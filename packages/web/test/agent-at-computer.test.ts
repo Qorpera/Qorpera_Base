@@ -11,7 +11,7 @@ import { CloudRpcError } from "../src/cloud/client.ts";
 import { parseScreensInUse, type ScreensInUse } from "../src/cloud/screens-in-use.ts";
 import type { TranscriptMessage } from "../src/cloud/transcript.ts";
 import type { HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
-import { atComputerFrame, atComputerSeed } from "../src/ui/at-computer-motion.ts";
+import { atComputerFrame } from "../src/ui/at-computer-motion.ts";
 import { setLanguagePreference, untranslated } from "../src/ui/preferences.ts";
 import { fixture, id, profileA, session, settle, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
 
@@ -319,15 +319,12 @@ describe("the rail", () => {
 
 describe("the figure's motion", () => {
 	it("moves only in steps: a hold draws nothing new, and two agents do not move in step", () => {
-		const seed = atComputerSeed(staff.id);
+		const seed = 2462466252;
 		const keys = Array.from({ length: 40 * 60 }, (_, frame) => atComputerFrame(frame / 60, seed, false).key);
 		const changes = keys.filter((key, index) => index > 0 && key !== keys[index - 1]).length;
 		// At most a third of the frames of a 60 Hz screen draw anything.
 		expect(changes / keys.length).toBeLessThan(1 / 3);
-		const others = Array.from(
-			{ length: 600 },
-			(_, frame) => atComputerFrame(frame / 60, atComputerSeed(other.id), false).key,
-		);
+		const others = Array.from({ length: 600 }, (_, frame) => atComputerFrame(frame / 60, 45900736, false).key);
 		expect(others).not.toEqual(keys.slice(0, 600));
 		// Reduced motion: one still frame.
 		expect(new Set([0, 3, 17].map((s) => atComputerFrame(s, seed, true).key)).size).toBe(1);
@@ -533,5 +530,153 @@ describe("the agent's thread", () => {
 		await settle();
 		expect(f.panel()).toBe(panel);
 		expect(panel?.closest(".thread-computer")?.parentElement?.classList.contains("messages-log")).toBe(true);
+	});
+
+	/* Found on the live app, 15 Nov 2026: the member pressed Computer on the agent's card and the window came in at the
+	 * thread's end, under the composer; the thread stayed where it was. The thread goes to the window the member opened. */
+	/** The thread's scroller with a height of its own: `full` is all it holds, 300 of it shows. */
+	const scrolling = (f: ReturnType<typeof thread>, full: { value: number }) => {
+		const scroller = f.view.el.querySelector<HTMLElement>(".messages")!;
+		let top = 0;
+		Object.defineProperty(scroller, "scrollTop", {
+			configurable: true,
+			get: () => top,
+			set: (value: number) => {
+				top = Math.max(0, Math.min(value, full.value - 300));
+			},
+		});
+		Object.defineProperty(scroller, "scrollHeight", { configurable: true, get: () => full.value });
+		Object.defineProperty(scroller, "clientHeight", { configurable: true, get: () => 300 });
+		/** The member scrolls to `to`. */
+		const scroll = (to: number) => {
+			scroller.scrollTop = to;
+			scroller.dispatchEvent(new Event("scroll"));
+		};
+		return { scroller, scroll };
+	};
+	/** The page's size observers, told by hand that something grew. */
+	const observers = () => {
+		const told: (() => void)[] = [];
+		vi.stubGlobal(
+			"ResizeObserver",
+			class {
+				constructor(callback: () => void) {
+					told.push(callback);
+				}
+				observe(): void {}
+				unobserve(): void {}
+				disconnect(): void {}
+			},
+		);
+		return () => {
+			for (const callback of told) callback();
+		};
+	};
+
+	it("goes to the window the member opened: the thread is at its end and follows the window while it grows, from wherever the member had scrolled, and the window takes the keyboard without a scroll of the browser's own", async () => {
+		const grew = observers();
+		const f = thread();
+		await settle();
+		f.controller.conversation(session.sessionId).set(items(said(1, 0), said(2, 2)));
+		await settle();
+		const full = { value: 1000 };
+		const { scroller, scroll } = scrolling(f, full);
+		// The member reads further up: the thread no longer follows its end.
+		scroll(100);
+		full.value = 1100;
+		grew();
+		expect(scroller.scrollTop).toBe(100);
+		const focus = vi.spyOn(HTMLElement.prototype, "focus");
+		expect(f.view.show(staff.id, "computer", true)).toBe(true);
+		// The row is in the thread at once, small; the thread is at its end once the row has its place.
+		full.value = 1120;
+		await settle();
+		expect(scroller.scrollTop).toBe(820);
+		// The window grows into its place (the start scene, then the picture): the thread stays at its end.
+		full.value = 1500;
+		grew();
+		expect(scroller.scrollTop).toBe(1200);
+		// The keyboard is the window's, and the browser was told not to scroll for it.
+		const panel = f.panel();
+		expect(document.activeElement).toBe(panel);
+		const calls = focus.mock.calls.filter((_call, index) => focus.mock.contexts[index] === panel);
+		expect(calls.length).toBeGreaterThan(0);
+		expect(calls.every(([options]) => options?.preventScroll === true)).toBe(true);
+	});
+
+	it("brings a window that stands further up into view, between the thread's top and the foot laid over its bottom", async () => {
+		const f = thread();
+		await settle();
+		f.controller.conversation(session.sessionId).set(items(said(1, 0)));
+		f.controller.store.set({ activity: [run()], atComputers: { [staff.id]: at() } });
+		await settle();
+		f.controller.store.set({ activity: [], atComputers: {} });
+		f.controller.conversation(session.sessionId).set(items(said(1, 0), said(2, 5)));
+		await settle();
+		expect(rows(f)).toEqual(["Message 1", "computer", "Message 2"]);
+		const full = { value: 2000 };
+		const { scroller, scroll } = scrolling(f, full);
+		const row = f.panel()!.closest<HTMLElement>(".thread-computer")!;
+		Object.defineProperty(f.view.el.querySelector<HTMLElement>(".thread-foot")!, "offsetHeight", {
+			configurable: true,
+			get: () => 60,
+		});
+		// The row holds 120 of the thread's height, from 500 on; 300 of the thread shows, the foot over its last 60.
+		const rect = (top: number, height: number) =>
+			({
+				top,
+				bottom: top + height,
+				height,
+				left: 0,
+				right: 0,
+				width: 0,
+				x: 0,
+				y: top,
+				toJSON: () => ({}),
+			}) as DOMRect;
+		vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+			if (this === scroller) return rect(0, 300);
+			if (this === row) return rect(500 - scroller.scrollTop, 120);
+			return rect(0, 0);
+		});
+		// Below what shows: its bottom comes to the foot (300 - 60 - 12).
+		scroll(0);
+		expect(f.view.show(staff.id, "computer", true)).toBe(true);
+		await settle();
+		expect(scroller.scrollTop).toBe(392);
+		expect(row.getBoundingClientRect().bottom).toBe(228);
+		// Above what shows: its top comes to the thread's top (12 under it).
+		scroll(900);
+		expect(f.view.show(staff.id, "computer", true)).toBe(true);
+		await settle();
+		expect(scroller.scrollTop).toBe(488);
+		// In view already: the thread stays.
+		scroll(400);
+		expect(f.view.show(staff.id, "computer", true)).toBe(true);
+		await settle();
+		expect(scroller.scrollTop).toBe(400);
+		expect(rows(f)).toEqual(["Message 1", "computer", "Message 2"]);
+	});
+
+	it("leaves a thread the member scrolled where it is when the window shows by itself", async () => {
+		const grew = observers();
+		const f = thread();
+		await settle();
+		f.controller.conversation(session.sessionId).set(items(said(1, 0), said(2, 2)));
+		await settle();
+		const full = { value: 1000 };
+		const { scroller, scroll } = scrolling(f, full);
+		scroll(100);
+		f.controller.store.set({ activity: [run()], atComputers: { [staff.id]: at() } });
+		full.value = 1500;
+		await settle();
+		grew();
+		expect(f.panel()).not.toBeNull();
+		expect(scroller.scrollTop).toBe(100);
+		// At its end, the thread follows the window that came by itself, as it follows anything that grows there.
+		scroll(1200);
+		full.value = 1600;
+		grew();
+		expect(scroller.scrollTop).toBe(1300);
 	});
 });

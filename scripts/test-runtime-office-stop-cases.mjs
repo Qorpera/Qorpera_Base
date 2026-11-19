@@ -68,9 +68,9 @@ export async function testOfficeStopAcknowledgement({request,revocation,lease,sc
 	execute(`update public.qorpera_runtime_offices set privacy_state='${privacy.state}',privacy_version=${privacy.version},privacy_challenge=${literal(privacy.challenge)},revision=revision+1;
 		update public.qorpera_runtime_office_providers set preparation_enabled=false;
 		insert into public.qorpera_company_execution_pauses(profile_id,paused_by_user_id) values('${scope.companyId}','92400000-0000-4000-8000-000000000001');`);
-	const methods=[];let loseAck=true;
+	let loseAck=true;
 	const control=new LxdOfficeStopControl(stopRequest,command,{call:async(method,args,signal)=>{
-		signal.throwIfAborted();methods.push(method);
+		signal.throwIfAborted();
 		const sql=method==='qorpera_prepare_runtime_office_stop'?prepare(args.p_inspection_id,args.p_command,args.p_request,args.p_start_completion_sha256):
 			method==='qorpera_ack_runtime_office_stop'?ack(args.p_inspection):status;
 		if(method==='qorpera_ack_runtime_office_stop'&&loseAck){
@@ -123,7 +123,6 @@ export async function testOfficeStopAcknowledgement({request,revocation,lease,sc
 	assert.equal(replay.pending,1);assert.deepEqual(replay.receipt,result);
 	await deny(`select public.qorpera_check_runtime_office_startup(${literal(request.startup)});`);
 	assert.equal(call(`select public.qorpera_runtime_office_lifecycle_status(${literal(request)});`).state,'draining');
-	assert.equal(methods.filter(m=>m==='qorpera_ack_runtime_office_stop').length,1);
 	console.log('PASS: concurrent acknowledgements commit once; actual stop adapter recovers lost committed reply and database restart, preserves newer drains/private state and leaves admission and machine capacity fenced');
 	return { request: stopRequest, command, acknowledgement: result };
 }

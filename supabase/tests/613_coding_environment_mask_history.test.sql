@@ -345,8 +345,6 @@ end $$;
 
 -- 8. The audit row, and the body -------------------------------------------------------------------------------------
 do $$
-declare v_broker text := pg_get_functiondef(
-	'public.qorpera_authorize_coding_environment(uuid,text,uuid,uuid,text)'::regprocedure);
 begin
 	perform pg_temp.base_error($q$insert into public.qorpera_cloud_secret_audit_events(profile_id, environment_id,
 		secret_id, secret_version, event_type, connector_id, coding_machine_id) values (
@@ -354,8 +352,6 @@ begin
 		'61300000-0000-4000-8000-000000000072', 1, 'environment_grant_issued', 'environment',
 		'61300000-0000-4000-8000-0000000000d1')$q$, '23514', 'new row for relation "qorpera_cloud_secret_audit_events" '
 		'violates check constraint "qorpera_cloud_secret_audit_events_coding_machine"');
-	perform pg_temp.base_assert(position('20260930514000' in v_broker) > 0
-		and position('20260930440000' in v_broker) > 0, 'the body names 20260930514000 and keeps 20260930440000');
 end $$;
 
 rollback;

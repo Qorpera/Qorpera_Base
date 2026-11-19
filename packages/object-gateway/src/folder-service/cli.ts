@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { leaveCleanStop, takeCleanStop } from "./clean-stop.ts";
 import { CONTROL_SOCKET, createControlServer } from "./control.ts";
 import { SupabaseFolderCore } from "./core.ts";
+import { httpsDataDoor } from "./data-door.ts";
 import { parseMachineProject, parseMachineRef } from "./machines.ts";
 import { MountGrants, parseOperatorMounts } from "./mounts.ts";
 import { NasObjects } from "./objects.ts";
@@ -43,6 +44,7 @@ interface Config {
 	/** Writes through the mount (F3 step 3): the object gateway that stores the views' bytes. Without it, every view is
 	 * read-only. Its token is the credential qorpera-folder-gateway-token. */
 	readonly gatewayUrl?: string;
+	readonly companyDataUrl?: string;
 }
 
 function config(): Config {
@@ -58,6 +60,7 @@ function config(): Config {
 		"testMachineProjects",
 		"codingExecutorUid",
 		"gatewayUrl",
+		"companyDataUrl",
 	];
 	for (const key of Object.keys(value)) if (!known.includes(key)) throw new Error(`Unknown configuration key ${key}`);
 	if (typeof value.supabaseUrl !== "string" || typeof value.storageRoot !== "string")
@@ -79,6 +82,8 @@ function config(): Config {
 		throw new Error("codingExecutorUid must be the coding executor's uid, not root's");
 	if (value.gatewayUrl !== undefined && typeof value.gatewayUrl !== "string")
 		throw new Error("gatewayUrl must be a URL");
+	if (value.companyDataUrl !== undefined && typeof value.companyDataUrl !== "string")
+		throw new Error("companyDataUrl must be a URL");
 	return value as unknown as Config;
 }
 
@@ -118,6 +123,15 @@ const service = new FolderService({
 	),
 	vouched,
 	log,
+	...(settings.companyDataUrl
+		? {
+				dataDoor: httpsDataDoor({
+					url: settings.companyDataUrl,
+					token: credential("qorpera-folder-company-data-token"),
+					ca: credential("qorpera-folder-company-data-ca"),
+				}),
+			}
+		: {}),
 });
 
 /** Socket activation: systemd passes the listening sockets from fd 3 on, named by the units' FileDescriptorName=, and

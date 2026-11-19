@@ -2,10 +2,11 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { answersInteraction } from "../src/app/company.ts";
-import type { InteractionRequest } from "../src/cloud/interactions.ts";
+import { type InteractionRequest, questionInput } from "../src/cloud/interactions.ts";
 import type { HostedSession } from "../src/cloud/types.ts";
 import { fmtTime } from "../src/ui/dom.ts";
 import { type InteractionCardApp, refreshAppPreviews, renderInteractionCard } from "../src/ui/interaction-card.ts";
+import type { MailAddressCalls } from "../src/ui/mail-address.ts";
 import { session, userA, userB } from "./fixtures.ts";
 
 const ID = "44444444-4444-4444-8444-000000000593";
@@ -99,9 +100,9 @@ describe("interaction cards", () => {
 		expect(card.querySelector("button")).toBeNull();
 	});
 
-	it("shows a takeover with Take over, I'm done and Skip, and hands back or dismisses", () => {
-		const takeOver = vi.fn();
-		const ctx = context({ takeOver });
+	it("shows a takeover with Open computer, I'm done and Skip, no Take over (Jonas, 14 Nov 2026), and opens, hands back or dismisses", () => {
+		const openComputer = vi.fn();
+		const ctx = context({ openComputer });
 		const card = renderInteractionCard(
 			item({
 				surface: "takeover",
@@ -111,9 +112,9 @@ describe("interaction cards", () => {
 			ctx,
 		);
 		const labels = [...card.querySelectorAll<HTMLButtonElement>(".interaction-actions .btn")];
-		expect(labels.map((pill) => pill.textContent)).toEqual(["Take over", "I'm done", "Skip"]);
+		expect(labels.map((pill) => pill.textContent)).toEqual(["Open computer", "I'm done", "Skip"]);
 		labels[0]?.click();
-		expect(takeOver).toHaveBeenCalledTimes(1);
+		expect(openComputer).toHaveBeenCalledTimes(1);
 		expect(ctx.answer).not.toHaveBeenCalled();
 		labels[1]?.click();
 		expect(ctx.answer).toHaveBeenCalledWith("handed_back", {});
@@ -147,7 +148,6 @@ describe("interaction cards", () => {
 		const readOnly = renderInteractionCard(secret, context());
 		expect(readOnly.querySelector("input")).toBeNull();
 		expect(readOnly.textContent).toContain("Saving a secret to the company vault is unavailable here.");
-		expect(readOnly.textContent).not.toContain("newer version");
 		const pills = [...readOnly.querySelectorAll<HTMLButtonElement>(".interaction-actions .btn")];
 		expect(pills.map((pill) => pill.textContent)).toEqual(["Decline"]);
 	});
@@ -191,8 +191,6 @@ describe("interaction cards", () => {
 		const card = renderInteractionCard(item(request), ctx);
 		expect(card.textContent).toContain("Website: shop.example");
 		expect(card.textContent).toContain("Filling a webpage through this card is unavailable.");
-		expect(card.textContent).not.toContain("Filled on the computer");
-		expect(card.textContent).not.toContain("newer version");
 		expect(card.querySelector("input, select, textarea")).toBeNull();
 		const actions = [...card.querySelectorAll<HTMLButtonElement>("button")];
 		expect(actions.map((action) => action.textContent)).toEqual(["Skip"]);
@@ -222,7 +220,6 @@ describe("interaction cards", () => {
 					? "Signing in to accounts.example through this card is unavailable."
 					: "Signing in through this card is unavailable.",
 			);
-			expect(card.textContent).not.toContain("Nothing to do here");
 			expect(card.querySelector("button, input")).toBeNull();
 			expect(ctx.answer).not.toHaveBeenCalled();
 		},
@@ -851,5 +848,139 @@ describe("who answers a card", () => {
 		expect(card.querySelector(".card-more")).toBeNull();
 		const code = renderInteractionCard(item({ ...question, body: "```\n- a\nb\n```" }), context());
 		expect(code.querySelector("pre")?.textContent).toBe("- a\nb");
+	});
+});
+
+describe("the address card", () => {
+	const address: InteractionRequest = {
+		surface: "question",
+		title: "Your company's email address",
+		payload: {
+			allowCustom: true,
+			input: { kind: "mail_address" },
+			options: [
+				{ label: "lerhave-keramik", value: "lerhave-keramik" },
+				{ label: "lerhave", value: "lerhave" },
+			],
+		},
+	};
+	const taken = new Set(["brooks"]);
+	function calls(overrides: Partial<MailAddressCalls> = {}) {
+		return {
+			canChoose: true,
+			handles: vi.fn(async () => ({ domain: "inbox.qorpera.com", handles: ["mine"] })),
+			status: vi.fn(async (handle: string) =>
+				handle === "mine" ? ("ours" as const) : taken.has(handle) ? ("taken" as const) : ("free" as const),
+			),
+			choose: vi.fn(async () => {}),
+			...overrides,
+		};
+	}
+	const field = (card: HTMLElement) => card.querySelector<HTMLInputElement>(".interaction-address-handle")!;
+	const check = (card: HTMLElement) => card.querySelector(".interaction-address-check")?.textContent;
+	const use = (card: HTMLElement) =>
+		[...card.querySelectorAll<HTMLButtonElement>(".interaction-actions .btn")].find(
+			(pill) => pill.textContent === "Use this address",
+		);
+	const type = (card: HTMLElement, text: string) => {
+		field(card).value = text;
+		field(card).dispatchEvent(new Event("input"));
+	};
+
+	it("is a question that takes the member's own answer and says its input is a mail address", () => {
+		expect(questionInput(address)).toBe("mail_address");
+		expect(questionInput({ ...address, payload: { ...address.payload, allowCustom: false } })).toBeUndefined();
+		expect(questionInput(question)).toBeUndefined();
+		expect(questionInput({ ...address, payload: { ...address.payload, input: { kind: "phone" } } })).toBeUndefined();
+	});
+
+	it("shows hello., the first suggestion and the domain in one field, and checks the company's part as it is typed", async () => {
+		const mail = calls();
+		const card = renderInteractionCard(item(address), context({ inThread: true, mailAddress: mail }));
+		expect(card.querySelector(".interaction-address-box")?.textContent).toBe("hello.");
+		expect(field(card).value).toBe("lerhave-keramik");
+		await vi.waitFor(() =>
+			expect(card.querySelector(".interaction-address-domain")?.textContent).toBe("@inbox.qorpera.com"),
+		);
+		expect(card.querySelector(".interaction-field")).toBeNull();
+		expect(check(card)).toBe("Checking…");
+		expect(use(card)?.disabled).toBe(true);
+		await vi.waitFor(() => expect(check(card)).toBe("Free"));
+		expect(use(card)?.disabled).toBe(false);
+		expect(mail.status).toHaveBeenCalledWith("lerhave-keramik", expect.any(AbortSignal));
+		const suggestions = [...card.querySelectorAll<HTMLButtonElement>(".interaction-address-suggestions .btn")];
+		expect(suggestions.map((pill) => pill.textContent)).toEqual(["lerhave-keramik", "lerhave"]);
+		suggestions[1]!.click();
+		expect(field(card).value).toBe("lerhave");
+		expect(mail.choose).not.toHaveBeenCalled();
+		type(card, "Brooks");
+		expect(field(card).value).toBe("brooks");
+		await vi.waitFor(() => expect(check(card)).toBe("That one belongs to another company"));
+		expect(use(card)?.disabled).toBe(true);
+		type(card, "mine");
+		await vi.waitFor(() => expect(check(card)).toBe("Already yours"));
+		type(card, "a");
+		expect(check(card)).toBe("Use a–z, 0–9 and hyphens");
+		expect(use(card)?.disabled).toBe(true);
+		type(card, "lerhave keramik!");
+		expect(field(card).value).toBe("lerhave-keramik-");
+		expect(check(card)).toBe("Use a–z, 0–9 and hyphens");
+	});
+
+	it("makes the address with Use this address, and says why when it could not be made", async () => {
+		const choose = vi
+			.fn<(handle: string) => Promise<void>>()
+			.mockRejectedValueOnce(new Error("This address is taken."))
+			.mockResolvedValueOnce(undefined);
+		const ctx = context({ inThread: true, mailAddress: calls({ choose }) });
+		const card = renderInteractionCard(item(address), ctx);
+		document.body.append(card);
+		await vi.waitFor(() => expect(check(card)).toBe("Free"));
+		use(card)!.click();
+		expect(choose).toHaveBeenCalledWith("lerhave-keramik");
+		expect(field(card).getAttribute("aria-disabled")).toBe("true");
+		await vi.waitFor(() => expect(check(card)).toBe("This address is taken."));
+		expect(field(card).getAttribute("aria-disabled")).toBeNull();
+		use(card)!.click();
+		await vi.waitFor(() => expect(choose).toHaveBeenCalledTimes(2));
+		expect(ctx.answer).not.toHaveBeenCalled();
+		document.body.replaceChildren();
+	});
+
+	it("shows a member who is not a founder or an admin the address without a way to choose it", async () => {
+		const card = renderInteractionCard(item(address), context({ mailAddress: calls({ canChoose: false }) }));
+		expect(field(card).disabled).toBe(true);
+		expect(use(card)).toBeUndefined();
+		expect(card.querySelector(".interaction-address-suggestions")).toBeNull();
+		expect(check(card)).toBe("Only founders and admins can choose the address");
+		expect(card.querySelector(".interaction-quiet")?.textContent).toBe("Skip");
+		const away = renderInteractionCard(item(address), context());
+		expect(field(away).disabled).toBe(true);
+		expect(check(away)).toBe("The address can be chosen in the chat.");
+	});
+
+	it("says when the company's mail is off", async () => {
+		const card = renderInteractionCard(
+			item(address),
+			context({ mailAddress: calls({ handles: vi.fn(async () => ({ domain: null, handles: [] })) }) }),
+		);
+		await vi.waitFor(() => expect(check(card)).toBe("Company mail is not set up yet."));
+		expect(use(card)?.disabled).toBe(true);
+	});
+
+	it("shows the address made as the member's own answer once it is answered", () => {
+		const card = renderInteractionCard(
+			item(address, {
+				outcome: "answered",
+				answer: { values: ["hello.lerhave-keramik@inbox.qorpera.com"] },
+				answeredBy: MEMBER,
+				answeredAt: "2026-09-22T20:05:00Z",
+			}),
+			context({ inThread: true, viewerId: MEMBER, mailAddress: calls() }),
+		);
+		expect(card.querySelector(".interaction-address")).toBeNull();
+		expect(card.querySelector(".interaction-result.is-said.mine .bubble")?.textContent).toBe(
+			"hello.lerhave-keramik@inbox.qorpera.com",
+		);
 	});
 });

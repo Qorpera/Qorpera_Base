@@ -9,11 +9,13 @@ import {
 	type CompanySitePassword,
 	createWebSites,
 	parseCompanySite,
+	parseCompanySiteAccess,
 	parseCompanySitePassword,
 	type WebSites,
 } from "../src/cloud/sites.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
-import { deferred, id, settle, timestamp } from "./fixtures.ts";
+import { setLanguagePreference, t } from "../src/ui/preferences.ts";
+import { deferred, id, oneHostList, settle, timestamp } from "./fixtures.ts";
 
 const ORIGIN = "https://sites.qorpera.com";
 const PASSWORD = "k7mq-x2pa-9fhd";
@@ -907,6 +909,365 @@ describe("Sites: who may do what", () => {
 	});
 });
 
+describe("Sites: a site Qorpera took down (own code storage step 5.1)", () => {
+	const REASON = "It asked visitors for bank passwords.";
+	const SAID =
+		"Qorpera took this site down: It asked visitors for bank passwords. If you think this is wrong, tell us with Feedback in your menu.";
+	/** The access read as the kernel answers it (qorpera.company-site-access/v1), with keys this web does not know. */
+	const accessOf = (down: Record<string, string>, extra: Record<string, unknown> = {}) => ({
+		schema: "qorpera.company-site-access/v1",
+		hosts: true,
+		...extra,
+		sites: [shop, draft, app, gift].map((site) => ({
+			siteId: site.id,
+			takenDown: site.id in down ? { at: timestamp, reason: down[site.id] } : null,
+			public: false,
+		})),
+	});
+	const withAccess = (answer: () => unknown) => (client: SitesClientMock) => {
+		(client as SitesClientMock & Pick<WebSites, "access">).access = vi.fn(async () => {
+			const value = answer();
+			if (value instanceof Error) throw value;
+			return parseCompanySiteAccess(value);
+		});
+	};
+	const links = (row: Element) => [...row.querySelectorAll<HTMLAnchorElement>("a")].map((link) => link.href);
+
+	it("says so in its row in one plain sentence, and offers no link to the gone page, its password nor a menu", async () => {
+		setup(
+			[shop, app, gift],
+			admin,
+			withAccess(() => accessOf({ [shop.id]: REASON, [app.id]: "Spam." })),
+		);
+		await settle();
+		const row = rowOf(shop.id)!;
+		expect(row.classList.contains("is-down")).toBe(true);
+		expect(row.querySelector(".site-state")?.textContent).toBe("Taken down");
+		expect(row.querySelector(".site-state.is-down")).not.toBeNull();
+		expect(row.querySelector(".site-down")?.textContent).toBe(SAID);
+		// Nothing that leads to the site: no link to copy or open, no password to share.
+		expect(row.querySelector(".site-share, .site-link, .site-secret")).toBeNull();
+		expect(links(row)).toEqual([]);
+		expect(row.innerHTML).not.toContain("sites.qorpera.com");
+		// No menu: until Qorpera restores it, the kernel refuses taking it offline and its password opens nothing.
+		expect(buttonsIn(row)).toEqual([]);
+		expect(row.querySelector(".site-more")).toBeNull();
+		// An app link taken down says the same, in its own row, with no menu either.
+		const link = rowOf(app.id)!;
+		expect(link.querySelector(".site-down")?.textContent).toBe(
+			"Qorpera took this site down: Spam. If you think this is wrong, tell us with Feedback in your menu.",
+		);
+		expect(links(link)).toEqual([]);
+		expect(buttonsIn(link)).toEqual([]);
+		// A site not taken down is as before; a project's site keeps its way to What's new.
+		const other = rowOf(gift.id)!;
+		expect(other.querySelector(".site-state")?.textContent).toBe("Live");
+		expect(other.querySelector(".site-down")).toBeNull();
+		expect(control(gift.id, "copy-link")?.textContent).toBe("sites.qorpera.com/gift-message");
+		expect(secretOf(gift.id)).toBe(DOTS);
+		press(gift.id, "more");
+		expect(menuLabels().map((item) => item.label)).toEqual(["Change password", "Take offline"]);
+	});
+
+	it("tells every member why, with no menu for those who may not take it offline", async () => {
+		setup(
+			[shop],
+			{ canManage: () => false },
+			withAccess(() => accessOf({ [shop.id]: REASON })),
+		);
+		await settle();
+		const row = rowOf(shop.id)!;
+		expect(row.querySelector(".site-down")?.textContent).toBe(SAID);
+		expect(buttonsIn(row)).toEqual([]);
+		expect(links(row)).toEqual([]);
+	});
+
+	it("keeps a project's site's way to What's new, with no menu: it stays until Qorpera restores it", async () => {
+		const { client } = setup(
+			[gift],
+			admin,
+			withAccess(() => accessOf({ [gift.id]: REASON })),
+			{
+				versions: { "gift-message": 3 },
+			},
+		);
+		await settle();
+		expect(rowOf(gift.id)?.querySelector(".site-from")?.textContent).toBe("Version 3 · What's new");
+		expect(buttonsIn(rowOf(gift.id)!)).toEqual([]);
+		expect(client.unpublish).not.toHaveBeenCalled();
+	});
+
+	it("draws a row for a project's site taken down before it ever went live, which no list has (review of #1774, F4)", async () => {
+		// A project's site whose first version still waits in What's new: the list leaves it out; the access read names it.
+		const fresh = {
+			id: id(86),
+			slug: "spring-sale",
+			title: "Spring sale",
+			kind: "files",
+			source: "code/company/spring-sale",
+		};
+		let down = true;
+		const access = () => ({
+			schema: "qorpera.company-site-access/v1",
+			hosts: true,
+			sites: [
+				{
+					siteId: shop.id,
+					slug: shop.slug,
+					title: shop.title,
+					kind: "files",
+					source: shop.source,
+					takenDown: null,
+				},
+				{
+					siteId: fresh.id,
+					slug: fresh.slug,
+					title: fresh.title,
+					kind: fresh.kind,
+					source: fresh.source,
+					takenDown: down ? { at: timestamp, reason: REASON } : null,
+				},
+			],
+		});
+		setup([shop], admin, withAccess(access), { versions: {} });
+		await settle();
+		expect(ids()).toEqual([shop.id, fresh.id]);
+		const row = rowOf(fresh.id)!;
+		expect(row.querySelector(".site-name")?.textContent).toBe("Spring sale");
+		expect(row.querySelector(".site-state")?.textContent).toBe("Taken down");
+		expect(row.querySelector(".site-down")?.textContent).toBe(SAID);
+		// The row and nothing else: no link, no password, no menu; its way to What's new, where its version waits.
+		expect(row.innerHTML).not.toContain("qorpera.com");
+		expect(row.querySelectorAll("a")).toHaveLength(1);
+		expect(row.querySelector(".site-share, .site-link, .site-secret, .site-more")).toBeNull();
+		expect(buttonsIn(row)).toEqual([]);
+		expect(row.querySelector(".site-from")?.textContent).toBe("What's new");
+		// A member who may not manage sites sees the same row.
+		view?.dispose();
+		document.body.replaceChildren();
+		setup([shop], { canManage: () => false }, withAccess(access));
+		await settle();
+		expect(rowOf(fresh.id)?.querySelector(".site-down")?.textContent).toBe(SAID);
+		expect(buttonsIn(rowOf(fresh.id)!)).toEqual([]);
+		// Restored: the row goes with the next read (the list still leaves the site out until it goes live).
+		down = false;
+		view?.dispose();
+		document.body.replaceChildren();
+		setup([shop], admin, withAccess(access));
+		await settle();
+		expect(ids()).toEqual([shop.id]);
+		// An access read whose entry does not name the site (a kernel's answer it cannot read whole) draws no such row.
+		view?.dispose();
+		document.body.replaceChildren();
+		down = true;
+		setup(
+			[shop],
+			admin,
+			withAccess(() => ({ ...access(), sites: access().sites.map(({ slug: _slug, ...entry }) => entry) })),
+		);
+		await settle();
+		expect(ids()).toEqual([shop.id]);
+	});
+
+	it("sends nothing when Qorpera took the site down while its Take offline was on the way, and the focus skips its row", async () => {
+		let answer: unknown = accessOf({});
+		const { client } = setup(
+			[shop, gift, draft],
+			admin,
+			withAccess(() => answer),
+		);
+		await settle();
+		/** A read of the list (and of what Qorpera took down) that is still out: a password read that fails reads again. */
+		const readOut = async (down: Record<string, string>) => {
+			const read = deferred<CompanySite[]>();
+			vi.mocked(client.list).mockImplementationOnce(() => read.promise);
+			vi.mocked(client.password).mockRejectedValueOnce(new Error("offline"));
+			answer = accessOf(down);
+			press(draft.id, "eye");
+			await settle();
+			return async () => {
+				read.resolve([shop, gift, draft]);
+				await settle();
+			};
+		};
+		const asked = () => document.querySelector('[role="alertdialog"]');
+		// The read says so while the project's site's menu is open: Take offline asks nothing and sends nothing.
+		let lands = await readOut({ [gift.id]: REASON });
+		press(gift.id, "more");
+		await lands();
+		expect(rowOf(gift.id)?.querySelector(".site-down")?.textContent).toBe(SAID);
+		choose("Take offline");
+		await settle();
+		expect(asked()).toBeNull();
+		// Restored, then taken down again while the question is open: its yes sends nothing.
+		await (await readOut({}))();
+		lands = await readOut({ [gift.id]: REASON });
+		press(gift.id, "more");
+		choose("Take offline");
+		await lands();
+		expect(rowOf(gift.id)?.querySelector(".site-down")?.textContent).toBe(SAID);
+		pressLabel(dialog(), "Take offline");
+		await settle();
+		expect(client.unpublish).not.toHaveBeenCalled();
+		expect(rowOf(gift.id)).not.toBeNull();
+		// Taking the site before it offline moves the focus past the row with no menu, to the site after it.
+		press(shop.id, "more");
+		choose("Take offline");
+		pressLabel(dialog(), "Take offline");
+		await settle();
+		expect(client.unpublish).toHaveBeenCalledExactlyOnceWith(shop.id, expect.any(AbortSignal));
+		expect(focusKey()).toBe(`site-more:${draft.id}`);
+	});
+
+	it("draws the page exactly as before on a kernel without the read, or with an answer it cannot read", async () => {
+		const drawn = async (configure?: (client: SitesClientMock) => void) => {
+			view?.dispose();
+			document.body.replaceChildren();
+			setup([shop, draft, app, gift], admin, configure, { versions: { "gift-message": 3 } });
+			await settle();
+			// Each globe numbers its own mask: the number is all that differs between two pages drawn alike.
+			return view!.el.innerHTML.replace(/emblem-cuts-\d+/g, "emblem-cuts");
+		};
+		const before = await drawn();
+		expect(before).toContain("sites.qorpera.com/wristband-shop");
+		const missing = new CloudRpcError("qorpera_company_site_access", { message: "missing", code: "PGRST202" }, 404);
+		for (const answer of [
+			() => missing,
+			() => new Error("Failed to fetch"),
+			() => ({}),
+			() => [],
+			() => ({ schema: "qorpera.company-site-access/v2", sites: [] }),
+			() => ({ schema: "qorpera.company-site-access/v1", sites: {} }),
+			// Entries it cannot read say nothing of their site.
+			() => ({
+				schema: "qorpera.company-site-access/v1",
+				sites: [
+					{ siteId: shop.id, takenDown: { at: timestamp } },
+					{ siteId: shop.id, takenDown: { at: timestamp, reason: "   " } },
+					{ siteId: shop.id, takenDown: { at: "yesterday", reason: REASON } },
+					{ siteId: shop.id, takenDown: [REASON] },
+					{ siteId: shop.id, takenDown: true },
+					{ siteId: "shop", takenDown: { at: timestamp, reason: REASON } },
+					{ takenDown: { at: timestamp, reason: REASON } },
+					null,
+					REASON,
+				],
+			}),
+			() => accessOf({}),
+		])
+			expect(await drawn(withAccess(answer)), JSON.stringify(answer())).toBe(before);
+	});
+
+	it("keeps what the last read said when a read fails, forgets a password on screen, and gives the link back once up again", async () => {
+		let answer: unknown = accessOf({ [shop.id]: REASON });
+		const { client } = setup(
+			[shop, gift, draft],
+			admin,
+			withAccess(() => answer),
+		);
+		await settle();
+		expect(rowOf(shop.id)?.querySelector(".site-down")).not.toBeNull();
+		/** A new password for the project's site, which then stays on screen: the page reads the list again after it. */
+		const newPassword = async (password: string) => {
+			press(gift.id, "more");
+			choose("Change password");
+			question()!.querySelector("input")!.value = password;
+			question()!.requestSubmit();
+			await settle();
+		};
+		// A read whose access answer fails: what the last one said stands.
+		answer = new Error("Failed to fetch");
+		await newPassword("our friends only");
+		expect(client.list).toHaveBeenCalledTimes(2);
+		expect(rowOf(shop.id)?.querySelector(".site-down")).not.toBeNull();
+		expect(secretOf(gift.id)).toBe("our friends only");
+		// Taken down while its new password is on screen: the password leaves with the link.
+		answer = accessOf({ [shop.id]: REASON, [gift.id]: REASON });
+		await newPassword("our friends again");
+		expect(client.list).toHaveBeenCalledTimes(3);
+		expect(rowOf(gift.id)?.querySelector(".site-down")).not.toBeNull();
+		expect(rowOf(gift.id)?.querySelector(".site-secret")).toBeNull();
+		expect(view!.el.textContent).not.toContain("our friends again");
+		// Up again (Qorpera restored both): the links are back, and the password hidden. A password read that fails (the
+		// other site's) reads the list again.
+		answer = accessOf({});
+		vi.mocked(client.password).mockRejectedValueOnce(new Error("offline"));
+		press(draft.id, "eye");
+		await settle();
+		expect(client.list).toHaveBeenCalledTimes(4);
+		expect(rowOf(shop.id)?.querySelector(".site-down")).toBeNull();
+		expect(control(gift.id, "copy-link")?.textContent).toBe("sites.qorpera.com/gift-message");
+		expect(secretOf(gift.id)).toBe(DOTS);
+	});
+
+	it("says the reason as Qorpera wrote it, without a full stop of its own, and in Danish", async () => {
+		const said = async (reason: string) => {
+			view?.dispose();
+			document.body.replaceChildren();
+			setup(
+				[shop],
+				admin,
+				withAccess(() => accessOf({ [shop.id]: reason })),
+			);
+			await settle();
+			return rowOf(shop.id)?.querySelector(".site-down")?.textContent;
+		};
+		expect(await said("Phishing")).toBe(
+			"Qorpera took this site down: Phishing. If you think this is wrong, tell us with Feedback in your menu.",
+		);
+		expect(await said("Phishing. . ")).toBe(
+			"Qorpera took this site down: Phishing. If you think this is wrong, tell us with Feedback in your menu.",
+		);
+		// Read as text: braces and markup stay as they are.
+		expect(await said("{name} <b>x</b>")).toBe(
+			"Qorpera took this site down: {name} <b>x</b>. If you think this is wrong, tell us with Feedback in your menu.",
+		);
+		expect(rowOf(shop.id)?.querySelector("b")).toBeNull();
+		expect(await said("...")).toBe(
+			"Qorpera took this site down: .... If you think this is wrong, tell us with Feedback in your menu.",
+		);
+		setLanguagePreference("da");
+		try {
+			await said(REASON);
+			expect(rowOf(shop.id)?.querySelector(".site-state")?.textContent).toBe("Taget ned");
+			expect(rowOf(shop.id)?.querySelector(".site-down")?.textContent).toBe(
+				"Qorpera har taget hjemmesiden ned: It asked visitors for bank passwords. Hvis du mener, det er forkert, så skriv til os under Feedback i din menu.",
+			);
+		} finally {
+			setLanguagePreference("system");
+		}
+	});
+
+	it("sends a member who thinks it wrong to Feedback in their menu, by that item's own label", () => {
+		// The menu's item, as the account menu draws it, in both languages.
+		const shell = readFileSync(resolve("src/app/views/shell.ts"), "utf8");
+		expect(shell).toContain('h("span", { class: "account-item-label" }, uiText("Feedback"))');
+		const said = (lang: string) => {
+			setLanguagePreference(lang);
+			try {
+				return {
+					item: t("Feedback"),
+					sentence: t(
+						"Qorpera took this site down: {reason}. If you think this is wrong, tell us with {feedback} in your menu.",
+						{ reason: "Spam", feedback: t("Feedback") },
+					),
+				};
+			} finally {
+				setLanguagePreference("system");
+			}
+		};
+		expect(said("en")).toEqual({
+			item: "Feedback",
+			sentence: "Qorpera took this site down: Spam. If you think this is wrong, tell us with Feedback in your menu.",
+		});
+		expect(said("da")).toEqual({
+			item: "Feedback",
+			sentence:
+				"Qorpera har taget hjemmesiden ned: Spam. Hvis du mener, det er forkert, så skriv til os under Feedback i din menu.",
+		});
+	});
+});
+
 describe("Sites and What's new's live row at every width", () => {
 	// jsdom lays nothing out, so the stylesheet's rules are what is pinned here; measured in headless Chrome at 390, 768,
 	// 1024, 1280 and 1440 px, the sidebar open and compact, in English and Danish (lanes/own-code-storage/sites-redo).
@@ -917,8 +1278,6 @@ describe("Sites and What's new's live row at every width", () => {
 		expect(css).toContain(":is(.sites, .whats-new) {");
 		expect(css).toMatch(/:is\(\.sites, \.whats-new\) \{[^}]*container: site-rows \/ inline-size;/);
 		expect(app).toContain('@import "./sites.css";');
-		// The old cards' rules are gone with the cards.
-		expect(app).not.toContain("page-cards");
 	});
 
 	it("puts the pills under the globe on a narrow page, and What's new's buttons under its line", () => {
@@ -1134,6 +1493,49 @@ describe("sites client", () => {
 			expect(() => site("shop", url), url).toThrow("Invalid site.");
 	});
 
+	it("reads the access answer as the cloud gives it, a time as PostgreSQL writes it in JSON", async () => {
+		const at = "2026-11-13T19:00:00.123456+00:00";
+		const rpc = vi.fn(async (_name: string, _args: Record<string, unknown>) => ({
+			schema: "qorpera.company-site-access/v1",
+			hosts: true,
+			sites: [
+				{
+					siteId: shop.id,
+					slug: shop.slug,
+					title: shop.title,
+					kind: "files",
+					source: shop.source,
+					takenDown: { at, reason: "Spam" },
+				},
+				{ siteId: draft.id, slug: draft.slug, title: null, kind: "files", source: draft.source, takenDown: null },
+			],
+		}));
+		const access = await createWebSites({ rpc } as unknown as Cloud, { profileId: id(10) }).access();
+		expect(rpc.mock.calls).toEqual([["qorpera_company_site_access", { p_profile_id: id(10) }]]);
+		expect([...access.takenDown]).toEqual([[shop.id, { at, reason: "Spam" }]]);
+		// Each site taken down by its name too (the review of #1774, F4); one not taken down is not named.
+		expect([...access.named]).toEqual([
+			[shop.id, { slug: shop.slug, title: shop.title, kind: "files", source: shop.source }],
+		]);
+	});
+
+	it("takes as a website's link exactly the own hosts of the one host list (SQL test 1252), each for its own site", () => {
+		const list = oneHostList();
+		const slugs = [...new Set(list.map((entry) => entry.slug).filter(Boolean))];
+		for (const { host, slug, scope, verdict } of list) {
+			// A name the rule refuses (verdict name) never reaches the web: the kernel makes no site of it, and migration
+			// 20260930756000 refuses to run while one is stored. The parse reads the link's shape and the row's own slug.
+			if (verdict === "name") continue;
+			const url = `https://${host}/`;
+			for (const named of slugs) {
+				const label = `${url} for ${named}`;
+				if (verdict === "taken" && scope === "site" && named === slug)
+					expect(parseCompanySite(row({ slug: named, url })).url, label).toBe(url);
+				else expect(() => parseCompanySite(row({ slug: named, url })), label).toThrow("Invalid site.");
+			}
+		}
+	});
+
 	it("reads and draws today's answers exactly as before: websites on the sites host, app links at their own", async () => {
 		const today = [
 			row(),
@@ -1250,6 +1652,90 @@ describe("sites client", () => {
 		await expect(sites.password("not-a-site")).rejects.toThrow("Invalid site.");
 		await expect(sites.unpublish("not-a-site")).rejects.toThrow("Invalid site.");
 		expect(cloud.rpc).not.toHaveBeenCalled();
+	});
+
+	it("reads which sites Qorpera took down (step 5.1), leniently, and asks for it with the company", async () => {
+		const at = "2026-11-13T18:00:00.000Z";
+		const value = {
+			schema: "qorpera.company-site-access/v1",
+			hosts: true,
+			later: { public: true },
+			sites: [
+				{ siteId: shop.id, takenDown: { at, reason: "  Phishing.  ", by: "operator" }, public: false },
+				{ siteId: draft.id, takenDown: null },
+				{ siteId: app.id },
+				{ siteId: gift.id, takenDown: { at, reason: "x".repeat(400) } },
+			],
+		};
+		const read = parseCompanySiteAccess(value);
+		expect([...read.takenDown]).toEqual([
+			[shop.id, { at, reason: "Phishing." }],
+			[gift.id, { at, reason: "x".repeat(300) }],
+		]);
+		for (const bad of [
+			null,
+			[],
+			"x",
+			{ ...value, schema: "qorpera.company-site-access/v2" },
+			{ ...value, schema: undefined },
+			{ ...value, sites: null },
+			{ ...value, sites: { [shop.id]: { at, reason: "x" } } },
+		])
+			expect(() => parseCompanySiteAccess(bad), JSON.stringify(bad)).toThrow("Invalid site access.");
+		// An entry not as expected says nothing of its site; the others still count.
+		for (const entry of [
+			{ siteId: shop.id, takenDown: { at, reason: "" } },
+			{ siteId: shop.id, takenDown: { at, reason: " \n " } },
+			{ siteId: shop.id, takenDown: { at, reason: 7 } },
+			{ siteId: shop.id, takenDown: { reason: "x" } },
+			{ siteId: shop.id, takenDown: { at: "soon", reason: "x" } },
+			{ siteId: shop.id, takenDown: ["x"] },
+			{ siteId: shop.id, takenDown: "x" },
+			{ siteId: "site", takenDown: { at, reason: "x" } },
+			{ siteId: 81, takenDown: { at, reason: "x" } },
+			{ takenDown: { at, reason: "x" } },
+			[shop.id],
+			null,
+		])
+			expect(
+				[...parseCompanySiteAccess({ ...value, sites: [entry, value.sites[3]] }).takenDown.keys()],
+				JSON.stringify(entry),
+			).toEqual([gift.id]);
+		const cloud = cloudWith(() => value);
+		expect([...(await createWebSites(cloud, { profileId: id(10) }).access()).takenDown.keys()]).toEqual([
+			shop.id,
+			gift.id,
+		]);
+		expect(cloud.rpc).toHaveBeenLastCalledWith("qorpera_company_site_access", { p_profile_id: id(10) });
+	});
+
+	it("draws a site Qorpera took down through the real calls, the rest as today", async () => {
+		const cloud = cloudWith((name) =>
+			name === "qorpera_company_site_access"
+				? {
+						schema: "qorpera.company-site-access/v1",
+						hosts: false,
+						sites: [
+							{ siteId: shop.id, takenDown: { at: timestamp, reason: "Spam" } },
+							{ siteId: app.id, takenDown: null },
+						],
+					}
+				: [row(), appRow()],
+		);
+		view = new SitesView(createWebSites(cloud, { profileId: id(10) }), new AbortController().signal, {
+			access: admin,
+		});
+		document.body.append(view.el);
+		await settle();
+		expect(cloud.rpc.mock.calls.map(([name]) => name).sort()).toEqual([
+			"qorpera_company_site_access",
+			"qorpera_list_company_sites",
+		]);
+		expect(rowOf(shop.id)?.querySelector(".site-down")?.textContent).toBe(
+			"Qorpera took this site down: Spam. If you think this is wrong, tell us with Feedback in your menu.",
+		);
+		expect(rowOf(shop.id)?.querySelector("a")).toBeNull();
+		expect(control(app.id, "copy-link")?.textContent).toBe("saml-shop-preview.qorpera.com");
 	});
 
 	it("refuses a malformed answer and a malformed company", async () => {

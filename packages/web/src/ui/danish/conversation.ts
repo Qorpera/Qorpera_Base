@@ -150,7 +150,6 @@ export const CONVERSATION: Record<string, string> = {
 	"{name} is writing": "{name} skriver",
 	"{name} is using its computer": "{name} bruger sin computer",
 	// A run with no progress for 15 minutes (conversation.ts, interfaces.ts, views/execution-notices.ts)
-	"No progress": "Ingen fremgang",
 	"{agent} has made no progress for {minutes} minutes.": "{agent} har ikke haft fremgang i {minutes} minutter.",
 	"An agent": "En agent",
 	"The work could not be stopped. Try again.": "Arbejdet kunne ikke stoppes. Prøv igen.",
@@ -212,6 +211,18 @@ export const CONVERSATION: Record<string, string> = {
 		"Din seneste kørsel stoppede, fordi et login nåede sin forbrugsgrænse. Fortsæt venligst det arbejde.",
 	"ChatGPT refused or could not answer this run's request. Check the login that pays for it in Settings → AI subscriptions, or choose another login for this conversation.":
 		"ChatGPT afviste eller kunne ikke besvare kørslens forespørgsel. Tjek det login, der betaler for den, under Indstillinger → AI-abonnementer, eller vælg et andet login til denne samtale.",
+	"Your message didn't go through: ChatGPT got too many requests at once. The login is fine.":
+		"Din besked gik ikke igennem: ChatGPT fik for mange forespørgsler på én gang. Loginnet er i orden.",
+	"ChatGPT turned this run away because too many requests came at once. The login is fine.":
+		"ChatGPT afviste kørslen, fordi der kom for mange forespørgsler på én gang. Loginnet er i orden.",
+	"ChatGPT is busy with too many requests at once. This work waits a few minutes and then tries again by itself. The login is fine.":
+		"ChatGPT har travlt med for mange forespørgsler på én gang. Arbejdet venter et par minutter og prøver så igen af sig selv. Loginnet er i orden.",
+	"ChatGPT no longer accepts this login's sign-in, so the work stopped. Sign in again in Settings → AI subscriptions.":
+		"ChatGPT godtager ikke længere loginnet, så arbejdet stoppede. Log ind igen under Indstillinger → AI-abonnementer.",
+	"ChatGPT no longer accepts the sign-in of the login that pays for this run, so the work stopped. The member whose login it is can sign in again in Settings → AI subscriptions.":
+		"ChatGPT godtager ikke længere det login, der betaler for kørslen, så arbejdet stoppede. Det medlem, der ejer loginnet, kan logge ind igen under Indstillinger → AI-abonnementer.",
+	"ChatGPT did not accept this login's sign-in. Qorpera is renewing it, and the work tries again by itself in a few minutes.":
+		"ChatGPT godtog ikke loginnet. Qorpera fornyer det, og arbejdet prøver igen af sig selv om et par minutter.",
 	"The run lost its connection while it was working. This is usually brief.":
 		"Kørslen mistede forbindelsen, mens den arbejdede. Det går som regel hurtigt over.",
 	"The run could not load the login that pays for it. Check that login in Settings → AI subscriptions, or choose another login for this conversation.":
@@ -248,13 +259,20 @@ export const CONVERSATION: Record<string, string> = {
 	Low: "Lav",
 	Medium: "Mellem",
 	High: "Høj",
-	Speed: "Hastighed",
+	"Extra high": "Ekstra høj",
+	Max: "Maks",
+	Models: "Modeller",
+	"Choose model": "Vælg model",
+	"Choose model ({name})": "Vælg model ({name})",
+	"Switch to Claude": "Skift til Claude",
+	"Switch to GPT": "Skift til GPT",
+	"GPT answers light messages. Claude Code does the work, on your Claude plan.":
+		"GPT svarer på lette beskeder. Claude Code gør arbejdet, på dit Claude-abonnement.",
 	Fast: "Hurtig",
 	"{model}, Fast": "{model}, hurtig",
 	"{speed} speed": "{speed} hastighed",
 	"{speed} speed, uses more of your plan": "{speed} hastighed, bruger mere af dit abonnement",
 	"Faster replies": "Hurtigere svar",
-	"Only this conversation. Applies from your next message.": "Kun denne samtale. Gælder fra din næste besked.",
 	"Each agent's own": "Hver agents egen",
 	"Every agent in this group chat. Applies from your next message.":
 		"Alle agenter i denne gruppechat. Gælder fra din næste besked.",
@@ -282,8 +300,61 @@ export const CONVERSATION: Record<string, string> = {
 	"This app's app.toml has problems: {problems}": "Appens app.toml har fejl: {problems}",
 	"This can't be opened right now.": "Det kan ikke åbnes lige nu.",
 	"This page can't be shown here.": "Siden kan ikke vises her.",
+	"Opening… {percent}%": "Åbner… {percent}%",
 	"This page can't be shown live.": "Siden kan ikke vises direkte.",
 	"App: {name}": "App: {name}",
+	"This program has no version yet.": "Programmet har ingen version endnu.",
+	"This program's program.json can't be read.": "Programmets program.json kan ikke læses.",
+	"Version {version} · {day}": "Version {version} · {day}",
+	Install: "Installér",
+	"Download for {kind}": "Hent til {kind}",
+	"Download {kind}": "Hent {kind}",
+	"Not made for {kind} yet": "Ikke lavet til {kind} endnu",
+	"For this computer": "Til denne computer",
+	"For this phone": "Til denne telefon",
+	"It's in your Downloads.": "Den ligger i dine overførsler.",
+	"This file is no longer in the app's folder.": "Filen er ikke længere i appens mappe.",
+	"This file changed after version {version} was kept.": "Filen er ændret, efter at version {version} blev gemt.",
+	"The download stopped. Try again.": "Hentningen stoppede. Prøv igen.",
+	"Earlier versions": "Tidligere versioner",
+	"None yet": "Ingen endnu",
+	"Back to the newest, {version}": "Tilbage til den nyeste, {version}",
+	"{name} on a computer": "{name} på en computer",
+	"{name} on a phone": "{name} på en telefon",
+	"New program": "Nyt program",
+	"Drop a program here": "Slip et program her",
+	"or choose a file": "eller vælg en fil",
+	"Choose a program": "Vælg et program",
+	"Made something yourself? Drop it here and everyone in {company} can get it.":
+		"Har du selv lavet noget? Slip det her, så alle i {company} kan hente det.",
+	"What is it for?": "Hvad er det til?",
+	"Not this one": "Ikke denne",
+	"Putting {name} in place… {percent}%": "Lægger {name} på plads … {percent} %",
+	"{size}: too large. The most is {most}.": "{size}: for stor. Højst {most}.",
+	"Drop at most five files, one for each kind.": "Slip højst fem filer, én til hver slags.",
+	"{name} is empty.": "{name} er tom.",
+	"{name} can't be used as it is named. Rename the file and drop it again.":
+		"{name} kan ikke bruges med det navn. Omdøb filen, og slip den igen.",
+	"Two files for {kind}: drop one for each kind.": "To filer til {kind}: slip én til hver slags.",
+	"This program holds as many versions as it can.": "Programmet rummer så mange versioner, som det kan.",
+	"You can't add programs in this company.": "Du kan ikke tilføje programmer i denne virksomhed.",
+	"The company is paused. Add the program when it runs again.":
+		"Virksomheden er sat på pause. Tilføj programmet, når den kører igen.",
+	"Another program of yours is still going up. Try again in a moment.":
+		"Et andet af dine programmer er stadig på vej op. Prøv igen om lidt.",
+	"Someone added to this program at the same moment. Try again.":
+		"En anden tilføjede til programmet i samme øjeblik. Prøv igen.",
+	"The connection dropped.": "Forbindelsen blev afbrudt.",
+	"Add a version": "Tilføj en version",
+	"Putting it in place for everyone in {company}.": "Lægger det på plads til alle i {company}.",
+	"That version already has this file.": "Den version har allerede denne fil.",
+	"This is the version that is already here.": "Det er den version, der allerede ligger her.",
+	"The company folder refused this file: {reason}.": "Virksomhedens mappe afviste filen: {reason}.",
+	"The company folder refused this file.": "Virksomhedens mappe afviste filen.",
+	"This file can't be put in place as it is named. Rename it and drop it again.":
+		"Filen kan ikke lægges på plads med det navn. Omdøb den, og slip den igen.",
+	"Version {version} · added by you": "Version {version} · tilføjet af dig",
+	"Version {version} · added by {name}": "Version {version} · tilføjet af {name}",
 	"This app reloaded itself. Press Reload to start it again.":
 		"Appen genindlæste sig selv. Tryk Genindlæs for at starte den igen.",
 
@@ -329,6 +400,7 @@ export const CONVERSATION: Record<string, string> = {
 	"Your note waits in {name}'s thread": "Din besked venter i tråden med {name}",
 	"Write your note first.": "Skriv din besked først.",
 	"Leave the app out": "Udelad appen",
+	"Leave the page out": "Udelad siden",
 	"Your note could not be sent. Try again.": "Din besked kunne ikke sendes. Prøv igen.",
 	"{name}'s thread has a message started. Send or clear it there, then send this note.":
 		"Der er en besked i gang i tråden med {name}. Send eller ryd den dér, og send så denne besked.",
@@ -348,40 +420,23 @@ export const CONVERSATION: Record<string, string> = {
 	"Sent without waking the coworker": "Sendt uden at vække kollegaen",
 	"Left for {name}'s next turn": "Til {name} ved næste tur",
 
-	// The run status line (app/views/session-run.ts)
-	"Cloud run": "Kørsel i skyen",
-	"Cloud run status is unavailable.": "Status for kørslen i skyen er ikke tilgængelig.",
-	"Cloud run status is unavailable. Refresh to try again.":
-		"Status for kørslen i skyen er ikke tilgængelig. Opdater for at prøve igen.",
-	"Checking cloud run…": "Tjekker kørsel i skyen…",
-	"Cloud run queued.": "Kørsel i skyen er i kø.",
-	"Cloud run in progress.": "Kørsel i skyen er i gang.",
-	"No active cloud run.": "Ingen aktiv kørsel i skyen.",
-	"Stop could not be confirmed. Refresh run status before trying again.":
-		"Stop kunne ikke bekræftes. Opdater kørselsstatus, før du prøver igen.",
-	"Stopping selected cloud run…": "Stopper den valgte kørsel i skyen…",
-	"Refresh run status": "Opdater kørselsstatus",
 	Refresh: "Opdater",
-	"Stop cloud run": "Stop kørsel i skyen",
-	"Stop run": "Stop kørsel",
 
 	// The model account (app/views/session-execution.ts)
 	"Model accounts are unavailable. Trying again…": "Modelkonti er ikke tilgængelige. Prøver igen…",
-	"Execution history is unavailable.": "Kørselshistorikken er ikke tilgængelig.",
 	"Retry keeps the original model account and message request. The earlier message may already have been accepted. Starting a new request can send it again.":
 		"Prøv igen bruger den samme modelkonto og beskedanmodning. Den tidligere besked kan allerede være modtaget. En ny anmodning kan sende den igen.",
 	"Start a new message request": "Start en ny beskedanmodning",
 	"This conversation is unavailable for a new request.": "Denne samtale er ikke tilgængelig for en ny anmodning.",
+	"ChatGPT no longer accepts the sign-in for {email}. Sign in again in Settings → AI subscriptions.":
+		"ChatGPT godtager ikke længere loginnet for {email}. Log ind igen under Indstillinger → AI-abonnementer.",
+	"ChatGPT no longer accepts this login's sign-in. Sign in again in Settings → AI subscriptions.":
+		"ChatGPT godtager ikke længere loginnet. Log ind igen under Indstillinger → AI-abonnementer.",
 	"Your model accounts have reached their usage limits. Sending resumes when an account resets.":
 		"Dine modelkonti har nået deres forbrugsgrænser. Du kan sende igen, når en konto nulstilles.",
-	"This conversation's model account has reached its usage limit. Sending resumes when it resets.":
-		"Samtalens modelkonto har nået sin forbrugsgrænse. Du kan sende igen, når den nulstilles.",
 	"This conversation's model account can't be used right now. Check it in Settings → AI subscriptions.":
 		"Samtalens modelkonto kan ikke bruges lige nu. Se den under Indstillinger → AI-abonnementer.",
 	"Choose a login to continue.": "Vælg et login for at fortsætte.",
-	"Or use another of your logins now.": "Eller brug et andet af dine logins nu.",
-	"This conversation's model account has reached its usage limit. A message you send now waits and goes on by itself when it resets.":
-		"Samtalens modelkonto har nået sin forbrugsgrænse. En besked, du sender nu, venter og fortsætter af sig selv, når grænsen nulstilles.",
 	"Your login {account} reached its usage limit. Work will go on by itself when it resets (about {time}).":
 		"Dit login {account} har nået sin forbrugsgrænse. Arbejdet fortsætter af sig selv, når grænsen nulstilles (om cirka {time}).",
 	"Your login reached its usage limit. Work will go on by itself when it resets (about {time}).":
@@ -398,6 +453,27 @@ export const CONVERSATION: Record<string, string> = {
 	"{count} h": "{count} t.",
 	"{count} days": "{count} dage",
 	"Use {account}": "Brug {account}",
+	"Use {account} for all {count} chats waiting on this login":
+		"Brug {account} til alle {count} chats, der venter på dette login",
+	"This chat stays on its login: the work waiting in it can't move to {account}.":
+		"Denne chat bliver på sit login: det arbejde, der venter i den, kan ikke flyttes til {account}.",
+	"Out of usage until {time}": "Forbruget er brugt op indtil {time}",
+	"Out of usage": "Forbruget er brugt op",
+	"Keep going with {account}": "Fortsæt med {account}",
+	"Claude is out of usage until {time}": "Claude-forbruget er brugt op indtil {time}",
+	"{account} is used up. Keep going with {other}": "{account} er brugt op. Fortsæt med {other}",
+	"New Claude work now uses {account}": "Nyt Claude-arbejde bruger nu {account}",
+	"All {count} chats": "Alle {count} chats",
+	"Just this one": "Kun denne",
+	"Or use {accounts}": "Eller brug {accounts}",
+	"A message you send now goes on when it resets.": "En besked, du sender nu, fortsætter, når grænsen nulstilles.",
+	"Sending resumes when it resets.": "Du kan sende igen, når grænsen nulstilles.",
+	"{count} chats moved to {account}": "{count} chats flyttet til {account}",
+	"{count} chat moved to {account}": "{count} chat flyttet til {account}",
+	"{count} other chats moved to {account}": "{count} andre chats flyttet til {account}",
+	"{count} other chat moved to {account}": "{count} anden chat flyttet til {account}",
+	"No chats were waiting on that login any more.": "Ingen chats ventede længere på det login.",
+	"The chats could not be moved. Try again.": "Chattene kunne ikke flyttes. Prøv igen.",
 	"Model account {number}": "Modelkonto {number}",
 
 	// The Login page of the composer's menu (app/views/composer-logins.ts)
@@ -496,7 +572,8 @@ export const CONVERSATION: Record<string, string> = {
 	"Something else…": "Noget andet…",
 	"Your own answer": "Dit eget svar",
 	Skip: "Spring over",
-	"Take over": "Overtag",
+	// The take-over card's way to the agent's computer (review r1 F1 of #1812).
+	"Open computer": "Åbn computer",
 	"I'm done": "Jeg er færdig",
 	"The computer could not be given back yet. Press I'm done to try again. It goes back by itself within 5 minutes.":
 		"Computeren kunne ikke gives tilbage endnu. Tryk på Jeg er færdig for at prøve igen. Den går tilbage af sig selv inden for 5 minutter.",
@@ -668,4 +745,13 @@ export const CONVERSATION: Record<string, string> = {
 	"Could not open this chat. Check your connection.": "Chatten kunne ikke åbnes. Tjek din forbindelse.",
 	"This message is too long to send. Send it in parts.": "Beskeden er for lang til at sende. Send den i dele.",
 	"Could not delete the message. Try again.": "Beskeden kunne ikke slettes. Prøv igen.",
+	"The company's part of the address": "Virksomhedens del af adressen",
+	"Use this address": "Brug denne adresse",
+	"The address can be chosen in the chat.": "Adressen kan vælges i chatten.",
+	"The address could not be made. Try again.": "Adressen kunne ikke oprettes. Prøv igen.",
+	"Only founders and admins can choose the address": "Kun stiftere og administratorer kan vælge adressen",
+	Free: "Ledig",
+	"Already yours": "Allerede jeres",
+	"That one belongs to another company": "Den tilhører en anden virksomhed",
+	"Use a–z, 0–9 and hyphens": "Brug a–z, 0–9 og bindestreger",
 };

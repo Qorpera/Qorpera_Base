@@ -1,12 +1,17 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { CloudMachineCommandReceipt } from "../../packages/contracts/src/cloud-machine.ts";
 import type {
-	CompanyMachineClipboardClear, CompanyMachineClipboardCleared, CompanyMachineCodingValue, CompanyMachineCodingValueOutcome,
+	CompanyMachineAccountFill, CompanyMachineAccountFillOutcome, CompanyMachineAccountFillSeal, CompanyMachineClipboardClear,
+	CompanyMachineClipboardCleared, CompanyMachineCodingValue, CompanyMachineCodingValueOutcome,
 	CompanyMachineMemberAct, CompanyMachineMemberActOutcome, CompanyMachineMemberLook, CompanyMachineMemberLookOutcome,
 	CompanyMachineMemberPointer, CompanyMachineMemberPointerOutcome, CompanyMachineMemberStart,
 	CompanyMachineMemberStartOutcome, CompanyMachineMemberStream, CompanyMachineScreen, CompanyMachineScreenOutcome,
 } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
 import {
+	CLOUD_MACHINE_ACCOUNT_FILL_SCHEMA,
+	type CloudMachineAccountFillAnswer,
+	type CloudMachineAccountFillHttpRequest,
+	CloudMachineAccountFillRefusal,
 	CLOUD_MACHINE_CODING_VALUE_SCHEMA,
 	CLOUD_MACHINE_SCREEN_SCHEMA,
 	CLOUD_MACHINE_WAKE_WAIT_MS,
@@ -35,6 +40,7 @@ import {
 	cloudMachineCommandRefusal,
 	createHttpCloudMachineCommandGateway,
 	createHttpMemberMachineScreenPeer,
+	isCloudMachineAccountFillRefusal,
 	isCloudMachineCodingValueRefusal,
 	isCloudMachineScreenRefusal,
 	isCloudMemberMachineActRefusal,
@@ -52,11 +58,18 @@ import {
 	MACHINE_SCREEN_REQUEST_SCHEMA, type MachineScreenAction, parseMachineScreenHeader,
 } from "../../packages/runtime/src/cloud-machine-screen.ts";
 import { CloudCommandPages } from "../../packages/runtime/src/cloud-command-pages.ts";
-import type { CodingCommandPeer } from "./command-routing.ts";
 import {
-	authorizeMachineCodingValue, authorizeMachineCommand, authorizeMachineScreen, authorizeMemberMachineAct,
-	authorizeMemberMachinePointer, authorizeMemberMachineScreen, authorizeMemberMachineStart, type MachineCodingValueAuthority,
-	type MachineCodingValueClear, type MachineCommandAuthority, type MachineScreenAuthority, type MemberMachineActAuthority,
+	type CloudHomeChannelKind, type CloudHomeChannelRequest, CloudHomeChannelRefused, type CloudHomeChannelSide,
+	type CloudHomeSessionAuthorized,
+} from "../../packages/runtime/src/cloud-home-channel.ts";
+import { createCloudHomeChannel } from "../../packages/runtime/src/cloud-home-channel-client.ts";
+import type { CodingCommandPeer } from "./command-routing.ts";
+import type { MachineAccountFillSealRequest } from "./machine-account-fill-broker.ts";
+import {
+	authorizeMachineAccountFill, authorizeMachineCodingValue, authorizeMachineCommand, authorizeMachineScreen,
+	authorizeMemberMachineAct, authorizeMemberMachinePointer, authorizeMemberMachineScreen, authorizeMemberMachineStart,
+	type MachineAccountFillAuthority, type MachineCodingValueAuthority, type MachineCodingValueClear,
+	type MachineCommandAuthority, type MachineScreenAuthority, type MemberMachineActAuthority,
 	type MemberMachinePointerAuthority, type MemberMachineScreenAuthority, type MemberMachineStartAuthority,
 } from "./machine-command-authority.ts";
 
@@ -68,10 +81,19 @@ interface MachineCommandRouterOptions {
 	credential(name: string): Promise<string>;
 	/** This node's machines; absent when the executor carries no machines. */
 	executeLocal?(request: CloudMachineCommandHttpRequest, authority: MachineCommandAuthority, signal: AbortSignal): Promise<CloudMachineCommandReceipt>;
+	/** One run's channel to its home on this node's machine (slice 1): `codex exec-server` inside it (or, for kind
+	 * `sftp`, OpenSSH's `sftp-server`: slice C1), as the agent's account on the boot SQL named, for as long as the run's
+	 * turn. Absent when the executor carries no machines. */
+	execServerLocal?(authority: { sessionId: string; placementId: string; bootId: string; kind: CloudHomeChannelKind }, signal: AbortSignal): Promise<CloudHomeChannelSide>;
 	/** Asks this node's machines for a pass now; with a wait, true once a step took the machine somewhere. Absent when the executor carries no machines. */
 	wakeLocal?(machineId: string, wait: boolean, signal: AbortSignal): Promise<boolean>;
 	/** save_coding_value (20260930705000): runs the clipboard helper on this node's machine; absent when the executor carries no machines. */
 	codingValueLocal?(authority: MachineCodingValueAuthority, signal: AbortSignal): Promise<CloudMachineCodingValueAnswer>;
+	accountFillLocal?(
+		request: CloudMachineAccountFillHttpRequest,
+		authority: MachineAccountFillAuthority,
+		signal: AbortSignal,
+	): Promise<CloudMachineAccountFillAnswer>;
 	/** The backstop of the clipboard clear owed after a member held the desktop (F32 to F35 of #1661): clears it on this
 	 * node's machine and confirms it to SQL. Never reads it: the agent's call is answered CLIPBOARD_EMPTY whatever came of
 	 * it. */
@@ -96,7 +118,7 @@ interface MachineCommandRouterOptions {
 	memberActLocal?(authority: MemberMachineActAuthority, action: MachineScreenAction, signal: AbortSignal): Promise<CloudMemberMachineAct>;
 	/** A member's start of the desktop (20260930714000): begins it as the member (member-control.ts); absent when this
 	 * executor takes no member's requests. */
-	memberStartBegin?(token: string, start: { companyId: string; machineId: string }, signal: AbortSignal): Promise<{ startId: string }>;
+	memberStartBegin?(token: string, start: { companyId: string; machineId: string; open?: string }, signal: AbortSignal): Promise<{ startId: string }>;
 	/** A member's start on this node's machine; absent when the executor carries no machines. */
 	memberStartLocal?(authority: MemberMachineStartAuthority, signal: AbortSignal): Promise<CloudMemberMachineStart>;
 	/** A member's pointer pass (20260930744000): begun as the member (member-control.ts); absent when this executor takes
@@ -206,6 +228,37 @@ export class MachineCommandRouter {
 		const asked = local ? [local, ...peers] : peers;
 		return wait ? anyTold(asked) : Promise.all(asked).then(() => false);
 	}
+	/**
+	 * One run's channel to its home (slice 1). The ingress proved the run's holder and SQL authorized the session on
+	 * the machine's placement and boot. A machine of this node is opened here; a machine another node holds is reached
+	 * through that node's peer listener, exactly as a machine command is forwarded: the peer authorizes the same
+	 * session again in SQL and may only open it locally, so a channel is never forwarded twice. A run's slot talks to
+	 * its own node's ingress wherever its agent's machine is. The channel's kind (the exec-server's lines, or the file
+	 * channel's: slice C1) travels with it, under the same session.
+	 */
+	async execServer(authority: CloudHomeSessionAuthorized, request: CloudHomeChannelRequest, signal: AbortSignal, localOnly = false): Promise<CloudHomeChannelSide> {
+		if (authority.executorOwner === this.#options.owner && authority.providerId === this.#options.providerId) {
+			if (!this.#options.execServerLocal) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
+			try {
+				return await this.#options.execServerLocal({ ...authority, kind: request.kind }, signal);
+			} catch (error) {
+				// The machine's Codex is not the pinned build, or it has no sftp-server (an earlier image's disk): the run is
+				// told so in words of its own, through this ingress or a forwarding one, rather than "could not be reached".
+				if (error instanceof Error && (error.message === "HOME_CODEX_NOT_PINNED" || error.message === "HOME_SFTP_MISSING"))
+					throw new CloudHomeChannelRefused(error.message);
+				throw error;
+			}
+		}
+		if (localOnly) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
+		const peer = this.#options.peers.find((entry) => entry.owner === authority.executorOwner && entry.providerId === authority.providerId);
+		if (!peer) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+		const channel = createCloudHomeChannel({
+			url: peer.origin, token: await this.#options.credential(peer.tokenCredential), binding: request.binding,
+			// The peer listener takes no holder: this executor proved the run's at its own ingress.
+			holder: null,
+		});
+		return await channel.open({ sessionId: authority.sessionId, machineId: authority.machineId, kind: request.kind }, signal);
+	}
 	async execute(request: CloudMachineCommandHttpRequest, signal: AbortSignal, localOnly = false): Promise<CloudMachineCommandReceipt> {
 		const authority = await authorizeMachineCommand(this.#options.control, request, signal);
 		if (authority.executorOwner === this.#options.owner && authority.providerId === this.#options.providerId) {
@@ -258,6 +311,22 @@ export class MachineCommandRouter {
 		});
 		if (!gateway.codingValue) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
 		return gateway.codingValue(request.scope, request.input, signal);
+	}
+	async accountFill(request: CloudMachineAccountFillHttpRequest, signal: AbortSignal, localOnly = false): Promise<CloudMachineAccountFillAnswer> {
+		const authority = await authorizeMachineAccountFill(this.#options.control, request, signal);
+		if (authority.executorOwner === this.#options.owner && authority.providerId === this.#options.providerId) {
+			if (!this.#options.accountFillLocal) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
+			return this.#options.accountFillLocal(request, authority, signal);
+		}
+		if (localOnly) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
+		const peer = this.#options.peers.find((entry) => entry.owner === authority.executorOwner && entry.providerId === authority.providerId);
+		if (!peer) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+		const gateway = createHttpCloudMachineCommandGateway({
+			url: peer.origin, token: await this.#options.credential(peer.tokenCredential), binding: request.binding,
+			holder: null, fetch: this.#options.fetch,
+		});
+		if (!gateway.accountFill) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+		return gateway.accountFill(request.scope, request.input, signal);
 	}
 	/** machine_screen (20260930708000): SQL names the machine's executor, as for a command. This node runs the helper; another
 	 * node's executor is sent the request once (it reads SQL again and only runs it locally): an action is never sent twice.
@@ -380,11 +449,12 @@ export class MachineCommandRouter {
 	 * database checks their token and answers a single-use id), then read again as the executor, and run on this node or
 	 * sent once to the machine's node. It takes no hold and needs no run of the agent's; a member's hold of the desktop
 	 * does not stop it (review r1 F1 of #1681: a hold does not prove the desktop runs, and a start of one that runs does
-	 * nothing). */
+	 * nothing). With `open` (20260930758000) the start also opens that path of the company folder once the desktop runs:
+	 * SQL keeps it on the start, and the machine's executor takes it from its own read of SQL, never from a peer. */
 	async memberStart(request: CloudMemberMachineStartRequest, signal: AbortSignal): Promise<CloudMemberMachineStart> {
 		if (!this.#options.memberStartBegin) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
 		const begun = await this.#options.memberStartBegin(request.token, { companyId: request.companyId,
-			machineId: request.machineId }, signal);
+			machineId: request.machineId, ...(request.open === undefined ? {} : { open: request.open }) }, signal);
 		return this.#memberStartServe(begun.startId, signal, false);
 	}
 	/** A member's start another executor sent here (the peer listener): read again, and run on this node only. */
@@ -671,6 +741,31 @@ export function localMachineCodingValue(host: {
 	};
 }
 
+/** How a router runs fill_company_account's helper on this node's machines (MachineCommandRouter's `accountFillLocal`):
+ * the helper's key goes to the vault (`seal`, the executor's broker client) with the run's call and where the helper runs;
+ * typed is the answer, a code the agent can act on (or the vault's refusal, with its words) its refusal, and any other
+ * code a failure. */
+export function localMachineAccountFill(
+	host: {
+		accountFill(run: CompanyMachineAccountFill, seal: CompanyMachineAccountFillSeal, signal: AbortSignal): Promise<CompanyMachineAccountFillOutcome>;
+	},
+	vault: { seal(request: MachineAccountFillSealRequest, signal: AbortSignal): ReturnType<CompanyMachineAccountFillSeal> },
+): (request: CloudMachineAccountFillHttpRequest, authority: MachineAccountFillAuthority, signal: AbortSignal) => Promise<CloudMachineAccountFillAnswer> {
+	return async (request, authority, signal) => {
+		const outcome = await host.accountFill({ placementId: authority.placementId, bootId: authority.bootId,
+			receiptId: authority.receiptId, desktopGeneration: authority.desktopGeneration, target: authority.target },
+		(publicKey, sealSignal) => vault.seal({ companyId: authority.companyId, binding: request.binding, receiptId: authority.receiptId,
+			idempotencyKey: request.input.idempotencyKey, envelope: request.input.envelope, placementId: authority.placementId,
+			bootId: authority.bootId, fillPublicKey: publicKey }, sealSignal), signal);
+		if ("vaultRefused" in outcome) throw new CloudMachineAccountFillRefusal("VAULT_REFUSED", outcome.vaultRefused.message);
+		if ("refused" in outcome) {
+			if (isCloudMachineAccountFillRefusal(outcome.refused)) throw new CloudMachineAccountFillRefusal(outcome.refused);
+			throw new Error("MACHINE_ACCOUNT_FILL_FAILED");
+		}
+		return { schema: CLOUD_MACHINE_ACCOUNT_FILL_SCHEMA, commandId: authority.receiptId, filled: true };
+	};
+}
+
 /** How a router does the clipboard clear owed after a member held a desktop on this node, when save_coding_value meets
  * it (MachineCommandRouter's `codingValueClearLocal`, F32 to F35 of #1661; the agent's first screen call after the hold
  * does it first): the host clears both selections with its own fixed script under the desktop's one-actor rule after
@@ -748,13 +843,14 @@ export function localMemberMachineAct(host: {
 
 /** How a router turns a desktop on for a member on this node's machines (MachineCommandRouter's `memberStartLocal`,
  * 20260930714000): the host's outcome, a machine too small, restarted, without a desktop or a desktop that did not start
- * as the member's refusals, and any other code a failure. */
+ * as the member's refusals, and any other code a failure. A start that opens something (20260930758000) passes what SQL
+ * read to the host, and its refusals (not there, no company folder, could not open) are the member's too. */
 export function localMemberMachineStart(host: {
 	memberStart(start: CompanyMachineMemberStart, signal: AbortSignal): Promise<CompanyMachineMemberStartOutcome>;
 }): (authority: MemberMachineStartAuthority, signal: AbortSignal) => Promise<CloudMemberMachineStart> {
 	return async (authority, signal) => {
 		const outcome = await host.memberStart({ placementId: authority.placementId, bootId: authority.bootId,
-			startId: authority.startId }, signal);
+			startId: authority.startId, ...(authority.open === undefined ? {} : { open: authority.open }) }, signal);
 		if ("refused" in outcome) {
 			if (isCloudMemberMachineStartRefusal(outcome.refused)) throw new CloudMemberMachineStartRefusal(outcome.refused);
 			throw new Error("MEMBER_MACHINE_START_FAILED");
@@ -798,6 +894,7 @@ export function machineCommandRoutes(
 	execute(request: CloudMachineCommandHttpRequest, signal: AbortSignal): Promise<CloudMachineCommandReceipt>;
 	wake(request: CloudMachineWakeHttpRequest, signal: AbortSignal): Promise<boolean>;
 	codingValue(request: CloudMachineCodingValueHttpRequest, signal: AbortSignal): Promise<CloudMachineCodingValueAnswer>;
+	accountFill(request: CloudMachineAccountFillHttpRequest, signal: AbortSignal): Promise<CloudMachineAccountFillAnswer>;
 	screen(request: CloudMachineScreenHttpRequest, signal: AbortSignal): Promise<CloudMachineScreenAnswer>;
 	memberScreen?(request: CloudMemberMachineScreenPeerRequest, signal: AbortSignal): Promise<CloudMemberMachineScreen>;
 	memberAct?(request: CloudMemberMachineActPeerRequest, signal: AbortSignal): Promise<CloudMemberMachineAct>;
@@ -810,6 +907,7 @@ export function machineCommandRoutes(
 		execute: (request, signal) => router.execute(request, signal, localOnly),
 		wake: (request, signal) => router.wake(request, signal, localOnly),
 		codingValue: (request, signal) => router.codingValue(request, signal, localOnly),
+		accountFill: (request, signal) => router.accountFill(request, signal, localOnly),
 		screen: (request, signal) => router.screen(request, signal, localOnly),
 		// A member's look comes from another executor only, on the peer listener; a guest's ingress has none.
 		...(localOnly ? { memberScreen: (request: CloudMemberMachineScreenPeerRequest, signal: AbortSignal) => router.memberScreenPeer(request, signal) } : {}),

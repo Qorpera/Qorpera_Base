@@ -121,7 +121,7 @@ export function parseProfiles(value: unknown): HostedProfile[] {
 	return array(value, "profile list").map(parseProfile);
 }
 
-export function parseAccountEntitlement(value: unknown): HostedAccountEntitlement {
+function parseAccountEntitlement(value: unknown): HostedAccountEntitlement {
 	const input = record(value, "account entitlement");
 	const storageAllocationBytes = input.storage_allocation_bytes;
 	return {
@@ -464,7 +464,6 @@ export function parseStaffExecutionActivity(value: unknown): HostedStaffExecutio
 	});
 }
 
-/** A queued run waiting at its login's usage limit (20260930703000); an older cloud says nothing of it. */
 function pausedRun(activity: Record<string, unknown>): { paused?: PausedRun } {
 	if (activity.paused_until === undefined || activity.paused_until === null) return {};
 	if (activity.job_status !== "queued") throw new CloudShapeError("a paused run that is not queued");
@@ -484,6 +483,8 @@ function pausedRun(activity: Record<string, unknown>): { paused?: PausedRun } {
 			paidByChatgptPlan: activity.paid_by_chatgpt_plan,
 			paidWhileAway: activity.paid_while_away,
 			movable: activity.movable,
+			...(activity.paused_for === "rate_limited" ? { rateLimited: true as const } : {}),
+			...(activity.paused_for === "sign_in_refused" ? { signInRefused: true as const } : {}),
 		},
 	};
 }
@@ -528,6 +529,8 @@ export function parseRunRecovery(value: unknown): HostedRunRecovery {
 		...(recovery.proposal_id ? { proposalId: uuid(recovery.proposal_id, "recovery proposal id") } : {}),
 		// Absent before 20260929910000: then only the error text can tell.
 		...(typeof recovery.usage_limit === "boolean" ? { usageLimit: recovery.usage_limit } : {}),
+		...(typeof recovery.rate_limited === "boolean" ? { rateLimited: recovery.rate_limited } : {}),
+		...(typeof recovery.sign_in_refused === "boolean" ? { signInRefused: recovery.sign_in_refused } : {}),
 		// Absent before 20260929993000: then a plan's limit reads as any account's.
 		...(typeof recovery.paid_by_chatgpt_plan === "boolean"
 			? { paidByChatgptPlan: recovery.paid_by_chatgpt_plan }

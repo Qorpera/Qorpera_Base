@@ -46,6 +46,8 @@ pub mod kind {
 	/// A hard link: a new file with the source's bytes, or a new link with its target, answered with `k` and the
 	/// version made.
 	pub const LINK: u8 = b'J';
+	pub const DATA_CALL: u8 = b'T';
+	pub const DATA_ANSWER: u8 = b't';
 }
 
 pub fn write_frame(w: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {

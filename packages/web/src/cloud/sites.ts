@@ -1,3 +1,4 @@
+import { withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import type { Cloud } from "./client.ts";
 import { UUID_PATTERN } from "./parse.ts";
 
@@ -7,7 +8,8 @@ import { UUID_PATTERN } from "./parse.ts";
  * and the private app links they share from an always-on machine (an app site, v195:
  * https://<slug>-preview.qorpera.com/, one port of the machine behind the same password). Every member lists them,
  * with their links. Only owners and admins read or change a
- * site's password and take a site offline; the kernel refuses anyone else (42501). RPCs listed in
+ * site's password and take a site offline; the kernel refuses anyone else (42501). From step 5.1 every member also reads
+ * which sites Qorpera took down, and why (`qorpera_company_site_access`, migration 20260930756000). RPCs listed in
  * supabase/CLIENT-CONTRACT.md §2, "Company sites".
  */
 
@@ -48,6 +50,35 @@ export interface CompanySitePassword {
 	changedAt: string;
 }
 
+/** Qorpera took a site down (own code storage step 5.1): since when, and why, in the operator's one line. */
+export interface CompanySiteTakedown {
+	readonly at: string;
+	readonly reason: string;
+}
+
+/** A site Qorpera took down, by name, as the access read gives it (the review of #1774, F4): Sites draws the row of one the
+ * list leaves out (a project's site that never went live) from this. */
+export interface CompanySiteNamed {
+	readonly slug: string;
+	/** The site's title, or null. */
+	readonly title: string | null;
+	readonly kind: CompanySiteKind;
+	/** The Company File path the site is made from (`code/<owner>/<name>` for a project's site). */
+	readonly source: string;
+}
+
+/** What the company's sites may do beyond the list (`qorpera.company-site-access/v1`, step 5.1): which of them Qorpera
+ * took down, by site id, and the name of each of those whose entry gives it whole. */
+export interface CompanySiteAccess {
+	readonly takenDown: ReadonlyMap<string, CompanySiteTakedown>;
+	readonly named: ReadonlyMap<string, CompanySiteNamed>;
+}
+
+/** The longest reason the kernel keeps (migration 20260930756000). */
+const REASON_MAX = 300;
+/** One read of the access, bounded: the Sites list waits for it. */
+const ACCESS_MS = 10_000;
+
 /** A site's name in its link, as the kernel allows it. */
 const SLUG = /^[a-z0-9](?:[a-z0-9-]{1,46}[a-z0-9])$/;
 /** A website's own host (own code storage step 5.1; Jonas, 13 Nov 2026: "Use qorpera.com"), by the one host rule SQL,
@@ -58,8 +89,46 @@ const SLUG = /^[a-z0-9](?:[a-z0-9-]{1,46}[a-z0-9])$/;
  * the host already. The domain is pinned, not read from the answer: the row names none (a key more would break this
  * closed parse in every open tab), and a domain taken from the link itself would let any host through. Its text
  * `(--next)?\.qorpera\.com$` is also this change's marker: the operator turns own hosts on only once the live web bundle
- * holds it (step 5.1's gate). */
-const SITE_HOST = /^([a-z0-9]+(?:-[a-z0-9]+)*)(--next)?\.qorpera\.com$/;
+ * holds it (step 5.1's gate). What's new reads Look first's next host by it too (cloud/releases.ts), so the bundle holds
+ * the text once. */
+export const SITE_HOST = /^([a-z0-9]+(?:-[a-z0-9]+)*)(--next)?\.qorpera\.com$/;
+/** The host every website had before sites had addresses of their own (step 5.1): https://sites.qorpera.com/<slug>/.
+ * Links written then stay in the threads. */
+export const OLD_SITES_HOST = "sites.qorpera.com";
+
+/** The company's site a link leads to, from the company's own list, or undefined: a website by its own host
+ * (`https://<slug>.qorpera.com/…`, never its next host) or its old link (`https://sites.qorpera.com/<slug>/…`), or by
+ * the host its listed link has; an app link by its own host. Nothing is guessed from the link's text: a host that names
+ * no site of the list leads to none. */
+export function siteOfLink(sites: readonly CompanySite[], href: string): CompanySite | undefined {
+	let url: URL;
+	try {
+		url = new URL(href);
+	} catch {
+		return undefined;
+	}
+	if (url.protocol !== "https:" || url.username || url.password || url.port) return undefined;
+	const own = SITE_HOST.exec(url.hostname);
+	for (const site of sites) {
+		let listed: URL;
+		try {
+			listed = new URL(site.url);
+		} catch {
+			continue;
+		}
+		if (site.kind === "app") {
+			if (url.hostname === listed.hostname) return site;
+			continue;
+		}
+		if (own?.[1] === site.slug && own[2] === undefined) return site;
+		const path = `/${site.slug}/`;
+		const under = url.pathname === `/${site.slug}` || url.pathname.startsWith(path);
+		if (under && (url.hostname === OLD_SITES_HOST || (listed.pathname === path && url.hostname === listed.hostname)))
+			return site;
+	}
+	return undefined;
+}
+
 /** A machine's name, as an agent gives one. */
 const MACHINE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const SITE_KEYS = [
@@ -191,6 +260,35 @@ export function parseCompanySitePassword(value: unknown, siteId: string): Compan
 	return { siteId, password: input.password as string, changedAt: input.changedAt as string };
 }
 
+const object = (value: unknown): Record<string, unknown> | undefined =>
+	value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+
+/** The `qorpera.company-site-access/v1` read, leniently: later steps add keys, and an entry not as expected says
+ * nothing of its site (it is not known to be taken down). Only an answer of another schema is refused. */
+export function parseCompanySiteAccess(value: unknown): CompanySiteAccess {
+	const input = object(value);
+	if (input?.schema !== "qorpera.company-site-access/v1" || !Array.isArray(input.sites))
+		throw new Error("Invalid site access.");
+	const takenDown = new Map<string, CompanySiteTakedown>();
+	const named = new Map<string, CompanySiteNamed>();
+	for (const entry of input.sites) {
+		const site = object(entry);
+		const down = object(site?.takenDown);
+		if (typeof site?.siteId !== "string" || !UUID_PATTERN.test(site.siteId) || !down) continue;
+		const reason = typeof down.reason === "string" ? down.reason.trim() : "";
+		if (typeof down.at !== "string" || !Number.isFinite(Date.parse(down.at)) || !reason) continue;
+		takenDown.set(site.siteId, { at: down.at, reason: reason.slice(0, REASON_MAX) });
+		// Its name, when the entry gives it whole (a kernel of step 5.1 does): what a row of its own needs.
+		const slug = typeof site.slug === "string" && SLUG.test(site.slug) ? site.slug : undefined;
+		const kind = site.kind === "files" || site.kind === "app" ? (site.kind as CompanySiteKind) : undefined;
+		const title =
+			site.title === null ? null : typeof site.title === "string" && site.title.trim() ? site.title : undefined;
+		if (slug && kind && title !== undefined && typeof site.source === "string")
+			named.set(site.siteId, { slug, title, kind, source: site.source });
+	}
+	return { takenDown, named };
+}
+
 export interface WebSites {
 	/** The company's sites, newest published first. */
 	list(signal?: AbortSignal): Promise<CompanySite[]>;
@@ -200,6 +298,9 @@ export interface WebSites {
 	setPassword(siteId: string, password: string | null, signal?: AbortSignal): Promise<CompanySitePassword>;
 	/** Takes a site offline: its link, files, password and visitors' sessions go. False when it was already gone. */
 	unpublish(siteId: string, signal?: AbortSignal): Promise<boolean>;
+	/** Which of the company's sites Qorpera took down, and why (step 5.1; any member). A kernel before step 5.1 has no
+	 * such read (PGRST202). */
+	access(signal?: AbortSignal): Promise<CompanySiteAccess>;
 }
 
 export function createWebSites(cloud: Cloud, company: { profileId: string }): WebSites {
@@ -245,6 +346,16 @@ export function createWebSites(cloud: Cloud, company: { profileId: string }): We
 			)
 				throw new Error("Invalid site.");
 			return input.removed as boolean;
+		},
+		async access(signal) {
+			signal?.throwIfAborted();
+			return parseCompanySiteAccess(
+				await withCloudDeadline(
+					() => cloud.rpc("qorpera_company_site_access", { p_profile_id: company.profileId }),
+					ACCESS_MS,
+					signal,
+				),
+			);
 		},
 	};
 }

@@ -49,8 +49,15 @@ const context = Object.fromEntries(
 		"clip",
 	].map((key) => [key, vi.fn()]),
 );
-// The screen's light of a figure at its computer (20260930742000) is a gradient.
 context.createRadialGradient = vi.fn(() => ({ addColorStop: vi.fn() }));
+context.createLinearGradient = vi.fn(() => ({ addColorStop: vi.fn() }));
+context.bezierCurveTo = vi.fn();
+context.getImageData = vi.fn(() => {
+	const data = new Uint8ClampedArray(100 * 100 * 4);
+	for (let y = 0; y < 100; y++)
+		for (let x = 0; x < 100; x++) if ((x - 50) ** 2 + (y - 55) ** 2 < 35 ** 2) data[(y * 100 + x) * 4 + 3] = 255;
+	return { data };
+});
 const artwork: FigureArtwork = {
 	faces: {
 		crown: [
@@ -161,13 +168,10 @@ describe("before the recorded motion arrives", () => {
 		expect(idle.querySelector("canvas")!.dataset.frame).toBe("0");
 		advance(1000);
 		expect(idle.querySelector("canvas")!.dataset.frame).toBe("60");
-		// The working figure goes on with its act: it bounces under its stars, off the ground between beats.
-		const poses = new Set<string>();
-		for (let frame = 0; frame < 420; frame++) {
-			advance(1000 / 60);
-			poses.add(still.querySelector("canvas")!.style.transform);
-		}
-		expect([...poses].some((pose) => /^translate\([-\d.]+%, -[1-9]/.test(pose))).toBe(true);
+		vi.mocked(context.stroke!).mockClear();
+		for (let frame = 0; frame < 600; frame++) advance(1000 / 60);
+		expect(context.stroke).toHaveBeenCalled();
+		expect(still.querySelectorAll(".figure-air")).toHaveLength(2);
 	});
 });
 
@@ -261,14 +265,13 @@ describe("2D studio playback in the shell", () => {
 		show([working, writing]);
 		expect(bangStem()).toBe(true);
 		expect(questionDot()).toBe(true);
-		expect(working.querySelector(".figure-prop")).toBeNull();
-		// With nothing waiting, a working figure at rest keeps itself and its three stars.
+		expect(working.querySelector(".figure-air")).toBeNull();
 		const busy = mount("Working", "only-works");
 		await settle();
 		vi.mocked(context.roundRect!).mockClear();
 		show([busy]);
 		expect(bangStem()).toBe(false);
-		expect(busy.querySelectorAll(".figure-prop")).toHaveLength(3);
+		expect(busy.querySelector(".figure-air")).toBeNull();
 	});
 	it("keeps what waits on the member in sight while the figure uses its computer, at rest too (20260930742000)", async () => {
 		const questionDot = () => vi.mocked(context.arc!).mock.calls.some((call) => call[0] === 50.5 && call[2] === 9.3);
@@ -373,7 +376,7 @@ describe("2D studio playback in the shell", () => {
 				card = mount("Waiting", "asks-twice", { ask: "bang" });
 			await settle();
 			show([rail, card]);
-			const effects = (host: HTMLElement) => host.querySelectorAll(".figure-bit:not(.figure-prop)").length;
+			const effects = (host: HTMLElement) => host.querySelectorAll(".figure-bit").length;
 			for (let frame = 0; frame < 90; frame++) advance(1000 / 60);
 			// Both showed the same: the stars of the change and the dust of its landing.
 			expect(effects(rail)).toBeGreaterThan(0);
@@ -461,37 +464,69 @@ describe("2D studio playback in the shell", () => {
 			vi.useRealTimers();
 		}
 	});
-	it("keeps a working figure itself, juggling three stars, the same in every view of the agent", async () => {
+	it("keeps a working figure itself while a thread passes round it, behind and in front, the same in every view", async () => {
 		const rail = mount("Working", "at-work"),
 			thread = mount("Working", "at-work");
-		// Large enough to show its stars.
 		for (const host of [rail, thread]) host.style.width = "50px";
 		await settle();
 		show([rail, thread]);
-		const canvas = rail.querySelector("canvas")!;
 		vi.mocked(context.roundRect!).mockClear();
-		const poses = new Set<string>();
-		for (let frame = 0; frame < 180; frame++) {
+		vi.mocked(context.stroke!).mockClear();
+		for (let frame = 0; frame < 600; frame++) {
 			advance(1000 / 60);
-			poses.add(canvas.style.transform);
-			// Two views of one agent show the same pose.
-			expect(canvas.style.transform).toBe(thread.querySelector("canvas")!.style.transform);
+			expect(rail.querySelector("canvas")!.style.transform).toBe("");
+			expect(thread.querySelector("canvas")!.style.transform).toBe("");
 		}
-		// It bounces from side to side, and its eyes (drawn pills) are there the whole time.
-		expect([...poses].some((pose) => /rotate\(-[1-9]/.test(pose))).toBe(true);
-		expect([...poses].some((pose) => /rotate\([1-9]/.test(pose))).toBe(true);
 		expect(context.roundRect).toHaveBeenCalled();
-		// Three stars over it, each placed by its own transform, all out by now.
-		const stars = [...rail.querySelectorAll<HTMLElement>(".figure-prop")];
-		expect(stars).toHaveLength(3);
-		expect(stars.every((star) => /^translate\(.*scale\(1\)$/.test(star.style.transform))).toBe(true);
-		// In the cascade no star is behind the figure.
-		expect(stars.some((star) => star.classList.contains("is-behind"))).toBe(false);
-		expect(new Set(stars.map((star) => star.style.transform)).size).toBe(3);
-		// It goes on working past any length of time.
+		expect(context.stroke).toHaveBeenCalled();
+		const air = [...rail.querySelectorAll<HTMLCanvasElement>(".figure-air")];
+		expect(air).toHaveLength(2);
+		expect(air.filter((canvas) => canvas.classList.contains("is-behind"))).toHaveLength(1);
 		advance(60_000);
 		expect(frames.size).toBe(1);
 	});
+	it("does a working figure's frame at most 60 times a second on a faster screen, and every one of them at 90 Hz", async () => {
+		const host = mount("Working", "fast-screen");
+		await settle();
+		show([host]);
+		advance(1000 / 60);
+		const canvas = host.querySelector("canvas")!;
+		const drawn = (step: number) => {
+			canvas.dataset.frame = "unpainted";
+			advance(step);
+			return canvas.dataset.frame !== "unpainted";
+		};
+		expect(drawn(6)).toBe(false);
+		expect(drawn(6)).toBe(false);
+		expect(frames.size).toBe(1);
+		expect(drawn(6)).toBe(true);
+		const framesPerSecond = (hz: number) => {
+			advance(1000);
+			let count = 0;
+			for (let refresh = 0; refresh < hz; refresh++) if (drawn(1000 / hz)) count++;
+			return count;
+		};
+		expect(framesPerSecond(60)).toBe(60);
+		for (const hz of [75, 90, 100, 120, 144, 165, 240]) {
+			const count = framesPerSecond(hz);
+			expect(count).toBeGreaterThanOrEqual(59);
+			expect(count).toBeLessThanOrEqual(62);
+		}
+	});
+	for (const start of [1, 8, 15.5, 16.5])
+		it(`draws every refresh of a screen a little faster than 60 Hz when the first comes ${start} ms after the figure starts`, async () => {
+			const host = mount("Working", `drifting-screen-${start}`);
+			await settle();
+			show([host]);
+			const canvas = host.querySelector("canvas")!;
+			let missed = 0;
+			for (const [index, step] of [start, ...Array<number>(600).fill(16.65)].entries()) {
+				canvas.dataset.frame = "unpainted";
+				advance(step);
+				if (index > 0 && canvas.dataset.frame === "unpainted") missed++;
+			}
+			expect(missed).toBe(0);
+		});
 	it("advances one shared agent clock once per frame and preserves it when a view refreshes", async () => {
 		const a = mount(),
 			b = mount();

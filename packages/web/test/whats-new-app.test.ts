@@ -57,8 +57,9 @@ async function draw() {
 	await vi.advanceTimersByTimeAsync(60);
 	await settle();
 }
-/** The app over the fixture's cloud, whose What's new read answers `answer` (a value, or an error to throw). */
-async function mount(hash: string, answer: () => unknown) {
+/** The app over the fixture's cloud, whose What's new read answers `answer` (a value, or an error to throw), and Look
+ * first's call `preview` (step 5.1; none by default). */
+async function mount(hash: string, answer: () => unknown, preview?: () => unknown) {
 	history.replaceState(null, "", `/${hash}`);
 	const f = fixture();
 	// Another member, so the company's presence is joined.
@@ -70,6 +71,7 @@ async function mount(hash: string, answer: () => unknown) {
 		],
 	});
 	vi.mocked(f.cloud.rpc).mockImplementation(async (name: string) => {
+		if (name === "qorpera_open_site_preview" && preview) return preview();
 		if (name !== "qorpera_list_code_releases") throw new Error("Unexpected RPC");
 		const value = answer();
 		if (value instanceof Error) throw value;
@@ -115,6 +117,47 @@ describe("What's new in the app", () => {
 		await draw();
 		expect(reads(f.cloud)).toHaveLength(3);
 		expect(entry(f.root)).toBeNull();
+	});
+
+	it("shows no Look first with today's read, and asks for no link (step 5.1: nothing of it before hosts are on)", async () => {
+		const open = vi.spyOn(window, "open");
+		const f = await mount(`#/c/${profileA.profileId}/whats-new`, () => read);
+		const page = f.root.querySelector<HTMLElement>(".page.whats-new-page")!;
+		expect([...page.querySelectorAll(".whats-new-actions button")].map((item) => item.textContent)).toEqual([
+			"Put it live",
+			"Not yet",
+		]);
+		expect(page.textContent).not.toContain("Look first");
+		expect(vi.mocked(f.cloud.rpc).mock.calls.map(([name]) => name)).not.toContain("qorpera_open_site_preview");
+		expect(open).not.toHaveBeenCalled();
+	});
+
+	it("opens the ready version on the site's next host with Look first when the read offers it", async () => {
+		const ticket = "Tk3_-9aZqLm0PxW2vB8nC4dE6fG1hJ5kR7sU0yQwXeA";
+		const link = `https://wristband-shop--next.qorpera.com/.qorpera/enter?t=${ticket}`;
+		const tab = { opener: window as unknown, closed: false, location: { replace: vi.fn() }, close: vi.fn() };
+		const open = vi.spyOn(window, "open").mockReturnValue(tab as unknown as Window);
+		const f = await mount(
+			`#/c/${profileA.profileId}/whats-new`,
+			() => ({ ...read, preview: true }),
+			() => ({ schema: "qorpera.site-preview/v1", state: "open", url: link }),
+		);
+		const look = [...f.root.querySelectorAll<HTMLButtonElement>(".whats-new-actions button")].find(
+			(item) => item.textContent === "Look first",
+		)!;
+		look.click();
+		expect(open).toHaveBeenCalledWith("about:blank", "_blank");
+		expect(tab.opener).toBeNull();
+		await draw();
+		expect(vi.mocked(f.cloud.rpc)).toHaveBeenCalledWith("qorpera_open_site_preview", {
+			p_profile_id: profileA.profileId,
+			p_owner: "qorpera",
+			p_name: "wristband-shop",
+			p_change: 17,
+		});
+		expect(tab.location.replace).toHaveBeenCalledWith(link);
+		expect(tab.close).not.toHaveBeenCalled();
+		expect(document.documentElement.outerHTML).not.toContain(ticket);
 	});
 
 	it("shows no entry on a cloud without the read, and says so on the page", async () => {

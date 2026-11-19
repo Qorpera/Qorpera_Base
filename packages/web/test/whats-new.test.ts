@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { liveVersions, WhatsNewView, whatsNewEntry } from "../src/app/views/whats-new.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
+import { CloudShapeError } from "../src/cloud/parse.ts";
 import {
 	type CodeReleaseAnswer,
 	type CodeReleaseSite,
@@ -10,6 +11,8 @@ import {
 	codeReleaseCalls,
 	parseCodeReleaseAnswer,
 	parseCodeReleases,
+	parseSitePreviewAnswer,
+	type SitePreviewAnswer,
 } from "../src/cloud/releases.ts";
 import type { HostedStaffAgent } from "../src/cloud/types.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
@@ -17,6 +20,7 @@ import {
 	deferred,
 	fixture,
 	id,
+	oneHostList,
 	profileA,
 	session,
 	settle,
@@ -76,13 +80,19 @@ function shop(extra: Partial<CodeReleaseSite> = {}): CodeReleaseSite {
 	};
 }
 
-const releasesOf = (sites: CodeReleaseSite[], canRelease = true): CodeReleases => ({ canRelease, sites });
+const releasesOf = (sites: CodeReleaseSite[], canRelease = true, preview = false): CodeReleases => ({
+	canRelease,
+	preview,
+	sites,
+});
 
-/** The read as the kernel sends it (qorpera.code-releases/v1), with a key this web does not know. */
+/** The read as the kernel sends it (qorpera.code-releases/v1), with a key this web does not know. `preview` only while
+ * it is offered (step 5.1: the kernel leaves the key out while sites have no addresses of their own). */
 function wire(releases: CodeReleases): unknown {
 	return {
 		schema: "qorpera.code-releases/v1",
 		canRelease: releases.canRelease,
+		...(releases.preview ? { preview: true } : {}),
 		sites: releases.sites.map((site) => ({ ...site, live: site.live && { ...site.live, from: null } })),
 	};
 }
@@ -127,8 +137,14 @@ interface Setup {
 	agents?: HostedStaffAgent[];
 	putLive?: (shown: unknown) => Promise<CodeReleaseAnswer>;
 	goBack?: (shown: unknown) => Promise<CodeReleaseAnswer>;
+	openPreview?: (shown: unknown) => Promise<SitePreviewAnswer>;
 	image?: (path: string) => Promise<Blob | null>;
+	takenDown?: (signal: AbortSignal) => Promise<ReadonlySet<string>>;
 }
+
+/** Look first's one-time ticket, as the kernel makes one (43 characters), and its link on the shop's next host. */
+const TICKET = "Tk3_-9aZqLm0PxW2vB8nC4dE6fG1hJ5kR7sU0yQwXeA";
+const NEXT = `https://wristband-shop--next.qorpera.com/.qorpera/enter?t=${TICKET}`;
 
 async function page(reads: CodeReleases[], options: Setup = {}) {
 	const controller = company(options.role, options.agents);
@@ -141,6 +157,10 @@ async function page(reads: CodeReleases[], options: Setup = {}) {
 		goBack: vi.fn(async (_owner: string, _name: string, shown: unknown) =>
 			options.goBack ? options.goBack(shown) : ({ state: "live", version: 2 } as const),
 		),
+		openPreview: vi.fn(
+			async (_owner: string, _name: string, shown: unknown): Promise<SitePreviewAnswer> =>
+				options.openPreview ? options.openPreview(shown) : { state: "open", url: NEXT },
+		),
 	};
 	const image = vi.fn(
 		options.image ??
@@ -148,7 +168,11 @@ async function page(reads: CodeReleases[], options: Setup = {}) {
 				path === "missing.png" ? null : new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" })),
 	);
 	const listed = vi.fn();
-	const view = new WhatsNewView(controller, client, controller.signal, { image, listed });
+	const view = new WhatsNewView(controller, client, controller.signal, {
+		image,
+		listed,
+		...(options.takenDown ? { takenDown: options.takenDown } : {}),
+	});
 	cleanup.push(() => view.dispose());
 	document.body.append(view.el);
 	await settle();
@@ -222,6 +246,10 @@ describe("What's new: the read", () => {
 		await calls.list(signal);
 		await calls.putLive("qorpera", "wristband-shop", { live: 3, change: 17, token: TOKEN }, signal);
 		await calls.goBack("qorpera", "wristband-shop", { live: 3, to: 2 }, signal);
+		rpc.mockImplementationOnce(async () => ({ schema: "qorpera.site-preview/v1", state: "open", url: NEXT }));
+		expect(
+			await calls.openPreview("qorpera", "wristband-shop", { change: 17, slug: "wristband-shop" }, signal),
+		).toEqual({ state: "open", url: NEXT });
 		expect(rpc.mock.calls).toEqual([
 			["qorpera_list_code_releases", { p_profile_id: profileA.profileId }],
 			[
@@ -241,6 +269,10 @@ describe("What's new: the read", () => {
 					p_name: "wristband-shop",
 					p_shown: { live: 3, to: 2 },
 				},
+			],
+			[
+				"qorpera_open_site_preview",
+				{ p_profile_id: profileA.profileId, p_owner: "qorpera", p_name: "wristband-shop", p_change: 17 },
 			],
 		]);
 	});
@@ -944,5 +976,588 @@ describe("What's new: Not yet", () => {
 		press(view.el.querySelector('[data-site="qorpera/gift-cards"]')!, "Not yet");
 		await settle();
 		expect(whatsNewEntry(controller, releasesOf([shop(), other]))).toEqual({ ready: 6 });
+	});
+});
+
+describe("What's new: Look first (own code storage step 5.1)", () => {
+	/** A tab as window.open hands it back: what the page may do with it, recorded. `opener` at the moment the tab is sent
+	 * anywhere is kept, so a test sees the way back was cut before. */
+	function tabs(blocked = false) {
+		const opened: {
+			opener: unknown;
+			closed: boolean;
+			location: { replace: ReturnType<typeof vi.fn> };
+			close: ReturnType<typeof vi.fn>;
+			openerWhenSent?: unknown;
+		}[] = [];
+		const open = vi.spyOn(window, "open").mockImplementation(() => {
+			if (blocked) return null;
+			const tab = {
+				opener: window as unknown,
+				closed: false,
+				location: {
+					replace: vi.fn((_url: string) => {
+						tab.openerWhenSent = tab.opener;
+					}),
+				},
+				close: vi.fn(() => {
+					tab.closed = true;
+				}),
+				openerWhenSent: undefined as unknown,
+			};
+			opened.push(tab);
+			return tab as unknown as Window;
+		});
+		return { open, opened };
+	}
+	const offered = () => releasesOf([shop()], true, true);
+	const actions = (view: WhatsNewView) => block(view).querySelector(".whats-new-actions")!;
+	const lookLine = (view: WhatsNewView) =>
+		block(view).querySelector(".whats-new-actions + .service-outcome.is-error")?.textContent;
+	const lost = () => Promise.reject(new CloudRpcError("x", { message: "TypeError: Failed to fetch", code: "" }, 0));
+
+	it("shows nothing of it on a kernel without it, or while sites have no addresses of their own (today's read)", async () => {
+		const { open } = tabs();
+		// Today's read has no `preview`: it reads as false, and so does anything but true.
+		expect(parseCodeReleases(wire(releasesOf([shop()]))).preview).toBe(false);
+		for (const preview of [false, "true", 1, null, {}]) {
+			const value = { ...(wire(releasesOf([shop()])) as object), preview };
+			expect(parseCodeReleases(value).preview, String(preview)).toBe(false);
+		}
+		expect(parseCodeReleases(wire(offered())).preview).toBe(true);
+		const { view, client } = await page([releasesOf([shop()])]);
+		expect(labels(actions(view))).toEqual(["Put it live", "Not yet"]);
+		expect(text(view.el)).not.toContain("Look first");
+		press(block(view), "Put it live");
+		await settle();
+		expect(client.openPreview).not.toHaveBeenCalled();
+		expect(open).not.toHaveBeenCalled();
+		// A client without the call (and the read offering it) shows no button either.
+		const controller = company();
+		const bare = new WhatsNewView(
+			controller,
+			{ list: vi.fn(async () => offered()), putLive: vi.fn(), goBack: vi.fn() },
+			controller.signal,
+		);
+		cleanup.push(() => bare.dispose());
+		document.body.append(bare.el);
+		await settle();
+		expect(labels(actions(bare))).toEqual(["Put it live", "Not yet"]);
+	});
+
+	it("shows Look first before Put it live for an owner or admin while the read offers it, and never to anyone else", async () => {
+		const { view } = await page([offered()]);
+		expect(labels(actions(view))).toEqual(["Look first", "Put it live", "Not yet"]);
+		plain(block(view));
+		// A member who is not an owner or admin: the kernel neither offers it nor lets them put a version live.
+		const member = await page([releasesOf([shop()], false, false)], { role: "contributor" });
+		expect(labels(block(member.view))).toEqual([]);
+		expect(text(member.view.el)).not.toContain("Look first");
+		// Even a read that offered it to a member who may not put a version live draws no button.
+		const odd = await page([releasesOf([shop()], false, true)], { role: "contributor" });
+		expect(labels(block(odd.view))).toEqual([]);
+		// Nothing ready, or no site yet: nothing to look at.
+		const nothing = await page([releasesOf([shop({ ready: null })], true, true)]);
+		expect(labels(block(nothing.view))).toEqual(["Go back to version 2"]);
+		const first = await page([releasesOf([shop({ site: null, live: null, back: null })], true, true)]);
+		expect(labels(block(first.view))).toEqual(["Put the first version live", "Not yet"]);
+	});
+
+	it("opens a blank tab within the press, cuts its way back at once, then sends it to the one-time link, once", async () => {
+		const { open, opened } = tabs();
+		const answer = deferred<SitePreviewAnswer>();
+		const { view, client } = await page([offered()], { openPreview: () => answer.promise });
+		const logged = (["log", "info", "warn", "error", "debug"] as const).map((level) => vi.spyOn(console, level));
+		const look = buttons(block(view)).find((item) => item.textContent === "Look first")!;
+		look.click();
+		look.click();
+		// Within the press, before the call answers: a blank tab, with no way back to this window.
+		expect(open).toHaveBeenCalledOnce();
+		expect(open).toHaveBeenCalledWith("about:blank", "_blank");
+		expect(opened[0]?.opener).toBeNull();
+		await settle();
+		expect(client.openPreview).toHaveBeenCalledOnce();
+		expect(client.openPreview).toHaveBeenCalledWith(
+			"qorpera",
+			"wristband-shop",
+			{ change: 17, slug: "wristband-shop" },
+			expect.any(AbortSignal),
+		);
+		expect(buttons(block(view)).map((item) => [item.textContent, item.disabled])).toEqual([
+			["Go back to version 2", true],
+			["Opening…", true],
+			["Put it live", true],
+			["Not yet", true],
+		]);
+		answer.resolve({ state: "open", url: NEXT });
+		await settle();
+		const tab = opened[0]!;
+		expect(tab.location.replace).toHaveBeenCalledOnce();
+		expect(tab.location.replace).toHaveBeenCalledWith(NEXT);
+		expect(tab.openerWhenSent).toBeNull();
+		expect(tab.close).not.toHaveBeenCalled();
+		expect(labels(actions(view))).toEqual(["Look first", "Put it live", "Not yet"]);
+		expect(block(view).querySelector(".service-outcome")).toBeNull();
+		expect(client.list).toHaveBeenCalledOnce();
+		// The ticket went to that one tab and nowhere else: not the page, not storage, not a line in the console.
+		expect(document.documentElement.outerHTML).not.toContain(TICKET);
+		expect(JSON.stringify({ ...localStorage })).not.toContain(TICKET);
+		expect(JSON.stringify({ ...sessionStorage })).not.toContain(TICKET);
+		for (const spy of logged) expect(JSON.stringify(spy.mock.calls)).not.toContain(TICKET);
+	});
+
+	it.each([
+		["the version went live or is no longer the one ready (moved)", async () => ({ state: "moved" }) as const],
+		["Qorpera took the site down (gone)", async () => ({ state: "gone" }) as const],
+		["sites have no addresses of their own now (off)", async () => ({ state: "off" }) as const],
+		["no answer came", lost],
+		["a refusal came", () => Promise.reject(new CloudRpcError("x", { message: "", code: "55P03" }, 500))],
+	])("closes the tab when %s, and never sends it anywhere", async (_why, answer) => {
+		const { opened } = tabs();
+		const { view } = await page([offered(), releasesOf([shop()])], { openPreview: answer });
+		press(block(view), "Look first");
+		await settle();
+		expect(opened[0]?.close).toHaveBeenCalledOnce();
+		expect(opened[0]?.location.replace).not.toHaveBeenCalled();
+	});
+
+	it("says what changed when the version is no longer the one ready, and reads the page again", async () => {
+		tabs();
+		const newer = shop({ ready: { ...shop().ready!, change: 18, token: OTHER_TOKEN } });
+		const { view, client } = await page([offered(), releasesOf([newer], true, true)], {
+			openPreview: async () => ({ state: "moved" }),
+		});
+		press(block(view), "Look first");
+		await settle();
+		expect(block(view).querySelector("h3")?.previousElementSibling?.textContent).toBe(
+			"Something changed while you looked. Here is what is ready now.",
+		);
+		expect(client.list).toHaveBeenCalledTimes(2);
+		press(block(view), "Look first");
+		await settle();
+		expect(client.openPreview).toHaveBeenLastCalledWith(
+			"qorpera",
+			"wristband-shop",
+			{ change: 18, slug: "wristband-shop" },
+			expect.any(AbortSignal),
+		);
+	});
+
+	it.each([
+		[
+			"Qorpera took the site down",
+			async (): Promise<SitePreviewAnswer> => ({ state: "gone" }),
+			"Qorpera took this site down, so it can't be opened. See why in Sites.",
+			1,
+		],
+		["no answer came", lost, "The next version could not be opened: Qorpera could not be reached. Try again.", 1],
+		[
+			"a gateway's page came",
+			() =>
+				Promise.reject(
+					new CloudRpcError("x", { message: "<html><body><h1>504 Gateway Time-out</h1></body></html>" }, 504),
+				),
+			"The next version could not be opened: Qorpera could not be reached. Try again.",
+			1,
+		],
+		[
+			"Qorpera was busy",
+			() => Promise.reject(new CloudRpcError("x", { message: "lock timeout", code: "55P03" }, 500)),
+			"The next version could not be opened. Try again.",
+			1,
+		],
+		[
+			"the request was refused as malformed",
+			() => Promise.reject(new CloudRpcError("x", { message: "Look first request is invalid", code: "22023" }, 400)),
+			"The next version could not be opened. Try again.",
+			1,
+		],
+		[
+			"the answer was not as expected",
+			() => Promise.reject(new CloudShapeError("look first link")),
+			"The next version could not be opened. Try again.",
+			1,
+		],
+		[
+			"the member is no longer an owner or admin",
+			() => Promise.reject(new CloudRpcError("x", { message: "Releases unavailable", code: "42501" }, 403)),
+			"Only founders and admins can look at a version before it goes live.",
+			2,
+		],
+	])("says in its own words when %s", async (_why, answer, line, reads) => {
+		tabs();
+		const { view, client } = await page([offered()], { openPreview: answer });
+		press(block(view), "Look first");
+		await settle();
+		expect(lookLine(view)).toBe(line);
+		expect(client.list).toHaveBeenCalledTimes(reads);
+		plain(block(view));
+		expect(text(block(view))).not.toMatch(/42501|55P03|22023|Gateway|invalid|unavailable/);
+		// Another press may try again: the button is there and on.
+		expect(buttons(actions(view)).find((item) => item.textContent === "Look first")?.disabled).toBe(false);
+	});
+
+	it("asks for no link when the browser stopped the tab, and says so", async () => {
+		const { open } = tabs(true);
+		const { view, client } = await page([offered()]);
+		press(block(view), "Look first");
+		await settle();
+		expect(open).toHaveBeenCalledOnce();
+		expect(client.openPreview).not.toHaveBeenCalled();
+		expect(lookLine(view)).toBe("The next version could not be opened. Try again.");
+	});
+
+	it("takes the button away when sites have no addresses of their own now, and reads the page again", async () => {
+		tabs();
+		const { view, client } = await page([offered(), releasesOf([shop()])], {
+			openPreview: async () => ({ state: "off" }),
+		});
+		press(block(view), "Look first");
+		await settle();
+		expect(labels(actions(view))).toEqual(["Put it live", "Not yet"]);
+		expect(block(view).querySelector(".service-outcome")).toBeNull();
+		expect(client.list).toHaveBeenCalledTimes(2);
+		// Until a read says otherwise, the press's answer stands, even over a read that still offers it.
+		const stale = await page([offered(), offered()], { openPreview: async () => ({ state: "off" }) });
+		const answered = deferred<CodeReleases>();
+		stale.client.list.mockImplementationOnce(() => answered.promise);
+		press(block(stale.view), "Look first");
+		await settle();
+		expect(labels(actions(stale.view))).toEqual(["Put it live", "Not yet"]);
+		answered.resolve(offered());
+		await settle();
+		expect(labels(actions(stale.view))).toEqual(["Look first", "Put it live", "Not yet"]);
+	});
+
+	it("keeps its line through the read the window makes coming back from the closed tab, and drops it with the next", async () => {
+		tabs();
+		const { view, client } = await page([offered()], { openPreview: async () => ({ state: "gone" }) });
+		press(block(view), "Look first");
+		await settle();
+		const line = "Qorpera took this site down, so it can't be opened. See why in Sites.";
+		expect(lookLine(view)).toBe(line);
+		window.dispatchEvent(new Event("focus"));
+		await settle();
+		expect(client.list).toHaveBeenCalledTimes(2);
+		expect(lookLine(view)).toBe(line);
+		window.dispatchEvent(new Event("focus"));
+		await settle();
+		expect(lookLine(view)).toBeUndefined();
+		// A page that moved: its own read, then the window's, keep the line; the next drops it.
+		const moved = await page([offered()], { openPreview: async () => ({ state: "moved" }) });
+		press(block(moved.view), "Look first");
+		await settle();
+		const said = () => [...block(moved.view).querySelectorAll(".service-outcome")].map((item) => item.textContent);
+		expect(said()).toEqual(["Something changed while you looked. Here is what is ready now."]);
+		window.dispatchEvent(new Event("focus"));
+		await settle();
+		expect(moved.client.list).toHaveBeenCalledTimes(3);
+		expect(said()).toEqual(["Something changed while you looked. Here is what is ready now."]);
+		window.dispatchEvent(new Event("focus"));
+		await settle();
+		expect(said()).toEqual([]);
+	});
+
+	it("closes the tab and sends it nowhere when the page is left while the call is out", async () => {
+		const { opened } = tabs();
+		const answer = deferred<SitePreviewAnswer>();
+		const { view } = await page([offered()], {
+			openPreview: () => answer.promise,
+		});
+		press(block(view), "Look first");
+		await settle();
+		view.dispose();
+		answer.resolve({ state: "open", url: NEXT });
+		await settle();
+		expect(opened[0]?.close).toHaveBeenCalledOnce();
+		expect(opened[0]?.location.replace).not.toHaveBeenCalled();
+	});
+
+	it("is in Danish", async () => {
+		setLanguagePreference("da");
+		tabs();
+		const { view } = await page([offered()], { openPreview: async () => ({ state: "gone" }) });
+		expect(labels(actions(view))).toEqual(["Se den først", "Sæt live", "Ikke endnu"]);
+		press(block(view), "Se den først");
+		await settle();
+		expect(lookLine(view)).toBe(
+			"Qorpera har taget hjemmesiden ned, så den kan ikke åbnes. Se hvorfor under Hjemmesider.",
+		);
+		const words: [() => Promise<SitePreviewAnswer>, string][] = [
+			[lost, "Den næste version kunne ikke åbnes: Qorpera kunne ikke nås. Prøv igen."],
+			[
+				() => Promise.reject(new CloudRpcError("x", { message: "", code: "55P03" }, 500)),
+				"Den næste version kunne ikke åbnes. Prøv igen.",
+			],
+			[
+				() => Promise.reject(new CloudRpcError("x", { message: "", code: "42501" }, 403)),
+				"Kun stiftere og administratorer kan se en version, før den går live.",
+			],
+		];
+		for (const [answer, line] of words) {
+			const each = await page([offered()], { openPreview: answer });
+			press(block(each.view), "Se den først");
+			await settle();
+			expect(lookLine(each.view)).toBe(line);
+		}
+		const busy = deferred<SitePreviewAnswer>();
+		const working = await page([offered()], { openPreview: () => busy.promise });
+		press(block(working.view), "Se den først");
+		await settle();
+		expect(labels(actions(working.view))).toContain("Åbner…");
+	});
+});
+
+describe("What's new: Look first's link and a refused write (step 5.1)", () => {
+	it("takes as Look first's link exactly the next hosts of the one host list (SQL test 1252), each for its own site", () => {
+		const answer = (url: string) => ({ schema: "qorpera.site-preview/v1", state: "open", url });
+		const list = oneHostList();
+		const slugs = [...new Set(list.map((entry) => entry.slug).filter(Boolean))];
+		for (const { host, slug, scope, verdict } of list) {
+			// A name the rule refuses (verdict name) has no site, so the kernel opens no Look first for it.
+			if (verdict === "name") continue;
+			const url = `https://${host}/.qorpera/enter?t=${TICKET}`;
+			for (const drawn of slugs) {
+				const label = `${url} for ${drawn}`;
+				if (verdict === "taken" && scope === "next" && drawn === slug)
+					expect(parseSitePreviewAnswer(answer(url), drawn), label).toEqual({ state: "open", url });
+				else expect(() => parseSitePreviewAnswer(answer(url), drawn), label).toThrow(CloudShapeError);
+			}
+		}
+	});
+
+	it("reads Look first's answer: exactly the site's next host with a one-time ticket, nothing else", () => {
+		const answer = (extra: Record<string, unknown>) => ({ schema: "qorpera.site-preview/v1", ...extra });
+		expect(parseSitePreviewAnswer(answer({ state: "open", url: NEXT }), "wristband-shop")).toEqual({
+			state: "open",
+			url: NEXT,
+		});
+		for (const state of ["moved", "gone", "off"] as const)
+			expect(parseSitePreviewAnswer(answer({ state, url: NEXT }), "wristband-shop")).toEqual({ state });
+		// One host rule: `shop-next--next` is site shop-next's next host.
+		const shopNext = `https://shop-next--next.qorpera.com/.qorpera/enter?t=${TICKET}`;
+		expect(parseSitePreviewAnswer(answer({ state: "open", url: shopNext }), "shop-next")).toEqual({
+			state: "open",
+			url: shopNext,
+		});
+		const enter = `/.qorpera/enter?t=${TICKET}`;
+		for (const url of [
+			// Only the site's own next host, over https, with no sign-in or port.
+			`https://other-shop--next.qorpera.com${enter}`,
+			`https://wristband-shop.qorpera.com${enter}`,
+			`https://wristband-shop-next.qorpera.com${enter}`,
+			`https://wristband-shop--next--next.qorpera.com${enter}`,
+			`https://wristband-shop-preview.qorpera.com${enter}`,
+			`http://wristband-shop--next.qorpera.com${enter}`,
+			`https://user:pass@wristband-shop--next.qorpera.com${enter}`,
+			`https://wristband-shop--next.qorpera.com:8443${enter}`,
+			`https://wristband-shop--next.qorpera.com:443${enter}`,
+			`https://WRISTBAND-SHOP--next.qorpera.com${enter}`,
+			`https://wristband-shop--next.qorpera.com.${enter}`,
+			`https://x.wristband-shop--next.qorpera.com${enter}`,
+			`https://wristband-shop--next.qorpera.site${enter}`,
+			`https://wristband-shop--next.qorpera.com.example.org${enter}`,
+			`https://wristband-shop--nextxqorpera.com${enter}`,
+			// Only the enter path, and only one well-made ticket.
+			`https://wristband-shop--next.qorpera.com/${`?t=${TICKET}`}`,
+			`https://wristband-shop--next.qorpera.com/.qorpera/unlock?t=${TICKET}`,
+			`https://wristband-shop--next.qorpera.com/.qorpera/enter/?t=${TICKET}`,
+			`https://wristband-shop--next.qorpera.com/.qorpera/enter?t=${TICKET.slice(1)}`,
+			`https://wristband-shop--next.qorpera.com/.qorpera/enter?t=${TICKET}A`,
+			`https://wristband-shop--next.qorpera.com/.qorpera/enter?t=${TICKET.slice(1)}=`,
+			`https://wristband-shop--next.qorpera.com/.qorpera/enter?t=${TICKET.slice(1)}+`,
+			`https://wristband-shop--next.qorpera.com/.qorpera/enter?t=${TICKET}&next=x`,
+			`https://wristband-shop--next.qorpera.com/.qorpera/enter?a=1?t=${TICKET}`,
+			`https://wristband-shop--next.qorpera.com/.qorpera/enter?x=${TICKET}`,
+			`https://wristband-shop--next.qorpera.com/.qorpera/enter`,
+			`${NEXT}#x`,
+			`${NEXT}#`,
+			` ${NEXT}`,
+			"javascript:alert(1)",
+			"",
+			17,
+			null,
+		]) {
+			const parse = () => parseSitePreviewAnswer(answer({ state: "open", url }), "wristband-shop");
+			expect(parse, String(url)).toThrow(CloudShapeError);
+		}
+		// A link with the site's name but in another schema or state is no answer either.
+		expect(() =>
+			parseSitePreviewAnswer({ schema: "qorpera.site-preview/v2", state: "open", url: NEXT }, "wristband-shop"),
+		).toThrow(CloudShapeError);
+		expect(() => parseSitePreviewAnswer(answer({ state: "maybe" }), "wristband-shop")).toThrow(CloudShapeError);
+		// An error never carries the link.
+		try {
+			parseSitePreviewAnswer(answer({ state: "open", url: `${NEXT}#x` }), "wristband-shop");
+		} catch (error) {
+			expect(String(error)).not.toContain(TICKET);
+		}
+	});
+
+	it("reads a write refused for a site Qorpera took down, and says nothing changed", async () => {
+		expect(
+			parseCodeReleaseAnswer({ schema: "qorpera.code-release/v1", state: "refused", code: "SITE_TAKEN_DOWN" }),
+		).toEqual({ state: "refused", code: "SITE_TAKEN_DOWN" });
+		expect(() => parseCodeReleaseAnswer({ schema: "qorpera.code-release/v1", state: "refused" })).toThrow();
+		expect(() => parseCodeReleaseAnswer({ schema: "qorpera.code-release/v1", state: "refused", code: "" })).toThrow();
+		const down = await page([releasesOf([shop()])], {
+			putLive: async () => ({ state: "refused", code: "SITE_TAKEN_DOWN" }),
+		});
+		press(block(down.view), "Put it live");
+		await settle();
+		expect(block(down.view).querySelector(".whats-new-actions + .service-outcome.is-error")?.textContent).toBe(
+			"It did not go live: Qorpera took this site down. Nothing changed.",
+		);
+		expect(text(block(down.view))).not.toContain("SITE_TAKEN_DOWN");
+		expect(down.client.list).toHaveBeenCalledTimes(2);
+		const back = await page([releasesOf([shop()])], {
+			goBack: async () => ({ state: "refused", code: "SITE_TAKEN_DOWN" }),
+		});
+		press(block(back.view), "Go back to version 2");
+		await settle();
+		press(dialog(), "Go back");
+		await settle();
+		expect(block(back.view).querySelector(".whats-new-live + .service-outcome.is-error")?.textContent).toBe(
+			"It did not go back: Qorpera took this site down. Nothing changed.",
+		);
+		// A reason this web does not know yet still says nothing changed.
+		const other = await page([releasesOf([shop()])], {
+			putLive: async () => ({ state: "refused", code: "SOMETHING_NEW" }),
+		});
+		press(block(other.view), "Put it live");
+		await settle();
+		expect(block(other.view).querySelector(".whats-new-actions + .service-outcome.is-error")?.textContent).toBe(
+			"It did not go live: something went wrong on Qorpera's side. Nothing changed.",
+		);
+		setLanguagePreference("da");
+		const danish = await page([releasesOf([shop()])], {
+			putLive: async () => ({ state: "refused", code: "SITE_TAKEN_DOWN" }),
+		});
+		press(block(danish.view), "Sæt live");
+		await settle();
+		expect(block(danish.view).querySelector(".whats-new-actions + .service-outcome.is-error")?.textContent).toBe(
+			"Det blev ikke sat live: Qorpera har taget hjemmesiden ned. Intet er ændret.",
+		);
+	});
+});
+
+describe("What's new: a site Qorpera took down (step 5.1)", () => {
+	const DOWN = "Qorpera took this site down, so it can't be opened. See why in Sites.";
+	const openLink = (view: WhatsNewView) =>
+		[...block(view).querySelectorAll<HTMLAnchorElement>("a.site-button")].find((link) =>
+			link.textContent?.includes("Open the site"),
+		);
+
+	it("offers no link to a site Qorpera took down, and says so to every member", async () => {
+		for (const role of ["owner", "contributor"] as const) {
+			const takenDown = vi.fn(async () => new Set(["wristband-shop"]));
+			const { view } = await page([releasesOf([shop()], role === "owner")], { role, takenDown });
+			expect(takenDown).toHaveBeenCalledTimes(1);
+			expect(openLink(view), role).toBeUndefined();
+			expect(block(view).querySelector('a[href*="sites.qorpera.com"]'), role).toBeNull();
+			expect(text(block(view)), role).toContain(DOWN);
+			// No password to share either: the Sites page has none to show for it.
+			expect(text(block(view)), role).not.toContain("The password is in Sites.");
+			// What is live and ready is still said; nothing the kernel would refuse is offered (review of #1774, round 3).
+			expect(text(block(view)), role).toContain("Live now");
+			expect(text(block(view)), role).toContain("6 changes are ready");
+			if (role === "owner") expect(labels(block(view))).toEqual(["Not yet"]);
+			plain(block(view));
+			view.dispose();
+		}
+	});
+
+	it("offers an owner no Look first, Put it live or Go back for a site taken down, only Not yet (review of #1774, round 3)", async () => {
+		const read = () => releasesOf([shop()], true, true);
+		// Up: all four, as before.
+		const { view: up } = await page([read()], { takenDown: async () => new Set<string>() });
+		expect(labels(block(up))).toEqual(["Go back to version 2", "Look first", "Put it live", "Not yet"]);
+		up.dispose();
+		// Taken down: the line says why, and only Not yet is left; a site never live has no Put the first version live.
+		const { view, client } = await page([read()], { takenDown: async () => new Set(["wristband-shop"]) });
+		expect(labels(block(view))).toEqual(["Not yet"]);
+		expect(text(block(view))).toContain(DOWN);
+		expect(client.openPreview).not.toHaveBeenCalled();
+		view.dispose();
+		const { view: first } = await page([releasesOf([shop({ live: null, back: null })], true, true)], {
+			takenDown: async () => new Set(["wristband-shop"]),
+		});
+		expect(labels(block(first))).toEqual(["Not yet"]);
+		expect(text(block(first))).toContain(DOWN);
+		first.dispose();
+		// In Danish too.
+		setLanguagePreference("da");
+		try {
+			const { view: da } = await page([read()], { takenDown: async () => new Set(["wristband-shop"]) });
+			expect(labels(block(da))).toEqual(["Ikke endnu"]);
+			expect(text(block(da))).toContain(
+				"Qorpera har taget hjemmesiden ned, så den kan ikke åbnes. Se hvorfor under Hjemmesider.",
+			);
+			da.dispose();
+		} finally {
+			setLanguagePreference("system");
+		}
+	});
+
+	it("draws the page as before without the read, with a read that fails, and with no site taken down", async () => {
+		for (const takenDown of [
+			undefined,
+			async () => {
+				throw new CloudRpcError("x", { message: "Could not find the function", code: "PGRST202" }, 404);
+			},
+			async () => new Set<string>(),
+			async () => new Set(["another-shop"]),
+		]) {
+			const { view } = await page([releasesOf([shop()])], takenDown ? { takenDown } : {});
+			expect(openLink(view)?.href).toBe("https://sites.qorpera.com/wristband-shop/");
+			expect(text(block(view))).not.toContain(DOWN);
+			expect(text(block(view))).toContain("The password is in Sites.");
+			view.dispose();
+		}
+	});
+
+	it("keeps what the last read said when one fails, and shows the link again once the site is back", async () => {
+		const answers: (ReadonlySet<string> | Error)[] = [new Set(["wristband-shop"]), new Error("no answer"), new Set()];
+		const takenDown = vi.fn(async () => {
+			const next = answers.shift();
+			if (next instanceof Error) throw next;
+			return next ?? new Set<string>();
+		});
+		const { view } = await page([releasesOf([shop()])], { takenDown });
+		expect(openLink(view)).toBeUndefined();
+		window.dispatchEvent(new Event("focus"));
+		await settle();
+		expect(takenDown).toHaveBeenCalledTimes(2);
+		expect(openLink(view)).toBeUndefined();
+		expect(text(block(view))).toContain(DOWN);
+		window.dispatchEvent(new Event("focus"));
+		await settle();
+		expect(takenDown).toHaveBeenCalledTimes(3);
+		expect(openLink(view)?.href).toBe("https://sites.qorpera.com/wristband-shop/");
+		expect(text(block(view))).not.toContain(DOWN);
+	});
+
+	it("says so for a site that was never live too, whose Look first answers so (review of #1774, F4)", async () => {
+		const { view } = await page([releasesOf([shop({ live: null, back: null })])], {
+			takenDown: async () => new Set(["wristband-shop"]),
+		});
+		expect(text(block(view))).toContain("Not live yet");
+		expect(text(block(view))).toContain(DOWN);
+		expect(openLink(view)).toBeUndefined();
+		view.dispose();
+		// Not taken down: nothing said.
+		const { view: up } = await page([releasesOf([shop({ live: null, back: null })])], {
+			takenDown: async () => new Set<string>(),
+		});
+		expect(text(block(up))).not.toContain(DOWN);
+	});
+
+	it("says it in Danish", async () => {
+		setLanguagePreference("da");
+		const { view } = await page([releasesOf([shop()])], { takenDown: async () => new Set(["wristband-shop"]) });
+		expect(text(block(view))).toContain(
+			"Qorpera har taget hjemmesiden ned, så den kan ikke åbnes. Se hvorfor under Hjemmesider.",
+		);
+		expect(openLink(view)).toBeUndefined();
 	});
 });

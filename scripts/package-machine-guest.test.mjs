@@ -344,6 +344,7 @@ test("the image has a desktop that only `desktop start` starts, with Chromium sa
 		{ file: "render-assets.tsv", installedPath: "/opt/qorpera-assets/SOURCES.tsv", mode: "0444" },
 		{ file: "render-assets.md", installedPath: "/opt/qorpera-assets/README.md", mode: "0444" },
 		{ file: "render-assets-preview.jpg", installedPath: "/opt/qorpera-assets/preview.jpg", mode: "0444" },
+		{ file: "qorpera-agent.sudoers", installedPath: "/etc/sudoers.d/qorpera-agent", mode: "0440" },
 	]);
 	const required = words(imageScript.match(/for file in ([^;]+); do\n\t\[\[ -f \$PACKAGE\/\$file \]\]/)[1]);
 	for (const { file, installedPath, mode } of files) {
@@ -522,6 +523,15 @@ test("the image carries machine_screen's screen helper as its own file, and chec
 		'\t[[ -z $(ls -A /company) ]] || { echo "the screen helper wrote into /company" >&2; exit 1; }\n',
 	])
 		assert.ok(imageScript.includes(line), line);
+	for (const line of [
+		'\tprintf "%s\\n" "#!/bin/sh" "[ \\"\\$(id -u)\\" = 0 ] || exec sudo -n /opt/qorpera-folder/qorpera-folder data \\"\\$@\\"" \\\n',
+		'\t\t"exec /opt/qorpera-folder/qorpera-folder data \\"\\$@\\"" >/usr/local/bin/data\n',
+		"\tdata >/dev/null 2>&1 && exit 1 || [[ $? == 2 ]]\n",
+		"\tdata describe >/dev/null 2>&1 && exit 1 || [[ $? == 3 ]]\n",
+		'\t[[ $(runuser -u qorpera-agent -- data --view-file /root/no-view.json describe 2>&1 >/dev/null; echo "exit $?") == \\\n',
+		'\t\t*"has no company folder"*"exit 3" ]] ||\n',
+	])
+		assert.ok(imageScript.includes(line), line);
 	// Every check of the build sits in its one single-quoted script: no single quote may appear in it, comments too.
 	const opening = "bash -euo pipefail -c '\n";
 	const start = imageScript.indexOf(opening, imageScript.indexOf('lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256='));
@@ -620,6 +630,78 @@ test("desktop key presses no xdotool command word, whatever its case, by the ins
 	}
 	// An unknown key name, which xdotool only reports on stderr, fails the command instead of passing as pressed.
 	assert.match(read("deploy/machine/desktop"), /if \[\[ \$skipped == \*"No such key name"\* \]\]; then\n\t\tfail "no such key: /);
+});
+
+test("the image carries fill_company_account's fill helper as its own file, desktop open's DevTools port, and checks both", async () => {
+	const packager = read("scripts/package-machine-guest.mjs");
+	assert.match(packager, /entryPoints: \["packages\/runtime\/src\/cloud-machine-account-fill-main\.ts"\]/);
+	assert.match(
+		packager,
+		/file: "cloud-machine-account-fill\.mjs",\n\tsource: "packages\/runtime\/src\/cloud-machine-account-fill-main\.ts",\n\tinstalledPath: "\/opt\/qorpera-machine\/cloud-machine-account-fill\.mjs",\n\towner: "root:root",\n\tmode: "0444",/,
+	);
+	// The runtime imports the helper's module (its codes), and every service bundle with it: loading it runs nothing.
+	assert.doesNotMatch(read("packages/runtime/src/cloud-machine-account-fill.ts"), /process\.(argv|stdin|exitCode|exit)\b|import\.meta/);
+	assert.match(read("packages/runtime/src/cloud-machine-account-fill-main.ts"), /^runMachineAccountFillCli\(/m);
+	assert.ok(packager.indexOf('file: "cloud-machine-guest.mjs"') < packager.indexOf('file: "cloud-machine-account-fill.mjs"'));
+	const required = words(imageScript.match(/for file in ([^;]+); do\n\t\[\[ -f \$PACKAGE\/\$file \]\]/)[1]);
+	assert.ok(required.includes("cloud-machine-account-fill.mjs"));
+	assert.ok(
+		imageScript.includes(
+			'lx file push "$PACKAGE/cloud-machine-account-fill.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-account-fill.mjs" --uid 0 --gid 0 --mode 0444\n',
+		),
+	);
+	// The desktop's browser (desktop open, desktop start TARGET) starts with the profile the helper reads and a DevTools port
+	// the kernel picks on the loopback.
+	const desktop = read("deploy/machine/desktop");
+	assert.match(desktop, /\nPROFILE=\/home\/desktop\/\.config\/qorpera-chromium\nbrowser\(\) \{\n\tlocal flags=\(--user-data-dir="\$PROFILE" --remote-debugging-port=0 /);
+	assert.doesNotMatch(desktop, /remote-debugging-address|remote-allow-origins/);
+	const helperSource = read("packages/runtime/src/cloud-machine-account-fill.ts");
+	assert.match(helperSource, /MACHINE_CHROMIUM_PROFILE = "\/home\/desktop\/\.config\/qorpera-chromium"/);
+	assert.match(helperSource, /MACHINE_CHROMIUM = "\/usr\/lib\/qorpera-chromium\/chrome"/);
+	assert.match(imageScript, /mv \/tmp\/chromium\/chrome-linux64 \/usr\/lib\/qorpera-chromium\n/);
+	// The build's own check: a made-up password filled into a local page's password box, never printed; another site,
+	// another boot and a "Just a moment..." page refused by code; desktop open's port on the loopback only.
+	for (const line of [
+		'spawn("/usr/bin/node", ["/opt/qorpera-machine/cloud-machine-account-fill.mjs"]',
+		'fail("the fill helper printed the value")',
+		'"the page did not get the value whole"',
+		'await refusal(["example.org"], "FILL_WRONG_SITE");',
+		'await refusal(["fill-check.test"], "MACHINE_BOOT_CHANGED", { boot: id() });',
+		'await refusal(["fill-check.test"], "SITE_STOP_HUMAN_CHECK");',
+		'echo "the DevTools port is not on the loopback"',
+		'echo "the DevTools port listens beyond the loopback"',
+	])
+		assert.ok(imageScript.includes(line), line);
+	// Both checks' scripts sit in the build's single-quoted script: they hold no single quote.
+	const fill = imageScript.slice(
+		imageScript.indexOf("# fill_company_account (20260930781000): the fill helper types"),
+		imageScript.indexOf("# Nothing of these checks stays in the desktop account"),
+	);
+	assert.ok(fill.length > 0 && !fill.includes("'"));
+	// The helper's deadline fits the executor's: the exec's own is longer, and both inside the command service's 30 s.
+	const hostSource = read("packages/runner-orchestrator/src/company-machine-host.ts");
+	const helperMs = Number(helperSource.match(/\nexport const MACHINE_ACCOUNT_FILL_MS = ([0-9_]+);\n/)[1].replaceAll("_", ""));
+	const execMs = Number(hostSource.match(/\nconst ACCOUNT_FILL_MS = (\d+);\n/)[1]);
+	assert.ok(helperMs + 2000 <= execMs && execMs <= 26000, `${helperMs} ms in the helper against ${execMs} ms`);
+	assert.match(hostSource, /COMPANY_MACHINE_ACCOUNT_FILL_HELPER = "\/opt\/qorpera-machine\/cloud-machine-account-fill\.mjs"/);
+	// Built with the packager's options, the guest helper holds none of it; the fill helper bundles no browser driver.
+	const temporary = await mkdtemp(join(tmpdir(), "qorpera-machine-account-fill-"));
+	try {
+		const options = { bundle: true, platform: "node", format: "esm", target: "node22.19", legalComments: "none", logLevel: "silent" };
+		await build({ ...options, entryPoints: [join(repositoryRoot, "packages/runtime/src/cloud-machine-guest.ts")], outfile: join(temporary, "guest.mjs") });
+		await build({ ...options, entryPoints: [join(repositoryRoot, "packages/runtime/src/cloud-machine-account-fill-main.ts")], outfile: join(temporary, "fill.mjs") });
+		const guest = await readFile(join(temporary, "guest.mjs"), "utf8");
+		const helper = await readFile(join(temporary, "fill.mjs"), "utf8");
+		assert.doesNotMatch(guest, /account-fill|Input\.insertText/);
+		// The value is set inside the checked document (Runtime.callFunctionOn on the checked box), never typed at the tab.
+		assert.match(helper, /"Runtime\.callFunctionOn"/);
+		assert.doesNotMatch(helper, /Input\.insertText/);
+		assert.match(helper, /\/json\/version/);
+		assert.doesNotMatch(helper, /playwright/);
+		assert.ok(helper.length < 131072, `the fill helper is ${helper.length} bytes`);
+	} finally {
+		await rm(temporary, { recursive: true, force: true });
+	}
 });
 
 test("a desktop is asked for: small machines refuse it, chosen files open on it, and pages work without a screen too", () => {
@@ -770,6 +852,113 @@ test("a desktop action on the spot the pointer is on never waits for a move that
 		"\t(( ($(date +%s%N) - pointer_started) / 1000000 < 5000 )) ||\n",
 	])
 		assert.ok(imageScript.includes(line), line);
+});
+
+test("the agent's home: Codex's own home folder is the agent account's, where the executor points CODEX_HOME", () => {
+	// lanes/agent-box-20261113/home-lxd (14 Nov 2026): on a real machine without it the exec-server warned "could not
+	// create PATH aliases" and `apply_patch` typed in its shell was "command not found"; with it, the patch applied.
+	const host = read("packages/runner-orchestrator/src/company-machine-host.ts");
+	assert.ok(host.includes("CODEX_HOME: `${CLOUD_MACHINE_HOME.home}/.codex`,"), "the executor's CODEX_HOME");
+	assert.match(read("packages/contracts/src/cloud-machine.ts"), /\thome: "\/var\/lib\/qorpera-agent",\n/);
+	// The executor runs a machine's Codex only when it is the pinned build: its sha-256 is the artifact's, the one the
+	// image takes (argument 8 is checked against the same file).
+	const pin = JSON.parse(read("deploy/first-node/native-codex/linux-x64-artifact.json")).artifact.sha256;
+	assert.match(pin, /^[0-9a-f]{64}$/);
+	assert.ok(read("packages/contracts/src/cloud-machine.ts").includes(`\tcodexSha256: "${pin}",\n`), "the executor's Codex pin");
+	const made = imageScript.indexOf("\tinstall -d -o qorpera-agent -g qorpera-agent -m 0700 /var/lib/qorpera-agent/.codex\n");
+	assert.ok(made > imageScript.indexOf("\tuseradd --uid 2000 --gid 2000 --home-dir /var/lib/qorpera-agent "), "made after the account");
+	assert.ok(
+		imageScript.includes(
+			'\t[[ $(stat -c "%U:%G %a" /var/lib/qorpera-agent/.codex) == "qorpera-agent:qorpera-agent 700" ]] ||\n',
+		),
+		"the image's own check",
+	);
+});
+
+test("the agent's home: Claude Code's file channel has sftp-server on every machine, at the path the executor runs", () => {
+	// lanes/agent-box-20261113, slice C1 (P4: Claude Code's Read/Edit/Write on the home went through OpenSSH's sftp-server
+	// in a unit of the machines' slice, as the agent's account). The executor refuses a file channel on a machine without
+	// it (HOME_SFTP_MISSING), so the image must carry it.
+	const apt = words(imageScript.match(/apt-get install -y --no-install-recommends((?:[^\n]*\\\n)*[^\n]*)/)[1]);
+	assert.ok(apt.includes("openssh-sftp-server"), "apt installs openssh-sftp-server");
+	// No daemon: nothing listens for SFTP on a machine; only the executor's unit starts it.
+	assert.ok(!apt.includes("openssh-server"), "no sshd");
+	assert.ok(read("packages/contracts/src/cloud-machine.ts").includes('\tsftpServer: "/usr/lib/openssh/sftp-server",\n'));
+	assert.ok(
+		read("packages/runner-orchestrator/src/company-machine-host.ts").includes("[CLOUD_MACHINE_HOME.sftpServer]"),
+		"the executor's unit runs that path, with no argument and no shell",
+	);
+	const check = [
+		'\t{ printf "\\000\\000\\000\\005\\001\\000\\000\\000\\003"; sleep 1; } | runuser -u qorpera-agent -- /usr/lib/openssh/sftp-server >/tmp/sftp-check.out\n',
+		'\t[[ $(head -c 9 /tmp/sftp-check.out | od -An -tx1 | tr -d " \\n") == ????????0200000003 ]] ||\n',
+	];
+	for (const line of check) assert.ok(imageScript.includes(line), line);
+	// The image's own check, run here against this computer's sftp-server where it has one (without the account
+	// switch): an SFTP version 3 answer passes it, and a program that answers anything else fails it.
+	const run = (program) =>
+		spawnSync(
+			"bash",
+			[
+				"-euo",
+				"pipefail",
+				"-c",
+				`out=$(mktemp); ${check[0].trim().replace("runuser -u qorpera-agent -- /usr/lib/openssh/sftp-server >/tmp/sftp-check.out", `${program} >"$out"`)}
+				[[ $(head -c 9 "$out" | od -An -tx1 | tr -d " \\n") == ????????0200000003 ]]; rc=$?; rm -f "$out"; exit $rc`,
+			],
+			{ encoding: "utf8" },
+		);
+	if (existsSync("/usr/lib/openssh/sftp-server")) assert.equal(run("/usr/lib/openssh/sftp-server").status, 0);
+	assert.notEqual(run("cat").status, 0);
+});
+
+test("the agent's home: every image carries the pinned Codex, and the desktop account keeps its uid", async () => {
+	// lanes/agent-box-20261113/home-image (14 Nov 2026): with the Codex optional, an image built without it looked like
+	// any other (the same bootstrapSha256) while every home on it was refused HOME_CODEX_NOT_PINNED; and the pin was read
+	// from the record's top level, where it is not, so no build got past its first lines.
+	const artifact = JSON.parse(read("deploy/first-node/native-codex/linux-x64-artifact.json")).artifact;
+	assert.match(artifact.sha256, /^[0-9a-f]{64}$/);
+	assert.ok(Number.isSafeInteger(artifact.bytes) && artifact.bytes > 0);
+	assert.ok(imageScript.includes("\nCODEX=${8:?argument 8: the pinned Codex,"), "argument 8 is required");
+	assert.ok(!imageScript.includes("${8:-"), "argument 8 has no default");
+	assert.ok(imageScript.includes('json.load(open(sys.argv[1]))["artifact"];print(a["sha256"],a["bytes"])'), "the pin is read where it is");
+	assert.ok(
+		imageScript.includes('\nlx file push "$CODEX" "$BUILDER/opt/qorpera-machine/codex" --uid 0 --gid 0 --mode 0555\n'),
+		"the Codex is always pushed, root's and 0555",
+	);
+	assert.ok(imageScript.includes('\t[[ $(stat -c "%U:%G %a" /opt/qorpera-machine/codex) == "root:root 555" &&\n'), "the image's own check");
+	assert.ok(imageScript.includes('\t\t$(sha256sum </opt/qorpera-machine/codex | cut -d" " -f1) == "$EXPECTED_CODEX_SHA256" ]] ||\n'));
+	assert.ok(imageScript.includes('EXPECTED_CODEX_SHA256="$EXPECTED_CODEX_SHA256" \\\n\tPLAYWRIGHT_VERSION='), "the checks get the pin");
+	assert.ok(imageScript.includes("codexSha256: $codexSha256,"), "the build record names the Codex");
+	// The desktop account first: useradd gives the next id above the highest in use, so an agent account made first
+	// (2000) would move the desktop's to 2001. The build prints both and refuses a moved desktop account.
+	const desktop = imageScript.indexOf("\tuseradd --create-home --shell /bin/bash --user-group desktop\n");
+	assert.ok(desktop > 0 && imageScript.indexOf("\tgroupadd --gid 2000 qorpera-agent\n") > desktop, "the agent account after the desktop's");
+	assert.ok(imageScript.indexOf("\tuseradd --uid 2000 --gid 2000 --home-dir /var/lib/qorpera-agent ") > desktop);
+	assert.ok(imageScript.includes('\techo "accounts: desktop $(id -u desktop):$(id -g desktop), qorpera-agent $(id -u qorpera-agent):$(id -g qorpera-agent)" >&2\n'));
+	assert.ok(imageScript.includes("&& $(id -u desktop) -lt 2000 ]] ||"));
+	// The script itself, up to where a build would begin: it refuses before root, a builder or a package is needed.
+	const work = await mkdtemp(join(tmpdir(), "machine-image-codex-"));
+	try {
+		const run = (...extra) =>
+			spawnSync("bash", [join(repositoryRoot, "deploy/machine/build-machine-image.sh"), work, "24.21.0", "0".repeat(64), "qorpera-build", "qorpera0", "qorpera-vm", ...extra], {
+				encoding: "utf8",
+				env: { PATH: process.env.PATH },
+			});
+		const none = run("machines");
+		assert.notEqual(none.status, 0);
+		assert.match(none.stderr, /argument 8: the pinned Codex, the build deploy\/first-node\/native-codex\/linux-x64-artifact\.json records/);
+		const missing = run("machines", join(work, "no-such-codex"));
+		assert.notEqual(missing.status, 0);
+		assert.match(missing.stderr, /argument 8 is not a file/);
+		const other = join(work, "codex");
+		await writeFile(other, "not the pinned build\n");
+		const wrong = run("machines", other);
+		assert.notEqual(wrong.status, 0);
+		assert.ok(wrong.stderr.includes(`the Codex given is not the pinned build (${artifact.sha256}, ${artifact.bytes} bytes)`), wrong.stderr);
+		assert.ok(!/no pinned Codex|Traceback/.test(`${none.stderr}${missing.stderr}${wrong.stderr}`), "the pin is read");
+	} finally {
+		await rm(work, { recursive: true, force: true });
+	}
 });
 
 test("every machine has compressed memory from its boot on and a guard at the edge of its memory", () => {
@@ -2423,7 +2612,7 @@ test("a press on the dock can steer nothing but which of three programs starts (
 	);
 	assert.match(
 		code,
-		/\nbrowser\(\) \{\n\tlocal flags=\(--start-maximized --no-first-run --no-default-browser-check --password-store=basic --disable-infobars\n\t\t--enable-unsafe-swiftshader\)\n\t\[\[ -s \$RUN\/lang \]\] && flags\+=\(--lang="\$\(<"\$RUN\/lang"\)"\)\n\tlaunch "\$CHROME" "\$\{flags\[@\]\}" "\$@"\n\}\n/,
+		/\nbrowser\(\) \{\n\tlocal flags=\(--user-data-dir="\$PROFILE" --remote-debugging-port=0 --start-maximized --no-first-run\n\t\t--no-default-browser-check --password-store=basic --disable-infobars\n\t\t--enable-unsafe-swiftshader\)\n\t\[\[ -s \$RUN\/lang \]\] && flags\+=\(--lang="\$\(<"\$RUN\/lang"\)"\)\n\tlaunch "\$CHROME" "\$\{flags\[@\]\}" "\$@"\n\}\n/,
 	);
 	for (const file of ["deploy/machine/desktop", "deploy/machine/desktop-dock-open"])
 		assert.equal(spawnSync("bash", ["-n", join(repositoryRoot, file)], { encoding: "utf8" }).status, 0, file);

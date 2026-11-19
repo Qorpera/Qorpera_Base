@@ -296,6 +296,37 @@ it("dispatches a coding session: its brief names the harness and repository, and
 	expect(Object.keys(plain.workerRequests[0] ?? {})).not.toContain("species");
 });
 
+it("dispatches a plain worker Claude Code does: its brief and request name the harness, nothing else (20260930770000)", async () => {
+	const f = await fixture({ files: { [TODO]: todoText() } });
+	const result = parse(
+		await f.workers().change({ ...DISPATCH, operationKey: "claude-1", harness: "claude-code" }, f.context),
+	);
+	expect(result).toMatchObject({ action: "dispatch", outcome: "saved" });
+	expect(result.coding).toBeUndefined();
+	expect(f.workerRequests).toEqual([expect.objectContaining({ action: "dispatch", harness: "claude-code" })]);
+	expect(Object.keys(f.workerRequests[0] ?? {})).not.toContain("species");
+	expect(Object.keys(f.workerRequests[0] ?? {})).not.toContain("repository");
+	const parsed = parseCompanyStateFile(`${FOLDER}/brief.md`, f.text(`${FOLDER}/brief.md`) ?? "");
+	expect(parsed?.ok && parsed.file).toMatchObject({
+		kind: "worker-brief",
+		species: "in-house",
+		harness: "claude-code",
+		...workerStandingTexts({ species: "in-house", access: "read", revival: "batch" }),
+	});
+	expect(parsed?.ok && Object.hasOwn(parsed.file, "repository")).toBe(false);
+});
+
+it("dispatches a plain worker a member asked Codex for: its brief and request name codex", async () => {
+	const f = await fixture({ files: { [TODO]: todoText() } });
+	const result = parse(
+		await f.workers().change({ ...DISPATCH, operationKey: "codex-1", harness: "codex" }, f.context),
+	);
+	expect(result).toMatchObject({ action: "dispatch", outcome: "saved" });
+	expect(f.workerRequests).toEqual([expect.objectContaining({ action: "dispatch", harness: "codex" })]);
+	const parsed = parseCompanyStateFile(`${FOLDER}/brief.md`, f.text(`${FOLDER}/brief.md`) ?? "");
+	expect(parsed?.ok && parsed.file).toMatchObject({ kind: "worker-brief", species: "in-house", harness: "codex" });
+});
+
 it("follows a worker up: its brief with one more follow-up, and its earlier results removed, under review", async () => {
 	const f = await fixture({
 		files: { [TODO]: todoText(), [`${FOLDER}/brief.md`]: briefText(), [`${FOLDER}/results.md`]: resultsText() },
@@ -610,16 +641,24 @@ it("routes manage_worker and report_work to the folder writer, and says how work
 		{ kind: "human", source: { kind: "input", id: f.identity.runId, occurrenceKey: "x" } } as never,
 		{ folderTodos, folderWorkers: f.workers() },
 	);
-	expect(manage?.description).toContain("status lists the workers of one todo (name its todoKey)");
-	expect(manage?.description).toContain("holds brief.md");
+	expect(manage?.description).toContain("- status: the workers of one todo (name its todoKey), newest first");
+	expect(JSON.stringify(manage?.inputSchema)).toContain("holds brief.md");
 	// Coding sessions and their archive are this company's too (C3b).
-	expect(manage?.description).toContain("A coding session is a worker with species coding");
+	expect(manage?.description).toContain(
+		"Coding sessions (species coding, with harness and repository; access stays read)",
+	);
 	// The one idle rule: a busy session keeps its machine awake and brings check-ins (20260930109000).
 	expect(manage?.description).toContain(
-		"Only a busy program keeps it awake; a session busy for hours after a turn brings you check-ins.",
+		"only a busy program keeps it awake (a session busy for hours after a turn brings you check-ins)",
 	);
-	expect(manage?.description).toContain("Actions: dispatch, status, followup, cancel, decide, archive.");
+	for (const action of ["dispatch", "status", "followup", "cancel", "decide", "archive"])
+		expect(manage?.description).toContain(`\n- ${action}: `);
 	expect(manage?.description).not.toContain("without todoKey, those of open todos");
+	// Review r1 of #1802: status needs the todoKey too (CloudFolderWorkers.status refuses without one), and the field says so.
+	expect(manage?.description).toContain(
+		"Every action takes the todo's todoKey; all but status also take operationKey and workerKey.",
+	);
+	expect(JSON.stringify(manage?.inputSchema)).toContain("every action names it, status too");
 	// The longest text a run gets: folder-v2 on a node that serves machines. The tool boundary refuses over 4096 bytes.
 	const [, withMachines] = cloudWorkerTools(
 		f.binding,
@@ -627,7 +666,8 @@ it("routes manage_worker and report_work to the folder writer, and says how work
 		{ kind: "human", source: { kind: "input", id: f.identity.runId, occurrenceKey: "x" } } as never,
 		{ machines: true, folderTodos, folderWorkers: f.workers() },
 	);
-	expect(withMachines?.description).toContain("running tests or builds on the company's machines");
+	expect(withMachines?.description).toContain("tests or builds on the company's machines");
+	expect(manage?.description).not.toContain("the company's machines");
 	expect(withMachines?.description).toContain("a session busy for hours after a turn brings you check-ins");
 	for (const tool of [manage, withMachines]) expect(Buffer.byteLength(tool!.description)).toBeLessThanOrEqual(4096);
 	// As the model sends them: JSON, without the empty context.

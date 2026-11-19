@@ -7,19 +7,17 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929024699_runtime_bundle_activation_v246.sql";
-const activationVersion = 246;
-const previousActivationVersion = 245;
-const previousActivationSha256 = "8eab2780076d59239b3102771024c9b85a67502c57462b7d262af871de7c14a3";
-// This release's own migrations, which its activation requires before it registers the bundle (v246): one entry per
-// migration, as [file name, why, SQL that is true once it is in place]. Each release states its own list here, beside its
-// version lines, when it sets them: v247 replaces these entries with the migrations v247 brings (or an empty list).
-// v247's activation already requires v246 active with its exact digest, which on a database past 20260930534000 only
-// this activation sets. v246 carries no migration of its own (company databases open to pages: #1744, #1778, and
-// #1765's words: a runtime bundle alone), so its list is empty. An entry sorting before the activation file is checked
-// on every database; one sorting after it only on a database past 20260930534000, since a fresh chain in file order
-// reaches it only after the activation (as with the guards in the activation's text below).
-const activationRequires = Object.freeze([]);
+const activation = "supabase/migrations/20260929026199_runtime_bundle_activation_v261.sql";
+const activationVersion = 261;
+const previousActivationVersion = 260;
+const previousActivationSha256 = "a6aa04f164e14df6c7550510c923919d3173cdb7a5ddcebc51d9a18b6ca3769f";
+const activationRequires = Object.freeze([
+	[
+		"20260930810000_claude_parallel_runs",
+		"#1906 (Claude parallel runs): bundle 261's Claude Code runs cannot renew (their box reaches the API host alone) and ask the vault for their login's newer version every 60 s; the renewal is the shared vault's, through 810000's lock, lease login and compare-and-swap, so bundle 261 must never run on a database without it",
+		"to_regprocedure('public.qorpera_claude_worker_run_cap()') is not null and to_regprocedure('public.qorpera_take_idle_claude_login_renewal(uuid,text)') is not null",
+	],
+]);
 const activationRequiresSql = activationRequires
 	.map(([migration, why, present]) => {
 		const always = `${migration}.sql` < activation.slice(activation.lastIndexOf("/") + 1);
@@ -41,6 +39,8 @@ export const CLOUD_RUNTIME_ENTRY_POINTS = Object.freeze({
 	"qorpera-sandbox-probe": "packages/runtime/src/cloud-runner-container-main.ts",
 	"qorpera-lxd-runner-bootstrap": "packages/runtime/src/lxd-runner-bootstrap-main.ts",
 	"qorpera-lxd-native-login-bootstrap": "packages/runtime/src/lxd-native-login-bootstrap-main.ts",
+	// The Claude Code box's shell prefix and `rg` bridge (cloud-claude-box.ts runs it inside the box by its path).
+	"qorpera-claude-home-shell": "packages/runtime/src/cloud-claude-home-shell-client.ts",
 });
 
 /** PostgreSQL jsonb::text for this generated ASCII-key/string/integer manifest.
@@ -125,6 +125,8 @@ export async function cloudRuntimeBundle(root = repository) {
 	for (const path of [
 		"deploy/first-node/native-codex/source.json", "deploy/first-node/native-codex/0001-cloud-result-fence.patch",
 		"deploy/first-node/native-codex/linux-x64-artifact.json",
+		"deploy/first-node/native-claude/linux-x64-artifact.json", "deploy/claude-box/qorpera-claude-box-stage.sh",
+		"deploy/claude-box/qorpera-claude-box-ns.apparmor",
 		"deploy/ephemeral-runner/image/run-job", "deploy/lxd-runner-guest/harness/package.json", "deploy/lxd-runner-guest/harness/package-lock.json",
 		"scripts/native-company-artifact.mjs", "scripts/package-ephemeral-runner.mjs", "scripts/generate-cloud-runtime-bundle.mjs",
 		"scripts/package-lxd-runner-guest.mjs", "scripts/package-company-computer.mjs",

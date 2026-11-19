@@ -1,6 +1,7 @@
 import { companyPathKey } from "@qorpera/cloud-client/company-state-files";
 import { type CodingSession, codingSessionGoing } from "../../cloud/coding-session.ts";
 import type { EmailDraftAction, EmailDraftContent } from "../../cloud/email-drafts.ts";
+import { questionInput } from "../../cloud/interactions.ts";
 import {
 	type InterfaceChange,
 	type InterfaceChangeSubject,
@@ -50,7 +51,7 @@ import {
 } from "../../ui/interface-change-line.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { matchesKey } from "../../ui/keys.ts";
-import { appCard, markdownBubbles } from "../../ui/markdown.ts";
+import { appCard, type LinkedSite, markdownBubbles } from "../../ui/markdown.ts";
 import { findMentions, type MentionTarget, matchTargets, mentionParts, mentionQuery } from "../../ui/mentions.ts";
 import { easing, foldFrom, leave, playOnce, reducedMotion } from "../../ui/motion.ts";
 import { presentationDay, presentationLocale, presentationTimeZone, t, timeZoneOption } from "../../ui/preferences.ts";
@@ -95,11 +96,14 @@ import {
 } from "./composer-quotes.ts";
 import { type ComputerPanel, ComputerPanels } from "./computer.ts";
 import { GroupDetails } from "./group-details.ts";
+import { pageNoteApp, pageNoteCard } from "./page-note.ts";
 import { PairTranscriptView } from "./pair-transcript.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
 import { SharedDrafts } from "./shared-drafts.ts";
 import { type AppLook, appLook } from "./shell.ts";
+import { ThreadReady } from "./thread-ready.ts";
+import { ThreadSites } from "./thread-sites.ts";
 
 /* How often the thread re-reads its coding sessions while one is still going: the
  * pill's figures follow them. Nothing is read once they all settled. */
@@ -474,6 +478,13 @@ export class ConversationView {
 	/** The day each shown moment falls on in #daysZone, so a redraw need not work it out again. */
 	readonly #days = new Map<string, string>();
 	#daysZone = "";
+	/** "A change is ready" (own code storage): a card below the thread for each project with a change ready from this
+	 * thread's agent, with What's new's own buttons (views/thread-ready.ts). Made once the company has a project that
+	 * makes a website, in an agent's thread. */
+	#ready: ThreadReady | undefined;
+	/** The company's sites, for the card of a site a message links (views/thread-sites.ts). Made once the company has a
+	 * site. */
+	#siteCards: ThreadSites | undefined;
 
 	constructor(
 		company: CompanyController,
@@ -657,7 +668,6 @@ export class ConversationView {
 			actions.sessionModel,
 			this.#notificationSignal,
 			() => this.#setSubmenu(this.#models, true),
-			() => this.#setSubmenu(this.#models, false),
 			() => this.update(),
 		);
 		this.#logins = this.#execution
@@ -717,8 +727,12 @@ export class ConversationView {
 			) {
 				event.preventDefault();
 				const page = open?.el ?? this.#menuMain;
-				const controls = [...page.querySelectorAll<HTMLButtonElement>("button:not(:disabled):not([hidden])")];
-				const current = controls.indexOf(document.activeElement as HTMLButtonElement);
+				const controls = [
+					...page.querySelectorAll<HTMLElement>(
+						'button:not(:disabled):not([hidden]), [role="slider"][tabindex="0"]:not([aria-disabled="true"])',
+					),
+				];
+				const current = controls.indexOf(document.activeElement as HTMLElement);
 				const index = matchesKey(event, "first")
 					? 0
 					: matchesKey(event, "last")
@@ -1153,6 +1167,7 @@ export class ConversationView {
 			// Already here: the click still asks for the computer (a sleeping one wakes).
 			if (shown && asked) this.#panels.open(agent, { asked });
 			(shown ?? this.#showPanel(agent, asked))?.focus();
+			this.#revealComputer();
 		}
 		return true;
 	}
@@ -1590,14 +1605,49 @@ export class ConversationView {
 		}
 	}
 
-	/** Take over the agent's computer for a card: open its screen here and take the desktop over (20260930713000). Once
-	 * the window shows the picture it enters its large view, where the picture takes the member's mouse and keyboard. */
-	#takeOver(agent: HostedStaffAgent): void {
-		// The member's own click: a window already here is asked again (computer.ts OPEN_STARTS).
+	/** The take-over card's Open computer (review r1 F1 of #1812): what its Take over did, but the hold. The agent's
+	 * computer here, asked by the member's own click (a sleeping one wakes: computer.ts OPEN_STARTS), focused, and its
+	 * large view once a picture shows, where the member uses it as it is shared. */
+	#openComputer(agent: HostedStaffAgent): void {
 		if (this.#panel) this.#panels.open(agent, { asked: true });
 		const panel = this.#panel ?? this.#showPanel(agent, true);
 		panel?.focus();
-		panel?.takeOver();
+		this.#revealComputer();
+		panel?.enterWhenShown();
+	}
+
+	/** The computer opened on the member's click (the agent card's Computer, the take-over card's Open computer): the
+	 * thread goes to where its window stands, for a click whose answer is under the fold is no answer (found on the
+	 * live app, 15 Nov 2026: the window came in at the thread's end, under the composer). A window at the thread's end
+	 * keeps the thread at its end while it grows into its place (the start scene, then the picture: the size observer
+	 * pins it); one that stands further up, where the agent left it, comes into view between the thread's top and the
+	 * foot laid over its bottom. The window takes the keyboard without a scroll of the browser's own (ComputerPanel
+	 * focus): that scroll knew nothing of the foot and left the thread just short of its end, where it no longer
+	 * followed. A window that shows by itself (#computerByItself) never moves a thread the member has scrolled. */
+	#revealComputer(): void {
+		// After the redraw that puts the row in its place (#redrawComputer's microtask, queued before this one).
+		queueMicrotask(() => {
+			const row = this.#computerRow;
+			if (this.#disposed || !this.#panel || !row.isConnected) return;
+			// The large view covers the thread from the row: nothing to bring into view.
+			if (this.#panel.el.classList.contains("is-entered")) return;
+			const followed = this.#timestampRows.some(
+				({ node }) => (row.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+			);
+			if (!followed) {
+				this.#stickToBottom = true;
+				this.#pinToBottom();
+				return;
+			}
+			const view = this.#messages.getBoundingClientRect();
+			const box = row.getBoundingClientRect();
+			const gap = 12 * uiScale();
+			const top = view.top + gap;
+			const bottom = view.bottom - this.#foot.offsetHeight - gap;
+			// Taller than the room, or above it: its top at the top. Below it: its bottom at the foot.
+			const by = box.top < top || box.height > bottom - top ? box.top - top : Math.max(0, box.bottom - bottom);
+			if (by !== 0) this.#messages.scrollTop += by;
+		});
 	}
 
 	/** The agent's computer shows here by itself while the agent works at it (20260930742000; the rules are in
@@ -1923,7 +1973,7 @@ export class ConversationView {
 		else this.#answerEmblem.style.removeProperty("--app-colour");
 		this.#answerLabel.textContent = note ? (app?.name ?? note.app) : t("Answering");
 		this.#answerQuestion.textContent = note ? note.about : (answering ?? "");
-		const stop = note ? t("Leave the app out") : t("Stop answering");
+		const stop = note?.page ? t("Leave the page out") : note ? t("Leave the app out") : t("Stop answering");
 		this.#answerStop.setAttribute("aria-label", stop);
 		this.#answerStop.title = stop;
 		this.#composer.placeholder = answering && !note ? t("Your answer…") : t("Message…");
@@ -1933,6 +1983,7 @@ export class ConversationView {
 	 * drawer draws them), with a key that changes when any of it does. */
 	#answerApp(answering: string | undefined): { name: string; look?: AppLook; key: string } | undefined {
 		const note = answering === undefined ? undefined : appNoteHeader(answering);
+		if (note?.page) return pageNoteApp(note.app);
 		const app = note && this.#company.store.get().apps?.find((entry) => entry.name === note.app);
 		if (!app?.manifest) return undefined;
 		const look = appLook(this.#company, app);
@@ -1950,6 +2001,66 @@ export class ConversationView {
 	 * is about as its line: it stands on the thread above the member's words, as an agent's message has its cards, and a
 	 * press on it opens the app. */
 	#memberParts(text: string, quotes: readonly MessageQuote[] = []): HTMLElement[] {
+		const parts = this.#memberWords(text, quotes);
+		// A site of the company the member's words link: its card under them, as under an agent's. (A message may come
+		// without text: it shows as "(empty)".)
+		if (!this.#siteCards || typeof text !== "string") return parts;
+		const sites = new Map<string, HTMLElement>();
+		for (const [href] of text.matchAll(/https:\/\/[^\s<>"'`]+/g)) {
+			const site = this.#linkedSite(href.replace(/[.,;:!?)\]]+$/, ""));
+			if (site && !sites.has(site.id)) sites.set(site.id, site.card());
+		}
+		return sites.size ? [...parts, h("div", { class: "app-cards site-cards" }, [...sites.values()])] : parts;
+	}
+
+	/** The card of the company's site a link leads to, once the thread knows the company's sites. */
+	#linkedSite(href: string): LinkedSite | undefined {
+		const cards = this.#siteCards;
+		const site = cards?.match(href);
+		return cards && site ? { id: site.id, card: () => cards.card(site) } : undefined;
+	}
+
+	/** Brings in the thread's pieces of the company's projects and sites once the company has any: the card of a change
+	 * ready from this thread's agent (not in a group chat), and the cards of sites its messages link. */
+	#threadPieces(room: boolean, known: boolean): void {
+		const company = this.#company.store.get();
+		const signal = AbortSignal.any([this.#lifetime.signal, this.#company.signal]);
+		const releases = this.#actions.codeReleases;
+		if (!this.#ready && releases && known && !room && company.whatsNew !== undefined)
+			this.#ready = new ThreadReady(this.#company, this.#sessionId, releases.client, releases.options, signal, {
+				agentId: () =>
+					this.#isRoom
+						? undefined
+						: this.#company.store.get().sessions.find((item) => item.sessionId === this.#sessionId)?.staffAgentId,
+				focusComposer: () => {
+					this.focus();
+					const end = this.#composer.value.length;
+					this.#composer.setSelectionRange(end, end);
+				},
+				shownChanged: () => this.#redrawItems(),
+				...(releases.last ? { last: releases.last } : {}),
+			});
+		this.#ready?.update();
+		const sites = this.#actions.companySites;
+		if (!this.#siteCards && sites && (company.siteCount ?? 0) > 0)
+			this.#siteCards = new ThreadSites(sites.client, sites.canManage, this.#company.profile.profileId, signal, () =>
+				this.#redrawItems(),
+			);
+		this.#siteCards?.update();
+	}
+
+	/** Draws the thread's items again, after the update that asked for it: a card came or went, or the company's sites
+	 * changed what a message's links show. */
+	#redrawItems(): void {
+		queueMicrotask(() => {
+			if (this.#disposed) return;
+			this.#renderedKey = "";
+			this.update();
+		});
+	}
+
+	/** A member's words, as #memberParts draws them before any card of a site they link. */
+	#memberWords(text: string, quotes: readonly MessageQuote[]): HTMLElement[] {
 		const reply = splitReply(text);
 		if (!reply) return [h("div", { class: "text" }, ...(text ? this.#withMentions(text, quotes) : [t("(empty)")]))];
 		const shift = [...text.slice(0, reply.start)].length;
@@ -1957,7 +2068,11 @@ export class ConversationView {
 		const note = appNoteHeader(reply.question);
 		if (note)
 			return [
-				h("div", { class: "app-cards" }, appCard(note.app, note.app, note.about)),
+				h(
+					"div",
+					{ class: "app-cards" },
+					note.page ? pageNoteCard(note.app, note.at, note.about) : appCard(note.app, note.app, note.about),
+				),
 				...(reply.text ? [h("div", { class: "text" }, ...this.#withMentions(reply.text, own))] : []),
 			];
 		return [
@@ -2149,6 +2264,7 @@ export class ConversationView {
 		this.#working = agentWorks(this.#agentState);
 		this.#waitingRun = !room && this.#company.pausedRunFor(session?.staffAgentId) !== undefined;
 		this.#renderHeader(session, agent);
+		this.#threadPieces(room, Boolean(session));
 		if (!room) this.#computerByItself(agent);
 		this.#renderHere();
 		this.#renderCodingSlots(conversation.codingSessions ?? [], agent);
@@ -2500,6 +2616,8 @@ export class ConversationView {
 			[...this.#undos],
 			// A sent message learns its input id: the element passes on by it (see `handedOver`).
 			conversation.optimistic.map((item) => item.inputId ?? null),
+			this.#ready?.shown,
+			this.#siteCards?.key,
 		]);
 		if (key === this.#renderedKey) return;
 		this.#renderedKey = key;
@@ -2615,7 +2733,9 @@ export class ConversationView {
 			// A "/name" may be a skill. (An item that arrives without text still draws, as "(empty)".)
 			const skilled = item.text?.includes("/") === true;
 			// The mention targets and skill names go in as they are, once serialized for the render.
-			const itemKey = `${JSON.stringify([item, author, mine, room, locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}`;
+			// A link may lead to one of the company's sites, whose card stands under the words: the sites as read go in too.
+			const linked = this.#siteCards && item.text?.includes("https://") ? `\n${this.#siteCards.key}` : "";
+			const itemKey = `${JSON.stringify([item, author, mine, room, locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}${linked}`;
 			const time = `${zone} ${when(item.createdAt)}`;
 			// The input this form stands for, which the next form finds it by.
 			const input = optimisticInputs.has(item.id)
@@ -2638,7 +2758,7 @@ export class ConversationView {
 				mine,
 				room,
 				{
-					body: `${JSON.stringify([item.kind, item.text, item.quotes ?? null, Boolean(item.attachmentCount), Boolean(item.erased), locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}`,
+					body: `${JSON.stringify([item.kind, item.text, item.quotes ?? null, Boolean(item.attachmentCount), Boolean(item.erased), locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}${linked}`,
 					files: JSON.stringify([
 						locale,
 						item.attachmentCount,
@@ -2908,6 +3028,7 @@ export class ConversationView {
 				const answer = item.answer ?? conversation.interactionAnswers?.[item.id.toLowerCase()];
 				const answers = canAnswer(item.actorUserId);
 				const takeOver = Boolean(agent) && item.request.surface === "takeover";
+				const address = questionInput(item.request) === "mail_address";
 				const cardKey = JSON.stringify([
 					item.request,
 					// What the card shows of an answer; the input it went out as is not shown.
@@ -2916,6 +3037,7 @@ export class ConversationView {
 					// Whose a secret saved here is: a coding value's card says which repositories get it (a role change
 					// moves it).
 					item.request.surface === "secret" ? this.#company.secretSavedForCompany(item.request) : null,
+					address ? this.#company.canChooseMailAddress() : null,
 					item.answerFailed,
 					item.chainStopped,
 					item.request.expiresAt ? Date.parse(item.request.expiresAt) <= Date.now() : false,
@@ -2986,9 +3108,9 @@ export class ConversationView {
 									: {}),
 								...(takeOver
 									? {
-											takeOver: () => {
+											openComputer: () => {
 												const current = currentAgent();
-												if (current) this.#takeOver(current);
+												if (current) this.#openComputer(current);
 											},
 										}
 									: {}),
@@ -2998,6 +3120,9 @@ export class ConversationView {
 												this.#company.provideSecret(this.#sessionId, item.id, item.request, value),
 											savesForCompany: this.#company.secretSavedForCompany(item.request),
 										}
+									: {}),
+								...(address && answers
+									? { mailAddress: this.#company.mailAddressCalls(this.#sessionId, item.id) }
 									: {}),
 							},
 						),
@@ -3038,6 +3163,9 @@ export class ConversationView {
 					h("div", { class: "conversation-note", role: "note" }, t("More saved changes wait after these.")),
 				),
 			);
+		// A change of this agent's that is ready to go live waits below them; the card draws itself in place.
+		const ready = this.#ready;
+		if (ready?.shown) nodes.push(keep("code ready", "", "", () => ready.el));
 		// Items gone from the thread, and messages whose element passed on, let what they held go.
 		const live = new Set(drawn.values());
 		for (const previous of this.#drawn.values()) if (!live.has(previous)) previous.message?.files?.view.dispose();
@@ -3065,6 +3193,7 @@ export class ConversationView {
 			!items.length &&
 			!codingSessions.length &&
 			!proposals.length &&
+			!this.#ready?.shown &&
 			!conversation.error &&
 			!this.#working &&
 			!conversation.hasEarlier
@@ -3421,7 +3550,7 @@ export class ConversationView {
 				item.erased
 					? [h("div", { class: "text" }, t("(erased)"))]
 					: item.kind === "agent"
-						? markdownBubbles(item.text)
+						? markdownBubbles(item.text, (href) => this.#linkedSite(href))
 						: item.text || !item.attachmentCount
 							? this.#memberParts(item.text, item.quotes)
 							: []
@@ -3764,7 +3893,6 @@ export class ConversationView {
 		const company = this.#company.store.get();
 		const readable = !this.#isRoom && !company.accessLost && company.team?.capabilities.read;
 		const failed = readable ? this.#company.failedRunFor(session?.staffAgentId) : undefined;
-		// A run waiting at its login's usage limit is the agent's newest work: it shows above an earlier failure.
 		const waiting = readable ? this.#company.pausedRunFor(session?.staffAgentId) : undefined;
 		if (waiting?.paused && (!failed || failed.earlier)) {
 			this.#renderWaitingRun(session, waiting.runId, waiting.paused);
@@ -3827,11 +3955,20 @@ export class ConversationView {
 			: ownPlanLimit
 				? planUsageLimitReason()
 				: recovery
-					? runFailureReason(recovery.lastError, recovery.jobStatus, recovery.usageLimit, {
-							...payer,
-							...(logins.length ? { continuable: true } : {}),
-							...(payerName ? { payerName } : {}),
-						})
+					? runFailureReason(
+							recovery.lastError,
+							recovery.jobStatus,
+							recovery.usageLimit,
+							{
+								...payer,
+								...(logins.length ? { continuable: true } : {}),
+								...(payerName ? { payerName } : {}),
+							},
+							recovery.rateLimited,
+							(recovery.sourceKind === "session_turn" || recovery.sourceKind === "room_delivery") &&
+								recovery.requestedByUserId === this.#company.userId.toLowerCase(),
+							recovery.signInRefused,
+						)
 					: undefined;
 		const continuing = this.#continuing?.runId === runId ? this.#continuing?.connectionId : undefined;
 		const continueNote = this.#continueNote?.runId === runId ? this.#continueNote?.text : undefined;
@@ -3844,7 +3981,13 @@ export class ConversationView {
 			!review &&
 			this.#company.canRetryFailedRun(failed) &&
 			recovery !== undefined &&
-			runFailureInterrupted(recovery.lastError, recovery.jobStatus, recovery.usageLimit);
+			runFailureInterrupted(
+				recovery.lastError,
+				recovery.jobStatus,
+				recovery.usageLimit,
+				recovery.rateLimited,
+				recovery.signInRefused,
+			);
 		const key = JSON.stringify([
 			runId,
 			hidden,
@@ -3954,10 +4097,6 @@ export class ConversationView {
 		}
 	}
 
-	/** The agent's run waiting at its login's usage limit (20260930703000): it goes on by itself at the reset, on the
-	 * same login. The member whose own login pays may move it now to another of theirs that can pay ("Continue with …"):
-	 * the run itself goes on there at once, from where it stopped, so it never also comes back on the old login. Anyone
-	 * else reads who can. Nothing to dismiss: the line goes when the run goes on. */
 	#renderWaitingRun(session: HostedSession | undefined, runId: string, paused: PausedRun): void {
 		const company = this.#company.store.get();
 		const agentName = this.#company.staffById(session?.staffAgentId ?? "")?.displayName ?? t("The agent");
@@ -3967,7 +4106,7 @@ export class ConversationView {
 		// resumes, never onto or off a ChatGPT plan, and only onto a login that may work while its member is away when the
 		// paying one may.
 		const logins =
-			payer?.own === true && paused.movable && !paused.paidByChatgptPlan && canWrite
+			payer?.own === true && paused.movable && !paused.rateLimited && !paused.paidByChatgptPlan && canWrite
 				? (this.#execution?.continueLogins(
 						paused.sponsorBindingId,
 						(connection) =>
@@ -3980,11 +4119,16 @@ export class ConversationView {
 				? company.team?.members.find((member) => member.userId.toLowerCase() === payerId)?.displayName
 				: undefined;
 		const title = t("{name} is waiting to go on", { name: agentName });
-		const reason = runWaitingReason(paused.until, {
-			...payer,
-			...(logins.length ? { continuable: true } : {}),
-			...(payerName ? { payerName } : {}),
-		});
+		const reason = runWaitingReason(
+			paused.until,
+			{
+				...payer,
+				...(logins.length ? { continuable: true } : {}),
+				...(payerName ? { payerName } : {}),
+			},
+			paused.rateLimited,
+			paused.signInRefused,
+		);
 		const moving = this.#continuing?.runId === runId ? this.#continuing.connectionId : undefined;
 		const note = this.#continueNote?.runId === runId ? this.#continueNote.text : undefined;
 		const key = JSON.stringify(["waiting", runId, title, reason, logins, moving, note]);

@@ -103,6 +103,8 @@ begin
 	end loop;
 	v_open := current_setting('qorpera_test.open_b')::jsonb;
 	foreach v_call in array array[
+		format('select public.qorpera_folder_authorize_object_upload(%L, %L, %L, %L, 11)', '63500000-0000-4000-8000-000000000020',
+			v::text, v_open ->> 'intentId', pg_temp.hash('unblocked 2')),
 		pg_temp.sql_confirm(v, (v_open ->> 'intentId')::uuid, 'unblocked 2'),
 		pg_temp.sql_confirm(v, (v_open ->> 'intentId')::uuid, pg_temp.manifest(array['unblocked 2'])),
 		format('select public.qorpera_folder_seal_upload(%L, %L, %L)', '63500000-0000-4000-8000-000000000020', v::text, v_open ->> 'intentId'),

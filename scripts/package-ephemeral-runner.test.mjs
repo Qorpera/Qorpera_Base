@@ -56,6 +56,7 @@ test("packages directly executable ephemeral runner bundles", async () => {
 				"qorpera-sandbox-probe.mjs",
 				"qorpera-lxd-runner-bootstrap.mjs",
 				"qorpera-lxd-native-login-bootstrap.mjs",
+				"qorpera-claude-home-shell.mjs",
 				"run-job",
 			],
 		);

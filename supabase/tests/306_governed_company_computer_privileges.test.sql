@@ -1,29 +1,10 @@
 -- Run after the Step 2 migrations, including the independent broker role.
--- A production-schema replay also exercises the retained legacy trigger.
 begin;
 
 do $$
 declare
-	v_guard regprocedure := to_regprocedure('public.qorpera_company_computer_binding_guard()');
-	v_role text;
 	v_functions text[];
 begin
-	if v_guard is not null then
-		if not exists (
-			select 1 from pg_proc where oid = v_guard and prorettype = 'trigger'::regtype
-		) then
-			raise exception 'Retained Company Computer guard changed its signature';
-		end if;
-		foreach v_role in array array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker'] loop
-			if has_function_privilege(v_role, v_guard, 'EXECUTE') then
-				raise exception 'Legacy Company Computer guard is exposed to %', v_role;
-			end if;
-		end loop;
-		if not exists (select 1 from pg_trigger where tgfoid = v_guard and not tgisinternal) then
-			raise exception 'Legacy Company Computer guard lost its existing trigger';
-		end if;
-	end if;
-
 	-- Exact signatures, not names: Step 7 added a second signature of the
 	-- capture completion (account label), and a name-only check would also pass
 	-- any other overload the broker inherited. Bundle v88 added the coding
@@ -57,6 +38,11 @@ begin
 	-- Coding value captures (20260930695000) add preparing a coding value's capture key, and reading and storing a
 	-- value a vault_capture browser call took from its service's screen, each bound to the agent's effect receipt;
 	-- 20260930698000 adds describing what the key is derived from, bound the same way.
+	-- The company's days by kind (20260930769000) add recording the leased bank sync's days, on the company's own
+	-- authority.
+	-- A Claude Code worker's run (20260930771000) adds opening its member's Claude login for that run, the vault's own
+	-- re-open of it for a seal-back, and sealing the credentials file back, each bound to the run's exact lease, its
+	-- worker and its member's Claude Code lease.
 	select array_agg(function.oid::regprocedure::text order by function.oid::regprocedure::text collate "C") into v_functions
 	from pg_proc as function
 	join pg_namespace as namespace on namespace.oid = function.pronamespace
@@ -77,12 +63,14 @@ begin
 		'qorpera_broker_principal_digital_post_syncs_due(uuid,text)',
 		'qorpera_broker_principal_event_verifications_due(uuid,text)',
 		'qorpera_claim_bank_sync(uuid,text)',
+		'qorpera_claim_claude_login_reset(uuid,text,uuid,text,uuid)',
 		'qorpera_claim_connector_token_revocations(uuid,text,integer)',
 		'qorpera_claim_digital_post_sync(uuid,text)',
 		'qorpera_claim_email_draft_action(uuid,text,uuid,text)',
 		'qorpera_claim_event_verifications(uuid,text,integer)',
 		'qorpera_commit_account_model_login_renewal(uuid,text,uuid,uuid,bigint,text,text,text,timestamp with time zone,timestamp with time zone)',
 		'qorpera_commit_chatgpt_plan_renewal(uuid,text,uuid,uuid,bigint,text,text,text,timestamp with time zone,timestamp with time zone,timestamp with time zone)',
+		'qorpera_commit_claude_login_renewal(uuid,text,uuid,uuid,bigint,text,text,text,text)',
 		'qorpera_commit_model_login_renewal(uuid,text,uuid,uuid,bigint,text,text,text,timestamp with time zone,timestamp with time zone)',
 		'qorpera_complete_account_model_login_sign_in(uuid,text,uuid,text,uuid,text,text,text,timestamp with time zone,timestamp with time zone,text,text)',
 		'qorpera_complete_chatgpt_plan_sign_in(uuid,text,uuid,text,uuid,text,text,text,timestamp with time zone,timestamp with time zone,text,text,timestamp with time zone)',
@@ -92,6 +80,7 @@ begin
 		'qorpera_complete_connector_token_revocation(uuid,text,uuid,bigint,text,text)',
 		'qorpera_complete_model_login_account_refresh(uuid,text,uuid,text)',
 		'qorpera_complete_model_login_sign_in(uuid,text,uuid,text,uuid,text,text,text,timestamp with time zone,timestamp with time zone,text,text)',
+		'qorpera_describe_claude_login_read(uuid,text,uuid,text)',
 		'qorpera_describe_cloud_secret_capture(uuid,text,uuid,text)',
 		'qorpera_describe_company_account_open(uuid,text,jsonb,uuid,text,text)',
 		'qorpera_describe_model_login_account_refresh(uuid,text,uuid,text)',
@@ -99,6 +88,7 @@ begin
 		'qorpera_describe_model_login_sign_in_v2(uuid,text,uuid,text)',
 		'qorpera_digital_post_held_among(uuid,text,uuid,bigint,uuid,jsonb)',
 		'qorpera_fill_company_account(uuid,text,jsonb,uuid,text,text)',
+		'qorpera_fill_company_account_on_machine(uuid,text,jsonb,uuid,text,text,text,uuid,uuid,text)',
 		'qorpera_fill_event_hook_secret(uuid,text,jsonb,uuid,text,text)',
 		'qorpera_finish_bank_sync(uuid,text,uuid,bigint,uuid,text,jsonb,timestamp with time zone,text,text)',
 		'qorpera_finish_chatgpt_plan_revocation(uuid,text,uuid,uuid,bigint)',
@@ -122,21 +112,30 @@ begin
 		'qorpera_model_login_broker_company(uuid,text)',
 		'qorpera_model_logins_without_account(uuid,text)',
 		'qorpera_native_binding_proven(jsonb,text)',
+		'qorpera_open_claude_login_for_run(uuid,text,jsonb)',
+		'qorpera_open_claude_login_for_run(uuid,text,jsonb,bigint)',
+		'qorpera_open_claude_login_for_seal_back(uuid,text,jsonb)',
 		'qorpera_open_company_account(uuid,text,jsonb,uuid,text,text,uuid,uuid,uuid,text,text[],text,text,uuid,text,bytea,text)',
 		'qorpera_record_account_model_login_account(uuid,text,uuid,text)',
+		'qorpera_record_bank_days(uuid,text,uuid,bigint,uuid,jsonb,date,date,jsonb)',
 		'qorpera_record_bank_transactions(uuid,text,uuid,bigint,uuid,jsonb,jsonb)',
+		'qorpera_record_claude_login_read(uuid,text,uuid,text,jsonb,jsonb,jsonb)',
 		'qorpera_record_model_login_account(uuid,text,uuid,text)',
 		'qorpera_record_model_login_account_metadata(uuid,text,uuid,text,uuid,uuid,bigint,text,jsonb,text)',
 		'qorpera_register_company_with_broker_principal(uuid,text,uuid,text)',
 		'qorpera_release_account_model_login_renewal(uuid,text,uuid,uuid,bigint,boolean,text)',
+		'qorpera_release_claude_login_renewal(uuid,text,uuid,uuid,text)',
 		'qorpera_release_model_login_renewal(uuid,text,uuid,uuid,bigint,boolean,text)',
+		'qorpera_seal_claude_login_back(uuid,text,jsonb,uuid,bigint,text,text,text,text)',
 		'qorpera_seal_digital_post_letter(uuid,text,uuid,bigint,uuid,uuid)',
 		'qorpera_set_company_account_state(uuid,text,jsonb,uuid,text,text,uuid,text)',
 		'qorpera_stage_digital_post_chunk(uuid,text,uuid,bigint,uuid,uuid,integer,integer,bytea)',
 		'qorpera_switch_off_replaced_by_account_logins(uuid,text)',
 		'qorpera_switch_off_replaced_node_logins(uuid,text)',
 		'qorpera_take_chatgpt_plan_revocation(uuid,text)',
+		'qorpera_take_claude_login_renewal(uuid,text,uuid,text)',
 		'qorpera_take_idle_account_model_login_renewal(uuid,text)',
+		'qorpera_take_idle_claude_login_renewal(uuid,text)',
 		'qorpera_take_idle_model_login_renewal(uuid,text)',
 		'qorpera_use_company_account(uuid,text,jsonb,uuid,text,text,uuid)'
 	]::text[] then

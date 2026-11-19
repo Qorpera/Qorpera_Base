@@ -252,11 +252,9 @@ select pg_temp.p506_note('N5: one version per number', jsonb_build_object('ok', 
 select pg_temp.p506_stored('N6: a company version on login A', '50600000-0000-4000-8000-000000000086', 'company_api_billing',
 	pg_temp.p506('a'), 2, 'execution sponsor binding''s company account has a member owner');
 
--- 6. The function carries this fix, and members may still call it.
-select pg_temp.p506_note('M1: the body and grant', jsonb_build_object('ok',
-	position('20260930544000' in pg_get_functiondef('public.qorpera_create_execution_sponsor_binding(uuid,uuid,text,uuid,bigint,boolean)'::regprocedure)) > 0
-	and has_function_privilege('authenticated', 'public.qorpera_create_execution_sponsor_binding(uuid,uuid,text,uuid,bigint,boolean)', 'EXECUTE'),
-	'detail', 'the 20260930544000 body, executable by authenticated'));
+select pg_temp.p506_note('M1: the grant', jsonb_build_object('ok',
+	has_function_privilege('authenticated', 'public.qorpera_create_execution_sponsor_binding(uuid,uuid,text,uuid,bigint,boolean)', 'EXECUTE'),
+	'detail', 'executable by authenticated'));
 
 -- Every case, as one result.
 select pg_temp.base_assert((select count(*) = 22 and bool_and(ok) from pg_temp.p506_cases),

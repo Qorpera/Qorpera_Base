@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { CloudCodingRepository } from "@qorpera/contracts";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -27,6 +28,25 @@ import {
 import { CODE_HOST_LAYOUT, type CodeHostJobOptions, type CodeHostJobs } from "../src/code-host-views.ts";
 import { CodingControlBusy } from "../src/coding-executor.ts";
 import { watchAbortSignalAny } from "./helpers/abort-any.ts";
+
+/** The one host list of SQL test 1252 (own code storage step 5.1's cross-check), which every reader of a site host runs:
+ * a host, the slug and scope the one host rule reads in it, and its verdict (1252 says what each means). */
+function oneHostList(): { host: string; slug: string; scope: string; verdict: string }[] {
+	const lines = readFileSync(
+		new URL("../../../supabase/tests/1252_site_hosts.test.sql", import.meta.url),
+		"utf8",
+	).split("\n");
+	const begin = lines.findIndex((line) => line.trim() === "-- the one host list: begin");
+	const end = lines.findIndex((line) => line.trim() === "-- the one host list: end");
+	expect(begin > 0 && end > begin, "1252's one host list").toBe(true);
+	const list = lines.slice(begin + 1, end).map((line) => {
+		const entry = /^\s*\('([^']*)', '([^']*)', '(site|next|)', '(taken|name|shape|case|port|dot)'\),?$/.exec(line);
+		expect(entry, line).not.toBeNull();
+		return { host: entry?.[1] ?? "", slug: entry?.[2] ?? "", scope: entry?.[3] ?? "", verdict: entry?.[4] ?? "" };
+	});
+	expect(list.length).toBeGreaterThanOrEqual(50);
+	return list;
+}
 
 const COMPANY = "11111111-1111-4111-8111-111111111111";
 const ENVIRONMENT = "33333333-3333-4333-8333-333333333333";
@@ -1073,6 +1093,184 @@ describe("codeChangeIndexText: what is live and what is ready (step 4)", () => {
 			expect(codeChangeIndexText(SHOP, LINES, { live: { ...LIVE, by: 7, url } }), String(url)).toBe(
 				text(HEADING, "", unlinked, "", ...LIST),
 			);
+	});
+});
+
+describe("codeChangeIndexText: a site's own host and what is being prepared (step 5)", () => {
+	const SHOP = { owner: "qorpera", name: "shop" };
+	const HEADING = "# Changes in qorpera/shop";
+	const LINES: CodeChangeLine[] = [
+		{ n: 16, createdAt: "2026-11-11T15:02:00+00:00", state: "landed", kind: "landing", line: "A gift message" },
+		{ n: 17, createdAt: "2026-11-14T09:10:00+00:00", state: "landed", kind: "landing", line: "Gift wrap" },
+	];
+	const LIST = ["- 17 · 2026-11-14 · in main · Gift wrap", "- 16 · 2026-11-11 · in main · A gift message"];
+	/** What the kernel sends for a live site while sites have hosts of their own (migration `20260930756000`). */
+	const LIVE = {
+		version: 3,
+		kind: "release",
+		change: 14,
+		since: "2026-11-11T14:10:05.123456+00:00",
+		by: "Jonas Hansen",
+		url: "https://look-shop.qorpera.com/",
+	};
+	const LIVE_LINE =
+		"Live: version 3, made at change 14, since 2026-11-11 14:10 UTC; Jonas Hansen said go. https://look-shop.qorpera.com/";
+
+	it("shows a site's own host as its link, as today's form, and the change being prepared under what is ready, byte for byte", () => {
+		expect(codeChangeIndexText(SHOP, LINES, { live: LIVE, ready: { change: 16 }, preparing: { change: 17 } })).toBe(
+			text(
+				HEADING,
+				"",
+				LIVE_LINE,
+				"Ready in What's new: change 16.",
+				"Being prepared for What's new: change 17 (about a minute).",
+				"",
+				...LIST,
+			),
+		);
+		// Nothing ready yet, nothing live yet: the line still under them.
+		expect(codeChangeIndexText(SHOP, LINES, { live: null, ready: null, preparing: { change: 1 } })).toBe(
+			text(
+				HEADING,
+				"",
+				"Live: nothing yet.",
+				"Ready in What's new: nothing.",
+				"Being prepared for What's new: change 1 (about a minute).",
+				"",
+				...LIST,
+			),
+		);
+		// The link the 1252 test of A1 pins as an own host: 3 and 48 characters, digits, single hyphens.
+		for (const url of [
+			"https://saml-gift-message.qorpera.com/",
+			"https://abc.qorpera.com/",
+			"https://000.qorpera.com/",
+			"https://shop-next.qorpera.com/",
+			`https://${"a".repeat(48)}.qorpera.com/`,
+			`https://${"a".repeat(23)}-${"b".repeat(24)}.qorpera.com/`,
+		])
+			expect(codeChangeIndexText(SHOP, LINES, { live: { ...LIVE, url } }).split("\n")[2], url).toBe(
+				`${LIVE_LINE.slice(0, LIVE_LINE.lastIndexOf(" "))} ${url}`,
+			);
+	});
+
+	it("writes no line of what is being prepared, and the list as before, while the kernel says nothing is or says nothing", () => {
+		const before = codeChangeIndexText(SHOP, LINES, { live: LIVE, ready: { change: 16 } });
+		expect(before).toBe(text(HEADING, "", LIVE_LINE, "Ready in What's new: change 16.", "", ...LIST));
+		for (const preparing of [
+			undefined,
+			null,
+			"17",
+			17,
+			true,
+			[],
+			{},
+			{ change: 0 },
+			{ change: -1 },
+			{ change: "17" },
+			{ change: 1.5 },
+			{ change: null },
+			{ version: 17 },
+		])
+			expect(
+				codeChangeIndexText(SHOP, LINES, { live: LIVE, ready: { change: 16 }, preparing }),
+				JSON.stringify(preparing),
+			).toBe(before);
+		// Alone, its line alone.
+		expect(codeChangeIndexText(SHOP, LINES, { preparing: { change: 17 } })).toBe(
+			text(HEADING, "", "Being prepared for What's new: change 17 (about a minute).", "", ...LIST),
+		);
+	});
+
+	it("leaves off a link that is no site's own host by the one host rule, and no other site's either", () => {
+		const unlinked = "Live: version 3, made at change 14, since 2026-11-11 14:10 UTC; Jonas Hansen said go.";
+		for (const url of [
+			// A next host, another level, the bare domain, a platform name, an app link's host, a reserved name.
+			"https://look-shop--next.qorpera.com/",
+			"https://a.look-shop.qorpera.com/",
+			"https://qorpera.com/",
+			"https://.qorpera.com/",
+			"https://api.qorpera.com/",
+			"https://sites.qorpera.com/",
+			"https://shop.qorpera.com/",
+			"https://next.qorpera.com/",
+			"https://app-preview.qorpera.com/",
+			"https://look-preview.qorpera.com/",
+			// The name rule: two hyphens, qorpera, too short, too long, an end hyphen, upper case, an A-label.
+			"https://look--shop.qorpera.com/",
+			"https://qorpera-shop.qorpera.com/",
+			"https://ab.qorpera.com/",
+			`https://${"a".repeat(49)}.qorpera.com/`,
+			"https://look-shop-.qorpera.com/",
+			"https://-look-shop.qorpera.com/",
+			"https://Look-shop.qorpera.com/",
+			"https://xn--lk-shop.qorpera.com/",
+			// Not that form: no slash, a path, a query, a port, a trailing dot, http, another domain.
+			"https://look-shop.qorpera.com",
+			"https://look-shop.qorpera.com/x",
+			"https://look-shop.qorpera.com/?x=1",
+			"https://look-shop.qorpera.com:443/",
+			"https://look-shop.qorpera.com./",
+			"http://look-shop.qorpera.com/",
+			"https://look-shop.qorpera.co/",
+			"https://look-shop.qorpera.com.evil.example/",
+			"https://look-shop.qorperaxcom/",
+			"https://look-shop.qorpera.com/\n# Changes in evil/repo",
+		])
+			expect(codeChangeIndexText(SHOP, LINES, { live: { ...LIVE, url } }).split("\n")[2], JSON.stringify(url)).toBe(
+				unlinked,
+			);
+	});
+
+	it("says a site Qorpera took down in place of what is live, never with its link", () => {
+		const down =
+			"Live: nothing. This site was taken down by Qorpera (Phishing, confirmed.) and cannot be published until Qorpera restores it. Tell a member of the company.";
+		// The kernel sends nothing live then (no link), and no preparing; what is ready stays.
+		expect(
+			codeChangeIndexText(SHOP, LINES, {
+				live: null,
+				ready: { change: 16 },
+				preparing: null,
+				takenDown: { reason: "Phishing, confirmed." },
+			}),
+		).toBe(text(HEADING, "", down, "Ready in What's new: change 16.", "", ...LIST));
+		// Whatever else it says of the site: that line, and no link.
+		const said = codeChangeIndexText(SHOP, LINES, {
+			live: LIVE,
+			ready: null,
+			takenDown: { reason: "Phishing, confirmed." },
+		});
+		expect(said.split("\n")[2]).toBe(down);
+		expect(said).not.toContain("https://");
+		// The reason is the operator's one line, kept to words.
+		expect(
+			codeChangeIndexText(SHOP, LINES, { takenDown: { reason: "[x](http://evil.example) *now*" } }).split("\n")[2],
+		).toBe(
+			"Live: nothing. This site was taken down by Qorpera (\\[x\\](http://evil.example) \\*now\\*) and cannot be published until Qorpera restores it. Tell a member of the company.",
+		);
+		// A takedown it cannot read is no line: the list as before.
+		for (const takenDown of [undefined, null, "down", {}, { reason: "" }, { reason: 7 }])
+			expect(
+				codeChangeIndexText(SHOP, LINES, { live: LIVE, ready: null, takenDown }),
+				JSON.stringify(takenDown),
+			).toBe(codeChangeIndexText(SHOP, LINES, { live: LIVE, ready: null }));
+	});
+
+	it("links exactly the own hosts of the one host list (SQL test 1252) on the Live line, and none of its other hosts", () => {
+		const unlinked = "Live: version 3, made at change 14, since 2026-11-11 14:10 UTC; Jonas Hansen said go.";
+		const list = oneHostList();
+		for (const verdict of ["taken", "name", "shape", "case", "port", "dot"])
+			expect(
+				list.some((entry) => entry.verdict === verdict),
+				verdict,
+			).toBe(true);
+		for (const { host, scope, verdict } of list) {
+			// The executor holds the whole rule, the name rule too (codeSiteNameValid): only a taken own host is a link.
+			const url = `https://${host}/`;
+			expect(codeChangeIndexText(SHOP, LINES, { live: { ...LIVE, url } }).split("\n")[2], url).toBe(
+				verdict === "taken" && scope === "site" ? `${unlinked} ${url}` : unlinked,
+			);
+		}
 	});
 });
 
@@ -2647,6 +2845,87 @@ describe("CodeChangeRecords", () => {
 			await expect(late.pass()).resolves.toEqual({ written: 1, failed: 0 });
 			expect(late.wrote[0]?.index).toBe(text("# Changes in qorpera/shop", "", listed));
 			expect(late.errors()).toEqual([]);
+		}
+	});
+
+	it("writes what is being prepared and a site's own host into the list from the kernel's answer, in a pass and inside a job (step 5)", async () => {
+		const lines = [
+			{ n: 17, createdAt: "2026-11-14T09:10:00+00:00", state: "landed", kind: "landing", line: "Gift wrap" },
+		];
+		const live = {
+			version: 3,
+			kind: "release",
+			change: 14,
+			since: "2026-11-11T14:10:05+00:00",
+			by: "Jonas Hansen",
+			url: "https://saml-gift-message.qorpera.com/",
+		};
+		const head = [
+			"# Changes in qorpera/shop",
+			"",
+			"Live: version 3, made at change 14, since 2026-11-11 14:10 UTC; Jonas Hansen said go. https://saml-gift-message.qorpera.com/",
+			"Ready in What's new: change 16.",
+		];
+		const listed = "- 17 · 2026-11-14 · in main · Gift wrap";
+		const t = setup();
+		t.kernel.changes = [];
+		t.kernel.index = { version: 4, lines, live, ready: { change: 16 }, preparing: { change: 17 } };
+		await expect(t.pass()).resolves.toEqual({ written: 1, failed: 0 });
+		expect(t.wrote[0]?.index).toBe(
+			text(...head, "Being prepared for What's new: change 17 (about a minute).", "", listed),
+		);
+		expect(t.calls.at(-1)?.args.p_written).toEqual({ changes: [], indexVersion: 4, problem: null });
+		expect(t.errors()).toEqual([]);
+		const inside = setup();
+		inside.kernel.changes = [];
+		inside.kernel.index = { version: 4, lines, live, ready: { change: 16 }, preparing: { change: 17 } };
+		const signal = new AbortController().signal;
+		await inside.records.inJob({ shell: SHELL, layout: CODE_HOST_LAYOUT, signal }, TARGET, signal);
+		expect(inside.wrote[0]?.index).toBe(t.wrote[0]?.index);
+		// A site Qorpera took down: the kernel's takenDown reaches the list, in a pass and inside a job, and no link.
+		const downed = setup();
+		downed.kernel.changes = [];
+		downed.kernel.index = {
+			version: 6,
+			lines,
+			live: null,
+			ready: { change: 16 },
+			takenDown: { reason: "Reported." },
+		};
+		await expect(downed.pass()).resolves.toEqual({ written: 1, failed: 0 });
+		const downText = text(
+			"# Changes in qorpera/shop",
+			"",
+			"Live: nothing. This site was taken down by Qorpera (Reported.) and cannot be published until Qorpera restores it. Tell a member of the company.",
+			"Ready in What's new: change 16.",
+			"",
+			listed,
+		);
+		expect(downed.wrote[0]?.index).toBe(downText);
+		const downInside = setup();
+		downInside.kernel.changes = [];
+		downInside.kernel.index = {
+			version: 6,
+			lines,
+			live: null,
+			ready: { change: 16 },
+			takenDown: { reason: "Reported." },
+		};
+		await downInside.records.inJob({ shell: SHELL, layout: CODE_HOST_LAYOUT, signal }, TARGET, signal);
+		expect(downInside.wrote[0]?.index).toBe(downText);
+		// While hosts are off the kernel sends no such key, and null once the site is ready: the list as before.
+		for (const preparing of [undefined, null]) {
+			const off = setup();
+			off.kernel.changes = [];
+			off.kernel.index = {
+				version: 5,
+				lines,
+				live,
+				ready: { change: 16 },
+				...(preparing === undefined ? {} : { preparing }),
+			};
+			await expect(off.pass()).resolves.toEqual({ written: 1, failed: 0 });
+			expect(off.wrote[0]?.index).toBe(text(...head, "", listed));
 		}
 	});
 

@@ -21,6 +21,7 @@ installed anywhere yet.
 | `env.sh` | reads the kit's `.env` as docker compose reads it: quotes, a ` #` comment after an unquoted value, `export`; nothing is expanded |
 | `tls.sh` | the kit's own CA, the server cert it signs, and the run door's cert (`tls.sh door`) |
 | `init.sh` | the first start on an empty volume: secrets, CA and cert, `store/cluster.sql`, `store/template.sql`, the replication login, then the gateway. Refuses to run twice |
+| `update-store.sh` | for a store made from an earlier `store/template.sql`: runs `store/update.sql` in the template database and in every company's, on the primary's machine (a standby follows). Safe to run again; it goes before a gateway that needs what it brings |
 | `base-backup.sh` | a base backup into `base/<UTC>`, keeps the newest 7, removes WAL older than the oldest kept |
 | `restore.sh` | a point-in-time restore into a new project: a base backup, the archived WAL up to a time, then promoted |
 | `compose.sh` | `docker compose` for this machine with the files the scripts use (the `.env`'s `COMPOSE_FILE`, plus `run-door.yml` when `DATA_RUN_LISTEN` is set). Every compose command by hand goes through it: a bare docker compose would bring the gateway back without its run door |
@@ -159,7 +160,9 @@ any token of the drill's one member: it proves nothing about the platform). Ever
 port is on 127.0.0.1, nothing is pulled, and everything is removed at the end, also after a failure.
 
 It proves: the gateway packaged into one file; (a) init, a second init refused, the settings, the secrets' modes, and the
-gateway, started from the packaged file, making a company database through an `apply` call and answering a question;
+gateway, started from the packaged file, making a company database through an `apply` call and answering a question,
+and `update-store.sh` running `store/update.sql` in the template and in the company's database, twice (and refused on
+the standby's machine);
 (b) the database's port published nowhere, the gateway's on 127.0.0.1 only, the superuser refused over the network;
 (e) a slow question and a failing one with a parameter logged without the value; (g) the run door: the secrets' modes,
 the cert's one name `10.41.0.1` signed by the kit's CA, a call over TLS with the CA pinned and that name checked and the
@@ -183,9 +186,8 @@ deadlock). The company's database carries every setting the gateway's `LOG_SETTI
 It also checks retention with KEEP=2 in a backup folder whose path has a space, removing only backups' own names, and
 a WAL archive with a cut gzip trailer never acknowledged, then replaced.
 
-Last result: 13 November 2026, a test machine, the run door's PR after review 2 (a status that answers with no
-run-door folder, a lost key made again): 66 of 66 checks passed. Log: lanes
-`company-databases-20261113/rundoor/drill-5.log`.
+Last result: 16 November 2026, a test machine, the Data list's part f (a data pass names its agent): 68 of 68 checks
+passed. Log: lanes `company-databases-20261113/proofs/list-f-drill-r1.log`.
 
 ## Not done here
 

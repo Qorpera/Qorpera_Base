@@ -498,6 +498,7 @@ describe("ephemeral cloud runner worker", () => {
 			["NATIVE_COMPANY_CONTEXT:TRANSPORT_UNAVAILABLE", true],
 			["NATIVE_EXECUTION_ADMISSION:TIMEOUT", true],
 			["NATIVE_CODEX_THREAD_START:TRANSPORT_UNAVAILABLE", true],
+			["NATIVE_BRIDGE_CONNECTION:TRANSPORT_UNAVAILABLE", true],
 			["NATIVE_NATIVE_TOOLS:TIMEOUT", false],
 			["NATIVE_CODEX_TURN_START:TIMEOUT", false],
 			["NATIVE_CODEX_TURN_COMPLETION:TRANSPORT_UNAVAILABLE", false],
@@ -507,6 +508,7 @@ describe("ephemeral cloud runner worker", () => {
 			["NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED", false],
 			["NATIVE_CODING_SESSION:TIMEOUT", false],
 			["NATIVE_CODING_SESSION:TRANSPORT_UNAVAILABLE", false],
+			["NATIVE_CLAUDE_WORKER:UNKNOWN", false],
 			["AGENT_TURN_ENDED_WITHOUT_FINAL_SEND", false],
 		] as const) {
 			const service = new RunnerService();

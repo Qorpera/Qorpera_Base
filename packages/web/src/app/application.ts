@@ -1,20 +1,18 @@
 import type { User } from "@supabase/supabase-js";
 import { CloudApi } from "../cloud/api.ts";
 import { forgetChatGptPlanSignIn, takeChatGptPlanReturn } from "../cloud/chatgpt-plan-sign-in.ts";
-import { type Cloud, CloudRpcError, describeError } from "../cloud/client.ts";
+import { type Cloud, CloudRpcError, describeError, translateCloudErrors } from "../cloud/client.ts";
 import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
 import { createWebConnectors, takeConnectorReturn } from "../cloud/connectors.ts";
 import { createDigitalPostKeys, readDigitalPost } from "../cloud/digital-post.ts";
 import { createWebEventHooks } from "../cloud/event-hooks.ts";
-import { interfaceOfferCalls } from "../cloud/interface-offers.ts";
 import { interfacePageCalls } from "../cloud/interface-pages.ts";
-import { interfaceSupervisionCalls } from "../cloud/interface-supervisions.ts";
 import { createWebMemberNotifications } from "../cloud/member-notifications.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
-import { codeReleaseCalls } from "../cloud/releases.ts";
+import { type CodeReleases, codeReleaseCalls } from "../cloud/releases.ts";
 import { createWebRoutines } from "../cloud/routines.ts";
 import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
@@ -26,6 +24,7 @@ import type { HostedProfile } from "../cloud/types.ts";
 import { agentFigure, nativeColorOf } from "../ui/avatar.ts";
 import { watchBrowserBar } from "../ui/browser-bar.ts";
 import { companyLogos, setCompanyLogos } from "../ui/company-logos.ts";
+import { companyInSentence, companyNameText } from "../ui/company-name.ts";
 import { button, h, notice, replace } from "../ui/dom.ts";
 import { type InteractionCardApp, refreshAppPreviews } from "../ui/interaction-card.ts";
 import { interfaceEmblem } from "../ui/interface-emblem.ts";
@@ -38,19 +37,22 @@ import { AgentNotes } from "./agent-notes.ts";
 import type { AppTellSource, HeldNote } from "./app-actions.ts";
 import { AuthController, displayName } from "./auth.ts";
 import { agentWorks, CompanyController } from "./company.ts";
+import { CompanyDatabases } from "./company-data.ts";
 import { CompanyLogos } from "./company-logos.ts";
 import { CompanyMail } from "./company-mail.ts";
+import { CompanyReading, readCompanyStanding } from "./company-reading.ts";
+import { DATA_PAGE, wantDataList } from "./data-page.ts";
 import { folderImageReader } from "./folder-images.ts";
 import { FoundingController } from "./founding.ts";
 import { type CompanyApp, CompanyApps, CompanyData, companyConcepts, sharedFolderHints } from "./interface-apps.ts";
 import { CompanyInterfaceFolder } from "./interface-folder.ts";
-import { CompanyInterfaceOffers } from "./interface-offers.ts";
 import { CompanyInterfacePages } from "./interface-pages.ts";
 import { pagesOn } from "./interfaces.ts";
 import { MemberPictures } from "./member-pictures.ts";
 import { newVersionNotice, runningBuildFiles, watchNewVersion } from "./new-version.ts";
 import { watchOnline } from "./online-mark.ts";
 import { OpenQuestions } from "./open-questions.ts";
+import { type CompanyReleaseReads, companyReleaseReads } from "./release-reads.ts";
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
@@ -62,6 +64,7 @@ import { AgentDetails } from "./views/agent-details.ts";
 import { savedAgentDraft } from "./views/agent-edits.ts";
 import { AppPanel, type AppPanelHost, type SidePanelTarget, sameTarget } from "./views/app-panel.ts";
 import { noteBankReturn } from "./views/bank.ts";
+import { chooseInCompanyFolder } from "./views/company-folder-choose.ts";
 import { ComputerPanels } from "./views/computer.ts";
 import { ConceptsView } from "./views/concepts.ts";
 import { type AgentPage, ConversationView } from "./views/conversation.ts";
@@ -82,6 +85,7 @@ import {
 	type Viewer,
 } from "./views/new-company.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
+import { NewProgramPage, type ProgramAddHost } from "./views/program-add.ts";
 import type { QuestionDockHost } from "./views/question-dock.ts";
 import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { finishPlanSignIn, memberPlanSignIn } from "./views/settings-connections.ts";
@@ -89,6 +93,7 @@ import { MyGoodWillView, takeGoodWillReturn } from "./views/settings-good-will.t
 import { SitesView } from "./views/settings-sites.ts";
 import { appLook, renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
+import { landStartCrown, settleStartCrown } from "./views/start-crown.ts";
 import { renderTeam, type TeamFeedback } from "./views/team.ts";
 import { liveVersions, WhatsNewView, whatsNewEntry } from "./views/whats-new.ts";
 import type { WorkspaceActions } from "./workspace-actions.ts";
@@ -120,6 +125,7 @@ export function mountApplication(
 	api = new CloudApi(cloud),
 	workspaceActions: WorkspaceActions = {},
 ): () => void {
+	translateCloudErrors(t);
 	const auth = new AuthController(cloud);
 	let hub = new HubController(api);
 	/** The founding table on screen, if any; one at a time, like the company. */
@@ -302,6 +308,14 @@ export function mountApplication(
 	// stays where it was below Settings. Storage answers the links in the documents it shows itself. An app's link or
 	// card, in a message or in a choice, opens the app's page.
 	function onFolderLink(event: MouseEvent): void {
+		const page = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-open-page]") : null;
+		if (page?.dataset.openPage && company && !event.defaultPrevented) {
+			event.preventDefault();
+			const profileId = company.profile.profileId;
+			wantDataList(profileId, page.dataset.openAt);
+			navigate({ name: "company", profileId, section: "interface", id: page.dataset.openPage });
+			return;
+		}
 		const app = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-app-name]") : null;
 		if (app?.dataset.appName && !event.defaultPrevented) {
 			event.preventDefault();
@@ -450,10 +464,9 @@ export function mountApplication(
 	let notices: ExecutionNotices | undefined;
 	/** Which of the open company's two pages are on (Interfaces C6a), read with its folder. */
 	let interfacePages: CompanyInterfacePages | undefined;
+	let companyDatabases: CompanyDatabases | undefined;
 	/** What the open company's pages read from its folder, its tables and files, followed there (Interfaces step I7). */
 	let interfaceFolder: CompanyInterfaceFolder | undefined;
-	/** The company's open offers of claimed cells, read with its interfaces (Interfaces step I9c). */
-	let interfaceOffers: CompanyInterfaceOffers | undefined;
 	/** The agents' interface apps in the open company's folder, followed there (RUNTIME-INTERFACE-APPS.md §4). */
 	let companyApps: CompanyApps | undefined;
 	/** The agents' next runs for the rail's line under each name (app/agent-notes.ts), while the company is open. */
@@ -477,6 +490,7 @@ export function mountApplication(
 	let whatsNewPage:
 		| { readonly company: CompanyController; readonly view: WhatsNewView; readonly el: HTMLElement }
 		| undefined;
+	let newProgramPage: { readonly company: CompanyController; readonly view: NewProgramPage } | undefined;
 	let releasesRead: CompanyController | undefined;
 	/** The open company's mail as the member reads it, for the Mailbox page (Interfaces step I5c). */
 	let mail: CompanyMail | undefined;
@@ -489,6 +503,24 @@ export function mountApplication(
 	let agentCard: AgentDetails | GroupDetails | undefined;
 	let agentPage: { agentId: string; page: AgentPage; until: number } | undefined;
 	const cardImages = new WeakMap<CompanyController, ReturnType<typeof folderImageReader>>();
+	/** Each company's What's new reads and writes, as the apps drawer, What's new's page and the threads' "a change is
+	 * ready" cards make them: numbered as they start, one shared read out at a time for the drawer and the threads, never
+	 * across a write from any of them, and the latest-started answer as the company's last read (app/release-reads.ts). */
+	const releaseReads = new WeakMap<CompanyController, CompanyReleaseReads>();
+	const companyReleases = (controller: CompanyController): CompanyReleaseReads => {
+		let reads = releaseReads.get(controller);
+		if (!reads) {
+			reads = companyReleaseReads(codeReleaseCalls(cloud, controller.profile.profileId), controller.signal);
+			releaseReads.set(controller, reads);
+		}
+		return reads;
+	};
+	/** The drawer's entry and the versions the Sites page names, from the company's latest-started read that answered:
+	 * an answer that comes back after a newer one changes neither. `read` stands in until one did. */
+	const showReleases = (controller: CompanyController, read: CodeReleases) => {
+		const newest = companyReleases(controller).last ?? read;
+		controller.store.set({ whatsNew: whatsNewEntry(controller, newest), siteVersions: liveVersions(newest) });
+	};
 	/** Each company's open questions for its app pages and Concepts viewer, read only while one is on screen. */
 	const appQuestions = new WeakMap<CompanyController, OpenQuestions>();
 	/** Each company's databases for its app pages: one held watch call for all of them, while the company is open. */
@@ -499,6 +531,9 @@ export function mountApplication(
 		CompanyController,
 		{ readonly notes: Map<string, HeldNote>; readonly back: Map<string, () => void> }
 	>();
+	const askAccounts = new WeakMap<CompanyController, TellAccounts>();
+	/** Each company's reading of itself for its app pages that read `reading` (the map kit), while the company is open. */
+	const appReading = new WeakMap<CompanyController, CompanyReading>();
 	let newConversation: NewConversationView | undefined;
 	let startingSession: { sessionId: string } | undefined;
 	let profiles: HostedProfile[] = [];
@@ -631,6 +666,8 @@ export function mountApplication(
 		sitesPage = undefined;
 		whatsNewPage?.view.dispose();
 		whatsNewPage = undefined;
+		newProgramPage?.view.dispose();
+		newProgramPage = undefined;
 		if (newConversation && !newConversation.hasInput) {
 			newConversation.dispose();
 			newConversation = undefined;
@@ -644,10 +681,10 @@ export function mountApplication(
 		notices = undefined;
 		interfacePages?.dispose();
 		interfacePages = undefined;
+		companyDatabases?.dispose();
+		companyDatabases = undefined;
 		interfaceFolder?.dispose();
 		interfaceFolder = undefined;
-		interfaceOffers?.dispose();
-		interfaceOffers = undefined;
 		companyApps?.dispose();
 		companyApps = undefined;
 		agentNotes?.dispose();
@@ -656,6 +693,8 @@ export function mountApplication(
 		appPage?.dispose();
 		appPage = undefined;
 		appReturn = undefined;
+		newProgramPage?.view.dispose();
+		newProgramPage = undefined;
 		conceptsView?.dispose();
 		conceptsView = undefined;
 		mail?.dispose();
@@ -820,6 +859,36 @@ export function mountApplication(
 				hints: (listener) => controller.onInvalidate(listener),
 				// The machine's clock and backdrop follow the company's time zone (20260930739000).
 				timeZone: () => controller.store.get().team?.timeZone,
+				// The company's apps a member may open on a computer (20260930758000): each by its name, its entry page's
+				// folder when the page is its index.html (the helper serves the folder), else the page itself.
+				apps: () =>
+					controller.store
+						.get()
+						.apps?.filter((app) => app.manifest !== null && app.manifest.kit !== "program")
+						.map((app) => ({
+							name: app.manifest?.name ?? app.name,
+							path:
+								app.manifest === null || app.manifest.entry === "index.html"
+									? app.path
+									: `${app.path}/${app.manifest.entry}`,
+						})),
+				// Open's "A file…": the company folder's own browser in choose mode, read as the member.
+				chooseFile: (signal) => {
+					const role = controller.store.get().team?.role;
+					if (!role) return Promise.resolve(null);
+					return chooseInCompanyFolder(
+						new WebCompanyFiles(cloud, profile, userId, role, controller.signal, () => {
+							if (
+								disposed ||
+								company !== controller ||
+								auth.userId !== userId ||
+								controller.store.get().accessLost
+							)
+								throw new Error(t("Company access changed."));
+						}),
+						signal,
+					);
+				},
 			});
 			unsubscribeCompany = controller.store.subscribe(() => render());
 			void controller.start();
@@ -895,6 +964,7 @@ export function mountApplication(
 
 	async function draw(): Promise<void> {
 		if (disposed) return;
+		settleStartCrown();
 		const current = captureRoute();
 		const authState = auth.store.get();
 		if (!authState.ready) {
@@ -958,8 +1028,10 @@ export function mountApplication(
 							const currentHub = hub;
 							void currentHub.refreshAfter().then(() => {
 								if (disposed || hub !== currentHub || location.hash !== page) return;
-								if (currentHub.store.get().profiles.some((item) => item.profileId === profileId))
+								if (currentHub.store.get().profiles.some((item) => item.profileId === profileId)) {
+									landStartCrown();
 									navigate({ name: "company", profileId, section: "home" }, true);
+								}
 							});
 						},
 					});
@@ -980,21 +1052,6 @@ export function mountApplication(
 				founding.view.update();
 			} else if (route.name === "account") {
 				const revision = accountRevision;
-				if (!accountState.loading && !accountState.loaded) {
-					accountState.loading = true;
-					void api
-						.getAccountEntitlement()
-						.then((entitlement) => {
-							if (disposed || accountRevision !== revision) return;
-							accountState = { ...accountState, loading: false, loaded: true, entitlement };
-							render();
-						})
-						.catch((error) => {
-							if (disposed || accountRevision !== revision) return;
-							accountState = { ...accountState, loading: false, loaded: true, error: describeError(error) };
-							render();
-						});
-				}
 				renderAccount(auth, main, accountState, (next) => {
 					if (disposed || accountRevision !== revision) return;
 					accountState = { ...accountState, ...next };
@@ -1216,7 +1273,66 @@ export function mountApplication(
 				},
 			};
 		};
+		// The company's reading of itself, its agents and its standing, for a page that reads `reading`
+		// (app/company-reading.ts): read as the member, handed over as plain names.
+		const readingHost = (): CompanyReading => {
+			let reading = appReading.get(controller);
+			if (!reading) {
+				reading = new CompanyReading(
+					{
+						folder: () => memberFolder(companyCurrent, t("Company access changed.")),
+						people: () => {
+							const state = controller.store.get();
+							return {
+								staff: state.staff,
+								working: (agentId) => agentWorks(controller.agentState(agentId)),
+								cofounderId: controller.cofounderId(),
+								members: state.team?.members ?? [],
+								viewer: controller.userId,
+							};
+						},
+						standing: () => readCompanyStanding(cloud, controller.profile.profileId),
+					},
+					controller.signal,
+				);
+				appReading.set(controller, reading);
+			}
+			return reading;
+		};
+		const cofounderFigure = (className: string) =>
+			agentFigure(
+				controller.staffById(controller.cofounderId()) ?? {
+					id: "",
+					displayName: "Co-Founder",
+					appearance: { color: "", shape: "" },
+					templateId: "co-founder",
+				},
+				"Co-Founder",
+				{ size: 96, className },
+			);
+		const memberFirstName = (userId: string) => {
+			const member = controller.store.get().team?.members.find((each) => each.userId === userId);
+			const name = member ? member.displayName || member.email : "";
+			return name ? (name.split(/\s+/)[0] ?? name) : null;
+		};
+		const programAdds = (): ProgramAddHost => ({
+			writer: () => memberFolder(companyCurrent, t("Company access changed.")),
+			userId: controller.userId,
+			canWrite: () => controller.store.get().team?.capabilities.write === true,
+			companyName: () => companyInSentence(controller.profile.profileName),
+			appNames: () => (companyApps?.apps ?? []).map((app) => app.name),
+			opened: (folder) => {
+				try {
+					companyCurrent();
+				} catch {
+					return;
+				}
+				navigate({ name: "company", profileId: controller.profile.profileId, section: "app", id: folder }, true);
+			},
+			cofounder: () => cofounderFigure("program-say-figure"),
+		});
 		const panelHost = (beside: boolean): AppPanelHost => ({
+			programs: { userId: controller.userId, memberName: memberFirstName, adds: programAdds() },
 			folder: () => memberFolder(companyCurrent, t("Company access changed.")),
 			agents: () =>
 				controller.store
@@ -1230,6 +1346,7 @@ export function mountApplication(
 							working: agentWorks(now),
 						};
 					}),
+			reading: readingHost(),
 			readApps: () => companyApps?.read() ?? Promise.resolve([]),
 			apps: () => companyApps?.apps ?? [],
 			agentName: (agentId) => (agentId ? (controller.staffById(agentId)?.displayName ?? null) : null),
@@ -1294,6 +1411,40 @@ export function mountApplication(
 		// The apps that question options' previews name, as the company's apps were last read; a card drawn before they
 		// were read is brought up to date by decorateAppCards.
 		const cardApp = (name: string) => cardAppOf(controller.store.get().apps, name);
+		// What's new's calls and what it reads beside them: its page and the "a change is ready" card in an agent's thread
+		// share them (views/release-desk.ts).
+		const releaseDesk = (shared = false) => ({
+			client: shared ? companyReleases(controller).shared : companyReleases(controller).own,
+			// The company's last read, which a thread's card starts from.
+			last: () => companyReleases(controller).last,
+			options: {
+				image: (path: string, signal: AbortSignal) => (cardImage ? cardImage(path, signal) : Promise.resolve(null)),
+				// Every read, from What's new's page or a thread's card, is numbered as it starts (its client), so the latest
+				// to start is the company's last read: a thread opened next starts from what is true now (a change put live on
+				// the page is no card), with no read of its own. The drawer counts from it too.
+				listed: (read: CodeReleases) => showReleases(controller, read),
+				// The sites Qorpera took down (step 5.1): no link to one. Their names come with the access read, so a
+				// project's site that never went live is one too (the review of #1774, F4); the list is read only for an
+				// entry that names none.
+				takenDown: async (signal: AbortSignal) => {
+					const sites = createWebSites(cloud, controller.profile);
+					const access = await sites.access(signal);
+					const slugs = new Set<string>();
+					for (const id of access.takenDown.keys()) {
+						const named = access.named.get(id);
+						if (named) slugs.add(named.slug);
+					}
+					if ([...access.takenDown.keys()].every((id) => access.named.has(id))) return slugs;
+					for (const site of await sites.list(signal)) if (access.takenDown.has(site.id)) slugs.add(site.slug);
+					return slugs;
+				},
+			},
+		});
+		// Who may see a site's password and change it: owners and admins (the kernel enforces the same rule).
+		const managesSites = () => {
+			const role = controller.store.get().team?.role;
+			return role === "owner" || role === "admin";
+		};
 		const openAgentCard: ShellContext["openAgentCard"] = (agent, anchor, card, findAnchor) => {
 			agentCard?.dispose();
 			const opened = new AgentDetails(
@@ -1387,10 +1538,10 @@ export function mountApplication(
 			notices = undefined;
 			interfacePages?.dispose();
 			interfacePages = undefined;
+			companyDatabases?.dispose();
+			companyDatabases = undefined;
 			interfaceFolder?.dispose();
 			interfaceFolder = undefined;
-			interfaceOffers?.dispose();
-			interfaceOffers = undefined;
 			companyApps?.dispose();
 			companyApps = undefined;
 			agentNotes?.dispose();
@@ -1490,11 +1641,11 @@ export function mountApplication(
 		if (interfaceFolder && !state.team?.capabilities.read) {
 			interfacePages?.dispose();
 			interfacePages = undefined;
-			controller.store.set({ interfacePages: undefined });
+			companyDatabases?.dispose();
+			companyDatabases = undefined;
+			controller.store.set({ interfacePages: undefined, companyData: undefined });
 			interfaceFolder.dispose();
 			interfaceFolder = undefined;
-			interfaceOffers?.dispose();
-			interfaceOffers = undefined;
 			companyApps?.dispose();
 			companyApps = undefined;
 			agentNotes?.dispose();
@@ -1521,16 +1672,6 @@ export function mountApplication(
 				controller.signal,
 				folderCurrent,
 			);
-			// The offers of claimed cells are read with them, and again each time the folder the pages read changes,
-			// since the save that changes a cell settles its offers (step I9c) and makes or ends a supervision (I9b).
-			const offers = new CompanyInterfaceOffers(
-				interfaceOfferCalls(cloud, controller.profile.environmentId),
-				interfaceSupervisionCalls(cloud, controller.profile.environmentId),
-				(next) => {
-					if (interfaceOffers === offers) controller.store.set({ interfaceOffers: next });
-				},
-				controller.signal,
-			);
 			// The pages' reader and the apps' share one hint channel.
 			const hints = sharedFolderHints(files);
 			const shared = {
@@ -1542,8 +1683,21 @@ export function mountApplication(
 			const reader = new CompanyInterfaceFolder(shared, (folder) => {
 				if (interfaceFolder !== reader) return;
 				controller.store.set({ interfaceFolder: folder });
-				void offers.refresh();
 			});
+			const databases = cloud.config.memberCompanyGatewayUrl
+				? new CompanyDatabases(
+						() => {
+							const client = files.data();
+							if (!client) throw new Error(t("Company access changed."));
+							return client;
+						},
+						(described) => {
+							if (companyDatabases === databases) controller.store.set({ companyData: described });
+						},
+						controller.signal,
+					)
+				: undefined;
+			companyDatabases = databases;
 			// The folder is read for the pages that are on: a page switched on is read for at the next sync.
 			const pages = new CompanyInterfacePages(
 				interfacePageCalls(cloud, controller.profile.environmentId),
@@ -1551,13 +1705,12 @@ export function mountApplication(
 					if (interfacePages !== pages) return;
 					controller.store.set({ interfacePages: next });
 					reader.read(pagesOn(next));
+					if (next?.pages.some((page) => page.page === DATA_PAGE)) databases?.open();
 				},
 				controller.signal,
 			);
 			interfacePages = pages;
 			interfaceFolder = reader;
-			interfaceOffers = offers;
-			offers.open();
 			pages.open();
 			void reader.open();
 			// The agents' apps, for the apps drawer and the apps' own pages (RUNTIME-INTERFACE-APPS.md §4).
@@ -1634,15 +1787,11 @@ export function mountApplication(
 		// that refuses this member, shows no entry; a read that did not answer leaves the entry as it was.
 		if (releasesRead !== controller && state.team?.capabilities.read) {
 			releasesRead = controller;
-			const releases = codeReleaseCalls(cloud, controller.profile.profileId);
+			const releases = companyReleases(controller).shared;
 			const readReleases = () =>
 				void releases.list(controller.signal).then(
 					(read) => {
-						if (!controller.signal.aborted)
-							controller.store.set({
-								whatsNew: whatsNewEntry(controller, read),
-								siteVersions: liveVersions(read),
-							});
+						if (!controller.signal.aborted) showReleases(controller, read);
 					},
 					(error: unknown) => {
 						if (!controller.signal.aborted && error instanceof CloudRpcError && (error.missing || error.denied))
@@ -1740,6 +1889,10 @@ export function mountApplication(
 			whatsNewPage?.view.dispose();
 			whatsNewPage = undefined;
 		}
+		if (route.section !== "new-program" || newProgramPage?.company !== controller) {
+			newProgramPage?.view.dispose();
+			newProgramPage = undefined;
+		}
 		if (route.section !== "new") {
 			newConversation?.dispose();
 			newConversation = undefined;
@@ -1817,7 +1970,7 @@ export function mountApplication(
 					h(
 						"section",
 						{ class: "page" },
-						h("h1", null, controller.profile.profileName),
+						h("h1", null, companyNameText(controller.profile.profileName)),
 						notice("neutral", homeReason),
 						first
 							? h(
@@ -1997,6 +2150,10 @@ export function mountApplication(
 							// role, and the thread offers it to the roles that route takes (M3c).
 							folderImage: cardImage,
 							folderApp: cardApp,
+							// A change of this agent's ready to go live, as a card below the thread; a site a message links, as
+							// the Sites page's row under the words.
+							codeReleases: releaseDesk(true),
+							companySites: { client: createWebSites(cloud, controller.profile), canManage: managesSites },
 							messageErases: {
 								request: (sessionId, eventId, signal) =>
 									messageErases(() => checkConversationAccess(sessionId)).request(sessionId, eventId, signal),
@@ -2188,13 +2345,7 @@ export function mountApplication(
 				);
 				return;
 			case "interface":
-				// A board's take and release write the member's own rows with the same rechecks (step I9a); its offers go
-				// through the company's offers reader (step I9c). A change that could not be made reads the folder again.
 				renderInterface(main, controller, route.id ?? "", {
-					folder: () => memberFolder(companyCurrent, t("Company access changed.")),
-					current: companyCurrent,
-					...(interfaceOffers ? { offers: interfaceOffers } : {}),
-					...(interfaceFolder ? { reread: interfaceFolder.sync.bind(interfaceFolder) } : {}),
 					mailManage: () => {
 						const environment = {
 							profileId: controller.profile.profileId,
@@ -2225,6 +2376,21 @@ export function mountApplication(
 					},
 					bankConnection: () => createWebConnectors(cloud, controller.profile),
 					openSettings: (tab) => openSettings(tab),
+					data: () => companyDatabases,
+					dataAsk: (agentId, note) => {
+						let accounts = askAccounts.get(controller);
+						if (!accounts) {
+							accounts = createWebNativeSubscription(
+								cloud,
+								controller.profile.profileId,
+								controller.userId,
+								controller.signal,
+								companyCurrent,
+							);
+							askAccounts.set(controller, accounts);
+						}
+						return tellAgent(controller, accounts, agentId, note);
+					},
 				});
 				return;
 			case "sites": {
@@ -2233,12 +2399,7 @@ export function mountApplication(
 				// them offline (the kernel enforces the same rule).
 				if (!sitesPage) {
 					const view = new SitesView(createWebSites(cloud, controller.profile), controller.signal, {
-						access: {
-							canManage: () => {
-								const role = controller.store.get().team?.role;
-								return role === "owner" || role === "admin";
-							},
-						},
+						access: { canManage: managesSites },
 						listed: (list) => controller.store.set({ siteCount: list.length }),
 						// A site made from a project's code names the version What's new has live, and links there.
 						releases: {
@@ -2265,23 +2426,29 @@ export function mountApplication(
 				if (sitesPage.el.parentElement !== main) replace(main, sitesPage.el);
 				return;
 			}
+			case "new-program": {
+				if (state.team?.capabilities.write !== true) {
+					if (!state.loading && state.team)
+						navigate({ name: "company", profileId: controller.profile.profileId, section: "home" }, true);
+					else if (!main.querySelector(":scope > .page > .skeleton-page"))
+						replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
+					return;
+				}
+				if (!newProgramPage) {
+					const view = new NewProgramPage(programAdds());
+					newProgramPage = { company: controller, view };
+				}
+				const shown = newProgramPage.view.el.parentElement;
+				if (shown?.parentElement !== main)
+					replace(main, h("section", { class: "page program-new-page" }, newProgramPage.view.el));
+				return;
+			}
 			case "whats-new": {
 				// The changes to the company's sites made from its code, ready to go live, and what is live (own code storage
 				// step 4). Every member sees it; owners and admins put a version live and go back (the kernel's own rule).
 				if (!whatsNewPage) {
-					const view = new WhatsNewView(
-						controller,
-						codeReleaseCalls(cloud, controller.profile.profileId),
-						controller.signal,
-						{
-							image: (path, signal) => (cardImage ? cardImage(path, signal) : Promise.resolve(null)),
-							listed: (read) =>
-								controller.store.set({
-									whatsNew: whatsNewEntry(controller, read),
-									siteVersions: liveVersions(read),
-								}),
-						},
-					);
+					const desk = releaseDesk();
+					const view = new WhatsNewView(controller, desk.client, controller.signal, desk.options);
 					whatsNewPage = {
 						company: controller,
 						view,

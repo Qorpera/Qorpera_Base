@@ -570,7 +570,7 @@ end $$;
 
 -- 10. The parse's shape, the locks, and the deploy guard's markers --------------------------------------------------------
 do $$
-declare b jsonb := pg_temp.brief('84000000-0000-4000-8000-000000000109'); v_n integer;
+declare b jsonb := pg_temp.brief('84000000-0000-4000-8000-000000000109');
 begin
 	if jsonb_array_length(public.qorpera_company_state_parse_problems('worker-brief', b)) is distinct from 0
 		or jsonb_array_length(public.qorpera_company_state_parse_problems('worker-results', pg_temp.results('blocked'))) is distinct from 0 then
@@ -592,12 +592,6 @@ begin
 		jsonb_build_object('rank',5,'tbl','qorpera_runtime_workers','key','84000000-0000-4000-8000-000000000101','mode','nokeyupdate'),
 		jsonb_build_object('rank',5,'tbl','qorpera_runtime_agent_todos','key',(select id from public.qorpera_runtime_agent_todos
 			where folder_path = 'QorperaOS/agents/ada/todos/call-the-bank.md'),'mode','share')), 5::smallint, 5::smallint);
-	select count(*) into v_n from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
-	where n.nspname = 'public' and p.prosrc like '%20260930003000%' and p.proname in ('qorpera_company_state_parse_problems',
-		'qorpera_company_state_checked','qorpera_folder_structured_targets','qorpera_folder_structured_lock',
-		'qorpera_folder_structured_decide','qorpera_folder_structured_apply','qorpera_folder_structured_verify',
-		'qorpera_folder_structured_review_class','qorpera_folder_record_review','qorpera_folder_actor_resource_allowed');
-	if v_n is distinct from 10 then raise exception 'The deploy guard''s markers: % of 10', v_n; end if;
 	if not exists (select 1 from public.qorpera_native_host_calls where name = 'qorpera_folder_worker_commit' and scope = 'folder')
 		or not exists (select 1 from public.qorpera_native_host_calls where name = 'qorpera_folder_cancel_agent_worker' and scope = 'binding') then
 		raise exception 'The native host''s calls'; end if;

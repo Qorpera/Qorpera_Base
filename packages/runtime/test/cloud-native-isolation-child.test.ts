@@ -133,6 +133,36 @@ describe.skipIf(process.platform !== "linux")("the native entry", () => {
 		expect(received).toBe(LARGE_MESSAGE_BYTES);
 	}, 20_000);
 
+	// Claude Code's sign-in on descriptor 3 (slice C2): the entry hands it on only when the box names it, never reads it.
+	it.each([
+		[
+			"passes descriptor 3 on when CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR is 3",
+			{ CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR: "3" },
+			"sk-ant-oat01-test-token",
+		],
+		["passes no descriptor 3 without it", {}, null],
+		["passes no descriptor 3 for any other value", { CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR: "4" }, null],
+	])("%s", async (_name, variables, expected) => {
+		const program = join(root, "fd3.py");
+		const result = join(root, "fd3.json");
+		await writeFile(
+			program,
+			`#!/usr/bin/python3\nimport json, os, sys\ntry:\n    seen = os.read(3, 4096).decode()\nexcept OSError:\n    seen = None\njson.dump({"fd3": seen}, open(sys.argv[1], "w"))\n`,
+		);
+		await chmod(program, 0o755);
+		const entry = spawn(process.execPath, [await built(), join(root, "relay.sock"), program, result], {
+			stdio: ["ignore", "ignore", "pipe", "pipe"],
+			cwd: root,
+			env: { PATH: process.env.PATH, ...variables },
+		});
+		entry.stderr?.resume();
+		const token = entry.stdio[3] as unknown as { end(text: string): void; on(event: string, fn: () => void): void };
+		token.on("error", () => undefined);
+		token.end("sk-ant-oat01-test-token");
+		expect(await new Promise((resolve) => entry.once("close", resolve))).toBe(0);
+		expect(JSON.parse(await readFile(result, "utf8"))).toEqual({ fd3: expected });
+	});
+
 	// No model and no network: the answer to a skills/list of many folders is a large message, as a PNG's echo is.
 	it.skipIf(!CODEX)(
 		"keeps the real Codex answering after a message larger than its socket's buffer",

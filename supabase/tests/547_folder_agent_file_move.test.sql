@@ -29,15 +29,23 @@ begin
 		raise exception 'The reviewed move did not move the file: %', c; end if;
 end $$;
 
--- The vocabulary, and the markers for release guards.
 do $$
+declare b jsonb := pg_temp.agent_run() -> 'binding'; v_receipts jsonb;
 begin
-	if position('/* 20260930525000 */''company_edit'',''company_move'','
-		in pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure)) = 0 then
-		raise exception 'The observation vocabulary lacks company_edit and company_move'; end if;
-	if position('''company_move'' /* 20260930525000 */'
-		in pg_get_functiondef('public.qorpera_folder_record_review(jsonb,jsonb)'::regprocedure)) = 0 then
-		raise exception 'The recorder lacks company_move'; end if;
+	perform pg_temp.path_claims('service_role');
+	set local role service_role;
+	v_receipts := public.qorpera_record_runtime_observation_batch((b ->> 'runId')::uuid,
+		(select jsonb_agg(jsonb_build_object('schema','qorpera.runtime-observation/v1','attemptId',extensions.gen_random_uuid(),
+			'parentAttemptId',null,'assignmentId',b -> 'assignmentId','phase','start','operation',o.name,
+			'logicalOperationSha256',repeat('7',64),'observedAt','2026-11-14T12:00:00.000Z','durationMs',null,'status','started',
+			'errorCategory',null,'receiptId',null,'readId',null,'inputBytes',null,'outputBytes',null,'inputTokens',null,
+			'outputTokens',null,'cachedInputTokens',null,'cacheWriteInputTokens',null,'reasoningOutputTokens',null,
+			'totalTokens',null) order by o.name)
+		from unnest(array['company_edit', 'company_move']) o(name)));
+	reset role;
+	if jsonb_array_length(v_receipts -> 'receipts') <> 2 or exists (select 1 from jsonb_array_elements(v_receipts -> 'receipts') r
+			where r ->> 'schema' is distinct from 'qorpera.runtime-observation-receipt/v1') then
+		raise exception 'The observation vocabulary lacks company_edit and company_move: %', v_receipts; end if;
 end $$;
 
 rollback;

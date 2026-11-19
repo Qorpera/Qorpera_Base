@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { AuthChangeEvent, Session, User } from "@supabase/supabase-js";
 import { vi } from "vitest";
 import { CloudApi } from "../src/cloud/api.ts";
@@ -13,6 +15,37 @@ import type {
 	PendingSessionInput,
 } from "../src/cloud/types.ts";
 import * as figureMotion from "../src/ui/figure-motion.ts";
+
+/** One row of the one host list of SQL test 1252 (own code storage step 5.1's cross-check): a host, the slug and scope
+ * the one host rule reads in it, and its verdict (taken, name, shape, case, port, dot: 1252 says what each means). */
+export interface OneHostRow {
+	readonly host: string;
+	readonly slug: string;
+	readonly scope: "site" | "next" | "";
+	readonly verdict: "taken" | "name" | "shape" | "case" | "port" | "dot";
+}
+
+/** The one host list, read from SQL test 1252 between its two marker lines: every reader of a site host runs it. */
+export function oneHostList(): OneHostRow[] {
+	const lines = readFileSync(resolve("../../supabase/tests/1252_site_hosts.test.sql"), "utf8").split("\n");
+	const begin = lines.findIndex((line) => line.trim() === "-- the one host list: begin");
+	const end = lines.findIndex((line) => line.trim() === "-- the one host list: end");
+	if (begin < 0 || end < begin) throw new Error("SQL test 1252 has no one host list");
+	const list = lines.slice(begin + 1, end).map((line) => {
+		const entry = /^\s*\('([^']*)', '([^']*)', '(site|next|)', '(taken|name|shape|case|port|dot)'\),?$/.exec(line);
+		if (!entry) throw new Error(`Not a row of the one host list: ${line}`);
+		return {
+			host: entry[1] ?? "",
+			slug: entry[2] ?? "",
+			scope: (entry[3] ?? "") as OneHostRow["scope"],
+			verdict: (entry[4] ?? "") as OneHostRow["verdict"],
+		};
+	});
+	for (const verdict of ["taken", "name", "shape", "case", "port", "dot"])
+		if (list.length < 50 || !list.some((entry) => entry.verdict === verdict))
+			throw new Error(`The one host list is short of ${verdict}`);
+	return list;
+}
 
 export const id = (n: number): string => `11111111-1111-4111-8111-${String(n).padStart(12, "0")}`;
 export const timestamp = "2026-09-05T10:00:00Z";
@@ -213,13 +246,6 @@ export function fixture() {
 	vi.spyOn(api, "listCompanyFoundings").mockResolvedValue([]);
 	vi.spyOn(api, "findAccountByEmail").mockResolvedValue(null);
 	vi.spyOn(api, "listMemberPictures").mockResolvedValue([]);
-	vi.spyOn(api, "getAccountEntitlement").mockResolvedValue({
-		planKey: "Account A private plan",
-		billingMode: "fixture",
-		featureSet: "fixture",
-		storageAllocation: "fixture",
-		source: "fixture",
-	});
 	vi.spyOn(api, "getTeam").mockResolvedValue(team);
 	vi.spyOn(api, "listStaff").mockResolvedValue([staff]);
 	vi.spyOn(api, "listSessions").mockResolvedValue([session]);

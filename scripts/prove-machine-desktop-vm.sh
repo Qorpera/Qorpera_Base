@@ -11,7 +11,8 @@
 # and br_netfilter is not loaded): run it as root in a throwaway VM made for it. A node's real image build
 # (build-machine-image.sh) runs the same desktop checks on the builder itself.
 #
-# QORPERA_DESKTOP_PROOF_HOST=yes bash scripts/prove-machine-desktop-vm.sh   (as root, in that VM)
+# QORPERA_DESKTOP_PROOF_HOST=yes QORPERA_DESKTOP_PROOF_CODEX=<pinned codex> bash scripts/prove-machine-desktop-vm.sh
+#   (as root, in that VM; the image build requires the pinned Codex, deploy/first-node/native-codex/linux-x64-artifact.json)
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -19,6 +20,8 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 [[ $# -eq 0 ]] || fail "usage: prove-machine-desktop-vm.sh"
 [[ $(id -u) == 0 ]] || fail "run as root"
 [[ ${QORPERA_DESKTOP_PROOF_HOST:-} == yes ]] || fail "run only in a throwaway VM made for this proof (QORPERA_DESKTOP_PROOF_HOST=yes)"
+codex=${QORPERA_DESKTOP_PROOF_CODEX:-}
+[[ -f $codex ]] || fail "QORPERA_DESKTOP_PROOF_CODEX must name the pinned Codex (deploy/first-node/native-codex/linux-x64-artifact.json): every image carries it"
 [[ $(hostname) != qorpera-testvm-node0[12] ]] || fail "the shared test machines are not a host for this proof"
 [[ -c /dev/kvm ]] || fail "nested KVM required"
 grep -q '^br_netfilter ' /proc/modules || fail "br_netfilter is not loaded: this proof does not load it on its host"
@@ -80,7 +83,7 @@ done
 
 started=$(date +%s)
 bash deploy/machine/build-machine-image.sh "$work/guest" "$node_version" "$node_sha256" "$build" "$network" "$pool" \
-	"$machines" >"$work/image-build.json"
+	"$machines" "$codex" >"$work/image-build.json"
 echo "image built in $(($(date +%s) - started)) s: $(jq -c . "$work/image-build.json")"
 fingerprint=$(jq -er .imageFingerprint "$work/image-build.json")
 

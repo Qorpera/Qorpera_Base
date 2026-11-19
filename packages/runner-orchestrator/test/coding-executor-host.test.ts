@@ -1518,49 +1518,6 @@ describe("a coding turn on its member's machine", () => {
 			"NOT_PREPARED",
 		);
 	});
-	it("refuses a configuration without pinned helpers", () => {
-		expect(
-			() =>
-				new LxdCodingExecutorHost({
-					control: { call: vi.fn() },
-					owner: "coding-host",
-					machineIdSha256: "f".repeat(64),
-					journalRoot: "/srv/control",
-					storagePolicy: {
-						schema: "qorpera.coding-nas-policy/v1",
-						mountPoint: "/srv",
-						rootPath: "/srv",
-						source: "192.168.1.40:/coding",
-						serverAddress: "192.168.1.40",
-					},
-					client: {} as LxdCodingExecutorHostOptions["client"],
-					vmPolicy: {
-						providerId: "coding",
-						providerPolicySha256: "a".repeat(64),
-						project: "coding",
-						imageFingerprint: "b".repeat(64),
-						bootstrapSha256: "c".repeat(64),
-						storagePool: "coding",
-						network: "qagent0",
-						cpus: 4,
-						memoryBytes: 8589934592,
-						rootDiskBytes: 34359738368,
-					},
-					guest: {
-						uid: 1100,
-						gid: 1100,
-						storageHelperSha256: "latest",
-						commandHelperSha256: "a".repeat(64),
-						gitHelperSha256: "a".repeat(64),
-						watchdogHelperSha256: "a".repeat(64),
-						resourceProfile: {
-							maxLogBytes: 67108864,
-						},
-					},
-					repositoryCredentials: { withRepositoryToken: vi.fn() },
-				}),
-		).toThrow("CODING_HOST_CONFIGURATION_INVALID");
-	});
 });
 describe("the host's own configuration", () => {
 	it.each([
@@ -5587,15 +5544,17 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			ending: (given: typeof ending) => {
 				ending = given;
 			},
-			/** One run of `checks` on COMMIT, as the landing asks it; `site` is the recipe it is given (none by default). */
+			/** One run of `checks` on COMMIT, as the landing asks it; `site` is the recipe it is given (none by default), and
+			 * `rootLinks` whether its links from the root go through (step 5; not said by default, as before). */
 			run: (
 				checks: readonly CodeCheck[] = CHECKS,
 				attempt = 1,
 				signal: AbortSignal = f.signal,
 				site: CodeSiteRecipe | null = null,
+				rootLinks?: boolean,
 			) =>
 				(session.runChecks as NonNullable<CodingFolderRepositorySession["runChecks"]>)(
-					{ commit: COMMIT, checks, attempt, site },
+					{ commit: COMMIT, checks, attempt, site, ...(rootLinks === undefined ? {} : { rootLinks }) },
 					signal,
 				),
 		};
@@ -5696,6 +5655,71 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			return control(method, args, signal);
 		});
 		await expect(ask()).rejects.toBe(refusal);
+	});
+
+	it("reads the switch's links from the root and an operator's drill only when the kernel says them (own code storage, step 5)", async () => {
+		const f = await checksFixture();
+		const control = f.call.getMockImplementation()!;
+		let switched: unknown;
+		f.call.mockImplementation(async (method, args, signal) =>
+			method === "qorpera_code_checks_switch" ? switched : control(method, args, signal),
+		);
+		const ask = () => f.session.checksSwitch?.(f.signal);
+		const schema = "qorpera.code-checks-switch/v1";
+		// Exactly the keys said: none of step 5's while the kernel says none (hosts off, no drill waiting, a kernel before
+		// migration 20260930756000), so the landing's run is asked as before.
+		for (const [answer, read] of [
+			[
+				{ schema, enabled: true, site: true },
+				{ checks: true, site: true },
+			],
+			[
+				{ schema, enabled: true, site: true, rootLinks: true },
+				{ checks: true, site: true, rootLinks: true },
+			],
+			[
+				{ schema, enabled: true, site: true, rootLinks: false },
+				{ checks: true, site: true },
+			],
+			[
+				{ schema, enabled: true, site: true, drill: "check" },
+				{ checks: true, site: true, drill: "check" },
+			],
+			[
+				{ schema, enabled: false, site: false, rootLinks: true, drill: "site" },
+				{ checks: false, site: false, rootLinks: true, drill: "site" },
+			],
+			[
+				{ schema, enabled: true, rootLinks: true, preview: true, later: { key: 1 } },
+				{ checks: true, site: true, rootLinks: true },
+			],
+		] as const) {
+			switched = answer;
+			expect(await ask(), JSON.stringify(answer)).toStrictEqual(read);
+		}
+		for (const rootLinks of [undefined, true] as const)
+			for (const drill of [undefined, "check", "site"] as const) {
+				const said = { ...(rootLinks ? { rootLinks } : {}), ...(drill ? { drill } : {}) };
+				switched = { schema, enabled: true, site: true, ...said };
+				expect(await ask(), JSON.stringify(said)).toStrictEqual({ checks: true, site: true, ...said });
+			}
+		// A value of either that is not the kernel's: the answer is not the switch's, and reads as on (no drill, links
+		// from the root refused), as a lost answer does.
+		for (const odd of [
+			{ schema, enabled: false, site: false, rootLinks: "yes" },
+			{ schema, enabled: false, site: false, rootLinks: null },
+			{ schema, enabled: false, site: false, rootLinks: 1 },
+			{ schema, enabled: false, site: false, drill: "other" },
+			{ schema, enabled: false, site: false, drill: null },
+			{ schema, enabled: false, site: false, drill: "CHECK" },
+			{ schema, enabled: false, site: false, drill: true },
+		]) {
+			switched = odd;
+			expect(await ask(), JSON.stringify(odd)).toStrictEqual({ checks: true, site: true });
+		}
+		expect(f.logged.filter((event) => event.step === "switch" && event.event === "code-checks-error")).toHaveLength(
+			7,
+		);
 	});
 
 	it("gives a session command the machine's package caches over the company's values of their names, as every command of its runs, once its agent said they are ready (own code storage, step 6)", async () => {
@@ -6669,9 +6693,13 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			});
 			return {
 				...f,
-				/** One run of `checks` that takes the recipe's site. */
-				site: (attempt = 1, signal: AbortSignal = f.signal, checks: readonly CodeCheck[] = CHECKS) =>
-					f.run(checks, attempt, signal, RECIPE),
+				/** One run of `checks` that takes the recipe's site (its links from the root as `rootLinks` says, step 5). */
+				site: (
+					attempt = 1,
+					signal: AbortSignal = f.signal,
+					checks: readonly CodeCheck[] = CHECKS,
+					rootLinks?: boolean,
+				) => f.run(checks, attempt, signal, RECIPE, rootLinks),
 				/** The commands the guest was asked to run, by what they are. */
 				kinds: () => f.ran().map(kindOf),
 				/** The command of `kind` the guest was asked to run last. */
@@ -6840,6 +6868,46 @@ describe("a run of a repository's checks in the session's machine (own code stor
 					.join(" "),
 			);
 			expect(again.environment.QORPERA_SITE_SECRET_NAMES).toBe("API_KEY STRIPE_SECRET");
+		});
+
+		it("tells the collect whether links from the root go through, always one of two values over a secret of that name, and says it in the command's input only when they do (step 5)", async () => {
+			// A company secret of the variable's name: never the collect's value. (Its value is not `allowed` itself, which is
+			// under the 8 bytes a secret needs to be masked, so no command can be given it; the host's own value wins over
+			// any secret's all the same.)
+			const SECRET = "allowed-by-a-company-secret";
+			const f = await siteFixture({
+				secrets: { QORPERA_SITE_ROOT_LINKS: SECRET, API_KEY: "value-of-the-api-key-1" },
+			});
+			const today = hash(JSON.stringify({ schema: "qorpera.code-site-command/v1", commit: COMMIT, folder: "dist" }));
+			// Not said (a landing before step 5, hosts off, an answer lost) and said false: refused, the input as before.
+			for (const [attempt, rootLinks] of [
+				[1, undefined],
+				[2, false],
+			] as const) {
+				expect(await f.site(attempt, f.signal, CHECKS, rootLinks)).toMatchObject({ state: "passed", site: MADE });
+				const collect = f.command("collect");
+				expect(collect.environment.QORPERA_SITE_ROOT_LINKS).toBe("refused");
+				expect((await f.kept(collect)).inputSha256).toBe(today);
+				expect(collect.environment.QORPERA_SITE_SECRET_NAMES).toBe("API_KEY");
+			}
+			expect(await f.site(3, f.signal, CHECKS, true)).toMatchObject({ state: "passed", site: MADE });
+			const allowed = f.command("collect");
+			expect(allowed.environment.QORPERA_SITE_ROOT_LINKS).toBe("allowed");
+			expect((await f.kept(allowed)).inputSha256).toBe(
+				hash(
+					JSON.stringify({
+						schema: "qorpera.code-site-command/v1",
+						commit: COMMIT,
+						folder: "dist",
+						rootLinks: true,
+					}),
+				),
+			);
+			expect(allowed.environment.QORPERA_SITE_SECRET_NAMES).toBe("API_KEY");
+			// The host tells only the collect: every other command of the runs gets the secret of that name, as it gets
+			// every secret.
+			for (const ran of f.ran().filter((run) => kindOf(run) !== "collect"))
+				expect(ran.environment.QORPERA_SITE_ROOT_LINKS, kindOf(ran)).toBe(SECRET);
 		});
 
 		it("gives no command of a machine whose agent did not make the package caches (from before them, or they failed) any of their variables: a company value of such a name reaches them as before, and the collect looks for it (own code storage, step 6)", async () => {

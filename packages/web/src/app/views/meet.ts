@@ -8,6 +8,7 @@ import {
 	figureName,
 	nativeColorOf,
 } from "../../ui/avatar.ts";
+import { companyNameText } from "../../ui/company-name.ts";
 import { h, notice, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import { pageSkeleton } from "../../ui/skeleton.ts";
@@ -64,7 +65,7 @@ export function renderMeet(
 			h(
 				"section",
 				{ class: "page" },
-				h("h1", null, company.profile.profileName),
+				h("h1", null, companyNameText(company.profile.profileName)),
 				notice(
 					"neutral",
 					t(

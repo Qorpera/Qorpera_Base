@@ -26,6 +26,26 @@ const TEST_MACHINE = "/etc/qorpera-test-machine-versions";
 const SITES = "sites.qorpera.com";
 const API = "api.qorpera.com";
 const APP = "shop-preview.qorpera.com";
+/** A company site's own host (step 5, release 5.1; SITE-HOSTS.md). */
+const SITE = "look-shop.qorpera.com";
+
+/** The one host list of SQL test 1252 (own code storage step 5.1's cross-check), which every reader of a site host runs:
+ * a host, the slug and scope the one host rule reads in it, and its verdict (1252 says what each means). */
+function oneHostList() {
+	const lines = readFileSync(new URL("../../supabase/tests/1252_site_hosts.test.sql", import.meta.url), "utf8").split(
+		"\n",
+	);
+	const begin = lines.findIndex((line) => line.trim() === "-- the one host list: begin");
+	const end = lines.findIndex((line) => line.trim() === "-- the one host list: end");
+	assert.ok(begin > 0 && end > begin, "1252's one host list");
+	const list = lines.slice(begin + 1, end).map((line) => {
+		const entry = /^\s*\('([^']*)', '([^']*)', '(site|next|)', '(taken|name|shape|case|port|dot)'\),?$/.exec(line);
+		assert.ok(entry, line);
+		return { host: entry[1], slug: entry[2], scope: entry[3], verdict: entry[4] };
+	});
+	assert.ok(list.length >= 50);
+	return list;
+}
 
 /** The block as front-sites.py puts it in: from `virtual_hosts:` on, its comment header dropped. */
 function virtualHosts() {
@@ -37,18 +57,6 @@ function virtualHosts() {
 		"only comments before it",
 	);
 	return lines.slice(start).join("\n").trimEnd();
-}
-
-/** One virtual host's lines, from its `- name:` to the next one's (or the comment before it). */
-function virtualHost(name) {
-	const lines = virtualHosts().split("\n");
-	const start = lines.indexOf(`${" ".repeat(20)}- name: ${name}`);
-	assert.ok(start > 0, name);
-	const end = lines.findIndex(
-		(line, index) =>
-			index > start && (line.startsWith(`${" ".repeat(20)}- name: `) || line.startsWith(`${" ".repeat(20)}#`)),
-	);
-	return lines.slice(start, end === -1 ? undefined : end);
 }
 
 /** The two lines the block's header names for the `front` listener's connection manager (16 spaces). */
@@ -75,82 +83,6 @@ function appRelayCluster() {
 }
 
 describe("envoy-front-sites.yaml: what the file says", () => {
-	it("overwrites x-forwarded-host with the sites host on the sites name", () => {
-		const sites = virtualHost("sites").join("\n");
-		assert.match(sites, /domains: \["sites\.qorpera\.com"\]/);
-		assert.match(
-			sites,
-			/- header: \{ key: x-forwarded-host, value: sites\.qorpera\.com \}\n\s+append_action: OVERWRITE_IF_EXISTS_OR_ADD/,
-		);
-		assert.match(sites, /prefix_rewrite: \/functions\/v1\/site-serve\/ \}/);
-	});
-
-	it("drops a visitor's x-forwarded-host on the api name and sets the Host it was asked for", () => {
-		const api = virtualHost("api").join("\n");
-		assert.match(api, /domains: \["api\.qorpera\.com", "\*"\]/);
-		assert.match(api, /request_headers_to_remove: \[x-forwarded-host\]/);
-		assert.match(
-			api,
-			/- header: \{ key: x-forwarded-host, value: "%REQ\(:AUTHORITY\)%" \}\n\s+append_action: OVERWRITE_IF_EXISTS_OR_ADD/,
-		);
-	});
-
-	it("answers 404 for site-serve on the api name before its functions route", () => {
-		const routes = virtualHost("api").filter((line) => line.trimStart().startsWith("- { match:"));
-		const block = routes.findIndex((line) =>
-			line.includes(
-				"{ match: { prefix: /functions/v1/site-serve, case_sensitive: false }, direct_response: { status: 404 } }",
-			),
-		);
-		const functions = routes.findIndex((line) => line.includes("{ match: { prefix: /functions/v1/ }, route:"));
-		assert.ok(block >= 0 && functions > block, "the site-serve 404 comes first");
-	});
-
-	it("sends every path of an app host to the relay, WebSocket upgrades on, with the request's own name", () => {
-		const apps = virtualHost("apps").join("\n");
-		assert.match(apps, /domains: \["\*-preview\.qorpera\.com"\]/);
-		assert.match(apps, /request_headers_to_remove: \[x-forwarded-host\]/);
-		assert.match(
-			apps,
-			/- header: \{ key: x-forwarded-host, value: "%REQ\(:AUTHORITY\)%" \}\n\s+append_action: OVERWRITE_IF_EXISTS_OR_ADD/,
-		);
-		const routes = virtualHost("apps").filter((line) => line.trimStart().startsWith("- { match:"));
-		assert.deepEqual(
-			routes.map((line) => line.trim()),
-			[
-				"- { match: { prefix: / }, route: { cluster: app_relay, timeout: 0s, upgrade_configs: [{ upgrade_type: websocket }] } }",
-			],
-		);
-	});
-
-	it("answers 404 for every other name under qorpera.com, so none reaches the API", () => {
-		const others = virtualHost("others");
-		assert.match(others.join("\n"), /domains: \["\*\.qorpera\.com"\]/);
-		assert.deepEqual(
-			others.filter((line) => line.trimStart().startsWith("- { match:")).map((line) => line.trim()),
-			["- { match: { prefix: / }, direct_response: { status: 404 } }"],
-		);
-		// Each name in exactly one virtual host (Envoy refuses a name twice).
-		const domains = [...virtualHosts().matchAll(/domains: \[(.*)\]/g)].flatMap((match) =>
-			JSON.parse(`[${match[1]}]`),
-		);
-		assert.deepEqual(domains, [
-			"sites.qorpera.com",
-			"*-preview.qorpera.com",
-			"*.qorpera.com",
-			"api.qorpera.com",
-			"*",
-		]);
-	});
-
-	it("names the connection manager's two lines that drop a Host's port and trailing dot", () => {
-		assert.deepEqual(stripLines(), [
-			`${" ".repeat(16)}strip_any_host_port: true`,
-			`${" ".repeat(16)}strip_trailing_host_dot: true`,
-		]);
-		assert.match(BLOCK, /right after `use_remote_address: false`/);
-	});
-
 	it("has the app_relay cluster the apps host routes to, as the kit's clusters list takes it", () => {
 		const cluster = appRelayCluster();
 		assert.match(cluster, /^ {4}- name: app_relay\n {6}type: STRICT_DNS\n {6}connect_timeout: 5s\n/);
@@ -243,6 +175,10 @@ ${virtualHosts()}
                 merge_slashes: true
                 path_with_escaped_slashes_action: REJECT_REQUEST
                 use_remote_address: true
+                # As the stack's gateway (Realtime's WebSocket): an upgrade the front lets through reaches the echo, so a
+                # refusal seen here is the front's own.
+                upgrade_configs:
+                  - upgrade_type: websocket
                 http_filters:
                   - name: envoy.filters.http.router
                     typed_config:
@@ -571,26 +507,166 @@ describe(
 			}
 		});
 
-		it("answers 404 itself for every other name under qorpera.com, with a port or a trailing dot too", async () => {
+		it("gives site-serve every other name under qorpera.com on every path, with the request's own name only", async () => {
 			for (const host of [
+				SITE,
+				"webshop--next.qorpera.com",
+				"Look-Shop.Qorpera.COM",
 				`x${SITES}`,
-				"evil.qorpera.com",
+				`x${API}`,
 				"-preview.qorpera.com",
+				"shop-previewx.qorpera.com",
 				"a.b.qorpera.com",
-				"EVIL.Qorpera.com",
-				"evil.qorpera.com:8443",
-				"evil.qorpera.com:443",
-				"evil.qorpera.com.",
-				`x${SITES}.`,
 			])
-				for (const path of ["/", "/rest/v1/", "/functions/v1/event-intake/x", "/.qorpera/health"]) {
-					const answer = await raw(front, path, [
+				for (const sent of [[], [API], [SITES], ["other.qorpera.com", API]])
+					for (const path of [
+						"/",
+						"/a/b?c=1",
+						"/rest/v1/",
+						"/auth/v1/token?grant_type=password",
+						"/storage/v1/object/x",
+						"/functions/v1/event-intake/x",
+						"/functions/v1/site-serve/x",
+						"/.qorpera/unlock",
+						"/.qorpera/health",
+					]) {
+						const label = `${host} ${path} ${sent.join(",")}`;
+						const answer = seen(
+							await raw(front, path, [
+								["Host", host],
+								...sent.map((value) => ["X-Forwarded-Host", value]),
+								["CF-Connecting-IP", "203.0.113.9"],
+							]),
+						);
+						// Under site-serve's name, whatever the path names: never the API's own routes.
+						assert.equal(answer.path, `/site-serve${path}`, label);
+						assert.deepEqual(
+							answer.forwardedHost.map((value) => value.toLowerCase()),
+							[host.toLowerCase()],
+							label,
+						);
+						// Set by the front itself, not left to the gateway.
+						assert.deepEqual(
+							answer.fromFront.map((value) => value.toLowerCase()),
+							[host.toLowerCase()],
+							label,
+						);
+						assert.deepEqual(answer.client, ["203.0.113.9"], label);
+					}
+		});
+
+		it("matches a site host with a port or a trailing dot by its bare name, and forwards that", async () => {
+			for (const host of [`${SITE}:443`, `${SITE}:8443`, `${SITE}.`, "Look-Shop.Qorpera.com:443"]) {
+				const answer = seen(
+					await raw(front, "/a", [
+						["Host", host],
+						["X-Forwarded-Host", SITES],
+					]),
+				);
+				assert.equal(answer.path, "/site-serve/a", host);
+				assert.deepEqual(
+					answer.forwardedHost.map((value) => value.toLowerCase()),
+					[SITE],
+					host,
+				);
+			}
+		});
+
+		it("never lets a site host's path out of site-serve, however it is spelled", async () => {
+			for (const path of [
+				"/../rest/v1/",
+				"/a/../../functions/v1/event-intake/x",
+				"/%2e%2e/rest/v1/",
+				"/%2E%2E/%2e%2e/functions/v1/event-intake/x",
+				"/.%2e/rest/v1/",
+				"/a/%2e%2e/%2e%2e/x",
+				"/..\\..\\event-intake/x",
+				"/..%5c..%5cevent-intake/x",
+				"/..%2f..%2fevent-intake/x",
+				"//rest/v1/",
+				"/./rest/v1/",
+			]) {
+				const answer = await raw(front, path, [
+					["Host", SITE],
+					["X-Forwarded-Host", API],
+				]);
+				if (answer.status === 200) {
+					const reached = JSON.parse(answer.body);
+					// The functions runtime parses the path as a URL (dot segments, %2e and backslashes included) and runs the
+					// function its first segment names: that stays site-serve.
+					assert.equal(new URL(`http://runtime${reached.path}`).pathname.split("/")[1], "site-serve", path);
+					assert.deepEqual(reached.forwardedHost, [SITE], path);
+				} else assert.equal(answer.status, 400, `${path}: ${answer.status}`);
+			}
+		});
+
+		it("refuses a WebSocket upgrade on a site host itself (403), while the API's and an app's pass", async () => {
+			const upgrade = (host, path) =>
+				raw(
+					front,
+					path,
+					[
+						["Host", host],
+						["Upgrade", "websocket"],
+						["Connection", "Upgrade"],
+						["Sec-WebSocket-Version", "13"],
+						["Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ=="],
+					],
+					{ upgrade: true },
+				);
+			for (const host of [SITE, "webshop--next.qorpera.com", `${SITE}:443`])
+				for (const path of ["/", "/.qorpera/connect", "/realtime/v1/websocket"]) {
+					const answer = await upgrade(host, path);
+					assert.equal(answer.status, 403, `${host} ${path}: ${answer.head}`);
+					assert.doesNotMatch(answer.head, /x-seen-path/i, `${host} ${path}: nothing reached site-serve`);
+				}
+			// The model gateway passes upgrades on: the refusal above is the front's own.
+			const realtime = await upgrade(API, "/realtime/v1/websocket");
+			assert.equal(realtime.status, 101, realtime.head);
+			assert.match(realtime.head, /\r\nx-seen-path: \/realtime\/v1\/websocket(\r\n|$)/i);
+			const app = await upgrade(APP, "/.qorpera/connect");
+			assert.equal(app.status, 101, app.head);
+		});
+
+		it("sends every host of the one host list (SQL test 1252) on: a site's host to site-serve with its bare name", async () => {
+			for (const { host, verdict } of oneHostList()) {
+				// No Host at all is no name to route by.
+				if (!host) continue;
+				const answer = seen(
+					await raw(front, "/rest/v1/x", [
 						["Host", host],
 						["X-Forwarded-Host", API],
-					]);
-					assert.equal(answer.status, 404, `${host} ${path}`);
-					assert.equal(answer.body, "", `${host} ${path}: Envoy's own answer, nothing reached`);
-				}
+					]),
+				);
+				// The name the front matches: lower-cased, its port and trailing dot dropped.
+				const bare = host.toLowerCase().replace(/(:\d+|\.)$/, "");
+				const got = { path: answer.path, forwardedHost: answer.forwardedHost.map((value) => value.toLowerCase()) };
+				if (["taken", "case", "port", "dot"].includes(verdict))
+					// A site's own or next host: site-serve, with the bare name, whatever the path.
+					assert.deepEqual(got, { path: "/site-serve/rest/v1/x", forwardedHost: [bare] }, host);
+				// No site has it: an exact name keeps its own host, an app host (*-preview) goes to the relay, any other name
+				// under qorpera.com to site-serve (which answers it as a name with no site), anything else to the API's "*".
+				else
+					assert.deepEqual(
+						got,
+						bare === SITES
+							? { path: "/site-serve/rest/v1/x", forwardedHost: [SITES] }
+							: bare !== API && /^.+\.qorpera\.com$/.test(bare) && !/^.+-preview\.qorpera\.com$/.test(bare)
+								? { path: "/site-serve/rest/v1/x", forwardedHost: [bare] }
+								: { path: "/rest/v1/x", forwardedHost: [bare] },
+						`${host} (${verdict})`,
+					);
+			}
+		});
+
+		it("keeps the exact names and app hosts ahead of the site hosts", async () => {
+			// The sites host: site-serve with the sites host, under the old path.
+			assert.deepEqual(seen(await raw(front, "/shop/", [["Host", SITES]])).forwardedHost, [SITES]);
+			// The api name: the API's own route, unrenamed.
+			assert.equal(seen(await raw(front, "/rest/v1/x", [["Host", API]])).path, "/rest/v1/x");
+			// An app host (the longer suffix) and not a site host: the relay, the path as it came.
+			for (const host of [APP, "shop--next-preview.qorpera.com", "a-preview-preview.qorpera.com"])
+				assert.equal(seen(await raw(front, "/x", [["Host", host]])).path, "/x", host);
 		});
 	},
 );

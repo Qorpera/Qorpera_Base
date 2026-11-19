@@ -157,6 +157,7 @@ export const CLOUD_HOOK_REFUSALS: ReadonlyMap<string, string> = new Map([
 			["22023", "This mailbox name is reserved"],
 			["22023", "A mailbox name that reads as Qorpera is reserved"],
 			["22023", "A mailbox purpose is one line of at most 512 characters"],
+			["22023", "A new address is a name, a dot and the company's handle, like hello.acme"],
 			["0A000", "Company mail is not set up yet"],
 			["P0002", "No hook has this name"],
 			["55000", "This hook was removed"],
@@ -166,6 +167,7 @@ export const CLOUD_HOOK_REFUSALS: ReadonlyMap<string, string> = new Map([
 			["23505", "This address is taken"],
 			["23505", "A hook with this name already exists"],
 			["42501", "Only owners and admins can open hooks; ask one of them"],
+			["42501", "Only a member can choose the company's email handle"],
 		] as const
 	).map(([code, message]) => [`${code} ${message}`, message] as const),
 	// The run receipt's: the key names an earlier, different request of this run.
@@ -541,11 +543,12 @@ export interface CloudCompanyFolderRunView {
 }
 
 /** A run's data pass (`qorpera_run_data_pass`, 20260930750000), or why it has none: the database named is not there or
- * the run may not read it (the same answer), more than 1,000 files would be kept, or (with no name) data/ holds more
- * than 5,000 folders to look through. */
+ * the run may not read it (the same answer), more than 1,000 files would be kept, (with no name) data/ holds more
+ * than 5,000 folders to look through, or (for a pass that carries a member's yes, 20260930764000) no member said yes
+ * to this run's call on a card. */
 export type CloudCompanyDataPass =
 	| { readonly state: "pass"; readonly pass: string; readonly files: number }
-	| { readonly state: "no_database" | "too_many_files" | "too_many_folders" };
+	| { readonly state: "no_database" | "too_many_files" | "too_many_folders" | "not_approved" };
 
 export interface CloudCompanyFolderReadResult {
 	/** The folder's clock when the read was answered. */
@@ -1455,13 +1458,36 @@ export class CloudCompanyFolderClient {
 	/** A data pass for the company data gateway's run door (company databases, slice 5; `qorpera_run_data_pass`,
 	 * 20260930750000): the platform keeps, as the run, each file the run may read under data/<database>/ (or under
 	 * every database's folder, for null) with its hash, and answers 32 random bytes that the gateway redeems once
-	 * within 60 s. */
-	async dataPass(database: string | null, signal: AbortSignal): Promise<CloudCompanyDataPass> {
+	 * within 60 s. `reviewId`: the automatic review's approval of the run's data_apply call that names a held step
+	 * (`qorpera_run_data_pass_approved`, 20260930764000): the pass then also carries the `allow` a member said yes to,
+	 * when the review is a member's Allow on that call's card which this run used; else there is none. */
+	async dataPass(database: string | null, signal: AbortSignal, reviewId?: string): Promise<CloudCompanyDataPass> {
 		if (database !== null && !/^[a-z][a-z0-9_]{0,39}$/.test(database))
 			throw new Error("Invalid company database name");
+		if (reviewId !== undefined && (database === null || !UUID.test(reviewId)))
+			throw new Error("Invalid approved data pass");
 		let value: unknown;
 		try {
-			value = await this.#once("qorpera_run_data_pass", { p_database: database }, signal);
+			if (reviewId === undefined)
+				value = await this.#once("qorpera_run_data_pass", { p_database: database }, signal);
+			else
+				try {
+					value = await this.#call(
+						"qorpera_run_data_pass_approved",
+						{ p_database: database, p_review_id: reviewId },
+						signal,
+					);
+				} catch (error) {
+					// The platform's own word that no member's yes stands behind the review: read before a 42501 is taken
+					// for lost access to the folder.
+					if (
+						error instanceof CloudCompanyFolderRpcError &&
+						error.code === "42501" &&
+						error.detail.startsWith("DATA_APPROVAL_REQUIRED")
+					)
+						return { state: "not_approved" };
+					throw cloudCompanyFolderFailure(error);
+				}
 		} catch (error) {
 			if (error instanceof CloudCompanyFolderRpcError) {
 				if (error.code === "P0002" && error.detail === "Data pass has no such database")
@@ -1486,6 +1512,19 @@ export class CloudCompanyFolderClient {
 		)
 			invalid();
 		return { state: "pass", pass: input.pass, files: input.files as number };
+	}
+
+	/** Whether this run has a receipt under the operations layer's logical key (`<tool>:<key>`), read only
+	 * (`qorpera_folder_run_receipt_exists`, 20260930766000): a writer tells a repeat of a call, which its receipt
+	 * answers, from a new one before it begins anything. */
+	async runReceiptExists(logicalOperationKey: string, signal: AbortSignal): Promise<boolean> {
+		const answer = await this.#once(
+			"qorpera_folder_run_receipt_exists",
+			{ p_logical_operation_key: logicalOperationKey },
+			signal,
+		);
+		if (typeof answer !== "boolean") invalid();
+		return answer as boolean;
 	}
 
 	/** A page of the run agent's own todos from the todo index, which the commit updates with the files (thin writers

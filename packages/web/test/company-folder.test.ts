@@ -16,12 +16,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	CompanyFolderBrowser,
 	type CompanyFolderBrowserOptions,
+	type CompanyFolderPick,
 	type CompanyFolderSource,
 } from "../src/app/views/company-folder.ts";
-import { LiveCompanyFileView } from "../src/app/views/live-company-file.ts";
-import { WebCompanyFiles } from "../src/cloud/company-files.ts";
+import { chooseInCompanyFolder } from "../src/app/views/company-folder-choose.ts";
 import { setLanguagePreference, setTimeZonePreference } from "../src/ui/preferences.ts";
-import { deferred, fixture, id, profileA, settle, team, visibleText } from "./fixtures.ts";
+import { deferred, id, settle, visibleText } from "./fixtures.ts";
 
 const me = id(1);
 const other = id(2);
@@ -1015,10 +1015,16 @@ describe("a folder-v2 company's Company File", () => {
 			["Page", "true"],
 			["Source", "false"],
 		]);
-		// The frame asks for its page once it is ready, and gets this one.
 		const send = vi.spyOn(frame.contentWindow!, "postMessage");
 		ready(frame);
-		expect(send).toHaveBeenCalledExactlyOnceWith({ type: "qorpera-page", html }, "*");
+		frame.dispatchEvent(new Event("load"));
+		await settle();
+		const handed = `<!doctype html><html><head></head><body>${html}</body></html>`;
+		expect(send).toHaveBeenCalledExactlyOnceWith(
+			{ type: "qorpera-page", html: handed, files: [], missing: [], base: "" },
+			"*",
+			[expect.any(MessagePort)],
+		);
 		// Its source, and back to the same frame, which keeps the page's state.
 		views[1]!.click();
 		const source = host.querySelector<HTMLElement>(".files-page-source")!;
@@ -1039,7 +1045,13 @@ describe("a folder-v2 company's Company File", () => {
 		expect(large.getAttribute("sandbox")).toBe("allow-scripts");
 		const sendLarge = vi.spyOn(large.contentWindow!, "postMessage");
 		ready(large);
-		expect(sendLarge).toHaveBeenCalledExactlyOnceWith({ type: "qorpera-page", html }, "*");
+		large.dispatchEvent(new Event("load"));
+		await settle();
+		expect(sendLarge).toHaveBeenCalledExactlyOnceWith(
+			{ type: "qorpera-page", html: handed, files: [], missing: [], base: "" },
+			"*",
+			[expect.any(MessagePort)],
+		);
 		dialog.querySelector<HTMLButtonElement>(".surface-close")!.click();
 		expect(document.querySelector("dialog.page-preview-dialog")).toBeNull();
 		// Another file shows as it did; the page's view starts as the page again for the next page.
@@ -1832,77 +1844,161 @@ describe("a folder-v2 company's Company File", () => {
 	});
 });
 
-describe("the Company File page", () => {
-	it("offers to try again when the folder can't be opened, and opens it then", async () => {
-		const fake = folderFake();
-		fake.client.list.mockRejectedValueOnce(new Error("offline"));
-		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue(fake.client as never);
-		vi.spyOn(WebCompanyFiles.prototype, "folderHints").mockReturnValue({ close: async () => {} } as never);
-		const f = fixture(),
-			stop = new AbortController();
-		const company = new WebCompanyFiles(f.cloud, profileA, me, team.role, stop.signal, () => {});
-		const view = new LiveCompanyFileView(company, stop, "key", people);
-		disposers.push(() => view.dispose());
-		document.body.append(view.el);
-		await settle();
-		await settle();
-		const retry = [...view.el.querySelectorAll("button")].find((button) =>
-			button.textContent?.includes("Retry opening Company File"),
-		);
-		expect(retry).toBeDefined();
-		expect(view.el.classList.contains("folder-page")).toBe(false);
-		expect(view.el.classList.contains("files-page")).toBe(false);
-		retry!.click();
-		await settle();
-		await settle();
-		expect(rows(view.el)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
+describe("choose mode: Open's \"A file…\" on an agent's computer (20260930758000)", () => {
+	it("picks one file, or the folder open, from the same rows; a file picked again is unpicked", async () => {
+		const picks: (CompanyFolderPick | null)[] = [];
+		const { host } = await opened({ choose: (pick) => picks.push(pick) });
+		expect(rows(host)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
+		expect(host.classList.contains("is-choosing")).toBe(true);
+		expect(picks.at(-1)).toBeNull();
+		await click(row(host, "readme.txt"));
+		expect(picks.at(-1)).toEqual({ path: "readme.txt", kind: "file" });
+		expect(row(host, "readme.txt")?.getAttribute("aria-pressed")).toBe("true");
+		expect(row(host, "readme.txt")?.closest(".files-row")?.classList.contains("is-open")).toBe(true);
+		await click(row(host, "logo.png"));
+		expect(picks.at(-1)).toEqual({ path: "logo.png", kind: "file" });
+		expect(row(host, "readme.txt")?.getAttribute("aria-pressed")).toBe("false");
+		await click(row(host, "logo.png"));
+		expect(picks.at(-1)).toBeNull();
+		// A folder's row opens it, as in Storage; the folder open is the pick until a file in it is.
+		await click(row(host, "notes"));
+		expect(rows(host)).toEqual(["log.txt", "plan.md"]);
+		expect(picks.at(-1)).toEqual({ path: "notes", kind: "folder" });
+		await click(row(host, "plan.md"));
+		expect(picks.at(-1)).toEqual({ path: "notes/plan.md", kind: "file" });
+		await click(host.querySelector("button.files-crumb"));
+		expect(rows(host)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
+		expect(picks.at(-1)).toBeNull();
 	});
 
-	it("clears what it shows the moment its company ends, and reads nothing after", async () => {
-		vi.useFakeTimers();
+	it("reaches nothing that changes the folder: no preview, history, Restore, download, Recents or code tools", async () => {
+		const fake = folderFake(),
+			src = source(fake),
+			host = document.createElement("section");
+		document.body.append(host);
+		const codeDownloads = vi.fn();
+		const browser = new CompanyFolderBrowser(host, { ...src.value, codeDownloads }, people, { choose: () => {} });
+		disposers.push(() => browser.dispose());
+		await browser.open();
+		await settle();
+		expect(host.querySelector("h1")).toBeNull();
+		expect(host.querySelector(".files-tool")).toBeNull();
+		await click(row(host, "readme.txt"));
+		await click(row(host, "notes"));
+		await click(row(host, "plan.md"));
+		expect(host.querySelector<HTMLElement>(".files-preview")?.hidden).toBe(true);
+		expect(host.querySelector(".storage-viewer, .files-preview-actions, .folder-history-row")).toBeNull();
+		expect(codeDownloads).not.toHaveBeenCalled();
+		for (const method of ["readFile", "readFilePieces", "pathHistory", "history", "commit"] as const)
+			expect(fake.client[method], method).not.toHaveBeenCalled();
+		const labels = [...host.querySelectorAll("button")].map((button) => button.textContent ?? "");
+		for (const label of ["Restore", "Download", "Delete", "Rename", "Upload", "New folder", "Recent changes"])
+			expect(
+				labels.some((text) => text.includes(label)),
+				label,
+			).toBe(false);
+		expect(host.querySelector("[draggable=true]")).toBeNull();
+	});
+
+	it("shows a link, and does not pick it", async () => {
 		const fake = folderFake();
-		let hint: ((seq: number) => void) | undefined;
-		const close = vi.fn(async () => {});
-		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue(fake.client as never);
-		vi.spyOn(WebCompanyFiles.prototype, "folderHints").mockImplementation((onHint) => {
-			hint = onHint;
-			return { close } as never;
+		fake.links.set("latest", "notes/plan.md");
+		const picks: (CompanyFolderPick | null)[] = [];
+		const src = source(fake),
+			host = document.createElement("section");
+		document.body.append(host);
+		const browser = new CompanyFolderBrowser(host, src.value, people, { choose: (pick) => picks.push(pick) });
+		disposers.push(() => browser.dispose());
+		await browser.open();
+		await settle();
+		expect(rows(host)).toContain("latest");
+		expect(row(host, "latest")?.matches(":disabled")).toBe(true);
+		await click(row(host, "latest"));
+		expect(picks.at(-1)).toBeNull();
+	});
+
+	async function dialog(fake = folderFake(), signal = new AbortController().signal) {
+		const src = source(fake);
+		const answer = chooseInCompanyFolder(src.value, signal);
+		await settle();
+		const el = document.querySelector<HTMLDialogElement>("dialog.folder-choose-dialog")!;
+		const confirm = () =>
+			[...el.querySelectorAll<HTMLButtonElement>(".folder-choose-actions button")].find(
+				(button) => button.textContent === "Open on this computer",
+			)!;
+		const cancel = () =>
+			[...el.querySelectorAll<HTMLButtonElement>(".folder-choose-actions button")].find(
+				(button) => button.textContent === "Cancel",
+			)!;
+		const line = () => el.querySelector(".folder-choose-pick")?.textContent;
+		return { el, answer, confirm, cancel, line, src };
+	}
+
+	it("answers the file picked, or the folder gone into, with one button; nothing until something is picked", async () => {
+		const one = await dialog();
+		expect(one.el.getAttribute("aria-label")).toBe("Choose a file or a folder");
+		expect(one.confirm().disabled).toBe(true);
+		expect(one.line()).toBe("Pick a file, or go into a folder to open it.");
+		await click(row(one.el, "readme.txt"));
+		expect(one.line()).toBe("Opens readme.txt.");
+		expect(one.confirm().disabled).toBe(false);
+		await click(one.confirm());
+		await expect(one.answer).resolves.toBe("readme.txt");
+		expect(document.querySelector("dialog.folder-choose-dialog")).toBeNull();
+		const two = await dialog();
+		await click(row(two.el, "notes"));
+		expect(two.line()).toBe("Opens the folder notes.");
+		await click(two.confirm());
+		await expect(two.answer).resolves.toBe("notes");
+	});
+
+	it("Cancel, Escape and the window closing choose nothing", async () => {
+		const one = await dialog();
+		await click(row(one.el, "readme.txt"));
+		await click(one.cancel());
+		await expect(one.answer).resolves.toBeNull();
+		const two = await dialog();
+		await click(row(two.el, "readme.txt"));
+		two.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		await expect(two.answer).resolves.toBeNull();
+		const window = new AbortController();
+		const three = await dialog(folderFake(), window.signal);
+		await click(row(three.el, "readme.txt"));
+		window.abort();
+		await expect(three.answer).resolves.toBeNull();
+		expect(document.querySelector("dialog.folder-choose-dialog")).toBeNull();
+	});
+
+	it("says the folder's states in plain words: opening, empty, and a read that failed, with Try again", async () => {
+		const fake = folderFake();
+		fake.folders.add("empty");
+		const first = deferred<void>();
+		const list = fake.client.list.getMockImplementation()!;
+		fake.client.list.mockImplementationOnce(async (...args) => {
+			await first.promise;
+			return list(...args);
 		});
-		const f = fixture(),
-			stop = new AbortController();
-		const company = new WebCompanyFiles(f.cloud, profileA, me, team.role, stop.signal, () => {});
-		const view = new LiveCompanyFileView(company, stop, "key", people);
-		disposers.push(() => view.dispose());
-		document.body.append(view.el);
+		const opening = await dialog(fake);
+		expect(opening.line()).toBe("Opening Company File");
+		expect(opening.confirm().disabled).toBe(true);
+		first.resolve();
 		await settle();
-		await settle();
-		expect(rows(view.el)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
-		const lists = fake.client.list.mock.calls.length;
-		stop.abort();
-		expect(view.el.childElementCount).toBe(0);
-		expect(view.el.isConnected).toBe(false);
-		expect(view.el.classList.contains("folder-page")).toBe(false);
-		expect(close).toHaveBeenCalledTimes(1);
-		hint?.(9);
-		await vi.advanceTimersByTimeAsync(120_000);
-		await settle();
-		expect(fake.client.list.mock.calls.length).toBe(lists);
-		expect(fake.client.changes).not.toHaveBeenCalled();
-	});
-
-	it("is the company's folder, with no other File page to choose", async () => {
-		const fake = folderFake();
-		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue(fake.client as never);
-		vi.spyOn(WebCompanyFiles.prototype, "folderHints").mockReturnValue({ close: async () => {} } as never);
-		const f = fixture(),
-			stop = new AbortController();
-		const company = new WebCompanyFiles(f.cloud, profileA, me, team.role, stop.signal, () => {});
-		const view = new LiveCompanyFileView(company, stop, "key", people);
-		disposers.push(() => view.dispose());
-		document.body.append(view.el);
-		await settle();
-		await settle();
-		expect(view.el.classList.contains("folder-page")).toBe(true);
-		expect(rows(view.el)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
+		expect(opening.line()).toBe("Pick a file, or go into a folder to open it.");
+		await click(row(opening.el, "empty"));
+		expect(visibleText(opening.el)).toContain("This folder is empty.");
+		expect(opening.line()).toBe("Opens the folder empty.");
+		await click(opening.cancel());
+		const failing = folderFake();
+		failing.client.list.mockRejectedValueOnce(new Error("offline"));
+		const failed = await dialog(failing);
+		expect(visibleText(failed.el)).toContain("The Company File could not be read just now.");
+		expect(failed.confirm().disabled).toBe(true);
+		const again = [...failed.el.querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "Try again",
+		)!;
+		await click(again);
+		expect(rows(failed.el)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
+		await click(failed.cancel());
+		await expect(failed.answer).resolves.toBeNull();
 	});
 });

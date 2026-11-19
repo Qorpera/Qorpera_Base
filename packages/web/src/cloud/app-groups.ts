@@ -85,10 +85,13 @@ export const groupKey = (id: string) => `group:${id}`;
 export const isGroupKey = (key: string) => key.startsWith("group:");
 export const groupIdOf = (key: string) => key.slice("group:".length);
 
-/** The drawer marks a page by its bare name (`mailbox`); the file and the member's document write `page:mailbox`. */
 export function fileKey(drawerKey: string): string {
-	return drawerKey === "mailbox" || drawerKey === "members" || drawerKey === "bank" ? `page:${drawerKey}` : drawerKey;
+	return drawerKey === "mailbox" || drawerKey === "members" || drawerKey === "bank" || drawerKey === "data"
+		? `page:${drawerKey}`
+		: drawerKey;
 }
+
+const isMemberDrawerKey = (key: string) => key === "page:data" || isAppDrawerKey(key);
 export function drawerKey(key: string): string {
 	return key.startsWith("page:") ? key.slice("page:".length) : key;
 }
@@ -129,7 +132,7 @@ export function parseMemberAppLayout(value: unknown): MemberAppLayout {
 	const places: Record<string, AppPlace> = {};
 	for (const [key, raw] of Object.entries(objectOrNothing(input.places) ?? {})) {
 		const place = objectOrNothing(raw);
-		if (!place || !(isAppDrawerKey(key) || (isGroupKey(key) && isAppGroupId(groupIdOf(key))))) continue;
+		if (!place || !(isMemberDrawerKey(key) || (isGroupKey(key) && isAppGroupId(groupIdOf(key))))) continue;
 		const group = typeof place.group === "string" && isAppGroupId(place.group) ? place.group : null;
 		const after = typeof place.after === "string" ? place.after : null;
 		const at = typeof place.at === "number" && Number.isSafeInteger(place.at) && place.at >= 0 ? place.at : 0;
@@ -150,11 +153,12 @@ export function parseMemberAppLayout(value: unknown): MemberAppLayout {
 	const colours: Record<string, AgentColour> = {};
 	for (const [key, value] of Object.entries(objectOrNothing(input.colours) ?? {})) {
 		const colour = AGENT_COLOURS.find((name) => name === value);
-		if (colour && (isAppDrawerKey(key) || (isGroupKey(key) && isAppGroupId(groupIdOf(key))))) colours[key] = colour;
+		if (colour && (isMemberDrawerKey(key) || (isGroupKey(key) && isAppGroupId(groupIdOf(key)))))
+			colours[key] = colour;
 	}
 	const emblems: Record<string, string> = {};
 	for (const [key, value] of Object.entries(objectOrNothing(input.emblems) ?? {}))
-		if (typeof value === "string" && isAppDrawerKey(key) && isAppEmblemChoice(value)) emblems[key] = value;
+		if (typeof value === "string" && isMemberDrawerKey(key) && isAppEmblemChoice(value)) emblems[key] = value;
 	return {
 		schema: APP_LAYOUT_SCHEMA,
 		places,
@@ -177,16 +181,6 @@ export function parseMemberAppLayoutRead(value: unknown): MemberAppLayoutRead {
 		layout: parseMemberAppLayout(input.layout),
 		updatedAt: typeof input.updatedAt === "string" ? input.updatedAt : null,
 	};
-}
-
-/** How many changes the member's document holds, as Reset sidebar counts them. */
-export function appLayoutChanges(layout: MemberAppLayout): number {
-	return (
-		Object.keys(layout.places).length +
-		Object.keys(layout.groups).length +
-		Object.keys(layout.colours ?? {}).length +
-		Object.keys(layout.emblems ?? {}).length
-	);
 }
 
 function clone(nodes: readonly AppTreeNode[], present: ReadonlySet<string>, seen: Set<string>): AppTreeNode[] {

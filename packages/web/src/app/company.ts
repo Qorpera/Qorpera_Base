@@ -1,7 +1,8 @@
+import type { CloudMemberDataDescription } from "@qorpera/cloud-client/cloud-member-data";
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { CloudApi } from "../cloud/api.ts";
 import type { AppTreeNode, MemberAppLayout, MemberAppLayoutRead } from "../cloud/app-groups.ts";
-import { CloudRpcError, describeError } from "../cloud/client.ts";
+import { CloudRpcError, connectionLost, describeError } from "../cloud/client.ts";
 import { createWebCodingEnvironment } from "../cloud/coding-environment.ts";
 import {
 	type CodingSession,
@@ -21,6 +22,7 @@ import {
 	type EmailDraftEditor,
 	type EmailDraftState,
 } from "../cloud/email-drafts.ts";
+import { createWebEventHooks } from "../cloud/event-hooks.ts";
 import { type GroupChatDetails, listGroupChatDetails, readGroupChatDetails } from "../cloud/group-details.ts";
 import type { InteractionAnswer, InteractionOutcome, InteractionRequest } from "../cloud/interactions.ts";
 import { type MemberChatSummary, memberChatCalls } from "../cloud/member-chats.ts";
@@ -73,6 +75,7 @@ import { type WorksForCalls, worksForCalls } from "../cloud/works-for.ts";
 import { attachmentProblemText } from "../ui/attachments.ts";
 import type { FigureChoice } from "../ui/figure-picker.ts";
 import { isGroupChat } from "../ui/group-chat.ts";
+import { type MailAddressCalls, mailboxRefusal } from "../ui/mail-address.ts";
 import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
 import type { AgentNotesState } from "./agent-notes.ts";
@@ -81,7 +84,6 @@ import type { MailState } from "./company-mail.ts";
 import { memberTimeZone, rememberTimeZoneRefused, timeZoneRefused } from "./company-time-zone.ts";
 import type { CompanyApp, CompanyAppIcon } from "./interface-apps.ts";
 import type { InterfaceFolderState } from "./interface-folder.ts";
-import type { InterfaceOffersState } from "./interface-offers.ts";
 import type { InterfacePagesState } from "./interface-pages.ts";
 import { MemberChats } from "./member-chats.ts";
 import { parsePresenceValue, presenceValue, sessionPlace } from "./presence-place.ts";
@@ -95,6 +97,7 @@ import {
 	type QuoteRecord,
 	takeQuoteRecords,
 } from "./quotes.ts";
+import { Reconnect } from "./reconnect.ts";
 import { RoomDrafts } from "./room-drafts.ts";
 import { debounce, Store, throttle } from "./state.ts";
 
@@ -201,6 +204,7 @@ export interface CompanyState {
 	staff: HostedStaffAgent[];
 	sessions: HostedSession[];
 	sessionsError?: string;
+	connectionLost?: boolean;
 	groups?: Record<string, GroupChatDetails>;
 	/** Kept for diagnostics only; the rail does not show it (see shell.ts). */
 	groupsError?: string;
@@ -266,13 +270,10 @@ export interface CompanyState {
 	/** Which of the two pages, Mailbox and Members, the company shows (Interfaces C6a; app/interface-pages.ts). Unset
 	 * until the first read lands, and on a cloud without the calls: no page shows then. */
 	interfacePages?: InterfacePagesState;
+	companyData?: CloudMemberDataDescription | null;
 	/** The tables and files the shown pages read, as the company's folder holds them (Interfaces step I7;
 	 * app/interface-folder.ts). Unset until the first read lands. */
 	interfaceFolder?: InterfaceFolderState;
-	/** The company's open offers of claimed cells (Interfaces step I9c; app/interface-offers.ts), with its live
-	 * supervision consents (I9b). Unset until the first read lands, and on a cloud without them: no page draws an offer
-	 * then. */
-	interfaceOffers?: InterfaceOffersState;
 	/** The agents' interface apps in the company's folder (apps/, app/interface-apps.ts), as last read. Unset until the
 	 * first read lands. */
 	apps?: readonly CompanyApp[];
@@ -619,7 +620,9 @@ export class CompanyController {
 	#hiddenAt: number | undefined;
 	#openSessionId: string | undefined;
 	#stopped = false;
+	#connectionFailures = 0;
 	readonly #abort = new AbortController();
+	readonly #reconnect = new Reconnect(() => this.#tryAgain(), this.#abort.signal);
 	readonly #versions = { team: 0, staff: 0, sessions: 0, groups: 0, organization: 0, activity: 0, sidebar: 0 };
 	#polling = false;
 	readonly #invalidations = new Set<(resource: RealtimeResource) => void>();
@@ -1067,7 +1070,7 @@ export class CompanyController {
 						earlierError: undefined,
 					}));
 				this.stop();
-			} else this.store.set({ error: describeError(error) });
+			} else if (!this.#lost(error)) this.store.set({ error: describeError(error) });
 		}
 	}
 
@@ -1102,7 +1105,7 @@ export class CompanyController {
 			this.store.set((state) => ({ staff, hierarchy: buildCompanyHierarchy(state.organization, staff) }));
 		} catch (error) {
 			if (this.#stopped || version !== this.#versions.staff) return;
-			this.store.set({ error: describeError(error) });
+			if (!this.#lost(error)) this.store.set({ error: describeError(error) });
 		}
 	}
 
@@ -1122,7 +1125,7 @@ export class CompanyController {
 				if (!this.store.get().loading) await this.refreshGroups();
 			} catch (error) {
 				if (this.#stopped || version !== this.#versions.sessions) return;
-				this.store.set({ sessionsError: describeError(error) });
+				this.store.set({ sessionsError: this.#lost(error) ? undefined : describeError(error) });
 			}
 		})();
 		this.#sessionsFullRead = read;
@@ -1194,10 +1197,29 @@ export class CompanyController {
 				await this.refreshGroups();
 			return changed;
 		} catch (error) {
-			if (!this.#stopped) this.store.set({ sessionsError: describeError(error) });
+			if (!this.#stopped) this.store.set({ sessionsError: this.#lost(error) ? undefined : describeError(error) });
 			// Unknown, not unchanged: what the hint would have read is read anyway.
 			return undefined;
 		}
+	}
+
+	#lost(error: unknown): boolean {
+		if (this.#stopped || !connectionLost(error)) return false;
+		this.#connectionFailures += 1;
+		if (!this.store.get().connectionLost) this.store.set({ connectionLost: true });
+		this.#reconnect.lost();
+		return true;
+	}
+
+	async #tryAgain(): Promise<boolean> {
+		const failures = this.#connectionFailures;
+		await this.refreshTeam();
+		await Promise.all([this.refreshSessions(), this.refreshStaff(), this.refreshOrganization()]);
+		if (this.#stopped || this.#connectionFailures !== failures) return false;
+		this.store.set({ connectionLost: undefined });
+		for (const listener of this.#invalidations) listener("sessions");
+		if (this.#openSessionId) void this.loadConversation(this.#openSessionId);
+		return true;
 	}
 
 	async refreshOrganization(): Promise<void> {
@@ -1219,7 +1241,7 @@ export class CompanyController {
 					organizationState: "not-deployed",
 					hierarchy: buildCompanyHierarchy(undefined, state.staff),
 				}));
-			} else {
+			} else if (!this.#lost(error)) {
 				this.store.set({ organizationState: "error", organizationError: describeError(error) });
 			}
 		}
@@ -2024,16 +2046,6 @@ export class CompanyController {
 			.length;
 	}
 
-	/** When a working agent's running run last made progress, if that is the cloud's stall minutes ago or more
-	 * (gap 4). The minutes come with it: the web has no number of its own. */
-	noProgress(staffAgentId: string | undefined): { since: string; minutes: number } | undefined {
-		const row = this.activityFor(staffAgentId);
-		if (row?.activity !== "working" || row.jobStatus !== "leased") return undefined;
-		return row.noProgressSince && row.noProgressMinutes
-			? { since: row.noProgressSince, minutes: row.noProgressMinutes }
-			: undefined;
-	}
-
 	/** The agent's run waiting at its login's usage limit, while the pause holds (20260930703000). */
 	pausedRunFor(staffAgentId: string | undefined): HostedStaffExecutionActivity | undefined {
 		const row = this.activityFor(staffAgentId);
@@ -2544,6 +2556,7 @@ export class CompanyController {
 								...(hasEarlier === undefined ? {} : { hasEarlier }),
 							}
 						: {};
+				this.#lost(error);
 				store.set({ ...read, loading: false, complete: false, error: describeError(error) });
 				return;
 			}
@@ -3048,6 +3061,41 @@ export class CompanyController {
 			throw error;
 		}
 		await this.answerInteraction(sessionId, interactionId, "provided", {});
+	}
+
+	canChooseMailAddress(): boolean {
+		const role = this.store.get().team?.role;
+		return role === "owner" || role === "admin";
+	}
+
+	mailAddressCalls(sessionId: string, interactionId: string): MailAddressCalls {
+		const hooks = createWebEventHooks(this.#api.cloud, this.profile);
+		return {
+			canChoose: this.canChooseMailAddress(),
+			handles: (signal) => hooks.mailHandles(signal),
+			status: (handle, signal) => hooks.handleStatus(handle, signal),
+			choose: (handle) => this.chooseMailAddress(sessionId, interactionId, handle),
+		};
+	}
+
+	async chooseMailAddress(sessionId: string, interactionId: string, handle: string): Promise<void> {
+		this.assertCanSend(sessionId);
+		this.conversation(sessionId).set({ interactionError: undefined });
+		const hooks = createWebEventHooks(this.#api.cloud, this.profile);
+		const localPart = `hello.${handle}`;
+		let address: string | undefined;
+		try {
+			this.#answerSponsor(sessionId);
+			const kept = (await hooks.list()).find(
+				(hook) => hook.proof === "mail" && hook.email?.split("@")[0] === localPart,
+			);
+			if (kept?.status === "paused") await hooks.setStatus(kept.id, "active");
+			address = (kept ?? (await hooks.createMailbox(localPart, "The company's main email"))).email;
+		} catch (error) {
+			throw new Error(mailboxRefusal(error));
+		}
+		if (!address) throw new Error(t("The address could not be made. Try again."));
+		await this.answerInteraction(sessionId, interactionId, "answered", { values: [address] });
 	}
 
 	/** The quotes of outside content in a conversation's draft: its records' words wherever they stand in «» marks. */

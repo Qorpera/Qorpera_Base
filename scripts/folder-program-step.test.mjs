@@ -173,7 +173,10 @@ test("the tests run beside the release build, its check and the program against 
 	assert.equal(call(ran.calls, "check").at(-1), "node ../../scripts/folder-program-artifact.mjs --check /out/qorpera-folder");
 	const e2e = call(ran.calls, "e2e");
 	assert.ok(flags(e2e, "--device").includes("/dev/fuse"));
-	assert.equal(e2e.at(-1), "node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-e2e.test.ts test/folder-git-e2e.test.ts");
+	assert.equal(
+		e2e.at(-1),
+		"node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-e2e.test.ts test/folder-git-e2e.test.ts test/folder-data-e2e.test.ts",
+	);
 	// The runs with real git read the pinned git from its volume, built once per test machine and checked against its
 	// digest first.
 	assert.ok(flags(e2e, "-e").includes("QORPERA_GIT_BIN=/git/2.56.0/bin/git") && flags(e2e, "-v").includes("qorpera-git-2.56.0:/git:ro"));

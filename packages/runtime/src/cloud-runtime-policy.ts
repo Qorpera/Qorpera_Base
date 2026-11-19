@@ -14,7 +14,16 @@
  * `fastMode: "thread"`: a member's turn in a conversation runs on Codex's Fast
  * service tier unless that conversation's Model menu turned it off; every
  * other run is standard. The kernel pins the tier on the run as well. */
-export const CLOUD_RUNTIME_REASONING_EFFORTS = Object.freeze(["low", "medium", "high"] as const);
+export const CLOUD_RUNTIME_ROUTINE_EFFORTS = Object.freeze(["low", "medium", "high"] as const);
+
+export type CloudRuntimeRoutineEffort = (typeof CLOUD_RUNTIME_ROUTINE_EFFORTS)[number];
+
+export const CLOUD_RUNTIME_THREAD_EFFORTS = Object.freeze(["xhigh"] as const);
+
+export const CLOUD_RUNTIME_REASONING_EFFORTS = Object.freeze([
+	...CLOUD_RUNTIME_ROUTINE_EFFORTS,
+	...CLOUD_RUNTIME_THREAD_EFFORTS,
+] as const);
 
 export type CloudRuntimeReasoningEffort = (typeof CLOUD_RUNTIME_REASONING_EFFORTS)[number];
 
@@ -22,9 +31,11 @@ export const CLOUD_RUNTIME_MODEL_POLICY = Object.freeze({
 	schema: "qorpera.model-reasoning/v1",
 	effort: "low",
 	overrides: "routine-and-thread",
-	allowed: CLOUD_RUNTIME_REASONING_EFFORTS,
+	allowed: CLOUD_RUNTIME_ROUTINE_EFFORTS,
 	fastMode: "thread",
 	unattended: "high",
+	claudeChoice: "thread",
+	threadEfforts: CLOUD_RUNTIME_THREAD_EFFORTS,
 } as const);
 
 export const CLOUD_RUNTIME_SERVICE_TIERS = Object.freeze(["fast", "standard"] as const);
@@ -37,4 +48,37 @@ export function isCloudRuntimeServiceTier(value: unknown): value is CloudRuntime
 
 export function isCloudRuntimeReasoningEffort(value: unknown): value is CloudRuntimeReasoningEffort {
 	return typeof value === "string" && (CLOUD_RUNTIME_REASONING_EFFORTS as readonly string[]).includes(value);
+}
+
+export function isCloudRuntimeRoutineEffort(value: unknown): value is CloudRuntimeRoutineEffort {
+	return typeof value === "string" && (CLOUD_RUNTIME_ROUTINE_EFFORTS as readonly string[]).includes(value);
+}
+
+export const CLOUD_RUNTIME_CLAUDE_MODELS = Object.freeze({
+	"claude-fable-5-2": "Fable 5.2",
+	"claude-opus-5-5": "Opus 5.5",
+} as const);
+
+export type CloudRuntimeClaudeModel = keyof typeof CLOUD_RUNTIME_CLAUDE_MODELS;
+
+export const CLOUD_RUNTIME_CLAUDE_EFFORTS = Object.freeze(["low", "medium", "high", "xhigh", "max"] as const);
+
+export type CloudRuntimeClaudeEffort = (typeof CLOUD_RUNTIME_CLAUDE_EFFORTS)[number];
+
+export interface CloudRuntimeClaudeChoice {
+	readonly model: CloudRuntimeClaudeModel;
+	readonly effort: CloudRuntimeClaudeEffort;
+}
+
+export function isCloudRuntimeClaudeChoice(value: unknown): value is CloudRuntimeClaudeChoice {
+	const record =
+		value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+	return (
+		record !== undefined &&
+		Object.keys(record).length === 2 &&
+		typeof record.model === "string" &&
+		Object.hasOwn(CLOUD_RUNTIME_CLAUDE_MODELS, record.model) &&
+		typeof record.effort === "string" &&
+		(CLOUD_RUNTIME_CLAUDE_EFFORTS as readonly string[]).includes(record.effort)
+	);
 }

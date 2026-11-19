@@ -52,6 +52,8 @@ select pg_temp.acct_assert(not exists (
 	select table_id::regclass::text from reached
 	except
 	select unnest(array['qorpera_account_presence', 'qorpera_claude_logins', 'qorpera_claude_sign_in_members',
+		-- Which of a member's Claude Code workers runs on their Claude plan now (20260930770000): the member's own lease.
+		'qorpera_claude_worker_leases',
 		'qorpera_company_creation_requests', 'qorpera_company_founder_seats',
 		-- Which machines a member watched and when (20260930712000): the member's own record, no picture.
 		'qorpera_company_machine_screen_watches',
@@ -66,7 +68,8 @@ select pg_temp.acct_assert(not exists (
 		'qorpera_member_sidebar_places', 'qorpera_member_sidebar_resets', 'qorpera_member_sidebar_sections',
 		-- A member's own arrangement of the apps drawer; it hangs on the memberships (20260930728000).
 		'qorpera_member_app_layouts',
-		'qorpera_member_sidebar_rooms', 'qorpera_native_presence_devices', 'qorpera_presence_devices',
+		'qorpera_member_sidebar_rooms', 'qorpera_native_account_usage_marks', 'qorpera_native_presence_devices',
+		'qorpera_presence_devices',
 		'qorpera_product_feedback', 'qorpera_profile_access_state', 'qorpera_profile_invitation_deliveries',
 		'qorpera_profile_invitations', 'qorpera_profile_members', 'qorpera_review_rules', 'qorpera_room_drafts',
 		'qorpera_runtime_browser_membership_revocations', 'qorpera_runtime_office_wake_requests'])

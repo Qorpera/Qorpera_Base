@@ -153,17 +153,16 @@ describe("manage_code: the tool an agent's own run is offered", () => {
 			expect(Buffer.byteLength(tool.description)).toBeLessThan(1800);
 			for (const said of [
 				"Qorpera numbers every change that goes into a repository's main code and writes its record at code/<owner>/<name>/changes/<number>.md.",
-				"Actions: undo, describe, bring_in. Each needs operationKey, owner and name; undo and describe also need change (the number).",
-				"undo puts main back as it was without that change, as a new change of its own: nothing is lost, and an undo can be undone.",
+				"Every action takes operationKey, owner and name; undo and describe also take change, the number.",
+				"- undo: put main back as it was without that change, as a new change of its own: nothing is lost, and an undo can be undone.",
 				"When later changes built on it, nothing happens and you are told the files: then undo with andLater true, which takes out that change and every change after it, or send the session a follow-up.",
 				"After an undo, check main before you tell anyone.",
-				"describe sets the change's notice (one plain sentence on what a customer will notice) and picture",
+				"- describe: set the change's notice and picture; what you leave out stays as it is.",
 				// Step 6 (STEP6-IMPORT-BUILD.md section 6): existing code comes in with its history, after a look.
-				'bring_in brings existing code in with its history, as a new repository code/<owner>/<name>/ (lowercase): from {"github":"owner/name"}, or from {"file":"code/_incoming/<folder>/<name>.bundle"}, a git bundle of at most 256 MB made on a machine (from a zip: git init, add, commit, then git bundle create with --all).',
+				'- bring_in: bring existing code in with its history, as a new repository code/<owner>/<name>/ (lowercase): from {"github":"owner/name"}, or from {"file":"code/_incoming/<folder>/<name>.bundle"}, a git bundle of at most 256 MB made on a machine (from a zip: git init, add, commit, then git bundle create with --all).',
 				"look true only reads it: size, history, who changed it lately, what stops it, files with key-like strings.",
 				"It takes minutes: call again with the same operationKey, and tell members it shows in Storage when it is in.",
 				"Replace keys it found where you can, and ask a member once for the rest.",
-				"After a result you did not see, call again with the same operationKey.",
 				// What a member reads never carries the platform's own names for things.
 				"Change numbers are yours, never the members' words.",
 			])

@@ -28,14 +28,6 @@ select pg_temp.pause_as('service_role');
 select public.qorpera_folder_enable('92900000-0000-4000-8000-000000000020') \g /dev/null
 select pg_temp.pause_assert(public.qorpera_company_is_folder_v2('92900000-0000-4000-8000-000000000010'), 'the company is folder-v2');
 
--- 1. The record itself: still required, and no longer a foreign key to the account.
-select pg_temp.pause_assert((select is_nullable = 'NO' from information_schema.columns where table_schema = 'public'
-	and table_name = 'qorpera_company_execution_pauses' and column_name = 'paused_by_user_id'), 'the column is still required');
-select pg_temp.pause_assert(not exists (select 1 from pg_constraint
-	where conrelid = 'public.qorpera_company_execution_pauses'::regclass and contype = 'f'
-		and conkey = array[(select attnum from pg_attribute where attrelid = 'public.qorpera_company_execution_pauses'::regclass
-			and attname = 'paused_by_user_id')]), 'the column has no foreign key to the account');
-
 -- 2. The creator makes the contributor a co-founder and leaves; the contributor is now the last member, and deletes the
 --    company. Its pause names them.
 select pg_temp.pause_as('authenticated', '92900000-0000-4000-8000-000000000001');

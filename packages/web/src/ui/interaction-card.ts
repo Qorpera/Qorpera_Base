@@ -2,12 +2,14 @@ import type { InterfaceEmblem } from "@qorpera/cloud-client/interfaces";
 import { isInterfaceName } from "@qorpera/cloud-client/interfaces";
 import { pictureUrl } from "../app/folder-images.ts";
 import type { EmailDraftContent, EmailDraftEditor, EmailDraftState } from "../cloud/email-drafts.ts";
+import { MAIL_HANDLE } from "../cloud/event-hooks.ts";
 import {
 	type InteractionAnswer,
 	type InteractionOutcome,
 	type InteractionRequest,
 	interactionState,
 	type QuestionOption,
+	questionInput,
 	questionOptions,
 } from "../cloud/interactions.ts";
 import type { JsonValue } from "../cloud/types.ts";
@@ -16,6 +18,14 @@ import { stoppedCardNote } from "./card-notes.ts";
 import { badge, button, fmtTime, h, icon } from "./dom.ts";
 import { renderEmailDraftCard } from "./email-draft-card.ts";
 import { interfaceEmblem } from "./interface-emblem.ts";
+import {
+	cleanHandle,
+	HANDLE_MAX_CHARACTERS,
+	HandleCheck,
+	handleUsable,
+	handleWords,
+	type MailAddressCalls,
+} from "./mail-address.ts";
 import { appCard, markdown } from "./markdown.ts";
 import { phrase, t } from "./preferences.ts";
 
@@ -89,8 +99,9 @@ export interface InteractionCardContext {
 	figure?: () => HTMLElement;
 	/** Sends the outcome and answer; the card shows its busy state until it resolves. */
 	answer: (outcome: InteractionOutcome, answer: Record<string, JsonValue>) => Promise<void>;
-	/** Opens the agent's computer for a takeover; absent when the thread has none. */
-	takeOver?: () => void;
+	/** A takeover card's Open computer: the agent's computer in the thread (woken when it sleeps), its large view once
+	 * a picture shows; absent when the thread has none. It begins no private hold (Jonas, 14 Nov 2026). */
+	openComputer?: () => void;
 	/** Saves a secret card's value into the company vault and marks the card provided;
 	 * absent when this context cannot reach the vault. */
 	provideSecret?: (value: string) => Promise<void>;
@@ -100,6 +111,7 @@ export interface InteractionCardContext {
 	emailDraft?: EmailDraftEditor;
 	loadEmailDraft?: () => Promise<EmailDraftState>;
 	actEmailDraft?: (action: "save" | "send" | "discard", content: EmailDraftContent) => Promise<EmailDraftState>;
+	mailAddress?: MailAddressCalls;
 	/** Reads a picture of the company's folder for an option's preview; null when there is none to show. */
 	image?: (path: string, signal: AbortSignal) => Promise<Blob | null>;
 	/** An app of the company by its name, for an option whose preview names one; undefined when the company has no
@@ -275,6 +287,108 @@ export function refreshAppPreviews(root: ParentNode, apps: AppReader, read?: Pic
 		const text = apps(name)?.title ?? name;
 		if (title && title.textContent !== text) title.textContent = text;
 	}
+}
+
+const FIRST_BOX = "hello.";
+
+function mailAddressParts(
+	options: readonly QuestionOption[],
+	calls: MailAddressCalls | undefined,
+	busy: boolean,
+	use: (handle: string, refused: (text: string) => void) => void,
+): { body: HTMLElement[]; actions: HTMLElement[] } {
+	const suggestions = [...new Set(options.map((option) => option.value).filter((value) => MAIL_HANDLE.test(value)))];
+	const able = calls?.canChoose === true;
+	const input = h("input", {
+		type: "text",
+		class: "interaction-address-handle",
+		value: suggestions[0] ?? "",
+		maxlength: String(HANDLE_MAX_CHARACTERS),
+		autocomplete: "off",
+		autocapitalize: "none",
+		spellcheck: "false",
+		"aria-label": t("The company's part of the address"),
+		disabled: !able,
+	});
+	const domain = h("span", { class: "interaction-address-domain" }, "@…");
+	const line = h("p", { class: "interaction-address-check service-outcome", role: "status" });
+	let mailOff = false;
+	const say = (text: string, tone: "ok" | "error" | "") => {
+		if (line.textContent !== text) line.textContent = text;
+		line.classList.toggle("is-ok", tone === "ok");
+		line.classList.toggle("is-error", tone === "error");
+	};
+	const submit = () => {
+		if (!able || mailOff || !check || !handleUsable(check.state)) return;
+		use(input.value, (text) => say(text, "error"));
+	};
+	const useButton = able ? pill(t("Use this address"), submit, "primary", busy) : null;
+	const draw = () => {
+		const state = check?.state ?? "unknown";
+		if (useButton) useButton.disabled = mailOff || !handleUsable(state) || state === "checking";
+		if (!calls) say(t("The address can be chosen in the chat."), "");
+		else if (!able) say(t("Only founders and admins can choose the address"), "");
+		else if (mailOff) say(t("Company mail is not set up yet."), "error");
+		else
+			say(
+				handleWords(state),
+				state === "free" || state === "ours" ? "ok" : state === "taken" || state === "invalid" ? "error" : "",
+			);
+	};
+	const check = able && calls ? new HandleCheck(calls.status, draw) : undefined;
+	input.addEventListener("input", () => {
+		const cleaned = cleanHandle(input.value);
+		if (cleaned !== input.value) input.value = cleaned;
+		check?.set(cleaned);
+	});
+	input.addEventListener("keydown", (event) => {
+		if (event.key !== "Enter" || event.isComposing) return;
+		event.preventDefault();
+		submit();
+	});
+	void calls?.handles(new AbortController().signal).then(
+		(mail) => {
+			if (mail.domain === null) mailOff = true;
+			else domain.textContent = `@${mail.domain}`;
+			draw();
+		},
+		() => undefined,
+	);
+	const pills =
+		able && suggestions.length > 1
+			? h(
+					"div",
+					{ class: "interaction-options interaction-address-suggestions" },
+					...suggestions.map((handle) =>
+						pill(
+							handle,
+							() => {
+								input.value = handle;
+								check?.set(handle);
+								input.focus();
+							},
+							"secondary",
+							busy,
+						),
+					),
+				)
+			: null;
+	draw();
+	check?.set(input.value);
+	return {
+		body: [
+			h(
+				"label",
+				{ class: "interaction-address" },
+				h("span", { class: "interaction-address-box" }, FIRST_BOX),
+				input,
+				domain,
+			),
+			...(pills ? [pills] : []),
+			line,
+		],
+		actions: useButton ? [useButton] : [],
+	};
 }
 
 export interface InteractionCardItem {
@@ -489,7 +603,29 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 				),
 			);
 		}
-		if (open) {
+		if (open && questionInput(request) === "mail_address") {
+			const parts = mailAddressParts(options, context.mailAddress, busy, (handle, refused) => {
+				if (busy || !context.mailAddress) return;
+				busy = true;
+				for (const control of card.querySelectorAll<HTMLElement>("button, input"))
+					control.setAttribute("aria-disabled", "true");
+				void context.mailAddress.choose(handle).then(rerender, (error: unknown) => {
+					busy = false;
+					for (const control of card.querySelectorAll<HTMLElement>("button, input"))
+						control.removeAttribute("aria-disabled");
+					refused(
+						error instanceof Error && error.message
+							? error.message
+							: t("The address could not be made. Try again."),
+					);
+				});
+			});
+			body.push(...parts.body);
+			actions.push(
+				...parts.actions,
+				pill(t("Skip"), () => answer("declined"), "quiet", busy),
+			);
+		} else if (open) {
 			const send = () => {
 				const values = [...chosen];
 				if (values.length) answer("answered", { values });
@@ -583,8 +719,10 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 		if (instruction) body.push(h("p", { class: "interaction-text" }, instruction));
 		if (open) {
 			actions.push(
-				context.takeOver ? pill(t("Take over"), context.takeOver, "primary", busy) : null,
-				pill(t("I'm done"), () => answer("handed_back"), context.takeOver ? "secondary" : "primary", busy),
+				// Open computer takes the member to the agent's computer, where they do what the card asks as it is shared:
+				// nothing begins private typing in the web any more (Jonas, 14 Nov 2026). I'm done says it is done.
+				context.openComputer ? pill(t("Open computer"), context.openComputer, "primary", busy) : null,
+				pill(t("I'm done"), () => answer("handed_back"), context.openComputer ? "secondary" : "primary", busy),
 				pill(t("Skip"), () => answer("dismissed"), "quiet", busy),
 			);
 		}

@@ -43,7 +43,8 @@ export async function runNativeIsolationChild(args: string[]): Promise<void> {
 		throw new Error("Invalid native namespace entry");
 	const sockets = new Set<Socket>();
 	const server = createServer((client) => {
-		if (sockets.size >= 16) {
+		// WHY: two sockets a connection, and room for Claude Code's 32; the relay outside holds each run to its own cap.
+		if (sockets.size >= 64) {
 			client.destroy();
 			return;
 		}
@@ -75,8 +76,11 @@ export async function runNativeIsolationChild(args: string[]): Promise<void> {
 	const address = server.address();
 	if (!address || typeof address === "string") throw new Error("Native namespace proxy unavailable");
 	const proxy = `http://127.0.0.1:${address.port}`;
+	// Claude Code's sign-in, when the run has it as a token, is descriptor 3 (CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR,
+	// slice C2): passed on as it is, never read here. Every other run passes 0-2 only.
+	const tokenDescriptor = process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR === "3";
 	const child = spawn(command, commandArgs, {
-		stdio: "inherit",
+		stdio: tokenDescriptor ? ["inherit", "inherit", "inherit", 3] : "inherit",
 		env: {
 			...process.env,
 			HTTPS_PROXY: proxy,

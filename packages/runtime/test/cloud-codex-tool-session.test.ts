@@ -8,12 +8,15 @@ import { fileURLToPath } from "node:url";
 import {
 	CLOUD_ACTION_REVIEW_INSTRUCTIONS,
 	CLOUD_ACTION_REVIEW_SPECIFICATION,
+	CLOUD_REVIEW_UNAVAILABLE,
+	CloudActionReviewBusy,
 	CloudActionReviewChannel,
 	CloudActionReviewGate,
 } from "@qorpera/runtime/cloud-action-review";
 import {
 	CLOUD_CODEX_BOUNDARY_CONFIG,
 	CodexLineReader,
+	cloudCodexBoundaryConfig,
 	disposeCloudCodexSpares,
 	prefetchCloudCodexArtifact,
 	prepareCloudCodexSpare,
@@ -71,7 +74,7 @@ function run(
 	mode: string,
 	options: {
 		model?: string;
-		reasoningEffort?: "low" | "medium" | "high";
+		reasoningEffort?: "low" | "medium" | "high" | "xhigh";
 		serviceTier?: "fast" | "standard";
 		timeoutMs?: number;
 		identityRoot?: string;
@@ -201,6 +204,18 @@ it("starts a routine turn at the effort its routine chose", async () => {
 	await expect(run("model-selection", { reasoningEffort: "max" as never }).result).rejects.toThrow(
 		"Invalid native boundary input",
 	);
+});
+
+it("starts a member's turn at extra high when the conversation chose it", async () => {
+	const { result, evidence } = run("model-selection", { model: "gpt-6.1-sol", reasoningEffort: "xhigh" });
+	await result;
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.threadParameters.model).toBe("gpt-6.1-sol");
+	expect(recorded).toMatchObject({
+		turnParameters: { effort: "xhigh" },
+		configuration: { model_reasoning_effort: "xhigh" },
+	});
+	expect(cloudCodexBoundaryConfig("xhigh")).toContain('model_reasoning_effort="xhigh"');
 });
 
 it("requires composition telemetry before admitting a model request", async () => {
@@ -443,6 +458,21 @@ it("cuts webhook signing secrets out of the instructions file and the thread's i
 	expect(recorded.bootstrap).toContain("HOST_LAW whsec_[REDACTED] END");
 });
 
+// Track 3, T3-3: a company run's instructions carry the tool-result rules at their own place, after the company's purpose
+// and files; the session then puts no second copy before them.
+it("puts no second copy of the tool-result rules before instructions that carry them", async () => {
+	const { result, evidence } = run("model-selection", {
+		opening: async () => ({
+			prompt: "Private test input",
+			runtimeInstructions: `# Your company\n\n${CLOUD_TOOL_RESULT_INSTRUCTIONS}`,
+			resultRulesInside: true,
+		}),
+	});
+	await result;
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.threadParameters.developerInstructions).toBe(`# Your company\n\n${CLOUD_TOOL_RESULT_INSTRUCTIONS}`);
+});
+
 it("cuts webhook signing secrets out of every turn input it sends Codex, whatever composed it", async () => {
 	const { result, evidence } = run("model-selection", {
 		opening: async () => ({
@@ -664,6 +694,7 @@ it.each([
 	"skill-route",
 	"fast-mode-off",
 	"tier-dropped",
+	"web-search-off",
 ])("rejects effective configuration drift before a model request: %s", async (mode) => {
 	await expect(run(mode).result).rejects.toThrow("Native boundary configuration was not applied");
 });
@@ -728,6 +759,17 @@ describe("a run on a member's ChatGPT plan (Sign in with ChatGPT)", () => {
 		await expect(run("test-provider").result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
 	});
 
+	it("gives a plan run no web search, and refuses one whose Codex has it on", async () => {
+		const identityRoot = await planRoot();
+		const { result, evidence } = run("model-selection", { identityRoot });
+		await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		const recorded = JSON.parse(await readFile(evidence, "utf8"));
+		expect(recorded.configuration.web_search).toBe("disabled");
+		expect(recorded.configuration.features.standalone_web_search).toBeUndefined();
+		expect(recorded.threadParameters.config).toBeUndefined();
+		await expect(run("plan-web-search", { identityRoot }).result).rejects.toThrow("configuration was not applied");
+	});
+
 	it("starts no warm spare for a plan run in the environment fallback, whose process keeps its first token", async () => {
 		const identityRoot = await planRoot();
 		const evidence = join(root, "spare-evidence.json");
@@ -763,6 +805,8 @@ it.each([
 	["terminal-error-notice", "usage_limit"],
 	["terminal-rate-error", "rate_limited"],
 	["terminal-http-error", "provider_outage"],
+	["terminal-unauthorized", "sign_in_refused"],
+	["terminal-notice-then-null", undefined],
 	["terminal-context-error", undefined],
 	["diagnostic-binding", undefined],
 	["unknown-error-notice", undefined],
@@ -778,6 +822,7 @@ it.each([
 	["terminal-error-notice", "usageLimitExceeded"],
 	["terminal-rate-error", "httpConnectionFailed:429"],
 	["terminal-http-error", "httpConnectionFailed:503"],
+	["terminal-unauthorized", "unauthorized"],
 	["terminal-context-error", "contextWindowExceeded"],
 	// A completion without a discriminant keeps the name a notice gave; alone it says `null`.
 	["terminal-notice-then-null", "unauthorized"],
@@ -1117,25 +1162,25 @@ it("leaves the turn open after a confirmed final send: the model ends it, and th
 	});
 });
 /** A bookkeeping tool of the run's (CLOUD_AFTER_ANSWER_TOOLS), as the fixture calls it. */
-function wallTool(execute = vi.fn(async () => ({ kind: "text" as const, value: "PUBLIC_WALL" }))): CloudNativeTool {
+function todoTool(execute = vi.fn(async () => ({ kind: "text" as const, value: "PUBLIC_TODO" }))): CloudNativeTool {
 	return {
-		name: "update_wall",
+		name: "manage_todo",
 		source: "company_file",
-		description: "Synthetic wall.",
+		description: "Synthetic todo.",
 		inputSchema: { type: "object", properties: {}, additionalProperties: false },
 		parseArguments: () => ({}),
 		execute,
 	};
 }
 it("runs the run's bookkeeping after the answer, and the turn goes on until the model ends it", async () => {
-	const execute = vi.fn(async () => ({ kind: "text" as const, value: "PUBLIC_WALL" }));
-	const { result, evidence } = run("final-send-then-tail", { tools: [publicSendTool(), wallTool(execute)] });
+	const execute = vi.fn(async () => ({ kind: "text" as const, value: "PUBLIC_TODO" }));
+	const { result, evidence } = run("final-send-then-tail", { tools: [publicSendTool(), todoTool(execute)] });
 	await expect(result).resolves.toMatchObject({ toolCalls: 2, fencedRequests: 2 });
 	const recorded = JSON.parse(await readFile(evidence, "utf8"));
 	expect(recorded.interrupt).toBeNull();
 	expect(execute).toHaveBeenCalledOnce();
-	const wall = JSON.parse(recorded.outputs[1].output);
-	expect(wall).toMatchObject({ status: "ok", content: { text: "PUBLIC_WALL" } });
+	const todo = JSON.parse(recorded.outputs[1].output);
+	expect(todo).toMatchObject({ status: "ok", content: { text: "PUBLIC_TODO" } });
 });
 it("lets the answer's own call again after it: its key replays it, and the turn goes on", async () => {
 	const send = publicSendTool();
@@ -1628,6 +1673,88 @@ it("keeps the agent's own words, never its reasoning, with the next step of its 
 	expect(stored).not.toMatch(/PRIVATE_REASONING_CANARY|PUBLIC_REPLY_CANARY/);
 });
 
+describe("web search on a Codex login", () => {
+	it("is on for the agent's thread alone, from the provider's cached index, through Codex's own web.run", async () => {
+		const { result, evidence } = run("model-selection");
+		await result;
+		const recorded = JSON.parse(await readFile(evidence, "utf8"));
+		expect(recorded.configuration).toMatchObject({
+			web_search: "disabled",
+			features: { standalone_web_search: true },
+		});
+		expect(recorded.threadParameters.config).toEqual({ web_search: "cached" });
+		expect(CLOUD_CODEX_BOUNDARY_CONFIG).toContain("features.standalone_web_search=true");
+	});
+
+	it.each([
+		["test-provider", undefined],
+		["test-provider-search", { web_search: "cached" }],
+	])("is on through another provider only where Codex has its own web.run: %s", async (mode, config) => {
+		const { result, evidence } = run(mode);
+		await result;
+		expect(JSON.parse(await readFile(evidence, "utf8")).threadParameters.config).toEqual(config);
+	});
+
+	it("issues a search's result as one of Codex's own and keeps the search as a step of the run's work log", async () => {
+		const runId = randomUUID();
+		const log = new CloudRunLog({
+			runId,
+			conversationId: randomUUID(),
+			signal: new AbortController().signal,
+			protection: {
+				narrow: async () => ({ log: false, narrow: false }),
+				hashes: async (run, digests) =>
+					digests.map((digest) =>
+						createHmac("sha256", "web-search-test-key").update(`${run}:${digest}`).digest("hex"),
+					),
+			},
+			folder: {
+				locate: async () => ({ path: `runs/${runId}`, exists: true, missing: [], last: null, generation: 0 }),
+				read: async () => null,
+				commit: async (_key, units) => ({
+					commitId: randomUUID(),
+					seq: 1,
+					replay: false,
+					units: units.map((unit, index) => {
+						if (unit.op !== "write") throw new Error("Unexpected unit");
+						return {
+							unit: index,
+							op: unit.op,
+							path: unit.path,
+							to: null,
+							version: unit.path,
+							outcome: "saved" as const,
+							reason: null,
+							problems: [],
+						};
+					}),
+				}),
+			},
+		});
+		const { result, evidence } = run("web-search", { runLog: log });
+		await expect(result).resolves.toMatchObject({ fencedRequests: 2 });
+		const recorded = JSON.parse(await readFile(evidence, "utf8"));
+		expect(recorded.threadParameters.config).toEqual({ web_search: "cached" });
+		const [search, other] = recorded.reply.outputs.map((output: { output: string }) => JSON.parse(output.output));
+		expect(search).toMatchObject({
+			trust: "untrusted_data",
+			status: "unconfirmed",
+			provenance: { callId: "ws_call" },
+			content: { text: "SEARCH_RESULT_CANARY", truncated: false },
+		});
+		expect(other).toMatchObject({ status: "unconfirmed", provenance: { callId: "ws_other" } });
+		await log.close(new AbortController().signal);
+		expect(log.steps()).toEqual([
+			expect.objectContaining({
+				call: "ws_call",
+				tool: "web_search",
+				args: JSON.stringify({ query: "PRIVATE_QUERY_CANARY prices" }),
+				result: expect.stringContaining("SEARCH_RESULT_CANARY"),
+			}),
+		]);
+	});
+});
+
 it("clears writing and its renewal timer when composition is cancelled", async () => {
 	const abort = new AbortController();
 	const f = composing("composition-held", abort.signal);
@@ -1649,13 +1776,22 @@ it("clears writing and its renewal timer when composition is cancelled", async (
 // started while the agent's tool call is open. Its only output is its verdict tool
 // call; its model requests pass the fence on their own lane, never as the agent's.
 function reviewRun(
-	mode: "review" | "review-no-verdict" | "review-wrong-tool" | "review-context" | "review-compact",
+	mode:
+		| "review"
+		| "review-no-verdict"
+		| "review-busy-notice"
+		| "review-busy-turn"
+		| "review-busy-retrying"
+		| "review-wrong-tool"
+		| "review-context"
+		| "review-compact",
 	composeContext?: Parameters<typeof runCloudCodexToolSession>[0]["composeContext"],
 	compactor?: MemoryCompactChannel,
 	request = "Email Bob.",
 ) {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: "Sent." }));
 	const reviewer = new CloudActionReviewChannel();
+	const reviewErrors: unknown[] = [];
 	const signal = new AbortController().signal;
 	const boundary = new CloudNativeToolBoundary({
 		companyId: randomUUID(),
@@ -1680,9 +1816,16 @@ function reviewRun(
 						? { state: "review", agent: { name: "Tina" }, company: { name: "Acme" }, requester: null, rules: [] }
 						: { reviewId: "review-1", decision: "allow", card: false, reason: "Fine." },
 			},
-			reviewer,
+			reviewer: {
+				review: (input, reviewSignal) =>
+					reviewer.review(input, reviewSignal).catch((error: unknown) => {
+						reviewErrors.push(error);
+						throw error;
+					}),
+			},
 			request,
 			holdMs: 0,
+			reviewWaitsMs: [],
 		}),
 	});
 	const contextViews: string[] = [];
@@ -1701,7 +1844,7 @@ function reviewRun(
 		...(compactor ? { compactor } : {}),
 		signal,
 	});
-	return { result, execute, evidence, contextViews };
+	return { result, execute, evidence, contextViews, reviewErrors };
 }
 
 it("cuts webhook signing secrets out of the action review's prompt it sends Codex", async () => {
@@ -1772,8 +1915,26 @@ it("composes only the agent's requests from its run, never a reviewer's", async 
 	});
 });
 
+it("tells the review step that a reviewer the provider turned away is busy, so it may ask again (17 November 2026)", async () => {
+	for (const [mode, busy] of [
+		["review-busy-notice", true],
+		["review-busy-turn", true],
+		["review-busy-retrying", false],
+	] as const) {
+		const { result, execute, evidence, reviewErrors } = reviewRun(mode);
+		await expect(result, mode).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(execute, mode).not.toHaveBeenCalled();
+		expect(reviewErrors, mode).toEqual([expect.any(Error)]);
+		expect(reviewErrors[0] instanceof CloudActionReviewBusy, mode).toBe(busy);
+		const recorded = JSON.parse(await readFile(evidence, "utf8"));
+		expect(JSON.parse(recorded.reply.result.contentItems[0].text).content.text, mode).toBe(CLOUD_REVIEW_UNAVAILABLE);
+	}
+});
+
 it("never runs an acting call when the reviewer ends without a verdict", async () => {
-	const { result, execute, evidence } = reviewRun("review-no-verdict");
+	const { result, execute, evidence, reviewErrors } = reviewRun("review-no-verdict");
+	expect(await result.then(() => reviewErrors)).toEqual([expect.any(Error)]);
+	expect(reviewErrors[0]).not.toBeInstanceOf(CloudActionReviewBusy);
 	await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
 	expect(execute).not.toHaveBeenCalled();
 	const recorded = JSON.parse(await readFile(evidence, "utf8"));
@@ -2437,8 +2598,7 @@ describe("a picture call", () => {
 				config: { "features.image_generation": true, "features.omit_app_server_notification_media": true },
 			},
 		]);
-		// The agent's thread starts with the process's configuration alone, where the feature is off.
-		expect(recorded.mainThread).not.toHaveProperty("config");
+		expect(recorded.mainThread.config).toEqual({ web_search: "cached" });
 		expect(recorded.configuration.features.image_generation).toBe(false);
 		expect(recorded.configuration.features).not.toHaveProperty("omit_app_server_notification_media");
 		expect(recorded.turn).toEqual({
@@ -2577,6 +2737,33 @@ describe("a picture call", () => {
 		await f.endTurn();
 		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
 		expect((await f.recorded()).threads).toEqual([]);
+	});
+
+	it("makes pictures on a light run's side thread, which never starts the agent's thread", async () => {
+		const pictures = new CloudPictureChannel();
+		let made: unknown;
+		const { result, evidence, execute } = run("picture-light", {
+			tools: [],
+			pictures,
+			light: async (_ask, signal) => {
+				made = await pictures.make(apple, signal);
+			},
+		});
+		const session = await result;
+		expect(made).toEqual({ png: TINY_PNG, revisedPrompt: "a red apple", transparent: true });
+		expect(session.providerSessionId).toMatch(/^light:[0-9a-f-]{36}$/);
+		expect(execute).not.toHaveBeenCalled();
+		const recorded = JSON.parse(await readFile(evidence, "utf8"));
+		expect(recorded.mainThread ?? null).toBeNull();
+		expect(recorded.threads).toHaveLength(1);
+		expect(recorded.threads[0]).toMatchObject({
+			developerInstructions: CLOUD_PICTURE_MAKER_RULE,
+			dynamicTools: [],
+			sandbox: "read-only",
+			config: { "features.image_generation": true },
+		});
+		expect(existsSync(recorded.savedPath)).toBe(false);
+		expect(pictures.attached).toBe(false);
 	});
 
 	it("gives a run on a member's ChatGPT plan no pictures", async () => {
