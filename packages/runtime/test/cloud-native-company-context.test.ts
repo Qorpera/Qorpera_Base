@@ -2122,7 +2122,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "33b7fa81adbffcbafdc44b99d6deffc391d0ba54dc9033f001908fb32dcd2b3e",
+			instructions: "06795ee23938070425160ed3a509ec0870c540a9c405e2ead51a338938a232e4",
 			prompt: "44a41b632be600e8f1070908278c1a70e1b044e95c40f957a5b2d5b81d682bf1",
 		},
 	],

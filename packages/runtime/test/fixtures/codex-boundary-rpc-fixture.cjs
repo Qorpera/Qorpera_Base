@@ -277,10 +277,13 @@ async function handle(message) {
 		if (mode === "nested-cloud-tools") configuration.features.code_mode.direct_only_tool_namespaces = [];
 		if (mode === "skill-route") configuration.orchestrator.skills.enabled = true;
 		if (mode === "fast-mode-off") configuration.features.fast_mode = false;
+		if (mode === "web-search-off") delete configuration.features.standalone_web_search;
+		if (mode === "plan-web-search") configuration.features.standalone_web_search = true;
 		if (mode === "tier-dropped") delete configuration.service_tier;
 		if (mode === "plan-provider-dropped") delete configuration.model_provider;
 		if (mode === "plan-provider-on-codex") configuration.model_provider = "qorpera_chatgpt_plan";
-		if (mode === "test-provider") configuration.model_provider = "fixture_provider";
+		if (mode.startsWith("test-provider")) configuration.model_provider = "fixture_provider";
+		if (mode === "test-provider-search") configuration.model_providers = { fixture_provider: { name: "Fixture", supports_standalone_web_search: true } };
 		write({ id: message.id, result: { config: configuration } });
 	} else if (message.method === "skills/list") {
 		write({ id: message.id, result: { data: [{ skills: mode === "extra-skills" ? [{ name: "PRIVATE_UNCONTROLLED_SKILL" }] : [], errors: [] }] } });
@@ -586,7 +589,7 @@ async function handle(message) {
 	} else if (message.method === "turn/start") {
 		mainTurns++;
 		turnParameters = message.params;
-		if (mode === "model-selection") writeFileSync(evidencePath, JSON.stringify({ threadParameters, turnParameters, configuration }));
+		if (mode === "model-selection" || mode.startsWith("test-provider")) writeFileSync(evidencePath, JSON.stringify({ threadParameters, turnParameters, configuration }));
 		if (mode === "turn-request-rejected") {
 			write({ id: message.id, error: { code: -32000, message: "PRIVATE_TURN_REQUEST_ERROR" } });
 			return;
@@ -611,6 +614,19 @@ async function handle(message) {
 			...(mode === "wrong-fence-turn" ? { turnId: "other_turn" } : {}),
 		});
 		if (mode === "turn-stalled") return;
+		if (mode === "web-search") {
+			const search = (method, id, at, query) => write({ method, params: { ...at, item: { type: "webSearch", id, query, action: query ? { type: "search", query } : null } } });
+			search("item/started", "ws_call", { threadId, turnId }, "");
+			search("item/completed", "ws_call", { threadId, turnId }, "PRIVATE_QUERY_CANARY prices");
+			search("item/completed", "ws_other", { threadId: "other_thread", turnId: "other_turn" }, "OTHER_QUERY");
+			const reply = await fence([
+				{ kind: "function_call_output", callId: "ws_call", output: [{ type: "input_text", text: "SEARCH_RESULT_CANARY" }] },
+				{ kind: "function_call_output", callId: "ws_other", output: "OTHER_RESULT" },
+			]);
+			writeFileSync(evidencePath, JSON.stringify({ threadParameters, configuration, reply }));
+			done();
+			return;
+		}
 		if (mode.startsWith("compact-open-")) {
 			// The run ends while a compactor send is open: its provider's signal, or none, stops that send.
 			while (!existsSync(evidencePath)) await new Promise((resolve) => setTimeout(resolve, 5));
