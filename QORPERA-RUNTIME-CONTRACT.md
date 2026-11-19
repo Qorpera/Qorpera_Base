@@ -7231,6 +7231,25 @@ bundle; no migration, host call or image moves.
    an agent's. A kept version may name the member who added it (`userId`); an agent's never does.
 4. **Order.** The object gateway and the member company gateway function, then the web.
 
+### 2026-11-18 amendment: a sign-in the provider refused renews at once
+
+> The founder, 18 November 2026, to "Should I build it so a new sign-in replaces the dead one and the card says 'Sign in
+> again'?": "Yes, build it". Section 17's typed usage signals gain one kind; it goes live with migration
+> `20260930808000` and a runtime bundle. The details are in `deploy/first-node/RUNTIME-LOGIN-VAULT.md`, "A pass the
+> provider refuses".
+
+1. **The signal.** A Codex turn that ends with the pinned discriminant `unauthorized` is the usage signal
+   `sign_in_refused`, recorded against the run's exact binding as the others are. No other discriminant, status or text
+   raises it. It never moves work to another login.
+2. **The renewal.** The signal makes the paying login's renewal due now (for a plan login, not before OpenAI's earliest
+   renewal time), through the one renewal lock; a refused renewal sets `needs_sign_in` as before. In a plan login's
+   window before that time, the 30-minute hold can lapse and a member's message can use up its five waits before a
+   renewal is allowed.
+3. **The wait.** Until the renewal's outcome (at most 30 minutes), new work paid by the login waits as at a usage limit,
+   and a member's message that had no effect waits and tries again on the same login as at a rate limit
+   (`paused_for: "sign_in_refused"`). The recovery read of a failed run says `sign_in_refused` once its login needs a
+   new sign-in.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema

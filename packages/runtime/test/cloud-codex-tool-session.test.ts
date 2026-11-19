@@ -793,6 +793,8 @@ it.each([
 	["terminal-error-notice", "usage_limit"],
 	["terminal-rate-error", "rate_limited"],
 	["terminal-http-error", "provider_outage"],
+	["terminal-unauthorized", "sign_in_refused"],
+	["terminal-notice-then-null", undefined],
 	["terminal-context-error", undefined],
 	["diagnostic-binding", undefined],
 	["unknown-error-notice", undefined],
@@ -808,6 +810,7 @@ it.each([
 	["terminal-error-notice", "usageLimitExceeded"],
 	["terminal-rate-error", "httpConnectionFailed:429"],
 	["terminal-http-error", "httpConnectionFailed:503"],
+	["terminal-unauthorized", "unauthorized"],
 	["terminal-context-error", "contextWindowExceeded"],
 	// A completion without a discriminant keeps the name a notice gave; alone it says `null`.
 	["terminal-notice-then-null", "unauthorized"],

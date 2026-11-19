@@ -525,12 +525,9 @@ export const CLOUD_CODEX_BOUNDARY_CONFIG: readonly string[] = cloudCodexBoundary
 );
 
 function providerBusy(error: unknown): boolean {
-	return (
-		!!error &&
-		typeof error === "object" &&
-		!Array.isArray(error) &&
-		nativeRuntimeUsageSignal((error as Record<string, unknown>).codexErrorInfo) !== null
-	);
+	if (!error || typeof error !== "object" || Array.isArray(error)) return false;
+	const signal = nativeRuntimeUsageSignal((error as Record<string, unknown>).codexErrorInfo);
+	return signal !== null && signal !== "sign_in_refused";
 }
 
 function object(value: unknown): Record<string, unknown> {
