@@ -6,6 +6,7 @@ import {
 	type MyGoodWill,
 	type MyGoodWillCompany,
 } from "../../cloud/good-will.ts";
+import { companyInSentence, companyNameText } from "../../ui/company-name.ts";
 import { button, fmtDate, h, notice, replace } from "../../ui/dom.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
 
@@ -166,7 +167,7 @@ export class GoodWillView {
 				{ class: "settings-lead" },
 				t(
 					"We lend you our machines for free as an investment in your company. In exchange, {company} pays a good will tax to Qorpera. The more you earn, the smaller the tax rate.",
-					{ company: name },
+					{ company: companyInSentence(name) },
 				),
 			),
 		];
@@ -358,7 +359,7 @@ export class MyGoodWillView {
 						h(
 							"div",
 							{ class: "settings-copy" },
-							h("strong", null, company.name),
+							h("strong", null, companyNameText(company.name)),
 							h(
 								"small",
 								null,

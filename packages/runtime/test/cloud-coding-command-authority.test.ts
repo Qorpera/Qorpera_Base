@@ -5,8 +5,15 @@ import type { CloudCodingCommandHttpRequest } from "../src/cloud-coding-command-
 import { cloudNativeToolOperationEnvelope } from "../src/cloud-native-tool-operations.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
-function fixture(timeoutMs: number | null = 1000) {
-	const { authority, binding } = nativeToolAuthorityFixture();
+function fixture(timeoutMs: number | null = 1000, reasoningEffort?: "xhigh" | "max") {
+	const fixed = nativeToolAuthorityFixture();
+	const { binding } = fixed;
+	const authority = reasoningEffort
+		? {
+				...fixed.authority,
+				identity: { ...fixed.authority.identity, reasoningEffort } as typeof fixed.authority.identity,
+			}
+		: fixed.authority;
 	const scope = { workerId: randomUUID(), vmId: randomUUID(), requestId: randomUUID(), turn: 1 };
 	const operationKey = "build:1";
 	const command = "printf 'test € 😀'";
@@ -38,6 +45,12 @@ describe("coding command receipt binding", () => {
 	it("verifies exact canonical operation bytes including Unicode", async () => {
 		const f = fixture();
 		expect(await authorizeCodingCommand(f, f.request, f.signal)).toEqual({ inputSha256: f.inputSha256 });
+	});
+	it("authorizes a command of a member's turn at extra high and refuses max", async () => {
+		const f = fixture(1000, "xhigh");
+		expect(await authorizeCodingCommand(f, f.request, f.signal)).toEqual({ inputSha256: f.inputSha256 });
+		const max = fixture(1000, "max");
+		await expect(authorizeCodingCommand(max, max.request, max.signal)).rejects.toThrow();
 	});
 	it("binds a command without a deadline to the arguments the tool recorded without one", async () => {
 		const f = fixture(null);

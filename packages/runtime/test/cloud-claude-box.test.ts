@@ -5,6 +5,8 @@ import {
 	CLAUDE_BOX_DENY,
 	CLAUDE_BOX_HOME_FOLDERS,
 	CLAUDE_BOX_PATHS,
+	CLAUDE_BOX_TOOLS,
+	CLAUDE_BOX_TOOLS_KEPT_OUT,
 	CLAUDE_CODE_MINIMUM_VERSION,
 	CLAUDE_CODE_PIN,
 	claudeBoxArguments,
@@ -92,12 +94,10 @@ it("starts Claude Code in print mode with settings from the box alone", () => {
 		"user",
 		"--strict-mcp-config",
 		"--tools",
-		"Bash,Read,Edit,Write,NotebookEdit,Grep,Glob,TaskStop",
+		"Bash,Read,Edit,Write,NotebookEdit,Grep,Glob,TaskStop,Task,WebSearch,Skill,ToolSearch,TaskCreate,TaskGet,TaskList,TaskUpdate,ReportFindings,Monitor",
 	]);
 	expect(claudeBoxArguments({ tools: ["Bash", "Read"] }).slice(-2)).toEqual(["--tools", "Bash,Read"]);
-	// The list only narrows: nothing outside the eight, nothing twice, never empty (an empty list would mean "no
-	// restriction" to nobody, and "all" to a careless reader).
-	for (const tools of [[], ["Bash", "Bash"], ["Bash", "WebFetch"], ["Task"], ["default"]])
+	for (const tools of [[], ["Bash", "Bash"], ["Bash", "WebFetch"], ["Workflow"], ["SendMessage"], ["default"]])
 		expect(() => claudeBoxArguments({ tools: tools as never })).toThrow("Invalid Claude tools");
 	expect(claudeBoxArguments({ model: "claude-opus-5-5" }).slice(-2)).toEqual(["--model", "claude-opus-5-5"]);
 	expect(() => claudeBoxArguments({ model: "x --settings /tmp/evil" })).toThrow("Invalid Claude model");
@@ -112,6 +112,56 @@ it("starts Claude Code in print mode with settings from the box alone", () => {
 	for (const effort of ["", "ultra", "high --settings /tmp/evil"])
 		expect(() => claudeBoxArguments({ effort })).toThrow("Invalid Claude effort");
 	expect(claudeBoxArguments()).not.toContain("--effort");
+});
+
+it("offers every built-in tool of Claude Code 2.1.325's print mode but the ten that reach past the box or the run", () => {
+	const printMode = [
+		"Task",
+		"Bash",
+		"CronCreate",
+		"CronDelete",
+		"CronList",
+		"Edit",
+		"EnterWorktree",
+		"ExitWorktree",
+		"Glob",
+		"Grep",
+		"ListAgents",
+		"Monitor",
+		"NotebookEdit",
+		"Read",
+		"ReportFindings",
+		"ScheduleWakeup",
+		"SendMessage",
+		"Skill",
+		"TaskCreate",
+		"TaskGet",
+		"TaskList",
+		"TaskStop",
+		"TaskUpdate",
+		"ToolSearch",
+		"WebFetch",
+		"WebSearch",
+		"Workflow",
+		"Write",
+	];
+	const keptOut = Object.keys(CLAUDE_BOX_TOOLS_KEPT_OUT);
+	expect(keptOut.sort()).toEqual([
+		"CronCreate",
+		"CronDelete",
+		"CronList",
+		"EnterWorktree",
+		"ExitWorktree",
+		"ListAgents",
+		"ScheduleWakeup",
+		"SendMessage",
+		"WebFetch",
+		"Workflow",
+	]);
+	expect([...CLAUDE_BOX_TOOLS, ...keptOut].sort()).toEqual(printMode.sort());
+	for (const tool of keptOut)
+		expect(() => claudeBoxArguments({ tools: [tool as never] })).toThrow("Invalid Claude tools");
+	expect(claudeBoxArguments().at(-1)?.split(",")).toEqual([...CLAUDE_BOX_TOOLS]);
 });
 
 it("hands a token in on descriptor 3 only, and keeps HOME and the config folder in the box", () => {

@@ -8,7 +8,7 @@ supports, with its count beside it. A step nobody has shown dissolves into fog w
 ## Fields
 
 - `lang`: language code, such as `"da"`.
-- `title`: up to 40 characters. `line`: one quiet line, up to 60.
+- `title`: up to 40 characters. `line`: up to 60. Both are read only by screen readers; the page draws no title block.
 - `words`: the page's own words in your language: `known`, `assumed`, `unknown`, `total` ("in all"), `noMarks`,
   `close`, `next`, `empty`, `tell`, `told`.
 - `markWord`: what a mark is called, `{"one": "source", "many": "sources"}`.

@@ -211,7 +211,7 @@ begin
 	if f.session_id is distinct from pg_temp.thread(a1) or f.environment_id is distinct from '70700000-0000-4000-8000-000000000020'
 		or f.source_path_version is distinct from (pg_temp.staff(a1)).folder_path_version
 		or k.kind is distinct from 'kickoff' or k.author_user_id is distinct from '70700000-0000-4000-8000-000000000001'
-		or k.client_input_id is distinct from md5('qorpera.folder-agent-first-run:' || a1::text)::uuid
+		or k.client_input_id is null
 		or k.body -> 'assignment' ->> 'kind' is distinct from 'staff_startup' or k.body -> 'assignment' ->> 'staffAgentId' is distinct from a1::text
 		or k.body is distinct from f.startup_assignment then
 		raise exception 'The hire''s first run: % / %', to_jsonb(f), to_jsonb(k); end if;
@@ -226,7 +226,7 @@ begin
 		(select jsonb_agg(to_jsonb(x)) from public.qorpera_folder_follow_ups x); end if;
 	v := public.qorpera_folder_follow_up_now('70700000-0000-4000-8000-000000000020', 'agent', a1);
 	if v ->> 'result' is distinct from 'clean' or pg_temp.authority_rows() <> v_rows + 1
-		or (select count(*) from public.qorpera_session_inputs where client_input_id = md5('qorpera.folder-agent-first-run:' || a1::text)::uuid) <> 1
+		or (select count(*) from public.qorpera_session_inputs where kind = 'kickoff' and body #>> '{assignment,staffAgentId}' = a1::text) <> 1
 		or (select count(*) from public.qorpera_session_turn_requests where input_id = k.id) <> 1 then
 		raise exception 'A repeat changes nothing: %', v; end if;
 end $$;
@@ -500,7 +500,7 @@ begin
 	raise exception 'The transcript import is still uploading' using errcode = '55000';
 end $$;
 create trigger p15_test_refuse_kickoff before insert on public.qorpera_session_inputs for each row
-	when (new.client_input_id = md5('qorpera.folder-agent-first-run:87700000-0000-4000-8000-0000000000b2')::uuid)
+	when (new.kind = 'kickoff' and new.body #>> '{assignment,staffAgentId}' = '87700000-0000-4000-8000-0000000000b2')
 	execute function public.p15_test_refuse_kickoff();
 do $$
 declare a12 constant uuid := '87700000-0000-4000-8000-0000000000b2'; v jsonb; w public.qorpera_folder_follow_ups;
@@ -527,12 +527,12 @@ end $$;
 do $$
 declare a1 constant uuid := '87700000-0000-4000-8000-0000000000a1'; v jsonb; v_inputs bigint;
 begin
-	v_inputs := (select count(*) from public.qorpera_session_inputs where client_input_id = md5('qorpera.folder-agent-first-run:' || a1::text)::uuid);
+	v_inputs := (select count(*) from public.qorpera_session_inputs where kind = 'kickoff' and body #>> '{assignment,staffAgentId}' = a1::text);
 	perform pg_temp.expect(pg_temp.save(pg_temp.owner(), 'reactivate-a1', jsonb_build_array(pg_temp.agent('ada', a1, 'active'))), 1, 'saved');
 	v := pg_temp.step();
 	if v ->> 'result' is distinct from 'done' or (pg_temp.rt('87700000-0000-4000-8000-0000000000f1')).status is distinct from 'paused'
 		or pg_temp.connectors(a1) = 0
-		or (select count(*) from public.qorpera_session_inputs where client_input_id = md5('qorpera.folder-agent-first-run:' || a1::text)::uuid)
+		or (select count(*) from public.qorpera_session_inputs where kind = 'kickoff' and body #>> '{assignment,staffAgentId}' = a1::text)
 			<> v_inputs then
 		raise exception 'A reactivation keeps the routines paused and makes no second first run: %', v; end if;
 	-- The owner's paid save of the unchanged file resumes it.

@@ -1,6 +1,7 @@
 import { describeError } from "../../cloud/client.ts";
 import type { WebMemberFolder } from "../../cloud/company-folder-writes.ts";
 import { companyLogos } from "../../ui/company-logos.ts";
+import { companyNameText, isUnnamed } from "../../ui/company-name.ts";
 import { companyLogo, h, icon, notice, replace } from "../../ui/dom.ts";
 import { choosePictureCrop } from "../../ui/picture-cropper.ts";
 import { PictureFileError } from "../../ui/picture-file.ts";
@@ -103,8 +104,11 @@ export class CompanyBrandView {
 	update(): void {
 		if (this.#options.signal.aborted) return;
 		const manage = this.#options.canManage();
-		if (!this.#logoSlot.firstChild)
-			replace(this.#logoSlot, companyLogo(this.#options.profileId, "settings-brand-figure"));
+		const unnamed = isUnnamed(this.#options.name());
+		if (!this.#logoSlot.firstChild || this.#logoSlot.dataset.unnamed !== String(unnamed)) {
+			this.#logoSlot.dataset.unnamed = String(unnamed);
+			replace(this.#logoSlot, companyLogo(this.#options.profileId, "settings-brand-figure", unnamed));
+		}
 		this.#logoButton.disabled = !manage || this.#busy;
 		this.#logoButton.classList.toggle("is-changeable", manage);
 		this.#logoButton.toggleAttribute("aria-busy", this.#busy);
@@ -116,7 +120,7 @@ export class CompanyBrandView {
 		this.#logoButton.setAttribute("aria-label", label);
 		this.#logoButton.title = manage ? label : "";
 		if (!manage) this.#setMenu(false);
-		replace(this.#nameSlot, h("strong", null, this.#options.name()));
+		replace(this.#nameSlot, h("strong", null, companyNameText(this.#options.name())));
 	}
 
 	#hasLogo(): boolean {

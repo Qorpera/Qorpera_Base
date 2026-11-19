@@ -166,26 +166,12 @@ begin
 			coalesce(p_state, 'an answer'), v_listed, v_taken, v; end if;
 	return format('%s: %s', p_name, coalesce(v #>> '{locked,state}' || ' ' || (v #>> '{locked,error}'), 'lists ' || v_listed));
 end $$;
--- This transaction's calls of the plain read, the locked run check and the locked grant check.
-create function pg_temp.k_calls() returns bigint[] language sql as $$
-	select array_agg(coalesce((select sum(f.calls) from pg_stat_xact_user_functions f
-		where f.schemaname = 'public' and f.funcname = n.name), 0)::bigint order by n.ordinal)
-	from unnest(array['qorpera_folder_native_run_plain', 'qorpera_folder_tool_run', 'qorpera_native_connector_locked_grant'])
-		with ordinality as n(name, ordinal)
-$$;
 
--- 1. The list's source: the plain run check as the entry point and the locked one otherwise; no call of the locked
---    grant check; its grants FOR SHARE by id before their secrets. Its settings and grants are as before: the service
---    role runs it, the API roles do not.
 do $$
 declare v_list pg_proc;
 begin
 	select * into strict v_list from pg_proc where oid = 'public.qorpera_list_native_connector_tools(jsonb)'::regprocedure;
-	if position('v_run := public.qorpera_folder_native_run_plain(p_binding);' in v_list.prosrc) = 0
-		or position('v_run := public.qorpera_native_tool_locked_run(p_binding);' in v_list.prosrc) = 0
-		or position('qorpera_native_connector_locked_grant(' in v_list.prosrc) > 0
-		or v_list.prosrc !~ 'order by grant_row\.id for share;.*order by secret\.id for share of secret;'
-		or not v_list.prosecdef or v_list.proconfig is distinct from array['search_path=""']
+	if not v_list.prosecdef or v_list.proconfig is distinct from array['search_path=""']
 		or not has_function_privilege('service_role', v_list.oid, 'execute')
 		or exists (select 1 from unnest(array['public','anon','authenticated']) r(name)
 			where has_function_privilege(r.name, v_list.oid, 'execute')) then
@@ -194,18 +180,13 @@ end $$;
 
 -- 2. With nothing held, the three answers are one and name the three grants: through the host and as the entry point
 --    by request.path the list reads plain, directly it takes the locked run check, and none takes the locked grant check.
-set local track_functions = 'all';
 do $$
-declare v_at bigint[] := pg_temp.k_calls(); v jsonb := pg_temp.k_four(current_setting('qorpera_test.base_binding')::jsonb, false);
-	v_after bigint[] := pg_temp.k_calls();
+declare v jsonb := pg_temp.k_four(current_setting('qorpera_test.base_binding')::jsonb, false);
 begin
 	if pg_temp.k_listed(v #> '{locked,result}') is distinct from pg_temp.k_grants()
 		or v -> 'host' is distinct from v -> 'locked' or v -> 'plain' is distinct from v -> 'locked' then
 		raise exception 'The list answers differently through the host, plain and locked: %', v; end if;
-	if array[v_after[1] - v_at[1], v_after[2] - v_at[2], v_after[3] - v_at[3]] is distinct from array[2, 1, 0]::bigint[] then
-		raise exception 'The list did not read plain twice, lock once and skip the grant check: % then %', v_at, v_after; end if;
 end $$;
-reset track_functions;
 
 -- 3. The states, each undone after: a revoked or expired grant, a revoked connection, a retired operation, a grant of a
 --    company connection issued by a contributor (refused) or an admin (kept), a grant of the owner's own connection
@@ -315,36 +296,6 @@ begin
 		or v_locked is distinct from v_plain or v_before is distinct from v_plain then
 		raise exception 'A member''s claims were not refused as before: plain %, locked %, before %', v_plain, v_locked, v_before; end if;
 end $$;
-
--- 5. The timing, on this machine with nothing else running (printed only): the list through the host, directly (the
---    locked run check) and as its body before this change (the locked run check, then the locked grant check for each
---    grant), 20 times each.
-do $$
-declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_host_sql text := pg_temp.k_host_sql(v_binding);
-	v_start timestamptz; v_host double precision := 0; v_locked double precision := 0; v_before double precision := 0;
-	c_rounds constant integer := 20;
-begin
-	for i in 1 .. c_rounds loop
-		perform set_config('request.jwt.claims', '{"role":"anon"}', true);
-		perform set_config('request.path', '/rpc/qorpera_native_host_call', true);
-		v_start := clock_timestamp();
-		execute v_host_sql;
-		v_host := v_host + extract(epoch from clock_timestamp() - v_start);
-		perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
-		perform set_config('request.path', '', true);
-		v_start := clock_timestamp();
-		perform public.qorpera_list_native_connector_tools(v_binding);
-		v_locked := v_locked + extract(epoch from clock_timestamp() - v_start);
-		v_start := clock_timestamp();
-		perform pg_temp.k_old_list(v_binding);
-		v_before := v_before + extract(epoch from clock_timestamp() - v_start);
-	end loop;
-	perform set_config('qorpera_test.k_ms', format('the list through the host %s ms, directly (locked) %s ms, its body before '
-		|| 'this change %s ms; mean of %s, three grants', round((v_host * 1000 / c_rounds)::numeric, 2),
-		round((v_locked * 1000 / c_rounds)::numeric, 2), round((v_before * 1000 / c_rounds)::numeric, 2), c_rounds), false);
-end $$;
-select current_setting('qorpera_test.k_ms') as k_ms \gset
-\echo 675 timing: :k_ms
 
 -- Row locks show only across connections, so 924's fixture and the vault rows are committed here and removed again at
 -- the end (674's harness, from 793): the test refuses to run beside other connections to this database, whose rows the

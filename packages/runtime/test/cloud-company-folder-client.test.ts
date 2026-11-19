@@ -1699,7 +1699,7 @@ describe("hooks (E3a)", () => {
 	const MAILBOX = {
 		action: "create",
 		kind: "mailbox",
-		localPart: "sales",
+		localPart: "sales.acme",
 		purpose: "Sales mail.",
 		operationKey: "box-1",
 	} as const;
@@ -1791,18 +1791,18 @@ describe("hooks (E3a)", () => {
 				box,
 				"create",
 				hook(box, {
-					name: "mail-sales",
+					name: "mail-sales-acme-5d41c2",
 					purpose: "Sales mail.",
 					proof: "mail",
 					maxBodyBytes: 262144,
 					perMinute: 120,
-					email: "sales@mail.example.test",
+					email: "sales.acme@mail.example.test",
 				}),
 			),
 		);
 		await expect(box.client.manageHook(MAILBOX, signal())).resolves.toMatchObject({
 			action: "create",
-			hook: { name: "mail-sales", email: "sales@mail.example.test" },
+			hook: { name: "mail-sales-acme-5d41c2", email: "sales.acme@mail.example.test" },
 		});
 		expect(box.calls[0].args).toEqual({ p_binding: box.binding, p_request: MAILBOX });
 		for (const [action, status] of [
@@ -1836,6 +1836,17 @@ describe("hooks (E3a)", () => {
 				"Only owners and admins can open hooks; ask one of them",
 				"Only owners and admins can open hooks; ask one of them",
 			],
+			[
+				"22023",
+				"A new address is a name, a dot and the company's handle, like hello.acme",
+				"A new address is a name, a dot and the company's handle, like hello.acme",
+			],
+			[
+				"42501",
+				"Only a member can choose the company's email handle",
+				"Only a member can choose the company's email handle",
+			],
+			["23505", "This address is taken", "This address is taken"],
 			[
 				"23505",
 				"logical operation key is already bound to other work",
@@ -1927,12 +1938,16 @@ describe("hooks (E3a)", () => {
 			[
 				MAILBOX,
 				(f: Fixture) =>
-					receipt(f, "create", hook(f, { name: "mail-sales", proof: "mail", email: "support@mail.example.test" })),
+					receipt(
+						f,
+						"create",
+						hook(f, { name: "mail-sales-acme-5d41c2", proof: "mail", email: "support.acme@mail.example.test" }),
+					),
 			],
 			[
 				MAILBOX,
 				(f: Fixture) =>
-					receipt(f, "create", hook(f, { name: "sales", proof: "mail", email: "sales@mail.example.test" })),
+					receipt(f, "create", hook(f, { name: "sales", proof: "mail", email: "sales.acme@mail.example.test" })),
 			],
 			[
 				MAILBOX,
@@ -1940,7 +1955,7 @@ describe("hooks (E3a)", () => {
 					receipt(
 						f,
 						"create",
-						hook(f, { name: "mail-sales", proof: "address", email: "sales@mail.example.test" }),
+						hook(f, { name: "mail-sales-acme-5d41c2", proof: "address", email: "sales.acme@mail.example.test" }),
 					),
 			],
 			[
@@ -1949,7 +1964,12 @@ describe("hooks (E3a)", () => {
 					receipt(
 						f,
 						"create",
-						hook(f, { name: "mail-sales", proof: "mail", email: "sales@mail.example.test", ...live }),
+						hook(f, {
+							name: "mail-sales-acme-5d41c2",
+							proof: "mail",
+							email: "sales.acme@mail.example.test",
+							...live,
+						}),
 					),
 			],
 		] as const) {

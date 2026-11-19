@@ -10,6 +10,7 @@ import type { JsonValue } from "@qorpera/contracts";
 import {
 	CLOUD_ACTION_REVIEW_SPECIFICATION,
 	CLOUD_ACTION_REVIEW_TOOL,
+	CloudActionReviewBusy,
 	type CloudActionReviewChannel,
 	type CloudActionReviewer,
 } from "./cloud-action-review.ts";
@@ -214,6 +215,7 @@ interface ReviewThread {
 	readonly threadId: string;
 	turnId?: string;
 	verdictReceived: boolean;
+	busy?: true;
 	/** Exact outputs this host issued for the reviewer's calls. */
 	readonly issued: Map<string, string>;
 	resolve(value: unknown): void;
@@ -528,6 +530,15 @@ export const CLOUD_CODEX_BOUNDARY_FIXED_CONFIG: readonly string[] = Object.freez
 export const CLOUD_CODEX_BOUNDARY_CONFIG: readonly string[] = cloudCodexBoundaryConfig(
 	CLOUD_RUNTIME_MODEL_POLICY.effort,
 );
+
+function providerBusy(error: unknown): boolean {
+	return (
+		!!error &&
+		typeof error === "object" &&
+		!Array.isArray(error) &&
+		nativeRuntimeUsageSignal((error as Record<string, unknown>).codexErrorInfo) !== null
+	);
+}
 
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid native boundary protocol");
@@ -1399,8 +1410,20 @@ class CodexBoundaryRpc {
 			if (review.turnId !== undefined && review.turnId !== turnId)
 				review.reject(new Error("Native review binding failed"));
 			else review.turnId = turnId;
+		} else if (message.method === "error" && review && params?.willRetry === false) {
+			if (providerBusy(params.error)) review.busy = true;
 		} else if (message.method === "turn/completed" && review) {
-			if (!review.verdictReceived) review.reject(new Error("Native review ended without a verdict"));
+			if (!review.verdictReceived)
+				review.reject(
+					review.busy ||
+						providerBusy(
+							params?.turn && typeof params.turn === "object"
+								? (params.turn as Record<string, unknown>).error
+								: undefined,
+						)
+						? new CloudActionReviewBusy()
+						: new Error("Native review ended without a verdict"),
+				);
 			this.#endReview(threadId);
 		}
 		// The reviewer's text, reasoning, usage and diagnostics are never delivered or kept.

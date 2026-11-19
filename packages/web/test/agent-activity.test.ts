@@ -259,6 +259,12 @@ describe("shared agent activity", () => {
 			paidWhileAway: true,
 			movable: true,
 		});
+		expect(
+			parseStaffExecutionActivity([{ ...row, ...pause, paused_for: "rate_limited", movable: false }])[0]?.paused,
+		).toMatchObject({ rateLimited: true, movable: false });
+		expect(
+			parseStaffExecutionActivity([{ ...row, ...pause, paused_for: "usage_limit" }])[0]?.paused,
+		).not.toHaveProperty("rateLimited");
 		// An older cloud, or a run that does not wait: nothing.
 		expect(parseStaffExecutionActivity([row])[0]).not.toHaveProperty("paused");
 		expect(parseStaffExecutionActivity([{ ...row, paused_until: null }])[0]).not.toHaveProperty("paused");

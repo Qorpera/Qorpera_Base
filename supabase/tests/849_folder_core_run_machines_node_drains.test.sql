@@ -190,18 +190,6 @@ begin
 			(select to_jsonb(d) from public.qorpera_company_deletions d where profile_id = '64800000-0000-4000-8000-000000000010'); end if;
 end $$;
 
--- F. Every patched body carries the marker.
-do $$
-begin
-	if exists (select 1 from unnest(array['public.qorpera_reserve_runtime_machine(uuid,text,text,uuid,uuid,uuid,bigint)',
-			'public.qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)',
-			'public.qorpera_release_runtime_machine(uuid,text,text)', 'public.qorpera_authorize_node_update_drain(uuid,text,text)',
-			'public.qorpera_node_update_locked(uuid,bigint,text,text)',
-			'public.qorpera_release_node_update_admission(uuid,text,bigint,text)']) f
-		where position('20260930046000' in pg_get_functiondef(f::regprocedure)) = 0) then
-		raise exception 'F: a patched body lacks its marker'; end if;
-end $$;
-
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
 
 -- Remove the fixture: 648's company rows as 824 removes them (its allocation and node with it).

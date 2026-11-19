@@ -7,7 +7,7 @@ member runs a finger or the pointer along the curve and the big number follows. 
 
 ## Fields
 
-- `lang`: language code, such as `"da"`. `title` (40) and `line` (60): the page's name and one quiet line.
+- `lang`: language code, such as `"da"`. `title` (40) and `line` (60): read only by screen readers; the page draws no title block.
 - `unit` (8): the unit after the big number, such as `"kr"` or `"orders"`.
 - `tone`: the curve's colour, `"accent"` (default), `"good"`, `"warn"` or `"bad"`.
 - `points`: 2 to 120 in time order, each `{"label" (12), "value", "band"}`:
@@ -23,7 +23,7 @@ member runs a finger or the pointer along the curve and the big number follows. 
 - `headline`: optional `{"value", "label" (24)}`: the big number when nobody points. Default: the value at now.
 - `words`: the page's own words in your language: `now`, `safe`, `expected`, `assumed`, `unknown`, `between`
   ("{low} to {high}"), `empty`.
-- `source`: an `https:` or `folder:` link to where the numbers come from (a small ↗).
+- `source`: an `https:` or `folder:` link to where the numbers come from. The page does not draw it.
 
 A point's `value` and the `headline`'s may be live from a company database: `{"query": "<database>/<question>",
 "params": {}, "column": "balance", "example": 62400}`. Known once it answers, else not known; `example` shows only

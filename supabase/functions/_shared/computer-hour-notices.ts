@@ -177,7 +177,7 @@ export function parseComputerHourNoticeClaim(value: unknown): { jobs: ComputerHo
 	return { jobs, rejected };
 }
 
-export function computerHourNoticeIdempotencyKey(noticeId: string): string {
+function computerHourNoticeIdempotencyKey(noticeId: string): string {
 	if (!UUID_PATTERN.test(noticeId)) throw new Error("Invalid notice id");
 	return `qorpera-computer-hour-notice/${noticeId}`;
 }

@@ -8,12 +8,15 @@ import { fileURLToPath } from "node:url";
 import {
 	CLOUD_ACTION_REVIEW_INSTRUCTIONS,
 	CLOUD_ACTION_REVIEW_SPECIFICATION,
+	CLOUD_REVIEW_UNAVAILABLE,
+	CloudActionReviewBusy,
 	CloudActionReviewChannel,
 	CloudActionReviewGate,
 } from "@qorpera/runtime/cloud-action-review";
 import {
 	CLOUD_CODEX_BOUNDARY_CONFIG,
 	CodexLineReader,
+	cloudCodexBoundaryConfig,
 	disposeCloudCodexSpares,
 	prefetchCloudCodexArtifact,
 	prepareCloudCodexSpare,
@@ -71,7 +74,7 @@ function run(
 	mode: string,
 	options: {
 		model?: string;
-		reasoningEffort?: "low" | "medium" | "high";
+		reasoningEffort?: "low" | "medium" | "high" | "xhigh";
 		serviceTier?: "fast" | "standard";
 		timeoutMs?: number;
 		identityRoot?: string;
@@ -201,6 +204,18 @@ it("starts a routine turn at the effort its routine chose", async () => {
 	await expect(run("model-selection", { reasoningEffort: "max" as never }).result).rejects.toThrow(
 		"Invalid native boundary input",
 	);
+});
+
+it("starts a member's turn at extra high when the conversation chose it", async () => {
+	const { result, evidence } = run("model-selection", { model: "gpt-6.1-sol", reasoningEffort: "xhigh" });
+	await result;
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.threadParameters.model).toBe("gpt-6.1-sol");
+	expect(recorded).toMatchObject({
+		turnParameters: { effort: "xhigh" },
+		configuration: { model_reasoning_effort: "xhigh" },
+	});
+	expect(cloudCodexBoundaryConfig("xhigh")).toContain('model_reasoning_effort="xhigh"');
 });
 
 it("requires composition telemetry before admitting a model request", async () => {
@@ -1758,13 +1773,22 @@ it("clears writing and its renewal timer when composition is cancelled", async (
 // started while the agent's tool call is open. Its only output is its verdict tool
 // call; its model requests pass the fence on their own lane, never as the agent's.
 function reviewRun(
-	mode: "review" | "review-no-verdict" | "review-wrong-tool" | "review-context" | "review-compact",
+	mode:
+		| "review"
+		| "review-no-verdict"
+		| "review-busy-notice"
+		| "review-busy-turn"
+		| "review-busy-retrying"
+		| "review-wrong-tool"
+		| "review-context"
+		| "review-compact",
 	composeContext?: Parameters<typeof runCloudCodexToolSession>[0]["composeContext"],
 	compactor?: MemoryCompactChannel,
 	request = "Email Bob.",
 ) {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: "Sent." }));
 	const reviewer = new CloudActionReviewChannel();
+	const reviewErrors: unknown[] = [];
 	const signal = new AbortController().signal;
 	const boundary = new CloudNativeToolBoundary({
 		companyId: randomUUID(),
@@ -1789,9 +1813,16 @@ function reviewRun(
 						? { state: "review", agent: { name: "Tina" }, company: { name: "Acme" }, requester: null, rules: [] }
 						: { reviewId: "review-1", decision: "allow", card: false, reason: "Fine." },
 			},
-			reviewer,
+			reviewer: {
+				review: (input, reviewSignal) =>
+					reviewer.review(input, reviewSignal).catch((error: unknown) => {
+						reviewErrors.push(error);
+						throw error;
+					}),
+			},
 			request,
 			holdMs: 0,
+			reviewWaitsMs: [],
 		}),
 	});
 	const contextViews: string[] = [];
@@ -1810,7 +1841,7 @@ function reviewRun(
 		...(compactor ? { compactor } : {}),
 		signal,
 	});
-	return { result, execute, evidence, contextViews };
+	return { result, execute, evidence, contextViews, reviewErrors };
 }
 
 it("cuts webhook signing secrets out of the action review's prompt it sends Codex", async () => {
@@ -1881,8 +1912,26 @@ it("composes only the agent's requests from its run, never a reviewer's", async 
 	});
 });
 
+it("tells the review step that a reviewer the provider turned away is busy, so it may ask again (17 November 2026)", async () => {
+	for (const [mode, busy] of [
+		["review-busy-notice", true],
+		["review-busy-turn", true],
+		["review-busy-retrying", false],
+	] as const) {
+		const { result, execute, evidence, reviewErrors } = reviewRun(mode);
+		await expect(result, mode).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(execute, mode).not.toHaveBeenCalled();
+		expect(reviewErrors, mode).toEqual([expect.any(Error)]);
+		expect(reviewErrors[0] instanceof CloudActionReviewBusy, mode).toBe(busy);
+		const recorded = JSON.parse(await readFile(evidence, "utf8"));
+		expect(JSON.parse(recorded.reply.result.contentItems[0].text).content.text, mode).toBe(CLOUD_REVIEW_UNAVAILABLE);
+	}
+});
+
 it("never runs an acting call when the reviewer ends without a verdict", async () => {
-	const { result, execute, evidence } = reviewRun("review-no-verdict");
+	const { result, execute, evidence, reviewErrors } = reviewRun("review-no-verdict");
+	expect(await result.then(() => reviewErrors)).toEqual([expect.any(Error)]);
+	expect(reviewErrors[0]).not.toBeInstanceOf(CloudActionReviewBusy);
 	await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
 	expect(execute).not.toHaveBeenCalled();
 	const recorded = JSON.parse(await readFile(evidence, "utf8"));

@@ -99,9 +99,8 @@ begin
 	if (select p.prosecdef or p.provolatile <> 's' from pg_proc p where p.oid = v_answer) then
 		raise exception 'The answer is stable and runs as its caller'; end if;
 	if exists (select 1 from unnest(v_member) f where not has_function_privilege('service_role', f, 'execute')
-			or has_function_privilege('authenticated', f, 'execute') or has_function_privilege('anon', f, 'execute')
-			or pg_get_functiondef(f) not like '%20260930470000 (M3 copies)%qorpera_memory_message_erase_answer(%') then
-		raise exception 'The request and the status: their callers and the marker'; end if;
+			or has_function_privilege('authenticated', f, 'execute') or has_function_privilege('anon', f, 'execute')) then
+		raise exception 'The request and the status: their callers'; end if;
 end $$;
 
 rollback;

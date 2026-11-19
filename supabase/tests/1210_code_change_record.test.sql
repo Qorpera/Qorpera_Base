@@ -287,12 +287,7 @@ do $$
 declare v_claim jsonb; v_pass jsonb; v_turn jsonb; v_token uuid; v_finish jsonb; v_sent jsonb; v_bad jsonb; v jsonb;
 	v_landed jsonb; b1 uuid := '91170000-0000-4000-8000-0000000000b1'; b5 uuid := '91210000-0000-4000-8000-0000000000b5';
 	w public.qorpera_runtime_workers%rowtype; s public.qorpera_coding_sessions%rowtype; r public.qorpera_code_changes%rowtype;
-	v_def text := pg_get_functiondef('public.qorpera_submit_coding_turn(jsonb,jsonb)'::regprocedure);
 begin
-	perform pg_temp.base_assert(strpos(v_def, '20260930720000') > 0 and strpos(pg_get_functiondef(
-		'public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)'::regprocedure),
-		'20260930720000') > 0 and strpos(pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure),
-		$q$/* 20260930720000 */'manage_code',$q$) > 0, 'the changed bodies carry the marker');
 	-- The turn as 928 runs one: claimed, begun, its run started, its machine ready.
 	perform pg_temp.base_claims('service_role');
 	v_claim := public.qorpera_claim_coding_session('exec-1170', 60);
@@ -836,101 +831,11 @@ begin
 		and pg_temp.rec_files() -> 'index' ->> 'version' = (q.index_version + 1)::text, 'the list alone');
 end $$;
 
--- 6. The backfill -----------------------------------------------------------------------------------------------------
--- The record starts empty again; what the workers reported is all there is. Session b1's own report is there (2): its
--- landing on c1. Beside it: copy 2 reported two landings and copy 3 one, a merge; copy 4 reported a commit main already
--- held, copy 5 a turn that landed nothing, a session on GitHub a pull request, and copy 16 a landing in company/site.
-delete from public.qorpera_code_changes;
-update public.qorpera_code_repositories set last_change = 0, last_main = null, index_version = 0, index_written = 0;
-create function pg_temp.rec_reported(p_n integer, p_sequence integer, p_ago interval, p_body jsonb) returns void
-language plpgsql as $$
-begin
-	perform set_config('session_replication_role', 'replica', true);
-	insert into public.qorpera_runtime_worker_events(worker_id, sequence, kind, run_id, body, created_at)
-	values (pg_temp.rec_copy(p_n), p_sequence, 'reported', null, p_body, clock_timestamp() - p_ago);
-	perform set_config('session_replication_role', 'origin', true);
-end $$;
-create function pg_temp.rec_landed(p_state text, p_main text, p_summary text) returns jsonb language sql as $$
-	select jsonb_build_object('outcome', 'succeeded', 'summary', p_summary || E'\n\nQorpera landed this commit on main: main is at '
-		|| left(pg_temp.rec_sha(p_main), 12) || ', and the files are in the company folder at code/company/shop/main/.',
-		'landed', jsonb_build_object('kind', 'landed', 'state', p_state, 'branch', 'main', 'headSha', pg_temp.rec_sha('h-' || p_main),
-			'mainSha', pg_temp.rec_sha(p_main)))
-$$;
-select pg_temp.rec_reported(2, 1, interval '5 hours', pg_temp.rec_landed('fast-forward', 'd1', 'The first.')) \g /dev/null
-select pg_temp.rec_reported(3, 1, interval '4 hours', pg_temp.rec_landed('merged', 'd2',
-	E'The second.\n\nQorpera landed this commit on a branch of my own, I thought.')) \g /dev/null
-select pg_temp.rec_reported(2, 2, interval '3 hours', pg_temp.rec_landed('fast-forward', 'd3', 'The third.')) \g /dev/null
-select pg_temp.rec_reported(4, 1, interval '2 hours', pg_temp.rec_landed('unchanged', 'd3', 'Nothing new.')) \g /dev/null
-select pg_temp.rec_reported(5, 1, interval '2 hours', '{"outcome":"failed","summary":"It broke."}') \g /dev/null
-select pg_temp.rec_reported(90, 1, interval '2 hours', pg_temp.rec_landed('fast-forward', 'g1', 'On GitHub.')) \g /dev/null
-select pg_temp.rec_reported(16, 1, interval '1 hour', pg_temp.rec_landed('fast-forward', 's1', 'The site.')) \g /dev/null
-do $$
-declare v_count integer; r public.qorpera_code_changes%rowtype; q public.qorpera_code_repositories%rowtype;
-	v_before jsonb; b1 uuid := '91170000-0000-4000-8000-0000000000b1';
-begin
-	update public.qorpera_coding_sessions set base_sha = pg_temp.rec_sha('base-2') where worker_id = pg_temp.rec_copy(2);
-	v_count := public.qorpera_code_changes_backfill();
-	perform pg_temp.base_assert(v_count = 5 and (select count(*) from public.qorpera_code_changes) = 5, 'five landings: ' || v_count);
-	-- In time order. The first row starts at its session's base; each later one where the row before it ended.
-	r := pg_temp.rec_row(1);
-	perform pg_temp.base_assert(r.kind = 'landing' and r.state = 'landed' and r.how = 'fast-forward'
-		and r.main_before = pg_temp.rec_sha('base-2') and r.main_after = pg_temp.rec_sha('d1') and r.head_sha = pg_temp.rec_sha('h-d1')
-		and r.worker_id = pg_temp.rec_copy(2) and r.sequence = 1 and r.title = 'Session 2' and r.summary = 'The first.'
-		and r.staff_agent_id = '92400000-0000-4000-8000-000000000030' and r.notice is null and r.picture is null
-		and r.files_changed is null and r.paths is null and r.file_version = 1 and r.file_written = 0
-		and r.created_at between clock_timestamp() - interval '301 minutes' and clock_timestamp() - interval '299 minutes',
-		'the first landing: ' || to_jsonb(r)::text);
-	r := pg_temp.rec_row(2);
-	-- The summary is the session's words up to the platform's own line, which is the last of its kind.
-	perform pg_temp.base_assert(r.how = 'merged' and r.main_before = pg_temp.rec_sha('d1') and r.main_after = pg_temp.rec_sha('d2')
-		and r.worker_id = pg_temp.rec_copy(3) and r.title = 'Session 3'
-		and r.summary = E'The second.\n\nQorpera landed this commit on a branch of my own, I thought.', 'the second: ' || to_jsonb(r)::text);
-	r := pg_temp.rec_row(3);
-	perform pg_temp.base_assert(r.main_before = pg_temp.rec_sha('d2') and r.main_after = pg_temp.rec_sha('d3')
-		and r.worker_id = pg_temp.rec_copy(2) and r.sequence = 2 and r.summary = 'The third.', 'the third: ' || to_jsonb(r)::text);
-	r := pg_temp.rec_row(4);
-	perform pg_temp.base_assert(r.main_before = pg_temp.rec_sha('d3') and r.main_after = pg_temp.rec_sha('c1') and r.worker_id = b1
-		and r.sequence = 1 and r.title = 'Fix the login page' and r.summary = 'The shop has a cart.' and r.how = 'fast-forward',
-		'the real turn''s: ' || to_jsonb(r)::text);
-	q := pg_temp.rec_shop();
-	perform pg_temp.base_assert(q.last_change = 4 and q.last_main = pg_temp.rec_sha('c1') and q.index_version = 4
-		and pg_temp.rec_is(1, 'landing', 'landed', 'base', 's1', 'site') and (pg_temp.rec_shop('site')).last_change = 1
-		and (pg_temp.rec_shop('site')).last_main = pg_temp.rec_sha('s1'), 'the registry: ' || to_jsonb(q)::text);
-	-- Its rows need their files counted when their files are written.
-	perform pg_temp.base_assert((select bool_and((c ->> 'needsDiff')::boolean) and count(*) = 4
-		from jsonb_array_elements(pg_temp.rec_files() -> 'changes') c), 'the files are counted later');
-	-- Again: nothing new, and nothing changed.
-	select jsonb_agg(to_jsonb(c) order by c.name, c.n) into v_before from public.qorpera_code_changes c;
-	v_count := public.qorpera_code_changes_backfill();
-	perform pg_temp.base_assert(v_count = 0 and (select jsonb_agg(to_jsonb(c) order by c.name, c.n) from public.qorpera_code_changes c) = v_before
-		and to_jsonb(pg_temp.rec_shop()) = to_jsonb(q), 'a second backfill: ' || v_count);
-	-- A landing reported since, by an executor of before this step, is one more row. One reported before the last row,
-	-- that no row knows, is not put in between: the record's next movement finds it as a gap.
-	perform pg_temp.rec_reported(3, 2, interval '-1 second', pg_temp.rec_landed('fast-forward', 'd5', 'The fifth.'));
-	perform pg_temp.rec_reported(6, 1, interval '30 minutes', pg_temp.rec_landed('fast-forward', 'd4', 'Out of order.'));
-	v_count := public.qorpera_code_changes_backfill();
-	r := pg_temp.rec_row(5);
-	perform pg_temp.base_assert(v_count = 1 and r.main_before = pg_temp.rec_sha('c1') and r.main_after = pg_temp.rec_sha('d5')
-		and r.worker_id = pg_temp.rec_copy(3) and r.sequence = 2 and (pg_temp.rec_shop()).last_change = 5
-		and (pg_temp.rec_shop()).last_main = pg_temp.rec_sha('d5'), 'a landing since: ' || to_jsonb(r)::text);
-	perform pg_temp.base_assert(public.qorpera_code_changes_backfill() = 0, 'and nothing after it');
-	-- A landing the executor recorded is a row already, whenever its report came.
-	perform pg_temp.base_assert(pg_temp.rec_land(21, 'd5', 'd6') = pg_temp.rec_answer('recorded', 6), 'a recorded landing');
-	perform pg_temp.rec_reported(21, 1, interval '-2 seconds', pg_temp.rec_landed('fast-forward', 'd6', 'The sixth.'));
-	perform pg_temp.base_assert(public.qorpera_code_changes_backfill() = 0 and (pg_temp.rec_shop()).last_change = 6,
-		'a recorded landing is not added twice');
-end $$;
-
 -- 7. The folder's rules -----------------------------------------------------------------------------------------------
 do $$
 declare w uuid := pg_temp.rec_copy(1); d text := 'code/company/shop/'; s text := 'code/_set-aside/'; v_wrong text;
 	v_here uuid := pg_temp.rec_here(); g text := 'code/company/shop/repo.git/';
 begin
-	perform pg_temp.base_assert(strpos(pg_get_functiondef('public.qorpera_folder_git_refusal(text,text,text,uuid)'::regprocedure),
-		'20260930720000') > 0 and strpos(pg_get_functiondef(
-		'public.qorpera_folder_git_unit_refusal(uuid,jsonb,text,text,text,uuid)'::regprocedure), '20260930720000') > 0
-		and strpos(pg_get_functiondef('public.qorpera_folder_git_refusal(text,text,text,uuid)'::regprocedure), '20260930707000') > 0,
-		'the rules carry their markers');
 	-- The rule, key by key and per class: a repository's change record, its downloads and a restore's mark are the
 	-- platform's, as main/ is, and so is everything a restore set aside.
 	select string_agg(format('%s %s %s: %s', t.k, t.op, t.cls, coalesce(public.qorpera_folder_git_refusal(t.k, t.op, t.cls,

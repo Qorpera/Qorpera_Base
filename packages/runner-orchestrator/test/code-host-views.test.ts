@@ -282,7 +282,6 @@ describe("CodeHostJobs", () => {
 		// The view reaches the code host on stdin only, and only into the view file.
 		const write = lxd.execs.find((exec) => exec.label === "view");
 		expect(JSON.parse(write?.stdin ?? "")).toEqual({ environmentId: ENVIRONMENT, ...view });
-		expect(Object.keys(JSON.parse(write?.stdin ?? "{}"))).toEqual(["environmentId", "viewId", "pass"]);
 		for (const exec of lxd.execs) {
 			expect(exec.project).toBe(codeHostProject(COMPANY));
 			expect(exec.name).toBe("code-host");

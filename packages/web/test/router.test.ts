@@ -3,29 +3,13 @@ import { appHash, conceptsHash, parseRoute, routeHash } from "../src/app/router.
 import { profileA } from "./fixtures.ts";
 
 describe("company routes", () => {
-	it("opens the company home for a section that no longer exists", () => {
-		// The notification inbox was removed; old links land on the company home.
-		expect(parseRoute(`#/c/${profileA.profileId}/notifications`)).toEqual({
-			name: "company",
-			profileId: profileA.profileId,
-			section: "home",
-		});
-	});
-
-	it.each([
-		"approvals",
-		"organization",
-		`project/00000000-0000-4000-8000-000000000001`,
-		`snapshot/00000000-0000-4000-8000-000000000002`,
-		`proposal/00000000-0000-4000-8000-000000000003`,
-	])("opens the company home for the removed %s page", (section) => {
-		// Settings no longer links to Approvals or Organization, and every company is a folder now, with no
-		// snapshot or proposal pages; old links land on the company home.
-		expect(parseRoute(`#/c/${profileA.profileId}/${section}`)).toEqual({
-			name: "company",
-			profileId: profileA.profileId,
-			section: "home",
-		});
+	it("opens the company home for a section it does not know", () => {
+		for (const section of ["nowhere", "nowhere/00000000-0000-4000-8000-000000000001"])
+			expect(parseRoute(`#/c/${profileA.profileId}/${section}`)).toEqual({
+				name: "company",
+				profileId: profileA.profileId,
+				section: "home",
+			});
 	});
 
 	it("opens an agent's app as a page of its own, by its folder's name", () => {
@@ -68,18 +52,10 @@ describe("company routes", () => {
 		expect(parseRoute(`#/c/${profileA.profileId}/a/whats-new`)).toMatchObject({ section: "app", id: "whats-new" });
 		expect(parseRoute(`#/c/${profileA.profileId}/whats-new/extra`)).toMatchObject({ section: "whats-new" });
 	});
-
-	it("opens the Company File for its removed history page", () => {
-		expect(parseRoute(`#/c/${profileA.profileId}/file/history`)).toEqual({
-			name: "company",
-			profileId: profileA.profileId,
-			section: "file",
-		});
-	});
 });
 
 describe("account routes", () => {
-	it("opens the companies page for the removed cloud check", () => {
-		expect(parseRoute("#/cloud-check")).toEqual({ name: "hub" });
+	it("opens the companies page for a path it does not know", () => {
+		expect(parseRoute("#/nowhere")).toEqual({ name: "hub" });
 	});
 });

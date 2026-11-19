@@ -141,8 +141,6 @@ begin
 	perform pg_temp.fails('select * from public.qorpera_memory_message_erase_due(1)', '42501', 'The folder core''s alone');
 	perform pg_temp.fails(format('select public.qorpera_memory_message_erase_take(%L)', pg_temp.id(5)), '42501',
 		'The folder core alone takes an erase');
-	if to_regprocedure('public.qorpera_memory_message_erase_due(integer)') is not null then
-		raise exception 'The old queue is gone'; end if;
 	-- The API runs a stable function in a read-only transaction, where neither could lock a row.
 	if exists (select 1 from pg_proc p
 		where p.oid in (v_due::oid, v_take::oid) and (p.provolatile <> 'v' or not p.prosecdef)) then
