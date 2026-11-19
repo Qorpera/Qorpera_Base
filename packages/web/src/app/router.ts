@@ -23,6 +23,7 @@ export type CompanySection =
 	| "concepts"
 	| "sites"
 	| "whats-new"
+	| "new-program"
 	| "member";
 
 const INTERFACE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -65,7 +66,7 @@ export function parseRoute(hash: string): Route {
 			return { name: "company", profileId, section, id };
 		}
 		// The pages named by their section alone, as one pattern: shorter in theme.js than a comparison each.
-		if (/^(file|team|new|meet|sites|whats-new)$/.test(section))
+		if (/^(file|team|new|meet|sites|whats-new|new-program)$/.test(section))
 			return { name: "company", profileId, section: section as CompanySection };
 		return { name: "company", profileId, section: "home" };
 	}
