@@ -305,7 +305,9 @@ export const WORKSPACE: Record<string, string> = {
 	founder: "stifter",
 	admin: "administrator",
 	contributor: "bidragyder",
-	viewer: "læser",
+	spectator: "tilskuer",
+	"The spectators picked for this company could not be invited yet. Opening it again tries once more.":
+		"Tilskuerne til denne virksomhed kunne ikke inviteres endnu. Når du åbner den igen, prøver vi igen.",
 	"Resume the pending company creation before starting another.":
 		"Gør oprettelsen af den ventende virksomhed færdig, før du starter en ny.",
 	"Creating a company is paused. Try again later.": "Det er sat på pause at oprette virksomheder. Prøv igen senere.",

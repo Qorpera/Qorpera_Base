@@ -129,6 +129,9 @@ export const SETTINGS: Record<string, string> = {
 	Decline: "Afvis",
 	"Search friends, or type an email to add someone": "Søg efter venner, eller skriv en e-mail for at tilføje nogen",
 	"Company invitations": "Invitationer til virksomheder",
+	"{name} invited you as a spectator · no subscription needed":
+		"{name} har inviteret dig som tilskuer · intet abonnement",
+	"Invited as a spectator · no subscription needed": "Inviteret som tilskuer · intet abonnement",
 	"Requests for you": "Anmodninger til dig",
 	"asked {date}": "modtaget {date}",
 	Sent: "Sendt",
@@ -164,6 +167,7 @@ export const SETTINGS: Record<string, string> = {
 	"Make someone else a founder before you leave.": "Gør en anden til stifter, før du forlader virksomheden.",
 	"Company setup must finish before you can leave.": "Virksomheden skal være sat op, før du kan forlade den.",
 	Building: "Bygger",
+	Spectator: "Tilskuer",
 	"Remove {name} from {company}?": "Fjern {name} fra {company}?",
 	"{name} was removed.": "{name} blev fjernet.",
 	"Invited · email failed": "Inviteret · e-mail mislykkedes",

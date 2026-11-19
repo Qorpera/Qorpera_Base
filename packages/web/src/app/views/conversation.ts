@@ -3650,7 +3650,14 @@ export class ConversationView {
 			!company.accessLost &&
 			company.team?.capabilities.read === true
 		)
-			children.push(notice("neutral", t("You can read this conversation. Contributors and above can write.")));
+			children.push(
+				notice(
+					"neutral",
+					company.team?.role === "viewer"
+						? t("You're a spectator: you read along, and the founders write.")
+						: t("You can read this conversation. Contributors and above can write."),
+				),
+			);
 		const refocus = this.#status.contains(document.activeElement)
 			? (document.activeElement as HTMLElement).dataset.action
 			: undefined;

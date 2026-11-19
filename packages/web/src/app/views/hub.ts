@@ -6,7 +6,12 @@ import {
 	type FoundingTableEntry,
 } from "../../cloud/company-founding.ts";
 import { UUID_PATTERN } from "../../cloud/parse.ts";
-import type { HostedIncomingProfileInvitation, HostedProfile, HostedProfileRole } from "../../cloud/types.ts";
+import type {
+	HostedFriend,
+	HostedIncomingProfileInvitation,
+	HostedProfile,
+	HostedProfileRole,
+} from "../../cloud/types.ts";
 import {
 	companyDisplayName,
 	companyInSentence,
@@ -38,8 +43,13 @@ const ROLE_LABELS: Record<HostedProfileRole, string> = {
 	owner: phrase("founder"),
 	admin: phrase("admin"),
 	contributor: phrase("contributor"),
-	viewer: phrase("viewer"),
+	viewer: phrase("spectator"),
 };
+
+export interface Guests {
+	founders?: readonly string[];
+	spectators?: readonly string[];
+}
 
 /** What the new-company box asked for: open the table and start from there, or invite friends first. */
 export type CreationIntent = "start" | "friends";
@@ -48,6 +58,8 @@ export interface CreationOptions {
 	/** The idea: the table's first text, which the founders write on together. */
 	vision?: string;
 	intent?: CreationIntent;
+	founders?: readonly string[];
+	spectators?: readonly string[];
 }
 
 /** A table being opened, kept across a reload so a retry reuses its creation id. */
@@ -119,11 +131,15 @@ export class HubController {
 				const vision = "vision" in saved && typeof saved.vision === "string" ? saved.vision : undefined;
 				const intent =
 					"intent" in saved && (saved.intent === "start" || saved.intent === "friends") ? saved.intent : undefined;
+				const founders = "founders" in saved ? texts(saved.founders) : [];
+				const spectators = "spectators" in saved ? texts(saved.spectators) : [];
 				this.#creation = {
 					name: saved.name.trim(),
 					clientCreationId: saved.clientCreationId,
 					...(vision ? { vision } : {}),
 					...(intent ? { intent } : {}),
+					...(founders.length ? { founders } : {}),
+					...(spectators.length ? { spectators } : {}),
 				};
 				this.store.set({ creationRetry: this.#creation });
 			} else if (saved !== null && this.#creationKey) sessionStorage.removeItem(this.#creationKey);
@@ -321,7 +337,7 @@ export class HubController {
 		}
 	}
 
-	startFromIdea(idea: string, intent: CreationIntent, name = ""): Promise<boolean> {
+	startFromIdea(idea: string, intent: CreationIntent, name = "", guests: Guests = {}): Promise<boolean> {
 		const vision = idea.trim();
 		const typed = name
 			.replace(/\p{Cc}/gu, " ")
@@ -329,7 +345,16 @@ export class HubController {
 			.trim()
 			.slice(0, FOUNDING_NAME_MAX_CHARACTERS)
 			.trim();
-		return this.createCompany(typed, { ...(vision ? { vision } : {}), intent });
+		return this.createCompany(typed, {
+			...(vision ? { vision } : {}),
+			intent,
+			...(guests.founders?.length ? { founders: guests.founders } : {}),
+			...(guests.spectators?.length ? { spectators: guests.spectators } : {}),
+		});
+	}
+
+	async friends(): Promise<HostedFriend[]> {
+		return (await this.#api.listFriends()).filter((friend) => friend.status === "accepted");
 	}
 
 	async createCompany(name: string, options: CreationOptions = {}): Promise<boolean> {
@@ -343,6 +368,8 @@ export class HubController {
 		const wanted: CreationOptions = {
 			...(options.vision ? { vision: options.vision } : {}),
 			...(options.intent ? { intent: options.intent } : {}),
+			...(options.founders?.length ? { founders: options.founders } : {}),
+			...(options.spectators?.length ? { spectators: options.spectators } : {}),
 		};
 		this.store.set({ creating: { name: trimmed, clientCreationId: "", ...wanted }, error: undefined });
 		// Asked every time, never taken from an older read: the cloud may have switched the lobby on or off since.
@@ -404,6 +431,8 @@ export class HubController {
 				...(creation.intent === "friends" ? { friends: true } : {}),
 				...(creation.intent === "start" ? { start: true } : {}),
 				...(pending ? { vision: pending } : {}),
+				...(creation.founders?.length ? { founders: [...creation.founders] } : {}),
+				...(creation.spectators?.length ? { spectators: [...creation.spectators] } : {}),
 			});
 			if (location.hash === route) navigate({ name: "found", profileId: table.profileId });
 			return true;
@@ -664,4 +693,10 @@ export function renderHub(hub: HubController, container: HTMLElement, viewer?: V
 			),
 		),
 	);
+}
+
+function texts(value: unknown): string[] {
+	return Array.isArray(value)
+		? value.filter((item): item is string => typeof item === "string" && item.trim() !== "")
+		: [];
 }
