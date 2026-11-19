@@ -440,8 +440,6 @@ export interface WorkerBriefFile {
 	readonly id: string;
 	readonly title: string;
 	readonly species: "in-house" | "coding";
-	/** A coding session's harness and repository (C3a): a coding brief has both. An in-house brief has no repository and
-	 * names a harness only for Claude Code (20260930770000); Codex is its unsaid default. */
 	readonly harness?: "codex" | "claude-code";
 	readonly repository?: CloudCodingRepository;
 	readonly access: "read" | "write";
@@ -2012,9 +2010,10 @@ function workerBrief(split: Split, fields: Fields, problems: Problems): WorkerBr
 	const title = fields.text("title", true, 200, { bytes: true });
 	const species = fields.choice("species", true, ["in-house", "coding"] as const);
 	const coding = workerCoding(fields, species, problems);
-	// A plain worker may name one harness, claude-code (20260930770000); Codex is the unsaid default.
 	const plainHarness =
-		species === "in-house" && fields.has("harness") ? fields.choice("harness", true, ["claude-code"] as const) : null;
+		species === "in-house" && fields.has("harness")
+			? fields.choice("harness", true, ["claude-code", "codex"] as const)
+			: null;
 	const access = fields.choice("access", true, ["read", "write"] as const);
 	const revival = fields.choice("revival", true, ["each", "batch"] as const);
 	const dispatchedAt = fields.instant("dispatched_at", true);

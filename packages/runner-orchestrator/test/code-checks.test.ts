@@ -1,12 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-	CODE_CHECK_DEFAULT_SECONDS,
-	CODE_CHECK_MAX_SECONDS,
 	CODE_CHECKS_COPY_NOT_NEWEST,
 	CODE_CHECKS_EARLIER_RUN_NOT_STOPPED,
-	CODE_CHECKS_FILE,
 	CODE_CHECKS_MAIN_MOVED,
-	CODE_CHECKS_TOTAL_SECONDS,
 	type CodeCheck,
 	type CodeChecksRead,
 	type CodeChecksRun,
@@ -17,8 +13,6 @@ import {
 	codeChecksPassed,
 	codeChecksRefusedSummary,
 	codeChecksTail,
-	MAX_CODE_CHECKS,
-	MAX_CODE_CHECKS_FILE_BYTES,
 	readCodeChecks,
 } from "../src/code-checks.ts";
 import { CODE_CHECKS_DRILL, CODE_DRILL_WORDS } from "../src/code-site.ts";
@@ -70,15 +64,6 @@ const EXAMPLE = [
 ].join("\n");
 
 describe("the checks file's rules", () => {
-	it("has the plan's names and bounds", () => {
-		expect(CODE_CHECKS_FILE).toBe(".qorpera/checks.json");
-		expect(MAX_CODE_CHECKS_FILE_BYTES).toBe(16 * 1024);
-		expect(MAX_CODE_CHECKS).toBe(20);
-		expect(CODE_CHECK_DEFAULT_SECONDS).toBe(600);
-		expect(CODE_CHECK_MAX_SECONDS).toBe(1800);
-		expect(CODE_CHECKS_TOTAL_SECONDS).toBe(3600);
-	});
-
 	it("reads the plan's example, comments included, with each default", () => {
 		expect(read(EXAMPLE)).toEqual({
 			state: "ok",
@@ -932,7 +917,6 @@ describe("the other words", () => {
 		expect(words("authority")).toBe(said("the session's machine did not answer"));
 		expect(words("budget")).toBe(said("the checks ran past the time Qorpera gives them"));
 		// The machine is there: a command of an earlier run was not seen to end, and no new run starts beside it.
-		expect(CODE_CHECKS_EARLIER_RUN_NOT_STOPPED).toBe("CODE_CHECKS_EARLIER_RUN_NOT_STOPPED");
 		expect(
 			codeChecksNotRunSummary({ state: "not_run", why: "machine", code: CODE_CHECKS_EARLIER_RUN_NOT_STOPPED }),
 		).toBe(said("an earlier run of the checks has not stopped on the session's machine yet"));

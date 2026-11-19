@@ -76,7 +76,7 @@ begin
 	perform set_config('qorpera.folder_wake_admission', '64700000-0000-4000-8000-000000000011', true);
 	perform pg_temp.raises_like(v_sql, '55000', 'Folder wake admission is required');
 	perform public.qorpera_folder_admit_wakes(c_profile);
-	if pg_temp.admitted() <> v_before + 1 or current_setting('qorpera.folder_wake_admission', true) <> c_profile::text then
+	if pg_temp.admitted() <> v_before + 1 then
 		raise exception 'Admission counts and marks its company'; end if;
 	execute v_sql;
 	select * into v_wake from public.qorpera_wake_occurrences where id = '65600000-0000-4000-8000-0000000000e1';

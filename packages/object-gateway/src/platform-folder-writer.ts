@@ -80,7 +80,7 @@ export type PlatformFolderRpc = Extract<
 >;
 
 /** The hex SHA-256 of content the writer stages or reads. */
-const contentHash = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
+export const contentHash = (bytes: Uint8Array | string): string => createHash("sha256").update(bytes).digest("hex");
 
 /**
  * An answer with exactly these keys, or the problem `code`. The gateway has no `@qorpera/contracts` dependency (its

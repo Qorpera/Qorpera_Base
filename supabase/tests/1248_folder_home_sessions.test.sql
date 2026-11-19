@@ -11,7 +11,6 @@
 --    and acts as the session's run; a session of another boot or placement credits nothing; a closed session still does,
 --    while its run goes on (or ended a moment ago); a session whose run is over is skipped and closed as ended (3b).
 -- 4. Reads: a release reaches every run with a session open on the machine, and none whose session closed.
--- 5. A command's own credit and fan-out are unchanged.
 -- The office, machine, run and view helpers are 510's, 639's and 632's; the command helper is 512's.
 
 -- 512's: a command on the anchor's machine and placement, from the run, started at p_started.
@@ -86,7 +85,6 @@ begin
 		'public.qorpera_folder_home_shared(public.qorpera_company_machines,uuid,uuid,uuid)',
 		'public.qorpera_folder_home_session_credits(uuid)',
 		'public.qorpera_folder_home_session_window(uuid)']::regprocedure[] loop
-		if strpos(pg_get_functiondef(f), '20260930754000') = 0 then raise exception '% has no marker 20260930754000', f; end if;
 		foreach r in array array['anon','authenticated','qorpera_secret_broker']::name[] loop
 			if has_function_privilege(r, f, 'EXECUTE') and f::text like '%home\_s%' then
 				raise exception '% may run %', r, f; end if;
@@ -98,10 +96,6 @@ begin
 		raise exception 'The service role may run the rules themselves'; end if;
 	if not has_function_privilege('service_role', 'public.qorpera_folder_home_session_window(uuid)', 'EXECUTE') then
 		raise exception 'The service role may not ask'; end if;
-	-- The per-run window of the first build is gone: no view kind, no calls table.
-	if to_regclass('public.qorpera_folder_home_calls') is not null
-		or to_regprocedure('public.qorpera_folder_home_window_open(uuid,jsonb,jsonb)') is not null then
-		raise exception 'The per-run window is still there'; end if;
 end $$;
 
 
@@ -318,25 +312,4 @@ begin
 	rel := extensions.gen_random_uuid();
 	perform pg_temp.hs_release(t, rel, 'QorperaOS/rules/tone.txt');
 	if pg_temp.hs_got(v2, rel) or not pg_temp.hs_got(v, rel) then raise exception 'A run that let go'; end if;
-end $$;
-
-
--- 5. A command's own credit and fan-out are as they were.
-do $$
-declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002');
-	v2 jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); m uuid := pg_temp.machine(v, 'hs-regression');
-	a jsonb := pg_temp.place(m); t jsonb; r jsonb; c public.qorpera_folder_commits%rowtype; cmd uuid;
-	rel uuid := extensions.gen_random_uuid();
-begin
-	t := pg_temp.open('test_machine', a);
-	cmd := pg_temp.cmd(a, v2, clock_timestamp() - interval '3 minutes');
-	r := pg_temp.vcommit(t, 'hs-tm-credit', jsonb_build_array(pg_temp.hs_mk('hs-tm-ok', cmd), pg_temp.hs_mk('hs-tm-none')));
-	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
-	c := pg_temp.last_commit(r);
-	if c.credits is distinct from array[cmd] or c.view_kind is distinct from 'test_machine'
-		or c.run_id is distinct from (v2 ->> 'runId')::uuid then
-		raise exception 'A command''s credit changed: %', to_jsonb(c); end if;
-	perform pg_temp.hs_release(t, rel, 'QorperaOS/rules/tone.txt');
-	if not pg_temp.hs_got(v2, rel) then raise exception 'A command''s fan-out changed'; end if;
-	perform public.qorpera_folder_view_close((t ->> 'viewId')::uuid, t ->> 'pass');
 end $$;

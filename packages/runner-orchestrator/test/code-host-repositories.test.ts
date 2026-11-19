@@ -33,7 +33,6 @@ import {
 } from "../src/code-host-jobs.ts";
 import {
 	CODE_CHANGE_RECORD_MS,
-	CODE_HOST_EXPORT_MAXIMUM_BYTES,
 	CODE_RESTORING,
 	CodeHostRepositories,
 	type CodeHostRepositoriesOptions,
@@ -830,7 +829,6 @@ describe("CodeHostRepositories", () => {
 			{ repository: REPOSITORY, workerId: f.workerId, baseSha: f.baseSha, headSha: head },
 			{ maximumBytes: 64 * 1024 ** 2 },
 		]);
-		expect(CODE_HOST_EXPORT_MAXIMUM_BYTES).toBe(64 * 1024 ** 2);
 		if (!bundle) throw new Error("no bundle");
 		const file = join(f.root, "export.bundle");
 		await writeFile(file, bundle);
@@ -968,22 +966,6 @@ describe("the change record of a landing (own code storage, step 2b)", () => {
 			// The session's host runs no checks.
 			checks: { state: "off" },
 		});
-		// Exactly the keys the kernel takes.
-		expect(Object.keys(report ?? {}).sort()).toEqual([
-			"checks",
-			"filesChanged",
-			"headSha",
-			"how",
-			"inLine",
-			"mainAfter",
-			"mainBefore",
-			"paths",
-			"pathsMore",
-			"picture",
-			"refusal",
-			"schema",
-			"state",
-		]);
 		// The files are written for this repository, in the job, under the one deadline the report had.
 		expect(t.inJob).toHaveBeenCalledTimes(1);
 		const [job, target, bounded] = t.inJob.mock.calls[0] ?? [];

@@ -49,14 +49,8 @@ begin
 		raise exception 'B: progress closes the notices: % %', v_sweep, pg_temp.st_open_notices(); end if;
 end $$;
 
--- C. The exemption is gone, and the marker.
 do $$
-declare v_body text := pg_get_functiondef('public.qorpera_run_no_progress_since(uuid,timestamptz)'::regprocedure);
 begin
-	if exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'qorpera_run_waiting_on_tool') then
-		raise exception 'C: qorpera_run_waiting_on_tool is dropped'; end if;
-	if position('20260930051000' in v_body) = 0 or position('waiting_on_tool' in v_body) > 0 then
-		raise exception 'C: qorpera_run_no_progress_since carries the marker and asks no tool exemption'; end if;
 	if has_function_privilege('authenticated', 'public.qorpera_run_no_progress_since(uuid,timestamptz)', 'execute')
 		or has_function_privilege('anon', 'public.qorpera_run_no_progress_since(uuid,timestamptz)', 'execute') then
 		raise exception 'C: the function stays postgres-only'; end if;

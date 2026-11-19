@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { CLOUD_TOOL_RESULT_MAX_BYTES } from "@qorpera/cloud-client/cloud-tool-result";
 import type { JsonValue } from "@qorpera/contracts";
-import type { CloudActionGateResult } from "./cloud-action-review.ts";
+import { CLOUD_REVIEW_UNAVAILABLE, type CloudActionGateResult } from "./cloud-action-review.ts";
 import type { CompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
 import {
 	CloudCompanyPathParentMissing,
@@ -79,9 +79,6 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/;
 const CALL_ID = /^[A-Za-z0-9_:.-]{1,160}$/;
 const MAX_ARGUMENT_BYTES = 64 * 1024;
-/** The most a tool may raise its own argument bound to (`CloudNativeTool.maxArgumentBytes`): a file write of up to
- * 512 KiB of text, escaped (21 October 2026). It stays below the native session's 1 MiB message, which carries the
- * call. */
 export const MAX_TOOL_ARGUMENT_BYTES = 960 * 1024;
 const MAX_CONTENT_BYTES = 32 * 1024;
 const MAX_SOURCE_BYTES = 1024 * 1024;
@@ -271,7 +268,8 @@ export interface CloudNativeTool {
 	/** Everything a call would change, in full, for the automatic review, when its arguments only name it and its card
 	 * is cut to a bound (P40b: a proposal's every change). It throws when it cannot give all of it: the call is then
 	 * never reviewed on a part. */
-	reviewContents?(parsed: JsonValue): JsonValue;
+	reviewContents?(parsed: JsonValue): JsonValue | undefined;
+	reviewIdentity?(parsed: JsonValue): string | undefined;
 	/** What the call would change, read from the company's current state before the automatic review (I8b's interface
 	 * save took its card and effect from the files it replaced; since the scope reset, C6b, no tool has one). Its value
 	 * takes the parsed arguments' place for the review, the work log and the effect; it changes nothing. A
@@ -307,7 +305,7 @@ export interface CloudNativeActionReview {
 		call: {
 			/** What the review needs of the tool: a full one satisfies it, and so does one of the home's own actions,
 			 * which is not a tool call of the model's at all (cloud-codex-home.ts, slice 4). */
-			tool: Pick<CloudNativeTool, "name" | "source" | "reviewContents">;
+			tool: Pick<CloudNativeTool, "name" | "source" | "reviewContents" | "reviewIdentity">;
 			parsed: JsonValue;
 			/** The exact canonical arguments the digest covers: repeating them repeats the call. */
 			argumentsText: string;
@@ -1248,7 +1246,7 @@ export class CloudNativeToolBoundary {
 			} catch {
 				return reported("denied", {
 					kind: "text",
-					value: "REVIEW_UNAVAILABLE: The safety review of this action could not run, so it did not happen. You may try the identical call once more; if it fails again, tell the member.",
+					value: CLOUD_REVIEW_UNAVAILABLE,
 				});
 			}
 			if (!gate.run) {

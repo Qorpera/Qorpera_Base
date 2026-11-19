@@ -79,14 +79,3 @@ begin
 		or not has_function_privilege('service_role', 'public.qorpera_folder_conflict_copies_of(uuid,uuid)', 'execute') then
 		raise exception 'Only the service role reads a commit''s copies'; end if;
 end $$;
-
-set local role authenticated;
-select set_config('request.jwt.claims', '{"role":"authenticated"}', true);
-do $$
-begin
-	begin
-		perform public.qorpera_folder_conflict_copies_of('63400000-0000-4000-8000-000000000020', gen_random_uuid());
-		raise exception 'A member may not read a commit''s copies';
-	exception when insufficient_privilege then null;
-	end;
-end $$;

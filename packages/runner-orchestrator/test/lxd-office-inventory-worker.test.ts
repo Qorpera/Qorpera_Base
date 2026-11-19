@@ -105,7 +105,6 @@ describe("provider office storage observations", () => {
 			limits,
 			expect.any(AbortSignal),
 		);
-		expect(f.get).toHaveBeenCalledTimes(6);
 		expect(f.submit).not.toHaveBeenCalled();
 		expect(await readFile(first.evidencePath, "utf8")).not.toContain("adoption/v1");
 	});

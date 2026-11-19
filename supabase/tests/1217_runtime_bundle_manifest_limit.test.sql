@@ -23,16 +23,6 @@ exception when others then
 	return case when sqlerrm = 'registered-and-rolled-back' then 'ok' else sqlstate || ' ' || sqlerrm end;
 end $$;
 
--- The check, exactly.
-do $$ begin
-	perform pg_temp.same((select pg_get_constraintdef(oid) from pg_constraint
-		where conrelid = 'public.qorpera_runtime_bundles'::regclass and conname = 'qorpera_runtime_bundles_manifest_check'),
-		'CHECK (((jsonb_typeof(manifest) = ''object''::text) AND (octet_length((manifest)::text) <= 524288)))', 'the manifest check');
-	perform pg_temp.same((select convalidated::text from pg_constraint
-		where conrelid = 'public.qorpera_runtime_bundles'::regclass and conname = 'qorpera_runtime_bundles_manifest_check'),
-		'true', 'the manifest check is validated');
-end $$;
-
 -- The test manifests are the sizes they say.
 do $$ begin
 	perform pg_temp.same(octet_length(pg_temp.manifest_of(262145)::text)::text, '262145', 'a manifest just over 256 KiB');

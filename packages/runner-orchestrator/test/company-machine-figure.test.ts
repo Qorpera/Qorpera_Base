@@ -1,16 +1,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { STAFF_CHARACTER_BY_TEMPLATE, STAFF_CHARACTER_IDS } from "@qorpera/cloud-client/staff-characters";
 import { describe, expect, it } from "vitest";
+import { companyComputerScreenCharacter } from "../../runtime/src/cloud-company-computer-desktop.ts";
+import { computerBinding } from "../../runtime/test/fixtures/company-computer.ts";
 import { COMPANY_MACHINE_DESKTOP_FIGURE, companyMachineDesktopFigure } from "../src/company-machine-figure.ts";
 
 const source = (path: string) => readFileSync(new URL(`../../../${path}`, import.meta.url), "utf8");
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
-/** The clients' walk for an agent nobody dressed, written out here on its own. */
-const byId = (agentId: string) => {
-	let seed = 0;
-	for (const character of agentId) seed = (seed * 31 + character.charCodeAt(0)) >>> 0;
-	return STAFF_CHARACTER_IDS[seed % STAFF_CHARACTER_IDS.length];
-};
+const byId = (agentId: string) => companyMachineDesktopFigure({ staffAgentId: agentId });
 
 describe("the figure a machine's desktop shows (20260930737000)", () => {
 	it("is the saved figure, a retired one's replacement, else the template's, else one from the agent's id", () => {
@@ -33,6 +30,8 @@ describe("the figure a machine's desktop shows (20260930737000)", () => {
 		// Neither: a stable one from the agent's id, the same every time, and not the same for every agent.
 		const walked = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16].map((n) => id(n));
 		for (const agentId of walked) {
+			expect(STAFF_CHARACTER_IDS as readonly string[]).toContain(byId(agentId));
+			expect(byId(agentId)).toBe(byId(agentId));
 			expect(companyMachineDesktopFigure(starter(null, null, agentId))).toBe(byId(agentId));
 			expect(companyMachineDesktopFigure(starter(undefined, "no-such-template", agentId))).toBe(byId(agentId));
 			expect(companyMachineDesktopFigure({ staffAgentId: agentId })).toBe(byId(agentId));
@@ -79,9 +78,25 @@ describe("the figure a machine's desktop shows (20260930737000)", () => {
 			}
 	});
 
-	it("follows the one rule the web client and the office desktop follow", () => {
-		// The web client's figureFor and the office desktop's companyComputerScreenCharacter, read as text: the same
-		// template table and the same walk of the same list. Neither is changed here; a change there shows here.
+	it("draws the figure the office desktop draws, and follows the web client's rule", () => {
+		expect([1, 2, 3, 4, 8].map((n) => byId(id(n)))).toEqual(["heart", "star", "cloud", "bolt", "planet"]);
+		expect(byId("9f0c1b2e-7d4a-4c3b-8e5f-a1b2c3d4e5f6")).toBe("flame");
+		const templates = [
+			undefined,
+			"co-founder",
+			"no-such-template",
+			"__proto__",
+			...Object.keys(STAFF_CHARACTER_BY_TEMPLATE),
+		];
+		const figures = [undefined, "ghost", "dragon", ...STAFF_CHARACTER_IDS];
+		for (const n of Array.from({ length: 24 }, (_, index) => index + 1)) {
+			const binding = { ...computerBinding(), staffAgentId: id(n) };
+			for (const templateId of templates)
+				for (const figure of figures)
+					expect(companyMachineDesktopFigure({ staffAgentId: id(n), figure, templateId })).toBe(
+						companyComputerScreenCharacter(binding, templateId, figure),
+					);
+		}
 		const walk = /for \(const character of [a-zA-Z.]+\) seed = \(seed \* 31 \+ character\.charCodeAt\(0\)\) >>> 0;/;
 		const web = source("packages/web/src/ui/avatar.ts");
 		expect(web).toMatch(walk);
@@ -90,17 +105,9 @@ describe("the figure a machine's desktop shows (20260930737000)", () => {
 		);
 		expect(web).toContain("export const FIGURE_IDS = STAFF_CHARACTER_IDS;");
 		expect(web).toContain("const saved = drawnStaffCharacter(agent.appearance?.creature);");
-		const office = source("packages/runtime/src/cloud-company-computer-desktop.ts");
-		expect(office).toMatch(walk);
-		expect(office).toContain("return STAFF_CHARACTER_IDS[seed % STAFF_CHARACTER_IDS.length];");
-		expect(office).toContain('Object.freeze({ "co-founder": "crown" })');
-		const own = source("packages/runner-orchestrator/src/company-machine-figure.ts");
-		expect(own).toMatch(walk);
-		expect(own).toContain("return STAFF_CHARACTER_IDS[seed % STAFF_CHARACTER_IDS.length];");
-		expect(own).toContain("const saved = drawnStaffCharacter(figure);");
 	});
 
-	it("names the place the machine's desktop reads, and what SQL lists", () => {
+	it("names the place the machine's desktop reads", () => {
 		expect(COMPANY_MACHINE_DESKTOP_FIGURE).toBe("/etc/qorpera-machine/desktop-figure");
 		// The machine image's side (the desktop's look, #1704) names the same file, once it is in this tree.
 		const look = new URL("../../../deploy/machine/desktop-look", import.meta.url);
@@ -108,11 +115,5 @@ describe("the figure a machine's desktop shows (20260930737000)", () => {
 			expect(readFileSync(look, "utf8")).toMatch(
 				/\nFIGURE=\$\{QORPERA_DESKTOP_FIGURE:-\/etc\/qorpera-machine\/desktop-figure\}\n/,
 			);
-		const migration = source("supabase/migrations/20260930737000_machine_desktop_figure.sql");
-		expect(migration).toContain(
-			"'starter',(select jsonb_build_object('staffAgentId',staff.staff_agent_id,'figure',staff.appearance_creature,",
-		);
-		expect(migration).toContain("'templateId',staff.template_id)");
-		expect(migration).toContain("staff.staff_agent_id = machine.started_by_staff_agent_id");
 	});
 });

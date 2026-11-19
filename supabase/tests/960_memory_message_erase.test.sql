@@ -379,8 +379,9 @@ begin
 		'blocks', jsonb_build_array(jsonb_build_object('path', root || '/t0/00000000.jsonl', 'text', t,
 			'fileSha256', encode(extensions.digest(convert_to(t, 'utf8'), 'sha256'), 'hex'), 'bytes', octet_length(t),
 			'expectedVersion', null))), 'The plan');
-	perform pg_temp.same(p -> 'planSha256',
-		to_jsonb(encode(extensions.digest(convert_to((p -> 'blocks')::text, 'utf8'), 'sha256'), 'hex')), 'The plan''s hash');
+	perform pg_temp.same(to_jsonb(array[(p ->> 'planSha256') ~ '^[0-9a-f]{64}$',
+		public.qorpera_memory_message_erase_plan('70000000-0000-4000-8000-000000000020', eid) -> 'planSha256' = p -> 'planSha256']),
+		'[true, true]', 'The plan''s hash');
 	-- A rewrite holds to the plan and its files.
 	perform set_config('request.jwt.claims', '{"role":"authenticated"}', true);
 	perform pg_temp.fails(format('select public.qorpera_memory_message_erase_plan(%L, %L)',
@@ -409,6 +410,7 @@ begin
 	t := pg_temp.block(array[pg_temp.line0(0, 1, 'again'), pg_temp.line0(1, 3), pg_temp.line0(2, 4), pg_temp.line0(3, 5),
 		pg_temp.line0(4, 6), pg_temp.kept(1, 0), pg_temp.kept(1, 1), pg_temp.kept(2, 0)]);
 	p1 := public.qorpera_memory_message_erase_plan('70000000-0000-4000-8000-000000000020', eid);
+	perform pg_temp.same(to_jsonb(p1 -> 'planSha256' <> p -> 'planSha256'), 'true', 'A moved plan has another hash');
 	perform pg_temp.same(p1 -> 'blocks', jsonb_build_array(jsonb_build_object('path', root || '/t0/00000000.jsonl', 'text', t,
 		'fileSha256', encode(extensions.digest(convert_to(t, 'utf8'), 'sha256'), 'hex'), 'bytes', octet_length(t),
 		'expectedVersion', v)), 'The plan over the live block');

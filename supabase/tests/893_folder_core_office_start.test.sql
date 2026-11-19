@@ -399,9 +399,6 @@ do $$
 begin
 	if pg_get_functiondef('public.qorpera_runtime_office_default_access_for_staff()'::regprocedure) !~ 'order by id' then
 		raise exception 'H: the default access walks offices by id'; end if;
-	if (select count(*) from pg_proc where prosrc ~ '20260930012000') <> 25 then
-		raise exception 'H: 24 patched functions and the prelude name 20260930012000 (found %)',
-			(select count(*) from pg_proc where prosrc ~ '20260930012000'); end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;

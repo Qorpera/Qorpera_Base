@@ -1736,7 +1736,9 @@ describe("LXD cloud runner provider", () => {
 		await rm(join(stateRoot, laterId), { recursive: true });
 		await restarted.acquire(runId, { ...work(), attempt: 2 }, new AbortController().signal);
 		expect(lxd.createCalls).toHaveLength(2);
-		expect(lxd.createCalls[1]?.name).toBe(`qorpera-${runAttemptAcquisitionId(runId, 2).replaceAll("-", "")}`);
+		expect(lxd.createCalls[1]?.name).toMatch(/^qorpera-[0-9a-f]{32}$/);
+		expect(lxd.createCalls[1]?.name).not.toBe(lxd.createCalls[0]?.name);
+		expect(lxd.createCalls[1]?.name).not.toBe(`qorpera-${laterId.replaceAll("-", "")}`);
 	});
 	it("names each journal that fails a pass by its step and fixed codes, never by the error's text", async () => {
 		const f = await acquiredFixture();

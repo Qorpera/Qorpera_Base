@@ -1407,7 +1407,7 @@ describe('a web page a link in the app leads to, on the bar (Jonas, 13 November 
 describe("a page's Escape while its request waits", () => {
 	it("is not passed on, so the page cannot close what it is shown in to dodge the answer", () => {
 		const frame = new AppFrame(
-			"<p>page</p>",
+			{ html: "<p>page</p>" },
 			"App",
 			"frame",
 			async () => ({ ok: true, value: null }),

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -95,7 +96,11 @@ const signal = () => new AbortController().signal;
 
 describe("the folder service's control socket", () => {
 	it("is where the socket unit puts it", () => {
-		expect(CODING_FOLDER_CONTROL_SOCKET).toBe("/run/qorpera-folder-control/control.sock");
+		const unit = readFileSync(
+			new URL("../../../deploy/folder-service/qorpera-folder-control.socket", import.meta.url),
+			"utf8",
+		);
+		expect(unit).toContain(`\nListenStream=${CODING_FOLDER_CONTROL_SOCKET}\n`);
 	});
 
 	it("asks a machine's boundary on a connection of its own, and reads each view's report or error", async () => {

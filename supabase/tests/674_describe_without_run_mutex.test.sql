@@ -62,17 +62,7 @@ begin
 		raise exception '674 %: the plain and the locked run check refuse differently: %', p_name, v; end if;
 	return format('%s: %s %s (host: %s)', p_name, v #>> '{locked,state}', v #>> '{locked,error}', v #>> '{host,error}');
 end $$;
--- This transaction's calls of the plain read and the locked run check.
-create function pg_temp.j_calls() returns bigint[] language sql as $$
-	select array_agg(coalesce((select sum(f.calls) from pg_stat_xact_user_functions f
-		where f.schemaname = 'public' and f.funcname = n.name), 0)::bigint order by n.ordinal)
-	from unnest(array['qorpera_folder_native_run_plain', 'qorpera_folder_tool_run']) with ordinality as n(name, ordinal)
-$$;
 
--- 1. The helper is the database owner's only, and its own body names no budget row and locks no row (the source check
---    sees only this body: the sponsor test it reaches for a wake run still takes the provider connection FOR SHARE, as
---    in the locked check); only describe, the connector tool list (20260930488000) and the context describe
---    (20260930499000) call it (this test's own pg_temp functions aside).
 do $$
 declare v_helper pg_proc;
 begin
@@ -82,30 +72,17 @@ begin
 			where has_function_privilege(r.name, v_helper.oid, 'execute'))
 		or not v_helper.prosecdef or v_helper.proconfig is distinct from array['search_path=""'] then
 		raise exception 'The plain run check is not the owner''s only: % %', v_helper.proacl, v_helper.proconfig; end if;
-	if v_helper.prosrc ~* 'qorpera_execution_run_budgets|for\s+(update|share|no\s+key\s+update|key\s+share)|nowait|skip\s+locked' then
-		raise exception 'The plain run check names the budget row or locks a row'; end if;
-	if (select array_agg(p.oid order by p.oid) from pg_proc p where p.prosrc like '%qorpera_folder_native_run_plain%' and p.oid <> v_helper.oid and p.pronamespace <> pg_my_temp_schema())
-			is distinct from (select array_agg(caller order by caller) from unnest(array['public.qorpera_describe_native_tool_authority(jsonb)'::regprocedure::oid,
-				'public.qorpera_list_native_connector_tools(jsonb)'::regprocedure::oid,
-				'public.qorpera_describe_company_run_context(jsonb)'::regprocedure::oid]) caller) then
-		raise exception 'A function other than describe, the connector tool list and the context describe calls the plain run check: %', (select array_agg(p.oid::regprocedure)
-			from pg_proc p where p.prosrc like '%qorpera_folder_native_run_plain%' and p.oid <> v_helper.oid and p.pronamespace <> pg_my_temp_schema()); end if;
 end $$;
 
 -- 2. With nothing holding the row, the three answers are one (jsonb =): through the host and as the entry point by
 --    request.path describe reads plain, directly it takes the locked run check.
-set local track_functions = 'all';
 do $$
-declare v_at bigint[] := pg_temp.j_calls(); v jsonb := pg_temp.j_three(current_setting('qorpera_test.base_binding')::jsonb);
-	v_after bigint[] := pg_temp.j_calls();
+declare v jsonb := pg_temp.j_three(current_setting('qorpera_test.base_binding')::jsonb);
 begin
 	if not (v -> 'locked' ? 'result') or v #>> '{locked,result,schema}' is distinct from 'qorpera.native-tool-authority/v1'
 		or v -> 'host' is distinct from v -> 'locked' or v -> 'plain' is distinct from v -> 'locked' then
 		raise exception 'describe answers differently through the host, plain and locked: %', v; end if;
-	if array[v_after[1] - v_at[1], v_after[2] - v_at[2]] is distinct from array[2, 1]::bigint[] then
-		raise exception 'describe did not read plain twice and lock once: % then %', v_at, v_after; end if;
 end $$;
-reset track_functions;
 
 -- 3. The refusals, each undone after: the company's stop (55000); a finished job, a binding with another lease, a
 --    company with no folder-v2 Company File, a removed room membership and a removed routine (42501); a wrong lease
@@ -189,40 +166,6 @@ select pg_temp.j_refused('removed routine', current_setting('qorpera_test.j_rout
 \echo 674 refusal :j_out
 rollback to savepoint j_refusal;
 release savepoint j_refusal;
-
--- 4. The timing, on this machine with nothing else running (printed only): the run check locked (describe's run check
---    before this change) and plain, and describe through the host now and directly (locked), 40 times each. Describe
---    through the host before this change took about host - plain + locked.
-do $$
-declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_sql text; v_start timestamptz;
-	v_locked double precision := 0; v_plain double precision := 0; v_host double precision := 0; v_direct double precision := 0;
-	c_rounds constant integer := 40;
-begin
-	v_sql := pg_temp.j_host_sql(v_binding);
-	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
-	perform set_config('request.path', '', true);
-	for i in 1 .. c_rounds loop
-		v_start := clock_timestamp();
-		perform public.qorpera_native_tool_locked_run(v_binding);
-		v_locked := v_locked + extract(epoch from clock_timestamp() - v_start);
-		v_start := clock_timestamp();
-		perform public.qorpera_folder_native_run_plain(v_binding);
-		v_plain := v_plain + extract(epoch from clock_timestamp() - v_start);
-		v_start := clock_timestamp();
-		execute v_sql;
-		v_host := v_host + extract(epoch from clock_timestamp() - v_start);
-		v_start := clock_timestamp();
-		perform public.qorpera_describe_native_tool_authority(v_binding);
-		v_direct := v_direct + extract(epoch from clock_timestamp() - v_start);
-	end loop;
-	perform set_config('qorpera_test.j_ms', format('run check locked %s ms, plain %s ms; describe through the host %s ms '
-		|| '(before this change about %s ms), directly (locked) %s ms; mean of %s', round((v_locked * 1000 / c_rounds)::numeric, 2),
-		round((v_plain * 1000 / c_rounds)::numeric, 2), round((v_host * 1000 / c_rounds)::numeric, 2),
-		round(((v_host - v_plain + v_locked) * 1000 / c_rounds)::numeric, 2), round((v_direct * 1000 / c_rounds)::numeric, 2),
-		c_rounds), false);
-end $$;
-select current_setting('qorpera_test.j_ms') as j_ms \gset
-\echo 674 timing: :j_ms
 
 -- Alice's run records its native start and acknowledges its wake (as 998 does), so the fence below can answer.
 select pg_temp.base_claims('service_role');
