@@ -24,3 +24,19 @@ describe("a run ChatGPT turned away for too many requests at once, in Danish", (
 		expect(untranslated()).toEqual([]);
 	});
 });
+
+describe("a run ChatGPT no longer accepts the login's sign-in for, in Danish", () => {
+	it("asks the member whose login paid to sign in again, and says a waiting run tries again", () => {
+		expect(setLanguagePreference("da")).toBe(true);
+		expect(runFailureReason(REFUSED, "failed", false, { own: true }, false, true, true)).toBe(
+			"ChatGPT godtager ikke længere loginnet, så arbejdet stoppede. Log ind igen under Indstillinger → AI-abonnementer.",
+		);
+		expect(runFailureReason(REFUSED, "failed", false, {}, false, false, true)).toBe(
+			"ChatGPT godtager ikke længere det login, der betaler for kørslen, så arbejdet stoppede. Det medlem, der ejer loginnet, kan logge ind igen under Indstillinger → AI-abonnementer.",
+		);
+		expect(runWaitingReason(new Date(Date.now() + 90_000).toISOString(), {}, false, true)).toBe(
+			"ChatGPT godtog ikke loginnet. Qorpera fornyer det, og arbejdet prøver igen af sig selv om et par minutter.",
+		);
+		expect(untranslated()).toEqual([]);
+	});
+});

@@ -235,6 +235,7 @@ export const SETTINGS: Record<string, string> = {
 	"Connection {id}": "Forbindelse {id}",
 	"Added {time} · {id}": "Tilføjet {time} · {id}",
 	"Sign out and add this account again to reconnect.": "Log ud og tilføj kontoen igen for at genoprette forbindelsen.",
+	"ChatGPT no longer accepts this sign-in.": "ChatGPT godtager ikke længere dette login.",
 	"The account could not be disconnected. Try again.": "Kontoen kunne ikke afbrydes. Prøv igen.",
 	"Used in all your companies": "Bruges i alle dine virksomheder",
 	"Stop using here": "Stop med at bruge her",

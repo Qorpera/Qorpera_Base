@@ -73,6 +73,9 @@ function loginRank(connection: WebMemberConnection, now: number): readonly numbe
 	];
 }
 
+const refusedSignIn = (connection: NativeMemberConnection): boolean =>
+	(connection as WebMemberConnection).loginStatus === "needs_sign_in";
+
 function compareRanks(a: readonly number[], b: readonly number[]): number {
 	for (let index = 0; index < a.length; index++) {
 		const difference = (a[index] ?? 0) - (b[index] ?? 0);
@@ -499,7 +502,7 @@ export class SessionExecutionView {
 			.filter((connection) => {
 				if (seen.has(connection.connectionId)) return false;
 				seen.add(connection.connectionId);
-				if (remainingAllowance(connection, now) === 0) return false;
+				if (remainingAllowance(connection, now) === 0 || refusedSignIn(connection)) return false;
 				try {
 					selectSessionExecutionSponsor(observed, connection.connectionId, this.#company.userId);
 					return true;
@@ -522,7 +525,8 @@ export class SessionExecutionView {
 		const own = this.#own();
 		if (!observed || !own || !this.#keeps(own)) return undefined;
 		const connection = observed.connections.find((candidate) => candidate.connectionId === own);
-		if (!connection || remainingAllowance(connection, Date.now()) !== 0) return undefined;
+		if (!connection || refusedSignIn(connection) || remainingAllowance(connection, Date.now()) !== 0)
+			return undefined;
 		try {
 			selectSessionExecutionSponsor(observed, own, this.#company.userId);
 			return own;
@@ -943,7 +947,7 @@ export class SessionExecutionView {
 		const own = this.#own();
 		const connection = observed.connections.find((candidate) => candidate.connectionId === own);
 		if (!own || !connection || !this.#keeps(own)) return null;
-		const atLimit = remainingAllowance(connection, Date.now()) === 0;
+		const atLimit = !refusedSignIn(connection) && remainingAllowance(connection, Date.now()) === 0;
 		const available = this.#available();
 		const name = (connectionId: string) => this.#account(observed, connectionId, available);
 		const [first, ...rest] =
@@ -1040,11 +1044,22 @@ export class SessionExecutionView {
 		const now = Date.now();
 		const own = this.#own();
 		const atLimit = observed.connections.filter((connection) => remainingAllowance(connection, now) === 0);
+		const refused = observed.connections.filter(
+			(connection) => connection.connectionStatus !== "revoked" && refusedSignIn(connection),
+		);
+		const signIn = refused.find((connection) => connection.connectionId === own) ?? refused[0];
+		const signInAgain = signIn?.providerAccountEmail
+			? t("ChatGPT no longer accepts the sign-in for {email}. Sign in again in Settings → AI subscriptions.", {
+					email: signIn.providerAccountEmail,
+				})
+			: t("ChatGPT no longer accepts this login's sign-in. Sign in again in Settings → AI subscriptions.");
+		if (signIn && signIn.connectionId === own) return signInAgain;
 		// Kept although it cannot pay now (disabled, a new sign-in, its computer recovering).
 		if (own && this.#keeps(own))
 			return t(
 				"This conversation's model account can't be used right now. Check it in Settings → AI subscriptions.",
 			);
+		if (signIn) return signInAgain;
 		if (atLimit.length)
 			return t("Your model accounts have reached their usage limits. Sending resumes when an account resets.");
 		return t("Connect a model account in Settings → AI subscriptions to send messages.");

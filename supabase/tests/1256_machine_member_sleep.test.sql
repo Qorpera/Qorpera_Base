@@ -613,8 +613,8 @@ begin
 			and not exists (select 1 from public.qorpera_company_machine_desktop_actions
 				where machine_id = (pg_temp.gm_machine('carol-desktop')).id),
 			'2: taking one''s own hold again is an input, with no new hold and no action: ' || v::text);
-		perform pg_temp.gm_shift('carol-desktop', $s$desktop_member_input_at = clock_timestamp() - interval '40 minutes',
-			desktop_member_until = clock_timestamp() - interval '10 minutes'$s$);
+		perform pg_temp.gm_shift('carol-desktop', format($s$desktop_member_input_at = %1$L::timestamptz - interval '40 minutes',
+			desktop_member_until = %1$L::timestamptz - interval '10 minutes'$s$, clock_timestamp()));
 		v := pg_temp.gm_member('owner', 'qorpera_member_hand_back_machine_desktop', 'carol-desktop', $s$, 'closed', 0, null$s$);
 		perform pg_temp.base_assert(not (v ->> 'handedBack')::boolean
 			and (pg_temp.gm_machine('carol-desktop')).desktop_member_input_at is null

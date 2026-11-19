@@ -2641,6 +2641,77 @@ describe("a run waiting at its login's usage limit", () => {
 	});
 });
 
+describe("a login ChatGPT no longer accepts", () => {
+	function refused(remaining: readonly (number | undefined)[]): WebExecutionConnections {
+		const observed: WebExecutionConnections = withUsage(remaining);
+		return {
+			...observed,
+			connections: observed.connections.map((connection, index) =>
+				index === 0
+					? { ...connection, providerAccountEmail: "dead@example.test", loginStatus: "needs_sign_in" as const }
+					: connection,
+			),
+		};
+	}
+
+	it("says so before the usage-limit sentence, and never sends on it", async () => {
+		const f = setup(true, refused([undefined, 0]));
+		await settle();
+		expect(f.sponsor()).toBeUndefined();
+		type(f.view, "Hello");
+		await settle();
+		expect(f.send().disabled).toBe(true);
+		expect(f.view.el.textContent).toContain(
+			"ChatGPT no longer accepts the sign-in for dead@example.test. Sign in again in Settings → AI subscriptions.",
+		);
+		expect(f.view.el.textContent).not.toContain("Your model accounts have reached their usage limits.");
+	});
+
+	it("says so for the conversation's own login, and offers another login that can pay", async () => {
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const f = setup(
+			true,
+			refused([undefined, 60]),
+			select,
+			undefined,
+			vi.fn(async () => id(91)),
+		);
+		await settle();
+		type(f.view, "Hello");
+		await settle();
+		expect(f.send().disabled).toBe(true);
+		expect(f.view.el.textContent).toContain(
+			"ChatGPT no longer accepts the sign-in for dead@example.test. Sign in again in Settings → AI subscriptions.",
+		);
+	});
+
+	it("does not wait on its usage limit: the sign-in sentence, and nothing can be sent", async () => {
+		const f = setup(true, withUsage([80, 40]));
+		await settle();
+		f.listConnections.mockResolvedValue(refused([0, 0]));
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		type(f.view, "Hello");
+		await settle();
+		expect(f.send().disabled).toBe(true);
+		expect(f.view.el.querySelector(".usage-wall-title")?.textContent).toBe(
+			"ChatGPT no longer accepts the sign-in for dead@example.test. Sign in again in Settings → AI subscriptions.",
+		);
+		expect(f.view.el.querySelector(".usage-wall-sub")).toBeNull();
+		expect(f.view.el.textContent).not.toContain("Out of usage");
+	});
+
+	it("keeps the usage-limit sentence when no login needs a new sign-in", async () => {
+		const f = setup(true, withUsage([0, 0]));
+		await settle();
+		type(f.view, "Hello");
+		await settle();
+		expect(f.view.el.textContent).not.toContain("ChatGPT no longer accepts");
+		expect(f.view.el.textContent).toContain("Your model accounts have reached their usage limits.");
+	});
+});
+
 describe("the chat's card when the Claude login in use is used up", () => {
 	const until = new Date(Date.now() + 3 * 3_600_000).toISOString();
 	const work: WebClaudeLogin = {

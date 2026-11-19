@@ -167,6 +167,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Claude Code workers side by side",
 		text: "A member's Claude Code workers now run up to four at once instead of one after another; a fifth waits until one of them ends, and still never moves to Codex while it waits. Each works on the Claude login that member has in use when it starts, and the runs on one login share its plan's limits, so split work into parts that can go on side by side, and keep to fewer when the member's plan is near its limit.",
 	},
+	{
+		id: "app-pictures-webp",
+		kind: "behaviour",
+		date: "2026-11-19",
+		title: "App pictures as WebP",
+		text: "Pictures in an interface app open faster as WebP. A render, a photo or a screenshot saved as a PNG is about ten times larger than the same picture as .webp, and every member downloads each picture an app shows. When your agents make pictures for an app on a machine, have them save .webp (cwebp -q 90 shot.png -o shot.webp, or Pillow's save with quality=90) and name that file in the app's data. save_app now names the heavy PNGs an app shows, so the agent who saves an app sees which pictures to convert. PNG stays right for a small flat graphic that must be exact to the pixel, and SVG for what is drawn.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

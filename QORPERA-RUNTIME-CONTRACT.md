@@ -7021,6 +7021,25 @@ what runs and the agent is told, always-on machines are never stopped by the ker
 3. **The record.** Each search is a `web_search` step of the run's work log, with its query and the envelope the model
    got. Members see what was found in the agent's own words, never the steps. Every run's text names web.run beside the qorpera tools, for a run that has it.
 
+### 2026-11-17 amendment: a burst of saves wakes a file-change routine once
+
+> The founder, 17 November 2026: "fix the Brooks file storm too". In Brooks one worker run saved 38 change sets under
+> `strategy/` in 16 minutes, and the Brand agent's routine listening to that subtree was woken 38 times, once per change
+> set. Stopped the same day and reopened on the founder's word of 19 November 2026 ("Yes, reopen it"), after a new
+> company ran 67 file-change runs in a night, 45 of them without a tool call. It goes live with migration
+> `20260930809000` alone (no runtime bundle change).
+
+1. **One wake for a burst.** A file-change routine version has at most one file wake waiting to start. A change set that
+   matches its watch while one waits folds into it: the wake keeps its first change set (its key, `seq` and commit) and
+   names every later one; its changes keep at most 21 paths, each at its newest version, and count the rest.
+2. **Settle and ceiling.** A file wake starts 60 seconds after the latest change it holds, and never later than 5
+   minutes after its first, so a steady stream still runs. Both are one platform setting row
+   (`qorpera_folder_file_wake_settings`); a settle of 0 restores one wake per change set.
+3. **One follow-up.** While a file wake runs, the change sets saved meanwhile go to one new waiting wake, the same way.
+4. **What the run reads.** The run's file event is unchanged in shape (`qorpera.folder-file-wake/v1`): its `changes`
+   are every readable path the burst changed, at its newest version, and `more` counts the rest.
+5. **Unchanged.** A change set saved by the routine's own agent still never wakes it.
+
 ### 2026-11-16 amendment: the agent's home for every company
 
 Founder decision of 16 November 2026, to "Switch it on for every company in the next release, with the node 1 fix?":

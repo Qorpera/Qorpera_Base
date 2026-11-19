@@ -48,6 +48,8 @@ $$;
 -- The calls the H2c hook got, and a seq it fails on.
 create temp table hook_calls (n bigserial, commit_id uuid, seq bigint, paused boolean, actor jsonb);
 
+update public.qorpera_folder_file_wake_settings set settle_seconds = 0;
+
 -- 1. Listeners: the trigger, activation, the refusals gone ------------------------------------------------------------------
 
 do $$
