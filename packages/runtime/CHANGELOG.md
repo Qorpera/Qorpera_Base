@@ -1,6 +1,25 @@
 # Changelog
 
 ## [Unreleased]
+- A Claude Code worker can make a picture (the founder, 17 Nov 2026, "Yes, all three";
+  lanes/agent-box-20261113/CLAUDE-PICTURE-COMMAND-BRIEF.md; the runtime bundle and migration `20260930812000` (SQL test
+  1298), no runner or machine image). `picture <file.png under /company> <what to draw>` run with its Bash tool is answered by the run host's home
+  shell and never runs on the machine: the run's review gate checks it as Codex's `make_picture` (internal; delegation
+  into another agent's or a member's app), the member's own ChatGPT picture lane makes it (a light Codex session of the
+  run on the run's own Codex sign-in, started on the first picture, one picture at a time, ended 10 minutes after the
+  last), and the PNG is written at that path on the machine, whose folder program saves it to the company folder. A run
+  whose sign-in makes no pictures (no Codex login, a ChatGPT plan login) is told so in words and to render in Blender.
+  Pictures are made only when the run's Codex login is the asking member's own: `qorpera_claude_worker_run_facts` says so
+  (`ownCodexLogin`, the run's sponsor is the worker's member); another member's or a company login gets NO_PICTURES in
+  words, and a database without the migration gives no pictures. The worker's system note gains one sentence about it.
+- A Claude Code worker's commands and file changes on the agent's machine get the same per-action review as Codex's
+  (the founder, 16 Nov 2026, "Same check"; lanes/agent-box-20261113/CLAUDE-HOME-CHECK-BRIEF.md; the runtime bundle only,
+  no migration). The run host reviews each command before it reaches the home's exec channel, and each Write, Edit or
+  NotebookEdit once with its whole change, through a PreToolUse hook the host answers; the SFTP stream refuses any change
+  no approved call accounts for, or reviews it alone. Same gate, rules, cards and records as Codex's `home_command` and
+  `home_change`; reads are not reviewed. The reviewer is a fresh tool-less Claude Code (`haiku`) on the member's own
+  sign-in, in a box without the home, reaching Anthropic's API host only, so the vault stays the one renewer.
+- Many Claude Code runs per member at once, the vault as the one renewer (the founder's "Yes, build it", 16 Nov 2026; migration `20260930810000`, after `20260930804000`, SQL test 1287; `lanes/agent-box-20261113/claude-parallel/DESIGN.md`). A Claude Code worker's box reaches `api.anthropic.com` alone, so its Claude Code cannot renew; the run seals nothing back and asks the vault every 60 s for the version it holds, putting a newer `.credentials.json` in place (Claude Code reads it again before its next call). The shared vault renews: at a run's open and polls, and once a day for an idle login, its helper runs the pinned Claude Code's `auth status --json` on the login (`/v1/claude/check`), and a changed file is sealed as the next version under the login's renewal lock (compare-and-swap); two refusals of one version two minutes apart sign the login out. The member's lease becomes a cap (`qorpera_claude_parallel_runs`, 1 until the release sets 4), per member across all of the member's Claude logins. Under several logins (`20260930804000`) everything is per login: a lease records the worker's login when it is taken and the run opens, polls and is refreshed from that login to its end (a follow-up or the member's In-use switch moves only later runs; the run host never puts another login's files in place), a login is checked at a run's open and poll only while a live lease holds it, the idle pass keeps every active login alive, and the second refusal of the login In use moves In use to the member's next active login (one not used up first). The staff instructions and the worker tool say "up to four at once"; platform update `claude-code-workers-at-once`. Staff instruction pins `83618e1bb237` → `b2a4cebaa9c4610e79652da7d31a5bf3d922e7235cf55dd5c8e0225f78bb5e12` (conversation and private), the company run's tool catalog `457027590ec4` → `fb26aca8dfc8a0e94259d65b04576ddeb916fd01973d806958835208dc7e93f3` (manage_worker's harness line), from master since v259, measured on node 1's test VM (run 20261119T101331-61483-976bfb8b). A run's first open that the vault answers busy (its renewal for the run still running) is asked again, up to 6 times 5 s apart. A guard test keeps every `cloud-claude-*` source off Anthropic's sign-in hosts, so a Claude Code reviewer beside a run (#1897, which shares the run's login folder) cannot renew either once both land. The seal-back route stays for one release.
 - Release v260 (a ChatGPT sign-in OpenAI refuses renews at once, backend, #1958, with migration `20260930808000` and SQL
   test 1304; a held draft merged in the release branch at its approved head; with master's #1957, migration
   `20260930807000` and SQL test 1303, and #1945's program `userId` in `save_app`): runtime bundle 260

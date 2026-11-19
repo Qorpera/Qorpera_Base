@@ -2114,7 +2114,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "83618e1bb2375654fa9f61bfa66f3dda71840193ddca4683948e3de4da4e7000",
+			instructions: "b2a4cebaa9c4610e79652da7d31a5bf3d922e7235cf55dd5c8e0225f78bb5e12",
 			prompt: "8d4de0aa97c4fd1b1e41b05fc0f4eaa49296049c3d0c7c476a955d015db99df0",
 		},
 	],
@@ -2130,7 +2130,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "83618e1bb2375654fa9f61bfa66f3dda71840193ddca4683948e3de4da4e7000",
+			instructions: "b2a4cebaa9c4610e79652da7d31a5bf3d922e7235cf55dd5c8e0225f78bb5e12",
 			prompt: "9cb69c8a1cdf1d2bca1865206e55fb2efb05db9fa5333ad636bb07c78861cfb0",
 		},
 	],
@@ -2639,7 +2639,7 @@ it("gives a staff run the rules for starting work, and a worker none of them", (
 		"- One file: write it yourself, where it belongs, and link it.",
 		"- Bigger work or many files: a worker, with saveTo set to the folder for the results.",
 		"- Work a member asks Claude Code to do: a worker with harness claude-code, which runs on that member's own Claude sign-in.",
-		"Otherwise leave harness out unless a member asks for codex: a write worker then runs on Claude Code by itself, one at a time for that member, while that member can use it and your machine runs, else on Codex.",
+		"Otherwise leave harness out unless a member asks for codex: a write worker then runs on Claude Code by itself, up to four at once for that member, while that member can use it and your machine runs, else on Codex.",
 		"a machine, with the results saved in the company's files",
 		"A real code project is a coding session (manage_worker, species coding), the only work that needs a repository; its files are under code/.",
 		// C4-1 (26 October 2026): the Co-Founder passed a member's "push it and open a draft PR, report the link" on to

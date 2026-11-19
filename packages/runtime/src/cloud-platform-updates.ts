@@ -153,6 +153,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Programs members download",
 		text: "A program for a computer or a phone now has a home: an interface app of the kit program. Build the real thing on a machine, copy one file for each kind (Android, Linux, Windows, Mac, iPhone) into the app's versions/<version>/ folder, with real screenshots beside them, and save it with save_app. Its page shows the program and a Download for the member's own computer or phone, and every version stays. Link the app when you tell a member, never a machine or a folder. If your company makes such a product, keep its builds there; app_guide about program says how.",
 	},
+	{
+		id: "claude-code-workers-at-once",
+		kind: "behaviour",
+		date: "2026-11-19",
+		title: "Claude Code workers side by side",
+		text: "A member's Claude Code workers now run up to four at once instead of one after another; a fifth waits until one of them ends, and still never moves to Codex while it waits. Each works on the Claude login that member has in use when it starts, and the runs on one login share its plan's limits, so split work into parts that can go on side by side, and keep to fewer when the member's plan is near its limit.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

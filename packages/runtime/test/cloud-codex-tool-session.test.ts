@@ -2646,6 +2646,33 @@ describe("a picture call", () => {
 		expect((await f.recorded()).threads).toEqual([]);
 	});
 
+	it("makes pictures on a light run's side thread, which never starts the agent's thread", async () => {
+		const pictures = new CloudPictureChannel();
+		let made: unknown;
+		const { result, evidence, execute } = run("picture-light", {
+			tools: [],
+			pictures,
+			light: async (_ask, signal) => {
+				made = await pictures.make(apple, signal);
+			},
+		});
+		const session = await result;
+		expect(made).toEqual({ png: TINY_PNG, revisedPrompt: "a red apple", transparent: true });
+		expect(session.providerSessionId).toMatch(/^light:[0-9a-f-]{36}$/);
+		expect(execute).not.toHaveBeenCalled();
+		const recorded = JSON.parse(await readFile(evidence, "utf8"));
+		expect(recorded.mainThread ?? null).toBeNull();
+		expect(recorded.threads).toHaveLength(1);
+		expect(recorded.threads[0]).toMatchObject({
+			developerInstructions: CLOUD_PICTURE_MAKER_RULE,
+			dynamicTools: [],
+			sandbox: "read-only",
+			config: { "features.image_generation": true },
+		});
+		expect(existsSync(recorded.savedPath)).toBe(false);
+		expect(pictures.attached).toBe(false);
+	});
+
 	it("gives a run on a member's ChatGPT plan no pictures", async () => {
 		const f = await pictureRun("picture", { identityRoot: await planRoot() });
 		await expect(f.pictures.make(apple, new AbortController().signal)).rejects.toBeInstanceOf(

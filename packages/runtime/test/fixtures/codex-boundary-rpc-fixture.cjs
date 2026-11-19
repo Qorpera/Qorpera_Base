@@ -464,7 +464,7 @@ async function handle(message) {
 	} else if (message.id === "voice_request") {
 		voiceEvidence.refused = message;
 		voiceWrite();
-	} else if (message.method === "thread/start" && pictureMode && threadParameters) {
+	} else if (message.method === "thread/start" && pictureMode && (threadParameters || mode === "picture-light")) {
 		pictureEvidence.threads.push(message.params);
 		if (mode === "picture-thread-refused") {
 			pictureWrite();

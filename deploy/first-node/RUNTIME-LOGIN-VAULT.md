@@ -896,3 +896,61 @@ identity is live, `COMPUTE_IDENTITY_OCCUPIED`).
   wants them ended at once revokes Qorpera's access in their Claude account settings.
 - **Later (the coding harness):** it opens a Claude login only for a coding session its member started, and checks
   the allow-list again when it does.
+
+## Claude logins renewed in the vault; many Claude Code runs of one member at once (20260930810000)
+
+Design and the measurements behind it: `lanes/agent-box-20261113/claude-parallel/DESIGN.md`. The pinned Claude Code
+renews only in the last 5 minutes of its token, only at `POST platform.claude.com/v1/oauth/token`; with that host
+refused it goes on with the token it holds; it reads a replaced `.credentials.json` again before its next call.
+
+- **Each login on its own.** A member may hold several Claude logins (`20260930804000`); everything below is per
+  login: its lock, its checks, its versions, its refusals and its sign-out. A run's lease records the worker's login
+  when it is taken, and the run opens, polls and is refreshed from that login to its end, also after a follow-up or
+  the member's In-use switch points the worker at another (`qorpera_claude_login_run` reads the lease's
+  `claude_login_id`); only later runs take the login In use.
+- **Runs cannot renew and never seal back.** A Claude Code worker's box reaches `api.anthropic.com` alone (its egress
+  relay refuses `platform.claude.com`). The run host asks the vault every 60 s for the version it holds
+  (`/v1/claude-logins/open` with `knownVersion`; the vault answers `current`, or the newer files) and replaces the
+  run's `.credentials.json` with a newer one. Nothing is read back from the run.
+- **The vault renews, by the official Claude Code.** At a run's open (when the login was last checked more than 30 s
+  ago) and at a run's poll (more than 90 s ago), while a live lease holds that login, and in the upkeep pass for any
+  active login not checked for 20 hours (In use or not), the shared vault takes the login's renewal lock
+  (`qorpera_take_claude_login_renewal` / `qorpera_take_idle_claude_login_renewal`, its principal's own calls; one vault
+  host at a time, 2 minutes; another host's poll waits up to 8 s for it and opens again, a run's first open up to 15 s,
+  after which the run host is answered `busy` and asks again), opens the login under the
+  member's key and has the helper run `claude auth status --json` on it in a private folder (`/v1/claude/check`, the
+  helper's isolation, Anthropic's sign-in hosts). The helper compares the credentials' bytes and reads `loggedIn` from
+  Claude Code's output, nothing else. A changed file is sealed as the next version, a compare-and-swap on the version
+  and envelope the check started from (`qorpera_commit_claude_login_renewal`; the lock decides who checks, not who may
+  seal); anything else is recorded
+  (`qorpera_release_claude_login_renewal`: `unchanged`, `failed`, `refused`; a `failed` check counts as no check and
+  rests the login from 1 minute, doubling to an hour, so a failing login neither blocks the idle pass nor is retried at
+  every poll). A changed file is kept even when Claude Code's status run ends badly (its refresh token has already
+  rotated). A renewal the database could not save is retried for 100 s, then kept in the vault process and saved before
+  that host's next check of the login or its next idle pass. It seals on the base it was taken from even after its
+  2-minute lock passed to another host (only one renewal from a refresh token works at Anthropic), and that host's
+  release then answers stale and records no refusal. It is lost by a restart of the vault process before it is saved,
+  or by that host staying cut off from the database while the other host's checks of the old version are refused twice
+  (about 5 minutes): the member then signs in again.
+- **Signed out:** Claude Code refusing the same version twice, at least 2 minutes apart, signs the login out as the
+  member's own sign-out does. When it was the login In use and the member has another active login, In use moves to
+  one of those (one not used up first, then the oldest), under `20260930804000`'s per-member lock, so a member with an
+  active login always has one In use. A run's open or poll then answers `SIGNED_OUT`; a run already going ends at its token's
+  end in Claude Code's words ("their Claude sign-in has ended"); new Claude Code workers are refused at the dispatch.
+- **The cap:** `qorpera_claude_parallel_runs.cap` live Claude Code runs per member, across all of the member's logins
+  (slots of `qorpera_claude_worker_leases`, keyed by member). Per member, not per login: new work always takes the one
+  login In use, so a per-login cap would differ only while a switch leaves runs on the old login, and the cap is a
+  share of node 2's slots, which is the member's, not an account's. Each Claude account's plan limit is its own. The migration keeps 1; the release sets 4 (below). A worker waits only while its
+  member's live runs fill the cap.
+- **Deploy (in this order):**
+  1. Apply migration `20260930810000` (the cap stays 1: nothing changes for runs yet).
+  2. On both vault hosts, one at a time, the release's vault and helper build (the helper gains `/v1/claude/check`,
+     the vault its renewer). Restart the helper, then the broker; look for
+     `Model login helper: Claude sign-ins and Claude login checks on (pinned Claude Code).` Runs of the previous
+     runtime still renew and seal back meanwhile (the seal-back route stays for this release); the vault's
+     compare-and-swap and the two-refusal rule keep that safe.
+  3. The runtime bundle (and the runner image that carries it): from then on runs cannot renew.
+  4. `update public.qorpera_claude_parallel_runs set cap = 4;`
+  Never 3 before 2: runs that cannot renew with nothing renewing for them end at their token's end.
+- **Rollback:** `update public.qorpera_claude_parallel_runs set cap = 1;` (one run per member again). The renewer
+  stays right for one run as for four. A later cleanup drops the seal-back route and functions.
