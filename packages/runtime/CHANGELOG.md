@@ -1,6 +1,11 @@
 # Changelog
 
 ## [Unreleased]
+- Messages that waited together for a busy agent keep their arrival order (founder, 19 Nov 2026: "Yes, build it";
+  contract, the 2026-11-19 amendment; migration `20260930814000`, SQL test 1295): a scheduling pass stamps the turn
+  requests and wakes it looked at with one time, not one clock read per row, so two wakes scanned together no longer
+  swap places in the next pass. This was SQL test 1295's failure, now and then, at "the oldest message it took gets
+  its own run".
 - Release v260 (a ChatGPT sign-in OpenAI refuses renews at once, backend, #1958, with migration `20260930808000` and SQL
   test 1304; a held draft merged in the release branch at its approved head; with master's #1957, migration
   `20260930807000` and SQL test 1303, and #1945's program `userId` in `save_app`): runtime bundle 260

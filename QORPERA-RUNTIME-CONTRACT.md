@@ -7003,6 +7003,18 @@ what runs and the agent is told, always-on machines are never stopped by the ker
    (`saved`, `conflict`, refused); the same decision for the same update on the same day answers `unchanged`. Review
    class: the company's bookkeeping, no card.
 
+### 2026-11-19 amendment: messages that waited together keep their order
+
+> The founder, 19 November 2026, to "Shall I build the database fix for the message order?": "Yes, build it". Found
+> through SQL test 1295, which failed now and then at "the oldest message it took gets its own run". It goes live with
+> migration `20260930814000` (no runtime bundle change).
+
+1. **One time for a pass.** A scheduling pass (`qorpera_folder_materialize_company`) stamps every turn request and wake
+   it looked at with one time. Before, each row got its own clock read, in the order the database visited the rows, so
+   two wakes that waited together could swap places in the next pass and the newer could run first.
+2. **Unchanged.** A row a pass looked at still moves behind the rows it did not look at. Rows with the same stamp run in
+   the order they were made (`created_at`, then `id`).
+
 ### 2026-11-17 amendment: a burst of saves wakes a file-change routine once
 
 > The founder, 17 November 2026: "fix the Brooks file storm too". In Brooks one worker run saved 38 change sets under
