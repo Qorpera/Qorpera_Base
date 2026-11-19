@@ -2,13 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { CoreEntry } from "../src/folder-service/core.ts";
 import { ObjectIntegrityError, ObjectMissingError } from "../src/folder-service/objects.ts";
 import { encodeJson, Kind, parseSearch, type SearchRequest } from "../src/folder-service/protocol.ts";
-import {
-	compilePattern,
-	foldText,
-	linearRegexAvailable,
-	SearchPatternError,
-	translate,
-} from "../src/folder-service/regex.ts";
+import { compilePattern, foldText, linearRegexAvailable, SearchPatternError } from "../src/folder-service/regex.ts";
 import {
 	compileGlob,
 	globMatches,
@@ -804,12 +798,6 @@ describe("folder search, version 2 (keyholes S4)", () => {
 			const js = new RegExp(pattern.replace("\\x{E9}", "\\u00e9"), "imu").test(subject);
 			expect(ours, `${pattern} on ${subject}`).toBe(js);
 		}
-		// Every group is emitted without a capture, a class as escapes only.
-		expect(translate("(a|[b-c])", false)).toBe("(?:a|[\\u0062-\\u0063])");
-		expect(translate("A[B]", false)).toBe("a[\\u0042\\u0062]");
-		expect(translate("A[B]", true)).toBe("A[\\u0042]");
-		expect(translate("😀+", true)).toBe("(?:😀)+");
-		expect(translate("a{2,3}b{x}", true)).toBe("a{2,3}b\\{x\\}");
 		expect(() => compilePattern("[😀]", true)).toThrow(SearchPatternError);
 	});
 });

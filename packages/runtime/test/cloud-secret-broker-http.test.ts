@@ -10,7 +10,6 @@ import {
 	type CodingRepositoryCredentialRequest,
 } from "@qorpera/runtime/cloud-secret-broker";
 import {
-	captureCloudSecret,
 	HttpCloudSecretBrokerClient,
 	HttpCloudSecretBrokerService,
 	type NativeBindingProof,
@@ -199,6 +198,17 @@ function fixture(reflectSecret = false) {
 	};
 }
 
+const capture = (port: number, f: ReturnType<typeof fixture>, token: string) =>
+	fetch(`http://127.0.0.1:${port}/v1/captures/${f.ticketId}`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({
+			schema: "qorpera.cloud-secret-capture-request/v1",
+			captureCapability: f.capability,
+			fields: { token },
+		}),
+	});
+
 it("refuses a non-loopback listener even when a caller supplies one explicitly", () => {
 	const f = fixture();
 	expect(() => new HttpCloudSecretBrokerService(f.broker, f.runtimeToken, "0.0.0.0", 8080)).toThrow(
@@ -212,17 +222,10 @@ it("captures plaintext over the one-time member route and returns only a safe de
 	const f = fixture();
 	const port = await f.service.start();
 	const canary = "lin_api_NEVER_VISIBLE";
-	const rewrite: typeof fetch = (input, init) => {
-		const url = new URL(String(input));
-		return fetch(`http://127.0.0.1:${port}${url.pathname}`, init);
-	};
-	const descriptor = await captureCloudSecret(
-		"https://secrets.qorpera.test",
-		{ ticketId: f.ticketId, captureCapability: f.capability, fields: { token: canary } },
-		new AbortController().signal,
-		rewrite,
-	);
-	expect(descriptor).toEqual({
+	const answer = await capture(port, f, canary);
+	expect(answer.status).toBe(200);
+	const text = await answer.text();
+	expect(JSON.parse(text)).toEqual({
 		schema: "qorpera.cloud-secret-descriptor/v1",
 		secretId: expect.any(String),
 		version: 1,
@@ -233,7 +236,7 @@ it("captures plaintext over the one-time member route and returns only a safe de
 		ownerUserId: null,
 		status: "active",
 	});
-	expect(JSON.stringify(descriptor)).not.toContain(canary);
+	expect(text).not.toContain(canary);
 	const envelope = vi.mocked(f.authority.completeCapture).mock.calls[0][2];
 	expect(Buffer.from(envelope).toString("utf8")).not.toContain(canary);
 	f.wrappingKey.fill(0);
@@ -243,12 +246,7 @@ it("captures plaintext over the one-time member route and returns only a safe de
 it("requires the private runtime credential and fences reflected secret material", async () => {
 	const f = fixture(true);
 	const port = await f.service.start();
-	await captureCloudSecret(
-		"https://secrets.qorpera.test",
-		{ ticketId: f.ticketId, captureCapability: f.capability, fields: { token: "lin_api_REFLECTED" } },
-		new AbortController().signal,
-		(input, init) => fetch(`http://127.0.0.1:${port}${new URL(String(input)).pathname}`, init),
-	);
+	expect((await capture(port, f, "lin_api_REFLECTED")).status).toBe(200);
 	// The client names its company in the query so the shared origin's router
 	// reaches this company's broker; the broker routes by path and ignores it.
 	const companyId = randomUUID();
@@ -298,12 +296,7 @@ it("requires the private runtime credential and fences reflected secret material
 it("serves a runtime route only after the run's own lease proves its binding (G2-6a)", async () => {
 	const f = fixture();
 	const port = await f.service.start();
-	await captureCloudSecret(
-		"https://secrets.qorpera.test",
-		{ ticketId: f.ticketId, captureCapability: f.capability, fields: { token: "lin_api_PROOF" } },
-		new AbortController().signal,
-		(input, init) => fetch(`http://127.0.0.1:${port}${new URL(String(input)).pathname}`, init),
-	);
+	expect((await capture(port, f, "lin_api_PROOF")).status).toBe(200);
 	const send = (holder: string | undefined) =>
 		fetch(`http://127.0.0.1:${port}/v1/operations?company=${randomUUID()}`, {
 			method: "POST",
@@ -473,29 +466,6 @@ it("answers the coding environment only to the executor's token, uncached, and n
 	expect(f.authorizeCodingEnvironment).toHaveBeenCalledTimes(2);
 	f.wrappingKey.fill(0);
 	f.keyring.close();
-});
-
-it("rejects a broker descriptor carrying undeclared fields", async () => {
-	await expect(
-		captureCloudSecret(
-			"https://secrets.qorpera.test",
-			{ ticketId: randomUUID(), captureCapability: randomBytes(32).toString("base64url"), fields: { token: "x" } },
-			new AbortController().signal,
-			async () =>
-				Response.json({
-					schema: "qorpera.cloud-secret-descriptor/v1",
-					secretId: randomUUID(),
-					version: 1,
-					connectorId: "linear",
-					secretName: "primary",
-					purpose: "Company Linear connection",
-					ownerKind: "company",
-					ownerUserId: null,
-					status: "active",
-					encryptedEnvelope: "must-not-cross",
-				}),
-		),
-	).rejects.toThrow("returned invalid data");
 });
 
 it("answers a browser's capture from a listed member origin, and only that origin, with CORS", async () => {

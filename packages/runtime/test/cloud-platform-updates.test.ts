@@ -11,7 +11,6 @@ import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-auth
 import { CloudToolArgumentRefusal, CloudToolRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { cloudToolsOnDemand } from "@qorpera/runtime/cloud-native-tools-on-demand";
 import {
-	CLOUD_RECORD_REFLECTION_DESCRIPTION,
 	cloudPlatformUpdatesContext,
 	cloudRecordReflectionTool,
 	decisionsFor,
@@ -331,8 +330,14 @@ describe("reading the updates for a run", () => {
 			f.folder,
 			new Date("2026-11-20T08:00:00Z"),
 			new AbortController().signal,
+			FIXTURE_UPDATES,
 		);
-		expect(read.context).toEqual(cloudPlatformUpdatesContext(PLATFORM_UPDATES));
+		expect(read.context?.pending?.map((update) => update.id)).toEqual([
+			"old-kit",
+			"bank-kit",
+			"short-plans",
+			"gpt-7",
+		]);
 		expect(read.reads.map((entry) => entry.path)).toEqual(["QorperaOS/vision"]);
 		const bare = await folderWriterFixture();
 		runs.push(bare.run);
@@ -433,7 +438,6 @@ describe("record_reflection", () => {
 			operations: {} as never,
 			identity: {} as never,
 		});
-		expect(tool.description).toBe(CLOUD_RECORD_REFLECTION_DESCRIPTION);
 		expect(cloudToolsOnDemand([tool], "cofounder").deferred.has("record_reflection")).toBe(true);
 	});
 

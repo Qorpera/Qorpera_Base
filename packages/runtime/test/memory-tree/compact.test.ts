@@ -1,7 +1,5 @@
 import {
 	COMPACT,
-	COMPACT_EFFORT,
-	COMPACT_MODEL,
 	COMPACT_SCALE,
 	COMPACT_STEP,
 	COMPACT_STEP_SCALE,
@@ -107,7 +105,7 @@ function deadline(): AbortSignal {
 	return new AbortController().signal;
 }
 
-it("sizes its scale lines to NODE, shares rules 3 to 5, and uses auto-review's model", () => {
+it("sizes its scale lines to NODE, and shares rules 3 to 5", () => {
 	expect(Buffer.byteLength(COMPACT_SCALE)).toBe(NODE);
 	expect(Buffer.byteLength(COMPACT_STEP_SCALE)).toBe(NODE);
 	expect(memoryCompactSystem("conversation")).toBe(
@@ -123,7 +121,6 @@ it("sizes its scale lines to NODE, shares rules 3 to 5, and uses auto-review's m
 	expect(rules(COMPACT)).toContain(
 		`${backslash}u003c stands for <, ${backslash}u003e for > and ${backslash}u0026 for &: write the characters themselves.`,
 	);
-	expect([COMPACT_MODEL, COMPACT_EFFORT]).toEqual(["gpt-6-luna", "low"]);
 });
 
 it("windows an event on the previous group of 16 and its own group so far", () => {

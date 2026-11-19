@@ -75,14 +75,12 @@ import { type CloudToolContent, cloudToolJsonText } from "./cloud-native-tool-bo
 import {
 	CloudSecretBroker,
 	type CloudSecretCaptureRequest,
-	type CloudSecretDescriptor,
 	type CloudSecretOperationRequest,
 	type CodingEnvironmentRequest,
 	type CodingMcpSignInRequest,
 	type CodingRelaySignIn,
 	type CodingRepositoryCredentialRequest,
 	type CodingRepositoryFetchRequest,
-	parseCloudSecretAccountLabel,
 	parseCodingEnvironmentRequest,
 	parseCodingMcpSignInRequest,
 	parseCodingRepositoryCredentialRequest,
@@ -495,54 +493,6 @@ function parseContent(value: unknown): CloudToolContent {
 		throw new Error("Cloud secret broker response is invalid");
 	cloudToolJsonText(input, 32 * 1024);
 	return structuredClone(input) as CloudToolContent;
-}
-
-function parseDescriptor(value: unknown): CloudSecretDescriptor {
-	const input = record(value, "Cloud secret descriptor");
-	const keys = [
-		"schema",
-		"secretId",
-		"version",
-		"connectorId",
-		"secretName",
-		"purpose",
-		"ownerKind",
-		"ownerUserId",
-		"status",
-	];
-	exact(input, Object.hasOwn(input, "accountLabel") ? [...keys, "accountLabel"] : keys, "Cloud secret descriptor");
-	const accountLabel = parseCloudSecretAccountLabel(input.accountLabel);
-	if (
-		input.schema !== "qorpera.cloud-secret-descriptor/v1" ||
-		typeof input.secretId !== "string" ||
-		!UUID.test(input.secretId) ||
-		!Number.isSafeInteger(input.version) ||
-		(input.version as number) < 1 ||
-		typeof input.connectorId !== "string" ||
-		!IDENTIFIER.test(input.connectorId) ||
-		typeof input.secretName !== "string" ||
-		!IDENTIFIER.test(input.secretName) ||
-		typeof input.purpose !== "string" ||
-		!input.purpose.trim() ||
-		input.purpose.length > 512 ||
-		(input.ownerKind !== "company" && input.ownerKind !== "member") ||
-		(input.ownerKind === "company" ? input.ownerUserId !== null : typeof input.ownerUserId !== "string") ||
-		(typeof input.ownerUserId === "string" && !UUID.test(input.ownerUserId)) ||
-		input.status !== "active"
-	)
-		throw new Error("Cloud secret descriptor is invalid");
-	return {
-		schema: "qorpera.cloud-secret-descriptor/v1",
-		secretId: input.secretId,
-		version: input.version as number,
-		connectorId: input.connectorId,
-		secretName: input.secretName,
-		purpose: input.purpose,
-		ownerKind: input.ownerKind,
-		ownerUserId: input.ownerUserId as string | null,
-		status: "active",
-		...(Object.hasOwn(input, "accountLabel") ? { accountLabel } : {}),
-	};
 }
 
 function parseOAuthStart(value: unknown): {
@@ -2105,52 +2055,4 @@ export async function sealClaudeLoginBack(
 			fileSha256: { ...request.opened.fileSha256, ...Object.fromEntries(digests) },
 		},
 	};
-}
-
-/** Typed member capture path. The plaintext body goes to the broker origin,
- * never to Supabase, the Company File, a transcript, or the native runner. */
-export async function captureCloudSecret(
-	serviceOrigin: string,
-	request: CloudSecretCaptureRequest,
-	signal: AbortSignal,
-	fetchImplementation: typeof fetch = fetch,
-): Promise<CloudSecretDescriptor> {
-	const origin = brokerOrigin(serviceOrigin);
-	return withCloudDeadline(
-		async (requestSignal) => {
-			const body = Buffer.from(
-				JSON.stringify({
-					schema: "qorpera.cloud-secret-capture-request/v1",
-					captureCapability: request.captureCapability,
-					fields: request.fields,
-				}),
-				"utf8",
-			);
-			try {
-				const responseValue = await fetchImplementation(`${origin}/v1/captures/${request.ticketId}`, {
-					method: "POST",
-					redirect: "error",
-					headers: { "content-type": "application/json" },
-					body,
-					signal: requestSignal,
-				});
-				if (!responseValue.ok) {
-					void responseValue.body?.cancel().catch(() => undefined);
-					throw new Error("Cloud secret capture was not confirmed");
-				}
-				const bytes = await readBoundedCloudResponse(responseValue, MAX_RESPONSE_BYTES, requestSignal);
-				try {
-					return parseDescriptor(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
-				} catch {
-					throw new Error("Cloud secret capture returned invalid data");
-				} finally {
-					bytes.fill(0);
-				}
-			} finally {
-				body.fill(0);
-			}
-		},
-		15_000,
-		signal,
-	);
 }

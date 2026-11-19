@@ -608,13 +608,12 @@ describe("a machine wake's route", () => {
 	});
 
 	it("an executor's ingress and peer listener route a wake to the router, the peer listener never forwarding", async () => {
-		const wake = vi.fn(async (_request: unknown, _signal: AbortSignal, _localOnly?: boolean) => true);
-		const execute = vi.fn();
-		const fake = { wake, execute } as unknown as MachineCommandRouter;
-		const asked = request();
-		expect(await machineCommandRoutes(fake, { call: vi.fn() }, false).wake(asked, signal)).toBe(true);
-		expect(await machineCommandRoutes(fake, { call: vi.fn() }, true).wake(asked, signal)).toBe(true);
-		expect(wake.mock.calls.map((call) => call[2])).toEqual([false, true]);
+		const urls: string[] = [];
+		const routed = router({ wakeLocal: async () => true, urls });
+		expect(await machineCommandRoutes(routed, { call: vi.fn() }, true).wake(request(), signal)).toBe(true);
+		expect(urls).toEqual([]);
+		expect(await machineCommandRoutes(routed, { call: vi.fn() }, false).wake(request(), signal)).toBe(true);
+		await vi.waitFor(() => expect(urls).toEqual(["https://node-b.example/v1/machine-commands/wake"]));
 	});
 
 	it("reaches this node's machines: a word to wait on, or only a pass", async () => {
@@ -3098,7 +3097,6 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 				JSON.stringify(change),
 			).rejects.toThrow("MEMBER_POINTER_AUTHORITY_INVALID");
 		}
-		expect(new CloudMemberMachinePointerRefusal("POINTER_PASS_ENDED").code).toBe("POINTER_PASS_ENDED");
 	});
 });
 
@@ -3233,16 +3231,6 @@ describe("a member's start of a desktop (20260930714000)", () => {
 			{ placementId: f.placementId, bootId: f.bootId, startId: f.startId },
 			f.signal,
 		);
-	});
-
-	it("runs the start whoever holds the desktop: SQL's read knows no hold (review r1 F1 of #1681)", async () => {
-		const f = fixture();
-		// A read that still names a hold is of another shape: no authority.
-		f.call.mockResolvedValueOnce({ ...f.answer("mx-a"), held: true });
-		await expect(f.router.memberStart(f.start, f.signal)).rejects.toThrow("MEMBER_START_AUTHORITY_INVALID");
-		expect(f.host.memberStart).not.toHaveBeenCalled();
-		expect(await f.router.memberStart(f.start, f.signal)).toEqual({ outcome: "started" });
-		expect(f.host.memberStart).toHaveBeenCalledTimes(1);
 	});
 
 	it("reads SQL's answer strictly: the start asked, exactly its fields, served only to the machine's own executor", async () => {

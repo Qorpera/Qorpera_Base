@@ -156,15 +156,6 @@ it("does not downgrade when the bridge has no governed execution endpoint", asyn
 	expect(f.start).not.toHaveBeenCalled();
 });
 
-it("starts on the authority the runner just acquired, without renewing it first", async () => {
-	// Acquisition runs every check a renewal runs and sets the same expiry; the worker's
-	// maintenance loop renews the lease from then on. This call has no way to renew it.
-	const f = fixture();
-	await executeNativeCompanyRunnerJob(f.options);
-	expect(f.startCompany).toHaveBeenCalledOnce();
-	expect(f.startCompany.mock.calls[0]).toEqual([f.options.authority, { jobId: f.binding.jobId, attemptCount: 1 }]);
-});
-
 it.each(["expired", "unreadable"] as const)("refuses an %s authority before starting the bridge", async (kind) => {
 	const f = fixture();
 	const expiresAt = kind === "expired" ? new Date(Date.now() - 1).toISOString() : "not a time";

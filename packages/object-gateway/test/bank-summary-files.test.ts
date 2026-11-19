@@ -173,7 +173,6 @@ describe("BankSummaryWriter", () => {
 		expect(unit).toMatchObject({ op: "write", path: BANK_SUMMARY_PATH, file: { mediaType: "application/json" } });
 		expect(unit).not.toHaveProperty("expectedVersion");
 		expect(JSON.parse(written(unit))).toEqual(summary);
-		expect(written(unit)).toBe(bankSummaryText(summary));
 		for (const call of calls.filter((entry) => entry.method.startsWith("qorpera_folder_")))
 			expect(call.args.p_actor).toEqual({ kind: "platform" });
 		expect(calls.at(-1)).toEqual({

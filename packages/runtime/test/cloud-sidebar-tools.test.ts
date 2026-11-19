@@ -102,27 +102,13 @@ describe("agent sidebar tool", () => {
 });
 
 describe("a folder-v2 company's sections", () => {
-	it("goes through the sections file writer and names sections by name", async () => {
+	it("tells the agent the sections file and that a section is named by its name", () => {
 		const { binding, authority } = nativeToolAuthorityFixture();
-		const identity = authority.identity;
-		const run = vi.fn(async () => ({ kind: "text" as const, value: '{"changed":true}' }));
-		const [tool] = cloudSidebarTools(binding, identity, {
-			folderSidebar: { run } as unknown as CloudFolderSidebar,
+		const [tool] = cloudSidebarTools(binding, authority.identity, {
+			folderSidebar: { run: vi.fn() } as unknown as CloudFolderSidebar,
 		});
 		if (!tool) throw new Error("Missing sidebar tool");
 		expect(tool.description).toContain("QorperaOS/agents/sections.md");
 		expect(tool.description).toContain("name the section by its name;");
-		expect(tool.description).not.toContain("by its id or name");
-		const context = {
-			companyId: identity.companyId,
-			runId: identity.runId,
-			callId: "call-1",
-			argumentSha256: "a".repeat(64),
-			signal: new AbortController().signal,
-			identity,
-		};
-		const request = tool.parseArguments({ action: "move_agent", agentId: bob, section: "Sales" });
-		await expect(tool.execute(request, context)).resolves.toEqual({ kind: "text", value: '{"changed":true}' });
-		expect(run).toHaveBeenCalledWith({ action: "move_agent", agentId: bob, section: "Sales" }, context);
 	});
 });

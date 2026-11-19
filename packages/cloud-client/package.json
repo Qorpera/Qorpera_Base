@@ -26,7 +26,6 @@
 	},
 	"dependencies": {
 		"@qorpera/contracts": "^0.83.0",
-		"@qorpera/company": "^0.83.0",
 		"@supabase/supabase-js": "2.112.3"
 	},
 	"devDependencies": {

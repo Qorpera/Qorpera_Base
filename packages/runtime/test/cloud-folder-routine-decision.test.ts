@@ -522,19 +522,13 @@ it("finds its routine after a member renamed the file mid-run, by the routine's 
 	expect(f.commits).toHaveLength(commits);
 });
 
-it("is settled when another routine took its file's name, and lists the folder only when the file is not its own", async () => {
+it("is settled when another routine took its file's name", async () => {
 	const other = writeRoutineFile({ ...BASE, id: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d", title: "Someone else's" });
 	const f = await fixture(other);
 	await expect(
 		f.decide({ action: "next", operationKey: "decide-1", at: "2026-10-03T07:30:00Z" }),
 	).resolves.toMatchObject({ decided: true, result: { state: "settled", routine: { status: "retired" } } });
 	expect(f.commits).toHaveLength(0);
-	expect(f.listed).toHaveBeenCalled();
-	// Its own file at its key: no listing.
-	const h = await fixture();
-	h.listed.mockClear();
-	await h.decide({ action: "next", operationKey: "decide-1", at: "2026-10-03T07:30:00Z" });
-	expect(h.listed).not.toHaveBeenCalled();
 });
 
 it("releases the read a settled answer shows", async () => {

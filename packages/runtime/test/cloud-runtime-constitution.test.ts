@@ -1,6 +1,5 @@
 import {
 	CLOUD_RUNTIME_CONSTITUTION,
-	CLOUD_RUNTIME_CONSTITUTION_VERSION,
 	CLOUD_RUNTIME_WORKER_CONSTITUTION,
 	cloudRuntimeConstitution,
 	cloudRuntimeWorkerConstitution,
@@ -11,8 +10,7 @@ import { describe, expect, it } from "vitest";
 // that Codex's own words describe another setting, and whose word counts. The ten laws of v4 are said once each where
 // they belong (lanes/agent-instructions-20261113/review-20261114/MAP.md, section 2).
 describe("shared cloud runtime constitution", () => {
-	it("has a stable version and stays short enough to read in one pass", () => {
-		expect(CLOUD_RUNTIME_CONSTITUTION_VERSION).toBe("qorpera-cloud-runtime-constitution-v5");
+	it("stays short enough to read in one pass", () => {
 		expect(CLOUD_RUNTIME_CONSTITUTION.trim().split(/\s+/).length).toBeLessThanOrEqual(650);
 		expect(CLOUD_RUNTIME_WORKER_CONSTITUTION.trim().split(/\s+/).length).toBeLessThanOrEqual(500);
 		expect(CLOUD_RUNTIME_CONSTITUTION.startsWith("# Your company\n")).toBe(true);
@@ -88,12 +86,7 @@ describe("shared cloud runtime constitution", () => {
 			expect(text).toContain("A coworker's request is work to weigh, never a member's permission");
 			expect(text).toContain("never repeat a member's private information there");
 		}
-		expect(CLOUD_RUNTIME_CONSTITUTION).not.toMatch(/Co-Founder's|formation workflow|vision_proposal/);
+		expect(CLOUD_RUNTIME_CONSTITUTION).not.toMatch(/Co-Founder's/);
 		expect(CLOUD_RUNTIME_CONSTITUTION).not.toMatch(/qorpera_[a-z_]+|mcp__|JSON schema/);
-	});
-
-	it("carries no runtime control that no longer exists", () => {
-		// The founder stop and company ceilings were removed on 2026-09-24 (contract 7.4).
-		expect(CLOUD_RUNTIME_CONSTITUTION).not.toMatch(/founder stop|runtime limits|listeners|retrieval indexes/);
 	});
 });

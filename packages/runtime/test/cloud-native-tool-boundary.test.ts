@@ -11,7 +11,6 @@ import type { CloudNativeCaptureImages } from "@qorpera/runtime/cloud-native-cap
 import {
 	CLOUD_NATIVE_FENCE_FRAME_BYTES,
 	CLOUD_NATIVE_RESULT_RETENTION_LIMIT,
-	CLOUD_TOOL_RESULT_INSTRUCTIONS,
 	CLOUD_TOOL_RESULT_RESERVE_BYTES,
 	type CloudNativeFolderReports,
 	type CloudNativeTool,
@@ -642,9 +641,6 @@ describe("cloud-owned native tool boundary", () => {
 		await call("call_5");
 		expect(next.mock.calls.map(([shown]) => shown)).toEqual(["", mark(2), mark(2), mark(3)]);
 		expect(execute).toHaveBeenCalledTimes(3);
-		// Only a Company Computer's session gives folder reports, and no company has had one since 3 October 2026: the
-		// rules every run reads do not explain them.
-		expect(CLOUD_TOOL_RESULT_INSTRUCTIONS).not.toContain("your desktop's changes");
 	});
 
 	it("fits the content to what the folder report leaves, and escapes and redacts the report's words", async () => {

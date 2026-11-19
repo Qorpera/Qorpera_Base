@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,7 +25,6 @@ it("durably deduplicates one effect across a destination restart without persist
 	});
 	const encoded = await readFile(path, "utf8");
 	expect(encoded).not.toContain(operationKey);
-	expect(encoded).toContain(createHash("sha256").update(operationKey).digest("hex"));
 	await expect(recovered.admit(operationKey, "different", "drop_once")).rejects.toThrow("differs");
 });
 

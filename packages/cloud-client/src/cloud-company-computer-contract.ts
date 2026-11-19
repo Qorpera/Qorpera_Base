@@ -125,13 +125,13 @@ export function assertCompanyComputerScreenBinding(
 	if (actual.screenOrdinal > 32) throw new Error("SCREEN_BINDING_MISMATCH");
 }
 
-export function sameCompanyComputerDriver(left: CompanyComputerDriver, right: CompanyComputerDriver): boolean {
+function sameCompanyComputerDriver(left: CompanyComputerDriver, right: CompanyComputerDriver): boolean {
 	return left.kind === "agent"
 		? right.kind === "agent" && left.runId === right.runId && left.staffAgentId === right.staffAgentId
 		: right.kind === "member" && left.memberId === right.memberId && left.sessionId === right.sessionId;
 }
 
-export function assertCompanyComputerDriver(driver: CompanyComputerDriver): void {
+function assertCompanyComputerDriver(driver: CompanyComputerDriver): void {
 	if (
 		(driver.kind === "agent" &&
 			COMPANY_COMPUTER_UUID.test(driver.runId) &&
