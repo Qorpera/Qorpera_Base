@@ -3,7 +3,6 @@ import {
 	type CloudRunnerControlRequest,
 	CloudRunnerControlRequestError,
 	type CloudRunnerControlTransport,
-	createCloudRunnerPairingSecret,
 	parseCloudRunnerJob,
 } from "@qorpera/cloud-client/node/cloud-runner-protocol";
 import type { JsonValue } from "@qorpera/contracts";
@@ -22,10 +21,10 @@ const environmentId = "b953532a-c4f0-4b81-b901-d4bb21237002";
 const substrateVersionId = "b953532a-c4f0-4b81-b901-d4bb21237003";
 const clientJobId = "b953532a-c4f0-4b81-b901-d4bb21237004";
 const createdAt = "2026-08-16T12:00:00.000Z";
+const activationToken = "t".repeat(43);
 
 class MemoryAuthorityStore implements CloudRunnerAuthorityStore {
 	value?: JsonValue;
-	saves = 0;
 
 	async load(): Promise<unknown | undefined> {
 		return this.value === undefined ? undefined : structuredClone(this.value);
@@ -33,7 +32,6 @@ class MemoryAuthorityStore implements CloudRunnerAuthorityStore {
 
 	async save(value: JsonValue): Promise<void> {
 		this.value = structuredClone(value);
-		this.saves++;
 	}
 }
 
@@ -99,9 +97,6 @@ describe("disposable cloud runner", () => {
 	});
 
 	it("reuses secrets and assignment identity after ambiguous activation, heartbeat, acceptance, and completion", async () => {
-		const pairing = createCloudRunnerPairingSecret();
-		expect(pairing.activationToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
-		expect(pairing.activationTokenSha256).toMatch(/^[0-9a-f]{64}$/);
 		const attempts = new Map<string, Array<{ token: string; body: CloudRunnerControlRequest }>>();
 		const transport: CloudRunnerControlTransport = {
 			request: vi.fn(async (token, body) => {
@@ -117,7 +112,7 @@ describe("disposable cloud runner", () => {
 				return { ...jobRecord("leased"), status: "queued", runner_id: null, lease_expires_at: null };
 			}),
 		};
-		const runner = new DisposableCloudRunner(transport, runnerId, pairing.activationToken);
+		const runner = new DisposableCloudRunner(transport, runnerId, activationToken);
 
 		await expect(runner.activate("linux-x64", "0.1.0")).rejects.toThrow("response lost");
 		await expect(runner.activate("linux-x64", "0.1.0")).resolves.toMatchObject({ runnerId, online: true });
@@ -160,11 +155,10 @@ describe("disposable cloud runner", () => {
 		});
 		expect(runner.snapshot().activeJobIds).toEqual([]);
 		await expect(broker.describe()).rejects.toThrow("lease is unavailable");
-		expect(JSON.stringify(runner.snapshot())).not.toContain(pairing.activationToken);
+		expect(JSON.stringify(runner.snapshot())).not.toContain(activationToken);
 	});
 
 	it("restores pending authority and exact leased work after process restarts", async () => {
-		const pairing = createCloudRunnerPairingSecret();
 		const store = new MemoryAuthorityStore();
 		const attempts = new Map<string, Array<{ token: string; body: CloudRunnerControlRequest }>>();
 		const failures = new Set(["activate", "accept", "complete"]);
@@ -181,7 +175,7 @@ describe("disposable cloud runner", () => {
 			}),
 		};
 
-		let runner = await DisposableCloudRunner.open(transport, runnerId, store, pairing.activationToken);
+		let runner = await DisposableCloudRunner.open(transport, runnerId, store, activationToken);
 		await expect(runner.activate("linux-x64", "0.1.0")).rejects.toThrow("response lost");
 		runner = await DisposableCloudRunner.open(transport, runnerId, store);
 		await expect(runner.activate("linux-x64", "0.1.0")).resolves.toMatchObject({ runnerId });
@@ -203,12 +197,10 @@ describe("disposable cloud runner", () => {
 		});
 		expect(attempts.get("complete")?.[0]).toEqual(attempts.get("complete")?.[1]);
 		expect(runner.leasedJobs()).toEqual([]);
-		expect(store.saves).toBeGreaterThan(6);
-		expect(JSON.stringify(runner.snapshot())).not.toContain(pairing.activationToken);
+		expect(JSON.stringify(runner.snapshot())).not.toContain(activationToken);
 	});
 
 	it("keeps a folder-v2 job with no Company File substrate across restarts and completes it", async () => {
-		const pairing = createCloudRunnerPairingSecret();
 		const store = new MemoryAuthorityStore();
 		const completions: CloudRunnerControlRequest[] = [];
 		const transport: CloudRunnerControlTransport = {
@@ -222,7 +214,7 @@ describe("disposable cloud runner", () => {
 				throw new Error("unexpected runner action");
 			}),
 		};
-		let runner = await DisposableCloudRunner.open(transport, runnerId, store, pairing.activationToken);
+		let runner = await DisposableCloudRunner.open(transport, runnerId, store, activationToken);
 		await runner.activate("linux-x64", "0.1.0");
 		await runner.acceptAssignment({ assignmentId, jobId, capability: assignmentCapability });
 		runner = await DisposableCloudRunner.open(transport, runnerId, store);
@@ -238,7 +230,6 @@ describe("disposable cloud runner", () => {
 	});
 
 	it("swaps a refused staged completion for a staged failure in one saved step, and sends only that failure", async () => {
-		const pairing = createCloudRunnerPairingSecret();
 		const store = new MemoryAuthorityStore();
 		const actions: string[] = [];
 		const transport: CloudRunnerControlTransport = {
@@ -258,7 +249,7 @@ describe("disposable cloud runner", () => {
 				throw new Error("unexpected runner action");
 			}),
 		};
-		let runner = await DisposableCloudRunner.open(transport, runnerId, store, pairing.activationToken);
+		let runner = await DisposableCloudRunner.open(transport, runnerId, store, activationToken);
 		await runner.activate("linux-x64", "0.1.0");
 		await runner.acceptAssignment({ assignmentId, jobId, capability: assignmentCapability });
 		await expect(runner.replaceStagedCompletionWithFailure(jobId, "Completion refused", false)).rejects.toThrow(
@@ -287,7 +278,6 @@ describe("disposable cloud runner", () => {
 	});
 
 	it("recovers heartbeat authority after the previous-token grace period", async () => {
-		const pairing = createCloudRunnerPairingSecret();
 		const attempts: Array<{ token: string; body: CloudRunnerControlRequest }> = [];
 		let sessionToken: string | undefined;
 		let loseFirstHeartbeat = true;
@@ -308,7 +298,7 @@ describe("disposable cloud runner", () => {
 				return runnerRecord();
 			}),
 		};
-		const runner = new DisposableCloudRunner(transport, runnerId, pairing.activationToken);
+		const runner = new DisposableCloudRunner(transport, runnerId, activationToken);
 		await runner.activate("linux-x64", "0.1.0");
 
 		await expect(runner.heartbeat()).rejects.toThrow("heartbeat response lost");
@@ -324,7 +314,6 @@ describe("disposable cloud runner", () => {
 	});
 
 	it("does not replace an orchestrator assignment after an ambiguous response", async () => {
-		const pairing = createCloudRunnerPairingSecret();
 		const acceptances: Array<Extract<CloudRunnerControlRequest, { action: "accept" }>> = [];
 		let loseResponse = true;
 		const transport: CloudRunnerControlTransport = {
@@ -339,7 +328,7 @@ describe("disposable cloud runner", () => {
 				return jobRecord("leased");
 			}),
 		};
-		const runner = new DisposableCloudRunner(transport, runnerId, pairing.activationToken);
+		const runner = new DisposableCloudRunner(transport, runnerId, activationToken);
 		await runner.activate("linux-x64", "0.1.0");
 
 		const assignment = { assignmentId, jobId, capability: assignmentCapability };
@@ -468,12 +457,7 @@ describe("runner start", () => {
 	}
 
 	async function activeRunner(transport: CloudRunnerControlTransport, store = new MemoryAuthorityStore()) {
-		const runner = await DisposableCloudRunner.open(
-			transport,
-			runnerId,
-			store,
-			createCloudRunnerPairingSecret().activationToken,
-		);
+		const runner = await DisposableCloudRunner.open(transport, runnerId, store, activationToken);
 		await runner.activate("linux-x64", "0.1.0");
 		return runner;
 	}

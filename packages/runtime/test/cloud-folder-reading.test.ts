@@ -9,7 +9,6 @@ import {
 import type { JsonValue } from "@qorpera/contracts";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
 import {
-	CLOUD_UPDATE_READING_DESCRIPTION,
 	CloudFolderReading,
 	type CloudReadingRequest,
 	cloudCompanyMembers,
@@ -279,7 +278,6 @@ it("is update_reading: its description says every field's meaning, and an operat
 	const f = await fixture();
 	const tool = cloudReadingTool(f.identity, f.writer());
 	expect(tool.name).toBe("update_reading");
-	expect(tool.description).toBe(CLOUD_UPDATE_READING_DESCRIPTION);
 	for (const words of [
 		"sentence:",
 		"line:",

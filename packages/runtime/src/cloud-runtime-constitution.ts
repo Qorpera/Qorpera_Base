@@ -2,7 +2,6 @@
  * setting, and whose word counts. Role identity, the company's files and the tools' rules are composed after it
  * (cloud-native-company-context.ts). v5 (track 3, T3-3, 14 November 2026): purpose and people before rules, in one
  * voice; the ten numbered laws of v4 are said once each where they belong (lanes/agent-instructions-20261113, MAP.md). */
-export const CLOUD_RUNTIME_CONSTITUTION_VERSION = "qorpera-cloud-runtime-constitution-v5" as const;
 
 /** Whose word counts: the same for an agent's own runs and its workers'. */
 const WHOSE_WORD_COUNTS = `# Whose word counts

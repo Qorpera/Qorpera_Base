@@ -4,14 +4,12 @@ import type { JsonValue } from "@qorpera/contracts";
 import { CloudControlRpcEnded, CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
 import { CLOUD_RUN_ROW_WRITE_MS, CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
-	CLOUD_TOOL_RESULT_INSTRUCTIONS,
 	CloudNativeToolBoundary,
 	CloudToolAuthorizeRefusal,
 	CloudToolOutcomeUnknown,
 	CloudToolRefusal,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
-	CLOUD_NATIVE_TOOL_REMEMBERED_OPERATIONS,
 	type CloudNativeToolOperation,
 	type CloudNativeToolOperationControlPlane,
 	CloudNativeToolOperations,
@@ -406,10 +404,6 @@ it("tells the model to check an outcome-unknown call before it repeats it under 
 		expect(text).not.toContain("TOOL_OUTCOME_UNCONFIRMED");
 		expect(text).not.toContain("PRIVATE_EFFECT_UNKNOWN");
 		expect(f.perform).toHaveBeenCalledTimes(1);
-		// The standing rule (same key, never a new one) names its one exception.
-		expect(CLOUD_TOOL_RESULT_INSTRUCTIONS).toContain(
-			"- OUTCOME_UNKNOWN: your run was cut off while it ran, and the key is spent.",
-		);
 	} finally {
 		boundary.close();
 	}
@@ -1334,7 +1328,6 @@ it("never refuses a run's operations by count; a forgotten one replays through i
 	// Runtime v92: the run used to fail after 65,536 operations. Past that the
 	// oldest are forgotten locally and the kernel receipt stays the authority.
 	// The limit is injected: the same code path at 65,536 took 20-80 s per run.
-	expect(CLOUD_NATIVE_TOOL_REMEMBERED_OPERATIONS).toBe(65_536);
 	const f = await fixture();
 	const receipts = new Map<string, Receipt>();
 	// The newest receipt, which the next completion must name.

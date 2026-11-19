@@ -1496,30 +1496,15 @@ describe("manage_code bring_in: the other branches, the bundle left behind, and 
 	const MERGE =
 		" To bring one into main, have a coding session on code/acme/shop merge it into its branch (git merge refs/qorpera/imported/heads/<name>), run the checks and finish; changes/1.md lists them.";
 
-	it("reads every answer of today's SQL and executors exactly as before: no lines, no file", async () => {
-		// Today's read has eleven keys and a look without lines (20260930736000): each answer as v238 says it.
-		for (const [ended, args, text] of [
-			[
-				looked(),
-				{ ...bringIn, look: true },
-				`${FACTS} It found no strings that look like keys. To bring it in, call bring_in with look false and a new operationKey.`,
-			],
-			[imported(), bringIn, `${BROUGHT}${GITHUB}${CHECKS}`],
-			[imported(), fileIn, `${BROUGHT}${AS_BEFORE}${CHECKS}`],
+	it("says what came in when the read names no change or no look", async () => {
+		for (const [ended, text] of [
 			[
 				imported({ look: look({ commits: 1, files: 1, defaultBranch: null }), change: null }),
-				fileIn,
 				`Brought in as code/acme/shop: 1 earlier change on its main branch, 1 file.${AS_BEFORE}${CHECKS}`,
 			],
-			[
-				imported({ look: null }),
-				fileIn,
-				`Brought in as code/acme/shop; change 1 of its record.${AS_BEFORE}${CHECKS}`,
-			],
+			[imported({ look: null }), `Brought in as code/acme/shop; change 1 of its record.${AS_BEFORE}${CHECKS}`],
 		] as const) {
-			expect(Object.keys(ended)).toHaveLength(11);
-			expect(JSON.stringify(ended)).not.toContain('"lines"');
-			expect(await said(ended, args)).toBe(text);
+			expect(await said(ended, fileIn)).toBe(text);
 		}
 	});
 

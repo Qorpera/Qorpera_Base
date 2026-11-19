@@ -649,6 +649,29 @@
 - The unreleased office unit now loads credentials from the current boot's immutable directory. Previously acknowledged installations without those files are refused; replay does not backfill missing credentials from the original installation.
 - The platform's folders are under `QorperaOS/` (Jonas, 21 October 2026; needs migration `20260930534000` and a recreated company, no data is moved): `QorperaOS/vision/vision.md`, `QorperaOS/agents/` (with `groups/` and `sections.md`), `QorperaOS/rules/`, `QorperaOS/connections/`, `QorperaOS/skills/`, `QorperaOS/contacts/`, `QorperaOS/human-tasks/`, `QorperaOS/interfaces/` and `QorperaOS/tables/`, while `code/` and the company's own work stay at the top. Every run's instructions list them as `QorperaOS/<folder>/` with `code/` beside it (`CLOUD_COMPANY_TOP_FOLDERS` holds the full paths), the head and the first-run wake name `QorperaOS/vision/vision.md`, and the Co-Founder's role overlay is `qorpera.hire-overlay/v7` (the 2026-10-22 amendment's v6 text with the vision, `agents/`, `sections.md` and `human-tasks/` under `QorperaOS/`). The action reviewer's mandate names the vision `QorperaOS/vision/vision.md`. Every run's folder rules add that the platform writes `digital-post/`, `bank/`, `members/` and `hooks/`, which stay at the top (Jonas, 24 October 2026): agents read them but never put their own files there. The context names each agent's folder `QorperaOS/agents/<handle>`, and a member's chat image is accepted only under `QorperaOS/agents/`. `CLOUD_AGENT_VISION_PATH`, `CLOUD_COMPANY_SKILLS_ROOT` and the folder writers (hires, group chats, sidebar sections, todos, workers, routines, routine decisions, table rows) use the cloud client's `osPath`; the descriptions of `table_read`, `table_write`, `organize_sidebar`, `hire_agent` and `create_group_chat` name the new paths. A worker reports only into an `outputFolder` spelled `QorperaOS/agents/<handle>/todos/<todo>/<worker>`; a run log's place (spelled `QorperaOS/...` by the database, either spelling accepted), a human task wake's path, and the interface change notes of `company_*` writes and applied proposals are read below the root with `osRelative`.
 
+### Removed
+
+- Exports and files that only deleted tests still used are gone (18 Nov 2026, #1952; nothing in production, deploy or
+  scripts called them):
+  - `cloud-company-accounts`: `parseCompanyAccountOtpauth` and `parseCompanyAccountRecoveryCodes`.
+  - `cloud-company-computer-leases`: `CompanyComputerScreenActionGate.replaceBinding`, and with it the
+    `SCREEN_REPLACEMENT_PENDING` refusal. A fenced slot still refuses a lease or a fence with another binding.
+  - `cloud-company-computer-screens`: `CloudCompanyComputerScreenManager`. `companyComputerScreenDisplay`,
+    `waitForCompanyComputerScreenReady`, `CompanyComputerScreenLauncher` and `CompanyComputerScreenSessionHandle` stay.
+  - `cloud-company-computer-state` (the whole file, the `@qorpera/runtime/cloud-company-computer-state` subpath):
+    `assertCompanyComputerScreenRegistry`, `transitionCompanyComputerScreens`, `companyComputerScreenBinding`,
+    `companyComputerScreenLease`, `companyComputerPowerIntent` and the `CompanyComputerScreenState`,
+    `CompanyComputerScreenRegistry`, `CompanyComputerScreenCommand` and `CompanyComputerScreenTransition` types.
+  - `cloud-runner-model-socket`: `startCloudRunnerModelSocketServer`, `StartCloudRunnerModelSocketServerOptions`,
+    `CloudRunnerModelSocketServer`, `CloudRunnerModelSocketFactory` and `CloudRunnerModelBroker`. The container's client
+    `requestCloudRunnerModelSocket` and the frame schemas stay.
+  - `cloud-runtime-constitution`: `CLOUD_RUNTIME_CONSTITUTION_VERSION`.
+  - `cloud-secret-broker-http`: `captureCloudSecret`. The web posts a capture to the broker's route itself.
+  - `cloud-secret-broker`: `SupabaseCloudSecretBrokerAuthority` (production builds `PostgresCloudSecretBrokerAuthority`);
+    `parseCloudSecretAccountLabel` is no longer exported.
+  - `cloud-wake-bus`: `CloudNativeWakeBus` and `HttpCloudWakeControl`. `cloudCoworkerMessageTool` and
+    `parseCloudWakeEnvelope` stay.
+
 ### Added
 
 - Listener routines (L1; migration `20260930565000`, SQL tests 565; `deploy/first-node/RUNTIME-LISTENER-ROUTINES.md`): `manage_routine` takes the trigger `when_done` (`path`, a todo or human task file, `.md` optional; `latestAt` with its offset; `timeZone`; `report`). It compiles to a dynamic routine whose file has `after: <path>`: its run comes as soon as nothing open is left at the path (done, cancelled, declined or deleted), or at `latestAt`, and `wake.payload.done` says which. `decide_routine next` takes `whenDone` to wait again; a next run without it drops `after`. The review card reads "When the todo “Landing page” of product-builder is done, at the latest …", and a computer's proposal names it the same way. Standing work tells agents to use a listener instead of a guessed check time, and which follow-ups already wake them (their workers, coworkers' replies, the human tasks they asked for).

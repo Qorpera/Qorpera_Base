@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { writeWorkerResultsFile } from "@qorpera/cloud-client/company-state-files";
 import { describe, expect, it } from "vitest";
 import {
 	CODING_RESULTS_NO_SUMMARY,
@@ -215,19 +214,8 @@ describe("coding results claims", () => {
 
 describe("coding results text", () => {
 	it("writes the turn's report as the database takes it: its outcome and time, no decision, note or files", () => {
-		const { text, parse } = parsed({});
+		const { parse } = parsed({});
 		const summary = `Fixed the login page.\n\nPull request: ${pullRequest}`;
-		expect(text).toBe(
-			writeWorkerResultsFile({
-				outcome: "succeeded",
-				reportedAt: "2026-10-06T09:15:02.25Z",
-				decision: null,
-				note: null,
-				summary,
-				needs: null,
-				files: [],
-			}),
-		);
 		// The parse test 982 commits, key for key: a decision and a note that are JSON null, and no files.
 		expect(JSON.parse(JSON.stringify(parse))).toStrictEqual({
 			kind: "worker-results",

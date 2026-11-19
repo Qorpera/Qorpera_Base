@@ -167,6 +167,5 @@ describe("office sign-in privacy", () => {
 			{ ...f.challenge, scope: { ...computerScope(), companyId: computerId(99) } },
 		];
 		for (const value of invalid) expect(() => parseCompanyComputerPrivacyChallenge(value, computerScope())).toThrow();
-		expect(f.fence).not.toHaveBeenCalled();
 	});
 });

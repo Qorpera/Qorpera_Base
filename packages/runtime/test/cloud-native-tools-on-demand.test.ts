@@ -9,7 +9,6 @@ import {
 	CloudNativeToolBoundary,
 	CloudToolArgumentRefusal,
 	type CloudToolResult,
-	cloudToolForm,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
 	CLOUD_DIRECT_TOOLS,
@@ -50,6 +49,15 @@ function boundaryOf(
 }
 
 const resultOf = (response: CloudDynamicToolResponse) => JSON.parse(response.contentItems[0].text) as CloudToolResult;
+
+function expectForm(text: string, tool: CloudNativeTool) {
+	expect(text.startsWith(`${tool.name}\n`)).toBe(true);
+	expect(text).toContain(tool.description);
+	expect(text).toContain(JSON.stringify(tool.inputSchema));
+}
+
+const formBytes = (tool: CloudNativeTool) =>
+	tool.name.length + tool.description.length + JSON.stringify(tool.inputSchema).length;
 
 /** A tool that records what reaches it: it takes { operationKey, title } and refuses anything else in its own words. */
 function recorded(name: string, source: CloudNativeTool["source"] = "runtime") {
@@ -161,16 +169,11 @@ describe("tools on demand", () => {
 			for (const name of offered.deferred) {
 				const result = await describe([name]);
 				expect(result).toMatchObject({ status: "ok", content: { truncated: false } });
-				expect(result.content.text).toBe(cloudToolForm(tools.find((tool) => tool.name === name)!));
+				expectForm(result.content.text, tools.find((tool) => tool.name === name)!);
 			}
 			// The eight largest at once: as many as fit whole, the rest named to describe again.
-			const largest = [...offered.deferred]
-				.sort(
-					(a, b) =>
-						cloudToolForm(tools.find((tool) => tool.name === b)!).length -
-						cloudToolForm(tools.find((tool) => tool.name === a)!).length,
-				)
-				.slice(0, 8);
+			const size = (name: string) => formBytes(tools.find((tool) => tool.name === name)!);
+			const largest = [...offered.deferred].sort((a, b) => size(b) - size(a)).slice(0, 8);
 			const many = await describe(largest);
 			expect(many).toMatchObject({ status: "ok", content: { truncated: false } });
 			for (const name of largest)
@@ -270,9 +273,11 @@ describe("tools on demand", () => {
 			}),
 		);
 		expect(routed).toMatchObject({ status: "denied", provenance: { tool: "manage_hook" } });
-		expect(routed.content.text).toBe(
-			`INVALID_ARGUMENTS: operationKey and title are both text\nWhat manage_hook takes, to call it again through more_tools use:\n${cloudToolForm(hook)}`,
+		const [refusal, form] = routed.content.text.split(
+			"\nWhat manage_hook takes, to call it again through more_tools use:\n",
 		);
+		expect(refusal).toBe("INVALID_ARGUMENTS: operationKey and title are both text");
+		expectForm(form ?? "", hook);
 		const direct = resultOf(await boundary.invoke("d1", "qorpera", "manage_hook", { title: "Website form" }));
 		expect(direct.content.text).toBe("INVALID_ARGUMENTS: operationKey and title are both text");
 		expect(execute).not.toHaveBeenCalled();

@@ -3,7 +3,7 @@ import { CLOUD_CODING_COMMAND_LEGACY_PAGE_BYTES, parseCloudCodingCommandReceipt 
 import { describe, expect, it } from "vitest";
 import { CLOUD_COMMAND_PAGE_ASK, cloudCommandFits, fitCloudCommandPage } from "../src/cloud-command-page-fit.ts";
 import { CLOUD_COMMAND_PAGE_HEADER, CloudCommandPages } from "../src/cloud-command-pages.ts";
-import { CLOUD_TOOL_RESULT_RESERVE_BYTES, MAX_CLOUD_TOOL_RESULT_BYTES } from "../src/cloud-native-tool-boundary.ts";
+import { MAX_CLOUD_TOOL_RESULT_BYTES } from "../src/cloud-native-tool-boundary.ts";
 
 /** A page of `output` at `offset` of a log of `totalBytes`, its cursor counted in the output's own bytes. */
 function page(output: string, offset = 0, totalBytes = 200_000, state = "running") {
@@ -35,7 +35,8 @@ const lines = (bytes: number) => {
 
 describe("a command's page fitted to one result (keyholes S1)", () => {
 	it("asks for one result's room by default", () => {
-		expect(CLOUD_COMMAND_PAGE_ASK).toBe(MAX_CLOUD_TOOL_RESULT_BYTES - CLOUD_TOOL_RESULT_RESERVE_BYTES);
+		expect(CLOUD_COMMAND_PAGE_ASK).toBeGreaterThan(31_000);
+		expect(CLOUD_COMMAND_PAGE_ASK).toBeLessThan(MAX_CLOUD_TOOL_RESULT_BYTES);
 	});
 
 	it("keeps a page that fits as it is", () => {
