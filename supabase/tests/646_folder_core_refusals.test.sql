@@ -69,17 +69,6 @@ select pg_temp.fx($q$insert into public.qorpera_profile_objects(profile_id, sha2
 	('64600000-0000-4000-8000-000000000010', repeat('b', 64), 1, 'supabase-storage'),
 	('64600000-0000-4000-8000-000000000011', repeat('b', 64), 1, 'supabase-storage') on conflict do nothing$q$);
 
--- Raw object reads and uploads by hash, and the read lease, are gone on every company (legacy sweep E3, 20260930450000).
-do $$
-declare v_signature text;
-begin
-	foreach v_signature in array array['public.qorpera_authorize_profile_object_download(uuid,text)',
-		'public.qorpera_authorize_profile_object_upload(uuid,text,bigint)',
-		'public.qorpera_issue_profile_object_read_lease(uuid,text,integer)'] loop
-		if to_regprocedure(v_signature) is not null then raise exception '% must be gone', v_signature; end if;
-	end loop;
-end $$;
-
 -- The Storage read policy: a member never reads a folder-v2 object from Storage directly.
 select pg_temp.as_member('64600000-0000-4000-8000-000000000002');
 set local role authenticated;

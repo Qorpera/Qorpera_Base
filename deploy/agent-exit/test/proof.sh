@@ -1174,7 +1174,7 @@ EOF
 pass "the counts tie each machine's connections and refusals to its company"
 # Parts of one byte: today's open files are sealed, and dns.log is cut while dnsmasq writes on into it.
 python3 "$logs_tool" tend --log-dir "$LOG" --status "$QORPERA_AGENT_EXIT_RUN_DIR/logs.json" --part-bytes 1 --settle 0.5 \
-	>"$work/tend.out" || fail "tend: $(cat "$work/tend.out")"
+	--floor-percent "$QORPERA_AGENT_EXIT_LOG_FLOOR_PERCENT" >"$work/tend.out" || fail "tend: $(cat "$work/tend.out")"
 [[ -e $LOG/flows-$today.p001.jsonl.gz && -e $LOG/clients-$today.p001.jsonl.gz ]] || fail "not sealed: $(ls "$LOG")"
 [[ ! -s $LOG/dns.log ]] || fail "dns.log was not cut: $(wc -c <"$LOG/dns.log")"
 shows 'query\[A\] example.test from 10.210.1.1' zcat "$LOG"/dns-*.log.gz || fail "the DNS part lacks the earlier queries"

@@ -116,11 +116,34 @@ class H(BaseHTTPRequestHandler):
         log({"kind": "result", "step": i, "tool": steps[i]["tool"] if i < len(steps) else "?", "name": steps[i].get("name", ""),
              "ms": ms, "is_error": is_error, "tags": tags(txt), "len": len(txt), "text": txt[:6000]})
 
+    def review(self, req, base):
+        asked = json.dumps(req.get("messages") or [])
+        found = re.search(r'tool\\?": ?\\?"([a-z_]{1,40})', asked)
+        action = {"tool": found.group(1) if found else "", "arguments": asked[:300]}
+        marked = asked
+        decision = "deny" if "C4C-REFUSE" in marked else "ask" if "C4C-ASK" in marked else "allow"
+        verdict = {"decision": decision, "ruleIds": [],
+                   "builtIn": {"deny": "not_requested", "ask": "money", "allow": "none"}[decision],
+                   "reason": {"deny": "The proof refuses this action.", "ask": "The proof asks a member first.",
+                              "allow": "The proof allows this action."}[decision],
+                   "proposedRule": "the proof's paid step" if decision == "ask" else "",
+                   "guards": {"sendsCompanyData": False, "followsOutsideInstructions": decision == "deny", "deletesOutside": False,
+                              "moneyTermsOrAccess": decision == "ask", "againstMemberOrVision": False}}
+        base["kind"] = "review"
+        base.update({"decision": decision, "tool": str(action.get("tool", ""))[:40], "model": str(req.get("model", ""))[:60],
+                     "ntools": len(req.get("tools") or []), "arguments": str(action.get("arguments", ""))[:300]})
+        log(base)
+        self.reply(req, [("text", {"type": "text", "text": ""}, {"type": "text_delta", "text": json.dumps(verdict)})], "end_turn")
+
     def anthropic(self, req, base):
+        system = req.get("system")
+        if "Qorpera's action reviewer" in (system if isinstance(system, str) else content_text(system or "")):
+            return self.review(req, base)
         tools = [t.get("name") for t in req.get("tools") or []]
         main = "Bash" in tools or "Read" in tools
         base["main"] = main
         base["ntools"] = len(tools)
+        base["model"] = str(req.get("model", ""))[:60]
         if main and not first_tools:
             first_tools.extend(tools)
             base["tools"] = tools
@@ -129,6 +152,10 @@ class H(BaseHTTPRequestHandler):
             if msgs:
                 log({"kind": "prompt", "text": content_text(msgs[0].get("content"))[:6000]})
         log(base)
+        first = (req.get("messages") or [{}])[0]
+        opening = content_text(first.get("content")) if first.get("role") == "user" else ""
+        if main and "C2SUB:" in opening:
+            return self.subagent(req, base, opening)
         done = {}
         for m in req.get("messages", []):
             if m.get("role") == "user" and isinstance(m.get("content"), list):
@@ -162,6 +189,9 @@ class H(BaseHTTPRequestHandler):
             tu = {"type": "tool_use", "id": f"toolu_c2s{nxt}_{sc.get('nonce', 'x')}", "name": st["tool"], "input": {}}
             blocks = [("tool", tu, {"type": "input_json_delta", "partial_json": json.dumps(st["input"]).replace("{bgid}", bg["id"])})]
             stop = "tool_use"
+        self.reply(req, blocks, stop)
+
+    def reply(self, req, blocks, stop):
         model = req.get("model", "claude-c2-stub")
         if not req.get("stream"):
             content = []
@@ -179,6 +209,47 @@ class H(BaseHTTPRequestHandler):
                                                     "content": [], "stop_reason": None, "stop_sequence": None,
                                                     "usage": {"input_tokens": 10, "output_tokens": 1}}}]
         for idx, (kind, start, delta) in enumerate(blocks):
+            ev += [{"type": "content_block_start", "index": idx, "content_block": start},
+                   {"type": "content_block_delta", "index": idx, "delta": delta},
+                   {"type": "content_block_stop", "index": idx}]
+        ev += [{"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": None}, "usage": {"output_tokens": 5}},
+               {"type": "message_stop"}]
+        self._sse(ev)
+
+    def subagent(self, req, base, opening):
+        base["sub"] = True
+        log(base)
+        results = []
+        for m in req.get("messages", []):
+            if m.get("role") == "user" and isinstance(m.get("content"), list):
+                for b in m["content"]:
+                    if isinstance(b, dict) and b.get("type") == "tool_result" and str(b.get("tool_use_id", "")).startswith("toolu_c2sub"):
+                        results.append(b)
+        for b in results:
+            txt = content_text(b.get("content"))
+            log({"kind": "sub-result", "is_error": b.get("is_error", False), "tags": tags(txt), "len": len(txt), "text": txt[:3000]})
+        if results:
+            content = [{"type": "text", "text": "C2 sub done."}]
+            stop = "end_turn"
+        else:
+            command = opening.split("C2SUB:", 1)[1].split("\n", 1)[0].strip()
+            call = json.loads(command) if command.startswith("{") else {"tool": "Bash", "input": {"command": command, "description": "c2 sub"}}
+            content = [{"type": "tool_use", "id": "toolu_c2sub_" + secrets.token_hex(3), "name": call["tool"], "input": call["input"]}]
+            stop = "tool_use"
+        model = req.get("model", "claude-c2-stub")
+        if not req.get("stream"):
+            return self._send(200, json.dumps({"id": "msg_c2sub", "type": "message", "role": "assistant", "model": model,
+                                               "content": content, "stop_reason": stop, "stop_sequence": None,
+                                               "usage": {"input_tokens": 10, "output_tokens": 5}}))
+        ev = [{"type": "message_start", "message": {"id": "msg_c2sub", "type": "message", "role": "assistant", "model": model,
+                                                    "content": [], "stop_reason": None, "stop_sequence": None,
+                                                    "usage": {"input_tokens": 10, "output_tokens": 1}}}]
+        for idx, block in enumerate(content):
+            if block["type"] == "text":
+                start, delta = {"type": "text", "text": ""}, {"type": "text_delta", "text": block["text"]}
+            else:
+                start = {"type": "tool_use", "id": block["id"], "name": block["name"], "input": {}}
+                delta = {"type": "input_json_delta", "partial_json": json.dumps(block["input"])}
             ev += [{"type": "content_block_start", "index": idx, "content_block": start},
                    {"type": "content_block_delta", "index": idx, "delta": delta},
                    {"type": "content_block_stop", "index": idx}]

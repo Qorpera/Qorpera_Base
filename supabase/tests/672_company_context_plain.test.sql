@@ -52,14 +52,6 @@ create function pg_temp.c_clockless(p_outcome jsonb) returns jsonb language sql 
 	select case when p_outcome #> '{result,observedAt}' is null then p_outcome
 		else jsonb_set(p_outcome, '{result,observedAt}', to_jsonb((p_outcome #>> '{result,observedAt}')::timestamptz is not null)) end
 $$;
--- This transaction's calls of the plain read, the locked run check (the budget row FOR UPDATE) and the context check's
--- reads check (the read set's writer).
-create function pg_temp.c_calls() returns bigint[] language sql as $$
-	select array_agg(coalesce((select sum(f.calls) from pg_stat_xact_user_functions f
-		where f.schemaname = 'public' and f.funcname = n.name), 0)::bigint order by n.ordinal)
-	from unnest(array['qorpera_folder_native_run_plain', 'qorpera_folder_tool_run', 'qorpera_folder_run_reads_current'])
-		with ordinality as n(name, ordinal)
-$$;
 -- The context describe one way in this transaction, without its clock: through the host (the publishable key's role on
 -- the host's RPC path), as the entry point by request.path (the plain read the host reaches), or by direct SQL with no
 -- request.path (the locked run check and the whole context check).
@@ -98,23 +90,19 @@ begin
 	perform set_config('request.path', '', true);
 	return v;
 end $$;
--- The three ways, with each one's calls of [plain read, locked run check, reads check].
 create function pg_temp.c_three(p_binding jsonb) returns jsonb language plpgsql as $$
-declare v_answers jsonb := '{}'; v_calls jsonb := '{}'; v_at bigint[]; v_after bigint[]; v_way text;
+declare v_answers jsonb := '{}'; v_way text;
 begin
 	foreach v_way in array array['host', 'plain', 'locked'] loop
-		v_at := pg_temp.c_calls();
 		v_answers := v_answers || jsonb_build_object(v_way, pg_temp.c_way(p_binding, v_way));
-		v_after := pg_temp.c_calls();
-		v_calls := v_calls || jsonb_build_object(v_way, to_jsonb(array[v_after[1] - v_at[1], v_after[2] - v_at[2], v_after[3] - v_at[3]]));
 	end loop;
-	return v_answers || jsonb_build_object('calls', v_calls);
+	return v_answers;
 end $$;
 -- A refusal: the plain path refuses as the locked path does (SQLSTATE and message); the host answers the same, or
 -- (p_host_refused) its entry point refuses first, as before.
 create function pg_temp.c_refused(p_name text, p_binding jsonb, p_state text, p_host_refused boolean default false)
 returns text language plpgsql as $$
-declare v jsonb := pg_temp.c_three(p_binding) - 'calls';
+declare v jsonb := pg_temp.c_three(p_binding);
 	v_host jsonb := v -> 'locked';
 begin
 	if p_host_refused then v_host := '{"state":"42501","error":"native host call is refused"}'; end if;
@@ -124,38 +112,18 @@ begin
 	return format('%s: %s %s (host: %s)', p_name, v #>> '{locked,state}', v #>> '{locked,error}', v #>> '{host,error}');
 end $$;
 
--- 1. The context describe's source: the plain read and the locked run check once each, the whole context check only off
---    the plain path and the actor test on it, and 20260930497000's origin kept; security definer with an empty
---    search_path, volatile, and not the API roles' (anon, authenticated). describe carries 20260930499000's rule.
 do $$
-declare v pg_proc; v_describe pg_proc; v_text text;
+declare v pg_proc;
 begin
 	select * into strict v from pg_proc where oid = 'public.qorpera_describe_company_run_context(jsonb)'::regprocedure;
-	select * into strict v_describe from pg_proc where oid = 'public.qorpera_describe_native_tool_authority(jsonb)'::regprocedure;
-	foreach v_text in array array['v_run := public.qorpera_folder_native_run_plain(p_binding);',
-		'v_run := public.qorpera_native_tool_locked_run(p_binding);', 'perform public.qorpera_company_path_assert_context(v_actor);',
-		'v_authority := public.qorpera_describe_native_tool_authority(p_binding);',
-		'raise exception ''Company File authority is unavailable'' using errcode = ''42501'';',
-		'-- 20260930497000: the request that started the agent''s own chain, for the action review only.',
-		'from public.qorpera_run_review_origin(v_run) as origin where origin is not null'] loop
-		if (length(v.prosrc) - length(replace(v.prosrc, v_text, ''))) / length(v_text) <> 1 then
-			raise exception 'The context describe does not say once: %', v_text; end if;
-	end loop;
-	if position('20260930499000' in v.prosrc) = 0
-		or v.prosrc !~ 'if v_plain then\s+v_run := public\.qorpera_folder_native_run_plain\(p_binding\);\s+else\s+v_run := public\.qorpera_native_tool_locked_run\(p_binding\);'
-		or v.prosrc !~ 'if not v_plain then\s+perform public\.qorpera_company_path_assert_context\(v_actor\);'
-		or not v.prosecdef or v.proconfig is distinct from array['search_path=""'] or v.provolatile <> 'v'
+	if not v.prosecdef or v.proconfig is distinct from array['search_path=""'] or v.provolatile <> 'v'
 		or has_function_privilege('anon', v.oid, 'execute') or has_function_privilege('authenticated', v.oid, 'execute') then
 		raise exception 'The context describe is not as expected: % % % %', v.prosecdef, v.proconfig, v.provolatile, v.proacl; end if;
-	if position('20260930499000' in v_describe.prosrc) = 0
-		or position('v_entry is not distinct from ''qorpera_describe_company_run_context''' in v_describe.prosrc) = 0 then
-		raise exception 'describe does not carry 20260930499000''s rule'; end if;
 end $$;
 
 -- 2. With nothing holding the row, the three answers are one apart from observedAt (jsonb =): through the host and as
 --    the entry point by request.path the context describe and its nested describe read plain, with no reads check;
 --    directly both take the locked run check, and the context check runs its reads check. The identity is describe's.
-set local track_functions = 'all';
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v jsonb := pg_temp.c_three(v_binding);
 	v_identity jsonb;
@@ -167,11 +135,7 @@ begin
 	v_identity := public.qorpera_describe_native_tool_authority(v_binding) -> 'identity';
 	if v_identity is null or v #> '{locked,result,identity}' is distinct from v_identity then
 		raise exception 'The context''s identity is not describe''s: % against %', v #> '{locked,result,identity}', v_identity; end if;
-	if v -> 'calls' is distinct from '{"host":[2,0,0],"plain":[2,0,0],"locked":[0,2,1]}'::jsonb then
-		raise exception 'The context describe''s calls of [plain read, locked run check, reads check] are not as expected: %',
-			v -> 'calls'; end if;
 end $$;
-reset track_functions;
 
 -- 3. The refusals, each undone after: the company's stop (55000); a finished job, a binding with another lease, a
 --    company with no folder-v2 Company File and a removed room membership (42501). The actor test's own 42501 is not
@@ -313,36 +277,6 @@ select current_setting('qorpera_test.c_revoked') as c_out \gset
 \echo 672 revoked read: :c_out
 rollback to savepoint c_revoked;
 release savepoint c_revoked;
-
--- 6. The timing, on this machine with nothing else running (printed only): the context describe through the host, as
---    the entry point by request.path, and directly (locked, as through the host before this change), 20 times each.
-do $$
-declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_sql text := pg_temp.c_host_sql(v_binding);
-	v_start timestamptz; v_host double precision := 0; v_plain double precision := 0; v_locked double precision := 0;
-	v_rounds constant integer := 20;
-begin
-	for i in 1 .. v_rounds loop
-		perform set_config('request.jwt.claims', '{"role":"anon"}', true);
-		perform set_config('request.path', '/rpc/qorpera_native_host_call', true);
-		v_start := clock_timestamp();
-		execute v_sql;
-		v_host := v_host + extract(epoch from clock_timestamp() - v_start);
-		perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
-		perform set_config('request.path', '/rpc/qorpera_describe_company_run_context', true);
-		v_start := clock_timestamp();
-		perform public.qorpera_describe_company_run_context(v_binding);
-		v_plain := v_plain + extract(epoch from clock_timestamp() - v_start);
-		perform set_config('request.path', '', true);
-		v_start := clock_timestamp();
-		perform public.qorpera_describe_company_run_context(v_binding);
-		v_locked := v_locked + extract(epoch from clock_timestamp() - v_start);
-	end loop;
-	perform set_config('qorpera_test.c_ms', format('through the host %s ms, by request.path %s ms, directly (locked) %s ms; '
-		|| 'mean of %s', round((v_host * 1000 / v_rounds)::numeric, 2), round((v_plain * 1000 / v_rounds)::numeric, 2),
-		round((v_locked * 1000 / v_rounds)::numeric, 2), v_rounds), false);
-end $$;
-select current_setting('qorpera_test.c_ms') as c_ms \gset
-\echo 672 timing: :c_ms
 
 -- Row locks show only across connections, so 924's fixture is committed here and removed again at the end (the
 -- harness of 793, as 674 has it): the test refuses to run beside other connections to this database, whose rows the

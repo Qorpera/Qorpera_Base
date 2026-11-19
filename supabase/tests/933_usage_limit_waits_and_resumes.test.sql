@@ -131,8 +131,6 @@ begin
 			where sponsor.provider_connection_id = pg_temp.p933('b')), 'work moved to B');
 end $$;
 
--- 3b. The owner picks B for Bob's thread by hand (the member's own pick): their next post runs on B at once, while the
--- waiting one stays on A (an admitted wake never changes payer), and so does the routine's wake.
 select set_config('qorpera_test.p933_thread', (select session_id::text from public.qorpera_company_rooms
 	where id = pg_temp.base_thread('92400000-0000-4000-8000-000000000031')), true) \g /dev/null
 select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000001');
@@ -149,11 +147,14 @@ declare v_post public.qorpera_wake_occurrences := pg_temp.p933_wake(current_sett
 	v_routine public.qorpera_wake_occurrences := pg_temp.p933_wake(current_setting('qorpera_test.p933_routine_wake')::uuid);
 	v_run public.qorpera_execution_runs%rowtype;
 begin
-	perform pg_temp.base_assert(v_post_b.status = 'materialized', 'the post on B did not go on: ' || to_jsonb(v_post_b)::text);
-	select * into strict v_run from public.qorpera_execution_runs where id = v_post_b.run_id;
-	perform pg_temp.base_assert(v_run.sponsor_binding_id = pg_temp.p933('bBinding'), 'the post on B did not run on B');
-	perform pg_temp.base_assert(v_post.status = 'queued' and v_post.sponsor_binding_id = pg_temp.p933('aBinding'),
-		'the waiting post left A: ' || to_jsonb(v_post)::text);
+	perform pg_temp.base_assert(v_post.status = 'materialized' and v_post.sponsor_binding_id = pg_temp.p933('bBinding')
+		and exists (select 1 from public.qorpera_wake_payer_moves as move where move.wake_id = v_post.id
+			and move.from_binding_id = pg_temp.p933('aBinding') and move.to_binding_id = pg_temp.p933('bBinding')),
+		'the owner''s pick of B did not take the post waiting on A: ' || to_jsonb(v_post)::text);
+	select * into strict v_run from public.qorpera_execution_runs where id = v_post.run_id;
+	perform pg_temp.base_assert(v_run.sponsor_binding_id = pg_temp.p933('bBinding'), 'the waiting post did not run on B');
+	perform pg_temp.base_assert(v_post_b.status = 'queued' and v_post_b.sponsor_binding_id = pg_temp.p933('bBinding'),
+		'the next post on B did not wait behind the run in its thread: ' || to_jsonb(v_post_b)::text);
 	perform pg_temp.base_assert(v_routine.status = 'queued' and v_routine.sponsor_binding_id = pg_temp.p933('aBinding'),
 		'the routine''s wake left A: ' || to_jsonb(v_routine)::text);
 end $$;

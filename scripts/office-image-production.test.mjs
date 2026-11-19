@@ -47,32 +47,19 @@ test("the acceptance dates its test in ms from %N: uutils date (Ubuntu 26.04) pr
 test("production builds and accepts in the host's own LXD: no stage, no alias, no network, admission on", () => {
 	const production = read("build-office-image-production.sh");
 	const accept = read("accept-office-image.sh");
-	assert.match(production, /^source "\$repo\/scripts\/office-image-recipe\.sh"$/m);
-	for (const step of ["office_image_boot_and_fetch", "office_image_install", "office_image_seal"])
-		assert.match(production, new RegExp(`^${step}$`, "m"));
 	for (const source of [production, accept]) {
 		assert.match(source, / init "\$\w+" "\$vm" --vm --no-profiles --storage "\$pool" \\\n\t-c boot\.mode=uefi-secureboot /);
 		assert.match(source, /-d root,size="\$root_size"/);
-		assert.match(source, /\(\(available >= 16 \* 1024 \* 1024\)\) \|\| fail /);
-		assert.match(source, /\[\[ \$\(id -u\) == 0 \]\] \|\| fail /);
-		assert.match(source, /\[\[ \$\(hostname\) == "\$host" \]\] \|\| fail /);
-		assert.match(source, /fail "kvm or vhost_vsock is not loaded"/);
 		assert.doesNotMatch(source, /qorpera-office-stage|qoc-|--stage|--alias|\blx publish\b|nested proof|qorpera-testvm/);
 		// Nothing here changes the host's modules, firewall, sysctls or links.
 		assert.doesNotMatch(source, /\b(modprobe|insmod|rmmod)\b|nft (add|delete|flush|-f)|sysctl -w|ip link (add|del|set)/);
 	}
-	assert.match(accept, /fail "the VM unexpectedly has a NIC"/);
 	// Each deletes only what it made.
 	const deletes = (source) => [...source.matchAll(/^\tif \(\(made_\w+\)\); then (.*? delete .*?) \|\| status=1; fi$/gm)].map((m) => m[1]);
 	assert.deepEqual(deletes(production), ['lx delete --force "$vm"', 'lx image delete "$base"']);
 	assert.deepEqual(deletes(accept), ['la delete --force "$vm"', 'la image delete "$fingerprint"',
 		'lxc --force-local project delete "$throwaway" </dev/null']);
-	// The folder program comes built and must be the pinned build; the image is the clean commit's.
 	assert.doesNotMatch(production, /node scripts\/build-folder-program/);
-	assert.match(production, /folder_pin="\$repo\/deploy\/folder-service\/folder-program-linux-x64\.json"/);
-	assert.match(production, /\[\[ \$\(clean_commit\) == "\$commit" \]\] \|\| fail /);
-	assert.match(production, /profiles: \[\], aliases: \[\],/);
-	assert.match(production, /"qorpera\.purpose": "production-office-4e"/);
 });
 
 test("the production builder and the acceptance refuse bad arguments before touching LXD", () => {

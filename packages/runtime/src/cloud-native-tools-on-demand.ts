@@ -54,7 +54,7 @@ const STAFF_DIRECT = [
 /** The tools each kind of run carries in full. The Co-Founder hires, whatever the count says. A worker reads, writes
  * what its dispatch lets it, works on machines and reports. */
 export const CLOUD_DIRECT_TOOLS: Readonly<Record<CloudToolKind, ReadonlySet<string>>> = {
-	cofounder: new Set([...STAFF_DIRECT, "hire_agent", "update_reading"]),
+	cofounder: new Set([...STAFF_DIRECT, "hire_agent", "hire_team", "update_reading"]),
 	employee: new Set(STAFF_DIRECT),
 	worker: new Set([
 		"company_read",
@@ -124,6 +124,7 @@ const INDEX_LINES: Readonly<Record<string, string>> = {
 	search_skills: "search the skill libraries",
 	update_skill: "save, change or delete a skill",
 	hire_agent: "hire a new coworker for a continuing responsibility",
+	hire_team: "hire two or more coworkers at once, each knowing the others",
 	create_group_chat: "open a group chat with coworkers",
 	end_role: "end an agent's role when its work is over",
 	manage_code: "the company's code kept in Qorpera: its changes and records",

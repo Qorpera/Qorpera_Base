@@ -27,7 +27,7 @@ const STAGES = [
 	"codex-turn-completion",
 ] as const;
 export type NativeRuntimeFailureStage = (typeof STAGES)[number];
-export type NativeRuntimeUsageSignal = "usage_limit" | "rate_limited" | "provider_outage";
+export type NativeRuntimeUsageSignal = "usage_limit" | "rate_limited" | "provider_outage" | "sign_in_refused";
 export interface NativeRuntimeFailureMetadata {
 	stage: NativeRuntimeFailureStage;
 	category: CloudRuntimeErrorCategory;
@@ -117,7 +117,8 @@ export function tagNativeRuntimeFailure(
 	if (
 		!STAGES.includes(stage) ||
 		!CLOUD_RUNTIME_ERROR_CATEGORIES.includes(category) ||
-		(usageSignal !== null && !["usage_limit", "rate_limited", "provider_outage"].includes(usageSignal)) ||
+		(usageSignal !== null &&
+			!["usage_limit", "rate_limited", "provider_outage", "sign_in_refused"].includes(usageSignal)) ||
 		(codexError !== null && !codexErrorTokenIsValid(codexError))
 	)
 		throw new Error("Invalid native failure metadata");
@@ -129,6 +130,7 @@ export function tagNativeRuntimeFailure(
 /** Pinned Codex discriminants only; context budgets and arbitrary 429 text are not quota exhaustion. */
 export function nativeRuntimeUsageSignal(value: unknown): NativeRuntimeUsageSignal | null {
 	if (value === "usageLimitExceeded") return "usage_limit";
+	if (value === "unauthorized") return "sign_in_refused";
 	if (value === "serverOverloaded" || value === "internalServerError") return "provider_outage";
 	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
 	const keys = Object.keys(value);

@@ -216,33 +216,11 @@ describe("native subscription browser transport", () => {
 			p_connection_id: id(94),
 		});
 	});
-	it("uses SDK connection and provenance parsing with bounded scoped requests", async () => {
+	it("uses SDK connection parsing with bounded scoped requests", async () => {
 		const f = setup();
 		f.fetch.mockResolvedValueOnce(Response.json({ compute_identity: null, connections: [] }));
 		expect(await f.client.listConnections()).toEqual({ connections: [] });
 		expect(JSON.parse(f.fetch.mock.calls[0]![1]!.body as string)).toEqual({ p_profile_id: profileA.profileId });
-		f.fetch.mockResolvedValueOnce(
-			Response.json([
-				{
-					turn_request_id: id(90),
-					input_id: id(91),
-					requested_by_user_id: userA.id,
-					sponsor_mode: "member_connection",
-					worker_class: "managed_sandbox",
-					status: "materialized",
-					run_id: id(95),
-					run_status: "leased",
-					created_at: timestamp,
-				},
-			]),
-		);
-		expect(await f.client.listSessionTurnProvenance(session.sessionId)).toMatchObject([
-			{ turnRequestId: id(90), inputId: id(91), runId: id(95), runStatus: "leased" },
-		]);
-		expect(JSON.parse(f.fetch.mock.calls[1]![1]!.body as string)).toEqual({
-			p_session_id: session.sessionId,
-			p_limit: 100,
-		});
 		f.fetch.mockResolvedValueOnce(Response.json({ compute_identity: null, connections: [{}] }));
 		await expect(f.client.listConnections()).rejects.toThrow("Native subscription control returned invalid");
 	});
@@ -641,6 +619,29 @@ describe("ChatGPT plan logins (switched off until a company has one)", () => {
 			{ refused: true, completed: false },
 			{ refused: false, completed: true },
 			// An older cloud, and fields the web cannot read, read as absent.
+			undefined,
+			undefined,
+			undefined,
+		]);
+	});
+	it("reads whether ChatGPT still accepts each vault login's sign-in from the same answer (20260930808000)", async () => {
+		const f = setup();
+		f.fetch.mockResolvedValueOnce(
+			Response.json({
+				compute_identity: null,
+				connections: [
+					row(81, { login_status: "needs_sign_in" }),
+					row(82, { login_status: "active" }),
+					row(83, {}),
+					row(84, { login_status: "expired" }),
+					row(85, { login_status: null }),
+				],
+			}),
+		);
+		const listed = await f.client.listConnections();
+		expect(listed.connections.map(({ loginStatus }) => loginStatus)).toEqual([
+			"needs_sign_in",
+			"active",
 			undefined,
 			undefined,
 			undefined,

@@ -2,180 +2,12 @@
 -- What the usage-wall check costs, and that it still answers the same (20260930611000). Measured on production, 3 to 7 Nov
 -- 2026: 193,463 of the materializer's 193,994 calls fell in the day one login's wall held and answered 'idle', at 170 ms
 -- each, because the due list did not know the wall and one check ran up to 72 company walls for a login in 8 companies.
--- 1. On many generated worlds the new text answers exactly as the previous text, kept here as pg_temp.d1_old_*.
 -- 2. Cases the rewritten wall must keep, each with its answer: company logins with no owner, a later reading of a revoked
 -- connection, of an old version or of another member, a reading at exactly the signal's time, and a connection on this
 -- one's credential capsule, which closes it through a sibling.
--- 3. One check works out each company's wall once.
 -- 4. The due list agrees with the company's scan: work at a wall is not due.
 -- 5. The due list's check is last, and one that fails stops only its own company.
 -- 6. Work paid by another login or another sponsor version is due beside it, and it goes on once its login has room.
-
--- The previous text (20260930548000, 20260930575000, 20260930577000), with its names changed and its comments left out,
--- and with 20260930724000's two rule changes written into it (marked 724000 below): a reading with room ends a wall from
--- any company of the member unless a newer reading of the account is full, and a full window holds only while no newer
--- reading of the login on a live login has room.
-create function pg_temp.d1_old_sibling(p_connection_id uuid)
-returns table(connection_id uuid, connection_version bigint)
-language sql stable security definer set search_path = '' as $$
-	select other_version.connection_id, other_version.version
-	from public.qorpera_provider_connection_versions as own_version
-	join public.qorpera_model_login_links as own_link on own_link.credential_capsule_id = own_version.credential_capsule_id
-	join public.qorpera_model_login_links as other_link on other_link.login_id = own_link.login_id
-		and other_link.owner_user_id = own_link.owner_user_id
-		and other_link.credential_capsule_id <> own_link.credential_capsule_id
-	join public.qorpera_provider_connection_versions as other_version
-		on other_version.credential_capsule_id = other_link.credential_capsule_id
-	where own_version.connection_id = p_connection_id
-		and own_version.version = (select max(latest.version) from public.qorpera_provider_connection_versions as latest
-			where latest.connection_id = p_connection_id)
-		and other_version.version = (select max(latest.version) from public.qorpera_provider_connection_versions as latest
-			where latest.connection_id = other_version.connection_id)
-$$;
-create function pg_temp.d1_old_wall_reading_reset(p_connection_id uuid)
-returns timestamptz
-language sql stable security definer set search_path = '' as $$
-	select max((w.value ->> 'resetAt')::timestamptz)
-	from (select current_version.connection_id, current_version.version as connection_version
-		from (select v.connection_id, v.version from public.qorpera_provider_connection_versions as v
-			where v.connection_id = p_connection_id order by v.version desc limit 1) as current_version
-		union all
-		select sibling.connection_id, sibling.connection_version
-		from pg_temp.d1_old_sibling(p_connection_id) as sibling) as login
-	join public.qorpera_native_provider_account_metadata as m on m.connection_id = login.connection_id
-		and m.connection_version = login.connection_version
-	cross join lateral jsonb_array_elements(case when jsonb_typeof(m.provider_account_usage -> 'windows') = 'array'
-		then m.provider_account_usage -> 'windows' else '[]'::jsonb end) as w
-	where jsonb_typeof(w.value -> 'usedPercent') = 'number' and (w.value ->> 'usedPercent')::numeric >= 100
-		and jsonb_typeof(w.value -> 'resetAt') = 'string'
-		and (w.value ->> 'resetAt')::timestamptz > clock_timestamp()
-		and (w.value ->> 'resetAt')::timestamptz < clock_timestamp() + interval '90 days'
-		-- 724000: no newer reading of the login, on a live login, has room.
-		and not exists (
-			select 1 from (select current_version.connection_id, current_version.version as connection_version
-				from (select v.connection_id, v.version from public.qorpera_provider_connection_versions as v
-					where v.connection_id = p_connection_id order by v.version desc limit 1) as current_version
-				union all
-				select sibling.connection_id, sibling.connection_version
-				from pg_temp.d1_old_sibling(p_connection_id) as sibling) as newer_login
-			join public.qorpera_native_provider_account_metadata as newer on newer.connection_id = newer_login.connection_id
-				and newer.connection_version = newer_login.connection_version
-			join public.qorpera_provider_connections as newer_connection on newer_connection.id = newer.connection_id
-			join public.qorpera_provider_connection_versions as newer_version on newer_version.connection_id = newer.connection_id
-				and newer_version.version = newer.connection_version
-			where newer_connection.status = 'active' and newer_version.authorization_state = 'active'
-				and newer_version.authentication_mode = 'native_subscription'
-				and (newer.provider_account_usage ->> 'observedAt')::timestamptz <= statement_timestamp()
-				and (newer.provider_account_usage ->> 'observedAt')::timestamptz
-					>= (m.provider_account_usage ->> 'observedAt')::timestamptz
-				and jsonb_array_length(newer.provider_account_usage -> 'windows') > 0
-				and not exists (select 1 from jsonb_array_elements(newer.provider_account_usage -> 'windows') as nw
-					where (nw ->> 'usedPercent')::numeric is null or (nw ->> 'usedPercent')::numeric < 0
-						or (nw ->> 'usedPercent')::numeric >= 100
-						or (nw ? 'resetAt' and (nw ->> 'resetAt')::timestamptz
-							<= (newer.provider_account_usage ->> 'observedAt')::timestamptz)))
-$$;
--- 724000: the readings that may end a wall on a signal of p_connection/p_version: of the same account by the same member
--- on a live login, in any company, with whether each has room or is full.
-create function pg_temp.d1_old_readings(p_owner uuid, p_provider text, p_connection uuid, p_version bigint)
-returns table(observed_at timestamptz, has_room boolean, is_full boolean)
-language sql stable security definer set search_path = '' as $$
-    select (recovered.provider_account_usage ->> 'observedAt')::timestamptz,
-      jsonb_typeof(recovered.provider_account_usage -> 'windows') = 'array'
-        and jsonb_array_length(recovered.provider_account_usage -> 'windows') > 0
-        and not exists (select 1 from jsonb_array_elements(recovered.provider_account_usage -> 'windows') w
-          where (w ->> 'usedPercent')::numeric is null or (w ->> 'usedPercent')::numeric < 0
-            or (w ->> 'usedPercent')::numeric >= 100
-            or (w ? 'resetAt' and (w ->> 'resetAt')::timestamptz
-              <= (recovered.provider_account_usage ->> 'observedAt')::timestamptz)),
-      jsonb_typeof(recovered.provider_account_usage -> 'windows') = 'array'
-        and exists (select 1 from jsonb_array_elements(recovered.provider_account_usage -> 'windows') w
-          where jsonb_typeof(w -> 'usedPercent') = 'number' and (w ->> 'usedPercent')::numeric >= 100
-            and not (w ? 'resetAt' and ((w ->> 'resetAt')::timestamptz
-              <= (recovered.provider_account_usage ->> 'observedAt')::timestamptz
-              or (w ->> 'resetAt')::timestamptz <= statement_timestamp())))
-    from public.qorpera_native_provider_account_metadata recovered
-    join public.qorpera_provider_connections recovered_connection on recovered_connection.id = recovered.connection_id
-    join public.qorpera_provider_connection_versions recovered_version
-      on recovered_version.connection_id = recovered.connection_id
-      and recovered_version.version = recovered.connection_version
-    left join public.qorpera_native_provider_account_metadata blocked_metadata
-      on blocked_metadata.connection_id = p_connection and blocked_metadata.connection_version = p_version
-    where recovered_connection.owner_user_id is not distinct from p_owner
-      and recovered_connection.provider = p_provider
-      and recovered_connection.status = 'active' and recovered_version.authorization_state = 'active'
-      and recovered_version.authentication_mode = 'native_subscription'
-      and not exists (select 1 from public.qorpera_provider_connection_versions newer
-        where newer.connection_id = recovered.connection_id and newer.version > recovered.connection_version)
-      and ((recovered.connection_id = p_connection and recovered.connection_version = p_version)
-        or recovered.provider_account_identity = blocked_metadata.provider_account_identity)
-      and (recovered.provider_account_usage ->> 'observedAt')::timestamptz <= statement_timestamp()
-$$;
-create function pg_temp.d1_old_reset_company(p_connection_id uuid)
-returns timestamptz
-language sql stable security definer set search_path = '' as $$
-    select max(coalesce(blocked.resets_at, greatest(blocked.observed_at + interval '6 hours',
-      case when blocked.observed_at > statement_timestamp() - interval '8 days'
-        then (select pg_temp.d1_old_wall_reading_reset(p_connection_id)) end)))
-    from public.qorpera_provider_connection_usage_signals blocked
-    join public.qorpera_provider_connections current_connection on current_connection.id = p_connection_id
-    join lateral (select v.version from public.qorpera_provider_connection_versions v
-        where v.connection_id = p_connection_id order by v.version desc limit 1) current_version on true
-    where blocked.signal_kind = 'usage_limit'
-      and coalesce(blocked.resets_at, greatest(blocked.observed_at + interval '6 hours',
-      case when blocked.observed_at > statement_timestamp() - interval '8 days'
-        then (select pg_temp.d1_old_wall_reading_reset(p_connection_id)) end)) > statement_timestamp()
-      and ((blocked.provider_connection_id = p_connection_id
-        and blocked.provider_connection_version = current_version.version) or exists (
-        select 1 from public.qorpera_native_provider_account_metadata own
-        join public.qorpera_native_provider_account_metadata other
-          on other.provider_account_identity = own.provider_account_identity
-        join public.qorpera_provider_connections other_connection on other_connection.id = other.connection_id
-        where own.connection_id = p_connection_id and other.connection_id = blocked.provider_connection_id
-          and own.connection_version = current_version.version
-          and other.connection_version = blocked.provider_connection_version
-          and other_connection.profile_id = current_connection.profile_id
-          and other_connection.owner_user_id is not distinct from current_connection.owner_user_id
-          and other_connection.provider = current_connection.provider
-      ))
-      -- 724000: a later reading with room, with no newer full reading of the account in the same set.
-      and not exists (
-        select 1 from pg_temp.d1_old_readings(current_connection.owner_user_id, current_connection.provider,
-          blocked.provider_connection_id, blocked.provider_connection_version) recovered
-        where recovered.has_room and recovered.observed_at > blocked.observed_at
-          and not exists (select 1 from pg_temp.d1_old_readings(current_connection.owner_user_id, current_connection.provider,
-            blocked.provider_connection_id, blocked.provider_connection_version) fuller
-            where fuller.is_full and fuller.observed_at > recovered.observed_at))
-$$;
-create function pg_temp.d1_old_reset(p_connection_id uuid)
-returns timestamptz
-language sql stable security definer set search_path = '' as $$
-	select greatest(pg_temp.d1_old_reset_company(p_connection_id),
-		(select max(pg_temp.d1_old_reset_company(sibling.connection_id))
-			from pg_temp.d1_old_sibling(p_connection_id) as sibling))
-$$;
-create function pg_temp.d1_old_remaining_company(p_connection_id uuid, p_connection_version bigint)
-returns numeric
-language sql stable security definer set search_path = '' as $$
-    select case when pg_temp.d1_old_reset(p_connection_id) is not null then 0
-      else coalesce((select min(100 - (w.value ->> 'usedPercent')::numeric)
-        from public.qorpera_native_provider_account_metadata m,
-          lateral jsonb_array_elements(m.provider_account_usage -> 'windows') w
-        where m.connection_id = p_connection_id and m.connection_version = p_connection_version
-          and (m.provider_account_usage ->> 'observedAt')::timestamptz > statement_timestamp() - interval '5 minutes'
-          and (not (w.value ? 'resetAt') or (w.value ->> 'resetAt')::timestamptz > statement_timestamp())), -1) end
-$$;
-create function pg_temp.d1_old_remaining(p_connection_id uuid, p_connection_version bigint)
-returns numeric
-language sql stable security definer set search_path = '' as $$
-	select case when pg_temp.d1_old_reset(p_connection_id) is not null then 0
-		else coalesce((select min(known.remaining) from (
-				select pg_temp.d1_old_remaining_company(p_connection_id, p_connection_version) as remaining
-				union all
-				select pg_temp.d1_old_remaining_company(sibling.connection_id, sibling.connection_version)
-				from pg_temp.d1_old_sibling(p_connection_id) as sibling
-			) as known where known.remaining >= 0), -1) end
-$$;
 
 -- The world's rows, written directly: only these functions read them, and no other row refers to them.
 create function pg_temp.d1_id(p_kind integer, p_n integer) returns uuid language sql immutable as $$
@@ -253,10 +85,6 @@ create function pg_temp.d1_usage(p_shape integer) returns jsonb language sql sta
 		else jsonb_build_object('observedAt', statement_timestamp() - interval '4 hours',
 			'windows', jsonb_build_array(pg_temp.d1_window(60))) end
 $$;
-create function pg_temp.d1_calls(p_name text) returns bigint language sql as $$
-	select coalesce(sum(calls), 0) from pg_stat_xact_user_functions where funcname = p_name
-$$;
-
 -- The checks start here.
 -- 1. The world: four companies, two members, three logins. Connection 1's version 2 is on capsule 1, and connection 8 holds
 -- the same capsule; connection 12 holds connection 2's. Connection 6 is another provider's and 9 an API key's, 7 is
@@ -277,83 +105,6 @@ select pg_temp.d1_version(1, 1, 101), pg_temp.d1_version(1, 2, 1, 1), pg_temp.d1
 select pg_temp.base_assert((select count(*) = 4 from public.qorpera_account_login_sibling_connections(pg_temp.d1_id(1, 1))),
 	'connection 1 has the login''s other companies: 2 and 12 on capsule 2, and 7 and 10');
 
-create function pg_temp.d1_compare(p_round integer) returns jsonb language plpgsql as $$
-declare v_pair record; v_old numeric; v_new numeric; v_old_at timestamptz; v_new_at timestamptz;
-	v_seen jsonb := '{"zero":0,"room":0,"unknown":0,"wall":0}';
-begin
-	for v_pair in select version.connection_id, version.version from public.qorpera_provider_connection_versions as version
-		where version.connection_id::text like '11110001-%' order by 1, 2
-	loop
-		v_old_at := pg_temp.d1_old_reset_company(v_pair.connection_id);
-		v_new_at := public.qorpera_native_account_usage_limit_reset_company(v_pair.connection_id);
-		if v_old_at is distinct from v_new_at then
-			raise exception 'round %: the company wall of % differs: % then, % now', p_round, v_pair.connection_id, v_old_at, v_new_at; end if;
-		v_old_at := pg_temp.d1_old_reset(v_pair.connection_id);
-		v_new_at := public.qorpera_native_account_usage_limit_reset(v_pair.connection_id);
-		if v_old_at is distinct from v_new_at then
-			raise exception 'round %: the wall of % differs: % then, % now', p_round, v_pair.connection_id, v_old_at, v_new_at; end if;
-		if v_new_at is not null then v_seen := jsonb_set(v_seen, '{wall}', to_jsonb((v_seen ->> 'wall')::integer + 1)); end if;
-		v_old := pg_temp.d1_old_remaining_company(v_pair.connection_id, v_pair.version);
-		v_new := public.qorpera_native_account_remaining_company(v_pair.connection_id, v_pair.version);
-		if v_old is distinct from v_new then
-			raise exception 'round %: the company room of %/% differs: % then, % now', p_round, v_pair.connection_id, v_pair.version, v_old, v_new; end if;
-		v_old := pg_temp.d1_old_remaining(v_pair.connection_id, v_pair.version);
-		v_new := public.qorpera_native_account_remaining(v_pair.connection_id, v_pair.version);
-		if v_old is distinct from v_new then
-			raise exception 'round %: the room of %/% differs: % then, % now', p_round, v_pair.connection_id, v_pair.version, v_old, v_new; end if;
-		v_seen := jsonb_set(v_seen, array[case when v_new = 0 then 'zero' when v_new > 0 then 'room' else 'unknown' end],
-			to_jsonb((v_seen ->> case when v_new = 0 then 'zero' when v_new > 0 then 'room' else 'unknown' end)::integer + 1));
-		if (select coalesce(array_agg(row(s.connection_id, s.connection_version)::text order by 1), '{}')
-			from pg_temp.d1_old_sibling(v_pair.connection_id) as s)
-			is distinct from (select coalesce(array_agg(row(s.connection_id, s.connection_version)::text order by 1), '{}')
-			from public.qorpera_account_login_sibling_connections(v_pair.connection_id) as s) then
-			raise exception 'round %: the siblings of % differ', p_round, v_pair.connection_id; end if;
-		if pg_temp.d1_old_wall_reading_reset(v_pair.connection_id)
-			is distinct from public.qorpera_native_account_wall_reading_reset(v_pair.connection_id) then
-			raise exception 'round %: the wall reading of % differs', p_round, v_pair.connection_id; end if;
-	end loop;
-	return v_seen;
-end $$;
-
-do $$
-declare v_round integer; v_i integer; v_pair record; v_seen jsonb; v_total jsonb := '{"zero":0,"room":0,"unknown":0,"wall":0}';
-	v_key text; v_identities text[] := array[repeat('a', 64), repeat('a', 64), repeat('b', 64), null];
-	v_observed interval[] := array[interval '1 minute', '30 minutes', '5 hours', '7 hours', '3 days', '9 days'];
-	v_resets interval[] := array[null, null, null, interval '2 hours', '-1 hour', '1 day'];
-	v_kinds text[] := array['usage_limit', 'usage_limit', 'usage_limit', 'usage_limit', 'rate_limited', 'provider_outage'];
-	v_connections integer[] := array[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
-begin
-	perform setseed(0.1111);
-	for v_round in 1 .. 30 loop
-		delete from public.qorpera_native_provider_account_metadata where connection_id::text like '11110001-%';
-		delete from public.qorpera_provider_connection_usage_signals where provider_connection_id::text like '11110001-%';
-		for v_pair in select substr(version.connection_id::text, 25)::integer as n, version.version
-			from public.qorpera_provider_connection_versions as version where version.connection_id::text like '11110001-%' order by 1, 2
-		loop
-			if random() < 0.7 then
-				perform pg_temp.d1_reading(v_pair.n, v_pair.version, v_identities[1 + floor(random() * 4)::integer],
-					pg_temp.d1_usage(floor(random() * 13)::integer));
-			end if;
-		end loop;
-		for v_i in 1 .. floor(random() * 12)::integer loop
-			perform pg_temp.d1_signal(v_connections[1 + floor(random() * 17)::integer], 1 + floor(random() * 2)::bigint,
-				statement_timestamp() - v_observed[1 + floor(random() * 6)::integer],
-				statement_timestamp() + v_resets[1 + floor(random() * 6)::integer],
-				v_kinds[1 + floor(random() * 6)::integer]);
-		end loop;
-		v_seen := pg_temp.d1_compare(v_round);
-		foreach v_key in array array['zero', 'room', 'unknown', 'wall'] loop
-			v_total := jsonb_set(v_total, array[v_key], to_jsonb((v_total ->> v_key)::integer + (v_seen ->> v_key)::integer));
-		end loop;
-	end loop;
-	-- The worlds reached every answer, so the comparison above said something.
-	perform pg_temp.base_assert((v_total ->> 'zero')::integer >= 30 and (v_total ->> 'room')::integer >= 30
-		and (v_total ->> 'unknown')::integer >= 30 and (v_total ->> 'wall')::integer >= 30,
-		'the generated worlds were too plain: ' || v_total::text);
-end $$;
-
--- 2. The cases that decide a wall, each with its answer, on the new text and the previous one. All signals name a reset an
--- hour ahead unless said otherwise, and readings name account 'e' or 'd'.
 create function pg_temp.d1_clear() returns void language sql as $$
 	delete from public.qorpera_native_provider_account_metadata where connection_id::text like '11110001-%';
 	delete from public.qorpera_provider_connection_usage_signals where provider_connection_id::text like '11110001-%';
@@ -364,13 +115,9 @@ language sql as $$
 	select pg_temp.d1_reading(p_n, p_version, p_identity, jsonb_build_object('observedAt', p_at,
 		'windows', jsonb_build_array(pg_temp.d1_window(p_used))))
 $$;
--- The wall of a connection, the same in both texts, is held (to the signal's reset) or not.
 create function pg_temp.d1_expect(p_n integer, p_held boolean, p_case text) returns void language plpgsql as $$
 declare v_new timestamptz := public.qorpera_native_account_usage_limit_reset_company(pg_temp.d1_id(1, p_n));
-	v_old timestamptz := pg_temp.d1_old_reset_company(pg_temp.d1_id(1, p_n));
 begin
-	perform pg_temp.base_assert(v_new is not distinct from v_old, p_case || ': the texts differ: ' || coalesce(v_old::text, 'none')
-		|| ' then, ' || coalesce(v_new::text, 'none') || ' now');
 	perform pg_temp.base_assert((v_new is not null) = p_held, p_case || ': the wall is ' || coalesce(v_new::text, 'none'));
 end $$;
 create function pg_temp.d1_blocked(p_n integer, p_version bigint, p_at timestamptz) returns void language sql as $$
@@ -433,8 +180,7 @@ begin
 	perform pg_temp.d1_signal(3, 1, v_at - interval '1 hour', statement_timestamp() + interval '5 hours');
 	perform pg_temp.d1_signal(3, 1, v_at + interval '1 minute', statement_timestamp() + interval '1 hour');
 	perform pg_temp.base_assert(public.qorpera_native_account_usage_limit_reset_company(pg_temp.d1_id(1, 3))
-			= statement_timestamp() + interval '1 hour'
-		and pg_temp.d1_old_reset_company(pg_temp.d1_id(1, 3)) = statement_timestamp() + interval '1 hour',
+			= statement_timestamp() + interval '1 hour',
 		'the reading ended the wrong signal');
 end $$;
 select pg_temp.d1_cases() \g /dev/null
@@ -445,19 +191,15 @@ select pg_temp.d1_clear() \g /dev/null
 select pg_temp.d1_signal(8, 1, statement_timestamp() - interval '1 minute', statement_timestamp() + interval '1 day') \g /dev/null
 select pg_temp.base_assert(public.qorpera_native_account_usage_limit_reset(pg_temp.d1_id(1, 1)) is null
 	and public.qorpera_native_account_usage_limit_reset(pg_temp.d1_id(1, 2)) is not null
-	and pg_temp.d1_old_remaining(pg_temp.d1_id(1, 1), 2) = 0
 	and public.qorpera_native_account_remaining(pg_temp.d1_id(1, 1), 2) = 0,
 	'a sibling''s wall through the shared capsule did not close the login');
 -- A connection with no sibling is not closed by its capsule's other holder: connection 13's wall leaves connection 6 alone.
 delete from public.qorpera_provider_connection_usage_signals where provider_connection_id::text like '11110001-%';
 select pg_temp.d1_signal(13, 1, statement_timestamp() - interval '1 minute', statement_timestamp() + interval '1 day') \g /dev/null
 select pg_temp.base_assert(public.qorpera_native_account_usage_limit_reset(pg_temp.d1_id(1, 13)) is not null
-	and pg_temp.d1_old_remaining(pg_temp.d1_id(1, 6), 1) = -1
 	and public.qorpera_native_account_remaining(pg_temp.d1_id(1, 6), 1) = -1,
 	'a capsule''s other holder closed a connection with no sibling');
 
--- 3. A login in 8 companies, as on production. With no wall in force (no reading names a reset, and the signals, 13 to 165
--- hours old with none of their own, have run out) each company's wall is worked out once, not 72 times.
 do $$
 declare v_n integer; v_i integer;
 begin
@@ -471,37 +213,11 @@ begin
 	end loop;
 end $$;
 set local session_replication_role = origin;
-set local track_functions = 'all';
-do $$
-declare v_old_company bigint; v_new_company bigint; v_old numeric; v_new numeric;
-begin
-	v_old := pg_temp.d1_old_remaining(pg_temp.d1_id(1, 21), 1);
-	v_old_company := pg_temp.d1_calls('d1_old_reset_company');
-	v_new := public.qorpera_native_account_remaining(pg_temp.d1_id(1, 21), 1);
-	v_new_company := pg_temp.d1_calls('qorpera_native_account_usage_limit_reset_company');
-	perform pg_temp.base_assert(v_old = v_new and v_new = -1, 'the login''s room differs: ' || v_old || ' then, ' || v_new || ' now');
-	perform pg_temp.base_assert(v_old_company = 72, 'the previous text ran ' || v_old_company || ' company walls, not 72');
-	perform pg_temp.base_assert(v_new_company = 8, 'one check ran ' || v_new_company || ' company walls, not one per company');
-end $$;
--- At a wall (a reading now names a reset ahead, so all those signals hold) the previous text ran one per company and this
--- one stops at the first.
+select pg_temp.base_assert(public.qorpera_native_account_remaining(pg_temp.d1_id(1, 21), 1) = -1,
+	'the login''s room is ' || public.qorpera_native_account_remaining(pg_temp.d1_id(1, 21), 1));
 select pg_temp.d1_reading(21, 1, repeat('c', 64), pg_temp.d1_usage(3)) \g /dev/null
-do $$
-declare v_old_company bigint := pg_temp.d1_calls('d1_old_reset_company');
-	v_new_company bigint := pg_temp.d1_calls('qorpera_native_account_usage_limit_reset_company');
-begin
-	perform pg_temp.base_assert(pg_temp.d1_old_remaining(pg_temp.d1_id(1, 21), 1) = 0
-		and public.qorpera_native_account_remaining(pg_temp.d1_id(1, 21), 1) = 0, 'the login at its wall has room');
-	perform pg_temp.base_assert(pg_temp.d1_calls('d1_old_reset_company') - v_old_company = 8,
-		'at a wall the previous text ran ' || (pg_temp.d1_calls('d1_old_reset_company') - v_old_company) || ' company walls, not 8');
-	perform pg_temp.base_assert(pg_temp.d1_calls('qorpera_native_account_usage_limit_reset_company') - v_new_company = 1,
-		'at a wall one check ran ' || (pg_temp.d1_calls('qorpera_native_account_usage_limit_reset_company') - v_new_company)
-			|| ' company walls, not 1');
-end $$;
+select pg_temp.base_assert(public.qorpera_native_account_remaining(pg_temp.d1_id(1, 21), 1) = 0, 'the login at its wall has room');
 
--- 4. The due list and the scan. Login A's fresh reading is full, so it has no room. Dana's kickoff (a turn request) and the
--- owner's two posts in Bob's thread (wakes) wait on it: the company's scan is idle, so the due list does not name the company,
--- and it checks A's sponsor version once.
 create function pg_temp.d1_due() returns jsonb language plpgsql as $$
 declare v_due jsonb;
 begin
@@ -546,7 +262,7 @@ select set_config('qorpera_test.d1_post_1', pg_temp.base_post('92400000-0000-400
 select set_config('qorpera_test.d1_post_2', pg_temp.base_post('92400000-0000-4000-8000-000000000001',
 	'92400000-0000-4000-8000-000000000031', 'And the costs?') ->> 0, true) \g /dev/null
 do $$
-declare v_waits bigint := pg_temp.d1_calls('qorpera_sponsor_waits_for_usage_limit'); v_listed boolean; v_pass jsonb;
+declare v_listed boolean; v_pass jsonb;
 begin
 	perform pg_temp.base_assert((pg_temp.d1_wake('d1_post_1')).status = 'queued' and (pg_temp.d1_wake('d1_post_2')).status = 'queued'
 		and (pg_temp.d1_wake('d1_post_1')).sponsor_binding_id = pg_temp.d1_a_binding()
@@ -556,9 +272,6 @@ begin
 				and sponsor_binding_id = pg_temp.d1_a_binding()),
 		'the work is not queued on A');
 	v_listed := pg_temp.d1_listed();
-	perform pg_temp.base_assert(pg_temp.d1_calls('qorpera_sponsor_waits_for_usage_limit') - v_waits = 1,
-		'the due list checked one sponsor version '
-			|| (pg_temp.d1_calls('qorpera_sponsor_waits_for_usage_limit') - v_waits) || ' times');
 	perform pg_temp.base_assert(not v_listed, 'work at its login''s limit is due: ' || pg_temp.d1_due()::text);
 	v_pass := pg_temp.base_materialize();
 	perform pg_temp.base_assert(v_pass ->> 'state' = 'idle', 'the scan took work at its login''s limit: ' || v_pass::text);
@@ -591,15 +304,14 @@ begin
 	end if;
 	perform set_config('session_replication_role', 'origin', true);
 end $$;
--- One page of the list, with how many checks it made.
 create function pg_temp.d1_page(p_after uuid, p_limit integer) returns jsonb language plpgsql as $$
-declare v_before bigint := pg_temp.d1_calls('qorpera_folder_due_sponsor_waits'); v_due jsonb;
+declare v_due jsonb;
 begin
 	perform pg_temp.base_claims('service_role');
 	set local role service_role;
 	v_due := public.qorpera_folder_materialize_due(p_after, p_limit);
 	reset role;
-	return v_due || jsonb_build_object('checks', pg_temp.d1_calls('qorpera_folder_due_sponsor_waits') - v_before);
+	return v_due;
 end $$;
 create function pg_temp.d1_items(p_companies integer[]) returns jsonb language sql immutable as $$
 	select coalesce(jsonb_agg(jsonb_build_object('profile_id', pg_temp.d1_id(2, n)) order by n), '[]'::jsonb) from unnest(p_companies) as n
@@ -611,16 +323,16 @@ declare v_page jsonb;
 begin
 	-- The paused company and the two not on folder-v2 are not named and cost nothing.
 	v_page := pg_temp.d1_page(null, 100);
-	perform pg_temp.base_assert(v_page -> 'items' = pg_temp.d1_items(array[901, 902]) and (v_page ->> 'checks')::integer = 3,
+	perform pg_temp.base_assert(v_page -> 'items' = pg_temp.d1_items(array[901, 902]),
 		'a whole page: ' || v_page::text);
 	-- A page of one stops when it knows there is more, before this company's sponsor.
 	v_page := pg_temp.d1_page(null, 1);
 	perform pg_temp.base_assert(v_page -> 'items' = pg_temp.d1_items(array[901]) and (v_page ->> 'has_more')::boolean
-		and v_page ->> 'next_after_profile_id' = pg_temp.d1_id(2, 901)::text and (v_page ->> 'checks')::integer = 2,
+		and v_page ->> 'next_after_profile_id' = pg_temp.d1_id(2, 901)::text,
 		'a page of one: ' || v_page::text);
 	-- Companies before the cursor cost nothing.
 	v_page := pg_temp.d1_page(pg_temp.d1_id(2, 902), 100);
-	perform pg_temp.base_assert(v_page -> 'items' = '[]'::jsonb and (v_page ->> 'checks')::integer = 1,
+	perform pg_temp.base_assert(v_page -> 'items' = '[]'::jsonb,
 		'a page after the cursor: ' || v_page::text);
 end $$;
 

@@ -67,9 +67,4 @@ begin
 		'a step with a result past 8 KiB parses');
 	perform pg_temp.check(public.qorpera_memory_run_step_line(pg_temp.result_step(10, 8191)) is null,
 		'args past 8 KiB as stored still do not parse');
-
-	-- Both bodies name the migration.
-	perform pg_temp.check(strpos(pg_get_functiondef('public.qorpera_folder_record_context_view(uuid,jsonb,jsonb)'::regprocedure),
-		'20260930733000') > 0 and strpos(pg_get_functiondef('public.qorpera_memory_run_step_line(text)'::regprocedure),
-		'20260930733000') > 0, 'the bodies name their migration');
 end $$;

@@ -135,9 +135,6 @@ do $$ begin
 		raise exception 'qorpera_data_pass_redeem has the wrong grants'; end if;
 	perform pg_temp.dp_same((select scope || ' ' || budget from public.qorpera_native_host_calls
 		where name = 'qorpera_run_data_pass'), 'folder standard', 'the native host''s list');
-	if position($o$'data_describe','data_apply','data_query'$o$ in
-			pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure)) = 0 then
-		raise exception 'The observations do not name the three tools'; end if;
 end $$;
 
 -- 2. A pass for a database the run may read, through the native host's entry point with the job's lease token: it

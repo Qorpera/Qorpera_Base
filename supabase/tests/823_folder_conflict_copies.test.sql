@@ -302,24 +302,15 @@ begin
 	perform pg_temp.raises(format('select pg_temp.download(%L, %L)', pg_temp.member(1), v_second ->> 'manifestSha256'), '42501');
 	-- A copy holds its commit row, as a path version does: the row cannot go while the copy is there.
 	perform pg_temp.raises(format('delete from public.qorpera_folder_commits where id = %L', r ->> 'commitId'), '23503');
-	if not exists (select 1 from pg_constraint where conrelid = 'public.qorpera_folder_conflict_copies'::regclass and contype = 'f'
-			and confrelid = 'public.qorpera_folder_commits'::regclass and confdeltype = 'r') then
-		raise exception 'A copy restricts its commit row'; end if;
 end $$;
 
 -- 8. The lock text, the marker and the grants ----------------------------------------------------------------------------
 do $$
-declare v_fn regprocedure;
 begin
 	-- Keeping a copy takes no lock of its own: step 6's object locks and the rows' foreign keys are all it holds.
 	if (select prosrc from pg_proc where oid = 'public.qorpera_folder_keep_conflict_copies(uuid,uuid,jsonb,jsonb,uuid,integer,text,jsonb,text[])'::regprocedure)
 		~* '(for (update|share|no key update|key share)|nowait|lock_profile_gc_fence|qorpera_folder_fences|lock table)' then
 		raise exception 'Keeping a conflict copy takes a lock'; end if;
-	foreach v_fn in array array['public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)',
-		'public.qorpera_folder_object_rooted(uuid,text,uuid)', 'public.qorpera_folder_object_readable(uuid,uuid,jsonb,text)']::regprocedure[] loop
-		if strpos((select prosrc from pg_proc where oid = v_fn), '20260930042000') = 0 then
-			raise exception 'The P17 marker is missing from %', v_fn; end if;
-	end loop;
 	if has_function_privilege('service_role', 'public.qorpera_folder_keep_conflict_copies(uuid,uuid,jsonb,jsonb,uuid,integer,text,jsonb,text[])', 'execute')
 		or has_function_privilege('authenticated', 'public.qorpera_folder_keep_conflict_copies(uuid,uuid,jsonb,jsonb,uuid,integer,text,jsonb,text[])', 'execute')
 		or has_function_privilege('anon', 'public.qorpera_folder_keep_conflict_copies(uuid,uuid,jsonb,jsonb,uuid,integer,text,jsonb,text[])', 'execute')

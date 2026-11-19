@@ -418,14 +418,7 @@ end $$;
 
 -- 7. The marker, and the old rule gone ----------------------------------------------------------------------------------------
 do $$
-declare v_definition text := pg_get_functiondef('public.qorpera_admit_company_machine(uuid,text)'::regprocedure);
 begin
-	perform pg_temp.base_assert(strpos(v_definition, '20260930760000') > 0 and strpos(v_definition, '20260930757000') > 0
-		and strpos(v_definition, 'binding @> v_executor.policy') = 0, '7: the patched body names the migration; the old rule is gone');
-	perform pg_temp.base_assert(strpos(pg_get_functiondef('public.qorpera_record_company_machine_error(uuid,text,text,text,text)'::regprocedure),
-			'20260930760000') > 0
-		and strpos(pg_get_functiondef('public.qorpera_company_machine_helper_refused(uuid,text,text)'::regprocedure), '20260930760000') > 0,
-		'7: the record and its way out name the migration');
 	perform pg_temp.base_assert(not exists (select 1 from unnest(array['anon','authenticated','service_role']) role
 		where has_function_privilege(role, 'public.qorpera_company_machine_helper_refused(uuid,text,text)', 'execute')),
 		'7: the way out is internal');

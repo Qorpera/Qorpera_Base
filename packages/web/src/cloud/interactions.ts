@@ -149,6 +149,11 @@ export function questionOptions(request: InteractionRequest): QuestionOption[] {
 	return options;
 }
 
+export function questionInput(request: InteractionRequest): "mail_address" | undefined {
+	if (request.surface !== "question" || request.payload.allowCustom !== true) return undefined;
+	return asRecord(request.payload.input)?.kind === "mail_address" ? "mail_address" : undefined;
+}
+
 export type InteractionState = "waiting" | "answered" | "declined" | "expired";
 
 /** What the card shows: still open, answered in some way, declined, or past its time. */

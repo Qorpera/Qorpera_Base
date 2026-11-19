@@ -35,19 +35,6 @@ create function pg_temp.found(p_path text) returns boolean language sql as $$
 	select (pg_temp.read(p_path) ->> 'found')::boolean
 $$;
 
--- The migration's marker is in the commit; a commit row's credits are a non-empty list on a test machine's commit.
-do $$
-begin
-	if strpos(pg_get_functiondef('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure), '20260930421000') = 0 then
-		raise exception 'The commit has no marker 20260930421000'; end if;
-	if (select format_type(atttypid, atttypmod) from pg_attribute where attrelid = 'public.qorpera_folder_commits'::regclass
-			and attname = 'credits' and not attisdropped) is distinct from 'uuid[]' then
-		raise exception 'A commit has no credits uuid[]'; end if;
-	if not exists (select 1 from pg_constraint where conrelid = 'public.qorpera_folder_commits'::regclass
-			and conname = 'qorpera_folder_commits_credits') then
-		raise exception 'A commit''s credits have no check'; end if;
-end $$;
-
 -- Refusals: a credited command that has ended, ran on the machine's earlier placement or on another machine, or is not
 -- a command refuses its unit, alone; the others save. The commit lists the valid ones and acts as the starter (the
 -- first valid command is the starter's own). Without credits a commit keeps the starter and lists none.

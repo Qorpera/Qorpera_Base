@@ -15,8 +15,6 @@
 
 import { HOSTED_DB_SCRIPTS } from "./test-hosted-db.mjs";
 
-/** The function tests the old workflows ran (web-client and step2-lxd), the artifact GC worker's (its folder phase,
- * C1D §9.10) and the company sites' server's; the others never ran in CI. */
 const FUNCTION_TESTS = [
 	"supabase/functions/native-provider-login/native-provider-login.test.ts",
 	"supabase/functions/member-company-gateway/member-company-gateway.test.ts",
@@ -30,6 +28,7 @@ const FUNCTION_TESTS = [
 	"supabase/functions/runner-control/runner-control.test.ts",
 	"supabase/functions/artifact-gc-worker/artifact-gc-worker.test.ts",
 	"supabase/functions/site-serve/site-serve.test.ts",
+	"supabase/functions/_shared/profile-invitation-email.test.ts",
 ];
 const WEB_RELEASE_CONFIG = JSON.stringify({
 	projectUrl: "https://project.example.invalid",

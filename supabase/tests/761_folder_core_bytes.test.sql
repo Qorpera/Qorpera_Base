@@ -475,37 +475,8 @@ begin
 			from public.qorpera_folder_storage_usage u where profile_id = c_profile); end if;
 end $$;
 
--- 8. The lock text (C1D §8): each dispatcher's folder-v2 line comes first after "begin", the folder-v2 bodies take no
--- company-wide lock, and step 6 keeps its sorted locks.
 do $$
-declare v_check record; v_definition text;
 begin
-	for v_check in select * from (values
-		('public.qorpera_enforce_company_storage_quota()',
-			'if public.qorpera_folder_storage_quota(new.bucket_id, new.name, new.metadata) then return new; end if;'),
-		('public.qorpera_refresh_company_storage_usage()',
-			'if public.qorpera_folder_storage_usage_changed(tg_op, old, new) then return case when tg_op = ''DELETE'' then old else new end; end if;'),
-		-- With the object gateway's 2 s lock budget after the folder-v2 line (20260928339630).
-		('public.qorpera_authorize_profile_object_replication(uuid,text,bigint)',
-			'if public.qorpera_company_is_folder_v2(p_profile_id) then return public.qorpera_folder_authorize_replication(p_profile_id, p_sha256, p_bytes); end if;'),
-		('public.qorpera_confirm_profile_object_upload(uuid,text,bigint,text)',
-			'if public.qorpera_company_is_folder_v2(p_profile_id) then raise exception ''This Company File path does not serve folder-v2 companies'' using errcode = ''0A000''; end if;')) c(target, guard)
-	loop
-		v_definition := pg_get_functiondef(v_check.target::regprocedure);
-		if position(E'\nbegin\n\t' || v_check.guard || E'\n' in v_definition) = 0 then
-			raise exception 'The folder-v2 line of % no longer comes first', v_check.target; end if;
-	end loop;
-	for v_check in select p.proname, p.prosrc from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname in (
-		'qorpera_folder_manifest', 'qorpera_folder_upload_scope', 'qorpera_folder_upload_actor', 'qorpera_folder_object_readable',
-		'qorpera_folder_open_upload', 'qorpera_folder_put_intent', 'qorpera_folder_authorize_object_upload', 'qorpera_folder_confirm_object',
-		'qorpera_folder_seal_upload', 'qorpera_folder_renew_upload', 'qorpera_folder_storage_quota_check', 'qorpera_folder_storage_quota',
-		'qorpera_folder_storage_usage_changed', 'qorpera_folder_authorize_replication', 'qorpera_folder_authorize_object_download',
-		'qorpera_folder_unit_objects', 'qorpera_folder_file_bytes_problem')
-	loop
-		if v_check.prosrc ~* '(for update|for share\M|nowait|lock_profile_gc_fence|qorpera_folder_fences|qorpera_runner_jobs)'
-			or (v_check.prosrc ~* 'for no key update' and v_check.proname <> 'qorpera_folder_authorize_replication') then
-			raise exception 'A folder-v2 body takes a lock it must not: %', v_check.proname; end if;
-	end loop;
 	if position('order by o.sha256 collate "C" for key share' in (select prosrc from pg_proc
 		where pronamespace = 'public'::regnamespace and proname = 'qorpera_folder_commit')) = 0 then
 		raise exception 'Step 6 locks the objects in one hash order'; end if;

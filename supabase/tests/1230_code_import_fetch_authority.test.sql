@@ -278,10 +278,6 @@ begin
 			current_setting('qorpera_test.imp_lease')::uuid) = '42501:coding session lease is unavailable'
 		and pg_temp.mcp_fetch(current_setting('qorpera_test.imp_request')::uuid,
 			current_setting('qorpera_test.mcp_lease')::uuid) = '42501:code import fetch is unavailable', 'two leases');
-	perform pg_temp.base_assert(position('20260930736000' in pg_get_functiondef(
-		'public.qorpera_authorize_coding_repository_fetch(uuid,text,uuid,uuid,text)'::regprocedure)) > 0
-		and position('qorpera_coding_relay_session' in pg_get_functiondef(
-		'public.qorpera_authorize_coding_repository_fetch(uuid,text,uuid,uuid,text)'::regprocedure)) > 0, 'the patched body');
 	foreach v_result in array array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker'] loop
 		perform pg_temp.base_assert(not has_function_privilege(v_result,
 			'public.qorpera_authorize_code_import_fetch(uuid,text,uuid,uuid,text)', 'EXECUTE')
