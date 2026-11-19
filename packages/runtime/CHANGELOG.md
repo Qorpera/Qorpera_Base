@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- `save_app` keeps a program version's `userId` (the member who added it from the web, RUNTIME-INTERFACE-APPS.md §3f, 18 Nov 2026) on the versions it does not touch, through the shared `parseProgram`; an agent's own version never has it, and a hand-in naming it is refused. No migration.
 - Release v259 (several Claude logins per member, one In use, backend, #1947, with migration `20260930804000` and SQL
   test 1300; a held draft merged in the release branch at its approved head): runtime bundle 259
   `43df5e96327e5489c95be5357208fb0fe1999c0aaf56bb09d9255f63328e53fc` (activation `20260929025999`, previous 258

@@ -1,4 +1,6 @@
-import { APP_COVER_KINDS, appFileKind, appRelativePath } from "./interface-apps.ts";
+import { isUuid } from "@qorpera/contracts";
+import { parseCloudCompanyPath } from "./company-path-schema.ts";
+import { APP_COVER_KINDS, APPS_FOLDER, appFileKind, appFolder, appRelativePath } from "./interface-apps.ts";
 
 export const PROGRAM_KIT = "program";
 export const PROGRAM_FILE = "program.json";
@@ -38,6 +40,7 @@ export interface ProgramVersion {
 	readonly version: string;
 	readonly date: string;
 	readonly forms: readonly ProgramKeptForm[];
+	readonly userId?: string;
 }
 
 export interface Program extends ProgramHandIn {
@@ -47,12 +50,22 @@ export interface Program extends ProgramHandIn {
 export const isProgramKind = (value: unknown): value is ProgramKind =>
 	typeof value === "string" && (PROGRAM_KINDS as readonly string[]).includes(value);
 
+const folderTakes = (path: string) => {
+	try {
+		parseCloudCompanyPath(path);
+		return true;
+	} catch {
+		return false;
+	}
+};
+
 export function isProgramVersion(value: unknown): value is string {
 	return (
 		typeof value === "string" &&
 		value.length <= PROGRAM_VERSION_MAX_CHARS &&
 		VERSION.test(value) &&
-		!value.includes("..")
+		!value.includes("..") &&
+		folderTakes(`${APPS_FOLDER}/program/${PROGRAM_VERSIONS_FOLDER}/${value}/program`)
 	);
 }
 
@@ -62,12 +75,23 @@ export function isProgramFileName(value: unknown): value is string {
 		[...value].length <= PROGRAM_FILE_NAME_MAX_CHARS &&
 		!value.includes("/") &&
 		!/[\0-\x1f\x7f"<>\\]/.test(value) &&
-		appRelativePath(value) === value
+		appRelativePath(value) === value &&
+		folderTakes(`${APPS_FOLDER}/program/${PROGRAM_VERSIONS_FOLDER}/1/${value}`)
 	);
 }
 
 export const programFilePath = (version: string, file: string): string =>
 	`${PROGRAM_VERSIONS_FOLDER}/${version}/${file}`;
+
+export function programUploadPath(
+	path: string,
+): { readonly name: string; readonly version: string; readonly file: string } | null {
+	const parts = path.split("/");
+	if (parts.length !== 5 || parts[0] !== APPS_FOLDER || parts[2] !== PROGRAM_VERSIONS_FOLDER) return null;
+	const [, name = "", , version, file] = parts;
+	if (appFolder(name) === null || !isProgramVersion(version) || !isProgramFileName(file)) return null;
+	return { name, version, file };
+}
 
 export function programFormsInOrder<T extends ProgramForm>(forms: readonly T[]): T[] {
 	return [...forms].sort((a, b) => PROGRAM_KINDS.indexOf(a.for) - PROGRAM_KINDS.indexOf(b.for));
@@ -86,7 +110,7 @@ function readForms(value: unknown): Read<ProgramForm[]> {
 			return { problem: `form ${index + 1}'s for must be one of ${PROGRAM_KINDS.join(", ")}` };
 		if (!isProgramFileName(file))
 			return {
-				problem: `form ${index + 1}'s file must be one file's name in versions/<version>/, such as fokusur-0.1.apk: no folder, at most ${PROGRAM_FILE_NAME_MAX_CHARS} characters`,
+				problem: `form ${index + 1}'s file must be one file's name in versions/<version>/, such as fokusur-0.1.apk: no folder, at most ${PROGRAM_FILE_NAME_MAX_CHARS} characters, and a name the company folder takes (no %, :, ending dot or space, or a device name such as con)`,
 			};
 		if (forms.some((each) => each.for === kind))
 			return { problem: `forms name ${kind} twice: one file for each kind` };
@@ -121,7 +145,7 @@ function readVersion(value: unknown): Read<string> {
 	return isProgramVersion(value)
 		? { value }
 		: {
-				problem: `version must be short text such as 0.1: letters, digits and . _ + -, at most ${PROGRAM_VERSION_MAX_CHARS} characters`,
+				problem: `version must be short text such as 0.1: letters, digits and . _ + -, at most ${PROGRAM_VERSION_MAX_CHARS} characters, not ending in a dot`,
 			};
 }
 
@@ -161,8 +185,9 @@ export function parseProgramHandIn(text: string): { readonly handIn: ProgramHand
 
 function readKept(value: unknown): ProgramVersion | null {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-	const { version, date, forms } = value as Record<string, unknown>;
+	const { version, date, forms, userId } = value as Record<string, unknown>;
 	if (!isProgramVersion(version) || typeof date !== "string" || !Number.isFinite(Date.parse(date))) return null;
+	if (userId !== undefined && !isUuid(userId)) return null;
 	const read = readForms(forms);
 	if ("problem" in read || !Array.isArray(forms)) return null;
 	const kept: ProgramKeptForm[] = [];
@@ -172,7 +197,7 @@ function readKept(value: unknown): ProgramVersion | null {
 			return null;
 		kept.push({ ...form, bytes: bytes as number, sha256 });
 	}
-	return { version, date, forms: kept };
+	return { version, date, forms: kept, ...(userId === undefined ? {} : { userId }) };
 }
 
 export function parseProgram(text: string): Program | null {
