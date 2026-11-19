@@ -484,6 +484,7 @@ function pausedRun(activity: Record<string, unknown>): { paused?: PausedRun } {
 			paidWhileAway: activity.paid_while_away,
 			movable: activity.movable,
 			...(activity.paused_for === "rate_limited" ? { rateLimited: true as const } : {}),
+			...(activity.paused_for === "sign_in_refused" ? { signInRefused: true as const } : {}),
 		},
 	};
 }
@@ -529,6 +530,7 @@ export function parseRunRecovery(value: unknown): HostedRunRecovery {
 		// Absent before 20260929910000: then only the error text can tell.
 		...(typeof recovery.usage_limit === "boolean" ? { usageLimit: recovery.usage_limit } : {}),
 		...(typeof recovery.rate_limited === "boolean" ? { rateLimited: recovery.rate_limited } : {}),
+		...(typeof recovery.sign_in_refused === "boolean" ? { signInRefused: recovery.sign_in_refused } : {}),
 		// Absent before 20260929993000: then a plan's limit reads as any account's.
 		...(typeof recovery.paid_by_chatgpt_plan === "boolean"
 			? { paidByChatgptPlan: recovery.paid_by_chatgpt_plan }

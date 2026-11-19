@@ -243,6 +243,7 @@ export type WebMemberConnection = NativeMemberConnection & {
 	allowAutonomous?: boolean;
 	routineOfferShownAt?: string;
 	recentTurns?: { refused: boolean; completed: boolean };
+	loginStatus?: "active" | "needs_sign_in" | "revoked";
 };
 export interface WebExecutionConnections extends NativeExecutionConnections {
 	connections: readonly WebMemberConnection[];
@@ -424,6 +425,7 @@ function withPlanFields(connection: NativeMemberConnection, answer: unknown): We
 	const turns = entry.recent_turns;
 	const refused = turns && typeof turns === "object" ? (turns as Record<string, unknown>).refused : undefined;
 	const completed = turns && typeof turns === "object" ? (turns as Record<string, unknown>).completed : undefined;
+	const status = entry.login_status;
 	return {
 		...connection,
 		...(kind === "codex" || kind === "chatgpt_plan" ? { loginKind: kind } : {}),
@@ -432,6 +434,7 @@ function withPlanFields(connection: NativeMemberConnection, answer: unknown): We
 		...(typeof refused === "boolean" && typeof completed === "boolean"
 			? { recentTurns: { refused, completed } }
 			: {}),
+		...(status === "active" || status === "needs_sign_in" || status === "revoked" ? { loginStatus: status } : {}),
 	};
 }
 

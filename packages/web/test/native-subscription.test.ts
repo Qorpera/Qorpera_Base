@@ -624,6 +624,29 @@ describe("ChatGPT plan logins (switched off until a company has one)", () => {
 			undefined,
 		]);
 	});
+	it("reads whether ChatGPT still accepts each vault login's sign-in from the same answer (20260930808000)", async () => {
+		const f = setup();
+		f.fetch.mockResolvedValueOnce(
+			Response.json({
+				compute_identity: null,
+				connections: [
+					row(81, { login_status: "needs_sign_in" }),
+					row(82, { login_status: "active" }),
+					row(83, {}),
+					row(84, { login_status: "expired" }),
+					row(85, { login_status: null }),
+				],
+			}),
+		);
+		const listed = await f.client.listConnections();
+		expect(listed.connections.map(({ loginStatus }) => loginStatus)).toEqual([
+			"needs_sign_in",
+			"active",
+			undefined,
+			undefined,
+			undefined,
+		]);
+	});
 	it("binds a plan for the member's own messages without consenting it", async () => {
 		const f = setup();
 		const rpc = vi.spyOn(f.cloud, "rpc");

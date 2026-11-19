@@ -217,6 +217,12 @@ export const CONVERSATION: Record<string, string> = {
 		"ChatGPT afviste kørslen, fordi der kom for mange forespørgsler på én gang. Loginnet er i orden.",
 	"ChatGPT is busy with too many requests at once. This work waits a few minutes and then tries again by itself. The login is fine.":
 		"ChatGPT har travlt med for mange forespørgsler på én gang. Arbejdet venter et par minutter og prøver så igen af sig selv. Loginnet er i orden.",
+	"ChatGPT no longer accepts this login's sign-in, so the work stopped. Sign in again in Settings → AI subscriptions.":
+		"ChatGPT godtager ikke længere loginnet, så arbejdet stoppede. Log ind igen under Indstillinger → AI-abonnementer.",
+	"ChatGPT no longer accepts the sign-in of the login that pays for this run, so the work stopped. The member whose login it is can sign in again in Settings → AI subscriptions.":
+		"ChatGPT godtager ikke længere det login, der betaler for kørslen, så arbejdet stoppede. Det medlem, der ejer loginnet, kan logge ind igen under Indstillinger → AI-abonnementer.",
+	"ChatGPT did not accept this login's sign-in. Qorpera is renewing it, and the work tries again by itself in a few minutes.":
+		"ChatGPT godtog ikke loginnet. Qorpera fornyer det, og arbejdet prøver igen af sig selv om et par minutter.",
 	"The run lost its connection while it was working. This is usually brief.":
 		"Kørslen mistede forbindelsen, mens den arbejdede. Det går som regel hurtigt over.",
 	"The run could not load the login that pays for it. Check that login in Settings → AI subscriptions, or choose another login for this conversation.":
@@ -422,6 +428,10 @@ export const CONVERSATION: Record<string, string> = {
 		"Prøv igen bruger den samme modelkonto og beskedanmodning. Den tidligere besked kan allerede være modtaget. En ny anmodning kan sende den igen.",
 	"Start a new message request": "Start en ny beskedanmodning",
 	"This conversation is unavailable for a new request.": "Denne samtale er ikke tilgængelig for en ny anmodning.",
+	"ChatGPT no longer accepts the sign-in for {email}. Sign in again in Settings → AI subscriptions.":
+		"ChatGPT godtager ikke længere loginnet for {email}. Log ind igen under Indstillinger → AI-abonnementer.",
+	"ChatGPT no longer accepts this login's sign-in. Sign in again in Settings → AI subscriptions.":
+		"ChatGPT godtager ikke længere loginnet. Log ind igen under Indstillinger → AI-abonnementer.",
 	"Your model accounts have reached their usage limits. Sending resumes when an account resets.":
 		"Dine modelkonti har nået deres forbrugsgrænser. Du kan sende igen, når en konto nulstilles.",
 	"This conversation's model account can't be used right now. Check it in Settings → AI subscriptions.":

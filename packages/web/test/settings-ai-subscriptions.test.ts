@@ -349,3 +349,41 @@ describe("AI subscriptions with no company open", () => {
 		}
 	});
 });
+
+describe("a sign-in ChatGPT no longer accepts", () => {
+	const refused: WebAccountLogin = { ...login, status: "needs_sign_in" };
+
+	it("says so, offers Sign in again and no usage, and one press starts the ChatGPT sign-in", async () => {
+		const b = company(true, [refused]);
+		await setup(new Map([[profileB, b]]));
+		const card = cards()[0]!;
+		expect(card.querySelector('small[role="status"]')?.textContent).toBe("ChatGPT no longer accepts this sign-in.");
+		expect(card.textContent).not.toContain("Sign out and add this account again to reconnect.");
+		expect(card.querySelector(".connection-usage")).toBeNull();
+		expect(buttons(card)).toEqual(["Sign in again", "Sign out everywhere"]);
+		card.querySelector<HTMLButtonElement>('[data-action="sign-in-again"]')!.click();
+		await settle();
+		expect(b.begin).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ provider: "openai" }));
+		expect(view!.el.querySelector(".connection-attempt")?.textContent).toContain("Open OpenAI sign-in");
+		expect(cards()[0]!.querySelector<HTMLButtonElement>('[data-action="sign-in-again"]')!.disabled).toBe(true);
+	});
+
+	it("shows only the new login once the member has signed in to the same account again", async () => {
+		const fresh: WebAccountLogin = { ...login, loginId: id(91), connectionIds: [id(85)] };
+		const b = company(true, [refused, fresh], observed(linked, { ...linked, connectionId: id(85) }));
+		await setup(new Map([[profileB, b]]));
+		expect(cards().map((card) => card.dataset.loginId)).toEqual([id(91)]);
+		expect(view!.el.textContent).not.toContain("ChatGPT no longer accepts this sign-in.");
+	});
+
+	it("says it in Danish", async () => {
+		setLanguagePreference("da");
+		try {
+			await setup(new Map([[profileB, company(true, [refused])]]));
+			expect(cards()[0]!.textContent).toContain("ChatGPT godtager ikke længere dette login.");
+			expect(buttons(cards()[0]!)).toEqual(["Log ind igen", "Log ud overalt"]);
+		} finally {
+			setLanguagePreference("en");
+		}
+	});
+});

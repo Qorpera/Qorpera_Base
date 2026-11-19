@@ -1711,6 +1711,64 @@ describe("account model logins", () => {
 	});
 });
 
+describe("a sign-in ChatGPT no longer accepts", () => {
+	const refused: WebMemberConnection = {
+		...connected,
+		sponsorBindingId: id(82),
+		sponsorVersion: 1,
+		loginStatus: "needs_sign_in",
+		providerAccountUsage: {
+			observedAt: timestamp,
+			windows: [{ id: "primary", label: "5-hour limit", usedPercent: 10 }],
+		},
+	};
+
+	it("says so on the card with Sign in again and no usage, and one press starts the normal sign-in", async () => {
+		const { client } = await setup(true, observed(refused));
+		expect(status(OPENAI)).toBe("ChatGPT no longer accepts this sign-in.");
+		expect(card(OPENAI).querySelector(".connection-usage")).toBeNull();
+		expect(card(OPENAI).textContent).not.toContain("Usage unavailable");
+		expect([...card(OPENAI).querySelectorAll("button")].map((item) => item.textContent)).toEqual([
+			"Sign in again",
+			"Sign out",
+		]);
+		card(OPENAI).querySelector<HTMLButtonElement>('[data-action="sign-in-again"]')!.click();
+		await settle();
+		expect(client.beginProviderLogin).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ provider: "openai" }),
+		);
+		expect(view.el.querySelector(".connection-attempt")?.textContent).toContain("Open OpenAI sign-in");
+	});
+
+	it("keeps a login the cloud says nothing about as it was", async () => {
+		const active: WebMemberConnection = { ...refused, loginStatus: "active" };
+		await setup(true, observed(active));
+		expect(card(OPENAI).querySelector('small[role="status"]')).toBeNull();
+		expect(card(OPENAI).querySelector(".connection-usage")).not.toBeNull();
+		expect(view.el.querySelector('[data-action="sign-in-again"]')).toBeNull();
+	});
+
+	it("hides it once the member has a working login of the same account", async () => {
+		const fresh: WebMemberConnection = { ...connected, connectionId: id(83), clientConnectionId: id(183) };
+		await setup(true, observed(refused, fresh));
+		const cards = [...view.el.querySelectorAll<HTMLElement>(".connection-card")];
+		expect(cards.map((item) => item.dataset.connectionId)).toEqual([id(83)]);
+		expect(view.el.textContent).not.toContain("ChatGPT no longer accepts this sign-in.");
+		expect(view.el.textContent).not.toContain("Added ");
+	});
+
+	it("keeps it beside a working login when neither has an email", async () => {
+		const unnamed: WebMemberConnection = { ...refused };
+		delete unnamed.providerAccountEmail;
+		const fresh: WebMemberConnection = { ...connected, connectionId: id(83), clientConnectionId: id(183) };
+		delete fresh.providerAccountEmail;
+		await setup(true, observed(unnamed, fresh));
+		const cards = [...view.el.querySelectorAll<HTMLElement>(".connection-card")];
+		expect(cards.map((item) => item.dataset.connectionId)).toEqual([unnamed.connectionId, id(83)]);
+		expect(view.el.querySelector('[data-action="sign-in-again"]')).not.toBeNull();
+	});
+});
+
 describe("Claude sign-in (coding only, offered while the member may sign in with it)", () => {
 	const claudeLogin = {
 		loginId: id(95),
