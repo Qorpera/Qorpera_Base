@@ -2,10 +2,12 @@ set local lock_timeout = '3s';
 
 do $$ begin
 	if to_regclass('public.qorpera_claude_parallel_runs') is not null then
-		raise exception 'Claude parallel runs (20260930790000) are already applied'; end if;
+		raise exception 'Claude parallel runs (20260930810000) are already applied'; end if;
 	if to_regprocedure('public.qorpera_claude_login_opened(uuid,text,jsonb,boolean)') is null
-		or to_regprocedure('public.qorpera_claude_worker_resolve(uuid,uuid,uuid)') is null then
-		raise exception 'Claude parallel runs (20260930790000) need 20260930771000 and 20260930787000 first'; end if;
+		or to_regprocedure('public.qorpera_claude_worker_resolve(uuid,uuid,uuid)') is null
+		or to_regprocedure('public.qorpera_use_claude_login(uuid)') is null then
+		raise exception 'Claude parallel runs (20260930810000) need 20260930771000, 20260930787000 and 20260930804000 first';
+	end if;
 end $$;
 
 create table public.qorpera_claude_parallel_runs (
@@ -25,8 +27,12 @@ revoke all on function public.qorpera_claude_worker_run_cap() from public, anon,
 
 alter table public.qorpera_claude_worker_leases
 	add column slot smallint not null default 1 check (slot between 1 and 16),
+	add column claude_login_id uuid references public.qorpera_claude_logins(id) on delete set null,
 	drop constraint qorpera_claude_worker_leases_pkey,
 	add primary key (owner_user_id, slot);
+update public.qorpera_claude_worker_leases lease set claude_login_id = worker.claude_login_id
+from public.qorpera_runtime_workers worker where worker.id = lease.worker_id;
+create index qorpera_claude_worker_leases_login on public.qorpera_claude_worker_leases(claude_login_id);
 
 create or replace function public.qorpera_claude_worker_waits(p_worker public.qorpera_runtime_workers)
 returns boolean language sql stable security definer set search_path = '' as $$
@@ -48,10 +54,10 @@ begin
 		where lease.owner_user_id = p_worker.requested_by_user_id and public.qorpera_claude_worker_lease_live(lease)) >= v_cap then
 		return false; end if;
 	for v_slot in 1..v_cap loop
-		insert into public.qorpera_claude_worker_leases as lease (owner_user_id, slot, worker_id, wake_id)
-		values (p_worker.requested_by_user_id, v_slot, p_worker.id, p_wake_id)
+		insert into public.qorpera_claude_worker_leases as lease (owner_user_id, slot, worker_id, wake_id, claude_login_id)
+		values (p_worker.requested_by_user_id, v_slot, p_worker.id, p_wake_id, p_worker.claude_login_id)
 		on conflict (owner_user_id, slot) do update set worker_id = excluded.worker_id, wake_id = excluded.wake_id,
-			taken_at = clock_timestamp()
+			claude_login_id = excluded.claude_login_id, taken_at = clock_timestamp()
 		where not public.qorpera_claude_worker_lease_live(lease)
 		returning lease.wake_id into v_taken;
 		if v_taken is not distinct from p_wake_id then return true; end if;
@@ -79,15 +85,16 @@ begin
 	v_worker := public.qorpera_run_worker(v_run.id);
 	select principal.* into v_principal from public.qorpera_cloud_secret_broker_principals principal
 	where principal.id = v_authority.principal_id and principal.status = 'active';
-	if p_lock then
-		select login.* into v_login from public.qorpera_claude_logins login where login.id = v_worker.claude_login_id for update;
-	else
-		select login.* into v_login from public.qorpera_claude_logins login where login.id = v_worker.claude_login_id;
-	end if;
 	select lease.* into v_claude from public.qorpera_claude_worker_leases lease
 	where lease.owner_user_id = v_worker.requested_by_user_id and lease.worker_id = v_worker.id
 		and lease.wake_id = v_worker.occurrence_id
 	order by lease.slot limit 1;
+	-- WHY: a run keeps the login its lease took; a follow-up or the member's In-use switch moves only later runs.
+	if p_lock then
+		select login.* into v_login from public.qorpera_claude_logins login where login.id = v_claude.claude_login_id for update;
+	else
+		select login.* into v_login from public.qorpera_claude_logins login where login.id = v_claude.claude_login_id;
+	end if;
 	if v_run.id is null or v_run.profile_id is distinct from v_authority.profile_id
 		or v_worker.id is null or v_worker.species is distinct from 'in-house'
 		or v_worker.harness is distinct from 'claude-code' or (p_at_work and v_worker.state is distinct from 'active')
@@ -168,7 +175,8 @@ begin
 		and (login.checked_at is null or login.checked_at < v_now - v_age)
 		and public.qorpera_claude_login_renewal_rested(login, v_now)
 		and exists (select 1 from public.qorpera_claude_worker_leases lease
-			where lease.owner_user_id = login.owner_user_id and public.qorpera_claude_worker_lease_live(lease))
+			where lease.owner_user_id = login.owner_user_id and lease.claude_login_id = login.id
+				and public.qorpera_claude_worker_lease_live(lease))
 	returning login.* into v_login;
 	if v_login.id is null then
 		return jsonb_build_object('schema', 'qorpera.claude-login-renewal/v1', 'renewal', null,
@@ -277,10 +285,16 @@ end $$;
 create function public.qorpera_release_claude_login_renewal(p_principal_id uuid, p_capability_sha256 text,
 	p_claude_login_id uuid, p_token uuid, p_outcome text)
 returns jsonb language plpgsql security definer set search_path = '' set lock_timeout = '5s' as $$
-declare v_login public.qorpera_claude_logins%rowtype; v_now timestamptz := clock_timestamp();
+declare v_login public.qorpera_claude_logins%rowtype; v_now timestamptz := clock_timestamp(); v_owner uuid;
 begin
 	if p_outcome is null or p_outcome not in ('unchanged', 'failed', 'refused') then
 		raise exception 'Claude login renewal is invalid' using errcode = '22023'; end if;
+	if p_outcome = 'refused' then
+		select login.owner_user_id into v_owner from public.qorpera_claude_logins login where login.id = p_claude_login_id;
+		-- WHY: 20260930804000's lock, before the row's, as a member's sign-out and In-use switch take them.
+		if v_owner is not null then
+			perform pg_advisory_xact_lock(hashtextextended('qorpera.claude_logins:' || v_owner::text, 0)); end if;
+	end if;
 	v_login := public.qorpera_claude_login_renewal_locked(p_principal_id, p_capability_sha256, p_claude_login_id, p_token);
 	if v_login.id is null then
 		return jsonb_build_object('schema', 'qorpera.claude-login-renewal-release/v1', 'state', 'stale'); end if;
@@ -291,6 +305,12 @@ begin
 		set status = 'revoked', revoked_at = coalesce(revoked_at, v_now), key_id = null, encrypted_envelope = null,
 			envelope_sha256 = null, renewal_token = null, renewal_until = null, checked_at = v_now
 		where id = v_login.id;
+		if v_login.in_use then
+			update public.qorpera_claude_logins set in_use = true
+			where id = (select claude.id from public.qorpera_claude_logins claude
+				where claude.owner_user_id = v_login.owner_user_id and claude.status = 'active' and claude.id <> v_login.id
+				order by public.qorpera_claude_login_used_up_until(claude) is not null, claude.created_at, claude.id limit 1);
+		end if;
 		return jsonb_build_object('schema', 'qorpera.claude-login-renewal-release/v1', 'state', 'signed_out');
 	end if;
 	update public.qorpera_claude_logins
