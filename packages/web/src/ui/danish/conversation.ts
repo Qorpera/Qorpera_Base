@@ -133,6 +133,7 @@ export const CONVERSATION: Record<string, string> = {
 	"Loaded {count} earlier messages.": "Hentede {count} tidligere beskeder.",
 	"This is the start of the conversation.": "Dette er starten på samtalen.",
 	"This conversation is archived.": "Denne samtale er arkiveret.",
+	"You're a spectator: you read along, and the founders write.": "Du er tilskuer: du læser med, og stifterne skriver.",
 	"You can read this conversation. Contributors and above can write.":
 		"Du kan læse denne samtale. Bidragydere og derover kan skrive.",
 	you: "dig",
