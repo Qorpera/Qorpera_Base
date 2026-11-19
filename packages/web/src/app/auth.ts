@@ -4,17 +4,28 @@ import { forgetMemberFiles } from "../cloud/company-files.ts";
 import { t } from "../ui/preferences.ts";
 import { Store } from "./state.ts";
 
-/* Supabase Auth in the browser (CLIENT-CONTRACT.md §1): email one-time code or
- * link, GitHub/Google OAuth with PKCE. The publishable key plus the member's
- * token is the whole credential set; nothing else is stored. */
+export const CODE_LENGTH = 6;
+export const PASSWORD_MIN = 8;
+const RESEND_WAIT_MS = 60_000;
+
+export type AuthStep =
+	| { name: "signin" }
+	| { name: "create" }
+	| { name: "confirm"; email: string }
+	| { name: "code"; email: string }
+	| { name: "reset"; email: string; verified?: boolean };
+
+export type AuthErrorKind = "mismatch" | "exists";
 
 export interface AuthState {
 	ready: boolean;
 	session: Session | null;
 	user: User | null;
-	pendingEmail?: string;
+	step: AuthStep;
+	resendAt?: number;
 	message?: string;
 	error?: string;
+	errorKind?: AuthErrorKind;
 	busy: boolean;
 	oauthProviders: OAuthProvider[];
 }
@@ -34,7 +45,14 @@ export const SIGN_IN_CALLBACK_FIELDS = [
 ];
 
 export class AuthController {
-	readonly store = new Store<AuthState>({ ready: false, session: null, user: null, busy: false, oauthProviders: [] });
+	readonly store = new Store<AuthState>({
+		ready: false,
+		session: null,
+		user: null,
+		step: { name: "signin" },
+		busy: false,
+		oauthProviders: [],
+	});
 	readonly #cloud: Cloud;
 	#disposed = false;
 	#unsubscribe?: () => void;
@@ -42,6 +60,7 @@ export class AuthController {
 	#providerRequest?: AbortController;
 	/** A refused session is being signed out; further refusals wait for that one sign-out. */
 	#signingOut = false;
+	#verifyingRecovery = false;
 
 	constructor(cloud: Cloud) {
 		this.#cloud = cloud;
@@ -81,7 +100,7 @@ export class AuthController {
 			user: data.session?.user ?? null,
 			error:
 				!data.session && (initializationError || error || queryCallback || fragmentCallback)
-					? t("Sign-in could not be completed. Request a new email code in this browser.")
+					? t("Sign-in could not be completed. Try again.")
 					: undefined,
 		});
 		if (!data.session) void this.#loadProviders();
@@ -89,7 +108,14 @@ export class AuthController {
 			data: { subscription },
 		} = this.#cloud.supabase.auth.onAuthStateChange((_event, session) => {
 			this.store.set({ session, user: session?.user ?? null, ready: true });
-			if (session) return;
+			const step = this.store.get().step;
+			const resetUnproven = step.name === "reset" && !step.verified && !this.#verifyingRecovery;
+			if (session) {
+				if (resetUnproven) this.store.set({ step: { name: "signin" }, error: undefined, errorKind: undefined });
+				return;
+			}
+			if (step.name === "reset")
+				this.store.set({ step: { name: "signin" }, error: undefined, errorKind: undefined });
 			// Signed out, however it came about: no file read as the member stays in this tab.
 			forgetMemberFiles();
 			void this.#loadProviders();
@@ -144,8 +170,10 @@ export class AuthController {
 		this.store.set({
 			session: null,
 			user: null,
-			pendingEmail: undefined,
+			step: { name: "signin" },
+			resendAt: undefined,
 			error: undefined,
+			errorKind: undefined,
 			message: t("You were signed out. Sign in again."),
 		});
 		if (current) void this.#loadProviders();
@@ -194,43 +222,186 @@ export class AuthController {
 		return `${location.origin}${location.pathname}`;
 	}
 
-	async sendEmailCode(email: string): Promise<void> {
-		const normalized = email.trim().toLowerCase();
-		if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
-			this.store.set({ error: t("Enter a valid email address.") });
-			return;
-		}
-		this.store.set({ busy: true, error: undefined, message: undefined });
-		const { error } = await this.#cloud.supabase.auth.signInWithOtp({
-			email: normalized,
-			options: { emailRedirectTo: this.#redirectTo(), shouldCreateUser: true },
-		});
-		if (error) {
-			this.store.set({ busy: false, error: error.message });
-			return;
-		}
+	showStep(name: "signin" | "create"): void {
 		this.store.set({
-			busy: false,
-			pendingEmail: normalized,
-			message: t("Check your email. Enter the code below, or open the sign-in link on this device."),
+			step: { name },
+			resendAt: undefined,
+			error: undefined,
+			errorKind: undefined,
+			message: undefined,
+		});
+	}
+
+	back(): void {
+		this.showStep(this.store.get().step.name === "confirm" ? "create" : "signin");
+	}
+
+	async signInWithPassword(email: string, password: string): Promise<void> {
+		const address = normalEmail(email);
+		if (!address) return this.#fail(t("Enter a valid email address."));
+		if (!password) return this.#fail(t("Enter your password."));
+		await this.#run(async () => {
+			const { error } = await this.#cloud.supabase.auth.signInWithPassword({ email: address, password });
+			if (!error) return;
+			if (authCode(error) === "email_not_confirmed") {
+				const resent = await this.#cloud.supabase.auth.resend({
+					type: "signup",
+					email: address,
+					options: { emailRedirectTo: this.#redirectTo() },
+				});
+				if (resent.error) throw resent.error;
+				this.#waitForCode(
+					{ name: "confirm", email: address },
+					t("Confirm your email first. We sent you a new code."),
+				);
+				return;
+			}
+			throw error;
+		});
+	}
+
+	async createAccount(name: string, email: string, password: string): Promise<void> {
+		const displayName = name.trim();
+		const address = normalEmail(email);
+		if (!displayName || displayName.length > 64 || /[\u0000-\u001f\u007f]/.test(displayName))
+			return this.#fail(t("Enter a name between 1 and 64 characters."));
+		if (!address) return this.#fail(t("Enter a valid email address."));
+		if (password.length < PASSWORD_MIN) return this.#fail(t("Use at least 8 characters for your password."));
+		await this.#run(async () => {
+			const { data, error } = await this.#cloud.supabase.auth.signUp({
+				email: address,
+				password,
+				options: { data: { display_name: displayName }, emailRedirectTo: this.#redirectTo() },
+			});
+			if (error) throw error;
+			// WHY: Auth answers an address that already has a proven account with a user without identities, and sends nothing.
+			if (data.user && data.user.identities?.length === 0) {
+				this.store.set({ error: t("There's already an account with this email."), errorKind: "exists" });
+				return;
+			}
+			if (data.session) return;
+			this.#waitForCode({ name: "confirm", email: address });
+		});
+	}
+
+	async sendEmailCode(email: string): Promise<void> {
+		const address = normalEmail(email);
+		if (!address) return this.#fail(t("Enter a valid email address."));
+		await this.#run(async () => {
+			const { error } = await this.#cloud.supabase.auth.signInWithOtp({
+				email: address,
+				options: { emailRedirectTo: this.#redirectTo(), shouldCreateUser: false },
+			});
+			if (error) throw error;
+			this.#waitForCode({ name: "code", email: address });
+		});
+	}
+
+	async forgotPassword(email: string): Promise<void> {
+		const address = normalEmail(email);
+		if (!address) return this.#fail(t("Type your email first, then choose Forgot password."));
+		await this.#run(async () => {
+			const { error } = await this.#cloud.supabase.auth.resetPasswordForEmail(address, {
+				redirectTo: this.#redirectTo(),
+			});
+			if (error) throw error;
+			this.#waitForCode({ name: "reset", email: address });
 		});
 	}
 
 	async verifyEmailCode(token: string): Promise<void> {
-		const email = this.store.get().pendingEmail;
-		if (!email) return;
-		this.store.set({ busy: true, error: undefined });
-		const { error } = await this.#cloud.supabase.auth.verifyOtp({ email, token: token.trim(), type: "email" });
-		if (error) {
-			this.store.set({ busy: false, error: error.message });
-			return;
+		const step = this.store.get().step;
+		if (step.name !== "confirm" && step.name !== "code") return;
+		const code = token.replace(/\D/g, "");
+		if (code.length !== CODE_LENGTH) return this.#fail(t("Enter the 6-digit code from the email."));
+		await this.#run(async () => {
+			const { error } = await this.#cloud.supabase.auth.verifyOtp({ email: step.email, token: code, type: "email" });
+			if (error) throw error;
+			this.store.set({ step: { name: "signin" }, resendAt: undefined, message: undefined });
+		});
+	}
+
+	async resetPassword(token: string, password: string): Promise<void> {
+		const step = this.store.get().step;
+		if (step.name !== "reset") return;
+		const code = token.replace(/\D/g, "");
+		if (!step.verified && code.length !== CODE_LENGTH) return this.#fail(t("Enter the 6-digit code from the email."));
+		if (password.length < PASSWORD_MIN) return this.#fail(t("Use at least 8 characters for your password."));
+		await this.#run(async () => {
+			if (!step.verified) {
+				this.#verifyingRecovery = true;
+				try {
+					const verified = await this.#cloud.supabase.auth.verifyOtp({
+						email: step.email,
+						token: code,
+						type: "recovery",
+					});
+					if (verified.error) throw verified.error;
+				} finally {
+					this.#verifyingRecovery = false;
+				}
+				this.store.set({ step: { name: "reset", email: step.email, verified: true } });
+			}
+			const { error } = await this.#cloud.supabase.auth.updateUser({ password });
+			if (error) throw error;
+			this.store.set({ step: { name: "signin" }, resendAt: undefined, message: undefined });
+		});
+	}
+
+	async resendCode(): Promise<void> {
+		const { step, resendAt } = this.store.get();
+		if (step.name !== "confirm" && step.name !== "code" && step.name !== "reset") return;
+		if (resendAt && Date.now() < resendAt) return;
+		await this.#run(async () => {
+			const auth = this.#cloud.supabase.auth;
+			const options = { emailRedirectTo: this.#redirectTo() };
+			const { error } =
+				step.name === "confirm"
+					? await auth.resend({ type: "signup", email: step.email, options })
+					: step.name === "code"
+						? await auth.signInWithOtp({ email: step.email, options: { ...options, shouldCreateUser: false } })
+						: await auth.resetPasswordForEmail(step.email, { redirectTo: this.#redirectTo() });
+			if (error) throw error;
+			this.store.set({ resendAt: Date.now() + RESEND_WAIT_MS, message: t("We sent a new code.") });
+		});
+	}
+
+	async setPassword(password: string): Promise<void> {
+		if (password.length < PASSWORD_MIN) throw new Error(t("Use at least 8 characters for your password."));
+		const userId = this.userId;
+		if (!userId) throw new Error(t("Sign in to change your password."));
+		const { error } = await this.#cloud.supabase.auth.updateUser({ password });
+		if (error) throw new Error(authErrorText(error).text);
+	}
+
+	#waitForCode(step: AuthStep, message?: string): void {
+		this.store.set({ step, resendAt: Date.now() + RESEND_WAIT_MS, message, error: undefined, errorKind: undefined });
+	}
+
+	#fail(error: string): void {
+		this.store.set({ error, errorKind: undefined, message: undefined });
+	}
+
+	async #run(operation: () => Promise<void>): Promise<void> {
+		if (this.store.get().busy) return;
+		this.store.set({ busy: true, error: undefined, errorKind: undefined, message: undefined });
+		try {
+			await operation();
+		} catch (failure) {
+			if (this.#disposed) return;
+			const { text, kind } = authErrorText(failure);
+			this.store.set({ error: text, errorKind: kind });
+		} finally {
+			if (!this.#disposed) this.store.set({ busy: false });
 		}
-		this.store.set({ busy: false, pendingEmail: undefined, message: undefined });
 	}
 
 	async signInWithOAuth(provider: OAuthProvider): Promise<void> {
 		if (!this.store.get().oauthProviders.includes(provider)) {
-			this.store.set({ error: t("This sign-in provider is unavailable. Continue with email.") });
+			this.store.set({
+				error: t("This sign-in method is unavailable. Use your email instead."),
+				errorKind: undefined,
+			});
 			return;
 		}
 		this.store.set({ busy: true, error: undefined });
@@ -238,13 +409,21 @@ export class AuthController {
 			provider,
 			options: { redirectTo: this.#redirectTo() },
 		});
-		if (error) this.store.set({ busy: false, error: error.message });
+		if (error) this.store.set({ busy: false, ...errorState(error) });
 	}
 
 	async signOut(): Promise<void> {
 		await this.#cloud.supabase.auth.signOut();
 		forgetMemberFiles();
-		this.store.set({ session: null, user: null, pendingEmail: undefined, message: undefined, error: undefined });
+		this.store.set({
+			session: null,
+			user: null,
+			step: { name: "signin" },
+			resendAt: undefined,
+			message: undefined,
+			error: undefined,
+			errorKind: undefined,
+		});
 	}
 
 	async updateName(value: string): Promise<void> {
@@ -263,9 +442,51 @@ export class AuthController {
 			session: current.session ? { ...current.session, user: data.user! } : null,
 		}));
 	}
+}
 
-	resetEmail(): void {
-		this.store.set({ pendingEmail: undefined, message: undefined, error: undefined });
+function normalEmail(email: string): string | undefined {
+	const address = email.trim().toLowerCase();
+	return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address) ? address : undefined;
+}
+
+function authCode(error: unknown): string | undefined {
+	return error && typeof error === "object" && "code" in error && typeof error.code === "string"
+		? error.code
+		: undefined;
+}
+
+function errorState(error: unknown): Pick<AuthState, "error" | "errorKind"> {
+	const { text, kind } = authErrorText(error);
+	return { error: text, errorKind: kind };
+}
+
+export function authErrorText(error: unknown): { text: string; kind?: AuthErrorKind } {
+	switch (authCode(error)) {
+		case "invalid_credentials":
+			return { text: t("That email and password don't match an account."), kind: "mismatch" };
+		case "user_already_exists":
+		case "email_exists":
+			return { text: t("There's already an account with this email."), kind: "exists" };
+		case "otp_expired":
+			return { text: t("That code is wrong or too old. Check it, or send a new one.") };
+		case "weak_password":
+			return { text: t("Choose a stronger password: at least 8 characters, and not a common one.") };
+		case "same_password":
+			return { text: t("That's your current password. Choose a new one.") };
+		case "otp_disabled":
+		case "signup_disabled":
+		case "user_not_found":
+			return { text: t("We couldn't send a code to that email. Check it, or create an account.") };
+		case "over_email_send_rate_limit":
+		case "over_request_rate_limit":
+			return { text: t("Too many tries. Wait a minute, then try again.") };
+		case "reauthentication_needed":
+		case "session_not_found":
+			return { text: t("Sign in again, then change your password.") };
+		case "email_address_invalid":
+			return { text: t("Enter a valid email address.") };
+		default:
+			return { text: t("Something went wrong. Try again.") };
 	}
 }
 
