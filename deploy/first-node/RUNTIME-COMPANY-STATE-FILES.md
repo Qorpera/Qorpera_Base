@@ -749,7 +749,7 @@ Not reviewed. Dispatching a worker is reviewed.
 | `id` | the worker's id |
 | `title` | 1–200 bytes |
 | `species` | `in-house` or `coding` |
-| `harness` | a coding session's: `codex` or `claude-code` (C3a); an in-house brief names it only when a member asked for one: `claude-code` (20260930770000) or `codex` (20260930787000). An in-house brief that names none is resolved by the dispatch, and again by each follow-up (20260930787000, Claude first): Claude Code (`harness_default`) when it has access write and its member can use Claude Code now (`qorpera_claude_worker_problem` answers nothing, and the follow-up's asker is the worker's member) or only the agent's machine is missing (20260930797000: the drain wakes it), else Codex |
+| `harness` | a coding session's: `codex` or `claude-code` (C3a); an in-house brief names it only when a member asked for one: `claude-code` (20260930770000) or `codex` (20260930787000). An in-house brief that names none is resolved by the dispatch, and again by each follow-up (20260930787000, Claude first): Claude Code (`harness_default`) when it has access write and its member can use Claude Code now (`qorpera_claude_worker_problem` answers nothing, and the follow-up's asker is the worker's member) or only the agent's machine is missing (20260930811000: the drain wakes it), else Codex |
 | `repository` | a coding session's: `github.com/<owner>/<name>` (only in a coding brief) |
 | `base_branch` | a coding session's base branch (only in a coding brief) |
 | `access` | `read` or `write` |
@@ -2560,7 +2560,7 @@ files. So a dispatch or a follow-up leaves its row active with no occurrence, an
      (`qorpera_claude_worker_waits` in `qorpera_folder_worker_due`, 20260930770000) until that lease ends (its wake or
      its run's job ends), so waiting workers never fill a pass.
      A defaulted Claude Code worker whose only problem is that its agent has no machine running for its member's work
-     (20260930797000) is still resolved to Claude Code (`qorpera_claude_worker_machine_wakeable`: the member's checks
+     (20260930811000) is still resolved to Claude Code (`qorpera_claude_worker_machine_wakeable`: the member's checks
      pass, the home is on for the company, machines are available, the company has computer hours, the agent and the
      member read the root). Before its lease, the drain wakes that machine (`qorpera_claude_worker_machine_wait`, under
      the company's machine lock, after the drain's fence and member rows): the newest of the agent's machines the worker's

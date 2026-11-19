@@ -1,10 +1,10 @@
 do $$ begin
 	if to_regclass('public.qorpera_home_outdated_images') is not null then
-		raise exception '20260930797000 is already applied'; end if;
+		raise exception '20260930811000 is already applied'; end if;
 	if to_regprocedure('public.qorpera_claude_worker_resolve(uuid,uuid,uuid)') is null
 		or to_regprocedure('public.qorpera_company_machine_member_sleep_due(public.qorpera_company_machines,timestamptz,integer)') is null
 		or to_regprocedure('public.qorpera_authorize_home_session(jsonb,jsonb,uuid)') is null then
-		raise exception '20260930797000 needs Claude-first workers (20260930787000), member machine sleep (20260930759000) and the home';
+		raise exception '20260930811000 needs Claude-first workers (20260930787000), member machine sleep (20260930759000) and the home';
 	end if;
 end $$;
 
@@ -15,7 +15,7 @@ returns void language plpgsql as $$
 declare v_definition text := pg_get_functiondef(p_function);
 begin
 	if p_old = '' or (length(v_definition) - length(replace(v_definition, p_old, ''))) / length(p_old) <> 1 then
-		raise exception '20260930797000 anchor differs in %: %', p_function, left(p_old, 80); end if;
+		raise exception '20260930811000 anchor differs in %: %', p_function, left(p_old, 80); end if;
 	execute replace(v_definition, p_old, p_new);
 end $$;
 
@@ -356,7 +356,7 @@ do $$ declare v_owner name; begin
 		'public.qorpera_list_executor_machines(text,text)'::regprocedure,
 		'public.qorpera_authorize_executor_machine(uuid,text,text,text,text)'::regprocedure)) loop
 		if v_owner in ('anon', 'authenticated', 'service_role', 'qorpera_secret_broker') then
-			raise exception 'A function 20260930797000 patches has an API owner'; end if;
+			raise exception 'A function 20260930811000 patches has an API owner'; end if;
 		if v_owner is distinct from current_user then
 			execute format('grant execute on function public.qorpera_company_machine_home_outdated(public.qorpera_company_machines), '
 				'public.qorpera_claude_worker_member_problem(uuid, uuid), '
