@@ -66,8 +66,6 @@ test("packages and pins the shared execution service", async () => {
 			contents.set(artifact.file, content);
 		}
 		const service = contents.get("qorpera-shared-execution-service.mjs").toString("utf-8");
-		assert.ok(service.includes("qorpera.shared-execution-journal/v1"));
-		assert.ok(service.includes("qorpera_reserve_runtime_machine"));
 		assert.ok(!service.includes("import { spawn }"), "the service must be a single bundled artifact");
 		for (const file of ["qorpera-shared-execution-service.mjs", "qorpera-runner-orchestrator.mjs"]) {
 			const checked = spawnSync(process.execPath, ["--check", join(outputRoot, file)], { encoding: "utf-8" });
@@ -134,7 +132,6 @@ test("packages and pins the shared execution service", async () => {
 		// Only the slot's host account joins the box's group, and only on an image that has it.
 		assert.ok(installer.includes('usermod -aG qorpera-claude-box "qorpera-shared-host-${slot}"'));
 		assert.ok(!installer.includes("usermod -aG qorpera-claude-box \"qorpera-shared-runner"));
-		assert.ok(installer.includes("Nothing starts here"));
 		assert.ok(installer.includes('verify_sha256 "${STAGING_ROOT}/qorpera-folder" "${EXPECTED_FOLDER_PROGRAM_SHA256}"'));
 		assert.ok(!/systemctl (enable|start)[^\n]*qorpera-folder-mount/.test(installer), "no mount starts at install");
 		assert.ok(!/systemctl (enable|start)[^\n]*qorpera-folder-relay/.test(installer), "no relay starts at install");

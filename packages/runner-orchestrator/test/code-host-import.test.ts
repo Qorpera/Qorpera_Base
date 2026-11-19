@@ -20,7 +20,6 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { codeBundleName } from "../src/code-bundle-store.ts";
 import {
-	CODE_HOST_IMPORT_JOBS,
 	CODE_HOST_IMPORT_MEASURE,
 	codeImportBelow,
 	lookCodeImport,
@@ -48,7 +47,6 @@ import {
 	type CodeImportLook,
 	type CodeImportLooked,
 	type CodeImportRaw,
-	CodeImportStop,
 	codeImportBundleName,
 	codeImportLookOf,
 	codeImportProgressOf,
@@ -507,8 +505,6 @@ describe("code host: an import's look (own code storage, step 6, part B)", { tim
 		await expect(looking(f, { bytes: two.bytes, raw: elsewhere })).rejects.toMatchObject({
 			code: "CODE_HOST_IMPORT_BUNDLE_DIFFERS",
 		});
-		// C3 takes the two jobs as one value: there is no job that removes a file source.
-		expect(CODE_HOST_IMPORT_JOBS).toEqual({ read: readIncomingCodeBundle, look: lookCodeImport });
 	});
 
 	it("applies the refs plan: main and the mark at the default branch, the newest 500 tags and 200 branches of 90 days", async () => {
@@ -1616,12 +1612,10 @@ describe("code host: the import's shell, as the image runs it", () => {
 		expect(proof).toContain(`<<'MEASURE'\n${CODE_HOST_IMPORT_MEASURE}\nMEASURE\n`);
 	});
 
-	it("the import's steps end at the open: no step of the import removes a file source", () => {
+	it("reads a progress at each of the import's steps, the runtime's list, and refuses a step not in it", () => {
 		expect(CODE_IMPORT_STEPS).toEqual(["fetch", "read", "look", "close", "set-aside", "build", "open"]);
-		expect(() => codeImportProgressOf({ step: "tidy" })).toThrow("INVALID_CODE_IMPORT_PROGRESS");
-	});
-
-	it("a stop is the code alone", () => {
-		expect(new CodeImportStop("refused", "IMPORT_USES_LFS").message).toBe("IMPORT_USES_LFS");
+		for (const step of CODE_IMPORT_STEPS) expect(codeImportProgressOf({ step })).toEqual({ step });
+		for (const step of ["later", "", 1, null])
+			expect(() => codeImportProgressOf({ step }), String(step)).toThrow("INVALID_CODE_IMPORT_PROGRESS");
 	});
 });

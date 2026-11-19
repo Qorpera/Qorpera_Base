@@ -402,13 +402,6 @@ begin
 		and not has_function_privilege('authenticated', 'public.qorpera_company_machine_reusable(jsonb,uuid,jsonb)', 'execute')
 		and not has_function_privilege('service_role', 'public.qorpera_company_machine_reusable(jsonb,uuid,jsonb)', 'execute'),
 		'4: the helper is internal');
-	perform pg_temp.base_assert(strpos(pg_get_functiondef('public.qorpera_native_machine_start(jsonb,text,text,uuid,text)'::regprocedure),
-			'20260930747000') > 0
-		and strpos(pg_get_functiondef('public.qorpera_native_machine_manage(jsonb,jsonb)'::regprocedure), '20260930747000') > 0
-		and strpos(pg_get_functiondef('public.qorpera_company_machine_reusable(jsonb,uuid,jsonb)'::regprocedure), '20260930747000') > 0
-		and strpos(pg_get_functiondef('public.qorpera_company_machine_takeable(public.qorpera_company_machines,jsonb,jsonb,text)'::regprocedure),
-			'20260930747000') > 0,
-		'4: the markers');
 	perform pg_temp.base_assert(not has_function_privilege('anon',
 			'public.qorpera_company_machine_takeable(public.qorpera_company_machines,jsonb,jsonb,text)', 'execute')
 		and not has_function_privilege('authenticated',

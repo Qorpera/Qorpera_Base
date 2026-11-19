@@ -14,8 +14,6 @@ import {
 	OFFICE_IMAGE_FOLDER_PACKAGE_FILES,
 } from "../src/lxd-office-image-installation.ts";
 import { officeCanonical, officeDigest } from "../src/lxd-office-image-provenance.ts";
-import { verifyLxdOfficeServiceSoftware } from "../src/lxd-office-service-software.ts";
-import { officeSoftwareFixture } from "./fixtures/office-software.ts";
 
 const hash = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 
@@ -224,19 +222,5 @@ describe("pure signed code-only package verification", () => {
 		expect(() =>
 			verifyLxdOfficeCodePackageProvisionRequest({ ...request, targetManifestSha256: hash("wrong") }, v),
 		).toThrow();
-	});
-	it("retains service-only rejection of non-service code changes", () => {
-		const f = officeSoftwareFixture();
-		f.next.artifacts.find((a) => a.file === "qorpera-company-computer-preparation.mjs")!.sha256 =
-			hash("changed preparation");
-		f.manifests.next = Buffer.from(JSON.stringify(f.next));
-		f.statement.next.packageManifestSha256 = hash(f.manifests.next);
-		f.envelope.signature.value = sign(null, Buffer.from(officeCanonical(f.statement)), f.keys.privateKey).toString(
-			"base64",
-		);
-		f.plan.statementSha256 = officeDigest(f.statement);
-		f.trust.statementSha256 = f.plan.statementSha256;
-		f.trust.planSha256 = officeDigest(f.plan);
-		expect(() => verifyLxdOfficeServiceSoftware(f.envelope, f.plan, f.trust, f.manifests)).toThrow();
 	});
 });

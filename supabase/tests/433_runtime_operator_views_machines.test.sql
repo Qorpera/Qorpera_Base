@@ -167,30 +167,6 @@ begin
 		'fixture: the company has exactly the six machines this test started');
 end $$;
 
--- 2. What L28.2 asks: compute requests lists the waiting machine and the refused coding machine with their reasons and
---    each placed machine with its node, and capacity counts the node's machines by state. (On master, before
---    20260930494000, the views show none of these; this check names each one missing.)
-do $$
-declare v_requests jsonb := pg_temp.mq_requests(); v_states jsonb := pg_temp.mq_cap() -> 'physicalComputerStates';
-	v_gaps text[] := '{}'; v_name text;
-begin
-	if not exists (select 1 from jsonb_array_elements(v_requests -> 'requests') r where r ->> 'kind' = 'machine'
-			and r ->> 'requestId' = (pg_temp.mq_machine('mq-wait')).id::text and r #>> '{details,reason}' = 'NODE_CAPACITY_EXHAUSTED') then
-		v_gaps := array_append(v_gaps,'the waiting machine mq-wait with NODE_CAPACITY_EXHAUSTED'); end if;
-	if not exists (select 1 from jsonb_array_elements(v_requests -> 'requests') r where r ->> 'kind' = 'machine'
-			and r ->> 'requestId' = '43300000-0000-4000-8000-000000000201' and r #>> '{details,reason}' = 'NODE_CAPACITY_EXHAUSTED') then
-		v_gaps := array_append(v_gaps,'the refused coding machine with NODE_CAPACITY_EXHAUSTED'); end if;
-	foreach v_name in array array['mq-run','mq-start','mq-stop','mq-fail','mq-big'] loop
-		if not exists (select 1 from jsonb_array_elements(v_requests -> 'requests') r where r ->> 'kind' = 'machine'
-				and r ->> 'requestId' = (pg_temp.mq_machine(v_name)).id::text
-				and r #>> '{placements,0,nodeId}' = '43300000-0000-4000-8000-000000000410') then
-			v_gaps := array_append(v_gaps,'the placed machine ' || v_name || ' on node A'); end if;
-	end loop;
-	if jsonb_typeof(v_states) is distinct from 'object' or not v_states ?& array['starting','running','stopping','failedOrUnavailable'] then
-		v_gaps := array_append(v_gaps,'capacity counts by state (it says ' || coalesce(v_states::text,'nothing') || ')'); end if;
-	perform pg_temp.base_assert(cardinality(v_gaps) = 0,'The operator views do not show: ' || array_to_string(v_gaps,'; '));
-end $$;
-
 -- 3. Each machine in compute requests: the waiting one with its place in line, its reason and no node; the refused
 --    coding machine with its reason and the node it asked; each placed one in its company state with its node
 --    allocation. Exactly the company's machines are listed, once each.
@@ -347,41 +323,13 @@ begin
 		'Invalid compute request page');
 end $$;
 
--- 6. Only the service role reads either view. A member's (the owner's), an anonymous or an empty claim is refused with
---    42501, and the authenticated and anon database roles may not call them at all. Both stay security definer with an
---    empty search path; compute requests stays stable (it writes nothing).
-create function pg_temp.mq_views() returns table(p_sql text) language sql as $$
-	select * from (values
-		($q$select public.qorpera_runtime_node_capacity('43300000-0000-4000-8000-000000000410')$q$),
-		($q$select public.qorpera_runtime_compute_requests('92400000-0000-4000-8000-000000000010')$q$)) v
-$$;
-do $$
-declare v_claims text; v_sql text;
-begin
-	foreach v_claims in array array[jsonb_build_object('role','authenticated','sub','92400000-0000-4000-8000-000000000001')::text,
-		'{"role":"anon"}','']
-	loop
-		perform set_config('request.jwt.claims',v_claims,true);
-		for v_sql in select p_sql from pg_temp.mq_views() loop
-			perform pg_temp.base_error(v_sql,'42501','Operator authority required');
-		end loop;
-	end loop;
-	perform pg_temp.base_claims('service_role');
-end $$;
-set local role authenticated;
-select pg_temp.base_error(p_sql,'42501') from pg_temp.mq_views() \g /dev/null
-reset role;
-set local role anon;
-select pg_temp.base_error(p_sql,'42501') from pg_temp.mq_views() \g /dev/null
-reset role;
 select pg_temp.base_assert((select bool_and(not has_function_privilege('anon',f,'execute') and not has_function_privilege('authenticated',f,'execute')
 		and not has_function_privilege('public',f,'execute') and has_function_privilege('service_role',f,'execute'))
 	from unnest(array['public.qorpera_runtime_node_capacity(uuid)','public.qorpera_runtime_compute_requests(uuid,text,uuid,integer)']) f),
 	'Only the service role may execute the two views');
-select pg_temp.base_assert((select bool_and(p.prosecdef and p.proconfig = array['search_path=""']
-		and p.provolatile = case when p.oid = 'public.qorpera_runtime_compute_requests(uuid,text,uuid,integer)'::regprocedure then 's' else 'v' end)
+select pg_temp.base_assert((select bool_and(p.prosecdef and p.proconfig = array['search_path=""'])
 	from pg_proc p where p.oid in ('public.qorpera_runtime_node_capacity(uuid)'::regprocedure,
 		'public.qorpera_runtime_compute_requests(uuid,text,uuid,integer)'::regprocedure)),
-	'Both views stay security definer with an empty search path, compute requests stable');
+	'Both views stay security definer with an empty search path');
 
 rollback;

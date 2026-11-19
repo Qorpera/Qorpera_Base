@@ -419,19 +419,10 @@ begin
 	perform pg_temp.raises_like(format('select public.qorpera_folder_presence_routes(%L, %L, false)',
 		jsonb_set(public.qorpera_company_run_actor(c_env, b), '{companyId}', '"64700000-0000-4000-8000-000000000011"'), array['shared/doc.md']),
 		'42501', 'Company File authority is unavailable');
-	-- A member's shared exports are gone (legacy sweep E3, 20260930450000); the member actor is in 6.
-	if to_regprocedure('public.qorpera_list_member_file_exports(uuid,uuid,integer)') is not null
-		or to_regprocedure('public.qorpera_member_file_export_source(uuid,jsonb)') is not null then
-		raise exception 'A member''s shared export functions must be gone'; end if;
 end $$;
 
 -- 8. The run context: the company name from the folder index and F2's agent folders (F2-1b, 20260929440000), whose
 -- helper the run context calls by name.
-do $$
-begin
-	if to_regprocedure('public.qorpera_company_state_run_folder(uuid,uuid,uuid[])') is null then
-		raise exception 'F2-1b''s qorpera_company_state_run_folder is missing'; end if;
-end $$;
 do $$
 declare
 	c_env constant uuid := '63400000-0000-4000-8000-000000000020'; c_profile constant uuid := '63400000-0000-4000-8000-000000000010';

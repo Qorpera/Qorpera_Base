@@ -683,6 +683,7 @@ end $$;
 -- 16. The observation ledger names the new tools; the binding text is the executor's exactly
 --     (packages/runner-orchestrator/test/company-machine.test.ts asserts the same string).
 do $$
+declare v_receipts jsonb;
 begin
 	perform pg_temp.base_assert(public.qorpera_company_machine_binding_text(jsonb_build_object('schema','qorpera.lxd-company-machine/v2',
 		'machineId','00000000-0000-4000-8000-000000000002','placementId','00000000-0000-4000-8000-000000000005',
@@ -696,9 +697,21 @@ begin
 			|| '","project":"machines","imageFingerprint":"' || repeat('b',64) || '","bootstrapSha256":"' || repeat('c',64)
 			|| '","storagePool":"machines","network":"qagent0","cpus":8,"memoryBytes":34359738368,"rootDiskBytes":107374182400}',
 		'The binding text matches the executor''s');
-	perform pg_temp.base_assert(pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure)
-		like '%''machine_start'',''machine_run'',''machine_read'',''machine_cancel'',''machine_stop'',''machine_delete'',''machine_list''%',
-		'Machine tools are known operations');
+	perform pg_temp.base_claims('service_role');
+	set local role service_role;
+	v_receipts := public.qorpera_record_runtime_observation_batch((pg_temp.mc_binding() ->> 'runId')::uuid,
+		(select jsonb_agg(jsonb_build_object('schema','qorpera.runtime-observation/v1','attemptId',extensions.gen_random_uuid(),
+			'parentAttemptId',null,'assignmentId',pg_temp.mc_binding() -> 'assignmentId','phase','start','operation',o.name,
+			'logicalOperationSha256',repeat('7',64),'observedAt','2026-11-14T12:00:00.000Z','durationMs',null,'status','started',
+			'errorCategory',null,'receiptId',null,'readId',null,'inputBytes',null,'outputBytes',null,'inputTokens',null,
+			'outputTokens',null,'cachedInputTokens',null,'cacheWriteInputTokens',null,'reasoningOutputTokens',null,
+			'totalTokens',null) order by o.name)
+		from unnest(array['machine_start','machine_run','machine_read','machine_cancel','machine_stop','machine_delete',
+			'machine_list']) o(name)));
+	reset role;
+	perform pg_temp.base_assert(jsonb_array_length(v_receipts -> 'receipts') = 7 and not exists (select 1
+		from jsonb_array_elements(v_receipts -> 'receipts') r where r ->> 'schema' is distinct from 'qorpera.runtime-observation-receipt/v1'),
+		'Machine tools are known operations: ' || v_receipts::text);
 end $$;
 
 -- 17-18 of the snapshot-v1 test are deleted under the delete-first rule: its batching (848 covers it) and the

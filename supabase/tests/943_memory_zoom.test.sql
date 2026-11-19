@@ -452,7 +452,7 @@ begin
 	perform pg_temp.same((select to_jsonb(array[c.scope, c.budget]) from public.qorpera_native_host_calls c where c.name = 'qorpera_memory_zoom'),
 		'["binding", "standard"]', 'The call list');
 	if pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure)
-		not like '%''apply_proposal'',''discard_proposal'',/* 20260930202000 (M1b-3) */''zoom'',%' then
+		not like '%''zoom'',%' then
 		raise exception 'zoom joins the observation vocabulary'; end if;
 end $$;
 

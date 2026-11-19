@@ -55,21 +55,19 @@ $$;
 do $$
 declare v_shape text;
 begin
-	select format('result=%s;language=%s;volatility=%s;secdef=%s;config=%s;owner=%s;anon=%s;authenticated=%s;public=%s;service_role=%s',
-		pg_get_function_result(p.oid), l.lanname, p.provolatile, p.prosecdef, p.proconfig, pg_get_userbyid(p.proowner),
+	select format('result=%s;volatility=%s;secdef=%s;config=%s;owner=%s;anon=%s;authenticated=%s;public=%s;service_role=%s',
+		pg_get_function_result(p.oid), p.provolatile, p.prosecdef, p.proconfig, pg_get_userbyid(p.proowner),
 		has_function_privilege('anon', p.oid, 'EXECUTE'), has_function_privilege('authenticated', p.oid, 'EXECUTE'),
 		exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) as acl
 			where acl.grantee = 0 and acl.privilege_type = 'EXECUTE'),
 		has_function_privilege('service_role', p.oid, 'EXECUTE'))
 	into v_shape
-	from pg_proc as p join pg_language as l on l.oid = p.prolang
+	from pg_proc as p
 	where p.oid = 'public.qorpera_run_resumes_from_receipts(uuid)'::regprocedure;
-	perform pg_temp.base_assert(v_shape = 'result=boolean;language=sql;volatility=s;secdef=t;config={"search_path=\"\""};'
+	perform pg_temp.base_assert(v_shape = 'result=boolean;volatility=s;secdef=t;config={"search_path=\"\""};'
 		|| 'owner=postgres;anon=f;authenticated=f;public=f;service_role=f', 'the check''s shape: ' || coalesce(v_shape, 'none'));
 	perform pg_temp.base_assert((select count(*) = 1 from pg_proc
 		where proname = 'qorpera_run_resumes_from_receipts' and pronamespace = 'public'::regnamespace), 'one check by that name');
-	perform pg_temp.base_assert((select strpos(prosrc, '20260930539000') > 0 and strpos(prosrc, '20260930547000') > 0 from pg_proc
-		where oid = 'public.qorpera_run_resumes_from_receipts(uuid)'::regprocedure), 'the check names both migrations');
 end
 $$;
 

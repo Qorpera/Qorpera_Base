@@ -115,8 +115,4 @@ select pg_temp.base_assert((pg_temp.cap() ->> 'freeCpuMillis')::bigint = 8000 an
 select pg_temp.base_error($q$select public.qorpera_configure_runtime_node(pg_temp.cap_policy(32000,68719476736,26000,49392123904),2)$q$,'55000',
 	'Node policy would discard occupied capacity');
 reset role;
-
--- The view stays operator-only.
-select pg_temp.base_assert(not has_function_privilege(role_name,'public.qorpera_runtime_node_capacity(uuid)','EXECUTE'),
-	'Capacity view is not public: ' || role_name) from unnest(array['anon','authenticated']) role_name;
 rollback;

@@ -4,9 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	CLEANUP_STOP_BUDGET_MS,
 	CloudCodingExecutor,
-	CODING_LAND_FILE_TOO_LARGE,
-	CODING_LAND_NAMES_REFUSED,
-	CODING_LANDING_STEP,
 	CODING_LEASE_MARGIN_MS,
 	CODING_RETRY_PAUSES_MS,
 	CodingControlBusy,
@@ -596,8 +593,6 @@ describe("the coding executor over a session turn", () => {
 		);
 		// A refusal for the files' names or size ends with a code of its own, which the kernel keeps as the turn's reason
 		// (migration 20260930743000) and a member's page reads; every other refusal ends with no code, as before.
-		expect(CODING_LAND_NAMES_REFUSED).toBe("CODING_LAND_NAMES_REFUSED");
-		expect(CODING_LAND_FILE_TOO_LARGE).toBe("CODING_LAND_FILE_TOO_LARGE");
 		for (const code of [
 			"CODE_HOST_NAMES_FOLDER_REFUSES",
 			"CODE_HOST_NAMES_NOT_UTF8",
@@ -716,7 +711,6 @@ describe("the coding executor over a session turn", () => {
 			return publishing[0]?.args.p_last_step;
 		};
 		// The founder's card draws its line for the checks by exactly these words (the web, part E).
-		expect(CODING_LANDING_STEP).toBe("Checking and saving the change");
 		expect(await stepOf("qorpera")).toBe("Checking and saving the change");
 		expect(await stepOf("github.com")).toBe("Publishing the draft pull request");
 	});

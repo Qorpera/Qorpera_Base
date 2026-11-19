@@ -94,6 +94,7 @@ export const APP_KITS = Object.freeze([
 	"map",
 	"ring",
 	"flow",
+	"program",
 ] as const);
 export type AppKit = (typeof APP_KITS)[number];
 

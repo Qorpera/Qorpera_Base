@@ -126,11 +126,6 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 		"packages/runtime/src/cloud-runtime-policy.ts",
 	])
 		assert.ok(names([file]).includes("hosted-db"), file);
-	// The wake bus and company context parsers fed only the deleted production review and wake bus scripts.
-	for (const file of ["packages/runtime/src/cloud-wake-bus.ts", "packages/runtime/src/cloud-native-company-context.ts"])
-		assert.ok(!names([file]).includes("hosted-db"), file);
-	// No hosted-db script reads the coding turn sample since C1c-3i removed the snapshot-v1 coding backfill script.
-	assert.ok(!names(["packages/runtime/test/fixtures/coding-turn-context-backfilled.json"]).includes("hosted-db"));
 	// The folder service's shapes script and the parsers it checks against SQL.
 	for (const file of [
 		"scripts/test-folder-service-core-shapes.mjs",

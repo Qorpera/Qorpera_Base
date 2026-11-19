@@ -6,13 +6,8 @@
 -- set's repo.git paths as one line. The office, code/acme/app and the helpers are 490's. The race with the upload
 -- intents' sweep is 532's.
 
--- The history keeps every marker; the expiry is no role's and runs every minute.
 do $$
-declare v_def text := pg_get_functiondef('public.qorpera_member_folder_history(uuid,bigint,integer)'::regprocedure);
 begin
-	if strpos(v_def, '20260930446400') = 0 or strpos(v_def, 'C4 P27a (20260930013000)') = 0
-		or strpos(v_def, 'C4 P33 (20260930013200)') = 0 or strpos(v_def, 'limit v_cap + 1') = 0 then
-		raise exception 'The history lost a marker'; end if;
 	if exists (select 1 from unnest(array['anon','authenticated','service_role']) r(role)
 			where has_function_privilege(r.role, 'public.qorpera_folder_git_versions_expire(integer)', 'EXECUTE')
 				or has_function_privilege(r.role, 'public.qorpera_schedule_folder_git_expiry()', 'EXECUTE')

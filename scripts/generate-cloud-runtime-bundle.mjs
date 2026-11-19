@@ -7,15 +7,15 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929025599_runtime_bundle_activation_v255.sql";
-const activationVersion = 255;
-const previousActivationVersion = 254;
-const previousActivationSha256 = "73401553e00450485082a7b3af00ada3b4aad05b26b37b42fdf47a4fe324ba1e";
+const activation = "supabase/migrations/20260929026199_runtime_bundle_activation_v261.sql";
+const activationVersion = 261;
+const previousActivationVersion = 260;
+const previousActivationSha256 = "a6aa04f164e14df6c7550510c923919d3173cdb7a5ddcebc51d9a18b6ca3769f";
 const activationRequires = Object.freeze([
 	[
-		"20260930799000_hire_team",
-		"#1922 (hire_team): bundle 255's hire_team is recorded by the action review, the folder review and the observation recorder, which name it only once 799000 applied; without it every team is refused (42501) and nothing is saved",
-		"position('20260930799000' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_folder_record_review(jsonb,jsonb)')), '')) > 0 and position('20260930799000' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_record_action_review(jsonb,jsonb)')), '')) > 0 and position('20260930799000' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_record_runtime_observation(uuid,jsonb)')), '')) > 0",
+		"20260930810000_claude_parallel_runs",
+		"#1906 (Claude parallel runs): bundle 261's Claude Code runs cannot renew (their box reaches the API host alone) and ask the vault for their login's newer version every 60 s; the renewal is the shared vault's, through 810000's lock, lease login and compare-and-swap, so bundle 261 must never run on a database without it",
+		"to_regprocedure('public.qorpera_claude_worker_run_cap()') is not null and to_regprocedure('public.qorpera_take_idle_claude_login_renewal(uuid,text)') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires

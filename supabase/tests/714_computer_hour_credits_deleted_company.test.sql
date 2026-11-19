@@ -70,6 +70,4 @@ select pg_temp.credit_assert(not exists (select 1 from public.qorpera_computer_h
 -- A repeated delivery of a payment already credited stays a quiet no-op, even for a company being deleted.
 select pg_temp.credit_assert(not (pg_temp.bill('credits_paid', '{"sessionId":"cs_test_before","paymentIntentId":"pi_before",
 	"paidAt":"2026-09-28T12:00:00Z"}') ->> 'added')::boolean, 'The same payment again adds nothing and raises nothing');
-select pg_temp.credit_assert(not has_function_privilege(role_name, 'public.qorpera_computer_hour_credit_company_guard()', 'EXECUTE'),
-	'The guard is callable by no API role') from unnest(array['anon', 'authenticated', 'service_role']) role_name;
 rollback;

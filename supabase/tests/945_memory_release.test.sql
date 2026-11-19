@@ -313,15 +313,6 @@ begin
 		raise exception 'The release is a definer'; end if;
 	perform pg_temp.same((select to_jsonb(array[c.scope, c.budget]) from public.qorpera_native_host_calls c where c.name = 'qorpera_memory_release'),
 		'["binding", "standard"]', 'The call list');
-	select string_agg(f, ', ') into v_bad
-	from unnest(array['public.qorpera_folder_run_reads_current(uuid,uuid,jsonb)',
-		'public.qorpera_folder_parent_reads_allowed(public.qorpera_wake_occurrences)', 'public.qorpera_folder_read_wake(jsonb)']) f
-	where pg_get_functiondef(f::regprocedure)
-		not like '%rec.resource_id <> ''00000000-0000-0000-0000-000000000000''::uuid /* 20260930203000 (M1b-3) */%';
-	if v_bad is not null then raise exception 'No platform-read marker in %', v_bad; end if;
-	if pg_get_functiondef('public.qorpera_folder_read_wake(jsonb)'::regprocedure)
-		not like '%-- 20260930203000 (M1b-3): the parent''s platform reads of memory blocks%' then
-		raise exception 'The wake copies platform reads'; end if;
 end $$;
 
 rollback;

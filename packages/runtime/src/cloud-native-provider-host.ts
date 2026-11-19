@@ -12,6 +12,7 @@ import {
 } from "@qorpera/cloud-client/native-account-refresh";
 import type { JsonValue } from "@qorpera/contracts";
 import type { CloudAgentSendInput, CloudAgentSendReceipt } from "./cloud-agent-mouth.ts";
+import { claudeStatusLoggedIn } from "./cloud-claude-login-renewal.ts";
 import { cloudControlBackoffMs, cloudControlPause, cloudControlRetryable } from "./cloud-control-errors.ts";
 import type { ModelLoginIssue, ModelLoginIssueRequest, ModelLoginRunBinding } from "./cloud-model-login-vault.ts";
 import { nativeRuntimeFailureMetadata } from "./cloud-native-failure.ts";
@@ -766,7 +767,7 @@ function collectChildOutput(child: NativeHarnessChild): {
 	};
 }
 
-export type NativeProviderUsageSignal = "usage_limit" | "rate_limited" | "provider_outage";
+export type NativeProviderUsageSignal = "usage_limit" | "rate_limited" | "provider_outage" | "sign_in_refused";
 
 /**
  * Typed usage signal from a harness failure (contract section 17). The
@@ -998,6 +999,39 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 		} catch (error) {
 			await rm(scratchRoot, { recursive: true, force: true });
 			throw error;
+		}
+	}
+
+	async claudeLoginStatus(
+		identityRoot: string,
+		signal: AbortSignal,
+	): Promise<{ readonly exitedOk: boolean; readonly loggedIn: boolean | undefined }> {
+		const root = requiredAbsolutePath(identityRoot, "Native identity root");
+		const environment = await prepareHarnessEnvironment(root);
+		const launched = await this.#loginProcess(
+			this.#claudePath,
+			["auth", "status", "--json"],
+			root,
+			environment,
+			signal,
+			{
+				harness: "claude-code",
+			},
+		);
+		const stop = (): void => {
+			void launched.close();
+		};
+		signal.addEventListener("abort", stop, { once: true });
+		try {
+			const capture = collectChildOutput(launched.child);
+			const exitedOk = await capture.completed.then(
+				() => true,
+				() => false,
+			);
+			return { exitedOk: exitedOk && !signal.aborted, loggedIn: claudeStatusLoggedIn(capture.output()) };
+		} finally {
+			signal.removeEventListener("abort", stop);
+			await launched.close();
 		}
 	}
 

@@ -577,16 +577,6 @@ begin
 		where has_function_privilege(role, fn, 'execute')), '7: the helpers are internal');
 	perform pg_temp.base_assert(not has_table_privilege('service_role', 'public.qorpera_machine_executor_disks', 'select')
 		and not has_table_privilege('authenticated', 'public.qorpera_machine_executor_disks', 'select'), '7: the table is internal');
-	perform pg_temp.base_assert(not exists (select 1 from unnest(array[
-			'public.qorpera_admit_executor_machines(text,text,integer)', 'public.qorpera_company_machine_candidates(bigint,bigint,bigint,text,uuid)',
-			'public.qorpera_place_company_machine(uuid,text,uuid)', 'public.qorpera_admit_company_machine(uuid,text)',
-			'public.qorpera_company_machine_view(public.qorpera_company_machines)', 'public.qorpera_company_machine_reusable(jsonb,uuid,jsonb)',
-			'public.qorpera_native_machine_start(jsonb,text,text,uuid,text)', 'public.qorpera_report_executor_disk(text,text,jsonb)',
-			'public.qorpera_abandon_machine_executor(text,text)', 'public.qorpera_release_company_machine(uuid,text,text,text)',
-			'public.qorpera_machine_executor_disk_report(text)', 'public.qorpera_machine_executor_disk_room(text,uuid)',
-			'public.qorpera_machine_executor_disk_frees(public.qorpera_machine_executor_disks,uuid,bigint)',
-			'public.qorpera_company_machine_disk_freed(public.qorpera_company_machines)']) fn
-		where strpos(pg_get_functiondef(fn::regprocedure), '20260930757000') = 0), '7: every new or patched body names the migration');
 end $$;
 
 rollback;

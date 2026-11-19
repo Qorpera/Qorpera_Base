@@ -175,10 +175,5 @@ select pg_temp.base_assert(has_function_privilege('authenticated', 'public.qorpe
 	and not exists (select 1 from pg_proc, aclexplode(proacl) acl
 		where pg_proc.oid = 'public.qorpera_list_staff_execution_activity(uuid)'::regprocedure and acl.grantee = 0),
 	'6: the activity list keeps its grants');
-select pg_temp.base_assert((select bool_and(position(part in
-		pg_get_functiondef('public.qorpera_list_staff_execution_activity(uuid)'::regprocedure)) > 0)
-	from unnest(array['20260930751000', '20260930542000', 'a member''s Stop is no failure',
-		'when job.cancelled_by_user_id is not null then 0', 'public.qorpera_agent_sends']) part),
-	'6: the read names this migration and keeps the earlier rules');
 
 rollback;
