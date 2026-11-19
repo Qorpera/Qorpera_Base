@@ -694,6 +694,7 @@ it.each([
 	"skill-route",
 	"fast-mode-off",
 	"tier-dropped",
+	"web-search-off",
 ])("rejects effective configuration drift before a model request: %s", async (mode) => {
 	await expect(run(mode).result).rejects.toThrow("Native boundary configuration was not applied");
 });
@@ -756,6 +757,17 @@ describe("a run on a member's ChatGPT plan (Sign in with ChatGPT)", () => {
 		await expect(run("plan-provider-on-codex").result).rejects.toThrow("configuration was not applied");
 		// A Codex login's run keeps any other provider its command sets (the real-Codex probes use one).
 		await expect(run("test-provider").result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	});
+
+	it("gives a plan run no web search, and refuses one whose Codex has it on", async () => {
+		const identityRoot = await planRoot();
+		const { result, evidence } = run("model-selection", { identityRoot });
+		await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		const recorded = JSON.parse(await readFile(evidence, "utf8"));
+		expect(recorded.configuration.web_search).toBe("disabled");
+		expect(recorded.configuration.features.standalone_web_search).toBeUndefined();
+		expect(recorded.threadParameters.config).toBeUndefined();
+		await expect(run("plan-web-search", { identityRoot }).result).rejects.toThrow("configuration was not applied");
 	});
 
 	it("starts no warm spare for a plan run in the environment fallback, whose process keeps its first token", async () => {
@@ -1661,6 +1673,88 @@ it("keeps the agent's own words, never its reasoning, with the next step of its 
 	expect(stored).not.toMatch(/PRIVATE_REASONING_CANARY|PUBLIC_REPLY_CANARY/);
 });
 
+describe("web search on a Codex login", () => {
+	it("is on for the agent's thread alone, from the provider's cached index, through Codex's own web.run", async () => {
+		const { result, evidence } = run("model-selection");
+		await result;
+		const recorded = JSON.parse(await readFile(evidence, "utf8"));
+		expect(recorded.configuration).toMatchObject({
+			web_search: "disabled",
+			features: { standalone_web_search: true },
+		});
+		expect(recorded.threadParameters.config).toEqual({ web_search: "cached" });
+		expect(CLOUD_CODEX_BOUNDARY_CONFIG).toContain("features.standalone_web_search=true");
+	});
+
+	it.each([
+		["test-provider", undefined],
+		["test-provider-search", { web_search: "cached" }],
+	])("is on through another provider only where Codex has its own web.run: %s", async (mode, config) => {
+		const { result, evidence } = run(mode);
+		await result;
+		expect(JSON.parse(await readFile(evidence, "utf8")).threadParameters.config).toEqual(config);
+	});
+
+	it("issues a search's result as one of Codex's own and keeps the search as a step of the run's work log", async () => {
+		const runId = randomUUID();
+		const log = new CloudRunLog({
+			runId,
+			conversationId: randomUUID(),
+			signal: new AbortController().signal,
+			protection: {
+				narrow: async () => ({ log: false, narrow: false }),
+				hashes: async (run, digests) =>
+					digests.map((digest) =>
+						createHmac("sha256", "web-search-test-key").update(`${run}:${digest}`).digest("hex"),
+					),
+			},
+			folder: {
+				locate: async () => ({ path: `runs/${runId}`, exists: true, missing: [], last: null, generation: 0 }),
+				read: async () => null,
+				commit: async (_key, units) => ({
+					commitId: randomUUID(),
+					seq: 1,
+					replay: false,
+					units: units.map((unit, index) => {
+						if (unit.op !== "write") throw new Error("Unexpected unit");
+						return {
+							unit: index,
+							op: unit.op,
+							path: unit.path,
+							to: null,
+							version: unit.path,
+							outcome: "saved" as const,
+							reason: null,
+							problems: [],
+						};
+					}),
+				}),
+			},
+		});
+		const { result, evidence } = run("web-search", { runLog: log });
+		await expect(result).resolves.toMatchObject({ fencedRequests: 2 });
+		const recorded = JSON.parse(await readFile(evidence, "utf8"));
+		expect(recorded.threadParameters.config).toEqual({ web_search: "cached" });
+		const [search, other] = recorded.reply.outputs.map((output: { output: string }) => JSON.parse(output.output));
+		expect(search).toMatchObject({
+			trust: "untrusted_data",
+			status: "unconfirmed",
+			provenance: { callId: "ws_call" },
+			content: { text: "SEARCH_RESULT_CANARY", truncated: false },
+		});
+		expect(other).toMatchObject({ status: "unconfirmed", provenance: { callId: "ws_other" } });
+		await log.close(new AbortController().signal);
+		expect(log.steps()).toEqual([
+			expect.objectContaining({
+				call: "ws_call",
+				tool: "web_search",
+				args: JSON.stringify({ query: "PRIVATE_QUERY_CANARY prices" }),
+				result: expect.stringContaining("SEARCH_RESULT_CANARY"),
+			}),
+		]);
+	});
+});
+
 it("clears writing and its renewal timer when composition is cancelled", async () => {
 	const abort = new AbortController();
 	const f = composing("composition-held", abort.signal);
@@ -2504,8 +2598,7 @@ describe("a picture call", () => {
 				config: { "features.image_generation": true, "features.omit_app_server_notification_media": true },
 			},
 		]);
-		// The agent's thread starts with the process's configuration alone, where the feature is off.
-		expect(recorded.mainThread).not.toHaveProperty("config");
+		expect(recorded.mainThread.config).toEqual({ web_search: "cached" });
 		expect(recorded.configuration.features.image_generation).toBe(false);
 		expect(recorded.configuration.features).not.toHaveProperty("omit_app_server_notification_media");
 		expect(recorded.turn).toEqual({
@@ -2644,6 +2737,33 @@ describe("a picture call", () => {
 		await f.endTurn();
 		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
 		expect((await f.recorded()).threads).toEqual([]);
+	});
+
+	it("makes pictures on a light run's side thread, which never starts the agent's thread", async () => {
+		const pictures = new CloudPictureChannel();
+		let made: unknown;
+		const { result, evidence, execute } = run("picture-light", {
+			tools: [],
+			pictures,
+			light: async (_ask, signal) => {
+				made = await pictures.make(apple, signal);
+			},
+		});
+		const session = await result;
+		expect(made).toEqual({ png: TINY_PNG, revisedPrompt: "a red apple", transparent: true });
+		expect(session.providerSessionId).toMatch(/^light:[0-9a-f-]{36}$/);
+		expect(execute).not.toHaveBeenCalled();
+		const recorded = JSON.parse(await readFile(evidence, "utf8"));
+		expect(recorded.mainThread ?? null).toBeNull();
+		expect(recorded.threads).toHaveLength(1);
+		expect(recorded.threads[0]).toMatchObject({
+			developerInstructions: CLOUD_PICTURE_MAKER_RULE,
+			dynamicTools: [],
+			sandbox: "read-only",
+			config: { "features.image_generation": true },
+		});
+		expect(existsSync(recorded.savedPath)).toBe(false);
+		expect(pictures.attached).toBe(false);
 	});
 
 	it("gives a run on a member's ChatGPT plan no pictures", async () => {

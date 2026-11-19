@@ -7,15 +7,15 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929026099_runtime_bundle_activation_v260.sql";
-const activationVersion = 260;
-const previousActivationVersion = 259;
-const previousActivationSha256 = "43df5e96327e5489c95be5357208fb0fe1999c0aaf56bb09d9255f63328e53fc";
+const activation = "supabase/migrations/20260929026199_runtime_bundle_activation_v261.sql";
+const activationVersion = 261;
+const previousActivationVersion = 260;
+const previousActivationSha256 = "a6aa04f164e14df6c7550510c923919d3173cdb7a5ddcebc51d9a18b6ca3769f";
 const activationRequires = Object.freeze([
 	[
-		"20260930808000_sign_in_refused_renews_now",
-		"#1958 (a refused sign-in renews at once): bundle 260's run host reports Codex's pinned unauthorized as the usage signal sign_in_refused through qorpera_record_provider_usage_signal, whose kind check and body accept it only once 808000 applied; without it the signal is refused (22023) and the login is not renewed",
-		"to_regprocedure('public.qorpera_note_model_login_pass_refused(uuid,timestamp with time zone)') is not null and position('sign_in_refused' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_record_provider_usage_signal(jsonb,text,timestamp with time zone)')), '')) > 0",
+		"20260930810000_claude_parallel_runs",
+		"#1906 (Claude parallel runs): bundle 261's Claude Code runs cannot renew (their box reaches the API host alone) and ask the vault for their login's newer version every 60 s; the renewal is the shared vault's, through 810000's lock, lease login and compare-and-swap, so bundle 261 must never run on a database without it",
+		"to_regprocedure('public.qorpera_claude_worker_run_cap()') is not null and to_regprocedure('public.qorpera_take_idle_claude_login_renewal(uuid,text)') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires

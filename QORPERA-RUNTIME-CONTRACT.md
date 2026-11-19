@@ -2616,6 +2616,29 @@ itself. What changed:
 - The usage-limit notice names the login to its own member. The member's own
   pick of another login stays as it was.
 
+2026-11-19 amendment: the member's pick takes their post waiting in a thread
+(migration 20260930813000). On 19 Nov a member posted in an agent's thread while
+its login was at its usage limit. The post waited, as the 2026-11-05 amendment
+says, and the member then chose another login on the thread's usage card. The
+pick moved only their waiting turns (20260930580000), so the post stayed on the
+used-up login until its reset, with nothing in the thread to say so. Now:
+
+- The member's own pick of a login in an agent's thread or a group chat (one
+  chat or all chats on that login) also takes the wakes of their own posts there
+  that wait at another of their logins' usage limit, while no run holds them.
+  They go on, on the picked login, at once.
+- The same limits hold as for a waiting turn: never onto or off a ChatGPT plan,
+  never from a login that may work while the member is away onto one that may
+  not, only to a login that may pay for the poster. Another member's post and
+  every other wake (follow-up work, a routine's run) stay on their login.
+- A post the pick cannot take keeps the conversation on its login while it
+  waits, as a waiting turn does: the thread names that login and its usage
+  limit, and "All N chats" on it counts the chat.
+- Each move is recorded (`qorpera_wake_payer_moves`), and the wake's identity
+  guard admits exactly that recorded move of a queued wake with no run.
+- This replaces the 2026-11-05 amendment's "one already waiting stays on its
+  login" for the member's own posts.
+
 2026-11-18 amendment: a full reading holds an account by itself (founder, 18
 November 2026: "Yes, build it"; migration 20260930807000). On 18 Nov a member
 deleted a company, and with it the only usage-limit signals of their account
@@ -7014,6 +7037,24 @@ what runs and the agent is told, always-on machines are never stopped by the ker
    two wakes that waited together could swap places in the next pass and the newer could run first.
 2. **Unchanged.** A row a pass looked at still moves behind the rows it did not look at. Rows with the same stamp run in
    the order they were made (`created_at`, then `id`).
+
+### 2026-11-16 amendment: web search on a member's Codex login
+
+> The founder, 16 November 2026: "Yes, turn it on" (web search for agents, paid by the member's own plan). It changes
+> the 2026-10-21 amendment's "web search is off" and the 2026-09-27 amendment's item 7 ("web work stays on the Company
+> Computer's browser and on connectors"). It goes live with the runtime bundle that carries it; the native Codex does not change.
+
+1. **Where.** An agent's own thread, when its run is on a member's Codex sign-in, searches the web from OpenAI's cached
+   index (`web_search="cached"`: no live fetch of a site, so a query never reaches a third party's server). The search
+   is Codex's own `web.run`, on the same sign-in, and counts toward that member's ChatGPT plan, then their credits,
+   never Qorpera. The reviewer's, the compactor's, a voice call's and a picture's threads have none, nor a run on a
+   member's ChatGPT plan through the API.
+2. **The fence keeps its meaning.** Each result reaches the model only as a function output the result fence issues
+   as one of Codex's own: an `unconfirmed` envelope of untrusted data, at most 32 KiB, under the run's live authority
+   at every request. The provider's hosted search, whose results never pass the host, is not offered; its
+   `web_search_call` item stays refused.
+3. **The record.** Each search is a `web_search` step of the run's work log, with its query and the envelope the model
+   got. Members see what was found in the agent's own words, never the steps. Every run's text names web.run beside the qorpera tools, for a run that has it.
 
 ### 2026-11-17 amendment: a burst of saves wakes a file-change routine once
 
