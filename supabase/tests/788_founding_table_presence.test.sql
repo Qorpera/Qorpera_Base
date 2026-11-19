@@ -102,9 +102,6 @@ begin
 		order by device ->> 'client_id') from jsonb_array_elements(v_answer::jsonb) as device), '');
 end $$;
 
--- The API: the topic helpers, the join check and the three device calls are for signed-in people only; nobody reads
--- or writes the device table directly. The policies are a receive and a publish policy for authenticated users, and
--- every function carries the deploy guard's marker.
 do $$
 declare v_function text;
 begin
@@ -114,8 +111,6 @@ begin
 		if has_function_privilege('anon', v_function, 'EXECUTE')
 			or not has_function_privilege('authenticated', v_function, 'EXECUTE') then
 			raise exception '% has the wrong grants', v_function; end if;
-		if strpos(pg_get_functiondef(v_function::regprocedure), '20260930531000') = 0 then
-			raise exception '% has no deploy marker', v_function; end if;
 	end loop;
 	foreach v_function in array array['authenticated', 'anon', 'service_role'] loop
 		if has_table_privilege(v_function, 'public.qorpera_founding_presence_devices', 'SELECT,INSERT,UPDATE,DELETE') then

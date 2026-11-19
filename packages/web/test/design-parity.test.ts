@@ -8,7 +8,6 @@ import { HubController } from "../src/app/views/hub.ts";
 import { NewConversationView } from "../src/app/views/new-conversation.ts";
 import { SettingsView } from "../src/app/views/settings.ts";
 import { renderRail } from "../src/app/views/shell.ts";
-import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import { projectTranscript, type TranscriptMessage } from "../src/cloud/transcript.ts";
 import type { HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { renderAuthorizationCard } from "../src/ui/authorization-card.ts";
@@ -952,69 +951,16 @@ describe("received content presentation", () => {
 	});
 });
 
-it("keeps responsibility and project pages out of the rail even when they are recorded", () => {
+it("marks the Co-Founder's home current and puts search before the add button, folding out of its button", () => {
 	const f = companyFixture();
-	const organization: HostedCompanyOrganization = {
-		schema: "qorpera.company-organization/v1",
-		profileId: profileA.profileId,
-		cofounder: { staffAgentId: staff.id, formationId: id(30) },
-		formation: {
-			formationId: id(30),
-			state: "operating",
-			status: "active",
-			revision: 1,
-			projectionStatus: "ready",
-			sourcePath: "company/formation.json",
-		},
-		responsibilities: [
-			{
-				responsibilityId: id(31),
-				slug: "quality",
-				name: "Product quality",
-				outcome: "Fewer defects",
-				status: "active",
-				accountableStaffAgentId: staff.id,
-				attentionCadence: "weekly",
-				measures: [
-					{
-						measureId: id(32),
-						key: "defects",
-						label: "Defects",
-						status: "active",
-						target: "Under 5",
-						sourcePaths: ["quality/report.md"],
-					},
-				],
-				version: 1,
-				sourcePath: "quality.json",
-			},
-		],
-		projects: [
-			{
-				projectId: id(33),
-				key: "launch",
-				name: "Launch",
-				status: "active",
-				sponsoringResponsibilityId: id(31),
-				leadStaffAgentId: staff.id,
-				roomId: id(34),
-				staff: [],
-				version: 1,
-				sourcePath: "launch.json",
-			},
-		],
-	};
-	f.company.store.set({ organization, organizationState: "ready" });
+	f.company.store.set({ staff: [{ ...staff, templateId: "co-founder" }] });
 	const { rail } = mountRail(f);
-	expect(rail.querySelector('a[data-href*="/responsibility/"], a[data-href*="/project/"]')).toBeNull();
 	expect(rail.querySelector('.rail-cofounder .cofounder-home[aria-current="page"]')?.textContent).toContain(
 		staff.displayName,
 	);
-	expect(rail.querySelector('[aria-label="Pinned agents"], [data-toggle-rail]')).toBeNull();
 	expect(rail.querySelector(".cofounder-stand .figure")).not.toBeNull();
 	expect(rail.querySelector(".cofounder-status")).toBeNull();
 	expect(rail.querySelector(".account-menu-rail .account-trigger")).not.toBeNull();
-	expect(rail.querySelector(".account-menu-rail .account-chevron")).toBeNull();
 	// Search and the add button share the top row, search first.
 	expect(rail.querySelector('.rail-toolbar > .rail-search > input[type="search"]')).not.toBeNull();
 	expect(rail.querySelector('.rail-toolbar > .rail-search + .rail-add[data-href$="/new"]')).not.toBeNull();

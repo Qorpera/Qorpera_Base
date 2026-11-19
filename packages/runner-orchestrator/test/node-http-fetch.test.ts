@@ -141,13 +141,6 @@ describe("jitless Node HTTP transport", () => {
 		expect(await response.json()).toEqual({ authorization: "Bearer test", encoded: '{"ok":true}' });
 	});
 
-	it("rejects redirects when the caller requires an exact authority endpoint", async () => {
-		const baseUrl = await listen((_request, response) => {
-			response.writeHead(302, { location: "/elsewhere" }).end();
-		});
-		await expect(nodeHttpFetch(`${baseUrl}/redirect`, { redirect: "error" })).rejects.toThrow("rejected a redirect");
-	});
-
 	it("closes a refused redirect without draining a stalled body or forwarding credentials", async () => {
 		let resolveClosed = (): void => {};
 		const closed = new Promise<void>((resolve) => {

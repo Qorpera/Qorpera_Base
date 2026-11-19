@@ -32,62 +32,43 @@ function setup() {
 	const cancel = vi.fn(async () => "cancelled" as const);
 	const lifetime = new AbortController();
 	const view = new SessionRunView({ read, cancel }, session.sessionId, lifetime.signal);
-	document.body.append(view.el);
 	view.update(staff.id, true);
 	dispose = () => view.dispose();
 	return { read, cancel, view, lifetime };
 }
 
 describe("cloud run UI", () => {
-	it("reads on opening and explicitly stops only the observed run before refreshing", async () => {
+	it("reads on opening and stops only the observed run before reading again", async () => {
 		const f = setup();
 		await settle();
 		expect(f.read).toHaveBeenCalledExactlyOnceWith(session.sessionId, staff.id, expect.any(AbortSignal));
-		expect(f.view.el.textContent).toContain("Cloud run in progress");
+		expect(f.view.stoppable).toBe(true);
 		f.read.mockResolvedValue(state(null));
-		button("Stop cloud run").click();
+		f.view.stop();
 		await settle();
 		expect(f.cancel).toHaveBeenCalledExactlyOnceWith(session.sessionId, id(90), expect.any(AbortSignal));
 		expect(f.read).toHaveBeenCalledTimes(2);
-		expect(f.view.el.textContent).toContain("No active cloud run");
+		expect(f.view.stoppable).toBe(false);
 	});
 
-	it("blocks cancellation replay after a lost response until status is read again", async () => {
+	it("blocks a stop replay after a lost response until the status is read again", async () => {
 		const f = setup();
 		await settle();
-		const oldStop = button("Stop cloud run");
 		f.cancel.mockRejectedValueOnce(new Error("lost response"));
-		oldStop.click();
+		f.view.stop();
 		await settle();
-		expect(f.view.el.textContent).toContain("Stop could not be confirmed");
-		oldStop.click();
+		expect(f.view.stoppable).toBe(false);
+		f.view.stop();
 		f.view.messageSent();
 		await vi.advanceTimersByTimeAsync(20_000);
 		expect(f.cancel).toHaveBeenCalledTimes(1);
 		expect(f.read).toHaveBeenCalledTimes(1);
 		f.read.mockResolvedValue(state(id(91)));
-		button("Refresh run status").click();
-		await settle();
-		oldStop.click();
-		expect(f.cancel).toHaveBeenCalledTimes(1);
-		button("Stop cloud run").click();
+		await f.view.refresh();
+		expect(f.view.stoppable).toBe(true);
+		f.view.stop();
 		await settle();
 		expect(f.cancel).toHaveBeenLastCalledWith(session.sessionId, id(91), expect.any(AbortSignal));
-	});
-
-	it("never lets an old rendered button select a newer run", async () => {
-		const f = setup();
-		await settle();
-		const oldStop = button("Stop cloud run");
-		f.read.mockResolvedValue(state(id(91)));
-		button("Refresh run status").click();
-		oldStop.click();
-		await settle();
-		oldStop.click();
-		expect(f.cancel).not.toHaveBeenCalled();
-		button("Stop cloud run").click();
-		await settle();
-		expect(f.cancel).toHaveBeenCalledExactlyOnceWith(session.sessionId, id(91), expect.any(AbortSignal));
 	});
 
 	it("reads on reconnection and reopening without mutating runtime state", async () => {
@@ -128,17 +109,16 @@ describe("cloud run UI", () => {
 		await settle();
 		const pending = deferred<CloudSessionRunState>();
 		f.read.mockReturnValueOnce(pending.promise);
-		button("Refresh run status").click();
-		f.view.update(undefined, false);
+		void f.view.refresh();
+		f.view.update(undefined, true);
 		pending.resolve(state());
 		await settle();
-		expect(f.view.el.hidden).toBe(true);
-		expect(document.querySelector('[aria-label="Stop cloud run"]')).toBeNull();
+		expect(f.view.stoppable).toBe(false);
 		f.read.mockResolvedValue({ ...state(null), staffAgentId: id(99) });
-		f.view.update(id(99), false);
+		f.view.update(id(99), true);
 		await settle();
 		expect(f.read).toHaveBeenLastCalledWith(session.sessionId, id(99), expect.any(AbortSignal));
-		expect(f.view.el.textContent).toContain("No active cloud run");
+		expect(f.view.stoppable).toBe(false);
 	});
 
 	it("aborts pending cancellation locally on disposal without resubmitting it", async () => {
@@ -146,7 +126,7 @@ describe("cloud run UI", () => {
 		await settle();
 		const pending = deferred<"cancelled">();
 		f.cancel.mockReturnValueOnce(pending.promise);
-		button("Stop cloud run").click();
+		f.view.stop();
 		const signal = vi.mocked(f.cancel).mock.calls[0] as unknown as [string, string, AbortSignal];
 		f.lifetime.abort();
 		expect(signal[2].aborted).toBe(true);
@@ -154,7 +134,7 @@ describe("cloud run UI", () => {
 		await settle();
 		expect(f.cancel).toHaveBeenCalledTimes(1);
 		expect(f.read).toHaveBeenCalledTimes(1);
-		expect(f.view.el.textContent).toBe("");
+		expect(f.view.stoppable).toBe(false);
 	});
 
 	it("conversation submission refreshes cloud state without using presence as run status", async () => {
@@ -179,7 +159,6 @@ describe("cloud run UI", () => {
 		await settle();
 		expect(sendMessage).toHaveBeenCalledExactlyOnceWith(session.sessionId, "Hello", expect.any(AbortSignal));
 		expect(read).toHaveBeenCalledTimes(2);
-		expect(view.el.textContent).not.toContain("cloud run");
 		expect(view.el.querySelector(".thread-activity")).toBeNull();
 		view.dispose();
 		await vi.advanceTimersByTimeAsync(20_000);

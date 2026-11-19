@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
@@ -564,13 +564,6 @@ describe("the coding pill above the composer", () => {
 	// jsdom lays nothing out, so the stylesheet's rules are what is pinned here (checked in headless Chrome at 600, 680
 	// and 1200px for PR #1557).
 	const conversation = readFileSync(resolve("src/styles/conversation.css"), "utf8");
-
-	it("has its own line: no wall shares it any more (Jonas, 14 Nov 2026)", () => {
-		expect(conversation).not.toContain("agent-wall");
-		expect(conversation).not.toContain("@container thread-conversation");
-		expect(readFileSync(resolve("src/styles/app.css"), "utf8")).not.toContain("agent-wall");
-		expect(existsSync(resolve("src/styles/agent-wall.css"))).toBe(false);
-	});
 
 	it("lays the thread's foot over the messages, with everything its bands hold taking the pointer", () => {
 		expect(conversation).toMatch(/\.messages \{[^}]*padding: 16px 16px calc\(40px \+ var\(--thread-foot, 0px\)\);/);

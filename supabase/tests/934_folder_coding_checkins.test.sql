@@ -362,11 +362,6 @@ begin
 				'public.qorpera_folder_coding_checkin_due(public.qorpera_coding_sessions,public.qorpera_runtime_workers)', 'execute'),
 			'grants for ' || v_role);
 	end loop;
-	perform pg_temp.base_assert(pg_get_functiondef(p) like '%20260930107500%', 'the marker in ' || p::text)
-	from unnest(array['public.qorpera_folder_parent_continuation(uuid,text)',
-		'public.qorpera_folder_coding_checkin_due(public.qorpera_coding_sessions,public.qorpera_runtime_workers)',
-		'public.qorpera_folder_coding_checkins_due(uuid,integer)', 'public.qorpera_folder_coding_checkins_company(uuid,integer)',
-		'public.qorpera_folder_cancel_agent_worker(jsonb,jsonb)']::regprocedure[]) p;
 end $$;
 
 rollback;

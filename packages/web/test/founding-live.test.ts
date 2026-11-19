@@ -361,7 +361,7 @@ describe("live presence at the founding table", () => {
 		await vi.advanceTimersByTimeAsync(10_000);
 		expect(handle.sendLive).toHaveBeenCalledTimes(1);
 		// The name goes out the same way.
-		const name = container.querySelector<HTMLInputElement>("input.founding-name")!;
+		const name = container.querySelector<HTMLInputElement>("input#foundingName")!;
 		name.focus();
 		expect(handle.sendLive).toHaveBeenLastCalledWith("name", name.value, name.value.length, false, false);
 	});

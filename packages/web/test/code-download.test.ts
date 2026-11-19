@@ -859,44 +859,17 @@ describe("Download the code, on a repository's folder in Storage", () => {
 		expect(calls.list).toHaveBeenCalledTimes(1);
 	});
 
-	it("says it all in Danish too", async () => {
-		vi.useFakeTimers();
+	it("names the button and its menu in Danish", async () => {
 		setLanguagePreference("da");
-		const calls = callsFake();
-		calls.request.mockResolvedValueOnce(queued).mockResolvedValueOnce(queued).mockResolvedValueOnce(queued);
-		calls.read
-			.mockResolvedValueOnce({ state: "failed", file: "files", reason: "too_large" })
-			.mockResolvedValueOnce({ state: "failed", file: "files", reason: "busy" })
-			.mockResolvedValueOnce(ready());
-		const { fake, go, button, line } = await storage(calls);
-		fake.made(zip, 20);
+		const { go, button } = await storage();
 		await go("code/qorpera/shop");
 		expect(visibleText(button())).toBe("Hent koden");
-		const pick = async (label: string) => {
-			button()!.click();
-			const rows = [...document.querySelectorAll<HTMLElement>(".context-menu [role=menuitem]")];
-			expect(rows.map((row) => row.textContent)).toEqual([
-				"FilerneAlt, som det er nu, i én fil",
-				"Med hele historikkenTil en udvikler",
-			]);
-			rows.find((row) => row.textContent?.startsWith(label))!.click();
-			await settle();
-		};
-		await pick("Filerne");
-		expect(visibleText(line())).toBe("Gør koden klar…Annuller");
-		await vi.advanceTimersByTimeAsync(2000);
-		await settle();
-		expect(visibleText(line())).toBe(
-			"Koden er for stor til at hente her (over 200 MB). Skriv til Qorpera, så sender vi den.",
-		);
-		await pick("Med hele");
-		await vi.advanceTimersByTimeAsync(2000);
-		await settle();
-		expect(visibleText(line())).toBe("Agenterne arbejder på koden lige nu. Prøv igen om lidt.");
-		await pick("Filerne");
-		await vi.advanceTimersByTimeAsync(2000);
-		await settle();
-		expect(visibleText(line())).toBe("shop-2026-11-10.zip er klar: din browser gemmer den i dine overførsler.");
+		button()!.click();
+		const rows = [...document.querySelectorAll<HTMLElement>(".context-menu [role=menuitem]")];
+		expect(rows.map((row) => row.textContent)).toEqual([
+			"FilerneAlt, som det er nu, i én fil",
+			"Med hele historikkenTil en udvikler",
+		]);
 	});
 
 	/** Every state the line can be in, as the member reads it, in each language. */

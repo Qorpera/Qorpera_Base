@@ -96,7 +96,7 @@ update public.qorpera_mail_settings set domain = 'inbox.example.test';
 select dblink_exec('fence_one', 'begin');
 select dblink_exec('fence_one', $q$update public.qorpera_mail_settings set domain = 'mail.example.test'$q$);
 select dblink_send_query('fence_two', format('select public.qorpera_create_company_mailbox(%L, %L, %L, %L)::text',
-	'64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', 'support', 'Customer support.'));
+	'64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', 'support.base', 'Customer support.'));
 do $$
 begin
 	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'R3: the creation does not wait for the new domain'; end if;
@@ -112,11 +112,38 @@ begin
 	if v_outcome <> 'ok' then raise exception 'R3: the creation: %', v_outcome; end if;
 	c := pg_temp.claim();
 	if c ->> 'subjectKind' is distinct from 'mailbox' or c ->> 'present' <> 'true'
-		or c -> 'settings' ->> 'address' is distinct from 'support@mail.example.test' then
+		or c -> 'settings' ->> 'address' is distinct from 'support.base@mail.example.test' then
 		raise exception 'R3: the new mailbox''s claim shows the new domain: %', c; end if;
 	perform public.qorpera_finish_connection_file('91900000-0000-4000-8000-00000000000a', (c ->> 'secretId')::uuid,
 		(c ->> 'generation')::bigint, null, 'mailbox');
 end $$;
+select dblink_exec('fence_one', $q$set request.jwt.claims = '{"role":"authenticated","sub":"64800000-0000-4000-8000-000000000001"}'$q$);
+select dblink_exec('fence_two', $q$set request.jwt.claims = '{"role":"authenticated","sub":"64800000-0000-4000-8000-000000000003"}'$q$);
+select dblink_exec('fence_one', 'begin');
+select x from dblink('fence_one', format('select public.qorpera_create_company_mailbox(%L, %L, %L, %L)::text',
+	'64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', 'a.race', 'Race for a handle.')) as t(x text)
+\g /dev/null
+select dblink_send_query('fence_two', format('select public.qorpera_create_company_mailbox(%L, %L, %L, %L)::text',
+	'64800000-0000-4000-8000-000000000011', '64800000-0000-4000-8000-000000000021', 'b.race', 'Race for a handle.'));
+do $$
+begin
+	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'R4: the second claim does not wait for the first'; end if;
+end $$;
+select dblink_exec('fence_one', 'commit');
+do $$
+declare v_outcome text;
+begin
+	if not pg_temp.finishes_unblocked('fence_two', 'fence_one') then raise exception 'R4: the second claim did not end'; end if;
+	v_outcome := pg_temp.outcome('fence_two');
+	if v_outcome is distinct from '23505 This address is taken' then raise exception 'R4: the second claim: %', v_outcome; end if;
+	if (select profile_id from public.qorpera_company_mail_handles where handle = 'race') is distinct from
+			'64800000-0000-4000-8000-000000000010'
+		or exists (select 1 from public.qorpera_company_mail_handles where profile_id = '64800000-0000-4000-8000-000000000011')
+		or exists (select 1 from public.qorpera_company_mailboxes where local_part = 'b.race')
+		or not exists (select 1 from public.qorpera_company_mailboxes where local_part = 'a.race' and removed_at is null) then
+		raise exception 'R4: the first claim keeps the handle and the second leaves nothing'; end if;
+end $$;
+select dblink_exec(name, $q$set request.jwt.claims = '{"role":"service_role"}'$q$) from unnest(array['fence_one','fence_two']) name;
 update public.qorpera_mail_settings set domain = nullif(current_setting('qorpera_test.domain'), '');
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;

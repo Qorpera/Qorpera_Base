@@ -7,30 +7,15 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929025399_runtime_bundle_activation_v253.sql";
-const activationVersion = 253;
-const previousActivationVersion = 252;
-const previousActivationSha256 = "ac0e54611d0dbf9ca095972482ebe4ed36ff93c428f019e5a29a513040ceb206";
+const activation = "supabase/migrations/20260929025999_runtime_bundle_activation_v259.sql";
+const activationVersion = 259;
+const previousActivationVersion = 258;
+const previousActivationSha256 = "f2741acd0a00d6faf6fa9b9911675088e146fb566dcb99247c7de97187efe321";
 const activationRequires = Object.freeze([
 	[
-		"20260930786000_claude_worker_runs_on_shared_hosts",
-		"#1880 (Claude Code workers never on node 1): a Claude Code worker's run is claimed only by a shared execution host; it applies before 789000 opens the home to every company, so no new Claude Code worker meets node 1",
-		"coalesce(position('qorpera_execution_host_principals' in pg_get_functiondef(to_regprocedure('public.qorpera_runtime_claim_turn(uuid,public.qorpera_runner_jobs,public.qorpera_execution_runs)'))) > 0, false)",
-	],
-	[
-		"20260930787000_claude_first_for_workers",
-		"#1882 (Claude first for coding and design work): bundle 253 calls qorpera_claude_worker_fall_back through the native host, and a plain worker's harness is resolved by the dispatch",
-		"to_regprocedure('public.qorpera_claude_worker_fall_back(jsonb,text,jsonb)') is not null",
-	],
-	[
-		"20260930788000_gpt_extra_high_effort",
-		"#1889 (Extra high on GPT): bundle 253 declares modelPolicy.threadEfforts, which an older kernel's manifest check refuses; 788000 makes the check take it and lets a member's turn run at xhigh",
-		"to_regprocedure('public.qorpera_model_policy_thread_efforts(jsonb)') is not null",
-	],
-	[
-		"20260930789000_home_every_company",
-		"#1895 (the agent's home for every company): the setting every_company, on where the platform switch is on; it rides only with 786000",
-		"exists (select 1 from pg_catalog.pg_attribute where attrelid = to_regclass('public.qorpera_home_settings') and attname = 'every_company' and not attisdropped)",
+		"20260930804000_several_claude_logins",
+		"#1947 (several Claude logins): bundle 259's run host records which limit refused a Claude Code run (limitType, Claude Code's rateLimitType) next to limitResetAt; qorpera_claude_usage_valid accepts that key only once 804000 applied, and without it the run's usage is refused and not recorded",
+		"position('limitType' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_claude_usage_valid(jsonb)')), '')) > 0 and to_regprocedure('public.qorpera_use_claude_login(uuid)') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires

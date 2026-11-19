@@ -17,7 +17,7 @@ import {
 } from "@qorpera/runtime/cloud-picture-channel";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { folderWriterFixture, sha } from "./fixtures/folder-writer-fixture.ts";
-import { pngChunk, pngFile, pngHeader, pngRows } from "./fixtures/png-fixture.ts";
+import { pngFile, pngHeader, pngRows } from "./fixtures/png-fixture.ts";
 
 const runs: CloudNativeToolRun[] = [];
 afterEach(() => {
@@ -416,84 +416,17 @@ it("notes a picture among the company's pages again on a repeat, when the first 
 describe("a picture in an app", () => {
 	const app = (name: string, owner: string) => `name = "${name}"\nowner = "${owner}"\nposted = false\n`;
 
-	it("is refused before it is made when the app has no room, as save_app counts it", async () => {
+	it("goes into an app whatever it holds already: any number of files, any size", async () => {
 		const MIB = 1024 * 1024;
-		const f = await fixture({ folders: ["apps/full/pictures", "apps/big/pictures", "apps/tight/pictures"] });
-		const own = f.identity.staffAgentId.toLowerCase();
-		for (const name of ["full", "big", "tight"]) f.seed(`apps/${name}/app.toml`, app(name, own));
-		// 64 files already: one more is past save_app's bound.
-		for (let n = 0; n < 64; n++) f.seed(`apps/full/icon-${n}.svg`, "<svg/>");
-		await refuses(f.call(request({ path: "apps/full/pictures/mug.png" })), "APP_TOO_LARGE: nothing was made");
-		// 46 MiB of pictures already: less than a picture's room is left of 48 MiB.
-		f.seed("apps/big/pictures/a.png", new Uint8Array(46 * MIB), "image/png");
-		await refuses(f.call(request({ path: "apps/big/pictures/mug.png" })), "APP_TOO_LARGE: nothing was made");
-		expect(f.made).not.toHaveBeenCalled();
-		// The picture a call replaces does not count: the same path has its room.
-		const replaced = await f.call(
-			request({
-				operationKey: "a-2",
-				path: "apps/big/pictures/a.png",
-				expectedVersion: f.files.get("apps/big/pictures/a.png")?.version as string,
-			}),
-		);
-		expect(answer(replaced.content)).toMatchObject({ state: "applied" });
+		const f = await fixture({ folders: ["apps/full/pictures"] });
+		f.seed("apps/full/app.toml", app("full", f.identity.staffAgentId.toLowerCase()));
+		for (let n = 0; n < 250; n++) f.seed(`apps/full/icon-${n}.svg`, "<svg/>");
+		f.seed("apps/full/pictures/a.png", new Uint8Array(60 * MIB), "image/png");
+		const saved = await f.call(request({ path: "apps/full/pictures/mug.png" }));
+		expect(answer(saved.content)).toMatchObject({ state: "applied" });
 		expect(f.made).toHaveBeenCalledOnce();
 		expect(f.commits).toHaveLength(1);
 	});
-
-	it("is refused after it is made, and not saved, when it is larger than the room the app has left", async () => {
-		const MIB = 1024 * 1024;
-		// A PNG of 6 MiB: one pixel, and an ancillary chunk a reader skips.
-		const large = pngFile(pngHeader(1, 1, 8, 2), pngRows([[255, 0, 0]]), pngChunk("tEXt", Buffer.alloc(6 * MIB)));
-		const f = await fixture({ folders: ["apps/tight/pictures"] }, {}, async () => ({ png: large }));
-		f.seed("apps/tight/app.toml", app("tight", f.identity.staffAgentId.toLowerCase()));
-		f.seed("apps/tight/pictures/a.png", new Uint8Array(43 * MIB), "image/png");
-		await refuses(
-			f.call(request({ path: "apps/tight/pictures/mug.png" })),
-			`APP_TOO_LARGE: the picture was made but not saved; the app tight has no room for it now, as it changed while the picture was made or was full already: at ${large.byteLength} bytes it is more than the ${5 * MIB} bytes left`,
-		);
-		expect(f.made).toHaveBeenCalledOnce();
-		expect(f.commits).toEqual([]);
-	});
-
-	it.each<[string, number, string, string]>([
-		// 63 files when the call starts: room for one more.
-		["its 64th file", 60, "notes.md", "one more file would pass the 64 an app holds"],
-		// 36 MiB of pictures when the call starts: room for a picture, until another 12 MiB fills the 48.
-		[
-			"a picture that fills it",
-			10,
-			"pictures/d.png",
-			`at ${picture().byteLength} bytes it is more than the 0 bytes left for pictures and videos`,
-		],
-	])(
-		"is refused, and not saved, when another run adds %s while the picture is made",
-		async (_what, icons, added, words) => {
-			const MIB = 1024 * 1024;
-			let meanwhile: () => void = () => undefined;
-			const f = await fixture({ folders: ["apps/busy/pictures", "pictures"] }, {}, async (prompt) => {
-				meanwhile();
-				return { png: picture(), revisedPrompt: prompt };
-			});
-			f.seed("apps/busy/app.toml", app("busy", f.identity.staffAgentId.toLowerCase()));
-			for (let n = 0; n < icons; n++) f.seed(`apps/busy/icon-${n}.svg`, "<svg/>");
-			for (const name of ["a", "b", "c"])
-				f.seed(`apps/busy/pictures/${name}.png`, new Uint8Array(12 * MIB), "image/png");
-			meanwhile = () =>
-				added.endsWith(".png")
-					? f.seed(`apps/busy/${added}`, new Uint8Array(12 * MIB), "image/png")
-					: f.seed(`apps/busy/${added}`, "# Notes");
-			await refuses(
-				f.call(request({ path: "apps/busy/pictures/mug.png" })),
-				`APP_TOO_LARGE: the picture was made but not saved; the app busy has no room for it now, as it changed while the picture was made or was full already: ${words}.`,
-			);
-			expect(f.made).toHaveBeenCalledOnce();
-			expect(f.commits).toEqual([]);
-			// The refusal began no receipt: the run's next change is saved.
-			expect(answer((await f.call(request({ operationKey: "mug-2" }))).content)).toMatchObject({ state: "applied" });
-			expect(f.commits).toHaveLength(1);
-		},
-	);
 
 	it("goes into its own app as a write does, and into another's app only after the review as delegation", async () => {
 		const f = await fixture({ folders: ["apps/mine/pictures", "apps/theirs/pictures"] });

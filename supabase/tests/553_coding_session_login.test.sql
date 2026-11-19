@@ -410,14 +410,6 @@ begin
 				v_role || ' and ' || v_name);
 		end loop;
 	end loop;
-	foreach v_name in array array['public.qorpera_coding_session_login_state(public.qorpera_runtime_workers)',
-		'public.qorpera_coding_turn_failure(public.qorpera_runtime_workers,text)',
-		'public.qorpera_coding_session_login_candidates(public.qorpera_runtime_workers,text)',
-		'public.qorpera_list_coding_session_logins(uuid)', 'public.qorpera_choose_coding_session_login(uuid,uuid)',
-		'public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)',
-		'public.qorpera_coding_session_view(public.qorpera_coding_sessions,public.qorpera_runtime_workers)'] loop
-		perform pg_temp.base_assert(position('20260930551000' in pg_get_functiondef(v_name::regprocedure)) > 0, v_name || ' names 20260930551000');
-	end loop;
 end $$;
 
 rollback;

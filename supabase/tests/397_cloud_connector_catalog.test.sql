@@ -87,10 +87,6 @@ begin
 		or has_function_privilege('anon','public.qorpera_grant_cloud_connector(uuid,uuid,uuid,uuid[])','EXECUTE') then
 		raise exception 'Connector grant privileges differ';
 	end if;
-	-- Bundle v88: company connections are always shared; Stop sharing is gone.
-	if to_regprocedure('public.qorpera_unshare_cloud_connector(uuid,uuid,uuid)') is not null then
-		raise exception 'Stop sharing is still callable';
-	end if;
 end
 $$;
 

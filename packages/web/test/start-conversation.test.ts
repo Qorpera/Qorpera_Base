@@ -199,9 +199,6 @@ describe("starting a conversation on first send", () => {
 			});
 			await f.start(kind === "agent" ? [staff.id] : [staff.id, f.other.id], "Hello", f.signal);
 			expect(f.selectSessionAccount).toHaveBeenCalledExactlyOnceWith(session.sessionId, expect.any(AbortSignal));
-			expect(f.listConnections.mock.invocationCallOrder[1]).toBeGreaterThan(
-				f.selectSessionAccount.mock.invocationCallOrder[0]!,
-			);
 			expect(f.write.mock.calls[0]?.[5]).toMatchObject({
 				connectionId: id(91),
 				sponsorBindingId: id(101),

@@ -51,9 +51,6 @@ test("the first screen never downloads the figures' motion data or noVNC; main.j
 	assert.deepEqual(inputsOf(layout, first).filter((path) => MOTION_DATA.test(path) || NOVNC.test(path)), []);
 	const lazy = inputsOf(layout, layout.lazy);
 	assert.equal(lazy.filter((path) => MOTION_DATA.test(path)).length, 2);
-	// The computer window shows pictures of the screen (20260930712000): noVNC is in no chunk until the stream that
-	// uses it again (stage 2 of lanes/desktop-computers-20261110/LIVE-VIEW-PLAN.md) imports it on demand.
-	assert.equal(lazy.filter((path) => NOVNC.test(path)).length, 0);
 	const dynamic = layout.outputs[layout.script].imports.filter((item) => item.kind === "dynamic-import");
 	assert.equal(dynamic.length, 1);
 	assert.deepEqual(

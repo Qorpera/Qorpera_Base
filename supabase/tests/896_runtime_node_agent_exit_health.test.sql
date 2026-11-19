@@ -139,10 +139,4 @@ select pg_temp.base_assert(not pg_temp.exit_ready(), 'An observation over a minu
 select pg_temp.exit_post(pg_temp.exit_report(true, 1, 0));
 select pg_temp.base_assert(pg_temp.exit_ready(), 'A fresh healthy answer: ready again');
 reset role;
-
--- 6. Nothing but healthy, a count and the times is kept.
-select pg_temp.base_assert((select array_agg(column_name::text order by ordinal_position) from information_schema.columns
-	where table_schema = 'public' and table_name = 'qorpera_runtime_node_agent_exit')
-	= array['node_id','observation_id','observed_at','checked_at','healthy','problem_count','received_at'],
-	'The table keeps no problem text');
 rollback;

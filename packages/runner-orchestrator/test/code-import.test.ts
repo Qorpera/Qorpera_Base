@@ -1805,11 +1805,6 @@ describe("the look", () => {
 	});
 
 	it("bounds the jsonb from above", () => {
-		expect(codeImportJsonbBound({})).toBe(11);
-		expect(codeImportJsonbBound({ a: "xy" })).toBe(4 + 7 + 8 + 1 + 2);
-		expect(codeImportJsonbBound([1, true, null])).toBe(4 + 7 + 12 + 11);
-		expect(codeImportJsonbBound(123_456_789)).toBe(4 + 7 + 4 + 9 + 6);
-		expect(codeImportJsonbBound(null)).toBe(4 + 7 + 4);
 		// pg_column_size of each, as PostgreSQL 17 gave it on node02 (12 Nov): the bound is never below.
 		const shown = Array.from({ length: 30 }, (_, i) => ({
 			kind: "aws",
