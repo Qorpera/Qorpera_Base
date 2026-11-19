@@ -7,15 +7,15 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929025999_runtime_bundle_activation_v259.sql";
-const activationVersion = 259;
-const previousActivationVersion = 258;
-const previousActivationSha256 = "f2741acd0a00d6faf6fa9b9911675088e146fb566dcb99247c7de97187efe321";
+const activation = "supabase/migrations/20260929026099_runtime_bundle_activation_v260.sql";
+const activationVersion = 260;
+const previousActivationVersion = 259;
+const previousActivationSha256 = "43df5e96327e5489c95be5357208fb0fe1999c0aaf56bb09d9255f63328e53fc";
 const activationRequires = Object.freeze([
 	[
-		"20260930804000_several_claude_logins",
-		"#1947 (several Claude logins): bundle 259's run host records which limit refused a Claude Code run (limitType, Claude Code's rateLimitType) next to limitResetAt; qorpera_claude_usage_valid accepts that key only once 804000 applied, and without it the run's usage is refused and not recorded",
-		"position('limitType' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_claude_usage_valid(jsonb)')), '')) > 0 and to_regprocedure('public.qorpera_use_claude_login(uuid)') is not null",
+		"20260930808000_sign_in_refused_renews_now",
+		"#1958 (a refused sign-in renews at once): bundle 260's run host reports Codex's pinned unauthorized as the usage signal sign_in_refused through qorpera_record_provider_usage_signal, whose kind check and body accept it only once 808000 applied; without it the signal is refused (22023) and the login is not renewed",
+		"to_regprocedure('public.qorpera_note_model_login_pass_refused(uuid,timestamp with time zone)') is not null and position('sign_in_refused' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_record_provider_usage_signal(jsonb,text,timestamp with time zone)')), '')) > 0",
 	],
 ]);
 const activationRequiresSql = activationRequires
