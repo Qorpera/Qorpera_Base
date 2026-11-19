@@ -2,15 +2,15 @@ set local lock_timeout = '3s';
 
 do $$ begin
 	if to_regprocedure('public.qorpera_claude_worker_run_facts(jsonb)') is null then
-		raise exception '20260930802000 needs Claude Code workers on the home (20260930772000)'; end if;
+		raise exception '20260930812000 needs Claude Code workers on the home (20260930772000)'; end if;
 	if position('ownCodexLogin' in pg_get_functiondef('public.qorpera_claude_worker_run_facts(jsonb)'::regprocedure)) > 0 then
-		raise exception '20260930802000 is already applied'; end if;
+		raise exception '20260930812000 is already applied'; end if;
 end $$;
 
 create or replace function public.qorpera_claude_worker_run_facts(p_binding jsonb)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_run public.qorpera_execution_runs%rowtype; v_worker public.qorpera_runtime_workers%rowtype; v_paths jsonb;
-	v_marker constant text := '20260930802000';
+	v_marker constant text := '20260930812000';
 begin
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Claude Code worker facts are the runtime''s' using errcode = '42501'; end if;

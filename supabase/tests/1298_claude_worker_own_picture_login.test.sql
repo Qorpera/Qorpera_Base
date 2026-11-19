@@ -33,6 +33,6 @@ begin
 	if has_function_privilege('authenticated', 'public.qorpera_claude_worker_run_facts(jsonb)', 'execute')
 		or not has_function_privilege('service_role', 'public.qorpera_claude_worker_run_facts(jsonb)', 'execute') then
 		raise exception '5: only the runtime reads a worker run''s facts'; end if;
-	if position('20260930802000' in pg_get_functiondef('public.qorpera_claude_worker_run_facts(jsonb)'::regprocedure)) = 0 then
-		raise exception '5: the facts do not name 20260930802000'; end if;
+	if position('20260930812000' in pg_get_functiondef('public.qorpera_claude_worker_run_facts(jsonb)'::regprocedure)) = 0 then
+		raise exception '5: the facts do not name 20260930812000'; end if;
 end $$;

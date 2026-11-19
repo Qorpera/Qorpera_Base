@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 - A Claude Code worker can make a picture (the founder, 17 Nov 2026, "Yes, all three";
-  lanes/agent-box-20261113/CLAUDE-PICTURE-COMMAND-BRIEF.md; the runtime bundle and migration `20260930802000` (SQL test
+  lanes/agent-box-20261113/CLAUDE-PICTURE-COMMAND-BRIEF.md; the runtime bundle and migration `20260930812000` (SQL test
   1298), no runner or machine image). `picture <file.png under /company> <what to draw>` run with its Bash tool is answered by the run host's home
   shell and never runs on the machine: the run's review gate checks it as Codex's `make_picture` (internal; delegation
   into another agent's or a member's app), the member's own ChatGPT picture lane makes it (a light Codex session of the
