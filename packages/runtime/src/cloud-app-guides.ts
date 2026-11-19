@@ -127,6 +127,9 @@ const EXPLAINER =
  * it, then gives the kit's own (packages/runtime/kits/<kit>/KIT.md, which reaches a run in the same bundle as its
  * engine).
  */
+const PICTURES =
+	"Save a photo, a render or a screenshot for an app as .webp, not .png: on a machine, cwebp -q 90 shot.png -o shot.webp, or Pillow's save with quality=90. Every member downloads each picture the app shows, and a 1600 px render of about 1 MB as a PNG is about a tenth of that as WebP. Keep .png for a small flat graphic that must stay exact to the pixel, and .svg for what you draw.";
+
 const DATA_KITS_SHARE =
 	"For a data kit (model, board, path, object, curve, stack, shelf, map, ring, flow) you write one file among files, the kit's data (<kit>.json, such as model.json), and save_app writes engine.js and index.html: never write or edit those two. A picture or video the data names shows only when it is in the app's folder as you save: write it there first (on a machine, under /company/apps/<name>/), or save the data again after. Change the data with save_app, not with company_write, so the page is written again with it. The page speaks your data's language: give lang, and the kit's words in that language. Every kit's words may hold tell, the label of the button with which a member sends you a note about the thing they opened, naming you (\"Ask Luna\"), and told, what it says once the note went; a thing a member opens (a board's item, a path lane's step, an object's part, a model's input, a shelf's thing) may hold ask, a draft for that note (≤40 characters). Such a note reaches you as the member's message, under a first line that names the app and the thing. Every text in the data is a label or a note of one line, and the page cuts what is longer. Every fact comes from the company's files; what nobody knows yet is marked unknown, which the page draws as open: never guess it and never write about it. Look at the app on a machine before you show it, as for any app: its index.html opens there with the data you saved. The answer's look names the pictures the folder lacks and the texts the page cuts.";
 
@@ -144,7 +147,7 @@ Then tell the member in one line what they can try, with a link to the app, such
 
 /** One guide's text, as app_guide answers it: the whole of what an agent knows of that part. */
 export function appGuide(about: AppGuide): string {
-	if (isDataKit(about)) return `${DATA_KITS_SHARE}\n\n${KIT_GUIDE[about].trim()}`;
+	if (isDataKit(about)) return `${DATA_KITS_SHARE}\n\n${PICTURES}\n\n${KIT_GUIDE[about].trim()}`;
 	switch (about) {
 		case "look":
 			return `# The look of an app\n\n${LOOK}`;
@@ -153,7 +156,7 @@ export function appGuide(about: AppGuide): string {
 		case "program":
 			return `# Program kit: a program people download\n\n${PROGRAM}`;
 		case "style":
-			return `# The base style of a page written by hand\n\n${STYLE}`;
+			return `# The base style of a page written by hand\n\n${STYLE}\n\n${PICTURES}`;
 		case "reads":
 			return `# How a page reads the company's live data\n\n${READS}`;
 		case "writes":
