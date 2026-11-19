@@ -148,9 +148,55 @@ describe("a member who has no password yet", () => {
 	it("asks the name first, then the password", async () => {
 		const f = fixture();
 		f.auth(emailUser({}));
+		Object.assign(f.cloud.supabase.auth, {
+			updateUser: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+				data: { user: emailUser({ ...data }) },
+				error: null,
+			})),
+		});
 		dispose = mountApplication(root, f.cloud, f.api);
 		await drawn();
 		expect(root.querySelector('.auth[data-step="name"]')).not.toBeNull();
+		type("accountNameAsk", "Mette Hansen");
+		root.querySelector<HTMLFormElement>("form.auth-form")!.requestSubmit();
+		await drawn();
+		expect(root.querySelector('.auth[data-step="password"]')).not.toBeNull();
+	});
+
+	it("takes the password the account already has as done", async () => {
+		const f = fixture();
+		f.auth(emailUser({ full_name: "Mette Hansen" }));
+		const updateUser = vi.fn(async (attributes: { password?: string; data: Record<string, unknown> }) =>
+			attributes.password
+				? { data: { user: null }, error: new AuthError("raw", 422, "same_password") }
+				: { data: { user: emailUser({ full_name: "Mette Hansen", ...attributes.data }) }, error: null },
+		);
+		Object.assign(f.cloud.supabase.auth, { updateUser });
+		dispose = mountApplication(root, f.cloud, f.api);
+		await drawn();
+		type("accountPasswordAsk", "hemmeligt1");
+		root.querySelector<HTMLFormElement>("form.auth-form")!.requestSubmit();
+		await drawn();
+		expect(updateUser).toHaveBeenLastCalledWith({ data: { password_set: true } });
+		expect(root.querySelector('.auth[data-step="password"]')).toBeNull();
+		expect(root.querySelector(".frame")).not.toBeNull();
+	});
+
+	it("can be left by signing out", async () => {
+		const f = fixture();
+		f.auth(emailUser({ full_name: "Mette Hansen" }));
+		const signOut = vi.fn(async () => {
+			f.auth(null);
+			return { error: null };
+		});
+		Object.assign(f.cloud.supabase.auth, { signOut });
+		dispose = mountApplication(root, f.cloud, f.api);
+		await drawn();
+		[...root.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Sign out")!.click();
+		await drawn();
+		expect(signOut).toHaveBeenCalledOnce();
+		expect(root.querySelector('.auth[data-step="password"]')).toBeNull();
+		expect(root.querySelector("h1")!.textContent).toBe("Welcome back");
 	});
 
 	it("is not asked again once a password is set, nor when the member signs in only through another provider", async () => {

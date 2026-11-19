@@ -366,11 +366,14 @@ export class AuthController {
 		});
 	}
 
-	async setPassword(password: string): Promise<void> {
+	async setPassword(password: string, options: { currentCounts?: boolean } = {}): Promise<void> {
 		if (password.length < PASSWORD_MIN) throw new Error(t("Use at least 8 characters for your password."));
 		const userId = this.userId;
 		if (!userId) throw new Error(t("Sign in to change your password."));
-		const { data, error } = await this.#cloud.supabase.auth.updateUser({ password, data: { password_set: true } });
+		const auth = this.#cloud.supabase.auth;
+		let { data, error } = await auth.updateUser({ password, data: { password_set: true } });
+		if (error && options.currentCounts && authCode(error) === "same_password")
+			({ data, error } = await auth.updateUser({ data: { password_set: true } }));
 		if (error) throw new Error(authErrorText(error).text);
 		if (this.#disposed || this.userId !== userId || !data.user || data.user.id !== userId) return;
 		const user = data.user;
@@ -499,17 +502,17 @@ export function displayName(user: User | null): string {
 }
 
 /** The editable name excludes the email fallback used by authentication. */
-export function needsPassword(user: User | null): boolean {
-	if (!user) return false;
-	const providers = user.app_metadata?.providers;
-	const usesEmail = Array.isArray(providers) ? providers.includes("email") : user.app_metadata?.provider === "email";
-	return usesEmail && user.user_metadata?.password_set !== true;
-}
-
 export function accountName(user: User | null): string {
 	if (!user) return "";
 	const meta = user.user_metadata as Record<string, unknown> | undefined;
 	const candidates = [meta?.display_name, meta?.full_name, meta?.name, meta?.user_name, meta?.preferred_username];
 	const value = candidates.find((candidate) => typeof candidate === "string" && candidate.trim());
 	return typeof value === "string" ? value.trim() : "";
+}
+
+export function needsPassword(user: User | null): boolean {
+	if (!user) return false;
+	const providers = user.app_metadata?.providers;
+	const usesEmail = Array.isArray(providers) ? providers.includes("email") : user.app_metadata?.provider === "email";
+	return usesEmail && user.user_metadata?.password_set !== true;
 }

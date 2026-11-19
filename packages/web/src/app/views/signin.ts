@@ -560,6 +560,7 @@ export function renderPasswordAsk(auth: AuthController, container: HTMLElement, 
 						try {
 							await auth.setPassword(
 								container.querySelector<HTMLInputElement>("#accountPasswordAsk")?.value ?? "",
+								{ currentCounts: true },
 							);
 							onDone();
 						} catch (failure) {
@@ -573,6 +574,11 @@ export function renderPasswordAsk(auth: AuthController, container: HTMLElement, 
 				h("p", { class: "auth-hint" }, t("At least 8 characters.")),
 				submit,
 				error,
+			),
+			h(
+				"p",
+				{ class: "auth-muted" },
+				h("button", { type: "button", class: "auth-inline", onclick: () => void auth.signOut() }, t("Sign out")),
 			),
 		),
 	);
