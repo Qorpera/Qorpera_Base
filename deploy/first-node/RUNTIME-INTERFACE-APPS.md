@@ -451,6 +451,11 @@ call the web does not already answer.
   folder), and the engine takes each from there by its path. One the folder lacks is left out, the engine draws a
   quiet placeholder for it, and the save's `look` says which. So an agent writes its pictures first, from a machine,
   or saves the data again after: a save with the data in the folder and none in the call reads the folder's.
+- **Pictures as WebP.** Every data kit's guide ends, and `style` for a page written by hand ends, with one paragraph
+  (`PICTURES`, `cloud-app-guides.ts`): save a photo, a render or a screenshot as .webp (`cwebp -q 90`, or Pillow's
+  save with quality 90, both in the machine image), since every member downloads each picture an app shows and a
+  render as a PNG is about ten times its size as WebP (measured 19 November 2026 on one board app's eight renders:
+  9.4 MB as PNGs, 0.72 MB as WebP); .png for a small flat graphic that must stay exact, .svg for what is drawn.
 - **The engine reads the data through the bridge**, as it stands when the page opens, and again after a change
   notice, no sooner than ten seconds after its last draw (§5). So the app's own folder is the one source: a change of
   `<kit>.json` shows without a new page. The page also holds the data as it was saved, for one case: opened where
@@ -502,7 +507,9 @@ call the web does not already answer.
   button stays. The button is drawn only where the page's `qorpera` has `tell`: an older web, and the page opened
   outside Qorpera, show none.
 - **`look`** is what a read of the data finds (`kitNotes`): pictures the folder lacks, and texts longer than a kit
-  shows. How the page looks stays the agent's to check on a machine.
+  shows. A save over the app's folder also names the PNGs of more than 400 KiB that the data names and the folder
+  holds (`kitHeavyPictures`: three names at most, their size together, and the `cwebp` command that makes each a
+  .webp); nothing is refused and no file is changed. How the page looks stays the agent's to check on a machine.
 
 Not built: the Co-Founder's `company` page has no kit of its own; a helper that renders an object's turntable and
 its parts' tracks in Blender on a machine (an agent writes that script itself today, from the guide); and a look at an
