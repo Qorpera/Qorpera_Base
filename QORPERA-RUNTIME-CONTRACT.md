@@ -2631,8 +2631,13 @@ used-up login until its reset, with nothing in the thread to say so. Now:
   never from a login that may work while the member is away onto one that may
   not, only to a login that may pay for the poster. Another member's post and
   every other wake (follow-up work, a routine's run) stay on their login.
+- A post the pick cannot take keeps the conversation on its login while it
+  waits, as a waiting turn does: the thread names that login and its usage
+  limit, and "All N chats" on it counts the chat.
 - Each move is recorded (`qorpera_wake_payer_moves`), and the wake's identity
   guard admits exactly that recorded move of a queued wake with no run.
+- This replaces the 2026-11-05 amendment's "one already waiting stays on its
+  login" for the member's own posts.
 
 2026-11-18 amendment: a full reading holds an account by itself (founder, 18
 November 2026: "Yes, build it"; migration 20260930807000). On 18 Nov a member

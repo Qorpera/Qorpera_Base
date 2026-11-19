@@ -135,6 +135,50 @@ begin
 end $$;
 
 do $$
+begin
+	perform pg_temp.base_assert(pg_temp.wp_as_owner(format('select public.qorpera_select_member_session_account(%L,%L)::text',
+			pg_temp.wp('profile'), pg_temp.wp('bob'))) = pg_temp.wp('a')::text,
+		'Bob''s thread does not name A, where its post still waits, after the pick of C');
+	perform pg_temp.base_assert(exists (select 1
+			from public.qorpera_member_sessions_on_login(pg_temp.wp('profile'), pg_temp.wp('owner'), pg_temp.wp('a')) as on_login
+			where on_login.session_id = pg_temp.wp('bob')), 'Bob''s thread is not among the chats on A while its post waits there');
+end $$;
+
+savepoint wp_plan;
+set local session_replication_role = replica;
+insert into public.qorpera_model_logins(id, profile_id, compute_identity_id, credential_capsule_id, broker_authority_id, provider,
+	native_harness, current_version, access_issued_at, access_expires_at, login_kind)
+select '13060000-0000-4000-8000-0000000000fb', pg_temp.wp('profile'),
+	(current_setting('qorpera_test.base_identity')::jsonb ->> 'compute_identity_id')::uuid, version.credential_capsule_id,
+	'13060000-0000-4000-8000-00000000ffff', 'openai', 'codex-cli', 1, clock_timestamp(), clock_timestamp() + interval '1 hour',
+	'chatgpt_plan'
+from public.qorpera_provider_connection_versions as version
+where version.connection_id = pg_temp.wp('b') and version.version = 2;
+set local session_replication_role = origin;
+do $$
+declare v_answer text;
+begin
+	perform pg_temp.base_assert(public.qorpera_connection_is_chatgpt_plan(pg_temp.wp('b')), 'B is no ChatGPT plan');
+	v_answer := pg_temp.wp_pick('bob', 'b');
+	perform pg_temp.base_assert((pg_temp.wp_wake('bob_wake')).sponsor_binding_id = pg_temp.wp('aBinding')
+		and pg_temp.wp_moves('bob_wake') = '[]'::jsonb, 'the waiting post moved onto a ChatGPT plan (' || v_answer || ')');
+end $$;
+rollback to savepoint wp_plan;
+
+savepoint wp_other;
+set local session_replication_role = replica;
+update public.qorpera_wake_occurrences set requested_by_user_id = '92400000-0000-4000-8000-000000000002'
+where id = pg_temp.wp('bob_wake');
+set local session_replication_role = origin;
+do $$
+begin
+	perform pg_temp.base_assert(pg_temp.wp_pick('bob', 'b') = pg_temp.wp('b')::text, 'the owner''s pick of B beside another''s post');
+	perform pg_temp.base_assert((pg_temp.wp_wake('bob_wake')).sponsor_binding_id = pg_temp.wp('aBinding')
+		and pg_temp.wp_moves('bob_wake') = '[]'::jsonb, 'the owner''s pick moved another member''s waiting post');
+end $$;
+rollback to savepoint wp_other;
+
+do $$
 declare v_wake public.qorpera_wake_occurrences; v_moves jsonb; v_pass jsonb; v_run public.qorpera_execution_runs;
 begin
 	perform pg_temp.base_assert(pg_temp.wp_pick('bob', 'b') = pg_temp.wp('b')::text, 'the owner''s pick of B in Bob''s thread');

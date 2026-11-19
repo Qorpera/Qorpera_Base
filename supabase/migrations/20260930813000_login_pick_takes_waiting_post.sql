@@ -34,9 +34,11 @@ comment on table public.qorpera_wake_payer_moves is
 	'20260930813000: a member''s own post in a thread, waiting at their login''s usage limit, moved by their pick of another login.';
 
 create function public.qorpera_member_session_waiting_posts(p_profile_id uuid, p_session_id uuid, p_user_id uuid)
-returns table(wake_id uuid, binding_id uuid, sponsor_version bigint, connection_id uuid, allow_autonomous boolean)
+returns table(wake_id uuid, binding_id uuid, sponsor_version bigint, connection_id uuid, allow_autonomous boolean,
+	created_at timestamptz)
 language sql stable security definer set search_path = '' as $$
-	select wake.id, wake.sponsor_binding_id, wake.sponsor_version, sponsor.provider_connection_id, sponsor.allow_autonomous
+	select wake.id, wake.sponsor_binding_id, wake.sponsor_version, sponsor.provider_connection_id, sponsor.allow_autonomous,
+		wake.created_at
 	from public.qorpera_wake_occurrences as wake
 	join public.qorpera_execution_sponsor_versions as sponsor on sponsor.binding_id = wake.sponsor_binding_id
 		and sponsor.version = wake.sponsor_version
@@ -73,7 +75,44 @@ select pg_temp.wp813_patch('public.qorpera_guard_wake_identity()'::regprocedure,
 	|| E'\t\treturn new; end if;\n'
 	|| E'\t-- 20260930703000: the member''s own recorded move');
 
+select pg_temp.wp813_patch('public.qorpera_select_member_session_account(uuid,uuid)'::regprocedure,
+	E'            order by waiting.created_at,waiting.request_id,candidate.binding_id limit 1;\n'
+	|| E'        v_has_choice := found;\n',
+	E'            order by waiting.created_at,waiting.request_id,candidate.binding_id limit 1;\n'
+	|| E'        v_has_choice := found;\n'
+	|| E'        if not v_has_choice then\n'
+	|| E'            select candidate.connection_id,candidate.binding_id into v_choice\n'
+	|| E'                from public.qorpera_member_session_waiting_posts(p_profile_id,p_session_id,v_user) as waiting\n'
+	|| E'                join public.qorpera_member_live_account_bindings(p_profile_id,v_user) as candidate\n'
+	|| E'                    on candidate.connection_id = waiting.connection_id\n'
+	|| E'                order by waiting.created_at,waiting.wake_id,candidate.binding_id limit 1;\n'
+	|| E'            v_has_choice := found;\n'
+	|| E'        end if;\n');
+
 drop function pg_temp.wp813_patch(regprocedure, text, text);
+
+create or replace function public.qorpera_member_session_login(p_profile_id uuid, p_session_id uuid, p_user_id uuid,
+	p_live uuid[])
+returns uuid language sql stable security definer set search_path = '' as $$
+	select coalesce(
+		(select waiting.connection_id
+			from public.qorpera_member_session_waiting_turns(p_profile_id, p_session_id, p_user_id) as waiting
+			where waiting.connection_id = any(p_live)
+			order by waiting.created_at, waiting.request_id limit 1),
+		(select waiting.connection_id
+			from public.qorpera_member_session_waiting_posts(p_profile_id, p_session_id, p_user_id) as waiting
+			where waiting.connection_id = any(p_live)
+			order by waiting.created_at, waiting.wake_id limit 1),
+		(select connection.id
+			from public.qorpera_member_session_accounts as saved
+			join public.qorpera_provider_connections as connection
+				on connection.id = coalesce(public.qorpera_sponsor_binding_connection(saved.sponsor_binding_id), saved.connection_id)
+				and connection.profile_id = p_profile_id and connection.owner_user_id = p_user_id
+				and connection.status <> 'revoked'
+			where saved.profile_id = p_profile_id and saved.session_id = p_session_id and saved.user_id = p_user_id))
+$$;
+revoke all on function public.qorpera_member_session_login(uuid, uuid, uuid, uuid[])
+	from public, anon, authenticated, service_role;
 
 create or replace function public.qorpera_take_member_session_account(p_profile_id uuid, p_session_id uuid, p_user_id uuid,
 	p_connection_id uuid, p_binding_id uuid, p_sponsor_version bigint, p_compute_identity_id uuid)
