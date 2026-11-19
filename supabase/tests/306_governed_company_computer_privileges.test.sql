@@ -70,6 +70,7 @@ begin
 		'qorpera_claim_event_verifications(uuid,text,integer)',
 		'qorpera_commit_account_model_login_renewal(uuid,text,uuid,uuid,bigint,text,text,text,timestamp with time zone,timestamp with time zone)',
 		'qorpera_commit_chatgpt_plan_renewal(uuid,text,uuid,uuid,bigint,text,text,text,timestamp with time zone,timestamp with time zone,timestamp with time zone)',
+		'qorpera_commit_claude_login_renewal(uuid,text,uuid,uuid,bigint,text,text,text,text)',
 		'qorpera_commit_model_login_renewal(uuid,text,uuid,uuid,bigint,text,text,text,timestamp with time zone,timestamp with time zone)',
 		'qorpera_complete_account_model_login_sign_in(uuid,text,uuid,text,uuid,text,text,text,timestamp with time zone,timestamp with time zone,text,text)',
 		'qorpera_complete_chatgpt_plan_sign_in(uuid,text,uuid,text,uuid,text,text,text,timestamp with time zone,timestamp with time zone,text,text,timestamp with time zone)',
@@ -112,6 +113,7 @@ begin
 		'qorpera_model_logins_without_account(uuid,text)',
 		'qorpera_native_binding_proven(jsonb,text)',
 		'qorpera_open_claude_login_for_run(uuid,text,jsonb)',
+		'qorpera_open_claude_login_for_run(uuid,text,jsonb,bigint)',
 		'qorpera_open_claude_login_for_seal_back(uuid,text,jsonb)',
 		'qorpera_open_company_account(uuid,text,jsonb,uuid,text,text,uuid,uuid,uuid,text,text[],text,text,uuid,text,bytea,text)',
 		'qorpera_record_account_model_login_account(uuid,text,uuid,text)',
@@ -122,6 +124,7 @@ begin
 		'qorpera_record_model_login_account_metadata(uuid,text,uuid,text,uuid,uuid,bigint,text,jsonb,text)',
 		'qorpera_register_company_with_broker_principal(uuid,text,uuid,text)',
 		'qorpera_release_account_model_login_renewal(uuid,text,uuid,uuid,bigint,boolean,text)',
+		'qorpera_release_claude_login_renewal(uuid,text,uuid,uuid,text)',
 		'qorpera_release_model_login_renewal(uuid,text,uuid,uuid,bigint,boolean,text)',
 		'qorpera_seal_claude_login_back(uuid,text,jsonb,uuid,bigint,text,text,text,text)',
 		'qorpera_seal_digital_post_letter(uuid,text,uuid,bigint,uuid,uuid)',
@@ -130,7 +133,9 @@ begin
 		'qorpera_switch_off_replaced_by_account_logins(uuid,text)',
 		'qorpera_switch_off_replaced_node_logins(uuid,text)',
 		'qorpera_take_chatgpt_plan_revocation(uuid,text)',
+		'qorpera_take_claude_login_renewal(uuid,text,uuid,text)',
 		'qorpera_take_idle_account_model_login_renewal(uuid,text)',
+		'qorpera_take_idle_claude_login_renewal(uuid,text)',
 		'qorpera_take_idle_model_login_renewal(uuid,text)',
 		'qorpera_use_company_account(uuid,text,jsonb,uuid,text,text,uuid)'
 	]::text[] then

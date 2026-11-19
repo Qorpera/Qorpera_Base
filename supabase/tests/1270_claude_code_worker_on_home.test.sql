@@ -113,8 +113,9 @@ do $$
 declare v jsonb; v_run uuid := pg_temp.c4c_run('claude');
 begin
 	v := public.qorpera_claude_worker_run_facts(pg_temp.c4c_binding('claude'));
-	perform pg_temp.base_assert(v = jsonb_build_object('schema', 'qorpera.claude-worker-run-facts/v1', 'member', pg_temp.c4_name(),
-		'outputs', '[]'::jsonb, 'earlier', null), '1b: the member''s name, no outputs yet, no earlier report on a first run: ' || v::text);
+	perform pg_temp.base_assert(v - 'ownCodexLogin' = jsonb_build_object('schema', 'qorpera.claude-worker-run-facts/v1',
+		'member', pg_temp.c4_name(), 'outputs', '[]'::jsonb, 'earlier', null),
+		'1b: the member''s name, no outputs yet, no earlier report on a first run: ' || v::text);
 	begin
 		set local session_replication_role = replica;
 		-- (The run's home session closed in section 1: a commit of the view's last boundary after that is credited all the same.)
