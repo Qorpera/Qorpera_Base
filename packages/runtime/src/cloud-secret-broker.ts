@@ -2781,6 +2781,53 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
+	describeClaudeLoginRead(
+		request: { requestId: string; capabilitySha256: string },
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_describe_claude_login_read($1::uuid,$2::text,$3::uuid,$4::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, request.requestId, request.capabilitySha256],
+			signal,
+		);
+	}
+
+	claimClaudeLoginReset(
+		request: { requestId: string; capabilitySha256: string; claim: string },
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_claim_claude_login_reset($1::uuid,$2::text,$3::uuid,$4::text,$5::uuid) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				request.requestId,
+				request.capabilitySha256,
+				request.claim,
+			],
+			signal,
+		);
+	}
+
+	recordClaudeLoginRead(
+		record: Parameters<NonNullable<ModelLoginUsageAuthority["recordClaudeLoginRead"]>>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_record_claude_login_read($1::uuid,$2::text,$3::uuid,$4::text,$5::jsonb,$6::jsonb,$7::jsonb) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				record.requestId,
+				record.capabilitySha256,
+				record.usage === null ? null : JSON.stringify(record.usage),
+				record.resets === null ? null : JSON.stringify(record.resets),
+				record.reset === null ? null : JSON.stringify(record.reset),
+			],
+			signal,
+		);
+	}
+
 	/** The daily usage check's refresh, if a login at its usage limit is due a reading (20260930575000). */
 	beginModelLoginUsageRecheck(request: { capabilitySha256: string }, signal: AbortSignal): Promise<unknown> {
 		return this.#rpc(

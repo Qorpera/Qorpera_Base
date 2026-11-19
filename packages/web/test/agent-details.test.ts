@@ -4,7 +4,6 @@ import { CompanyController } from "../src/app/company.ts";
 import { type AgentCardActions, AgentDetails } from "../src/app/views/agent-details.ts";
 import type { AgentDraft, WorkspaceActions } from "../src/app/workspace-actions.ts";
 import type { WebNativeSubscription } from "../src/cloud/native-subscription.ts";
-import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { WebRoutines } from "../src/cloud/routines.ts";
 import type { HostedStaffAgent } from "../src/cloud/types.ts";
 import conversationCss from "../src/styles/conversation.css?raw";
@@ -494,34 +493,6 @@ describe("agent figure", () => {
 });
 
 describe("agent pages", () => {
-	const organization: HostedCompanyOrganization = {
-		schema: "qorpera.company-organization/v1",
-		profileId: profileA.profileId,
-		cofounder: { staffAgentId: staff.id, formationId: id(30) },
-		formation: {
-			formationId: id(30),
-			state: "operating",
-			status: "active",
-			revision: 1,
-			projectionStatus: "ready",
-			sourcePath: "company/formation.json",
-		},
-		responsibilities: [
-			{
-				responsibilityId: id(31),
-				slug: "quality",
-				name: "Product quality",
-				outcome: "Fewer defects",
-				status: "active",
-				accountableStaffAgentId: staff.id,
-				attentionCadence: "weekly",
-				measures: [],
-				version: 1,
-				sourcePath: "quality.json",
-			},
-		],
-		projects: [],
-	};
 	it("offers the computer and routines as lines and Hide and Delete as squares; the computer closes the card", () => {
 		const card = { computer: vi.fn(), hide: vi.fn(), remove: vi.fn() };
 		const f = open({}, staff, undefined, card);
@@ -543,19 +514,6 @@ describe("agent pages", () => {
 		expect(card.computer).toHaveBeenCalledTimes(1);
 		expect(f.dialog.open).toBe(false);
 		expect(f.onClose).toHaveBeenCalledTimes(1);
-	});
-
-	it("shows a name and responsibilities, no title, and no Latest notes", () => {
-		const f = open({}, staff, undefined, { computer: vi.fn() });
-		expect(field("Agent name")).not.toBeNull();
-		expect(field("Responsibilities")).not.toBeNull();
-		expect(f.dialog.querySelector('[aria-label="Agent title"]')).toBeNull();
-		expect(f.dialog.querySelector(".agent-inline-title")).toBeNull();
-		expect(f.dialog.textContent).not.toContain(staff.role);
-		expect([...f.dialog.querySelectorAll(".agent-card-link")].map((row) => row.textContent)).toEqual([
-			"Computer",
-			"Routines",
-		]);
 	});
 
 	it("opens the routines as a page of the card, wider, with a way back to the details", async () => {
@@ -659,17 +617,6 @@ describe("agent pages", () => {
 		expect(status()).toContain("could not be saved");
 		expect(named("Try again")).toBeDefined();
 		expect(field("Agent name").value).toBe("Unsaved name");
-	});
-
-	it("keeps responsibilities as the description, not a page of their own", async () => {
-		const f = open();
-		f.company.store.set({ organization });
-		await settle();
-		// Recorded responsibility objects no longer surface: the agent's own description is the reference.
-		expect(f.dialog.textContent).not.toContain("Product quality");
-		expect(f.dialog.querySelector('a[data-href*="/responsibility/"]')).toBeNull();
-		expect(field("Responsibilities").value).toBe(staff.charter);
-		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 });
 

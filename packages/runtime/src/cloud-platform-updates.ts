@@ -146,6 +146,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "The first concept before references and directions",
 		text: "The founders now see their own product first: the product's owner makes one first concept from their words in its first run, its builders make their parts beside it without waiting for each other, references or the brand, and it reaches the founders the same hour the builders are hired. A wall of other companies' products is references, never a concept, and the brand's directions follow the first concept. If your founders have not yet seen their own product, have its owner make that one concept now, without waiting for references or directions.",
 	},
+	{
+		id: "program-kit",
+		kind: "capability",
+		date: "2026-11-18",
+		title: "Programs members download",
+		text: "A program for a computer or a phone now has a home: an interface app of the kit program. Build the real thing on a machine, copy one file for each kind (Android, Linux, Windows, Mac, iPhone) into the app's versions/<version>/ folder, with real screenshots beside them, and save it with save_app. Its page shows the program and a Download for the member's own computer or phone, and every version stays. Link the app when you tell a member, never a machine or a folder. If your company makes such a product, keep its builds there; app_guide about program says how.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

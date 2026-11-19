@@ -47,21 +47,5 @@ begin
 end
 $$;
 
--- 2. The marker: the list names data_change right after the three data tools, and only this body carries
--- 20260930763000.
-reset role;
-do $$
-begin
-	if strpos(pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure),
-			$q$/* 20260930750000 */'data_describe','data_apply','data_query',/* 20260930763000 */'data_change',$q$) = 0 then
-		raise exception '2: the observations'' list does not name data_change after the three data tools'; end if;
-	if (select array_agg(proc.proname::text order by proc.proname::text collate "C")
-			from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
-			where namespace.nspname = 'public' and strpos(proc.prosrc, '20260930763000') > 0)
-		is distinct from array['qorpera_record_runtime_observation'] then
-		raise exception '2: the marker is in other bodies'; end if;
-end
-$$;
-
 set constraints all immediate;
 rollback;

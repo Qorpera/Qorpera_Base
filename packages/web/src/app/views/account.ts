@@ -1,4 +1,3 @@
-import type { HostedAccountEntitlement } from "../../cloud/types.ts";
 import { button, h, notice, replace } from "../../ui/dom.ts";
 import { type PickerOption, PreferencePicker } from "../../ui/preference-picker.ts";
 import {
@@ -102,9 +101,6 @@ function pickersFor(container: HTMLElement, setState: (next: AccountViewState) =
 }
 
 export interface AccountViewState {
-	loading?: boolean;
-	loaded?: boolean;
-	entitlement?: HostedAccountEntitlement;
 	error?: string;
 	message?: string;
 }

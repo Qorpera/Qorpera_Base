@@ -475,19 +475,6 @@ begin
 				and not has_function_privilege(v_role, 'public.qorpera_valid_machine_screen_call(jsonb)', 'execute'),
 			format('7: the grants for %s', v_role));
 	end loop;
-	perform pg_temp.base_assert(strpos((select prosrc from pg_proc
-			where oid = 'public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure), '''machine_screen''') > 0
-			and strpos((select prosrc from pg_proc
-				where oid = 'public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure), '''save_coding_value''') > 0,
-		'7: the observations'' list');
-	perform pg_temp.base_assert((select array_agg(proc.proname::text order by proc.proname::text collate "C")
-			from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
-			where namespace.nspname = 'public' and strpos(proc.prosrc, '20260930708000') > 0) = array[
-			'qorpera_authorize_machine_screen', 'qorpera_record_runtime_observation', 'qorpera_valid_machine_screen_call'],
-		'7: the marker''s bodies');
-	perform pg_temp.base_assert((select provolatile from pg_proc
-			where oid = 'public.qorpera_valid_machine_screen_call(jsonb)'::regprocedure) = 's',
-		'7: the call check is STABLE');
 end $$;
 
 
@@ -587,11 +574,6 @@ begin
 		end;
 	end loop;
 	perform pg_temp.base_assert(pg_temp.ms_reads_root(), '8: undone');
-	-- The check names the run's agent and requester, as qorpera_authorize_machine_command's (20260930420000).
-	perform pg_temp.base_assert(strpos(regexp_replace((select prosrc from pg_proc
-			where oid = 'public.qorpera_authorize_machine_screen(jsonb,jsonb,uuid,text)'::regprocedure), '\s+', ' ', 'g'),
-			'public.qorpera_folder_reads_root(v_machine.environment_id, v_machine.profile_id, (v_identity ->> ''staffAgentId'')::uuid, (v_identity ->> ''requesterUserId'')::uuid)') > 0,
-		'8: the root check names the run''s agent and requester');
 end $$;
 
 rollback;

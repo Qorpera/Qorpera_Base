@@ -1,9 +1,9 @@
 import type {
 	NativeExecutionConnections,
 	NativeMemberConnection,
-	SessionTurnProvenance,
 } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type {
+	WebClaudeLogin,
 	WebExecutionConnections,
 	WebMemberConnection,
 	WebNativeSubscription,
@@ -127,6 +127,8 @@ function usageCard(
  * unavailable" until the page was reloaded.) */
 export const ACCOUNT_RETRY_DELAYS_MS: readonly number[] = [2_000, 5_000, 10_000, 30_000, 60_000];
 
+const CLAUDE_READ_EVERY_MS = 60_000;
+
 /** One of the member's logins that can pay for a conversation, as the composer's Login page lists it. */
 export interface SessionLogin {
 	readonly connectionId: string;
@@ -150,11 +152,9 @@ export class SessionExecutionView {
 	readonly #lifetime = new AbortController();
 	#request: AbortController | undefined;
 	#observed: WebExecutionConnections | undefined;
-	#provenance: readonly SessionTurnProvenance[] = [];
 	#started = false;
 	#busy = false;
 	#error: string | undefined;
-	#historyError: string | undefined;
 	#renderKey = "";
 	#room = false;
 	#serverSelection = false;
@@ -168,6 +168,10 @@ export class SessionExecutionView {
 	#countedFor: string | undefined;
 	#countRequest: AbortController | undefined;
 	#moved: { login: string | undefined; stuck: boolean; done: boolean; title: string; detail?: string } | undefined;
+	#claudeOut: { login: WebClaudeLogin; until: string; next: WebClaudeLogin } | undefined;
+	#claudeMoved: { loginId: string; account: string } | undefined;
+	#claudeSwitching = false;
+	#claudeReadAt: number | undefined;
 
 	constructor(
 		company: CompanyController,
@@ -229,8 +233,6 @@ export class SessionExecutionView {
 		if (room !== this.#room) {
 			this.#request?.abort();
 			this.#request = undefined;
-			this.#provenance = [];
-			this.#historyError = undefined;
 			this.#busy = false;
 			this.#started = false;
 			this.#room = room;
@@ -245,7 +247,6 @@ export class SessionExecutionView {
 			this.#request?.abort();
 			this.#request = undefined;
 			this.#observed = undefined;
-			this.#provenance = [];
 			this.#started = false;
 			this.#busy = false;
 			this.#usageHydratedAt = undefined;
@@ -279,7 +280,6 @@ export class SessionExecutionView {
 		this.#busy = true;
 		// The line that says the accounts are unavailable stays while they are read again, instead of blinking.
 		if (!this.#failures) this.#error = undefined;
-		this.#historyError = undefined;
 		this.#render();
 		this.#changed();
 		const conversation = this.#company.conversation(this.#sessionId).get();
@@ -296,25 +296,17 @@ export class SessionExecutionView {
 			}
 			return this.#native.listConnections(signal);
 		};
-		const [connections, provenance] = await Promise.allSettled([
-			readConnections(),
-			this.#room ? Promise.resolve([]) : this.#native.listSessionTurnProvenance(this.#sessionId, signal),
-		]);
+		const connections = await readConnections().catch(() => undefined);
 		if (signal.aborted) return;
 		this.#serverConnectionId = serverConnectionId;
-		if (connections.status === "fulfilled") {
-			this.#observed = connections.value;
+		if (connections) {
+			this.#observed = connections;
 			if (this.#failures) this.#error = undefined;
 			this.#failures = 0;
 		} else {
 			this.#observed = undefined;
 			this.#failures++;
 			this.#error = t("Model accounts are unavailable. Trying again…");
-		}
-		if (provenance.status === "fulfilled") this.#provenance = provenance.value;
-		else {
-			this.#provenance = [];
-			this.#historyError = t("Execution history is unavailable.");
 		}
 		this.#busy = false;
 		this.#request = undefined;
@@ -329,6 +321,79 @@ export class SessionExecutionView {
 				: undefined,
 		);
 		void this.#hydrateUsage();
+		if (this.#claudeReadAt === undefined || Date.now() - this.#claudeReadAt >= CLAUDE_READ_EVERY_MS)
+			void this.#readClaude(signal);
+	}
+
+	async #readClaude(signal: AbortSignal): Promise<void> {
+		if (!this.#native.listClaudeLogins) return;
+		this.#claudeReadAt = Date.now();
+		let logins: readonly WebClaudeLogin[];
+		try {
+			logins = (await this.#native.listClaudeLogins(signal)).logins;
+		} catch {
+			return;
+		}
+		if (signal.aborted) return;
+		const now = Date.now();
+		const usedUp = (login: WebClaudeLogin) => login.usedUpUntil !== undefined && Date.parse(login.usedUpUntil) > now;
+		const inUse = logins.find((login) => login.inUse);
+		const next = inUse && usedUp(inUse) ? logins.find((login) => login !== inUse && !usedUp(login)) : undefined;
+		this.#claudeOut = inUse?.usedUpUntil && next ? { login: inUse, until: inUse.usedUpUntil, next } : undefined;
+		if (this.#claudeMoved && (inUse?.loginId !== this.#claudeMoved.loginId || usedUp(inUse)))
+			this.#claudeMoved = undefined;
+		this.#render();
+	}
+
+	async #useClaude(next: WebClaudeLogin): Promise<void> {
+		if (!this.#native.useClaude || this.#claudeSwitching || this.#lifetime.signal.aborted) return;
+		this.#claudeSwitching = true;
+		this.#render();
+		try {
+			await this.#native.useClaude(next.loginId, this.#lifetime.signal);
+			this.#claudeMoved = {
+				loginId: next.loginId,
+				account: next.providerAccountEmail ?? t("your other Claude login"),
+			};
+			this.#claudeOut = undefined;
+		} catch {
+			this.#error = t("The Claude login could not be switched. Try again.");
+		} finally {
+			this.#claudeSwitching = false;
+		}
+		if (!this.#lifetime.signal.aborted) this.#render();
+	}
+
+	#claudeCard(): HTMLElement | null {
+		if (this.#claudeMoved) {
+			const card = usageCard(
+				t("New Claude work now uses {account}", { account: this.#claudeMoved.account }),
+				undefined,
+				true,
+				[],
+			);
+			card.setAttribute("role", "status");
+			return card;
+		}
+		const out = this.#claudeOut;
+		if (!out) return null;
+		const other = out.next.providerAccountEmail ?? t("your other Claude login");
+		return usageCard(
+			t("Claude is out of usage until {time}", { time: fmtTime(out.until) }),
+			t("{account} is used up. Keep going with {other}", {
+				account: out.login.providerAccountEmail ?? t("Your Claude login"),
+				other,
+			}),
+			false,
+			[
+				button(t("Continue"), () => void this.#useClaude(out.next), {
+					small: true,
+					primary: true,
+					disabled: this.#claudeSwitching,
+					title: t("Use {account}", { account: other }),
+				}),
+			],
+		);
 	}
 
 	async #hydrateUsage(): Promise<void> {
@@ -790,9 +855,7 @@ export class SessionExecutionView {
 		const key = JSON.stringify([
 			this.#room,
 			this.#observed,
-			this.#provenance,
 			this.#error,
-			this.#historyError,
 			selected,
 			this.#serverConnectionId,
 			locked,
@@ -802,6 +865,9 @@ export class SessionExecutionView {
 			this.canSend,
 			this.#sameLogin,
 			this.#moved,
+			this.#claudeOut,
+			this.#claudeMoved,
+			this.#claudeSwitching,
 		]);
 		if (key === this.#renderKey) return;
 		this.#renderKey = key;
@@ -846,7 +912,7 @@ export class SessionExecutionView {
 									? this.#choice(this.#observed, !canWrite)
 									: (this.#usageWall(this.#observed, locked, false) ??
 										h("p", { class: "muted" }, this.#unavailableReason(this.#observed)))
-								: null)),
+								: this.#claudeCard())),
 		);
 	}
 
@@ -992,7 +1058,6 @@ export class SessionExecutionView {
 		this.#usageRequest?.abort();
 		this.#usageRequest = undefined;
 		this.#observed = undefined;
-		this.#provenance = [];
 		this.el.replaceChildren();
 	}
 }

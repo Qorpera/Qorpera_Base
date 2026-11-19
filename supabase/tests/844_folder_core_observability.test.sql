@@ -43,9 +43,8 @@ do $$
 declare v jsonb := current_setting('qorpera_test.p32_run')::jsonb; q jsonb; c jsonb;
 begin
 	q := public.qorpera_get_runtime_operational_run((v ->> 'runId')::uuid);
-	if q ->> 'schema' <> 'qorpera.runtime-operational-run/v2' or (q #>> '{identity,companySeq}')::bigint is distinct from 41
-		or q -> 'sections' ?| array['revisions','proposals','reads'] then
-		raise exception 'The run query is not v2 or keeps a legacy section: %', q -> 'sections'; end if;
+	if q ->> 'schema' <> 'qorpera.runtime-operational-run/v2' or (q #>> '{identity,companySeq}')::bigint is distinct from 41 then
+		raise exception 'The run query is not v2: %', q -> 'identity'; end if;
 	-- The commit, with its two path versions, attributed to the agent for the requester.
 	c := q #> '{sections,commits,items,0}';
 	if jsonb_array_length(q #> '{sections,commits,items}') <> 1

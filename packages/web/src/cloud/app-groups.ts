@@ -183,16 +183,6 @@ export function parseMemberAppLayoutRead(value: unknown): MemberAppLayoutRead {
 	};
 }
 
-/** How many changes the member's document holds, as Reset sidebar counts them. */
-export function appLayoutChanges(layout: MemberAppLayout): number {
-	return (
-		Object.keys(layout.places).length +
-		Object.keys(layout.groups).length +
-		Object.keys(layout.colours ?? {}).length +
-		Object.keys(layout.emblems ?? {}).length
-	);
-}
-
 function clone(nodes: readonly AppTreeNode[], present: ReadonlySet<string>, seen: Set<string>): AppTreeNode[] {
 	const out: AppTreeNode[] = [];
 	for (const node of nodes) {

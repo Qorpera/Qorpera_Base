@@ -98,7 +98,7 @@ function page(
 		loading: false,
 		staff: extra.staff ?? [cofounder, ...crew],
 		team: { ...team, members },
-		interfaceFolder: { tables: new Map(), files: new Map(), sources: new Map() },
+		interfaceFolder: { tables: new Map(), files: new Map() },
 	});
 	cleanup.push(() => controller.stop());
 	const calls = {

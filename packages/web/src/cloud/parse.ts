@@ -121,7 +121,7 @@ export function parseProfiles(value: unknown): HostedProfile[] {
 	return array(value, "profile list").map(parseProfile);
 }
 
-export function parseAccountEntitlement(value: unknown): HostedAccountEntitlement {
+function parseAccountEntitlement(value: unknown): HostedAccountEntitlement {
 	const input = record(value, "account entitlement");
 	const storageAllocationBytes = input.storage_allocation_bytes;
 	return {

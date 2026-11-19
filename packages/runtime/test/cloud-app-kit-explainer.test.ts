@@ -271,6 +271,7 @@ it("tells an agent in the explainer's guide only what the engine can draw", asyn
 		"map",
 		"ring",
 		"flow",
+		"program",
 		null,
 	]);
 	expect(kit.description).toContain("explainer: a mechanism or a decision that a short narrated video explains.");

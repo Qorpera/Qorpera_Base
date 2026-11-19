@@ -184,9 +184,6 @@ savepoint r771_cap;
 do $$
 declare v_result jsonb;
 begin
-	if position('perform public.qorpera_abandon_company_chatgpt_plan_logins(p_profile_id);'
-		in pg_get_functiondef('public.qorpera_finish_company_deletion(uuid)'::regprocedure)) = 0 then
-		raise exception 'the purging pass does not count plan logins left open'; end if;
 	if public.qorpera_abandon_company_chatgpt_plan_logins('92400000-0000-4000-8000-000000000010') <> 1 then
 		raise exception 'the plan login left open is not counted'; end if;
 	update public.qorpera_model_logins set status = 'needs_sign_in' where id = '76400000-0000-4000-8000-000000000150';

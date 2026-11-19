@@ -92,7 +92,7 @@ $$;
 
 -- 1. Who may call what ----------------------------------------------------------------------------------------------------
 do $$
-declare v_name text; v_signature text; v_bad text;
+declare v_name text; v_signature text; v_bad text; v_receipts jsonb;
 begin
 	foreach v_name in array array['qorpera_site_share_check', 'qorpera_site_share_app'] loop
 		perform pg_temp.base_assert((select scope = 'binding' and budget = 'standard' from public.qorpera_native_host_calls
@@ -147,18 +147,18 @@ begin
 	where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'v', 'm', 'p', 'f')
 		and has_table_privilege('qorpera_site_relay', c.oid, 'select');
 	perform pg_temp.base_assert(v_bad is null, 'The relay reads no table: ' || coalesce(v_bad, ''));
-	-- Every replaced body names this migration; the website unlock is 20260930550000's; observations name share_app.
-	foreach v_signature in array array['public.qorpera_site_url(text)', 'public.qorpera_site_abandoned(public.qorpera_company_sites)',
-		'public.qorpera_site_publish_check(jsonb,text)', 'public.qorpera_site_publish_begin(jsonb,text,jsonb,uuid)',
-		'public.qorpera_site_unpublish(jsonb,text)', 'public.qorpera_list_company_sites(uuid)',
-		'public.qorpera_site_serve(text,text,text,text,integer,integer)', 'public.qorpera_site_share_app(jsonb,text,jsonb,uuid)'] loop
-		perform pg_temp.base_assert(strpos(pg_get_functiondef(v_signature::regprocedure), '20260930562000') > 0,
-			v_signature || ' names 20260930562000');
-	end loop;
-	perform pg_temp.base_assert(strpos(pg_get_functiondef('public.qorpera_site_unlock(text,text,text)'::regprocedure), '20260930562000') = 0,
-		'The website unlock is as 20260930550000 wrote it');
-	perform pg_temp.base_assert(strpos(pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure),
-		'''publish_site'',''unpublish_site'',/* 20260930562000 */''share_app''') > 0, 'Observations name share_app');
+	set local role service_role;
+	v_receipts := public.qorpera_record_runtime_observation_batch(
+		(current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid,
+		jsonb_build_array(jsonb_build_object('schema','qorpera.runtime-observation/v1','attemptId',extensions.gen_random_uuid(),
+			'parentAttemptId',null,'assignmentId',current_setting('qorpera_test.base_binding')::jsonb -> 'assignmentId',
+			'phase','start','operation','share_app','logicalOperationSha256',repeat('7',64),
+			'observedAt','2026-11-14T12:00:00.000Z','durationMs',null,'status','started','errorCategory',null,
+			'receiptId',null,'readId',null,'inputBytes',null,'outputBytes',null,'inputTokens',null,'outputTokens',null,
+			'cachedInputTokens',null,'cacheWriteInputTokens',null,'reasoningOutputTokens',null,'totalTokens',null)));
+	reset role;
+	perform pg_temp.base_assert(v_receipts #>> '{receipts,0,schema}' = 'qorpera.runtime-observation-receipt/v1',
+		'Observations name share_app: ' || v_receipts::text);
 	perform pg_temp.base_assert((select apps_enabled = true and app_host_suffix = '-preview.qorpera.com'
 		from public.qorpera_site_settings), 'The suffix is the previews''');
 end

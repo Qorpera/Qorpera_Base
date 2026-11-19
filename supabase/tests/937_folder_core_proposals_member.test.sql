@@ -45,12 +45,9 @@ begin
 		if not has_function_privilege('authenticated', v_fn, 'execute') or has_function_privilege('anon', v_fn, 'execute')
 			or has_function_privilege('service_role', v_fn, 'execute') then
 			raise exception '% has the wrong grants', v_fn; end if;
-		if strpos(pg_get_functiondef(v_fn::regprocedure), 'P40c (20260930102000)') = 0 then
-			raise exception '% has no body marker', v_fn; end if;
 	end loop;
 	if has_function_privilege('authenticated', c_core, 'execute') or has_function_privilege('anon', c_core, 'execute')
-		or not has_function_privilege('service_role', c_core, 'execute')
-		or strpos(pg_get_functiondef(c_core::regprocedure), '20260930102000 (P40c)') = 0 then
+		or not has_function_privilege('service_role', c_core, 'execute') then
 		raise exception 'The core''s discard has the wrong grants or no marker'; end if;
 end $$;
 

@@ -8,9 +8,7 @@ import { WebCompanyComputer } from "../cloud/computer.ts";
 import { createWebConnectors, takeConnectorReturn } from "../cloud/connectors.ts";
 import { createDigitalPostKeys, readDigitalPost } from "../cloud/digital-post.ts";
 import { createWebEventHooks } from "../cloud/event-hooks.ts";
-import { interfaceOfferCalls } from "../cloud/interface-offers.ts";
 import { interfacePageCalls } from "../cloud/interface-pages.ts";
-import { interfaceSupervisionCalls } from "../cloud/interface-supervisions.ts";
 import { createWebMemberNotifications } from "../cloud/member-notifications.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
@@ -48,7 +46,6 @@ import { folderImageReader } from "./folder-images.ts";
 import { FoundingController } from "./founding.ts";
 import { type CompanyApp, CompanyApps, CompanyData, companyConcepts, sharedFolderHints } from "./interface-apps.ts";
 import { CompanyInterfaceFolder } from "./interface-folder.ts";
-import { CompanyInterfaceOffers } from "./interface-offers.ts";
 import { CompanyInterfacePages } from "./interface-pages.ts";
 import { pagesOn } from "./interfaces.ts";
 import { MemberPictures } from "./member-pictures.ts";
@@ -469,8 +466,6 @@ export function mountApplication(
 	let companyDatabases: CompanyDatabases | undefined;
 	/** What the open company's pages read from its folder, its tables and files, followed there (Interfaces step I7). */
 	let interfaceFolder: CompanyInterfaceFolder | undefined;
-	/** The company's open offers of claimed cells, read with its interfaces (Interfaces step I9c). */
-	let interfaceOffers: CompanyInterfaceOffers | undefined;
 	/** The agents' interface apps in the open company's folder, followed there (RUNTIME-INTERFACE-APPS.md §4). */
 	let companyApps: CompanyApps | undefined;
 	/** The agents' next runs for the rail's line under each name (app/agent-notes.ts), while the company is open. */
@@ -686,8 +681,6 @@ export function mountApplication(
 		companyDatabases = undefined;
 		interfaceFolder?.dispose();
 		interfaceFolder = undefined;
-		interfaceOffers?.dispose();
-		interfaceOffers = undefined;
 		companyApps?.dispose();
 		companyApps = undefined;
 		agentNotes?.dispose();
@@ -865,7 +858,7 @@ export function mountApplication(
 				apps: () =>
 					controller.store
 						.get()
-						.apps?.filter((app) => app.manifest !== null)
+						.apps?.filter((app) => app.manifest !== null && app.manifest.kit !== "program")
 						.map((app) => ({
 							name: app.manifest?.name ?? app.name,
 							path:
@@ -1053,21 +1046,6 @@ export function mountApplication(
 				founding.view.update();
 			} else if (route.name === "account") {
 				const revision = accountRevision;
-				if (!accountState.loading && !accountState.loaded) {
-					accountState.loading = true;
-					void api
-						.getAccountEntitlement()
-						.then((entitlement) => {
-							if (disposed || accountRevision !== revision) return;
-							accountState = { ...accountState, loading: false, loaded: true, entitlement };
-							render();
-						})
-						.catch((error) => {
-							if (disposed || accountRevision !== revision) return;
-							accountState = { ...accountState, loading: false, loaded: true, error: describeError(error) };
-							render();
-						});
-				}
 				renderAccount(auth, main, accountState, (next) => {
 					if (disposed || accountRevision !== revision) return;
 					accountState = { ...accountState, ...next };
@@ -1525,8 +1503,6 @@ export function mountApplication(
 			companyDatabases = undefined;
 			interfaceFolder?.dispose();
 			interfaceFolder = undefined;
-			interfaceOffers?.dispose();
-			interfaceOffers = undefined;
 			companyApps?.dispose();
 			companyApps = undefined;
 			agentNotes?.dispose();
@@ -1631,8 +1607,6 @@ export function mountApplication(
 			controller.store.set({ interfacePages: undefined, companyData: undefined });
 			interfaceFolder.dispose();
 			interfaceFolder = undefined;
-			interfaceOffers?.dispose();
-			interfaceOffers = undefined;
 			companyApps?.dispose();
 			companyApps = undefined;
 			agentNotes?.dispose();
@@ -1659,16 +1633,6 @@ export function mountApplication(
 				controller.signal,
 				folderCurrent,
 			);
-			// The offers of claimed cells are read with them, and again each time the folder the pages read changes,
-			// since the save that changes a cell settles its offers (step I9c) and makes or ends a supervision (I9b).
-			const offers = new CompanyInterfaceOffers(
-				interfaceOfferCalls(cloud, controller.profile.environmentId),
-				interfaceSupervisionCalls(cloud, controller.profile.environmentId),
-				(next) => {
-					if (interfaceOffers === offers) controller.store.set({ interfaceOffers: next });
-				},
-				controller.signal,
-			);
 			// The pages' reader and the apps' share one hint channel.
 			const hints = sharedFolderHints(files);
 			const shared = {
@@ -1680,7 +1644,6 @@ export function mountApplication(
 			const reader = new CompanyInterfaceFolder(shared, (folder) => {
 				if (interfaceFolder !== reader) return;
 				controller.store.set({ interfaceFolder: folder });
-				void offers.refresh();
 			});
 			const databases = cloud.config.memberCompanyGatewayUrl
 				? new CompanyDatabases(
@@ -1709,8 +1672,6 @@ export function mountApplication(
 			);
 			interfacePages = pages;
 			interfaceFolder = reader;
-			interfaceOffers = offers;
-			offers.open();
 			pages.open();
 			void reader.open();
 			// The agents' apps, for the apps drawer and the apps' own pages (RUNTIME-INTERFACE-APPS.md §4).
@@ -2341,13 +2302,7 @@ export function mountApplication(
 				);
 				return;
 			case "interface":
-				// A board's take and release write the member's own rows with the same rechecks (step I9a); its offers go
-				// through the company's offers reader (step I9c). A change that could not be made reads the folder again.
 				renderInterface(main, controller, route.id ?? "", {
-					folder: () => memberFolder(companyCurrent, t("Company access changed.")),
-					current: companyCurrent,
-					...(interfaceOffers ? { offers: interfaceOffers } : {}),
-					...(interfaceFolder ? { reread: interfaceFolder.sync.bind(interfaceFolder) } : {}),
 					mailManage: () => {
 						const environment = {
 							profileId: controller.profile.profileId,

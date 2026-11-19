@@ -297,16 +297,6 @@ describe("CodeHostRequests", () => {
 				message: "Undo change 12: A banner on the front page",
 			});
 			expect(t.finishes()).toEqual([finishOf(R1, T1, undone)]);
-			expect(Object.keys(t.finishes()[0]?.args.p_outcome as object)).toEqual([
-				"schema",
-				"state",
-				"result",
-				"mainBefore",
-				"mainAfter",
-				"filesChanged",
-				"paths",
-				"pathsMore",
-			]);
 			// The record's files, for this repository, with the job's own shell and a signal that ends with the record's time.
 			expect(t.inJob).toHaveBeenCalledTimes(1);
 			const [job, target, signal] = t.inJob.mock.calls[0] ?? [];

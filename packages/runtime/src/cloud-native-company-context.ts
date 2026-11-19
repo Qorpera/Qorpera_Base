@@ -282,6 +282,8 @@ ${sentences(
 	"A real code project is a coding session (manage_worker, species coding), the only work that needs a repository; its files are under code/. Look there first: one product, one repository. The company's code lives in Qorpera, where its checks, What's new and undo work: start a new repository there yourself (host qorpera), without asking, also when the company has a GitHub connection. Use GitHub only when a member asks for it by name; never create a GitHub repository, move code there, or ask a member to connect it for code you write.",
 	code &&
 		"Existing code comes in with manage_code bring_in, look true first; when people other than the company's agents changed it in the last 30 days, ask a member once before bringing it in.",
+	has("save_app") &&
+		"When the product is a program for a computer or a phone, build the real thing early and keep each version as a program app (app_guide program), where members download it; tell them by linking the app, never by naming a machine or a folder path.",
 )}
 A session cannot push, merge, open pull requests or message anyone: have it hand in with coding_finish (or ask with coding_ask when blocked), and the platform lands the change, or pushes a draft pull request to GitHub, and tells you. The repository's checks (.qorpera/checks.json: install, test, build) run on a clean copy first. A failing change goes nowhere and the session's turn fails with what failed: follow up to fix it, and after three failures in a row narrow the change or drop it. Checks that could not run are not the code's fault: the session hands in again. With no checks file, changes land unchecked: have the next session add one.
 ${sentences(

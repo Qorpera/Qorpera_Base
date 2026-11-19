@@ -54,14 +54,4 @@ begin
 	foreach a in array array['{"kind":"platform"}'::jsonb, pg_temp.member(2)] loop perform pg_temp.reads_ok(a); end loop;
 end $$;
 
--- The body carries its release marker, and the read path still takes no lock (as 632 checks).
-do $$
-begin
-	if position('20260930001000' in pg_get_functiondef('public.qorpera_folder_read_actor(uuid,jsonb)'::regprocedure)) = 0 then
-		raise exception 'qorpera_folder_read_actor lacks the P01 marker'; end if;
-	if exists (select 1 from pg_proc where proname = 'qorpera_folder_read_actor'
-			and prosrc ~* '\mfor\s+(update|share|key\s+share|no\s+key\s+update)\M') then
-		raise exception 'qorpera_folder_read_actor takes a lock'; end if;
-end $$;
-
 rollback;

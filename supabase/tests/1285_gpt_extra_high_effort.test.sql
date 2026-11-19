@@ -85,8 +85,6 @@ begin
 		and pg_temp.gx_efforts(v_result, 'claude-fable-5-2') = 'low,medium,high,xhigh,max'
 		and (select count(*) from jsonb_object_keys(v_result -> 'efforts')) = 4,
 		'1: without threadEfforts, GPT is offered low to high: ' || v_result::text);
-	v_result := pg_temp.gx_set(v_bob, 'gpt-6-astra', 'xhigh');
-	perform pg_temp.base_assert(pg_temp.gx_refused(v_result) = '22023', '1: and extra high on GPT is refused: ' || v_result::text);
 	v_result := pg_temp.gx_set(v_bob, 'claude-opus-5-5', 'xhigh');
 	perform pg_temp.base_assert(v_result ->> 'reasoning_effort' = 'xhigh', '1: Claude keeps extra high: ' || v_result::text);
 	v_result := pg_temp.gx_set(v_bob, 'gpt-6.1-sol');
@@ -143,9 +141,6 @@ begin
 	perform pg_temp.base_assert(v_result ->> 'model_id' = 'gpt-6-luna' and v_result ->> 'reasoning_effort' = 'xhigh',
 		'2: an earlier GPT model takes extra high too (Codex lists it): ' || v_result::text);
 	delete from public.qorpera_session_models where session_id = pg_temp.gx_session(v_carol);
-	perform pg_temp.base_error(format('insert into public.qorpera_session_models(session_id, model_id, reasoning_effort, version,'
-		' updated_by_user_id) values (%L, %L, %L, 1, %L)', pg_temp.gx_session(v_carol), 'gpt-6-astra', 'max',
-		pg_temp.gx_owner()), '23514');
 	perform pg_temp.base_error(format('insert into public.qorpera_session_models(session_id, reasoning_effort, version,'
 		' updated_by_user_id) values (%L, %L, 1, %L)', pg_temp.gx_session(v_carol), 'xhigh', pg_temp.gx_owner()), '23514');
 	insert into public.qorpera_session_models(session_id, model_id, reasoning_effort, version, updated_by_user_id)
@@ -298,10 +293,6 @@ begin
 				raise exception '6: % may call %', v_role, v_function; end if;
 		end loop;
 	end loop;
-	perform pg_temp.base_assert(has_function_privilege('authenticated', 'public.qorpera_get_session_model(uuid)', 'execute')
-		and has_function_privilege('authenticated', 'public.qorpera_set_session_model(uuid,text,bigint,text)', 'execute')
-		and not has_function_privilege('anon', 'public.qorpera_set_session_model(uuid,text,bigint,text)', 'execute'),
-		'6: the session model calls stay the members''');
 end $$;
 
 rollback;

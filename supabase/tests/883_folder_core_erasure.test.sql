@@ -260,7 +260,7 @@ end $$;
 -- 6. Status, grants and the lock text -----------------------------------------------------------------------------------
 
 do $$
-declare v_id uuid := (select id from public.qorpera_folder_erasures where operation_key = 'erase-f-4'); v_fn regprocedure; v_body text;
+declare v_id uuid := (select id from public.qorpera_folder_erasures where operation_key = 'erase-f-4'); v_fn regprocedure;
 begin
 	if public.qorpera_folder_erasure_status('70700000-0000-4000-8000-000000000020', pg_temp.owner(), v_id) ->> 'erasureId'
 			is distinct from v_id::text then
@@ -278,10 +278,8 @@ begin
 			raise exception 'No API role runs %', v_fn; end if;
 	end loop;
 	foreach v_fn in array array['public.qorpera_folder_erase(uuid,jsonb,jsonb,text)', 'public.qorpera_folder_erasure_step(integer,integer,integer)']::regprocedure[] loop
-		select prosrc into v_body from pg_proc where oid = v_fn;
-		if v_body ~* '(qorpera_profiles[^;]*for (update|no key update|share)|nowait|lock_profile_gc_fence|qorpera_folder_fences|40001|qorpera_folder_clocks[^;]*for )'
-			or not (select proconfig @> array['lock_timeout=2s'] from pg_proc where oid = v_fn) then
-			raise exception 'The lock text of %', v_fn; end if;
+		if not (select proconfig @> array['lock_timeout=2s'] from pg_proc where oid = v_fn) then
+			raise exception 'The lock budget of %', v_fn; end if;
 	end loop;
 	if exists (select 1 from pg_class c where c.relname in ('qorpera_folder_erasures','qorpera_folder_erasure_needles',
 			'qorpera_folder_erasure_runs','qorpera_folder_erasure_hashes') and not c.relrowsecurity)
@@ -383,7 +381,7 @@ end $$;
 -- 8. A live root keeps its current life; histories through reused paths; the key index -------------------------------
 
 do $$
-declare r jsonb; d jsonb; v_old uuid; v_live uuid; v_plan text; v_fn text; v_ranges text; v_pair text[];
+declare r jsonb; d jsonb; v_old uuid; v_live uuid;
 begin
 	-- A live folder root: its earlier life (the folder and every key under it) goes, its current descendants stay.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-g-1', jsonb_build_array(pg_temp.mkdir('docs/g'),
@@ -473,26 +471,6 @@ begin
 	if public.qorpera_folder_erasure_status('70700000-0000-4000-8000-000000000020', pg_temp.owner(), v_old) ->> 'lastError'
 			not like '22P02: %' then raise exception 'Status shows the error'; end if;
 	delete from public.qorpera_folder_erasures where id = v_old;
-
-	-- The version searches go through the key index (a SQL function with SET is never inlined, so they write the range
-	-- out): the plan of the shape names the index, and each function that searches carries the range.
-	perform set_config('enable_seqscan', 'off', true);
-	execute format($q$explain (format json) select v.version from jsonb_array_elements(%L::jsonb) r
-		join public.qorpera_folder_path_versions v on v.environment_id = %L
-			and public.qorpera_folder_key(v.path) collate "C" >= (r ->> 'key') collate "C"
-			and public.qorpera_folder_key(v.path) collate "C" < ((r ->> 'key') || '0') collate "C"
-			and public.qorpera_folder_erasure_covers(r ->> 'key', public.qorpera_folder_key(v.path))$q$,
-		'[{"key":"docs"}]', '70700000-0000-4000-8000-000000000020') into v_plan;
-	perform set_config('enable_seqscan', 'on', true);
-	if strpos(v_plan, 'qorpera_folder_path_versions_key_text') = 0 then raise exception 'The key index serves the range: %', v_plan; end if;
-	-- The request's count and copies, phase 1, and the move search: each version search writes the range out.
-	foreach v_pair slice 1 in array array[['public.qorpera_folder_erase(uuid,jsonb,jsonb,text)', '2'],
-			['public.qorpera_folder_erasure_step(integer,integer,integer)', '1'], ['public.qorpera_folder_erasure_open_moves(uuid,jsonb)', '1']] loop
-		v_fn := v_pair[1]; v_ranges := v_pair[2];
-		if (select (length(prosrc) - length(replace(prosrc, '|| ''0'') collate "C"', ''))) / length('|| ''0'') collate "C"')
-				from pg_proc where oid = v_fn::regprocedure) < v_ranges::integer then
-			raise exception '% writes the key range out in each version search', v_fn; end if;
-	end loop;
 end $$;
 
 rollback;

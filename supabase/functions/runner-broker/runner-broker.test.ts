@@ -54,10 +54,7 @@ describe("runner broker request validation", () => {
 			() => parseRunnerBrokerRequest({ action: "release_native_authority", runnerId, jobId, leaseId, status: "kept" }),
 			/release status/,
 		);
-		// The snapshot-v1 lane's actions are gone (legacy sweep step D5).
-		for (const action of ["inputs", "transcript", "operations", "artifacts", "model", "register_artifact"]) {
-			assert.throws(() => parseRunnerBrokerRequest({ action, runnerId, jobId }), /broker action/);
-		}
+		assert.throws(() => parseRunnerBrokerRequest({ action: "unknown", runnerId, jobId }), /broker action/);
 	});
 
 	it("rejects oversized request bodies before parsing JSON", async () => {

@@ -126,8 +126,6 @@ select pg_temp.check(not has_function_privilege('anon', 'public.qorpera_list_exe
 	and not has_function_privilege('authenticated', 'public.qorpera_list_executor_machines(text,text)', 'execute')
 	and has_function_privilege('service_role', 'public.qorpera_list_executor_machines(text,text)', 'execute'),
 	'the list is the service role''s alone');
-select pg_temp.check((select bool_and(position(marker in pg_get_functiondef('public.qorpera_list_executor_machines(text,text)'::regprocedure)) > 0)
-	from unnest(array['20260930737000', '20260929730000', '(20260930055000)']) marker), 'the body names this migration and keeps the earlier ones');
 
 -- Remove the fixture: the machine node and executor, then 648's company rows as 648 removes them.
 set session_replication_role = replica;

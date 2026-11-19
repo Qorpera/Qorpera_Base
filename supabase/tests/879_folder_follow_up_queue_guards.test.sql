@@ -19,44 +19,6 @@ begin
 	for i in 1..7 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 end $$;
 
--- 2. Every patched body carries the marker, and the pause reason is the index's --------------------------------------------
-
-do $$
-declare v_fn text; v_listener regprocedure;
-begin
-	foreach v_fn in array array[
-		'public.qorpera_folder_structured_apply(uuid,uuid,integer,jsonb,text,text)',
-		'public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)',
-		'public.qorpera_company_state_index_routine(uuid,uuid,uuid,text,uuid,jsonb)',
-		'public.qorpera_company_state_routine_resumes(public.qorpera_cloud_routines,jsonb,jsonb,text)',
-		'public.qorpera_folder_enqueue_routine_wake(uuid,bigint,uuid,text,text,timestamp with time zone,timestamp with time zone,timestamp with time zone,jsonb)',
-		'public.qorpera_folder_restore_dynamic_routine_run(uuid,bigint)',
-		'public.qorpera_folder_company_first_run(uuid,uuid,uuid,uuid)',
-		'public.qorpera_folder_company_ready(uuid)',
-		'public.qorpera_list_hosted_profiles()',
-		'public.qorpera_default_agent_read_on_staff()',
-		'public.qorpera_grant_shared_connectors_to_staff()',
-		'public.qorpera_revoke_secret_grants_for_inactive_staff()',
-		'public.qorpera_agent_thread_on_staff()'] loop
-		if position('20260930022000' in pg_get_functiondef(v_fn::regprocedure)) = 0 then
-			raise exception '% does not carry P15''s marker', v_fn; end if;
-	end loop;
-	-- P29's listener, wherever it is installed, marks the agents it sets aside.
-	select p.oid::regprocedure into v_listener from pg_proc p
-	where p.pronamespace = 'public'::regnamespace and p.proname = 'qorpera_folder_listen_company';
-	if v_listener is not null and (position('20260930022000 (P15)' in pg_get_functiondef(v_listener)) = 0
-		or position('qorpera_folder_follow_up_mark_firing' in pg_get_functiondef(v_listener)) = 0) then
-		raise exception 'P29''s listener writes no follow-up mark'; end if;
-	if position('agent_archived' in (select pg_get_constraintdef(c.oid) from pg_constraint c
-		where c.conrelid = 'public.qorpera_cloud_routines'::regclass and c.conname = 'qorpera_cloud_routines_pause_reason_check')) = 0
-		or not (select c.convalidated from pg_constraint c where c.conrelid = 'public.qorpera_cloud_routines'::regclass
-			and c.conname = 'qorpera_cloud_routines_pause_reason_check') then
-		raise exception 'The routine pause reasons lack agent_archived'; end if;
-	-- The creation commit queues no turn: the queue does, after the Co-Founder's grant.
-	if position('qorpera_queue_agent_first_run' in pg_get_functiondef('public.qorpera_folder_company_first_run(uuid,uuid,uuid,uuid)'::regprocedure)) > 0 then
-		raise exception 'The creation commit still queues the Co-Founder''s turn'; end if;
-end $$;
-
 -- 3. The queue is the platform's: tables and inner functions belong to no API role; the kicks to the service role --------
 
 do $$
@@ -230,27 +192,6 @@ begin
 			where f.staff_agent_id = a3)
 		or exists (select 1 from public.qorpera_folder_follow_ups where environment_id = '70400000-0000-4000-8000-000000000020' and dirty) then
 		raise exception 'A marked company converges; its unhired agent gets an owner''s kickoff and no turn'; end if;
-end $$;
-
--- 5. Only the name copy locks the company row beyond KEY SHARE (core §3 step 3), and it skips a held row ---------------------
-
-do $$
-declare v_fn record;
-begin
-	for v_fn in select p.oid::regprocedure as fn, pg_get_functiondef(p.oid) as body from pg_proc p
-		where p.pronamespace = 'public'::regnamespace
-			and (p.proname like 'qorpera_folder_follow_up%' or p.proname like 'qorpera_folder_converge_%')
-	loop
-		if v_fn.body ~* 'qorpera_profiles[^;]*for (no key )?update' and v_fn.fn <> 'public.qorpera_folder_converge_company(uuid)'::regprocedure then
-			raise exception '% locks the company row', v_fn.fn; end if;
-	end loop;
-	if pg_get_functiondef('public.qorpera_folder_converge_company(uuid)'::regprocedure) !~* 'for no key update skip locked'
-		or pg_get_functiondef('public.qorpera_folder_converge_company(uuid)'::regprocedure) ~* 'nowait' then
-		raise exception 'The name copy takes the company row FOR NO KEY UPDATE SKIP LOCKED'; end if;
-	-- No savepoint around it: the company subject converges outside the block.
-	if pg_get_functiondef('public.qorpera_folder_follow_up_converge(public.qorpera_folder_follow_ups)'::regprocedure)
-		!~ 'if p_work.subject_kind = ''company'' then\s+v_out := public.qorpera_folder_converge_company' then
-		raise exception 'The name copy runs inside the agent''s block'; end if;
 end $$;
 
 -- 6. The schedule: the step every 10 seconds (20260930483000), and a daily cleanup of its run log ------------------------

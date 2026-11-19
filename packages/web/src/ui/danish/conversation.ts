@@ -150,7 +150,6 @@ export const CONVERSATION: Record<string, string> = {
 	"{name} is writing": "{name} skriver",
 	"{name} is using its computer": "{name} bruger sin computer",
 	// A run with no progress for 15 minutes (conversation.ts, interfaces.ts, views/execution-notices.ts)
-	"No progress": "Ingen fremgang",
 	"{agent} has made no progress for {minutes} minutes.": "{agent} har ikke haft fremgang i {minutes} minutter.",
 	"An agent": "En agent",
 	"The work could not be stopped. Try again.": "Arbejdet kunne ikke stoppes. Prøv igen.",
@@ -298,6 +297,24 @@ export const CONVERSATION: Record<string, string> = {
 	"Opening… {percent}%": "Åbner… {percent}%",
 	"This page can't be shown live.": "Siden kan ikke vises direkte.",
 	"App: {name}": "App: {name}",
+	"This program has no version yet.": "Programmet har ingen version endnu.",
+	"This program's program.json can't be read.": "Programmets program.json kan ikke læses.",
+	"Version {version} · {day}": "Version {version} · {day}",
+	Install: "Installér",
+	"Download for {kind}": "Hent til {kind}",
+	"Download {kind}": "Hent {kind}",
+	"Not made for {kind} yet": "Ikke lavet til {kind} endnu",
+	"For this computer": "Til denne computer",
+	"For this phone": "Til denne telefon",
+	"It's in your Downloads.": "Den ligger i dine overførsler.",
+	"This file is no longer in the app's folder.": "Filen er ikke længere i appens mappe.",
+	"This file changed after version {version} was kept.": "Filen er ændret, efter at version {version} blev gemt.",
+	"The download stopped. Try again.": "Hentningen stoppede. Prøv igen.",
+	"Earlier versions": "Tidligere versioner",
+	"None yet": "Ingen endnu",
+	"Back to the newest, {version}": "Tilbage til den nyeste, {version}",
+	"{name} on a computer": "{name} på en computer",
+	"{name} on a phone": "{name} på en telefon",
 	"This app reloaded itself. Press Reload to start it again.":
 		"Appen genindlæste sig selv. Tryk Genindlæs for at starte den igen.",
 
@@ -363,26 +380,10 @@ export const CONVERSATION: Record<string, string> = {
 	"Sent without waking the coworker": "Sendt uden at vække kollegaen",
 	"Left for {name}'s next turn": "Til {name} ved næste tur",
 
-	// The run status line (app/views/session-run.ts)
-	"Cloud run": "Kørsel i skyen",
-	"Cloud run status is unavailable.": "Status for kørslen i skyen er ikke tilgængelig.",
-	"Cloud run status is unavailable. Refresh to try again.":
-		"Status for kørslen i skyen er ikke tilgængelig. Opdater for at prøve igen.",
-	"Checking cloud run…": "Tjekker kørsel i skyen…",
-	"Cloud run queued.": "Kørsel i skyen er i kø.",
-	"Cloud run in progress.": "Kørsel i skyen er i gang.",
-	"No active cloud run.": "Ingen aktiv kørsel i skyen.",
-	"Stop could not be confirmed. Refresh run status before trying again.":
-		"Stop kunne ikke bekræftes. Opdater kørselsstatus, før du prøver igen.",
-	"Stopping selected cloud run…": "Stopper den valgte kørsel i skyen…",
-	"Refresh run status": "Opdater kørselsstatus",
 	Refresh: "Opdater",
-	"Stop cloud run": "Stop kørsel i skyen",
-	"Stop run": "Stop kørsel",
 
 	// The model account (app/views/session-execution.ts)
 	"Model accounts are unavailable. Trying again…": "Modelkonti er ikke tilgængelige. Prøver igen…",
-	"Execution history is unavailable.": "Kørselshistorikken er ikke tilgængelig.",
 	"Retry keeps the original model account and message request. The earlier message may already have been accepted. Starting a new request can send it again.":
 		"Prøv igen bruger den samme modelkonto og beskedanmodning. Den tidligere besked kan allerede være modtaget. En ny anmodning kan sende den igen.",
 	"Start a new message request": "Start en ny beskedanmodning",
@@ -415,6 +416,9 @@ export const CONVERSATION: Record<string, string> = {
 	"Out of usage until {time}": "Forbruget er brugt op indtil {time}",
 	"Out of usage": "Forbruget er brugt op",
 	"Keep going with {account}": "Fortsæt med {account}",
+	"Claude is out of usage until {time}": "Claude-forbruget er brugt op indtil {time}",
+	"{account} is used up. Keep going with {other}": "{account} er brugt op. Fortsæt med {other}",
+	"New Claude work now uses {account}": "Nyt Claude-arbejde bruger nu {account}",
 	"All {count} chats": "Alle {count} chats",
 	"Just this one": "Kun denne",
 	"Or use {accounts}": "Eller brug {accounts}",

@@ -776,16 +776,14 @@ describe("answering a card", () => {
 });
 
 describe("conversation lifecycle regressions", () => {
-	it("requires explicit sponsorship and never falls back to ordinary append", async () => {
+	it("requires explicit sponsorship", async () => {
 		const f = fixture();
-		vi.spyOn(f.api, "appendPrompt");
 		const controller = new CompanyController(f.api, profileA, userA.id);
 		cleanup.push(() => controller.stop());
 		controller.store.set({ team, sessions: [session] });
 		expect(await controller.sendPrompt(session.sessionId, "Draft")).toBe(false);
 		controller.setExecutionSponsor(session.sessionId, connections, id(80));
 		expect(await controller.sendPrompt(session.sessionId, "Draft")).toBe(false);
-		expect(f.api.appendPrompt).not.toHaveBeenCalled();
 		expect(controller.conversation(session.sessionId).get().draft).toBe("Draft");
 	});
 	it.each(["revoked", "reauthentication", "disabled", "planned", "identity", "binding"])(
@@ -903,10 +901,9 @@ describe("conversation lifecycle regressions", () => {
 		expect(() => controller.discardSendRetry(session.sessionId)).toThrow("not available");
 	});
 	it("refuses a write from an already closed view", async () => {
-		const { controller } = company();
+		const { controller, write } = company();
 		controller.store.set({ team, sessions: [session], loading: false });
 		const view = new AbortController();
-		const write = vi.spyOn(controller, "assertCanSend");
 		view.abort();
 		expect(await controller.sendPrompt(session.sessionId, "Draft", view.signal)).toBe(false);
 		expect(write).not.toHaveBeenCalled();
@@ -927,13 +924,12 @@ describe("conversation lifecycle regressions", () => {
 		expect(append.mock.calls[1]?.[1]).toBe(append.mock.calls[0]?.[1]);
 	});
 	it("refuses writes to unknown or closed conversations", async () => {
-		const { api, controller } = company();
-		const append = vi.spyOn(api, "appendPrompt");
+		const { controller, write } = company();
 		controller.store.set({ team, sessions: [] });
 		expect(await controller.sendPrompt(session.sessionId, "Draft")).toBe(false);
 		controller.store.set({ sessions: [{ ...session, status: "closed" }] });
 		expect(await controller.sendPrompt(session.sessionId, "Draft")).toBe(false);
-		expect(append).not.toHaveBeenCalled();
+		expect(write).not.toHaveBeenCalled();
 	});
 	it("does not let an older roster response overwrite the current roster", async () => {
 		const { api, controller } = company();

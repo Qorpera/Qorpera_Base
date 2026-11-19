@@ -7175,6 +7175,42 @@ bundle; no migration, host call or image moves.
 3. **A look on a machine** is one round that ends in the link, and is reported as a look at the files on a machine,
    never as a test in the app.
 
+### 2026-11-18 amendment: programs members download (the program kit)
+
+> The founder, 18 November 2026: "for desktop apps surely we can create a private space were companies can upload and
+> share code/programs with its members - like a github repo, just built for downloading and testing apps, not for
+> reading code", and "Yes, build step 1" to "kept versions and the program's page with Download". The detail is
+> RUNTIME-INTERFACE-APPS.md §3f and §7 step 15.
+
+1. **A program is an interface app.** Of the kit `program`, in `apps/<name>/` with its `app.toml`; no new tool, no new
+   top-level folder, no migration. Its builds are files in `apps/<name>/versions/<version>/`, which an agent copies
+   there from a machine; `save_app` takes `program.json` (`version`, `forms`, `screens`), refuses a file that is not in
+   the folder, a kept version with other files and an earlier version, and keeps every version, newest first, with its
+   date, sizes and hashes. Nothing in `versions/` is deleted.
+2. **The web draws its page.** Not in the app's frame: the program, its pictures, one Download for the member's own
+   computer or phone, the five kinds, and the earlier versions. A download is the member's own read through Storage's
+   path. Everyone who may read the company folder sees it and may download.
+3. **The agents' words.** `app_guide program` says how to hand in a program; the company context's code projects say
+   to build the real thing early, keep each version as a program app and link the app, never a machine or a folder.
+4. **Order.** An older web reads the kit as a manifest with problems and hides the app: the web goes live first, then
+   the runtime bundle that carries the kit.
+
+### 2026-11-18 amendment: a member adds a program of their own
+
+> The founder, 18 November 2026, after seeing step 1's page: "then build step 2, add your own". The detail is
+> RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md §7 and RUNTIME-INTERFACE-APPS.md §3f and §7 step 16.
+
+1. **One way in for a browser's bytes.** The object gateway's member program route takes a file of at most 256 MiB in
+   4 MiB pieces, each its own request through the member company gateway, staged under the member's own upload intent,
+   the whole checked against the SHA-256 the member named, and committed as the member at
+   `apps/<name>/versions/<version>/<file>`, only where no file is (the same file again is answered as saved). No other folder path takes bytes from a browser. One upload in flight per
+   member; an upload not finished leaves nothing in the folder. No migration.
+2. **The text** (`app.toml`, `program.json`) goes through the member commit route after the bytes, `program.json` with
+   its version, so two members adding at once never lose a version.
+3. **Who.** A member who may write the folder makes a program or adds a version to a program a member made, never to
+   an agent's. A kept version may name the member who added it (`userId`); an agent's never does.
+4. **Order.** The object gateway and the member company gateway function, then the web.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema

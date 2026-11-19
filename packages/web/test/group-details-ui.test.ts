@@ -183,11 +183,10 @@ describe("group details from the conversation header", () => {
 		},
 	);
 
-	it("edits title, subtitle and description in place without an Edit group button", async () => {
+	it("edits title, subtitle and description in place", async () => {
 		const f = setup();
-		const panel = f.open();
+		f.open();
 		await settle();
-		expect(button("Edit group")).toBeUndefined();
 		expect(field("name").getAttribute("aria-label")).toBe("Group title");
 		expect(field("subtitle").value).toBe("Group chat");
 		let canonical = { ...room };
@@ -216,7 +215,6 @@ describe("group details from the conversation header", () => {
 			members: room.members,
 		});
 		expect(f.header.querySelector("h1")?.textContent).toBe("Launch team");
-		expect(panel.querySelector(".group-edit-form")).toBeNull();
 	});
 
 	it("cancels with Escape without closing the panel and rejects empty required text", async () => {
