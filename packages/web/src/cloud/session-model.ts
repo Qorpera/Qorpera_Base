@@ -8,7 +8,7 @@ export type SessionProvider = (typeof SESSION_PROVIDERS)[number];
 export const SESSION_MODELS = [
 	{ id: "gpt-6.2-sol", name: "GPT-6.2 Sol", provider: "openai" },
 	{ id: "gpt-6-astra", name: "GPT-6 Astra", provider: "openai" },
-	// WHY: a cloud before 20260930803000 still offers GPT-6.1 Sol; the list shows only the models the cloud names.
+	// WHY: a cloud before 20260930816000 still offers GPT-6.1 Sol; the list shows only the models the cloud names.
 	{ id: "gpt-6.1-sol", name: "GPT-6.1 Sol", provider: "openai" },
 	{ id: "claude-fable-5-2", name: "Fable 5.2", provider: "anthropic" },
 	{ id: "claude-opus-5-5", name: "Opus 5.5", provider: "anthropic" },

@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 - GPT-6.2 Sol (the founder, 18 November 2026: "update gpt sol 6.1 to sol 6.2, and make that the default gpt model used
-  over astra 6"; contract, the 2026-11-18 amendment; migration `20260930803000`, SQL test 1299). A conversation's Model
+  over astra 6"; contract, the 2026-11-18 amendment; migration `20260930816000`, SQL test 1299). A conversation's Model
   menu offers GPT-6.2 Sol and GPT-6 Astra (`models`); GPT-6.1 Sol leaves the table and the setter, and conversations on it
   move to GPT-6.2 Sol. An agent whose agent.md names no model is on GPT-6.2 Sol (the roster index's default and a move of
   the agents indexed before), so its runs take it on the provider-mapping path; an agent.md that names a model and a

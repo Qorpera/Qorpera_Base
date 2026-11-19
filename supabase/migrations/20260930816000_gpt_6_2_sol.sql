@@ -1,9 +1,9 @@
 do $$ begin
 	if strpos(pg_get_functiondef('public.qorpera_get_session_model(uuid)'::regprocedure), 'gpt-6.2-sol') > 0 then
-		raise exception '20260930803000 is already applied'; end if;
+		raise exception '20260930816000 is already applied'; end if;
 	if to_regprocedure('public.qorpera_model_policy_thread_efforts(jsonb)') is null
 		or to_regprocedure('public.qorpera_member_may_pick_claude(uuid,uuid)') is null then
-		raise exception '20260930803000 needs conversation models (20260930784000) and GPT extra high (20260930788000)';
+		raise exception '20260930816000 needs conversation models (20260930784000) and GPT extra high (20260930788000)';
 	end if;
 end $$;
 
@@ -14,7 +14,7 @@ returns void language plpgsql as $$
 declare v_definition text := pg_get_functiondef(p_function);
 begin
 	if p_old = '' or (length(v_definition) - length(replace(v_definition, p_old, ''))) / length(p_old) <> 1 then
-		raise exception '20260930803000 anchor differs in %: %', p_function, left(p_old, 80); end if;
+		raise exception '20260930816000 anchor differs in %: %', p_function, left(p_old, 80); end if;
 	execute replace(v_definition, p_old, p_new);
 end $$;
 

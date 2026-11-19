@@ -2457,7 +2457,7 @@ conversation where a member picked `gpt-6-astra` keeps it. agent.md's own
 `model` values are unchanged (gpt-6-astra, gpt-6-sol, gpt-6-luna). A run with no
 mapping on a native subscription (`provider-default`) still sends no model, and
 coding sessions still start on the pinned Codex's own default. Migration
-20260930803000. Built, not live: it goes live with the release that runs the
+20260930816000. Built, not live: it goes live with the release that runs the
 migration; the release must first prove a real turn of the pinned Codex
 (0.155.1) on `gpt-6.2-sol`, since the provider refuses a model whose
 minimal Codex version is newer than the binary (as GPT-6 Astra was refused for
