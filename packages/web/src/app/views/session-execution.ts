@@ -852,6 +852,11 @@ export class SessionExecutionView {
 	}
 
 	#render(): void {
+		if (this.#company.store.get().team?.role === "viewer") {
+			if (this.#renderKey !== "spectator") replace(this.el);
+			this.#renderKey = "spectator";
+			return;
+		}
 		const conversation = this.#company.conversation(this.#sessionId).get();
 		const canWrite = this.#canWrite();
 		const selected = conversation.retrySend?.executionSponsor ?? conversation.executionSponsor;

@@ -169,6 +169,20 @@ function buttonNamed(view: ConversationView, label: string): HTMLButtonElement |
 const CONNECT_HINT = "Connect a model account in Settings → AI subscriptions to send messages.";
 const OUT_OF_USAGE = `Out of usage until ${fmtTime("2099-01-01T00:00:00.000Z")}`;
 
+describe("a spectator", () => {
+	it("is shown no model accounts or usage, only that they read along", async () => {
+		const f = setup(false, connections(0));
+		await settle();
+		expect(f.view.el.textContent).toContain(CONNECT_HINT);
+		f.company.store.set({ team: { ...team, role: "viewer", capabilities: { ...team.capabilities, write: false } } });
+		refresh();
+		await settle();
+		expect(f.view.el.textContent).not.toContain(CONNECT_HINT);
+		expect(f.view.el.textContent).not.toContain("AI subscriptions");
+		expect(f.view.el.textContent).toContain("You're a spectator: you read along, and the founders write.");
+	});
+});
+
 describe("reading the accounts", () => {
 	const showing = (state: DocumentVisibilityState) =>
 		Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });

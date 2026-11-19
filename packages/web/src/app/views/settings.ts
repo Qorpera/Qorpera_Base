@@ -8,6 +8,7 @@ import { agentFigure } from "../../ui/avatar.ts";
 import { companyLogos } from "../../ui/company-logos.ts";
 import { showCompanyName } from "../../ui/company-name.ts";
 import { button, h, icon, notice, replace } from "../../ui/dom.ts";
+import { friendsCount } from "../../ui/friends-count.ts";
 import { leave } from "../../ui/motion.ts";
 import { phrase, t, uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
@@ -81,6 +82,7 @@ function connectionsPage(title: string, rule: string, ...content: HTMLElement[])
 export class SettingsView {
 	readonly el: HTMLElement;
 	readonly #api: CloudApi;
+	readonly #hub: HubController;
 	readonly #auth: AuthController;
 	/** The account's friends, for the Company tab's invitation picker; the list itself is the Friends window's. */
 	readonly #friends: FriendsController;
@@ -174,6 +176,7 @@ export class SettingsView {
 		openFriends: () => void = () => {},
 	) {
 		this.#api = api;
+		this.#hub = hub;
 		this.#auth = auth;
 		this.#friends = new FriendsController(api);
 		this.#close = close;
@@ -240,16 +243,17 @@ export class SettingsView {
 			uiText("Back to companies"),
 		);
 		nav.append(tablist, empty, back);
-		// Friends, a window of its own, beside Settings | Storage (Jonas, 9 Nov 2026): inside a company the friends
-		// button lives here rather than in the rail. Plain, with no fill or dot; its label says when invitations wait.
+		const friendsCountSlot = h("span", { class: "settings-friends-count" });
 		const friendsButton = h(
 			"button",
 			{ type: "button", class: "settings-friends", onclick: () => this.#openFriends() },
 			icon("friends"),
 			uiText(phrase("Friends")),
+			friendsCountSlot,
 		);
 		const countInvitations = () => {
 			const waiting = hub.store.get().invitations.length;
+			friendsCountSlot.replaceChildren(...(waiting > 0 ? [friendsCount(waiting)] : []));
 			const label =
 				waiting > 0 ? t("Friends: {count} company invitations waiting", { count: waiting }) : t("Friends");
 			friendsButton.setAttribute("aria-label", label);
@@ -918,6 +922,10 @@ export class SettingsView {
 				},
 				folder,
 				signal: lifetime,
+				renamed: (name) => {
+					company.store.set(({ profile }) => ({ profile: { ...profile, profileName: name } }));
+					this.#hub.renamed(company.profile.profileId, name);
+				},
 			});
 			if (company.store.get().team?.capabilities.write)
 				void companyLogos()

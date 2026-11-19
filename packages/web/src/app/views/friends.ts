@@ -281,11 +281,21 @@ function friendMeta(friend: HostedFriend, now: number): RowMeta {
 	return seen ? { text: seen.text, title: t("Friends {since}", { since }), online: seen.online } : since;
 }
 
-function invitationRow(hub: HubController, invitation: HostedIncomingProfileInvitation, busy: boolean): HTMLElement {
+function invitationRow(
+	hub: HubController,
+	invitation: HostedIncomingProfileInvitation,
+	busy: boolean,
+	friends: readonly HostedFriend[],
+): HTMLElement {
+	const inviter = friends.find((friend) => friend.userId === invitation.invitedByUserId);
+	const name = inviter ? inviter.displayName || inviter.email : undefined;
+	const spectator = invitation.role === "viewer";
 	return h(
 		"div",
-		{ class: "person-row" },
-		companyLogo(invitation.profileId, "person-company", isUnnamed(invitation.profileName)),
+		{ class: "person-row person-invitation" },
+		inviter
+			? personAvatar(name ?? "", invitation.invitedByUserId)
+			: companyLogo(invitation.profileId, "person-company", isUnnamed(invitation.profileName)),
 		h(
 			"div",
 			{ class: "person-copy" },
@@ -293,17 +303,21 @@ function invitationRow(hub: HubController, invitation: HostedIncomingProfileInvi
 			h(
 				"span",
 				{ class: "muted small" },
-				t("Invited as {role} · expires {date}", {
-					role: roleLabel(invitation.role),
-					date: fmtDate(invitation.expiresAt),
-				}),
+				spectator
+					? name
+						? t("{name} invited you as a spectator · no subscription needed", { name })
+						: t("Invited as a spectator · no subscription needed")
+					: t("Invited as {role} · expires {date}", {
+							role: roleLabel(invitation.role),
+							date: fmtDate(invitation.expiresAt),
+						}),
 			),
 		),
 		h(
 			"div",
 			{ class: "person-actions" },
 			button(t("Decline"), () => void hub.respondInvitation(invitation, false), { disabled: busy }),
-			button(t("Accept"), () => void hub.respondInvitation(invitation, true), { primary: true, disabled: busy }),
+			button(t("Join"), () => void hub.respondInvitation(invitation, true), { primary: true, disabled: busy }),
 		),
 	);
 }
@@ -500,7 +514,9 @@ export function renderFriends(friends: FriendsController, hub: HubController, co
 		outcome ? h("p", { class: "panel-empty muted" }, outcome) : null,
 		group(
 			t("Company invitations"),
-			invitations.map((invitation) => invitationRow(hub, invitation, companies.busyInvitation === invitation.id)),
+			invitations.map((invitation) =>
+				invitationRow(hub, invitation, companies.busyInvitation === invitation.id, state.friends),
+			),
 		),
 		group(
 			t("Requests for you"),
