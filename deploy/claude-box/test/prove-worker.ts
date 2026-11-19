@@ -368,7 +368,7 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 		const renewalState = join(renewalDir, "state.json");
 		const renewalLog = join(renewalDir, "stub.jsonl");
 		const proxyLog = join(renewalDir, "proxy.jsonl");
-		writeFileSync(renewalState, JSON.stringify({ valid: "FILE", n: 0, refuse: false, steps: [], revoked: [], expiresIn: 320, exp: {} }));
+		writeFileSync(renewalState, JSON.stringify({ valid: "FILE", n: 0, validS: "SECOND", nS: 0, refuse: false, steps: [], revoked: [], expiresIn: 320, exp: {} }));
 		writeFileSync(join(renewalDir, "allow"), "platform.claude.com\napi.anthropic.com\n");
 		const renewalStubPort = 20000 + Math.floor(Math.random() * 9000);
 		const renewalProxyPort = renewalStubPort + 1;
@@ -1165,6 +1165,68 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 		check("stays-signed-in", idleChecked === 1 && login()?.status === "active" && (login()?.version ?? 0) === beforeIdle + 1
 			&& renewals().at(-1)?.answer?.startsWith("R") === true,
 			`after all runs: the idle check renewed ${beforeIdle} -> ${login()?.version} (${renewals().at(-1)?.sent} -> ${renewals().at(-1)?.answer}); status ${login()?.status}`);
+		const firstLogin = login()?.id as string;
+		const secondLogin = "c4c00000-0000-4000-8000-0000000000c2";
+		const secondFiles = loginFiles(canary("SECOND"), Date.now() - 3600_000);
+		const secondEnvelope = Buffer.from(
+			keyring.sealMember(
+				{ [CLAUDE_LOGIN_FIELD]: JSON.stringify({ schema: CLAUDE_LOGIN_FILES_SCHEMA, files: secondFiles }) },
+				{ memberId: owner, loginId: secondLogin, version: 1, keyId: KEY_ID },
+			),
+		);
+		session(`insert into public.qorpera_claude_logins(id, owner_user_id, principal_id, client_connection_id, key_id, encrypted_envelope,
+				envelope_sha256, provider_account_email)
+			values ('${secondLogin}', '${owner}', '12680000-0000-4000-8000-000000000050', extensions.gen_random_uuid(), '${KEY_ID}',
+				decode('${secondEnvelope.toString("base64")}', 'base64'), '${sha256(secondEnvelope)}', 'second@example.test');`);
+		secondEnvelope.fill(0);
+		const logins = () =>
+			sessionJson<{ id: string; version: number; status: string; in_use: boolean }[]>(
+				`select coalesce(jsonb_agg(jsonb_build_object('id', id, 'version', version, 'status', status, 'in_use', in_use) order by created_at),
+					'[]')::text from public.qorpera_claude_logins where owner_user_id = '${owner}' and id in ('${firstLogin}', '${secondLogin}');`,
+			);
+		const ofLogin = (id: string) => logins().find((row) => row.id === id);
+		const leaseLogin = (workerId: string) =>
+			sessionJson<string | null>(`select to_jsonb((select claude_login_id from public.qorpera_claude_worker_leases
+				where worker_id = '${workerId}' order by taken_at desc limit 1))::text;`);
+		const wA = "c4c00000-0000-4000-8000-0000000001c0";
+		const wB = "c4c00000-0000-4000-8000-0000000001c1";
+		drain();
+		dispatch("login-a", wA, "On the first login");
+		drain();
+		const bA = leased(start(wA));
+		session(`update public.qorpera_claude_logins set in_use = false where id = '${firstLogin}';
+			update public.qorpera_claude_logins set in_use = true where id = '${secondLogin}';
+			update public.qorpera_runtime_workers set claude_login_id = '${secondLogin}' where id = '${wA}';`);
+		dispatch("login-b", wB, "On the second login");
+		drain();
+		const bB = leased(start(wB));
+		const firstBefore = ofLogin(firstLogin)?.version ?? 0;
+		const [rA, rB] = await Promise.all([
+			runWorker(bA, scenario("login-a", long, "First login done.", 1), { parallel: true }),
+			runWorker(bB, scenario("login-b", long, "Second login done.", 1), { parallel: true }),
+		]);
+		if (rA.ok && rA.providerSessionId) complete(bA, rA.providerSessionId);
+		if (rB.ok && rB.providerSessionId) complete(bB, rB.providerSessionId);
+		const first = renewals().filter((r) => r.answer?.startsWith("R"));
+		const second = renewals().filter((r) => r.sent?.startsWith("S"));
+		const fromFirst = new Set(first.map((r) => r.answer as string));
+		const fromSecond = new Set(second.map((r) => r.answer as string));
+		check("second-login-leases", leaseLogin(wA) === firstLogin && leaseLogin(wB) === secondLogin
+			&& (worker(wB) as { claude_login_id?: string } | null)?.claude_login_id === secondLogin,
+			`a run's lease keeps the login it started on, after the member's switch and its worker's follow-up: A ${leaseLogin(wA)?.slice(-2)}, B ${leaseLogin(wB)?.slice(-2)}`);
+		check("second-login-own-runs", rA.ok && rB.ok && (rA.stub?.authTags ?? []).length >= 2 && (rB.stub?.authTags ?? []).length >= 2
+			&& (rA.stub?.authTags ?? []).every((tag) => fromFirst.has(tag)) && (rB.stub?.authTags ?? []).every((tag) => fromSecond.has(tag))
+			&& rA.stub?.refreshes === 0 && rB.stub?.refreshes === 0,
+			`each run spoke only with its own login's versions, the newer put in place while it worked, and renewed nothing itself: A ${JSON.stringify(rA.stub?.authTags)}, B ${JSON.stringify(rB.stub?.authTags)}; ${rA.error?.slice(0, 120) ?? ""} ${rB.error?.slice(0, 120) ?? ""}`);
+		check("second-login-renewed", second.length >= 2 && second[0]?.sent === "SECOND" && second.every((r) => r.answer !== "invalid_grant")
+			&& second.every((r, i, all) => i === 0 || r.sent === all[i - 1]?.answer)
+			&& renewals().filter((r) => r.answer === "invalid_grant").length === 0
+			&& (ofLogin(secondLogin)?.version ?? 0) === second.length + 1 && (ofLogin(firstLogin)?.version ?? 0) > firstBefore,
+			`the vault renewed each login on its own chain, from its newest refresh token, none refused: second ${JSON.stringify(second.map((r) => `${r.sent}->${r.answer}`))} (version ${ofLogin(secondLogin)?.version}), first ${firstBefore} -> ${ofLogin(firstLogin)?.version}`);
+		check("second-login-in-use", JSON.stringify(logins().map((row) => [row.status, row.in_use])) === JSON.stringify([["active", false], ["active", true]]),
+			`both logins active, the second In use: ${JSON.stringify(logins())}`);
+		session(`update public.qorpera_claude_logins set in_use = false where id = '${secondLogin}';
+			update public.qorpera_claude_logins set in_use = true where id = '${firstLogin}';`);
 		session("update public.qorpera_claude_parallel_runs set cap = 1;");
 
 		drain();
