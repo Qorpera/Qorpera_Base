@@ -1,13 +1,4 @@
-import {
-	foldWallDone,
-	isWallDay,
-	parseWall,
-	renderWall,
-	WALL_ITEM_MAX_CHARS,
-	wallHandle,
-	wallPath,
-	wallPreview,
-} from "@qorpera/cloud-client/agent-wall";
+import { parseWall, WALL_ITEM_MAX_CHARS, wallHandle } from "@qorpera/cloud-client/agent-wall";
 import { expect, it } from "vitest";
 
 const WALL = {
@@ -20,7 +11,6 @@ const WALL = {
 };
 
 it("names an agent's wall in its folder, and only there", () => {
-	expect(wallPath("co-founder")).toBe("QorperaOS/agents/co-founder/wall.md");
 	expect(wallHandle("QorperaOS/agents/co-founder/wall.md")).toBe("co-founder");
 	expect(wallHandle("qorperaos/Agents/Nora/WALL.md")).toBe("Nora");
 	expect(wallHandle("QorperaOS/agents/groups/wall.md")).toBeNull();
@@ -28,34 +18,25 @@ it("names an agent's wall in its folder, and only there", () => {
 	expect(wallHandle("notes/wall.md")).toBeNull();
 });
 
-it("keeps the file's own head as written", () => {
-	const text = renderWall(WALL, "# Our wall\n\nAsk Nora about anything here.\n\n");
-	expect(text.startsWith("# Our wall\n\nAsk Nora about anything here.\n\n## Waits on you\n")).toBe(true);
-	expect(parseWall(text).head).toBe("# Our wall\n\nAsk Nora about anything here.");
-	expect(renderWall(WALL, "").startsWith("# Wall\n\n## Waits on you")).toBe(true);
-});
+const TEXT = [
+	"# Wall",
+	"",
+	"## Waits on you",
+	"- Pick a shop name",
+	"  My pick is Båndklar. [Names](folder:research/names.md)",
+	"",
+	"## Working on",
+	"- Checking five shops' prices",
+	"- Finding a supplier",
+	"",
+	"## Done",
+	"- 2026-11-05: Team hired",
+	"- 2026-10-20: Budget made [Budget](folder:money/budget.md)",
+	"",
+].join("\n");
 
-it("writes the kept form and reads it back", () => {
-	const text = renderWall(WALL);
-	expect(text).toBe(
-		[
-			"# Wall",
-			"",
-			"## Waits on you",
-			"- Pick a shop name",
-			"  My pick is Båndklar. [Names](folder:research/names.md)",
-			"",
-			"## Working on",
-			"- Checking five shops' prices",
-			"- Finding a supplier",
-			"",
-			"## Done",
-			"- 2026-11-05: Team hired",
-			"- 2026-10-20: Budget made [Budget](folder:money/budget.md)",
-			"",
-		].join("\n"),
-	);
-	expect(parseWall(text)).toEqual({ wall: WALL, problems: [], head: "# Wall" });
+it("reads the kept form with no problems", () => {
+	expect(parseWall(TEXT)).toEqual({ wall: WALL, problems: [], head: "# Wall" });
 });
 
 it("reads a member's edit in any case, and leaves out text outside the parts", () => {
@@ -121,21 +102,10 @@ it("names each problem with its line, and keeps every item that reads", () => {
 });
 
 it("refuses more items than a part holds", () => {
-	const text = renderWall({
-		waiting: ["1", "2", "3", "4", "5", "6", "7"].map((text) => ({ text })),
-		working: [],
-		done: [],
-	});
+	const text = "# Wall\n\n## Waits on you\n- 1\n- 2\n- 3\n- 4\n- 5\n- 6\n- 7\n\n## Working on\n\n## Done\n";
 	expect(parseWall(text).problems).toEqual([
 		{ code: "limit", line: 1, message: '"Waits on you" holds at most 6 items' },
 	]);
-});
-
-it("folds done items older than a week into Earlier", () => {
-	expect(foldWallDone(WALL.done, "2026-11-05")).toEqual({ recent: [WALL.done[0]], earlier: [WALL.done[1]] });
-	expect(foldWallDone(WALL.done, "2026-10-26").recent).toEqual(WALL.done);
-	expect(isWallDay("2026-11-05")).toBe(true);
-	expect(isWallDay("2026-13-01")).toBe(false);
 });
 
 it("reads a detail under its item, joined when it runs over two lines, and nothing else as one", () => {
@@ -172,36 +142,16 @@ it("reads a bullet at any indent as an item, as walls were written before detail
 	expect(parseWall("## Working on\n- Second\n  - a detail\n").wall.working).toEqual([
 		{ text: "Second", detail: "- a detail" },
 	]);
-	expect(
-		parseWall(renderWall({ waiting: [], working: [{ text: "A", detail: "- B" }], done: [] })).wall.working,
-	).toEqual([{ text: "A", detail: "- B" }]);
-});
-
-it("finds the picture or app an item shows when it opens", () => {
-	expect(wallPreview({ text: "Logo", detail: "[Plan](folder:a/plan.md) [Logo](folder:a/logo.SVG)" })).toEqual({
-		kind: "image",
-		path: "a/logo.SVG",
-	});
-	expect(wallPreview({ text: "Shop [Demo](app:shop-demo)", detail: "[Shot](folder:a/shot.png)" })).toEqual({
-		kind: "image",
-		path: "a/shot.png",
-	});
-	expect(wallPreview({ text: "Shop", detail: "See [Demo](app:shop-demo)" })).toEqual({
-		kind: "app",
-		name: "shop-demo",
-	});
-	expect(wallPreview({ text: "Plan [Plan](folder:a/plan.md)" })).toBeNull();
 });
 
 it("keeps a Now line on top: one line, no detail, absent from a wall written before it", () => {
-	const text = renderWall({ ...WALL, now: "Prices set, picking suppliers now" });
-	expect(text.startsWith("# Wall\n\n## Now\n- Prices set, picking suppliers now\n\n## Waits on you\n")).toBe(true);
+	const text = TEXT.replace("# Wall\n", "# Wall\n\n## Now\n- Prices set, picking suppliers now\n");
 	expect(parseWall(text)).toEqual({
 		wall: { ...WALL, now: "Prices set, picking suppliers now" },
 		problems: [],
 		head: "# Wall",
 	});
-	expect(parseWall(renderWall(WALL)).wall).not.toHaveProperty("now");
+	expect(parseWall(TEXT).wall).not.toHaveProperty("now");
 	const twice = parseWall("## Now\n- One\n- Two\n");
 	expect(twice.wall.now).toBe("One");
 	expect(twice.problems).toEqual([

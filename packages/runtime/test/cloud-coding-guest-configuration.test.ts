@@ -44,17 +44,13 @@ describe("admitted coding guest profile", () => {
 	])("rejects unsafe or ambiguous path/identity profile %j", (change) => {
 		expect(() => parseCodingGuestConfiguration({ ...config(), ...change })).toThrow();
 	});
-	it.each([
-		{ maxLogBytes: 0 },
-		{ maxLogBytes: 1073741825 },
-		// The per-command limits are gone: a profile naming one is refused.
-		{ memoryBytes: 2147483648 },
-		{ maxTimeoutMs: 1800000 },
-		{ extra: 1 },
-	])("rejects a log bound outside the supported profile, or any other field %j", (change) => {
-		const c = config();
-		expect(() =>
-			parseCodingGuestConfiguration({ ...c, resourceProfile: { ...c.resourceProfile, ...change } }),
-		).toThrow();
-	});
+	it.each([{ maxLogBytes: 0 }, { maxLogBytes: 1073741825 }, { extra: 1 }])(
+		"rejects a log bound outside the supported profile, or any other field %j",
+		(change) => {
+			const c = config();
+			expect(() =>
+				parseCodingGuestConfiguration({ ...c, resourceProfile: { ...c.resourceProfile, ...change } }),
+			).toThrow();
+		},
+	);
 });

@@ -2,7 +2,6 @@ import type { JsonValue } from "@qorpera/contracts";
 
 export const CLOUD_RUNNER_USAGE_SCHEMA = "qorpera.runner-usage/v1";
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 /** A run with no wall-clock limit reports this as its limit (founder, 2026-09-24:
  * company runs have no deadline). Usage records it as is. */
 export const CLOUD_RUNNER_NO_WALL_TIME_MS = Number.MAX_SAFE_INTEGER;
@@ -30,18 +29,6 @@ export interface CloudRunnerExecutionUsage {
 	limits: CloudRunnerUsageLimits;
 }
 
-export interface CloudRunnerUsageObservation extends CloudRunnerExecutionUsage {
-	observationId: number;
-	profileId: string;
-	environmentId: string;
-	jobId: string;
-	runnerId: string;
-	actorUserId: string;
-	reservedCpuMilliseconds: number;
-	reservedMemoryMibMilliseconds: number;
-	createdAt: string;
-}
-
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
 		throw new Error(`Runner usage contains invalid ${label}`);
@@ -54,20 +41,6 @@ function integer(value: unknown, label: string, minimum: number, maximum: number
 		throw new Error(`Runner usage contains invalid ${label}`);
 	}
 	return value as number;
-}
-
-function uuid(value: unknown, label: string): string {
-	if (typeof value !== "string" || !UUID_PATTERN.test(value)) {
-		throw new Error(`Runner usage contains invalid ${label}`);
-	}
-	return value;
-}
-
-function timestamp(value: unknown, label: string): string {
-	if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) {
-		throw new Error(`Runner usage contains invalid ${label}`);
-	}
-	return new Date(value).toISOString();
 }
 
 export function parseCloudRunnerExecutionUsage(value: unknown): CloudRunnerExecutionUsage {
@@ -124,40 +97,5 @@ export function serializeCloudRunnerExecutionUsage(usage: CloudRunnerExecutionUs
 			max_output_bytes: parsed.limits.maxOutputBytes,
 			max_result_bytes: parsed.limits.maxResultBytes,
 		},
-	};
-}
-
-export function parseCloudRunnerUsageObservation(value: unknown): CloudRunnerUsageObservation {
-	const input = record(value, "ledger record");
-	const usage = parseCloudRunnerExecutionUsage(input.usage);
-	const reservedCpuMilliseconds = integer(
-		input.reserved_cpu_milliseconds,
-		"reserved CPU milliseconds",
-		1,
-		Number.MAX_SAFE_INTEGER,
-	);
-	const reservedMemoryMibMilliseconds = integer(
-		input.reserved_memory_mib_milliseconds,
-		"reserved memory MiB-milliseconds",
-		1,
-		Number.MAX_SAFE_INTEGER,
-	);
-	if (
-		reservedCpuMilliseconds !== Math.ceil((usage.executionMs * usage.limits.cpuMillis) / 1000) ||
-		reservedMemoryMibMilliseconds !== Math.ceil(usage.limits.memoryBytes / (1024 * 1024)) * usage.executionMs
-	) {
-		throw new Error("Runner usage contains inconsistent reserved capacity");
-	}
-	return {
-		...usage,
-		observationId: integer(input.observation_id, "observation id", 1, Number.MAX_SAFE_INTEGER),
-		profileId: uuid(input.profile_id, "profile id"),
-		environmentId: uuid(input.environment_id, "environment id"),
-		jobId: uuid(input.job_id, "job id"),
-		runnerId: uuid(input.runner_id, "runner id"),
-		actorUserId: uuid(input.actor_user_id, "actor id"),
-		reservedCpuMilliseconds,
-		reservedMemoryMibMilliseconds,
-		createdAt: timestamp(input.created_at, "creation time"),
 	};
 }

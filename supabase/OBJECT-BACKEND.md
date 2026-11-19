@@ -14,10 +14,13 @@ account identity, membership, and trails stay on managed infrastructure.
 
 ## Why this is not a configuration change
 
-The desktop already talks to storage through an interface —
-`CloudObjectTransport` in `cloud-object-store.ts` is just `put(path, bytes,
-mediaType)` and `get(path)`, and the test suite substitutes an in-memory
-implementation. Swapping the client side is genuinely easy.
+The desktop talked to storage through an interface —
+`CloudObjectTransport` in `cloud-object-store.ts` was just `put(path, bytes,
+mediaType)` and `get(path)`, and the test suite substituted an in-memory
+implementation. `CloudContentAddressedStore` and `CloudObjectTransport` are
+gone since 18 Nov 2026 (#1952): nothing but their own test used them, and
+`cloud-object-store.ts` now holds only the `CloudFileReference` type. Swapping
+the client side was genuinely easy.
 
 The database is the hard part. Twelve sites across six migrations join
 `storage.objects` directly:

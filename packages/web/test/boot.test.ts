@@ -215,7 +215,7 @@ describe("index.html's static first screens", () => {
 			/^<div\.frame><header\.topbar\.topbar-plain><\/><div\.body><main\.main><section\.hub><div\.hub-inner\.hub-pick><h1\.hub-title>.*<p\.hub-lead>/,
 		);
 		expect(outline(boot.querySelector(".boot-sign-in > .auth")!)).toMatch(
-			/^<div\.auth><section\.auth-panel><header\.auth-brand>.*<div\.auth-body><h1>.*<p\.auth-lead>.*<div\.auth-form><label>.*<footer\.auth-foot>.*<aside\.auth-art><\/><\/>$/,
+			/^<div\.auth><header\.auth-brand>.*<section\.auth-body><div\.auth-crown>.*<h1>.*<p\.auth-lead>.*<div\.auth-form><label>.*<\/><\/>$/,
 		);
 	});
 

@@ -1,10 +1,5 @@
 import { createHash, createHmac } from "node:crypto";
-import {
-	CloudRequestTimeoutError,
-	readBoundedCloudResponse,
-	supabaseServiceHeaders,
-	withCloudDeadline,
-} from "@qorpera/cloud-client/cloud-request";
+import { CloudRequestTimeoutError, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import { type CloudCodingRepository, type JsonValue, parseCloudCodingRepository } from "@qorpera/contracts";
 import type { BankSyncAuthority } from "./cloud-bank-sync.ts";
 import type { ClaudeLoginRenewalAuthority } from "./cloud-claude-login-renewal.ts";
@@ -107,7 +102,6 @@ const MCP_RESERVED_HEADERS = new Set([
 ]);
 /** A coding session's repository as its relay requests name it: `<owner>/<name>`, GitHub's rules. */
 const REPOSITORY_PATH = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/;
-const MAX_RPC_BYTES = 256 * 1024;
 
 /** The shortest environment value, in UTF-8 bytes, the vault takes or hands out. It equals
  * `CODING_SECRET_MASK_MINIMUM_BYTES` in packages/runner-orchestrator/src/coding-secret-mask.ts (5j-2), so
@@ -456,7 +450,7 @@ function parseCaptureDescription(value: unknown): CloudSecretCaptureDescription 
 
 const ACCOUNT_LABEL = /^[^\s\0]{1,254}$/;
 
-export function parseCloudSecretAccountLabel(value: unknown): string | null {
+function parseCloudSecretAccountLabel(value: unknown): string | null {
 	if (value === undefined || value === null) return null;
 	if (typeof value !== "string" || !ACCOUNT_LABEL.test(value))
 		throw new Error("Cloud secret account label is invalid");
@@ -1570,144 +1564,6 @@ export class CloudSecretBroker {
 		} finally {
 			envelope.fill(0);
 		}
-	}
-}
-
-function cloudOrigin(value: string): string {
-	const url = new URL(value);
-	if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
-		throw new Error("Cloud secret authority URL is invalid");
-	}
-	return url.origin;
-}
-
-export class SupabaseCloudSecretBrokerAuthority implements CloudSecretBrokerAuthority {
-	readonly #origin: string;
-	readonly #serviceKey: string;
-	readonly #brokerAuthorityId: string;
-	readonly #brokerCapabilitySha256: string;
-	readonly #fetch: typeof fetch;
-
-	constructor(options: {
-		supabaseUrl: string;
-		serviceRoleKey: string;
-		brokerAuthorityId: string;
-		brokerCapability: string;
-		fetch?: typeof fetch;
-	}) {
-		this.#origin = cloudOrigin(options.supabaseUrl);
-		if (!options.serviceRoleKey || /[\0\r\n]/.test(options.serviceRoleKey)) {
-			throw new Error("Cloud secret authority service key is invalid");
-		}
-		this.#serviceKey = options.serviceRoleKey;
-		this.#brokerAuthorityId = uuid(options.brokerAuthorityId, "Cloud secret broker authority");
-		if (!CAPABILITY.test(options.brokerCapability)) throw new Error("Cloud secret broker capability is invalid");
-		this.#brokerCapabilitySha256 = createHash("sha256").update(options.brokerCapability).digest("hex");
-		this.#fetch = options.fetch ?? fetch;
-	}
-
-	describeCapture(ticketId: string, captureCapabilitySha256: string, signal: AbortSignal): Promise<unknown> {
-		return this.#rpc(
-			"qorpera_describe_cloud_secret_capture",
-			{
-				p_broker_authority_id: this.#brokerAuthorityId,
-				p_broker_capability_sha256: this.#brokerCapabilitySha256,
-				p_ticket_id: ticketId,
-				p_capture_capability_sha256: captureCapabilitySha256,
-			},
-			signal,
-		);
-	}
-
-	completeCapture(
-		ticketId: string,
-		captureCapabilitySha256: string,
-		encryptedEnvelope: Uint8Array,
-		envelopeSha256: string,
-		accountLabel: string | null,
-		signal: AbortSignal,
-	): Promise<unknown> {
-		return this.#rpc(
-			"qorpera_complete_cloud_secret_capture",
-			{
-				p_broker_authority_id: this.#brokerAuthorityId,
-				p_broker_capability_sha256: this.#brokerCapabilitySha256,
-				p_ticket_id: ticketId,
-				p_capture_capability_sha256: captureCapabilitySha256,
-				p_encrypted_envelope_base64: Buffer.from(encryptedEnvelope).toString("base64"),
-				p_envelope_sha256: envelopeSha256,
-				p_account_label: accountLabel,
-			},
-			signal,
-		);
-	}
-
-	authorizeOperation(request: CloudSecretOperationRequest, signal: AbortSignal): Promise<unknown> {
-		return this.#rpc(
-			"qorpera_authorize_cloud_secret_operation",
-			{
-				p_broker_authority_id: this.#brokerAuthorityId,
-				p_broker_capability_sha256: this.#brokerCapabilitySha256,
-				p_binding: request.binding,
-				p_receipt_id: request.receiptId,
-				p_input_sha256: request.inputSha256,
-				p_downstream_idempotency_sha256: createHash("sha256").update(request.idempotencyKey).digest("hex"),
-				p_grant_id: request.grantId,
-				p_connector_id: request.connectorId,
-				p_operation_id: request.operationId,
-				p_operation_version: request.operationVersion,
-				p_adapter_sha256: request.adapterSha256,
-				p_destination_origin: request.destinationOrigin,
-			},
-			signal,
-		);
-	}
-
-	authorizeRepositoryCredential(request: CodingRepositoryCredentialRequest, signal: AbortSignal): Promise<unknown> {
-		return this.#rpc(
-			"qorpera_authorize_coding_repository_credential",
-			{
-				p_broker_authority_id: this.#brokerAuthorityId,
-				p_broker_capability_sha256: this.#brokerCapabilitySha256,
-				p_worker_id: request.workerId,
-				p_lease_token: request.leaseToken,
-				p_executor_owner: request.executorOwner,
-				p_repository: request.repository,
-			},
-			signal,
-		);
-	}
-
-	// No authorizeCodingEnvironment: service_role cannot execute qorpera_authorize_coding_environment (5j-1),
-	// so a broker on this authority refuses every coding environment request. Nor the relay's two reads
-	// (5j-6a), for the same reason: it refuses every relay request.
-
-	async #rpc(name: string, body: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
-		return withCloudDeadline(
-			async (requestSignal) => {
-				const response = await this.#fetch(`${this.#origin}/rest/v1/rpc/${name}`, {
-					method: "POST",
-					redirect: "error",
-					headers: { ...supabaseServiceHeaders(this.#serviceKey), "content-type": "application/json" },
-					body: JSON.stringify(body),
-					signal: requestSignal,
-				});
-				if (!response.ok) {
-					void response.body?.cancel().catch(() => undefined);
-					throw new Error("Cloud secret authority rejected the operation");
-				}
-				const bytes = await readBoundedCloudResponse(response, MAX_RPC_BYTES, requestSignal);
-				try {
-					return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
-				} catch {
-					throw new Error("Cloud secret authority returned invalid data");
-				} finally {
-					bytes.fill(0);
-				}
-			},
-			5000,
-			signal,
-		);
 	}
 }
 
