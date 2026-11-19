@@ -42,6 +42,7 @@ interface Machine {
 	unavailable?: true;
 	limitAtOpen?: true;
 	lateTurnOn?: string;
+	limitAfterTurnOn?: string;
 	extraTurnAfter?: string;
 	limitOn?: string;
 	failOn?: string;
@@ -217,6 +218,7 @@ async function fixture(options: Machine = {}) {
 				withheld = turn;
 				stalling = true;
 			} else peer().text += turn;
+			if (caption === options.limitAfterTurnOn) throw new CloudVoiceLimitReached();
 			if (caption === options.extraTurnAfter) {
 				turns += 1;
 				peer().text += line({ turn: turns, file: `${turns}.webm`, ms: 900, bytes: 4000 });
@@ -732,4 +734,22 @@ it("ends the batch at a turn nobody asked for, and drops the clip recorded just 
 	expect(await first.narrate()).toMatchObject({ state: "partly_spoken", spokenNow: 0, left: 2 });
 	expect(first.steps()).toEqual(["captions", "peer", "answer", "stop", "clean"]);
 	expect(first.commits).toEqual([]);
+});
+
+it("keeps the clip before a line the limit cut, though that line left a turn of its own behind", async () => {
+	const f = await fixture({
+		captions: [A, B, C],
+		limitAfterTurnOn: B,
+		usage: (read) => (read === 0 ? ROOM : WEEK_FULL),
+	});
+	const answer = await f.narrate();
+	expect(f.spoken).toEqual([narrateSpokenLine(A), narrateSpokenLine(B)]);
+	expect(f.commands.find((command) => command.step === "encode")?.command).toContain(
+		`/company/apps/pricing/voice 1:${captionHash(A)}\n`,
+	);
+	expect(answer).toMatchObject({ state: "limit_reached", spokenNow: 1, left: 2, limit: { reached: true } });
+	expect(answer).not.toHaveProperty("recorder");
+	expect(
+		JSON.parse(f.committed("voice/clips.json") as string).clips.map((each: { caption: string }) => each.caption),
+	).toEqual([captionHash(A)]);
 });
