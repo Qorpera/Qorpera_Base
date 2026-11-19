@@ -81,6 +81,7 @@ function connectionsPage(title: string, rule: string, ...content: HTMLElement[])
 export class SettingsView {
 	readonly el: HTMLElement;
 	readonly #api: CloudApi;
+	readonly #hub: HubController;
 	readonly #auth: AuthController;
 	/** The account's friends, for the Company tab's invitation picker; the list itself is the Friends window's. */
 	readonly #friends: FriendsController;
@@ -174,6 +175,7 @@ export class SettingsView {
 		openFriends: () => void = () => {},
 	) {
 		this.#api = api;
+		this.#hub = hub;
 		this.#auth = auth;
 		this.#friends = new FriendsController(api);
 		this.#close = close;
@@ -918,6 +920,10 @@ export class SettingsView {
 				},
 				folder,
 				signal: lifetime,
+				renamed: (name) => {
+					company.store.set(({ profile }) => ({ profile: { ...profile, profileName: name } }));
+					this.#hub.renamed(company.profile.profileId, name);
+				},
 			});
 			if (company.store.get().team?.capabilities.write)
 				void companyLogos()
