@@ -41,6 +41,8 @@ interface Machine {
 	say?: (caption: string, asked: number) => string;
 	unavailable?: true;
 	limitAtOpen?: true;
+	lateTurnOn?: string;
+	extraTurnAfter?: string;
 	limitOn?: string;
 	failOn?: string;
 	usage?: (read: number) => CloudVoiceUsage | undefined;
@@ -80,6 +82,8 @@ async function fixture(options: Machine = {}) {
 	const logs = new Map<string, { step: Step; text: string; state: "running" | "succeeded" | "failed" }>();
 	const commands: { step: Step; command: string; timeoutMs: number | null }[] = [];
 	let peerId = "";
+	let withheld = "";
+	let stalling = false;
 	let answerFile: string | null = null;
 	let turns = 0;
 	const stepOf = (command: string): Step =>
@@ -143,7 +147,8 @@ async function fixture(options: Machine = {}) {
 				answerFile = Buffer.from(coded, "base64").toString("utf8");
 				peer().text += line({ connected: true });
 			} else if (step === "stop") {
-				peer().text += line({ ended: "stop" });
+				stalling = false;
+				peer().text += withheld + line({ ended: "stop" });
 				peer().state = "succeeded";
 			} else if (step === "encode") {
 				for (const [, turn, hash] of input.command.matchAll(/ (\d+):([0-9a-f]{8})/g)) {
@@ -155,9 +160,10 @@ async function fixture(options: Machine = {}) {
 			logs.set(input.commandId, { step, text, state });
 			return receipt(input.commandId, 0, 0);
 		}),
-		read: vi.fn<CloudMachineCommandGateway["read"]>(async (_scope, input) =>
-			receipt(input.commandId, input.offset ?? 0, input.limit ?? 4096),
-		),
+		read: vi.fn<CloudMachineCommandGateway["read"]>(async (_scope, input) => {
+			if (stalling) skew += 6000;
+			return receipt(input.commandId, input.offset ?? 0, input.limit ?? 4096);
+		}),
 		cancel: vi.fn<CloudMachineCommandGateway["cancel"]>(async (_scope, commandId) => {
 			const log = logs.get(commandId);
 			if (log) log.state = "failed";
@@ -206,7 +212,15 @@ async function fixture(options: Machine = {}) {
 			}
 			asked.set(caption, (asked.get(caption) ?? 0) + 1);
 			turns += 1;
-			peer().text += line({ turn: turns, file: `${turns}.webm`, ms: 2100, bytes: 9000 });
+			const turn = line({ turn: turns, file: `${turns}.webm`, ms: 2100, bytes: 9000 });
+			if (caption === options.lateTurnOn) {
+				withheld = turn;
+				stalling = true;
+			} else peer().text += turn;
+			if (caption === options.extraTurnAfter) {
+				turns += 1;
+				peer().text += line({ turn: turns, file: `${turns}.webm`, ms: 900, bytes: 4000 });
+			}
 			skew += options.speakMs ?? 1000;
 			return { transcript: options.say?.(caption, asked.get(caption) as number) ?? caption };
 		}),
@@ -677,4 +691,45 @@ it("speaks a video's languages one after the other and counts each", async () =>
 			da: { captions: 2, spoken: 1, left: 1 },
 		},
 	});
+});
+
+it("ends the batch when a recording does not arrive in time, and gives its late turn to no caption", async () => {
+	const f = await fixture({ captions: [A, B, C], lateTurnOn: B });
+	const answer = await f.narrate();
+	expect(f.spoken).toEqual([narrateSpokenLine(A), narrateSpokenLine(B)]);
+	expect(f.steps()).toEqual(["captions", "peer", "answer", "stop", "encode", "clean"]);
+	expect(f.commands.find((command) => command.step === "encode")?.command).toContain(
+		`/company/apps/pricing/voice 1:${captionHash(A)}\n`,
+	);
+	expect(answer).toMatchObject({
+		state: "partly_spoken",
+		captions: 3,
+		spokenNow: 1,
+		left: 2,
+		recorder: "The batch stopped early: a recording did not arrive in time.",
+	});
+	expect(answer).not.toHaveProperty("silent");
+	expect(
+		JSON.parse(f.committed("voice/clips.json") as string).clips.map((each: { caption: string }) => each.caption),
+	).toEqual([captionHash(A)]);
+});
+
+it("ends the batch at a turn nobody asked for, and drops the clip recorded just before it", async () => {
+	const f = await fixture({ captions: [A, B, C], extraTurnAfter: B });
+	const answer = await f.narrate();
+	expect(f.spoken).toEqual([narrateSpokenLine(A), narrateSpokenLine(B)]);
+	expect(f.commands.find((command) => command.step === "encode")?.command).toContain(
+		`/company/apps/pricing/voice 1:${captionHash(A)}\n`,
+	);
+	expect(answer).toMatchObject({
+		state: "partly_spoken",
+		spokenNow: 1,
+		left: 2,
+		recorder: "The batch stopped early: the recorder heard a turn that was not asked for.",
+	});
+	expect(f.committed("index.html")).not.toContain(captionHash(B));
+	const first = await fixture({ captions: [A, B], extraTurnAfter: A });
+	expect(await first.narrate()).toMatchObject({ state: "partly_spoken", spokenNow: 0, left: 2 });
+	expect(first.steps()).toEqual(["captions", "peer", "answer", "stop", "clean"]);
+	expect(first.commits).toEqual([]);
 });

@@ -375,5 +375,16 @@ describe("the explainer kit's engine", () => {
 		both.V.start();
 		expect(both.V.lang).toBe("en");
 		expect(both.V.segments[0]?.text).toBe("One.");
+		const mixed = page();
+		mixed.V.part({ da: "Idéen", en: "The idea" });
+		mixed.V.scene((s) => {
+			s.say({ da: "En.", en: "One." });
+			s.say({ en: "Two.", da: "To." });
+		});
+		mixed.V.start();
+		expect([mixed.V.languages, mixed.V.lang]).toEqual([["da", "en"], "da"]);
+		expect(mixed.V.segments.map((segment) => segment.text)).toEqual(["En.", "To."]);
+		expect(mixed.root.querySelectorAll(".vp-chip")).toHaveLength(1);
+		expect(mixed.root.querySelector(".vp-chip")?.textContent).toBe("1Idéen");
 	});
 });

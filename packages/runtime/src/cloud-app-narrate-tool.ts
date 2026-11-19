@@ -511,7 +511,11 @@ export function cloudNarrateAppTool(options: {
 					if (!(await poll(end))) await pause(Math.max(1, Math.min(pollMs, end - now())), signal);
 				}
 			};
-			return { lines, state, until };
+			const look = async (): Promise<void> => {
+				const end = now() + CLOUD_MACHINE_READ_MS;
+				while (!state.done && now() < end && (await poll(end)));
+			};
+			return { lines, state, until, look };
 		};
 		const ended = (line: Line | undefined) => (line && "ended" in line ? plain(line.ended) : undefined);
 		const usageNow = (): Promise<CloudVoiceUsage | undefined> =>
@@ -655,6 +659,14 @@ export function cloudNarrateAppTool(options: {
 			const silent: { caption: string; said: string }[] = [];
 			let callEnded: string | undefined;
 			let limitMet = false;
+			let heard = 0;
+			let unanswered = false;
+			const turnsPrinted = () =>
+				peer.lines.reduce((most, line) => (typeof line.turn === "number" ? Math.max(most, line.turn) : most), 0);
+			const unasked = (): void => {
+				if (kept.at(-1)?.turn === heard) kept.pop();
+				callEnded ??= "the recorder heard a turn that was not asked for";
+			};
 			try {
 				try {
 					const offer = await peer.until(
@@ -707,8 +719,6 @@ export function cloudNarrateAppTool(options: {
 					});
 				}
 
-				const turnsSeen = () =>
-					peer.lines.reduce((most, line) => (typeof line.turn === "number" ? Math.max(most, line.turn) : most), 0);
 				batch: for (const caption of todo) {
 					if (left() < RESERVE_MS) break;
 					const line = narrateSpokenLine(caption.text);
@@ -719,7 +729,11 @@ export function cloudNarrateAppTool(options: {
 					let said = "";
 					for (let attempt = 1; attempt <= TRIES; attempt++) {
 						if (left() < RESERVE_MS) break batch;
-						const turn = turnsSeen() + 1;
+						await peer.look();
+						if (turnsPrinted() > heard) {
+							unasked();
+							break batch;
+						}
 						try {
 							said = (
 								await call.speak(
@@ -731,16 +745,20 @@ export function cloudNarrateAppTool(options: {
 							signal.throwIfAborted();
 							limitMet = error instanceof CloudVoiceLimitReached;
 							callEnded = "the call ended";
+							unanswered = true;
 							break batch;
 						}
+						heard += 1;
+						const turn = heard;
 						const recorded = await peer.until((found) => found.turn === turn || "ended" in found, by(TURN_MS));
-						if (recorded?.turn === turn && explainerSpokenMatches(caption.text, said)) {
+						if (recorded?.turn !== turn) {
+							callEnded =
+								recorded && "ended" in recorded ? "the recorder ended" : "a recording did not arrive in time";
+							break batch;
+						}
+						if (explainerSpokenMatches(caption.text, said)) {
 							kept.push({ turn, caption });
 							break;
-						}
-						if (recorded && "ended" in recorded) {
-							callEnded = "the recorder ended";
-							break batch;
 						}
 						if (attempt === TRIES)
 							silent.push({ caption: plain(caption.text, SHOWN_CHARS), said: plain(said, SHOWN_CHARS) });
@@ -750,6 +768,7 @@ export function cloudNarrateAppTool(options: {
 				await call?.close();
 				if (!peerStopped) await stopPeer();
 			}
+			if (turnsPrinted() > heard + (unanswered ? 1 : 0)) unasked();
 			const after = callEnded ? await usageNow() : reading;
 			if (callEnded && cloudVoiceUsageFull(after)) limitMet = true;
 

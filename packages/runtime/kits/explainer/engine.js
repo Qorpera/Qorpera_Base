@@ -581,15 +581,18 @@ class Video {
     if (!this.started || !this.player || code === this.lang || !this.languages.includes(code)) return false;
     const caption = this.player.caption();
     this.lang = code;
+    this.rebuild();
+    this.layout();
+    this.player.relaid(caption);
+    return true;
+  }
+  rebuild() {
     this.world.replaceChildren();
     for (const clip of this.defs.querySelectorAll("clipPath")) clip.remove();
     this.scenes = [];
     this.chapters = [];
     this.shown = undefined;
     for (const step of this.program) { if (step.build) this.build(step.build); else this.mark(step.part); }
-    this.layout();
-    this.player.relaid(caption);
-    return true;
   }
   mark(title) { this.chapters.push({ num: String(this.chapters.length + 1), title: String(this.tr(title) ?? ""), sceneIndex: this.scenes.length }); }
   build(build) {
@@ -633,6 +636,7 @@ class Video {
     if (this.root.querySelector(".vp-fail")) return;
     if (this.scenes.length === 0) { fail(this.root, "This video has no scenes yet."); return; }
     this.lang = this.languages.includes(this.wish) ? this.wish : this.languages[0] ?? null;
+    if (this.lang && this.lang !== this.wish) this.rebuild();
     if (this.lang) document.documentElement.lang = this.lang;
     this.layout();
     const V = this, q = (c) => this.root.querySelector(c);

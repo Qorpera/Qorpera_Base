@@ -379,7 +379,11 @@ web does not already answer. What the kit adds is that the agent writes one file
   5. starts `voice-peer.cjs` in a work folder outside `/company`, places the call on the run's voice lane with the
      recorder's offer and hands the answer over as a file;
   6. speaks each caption left, wrapped as `Speak exactly this line and nothing else: "…"`, and keeps a turn only when
-     `explainerSpokenMatches` passes, three tries at most, 270 seconds in all, none begun with under 60 seconds left;
+     `explainerSpokenMatches` passes, three tries at most, 270 seconds in all, none begun with under 60 seconds left.
+     A line the voice answered is the recorder's turn of the same count, and only while the two agree: before each
+     line the recorder must have printed exactly as many turns as lines were answered, and each answered line waits
+     20 seconds for its own turn. A turn that does not come in time, or one nobody asked for, ends the batch (the
+     clip recorded just before an unasked turn is dropped), so no later caption takes an earlier sound;
   7. closes the call, stops the recorder, runs `voice-encode.cjs` for the kept turns, and commits `voice/clips.json`
      and the page under its receipt once the clips show in the folder.
   Every machine command is a `machine_run` receipt of its own (as `share_app`'s link program), running the kit's own
@@ -400,7 +404,8 @@ web does not already answer. What the kit adds is that the agent writes one file
 - **Languages** (18 November 2026; Jonas: "the videos needs language selection too, letting you switch between the
   english and danish"). Wherever the engine takes a text (a caption in `s.say`, a title in `V.part`, a `label`, `sub`
   or `str`) it also takes `{en: "…", da: "…"}`. The video collects the languages it meets (`V.languages`), starts in
-  the viewer's own when the video has it (`navigator.language`), else in the first, and shows one button a language
+  the viewer's own when the video has it (`navigator.language`), else in the first (built again in that one, so no
+  text stays in another language's first-written form), and shows one button a language
   beside the voice button (key L). A switch builds the scenes again in the language chosen (`V.language(code)`) and
   stays on the caption it was at, so a scenes.js keeps nothing between scenes. Each language's caption is its own
   text, so its own hash and its own clip: `voice/clips.json` stays one flat list, and `narrate_app` records the first
