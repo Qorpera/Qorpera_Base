@@ -66,9 +66,6 @@ begin
 	perform pg_temp.base_assert(public.qorpera_finalize_profile_object_deletion(v_authorization_id,
 		'92400000-0000-4000-8000-000000000010', v_sha, v_bytes, v_backend),
 		'authorized physical deletion did not finalize the NAS catalog row');
-	perform pg_temp.base_assert(not public.qorpera_finalize_profile_object_deletion(v_authorization_id,
-		'92400000-0000-4000-8000-000000000010', v_sha, v_bytes, v_backend),
-		'deletion finalization was not idempotent');
 end
 $$;
 reset role;

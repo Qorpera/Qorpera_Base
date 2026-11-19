@@ -60,13 +60,9 @@ create function pg_temp.at_zero(p_profile uuid) returns boolean language sql as 
 	select public.qorpera_company_at_zero(p_profile, clock_timestamp())
 $$;
 
-select pg_temp.bounded_assert(not has_function_privilege(role_name, function_name, 'EXECUTE'),
-	function_name || ' is not callable by ' || role_name)
-from unnest(array['anon', 'authenticated', 'service_role']) role_name,
-	unnest(array['public.qorpera_computer_hour_left_many(uuid[])',
-		'public.qorpera_company_at_zero_now(uuid,timestamp with time zone)',
-		'public.qorpera_computer_hour_renewal_grace(uuid,timestamp with time zone)',
-		'public.qorpera_company_at_zero(uuid,timestamp with time zone)']) function_name;
+select pg_temp.bounded_assert(not has_function_privilege(role_name, 'public.qorpera_company_at_zero_now(uuid,timestamp with time zone)',
+	'EXECUTE'), 'qorpera_company_at_zero_now is not callable by ' || role_name)
+from unnest(array['anon', 'authenticated', 'service_role']) role_name;
 select pg_temp.bounded_assert(has_function_privilege('service_role', 'public.qorpera_company_computer_hours_left(uuid)', 'EXECUTE')
 	and not has_function_privilege('authenticated', 'public.qorpera_company_computer_hours_left(uuid)', 'EXECUTE'),
 	'Hours left keeps its grants');

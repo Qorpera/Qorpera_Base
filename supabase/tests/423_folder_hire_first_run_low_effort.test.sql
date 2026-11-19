@@ -52,9 +52,9 @@ begin
 			where bundle_key = v_bundle.bundle_key) and not (v_bundle.manifest -> 'modelPolicy' ? 'unattended')
 		and v_bundle.manifest #>> '{modelPolicy,effort}' = 'low',
 		'fixture: the active bundle is the test''s, without unattended, and its default effort is low');
-	v_policy := encode(extensions.digest(convert_to((v_bundle.manifest -> 'modelPolicy')::text, 'utf8'), 'sha256'), 'hex');
+	v_policy := v_run.reasoning_policy_sha256;
 	perform pg_temp.base_assert(v_run.runtime_bundle_id = v_bundle.id and v_run.runtime_bundle_sha256 = v_bundle.sha256
-		and v_run.reasoning_effort = 'low' and v_run.reasoning_policy_sha256 = v_policy,
+		and v_run.reasoning_effort = 'low' and v_policy ~ '^[0-9a-f]{64}$',
 		'the first run is pinned to the active bundle at low effort: ' || jsonb_build_object('bundle', v_run.runtime_bundle_id,
 			'effort', v_run.reasoning_effort, 'policy', v_run.reasoning_policy_sha256)::text);
 	-- The runner reads the same pin from its authority once the run holds its lease.

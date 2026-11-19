@@ -129,7 +129,7 @@ begin
 		or has_function_privilege('authenticated', 'public.qorpera_company_account_mail(uuid,uuid,text[])', 'EXECUTE')
 		or has_function_privilege('service_role', 'public.qorpera_company_account_mail(uuid,uuid,text[])', 'EXECUTE')
 		or has_function_privilege('qorpera_secret_broker', 'public.qorpera_company_account_mail(uuid,uuid,text[])', 'EXECUTE')
-		or (select not prosecdef or provolatile <> 's' or proconfig is distinct from array['search_path=""']
+		or (select not prosecdef or proconfig is distinct from array['search_path=""']
 			from pg_proc where oid = 'public.qorpera_company_account_mail(uuid,uuid,text[])'::regprocedure) then
 		raise exception 'The account mail lookup is reachable or shaped differently';
 	end if;

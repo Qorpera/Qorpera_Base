@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	NATIVE_CHATGPT_PLAN_EGRESS_HOSTS,
+	NATIVE_CLAUDE_CODE_CONNECTIONS,
+	NATIVE_CLAUDE_CODE_EGRESS_HOSTS,
 	NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS,
 	NATIVE_CODEX_REALTIME_EGRESS_HOSTS,
 	NATIVE_EGRESS_LONG_IDLE_MS,
@@ -242,6 +244,32 @@ describe("private native egress relay", () => {
 		await expect(
 			startNativeCodexEgress({ root, signal: new AbortController().signal, hosts: ["evil.test"] }),
 		).rejects.toThrow("Unsupported native egress hosts");
+	});
+	it("holds 32 connections at once on a relay that carries Claude Code, and eight on any other", async () => {
+		const root = await mkdtemp(join(tmpdir(), "q-egress-claude-"));
+		cleanup.push(() => rm(root, { recursive: true, force: true }));
+		for (const [hosts, limit] of [
+			[NATIVE_CLAUDE_CODE_EGRESS_HOSTS, NATIVE_CLAUDE_CODE_CONNECTIONS],
+			[NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS, NATIVE_CLAUDE_CODE_CONNECTIONS],
+			[NATIVE_CHATGPT_PLAN_EGRESS_HOSTS, 8],
+		] as const) {
+			const server = await startNativeCodexEgress({ root, signal: new AbortController().signal, hosts });
+			const held = await Promise.all(
+				Array.from({ length: limit }, async () => {
+					const socket = createConnection(server.path);
+					socket.on("error", () => undefined);
+					await once(socket, "connect");
+					return socket;
+				}),
+			);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			expect(held.every((socket) => !socket.destroyed)).toBe(true);
+			const over = createConnection(server.path);
+			over.on("error", () => undefined);
+			await once(over, "close");
+			for (const socket of held) socket.destroy();
+			await server.close();
+		}
 	});
 	it("carries any number of connections and bytes over a run's life, eight at a time (no caps on runs)", async () => {
 		// Each connection answers 520 KiB: 130 in a row move 66 MiB, past the old 64 MiB and 128-connection totals.

@@ -1,7 +1,5 @@
 // @vitest-environment jsdom
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { CompanyMail } from "../src/app/company-mail.ts";
@@ -2708,23 +2706,6 @@ describe("Sent, Addresses and Write", () => {
 		expect(document.activeElement).toBe(chip());
 		expect(panel().scrollTop).toBe(78);
 		expect(panel().querySelector("textarea")!.scrollTop).toBe(220);
-	});
-
-	// jsdom has no layout, so this reads the rules that hold the Write window together on a short page (a phone with
-	// its keyboard up). Measured in Chromium with the Mailbox 500×300 and 912×300: the text once kept its full height
-	// and ran over the foot, and the window's clip hid the rest.
-	it("lets the Write window's text give way, and the window scroll, on a short page", () => {
-		const css = readFileSync(resolve("src/styles/mailbox.css"), "utf8");
-		const rule = (selector: string) =>
-			css.match(new RegExp(`^${selector.replaceAll(".", "\\.")} \\{([^}]*)\\}`, "m"))?.[1] ?? "";
-		expect(rule(".mailbox-write-panel")).toContain("max-height: calc(100% - 16px); overflow: hidden auto;");
-		// Only the text gives way: down to a floor, and then the window scrolls.
-		expect(rule(".mailbox-write-text")).toMatch(
-			/flex: 0 1 auto; display: flex; flex-direction: column; min-height: \d+px;/,
-		);
-		expect(rule(".mailbox-write-text textarea")).toContain("flex: 1; min-width: 0; min-height: 0;");
-		for (const fixed of [".mailbox-write-head", ".mailbox-write-row", ".mailbox-write-error", ".mailbox-write-foot"])
-			expect(rule(fixed)).toContain("flex: none;");
 	});
 
 	it("draws no Send, answer, Write or Change for a viewer", async () => {

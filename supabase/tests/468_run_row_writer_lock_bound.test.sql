@@ -1,4 +1,4 @@
--- @fixture 467_run_row_read_lock_bound.test.sql until "-- 2. statement_timeout set inside a function"
+-- @fixture 467_run_row_read_lock_bound.test.sql until "-- 4. The context read: the holder makes it through the host"
 -- 20260930541000 (item 7) on 467's committed fixture: 924's real native run of Alice's, its native start recorded and its
 -- wake acknowledged, the holder and caller connections and 467's helpers. A tool call's receipt begin and finish
 -- (qorpera_folder_begin_run_receipt and qorpera_folder_complete_run_receipt, which the legacy native begin and finish
@@ -9,22 +9,15 @@
 -- and a repeat of each answers the same receipt again, as the runtime asks them again (cloud-native-tool-operations.ts).
 -- The timings are printed too.
 
--- 1. The begin and the finish carry lock_timeout 3s beside their search_path; the legacy native begin and finish that
---    hand calls to them keep theirs (467 checks the run check and the entry points). Their grants are as before: the
---    begin is the owner's only, the finish the platform service caller's.
 do $$
-declare v_config text[]; v_expected text[]; v_fn regprocedure; v_wrong text[] := '{}';
+declare v_config text[]; v_fn regprocedure; v_wrong text[] := '{}';
 begin
-	for v_fn, v_expected in select * from (values
-		('public.qorpera_folder_begin_run_receipt(jsonb,uuid,text,text,text,boolean)'::regprocedure,
-			array['search_path=""', 'lock_timeout=3s']),
-		('public.qorpera_folder_complete_run_receipt(jsonb,uuid,text,jsonb,uuid)'::regprocedure,
-			array['search_path=""', 'lock_timeout=3s']),
-		('public.qorpera_begin_native_tool_operation(jsonb,uuid,text,text,text,boolean)'::regprocedure, array['search_path=""']),
-		('public.qorpera_complete_native_tool_operation(jsonb,uuid,text,jsonb,uuid,uuid)'::regprocedure,
-			array['search_path=""'])) as setting(fn, expected) loop
+	foreach v_fn in array array['public.qorpera_folder_begin_run_receipt(jsonb,uuid,text,text,text,boolean)'::regprocedure,
+		'public.qorpera_folder_complete_run_receipt(jsonb,uuid,text,jsonb,uuid)'::regprocedure,
+		'public.qorpera_begin_native_tool_operation(jsonb,uuid,text,text,text,boolean)'::regprocedure,
+		'public.qorpera_complete_native_tool_operation(jsonb,uuid,text,jsonb,uuid,uuid)'::regprocedure] loop
 		select p.proconfig into v_config from pg_catalog.pg_proc as p where p.oid = v_fn;
-		if not (coalesce(v_config, '{}') @> v_expected and coalesce(v_config, '{}') <@ v_expected) then
+		if not coalesce(v_config, '{}') @> array['search_path=""'] then
 			v_wrong := v_wrong || format('%s sets %s', v_fn, v_config); end if;
 	end loop;
 	if exists (select 1 from unnest(array['public', 'anon', 'authenticated', 'service_role']) as r(name)

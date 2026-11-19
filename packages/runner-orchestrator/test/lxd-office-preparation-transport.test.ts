@@ -219,18 +219,6 @@ for (const lane of [
 			expect(received).toEqual(Buffer.from("original request"));
 			expect(f.failures).toEqual([]);
 		});
-		it("preserves the small generic runner file limits", async () => {
-			const f = await fixture(() => {
-				throw new Error("unexpected request");
-			});
-			await expect(
-				f.client.pushInstanceFile("offices", "guest", "/generic", "x".repeat(256 * 1024 + 1), 0o400, signal()),
-			).rejects.toThrow("supported size");
-			await expect(f.client.readInstanceFile("offices", "guest", "/generic", 65537, signal())).rejects.toThrow(
-				"LXD_INSTANCE_FILE_UNCONFIRMED",
-			);
-			expect(f.calls).toEqual([]);
-		});
 		it.each(["empty", "oversized", "wrong-hash", "path", "project", "cancelled"])(
 			"refuses %s upload before HTTP",
 			async (kind) => {
@@ -349,6 +337,19 @@ for (const lane of [
 			expect(f.calls).toHaveLength(1);
 		}, 8000);
 	});
+
+it("preserves the small generic runner file limits", async () => {
+	const f = await fixture(() => {
+		throw new Error("unexpected request");
+	});
+	await expect(
+		f.client.pushInstanceFile("offices", "guest", "/generic", "x".repeat(256 * 1024 + 1), 0o400, signal()),
+	).rejects.toThrow("supported size");
+	await expect(f.client.readInstanceFile("offices", "guest", "/generic", 65537, signal())).rejects.toThrow(
+		"LXD_INSTANCE_FILE_UNCONFIRMED",
+	);
+	expect(f.calls).toEqual([]);
+});
 
 describe("reset custody public boot history transport", () => {
 	it.each(["reset-configuration-claim", "reset-configuration-completion"])(

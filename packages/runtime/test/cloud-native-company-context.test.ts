@@ -2271,7 +2271,7 @@ it("gives a staff run the rules for starting work, and a worker none of them", (
 		"- One file: write it yourself, where it belongs, and link it.",
 		"- Bigger work or many files: a worker, with saveTo set to the folder for the results.",
 		"- Work a member asks Claude Code to do: a worker with harness claude-code, which runs on that member's own Claude sign-in.",
-		"Otherwise leave harness out unless a member asks for codex: a write worker then runs on Claude Code by itself, one at a time for that member, while that member can use it and your machine runs, else on Codex.",
+		"Otherwise leave harness out unless a member asks for codex: a write worker then runs on Claude Code by itself, up to four at once for that member, while that member can use it and your machine runs, else on Codex.",
 		"a machine, with the results saved in the company's files",
 		"A real code project is a coding session (manage_worker, species coding), the only work that needs a repository; its files are under code/.",
 		// C4-1 (26 October 2026): the Co-Founder passed a member's "push it and open a draft PR, report the link" on to

@@ -22,6 +22,23 @@ import { randomBytes } from "node:crypto";
 import { chmod, rm } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { isAbsolute, join } from "node:path";
+import { pathToFileURL } from "node:url";
+import {
+	CLAUDE_REVIEW_FAILED,
+	CLAUDE_REVIEW_HOOK_PATH,
+	cloudClaudeInvocationCommand,
+	cloudClaudeShellAction,
+} from "./cloud-claude-home-review.ts";
+import {
+	CLAUDE_PICTURE_FAILED,
+	CLAUDE_PICTURE_MAX_BYTES,
+	type ClaudePictureHome,
+	type ClaudePictureOutcome,
+	type CloudClaudePictures,
+	cloudClaudePictureCall,
+	runClaudePictureCommand,
+} from "./cloud-claude-picture-command.ts";
+import type { CloudCodexHomeMachine, CloudCodexHomeReview } from "./cloud-codex-home.ts";
 import { assertNativeSocketPath } from "./cloud-native-egress.ts";
 
 /** The socket the box's prefix reaches, in the run's own scratch root. */
@@ -53,6 +70,14 @@ const VALUE_CHARS = 4096;
 const MAX_CONNECTIONS = 64;
 /** How long `initialize` may take on a fresh channel. */
 const INITIALIZE_MS = 20_000;
+const PICTURE_PLACE_MS = 30_000;
+const PICTURE_WRITE_MS = 120_000;
+const PICTURE_PLACE = [
+	't=$(realpath -m -- "$1") || exit 6; [ -d "$(dirname -- "$t")" ] || exit 3; [ -d "$t" ] && exit 5;',
+	`if [ -f "$t" ] && [ -r "$t" ] && [ "$(stat -L -c %s -- "$t")" -le ${CLAUDE_PICTURE_MAX_BYTES} ];`,
+	'then h=$(sha256sum < "$t" | cut -c1-64); elif [ -e "$t" ] || [ -L "$t" ]; then h=x; else h=-; fi;',
+	'printf "%s %s" "$h" "$t"',
+].join(" ");
 
 /** The words a command shows when its home is not there; Claude Code shows them to the model as the command's stderr. */
 export const CLOUD_CLAUDE_SHELL_UNAVAILABLE =
@@ -76,7 +101,9 @@ export interface CloudClaudeHomeChannel {
 /** A command's request as the prefix sends it, or undefined for anything else. */
 export function parseCloudClaudeShellRequest(
 	line: string,
-): { cmd: string; cwd: string; env: Record<string, string>; dropped: string[] } | undefined {
+):
+	| { cmd: string; cwd: string; env: Record<string, string>; dropped: string[]; hook?: string; real?: string }
+	| undefined {
 	let value: unknown;
 	try {
 		value = JSON.parse(line);
@@ -88,6 +115,8 @@ export function parseCloudClaudeShellRequest(
 	if (typeof record.cmd !== "string" || typeof record.cwd !== "string") return undefined;
 	if (!isAbsolute(record.cwd) || record.cwd.length > VALUE_CHARS || record.cwd.includes("\0")) return undefined;
 	if (record.cmd.includes("\0")) return undefined;
+	if (record.hook !== undefined && typeof record.hook !== "string") return undefined;
+	if (record.real !== undefined && (typeof record.real !== "string" || !isAbsolute(record.real))) return undefined;
 	const env: Record<string, string> = {};
 	const dropped: string[] = [];
 	const given = record.env && typeof record.env === "object" && !Array.isArray(record.env) ? record.env : {};
@@ -101,7 +130,14 @@ export function parseCloudClaudeShellRequest(
 			env[name] = text;
 		else dropped.push(name.slice(0, 64));
 	}
-	return { cmd: record.cmd, cwd: record.cwd, env, dropped };
+	return {
+		cmd: record.cmd,
+		cwd: record.cwd,
+		env,
+		dropped,
+		...(typeof record.hook === "string" ? { hook: record.hook } : {}),
+		...(typeof record.real === "string" ? { real: record.real } : {}),
+	};
 }
 
 interface Channel {
@@ -118,13 +154,31 @@ export class CloudClaudeHomeShell {
 	readonly #sessionId: string;
 	readonly #machineId: string;
 	readonly #signal: AbortSignal;
+	readonly #review?: { readonly gate: CloudCodexHomeReview; readonly machine: CloudCodexHomeMachine };
+	readonly #hook?: (text: string, signal: AbortSignal, realPath?: string) => Promise<string | undefined>;
+	readonly #pictures?: CloudClaudePictures;
+	#reviews = 0;
+	#pictureCalls = 0;
+	readonly #picturesWritten = new Map<string, string>();
 	readonly #sockets = new Set<Socket>();
 	#server?: Server;
 	#path?: string;
 	#current?: Promise<Channel>;
 	/** For the run's report: commands, searches among them, commands stopped by a dropped prefix, requests refused,
 	 * channels opened, commands whose channel was lost. */
-	readonly counts = { commands: 0, searches: 0, terminated: 0, refused: 0, channels: 0, lost: 0 };
+	readonly counts = {
+		commands: 0,
+		searches: 0,
+		terminated: 0,
+		refused: 0,
+		channels: 0,
+		lost: 0,
+		reviewed: 0,
+		declined: 0,
+		hooks: 0,
+		pictures: 0,
+		picturesSaved: 0,
+	};
 	/** Why the channel would not open or ended, for this host's journal alone. */
 	cause?: string;
 
@@ -133,11 +187,17 @@ export class CloudClaudeHomeShell {
 		sessionId: string;
 		machineId: string;
 		signal: AbortSignal;
+		review?: { readonly gate: CloudCodexHomeReview; readonly machine: CloudCodexHomeMachine };
+		hook?: (text: string, signal: AbortSignal, realPath?: string) => Promise<string | undefined>;
+		pictures?: CloudClaudePictures;
 	}) {
 		this.#channel = options.channel;
 		this.#sessionId = options.sessionId;
 		this.#machineId = options.machineId;
 		this.#signal = options.signal;
+		if (options.review) this.#review = options.review;
+		if (options.hook) this.#hook = options.hook;
+		if (options.pictures) this.#pictures = options.pictures;
 	}
 
 	get socketPath(): string {
@@ -248,6 +308,80 @@ export class CloudClaudeHomeShell {
 		return opening;
 	}
 
+	async #reviewed(request: { cmd: string; cwd: string }, signal: AbortSignal): Promise<string | undefined> {
+		if (!this.#review) return undefined;
+		const action = cloudClaudeShellAction(
+			this.#review.machine,
+			request,
+			`claude-shell:${this.#sessionId}:${++this.#reviews}`,
+		);
+		if (!action) return undefined;
+		this.counts.reviewed += 1;
+		try {
+			const gate = await this.#review.gate.check(action, signal);
+			if (gate.run) return undefined;
+			this.counts.declined += 1;
+			return gate.text;
+		} catch {
+			this.counts.declined += 1;
+			return CLAUDE_REVIEW_FAILED;
+		}
+	}
+
+	#picture(
+		call: { readonly path: string; readonly prompt: string },
+		request: { cmd: string; cwd: string },
+		signal: AbortSignal,
+	): Promise<ClaudePictureOutcome> {
+		const pictures = this.#pictures as CloudClaudePictures;
+		return runClaudePictureCommand({
+			call,
+			command: cloudClaudeInvocationCommand(request.cmd).command,
+			cwd: request.cwd,
+			machine: this.#review?.machine ?? { id: this.#machineId, name: this.#machineId },
+			...(this.#review ? { review: this.#review.gate } : {}),
+			callId: `claude-picture:${this.#sessionId}:${++this.#pictureCalls}`,
+			pictures,
+			home: this.#pictureHome(),
+			written: this.#picturesWritten,
+			signal,
+		});
+	}
+
+	#pictureHome(): ClaudePictureHome {
+		return {
+			place: async (path, signal) => {
+				let channel: Channel;
+				try {
+					channel = await this.#channelNow();
+				} catch {
+					return "unavailable";
+				}
+				const ran = await quiet(channel, ["/bin/sh", "-c", PICTURE_PLACE, "picture", path], signal);
+				if (ran?.code === 3) return "missing";
+				if (ran?.code === 5) return "folder";
+				if (ran?.code === 6) return "unresolved";
+				const found = ran?.code === 0 ? /^(-|x|[0-9a-f]{64}) (\/[^\0]*)$/.exec(ran.out) : null;
+				return found
+					? { file: found[1] === "-" ? null : (found[1] as string), real: found[2] as string }
+					: "unavailable";
+			},
+			write: async (path, png, signal) => {
+				let channel: Channel;
+				try {
+					channel = await this.#channelNow();
+				} catch {
+					return false;
+				}
+				const answer = await Promise.race([
+					call(channel, "fs/writeFile", { path: pathToFileURL(path).href, dataBase64: png.toString("base64") }),
+					aborted(AbortSignal.any([signal, AbortSignal.timeout(PICTURE_WRITE_MS)])),
+				]);
+				return answer !== undefined && !("error" in answer);
+			},
+		};
+	}
+
 	async #serve(socket: Socket): Promise<void> {
 		if (this.#sockets.size >= MAX_CONNECTIONS || this.#signal.aborted) {
 			socket.destroy();
@@ -271,6 +405,48 @@ export class CloudClaudeHomeShell {
 			if (!request) {
 				this.counts.refused += 1;
 				fail("HOME_REQUEST_INVALID: the command could not be read, so it did not run.", 126);
+				return;
+			}
+			const gone = new AbortController();
+			socket.once("close", () => gone.abort());
+			socket.resume();
+			const asked = AbortSignal.any([this.#signal, gone.signal]);
+			if (request.cmd === CLAUDE_REVIEW_HOOK_PATH || request.cmd === "--hook") {
+				this.counts.hooks += 1;
+				const refusal =
+					this.#hook && request.hook !== undefined
+						? await this.#hook(request.hook, asked, request.real).catch(() => CLAUDE_REVIEW_FAILED)
+						: undefined;
+				if (asked.aborted) return;
+				if (refusal === undefined) {
+					send({ x: 0 });
+					socket.end();
+				} else fail(refusal, 2);
+				return;
+			}
+			const picture = this.#pictures
+				? cloudClaudePictureCall(cloudClaudeInvocationCommand(request.cmd).command, request.cwd)
+				: undefined;
+			if (picture) {
+				this.counts.pictures += 1;
+				const outcome: ClaudePictureOutcome | undefined =
+					"usage" in picture
+						? { err: picture.usage, code: 2 }
+						: await this.#picture(picture, request, asked).catch(() =>
+								asked.aborted ? undefined : { err: CLAUDE_PICTURE_FAILED, code: 1 },
+							);
+				if (asked.aborted || !outcome) return;
+				if (outcome.saved !== undefined) this.counts.picturesSaved += 1;
+				if (outcome.out) send({ o: Buffer.from(outcome.out).toString("base64") });
+				if (outcome.err) send({ e: Buffer.from(`${outcome.err}\n`).toString("base64") });
+				send({ x: outcome.code });
+				socket.end();
+				return;
+			}
+			const refusal = await this.#reviewed(request, asked);
+			if (asked.aborted) return;
+			if (refusal !== undefined) {
+				fail(refusal, 126);
 				return;
 			}
 			try {
@@ -312,12 +488,11 @@ export class CloudClaudeHomeShell {
 				);
 				return;
 			}
-			let dropped = socket.destroyed;
+			let dropped = socket.destroyed || gone.signal.aborted;
 			socket.once("close", () => {
 				dropped = true;
 				wake?.();
 			});
-			socket.resume();
 			let exitCode: number | undefined;
 			for (;;) {
 				const message = events.shift();
@@ -368,6 +543,59 @@ function call(channel: Channel, method: string, params: Record<string, unknown>)
 		channel.pending.set(id, resolve);
 		channel.stream.write(JSON.stringify({ id, method, params }));
 	});
+}
+
+function aborted(signal: AbortSignal): Promise<undefined> {
+	return new Promise((resolve) => {
+		if (signal.aborted) resolve(undefined);
+		else signal.addEventListener("abort", () => resolve(undefined), { once: true });
+	});
+}
+
+async function quiet(
+	channel: Channel,
+	argv: readonly string[],
+	signal: AbortSignal,
+): Promise<{ code: number | undefined; out: string } | undefined> {
+	const processId = `claude-picture-${randomBytes(6).toString("hex")}`;
+	let exitCode: number | undefined;
+	const out: Buffer[] = [];
+	let lost = false;
+	let closed: () => void = () => undefined;
+	const done = new Promise<void>((resolve) => {
+		closed = resolve;
+	});
+	channel.processes.set(processId, (message) => {
+		const params = (message.params ?? {}) as Record<string, unknown>;
+		if (message.method === "process/output" && params.stream !== "stderr" && typeof params.chunk === "string")
+			out.push(Buffer.from(params.chunk, "base64"));
+		else if (message.method === "process/exited" && typeof params.exitCode === "number") exitCode = params.exitCode;
+		else if (message.method === "process/closed") {
+			lost = message.lost === true;
+			closed();
+		}
+	});
+	const until = AbortSignal.any([signal, AbortSignal.timeout(PICTURE_PLACE_MS)]);
+	try {
+		const started = await call(channel, "process/start", {
+			processId,
+			argv,
+			cwd: "file:///",
+			env: { ...CLOUD_CLAUDE_SHELL_ENVIRONMENT },
+			tty: false,
+			pipeStdin: false,
+			arg0: null,
+		});
+		if ("error" in started) return undefined;
+		const stopped = await Promise.race([done.then(() => false), aborted(until).then(() => true)]);
+		if (stopped) {
+			if (!channel.closed) await call(channel, "process/terminate", { processId });
+			return undefined;
+		}
+		return lost ? undefined : { code: exitCode, out: Buffer.concat(out).toString("utf8") };
+	} finally {
+		channel.processes.delete(processId);
+	}
 }
 
 /** The request line, read without taking more of the socket than that line; undefined past REQUEST_BYTES. */

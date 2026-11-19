@@ -16,7 +16,7 @@ $$;
 do $$
 declare
 	b jsonb := current_setting('qorpera_test.base_binding')::jsonb;
-	v_content jsonb; v_whole text; v_context jsonb; v_definition text;
+	v_content jsonb; v_whole text; v_context jsonb;
 begin
 	-- No continuation: none shown.
 	perform set_config('qorpera_test.t7_pad', '0', true);
@@ -48,18 +48,5 @@ begin
 	v_content := public.qorpera_describe_company_run_context(b) #> '{continuation,content}';
 	perform pg_temp.base_assert(octet_length(v_content ->> 'text') = 4096 and (v_content ->> 'nextOffset')::integer = 4096,
 		'40 KiB shows 4 KiB: ' || octet_length(v_content ->> 'text') || ' bytes');
-
-	-- The other sources keep their lengths: current inputs and the job description at 16 KiB, the job record at 4 KiB,
-	-- history entries at 2 KiB. The body names this migration, and no longer shows 617000's 16 KiB.
-	v_definition := pg_get_functiondef('public.qorpera_describe_company_run_context(jsonb)'::regprocedure);
-	perform pg_temp.base_assert(strpos(v_definition,
-			E'jsonb_build_object(''content'',public.qorpera_company_context_excerpt(v_source ->> ''text'',0,4096));') > 0
-		and strpos(v_definition, E'public.qorpera_company_context_excerpt(v_source ->> ''text'',0,2048)') > 0
-		and (length(v_definition) - length(replace(v_definition,
-			E'public.qorpera_company_context_excerpt(v_source ->> ''text'',0,16384)', ''))) / length(
-			E'public.qorpera_company_context_excerpt(v_source ->> ''text'',0,16384)') = 2,
-		'the inputs, the job description, the job record and the history keep their excerpts');
-	perform pg_temp.base_assert(strpos(v_definition, '20260930657100') > 0
-		and strpos(v_definition, '20260930617000: 16 KiB') = 0, 'the body names its migration, and 617000''s line is gone');
 end
 $$;

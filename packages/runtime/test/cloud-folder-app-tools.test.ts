@@ -212,6 +212,7 @@ it("answers a guide's text, and nothing of the company", async () => {
 		"ring",
 		"flow",
 		"explainer",
+		"program",
 		"style",
 		"reads",
 		"writes",

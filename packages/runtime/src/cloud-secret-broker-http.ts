@@ -388,11 +388,25 @@ function parseModelLoginRequest(value: unknown): ModelLoginIssueRequest {
 	return { binding: parseModelLoginRunBinding(input.binding), knownVersion: input.knownVersion };
 }
 
-function parseClaudeLoginOpenRequest(value: unknown): { binding: ModelLoginRunBinding } {
+function parseClaudeLoginOpenRequest(value: unknown): { binding: ModelLoginRunBinding; knownVersion?: number } {
 	const input = record(value, "Claude login request");
-	exact(input, ["schema", "binding"], "Claude login request");
-	if (input.schema !== "qorpera.claude-login-open-request/v1") throw new Error("Claude login request is invalid");
-	return { binding: parseModelLoginRunBinding(input.binding) };
+	exact(
+		input,
+		input.knownVersion === undefined ? ["schema", "binding"] : ["schema", "binding", "knownVersion"],
+		"Claude login request",
+	);
+	if (
+		input.schema !== "qorpera.claude-login-open-request/v1" ||
+		(input.knownVersion !== undefined &&
+			(typeof input.knownVersion !== "number" ||
+				!Number.isSafeInteger(input.knownVersion) ||
+				input.knownVersion < 1))
+	)
+		throw new Error("Claude login request is invalid");
+	return {
+		binding: parseModelLoginRunBinding(input.binding),
+		...(input.knownVersion === undefined ? {} : { knownVersion: input.knownVersion as number }),
+	};
 }
 
 function parseClaudeLoginSealRequest(value: unknown): {
@@ -1840,7 +1854,29 @@ export async function openClaudeLoginForRun(
 	options: ClaudeLoginRunClient,
 	binding: ModelLoginRunBinding,
 	signal: AbortSignal,
-): Promise<OpenedClaudeLogin | { readonly refused: "SIGNED_OUT" | "NOT_OPEN" }> {
+): Promise<OpenedClaudeLogin | { readonly refused: "SIGNED_OUT" | "NOT_OPEN" }>;
+export async function openClaudeLoginForRun(
+	options: ClaudeLoginRunClient,
+	binding: ModelLoginRunBinding,
+	signal: AbortSignal,
+	knownVersion: number | undefined,
+): Promise<
+	| OpenedClaudeLogin
+	| { readonly refused: "SIGNED_OUT" | "NOT_OPEN" }
+	| { readonly current: true; readonly claudeLoginId: string; readonly version: number }
+>;
+export async function openClaudeLoginForRun(
+	options: ClaudeLoginRunClient,
+	binding: ModelLoginRunBinding,
+	signal: AbortSignal,
+	knownVersion?: number,
+): Promise<
+	| OpenedClaudeLogin
+	| { readonly refused: "SIGNED_OUT" | "NOT_OPEN" }
+	| { readonly current: true; readonly claudeLoginId: string; readonly version: number }
+> {
+	if (knownVersion !== undefined && (!Number.isSafeInteger(knownVersion) || knownVersion < 1))
+		throw new Error("Claude login version is invalid");
 	const answer = record(
 		await claudeLoginCall(
 			options,
@@ -1849,6 +1885,7 @@ export async function openClaudeLoginForRun(
 				JSON.stringify({
 					schema: "qorpera.claude-login-open-request/v1",
 					binding: parseModelLoginRunBinding(binding),
+					...(knownVersion === undefined ? {} : { knownVersion }),
 				}),
 			),
 			signal,
@@ -1860,6 +1897,17 @@ export async function openClaudeLoginForRun(
 		exact(answer, ["schema", "state", "reason"], "Claude login");
 		if (answer.reason !== "SIGNED_OUT" && answer.reason !== "NOT_OPEN") throw new Error("Claude login is invalid");
 		return { refused: answer.reason };
+	}
+	if (answer.state === "current") {
+		exact(answer, ["schema", "state", "claudeLoginId", "version"], "Claude login");
+		if (
+			knownVersion === undefined ||
+			answer.version !== knownVersion ||
+			typeof answer.claudeLoginId !== "string" ||
+			!UUID.test(answer.claudeLoginId)
+		)
+			throw new Error("Claude login is invalid");
+		return { current: true, claudeLoginId: answer.claudeLoginId.toLowerCase(), version: knownVersion };
 	}
 	exact(answer, ["schema", "state", "claudeLoginId", "version", "envelopeSha256", "files"], "Claude login");
 	const { claudeLoginId, version, envelopeSha256 } = answer;

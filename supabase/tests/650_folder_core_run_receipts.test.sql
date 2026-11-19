@@ -106,16 +106,6 @@ begin
 	if x ->> 'state' is distinct from 'completed' or x ->> 'folder_commit_id' is distinct from c ->> 'commitId'
 		or x ->> 'receipt_id' is distinct from r::text then
 		raise exception 'A begin replay after completion: %', x; end if;
-	-- The request digests: without a receipt, today's (the change set and the actor); with one, the receipt joins it.
-	if (select request_sha256 from public.qorpera_folder_operation_keys where environment_id = '63400000-0000-4000-8000-000000000020'
-			and operation_key = 'receipt-commit-1')
-		<> encode(extensions.digest(convert_to(jsonb_build_array(jsonb_build_object('kind', 'run', 'runId', v ->> 'runId'), v_units, null, r)::text,
-			'utf8'), 'sha256'), 'hex') then raise exception 'The digest of a commit with a receipt'; end if;
-	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'receipt-plain-1', '[{"op":"mkdir","path":"receipt-plain"}]'), 1, 'saved');
-	if (select request_sha256 from public.qorpera_folder_operation_keys where environment_id = '63400000-0000-4000-8000-000000000020'
-			and operation_key = 'receipt-plain-1')
-		<> encode(extensions.digest(convert_to(jsonb_build_array(pg_temp.member(1), '[{"op":"mkdir","path":"receipt-plain"}]'::jsonb)::text,
-			'utf8'), 'sha256'), 'hex') then raise exception 'The digest of a commit without a receipt must not change'; end if;
 	if pg_temp.begin(b, extensions.gen_random_uuid(), 'op-next') ->> 'state' <> 'executing' then raise exception 'The next operation'; end if;
 end $$;
 

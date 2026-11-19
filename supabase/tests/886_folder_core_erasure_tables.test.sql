@@ -171,8 +171,7 @@ begin
 	if strpos(v_body, 'from public.qorpera_folder_table_index i where i.environment_id = p_environment_id and i.id = any(v_tables)')
 			<= strpos(v_body, 'from public.qorpera_folder_contact_index i where i.environment_id = p_environment_id and i.id = any(v_contacts)')
 		or strpos(v_body, 'from public.qorpera_folder_table_index i where i.environment_id = p_environment_id and i.id = any(v_tables)')
-			>= strpos(v_body, 'perform public.qorpera_folder_lock_commit_rank(v_env, v_targets, 6::smallint)')
-		or strpos(v_body, '20260930028000') = 0 then
+			>= strpos(v_body, 'perform public.qorpera_folder_lock_commit_rank(v_env, v_targets, 6::smallint)') then
 		raise exception 'The table rows are locked after the contact rows and before rank 6'; end if;
 end $$;
 

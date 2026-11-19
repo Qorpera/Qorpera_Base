@@ -2,6 +2,7 @@ import { createHash, createHmac } from "node:crypto";
 import { CloudRequestTimeoutError, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import { type CloudCodingRepository, type JsonValue, parseCloudCodingRepository } from "@qorpera/contracts";
 import type { BankSyncAuthority } from "./cloud-bank-sync.ts";
+import type { ClaudeLoginRenewalAuthority } from "./cloud-claude-login-renewal.ts";
 import type { ClaudeLoginRunAuthority } from "./cloud-claude-login-vault.ts";
 import {
 	type CodingValueAuthority,
@@ -2479,12 +2480,18 @@ export class PostgresCloudSecretBrokerAuthority
 
 	/** A Claude Code worker's run (20260930771000): its member's sealed Claude login, when the database says this run
 	 * may have it now (the open route's: the worker at work). */
-	openClaudeLoginForRun(binding: ModelLoginRunBinding, signal: AbortSignal): Promise<unknown> {
-		return this.#rpc(
-			"select public.qorpera_open_claude_login_for_run($1::uuid,$2::text,$3::jsonb) as result",
-			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, JSON.stringify(binding)],
-			signal,
-		);
+	openClaudeLoginForRun(binding: ModelLoginRunBinding, signal: AbortSignal, knownVersion?: number): Promise<unknown> {
+		return knownVersion === undefined
+			? this.#rpc(
+					"select public.qorpera_open_claude_login_for_run($1::uuid,$2::text,$3::jsonb) as result",
+					[this.#brokerAuthorityId, this.#brokerCapabilitySha256, JSON.stringify(binding)],
+					signal,
+				)
+			: this.#rpc(
+					"select public.qorpera_open_claude_login_for_run($1::uuid,$2::text,$3::jsonb,$4::bigint) as result",
+					[this.#brokerAuthorityId, this.#brokerCapabilitySha256, JSON.stringify(binding), knownVersion],
+					signal,
+				);
 	}
 
 	/** The same login re-opened for the vault's seal-back, which keeps the files the run did not send: every check of
@@ -2637,6 +2644,53 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
+	describeClaudeLoginRead(
+		request: { requestId: string; capabilitySha256: string },
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_describe_claude_login_read($1::uuid,$2::text,$3::uuid,$4::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, request.requestId, request.capabilitySha256],
+			signal,
+		);
+	}
+
+	claimClaudeLoginReset(
+		request: { requestId: string; capabilitySha256: string; claim: string },
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_claim_claude_login_reset($1::uuid,$2::text,$3::uuid,$4::text,$5::uuid) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				request.requestId,
+				request.capabilitySha256,
+				request.claim,
+			],
+			signal,
+		);
+	}
+
+	recordClaudeLoginRead(
+		record: Parameters<NonNullable<ModelLoginUsageAuthority["recordClaudeLoginRead"]>>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_record_claude_login_read($1::uuid,$2::text,$3::uuid,$4::text,$5::jsonb,$6::jsonb,$7::jsonb) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				record.requestId,
+				record.capabilitySha256,
+				record.usage === null ? null : JSON.stringify(record.usage),
+				record.resets === null ? null : JSON.stringify(record.resets),
+				record.reset === null ? null : JSON.stringify(record.reset),
+			],
+			signal,
+		);
+	}
+
 	/** The daily usage check's refresh, if a login at its usage limit is due a reading (20260930575000). */
 	beginModelLoginUsageRecheck(request: { capabilitySha256: string }, signal: AbortSignal): Promise<unknown> {
 		return this.#rpc(
@@ -2695,7 +2749,7 @@ export function sharedBrokerCapability(principalSecret: string, companyId?: stri
 /** The shared vault's principal: it lists the companies it serves and registers new ones, and hands out
  * each company's own authority, which every existing broker call uses unchanged. It also keeps its members'
  * account model logins (20260930548000): their renewals, idle pass, accounts and switch-off are its own calls. */
-export class PostgresCloudSecretBrokerPrincipal implements AccountModelLoginAuthority {
+export class PostgresCloudSecretBrokerPrincipal implements AccountModelLoginAuthority, ClaudeLoginRenewalAuthority {
 	readonly #database: CloudSecretPostgresClient;
 	readonly #principalId: string;
 	readonly #principalSecret: string;
@@ -2800,6 +2854,61 @@ export class PostgresCloudSecretBrokerPrincipal implements AccountModelLoginAuth
 				release.permanent,
 				release.reason,
 			],
+			signal,
+		);
+	}
+
+	takeClaudeLoginRenewal(
+		request: Parameters<ClaudeLoginRenewalAuthority["takeClaudeLoginRenewal"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return oneCloudSecretRpc(
+			this.#database,
+			"select public.qorpera_take_claude_login_renewal($1::uuid,$2::text,$3::uuid,$4::text) as result",
+			[this.#principalId, this.#capabilitySha256, request.claudeLoginId, request.purpose],
+			signal,
+		);
+	}
+
+	takeIdleClaudeLoginRenewal(signal: AbortSignal): Promise<unknown> {
+		return oneCloudSecretRpc(
+			this.#database,
+			"select public.qorpera_take_idle_claude_login_renewal($1::uuid,$2::text) as result",
+			[this.#principalId, this.#capabilitySha256],
+			signal,
+		);
+	}
+
+	commitClaudeLoginRenewal(
+		commit: Parameters<ClaudeLoginRenewalAuthority["commitClaudeLoginRenewal"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return oneCloudSecretRpc(
+			this.#database,
+			"select public.qorpera_commit_claude_login_renewal($1::uuid,$2::text,$3::uuid,$4::uuid,$5::bigint,$6::text,$7::text,$8::text,$9::text) as result",
+			[
+				this.#principalId,
+				this.#capabilitySha256,
+				commit.claudeLoginId,
+				commit.token,
+				commit.baseVersion,
+				commit.baseEnvelopeSha256,
+				commit.keyId,
+				Buffer.from(commit.encryptedEnvelope).toString("base64"),
+				commit.envelopeSha256,
+			],
+			signal,
+		);
+	}
+
+	releaseClaudeLoginRenewal(
+		release: Parameters<ClaudeLoginRenewalAuthority["releaseClaudeLoginRenewal"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return oneCloudSecretRpc(
+			this.#database,
+			"select public.qorpera_release_claude_login_renewal($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text) as result",
+			[this.#principalId, this.#capabilitySha256, release.claudeLoginId, release.token, release.outcome],
 			signal,
 		);
 	}

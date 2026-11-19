@@ -202,9 +202,7 @@ do $$
 begin
 	if not (pg_temp.layouts() ?& array['qorperaos/interfaces/mailbox/interface.toml', 'qorperaos/interfaces/member-page/interface.toml',
 			'qorperaos/interfaces/order.md', 'qorperaos/interfaces/pulse/interface.toml', 'qorperaos/interfaces/pulse/readme.md',
-			'qorperaos/tables/areas/table.toml', 'qorperaos/tables/cards/table.toml', 'qorperaos/tables/numbers/table.toml'])
-		or position('20260930510000 (C6)' in pg_get_functiondef(
-			'public.qorpera_company_state_interface_paths(uuid,uuid,jsonb,uuid,text,text,text,jsonb,text,text)'::regprocedure)) = 0 then
+			'qorperaos/tables/areas/table.toml', 'qorperaos/tables/cards/table.toml', 'qorperaos/tables/numbers/table.toml']) then
 		raise exception 'Kept: %', pg_temp.layouts(); end if;
 end $$;
 

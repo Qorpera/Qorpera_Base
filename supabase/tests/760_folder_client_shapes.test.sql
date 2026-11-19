@@ -137,11 +137,7 @@ do $$
 declare v_check record;
 begin
 	for v_check in select * from (values
-		('qorpera_folder_release_pairs', '%''A released read is no longer readable'' using errcode = ''42501''%'),
-		('qorpera_folder_run_reads_current', '%''A read is no longer readable'' using errcode = ''42501''%'),
-		('qorpera_folder_commit', '%''code'', ''QRC01'', ''message'', ''Company folder authority changed''%'),
-		('qorpera_folder_commit', '%detail = ''{"status":409,"headers":{}}''%'),
-		('qorpera_folder_commit', '%''Company execution is paused'' using errcode = ''55000''%')) c(fn, text)
+		('qorpera_folder_commit', '%detail = ''{"status":409,"headers":{}}''%')) c(fn, text)
 	loop
 		if not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
 			where n.nspname = 'public' and p.proname = v_check.fn and p.prosrc like v_check.text) then

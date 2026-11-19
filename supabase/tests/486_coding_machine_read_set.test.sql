@@ -110,9 +110,9 @@ begin
 	if exists (select 1 from public.qorpera_folder_run_read_records where run_id = (t3 ->> 'runId')::uuid) then
 		raise exception 'Take-in: a turn leased after the release has no records before its wake read'; end if;
 	perform public.qorpera_read_native_wake(pg_temp.native(t3));
-	v_take := md5('coding-machine:' || (t3 ->> 'runId') || ':' || c_m::text)::uuid;
-	if not exists (select 1 from public.qorpera_folder_run_read_records where run_id = (t3 ->> 'runId')::uuid and release_id = v_take
-			and resource_id = v_res and output_sha256 = repeat('0', 64) and reads @> '[{"path":"mread/f.txt"}]')
+	select release_id into v_take from public.qorpera_folder_run_read_records where run_id = (t3 ->> 'runId')::uuid
+		and resource_id = v_res and output_sha256 = repeat('0', 64) and reads @> '[{"path":"mread/f.txt"}]';
+	if v_take is null
 		or not exists (select 1 from public.qorpera_folder_run_reads where run_id = (t3 ->> 'runId')::uuid and resource_id = v_res) then
 		raise exception 'Take-in: the wake read files the machine''s reads under release %', v_take; end if;
 	if pg_temp.filed(t3, rid, 'mread/f.txt') then raise exception 'Take-in: nothing is filed under the view''s release id'; end if;
@@ -178,8 +178,9 @@ begin
 	t4 := pg_temp.run(c_a, 'agent', c_member, 'worker-dispatch', p, (s4 ->> 'workerId')::uuid);
 	b4 := pg_temp.native(t4);
 	perform public.qorpera_read_native_wake(b4);
-	v_take := md5('coding-machine:' || (t4 ->> 'runId') || ':' || c_m::text)::uuid;
-	if not pg_temp.filed(t4, v_take, 'mtake/f/f.txt') then raise exception 'Keep: S4''s turn takes F in at its wake read'; end if;
+	select release_id into v_take from public.qorpera_folder_run_read_records where run_id = (t4 ->> 'runId')::uuid
+		and output_sha256 = repeat('0', 64) and reads @> '[{"path":"mtake/f/f.txt"}]';
+	if v_take is null then raise exception 'Keep: S4''s turn takes F in at its wake read'; end if;
 	perform pg_temp.fx(format('update public.qorpera_coding_sessions set attached_machine_id = null, attachment_token = null,
 		attachment_until = null, attachment_turn = null, attached_at = null where attached_machine_id = %L', c_m));
 	r := public.qorpera_replace_coding_machine_disk(c_m, 'exec-1', '{}', repeat('8', 64));

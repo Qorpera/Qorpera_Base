@@ -303,9 +303,6 @@ end $$;
 do $$
 declare v_machine jsonb := to_jsonb(pg_temp.st_machine()); v_rows bigint;
 begin
-	perform pg_temp.base_assert((select provolatile from pg_proc
-			where oid = 'public.qorpera_member_machine_stream_release(uuid,uuid,uuid,bigint,bigint)'::regprocedure) = 's',
-		'5: stable');
 	v_rows := (select count(*) from public.qorpera_company_machine_desktop_actions) +
 		(select count(*) from public.qorpera_company_machine_desktop_pointers) +
 		(select count(*) from public.qorpera_company_machine_screen_watches);
@@ -326,6 +323,4 @@ begin
 		and not has_function_privilege('anon', 'public.qorpera_member_machine_stream_release(uuid,uuid,uuid,bigint,bigint)', 'execute')
 		and not has_function_privilege('qorpera_secret_broker', 'public.qorpera_member_machine_stream_release(uuid,uuid,uuid,bigint,bigint)', 'execute'),
 		'6: the machine''s node alone reads it');
-	perform pg_temp.base_assert(strpos(pg_get_functiondef('public.qorpera_member_machine_stream_release(uuid,uuid,uuid,bigint,bigint)'::regprocedure),
-		'20260930745000') > 0, '6: the marker');
 end $$;

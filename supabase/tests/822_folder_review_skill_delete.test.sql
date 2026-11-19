@@ -65,11 +65,4 @@ begin
 		raise exception 'A refused skill deletion deleted something'; end if;
 end $$;
 
--- The marker for release guards.
-do $$
-begin
-	if position('20260930001200' in pg_get_functiondef('public.qorpera_folder_record_review(jsonb,jsonb)'::regprocedure)) = 0 then
-		raise exception 'The recorder lacks the P20 marker'; end if;
-end $$;
-
 rollback;

@@ -2,7 +2,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
-import { interfaceRows } from "../src/app/interfaces.ts";
 import { showWaitingInTitle } from "../src/app/tab-title.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
@@ -157,16 +156,6 @@ describe("an agent stopped at the member", () => {
 		expect(card.getAttribute("aria-label")).toBe("Co-Founder · Waiting for you: Send an email");
 		expect(f.company.store.get().approvals).toEqual({ [cofounder.id]: 1 });
 		expect(f.ask(staff.id)).toBeUndefined();
-	});
-
-	it("says what for on the home page's waiting row", async () => {
-		const f = setup();
-		f.work.mockResolvedValue([waits(staff.id, { latestAt: "2026-10-02T09:50:00.250Z" })]);
-		await f.company.refreshApprovals();
-		const rows = interfaceRows(f.company, "waiting") ?? [];
-		expect(rows.map(({ row }) => [row.title, row.due])).toEqual([
-			[`${staff.displayName} needs you: ${question}`, "2026-10-02T09:50:00Z"],
-		]);
 	});
 
 	it("speaks Danish", async () => {

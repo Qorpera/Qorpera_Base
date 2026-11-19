@@ -451,6 +451,11 @@ call the web does not already answer.
   folder), and the engine takes each from there by its path. One the folder lacks is left out, the engine draws a
   quiet placeholder for it, and the save's `look` says which. So an agent writes its pictures first, from a machine,
   or saves the data again after: a save with the data in the folder and none in the call reads the folder's.
+- **Pictures as WebP.** Every data kit's guide ends, and `style` for a page written by hand ends, with one paragraph
+  (`PICTURES`, `cloud-app-guides.ts`): save a photo, a render or a screenshot as .webp (`cwebp -q 90`, or Pillow's
+  save with quality 90, both in the machine image), since every member downloads each picture an app shows and a
+  render as a PNG is about ten times its size as WebP (measured 19 November 2026 on one board app's eight renders:
+  9.4 MB as PNGs, 0.72 MB as WebP); .png for a small flat graphic that must stay exact, .svg for what is drawn.
 - **The engine reads the data through the bridge**, as it stands when the page opens, and again after a change
   notice, no sooner than ten seconds after its last draw (§5). So the app's own folder is the one source: a change of
   `<kit>.json` shows without a new page. The page also holds the data as it was saved, for one case: opened where
@@ -502,7 +507,9 @@ call the web does not already answer.
   button stays. The button is drawn only where the page's `qorpera` has `tell`: an older web, and the page opened
   outside Qorpera, show none.
 - **`look`** is what a read of the data finds (`kitNotes`): pictures the folder lacks, and texts longer than a kit
-  shows. How the page looks stays the agent's to check on a machine.
+  shows. A save over the app's folder also names the PNGs of more than 400 KiB that the data names and the folder
+  holds (`kitHeavyPictures`: three names at most, their size together, and the `cwebp` command that makes each a
+  .webp); nothing is refused and no file is changed. How the page looks stays the agent's to check on a machine.
 
 Not built: the Co-Founder's `company` page has no kit of its own; a helper that renders an object's turntable and
 its parts' tracks in Blender on a machine (an agent writes that script itself today, from the guide); and a look at an
@@ -768,6 +775,123 @@ commit route is open for `apps/`, and the runtime's tools are where an agent is 
 No tool's description, no role text and no context prose says any of this yet: an agent learns it from the refusal and
 the list. Not held: a company machine's own writes into an app's folder (the machine's file channel is not a tool of
 the run), and a member's own changes.
+
+## 3f. Programs: the program kit (18 November 2026)
+
+Jonas, 18 November 2026, after a live test in which agents built a Linux program and an Android app whose files had no
+home: "for desktop apps surely we can create a private space were companies can upload and share code/programs with its
+members - like a github repo, just built for downloading and testing apps, not for reading code", and "Yes, build step
+1" to "kept versions and the program's page with Download" (design: lanes/native-apps-review-20261118/design).
+
+**The app.** A program is an interface app of the kit `program` (`APP_KITS`), in `apps/<name>/` with its `app.toml`
+like every app: it is in the apps drawer, has its card in a message (`app:<name>`), is posted and organised as any app.
+No new tool and no new top-level folder. The kit writes no file: the web draws its page itself, since a page in the
+app's frame cannot start a download. Its manifest's `entry` stays `index.html` and no such file is needed.
+
+**Its data** (`cloud-client/app-program.ts`). The agent builds on a machine, copies one file for each kind a person
+opens into `apps/<name>/versions/<version>/` through `/company`, and calls `save_app` with `kit: "program"` and one
+file, `program.json`, holding:
+
+- `version`: short text, letters, digits and `. _ + -`, at most 24 characters, not starting or ending with a dot and
+  with no `..` (`isProgramVersion`); it is the folder's name under `versions/`;
+- `forms`: 1 to 5 `{"for", "file"}`, `for` one of `android`, `linux`, `windows`, `mac`, `iphone`, at most one each;
+  `file` one file's name in `versions/<version>/`, no folder, at most 200 characters, and one the company folder
+  takes (`isProgramFileName` requires that the joined path passes `parseCloudCompanyPath`: no `%`, `:`, ending dot or
+  space, device name such as `con`, non-NFC text or C1 control; `save_app` refuses such a hand-in in plain words, and
+  a member's drop says the file can't be used as it is named);
+- `screens` (optional): `{"phone", "desktop"}`, each a `.png`, `.jpg` or `.webp` in the app's folder: real
+  screenshots of the running program.
+
+The app's one line is its manifest's `about`. `save_app` (`cloud-app-kit-program.ts`) refuses, and saves nothing, when
+a file the data names is not in the app's folder as the run lists it (`PROGRAM_FILE_MISSING`, naming the file and
+`/company/apps/<name>/<path>` where it must be), when the version is kept with other files, by kind, name or content
+(`PROGRAM_VERSION_KEPT`), when it is an earlier kept version than the newest (`PROGRAM_VERSION_EARLIER`), when the data
+does not read (`APP_DATA_INVALID`: the field and what it must be; `versions` given by the agent is refused too), when a
+program app has no `program.json` (`APP_DATA_MISSING`), and in a run that has not read `app_guide program`
+(`APP_GUIDE_UNREAD`). It then writes `program.json` as the data plus `versions`: every kept version, newest first, each
+with its date (the save's, ISO) and its forms with each file's size and SHA-256 as the folder holds it (`writeProgram`,
+read back by `parseProgram`, which the web uses). The same newest version saved again with the same files keeps its
+date and takes new screens. Nothing under `versions/` is deleted or trimmed: every version stays in the list (no
+pattern in the code trims a kept list; `PROGRAM_FULL` refuses a save only when the list no longer fits the file's
+256 KiB). A save without screens says so in `look`.
+
+**The page** (`packages/web/src/app/views/program-page.ts`; `AppPanel` shows it in place of a frame for a manifest
+whose kit is `program`): the app's name as the one big line, then a green dot and "Version 0.1 · <day>" in the
+client's day words; one soft field in a neutral tint holding the program's own pictures (`screens.phone` in a plain
+phone outline in front, `screens.desktop` in a plain rounded window behind, either alone, or with none one large
+tile with the app's emblem, or its initial for the default emblem, and the file's name and size); one **Download**
+with a small line ("For this computer", "For this phone") when the member's system, read from the browser
+(`program-download.ts`), has a form; else "Download for <Kind>" for the first form in the fixed order Android, Linux,
+Windows, Mac, iPhone; "Install" on an Android phone with an Android form. Chips for the five kinds in that order: solid
+with a green dot when the version has that form, which downloads it, dashed and grey when not, which does nothing. A
+download is the member's own read of the file with Storage's path (`WebFileDownloads.offerPieces`), under the file's
+own name, its percent on the button while it runs, then "It's in your Downloads."; a file over Storage's 256 MiB says
+what Storage says. The "…" menu lists "Earlier versions", each as "<version> · <day>"; a pick shows that version (its
+forms, its Download) with a quiet way back to the newest. Everyone who reads the company folder sees it and may
+download; nothing else of the page writes.
+
+**An older web client** reads `kit = "program"` as a manifest with problems: the app is in no drawer (a posted app
+needs a manifest that reads), and its card or link opens the line "This app's app.toml has problems". Deploy the web
+first, then the runtime bundle that carries the kit.
+
+Not built in this step: a member's own upload, the on-screen trial, a link for friends, signing keys, public pages, a
+Remove of a version, a desktop program of Qorpera's own.
+
+**A member's own program** (step 2; Jonas, 18 November 2026: "then build step 2, add your own"). A member who may
+write the company folder makes a new program by giving one file, or several at once (one for each kind), or adds a
+version to a program a member made (a manifest without `owner`); never to an agent's program, whose versions are the
+agent's. The bytes go up through the object gateway's member program route (RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md §7),
+the only folder path that takes bytes from a browser: `apps/<name>/versions/<version>/<file>`, at most 256 MiB a
+file. Then the text, through the member commit route (C4 §5) in one change set: a new program's `app.toml` (kit
+`program`, its name, no `owner`, `posted = true`, the default emblem) and `program.json` (`writeProgram`; each form with
+the size and SHA-256 of what was staged, so the page's download check holds), with `expectedVersion` when the program
+has one, so two members adding at once conflict and the second reads the newer list, takes the next version, moves
+its files there in a change set of its own, and then writes `program.json` again. A member's versions are named `1`, `2` and so on (the next whole number not
+kept). A `program.json` past the commit route's 64 KiB text cannot take a member's version: the page says "This
+program holds as many versions as it can."
+
+**Who added it.** A kept version may carry `userId`, the member who added it from the web (`ProgramVersion.userId`,
+a lower-case UUID; any other value makes the file unread). `parseProgram` keeps it and `writeProgram` writes it;
+`save_app` keeps it on the versions it does not touch, and an agent's own version never has it (a hand-in naming
+`userId` is refused: it is not a field of a hand-in). A runtime bundle from before this keeps the versions but drops
+the field when an agent saves the program: the version then reads by its day, not "added by".
+
+**The web's part** (`packages/web/src/app/program-add.ts`, `views/program-add.ts`). The apps drawer's last entry, a
+dashed tile "New program", only for a member who may write (and only while the drawer itself shows), opens
+`#/c/<profileId>/new-program`: the big line "New program" in a muted tone, one dashed drop area ("Drop a program here",
+under it "or choose a file", a real file chooser; on a phone the area reads "Choose a program"), and the Co-Founder's
+figure (`agentFigure`, as the Sites page draws it) beside the chat's own bubble: "Made something yourself? Drop it here
+and everyone in <company> can get it." A file's kind comes from its name (`.apk` Android; `.ipa` iPhone; `.exe`, `.msi`
+Windows; `.dmg`, `.pkg` Mac; `.AppImage`, `.deb`, `.rpm`, `.flatpak`, `.tar.gz`, `.tar.xz`, `.tgz` Linux); any other
+asks "What is it for?" over the five kinds, and a click answers. Two files of one kind, more than five, an empty file,
+a name the format refuses and a file past 256 MiB are refused in one plain line. A new program's name is the file's
+without its ending, a trailing version and words such as setup or installer (`Lagerliste-1.0-setup.exe` gives
+Lagerliste); its folder is the name's slug (`æ ø å` as `ae oe aa`), made free with `-2`, `-3`, and claimed before any
+byte goes up: a change set of its own makes `apps/<slug>`, and a folder already there (an agent's app the page did not
+know of, another member's at the same moment) takes the next slug, so a member's program never lands in another app. The drawer has no rename
+for an app, so renaming is not in this step. While the file goes up the tile stands (initial, name, size) and fills with
+the share that is up, under it "Putting <file> in place… 40%" and a quiet Stop; no spinner, and the Co-Founder's
+bubble reads "Putting it in place for everyone in <company>." Leaving the page or Stop ends it: what was placed is
+deleted again (a new program's claimed folder whole), once any finish already sent has answered, so nothing is
+listed. Once the last change set (`app.toml`, `program.json`, and a move before it) is sent, Stop goes and it is not
+cut short: it settles, and nothing it lists is deleted. **A lost answer** (the folder saved, the reply never came)
+changes nothing on screen it should not: every change set keeps its operation key for the life of the add, keyed by
+what it sends (the kept version's date is fixed once, so the same change set is the same request), and before Try
+again and before any delete, the change set whose answer was lost is sent again with the same key: the commit route
+replays what it did (C4 §5), and only what is known not saved is deleted, moved or written again. A file's upload keeps
+its key and path the same way, and the gateway answers `saved` for that very file. As a second check, a `program.json`
+counts as listed when it holds a version that was not there when the add began, by this member, with every file of
+the drop (by SHA-256, and only once every file is hashed). All files are hashed before any byte goes up. Dropping the
+very files of the newest version (by anyone) is refused there and then: "This is the version that is already here."
+The same files as an older version are listed again as a new version, like any other file. A refusal says too large (the
+size and the most), not allowed, the company paused, another of the member's programs still going up, someone adding
+at the same moment (Try again), that version already having this file, the company folder's own refusal in its words
+(no retry), a name the folder does not take, or the connection dropped (Try again, which continues where it stopped). After it, the
+program's own page opens (its tile, chips and Download), its drawer tile selected, the dot line "Version 1 · added by
+you" ("added by <first name>" for another member the client knows, the day otherwise). A program a member made (no
+`owner`) has "Add a version" above "Earlier versions" in its "…" menu, which opens the same drop area in the field with
+a way back; a file dropped onto its page does the same. An agent's program and a viewer get neither. There is no
+Remove: the client has no retire of an app on this branch (§3e's web part is not on master).
 
 ## 4. Web
 
@@ -1325,6 +1449,18 @@ thread's "Quoted from an email" title).
 14. Module scripts import the page's own files (18 November 2026; the founder: "Yes, fix it"): relative, mapped and
     literal dynamic imports and cycles are resolved by the web while it puts a page together, a module worker starts
     from its own file, and the frame's `worker-src` adds `data:` (§2). Web only: live when it merges.
+
+15. Programs (§3f, 18 November 2026): the kit `program` and its data (`cloud-client/app-program.ts`), `save_app`'s
+    checks and kept list (`cloud-app-kit-program.ts`), `app_guide program`, the company context's sentence and the
+    platform update `program-kit`; the web's native page with Download and earlier versions. No migration and no node
+    change. The web goes first (an older web hides a program app), then the runtime bundle.
+
+16. A member's own program (§3f, 18 November 2026): the object gateway's member program route and its Edge Function
+    allow-list (RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md §7), cloud-client's `prepareCloudMemberFolderUpload`,
+    `uploadFile` and `CloudSha256`, `ProgramVersion.userId`; the web's New program page, its drawer entry and Add a
+    version. No migration, no new host call, no change to the folder service. Order: the object gateway on node 1 and
+    the member company gateway function (either first: each refuses the route without the other), then the web; the
+    runtime bundle that keeps `userId` through an agent's save may come at any time after.
 
 Follow-ups: the password line on an app's own page without a header (§6 H2: shown above the page only while the page
 has a password field on screen, reported by the frame document); a member marks a human task done from an app (the asking agent's wake is built, but the object gateway

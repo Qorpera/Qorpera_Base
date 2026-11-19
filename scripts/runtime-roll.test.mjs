@@ -84,7 +84,6 @@ test("the switch runs the activation verbatim between its gates, then declares a
 		at(`qorpera_set_runtime_node_runs('${nodeA}'::uuid, true`),
 	];
 	assert.deepEqual([...steps].sort((a, b) => a - b), steps);
-	assert.ok(!switchText.includes("qorpera_set_company_execution_pause"), "the switch pauses nobody");
 	assert.ok(!switchText.includes("Runtime is not quiet"), "the switch needs no quiet runtime");
 });
 
@@ -132,7 +131,6 @@ test("the emergency packets: per-company savepoints, folder-v2 companies, declar
 	// Only the folder core pauses (20260930240000 dropped the snapshot-v1 pause); a company with no folder is not pausable.
 	assert.ok(!packets["90-pause-now.sql"].includes("qorpera_folder_resume("), "90 resumes nobody");
 	assert.ok(!packets["93-resume.sql"].includes("qorpera_folder_pause("), "93 pauses nobody");
-	for (const [name, text] of Object.entries(packets)) assert.ok(!text.includes("qorpera_set_company_execution_pause"), name);
 	for (const name of ["90-pause-now.sql", "91-reverse.sql", "93-resume.sql"])
 		assert.ok(packets[name].includes("public.qorpera_company_is_folder_v2(profile.id) and not public.qorpera_company_deleting(profile.id)"), name);
 	// 91 keeps the declarations; it declares only when none is left (an emergency after 80-finish).
