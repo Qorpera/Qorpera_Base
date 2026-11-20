@@ -574,11 +574,85 @@ export async function assembleApp(
 	};
 }
 
+const RENAMED_STYLE = "data-qorpera-style";
+const LETTER = /[a-z]/i;
+const SPACE = /[\t\n\f\r ]/;
+const RAW_TEXT = new Set(["iframe", "noembed", "noframes", "plaintext", "script", "style", "textarea", "title", "xmp"]);
+
+// WHY: Chrome holds every parsed page to this app's style-src and logs each inline style it refuses; reading ahead keeps
+// no page, so it parses one whose styles cannot count as styles (noframes is raw text like style, in head and body).
+function withStylesRenamed(html: string): string {
+	const parts: string[] = [];
+	let copied = 0;
+	const rename = (from: number, to: string) => {
+		parts.push(html.slice(copied, from), to);
+		copied = from + "style".length;
+	};
+	let at = 0;
+	while (at < html.length) {
+		const open = html.indexOf("<", at);
+		if (open === -1) break;
+		const after = html[open + 1] ?? "";
+		const closing = after === "/" && LETTER.test(html[open + 2] ?? "");
+		if (html.startsWith("<!--", open)) at = past(html, "-->", open + 4);
+		else if (after === "!" || after === "?" || (after === "/" && !closing)) at = past(html, ">", open + 2);
+		else if (!closing && !LETTER.test(after)) at = open + 1;
+		else {
+			const tag = readTag(html, open + (closing ? 2 : 1));
+			if (tag.name === "style") rename(tag.nameAt, "noframes");
+			if (!closing) for (const attribute of tag.styles) rename(attribute, RENAMED_STYLE);
+			at = tag.end;
+			if (!closing && RAW_TEXT.has(tag.name)) {
+				const end = new RegExp(`</${tag.name}(?=[\\t\\n\\f\\r />])`, "gi");
+				end.lastIndex = at;
+				at = tag.name === "plaintext" ? html.length : (end.exec(html)?.index ?? html.length);
+			}
+		}
+	}
+	parts.push(html.slice(copied));
+	return parts.join("");
+}
+
+function past(html: string, end: string, from: number): number {
+	const found = html.indexOf(end, from);
+	return found === -1 ? html.length : found + end.length;
+}
+
+function readTag(
+	html: string,
+	nameAt: number,
+): { readonly name: string; readonly nameAt: number; readonly styles: number[]; readonly end: number } {
+	let at = nameAt;
+	while (at < html.length && !/[\t\n\f\r />]/.test(html[at]!)) at++;
+	const name = html.slice(nameAt, at).toLowerCase();
+	const styles: number[] = [];
+	while (at < html.length && html[at] !== ">") {
+		if (SPACE.test(html[at]!) || html[at] === "/") {
+			at++;
+			continue;
+		}
+		const start = at++;
+		while (at < html.length && !/[\t\n\f\r />=]/.test(html[at]!)) at++;
+		if (html.slice(start, at).toLowerCase() === "style") styles.push(start);
+		let equals = at;
+		while (equals < html.length && SPACE.test(html[equals]!)) equals++;
+		if (html[equals] !== "=") continue;
+		at = equals + 1;
+		while (at < html.length && SPACE.test(html[at]!)) at++;
+		const quote = html[at];
+		if (quote === '"' || quote === "'") at = past(html, quote, at + 1);
+		else while (at < html.length && !/[\t\n\f\r >]/.test(html[at]!)) at++;
+	}
+	return { name, nameAt, styles, end: Math.min(at + 1, html.length) };
+}
+
 async function readPage(files: AppFiles, entry: string): Promise<PageRead | null> {
 	const html = await files.text(entry);
 	if (html === null) return null;
 	// An inert parse: nothing here runs or loads, and it is only ever written out again for the frame.
-	const page = new DOMParser().parseFromString(html, "text/html");
+	const page = new DOMParser().parseFromString(files.warm ? withStylesRenamed(html) : html, "text/html");
+	const styleTag = files.warm ? "noframes" : "style";
+	const styleAttribute = files.warm ? RENAMED_STYLE : "style";
 	const base = dirOf(entry);
 	const handed = new Map<string, Blob>();
 	const missing = new Set<string>();
@@ -635,14 +709,14 @@ async function readPage(files: AppFiles, entry: string): Promise<PageRead | null
 				}),
 		);
 	}
-	for (const style of [...page.querySelectorAll("style")])
+	for (const style of [...page.querySelectorAll(styleTag)])
 		changes.push(
 			css(style.textContent ?? "", base).then((text) => () => {
 				style.textContent = text;
 			}),
 		);
-	for (const element of [...page.querySelectorAll("[style]")]) {
-		const value = element.getAttribute("style") ?? "";
+	for (const element of [...page.querySelectorAll(`[${styleAttribute}]`)]) {
+		const value = element.getAttribute(styleAttribute) ?? "";
 		if (value.includes("url("))
 			changes.push(css(value, base).then((text) => () => element.setAttribute("style", text)));
 	}
@@ -720,7 +794,8 @@ async function readPage(files: AppFiles, entry: string): Promise<PageRead | null
 			);
 		}
 	}
-	for (const change of await Promise.all(changes)) change?.();
+	const ready = await Promise.all(changes);
+	if (!files.warm) for (const change of ready) change?.();
 	const modules = await bindModules(
 		page,
 		{ warm: files.warm, text: (path) => files.moduleText(path), resolve: resolveAppPath },

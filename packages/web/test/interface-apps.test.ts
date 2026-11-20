@@ -877,6 +877,62 @@ describe("the company's apps", () => {
 		expect(f.reads.filter((path) => !path.endsWith("app.toml") && path !== "apps")).toEqual([]);
 	});
 
+	it("reads ahead the files a page's styles name without parsing a single inline style", async () => {
+		const files = {
+			"apps/sales/app.toml": 'name = "Sales"\n',
+			"apps/sales/index.html":
+				'<!doctype html><html><head><STYLE media="all">body > main{background:url(a.png)}</STYLE><link rel="stylesheet" href="look.css"></head><body><main id="m" title="a > b"\n  style="background:url(\'b.png\')"><p data-note="style=red" style=color:red>hi</p><svg><style>.s{fill:url(c.png)}</style></svg></main><script>for(let i=0;i<rows.length;i++){/* don\'t skip */}</script><!-- <b style="x"> --><div class="hero" style="background:url(e.png)">x</div><p>It\'s ready</p><i/style="color:blue"></i><b title="x"style="color:red"></b><u style></u><textarea><b style="x"></textarea></body></html>',
+			"apps/sales/look.css": "p{background:url(d.png)}",
+			"apps/sales/a.png": "a",
+			"apps/sales/b.png": "b",
+			"apps/sales/c.png": "c",
+			"apps/sales/d.png": "d",
+			"apps/sales/e.png": "e",
+		};
+		const f = fakeFolder(files);
+		const parsed: Document[] = [];
+		const parse = DOMParser.prototype.parseFromString;
+		const spy = vi.spyOn(DOMParser.prototype, "parseFromString").mockImplementation(function (
+			this: DOMParser,
+			text: string,
+			type: DOMParserSupportedType,
+		) {
+			const page = parse.call(this, text, type);
+			parsed.push(page);
+			return page;
+		});
+		try {
+			await warmApps(f, await readApps(f, new AbortController().signal), new AbortController().signal);
+		} finally {
+			spy.mockRestore();
+		}
+		expect(f.reads).toEqual(
+			expect.arrayContaining(["a", "b", "c", "d", "e"].map((name) => `apps/sales/${name}.png`)),
+		);
+		expect(parsed).toHaveLength(1);
+		expect(parsed[0]!.querySelectorAll("style, [style]")).toHaveLength(0);
+		expect(parsed[0]!.querySelectorAll("[data-qorpera-style]")).toHaveLength(6);
+		expect(parsed[0]!.getElementById("m")?.getAttribute("title")).toBe("a > b");
+		expect(parsed[0]!.querySelector("p")?.getAttribute("data-note")).toBe("style=red");
+		expect(parsed[0]!.querySelector("script")?.textContent).toBe("for(let i=0;i<rows.length;i++){/* don't skip */}");
+		expect(parsed[0]!.querySelector("textarea")?.value).toBe('<b style="x">');
+		expect(parsed[0]!.head.querySelectorAll("noframes")).toHaveLength(1);
+		expect(parsed[0]!.body.querySelectorAll("noframes")).toHaveLength(1);
+
+		const opened = await assembleApp(
+			fakeFolder(files) as never,
+			{ path: "apps/sales", entry: "index.html" },
+			new AbortController().signal,
+		);
+		expect(opened.ok).toBe(true);
+		if (!opened.ok) return;
+		const page = new DOMParser().parseFromString(opened.page, "text/html");
+		expect(page.head.querySelectorAll("style")).toHaveLength(2);
+		expect(page.querySelector("svg style")?.textContent).toMatch(/^\.s\{fill:url\("qorpera-file-/);
+		expect(page.getElementById("m")?.getAttribute("style")).toMatch(/^background:url\("qorpera-file-/);
+		expect(page.querySelector("p")?.getAttribute("style")).toBe("color:red");
+	});
+
 	it("reads ahead the most recently changed apps first, and stops at the round's bytes", async () => {
 		const picture = (fill: number) => new Uint8Array(10 * 1024 * 1024).fill(fill);
 		const f = fakeFolder({
