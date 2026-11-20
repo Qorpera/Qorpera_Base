@@ -341,4 +341,50 @@ describe("open decisions in the Co-Founder's chat", () => {
 			"Approve the mission?",
 		);
 	});
+
+	const update = (n: number, text: string): TranscriptItem => ({
+		kind: "agent",
+		id: id(400 + n),
+		sequence: n,
+		text,
+		attachmentCount: 0,
+		phase: "final",
+		runId: id(500 + n),
+		wokenBy: "agent",
+		createdAt: `2026-09-05T10:0${n}:00Z`,
+	});
+	const folds = (f: ReturnType<typeof setup>) =>
+		[...f.view.el.querySelectorAll(".messages .thread-fold")].map((row) => row.textContent);
+
+	it("keeps unasked updates on one folded line when only an approval the dock shows stands between them", async () => {
+		const f = setup(true);
+		const request = waitingApproval(f, id(310));
+		f.show([
+			update(2, "Webdesign has your brief."),
+			{ ...request, sequence: 3 },
+			update(4, "Three versions are ready."),
+		]);
+		await settle();
+		expect(f.view.el.querySelector(".messages .review-card, .messages .interaction-card")).toBeNull();
+		expect(folds(f)).toEqual(["2 updatesThree versions are ready."]);
+	});
+
+	it("keeps them on one line too when only the answer of an approval card stands between them", async () => {
+		const f = setup(false);
+		const request = waitingApproval(f, id(311));
+		f.store.set({ questions: [], decisions: [] });
+		const answer: TranscriptItem = {
+			kind: "authorization_decision",
+			id: id(312),
+			sequence: 4,
+			actorUserId: userA.id,
+			body: {
+				entry: { type: "custom", customType: "authorization_decision", data: { requestEventId: request.id } },
+			},
+			createdAt: "2026-09-05T10:03:00Z",
+		};
+		f.show([request, update(2, "Webdesign has your brief."), answer, update(5, "Three versions are ready.")]);
+		await settle();
+		expect(folds(f)).toEqual(["2 updatesThree versions are ready."]);
+	});
 });

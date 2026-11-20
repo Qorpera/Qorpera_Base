@@ -2975,7 +2975,8 @@ export class ConversationView {
 						}),
 					);
 					const headed = parseConversationTimestamp(item.createdAt);
-					if (headed) markTime(headed, nodes[nodes.length - 1]!);
+					const last = open || !newest ? undefined : parseConversationTimestamp(newest.createdAt);
+					if (headed) markTime(headed, nodes[nodes.length - 1]!, last ?? undefined);
 				}
 				if (!open) continue;
 			}
