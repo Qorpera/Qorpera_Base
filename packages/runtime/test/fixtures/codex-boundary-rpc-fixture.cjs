@@ -405,6 +405,13 @@ async function handle(message) {
 		write({ id: message.id, result: {} });
 		voiceSay("thread/realtime/started", { sessionId: "PRIVATE_SESSION" });
 		voiceSay("thread/realtime/sdp", { sdp: "v=0\r\nPRIVATE_ANSWER_SDP\r\n" });
+	} else if (message.method === "account/rateLimits/read" && voiceMode) {
+		if (mode === "voice-error") {
+			write({ id: message.id, error: { code: -32600, message: "PRIVATE_USAGE_ERROR" } });
+			return;
+		}
+		const full = mode === "voice-limit";
+		write({ id: message.id, result: { ordinaryUsageAllowed: !full, accountId: "PRIVATE_ACCOUNT", rateLimits: { limitId: "codex", planType: "prolite", primary: { usedPercent: 41, windowDurationMins: 300, resetsAt: Date.parse("2026-11-18T19:00:00Z") / 1000 }, secondary: { usedPercent: full ? 100 : 84, windowDurationMins: 10080, resetsAt: Date.parse("2026-11-24T13:22:00Z") / 1000 } } } });
 	} else if (message.method === "thread/realtime/appendSpeech") {
 		voiceEvidence.appended.push(message.params);
 		voiceWrite();
@@ -419,6 +426,10 @@ async function handle(message) {
 		}
 		if (mode === "voice-error") {
 			voiceSay("thread/realtime/error", { message: "PRIVATE_REALTIME_ERROR" });
+			return;
+		}
+		if (mode === "voice-limit") {
+			voiceSay("thread/realtime/error", { message: "You have reached your usage limit." });
 			return;
 		}
 		if (mode === "voice-silent" || (voiceReopen && line === 1)) return;

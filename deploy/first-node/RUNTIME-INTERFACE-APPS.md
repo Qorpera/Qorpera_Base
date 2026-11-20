@@ -363,11 +363,53 @@ web does not already answer. What the kit adds is that the agent writes one file
   said in English or Danish and drops the caption that came back with two sentences of the voice's own.
   Run together on a Mac with the official Codex placing the call (10 November): six captions read from the page,
   spoken, checked and written as clips, with no turn started on the call's thread.
-- **The tool that drives them is the next step** (§7): the kit, the engine, the page and the scripts are ready. The plan is
-  ChatGPT's own voice through the Codex the agent already runs on, one caption at a time, each clip checked against
-  its caption by the call's transcript (Jonas, 10 November 2026: "if it can just be ChatGPT's AI voice driven on
-  your subscription it would be ideal probably"; a trial on his Mac that day read 28 captions, and one of them came
-  back with sentences of the voice's own). Until then an explainer plays with captions alone.
+- **The tool** (18 November 2026; `cloud-app-narrate-tool.ts`, migration `20260930817000`):
+  `narrate_app {name, operationKey, machine?, voice?}` gives the agent's own explainer its voice. Jonas, 10 November
+  2026: "if it can just be ChatGPT's AI voice driven on your subscription it would be ideal probably", and "Yes, build
+  it"; a trial on his Mac that day read 28 captions, and one came back with sentences of the voice's own. One call:
+  1. reads the app's manifest and refuses an app that is not an explainer or not the agent's own (`APP_NOT_YOURS`:
+     the machine's part of the work is never reviewed, and another's app is delegation);
+  2. takes the named machine, or a running one when none is named, and runs `voice-captions.cjs` there against
+     `/company/apps/<name>/index.html`: the captions come from the running video, in every language it has;
+  3. leaves out every caption whose clip the app already lists and holds (a clip is named by its caption's hash, so
+     after a change to one part only the changed captions are left), and answers at once when none is left;
+  4. reads the login's usage (`account/rateLimits/read` on the run's own app-server, through the voice channel's
+     `usage`): a window at 100 per cent, or ordinary use not allowed, answers `limit_reached` with nothing started.
+     A reading that cannot be had counts as room, never as full;
+  5. starts `voice-peer.cjs` in a work folder outside `/company`, places the call on the run's voice lane with the
+     recorder's offer and hands the answer over as a file;
+  6. speaks each caption left, wrapped as `Speak exactly this line and nothing else: "…"`, and keeps a turn only when
+     `explainerSpokenMatches` passes, three tries at most, 270 seconds in all, none begun with under 60 seconds left.
+     A line the voice answered is the recorder's turn of the same count, and only while the two agree: before each
+     line the recorder must have printed exactly as many turns as lines were answered, and each answered line waits
+     20 seconds for its own turn. A turn that does not come in time, or one nobody asked for, ends the batch (the
+     clip recorded just before an unasked turn is dropped), so no later caption takes an earlier sound;
+  7. closes the call, stops the recorder, runs `voice-encode.cjs` for the kept turns, and commits `voice/clips.json`
+     and the page under its receipt once the clips show in the folder.
+  Every machine command is a `machine_run` receipt of its own (as `share_app`'s link program), running the kit's own
+  text; the work folder is removed at the end. The review class is `internal`.
+  - **The answer** (`qorpera.app-narrate/v1`) always says `captions`, `spoken`, `left`, `spokenNow` and
+    `spokenBefore`, per language under `languages` when the video has more than one, and `limit` (the fullest
+    window's `usedPercent`, `resetAt` when known, `reached`) when the login's usage was read. `state` is `spoken`,
+    `partly_spoken` (call again), `limit_reached`, `unavailable` (no call could be placed) or `not_saved`.
+  - **The limit.** The voice counts against the ChatGPT plan's usage limit: on 18 November 2026 a recording was cut
+    at caption 28 of 31 with "You have reached your usage limit." (`thread/realtime/error`, then
+    `thread/realtime/closed`). The lane turns that message into `CloudVoiceLimitReached` and keeps none of its words;
+    the tool stops there, saves what it recorded, and answers `limit_reached` with how many captions are spoken and
+    how many are left. A call that ends for another stated reason is read against the usage again, and counts as the
+    limit when a window then reads full.
+  - **Offered** to a run on a Codex login with the company's machines, to a worker that may write as to its agent;
+    never to a run on a member's ChatGPT plan, which has no voice lane. It is one of the tools on demand
+    (`more_tools`).
+- **Languages** (18 November 2026; Jonas: "the videos needs language selection too, letting you switch between the
+  english and danish"). Wherever the engine takes a text (a caption in `s.say`, a title in `V.part`, a `label`, `sub`
+  or `str`) it also takes `{en: "…", da: "…"}`. The video collects the languages it meets (`V.languages`), starts in
+  the viewer's own when the video has it (`navigator.language`), else in the first (built again in that one, so no
+  text stays in another language's first-written form), and shows one button a language
+  beside the voice button (key L). A switch builds the scenes again in the language chosen (`V.language(code)`) and
+  stays on the caption it was at, so a scenes.js keeps nothing between scenes. Each language's caption is its own
+  text, so its own hash and its own clip: `voice/clips.json` stays one flat list, and `narrate_app` records the first
+  language's captions first. After a save, `look` names captions that lack one of the video's languages.
 - **What an agent is told** is the guide `explainer` (§3d; on `kit` in `save_app`'s schema until 14 November 2026,
   where no model received it): when a video is the right form
   and when not, the calls of a scene, how to write captions for the ear, how to pace and lay out a stage, that every
@@ -402,7 +444,8 @@ web does not already answer. What the kit adds is that the agent writes one file
     the run's process ends; then it refuses new connections to it and cuts the ones open
     (`NATIVE_CODEX_REALTIME_EGRESS_HOSTS`, `allowRealtime` in `cloud-native-egress.ts`). Only a Codex login's relay
     can be widened so; a ChatGPT plan's and a Claude sign-in's cannot. The call's sound never passes the relay.
-  - Nothing opens a call yet: the tool that does is the next step. Until then the host is never let through.
+  - `narrate_app` (above) is the one caller. The lane also reads the login's usage for it (`voiceUsage`): one quiet
+    `account/rateLimits/read`, whose refusal is no reading and never the run's failure.
 
 ## 3b. The data kits (13 November 2026)
 
@@ -1431,7 +1474,8 @@ thread's "Quoted from an email" title).
 7. The explainer kit (§3a, 10 November 2026): the manifest's `kit` (`cloud-client/interface-apps.ts`), the engine
    (`packages/runtime/kits/explainer/engine.js`), the page and the clips' list (`cloud-app-kit-explainer.ts`), and
    `save_app` writing both with how to make a video on the schema field. No migration, no node change and no change
-   to the web's own code: an explainer is put together as any app. Next: the tool that records the clips.
+   to the web's own code: an explainer is put together as any app. The tool that records the clips, the usage limit
+   and the video's languages followed on 18 November 2026 (§3a "The tool", "Languages"; migration `20260930817000`).
 8. An app's own icons (§2 "Icons", 12 November 2026): the format and the 24 emblems (`cloud-client/app-icons.ts`,
    `interfaces.ts`), `save_app`'s checks and how to draw them on `files`, and the web's Icon and colour and Generate
    icon in the drawer.

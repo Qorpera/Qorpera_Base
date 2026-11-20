@@ -99,6 +99,7 @@ const INDEX_LINES: Readonly<Record<string, string>> = {
 	table_read: "read a table's rows (QorperaOS/tables/)",
 	table_write: "set or remove rows of a table you may write",
 	make_picture: "make a new picture (an idea, a scene, an illustration) as a PNG",
+	narrate_app: "give your explainer video its voice: a spoken clip for each caption",
 	data_describe: "the company's databases: tables, steps, questions",
 	data_query: "read a database: a named question or one select",
 	data_apply: "apply a database's waiting steps",

@@ -238,6 +238,7 @@ describe("which calls are reviewed", () => {
 		["data_apply", { database: "shop", allow: `003-clear.${"a".repeat(64)}.${"b".repeat(64)}` }, "destructive"],
 		// A named change writes the company's own rows, as company_write writes a file (slice 7).
 		["data_change", { database: "shop", change: "mark-shipped", params: { id: 7 } }, "internal"],
+		["narrate_app", { name: "pricing", operationKey: "k", machine: "studio", voice: "cove" }, "internal"],
 		["manage_worker", { action: "status" }, "internal"],
 		["manage_worker", { action: "dispatch" }, "delegation"],
 		// Changes the agent saved from a computer apply with the effect their list gave them (P40b); dropping them

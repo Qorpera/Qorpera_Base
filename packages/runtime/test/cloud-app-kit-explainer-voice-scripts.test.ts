@@ -26,12 +26,20 @@ const marked = (output: string): Line[] =>
 		.filter((line) => line.startsWith("QORPERA-VOICE "))
 		.map((line) => JSON.parse(line.slice("QORPERA-VOICE ".length)) as Line);
 
-function run(script: string, args: string[], scenario: string): Promise<{ code: number | null; lines: Line[] }> {
+function run(
+	script: string,
+	args: string[],
+	scenario: string,
+	more: Record<string, string> = {},
+): Promise<{ code: number | null; lines: Line[] }> {
 	return new Promise((resolve) => {
 		execFile(
 			process.execPath,
 			[join(KIT, script), ...args],
-			{ env: { ...process.env, QORPERA_PLAYWRIGHT: STUB, QORPERA_VOICE_SCENARIO: scenario }, timeout: 20_000 },
+			{
+				env: { ...process.env, QORPERA_PLAYWRIGHT: STUB, QORPERA_VOICE_SCENARIO: scenario, ...more },
+				timeout: 20_000,
+			},
 			(error, stdout) =>
 				resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, lines: marked(stdout) }),
 		);
@@ -136,4 +144,48 @@ it("keeps a turn that is written in the last moment of its time to finish", asyn
 	expect(lines.at(-1)).toEqual({ ended: "stop" });
 	expect(code).toBe(0);
 	expect(existsSync(join(work, "1.webm"))).toBe(true);
+});
+
+it("reads the captions of every language of a video that has more than one", async () => {
+	const read = await run("voice-captions.cjs", ["/company/apps/fee/index.html"], "captions-languages");
+	expect(read).toEqual({
+		code: 0,
+		lines: [
+			{
+				captions: [
+					{ text: "Each traveller pays one fee.", hash: "hash28", lang: "en" },
+					{ text: "So four friends see it.", hash: "hash23", lang: "en" },
+					{ text: "Hver rejsende betaler et gebyr.", hash: "hash31", lang: "da" },
+					{ text: "Fire venner ser det.", hash: "hash20", lang: "da" },
+				],
+			},
+		],
+	});
+});
+
+it("opens the agent's page in a browser that reaches nothing", async () => {
+	const folder = mkdtempSync(join(tmpdir(), "voice-captions-test-"));
+	folders.push(folder);
+	const asked = join(folder, "asked.json");
+	const read = await run("voice-captions.cjs", ["/company/apps/fee/index.html"], "captions", {
+		QORPERA_VOICE_ASKED: asked,
+	});
+	expect(read.code).toBe(0);
+	const told = JSON.parse(readFileSync(asked, "utf8")) as {
+		launch: { args?: string[] }[];
+		initScripts: number;
+		initScript: string;
+	};
+	expect(told.launch).toHaveLength(1);
+	expect(told.launch[0]?.args).toEqual(
+		expect.arrayContaining([
+			"--host-resolver-rules=MAP * ~NOTFOUND",
+			"--proxy-server=http://127.0.0.1:9",
+			"--proxy-bypass-list=<-loopback>",
+		]),
+	);
+	expect(told.initScripts).toBe(1);
+	for (const name of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel", "WebTransport"])
+		expect(told.initScript).toContain(`"${name}"`);
+	expect(told.initScript).toContain("configurable: false");
 });

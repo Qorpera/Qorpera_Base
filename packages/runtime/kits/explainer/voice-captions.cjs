@@ -11,12 +11,34 @@
 // not the video's) or has no started video.
 const { chromium } = require(process.env.QORPERA_PLAYWRIGHT || "playwright");
 
+// WHY: the page is an agent's own script, opened by a tool that is not reviewed, on a machine that reaches the
+// internet: the browser that opens it reaches nothing. No flag stops WebRTC, so its interfaces are taken away.
+const NO_NETWORK = [
+	"--host-resolver-rules=MAP * ~NOTFOUND",
+	"--proxy-server=http://127.0.0.1:9",
+	"--proxy-bypass-list=<-loopback>",
+	"--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+	"--disable-quic",
+	"--disable-background-networking",
+];
+
 (async () => {
 	const [index] = process.argv.slice(2);
 	if (!index || !index.startsWith("/")) throw new Error("give the page's absolute path");
-	const browser = await chromium.launch(process.env.QORPERA_VOICE_CHANNEL ? { channel: process.env.QORPERA_VOICE_CHANNEL } : {});
+	const browser = await chromium.launch({
+		...(process.env.QORPERA_VOICE_CHANNEL ? { channel: process.env.QORPERA_VOICE_CHANNEL } : {}),
+		args: NO_NETWORK,
+	});
 	try {
-		const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+		const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+		await context.addInitScript(() => {
+			for (const name of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel", "RTCIceTransport", "WebTransport"]) {
+				try {
+					Object.defineProperty(window, name, { value: undefined, writable: false, configurable: false });
+				} catch {}
+			}
+		});
+		const page = await context.newPage();
 		await page.goto(`file://${index}`, { waitUntil: "load", timeout: 30000 });
 		const read = await page.evaluate(() => {
 			// What the page says is wrong comes first: a video that failed may still hold the captions it got to.
@@ -26,7 +48,16 @@ const { chromium } = require(process.env.QORPERA_PLAYWRIGHT || "playwright");
 			const video = typeof V === "undefined" ? null : V;
 			if (!video || !Array.isArray(video.segments) || typeof captionHash !== "function")
 				return { problem: "The page has no started video." };
-			return { captions: video.segments.map((segment) => ({ text: segment.text, hash: captionHash(segment.text) })) };
+			const codes = Array.isArray(video.languages) && video.languages.length > 0 && typeof video.language === "function" ? [...video.languages] : [null];
+			const shown = video.lang;
+			const captions = [];
+			for (const code of codes) {
+				if (code !== null) video.language(code);
+				for (const segment of video.segments) captions.push({ text: segment.text, hash: captionHash(segment.text), ...(code === null ? {} : { lang: code }) });
+			}
+			if (codes[0] !== null && shown) video.language(shown);
+			const failedLater = document.querySelector(".vp-fail");
+			return failedLater ? { problem: failedLater.textContent } : { captions };
 		});
 		console.log(`QORPERA-VOICE ${JSON.stringify(read)}`);
 	} finally {

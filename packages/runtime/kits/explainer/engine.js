@@ -116,7 +116,8 @@ class Mob {
 class Box extends Mob {
   constructor(scene, o) {
     super(scene, o);
-    const { w = 220, h = 80, color = C.blue, label = "", sub = "", size = 28, r = 14, fill = 0.13, dash = false, labelColor, subColor } = o;
+    const { w = 220, h = 80, color = C.blue, size = 28, r = 14, fill = 0.13, dash = false, labelColor, subColor } = o;
+    const label = scene.video.tr(o.label ?? ""), sub = scene.video.tr(o.sub ?? "");
     this.w = w; this.h = h;
     this.glowEl = el("rect", { x: -w / 2 - 6, y: -h / 2 - 6, width: w + 12, height: h + 12, rx: r + 4, fill: "none", stroke: color, "stroke-width": 2, opacity: 0, filter: "url(#glow)" }, this.g);
     this.rect = this.stroke(el("rect", { x: -w / 2, y: -h / 2, width: w, height: h, rx: r, fill: color, stroke: color, "stroke-width": 2.6 }, this.g), fill);
@@ -153,7 +154,8 @@ class Box extends Mob {
 class Txt extends Mob {
   constructor(scene, o) {
     super(scene, o);
-    const { str = "", size = 34, color = C.text, anchor = "middle", weight, font, italic } = o;
+    const { size = 34, color = C.text, anchor = "middle", weight, font, italic } = o;
+    const str = scene.video.tr(o.str ?? "");
     this.clip = el("clipPath", { id: `c${scene.video.uid()}` }, scene.video.defs);
     this.clipRect = el("rect", { x: -2000, y: -1000, width: 0, height: 2000 }, this.clip);
     const g = el("g", { "clip-path": `url(#${this.clip.id})` }, this.g);
@@ -215,7 +217,8 @@ class Bar extends Mob {
 class Line extends Mob {
   constructor(scene, o) {
     super(scene, { ...o, x: 0, y: 0 });
-    const { d, color = C.dim, width = 3, head = true, label, labelSize = 22, labelAt = 0.5, labelOffset = -18, labelColor } = o;
+    const { d, color = C.dim, width = 3, head = true, labelSize = 22, labelAt = 0.5, labelOffset = -18, labelColor } = o;
+    const label = scene.video.tr(o.label);
     this.color = color;
     this.path = this.stroke(el("path", { d, fill: "none", stroke: color, "stroke-width": width, "stroke-linecap": "round", "stroke-linejoin": "round" }, this.g));
     if (head) {
@@ -243,7 +246,8 @@ class Line extends Mob {
 class Packet extends Mob {
   constructor(scene, o) {
     super(scene, { ...o, layer: 2 });
-    const { color = C.yellow, label = "", r = 10, size = 22 } = o;
+    const { color = C.yellow, r = 10, size = 22 } = o;
+    const label = scene.video.tr(o.label ?? "");
     this.line = o.line;
     el("circle", { r: r + 7, fill: color, opacity: 0.18 }, this.g);
     el("circle", { r, fill: color }, this.g);
@@ -311,7 +315,8 @@ const ICONS = {
 class Icon extends Mob {
   constructor(scene, o) {
     super(scene, o);
-    const { name, color = C.blue, size = 1, label, labelSize = 24, fill = 0.12, labelColor } = o;
+    const { name, color = C.blue, size = 1, labelSize = 24, fill = 0.12, labelColor } = o;
+    const label = scene.video.tr(o.label);
     this.w = 56 * size; this.h = 60 * size;
     const g = el("g", { fill: color, stroke: color, "stroke-width": 2.6, "stroke-linejoin": "round", "stroke-linecap": "round" }, this.g);
     // An unknown name draws a plain ring, so one wrong word does not stop the video.
@@ -411,7 +416,8 @@ class Scene {
   camera(x, y, s, d = 1.4, o = {}) { return { mob: this.cam, kind: "move", d, x, y, cam: s, ...o }; }
 
   /** One caption with its animations. */
-  say(text, ...anims) {
+  say(words, ...anims) {
+    const text = String(this.video.tr(words) ?? "");
     const start = this.cursor;
     let c = start, prev = start;
     for (const a of anims.flat()) {
@@ -423,11 +429,11 @@ class Scene {
       this.anims.push({ ...a, t0 });
       c = Math.max(c, t0 + a.d);
     }
-    const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+    const count = text.trim() ? text.trim().split(/\s+/).length : 0;
     const v = this.video;
     // Spoken, a caption lasts as long as its clip and a breath; silent, as long as its words take to read.
     const clip = v.voice.get(captionHash(text)) ?? null;
-    const dur = Math.max(clip ? clip.seconds + v.pad : words ? words / v.wps + v.pad : 0, c - start + 0.3, 1.2);
+    const dur = Math.max(clip ? clip.seconds + v.pad : count ? count / v.wps + v.pad : 0, c - start + 0.3, 1.2);
     this.segments.push({ text, start, end: start + dur, clip });
     this.cursor = start + dur;
     return this;
@@ -488,7 +494,11 @@ html, body { margin: 0; height: 100%; background: var(--vp-bg); color: var(--vp-
 .vp-btn { font: inherit; font-weight: 600; color: var(--vp-fg); background: var(--vp-panel); border: 1px solid var(--vp-line); border-radius: 8px; padding: 7px 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; flex: none; }
 .vp-btn:hover { border-color: #4a505a; }
 .vp-btn svg { width: 12px; height: 12px; }
-.vp-voice { margin-left: auto; }
+.vp-side { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: none; }
+.vp-langs { display: flex; gap: 4px; }
+.vp-langs[hidden] { display: none; }
+.vp-lang[aria-pressed="true"] { color: #15161a; background: var(--vp-accent); border-color: var(--vp-accent); }
+.vp-lang[aria-pressed="false"] { color: var(--vp-dim); }
 .vp-voice[hidden] { display: none; }
 .vp-voice[aria-pressed="false"] { color: var(--vp-dim); }
 .vp-voice svg { width: 14px; height: 12px; }
@@ -507,6 +517,7 @@ const ICON_VOICE = '<svg viewBox="0 0 14 12" aria-hidden="true"><path d="M1 4 H3
 const ICON_MUTED = '<svg viewBox="0 0 14 12" aria-hidden="true"><path d="M1 4 H3.5 L7 1 V11 L3.5 8 H1 Z" fill="currentColor"/><path d="M9.3 3.8 L13 8.2 M13 3.8 L9.3 8.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
 const ICON_PLAY = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 1 L11 6 L2 11 Z" fill="currentColor"/></svg>';
 const ICON_PAUSE = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 1 H5 V11 H2 Z M7 1 H10 V11 H7 Z" fill="currentColor"/></svg>';
+const LANGUAGE_NAMES = { en: "English", da: "Dansk" };
 const ICON_AGAIN = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1.5 A4.5 4.5 0 1 1 1.6 5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M0 2 L3.4 5.6 L0.2 6.2 Z" fill="currentColor"/></svg>';
 
 class Video {
@@ -514,6 +525,10 @@ class Video {
     this.title = o.title ?? "Explainer";
     this.wps = o.wps ?? 3; // caption reading pace in words a second
     this.pad = o.pad ?? 0.5; // a breath after each caption
+    this.languages = [];
+    this.lang = null;
+    this.wish = String(o.lang ?? (typeof navigator === "undefined" ? "" : navigator.language) ?? "").slice(0, 2).toLowerCase();
+    this.program = [];
     // The recorded clips, by caption (see the top of this file). Read before the scenes are built: they set the pace.
     this.voice = new Map();
     for (const a of document.querySelectorAll("audio[data-caption]")) {
@@ -535,7 +550,7 @@ class Video {
   </div><div class="vp-cc" aria-live="off"></div></div>
   <div class="vp-bar">
     <div class="vp-scrub" role="slider" aria-label="Position" tabindex="0"><div class="vp-track"></div><div class="vp-fill"></div><div class="vp-knob"></div></div>
-    <div class="vp-row"><button class="vp-btn vp-play" type="button"></button><span class="vp-time"></span><span class="vp-now"></span><button class="vp-btn vp-voice" type="button" hidden></button></div>
+    <div class="vp-row"><button class="vp-btn vp-play" type="button"></button><span class="vp-time"></span><span class="vp-now"></span><span class="vp-side"><span class="vp-langs" role="group" aria-label="Language" hidden></span><button class="vp-btn vp-voice" type="button" hidden></button></span></div>
     <div class="vp-chaps"></div>
   </div></div>`;
     this.root = root;
@@ -552,8 +567,35 @@ class Video {
   }
   uid() { return ++this._uid; }
   /** A chapter mark at the next scene (shown on the scrub bar and as a chip). */
-  part(title) { this.chapters.push({ num: String(this.chapters.length + 1), title, sceneIndex: this.scenes.length }); }
-  scene(build) {
+  part(title) { this.program.push({ part: title }); this.mark(title); }
+  scene(build) { this.program.push({ build }); return this.build(build); }
+  tr(text) {
+    if (text === null || typeof text !== "object" || Array.isArray(text)) return text;
+    const codes = Object.keys(text).filter((code) => /^[a-z]{2,3}$/.test(code) && typeof text[code] === "string");
+    for (const code of codes) if (!this.languages.includes(code)) this.languages.push(code);
+    const want = this.lang ?? this.wish;
+    const code = codes.includes(want) ? want : codes[0];
+    return code === undefined ? "" : text[code];
+  }
+  language(code) {
+    if (!this.started || !this.player || code === this.lang || !this.languages.includes(code)) return false;
+    const caption = this.player.caption();
+    this.lang = code;
+    this.rebuild();
+    this.layout();
+    this.player.relaid(caption);
+    return true;
+  }
+  rebuild() {
+    this.world.replaceChildren();
+    for (const clip of this.defs.querySelectorAll("clipPath")) clip.remove();
+    this.scenes = [];
+    this.chapters = [];
+    this.shown = undefined;
+    for (const step of this.program) { if (step.build) this.build(step.build); else this.mark(step.part); }
+  }
+  mark(title) { this.chapters.push({ num: String(this.chapters.length + 1), title: String(this.tr(title) ?? ""), sceneIndex: this.scenes.length }); }
+  build(build) {
     const s = new Scene(this, this.scenes.length);
     s.chapter = this.chapters.length - 1;
     build(s);
@@ -593,6 +635,9 @@ class Video {
     // The page already says what is wrong (a scenes.js that stopped halfway): there is no player left to start.
     if (this.root.querySelector(".vp-fail")) return;
     if (this.scenes.length === 0) { fail(this.root, "This video has no scenes yet."); return; }
+    this.lang = this.languages.includes(this.wish) ? this.wish : this.languages[0] ?? null;
+    if (this.lang && this.lang !== this.wish) this.rebuild();
+    if (this.lang) document.documentElement.lang = this.lang;
     this.layout();
     const V = this, q = (c) => this.root.querySelector(c);
     const frame = q(".vp-frame"), main = q(".vp-main"), cc = q(".vp-cc"), big = q(".vp-big"), playBtn = q(".vp-play");
@@ -604,8 +649,8 @@ class Video {
     // follows it, so a pause, a jump or a scrub is the timeline's alone.
     const voiceBtn = q(".vp-voice"), speaker = new Audio();
     this.speaker = speaker; // for a look from outside: V.speaker.paused, .currentTime
-    let voiceOn = V.segments.some((g) => g.clip), spoken = null, primed = false, resumed = -Infinity;
-    voiceBtn.hidden = !voiceOn;
+    let voiceOn = true, spoken = null, primed = false, resumed = -Infinity;
+    voiceBtn.hidden = !V.segments.some((g) => g.clip);
     function hush() { if (spoken) { speaker.pause(); spoken = null; } }
     function speak() {
       const seg = playing && voiceOn ? V.segmentAt(t) : null;
@@ -662,7 +707,11 @@ class Video {
     }
     voiceBtn.onclick = () => { voice(!voiceOn); prime(); };
 
-    const chips = this.chapters.map((c) => {
+    let chips = [];
+    const marks = () => {
+      for (const old of scrub.querySelectorAll(".vp-tick")) old.remove();
+      chaps.replaceChildren();
+      chips = V.chapters.map((c) => {
       const tick = document.createElement("button");
       tick.className = "vp-tick"; tick.type = "button";
       tick.style.left = `${(c.start / V.total) * 100}%`;
@@ -678,7 +727,36 @@ class Video {
       b.onclick = () => seek(c.start + 0.01);
       chaps.appendChild(b);
       return b;
-    });
+      });
+    };
+    marks();
+    const langs = q(".vp-langs");
+    const languages = () => {
+      langs.hidden = V.languages.length < 2;
+      langs.replaceChildren(...V.languages.map((code) => {
+        const b = document.createElement("button");
+        b.className = "vp-btn vp-lang"; b.type = "button";
+        b.lang = code;
+        b.textContent = LANGUAGE_NAMES[code] ?? code.toUpperCase();
+        b.setAttribute("aria-pressed", String(code === V.lang));
+        b.onclick = () => V.language(code);
+        return b;
+      }));
+    };
+    languages();
+    this.player = {
+      caption: () => V.segments.indexOf(V.segmentAt(t)),
+      relaid(caption) {
+        hush();
+        t = caption >= 0 && V.segments[caption] ? V.segments[caption].start + 0.01 : Math.min(t, V.total);
+        if (V.lang) document.documentElement.lang = V.lang;
+        marks();
+        languages();
+        voiceBtn.hidden = !V.segments.some((g) => g.clip);
+        fit();
+        draw();
+      },
+    };
 
     // The stage keeps 16:9 and takes what the caption and the controls leave; the caption keeps the height of the
     // longest caption at this width, so nothing jumps while it plays.
@@ -750,6 +828,7 @@ class Video {
       else if (e.code === "ArrowLeft") { e.preventDefault(); seek(t - 5); }
       else if (e.code === "ArrowRight") { e.preventDefault(); seek(t + 5); }
       else if (e.key === "m" && !voiceBtn.hidden) { voice(!voiceOn); prime(); }
+      else if (e.key === "l" && V.languages.length > 1) V.language(V.languages[(V.languages.indexOf(V.lang) + 1) % V.languages.length]);
     });
     // ?t=95 opens paused at 1:35 (for review stills; the app frame has no query, so this is optional).
     try {

@@ -4028,6 +4028,31 @@ it("offers make_picture to a run on a Codex login, and never to one on a member'
 	expect(names).not.toContain("make_picture");
 });
 
+it("offers narrate_app to a Codex login's run with machines, on demand, and to no run without a voice lane", async () => {
+	const machines = await fixture("company-runtime", false, undefined, true);
+	await machines.runtime.execute(machines.request, machines.identityRoot, new AbortController().signal);
+	const evidence = JSON.parse(await readFile(machines.evidence, "utf8"));
+	expect(offeredNames(evidence)).toContain("narrate_app");
+	expect(
+		(evidence.threadParameters.dynamicTools[0].tools as { name: string }[]).map((tool) => tool.name),
+	).not.toContain("narrate_app");
+	await rm(machines.identityRoot, { recursive: true, force: true });
+	await rm(machines.companyRoot, { recursive: true, force: true });
+	const none = await fixture("company-runtime");
+	await none.runtime.execute(none.request, none.identityRoot, new AbortController().signal);
+	expect(offeredNames(JSON.parse(await readFile(none.evidence, "utf8")))).not.toContain("narrate_app");
+	await rm(none.identityRoot, { recursive: true, force: true });
+	await rm(none.companyRoot, { recursive: true, force: true });
+	const plan = await fixture("company-runtime", false, undefined, true);
+	await rm(join(plan.identityRoot, "codex", "auth.json"));
+	await mkdir(join(plan.identityRoot, "chatgpt-plan"), { mode: 0o700 });
+	await writeFile(join(plan.identityRoot, "chatgpt-plan", "access-token"), "plan-access-1", { mode: 0o600 });
+	await plan.runtime.execute(plan.request, plan.identityRoot, new AbortController().signal);
+	const names = offeredNames(JSON.parse(await readFile(plan.evidence, "utf8")));
+	expect(names).toContain("machine_run");
+	expect(names).not.toContain("narrate_app");
+});
+
 describe("a light ask's run (deploy/first-node/RUNTIME-LIGHT-ASK.md)", () => {
 	const called = (f: Awaited<ReturnType<typeof fixture>>, method: string) =>
 		f.pathCall.mock.calls.filter(([name]) => name === method).map(([, args]) => args);

@@ -1,3 +1,5 @@
+import { parseRecord } from "@qorpera/contracts";
+
 /**
  * The seam between a run's Codex app-server and a tool that gives an explainer its voice
  * (deploy/first-node/RUNTIME-INTERFACE-APPS.md §3a, "The call"): the session attaches its realtime lane here once the
@@ -72,6 +74,62 @@ export interface CloudVoiceCall {
 /** Opens a call on the run's own app-server. */
 export type CloudVoiceLane = (input: CloudVoiceOpenInput, signal: AbortSignal) => Promise<CloudVoiceCall>;
 
+export interface CloudVoiceUsageWindow {
+	readonly usedPercent: number;
+	readonly resetAt?: string;
+	readonly windowMinutes?: number;
+}
+
+export interface CloudVoiceUsage {
+	readonly allowed?: boolean;
+	readonly windows: readonly CloudVoiceUsageWindow[];
+}
+
+export type CloudVoiceUsageReader = (signal: AbortSignal) => Promise<CloudVoiceUsage | undefined>;
+
+function usagePart(value: unknown): Record<string, unknown> | undefined {
+	try {
+		return parseRecord(value, "Voice usage");
+	} catch {
+		return undefined;
+	}
+}
+
+export function cloudVoiceUsage(answer: unknown): CloudVoiceUsage | undefined {
+	const root = usagePart(answer);
+	const limits = usagePart(root?.rateLimits);
+	if (!limits) return undefined;
+	const windows: CloudVoiceUsageWindow[] = [];
+	for (const id of ["primary", "secondary"] as const) {
+		const window = usagePart(limits[id]);
+		const usedPercent = window?.usedPercent;
+		if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent) || usedPercent < 0) continue;
+		const minutes = window?.windowDurationMins;
+		const resets = window?.resetsAt;
+		const resetMs = typeof resets === "number" && Number.isFinite(resets) && resets > 0 ? resets * 1000 : undefined;
+		windows.push({
+			usedPercent: Math.min(100, usedPercent),
+			...(resetMs !== undefined && resetMs <= 8_640_000_000_000_000
+				? { resetAt: new Date(resetMs).toISOString() }
+				: {}),
+			...(typeof minutes === "number" && Number.isSafeInteger(minutes) && minutes > 0
+				? { windowMinutes: minutes }
+				: {}),
+		});
+	}
+	const allowed = root?.ordinaryUsageAllowed;
+	if (windows.length === 0 && typeof allowed !== "boolean") return undefined;
+	return { ...(typeof allowed === "boolean" ? { allowed } : {}), windows };
+}
+
+export function cloudVoiceUsageFull(usage: CloudVoiceUsage | undefined): { resetAt?: string } | undefined {
+	if (!usage) return undefined;
+	const full = usage.windows.filter((window) => window.usedPercent >= 100);
+	if (full.length === 0) return usage.allowed === false ? {} : undefined;
+	const resets = full.map((window) => window.resetAt).filter((reset): reset is string => reset !== undefined);
+	return resets.length === full.length ? { resetAt: resets.sort().at(-1) as string } : {};
+}
+
 /** What `open` rejects with when no run's lane is attached: no run, a run on a ChatGPT plan, or a run that ended. */
 export class CloudVoiceUnavailable extends Error {
 	constructor() {
@@ -80,9 +138,17 @@ export class CloudVoiceUnavailable extends Error {
 	}
 }
 
+export class CloudVoiceLimitReached extends Error {
+	constructor() {
+		super("The login's usage limit ended the voice call");
+		this.name = "CloudVoiceLimitReached";
+	}
+}
+
 /** The run's voice calls, made by a tool before or after the session that answers them is up. */
 export class CloudVoiceChannel {
 	#lane?: CloudVoiceLane;
+	#usage?: CloudVoiceUsageReader;
 	/** How long the lane waits for Codex to confirm a call's stop before it opens no more calls in the run; the
 	 * session's own bound when absent. Only tests shorten it. */
 	readonly stopMs?: number;
@@ -91,8 +157,13 @@ export class CloudVoiceChannel {
 		if (options.stopMs !== undefined) this.stopMs = options.stopMs;
 	}
 
-	attach(lane: CloudVoiceLane | undefined): void {
+	attach(lane: CloudVoiceLane | undefined, usage?: CloudVoiceUsageReader): void {
 		this.#lane = lane;
+		this.#usage = lane ? usage : undefined;
+	}
+
+	usage(signal: AbortSignal): Promise<CloudVoiceUsage | undefined> {
+		return this.#usage ? this.#usage(signal) : Promise.resolve(undefined);
 	}
 
 	open(input: CloudVoiceOpenInput, signal: AbortSignal): Promise<CloudVoiceCall> {

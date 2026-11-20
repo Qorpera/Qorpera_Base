@@ -10,6 +10,7 @@ import {
 	explainerCaptions,
 	explainerNotes,
 	explainerPage,
+	explainerSaid,
 	explainerSpokenMatches,
 	parseExplainerClips,
 } from "@qorpera/runtime/cloud-app-kit-explainer";
@@ -229,6 +230,22 @@ it("finds the captions a scenes.js speaks, as far as a read of its text tells", 
 	expect(explainerCaptions('s.say("caf\\u00e9 \\"au lait\\"")')).toEqual(['café "au lait"']);
 });
 
+it("finds a caption written in the video's languages, and tells the maker of one that lacks a language", () => {
+	const both =
+		'V.scene((s) => { s.say({ en: "The shop pays Ada.", da: "Butikken betaler Ada." }, s.create(a)); s.say({en: \'One.\', "da": `En.`}); });';
+	expect(explainerSaid(both)).toEqual([
+		{ text: "The shop pays Ada.", languages: { en: "The shop pays Ada.", da: "Butikken betaler Ada." } },
+		{ text: "One.", languages: { en: "One.", da: "En." } },
+	]);
+	expect(explainerCaptions(both)).toEqual(["The shop pays Ada.", "One."]);
+	expect(explainerNotes(both)).toEqual([]);
+	const partly = `${both} V.scene((s) => { s.say("Plain."); s.say({ en: "Only English." }); });`;
+	expect(explainerNotes(partly)).toEqual([
+		'2 captions have not every language of the video (en, da; the first: "Plain."): write each caption as {en: "…", da: "…"}, so the video reads and speaks whole in each language.',
+	]);
+	expect(explainerSaid('s.say({ en: text, da: other }); s.say({ title: "x" });')).toEqual([]);
+});
+
 it("tells the maker what a read of the scenes found, and nothing of a video that is in order", () => {
 	expect(explainerNotes(SCENES)).toEqual([]);
 	const empty = explainerNotes("// to do");
@@ -319,7 +336,13 @@ it("tells an agent in the explainer's guide only what the engine can draw", asyn
 		"Use it where motion explains better than a page",
 		"Not for a thing a member should handle (that is another kit) and not as a mock-up of a screen.",
 		"You write one file, scenes.js; save_app writes engine.js and index.html beside it, so never write or edit those two.",
-		"The captions are the narration: shown under the stage, and spoken word for word when the video has a voice.",
+		"The captions are the narration: shown under the stage, and spoken word for word once the video has its voice.",
+		"A video is not left mute: after save_app, call narrate_app (among more_tools) with the app's name and a running machine",
+		"It records only captions that have no clip yet, so after you change one part only that part's changed captions are recorded again.",
+		"narrate_app reads the limit before it starts, stops when it is reached, keeps what it recorded, and answers how many captions are spoken and how many are left",
+		"Languages: make every video in English and Danish unless a member asked for one language.",
+		'write {en: "…", da: "…"} in place of the string',
+		"The scenes are built again when a viewer switches language",
 		"amounts as they are said (149 kroner, not NOK 149.00)",
 		"A mechanism is motion",
 		"Every number, name and claim comes from the company's files",

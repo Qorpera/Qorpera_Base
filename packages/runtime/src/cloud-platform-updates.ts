@@ -188,6 +188,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "GPT-6.2 Sol is the platform's GPT model",
 		text: "Your runs and your workers on Codex now run on GPT-6.2 Sol (gpt-6.2-sol) unless your own agent file names a model or a member picked one for the conversation. A conversation's Model menu offers GPT-6.2 Sol and GPT-6 Astra; GPT-6.1 Sol is gone, and conversations that were on it now run GPT-6.2 Sol. Hiring is unchanged: a new agent names no model and runs on GPT-6.2 Sol.",
 	},
+	{
+		id: "explainer-voice-and-languages",
+		kind: "capability",
+		date: "2026-11-18",
+		title: "Explainer videos speak, in English and Danish",
+		text: "An explainer video now gets a voice: after save_app, narrate_app has a voice read each caption into a clip the video plays. It runs on the ChatGPT login the run works on and counts against that login's usage limit, so it records only captions with no clip yet, stops at the limit, keeps what it recorded and says how many captions are left; call it again after the reset. A video can carry English and Danish in one scenes.js ({en, da} wherever a text goes), with a language switch in the player: make new videos in both, and give the videos you own a voice. Read app_guide explainer first.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;
