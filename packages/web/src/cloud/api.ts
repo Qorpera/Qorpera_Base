@@ -41,7 +41,7 @@ import {
 	parseMemberPictures,
 } from "./member-pictures.ts";
 import { listMemberMentions, type MemberMentions, markMentionsSeen } from "./mentions.ts";
-import { listOpenDecisions, type OpenDecision } from "./open-decisions.ts";
+import { castDecisionVote, listCompanyOpenDecisions, listOpenDecisions, type OpenDecision } from "./open-decisions.ts";
 import { listOpenQuestions, type OpenQuestion } from "./open-questions.ts";
 import { type HostedCompanyOrganization, parseHostedCompanyOrganization } from "./organization.ts";
 import { collectPages, type PageCursor } from "./pagination.ts";
@@ -550,6 +550,25 @@ export class CloudApi {
 
 	listOpenDecisions(profileId: string): Promise<OpenDecision[]> {
 		return listOpenDecisions(this.cloud, requiredUuid(profileId, "Profile id"));
+	}
+
+	listCompanyOpenDecisions(profileId: string): Promise<OpenDecision[]> {
+		return listCompanyOpenDecisions(this.cloud, requiredUuid(profileId, "Profile id"));
+	}
+
+	castDecisionVote(
+		profileId: string,
+		itemId: string,
+		choice: string | undefined,
+		note: string | undefined,
+	): Promise<void> {
+		return castDecisionVote(
+			this.cloud,
+			requiredUuid(profileId, "Profile id"),
+			requiredUuid(itemId, "Decision id"),
+			choice,
+			note,
+		);
 	}
 
 	/** The member's own arrangement of the apps drawer over the company's apps/groups.md (20260930728000). */

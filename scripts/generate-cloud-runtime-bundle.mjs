@@ -7,11 +7,17 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929026699_runtime_bundle_activation_v266.sql";
-const activationVersion = 266;
-const previousActivationVersion = 265;
-const previousActivationSha256 = "df25c9ccc2606496bc03843260c7f6a8c8cfbe09cbcdb0494acc87ea26805536";
-const activationRequires = Object.freeze([]);
+const activation = "supabase/migrations/20260929026799_runtime_bundle_activation_v267.sql";
+const activationVersion = 267;
+const previousActivationVersion = 266;
+const previousActivationSha256 = "79984a84c5b67dafb0affc3d9ddc50e772c12193400ec7e9be61da44dc160b77";
+const activationRequires = Object.freeze([
+	[
+		"20260930818000_member_open_decisions",
+		"#1989 (member open decisions): bundle 267's manifest hashes every migration into its authorization component, so it names 818000; the bundle is never active on a database where that migration did not apply",
+		"to_regprocedure('public.qorpera_list_member_open_decisions(uuid)') is not null",
+	],
+]);
 const activationRequiresSql = activationRequires
 	.map(([migration, why, present]) => {
 		const always = `${migration}.sql` < activation.slice(activation.lastIndexOf("/") + 1);

@@ -1,6 +1,18 @@
 # Changelog
 
 ## [Unreleased]
+- Release v267 (#1989, the decisions that wait for a member, read by the web's decisions dock; master since v266's
+  release merge 05792147a holds it and the web-only #1993): one migration, `20260930818000_member_open_decisions` (a new
+  stable read function, `qorpera_list_member_open_decisions`, granted to members alone; no table, index, data or existing
+  function changes); runtime bundle 267
+  `869096855b8595240b69df74b872031d2bbe47cee85a1cfed65f9b46b7e1f299` (activation `20260929026799`, which requires
+  818000: the bundle's manifest names every migration), the runner image of node release 154 with the native provider
+  host `abdbe58799fdfc03cd4b2602dd57f65ab564736577c7faf8e8aaa7ae2ef70c7e` (only the bundle it names moves; the patched
+  Codex 0.170.0 `9d6a86ec` as in v266). The shared vault (784784b9), the model login helper (cedd6a37) and its isolation
+  child stay as v266 left them: their builds at this release are the live programs byte for byte. The coding executor
+  stays f8db2998, the company machine image, the folder service, the object gateway, the shared execution package and
+  the test machines do not move. Way back: bundle 266 by the release lane's emergency path; the read function stays (it
+  only reads, no bundle calls it, and the web that reads it is live already).
 - Release v266 (#1982, words typed on a question card are a note, not a pick; #1980, a Claude reading names no 5-hour
   window; #1983, worker and todo argument refusals name the field to correct; #1984, the review's script read starts and
   an approved machine command runs; master since v265's release merge ba1be20f1 holds these four and the web-only #1979,

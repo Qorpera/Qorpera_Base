@@ -550,7 +550,7 @@ describe("account and route ownership", () => {
 	it("counts the member's open decisions on the Co-Founder's card on a page with no dock", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/team`);
 		vi.mocked(f.api.listStaff).mockResolvedValue([{ ...staff, templateId: "co-founder" }]);
-		const listed = vi.spyOn(f.api, "listOpenDecisions").mockResolvedValue([
+		const listed = vi.spyOn(f.api, "listCompanyOpenDecisions").mockResolvedValue([
 			{
 				kind: "question",
 				sessionId: session.sessionId,
@@ -577,7 +577,7 @@ describe("account and route ownership", () => {
 		vi.mocked(f.api.listStaff).mockResolvedValue([{ ...staff, templateId: "co-founder" }]);
 		const membership = deferred<typeof team>();
 		vi.mocked(f.api.getTeam).mockReturnValue(membership.promise);
-		const listed = vi.spyOn(f.api, "listOpenDecisions").mockResolvedValue([
+		const listed = vi.spyOn(f.api, "listCompanyOpenDecisions").mockResolvedValue([
 			{
 				kind: "question",
 				sessionId: session.sessionId,

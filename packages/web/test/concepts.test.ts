@@ -82,6 +82,7 @@ function company(questions: OpenQuestion[] = []) {
 		signal: new AbortController().signal,
 		listOpenQuestions: async () => questions,
 		listOpenDecisions: async () => asOpenCards(questions),
+		listCompanyOpenDecisions: async () => asOpenCards(questions),
 		setOpenDecisions: () => {},
 		store: new Store({ team: { capabilities: { write: true } } }),
 		onInvalidate: () => () => {},

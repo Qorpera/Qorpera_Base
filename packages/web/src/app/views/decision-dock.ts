@@ -11,7 +11,7 @@ import type { ActionReviewAnswer } from "../../cloud/review-rules.ts";
 import type { JsonValue } from "../../cloud/types.ts";
 import { type ActionReviewDraft, renderActionReviewCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { h, replace } from "../../ui/dom.ts";
+import { h, personAvatar, replace } from "../../ui/dom.ts";
 import { renderInteractionCard } from "../../ui/interaction-card.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
 import type { OpenQuestions } from "../open-questions.ts";
@@ -22,6 +22,7 @@ const FIGURE_BESIDE = 132;
 const FIGURE_ABOVE = 58;
 const MAX_TIMER_MS = 2 ** 31 - 1;
 export const UNDO_MS = 5_000;
+export const SETTLE_MS = 600;
 
 function expiry(decision: OpenDecision): number {
 	const at =
@@ -30,6 +31,7 @@ function expiry(decision: OpenDecision): number {
 }
 
 export function decisionOrder(a: OpenDecision, b: OpenDecision): number {
+	if (Boolean(a.othersAnswer) !== Boolean(b.othersAnswer)) return a.othersAnswer ? 1 : -1;
 	if (expiry(a) !== expiry(b)) return expiry(a) < expiry(b) ? -1 : 1;
 	if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? -1 : 1;
 	return a.interactionId.localeCompare(b.interactionId);
@@ -114,6 +116,14 @@ export class DecisionDock {
 	readonly #decidedThreads = new Map<string, () => void>();
 	readonly #ruleDrafts = new Map<string, ActionReviewDraft>();
 	#stageKey = "";
+	#votesKey = "";
+	#shown: string | undefined;
+	#shownOthers = false;
+	#shownNone = false;
+	#staged: string | undefined;
+	#byMember = false;
+	#settlesAt = 0;
+	readonly #voteCalls = new Map<string, number>();
 	#tabsKey = "";
 	#waiting = "";
 	#told = "";
@@ -135,6 +145,15 @@ export class DecisionDock {
 		this.el = h("aside", { class: "decision-dock", "aria-label": t("Decisions for you"), hidden: true });
 		this.#tabs.setAttribute("aria-label", t("Decisions for you"));
 		this.#tabs.addEventListener("keydown", (event) => this.#step(event));
+		this.#stage.addEventListener(
+			"click",
+			(event) => {
+				if (Date.now() >= this.#settlesAt) return;
+				event.stopPropagation();
+				event.preventDefault();
+			},
+			true,
+		);
 		this.el.append(this.#stage, this.#tabs);
 		const unsubscribe = host.questions.store.subscribe(() => this.#draw());
 		this.#stopWatch = host.questions.watch();
@@ -205,6 +224,7 @@ export class DecisionDock {
 		this.#decided.splice(index, 1);
 		this.#host.questions.release(interactionId);
 		this.#current = interactionId;
+		this.#byMember = true;
 		this.#draw();
 	}
 
@@ -324,6 +344,7 @@ export class DecisionDock {
 				.get()
 				.decisions.filter(
 					(decision) =>
+						!(decision.kind === "draft" && decision.othersAnswer) &&
 						(expiry(decision) > now || (decision.kind === "draft" && questions.draftUnsettled(decision))) &&
 						!this.#onItsWay(decision.interactionId) &&
 						!this.#host.conversation(decision.sessionId).get().interactionAnswers?.[decision.interactionId],
@@ -352,7 +373,21 @@ export class DecisionDock {
 		this.#dropUndelivered();
 		const cards = this.#cards();
 		this.#untilNextExpiry(cards);
-		const current = cards.find((card) => card.interactionId === this.#current) ?? cards[0];
+		const current =
+			cards.find((card) => card.interactionId === this.#current) ??
+			(this.#shownOthers ? cards.find((card) => card.othersAnswer) : undefined) ??
+			cards[0];
+		if (
+			current &&
+			(current.interactionId !== this.#shown
+				? this.#shown !== undefined || this.#shownNone
+				: this.#shownOthers && !current.othersAnswer)
+		)
+			this.#settlesAt = this.#byMember ? 0 : Date.now() + SETTLE_MS;
+		this.#shownNone = !current && this.#host.questions.store.get().read;
+		this.#byMember = false;
+		this.#shown = current?.interactionId;
+		this.#shownOthers = current?.othersAnswer === true;
 		this.#current = current?.interactionId;
 		this.#watch(current?.sessionId);
 		this.#waiting = this.#waitingNow(cards);
@@ -361,6 +396,7 @@ export class DecisionDock {
 		this.el.classList.toggle("is-narrow", this.#narrow);
 		if (current) {
 			this.#drawStage(current);
+			this.#paintVotes(current);
 			this.#drawTabs(cards, current);
 		} else {
 			this.#stageKey = "";
@@ -378,11 +414,15 @@ export class DecisionDock {
 
 	#drawStage(current: OpenDecision): void {
 		const error = this.#errors.get(current.interactionId);
-		const key = JSON.stringify([current.interactionId, error, this.#narrow, presentationLocale()]);
+		const others = current.othersAnswer === true;
+		const mayVote = this.#host.questions.mayVote();
+		const key = JSON.stringify([current.interactionId, error, this.#narrow, presentationLocale(), others, mayVote]);
 		if (key === this.#stageKey) return;
 		this.#stageKey = key;
+		this.#votesKey = "";
 		const agent = this.#host.agent(current.staffAgentId);
 		const name = agent?.displayName ?? t("The agent");
+		const id = current.interactionId;
 		const card =
 			current.kind === "draft"
 				? this.#draftCard(current, name)
@@ -391,14 +431,18 @@ export class DecisionDock {
 							memberName: (userId) => this.#host.memberName(userId),
 							draft: this.#ruleDrafts.get(current.interactionId),
 							onDraft: (draft) => this.#ruleDrafts.set(current.interactionId, draft),
-							answer: (answer, ruleText) =>
-								this.#hold({
-									decision: current,
-									answer,
-									...(ruleText === undefined ? {} : { ruleText }),
-									at: Date.now(),
-									state: "held",
-								}),
+							...(others
+								? {}
+								: {
+										answer: (answer: ActionReviewAnswer, ruleText?: string) =>
+											this.#hold({
+												decision: current,
+												answer,
+												...(ruleText === undefined ? {} : { ruleText }),
+												at: Date.now(),
+												state: "held",
+											}),
+									}),
 						})
 					: renderInteractionCard(
 							{
@@ -410,8 +454,16 @@ export class DecisionDock {
 							{
 								agentName: name,
 								memberName: (userId) => this.#host.memberName(userId),
-								canAnswer: true,
+								canAnswer: !others,
 								inThread: true,
+								...(others
+									? {
+											vote: {
+												answerer: this.#host.memberName(current.actorUserId),
+												...(mayVote ? { pick: (value: string) => this.#pick(id, value) } : {}),
+											},
+										}
+									: {}),
 								...(this.#host.image ? { image: this.#host.image } : {}),
 								...(this.#host.app ? { app: this.#host.app } : {}),
 								answer: async (outcome, value) =>
@@ -419,12 +471,33 @@ export class DecisionDock {
 							},
 						);
 		this.#markCut(card);
+		const mine = (current.votes ?? []).find((vote) => vote.userId === this.#host.questions.viewerId);
+		const typed = this.#staged === id ? this.#stage.querySelector<HTMLInputElement>(".decision-note") : null;
+		const typing = typed !== null && typed === document.activeElement;
+		this.#staged = id;
+		const note =
+			others && mayVote
+				? (h("input", {
+						type: "text",
+						class: "decision-note",
+						maxlength: 500,
+						value: typed?.value ?? mine?.note ?? "",
+						placeholder: t("Add a note…"),
+						"aria-label": t("Your note on this decision"),
+						onkeydown: (event: KeyboardEvent) => {
+							if (event.key !== "Enter") return;
+							event.preventDefault();
+							this.#say(id, (event.currentTarget as HTMLInputElement).value);
+						},
+					}) as HTMLInputElement)
+				: null;
 		replace(
 			this.#stage,
 			h(
 				"div",
 				{ class: "decision-card" },
 				card,
+				h("div", { class: "decision-votes" }, h("ul", { class: "vote-notes" }), note),
 				error ? h("p", { class: "decision-error", role: "alert" }, error) : null,
 			),
 			h(
@@ -437,6 +510,95 @@ export class DecisionDock {
 				}),
 			),
 		);
+		if (typing) note?.focus({ preventScroll: true });
+	}
+
+	#listed(id: string): OpenDecision | undefined {
+		return this.#host.questions.store.get().decisions.find((decision) => decision.interactionId === id);
+	}
+
+	#mine(decision: OpenDecision) {
+		return (decision.votes ?? []).find((vote) => vote.userId === this.#host.questions.viewerId);
+	}
+
+	#pick(id: string, value: string): void {
+		const decision = this.#listed(id);
+		if (!decision) return;
+		const mine = this.#mine(decision);
+		this.#vote(decision, mine?.choice === value ? undefined : value, mine?.note);
+	}
+
+	#say(id: string, words: string): void {
+		const decision = this.#listed(id);
+		if (decision) this.#vote(decision, this.#mine(decision)?.choice, words.trim() || undefined);
+	}
+
+	#vote(decision: OpenDecision, choice: string | undefined, note: string | undefined): void {
+		const id = decision.interactionId;
+		const call = (this.#voteCalls.get(id) ?? 0) + 1;
+		this.#voteCalls.set(id, call);
+		this.#errors.delete(id);
+		void this.#host.questions.vote(decision, choice, note).catch((error: unknown) => {
+			if (this.#voteCalls.get(id) !== call) return;
+			this.#errors.set(
+				id,
+				error instanceof Error && error.message ? error.message : t("Your vote could not be saved. Try again."),
+			);
+			this.#everyDock();
+		});
+	}
+
+	#paintVotes(current: OpenDecision): void {
+		const votes = current.votes ?? [];
+		const others = current.othersAnswer === true;
+		const key = JSON.stringify([current.interactionId, votes, others, presentationLocale()]);
+		if (key === this.#votesKey) return;
+		this.#votesKey = key;
+		const mine = this.#mine(current);
+		const face = (userId: string) => {
+			const avatar = personAvatar(this.#host.memberName(userId), userId);
+			avatar.title = this.#host.memberName(userId);
+			return avatar;
+		};
+		for (const option of this.#stage.querySelectorAll<HTMLElement>("[data-option-value]")) {
+			option.querySelector(":scope > .vote-faces")?.remove();
+			const voters = votes.filter((vote) => vote.choice === option.dataset.optionValue);
+			if (voters.length)
+				option.append(
+					h(
+						"span",
+						{ class: "vote-faces" },
+						...voters.map((vote) => face(vote.userId)),
+						h(
+							"span",
+							{ class: "visually-hidden" },
+							t("Voted for by {names}", {
+								names: voters.map((vote) => this.#host.memberName(vote.userId)).join(", "),
+							}),
+						),
+					),
+				);
+			if (!others) continue;
+			const voted = mine?.choice === option.dataset.optionValue;
+			option.classList.toggle("is-voted", voted);
+			option.setAttribute("aria-pressed", String(voted));
+		}
+		const notes = this.#stage.querySelector<HTMLElement>(".vote-notes");
+		if (notes)
+			replace(
+				notes,
+				...votes
+					.filter((vote) => vote.note)
+					.map((vote) =>
+						h(
+							"li",
+							null,
+							face(vote.userId),
+							h("b", null, this.#host.memberName(vote.userId)),
+							h("span", null, vote.note ?? ""),
+						),
+					),
+			);
 	}
 
 	#draftCard(draft: OpenDraft, name: string): HTMLElement {
@@ -509,7 +671,10 @@ export class DecisionDock {
 
 	#drawTabs(cards: OpenDecision[], current: OpenDecision): void {
 		this.#tabs.hidden = cards.length < 2;
-		const key = JSON.stringify([cards.map((card) => card.interactionId), presentationLocale()]);
+		const key = JSON.stringify([
+			cards.map((card) => [card.interactionId, card.othersAnswer === true]),
+			presentationLocale(),
+		]);
 		if (key !== this.#tabsKey) {
 			this.#tabsKey = key;
 			replace(
@@ -522,7 +687,7 @@ export class DecisionDock {
 						{
 							type: "button",
 							role: "tab",
-							class: "decision-tab",
+							class: card.othersAnswer ? "decision-tab is-others" : "decision-tab",
 							title: `${name}: ${decisionTitle(card)}`,
 							dataset: { decision: card.interactionId },
 							onclick: () => this.#select(card.interactionId),
@@ -541,6 +706,7 @@ export class DecisionDock {
 	}
 
 	#select(interactionId: string): void {
+		this.#byMember = true;
 		this.#current = interactionId;
 		this.#draw();
 	}
