@@ -27,6 +27,7 @@ import { type GroupChatDetails, listGroupChatDetails, readGroupChatDetails } fro
 import type { InteractionAnswer, InteractionOutcome, InteractionRequest } from "../cloud/interactions.ts";
 import { type MemberChatSummary, memberChatCalls } from "../cloud/member-chats.ts";
 import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
+import type { OpenDecision } from "../cloud/open-decisions.ts";
 import type { OpenQuestion } from "../cloud/open-questions.ts";
 import { buildCompanyHierarchy, type CompanyHierarchy, type HostedCompanyOrganization } from "../cloud/organization.ts";
 import type { PageCursor } from "../cloud/pagination.ts";
@@ -196,6 +197,10 @@ function answerRefusal(error: unknown): string {
 	const message = error instanceof Error ? error.message : "";
 	if (needsModelAccount(error)) return t("Select an active model account, then try again.");
 	if (/paused/i.test(message)) return t("Agents are paused for a moment while Qorpera updates. Try again shortly.");
+	if (/Only a member of this thread can wake its agent/.test(message))
+		return t(
+			"Your answer did not go. It would start this agent's work, and only members of the agent's thread can do that. Ask someone in that thread to answer.",
+		);
 	return describeError(error);
 }
 
@@ -240,6 +245,7 @@ export interface CompanyState {
 	realtimeError?: string;
 	/** Mentions of this member not seen yet, by conversation (session id → count). */
 	mentions?: Readonly<Record<string, number>>;
+	openDecisions?: number;
 	/** The cloud does not read mentions yet: no mention picker, no badges. */
 	mentionsUnavailable?: boolean;
 	/** The cloud answered a mentions read: it reads mentions, so names are offered. */
@@ -992,6 +998,16 @@ export class CompanyController {
 		const state = this.store.get();
 		if (this.#stopped || state.accessLost || !state.team?.capabilities.write) return [];
 		return this.#api.listOpenQuestions(this.profile.profileId);
+	}
+
+	setOpenDecisions(count: number): void {
+		if (!this.#stopped && (this.store.get().openDecisions ?? 0) !== count) this.store.set({ openDecisions: count });
+	}
+
+	async listOpenDecisions(): Promise<OpenDecision[]> {
+		const state = this.store.get();
+		if (this.#stopped || state.accessLost || !state.team?.capabilities.write) return [];
+		return this.#api.listOpenDecisions(this.profile.profileId);
 	}
 
 	/** Mentions in the conversation on screen are seen: the badge goes, for this member only. */

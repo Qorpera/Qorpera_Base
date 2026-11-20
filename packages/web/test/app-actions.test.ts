@@ -298,7 +298,7 @@ function card(id: string, app: string, more: Record<string, unknown> = {}): Open
 }
 
 function questionsOf(cards: OpenQuestion[]) {
-	const store = new Store<OpenQuestionsState>({ questions: cards, read: true, unavailable: false });
+	const store = new Store<OpenQuestionsState>({ questions: cards, decisions: [], read: true, unavailable: false });
 	const questions = {
 		store,
 		refresh: vi.fn(async () => {}),

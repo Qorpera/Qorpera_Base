@@ -1234,6 +1234,7 @@ export function mountApplication(
 					),
 				);
 				appQuestions.set(controller, questions);
+				controller.signal.addEventListener("abort", questions.watch(), { once: true });
 			}
 			return {
 				questions,
@@ -1244,6 +1245,7 @@ export function mountApplication(
 				conversation: (sessionId) => controller.conversation(sessionId, false),
 			};
 		};
+		questionsHost();
 		// The company's databases, asked and watched as the member through the member gateway; none where the build
 		// names no member gateway.
 		const dataHost = (): CompanyData | undefined => {

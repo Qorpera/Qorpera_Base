@@ -956,7 +956,7 @@ function statusDisc(look: AgentLook, className: string): HTMLElement | null {
  * nothing aloud. What the agent waits on the member for is said too, while it works as
  * well, since the symbol the figure becomes says nothing aloud either. */
 function railLabel(
-	agent: Pick<AgentModel, "displayName" | "state" | "waiting"> & { mentioned?: boolean },
+	agent: Pick<AgentModel, "displayName" | "state" | "waiting" | "decisions"> & { mentioned?: boolean },
 	look: AgentLook,
 	idle?: IdleLine,
 ): { "aria-label": string } {
@@ -973,7 +973,12 @@ function railLabel(
 			: undefined;
 	const state = decision && what ? undefined : words ? t(words) : idle?.text;
 	const mention = agent.mentioned ? t("You were mentioned") : undefined;
-	return { "aria-label": [agent.displayName, state, waiting, mention].filter(Boolean).join(" · ") };
+	const decisions = !agent.decisions
+		? undefined
+		: agent.decisions === 1
+			? t("1 decision waits for you")
+			: t("{count} decisions wait for you", { count: String(agent.decisions) });
+	return { "aria-label": [agent.displayName, state, waiting, decisions, mention].filter(Boolean).join(" · ") };
 }
 
 /** An agent's figure on its stand in the rail: alive (it blinks and moves when left alone; the pointer over its row
@@ -1008,6 +1013,7 @@ interface AgentModel extends Pick<HostedStaffAgent, "id" | "displayName" | "temp
 	/** Its work waits on this member (CompanyController.waitingFor): the newest item in a few words and its kind,
 	 * when the cloud says. */
 	waiting?: { what?: string; kind?: string };
+	decisions?: number;
 }
 interface SessionModel {
 	title: string;
@@ -1036,6 +1042,9 @@ function cofounderCard(model: AgentModel, href: string): HTMLElement {
 			railFigure(model, 82, look),
 			statusDisc(look, "cofounder-status"),
 			mentionBadge(model.mentioned),
+			model.decisions
+				? h("span", { class: "rail-decisions", "aria-hidden": "true" }, String(model.decisions))
+				: null,
 		),
 		h("strong", null, model.displayName),
 	);
@@ -1388,6 +1397,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 						},
 					}
 				: {}),
+			...(agent.id === cofounder?.id && state.openDecisions ? { decisions: state.openDecisions } : {}),
 		};
 	};
 	const cofounderElement =

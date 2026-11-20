@@ -158,6 +158,27 @@ describe("an agent stopped at the member", () => {
 		expect(f.ask(staff.id)).toBeUndefined();
 	});
 
+	it("counts the decisions that wait for the member on the Co-Founder's card, and nowhere else", () => {
+		const f = setup([cofounder, staff]);
+		f.draw();
+		const card = () => f.rail.querySelector<HTMLElement>(".cofounder-home")!;
+		expect(card().querySelector(".rail-decisions")).toBeNull();
+		expect(card().getAttribute("aria-label")).toBe("Co-Founder");
+		f.company.setOpenDecisions(3);
+		f.draw();
+		expect(card().querySelector(".rail-decisions")?.textContent).toBe("3");
+		expect(card().getAttribute("aria-label")).toBe("Co-Founder · 3 decisions wait for you");
+		expect(f.rail.querySelectorAll(".rail-decisions")).toHaveLength(1);
+		expect(f.row().querySelector(".rail-decisions")).toBeNull();
+		f.company.setOpenDecisions(1);
+		f.draw();
+		expect(card().querySelector(".rail-decisions")?.textContent).toBe("1");
+		expect(card().getAttribute("aria-label")).toBe("Co-Founder · 1 decision waits for you");
+		f.company.setOpenDecisions(0);
+		f.draw();
+		expect(card().querySelector(".rail-decisions")).toBeNull();
+	});
+
 	it("speaks Danish", async () => {
 		const f = setup();
 		f.work.mockResolvedValue([waits(staff.id)]);

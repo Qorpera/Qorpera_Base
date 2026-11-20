@@ -64,6 +64,7 @@ function rpcs(f: ReturnType<typeof fixture>): string[] {
 				name !== "qorpera_member_interface_pages" &&
 				// The account marks itself online for its friends (online-mark.ts).
 				name !== "qorpera_mark_online" &&
+				name !== "qorpera_list_member_open_decisions" &&
 				// Company figures ask for the company's logo (app/company-logos.ts).
 				name !== "qorpera_company_logos",
 		);

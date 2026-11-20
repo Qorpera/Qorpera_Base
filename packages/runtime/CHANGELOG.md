@@ -1,6 +1,20 @@
 # Changelog
 
 ## [Unreleased]
+- Release v266 (#1982, words typed on a question card are a note, not a pick; #1980, a Claude reading names no 5-hour
+  window; #1983, worker and todo argument refusals name the field to correct; #1984, the review's script read starts and
+  an approved machine command runs; master since v265's release merge ba1be20f1 holds these four and the web-only #1979,
+  #1981 and #1986): no migration; runtime bundle 266
+  `79984a84c5b67dafb0affc3d9ddc50e772c12193400ec7e9be61da44dc160b77` (activation `20260929026699`, which requires
+  nothing; its platform update `typed-words-are-a-note`), the runner image of node release 153 with the native provider
+  host `7ecd33a5ed6d3db479e038d75e28f9825bc463eada76e2eff4f7d299f89560c8` (the patched Codex 0.170.0 `9d6a86ec` as in
+  v265), and on both nodes the shared vault `784784b987ab71e944087eb11621a1a8ba71183ac2a40585a5899767a30e1580` and the
+  model login helper `cedd6a3780a03b743ca324d1e8189a863a39d44fd0bdfd9b2db2bf27ee672ed6` (its isolation child
+  `ad2159b1` unchanged), which make a member's Claude Settings read name no 5-hour window. The coding executor stays
+  f8db2998: its build at this release differs from the live one only by narrate_app in a list of operation names it
+  never reads (#1984's script read changes the run's side only). The company machine image, the folder service, the
+  object gateway, the shared execution package and the test machines do not move. Way back: bundle 265 by the release
+  lane's emergency path, the vault and the helper back to 9da8db4d and c0c183fa from each node's own backups.
 - The review's read of a script a machine command runs starts (mywave, 20 Nov 2026). Its operation had no
   `operationKey` in its arguments, while the executor rebuilds every start's digest with one
   (`deploy/coding-worker/machine-command-authority.ts`), so every read since the reads went live (#1924) was refused

@@ -386,6 +386,23 @@ describe("email draft card", () => {
 		expect(card.textContent).not.toContain("spoofed@example.com");
 	});
 
+	it("keeps Refresh on a draft whose send is unconfirmed after its time has passed, and nothing else to press", async () => {
+		const past = { ...item, request: { ...item.request, expiresAt: "2000-01-01T00:00:00Z" } };
+		const ctx = context({
+			emailDraft: { state: { ...structuredClone(ready), status: "unconfirmed" } },
+			loadEmailDraft: vi.fn(async (): Promise<EmailDraftState> => ({ ...structuredClone(ready), status: "sent" })),
+		});
+		const card = renderInteractionCard(past, ctx);
+		expect(card.querySelector(".email-draft-status")?.textContent).toBe("Send unconfirmed");
+		expect(card.querySelector<HTMLButtonElement>(".email-draft-send")?.disabled).toBe(true);
+		expect(card.querySelector<HTMLButtonElement>(".email-draft-save")?.disabled).toBe(true);
+		expect(card.querySelector<HTMLTextAreaElement>("textarea")?.readOnly).toBe(true);
+		click(card, "Refresh");
+		await ctx.emailDraft?.pending;
+		expect(card.querySelector(".email-draft-status")?.textContent).toBe("Sent");
+		expect(card.querySelector(".email-draft-actions")).toBeNull();
+	});
+
 	it("renders terminal, expired, and other-member drafts without actionable controls", () => {
 		const other = renderInteractionCard(item, context({ canAnswer: false }));
 		expect(other.querySelector("button:not([hidden])")).toBeNull();
