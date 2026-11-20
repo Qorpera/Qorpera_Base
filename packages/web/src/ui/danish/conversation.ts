@@ -361,6 +361,7 @@ export const CONVERSATION: Record<string, string> = {
 
 	// The agents' open questions on an app's page and in the Concepts viewer (app/views/question-dock.ts)
 	"Questions for you": "Spørgsmål til dig",
+	"Decisions for you": "Beslutninger til dig",
 	"{name} asks you": "{name} spørger dig",
 	"{name} is reworking this": "{name} laver det om",
 	"Sending to {name}…": "Sender til {name}…",

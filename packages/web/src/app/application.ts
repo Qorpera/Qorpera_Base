@@ -2236,6 +2236,7 @@ export function mountApplication(
 							// role, and the thread offers it to the roles that route takes (M3c).
 							folderImage: cardImage,
 							folderApp: cardApp,
+							decisions: questionsHost(),
 							// A change of this agent's ready to go live, as a card below the thread; a site a message links, as
 							// the Sites page's row under the words.
 							codeReleases: releaseDesk(true),

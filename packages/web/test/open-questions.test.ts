@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyController, ConversationState } from "../src/app/company.ts";
 import { OpenQuestions, questionApps } from "../src/app/open-questions.ts";
 import { Store } from "../src/app/state.ts";
+import { DecisionDock, decisionOrder } from "../src/app/views/decision-dock.ts";
 import { QuestionDock, type QuestionDockHost } from "../src/app/views/question-dock.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { InteractionOutcome, InteractionRequest } from "../src/cloud/interactions.ts";
@@ -471,5 +472,157 @@ describe("reading the open questions", () => {
 		await open.refresh();
 		expect(controller.listOpenQuestions).toHaveBeenCalledTimes(1);
 		stop();
+	});
+});
+
+describe("the decisions dock in the Co-Founder chat", () => {
+	const name: InteractionRequest = {
+		surface: "question",
+		title: "What should the app be called?",
+		payload: { options: [{ label: "mywave" }, { label: "Not yet" }], allowCustom: true },
+	};
+	const cards = () => [
+		question(CARD_A, directions, "2026-11-10T10:00:00Z"),
+		question(CARD_B, name, "2026-11-10T09:00:00Z"),
+		question(
+			CARD_C,
+			{ ...name, title: "Launch this week?", expiresAt: "2099-01-01T00:00:00Z" },
+			"2026-11-10T11:00:00Z",
+		),
+	];
+	const tabs = (dock: DecisionDock) => [...dock.el.querySelectorAll<HTMLElement>(".decision-tab")];
+	const chosen = (dock: DecisionDock) =>
+		dock.el.querySelector<HTMLElement>('.decision-tab[aria-selected="true"]')?.dataset.decision;
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+		document.body.replaceChildren();
+	});
+
+	it("orders decisions once and for all: the one that runs out first, then the oldest", () => {
+		expect(
+			cards()
+				.sort(decisionOrder)
+				.map((card) => card.interactionId),
+		).toEqual([CARD_C, CARD_B, CARD_A]);
+	});
+
+	it("shows every open question, one card at a time, with a tab for each under it", async () => {
+		const { host } = company({ questions: cards() });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		expect(dock.el.hidden).toBe(false);
+		expect(dock.el.querySelectorAll(".decision-card .interaction-card")).toHaveLength(1);
+		expect(dock.el.querySelector(".decision-card .interaction-card")?.classList.contains("is-asking")).toBe(true);
+		expect(dock.el.querySelector(".interaction-title")?.textContent).toBe("Launch this week?");
+		expect(dock.el.querySelector(".interaction-call strong")?.textContent).toBe("Bob asks you");
+		expect(dock.el.querySelector(".interaction-call strong b")?.textContent).toBe("Bob");
+		expect(dock.el.querySelector(".decision-figure .figure")).not.toBeNull();
+		expect(tabs(dock).map((tab) => tab.querySelector(".decision-tab-label")?.textContent)).toEqual([
+			"Launch this week?",
+			"What should the app be called?",
+			"Which direction should the shop take?",
+		]);
+		expect(dock.el.querySelector(".decision-tabs")?.getAttribute("role")).toBe("tablist");
+		expect(chosen(dock)).toBe(CARD_C);
+		expect(tabs(dock).map((tab) => tab.tabIndex)).toEqual([0, -1, -1]);
+		expect(dock.waiting).toBe([CARD_C, CARD_B, CARD_A].join(" "));
+		expect(dock.shows(CARD_A.toUpperCase())).toBe(true);
+		dock.dispose();
+	});
+
+	it("flicks by a tab and by the arrow keys, and keeps the tabs where they stand", async () => {
+		const { host } = company({ questions: cards() });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		const first = tabs(dock);
+		first[2]?.click();
+		expect(chosen(dock)).toBe(CARD_A);
+		expect(dock.el.querySelector(".interaction-title")?.textContent).toBe("Which direction should the shop take?");
+		expect(tabs(dock)).toEqual(first);
+		const key = (name: string) =>
+			dock.el
+				.querySelector(".decision-tabs")
+				?.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true }));
+		key("ArrowRight");
+		expect(chosen(dock)).toBe(CARD_C);
+		key("ArrowLeft");
+		expect(chosen(dock)).toBe(CARD_A);
+		expect(document.activeElement).toBe(first[2]);
+		dock.dispose();
+	});
+
+	it("answers in the asking agent's thread, says it went, and brings the next one up", async () => {
+		const { host, answers } = company({ questions: cards().slice(0, 2) });
+		const dock = new DecisionDock(host);
+		const changes = vi.fn();
+		dock.onChange(changes);
+		document.body.append(dock.el);
+		await settle();
+		expect(dock.el.querySelector(".interaction-title")?.textContent).toBe("What should the app be called?");
+		[...dock.el.querySelectorAll<HTMLButtonElement>(".interaction-options .btn")]
+			.find((pill) => pill.textContent === "mywave")
+			?.click();
+		await settle();
+		expect(dock.shows(CARD_B)).toBe(false);
+		expect(changes).toHaveBeenCalled();
+		expect(answers).toEqual([[SESSION, CARD_B, "answered", { values: ["mywave"] }]]);
+		expect(dock.el.querySelector(".decision-sent")?.textContent).toBe("Sent to Bob");
+		expect(dock.el.querySelector(".decision-stage")?.classList.contains("is-answered")).toBe(true);
+		expect(dock.el.querySelector(".decision-card button, .decision-card input")).toBeNull();
+		await vi.advanceTimersByTimeAsync(2_300);
+		expect(dock.el.querySelector(".interaction-title")?.textContent).toBe("Which direction should the shop take?");
+		expect(tabs(dock)).toHaveLength(1);
+		expect(dock.el.querySelector<HTMLElement>(".decision-tabs")?.hidden).toBe(true);
+		dock.dispose();
+	});
+
+	it("keeps the card and says why when the answer is refused", async () => {
+		const { host } = company({ questions: [question(CARD_B, name)], refuse: "Select an active model account." });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		dock.el.querySelector<HTMLButtonElement>(".interaction-options .btn")?.click();
+		await settle();
+		expect(dock.el.querySelector(".decision-error")?.textContent).toBe("Select an active model account.");
+		expect(dock.el.querySelector(".decision-card .interaction-card")?.classList.contains("is-asking")).toBe(true);
+		expect(dock.shows(CARD_B)).toBe(true);
+		dock.dispose();
+	});
+
+	it("lets a card go the moment its time is up, so its thread shows it past its time", async () => {
+		vi.setSystemTime(new Date("2026-11-10T12:00:00Z"));
+		const soon = question(CARD_C, { ...name, title: "Launch today?", expiresAt: "2026-11-10T12:00:30Z" });
+		const gone = question(CARD_A, { ...name, expiresAt: "2026-11-10T11:59:00Z" });
+		const { host } = company({ questions: [soon, question(CARD_B, name), gone] });
+		const dock = new DecisionDock(host);
+		const changes = vi.fn();
+		dock.onChange(changes);
+		document.body.append(dock.el);
+		await settle();
+		expect(dock.waiting).toBe([CARD_C, CARD_B].join(" "));
+		expect(dock.el.querySelector(".interaction-title")?.textContent).toBe("Launch today?");
+		changes.mockClear();
+		await vi.advanceTimersByTimeAsync(30_001);
+		expect(dock.waiting).toBe(CARD_B);
+		expect(dock.shows(CARD_C)).toBe(false);
+		expect(changes).toHaveBeenCalledTimes(1);
+		expect(dock.el.querySelector(".interaction-title")?.textContent).toBe("What should the app be called?");
+		dock.dispose();
+	});
+
+	it("is not there with nothing to decide", async () => {
+		const { host } = company();
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		expect(dock.el.hidden).toBe(true);
+		expect(dock.waiting).toBe("");
+		dock.dispose();
 	});
 });
