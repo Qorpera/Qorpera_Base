@@ -1,6 +1,21 @@
 # Changelog
 
 ## [Unreleased]
+- Release v268 (#1994 and #1997, thread decisions step 3; master since v267's release merge bbb86aaf1 holds exactly
+  these two): two migrations, in this order. `20260930819000_decision_votes` (a new table of members' votes and notes on
+  open decisions, row level security on and no grant; two member functions, `qorpera_list_company_open_decisions` and
+  `qorpera_cast_decision_vote`, granted to members alone; two internal ones nobody may call; a deferred trigger on the new
+  table only) and `20260930820000_send_decision_pick` (one internal function, `qorpera_is_decision_pick`, nobody may call;
+  one condition of `qorpera_answer_interaction` patched: in an agent's thread another active member of the thread may
+  send the asked member's voted pick of a question, on their own login, and nothing else). Runtime bundle 268
+  `df031a7237b9cee5a9a295f169f5b88858bae3ed3840200c3b06cf88a1ccf449` (activation `20260929026899`, which requires both:
+  the bundle's manifest names every migration), the runner image of node release 155 with the native provider host
+  `78b7ca34810f04e7e9c8ab3589e8a0b45fd19234c8a9d88e7af4050edd853494` (only the bundle it names moves; the patched Codex
+  0.170.0 `9d6a86ec` as in v267). The shared vault (784784b9), the model login helper (cedd6a37) and its isolation child
+  stay as v267 left them: their builds at this release are the live programs byte for byte. The coding executor stays
+  f8db2998; the company machine image, the folder service, the object gateway, the shared execution package and the
+  test machines do not move. Way back: bundle 267 by the release lane's emergency path; both migrations stay (no bundle
+  calls their functions, and the answer function's new branch needs a vote that only the new web can cast).
 - Release v267 (#1989, the decisions that wait for a member, read by the web's decisions dock; master since v266's
   release merge 05792147a holds it and the web-only #1993): one migration, `20260930818000_member_open_decisions` (a new
   stable read function, `qorpera_list_member_open_decisions`, granted to members alone; no table, index, data or existing
