@@ -508,7 +508,8 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   `authorization_request` event holds (without `call`), and is not listed
   once that event was erased. `answererUserId` is the member who answers (null: any
   owner or admin); `canAnswer` says whether the caller is one, by the rules
-  the answer functions keep (the member a card was raised for, in the thread;
+  the answer functions keep, for an answer of the caller's own choosing (the
+  member a card was raised for, in the thread;
   an approval's approver, or any owner or admin for the company's; never a
   spectator). It shows nothing a member could not already read: an agent
   thread is the company's, and its cards are events every member reads. A
@@ -521,9 +522,14 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   values (an option's `value`, else its `label`), and null on an email draft or
   an approval; `p_note` is trimmed, at most 500 characters. Both empty takes
   the vote back. One vote a member a decision: a second call replaces the
-  first. Advisory only: it answers nothing, wakes no agent and needs no model
-  account. Owners, admins and contributors vote, on any open decision, their
-  own too; a spectator reads the votes and casts none (42501, as for a
+  first. The call itself answers nothing, wakes no agent and needs no model
+  account. One vote is more than advice since `20260930820000`: a member's
+  vote for an option of a QUESTION RAISED FOR THEM is their pick, and stands
+  as their leave for any other member of the thread to send it, which answers
+  the card and starts the agent's work on the sender's account (see "An
+  agent's shared thread" under Thread interactions). A client says so where
+  that member votes, and they take the leave back by taking the vote back.
+  Owners, admins and contributors vote, on any open decision, their own too; a spectator reads the votes and casts none (42501, as for a
   non-member). 22023: the decision is not open (answered, past its time, not a
   question, draft or approval card, or another company's), the choice is not
   one of its options, or the note is too long. A decision's votes are kept
@@ -2546,7 +2552,22 @@ outputs.
 members' posts. Only the member the card was raised for answers it: the
 request event's `actor_user_id` (the member whose post, routine or first run
 the raising run serves), while still a member of the room; approvals still
-need owner or admin. The answer is delivered like a post, on the member's own
+need owner or admin. Since `20260930820000_send_decision_pick` one more
+member may answer a QUESTION card: any other member of the room (owner, admin
+or contributor) may send the PICK of the member it was raised for, which is
+the one option that member has voted for (`qorpera_cast_decision_vote`), with
+`p_outcome` `answered` and `p_answer` exactly `{"values": [<that option>]}`.
+Anything else from them (another option, several, a skip, their own words, a
+draft or another card kind, a pick whose voter changed their vote or is a
+spectator now) is refused as before, `42501` "Only the member this card was
+raised for can answer it". Whoever sends is the answer's author in every
+sense: `answeredBy` and the event's actor are the sender (the card's
+`actor_user_id` still names the member it was raised for, so a client can
+show "{member}'s pick, sent by {sender}"), the woken run is the sender's (their
+own review rules apply, its member approvals and its next cards come to
+them), and the sender must pass a sponsor of their OWN, checked exactly as
+below: one member's model account never pays for another member's call, and
+nothing is sent without the sender's own call. The answer is delivered like a post, on the member's own
 model account: pass `p_sponsor_binding_id` and `p_sponsor_version` (the
 conversation's selected sponsor, as for `qorpera_post_company_room_message`).
 The kernel checks them as the wake materializer will (binding active and
@@ -2555,7 +2576,8 @@ with `42501` "Room sponsor is unavailable" otherwise, or `55000` while company
 execution is paused; a refused answer records nothing. An accepted answer's
 input is complete at once, its `interaction_answer` event is in the transcript
 when the RPC returns (never in the pending list), and a room wake runs the
-thread's agent. A client shows live card controls only to that member; against
+thread's agent. A client shows live card controls only to that member (another
+member gets, at most, the one control that sends that member's pick); against
 a cloud before bundle v100 (`PGRST202` for the seven named arguments) it keeps
 the card open and says answering there is not available yet (the old function
 would queue an answer that never wakes the agent).
