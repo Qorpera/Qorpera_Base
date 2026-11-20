@@ -2611,6 +2611,7 @@ export class ConversationView {
 			conversation.loading,
 			conversation.error,
 			this.#agentState,
+			this.#waitingRun,
 			agent?.id,
 			agent?.appearance,
 			agent?.templateId,

@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
+import { parseStaffExecutionActivity } from "../src/cloud/parse.ts";
 import type { TranscriptInteraction, TranscriptItem } from "../src/cloud/transcript.ts";
 import { fixture, id, profileA, session, settle, staff, team, userA } from "./fixtures.ts";
 
@@ -48,12 +49,38 @@ afterEach(() => {
 	sessionStorage.clear();
 });
 
-function setup(state: "working" | "idle") {
+const run = {
+	run_id: id(722),
+	staff_agent_id: staff.id,
+	source_kind: "session_turn",
+	updated_at: "2026-09-05T10:05:01Z",
+};
+const working = parseStaffExecutionActivity([{ ...run, job_status: "leased", activity: "working" }]);
+const paused = parseStaffExecutionActivity([
+	{
+		...run,
+		job_status: "queued",
+		activity: "waiting",
+		paused_until: "2099-01-01T00:00:00Z",
+		sponsor_binding_id: id(723),
+		requested_by_user_id: userA.id,
+		paid_by_chatgpt_plan: true,
+		paid_while_away: false,
+		movable: false,
+	},
+]);
+
+function setup(activity: typeof working) {
 	const f = fixture();
 	const company = new CompanyController(f.api, profileA, userA.id);
 	vi.spyOn(company, "loadConversation").mockResolvedValue();
-	const agentState = vi.spyOn(company, "agentState").mockReturnValue(state);
-	company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
+	company.store.set({
+		team,
+		staff: [staff],
+		sessions: [{ ...session, staffAgentId: staff.id }],
+		activity,
+		loading: false,
+	});
 	const show = (items: TranscriptItem[]) =>
 		company
 			.conversation(session.sessionId)
@@ -66,12 +93,12 @@ function setup(state: "working" | "idle") {
 		company.stop();
 	};
 	const card = () => view.el.querySelector<HTMLElement>(".interaction-card");
-	return { card, show, agentState, company };
+	return { card, show, company };
 }
 
 describe("a question answered in the member's own words, in its thread", () => {
 	it("shows the agent reworking it while the agent works, and the exchange once the agent is back", async () => {
-		const f = setup("working");
+		const f = setup(working);
 		await settle();
 		expect(f.card()?.classList.contains("is-reworking")).toBe(true);
 		expect(f.card()?.querySelector(".interaction-call strong")?.textContent).toBe(
@@ -87,8 +114,25 @@ describe("a question answered in the member's own words, in its thread", () => {
 		expect(f.card()?.querySelector(".interaction-chosen")?.textContent).toBe("Warmer, less blue");
 	});
 
+	it("flips on the agent's state alone, on the same view, a run waiting at its usage limit included", async () => {
+		const f = setup(working);
+		await settle();
+		expect(f.card()?.classList.contains("is-reworking")).toBe(true);
+		f.company.store.set({ activity: [] });
+		await settle();
+		expect(f.card()?.classList.contains("is-reworking")).toBe(false);
+		expect(f.card()?.classList.contains("is-exchange")).toBe(true);
+		f.company.store.set({ activity: paused });
+		await settle();
+		expect(f.company.agentState(staff.id)).toBe("idle");
+		expect(f.card()?.classList.contains("is-reworking")).toBe(true);
+		f.company.store.set({ activity: [] });
+		await settle();
+		expect(f.card()?.classList.contains("is-reworking")).toBe(false);
+	});
+
 	it("is the exchange it was when the agent is not at work", async () => {
-		const f = setup("idle");
+		const f = setup([]);
 		await settle();
 		expect(f.card()?.classList.contains("is-reworking")).toBe(false);
 		expect(f.card()?.classList.contains("is-exchange")).toBe(true);
