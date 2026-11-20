@@ -1903,7 +1903,8 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .decision-pick-words { flex: 1 1 260px; margin: 0; color: var(--text-muted); font-size: 12.5px; line-height: 1.4; }
 .decision-pick-send { flex: none; max-width: 100%; min-height: 34px; padding: 6px 14px; border: 0; border-radius: 999px; background: var(--text); color: var(--bg); font: inherit; font-size: 13px; font-weight: 600; line-height: 1.3; text-align: left; cursor: pointer; }
 .decision-pick-send:hover { filter: brightness(1.15); }
-.decision-pick-send:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.decision-pick-send:focus-visible, .decision-pick-back:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.decision-pick-back { flex: none; min-height: 34px; padding: 6px 14px; border: 1px solid var(--border-strong); border-radius: 999px; background: transparent; color: var(--text); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; }
 .decision-tab.is-others:not([aria-selected="true"]) { border-style: dashed; color: var(--text-muted); }
 .decision-figure { display: grid; flex: none; place-items: end center; width: 132px; }
 .decision-dock.is-narrow .decision-stage { position: relative; display: block; padding: 50px 0 0; }

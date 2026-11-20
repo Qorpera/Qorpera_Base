@@ -668,6 +668,27 @@ export class DecisionDock {
 			);
 			return;
 		}
+		const standing = current.kind === "question" && !current.othersAnswer ? this.#mine(current) : undefined;
+		if (standing?.choice !== undefined) {
+			replace(
+				place,
+				h(
+					"p",
+					{ class: "decision-pick-words" },
+					t("Your pick stands: a member with a login can send it. Answer here yourself, or take it back."),
+				),
+				h(
+					"button",
+					{
+						type: "button",
+						class: "decision-pick-back",
+						onclick: () => this.#vote(current, undefined, standing.note),
+					},
+					t("Take my pick back"),
+				),
+			);
+			return;
+		}
 		if (current.kind !== "question" || !option) {
 			replace(place);
 			return;
@@ -864,10 +885,16 @@ export class DecisionDock {
 				pickOf !== undefined &&
 				error instanceof Error &&
 				/Only the member this card was raised for can answer it/.test(error.message);
-			if (pickOf !== undefined) void this.#host.questions.refresh();
+			if (pickOf !== undefined) await this.#host.questions.refresh().catch(() => {});
+			const sent = pickOf === undefined ? undefined : (entry as DecidedCard).value.values;
+			const listed = pickOf === undefined ? undefined : this.#listed(id);
+			const unchanged =
+				listed?.kind === "question" &&
+				Array.isArray(sent) &&
+				(listed.votes ?? []).find((vote) => vote.userId === listed.actorUserId)?.choice === sent[0];
 			this.#errors.set(
 				id,
-				stale
+				stale && !unchanged
 					? t("Nothing was sent. {name}'s pick is not that option now. Look at their vote again.", {
 							name: pickOf,
 						})

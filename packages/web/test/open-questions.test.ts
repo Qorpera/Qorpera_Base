@@ -2225,6 +2225,55 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		dock.dispose();
 	});
 
+	it("keeps a pick the member left on their own question in sight, with a way to take it back, once they can answer", async () => {
+		const list: OpenDecision[] = [
+			{
+				...asOpenCards([question(CARD_B, name)])[0]!,
+				votes: [{ userId: MEMBER, choice: "mywave", note: "For now.", updatedAt: "2026-11-10T10:05:00Z" }],
+			},
+		];
+		const { host, votesCast, answers } = company({ company: list, accounts: withLogin });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await rest();
+		expect(dock.el.querySelector(".decision-card > .interaction-card.is-voting")).toBeNull();
+		expect(dock.el.querySelector(".decision-pick-words")?.textContent).toBe(
+			"Your pick stands: a member with a login can send it. Answer here yourself, or take it back.",
+		);
+		const back = dock.el.querySelector<HTMLButtonElement>(".decision-pick-back");
+		expect(back?.textContent).toBe("Take my pick back");
+		await vi.advanceTimersByTimeAsync(SETTLE_MS);
+		back?.click();
+		await rest();
+		expect(votesCast).toEqual([[CARD_B, undefined, "For now."]]);
+		expect(answers).toEqual([]);
+		expect(dock.el.querySelector(".decision-pick-back")).toBeNull();
+		dock.dispose();
+	});
+
+	it("does not say the pick changed when the cloud refuses a send for another reason", async () => {
+		const list: OpenDecision[] = [
+			others(CARD_B, name, [{ userId: SARA, choice: "mywave", updatedAt: "2026-11-10T10:05:00Z" }]),
+		];
+		const { host, controller } = company({ company: list, accounts: withLogin });
+		controller.answerInteraction.mockImplementationOnce(async () => {
+			throw new Error("Only the member this card was raised for can answer it");
+		});
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await rest();
+		await vi.advanceTimersByTimeAsync(SETTLE_MS);
+		sendPick(dock)?.click();
+		await settle();
+		await vi.advanceTimersByTimeAsync(UNDO_MS + 1);
+		await rest();
+		expect(dock.el.querySelector(".decision-error")?.textContent).toBe(
+			"Only the member this card was raised for can answer it",
+		);
+		expect(sendPick(dock)?.textContent).toBe("Send Jonas's pick: mywave");
+		dock.dispose();
+	});
+
 	it("offers no send to a member without a usable login, nor to a spectator", async () => {
 		const voted = () => [
 			others(CARD_B, name, [{ userId: SARA, choice: "mywave", updatedAt: "2026-11-10T10:05:00Z" }]),
