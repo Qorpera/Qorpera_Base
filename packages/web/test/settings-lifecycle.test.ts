@@ -91,7 +91,8 @@ function sdkRpcs(f: { cloud: Cloud }): string[] {
 			name !== "qorpera_list_code_releases" &&
 			// The rail's line under each agent's name reads the next planned runs (app/agent-notes.ts).
 			name !== "qorpera_list_cloud_routines" &&
-			name !== "qorpera_list_member_open_decisions",
+			name !== "qorpera_list_member_open_decisions" &&
+			name !== "qorpera_list_company_open_decisions",
 	);
 }
 function click(root: Element, selector: string) {
