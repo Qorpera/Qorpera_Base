@@ -1,6 +1,15 @@
 # Changelog
 
 ## [Unreleased]
+- A question an agent asks again after a member's note is the next round of one decision (thread decisions step 4;
+  Jonas, 20 Nov 2026: "Yes, build it"). `ask_member`'s question payload takes `asksAgain`, the `interactionId` of the
+  card the note was on; the agents' words and a platform update (`asked-again-is-a-round`) say when to set it.
+  Migration `20260930821000_decision_rounds`: the card validator allows the field on a question; the append refuses it
+  (22023, in words the agent can act on) unless it names a question of the same thread that a member answered and that
+  no other card asks again, so a decision's rounds are one chain; `qorpera_list_company_open_decisions` gives such a
+  question `round` (its number, and the card it asks again with the answer that led to it). Two internal functions
+  nobody may call (`qorpera_assert_asks_again`, `qorpera_decision_round`); no table, no trigger, no grant changes.
+  A card without `asksAgain` is appended, listed and answered exactly as before.
 - Release v268 (#1994 and #1997, thread decisions step 3; master since v267's release merge bbb86aaf1 holds exactly
   these two): two migrations, in this order. `20260930819000_decision_votes` (a new table of members' votes and notes on
   open decisions, row level security on and no grant; two member functions, `qorpera_list_company_open_decisions` and

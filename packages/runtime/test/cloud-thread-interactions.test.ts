@@ -164,6 +164,7 @@ const PAYLOADS = {
 			allowCustom: true,
 			dismissOnMoveOn: false,
 			input: { kind: "mail_address" },
+			asksAgain: "5a1e9f04-7c2b-4d3e-a1b2-0123456789ab",
 		},
 	},
 	secret: {
@@ -445,7 +446,7 @@ describe("readable cards", () => {
 		const schema = JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA);
 		expect(schema).toContain("allowCustom adds a field for the member's own");
 		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain(
-			"Words the member typed in the card (a value that is none of your options) are their note, not a pick: when the note is itself the answer (a name, a figure, their own choice), act on it; otherwise the decision is still open: rework what the note asks, ask again with the changed options, and start nothing that depends on it. After a note, post nothing in their thread until you have the new question or have acted; if your turn must end first (a worker or your machine does the rework), your final send says only that the question is being reworked and comes back.",
+			"Words the member typed in the card (a value that is none of your options) are their note, not a pick: when the note is itself the answer (a name, a figure, their own choice), act on it; otherwise the decision is still open: rework what the note asks, ask again with the changed options and asksAgain set to that card's interactionId (so members see the next round of one decision, not a new question), and start nothing that depends on it. After a note, post nothing in their thread until you have the new question or have acted; if your turn must end first (a worker or your machine does the rework), your final send says only that the question is being reworked and comes back.",
 		);
 		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).not.toContain("custom answer");
 		// The tool boundary takes a description of at most 4096 bytes.
@@ -551,7 +552,7 @@ describe("ask_member card shapes", () => {
 		}
 		expect(refusal).toBeInstanceOf(CloudToolArgumentRefusal);
 		expect((refusal as Error).message).toBe(
-			"the question payload must be {options: [{label, value?, description?, style?: default|primary|danger, preview?}], multiSelect?, allowCustom?, dismissOnMoveOn?, input?: {kind: mail_address}}. Each option is an object with a label, never a plain string. Text limits count UTF-8 bytes (æ, ø and å take 2, an emoji 4), control characters are refused, and ids, names and hosts must match their schema patterns.",
+			"the question payload must be {options: [{label, value?, description?, style?: default|primary|danger, preview?}], multiSelect?, allowCustom?, dismissOnMoveOn?, input?: {kind: mail_address}, asksAgain?}. Each option is an object with a label, never a plain string. Text limits count UTF-8 bytes (æ, ø and å take 2, an emoji 4), control characters are refused, and ids, names and hosts must match their schema patterns.",
 		);
 	});
 
@@ -651,6 +652,47 @@ describe("ask_member card shapes", () => {
 				payload: { options: ["Apples"] },
 			}),
 		).toThrow(/^Invalid interaction request: the question payload must be/);
+	});
+});
+
+describe("a question asked again", () => {
+	const again = (asksAgain: unknown) => ({
+		idempotencyKey: "look-round-2",
+		text: "Here are the warmer looks.",
+		surface: "question",
+		title: "Which of the warmer looks?",
+		payload: { options: [{ label: "Amber" }, { label: "Sand" }], allowCustom: true, asksAgain },
+	});
+
+	it("names the card it asks again by its id, as the kernel stores it", () => {
+		const card = again("5a1e9f04-7c2b-4d3e-a1b2-0123456789ab");
+		expect(parseCloudAskMemberInput(card).data.payload).toEqual(card.payload);
+		expect(
+			parseCloudInteractionRequestData({
+				schema: "qorpera.interaction/v1",
+				surface: "question",
+				title: card.title,
+				payload: card.payload,
+			}).payload,
+		).toEqual(card.payload);
+		expect(JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA)).toContain('"asksAgain"');
+		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain(
+			"ask again with the changed options and asksAgain set to that card's interactionId",
+		);
+	});
+
+	it("refuses anything that is not a card id, on a new card and a stored one", () => {
+		for (const asksAgain of ["the first card", "5A1E9F04-7C2B-4D3E-A1B2-0123456789AB", 7, null, { id: "x" }]) {
+			expect(() => parseCloudAskMemberInput(again(asksAgain))).toThrow(CloudToolArgumentRefusal);
+			expect(() =>
+				parseCloudInteractionRequestData({
+					schema: "qorpera.interaction/v1",
+					surface: "question",
+					title: "T",
+					payload: again(asksAgain).payload,
+				}),
+			).toThrow("Invalid interaction request");
+		}
 	});
 });
 
