@@ -1,6 +1,15 @@
 # Changelog
 
 ## [Unreleased]
+- Release v263 (#1944, the patched native Codex 0.155.1 -> 0.170.0 so agents can run GPT-6.2 Sol, everywhere it lives;
+  master since v262's release merge: #1952's dead code and tests, #1829's `money` and `site` reads, #1842's web and one
+  comment, #1975's SQL test): runtime bundle 263 `f3635cabfba0b4c853cb5034ade668a407a3f65ccc86801c985459b9b8aebc83`
+  (activation `20260929026399`, previous 262 `0b6230d998f0`). The activation requires no migration (v263 has none). The guest
+  moves: the native Codex `9d6a86ec` (398,449,416 bytes) and its artifact.json, the native provider host (`88ad9ec6`,
+  5,560,914 bytes). The coding executor moves to `f8db2998` (its machine Codex pin), node 2's company machine image moves
+  with it in the same window, and the images `93ef50b7` and `6e49b94b` (Codex `9c299f88`) are outdated for homes. The test
+  machines' pin (`deploy/test-machine/guest-setup.sh`) is `9d6a86ec`. The shared vault (`9da8db4d`) and the model login
+  helper (`c0c183fa`, official 0.155.1) stay.
 - `save_app`'s `reads` take `money` and `site`, the platform's own numbers of the company (company views step 3, slice W1; cloud-client's `APP_READS`, migration `20260930767000`), from the next bundle. Nothing else of the runtime changes here: `data_query` answering `qorpera`, `save_app` adding the reads for a kit's `qorpera/*` binding and the guide's words are slice R1.
 - The patched native Codex moves from 0.155.1 to 0.170.0 (18 Nov 2026; the founder: "Yes, upgrade Codex"): OpenAI offers
   GPT-6.2 Sol only to Codex 0.166.0 or newer. `0001-cloud-result-fence.patch` is rebased onto `rust-v0.170.0`
