@@ -115,6 +115,33 @@ export function activityCaption(look: AgentLook, name: string): { label: string;
 	return { label: t(look.caption, { name }), caption: statusCaption(name, after, before) };
 }
 
+export function activityRow(look: AgentLook, name: string, figure: Node): HTMLElement {
+	const { label, caption } = activityCaption(look, name);
+	const row = document.createElement("div");
+	row.className = "message from-agent thread-activity";
+	row.setAttribute("role", "status");
+	row.setAttribute("tabindex", "0");
+	row.setAttribute("aria-label", label);
+	row.dataset.state = label;
+	const words = document.createElement("span");
+	words.className = "thread-activity-words";
+	words.hidden = true;
+	row.append(figure, caption, words);
+	row.addEventListener("mouseenter", () => syncCaption(caption));
+	row.addEventListener("focus", () => syncCaption(caption));
+	return row;
+}
+
+export function activityWords(row: HTMLElement, text: string): void {
+	const words = row.querySelector<HTMLElement>(":scope > .thread-activity-words");
+	if (!words) return;
+	if (words.textContent !== text) words.textContent = text;
+	words.hidden = !text;
+	const state = row.dataset.state ?? "";
+	const label = text ? `${state}. ${text}` : state;
+	if (row.getAttribute("aria-label") !== label) row.setAttribute("aria-label", label);
+}
+
 /** Rebuilds the caption's letters from the shared clock, so a caption shown
  * after any pause starts in step with the rail instead of where it left off. */
 export function syncCaption(caption: HTMLElement): void {
