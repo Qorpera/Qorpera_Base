@@ -6,6 +6,7 @@ import {
 	projectTranscript,
 	RUNNER_ENTRY_SCHEMA,
 	reworkingNote,
+	runAcknowledgements,
 	type TranscriptItem,
 } from "../src/cloud/transcript.ts";
 import type { HostedSessionEvent, PendingSessionInput } from "../src/cloud/types.ts";
@@ -361,6 +362,16 @@ describe("interaction cards in the transcript", () => {
 		answer: { values: ["general"] },
 	};
 
+	it("names the run that raised a question or an approval card, when the event names one", () => {
+		const execution = { kind: "run" as const, id: RUN, claimantId: RUN, runnerAssignmentId: RUN };
+		const { items } = projectTranscript([
+			event(1, { eventId: CARD, eventType: "interaction_request", execution, body: request }),
+			event(2, { eventType: "authorization_request", execution, body: { operation: "send-email" } }),
+			event(3, { eventType: "authorization_request", body: { operation: "send-email" } }),
+		]);
+		expect(items.map((item) => ("runId" in item ? item.runId : undefined))).toEqual([RUN, RUN, undefined]);
+	});
+
 	it("projects a request as a card and attaches its written answer", () => {
 		const projection = projectTranscript([
 			event(1, { eventId: CARD, eventType: "interaction_request", body: request }),
@@ -435,6 +446,145 @@ describe("interaction cards in the transcript", () => {
 		expect(reworkingNote([open, said, again] as TranscriptItem[], 0, noted, true)).toBe(false);
 		const member = { kind: "member" as const, id: "m", sequence: 3, text: "And?", createdAt: "2026-09-02T10:06:00Z" };
 		expect(reworkingNote([open, said, member] as TranscriptItem[], 0, noted, true)).toBe(true);
+	});
+
+	it("finds each run's first short words and whether the run said more", () => {
+		const RUN = "00000000-0000-4000-8000-000000000a01";
+		const NEXT = "00000000-0000-4000-8000-000000000a02";
+		const at = (n: number) => `2026-09-02T10:00:${String(n).padStart(2, "0")}Z`;
+		const say = (n: number, text: string, phase: "progress" | "final", runId: string | undefined = RUN) =>
+			({
+				kind: "agent",
+				id: `s${n}`,
+				sequence: n,
+				text,
+				attachmentCount: 0,
+				phase,
+				...(runId ? { runId } : {}),
+				createdAt: at(n),
+			}) as TranscriptItem;
+		const member = (n: number) =>
+			({
+				kind: "member",
+				id: `m${n}`,
+				sequence: n,
+				text: "And?",
+				attachmentCount: 0,
+				createdAt: at(n),
+			}) as TranscriptItem;
+		const ask = (n: number, runId: string | undefined = RUN) =>
+			({
+				kind: "interaction",
+				id: `q${n}`,
+				sequence: n,
+				actorUserId: USER,
+				request: { surface: "question", title: "Which?", payload: { options: [{ label: "A", value: "a" }] } },
+				...(runId ? { runId } : {}),
+				createdAt: at(n),
+			}) as TranscriptItem;
+		const approval = (n: number, runId: string | undefined = RUN) =>
+			({
+				kind: "authorization_request",
+				id: `r${n}`,
+				sequence: n,
+				actorUserId: USER,
+				body: {},
+				...(runId ? { runId } : {}),
+				createdAt: at(n),
+			}) as TranscriptItem;
+		const link = (n: number) =>
+			({
+				kind: "peer_link",
+				id: `p${n}`,
+				sequence: n,
+				direction: "out",
+				counterpartStaffId: USER,
+				pairSessionId: SESSION,
+				createdAt: at(n),
+			}) as TranscriptItem;
+		const first = say(1, " Checking the refund log. ", "progress");
+		const open = runAcknowledgements([member(0), first, member(2), link(3)], true);
+		expect([...open]).toEqual([["s1", { runId: RUN, text: "Checking the refund log.", followed: false }]]);
+		for (const later of [say(4, "Done.", "final"), say(4, "Half way.", "progress"), ask(4), approval(4)]) {
+			const found = runAcknowledgements([first, member(2), later], true);
+			expect([...found.keys()]).toEqual(["s1"]);
+			expect(found.get("s1")?.followed).toBe(true);
+		}
+		const next = say(2, "On the new one.", "progress", NEXT);
+		for (const other of [ask(3, NEXT), approval(3, NEXT), ask(3, ""), approval(3, "")])
+			expect(runAcknowledgements([first, other], true).get("s1")?.followed).toBe(false);
+		const two = runAcknowledgements([first, next, ask(3, NEXT)], true);
+		expect(two.get("s1")?.followed).toBe(false);
+		expect(two.get("s2")).toEqual({ runId: NEXT, text: "On the new one.", followed: true });
+		const woven = runAcknowledgements(
+			[first, next, say(3, "Done.", "final"), say(4, "Done too.", "final", NEXT)],
+			true,
+		);
+		expect([...woven.values()].map((found) => found.followed)).toEqual([true, true]);
+		expect(runAcknowledgements([first, next, say(3, "Done.", "final")], false, true).size).toBe(0);
+		expect(runAcknowledgements([first, next, say(3, "Done.", "final")], true, true).size).toBe(2);
+		for (const other of [
+			say(1, "x".repeat(161), "progress"),
+			say(1, "Checking.\nThen the log.", "progress"),
+			say(1, "Running `npm test`.", "progress"),
+			say(1, "   ", "progress"),
+			say(1, "Done.", "final"),
+			say(1, "Checking.", "progress", ""),
+			{ ...say(1, "Checking.", "progress"), attachmentCount: 1 },
+			{ ...say(1, "", "progress"), erased: true },
+			{ ...say(1, "Checking.", "progress"), held: true },
+		] as TranscriptItem[])
+			expect(runAcknowledgements([other, say(2, "Done.", "final")], true).size).toBe(0);
+		expect(runAcknowledgements([say(1, "x".repeat(160), "progress")], true).size).toBe(1);
+		const cut = runAcknowledgements([first, say(2, "Done.", "final"), say(3, "Next.", "progress", NEXT)], false);
+		expect([...cut.keys()]).toEqual(["s3"]);
+	});
+
+	it("keeps a typed note's rework line while the agent's first words are all it has said", () => {
+		const RUN = "00000000-0000-4000-8000-000000000a01";
+		const card = {
+			kind: "interaction" as const,
+			id: CARD,
+			sequence: 1,
+			actorUserId: USER,
+			request: {
+				surface: "question" as const,
+				title: "Which channel?",
+				payload: { options: [{ label: "#general", value: "general" }], allowCustom: true },
+			},
+			createdAt: "2026-09-02T10:00:00Z",
+		};
+		const noted = {
+			outcome: "answered" as const,
+			answer: { values: ["Warmer"] },
+			answeredAt: "2026-09-02T10:05:00Z",
+		};
+		const heard = {
+			kind: "agent" as const,
+			id: "a",
+			sequence: 2,
+			text: "Reworking the palette.",
+			attachmentCount: 0,
+			phase: "progress" as const,
+			runId: RUN,
+			createdAt: "2026-09-02T10:05:30Z",
+		};
+		const items = [card, heard] as TranscriptItem[];
+		expect(reworkingNote(items, 0, noted, true)).toBe(false);
+		expect(reworkingNote(items, 0, noted, true, runAcknowledgements(items, true))).toBe(true);
+		const answered = [
+			...items,
+			{ ...heard, id: "b", sequence: 3, phase: "final", createdAt: "2026-09-02T10:06:00Z" },
+		];
+		expect(
+			reworkingNote(
+				answered as TranscriptItem[],
+				0,
+				noted,
+				true,
+				runAcknowledgements(answered as TranscriptItem[], true),
+			),
+		).toBe(false);
 	});
 
 	it("shows a queued answer on its card instead of as a message, until the kernel writes it", () => {

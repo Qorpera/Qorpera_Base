@@ -69,6 +69,7 @@ export interface TranscriptCard {
 	sequence: number;
 	actorUserId: string;
 	body: JsonValue;
+	runId?: string;
 	createdAt: string;
 	/** An approval card's answer still on its way (queued, not yet in the transcript). */
 	answer?: InteractionAnswer;
@@ -115,6 +116,7 @@ export interface TranscriptInteraction {
 	sequence: number;
 	actorUserId: string;
 	request: InteractionRequest;
+	runId?: string;
 	answer?: InteractionAnswer;
 	/** An answer was sent and its delivery failed, so it never reached the agent: the card is open again. */
 	answerFailed?: boolean;
@@ -136,6 +138,7 @@ export function reworkingNote(
 	index: number,
 	answer: InteractionAnswer | undefined,
 	agentAtWork: boolean,
+	acknowledgements?: ReadonlyMap<string, RunAcknowledgement>,
 ): boolean {
 	const card = items[index];
 	if (card?.kind !== "interaction" || typedNote(card.request, answer) === undefined) return false;
@@ -144,8 +147,58 @@ export function reworkingNote(
 	return !items
 		.slice(index + 1)
 		.some(
-			(later) => (later.kind === "agent" || later.kind === "interaction") && Date.parse(later.createdAt) > notedAt,
+			(later) =>
+				(later.kind === "agent" || later.kind === "interaction") &&
+				!acknowledgements?.has(later.id) &&
+				Date.parse(later.createdAt) > notedAt,
 		);
+}
+
+export interface RunAcknowledgement {
+	runId: string;
+	text: string;
+	followed: boolean;
+}
+
+const ACKNOWLEDGEMENT_LENGTH = 160;
+
+function acknowledgementWords(item: TranscriptMessage): string | undefined {
+	if (item.phase !== "progress" || item.erased || item.held || item.attachmentCount > 0) return undefined;
+	const text = item.text.trim();
+	return text && text.length <= ACKNOWLEDGEMENT_LENGTH && !/[\n`]/u.test(text) ? text : undefined;
+}
+
+function saidBy(item: TranscriptItem): string | undefined {
+	return item.kind === "agent" || item.kind === "interaction" || item.kind === "authorization_request"
+		? item.runId
+		: undefined;
+}
+
+export function runAcknowledgements(
+	items: readonly TranscriptItem[],
+	complete: boolean,
+	shared = false,
+): ReadonlyMap<string, RunAcknowledgement> {
+	const found = new Map<string, RunAcknowledgement>();
+	// WHY: where several agents' runs interleave, no run's first loaded message is known to be its first.
+	if (!complete && shared) return found;
+	const last = new Map<string, number>();
+	for (let index = 0; index < items.length; index++) {
+		const runId = saidBy(items[index]!);
+		if (runId) last.set(runId, index);
+	}
+	const runs = new Set<string>();
+	for (let index = 0; index < items.length; index++) {
+		const item = items[index]!;
+		if (item.kind !== "agent" || !item.runId || runs.has(item.runId)) continue;
+		runs.add(item.runId);
+		// WHY: a window that starts inside a run would take that run's later progress for its first words.
+		if (!complete && runs.size === 1) continue;
+		const text = acknowledgementWords(item);
+		if (text === undefined) continue;
+		found.set(item.id, { runId: item.runId, text, followed: (last.get(item.runId) ?? index) > index });
+	}
+	return found;
 }
 
 export interface TranscriptProjection {
@@ -402,6 +455,7 @@ export function projectTranscript(
 				sequence: event.sequence,
 				actorUserId: event.actorUserId,
 				body: event.body,
+				...(event.execution?.kind === "run" ? { runId: event.execution.id } : {}),
 				createdAt: event.createdAt,
 			};
 			if (event.eventType === "authorization_request") cards.set(event.eventId.toLowerCase(), card);
@@ -420,6 +474,7 @@ export function projectTranscript(
 				sequence: event.sequence,
 				actorUserId: event.actorUserId,
 				request,
+				...(event.execution?.kind === "run" ? { runId: event.execution.id } : {}),
 				createdAt: event.createdAt,
 			};
 			interactions.set(event.eventId.toLowerCase(), interaction);
