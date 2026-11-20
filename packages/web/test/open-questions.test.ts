@@ -1234,6 +1234,36 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		stop();
 	});
 
+	it("asks a cloud without the company's list once a page load, and reads the member's own list as before", async () => {
+		const { host, controller } = company({ questions: [question(CARD_B, name)], approvals: [approval] });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		expect(tabs(dock).map((tab) => [tab.dataset.decision, tab.classList.contains("is-others")])).toEqual([
+			[REVIEW, false],
+			[CARD_B, false],
+		]);
+		expect(dock.el.querySelector(".decision-note")).toBeNull();
+		expect(dock.el.querySelector(".vote-faces")).toBeNull();
+		await host.questions.refresh();
+		await host.questions.refresh();
+		expect(controller.listCompanyOpenDecisions).toHaveBeenCalledTimes(1);
+		expect(controller.listOpenDecisions).toHaveBeenCalledTimes(3);
+		expect(controller.listOpenQuestions).not.toHaveBeenCalled();
+		expect(controller.castDecisionVote).not.toHaveBeenCalled();
+		dock.dispose();
+
+		const neither = company({ questions: [question(CARD_B, name)] });
+		const older = new DecisionDock(neither.host);
+		document.body.append(older.el);
+		await settle();
+		await neither.host.questions.refresh();
+		expect(neither.controller.listCompanyOpenDecisions).toHaveBeenCalledTimes(1);
+		expect(neither.controller.listOpenDecisions).toHaveBeenCalledTimes(1);
+		expect(neither.controller.listOpenQuestions).toHaveBeenCalledTimes(2);
+		older.dispose();
+	});
+
 	it("falls back to the questions alone while the cloud has no list of decisions", async () => {
 		const { host, controller } = company({ questions: [question(CARD_B, name)] });
 		const dock = new DecisionDock(host);
