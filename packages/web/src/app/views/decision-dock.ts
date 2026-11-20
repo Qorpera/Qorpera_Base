@@ -150,6 +150,8 @@ export class DecisionDock {
 		} else {
 			this.#stageKey = "";
 			this.#tabsKey = "";
+			this.#cut?.disconnect();
+			this.#cut = undefined;
 			replace(this.#stage);
 			replace(this.#tabs);
 		}
