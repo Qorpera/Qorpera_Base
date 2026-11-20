@@ -11,6 +11,7 @@ import type { QuestionDockHost } from "./question-dock.ts";
 const NARROW_BELOW = 620;
 const FIGURE_BESIDE = 132;
 const FIGURE_ABOVE = 58;
+const MAX_TIMER_MS = 2 ** 31 - 1;
 
 function expiry(question: OpenQuestion): number {
 	const at = question.request.expiresAt ? Date.parse(question.request.expiresAt) : Number.NaN;
@@ -46,6 +47,7 @@ export class DecisionDock {
 	#tabsKey = "";
 	#waiting = "";
 	#narrow = false;
+	#expires: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(host: QuestionDockHost) {
 		this.#host = host;
@@ -89,17 +91,33 @@ export class DecisionDock {
 		this.#watched = undefined;
 		for (const timer of this.#timers) clearTimeout(timer);
 		this.#timers.clear();
+		if (this.#expires !== undefined) clearTimeout(this.#expires);
 		this.#listeners.clear();
 		this.el.remove();
 	}
 
 	#cards(): OpenQuestion[] {
-		const listed = this.#host.questions.store.get().questions;
+		const now = Date.now();
+		const listed = this.#host.questions.store.get().questions.filter((question) => expiry(question) > now);
 		const ids = new Set(listed.map((question) => question.interactionId));
 		const held = [...this.#held.values()]
 			.map((entry) => entry.question)
 			.filter((question) => !ids.has(question.interactionId));
 		return [...listed, ...held].sort(decisionOrder);
+	}
+
+	#untilNextExpiry(cards: OpenQuestion[]): void {
+		if (this.#expires !== undefined) clearTimeout(this.#expires);
+		this.#expires = undefined;
+		const next = Math.min(...cards.filter((card) => !this.#held.has(card.interactionId)).map(expiry));
+		if (!Number.isFinite(next)) return;
+		this.#expires = setTimeout(
+			() => {
+				this.#expires = undefined;
+				this.#draw();
+			},
+			Math.min(Math.max(next - Date.now(), 0) + 1, MAX_TIMER_MS),
+		);
 	}
 
 	#answerOf(question: OpenQuestion): InteractionAnswer | undefined {
@@ -112,6 +130,7 @@ export class DecisionDock {
 	#draw(): void {
 		if (this.#lifetime.signal.aborted) return;
 		const cards = this.#cards();
+		this.#untilNextExpiry(cards);
 		const current = cards.find((card) => card.interactionId === this.#current) ?? cards[0];
 		this.#current = current?.interactionId;
 		this.#watch(current?.sessionId);

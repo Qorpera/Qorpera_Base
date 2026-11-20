@@ -595,6 +595,27 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		dock.dispose();
 	});
 
+	it("lets a card go the moment its time is up, so its thread shows it past its time", async () => {
+		vi.setSystemTime(new Date("2026-11-10T12:00:00Z"));
+		const soon = question(CARD_C, { ...name, title: "Launch today?", expiresAt: "2026-11-10T12:00:30Z" });
+		const gone = question(CARD_A, { ...name, expiresAt: "2026-11-10T11:59:00Z" });
+		const { host } = company({ questions: [soon, question(CARD_B, name), gone] });
+		const dock = new DecisionDock(host);
+		const changes = vi.fn();
+		dock.onChange(changes);
+		document.body.append(dock.el);
+		await settle();
+		expect(dock.waiting).toBe([CARD_C, CARD_B].join(" "));
+		expect(dock.el.querySelector(".interaction-title")?.textContent).toBe("Launch today?");
+		changes.mockClear();
+		await vi.advanceTimersByTimeAsync(30_001);
+		expect(dock.waiting).toBe(CARD_B);
+		expect(dock.shows(CARD_C)).toBe(false);
+		expect(changes).toHaveBeenCalledTimes(1);
+		expect(dock.el.querySelector(".interaction-title")?.textContent).toBe("What should the app be called?");
+		dock.dispose();
+	});
+
 	it("is not there with nothing to decide", async () => {
 		const { host } = company();
 		const dock = new DecisionDock(host);
