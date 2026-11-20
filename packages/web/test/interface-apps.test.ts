@@ -881,12 +881,13 @@ describe("the company's apps", () => {
 		const files = {
 			"apps/sales/app.toml": 'name = "Sales"\n',
 			"apps/sales/index.html":
-				'<!doctype html><html><head><STYLE media="all">body > main{background:url(a.png)}</STYLE><link rel="stylesheet" href="look.css"></head><body><main id="m" title="a > b"\n  style="background:url(\'b.png\')"><p data-note="style=red" style=color:red>hi</p><svg><style>.s{fill:url(c.png)}</style></svg></main></body></html>',
+				'<!doctype html><html><head><STYLE media="all">body > main{background:url(a.png)}</STYLE><link rel="stylesheet" href="look.css"></head><body><main id="m" title="a > b"\n  style="background:url(\'b.png\')"><p data-note="style=red" style=color:red>hi</p><svg><style>.s{fill:url(c.png)}</style></svg></main><script>for(let i=0;i<rows.length;i++){/* don\'t skip */}</script><!-- <b style="x"> --><div class="hero" style="background:url(e.png)">x</div><p>It\'s ready</p><i/style="color:blue"></i><b title="x"style="color:red"></b><u style></u><textarea><b style="x"></textarea></body></html>',
 			"apps/sales/look.css": "p{background:url(d.png)}",
 			"apps/sales/a.png": "a",
 			"apps/sales/b.png": "b",
 			"apps/sales/c.png": "c",
 			"apps/sales/d.png": "d",
+			"apps/sales/e.png": "e",
 		};
 		const f = fakeFolder(files);
 		const parsed: Document[] = [];
@@ -906,12 +907,15 @@ describe("the company's apps", () => {
 			spy.mockRestore();
 		}
 		expect(f.reads).toEqual(
-			expect.arrayContaining(["apps/sales/a.png", "apps/sales/b.png", "apps/sales/c.png", "apps/sales/d.png"]),
+			expect.arrayContaining(["a", "b", "c", "d", "e"].map((name) => `apps/sales/${name}.png`)),
 		);
 		expect(parsed).toHaveLength(1);
 		expect(parsed[0]!.querySelectorAll("style, [style]")).toHaveLength(0);
+		expect(parsed[0]!.querySelectorAll("[data-qorpera-style]")).toHaveLength(6);
 		expect(parsed[0]!.getElementById("m")?.getAttribute("title")).toBe("a > b");
 		expect(parsed[0]!.querySelector("p")?.getAttribute("data-note")).toBe("style=red");
+		expect(parsed[0]!.querySelector("script")?.textContent).toBe("for(let i=0;i<rows.length;i++){/* don't skip */}");
+		expect(parsed[0]!.querySelector("textarea")?.value).toBe('<b style="x">');
 		expect(parsed[0]!.head.querySelectorAll("noframes")).toHaveLength(1);
 		expect(parsed[0]!.body.querySelectorAll("noframes")).toHaveLength(1);
 
