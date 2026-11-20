@@ -124,6 +124,7 @@ export class DecisionDock {
 	#votesKey = "";
 	#shown: string | undefined;
 	#shownOthers = false;
+	#shownVoting = false;
 	#shownNone = false;
 	#staged: string | undefined;
 	#byMember = false;
@@ -386,13 +387,14 @@ export class DecisionDock {
 			current &&
 			(current.interactionId !== this.#shown
 				? this.#shown !== undefined || this.#shownNone
-				: this.#shownOthers && !current.othersAnswer)
+				: this.#shownVoting && !(current.othersAnswer === true || this.#picksOwn(current)))
 		)
 			this.#settlesAt = this.#byMember ? 0 : Date.now() + SETTLE_MS;
 		this.#shownNone = !current && this.#host.questions.store.get().read;
 		this.#byMember = false;
 		this.#shown = current?.interactionId;
 		this.#shownOthers = current?.othersAnswer === true;
+		this.#shownVoting = current !== undefined && (current.othersAnswer === true || this.#picksOwn(current));
 		this.#current = current?.interactionId;
 		this.#watch(current?.sessionId);
 		this.#waiting = this.#waitingNow(cards);
@@ -421,7 +423,16 @@ export class DecisionDock {
 		const error = this.#errors.get(current.interactionId);
 		const others = current.othersAnswer === true;
 		const mayVote = this.#host.questions.mayVote();
-		const key = JSON.stringify([current.interactionId, error, this.#narrow, presentationLocale(), others, mayVote]);
+		const ownPick = this.#picksOwn(current);
+		const key = JSON.stringify([
+			current.interactionId,
+			error,
+			this.#narrow,
+			presentationLocale(),
+			others,
+			mayVote,
+			ownPick,
+		]);
 		if (key === this.#stageKey) return;
 		this.#stageKey = key;
 		this.#votesKey = "";
@@ -459,12 +470,13 @@ export class DecisionDock {
 							{
 								agentName: name,
 								memberName: (userId) => this.#host.memberName(userId),
-								canAnswer: !others,
+								canAnswer: !others && !ownPick,
 								inThread: true,
-								...(others
+								...(others || ownPick
 									? {
 											vote: {
 												answerer: this.#host.memberName(current.actorUserId),
+												...(ownPick ? { own: true as const } : {}),
 												...(mayVote ? { pick: (value: string) => this.#pick(id, value) } : {}),
 											},
 										}
@@ -561,7 +573,7 @@ export class DecisionDock {
 
 	#paintVotes(current: OpenDecision): void {
 		const votes = current.votes ?? [];
-		const others = current.othersAnswer === true;
+		const others = current.othersAnswer === true || this.#picksOwn(current);
 		const hasLogin = this.#host.questions.store.get().hasLogin === true;
 		const key = JSON.stringify([current.interactionId, votes, others, hasLogin, presentationLocale()]);
 		if (key === this.#votesKey) return;
@@ -614,6 +626,16 @@ export class DecisionDock {
 			);
 	}
 
+	#picksOwn(current: OpenDecision): boolean {
+		return (
+			current.kind === "question" &&
+			!current.othersAnswer &&
+			current.votes !== undefined &&
+			this.#host.questions.store.get().hasLogin === false &&
+			this.#host.questions.mayVote()
+		);
+	}
+
 	#paintPick(current: OpenDecision, hasLogin: boolean): void {
 		const place = this.#stage.querySelector<HTMLElement>(".decision-pick");
 		if (!place) return;
@@ -628,6 +650,19 @@ export class DecisionDock {
 		if (place.dataset.pick !== (option?.value ?? "") && place.dataset.pick !== undefined && option)
 			this.#settlesAt = Date.now() + SETTLE_MS;
 		place.dataset.pick = option?.value ?? "";
+		if (this.#picksOwn(current)) {
+			replace(
+				place,
+				h(
+					"p",
+					{ class: "decision-pick-words" },
+					t(
+						"You have no AI login here, so a tap is your pick, not an answer. A member with a login can then send your pick; tap it again to take it back.",
+					),
+				),
+			);
+			return;
+		}
 		if (current.kind !== "question" || !option) {
 			replace(place);
 			return;

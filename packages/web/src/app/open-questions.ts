@@ -143,7 +143,7 @@ export class OpenQuestions {
 					const decisions = listed
 						.filter((decision) => !this.#answered.has(decision.interactionId))
 						.map((decision) => this.#withMyVote(decision));
-					if (decisions.some((decision) => decision.kind === "question" && decision.othersAnswer))
+					if (decisions.some((decision) => decision.kind === "question" && decision.votes !== undefined))
 						void this.readLogin();
 					for (const decision of decisions)
 						if (decision.kind === "draft" && !decision.othersAnswer)

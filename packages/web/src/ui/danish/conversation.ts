@@ -374,6 +374,8 @@ export const CONVERSATION: Record<string, string> = {
 	"Your pick, sent by {sender}": "Dit valg, sendt af {sender}",
 	"{name}'s pick, sent by {sender}": "{name}s valg, sendt af {sender}",
 	"Send {name}'s pick: {option}": "Send {name}s valg: {option}",
+	"You have no AI login here, so a tap is your pick, not an answer. A member with a login can then send your pick; tap it again to take it back.":
+		"Du har ikke noget AI-login her, så et tryk er dit valg, ikke et svar. Et medlem med et login kan derefter sende dit valg; tryk igen for at tage det tilbage.",
 	"The work then runs on your login. The agent's next questions about this will come to you, and your approval rules apply.":
 		"Arbejdet kører derefter på dit login. Agentens næste spørgsmål om dette kommer til dig, og dine godkendelsesregler gælder.",
 	"Add a note…": "Tilføj en note…",

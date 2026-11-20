@@ -2088,6 +2088,55 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		dock.dispose();
 	});
 
+	it("takes a tap on the member's own question as their pick when they have no login, and says another member can send it", async () => {
+		const list: OpenDecision[] = [{ ...asOpenCards([question(CARD_B, name)])[0]!, votes: [] }];
+		const { host, votesCast, answers } = company({
+			company: list,
+			accounts: {
+				listConnections: vi.fn(async () => ({ ...login, connections: [] })),
+				selectSessionAccount: undefined,
+			},
+		});
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await rest();
+		const card = dock.el.querySelector<HTMLElement>(".decision-card > .interaction-card");
+		expect(card?.classList.contains("is-voting")).toBe(true);
+		expect(card?.querySelector(".interaction-call strong")?.textContent).toBe("Bob asks you");
+		expect(card?.querySelector(".interaction-field")).toBeNull();
+		expect(dock.el.querySelector(".decision-pick-words")?.textContent).toBe(
+			"You have no AI login here, so a tap is your pick, not an answer. A member with a login can then send your pick; tap it again to take it back.",
+		);
+		expect(sendPick(dock)).toBeNull();
+		await vi.advanceTimersByTimeAsync(SETTLE_MS);
+		option(dock, "mywave")?.click();
+		await rest();
+		expect(votesCast).toEqual([[CARD_B, "mywave", undefined]]);
+		expect(answers).toEqual([]);
+		expect(dock.decided).toEqual([]);
+		expect(option(dock, "mywave")?.classList.contains("is-voted")).toBe(true);
+		option(dock, "mywave")?.click();
+		await rest();
+		expect(votesCast.at(-1)).toEqual([CARD_B, undefined, undefined]);
+		dock.dispose();
+
+		const signedIn = company({
+			company: [{ ...asOpenCards([question(CARD_B, name)])[0]!, votes: [] }],
+			accounts: withLogin,
+		});
+		const second = new DecisionDock(signedIn.host);
+		document.body.append(second.el);
+		await rest();
+		expect(second.el.querySelector(".decision-card > .interaction-card.is-voting")).toBeNull();
+		expect(second.el.querySelector(".decision-pick-words")).toBeNull();
+		await vi.advanceTimersByTimeAsync(SETTLE_MS);
+		option(second, "mywave")?.click();
+		await settle();
+		expect(second.decided.map((entry) => entry.state)).toEqual(["held"]);
+		expect(signedIn.votesCast).toEqual([]);
+		second.dispose();
+	});
+
 	it("offers no send to a member without a usable login, nor to a spectator", async () => {
 		const voted = () => [
 			others(CARD_B, name, [{ userId: SARA, choice: "mywave", updatedAt: "2026-11-10T10:05:00Z" }]),

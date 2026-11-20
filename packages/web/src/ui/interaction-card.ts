@@ -100,7 +100,7 @@ export interface InteractionCardContext {
 	/** The agent's figure, waiting: the head of a card that waits for this member in a thread. */
 	figure?: () => HTMLElement;
 	reworking?: boolean;
-	vote?: { answerer: string; pick?: (value: string) => void };
+	vote?: { answerer: string; own?: true; pick?: (value: string) => void };
 	/** Sends the outcome and answer; the card shows its busy state until it resolves. */
 	answer: (outcome: InteractionOutcome, answer: Record<string, JsonValue>) => Promise<void>;
 	/** A takeover card's Open computer: the agent's computer in the thread (woken when it sleeps), its large view once
@@ -916,7 +916,7 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 							...named(
 								reworking
 									? t("{name} is reworking this", { name: NAME_MARK })
-									: vote
+									: vote && !vote.own
 										? t("{name} asks {member}", { name: NAME_MARK, member: vote.answerer })
 										: request.surface === "question"
 											? t("{name} asks you", { name: NAME_MARK })
