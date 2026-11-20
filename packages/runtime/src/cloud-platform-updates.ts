@@ -214,7 +214,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "behaviour",
 		date: "2026-11-20",
 		title: "Another member may send a member's pick",
-		text: "A question you raise for one member can be answered by another member of your thread in one way only: the asked member votes for an option, and another member with a login of their own sends exactly that pick. The answer that wakes you then holds the asked member's choice, but the run is for the member who sent it: it runs on their login, your next questions and approval cards go to them, and their approval rules apply. Any member may vote and leave a note on your open questions without a login; a vote starts no run and is no answer, so keep waiting for the answer.",
+		text: "A question you raise for one member can be answered by another member of your thread in one way only: the asked member votes for an option, and another member of your thread, not a spectator, with a login of their own sends exactly that pick. The answer that wakes you then holds the asked member's choice, but the run is for the member who sent it: it runs on their login, your next questions and approval cards go to them, and their approval rules apply. Any member but a spectator may vote and leave a note on your open questions without a login; a vote starts no run and is no answer, so keep waiting for the answer.",
 	},
 ]);
 
