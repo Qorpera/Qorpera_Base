@@ -71,10 +71,10 @@ type UsageWindow = { id: string; label: string; usedPercent: number; resetAt?: s
 type UsageReading = { observedAt: string; windows: readonly UsageWindow[] };
 
 const REFILLS: Readonly<Record<WebClaudeResetKind, readonly string[]>> = {
-	session: ["five_hour"],
+	session: [],
 	weekly: ["seven_day"],
 	fable: ["seven_day_model"],
-	full: ["five_hour", "seven_day"],
+	full: ["seven_day"],
 };
 
 interface ClaudeResetUse {
@@ -989,7 +989,14 @@ export class ConnectionsView {
 	#claudeUsage(login: WebClaudeLogin, using: boolean): HTMLElement[] {
 		const limitResetAt = claudeLimitResetAt(login.usage, Date.now());
 		const refilling = new Set(using && this.#claudeReset ? REFILLS[this.#claudeReset.kind] : []);
-		const bars = this.#bars(login.usage, true, using ? undefined : limitResetAt, refilling, false);
+		const shown = login.usage?.windows.length ? login.usage : undefined;
+		const unmarked = using && !shown?.windows.some((window) => refilling.has(window.id));
+		const status = () => h("span", { class: "muted", role: "status" }, t("Using a reset…"));
+		const bars =
+			unmarked && !shown
+				? h("div", { class: "connection-usage" }, status())
+				: this.#bars(shown, true, using ? undefined : limitResetAt, refilling, false);
+		if (unmarked && shown) bars.prepend(status());
 		// WHY: an idle sign-in's key lapses after hours and only a Claude task renews it; till then a read finds nothing new.
 		if (
 			!using &&
@@ -1349,9 +1356,7 @@ export class ConnectionsView {
 							expired
 								? t("Reset passed · awaiting updated usage")
 								: resetIn === undefined
-									? window.id === "five_hour" && window.usedPercent === 0
-										? t("Starts when you next use Claude")
-										: t("Reset time unavailable")
+									? t("Reset time unavailable")
 									: t("Resets in {time}", { time: resetCountdown(resetIn) }),
 						),
 						h("span", { title: t("Last checked {time}", { time: checked }) }, value),

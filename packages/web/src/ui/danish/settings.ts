@@ -269,7 +269,6 @@ export const SETTINGS: Record<string, string> = {
 	"Resets in {time}": "Nulstilles om {time}",
 	"Reset passed · awaiting updated usage": "Nulstillet · venter på opdateret forbrug",
 	"Reset time unavailable": "Tidspunkt for nulstilling ikke tilgængeligt",
-	"Starts when you next use Claude": "Starter, når du bruger Claude næste gang",
 	"Usage updates the next time Claude works on a task.":
 		"Forbruget opdateres, næste gang Claude arbejder på en opgave.",
 	"Usage updates once this login is in use and Claude works on a task.":

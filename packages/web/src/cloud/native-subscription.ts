@@ -65,7 +65,7 @@ export type WebClaudeResetKind = "session" | "weekly" | "fable" | "full";
 export interface WebClaudeUsage {
 	observedAt: string;
 	windows: readonly {
-		id: "five_hour" | "seven_day" | "seven_day_model";
+		id: "seven_day" | "seven_day_model";
 		label: string;
 		usedPercent: number;
 		resetAt?: string;
@@ -112,6 +112,8 @@ function parseClaudeUsage(value: unknown): WebClaudeUsage | undefined {
 			!(window.usedPercent >= 0 && window.usedPercent <= 100)
 		)
 			return undefined;
+		// WHY: Claude plans have no 5-hour limit since 20 Nov 2026; readings stored before then still name one.
+		if (window.id === "five_hour") continue;
 		windows.push({
 			id: window.id as WebClaudeUsage["windows"][number]["id"],
 			label: window.label,
@@ -119,7 +121,7 @@ function parseClaudeUsage(value: unknown): WebClaudeUsage | undefined {
 			...(instant(window.resetAt) ? { resetAt: window.resetAt } : {}),
 		});
 	}
-	return windows.length
+	return windows.length || instant(input.limitResetAt)
 		? {
 				observedAt: input.observedAt,
 				windows,
