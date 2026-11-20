@@ -1,17 +1,18 @@
-import type { InteractionAnswer, InteractionOutcome } from "../../cloud/interactions.ts";
+import { type InteractionOutcome, questionOptions, typedNote } from "../../cloud/interactions.ts";
 import type { OpenQuestion } from "../../cloud/open-questions.ts";
 import type { JsonValue } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { h, replace } from "../../ui/dom.ts";
 import { renderInteractionCard } from "../../ui/interaction-card.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
-import { ANSWERED_HOLD_MS } from "../open-questions.ts";
+import type { OpenQuestions } from "../open-questions.ts";
 import type { QuestionDockHost } from "./question-dock.ts";
 
 const NARROW_BELOW = 620;
 const FIGURE_BESIDE = 132;
 const FIGURE_ABOVE = 58;
 const MAX_TIMER_MS = 2 ** 31 - 1;
+export const UNDO_MS = 5_000;
 
 function expiry(question: OpenQuestion): number {
 	const at = question.request.expiresAt ? Date.parse(question.request.expiresAt) : Number.NaN;
@@ -24,17 +25,22 @@ export function decisionOrder(a: OpenQuestion, b: OpenQuestion): number {
 	return a.interactionId.localeCompare(b.interactionId);
 }
 
-interface Held {
+export interface Decided {
 	readonly question: OpenQuestion;
-	readonly answer: InteractionAnswer;
+	readonly outcome: InteractionOutcome;
+	readonly value: Record<string, JsonValue>;
+	readonly at: number;
+	state: "held" | "sending" | "sent";
 }
+
+const DECIDED = new WeakMap<OpenQuestions, Decided[]>();
 
 export class DecisionDock {
 	readonly el: HTMLElement;
 	readonly #host: QuestionDockHost;
 	readonly #lifetime = new AbortController();
-	readonly #held = new Map<string, Held>();
-	readonly #timers = new Set<ReturnType<typeof setTimeout>>();
+	readonly #decided: Decided[];
+	readonly #holds = new Map<string, ReturnType<typeof setTimeout>>();
 	readonly #errors = new Map<string, string>();
 	readonly #listeners = new Set<() => void>();
 	readonly #stage = h("div", { class: "decision-stage" });
@@ -46,12 +52,19 @@ export class DecisionDock {
 	#stageKey = "";
 	#tabsKey = "";
 	#waiting = "";
+	#told = "";
 	#narrow = false;
 	#expires: ReturnType<typeof setTimeout> | undefined;
 	#cut: ResizeObserver | undefined;
 
 	constructor(host: QuestionDockHost) {
 		this.#host = host;
+		let decided = DECIDED.get(host.questions);
+		if (!decided) {
+			decided = [];
+			DECIDED.set(host.questions, decided);
+		}
+		this.#decided = decided;
 		this.el = h("aside", { class: "decision-dock", "aria-label": t("Decisions for you"), hidden: true });
 		this.#tabs.setAttribute("aria-label", t("Decisions for you"));
 		this.#tabs.addEventListener("keydown", (event) => this.#step(event));
@@ -59,6 +72,8 @@ export class DecisionDock {
 		const unsubscribe = host.questions.store.subscribe(() => this.#draw());
 		this.#stopWatch = host.questions.watch();
 		this.#lifetime.signal.addEventListener("abort", unsubscribe, { once: true });
+		if (typeof window !== "undefined")
+			window.addEventListener("pagehide", () => this.#sendHeld(), { signal: this.#lifetime.signal });
 		if (typeof ResizeObserver === "function") {
 			this.#sizes = new ResizeObserver(() => {
 				const narrow = this.el.clientWidth > 0 && this.el.clientWidth < NARROW_BELOW;
@@ -79,39 +94,117 @@ export class DecisionDock {
 		return this.#waiting;
 	}
 
+	get decided(): readonly Decided[] {
+		return this.#decided;
+	}
+
+	get decidedKey(): string {
+		return this.#decided.map((entry) => `${entry.question.interactionId}:${entry.state}`).join(" ");
+	}
+
 	onChange(listener: () => void): () => void {
 		this.#listeners.add(listener);
 		return () => this.#listeners.delete(listener);
 	}
 
+	undo(interactionId: string): void {
+		const index = this.#decided.findIndex(
+			(entry) => entry.question.interactionId === interactionId && entry.state === "held",
+		);
+		if (index < 0) return;
+		clearTimeout(this.#holds.get(interactionId));
+		this.#holds.delete(interactionId);
+		this.#decided.splice(index, 1);
+		this.#current = interactionId;
+		this.#draw();
+	}
+
+	renderDecided(entry: Decided): HTMLElement {
+		const { question, outcome } = entry;
+		const agent = this.#host.agent(question.staffAgentId);
+		const name = agent?.displayName ?? t("The agent");
+		const answer = { outcome, answer: entry.value };
+		const note = typedNote(question.request, answer);
+		const skipped = outcome !== "answered";
+		const labels = new Map(questionOptions(question.request).map((option) => [option.value, option.label]));
+		const values = Array.isArray(entry.value.values)
+			? entry.value.values.filter((value): value is string => typeof value === "string")
+			: [];
+		const said = note !== undefined ? `“${note}”` : values.map((value) => labels.get(value) ?? value).join(", ");
+		const word = skipped ? t("Skipped") : note !== undefined ? t("Your note") : t("Decided");
+		const by =
+			entry.state === "held"
+				? t("Goes to {name} in a moment", { name })
+				: entry.state === "sending"
+					? t("Sending to {name}…", { name })
+					: t("Sent to {name}", { name });
+		const ring = h("span", { class: "decided-ring", "aria-hidden": "true" });
+		ring.style.animationDelay = `${Math.min(0, entry.at - Date.now())}ms`;
+		return h(
+			"section",
+			{
+				class: `decided is-${entry.state}`,
+				dataset: { decided: question.interactionId },
+				"aria-label": `${word}: ${question.request.title}`,
+			},
+			h("div", { class: "decided-rule" }, h("span", null, word)),
+			h(
+				"p",
+				{ class: "decided-ask" },
+				h("span", { class: "decided-figure" }, agentFigure(agent, name, { size: 22, still: true })),
+				h("span", null, question.request.title),
+			),
+			skipped || !said ? null : h("p", { class: "decided-answer" }, said),
+			h(
+				"p",
+				{ class: "decided-by" },
+				h("span", { "aria-live": "polite" }, by),
+				entry.state === "held"
+					? h(
+							"button",
+							{ type: "button", class: "decided-undo", onclick: () => this.undo(question.interactionId) },
+							ring,
+							t("Undo"),
+						)
+					: null,
+			),
+		);
+	}
+
 	dispose(): void {
+		this.#sendHeld();
 		this.#lifetime.abort();
 		this.#stopWatch();
 		this.#sizes?.disconnect();
 		this.#cut?.disconnect();
 		this.#watched?.stop();
 		this.#watched = undefined;
-		for (const timer of this.#timers) clearTimeout(timer);
-		this.#timers.clear();
 		if (this.#expires !== undefined) clearTimeout(this.#expires);
 		this.#listeners.clear();
 		this.el.remove();
 	}
 
+	#onItsWay(interactionId: string): boolean {
+		return this.#decided.some((entry) => entry.question.interactionId === interactionId && entry.state !== "sent");
+	}
+
 	#cards(): OpenQuestion[] {
 		const now = Date.now();
-		const listed = this.#host.questions.store.get().questions.filter((question) => expiry(question) > now);
-		const ids = new Set(listed.map((question) => question.interactionId));
-		const held = [...this.#held.values()]
-			.map((entry) => entry.question)
-			.filter((question) => !ids.has(question.interactionId));
-		return [...listed, ...held].sort(decisionOrder);
+		return this.#host.questions.store
+			.get()
+			.questions.filter(
+				(question) =>
+					expiry(question) > now &&
+					!this.#onItsWay(question.interactionId) &&
+					!this.#host.conversation(question.sessionId).get().interactionAnswers?.[question.interactionId],
+			)
+			.sort(decisionOrder);
 	}
 
 	#untilNextExpiry(cards: OpenQuestion[]): void {
 		if (this.#expires !== undefined) clearTimeout(this.#expires);
 		this.#expires = undefined;
-		const next = Math.min(...cards.filter((card) => !this.#held.has(card.interactionId)).map(expiry));
+		const next = Math.min(...cards.map(expiry));
 		if (!Number.isFinite(next)) return;
 		this.#expires = setTimeout(
 			() => {
@@ -122,13 +215,6 @@ export class DecisionDock {
 		);
 	}
 
-	#answerOf(question: OpenQuestion): InteractionAnswer | undefined {
-		return (
-			this.#held.get(question.interactionId)?.answer ??
-			this.#host.conversation(question.sessionId).get().interactionAnswers?.[question.interactionId]
-		);
-	}
-
 	#draw(): void {
 		if (this.#lifetime.signal.aborted) return;
 		const cards = this.#cards();
@@ -136,12 +222,12 @@ export class DecisionDock {
 		const current = cards.find((card) => card.interactionId === this.#current) ?? cards[0];
 		this.#current = current?.interactionId;
 		this.#watch(current?.sessionId);
-		const waiting = cards
-			.filter((card) => !this.#answerOf(card))
-			.map((card) => card.interactionId.toLowerCase())
+		this.#waiting = [
+			...cards.map((card) => card.interactionId),
+			...this.#decided.map((entry) => entry.question.interactionId),
+		]
+			.map((id) => id.toLowerCase())
 			.join(" ");
-		const changed = waiting !== this.#waiting;
-		this.#waiting = waiting;
 		this.el.hidden = !current;
 		this.el.classList.toggle("is-narrow", this.#narrow);
 		if (current) {
@@ -155,58 +241,42 @@ export class DecisionDock {
 			replace(this.#stage);
 			replace(this.#tabs);
 		}
-		if (changed) for (const listener of this.#listeners) listener();
+		const told = `${this.#waiting}|${this.decidedKey}`;
+		if (told === this.#told) return;
+		this.#told = told;
+		for (const listener of this.#listeners) listener();
 	}
 
 	#drawStage(current: OpenQuestion): void {
-		const answer = this.#answerOf(current);
 		const error = this.#errors.get(current.interactionId);
-		const sent = this.#held.has(current.interactionId);
-		const key = JSON.stringify([
-			current.interactionId,
-			answer && [answer.outcome, answer.answer, answer.pending],
-			error,
-			sent,
-			this.#narrow,
-			presentationLocale(),
-		]);
+		const key = JSON.stringify([current.interactionId, error, this.#narrow, presentationLocale()]);
 		if (key === this.#stageKey) return;
 		this.#stageKey = key;
 		const agent = this.#host.agent(current.staffAgentId);
 		const name = agent?.displayName ?? t("The agent");
-		const declined = answer !== undefined && ["declined", "dismissed", "discarded"].includes(answer.outcome);
 		const card = renderInteractionCard(
 			{
 				id: current.interactionId,
 				actorUserId: current.actorUserId,
 				request: current.request,
 				createdAt: current.createdAt,
-				...(answer ? { answer } : {}),
 			},
 			{
 				agentName: name,
 				memberName: (userId) => this.#host.memberName(userId),
-				canAnswer: !answer,
-				...(answer ? { inDock: true } : { inThread: true }),
+				canAnswer: true,
+				inThread: true,
 				...(this.#host.image ? { image: this.#host.image } : {}),
 				...(this.#host.app ? { app: this.#host.app } : {}),
-				answer: (outcome, value) => this.#answer(current, outcome, value),
+				answer: async (outcome, value) => this.#decide(current, outcome, value),
 			},
 		);
-		this.#stage.classList.toggle("is-answered", Boolean(answer));
 		this.#markCut(card);
 		replace(
 			this.#stage,
 			h(
 				"div",
 				{ class: "decision-card" },
-				answer
-					? h(
-							"p",
-							{ class: "decision-sent", "aria-live": "polite" },
-							declined ? t("Skipped") : sent ? t("Sent to {name}", { name }) : t("Sending to {name}…", { name }),
-						)
-					: null,
 				card,
 				error ? h("p", { class: "decision-error", role: "alert" }, error) : null,
 			),
@@ -215,8 +285,8 @@ export class DecisionDock {
 				{ class: "decision-figure" },
 				agentFigure(agent, name, {
 					size: this.#narrow ? FIGURE_ABOVE : FIGURE_BESIDE,
-					activity: answer ? "Done" : "Waiting",
-					...(answer ? {} : { ask: "question" as const }),
+					activity: "Waiting",
+					ask: "question",
 				}),
 			),
 		);
@@ -282,44 +352,53 @@ export class DecisionDock {
 		this.#tabs.querySelector<HTMLElement>('.decision-tab[aria-selected="true"]')?.focus({ preventScroll: true });
 	}
 
-	async #answer(question: OpenQuestion, outcome: InteractionOutcome, value: Record<string, JsonValue>): Promise<void> {
-		this.#errors.delete(question.interactionId);
+	#decide(question: OpenQuestion, outcome: InteractionOutcome, value: Record<string, JsonValue>): void {
+		const id = question.interactionId;
+		if (this.#onItsWay(id)) return;
+		this.#errors.delete(id);
+		const entry: Decided = { question, outcome, value, at: Date.now(), state: "held" };
+		this.#decided.push(entry);
+		this.#holds.set(
+			id,
+			setTimeout(() => void this.#send(entry), UNDO_MS),
+		);
+		if (this.#current === id) this.#current = undefined;
+		this.#draw();
+	}
+
+	#sendHeld(): void {
+		for (const entry of [...this.#decided]) if (entry.state === "held") void this.#send(entry);
+	}
+
+	async #send(entry: Decided): Promise<void> {
+		const { question } = entry;
+		const id = question.interactionId;
+		clearTimeout(this.#holds.get(id));
+		this.#holds.delete(id);
+		if (entry.state !== "held") return;
+		entry.state = "sending";
+		this.#draw();
 		try {
-			await this.#host.questions.answer(question, outcome, value);
+			await this.#host.questions.answer(question, entry.outcome, entry.value);
 		} catch (error) {
 			const said = this.#host.conversation(question.sessionId).get().interactionError;
 			this.#errors.set(
-				question.interactionId,
+				id,
 				said ??
 					(error instanceof Error && error.message
 						? error.message
 						: t("Your answer could not be sent. Try again.")),
 			);
+			const index = this.#decided.indexOf(entry);
+			if (index >= 0) this.#decided.splice(index, 1);
+			this.#current = id;
 			this.#draw();
-			throw error;
+			return;
 		}
-		const answer = this.#host.conversation(question.sessionId).get().interactionAnswers?.[question.interactionId] ?? {
-			outcome,
-			answer: value,
-			answeredAt: new Date().toISOString(),
-		};
-		this.#held.set(question.interactionId, { question, answer: { ...answer, pending: false } });
-		this.#later(ANSWERED_HOLD_MS, () => {
-			this.#held.delete(question.interactionId);
-			this.#host.questions.forget(question.interactionId);
-			if (this.#current === question.interactionId) this.#current = undefined;
-			this.#draw();
-		});
-		this.#later(ANSWERED_HOLD_MS + 1_000, () => void this.#host.questions.refresh());
+		entry.state = "sent";
+		this.#host.questions.forget(id);
+		void this.#host.questions.refresh();
 		this.#draw();
-	}
-
-	#later(ms: number, run: () => void): void {
-		const timer = setTimeout(() => {
-			this.#timers.delete(timer);
-			if (!this.#lifetime.signal.aborted) run();
-		}, ms);
-		this.#timers.add(timer);
 	}
 
 	#watch(sessionId: string | undefined): void {

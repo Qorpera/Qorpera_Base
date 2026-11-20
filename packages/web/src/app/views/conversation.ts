@@ -2626,6 +2626,7 @@ export class ConversationView {
 			this.#agentState,
 			this.#waitingRun,
 			this.#decisions?.waiting,
+			this.#decisions?.decidedKey,
 			agent?.id,
 			agent?.appearance,
 			agent?.templateId,
@@ -3191,6 +3192,17 @@ export class ConversationView {
 					h("div", { class: "conversation-note", role: "note" }, t("More saved changes wait after these.")),
 				),
 			);
+		const dock = this.#decisions;
+		for (const entry of dock?.decided ?? []) {
+			const block = keep(`decided ${entry.question.interactionId}`, JSON.stringify([entry.state, locale]), "", () =>
+				dock ? dock.renderDecided(entry) : h("section"),
+			);
+			const next = this.#timestampRows.find((row) => row.date.getTime() > entry.at)?.node;
+			const at = next ? nodes.indexOf(next) : -1;
+			const index = at < 0 ? nodes.length : at;
+			nodes.splice(index, 0, block);
+			if (liveStart !== undefined && index < liveStart) liveStart += 1;
+		}
 		// A change of this agent's that is ready to go live waits below them; the card draws itself in place.
 		const ready = this.#ready;
 		if (ready?.shown) nodes.push(keep("code ready", "", "", () => ready.el));
