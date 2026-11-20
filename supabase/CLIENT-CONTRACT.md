@@ -2546,7 +2546,22 @@ outputs.
 members' posts. Only the member the card was raised for answers it: the
 request event's `actor_user_id` (the member whose post, routine or first run
 the raising run serves), while still a member of the room; approvals still
-need owner or admin. The answer is delivered like a post, on the member's own
+need owner or admin. Since `20260930820000_send_decision_pick` one more
+member may answer a QUESTION card: any other member of the room (owner, admin
+or contributor) may send the PICK of the member it was raised for, which is
+the one option that member has voted for (`qorpera_cast_decision_vote`), with
+`p_outcome` `answered` and `p_answer` exactly `{"values": [<that option>]}`.
+Anything else from them (another option, several, a skip, their own words, a
+draft or another card kind, a pick whose voter changed their vote or is a
+spectator now) is refused as before, `42501` "Only the member this card was
+raised for can answer it". Whoever sends is the answer's author in every
+sense: `answeredBy` and the event's actor are the sender (the card's
+`actor_user_id` still names the member it was raised for, so a client can
+show "{member}'s pick, sent by {sender}"), the woken run is the sender's (their
+own review rules apply, its member approvals and its next cards come to
+them), and the sender must pass a sponsor of their OWN, checked exactly as
+below: one member's model account never pays for another member's call, and
+nothing is sent without the sender's own call. The answer is delivered like a post, on the member's own
 model account: pass `p_sponsor_binding_id` and `p_sponsor_version` (the
 conversation's selected sponsor, as for `qorpera_post_company_room_message`).
 The kernel checks them as the wake materializer will (binding active and
