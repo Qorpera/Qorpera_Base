@@ -72,6 +72,7 @@ export class OpenQuestions {
 	#stopWatching: (() => void) | undefined;
 	#reads = 0;
 	#questionsOnly = false;
+	readonly #onTheirWay = new Set<string>();
 	#reading: Promise<void> | undefined;
 	#again = false;
 	/** A hint's read, at most once an interval; one still queued when the last watcher left is not made. */
@@ -117,12 +118,12 @@ export class OpenQuestions {
 						questions: decisions.filter((decision): decision is OpenCard => decision.kind === "question"),
 						read: true,
 					});
-					this.#company.setOpenDecisions(decisions.length);
+					this.#count();
 				},
 				(error: unknown) => {
 					if (error instanceof CloudRpcError && error.missing) {
 						this.store.set({ unavailable: true, questions: [], decisions: [], read: true });
-						this.#company.setOpenDecisions(0);
+						this.#count();
 					}
 					// Otherwise what was shown stands; the next hint or the clock reads again.
 					else this.store.set({ read: true });
@@ -161,7 +162,24 @@ export class OpenQuestions {
 			questions: questions.filter((question) => question.interactionId !== interactionId),
 			decisions: left,
 		});
-		this.#company.setOpenDecisions(left.length);
+		this.#onTheirWay.delete(interactionId);
+		this.#count();
+	}
+
+	hold(interactionId: string): void {
+		this.#onTheirWay.add(interactionId);
+		this.#count();
+	}
+
+	release(interactionId: string): void {
+		this.#onTheirWay.delete(interactionId);
+		this.#count();
+	}
+
+	#count(): void {
+		this.#company.setOpenDecisions(
+			this.store.get().decisions.filter((decision) => !this.#onTheirWay.has(decision.interactionId)).length,
+		);
 	}
 
 	async #list(): Promise<OpenDecision[]> {

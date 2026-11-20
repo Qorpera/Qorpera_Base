@@ -182,6 +182,7 @@ export class DecisionDock {
 		clearTimeout(this.#holds.get(interactionId));
 		this.#holds.delete(interactionId);
 		this.#decided.splice(index, 1);
+		this.#host.questions.release(interactionId);
 		this.#current = interactionId;
 		this.#draw();
 	}
@@ -474,6 +475,7 @@ export class DecisionDock {
 		if (this.#onItsWay(id)) return;
 		this.#errors.delete(id);
 		this.#decided.push(entry);
+		this.#host.questions.hold(id);
 		this.#holds.set(
 			id,
 			setTimeout(() => void this.#send(entry), UNDO_MS),
@@ -513,6 +515,7 @@ export class DecisionDock {
 			);
 			const index = this.#decided.indexOf(entry);
 			if (index >= 0) this.#decided.splice(index, 1);
+			this.#host.questions.release(id);
 			this.#current = id;
 			this.#everyDock();
 			return;

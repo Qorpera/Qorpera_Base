@@ -547,6 +547,31 @@ describe("account and route ownership", () => {
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 	});
 
+	it("counts the member's open decisions on the Co-Founder's card on a page with no dock", async () => {
+		const f = mounted(`#/c/${profileA.profileId}/team`);
+		vi.mocked(f.api.listStaff).mockResolvedValue([{ ...staff, templateId: "co-founder" }]);
+		const listed = vi.spyOn(f.api, "listOpenDecisions").mockResolvedValue([
+			{
+				kind: "question",
+				sessionId: session.sessionId,
+				interactionId: id(740),
+				sequence: 1,
+				actorUserId: userA.id,
+				staffAgentId: staff.id,
+				request: { surface: "question", title: "Which logo?", payload: { options: [{ label: "A" }] } },
+				createdAt: "2026-09-05T10:00:00Z",
+			},
+		]);
+		await draw();
+		await draw();
+		expect(listed).toHaveBeenCalledWith(profileA.profileId);
+		expect(f.root.querySelector(".decision-dock")).toBeNull();
+		expect(f.root.querySelector(".rail .cofounder-home .rail-decisions")?.textContent).toBe("1");
+		expect(f.root.querySelector(".rail .cofounder-home")?.getAttribute("aria-label")).toContain(
+			"1 decision waits for you",
+		);
+	});
+
 	it("cancels a private confirmation dialog when the account changes", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/team`);
 		await draw();

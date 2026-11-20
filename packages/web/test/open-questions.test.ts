@@ -1077,9 +1077,32 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		const stop = host.questions.watch();
 		await settle();
 		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(2);
+		host.questions.hold(REVIEW);
+		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(1);
+		host.questions.release(REVIEW);
+		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(2);
+		host.questions.hold(CARD_B);
 		host.questions.forget(CARD_B);
 		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(1);
 		stop();
+	});
+
+	it("leaves a decision out of the count from the pick on, and counts it again on Undo", async () => {
+		const { host, controller } = company({ questions: cards().slice(0, 2) });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(2);
+		pick(dock, "mywave");
+		await settle();
+		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(1);
+		dock.undo(CARD_B);
+		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(2);
+		pick(dock, "mywave");
+		await vi.advanceTimersByTimeAsync(UNDO_MS + 1);
+		await settle();
+		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(1);
+		dock.dispose();
 	});
 
 	it("falls back to the questions alone while the cloud has no list of decisions", async () => {
