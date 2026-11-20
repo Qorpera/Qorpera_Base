@@ -154,6 +154,14 @@ export function questionInput(request: InteractionRequest): "mail_address" | und
 	return asRecord(request.payload.input)?.kind === "mail_address" ? "mail_address" : undefined;
 }
 
+export function typedNote(request: InteractionRequest, answer: InteractionAnswer | undefined): string | undefined {
+	if (request.surface !== "question" || answer?.outcome !== "answered" || questionInput(request)) return undefined;
+	const values = answer.answer.values;
+	const typed = Array.isArray(values) && values.length === 1 ? values[0] : undefined;
+	if (typeof typed !== "string") return undefined;
+	return questionOptions(request).some((option) => option.value === typed) ? undefined : typed;
+}
+
 export type InteractionState = "waiting" | "answered" | "declined" | "expired";
 
 /** What the card shows: still open, answered in some way, declined, or past its time. */

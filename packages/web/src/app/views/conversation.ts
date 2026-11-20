@@ -18,7 +18,13 @@ import {
 	answersActionReview,
 } from "../../cloud/review-rules.ts";
 import { sessionAttachmentProblem } from "../../cloud/session-attachments.ts";
-import type { TranscriptCard, TranscriptItem, TranscriptMessage, TranscriptPeerLink } from "../../cloud/transcript.ts";
+import {
+	reworkingNote,
+	type TranscriptCard,
+	type TranscriptItem,
+	type TranscriptMessage,
+	type TranscriptPeerLink,
+} from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent, JsonValue, PausedRun } from "../../cloud/types.ts";
 import { appNoteHeader, splitReply } from "../../cloud/wall-reply.ts";
 import { AGENT_LOOK, activityCaption, syncCaption } from "../../ui/agent-activity.ts";
@@ -2605,6 +2611,7 @@ export class ConversationView {
 			conversation.loading,
 			conversation.error,
 			this.#agentState,
+			this.#waitingRun,
 			agent?.id,
 			agent?.appearance,
 			agent?.templateId,
@@ -3029,6 +3036,7 @@ export class ConversationView {
 				const answers = canAnswer(item.actorUserId);
 				const takeOver = Boolean(agent) && item.request.surface === "takeover";
 				const address = questionInput(item.request) === "mail_address";
+				const reworking = reworkingNote(items, index, answer, this.#working || this.#waitingRun);
 				const cardKey = JSON.stringify([
 					item.request,
 					// What the card shows of an answer; the input it went out as is not shown.
@@ -3040,6 +3048,7 @@ export class ConversationView {
 					address ? this.#company.canChooseMailAddress() : null,
 					item.answerFailed,
 					item.chainStopped,
+					reworking,
 					item.request.expiresAt ? Date.parse(item.request.expiresAt) <= Date.now() : false,
 					agentName,
 					locale,
@@ -3057,7 +3066,10 @@ export class ConversationView {
 				// secret, a takeover, a draft), as in the rail.
 				const ask = item.request.surface === "question" ? "question" : "bang";
 				const waitingFigure = agent
-					? () => agentFigure(agent, agentName, { size: 30, activity: "Waiting", ask })
+					? () =>
+							reworking
+								? agentFigure(agent, agentName, { size: 30, activity: "Working" })
+								: agentFigure(agent, agentName, { size: 30, activity: "Waiting", ask })
 					: undefined;
 				const card = keep(
 					item.id,
@@ -3072,6 +3084,7 @@ export class ConversationView {
 								canAnswer: answers,
 								inThread: true,
 								viewerId: this.#company.userId,
+								reworking,
 								...(waitingFigure ? { figure: waitingFigure } : {}),
 								...(this.#actions.folderImage ? { image: this.#actions.folderImage } : {}),
 								...(this.#actions.folderApp ? { app: this.#actions.folderApp } : {}),

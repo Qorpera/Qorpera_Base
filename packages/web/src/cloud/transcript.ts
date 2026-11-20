@@ -5,6 +5,7 @@ import {
 	parseInteractionAnswerEvent,
 	parseInteractionAnswerInput,
 	parseInteractionRequest,
+	typedNote,
 } from "./interactions.ts";
 import { type InterfaceChange, parseInterfaceChange } from "./interface-changes.ts";
 import { type MessageQuote, parseQuotes } from "./quotes.ts";
@@ -129,6 +130,23 @@ export type TranscriptItem =
 	| TranscriptNote
 	| TranscriptInterfaceChange
 	| TranscriptInteraction;
+
+export function reworkingNote(
+	items: readonly TranscriptItem[],
+	index: number,
+	answer: InteractionAnswer | undefined,
+	agentAtWork: boolean,
+): boolean {
+	const card = items[index];
+	if (card?.kind !== "interaction" || typedNote(card.request, answer) === undefined) return false;
+	if (answer?.pending !== true && !agentAtWork) return false;
+	const notedAt = answer?.answeredAt ? Date.parse(answer.answeredAt) : Number.NaN;
+	return !items
+		.slice(index + 1)
+		.some(
+			(later) => (later.kind === "agent" || later.kind === "interaction") && Date.parse(later.createdAt) > notedAt,
+		);
+}
 
 export interface TranscriptProjection {
 	items: TranscriptItem[];

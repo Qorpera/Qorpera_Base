@@ -5,6 +5,8 @@ import {
 	LEGACY_PART_SCHEMA,
 	projectTranscript,
 	RUNNER_ENTRY_SCHEMA,
+	reworkingNote,
+	type TranscriptItem,
 } from "../src/cloud/transcript.ts";
 import type { HostedSessionEvent, PendingSessionInput } from "../src/cloud/types.ts";
 
@@ -388,6 +390,51 @@ describe("interaction cards in the transcript", () => {
 			answeredBy: USER,
 			answeredAt: "2026-09-02T10:00:02Z",
 		});
+	});
+
+	it("counts typed words as a note the agent reworks until the agent is back", () => {
+		const open = {
+			kind: "interaction" as const,
+			id: CARD,
+			sequence: 1,
+			actorUserId: USER,
+			request: {
+				surface: "question" as const,
+				title: "Which channel?",
+				payload: { options: [{ label: "#general", value: "general" }], allowCustom: true },
+			},
+			createdAt: "2026-09-02T10:00:00Z",
+		};
+		const said = { kind: "agent" as const, id: "a", sequence: 2, text: "Asking.", createdAt: "2026-09-02T10:00:01Z" };
+		const noted = {
+			outcome: "answered" as const,
+			answer: { values: ["Warmer"] },
+			answeredAt: "2026-09-02T10:05:00Z",
+		};
+		const items = [open, said] as TranscriptItem[];
+		expect(reworkingNote(items, 0, noted, true)).toBe(true);
+		expect(reworkingNote(items, 0, noted, false)).toBe(false);
+		expect(reworkingNote(items, 0, { ...noted, pending: true }, false)).toBe(true);
+		expect(
+			reworkingNote(items, 0, { outcome: "answered", answer: { values: ["Warmer"] }, pending: true }, false),
+		).toBe(true);
+		expect(reworkingNote(items, 0, { ...noted, answer: { values: ["general"] } }, true)).toBe(false);
+		expect(reworkingNote(items, 0, { outcome: "declined", answer: {} }, true)).toBe(false);
+		expect(reworkingNote(items, 0, undefined, true)).toBe(false);
+		expect(reworkingNote(items, 1, noted, true)).toBe(false);
+		const address = {
+			...open,
+			request: { ...open.request, payload: { ...open.request.payload, input: { kind: "mail_address" } } },
+		};
+		expect(reworkingNote([address] as TranscriptItem[], 0, { ...noted, answer: { values: ["acme"] } }, true)).toBe(
+			false,
+		);
+		const reply = { ...said, id: "b", sequence: 3, createdAt: "2026-09-02T10:06:00Z" };
+		expect(reworkingNote([open, said, reply] as TranscriptItem[], 0, noted, true)).toBe(false);
+		const again = { ...open, id: "c", sequence: 3, createdAt: "2026-09-02T10:06:00Z" };
+		expect(reworkingNote([open, said, again] as TranscriptItem[], 0, noted, true)).toBe(false);
+		const member = { kind: "member" as const, id: "m", sequence: 3, text: "And?", createdAt: "2026-09-02T10:06:00Z" };
+		expect(reworkingNote([open, said, member] as TranscriptItem[], 0, noted, true)).toBe(true);
 	});
 
 	it("shows a queued answer on its card instead of as a message, until the kernel writes it", () => {

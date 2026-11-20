@@ -451,6 +451,43 @@ describe("a card that waits for the member, in a thread", () => {
 		expect(plain.querySelector(".interaction-figure")).toBeNull();
 	});
 
+	it("shows a typed note as the agent reworking the question until the agent is back", () => {
+		const noted = { outcome: "answered" as const, answer: { values: ["Warmer, less blue"] }, answeredBy: "user-1" };
+		const figure = document.createElement("span");
+		const card = renderInteractionCard(
+			item({ ...own, body: "Pick the channel." }, noted),
+			thread({ reworking: true, figure: () => figure }),
+		);
+		expect(classes(card)).toEqual([
+			"interaction-card",
+			"surface-question",
+			"state-answered",
+			"is-asking",
+			"is-reworking",
+		]);
+		expect(card.querySelector(".interaction-call strong")?.textContent).toBe("Yang Tang is reworking this");
+		expect(card.querySelector(".interaction-call .interaction-figure")?.firstElementChild).toBe(figure);
+		expect(card.querySelector(".interaction-title")?.textContent).toBe(own.title);
+		expect(card.querySelector(".interaction-noted")?.textContent).toBe("“Warmer, less blue”");
+		expect(
+			card.querySelector(".interaction-body, .interaction-result, .interaction-actions, button, input"),
+		).toBeNull();
+		expect(classes(card.querySelector(".interaction-heading"))).toContain("visually-hidden");
+
+		const back = renderInteractionCard(item(own, noted), thread({ reworking: false }));
+		expect(classes(back)).toEqual(["interaction-card", "surface-question", "state-answered", "is-exchange"]);
+		expect(back.querySelector(".interaction-result.is-said .interaction-chosen")?.textContent).toBe(
+			"Warmer, less blue",
+		);
+
+		const picked = { outcome: "answered" as const, answer: { values: ["general"] }, answeredBy: "user-1" };
+		const chosen = renderInteractionCard(item(own, picked), thread({ reworking: true }));
+		expect(classes(chosen)).toEqual(["interaction-card", "surface-question", "state-answered", "is-exchange"]);
+
+		const outside = renderInteractionCard(item(own, noted), { ...thread({ reworking: true }), inThread: false });
+		expect(classes(outside)).not.toContain("is-reworking");
+	});
+
 	it("says the agent needs the member on a card that is no question", () => {
 		const secret: InteractionRequest = { surface: "secret", title: "Stripe key", payload: { label: "Stripe key" } };
 		const card = renderInteractionCard(item(secret), thread({ provideSecret: async () => {} }));
@@ -537,6 +574,22 @@ describe("a visual choice", () => {
 		boxes[1]?.click();
 		expect(ctx.answer).toHaveBeenCalledWith("answered", { values: ["pair"] });
 		created.mockRestore();
+	});
+
+	it("shows no pictures under a question the member answered in their own words", () => {
+		const own = { ...visual, payload: { ...visual.payload, allowCustom: true } };
+		const ctx = { ...context({ app }), inThread: true };
+		const noted = renderInteractionCard(
+			item(own, { outcome: "answered", answer: { values: ["Something calmer"] }, answeredBy: "user-1" }),
+			ctx,
+		);
+		expect(noted.querySelector(".choice-box, .interaction-choices")).toBeNull();
+		expect(noted.querySelector(".interaction-chosen")?.textContent).toBe("Something calmer");
+		const picked = renderInteractionCard(
+			item(own, { outcome: "answered", answer: { values: ["pair"] }, answeredBy: "user-1" }),
+			ctx,
+		);
+		expect(picked.querySelector(".interaction-choices")).not.toBeNull();
 	});
 
 	it("shows an app's own cover for an option that names it", async () => {
