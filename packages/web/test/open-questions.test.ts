@@ -1112,12 +1112,10 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		await settle();
 		const stop = host.questions.watch();
 		await settle();
-		const before = controller.listOpenDecisions.mock.calls.length;
+		const before = controller.listOpenQuestions.mock.calls.length;
 		controller.store.set({ team: { capabilities: { write: true } } });
 		await settle();
-		expect(
-			controller.listOpenDecisions.mock.calls.length + controller.listOpenQuestions.mock.calls.length,
-		).toBeGreaterThan(before);
+		expect(controller.listOpenQuestions.mock.calls.length).toBe(before + 1);
 		const then = controller.listOpenQuestions.mock.calls.length;
 		controller.store.set({ team: { capabilities: { write: true } } });
 		await settle();
