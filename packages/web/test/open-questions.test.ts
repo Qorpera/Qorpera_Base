@@ -130,6 +130,7 @@ function company(
 	const controller = {
 		signal: new AbortController().signal,
 		listOpenQuestions: vi.fn(async () => questions),
+		setOpenDecisions: vi.fn(),
 		listOpenDecisions: vi.fn(async (): Promise<OpenDecision[]> => {
 			if (!options.approvals)
 				throw new CloudRpcError(
@@ -1069,6 +1070,16 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		await vi.advanceTimersByTimeAsync(UNDO_MS + 1_000);
 		expect(reviews).toEqual([]);
 		dock.dispose();
+	});
+
+	it("tells the company how many decisions wait, as the list changes", async () => {
+		const { host, controller } = company({ questions: [question(CARD_B, name)], approvals: [approval] });
+		const stop = host.questions.watch();
+		await settle();
+		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(2);
+		host.questions.forget(CARD_B);
+		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(1);
+		stop();
 	});
 
 	it("falls back to the questions alone while the cloud has no list of decisions", async () => {

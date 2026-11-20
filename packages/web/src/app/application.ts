@@ -1234,6 +1234,7 @@ export function mountApplication(
 					),
 				);
 				appQuestions.set(controller, questions);
+				controller.signal.addEventListener("abort", questions.watch(), { once: true });
 			}
 			return {
 				questions,

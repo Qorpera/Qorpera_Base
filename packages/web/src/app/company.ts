@@ -241,6 +241,7 @@ export interface CompanyState {
 	realtimeError?: string;
 	/** Mentions of this member not seen yet, by conversation (session id → count). */
 	mentions?: Readonly<Record<string, number>>;
+	openDecisions?: number;
 	/** The cloud does not read mentions yet: no mention picker, no badges. */
 	mentionsUnavailable?: boolean;
 	/** The cloud answered a mentions read: it reads mentions, so names are offered. */
@@ -993,6 +994,10 @@ export class CompanyController {
 		const state = this.store.get();
 		if (this.#stopped || state.accessLost || !state.team?.capabilities.write) return [];
 		return this.#api.listOpenQuestions(this.profile.profileId);
+	}
+
+	setOpenDecisions(count: number): void {
+		if (!this.#stopped && (this.store.get().openDecisions ?? 0) !== count) this.store.set({ openDecisions: count });
 	}
 
 	async listOpenDecisions(): Promise<OpenDecision[]> {

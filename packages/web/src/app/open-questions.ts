@@ -117,10 +117,13 @@ export class OpenQuestions {
 						questions: decisions.filter((decision): decision is OpenCard => decision.kind === "question"),
 						read: true,
 					});
+					this.#company.setOpenDecisions(decisions.length);
 				},
 				(error: unknown) => {
-					if (error instanceof CloudRpcError && error.missing)
+					if (error instanceof CloudRpcError && error.missing) {
 						this.store.set({ unavailable: true, questions: [], decisions: [], read: true });
+						this.#company.setOpenDecisions(0);
+					}
 					// Otherwise what was shown stands; the next hint or the clock reads again.
 					else this.store.set({ read: true });
 				},
@@ -152,11 +155,13 @@ export class OpenQuestions {
 	forget(interactionId: string): void {
 		this.#answered.add(interactionId);
 		const { questions, decisions } = this.store.get();
-		if (decisions.some((decision) => decision.interactionId === interactionId))
-			this.store.set({
-				questions: questions.filter((question) => question.interactionId !== interactionId),
-				decisions: decisions.filter((decision) => decision.interactionId !== interactionId),
-			});
+		if (!decisions.some((decision) => decision.interactionId === interactionId)) return;
+		const left = decisions.filter((decision) => decision.interactionId !== interactionId);
+		this.store.set({
+			questions: questions.filter((question) => question.interactionId !== interactionId),
+			decisions: left,
+		});
+		this.#company.setOpenDecisions(left.length);
 	}
 
 	async #list(): Promise<OpenDecision[]> {

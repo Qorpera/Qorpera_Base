@@ -82,6 +82,7 @@ function company(questions: OpenQuestion[] = []) {
 		signal: new AbortController().signal,
 		listOpenQuestions: async () => questions,
 		listOpenDecisions: async () => asOpenCards(questions),
+		setOpenDecisions: () => {},
 		onInvalidate: () => () => {},
 		conversation,
 		setExecutionSponsor: () => {},
