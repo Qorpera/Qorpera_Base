@@ -2067,18 +2067,47 @@ describe("Claude usage and limit resets on the Claude card", () => {
 		expect(client.signOutClaude).not.toHaveBeenCalled();
 	});
 
+	it("says a 5-hour reset is being used, though it refills no bar", async () => {
+		const readClaude = vi.fn<ReadClaude>(async (options) => (options.reset ? new Promise<string>(() => {}) : id(99)));
+		await claudeView(
+			login({
+				resets: {
+					observedAt: new Date().toISOString(),
+					entries: [{ ...fullReset, kind: "session", left: 1, refills: "5-hour limit" }],
+				},
+			}),
+			readClaude,
+		);
+		claudeCard().querySelector<HTMLButtonElement>(".connection-resets button")!.click();
+		await settle();
+		expect(readClaude).toHaveBeenLastCalledWith({ loginId: id(97), reset: "session" }, expect.any(AbortSignal));
+		expect(claudeCard().querySelector('.connection-usage > [role="status"]')!.textContent).toBe("Using a reset…");
+		expect(claudeCard().querySelectorAll(".connection-usage-meter.refilling")).toHaveLength(0);
+		expect(bars()).toEqual([
+			expect.stringMatching(/^Weekly.*13% left$/),
+			expect.stringMatching(/^Weekly · Fable.*91% left$/),
+		]);
+	});
+
 	it("says the limit Claude Code refused at, with no bar, when the refusal named only a 5-hour window", async () => {
+		const readClaude = vi.fn<ReadClaude>(async (options) => (options.reset ? new Promise<string>(() => {}) : id(99)));
 		await claudeView(
 			login({
 				usage: { observedAt: new Date().toISOString(), limitResetAt: hours(3.2), windows: [] },
 				resets: { observedAt: new Date().toISOString(), entries: [fullReset] },
 			}),
+			readClaude,
 		);
 		expect(claudeCard().querySelector(".connection-usage")!.textContent).toMatch(/^Usage limit reached · resets in/);
 		expect(bars()).toEqual([]);
 		expect(claudeCard().querySelector(".connection-resets.is-ready strong")!.textContent).toBe(
 			"Keep going now with a reset",
 		);
+		claudeCard().querySelector<HTMLButtonElement>(".connection-resets button")!.click();
+		await settle();
+		expect(readClaude).toHaveBeenLastCalledWith({ loginId: id(97), reset: "full" }, expect.any(AbortSignal));
+		expect(claudeCard().querySelector(".connection-usage")!.textContent).toBe("Using a reset…");
+		expect(claudeCard().querySelector('.connection-usage > [role="status"]')).not.toBeNull();
 		view.dispose();
 		document.body.replaceChildren();
 		await claudeView(

@@ -989,13 +989,14 @@ export class ConnectionsView {
 	#claudeUsage(login: WebClaudeLogin, using: boolean): HTMLElement[] {
 		const limitResetAt = claudeLimitResetAt(login.usage, Date.now());
 		const refilling = new Set(using && this.#claudeReset ? REFILLS[this.#claudeReset.kind] : []);
-		const bars = this.#bars(
-			login.usage?.windows.length ? login.usage : undefined,
-			true,
-			using ? undefined : limitResetAt,
-			refilling,
-			false,
-		);
+		const shown = login.usage?.windows.length ? login.usage : undefined;
+		const unmarked = using && !shown?.windows.some((window) => refilling.has(window.id));
+		const status = () => h("span", { class: "muted", role: "status" }, t("Using a reset…"));
+		const bars =
+			unmarked && !shown
+				? h("div", { class: "connection-usage" }, status())
+				: this.#bars(shown, true, using ? undefined : limitResetAt, refilling, false);
+		if (unmarked && shown) bars.prepend(status());
 		// WHY: an idle sign-in's key lapses after hours and only a Claude task renews it; till then a read finds nothing new.
 		if (
 			!using &&
