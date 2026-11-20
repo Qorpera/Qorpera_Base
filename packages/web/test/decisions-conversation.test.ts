@@ -365,7 +365,7 @@ describe("open decisions in the Co-Founder's chat", () => {
 			update(4, "Three versions are ready."),
 		]);
 		await settle();
-		expect(f.view.el.querySelector(".messages .review-card, .messages .interaction-card")).toBeNull();
+		expect(f.view.el.querySelector(".messages .auth-card")).toBeNull();
 		expect(folds(f)).toEqual(["2 updatesThree versions are ready."]);
 	});
 

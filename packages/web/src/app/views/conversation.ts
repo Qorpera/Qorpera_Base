@@ -2976,7 +2976,7 @@ export class ConversationView {
 					);
 					const headed = parseConversationTimestamp(item.createdAt);
 					const last = open || !newest ? undefined : parseConversationTimestamp(newest.createdAt);
-					if (headed) markTime(headed, nodes[nodes.length - 1]!, last ?? undefined);
+					if (headed) markTime(headed, nodes[nodes.length - 1]!, last);
 				}
 				if (!open) continue;
 			}
