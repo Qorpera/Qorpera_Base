@@ -7,20 +7,15 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929026899_runtime_bundle_activation_v268.sql";
-const activationVersion = 268;
-const previousActivationVersion = 267;
-const previousActivationSha256 = "869096855b8595240b69df74b872031d2bbe47cee85a1cfed65f9b46b7e1f299";
+const activation = "supabase/migrations/20260929026999_runtime_bundle_activation_v269.sql";
+const activationVersion = 269;
+const previousActivationVersion = 268;
+const previousActivationSha256 = "df031a7237b9cee5a9a295f169f5b88858bae3ed3840200c3b06cf88a1ccf449";
 const activationRequires = Object.freeze([
 	[
-		"20260930819000_decision_votes",
-		"#1994 (votes and notes on open decisions): bundle 268's manifest hashes every migration into its authorization component, so it names 819000; the bundle is never active on a database where that migration did not apply",
-		"to_regprocedure('public.qorpera_list_company_open_decisions(uuid)') is not null and to_regprocedure('public.qorpera_cast_decision_vote(uuid,uuid,text,text)') is not null",
-	],
-	[
-		"20260930820000_send_decision_pick",
-		"#1997 (send the asked member's pick): bundle 268's manifest names 820000 too; the bundle is never active on a database where the answer function was not patched",
-		"to_regprocedure('public.qorpera_is_decision_pick(uuid,uuid,uuid,jsonb,text,jsonb)') is not null and position('qorpera_is_decision_pick' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_answer_interaction(uuid,uuid,uuid,text,jsonb,uuid,bigint)')), '')) > 0",
+		"20260930821000_decision_rounds",
+		"#2001 (decision rounds): bundle 269's ask_member sends asksAgain on a question asked again, which the card's validity check accepts and the append links only once 821000 applied; without it every such card is refused (22023)",
+		"to_regprocedure('public.qorpera_assert_asks_again(uuid,uuid,uuid)') is not null and to_regprocedure('public.qorpera_decision_round(uuid,uuid)') is not null and position('asksAgain' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_interaction_request_valid(jsonb)')), '')) > 0 and position('qorpera_assert_asks_again' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_folder_append_interaction_request(jsonb,uuid,jsonb)')), '')) > 0 and position('qorpera_decision_round' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_list_company_open_decisions(uuid)')), '')) > 0",
 	],
 ]);
 const activationRequiresSql = activationRequires
