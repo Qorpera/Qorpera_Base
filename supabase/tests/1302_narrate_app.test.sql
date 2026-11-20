@@ -38,13 +38,13 @@ reset role;
 do $$
 begin
 	if strpos(pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure),
-			$q$/* 20260930815000 */'narrate_app',$q$)
+			$q$/* 20260930817000 */'narrate_app',$q$)
 		<= strpos(pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure),
 			$q$/* 20260930746000 */'make_picture',$q$) then
 		raise exception '2: the observations'' list does not name narrate_app after make_picture'; end if;
 	if (select array_agg(proc.proname::text order by proc.proname::text collate "C")
 			from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
-			where namespace.nspname = 'public' and strpos(proc.prosrc, '20260930815000') > 0)
+			where namespace.nspname = 'public' and strpos(proc.prosrc, '20260930817000') > 0)
 		is distinct from array['qorpera_record_runtime_observation'] then
 		raise exception '2: the marker is in other bodies'; end if;
 end

@@ -363,7 +363,7 @@ web does not already answer. What the kit adds is that the agent writes one file
   said in English or Danish and drops the caption that came back with two sentences of the voice's own.
   Run together on a Mac with the official Codex placing the call (10 November): six captions read from the page,
   spoken, checked and written as clips, with no turn started on the call's thread.
-- **The tool** (18 November 2026; `cloud-app-narrate-tool.ts`, migration `20260930815000`):
+- **The tool** (18 November 2026; `cloud-app-narrate-tool.ts`, migration `20260930817000`):
   `narrate_app {name, operationKey, machine?, voice?}` gives the agent's own explainer its voice. Jonas, 10 November
   2026: "if it can just be ChatGPT's AI voice driven on your subscription it would be ideal probably", and "Yes, build
   it"; a trial on his Mac that day read 28 captions, and one came back with sentences of the voice's own. One call:
@@ -1475,7 +1475,7 @@ thread's "Quoted from an email" title).
    (`packages/runtime/kits/explainer/engine.js`), the page and the clips' list (`cloud-app-kit-explainer.ts`), and
    `save_app` writing both with how to make a video on the schema field. No migration, no node change and no change
    to the web's own code: an explainer is put together as any app. The tool that records the clips, the usage limit
-   and the video's languages followed on 18 November 2026 (§3a "The tool", "Languages"; migration `20260930815000`).
+   and the video's languages followed on 18 November 2026 (§3a "The tool", "Languages"; migration `20260930817000`).
 8. An app's own icons (§2 "Icons", 12 November 2026): the format and the 24 emblems (`cloud-client/app-icons.ts`,
    `interfaces.ts`), `save_app`'s checks and how to draw them on `files`, and the web's Icon and colour and Generate
    icon in the drawer.
