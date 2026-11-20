@@ -2663,15 +2663,26 @@ export class ConversationView {
 		const acknowledgements = runAcknowledgements(items, !conversation.hasEarlier, room);
 		const heldWords = this.#holdFirstWords(items, acknowledgements, runAtWork, room || conversation.loading === true);
 		const computerShown = this.#panel !== undefined && this.#computerSlot.contains(this.#panel.el);
+		// Approval cards of agents' actions (auto-review, v130) show their own outcome.
+		const reviews = new Map<string, ActionReviewCard>();
+		const requests = new Set<string>();
+		for (const item of items)
+			if (item.kind === "authorization_request") {
+				requests.add(item.id.toLowerCase());
+				const review = actionReviewCard(authorizationData(item.body));
+				if (review) reviews.set(item.id.toLowerCase(), review);
+			}
 		const folds = room
 			? new Map<string, UnaskedGroup>()
 			: unaskedGroups(items, (item) => {
 					const first = acknowledgements.get(item.id);
-					return (
-						(first !== undefined &&
-							(first.followed || heldWords.includes(item.id) || first.runId === runAtWork)) ||
-						(item.kind === "interaction" && this.#decisions?.shows(item.id) === true)
-					);
+					if (first !== undefined)
+						return first.followed || heldWords.includes(item.id) || first.runId === runAtWork;
+					if (item.kind === "interaction" || item.kind === "authorization_request")
+						return this.#decisions?.shows(item.id) === true;
+					if (item.kind !== "authorization_decision") return false;
+					const request = authorizationRequestId(item.body) ?? "";
+					return reviews.has(request) || (conversation.hasEarlier === true && !requests.has(request));
 				});
 		const foldOf = new Map<string, string>();
 		for (const [first, group] of folds) for (const id of group.items) foldOf.set(id, first);
@@ -2733,15 +2744,6 @@ export class ConversationView {
 			if (item.kind === "authorization_decision") {
 				const request = authorizationRequestId(item.body);
 				if (request) decisions.set(request, item);
-			}
-		// Approval cards of agents' actions (auto-review, v130) show their own outcome.
-		const reviews = new Map<string, ActionReviewCard>();
-		const requests = new Set<string>();
-		for (const item of items)
-			if (item.kind === "authorization_request") {
-				requests.add(item.id.toLowerCase());
-				const review = actionReviewCard(authorizationData(item.body));
-				if (review) reviews.set(item.id.toLowerCase(), review);
 			}
 		const locale = presentationLocale();
 		// Shown times (fmtTime) read by the zone and by their day against today: the time alone
@@ -2958,8 +2960,8 @@ export class ConversationView {
 								)
 							: "";
 					nodes.push(
-						keep(`fold ${folded}`, JSON.stringify([group.messages.length, text, open, locale]), "", () =>
-							threadFold({
+						keep(`fold ${folded}`, JSON.stringify([group.messages.length, text, open, locale]), "", () => {
+							const row = threadFold({
 								count: group.messages.length,
 								text,
 								open,
@@ -2967,13 +2969,13 @@ export class ConversationView {
 									if (!this.#openFolds.delete(folded)) this.#openFolds.add(folded);
 									this.update();
 								},
-							}),
-						),
+							});
+							row.dataset.fold = folded;
+							return row;
+						}),
 					);
-					if (!open) {
-						const date = parseConversationTimestamp(item.createdAt);
-						if (date) markTime(date, nodes[nodes.length - 1]!);
-					}
+					const headed = parseConversationTimestamp(item.createdAt);
+					if (headed) markTime(headed, nodes[nodes.length - 1]!);
 				}
 				if (!open) continue;
 			}
@@ -3295,7 +3297,7 @@ export class ConversationView {
 			}
 			const date = parseConversationTimestamp(item.createdAt);
 			const node = nodes[nodes.length - 1];
-			if (date && node) markTime(date, node);
+			if (date && node && item.id !== folded) markTime(date, node);
 		}
 		liveStart ??= nodes.length;
 		placeSessions(undefined);
@@ -3445,6 +3447,7 @@ export class ConversationView {
 		const reviewCard = active?.closest<HTMLElement>("[data-review-id]")?.dataset.reviewId;
 		const proposalCard = active?.closest<HTMLElement>("[data-proposal-id]")?.dataset.proposalId;
 		const changeLine = active?.closest<HTMLElement>("[data-interface-change]")?.dataset.interfaceChange;
+		const foldFocused = active?.classList.contains("thread-fold") ? active.dataset.fold : undefined;
 		// Nodes already in place stay put: a live log re-reads what is taken out and put back.
 		// (replaceChildren would also drop keyboard focus, selection and an in-progress IME edit.)
 		const separatorOf = new Map<HTMLElement, HTMLTimeElement>();
@@ -3641,6 +3644,10 @@ export class ConversationView {
 			const retry = line?.querySelector<HTMLButtonElement>("button:not(:disabled)");
 			(retry ?? line)?.focus({ preventScroll: true });
 		}
+		if (foldFocused !== undefined && active && !active.isConnected)
+			[...this.#messages.querySelectorAll<HTMLElement>(".thread-fold")]
+				.find((row) => row.dataset.fold === foldFocused)
+				?.focus({ preventScroll: true });
 		// A link in a message that was redrawn without it (the message erased) leaves the keyboard on the message, and a
 		// message gone from the thread leaves it on the thread.
 		if (focusedMessage && (!document.activeElement?.isConnected || document.activeElement === document.body))

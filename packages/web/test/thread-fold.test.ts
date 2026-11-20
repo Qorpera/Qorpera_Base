@@ -71,10 +71,7 @@ describe("what a member did not ask for", () => {
 		];
 		const groups = unaskedGroups(items);
 		expect([...groups]).toEqual([
-			[
-				id(73),
-				{ items: [id(73), update.id, id(75), result.id, report.id], messages: [update.id, result.id, report.id] },
-			],
+			[update.id, { items: [update.id, id(75), result.id, report.id], messages: [update.id, result.id, report.id] }],
 		]);
 		expect(unaskedGroups([asked, reply, say(3, "Hello, I am new here.", "first-run"), say(4, "Old.")]).size).toBe(0);
 		expect([...unaskedGroups([update, reply, result]).keys()]).toEqual([update.id, result.id]);
@@ -157,7 +154,7 @@ function setup(room = false) {
 					: [...el.querySelectorAll(".bubble")].map((bubble) => bubble.textContent).join(" "),
 		);
 	const fold = (n = 0) => view.el.querySelectorAll<HTMLButtonElement>(".thread-fold")[n]!;
-	return { view, show, rows, fold };
+	return { company, view, show, rows, fold };
 }
 
 describe("the folded line in an agent's thread", () => {
@@ -186,7 +183,7 @@ describe("the folded line in an agent's thread", () => {
 		const f = setup();
 		await f.show([asked, reply, link(3), update, link(5), result]);
 		expect(f.rows().slice(2)).toEqual(["fold:2 updatesThree versions are ready for you."]);
-		expect(f.view.el.querySelectorAll(".messages-log .peer-link, .messages-log [class*=peer]")).toHaveLength(0);
+		expect(f.view.el.querySelectorAll(".messages-log .peer-link")).toHaveLength(1);
 		await f.show([asked, reply, link(3), update, link(5), result, report]);
 		expect(f.rows().slice(2)).toEqual(["fold:3 updatesThe weekly numbers are in the folder."]);
 		f.fold().click();
@@ -223,6 +220,43 @@ describe("the folded line in an agent's thread", () => {
 			"How is the website coming?",
 			"fold:Three versions are ready for you.",
 		]);
+	});
+
+	it("keeps the keyboard on the line when it opens, closes, or takes in another update", async () => {
+		const f = setup();
+		await f.show([asked, reply, update, result]);
+		f.fold().focus();
+		f.fold().click();
+		await settle();
+		expect(document.activeElement).toBe(f.fold());
+		expect(f.fold().getAttribute("aria-expanded")).toBe("true");
+		f.fold().click();
+		await settle();
+		expect(document.activeElement).toBe(f.fold());
+		await f.show([asked, reply, update, result, report]);
+		expect(f.fold().textContent).toBe("3 updatesThe weekly numbers are in the folder.");
+		expect(document.activeElement).toBe(f.fold());
+	});
+
+	it("keeps one line when only something the thread does not draw stands between two updates", async () => {
+		const f = setup();
+		const answered = {
+			kind: "authorization_decision",
+			id: id(97),
+			sequence: 5,
+			actorUserId: userA.id,
+			body: {},
+			createdAt: at(5),
+		} as TranscriptItem;
+		const company = f.company.conversation(session.sessionId, false);
+		company.set({
+			loading: false,
+			hasEarlier: true,
+			projection: { items: [asked, reply, update, answered, result], hiddenCount: 0, lastSequence: 5 },
+		});
+		f.view.update();
+		await settle();
+		expect(f.rows().slice(2)).toEqual(["fold:2 updatesThree versions are ready for you."]);
 	});
 
 	it("folds nothing in a group chat", async () => {

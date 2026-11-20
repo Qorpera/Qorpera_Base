@@ -25,7 +25,8 @@ drop function pg_temp.run_wakes_replace(regprocedure, text, text);
 comment on function public.qorpera_read_session_events(uuid, bigint, integer) is
 	'A conversation''s events after a sequence, oldest first, for a caller who may read the session; each public send '
 	'carries its speaker (staff_speaker). Since 20260930822000 each event written by a run also carries run_wake, the '
-	'kind of wake that started that run (room: a member''s post or card answer; first-run; agent: a coworker''s '
-	'message, a worker''s report or a machine event; routine), when the run has a wake: the web shows what a member '
+	'kind of wake that started that run (room: a member''s post or card answer; human: a member''s direct message; '
+	'first-run; agent: a coworker''s message, a worker''s report or a machine event; routine), when the run has a '
+	'wake: the web shows what a member '
 	'did not ask for as one quiet line. qorpera_read_session_events_tail reads through this function and carries the '
 	'same field.';

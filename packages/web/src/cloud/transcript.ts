@@ -222,7 +222,8 @@ export function unaskedGroups(
 		}
 		if (!open) {
 			open = { items: [], messages: [] };
-			groups.set(links[0] ?? item.id, open);
+			groups.set(item.id, open);
+			links = [];
 		}
 		open.items.push(...links, item.id);
 		open.messages.push(item.id);
