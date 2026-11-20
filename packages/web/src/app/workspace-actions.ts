@@ -13,6 +13,7 @@ import type { HostedStaffAgent } from "../cloud/types.ts";
 import type { FigureChoice } from "../ui/figure-picker.ts";
 import type { InteractionCardApp } from "../ui/interaction-card.ts";
 import type { ComputerPanels } from "./views/computer.ts";
+import type { QuestionDockHost } from "./views/question-dock.ts";
 import type { ReleaseClient, ReleaseDeskOptions } from "./views/release-desk.ts";
 import type { ThreadSitesClient } from "./views/thread-sites.ts";
 
@@ -63,6 +64,7 @@ export interface WorkspaceActions {
 	/** An app of the company by its name, for a question option whose preview names one (`app:<name>`): the card shows
 	 * the app's cover, or its emblem and title, never its folder name. */
 	folderApp?: (name: string) => InteractionCardApp | undefined;
+	decisions?: QuestionDockHost;
 	/** What's new's calls and what the page reads beside them (own code storage): the agent's thread shows a change it
 	 * made that is ready as a card, put live, looked at first or answered Not yet there as on What's new
 	 * (views/thread-ready.ts). Only while the company has a project that makes a website. */

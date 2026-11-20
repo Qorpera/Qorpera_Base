@@ -101,6 +101,7 @@ import {
 	watchHistory,
 } from "./composer-quotes.ts";
 import { type ComputerPanel, ComputerPanels } from "./computer.ts";
+import { DecisionDock } from "./decision-dock.ts";
 import { GroupDetails } from "./group-details.ts";
 import { pageNoteApp, pageNoteCard } from "./page-note.ts";
 import { PairTranscriptView } from "./pair-transcript.ts";
@@ -310,6 +311,7 @@ export class ConversationView {
 	#working = false;
 	/** The agent's run waits at its login's usage limit (20260930703000): it shows no work, but it may be stopped. */
 	#waitingRun = false;
+	#decisions: DecisionDock | undefined;
 	#agentState: AgentState = "idle";
 	#activityKey = "";
 	readonly #composerWrap: HTMLElement;
@@ -939,10 +941,19 @@ export class ConversationView {
 		this.update();
 	}
 
+	#gatherDecisions(): void {
+		if (this.#decisions || this.#disposed || !this.#actions.decisions) return;
+		const dock = new DecisionDock(this.#actions.decisions);
+		dock.onChange(() => this.update());
+		this.#composerWrap.before(dock.el);
+		this.#decisions = dock;
+	}
+
 	dispose(): void {
 		if (this.#disposed) return;
 		this.#disposed = true;
 		this.#lifetime.abort();
+		this.#decisions?.dispose();
 		window.clearInterval(this.#timestampTimer);
 		this.#sizes?.disconnect();
 		this.#runNotification.remove();
@@ -2269,6 +2280,8 @@ export class ConversationView {
 		this.#agentState = room ? "idle" : this.#company.agentState(session?.staffAgentId);
 		this.#working = agentWorks(this.#agentState);
 		this.#waitingRun = !room && this.#company.pausedRunFor(session?.staffAgentId) !== undefined;
+		if (!room && session?.staffAgentId !== undefined && session.staffAgentId === this.#company.cofounderId())
+			this.#gatherDecisions();
 		this.#renderHeader(session, agent);
 		this.#threadPieces(room, Boolean(session));
 		if (!room) this.#computerByItself(agent);
@@ -2612,6 +2625,7 @@ export class ConversationView {
 			conversation.error,
 			this.#agentState,
 			this.#waitingRun,
+			this.#decisions?.waiting,
 			agent?.id,
 			agent?.appearance,
 			agent?.templateId,
@@ -3028,6 +3042,7 @@ export class ConversationView {
 					),
 				);
 			} else if (item.kind === "interaction") {
+				if (this.#decisions?.shows(item.id)) continue;
 				const email =
 					item.request.surface === "draft" &&
 					item.request.payload.platform === "email" &&

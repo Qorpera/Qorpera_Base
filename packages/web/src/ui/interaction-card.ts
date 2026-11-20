@@ -447,6 +447,13 @@ function answerText(request: InteractionRequest, answer: InteractionAnswer): str
 	return values.map((value) => labels.get(value) ?? value).join(", ") || t("Answered");
 }
 
+const NAME_MARK = "\u0000";
+
+function named(line: string, name: string): (string | HTMLElement)[] {
+	const at = line.indexOf(NAME_MARK);
+	return at < 0 ? [line] : [line.slice(0, at), h("b", null, name), line.slice(at + NAME_MARK.length)];
+}
+
 function pill(label: string, onClick: () => void, kind: "primary" | "secondary" | "quiet", busy: boolean) {
 	const element = button(
 		label,
@@ -875,11 +882,14 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 						h(
 							"strong",
 							null,
-							reworking
-								? t("{name} is reworking this", { name: context.agentName })
-								: request.surface === "question"
-									? t("{name} asks you", { name: context.agentName })
-									: t("{name} needs you", { name: context.agentName }),
+							...named(
+								reworking
+									? t("{name} is reworking this", { name: NAME_MARK })
+									: request.surface === "question"
+										? t("{name} asks you", { name: NAME_MARK })
+										: t("{name} needs you", { name: NAME_MARK }),
+								context.agentName,
+							),
 						),
 					)
 				: null,
