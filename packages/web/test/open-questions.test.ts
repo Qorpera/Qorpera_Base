@@ -1603,6 +1603,46 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		).toThrow();
 	});
 
+	it("reads the round of a question asked again, and shows it on the card in the dock", async () => {
+		const again: InteractionRequest = { ...directions, payload: { ...directions.payload, asksAgain: CARD_A } };
+		const row = {
+			sessionId: SESSION,
+			staffAgentId: AGENT,
+			createdAt: "2026-11-10T10:00:00Z",
+			kind: "question",
+			answererUserId: MEMBER,
+			canAnswer: true,
+			sequence: 9,
+			votes: [],
+		};
+		const round = {
+			number: 2,
+			previous: { interactionId: CARD_A, answeredBy: MEMBER, values: ["Warmer, with more motion"] },
+		};
+		const parsed = parseOpenDecisions({
+			schema: "qorpera.company-open-decisions/v1",
+			decisions: [
+				{ ...row, id: CARD_B, body: body(again), round },
+				{ ...row, id: CARD_A, body: body(directions), round },
+				{ ...row, id: SESSION, body: body(again), round: { number: 1 } },
+				{ ...row, id: AGENT, body: body(again), round: { number: 3, previous: { values: ["a", "b"] } } },
+			],
+		});
+		expect(parsed.map((decision) => (decision.kind === "question" ? decision.round : null))).toEqual([
+			{ number: 2, note: "Warmer, with more motion", by: MEMBER },
+			undefined,
+			undefined,
+			{ number: 3 },
+		]);
+		const { host } = company({ company: [parsed[0]!] });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		expect(dock.el.querySelector(".decision-card .interaction-round")?.textContent).toBe(
+			"Round 2You said: “Warmer, with more motion”",
+		);
+	});
+
 	it("shows another member's question after the member's own, and counts and offers elsewhere only their own", async () => {
 		const { host, open, controller } = company({
 			company: [others(CARD_A, directions), ...asOpenCards([question(CARD_B, name)])],

@@ -1465,6 +1465,10 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .interaction-kind { font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
 .interaction-heading .badge { margin-left: auto; font-size: 10px; }
 .interaction-title { margin: 8px 0 4px; font-size: 15px; font-weight: 600; line-height: 1.3; }
+.interaction-round { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 8px 0 0; font-size: 13px; line-height: 1.4; color: var(--text-muted); }
+.interaction-round-number { flex: none; padding: 1px 8px; border: 1px solid var(--border); border-radius: 999px; font-size: 12px; font-weight: 600; color: var(--text); }
+.interaction-round-note { min-width: 0; overflow-wrap: anywhere; }
+.interaction-round + .interaction-title { margin-top: 4px; }
 .interaction-text { margin: 0 0 8px; font-size: 13px; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; }
 /* A card's body: Markdown like a message, short lines with room between them, folded past about four lines. */
 .interaction-body { margin: 0 0 8px; font-size: 13px; line-height: 1.5; color: var(--text); overflow-wrap: anywhere; }

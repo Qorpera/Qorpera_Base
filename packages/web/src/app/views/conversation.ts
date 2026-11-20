@@ -19,6 +19,7 @@ import {
 } from "../../cloud/review-rules.ts";
 import { sessionAttachmentProblem } from "../../cloud/session-attachments.ts";
 import {
+	decisionRound,
 	type RunAcknowledgement,
 	reworkingNote,
 	runAcknowledgements,
@@ -3123,8 +3124,10 @@ export class ConversationView {
 				const takeOver = Boolean(agent) && item.request.surface === "takeover";
 				const address = questionInput(item.request) === "mail_address";
 				const reworking = reworkingNote(items, index, answer, this.#working || this.#waitingRun, acknowledgements);
+				const round = decisionRound(items, { ...item, ...(answer ? { answer } : {}) });
 				const cardKey = JSON.stringify([
 					item.request,
+					round ?? null,
 					// What the card shows of an answer; the input it went out as is not shown.
 					answer && [answer.outcome, answer.answer, answer.answeredBy, answer.answeredAt, answer.pending],
 					answers,
@@ -3171,6 +3174,7 @@ export class ConversationView {
 								inThread: true,
 								viewerId: this.#company.userId,
 								reworking,
+								...(round ? { round } : {}),
 								...(waitingFigure ? { figure: waitingFigure } : {}),
 								...(this.#actions.folderImage ? { image: this.#actions.folderImage } : {}),
 								...(this.#actions.folderApp ? { app: this.#actions.folderApp } : {}),

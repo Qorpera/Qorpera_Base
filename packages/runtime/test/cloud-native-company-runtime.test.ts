@@ -24,7 +24,7 @@ import type {
 	CloudCompanyPathPresenceFactory,
 } from "@qorpera/runtime/cloud-company-path-presence";
 import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
-import { CloudControlRpcEnded } from "@qorpera/runtime/cloud-control-errors";
+import { CloudControlRpcEnded, CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
 import { CLOUD_LIGHT_ASK_NAME_APP_GROUP, composeCloudLightAsk } from "@qorpera/runtime/cloud-light-ask";
 import { compileCloudNativeCompanyInstructions } from "@qorpera/runtime/cloud-native-company-context";
 import { CLAUDE_WORKER_NOT_CARRIED, CloudNativeCompanyRuntime } from "@qorpera/runtime/cloud-native-company-runtime";
@@ -2565,6 +2565,30 @@ it("tells the model the card shape and why a card was refused, so it can fix the
 		["denied", "invalid_arguments"],
 		["succeeded", null],
 	]);
+});
+
+it("tells the model why the kernel refused a card that asks another again, so it raises the card without the link", async () => {
+	const f = await fixture("company-cards-again-refused");
+	const words =
+		"asksAgain must name a question card of this thread that a member answered and that no other card asks again; leave it out otherwise";
+	f.control.appendInteractionRequest.mockImplementationOnce(async () => {
+		throw new CloudControlRpcRefused("22023", words);
+	});
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({
+		messageCount: 2,
+		finalMessageId: f.deliveries.get("look-2-plain:final")?.messageId,
+	});
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const refused = JSON.parse(evidence.fenced.outputs[1].output);
+	expect(refused.status).toBe("denied");
+	expect(refused.content.text).toBe(`REFUSED: NOT_AVAILABLE: ${words}`);
+	expect(f.control.appendInteractionRequest).toHaveBeenCalledTimes(2);
+	expect(f.control.appendInteractionRequest.mock.calls.map(([, card]) => "asksAgain" in card.data.payload)).toEqual([
+		true,
+		false,
+	]);
+	expect(f.deliveries.has("look-2:final")).toBe(false);
 });
 
 it("refuses unavailable form and credential cards without effects and lets the model recover", async () => {

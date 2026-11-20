@@ -53,6 +53,29 @@ describe("interaction cards", () => {
 		await Promise.resolve();
 	});
 
+	it("says which round a question asked again is, and whose words led to it, while it waits", () => {
+		const me = "11111111-1111-4111-8111-111111111111";
+		const round = { number: 2, note: "Warmer, with more motion", by: me };
+		const mine = renderInteractionCard(item(question), context({ round, viewerId: me }));
+		expect(mine.querySelector(".interaction-round-number")?.textContent).toBe("Round 2");
+		expect(mine.querySelector(".interaction-round-note")?.textContent).toBe("You said: “Warmer, with more motion”");
+		expect(
+			mine.querySelector(".interaction-round")?.nextElementSibling?.classList.contains("interaction-title"),
+		).toBe(true);
+		const theirs = renderInteractionCard(item(question), context({ round: { ...round, number: 3 } }));
+		expect(theirs.querySelector(".interaction-round")?.textContent).toBe(
+			"Round 3Jonas said: “Warmer, with more motion”",
+		);
+		const bare = renderInteractionCard(item(question), context({ round: { number: 2 } }));
+		expect(bare.querySelector(".interaction-round")?.textContent).toBe("Round 2");
+		expect(renderInteractionCard(item(question), context()).querySelector(".interaction-round")).toBeNull();
+		const answered = renderInteractionCard(
+			item(question, { outcome: "answered", answer: { values: ["general"] } }),
+			context({ round }),
+		);
+		expect(answered.querySelector(".interaction-round")).toBeNull();
+	});
+
 	it("skips a question as declined and never sends free text unless the card allows it", () => {
 		const ctx = context();
 		const card = renderInteractionCard(item(question), ctx);

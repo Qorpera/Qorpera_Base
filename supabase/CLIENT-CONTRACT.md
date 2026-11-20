@@ -515,6 +515,13 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   thread is the company's, and its cards are events every member reads. A
   conversation that is one member's own lists nothing. Members only (42501
   otherwise).
+  Since `20260930821000_decision_rounds` a question that asks another again
+  (`payload.asksAgain`) also carries `round`: `{number, previous:
+  {interactionId, answeredBy?, answeredAt?, values?}}`, where `number` counts
+  the cards of the chain up to this one (2 for the first re-asked question; at
+  most 20 are followed) and `previous` is the card it asks again with the
+  answer that led here (the member's typed note, as `values`). A question that
+  asks nothing again has no `round`.
 - `qorpera_cast_decision_vote(p_profile_id, p_item_id, p_choice, p_note)` →
   `qorpera.decision-vote/v1` `{itemId, choice, note}` (20260930819000): the
   caller's own vote and note on an open decision of their company (`p_item_id`
@@ -2517,7 +2524,7 @@ renders only these surfaces and never agent-authored HTML:
 
 | `surface` | `payload` (closed object) | Member outcomes | `answer` |
 | --- | --- | --- | --- |
-| `question` | `options[1..6]{label,value?,description?,style?}`, `multiSelect?`, `allowCustom?`, `dismissOnMoveOn?`, `input?` (20260930796000: exactly `{kind: "mail_address"}`, only with `allowCustom: true`; an address card whose options are handle suggestions and whose answer is the created address as a custom value) | `answered`, `declined` | `{values: string[]}` for answered, else `{}` |
+| `question` | `options[1..6]{label,value?,description?,style?}`, `multiSelect?`, `allowCustom?`, `dismissOnMoveOn?`, `input?` (20260930796000: exactly `{kind: "mail_address"}`, only with `allowCustom: true`; an address card whose options are handle suggestions and whose answer is the created address as a custom value), `asksAgain?` (20260930821000: the event id, a lower-case uuid, of the question card this one asks again, as its next round; the append refuses, `22023`, unless that card is a question of the same thread that a member answered, written or queued, and no other card asks it again) | `answered`, `declined` | `{values: string[]}` for answered, else `{}` |
 | `secret` | `name`, `label`, `purpose`, `kind?` (`token`/`password`/`text`), `connectorId?` (default `vault`; bundle v81), `repository?` (20260930693000: only with `connectorId: environment`, owner/name in lower case) | `provided`, `declined` | send `{}`; the value goes to the cloud secret custody (`qorpera_begin_cloud_secret_capture` → POST to the broker's `/v1/captures/<ticket>`), and `provided` is accepted only when an active secret with that connector and name exists (owned by the company or by you); the kernel writes `{secretId, version}` into the answer. A coding value (`connectorId: environment`, a name `qorpera_coding_environment_name_allowed` takes) is an environment variable coding sessions get: with `repository`, an owner or admin saves it for the company and gives it to that repository (`qorpera_grant_coding_environment_secret`); otherwise it is the member's own, which reaches their coding sessions in every repository |
 | `form` | `domain`, `reason?`, `submitAfterFill?`, `fields[1..8]{id,label,type,required?,placeholder?,options?,secret?,target?,vaultName?}` | `answered`, `declined` | `{values: {id: string|boolean}, fields: {id: filled|failed|skipped}}`; values for secret fields are refused |
 | `takeover` | `instruction`, `reason?`, `domain?`, `idpDomain?` | `handed_back`, `dismissed` | `{}` |

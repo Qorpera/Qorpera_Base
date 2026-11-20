@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { isInterfaceName } from "@qorpera/cloud-client/interfaces";
-import type { JsonValue } from "@qorpera/contracts";
+import { type JsonValue, POSTGRES_UUID_PATTERN } from "@qorpera/contracts";
 import { CODING_VALUE_REPOSITORY, codingValueNameAllowed } from "./cloud-coding-value-names.ts";
 import { CloudToolArgumentRefusal } from "./cloud-native-tool-boundary.ts";
 
@@ -76,7 +76,7 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 					preview: chars(
 						1,
 						512,
-						"A picture of this option: an image you made for it, by its company file path, or app:<name> for an interface app. Options with pictures show as big boxes to pick from.",
+						"A picture of this option: your image's company file path, or app:<name> for an interface app. Options with pictures show as big boxes to pick from.",
 					),
 				}),
 			},
@@ -87,6 +87,7 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 			},
 			dismissOnMoveOn: { type: "boolean" },
 			input: closedObject(["kind"], { kind: { type: "string", enum: ["mail_address"] } }),
+			asksAgain: { type: "string" },
 		},
 		"surface question: 1 to 6 likely answers; allowCustom adds a field for the member's own.",
 	),
@@ -229,7 +230,7 @@ function payloadRefusal(surface: CloudInteractionSurface): string {
 
 const ASK_MEMBER_WORDS = [
 	"Raise one card for a member: question, secret, takeover or draft. The card is your final send, and text only introduces it: finish independent work first and nothing that depends on the answer, and in text do not answer the card's question, guess the choice or start on one.",
-	"- question: an answer your work cannot go on without, never only in chat: the card shows members that work is stopped at them. Not for facts you can find or permission you have; ideas, offers and news stay in chat. Ask once, act on the chosen answer, and follow up only for what is missing. Words the member typed in the card (a value that is none of your options) are their note, not a pick: when the note is itself the answer (a name, a figure, their own choice), act on it; otherwise the decision is still open: rework what the note asks, ask again with the changed options, and start nothing that depends on it. After a note, post nothing in their thread until you have the new question or have acted; if your turn must end first (a worker or your machine does the rework), your final send says only that the question is being reworked and comes back.",
+	"- question: an answer your work cannot go on without, never only in chat: the card shows members that work is stopped at them. Not for facts you can find or permission you have; ideas, offers and news stay in chat. Ask once, act on the chosen answer, and follow up only for what is missing. Words the member typed in the card (a value that is none of your options) are their note, not a pick: when the note is itself the answer (a name, a figure, their own choice), act on it; otherwise the decision is still open: rework what the note asks, ask again with the changed options and asksAgain: that card's interactionId, and start nothing that depends on it. After a note, post nothing in their thread until you have the new question or have acted; if your turn must end first (a worker or your machine does the rework), your final send says only that the question is being reworked and comes back.",
 	"- secret: the member saves a value into the company vault; you never see it. It fills no page and signs in nowhere.",
 	"- takeover: for a sign-in or page entry on your desktop computer the member does it on the screen you both use, so never promise it is private; end your turn: their I'm done wakes you. Then look, since I'm done is not proof of a sign-in. With no desktop computer, say so.",
 	"- draft: an email or message the member edits, then saves, sends or discards. Raise it directly, with no question before it. A card neither sends nor saves anything and asking for a draft never allows sending: report saved or sent only from a tool result or the card's outcome; a sent outcome is already sent.",
@@ -323,8 +324,12 @@ function payloadValid(surface: CloudInteractionSurface, payload: Record<string, 
 	switch (surface) {
 		case "question": {
 			if (
-				!closedKeys(payload, ["options", "multiSelect", "allowCustom", "dismissOnMoveOn", "input"]) ||
+				!closedKeys(payload, ["options", "multiSelect", "allowCustom", "dismissOnMoveOn", "input", "asksAgain"]) ||
 				questionInputIssue(payload) !== undefined ||
+				!(
+					!("asksAgain" in payload) ||
+					(typeof payload.asksAgain === "string" && POSTGRES_UUID_PATTERN.test(payload.asksAgain))
+				) ||
 				!Array.isArray(payload.options) ||
 				payload.options.length < 1 ||
 				payload.options.length > 6 ||

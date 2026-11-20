@@ -1,5 +1,5 @@
 import type { Cloud } from "./client.ts";
-import { isGmailDraft, parseInteractionRequest } from "./interactions.ts";
+import { asksAgain, type DecisionRound, isGmailDraft, parseInteractionRequest, roundNote } from "./interactions.ts";
 import type { OpenQuestion } from "./open-questions.ts";
 import { array, boundedInteger, CloudShapeError, jsonValue, record, timestamp, uuid } from "./parse.ts";
 import { type ActionReviewCard, actionReviewCard } from "./review-rules.ts";
@@ -22,6 +22,23 @@ interface CompanyStanding {
 
 export interface OpenCard extends OpenQuestion, CompanyStanding {
 	kind: "question";
+	round?: DecisionRound;
+}
+
+function parseRound(value: unknown): DecisionRound | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const round = value as Record<string, unknown>;
+	if (!Number.isSafeInteger(round.number) || (round.number as number) < 2) return undefined;
+	const previous =
+		round.previous && typeof round.previous === "object" && !Array.isArray(round.previous)
+			? (round.previous as Record<string, unknown>)
+			: {};
+	const note = roundNote(previous.values);
+	return {
+		number: round.number as number,
+		...(note ? { note } : {}),
+		...(typeof previous.answeredBy === "string" ? { by: previous.answeredBy.toLowerCase() } : {}),
+	};
 }
 
 export interface OpenDraft extends OpenQuestion, CompanyStanding {
@@ -97,6 +114,7 @@ export function parseOpenDecisions(value: unknown): OpenDecision[] {
 		if (kind !== "question" && kind !== "draft") return [];
 		const request = parseInteractionRequest(jsonValue(item.body));
 		if (request?.surface !== kind || (kind === "draft" && !isGmailDraft(request))) return [];
+		const round = kind === "question" && asksAgain(request) ? parseRound(item.round) : undefined;
 		return [
 			{
 				kind,
@@ -104,6 +122,7 @@ export function parseOpenDecisions(value: unknown): OpenDecision[] {
 				sequence: boundedInteger(item.sequence, "open decision sequence", 1, Number.MAX_SAFE_INTEGER),
 				actorUserId: uuid(item.answererUserId, "open decision member"),
 				request,
+				...(round ? { round } : {}),
 			},
 		];
 	});

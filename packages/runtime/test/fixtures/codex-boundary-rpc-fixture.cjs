@@ -42,6 +42,12 @@ const companyCalls = mode === "company-office"
 			{ tool: "ask_member", arguments: { idempotencyKey: `digest-channel-${"k".repeat(113)}`, text: "One thing to decide first.", surface: "question", title: "Which channel should the digest go to?", payload: { options: [{ label: "#general" }, { label: "#finance" }] } } },
 			{ tool: "ask_member", arguments: { idempotencyKey: `digest-channel-${"k".repeat(113)}`, text: "One thing to decide first.", surface: "question", title: "Which channel should the digest go to?", payload: { options: [{ label: "#general" }, { label: "#finance" }] } } },
 		]
+	: mode === "company-cards-again-refused"
+	? [
+			{ tool: "send_message", arguments: { idempotencyKey: "progress", text: "Reworking the look.", phase: "progress" } },
+			{ tool: "ask_member", arguments: { idempotencyKey: "look-2", text: "Here are the warmer looks.", surface: "question", title: "Which of the warmer looks?", payload: { options: [{ label: "Amber" }, { label: "Sand" }], asksAgain: "5a1e9f04-7c2b-4d3e-a1b2-0123456789ab" } } },
+			{ tool: "ask_member", arguments: { idempotencyKey: "look-2-plain", text: "Here are the warmer looks.", surface: "question", title: "Which of the warmer looks?", payload: { options: [{ label: "Amber" }, { label: "Sand" }] } } },
+		]
 	: mode === "company-cards-retry"
 	? [
 			// What the live model sent (options as plain strings), then the card its refusal asked for.
