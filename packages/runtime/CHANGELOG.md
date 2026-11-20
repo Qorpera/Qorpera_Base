@@ -1,6 +1,17 @@
 # Changelog
 
 ## [Unreleased]
+- Release v265 (#1940, narrate_app gives an agent's explainer film its voice, and films in English and Danish; master
+  since v264's release merge c0acd5d63 holds #1940 alone): migration `20260930817000` first, then runtime bundle 265
+  `df25c9ccc2606496bc03843260c7f6a8c8cfbe09cbcdb0494acc87ea26805536` (activation `20260929026599`, which requires
+  817000; its platform update `explainer-voice-and-languages`), the runner image of node release 152 with the native
+  provider host `5f5048a8f214b739dac1f97f39e144031e5e927538c035bc33ceb9b009516beb` (the patched Codex 0.170.0 `9d6a86ec`
+  as in v264). The coding executor stays f8db2998, the shared vault and the login helper stay as live: their builds
+  at this release differ from the live ones only by narrate_app in a list of operation names they never read. The
+  company machine image, the folder service, the object gateway and the test machines do not move. Node 2's fast host goes back to 12 run slots and its
+  wake pass-forward is turned on again (both as before v264's roll). The founder waived a test voice call before the
+  release (20 Nov 2026: "dont need to - just get it out"); the first film an agent voices is its proof. Way back:
+  bundle 264 by the release lane's emergency path; the migration stays.
 - An explainer gets its voice: `narrate_app {name, operationKey, machine?, voice?}` (deploy/first-node/RUNTIME-INTERFACE-APPS.md §3a "The tool"; Jonas, 10 Nov 2026: "Yes, build it"; migration `20260930817000`, SQL test 1302). On a running company machine it reads the captions of the agent's own explainer from the running video, records on the run's voice lane only the captions that have no clip yet (a clip is named by its caption's hash, so a changed part costs only its changed captions), keeps a turn only when the transcript says the caption was said as written, and commits `voice/clips.json` and the page under its receipt. It reads the login's usage before it starts (`CloudVoiceChannel.usage`, the lane's `voiceUsage`: `account/rateLimits/read`) and places no call at the limit; a call the limit cuts (`thread/realtime/error` "You have reached your usage limit.", seen 18 Nov 2026) ends as `CloudVoiceLimitReached`, what was recorded is saved, and the answer says `limit_reached` with how many captions are spoken and left and when the limit resets. Offered to a Codex login's run with machines, on demand (`more_tools`); review class `internal`. The explainer's guide and a platform update tell agents.
 - An explainer in English and Danish (Jonas, 18 Nov 2026: "the videos needs language selection too, letting you switch between the english and danish"): the engine takes `{en: "…", da: "…"}` wherever it takes a text, shows a button a language, builds the scenes again in the language chosen and stays on the caption it was at; `voice-captions.cjs` prints every language's captions, `narrate_app` records each, and `look` names captions that lack a language (`explainerSaid`).
 - Release v264 (#1935, GPT-6.2 Sol the platform's GPT model; master since v263's release merge 54658d8f8 holds #1935
