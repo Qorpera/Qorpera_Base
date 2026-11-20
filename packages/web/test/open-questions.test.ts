@@ -1330,20 +1330,23 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		dock.dispose();
 	});
 
-	it("keeps a sent email whose agent was not told in the dock, and tells the agent on the next read", async () => {
-		let told = false;
+	it("keeps a sent email whose agent was not told in the dock, and picks the account only to tell the agent", async () => {
+		let owed: boolean[] = [];
 		const selectSessionAccount = vi.fn(async () => "conn-2");
-		const { host, open, unlist, draftSteps } = company({
+		const { host, open, unlist, draftSteps, controller } = company({
 			drafts: [draft],
 			draft: async (action) =>
-				action === "send" || (action === "load" && draftSteps.length > 1)
-					? { ...readyDraft, status: "sent", actionId: CARD_C, notificationPending: !told }
-					: readyDraft,
+				action === "send"
+					? { ...readyDraft, status: "sent", actionId: CARD_C, notificationPending: true }
+					: draftSteps.length > 1
+						? { ...readyDraft, status: "sent", actionId: CARD_C, notificationPending: owed.shift() ?? false }
+						: readyDraft,
 			accounts: { listConnections: vi.fn(async () => ({})), selectSessionAccount },
 		});
 		const dock = new DecisionDock(host);
 		document.body.append(dock.el);
 		await rest();
+		expect(selectSessionAccount).not.toHaveBeenCalled();
 		press(dock, "Send email");
 		await rest();
 		unlist(DRAFT);
@@ -1353,11 +1356,41 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		expect(dock.el.querySelector(".decision-card .email-draft-note")?.textContent).toBe(
 			"Your email action is complete. The agent has not been notified yet.",
 		);
+		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(1);
 		selectSessionAccount.mockClear();
-		told = true;
+		owed = [true, false];
 		press(dock, "Retry notifying agent");
 		await rest();
+		expect(selectSessionAccount).toHaveBeenCalledExactlyOnceWith(SESSION, controller.signal);
+		expect(draftSteps.slice(-2)).toEqual([
+			[SESSION, DRAFT, "load"],
+			[SESSION, DRAFT, "load"],
+		]);
 		expect(dock.decided.map((entry) => [entry.decision.interactionId, entry.state])).toEqual([[DRAFT, "sent"]]);
+		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(0);
+		dock.dispose();
+	});
+
+	it("keeps a draft whose send was not confirmed when its time runs out, and sets no clock for a time that has passed", async () => {
+		vi.setSystemTime(new Date("2026-11-10T12:00:00Z"));
+		const timed: OpenDraft = { ...draft, request: { ...letter, expiresAt: "2026-11-10T12:00:10Z" } };
+		const { host } = company({
+			drafts: [timed],
+			draft: async (action) => {
+				if (action === "send") throw new Error("The connection dropped");
+				return readyDraft;
+			},
+		});
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await rest();
+		press(dock, "Send email");
+		await rest();
+		await vi.advanceTimersByTimeAsync(11_000);
+		await rest();
+		expect(dock.shows(DRAFT)).toBe(true);
+		expect(dock.el.querySelector(".decision-card .email-draft-error")?.textContent).toBe("The connection dropped");
+		expect(vi.getTimerCount()).toBeLessThanOrEqual(1);
 		dock.dispose();
 	});
 

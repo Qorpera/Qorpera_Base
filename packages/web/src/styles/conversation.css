@@ -1872,7 +1872,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .decision-card > .email-draft-card { display: flex; flex-direction: column; max-height: min(720px, 70vh); }
 .decision-card > .email-draft-card > *, .decision-card .email-draft-panel > * { flex: none; }
 .decision-card > .email-draft-card > .email-draft-panel { display: flex; flex: 0 1 auto; flex-direction: column; min-height: 0; }
-.decision-card .email-draft-panel > .email-draft-body { flex: 0 1 auto; min-height: 64px; }
+.decision-card .email-draft-panel > .email-draft-body { flex: 0 1 auto; min-height: 112px; }
 .decision-card > :is(.interaction-card, .auth-card).is-cut::after { content: ""; position: sticky; bottom: -14px; display: block; height: 56px; margin: -56px -18px -14px; background: linear-gradient(to bottom, transparent, var(--popover, var(--bg)) 85%); pointer-events: none; }
 .decision-card .interaction-call { color: var(--text-muted); }
 .decision-card .interaction-call strong { font-weight: 450; }

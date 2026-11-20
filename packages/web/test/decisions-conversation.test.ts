@@ -74,6 +74,8 @@ function setup(cofounder: boolean) {
 			hold: () => {},
 			release: () => {},
 			draftEditor: (draft: OpenDraft) => company.emailDraftEditor(draft.interactionId),
+			draftUnsettled: () => false,
+			unsettledDrafts: () => [],
 			loadDraft: async () => ({
 				from: "jonas@mywave.test",
 				content: { to: ["ada@acme.test"], cc: [], subject: "Our offer", body: "Hello Ada" },

@@ -1,9 +1,4 @@
-import type {
-	EmailDraftAction,
-	EmailDraftContent,
-	EmailDraftEditor,
-	EmailDraftState,
-} from "../../cloud/email-drafts.ts";
+import type { EmailDraftAction, EmailDraftContent, EmailDraftState } from "../../cloud/email-drafts.ts";
 import { type InteractionOutcome, questionOptions, typedNote } from "../../cloud/interactions.ts";
 import {
 	decisionTitle,
@@ -67,23 +62,11 @@ export type Decided = DecidedCard | DecidedApproval | DecidedDraft;
 
 interface Shared {
 	readonly decided: Decided[];
-	readonly drafts: Map<string, OpenDraft>;
 	readonly errors: Map<string, string>;
 	readonly docks: Set<() => void>;
 }
 
 const SHARED = new WeakMap<OpenQuestions, Shared>();
-
-function unsettled(editor: EmailDraftEditor): boolean {
-	const status = editor.state?.status;
-	return (
-		(editor.busy !== undefined && editor.busy !== "load") ||
-		editor.unconfirmedAction !== undefined ||
-		status === "sending" ||
-		status === "unconfirmed" ||
-		((status === "sent" || status === "discarded") && editor.state?.notificationPending === true)
-	);
-}
 
 function decidedWords(entry: Decided): { word: string; said: string } {
 	if (entry.decision.kind === "draft") {
@@ -117,7 +100,6 @@ export class DecisionDock {
 	readonly #host: QuestionDockHost;
 	readonly #lifetime = new AbortController();
 	readonly #decided: Decided[];
-	readonly #drafts: Map<string, OpenDraft>;
 	readonly #holds = new Map<string, ReturnType<typeof setTimeout>>();
 	readonly #errors: Map<string, string>;
 	readonly #docks: Set<() => void>;
@@ -143,11 +125,10 @@ export class DecisionDock {
 		this.#host = host;
 		let shared = SHARED.get(host.questions);
 		if (!shared) {
-			shared = { decided: [], drafts: new Map(), errors: new Map(), docks: new Set() };
+			shared = { decided: [], errors: new Map(), docks: new Set() };
 			SHARED.set(host.questions, shared);
 		}
 		this.#decided = shared.decided;
-		this.#drafts = shared.drafts;
 		this.#errors = shared.errors;
 		this.#docks = shared.docks;
 		this.#docks.add(this.#redraw);
@@ -337,41 +318,32 @@ export class DecisionDock {
 
 	#cards(): OpenDecision[] {
 		const now = Date.now();
-		const listed = this.#host.questions.store.get().decisions;
+		const { questions } = this.#host;
 		return [
-			...listed.filter(
-				(decision) =>
-					expiry(decision) > now &&
-					!this.#onItsWay(decision.interactionId) &&
-					!this.#host.conversation(decision.sessionId).get().interactionAnswers?.[decision.interactionId],
-			),
-			...this.#unsettledDrafts(listed),
+			...questions.store
+				.get()
+				.decisions.filter(
+					(decision) =>
+						(expiry(decision) > now || (decision.kind === "draft" && questions.draftUnsettled(decision))) &&
+						!this.#onItsWay(decision.interactionId) &&
+						!this.#host.conversation(decision.sessionId).get().interactionAnswers?.[decision.interactionId],
+				),
+			...questions.unsettledDrafts(),
 		].sort(decisionOrder);
-	}
-
-	#unsettledDrafts(listed: readonly OpenDecision[]): OpenDraft[] {
-		const ids = new Set(listed.map((decision) => decision.interactionId));
-		for (const decision of listed) if (decision.kind === "draft") this.#drafts.set(decision.interactionId, decision);
-		const kept: OpenDraft[] = [];
-		for (const [id, draft] of this.#drafts) {
-			if (ids.has(id)) continue;
-			if (unsettled(this.#host.questions.draftEditor(draft))) kept.push(draft);
-			else this.#drafts.delete(id);
-		}
-		return kept;
 	}
 
 	#untilNextExpiry(cards: OpenDecision[]): void {
 		if (this.#expires !== undefined) clearTimeout(this.#expires);
 		this.#expires = undefined;
-		const next = Math.min(...cards.map(expiry));
+		const now = Date.now();
+		const next = Math.min(...cards.map(expiry).filter((at) => at > now));
 		if (!Number.isFinite(next)) return;
 		this.#expires = setTimeout(
 			() => {
 				this.#expires = undefined;
 				this.#draw();
 			},
-			Math.min(Math.max(next - Date.now(), 0) + 1, MAX_TIMER_MS),
+			Math.min(next - now + 1, MAX_TIMER_MS),
 		);
 	}
 
@@ -506,7 +478,6 @@ export class DecisionDock {
 			at: Date.now(),
 			state: "sent",
 		});
-		this.#drafts.delete(id);
 		this.#host.questions.forget(id);
 		void this.#host.questions.refresh();
 		if (this.#current === id) this.#current = undefined;

@@ -61,6 +61,17 @@ export interface OpenQuestionsState {
 	readonly unavailable: boolean;
 }
 
+function unsettled(editor: EmailDraftEditor): boolean {
+	const status = editor.state?.status;
+	return (
+		(editor.busy !== undefined && editor.busy !== "load") ||
+		editor.unconfirmedAction !== undefined ||
+		status === "sending" ||
+		status === "unconfirmed" ||
+		((status === "sent" || status === "discarded") && editor.state?.notificationPending === true)
+	);
+}
+
 export type QuestionAccounts = Pick<WebNativeSubscription, "listConnections" | "selectSessionAccount">;
 
 /** A hint in the company's conversations reads again at most this often; with none, the clock does. */
@@ -80,6 +91,7 @@ export class OpenQuestions {
 	#reads = 0;
 	#questionsOnly = false;
 	readonly #onTheirWay = new Set<string>();
+	readonly #drafts = new Map<string, OpenDraft>();
 	#reading: Promise<void> | undefined;
 	#again = false;
 	/** A hint's read, at most once an interval; one still queued when the last watcher left is not made. */
@@ -120,6 +132,8 @@ export class OpenQuestions {
 				(listed) => {
 					if (version !== this.#reads) return;
 					const decisions = listed.filter((decision) => !this.#answered.has(decision.interactionId));
+					for (const decision of decisions)
+						if (decision.kind === "draft") this.#drafts.set(decision.interactionId, decision);
 					this.store.set({
 						decisions,
 						questions: decisions.filter((decision): decision is OpenCard => decision.kind === "question"),
@@ -164,6 +178,21 @@ export class OpenQuestions {
 		return this.#company.emailDraftEditor(draft.interactionId);
 	}
 
+	draftUnsettled(draft: OpenDraft): boolean {
+		return unsettled(this.draftEditor(draft));
+	}
+
+	unsettledDrafts(): OpenDraft[] {
+		const listed = new Set(this.store.get().decisions.map((decision) => decision.interactionId));
+		const kept: OpenDraft[] = [];
+		for (const [id, draft] of this.#drafts) {
+			if (listed.has(id)) continue;
+			if (this.draftUnsettled(draft)) kept.push(draft);
+			else this.#drafts.delete(id);
+		}
+		return kept;
+	}
+
 	async loadDraft(draft: OpenDraft): Promise<EmailDraftState> {
 		const state = await this.#company.loadEmailDraft(draft.sessionId, draft.interactionId);
 		if (!state.notificationPending) return state;
@@ -179,6 +208,7 @@ export class OpenQuestions {
 	forget(interactionId: string): void {
 		this.#answered.add(interactionId);
 		const { questions, decisions } = this.store.get();
+		if (this.#drafts.delete(interactionId)) this.#count();
 		if (!decisions.some((decision) => decision.interactionId === interactionId)) return;
 		const left = decisions.filter((decision) => decision.interactionId !== interactionId);
 		this.store.set({
@@ -201,7 +231,8 @@ export class OpenQuestions {
 
 	#count(): void {
 		this.#company.setOpenDecisions(
-			this.store.get().decisions.filter((decision) => !this.#onTheirWay.has(decision.interactionId)).length,
+			this.store.get().decisions.filter((decision) => !this.#onTheirWay.has(decision.interactionId)).length +
+				this.unsettledDrafts().length,
 		);
 	}
 
