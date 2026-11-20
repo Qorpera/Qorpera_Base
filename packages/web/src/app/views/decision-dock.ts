@@ -885,9 +885,9 @@ export class DecisionDock {
 				pickOf !== undefined &&
 				error instanceof Error &&
 				/Only the member this card was raised for can answer it/.test(error.message);
-			if (pickOf !== undefined) await this.#host.questions.refresh().catch(() => {});
+			const fresh = pickOf !== undefined && (await this.#host.questions.refreshAfter());
 			const sent = pickOf === undefined ? undefined : (entry as DecidedCard).value.values;
-			const listed = pickOf === undefined ? undefined : this.#listed(id);
+			const listed = fresh ? this.#listed(id) : undefined;
 			const unchanged =
 				listed?.kind === "question" &&
 				Array.isArray(sent) &&

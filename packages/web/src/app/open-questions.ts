@@ -94,6 +94,7 @@ export class OpenQuestions {
 	#stopWatching: (() => void) | undefined;
 	#reads = 0;
 	#source: "company" | "member" | "questions" = "company";
+	#applied = 0;
 	#loginReading = false;
 	#loginReadAt: number | undefined;
 	readonly #onTheirWay = new Set<string>();
@@ -141,6 +142,7 @@ export class OpenQuestions {
 			.then(
 				(listed) => {
 					if (version !== this.#reads) return;
+					this.#applied++;
 					for (const [id, mine] of this.#myVotes)
 						if (mine.settledAt !== undefined && version > mine.settledAt) this.#myVotes.delete(id);
 					const decisions = listed
@@ -222,6 +224,13 @@ export class OpenQuestions {
 	async actDraft(draft: OpenDraft, action: EmailDraftAction, content: EmailDraftContent): Promise<EmailDraftState> {
 		await this.#chooseAccount(draft.sessionId);
 		return this.#company.actEmailDraft(draft.sessionId, draft.interactionId, action, content);
+	}
+
+	async refreshAfter(): Promise<boolean> {
+		if (this.#reading) await this.#reading;
+		const before = this.#applied;
+		await this.refresh();
+		return this.#applied > before;
 	}
 
 	async readLogin(): Promise<void> {

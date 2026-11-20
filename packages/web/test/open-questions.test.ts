@@ -2274,6 +2274,66 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		dock.dispose();
 	});
 
+	it("judges a refused pick by votes read after the refusal, never by a read that was already on its way", async () => {
+		const list: OpenDecision[] = [
+			others(CARD_B, name, [{ userId: SARA, choice: "mywave", updatedAt: "2026-11-10T10:05:00Z" }]),
+		];
+		const { host, open, controller } = company({ company: list, accounts: withLogin });
+		controller.answerInteraction.mockImplementationOnce(async () => {
+			throw new Error("Only the member this card was raised for can answer it");
+		});
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await rest();
+		await vi.advanceTimersByTimeAsync(SETTLE_MS);
+		sendPick(dock)?.click();
+		await settle();
+		let early: (value: OpenDecision[]) => void = () => {};
+		controller.listCompanyOpenDecisions.mockImplementationOnce(
+			() =>
+				new Promise<OpenDecision[]>((resolve) => {
+					early = resolve;
+				}),
+		);
+		void open.refresh();
+		const before = [others(CARD_B, name, [{ userId: SARA, choice: "mywave", updatedAt: "2026-11-10T10:05:00Z" }])];
+		list[0] = others(CARD_B, name, [{ userId: SARA, choice: "Not yet", updatedAt: "2026-11-10T10:09:00Z" }]);
+		await vi.advanceTimersByTimeAsync(UNDO_MS + 1);
+		await rest();
+		expect(dock.el.querySelector(".decision-error")).toBeNull();
+		early(before);
+		await rest();
+		await rest();
+		expect(dock.el.querySelector(".decision-error")?.textContent).toBe(
+			"Nothing was sent. Jonas's pick is not that option now. Look at their vote again.",
+		);
+		expect(sendPick(dock)?.textContent).toBe("Send Jonas's pick: Not yet");
+		dock.dispose();
+
+		const offline = company({
+			company: [others(CARD_B, name, [{ userId: SARA, choice: "mywave", updatedAt: "2026-11-10T10:05:00Z" }])],
+			accounts: withLogin,
+		});
+		offline.controller.answerInteraction.mockImplementationOnce(async () => {
+			throw new Error("Only the member this card was raised for can answer it");
+		});
+		const second = new DecisionDock(offline.host);
+		document.body.append(second.el);
+		await rest();
+		await vi.advanceTimersByTimeAsync(SETTLE_MS);
+		sendPick(second)?.click();
+		await settle();
+		offline.controller.listCompanyOpenDecisions.mockImplementation(async () => {
+			throw new Error("offline");
+		});
+		await vi.advanceTimersByTimeAsync(UNDO_MS + 1);
+		await rest();
+		expect(second.el.querySelector(".decision-error")?.textContent).toBe(
+			"Nothing was sent. Jonas's pick is not that option now. Look at their vote again.",
+		);
+		second.dispose();
+	});
+
 	it("offers no send to a member without a usable login, nor to a spectator", async () => {
 		const voted = () => [
 			others(CARD_B, name, [{ userId: SARA, choice: "mywave", updatedAt: "2026-11-10T10:05:00Z" }]),
