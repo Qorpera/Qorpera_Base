@@ -58,6 +58,8 @@ export const COMPANY: Record<string, string> = {
 	// The company controller's own messages (app/company.ts)
 	"Only the person who wrote the message can try it again.": "Kun den, der skrev beskeden, kan prøve igen.",
 	"Select an active model account, then try again.": "Vælg en aktiv modelkonto, og prøv igen.",
+	"Your answer did not go. It would start this agent's work, and only members of the agent's thread can do that. Ask someone in that thread to answer.":
+		"Dit svar blev ikke sendt. Det ville sætte agentens arbejde i gang, og det kan kun medlemmer af agentens tråd. Bed en i den tråd om at svare.",
 	"Answering cards here is not available yet. Reply in a message instead.":
 		"Det er endnu ikke muligt at besvare kort her. Svar i en besked i stedet.",
 	"This run was already handled.": "Denne kørsel er allerede håndteret.",
