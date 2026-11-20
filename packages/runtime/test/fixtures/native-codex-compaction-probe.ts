@@ -221,7 +221,7 @@ export async function runNativeCodexCompactionProbe(
 				assert(body.includes(SUMMARY));
 				assert(!body.includes(FORGED));
 				assert(body.includes(LAW));
-				assert(body.includes(CLOUD_TOOL_RESULT_INSTRUCTIONS));
+				assert(body.includes(JSON.stringify(CLOUD_TOOL_RESULT_INSTRUCTIONS).slice(1, -1)));
 				resumedWithLaws = true;
 			}
 			if (index === 3) {

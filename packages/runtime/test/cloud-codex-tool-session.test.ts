@@ -151,7 +151,7 @@ it.each(["response-first", "notify-first", "fence-before-started", "prewarm-befo
 		await expect(run(mode).result).resolves.toEqual({
 			providerSessionId: "thread_fixture",
 			toolCalls: 0,
-			codexVersion: "0.155.1",
+			codexVersion: "0.170.0",
 			fencedRequests: 1,
 		});
 	},
@@ -645,7 +645,7 @@ it("reads a message near the wire limit that arrives over many pipe reads", asyn
 	await expect(run("large-line").result).resolves.toEqual({
 		providerSessionId: "thread_fixture",
 		toolCalls: 0,
-		codexVersion: "0.155.1",
+		codexVersion: "0.170.0",
 		fencedRequests: 1,
 	});
 });
@@ -1146,7 +1146,7 @@ it("leaves the turn open after a confirmed final send: the model ends it, and th
 	await expect(result).resolves.toEqual({
 		providerSessionId: "thread_fixture",
 		toolCalls: 1,
-		codexVersion: "0.155.1",
+		codexVersion: "0.170.0",
 		fencedRequests: 2,
 	});
 	await observability.close();
@@ -1229,7 +1229,7 @@ it("gives its caller the usage limit a provider failure after the answer met; a 
 	await expect(limited.result).resolves.toEqual({
 		providerSessionId: "thread_fixture",
 		toolCalls: 1,
-		codexVersion: "0.155.1",
+		codexVersion: "0.170.0",
 		fencedRequests: 2,
 		usageSignal: "usage_limit",
 	});
@@ -1251,7 +1251,7 @@ describe("a turn that ended with the run's closing act undone", () => {
 		await expect(result).resolves.toEqual({
 			providerSessionId: "thread_fixture",
 			toolCalls: 1,
-			codexVersion: "0.155.1",
+			codexVersion: "0.170.0",
 			fencedRequests: 3,
 		});
 		await observability.close();
