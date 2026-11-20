@@ -43,15 +43,41 @@ select pg_temp.sp_refused('92400000-0000-4000-8000-000000000002', '{"values":["f
 	'Room sponsor is unavailable');
 select pg_temp.sp_refused('92400000-0000-4000-8000-000000000004', '{"values":["finance"]}', '42501',
 	'Room sponsor is unavailable');
-select pg_temp.sp_refused('92400000-0000-4000-8000-000000000003', '{"values":["finance"]}', '42501', null);
+select pg_temp.sp_refused('92400000-0000-4000-8000-000000000003', '{"values":["finance"]}', '42501',
+	'session write access is required');
 select pg_temp.sp_refused('92400000-0000-4000-8000-000000000002', '{"values":["Digest"]}', '42501',
 	'Only the member this card was raised for can answer it', 'answered', '13070000-0000-4000-8000-0000000000d1');
 
 savepoint sp_changed_vote;
+select pg_temp.dv_cast('92400000-0000-4000-8000-000000000001', '59600000-0000-4000-8000-0000000009a1', 'general', null);
+select pg_temp.sp_refused('92400000-0000-4000-8000-000000000002', '{"values":["finance"]}', '42501',
+	'Only the member this card was raised for can answer it');
+select pg_temp.sp_refused('92400000-0000-4000-8000-000000000002', '{"values":["general"]}', '42501',
+	'Room sponsor is unavailable');
 select pg_temp.dv_cast('92400000-0000-4000-8000-000000000001', '59600000-0000-4000-8000-0000000009a1', null, 'Not sure yet.');
+select pg_temp.sp_refused('92400000-0000-4000-8000-000000000002', '{"values":["general"]}', '42501',
+	'Only the member this card was raised for can answer it');
 select pg_temp.sp_refused('92400000-0000-4000-8000-000000000002', '{"values":["finance"]}', '42501',
 	'Only the member this card was raised for can answer it');
 rollback to savepoint sp_changed_vote;
+
+savepoint sp_other_cards;
+do $$
+begin
+	set local session_replication_role = replica;
+	insert into public.qorpera_decision_votes(profile_id, item_id, user_id, choice)
+	values ('92400000-0000-4000-8000-000000000010', '13070000-0000-4000-8000-0000000000d1',
+			'92400000-0000-4000-8000-000000000001', 'Digest'),
+		('92400000-0000-4000-8000-000000000010', '13070000-0000-4000-8000-0000000000b1',
+			'92400000-0000-4000-8000-000000000001', 'Yes');
+	set local session_replication_role = origin;
+end
+$$;
+select pg_temp.sp_refused('92400000-0000-4000-8000-000000000002', '{"values":["Digest"]}', '42501',
+	'Only the member this card was raised for can answer it', 'answered', '13070000-0000-4000-8000-0000000000d1');
+select pg_temp.sp_refused('92400000-0000-4000-8000-000000000002', '{"values":["Yes"]}', '55000',
+	'interaction request has expired', 'answered', '13070000-0000-4000-8000-0000000000b1');
+rollback to savepoint sp_other_cards;
 
 savepoint sp_left_thread;
 create function pg_temp.sp_is_pick(p_answerer uuid, p_answer jsonb) returns boolean language sql as $$
@@ -78,11 +104,17 @@ where id = (current_setting('qorpera_test.base_connection')::jsonb ->> 'connecti
 select pg_temp.sp_refused('92400000-0000-4000-8000-000000000002', '{"values":["general"]}', '42501',
 	'Only the member this card was raised for can answer it');
 do $$
-declare v_thread uuid := current_setting('qorpera_test.card_thread')::uuid; v_answer jsonb;
+declare v_thread uuid := current_setting('qorpera_test.card_thread')::uuid; v_answer jsonb; v_retry jsonb;
 	v_input public.qorpera_session_inputs%rowtype; v_event public.qorpera_session_events%rowtype;
-	v_wake public.qorpera_wake_occurrences%rowtype;
+	v_wake public.qorpera_wake_occurrences%rowtype; v_client uuid := extensions.gen_random_uuid();
 begin
-	v_answer := pg_temp.sp_send('92400000-0000-4000-8000-000000000002', '{"values":["finance"]}');
+	perform pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000002');
+	v_answer := pg_temp.cd_answer(v_client, '59600000-0000-4000-8000-0000000009a1', 'answered', '{"values":["finance"]}');
+	v_retry := pg_temp.cd_answer(v_client, '59600000-0000-4000-8000-0000000009a1', 'answered', '{"values":["finance"]}');
+	perform pg_temp.base_claims('service_role');
+	perform pg_temp.base_assert(v_retry ->> 'input_id' = v_answer ->> 'input_id'
+		and (select count(*) = 1 from public.qorpera_session_inputs where client_input_id = v_client),
+		'The sender''s retry of the same send returns the first receipt and records nothing more');
 	select * into strict v_input from public.qorpera_session_inputs where id = (v_answer ->> 'input_id')::uuid;
 	perform pg_temp.base_assert(v_input.author_user_id = '92400000-0000-4000-8000-000000000002'
 		and v_input.completed_at is not null, 'The one who sends the pick is the answer''s author');
@@ -100,8 +132,10 @@ begin
 		and v_wake.staff_agent_id = '92400000-0000-4000-8000-000000000031'
 		and (select count(*) = 1 from public.qorpera_wake_occurrences where source_id = v_input.id),
 		'One pick, one wake of the thread''s agent, queued behind the work it is in');
-	perform pg_temp.base_assert(pg_temp.dv_kinds('92400000-0000-4000-8000-000000000001') not like '%question%',
-		'A sent pick answers the question: it leaves every list');
+	perform pg_temp.base_assert(pg_temp.dv_kinds('92400000-0000-4000-8000-000000000001') not like '%question%'
+		and pg_temp.dv_kinds('92400000-0000-4000-8000-000000000002') not like '%question%'
+		and pg_temp.od_kinds('92400000-0000-4000-8000-000000000001') not like '%question%',
+		'A sent pick answers the question: it leaves the company''s list for the asked member and the sender, and the asked member''s own list');
 	perform pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 	perform pg_temp.base_error(format('select pg_temp.cd_answer(%L,%L,%L,%L)', extensions.gen_random_uuid(),
 		'59600000-0000-4000-8000-0000000009a1', 'answered', '{"values":["finance"]}'), '55000',

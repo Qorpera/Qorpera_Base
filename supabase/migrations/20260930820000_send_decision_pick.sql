@@ -47,6 +47,22 @@ select pg_temp.send_pick_replace('public.qorpera_answer_interaction(uuid,uuid,uu
 
 drop function pg_temp.send_pick_replace(regprocedure, text, text);
 
+comment on table public.qorpera_decision_votes is
+	'A member''s vote and note on an open decision of their company (20260930819000): item_id is the card''s event id '
+	'or the approval''s review id, choice one of a question''s option values, note a few words. Written by '
+	'qorpera_cast_decision_vote alone and read by qorpera_list_company_open_decisions; a member who leaves the company '
+	'takes their rows with them. No row answers a card by itself. Since 20260930820000 the vote of the member a '
+	'question was raised for is their pick: their leave for another member of the thread to send exactly that option '
+	'through qorpera_answer_interaction, on the sender''s own account.';
+comment on function public.qorpera_cast_decision_vote(uuid, uuid, text, text) is
+	'A member''s vote and note on an open decision of their company (20260930819000): p_choice one of a question''s '
+	'option values (its value, else its label, as the web reads options; null on an email draft or an approval), '
+	'p_note at most 500 characters; both empty takes the member''s vote back. Owners, admins and contributors vote, on '
+	'any open decision, their own too; a spectator reads the votes and casts none. The call answers nothing, wakes no '
+	'agent and needs no model account. Since 20260930820000 a member''s vote on a question raised for them is their '
+	'pick, which another member of the thread may send (qorpera_answer_interaction); taking the vote back takes that '
+	'leave back. Refuses a decision that is not open (22023) and a choice that is not one of its options (22023).';
+
 comment on function public.qorpera_answer_interaction(uuid, uuid, uuid, text, jsonb, uuid, bigint) is
 	'A member''s answer to a card an agent raised. In an agent''s thread the member the card was raised for answers '
 	'it; since 20260930820000 another member of the thread may send that member''s pick of a question, the one option '

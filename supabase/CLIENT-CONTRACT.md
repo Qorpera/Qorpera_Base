@@ -508,7 +508,8 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   `authorization_request` event holds (without `call`), and is not listed
   once that event was erased. `answererUserId` is the member who answers (null: any
   owner or admin); `canAnswer` says whether the caller is one, by the rules
-  the answer functions keep (the member a card was raised for, in the thread;
+  the answer functions keep, for an answer of the caller's own choosing (the
+  member a card was raised for, in the thread;
   an approval's approver, or any owner or admin for the company's; never a
   spectator). It shows nothing a member could not already read: an agent
   thread is the company's, and its cards are events every member reads. A
@@ -521,9 +522,14 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   values (an option's `value`, else its `label`), and null on an email draft or
   an approval; `p_note` is trimmed, at most 500 characters. Both empty takes
   the vote back. One vote a member a decision: a second call replaces the
-  first. Advisory only: it answers nothing, wakes no agent and needs no model
-  account. Owners, admins and contributors vote, on any open decision, their
-  own too; a spectator reads the votes and casts none (42501, as for a
+  first. The call itself answers nothing, wakes no agent and needs no model
+  account. One vote is more than advice since `20260930820000`: a member's
+  vote for an option of a QUESTION RAISED FOR THEM is their pick, and stands
+  as their leave for any other member of the thread to send it, which answers
+  the card and starts the agent's work on the sender's account (see "An
+  agent's shared thread" under Thread interactions). A client says so where
+  that member votes, and they take the leave back by taking the vote back.
+  Owners, admins and contributors vote, on any open decision, their own too; a spectator reads the votes and casts none (42501, as for a
   non-member). 22023: the decision is not open (answered, past its time, not a
   question, draft or approval card, or another company's), the choice is not
   one of its options, or the note is too long. A decision's votes are kept
@@ -2570,7 +2576,8 @@ with `42501` "Room sponsor is unavailable" otherwise, or `55000` while company
 execution is paused; a refused answer records nothing. An accepted answer's
 input is complete at once, its `interaction_answer` event is in the transcript
 when the RPC returns (never in the pending list), and a room wake runs the
-thread's agent. A client shows live card controls only to that member; against
+thread's agent. A client shows live card controls only to that member (another
+member gets, at most, the one control that sends that member's pick); against
 a cloud before bundle v100 (`PGRST202` for the seven named arguments) it keeps
 the card open and says answering there is not available yet (the old function
 would queue an answer that never wakes the agent).
