@@ -7,15 +7,20 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929026799_runtime_bundle_activation_v267.sql";
-const activationVersion = 267;
-const previousActivationVersion = 266;
-const previousActivationSha256 = "79984a84c5b67dafb0affc3d9ddc50e772c12193400ec7e9be61da44dc160b77";
+const activation = "supabase/migrations/20260929026899_runtime_bundle_activation_v268.sql";
+const activationVersion = 268;
+const previousActivationVersion = 267;
+const previousActivationSha256 = "869096855b8595240b69df74b872031d2bbe47cee85a1cfed65f9b46b7e1f299";
 const activationRequires = Object.freeze([
 	[
-		"20260930818000_member_open_decisions",
-		"#1989 (member open decisions): bundle 267's manifest hashes every migration into its authorization component, so it names 818000; the bundle is never active on a database where that migration did not apply",
-		"to_regprocedure('public.qorpera_list_member_open_decisions(uuid)') is not null",
+		"20260930819000_decision_votes",
+		"#1994 (votes and notes on open decisions): bundle 268's manifest hashes every migration into its authorization component, so it names 819000; the bundle is never active on a database where that migration did not apply",
+		"to_regprocedure('public.qorpera_list_company_open_decisions(uuid)') is not null and to_regprocedure('public.qorpera_cast_decision_vote(uuid,uuid,text,text)') is not null",
+	],
+	[
+		"20260930820000_send_decision_pick",
+		"#1997 (send the asked member's pick): bundle 268's manifest names 820000 too; the bundle is never active on a database where the answer function was not patched",
+		"to_regprocedure('public.qorpera_is_decision_pick(uuid,uuid,uuid,jsonb,text,jsonb)') is not null and position('qorpera_is_decision_pick' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_answer_interaction(uuid,uuid,uuid,text,jsonb,uuid,bigint)')), '')) > 0",
 	],
 ]);
 const activationRequiresSql = activationRequires
