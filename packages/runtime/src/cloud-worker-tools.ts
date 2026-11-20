@@ -35,17 +35,15 @@ const WORKER_STATES = ["active", "blocked", "succeeded", "failed", "cancelled"] 
 export const CURSOR = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function object(value: unknown, allowed: readonly string[], required: readonly string[]): Record<string, unknown> {
-	if (
-		!value ||
-		typeof value !== "object" ||
-		Array.isArray(value) ||
-		Object.keys(value).some((key) => !allowed.includes(key)) ||
-		required.some((key) => !Object.hasOwn(value, key))
-	)
-		throw new Error("Invalid work request");
+	if (!value || typeof value !== "object" || Array.isArray(value))
+		throw new CloudToolArgumentRefusal("the arguments must be one JSON object");
+	if (Object.keys(value).some((key) => !allowed.includes(key)))
+		throw new CloudToolArgumentRefusal(`this action takes only these fields: ${allowed.join(", ")}`);
+	const missing = required.filter((key) => !Object.hasOwn(value, key));
+	if (missing.length) throw new CloudToolArgumentRefusal(`this action also needs: ${missing.join(", ")}`);
 	return value as Record<string, unknown>;
 }
-function text(value: unknown, maxBytes: number, singleLine = false): string {
+function text(field: string, value: unknown, maxBytes: number, singleLine = false): string {
 	if (
 		typeof value !== "string" ||
 		!value.trim() ||
@@ -54,15 +52,22 @@ function text(value: unknown, maxBytes: number, singleLine = false): string {
 		Buffer.byteLength(value.trim()) > maxBytes ||
 		Buffer.from(value).toString("utf8") !== value
 	)
-		throw new Error("Invalid work text");
+		throw new CloudToolArgumentRefusal(
+			`${field} must be text of 1 to ${maxBytes} bytes${singleLine ? " on one line" : ""}`,
+		);
 	return value.trim();
 }
-function optionalText(value: unknown, maxBytes: number): string | undefined {
+function optionalText(field: string, value: unknown, maxBytes: number): string | undefined {
 	if (value === undefined || value === "") return undefined;
-	return text(value, maxBytes);
+	return text(field, value, maxBytes);
 }
-function key(value: unknown, pattern: RegExp): string {
-	if (typeof value !== "string" || !pattern.test(value)) throw new Error("Invalid work key");
+function key(field: string, value: unknown, pattern: RegExp): string {
+	if (typeof value !== "string" || !pattern.test(value))
+		throw new CloudToolArgumentRefusal(
+			pattern === WORK_KEY
+				? `${field} must be lowercase letters, digits, dots, underscores and hyphens, starting with a letter or digit, at most 64 characters`
+				: `${field} must be letters, digits, dots, underscores, colons and hyphens, starting with a letter or digit, at most 96 characters`,
+		);
 	return value;
 }
 /** The filters and cursor of a listing, each sent only when given. */
@@ -81,7 +86,7 @@ function listing(a: Record<string, unknown>, states: readonly string[]): Record<
 		throw new CloudToolArgumentRefusal("cursor must be a nextCursor from an earlier page, unchanged");
 	return {
 		...(a.state === undefined ? {} : { state: a.state }),
-		...(a.search === undefined ? {} : { search: text(a.search, 200, true) }),
+		...(a.search === undefined ? {} : { search: text("search", a.search, 200, true) }),
 		...(a.cursor === undefined ? {} : { cursor: a.cursor }),
 	};
 }
@@ -93,14 +98,14 @@ export function fitsOneResult(text: string): boolean {
 		MAX_CLOUD_TOOL_RESULT_BYTES - CLOUD_TOOL_RESULT_RESERVE_BYTES
 	);
 }
-function paths(value: unknown, max: number, maxBytes: number): string[] {
+function paths(field: string, value: unknown, max: number, maxBytes: number): string[] {
 	if (value === undefined) return [];
 	const listed = Array.isArray(value)
 		? value.map((path) => (typeof path === "string" && path.length > 1 ? path.replace(/\/$/, "") : path))
 		: value;
-	return checkedPaths(listed, max, maxBytes);
+	return checkedPaths(field, listed, max, maxBytes);
 }
-function checkedPaths(value: unknown, max: number, maxBytes: number): string[] {
+function checkedPaths(field: string, value: unknown, max: number, maxBytes: number): string[] {
 	if (
 		!Array.isArray(value) ||
 		value.length > max ||
@@ -114,7 +119,9 @@ function checkedPaths(value: unknown, max: number, maxBytes: number): string[] {
 				path.split("/").some((part) => !part || part === "." || part === ".."),
 		)
 	)
-		throw new Error("Invalid work path");
+		throw new CloudToolArgumentRefusal(
+			`${field} must be up to ${max} different company paths of at most ${maxBytes} bytes each, relative (no leading slash, no . or .. parts)`,
+		);
 	return value as string[];
 }
 
@@ -253,14 +260,15 @@ export function cloudWorkerTools(
 					["operationKey", "outcome", "summary"],
 				);
 				if (typeof a.outcome !== "string" || !OUTCOMES.includes(a.outcome as (typeof OUTCOMES)[number]))
-					throw new Error("Invalid work outcome");
-				const needs = optionalText(a.needs, 1000);
-				if ((a.outcome === "blocked") !== (needs !== undefined)) throw new Error("Invalid work outcome");
-				const outputs = paths(a.outputs, 4, 256);
+					throw new CloudToolArgumentRefusal(`outcome must be one of ${OUTCOMES.join(", ")}`);
+				const needs = optionalText("needs", a.needs, 1000);
+				if ((a.outcome === "blocked") !== (needs !== undefined))
+					throw new CloudToolArgumentRefusal("needs is given with outcome blocked, and only then");
+				const outputs = paths("outputs", a.outputs, 4, 256);
 				return {
-					operationKey: key(a.operationKey, OPERATION_KEY),
+					operationKey: key("operationKey", a.operationKey, OPERATION_KEY),
 					outcome: a.outcome,
-					summary: text(a.summary, 4000),
+					summary: text("summary", a.summary, 4000),
 					...(needs === undefined ? {} : { needs }),
 					...(outputs.length ? { outputs } : {}),
 				};
@@ -319,15 +327,15 @@ export function cloudWorkerTools(
 		parseArguments(value) {
 			const action = (value as { action?: unknown } | null)?.action;
 			if (typeof action !== "string" || !TODO_ACTIONS.includes(action as (typeof TODO_ACTIONS)[number]))
-				throw new Error("Invalid todo action");
+				throw new CloudToolArgumentRefusal(`action must be one of ${TODO_ACTIONS.join(", ")}`);
 			if (action === "list") {
 				const a = object(value, ["action", "includeClosed", "todoKey", "state", "search", "cursor"], ["action"]);
 				if (a.includeClosed !== undefined && typeof a.includeClosed !== "boolean")
-					throw new Error("Invalid todo request");
+					throw new CloudToolArgumentRefusal("includeClosed must be true or false");
 				return {
 					action,
 					...(a.includeClosed ? { includeClosed: true } : {}),
-					...(a.todoKey === undefined ? {} : { todoKey: key(a.todoKey, WORK_KEY) }),
+					...(a.todoKey === undefined ? {} : { todoKey: key("todoKey", a.todoKey, WORK_KEY) }),
 					...listing(a, TODO_STATES),
 				} as never;
 			}
@@ -335,8 +343,8 @@ export function cloudWorkerTools(
 				const a = object(value, ["action", "operationKey", "todoKey"], ["action", "operationKey", "todoKey"]);
 				return {
 					action,
-					operationKey: key(a.operationKey, OPERATION_KEY),
-					todoKey: key(a.todoKey, WORK_KEY),
+					operationKey: key("operationKey", a.operationKey, OPERATION_KEY),
+					todoKey: key("todoKey", a.todoKey, WORK_KEY),
 				} as never;
 			}
 			const a = object(
@@ -348,10 +356,10 @@ export function cloudWorkerTools(
 				throw new CloudToolArgumentRefusal("upsert state is open or blocked; close a todo with done or cancel");
 			return {
 				action,
-				operationKey: key(a.operationKey, OPERATION_KEY),
-				todoKey: key(a.todoKey, WORK_KEY),
-				title: text(a.title, 200, true),
-				detail: optionalText(a.detail, 4000) ?? "",
+				operationKey: key("operationKey", a.operationKey, OPERATION_KEY),
+				todoKey: key("todoKey", a.todoKey, WORK_KEY),
+				title: text("title", a.title, 200, true),
+				detail: optionalText("detail", a.detail, 4000) ?? "",
 				state: (a.state as string | undefined) ?? "open",
 			} as never;
 		},
@@ -484,14 +492,15 @@ export function cloudWorkerTools(
 		parseArguments(value) {
 			const action = (value as { action?: unknown } | null)?.action;
 			if (typeof action !== "string" || !WORKER_ACTIONS.includes(action as (typeof WORKER_ACTIONS)[number]))
-				throw new Error("Invalid worker action");
+				throw new CloudToolArgumentRefusal(`action must be one of ${WORKER_ACTIONS.join(", ")}`);
 			if (action === "status") {
 				const a = object(value, ["action", "todoKey", "workerKey", "state", "search", "cursor"], ["action"]);
-				if (a.workerKey !== undefined && a.todoKey === undefined) throw new Error("Invalid worker request");
+				if (a.workerKey !== undefined && a.todoKey === undefined)
+					throw new CloudToolArgumentRefusal("workerKey is given together with its todoKey");
 				return {
 					action,
-					...(a.todoKey === undefined ? {} : { todoKey: key(a.todoKey, WORK_KEY) }),
-					...(a.workerKey === undefined ? {} : { workerKey: key(a.workerKey, WORK_KEY) }),
+					...(a.todoKey === undefined ? {} : { todoKey: key("todoKey", a.todoKey, WORK_KEY) }),
+					...(a.workerKey === undefined ? {} : { workerKey: key("workerKey", a.workerKey, WORK_KEY) }),
 					...listing(a, WORKER_STATES),
 				} as never;
 			}
@@ -528,19 +537,20 @@ export function cloudWorkerTools(
 			const a = object(value, fields, required);
 			const request: Record<string, unknown> = {
 				action,
-				operationKey: key(a.operationKey, OPERATION_KEY),
-				todoKey: key(a.todoKey, WORK_KEY),
-				workerKey: key(a.workerKey, WORK_KEY),
+				operationKey: key("operationKey", a.operationKey, OPERATION_KEY),
+				todoKey: key("todoKey", a.todoKey, WORK_KEY),
+				workerKey: key("workerKey", a.workerKey, WORK_KEY),
 			};
 			if (action === "dispatch") {
-				if (a.access !== "read" && a.access !== "write") throw new Error("Invalid worker access");
+				if (a.access !== "read" && a.access !== "write")
+					throw new CloudToolArgumentRefusal("access must be read or write");
 				if (a.revival !== undefined && a.revival !== "batch" && a.revival !== "each")
-					throw new Error("Invalid worker revival");
-				const sources = paths(a.sources, 8, 512);
-				const context = optionalText(a.context, 4000) ?? "";
+					throw new CloudToolArgumentRefusal("revival must be batch or each");
+				const sources = paths("sources", a.sources, 8, 512);
+				const context = optionalText("context", a.context, 4000) ?? "";
 				// The folder where the finished files belong (21 October 2026): the worker may write there as its agent may,
 				// so the brief says so in its context, which the worker reads. The folder core decides each write.
-				const saveTo = a.saveTo === undefined ? undefined : paths([a.saveTo], 1, 512)[0];
+				const saveTo = a.saveTo === undefined ? undefined : paths("saveTo", [a.saveTo], 1, 512)[0];
 				if (saveTo !== undefined && (a.access !== "write" || a.species === "coding"))
 					throw new CloudToolArgumentRefusal("saveTo needs access write, and a coding session has none");
 				const placed =
@@ -548,9 +558,9 @@ export function cloudWorkerTools(
 				if (Buffer.byteLength(placed) > 4000)
 					throw new CloudToolArgumentRefusal("context and the saveTo sentence together must fit in 4000 bytes");
 				Object.assign(request, {
-					title: text(a.title, 200, true),
-					goal: text(a.goal, 4000),
-					definitionOfDone: text(a.definitionOfDone, 2000),
+					title: text("title", a.title, 200, true),
+					goal: text("goal", a.goal, 4000),
+					definitionOfDone: text("definitionOfDone", a.definitionOfDone, 2000),
 					context: placed,
 					...(sources.length ? { sources } : {}),
 					access: a.access,
@@ -558,11 +568,15 @@ export function cloudWorkerTools(
 					revival: a.revival ?? "batch",
 				});
 				if (a.species !== undefined && a.species !== "in-house" && a.species !== "coding")
-					throw new Error("Invalid worker species");
+					throw new CloudToolArgumentRefusal("species must be in-house or coding");
 				if (a.species === "coding") {
 					// A coding session: one harness, one repository, read access; it runs for the member who asked.
-					if (a.harness !== "codex" && a.harness !== "claude-code") throw new Error("Invalid coding harness");
-					if (a.access !== "read") throw new Error("A coding session has read access to the Company File");
+					if (a.harness !== "codex" && a.harness !== "claude-code")
+						throw new CloudToolArgumentRefusal("a coding session needs harness codex or claude-code");
+					if (a.access !== "read")
+						throw new CloudToolArgumentRefusal(
+							"a coding session takes access read; its changes land in its repository",
+						);
 					const repository = a.repository as Record<string, unknown> | undefined;
 					if (
 						!repository ||
@@ -573,7 +587,9 @@ export function cloudWorkerTools(
 						typeof repository.name !== "string" ||
 						typeof repository.baseBranch !== "string"
 					)
-						throw new Error("Invalid coding repository");
+						throw new CloudToolArgumentRefusal(
+							"a coding session needs repository with exactly host (qorpera or github.com), owner, name and baseBranch, each text",
+						);
 					// A repository kept in Qorpera names a folder, code/<owner>/<name>/: lower case only, said plainly.
 					if (repository.host === "qorpera")
 						try {
@@ -588,18 +604,21 @@ export function cloudWorkerTools(
 						harness: a.harness,
 						repository: {
 							host: repository.host,
-							owner: text(repository.owner, 39, true),
-							name: text(repository.name, 100, true),
-							baseBranch: text(repository.baseBranch, 200, true),
+							owner: text("repository.owner", repository.owner, 39, true),
+							name: text("repository.name", repository.name, 100, true),
+							baseBranch: text("repository.baseBranch", repository.baseBranch, 200, true),
 						},
 					});
-				} else if (a.repository !== undefined) throw new Error("repository belongs to a coding session");
+				} else if (a.repository !== undefined)
+					throw new CloudToolArgumentRefusal("repository is given only with species coding");
 				else if (a.harness === "claude-code" || a.harness === "codex") request.harness = a.harness;
-				else if (a.harness !== undefined) throw new Error("Invalid worker harness");
-			} else if (action === "followup") request.text = text(a.text, 4000);
+				else if (a.harness !== undefined)
+					throw new CloudToolArgumentRefusal("harness must be codex or claude-code");
+			} else if (action === "followup") request.text = text("text", a.text, 4000);
 			else if (action === "decide") {
-				if (a.decision !== "accept" && a.decision !== "reject") throw new Error("Invalid worker decision");
-				const note = optionalText(a.note, 1000);
+				if (a.decision !== "accept" && a.decision !== "reject")
+					throw new CloudToolArgumentRefusal("decision must be accept or reject");
+				const note = optionalText("note", a.note, 1000);
 				Object.assign(request, { decision: a.decision, ...(note === undefined ? {} : { note }) });
 			}
 			return request as never;

@@ -605,6 +605,45 @@ describe("agent todo and worker tools", () => {
 		}
 	});
 
+	it("tells the model which field of a coding session start to correct", async () => {
+		const f = await fixture();
+		try {
+			const coding = {
+				...dispatch,
+				workerKey: "fix-login",
+				access: "read",
+				species: "coding",
+				harness: "codex",
+				repository: { host: "qorpera", owner: "company", name: "shop", baseBranch: "main" },
+			};
+			const { harness: _harness, ...noHarness } = coding;
+			const cases: [Record<string, unknown>, string][] = [
+				[noHarness, "a coding session needs harness codex or claude-code"],
+				[{ ...coding, access: "write" }, "a coding session takes access read"],
+				[
+					{ ...coding, repository: { host: "qorpera", owner: "company", name: "shop" } },
+					"a coding session needs repository with exactly host",
+				],
+				[{ ...coding, model: "x" }, "this action takes only these fields: action, operationKey"],
+				[{ ...coding, goal: "" }, "goal must be text of 1 to 4000 bytes"],
+				[{ ...coding, workerKey: "Fix Login" }, "workerKey must be lowercase letters"],
+				[{ ...coding, species: "remote" }, "species must be in-house or coding"],
+			];
+			const calls = f.writerCalls();
+			for (const [index, [args, reason]] of cases.entries()) {
+				const refused = await f.boundary.invoke(`r${index}`, "qorpera", "manage_worker", {
+					...args,
+					operationKey: `r${index}`,
+				});
+				expect(body(refused).status, reason).toBe("denied");
+				expect(body(refused).content.text, reason).toContain(`INVALID_ARGUMENTS: ${reason}`);
+			}
+			expect(f.writerCalls()).toBe(calls);
+		} finally {
+			f.run.close();
+		}
+	});
+
 	it("names a plain worker's harness only when the model names it, claude-code or codex", async () => {
 		const f = await fixture();
 		try {
