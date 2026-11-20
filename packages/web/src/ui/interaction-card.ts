@@ -100,7 +100,7 @@ export interface InteractionCardContext {
 	/** The agent's figure, waiting: the head of a card that waits for this member in a thread. */
 	figure?: () => HTMLElement;
 	reworking?: boolean;
-	vote?: { answerer: string; pick?: (value: string) => void };
+	vote?: { answerer: string; own?: true; pick?: (value: string) => void };
 	/** Sends the outcome and answer; the card shows its busy state until it resolves. */
 	answer: (outcome: InteractionOutcome, answer: Record<string, JsonValue>) => Promise<void>;
 	/** A takeover card's Open computer: the agent's computer in the thread (woken when it sleeps), its large view once
@@ -531,9 +531,18 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 		// A question's answer is what the member said: their bubble. Anything else is what they did: a line.
 		const said = request.surface === "question" && item.answer.outcome === "answered";
 		const who = answeredBy ? context.memberName(answeredBy) : t("You");
+		const asked =
+			said && answeredBy && item.actorUserId && answeredBy !== item.actorUserId ? item.actorUserId : undefined;
+		const sentFor = asked
+			? own
+				? t("{name}'s pick, sent by you", { name: context.memberName(asked) })
+				: asked === context.viewerId
+					? t("Your pick, sent by {sender}", { sender: who })
+					: t("{name}'s pick, sent by {sender}", { name: context.memberName(asked), sender: who })
+			: undefined;
 		// Beside the answer: whose it is when it is not the member's own, and that it is on its way.
-		const beside = [own ? null : who, pending ? t("Sending") : null].filter(Boolean).join(" · ");
-		const whole = `${who}${answeredAt ? ` · ${fmtTime(answeredAt)}` : ""}${pending ? ` · ${t("Sending")}` : ""}`;
+		const beside = [sentFor ?? (own ? null : who), pending ? t("Sending") : null].filter(Boolean).join(" · ");
+		const whole = `${sentFor ?? who}${answeredAt ? ` · ${fmtTime(answeredAt)}` : ""}${pending ? ` · ${t("Sending")}` : ""}`;
 		result.push(
 			h(
 				"p",
@@ -907,7 +916,7 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 							...named(
 								reworking
 									? t("{name} is reworking this", { name: NAME_MARK })
-									: vote
+									: vote && !vote.own
 										? t("{name} asks {member}", { name: NAME_MARK, member: vote.answerer })
 										: request.surface === "question"
 											? t("{name} asks you", { name: NAME_MARK })

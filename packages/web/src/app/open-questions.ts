@@ -14,6 +14,7 @@ import {
 } from "../cloud/open-decisions.ts";
 import type { OpenQuestion } from "../cloud/open-questions.ts";
 import type { ActionReviewAnswer } from "../cloud/review-rules.ts";
+import { selectSessionExecutionSponsor } from "../cloud/session-input.ts";
 import type { JsonValue } from "../cloud/types.ts";
 import type { CompanyController } from "./company.ts";
 import { Store, throttle } from "./state.ts";
@@ -59,6 +60,7 @@ export interface OpenQuestionsState {
 	readonly read: boolean;
 	/** The cloud has no such read yet (before 20260930706000): nothing is asked again. */
 	readonly unavailable: boolean;
+	readonly hasLogin?: boolean;
 }
 
 function unsettled(editor: EmailDraftEditor): boolean {
@@ -77,6 +79,8 @@ export type QuestionAccounts = Pick<WebNativeSubscription, "listConnections" | "
 /** A hint in the company's conversations reads again at most this often; with none, the clock does. */
 const HINT_MS = 4_000;
 const HEARTBEAT_MS = 30_000;
+const LOGIN_MISSING_AGAIN_MS = 10_000;
+const LOGIN_AGAIN_MS = 300_000;
 /** An answered card stays on screen this long, answered, before it goes (views/question-dock.ts plays it out). */
 export const ANSWERED_HOLD_MS = 2_200;
 
@@ -90,6 +94,9 @@ export class OpenQuestions {
 	#stopWatching: (() => void) | undefined;
 	#reads = 0;
 	#source: "company" | "member" | "questions" = "company";
+	#applied = 0;
+	#loginReading = false;
+	#loginReadAt: number | undefined;
 	readonly #onTheirWay = new Set<string>();
 	readonly #drafts = new Map<string, OpenDraft>();
 	readonly #myVotes = new Map<
@@ -135,11 +142,14 @@ export class OpenQuestions {
 			.then(
 				(listed) => {
 					if (version !== this.#reads) return;
+					this.#applied++;
 					for (const [id, mine] of this.#myVotes)
 						if (mine.settledAt !== undefined && version > mine.settledAt) this.#myVotes.delete(id);
 					const decisions = listed
 						.filter((decision) => !this.#answered.has(decision.interactionId))
 						.map((decision) => this.#withMyVote(decision));
+					if (decisions.some((decision) => decision.kind === "question" && decision.votes !== undefined))
+						void this.readLogin();
 					for (const decision of decisions)
 						if (decision.kind === "draft" && !decision.othersAnswer)
 							this.#drafts.set(decision.interactionId, decision);
@@ -214,6 +224,39 @@ export class OpenQuestions {
 	async actDraft(draft: OpenDraft, action: EmailDraftAction, content: EmailDraftContent): Promise<EmailDraftState> {
 		await this.#chooseAccount(draft.sessionId);
 		return this.#company.actEmailDraft(draft.sessionId, draft.interactionId, action, content);
+	}
+
+	async refreshAfter(): Promise<boolean> {
+		if (this.#reading) await this.#reading;
+		const before = this.#applied;
+		await this.refresh();
+		return this.#applied > before;
+	}
+
+	async readLogin(): Promise<void> {
+		const wait = this.store.get().hasLogin === true ? LOGIN_AGAIN_MS : LOGIN_MISSING_AGAIN_MS;
+		if (this.#loginReading || !this.#accounts.listConnections) return;
+		if (this.#loginReadAt !== undefined && Date.now() - this.#loginReadAt < wait) return;
+		this.#loginReading = true;
+		try {
+			const observed = await this.#accounts.listConnections(this.#company.signal);
+			const userId = this.#company.userId;
+			this.store.set({
+				hasLogin: observed.connections.some((connection) => {
+					try {
+						selectSessionExecutionSponsor(observed, connection.connectionId, userId);
+						return true;
+					} catch {
+						return false;
+					}
+				}),
+			});
+			this.#loginReadAt = Date.now();
+		} catch {
+			this.#loginReadAt = undefined;
+		} finally {
+			this.#loginReading = false;
+		}
 	}
 
 	get viewerId(): string {

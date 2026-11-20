@@ -1,5 +1,5 @@
 import type { EmailDraftAction, EmailDraftContent, EmailDraftState } from "../../cloud/email-drafts.ts";
-import { type InteractionOutcome, questionOptions, typedNote } from "../../cloud/interactions.ts";
+import { type InteractionOutcome, questionInput, questionOptions, typedNote } from "../../cloud/interactions.ts";
 import {
 	decisionTitle,
 	type OpenApproval,
@@ -46,6 +46,7 @@ interface DecidedCard extends DecidedState {
 	readonly decision: OpenCard;
 	readonly outcome: InteractionOutcome;
 	readonly value: Record<string, JsonValue>;
+	readonly pickOf?: string;
 }
 
 interface DecidedApproval extends DecidedState {
@@ -90,7 +91,11 @@ function decidedWords(entry: Decided): { word: string; said: string } {
 	const values = Array.isArray(value.values)
 		? value.values.filter((picked): picked is string => typeof picked === "string")
 		: [];
-	return { word: t("Decided"), said: values.map((picked) => labels.get(picked) ?? picked).join(", ") };
+	const { pickOf } = entry as DecidedCard;
+	return {
+		word: pickOf ? t("{name}'s pick", { name: pickOf }) : t("Decided"),
+		said: values.map((picked) => labels.get(picked) ?? picked).join(", "),
+	};
 }
 
 function draftOutcome({ action, content }: DecidedDraft): string {
@@ -119,6 +124,9 @@ export class DecisionDock {
 	#votesKey = "";
 	#shown: string | undefined;
 	#shownOthers = false;
+	#shownVoting = false;
+	#chose = false;
+	#pickPainted = "";
 	#shownNone = false;
 	#staged: string | undefined;
 	#byMember = false;
@@ -381,13 +389,15 @@ export class DecisionDock {
 			current &&
 			(current.interactionId !== this.#shown
 				? this.#shown !== undefined || this.#shownNone
-				: this.#shownOthers && !current.othersAnswer)
+				: this.#shownVoting !== (current.othersAnswer === true || this.#picksOwn(current)))
 		)
 			this.#settlesAt = this.#byMember ? 0 : Date.now() + SETTLE_MS;
 		this.#shownNone = !current && this.#host.questions.store.get().read;
+		this.#chose = this.#byMember;
 		this.#byMember = false;
 		this.#shown = current?.interactionId;
 		this.#shownOthers = current?.othersAnswer === true;
+		this.#shownVoting = current !== undefined && (current.othersAnswer === true || this.#picksOwn(current));
 		this.#current = current?.interactionId;
 		this.#watch(current?.sessionId);
 		this.#waiting = this.#waitingNow(cards);
@@ -416,7 +426,16 @@ export class DecisionDock {
 		const error = this.#errors.get(current.interactionId);
 		const others = current.othersAnswer === true;
 		const mayVote = this.#host.questions.mayVote();
-		const key = JSON.stringify([current.interactionId, error, this.#narrow, presentationLocale(), others, mayVote]);
+		const ownPick = this.#picksOwn(current);
+		const key = JSON.stringify([
+			current.interactionId,
+			error,
+			this.#narrow,
+			presentationLocale(),
+			others,
+			mayVote,
+			ownPick,
+		]);
 		if (key === this.#stageKey) return;
 		this.#stageKey = key;
 		this.#votesKey = "";
@@ -454,12 +473,13 @@ export class DecisionDock {
 							{
 								agentName: name,
 								memberName: (userId) => this.#host.memberName(userId),
-								canAnswer: !others,
+								canAnswer: !others && !ownPick,
 								inThread: true,
-								...(others
+								...(others || ownPick
 									? {
 											vote: {
 												answerer: this.#host.memberName(current.actorUserId),
+												...(ownPick ? { own: true as const } : {}),
 												...(mayVote ? { pick: (value: string) => this.#pick(id, value) } : {}),
 											},
 										}
@@ -497,7 +517,13 @@ export class DecisionDock {
 				"div",
 				{ class: "decision-card" },
 				card,
-				h("div", { class: "decision-votes" }, h("ul", { class: "vote-notes" }), note),
+				h(
+					"div",
+					{ class: "decision-votes" },
+					h("ul", { class: "vote-notes" }),
+					note,
+					h("div", { class: "decision-pick" }),
+				),
 				error ? h("p", { class: "decision-error", role: "alert" }, error) : null,
 			),
 			h(
@@ -550,10 +576,12 @@ export class DecisionDock {
 
 	#paintVotes(current: OpenDecision): void {
 		const votes = current.votes ?? [];
-		const others = current.othersAnswer === true;
-		const key = JSON.stringify([current.interactionId, votes, others, presentationLocale()]);
+		const others = current.othersAnswer === true || this.#picksOwn(current);
+		const hasLogin = this.#host.questions.store.get().hasLogin === true;
+		const key = JSON.stringify([current.interactionId, votes, others, hasLogin, presentationLocale()]);
 		if (key === this.#votesKey) return;
 		this.#votesKey = key;
+		this.#paintPick(current, hasLogin);
 		const mine = this.#mine(current);
 		const face = (userId: string) => {
 			const avatar = personAvatar(this.#host.memberName(userId), userId);
@@ -599,6 +627,100 @@ export class DecisionDock {
 						),
 					),
 			);
+	}
+
+	#picksOwn(current: OpenDecision): boolean {
+		return (
+			current.kind === "question" &&
+			!current.othersAnswer &&
+			questionInput(current.request) === undefined &&
+			questionOptions(current.request).length > 0 &&
+			current.votes !== undefined &&
+			this.#host.questions.store.get().hasLogin === false &&
+			this.#host.questions.mayVote()
+		);
+	}
+
+	#paintPick(current: OpenDecision, hasLogin: boolean): void {
+		const place = this.#stage.querySelector<HTMLElement>(".decision-pick");
+		if (!place) return;
+		const pick =
+			current.kind === "question" && current.othersAnswer && hasLogin && this.#host.questions.mayVote()
+				? (current.votes ?? []).find((vote) => vote.userId === current.actorUserId)?.choice
+				: undefined;
+		const option =
+			current.kind === "question" && pick !== undefined
+				? questionOptions(current.request).find((candidate) => candidate.value === pick)
+				: undefined;
+		const painted = option ? `${current.interactionId} ${option.value}` : "";
+		if (painted && painted !== this.#pickPainted && !this.#chose) this.#settlesAt = Date.now() + SETTLE_MS;
+		this.#pickPainted = painted;
+		if (this.#picksOwn(current)) {
+			replace(
+				place,
+				h(
+					"p",
+					{ class: "decision-pick-words" },
+					t(
+						"You have no login here that can answer, so a tap is your pick, not an answer. A member who has one can then send your pick; tap it again to take it back.",
+					),
+				),
+			);
+			return;
+		}
+		const standing = current.kind === "question" && !current.othersAnswer ? this.#mine(current) : undefined;
+		if (standing?.choice !== undefined) {
+			replace(
+				place,
+				h(
+					"p",
+					{ class: "decision-pick-words" },
+					t("Your pick stands: a member with a login can send it. Answer here yourself, or take it back."),
+				),
+				h(
+					"button",
+					{
+						type: "button",
+						class: "decision-pick-back",
+						onclick: () => this.#vote(current, undefined, standing.note),
+					},
+					t("Take my pick back"),
+				),
+			);
+			return;
+		}
+		if (current.kind !== "question" || !option) {
+			replace(place);
+			return;
+		}
+		const name = this.#host.memberName(current.actorUserId);
+		replace(
+			place,
+			h(
+				"p",
+				{ class: "decision-pick-words" },
+				t(
+					"The work then runs on your login. The agent's next questions about this will come to you, and your approval rules apply.",
+				),
+			),
+			h(
+				"button",
+				{
+					type: "button",
+					class: "decision-pick-send",
+					onclick: () =>
+						this.#hold({
+							decision: current,
+							outcome: "answered",
+							value: { values: [option.value] },
+							pickOf: name,
+							at: Date.now(),
+							state: "held",
+						}),
+				},
+				t("Send {name}'s pick: {option}", { name, option: option.label }),
+			),
+		);
 	}
 
 	#draftCard(draft: OpenDraft, name: string): HTMLElement {
@@ -758,12 +880,28 @@ export class DecisionDock {
 			}
 		} catch (error) {
 			const said = this.#host.conversation(decision.sessionId).get().interactionError;
+			const pickOf = entry.decision.kind === "question" ? (entry as DecidedCard).pickOf : undefined;
+			const stale =
+				pickOf !== undefined &&
+				error instanceof Error &&
+				/Only the member this card was raised for can answer it/.test(error.message);
+			const fresh = pickOf !== undefined && (await this.#host.questions.refreshAfter());
+			const sent = pickOf === undefined ? undefined : (entry as DecidedCard).value.values;
+			const listed = fresh ? this.#listed(id) : undefined;
+			const unchanged =
+				listed?.kind === "question" &&
+				Array.isArray(sent) &&
+				(listed.votes ?? []).find((vote) => vote.userId === listed.actorUserId)?.choice === sent[0];
 			this.#errors.set(
 				id,
-				said ??
-					(error instanceof Error && error.message
-						? error.message
-						: t("Your answer could not be sent. Try again.")),
+				stale && !unchanged
+					? t("Nothing was sent. {name}'s pick is not that option now. Look at their vote again.", {
+							name: pickOf,
+						})
+					: (said ??
+							(error instanceof Error && error.message
+								? error.message
+								: t("Your answer could not be sent. Try again."))),
 			);
 			const index = this.#decided.indexOf(entry);
 			if (index >= 0) this.#decided.splice(index, 1);

@@ -369,6 +369,20 @@ export const CONVERSATION: Record<string, string> = {
 	"Always allowed": "Altid tilladt",
 	"Nothing was sent": "Intet blev sendt",
 	"{name} asks {member}": "{name} spørger {member}",
+	"{name}'s pick": "Valgt af {name}",
+	"{name}'s pick, sent by you": "Valgt af {name}, sendt af dig",
+	"Your pick, sent by {sender}": "Dit valg, sendt af {sender}",
+	"{name}'s pick, sent by {sender}": "Valgt af {name}, sendt af {sender}",
+	"Send {name}'s pick: {option}": "Send det, {name} valgte: {option}",
+	"Your pick stands: a member with a login can send it. Answer here yourself, or take it back.":
+		"Dit valg står: et medlem med et login kan sende det. Svar selv her, eller tag det tilbage.",
+	"Take my pick back": "Tag mit valg tilbage",
+	"You have no login here that can answer, so a tap is your pick, not an answer. A member who has one can then send your pick; tap it again to take it back.":
+		"Du har ikke noget login her, der kan svare, så et tryk er dit valg, ikke et svar. Et medlem, der har et, kan derefter sende dit valg; tryk igen for at tage det tilbage.",
+	"Nothing was sent. {name}'s pick is not that option now. Look at their vote again.":
+		"Intet blev sendt. {name} har ikke valgt den mulighed nu. Se deres stemme igen.",
+	"The work then runs on your login. The agent's next questions about this will come to you, and your approval rules apply.":
+		"Arbejdet kører derefter på dit login. Agentens næste spørgsmål om dette kommer til dig, og dine godkendelsesregler gælder.",
 	"Add a note…": "Tilføj en note…",
 	"Your note on this decision": "Din note til beslutningen",
 	"Voted for by {names}": "Valgt af {names}",
