@@ -50,10 +50,7 @@ describe("Claude Code's usage, as it reports it", () => {
 			),
 		).toEqual({
 			observedAt: NOW.toISOString(),
-			windows: [
-				{ id: "five_hour", label: "5 hours", usedPercent: 28, resetAt: "2026-11-17T13:24:58.000Z" },
-				{ id: "seven_day", label: "Weekly", usedPercent: 50, resetAt: "2026-11-21T14:43:58.000Z" },
-			],
+			windows: [{ id: "seven_day", label: "Weekly", usedPercent: 50, resetAt: "2026-11-21T14:43:58.000Z" }],
 		});
 	});
 
@@ -61,8 +58,17 @@ describe("Claude Code's usage, as it reports it", () => {
 		const info = {
 			status: "rejected",
 			resetsAt: 1794921898,
-			unifiedWindows: { five_hour: { utilization: 1, resetsAt: 1794921898, status: "rejected" } },
+			unifiedWindows: {
+				five_hour: { utilization: 1, resetsAt: 1794921898, status: "rejected" },
+				seven_day: { utilization: 0.5, resetsAt: 1795272238, status: "allowed" },
+			},
 		};
+		expect(claudeUsageFromRateLimitInfo({ ...info, rateLimitType: "five_hour" }, NOW)).toEqual({
+			observedAt: NOW.toISOString(),
+			windows: [{ id: "seven_day", label: "Weekly", usedPercent: 50, resetAt: "2026-11-21T14:43:58.000Z" }],
+			limitResetAt: "2026-11-17T13:24:58.000Z",
+			limitType: "five_hour",
+		});
 		expect(claudeUsageFromRateLimitInfo(info, NOW)?.limitResetAt).toBe("2026-11-17T13:24:58.000Z");
 		expect(claudeUsageFromRateLimitInfo(info, NOW)).not.toHaveProperty("limitType");
 		expect(claudeUsageFromRateLimitInfo({ ...info, rateLimitType: "seven_day_opus" }, NOW)).toMatchObject({
@@ -75,7 +81,13 @@ describe("Claude Code's usage, as it reports it", () => {
 		expect(claudeUsageFromRateLimitInfo({ ...info, rateLimitType: "Five Hour!" }, NOW)).not.toHaveProperty(
 			"limitType",
 		);
-		expect(claudeUsageFromRateLimitInfo({ unifiedWindows: { five_hour: { utilization: 2 } } }, NOW)).toBeUndefined();
+		expect(claudeUsageFromRateLimitInfo({ unifiedWindows: { seven_day: { utilization: 2 } } }, NOW)).toBeUndefined();
+		expect(
+			claudeUsageFromRateLimitInfo(
+				{ unifiedWindows: { five_hour: { utilization: 0.28, resetsAt: 1794921898 } } },
+				NOW,
+			),
+		).toBeUndefined();
 		expect(claudeUsageFromRateLimitInfo({ status: "allowed" }, NOW)).toBeUndefined();
 		expect(claudeUsageFromRateLimitInfo("nonsense", NOW)).toBeUndefined();
 	});
@@ -112,30 +124,25 @@ describe("Claude Code's usage, as it reports it", () => {
 			NOW,
 		);
 		expect(usage?.windows).toEqual([
-			{ id: "five_hour", label: "5 hours", usedPercent: 28, resetAt: "2026-11-17T13:25:33.000Z" },
 			{ id: "seven_day", label: "Weekly", usedPercent: 87, resetAt: "2026-11-21T14:44:33.000Z" },
 			{ id: "seven_day_model", label: "Weekly · Fable", usedPercent: 9, resetAt: "2026-11-21T14:44:33.000Z" },
 			{ id: "seven_day_model", label: "Weekly · Opus", usedPercent: 4 },
 		]);
 		expect(claudeUsageFromGetUsage({ rate_limits: null }, NOW)).toBeUndefined();
-		expect(claudeUsageFromGetUsage({ rate_limits: { five_hour: { utilization: "x" } } }, NOW)).toBeUndefined();
+		expect(claudeUsageFromGetUsage({ rate_limits: { five_hour: { utilization: 28 } } }, NOW)).toBeUndefined();
 	});
 
-	it("reads a real get_usage answer with no open 5-hour window as 0 % used, with no reset time", () => {
+	it("reads a real get_usage answer, five_hour null as Claude plans have no 5-hour limit, as weekly windows only", () => {
 		const answer = JSON.parse(
-			readFileSync(new URL("./fixtures/claude-get-usage-idle-five-hour.json", import.meta.url), "utf8"),
+			readFileSync(new URL("./fixtures/claude-get-usage-weekly-only.json", import.meta.url), "utf8"),
 		) as Record<string, unknown>;
 		expect(claudeUsageFromGetUsage(answer, NOW)).toEqual({
 			observedAt: NOW.toISOString(),
 			windows: [
-				{ id: "five_hour", label: "5 hours", usedPercent: 0 },
 				{ id: "seven_day", label: "Weekly", usedPercent: 4, resetAt: "2026-11-23T16:00:00.204Z" },
 				{ id: "seven_day_model", label: "Weekly · Fable", usedPercent: 0, resetAt: "2026-11-23T16:00:00.000Z" },
 			],
 		});
-		expect(claudeUsageFromGetUsage({ ...answer, rate_limits_available: false }, NOW)?.windows[0]?.id).toBe(
-			"seven_day",
-		);
 	});
 });
 

@@ -27,7 +27,7 @@ it("records a Claude Code run's usage through the path control and the native ho
 	});
 	const usage = {
 		observedAt: "2026-11-17T11:00:00.000Z",
-		windows: [{ id: "five_hour", label: "5 hours", usedPercent: 28, resetAt: "2026-11-17T13:00:00.000Z" }],
+		windows: [{ id: "seven_day", label: "Weekly", usedPercent: 28, resetAt: "2026-11-21T13:00:00.000Z" }],
 	};
 	expect(
 		await paths.call(

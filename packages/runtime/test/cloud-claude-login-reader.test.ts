@@ -86,7 +86,10 @@ const FULL = { full: confirm("full reset", "3 full resets") };
 describe.skipIf(process.platform !== "linux")("Claude Code's screens, read and pressed in a terminal", () => {
 	it("hands Claude Code the credentials alone with its onboarding done, reads usage, and wipes the folder", async () => {
 		const { read, log, root } = await reader({
-			usage: { five_hour: { utilization: 28, resets_at: "2026-11-17T13:25:33+00:00" } },
+			usage: {
+				five_hour: { utilization: 28, resets_at: "2026-11-17T13:25:33+00:00" },
+				seven_day: { utilization: 87, resets_at: "2026-11-21T14:44:33+00:00" },
+			},
 			screens: { "": FULL.full },
 		});
 		const result = await read.readClaudeLogin(
@@ -94,7 +97,7 @@ describe.skipIf(process.platform !== "linux")("Claude Code's screens, read and p
 			AbortSignal.timeout(20_000),
 		);
 		expect(result.usage?.windows).toEqual([
-			{ id: "five_hour", label: "5 hours", usedPercent: 28, resetAt: "2026-11-17T13:25:33.000Z" },
+			{ id: "seven_day", label: "Weekly", usedPercent: 87, resetAt: "2026-11-21T14:44:33.000Z" },
 		]);
 		expect(result.resets?.entries).toEqual([
 			expect.objectContaining({ kind: "full", left: 3, refills: "5-hour and weekly limits", usable: "now" }),
