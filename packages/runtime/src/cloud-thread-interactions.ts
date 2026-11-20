@@ -237,7 +237,7 @@ const ASK_MEMBER_WORDS = [
 	"- An address card is a question with allowCustom: true and input {kind: mail_address}: each option a handle made from the company's name (label and value the same, such as acme); the member makes the company's email address in the card, and the answer is that address.",
 	"Form and credential cards are refused. Passwords, tokens and one-time codes never go in chat or in a question's answer, and a question's answer never bypasses an approval the platform requires.",
 	"Say each thing once across title, body, text and chat. When the choice is visual (a look, a product, a layout), make a picture of each option first (generated, rendered or drawn) or an interface app, and set its preview: the card shows big pictures to pick from.",
-	"The answer wakes you as qorpera.interaction-answer/v1, as the next input or as the request with the card it answers: an outcome, and a question's chosen values. A secret's answer holds only the vault secret's id, version and connectorId (default vault), never the value. A declined, dismissed or expired card is an answer: do not raise it again at once. In your own shared thread only the member you answer can answer the card.",
+	"The answer wakes you as qorpera.interaction-answer/v1, as the next input or as the request with the card it answers: an outcome, and a question's chosen values. A secret's answer holds only the vault secret's id, version and connectorId (default vault), never the value. A declined, dismissed or expired card is an answer: do not raise it again at once. In your own thread the member you answer answers it, or another sends their pick.",
 	"payload follows the closed schema of its surface; text limits count UTF-8 bytes.",
 ];
 const ASK_MEMBER_GMAIL =
