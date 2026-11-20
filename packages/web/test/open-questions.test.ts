@@ -655,6 +655,103 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		again.dispose();
 	});
 
+	it("sends what it holds when the page is hidden or goes, and asks before a close while it holds", async () => {
+		const { host, answers } = company({ questions: cards() });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		const calm = new Event("beforeunload", { cancelable: true });
+		window.dispatchEvent(calm);
+		expect(calm.defaultPrevented).toBe(false);
+
+		dock.el.querySelector<HTMLButtonElement>(".interaction-quiet")?.click();
+		await settle();
+		window.dispatchEvent(new Event("pagehide"));
+		await settle();
+		expect(answers).toEqual([[SESSION, CARD_C, "declined", {}]]);
+
+		pick(dock, "mywave");
+		await settle();
+		const hidden = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+		document.dispatchEvent(new Event("visibilitychange"));
+		await settle();
+		hidden.mockRestore();
+		expect(answers).toHaveLength(2);
+		expect(answers[1]).toEqual([SESSION, CARD_B, "answered", { values: ["mywave"] }]);
+
+		dock.el.querySelector<HTMLElement>(".choice-box, .interaction-options .btn")?.click();
+		await settle();
+		const leaving = new Event("beforeunload", { cancelable: true });
+		window.dispatchEvent(leaving);
+		expect(leaving.defaultPrevented).toBe(true);
+		await settle();
+		expect(answers).toHaveLength(3);
+		dock.dispose();
+	});
+
+	it("drops a sent decision whose answer never reached the agent, so its card is drawn again", async () => {
+		const { host } = company({ questions: cards().slice(0, 2) });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		pick(dock, "mywave");
+		await vi.advanceTimersByTimeAsync(UNDO_MS + 1);
+		await settle();
+		expect(dock.decided.map((entry) => entry.state)).toEqual(["sent"]);
+		expect(dock.shows(CARD_B)).toBe(true);
+		host.conversation(SESSION).set({
+			interactionAnswers: undefined,
+			projection: {
+				items: [
+					{
+						kind: "interaction",
+						id: CARD_B,
+						sequence: 7,
+						actorUserId: MEMBER,
+						request: name,
+						createdAt: "2026-11-10T09:00:00Z",
+						answerFailed: true,
+					},
+				],
+				hiddenCount: 0,
+				lastSequence: 7,
+			},
+		});
+		expect(dock.shows(CARD_B)).toBe(false);
+		expect(dock.decided).toEqual([]);
+		expect(dock.decidedKey).toBe("");
+		dock.dispose();
+	});
+
+	it("tells the dock that stands now when an answer sent on leaving is refused", async () => {
+		let refuse = () => {};
+		const gate = new Promise<void>((resolve) => {
+			refuse = resolve;
+		});
+		const { host } = company({
+			questions: [question(CARD_B, name)],
+			refuse: "Select an active model account.",
+			gate,
+		});
+		const left = new DecisionDock(host);
+		document.body.append(left.el);
+		await settle();
+		pick(left, "mywave");
+		await settle();
+		left.dispose();
+		const now = new DecisionDock(host);
+		document.body.append(now.el);
+		await settle();
+		expect(now.decided.map((entry) => entry.state)).toEqual(["sending"]);
+		expect(now.el.hidden).toBe(true);
+		refuse();
+		await settle();
+		expect(now.decided).toEqual([]);
+		expect(now.el.hidden).toBe(false);
+		expect(now.el.querySelector(".decision-error")?.textContent).toBe("Select an active model account.");
+		now.dispose();
+	});
+
 	it("brings the card back and says why when the answer is refused", async () => {
 		const { host } = company({ questions: [question(CARD_B, name)], refuse: "Select an active model account." });
 		const dock = new DecisionDock(host);

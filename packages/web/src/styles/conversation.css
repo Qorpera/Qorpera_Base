@@ -1903,7 +1903,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .decided-undo { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 12px 0 6px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--bg); color: var(--text); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
 .decided-undo:hover { background: var(--hover); }
 .decided-undo:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-.decided-ring { width: 16px; height: 16px; border-radius: 50%; background: conic-gradient(var(--text) var(--decided-gone, 0%), color-mix(in srgb, var(--text) 16%, transparent) 0); mask: radial-gradient(circle, transparent 5px, #000 5.5px); animation: decided-ring 5s linear both; }
+.decided-ring { width: 16px; height: 16px; border-radius: 50%; background: conic-gradient(var(--text) var(--decided-gone, 0%), color-mix(in srgb, var(--text) 16%, transparent) 0); mask: radial-gradient(circle, transparent 5px, #000 5.5px); animation: decided-ring linear both; }
 @property --decided-gone { syntax: "<percentage>"; inherits: false; initial-value: 0%; }
 @keyframes decided-ring { from { --decided-gone: 0%; } to { --decided-gone: 100%; } }
 @media (prefers-reduced-motion: reduce) { .decided-ring { animation: none; } }

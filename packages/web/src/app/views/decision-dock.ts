@@ -33,7 +33,13 @@ export interface Decided {
 	state: "held" | "sending" | "sent";
 }
 
-const DECIDED = new WeakMap<OpenQuestions, Decided[]>();
+interface Shared {
+	readonly decided: Decided[];
+	readonly errors: Map<string, string>;
+	readonly docks: Set<() => void>;
+}
+
+const SHARED = new WeakMap<OpenQuestions, Shared>();
 
 export class DecisionDock {
 	readonly el: HTMLElement;
@@ -41,7 +47,9 @@ export class DecisionDock {
 	readonly #lifetime = new AbortController();
 	readonly #decided: Decided[];
 	readonly #holds = new Map<string, ReturnType<typeof setTimeout>>();
-	readonly #errors = new Map<string, string>();
+	readonly #errors: Map<string, string>;
+	readonly #docks: Set<() => void>;
+	readonly #redraw = () => this.#draw();
 	readonly #listeners = new Set<() => void>();
 	readonly #stage = h("div", { class: "decision-stage" });
 	readonly #tabs = h("div", { class: "decision-tabs", role: "tablist" });
@@ -59,12 +67,15 @@ export class DecisionDock {
 
 	constructor(host: QuestionDockHost) {
 		this.#host = host;
-		let decided = DECIDED.get(host.questions);
-		if (!decided) {
-			decided = [];
-			DECIDED.set(host.questions, decided);
+		let shared = SHARED.get(host.questions);
+		if (!shared) {
+			shared = { decided: [], errors: new Map(), docks: new Set() };
+			SHARED.set(host.questions, shared);
 		}
-		this.#decided = decided;
+		this.#decided = shared.decided;
+		this.#errors = shared.errors;
+		this.#docks = shared.docks;
+		this.#docks.add(this.#redraw);
 		this.el = h("aside", { class: "decision-dock", "aria-label": t("Decisions for you"), hidden: true });
 		this.#tabs.setAttribute("aria-label", t("Decisions for you"));
 		this.#tabs.addEventListener("keydown", (event) => this.#step(event));
@@ -72,8 +83,26 @@ export class DecisionDock {
 		const unsubscribe = host.questions.store.subscribe(() => this.#draw());
 		this.#stopWatch = host.questions.watch();
 		this.#lifetime.signal.addEventListener("abort", unsubscribe, { once: true });
-		if (typeof window !== "undefined")
-			window.addEventListener("pagehide", () => this.#sendHeld(), { signal: this.#lifetime.signal });
+		if (typeof window !== "undefined") {
+			const signal = this.#lifetime.signal;
+			window.addEventListener("pagehide", () => this.#sendHeld(), { signal });
+			document.addEventListener(
+				"visibilitychange",
+				() => {
+					if (document.visibilityState === "hidden") this.#sendHeld();
+				},
+				{ signal },
+			);
+			window.addEventListener(
+				"beforeunload",
+				(event) => {
+					if (!this.#decided.some((entry) => entry.state === "held")) return;
+					event.preventDefault();
+					this.#sendHeld();
+				},
+				{ signal },
+			);
+		}
 		if (typeof ResizeObserver === "function") {
 			this.#sizes = new ResizeObserver(() => {
 				const narrow = this.el.clientWidth > 0 && this.el.clientWidth < NARROW_BELOW;
@@ -87,18 +116,21 @@ export class DecisionDock {
 	}
 
 	shows(interactionId: string): boolean {
-		return this.#waiting.split(" ").includes(interactionId.toLowerCase());
+		return this.waiting.split(" ").includes(interactionId.toLowerCase());
 	}
 
 	get waiting(): string {
+		if (this.#dropUndelivered()) this.#waiting = this.#waitingNow(this.#cards());
 		return this.#waiting;
 	}
 
 	get decided(): readonly Decided[] {
+		this.#dropUndelivered();
 		return this.#decided;
 	}
 
 	get decidedKey(): string {
+		this.#dropUndelivered();
 		return this.#decided.map((entry) => `${entry.question.interactionId}:${entry.state}`).join(" ");
 	}
 
@@ -139,6 +171,7 @@ export class DecisionDock {
 					? t("Sending to {name}…", { name })
 					: t("Sent to {name}", { name });
 		const ring = h("span", { class: "decided-ring", "aria-hidden": "true" });
+		ring.style.animationDuration = `${UNDO_MS}ms`;
 		ring.style.animationDelay = `${Math.min(0, entry.at - Date.now())}ms`;
 		return h(
 			"section",
@@ -180,8 +213,33 @@ export class DecisionDock {
 		this.#watched?.stop();
 		this.#watched = undefined;
 		if (this.#expires !== undefined) clearTimeout(this.#expires);
+		this.#docks.delete(this.#redraw);
 		this.#listeners.clear();
 		this.el.remove();
+	}
+
+	#dropUndelivered(): boolean {
+		const kept = this.#decided.filter((entry) => {
+			if (entry.state !== "sent") return true;
+			const id = entry.question.interactionId;
+			const items = this.#host.conversation(entry.question.sessionId).get().projection?.items ?? [];
+			return !items.some(
+				(item) => item.kind === "interaction" && item.id.toLowerCase() === id && item.answerFailed === true,
+			);
+		});
+		if (kept.length === this.#decided.length) return false;
+		this.#decided.splice(0, this.#decided.length, ...kept);
+		return true;
+	}
+
+	#waitingNow(cards: OpenQuestion[]): string {
+		return [...cards.map((card) => card.interactionId), ...this.#decided.map((entry) => entry.question.interactionId)]
+			.map((id) => id.toLowerCase())
+			.join(" ");
+	}
+
+	#everyDock(): void {
+		for (const redraw of [...this.#docks]) redraw();
 	}
 
 	#onItsWay(interactionId: string): boolean {
@@ -217,17 +275,13 @@ export class DecisionDock {
 
 	#draw(): void {
 		if (this.#lifetime.signal.aborted) return;
+		this.#dropUndelivered();
 		const cards = this.#cards();
 		this.#untilNextExpiry(cards);
 		const current = cards.find((card) => card.interactionId === this.#current) ?? cards[0];
 		this.#current = current?.interactionId;
 		this.#watch(current?.sessionId);
-		this.#waiting = [
-			...cards.map((card) => card.interactionId),
-			...this.#decided.map((entry) => entry.question.interactionId),
-		]
-			.map((id) => id.toLowerCase())
-			.join(" ");
+		this.#waiting = this.#waitingNow(cards);
 		this.el.hidden = !current;
 		this.el.classList.toggle("is-narrow", this.#narrow);
 		if (current) {
@@ -241,7 +295,7 @@ export class DecisionDock {
 			replace(this.#stage);
 			replace(this.#tabs);
 		}
-		const told = `${this.#waiting}|${this.decidedKey}`;
+		const told = `${this.#waiting}|${this.#decided.map((entry) => `${entry.question.interactionId}:${entry.state}`).join(" ")}`;
 		if (told === this.#told) return;
 		this.#told = told;
 		for (const listener of this.#listeners) listener();
@@ -377,7 +431,7 @@ export class DecisionDock {
 		this.#holds.delete(id);
 		if (entry.state !== "held") return;
 		entry.state = "sending";
-		this.#draw();
+		this.#everyDock();
 		try {
 			await this.#host.questions.answer(question, entry.outcome, entry.value);
 		} catch (error) {
@@ -392,13 +446,13 @@ export class DecisionDock {
 			const index = this.#decided.indexOf(entry);
 			if (index >= 0) this.#decided.splice(index, 1);
 			this.#current = id;
-			this.#draw();
+			this.#everyDock();
 			return;
 		}
 		entry.state = "sent";
 		this.#host.questions.forget(id);
 		void this.#host.questions.refresh();
-		this.#draw();
+		this.#everyDock();
 	}
 
 	#watch(sessionId: string | undefined): void {
