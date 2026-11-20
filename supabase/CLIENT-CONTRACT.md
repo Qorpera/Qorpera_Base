@@ -494,6 +494,39 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   or admin), `canAnswer` is true for every row. The web's decisions dock in the
   Co-Founder's chat draws them and answers each as its thread does. Members
   only (42501 otherwise).
+- `qorpera_list_company_open_decisions(p_profile_id)` →
+  `qorpera.company-open-decisions/v1` (20260930819000): every open decision in
+  the company's agent threads, for any member of the company, spectators too.
+  `decisions`: the ones the caller answers first, then newest first (at most 20
+  cards a thread, 50 approvals, 100 in all), each as
+  `qorpera_list_member_open_decisions` gives it plus `votes`: every member's
+  vote and note on it, `[{userId, choice, note, updatedAt}]`, oldest change
+  first (`choice` one of a question's option values or null, `note` null or at
+  most 500 characters). `answererUserId` is the member who answers (null: any
+  owner or admin); `canAnswer` says whether the caller is one, by the rules
+  the answer functions keep (the member a card was raised for, in the thread,
+  not a spectator; an approval's approver, or any owner or admin for the
+  company's). It shows nothing a member could not already read: an agent
+  thread is the company's, and its cards are events every member reads. A
+  conversation that is one member's own lists nothing. Members only (42501
+  otherwise).
+- `qorpera_cast_decision_vote(p_profile_id, p_item_id, p_choice, p_note)` →
+  `qorpera.decision-vote/v1` `{itemId, choice, note}` (20260930819000): the
+  caller's own vote and note on an open decision of their company (`p_item_id`
+  is a row's `id` in the list above). `p_choice` is one of a question's option
+  values (an option's `value`, else its `label`), and null on an email draft or
+  an approval; `p_note` is trimmed, at most 500 characters. Both empty takes
+  the vote back. One vote a member a decision: a second call replaces the
+  first. Advisory only: it answers nothing, wakes no agent and needs no model
+  account. Owners, admins and contributors vote, on any open decision, their
+  own too; a spectator reads the votes and casts none (42501, as for a
+  non-member). 22023: the decision is not open (answered, past its time, not a
+  question, draft or approval card, or another company's), the choice is not
+  one of its options, or the note is too long. A decision's votes are kept
+  when it is answered, so a card that opens again after a failed answer has
+  them still; a member who leaves the company takes theirs along. At commit
+  every member of the company gets the `sessions` live hint (§3), and reads
+  the list again.
 - `qorpera_list_member_waiting_work(p_profile_id)` →
   `qorpera.member-waiting-work/v1` (20260930723000): what each agent's work
   waits on the caller for, `agents` of `{staffAgentId, sessionId, count,
@@ -2228,7 +2261,7 @@ topic's rows. A new private topic's policies must do the same.
   made, wanted on or off, removed or fails, another agent drives its screen (or one drives it again after 10 minutes),
   or its placement is made, starts, gets a boot, retires or goes, and since `20260930713000_machine_member_control` when
   a member takes its desktop over or hands it back (not on an action or a heartbeat, nor when a lease runs out: read the
-  list again at its `until`): read `qorpera_list_agent_machines` again. Who hears a change is decided per change, at commit: only the topics of the members
+  list again at its `until`): read `qorpera_list_agent_machines` again. Since `20260930819000_decision_votes` `sessions` is also sent, to every member of the company, when a member's vote or note on an open decision changes (no conversation row changes with it): read `qorpera_list_company_open_decisions` again. Who hears a change is decided per change, at commit: only the topics of the members
   who may read the changed row under its table's read policy then, so a member who leaves hears nothing of the company
   from that commit on but the change to their own access row (which they may read). A member may join only their own
   topic, of a company they are a member of or have an access row in (RLS on `realtime.messages` via
