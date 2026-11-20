@@ -233,7 +233,69 @@ where room_id = current_setting('qorpera_test.card_room')::uuid and principal_ki
 select pg_temp.base_assert(pg_temp.dv_kinds('92400000-0000-4000-8000-000000000001') = 'approval!,approval!,draft,question',
 	'An owner who left the thread still sees its cards and no longer answers them: '
 		|| pg_temp.dv_kinds('92400000-0000-4000-8000-000000000001'));
+update public.qorpera_company_room_members set status = 'removed', removed_at = clock_timestamp()
+where room_id = current_setting('qorpera_test.card_room')::uuid and principal_kind = 'member'
+	and principal_id = '92400000-0000-4000-8000-000000000002';
+select pg_temp.base_assert(pg_temp.dv_kinds('92400000-0000-4000-8000-000000000002') = 'approval,approval,draft,question',
+	'A contributor who is in no agent thread reads the company''s decisions all the same: '
+		|| pg_temp.dv_kinds('92400000-0000-4000-8000-000000000002'));
 rollback to savepoint dv_left_thread;
+
+savepoint dv_deleting;
+do $$
+begin
+	set local session_replication_role = replica;
+	insert into public.qorpera_company_deletions(profile_id, requested_by_user_id)
+	values ('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000001');
+	set local session_replication_role = origin;
+	perform pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+	perform pg_temp.base_error($q$select public.qorpera_list_company_open_decisions('92400000-0000-4000-8000-000000000010')$q$,
+		'42501', 'Decisions unavailable');
+	perform pg_temp.base_error($q$select public.qorpera_cast_decision_vote('92400000-0000-4000-8000-000000000010',
+		'59600000-0000-4000-8000-0000000009a1', 'finance', null)$q$, '42501', 'Voting unavailable');
+	perform pg_temp.base_claims('service_role');
+end
+$$;
+rollback to savepoint dv_deleting;
+
+savepoint dv_cap;
+do $$
+declare
+	v_own public.qorpera_action_reviews%rowtype;
+	v_event public.qorpera_session_events%rowtype;
+	v_last bigint;
+	v_id uuid;
+	v jsonb;
+begin
+	select * into strict v_own from public.qorpera_action_reviews where id = current_setting('qorpera_test.od_own')::uuid;
+	select * into strict v_event from public.qorpera_session_events where event_id = v_own.id;
+	select max(sequence) into v_last from public.qorpera_session_events where session_id = v_event.session_id;
+	set local session_replication_role = replica;
+	for i in 1..55 loop
+		v_id := extensions.gen_random_uuid();
+		insert into public.qorpera_action_reviews
+		select (jsonb_populate_record(v_own, jsonb_build_object('id', v_id, 'call_id', 'dv-cap-' || i,
+			'created_at', clock_timestamp() + i * interval '1 second'))).*;
+		insert into public.qorpera_session_events
+		select (jsonb_populate_record(v_event, jsonb_build_object('event_id', v_id, 'sequence', v_last + i,
+			'body', jsonb_set(v_event.body, '{entry,data,reviewId}', to_jsonb(v_id::text))))).*;
+	end loop;
+	set local session_replication_role = origin;
+	v := pg_temp.dv_list('92400000-0000-4000-8000-000000000004');
+	perform pg_temp.base_assert(v #>> '{0,id}' = current_setting('qorpera_test.od_company') and v #> '{0,canAnswer}' = 'true'
+		and (select count(*) from jsonb_array_elements(v) as listed(decision) where decision ->> 'kind' = 'approval') = 50,
+		'With 56 newer approvals of another member, the 50 kept still hold the company''s one the admin answers: '
+			|| (v -> 0)::text);
+	v := pg_temp.dv_cast('92400000-0000-4000-8000-000000000004', current_setting('qorpera_test.od_company')::uuid, null,
+		'Still on my list.');
+	perform pg_temp.base_assert(v ->> 'note' = 'Still on my list.', 'and the admin can still note on it');
+	v := pg_temp.dv_list('92400000-0000-4000-8000-000000000002');
+	perform pg_temp.base_assert(not exists (select 1 from jsonb_array_elements(v) as listed(decision)
+			where decision ->> 'id' = current_setting('qorpera_test.od_company')),
+		'A contributor, who answers none, gets the 50 newest, which leave the older company approval out');
+end
+$$;
+rollback to savepoint dv_cap;
 
 savepoint dv_archived;
 update public.qorpera_company_rooms set status = 'archived' where id = current_setting('qorpera_test.card_room')::uuid;

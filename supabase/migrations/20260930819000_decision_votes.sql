@@ -83,7 +83,8 @@ language sql stable security definer set search_path = '' as $$
 				and session.audience_kind = 'company'
 		join public.qorpera_company_rooms as room on room.session_id = review.card_session_id
 			and room.bound_staff_agent_id = review.staff_agent_id and room.profile_id = review.profile_id
-		join public.qorpera_session_events as raised on raised.session_id = review.card_session_id
+		join public.qorpera_session_events as raised on raised.event_id = review.id
+			and raised.session_id = review.card_session_id
 			and raised.event_type = 'authorization_request'
 			and raised.body #>> '{entry,data,reviewId}' = review.id::text
 		where review.profile_id = p_profile_id and review.decision = 'ask' and review.answer is null
