@@ -445,7 +445,7 @@ describe("readable cards", () => {
 		const schema = JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA);
 		expect(schema).toContain("allowCustom adds a field for the member's own");
 		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain(
-			"Words the member typed in the card (a value that is none of your options) are their note on the question, not a pick: when the note is itself the answer (a name, a figure, a choice of their own), act on it; otherwise the decision is still open, so rework what the note asks, raise the question again with the changed options, and start nothing that depends on the decision.",
+			"Words the member typed in the card (a value that is none of your options) are their note on the question, not a pick: when the note is itself the answer (a name, a figure, a choice of their own), act on it; otherwise the decision is still open, so rework what the note asks, raise the question again with the changed options, and start nothing that depends on the decision. After a note, post nothing in their thread until you have the new question or have acted on their answer.",
 		);
 		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).not.toContain("custom answer");
 		// The tool boundary takes a description of at most 4096 bytes.
