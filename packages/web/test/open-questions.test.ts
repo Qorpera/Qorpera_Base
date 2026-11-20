@@ -1234,7 +1234,7 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		stop();
 	});
 
-	it("asks a cloud without the company's list once a page load, and reads the member's own list as before", async () => {
+	it("asks a cloud without the company's list once while the company is open, and reads the member's own list as before", async () => {
 		const { host, controller } = company({ questions: [question(CARD_B, name)], approvals: [approval] });
 		const dock = new DecisionDock(host);
 		document.body.append(dock.el);
