@@ -195,6 +195,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Explainer videos speak, in English and Danish",
 		text: "An explainer video now gets a voice: after save_app, narrate_app has a voice read each caption into a clip the video plays. It runs on the ChatGPT login the run works on and counts against that login's usage limit, so it records only captions with no clip yet, stops at the limit, keeps what it recorded and says how many captions are left; call it again after the reset. A video can carry English and Danish in one scenes.js ({en, da} wherever a text goes), with a language switch in the player: make new videos in both, and give the videos you own a voice. Read app_guide explainer first.",
 	},
+	{
+		id: "typed-words-are-a-note",
+		kind: "behaviour",
+		date: "2026-11-20",
+		title: "Words typed on a question are a note",
+		text: "When a member types their own words on your question card instead of picking an option, that is their note on the question, not a pick. If the note is itself the answer (a name, a figure, a choice of their own), act on it. Otherwise the decision is still open: rework what the note asks, raise the question again with the changed options, and start nothing that depends on the decision. Their thread shows your question as being reworked until you are back, so come back with the new question or with what you did with their answer, before any other news.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;
