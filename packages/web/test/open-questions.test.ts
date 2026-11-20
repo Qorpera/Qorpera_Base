@@ -2105,7 +2105,7 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		expect(card?.querySelector(".interaction-call strong")?.textContent).toBe("Bob asks you");
 		expect(card?.querySelector(".interaction-field")).toBeNull();
 		expect(dock.el.querySelector(".decision-pick-words")?.textContent).toBe(
-			"You have no AI login here, so a tap is your pick, not an answer. A member with a login can then send your pick; tap it again to take it back.",
+			"You have no login here that can answer, so a tap is your pick, not an answer. A member who has one can then send your pick; tap it again to take it back.",
 		);
 		expect(sendPick(dock)).toBeNull();
 		await vi.advanceTimersByTimeAsync(SETTLE_MS);
@@ -2135,6 +2135,94 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		expect(second.decided.map((entry) => entry.state)).toEqual(["held"]);
 		expect(signedIn.votesCast).toEqual([]);
 		second.dispose();
+	});
+
+	it("draws the member's own question as an answer card while the login is not known, and turns it back when a login appears", async () => {
+		let connections: unknown[] = [];
+		let held: ((value: typeof login) => void) | undefined;
+		const listConnections = vi.fn(
+			() =>
+				new Promise<typeof login>((resolve) => {
+					held = resolve;
+				}),
+		);
+		const { host, open, votesCast } = company({
+			company: [{ ...asOpenCards([question(CARD_B, name)])[0]!, votes: [] }],
+			accounts: { listConnections, selectSessionAccount: undefined },
+		});
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await rest();
+		const voting = () => dock.el.querySelector(".decision-card > .interaction-card.is-voting") !== null;
+		expect(voting()).toBe(false);
+		held?.({ ...login, connections: connections as never });
+		await rest();
+		expect(voting()).toBe(true);
+		option(dock, "mywave")?.click();
+		await rest();
+		expect(votesCast).toEqual([]);
+		expect(dock.decided).toEqual([]);
+
+		connections = login.connections;
+		await vi.advanceTimersByTimeAsync(10_001);
+		await open.refresh();
+		await rest();
+		expect(listConnections).toHaveBeenCalledTimes(2);
+		held?.({ ...login, connections: connections as never });
+		await rest();
+		expect(voting()).toBe(false);
+		expect(dock.el.querySelector(".decision-pick-words")).toBeNull();
+		option(dock, "mywave")?.click();
+		await rest();
+		expect(dock.decided).toEqual([]);
+		await vi.advanceTimersByTimeAsync(SETTLE_MS);
+		option(dock, "mywave")?.click();
+		await settle();
+		expect(dock.decided.map((entry) => entry.state)).toEqual(["held"]);
+		expect(votesCast).toEqual([]);
+		dock.dispose();
+
+		const failing = company({
+			company: [{ ...asOpenCards([question(CARD_B, name)])[0]!, votes: [] }],
+			accounts: {
+				listConnections: vi.fn(async () => {
+					throw new Error("offline");
+				}),
+				selectSessionAccount: undefined,
+			},
+		});
+		const second = new DecisionDock(failing.host);
+		document.body.append(second.el);
+		await rest();
+		expect(second.el.querySelector(".decision-card > .interaction-card.is-voting")).toBeNull();
+		second.dispose();
+	});
+
+	it("says a sent pick is not the member's pick now when the cloud refuses it, and reads the votes again", async () => {
+		const list: OpenDecision[] = [
+			others(CARD_B, name, [{ userId: SARA, choice: "mywave", updatedAt: "2026-11-10T10:05:00Z" }]),
+		];
+		const { host, controller } = company({ company: list, accounts: withLogin });
+		controller.answerInteraction.mockImplementationOnce(async () => {
+			throw new Error("Only the member this card was raised for can answer it");
+		});
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await rest();
+		await vi.advanceTimersByTimeAsync(SETTLE_MS);
+		sendPick(dock)?.click();
+		await settle();
+		list[0] = others(CARD_B, name, [{ userId: SARA, choice: "Not yet", updatedAt: "2026-11-10T10:09:00Z" }]);
+		const reads = controller.listCompanyOpenDecisions.mock.calls.length;
+		await vi.advanceTimersByTimeAsync(UNDO_MS + 1);
+		await rest();
+		expect(dock.decided).toEqual([]);
+		expect(dock.el.querySelector(".decision-error")?.textContent).toBe(
+			"Nothing was sent. Jonas's pick is not that option now. Look at their vote again.",
+		);
+		expect(controller.listCompanyOpenDecisions.mock.calls.length).toBeGreaterThan(reads);
+		expect(sendPick(dock)?.textContent).toBe("Send Jonas's pick: Not yet");
+		dock.dispose();
 	});
 
 	it("offers no send to a member without a usable login, nor to a spectator", async () => {

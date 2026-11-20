@@ -79,6 +79,8 @@ export type QuestionAccounts = Pick<WebNativeSubscription, "listConnections" | "
 /** A hint in the company's conversations reads again at most this often; with none, the clock does. */
 const HINT_MS = 4_000;
 const HEARTBEAT_MS = 30_000;
+const LOGIN_MISSING_AGAIN_MS = 10_000;
+const LOGIN_AGAIN_MS = 300_000;
 /** An answered card stays on screen this long, answered, before it goes (views/question-dock.ts plays it out). */
 export const ANSWERED_HOLD_MS = 2_200;
 
@@ -92,7 +94,8 @@ export class OpenQuestions {
 	#stopWatching: (() => void) | undefined;
 	#reads = 0;
 	#source: "company" | "member" | "questions" = "company";
-	#loginRead = false;
+	#loginReading = false;
+	#loginReadAt: number | undefined;
 	readonly #onTheirWay = new Set<string>();
 	readonly #drafts = new Map<string, OpenDraft>();
 	readonly #myVotes = new Map<
@@ -222,8 +225,10 @@ export class OpenQuestions {
 	}
 
 	async readLogin(): Promise<void> {
-		if (this.#loginRead || !this.#accounts.listConnections) return;
-		this.#loginRead = true;
+		const wait = this.store.get().hasLogin === true ? LOGIN_AGAIN_MS : LOGIN_MISSING_AGAIN_MS;
+		if (this.#loginReading || !this.#accounts.listConnections) return;
+		if (this.#loginReadAt !== undefined && Date.now() - this.#loginReadAt < wait) return;
+		this.#loginReading = true;
 		try {
 			const observed = await this.#accounts.listConnections(this.#company.signal);
 			const userId = this.#company.userId;
@@ -237,8 +242,11 @@ export class OpenQuestions {
 					}
 				}),
 			});
+			this.#loginReadAt = Date.now();
 		} catch {
-			this.#loginRead = false;
+			this.#loginReadAt = undefined;
+		} finally {
+			this.#loginReading = false;
 		}
 	}
 

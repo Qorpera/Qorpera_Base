@@ -59,8 +59,6 @@ export const COMPANY: Record<string, string> = {
 	"Only the person who wrote the message can try it again.": "Kun den, der skrev beskeden, kan prøve igen.",
 	"Select an active model account, then try again.": "Vælg en aktiv modelkonto, og prøv igen.",
 	"Voting is not available here.": "Du kan ikke stemme her.",
-	"Nothing was sent. This decision is another member's to answer, and what you sent is not their pick now. Look at their vote again.":
-		"Intet blev sendt. Beslutningen er et andet medlems at svare på, og det, du sendte, er ikke deres valg nu. Se deres stemme igen.",
 	"Your answer did not go. It would start this agent's work, and only members of the agent's thread can do that. Ask someone in that thread to answer.":
 		"Dit svar blev ikke sendt. Det ville sætte agentens arbejde i gang, og det kan kun medlemmer af agentens tråd. Bed en i den tråd om at svare.",
 	"Answering cards here is not available yet. Reply in a message instead.":

@@ -1883,7 +1883,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .decision-card .interaction-dot { display: none; }
 .decision-error { margin: 6px 2px 0; color: var(--danger); font-size: 12.5px; line-height: 1.4; }
 .decision-votes { display: flex; flex-direction: column; gap: 8px; margin: 8px 2px 0; }
-.decision-votes:not(:has(li, input, button)) { display: none; }
+.decision-votes:not(:has(li, input, button, .decision-pick-words)) { display: none; }
 .vote-notes { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; color: var(--text-muted); font-size: 12.5px; line-height: 1.4; }
 .vote-notes:empty { display: none; }
 .vote-notes li { display: flex; align-items: center; gap: 6px; min-width: 0; }

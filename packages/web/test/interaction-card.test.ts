@@ -336,6 +336,13 @@ describe("a card with its answer, in a thread", () => {
 		expect(
 			mine.querySelector(".interaction-result .interaction-attribution > .interaction-beside")?.textContent,
 		).toBe("Sofie's pick, sent by you");
+		const third = renderInteractionCard(
+			{ ...item(question, { ...answered, answeredBy: OTHER }), actorUserId: "44444444-4444-4444-8444-444444444444" },
+			thread(),
+		);
+		expect(
+			third.querySelector(".interaction-result .interaction-attribution > .interaction-beside")?.textContent,
+		).toBe("Sofie's pick, sent by Sofie");
 	});
 
 	it("says under the answer whose it is when it is another member's, and that it is on its way", () => {

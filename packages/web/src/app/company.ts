@@ -197,10 +197,6 @@ function answerRefusal(error: unknown): string {
 	const message = error instanceof Error ? error.message : "";
 	if (needsModelAccount(error)) return t("Select an active model account, then try again.");
 	if (/paused/i.test(message)) return t("Agents are paused for a moment while Qorpera updates. Try again shortly.");
-	if (/Only the member this card was raised for can answer it/.test(message))
-		return t(
-			"Nothing was sent. This decision is another member's to answer, and what you sent is not their pick now. Look at their vote again.",
-		);
 	if (/Only a member of this thread can wake its agent/.test(message))
 		return t(
 			"Your answer did not go. It would start this agent's work, and only members of the agent's thread can do that. Ask someone in that thread to answer.",

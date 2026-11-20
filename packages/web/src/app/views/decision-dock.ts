@@ -1,5 +1,5 @@
 import type { EmailDraftAction, EmailDraftContent, EmailDraftState } from "../../cloud/email-drafts.ts";
-import { type InteractionOutcome, questionOptions, typedNote } from "../../cloud/interactions.ts";
+import { type InteractionOutcome, questionInput, questionOptions, typedNote } from "../../cloud/interactions.ts";
 import {
 	decisionTitle,
 	type OpenApproval,
@@ -125,6 +125,8 @@ export class DecisionDock {
 	#shown: string | undefined;
 	#shownOthers = false;
 	#shownVoting = false;
+	#chose = false;
+	#pickPainted = "";
 	#shownNone = false;
 	#staged: string | undefined;
 	#byMember = false;
@@ -387,10 +389,11 @@ export class DecisionDock {
 			current &&
 			(current.interactionId !== this.#shown
 				? this.#shown !== undefined || this.#shownNone
-				: this.#shownVoting && !(current.othersAnswer === true || this.#picksOwn(current)))
+				: this.#shownVoting !== (current.othersAnswer === true || this.#picksOwn(current)))
 		)
 			this.#settlesAt = this.#byMember ? 0 : Date.now() + SETTLE_MS;
 		this.#shownNone = !current && this.#host.questions.store.get().read;
+		this.#chose = this.#byMember;
 		this.#byMember = false;
 		this.#shown = current?.interactionId;
 		this.#shownOthers = current?.othersAnswer === true;
@@ -630,6 +633,8 @@ export class DecisionDock {
 		return (
 			current.kind === "question" &&
 			!current.othersAnswer &&
+			questionInput(current.request) === undefined &&
+			questionOptions(current.request).length > 0 &&
 			current.votes !== undefined &&
 			this.#host.questions.store.get().hasLogin === false &&
 			this.#host.questions.mayVote()
@@ -647,9 +652,9 @@ export class DecisionDock {
 			current.kind === "question" && pick !== undefined
 				? questionOptions(current.request).find((candidate) => candidate.value === pick)
 				: undefined;
-		if (place.dataset.pick !== (option?.value ?? "") && place.dataset.pick !== undefined && option)
-			this.#settlesAt = Date.now() + SETTLE_MS;
-		place.dataset.pick = option?.value ?? "";
+		const painted = option ? `${current.interactionId} ${option.value}` : "";
+		if (painted && painted !== this.#pickPainted && !this.#chose) this.#settlesAt = Date.now() + SETTLE_MS;
+		this.#pickPainted = painted;
 		if (this.#picksOwn(current)) {
 			replace(
 				place,
@@ -657,7 +662,7 @@ export class DecisionDock {
 					"p",
 					{ class: "decision-pick-words" },
 					t(
-						"You have no AI login here, so a tap is your pick, not an answer. A member with a login can then send your pick; tap it again to take it back.",
+						"You have no login here that can answer, so a tap is your pick, not an answer. A member who has one can then send your pick; tap it again to take it back.",
 					),
 				),
 			);
@@ -854,12 +859,22 @@ export class DecisionDock {
 			}
 		} catch (error) {
 			const said = this.#host.conversation(decision.sessionId).get().interactionError;
+			const pickOf = entry.decision.kind === "question" ? (entry as DecidedCard).pickOf : undefined;
+			const stale =
+				pickOf !== undefined &&
+				error instanceof Error &&
+				/Only the member this card was raised for can answer it/.test(error.message);
+			if (pickOf !== undefined) void this.#host.questions.refresh();
 			this.#errors.set(
 				id,
-				said ??
-					(error instanceof Error && error.message
-						? error.message
-						: t("Your answer could not be sent. Try again.")),
+				stale
+					? t("Nothing was sent. {name}'s pick is not that option now. Look at their vote again.", {
+							name: pickOf,
+						})
+					: (said ??
+							(error instanceof Error && error.message
+								? error.message
+								: t("Your answer could not be sent. Try again."))),
 			);
 			const index = this.#decided.indexOf(entry);
 			if (index >= 0) this.#decided.splice(index, 1);
