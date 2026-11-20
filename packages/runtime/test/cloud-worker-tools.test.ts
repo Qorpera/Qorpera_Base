@@ -624,7 +624,11 @@ describe("agent todo and worker tools", () => {
 					{ ...coding, repository: { host: "qorpera", owner: "company", name: "shop" } },
 					"a coding session needs repository with exactly host",
 				],
-				[{ ...coding, model: "x" }, "this action takes only these fields: action, operationKey"],
+				[{ ...coding, model: "x" }, "this call takes only these fields: action, operationKey"],
+				[
+					{ ...dispatch, access: "write", saveTo: "/designs" },
+					"saveTo must be one relative company path of at most 512 bytes",
+				],
 				[{ ...coding, goal: "" }, "goal must be text of 1 to 4000 bytes"],
 				[{ ...coding, workerKey: "Fix Login" }, "workerKey must be lowercase letters"],
 				[{ ...coding, species: "remote" }, "species must be in-house or coding"],

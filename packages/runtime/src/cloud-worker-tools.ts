@@ -38,9 +38,9 @@ function object(value: unknown, allowed: readonly string[], required: readonly s
 	if (!value || typeof value !== "object" || Array.isArray(value))
 		throw new CloudToolArgumentRefusal("the arguments must be one JSON object");
 	if (Object.keys(value).some((key) => !allowed.includes(key)))
-		throw new CloudToolArgumentRefusal(`this action takes only these fields: ${allowed.join(", ")}`);
+		throw new CloudToolArgumentRefusal(`this call takes only these fields: ${allowed.join(", ")}`);
 	const missing = required.filter((key) => !Object.hasOwn(value, key));
-	if (missing.length) throw new CloudToolArgumentRefusal(`this action also needs: ${missing.join(", ")}`);
+	if (missing.length) throw new CloudToolArgumentRefusal(`this call also needs: ${missing.join(", ")}`);
 	return value as Record<string, unknown>;
 }
 function text(field: string, value: unknown, maxBytes: number, singleLine = false): string {
@@ -120,7 +120,9 @@ function checkedPaths(field: string, value: unknown, max: number, maxBytes: numb
 		)
 	)
 		throw new CloudToolArgumentRefusal(
-			`${field} must be up to ${max} different company paths of at most ${maxBytes} bytes each, relative (no leading slash, no . or .. parts)`,
+			max === 1
+				? `${field} must be one relative company path of at most ${maxBytes} bytes (no leading slash, no . or .. parts)`
+				: `${field} must be a list of up to ${max} different relative company paths of at most ${maxBytes} bytes each (no leading slash, no . or .. parts)`,
 		);
 	return value as string[];
 }
