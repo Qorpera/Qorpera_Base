@@ -1,6 +1,14 @@
 # Changelog
 
 ## [Unreleased]
+- A Claude reading names no 5-hour window (the founder, 20 Nov 2026: "remove the 5H limit, they already have"; on
+  production that day Claude Code's `get_usage` for an Ultra plan answered `rate_limits.five_hour: null` and weekly
+  windows only). `claudeUsageFromGetUsage` no longer reads a null `five_hour` as a 0 % window (the 17 Nov idle-window
+  rule) nor a present one; `claudeUsageFromRateLimitInfo` reads a run's `seven_day` window only, and still keeps
+  `limitResetAt` and `limitType` when Claude Code says the plan refused, a refusal by a 5-hour limit among them, so a
+  login refused by one is still used up until it resets. The login helper's client drops a `five_hour` window from an
+  older helper's answer. The Settings read runs in the shared vault and the login helper, so it changes only when
+  those move; a run's reading changes with the bundle. No migration: the cloud still accepts a `five_hour` window.
 - Release v265 (#1940, narrate_app gives an agent's explainer film its voice, and films in English and Danish; master
   since v264's release merge c0acd5d63 holds #1940 alone): migration `20260930817000` first, then runtime bundle 265
   `df25c9ccc2606496bc03843260c7f6a8c8cfbe09cbcdb0494acc87ea26805536` (activation `20260929026599`, which requires

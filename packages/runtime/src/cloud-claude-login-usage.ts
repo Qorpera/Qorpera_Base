@@ -1,4 +1,4 @@
-export type ClaudeUsageWindowId = "five_hour" | "seven_day" | "seven_day_model";
+export type ClaudeUsageWindowId = "seven_day" | "seven_day_model";
 
 export interface ClaudeUsageWindow {
 	readonly id: ClaudeUsageWindowId;
@@ -84,13 +84,8 @@ function window(id: ClaudeUsageWindowId, label: string, used: number | undefined
 
 export function claudeUsageFromRateLimitInfo(value: unknown, now = new Date()): ClaudeLoginUsage | undefined {
 	const info = fields(value);
-	const windows = fields(info?.unifiedWindows);
-	const five = fields(windows?.five_hour);
-	const week = fields(windows?.seven_day);
-	const read = [
-		...window("five_hour", "5 hours", percent(five?.utilization, 100), five?.resetsAt),
-		...window("seven_day", "Weekly", percent(week?.utilization, 100), week?.resetsAt),
-	];
+	const week = fields(fields(info?.unifiedWindows)?.seven_day);
+	const read = window("seven_day", "Weekly", percent(week?.utilization, 100), week?.resetsAt);
 	if (!read.length) return undefined;
 	const limitResetAt = info?.status === "rejected" ? instant(info.resetsAt) : undefined;
 	const limitType =
@@ -112,11 +107,6 @@ export function claudeUsageFromGetUsage(value: unknown, now = new Date()): Claud
 	const answer = fields(value);
 	const limits = fields(answer?.rate_limits);
 	if (!limits) return undefined;
-	// WHY: get_usage sends five_hour as null while no 5-hour window is open, which is 0 % used.
-	const five =
-		limits.five_hour === null && answer?.rate_limits_available !== false
-			? { utilization: 0 }
-			: fields(limits.five_hour);
 	const week = fields(limits.seven_day);
 	const models: ClaudeUsageWindow[] = [];
 	const scoped = Array.isArray(limits.limits) ? limits.limits : [];
@@ -128,11 +118,7 @@ export function claudeUsageFromGetUsage(value: unknown, now = new Date()): Claud
 		models.push(...window("seven_day_model", `Weekly · ${name}`, percent(row.percent, 1), row.resets_at));
 		if (models.length >= MAX_MODEL_WINDOWS) break;
 	}
-	const read = [
-		...window("five_hour", "5 hours", percent(five?.utilization, 1), five?.resets_at),
-		...window("seven_day", "Weekly", percent(week?.utilization, 1), week?.resets_at),
-		...models,
-	];
+	const read = [...window("seven_day", "Weekly", percent(week?.utilization, 1), week?.resets_at), ...models];
 	return read.length ? { observedAt: now.toISOString(), windows: read } : undefined;
 }
 
