@@ -421,48 +421,8 @@ export function cloudScriptReadProgram(paths: readonly string[]): string {
 }
 
 export type CloudScriptEntry =
-	| { readonly path: string; readonly sha256: string; readonly bytes: number; readonly written?: string }
+	| { readonly path: string; readonly sha256: string; readonly bytes: number }
 	| { readonly path: string; readonly notShown: string };
-
-export interface CloudWrittenScript {
-	readonly path: string;
-	readonly text: string;
-}
-
-const WRITTEN_PATH = String.raw`(\/[A-Za-z0-9_./\-+@%,:=]+)`;
-const WRITTEN_TAG = `(['"])([A-Za-z_][A-Za-z0-9_]*)`;
-const WRITE_THEN_TAG = new RegExp(
-	String.raw`^[ \t]*cat[ \t]+>[ \t]*${WRITTEN_PATH}[ \t]+<<[ \t]*${WRITTEN_TAG}\2[ \t]*$`,
-);
-const TAG_THEN_WRITE = new RegExp(
-	String.raw`^[ \t]*cat[ \t]+<<[ \t]*${WRITTEN_TAG}\1[ \t]+>[ \t]*${WRITTEN_PATH}[ \t]*$`,
-);
-
-export function cloudCommandWrittenScripts(command: string): CloudWrittenScript[] {
-	const lines = command.split("\n");
-	const written = new Map<string, string>();
-	for (let at = 0; at < lines.length; at += 1) {
-		const line = lines[at] as string;
-		const first = WRITE_THEN_TAG.exec(line);
-		const second = first ? null : TAG_THEN_WRITE.exec(line);
-		const path = first?.[1] ?? second?.[3];
-		const tag = first?.[3] ?? second?.[2];
-		if (path === undefined || tag === undefined) continue;
-		const end = lines.indexOf(tag, at + 1);
-		if (end < 0) break;
-		const text = lines
-			.slice(at + 1, end)
-			.map((body) => `${body}\n`)
-			.join("");
-		if (Buffer.byteLength(text) <= CLOUD_SCRIPT_FILE_BYTES) written.set(posix.normalize(path), text);
-		else written.delete(posix.normalize(path));
-		at = end;
-	}
-	return [...written].map(([path, text]) => ({ path, text }));
-}
-
-export const CLOUD_SCRIPT_WRITTEN = (why: string) =>
-	`Not read from the machine just now (${why}). This is the text this run wrote to the file with an earlier command; a later command may have changed it.`;
 
 export interface CloudScriptRead {
 	readonly entries: CloudScriptEntry[];
@@ -551,7 +511,6 @@ export function parseCloudPreparedScripts(value: JsonValue | undefined): CloudPr
 			typeof entry !== "object" ||
 			typeof entry.path !== "string" ||
 			!entry.path.startsWith("/") ||
-			(entry.written !== undefined && typeof entry.written !== "string") ||
 			(typeof entry.notShown !== "string" &&
 				(typeof entry.sha256 !== "string" ||
 					!SHA256_HEX_PATTERN.test(entry.sha256) ||
@@ -586,7 +545,6 @@ export function cloudScriptContents(scripts: CloudPreparedScripts, texts: Readon
 				bytes: entry.bytes,
 				sha256: entry.sha256,
 				text,
-				...(entry.written === undefined ? {} : { written: CLOUD_SCRIPT_WRITTEN(entry.written) }),
 			};
 		}),
 		...(notShown.length > 0 ? { notShown } : {}),

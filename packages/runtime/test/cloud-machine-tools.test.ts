@@ -16,7 +16,6 @@ import {
 	CloudMachineCommandUnanswered,
 	CloudMachineScreenRefusal,
 } from "../src/cloud-machine-command-http.ts";
-import { cloudScriptContentsIncomplete } from "../src/cloud-machine-script-review.ts";
 import {
 	CLOUD_MACHINE_DESKTOP_LEAST,
 	CLOUD_MACHINE_START_ANSWER_MS,
@@ -2958,38 +2957,22 @@ describe("the files a machine command runs, read for its review (17 November 202
 		}
 	});
 
-	it("shows the text this run wrote to a script with an earlier command when the machine cannot be read (mywave, 20 November 2026)", async () => {
+	it("names a start the executor failed apart from one that did not start in time", async () => {
 		const f = fixture();
-		const probe = "import requests\nprint('Veylune')\n";
-		const write = {
-			operationKey: "write",
-			machine: "build-a",
-			command: `cat > /tmp/mywave-name-probe.py <<'PY'\n${probe}PY\necho written`,
-		};
-		const run = { operationKey: "run", machine: "build-a", command: "python3 /tmp/mywave-name-probe.py" };
-		f.gateway.read = vi.fn<CloudMachineCommandGateway["read"]>(async () => {
-			throw new CloudMachineCommandUnanswered();
+		f.gateway.start.mockImplementation(async (scope, input) => {
+			if (input.command.startsWith("echo QORPERA-REVIEW-READ")) throw new Error("MACHINE_COMMAND_INPUT_DIFFERS");
+			return f.receipt(scope.machineId, input.commandId) as never;
 		});
 		try {
-			const before = await prepareOf(f, run);
-			expect(before.tool.reviewContents?.(before.ready)).toHaveProperty("notShown");
-			expect((await f.boundary.invoke("w1", "qorpera", "machine_run", write)).success).toBe(true);
-			const { tool, ready } = await prepareOf(f, run);
-			const contents = tool.reviewContents?.(ready);
-			expect(contents).toMatchObject({
+			const { tool, ready } = await prepareOf(f);
+			expect(tool.reviewContents?.(ready)).toMatchObject({
 				files: [
 					{
-						path: "/tmp/mywave-name-probe.py",
-						text: probe,
-						sha256: createHash("sha256").update(probe).digest("hex"),
-						written: expect.stringMatching(
-							/^Not read from the machine just now \(it could not be read just now: the read failed \(\w+\)\)\. This is the text this run wrote/,
-						),
+						path: "/tmp/eeg/fetch.py",
+						notShown: expect.stringMatching(/^it could not be read just now: the read's start failed \(\w+\)$/),
 					},
 				],
 			});
-			expect(contents).not.toHaveProperty("notShown");
-			expect(cloudScriptContentsIncomplete(contents)).toBe(false);
 		} finally {
 			f.boundary.close();
 		}

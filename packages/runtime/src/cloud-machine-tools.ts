@@ -56,7 +56,6 @@ import {
 	type CloudCommandScriptRun,
 	type CloudScriptEntry,
 	cloudCommandScripts,
-	cloudCommandWrittenScripts,
 	cloudScriptContents,
 	cloudScriptIdentity,
 	cloudScriptNotRead,
@@ -955,40 +954,11 @@ export function cloudMachineTools(options: {
 	};
 
 	const scriptTexts = new Map<string, string>();
-	const writtenScripts = new Map<string, { sha256: string; bytes: number; text: string }>();
-	const writtenKey = (machineId: string, path: string) => `${machineId}\n${path}`;
 	const rememberText = (sha256: string, text: string) => {
 		scriptTexts.delete(sha256);
 		scriptTexts.set(sha256, text);
 		while (scriptTexts.size > REMEMBERED_SCRIPTS) scriptTexts.delete(scriptTexts.keys().next().value as string);
 	};
-	const rememberWritten = (machine: MachineView, command: string, content: CloudToolContent) => {
-		if (content.kind !== "text") return;
-		try {
-			if (typeof (JSON.parse(content.value) as Record<string, unknown>).commandId !== "string") return;
-		} catch {
-			return;
-		}
-		for (const { path, text } of cloudCommandWrittenScripts(command)) {
-			const key = writtenKey(machine.machineId, path);
-			writtenScripts.delete(key);
-			writtenScripts.set(key, {
-				sha256: createHash("sha256").update(text).digest("hex"),
-				bytes: Buffer.byteLength(text),
-				text,
-			});
-		}
-		while (writtenScripts.size > REMEMBERED_SCRIPTS)
-			writtenScripts.delete(writtenScripts.keys().next().value as string);
-	};
-	const orWritten = (machine: MachineView, entries: CloudScriptEntry[]): CloudScriptEntry[] =>
-		entries.map((entry) => {
-			if (!("notShown" in entry)) return entry;
-			const written = writtenScripts.get(writtenKey(machine.machineId, entry.path));
-			if (!written) return entry;
-			rememberText(written.sha256, written.text);
-			return { path: entry.path, sha256: written.sha256, bytes: written.bytes, written: entry.notShown };
-		});
 	const scriptsOf = (parsed: JsonValue) =>
 		parseCloudPreparedScripts((parsed as Record<string, JsonValue> | null)?.scripts ?? undefined);
 	const readScripts = async (
@@ -1040,7 +1010,12 @@ export function cloudMachineTools(options: {
 						bound,
 					).then(
 						(receipt): JsonValue => ({ commandId: receipt.commandId }),
-						(error: unknown): JsonValue => ({ refused: cloudMachineCommandRefusal(error) ?? "NOT_STARTED" }),
+						(error: unknown): JsonValue => {
+							const refusal = cloudMachineCommandRefusal(error);
+							return refusal
+								? { refused: refusal }
+								: { refused: "START_FAILED", category: cloudRuntimeErrorCategory(error, bound) };
+						},
 					);
 					let timer: ReturnType<typeof setTimeout> | undefined;
 					const late = new Promise<JsonValue>((resolve) => {
@@ -1058,7 +1033,9 @@ export function cloudMachineTools(options: {
 				throw new ScriptReadFailure(
 					answer.refused === "NOT_STARTED"
 						? "the read did not start in time"
-						: `the machine did not start the read: ${answer.refused}`,
+						: answer.refused === "START_FAILED"
+							? `the read's start failed (${String(answer.category)})`
+							: `the machine did not start the read: ${answer.refused}`,
 				);
 			const commandId = answer?.commandId;
 			if (typeof commandId !== "string")
@@ -1093,7 +1070,7 @@ export function cloudMachineTools(options: {
 				throw new ScriptReadFailure("the read's output was not in the expected shape");
 			}
 			for (const [sha256, text] of read.texts) rememberText(sha256, text);
-			return orWritten(machine, read.entries);
+			return read.entries;
 		} catch (error) {
 			context.signal.throwIfAborted();
 			const why =
@@ -1103,7 +1080,7 @@ export function cloudMachineTools(options: {
 						? `the read took longer than ${SCRIPT_READ_MS / 1000} s`
 						: `the read failed (${cloudRuntimeErrorCategory(error, context.signal)})`;
 			console.error(`A reviewed script on ${machine.name} was not read: ${why}`);
-			return orWritten(machine, cloudScriptNotRead(files, `it could not be read just now: ${why}`));
+			return cloudScriptNotRead(files, `it could not be read just now: ${why}`);
 		}
 	};
 
@@ -1238,7 +1215,6 @@ export function cloudMachineTools(options: {
 					return { content: receipt(started, machine.name) };
 				},
 			});
-			rememberWritten(machine, String(input.command), started);
 			return readStarted(machine, started, context);
 		},
 	};
