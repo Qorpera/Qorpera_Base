@@ -265,13 +265,13 @@ describe("the folded line in an agent's thread", () => {
 		const late = { ...result, createdAt: "2026-11-20T13:58:00Z" };
 		const next = { ...asked, id: id(99), createdAt: "2026-11-20T14:01:00Z" };
 		await f.show([early, late, next]);
-		const before = () =>
+		const above = () =>
 			[...f.view.el.querySelectorAll<HTMLElement>("article.message.from-member")].at(-1)?.previousElementSibling;
-		expect(before()?.tagName).not.toBe("TIME");
-		expect(before()?.classList.contains("thread-fold")).toBe(true);
+		expect(above()?.tagName).not.toBe("TIME");
+		expect(above()?.classList.contains("thread-fold")).toBe(true);
 		f.fold().click();
 		await settle();
-		expect(before()?.tagName).not.toBe("TIME");
+		expect(above()?.tagName).not.toBe("TIME");
 	});
 
 	it("folds nothing in a group chat", async () => {
