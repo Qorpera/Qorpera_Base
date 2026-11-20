@@ -574,11 +574,23 @@ export async function assembleApp(
 	};
 }
 
+const RENAMED_STYLE = "data-qorpera-style";
+
+// WHY: Chrome holds every parsed page to this app's style-src and logs each inline style it refuses; reading ahead keeps
+// no page, so it parses one whose styles cannot count as styles (noframes is raw text like style, in head and body).
+function withStylesRenamed(html: string): string {
+	return html
+		.replace(/<(\/?)style(?=[\s/>])/gi, "<$1noframes")
+		.replace(/(<[a-z][^<>]*?\s)style(?=\s*=)/gi, `$1${RENAMED_STYLE}`);
+}
+
 async function readPage(files: AppFiles, entry: string): Promise<PageRead | null> {
 	const html = await files.text(entry);
 	if (html === null) return null;
 	// An inert parse: nothing here runs or loads, and it is only ever written out again for the frame.
-	const page = new DOMParser().parseFromString(html, "text/html");
+	const page = new DOMParser().parseFromString(files.warm ? withStylesRenamed(html) : html, "text/html");
+	const styleTag = files.warm ? "noframes" : "style";
+	const styleAttribute = files.warm ? RENAMED_STYLE : "style";
 	const base = dirOf(entry);
 	const handed = new Map<string, Blob>();
 	const missing = new Set<string>();
@@ -635,14 +647,14 @@ async function readPage(files: AppFiles, entry: string): Promise<PageRead | null
 				}),
 		);
 	}
-	for (const style of [...page.querySelectorAll("style")])
+	for (const style of [...page.querySelectorAll(styleTag)])
 		changes.push(
 			css(style.textContent ?? "", base).then((text) => () => {
 				style.textContent = text;
 			}),
 		);
-	for (const element of [...page.querySelectorAll("[style]")]) {
-		const value = element.getAttribute("style") ?? "";
+	for (const element of [...page.querySelectorAll(`[${styleAttribute}]`)]) {
+		const value = element.getAttribute(styleAttribute) ?? "";
 		if (value.includes("url("))
 			changes.push(css(value, base).then((text) => () => element.setAttribute("style", text)));
 	}
@@ -720,7 +732,8 @@ async function readPage(files: AppFiles, entry: string): Promise<PageRead | null
 			);
 		}
 	}
-	for (const change of await Promise.all(changes)) change?.();
+	const ready = await Promise.all(changes);
+	if (!files.warm) for (const change of ready) change?.();
 	const modules = await bindModules(
 		page,
 		{ warm: files.warm, text: (path) => files.moduleText(path), resolve: resolveAppPath },

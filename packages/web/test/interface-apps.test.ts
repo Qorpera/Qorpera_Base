@@ -877,6 +877,52 @@ describe("the company's apps", () => {
 		expect(f.reads.filter((path) => !path.endsWith("app.toml") && path !== "apps")).toEqual([]);
 	});
 
+	it("reads ahead the files a page's styles name without parsing a single inline style", async () => {
+		const files = {
+			"apps/sales/app.toml": 'name = "Sales"\n',
+			"apps/sales/index.html":
+				'<!doctype html><html><head><STYLE media="all">body > main{background:url(a.png)}</STYLE><link rel="stylesheet" href="look.css"></head><body><main id="m" title="x"\n  style="background:url(\'b.png\')"><p style=color:red>hi</p><svg><style>.s{fill:url(c.png)}</style></svg></main></body></html>',
+			"apps/sales/look.css": "p{background:url(d.png)}",
+			"apps/sales/a.png": "a",
+			"apps/sales/b.png": "b",
+			"apps/sales/c.png": "c",
+			"apps/sales/d.png": "d",
+		};
+		const f = fakeFolder(files);
+		const parsed: Document[] = [];
+		const parse = DOMParser.prototype.parseFromString;
+		vi.spyOn(DOMParser.prototype, "parseFromString").mockImplementation(function (
+			this: DOMParser,
+			text: string,
+			type: DOMParserSupportedType,
+		) {
+			const page = parse.call(this, text, type);
+			parsed.push(page);
+			return page;
+		});
+		await warmApps(f, await readApps(f, new AbortController().signal), new AbortController().signal);
+		expect(f.reads).toEqual(
+			expect.arrayContaining(["apps/sales/a.png", "apps/sales/b.png", "apps/sales/c.png", "apps/sales/d.png"]),
+		);
+		expect(parsed).toHaveLength(1);
+		expect(parsed[0]!.querySelectorAll("style, [style]")).toHaveLength(0);
+		expect(parsed[0]!.head.querySelectorAll("noframes")).toHaveLength(1);
+		expect(parsed[0]!.body.querySelectorAll("noframes")).toHaveLength(1);
+
+		const opened = await assembleApp(
+			fakeFolder(files) as never,
+			{ path: "apps/sales", entry: "index.html" },
+			new AbortController().signal,
+		);
+		expect(opened.ok).toBe(true);
+		if (!opened.ok) return;
+		const page = new DOMParser().parseFromString(opened.page, "text/html");
+		expect(page.head.querySelectorAll("style")).toHaveLength(2);
+		expect(page.querySelector("svg style")?.textContent).toMatch(/^\.s\{fill:url\("qorpera-file-/);
+		expect(page.getElementById("m")?.getAttribute("style")).toMatch(/^background:url\("qorpera-file-/);
+		expect(page.querySelector("p")?.getAttribute("style")).toBe("color:red");
+	});
+
 	it("reads ahead the most recently changed apps first, and stops at the round's bytes", async () => {
 		const picture = (fill: number) => new Uint8Array(10 * 1024 * 1024).fill(fill);
 		const f = fakeFolder({
