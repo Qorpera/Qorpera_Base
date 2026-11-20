@@ -13,7 +13,7 @@ import {
 import { type InterfaceChange, parseInterfaceChange } from "./interface-changes.ts";
 import { type MessageQuote, parseQuotes } from "./quotes.ts";
 import { SESSION_IMAGE_TYPES } from "./session-attachments.ts";
-import type { HostedSessionEvent, HostedStaffSpeaker, JsonValue, PendingSessionInput } from "./types.ts";
+import type { HostedSessionEvent, HostedStaffSpeaker, JsonValue, PendingSessionInput, RunWake } from "./types.ts";
 
 /* Transcript projection (runtime contract §6; launch acceptance item 8).
  * Only two things become visible conversation content: a member's admitted
@@ -47,6 +47,7 @@ export interface TranscriptMessage {
 	attachments?: TranscriptAttachment[];
 	phase?: "progress" | "final";
 	runId?: string;
+	wokenBy?: RunWake;
 	staffSpeaker?: HostedStaffSpeaker;
 	/** A peer message sent without waking its recipient; it is read at the recipient's next turn. */
 	held?: boolean;
@@ -182,6 +183,61 @@ export function decisionRound(
 		...(note ? { note } : {}),
 		...(first?.answer?.answeredBy ? { by: first.answer.answeredBy.toLowerCase() } : {}),
 	};
+}
+
+const ASKED_WAKES: readonly RunWake[] = ["room", "human", "first-run"];
+
+export interface UnaskedGroup {
+	items: string[];
+	messages: string[];
+}
+
+export function unaskedGroups(
+	items: readonly TranscriptItem[],
+	hidden: (item: TranscriptItem) => boolean = () => false,
+): ReadonlyMap<string, UnaskedGroup> {
+	const asking = new Set<string>();
+	for (const item of items)
+		if ((item.kind === "interaction" || item.kind === "authorization_request") && item.runId) asking.add(item.runId);
+	const groups = new Map<string, UnaskedGroup>();
+	let open: UnaskedGroup | undefined;
+	let links: string[] = [];
+	for (const item of items) {
+		if (hidden(item)) continue;
+		if (item.kind === "peer_link") {
+			links.push(item.id);
+			continue;
+		}
+		const unasked =
+			item.kind === "agent" &&
+			item.wokenBy !== undefined &&
+			!ASKED_WAKES.includes(item.wokenBy) &&
+			!item.erased &&
+			!item.held &&
+			!(item.runId && asking.has(item.runId));
+		if (!unasked) {
+			open = undefined;
+			links = [];
+			continue;
+		}
+		if (!open) {
+			open = { items: [], messages: [] };
+			groups.set(links[0] ?? item.id, open);
+		}
+		open.items.push(...links, item.id);
+		open.messages.push(item.id);
+		links = [];
+	}
+	return groups;
+}
+
+const FOLD_TEXT_LENGTH = 140;
+
+export function foldText(plain: string): string {
+	const line = plain.replace(/\s+/gu, " ").trim();
+	const end = line.search(/[.!?](?=\s|$)/u);
+	const sentence = end >= 0 ? line.slice(0, end + 1) : line;
+	return sentence.length > FOLD_TEXT_LENGTH ? `${sentence.slice(0, FOLD_TEXT_LENGTH - 1).trimEnd()}…` : sentence;
 }
 
 export interface RunAcknowledgement {
@@ -421,6 +477,7 @@ function messageFromEntry(entry: Entry, event: HostedSessionEvent, legacy: boole
 			...(attachments.length ? { attachments } : {}),
 			phase,
 			...(runId ? { runId } : {}),
+			...(event.runWake ? { wokenBy: event.runWake } : {}),
 			...(event.staffSpeaker?.runId === runId ? { staffSpeaker: event.staffSpeaker } : {}),
 			createdAt: event.createdAt,
 		};

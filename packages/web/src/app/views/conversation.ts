@@ -20,6 +20,7 @@ import {
 import { sessionAttachmentProblem } from "../../cloud/session-attachments.ts";
 import {
 	decisionRound,
+	foldText,
 	type RunAcknowledgement,
 	reworkingNote,
 	runAcknowledgements,
@@ -27,6 +28,8 @@ import {
 	type TranscriptItem,
 	type TranscriptMessage,
 	type TranscriptPeerLink,
+	type UnaskedGroup,
+	unaskedGroups,
 } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent, JsonValue, PausedRun } from "../../cloud/types.ts";
 import { appNoteHeader, splitReply } from "../../cloud/wall-reply.ts";
@@ -80,6 +83,7 @@ import { uiScale } from "../../ui/scale.ts";
 import { sentTimeHover } from "../../ui/sent-time-hover.ts";
 import { composerSkeleton, messagesSkeleton, threadIdentitySkeleton } from "../../ui/skeleton.ts";
 import { markSkillNames, SkillMentions } from "../../ui/skill-mentions.ts";
+import { threadFold } from "../../ui/thread-fold.ts";
 import {
 	type AgentState,
 	agentWorks,
@@ -450,6 +454,7 @@ export class ConversationView {
 	#drawn = new Map<string, DrawnItem>();
 	/** The working figure's row and the empty thread's line, kept while they read the same. */
 	#activityRow: { key: string; element: HTMLElement } | undefined;
+	readonly #openFolds = new Set<string>();
 	readonly #firstWords = new Map<string, { since?: number; shown?: true }>();
 	#firstWordsThrough: number | undefined;
 	#firstWordsTimer: ReturnType<typeof setTimeout> | undefined;
@@ -2658,6 +2663,19 @@ export class ConversationView {
 		const acknowledgements = runAcknowledgements(items, !conversation.hasEarlier, room);
 		const heldWords = this.#holdFirstWords(items, acknowledgements, runAtWork, room || conversation.loading === true);
 		const computerShown = this.#panel !== undefined && this.#computerSlot.contains(this.#panel.el);
+		const folds = room
+			? new Map<string, UnaskedGroup>()
+			: unaskedGroups(items, (item) => {
+					const first = acknowledgements.get(item.id);
+					return (
+						(first !== undefined &&
+							(first.followed || heldWords.includes(item.id) || first.runId === runAtWork)) ||
+						(item.kind === "interaction" && this.#decisions?.shows(item.id) === true)
+					);
+				});
+		const foldOf = new Map<string, string>();
+		for (const [first, group] of folds) for (const id of group.items) foldOf.set(id, first);
+		for (const first of this.#openFolds) if (!folds.has(first)) this.#openFolds.delete(first);
 		const key = JSON.stringify([
 			items,
 			mentionTargets,
@@ -2689,6 +2707,7 @@ export class ConversationView {
 			this.#agentState,
 			runAtWork,
 			heldWords,
+			[...folds].map(([first, group]) => [first, group.items, this.#openFolds.has(first)]),
 			computerShown,
 			this.#waitingRun,
 			this.#decisions?.waiting,
@@ -2924,6 +2943,39 @@ export class ConversationView {
 			if (acknowledgement && acknowledgement.runId === runAtWork) {
 				words = markdown(acknowledgement.text).textContent?.replace(/\s+/gu, " ").trim() ?? "";
 				continue;
+			}
+			const folded = foldOf.get(item.id);
+			if (folded !== undefined) {
+				const open = this.#openFolds.has(folded);
+				if (item.id === folded) {
+					const group = folds.get(folded)!;
+					const newest = items.find((candidate) => candidate.id === group.messages[group.messages.length - 1]);
+					const text =
+						newest?.kind === "agent"
+							? foldText(
+									[...markdown(newest.text).children].map((block) => block.textContent ?? "").join(" ") ||
+										newest.text,
+								)
+							: "";
+					nodes.push(
+						keep(`fold ${folded}`, JSON.stringify([group.messages.length, text, open, locale]), "", () =>
+							threadFold({
+								count: group.messages.length,
+								text,
+								open,
+								toggle: () => {
+									if (!this.#openFolds.delete(folded)) this.#openFolds.add(folded);
+									this.update();
+								},
+							}),
+						),
+					);
+					if (!open) {
+						const date = parseConversationTimestamp(item.createdAt);
+						if (date) markTime(date, nodes[nodes.length - 1]!);
+					}
+				}
+				if (!open) continue;
 			}
 			if (item.kind === "member" || item.kind === "agent") {
 				const mine = item.kind === "member" && item.authorUserId === this.#company.userId;

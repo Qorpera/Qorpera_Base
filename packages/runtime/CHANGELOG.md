@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+- The thread read says what woke each run (thread decisions step 5, the fold; Jonas, 20 Nov 2026: "Fold them").
+  Migration `20260930822000_thread_run_wakes`: one text patch of `qorpera_read_session_events` (anchor required exactly
+  once; the tail read goes through it): each event a run wrote gets `run_wake`, the wake's kind, by the unique index
+  on `qorpera_wake_occurrences.run_id`. No table, no trigger, no grant change, no new function; who may read a thread
+  is unchanged, and the field tells a reader nothing the agent's activity does not already show. Runtime code is
+  untouched.
 - A question an agent asks again after a member's note is the next round of one decision (thread decisions step 4;
   Jonas, 20 Nov 2026: "Yes, build it"). `ask_member`'s question payload takes `asksAgain`, the `interactionId` of the
   card the note was on; the agents' words and a platform update (`asked-again-is-a-round`) say when to set it.
