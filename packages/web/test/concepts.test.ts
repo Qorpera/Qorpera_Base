@@ -9,6 +9,7 @@ import type { AppPanelHost } from "../src/app/views/app-panel.ts";
 import { ConceptsView } from "../src/app/views/concepts.ts";
 import type { QuestionDockHost } from "../src/app/views/question-dock.ts";
 import type { InteractionRequest } from "../src/cloud/interactions.ts";
+import { asOpenCards } from "../src/cloud/open-decisions.ts";
 import { type OpenQuestion, parseOpenQuestions } from "../src/cloud/open-questions.ts";
 import type { HostedStaffAgent, JsonValue } from "../src/cloud/types.ts";
 import { icon } from "../src/ui/dom.ts";
@@ -80,6 +81,7 @@ function company(questions: OpenQuestion[] = []) {
 	const controller = {
 		signal: new AbortController().signal,
 		listOpenQuestions: async () => questions,
+		listOpenDecisions: async () => asOpenCards(questions),
 		onInvalidate: () => () => {},
 		conversation,
 		setExecutionSponsor: () => {},
