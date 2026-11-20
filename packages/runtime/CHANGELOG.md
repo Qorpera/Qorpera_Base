@@ -3,6 +3,29 @@
 ## [Unreleased]
 - An explainer gets its voice: `narrate_app {name, operationKey, machine?, voice?}` (deploy/first-node/RUNTIME-INTERFACE-APPS.md §3a "The tool"; Jonas, 10 Nov 2026: "Yes, build it"; migration `20260930817000`, SQL test 1302). On a running company machine it reads the captions of the agent's own explainer from the running video, records on the run's voice lane only the captions that have no clip yet (a clip is named by its caption's hash, so a changed part costs only its changed captions), keeps a turn only when the transcript says the caption was said as written, and commits `voice/clips.json` and the page under its receipt. It reads the login's usage before it starts (`CloudVoiceChannel.usage`, the lane's `voiceUsage`: `account/rateLimits/read`) and places no call at the limit; a call the limit cuts (`thread/realtime/error` "You have reached your usage limit.", seen 18 Nov 2026) ends as `CloudVoiceLimitReached`, what was recorded is saved, and the answer says `limit_reached` with how many captions are spoken and left and when the limit resets. Offered to a Codex login's run with machines, on demand (`more_tools`); review class `internal`. The explainer's guide and a platform update tell agents.
 - An explainer in English and Danish (Jonas, 18 Nov 2026: "the videos needs language selection too, letting you switch between the english and danish"): the engine takes `{en: "…", da: "…"}` wherever it takes a text, shows a button a language, builds the scenes again in the language chosen and stays on the caption it was at; `voice-captions.cjs` prints every language's captions, `narrate_app` records each, and `look` names captions that lack a language (`explainerSaid`).
+- Release v264 (#1935, GPT-6.2 Sol the platform's GPT model; master since v263's release merge 54658d8f8 holds #1935
+  alone): migration `20260930816000` first, then runtime bundle 264
+  `29f6ec5af8d03ce46e130b791039198d6cda63886b21a84f60f25c429658456f` (activation `20260929026499`, which requires
+  816000; its platform update `gpt-6-2-sol-default`), the runner image of node release 151 with the native provider
+  host `d70d61dcd31f387d7edc8d3c5ec62e1e27b98d112c8ac03fadb5824aaedd2e4c` (the patched Codex 0.170.0 `9d6a86ec` as in
+  v263). The coding executor, the company machine image, the shared vault, the login helper, the folder service, the
+  object gateway and the test machines do not move. The founder waived a real turn on GPT-6.2 Sol before the release
+  (19 Nov 2026: "don't even need to test it"); production is its first proof. Way back: the roster rows the migration
+  moved and the index default back to `gpt-6-astra` by the release lane's packet; bundle 263 by the lane's emergency path.
+- GPT-6.2 Sol (the founder, 18 November 2026: "update gpt sol 6.1 to sol 6.2, and make that the default gpt model used
+  over astra 6"; contract, the 2026-11-18 amendment; migration `20260930816000`, SQL test 1299). A conversation's Model
+  menu offers GPT-6.2 Sol and GPT-6 Astra (`models`); GPT-6.1 Sol leaves the table and the setter, and conversations on it
+  move to GPT-6.2 Sol. An agent whose agent.md names no model is on GPT-6.2 Sol (the roster index's default and a move of
+  the agents indexed before), so its runs take it on the provider-mapping path; an agent.md that names a model and a
+  member's GPT-6 Astra pick keep theirs. A platform update (`gpt-6-2-sol-default`, kind model) tells the agents. The web
+  lists the models the cloud names, GPT-6.2 Sol first, and still knows GPT-6.1 Sol for a cloud before the migration.
+  Deploy order: the patched Codex 0.170.0 (#1944; OpenAI offers `gpt-6.2-sol` only to Codex 0.166.0 or newer, and
+  0.155.1 is not offered it) is LIVE on every node first, in an earlier cut; then one later cut runs this migration and
+  the bundle that carries the update's text, the migration first, so the agents are never told of a model they do not
+  run. Run with nodes still on Codex 0.155.1, the migration would move every agent with no model in agent.md to a model
+  its Codex cannot run, and every such run would fail at the model turn. The founder waived a real turn before the
+  release (19 Nov 2026: "don't even need to test it"); production is the first proof. Way back: a migration
+  that sets the roster rows and the index default back to `gpt-6-astra` (the conversations stay on GPT-6.2 Sol).
 - Release v263 (#1944, the patched native Codex 0.155.1 -> 0.170.0 so agents can run GPT-6.2 Sol, everywhere it lives;
   master since v262's release merge: #1952's dead code and tests, #1829's `money` and `site` reads, #1842's web and one
   comment, #1975's SQL test): runtime bundle 263 `f3635cabfba0b4c853cb5034ade668a407a3f65ccc86801c985459b9b8aebc83`

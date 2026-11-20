@@ -2438,6 +2438,32 @@ the efforts this conversation may pick with it. Migration 20260930788000.
 Built, not live: GPT Extra high goes live with the release cut whose bundle
 declares `threadEfforts`.
 
+2026-11-18 amendment: GPT-6.2 Sol (founder, 18 November: "update gpt sol 6.1
+to sol 6.2, and make that the default gpt model used over astra 6"; GPT-6.2
+Astra is not offered). A conversation's GPT models are `gpt-6-astra` and
+`gpt-6.2-sol`; `gpt-6.1-sol` leaves the table, the setter (22023) and the
+model menu's `models`, and every conversation that held it moves to
+`gpt-6.2-sol` with its effort and speed, its version moved on by one so a
+stale save is refused (QRC01). The efforts each offers are unchanged
+(`gpt-6.2-sol` takes `xhigh` under `threadEfforts` as any GPT model does).
+GPT-6.2 Sol is the platform's GPT model where nobody picked one: an agent whose
+agent.md names no `model` gets `gpt-6.2-sol` as its roster model and provider
+mapping, so its runs (wakes, a member's turns with no pick, room deliveries,
+routines, its in-house workers) run on it on the mapping path; and a
+conversation with no pick and no agent model reads `gpt-6.2-sol`. The agents
+indexed before move with the migration when their current agent.md names no
+model; an agent.md that names a model (`gpt-6-astra` included) keeps it, and a
+conversation where a member picked `gpt-6-astra` keeps it. agent.md's own
+`model` values are unchanged (gpt-6-astra, gpt-6-sol, gpt-6-luna). A run with no
+mapping on a native subscription (`provider-default`) still sends no model, and
+coding sessions still start on the pinned Codex's own default. Migration
+20260930816000. Built, not live: it goes live with the release that runs the
+migration, which must come after a release that put a Codex the provider
+offers `gpt-6.2-sol` to (0.166.0 or newer; the 0.170.0 pin) on every node,
+since the provider refuses a model whose minimal Codex version is newer than
+the binary (as GPT-6 Astra was refused for 0.147.0 on 20 September), and the
+pinned 0.155.1 is not offered it.
+
 2026-09-22 amendment: no turn caps. A turn is not capped by a number of tool
 calls, effectful operations, transcript events or wall-clock time. The agent
 works until the task is done or genuinely blocked. The remaining bounds are
