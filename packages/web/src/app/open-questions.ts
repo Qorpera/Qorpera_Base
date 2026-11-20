@@ -72,6 +72,7 @@ export class OpenQuestions {
 	#stopWatching: (() => void) | undefined;
 	#reads = 0;
 	#questionsOnly = false;
+	readonly #onTheirWay = new Set<string>();
 	#reading: Promise<void> | undefined;
 	#again = false;
 	/** A hint's read, at most once an interval; one still queued when the last watcher left is not made. */
@@ -117,10 +118,13 @@ export class OpenQuestions {
 						questions: decisions.filter((decision): decision is OpenCard => decision.kind === "question"),
 						read: true,
 					});
+					this.#count();
 				},
 				(error: unknown) => {
-					if (error instanceof CloudRpcError && error.missing)
+					if (error instanceof CloudRpcError && error.missing) {
 						this.store.set({ unavailable: true, questions: [], decisions: [], read: true });
+						this.#count();
+					}
 					// Otherwise what was shown stands; the next hint or the clock reads again.
 					else this.store.set({ read: true });
 				},
@@ -152,11 +156,30 @@ export class OpenQuestions {
 	forget(interactionId: string): void {
 		this.#answered.add(interactionId);
 		const { questions, decisions } = this.store.get();
-		if (decisions.some((decision) => decision.interactionId === interactionId))
-			this.store.set({
-				questions: questions.filter((question) => question.interactionId !== interactionId),
-				decisions: decisions.filter((decision) => decision.interactionId !== interactionId),
-			});
+		if (!decisions.some((decision) => decision.interactionId === interactionId)) return;
+		const left = decisions.filter((decision) => decision.interactionId !== interactionId);
+		this.store.set({
+			questions: questions.filter((question) => question.interactionId !== interactionId),
+			decisions: left,
+		});
+		this.#onTheirWay.delete(interactionId);
+		this.#count();
+	}
+
+	hold(interactionId: string): void {
+		this.#onTheirWay.add(interactionId);
+		this.#count();
+	}
+
+	release(interactionId: string): void {
+		this.#onTheirWay.delete(interactionId);
+		this.#count();
+	}
+
+	#count(): void {
+		this.#company.setOpenDecisions(
+			this.store.get().decisions.filter((decision) => !this.#onTheirWay.has(decision.interactionId)).length,
+		);
 	}
 
 	async #list(): Promise<OpenDecision[]> {
@@ -186,8 +209,17 @@ export class OpenQuestions {
 		const clock = setInterval(() => {
 			if (typeof document === "undefined" || document.visibilityState !== "hidden") void this.refresh();
 		}, HEARTBEAT_MS);
+		const mayWrite = () => this.#company.store.get().team?.capabilities.write === true;
+		let could = mayWrite();
+		const stopTeam = this.#company.store.subscribe(() => {
+			const can = mayWrite();
+			if (can === could) return;
+			could = can;
+			void this.refresh();
+		});
 		this.#stopWatching = () => {
 			stopHints();
+			stopTeam();
 			clearInterval(clock);
 		};
 	}

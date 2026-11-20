@@ -70,6 +70,8 @@ function setup(cofounder: boolean) {
 			forget: () => {},
 			answer: answered,
 			answerApproval: approved,
+			hold: () => {},
+			release: () => {},
 		} as unknown as OpenQuestions,
 		agent: (agentId) => company.staffById(agentId),
 		memberName: () => "Jonas",

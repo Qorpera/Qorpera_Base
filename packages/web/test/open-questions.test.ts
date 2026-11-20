@@ -130,6 +130,8 @@ function company(
 	const controller = {
 		signal: new AbortController().signal,
 		listOpenQuestions: vi.fn(async () => questions),
+		setOpenDecisions: vi.fn(),
+		store: new Store({ team: { capabilities: { write: true } } }),
 		listOpenDecisions: vi.fn(async (): Promise<OpenDecision[]> => {
 			if (!options.approvals)
 				throw new CloudRpcError(
@@ -1069,6 +1071,59 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		await vi.advanceTimersByTimeAsync(UNDO_MS + 1_000);
 		expect(reviews).toEqual([]);
 		dock.dispose();
+	});
+
+	it("tells the company how many decisions wait, as the list changes", async () => {
+		const { host, controller } = company({ questions: [question(CARD_B, name)], approvals: [approval] });
+		const stop = host.questions.watch();
+		await settle();
+		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(2);
+		host.questions.hold(REVIEW);
+		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(1);
+		host.questions.release(REVIEW);
+		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(2);
+		host.questions.hold(CARD_B);
+		host.questions.forget(CARD_B);
+		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(1);
+		stop();
+	});
+
+	it("leaves a decision out of the count from the pick on, and counts it again on Undo", async () => {
+		const { host, controller } = company({ questions: cards().slice(0, 2) });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(2);
+		pick(dock, "mywave");
+		await settle();
+		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(1);
+		dock.undo(CARD_B);
+		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(2);
+		pick(dock, "mywave");
+		await vi.advanceTimersByTimeAsync(UNDO_MS + 1);
+		await settle();
+		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(1);
+		dock.dispose();
+	});
+
+	it("reads again the moment the company's membership is known, and when it stops being writable", async () => {
+		const { host, controller } = company({ questions: [question(CARD_B, name)] });
+		controller.store.set({ team: undefined as never });
+		await settle();
+		const stop = host.questions.watch();
+		await settle();
+		const before = controller.listOpenQuestions.mock.calls.length;
+		controller.store.set({ team: { capabilities: { write: true } } });
+		await settle();
+		expect(controller.listOpenQuestions.mock.calls.length).toBe(before + 1);
+		const then = controller.listOpenQuestions.mock.calls.length;
+		controller.store.set({ team: { capabilities: { write: true } } });
+		await settle();
+		expect(controller.listOpenQuestions.mock.calls.length).toBe(then);
+		controller.store.set({ team: { capabilities: { write: false } } });
+		await settle();
+		expect(controller.listOpenQuestions.mock.calls.length).toBe(then + 1);
+		stop();
 	});
 
 	it("falls back to the questions alone while the cloud has no list of decisions", async () => {
