@@ -6,10 +6,13 @@ import { describe, expect, it } from "vitest";
 import { sha256 } from "../src/cloud-company-folder-client.ts";
 import {
 	CLOUD_COMMAND_NOT_PLAIN,
+	CLOUD_SCRIPT_FILE_BYTES,
 	CLOUD_SCRIPT_LATER,
 	CLOUD_SCRIPT_SHOWN,
+	CLOUD_SCRIPT_WRITTEN,
 	cloudCommandScripts,
 	cloudCommandTokens,
+	cloudCommandWrittenScripts,
 	cloudScriptContents,
 	cloudScriptContentsIncomplete,
 	cloudScriptIdentity,
@@ -739,5 +742,79 @@ describe("on a real shell (bash and coreutils)", () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("the scripts a command writes with a quoted heredoc (mywave, 20 November 2026)", () => {
+	const probe = "import requests\nurls = {'ddg': 'https://html.duckduckgo.com/html/?q=%22Veylune%22'}\nprint($HOME, `x`)\n";
+
+	it("reads each file a command writes as bash writes it", () => {
+		const folder = mkdtempSync(join(tmpdir(), "written-"));
+		try {
+			const first = join(folder, "probe.py");
+			const second = join(folder, "two.sh");
+			const command = `cd ${folder}\ncat > ${first} <<'PY'\n${probe}PY\ncat <<"EOS" > ${second}\necho two\n\nEOS\necho done`;
+			expect(spawnSync("bash", ["-c", command], { encoding: "utf8" }).status).toBe(0);
+			expect(cloudCommandWrittenScripts(command)).toEqual([
+				{ path: first, text: readFileSync(first, "utf8") },
+				{ path: second, text: readFileSync(second, "utf8") },
+			]);
+			expect(cloudCommandWrittenScripts(command)[0]?.text).toBe(probe);
+		} finally {
+			rmSync(folder, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps the last text written to a path and normalizes the path", () => {
+		expect(cloudCommandWrittenScripts("cat > /tmp/a/../x.py <<'A'\none\nA\ncat > /tmp/x.py <<'B'\ntwo\nB")).toEqual([
+			{ path: "/tmp/x.py", text: "two\n" },
+		]);
+	});
+
+	it("reads nothing it cannot be sure of", () => {
+		for (const command of [
+			"cat > /tmp/x.py <<PY\nprint($HOME)\nPY",
+			"cat > x.py <<'PY'\nprint(1)\nPY",
+			"cat >> /tmp/x.py <<'PY'\nprint(1)\nPY",
+			"cat > /tmp/x.py <<-'PY'\n\tprint(1)\n\tPY",
+			"cat > /tmp/x.py <<'PY'\nprint(1)",
+			"tee /tmp/x.py <<'PY'\nprint(1)\nPY",
+			"echo hi && cat > /tmp/x.py <<'PY'\nprint(1)\nPY",
+		])
+			expect(cloudCommandWrittenScripts(command), command).toEqual([]);
+	});
+
+	it("leaves out a file over what the review reads of one", () => {
+		const big = `${"x".repeat(CLOUD_SCRIPT_FILE_BYTES)}\n`;
+		expect(cloudCommandWrittenScripts(`cat > /tmp/x.py <<'PY'\n${big}PY`)).toEqual([]);
+	});
+
+	it("shows a written file's text with where it came from, and the prepared form keeps that only as text", () => {
+		const sha = digest(probe);
+		const scripts = parseCloudPreparedScripts({
+			files: [{ path: "/tmp/probe.py", sha256: sha, bytes: Buffer.byteLength(probe), written: "it is not on the machine now" }],
+			notShown: [],
+		});
+		expect(scripts).toBeDefined();
+		const contents = cloudScriptContents(scripts!, new Map([[sha, probe]]));
+		expect(contents).toEqual({
+			shown: CLOUD_SCRIPT_SHOWN,
+			files: [
+				{
+					path: "/tmp/probe.py",
+					bytes: Buffer.byteLength(probe),
+					sha256: sha,
+					text: probe,
+					written: CLOUD_SCRIPT_WRITTEN("it is not on the machine now"),
+				},
+			],
+		});
+		expect(cloudScriptContentsIncomplete(contents)).toBe(false);
+		expect(() =>
+			parseCloudPreparedScripts({
+				files: [{ path: "/tmp/probe.py", sha256: sha, bytes: 1, written: true }],
+				notShown: [],
+			}),
+		).toThrow("Invalid reviewed files");
 	});
 });

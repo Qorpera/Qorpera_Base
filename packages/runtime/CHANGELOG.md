@@ -1,6 +1,16 @@
 # Changelog
 
 ## [Unreleased]
+- An approved machine command runs (mywave, 20 Nov 2026: Brand wrote `/tmp/mywave-name-probe.py` with a heredoc,
+  the review read it in that command, then said it could not read the file when Brand ran it eight seconds later and
+  asked; the founder's Allow once was never used, because the woken run read the card's reason as a warning and did not
+  repeat the call). machine_run remembers each file a started command writes with a quoted heredoc (`cat > /abs/path
+  <<'TAG'`, `cat <<'TAG' > /abs/path`) per machine, and when the review's read of a script fails or finds no file, it
+  shows that text, marked as written by an earlier command and not read just now, so the script is shown and the
+  review is not held at ask for an unread file. A failed read now names why (did not start in time, the machine's
+  refusal, the read's end state and exit code, its output shape, its 20 s limit, or the error's category) to the
+  review and in the runner's log. A room wake's instructions say that an approval answer means the member read the
+  card, its reason included, and wants the action made now with the card's `call`.
 - Release v265 (#1940, narrate_app gives an agent's explainer film its voice, and films in English and Danish; master
   since v264's release merge c0acd5d63 holds #1940 alone): migration `20260930817000` first, then runtime bundle 265
   `df25c9ccc2606496bc03843260c7f6a8c8cfbe09cbcdb0494acc87ea26805536` (activation `20260929026599`, which requires

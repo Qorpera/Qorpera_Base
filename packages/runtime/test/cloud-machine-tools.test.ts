@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { CLOUD_MACHINE_FOLDER_LIMITS, cloudMachineFolderBytes, type JsonValue } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type CloudActionReviewControl, CloudActionReviewGate } from "../src/cloud-action-review.ts";
+import { cloudScriptContentsIncomplete } from "../src/cloud-machine-script-review.ts";
 import { CLOUD_COMMAND_PAGE_ASK } from "../src/cloud-command-page-fit.ts";
 import { COMPANY_COMPUTER_SITE_STOP_MESSAGE } from "../src/cloud-company-computer-site-stops.ts";
 import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
@@ -2870,10 +2871,74 @@ describe("the files a machine command runs, read for its review (17 November 202
 			expect((await f.boundary.invoke("r1", "qorpera", "machine_run", args)).success).toBe(true);
 			const { tool, ready } = await prepareOf(f);
 			expect(tool.reviewContents?.(ready)).toMatchObject({
-				files: [{ path: "/tmp/eeg/fetch.py", notShown: "it could not be read just now" }],
-				notShown: ["/tmp/eeg/fetch.py: it could not be read just now"],
+				files: [
+					{
+						path: "/tmp/eeg/fetch.py",
+						notShown: expect.stringMatching(/^it could not be read just now: the read failed \(\w+\)$/),
+					},
+				],
+				notShown: [expect.stringMatching(/^\/tmp\/eeg\/fetch\.py: it could not be read just now: the read failed/)],
 			});
 			expect(f.gateway.start.mock.calls[1]?.[1].command).toBe("cd /tmp/eeg && python3 fetch.py");
+		} finally {
+			f.boundary.close();
+		}
+	});
+
+	it("names why the machine did not start the read", async () => {
+		const f = fixture();
+		f.gateway.start.mockImplementation(async (scope, input) => {
+			if (input.command.startsWith("echo QORPERA-REVIEW-READ"))
+				throw new CloudMachineCommandRefusal("DESKTOP_MEMBER_IN_CONTROL");
+			return f.receipt(scope.machineId, input.commandId) as never;
+		});
+		try {
+			const { tool, ready } = await prepareOf(f);
+			expect(tool.reviewContents?.(ready)).toMatchObject({
+				files: [
+					{
+						path: "/tmp/eeg/fetch.py",
+						notShown: "it could not be read just now: the machine did not start the read: DESKTOP_MEMBER_IN_CONTROL",
+					},
+				],
+			});
+		} finally {
+			f.boundary.close();
+		}
+	});
+
+	it("shows the text this run wrote to a script with an earlier command when the machine cannot be read (mywave, 20 November 2026)", async () => {
+		const f = fixture();
+		const probe = "import requests\nprint('Veylune')\n";
+		const write = {
+			operationKey: "write",
+			machine: "build-a",
+			command: `cat > /tmp/mywave-name-probe.py <<'PY'\n${probe}PY\necho written`,
+		};
+		const run = { operationKey: "run", machine: "build-a", command: "python3 /tmp/mywave-name-probe.py" };
+		f.gateway.read = vi.fn<CloudMachineCommandGateway["read"]>(async () => {
+			throw new CloudMachineCommandUnanswered();
+		});
+		try {
+			const before = await prepareOf(f, run);
+			expect(before.tool.reviewContents?.(before.ready)).toHaveProperty("notShown");
+			expect((await f.boundary.invoke("w1", "qorpera", "machine_run", write)).success).toBe(true);
+			const { tool, ready } = await prepareOf(f, run);
+			const contents = tool.reviewContents?.(ready);
+			expect(contents).toMatchObject({
+				files: [
+					{
+						path: "/tmp/mywave-name-probe.py",
+						text: probe,
+						sha256: createHash("sha256").update(probe).digest("hex"),
+						written: expect.stringMatching(
+							/^Not read from the machine just now \(it could not be read just now: the read failed \(\w+\)\)\. This is the text this run wrote/,
+						),
+					},
+				],
+			});
+			expect(contents).not.toHaveProperty("notShown");
+			expect(cloudScriptContentsIncomplete(contents)).toBe(false);
 		} finally {
 			f.boundary.close();
 		}
