@@ -11,6 +11,7 @@ import {
 	type QuestionOption,
 	questionInput,
 	questionOptions,
+	typedNote,
 } from "../cloud/interactions.ts";
 import type { JsonValue } from "../cloud/types.ts";
 import { foldLong, shownLength } from "./card-fold.ts";
@@ -97,6 +98,7 @@ export interface InteractionCardContext {
 	viewerId?: string;
 	/** The agent's figure, waiting: the head of a card that waits for this member in a thread. */
 	figure?: () => HTMLElement;
+	reworking?: boolean;
 	/** Sends the outcome and answer; the card shows its busy state until it resolves. */
 	answer: (outcome: InteractionOutcome, answer: Record<string, JsonValue>) => Promise<void>;
 	/** A takeover card's Open computer: the agent's computer in the thread (woken when it sleeps), its large view once
@@ -490,7 +492,9 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 	const actions: (HTMLElement | null)[] = [];
 	const result: (HTMLElement | null)[] = [];
 	// In a thread a card with its answer is the exchange it was: the bubbles' own classes draw it (styles/conversation.css).
-	const exchange = context.inThread === true && state !== "waiting";
+	const note = typedNote(request, item.answer);
+	const reworking = context.inThread === true && context.reworking === true && note !== undefined;
+	const exchange = context.inThread === true && state !== "waiting" && !reworking;
 	// In a thread a card this member can answer says that it waits for them.
 	const asking = context.inThread === true && open;
 	const mark = (name: "check" | "close") =>
@@ -501,7 +505,9 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 					icon(name),
 				)
 			: null;
-	if (state === "answered" && item.answer) {
+	if (reworking) {
+		body.push(h("p", { class: "interaction-text interaction-noted" }, `“${note}”`));
+	} else if (state === "answered" && item.answer) {
 		const { answeredBy, answeredAt, pending } = item.answer;
 		const own = !answeredBy || answeredBy === context.viewerId;
 		// A question's answer is what the member said: their bubble. Anything else is what they did: a line.
@@ -589,7 +595,7 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 			const cover = choicePicture(`app:${name}`, context.app, context.image, true);
 			if (cover) linkCard.prepend(cover);
 		}
-		if (visual && !open && state === "answered" && item.answer?.answer) {
+		if (visual && !open && state === "answered" && item.answer?.answer && note === undefined) {
 			const values = item.answer.answer.values;
 			body.push(
 				visualChoices(
@@ -839,7 +845,7 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 	card = h(
 		"article",
 		{
-			class: `interaction-card surface-${request.surface} state-${state}${exchange ? " is-exchange" : ""}${asking ? " is-asking" : ""}`,
+			class: `interaction-card surface-${request.surface} state-${state}${exchange ? " is-exchange" : ""}${asking || reworking ? " is-asking" : ""}${reworking ? " is-reworking" : ""}`,
 			dataset: {
 				interactionId: item.id,
 				surface: request.surface,
@@ -859,7 +865,7 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 				...(exchange ? { dataset: { sentAt: item.createdAt } } : {}),
 			},
 			// A card that waits for the member in a thread is headed by who asks: the label row is then a screen reader's.
-			asking
+			asking || reworking
 				? h(
 						"div",
 						{ class: "interaction-call" },
@@ -869,9 +875,11 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 						h(
 							"strong",
 							null,
-							request.surface === "question"
-								? t("{name} asks you", { name: context.agentName })
-								: t("{name} needs you", { name: context.agentName }),
+							reworking
+								? t("{name} is reworking this", { name: context.agentName })
+								: request.surface === "question"
+									? t("{name} asks you", { name: context.agentName })
+									: t("{name} needs you", { name: context.agentName }),
 						),
 					)
 				: null,
@@ -879,13 +887,15 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 				"header",
 				// Who asks, when, and the card's state. In a thread, and in the questions dock, that already stands over
 				// the card: the row is then a screen reader's alone.
-				{ class: `interaction-heading${exchange || asking || context.inDock === true ? " visually-hidden" : ""}` },
+				{
+					class: `interaction-heading${exchange || asking || reworking || context.inDock === true ? " visually-hidden" : ""}`,
+				},
 				h("span", { class: "interaction-kind" }, t(SURFACE_LABEL[request.surface])),
 				h("span", { class: "interaction-from" }, `${context.agentName} · ${fmtTime(item.createdAt)}`),
 				badge(t(STATE_LABEL[state]), stateTone),
 			),
 			h("h3", { class: "interaction-title" }, request.title),
-			words,
+			reworking ? null : words,
 			...body.filter((part) => !pictures.includes(part)),
 		),
 		...pictures,

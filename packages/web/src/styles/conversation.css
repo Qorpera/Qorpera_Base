@@ -1545,6 +1545,8 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .is-asking .interaction-title { margin: 10px 0 4px; font-size: 17px; font-weight: 650; }
 .is-asking .interaction-ask > :is(.interaction-body, .interaction-text), .is-asking .card-fold-wrap > .interaction-body { font-size: 14px; }
 .is-asking .interaction-options { margin: 12px 0; }
+.interaction-card.is-reworking .interaction-title { color: var(--text); }
+.is-reworking .interaction-ask > .interaction-noted { margin: 0; color: var(--text-muted); }
 .is-asking .interaction-options .btn { min-height: 38px; padding: 8px 16px; border-radius: 19px; font-size: 14px; font-weight: 550; }
 .is-asking .interaction-options .btn:not(.btn-primary) { border-color: var(--border-strong); background: var(--bg); }
 .is-asking .interaction-options .btn:not(.btn-primary):hover:not([aria-disabled="true"]) { border-color: var(--accent); background: var(--accent-soft); }
