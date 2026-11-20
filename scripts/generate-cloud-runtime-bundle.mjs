@@ -7,15 +7,15 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929026499_runtime_bundle_activation_v264.sql";
-const activationVersion = 264;
-const previousActivationVersion = 263;
-const previousActivationSha256 = "f3635cabfba0b4c853cb5034ade668a407a3f65ccc86801c985459b9b8aebc83";
+const activation = "supabase/migrations/20260929026599_runtime_bundle_activation_v265.sql";
+const activationVersion = 265;
+const previousActivationVersion = 264;
+const previousActivationSha256 = "29f6ec5af8d03ce46e130b791039198d6cda63886b21a84f60f25c429658456f";
 const activationRequires = Object.freeze([
 	[
-		"20260930816000_gpt_6_2_sol",
-		"#1935 (GPT-6.2 Sol): bundle 264's platform update gpt-6-2-sol-default tells every agent it runs on GPT-6.2 Sol unless its agent file or a member's pick names another model, which is true only once 816000 moved the roster's default and the agents with no model to it; the agents are never told of a model before they run it",
-		"position('gpt-6.2-sol' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_company_state_index_agent(uuid,uuid,uuid,uuid,text,uuid,jsonb,jsonb)')), '')) > 0 and position('gpt-6.2-sol' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_get_session_model(uuid)')), '')) > 0 and position('gpt-6.1-sol' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_get_session_model(uuid)')), '')) = 0",
+		"20260930817000_narrate_app",
+		"#1940 (narrate_app): bundle 265's tool narrate_app is recorded by the observation recorder, whose name list holds it only once 817000 applied; without it every observation of the tool is refused (22023)",
+		"position('20260930817000' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_record_runtime_observation(uuid,jsonb)')), '')) > 0",
 	],
 ]);
 const activationRequiresSql = activationRequires
