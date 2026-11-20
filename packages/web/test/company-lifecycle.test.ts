@@ -330,6 +330,23 @@ describe("answering an approval card of an agent's action (auto-review, v130)", 
 		expect([...shown().querySelectorAll("button")].map((button) => button.textContent)).toContain("Allow once");
 	});
 
+	it("keeps the card open and says in plain words why someone outside the agent's thread cannot start its work", async () => {
+		const f = company();
+		vi.spyOn(f.api, "answerActionReview").mockRejectedValue(
+			new CloudRpcError(
+				"qorpera_answer_action_review",
+				{ code: "42501", message: "Only a member of this thread can wake its agent" },
+				403,
+			),
+		);
+		await expect(f.controller.answerActionReview(session.sessionId, id(598), "allow_once")).rejects.toThrow();
+		const state = f.controller.conversation(session.sessionId).get();
+		expect(state.interactionError).toBe(
+			"Your answer did not go. It would start this agent's work, and only members of the agent's thread can do that. Ask someone in that thread to answer.",
+		);
+		expect(state.interactionAnswers).toBeUndefined();
+	});
+
 	it("keeps the card open, saying why, where the cloud has no approvals yet", async () => {
 		const f = company();
 		vi.spyOn(f.api, "answerActionReview").mockRejectedValue(

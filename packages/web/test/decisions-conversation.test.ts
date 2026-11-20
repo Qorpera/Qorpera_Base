@@ -91,7 +91,45 @@ function setup(cofounder: boolean) {
 		company.conversation(session.sessionId).set({
 			projection: { items: [{ ...card, answerFailed: true }], hiddenCount: 0, lastSequence: 1 },
 		});
-	return { view, store, stopped, answered, approved, reopen, show };
+	return { view, company, store, stopped, answered, approved, reopen, show };
+}
+
+function waitingApproval(f: ReturnType<typeof setup>, reviewId: string): TranscriptCard {
+	const data = {
+		schema: "qorpera.action-review/v1",
+		reviewId,
+		title: "Send an email",
+		summary: "It writes to someone outside the company.",
+		builtIn: "none",
+		approverScope: "member",
+		approverUserId: userA.id,
+		alwaysAllow: false,
+	};
+	const request: TranscriptCard = {
+		kind: "authorization_request",
+		id: reviewId,
+		sequence: 1,
+		actorUserId: userA.id,
+		body: { entry: { type: "custom", customType: "authorization_request", data } },
+		createdAt: "2026-09-05T10:00:00Z",
+	};
+	f.show([request]);
+	const review = actionReviewCard(data);
+	if (!review) throw new Error("review expected");
+	f.store.set({
+		questions: [],
+		decisions: [
+			{
+				kind: "approval",
+				sessionId: session.sessionId,
+				interactionId: reviewId,
+				staffAgentId: staff.id,
+				createdAt: request.createdAt,
+				review,
+			},
+		],
+	});
+	return request;
 }
 
 describe("open decisions in the Co-Founder's chat", () => {
@@ -167,41 +205,7 @@ describe("open decisions in the Co-Founder's chat", () => {
 
 	it("show a docked approval once: not in the thread as well, and back there when the dock lets go", async () => {
 		const f = setup(true);
-		const reviewId = id(731);
-		const data = {
-			schema: "qorpera.action-review/v1",
-			reviewId,
-			title: "Send an email",
-			summary: "It writes to someone outside the company.",
-			builtIn: "none",
-			approverScope: "member",
-			approverUserId: userA.id,
-			alwaysAllow: false,
-		};
-		const request: TranscriptCard = {
-			kind: "authorization_request",
-			id: reviewId,
-			sequence: 1,
-			actorUserId: userA.id,
-			body: { entry: { type: "custom", customType: "authorization_request", data } },
-			createdAt: "2026-09-05T10:00:00Z",
-		};
-		f.show([request]);
-		const review = actionReviewCard(data);
-		if (!review) throw new Error("review expected");
-		f.store.set({
-			questions: [],
-			decisions: [
-				{
-					kind: "approval",
-					sessionId: session.sessionId,
-					interactionId: reviewId,
-					staffAgentId: staff.id,
-					createdAt: request.createdAt,
-					review,
-				},
-			],
-		});
+		waitingApproval(f, id(731));
 		await settle();
 		expect(f.view.el.querySelector(".decision-dock .auth-card h3")?.textContent).toBe("Send an email");
 		expect(f.view.el.querySelector(".messages .auth-card")).toBeNull();
@@ -214,41 +218,7 @@ describe("open decisions in the Co-Founder's chat", () => {
 
 	it("show an approval again when its sent answer never reached the agent", async () => {
 		const f = setup(true);
-		const reviewId = id(732);
-		const data = {
-			schema: "qorpera.action-review/v1",
-			reviewId,
-			title: "Send an email",
-			summary: "It writes to someone outside the company.",
-			builtIn: "none",
-			approverScope: "member",
-			approverUserId: userA.id,
-			alwaysAllow: false,
-		};
-		const request: TranscriptCard = {
-			kind: "authorization_request",
-			id: reviewId,
-			sequence: 1,
-			actorUserId: userA.id,
-			body: { entry: { type: "custom", customType: "authorization_request", data } },
-			createdAt: "2026-09-05T10:00:00Z",
-		};
-		f.show([request]);
-		const review = actionReviewCard(data);
-		if (!review) throw new Error("review expected");
-		f.store.set({
-			questions: [],
-			decisions: [
-				{
-					kind: "approval",
-					sessionId: session.sessionId,
-					interactionId: reviewId,
-					staffAgentId: staff.id,
-					createdAt: request.createdAt,
-					review,
-				},
-			],
-		});
+		const request = waitingApproval(f, id(732));
 		await settle();
 		[...f.view.el.querySelectorAll<HTMLButtonElement>(".decision-dock button")]
 			.find((button) => button.textContent === "Allow once")
@@ -269,6 +239,31 @@ describe("open decisions in the Co-Founder's chat", () => {
 		expect(f.view.el.querySelector(".messages .decided")).toBeNull();
 		expect(f.view.el.querySelector(".messages .auth-card h3")?.textContent).toBe("Send an email");
 		expect(f.view.el.querySelector(".messages .auth-card")?.textContent).toContain("Answer again");
+	});
+
+	it("put a refused approval back, open, with the reason in plain words", async () => {
+		const f = setup(true);
+		waitingApproval(f, id(733));
+		await settle();
+		const refusal =
+			"Your answer did not go. It would start this agent's work, and only members of the agent's thread can do that. Ask someone in that thread to answer.";
+		f.approved.mockImplementationOnce(async () => {
+			f.company.conversation(session.sessionId).set({ interactionError: refusal });
+			throw new Error("Only a member of this thread can wake its agent");
+		});
+		const press = (label: string) =>
+			[...f.view.el.querySelectorAll<HTMLButtonElement>(".decision-dock button")].find(
+				(button) => button.textContent === label,
+			);
+		press("Allow once")?.click();
+		await settle();
+		window.dispatchEvent(new Event("pagehide"));
+		await settle();
+		expect(f.approved).toHaveBeenCalledTimes(1);
+		expect(f.view.el.querySelector(".messages .decided")).toBeNull();
+		expect(f.view.el.querySelector(".decision-dock .auth-card h3")?.textContent).toBe("Send an email");
+		expect(press("Allow once")?.disabled).toBe(false);
+		expect(f.view.el.querySelector(".decision-dock .decision-error")?.textContent).toBe(refusal);
 	});
 
 	it("are gathered in no other agent's thread", async () => {
