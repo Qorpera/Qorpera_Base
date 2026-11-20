@@ -792,6 +792,7 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		const note = dock.renderDecided(dock.decided[0]!);
 		expect(note.querySelector(".decided-rule")?.textContent).toBe("Your note");
 		expect(note.querySelector(".decided-answer")?.textContent).toBe("“Something calmer”");
+		await vi.advanceTimersByTimeAsync(SETTLE_MS);
 		dock.el.querySelector<HTMLButtonElement>(".interaction-quiet")?.click();
 		await settle();
 		const skipped = dock.renderDecided(dock.decided[1]!);
@@ -832,6 +833,7 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		await settle();
 		expect(answers).toEqual([[SESSION, CARD_C, "declined", {}]]);
 
+		await vi.advanceTimersByTimeAsync(SETTLE_MS);
 		pick(dock, "mywave");
 		await settle();
 		const hidden = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
@@ -841,6 +843,7 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		expect(answers).toHaveLength(2);
 		expect(answers[1]).toEqual([SESSION, CARD_B, "answered", { values: ["mywave"] }]);
 
+		await vi.advanceTimersByTimeAsync(SETTLE_MS);
 		dock.el.querySelector<HTMLElement>(".choice-box, .interaction-options .btn")?.click();
 		await settle();
 		const leaving = new Event("beforeunload", { cancelable: true });
@@ -1752,6 +1755,64 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		await settle();
 		expect(dock.decided.map((entry) => entry.state)).toEqual(["held"]);
 		expect(answers).toEqual([]);
+		dock.dispose();
+	});
+
+	it("takes no tap for a moment when the card on screen turns from a vote into the member's own to answer", async () => {
+		const list: OpenDecision[] = [others(CARD_B, name)];
+		const { host, open, votesCast } = company({ company: list });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		expect(dock.el.querySelector(".decision-card > .interaction-card.is-voting")).not.toBeNull();
+		list[0] = asOpenCards([question(CARD_B, name)])[0]!;
+		await open.refresh();
+		await settle();
+		expect(dock.el.querySelector(".decision-card > .interaction-card.is-voting")).toBeNull();
+		option(dock, "mywave")?.click();
+		await settle();
+		expect(dock.decided).toEqual([]);
+		expect(votesCast).toEqual([]);
+		await vi.advanceTimersByTimeAsync(SETTLE_MS);
+		option(dock, "mywave")?.click();
+		await settle();
+		expect(dock.decided.map((entry) => entry.state)).toEqual(["held"]);
+		dock.dispose();
+	});
+
+	it("takes a second quick tap for no answer to the next card, and takes taps at once after Undo", async () => {
+		const { host } = company({ questions: [question(CARD_B, name), question(CARD_A, name, "2026-11-10T11:00:00Z")] });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		option(dock, "mywave")?.click();
+		option(dock, "mywave")?.click();
+		await settle();
+		expect(dock.decided.map((entry) => entry.decision.interactionId)).toEqual([CARD_B]);
+		dock.undo(CARD_B);
+		option(dock, "Not yet")?.click();
+		await settle();
+		expect(dock.decided.map((entry) => entry.decision.interactionId)).toEqual([CARD_B]);
+		dock.dispose();
+	});
+
+	it("says nothing of a vote that failed once a later vote was sent", async () => {
+		const list: OpenDecision[] = [others(CARD_B, name)];
+		const { host, controller } = company({ company: list });
+		controller.castDecisionVote.mockImplementationOnce(async () => {
+			throw new Error("The connection dropped");
+		});
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		const note = dock.el.querySelector<HTMLInputElement>(".decision-note");
+		option(dock, "mywave")?.click();
+		option(dock, "Not yet")?.click();
+		await settle();
+		await settle();
+		expect(dock.el.querySelector(".decision-error")).toBeNull();
+		expect(dock.el.querySelector<HTMLInputElement>(".decision-note")).toBe(note);
+		expect(option(dock, "Not yet")?.classList.contains("is-voted")).toBe(true);
 		dock.dispose();
 	});
 

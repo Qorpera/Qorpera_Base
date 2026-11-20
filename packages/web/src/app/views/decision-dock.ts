@@ -121,6 +121,7 @@ export class DecisionDock {
 	#shownOthers = false;
 	#byMember = false;
 	#settlesAt = 0;
+	readonly #voteCalls = new Map<string, number>();
 	#tabsKey = "";
 	#waiting = "";
 	#told = "";
@@ -374,8 +375,12 @@ export class DecisionDock {
 			cards.find((card) => card.interactionId === this.#current) ??
 			(this.#shownOthers ? cards.find((card) => card.othersAnswer) : undefined) ??
 			cards[0];
-		if (this.#shown !== undefined && current && current.interactionId !== this.#shown && !this.#byMember)
-			this.#settlesAt = Date.now() + SETTLE_MS;
+		if (
+			this.#shown !== undefined &&
+			current &&
+			(current.interactionId !== this.#shown || (this.#shownOthers && !current.othersAnswer))
+		)
+			this.#settlesAt = this.#byMember ? 0 : Date.now() + SETTLE_MS;
 		this.#byMember = false;
 		this.#shown = current?.interactionId;
 		this.#shownOthers = current?.othersAnswer === true;
@@ -522,8 +527,11 @@ export class DecisionDock {
 
 	#vote(decision: OpenDecision, choice: string | undefined, note: string | undefined): void {
 		const id = decision.interactionId;
+		const call = (this.#voteCalls.get(id) ?? 0) + 1;
+		this.#voteCalls.set(id, call);
 		this.#errors.delete(id);
 		void this.#host.questions.vote(decision, choice, note).catch((error: unknown) => {
+			if (this.#voteCalls.get(id) !== call) return;
 			this.#errors.set(
 				id,
 				error instanceof Error && error.message ? error.message : t("Your vote could not be saved. Try again."),
@@ -718,7 +726,6 @@ export class DecisionDock {
 			setTimeout(() => void this.#send(entry), UNDO_MS),
 		);
 		if (this.#current === id) this.#current = undefined;
-		this.#byMember = true;
 		this.#draw();
 	}
 
