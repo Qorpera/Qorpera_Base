@@ -92,6 +92,10 @@ export class OpenQuestions {
 	#source: "company" | "member" | "questions" = "company";
 	readonly #onTheirWay = new Set<string>();
 	readonly #drafts = new Map<string, OpenDraft>();
+	readonly #myVotes = new Map<
+		string,
+		{ choice?: string; note?: string; at: string; calls: number; sent: Promise<void>; settledAt?: number }
+	>();
 	#reading: Promise<void> | undefined;
 	#again = false;
 	/** A hint's read, at most once an interval; one still queued when the last watcher left is not made. */
@@ -131,7 +135,11 @@ export class OpenQuestions {
 			.then(
 				(listed) => {
 					if (version !== this.#reads) return;
-					const decisions = listed.filter((decision) => !this.#answered.has(decision.interactionId));
+					for (const [id, mine] of this.#myVotes)
+						if (mine.settledAt !== undefined && version > mine.settledAt) this.#myVotes.delete(id);
+					const decisions = listed
+						.filter((decision) => !this.#answered.has(decision.interactionId))
+						.map((decision) => this.#withMyVote(decision));
 					for (const decision of decisions)
 						if (decision.kind === "draft" && !decision.othersAnswer)
 							this.#drafts.set(decision.interactionId, decision);
@@ -217,35 +225,53 @@ export class OpenQuestions {
 	}
 
 	async vote(decision: OpenDecision, choice: string | undefined, note: string | undefined): Promise<void> {
-		const userId = this.#company.userId;
-		const others = (decision.votes ?? []).filter((vote) => vote.userId !== userId);
-		const mine =
-			choice === undefined && note === undefined
-				? []
-				: [
-						{
-							userId,
-							...(choice === undefined ? {} : { choice }),
-							...(note === undefined ? {} : { note }),
-							updatedAt: new Date().toISOString(),
-						},
-					];
-		const cast = (votes: OpenDecision["votes"]) => {
-			const { decisions } = this.store.get();
-			this.store.set({
-				decisions: decisions.map((listed) =>
-					listed.interactionId === decision.interactionId ? { ...listed, votes } : listed,
-				),
-			});
-		};
-		cast([...others, ...mine]);
+		const id = decision.interactionId;
+		const before = this.#myVotes.get(id);
+		const calls = (before?.calls ?? 0) + 1;
+		const sent = (before?.sent ?? Promise.resolve()).then(() => this.#company.castDecisionVote(id, choice, note));
+		this.#myVotes.set(id, {
+			...(choice === undefined ? {} : { choice }),
+			...(note === undefined ? {} : { note }),
+			at: new Date().toISOString(),
+			calls,
+			sent: sent.then(
+				() => {},
+				() => {},
+			),
+		});
+		this.store.set({ decisions: this.store.get().decisions.map((listed) => this.#withMyVote(listed)) });
 		try {
-			await this.#company.castDecisionVote(decision.interactionId, choice, note);
+			await sent;
 		} catch (error) {
-			cast(decision.votes);
+			if (this.#myVotes.get(id)?.calls === calls) this.#myVotes.delete(id);
 			void this.refresh();
 			throw error;
 		}
+		const mine = this.#myVotes.get(id);
+		if (mine?.calls === calls) this.#myVotes.set(id, { ...mine, settledAt: this.#reads });
+		void this.refresh();
+	}
+
+	#withMyVote(decision: OpenDecision): OpenDecision {
+		const mine = this.#myVotes.get(decision.interactionId);
+		if (!mine) return decision;
+		const userId = this.#company.userId;
+		return {
+			...decision,
+			votes: [
+				...(decision.votes ?? []).filter((vote) => vote.userId !== userId),
+				...(mine.choice === undefined && mine.note === undefined
+					? []
+					: [
+							{
+								userId,
+								...(mine.choice === undefined ? {} : { choice: mine.choice }),
+								...(mine.note === undefined ? {} : { note: mine.note }),
+								updatedAt: mine.at,
+							},
+						]),
+			],
+		};
 	}
 
 	forget(interactionId: string): void {

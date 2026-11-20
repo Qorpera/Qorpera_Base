@@ -22,6 +22,7 @@ const FIGURE_BESIDE = 132;
 const FIGURE_ABOVE = 58;
 const MAX_TIMER_MS = 2 ** 31 - 1;
 export const UNDO_MS = 5_000;
+export const SETTLE_MS = 600;
 
 function expiry(decision: OpenDecision): number {
 	const at =
@@ -116,6 +117,10 @@ export class DecisionDock {
 	readonly #ruleDrafts = new Map<string, ActionReviewDraft>();
 	#stageKey = "";
 	#votesKey = "";
+	#shown: string | undefined;
+	#shownOthers = false;
+	#byMember = false;
+	#settlesAt = 0;
 	#tabsKey = "";
 	#waiting = "";
 	#told = "";
@@ -137,6 +142,15 @@ export class DecisionDock {
 		this.el = h("aside", { class: "decision-dock", "aria-label": t("Decisions for you"), hidden: true });
 		this.#tabs.setAttribute("aria-label", t("Decisions for you"));
 		this.#tabs.addEventListener("keydown", (event) => this.#step(event));
+		this.#stage.addEventListener(
+			"click",
+			(event) => {
+				if (Date.now() >= this.#settlesAt) return;
+				event.stopPropagation();
+				event.preventDefault();
+			},
+			true,
+		);
 		this.el.append(this.#stage, this.#tabs);
 		const unsubscribe = host.questions.store.subscribe(() => this.#draw());
 		this.#stopWatch = host.questions.watch();
@@ -207,6 +221,7 @@ export class DecisionDock {
 		this.#decided.splice(index, 1);
 		this.#host.questions.release(interactionId);
 		this.#current = interactionId;
+		this.#byMember = true;
 		this.#draw();
 	}
 
@@ -355,7 +370,15 @@ export class DecisionDock {
 		this.#dropUndelivered();
 		const cards = this.#cards();
 		this.#untilNextExpiry(cards);
-		const current = cards.find((card) => card.interactionId === this.#current) ?? cards[0];
+		const current =
+			cards.find((card) => card.interactionId === this.#current) ??
+			(this.#shownOthers ? cards.find((card) => card.othersAnswer) : undefined) ??
+			cards[0];
+		if (this.#shown !== undefined && current && current.interactionId !== this.#shown && !this.#byMember)
+			this.#settlesAt = Date.now() + SETTLE_MS;
+		this.#byMember = false;
+		this.#shown = current?.interactionId;
+		this.#shownOthers = current?.othersAnswer === true;
 		this.#current = current?.interactionId;
 		this.#watch(current?.sessionId);
 		this.#waiting = this.#waitingNow(cards);
@@ -604,6 +627,7 @@ export class DecisionDock {
 		this.#host.questions.forget(id);
 		void this.#host.questions.refresh();
 		if (this.#current === id) this.#current = undefined;
+		this.#byMember = true;
 		this.#everyDock();
 		return state;
 	}
@@ -667,6 +691,7 @@ export class DecisionDock {
 	}
 
 	#select(interactionId: string): void {
+		this.#byMember = true;
 		this.#current = interactionId;
 		this.#draw();
 	}
@@ -693,6 +718,7 @@ export class DecisionDock {
 			setTimeout(() => void this.#send(entry), UNDO_MS),
 		);
 		if (this.#current === id) this.#current = undefined;
+		this.#byMember = true;
 		this.#draw();
 	}
 

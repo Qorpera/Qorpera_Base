@@ -1,7 +1,7 @@
 import type { Cloud } from "./client.ts";
 import { isGmailDraft, parseInteractionRequest } from "./interactions.ts";
 import type { OpenQuestion } from "./open-questions.ts";
-import { array, boundedInteger, CloudShapeError, jsonValue, nonEmptyString, record, timestamp, uuid } from "./parse.ts";
+import { array, boundedInteger, CloudShapeError, jsonValue, record, timestamp, uuid } from "./parse.ts";
 import { type ActionReviewCard, actionReviewCard } from "./review-rules.ts";
 import type { JsonValue } from "./types.ts";
 
@@ -48,18 +48,24 @@ export function decisionTitle(decision: OpenDecision): string {
 }
 
 function parseVotes(value: unknown): DecisionVote[] {
-	return array(value, "decision votes").map((entry) => {
-		const vote = record(entry, "decision vote");
-		return {
-			userId: uuid(vote.userId, "decision vote member"),
-			...(vote.choice === null || vote.choice === undefined
-				? {}
-				: { choice: nonEmptyString(vote.choice, "decision vote choice", 200) }),
-			...(vote.note === null || vote.note === undefined
-				? {}
-				: { note: nonEmptyString(vote.note, "decision vote note", 500) }),
-			updatedAt: timestamp(vote.updatedAt, "decision vote time"),
-		};
+	return array(value, "decision votes").flatMap((entry): DecisionVote[] => {
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+		const vote = entry as Record<string, unknown>;
+		if (typeof vote.userId !== "string" || typeof vote.updatedAt !== "string") return [];
+		const choice = typeof vote.choice === "string" && vote.choice ? vote.choice : undefined;
+		const note = typeof vote.note === "string" && vote.note.trim() ? vote.note : undefined;
+		try {
+			return [
+				{
+					userId: uuid(vote.userId, "decision vote member"),
+					...(choice === undefined ? {} : { choice }),
+					...(note === undefined ? {} : { note }),
+					updatedAt: timestamp(vote.updatedAt, "decision vote time"),
+				},
+			];
+		} catch {
+			return [];
+		}
 	});
 }
 

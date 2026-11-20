@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyController, ConversationState } from "../src/app/company.ts";
 import { OpenQuestions, questionApps } from "../src/app/open-questions.ts";
 import { Store } from "../src/app/state.ts";
-import { DecisionDock, decisionOrder, UNDO_MS } from "../src/app/views/decision-dock.ts";
+import { DecisionDock, decisionOrder, SETTLE_MS, UNDO_MS } from "../src/app/views/decision-dock.ts";
 import { QuestionDock, type QuestionDockHost } from "../src/app/views/question-dock.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type {
@@ -182,7 +182,27 @@ function company(
 		}),
 		castDecisionVote: vi.fn(async (itemId: string, choice: string | undefined, note: string | undefined) => {
 			votesCast.push([itemId, choice, note]);
+			await (options.gate ?? Promise.resolve());
 			if (options.refuse) throw new Error(options.refuse);
+			const at = options.company?.findIndex((listed) => listed.interactionId === itemId) ?? -1;
+			const voted = options.company?.[at];
+			if (!options.company || !voted) return;
+			options.company[at] = {
+				...voted,
+				votes: [
+					...(voted.votes ?? []).filter((vote) => vote.userId !== MEMBER),
+					...(choice === undefined && note === undefined
+						? []
+						: [
+								{
+									userId: MEMBER,
+									...(choice === undefined ? {} : { choice }),
+									...(note === undefined ? {} : { note }),
+									updatedAt: "2026-11-10T10:10:00Z",
+								},
+							]),
+				],
+			};
 		}),
 		listOpenDecisions: vi.fn(async (): Promise<OpenDecision[]> => {
 			if (!options.approvals && !options.drafts)
@@ -1707,6 +1727,119 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		expect(votesCast).toEqual([[REVIEW, undefined, "Check the amount first."]]);
 		expect(reviews).toEqual([]);
 		dock.dispose();
+	});
+
+	it("takes no tap for a moment when another member's card leaves and the member's own slides in", async () => {
+		const list: OpenDecision[] = [...asOpenCards([question(CARD_B, name)]), others(CARD_A, name)];
+		const { host, open, answers, votesCast } = company({ company: list });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		tabs(dock)
+			.find((tab) => tab.dataset.decision === CARD_A)
+			?.click();
+		expect(dock.el.querySelector(".decision-card > .interaction-card.is-voting")).not.toBeNull();
+		list.splice(1, 1);
+		await open.refresh();
+		await settle();
+		expect(dock.el.querySelector(".decision-card > .interaction-card.is-voting")).toBeNull();
+		option(dock, "mywave")?.click();
+		await settle();
+		expect(dock.decided).toEqual([]);
+		expect(votesCast).toEqual([]);
+		await vi.advanceTimersByTimeAsync(SETTLE_MS);
+		option(dock, "mywave")?.click();
+		await settle();
+		expect(dock.decided.map((entry) => entry.state)).toEqual(["held"]);
+		expect(answers).toEqual([]);
+		dock.dispose();
+	});
+
+	it("goes on to the next of the other members' decisions when the one on screen leaves", async () => {
+		const list: OpenDecision[] = [
+			...asOpenCards([question(CARD_B, name)]),
+			others(CARD_A, name),
+			others(CARD_C, directions),
+		];
+		const { host, open } = company({ company: list });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		tabs(dock)
+			.find((tab) => tab.dataset.decision === CARD_A)
+			?.click();
+		list.splice(1, 1);
+		await open.refresh();
+		await settle();
+		expect(chosen(dock)).toBe(CARD_C);
+		dock.dispose();
+	});
+
+	it("keeps a vote in sight through a read that began before it, and sends quick taps in their order", async () => {
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const list: OpenDecision[] = [others(CARD_B, name)];
+		const { host, open, votesCast, controller } = company({ company: list, gate });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		let stale: (value: OpenDecision[]) => void = () => {};
+		controller.listCompanyOpenDecisions.mockImplementationOnce(
+			() =>
+				new Promise<OpenDecision[]>((resolve) => {
+					stale = resolve;
+				}),
+		);
+		const reading = open.refresh();
+		option(dock, "mywave")?.click();
+		option(dock, "Not yet")?.click();
+		await settle();
+		expect(votesCast).toEqual([[CARD_B, "mywave", undefined]]);
+		expect(option(dock, "Not yet")?.classList.contains("is-voted")).toBe(true);
+		stale([others(CARD_B, name)]);
+		await reading;
+		await settle();
+		expect(option(dock, "Not yet")?.classList.contains("is-voted")).toBe(true);
+		expect(option(dock, "mywave")?.classList.contains("is-voted")).toBe(false);
+		release();
+		await settle();
+		await settle();
+		expect(votesCast).toEqual([
+			[CARD_B, "mywave", undefined],
+			[CARD_B, "Not yet", undefined],
+		]);
+		expect(option(dock, "Not yet")?.classList.contains("is-voted")).toBe(true);
+		expect(list[0]?.votes?.map((vote) => vote.choice)).toEqual(["Not yet"]);
+		dock.dispose();
+	});
+
+	it("reads a note of any letters, and drops a vote it cannot read without losing the list", () => {
+		const listedRow = { sessionId: SESSION, staffAgentId: AGENT, createdAt: "2026-11-10T10:00:00Z" };
+		const long = "\u{1F30A}".repeat(400);
+		const parsed = parseOpenDecisions({
+			schema: "qorpera.company-open-decisions/v1",
+			decisions: [
+				{
+					...listedRow,
+					kind: "question",
+					id: CARD_A,
+					answererUserId: SARA,
+					canAnswer: false,
+					sequence: 7,
+					body: body(directions),
+					votes: [
+						{ userId: SARA, choice: null, note: long, updatedAt: "2026-11-10T10:06:00Z" },
+						{ userId: "not-an-id", choice: "calm", note: null, updatedAt: "2026-11-10T10:06:00Z" },
+						{ userId: MEMBER, choice: "calm", note: null, updatedAt: "never" },
+						"nothing",
+					],
+				},
+			],
+		});
+		expect(parsed).toHaveLength(1);
+		expect(parsed[0]?.votes).toEqual([{ userId: SARA, note: long, updatedAt: "2026-11-10T10:06:00Z" }]);
 	});
 
 	it("is not there with nothing to decide", async () => {
