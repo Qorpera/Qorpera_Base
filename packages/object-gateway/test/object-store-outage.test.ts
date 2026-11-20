@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { FileSystemObjectStore } from "../src/object-store.ts";
+import { FileSystemObjectStore, resolveObjectStoreLanes } from "../src/object-store.ts";
 
 const filesystem = vi.hoisted(() => ({
 	mkdir: vi.fn(),
@@ -177,5 +177,27 @@ describe("bounded NAS filesystem operations", () => {
 		expect(sync).toHaveBeenCalledTimes(4);
 		await store.remove(profileId, hash);
 		expect(sync).toHaveBeenCalledTimes(5);
+	});
+
+	it("scales lanes when configured and still isolates a full stuck-NAS outage at the configured lane cap", async () => {
+		expect(resolveObjectStoreLanes({})).toBe(2);
+		expect(resolveObjectStoreLanes({ UV_THREADPOOL_SIZE: "16", QORPERA_OBJECT_GATEWAY_NAS_LANES: "8" })).toBe(8);
+		expect(() => resolveObjectStoreLanes({ QORPERA_OBJECT_GATEWAY_NAS_LANES: "4" })).toThrow("UV_THREADPOOL_SIZE>=6");
+		expect(() => resolveObjectStoreLanes({ UV_THREADPOOL_SIZE: "8", QORPERA_OBJECT_GATEWAY_NAS_LANES: "7" })).toThrow(
+			"UV_THREADPOOL_SIZE>=9",
+		);
+
+		filesystem.stat.mockImplementation(() => new Promise(() => {}));
+		const store = new FileSystemObjectStore("/synthetic-objects", 15, 10_000, 4);
+		const results = await Promise.all(
+			["1", "2", "3", "4", "5", "6"].map((digit) =>
+				store.get(profileId, digit.repeat(64), bytes.length).then(
+					() => "ok",
+					(error: { status?: number }) => error.status,
+				),
+			),
+		);
+		expect(results).toEqual([503, 503, 503, 503, 503, 503]);
+		expect(filesystem.stat).toHaveBeenCalledTimes(4);
 	});
 });

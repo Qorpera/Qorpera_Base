@@ -14,7 +14,7 @@ import { SupabaseMemberCompanyAuthority } from "./member-company-authority.ts";
 import { MemberCompanyObservations } from "./member-observability.ts";
 import { MemoryMessageEraser } from "./memory-message-eraser.ts";
 import { migrateLegacyObjects } from "./migration.ts";
-import { FileSystemObjectStore } from "./object-store.ts";
+import { FileSystemObjectStore, resolveObjectStoreLanes } from "./object-store.ts";
 import { ObjectGatewayReplication } from "./replication.ts";
 import { createObjectGatewayHandler } from "./service.ts";
 import { SupabaseObjectAuthority } from "./supabase-authority.ts";
@@ -38,7 +38,12 @@ const authority = new SupabaseObjectAuthority({
 	publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
 	secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
 });
-const store = new FileSystemObjectStore(resolve(required(process.env, "QORPERA_OBJECT_GATEWAY_STORAGE_ROOT")));
+const store = new FileSystemObjectStore(
+	resolve(required(process.env, "QORPERA_OBJECT_GATEWAY_STORAGE_ROOT")),
+	undefined,
+	undefined,
+	resolveObjectStoreLanes(process.env),
+);
 const journal = new ObjectGatewayJournal(required(process.env, "QORPERA_OBJECT_GATEWAY_STATE_ROOT"));
 const replication = new ObjectGatewayReplication(journal, store, authority);
 const folderGc = new ObjectGatewayFolderGc(store, replication, authority);
