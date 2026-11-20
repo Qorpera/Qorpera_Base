@@ -18,7 +18,13 @@ import {
 	answersActionReview,
 } from "../../cloud/review-rules.ts";
 import { sessionAttachmentProblem } from "../../cloud/session-attachments.ts";
-import type { TranscriptCard, TranscriptItem, TranscriptMessage, TranscriptPeerLink } from "../../cloud/transcript.ts";
+import {
+	reworkingNote,
+	type TranscriptCard,
+	type TranscriptItem,
+	type TranscriptMessage,
+	type TranscriptPeerLink,
+} from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent, JsonValue, PausedRun } from "../../cloud/types.ts";
 import { appNoteHeader, splitReply } from "../../cloud/wall-reply.ts";
 import { AGENT_LOOK, activityCaption, syncCaption } from "../../ui/agent-activity.ts";
