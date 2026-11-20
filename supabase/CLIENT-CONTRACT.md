@@ -481,6 +481,19 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   and, for an owner or admin, the company's, in their agent's own open thread
   (`sessionId`), which the caller may read. The web shows such an agent as
   "Needs you" while it has no work of its own. Members only (42501 otherwise).
+- `qorpera_list_member_open_decisions(p_profile_id)` →
+  `qorpera.member-open-decisions/v1` (20260930818000): the decisions that wait
+  for the caller in the agents' own threads, `decisions` newest first (at most
+  20 cards a thread, 50 approvals, 100 in all), each `{kind, id, sessionId,
+  staffAgentId, answererUserId, canAnswer, createdAt}` with what draws it:
+  `kind` `question` or `draft` carries `sequence` and `body` (the card's event
+  body, as `qorpera_list_member_open_questions` gives it), `kind` `approval`
+  carries `review` (the `qorpera.action-review/v1` card, without `call`). Found
+  as `qorpera_list_member_waiting_work` finds them; a secret or a takeover card
+  is no decision. `answererUserId` is the member who answers (null: any owner
+  or admin), `canAnswer` is true for every row. The web's decisions dock in the
+  Co-Founder's chat draws them and answers each as its thread does. Members
+  only (42501 otherwise).
 - `qorpera_list_member_waiting_work(p_profile_id)` →
   `qorpera.member-waiting-work/v1` (20260930723000): what each agent's work
   waits on the caller for, `agents` of `{staffAgentId, sessionId, count,
