@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+- The thread read says what woke each run (thread decisions step 5, the fold; Jonas, 20 Nov 2026: "Fold them").
+  Migration `20260930822000_thread_run_wakes`: one text patch of `qorpera_read_session_events` (anchor required exactly
+  once; the tail read goes through it): each event a run wrote gets `run_wake`, the wake's kind, by the unique index
+  on `qorpera_wake_occurrences.run_id`. No table, no trigger, no grant change, no new function; who may read a thread
+  is unchanged, and the field tells a reader nothing the agent's activity does not already show. Runtime code is
+  untouched.
 - Release v269 (#2001, thread decisions step 4, and #2003, its words; master since v268's release merge afaae0474 holds
   them and the web-only #2000 and #2002): one migration, `20260930821000_decision_rounds` (two internal functions nobody
   may call, `qorpera_assert_asks_again` and `qorpera_decision_round`; three anchored text patches, each refusing unless

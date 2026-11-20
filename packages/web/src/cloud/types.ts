@@ -145,6 +145,9 @@ export interface HostedStaffSpeaker {
 	displayName?: string;
 }
 
+export const RUN_WAKES = ["room", "human", "first-run", "agent", "routine"] as const;
+export type RunWake = (typeof RUN_WAKES)[number];
+
 export interface HostedSessionEvent {
 	sessionId: string;
 	sequence: number;
@@ -155,6 +158,7 @@ export interface HostedSessionEvent {
 	previousHash?: string;
 	eventHash: string;
 	execution?: HostedSessionExecutionIdentity;
+	runWake?: RunWake;
 	staffSpeaker?: HostedStaffSpeaker;
 	sessionInputId?: string;
 	createdAt: string;

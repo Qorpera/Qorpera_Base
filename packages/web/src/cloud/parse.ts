@@ -24,7 +24,13 @@ import type {
 	StaffSessionHandle,
 	WorkerRunControl,
 } from "./types.ts";
-import { EXECUTION_SOURCE_KINDS, HOSTED_PROFILE_ROLES, HOSTED_SESSION_EVENT_TYPES } from "./types.ts";
+import {
+	EXECUTION_SOURCE_KINDS,
+	HOSTED_PROFILE_ROLES,
+	HOSTED_SESSION_EVENT_TYPES,
+	RUN_WAKES,
+	type RunWake,
+} from "./types.ts";
 
 /* Strict parsers ported from the desktop's hosted-primary.ts. Identities are
  * always validated; presentational fields tolerate absence where an older
@@ -634,6 +640,9 @@ export function parseEvent(value: unknown): HostedSessionEvent {
 		...(typeof previousHash === "string" && SHA256_PATTERN.test(previousHash) ? { previousHash } : {}),
 		eventHash: input.event_hash,
 		...(execution ? { execution } : {}),
+		...(execution?.kind === "run" && RUN_WAKES.some((kind) => kind === input.run_wake)
+			? { runWake: input.run_wake as RunWake }
+			: {}),
 		...(staffSpeaker ? { staffSpeaker } : {}),
 		...(sessionInputId ? { sessionInputId } : {}),
 		createdAt: timestamp(input.created_at, "event creation time"),
