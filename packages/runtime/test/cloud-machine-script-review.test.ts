@@ -746,7 +746,8 @@ describe("on a real shell (bash and coreutils)", () => {
 });
 
 describe("the scripts a command writes with a quoted heredoc (mywave, 20 November 2026)", () => {
-	const probe = "import requests\nurls = {'ddg': 'https://html.duckduckgo.com/html/?q=%22Veylune%22'}\nprint($HOME, `x`)\n";
+	const probe =
+		"import requests\nurls = {'ddg': 'https://html.duckduckgo.com/html/?q=%22Veylune%22'}\nprint($HOME, `x`)\n";
 
 	it("reads each file a command writes as bash writes it", () => {
 		const folder = mkdtempSync(join(tmpdir(), "written-"));
@@ -792,7 +793,14 @@ describe("the scripts a command writes with a quoted heredoc (mywave, 20 Novembe
 	it("shows a written file's text with where it came from, and the prepared form keeps that only as text", () => {
 		const sha = digest(probe);
 		const scripts = parseCloudPreparedScripts({
-			files: [{ path: "/tmp/probe.py", sha256: sha, bytes: Buffer.byteLength(probe), written: "it is not on the machine now" }],
+			files: [
+				{
+					path: "/tmp/probe.py",
+					sha256: sha,
+					bytes: Buffer.byteLength(probe),
+					written: "it is not on the machine now",
+				},
+			],
 			notShown: [],
 		});
 		expect(scripts).toBeDefined();

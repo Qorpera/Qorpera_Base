@@ -56,9 +56,9 @@ import {
 	type CloudCommandScriptRun,
 	type CloudScriptEntry,
 	cloudCommandScripts,
+	cloudCommandWrittenScripts,
 	cloudScriptContents,
 	cloudScriptIdentity,
-	cloudCommandWrittenScripts,
 	cloudScriptNotRead,
 	cloudScriptReadProgram,
 	parseCloudPreparedScripts,
@@ -1006,7 +1006,13 @@ export function cloudMachineTools(options: {
 					tool: "machine_run",
 					toolVersion: CLOUD_MACHINE_TOOL_VERSION,
 					logicalOperationKey: operationKey,
-					arguments: { operationKey, machine: machine.name, command: program, timeoutMs: SCRIPT_READ_MS, notify: false },
+					arguments: {
+						operationKey,
+						machine: machine.name,
+						command: program,
+						timeoutMs: SCRIPT_READ_MS,
+						notify: false,
+					},
 					target: { realm: "company_machine", machineId: machine.machineId },
 					requiresCompanyRevision: false,
 				},
@@ -1055,7 +1061,8 @@ export function cloudMachineTools(options: {
 						: `the machine did not start the read: ${answer.refused}`,
 				);
 			const commandId = answer?.commandId;
-			if (typeof commandId !== "string") throw new ScriptReadFailure("the read's start answered in an unknown shape");
+			if (typeof commandId !== "string")
+				throw new ScriptReadFailure("the read's start answered in an unknown shape");
 			let output = "";
 			for (let offset = 0; ; ) {
 				const page = parseCloudMachineCommandReceipt(

@@ -430,9 +430,13 @@ export interface CloudWrittenScript {
 }
 
 const WRITTEN_PATH = String.raw`(\/[A-Za-z0-9_./\-+@%,:=]+)`;
-const WRITTEN_TAG = String.raw`(['"])([A-Za-z_][A-Za-z0-9_]*)`;
-const WRITE_THEN_TAG = new RegExp(String.raw`^[ \t]*cat[ \t]+>[ \t]*${WRITTEN_PATH}[ \t]+<<[ \t]*${WRITTEN_TAG}\2[ \t]*$`);
-const TAG_THEN_WRITE = new RegExp(String.raw`^[ \t]*cat[ \t]+<<[ \t]*${WRITTEN_TAG}\1[ \t]+>[ \t]*${WRITTEN_PATH}[ \t]*$`);
+const WRITTEN_TAG = `(['"])([A-Za-z_][A-Za-z0-9_]*)`;
+const WRITE_THEN_TAG = new RegExp(
+	String.raw`^[ \t]*cat[ \t]+>[ \t]*${WRITTEN_PATH}[ \t]+<<[ \t]*${WRITTEN_TAG}\2[ \t]*$`,
+);
+const TAG_THEN_WRITE = new RegExp(
+	String.raw`^[ \t]*cat[ \t]+<<[ \t]*${WRITTEN_TAG}\1[ \t]+>[ \t]*${WRITTEN_PATH}[ \t]*$`,
+);
 
 export function cloudCommandWrittenScripts(command: string): CloudWrittenScript[] {
 	const lines = command.split("\n");

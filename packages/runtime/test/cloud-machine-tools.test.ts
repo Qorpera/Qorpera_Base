@@ -1,10 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { authorizeMachineCommand } from "../../../deploy/coding-worker/machine-command-authority.ts";
 import { CLOUD_MACHINE_FOLDER_LIMITS, cloudMachineFolderBytes, type JsonValue } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { authorizeMachineCommand } from "../../../deploy/coding-worker/machine-command-authority.ts";
 import { type CloudActionReviewControl, CloudActionReviewGate } from "../src/cloud-action-review.ts";
-import { cloudScriptContentsIncomplete } from "../src/cloud-machine-script-review.ts";
 import { CLOUD_COMMAND_PAGE_ASK } from "../src/cloud-command-page-fit.ts";
 import { COMPANY_COMPUTER_SITE_STOP_MESSAGE } from "../src/cloud-company-computer-site-stops.ts";
 import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
@@ -17,6 +16,7 @@ import {
 	CloudMachineCommandUnanswered,
 	CloudMachineScreenRefusal,
 } from "../src/cloud-machine-command-http.ts";
+import { cloudScriptContentsIncomplete } from "../src/cloud-machine-script-review.ts";
 import {
 	CLOUD_MACHINE_DESKTOP_LEAST,
 	CLOUD_MACHINE_START_ANSWER_MS,
@@ -2948,7 +2948,8 @@ describe("the files a machine command runs, read for its review (17 November 202
 				files: [
 					{
 						path: "/tmp/eeg/fetch.py",
-						notShown: "it could not be read just now: the machine did not start the read: DESKTOP_MEMBER_IN_CONTROL",
+						notShown:
+							"it could not be read just now: the machine did not start the read: DESKTOP_MEMBER_IN_CONTROL",
 					},
 				],
 			});
