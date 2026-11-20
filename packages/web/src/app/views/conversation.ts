@@ -1,7 +1,7 @@
 import { companyPathKey } from "@qorpera/cloud-client/company-state-files";
 import { type CodingSession, codingSessionGoing } from "../../cloud/coding-session.ts";
 import type { EmailDraftAction, EmailDraftContent } from "../../cloud/email-drafts.ts";
-import { questionInput } from "../../cloud/interactions.ts";
+import { isGmailDraft, questionInput } from "../../cloud/interactions.ts";
 import {
 	type InterfaceChange,
 	type InterfaceChangeSubject,
@@ -3045,10 +3045,7 @@ export class ConversationView {
 				);
 			} else if (item.kind === "interaction") {
 				if (this.#decisions?.shows(item.id)) continue;
-				const email =
-					item.request.surface === "draft" &&
-					item.request.payload.platform === "email" &&
-					item.request.payload.connectorId === "gmail";
+				const email = isGmailDraft(item.request);
 				const answer = item.answer ?? conversation.interactionAnswers?.[item.id.toLowerCase()];
 				const answers = canAnswer(item.actorUserId);
 				const takeOver = Boolean(agent) && item.request.surface === "takeover";

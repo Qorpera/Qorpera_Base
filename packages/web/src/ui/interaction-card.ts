@@ -8,6 +8,7 @@ import {
 	type InteractionOutcome,
 	type InteractionRequest,
 	interactionState,
+	isGmailDraft,
 	type QuestionOption,
 	questionInput,
 	questionOptions,
@@ -469,8 +470,7 @@ function pill(label: string, onClick: () => void, kind: "primary" | "secondary" 
 
 export function renderInteractionCard(item: InteractionCardItem, context: InteractionCardContext): HTMLElement {
 	const { request } = item;
-	if (request.surface === "draft" && request.payload.platform === "email" && request.payload.connectorId === "gmail")
-		return renderEmailDraftCard(item, context);
+	if (isGmailDraft(request)) return renderEmailDraftCard(item, context);
 	const state = interactionState(request, item.answer, context.now);
 	let busy = false;
 	let card: HTMLElement;

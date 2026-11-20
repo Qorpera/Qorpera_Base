@@ -154,6 +154,12 @@ export function questionInput(request: InteractionRequest): "mail_address" | und
 	return asRecord(request.payload.input)?.kind === "mail_address" ? "mail_address" : undefined;
 }
 
+export function isGmailDraft(request: InteractionRequest): boolean {
+	return (
+		request.surface === "draft" && request.payload.platform === "email" && request.payload.connectorId === "gmail"
+	);
+}
+
 export function typedNote(request: InteractionRequest, answer: InteractionAnswer | undefined): string | undefined {
 	if (request.surface !== "question" || answer?.outcome !== "answered" || questionInput(request)) return undefined;
 	const values = answer.answer.values;

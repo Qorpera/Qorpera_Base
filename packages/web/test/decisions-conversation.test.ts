@@ -6,6 +6,7 @@ import type { OpenQuestions, OpenQuestionsState } from "../src/app/open-question
 import { Store } from "../src/app/state.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import type { QuestionDockHost } from "../src/app/views/question-dock.ts";
+import type { OpenDraft } from "../src/cloud/open-decisions.ts";
 import type { OpenQuestion } from "../src/cloud/open-questions.ts";
 import { actionReviewCard } from "../src/cloud/review-rules.ts";
 import type { TranscriptCard, TranscriptInteraction, TranscriptItem } from "../src/cloud/transcript.ts";
@@ -72,6 +73,14 @@ function setup(cofounder: boolean) {
 			answerApproval: approved,
 			hold: () => {},
 			release: () => {},
+			draftEditor: (draft: OpenDraft) => company.emailDraftEditor(draft.interactionId),
+			draftUnsettled: () => false,
+			unsettledDrafts: () => [],
+			loadDraft: async () => ({
+				from: "jonas@mywave.test",
+				content: { to: ["ada@acme.test"], cc: [], subject: "Our offer", body: "Hello Ada" },
+				status: "ready",
+			}),
 		} as unknown as OpenQuestions,
 		agent: (agentId) => company.staffById(agentId),
 		memberName: () => "Jonas",
@@ -264,6 +273,59 @@ describe("open decisions in the Co-Founder's chat", () => {
 		expect(f.view.el.querySelector(".decision-dock .auth-card h3")?.textContent).toBe("Send an email");
 		expect(press("Allow once")?.disabled).toBe(false);
 		expect(f.view.el.querySelector(".decision-dock .decision-error")?.textContent).toBe(refusal);
+	});
+
+	it("show a docked Gmail draft once: not in the thread as well, and back there when the dock lets go", async () => {
+		const f = setup(true);
+		const letter: TranscriptInteraction = {
+			kind: "interaction",
+			id: id(734),
+			sequence: 1,
+			actorUserId: userA.id,
+			createdAt: "2026-09-05T10:00:00Z",
+			request: {
+				surface: "draft",
+				title: "New email",
+				payload: {
+					platform: "email",
+					connectorId: "gmail",
+					to: ["ada@acme.test"],
+					cc: [],
+					subject: "Our offer",
+					body: "Hello Ada",
+				},
+			},
+		};
+		f.show([letter]);
+		f.store.set({
+			questions: [],
+			decisions: [
+				{
+					kind: "draft",
+					sessionId: session.sessionId,
+					interactionId: letter.id,
+					sequence: 1,
+					actorUserId: userA.id,
+					staffAgentId: staff.id,
+					request: letter.request,
+					createdAt: letter.createdAt,
+				},
+			],
+		});
+		await settle();
+		expect(f.view.el.querySelector<HTMLTextAreaElement>(".decision-dock .email-draft-body")?.value).toBe("Hello Ada");
+		expect(f.view.el.querySelector(".messages .email-draft-card")).toBeNull();
+
+		f.view.el.querySelector<HTMLTextAreaElement>(".decision-dock .email-draft-body")!.value = "Hello Ada, again";
+		f.view.el
+			.querySelector<HTMLTextAreaElement>(".decision-dock .email-draft-body")
+			?.dispatchEvent(new Event("input", { bubbles: true }));
+		f.store.set({ decisions: [] });
+		await settle();
+		expect(f.view.el.querySelector(".decision-dock .email-draft-card")).toBeNull();
+		expect(f.view.el.querySelector<HTMLTextAreaElement>(".messages .email-draft-body")?.value).toBe(
+			"Hello Ada, again",
+		);
 	});
 
 	it("are gathered in no other agent's thread", async () => {

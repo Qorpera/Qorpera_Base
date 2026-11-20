@@ -7,8 +7,20 @@ import { Store } from "../src/app/state.ts";
 import { DecisionDock, decisionOrder, UNDO_MS } from "../src/app/views/decision-dock.ts";
 import { QuestionDock, type QuestionDockHost } from "../src/app/views/question-dock.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
+import type {
+	EmailDraftAction,
+	EmailDraftContent,
+	EmailDraftEditor,
+	EmailDraftState,
+} from "../src/cloud/email-drafts.ts";
 import type { InteractionOutcome, InteractionRequest } from "../src/cloud/interactions.ts";
-import { asOpenCards, type OpenApproval, type OpenDecision, parseOpenDecisions } from "../src/cloud/open-decisions.ts";
+import {
+	asOpenCards,
+	type OpenApproval,
+	type OpenDecision,
+	type OpenDraft,
+	parseOpenDecisions,
+} from "../src/cloud/open-decisions.ts";
 import { type OpenQuestion, parseOpenQuestions } from "../src/cloud/open-questions.ts";
 import type { ActionReviewAnswer } from "../src/cloud/review-rules.ts";
 import type { HostedStaffAgent, JsonValue } from "../src/cloud/types.ts";
@@ -20,6 +32,20 @@ const MEMBER = "33333333-3333-4333-8333-333333333333";
 const CARD_A = "44444444-4444-4444-8444-00000000000a";
 const CARD_B = "44444444-4444-4444-8444-00000000000b";
 const CARD_C = "44444444-4444-4444-8444-00000000000c";
+
+const DRAFT = "66666666-6666-4666-8666-00000000000a";
+const letter: InteractionRequest = {
+	surface: "draft",
+	title: "New email",
+	payload: {
+		platform: "email",
+		connectorId: "gmail",
+		to: ["ada@acme.test"],
+		cc: [],
+		subject: "Our offer",
+		body: "Hello Ada",
+	},
+};
 
 const directions: InteractionRequest = {
 	surface: "question",
@@ -104,6 +130,8 @@ function company(
 	options: {
 		questions?: OpenQuestion[];
 		approvals?: OpenApproval[];
+		drafts?: OpenDraft[];
+		draft?: (action: EmailDraftAction | "load", content?: EmailDraftContent) => Promise<EmailDraftState>;
 		refuse?: string;
 		/** The cloud takes the answer only when this resolves. */
 		gate?: Promise<void>;
@@ -117,6 +145,13 @@ function company(
 	const listeners = new Set<(resource: string) => void>();
 	let questions = options.questions ?? [];
 	let approvals = options.approvals ?? [];
+	let drafts = options.drafts ?? [];
+	const editors = new Map<string, EmailDraftEditor>();
+	const draftSteps: [string, string, EmailDraftAction | "load"][] = [];
+	const draftStep = (sessionId: string, interactionId: string, action: EmailDraftAction | "load") => {
+		draftSteps.push([sessionId, interactionId, action]);
+		if (!options.draft) throw new Error("no draft in this fixture");
+	};
 	const reviews: [string, string, ActionReviewAnswer, string | undefined][] = [];
 	const conversation = (sessionId: string) => {
 		let store = conversations.get(sessionId);
@@ -133,14 +168,32 @@ function company(
 		setOpenDecisions: vi.fn(),
 		store: new Store({ team: { capabilities: { write: true } } }),
 		listOpenDecisions: vi.fn(async (): Promise<OpenDecision[]> => {
-			if (!options.approvals)
+			if (!options.approvals && !options.drafts)
 				throw new CloudRpcError(
 					"qorpera_list_member_open_decisions",
 					{ message: "missing", code: "PGRST202" },
 					404,
 				);
-			return [...asOpenCards(questions), ...approvals];
+			return [...asOpenCards(questions), ...approvals, ...drafts];
 		}),
+		emailDraftEditor: (interactionId: string) => {
+			let editor = editors.get(interactionId);
+			if (!editor) {
+				editor = {};
+				editors.set(interactionId, editor);
+			}
+			return editor;
+		},
+		loadEmailDraft: vi.fn(async (sessionId: string, interactionId: string) => {
+			draftStep(sessionId, interactionId, "load");
+			return options.draft!("load");
+		}),
+		actEmailDraft: vi.fn(
+			async (sessionId: string, interactionId: string, action: EmailDraftAction, content: EmailDraftContent) => {
+				draftStep(sessionId, interactionId, action);
+				return options.draft!(action, content);
+			},
+		),
 		answerActionReview: vi.fn(
 			async (sessionId: string, reviewId: string, answer: ActionReviewAnswer, ruleText?: string) => {
 				reviews.push([sessionId, reviewId, answer, ruleText]);
@@ -198,6 +251,10 @@ function company(
 		host,
 		answers,
 		reviews,
+		draftSteps,
+		unlist: (interactionId: string) => {
+			drafts = drafts.filter((item) => item.interactionId !== interactionId);
+		},
 		hint: () => {
 			for (const listener of listeners) listener("sessions");
 		},
@@ -511,13 +568,22 @@ describe("open decisions from the cloud", () => {
 		alwaysAllow: false,
 	};
 
-	it("keeps the questions and approvals it can draw and drops the rest", () => {
+	it("keeps the questions, approvals and Gmail drafts it can draw and drops the rest", () => {
 		const parsed = parseOpenDecisions({
 			schema: "qorpera.member-open-decisions/v1",
 			decisions: [
 				{ ...row, kind: "approval", id: REVIEW.toUpperCase(), answererUserId: null, review },
 				{ ...row, kind: "question", id: CARD_A, answererUserId: MEMBER, sequence: 7, body: body(directions) },
 				{ ...row, kind: "draft", id: CARD_B, answererUserId: MEMBER, sequence: 8, body: body(directions) },
+				{ ...row, kind: "draft", id: DRAFT, answererUserId: MEMBER, sequence: 9, body: body(letter) },
+				{
+					...row,
+					kind: "draft",
+					id: CARD_C,
+					answererUserId: MEMBER,
+					sequence: 10,
+					body: body({ ...letter, payload: { ...letter.payload, connectorId: "outlook" } }),
+				},
 				{ ...row, kind: "approval", id: CARD_C, answererUserId: null, review },
 				{ ...row, kind: "approval", id: REVIEW, answererUserId: null, review: { schema: "other" } },
 			],
@@ -525,6 +591,7 @@ describe("open decisions from the cloud", () => {
 		expect(parsed.map((decision) => [decision.kind, decision.interactionId])).toEqual([
 			["approval", REVIEW],
 			["question", CARD_A],
+			["draft", DRAFT],
 		]);
 		expect(parsed[0]?.kind === "approval" && parsed[0].review.title).toBe("Send an email");
 		expect(parsed[1]?.kind === "question" && parsed[1].actorUserId).toBe(MEMBER);
@@ -1135,6 +1202,265 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		await host.questions.refresh();
 		expect(controller.listOpenDecisions).toHaveBeenCalledTimes(1);
 		expect(controller.listOpenQuestions).toHaveBeenCalledTimes(2);
+		dock.dispose();
+	});
+
+	const content: EmailDraftContent = { to: ["ada@acme.test"], cc: [], subject: "Our offer", body: "Hello Ada" };
+	const readyDraft: EmailDraftState = { from: "jonas@mywave.test", content, status: "ready" };
+	const draft: OpenDraft = {
+		kind: "draft",
+		sessionId: SESSION,
+		interactionId: DRAFT,
+		sequence: 9,
+		actorUserId: MEMBER,
+		staffAgentId: AGENT,
+		request: letter,
+		createdAt: "2026-11-10T07:00:00Z",
+	};
+	const rest = async () => {
+		for (let i = 0; i < 6; i++) await settle();
+	};
+	const press = (dock: DecisionDock, label: string) =>
+		[...dock.el.querySelectorAll<HTMLButtonElement>(".decision-card button")]
+			.find((button) => button.textContent === label)
+			?.click();
+
+	it("draws a Gmail draft as its thread's email card and sends it at once, with no hold and no Undo", async () => {
+		const selectSessionAccount = vi.fn(async () => "conn-2");
+		const { host, draftSteps, controller } = company({
+			questions: [question(CARD_B, name)],
+			drafts: [draft],
+			draft: async (action) => (action === "send" ? { ...readyDraft, status: "sent" } : readyDraft),
+			accounts: { listConnections: vi.fn(async () => ({})), selectSessionAccount },
+		});
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await rest();
+		expect(tabs(dock).map((tab) => tab.querySelector(".decision-tab-label")?.textContent)).toEqual([
+			"New email",
+			"What should the app be called?",
+		]);
+		expect(dock.el.querySelector(".decision-card > .email-draft-card .email-draft-from")?.textContent).toBe(
+			"jonas@mywave.test",
+		);
+		expect(dock.shows(DRAFT)).toBe(true);
+		expect(selectSessionAccount).not.toHaveBeenCalled();
+		press(dock, "Send email");
+		await rest();
+		expect(draftSteps).toEqual([
+			[SESSION, DRAFT, "load"],
+			[SESSION, DRAFT, "send"],
+		]);
+		expect(selectSessionAccount).toHaveBeenCalledWith(SESSION, controller.signal);
+		expect(controller.actEmailDraft).toHaveBeenCalledWith(SESSION, DRAFT, "send", content);
+		expect(dock.decided.map((entry) => [entry.decision.interactionId, entry.state])).toEqual([[DRAFT, "sent"]]);
+		const block = dock.renderDecided(dock.decided[0]!);
+		expect(block.querySelector(".decided-rule")?.textContent).toBe("Email sent");
+		expect(block.querySelector(".decided-answer")?.textContent).toBe("Our offer");
+		expect(block.querySelector(".decided-by span")?.textContent).toBe("To ada@acme.test");
+		expect(block.querySelector(".decided-undo")).toBeNull();
+		expect(dock.el.querySelector(".decision-card .email-draft-card")).toBeNull();
+		expect(dock.el.querySelector(".interaction-title")?.textContent).toBe("What should the app be called?");
+		expect(dock.shows(DRAFT)).toBe(true);
+		dock.dispose();
+	});
+
+	it("says a discarded draft was not sent, and keeps a draft saved to Gmail where it stands", async () => {
+		const { host, draftSteps } = company({
+			drafts: [draft],
+			draft: async (action) =>
+				action === "discard"
+					? { ...readyDraft, status: "discarded" }
+					: action === "save"
+						? { ...readyDraft, status: "saved" }
+						: readyDraft,
+		});
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await rest();
+		press(dock, "Save to Gmail");
+		await rest();
+		expect(dock.decided).toEqual([]);
+		expect(dock.el.querySelector(".decision-card .email-draft-status")?.textContent).toBe("Saved to Gmail");
+		press(dock, "Discard");
+		await rest();
+		expect(draftSteps.map((step) => step[2])).toEqual(["load", "save", "discard"]);
+		const block = dock.renderDecided(dock.decided[0]!);
+		expect(block.querySelector(".decided-rule")?.textContent).toBe("Discarded");
+		expect(block.querySelector(".decided-by span")?.textContent).toBe("Nothing was sent");
+		expect(dock.el.hidden).toBe(true);
+		dock.dispose();
+	});
+
+	it("keeps a draft whose send was not confirmed, also once the list has let it go, until a read settles it", async () => {
+		let sent = false;
+		const { host, open, unlist } = company({
+			drafts: [draft],
+			draft: async (action) => {
+				if (action === "send") throw new Error("The connection dropped");
+				return sent ? { ...readyDraft, status: "sent" } : readyDraft;
+			},
+		});
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await rest();
+		press(dock, "Send email");
+		await rest();
+		expect(dock.decided).toEqual([]);
+		expect(dock.el.querySelector(".decision-card .email-draft-status")?.textContent).toBe("Send unconfirmed");
+		unlist(DRAFT);
+		await open.refresh();
+		await rest();
+		expect(open.store.get().decisions).toEqual([]);
+		expect(dock.el.hidden).toBe(false);
+		expect(dock.shows(DRAFT)).toBe(true);
+		expect(dock.el.querySelector(".decision-card .email-draft-error")?.textContent).toBe("The connection dropped");
+
+		const next = new DecisionDock(host);
+		document.body.append(next.el);
+		await rest();
+		expect(next.el.querySelector(".decision-card .email-draft-status")?.textContent).toBe("Send unconfirmed");
+		next.dispose();
+
+		sent = true;
+		press(dock, "Refresh");
+		await rest();
+		expect(dock.decided.map((entry) => [entry.decision.interactionId, entry.state])).toEqual([[DRAFT, "sent"]]);
+		expect(dock.el.hidden).toBe(true);
+		dock.dispose();
+	});
+
+	it("keeps a sent email whose agent was not told in the dock, and picks the account only to tell the agent", async () => {
+		let owed: boolean[] = [];
+		const selectSessionAccount = vi.fn(async () => "conn-2");
+		const { host, open, unlist, draftSteps, controller } = company({
+			drafts: [draft],
+			draft: async (action) =>
+				action === "send"
+					? { ...readyDraft, status: "sent", actionId: CARD_C, notificationPending: true }
+					: draftSteps.length > 1
+						? { ...readyDraft, status: "sent", actionId: CARD_C, notificationPending: owed.shift() ?? false }
+						: readyDraft,
+			accounts: { listConnections: vi.fn(async () => ({})), selectSessionAccount },
+		});
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await rest();
+		expect(selectSessionAccount).not.toHaveBeenCalled();
+		press(dock, "Send email");
+		await rest();
+		unlist(DRAFT);
+		await open.refresh();
+		await rest();
+		expect(dock.decided).toEqual([]);
+		expect(dock.el.querySelector(".decision-card .email-draft-note")?.textContent).toBe(
+			"Your email action is complete. The agent has not been notified yet.",
+		);
+		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(1);
+		selectSessionAccount.mockClear();
+		owed = [true, false];
+		press(dock, "Retry notifying agent");
+		await rest();
+		expect(selectSessionAccount).toHaveBeenCalledExactlyOnceWith(SESSION, controller.signal);
+		expect(draftSteps.slice(-2)).toEqual([
+			[SESSION, DRAFT, "load"],
+			[SESSION, DRAFT, "load"],
+		]);
+		expect(dock.decided.map((entry) => [entry.decision.interactionId, entry.state])).toEqual([[DRAFT, "sent"]]);
+		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(0);
+		dock.dispose();
+	});
+
+	it("keeps a draft whose send was not confirmed when its time runs out, and sets no clock for a time that has passed", async () => {
+		vi.setSystemTime(new Date("2026-11-10T12:00:00Z"));
+		const timed: OpenDraft = { ...draft, request: { ...letter, expiresAt: "2026-11-10T12:00:10Z" } };
+		const reads: EmailDraftState["status"][] = ["ready", "unconfirmed", "sent"];
+		const { host } = company({
+			drafts: [timed],
+			draft: async (action) => {
+				if (action === "send") throw new Error("The connection dropped");
+				return { ...readyDraft, status: reads.shift() ?? "sent" };
+			},
+		});
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await rest();
+		press(dock, "Send email");
+		await rest();
+		await vi.advanceTimersByTimeAsync(11_000);
+		await rest();
+		expect(dock.shows(DRAFT)).toBe(true);
+		expect(dock.el.querySelector(".decision-card .email-draft-error")?.textContent).toBe("The connection dropped");
+		expect(vi.getTimerCount()).toBeLessThanOrEqual(1);
+
+		press(dock, "Refresh");
+		await rest();
+		expect(dock.el.querySelector(".decision-card .email-draft-status")?.textContent).toBe("Send unconfirmed");
+		expect(dock.decided).toEqual([]);
+		const again = new DecisionDock(host);
+		document.body.append(again.el);
+		await rest();
+		expect(
+			[...again.el.querySelectorAll<HTMLButtonElement>(".decision-card button")].map((button) => button.textContent),
+		).toContain("Refresh");
+		again.dispose();
+		press(dock, "Refresh");
+		await rest();
+		expect(dock.decided.map((entry) => [entry.decision.interactionId, entry.state])).toEqual([[DRAFT, "sent"]]);
+		dock.dispose();
+	});
+
+	it("marks a draft taller than its room as cut once its card has drawn itself again with the sender", async () => {
+		const seen = new Set<Element>();
+		vi.stubGlobal(
+			"ResizeObserver",
+			class {
+				observe(target: Element) {
+					seen.add(target);
+				}
+				disconnect() {}
+			},
+		);
+		let loaded: (state: EmailDraftState) => void = () => {};
+		const { host } = company({
+			drafts: [draft],
+			draft: () =>
+				new Promise<EmailDraftState>((resolve) => {
+					loaded = resolve;
+				}),
+		});
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await rest();
+		const card = dock.el.querySelector<HTMLElement>(".decision-card > .email-draft-card");
+		if (!card) throw new Error("card expected");
+		Object.defineProperty(card, "scrollHeight", { value: 500 });
+		Object.defineProperty(card, "clientHeight", { value: 300 });
+		expect(card.classList.contains("is-cut")).toBe(false);
+		loaded(readyDraft);
+		await rest();
+		expect(card.querySelector(".email-draft-from")?.textContent).toBe("jonas@mywave.test");
+		expect(card.classList.contains("is-cut")).toBe(true);
+		expect([...card.children].every((part) => seen.has(part))).toBe(true);
+		dock.dispose();
+	});
+
+	it("marks only the Gmail draft for the dock's email layout, never the approval of an email", async () => {
+		const { host } = company({
+			approvals: [{ ...approval, review: { ...approval.review, tool: "gmail_send_message" } }],
+			drafts: [draft],
+			draft: async () => readyDraft,
+		});
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await rest();
+		const shown = () => dock.el.querySelector<HTMLElement>(".decision-card > .email-draft-card");
+		expect(shown()?.matches(".surface-draft")).toBe(true);
+		tabs(dock)
+			.find((tab) => tab.dataset.decision === REVIEW)
+			?.click();
+		expect(shown()?.matches(".review-email")).toBe(true);
+		expect(shown()?.matches(".surface-draft")).toBe(false);
 		dock.dispose();
 	});
 
