@@ -1445,6 +1445,25 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		dock.dispose();
 	});
 
+	it("marks only the Gmail draft for the dock's email layout, never the approval of an email", async () => {
+		const { host } = company({
+			approvals: [{ ...approval, review: { ...approval.review, tool: "gmail_send_message" } }],
+			drafts: [draft],
+			draft: async () => readyDraft,
+		});
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await rest();
+		const shown = () => dock.el.querySelector<HTMLElement>(".decision-card > .email-draft-card");
+		expect(shown()?.matches(".surface-draft")).toBe(true);
+		tabs(dock)
+			.find((tab) => tab.dataset.decision === REVIEW)
+			?.click();
+		expect(shown()?.matches(".review-email")).toBe(true);
+		expect(shown()?.matches(".surface-draft")).toBe(false);
+		dock.dispose();
+	});
+
 	it("is not there with nothing to decide", async () => {
 		const { host } = company();
 		const dock = new DecisionDock(host);
