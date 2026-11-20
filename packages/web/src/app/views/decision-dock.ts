@@ -119,6 +119,8 @@ export class DecisionDock {
 	#votesKey = "";
 	#shown: string | undefined;
 	#shownOthers = false;
+	#shownNone = false;
+	#staged: string | undefined;
 	#byMember = false;
 	#settlesAt = 0;
 	readonly #voteCalls = new Map<string, number>();
@@ -376,11 +378,13 @@ export class DecisionDock {
 			(this.#shownOthers ? cards.find((card) => card.othersAnswer) : undefined) ??
 			cards[0];
 		if (
-			this.#shown !== undefined &&
 			current &&
-			(current.interactionId !== this.#shown || (this.#shownOthers && !current.othersAnswer))
+			(current.interactionId !== this.#shown
+				? this.#shown !== undefined || this.#shownNone
+				: this.#shownOthers && !current.othersAnswer)
 		)
 			this.#settlesAt = this.#byMember ? 0 : Date.now() + SETTLE_MS;
+		this.#shownNone = !current && this.#host.questions.store.get().read;
 		this.#byMember = false;
 		this.#shown = current?.interactionId;
 		this.#shownOthers = current?.othersAnswer === true;
@@ -468,13 +472,16 @@ export class DecisionDock {
 						);
 		this.#markCut(card);
 		const mine = (current.votes ?? []).find((vote) => vote.userId === this.#host.questions.viewerId);
+		const typed = this.#staged === id ? this.#stage.querySelector<HTMLInputElement>(".decision-note") : null;
+		const typing = typed !== null && typed === document.activeElement;
+		this.#staged = id;
 		const note =
 			others && mayVote
 				? (h("input", {
 						type: "text",
 						class: "decision-note",
 						maxlength: 500,
-						value: mine?.note ?? "",
+						value: typed?.value ?? mine?.note ?? "",
 						placeholder: t("Add a note…"),
 						"aria-label": t("Your note on this decision"),
 						onkeydown: (event: KeyboardEvent) => {
@@ -503,6 +510,7 @@ export class DecisionDock {
 				}),
 			),
 		);
+		if (typing) note?.focus({ preventScroll: true });
 	}
 
 	#listed(id: string): OpenDecision | undefined {
@@ -635,7 +643,6 @@ export class DecisionDock {
 		this.#host.questions.forget(id);
 		void this.#host.questions.refresh();
 		if (this.#current === id) this.#current = undefined;
-		this.#byMember = true;
 		this.#everyDock();
 		return state;
 	}

@@ -1816,6 +1816,86 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		dock.dispose();
 	});
 
+	it("takes no tap for a moment on the card that follows a sent email draft", async () => {
+		const { host } = company({
+			questions: [question(CARD_B, name)],
+			drafts: [draft],
+			draft: async (action) => (action === "send" ? { ...readyDraft, status: "sent" } : readyDraft),
+		});
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await rest();
+		press(dock, "Send email");
+		await rest();
+		expect(dock.decided.map((entry) => entry.decision.interactionId)).toEqual([DRAFT]);
+		option(dock, "mywave")?.click();
+		await settle();
+		expect(dock.decided.map((entry) => entry.decision.interactionId)).toEqual([DRAFT]);
+		await vi.advanceTimersByTimeAsync(SETTLE_MS);
+		option(dock, "mywave")?.click();
+		await settle();
+		expect(dock.decided.map((entry) => entry.decision.interactionId)).toEqual([DRAFT, CARD_B]);
+		dock.dispose();
+	});
+
+	it("takes no tap for a moment on a card that arrives in a dock that stood empty, but takes the first cards at once", async () => {
+		const list: OpenDecision[] = [];
+		const { host, open } = company({ company: list });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		expect(dock.el.hidden).toBe(true);
+		list.push(...asOpenCards([question(CARD_B, name)]));
+		await open.refresh();
+		await settle();
+		expect(dock.el.hidden).toBe(false);
+		option(dock, "mywave")?.click();
+		await settle();
+		expect(dock.decided).toEqual([]);
+		await vi.advanceTimersByTimeAsync(SETTLE_MS);
+		option(dock, "mywave")?.click();
+		await settle();
+		expect(dock.decided.map((entry) => entry.state)).toEqual(["held"]);
+		dock.dispose();
+
+		const first = company({ company: asOpenCards([question(CARD_B, name)]) });
+		const fresh = new DecisionDock(first.host);
+		document.body.append(fresh.el);
+		await settle();
+		option(fresh, "mywave")?.click();
+		await settle();
+		expect(fresh.decided.map((entry) => entry.state)).toEqual(["held"]);
+		fresh.dispose();
+	});
+
+	it("keeps a note being typed when the card is drawn again for a refused vote and its retry", async () => {
+		const list: OpenDecision[] = [others(CARD_B, name)];
+		const { host, controller } = company({ company: list });
+		controller.castDecisionVote.mockImplementationOnce(async () => {
+			throw new Error("The connection dropped");
+		});
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		option(dock, "mywave")?.click();
+		await settle();
+		await settle();
+		expect(dock.el.querySelector(".decision-error")?.textContent).toBe("The connection dropped");
+		const note = dock.el.querySelector<HTMLInputElement>(".decision-note");
+		if (!note) throw new Error("note field expected");
+		note.focus();
+		note.value = "Because the domain is ours";
+		option(dock, "mywave")?.click();
+		await settle();
+		await settle();
+		expect(dock.el.querySelector(".decision-error")).toBeNull();
+		const again = dock.el.querySelector<HTMLInputElement>(".decision-note");
+		expect(again?.value).toBe("Because the domain is ours");
+		expect(document.activeElement).toBe(again);
+		expect(option(dock, "mywave")?.classList.contains("is-voted")).toBe(true);
+		dock.dispose();
+	});
+
 	it("goes on to the next of the other members' decisions when the one on screen leaves", async () => {
 		const list: OpenDecision[] = [
 			...asOpenCards([question(CARD_B, name)]),
