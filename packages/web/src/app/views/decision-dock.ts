@@ -255,7 +255,10 @@ export class DecisionDock {
 			const thread = this.#host.conversation(entry.decision.sessionId).get();
 			if (thread.interactionAnswers?.[id]) return true;
 			return !(thread.projection?.items ?? []).some(
-				(item) => item.kind === "interaction" && item.id.toLowerCase() === id && item.answerFailed === true,
+				(item) =>
+					(item.kind === "interaction" || item.kind === "authorization_request") &&
+					item.id.toLowerCase() === id &&
+					item.answerFailed === true,
 			);
 		});
 		if (kept.length === this.#decided.length) return false;
