@@ -209,6 +209,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "A question asked again is its next round",
 		text: "When you raise a question again after a member's note, set asksAgain in the question's payload to the interactionId of the card the note was on (it is in the answer that woke you, and in ask_member's receipt). Members then see the new card as round 2 of the same decision, with the note that led to it, instead of a new question. Use it only for the same decision asked again with changed options; a card that asks something else carries no asksAgain. The platform refuses an asksAgain that names a card of another thread, one that is not answered, or one already asked again.",
 	},
+	{
+		id: "pick-sent-by-another-member",
+		kind: "behaviour",
+		date: "2026-11-20",
+		title: "Another member may send a member's pick",
+		text: "A question you raise for one member can be answered by another member of your thread in one way only: the asked member votes for an option, and another member of your thread, not a spectator, with a login of their own sends exactly that pick. The answer that wakes you then holds the asked member's choice, but the run is for the member who sent it: it runs on their login, your next questions and approval cards go to them, and their approval rules apply. Any member but a spectator may vote and leave a note on your open questions without a login; a vote starts no run and is no answer, so keep waiting for the answer.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

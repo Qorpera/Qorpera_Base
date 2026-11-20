@@ -1,5 +1,6 @@
 import { parseCloudAgentSendInput } from "@qorpera/runtime/cloud-agent-mouth";
 import { CloudToolArgumentRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { PLATFORM_UPDATES } from "@qorpera/runtime/cloud-platform-updates";
 import {
 	CLOUD_ASK_MEMBER_INPUT_SCHEMA,
 	CLOUD_ASK_MEMBER_INSTRUCTIONS,
@@ -652,6 +653,19 @@ describe("ask_member card shapes", () => {
 				payload: { options: ["Apples"] },
 			}),
 		).toThrow(/^Invalid interaction request: the question payload must be/);
+	});
+});
+
+describe("who answers a card", () => {
+	it("tells the agent that the member it answers answers the card, or another member sends that member's pick", () => {
+		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain(
+			"In your own thread the member you answer answers it, or another sends their pick.",
+		);
+		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).not.toContain("only the member you answer can answer the card");
+		const update = PLATFORM_UPDATES.find((entry) => entry.id === "pick-sent-by-another-member");
+		expect(update?.kind).toBe("behaviour");
+		expect(update?.text).toContain("the run is for the member who sent it");
+		expect(update?.text).toContain("a vote starts no run and is no answer");
 	});
 });
 

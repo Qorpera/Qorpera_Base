@@ -1,6 +1,11 @@
 # Changelog
 
 ## [Unreleased]
+- Agents are told that another member may send the asked member's pick (thread decisions step 3, live since v268 with
+  migration `20260930820000`; Jonas, 20 Nov 2026: "Yes, with clear words"). `ask_member`'s words said "only the member
+  you answer can answer the card"; they now say the member answers it or another sends their pick, and a platform
+  update (`pick-sent-by-another-member`) says what that means for the run: it is for the sender, on their login, with
+  their approval rules, and votes and notes are no answers. Words only: no tool, schema or database change.
 - A question an agent asks again after a member's note is the next round of one decision (thread decisions step 4;
   Jonas, 20 Nov 2026: "Yes, build it"). `ask_member`'s question payload takes `asksAgain`, the `interactionId` of the
   card the note was on; the agents' words and a platform update (`asked-again-is-a-round`) say when to set it.
