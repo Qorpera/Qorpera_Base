@@ -363,9 +363,15 @@ function abortableDigest(value: Promise<string>, signal: AbortSignal): Promise<s
 	return Promise.race([value, aborted]).finally(() => signal.removeEventListener("abort", onAbort));
 }
 
+const ARTIFACT_HASH_HIGH_WATER_MARK = 1024 * 1024;
+
 async function hashArtifact(path: string, signal?: AbortSignal): Promise<string> {
 	const hash = createHash("sha256");
-	for await (const chunk of createReadStream(path, signal ? { signal } : {})) hash.update(chunk);
+	for await (const chunk of createReadStream(path, {
+		highWaterMark: ARTIFACT_HASH_HIGH_WATER_MARK,
+		...(signal ? { signal } : {}),
+	}))
+		hash.update(chunk);
 	return hash.digest("hex");
 }
 

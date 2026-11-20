@@ -1135,6 +1135,134 @@ describe("shared execution provider backend", () => {
 		await stopping;
 		expect(await journal(f)).toMatchObject({ physicalState: "stopped", stopReason: "revoked" });
 	});
+
+	it("acquires distinct slots in parallel without holding the service lock across RPCs or material writes", async () => {
+		const f = await fixture({ slotCount: 4 });
+		const signal = new AbortController().signal;
+		const stateRoot = join(await root(), "state");
+		const runRoot = join(await root(), "run");
+		const identityRoot = f.identityRoot;
+		const units = new FakeUnits();
+		let inFlightProvisions = 0;
+		let maxConcurrentProvisions = 0;
+		let allFourProvisioning: () => void = () => undefined;
+		const fourEntered = new Promise<void>((resolveWait) => {
+			allFourProvisioning = resolveWait;
+		});
+		let releaseProvisions: () => void = () => undefined;
+		const gateProvisions = new Promise<void>((resolveWait) => {
+			releaseProvisions = resolveWait;
+		});
+		let runnerSeq = 0;
+		const gatedFetch = async (input: string | URL, init?: RequestInit): Promise<Response> => {
+			const url = new URL(String(input));
+			if (url.pathname.startsWith("/rest/v1/rpc/")) {
+				const outer = JSON.parse(String(init?.body)) as { p_name: string; p_args: Record<string, unknown> };
+				const name = outer.p_name;
+				const body = outer.p_args;
+				if (name === "qorpera_compute_identity_login_in_vault") return Response.json(false);
+				if (name === "qorpera_provision_execution_runner") {
+					inFlightProvisions++;
+					maxConcurrentProvisions = Math.max(maxConcurrentProvisions, inFlightProvisions);
+					if (inFlightProvisions === 4) allFourProvisioning();
+					await gateProvisions;
+					inFlightProvisions--;
+					return Response.json({
+						runner_id: `30000000-0000-4000-8009-${String(++runnerSeq).padStart(12, "0")}`,
+						runner_kind: "qorpera_computer",
+						provider_adapter: "native26-test",
+						status: "provisioned",
+						compute_identity_id: computeIdentityId,
+						logical_computer_id: null,
+						worker_class: "managed_sandbox",
+						template_key: "qorpera-member-linux",
+						template_version: "v1",
+						compute_policy_sha256: "f".repeat(64),
+						capabilities: ["agent_turn"],
+					});
+				}
+				if (name === "qorpera_reserve_runtime_machine")
+					return Response.json({
+						state: "reserved",
+						allocationId: body.p_allocation_id,
+						instanceSha256: body.p_instance_sha256,
+					});
+				if (name === "qorpera_bind_native_identity_credential")
+					return Response.json({ allocationId: body.p_allocation_id, holderKind: body.p_holder_kind });
+				if (name === "qorpera_release_runtime_machine")
+					return Response.json({
+						state: "released",
+						allocationId: body.p_allocation_id,
+						instanceSha256: body.p_instance_sha256,
+					});
+			}
+			if (url.hostname === "127.0.0.1" && url.pathname === "/healthz") return Response.json({ ok: true });
+			return new Response("not found", { status: 404 });
+		};
+		const backend = new SharedExecutionProviderBackend(
+			{
+				adapterId: "native26-test",
+				hostId: "qorpera-exec-test",
+				supabaseUrl: "https://project.supabase.test",
+				supabasePublishableKey: "publishable-key",
+				executionHostCredential: hostCredential,
+				stateRoot,
+				runRoot,
+				identityRoot,
+				slotCount: 4,
+				portBase: 20_000,
+				hostUnitPrefix: "qorpera-shared-run-host@",
+				runnerUnitPrefix: "qorpera-shared-runner@",
+				hostAccountPrefix: "qorpera-shared-host",
+				runnerAccountPrefix: "qorpera-shared-runner",
+				runnerImage: `localhost/qorpera/sandbox-probe:test@sha256:${"1".repeat(64)}`,
+				runnerPodmanPath: "/usr/bin/podman",
+				runnerEntrypoint: "/qorpera/bin/run-job",
+				runnerVersion: "test",
+				codexPath: "/opt/qorpera-harnesses/native-company/codex",
+				claudePath: "/usr/local/bin/claude",
+				nativeCompanyRuntime: f.runtime,
+				startTimeoutMs: 5000,
+			},
+			{
+				fetch: gatedFetch as typeof fetch,
+				units,
+				identityAuthority: async () => f.identityState,
+				account: async () => ({ uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 }),
+				requireIdentityMount: false,
+				identityOwnerUid: process.getuid?.() ?? 0,
+			},
+		);
+		const runIds = [1, 2, 3, 4].map((n) => `30000000-0000-4000-8000-00000000010${n}`);
+		const fifthRun = "30000000-0000-4000-8000-000000000105";
+		const acquires = runIds.map((id) => backend.acquire(id, work({ runId: id, sourceId: id }), signal));
+		await Promise.race([
+			fourEntered,
+			delay(2000).then(() => {
+				throw new Error(`Expected 4 concurrent provisions, saw max=${maxConcurrentProvisions}`);
+			}),
+		]);
+		expect(maxConcurrentProvisions).toBe(4);
+		const fifthError = await backend
+			.acquire(fifthRun, work({ runId: fifthRun, sourceId: fifthRun }), signal)
+			.catch((error) => error);
+		expect(fifthError).toBeInstanceOf(ProviderAdmissionRefused);
+		expect(fifthError).toMatchObject({ reason: "SANDBOX_CAPACITY_EXHAUSTED" });
+		await backend.reconcile(signal);
+		releaseProvisions();
+		const runners = await Promise.all(acquires);
+		expect(runners).toHaveLength(4);
+		const slots = new Set<number>();
+		for (const id of runIds) {
+			const record = JSON.parse(await readFile(join(stateRoot, "journals", `${id}.json`), "utf-8")) as {
+				slot: number;
+				physicalState: string;
+			};
+			expect(record.physicalState).toBe("registered");
+			slots.add(record.slot);
+		}
+		expect(slots).toEqual(new Set([0, 1, 2, 3]));
+	});
 });
 
 describe("warm conversations", () => {
