@@ -57,6 +57,7 @@ export class DecisionDock {
 	readonly #sizes: ResizeObserver | undefined;
 	#current: string | undefined;
 	#watched: { sessionId: string; stop: () => void } | undefined;
+	readonly #decidedThreads = new Map<string, () => void>();
 	#stageKey = "";
 	#tabsKey = "";
 	#waiting = "";
@@ -214,6 +215,8 @@ export class DecisionDock {
 		this.#watched = undefined;
 		if (this.#expires !== undefined) clearTimeout(this.#expires);
 		this.#docks.delete(this.#redraw);
+		for (const stop of this.#decidedThreads.values()) stop();
+		this.#decidedThreads.clear();
 		this.#listeners.clear();
 		this.el.remove();
 	}
@@ -222,14 +225,27 @@ export class DecisionDock {
 		const kept = this.#decided.filter((entry) => {
 			if (entry.state !== "sent") return true;
 			const id = entry.question.interactionId;
-			const items = this.#host.conversation(entry.question.sessionId).get().projection?.items ?? [];
-			return !items.some(
+			const thread = this.#host.conversation(entry.question.sessionId).get();
+			if (thread.interactionAnswers?.[id]) return true;
+			return !(thread.projection?.items ?? []).some(
 				(item) => item.kind === "interaction" && item.id.toLowerCase() === id && item.answerFailed === true,
 			);
 		});
 		if (kept.length === this.#decided.length) return false;
 		this.#decided.splice(0, this.#decided.length, ...kept);
 		return true;
+	}
+
+	#watchDecided(): void {
+		const sessions = new Set(this.#decided.map((entry) => entry.question.sessionId));
+		for (const [sessionId, stop] of this.#decidedThreads) {
+			if (sessions.has(sessionId)) continue;
+			stop();
+			this.#decidedThreads.delete(sessionId);
+		}
+		for (const sessionId of sessions)
+			if (!this.#decidedThreads.has(sessionId))
+				this.#decidedThreads.set(sessionId, this.#host.conversation(sessionId).subscribe(this.#redraw));
 	}
 
 	#waitingNow(cards: OpenQuestion[]): string {
@@ -282,6 +298,7 @@ export class DecisionDock {
 		this.#current = current?.interactionId;
 		this.#watch(current?.sessionId);
 		this.#waiting = this.#waitingNow(cards);
+		this.#watchDecided();
 		this.el.hidden = !current;
 		this.el.classList.toggle("is-narrow", this.#narrow);
 		if (current) {

@@ -699,6 +699,21 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		await settle();
 		expect(dock.decided.map((entry) => entry.state)).toEqual(["sent"]);
 		expect(dock.shows(CARD_B)).toBe(true);
+		const failedBefore = {
+			kind: "interaction" as const,
+			id: CARD_B,
+			sequence: 7,
+			actorUserId: MEMBER,
+			request: name,
+			createdAt: "2026-11-10T09:00:00Z",
+			answerFailed: true,
+		};
+		host.conversation(SESSION).set({ projection: { items: [failedBefore], hiddenCount: 0, lastSequence: 7 } });
+		expect(host.conversation(SESSION).get().interactionAnswers?.[CARD_B]).toBeDefined();
+		expect(dock.decided.map((entry) => entry.state)).toEqual(["sent"]);
+		expect(dock.shows(CARD_B)).toBe(true);
+		const changes = vi.fn();
+		dock.onChange(changes);
 		host.conversation(SESSION).set({
 			interactionAnswers: undefined,
 			projection: {
@@ -717,6 +732,8 @@ describe("the decisions dock in the Co-Founder chat", () => {
 				lastSequence: 7,
 			},
 		});
+		await settle();
+		expect(changes).toHaveBeenCalledTimes(1);
 		expect(dock.shows(CARD_B)).toBe(false);
 		expect(dock.decided).toEqual([]);
 		expect(dock.decidedKey).toBe("");
