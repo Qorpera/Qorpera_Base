@@ -7,11 +7,17 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929026399_runtime_bundle_activation_v263.sql";
-const activationVersion = 263;
-const previousActivationVersion = 262;
-const previousActivationSha256 = "0b6230d998f01d3f7de0e8cbf6ec3b327c40ea17ed61a9c5759ed1cd91d58b77";
-const activationRequires = Object.freeze([]);
+const activation = "supabase/migrations/20260929026499_runtime_bundle_activation_v264.sql";
+const activationVersion = 264;
+const previousActivationVersion = 263;
+const previousActivationSha256 = "f3635cabfba0b4c853cb5034ade668a407a3f65ccc86801c985459b9b8aebc83";
+const activationRequires = Object.freeze([
+	[
+		"20260930816000_gpt_6_2_sol",
+		"#1935 (GPT-6.2 Sol): bundle 264's platform update gpt-6-2-sol-default tells every agent it runs on GPT-6.2 Sol unless its agent file or a member's pick names another model, which is true only once 816000 moved the roster's default and the agents with no model to it; the agents are never told of a model before they run it",
+		"position('gpt-6.2-sol' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_company_state_index_agent(uuid,uuid,uuid,uuid,text,uuid,jsonb,jsonb)')), '')) > 0 and position('gpt-6.2-sol' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_get_session_model(uuid)')), '')) > 0 and position('gpt-6.1-sol' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_get_session_model(uuid)')), '')) = 0",
+	],
+]);
 const activationRequiresSql = activationRequires
 	.map(([migration, why, present]) => {
 		const always = `${migration}.sql` < activation.slice(activation.lastIndexOf("/") + 1);
