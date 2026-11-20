@@ -29,6 +29,12 @@
 .rail-apps-drawer.is-open { grid-template-rows: 1fr; }
 .rail-apps-drawer > div { min-height: 0; overflow: hidden; }
 .rail-apps-grid { position: relative; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px 2px; padding: 10px 0 8px; }
+/* The company's owed views (company views step 4): its websites, then its products, money and ads apps, in one row of
+ * their own above the rest, laid out as the grid is; a hairline parts them from what the member arranges. */
+.rail-apps-owed { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px 2px; padding: 10px 0 9px; }
+.rail-apps-owed[hidden] { display: none; }
+.rail-apps-owed:not([hidden]) + .rail-apps-grid { margin-top: 1px; box-shadow: 0 -1px 0 var(--sidebar-divider); }
+.rail-apps-owed:not([hidden]) + .rail-apps-grid:empty { display: none; }
 .rail-app {
 	display: grid; justify-items: center; gap: 5px; min-width: 0; padding: 6px 2px 5px; border-radius: 12px;
 	color: var(--text); text-decoration: none; opacity: 0; transform: translateY(-6px) scale(0.4);

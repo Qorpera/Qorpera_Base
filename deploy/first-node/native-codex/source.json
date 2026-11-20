@@ -1,10 +1,10 @@
 {
   "schema": "qorpera.native-codex-source/v1",
   "repository": "https://github.com/openai/codex.git",
-  "tag": "rust-v0.155.1",
-  "tagObject": "4e21628f9ec9ee656650cd2b62ef92225725b5ac",
-  "commit": "be2951ea34f0d295ed0becf97079f92fa5f6950e",
-  "version": "0.155.1",
+  "tag": "rust-v0.170.0",
+  "tagObject": "72f97c309fb0f78b6f35cce455adf416e6a51571",
+  "commit": "29eb79e9866b3262a777fdf8195c1b9e63684c91",
+  "version": "0.170.0",
   "rustToolchain": "1.95.0",
   "protocol": "qorpera.native-result-fence/v1",
   "capabilities": [
@@ -15,10 +15,10 @@
     "qorpera.native-context-composition/v1",
     "qorpera.native-prompt-cache-key/v1"
   ],
-  "patchSha256": "b7eab8423d4198e16bb893ef300ae162d1c9218642a61efe5d13f88666c6349a",
+  "patchSha256": "7218a9e25e4857ead3c40ff4e1d780e0f4b232a48373ba6c998d569e3fad8221",
   "cargoLock": {
-    "upstreamSha256": "81eb29f6276d5b3d1b39f1588a26059dadfbba717952247efeb8a575f271f569",
-    "normalizedSha256": "df88a71b82843c6f092610fb07589f7a40032ddc25f50718354546ca541eb9b7",
-    "pathPackages": 152
+    "upstreamSha256": "e913b4fe3ff12121362c1f85ef360b32cba72305149c0cbe55e0a416337c1415",
+    "normalizedSha256": "11ed3c419dcb08d7d3921f20eb4980c7a0620234c1f7ed79a2d3ca3b98f39a3e",
+    "pathPackages": 174
   }
 }

@@ -42,6 +42,16 @@ const SCREEN_GAZE: [number, number, number, number, number, number][] = [
 ];
 const GAZE_PERIOD = 15000;
 
+const FORM_GAZE: [number, number, number, number, number, number][] = [
+	[0, -7, 13.5, 0, 0.86, 0.95],
+	[6200, -7, 13.5, 0, 0.86, 0.95],
+	[6700, -7, 4.5, -0.1, 1, 1],
+	[8600, -7, 4.5, -0.1, 1, 1],
+	[9100, -7, 13.5, 0, 0.86, 0.95],
+	[12000, -7, 13.5, 0, 0.86, 0.95],
+];
+const FORM_PERIOD = 12000;
+
 function smooth(progress: number): number {
 	const p = Math.min(1, Math.max(0, progress));
 	return p * p * (3 - 2 * p);
@@ -78,6 +88,7 @@ export interface CrownHandle {
 export interface CrownOptions {
 	/** Mirrored so it faces a form on its left. Default true. */
 	mirrored?: boolean;
+	gaze?: "screen" | "form";
 }
 
 export function mountCrown(host: HTMLElement, options: CrownOptions = {}): CrownHandle {
@@ -158,7 +169,15 @@ export function mountCrown(host: HTMLElement, options: CrownOptions = {}): Crown
 	};
 
 	// The resting pose, used before the first frame and under reduced motion.
-	const still = () => setEyes({ x: 1.8, y: 8.8, turn: 0.1, open: 0.94, width: 1 });
+	const form = options.gaze === "form";
+	const gaze = form ? FORM_GAZE : SCREEN_GAZE;
+	const period = form ? FORM_PERIOD : GAZE_PERIOD;
+	const still = () =>
+		setEyes(
+			form
+				? { x: -7, y: 13.5, turn: 0, open: 0.86, width: 0.95 }
+				: { x: 1.8, y: 8.8, turn: 0.1, open: 0.94, width: 1 },
+		);
 
 	const tick = (now: number) => {
 		frame = 0;
@@ -174,7 +193,7 @@ export function mountCrown(host: HTMLElement, options: CrownOptions = {}): Crown
 		}
 		// Eyes: the approved gaze sequence, blinking on its own tempo. Nothing
 		// here reads the pointer, and the crown itself never moves.
-		const [gx = 0, gy = 0, gturn = 0, gopen = 1, gwidth = 1] = sample(SCREEN_GAZE, elapsed % GAZE_PERIOD);
+		const [gx = 0, gy = 0, gturn = 0, gopen = 1, gwidth = 1] = sample(gaze, elapsed % period);
 		let open = gopen;
 		if (blinkStartedAt < 0 && now >= nextBlinkAt) blinkStartedAt = now;
 		if (blinkStartedAt >= 0) {

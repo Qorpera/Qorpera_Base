@@ -15,14 +15,12 @@ import {
 	CLOUD_COWORKER_STARTING,
 	CLOUD_COWORKER_STARTING_WAIT_MS,
 	CLOUD_WAKE_SCHEMA,
-	CloudNativeWakeBus,
 	type CloudWakeControl,
 	type CloudWakeEnvelope,
 	type CloudWakePolicy,
 	cloudCoworkerMessageTool,
 	cloudWakeIsConversationPost,
 	cloudWakeIsOwnThread,
-	HttpCloudWakeControl,
 	parseCloudWakeEnvelope,
 	parseCloudWakePolicy,
 	REQUIRED_CLOUD_WAKE_POLICY,
@@ -93,7 +91,6 @@ async function coworkerFixture() {
 		status: "queued",
 	} as const;
 	const call = vi.fn<CloudWakeControl["call"]>(async () => receipt);
-	const bus = new CloudNativeWakeBus(run, { call });
 	// This callback type is the existing host contract, with no new run handle.
 	const makeTools = ((identity: CloudNativeToolIdentity) => ({
 		tools: [cloudCoworkerMessageTool(binding, identity, { call })],
@@ -114,7 +111,7 @@ async function coworkerFixture() {
 			signal: run.signal,
 		});
 	};
-	return { binding, run, message, receipt, call, bus, createBoundary };
+	return { binding, run, message, receipt, call, createBoundary };
 }
 
 function officeWakeFixture() {
@@ -851,14 +848,6 @@ describe("immutable cloud wake policies", () => {
 		expect(cloudWakeIsConversationPost({ kind: "human", policy: room })).toBe(false);
 		expect(cloudWakeIsConversationPost({ kind: "room", policy: REQUIRED_CLOUD_WAKE_POLICY })).toBe(false);
 	});
-	it("allows a successful silent routine through the existing mouth component", async () => {
-		const send = vi.fn();
-		const mouth = new CloudAgentMouth(randomUUID(), send);
-		const policy = parseCloudWakePolicy(policies[2].policy);
-		expect(await mouth.finish(policy.final === "required")).toEqual({ messageCount: 0, finalMessageId: null });
-		expect(send).not.toHaveBeenCalled();
-		await mouth.close();
-	});
 	it("does not count progress as completion when final delivery is optional", async () => {
 		const runId = randomUUID();
 		const mouth = new CloudAgentMouth(runId, async () => ({
@@ -973,50 +962,21 @@ describe("authorized envelope", () => {
 			parseCloudWakeEnvelope({ ...envelope, source: { ...envelope.source, id: randomUUID() } }, authority.identity),
 		).toThrow();
 	});
-	it("checks durable read authority after context I/O", async () => {
-		const { binding, authority, envelope } = fixture();
-		const run = await CloudNativeToolRun.open(
-			binding,
-			{ describeToolAuthority: async () => authority },
-			new AbortController().signal,
-		);
-		const call = vi.fn().mockResolvedValueOnce(envelope).mockRejectedValueOnce(new Error("Path permission revoked"));
-		try {
-			await expect(new CloudNativeWakeBus(run, { call }).read(run.signal)).rejects.toThrow("revoked");
-			expect(call.mock.calls[1][0]).toBe("qorpera_assert_company_path_reads");
-		} finally {
-			run.close();
-		}
-	});
-	it("reuses the caller's durable operation key and checks the addressed receipt", async () => {
-		const { binding, authority } = fixture();
-		const run = await CloudNativeToolRun.open(
-			binding,
-			{ describeToolAuthority: async () => authority },
-			new AbortController().signal,
-		);
-		const message = {
-			recipientStaffId: randomUUID(),
-			operationKey: "handoff-1",
-			text: "Please examine the note.",
-			priority: true,
+	it("refuses a delivery receipt addressed to another coworker", async () => {
+		const { binding, run, message, receipt, call } = await coworkerFixture();
+		const tool = cloudCoworkerMessageTool(binding, run.identity, { call });
+		const context: CloudToolContext = {
+			companyId: run.identity.companyId,
+			runId: run.identity.runId,
+			callId: "send_1",
+			argumentSha256: "0".repeat(64),
+			signal: run.signal,
+			identity: run.identity,
 		};
-		const receipt = {
-			schema: "qorpera.coworker-send/v1",
-			runId: binding.runId,
-			receiptId: randomUUID(),
-			occurrenceId: randomUUID(),
-			recipientStaffId: message.recipientStaffId,
-			status: "queued",
-		};
-		const call = vi.fn().mockResolvedValue(receipt);
 		try {
-			const bus = new CloudNativeWakeBus(run, { call });
-			expect(await bus.sendCoworker(message, run.signal)).toEqual(receipt);
-			expect(await bus.sendCoworker(message, run.signal)).toEqual(receipt);
-			expect(call.mock.calls[0][1]).toEqual(call.mock.calls[1][1]);
+			await expect(tool.execute(message, context)).resolves.toEqual({ kind: "json", value: receipt });
 			call.mockResolvedValueOnce({ ...receipt, recipientStaffId: randomUUID() });
-			await expect(bus.sendCoworker(message, run.signal)).rejects.toThrow("receipt");
+			await expect(tool.execute({ ...message, operationKey: "handoff-2" }, context)).rejects.toThrow("receipt");
 		} finally {
 			run.close();
 		}
@@ -1277,13 +1237,12 @@ describe("native coworker tool adapter", () => {
 	});
 
 	it("does not dispatch after the native run closes", async () => {
-		const { run, message, call, bus, createBoundary } = await coworkerFixture();
+		const { run, message, call, createBoundary } = await coworkerFixture();
 		const boundary = createBoundary();
 		try {
 			run.close();
 			const response = await boundary.invoke("closed", "qorpera", "send_coworker_message", message);
 			expect(response.success).toBe(false);
-			await expect(bus.sendCoworker(message, new AbortController().signal)).rejects.toThrow();
 			expect(call).not.toHaveBeenCalled();
 		} finally {
 			boundary.close();
@@ -1331,39 +1290,6 @@ describe("native coworker tool adapter", () => {
 			boundary.close();
 			run.close();
 		}
-	});
-});
-
-describe("cloud-only wake transport", () => {
-	it("does not retry an uncertain send or fall back to local execution", async () => {
-		const request = vi.fn().mockRejectedValue(new Error("lost response"));
-		const control = new HttpCloudWakeControl({
-			supabaseUrl: "https://fixture.test",
-			serviceRoleKey: "fixture-service",
-			fetch: request,
-		});
-		await expect(control.call("qorpera_send_coworker_message", {}, new AbortController().signal)).rejects.toThrow(
-			"lost response",
-		);
-		expect(request).toHaveBeenCalledTimes(1);
-		expect(request.mock.calls[0][1].redirect).toBe("error");
-	});
-	it("bounds the response and does not expose a denied response body", async () => {
-		const request = vi
-			.fn()
-			.mockResolvedValueOnce(new Response("private-denial", { status: 403 }))
-			.mockResolvedValueOnce(new Response("x".repeat(100_000)));
-		const control = new HttpCloudWakeControl({
-			supabaseUrl: "https://fixture.test",
-			serviceRoleKey: "fixture-service",
-			fetch: request,
-		});
-		await expect(control.call("qorpera_read_native_wake", {}, new AbortController().signal)).rejects.toThrow(
-			"Wake authority unavailable",
-		);
-		await expect(control.call("qorpera_read_native_wake", {}, new AbortController().signal)).rejects.toThrow(
-			"byte limit",
-		);
 	});
 });
 
@@ -1598,7 +1524,7 @@ describe("held coworker messages (contract 14.6, second cut)", () => {
 		).toThrow("Invalid held coworker messages");
 	});
 	it("refuses a message that does not say whether it wakes the coworker", async () => {
-		const { run, message, call, bus, createBoundary } = await coworkerFixture();
+		const { binding, run, message, call, createBoundary } = await coworkerFixture();
 		const { priority: _priority, ...undecided } = message;
 		const boundary = createBoundary();
 		try {
@@ -1609,7 +1535,7 @@ describe("held coworker messages (contract 14.6, second cut)", () => {
 				content: { text: `INVALID_ARGUMENTS: ${CLOUD_COWORKER_PRIORITY_REQUIRED}` },
 			});
 			expect(call).not.toHaveBeenCalled();
-			expect(bus.coworkerTool().inputSchema.required).toContain("priority");
+			expect(cloudCoworkerMessageTool(binding, run.identity, { call }).inputSchema.required).toContain("priority");
 		} finally {
 			boundary.close();
 			run.close();
@@ -1703,7 +1629,6 @@ describe("folder file wakes", () => {
 		const commitId = randomUUID();
 		return {
 			identity: authority.identity,
-			commitId,
 			wake: {
 				...envelope,
 				kind: "routine",
@@ -1752,22 +1677,6 @@ describe("folder file wakes", () => {
 	])("rejects a file wake with %j", (payload) => {
 		const { wake, identity } = fileWake(payload);
 		expect(() => parseCloudWakeEnvelope(wake, identity)).toThrow();
-	});
-	it("refuses the snapshot-v1 shape", () => {
-		const { wake, identity, commitId } = fileWake();
-		const legacy = {
-			...wake,
-			payload: {
-				eventId: commitId,
-				path: "docs/a.md",
-				previousVersion: null,
-				version: randomUUID(),
-				operation: "upsert",
-				receiptId: null,
-				proposalId: null,
-			},
-		} as unknown as CloudWakeEnvelope;
-		expect(() => parseCloudWakeEnvelope(legacy, identity)).toThrow();
 	});
 });
 

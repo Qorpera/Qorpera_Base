@@ -47,10 +47,15 @@ describe("guest image self-update guard", () => {
 		await expect(assertGuestImageSelfUpdateMasked(await masked())).resolves.toBeUndefined();
 	});
 
-	it.each(GUEST_IMAGE_SELF_UPDATE_UNITS.map((unit) => [unit]))("refuses when %s is not masked", async (unit) => {
+	it.each([
+		["apt-daily.timer", "RUNNER_IMAGE_SELF_UPDATE_ENABLED:APT_DAILY_TIMER"],
+		["apt-daily-upgrade.timer", "RUNNER_IMAGE_SELF_UPDATE_ENABLED:APT_DAILY_UPGRADE_TIMER"],
+		["apt-daily.service", "RUNNER_IMAGE_SELF_UPDATE_ENABLED:APT_DAILY_SERVICE"],
+		["apt-daily-upgrade.service", "RUNNER_IMAGE_SELF_UPDATE_ENABLED:APT_DAILY_UPGRADE_SERVICE"],
+		["unattended-upgrades.service", "RUNNER_IMAGE_SELF_UPDATE_ENABLED:UNATTENDED_UPGRADES_SERVICE"],
+	])("refuses when %s is not masked", async (unit, code) => {
 		const root = await masked();
 		await unlink(join(root, unit));
-		const code = `RUNNER_IMAGE_SELF_UPDATE_ENABLED:${unit.toUpperCase().replace(/[.-]/g, "_")}`;
 		await expect(assertGuestImageSelfUpdateMasked(root)).rejects.toThrow(code);
 		// The code passes the coding logs' fixed-identifier filter unchanged.
 		expect(codingErrorCode(new Error(code))).toBe(code);

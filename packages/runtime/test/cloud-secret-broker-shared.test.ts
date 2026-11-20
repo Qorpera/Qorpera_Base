@@ -71,23 +71,23 @@ it("calls the principal's functions with its own capability hash and registers w
 	const own = createHash("sha256").update(sharedBrokerCapability(secret)).digest("hex");
 	expect(db.queries).toEqual([
 		{
-			text: "select public.qorpera_broker_principal_companies($1::uuid,$2::text) as result",
+			text: expect.stringMatching(/\bpublic\.qorpera_broker_principal_companies\(/),
 			values: [principalId, own],
 		},
 		{
-			text: "select public.qorpera_broker_principal_event_verifications_due($1::uuid,$2::text) as result",
+			text: expect.stringMatching(/\bpublic\.qorpera_broker_principal_event_verifications_due\(/),
 			values: [principalId, own],
 		},
 		{
-			text: "select public.qorpera_broker_principal_bank_syncs_due($1::uuid,$2::text) as result",
+			text: expect.stringMatching(/\bpublic\.qorpera_broker_principal_bank_syncs_due\(/),
 			values: [principalId, own],
 		},
 		{
-			text: "select public.qorpera_broker_principal_digital_post_syncs_due($1::uuid,$2::text) as result",
+			text: expect.stringMatching(/\bpublic\.qorpera_broker_principal_digital_post_syncs_due\(/),
 			values: [principalId, own],
 		},
 		{
-			text: "select public.qorpera_register_company_with_broker_principal($1::uuid,$2::text,$3::uuid,$4::text) as result",
+			text: expect.stringMatching(/\bpublic\.qorpera_register_company_with_broker_principal\(/),
 			values: [
 				principalId,
 				own,

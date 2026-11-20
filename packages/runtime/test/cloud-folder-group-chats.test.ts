@@ -1,8 +1,8 @@
-import { createHash } from "node:crypto";
 import { parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
+import { UUID_PATTERN } from "@qorpera/contracts";
 import { type CloudFolderGroupChat, CloudFolderGroupChats } from "@qorpera/runtime/cloud-folder-group-chats";
 import { CloudFolderHiring } from "@qorpera/runtime/cloud-folder-hiring";
-import { CLOUD_GROUP_CHAT_TOOL_DESCRIPTION_FOLDER, cloudHiringTools } from "@qorpera/runtime/cloud-hiring-tools";
+import { cloudHiringTools } from "@qorpera/runtime/cloud-hiring-tools";
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CloudToolArgumentRefusal, CloudToolRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudNativeToolOperations } from "@qorpera/runtime/cloud-native-tool-operations";
@@ -31,10 +31,6 @@ const CHAT: CloudFolderGroupChat = {
 	includeRequestingMember: true,
 };
 const parse = (content: { value: unknown }) => JSON.parse(String(content.value));
-const hashedId = (namespace: string, runId: string, key: string) => {
-	const hex = createHash("sha256").update(`${namespace}:${runId}:${key}`).digest("hex");
-	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${((Number.parseInt(hex[16] ?? "0", 16) & 3) | 8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
-};
 async function refuses(call: Promise<unknown>, reason: string) {
 	const error = await call.then(
 		() => null,
@@ -47,7 +43,8 @@ async function refuses(call: Promise<unknown>, reason: string) {
 it("saves a group chat as one new folder with group.md, recording its review", async () => {
 	const f = await fixture({ folders: ["QorperaOS/agents/groups"] });
 	const result = parse(await f.chats().create(CHAT, f.context));
-	const id = hashedId("qorpera.folder-group/v1", f.identity.runId, "chat-1");
+	const id = result.chat.id;
+	expect(id).toMatch(UUID_PATTERN);
 	expect(result).toMatchObject({
 		schema: "qorpera.group-chat-receipt/v2",
 		runId: f.identity.runId,
@@ -118,9 +115,14 @@ it("numbers the handle past the chats there, and replays a finished call from it
 			),
 	);
 	expect(groups.chat.folder).toBe("QorperaOS/agents/groups/groups");
+	expect(groups.chat.id).not.toBe(first.chat.id);
 	expect(parse(await f.chats().create(CHAT, f.context))).toEqual(first);
 	expect(f.commits).toHaveLength(2);
 	expect(f.recordings).toHaveLength(2);
+	const other = await fixture({ folders: ["QorperaOS/agents/groups"] });
+	const elsewhere = parse(await other.chats().create(CHAT, other.context));
+	expect(elsewhere.outcome).toBe("saved");
+	expect(elsewhere.chat.id).not.toBe(first.chat.id);
 });
 
 it("checks the file before the review, and refuses a call without the review's approval", async () => {
@@ -172,14 +174,13 @@ it("tells the model what a conflict, a refusal and a waiting chat mean", async (
 	expect(parse(await h.chats().create(CHAT, h.context)).next).toContain("do not open it again");
 });
 
-it("is the group chat tool's folder-v2 path: its description, the check before review, a bound key, the writer behind execute", async () => {
+it("is the group chat tool's folder-v2 path: the check before review, the writer behind execute", async () => {
 	const f = await fixture({ folders: ["QorperaOS/agents/groups"] });
 	const operations = new CloudNativeToolOperations(f.run, f.operationControl);
 	const tool = cloudHiringTools(f.identity, {
 		folderHiring: new CloudFolderHiring({ folder: f.folder, operations, identity: f.identity }),
 		folderGroupChats: f.chats(operations),
 	})[1];
-	expect(tool?.description).toBe(CLOUD_GROUP_CHAT_TOOL_DESCRIPTION_FOLDER);
 	const args = {
 		operationKey: "chat-1",
 		name: "Launch Week",
@@ -190,7 +191,4 @@ it("is the group chat tool's folder-v2 path: its description, the check before r
 	const parsed = tool?.parseArguments(args);
 	const result = parse((await tool?.execute(parsed ?? {}, f.context)) as { value: unknown });
 	expect(result).toMatchObject({ outcome: "saved", chat: { folder: "QorperaOS/agents/groups/launch-week" } });
-	expect(() => tool?.parseArguments({ ...args, name: "Other" })).toThrow(
-		/check QorperaOS\/agents\/groups\/ before opening another/,
-	);
 });

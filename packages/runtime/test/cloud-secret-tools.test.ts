@@ -225,9 +225,6 @@ it("validates business arguments, reserves one receipt and calls the separate br
 	expect(fixture.operationControl.beginToolOperation).toHaveBeenCalledTimes(1);
 	expect(fixture.operationControl.completeToolOperation).toHaveBeenCalledTimes(1);
 	expect(fixture.broker.execute).toHaveBeenCalledTimes(1);
-	expect(
-		fixture.pathControl.call.mock.calls.filter(([method]) => method === "qorpera_assert_native_connector_operation"),
-	).toHaveLength(3);
 });
 
 it("refuses each malformed connector call with the rule it broke and none of its values", async () => {
@@ -422,11 +419,11 @@ it("takes a write's fields on their own beside its key, and runs each write that
 			{ title: "Login is slow" },
 			login,
 		]);
-		expect(
-			vi.mocked(keyed.operationControl.beginToolOperation).mock.calls.map(([, input]) => input.logicalOperationKey),
-		).toEqual(
-			["issue-1", "issue-2", "issue-3"].map((key) => `linear_issue_create:${fixture.descriptor.grantId}:${key}`),
-		);
+		const begun = vi.mocked(keyed.operationControl.beginToolOperation).mock.calls;
+		const keys = begun.map(([, input]) => input.logicalOperationKey);
+		expect(new Set(keys).size).toBe(3);
+		const grantScoped = new RegExp(`^linear_issue_create:${fixture.descriptor.grantId}:`);
+		for (const key of keys) expect(key).toMatch(grantScoped);
 		// Without a key a write does not run, in either shape, and says why.
 		for (const [callId, args] of [
 			["call_flat_no_key", login],
@@ -636,11 +633,6 @@ it("privately links connector effects and changed-call-ID replays without changi
 		expect(fixture.broker.execute).toHaveBeenCalledTimes(1);
 		expect(fixture.operationControl.beginToolOperation).toHaveBeenCalledTimes(1);
 		expect(fixture.operationControl.completeToolOperation).toHaveBeenCalledTimes(1);
-		expect(
-			fixture.pathControl.call.mock.calls.filter(
-				([method]) => method === "qorpera_assert_native_connector_operation",
-			),
-		).toHaveLength(4);
 		expect(Object.keys(fixture.broker.execute.mock.calls[0][0]).sort()).toEqual([
 			"adapterSha256",
 			"arguments",

@@ -4,10 +4,8 @@ import {
 	type AppGroup,
 	appGroupName,
 	appGroupSlug,
-	appGroupsGroups,
 	isAppDrawerKey,
 	parseAppGroups,
-	resolveAppGroups,
 	writeAppGroups,
 } from "../src/app-groups.ts";
 import { appPath } from "../src/interface-apps.ts";
@@ -60,13 +58,6 @@ describe("apps/groups.md", () => {
 		expect(file.notes).toEqual([]);
 		expect(file.retired).toEqual([]);
 		expect(writeAppGroups(file)).toBe(SPEC);
-		expect(
-			appGroupsGroups(file.items).map(({ group, parent, level }) => [group.id, parent?.id ?? null, level]),
-		).toEqual([
-			["trips", null, 0],
-			["routes", "trips", 1],
-			["market", null, 0],
-		]);
 	});
 
 	it("reads a deeper line at its nearest allowed level: a group never goes past the second", () => {
@@ -288,7 +279,7 @@ describe("keys, names and ids", () => {
 			expect(isAppDrawerKey(key)).toBe(false);
 	});
 
-	it("reads What's new as a drawer key: its first line wins, and the drawer draws it in its group", () => {
+	it("reads What's new as a drawer key: its first line wins", () => {
 		const file = parseAppGroups("- group launch: Launch\n  - whats-new What's new\n- whats-new again\n");
 		expect(file.items).toEqual([
 			{
@@ -297,10 +288,6 @@ describe("keys, names and ids", () => {
 				name: "Launch",
 				items: [{ kind: "item", key: "whats-new", words: "What's new" }],
 			},
-		]);
-		expect(resolveAppGroups(file, ["page:mailbox", "whats-new"]).items).toEqual([
-			{ kind: "group", id: "launch", name: "Launch", items: [{ kind: "item", key: "whats-new" }] },
-			{ kind: "item", key: "page:mailbox" },
 		]);
 	});
 
@@ -323,30 +310,6 @@ describe("keys, names and ids", () => {
 		const taken = appGroupSlug("a".repeat(45), new Set(["a".repeat(40)]));
 		expect(taken).toBe(`${"a".repeat(38)}-2`);
 		expect(taken.length).toBeLessThanOrEqual(40);
-	});
-});
-
-describe("what the drawer draws", () => {
-	it("draws the listed keys the company has, leaves out groups with nothing, and puts the rest loose at the end", () => {
-		const file = parseAppGroups(`- page:bank
-- group trips: Trips
-  - app:gone
-  - group routes: Routes
-    - app:gone-too
-  - app:planner
-- group empty: Empty
-- sites
-- app:Odd
-`);
-		const drawn = resolveAppGroups(file, ["page:mailbox", "page:bank", "app:planner", "app:zebra", "concepts"]);
-		expect(drawn.items).toEqual([
-			{ kind: "item", key: "page:bank" },
-			{ kind: "group", id: "trips", name: "Trips", items: [{ kind: "item", key: "app:planner" }] },
-			{ kind: "item", key: "page:mailbox" },
-			{ kind: "item", key: "app:zebra" },
-			{ kind: "item", key: "concepts" },
-		]);
-		expect(drawn.missing).toEqual(["app:gone", "app:gone-too", "sites"]);
 	});
 });
 
@@ -380,17 +343,6 @@ describe("the groups' colours (12 Nov 2026)", () => {
 <!-- group colours: trips=teal, market=green -->
 `);
 		expect(parseAppGroups(writeAppGroups(file))).toEqual(file);
-		// The drawer gets them too.
-		expect(resolveAppGroups(file, ["app:planner", "app:research"]).items).toEqual([
-			{ kind: "group", id: "trips", name: "Trips", items: [{ kind: "item", key: "app:planner" }], colour: "teal" },
-			{
-				kind: "group",
-				id: "market",
-				name: "Market",
-				items: [{ kind: "item", key: "app:research" }],
-				colour: "green",
-			},
-		]);
 	});
 
 	it("writes no colours line for a file without colours", () => {

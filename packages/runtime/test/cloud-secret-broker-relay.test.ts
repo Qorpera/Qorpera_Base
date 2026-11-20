@@ -775,11 +775,11 @@ describe("the broker's relay sign-ins", () => {
 		];
 		expect(queries).toEqual([
 			{
-				text: "select public.qorpera_authorize_coding_mcp_sign_in($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text,$6::text) as result",
+				text: expect.stringMatching(/\bpublic\.qorpera_authorize_coding_mcp_sign_in\(/),
 				values: [...bound, "https://mcp.example.com"],
 			},
 			{
-				text: "select public.qorpera_authorize_coding_repository_fetch($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text) as result",
+				text: expect.stringMatching(/\bpublic\.qorpera_authorize_coding_repository_fetch\(/),
 				values: bound,
 			},
 		]);

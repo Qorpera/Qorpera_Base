@@ -1,13 +1,10 @@
 import {
-	CLOUD_PICTURE_MAKER_RULE,
-	CLOUD_PICTURE_MS,
 	CloudPictureChannel,
 	CloudPictureFailure,
 	type CloudPictureMade,
 	CloudPictureUnavailable,
 	cloudPictureInput,
 	isCloudPicturePng,
-	MAX_CLOUD_PICTURE_BYTES,
 	MAX_CLOUD_PICTURE_PROMPT_BYTES,
 } from "@qorpera/runtime/cloud-picture-channel";
 import { describe, expect, it, vi } from "vitest";
@@ -55,15 +52,7 @@ describe("cloudPictureInput", () => {
 	});
 });
 
-it("tells the picture's model to make one picture of the description and nothing else", () => {
-	expect(CLOUD_PICTURE_MAKER_RULE).toBe(
-		"You make pictures and nothing else. Each message is the description of one picture. Call image_gen.imagegen exactly once, with that description as its prompt, word for word, and no other argument. Never answer in words, never ask a question and never use another tool.",
-	);
-});
-
-it("holds every picture to an app's bound for one picture, and a call to four minutes", () => {
-	expect(MAX_CLOUD_PICTURE_BYTES).toBe(12 * 1024 * 1024);
-	expect(CLOUD_PICTURE_MS).toBe(240_000);
+it("knows a PNG by its signature, and names a failure's reason and when its limit resets", () => {
 	expect(isCloudPicturePng(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0]))).toBe(true);
 	expect(isCloudPicturePng(Buffer.from("GIF89a"))).toBe(false);
 	expect(isCloudPicturePng(Buffer.alloc(0))).toBe(false);

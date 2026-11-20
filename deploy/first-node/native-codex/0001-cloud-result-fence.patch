@@ -1,8 +1,8 @@
 diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
-index 5394382df..d21e0d89a 100644
+index 9ff507f98..eac94faeb 100644
 --- a/codex-rs/Cargo.lock
 +++ b/codex-rs/Cargo.lock
-@@ -3067,6 +3067,7 @@ dependencies = [
+@@ -3127,6 +3127,7 @@ dependencies = [
   "serde_json",
   "serial_test",
   "sha1 0.10.6",
@@ -11,10 +11,10 @@ index 5394382df..d21e0d89a 100644
   "similar",
   "tempfile",
 diff --git a/codex-rs/app-server-protocol/src/protocol/common.rs b/codex-rs/app-server-protocol/src/protocol/common.rs
-index 70954a3d6..4f71b712a 100644
+index 52ed76c60..00d9f7b40 100644
 --- a/codex-rs/app-server-protocol/src/protocol/common.rs
 +++ b/codex-rs/app-server-protocol/src/protocol/common.rs
-@@ -1948,6 +1948,8 @@ server_notification_definitions! {
+@@ -2096,6 +2096,8 @@ server_notification_definitions! {
      RawResponseItemCompleted => "rawResponseItem/completed" (v2::RawResponseItemCompletedNotification),
      /// This event is internal-only. Used by clients that need exact upstream usage.
      RawResponseCompleted => "rawResponse/completed" (v2::RawResponseCompletedNotification),
@@ -24,10 +24,10 @@ index 70954a3d6..4f71b712a 100644
      /// EXPERIMENTAL - proposed plan streaming deltas for plan items.
      PlanDelta => "item/plan/delta" (v2::PlanDeltaNotification),
 diff --git a/codex-rs/app-server-protocol/src/protocol/v2/item.rs b/codex-rs/app-server-protocol/src/protocol/v2/item.rs
-index f56386cae..4c2eaa0cd 100644
+index 932212343..2f232a5b5 100644
 --- a/codex-rs/app-server-protocol/src/protocol/v2/item.rs
 +++ b/codex-rs/app-server-protocol/src/protocol/v2/item.rs
-@@ -1415,6 +1415,17 @@ pub struct RawResponseItemCompletedNotification {
+@@ -1565,6 +1565,17 @@ pub struct RawResponseItemCompletedNotification {
      pub item: ResponseItem,
  }
  
@@ -45,7 +45,7 @@ index f56386cae..4c2eaa0cd 100644
  // Item-specific progress notifications
  #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
  #[serde(rename_all = "camelCase")]
-@@ -1786,3 +1797,26 @@ pub struct ToolRequestUserInputAnswer {
+@@ -1940,3 +1951,26 @@ pub struct ToolRequestUserInputAnswer {
  pub struct ToolRequestUserInputResponse {
      pub answers: HashMap<String, ToolRequestUserInputAnswer>,
  }
@@ -73,10 +73,10 @@ index f56386cae..4c2eaa0cd 100644
 +    }
 +}
 diff --git a/codex-rs/app-server/src/bespoke_event_handling.rs b/codex-rs/app-server/src/bespoke_event_handling.rs
-index be146d82c..1d53fe704 100644
+index 485f8e144..cefaa5682 100644
 --- a/codex-rs/app-server/src/bespoke_event_handling.rs
 +++ b/codex-rs/app-server/src/bespoke_event_handling.rs
-@@ -1196,6 +1196,19 @@ pub(crate) async fn apply_bespoke_event_handling(
+@@ -1242,6 +1242,19 @@ pub(crate) async fn apply_bespoke_event_handling(
              }
              outgoing.send_server_notification(notification).await;
          }
@@ -97,10 +97,10 @@ index be146d82c..1d53fe704 100644
              let notification = RawResponseCompletedNotification {
                  thread_id: conversation_id.to_string(),
 diff --git a/codex-rs/app-server/src/notification_media.rs b/codex-rs/app-server/src/notification_media.rs
-index 04e57f8c5..064a3bbf3 100644
+index 1e3d3d91c..5a0815ec7 100644
 --- a/codex-rs/app-server/src/notification_media.rs
 +++ b/codex-rs/app-server/src/notification_media.rs
-@@ -55,6 +55,8 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
+@@ -56,6 +56,8 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
              ServerNotification::RawResponseItemCompleted(notification)
          }
          ServerNotification::Error(_)
@@ -108,13 +108,13 @@ index 04e57f8c5..064a3bbf3 100644
 +        | ServerNotification::QorperaMessageComposition(_)
          | ServerNotification::ThreadStarted(_)
          | ServerNotification::ThreadStatusChanged(_)
-         | ServerNotification::ThreadArchived(_)
+         | ServerNotification::ThreadReadStateChanged(_)
 diff --git a/codex-rs/app-server/src/request_processors/initialize_processor.rs b/codex-rs/app-server/src/request_processors/initialize_processor.rs
-index d6c77f12e..ff57de811 100644
+index f6b282e7e..651b0dd7b 100644
 --- a/codex-rs/app-server/src/request_processors/initialize_processor.rs
 +++ b/codex-rs/app-server/src/request_processors/initialize_processor.rs
-@@ -173,7 +173,12 @@ impl InitializeRequestProcessor {
-             *suffix = Some(user_agent_suffix);
+@@ -211,7 +211,12 @@ impl InitializeRequestProcessor {
+             }
          }
  
 -        let user_agent = get_codex_user_agent();
@@ -128,10 +128,10 @@ index d6c77f12e..ff57de811 100644
              user_agent,
              codex_home,
 diff --git a/codex-rs/codex-api/src/api_bridge.rs b/codex-rs/codex-api/src/api_bridge.rs
-index 6b79b4754..5bd9705be 100644
+index 4a65ddcd4..db119f871 100644
 --- a/codex-rs/codex-api/src/api_bridge.rs
 +++ b/codex-rs/codex-api/src/api_bridge.rs
-@@ -168,6 +168,8 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
+@@ -266,6 +266,8 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                                          | "organization_spend_limit_exceeded"
                                          | "project_spend_limit_exceeded"
                                          | "organization_usage_limit_exceeded"
@@ -141,16 +141,17 @@ index 6b79b4754..5bd9705be 100644
                              )
                          {
 diff --git a/codex-rs/codex-api/src/api_bridge_tests.rs b/codex-rs/codex-api/src/api_bridge_tests.rs
-index 51fb5a28b..43df0bbf7 100644
+index 99bd0bc14..3c9723236 100644
 --- a/codex-rs/codex-api/src/api_bridge_tests.rs
 +++ b/codex-rs/codex-api/src/api_bridge_tests.rs
-@@ -352,6 +352,27 @@ fn map_api_error_distinguishes_http_quota_errors_from_rate_limits() {
+@@ -655,6 +655,28 @@ fn map_api_error_preserves_optional_usage_limit_window() {
      }
  }
  
 +#[test]
 +fn qorpera_maps_subscription_sharing_usage_limit_to_usage_limit_exceeded() {
 +    let err = map_api_error(ApiError::Transport(TransportError::Http {
++        retry_after: None,
 +        status: http::StatusCode::TOO_MANY_REQUESTS,
 +        url: None,
 +        headers: None,
@@ -173,23 +174,10 @@ index 51fb5a28b..43df0bbf7 100644
  fn map_api_error_maps_usage_limit_limit_name_header() {
      let mut headers = HeaderMap::new();
 diff --git a/codex-rs/codex-api/src/sse/responses.rs b/codex-rs/codex-api/src/sse/responses.rs
-index e4f5f04d6..db696620a 100644
+index eafc92dd6..77743b600 100644
 --- a/codex-rs/codex-api/src/sse/responses.rs
 +++ b/codex-rs/codex-api/src/sse/responses.rs
-@@ -713,7 +713,11 @@ fn is_context_window_error(error: &Error) -> bool {
- }
- 
- fn is_quota_exceeded_error(error: &Error) -> bool {
--    error.code.as_deref() == Some("insufficient_quota")
-+    matches!(
-+        error.code.as_deref(),
-+        // Qorpera: a ChatGPT plan's usage limit, which can end a response mid-stream.
-+        Some("insufficient_quota" | "subscription_sharing_usage_limit_exceeded")
-+    )
- }
- 
- fn is_usage_not_included(error: &Error) -> bool {
-@@ -1194,6 +1198,20 @@ mod tests {
+@@ -1250,6 +1250,20 @@ mod tests {
          assert_matches!(events[0], Err(ApiError::QuotaExceeded));
      }
  
@@ -210,11 +198,26 @@ index e4f5f04d6..db696620a 100644
      #[tokio::test]
      async fn cyber_policy_error_is_fatal() {
          let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_fatal_cyber","object":"response","created_at":1759771626,"status":"failed","background":false,"error":{"code":"cyber_policy","message":"This request was flagged for cyber policy."},"incomplete_details":null}}"#;
+diff --git a/codex-rs/codex-api/src/sse/responses_error.rs b/codex-rs/codex-api/src/sse/responses_error.rs
+index b16822c14..2852963cc 100644
+--- a/codex-rs/codex-api/src/sse/responses_error.rs
++++ b/codex-rs/codex-api/src/sse/responses_error.rs
+@@ -49,7 +49,9 @@ pub(super) fn parse_failed_response(response: Option<Value>) -> ApiError {
+             "insufficient_quota"
+             | "credit_balance_exhausted"
+             | "organization_spend_limit_exceeded"
+-            | "project_spend_limit_exceeded",
++            | "project_spend_limit_exceeded"
++            // Qorpera: a ChatGPT plan's usage limit, which can end a response mid-stream.
++            | "subscription_sharing_usage_limit_exceeded",
+         ) => ApiError::QuotaExceeded,
+         Some("usage_not_included") => ApiError::UsageNotIncluded,
+         Some("cyber_policy") => ApiError::CyberPolicy {
 diff --git a/codex-rs/core/Cargo.toml b/codex-rs/core/Cargo.toml
-index 24c6640cc..a851e5344 100644
+index c485813d0..9ab49c408 100644
 --- a/codex-rs/core/Cargo.toml
 +++ b/codex-rs/core/Cargo.toml
-@@ -105,6 +105,7 @@ rmcp = { workspace = true, default-features = false, features = [
+@@ -111,6 +111,7 @@ rmcp = { workspace = true, default-features = false, features = [
  serde = { workspace = true, features = ["derive"] }
  serde_json = { workspace = true }
  sha1 = { workspace = true }
@@ -223,25 +226,34 @@ index 24c6640cc..a851e5344 100644
  similar = { workspace = true }
  tempfile = { workspace = true }
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index d46a98ed3..8172091f7 100644
+index 5913d07c7..396ecfc18 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
-@@ -781,6 +781,8 @@ impl ModelClient {
+@@ -1158,6 +1158,8 @@ impl ModelClient {
          }
      }
  
 +    /// Unfenced builder for size/budget checks and tests; nothing built here is sent
 +    /// to the provider. Provider-bound requests use `build_fenced_responses_request`.
+     #[allow(clippy::too_many_arguments)]
      pub(crate) fn build_responses_request(
          &self,
-         prompt: &Prompt,
-@@ -790,7 +792,51 @@ impl ModelClient {
-         service_tier: Option<String>,
+@@ -1169,7 +1171,71 @@ impl ModelClient {
          responses_metadata: &CodexResponsesMetadata,
+         include_internal: bool,
      ) -> Result<ResponsesApiRequest> {
 -        let mut input = prompt.get_formatted_input_for_request(model_info);
 +        let input = prompt.get_formatted_input_for_request(model_info);
-+        self.build_responses_request_from_input(input, prompt, model_info, effort, summary, service_tier, responses_metadata)
++        self.build_responses_request_from_input(
++            input,
++            prompt,
++            model_info,
++            effort,
++            summary,
++            service_tier,
++            responses_metadata,
++            include_internal,
++        )
 +    }
 +
 +    /// Governed request builder: has the host compose the input, then validates and
@@ -257,6 +269,7 @@ index d46a98ed3..8172091f7 100644
 +        summary: ReasoningSummaryConfig,
 +        service_tier: Option<String>,
 +        responses_metadata: &CodexResponsesMetadata,
++        include_internal: bool,
 +    ) -> Result<ResponsesApiRequest> {
 +        let mut input = prompt.input.clone();
 +        let prompt_cache_key = crate::qorpera_context_composition::compose_context(
@@ -267,7 +280,16 @@ index d46a98ed3..8172091f7 100644
 +        .await?;
 +        crate::qorpera_result_fence::fence_results(&mut input, responses_metadata).await?;
 +        crate::client_common::normalize_image_details(&mut input, model_info);
-+        let mut request = self.build_responses_request_from_input(input, prompt, model_info, effort, summary, service_tier, responses_metadata)?;
++        let mut request = self.build_responses_request_from_input(
++            input,
++            prompt,
++            model_info,
++            effort,
++            summary,
++            service_tier,
++            responses_metadata,
++            include_internal,
++        )?;
 +        if prompt_cache_key.is_some() {
 +            request.prompt_cache_key = prompt_cache_key;
 +        }
@@ -284,11 +306,12 @@ index d46a98ed3..8172091f7 100644
 +        summary: ReasoningSummaryConfig,
 +        service_tier: Option<String>,
 +        responses_metadata: &CodexResponsesMetadata,
++        include_internal: bool,
 +    ) -> Result<ResponsesApiRequest> {
-         let is_openai = self.state.provider.info().is_openai();
-         let (instructions, tools) = if model_info.use_responses_lite {
-             // These prompt-only items are rebuilt on every request. Hash their visible payloads
-@@ -1522,14 +1568,17 @@ impl ModelClientSession {
+         if !self.reasoning_effort_override_enabled(model_info) {
+             // Unsupported models and disabled overrides must also accept saved history.
+             // Filter only the request copy; persisted history remains unchanged.
+@@ -2029,15 +2095,18 @@ impl ResponsesHttpExecutor<'_> {
                  )
                  .await;
  
@@ -299,6 +322,7 @@ index d46a98ed3..8172091f7 100644
 -                summary,
 -                service_tier.clone(),
 -                responses_metadata,
+-                include_internal,
 -            )?;
 +            let mut request = self
 +                .client
@@ -309,15 +333,16 @@ index d46a98ed3..8172091f7 100644
 +                    summary,
 +                    service_tier.clone(),
 +                    responses_metadata,
++                    include_internal,
 +                )
 +                .await?;
-             ModelClient::filter_tool_result_metadata(
-                 &mut request.input,
-                 &client_setup.api_provider,
-@@ -1678,14 +1727,17 @@ impl ModelClientSession {
-                 client_setup.agent_identity_telemetry.clone(),
+             self.client.set_guardian_metadata(
+                 &mut request.client_metadata,
+                 responses_metadata.parent_response_id.as_deref(),
+@@ -2227,15 +2296,18 @@ impl ModelClientSession {
                  pending_retry,
-             );
+             )
+             .map_err(|error| self.client.state.provider.map_api_error(error))?;
 -            let mut request = self.client.build_responses_request(
 -                prompt,
 -                model_info,
@@ -325,6 +350,7 @@ index d46a98ed3..8172091f7 100644
 -                summary,
 -                service_tier.clone(),
 -                responses_metadata,
+-                include_internal,
 -            )?;
 +            let mut request = self
 +                .client
@@ -335,16 +361,17 @@ index d46a98ed3..8172091f7 100644
 +                    summary,
 +                    service_tier.clone(),
 +                    responses_metadata,
++                    include_internal,
 +                )
 +                .await?;
-             ModelClient::filter_tool_result_metadata(
-                 &mut request.input,
-                 &client_setup.api_provider,
+             if is_guardian_reviewer(&responses_headers) {
+                 request.service_tier = None;
+             }
 diff --git a/codex-rs/core/src/client_common.rs b/codex-rs/core/src/client_common.rs
-index 96cd7eab0..9827f0fdb 100644
+index df995f71a..5c49b6118 100644
 --- a/codex-rs/core/src/client_common.rs
 +++ b/codex-rs/core/src/client_common.rs
-@@ -66,7 +66,7 @@ impl Prompt {
+@@ -69,7 +69,7 @@ impl Prompt {
      }
  }
  
@@ -354,13 +381,13 @@ index 96cd7eab0..9827f0fdb 100644
          match item {
              ResponseItem::Message { content, .. } => {
 diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
-index 55d1f474e..c3253fa33 100644
+index 12d65a0b7..e6b89da2e 100644
 --- a/codex-rs/core/src/lib.rs
 +++ b/codex-rs/core/src/lib.rs
-@@ -9,6 +9,9 @@ mod apply_patch;
- mod apps;
+@@ -10,6 +10,9 @@ mod apps;
  mod client;
  mod client_common;
+ mod model_request;
 +mod qorpera_context_composition;
 +mod qorpera_message_composition;
 +mod qorpera_result_fence;
@@ -369,10 +396,10 @@ index 55d1f474e..c3253fa33 100644
  mod realtime_history;
 diff --git a/codex-rs/core/src/qorpera_context_composition.rs b/codex-rs/core/src/qorpera_context_composition.rs
 new file mode 100644
-index 000000000..b561c93ae
+index 000000000..524e3fd59
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_context_composition.rs
-@@ -0,0 +1,509 @@
+@@ -0,0 +1,522 @@
 +//! Private cloud context composition (`qorpera.native-context-composition/v1`). Before every provider
 +//! request the Qorpera host composes the request's input from Codex's own: it keeps items by their
 +//! position, and where the run's earlier steps were (or, on a resumed run, would be) it may put one work
@@ -563,6 +590,8 @@ index 000000000..b561c93ae
 +                    items.get_mut(keep).and_then(Option::take).ok_or(())?
 +                }
 +                Entry::Work(Work { work }) => ResponseItem::Message {
++                    encrypted_content: None,
++                    status: None,
 +                    id: None,
 +                    role: "user".to_string(),
 +                    content: vec![ContentItem::InputText { text: work }],
@@ -724,7 +753,7 @@ index 000000000..b561c93ae
 +        };
 +        role != "assistant"
 +            && content.iter().any(|content| match content {
-+                ContentItem::InputText { text } | ContentItem::OutputText { text } => {
++                ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
 +                    text.contains(WORK_SCHEMA)
 +                        && serde_json::from_str::<serde_json::Value>(text.trim())
 +                            .is_ok_and(|value| value["schema"] == WORK_SCHEMA)
@@ -795,18 +824,21 @@ index 000000000..b561c93ae
 +    /// The bytes and media an item puts before the model, read from lengths, never serialized.
 +    fn size(item: &ResponseItem) -> (usize, usize) {
 +        match item {
-+            ResponseItem::Message { content, .. } => {
-+                content
-+                    .iter()
-+                    .fold((0, 0), |(bytes, media), content| match content {
-+                        ContentItem::InputText { text } | ContentItem::OutputText { text } => {
-+                            (bytes + text.len(), media)
-+                        }
-+                        ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => {
-+                            (bytes, media + 1)
-+                        }
-+                    })
-+            }
++            ResponseItem::Message {
++                content,
++                encrypted_content,
++                ..
++            } => content.iter().fold(
++                (encrypted_content.as_ref().map_or(0, String::len), 0),
++                |(bytes, media), content| match content {
++                    ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
++                        (bytes + text.len(), media)
++                    }
++                    ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => {
++                        (bytes, media + 1)
++                    }
++                },
++            ),
 +            ResponseItem::Reasoning {
 +                summary,
 +                content,
@@ -834,18 +866,26 @@ index 000000000..b561c93ae
 +                name,
 +                namespace,
 +                arguments,
++                encrypted_content,
 +                ..
 +            } => (
-+                name.len() + namespace.as_ref().map_or(0, String::len) + arguments.len(),
++                name.len()
++                    + namespace.as_ref().map_or(0, String::len)
++                    + arguments.len()
++                    + encrypted_content.as_ref().map_or(0, String::len),
 +                0,
 +            ),
 +            ResponseItem::CustomToolCall {
 +                name,
 +                namespace,
 +                input,
++                encrypted_content,
 +                ..
 +            } => (
-+                name.len() + namespace.as_ref().map_or(0, String::len) + input.len(),
++                name.len()
++                    + namespace.as_ref().map_or(0, String::len)
++                    + input.len()
++                    + encrypted_content.as_ref().map_or(0, String::len),
 +                0,
 +            ),
 +            ResponseItem::FunctionCallOutput { output, .. }
@@ -884,10 +924,10 @@ index 000000000..b561c93ae
 +mod tests;
 diff --git a/codex-rs/core/src/qorpera_context_composition_tests.rs b/codex-rs/core/src/qorpera_context_composition_tests.rs
 new file mode 100644
-index 000000000..d681cdacf
+index 000000000..f3ace77b2
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_context_composition_tests.rs
-@@ -0,0 +1,488 @@
+@@ -0,0 +1,492 @@
 +use codex_protocol::models::ContentItem;
 +use codex_protocol::models::ResponseItem;
 +use pretty_assertions::assert_eq;
@@ -1068,6 +1108,8 @@ index 000000000..d681cdacf
 +    assert_eq!(
 +        input[3],
 +        ResponseItem::Message {
++            encrypted_content: None,
++            status: None,
 +            id: None,
 +            role: "user".to_string(),
 +            content: vec![ContentItem::InputText {
@@ -1085,6 +1127,8 @@ index 000000000..d681cdacf
 +    // A resumed run is a new thread: its earlier steps are only in the run's log.
 +    let lines = work(&["step 1 read the folder", "step 2 outcome unknown"]);
 +    let message = ResponseItem::Message {
++        encrypted_content: None,
++        status: None,
 +        id: None,
 +        role: "user".to_string(),
 +        content: vec![ContentItem::InputText {
@@ -1562,10 +1606,10 @@ index 000000000..75c17fc4e
 +}
 diff --git a/codex-rs/core/src/qorpera_result_fence.rs b/codex-rs/core/src/qorpera_result_fence.rs
 new file mode 100644
-index 000000000..08528e6d6
+index 000000000..bca7f792e
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_result_fence.rs
-@@ -0,0 +1,390 @@
+@@ -0,0 +1,405 @@
 +//! Private cloud result boundary. This has no access to provider credentials or transports.
 +//! The Qorpera host enables it only in a pinned, isolated app-server process.
 +
@@ -1629,6 +1673,7 @@ index 000000000..08528e6d6
 +    use codex_protocol::models::FunctionCallOutputBody;
 +    use codex_protocol::models::FunctionCallOutputContentItem;
 +    use codex_protocol::models::ImageDetail;
++    use codex_protocol::models::ImageReference;
 +    use codex_protocol::models::ResponseItem;
 +    use serde::Deserialize;
 +    use serde::Serialize;
@@ -1765,7 +1810,17 @@ index 000000000..08528e6d6
 +                | ResponseItem::Other => return Err(()),
 +                // The host admits initial text only. Captures are issued through
 +                // exact tool results; provider messages cannot create another media path.
-+                ResponseItem::Message { content, .. } => {
++                // A provider-encrypted message is the model's own replayed output; any other role
++                // must be plain text the host can read.
++                ResponseItem::Message {
++                    role,
++                    content,
++                    encrypted_content,
++                    ..
++                } => {
++                    if encrypted_content.is_some() && role != "assistant" {
++                        return Err(());
++                    }
 +                    for item in content {
 +                        match item {
 +                            ContentItem::InputText { .. } | ContentItem::OutputText { .. } => {}
@@ -1805,7 +1860,7 @@ index 000000000..08528e6d6
 +                                source_bytes += text.len();
 +                                content.push(Content::InputText { text });
 +                            }
-+                            FunctionCallOutputContentItem::InputImage { image_url, detail } => {
++                            FunctionCallOutputContentItem::InputImage { image, detail } => {
 +                                // One capture accompanies one bounded, host-fenced text
 +                                // envelope. No URLs, audio, arbitrary detail or image-only output.
 +                                if position != 1
@@ -1822,6 +1877,10 @@ index 000000000..08528e6d6
 +                                if text.len() > MAX_RESULT_BYTES {
 +                                    return Err(());
 +                                }
++                                // An uploaded file reference carries no pixels to check.
++                                let ImageReference::Inline { image_url } = image else {
++                                    return Err(());
++                                };
 +                                let encoded =
 +                                    image_url.strip_prefix("data:image/png;base64,").ok_or(())?;
 +                                if encoded.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4 {
@@ -1958,10 +2017,10 @@ index 000000000..08528e6d6
 +mod tests;
 diff --git a/codex-rs/core/src/qorpera_result_fence_tests.rs b/codex-rs/core/src/qorpera_result_fence_tests.rs
 new file mode 100644
-index 000000000..380de0692
+index 000000000..e50482bbb
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_result_fence_tests.rs
-@@ -0,0 +1,444 @@
+@@ -0,0 +1,456 @@
 +use anyhow::Context;
 +use base64::Engine;
 +use base64::engine::general_purpose::STANDARD;
@@ -2167,7 +2226,7 @@ index 000000000..380de0692
 +    let valid = serde_json::to_value(capture_history().unwrap()).unwrap();
 +    for fault in [
 +        "url", "mime", "base64", "png", "width", "height", "bytes", "detail", "alone", "extra",
-+        "text",
++        "text", "file",
 +    ] {
 +        let mut value = valid.clone();
 +        let item = &mut value[0]["output"][1];
@@ -2213,6 +2272,11 @@ index 000000000..380de0692
 +                    .push(json!({"type":"input_text","text":"extra"}));
 +            }
 +            "text" => value[0]["output"][0]["text"] = json!("x".repeat(32 * 1024 + 1)),
++            "file" => {
++                let item = item.as_object_mut().unwrap();
++                item.remove("image_url");
++                item.insert("file_id".to_string(), json!("file-upload"));
++            }
 +            _ => panic!("unknown capture fault"),
 +        }
 +        let mut input: Vec<ResponseItem> = serde_json::from_value(value).unwrap();
@@ -2318,6 +2382,7 @@ index 000000000..380de0692
 +        json!({"type":"tool_search_output","call_id":"call-1","status":"completed","execution":"client","tools":[]}),
 +        json!({"type":"future_unknown_result","output":"untrusted"}),
 +        json!({"type":"function_call_output","call_id":"call-1","output":[{"type":"input_image","image_url":"https://example.invalid/image"}]}),
++        json!({"type":"message","role":"user","content":[],"encrypted_content":"opaque"}),
 +    ] {
 +        let mut input = vec![serde_json::from_value(value).unwrap()];
 +        let original = input.clone();
@@ -2398,27 +2463,33 @@ index 000000000..380de0692
 +            serde_json::to_value(&input[1]).unwrap()["output"],
 +            json!(envelope(&text))
 +        );
-+        let mut history = crate::context_manager::ContextManager::new();
++        let mut history = crate::context_manager::ContextManager::new(
++            codex_protocol_test_support::uuid_v7_item_id_generator_for_test(),
++        );
 +        history.record_items(
 +            [&input[1]],
 +            codex_protocol::protocol::TruncationPolicy::Tokens(10_000),
 +        );
-+        assert_eq!(history.raw_items().next(), Some(&input[1]));
++        let kept = history.raw_items().next().map(serde_json::to_value);
++        assert_eq!(
++            kept.map(|item| item.unwrap()["output"].clone()),
++            Some(json!(envelope(&text)))
++        );
 +    }
 +}
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 5d5fa3a0a..1e15fed86 100644
+index 0d3da231c..71814d16b 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
-@@ -2049,6 +2049,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<(String, Option<
-         | EventMsg::ExitedReviewMode(_)
+@@ -2523,6 +2523,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<RealtimeEventTex
          | EventMsg::RawResponseItem(_)
+         | EventMsg::PrivateSessionEvent(_)
          | EventMsg::RawResponseCompleted(_)
 +        | EventMsg::QorperaMessageComposition(_)
          | EventMsg::ItemStarted(_)
          | EventMsg::HookStarted(_)
          | EventMsg::HookCompleted(_)
-@@ -2481,6 +2482,10 @@ async fn try_run_sampling_request(
+@@ -3062,6 +3063,10 @@ async fn try_run_sampling_request(
      let defer_streamed_turn_items_for_contributors =
          !sess.services.extensions.turn_item_contributors().is_empty();
      let mut active_item_is_streaming_to_client = false;
@@ -2428,8 +2499,8 @@ index 5d5fa3a0a..1e15fed86 100644
 +        );
      let receiving_span = trace_span!("receiving_stream");
      let outcome: CodexResult<SamplingRequestResult> = loop {
-         let handle_responses = trace_span!(
-@@ -2534,6 +2539,10 @@ async fn try_run_sampling_request(
+         if response_completed && resampling.accepted_output.is_empty() {
+@@ -3199,6 +3204,10 @@ async fn try_run_sampling_request(
                  }
              }
              ResponseEvent::OutputItemDone(mut item) => {
@@ -2437,10 +2508,10 @@ index 5d5fa3a0a..1e15fed86 100644
 +                    sess.send_event(&turn_context, EventMsg::QorperaMessageComposition(event))
 +                        .await;
 +                }
-                 assign_missing_streamed_response_item_id(&mut item, active_item.as_ref());
-                 if analytics_tool_call_ids.len() < MAX_ANALYTICS_TOOL_CALL_IDS_PER_RESPONSE {
-                     let call_id = match &item {
-@@ -2646,6 +2655,10 @@ async fn try_run_sampling_request(
+                 // Serving emits one final value immediately before this item's completion.
+                 // After this handoff, the invocation/cell owns it independently of the stream.
+                 let assessment = pending_assessment
+@@ -3381,6 +3390,10 @@ async fn try_run_sampling_request(
                  }
              }
              ResponseEvent::OutputItemAdded(mut item) => {
@@ -2448,10 +2519,10 @@ index 5d5fa3a0a..1e15fed86 100644
 +                    sess.send_event(&turn_context, EventMsg::QorperaMessageComposition(event))
 +                        .await;
 +                }
-                 assign_missing_streamed_response_item_id(&mut item, /*active_item*/ None);
-                 if let ResponseItem::CustomToolCall {
-                     call_id,
-@@ -2973,6 +2986,12 @@ async fn try_run_sampling_request(
+                 sess.assign_missing_response_item_id(&mut item);
+                 sess.reserve_assistant_message_order(&turn_context, &item)
+                     .await;
+@@ -3760,6 +3773,12 @@ async fn try_run_sampling_request(
              }
          }
      };
@@ -2461,14 +2532,14 @@ index 5d5fa3a0a..1e15fed86 100644
 +        sess.send_event(&turn_context, EventMsg::QorperaMessageComposition(event))
 +            .await;
 +    }
-     drop(sampling_timing_guard);
- 
-     flush_assistant_text_segments_all(
+     if cancellation_token.is_cancelled() && !response_completed && can_interrupt {
+         let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+         if let Some(interrupt) = stream.interrupt.take() {
 diff --git a/codex-rs/core/src/tools/mod.rs b/codex-rs/core/src/tools/mod.rs
-index 7a65bc95a..6f1c66845 100644
+index eebc88af8..af7ac1c37 100644
 --- a/codex-rs/core/src/tools/mod.rs
 +++ b/codex-rs/core/src/tools/mod.rs
-@@ -66,7 +66,7 @@ pub(crate) fn tool_user_shell_type(
+@@ -64,7 +64,7 @@ pub(crate) fn flat_tool_name(tool_name: &ToolName) -> Cow<'_, str> {
  }
  
  pub(crate) fn requested_tool_mode(turn_context: &TurnContext, model_info: &ModelInfo) -> ToolMode {
@@ -2477,7 +2548,7 @@ index 7a65bc95a..6f1c66845 100644
          if turn_context.config.features.enabled(Feature::CodeModeOnly) {
              ToolMode::CodeModeOnly
          } else if turn_context.config.features.enabled(Feature::CodeMode) {
-@@ -74,7 +74,11 @@ pub(crate) fn requested_tool_mode(turn_context: &TurnContext, model_info: &Model
+@@ -72,7 +72,11 @@ pub(crate) fn requested_tool_mode(turn_context: &TurnContext, model_info: &Model
          } else {
              ToolMode::Direct
          }
@@ -2491,33 +2562,33 @@ index 7a65bc95a..6f1c66845 100644
  
  pub(crate) fn effective_tool_mode(turn_context: &TurnContext, model_info: &ModelInfo) -> ToolMode {
 diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
-index 01054b1b5..ffef21aa5 100644
+index a5851263d..bbeaf4f17 100644
 --- a/codex-rs/core/src/tools/spec_plan.rs
 +++ b/codex-rs/core/src/tools/spec_plan.rs
-@@ -1164,7 +1164,11 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
+@@ -1373,7 +1373,11 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
          );
      }
  
--    if !turn_context.session_source.is_non_root_agent()
+-    if turn_context.config.experimental_request_user_input_enabled
 +    let native_helper_tools_allowed = crate::qorpera_result_fence::native_helper_tools_allowed(
 +        std::env::var_os("QORPERA_NATIVE_RESULT_FENCE_SOCKET").as_deref(),
 +    );
 +    if native_helper_tools_allowed
-+        && !turn_context.session_source.is_non_root_agent()
++        && turn_context.config.experimental_request_user_input_enabled
+         && !turn_context.root_capabilities_restricted
          && context
              .model_info
-             .experimental_supported_tools
-@@ -1189,7 +1193,8 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
+@@ -1401,7 +1405,8 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
          );
      }
  
--    if !turn_context.session_source.is_non_root_agent()
+-    if !turn_context.root_capabilities_restricted
 +    if native_helper_tools_allowed
-+        && !turn_context.session_source.is_non_root_agent()
-         && context
-             .model_info
-             .experimental_supported_tools
-@@ -1214,10 +1219,11 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
++        && !turn_context.root_capabilities_restricted
+         && (features.enabled(Feature::SendMessageToUserAsync)
+             || context
+                 .model_info
+@@ -1436,10 +1441,11 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
          .experimental_supported_tools
          .iter()
          .any(|tool| tool == "clock");
@@ -2531,21 +2602,33 @@ index 01054b1b5..ffef21aa5 100644
          && match turn_context.config.sleep_tool_mode {
              SleepToolMode::AlwaysOn => true,
              SleepToolMode::ModelDriven => {
+@@ -1474,7 +1480,11 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
+         ));
+     }
+ 
+-    if context.model_info.apply_patch_tool_type.is_some() {
++    // Upstream 0.170 offers apply_patch with no environment, where every call fails; a governed run
++    // without a home keeps 0.155's rule and is never offered it.
++    if context.model_info.apply_patch_tool_type.is_some()
++        && (native_helper_tools_allowed || environment_mode.has_environment())
++    {
+         let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
+         registry.add(ApplyPatchHandler::new(include_environment_id));
+     }
 diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
-index e25cce88a..0aa416e4b 100644
+index 8d4b3fe8b..8b19b1e01 100644
 --- a/codex-rs/protocol/src/protocol.rs
 +++ b/codex-rs/protocol/src/protocol.rs
-@@ -1544,6 +1544,9 @@ pub enum EventMsg {
-     RawResponseItem(RawResponseItemEvent),
-     RawResponseCompleted(RawResponseCompletedEvent),
- 
+@@ -1753,6 +1753,8 @@ pub enum EventMsg {
+     #[schemars(skip)]
+     #[ts(skip)]
+     PrivateSessionEvent(PrivateSessionEvent),
 +    /// Private downstream, transient public-message composition metadata.
 +    QorperaMessageComposition(QorperaMessageCompositionEvent),
-+
+ 
      ItemStarted(ItemStartedEvent),
      ItemCompleted(ItemCompletedEvent),
-     HookStarted(HookStartedEvent),
-@@ -1932,6 +1935,20 @@ pub struct RawResponseCompletedEvent {
+@@ -2205,6 +2207,20 @@ pub struct RawResponseCompletedEvent {
      pub usage_metadata: Option<crate::ResponseUsageMetadata>,
  }
  
@@ -2567,19 +2650,19 @@ index e25cce88a..0aa416e4b 100644
  pub struct ItemStartedEvent {
      pub thread_id: ThreadId,
 diff --git a/codex-rs/rollout-trace/src/protocol_event.rs b/codex-rs/rollout-trace/src/protocol_event.rs
-index dadc4bb0a..22a3350a0 100644
+index 58481aacb..09bc57a60 100644
 --- a/codex-rs/rollout-trace/src/protocol_event.rs
 +++ b/codex-rs/rollout-trace/src/protocol_event.rs
-@@ -421,6 +421,7 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
-         | EventMsg::ExitedReviewMode(_)
+@@ -438,6 +438,7 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
+         | EventMsg::PrivateSessionEvent(_)
          | EventMsg::RawResponseItem(_)
          | EventMsg::RawResponseCompleted(_)
 +        | EventMsg::QorperaMessageComposition(_)
          | EventMsg::ItemStarted(_)
          | EventMsg::ItemCompleted(_)
          | EventMsg::HookStarted(_)
-@@ -500,6 +501,7 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
-         | EventMsg::ExitedReviewMode(_)
+@@ -520,6 +521,7 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
+         | EventMsg::PrivateSessionEvent(_)
          | EventMsg::RawResponseItem(_)
          | EventMsg::RawResponseCompleted(_)
 +        | EventMsg::QorperaMessageComposition(_)
@@ -2587,11 +2670,11 @@ index dadc4bb0a..22a3350a0 100644
          | EventMsg::ItemCompleted(_)
          | EventMsg::HookStarted(_)
 diff --git a/codex-rs/rollout/src/policy.rs b/codex-rs/rollout/src/policy.rs
-index c82b5ce95..512cf8bbe 100644
+index e62c42320..b4ca45924 100644
 --- a/codex-rs/rollout/src/policy.rs
 +++ b/codex-rs/rollout/src/policy.rs
-@@ -166,6 +166,7 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode)
-         | EventMsg::AgentReasoningSectionBreak(_)
+@@ -187,6 +187,7 @@ fn persisted_event_msg(
+         | EventMsg::PrivateSessionEvent(_)
          | EventMsg::RawResponseItem(_)
          | EventMsg::RawResponseCompleted(_)
 +        | EventMsg::QorperaMessageComposition(_)
@@ -2599,10 +2682,10 @@ index c82b5ce95..512cf8bbe 100644
          | EventMsg::EnvironmentConnected(_)
          | EventMsg::EnvironmentDisconnected(_)
 diff --git a/codex-rs/tui/src/app/app_server_event_targets.rs b/codex-rs/tui/src/app/app_server_event_targets.rs
-index 0054f7924..2247738b1 100644
+index cc5d3d8fe..33e35323d 100644
 --- a/codex-rs/tui/src/app/app_server_event_targets.rs
 +++ b/codex-rs/tui/src/app/app_server_event_targets.rs
-@@ -100,6 +100,9 @@ pub(super) fn server_notification_thread_target(
+@@ -103,6 +103,9 @@ pub(super) fn server_notification_thread_target(
          ServerNotification::RawResponseItemCompleted(notification) => {
              Some(notification.thread_id.as_str())
          }
@@ -2613,10 +2696,10 @@ index 0054f7924..2247738b1 100644
              Some(notification.thread_id.as_str())
          }
 diff --git a/codex-rs/tui/src/chatwidget/protocol.rs b/codex-rs/tui/src/chatwidget/protocol.rs
-index 9ec441ad2..566d20cd6 100644
+index 3f1ea5a7c..0f6ba8997 100644
 --- a/codex-rs/tui/src/chatwidget/protocol.rs
 +++ b/codex-rs/tui/src/chatwidget/protocol.rs
-@@ -316,6 +316,7 @@ impl ChatWidget {
+@@ -406,6 +406,7 @@ impl ChatWidget {
              | ServerNotification::ThreadAttachmentUpdated(_)
              | ServerNotification::RawResponseItemCompleted(_)
              | ServerNotification::RawResponseCompleted(_)

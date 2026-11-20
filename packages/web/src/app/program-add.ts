@@ -27,6 +27,7 @@ import {
 	APP_MANIFEST,
 	APP_NAME_MAX_CHARS,
 	APPS_FOLDER,
+	OWED_APPS,
 	writeAppManifest,
 } from "@qorpera/cloud-client/interface-apps";
 
@@ -108,11 +109,10 @@ export function programFolderName(name: string, taken: ReadonlySet<string>): str
 			.replace(/^-+|-+$/g, "")
 			.slice(0, FOLDER_NAME_MAX)
 			.replace(/-+$/g, "") || "program";
-	if (!taken.has(slug)) return slug;
-	for (let n = 2; ; n++) {
-		const free = `${slug}-${n}`;
-		if (!taken.has(free)) return free;
-	}
+	const owed: ReadonlySet<string> = new Set(OWED_APPS);
+	const free = (folder: string) => !taken.has(folder) && !owed.has(folder);
+	if (free(slug)) return slug;
+	for (let n = 2; ; n++) if (free(`${slug}-${n}`)) return `${slug}-${n}`;
 }
 
 export function nextMemberVersion(program: Pick<Program, "versions"> | null): string {

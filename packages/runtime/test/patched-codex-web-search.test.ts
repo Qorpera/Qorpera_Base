@@ -4,7 +4,7 @@ import { pinnedCodexBinary } from "./fixtures/pinned-codex-binary.ts";
 
 const binary = pinnedCodexBinary();
 describe.skipIf(!binary)("web search on the native artifact (requires QORPERA_CODEX_FENCE_BINARY)", () => {
-	for (const model of ["offline-probe", "gpt-6-astra"])
+	for (const model of ["offline-probe", "gpt-6-astra", "gpt-6.2-sol"])
 		it(`searches through Codex's own web.run and the fence admits the result (${model})`, async () => {
 			if (!binary) throw new Error("Missing pinned downstream native artifact");
 			const proof = await runNativeCodexWebSearchProbe(binary, model);

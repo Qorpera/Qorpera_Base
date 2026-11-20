@@ -1,5 +1,5 @@
-import { SupabaseCloudPresenceTransport } from "@qorpera/cloud-client/cloud-presence";
-import type { HostedPrimaryDatabase, QorperaHostedPrimary } from "@qorpera/cloud-client/hosted-primary";
+import { type PresenceDevices, SupabaseCloudPresenceTransport } from "@qorpera/cloud-client/cloud-presence";
+import type { HostedPrimaryDatabase } from "@qorpera/cloud-client/hosted-primary";
 import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -101,7 +101,7 @@ describe("cloud presence", () => {
 			registerPresenceDevice,
 			listPresenceDevices,
 			unregisterPresenceDevice,
-		} as unknown as QorperaHostedPrimary;
+		} as unknown as PresenceDevices;
 		const handle = new SupabaseCloudPresenceTransport(client, primary).join(
 			profileId,
 			(value) => members.push(value),

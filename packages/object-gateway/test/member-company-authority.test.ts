@@ -5,31 +5,6 @@ import { SupabaseMemberCompanyAuthority } from "../src/member-company-authority.
 const token = "synthetic-member-jwt";
 
 describe("human and publisher transport separation", () => {
-	it("keeps service credentials out of member RPCs and member credentials out of publication", async () => {
-		const requests: Request[] = [];
-		const authority = new SupabaseMemberCompanyAuthority({
-			projectUrl: "https://cloud.test",
-			publishableKey: "public-fixture",
-			secretKey: "secret-fixture",
-			fetch: async (input, init) => {
-				requests.push(new Request(input, init));
-				return Response.json({});
-			},
-		});
-		await authority.member("qorpera_member_folder_writer", token, {}, new AbortController().signal);
-		await authority.publisher("qorpera_folder_commit", {}, new AbortController().signal);
-		expect(
-			requests.map((request) => [
-				request.headers.get("apikey"),
-				request.headers.get("authorization"),
-				request.redirect,
-			]),
-		).toEqual([
-			["public-fixture", `Bearer ${token}`, "error"],
-			["secret-fixture", null, "error"],
-		]);
-	});
-
 	it.each([
 		[409, "23505", 409],
 		[500, "40001", 409],

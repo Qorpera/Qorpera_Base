@@ -3,10 +3,10 @@
   "source": {
     "schema": "qorpera.native-codex-source/v1",
     "repository": "https://github.com/openai/codex.git",
-    "tag": "rust-v0.155.1",
-    "tagObject": "4e21628f9ec9ee656650cd2b62ef92225725b5ac",
-    "commit": "be2951ea34f0d295ed0becf97079f92fa5f6950e",
-    "version": "0.155.1",
+    "tag": "rust-v0.170.0",
+    "tagObject": "72f97c309fb0f78b6f35cce455adf416e6a51571",
+    "commit": "29eb79e9866b3262a777fdf8195c1b9e63684c91",
+    "version": "0.170.0",
     "rustToolchain": "1.95.0",
     "protocol": "qorpera.native-result-fence/v1",
     "capabilities": [
@@ -17,17 +17,17 @@
       "qorpera.native-context-composition/v1",
       "qorpera.native-prompt-cache-key/v1"
     ],
-    "patchSha256": "b7eab8423d4198e16bb893ef300ae162d1c9218642a61efe5d13f88666c6349a",
+    "patchSha256": "7218a9e25e4857ead3c40ff4e1d780e0f4b232a48373ba6c998d569e3fad8221",
     "cargoLock": {
-      "upstreamSha256": "81eb29f6276d5b3d1b39f1588a26059dadfbba717952247efeb8a575f271f569",
-      "normalizedSha256": "df88a71b82843c6f092610fb07589f7a40032ddc25f50718354546ca541eb9b7",
-      "pathPackages": 152
+      "upstreamSha256": "e913b4fe3ff12121362c1f85ef360b32cba72305149c0cbe55e0a416337c1415",
+      "normalizedSha256": "11ed3c419dcb08d7d3921f20eb4980c7a0620234c1f7ed79a2d3ca3b98f39a3e",
+      "pathPackages": 174
     }
   },
   "artifact": {
     "file": "codex",
-    "bytes": 318813136,
-    "sha256": "9c299f88252c1cc6cc57a4f17bfabb72e87529468e209a8d772b0278ce03f6b4",
+    "bytes": 398449416,
+    "sha256": "9d6a86ec6e280e43d76653d9514aa92769ec67ec157e4ff3bb598fb4a4b48211",
     "target": "x86_64-unknown-linux-gnu",
     "profile": "release",
     "compiler": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.95.0\nLLVM version: 22.1.2",
@@ -35,7 +35,7 @@
       "tool": "rust-llvm-objcopy",
       "toolchain": "1.95.0",
       "operation": "strip-debug",
-      "inputSha256": "39957f97ccc22b418f734845eed913970367ff05cc2f967964d2afe311e8d891",
+      "inputSha256": "cfc32cb4efeeb0df9612b3b574b719a13b549485221ac7be122867ee0ed63a24",
       "toolSha256": "211b1e47ef0078d91f33d5076e958bf40a65b0f634d59c9802f0b049b9662728"
     }
   },

@@ -22,7 +22,7 @@ echo "home: $(X sh -c 'echo $(hostname) $(uname -r) $(. /etc/os-release; echo $P
 # The home's lines of build-machine-image.sh (the agent account, its sudo rule, its Codex home, the pinned Codex)
 X sh -c 'getent group qorpera-agent >/dev/null || groupadd --gid 2000 qorpera-agent; id qorpera-agent >/dev/null 2>&1 || useradd --uid 2000 --gid 2000 --home-dir /var/lib/qorpera-agent --create-home --shell /bin/bash qorpera-agent; install -d -o qorpera-agent -g qorpera-agent -m 0700 /var/lib/qorpera-agent/.codex; install -d -o qorpera-agent -g qorpera-agent -m 0755 /company; install -d -m 0755 /opt/qorpera-machine'
 L file push "$HERE/../../machine/qorpera-agent.sudoers" $H/etc/sudoers.d/qorpera-agent --uid 0 --gid 0 --mode 0440
-if [[ "$(X sh -c 'sha256sum /opt/qorpera-machine/codex 2>/dev/null | cut -c1-16')" != 9c299f88252c1cc6 ]]; then
+if [[ "$(X sh -c 'sha256sum /opt/qorpera-machine/codex 2>/dev/null | cut -c1-16')" != 9d6a86ec6e280e43 ]]; then
 	L file push /opt/qorpera-codex-fence/codex $H/opt/qorpera-machine/codex --uid 0 --gid 0 --mode 0555
 fi
 X sh -c 'command -v sudo >/dev/null' || echo "WARN: no sudo in the home image"
