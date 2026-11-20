@@ -417,9 +417,8 @@ describe("readable cards", () => {
 	// the other members share. The agent was told its calls are refused meanwhile and could have passed that on as
 	// privacy; it is told what is true, and still to end its turn until I'm done wakes it.
 	it("tells an agent that a member signs in on the screen they share, and promises no privacy", () => {
-		// T3-5's contract says it on its takeover line.
 		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain(
-			"- takeover: for a sign-in or page entry on your desktop computer the member does it on the screen you both use, so never promise it is private; end your turn: their I'm done wakes you.",
+			"- takeover: for a sign-in or entry on your shared desktop computer, so never promise it is private. End your turn; their I'm done wakes you — then inspect the screen, as I'm done is not proof of sign-in.",
 		);
 		const schema = JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA);
 		expect(schema).toContain(
@@ -427,27 +426,22 @@ describe("readable cards", () => {
 		);
 	});
 
-	// Jonas, 11 Nov 2026: "I would like the agents to be better at indicating when they need the users input and it's
-	// really stopped at you." Every answer the work waits for goes on a card, open questions too (allowCustom), and the
-	// card says what is stopped; nothing optional does.
 	it("puts every answer the work waits for on a card that says what is stopped, and nothing optional", () => {
 		for (const rule of [
-			"- question: an answer your work cannot go on without, never only in chat: the card shows members that work is stopped at them.",
-			"ideas, offers and news stay in chat.",
+			"- question: an answer work genuinely stops on (never ask only in chat).",
+			"ideas, offers, and updates stay in chat.",
 		])
 			expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain(rule);
-		// What a card says, and its options, are on the fields Codex sends (track 3, T3-5).
 		expect(JSON.stringify(CLOUD_ASK_MEMBER_INPUT_SCHEMA)).toContain(
 			"what is stopped until they answer, what is being chosen, the one or two things that matter",
 		);
 		expect(JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA)).toContain(
 			"The likely answers to what your work cannot go on without, each a specific one, never generic ones like Get started.",
 		);
-		// The card's own schema says the same: an open question goes on the card with allowCustom, not to chat.
 		const schema = JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA);
 		expect(schema).toContain("allowCustom adds a field for the member's own");
 		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain(
-			"Words the member typed in the card (a value that is none of your options) are their note, not a pick: when the note is itself the answer (a name, a figure, their own choice), act on it; otherwise the decision is still open: rework what the note asks, ask again with the changed options and asksAgain: that card's interactionId, and start nothing that depends on it. After a note, post nothing in their thread until you have the new question or have acted; if your turn must end first (a worker or your machine does the rework), your final send says only that the question is being reworked and comes back.",
+			"Words a member typed instead of picking an option are a note, not a pick: if the note directly answers the question (a name, figure, or custom choice), act on it; otherwise the decision stays open — rework what they asked, ask again with updated options and asksAgain set to that card's interactionId, and start no dependent work. After a note, post nothing in their thread until the new card or action is ready (if your turn must end first while a worker or machine reworks it, send only one line saying it is being reworked and will return).",
 		);
 		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).not.toContain("custom answer");
 		// The tool boundary takes a description of at most 4096 bytes.
@@ -659,7 +653,7 @@ describe("ask_member card shapes", () => {
 describe("who answers a card", () => {
 	it("tells the agent that the member it answers answers the card, or another member sends that member's pick", () => {
 		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain(
-			"In your own thread the member you answer answers it, or another sends their pick.",
+			"In your own thread, the asked member answers it or another member sends their voted pick.",
 		);
 		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).not.toContain("only the member you answer can answer the card");
 		const update = PLATFORM_UPDATES.find((entry) => entry.id === "pick-sent-by-another-member");
@@ -691,7 +685,7 @@ describe("a question asked again", () => {
 		).toEqual(card.payload);
 		expect(JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA)).toContain('"asksAgain"');
 		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain(
-			"ask again with the changed options and asksAgain: that card's interactionId",
+			"ask again with updated options and asksAgain set to that card's interactionId",
 		);
 	});
 
@@ -787,7 +781,7 @@ describe("the address card", () => {
 
 	it("tells the model what an address card is and what its answer holds", () => {
 		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain(
-			"- An address card is a question with allowCustom: true and input {kind: mail_address}: each option a handle made from the company's name (label and value the same, such as acme); the member makes the company's email address in the card, and the answer is that address.",
+			"- Address card: a question with allowCustom: true, input {kind: mail_address}, and handle options from the company name (identical label and value, e.g. acme); the answer is the email address the member creates.",
 		);
 		expect(JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA)).toContain('"input":{"type":"object"');
 	});

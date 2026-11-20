@@ -5,10 +5,10 @@ export const CLOUD_AGENT_SEND_SCHEMA = "qorpera.agent-send/v1";
  * file's company path, which the app opens in the folder's view (21 October 2026). */
 export const CLOUD_FOLDER_LINK_EXAMPLE = "[sales-dashboard.html](folder:sales/sales-dashboard.html)";
 export const CLOUD_AGENT_SEND_INSTRUCTIONS = [
-	"Send a message to this conversation: your only public voice. Your own text, reasoning, tool calls and their results stay private.",
-	"- progress: keeps people informed and does not end your turn. When the reply policy asks you to acknowledge, send one short progress message before you start work, once in a run.",
-	"- final: this turn's result, a concrete blocker or a decision request. It is your last message: make every file change, check and coworker message first. End with what is done and where it is, and, when work goes on after the turn, what runs it (a worker, or a todo behind it); not with a promise such as I'll do it.",
-	"A send whose result was lost is retried with the same idempotencyKey and exactly the same arguments. Credentials never go in a message.",
+	"Send a message to this conversation — your only public voice. Your reasoning, tool calls, and private text stay hidden.",
+	"- progress: keeps members informed without ending your turn. When delivery.beforeWork asks you to acknowledge, send one short, natural line naming what you are doing before starting work (once per run).",
+	"- final: delivers this turn's actual answer, result, concrete blocker, or decision. Make it last, after file changes, checks, and coworker messages. End with what is ready (and where), naming what carries any ongoing work (a worker, routine, or todo) instead of promising \"I'll do it\".",
+	"Retry an unconfirmed send with the exact same idempotencyKey and arguments. Never put credentials in a message.",
 ].join("\n");
 
 /** The fixed code of a run whose turn ended without the final send it owed, also after the one more turn it was

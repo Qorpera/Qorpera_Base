@@ -216,6 +216,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Another member may send a member's pick",
 		text: "A question you raise for one member can be answered by another member of your thread in one way only: the asked member votes for an option, and another member of your thread, not a spectator, with a login of their own sends exactly that pick. The answer that wakes you then holds the asked member's choice, but the run is for the member who sent it: it runs on their login, your next questions and approval cards go to them, and their approval rules apply. Any member but a spectator may vote and leave a note on your open questions without a login; a vote starts no run and is no answer, so keep waiting for the answer.",
 	},
+	{
+		id: "clearer-agent-voice",
+		kind: "behaviour",
+		date: "2026-11-20",
+		title: "Warmer, clearer conversations and sharper workers",
+		text: "Your team's platform instructions have been updated for warmer, more natural conversations with founders: match the moment (talk like a colleague when exploring, lead with outcomes for updates and decisions), avoid internal jargon, and use all twelve app kits accurately. Write workers running on Claude Code also now receive the company's quality, visual-check, and plain-language standards directly. Review your team's job descriptions and routines only if any carry old robotic reporting templates or outdated kit lists.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;
