@@ -152,6 +152,7 @@ import {
 } from "./cloud-native-tool-authority.ts";
 import {
 	CLOUD_NATIVE_TOOL_CATALOG_BYTES,
+	CloudControlRefusalRelay,
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
 	cloudToolJsonText,
@@ -973,6 +974,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			// the final send of its sentence. The card precedes the sentence so a failed
 			// send leaves a retryable tool call, never a turn that ended without its card.
 			const control = this.#control;
+			const askAgainRefusals = new CloudControlRefusalRelay();
 			const ask: CloudNativeTool = {
 				name: "ask_member" satisfies CloudRuntimeToolOperation,
 				source: "runtime",
@@ -999,10 +1001,17 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					});
 					const append = control.appendInteractionRequest;
 					if (!append) throw new Error("Cloud cards are unavailable on this control plane");
-					const card = await publicWrite(
-						(requestSignal) => append.call(control, request, { eventId, data: input.data }, requestSignal),
-						toolContext.signal,
-					);
+					const write = () =>
+						publicWrite(
+							(requestSignal) => append.call(control, request, { eventId, data: input.data }, requestSignal),
+							toolContext.signal,
+						);
+					// WHY: the kernel refuses an asksAgain it cannot link, in words the agent must read to raise the card
+					// without it; the append is the tool's first effect, so its refusal proves no card was written.
+					const card =
+						"asksAgain" in input.data.payload
+							? await askAgainRefusals.call(input.idempotencyKey, write)
+							: await write();
 					if (card.sessionId !== context.identity.sessionId) throw new Error("Cloud card audience changed");
 					const receipt = await mouth.send(sentence, toolContext.signal);
 					const replayed = deliveredMessageIds.has(receipt.messageId);

@@ -446,7 +446,7 @@ describe("readable cards", () => {
 		const schema = JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA);
 		expect(schema).toContain("allowCustom adds a field for the member's own");
 		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain(
-			"Words the member typed in the card (a value that is none of your options) are their note, not a pick: when the note is itself the answer (a name, a figure, their own choice), act on it; otherwise the decision is still open: rework what the note asks, ask again with the changed options and asksAgain set to that card's interactionId (so members see the next round of one decision, not a new question), and start nothing that depends on it. After a note, post nothing in their thread until you have the new question or have acted; if your turn must end first (a worker or your machine does the rework), your final send says only that the question is being reworked and comes back.",
+			"Words the member typed in the card (a value that is none of your options) are their note, not a pick: when the note is itself the answer (a name, a figure, their own choice), act on it; otherwise the decision is still open: rework what the note asks, ask again with the changed options and asksAgain: that card's interactionId, and start nothing that depends on it. After a note, post nothing in their thread until you have the new question or have acted; if your turn must end first (a worker or your machine does the rework), your final send says only that the question is being reworked and comes back.",
 		);
 		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).not.toContain("custom answer");
 		// The tool boundary takes a description of at most 4096 bytes.
@@ -677,7 +677,7 @@ describe("a question asked again", () => {
 		).toEqual(card.payload);
 		expect(JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA)).toContain('"asksAgain"');
 		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain(
-			"ask again with the changed options and asksAgain set to that card's interactionId",
+			"ask again with the changed options and asksAgain: that card's interactionId",
 		);
 	});
 

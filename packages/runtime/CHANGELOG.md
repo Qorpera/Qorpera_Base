@@ -9,7 +9,10 @@
   no other card asks again, so a decision's rounds are one chain; `qorpera_list_company_open_decisions` gives such a
   question `round` (its number, and the card it asks again with the answer that led to it). Two internal functions
   nobody may call (`qorpera_assert_asks_again`, `qorpera_decision_round`); no table, no trigger, no grant changes.
-  A card without `asksAgain` is appended, listed and answered exactly as before.
+  A card without `asksAgain` is appended, listed and answered exactly as before. When the kernel refuses a card that
+  carries `asksAgain`, `ask_member` answers the agent with the kernel's words (`REFUSED: NOT_AVAILABLE: asksAgain must
+  name ...; leave it out otherwise`) instead of an unconfirmed outcome, so it raises the card without the link; a retry
+  whose first attempt ended without an answer is never called refused. Other cards' refusals are relayed as before.
 - Release v268 (#1994 and #1997, thread decisions step 3; master since v267's release merge bbb86aaf1 holds exactly
   these two): two migrations, in this order. `20260930819000_decision_votes` (a new table of members' votes and notes on
   open decisions, row level security on and no grant; two member functions, `qorpera_list_company_open_decisions` and
