@@ -881,7 +881,7 @@ describe("the company's apps", () => {
 		const files = {
 			"apps/sales/app.toml": 'name = "Sales"\n',
 			"apps/sales/index.html":
-				'<!doctype html><html><head><STYLE media="all">body > main{background:url(a.png)}</STYLE><link rel="stylesheet" href="look.css"></head><body><main id="m" title="x"\n  style="background:url(\'b.png\')"><p style=color:red>hi</p><svg><style>.s{fill:url(c.png)}</style></svg></main></body></html>',
+				'<!doctype html><html><head><STYLE media="all">body > main{background:url(a.png)}</STYLE><link rel="stylesheet" href="look.css"></head><body><main id="m" title="a > b"\n  style="background:url(\'b.png\')"><p data-note="style=red" style=color:red>hi</p><svg><style>.s{fill:url(c.png)}</style></svg></main></body></html>',
 			"apps/sales/look.css": "p{background:url(d.png)}",
 			"apps/sales/a.png": "a",
 			"apps/sales/b.png": "b",
@@ -891,7 +891,7 @@ describe("the company's apps", () => {
 		const f = fakeFolder(files);
 		const parsed: Document[] = [];
 		const parse = DOMParser.prototype.parseFromString;
-		vi.spyOn(DOMParser.prototype, "parseFromString").mockImplementation(function (
+		const spy = vi.spyOn(DOMParser.prototype, "parseFromString").mockImplementation(function (
 			this: DOMParser,
 			text: string,
 			type: DOMParserSupportedType,
@@ -900,12 +900,18 @@ describe("the company's apps", () => {
 			parsed.push(page);
 			return page;
 		});
-		await warmApps(f, await readApps(f, new AbortController().signal), new AbortController().signal);
+		try {
+			await warmApps(f, await readApps(f, new AbortController().signal), new AbortController().signal);
+		} finally {
+			spy.mockRestore();
+		}
 		expect(f.reads).toEqual(
 			expect.arrayContaining(["apps/sales/a.png", "apps/sales/b.png", "apps/sales/c.png", "apps/sales/d.png"]),
 		);
 		expect(parsed).toHaveLength(1);
 		expect(parsed[0]!.querySelectorAll("style, [style]")).toHaveLength(0);
+		expect(parsed[0]!.getElementById("m")?.getAttribute("title")).toBe("a > b");
+		expect(parsed[0]!.querySelector("p")?.getAttribute("data-note")).toBe("style=red");
 		expect(parsed[0]!.head.querySelectorAll("noframes")).toHaveLength(1);
 		expect(parsed[0]!.body.querySelectorAll("noframes")).toHaveLength(1);
 

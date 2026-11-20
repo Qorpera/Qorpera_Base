@@ -581,7 +581,11 @@ const RENAMED_STYLE = "data-qorpera-style";
 function withStylesRenamed(html: string): string {
 	return html
 		.replace(/<(\/?)style(?=[\s/>])/gi, "<$1noframes")
-		.replace(/(<[a-z][^<>]*?\s)style(?=\s*=)/gi, `$1${RENAMED_STYLE}`);
+		.replace(/<[a-z][^\s/>]*(?:"[^"]*"|'[^']*'|[^"'>])*>/gi, (tag) =>
+			tag.replace(/("[^"]*"|'[^']*')|(\s)style(?=\s*=)/gi, (_found, quoted: string | undefined, space: string) =>
+				quoted === undefined ? `${space}${RENAMED_STYLE}` : quoted,
+			),
+		);
 }
 
 async function readPage(files: AppFiles, entry: string): Promise<PageRead | null> {
