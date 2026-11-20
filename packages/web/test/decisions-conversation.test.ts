@@ -7,7 +7,8 @@ import { Store } from "../src/app/state.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import type { QuestionDockHost } from "../src/app/views/question-dock.ts";
 import type { OpenQuestion } from "../src/cloud/open-questions.ts";
-import type { TranscriptInteraction } from "../src/cloud/transcript.ts";
+import { actionReviewCard } from "../src/cloud/review-rules.ts";
+import type { TranscriptCard, TranscriptInteraction, TranscriptItem } from "../src/cloud/transcript.ts";
 import { fixture, id, profileA, session, settle, staff, team, userA } from "./fixtures.ts";
 
 const card: TranscriptInteraction = {
@@ -52,7 +53,12 @@ function setup(cofounder: boolean) {
 	company
 		.conversation(session.sessionId)
 		.set({ loading: false, projection: { items: [card], hiddenCount: 0, lastSequence: 1 } });
-	const store = new Store<OpenQuestionsState>({ questions: [listed], read: true, unavailable: false });
+	const store = new Store<OpenQuestionsState>({
+		questions: [listed],
+		decisions: [{ ...listed, kind: "question" }],
+		read: true,
+		unavailable: false,
+	});
 	const stopped = vi.fn();
 	const answered = vi.fn(async () => {});
 	const decisions: QuestionDockHost = {
@@ -73,11 +79,15 @@ function setup(cofounder: boolean) {
 		view.dispose();
 		company.stop();
 	};
+	const show = (items: TranscriptItem[]) =>
+		company
+			.conversation(session.sessionId)
+			.set({ loading: false, projection: { items, hiddenCount: 0, lastSequence: items.length } });
 	const reopen = () =>
 		company.conversation(session.sessionId).set({
 			projection: { items: [{ ...card, answerFailed: true }], hiddenCount: 0, lastSequence: 1 },
 		});
-	return { view, store, stopped, answered, reopen };
+	return { view, store, stopped, answered, reopen, show };
 }
 
 describe("open decisions in the Co-Founder's chat", () => {
@@ -91,7 +101,7 @@ describe("open decisions in the Co-Founder's chat", () => {
 		expect(f.view.el.querySelectorAll(".interaction-card")).toHaveLength(1);
 		expect(f.view.el.querySelector(".messages .interaction-card")).toBeNull();
 
-		f.store.set({ questions: [] });
+		f.store.set({ questions: [], decisions: [] });
 		await settle();
 		expect(f.view.el.querySelector<HTMLElement>(".decision-dock")?.hidden).toBe(true);
 		expect(f.view.el.querySelector(".messages .interaction-card .interaction-title")?.textContent).toBe(
@@ -126,7 +136,7 @@ describe("open decisions in the Co-Founder's chat", () => {
 		await settle();
 		f.view.dispose();
 		expect(f.answered).toHaveBeenCalledTimes(1);
-		expect(f.answered).toHaveBeenCalledWith(listed, "answered", { values: ["Approve"] });
+		expect(f.answered).toHaveBeenCalledWith({ ...listed, kind: "question" }, "answered", { values: ["Approve"] });
 	});
 
 	it("show the card again when a sent answer never reached the agent", async () => {
@@ -142,13 +152,60 @@ describe("open decisions in the Co-Founder's chat", () => {
 		);
 		expect(f.view.el.querySelector(".messages .interaction-card")).toBeNull();
 
-		f.store.set({ questions: [] });
+		f.store.set({ questions: [], decisions: [] });
 		f.reopen();
 		await settle();
 		expect(f.view.el.querySelector(".messages .decided")).toBeNull();
 		expect(f.view.el.querySelector(".messages .interaction-card .interaction-title")?.textContent).toBe(
 			"Approve the mission?",
 		);
+	});
+
+	it("show a docked approval once: not in the thread as well, and back there when the dock lets go", async () => {
+		const f = setup(true);
+		const reviewId = id(731);
+		const data = {
+			schema: "qorpera.action-review/v1",
+			reviewId,
+			title: "Send an email",
+			summary: "It writes to someone outside the company.",
+			builtIn: "none",
+			approverScope: "member",
+			approverUserId: userA.id,
+			alwaysAllow: false,
+		};
+		const request: TranscriptCard = {
+			kind: "authorization_request",
+			id: reviewId,
+			sequence: 1,
+			actorUserId: userA.id,
+			body: { entry: { type: "custom", customType: "authorization_request", data } },
+			createdAt: "2026-09-05T10:00:00Z",
+		};
+		f.show([request]);
+		const review = actionReviewCard(data);
+		if (!review) throw new Error("review expected");
+		f.store.set({
+			questions: [],
+			decisions: [
+				{
+					kind: "approval",
+					sessionId: session.sessionId,
+					interactionId: reviewId,
+					staffAgentId: staff.id,
+					createdAt: request.createdAt,
+					review,
+				},
+			],
+		});
+		await settle();
+		expect(f.view.el.querySelector(".decision-dock .auth-card h3")?.textContent).toBe("Send an email");
+		expect(f.view.el.querySelector(".messages .auth-card")).toBeNull();
+
+		f.store.set({ decisions: [] });
+		await settle();
+		expect(f.view.el.querySelector(".decision-dock .auth-card")).toBeNull();
+		expect(f.view.el.querySelector(".messages .auth-card h3")?.textContent).toBe("Send an email");
 	});
 
 	it("are gathered in no other agent's thread", async () => {

@@ -27,6 +27,7 @@ import { type GroupChatDetails, listGroupChatDetails, readGroupChatDetails } fro
 import type { InteractionAnswer, InteractionOutcome, InteractionRequest } from "../cloud/interactions.ts";
 import { type MemberChatSummary, memberChatCalls } from "../cloud/member-chats.ts";
 import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
+import type { OpenDecision } from "../cloud/open-decisions.ts";
 import type { OpenQuestion } from "../cloud/open-questions.ts";
 import { buildCompanyHierarchy, type CompanyHierarchy, type HostedCompanyOrganization } from "../cloud/organization.ts";
 import type { PageCursor } from "../cloud/pagination.ts";
@@ -992,6 +993,12 @@ export class CompanyController {
 		const state = this.store.get();
 		if (this.#stopped || state.accessLost || !state.team?.capabilities.write) return [];
 		return this.#api.listOpenQuestions(this.profile.profileId);
+	}
+
+	async listOpenDecisions(): Promise<OpenDecision[]> {
+		const state = this.store.get();
+		if (this.#stopped || state.accessLost || !state.team?.capabilities.write) return [];
+		return this.#api.listOpenDecisions(this.profile.profileId);
 	}
 
 	/** Mentions in the conversation on screen are seen: the badge goes, for this member only. */

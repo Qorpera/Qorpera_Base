@@ -2972,6 +2972,7 @@ export class ConversationView {
 					),
 				);
 			} else if (item.kind === "authorization_request" && reviews.has(item.id.toLowerCase())) {
+				if (this.#decisions?.shows(item.id)) continue;
 				const review = reviews.get(item.id.toLowerCase())!;
 				// A decided card needs no editor any more.
 				if (decisions.has(item.id.toLowerCase())) this.#reviewDrafts.delete(review.reviewId);
@@ -3194,7 +3195,7 @@ export class ConversationView {
 			);
 		const dock = this.#decisions;
 		for (const entry of dock?.decided ?? []) {
-			const block = keep(`decided ${entry.question.interactionId}`, JSON.stringify([entry.state, locale]), "", () =>
+			const block = keep(`decided ${entry.decision.interactionId}`, JSON.stringify([entry.state, locale]), "", () =>
 				dock ? dock.renderDecided(entry) : h("section"),
 			);
 			const next = this.#timestampRows.find((row) => row.date.getTime() > entry.at)?.node;
