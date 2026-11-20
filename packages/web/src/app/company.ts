@@ -1010,6 +1010,19 @@ export class CompanyController {
 		return this.#api.listOpenDecisions(this.profile.profileId);
 	}
 
+	async listCompanyOpenDecisions(): Promise<OpenDecision[]> {
+		const state = this.store.get();
+		if (this.#stopped || state.accessLost || !state.team?.capabilities.read) return [];
+		return this.#api.listCompanyOpenDecisions(this.profile.profileId);
+	}
+
+	async castDecisionVote(itemId: string, choice: string | undefined, note: string | undefined): Promise<void> {
+		this.signal.throwIfAborted();
+		const state = this.store.get();
+		if (state.accessLost || !state.team?.capabilities.write) throw new Error(t("Voting is not available here."));
+		await this.#api.castDecisionVote(this.profile.profileId, itemId, choice, note);
+	}
+
 	/** Mentions in the conversation on screen are seen: the badge goes, for this member only. */
 	#seeMentions(): void {
 		const sessionId = this.#openSessionId;

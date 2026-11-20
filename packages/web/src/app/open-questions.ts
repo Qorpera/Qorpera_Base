@@ -89,9 +89,13 @@ export class OpenQuestions {
 	#watchers = 0;
 	#stopWatching: (() => void) | undefined;
 	#reads = 0;
-	#questionsOnly = false;
+	#source: "company" | "member" | "questions" = "company";
 	readonly #onTheirWay = new Set<string>();
 	readonly #drafts = new Map<string, OpenDraft>();
+	readonly #myVotes = new Map<
+		string,
+		{ choice?: string; note?: string; at: string; calls: number; sent: Promise<void>; settledAt?: number }
+	>();
 	#reading: Promise<void> | undefined;
 	#again = false;
 	/** A hint's read, at most once an interval; one still queued when the last watcher left is not made. */
@@ -131,12 +135,19 @@ export class OpenQuestions {
 			.then(
 				(listed) => {
 					if (version !== this.#reads) return;
-					const decisions = listed.filter((decision) => !this.#answered.has(decision.interactionId));
+					for (const [id, mine] of this.#myVotes)
+						if (mine.settledAt !== undefined && version > mine.settledAt) this.#myVotes.delete(id);
+					const decisions = listed
+						.filter((decision) => !this.#answered.has(decision.interactionId))
+						.map((decision) => this.#withMyVote(decision));
 					for (const decision of decisions)
-						if (decision.kind === "draft") this.#drafts.set(decision.interactionId, decision);
+						if (decision.kind === "draft" && !decision.othersAnswer)
+							this.#drafts.set(decision.interactionId, decision);
 					this.store.set({
 						decisions,
-						questions: decisions.filter((decision): decision is OpenCard => decision.kind === "question"),
+						questions: decisions.filter(
+							(decision): decision is OpenCard => decision.kind === "question" && !decision.othersAnswer,
+						),
 						read: true,
 					});
 					this.#count();
@@ -205,6 +216,64 @@ export class OpenQuestions {
 		return this.#company.actEmailDraft(draft.sessionId, draft.interactionId, action, content);
 	}
 
+	get viewerId(): string {
+		return this.#company.userId;
+	}
+
+	mayVote(): boolean {
+		return this.#company.store.get().team?.capabilities.write === true;
+	}
+
+	async vote(decision: OpenDecision, choice: string | undefined, note: string | undefined): Promise<void> {
+		const id = decision.interactionId;
+		const before = this.#myVotes.get(id);
+		const calls = (before?.calls ?? 0) + 1;
+		const sent = (before?.sent ?? Promise.resolve()).then(() => this.#company.castDecisionVote(id, choice, note));
+		this.#myVotes.set(id, {
+			...(choice === undefined ? {} : { choice }),
+			...(note === undefined ? {} : { note }),
+			at: new Date().toISOString(),
+			calls,
+			sent: sent.then(
+				() => {},
+				() => {},
+			),
+		});
+		this.store.set({ decisions: this.store.get().decisions.map((listed) => this.#withMyVote(listed)) });
+		try {
+			await sent;
+		} catch (error) {
+			if (this.#myVotes.get(id)?.calls === calls) this.#myVotes.delete(id);
+			void this.refresh();
+			throw error;
+		}
+		const mine = this.#myVotes.get(id);
+		if (mine?.calls === calls) this.#myVotes.set(id, { ...mine, settledAt: this.#reads });
+		void this.refresh();
+	}
+
+	#withMyVote(decision: OpenDecision): OpenDecision {
+		const mine = this.#myVotes.get(decision.interactionId);
+		if (!mine) return decision;
+		const userId = this.#company.userId;
+		return {
+			...decision,
+			votes: [
+				...(decision.votes ?? []).filter((vote) => vote.userId !== userId),
+				...(mine.choice === undefined && mine.note === undefined
+					? []
+					: [
+							{
+								userId,
+								...(mine.choice === undefined ? {} : { choice: mine.choice }),
+								...(mine.note === undefined ? {} : { note: mine.note }),
+								updatedAt: mine.at,
+							},
+						]),
+			],
+		};
+	}
+
 	forget(interactionId: string): void {
 		this.#answered.add(interactionId);
 		const { questions, decisions } = this.store.get();
@@ -231,18 +300,28 @@ export class OpenQuestions {
 
 	#count(): void {
 		this.#company.setOpenDecisions(
-			this.store.get().decisions.filter((decision) => !this.#onTheirWay.has(decision.interactionId)).length +
-				this.unsettledDrafts().length,
+			this.store
+				.get()
+				.decisions.filter((decision) => !decision.othersAnswer && !this.#onTheirWay.has(decision.interactionId))
+				.length + this.unsettledDrafts().length,
 		);
 	}
 
 	async #list(): Promise<OpenDecision[]> {
-		if (!this.#questionsOnly) {
+		if (this.#source === "company") {
+			try {
+				return await this.#company.listCompanyOpenDecisions();
+			} catch (error) {
+				if (!(error instanceof CloudRpcError && error.missing)) throw error;
+				this.#source = "member";
+			}
+		}
+		if (this.#source === "member") {
 			try {
 				return await this.#company.listOpenDecisions();
 			} catch (error) {
 				if (!(error instanceof CloudRpcError && error.missing)) throw error;
-				this.#questionsOnly = true;
+				this.#source = "questions";
 			}
 		}
 		return asOpenCards(await this.#company.listOpenQuestions());
@@ -263,7 +342,10 @@ export class OpenQuestions {
 		const clock = setInterval(() => {
 			if (typeof document === "undefined" || document.visibilityState !== "hidden") void this.refresh();
 		}, HEARTBEAT_MS);
-		const mayWrite = () => this.#company.store.get().team?.capabilities.write === true;
+		const mayWrite = () => {
+			const capabilities = this.#company.store.get().team?.capabilities;
+			return `${capabilities?.read === true} ${capabilities?.write === true}`;
+		};
 		let could = mayWrite();
 		const stopTeam = this.#company.store.subscribe(() => {
 			const can = mayWrite();

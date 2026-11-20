@@ -100,6 +100,7 @@ export interface InteractionCardContext {
 	/** The agent's figure, waiting: the head of a card that waits for this member in a thread. */
 	figure?: () => HTMLElement;
 	reworking?: boolean;
+	vote?: { answerer: string; pick?: (value: string) => void };
 	/** Sends the outcome and answer; the card shows its busy state until it resolves. */
 	answer: (outcome: InteractionOutcome, answer: Record<string, JsonValue>) => Promise<void>;
 	/** A takeover card's Open computer: the agent's computer in the thread (woken when it sleeps), its large view once
@@ -217,7 +218,10 @@ function visualChoices(
 				...(pick ? {} : { disabled: true }),
 				...(pick && multi ? { "aria-pressed": String(chosen.has(option.value)) } : {}),
 				...(busy ? { "aria-disabled": "true" } : {}),
-				...(app ? { dataset: { previewApp: app, previewShown: appShown(context.app?.(app)) } } : {}),
+				dataset: {
+					optionValue: option.value,
+					...(app ? { previewApp: app, previewShown: appShown(context.app?.(app)) } : {}),
+				},
 			},
 			// An option with no preview draws no preview: a box of its own, with its label, and nothing above it.
 			option.preview ? choicePicture(option.preview, context.app, context.image) : null,
@@ -491,6 +495,13 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 		});
 	};
 	const open = state === "waiting" && context.canAnswer;
+	const vote =
+		state === "waiting" &&
+		!context.canAnswer &&
+		request.surface === "question" &&
+		questionInput(request) !== "mail_address"
+			? context.vote
+			: undefined;
 	const stateTone = state === "waiting" ? "warn" : state === "answered" ? "ok" : "neutral";
 
 	// The card's own words, drawn as a message's Markdown.
@@ -638,7 +649,7 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 				...parts.actions,
 				pill(t("Skip"), () => answer("declined"), "quiet", busy),
 			);
-		} else if (open) {
+		} else if (open || vote) {
 			const send = () => {
 				const values = [...chosen];
 				if (values.length) answer("answered", { values });
@@ -650,6 +661,10 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 					const element = pill(
 						option.label,
 						() => {
+							if (vote) {
+								vote.pick?.(option.value);
+								return;
+							}
 							if (!multi) {
 								answer("answered", { values: [option.value] });
 								return;
@@ -661,47 +676,58 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 						option.style === "primary" ? "primary" : "secondary",
 						busy,
 					);
-					if (multi) element.setAttribute("aria-pressed", "false");
+					if (multi && !vote) element.setAttribute("aria-pressed", "false");
 					if (option.description) element.title = option.description;
+					element.dataset.optionValue = option.value;
+					if (vote && !vote.pick) element.disabled = true;
 					return element;
 				});
+			const pickBox =
+				vote && !vote.pick
+					? null
+					: (option: QuestionOption, box: HTMLButtonElement) => {
+							if (vote) {
+								vote.pick?.(option.value);
+								return;
+							}
+							if (!multi) {
+								answer("answered", { values: [option.value] });
+								return;
+							}
+							if (chosen.has(option.value)) chosen.delete(option.value);
+							else chosen.add(option.value);
+							box.setAttribute("aria-pressed", String(chosen.has(option.value)));
+							box.classList.toggle("is-chosen", chosen.has(option.value));
+						};
 			body.push(
 				visual
 					? visualChoices(
 							pictured,
 							context,
-							(option, box) => {
-								if (!multi) {
-									answer("answered", { values: [option.value] });
-									return;
-								}
-								if (chosen.has(option.value)) chosen.delete(option.value);
-								else chosen.add(option.value);
-								box.setAttribute("aria-pressed", String(chosen.has(option.value)));
-								box.classList.toggle("is-chosen", chosen.has(option.value));
-							},
+							pickBox,
 							chosen,
 							busy,
-							multi,
+							multi && !vote,
 							optionButtons.length
 								? h("div", { class: "interaction-options choice-others" }, ...optionButtons)
 								: null,
 						)
 					: h("div", { class: "interaction-options" }, ...optionButtons),
 			);
-			const field = custom
-				? (h("input", {
-						type: "text",
-						class: "interaction-field",
-						placeholder: t("Something else…"),
-						"aria-label": t("Your own answer"),
-						onkeydown: (event: KeyboardEvent) => {
-							if (event.key !== "Enter") return;
-							event.preventDefault();
-							sendOwn();
-						},
-					}) as HTMLInputElement)
-				: null;
+			const field =
+				custom && !vote
+					? (h("input", {
+							type: "text",
+							class: "interaction-field",
+							placeholder: t("Something else…"),
+							"aria-label": t("Your own answer"),
+							onkeydown: (event: KeyboardEvent) => {
+								if (event.key !== "Enter") return;
+								event.preventDefault();
+								sendOwn();
+							},
+						}) as HTMLInputElement)
+					: null;
 			const sendOwn = () => {
 				const value = field?.value.trim();
 				if (value) answer("answered", { values: [value] });
@@ -720,12 +746,8 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 				});
 				own = h("span", { class: "interaction-own" }, field, sendOwnButton);
 			}
-			const sendButton = multi ? pill(t("Send"), send, "primary", busy) : null;
-			actions.push(
-				own,
-				sendButton,
-				pill(t("Skip"), () => answer("declined"), "quiet", busy),
-			);
+			const sendButton = multi && !vote ? pill(t("Send"), send, "primary", busy) : null;
+			actions.push(own, sendButton, vote ? null : pill(t("Skip"), () => answer("declined"), "quiet", busy));
 		}
 	} else if (request.surface === "takeover") {
 		const instruction = typeof request.payload.instruction === "string" ? request.payload.instruction : "";
@@ -852,7 +874,7 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 	card = h(
 		"article",
 		{
-			class: `interaction-card surface-${request.surface} state-${state}${exchange ? " is-exchange" : ""}${asking || reworking ? " is-asking" : ""}${reworking ? " is-reworking" : ""}`,
+			class: `interaction-card surface-${request.surface} state-${state}${exchange ? " is-exchange" : ""}${asking || reworking || vote ? " is-asking" : ""}${reworking ? " is-reworking" : ""}${vote ? " is-voting" : ""}`,
 			dataset: {
 				interactionId: item.id,
 				surface: request.surface,
@@ -872,7 +894,7 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 				...(exchange ? { dataset: { sentAt: item.createdAt } } : {}),
 			},
 			// A card that waits for the member in a thread is headed by who asks: the label row is then a screen reader's.
-			asking || reworking
+			asking || reworking || vote
 				? h(
 						"div",
 						{ class: "interaction-call" },
@@ -885,9 +907,11 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 							...named(
 								reworking
 									? t("{name} is reworking this", { name: NAME_MARK })
-									: request.surface === "question"
-										? t("{name} asks you", { name: NAME_MARK })
-										: t("{name} needs you", { name: NAME_MARK }),
+									: vote
+										? t("{name} asks {member}", { name: NAME_MARK, member: vote.answerer })
+										: request.surface === "question"
+											? t("{name} asks you", { name: NAME_MARK })
+											: t("{name} needs you", { name: NAME_MARK }),
 								context.agentName,
 							),
 						),
@@ -898,7 +922,7 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 				// Who asks, when, and the card's state. In a thread, and in the questions dock, that already stands over
 				// the card: the row is then a screen reader's alone.
 				{
-					class: `interaction-heading${exchange || asking || reworking || context.inDock === true ? " visually-hidden" : ""}`,
+					class: `interaction-heading${exchange || asking || reworking || vote || context.inDock === true ? " visually-hidden" : ""}`,
 				},
 				h("span", { class: "interaction-kind" }, t(SURFACE_LABEL[request.surface])),
 				h("span", { class: "interaction-from" }, `${context.agentName} · ${fmtTime(item.createdAt)}`),

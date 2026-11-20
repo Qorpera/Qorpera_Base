@@ -5,6 +5,7 @@ import { CompanyController, type ConversationState } from "../src/app/company.ts
 import type { OpenQuestions, OpenQuestionsState } from "../src/app/open-questions.ts";
 import { Store } from "../src/app/state.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
+import { SETTLE_MS } from "../src/app/views/decision-dock.ts";
 import type { QuestionDockHost } from "../src/app/views/question-dock.ts";
 import type { OpenDraft } from "../src/cloud/open-decisions.ts";
 import type { OpenQuestion } from "../src/cloud/open-questions.ts";
@@ -76,6 +77,8 @@ function setup(cofounder: boolean) {
 			draftEditor: (draft: OpenDraft) => company.emailDraftEditor(draft.interactionId),
 			draftUnsettled: () => false,
 			unsettledDrafts: () => [],
+			mayVote: () => true,
+			viewerId: userA.id,
 			loadDraft: async () => ({
 				from: "jonas@mywave.test",
 				content: { to: ["ada@acme.test"], cc: [], subject: "Our offer", body: "Hello Ada" },
@@ -229,6 +232,7 @@ describe("open decisions in the Co-Founder's chat", () => {
 		const f = setup(true);
 		const request = waitingApproval(f, id(732));
 		await settle();
+		await new Promise((resolve) => setTimeout(resolve, SETTLE_MS + 20));
 		[...f.view.el.querySelectorAll<HTMLButtonElement>(".decision-dock button")]
 			.find((button) => button.textContent === "Allow once")
 			?.click();
@@ -254,6 +258,7 @@ describe("open decisions in the Co-Founder's chat", () => {
 		const f = setup(true);
 		waitingApproval(f, id(733));
 		await settle();
+		await new Promise((resolve) => setTimeout(resolve, SETTLE_MS + 20));
 		const refusal =
 			"Your answer did not go. It would start this agent's work, and only members of the agent's thread can do that. Ask someone in that thread to answer.";
 		f.approved.mockImplementationOnce(async () => {
