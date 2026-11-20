@@ -1,21 +1,34 @@
 import type { Cloud } from "./client.ts";
 import { isGmailDraft, parseInteractionRequest } from "./interactions.ts";
 import type { OpenQuestion } from "./open-questions.ts";
-import { array, boundedInteger, CloudShapeError, jsonValue, record, timestamp, uuid } from "./parse.ts";
+import { array, boundedInteger, CloudShapeError, jsonValue, nonEmptyString, record, timestamp, uuid } from "./parse.ts";
 import { type ActionReviewCard, actionReviewCard } from "./review-rules.ts";
 import type { JsonValue } from "./types.ts";
 
 export const OPEN_DECISIONS_SCHEMA = "qorpera.member-open-decisions/v1";
+export const COMPANY_OPEN_DECISIONS_SCHEMA = "qorpera.company-open-decisions/v1";
 
-export interface OpenCard extends OpenQuestion {
+export interface DecisionVote {
+	userId: string;
+	choice?: string;
+	note?: string;
+	updatedAt: string;
+}
+
+interface CompanyStanding {
+	othersAnswer?: true;
+	votes?: readonly DecisionVote[];
+}
+
+export interface OpenCard extends OpenQuestion, CompanyStanding {
 	kind: "question";
 }
 
-export interface OpenDraft extends OpenQuestion {
+export interface OpenDraft extends OpenQuestion, CompanyStanding {
 	kind: "draft";
 }
 
-export interface OpenApproval {
+export interface OpenApproval extends CompanyStanding {
 	kind: "approval";
 	sessionId: string;
 	interactionId: string;
@@ -34,9 +47,26 @@ export function decisionTitle(decision: OpenDecision): string {
 	return decision.kind === "approval" ? decision.review.title : decision.request.title;
 }
 
+function parseVotes(value: unknown): DecisionVote[] {
+	return array(value, "decision votes").map((entry) => {
+		const vote = record(entry, "decision vote");
+		return {
+			userId: uuid(vote.userId, "decision vote member"),
+			...(vote.choice === null || vote.choice === undefined
+				? {}
+				: { choice: nonEmptyString(vote.choice, "decision vote choice", 200) }),
+			...(vote.note === null || vote.note === undefined
+				? {}
+				: { note: nonEmptyString(vote.note, "decision vote note", 500) }),
+			updatedAt: timestamp(vote.updatedAt, "decision vote time"),
+		};
+	});
+}
+
 export function parseOpenDecisions(value: unknown): OpenDecision[] {
 	const input = record(value, "open decisions");
-	if (input.schema !== OPEN_DECISIONS_SCHEMA) throw new CloudShapeError("open decisions");
+	const company = input.schema === COMPANY_OPEN_DECISIONS_SCHEMA;
+	if (!company && input.schema !== OPEN_DECISIONS_SCHEMA) throw new CloudShapeError("open decisions");
 	return array(input.decisions, "open decisions").flatMap((value): OpenDecision[] => {
 		const item = record(value, "open decision");
 		const shared = {
@@ -44,6 +74,8 @@ export function parseOpenDecisions(value: unknown): OpenDecision[] {
 			interactionId: uuid(item.id, "open decision id").toLowerCase(),
 			staffAgentId: uuid(item.staffAgentId, "open decision agent"),
 			createdAt: timestamp(item.createdAt, "open decision time"),
+			...(company && item.canAnswer !== true ? { othersAnswer: true as const } : {}),
+			...(company ? { votes: parseVotes(item.votes) } : {}),
 		};
 		if (item.kind === "approval") {
 			const data = jsonValue(item.review);
@@ -68,6 +100,25 @@ export function parseOpenDecisions(value: unknown): OpenDecision[] {
 				request,
 			},
 		];
+	});
+}
+
+export async function listCompanyOpenDecisions(cloud: Cloud, profileId: string): Promise<OpenDecision[]> {
+	return parseOpenDecisions(await cloud.rpc("qorpera_list_company_open_decisions", { p_profile_id: profileId }));
+}
+
+export async function castDecisionVote(
+	cloud: Cloud,
+	profileId: string,
+	itemId: string,
+	choice: string | undefined,
+	note: string | undefined,
+): Promise<void> {
+	await cloud.rpc("qorpera_cast_decision_vote", {
+		p_profile_id: profileId,
+		p_item_id: itemId,
+		p_choice: choice ?? null,
+		p_note: note ?? null,
 	});
 }
 

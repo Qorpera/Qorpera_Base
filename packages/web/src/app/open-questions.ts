@@ -89,7 +89,7 @@ export class OpenQuestions {
 	#watchers = 0;
 	#stopWatching: (() => void) | undefined;
 	#reads = 0;
-	#questionsOnly = false;
+	#source: "company" | "member" | "questions" = "company";
 	readonly #onTheirWay = new Set<string>();
 	readonly #drafts = new Map<string, OpenDraft>();
 	#reading: Promise<void> | undefined;
@@ -133,10 +133,13 @@ export class OpenQuestions {
 					if (version !== this.#reads) return;
 					const decisions = listed.filter((decision) => !this.#answered.has(decision.interactionId));
 					for (const decision of decisions)
-						if (decision.kind === "draft") this.#drafts.set(decision.interactionId, decision);
+						if (decision.kind === "draft" && !decision.othersAnswer)
+							this.#drafts.set(decision.interactionId, decision);
 					this.store.set({
 						decisions,
-						questions: decisions.filter((decision): decision is OpenCard => decision.kind === "question"),
+						questions: decisions.filter(
+							(decision): decision is OpenCard => decision.kind === "question" && !decision.othersAnswer,
+						),
 						read: true,
 					});
 					this.#count();
@@ -205,6 +208,46 @@ export class OpenQuestions {
 		return this.#company.actEmailDraft(draft.sessionId, draft.interactionId, action, content);
 	}
 
+	get viewerId(): string {
+		return this.#company.userId;
+	}
+
+	mayVote(): boolean {
+		return this.#company.store.get().team?.capabilities.write === true;
+	}
+
+	async vote(decision: OpenDecision, choice: string | undefined, note: string | undefined): Promise<void> {
+		const userId = this.#company.userId;
+		const others = (decision.votes ?? []).filter((vote) => vote.userId !== userId);
+		const mine =
+			choice === undefined && note === undefined
+				? []
+				: [
+						{
+							userId,
+							...(choice === undefined ? {} : { choice }),
+							...(note === undefined ? {} : { note }),
+							updatedAt: new Date().toISOString(),
+						},
+					];
+		const cast = (votes: OpenDecision["votes"]) => {
+			const { decisions } = this.store.get();
+			this.store.set({
+				decisions: decisions.map((listed) =>
+					listed.interactionId === decision.interactionId ? { ...listed, votes } : listed,
+				),
+			});
+		};
+		cast([...others, ...mine]);
+		try {
+			await this.#company.castDecisionVote(decision.interactionId, choice, note);
+		} catch (error) {
+			cast(decision.votes);
+			void this.refresh();
+			throw error;
+		}
+	}
+
 	forget(interactionId: string): void {
 		this.#answered.add(interactionId);
 		const { questions, decisions } = this.store.get();
@@ -231,18 +274,28 @@ export class OpenQuestions {
 
 	#count(): void {
 		this.#company.setOpenDecisions(
-			this.store.get().decisions.filter((decision) => !this.#onTheirWay.has(decision.interactionId)).length +
-				this.unsettledDrafts().length,
+			this.store
+				.get()
+				.decisions.filter((decision) => !decision.othersAnswer && !this.#onTheirWay.has(decision.interactionId))
+				.length + this.unsettledDrafts().length,
 		);
 	}
 
 	async #list(): Promise<OpenDecision[]> {
-		if (!this.#questionsOnly) {
+		if (this.#source === "company") {
+			try {
+				return await this.#company.listCompanyOpenDecisions();
+			} catch (error) {
+				if (!(error instanceof CloudRpcError && error.missing)) throw error;
+				this.#source = "member";
+			}
+		}
+		if (this.#source === "member") {
 			try {
 				return await this.#company.listOpenDecisions();
 			} catch (error) {
 				if (!(error instanceof CloudRpcError && error.missing)) throw error;
-				this.#questionsOnly = true;
+				this.#source = "questions";
 			}
 		}
 		return asOpenCards(await this.#company.listOpenQuestions());
@@ -263,7 +316,10 @@ export class OpenQuestions {
 		const clock = setInterval(() => {
 			if (typeof document === "undefined" || document.visibilityState !== "hidden") void this.refresh();
 		}, HEARTBEAT_MS);
-		const mayWrite = () => this.#company.store.get().team?.capabilities.write === true;
+		const mayWrite = () => {
+			const capabilities = this.#company.store.get().team?.capabilities;
+			return `${capabilities?.read === true} ${capabilities?.write === true}`;
+		};
 		let could = mayWrite();
 		const stopTeam = this.#company.store.subscribe(() => {
 			const can = mayWrite();

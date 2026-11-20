@@ -1882,6 +1882,23 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .decision-card .interaction-call strong b { color: var(--text); font-weight: 650; }
 .decision-card .interaction-dot { display: none; }
 .decision-error { margin: 6px 2px 0; color: var(--danger); font-size: 12.5px; line-height: 1.4; }
+.decision-votes { display: flex; flex-direction: column; gap: 8px; margin: 8px 2px 0; }
+.decision-votes:not(:has(li, input)) { display: none; }
+.vote-notes { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; color: var(--text-muted); font-size: 12.5px; line-height: 1.4; }
+.vote-notes:empty { display: none; }
+.vote-notes li { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.vote-notes b { flex: none; color: var(--text); font-weight: 600; }
+.vote-notes li > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+:is(.vote-notes, .vote-faces) .person-avatar { flex: none; width: 18px; height: 18px; font-size: 8px; }
+.vote-faces { display: inline-flex; align-items: center; margin-left: 8px; vertical-align: middle; }
+.vote-faces .person-avatar { box-shadow: 0 0 0 1.5px var(--popover, var(--bg)); }
+.vote-faces .person-avatar + .person-avatar { margin-left: -5px; }
+.decision-card .choice-box { position: relative; }
+.choice-box > .vote-faces { position: absolute; top: 14px; right: 14px; margin: 0; }
+.decision-card :is(.btn, .choice-box).is-voted { outline: 2px solid var(--text); outline-offset: 2px; }
+.decision-note { box-sizing: border-box; width: 100%; min-height: 34px; padding: 6px 12px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--popover, var(--bg)); color: var(--text); font: inherit; font-size: 13px; }
+.decision-note:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.decision-tab.is-others:not([aria-selected="true"]) { border-style: dashed; color: var(--text-muted); }
 .decision-figure { display: grid; flex: none; place-items: end center; width: 132px; }
 .decision-dock.is-narrow .decision-stage { position: relative; display: block; padding: 50px 0 0; }
 .decision-dock.is-narrow .decision-figure { position: absolute; top: 0; right: 14px; width: auto; }
