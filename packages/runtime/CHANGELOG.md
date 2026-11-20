@@ -1,10 +1,14 @@
 # Changelog
 
 ## [Unreleased]
-- An approved machine command runs (mywave, 20 Nov 2026: Brand wrote `/tmp/mywave-name-probe.py` with a heredoc,
-  the review read it in that command, then said it could not read the file when Brand ran it eight seconds later and
-  asked; the founder's Allow once was never used, because the woken run read the card's reason as a warning and did not
-  repeat the call). machine_run remembers each file a started command writes with a quoted heredoc (`cat > /abs/path
+- The review's read of a script a machine command runs starts (mywave, 20 Nov 2026). Its operation had no
+  `operationKey` in its arguments, while the executor rebuilds every start's digest with one
+  (`deploy/coding-worker/machine-command-authority.ts`), so every read since the reads went live (#1924) was refused
+  `MACHINE_COMMAND_INPUT_DIFFERS`, filed as NOT_STARTED: 134 of 134 on production, 18-20 Nov. The review saw no script
+  and kept every such command at ask. A test now checks the read against the executor's own check.
+- An approved machine command runs (mywave, 20 Nov 2026: Brand wrote `/tmp/mywave-name-probe.py` with a heredoc and
+  ran it eight seconds later; the review could not read it and asked, and the founder's Allow once was never used,
+  because the woken run read the card's reason as a warning and did not repeat the call). machine_run remembers each file a started command writes with a quoted heredoc (`cat > /abs/path
   <<'TAG'`, `cat <<'TAG' > /abs/path`) per machine, and when the review's read of a script fails or finds no file, it
   shows that text, marked as written by an earlier command and not read just now, so the script is shown and the
   review is not held at ask for an unread file. A failed read now names why (did not start in time, the machine's

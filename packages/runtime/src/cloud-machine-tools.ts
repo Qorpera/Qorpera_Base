@@ -999,13 +999,14 @@ export function cloudMachineTools(options: {
 		const program = cloudScriptReadProgram(files.map((file) => file.path));
 		const deadline = AbortSignal.any([context.signal, AbortSignal.timeout(SCRIPT_READ_MS)]);
 		const scope = { machineId: machine.machineId };
+		const operationKey = `review-read.${randomUUID()}`;
 		try {
 			const started = await options.operations.execute({
 				operation: {
 					tool: "machine_run",
 					toolVersion: CLOUD_MACHINE_TOOL_VERSION,
-					logicalOperationKey: `review-read.${randomUUID()}`,
-					arguments: { machine: machine.name, command: program, timeoutMs: SCRIPT_READ_MS, notify: false },
+					logicalOperationKey: operationKey,
+					arguments: { operationKey, machine: machine.name, command: program, timeoutMs: SCRIPT_READ_MS, notify: false },
 					target: { realm: "company_machine", machineId: machine.machineId },
 					requiresCompanyRevision: false,
 				},

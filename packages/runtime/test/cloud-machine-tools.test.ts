@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { authorizeMachineCommand } from "../../../deploy/coding-worker/machine-command-authority.ts";
 import { CLOUD_MACHINE_FOLDER_LIMITS, cloudMachineFolderBytes, type JsonValue } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type CloudActionReviewControl, CloudActionReviewGate } from "../src/cloud-action-review.ts";
@@ -2857,6 +2858,55 @@ describe("the files a machine command runs, read for its review (17 November 202
 			expect(tool.reviewContents?.(ready)).not.toHaveProperty("notShown");
 			expect(tool.reviewIdentity?.(ready)).toContain(sha);
 			expect(tool.reviewContents?.(tool.parseArguments({ ...args, command: "npm test" }))).toBeUndefined();
+		} finally {
+			f.boundary.close();
+		}
+	});
+
+	it("starts its read the way the machine's executor checks every start, so the read is never refused as differing (mywave, 20 November 2026)", async () => {
+		const f = fixture();
+		f.gateway.read = readOutput(
+			`QORPERA-REVIEW-READ\nF ${Buffer.byteLength(SCRIPT)}\n${Buffer.from(SCRIPT).toString("base64")}\n`,
+		);
+		try {
+			await prepareOf(f);
+			const [call] = f.execute.mock.calls;
+			const operation = call?.[0].operation;
+			const start = f.gateway.start.mock.calls[0];
+			if (!operation || !start) throw new Error("no read");
+			const [scope, input] = start;
+			const inputSha256 = createHash("sha256")
+				.update(cloudNativeToolOperationEnvelope(f.identity, operation))
+				.digest("hex");
+			const answer = {
+				schema: "qorpera.machine-command-authority/v1",
+				state: "authorized",
+				machineId: scope.machineId,
+				machine: "build-a",
+				placementId: "00000000-0000-4000-8000-000000000066",
+				commandId: input.commandId,
+				inputSha256,
+				operationKey: operation.logicalOperationKey,
+				runId: f.binding.runId,
+				executorOwner: "mx-a",
+				providerId: "machine-node",
+				instanceSha256: "b".repeat(64),
+				bootId: randomUUID(),
+				identity: f.identity,
+			};
+			await expect(
+				authorizeMachineCommand(
+					{ call: async () => answer },
+					{
+						schema: "qorpera.machine-command-http/v1",
+						binding: f.binding,
+						scope,
+						action: "start",
+						input: { ...input, inputSha256 },
+					},
+					new AbortController().signal,
+				),
+			).resolves.toMatchObject({ inputSha256 });
 		} finally {
 			f.boundary.close();
 		}
