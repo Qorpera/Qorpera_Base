@@ -119,7 +119,7 @@ export class DecisionDock {
 	#told = "";
 	#narrow = false;
 	#expires: ReturnType<typeof setTimeout> | undefined;
-	#cut: ResizeObserver | undefined;
+	#cut: { disconnect: () => void } | undefined;
 
 	constructor(host: QuestionDockHost) {
 		this.#host = host;
@@ -491,9 +491,20 @@ export class DecisionDock {
 		const mark = () => card.classList.toggle("is-cut", card.scrollHeight - card.scrollTop - card.clientHeight > 4);
 		card.addEventListener("scroll", mark, { passive: true });
 		if (typeof ResizeObserver !== "function") return;
-		this.#cut = new ResizeObserver(mark);
-		this.#cut.observe(card);
-		for (const part of card.children) this.#cut.observe(part);
+		const sizes = new ResizeObserver(mark);
+		sizes.observe(card);
+		for (const part of card.children) sizes.observe(part);
+		const redrawn = new MutationObserver(() => {
+			for (const part of card.children) sizes.observe(part);
+			mark();
+		});
+		redrawn.observe(card, { childList: true });
+		this.#cut = {
+			disconnect: () => {
+				sizes.disconnect();
+				redrawn.disconnect();
+			},
+		};
 	}
 
 	#drawTabs(cards: OpenDecision[], current: OpenDecision): void {

@@ -1394,6 +1394,41 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		dock.dispose();
 	});
 
+	it("marks a draft taller than its room as cut once its card has drawn itself again with the sender", async () => {
+		const seen = new Set<Element>();
+		vi.stubGlobal(
+			"ResizeObserver",
+			class {
+				observe(target: Element) {
+					seen.add(target);
+				}
+				disconnect() {}
+			},
+		);
+		let loaded: (state: EmailDraftState) => void = () => {};
+		const { host } = company({
+			drafts: [draft],
+			draft: () =>
+				new Promise<EmailDraftState>((resolve) => {
+					loaded = resolve;
+				}),
+		});
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await rest();
+		const card = dock.el.querySelector<HTMLElement>(".decision-card > .email-draft-card");
+		if (!card) throw new Error("card expected");
+		Object.defineProperty(card, "scrollHeight", { value: 500 });
+		Object.defineProperty(card, "clientHeight", { value: 300 });
+		expect(card.classList.contains("is-cut")).toBe(false);
+		loaded(readyDraft);
+		await rest();
+		expect(card.querySelector(".email-draft-from")?.textContent).toBe("jonas@mywave.test");
+		expect(card.classList.contains("is-cut")).toBe(true);
+		expect([...card.children].every((part) => seen.has(part))).toBe(true);
+		dock.dispose();
+	});
+
 	it("is not there with nothing to decide", async () => {
 		const { host } = company();
 		const dock = new DecisionDock(host);
