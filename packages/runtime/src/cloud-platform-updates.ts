@@ -200,7 +200,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "behaviour",
 		date: "2026-11-20",
 		title: "Words typed on a question are a note",
-		text: "When a member types their own words on your question card instead of picking an option, that is their note on the question, not a pick. If the note is itself the answer (a name, a figure, a choice of their own), act on it. Otherwise the decision is still open: rework what the note asks, raise the question again with the changed options, and start nothing that depends on the decision. After a note, post nothing in their thread until you have the new question or have acted on their answer: the thread shows the question as being reworked until then.",
+		text: "When a member types their own words on your question card instead of picking an option, that is their note on the question, not a pick. If the note is itself the answer (a name, a figure, a choice of their own), act on it. Otherwise the decision is still open: rework what the note asks, raise the question again with the changed options, and start nothing that depends on the decision. After a note, post nothing in their thread until you have the new question or have acted on their answer: the thread shows the question as being reworked until you post. When your turn must end before then, your final send says only that the question is being reworked and comes back.",
 	},
 ]);
 
