@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { CLOUD_MACHINE_FOLDER_LIMITS, cloudMachineFolderBytes, type JsonValue } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { authorizeMachineCommand } from "../../../deploy/coding-worker/machine-command-authority.ts";
 import { type CloudActionReviewControl, CloudActionReviewGate } from "../src/cloud-action-review.ts";
 import { CLOUD_COMMAND_PAGE_ASK } from "../src/cloud-command-page-fit.ts";
 import { COMPANY_COMPUTER_SITE_STOP_MESSAGE } from "../src/cloud-company-computer-site-stops.ts";
@@ -2861,6 +2862,55 @@ describe("the files a machine command runs, read for its review (17 November 202
 		}
 	});
 
+	it("starts its read the way the machine's executor checks every start, so the read is never refused as differing (mywave, 20 November 2026)", async () => {
+		const f = fixture();
+		f.gateway.read = readOutput(
+			`QORPERA-REVIEW-READ\nF ${Buffer.byteLength(SCRIPT)}\n${Buffer.from(SCRIPT).toString("base64")}\n`,
+		);
+		try {
+			await prepareOf(f);
+			const [call] = f.execute.mock.calls;
+			const operation = call?.[0].operation;
+			const start = f.gateway.start.mock.calls[0];
+			if (!operation || !start) throw new Error("no read");
+			const [scope, input] = start;
+			const inputSha256 = createHash("sha256")
+				.update(cloudNativeToolOperationEnvelope(f.identity, operation))
+				.digest("hex");
+			const answer = {
+				schema: "qorpera.machine-command-authority/v1",
+				state: "authorized",
+				machineId: scope.machineId,
+				machine: "build-a",
+				placementId: "00000000-0000-4000-8000-000000000066",
+				commandId: input.commandId,
+				inputSha256,
+				operationKey: operation.logicalOperationKey,
+				runId: f.binding.runId,
+				executorOwner: "mx-a",
+				providerId: "machine-node",
+				instanceSha256: "b".repeat(64),
+				bootId: randomUUID(),
+				identity: f.identity,
+			};
+			await expect(
+				authorizeMachineCommand(
+					{ call: async () => answer },
+					{
+						schema: "qorpera.machine-command-http/v1",
+						binding: f.binding,
+						scope,
+						action: "start",
+						input: { ...input, inputSha256 },
+					},
+					new AbortController().signal,
+				),
+			).resolves.toMatchObject({ inputSha256 });
+		} finally {
+			f.boundary.close();
+		}
+	});
+
 	it("says a script it could not read is not shown, and runs the model's command as it is", async () => {
 		const f = fixture();
 		f.gateway.read = vi.fn<CloudMachineCommandGateway["read"]>(async () => {
@@ -2870,10 +2920,59 @@ describe("the files a machine command runs, read for its review (17 November 202
 			expect((await f.boundary.invoke("r1", "qorpera", "machine_run", args)).success).toBe(true);
 			const { tool, ready } = await prepareOf(f);
 			expect(tool.reviewContents?.(ready)).toMatchObject({
-				files: [{ path: "/tmp/eeg/fetch.py", notShown: "it could not be read just now" }],
-				notShown: ["/tmp/eeg/fetch.py: it could not be read just now"],
+				files: [
+					{
+						path: "/tmp/eeg/fetch.py",
+						notShown: expect.stringMatching(/^it could not be read just now: the read failed \(\w+\)$/),
+					},
+				],
+				notShown: [expect.stringMatching(/^\/tmp\/eeg\/fetch\.py: it could not be read just now: the read failed/)],
 			});
 			expect(f.gateway.start.mock.calls[1]?.[1].command).toBe("cd /tmp/eeg && python3 fetch.py");
+		} finally {
+			f.boundary.close();
+		}
+	});
+
+	it("names why the machine did not start the read", async () => {
+		const f = fixture();
+		f.gateway.start.mockImplementation(async (scope, input) => {
+			if (input.command.startsWith("echo QORPERA-REVIEW-READ"))
+				throw new CloudMachineCommandRefusal("DESKTOP_MEMBER_IN_CONTROL");
+			return f.receipt(scope.machineId, input.commandId) as never;
+		});
+		try {
+			const { tool, ready } = await prepareOf(f);
+			expect(tool.reviewContents?.(ready)).toMatchObject({
+				files: [
+					{
+						path: "/tmp/eeg/fetch.py",
+						notShown:
+							"it could not be read just now: the machine did not start the read: DESKTOP_MEMBER_IN_CONTROL",
+					},
+				],
+			});
+		} finally {
+			f.boundary.close();
+		}
+	});
+
+	it("names a start the executor failed apart from one that did not start in time", async () => {
+		const f = fixture();
+		f.gateway.start.mockImplementation(async (scope, input) => {
+			if (input.command.startsWith("echo QORPERA-REVIEW-READ")) throw new Error("MACHINE_COMMAND_INPUT_DIFFERS");
+			return f.receipt(scope.machineId, input.commandId) as never;
+		});
+		try {
+			const { tool, ready } = await prepareOf(f);
+			expect(tool.reviewContents?.(ready)).toMatchObject({
+				files: [
+					{
+						path: "/tmp/eeg/fetch.py",
+						notShown: expect.stringMatching(/^it could not be read just now: the read's start failed \(\w+\)$/),
+					},
+				],
+			});
 		} finally {
 			f.boundary.close();
 		}

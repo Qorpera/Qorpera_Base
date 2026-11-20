@@ -1,6 +1,17 @@
 # Changelog
 
 ## [Unreleased]
+- The review's read of a script a machine command runs starts (mywave, 20 Nov 2026). Its operation had no
+  `operationKey` in its arguments, while the executor rebuilds every start's digest with one
+  (`deploy/coding-worker/machine-command-authority.ts`), so every read since the reads went live (#1924) was refused
+  `MACHINE_COMMAND_INPUT_DIFFERS`, filed as NOT_STARTED: 134 of 134 on production, 18-20 Nov. The review saw no script
+  and kept every such command at ask. A test now checks the read against the executor's own check.
+- An approved machine command runs (mywave, 20 Nov 2026: the founder's Allow once on Brand's script was never used,
+  because the woken run read the card's reason as a warning and did not repeat the call). A room wake's instructions
+  say that an approval answer means the member read the card, its reason included, and wants the action made now with
+  the card's `call`. A failed script read now names why to the review and in the runner's log: it did not start in
+  time, the executor failed its start (with the error's category, START_FAILED, no longer filed as NOT_STARTED), the
+  machine's refusal, the read's end state and exit code, its output shape, its 20 s limit, or the error's category.
 - A Claude reading names no 5-hour window (the founder, 20 Nov 2026: "remove the 5H limit, they already have"; on
   production that day Claude Code's `get_usage` for an Ultra plan answered `rate_limits.five_hour: null` and weekly
   windows only). `claudeUsageFromGetUsage` no longer reads a null `five_hour` as a 0 % window (the 17 Nov idle-window

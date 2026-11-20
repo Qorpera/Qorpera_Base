@@ -80,7 +80,7 @@ import {
 	MAX_CLOUD_TOOL_RESULT_BYTES,
 } from "./cloud-native-tool-boundary.ts";
 import { type CloudNativeToolOperations, cloudNativeToolOperationEnvelope } from "./cloud-native-tool-operations.ts";
-import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
+import { type CloudRuntimeToolOperation, cloudRuntimeErrorCategory } from "./cloud-runtime-observability.ts";
 
 /** The vault, for save_coding_value (20260930705000): the same two calls an office's capture of a coding value makes
  * (HttpCloudSecretBrokerClient): the value's capture key before the machine reads its clipboard, and the box after. */
@@ -123,6 +123,8 @@ const SCRIPT_READ_MS = 20_000;
 const SCRIPT_START_MS = 15_000;
 const SCRIPT_READ_POLL_MS = 300;
 const REMEMBERED_SCRIPTS = 64;
+
+class ScriptReadFailure extends Error {}
 /** How long a run gives its report of a wait (20260930755000): beside the answer, never holding it long. */
 const WAIT_REPORT_MS = 5000;
 
@@ -952,6 +954,11 @@ export function cloudMachineTools(options: {
 	};
 
 	const scriptTexts = new Map<string, string>();
+	const rememberText = (sha256: string, text: string) => {
+		scriptTexts.delete(sha256);
+		scriptTexts.set(sha256, text);
+		while (scriptTexts.size > REMEMBERED_SCRIPTS) scriptTexts.delete(scriptTexts.keys().next().value as string);
+	};
 	const scriptsOf = (parsed: JsonValue) =>
 		parseCloudPreparedScripts((parsed as Record<string, JsonValue> | null)?.scripts ?? undefined);
 	const readScripts = async (
@@ -962,13 +969,20 @@ export function cloudMachineTools(options: {
 		const program = cloudScriptReadProgram(files.map((file) => file.path));
 		const deadline = AbortSignal.any([context.signal, AbortSignal.timeout(SCRIPT_READ_MS)]);
 		const scope = { machineId: machine.machineId };
+		const operationKey = `review-read.${randomUUID()}`;
 		try {
 			const started = await options.operations.execute({
 				operation: {
 					tool: "machine_run",
 					toolVersion: CLOUD_MACHINE_TOOL_VERSION,
-					logicalOperationKey: `review-read.${randomUUID()}`,
-					arguments: { machine: machine.name, command: program, timeoutMs: SCRIPT_READ_MS, notify: false },
+					logicalOperationKey: operationKey,
+					arguments: {
+						operationKey,
+						machine: machine.name,
+						command: program,
+						timeoutMs: SCRIPT_READ_MS,
+						notify: false,
+					},
 					target: { realm: "company_machine", machineId: machine.machineId },
 					requiresCompanyRevision: false,
 				},
@@ -996,7 +1010,12 @@ export function cloudMachineTools(options: {
 						bound,
 					).then(
 						(receipt): JsonValue => ({ commandId: receipt.commandId }),
-						(error: unknown): JsonValue => ({ refused: cloudMachineCommandRefusal(error) ?? "NOT_STARTED" }),
+						(error: unknown): JsonValue => {
+							const refusal = cloudMachineCommandRefusal(error);
+							return refusal
+								? { refused: refusal }
+								: { refused: "START_FAILED", category: cloudRuntimeErrorCategory(error, bound) };
+						},
 					);
 					let timer: ReturnType<typeof setTimeout> | undefined;
 					const late = new Promise<JsonValue>((resolve) => {
@@ -1009,8 +1028,18 @@ export function cloudMachineTools(options: {
 					}
 				},
 			});
-			const commandId = started.kind === "json" ? (started.value as Record<string, JsonValue>).commandId : null;
-			if (typeof commandId !== "string") throw new Error("Script read differs");
+			const answer = started.kind === "json" ? (started.value as Record<string, JsonValue>) : null;
+			if (typeof answer?.refused === "string")
+				throw new ScriptReadFailure(
+					answer.refused === "NOT_STARTED"
+						? "the read did not start in time"
+						: answer.refused === "START_FAILED"
+							? `the read's start failed (${String(answer.category)})`
+							: `the machine did not start the read: ${answer.refused}`,
+				);
+			const commandId = answer?.commandId;
+			if (typeof commandId !== "string")
+				throw new ScriptReadFailure("the read's start answered in an unknown shape");
 			let output = "";
 			for (let offset = 0; ; ) {
 				const page = parseCloudMachineCommandReceipt(
@@ -1028,21 +1057,30 @@ export function cloudMachineTools(options: {
 					await pause(SCRIPT_READ_POLL_MS, deadline);
 					continue;
 				}
-				if (page.state !== "succeeded" || page.exitCode !== 0) throw new Error("Script read failed");
+				if (page.state !== "succeeded" || page.exitCode !== 0)
+					throw new ScriptReadFailure(`the read ended ${page.state}, exit code ${page.exitCode ?? "none"}`);
 				output += page.output;
 				if (page.output === "" || page.log.nextOffset >= page.log.totalBytes) break;
 				offset = page.log.nextOffset;
 			}
-			const read = parseCloudScriptRead(output, files);
-			for (const [sha256, text] of read.texts) {
-				scriptTexts.delete(sha256);
-				scriptTexts.set(sha256, text);
+			let read: ReturnType<typeof parseCloudScriptRead>;
+			try {
+				read = parseCloudScriptRead(output, files);
+			} catch {
+				throw new ScriptReadFailure("the read's output was not in the expected shape");
 			}
-			while (scriptTexts.size > REMEMBERED_SCRIPTS) scriptTexts.delete(scriptTexts.keys().next().value as string);
+			for (const [sha256, text] of read.texts) rememberText(sha256, text);
 			return read.entries;
-		} catch {
+		} catch (error) {
 			context.signal.throwIfAborted();
-			return cloudScriptNotRead(files, "it could not be read just now");
+			const why =
+				error instanceof ScriptReadFailure
+					? error.message
+					: deadline.aborted
+						? `the read took longer than ${SCRIPT_READ_MS / 1000} s`
+						: `the read failed (${cloudRuntimeErrorCategory(error, context.signal)})`;
+			console.error(`A reviewed script on ${machine.name} was not read: ${why}`);
+			return cloudScriptNotRead(files, `it could not be read just now: ${why}`);
 		}
 	};
 
