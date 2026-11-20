@@ -332,6 +332,65 @@ test("the live release is the one the provider role runs, and the one before it 
 	}
 });
 
+test("holdDir keeps an unstaged release image and its transfer tarball past recentHours (Oct 18 v181 guard)", async () => {
+	const node = await nodeFixture();
+	const holdDir = join(node.root, "holds.d");
+	await mkdir(holdDir);
+	try {
+		const unstaged = image("a", 24, "Qorpera native181 unstaged candidate");
+		const stale = image("b", 100, "Qorpera native170 old");
+		const lxd = {
+			...node.lxd,
+			images: async () => [...(await node.lxd.images()), unstaged, stale],
+		};
+		await writeFile(
+			join(holdDir, "cut-v181.json"),
+			JSON.stringify({
+				schema: "qorpera.node-tidy-hold/v1",
+				fingerprint: unstaged.fingerprint,
+				reason: "cut-v181 awaiting staging",
+				stagingFiles: ["qorpera-native80-image-a1.tar.gz"],
+			}),
+		);
+		await writeFile(join(holdDir, ".tmp-writing"), "{");
+		const cfg = { ...node.config, recentHours: 12, holdDir };
+		const report = await tidy({ config: cfg, apply: true, lxd, systemd: node.systemd, now });
+		assert.equal(report.refusal, null);
+		assert.ok(report.keep.some((k) => k.fingerprint === unstaged.fingerprint && k.reason.includes("cut-v181.json")));
+		assert.deepEqual(
+			report.remove.map((r) => r.fingerprint[0]).sort(),
+			["9", "b"],
+		);
+		assert.deepEqual(report.staging, [], "held transfer tarball stays untouched");
+		assert.ok((await readdir(node.tmp)).includes("qorpera-native80-image-a1.tar.gz"));
+	} finally {
+		await rm(node.root, { recursive: true, force: true });
+	}
+});
+
+test("holdDir fails closed and deletes nothing when a hold file is corrupt or a symlink", async () => {
+	const node = await nodeFixture();
+	const holdDir = join(node.root, "holds.d");
+	await mkdir(holdDir);
+	try {
+		await writeFile(join(holdDir, "broken.json"), "{not-json");
+		const badJson = await tidy({ config: { ...node.config, holdDir }, apply: true, lxd: node.lxd, systemd: node.systemd, now });
+		assert.match(badJson.refusal ?? "", /not valid JSON/);
+		assert.deepEqual(node.deleted, []);
+		assert.equal((await readdir(node.tmp)).length, 2);
+
+		await rm(join(holdDir, "broken.json"));
+		const target = join(node.root, "outside.json");
+		await writeFile(target, JSON.stringify({ schema: "qorpera.node-tidy-hold/v1", fingerprint: fp("9"), reason: "x" }));
+		await symlink(target, join(holdDir, "link.json"));
+		const linkRefused = await tidy({ config: { ...node.config, holdDir }, apply: true, lxd: node.lxd, systemd: node.systemd, now });
+		assert.match(linkRefused.refusal ?? "", /unsafe or oversized/);
+		assert.deepEqual(node.deleted, []);
+	} finally {
+		await rm(node.root, { recursive: true, force: true });
+	}
+});
+
 test("the installer pins the tool, unit and timer it installs", async () => {
 	const here = new URL(".", import.meta.url);
 	const installer = await readFile(new URL("install-node-tidy.sh", here), "utf8");
