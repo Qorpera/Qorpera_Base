@@ -44,15 +44,15 @@ const KINDS = [
 /** The founder rules of PLAN.md §3, each by one phrase of the text and its count (track 3, T3-3 words). Every other rule
  * the rewrite kept is checked per kind of run by packages/runtime/test/cloud-agent-instruction-rules.test.ts. */
 const FOUNDER_RULES = [
-	["P1 a capable colleague", "Act; do not ask for permission you have."],
-	["P2 the gate is in code", "What you can do is what your tools allow"],
-	["P3 fewer human touches", "Never hand them long reading or work the team can do."],
+	["P1 a capable colleague", "Take initiative — do not ask for permission you already have."],
+	["P2 the gate is in code", "What you can do is enforced by your tools"],
+	["P3 fewer human touches", "Never turn a thread into a study hall or hand founders homework the team can do."],
 	["P4 company first", "The company is its files"],
-	["P5 the Co-Founder hires", "You hire and manage"],
-	["P5 from the first conversation", "from the first conversation on"],
+	["P5 the Co-Founder hires", "Your job is to hire, lead, and keep the whole picture clear"],
+	["P5 from the first conversation", "from the very first conversation"],
 	["P6 full ambition", "full ambition"],
-	["P7 show, do not tell", "write little and show a lot"],
-	["P7 work started: the acknowledgement", "it is how the member learns that work has started"],
+	["P7 show, do not tell", "Show rather than bury them in prose"],
+	["P7 work started: the acknowledgement", "it lets the member know you have picked it up"],
 	["P8 purpose before rules", "# Your company\n"],
 	["P9 the tool-result rules once", "# Tool results\n"],
 ];

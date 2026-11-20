@@ -2009,7 +2009,7 @@ it("has an interface app show a thing to see and handle, never a document or a s
 		"an object to turn (the product, a place), a model to try (numbers, a process), an interactive app to use (the product, a working tool), or a short video that explains",
 		"never per area or per agent",
 		"Draw unknowns visibly open (a slider, a gap), never as prose about them.",
-		"save_app's kits draw these well, so use one nearly always: model (numbers and levers to try), board (things on one scale, directions to choose between, or a wall of references), path (steps with evidence and gaps), object (a 3D model or turntable to turn), curve (one metric over time), stack (one big decision card at a time), shelf (products or items side by side), map (the company or an area with layers to dive into), ring (how a whole splits into parts), flow (stages or money moving through), explainer (a short narrated video), program (installable downloads for desktop or phone).",
+		"save_app's kits draw these well, so use one nearly always: model (numbers and levers to try), board (things on one scale, directions to choose between, or a wall of references), path (steps with evidence and gaps), object (a 3D model or turntable to turn), curve (one metric over time), stack (one big decision card at a time), shelf (products or items side by side), map (the company or an area with layers to dive into), ring (a year, month, or week with dates, deadlines, and seasons), flow (money or people from where they come to where they go), explainer (a short narrated video), program (installable downloads for desktop or phone).",
 		"Hand-code a page only for the product's own prototype or a working tool no kit covers.",
 		"Show real things with real pictures (saved as .webp for photos, renders, and screenshots)",
 		"update the thing's app whoever created it, in the same run the underlying work changes",
@@ -2138,6 +2138,36 @@ it("has the finance owner set up the CVR and bank account and keep the Bank page
 	expect(
 		compileCloudNativeCompanyInstructions(parseCloudNativeCompanyContext(finance.context, finance.binding)),
 	).toContain("# Registration and bank");
+	for (const [role, spec] of [
+		["Økonomi", "Du ejer virksomhedens økonomi og betalinger."],
+		["Økonomiansvarlig", "Ansvarlig for budget, likviditet og betalinger."],
+		["Regnskabschef", "Står for moms og årsrapportering."],
+		["Bogføringsansvarlig", "Holder bilag og afstemninger ajour."],
+		["CFO", "Lead capital allocation and investor reporting."],
+	]) {
+		const roleFixture = nativeCompanyContextFixture();
+		roleFixture.context.agentKind = "employee";
+		roleFixture.context.agent.name = "Søren";
+		roleFixture.context.agent.role = role;
+		roleFixture.context.jobSpecification = roleFixture.source("job_spec", roleFixture.context.agent.id, spec);
+		expect(
+			compileCloudNativeCompanyInstructions(
+				parseCloudNativeCompanyContext(roleFixture.context, roleFixture.binding),
+			),
+		).toContain("# Registration and bank");
+	}
+	const sales = nativeCompanyContextFixture();
+	sales.context.agentKind = "employee";
+	sales.context.agent.name = "Anders";
+	sales.context.agent.role = "Account Executive";
+	sales.context.jobSpecification = sales.source(
+		"job_spec",
+		sales.context.agent.id,
+		"Own outbound enterprise accounts and demos.",
+	);
+	expect(
+		compileCloudNativeCompanyInstructions(parseCloudNativeCompanyContext(sales.context, sales.binding)),
+	).not.toContain("# Registration and bank");
 });
 
 it("tells an agent to explore what is to be seen in loops, with demo videos in one posted app", () => {
