@@ -5,7 +5,6 @@ import {
 	type CloudSecretConnectorAdapter,
 	type CloudSecretOperationRequest,
 	PostgresCloudSecretBrokerAuthority,
-	SupabaseCloudSecretBrokerAuthority,
 } from "@qorpera/runtime/cloud-secret-broker";
 import { CloudSecretKeyring, sealCloudSecretFields, withCloudSecretFields } from "@qorpera/runtime/cloud-secret-crypto";
 import { afterEach, expect, it, vi } from "vitest";
@@ -269,26 +268,6 @@ it("fails closed on revocation and never releases private authority or adapter e
 	}
 	expect(error).not.toContain(fixture.canary);
 	expect(fixture.executeAdapter).not.toHaveBeenCalled();
-	fixture.wrappingKey.fill(0);
-});
-
-it("binds the downstream idempotency key to the database receipt authorization", async () => {
-	const fixture = await brokerFixture();
-	let rpcBody: Record<string, unknown> | undefined;
-	const authority = new SupabaseCloudSecretBrokerAuthority({
-		supabaseUrl: "https://database.qorpera.test",
-		serviceRoleKey: "synthetic-service-role",
-		brokerAuthorityId: randomUUID(),
-		brokerCapability: randomBytes(32).toString("base64url"),
-		fetch: async (_input, init) => {
-			rpcBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-			return Response.json({ accepted: true });
-		},
-	});
-	await authority.authorizeOperation(fixture.request, new AbortController().signal);
-	expect(rpcBody?.p_downstream_idempotency_sha256).toBe(
-		createHash("sha256").update(fixture.request.idempotencyKey).digest("hex"),
-	);
 	fixture.wrappingKey.fill(0);
 });
 

@@ -3,6 +3,31 @@
 ## [Unreleased]
 - An explainer gets its voice: `narrate_app {name, operationKey, machine?, voice?}` (deploy/first-node/RUNTIME-INTERFACE-APPS.md §3a "The tool"; Jonas, 10 Nov 2026: "Yes, build it"; migration `20260930815000`, SQL test 1302). On a running company machine it reads the captions of the agent's own explainer from the running video, records on the run's voice lane only the captions that have no clip yet (a clip is named by its caption's hash, so a changed part costs only its changed captions), keeps a turn only when the transcript says the caption was said as written, and commits `voice/clips.json` and the page under its receipt. It reads the login's usage before it starts (`CloudVoiceChannel.usage`, the lane's `voiceUsage`: `account/rateLimits/read`) and places no call at the limit; a call the limit cuts (`thread/realtime/error` "You have reached your usage limit.", seen 18 Nov 2026) ends as `CloudVoiceLimitReached`, what was recorded is saved, and the answer says `limit_reached` with how many captions are spoken and left and when the limit resets. Offered to a Codex login's run with machines, on demand (`more_tools`); review class `internal`. The explainer's guide and a platform update tell agents.
 - An explainer in English and Danish (Jonas, 18 Nov 2026: "the videos needs language selection too, letting you switch between the english and danish"): the engine takes `{en: "…", da: "…"}` wherever it takes a text, shows a button a language, builds the scenes again in the language chosen and stays on the caption it was at; `voice-captions.cjs` prints every language's captions, `narrate_app` records each, and `look` names captions that lack a language (`explainerSaid`).
+- Release v263 (#1944, the patched native Codex 0.155.1 -> 0.170.0 so agents can run GPT-6.2 Sol, everywhere it lives;
+  master since v262's release merge: #1952's dead code and tests, #1829's `money` and `site` reads, #1842's web and one
+  comment, #1975's SQL test): runtime bundle 263 `f3635cabfba0b4c853cb5034ade668a407a3f65ccc86801c985459b9b8aebc83`
+  (activation `20260929026399`, previous 262 `0b6230d998f0`). The activation requires no migration (v263 has none). The guest
+  moves: the native Codex `9d6a86ec` (398,449,416 bytes) and its artifact.json, the native provider host (`88ad9ec6`,
+  5,560,914 bytes). The coding executor moves to `f8db2998` (its machine Codex pin), node 2's company machine image moves
+  with it in the same window, and the images `93ef50b7` and `6e49b94b` (Codex `9c299f88`) are outdated for homes. The test
+  machines' pin (`deploy/test-machine/guest-setup.sh`) is `9d6a86ec`. The shared vault (`9da8db4d`) and the model login
+  helper (`c0c183fa`, official 0.155.1) stay.
+- `save_app`'s `reads` take `money` and `site`, the platform's own numbers of the company (company views step 3, slice W1; cloud-client's `APP_READS`, migration `20260930767000`), from the next bundle. Nothing else of the runtime changes here: `data_query` answering `qorpera`, `save_app` adding the reads for a kit's `qorpera/*` binding and the guide's words are slice R1.
+- The patched native Codex moves from 0.155.1 to 0.170.0 (18 Nov 2026; the founder: "Yes, upgrade Codex"): OpenAI offers
+  GPT-6.2 Sol only to Codex 0.166.0 or newer. `0001-cloud-result-fence.patch` is rebased onto `rust-v0.170.0`
+  (`29eb79e9`); the native binary is `9d6a86ec`, 398,449,416 bytes (deploy/first-node/native-codex/README.md, "0.170.0").
+  The session needs `qorpera_cloud_boundary/0.170.0`; a governed run turns `unified_image_budget` off (on since 0.170.0,
+  it re-prepares a capture at original detail, which the capture fence refuses) and, without a home, is not offered
+  `apply_patch`. Provider-default is GPT-6.2 Sol. The machine image's Codex (`CLOUD_MACHINE_HOME.codexSha256`) moves with it.
+- Release v262 (master since v261's release merge: the action review reads the company's own work as inside work and a
+  denial names the way forward, #1970, runtime text only; a member's waiting thread post moves with their pick of another
+  login, #1968 with migration `20260930813000` and SQL test 1306, SQL only; one clock value for a scheduling pass's stamps,
+  #1971 with migration `20260930814000` and a check in SQL test 1295, SQL only): runtime bundle 262
+  `0b6230d998f01d3f7de0e8cbf6ec3b327c40ea17ed61a9c5759ed1cd91d58b77` (activation `20260929026299`, previous 261
+  `0a7910b42fa1`). The activation requires no migration of its own (both are SQL only; bundle 262 changes the review's
+  words). The guest moves: the native provider host (`3ceeb63f`, 5,560,771 bytes); the rest of the guest and the native
+  Codex (`9c299f88`) stay. The shared vault (`9da8db4d`), the model login helper (`c0c183fa`) and the coding executor
+  stay.
 - Messages that waited together for a busy agent keep their arrival order (founder, 19 Nov 2026: "Yes, build it";
   contract, the 2026-11-19 amendment; migration `20260930814000`, SQL test 1295): a scheduling pass stamps the turn
   requests and wakes it looked at with one time, not one clock read per row, so two wakes scanned together no longer
@@ -635,6 +660,29 @@
 - Coding sessions stand by between turns: the guest configuration is `qorpera.coding-command-guest/v4` (its resource profile names only `maxLogBytes`), command requests are `qorpera.coding-command-request/v2` (`timeoutMs` may be null), and guest leases are `qorpera.coding-guest-lease/v2`, one generation per session attachment with the current turn and whether it is open. A new turn no longer stops the session's commands; a new attachment does. The turn context is `qorpera.coding-turn-context/v2` with `commands` (still running, stopped since the previous turn).
 - The unreleased office unit now loads credentials from the current boot's immutable directory. Previously acknowledged installations without those files are refused; replay does not backfill missing credentials from the original installation.
 - The platform's folders are under `QorperaOS/` (Jonas, 21 October 2026; needs migration `20260930534000` and a recreated company, no data is moved): `QorperaOS/vision/vision.md`, `QorperaOS/agents/` (with `groups/` and `sections.md`), `QorperaOS/rules/`, `QorperaOS/connections/`, `QorperaOS/skills/`, `QorperaOS/contacts/`, `QorperaOS/human-tasks/`, `QorperaOS/interfaces/` and `QorperaOS/tables/`, while `code/` and the company's own work stay at the top. Every run's instructions list them as `QorperaOS/<folder>/` with `code/` beside it (`CLOUD_COMPANY_TOP_FOLDERS` holds the full paths), the head and the first-run wake name `QorperaOS/vision/vision.md`, and the Co-Founder's role overlay is `qorpera.hire-overlay/v7` (the 2026-10-22 amendment's v6 text with the vision, `agents/`, `sections.md` and `human-tasks/` under `QorperaOS/`). The action reviewer's mandate names the vision `QorperaOS/vision/vision.md`. Every run's folder rules add that the platform writes `digital-post/`, `bank/`, `members/` and `hooks/`, which stay at the top (Jonas, 24 October 2026): agents read them but never put their own files there. The context names each agent's folder `QorperaOS/agents/<handle>`, and a member's chat image is accepted only under `QorperaOS/agents/`. `CLOUD_AGENT_VISION_PATH`, `CLOUD_COMPANY_SKILLS_ROOT` and the folder writers (hires, group chats, sidebar sections, todos, workers, routines, routine decisions, table rows) use the cloud client's `osPath`; the descriptions of `table_read`, `table_write`, `organize_sidebar`, `hire_agent` and `create_group_chat` name the new paths. A worker reports only into an `outputFolder` spelled `QorperaOS/agents/<handle>/todos/<todo>/<worker>`; a run log's place (spelled `QorperaOS/...` by the database, either spelling accepted), a human task wake's path, and the interface change notes of `company_*` writes and applied proposals are read below the root with `osRelative`.
+
+### Removed
+
+- Exports and files that only deleted tests still used are gone (18 Nov 2026, #1952; nothing in production, deploy or
+  scripts called them):
+  - `cloud-company-accounts`: `parseCompanyAccountOtpauth` and `parseCompanyAccountRecoveryCodes`.
+  - `cloud-company-computer-leases`: `CompanyComputerScreenActionGate.replaceBinding`, and with it the
+    `SCREEN_REPLACEMENT_PENDING` refusal. A fenced slot still refuses a lease or a fence with another binding.
+  - `cloud-company-computer-screens`: `CloudCompanyComputerScreenManager`. `companyComputerScreenDisplay`,
+    `waitForCompanyComputerScreenReady`, `CompanyComputerScreenLauncher` and `CompanyComputerScreenSessionHandle` stay.
+  - `cloud-company-computer-state` (the whole file, the `@qorpera/runtime/cloud-company-computer-state` subpath):
+    `assertCompanyComputerScreenRegistry`, `transitionCompanyComputerScreens`, `companyComputerScreenBinding`,
+    `companyComputerScreenLease`, `companyComputerPowerIntent` and the `CompanyComputerScreenState`,
+    `CompanyComputerScreenRegistry`, `CompanyComputerScreenCommand` and `CompanyComputerScreenTransition` types.
+  - `cloud-runner-model-socket`: `startCloudRunnerModelSocketServer`, `StartCloudRunnerModelSocketServerOptions`,
+    `CloudRunnerModelSocketServer`, `CloudRunnerModelSocketFactory` and `CloudRunnerModelBroker`. The container's client
+    `requestCloudRunnerModelSocket` and the frame schemas stay.
+  - `cloud-runtime-constitution`: `CLOUD_RUNTIME_CONSTITUTION_VERSION`.
+  - `cloud-secret-broker-http`: `captureCloudSecret`. The web posts a capture to the broker's route itself.
+  - `cloud-secret-broker`: `SupabaseCloudSecretBrokerAuthority` (production builds `PostgresCloudSecretBrokerAuthority`);
+    `parseCloudSecretAccountLabel` is no longer exported.
+  - `cloud-wake-bus`: `CloudNativeWakeBus` and `HttpCloudWakeControl`. `cloudCoworkerMessageTool` and
+    `parseCloudWakeEnvelope` stay.
 
 ### Added
 

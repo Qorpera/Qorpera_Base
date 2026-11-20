@@ -36,10 +36,13 @@
 .computer-scene:is([data-phase=off], [data-phase=asleep]) .computer-scene-eye-shape { background: var(--computer-scene-lid, #fff); }
 .computer-scene[data-avatar=false]:is([data-phase=off], [data-phase=asleep]) .computer-scene-eye-shape { background: hsl(225 12% 52%); }
 /* The dock: the machine's bar (80 of 1000), its three icons (64), the date left and the time right; while it waits,
-   the window's line in its middle, at its left once the icons come, gone when the clocks come. */
-.computer-scene-dock { position: absolute; left: 0; right: 0; bottom: 0; height: 8%; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; background: #101218; font: 400 1.7cqh/1 "Liberation Sans", Arial, Helvetica, sans-serif; }
-.computer-scene-date { justify-self: start; padding-left: 1.3125cqw; color: #a3abba; }
-.computer-scene-time { justify-self: end; padding-right: 2.9cqw; color: #eef0f4; }
+   the window's line in its middle, at its left once the icons come, gone when the clocks come. It has no colour of
+   its own (14 Nov 2026): it stands on the screen's ground, dark while the screen is off and the hour's once it is on,
+   as the machine's dock stands on its wallpaper; the date and the time, which come when the screen is on, are
+   written in that ground's ink (computer-scene.ts DOCK_INK: dark on a light ground). */
+.computer-scene-dock { position: absolute; left: 0; right: 0; bottom: 0; height: 8%; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; font: 400 1.7cqh/1 "Liberation Sans", Arial, Helvetica, sans-serif; }
+.computer-scene-date { justify-self: start; padding-left: 1.3125cqw; color: var(--computer-scene-date-ink, #a3abba); }
+.computer-scene-time { justify-self: end; padding-right: 2.9cqw; color: var(--computer-scene-time-ink, #eef0f4); }
 .computer-scene-date, .computer-scene-time { opacity: 0; transition: opacity 500ms var(--ease-out); }
 .computer-scene:is([data-phase=screen], [data-phase=settled]) :is(.computer-scene-date, .computer-scene-time) { opacity: 1; }
 .computer-scene-icons { display: flex; gap: 1cqw; }
@@ -51,7 +54,9 @@
 .computer-scene-line { position: absolute; left: 50%; top: 50%; translate: -50% -50%; max-width: 92%; overflow: hidden; color: #d4d8e0; white-space: nowrap; text-overflow: ellipsis; font: 500 11px/1.2 var(--font-sans, -apple-system, BlinkMacSystemFont, system-ui, sans-serif); opacity: 0; transition: opacity 300ms var(--ease-out); }
 .computer-scene-line.is-side { left: 1.3125cqw; translate: 0 -50%; max-width: calc(50% - 8.3cqw - 6px); color: #a3abba; font-size: 10.5px; }
 .computer-scene:is([data-phase=off], [data-phase=waking]) .computer-scene-line:not(.is-side, .is-short) { opacity: 1; }
-.computer-scene[data-phase=starting] .computer-scene-line.is-side { opacity: 1; transition-delay: 1200ms; }
+/* The side line shows while the machine boots: the screen comes on under it (the dark ground's fade, above), and the
+   line takes the hour's ink in step with it. */
+.computer-scene[data-phase=starting] .computer-scene-line.is-side { opacity: 1; color: var(--computer-scene-date-ink, #a3abba); transition: opacity 300ms var(--ease-out) 1200ms, color 1300ms var(--ease-in) 500ms; }
 /* A small window says a wait in its short form; a large one says the line and, under the figure, the full sentence. */
 .computer-scene[data-short=true]:is([data-phase=off], [data-phase=waking]) .computer-scene-line:not(.is-side, .is-short) { opacity: 0; }
 .computer-scene[data-short=true]:is([data-phase=off], [data-phase=waking]) .computer-scene-line.is-short { opacity: 1; }
@@ -73,12 +78,16 @@
 .computer-loading.is-scene > * { pointer-events: auto; }
 .computer-loading.is-scene p { flex: 0 1 auto; min-width: 0; max-width: none; overflow: hidden; color: #e9ebf0; font-size: 11px; font-weight: 500; line-height: 1.2; white-space: nowrap; text-overflow: ellipsis; }
 .computer-loading.is-scene p.computer-loading-detail { flex: 0 1000 auto; margin-top: 0; color: rgb(233 235 240 / 78%); font-weight: 400; }
-/* Asleep the screen is off: the strip may stand a little taller than the dock (28 px at least), on the dock's own
-   colour, so its words and button have room (review r1 on the real component). */
-.computer-loading.is-scene[data-scene=asleep] { top: auto; bottom: calc((100cqh - var(--screen-h)) / 2); height: max(28px, calc(var(--screen-h) * 0.08)); background: #101218; }
+/* Asleep the screen is off: the strip may stand a little taller than the dock (28 px at least), on the dark screen's
+   own colour (the night's ground: the dock has none of its own), so its words and button have room (review r1 on the
+   real component). */
+.computer-loading.is-scene[data-scene=asleep] { top: auto; bottom: calc((100cqh - var(--screen-h)) / 2); height: max(28px, calc(var(--screen-h) * 0.08)); background: hsl(225 8% 6%); }
 .computer-panel .computer-loading.is-scene .computer-retry { flex: none; min-height: 0; height: calc(100% - 8px); max-height: 30px; margin-left: auto; padding: 0 10px; border: 0; border-radius: 999px; color: #1d1d1f; background: #fff; font-size: 11px; font-weight: 600; line-height: 1; }
 .computer-panel .computer-loading.is-scene .computer-retry:hover { background: #e9e9ec; }
-.computer-loading.is-scene:is([data-scene=off], [data-scene=waking], [data-scene=starting], [data-scene=screen]) > p:is([role=status], .computer-loading-detail) { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* Settled too (review r1 of #1824): the scene's own dock shows the date and the time there, on the hour's ground, where
+   these light words would lie over the date and, by day, be next to invisible (a look that fails right after the first
+   picture leaves the scene up in that phase for a moment). */
+.computer-loading.is-scene:is([data-scene=off], [data-scene=waking], [data-scene=starting], [data-scene=screen], [data-scene=settled]) > p:is([role=status], .computer-loading-detail) { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 @container (min-width: 44em) {
 	.computer-loading.is-scene { padding: 0 6px 0 16px; gap: 10px; }
 	.computer-loading.is-scene p { font-size: 13px; }
@@ -98,4 +107,5 @@
    2026). Not while the words are the scene's own strip (`.is-scene`): the scene's lit phases (starting, screen) draw
    a light desktop by day, and keep the picture's ink (review r1 of #1801). */
 .computer-panel:has(.computer-scene:not([hidden]):is([data-phase=off], [data-phase=asleep], [data-phase=waking])),
+.computer-panel:has(.computer-scene:not([hidden])[data-tone=dark]),
 .computer-panel:has(.computer-loading:not([hidden], .is-scene)) { --computer-hover-ink: #e9ebf0; --computer-hover-ink-strong: #fff; --computer-hover-ink-shadow: none; --computer-hover-button-bg: rgb(255 255 255 / 14%); }

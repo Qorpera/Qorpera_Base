@@ -260,6 +260,66 @@ export function parseCompanySitePassword(value: unknown, siteId: string): Compan
 	return { siteId, password: input.password as string, changedAt: input.changedAt as string };
 }
 
+/** A member's pass into a website (company views step 4, slice V1: `qorpera_site_member_pass`, migration
+ * 20260930774000; supabase/CLIENT-CONTRACT.md "Seen inside Qorpera"): good once, for a minute, on the site's own host
+ * only. The site's door page (public/site-door/) posts it to `action`, so it is never in an address and never in a log.
+ * Or why there is none: hosts are off (`off`), the site was taken down (`gone`) or is not live (`none`), or the member
+ * holds too many open passes (`limited`, for `retryAfter` seconds). */
+export type SiteMemberPass =
+	| {
+			state: "open";
+			/** The site's own host, `<slug>.qorpera.com`: never a next host, never another site's. */
+			host: string;
+			pass: string;
+			expiresAt: string;
+			/** `https://<host>/__qorpera/member`, where the pass is posted. */
+			action: string;
+	  }
+	| { state: "off" | "gone" | "none" }
+	| { state: "limited"; retryAfter: number };
+
+/** Where a pass is posted on the site's own host: a path no site can serve (SITE-HOSTS.md, beside the reserved names). */
+export const MEMBER_PASS_PATH = "/__qorpera/member";
+/** 32 random bytes as base64url. */
+const PASS = /^[A-Za-z0-9_-]{43}$/;
+const PASS_SCHEMA = "qorpera.site-member-pass/v1";
+
+/** A pass exactly as the kernel gives it, for the site `slug`; anything else is refused. */
+export function parseSiteMemberPass(value: unknown, slug: string): SiteMemberPass {
+	const state = (value as { state?: unknown } | null)?.state;
+	const keys =
+		state === "open"
+			? ["schema", "state", "host", "pass", "expiresAt", "action"]
+			: state === "limited"
+				? ["schema", "state", "retryAfter"]
+				: ["schema", "state"];
+	const input = closedRecord(value, keys);
+	if (input?.schema === PASS_SCHEMA) {
+		if (input.state === "off" || input.state === "gone" || input.state === "none") return { state: input.state };
+		if (input.state === "limited" && count(input.retryAfter) && input.retryAfter <= 86_400)
+			return { state: "limited", retryAfter: input.retryAfter };
+		const host = input.state === "open" && typeof input.host === "string" ? SITE_HOST.exec(input.host) : null;
+		if (
+			host &&
+			host[1] === slug &&
+			host[2] === undefined &&
+			typeof input.pass === "string" &&
+			PASS.test(input.pass) &&
+			typeof input.expiresAt === "string" &&
+			Number.isFinite(Date.parse(input.expiresAt)) &&
+			input.action === `https://${input.host}${MEMBER_PASS_PATH}`
+		)
+			return {
+				state: "open",
+				host: input.host as string,
+				pass: input.pass,
+				expiresAt: input.expiresAt,
+				action: input.action,
+			};
+	}
+	throw new Error("Invalid site pass.");
+}
+
 const object = (value: unknown): Record<string, unknown> | undefined =>
 	value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 
@@ -292,6 +352,8 @@ export function parseCompanySiteAccess(value: unknown): CompanySiteAccess {
 export interface WebSites {
 	/** The company's sites, newest published first. */
 	list(signal?: AbortSignal): Promise<CompanySite[]>;
+	/** A member's pass into the website `site` (V1), to open it in a frame without its password, or why there is none. */
+	memberPass(site: Pick<CompanySite, "id" | "slug">, signal?: AbortSignal): Promise<SiteMemberPass>;
 	/** An owner's or admin's read of a site's password. */
 	password(siteId: string, signal?: AbortSignal): Promise<CompanySitePassword>;
 	/** Sets a site's password (null: a new random one). Every visitor then enters the new one. */
@@ -315,6 +377,13 @@ export function createWebSites(cloud: Cloud, company: { profileId: string }): We
 			const value = await cloud.rpc("qorpera_list_company_sites", { p_profile_id: company.profileId });
 			if (!Array.isArray(value)) throw new Error("Invalid sites.");
 			return value.map(parseCompanySite);
+		},
+		async memberPass(target, signal) {
+			signal?.throwIfAborted();
+			const id = site(target.id);
+			const value = await cloud.rpc("qorpera_site_member_pass", { p_site: id });
+			signal?.throwIfAborted();
+			return parseSiteMemberPass(value, target.slug);
 		},
 		async password(siteId, signal) {
 			signal?.throwIfAborted();

@@ -21,10 +21,6 @@ describe("an agent's folder", () => {
 			expect(() => cloudAgentFolder(company, agent, { core: "folder-v2", handle })).toThrow(
 				"Invalid agent folder name",
 			);
-		// No other kind of place is left: an agent's folder is never its id (legacy sweep step C, AF).
-		expect(() => cloudAgentFolder(company, agent, { core: "snapshot-v1" } as never)).toThrow(
-			"Invalid agent folder name",
-		);
 		expect(cloudAgentFolder(company, agent, { core: "folder-v2", handle: "a".repeat(64) })).toBe(
 			`QorperaOS/agents/${"a".repeat(64)}`,
 		);

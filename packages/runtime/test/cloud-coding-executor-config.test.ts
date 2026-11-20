@@ -314,7 +314,7 @@ describe("coding executor service configuration", () => {
 			parseCodingExecutorConfiguration({ ...fixture(), [key]: "https://example.com/arbitrary" }),
 		).toThrow();
 	});
-	it("rejects configured workspace paths, a session-range coding uid, missing NAS policy and resources above the VM", () => {
+	it("rejects configured workspace paths, a session-range coding uid and missing NAS policy", () => {
 		const config = fixture();
 		expect(() => parseCodingExecutorConfiguration({ ...config, storagePolicy: undefined })).toThrow();
 		// Every session's folders derive from the session; none is configured.
@@ -329,12 +329,6 @@ describe("coding executor service configuration", () => {
 			expect(() => parseCodingExecutorConfiguration({ ...config, guest: { ...config.guest, ...ids } })).toThrow(
 				"RESOURCE_POLICY_INVALID",
 			);
-		expect(() =>
-			parseCodingExecutorConfiguration({
-				...config,
-				guest: { ...config.guest, resourceProfile: { ...config.guest.resourceProfile, cpuQuotaPercent: 200 } },
-			}),
-		).toThrow();
 	});
 	it("rejects arbitrary credential paths, duplicated repositories and missing watchdog pins", () => {
 		const config = fixture();

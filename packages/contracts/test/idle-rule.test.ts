@@ -1,21 +1,9 @@
 import { describe, expect, it } from "vitest";
-import {
-	IDLE_RULE_BUSY_BYTES_PER_SAMPLE,
-	IDLE_RULE_BUSY_CORE_SHARE,
-	IDLE_RULE_SAMPLE_SECONDS,
-	idleRuleBusy,
-	idleRuleProcessIoBytes,
-} from "../src/idle-rule.ts";
+import { idleRuleBusy, idleRuleProcessIoBytes } from "../src/idle-rule.ts";
 
 describe("the one idle rule's busy measure", () => {
 	const before = { cpuSeconds: 10, ioBytes: 1_000_000, at: 0 };
 	const later = (cpuSeconds: number, ioBytes: number, at = 30_000) => ({ cpuSeconds, ioBytes, at });
-
-	it("states its thresholds: 5% of one core, 512 KiB in a 30-second sample", () => {
-		expect(IDLE_RULE_BUSY_CORE_SHARE).toBe(0.05);
-		expect(IDLE_RULE_BUSY_BYTES_PER_SAMPLE).toBe(512 * 1024);
-		expect(IDLE_RULE_SAMPLE_SECONDS).toBe(30);
-	});
 
 	it("is busy by processor at 5% of one core over the sample", () => {
 		expect(idleRuleBusy(before, later(11.5, 1_000_000))).toBe(true);

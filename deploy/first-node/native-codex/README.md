@@ -1,6 +1,6 @@
 # Pinned native result fence, governed tools, images and composition
 
-This is a narrow downstream change to the official Codex 0.155.1 source, not
+This is a narrow downstream change to the official Codex 0.170.0 source, not
 an official upstream release. The user explicitly authorized this exception
 to the unmodified-harness requirement on 2026-08-28. Native GPT sign-in,
 refresh, credential storage, provider transport, model metadata and provider
@@ -77,6 +77,43 @@ so a SHA-256 in hex, 72 characters, is refused). Codex refuses any other form
 and keeps its own key when the answer sets none. The key travels on the
 composition's answer, so it needs that marker as well.
 
+## 0.170.0 (18 Nov 2026)
+
+OpenAI offers `gpt-6.2-sol` only to Codex `client_version` 0.166.0 or newer (the model list read on 18 Nov:
+0.155.1 is offered neither GPT-6.1 Sol nor GPT-6.2 Sol). 0.170.0 is the newest stable tag, and its own catalog
+lists `gpt-6.2-sol` (added in 0.169.1), so a login that gets no remote list (an API key) still has its metadata.
+The patch was rebased, not redesigned: the request builder is still the one seam for HTTP, WebSocket and remote-v2
+compaction. What moved with it:
+- The builder now takes `include_internal` and drops or merges `configuration_update` items itself; the fenced
+  builder composes and fences `prompt.input` first and leaves those steps, and tool-result metadata, to upstream.
+- A picture is `{image: Inline | File}`; the fence admits an inline PNG only, so an uploaded file reference is refused.
+- A message may carry provider-encrypted content: the fence refuses it on any role but the model's own.
+- The plan-limit code moved to `sse/responses_error.rs`.
+- `apply_patch` is offered with no environment upstream; a governed run without a home keeps 0.155.1's rule and is
+  never offered it (the exact inventory check found `functions.apply_patch`).
+- The helper tools are gated as before; 0.170.0's catalog adds `request_user_input_async`,
+  `send_message_to_user_async`, `literature_search_query` and `multi_agent_v2_in_code_mode` for GPT-6.2 Sol. The
+  first two are gated; Code Mode is off, so the last never registers. `literature_search_query` is no tool of its own:
+  on a Codex login (`features.standalone_web_search`, `web_search="cached"`) it widens Codex's own `web.run` schema
+  for GPT-6.2 Sol, and a `web.run` result is fenced like any other. A plan run has no search.
+- Provider-default is GPT-6.2 Sol (it was GPT-6 Astra). Every GPT-6 and GPT-5.6 model uses Responses Lite.
+- A governed run turns `unified_image_budget` off (on since 0.170.0): it re-prepares a tool-output picture at
+  original detail for a Responses Lite model, which the capture fence refuses.
+
+Built in a Rust 1.95.0 container on the node02 test VM (run `20261118T162849-2060-10d4a060`, 32 min warm):
+`9d6a86ec…`, 398,449,416 bytes. On it: the patch's Rust tests (codex-core 29, codex-api 2, app-server-protocol 1;
+run `20261118T171325-48868-ac05e543`); the ten real-binary test files, 362 of 362 (`20261118T173506-4277-bf3703a8`),
+the exact inventory on provider-default, `gpt-6.2-sol`, `gpt-6-astra` and `gpt-6-luna`; the three standalone
+entrypoints (`20261118T171157-33799-aeb0f905`); and the company-run proofs on a migrated database (first requests,
+tools on demand, run log, read token, S2, S3, answer first, home channel, home folder, S4; runs
+`20261118T172451-79284-bbeb32f6` and `20261118T173109-98897-e9a5b17e`). All with a scripted loopback provider: no login, no real model.
+
+Again on the tree with master's Codex web search (#1894, `features.standalone_web_search`), 19 Nov, same binary:
+`patched-codex-web-search` on offline-probe, `gpt-6-astra` and `gpt-6.2-sol`, with `web.run`'s result fenced and the
+hosted search refused (`20261119T220422-93087-5f49cb22`); the eleven real-binary files, 377 of 377
+(`20261119T220756-96821-7e4ba53d`); the three standalone entrypoints (`20261119T221047-658-6fbfb5aa`); and the ten
+company-run proofs (`20261119T221133-1116-5e2947ae`).
+
 ## Build
 
 Provision Rust 1.95.0, its `llvm-tools` component and the upstream platform
@@ -106,7 +143,7 @@ checks the source/patch/lock and records the final executable independently.
 The cache is trusted build input, never an acceptance result.
 
 The upstream tag updates workspace package versions without updating the
-135 path-package versions in Cargo.lock. The script normalizes only those
+174 path-package versions in Cargo.lock (152 at 0.155.1). The script normalizes only those
 release metadata fields, verifying both full-file hashes before compiling
 with `--locked`. No external dependency is changed. Upstream's Bazel lock
 refresh was run and produced no lock diff.
@@ -164,15 +201,18 @@ event, or before the stream as an HTTP 429. Codex 0.155.1 maps only
   `provider_failed`.
 
 The patch adds that code to both places in `codex-api`:
-`sse/responses.rs`' `is_quota_exceeded_error` and `api_bridge.rs`' 429 code
+`sse/responses_error.rs`' `parse_failed_response` (since 0.170.0; it was
+`sse/responses.rs`' `is_quota_exceeded_error` on 0.155.1) and `api_bridge.rs`' 429 code
 list. Both give `ApiError::QuotaExceeded` / `CodexErr::QuotaExceeded`, which is
 not retried and which the app-server reports as `codexErrorInfo:
 usageLimitExceeded` (`willRetry: false`). The host reads that as a usage limit
 (`budget_exhausted`, `usage_limit`): the run stops and is not moved to another
 login. Only a response carrying this exact code takes the new path; every other
 code, `insufficient_quota` included, is handled as before, so Codex logins are
-unchanged. Not covered: Codex 0.155.1 ignores a top-level `error` stream event,
-so a limit sent that way would still be retried. OpenAI documents the code for
+unchanged. Not covered: a top-level `error` stream event. Codex 0.155.1 ignored
+it; 0.170.0 reads it only through `parse_terminal_provider_error`
+(`sse/responses.rs`' `"error"` arm), whose fixed code list does not hold the
+plan-limit code, so a limit sent that way is still ignored and retried. OpenAI documents the code for
 Sign in with ChatGPT; its live response shape cannot be checked before OpenAI
 approves the partner track, so the proof uses a synthetic provider.
 
@@ -279,8 +319,11 @@ real-binary runs on the node02 test VM are recorded in PR #1530 (run `20261112T1
 312 passed, none skipped; and with the run log's parser fixed, `scripts/prove-run-log-full-result.mjs`, run
 `20261112T172355-61541-8f6e1a35`: 13 of 13).
 
-The current [0.155.1 Linux proof](linux-x64-0.155.1-native-proof.json) records
-the pinned 318,891,312-byte release executable, SHA-256
+History (18 Nov 2026): the pinned executable is now the 0.170.0 build `9d6a86ec…`, whose proofs are the run IDs in the
+"0.170.0" section above. The paragraph below describes the 0.155.1 pin.
+
+The [0.155.1 Linux proof](linux-x64-0.155.1-native-proof.json) records
+the then-pinned 318,891,312-byte release executable, SHA-256
 `1c08fd015e7fe80bd813cccd73bc4331a01796479df77e16ac202d33ba3b460c`, run on the
 node02 test VM from a clean master commit. The five native test files pass 34
 of 34, none skipped, and the three standalone entrypoints (tool boundary,

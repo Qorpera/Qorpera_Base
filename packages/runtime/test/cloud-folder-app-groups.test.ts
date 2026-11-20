@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { AGENT_COLOURS } from "@qorpera/cloud-client/company-state-shared";
 import type { JsonValue } from "@qorpera/contracts";
-import { cloudActionEffect } from "@qorpera/runtime/cloud-action-review";
 import { CloudCompanyFolderClient } from "@qorpera/runtime/cloud-company-folder-client";
 import { cloudAppGroupsTool, ORGANIZE_APPS_DESCRIPTION } from "@qorpera/runtime/cloud-folder-app-groups";
 import { cloudAppTools } from "@qorpera/runtime/cloud-folder-app-tools";
@@ -11,7 +10,6 @@ import {
 	CloudToolArgumentRefusal,
 	CloudToolRefusal,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
-import { cloudRuntimeHireBehavior } from "@qorpera/runtime/cloud-runtime-hire-overlays";
 import { fitsOneResult } from "@qorpera/runtime/cloud-worker-tools";
 import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
@@ -312,7 +310,7 @@ it("says refused when the file changed since it was read, and its receipt still 
 	expect(f.operationControl.completeFolderToolOperation).toHaveBeenCalledTimes(1);
 });
 
-it("tells the rules within the bytes a tool's description may hold, and is reviewed as the sidebar is", async () => {
+it("tells the rules within the bytes a tool's description may hold", async () => {
 	expect(Buffer.byteLength(ORGANIZE_APPS_DESCRIPTION)).toBeLessThanOrEqual(4096);
 	for (const rule of [
 		"group by what the founder thinks in (a product, a customer, a piece of work), not by agent, by kind of page (such as Reports) or by date.",
@@ -326,15 +324,9 @@ it("tells the rules within the bytes a tool's description may hold, and is revie
 		"- rename_group: group gets name; its id stays. colour_group: group gets colour, or none with null.",
 	])
 		expect(ORGANIZE_APPS_DESCRIPTION).toContain(rule);
-	// The Co-Founder's tidy pass takes a group without a colour as a sign to sort the drawer.
-	expect(cloudRuntimeHireBehavior("cofounder")).toContain(
-		"more than eight apps loose, a group of one or of more than twelve, a top-level group with no colour, or a new product or area with no group.",
-	);
 	const f = await fixture();
 	const tool = f.tool();
 	expect([tool.name, tool.source]).toEqual(["organize_apps", "runtime"]);
-	const runtime = { name: "organize_apps", source: "runtime" } as const;
-	expect(cloudActionEffect(runtime, { action: "move" })).toBe("internal");
 });
 
 it("puts a new app in a group as save_app makes it, in the same commit, and refuses a group that is not there", async () => {

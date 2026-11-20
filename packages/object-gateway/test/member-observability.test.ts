@@ -202,11 +202,9 @@ describe("bounded human request observations", () => {
 			}),
 		);
 		span.operation("PRIVATE_OPERATION" as MemberObservationOperation);
-		// A snapshot-v1 operation is no longer an operation.
-		span.operation("command_review" as MemberObservationOperation);
 		const result = observer.snapshot({ limit: 1 });
 		expect(result).toMatchObject({
-			dropped: 8,
+			dropped: 7,
 			observations: [{ actorUserId, companyId: null, resourceId: null, logicalObjectReadBytes: null }],
 		});
 		expect(JSON.stringify(result)).not.toContain("PRIVATE_");
@@ -275,8 +273,6 @@ describe("strict operator query", () => {
 		"?offset=0",
 		"?companyId=invalid",
 		"?operation=execute",
-		"?operation=file_request",
-		"?operation=proposal_review",
 		"?outcome=applied",
 		"?path=secret",
 		"?companyId=%31",

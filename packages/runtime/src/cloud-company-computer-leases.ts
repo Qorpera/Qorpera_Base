@@ -267,7 +267,6 @@ export class CompanyComputerActionDrainError extends Error {
 export class CompanyComputerScreenActionGate {
 	readonly #active = new Map<string, ActiveScreenAction>();
 	readonly #fences = new Map<string, { binding: CompanyComputerScreenBinding; epoch: number }>();
-	readonly #replacing = new Set<string>();
 
 	async perform<T>(options: {
 		lease: CompanyComputerScreenLease;
@@ -286,7 +285,6 @@ export class CompanyComputerScreenActionGate {
 			// Refused before any work: nothing of this action ran.
 			throw new CompanyComputerActionSettledFailure(new Error(reason));
 		};
-		if (this.#replacing.has(key)) refuse("SCREEN_REPLACEMENT_PENDING");
 		const fence = this.#fences.get(key);
 		if (fence) {
 			assertCompanyComputerScreenBinding(lease.binding, fence.binding);
@@ -410,47 +408,5 @@ export class CompanyComputerScreenActionGate {
 		}
 		signal.throwIfAborted();
 		return { computerGeneration: binding.computerGeneration, screenGeneration: binding.screenGeneration, epoch };
-	}
-
-	/**
-	 * Called by the authenticated registry reconciler after close/reassignment or
-	 * VM recovery. Never erase fences merely because a new generation arrived.
-	 * The supplied supervisor proof must stop/reap the old desktop and browser
-	 * control channels; a timeout leaves the old fence installed.
-	 */
-	async replaceBinding(options: {
-		previous: CompanyComputerScreenBinding;
-		next: CompanyComputerScreenBinding;
-		fenceEpoch: number;
-		signal: AbortSignal;
-		assertReplacementReady: (signal: AbortSignal) => Promise<void>;
-	}): Promise<void> {
-		const { previous, next } = options;
-		assertCompanyComputerScreenBinding(previous, previous);
-		assertCompanyComputerScreenBinding(next, next);
-		assertCompanyComputerScope(next, previous);
-		if (
-			next.screenId !== previous.screenId ||
-			next.screenOrdinal !== previous.screenOrdinal ||
-			next.computerGeneration < previous.computerGeneration ||
-			(next.computerGeneration === previous.computerGeneration && next.screenGeneration <= previous.screenGeneration)
-		) {
-			throw new Error("INVALID_SCREEN_REPLACEMENT");
-		}
-		const key = `${next.companyComputerId}:${next.screenOrdinal}`;
-		if (this.#replacing.has(key)) throw new Error("SCREEN_REPLACEMENT_PENDING");
-		this.#replacing.add(key);
-		try {
-			await this.fence(previous, options.fenceEpoch, options.signal);
-			await companyComputerRequest(options.assertReplacementReady, options.signal);
-			options.signal.throwIfAborted();
-			const fence = this.#fences.get(key);
-			if (this.#active.has(key) || !fence || fence.epoch !== options.fenceEpoch)
-				throw new Error("SCREEN_REPLACEMENT_SUPERSEDED");
-			assertCompanyComputerScreenBinding(fence.binding, previous);
-			this.#fences.set(key, { binding: structuredClone(next), epoch: options.fenceEpoch });
-		} finally {
-			this.#replacing.delete(key);
-		}
 	}
 }

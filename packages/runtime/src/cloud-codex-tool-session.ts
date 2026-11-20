@@ -108,7 +108,7 @@ import {
 	type MemoryCompactUsage,
 } from "./memory-tree/compact.ts";
 
-export const CLOUD_CODEX_BOUNDARY_VERSION = "0.155.1";
+export const CLOUD_CODEX_BOUNDARY_VERSION = "0.170.0";
 const CLIENT_NAME = "qorpera_cloud_boundary";
 const DIRECT_TOOLS_CAPABILITY = "qorpera.native-direct-tools/v1";
 const MESSAGE_COMPOSITION_CAPABILITY = "qorpera.native-message-composition/v1";
@@ -339,6 +339,8 @@ const DISABLED_FEATURES = [
 	"guardian_approval",
 	"current_time_reminder",
 	"sleep_tool",
+	// WHY: on since Codex 0.170.0; it re-prepares a capture at original detail, which the capture fence refuses.
+	"unified_image_budget",
 ] as const;
 
 /** Digests started ahead of a session, by artifact path. */

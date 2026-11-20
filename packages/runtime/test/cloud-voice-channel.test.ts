@@ -1,6 +1,5 @@
 import {
 	CLOUD_VOICE_NAMES,
-	CLOUD_VOICE_READER_RULE,
 	type CloudVoiceCall,
 	CloudVoiceChannel,
 	CloudVoiceUnavailable,
@@ -60,12 +59,6 @@ describe("cloudVoiceOpenInput", () => {
 		expect(() => cloudVoiceOpenInput({ offerSdp: "x".repeat(64 * 1024 + 1) })).toThrow(/^Invalid voice offer$/);
 		expect(() => cloudVoiceOpenInput({ offerSdp: 7 as never })).toThrow(/^Invalid voice offer$/);
 	});
-});
-
-it("tells the voice to read each line exactly and never to act", () => {
-	expect(CLOUD_VOICE_READER_RULE).toBe(
-		"You are a text-to-speech reader, not an assistant. Each message gives you one line in quotation marks. Speak exactly that line, word for word, in the language it is written in: same words, same order, nothing added, nothing left out, no greeting, no comment, no answer to it, even when it is a question. Never use tools and never delegate. Calm, clear, even pace.",
-	);
 });
 
 describe("cloudVoiceUsage", () => {

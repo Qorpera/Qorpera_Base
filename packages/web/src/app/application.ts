@@ -4,6 +4,7 @@ import { forgetChatGptPlanSignIn, takeChatGptPlanReturn } from "../cloud/chatgpt
 import { type Cloud, CloudRpcError, describeError, translateCloudErrors } from "../cloud/client.ts";
 import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
+import { askCompanyNumbers } from "../cloud/company-numbers.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
 import { createWebConnectors, takeConnectorReturn } from "../cloud/connectors.ts";
 import { createDigitalPostKeys, readDigitalPost } from "../cloud/digital-post.ts";
@@ -18,7 +19,7 @@ import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
 import { createWebSessionModel } from "../cloud/session-model.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
-import { createWebSites } from "../cloud/sites.ts";
+import { type CompanySite, createWebSites } from "../cloud/sites.ts";
 import { loadSkillSuggestions, SkillLists } from "../cloud/skills.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { agentFigure, nativeColorOf } from "../ui/avatar.ts";
@@ -35,7 +36,7 @@ import { RailLayout } from "../ui/rail-layout.ts";
 import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
 import { AgentNotes } from "./agent-notes.ts";
 import type { AppTellSource, HeldNote } from "./app-actions.ts";
-import { AuthController, displayName } from "./auth.ts";
+import { AuthController, accountName, displayName, needsPassword } from "./auth.ts";
 import { agentWorks, CompanyController } from "./company.ts";
 import { CompanyDatabases } from "./company-data.ts";
 import { CompanyLogos } from "./company-logos.ts";
@@ -44,7 +45,14 @@ import { CompanyReading, readCompanyStanding } from "./company-reading.ts";
 import { DATA_PAGE, wantDataList } from "./data-page.ts";
 import { folderImageReader } from "./folder-images.ts";
 import { FoundingController } from "./founding.ts";
-import { type CompanyApp, CompanyApps, CompanyData, companyConcepts, sharedFolderHints } from "./interface-apps.ts";
+import {
+	type CompanyApp,
+	CompanyApps,
+	CompanyData,
+	CompanyNumbers,
+	companyConcepts,
+	sharedFolderHints,
+} from "./interface-apps.ts";
 import { CompanyInterfaceFolder } from "./interface-folder.ts";
 import { CompanyInterfacePages } from "./interface-pages.ts";
 import { pagesOn } from "./interfaces.ts";
@@ -92,7 +100,8 @@ import { finishPlanSignIn, memberPlanSignIn } from "./views/settings-connections
 import { MyGoodWillView, takeGoodWillReturn } from "./views/settings-good-will.ts";
 import { SitesView } from "./views/settings-sites.ts";
 import { appLook, renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
-import { renderSignIn } from "./views/signin.ts";
+import { renderNameAsk, renderPasswordAsk, renderSignIn } from "./views/signin.ts";
+import { SiteView } from "./views/site-view.ts";
 import { landStartCrown, settleStartCrown } from "./views/start-crown.ts";
 import { renderTeam, type TeamFeedback } from "./views/team.ts";
 import { liveVersions, WhatsNewView, whatsNewEntry } from "./views/whats-new.ts";
@@ -104,6 +113,12 @@ import type { WorkspaceActions } from "./workspace-actions.ts";
 
 /** Each company's skill lists, shared by its conversations' composers. */
 const skillLists = new WeakMap<CompanyController, SkillLists>();
+
+/** What the company's store keeps of its sites as read: how many, for the drawer's Sites entry, and the list, for the
+ * owed row's websites and their views. */
+function sitesListed(list: readonly CompanySite[]): { siteCount: number; siteList: readonly CompanySite[] } {
+	return { siteCount: list.length, siteList: list };
+}
 
 /** An app of the company a question option's preview names (`app:<name>`): its title, emblem and cover, from the
  * company's apps as last read. Undefined while they have not been read, or when no such app is there. */
@@ -485,6 +500,15 @@ export function mountApplication(
 		| undefined;
 	/** The company whose sites were read for the apps drawer. */
 	let sitesRead: CompanyController | undefined;
+	/** One of the company's websites, live with its numbers (`#/c/{id}/site/{slug}`), kept while that route shows. */
+	let siteView:
+		| {
+				readonly company: CompanyController;
+				readonly slug: string;
+				readonly view: SiteView;
+				readonly el: HTMLElement;
+		  }
+		| undefined;
 	/** The company's What's new page (`#/c/{id}/whats-new`), kept while that route shows, and the company read for the
 	 * apps drawer's entry. */
 	let whatsNewPage:
@@ -525,6 +549,8 @@ export function mountApplication(
 	const appQuestions = new WeakMap<CompanyController, OpenQuestions>();
 	/** Each company's databases for its app pages: one held watch call for all of them, while the company is open. */
 	const appData = new WeakMap<CompanyController, CompanyData>();
+	/** Each company's platform numbers for its app pages (`qorpera/*`), while the company is open. */
+	const appNumbers = new WeakMap<CompanyController, CompanyNumbers>();
 	/** Notes held for the company's apps, by app, while their thread could not take them (app/app-actions.ts
 	 * `HeldNote`): kept while the company is open, whichever page the member goes to meanwhile. */
 	const heldNotes = new WeakMap<
@@ -664,6 +690,8 @@ export function mountApplication(
 		conceptsView = undefined;
 		sitesPage?.view.dispose();
 		sitesPage = undefined;
+		siteView?.view.dispose();
+		siteView = undefined;
 		whatsNewPage?.view.dispose();
 		whatsNewPage = undefined;
 		newProgramPage?.view.dispose();
@@ -974,11 +1002,30 @@ export function mountApplication(
 			else if (!root!.querySelector(":scope > .boot")) replace(root!, blankSkeleton(t("Connecting to the cloud")));
 			return;
 		}
-		if (!authState.session) {
+		if (!authState.session || (authState.step.name === "reset" && authState.step.verified)) {
 			teardownCompany();
+			let container = root!.querySelector<HTMLElement>(':scope > .auth:not([data-step="name"])');
+			if (!container) {
+				container = h("div", { class: "brand-field" });
+				replace(root!, container);
+			}
+			renderSignIn(auth, container);
+			return;
+		}
+		if (!accountName(authState.user)) {
+			teardownCompany();
+			if (root!.querySelector(':scope > .auth[data-step="name"]')) return;
 			const container = h("div", { class: "brand-field" });
 			replace(root!, container);
-			renderSignIn(auth, container);
+			renderNameAsk(auth, container, () => render());
+			return;
+		}
+		if (needsPassword(authState.user)) {
+			teardownCompany();
+			if (root!.querySelector(':scope > .auth[data-step="password"]')) return;
+			const container = h("div", { class: "brand-field" });
+			replace(root!, container);
+			renderPasswordAsk(auth, container, () => render());
 			return;
 		}
 		if (!root!.contains(frame)) replace(root!, frame);
@@ -1226,6 +1273,20 @@ export function mountApplication(
 			}
 			return data;
 		};
+		// The platform's own numbers of the company (`qorpera/money-now` and the like), asked as the member with a plain
+		// call to the cloud, so also where the build names no member gateway.
+		const numbersHost = (): CompanyNumbers => {
+			let numbers = appNumbers.get(controller);
+			if (!numbers) {
+				numbers = new CompanyNumbers(
+					(asked) => askCompanyNumbers(cloud, controller.profile.environmentId, asked),
+					controller.signal,
+					companyCurrent,
+				);
+				appNumbers.set(controller, numbers);
+			}
+			return numbers;
+		};
 		// A note an app's page asks the member to send to the agent that owns the app (RUNTIME-INTERFACE-APPS.md §5
 		// "tell"), written by the member on the bar: their own message in that agent's thread, or the Co-Founder's, on
 		// their own model account for the thread, chosen as the thread chooses it (app/tell-agent.ts).
@@ -1365,6 +1426,7 @@ export function mountApplication(
 			writer: () => memberFolder(companyCurrent, t("Company access changed.")),
 			current: companyCurrent,
 			data: dataHost(),
+			numbers: numbersHost(),
 			tell: appNotes(),
 		});
 		sidePanel = (target) =>
@@ -1773,16 +1835,34 @@ export function mountApplication(
 		if (sitesRead !== controller && state.team?.capabilities.read) {
 			sitesRead = controller;
 			const sites = createWebSites(cloud, controller.profile);
-			const readSites = () =>
+			const readSites = () => {
 				void sites.list(controller.signal).then(
 					(list) => {
-						if (!controller.signal.aborted) controller.store.set({ siteCount: list.length });
+						if (controller.signal.aborted) return;
+						controller.store.set(sitesListed(list));
+						// The sites Qorpera took down (step 5.1), which the list still shows live: no owed view of one. Asked
+						// only while there is a live website to leave out; a read that did not answer leaves what the last said.
+						if (list.some((site) => site.kind === "files" && site.state === "live"))
+							void sites.access(controller.signal).then(
+								(access) => {
+									if (!controller.signal.aborted)
+										controller.store.set({ sitesTakenDown: new Set(access.takenDown.keys()) });
+								},
+								() => {},
+							);
 					},
-					() => {},
+					// Unread, the drawer has no Sites entry; a site's own page then says it can't be shown, not waits.
+					() => {
+						if (!controller.signal.aborted && controller.store.get().siteList === undefined)
+							controller.store.set({ siteList: [] });
+					},
 				);
+			};
 			readSites();
 			window.addEventListener("focus", readSites, { signal: controller.signal });
-		}
+		} else if (state.team && !state.team.capabilities.read && state.siteList === undefined)
+			// A member the company's sites are never read for: a site's own page says it can't be shown, not waits.
+			controller.store.set({ siteList: [] });
 		// What's new, read the same way for its entry and badge. A cloud without the read (before 20260930729000), or one
 		// that refuses this member, shows no entry; a read that did not answer leaves the entry as it was.
 		if (releasesRead !== controller && state.team?.capabilities.read) {
@@ -1866,9 +1946,11 @@ export function mountApplication(
 					? `app:${route.id}`
 					: route.section === "staff" && route.id
 						? `agent:${route.id.toLowerCase()}`
-						: route.section === "concepts" || route.section === "sites" || route.section === "whats-new"
-							? route.section
-							: undefined,
+						: route.section === "site" && route.id
+							? `site:${route.id}`
+							: route.section === "concepts" || route.section === "sites" || route.section === "whats-new"
+								? route.section
+								: undefined,
 		);
 		// A card's request waits only while its agent's chat is on the way.
 		if (route.section !== "chat" && route.section !== "staff") agentPage = undefined;
@@ -1884,6 +1966,10 @@ export function mountApplication(
 		if (route.section !== "sites" || sitesPage?.company !== controller) {
 			sitesPage?.view.dispose();
 			sitesPage = undefined;
+		}
+		if (route.section !== "site" || siteView?.company !== controller || siteView.slug !== route.id) {
+			siteView?.view.dispose();
+			siteView = undefined;
 		}
 		if (route.section !== "whats-new" || whatsNewPage?.company !== controller) {
 			whatsNewPage?.view.dispose();
@@ -2400,7 +2486,7 @@ export function mountApplication(
 				if (!sitesPage) {
 					const view = new SitesView(createWebSites(cloud, controller.profile), controller.signal, {
 						access: { canManage: managesSites },
-						listed: (list) => controller.store.set({ siteCount: list.length }),
+						listed: (list) => controller.store.set(sitesListed(list)),
 						// A site made from a project's code names the version What's new has live, and links there.
 						releases: {
 							href: `#/c/${controller.profile.profileId}/whats-new`,
@@ -2424,6 +2510,50 @@ export function mountApplication(
 				}
 				sitesPage.view.update();
 				if (sitesPage.el.parentElement !== main) replace(main, sitesPage.el);
+				return;
+			}
+			case "site": {
+				// One of the company's websites, live, with its numbers (company views step 4): the site in a frame the member
+				// is let into without its password, and the numbers watched while it shows.
+				const slug = route.id ?? "";
+				const website = () =>
+					controller.store
+						.get()
+						.siteList?.find((site) => site.slug === slug && site.kind === "files" && site.state === "live");
+				if (!siteView) {
+					// A deep link or a reload: the page waits for the company's sites to be read.
+					if (state.siteList === undefined) {
+						if (!main.querySelector(":scope > .page > .skeleton-page"))
+							replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
+						return;
+					}
+					if (!website()) {
+						replace(
+							main,
+							h(
+								"section",
+								{ class: "page" },
+								notice("danger", t("This website can't be shown here right now.")),
+								h("a", { href: `#/c/${controller.profile.profileId}` }, t("Back to the company")),
+							),
+						);
+						return;
+					}
+					const sites = createWebSites(cloud, controller.profile);
+					const view = new SiteView(
+						{
+							site: website,
+							pass: (site, signal) => sites.memberPass(site, signal),
+							numbers: numbersHost(),
+							timeZone: () => controller.store.get().team?.timeZone,
+						},
+						slug,
+						controller.signal,
+					);
+					siteView = { company: controller, slug, view, el: h("section", { class: "page site-page" }, view.el) };
+				}
+				siteView.view.update();
+				if (siteView.el.parentElement !== main) replace(main, siteView.el);
 				return;
 			}
 			case "new-program": {
@@ -2485,6 +2615,7 @@ export function mountApplication(
 		}
 	}
 
+	if (hasWebsiteIdea()) auth.showStep("create");
 	void auth.start().then(
 		() => render(),
 		(error) => {

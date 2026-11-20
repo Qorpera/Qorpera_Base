@@ -57,6 +57,7 @@ import {
 	SectionsChangeRefusal,
 	sectionsChange,
 } from "../cloud/sidebar-sections-file.ts";
+import type { CompanySite } from "../cloud/sites.ts";
 import { isErased, projectTranscript, type TranscriptProjection } from "../cloud/transcript.ts";
 import type {
 	HostedProfile,
@@ -293,6 +294,12 @@ export interface CompanyState {
 	/** How many websites the company's agents published, as last read: the apps drawer shows Sites while there are any.
 	 * Unset until read, and on a cloud that can't say. */
 	siteCount?: number;
+	/** The company's sites as last read, with `siteCount`: each live website is an owed view, first in the apps drawer,
+	 * opening the site with its numbers (company views step 4; views/shell.ts owedViews). */
+	siteList?: readonly CompanySite[];
+	/** The company's sites Qorpera's operators took down, by id, as the access read last said
+	 * (`qorpera_company_site_access`): the owed row leaves them out. Unset until read, and on a cloud without it. */
+	sitesTakenDown?: ReadonlySet<string>;
 	/** What's new (app/views/whats-new.ts): set while one of the company's projects makes a website, with how many of its
 	 * changes are ready to go live that this member did not answer Not yet to. The apps drawer shows What's new while it
 	 * is set. Unset until read, and on a cloud without it. */
@@ -645,6 +652,7 @@ export class CompanyController {
 	#connectedBefore = false;
 	/** This member's time zone was handed in for the company, which had none (#offerTimeZone): once, whatever came of it. */
 	#timeZoneOffered = false;
+	#spectatorsInvited = false;
 	/** The cloud has no newest-first transcript read (before 20260928279410): threads read forward. */
 	#tailMissing = false;
 	/** Taken inputs a thread has read back for once: never again (a run queued for hours stays taken
@@ -1037,6 +1045,7 @@ export class CompanyController {
 				.join(" ");
 			this.store.set({ team, accessLost: false });
 			void this.#offerTimeZone(team);
+			void this.#invitePendingSpectators(team);
 			this.#joinPresence();
 			// Someone joined or left: the member chats are theirs too. (The first read comes with refreshAll.)
 			if (before !== undefined && before !== team.members.map((member) => member.userId).join(" "))
@@ -1071,6 +1080,22 @@ export class CompanyController {
 					}));
 				this.stop();
 			} else if (!this.#lost(error)) this.store.set({ error: describeError(error) });
+		}
+	}
+
+	async #invitePendingSpectators(team: HostedProfileTeam): Promise<void> {
+		if (this.#spectatorsInvited || !team.capabilities.manageMembers) return;
+		this.#spectatorsInvited = true;
+		try {
+			const invited = await this.#api.invitePendingSpectators(this.profile.profileId);
+			if (!this.#stopped && invited.length) void this.refreshTeam();
+		} catch (error) {
+			if (this.#stopped || (error instanceof CloudRpcError && error.missing)) return;
+			this.store.set({
+				error: t(
+					"The spectators picked for this company could not be invited yet. Opening it again tries once more.",
+				),
+			});
 		}
 	}
 

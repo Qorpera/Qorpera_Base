@@ -1,0 +1,160 @@
+/* A website of the company, live, with its numbers (app/views/site-view.ts; company views step 4). The sketch's screen
+ * 38 is the bar: one big window with the real site on a warm paper, and one big number of the people on it now. No
+ * boxes around the numbers: a quiet line, one curve with a soft field under it, and the pages seen most as soft bars.
+ *
+ * The view lays itself out by its own width (container `site-view`), as the rail may take any share of the window: the
+ * numbers beside the window from 52em (about 730 design px), under it below. Container widths are in em (14 design px
+ * each): the design-px build step keeps px out of container conditions. */
+
+.page.site-page {
+	display: flex; flex-direction: column; height: 100%; max-width: none; padding: 0; overflow: hidden;
+	background: var(--site-paper);
+	--site-paper: #f6f3ef;
+	--site-glass: #ffffff;
+	--site-ink: #2047bd;
+	--site-field: color-mix(in srgb, var(--site-ink) 12%, transparent);
+	--site-live: var(--agent-active);
+	--site-shadow: 0 1px 2px rgb(60 40 20 / 6%), 0 24px 60px rgb(60 40 20 / 12%);
+	container: site-view / inline-size;
+}
+:root[data-theme="dark"] .page.site-page {
+	--site-paper: #181a19;
+	--site-glass: #262827;
+	--site-ink: #7193f2;
+	--site-field: color-mix(in srgb, var(--site-ink) 18%, transparent);
+	--site-live: #34d399;
+	--site-shadow: 0 1px 2px rgb(0 0 0 / 30%), 0 24px 60px rgb(0 0 0 / 38%);
+}
+
+.site-view {
+	flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: auto;
+	gap: 22px; padding: 18px 18px 32px; overflow-y: auto; color: var(--text);
+}
+
+/* ---- the window ----------------------------------------------------------------------------------- */
+.site-window {
+	display: flex; flex-direction: column; min-width: 0; height: min(68vh, 620px); border-radius: var(--radius-xl);
+	background: var(--site-glass); box-shadow: var(--site-shadow); overflow: hidden;
+	animation: site-window-in var(--motion-slow) var(--ease-out) both;
+}
+.site-bar {
+	flex: none; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px;
+	height: 44px; padding: 0 8px 0 16px; border-bottom: 1px solid var(--border);
+}
+.site-address {
+	min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+	color: var(--text-muted); font-size: 13.5px; font-weight: 500; letter-spacing: 0.005em;
+}
+.site-tools { display: flex; gap: 2px; }
+.site-tool {
+	display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px;
+	background: none; color: var(--text-muted); cursor: pointer;
+	transition: background var(--motion-fast) ease, color var(--motion-fast) ease;
+}
+.site-tool:hover:not(:disabled) { background: var(--hover); color: var(--text); text-decoration: none; }
+.site-tool:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.site-tool:disabled, .site-tool[hidden] { display: none; }
+.site-tool svg { width: 17px; height: 17px; }
+.site-tool:active:not(:disabled) svg { transform: rotate(-30deg); transition: transform var(--motion-fast) ease; }
+
+.site-glass { position: relative; flex: 1; min-height: 0; background: var(--site-glass); }
+.site-frame {
+	position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #ffffff;
+	opacity: 0; transition: opacity var(--motion-slow) var(--ease-out);
+}
+.site-glass.is-shown .site-frame { opacity: 1; }
+.site-glass.is-covered .site-frame { visibility: hidden; }
+/* While the site opens: the empty glass breathes, as the app's own placeholders do. */
+.site-glass.is-opening::before {
+	content: ""; position: absolute; inset: 0; background: var(--skeleton);
+	animation: site-glass-breathe 1.6s ease-in-out infinite;
+}
+.site-cover {
+	position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+	gap: 10px; padding: 24px; text-align: center; background: var(--site-glass);
+}
+.site-cover[hidden] { display: none; }
+.site-cover-words { margin: 0; max-width: 300px; color: var(--text-muted); font-size: 15px; line-height: 1.45; text-wrap: balance; }
+.site-cover-link { color: var(--site-ink); font-size: 14.5px; font-weight: 600; }
+.site-cover-link[hidden] { display: none; }
+
+/* ---- the numbers ---------------------------------------------------------------------------------- */
+.site-side { display: grid; align-content: start; gap: 6px; min-width: 0; padding: 0 6px; }
+.site-now {
+	display: grid; grid-template-columns: auto 1fr; grid-template-areas: "number dot" "label label";
+	align-items: center; justify-items: start; column-gap: 12px; margin: 0;
+}
+.site-now-number {
+	grid-area: number; font-size: 64px; font-weight: 700; line-height: 1; letter-spacing: -0.035em;
+	font-variant-numeric: tabular-nums;
+}
+/* A number that can't be read is a quiet dash, not a heavy bar. */
+.site-view.is-unknown .site-now-number { color: var(--text-soft); font-weight: 300; }
+.site-now-label { grid-area: label; margin-top: 4px; color: var(--text-muted); font-size: 15px; font-weight: 500; }
+/* The one live mark: a dot that breathes while anyone is on the site. */
+.site-live {
+	grid-area: dot; width: 11px; height: 11px; border-radius: 50%; background: var(--site-live);
+	opacity: 0; transform: scale(0.4); transition: opacity var(--motion-base) ease, transform var(--motion-base) var(--ease-spring);
+}
+.site-view.has-people .site-live { opacity: 1; transform: none; animation: site-live 1.8s ease-in-out infinite; }
+.site-today { margin: 2px 0 0; color: var(--text-muted); font-size: 14px; }
+
+.site-day { margin: 22px 0 0; }
+.site-curve { display: block; width: 100%; height: 72px; overflow: visible; }
+.site-curve-area { fill: var(--site-field); stroke: none; }
+.site-curve-line {
+	fill: none; stroke: var(--site-ink); stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round;
+	vector-effect: non-scaling-stroke;
+}
+.site-curve.is-unknown .site-curve-line { stroke: var(--border-strong); stroke-dasharray: 3 5; }
+.site-day figcaption { margin-top: 8px; color: var(--text-soft); font-size: 12px; }
+
+.site-pages { display: grid; gap: 6px; margin: 22px 0 0; padding: 0; list-style: none; }
+.site-pages[hidden] { display: none; }
+.site-top {
+	position: relative; display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%;
+	min-height: 38px; padding: 0 12px; border: 0; border-radius: 10px; color: var(--text); font: inherit; font-size: 14px;
+	text-align: left; cursor: pointer; isolation: isolate; overflow: hidden;
+	background: color-mix(in srgb, var(--site-ink) 5%, transparent);
+}
+/* Its share of today's views, as a soft field over the row's own paler one. */
+.site-top::before {
+	content: ""; position: absolute; inset: 0 auto 0 0; z-index: -1; width: calc(var(--share, 0) * 100%);
+	background: var(--site-field);
+	transition: width var(--motion-slow) var(--ease-out), background-color var(--motion-fast) ease;
+}
+.site-top:hover::before { background: color-mix(in srgb, var(--site-ink) 20%, transparent); }
+.site-top:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.site-top-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; }
+.site-top-count { flex: none; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+/* ---- wide: the window fills the page, the numbers stand beside it ----------------------------------- */
+@container site-view (min-width: 52em) {
+	.site-view {
+		grid-template-columns: minmax(0, 1fr) 248px; grid-template-rows: minmax(0, 1fr); gap: 40px;
+		padding: 24px 28px 28px; overflow: hidden;
+	}
+	.site-window { height: auto; min-height: 0; }
+	.site-side { padding: 18px 0 0; }
+}
+@container site-view (min-width: 80em) {
+	.site-view { grid-template-columns: minmax(0, 1fr) 280px; gap: 52px; padding: 28px 40px 32px; }
+	.site-now-number { font-size: 76px; }
+}
+/* ---- narrow: a phone ---------------------------------------------------------------------------- */
+@container site-view not (min-width: 36em) {
+	.site-view { padding: 10px 10px 28px; gap: 18px; }
+	.site-window { height: 62vh; border-radius: var(--radius-lg); }
+	.site-side { padding: 0 8px; }
+	.site-now-number { font-size: 56px; }
+	.site-day { margin-top: 16px; }
+}
+
+/* ---- motion -------------------------------------------------------------------------------------- */
+@keyframes site-window-in { from { opacity: 0; transform: translateY(8px) scale(0.99); } }
+@keyframes site-glass-breathe { 50% { opacity: 0.45; } }
+@keyframes site-live { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+	.site-window, .site-glass.is-opening::before, .site-view.has-people .site-live { animation: none; }
+	.site-frame, .site-top::before { transition: none; }
+}

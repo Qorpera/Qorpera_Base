@@ -7,7 +7,6 @@ import type {
 	CompanyComputerScreenLease,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { COMPANY_COMPUTER_TOOL_VERSION } from "@qorpera/cloud-client/cloud-company-computer-contract";
-import type { CompanyComputerScreenRegistry } from "@qorpera/runtime/cloud-company-computer-state";
 
 export function computerId(number: number): string {
 	return `00000000-0000-4000-8000-${String(number).padStart(12, "0")}`;
@@ -72,31 +71,6 @@ export function computerOperation(): CompanyComputerOperation {
 		arguments: { kind: "browser", action: "snapshot" },
 		target: { realm: "company_computer", binding: { ...computerBinding() }, resources: {} },
 		requiresCompanyRevision: false,
-	};
-}
-
-export function computerRegistry(): CompanyComputerScreenRegistry {
-	return {
-		scope: computerScope(),
-		computerGeneration: 1,
-		revision: 1,
-		lifecycle: "active",
-		maxScreens: 4,
-		screens: [
-			{
-				screenId: computerId(6),
-				ordinal: 1,
-				generation: 1,
-				staffAgentId: computerId(5),
-				status: "active",
-				power: "open",
-				epoch: 0,
-				touchedAt: 0,
-				lease: null,
-				takeover: null,
-				viewers: [],
-			},
-		],
 	};
 }
 

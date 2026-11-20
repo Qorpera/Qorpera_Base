@@ -88,7 +88,7 @@ describe("deployed sign-in methods", () => {
 		expect(root.querySelector("form")).not.toBeNull();
 		await auth.signInWithOAuth("google");
 		expect(oauth).not.toHaveBeenCalled();
-		expect(auth.store.get().error).toContain("Continue with email");
+		expect(auth.store.get().error).toContain("Use your email instead");
 	});
 
 	it("leaves email sign-in usable after provider discovery fails", async () => {
@@ -118,7 +118,7 @@ describe("deployed sign-in methods", () => {
 		auth = new AuthController(f.cloud);
 		auth.store.subscribe(() => renderSignIn(auth, root));
 		await auth.start();
-		auth.store.set({ pendingEmail: "member@example.com" });
+		auth.store.set({ step: { name: "code", email: "member@example.com" } });
 		await settle();
 		root.querySelector<HTMLInputElement>("#signinCode")!.value = "12345";
 		response.resolve(Response.json({ external: { google: true } }));
@@ -142,7 +142,7 @@ describe("deployed sign-in methods", () => {
 		await auth.start();
 		await settle();
 		renderSignIn(auth, root);
-		expect(root.textContent).toContain("Request a new email code in this browser");
+		expect(root.textContent).toContain("Sign-in could not be completed");
 		expect(location.search).toBe("");
 	});
 

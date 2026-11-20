@@ -94,7 +94,7 @@ it("uses server-owned identity and model at the native RPC callback boundary", a
 	expect(result).toEqual({
 		providerSessionId: "thread_fixture",
 		toolCalls: 1,
-		codexVersion: "0.155.1",
+		codexVersion: "0.170.0",
 		fencedRequests: 2,
 	});
 	expect(f.execute.mock.calls[0][1].identity).toEqual(f.authority.identity);

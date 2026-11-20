@@ -1749,7 +1749,6 @@ it("carries every agent's figure in a map's page, since who stands where is foun
 	for (const [id, url] of Object.entries(KIT_FIGURES))
 		expect(page).toContain(`<img data-kit-src="figure:${id}" src="${url}" alt="">`);
 	expect(kitFigures(OWN_MAP)).toEqual([]);
-	expect(KIT_ENGINE_JS.map).toBe(kitFile("map", "engine.js"));
 });
 
 it("gives a map's app the company's reading where it draws the reading or an agent's figure", async () => {

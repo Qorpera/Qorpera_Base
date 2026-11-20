@@ -4,8 +4,6 @@ import {
 	decodeCompanyAccountBase32,
 	generateCompanyAccountPassword,
 	parseCompanyAccountFields,
-	parseCompanyAccountOtpauth,
-	parseCompanyAccountRecoveryCodes,
 } from "@qorpera/runtime/cloud-company-accounts";
 import { describe, expect, it } from "vitest";
 
@@ -50,46 +48,6 @@ describe("company account authenticator codes", () => {
 		expect(companyAccountTotpCode(value, 59_000)).toBe("287082");
 		expect(companyAccountTotpCode(value, 30_000)).toBe(companyAccountTotpCode(value, 59_999));
 		expect(companyAccountTotpCode(value, 60_000)).not.toBe(companyAccountTotpCode(value, 59_999));
-	});
-
-	it("reads the setup link a website's QR code carries, and refuses others", () => {
-		expect(
-			parseCompanyAccountOtpauth(
-				`otpauth://totp/Vercel:agents%40nordlys.example?secret=${seeds.SHA1.toLowerCase()}&issuer=Vercel`,
-			),
-		).toEqual({ seed: seeds.SHA1, digits: 6, period: 30, algorithm: "SHA1" });
-		expect(
-			parseCompanyAccountOtpauth(`otpauth://totp/x?secret=${seeds.SHA256}&algorithm=sha256&digits=8&period=60`),
-		).toEqual({ seed: seeds.SHA256, digits: 8, period: 60, algorithm: "SHA256" });
-		// A repeated issuer or image is not read, so it does not matter.
-		expect(
-			parseCompanyAccountOtpauth(
-				`otpauth://totp/x?secret=${seeds.SHA1}&issuer=Vercel&issuer=Vercel&image=a&image=b`,
-			),
-		).toEqual({ seed: seeds.SHA1, digits: 6, period: 30, algorithm: "SHA1" });
-		expect(parseCompanyAccountOtpauth(`otpauth://totp/x?Secret=${seeds.SHA256}&Algorithm=SHA256&Digits=8`)).toEqual({
-			seed: seeds.SHA256,
-			digits: 8,
-			period: 30,
-			algorithm: "SHA256",
-		});
-		for (const link of [
-			`otpauth://hotp/x?secret=${seeds.SHA1}&counter=1`,
-			"otpauth://totp/x",
-			`https://example.com/?secret=${seeds.SHA1}`,
-			"otpauth://totp/x?secret=AAAA",
-			`otpauth://totp/x?secret=${seeds.SHA1}&digits=4`,
-			`otpauth://totp/x?secret=${seeds.SHA1}&algorithm=MD5`,
-			`otpauth://totp/x?secret=${seeds.SHA1}&period=5`,
-			`otpauth://totp/x?secret=${seeds.SHA1}&digits=0x8`,
-			`otpauth://totp/x?secret=${seeds.SHA1}&digits=`,
-			`otpauth://totp/x?secret=${seeds.SHA1}&secret=${seeds.SHA256}`,
-			`otpauth://totp/x?secret=${seeds.SHA1}&algorithm=SHA1&ALGORITHM=SHA256`,
-			`otpauth://totp/x?secret=${seeds.SHA1}&digits=6&digits=8`,
-			`otpauth://totp/x?secret=${seeds.SHA1}&period=30&Period=60`,
-			"not a link",
-		])
-			expect(() => parseCompanyAccountOtpauth(link), link).toThrow(/Company account authenticator/);
 	});
 
 	it("decodes base32 as authenticator apps accept it, and refuses what is not base32", () => {
@@ -178,17 +136,5 @@ describe("company account envelope fields", () => {
 		];
 		for (const fields of cases)
 			expect(() => parseCompanyAccountFields(fields), JSON.stringify(fields)).toThrow(/Company account/);
-	});
-
-	it("reads recovery codes as websites show or download them", () => {
-		expect(parseCompanyAccountRecoveryCodes("1. abcd-efgh\n2) ijkl mnop\r\n\nqrst-uvwx, abcd-efgh")).toEqual([
-			{ code: "abcd-efgh", used: false },
-			{ code: "ijklmnop", used: false },
-			{ code: "qrst-uvwx", used: false },
-		]);
-		expect(() => parseCompanyAccountRecoveryCodes("\n\n")).toThrow("Company account recovery codes are malformed");
-		expect(() => parseCompanyAccountRecoveryCodes("ok-code-1\nbad code!")).toThrow(
-			"Company account recovery codes are malformed",
-		);
 	});
 });

@@ -31,7 +31,6 @@ const actorUserId = "c98d600e-654a-40da-a07f-f1d54f93cc6c";
 const createdAt = "2026-08-17T01:00:00.000Z";
 const sessionToken = "s".repeat(43);
 const leaseToken = "l".repeat(43);
-const RUNTIME_REFUSAL = "Runner broker returned an invalid Company File runtime selection";
 const SUBSTRATE_REFUSAL = "Runner broker returned a run with a Company File substrate";
 
 /** A folder-v2 run's leased job: no Company File substrate. */
@@ -615,8 +614,6 @@ describe("a folder-v2 run in the runner broker (folder core C3, P23)", () => {
 	});
 
 	it.each([
-		["the whole-tree lane's description", wholeTreeRecord(), RUNTIME_REFUSAL],
-		["the whole-tree lane", { company_runtime: "whole-tree-v1" }, RUNTIME_REFUSAL],
 		[
 			"the path lane over a snapshot-v1 substrate",
 			{ ...wholeTreeRecord(), company_runtime: "company-path-v1" },

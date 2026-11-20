@@ -126,7 +126,8 @@ describe("profile invitation email delivery", () => {
 		assert.equal(invitationUrl.hash, `#invitation=${invitationId}`);
 		assert.match(email.html, /Qorpera &lt;Core&gt;/);
 		assert.doesNotMatch(email.html, /<Core>/);
-		assert.match(email.text, /sign in as friend@example\.com/i);
+		assert.match(email.text, /create your account as friend@example\.com/i);
+		assert.match(email.html, /crown-glance\.gif/);
 		assert.match(email.text, /before you choose whether to accept/i);
 		assert.equal(invitationIdempotencyKey(invitationId), "qorpera-profile-invitation/a8450f9d-c912-43ea-81f6-62c7247d752a");
 		assert.notEqual(invitationIdempotencyKey(invitationId), invitationIdempotencyKey(profileId));
@@ -139,13 +140,13 @@ describe("profile invitation email delivery", () => {
 			"https://qorpera.com/invitation",
 		);
 		assert.equal(unnamed.subject, "Jonas <J> invited you to their new company on Qorpera");
-		assert.match(unnamed.html, /<h1[^>]*>Join Jonas &lt;J&gt;&#39;s new company<\/h1>/);
-		assert.match(unnamed.text, /^Jonas <J> invited you to join their new company on Qorpera\./);
+		assert.match(unnamed.html, /<h1[^>]*>Jonas &lt;J&gt; invited you to their new company<\/h1>/);
+		assert.match(unnamed.text, /^Jonas <J> invited you to their new company on Qorpera\./);
 		assert.doesNotMatch(`${unnamed.subject}${unnamed.text}${unnamed.html}`, /No name yet/);
 		const named = buildProfileInvitationEmail(job({ profileName: "Nordlys" }), "https://qorpera.com/invitation");
 		assert.equal(named.subject, "Jonas invited you to Nordlys on Qorpera");
-		assert.match(named.html, /<h1[^>]*>Join Nordlys<\/h1>/);
-		assert.match(named.text, /^Jonas invited you to join Nordlys on Qorpera\./);
+		assert.match(named.html, /<h1[^>]*>Jonas invited you to Nordlys<\/h1>/);
+		assert.match(named.text, /^Jonas invited you to Nordlys on Qorpera\./);
 	});
 
 	it("records retryable and permanent failures without stopping the batch", async () => {

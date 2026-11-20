@@ -311,24 +311,9 @@ describe("cloud worker outage recovery", () => {
 		expect(forbidden).not.toHaveBeenCalled();
 		expect(lane.acquire).toHaveBeenCalledOnce();
 		expect(lane.release).not.toHaveBeenCalled();
-	});
-
-	it("replays an exact durable completion after process restart without rerunning work or sending messages", async () => {
-		const control = new Control();
-		control.loseCompletion = true;
-		const fixture = await durable(control);
-		const execute = vi.fn(async () => result());
-		const transport = broker();
-		await expect(worker(fixture.runner, execute, transport).runNext(assignment)).rejects.toThrow("response lost");
-		const restored = await fixture.restart();
-		expect(restored.leasedJobs()).toMatchObject([{ profileId, runId, assignmentId }]);
-		await expect(worker(restored, execute, transport).runNext(undefined)).resolves.toMatchObject({
-			status: "completed",
-		});
-		expect(execute).toHaveBeenCalledOnce();
-		const calls = control.calls.filter((call) => call.action === "complete");
-		expect(calls).toHaveLength(2);
-		expect(calls[0]).toEqual(calls[1]);
+		const completions = control.calls.filter((call) => call.action === "complete");
+		expect(completions).toHaveLength(2);
+		expect(completions[0]).toEqual(completions[1]);
 	});
 
 	it("persists a failed outcome before the request and recovers it idempotently", async () => {

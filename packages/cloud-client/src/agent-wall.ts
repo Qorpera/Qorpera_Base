@@ -1,4 +1,4 @@
-import { companyPathKey, osPath, osRelative } from "./company-state-shared.ts";
+import { companyPathKey, osRelative } from "./company-state-shared.ts";
 
 /* An agent's wall (Jonas, 5 November 2026: "a poster or wall of updates kept within rules, instead of many new
  * messages"): what the agent has done, with links, what it is working on, and what waits on a member, kept in place in
@@ -47,8 +47,6 @@ export const WALL_WAITING_MAX = 6;
 export const WALL_WORKING_MAX = 6;
 /** Done items a wall kept; `update_wall` dropped the oldest past it until 14 November 2026. */
 export const WALL_DONE_MAX = 40;
-/** Done items newer than this many days show on the poster; older ones fold into Earlier. */
-export const WALL_RECENT_DAYS = 7;
 
 export type WallPart = "now" | "waiting" | "working" | "done";
 
@@ -107,11 +105,6 @@ export interface WallParse {
 
 export const EMPTY_WALL: Wall = Object.freeze({ waiting: [], working: [], done: [] });
 
-/** The wall file of the agent whose folder is `QorperaOS/agents/<handle>/`. */
-export function wallPath(handle: string): string {
-	return osPath(`agents/${handle}/${WALL_FILE}`);
-}
-
 /** The agent folder name a wall path is in (as written), or null when the path is no agent's wall. */
 export function wallHandle(path: string): string | null {
 	const below = osRelative(companyPathKey(path));
@@ -152,20 +145,6 @@ export function wallDetailProblem(text: string): string | null {
 	if ([...text.trim()].length > WALL_DETAIL_MAX_CHARS)
 		return `a detail is at most ${WALL_DETAIL_MAX_CHARS} characters, a sentence or two: put the rest in a file and link it`;
 	return null;
-}
-
-const IMAGE = /\.(?:png|jpe?g|gif|webp|svg)$/i;
-
-/** What an item links that has a picture to show when it opens: the first image of the company's folder it links, else
- * the first interface app. */
-export function wallPreview(item: WallItem): { kind: "image"; path: string } | { kind: "app"; name: string } | null {
-	let app: string | null = null;
-	for (const match of `${item.text} ${item.detail ?? ""}`.matchAll(/\]\((folder|app):([^)\s]+)\)/g)) {
-		const target = match[2] ?? "";
-		if (match[1] === "folder" && IMAGE.test(target)) return { kind: "image", path: target };
-		if (match[1] === "app" && app === null) app = target;
-	}
-	return app === null ? null : { kind: "app", name: app };
 }
 
 export function wallItemText(text: string): string {
@@ -279,34 +258,4 @@ export function parseWall(text: string): WallParse {
 		}
 	const { now, ...rest } = parts;
 	return { wall: now[0] ? { now: now[0].text, ...rest } : rest, problems, head };
-}
-
-/** The wall as the writer keeps it: the file's own head (the title and a note, as written), then the three parts in
- * order, every item on its own line. */
-export function renderWall(wall: Wall, head = "# Wall"): string {
-	const out = [head.replace(/\s+$/, "") || "# Wall"];
-	const part = (name: WallPart, items: readonly WallItem[]) => {
-		out.push("", `## ${WALL_HEADINGS[name]}`);
-		for (const item of items) {
-			out.push(`- ${"day" in item ? `${(item as WallDone).day}: ` : ""}${item.text}`);
-			if (item.detail) out.push(`  ${item.detail}`);
-		}
-	};
-	if (wall.now) part("now", [{ text: wall.now }]);
-	part("waiting", wall.waiting);
-	part("working", wall.working);
-	part("done", wall.done);
-	return `${out.join("\n")}\n`;
-}
-
-/** The done items to show and those folded into Earlier: older than {@link WALL_RECENT_DAYS} days before `today`
- * (`YYYY-MM-DD`). */
-export function foldWallDone(
-	done: readonly WallDone[],
-	today: string,
-): { readonly recent: readonly WallDone[]; readonly earlier: readonly WallDone[] } {
-	const from = new Date(`${today}T00:00:00Z`);
-	from.setUTCDate(from.getUTCDate() - WALL_RECENT_DAYS);
-	const cut = from.toISOString().slice(0, 10);
-	return { recent: done.filter((item) => item.day > cut), earlier: done.filter((item) => item.day <= cut) };
 }

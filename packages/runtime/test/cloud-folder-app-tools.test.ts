@@ -93,8 +93,6 @@ it("tells how a page written by hand is made, within the bytes a tool's descript
 		"The answer's look names what a read of the saved app found: fix it, unless it does not fit this app.",
 	])
 		expect(tool.description).toContain(rule);
-	// The web opens an app's links and gives it a base style now: the description no longer says otherwise.
-	expect(tool.description).not.toMatch(/does not open inside an app|copied in because/);
 	// How a page reads live data is the guide reads: a field's description never reached a model from a schema this
 	// long (14 November 2026).
 	const schema = JSON.stringify(appGuide("reads"));

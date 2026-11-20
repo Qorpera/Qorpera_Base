@@ -14,8 +14,6 @@ const sessionId = "10000000-0000-4000-8000-000000000006";
 const requestId = "10000000-0000-4000-8000-000000000007";
 const inputId = "10000000-0000-4000-8000-000000000008";
 const ownerUserId = "10000000-0000-4000-8000-000000000009";
-const scopedIdentityId = "10000000-0000-4000-8000-000000000010";
-const logicalComputerId = "10000000-0000-4000-8000-000000000011";
 
 function transport() {
 	const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = [];
@@ -37,21 +35,6 @@ function transport() {
 					created_at: "2026-08-21T10:00:00.000Z",
 					updated_at: "2026-08-21T10:00:00.000Z",
 				};
-			case "qorpera_upsert_scoped_compute_identity":
-				return {
-					compute_identity_id: scopedIdentityId,
-					ownership_kind: args.p_ownership_kind,
-					owner_user_id: null,
-					owner_scope_key: args.p_owner_scope_key,
-					display_name: "Finance boundary",
-					template_key: "qorpera-company-linux",
-					template_version: "v1",
-					capabilities: ["agent_turn", "company_substrate"],
-					policy: { credentialExport: false },
-					status: "active",
-					created_at: "2026-08-21T10:00:00.000Z",
-					updated_at: "2026-08-21T10:00:00.000Z",
-				};
 			case "qorpera_begin_native_provider_login":
 				return {
 					login_id: loginId,
@@ -66,8 +49,6 @@ function transport() {
 				};
 			case "qorpera_create_member_execution_sponsor":
 				return { binding_id: bindingId, version: 1 };
-			case "qorpera_create_execution_sponsor_binding":
-				return { binding_id: bindingId, version: 2 };
 			case "qorpera_request_session_turn_v2":
 				return {
 					turn_request_id: requestId,
@@ -77,23 +58,6 @@ function transport() {
 				};
 			case "qorpera_list_member_native_execution_connections":
 				return { compute_identity: null, connections: [] };
-			case "qorpera_list_compute_identities":
-				return [
-					{
-						compute_identity_id: scopedIdentityId,
-						ownership_kind: "security_boundary",
-						owner_user_id: null,
-						owner_scope_key: "finance-prod",
-						display_name: "Finance boundary",
-						template_key: "qorpera-company-linux",
-						template_version: "v1",
-						capabilities: ["agent_turn", "company_substrate"],
-						policy: { credentialExport: false },
-						status: "active",
-						created_at: "2026-08-21T10:00:00.000Z",
-						updated_at: "2026-08-21T10:00:00.000Z",
-					},
-				];
 			case "qorpera_list_session_turn_requests":
 				return [];
 			case "qorpera_revoke_native_provider_connection":
@@ -141,29 +105,6 @@ describe("native subscription product control", () => {
 		expect(JSON.stringify(loginCall)).not.toContain(login.capability);
 	});
 
-	it("creates and lists company security-boundary compute identities without assigning member ownership", async () => {
-		const { calls, client } = transport();
-		await expect(
-			client.createScopedComputeIdentity({
-				profileId,
-				ownershipKind: "security_boundary",
-				ownerScopeKey: "finance-prod",
-				displayName: "Finance boundary",
-			}),
-		).resolves.toMatchObject({
-			computeIdentityId: scopedIdentityId,
-			ownershipKind: "security_boundary",
-			ownerScopeKey: "finance-prod",
-		});
-		await expect(client.listComputeIdentities(profileId)).resolves.toMatchObject([
-			{ computeIdentityId: scopedIdentityId, ownershipKind: "security_boundary", ownerScopeKey: "finance-prod" },
-		]);
-		expect(calls.find((call) => call.name === "qorpera_upsert_scoped_compute_identity")?.args).toMatchObject({
-			p_ownership_kind: "security_boundary",
-			p_owner_scope_key: "finance-prod",
-		});
-	});
-
 	it("submits one explicitly sponsored immutable turn instead of selecting a connection implicitly", async () => {
 		const { calls, client } = transport();
 		const sponsor = await client.createMemberSponsor({
@@ -209,56 +150,6 @@ describe("native subscription product control", () => {
 			}),
 		).rejects.toThrow("A turn is paid by the member who sends it or by a company account");
 		expect(calls).toEqual([]);
-	});
-
-	it("creates explicit company sponsorship without relabeling it as a member connection", async () => {
-		const { calls, client } = transport();
-		await expect(
-			client.createCompanySponsor({
-				profileId,
-				sponsorKind: "company_service_account",
-				providerConnectionId: connectionId,
-				providerConnectionVersion: 3,
-				allowAutonomous: true,
-			}),
-		).resolves.toEqual({ bindingId, version: 2 });
-		expect(calls.find((call) => call.name === "qorpera_create_execution_sponsor_binding")?.args).toMatchObject({
-			p_sponsor_kind: "company_service_account",
-			p_provider_connection_id: connectionId,
-			p_provider_connection_version: 3,
-			p_allow_autonomous: true,
-		});
-	});
-
-	it("submits the shared Company Computer as explicit company-owned governed work", async () => {
-		const { calls, client } = transport();
-		const sponsor = await client.createCompanySponsor({
-			profileId,
-			sponsorKind: "company_service_account",
-			providerConnectionId: connectionId,
-			providerConnectionVersion: 3,
-			allowAutonomous: true,
-		});
-
-		await expect(
-			client.requestSessionTurn({
-				sessionId,
-				body: { schema: "qorpera.session-prompt/v1", text: "Use the Company Computer.", images: [] },
-				sponsorMode: "company_connection",
-				sponsorBindingId: sponsor.bindingId,
-				sponsorVersion: sponsor.version,
-				computeIdentityId: scopedIdentityId,
-				logicalComputerId,
-				workerClass: "company_computer",
-			}),
-		).resolves.toMatchObject({ sponsorMode: "company_connection", status: "queued" });
-
-		expect(calls.find((call) => call.name === "qorpera_request_session_turn_v2")?.args).toMatchObject({
-			p_sponsor_mode: "company_connection",
-			p_compute_identity_id: scopedIdentityId,
-			p_logical_computer_id: logicalComputerId,
-			p_worker_class: "company_computer",
-		});
 	});
 
 	it("revokes the exact member-owned native connection without handling provider credentials", async () => {

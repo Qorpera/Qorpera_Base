@@ -199,7 +199,6 @@ describe("headless office process lifetime (physical guest mocked)", () => {
 		const options = await started.promise;
 		expect(options.scope).toEqual(config.scope);
 		expect(options.native.token).toBe("n".repeat(43));
-		expect(options).not.toHaveProperty("captureObjectGateway");
 		expect(options.native.tls.cert).toEqual(cert);
 		expect(options.startup).toBeDefined();
 		expect(options.screenLifecycle).toBeDefined();

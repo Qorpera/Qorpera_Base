@@ -1,5 +1,5 @@
 import { REALTIME_SUBSCRIBE_STATES, type RealtimeChannel, type SupabaseClient } from "@supabase/supabase-js";
-import type { HostedPresenceIdentity, HostedPrimaryDatabase, QorperaHostedPrimary } from "./hosted-primary.ts";
+import type { HostedPresenceIdentity, HostedPrimaryDatabase } from "./hosted-primary.ts";
 import { PresenceSignatures } from "./presence-signatures.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -68,10 +68,11 @@ export interface CloudPresenceHandle {
 
 /** The device registry calls presence needs; a client that does not carry the whole
  * hosted primary (the web app) supplies just these. */
-export type PresenceDevices = Pick<
-	QorperaHostedPrimary,
-	"registerPresenceDevice" | "listPresenceDevices" | "unregisterPresenceDevice"
->;
+export interface PresenceDevices {
+	registerPresenceDevice(profileId: string, clientId: string, publicKey: string): Promise<HostedPresenceIdentity>;
+	listPresenceDevices(profileId: string, clientIds: string[]): Promise<HostedPresenceIdentity[]>;
+	unregisterPresenceDevice(profileId: string, clientId: string): Promise<void>;
+}
 
 export class SupabaseCloudPresenceTransport {
 	readonly #client: Pick<SupabaseClient<HostedPrimaryDatabase>, "channel" | "removeChannel">;

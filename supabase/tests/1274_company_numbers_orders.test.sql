@@ -423,7 +423,7 @@ end $$;
 -- 5. Duplicates: the same event delivered twice is a duplicate (no body, no second fact); two deliveries of one payment
 --    (completed and succeeded, two event ids) are one order; the back-fill over applied deliveries changes nothing.
 do $$
-declare v_at timestamptz := pg_temp.o_at() - interval '1 hour'; v_event jsonb; v_before text; v_changed timestamptz;
+declare v_at timestamptz := pg_temp.o_at(); v_event jsonb; v_before text; v_changed timestamptz;
 begin
 	perform pg_temp.o_clean();
 	v_event := pg_temp.o_event('evt_Twice', 'checkout.session.completed', pg_temp.o_session('cs_Twice', 'pi_Twice', 4000, v_at));

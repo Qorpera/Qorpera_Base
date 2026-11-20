@@ -90,11 +90,6 @@ export interface CloudRunnerAuditReceipt {
 	createdAt: string;
 }
 
-export interface CloudRunnerPairingSecret {
-	activationToken: string;
-	activationTokenSha256: string;
-}
-
 export type CloudRunnerControlRequest =
 	| {
 			action: "activate";
@@ -391,14 +386,6 @@ export function parseCloudRunnerAuditReceipt(value: unknown): CloudRunnerAuditRe
 			? { actorUserId: uuid(input.actor_user_id, "runner audit actor id") }
 			: {}),
 		createdAt: timestamp(input.created_at, "runner audit creation time"),
-	};
-}
-
-export function createCloudRunnerPairingSecret(): CloudRunnerPairingSecret {
-	const activationToken = randomBytes(32).toString("base64url");
-	return {
-		activationToken,
-		activationTokenSha256: createHash("sha256").update(activationToken).digest("hex"),
 	};
 }
 

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
 	parseCompanyStateFile,
 	workerStandingTexts,
@@ -6,6 +6,7 @@ import {
 	writeWorkerBriefFile,
 	writeWorkerResultsFile,
 } from "@qorpera/cloud-client/company-state-files";
+import { UUID_PATTERN } from "@qorpera/contracts";
 import { type CloudFolderWorkerChange, CloudFolderWorkers } from "@qorpera/runtime/cloud-folder-workers";
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CloudToolArgumentRefusal, CloudToolRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
@@ -91,9 +92,9 @@ async function fixture(
 }
 
 const parse = (content: { value: unknown }) => JSON.parse(String(content.value));
-const hashedId = (namespace: string, runId: string, key: string) => {
-	const hex = createHash("sha256").update(`${namespace}:${runId}:${key}`).digest("hex");
-	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${((Number.parseInt(hex[16] ?? "0", 16) & 3) | 8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+const briefId = (f: { text: (path: string) => string | null }, folder = FOLDER) => {
+	const parsed = parseCompanyStateFile(`${folder}/brief.md`, f.text(`${folder}/brief.md`) ?? "");
+	return parsed?.ok ? (parsed.file as { id?: string }).id : undefined;
 };
 async function refuses(
 	call: Promise<unknown>,
@@ -163,7 +164,7 @@ it("dispatches a worker as its folder with brief.md, under the call's review and
 	const parsed = parseCompanyStateFile(`${FOLDER}/brief.md`, f.text(`${FOLDER}/brief.md`) ?? "");
 	expect(parsed?.ok && parsed.file).toMatchObject({
 		kind: "worker-brief",
-		id: hashedId("qorpera.folder-worker/v1", f.identity.runId, "dispatch-1"),
+		id: expect.stringMatching(UUID_PATTERN),
 		title: "Collect prices",
 		species: "in-house",
 		followUps: 0,
@@ -175,6 +176,23 @@ it("dispatches a worker as its folder with brief.md, under the call's review and
 	// A replay of the same call returns its stored result and commits nothing more.
 	expect(parse(await f.workers().change(DISPATCH, f.context))).toEqual(result);
 	expect(f.commits).toHaveLength(1);
+	const id = briefId(f);
+	const stock = "QorperaOS/agents/nora/todos/market-scan/stock";
+	const second = parse(
+		await f
+			.workers()
+			.change(
+				{ ...DISPATCH, operationKey: "dispatch-2", workerKey: "stock", title: "Check stock" },
+				{ ...f.context, callId: randomUUID(), actionReviewId: randomUUID() },
+			),
+	);
+	expect(second).toMatchObject({ outcome: "saved", worker: { path: stock } });
+	expect(briefId(f, stock)).toMatch(UUID_PATTERN);
+	expect(briefId(f, stock)).not.toBe(id);
+	const elsewhere = await fixture({ files: { [TODO]: todoText() } });
+	expect(parse(await elsewhere.workers().change(DISPATCH, elsewhere.context)).outcome).toBe("saved");
+	expect(briefId(elsewhere)).toMatch(UUID_PATTERN);
+	expect(briefId(elsewhere)).not.toBe(id);
 });
 
 it("dispatches into a todo folder that exists without making it again", async () => {
@@ -269,7 +287,8 @@ it("dispatches a coding session: its brief names the harness and repository, and
 				f.context,
 			),
 	);
-	const id = hashedId("qorpera.folder-worker/v1", f.identity.runId, "code-1");
+	const id = briefId(f);
+	expect(id).toMatch(UUID_PATTERN);
 	// The session is queued for its machine; its result comes back by itself.
 	expect(result).toMatchObject({
 		action: "dispatch",
@@ -653,7 +672,6 @@ it("routes manage_worker and report_work to the folder writer, and says how work
 	);
 	for (const action of ["dispatch", "status", "followup", "cancel", "decide", "archive"])
 		expect(manage?.description).toContain(`\n- ${action}: `);
-	expect(manage?.description).not.toContain("without todoKey, those of open todos");
 	// Review r1 of #1802: status needs the todoKey too (CloudFolderWorkers.status refuses without one), and the field says so.
 	expect(manage?.description).toContain(
 		"Every action takes the todo's todoKey; all but status also take operationKey and workerKey.",

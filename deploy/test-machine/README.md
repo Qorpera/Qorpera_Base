@@ -37,7 +37,7 @@ Nothing can download this build, so a rebuilt machine gets it pushed before `gue
 without the right file (the machine then counts as not set up). From the node that holds it, node 2, as root:
 
 ```sh
-lxc file push --create-dirs --mode 0755 /home/company41-admin/cut-v55-a1/native-company-fence-t2a/codex \
+lxc file push --create-dirs --mode 0755 /home/company41-admin/cut-v263-codex170/codex \
   qorpera-testvm-node02/opt/qorpera-codex-fence/codex --project testmachines
 ```
 

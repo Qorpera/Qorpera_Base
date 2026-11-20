@@ -11,15 +11,15 @@ import { pinnedCodexBinary } from "./fixtures/pinned-codex-binary.ts";
 // The standalone acceptance command is mandatory for rollout and fails rather than skipping a missing artifact.
 const binary = pinnedCodexBinary();
 describe.skipIf(!binary)("pinned downstream native artifact (requires QORPERA_CODEX_FENCE_BINARY)", () => {
-	it.each(["offline-probe", "provider-default", "gpt-5.6-sol"])(
+	it.each(["offline-probe", "provider-default", "gpt-6.2-sol", "gpt-6-astra", "gpt-6-luna"])(
 		"fences every real native result with %s",
 		async (model) => {
 			if (!binary) throw new Error("Missing pinned downstream native artifact");
 			const proof = await runOfficialCodexBoundaryProbe([binary], model);
 			expect(proof).toEqual({
 				platform: process.platform,
-				codexVersion: "0.155.1",
-				providerModel: model === "provider-default" ? "gpt-6-astra" : model,
+				codexVersion: "0.170.0",
+				providerModel: model === "provider-default" ? "gpt-6.2-sol" : model,
 				toolInventory: ["qorpera.read_document", "qorpera.send_message"],
 				forcedBypassesDenied: 22,
 				canonicalBytesUnchanged: true,
@@ -64,13 +64,13 @@ describe.skipIf(!binary)("pinned downstream native artifact (requires QORPERA_CO
 		});
 		const proof = JSON.parse(stdout);
 		expect(proof).toMatchObject({
-			providerModel: "gpt-6-astra",
+			providerModel: "gpt-6.2-sol",
 			nativeResultsFenced: 23,
 			unfencedNativeResults: 0,
 			allNativeResultsFenced: true,
 		});
-		expect(proof.solBoundaryProof).toMatchObject({
-			providerModel: "gpt-5.6-sol",
+		expect(proof.astraBoundaryProof).toMatchObject({
+			providerModel: "gpt-6-astra",
 			nativeResultsFenced: 23,
 			unfencedNativeResults: 0,
 			allNativeResultsFenced: true,
