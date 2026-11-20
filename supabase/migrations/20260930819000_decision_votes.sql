@@ -18,7 +18,7 @@ comment on table public.qorpera_decision_votes is
 	'answers a card, starts a run or needs a model account. Written by qorpera_cast_decision_vote alone and read by '
 	'qorpera_list_company_open_decisions; a member who leaves the company takes their rows with them.';
 
-create function public.qorpera_company_open_decisions(p_profile_id uuid, p_first_user_id uuid)
+create function public.qorpera_company_open_decisions(p_profile_id uuid, p_first_user_id uuid, p_first_authorizes boolean)
 returns table (
 	item_id uuid,
 	kind text,
@@ -76,28 +76,35 @@ language sql stable security definer set search_path = '' as $$
 		approval.approver_user_id, approval.approver_scope, null::bigint, approval.created_at, approval.card
 	from (
 		select review.id, review.card_session_id, room.id as room_id, review.staff_agent_id, review.approver_user_id,
-			review.approver_scope, review.created_at, public.qorpera_action_review_card(review) - 'call' as card
+			review.approver_scope, review.created_at, (raised.body #> '{entry,data}') - 'call' as card
 		from public.qorpera_action_reviews as review
 		join public.qorpera_shared_sessions as session
 			on session.id = review.card_session_id and session.profile_id = p_profile_id and session.status = 'open'
 				and session.audience_kind = 'company'
 		join public.qorpera_company_rooms as room on room.session_id = review.card_session_id
 			and room.bound_staff_agent_id = review.staff_agent_id and room.profile_id = review.profile_id
+		join public.qorpera_session_events as raised on raised.session_id = review.card_session_id
+			and raised.event_type = 'authorization_request'
+			and raised.body #>> '{entry,data,reviewId}' = review.id::text
 		where review.profile_id = p_profile_id and review.decision = 'ask' and review.answer is null
 			and review.card_session_id is not null
-		order by (review.approver_user_id is not distinct from p_first_user_id) desc, review.created_at desc
+		order by ((review.approver_scope = 'member' and review.approver_user_id is not distinct from p_first_user_id)
+			or (review.approver_scope = 'owners_admins' and p_first_authorizes)) desc, review.created_at desc
 		limit 50
 	) as approval
 $$;
-revoke all on function public.qorpera_company_open_decisions(uuid, uuid)
+revoke all on function public.qorpera_company_open_decisions(uuid, uuid, boolean)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
-comment on function public.qorpera_company_open_decisions(uuid, uuid) is
+comment on function public.qorpera_company_open_decisions(uuid, uuid, boolean) is
 	'Internal (20260930819000): every open decision in a company''s agent threads, whoever answers it. A question or '
 	'email draft card that is not answered, not past its time and has no live answer on its way, in an active agent '
 	'thread whose conversation is open and the company''s (at most 20 a thread, p_first_user_id''s own first), and an '
-	'approval card that still asks (at most 50, theirs first). The same conditions on the card as '
-	'qorpera_list_member_open_decisions, without the ones on the caller. Checks no caller: only '
-	'qorpera_list_company_open_decisions and qorpera_cast_decision_vote reach it, after their own membership check.';
+	'approval that still asks, as the card its authorization_request event holds, without the agent''s copy of the '
+	'call (at most 50; first the ones p_first_user_id answers, the company''s too when p_first_authorizes). An '
+	'approval whose card event was erased is not listed: the list gives a member only what the thread''s events give '
+	'them. The same conditions on the card as qorpera_list_member_open_decisions, without the ones on the caller. '
+	'Checks no caller: only qorpera_list_company_open_decisions and qorpera_cast_decision_vote reach it, after their '
+	'own membership check.';
 
 create function public.qorpera_list_company_open_decisions(p_profile_id uuid)
 returns jsonb
@@ -128,20 +135,22 @@ begin
 						select jsonb_agg(jsonb_build_object('userId', vote.user_id, 'choice', vote.choice, 'note', vote.note,
 							'updatedAt', vote.updated_at) order by vote.updated_at, vote.user_id)
 						from public.qorpera_decision_votes as vote
+						join public.qorpera_profile_members as voter
+							on voter.profile_id = vote.profile_id and voter.user_id = vote.user_id and voter.role <> 'viewer'
 						where vote.profile_id = p_profile_id and vote.item_id = item.item_id), '[]'::jsonb))
 				|| case when item.kind = 'approval' then jsonb_build_object('review', item.card)
 					else jsonb_build_object('sequence', item.sequence, 'body', item.card) end as decision
 			from (
 				select waiting.*,
 					case when waiting.kind = 'approval'
-						then (waiting.approver_scope = 'member' and waiting.answerer_user_id = v_user)
-							or (waiting.approver_scope = 'owners_admins' and v_authorize)
+						then v_role <> 'viewer' and ((waiting.approver_scope = 'member' and waiting.answerer_user_id = v_user)
+							or (waiting.approver_scope = 'owners_admins' and v_authorize))
 						else v_role <> 'viewer' and waiting.answerer_user_id = v_user and exists (
 							select 1 from public.qorpera_company_room_members as member
 							where member.room_id = waiting.room_id and member.principal_kind = 'member'
 								and member.principal_id = v_user and member.status = 'active')
 					end as can_answer
-				from public.qorpera_company_open_decisions(p_profile_id, v_user) as waiting
+				from public.qorpera_company_open_decisions(p_profile_id, v_user, v_authorize) as waiting
 			) as item
 			order by item.can_answer desc, item.created_at desc, item.item_id
 			limit 100
@@ -155,10 +164,11 @@ comment on function public.qorpera_list_company_open_decisions(uuid) is
 	'Every open decision in the company''s agent threads, for any member of the company, spectators too '
 	'(20260930819000): the ones the caller answers first, then newest first (at most 20 cards a thread, 50 approvals, '
 	'100 in all), each as qorpera_list_member_open_decisions gives it (the card''s event body, or the approval card '
-	'without the agent''s copy of the call) plus votes, every member''s vote and note on it. answererUserId is the '
-	'member who answers (null: any owner or admin) and canAnswer says whether the caller is one, by the rules the '
-	'answer functions keep. It shows nothing a member could not already read: agent threads are the company''s, and '
-	'their cards are events every member reads. Read by the web''s decisions dock in the Co-Founder''s chat.';
+	'as its event holds it, without the agent''s copy of the call) plus votes: the vote and note of every member who '
+	'is not a spectator now. answererUserId is the member who answers (null: any owner or admin) and canAnswer says '
+	'whether the caller is one, by the rules the answer functions keep (never a spectator). It shows nothing a member '
+	'could not already read: agent threads are the company''s, and their cards are events every member reads; a card '
+	'whose event was erased is not listed. Read by the web''s decisions dock in the Co-Founder''s chat.';
 
 create function public.qorpera_cast_decision_vote(p_profile_id uuid, p_item_id uuid, p_choice text, p_note text)
 returns jsonb
@@ -178,7 +188,8 @@ begin
 		raise exception 'A vote is one option and at most 500 characters of note' using errcode = '22023';
 	end if;
 	select waiting.kind, waiting.card into v_open
-	from public.qorpera_company_open_decisions(p_profile_id, v_user) as waiting
+	from public.qorpera_company_open_decisions(p_profile_id, v_user,
+		public.qorpera_can_authorize_profile(p_profile_id)) as waiting
 	where waiting.item_id = p_item_id;
 	if not found then
 		raise exception 'This decision is not open' using errcode = '22023';

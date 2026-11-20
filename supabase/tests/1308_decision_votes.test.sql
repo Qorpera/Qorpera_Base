@@ -181,9 +181,13 @@ select pg_temp.dv_refused('92400000-0000-4000-8000-000000000002', '59600000-0000
 	null, '22023', 'A vote is one option and at most 500 characters of note');
 
 do $$
-declare v jsonb;
+declare v jsonb; v_before bigint;
 begin
+	v_before := pg_temp.dv_hints();
+	perform set_config('qorpera.live_hints_sent', '', true);
 	v := pg_temp.dv_cast('92400000-0000-4000-8000-000000000004', '59600000-0000-4000-8000-0000000009a1', null, '   ');
+	perform pg_temp.base_assert(pg_temp.dv_hints() - v_before = 4,
+		'A vote taken back tells the company''s members too: ' || (pg_temp.dv_hints() - v_before)::text);
 	perform pg_temp.base_assert(v -> 'choice' = 'null' and v -> 'note' = 'null'
 		and not exists (select 1 from public.qorpera_decision_votes
 			where item_id = '59600000-0000-4000-8000-0000000009a1' and user_id = '92400000-0000-4000-8000-000000000004')
@@ -240,14 +244,80 @@ select pg_temp.dv_refused('92400000-0000-4000-8000-000000000002', '59600000-0000
 rollback to savepoint dv_archived;
 
 savepoint dv_member_leaves;
-delete from public.qorpera_profile_members
-where profile_id = '92400000-0000-4000-8000-000000000010' and user_id = '92400000-0000-4000-8000-000000000002';
-select pg_temp.base_assert(not exists (select 1 from public.qorpera_decision_votes
-		where user_id = '92400000-0000-4000-8000-000000000002')
-	and jsonb_array_length(pg_temp.dv_votes('92400000-0000-4000-8000-000000000001',
-		'59600000-0000-4000-8000-0000000009a1')) = 1,
-	'A member who leaves the company takes their votes and notes with them');
+create function pg_temp.dv_told(p_users uuid[]) returns bigint language sql as $$
+	select count(*) from realtime.messages as message
+	where message.event = 'sessions' and message.topic in (
+		select public.qorpera_live_hint_topic('92400000-0000-4000-8000-000000000010', told) from unnest(p_users) as told)
+$$;
+do $$
+declare
+	v_stay uuid[] := array['92400000-0000-4000-8000-000000000001', '92400000-0000-4000-8000-000000000003',
+		'92400000-0000-4000-8000-000000000004']::uuid[];
+	v_leave uuid[] := array['92400000-0000-4000-8000-000000000002']::uuid[];
+	v_stayers bigint; v_leaver bigint;
+begin
+	perform pg_temp.dv_hints();
+	perform set_config('qorpera.live_hints_sent', '', true);
+	v_stayers := pg_temp.dv_told(v_stay);
+	v_leaver := pg_temp.dv_told(v_leave);
+	delete from public.qorpera_profile_members
+	where profile_id = '92400000-0000-4000-8000-000000000010' and user_id = '92400000-0000-4000-8000-000000000002';
+	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_decision_votes
+			where user_id = '92400000-0000-4000-8000-000000000002')
+		and jsonb_array_length(pg_temp.dv_votes('92400000-0000-4000-8000-000000000001',
+			'59600000-0000-4000-8000-0000000009a1')) = 1,
+		'A member who leaves the company takes their votes and notes with them');
+	perform pg_temp.dv_hints();
+	perform pg_temp.base_assert(pg_temp.dv_told(v_stay) - v_stayers = 3 and pg_temp.dv_told(v_leave) = v_leaver,
+		'Their votes going tells the three members who stay, and not the one who left: '
+			|| (pg_temp.dv_told(v_stay) - v_stayers)::text || ' ' || (pg_temp.dv_told(v_leave) - v_leaver)::text);
+end
+$$;
 rollback to savepoint dv_member_leaves;
+
+savepoint dv_spectator_now;
+update public.qorpera_action_reviews set approver_user_id = '92400000-0000-4000-8000-000000000002'
+where id = current_setting('qorpera_test.od_own')::uuid;
+select pg_temp.base_assert(pg_temp.dv_kinds('92400000-0000-4000-8000-000000000002') = 'approval!,approval,draft,question',
+	'A contributor answers the approval that names them: ' || pg_temp.dv_kinds('92400000-0000-4000-8000-000000000002'));
+update public.qorpera_profile_members set role = 'viewer'
+where profile_id = '92400000-0000-4000-8000-000000000010' and user_id = '92400000-0000-4000-8000-000000000002';
+select pg_temp.base_assert(pg_temp.dv_kinds('92400000-0000-4000-8000-000000000002') = 'approval,approval,draft,question',
+	'Made a spectator, they answer nothing, the approval that names them included: '
+		|| pg_temp.dv_kinds('92400000-0000-4000-8000-000000000002'));
+select pg_temp.base_assert(
+	not (pg_temp.dv_votes('92400000-0000-4000-8000-000000000001', '59600000-0000-4000-8000-0000000009a1')
+		@> '[{"userId":"92400000-0000-4000-8000-000000000002"}]')
+	and exists (select 1 from public.qorpera_decision_votes where user_id = '92400000-0000-4000-8000-000000000002'),
+	'A spectator''s earlier votes are kept but no longer shown');
+select pg_temp.dv_refused('92400000-0000-4000-8000-000000000002', '59600000-0000-4000-8000-0000000009a1', null, null,
+	'42501', 'Voting unavailable');
+rollback to savepoint dv_spectator_now;
+
+savepoint dv_erased;
+do $$
+begin
+	set local session_replication_role = replica;
+	update public.qorpera_session_events set body = '{"erased":true}'
+	where session_id = current_setting('qorpera_test.card_thread')::uuid and event_type = 'authorization_request'
+		and body #>> '{entry,data,reviewId}' = current_setting('qorpera_test.od_company');
+	set local session_replication_role = origin;
+	perform pg_temp.base_assert(found, 'Fixture: the company approval''s card event is erased');
+end
+$$;
+select pg_temp.base_assert(pg_temp.dv_kinds('92400000-0000-4000-8000-000000000002') = 'approval,draft,question'
+	and pg_temp.dv_kinds('92400000-0000-4000-8000-000000000003') = 'approval,draft,question'
+	and pg_temp.dv_kinds('92400000-0000-4000-8000-000000000004') = 'approval,draft,question'
+	and pg_temp.dv_kinds('92400000-0000-4000-8000-000000000001') = 'approval!,draft!,question!',
+	'An approval whose card was erased from the thread is on nobody''s list: '
+		|| pg_temp.dv_kinds('92400000-0000-4000-8000-000000000003'));
+select pg_temp.base_assert(not exists (
+		select 1 from jsonb_array_elements(pg_temp.dv_list('92400000-0000-4000-8000-000000000003')) as listed(decision)
+		where decision ->> 'id' = current_setting('qorpera_test.od_company')),
+	'A spectator reads nothing of the erased approval');
+select pg_temp.dv_refused('92400000-0000-4000-8000-000000000002', current_setting('qorpera_test.od_company')::uuid, null,
+	'A note', '22023', 'This decision is not open');
+rollback to savepoint dv_erased;
 
 do $$
 begin
@@ -275,8 +345,8 @@ begin
 		and not has_function_privilege('service_role', 'public.qorpera_cast_decision_vote(uuid, uuid, text, text)', 'execute'),
 		'Members execute the two; anon and service_role do not');
 	perform pg_temp.base_assert(
-		not has_function_privilege('authenticated', 'public.qorpera_company_open_decisions(uuid, uuid)', 'execute')
-		and not has_function_privilege('anon', 'public.qorpera_company_open_decisions(uuid, uuid)', 'execute')
+		not has_function_privilege('authenticated', 'public.qorpera_company_open_decisions(uuid, uuid, boolean)', 'execute')
+		and not has_function_privilege('anon', 'public.qorpera_company_open_decisions(uuid, uuid, boolean)', 'execute')
 		and not has_function_privilege('authenticated', 'public.qorpera_decision_vote_hint()', 'execute'),
 		'The list behind them, which checks no caller, and the hint are internal');
 	perform pg_temp.base_assert(
@@ -290,7 +360,7 @@ begin
 	perform pg_temp.base_assert((select bool_and(prosecdef and proconfig = array['search_path=""']) from pg_proc
 		where oid in ('public.qorpera_list_company_open_decisions(uuid)'::regprocedure,
 			'public.qorpera_cast_decision_vote(uuid, uuid, text, text)'::regprocedure,
-			'public.qorpera_company_open_decisions(uuid, uuid)'::regprocedure,
+			'public.qorpera_company_open_decisions(uuid, uuid, boolean)'::regprocedure,
 			'public.qorpera_decision_vote_hint()'::regprocedure)), 'Definer functions with an empty search path');
 end
 $$;

@@ -65,6 +65,7 @@ begin
 			'public.qorpera_guard_office_delete_disposition()'::regprocedure,
 			-- The live hint (20260930653000) is deferred and absorbs every error: it never refuses a delete.
 			'public.qorpera_live_hint_internal()'::regprocedure,
+			'public.qorpera_decision_vote_hint()'::regprocedure,
 			-- A site Qorpera took down (20260930756000) keeps its row but in a purge, which a takedown keeps from
 			-- running (qorpera_finish_company_deletion waits); SQL test 1252 shows it lets a purge through.
 			'public.qorpera_site_takedown_sticks()'::regprocedure);
