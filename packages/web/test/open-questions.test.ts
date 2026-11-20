@@ -8,7 +8,9 @@ import { DecisionDock, decisionOrder, UNDO_MS } from "../src/app/views/decision-
 import { QuestionDock, type QuestionDockHost } from "../src/app/views/question-dock.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { InteractionOutcome, InteractionRequest } from "../src/cloud/interactions.ts";
+import { asOpenCards, type OpenApproval, type OpenDecision, parseOpenDecisions } from "../src/cloud/open-decisions.ts";
 import { type OpenQuestion, parseOpenQuestions } from "../src/cloud/open-questions.ts";
+import type { ActionReviewAnswer } from "../src/cloud/review-rules.ts";
 import type { HostedStaffAgent, JsonValue } from "../src/cloud/types.ts";
 import { refreshAppPreviews } from "../src/ui/interaction-card.ts";
 
@@ -101,6 +103,7 @@ describe("open questions from the cloud", () => {
 function company(
 	options: {
 		questions?: OpenQuestion[];
+		approvals?: OpenApproval[];
 		refuse?: string;
 		/** The cloud takes the answer only when this resolves. */
 		gate?: Promise<void>;
@@ -113,6 +116,8 @@ function company(
 	const conversations = new Map<string, Store<ConversationState>>();
 	const listeners = new Set<(resource: string) => void>();
 	let questions = options.questions ?? [];
+	let approvals = options.approvals ?? [];
+	const reviews: [string, string, ActionReviewAnswer, string | undefined][] = [];
 	const conversation = (sessionId: string) => {
 		let store = conversations.get(sessionId);
 		if (!store) {
@@ -125,6 +130,21 @@ function company(
 	const controller = {
 		signal: new AbortController().signal,
 		listOpenQuestions: vi.fn(async () => questions),
+		listOpenDecisions: vi.fn(async (): Promise<OpenDecision[]> => {
+			if (!options.approvals)
+				throw new CloudRpcError(
+					"qorpera_list_member_open_decisions",
+					{ message: "missing", code: "PGRST202" },
+					404,
+				);
+			return [...asOpenCards(questions), ...approvals];
+		}),
+		answerActionReview: vi.fn(
+			async (sessionId: string, reviewId: string, answer: ActionReviewAnswer, ruleText?: string) => {
+				reviews.push([sessionId, reviewId, answer, ruleText]);
+				approvals = approvals.filter((item) => item.interactionId !== reviewId);
+			},
+		),
 		onInvalidate: (listener: (resource: string) => void) => {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
@@ -175,6 +195,7 @@ function company(
 		open,
 		host,
 		answers,
+		reviews,
 		hint: () => {
 			for (const listener of listeners) listener("sessions");
 		},
@@ -475,6 +496,40 @@ describe("reading the open questions", () => {
 	});
 });
 
+describe("open decisions from the cloud", () => {
+	const REVIEW = "55555555-5555-4555-8555-00000000000b";
+	const row = { sessionId: SESSION, staffAgentId: AGENT, createdAt: "2026-11-10T10:00:00Z", canAnswer: true };
+	const review = {
+		schema: "qorpera.action-review/v1",
+		reviewId: REVIEW,
+		title: "Send an email",
+		summary: "It writes to someone outside the company.",
+		builtIn: "none",
+		approverScope: "owners_admins",
+		alwaysAllow: false,
+	};
+
+	it("keeps the questions and approvals it can draw and drops the rest", () => {
+		const parsed = parseOpenDecisions({
+			schema: "qorpera.member-open-decisions/v1",
+			decisions: [
+				{ ...row, kind: "approval", id: REVIEW.toUpperCase(), answererUserId: null, review },
+				{ ...row, kind: "question", id: CARD_A, answererUserId: MEMBER, sequence: 7, body: body(directions) },
+				{ ...row, kind: "draft", id: CARD_B, answererUserId: MEMBER, sequence: 8, body: body(directions) },
+				{ ...row, kind: "approval", id: CARD_C, answererUserId: null, review },
+				{ ...row, kind: "approval", id: REVIEW, answererUserId: null, review: { schema: "other" } },
+			],
+		});
+		expect(parsed.map((decision) => [decision.kind, decision.interactionId])).toEqual([
+			["approval", REVIEW],
+			["question", CARD_A],
+		]);
+		expect(parsed[0]?.kind === "approval" && parsed[0].review.title).toBe("Send an email");
+		expect(parsed[1]?.kind === "question" && parsed[1].actorUserId).toBe(MEMBER);
+		expect(() => parseOpenDecisions({ schema: "other", decisions: [] })).toThrow();
+	});
+});
+
 describe("the decisions dock in the Co-Founder chat", () => {
 	const name: InteractionRequest = {
 		surface: "question",
@@ -505,7 +560,7 @@ describe("the decisions dock in the Co-Founder chat", () => {
 
 	it("orders decisions once and for all: the one that runs out first, then the oldest", () => {
 		expect(
-			cards()
+			asOpenCards(cards())
 				.sort(decisionOrder)
 				.map((card) => card.interactionId),
 		).toEqual([CARD_C, CARD_B, CARD_A]);
@@ -574,7 +629,7 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		pick(dock, "mywave");
 		await settle();
 		expect(answers).toEqual([]);
-		expect(dock.decided.map((entry) => [entry.question.interactionId, entry.state])).toEqual([[CARD_B, "held"]]);
+		expect(dock.decided.map((entry) => [entry.decision.interactionId, entry.state])).toEqual([[CARD_B, "held"]]);
 		expect(dock.decidedKey).toBe(`${CARD_B}:held`);
 		expect(dock.shows(CARD_B)).toBe(true);
 		expect(changes).toHaveBeenCalled();
@@ -650,7 +705,7 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		await settle();
 		expect(answers).toEqual([[SESSION, CARD_B, "answered", { values: ["mywave"] }]]);
 		const again = new DecisionDock(host);
-		expect(again.decided.map((entry) => [entry.question.interactionId, entry.state])).toEqual([[CARD_B, "sent"]]);
+		expect(again.decided.map((entry) => [entry.decision.interactionId, entry.state])).toEqual([[CARD_B, "sent"]]);
 		expect(again.shows(CARD_B)).toBe(true);
 		again.dispose();
 	});
@@ -936,6 +991,95 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		await settle();
 		expect(dock.el.hidden).toBe(true);
 		expect(watching?.gone).toBe(true);
+		dock.dispose();
+	});
+
+	const REVIEW = "55555555-5555-4555-8555-00000000000a";
+	const approval: OpenApproval = {
+		kind: "approval",
+		sessionId: SESSION,
+		interactionId: REVIEW,
+		staffAgentId: AGENT,
+		createdAt: "2026-11-10T08:00:00Z",
+		review: {
+			reviewId: REVIEW,
+			title: "Send an email",
+			summary: "It writes to someone outside the company.",
+			target: "bob@acme.test",
+			details: [],
+			builtIn: "none",
+			rules: [],
+			approverScope: "member",
+			approverUserId: MEMBER,
+			alwaysAllow: false,
+		},
+	};
+
+	it("draws an approval as its own card, holds the answer with Undo, then sends it as its thread does", async () => {
+		const { host, reviews, answers, controller } = company({
+			questions: [question(CARD_B, name)],
+			approvals: [approval],
+		});
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		expect(controller.listOpenDecisions).toHaveBeenCalledTimes(1);
+		expect(controller.listOpenQuestions).not.toHaveBeenCalled();
+		expect(tabs(dock).map((tab) => tab.querySelector(".decision-tab-label")?.textContent)).toEqual([
+			"Send an email",
+			"What should the app be called?",
+		]);
+		expect(dock.el.querySelector(".decision-card > .auth-card h3")?.textContent).toBe("Send an email");
+		expect(dock.el.querySelector(".decision-card .interaction-card")).toBeNull();
+		[...dock.el.querySelectorAll<HTMLButtonElement>(".decision-card button")]
+			.find((button) => button.textContent === "Allow once")
+			?.click();
+		await settle();
+		expect(reviews).toEqual([]);
+		expect(dock.decided.map((entry) => [entry.decision.interactionId, entry.state])).toEqual([[REVIEW, "held"]]);
+		expect(dock.shows(REVIEW)).toBe(true);
+		expect(dock.el.querySelector(".interaction-title")?.textContent).toBe("What should the app be called?");
+		const block = dock.renderDecided(dock.decided[0]!);
+		expect(block.querySelector(".decided-rule")?.textContent).toBe("Allowed once");
+		expect(block.querySelector(".decided-ask")?.textContent).toBe("Send an email");
+		expect(block.querySelector(".decided-answer")).toBeNull();
+		await vi.advanceTimersByTimeAsync(UNDO_MS + 1);
+		await settle();
+		expect(reviews).toEqual([[SESSION, REVIEW, "allow_once", undefined]]);
+		expect(answers).toEqual([]);
+		expect(dock.decided[0]?.state).toBe("sent");
+		dock.dispose();
+	});
+
+	it("says Denied for a denied approval, and Undo puts its card back", async () => {
+		const { host, reviews } = company({ approvals: [approval] });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		[...dock.el.querySelectorAll<HTMLButtonElement>(".decision-card button")]
+			.find((button) => button.textContent === "Deny")
+			?.click();
+		await settle();
+		const block = dock.renderDecided(dock.decided[0]!);
+		expect(block.querySelector(".decided-rule")?.textContent).toBe("Denied");
+		expect(dock.el.hidden).toBe(true);
+		block.querySelector<HTMLButtonElement>(".decided-undo")?.click();
+		expect(dock.el.hidden).toBe(false);
+		expect(dock.el.querySelector(".decision-card > .auth-card")).not.toBeNull();
+		await vi.advanceTimersByTimeAsync(UNDO_MS + 1_000);
+		expect(reviews).toEqual([]);
+		dock.dispose();
+	});
+
+	it("falls back to the questions alone while the cloud has no list of decisions", async () => {
+		const { host, controller } = company({ questions: [question(CARD_B, name)] });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		expect(dock.el.querySelector(".interaction-title")?.textContent).toBe("What should the app be called?");
+		await host.questions.refresh();
+		expect(controller.listOpenDecisions).toHaveBeenCalledTimes(1);
+		expect(controller.listOpenQuestions).toHaveBeenCalledTimes(2);
 		dock.dispose();
 	});
 

@@ -4,7 +4,9 @@ import { CloudRpcError } from "../cloud/client.ts";
 import type { InteractionOutcome, InteractionRequest } from "../cloud/interactions.ts";
 import { questionOptions } from "../cloud/interactions.ts";
 import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
+import { asOpenCards, type OpenApproval, type OpenCard, type OpenDecision } from "../cloud/open-decisions.ts";
 import type { OpenQuestion } from "../cloud/open-questions.ts";
+import type { ActionReviewAnswer } from "../cloud/review-rules.ts";
 import type { JsonValue } from "../cloud/types.ts";
 import type { CompanyController } from "./company.ts";
 import { Store, throttle } from "./state.ts";
@@ -45,6 +47,7 @@ export function questionApps(request: InteractionRequest): ReadonlySet<string> {
 export interface OpenQuestionsState {
 	/** Newest first, as the cloud lists them, without the ones answered here. */
 	readonly questions: readonly OpenQuestion[];
+	readonly decisions: readonly OpenDecision[];
 	/** The first read is in. */
 	readonly read: boolean;
 	/** The cloud has no such read yet (before 20260930706000): nothing is asked again. */
@@ -60,7 +63,7 @@ const HEARTBEAT_MS = 30_000;
 export const ANSWERED_HOLD_MS = 2_200;
 
 export class OpenQuestions {
-	readonly store = new Store<OpenQuestionsState>({ questions: [], read: false, unavailable: false });
+	readonly store = new Store<OpenQuestionsState>({ questions: [], decisions: [], read: false, unavailable: false });
 	readonly #company: CompanyController;
 	readonly #accounts: QuestionAccounts;
 	/** Cards answered from here: a read on its way when the answer went keeps them off the list. */
@@ -68,6 +71,7 @@ export class OpenQuestions {
 	#watchers = 0;
 	#stopWatching: (() => void) | undefined;
 	#reads = 0;
+	#questionsOnly = false;
 	#reading: Promise<void> | undefined;
 	#again = false;
 	/** A hint's read, at most once an interval; one still queued when the last watcher left is not made. */
@@ -103,19 +107,20 @@ export class OpenQuestions {
 			return this.#reading;
 		}
 		const version = ++this.#reads;
-		this.#reading = this.#company
-			.listOpenQuestions()
+		this.#reading = this.#list()
 			.then(
-				(questions) => {
+				(listed) => {
 					if (version !== this.#reads) return;
+					const decisions = listed.filter((decision) => !this.#answered.has(decision.interactionId));
 					this.store.set({
-						questions: questions.filter((question) => !this.#answered.has(question.interactionId)),
+						decisions,
+						questions: decisions.filter((decision): decision is OpenCard => decision.kind === "question"),
 						read: true,
 					});
 				},
 				(error: unknown) => {
 					if (error instanceof CloudRpcError && error.missing)
-						this.store.set({ unavailable: true, questions: [], read: true });
+						this.store.set({ unavailable: true, questions: [], decisions: [], read: true });
 					// Otherwise what was shown stands; the next hint or the clock reads again.
 					else this.store.set({ read: true });
 				},
@@ -138,12 +143,32 @@ export class OpenQuestions {
 		this.#answered.add(question.interactionId);
 	}
 
-	/** An answered card leaves the list (after the dock showed it answered). */
+	async answerApproval(approval: OpenApproval, answer: ActionReviewAnswer, ruleText?: string): Promise<void> {
+		await this.#chooseAccount(approval.sessionId);
+		await this.#company.answerActionReview(approval.sessionId, approval.interactionId, answer, ruleText);
+		this.#answered.add(approval.interactionId);
+	}
+
 	forget(interactionId: string): void {
 		this.#answered.add(interactionId);
-		const { questions } = this.store.get();
-		if (questions.some((question) => question.interactionId === interactionId))
-			this.store.set({ questions: questions.filter((question) => question.interactionId !== interactionId) });
+		const { questions, decisions } = this.store.get();
+		if (decisions.some((decision) => decision.interactionId === interactionId))
+			this.store.set({
+				questions: questions.filter((question) => question.interactionId !== interactionId),
+				decisions: decisions.filter((decision) => decision.interactionId !== interactionId),
+			});
+	}
+
+	async #list(): Promise<OpenDecision[]> {
+		if (!this.#questionsOnly) {
+			try {
+				return await this.#company.listOpenDecisions();
+			} catch (error) {
+				if (!(error instanceof CloudRpcError && error.missing)) throw error;
+				this.#questionsOnly = true;
+			}
+		}
+		return asOpenCards(await this.#company.listOpenQuestions());
 	}
 
 	dispose(): void {

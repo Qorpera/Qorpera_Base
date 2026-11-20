@@ -41,6 +41,7 @@ import {
 	parseMemberPictures,
 } from "./member-pictures.ts";
 import { listMemberMentions, type MemberMentions, markMentionsSeen } from "./mentions.ts";
+import { listOpenDecisions, type OpenDecision } from "./open-decisions.ts";
 import { listOpenQuestions, type OpenQuestion } from "./open-questions.ts";
 import { type HostedCompanyOrganization, parseHostedCompanyOrganization } from "./organization.ts";
 import { collectPages, type PageCursor } from "./pagination.ts";
@@ -545,6 +546,10 @@ export class CloudApi {
 	/** The question cards raised for the signed-in member in the company's agent threads that still wait for them. */
 	listOpenQuestions(profileId: string): Promise<OpenQuestion[]> {
 		return listOpenQuestions(this.cloud, requiredUuid(profileId, "Profile id"));
+	}
+
+	listOpenDecisions(profileId: string): Promise<OpenDecision[]> {
+		return listOpenDecisions(this.cloud, requiredUuid(profileId, "Profile id"));
 	}
 
 	/** The member's own arrangement of the apps drawer over the company's apps/groups.md (20260930728000). */

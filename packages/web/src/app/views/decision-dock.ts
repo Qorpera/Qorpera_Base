@@ -1,6 +1,8 @@
 import { type InteractionOutcome, questionOptions, typedNote } from "../../cloud/interactions.ts";
-import type { OpenQuestion } from "../../cloud/open-questions.ts";
+import { decisionTitle, type OpenApproval, type OpenCard, type OpenDecision } from "../../cloud/open-decisions.ts";
+import type { ActionReviewAnswer } from "../../cloud/review-rules.ts";
 import type { JsonValue } from "../../cloud/types.ts";
+import { type ActionReviewDraft, renderActionReviewCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { h, replace } from "../../ui/dom.ts";
 import { renderInteractionCard } from "../../ui/interaction-card.ts";
@@ -14,24 +16,36 @@ const FIGURE_ABOVE = 58;
 const MAX_TIMER_MS = 2 ** 31 - 1;
 export const UNDO_MS = 5_000;
 
-function expiry(question: OpenQuestion): number {
-	const at = question.request.expiresAt ? Date.parse(question.request.expiresAt) : Number.NaN;
+function expiry(decision: OpenDecision): number {
+	const at =
+		decision.kind === "question" && decision.request.expiresAt ? Date.parse(decision.request.expiresAt) : Number.NaN;
 	return Number.isFinite(at) ? at : Number.POSITIVE_INFINITY;
 }
 
-export function decisionOrder(a: OpenQuestion, b: OpenQuestion): number {
+export function decisionOrder(a: OpenDecision, b: OpenDecision): number {
 	if (expiry(a) !== expiry(b)) return expiry(a) < expiry(b) ? -1 : 1;
 	if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? -1 : 1;
 	return a.interactionId.localeCompare(b.interactionId);
 }
 
-export interface Decided {
-	readonly question: OpenQuestion;
-	readonly outcome: InteractionOutcome;
-	readonly value: Record<string, JsonValue>;
+interface DecidedState {
 	readonly at: number;
 	state: "held" | "sending" | "sent";
 }
+
+interface DecidedCard extends DecidedState {
+	readonly decision: OpenCard;
+	readonly outcome: InteractionOutcome;
+	readonly value: Record<string, JsonValue>;
+}
+
+interface DecidedApproval extends DecidedState {
+	readonly decision: OpenApproval;
+	readonly answer: ActionReviewAnswer;
+	readonly ruleText?: string;
+}
+
+export type Decided = DecidedCard | DecidedApproval;
 
 interface Shared {
 	readonly decided: Decided[];
@@ -40,6 +54,25 @@ interface Shared {
 }
 
 const SHARED = new WeakMap<OpenQuestions, Shared>();
+
+function decidedWords(entry: Decided): { word: string; said: string } {
+	if (entry.decision.kind === "approval") {
+		const { answer, ruleText } = entry as DecidedApproval;
+		return {
+			word: answer === "deny" ? t("Denied") : answer === "always_allow" ? t("Always allowed") : t("Allowed once"),
+			said: answer === "always_allow" && ruleText ? ruleText : "",
+		};
+	}
+	const { outcome, value } = entry as DecidedCard;
+	if (outcome !== "answered") return { word: t("Skipped"), said: "" };
+	const note = typedNote(entry.decision.request, { outcome, answer: value });
+	if (note !== undefined) return { word: t("Your note"), said: `“${note}”` };
+	const labels = new Map(questionOptions(entry.decision.request).map((option) => [option.value, option.label]));
+	const values = Array.isArray(value.values)
+		? value.values.filter((picked): picked is string => typeof picked === "string")
+		: [];
+	return { word: t("Decided"), said: values.map((picked) => labels.get(picked) ?? picked).join(", ") };
+}
 
 export class DecisionDock {
 	readonly el: HTMLElement;
@@ -58,6 +91,7 @@ export class DecisionDock {
 	#current: string | undefined;
 	#watched: { sessionId: string; stop: () => void } | undefined;
 	readonly #decidedThreads = new Map<string, () => void>();
+	readonly #ruleDrafts = new Map<string, ActionReviewDraft>();
 	#stageKey = "";
 	#tabsKey = "";
 	#waiting = "";
@@ -132,7 +166,7 @@ export class DecisionDock {
 
 	get decidedKey(): string {
 		this.#dropUndelivered();
-		return this.#decided.map((entry) => `${entry.question.interactionId}:${entry.state}`).join(" ");
+		return this.#decided.map((entry) => `${entry.decision.interactionId}:${entry.state}`).join(" ");
 	}
 
 	onChange(listener: () => void): () => void {
@@ -142,7 +176,7 @@ export class DecisionDock {
 
 	undo(interactionId: string): void {
 		const index = this.#decided.findIndex(
-			(entry) => entry.question.interactionId === interactionId && entry.state === "held",
+			(entry) => entry.decision.interactionId === interactionId && entry.state === "held",
 		);
 		if (index < 0) return;
 		clearTimeout(this.#holds.get(interactionId));
@@ -153,18 +187,11 @@ export class DecisionDock {
 	}
 
 	renderDecided(entry: Decided): HTMLElement {
-		const { question, outcome } = entry;
-		const agent = this.#host.agent(question.staffAgentId);
+		const { decision } = entry;
+		const agent = this.#host.agent(decision.staffAgentId);
 		const name = agent?.displayName ?? t("The agent");
-		const answer = { outcome, answer: entry.value };
-		const note = typedNote(question.request, answer);
-		const skipped = outcome !== "answered";
-		const labels = new Map(questionOptions(question.request).map((option) => [option.value, option.label]));
-		const values = Array.isArray(entry.value.values)
-			? entry.value.values.filter((value): value is string => typeof value === "string")
-			: [];
-		const said = note !== undefined ? `“${note}”` : values.map((value) => labels.get(value) ?? value).join(", ");
-		const word = skipped ? t("Skipped") : note !== undefined ? t("Your note") : t("Decided");
+		const title = decisionTitle(decision);
+		const { word, said } = decidedWords(entry);
 		const by =
 			entry.state === "held"
 				? t("Goes to {name} in a moment", { name })
@@ -178,17 +205,17 @@ export class DecisionDock {
 			"section",
 			{
 				class: `decided is-${entry.state}`,
-				dataset: { decided: question.interactionId },
-				"aria-label": `${word}: ${question.request.title}`,
+				dataset: { decided: decision.interactionId },
+				"aria-label": `${word}: ${title}`,
 			},
 			h("div", { class: "decided-rule" }, h("span", null, word)),
 			h(
 				"p",
 				{ class: "decided-ask" },
 				h("span", { class: "decided-figure" }, agentFigure(agent, name, { size: 22, still: true })),
-				h("span", null, question.request.title),
+				h("span", null, title),
 			),
-			skipped || !said ? null : h("p", { class: "decided-answer" }, said),
+			said ? h("p", { class: "decided-answer" }, said) : null,
 			h(
 				"p",
 				{ class: "decided-by" },
@@ -196,7 +223,7 @@ export class DecisionDock {
 				entry.state === "held"
 					? h(
 							"button",
-							{ type: "button", class: "decided-undo", onclick: () => this.undo(question.interactionId) },
+							{ type: "button", class: "decided-undo", onclick: () => this.undo(decision.interactionId) },
 							ring,
 							t("Undo"),
 						)
@@ -224,11 +251,14 @@ export class DecisionDock {
 	#dropUndelivered(): boolean {
 		const kept = this.#decided.filter((entry) => {
 			if (entry.state !== "sent") return true;
-			const id = entry.question.interactionId;
-			const thread = this.#host.conversation(entry.question.sessionId).get();
+			const id = entry.decision.interactionId;
+			const thread = this.#host.conversation(entry.decision.sessionId).get();
 			if (thread.interactionAnswers?.[id]) return true;
 			return !(thread.projection?.items ?? []).some(
-				(item) => item.kind === "interaction" && item.id.toLowerCase() === id && item.answerFailed === true,
+				(item) =>
+					(item.kind === "interaction" || item.kind === "authorization_request") &&
+					item.id.toLowerCase() === id &&
+					item.answerFailed === true,
 			);
 		});
 		if (kept.length === this.#decided.length) return false;
@@ -237,7 +267,7 @@ export class DecisionDock {
 	}
 
 	#watchDecided(): void {
-		const sessions = new Set(this.#decided.map((entry) => entry.question.sessionId));
+		const sessions = new Set(this.#decided.map((entry) => entry.decision.sessionId));
 		for (const [sessionId, stop] of this.#decidedThreads) {
 			if (sessions.has(sessionId)) continue;
 			stop();
@@ -248,8 +278,8 @@ export class DecisionDock {
 				this.#decidedThreads.set(sessionId, this.#host.conversation(sessionId).subscribe(this.#redraw));
 	}
 
-	#waitingNow(cards: OpenQuestion[]): string {
-		return [...cards.map((card) => card.interactionId), ...this.#decided.map((entry) => entry.question.interactionId)]
+	#waitingNow(cards: OpenDecision[]): string {
+		return [...cards.map((card) => card.interactionId), ...this.#decided.map((entry) => entry.decision.interactionId)]
 			.map((id) => id.toLowerCase())
 			.join(" ");
 	}
@@ -259,23 +289,23 @@ export class DecisionDock {
 	}
 
 	#onItsWay(interactionId: string): boolean {
-		return this.#decided.some((entry) => entry.question.interactionId === interactionId && entry.state !== "sent");
+		return this.#decided.some((entry) => entry.decision.interactionId === interactionId && entry.state !== "sent");
 	}
 
-	#cards(): OpenQuestion[] {
+	#cards(): OpenDecision[] {
 		const now = Date.now();
 		return this.#host.questions.store
 			.get()
-			.questions.filter(
-				(question) =>
-					expiry(question) > now &&
-					!this.#onItsWay(question.interactionId) &&
-					!this.#host.conversation(question.sessionId).get().interactionAnswers?.[question.interactionId],
+			.decisions.filter(
+				(decision) =>
+					expiry(decision) > now &&
+					!this.#onItsWay(decision.interactionId) &&
+					!this.#host.conversation(decision.sessionId).get().interactionAnswers?.[decision.interactionId],
 			)
 			.sort(decisionOrder);
 	}
 
-	#untilNextExpiry(cards: OpenQuestion[]): void {
+	#untilNextExpiry(cards: OpenDecision[]): void {
 		if (this.#expires !== undefined) clearTimeout(this.#expires);
 		this.#expires = undefined;
 		const next = Math.min(...cards.map(expiry));
@@ -312,36 +342,52 @@ export class DecisionDock {
 			replace(this.#stage);
 			replace(this.#tabs);
 		}
-		const told = `${this.#waiting}|${this.#decided.map((entry) => `${entry.question.interactionId}:${entry.state}`).join(" ")}`;
+		const told = `${this.#waiting}|${this.#decided.map((entry) => `${entry.decision.interactionId}:${entry.state}`).join(" ")}`;
 		if (told === this.#told) return;
 		this.#told = told;
 		for (const listener of this.#listeners) listener();
 	}
 
-	#drawStage(current: OpenQuestion): void {
+	#drawStage(current: OpenDecision): void {
 		const error = this.#errors.get(current.interactionId);
 		const key = JSON.stringify([current.interactionId, error, this.#narrow, presentationLocale()]);
 		if (key === this.#stageKey) return;
 		this.#stageKey = key;
 		const agent = this.#host.agent(current.staffAgentId);
 		const name = agent?.displayName ?? t("The agent");
-		const card = renderInteractionCard(
-			{
-				id: current.interactionId,
-				actorUserId: current.actorUserId,
-				request: current.request,
-				createdAt: current.createdAt,
-			},
-			{
-				agentName: name,
-				memberName: (userId) => this.#host.memberName(userId),
-				canAnswer: true,
-				inThread: true,
-				...(this.#host.image ? { image: this.#host.image } : {}),
-				...(this.#host.app ? { app: this.#host.app } : {}),
-				answer: async (outcome, value) => this.#decide(current, outcome, value),
-			},
-		);
+		const card =
+			current.kind === "approval"
+				? renderActionReviewCard(current.review, undefined, {
+						memberName: (userId) => this.#host.memberName(userId),
+						draft: this.#ruleDrafts.get(current.interactionId),
+						onDraft: (draft) => this.#ruleDrafts.set(current.interactionId, draft),
+						answer: (answer, ruleText) =>
+							this.#hold({
+								decision: current,
+								answer,
+								...(ruleText === undefined ? {} : { ruleText }),
+								at: Date.now(),
+								state: "held",
+							}),
+					})
+				: renderInteractionCard(
+						{
+							id: current.interactionId,
+							actorUserId: current.actorUserId,
+							request: current.request,
+							createdAt: current.createdAt,
+						},
+						{
+							agentName: name,
+							memberName: (userId) => this.#host.memberName(userId),
+							canAnswer: true,
+							inThread: true,
+							...(this.#host.image ? { image: this.#host.image } : {}),
+							...(this.#host.app ? { app: this.#host.app } : {}),
+							answer: async (outcome, value) =>
+								this.#hold({ decision: current, outcome, value, at: Date.now(), state: "held" }),
+						},
+					);
 		this.#markCut(card);
 		replace(
 			this.#stage,
@@ -357,7 +403,7 @@ export class DecisionDock {
 				agentFigure(agent, name, {
 					size: this.#narrow ? FIGURE_ABOVE : FIGURE_BESIDE,
 					activity: "Waiting",
-					ask: "question",
+					ask: current.kind === "approval" ? "bang" : "question",
 				}),
 			),
 		);
@@ -374,7 +420,7 @@ export class DecisionDock {
 		for (const part of card.children) this.#cut.observe(part);
 	}
 
-	#drawTabs(cards: OpenQuestion[], current: OpenQuestion): void {
+	#drawTabs(cards: OpenDecision[], current: OpenDecision): void {
 		this.#tabs.hidden = cards.length < 2;
 		const key = JSON.stringify([cards.map((card) => card.interactionId), presentationLocale()]);
 		if (key !== this.#tabsKey) {
@@ -390,12 +436,12 @@ export class DecisionDock {
 							type: "button",
 							role: "tab",
 							class: "decision-tab",
-							title: `${name}: ${card.request.title}`,
+							title: `${name}: ${decisionTitle(card)}`,
 							dataset: { decision: card.interactionId },
 							onclick: () => this.#select(card.interactionId),
 						},
 						h("span", { class: "decision-tab-figure" }, agentFigure(agent, name, { size: 28, still: true })),
-						h("span", { class: "decision-tab-label" }, card.request.title),
+						h("span", { class: "decision-tab-label" }, decisionTitle(card)),
 					);
 				}),
 			);
@@ -423,11 +469,10 @@ export class DecisionDock {
 		this.#tabs.querySelector<HTMLElement>('.decision-tab[aria-selected="true"]')?.focus({ preventScroll: true });
 	}
 
-	#decide(question: OpenQuestion, outcome: InteractionOutcome, value: Record<string, JsonValue>): void {
-		const id = question.interactionId;
+	#hold(entry: Decided): void {
+		const id = entry.decision.interactionId;
 		if (this.#onItsWay(id)) return;
 		this.#errors.delete(id);
-		const entry: Decided = { question, outcome, value, at: Date.now(), state: "held" };
 		this.#decided.push(entry);
 		this.#holds.set(
 			id,
@@ -442,17 +487,23 @@ export class DecisionDock {
 	}
 
 	async #send(entry: Decided): Promise<void> {
-		const { question } = entry;
-		const id = question.interactionId;
+		const { decision } = entry;
+		const id = decision.interactionId;
 		clearTimeout(this.#holds.get(id));
 		this.#holds.delete(id);
 		if (entry.state !== "held") return;
 		entry.state = "sending";
 		this.#everyDock();
 		try {
-			await this.#host.questions.answer(question, entry.outcome, entry.value);
+			if (entry.decision.kind === "approval") {
+				const { answer, ruleText } = entry as DecidedApproval;
+				await this.#host.questions.answerApproval(entry.decision, answer, ruleText);
+			} else {
+				const { outcome, value } = entry as DecidedCard;
+				await this.#host.questions.answer(entry.decision, outcome, value);
+			}
 		} catch (error) {
-			const said = this.#host.conversation(question.sessionId).get().interactionError;
+			const said = this.#host.conversation(decision.sessionId).get().interactionError;
 			this.#errors.set(
 				id,
 				said ??
