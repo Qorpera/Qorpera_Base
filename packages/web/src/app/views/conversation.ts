@@ -20,6 +20,7 @@ import {
 import { sessionAttachmentProblem } from "../../cloud/session-attachments.ts";
 import {
 	reworkingNote,
+	runAcknowledgements,
 	type TranscriptCard,
 	type TranscriptItem,
 	type TranscriptMessage,
@@ -27,7 +28,7 @@ import {
 } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent, JsonValue, PausedRun } from "../../cloud/types.ts";
 import { appNoteHeader, splitReply } from "../../cloud/wall-reply.ts";
-import { AGENT_LOOK, activityCaption, syncCaption } from "../../ui/agent-activity.ts";
+import { AGENT_LOOK, activityCaption, activityRow, activityWords } from "../../ui/agent-activity.ts";
 import { AttachmentTray, attachmentProblemText } from "../../ui/attachments.ts";
 import {
 	type ActionReviewDraft,
@@ -57,7 +58,7 @@ import {
 } from "../../ui/interface-change-line.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { matchesKey } from "../../ui/keys.ts";
-import { appCard, type LinkedSite, markdownBubbles } from "../../ui/markdown.ts";
+import { appCard, type LinkedSite, markdown, markdownBubbles } from "../../ui/markdown.ts";
 import { findMentions, type MentionTarget, matchTargets, mentionParts, mentionQuery } from "../../ui/mentions.ts";
 import { easing, foldFrom, leave, playOnce, reducedMotion } from "../../ui/motion.ts";
 import { presentationDay, presentationLocale, presentationTimeZone, t, timeZoneOption } from "../../ui/preferences.ts";
@@ -453,11 +454,12 @@ export class ConversationView {
 	readonly #computerSlot = h("div", { class: "thread-computer-window" });
 	readonly #computerFigure = h("div", { class: "thread-computer-figure" });
 	readonly #computerCaption = h("p", { class: "thread-computer-caption" });
+	readonly #computerWords = h("p", { class: "thread-computer-caption thread-computer-words", hidden: true });
 	readonly #computerRow = h(
 		"div",
 		{ class: "thread-computer" },
 		this.#computerFigure,
-		h("div", { class: "thread-computer-main" }, this.#computerSlot, this.#computerCaption),
+		h("div", { class: "thread-computer-main" }, this.#computerSlot, this.#computerCaption, this.#computerWords),
 	);
 	/** What the figure beside the window was drawn for, kept while it reads the same (its motion runs on). */
 	#computerFigureKey: string | undefined;
@@ -2595,6 +2597,10 @@ export class ConversationView {
 			),
 		);
 		const undoes = Boolean(this.#actions.undoInterfaceChange) && this.#company.store.get().team?.capabilities.write;
+		const runAtWork =
+			!room && this.#working && !conversation.loading
+				? this.#company.activityFor(session?.staffAgentId)?.runId
+				: undefined;
 		const key = JSON.stringify([
 			items,
 			mentionTargets,
@@ -2624,6 +2630,7 @@ export class ConversationView {
 			conversation.loading,
 			conversation.error,
 			this.#agentState,
+			runAtWork,
 			this.#waitingRun,
 			this.#decisions?.waiting,
 			this.#decisions?.decidedKey,
@@ -2847,11 +2854,19 @@ export class ConversationView {
 		this.#liveFrom ??= conversation.projection.items.find((item) => !waiting(item))?.sequence;
 		const liveFrom = this.#liveFrom;
 		let liveStart: number | undefined;
+		const acknowledgements = runAcknowledgements(items, !conversation.hasEarlier);
+		let words = "";
 		for (let index = 0; index < items.length; index++) {
 			const item = items[index]!;
 			if (liveStart === undefined && (liveFrom === undefined || (!waiting(item) && item.sequence >= liveFrom)))
 				liveStart = nodes.length;
 			placeSessions(item.createdAt);
+			const acknowledgement = acknowledgements.get(item.id);
+			if (acknowledgement?.followed) continue;
+			if (acknowledgement && acknowledgement.runId === runAtWork) {
+				words = markdown(acknowledgement.text).textContent?.replace(/\s+/gu, " ").trim() ?? "";
+				continue;
+			}
 			if (item.kind === "member" || item.kind === "agent") {
 				const mine = item.kind === "member" && item.authorUserId === this.#company.userId;
 				const author =
@@ -3050,7 +3065,7 @@ export class ConversationView {
 				const answers = canAnswer(item.actorUserId);
 				const takeOver = Boolean(agent) && item.request.surface === "takeover";
 				const address = questionInput(item.request) === "mail_address";
-				const reworking = reworkingNote(items, index, answer, this.#working || this.#waitingRun);
+				const reworking = reworkingNote(items, index, answer, this.#working || this.#waitingRun, acknowledgements);
 				const cardKey = JSON.stringify([
 					item.request,
 					// What the card shows of an answer; the input it went out as is not shown.
@@ -3262,6 +3277,9 @@ export class ConversationView {
 			nodes.splice(index, 0, this.#computerRow);
 			if (index < liveStart) liveStart += 1;
 		}
+		const computerWords = atComputer ? words : "";
+		if (this.#computerWords.textContent !== computerWords) this.#computerWords.textContent = computerWords;
+		this.#computerWords.hidden = !computerWords;
 		if (atComputer) {
 			this.#computerAfter = latest;
 			this.#activityRow = undefined;
@@ -3279,24 +3297,14 @@ export class ConversationView {
 				locale,
 			]);
 			if (this.#activityRow?.key !== rowKey) {
-				const look = AGENT_LOOK[this.#agentState];
-				const { label, caption } = activityCaption(look, agentName);
-				const row = h(
-					"div",
-					{
-						class: "message from-agent thread-activity",
-						role: "status",
-						tabindex: "0",
-						"aria-label": label,
-					},
-					agentFigure(agent, agentName, { size: 40, activity: look.figure }),
-					caption,
+				const row = activityRow(
+					AGENT_LOOK[this.#agentState],
+					agentName,
+					agentFigure(agent, agentName, { size: 40, activity: AGENT_LOOK[this.#agentState].figure }),
 				);
-				// The wave only runs while the caption shows; on showing it starts in step with the rail.
-				row.addEventListener("mouseenter", () => syncCaption(caption));
-				row.addEventListener("focus", () => syncCaption(caption));
 				this.#activityRow = { key: rowKey, element: row };
 			}
+			activityWords(this.#activityRow.element, words);
 			nodes.push(this.#activityRow.element);
 		} else this.#activityRow = undefined;
 		// Day separators: a kept one stays where it is, relabelled only once the day changed; a new

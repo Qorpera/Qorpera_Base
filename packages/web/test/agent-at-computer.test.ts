@@ -420,6 +420,29 @@ describe("the agent's thread", () => {
 		expect(rows(f)).toEqual(["Message 1", "Message 2", "computer"]);
 	});
 
+	it("says the agent's first words under the window while it uses the computer, never as a message", async () => {
+		const f = thread();
+		await settle();
+		const heard: TranscriptMessage = {
+			...said(2, 1),
+			text: "Opening the shop page.",
+			phase: "progress",
+			runId: id(90),
+		};
+		f.controller.conversation(session.sessionId).set(items(said(1, 0), heard));
+		f.controller.store.set({ activity: [run()], atComputers: { [staff.id]: at() } });
+		await settle();
+		expect(f.view.el.querySelectorAll("article.message")).toHaveLength(1);
+		const words = f.view.el.querySelector<HTMLElement>(".thread-computer-words");
+		expect(words?.hidden).toBe(false);
+		expect(words?.textContent).toBe("Opening the shop page.");
+		f.controller.conversation(session.sessionId).set(items(said(1, 0), heard, { ...said(3, 2), runId: id(90) }));
+		await settle();
+		expect(words?.hidden).toBe(true);
+		expect(words?.textContent).toBe("");
+		expect(f.view.el.querySelectorAll("article.message")).toHaveLength(2);
+	});
+
 	it("stays where it stood once the agent stops using it, and what comes after goes under it", async () => {
 		const f = thread();
 		// The thread's own first read lands first; then the transcript it shows.

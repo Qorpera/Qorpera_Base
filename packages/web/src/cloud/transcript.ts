@@ -136,6 +136,7 @@ export function reworkingNote(
 	index: number,
 	answer: InteractionAnswer | undefined,
 	agentAtWork: boolean,
+	acknowledgements?: ReadonlyMap<string, RunAcknowledgement>,
 ): boolean {
 	const card = items[index];
 	if (card?.kind !== "interaction" || typedNote(card.request, answer) === undefined) return false;
@@ -144,8 +145,52 @@ export function reworkingNote(
 	return !items
 		.slice(index + 1)
 		.some(
-			(later) => (later.kind === "agent" || later.kind === "interaction") && Date.parse(later.createdAt) > notedAt,
+			(later) =>
+				(later.kind === "agent" || later.kind === "interaction") &&
+				!acknowledgements?.has(later.id) &&
+				Date.parse(later.createdAt) > notedAt,
 		);
+}
+
+export interface RunAcknowledgement {
+	runId: string;
+	text: string;
+	followed: boolean;
+}
+
+const ACKNOWLEDGEMENT_LENGTH = 160;
+
+function acknowledgementWords(item: TranscriptMessage): string | undefined {
+	if (item.phase !== "progress" || item.erased || item.held || item.attachmentCount > 0) return undefined;
+	const text = item.text.trim();
+	return text && text.length <= ACKNOWLEDGEMENT_LENGTH && !/[\n`]/u.test(text) ? text : undefined;
+}
+
+export function runAcknowledgements(
+	items: readonly TranscriptItem[],
+	complete: boolean,
+): ReadonlyMap<string, RunAcknowledgement> {
+	const found = new Map<string, RunAcknowledgement>();
+	const runs = new Set<string>();
+	for (let index = 0; index < items.length; index++) {
+		const item = items[index]!;
+		if (item.kind !== "agent" || !item.runId || runs.has(item.runId)) continue;
+		runs.add(item.runId);
+		// WHY: a window that starts inside a run would take that run's later progress for its first words.
+		if (!complete && runs.size === 1) continue;
+		const text = acknowledgementWords(item);
+		if (text === undefined) continue;
+		let followed = false;
+		for (const later of items.slice(index + 1)) {
+			if (later.kind === "agent" && later.runId !== item.runId) break;
+			if (later.kind === "agent" || later.kind === "interaction" || later.kind === "authorization_request") {
+				followed = true;
+				break;
+			}
+		}
+		found.set(item.id, { runId: item.runId, text, followed });
+	}
+	return found;
 }
 
 export interface TranscriptProjection {
