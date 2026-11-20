@@ -1374,11 +1374,12 @@ describe("the decisions dock in the Co-Founder chat", () => {
 	it("keeps a draft whose send was not confirmed when its time runs out, and sets no clock for a time that has passed", async () => {
 		vi.setSystemTime(new Date("2026-11-10T12:00:00Z"));
 		const timed: OpenDraft = { ...draft, request: { ...letter, expiresAt: "2026-11-10T12:00:10Z" } };
+		const reads: EmailDraftState["status"][] = ["ready", "unconfirmed", "sent"];
 		const { host } = company({
 			drafts: [timed],
 			draft: async (action) => {
 				if (action === "send") throw new Error("The connection dropped");
-				return readyDraft;
+				return { ...readyDraft, status: reads.shift() ?? "sent" };
 			},
 		});
 		const dock = new DecisionDock(host);
@@ -1391,6 +1392,21 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		expect(dock.shows(DRAFT)).toBe(true);
 		expect(dock.el.querySelector(".decision-card .email-draft-error")?.textContent).toBe("The connection dropped");
 		expect(vi.getTimerCount()).toBeLessThanOrEqual(1);
+
+		press(dock, "Refresh");
+		await rest();
+		expect(dock.el.querySelector(".decision-card .email-draft-status")?.textContent).toBe("Send unconfirmed");
+		expect(dock.decided).toEqual([]);
+		const again = new DecisionDock(host);
+		document.body.append(again.el);
+		await rest();
+		expect(
+			[...again.el.querySelectorAll<HTMLButtonElement>(".decision-card button")].map((button) => button.textContent),
+		).toContain("Refresh");
+		again.dispose();
+		press(dock, "Refresh");
+		await rest();
+		expect(dock.decided.map((entry) => [entry.decision.interactionId, entry.state])).toEqual([[DRAFT, "sent"]]);
 		dock.dispose();
 	});
 

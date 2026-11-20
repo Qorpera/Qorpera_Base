@@ -332,7 +332,7 @@ export function renderEmailDraftCard(item: InteractionCardItem, context: Interac
 			);
 		if (!terminal && item.chainStopped)
 			card.append(h("p", { class: "email-draft-note" }, stoppedCardNote(context.canAnswer)));
-		if (!terminal && context.canAnswer) {
+		if ((!terminal || (uncertain && state === "expired")) && context.canAnswer) {
 			const actions = h("div", { class: "email-draft-actions" }, send, discard, save);
 			if ((uncertain || !connected || editor.error) && context.loadEmailDraft) {
 				const refresh = button(
