@@ -69,6 +69,7 @@ export interface TranscriptCard {
 	sequence: number;
 	actorUserId: string;
 	body: JsonValue;
+	runId?: string;
 	createdAt: string;
 	/** An approval card's answer still on its way (queued, not yet in the transcript). */
 	answer?: InteractionAnswer;
@@ -115,6 +116,7 @@ export interface TranscriptInteraction {
 	sequence: number;
 	actorUserId: string;
 	request: InteractionRequest;
+	runId?: string;
 	answer?: InteractionAnswer;
 	/** An answer was sent and its delivery failed, so it never reached the agent: the card is open again. */
 	answerFailed?: boolean;
@@ -166,11 +168,25 @@ function acknowledgementWords(item: TranscriptMessage): string | undefined {
 	return text && text.length <= ACKNOWLEDGEMENT_LENGTH && !/[\n`]/u.test(text) ? text : undefined;
 }
 
+function saidBy(item: TranscriptItem): string | undefined {
+	return item.kind === "agent" || item.kind === "interaction" || item.kind === "authorization_request"
+		? item.runId
+		: undefined;
+}
+
 export function runAcknowledgements(
 	items: readonly TranscriptItem[],
 	complete: boolean,
+	shared = false,
 ): ReadonlyMap<string, RunAcknowledgement> {
 	const found = new Map<string, RunAcknowledgement>();
+	// WHY: where several agents' runs interleave, no run's first loaded message is known to be its first.
+	if (!complete && shared) return found;
+	const last = new Map<string, number>();
+	for (let index = 0; index < items.length; index++) {
+		const runId = saidBy(items[index]!);
+		if (runId) last.set(runId, index);
+	}
 	const runs = new Set<string>();
 	for (let index = 0; index < items.length; index++) {
 		const item = items[index]!;
@@ -180,15 +196,7 @@ export function runAcknowledgements(
 		if (!complete && runs.size === 1) continue;
 		const text = acknowledgementWords(item);
 		if (text === undefined) continue;
-		let followed = false;
-		for (const later of items.slice(index + 1)) {
-			if (later.kind === "agent" && later.runId !== item.runId) break;
-			if (later.kind === "agent" || later.kind === "interaction" || later.kind === "authorization_request") {
-				followed = true;
-				break;
-			}
-		}
-		found.set(item.id, { runId: item.runId, text, followed });
+		found.set(item.id, { runId: item.runId, text, followed: (last.get(item.runId) ?? index) > index });
 	}
 	return found;
 }
@@ -447,6 +455,7 @@ export function projectTranscript(
 				sequence: event.sequence,
 				actorUserId: event.actorUserId,
 				body: event.body,
+				...(event.execution?.kind === "run" ? { runId: event.execution.id } : {}),
 				createdAt: event.createdAt,
 			};
 			if (event.eventType === "authorization_request") cards.set(event.eventId.toLowerCase(), card);
@@ -465,6 +474,7 @@ export function projectTranscript(
 				sequence: event.sequence,
 				actorUserId: event.actorUserId,
 				request,
+				...(event.execution?.kind === "run" ? { runId: event.execution.id } : {}),
 				createdAt: event.createdAt,
 			};
 			interactions.set(event.eventId.toLowerCase(), interaction);

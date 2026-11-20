@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import type { TranscriptItem, TranscriptMessage } from "../src/cloud/transcript.ts";
@@ -7,7 +7,11 @@ import type { HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { fixture, id, profileA, session, settle, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
 
 const cleanup: (() => void)[] = [];
+beforeEach(() => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+});
 afterEach(() => {
+	vi.useRealTimers();
 	for (const dispose of cleanup.splice(0).reverse()) dispose();
 	document.body.replaceChildren();
 	vi.restoreAllMocks();
@@ -46,12 +50,15 @@ const say = (n: number, text: string, phase: "progress" | "final", runId = RUN):
 });
 const heard = say(2, "Checking the refund log.", "progress");
 
-function setup() {
+function setup(room = false, first: TranscriptItem[] = []) {
 	stubFigureMotion();
 	const f = fixture();
 	const company = new CompanyController(f.api, profileA, userA.id);
-	company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
-	company.conversation(session.sessionId, false).set({ loading: false });
+	const opened = room ? { ...session, executionScope: { roomId: id(79) } } : { ...session, staffAgentId: staff.id };
+	company.store.set({ team, staff: [staff], sessions: [opened], loading: false });
+	company
+		.conversation(session.sessionId, false)
+		.set({ loading: false, projection: { items: first, hiddenCount: 0, lastSequence: first.length } });
 	const view = new ConversationView(company, session.sessionId);
 	document.body.append(view.el);
 	cleanup.push(() => {
@@ -66,10 +73,17 @@ function setup() {
 		view.update();
 		await settle();
 	};
-	const messages = () => [...view.el.querySelectorAll<HTMLElement>("article.message")].map((el) => el.textContent);
+	const messages = () =>
+		[...view.el.querySelectorAll<HTMLElement>("article.message")].map((el) =>
+			[...el.querySelectorAll(".bubble")].map((bubble) => bubble.textContent).join(" "),
+		);
 	const row = () => view.el.querySelector<HTMLElement>(".thread-activity");
 	const words = () => row()?.querySelector<HTMLElement>(".thread-activity-words");
-	return { company, view, show, messages, row, words };
+	const wait = async (ms: number) => {
+		vi.advanceTimersByTime(ms);
+		await settle();
+	};
+	return { company, view, show, messages, row, words, wait };
 }
 
 describe("the agent's first words while it works", () => {
@@ -111,6 +125,10 @@ describe("the agent's first words while it works", () => {
 		await f.show([asked, heard], [working]);
 		expect(f.messages()).toEqual(["Where is the refund?"]);
 		await f.show([asked, heard], []);
+		expect(f.messages()).toEqual(["Where is the refund?"]);
+		await f.wait(4_999);
+		expect(f.messages()).toEqual(["Where is the refund?"]);
+		await f.wait(1);
 		expect(f.messages()).toEqual(["Where is the refund?", "Checking the refund log."]);
 		expect(f.view.el.querySelector("article.message-progress")?.textContent).toBe("Checking the refund log.");
 		await f.show([asked, heard], [{ ...working, runId: NEXT }]);
@@ -119,6 +137,43 @@ describe("the agent's first words while it works", () => {
 		await f.show([asked, heard, say(3, "Looking again.", "progress", NEXT)], [{ ...working, runId: NEXT }]);
 		expect(f.messages()).toEqual(["Where is the refund?", "Checking the refund log."]);
 		expect(f.words()?.textContent).toBe("Looking again.");
+	});
+
+	it("never flash as a message when the thread is read a moment before or after the agent's state", async () => {
+		const f = setup();
+		await f.show([asked], []);
+		await f.show([asked, heard], []);
+		expect(f.messages()).toEqual(["Where is the refund?"]);
+		await f.wait(2_000);
+		await f.show([asked, heard], [working]);
+		expect(f.messages()).toEqual(["Where is the refund?"]);
+		expect(f.words()?.textContent).toBe("Checking the refund log.");
+		await f.show([asked, heard], []);
+		expect(f.row()).toBeNull();
+		expect(f.messages()).toEqual(["Where is the refund?"]);
+		await f.wait(2_000);
+		await f.show([asked, heard, say(3, "It was paid on Monday.", "final")], []);
+		await f.wait(10_000);
+		expect(f.messages()).toEqual(["Where is the refund?", "It was paid on Monday."]);
+	});
+
+	it("show at once as the message they were when the thread opens on work that ended long ago", async () => {
+		const f = setup(false, [asked, heard]);
+		await settle();
+		expect(f.messages()).toEqual(["Where is the refund?", "Checking the refund log."]);
+	});
+
+	it("go from a group thread when their run says more, also while another agent's run speaks in between", async () => {
+		const f = setup(true);
+		const other = say(3, "Looking at the bank file.", "progress", NEXT);
+		await f.show([asked, heard, other], []);
+		expect(f.row()).toBeNull();
+		expect(f.messages()).toEqual(["Where is the refund?", "Checking the refund log.", "Looking at the bank file."]);
+		const answers = [say(4, "It was paid on Monday.", "final"), say(5, "The bank file agrees.", "final", NEXT)];
+		await f.show([asked, heard, other, ...answers], []);
+		expect(f.messages()).toEqual(["Where is the refund?", "It was paid on Monday.", "The bank file agrees."]);
+		await f.show([asked, heard, other, ...answers], [], { hasEarlier: true });
+		expect(f.messages()).toHaveLength(5);
 	});
 
 	it("leave a longer or formatted first message as the message it is", async () => {

@@ -362,6 +362,16 @@ describe("interaction cards in the transcript", () => {
 		answer: { values: ["general"] },
 	};
 
+	it("names the run that raised a question or an approval card, when the event names one", () => {
+		const execution = { kind: "run" as const, id: RUN, claimantId: RUN, runnerAssignmentId: RUN };
+		const { items } = projectTranscript([
+			event(1, { eventId: CARD, eventType: "interaction_request", execution, body: request }),
+			event(2, { eventType: "authorization_request", execution, body: { operation: "send-email" } }),
+			event(3, { eventType: "authorization_request", body: { operation: "send-email" } }),
+		]);
+		expect(items.map((item) => ("runId" in item ? item.runId : undefined))).toEqual([RUN, RUN, undefined]);
+	});
+
 	it("projects a request as a card and attaches its written answer", () => {
 		const projection = projectTranscript([
 			event(1, { eventId: CARD, eventType: "interaction_request", body: request }),
@@ -462,22 +472,24 @@ describe("interaction cards in the transcript", () => {
 				attachmentCount: 0,
 				createdAt: at(n),
 			}) as TranscriptItem;
-		const ask = (n: number) =>
+		const ask = (n: number, runId: string | undefined = RUN) =>
 			({
 				kind: "interaction",
 				id: `q${n}`,
 				sequence: n,
 				actorUserId: USER,
 				request: { surface: "question", title: "Which?", payload: { options: [{ label: "A", value: "a" }] } },
+				...(runId ? { runId } : {}),
 				createdAt: at(n),
 			}) as TranscriptItem;
-		const approval = (n: number) =>
+		const approval = (n: number, runId: string | undefined = RUN) =>
 			({
 				kind: "authorization_request",
 				id: `r${n}`,
 				sequence: n,
 				actorUserId: USER,
 				body: {},
+				...(runId ? { runId } : {}),
 				createdAt: at(n),
 			}) as TranscriptItem;
 		const link = (n: number) =>
@@ -498,9 +510,19 @@ describe("interaction cards in the transcript", () => {
 			expect([...found.keys()]).toEqual(["s1"]);
 			expect(found.get("s1")?.followed).toBe(true);
 		}
-		const two = runAcknowledgements([first, say(2, "On the new one.", "progress", NEXT), ask(3)], true);
+		const next = say(2, "On the new one.", "progress", NEXT);
+		for (const other of [ask(3, NEXT), approval(3, NEXT), ask(3, ""), approval(3, "")])
+			expect(runAcknowledgements([first, other], true).get("s1")?.followed).toBe(false);
+		const two = runAcknowledgements([first, next, ask(3, NEXT)], true);
 		expect(two.get("s1")?.followed).toBe(false);
 		expect(two.get("s2")).toEqual({ runId: NEXT, text: "On the new one.", followed: true });
+		const woven = runAcknowledgements(
+			[first, next, say(3, "Done.", "final"), say(4, "Done too.", "final", NEXT)],
+			true,
+		);
+		expect([...woven.values()].map((found) => found.followed)).toEqual([true, true]);
+		expect(runAcknowledgements([first, next, say(3, "Done.", "final")], false, true).size).toBe(0);
+		expect(runAcknowledgements([first, next, say(3, "Done.", "final")], true, true).size).toBe(2);
 		for (const other of [
 			say(1, "x".repeat(161), "progress"),
 			say(1, "Checking.\nThen the log.", "progress"),

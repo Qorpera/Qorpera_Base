@@ -19,6 +19,7 @@ import {
 } from "../../cloud/review-rules.ts";
 import { sessionAttachmentProblem } from "../../cloud/session-attachments.ts";
 import {
+	type RunAcknowledgement,
 	reworkingNote,
 	runAcknowledgements,
 	type TranscriptCard,
@@ -118,6 +119,7 @@ import { ThreadSites } from "./thread-sites.ts";
 const CODING_POLL_WORKING_MS = 2_500;
 const CODING_POLL_WAITING_MS = 6_000;
 const CODING_POLL_HIDDEN_MS = 20_000;
+const FIRST_WORDS_WAIT_MS = 5_000;
 
 // Popup dismissal lasts for this company controller, including conversation navigation.
 // It does not settle or discard work whose outcome still needs review.
@@ -447,6 +449,9 @@ export class ConversationView {
 	#drawn = new Map<string, DrawnItem>();
 	/** The working figure's row and the empty thread's line, kept while they read the same. */
 	#activityRow: { key: string; element: HTMLElement } | undefined;
+	readonly #firstWords = new Map<string, { since?: number; shown?: true }>();
+	#firstWordsThrough: number | undefined;
+	#firstWordsTimer: ReturnType<typeof setTimeout> | undefined;
 	#emptyRow: HTMLElement | undefined;
 	/** The agent's computer is a row of the thread (Jonas, 14 Nov 2026: "a bigger window next to the working agent inside
 	 * of the thread"): its window stands beside the agent's figure. While the agent uses its computer the row is the live
@@ -972,6 +977,7 @@ export class ConversationView {
 		this.#drawn.clear();
 		this.#closeCodingSession();
 		clearTimeout(this.#codingPoll);
+		clearTimeout(this.#firstWordsTimer);
 		for (const unsubscribe of this.#unsubscribe) unsubscribe();
 		this.#company.setOpenSession(undefined);
 	}
@@ -1722,6 +1728,53 @@ export class ConversationView {
 		const caption = working ? activityCaption(look, agentName).label : "";
 		this.#computerCaption.textContent = caption;
 		this.#computerCaption.hidden = !caption;
+	}
+
+	// WHY: the agent's state and the thread are read apart, so first words can be seen a moment before their run is
+	// (or after it ended, before its answer is): they wait that moment out instead of flashing as a message.
+	#holdFirstWords(
+		items: readonly TranscriptItem[],
+		acknowledgements: ReadonlyMap<string, RunAcknowledgement>,
+		runAtWork: string | undefined,
+		still: boolean,
+	): string[] {
+		clearTimeout(this.#firstWordsTimer);
+		this.#firstWordsTimer = undefined;
+		if (still) return [];
+		const now = Date.now();
+		const through = this.#firstWordsThrough;
+		const held: string[] = [];
+		let next = Number.POSITIVE_INFINITY;
+		let newest = through ?? 0;
+		for (const item of items) {
+			if (item.sequence !== Number.MAX_SAFE_INTEGER) newest = Math.max(newest, item.sequence);
+			const acknowledgement = acknowledgements.get(item.id);
+			if (!acknowledgement) continue;
+			let entry = this.#firstWords.get(item.id);
+			if (!entry) {
+				entry = through !== undefined && item.sequence > through ? { since: now } : {};
+				this.#firstWords.set(item.id, entry);
+			}
+			if (acknowledgement.followed) continue;
+			if (acknowledgement.runId === runAtWork) {
+				entry.shown = true;
+				entry.since = undefined;
+				continue;
+			}
+			if (entry.shown) {
+				entry.shown = undefined;
+				entry.since = now;
+			}
+			if (entry.since === undefined) continue;
+			const until = entry.since + FIRST_WORDS_WAIT_MS;
+			if (until <= now) continue;
+			held.push(item.id);
+			next = Math.min(next, until);
+		}
+		this.#firstWordsThrough = newest;
+		for (const id of this.#firstWords.keys()) if (!acknowledgements.has(id)) this.#firstWords.delete(id);
+		if (held.length) this.#firstWordsTimer = setTimeout(() => this.update(), next - now);
+		return held;
 	}
 
 	/** One button: it sends a draft, and with nothing to send it stops the run the agent is on. */
@@ -2601,6 +2654,9 @@ export class ConversationView {
 			!room && this.#working && !conversation.loading
 				? this.#company.activityFor(session?.staffAgentId)?.runId
 				: undefined;
+		const acknowledgements = runAcknowledgements(items, !conversation.hasEarlier, room);
+		const heldWords = this.#holdFirstWords(items, acknowledgements, runAtWork, room || conversation.loading === true);
+		const computerShown = this.#panel !== undefined && this.#computerSlot.contains(this.#panel.el);
 		const key = JSON.stringify([
 			items,
 			mentionTargets,
@@ -2631,6 +2687,8 @@ export class ConversationView {
 			conversation.error,
 			this.#agentState,
 			runAtWork,
+			heldWords,
+			computerShown,
 			this.#waitingRun,
 			this.#decisions?.waiting,
 			this.#decisions?.decidedKey,
@@ -2854,7 +2912,6 @@ export class ConversationView {
 		this.#liveFrom ??= conversation.projection.items.find((item) => !waiting(item))?.sequence;
 		const liveFrom = this.#liveFrom;
 		let liveStart: number | undefined;
-		const acknowledgements = runAcknowledgements(items, !conversation.hasEarlier);
 		let words = "";
 		for (let index = 0; index < items.length; index++) {
 			const item = items[index]!;
@@ -2862,7 +2919,7 @@ export class ConversationView {
 				liveStart = nodes.length;
 			placeSessions(item.createdAt);
 			const acknowledgement = acknowledgements.get(item.id);
-			if (acknowledgement?.followed) continue;
+			if (acknowledgement?.followed || heldWords.includes(item.id)) continue;
 			if (acknowledgement && acknowledgement.runId === runAtWork) {
 				words = markdown(acknowledgement.text).textContent?.replace(/\s+/gu, " ").trim() ?? "";
 				continue;
