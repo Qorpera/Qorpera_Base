@@ -740,6 +740,43 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		dock.dispose();
 	});
 
+	it("hears of a decided card's thread being read while no card of that thread is on screen", async () => {
+		const { host } = company({ questions: [question(CARD_B, name)] });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		pick(dock, "mywave");
+		await vi.advanceTimersByTimeAsync(UNDO_MS + 1);
+		await settle();
+		expect(dock.decided.map((entry) => entry.state)).toEqual(["sent"]);
+		expect(dock.el.hidden).toBe(true);
+		const changes = vi.fn();
+		dock.onChange(changes);
+		host.conversation(SESSION).set({
+			interactionAnswers: undefined,
+			projection: {
+				items: [
+					{
+						kind: "interaction",
+						id: CARD_B,
+						sequence: 7,
+						actorUserId: MEMBER,
+						request: name,
+						createdAt: "2026-11-10T09:00:00Z",
+						answerFailed: true,
+					},
+				],
+				hiddenCount: 0,
+				lastSequence: 7,
+			},
+		});
+		await settle();
+		expect(changes).toHaveBeenCalledTimes(1);
+		expect(dock.el.hidden).toBe(true);
+		expect(dock.decided).toEqual([]);
+		dock.dispose();
+	});
+
 	it("tells the dock that stands now when an answer sent on leaving is refused", async () => {
 		let refuse = () => {};
 		const gate = new Promise<void>((resolve) => {
