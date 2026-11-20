@@ -367,6 +367,7 @@ export const CONVERSATION: Record<string, string> = {
 	Decided: "Besluttet",
 	"Allowed once": "Tilladt én gang",
 	"Always allowed": "Altid tilladt",
+	"Nothing was sent": "Intet blev sendt",
 	Denied: "Afvist",
 	"Goes to {name} in a moment": "Går til {name} om et øjeblik",
 	"{name} asks you": "{name} spørger dig",

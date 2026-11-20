@@ -1,5 +1,17 @@
+import type {
+	EmailDraftAction,
+	EmailDraftContent,
+	EmailDraftEditor,
+	EmailDraftState,
+} from "../../cloud/email-drafts.ts";
 import { type InteractionOutcome, questionOptions, typedNote } from "../../cloud/interactions.ts";
-import { decisionTitle, type OpenApproval, type OpenCard, type OpenDecision } from "../../cloud/open-decisions.ts";
+import {
+	decisionTitle,
+	type OpenApproval,
+	type OpenCard,
+	type OpenDecision,
+	type OpenDraft,
+} from "../../cloud/open-decisions.ts";
 import type { ActionReviewAnswer } from "../../cloud/review-rules.ts";
 import type { JsonValue } from "../../cloud/types.ts";
 import { type ActionReviewDraft, renderActionReviewCard } from "../../ui/authorization-card.ts";
@@ -18,7 +30,7 @@ export const UNDO_MS = 5_000;
 
 function expiry(decision: OpenDecision): number {
 	const at =
-		decision.kind === "question" && decision.request.expiresAt ? Date.parse(decision.request.expiresAt) : Number.NaN;
+		decision.kind !== "approval" && decision.request.expiresAt ? Date.parse(decision.request.expiresAt) : Number.NaN;
 	return Number.isFinite(at) ? at : Number.POSITIVE_INFINITY;
 }
 
@@ -45,17 +57,39 @@ interface DecidedApproval extends DecidedState {
 	readonly ruleText?: string;
 }
 
-export type Decided = DecidedCard | DecidedApproval;
+interface DecidedDraft extends DecidedState {
+	readonly decision: OpenDraft;
+	readonly action: "send" | "discard";
+	readonly content: EmailDraftContent;
+}
+
+export type Decided = DecidedCard | DecidedApproval | DecidedDraft;
 
 interface Shared {
 	readonly decided: Decided[];
+	readonly drafts: Map<string, OpenDraft>;
 	readonly errors: Map<string, string>;
 	readonly docks: Set<() => void>;
 }
 
 const SHARED = new WeakMap<OpenQuestions, Shared>();
 
+function unsettled(editor: EmailDraftEditor): boolean {
+	const status = editor.state?.status;
+	return (
+		(editor.busy !== undefined && editor.busy !== "load") ||
+		editor.unconfirmedAction !== undefined ||
+		status === "sending" ||
+		status === "unconfirmed" ||
+		((status === "sent" || status === "discarded") && editor.state?.notificationPending === true)
+	);
+}
+
 function decidedWords(entry: Decided): { word: string; said: string } {
+	if (entry.decision.kind === "draft") {
+		const { action, content } = entry as DecidedDraft;
+		return { word: action === "send" ? t("Email sent") : t("Discarded"), said: content.subject };
+	}
 	if (entry.decision.kind === "approval") {
 		const { answer, ruleText } = entry as DecidedApproval;
 		return {
@@ -74,11 +108,16 @@ function decidedWords(entry: Decided): { word: string; said: string } {
 	return { word: t("Decided"), said: values.map((picked) => labels.get(picked) ?? picked).join(", ") };
 }
 
+function draftOutcome({ action, content }: DecidedDraft): string {
+	return action === "send" ? `${t("To")} ${[...content.to, ...content.cc].join(", ")}` : t("Nothing was sent");
+}
+
 export class DecisionDock {
 	readonly el: HTMLElement;
 	readonly #host: QuestionDockHost;
 	readonly #lifetime = new AbortController();
 	readonly #decided: Decided[];
+	readonly #drafts: Map<string, OpenDraft>;
 	readonly #holds = new Map<string, ReturnType<typeof setTimeout>>();
 	readonly #errors: Map<string, string>;
 	readonly #docks: Set<() => void>;
@@ -104,10 +143,11 @@ export class DecisionDock {
 		this.#host = host;
 		let shared = SHARED.get(host.questions);
 		if (!shared) {
-			shared = { decided: [], errors: new Map(), docks: new Set() };
+			shared = { decided: [], drafts: new Map(), errors: new Map(), docks: new Set() };
 			SHARED.set(host.questions, shared);
 		}
 		this.#decided = shared.decided;
+		this.#drafts = shared.drafts;
 		this.#errors = shared.errors;
 		this.#docks = shared.docks;
 		this.#docks.add(this.#redraw);
@@ -194,11 +234,13 @@ export class DecisionDock {
 		const title = decisionTitle(decision);
 		const { word, said } = decidedWords(entry);
 		const by =
-			entry.state === "held"
-				? t("Goes to {name} in a moment", { name })
-				: entry.state === "sending"
-					? t("Sending to {name}…", { name })
-					: t("Sent to {name}", { name });
+			decision.kind === "draft"
+				? draftOutcome(entry as DecidedDraft)
+				: entry.state === "held"
+					? t("Goes to {name} in a moment", { name })
+					: entry.state === "sending"
+						? t("Sending to {name}…", { name })
+						: t("Sent to {name}", { name });
 		const ring = h("span", { class: "decided-ring", "aria-hidden": "true" });
 		ring.style.animationDuration = `${UNDO_MS}ms`;
 		ring.style.animationDelay = `${Math.min(0, entry.at - Date.now())}ms`;
@@ -295,15 +337,28 @@ export class DecisionDock {
 
 	#cards(): OpenDecision[] {
 		const now = Date.now();
-		return this.#host.questions.store
-			.get()
-			.decisions.filter(
+		const listed = this.#host.questions.store.get().decisions;
+		return [
+			...listed.filter(
 				(decision) =>
 					expiry(decision) > now &&
 					!this.#onItsWay(decision.interactionId) &&
 					!this.#host.conversation(decision.sessionId).get().interactionAnswers?.[decision.interactionId],
-			)
-			.sort(decisionOrder);
+			),
+			...this.#unsettledDrafts(listed),
+		].sort(decisionOrder);
+	}
+
+	#unsettledDrafts(listed: readonly OpenDecision[]): OpenDraft[] {
+		const ids = new Set(listed.map((decision) => decision.interactionId));
+		for (const decision of listed) if (decision.kind === "draft") this.#drafts.set(decision.interactionId, decision);
+		const kept: OpenDraft[] = [];
+		for (const [id, draft] of this.#drafts) {
+			if (ids.has(id)) continue;
+			if (unsettled(this.#host.questions.draftEditor(draft))) kept.push(draft);
+			else this.#drafts.delete(id);
+		}
+		return kept;
 	}
 
 	#untilNextExpiry(cards: OpenDecision[]): void {
@@ -357,38 +412,40 @@ export class DecisionDock {
 		const agent = this.#host.agent(current.staffAgentId);
 		const name = agent?.displayName ?? t("The agent");
 		const card =
-			current.kind === "approval"
-				? renderActionReviewCard(current.review, undefined, {
-						memberName: (userId) => this.#host.memberName(userId),
-						draft: this.#ruleDrafts.get(current.interactionId),
-						onDraft: (draft) => this.#ruleDrafts.set(current.interactionId, draft),
-						answer: (answer, ruleText) =>
-							this.#hold({
-								decision: current,
-								answer,
-								...(ruleText === undefined ? {} : { ruleText }),
-								at: Date.now(),
-								state: "held",
-							}),
-					})
-				: renderInteractionCard(
-						{
-							id: current.interactionId,
-							actorUserId: current.actorUserId,
-							request: current.request,
-							createdAt: current.createdAt,
-						},
-						{
-							agentName: name,
+			current.kind === "draft"
+				? this.#draftCard(current, name)
+				: current.kind === "approval"
+					? renderActionReviewCard(current.review, undefined, {
 							memberName: (userId) => this.#host.memberName(userId),
-							canAnswer: true,
-							inThread: true,
-							...(this.#host.image ? { image: this.#host.image } : {}),
-							...(this.#host.app ? { app: this.#host.app } : {}),
-							answer: async (outcome, value) =>
-								this.#hold({ decision: current, outcome, value, at: Date.now(), state: "held" }),
-						},
-					);
+							draft: this.#ruleDrafts.get(current.interactionId),
+							onDraft: (draft) => this.#ruleDrafts.set(current.interactionId, draft),
+							answer: (answer, ruleText) =>
+								this.#hold({
+									decision: current,
+									answer,
+									...(ruleText === undefined ? {} : { ruleText }),
+									at: Date.now(),
+									state: "held",
+								}),
+						})
+					: renderInteractionCard(
+							{
+								id: current.interactionId,
+								actorUserId: current.actorUserId,
+								request: current.request,
+								createdAt: current.createdAt,
+							},
+							{
+								agentName: name,
+								memberName: (userId) => this.#host.memberName(userId),
+								canAnswer: true,
+								inThread: true,
+								...(this.#host.image ? { image: this.#host.image } : {}),
+								...(this.#host.app ? { app: this.#host.app } : {}),
+								answer: async (outcome, value) =>
+									this.#hold({ decision: current, outcome, value, at: Date.now(), state: "held" }),
+							},
+						);
 		this.#markCut(card);
 		replace(
 			this.#stage,
@@ -404,10 +461,57 @@ export class DecisionDock {
 				agentFigure(agent, name, {
 					size: this.#narrow ? FIGURE_ABOVE : FIGURE_BESIDE,
 					activity: "Waiting",
-					ask: current.kind === "approval" ? "bang" : "question",
+					ask: current.kind === "question" ? "question" : "bang",
 				}),
 			),
 		);
+	}
+
+	#draftCard(draft: OpenDraft, name: string): HTMLElement {
+		const { questions } = this.#host;
+		return renderInteractionCard(
+			{
+				id: draft.interactionId,
+				actorUserId: draft.actorUserId,
+				request: draft.request,
+				createdAt: draft.createdAt,
+			},
+			{
+				agentName: name,
+				memberName: (userId) => this.#host.memberName(userId),
+				canAnswer: true,
+				inThread: true,
+				answer: async () => {},
+				emailDraft: questions.draftEditor(draft),
+				loadEmailDraft: () => this.#draftStep(draft, questions.loadDraft(draft)),
+				actEmailDraft: (action: EmailDraftAction, content: EmailDraftContent) =>
+					this.#draftStep(draft, questions.actDraft(draft, action, content)),
+			},
+		);
+	}
+
+	async #draftStep(draft: OpenDraft, step: Promise<EmailDraftState>): Promise<EmailDraftState> {
+		const state = await step;
+		const id = draft.interactionId;
+		if (
+			(state.status !== "sent" && state.status !== "discarded") ||
+			state.notificationPending ||
+			this.#decided.some((entry) => entry.decision.interactionId === id)
+		)
+			return state;
+		this.#decided.push({
+			decision: draft,
+			action: state.status === "sent" ? "send" : "discard",
+			content: state.content,
+			at: Date.now(),
+			state: "sent",
+		});
+		this.#drafts.delete(id);
+		this.#host.questions.forget(id);
+		void this.#host.questions.refresh();
+		if (this.#current === id) this.#current = undefined;
+		this.#everyDock();
+		return state;
 	}
 
 	#markCut(card: HTMLElement): void {

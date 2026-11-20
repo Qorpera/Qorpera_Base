@@ -1,5 +1,5 @@
 import type { Cloud } from "./client.ts";
-import { parseInteractionRequest } from "./interactions.ts";
+import { isGmailDraft, parseInteractionRequest } from "./interactions.ts";
 import type { OpenQuestion } from "./open-questions.ts";
 import { array, boundedInteger, CloudShapeError, jsonValue, record, timestamp, uuid } from "./parse.ts";
 import { type ActionReviewCard, actionReviewCard } from "./review-rules.ts";
@@ -11,6 +11,10 @@ export interface OpenCard extends OpenQuestion {
 	kind: "question";
 }
 
+export interface OpenDraft extends OpenQuestion {
+	kind: "draft";
+}
+
 export interface OpenApproval {
 	kind: "approval";
 	sessionId: string;
@@ -20,7 +24,7 @@ export interface OpenApproval {
 	createdAt: string;
 }
 
-export type OpenDecision = OpenCard | OpenApproval;
+export type OpenDecision = OpenCard | OpenDraft | OpenApproval;
 
 export function asOpenCards(questions: readonly OpenQuestion[]): OpenCard[] {
 	return questions.map((question) => ({ ...question, kind: "question" }));
@@ -51,12 +55,13 @@ export function parseOpenDecisions(value: unknown): OpenDecision[] {
 				? [{ kind: "approval", ...shared, review }]
 				: [];
 		}
-		if (item.kind !== "question") return [];
+		const kind = item.kind;
+		if (kind !== "question" && kind !== "draft") return [];
 		const request = parseInteractionRequest(jsonValue(item.body));
-		if (request?.surface !== "question") return [];
+		if (request?.surface !== kind || (kind === "draft" && !isGmailDraft(request))) return [];
 		return [
 			{
-				kind: "question",
+				kind,
 				...shared,
 				sequence: boundedInteger(item.sequence, "open decision sequence", 1, Number.MAX_SAFE_INTEGER),
 				actorUserId: uuid(item.answererUserId, "open decision member"),

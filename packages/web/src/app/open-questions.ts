@@ -1,10 +1,17 @@
 import { appLinkName, appPath } from "@qorpera/cloud-client/interface-apps";
 import { isInterfaceName } from "@qorpera/cloud-client/interfaces";
 import { CloudRpcError } from "../cloud/client.ts";
+import type { EmailDraftAction, EmailDraftContent, EmailDraftEditor, EmailDraftState } from "../cloud/email-drafts.ts";
 import type { InteractionOutcome, InteractionRequest } from "../cloud/interactions.ts";
 import { questionOptions } from "../cloud/interactions.ts";
 import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
-import { asOpenCards, type OpenApproval, type OpenCard, type OpenDecision } from "../cloud/open-decisions.ts";
+import {
+	asOpenCards,
+	type OpenApproval,
+	type OpenCard,
+	type OpenDecision,
+	type OpenDraft,
+} from "../cloud/open-decisions.ts";
 import type { OpenQuestion } from "../cloud/open-questions.ts";
 import type { ActionReviewAnswer } from "../cloud/review-rules.ts";
 import type { JsonValue } from "../cloud/types.ts";
@@ -151,6 +158,22 @@ export class OpenQuestions {
 		await this.#chooseAccount(approval.sessionId);
 		await this.#company.answerActionReview(approval.sessionId, approval.interactionId, answer, ruleText);
 		this.#answered.add(approval.interactionId);
+	}
+
+	draftEditor(draft: OpenDraft): EmailDraftEditor {
+		return this.#company.emailDraftEditor(draft.interactionId);
+	}
+
+	async loadDraft(draft: OpenDraft): Promise<EmailDraftState> {
+		const state = await this.#company.loadEmailDraft(draft.sessionId, draft.interactionId);
+		if (!state.notificationPending) return state;
+		await this.#chooseAccount(draft.sessionId);
+		return this.#company.loadEmailDraft(draft.sessionId, draft.interactionId);
+	}
+
+	async actDraft(draft: OpenDraft, action: EmailDraftAction, content: EmailDraftContent): Promise<EmailDraftState> {
+		await this.#chooseAccount(draft.sessionId);
+		return this.#company.actEmailDraft(draft.sessionId, draft.interactionId, action, content);
 	}
 
 	forget(interactionId: string): void {
