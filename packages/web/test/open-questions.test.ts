@@ -499,6 +499,7 @@ describe("the decisions dock in the Co-Founder chat", () => {
 	});
 	afterEach(() => {
 		vi.useRealTimers();
+		vi.unstubAllGlobals();
 		document.body.replaceChildren();
 	});
 
@@ -613,6 +614,101 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		expect(dock.shows(CARD_C)).toBe(false);
 		expect(changes).toHaveBeenCalledTimes(1);
 		expect(dock.el.querySelector(".interaction-title")?.textContent).toBe("What should the app be called?");
+		dock.dispose();
+	});
+
+	it("marks a card taller than its room as cut until it is scrolled to its end", async () => {
+		const { host } = company({ questions: [question(CARD_B, name)] });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		const card = dock.el.querySelector<HTMLElement>(".decision-card > .interaction-card");
+		if (!card) throw new Error("card expected");
+		Object.defineProperty(card, "scrollHeight", { value: 500 });
+		Object.defineProperty(card, "clientHeight", { value: 300 });
+		card.dispatchEvent(new Event("scroll"));
+		expect(card.classList.contains("is-cut")).toBe(true);
+		card.scrollTop = 198;
+		card.dispatchEvent(new Event("scroll"));
+		expect(card.classList.contains("is-cut")).toBe(false);
+		dock.dispose();
+	});
+
+	it("marks a cut card as it is drawn, before any scroll, and lets its observer go with the card", async () => {
+		const made: { run: () => void; seen: Element[]; gone: boolean }[] = [];
+		vi.stubGlobal(
+			"ResizeObserver",
+			class {
+				readonly #entry: { run: () => void; seen: Element[]; gone: boolean };
+				constructor(run: () => void) {
+					this.#entry = { run, seen: [], gone: false };
+					made.push(this.#entry);
+				}
+				observe(target: Element) {
+					this.#entry.seen.push(target);
+				}
+				disconnect() {
+					this.#entry.gone = true;
+				}
+			},
+		);
+		const { host } = company({
+			questions: [question(CARD_B, name), question(CARD_A, directions, "2026-11-10T11:00:00Z")],
+		});
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		const shown = () => {
+			const card = dock.el.querySelector<HTMLElement>(".decision-card > .interaction-card");
+			if (!card) throw new Error("card expected");
+			return card;
+		};
+		const card = shown();
+		const first = made.find((entry) => entry.seen.includes(card));
+		expect(first?.seen).toEqual([card, ...card.children]);
+		expect(card.children.length).toBeGreaterThan(0);
+		Object.defineProperty(card, "scrollHeight", { value: 500 });
+		Object.defineProperty(card, "clientHeight", { value: 300 });
+		first?.run();
+		expect(card.classList.contains("is-cut")).toBe(true);
+
+		tabs(dock)[1]?.click();
+		expect(first?.gone).toBe(true);
+		const second = made.find((entry) => entry.seen.includes(shown()));
+		expect(second).not.toBe(first);
+		expect(second?.gone).toBe(false);
+		dock.dispose();
+		expect(second?.gone).toBe(true);
+	});
+
+	it("lets the observer go when the last decision leaves", async () => {
+		const made: { seen: Element[]; gone: boolean }[] = [];
+		vi.stubGlobal(
+			"ResizeObserver",
+			class {
+				readonly #entry: { seen: Element[]; gone: boolean } = { seen: [], gone: false };
+				constructor() {
+					made.push(this.#entry);
+				}
+				observe(target: Element) {
+					this.#entry.seen.push(target);
+				}
+				disconnect() {
+					this.#entry.gone = true;
+				}
+			},
+		);
+		const { host, open } = company({ questions: [question(CARD_B, name)] });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		const card = dock.el.querySelector(".decision-card > .interaction-card");
+		const watching = made.find((entry) => card !== null && entry.seen.includes(card));
+		expect(watching?.gone).toBe(false);
+		open.forget(CARD_B);
+		await settle();
+		expect(dock.el.hidden).toBe(true);
+		expect(watching?.gone).toBe(true);
 		dock.dispose();
 	});
 
