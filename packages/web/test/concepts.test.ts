@@ -83,6 +83,7 @@ function company(questions: OpenQuestion[] = []) {
 		listOpenQuestions: async () => questions,
 		listOpenDecisions: async () => asOpenCards(questions),
 		setOpenDecisions: () => {},
+		store: new Store({ team: { capabilities: { write: true } } }),
 		onInvalidate: () => () => {},
 		conversation,
 		setExecutionSponsor: () => {},

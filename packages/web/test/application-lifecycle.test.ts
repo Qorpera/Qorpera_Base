@@ -572,6 +572,32 @@ describe("account and route ownership", () => {
 		);
 	});
 
+	it("counts open decisions once the membership arrives late, without waiting for the clock", async () => {
+		const f = mounted(`#/c/${profileA.profileId}/team`);
+		vi.mocked(f.api.listStaff).mockResolvedValue([{ ...staff, templateId: "co-founder" }]);
+		const membership = deferred<typeof team>();
+		vi.mocked(f.api.getTeam).mockReturnValue(membership.promise);
+		const listed = vi.spyOn(f.api, "listOpenDecisions").mockResolvedValue([
+			{
+				kind: "question",
+				sessionId: session.sessionId,
+				interactionId: id(741),
+				sequence: 1,
+				actorUserId: userA.id,
+				staffAgentId: staff.id,
+				request: { surface: "question", title: "Which logo?", payload: { options: [{ label: "A" }] } },
+				createdAt: "2026-09-05T10:00:00Z",
+			},
+		]);
+		await draw();
+		expect(listed).not.toHaveBeenCalled();
+		membership.resolve(team);
+		await draw();
+		await draw();
+		expect(listed).toHaveBeenCalledWith(profileA.profileId);
+		expect(f.root.querySelector(".rail .cofounder-home .rail-decisions")?.textContent).toBe("1");
+	});
+
 	it("cancels a private confirmation dialog when the account changes", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/team`);
 		await draw();

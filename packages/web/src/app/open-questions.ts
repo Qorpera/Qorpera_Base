@@ -209,8 +209,17 @@ export class OpenQuestions {
 		const clock = setInterval(() => {
 			if (typeof document === "undefined" || document.visibilityState !== "hidden") void this.refresh();
 		}, HEARTBEAT_MS);
+		const mayWrite = () => this.#company.store.get().team?.capabilities.write === true;
+		let could = mayWrite();
+		const stopTeam = this.#company.store.subscribe(() => {
+			const can = mayWrite();
+			if (can === could) return;
+			could = can;
+			void this.refresh();
+		});
 		this.#stopWatching = () => {
 			stopHints();
+			stopTeam();
 			clearInterval(clock);
 		};
 	}

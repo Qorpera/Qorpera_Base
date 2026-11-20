@@ -131,6 +131,7 @@ function company(
 		signal: new AbortController().signal,
 		listOpenQuestions: vi.fn(async () => questions),
 		setOpenDecisions: vi.fn(),
+		store: new Store({ team: { capabilities: { write: true } } }),
 		listOpenDecisions: vi.fn(async (): Promise<OpenDecision[]> => {
 			if (!options.approvals)
 				throw new CloudRpcError(
@@ -1103,6 +1104,28 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		await settle();
 		expect(controller.setOpenDecisions).toHaveBeenLastCalledWith(1);
 		dock.dispose();
+	});
+
+	it("reads again the moment the company's membership is known, and when it stops being writable", async () => {
+		const { host, controller } = company({ questions: [question(CARD_B, name)] });
+		controller.store.set({ team: undefined as never });
+		await settle();
+		const stop = host.questions.watch();
+		await settle();
+		const before = controller.listOpenDecisions.mock.calls.length;
+		controller.store.set({ team: { capabilities: { write: true } } });
+		await settle();
+		expect(
+			controller.listOpenDecisions.mock.calls.length + controller.listOpenQuestions.mock.calls.length,
+		).toBeGreaterThan(before);
+		const then = controller.listOpenQuestions.mock.calls.length;
+		controller.store.set({ team: { capabilities: { write: true } } });
+		await settle();
+		expect(controller.listOpenQuestions.mock.calls.length).toBe(then);
+		controller.store.set({ team: { capabilities: { write: false } } });
+		await settle();
+		expect(controller.listOpenQuestions.mock.calls.length).toBe(then + 1);
+		stop();
 	});
 
 	it("falls back to the questions alone while the cloud has no list of decisions", async () => {
