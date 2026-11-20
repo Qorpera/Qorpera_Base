@@ -48,6 +48,7 @@ export class DecisionDock {
 	#waiting = "";
 	#narrow = false;
 	#expires: ReturnType<typeof setTimeout> | undefined;
+	#cut: ResizeObserver | undefined;
 
 	constructor(host: QuestionDockHost) {
 		this.#host = host;
@@ -87,6 +88,7 @@ export class DecisionDock {
 		this.#lifetime.abort();
 		this.#stopWatch();
 		this.#sizes?.disconnect();
+		this.#cut?.disconnect();
 		this.#watched?.stop();
 		this.#watched = undefined;
 		for (const timer of this.#timers) clearTimeout(timer);
@@ -190,6 +192,7 @@ export class DecisionDock {
 			},
 		);
 		this.#stage.classList.toggle("is-answered", Boolean(answer));
+		this.#markCut(card);
 		replace(
 			this.#stage,
 			h(
@@ -215,6 +218,17 @@ export class DecisionDock {
 				}),
 			),
 		);
+	}
+
+	#markCut(card: HTMLElement): void {
+		this.#cut?.disconnect();
+		this.#cut = undefined;
+		const mark = () => card.classList.toggle("is-cut", card.scrollHeight - card.scrollTop - card.clientHeight > 4);
+		card.addEventListener("scroll", mark, { passive: true });
+		if (typeof ResizeObserver !== "function") return;
+		this.#cut = new ResizeObserver(mark);
+		this.#cut.observe(card);
+		for (const part of card.children) this.#cut.observe(part);
 	}
 
 	#drawTabs(cards: OpenQuestion[], current: OpenQuestion): void {

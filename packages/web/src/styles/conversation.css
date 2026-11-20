@@ -1868,6 +1868,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .decision-card > .interaction-card { box-sizing: border-box; width: 100%; max-width: none; max-height: min(600px, 56vh); margin: 0; overflow: hidden auto; overscroll-behavior: contain; scrollbar-width: none; }
 .decision-card > .interaction-card::-webkit-scrollbar { display: none; }
 .decision-card > .interaction-card.is-asking { background: var(--popover, var(--bg)); }
+.decision-card > .interaction-card.is-cut::after { content: ""; position: sticky; bottom: -14px; display: block; height: 56px; margin: -56px -18px -14px; background: linear-gradient(to bottom, transparent, var(--popover, var(--bg)) 85%); pointer-events: none; }
 .decision-card .interaction-call { color: var(--text-muted); }
 .decision-card .interaction-call strong { font-weight: 450; }
 .decision-card .interaction-call strong b { color: var(--text); font-weight: 650; }

@@ -616,6 +616,23 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		dock.dispose();
 	});
 
+	it("marks a card taller than its room as cut until it is scrolled to its end", async () => {
+		const { host } = company({ questions: [question(CARD_B, name)] });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		const card = dock.el.querySelector<HTMLElement>(".decision-card > .interaction-card");
+		if (!card) throw new Error("card expected");
+		Object.defineProperty(card, "scrollHeight", { value: 500 });
+		Object.defineProperty(card, "clientHeight", { value: 300 });
+		card.dispatchEvent(new Event("scroll"));
+		expect(card.classList.contains("is-cut")).toBe(true);
+		card.scrollTop = 198;
+		card.dispatchEvent(new Event("scroll"));
+		expect(card.classList.contains("is-cut")).toBe(false);
+		dock.dispose();
+	});
+
 	it("is not there with nothing to decide", async () => {
 		const { host } = company();
 		const dock = new DecisionDock(host);
