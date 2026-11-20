@@ -71,10 +71,10 @@ type UsageWindow = { id: string; label: string; usedPercent: number; resetAt?: s
 type UsageReading = { observedAt: string; windows: readonly UsageWindow[] };
 
 const REFILLS: Readonly<Record<WebClaudeResetKind, readonly string[]>> = {
-	session: ["five_hour"],
+	session: [],
 	weekly: ["seven_day"],
 	fable: ["seven_day_model"],
-	full: ["five_hour", "seven_day"],
+	full: ["seven_day"],
 };
 
 interface ClaudeResetUse {
@@ -1349,9 +1349,7 @@ export class ConnectionsView {
 							expired
 								? t("Reset passed · awaiting updated usage")
 								: resetIn === undefined
-									? window.id === "five_hour" && window.usedPercent === 0
-										? t("Starts when you next use Claude")
-										: t("Reset time unavailable")
+									? t("Reset time unavailable")
 									: t("Resets in {time}", { time: resetCountdown(resetIn) }),
 						),
 						h("span", { title: t("Last checked {time}", { time: checked }) }, value),

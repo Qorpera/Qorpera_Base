@@ -1933,7 +1933,6 @@ describe("Claude usage and limit resets on the Claude card", () => {
 			usage: {
 				observedAt: new Date().toISOString(),
 				windows: [
-					{ id: "five_hour", label: "5 hours", usedPercent: 28, resetAt: hours(2.7) },
 					{ id: "seven_day", label: "Weekly", usedPercent: 87, resetAt: hours(100) },
 					{ id: "seven_day_model", label: "Weekly · Fable", usedPercent: 9, resetAt: hours(100) },
 				],
@@ -1969,29 +1968,9 @@ describe("Claude usage and limit resets on the Claude card", () => {
 	const bars = () =>
 		[...claudeCard().querySelectorAll(".connection-usage-window")].map((window) => window.textContent);
 
-	it("says an unused 5-hour window starts at the next use instead of a missing reset time", async () => {
-		await claudeView(
-			login({
-				usage: {
-					observedAt: new Date().toISOString(),
-					windows: [
-						{ id: "five_hour", label: "5 hours", usedPercent: 0 },
-						{ id: "seven_day", label: "Weekly", usedPercent: 4, resetAt: hours(100) },
-					],
-				},
-			}),
-		);
-		expect(bars()).toEqual([
-			expect.stringMatching(/^5 hours.*Starts when you next use Claude.*100% left$/),
-			expect.stringMatching(/^Weekly.*96% left$/),
-		]);
-		expect(claudeCard().textContent).not.toContain("Reset time unavailable");
-	});
-
-	it("shows Claude Code's 5-hour, weekly and per-model bars, and reads them again when Settings opens", async () => {
+	it("shows Claude Code's weekly and per-model bars, and reads them again when Settings opens", async () => {
 		const { client } = await claudeView(login());
 		expect(bars()).toEqual([
-			expect.stringMatching(/^5 hours.*72% left$/),
 			expect.stringMatching(/^Weekly.*13% left$/),
 			expect.stringMatching(/^Weekly · Fable.*91% left$/),
 		]);
@@ -2072,7 +2051,7 @@ describe("Claude usage and limit resets on the Claude card", () => {
 		await settle();
 		expect(readClaude).toHaveBeenLastCalledWith({ loginId: id(97), reset: "full" }, expect.any(AbortSignal));
 		expect(claudeCard().querySelector(".connection-resets")).toBeNull();
-		expect(claudeCard().querySelectorAll(".connection-usage-meter.refilling")).toHaveLength(2);
+		expect(claudeCard().querySelectorAll(".connection-usage-meter.refilling")).toHaveLength(1);
 		expect(claudeCard().textContent).toContain("Using a reset…");
 		logins.logins[0]!.lastReset = {
 			requestId: id(90),
@@ -2094,7 +2073,7 @@ describe("Claude usage and limit resets on the Claude card", () => {
 				usage: {
 					observedAt: new Date().toISOString(),
 					limitResetAt: hours(3.2),
-					windows: [{ id: "five_hour", label: "5 hours", usedPercent: 100, resetAt: hours(3.2) }],
+					windows: [{ id: "seven_day", label: "Weekly", usedPercent: 40, resetAt: hours(100) }],
 				},
 				resets: {
 					observedAt: new Date().toISOString(),
@@ -2228,7 +2207,7 @@ describe("Claude usage and limit resets on the Claude card", () => {
 			login({
 				usage: {
 					observedAt: hours(-9),
-					windows: [{ id: "five_hour", label: "5 hours", usedPercent: 40, resetAt: hours(-4) }],
+					windows: [{ id: "seven_day", label: "Weekly", usedPercent: 40, resetAt: hours(-4) }],
 				},
 			}),
 		);
@@ -2248,7 +2227,7 @@ describe("Claude usage and limit resets on the Claude card", () => {
 		expect(claudeCard().textContent).not.toContain(hint);
 		view.dispose();
 		document.body.replaceChildren();
-		const old = { observedAt: hours(-9), windows: [{ id: "five_hour" as const, label: "5 hours", usedPercent: 40 }] };
+		const old = { observedAt: hours(-9), windows: [{ id: "seven_day" as const, label: "Weekly", usedPercent: 40 }] };
 		const logins = {
 			signInOpen: true,
 			readable: true,

@@ -554,7 +554,7 @@ describe("Claude reads and resets", () => {
 			providerAccountEmail: null,
 			usage: {
 				observedAt: timestamp,
-				windows: [{ id: "five_hour", label: "5 hours", usedPercent: 28, resetAt: timestamp }],
+				windows: [{ id: "seven_day", label: "Weekly", usedPercent: 28, resetAt: timestamp }],
 			},
 			resets: {
 				observedAt: timestamp,
@@ -562,15 +562,24 @@ describe("Claude reads and resets", () => {
 			},
 			lastReset: { requestId: id(99), kind: "full", outcome: "reset", left: 2, at: timestamp },
 		};
+		const fiveHour = { id: "five_hour", label: "5 hours", usedPercent: 100, resetAt: timestamp };
 		const answers = [
 			{ schema: "qorpera.claude-logins/v1", signInOpen: true, readable: true, logins: [login] },
+			{
+				schema: "qorpera.claude-logins/v1",
+				signInOpen: true,
+				logins: [
+					{ ...login, usage: { ...login.usage, windows: [fiveHour, ...login.usage.windows] } },
+					{ ...login, loginId: id(96), usage: { observedAt: timestamp, windows: [fiveHour] } },
+				],
+			},
 			{
 				schema: "qorpera.claude-logins/v1",
 				signInOpen: false,
 				logins: [
 					{
 						...login,
-						usage: { observedAt: timestamp, windows: [{ id: "five_hour", label: "5 hours", usedPercent: 140 }] },
+						usage: { observedAt: timestamp, windows: [{ id: "seven_day", label: "Weekly", usedPercent: 140 }] },
 						resets: { observedAt: timestamp, entries: [{ kind: "lunar", left: 1, usable: "now" }] },
 						lastReset: { requestId: id(99), kind: "full", outcome: "spent", left: 2, at: timestamp },
 					},
@@ -595,6 +604,9 @@ describe("Claude reads and resets", () => {
 			resets: { entries: [{ kind: null, left: 1, useBy: timestamp, usable: "at_limit" }] },
 			lastReset: login.lastReset,
 		});
+		const older = await client.listClaudeLogins!();
+		expect(older.logins[0]?.usage).toEqual(login.usage);
+		expect(older.logins[1]).not.toHaveProperty("usage");
 		const bad = await client.listClaudeLogins!();
 		expect(bad.readable).toBe(false);
 		expect(bad.logins[0]).not.toHaveProperty("usage");
