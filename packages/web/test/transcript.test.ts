@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	AGENT_SEND_SCHEMA,
 	CHAIN_STOPPED_SCHEMA,
+	decisionRound,
 	LEGACY_PART_SCHEMA,
 	projectTranscript,
 	RUNNER_ENTRY_SCHEMA,
@@ -538,6 +539,39 @@ describe("interaction cards in the transcript", () => {
 		expect(runAcknowledgements([say(1, "x".repeat(160), "progress")], true).size).toBe(1);
 		const cut = runAcknowledgements([first, say(2, "Done.", "final"), say(3, "Next.", "progress", NEXT)], false);
 		expect([...cut.keys()]).toEqual(["s3"]);
+	});
+
+	it("reads a question's round from the cards it asks again", () => {
+		const ask = (id: string, again?: string, said?: string) =>
+			({
+				kind: "interaction",
+				id,
+				sequence: 1,
+				actorUserId: USER,
+				request: {
+					surface: "question",
+					title: "Which look?",
+					payload: {
+						options: [{ label: "Warm", value: "warm" }],
+						allowCustom: true,
+						...(again ? { asksAgain: again } : {}),
+					},
+				},
+				...(said
+					? { answer: { outcome: "answered", answer: { values: [said] }, answeredBy: USER.toUpperCase() } }
+					: {}),
+				createdAt: "2026-09-02T10:00:00Z",
+			}) as TranscriptItem & { kind: "interaction" };
+		const first = ask("a1", undefined, "Warmer");
+		const second = ask("a2", "A1", "Still too dark");
+		const third = ask("a3", "a2");
+		const items = [first, second, third];
+		expect(decisionRound(items, first)).toBeUndefined();
+		expect(decisionRound(items, second)).toEqual({ number: 2, note: "Warmer", by: USER });
+		expect(decisionRound(items, third)).toEqual({ number: 3, note: "Still too dark", by: USER });
+		expect(decisionRound([third], third)).toEqual({ number: 2 });
+		const loop = [ask("b1", "b2", "x"), ask("b2", "b1", "y")];
+		expect(decisionRound(loop, loop[0]!)?.number).toBe(3);
 	});
 
 	it("keeps a typed note's rework line while the agent's first words are all it has said", () => {

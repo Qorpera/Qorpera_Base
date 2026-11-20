@@ -1,10 +1,13 @@
 import type { CloudSessionAttachment } from "@qorpera/cloud-client/cloud-session-attachments";
 import {
+	asksAgain,
+	type DecisionRound,
 	type InteractionAnswer,
 	type InteractionRequest,
 	parseInteractionAnswerEvent,
 	parseInteractionAnswerInput,
 	parseInteractionRequest,
+	roundNote,
 	typedNote,
 } from "./interactions.ts";
 import { type InterfaceChange, parseInterfaceChange } from "./interface-changes.ts";
@@ -152,6 +155,33 @@ export function reworkingNote(
 				!acknowledgements?.has(later.id) &&
 				Date.parse(later.createdAt) > notedAt,
 		);
+}
+
+const ROUNDS_FOLLOWED = 20;
+
+export function decisionRound(
+	items: readonly TranscriptItem[],
+	card: TranscriptInteraction,
+): DecisionRound | undefined {
+	let previous = asksAgain(card.request);
+	if (!previous) return undefined;
+	const cards = new Map<string, TranscriptInteraction>();
+	for (const item of items) if (item.kind === "interaction") cards.set(item.id.toLowerCase(), item);
+	const first = cards.get(previous);
+	const note = roundNote(first?.answer?.answer.values);
+	let number = 2;
+	const seen = new Set([card.id.toLowerCase()]);
+	while (previous && number < ROUNDS_FOLLOWED && !seen.has(previous)) {
+		seen.add(previous);
+		const earlier = cards.get(previous);
+		previous = earlier ? asksAgain(earlier.request) : undefined;
+		if (previous) number += 1;
+	}
+	return {
+		number,
+		...(note ? { note } : {}),
+		...(first?.answer?.answeredBy ? { by: first.answer.answeredBy.toLowerCase() } : {}),
+	};
 }
 
 export interface RunAcknowledgement {

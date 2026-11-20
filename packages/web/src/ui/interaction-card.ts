@@ -4,6 +4,7 @@ import { pictureUrl } from "../app/folder-images.ts";
 import type { EmailDraftContent, EmailDraftEditor, EmailDraftState } from "../cloud/email-drafts.ts";
 import { MAIL_HANDLE } from "../cloud/event-hooks.ts";
 import {
+	type DecisionRound,
 	type InteractionAnswer,
 	type InteractionOutcome,
 	type InteractionRequest,
@@ -85,6 +86,20 @@ export interface InteractionCardApp {
 	readonly cover: string | null;
 }
 
+function roundLine(round: DecisionRound, context: InteractionCardContext): HTMLElement {
+	const said = round.note
+		? round.by !== undefined && round.by === context.viewerId?.toLowerCase()
+			? t("You said: “{note}”", { note: round.note })
+			: t("{member} said: “{note}”", { member: context.memberName(round.by), note: round.note })
+		: undefined;
+	return h(
+		"p",
+		{ class: "interaction-round" },
+		h("span", { class: "interaction-round-number" }, t("Round {number}", { number: String(round.number) })),
+		said ? h("span", { class: "interaction-round-note" }, said) : null,
+	);
+}
+
 export interface InteractionCardContext {
 	agentName: string;
 	memberName: (userId: string | undefined) => string;
@@ -100,6 +115,7 @@ export interface InteractionCardContext {
 	/** The agent's figure, waiting: the head of a card that waits for this member in a thread. */
 	figure?: () => HTMLElement;
 	reworking?: boolean;
+	round?: DecisionRound;
 	vote?: { answerer: string; own?: true; pick?: (value: string) => void };
 	/** Sends the outcome and answer; the card shows its busy state until it resolves. */
 	answer: (outcome: InteractionOutcome, answer: Record<string, JsonValue>) => Promise<void>;
@@ -937,6 +953,7 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 				h("span", { class: "interaction-from" }, `${context.agentName} · ${fmtTime(item.createdAt)}`),
 				badge(t(STATE_LABEL[state]), stateTone),
 			),
+			context.round && state === "waiting" ? roundLine(context.round, context) : null,
 			h("h3", { class: "interaction-title" }, request.title),
 			reworking ? null : words,
 			...body.filter((part) => !pictures.includes(part)),

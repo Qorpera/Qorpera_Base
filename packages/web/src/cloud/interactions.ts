@@ -160,6 +160,22 @@ export function isGmailDraft(request: InteractionRequest): boolean {
 	);
 }
 
+export interface DecisionRound {
+	number: number;
+	note?: string;
+	by?: string;
+}
+
+export function asksAgain(request: InteractionRequest): string | undefined {
+	const id = request.surface === "question" ? request.payload.asksAgain : undefined;
+	return typeof id === "string" && id ? id.toLowerCase() : undefined;
+}
+
+export function roundNote(values: unknown): string | undefined {
+	const said = Array.isArray(values) && values.length === 1 ? values[0] : undefined;
+	return typeof said === "string" && said.trim() ? said.trim() : undefined;
+}
+
 export function typedNote(request: InteractionRequest, answer: InteractionAnswer | undefined): string | undefined {
 	if (request.surface !== "question" || answer?.outcome !== "answered" || questionInput(request)) return undefined;
 	const values = answer.answer.values;

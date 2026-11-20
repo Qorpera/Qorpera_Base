@@ -475,6 +475,8 @@ export class DecisionDock {
 								memberName: (userId) => this.#host.memberName(userId),
 								canAnswer: !others && !ownPick,
 								inThread: true,
+								viewerId: this.#host.questions.viewerId,
+								...(current.kind === "question" && current.round ? { round: current.round } : {}),
 								...(others || ownPick
 									? {
 											vote: {
