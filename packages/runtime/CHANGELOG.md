@@ -7,6 +7,28 @@
   on `qorpera_wake_occurrences.run_id`. No table, no trigger, no grant change, no new function; who may read a thread
   is unchanged, and the field tells a reader nothing the agent's activity does not already show. Runtime code is
   untouched.
+- Release v269 (#2001, thread decisions step 4, and #2003, its words; master since v268's release merge afaae0474 holds
+  them and the web-only #2000 and #2002): one migration, `20260930821000_decision_rounds` (two internal functions nobody
+  may call, `qorpera_assert_asks_again` and `qorpera_decision_round`; three anchored text patches, each refusing unless
+  its anchor stands exactly once: `qorpera_interaction_request_valid` lets a question's payload carry `asksAgain`,
+  `qorpera_folder_append_interaction_request` checks such a card under the thread's lock, and
+  `qorpera_list_company_open_decisions` gives it `round`; no table, trigger or grant changes; a card without `asksAgain`
+  is written, listed and answered as before). Runtime bundle 269
+  `b49b2dc0e0059bd6817850ffbb416a6b9ac5d691c592c0782d14e5f463241c25` (activation `20260929026999`, which requires
+  821000: `ask_member` takes `asksAgain`, with the platform updates `asked-again-is-a-round` and
+  `pick-sent-by-another-member` and `ask_member`'s words on who answers a card), the runner image of node release 156
+  with the native provider host `81ca48e68268f8efeb135b0ddbd41876a0506e9b49c7f964cfd3330101236aa2` (it carries the
+  runtime; the patched Codex 0.170.0 `9d6a86ec` as in v268). The shared vault (784784b9), the model login helper
+  (cedd6a37) and its isolation child stay as v268 left them, and the coding executor stays f8db2998: their builds at
+  this release are v268's byte for byte (the executor's manifest names the new bundle only). The company machine image,
+  the folder service, the object gateway, the shared execution package and the test machines do not move. Way back:
+  bundle 268 by the release lane's emergency path; the migration stays (bundle 268 never sends `asksAgain`, and every
+  card without it behaves as before).
+- Agents are told that another member may send the asked member's pick (thread decisions step 3, live since v268 with
+  migration `20260930820000`; Jonas, 20 Nov 2026: "Yes, with clear words"). `ask_member`'s words said "only the member
+  you answer can answer the card"; they now say the member answers it or another sends their pick, and a platform
+  update (`pick-sent-by-another-member`) says what that means for the run: it is for the sender, on their login, with
+  their approval rules, and votes and notes are no answers. Words only: no tool, schema or database change.
 - A question an agent asks again after a member's note is the next round of one decision (thread decisions step 4;
   Jonas, 20 Nov 2026: "Yes, build it"). `ask_member`'s question payload takes `asksAgain`, the `interactionId` of the
   card the note was on; the agents' words and a platform update (`asked-again-is-a-round`) say when to set it.
