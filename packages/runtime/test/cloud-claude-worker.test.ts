@@ -301,12 +301,9 @@ describe("the stream", () => {
 				},
 			}),
 		);
-		expect(stream.usage?.windows.map((window) => [window.id, window.usedPercent])).toEqual([
-			["five_hour", 28],
-			["seven_day", 50],
-		]);
+		expect(stream.usage?.windows.map((window) => [window.id, window.usedPercent])).toEqual([["seven_day", 50]]);
 		stream.push(JSON.stringify({ type: "rate_limit_event", rate_limit_info: "nonsense" }));
-		expect(stream.usage?.windows).toHaveLength(2);
+		expect(stream.usage?.windows).toHaveLength(1);
 	});
 
 	it("bounds what a step keeps", () => {
@@ -430,7 +427,7 @@ describe("a Claude Code worker's run", () => {
 		const reading = (used: number) =>
 			JSON.stringify({
 				type: "rate_limit_event",
-				rate_limit_info: { unifiedWindows: { five_hour: { utilization: used, resetsAt: 1794921898 } } },
+				rate_limit_info: { unifiedWindows: { seven_day: { utilization: used, resetsAt: 1794921898 } } },
 			});
 		const box = standInBox([
 			init(),

@@ -107,7 +107,10 @@ function claudeUsage(value: unknown): ClaudeLoginUsage | null {
 		})
 	)
 		throw new Error("Login helper answer is invalid");
-	return value as ClaudeLoginUsage;
+	const usage = value as ClaudeLoginUsage;
+	// WHY: Claude plans have no 5-hour limit since 20 Nov 2026; a helper on an older bundle still names one.
+	const windows = usage.windows.filter((window) => (window.id as string) !== "five_hour");
+	return windows.length ? { ...usage, windows } : null;
 }
 
 function claudeResets(value: unknown): ClaudeLoginResets | null {

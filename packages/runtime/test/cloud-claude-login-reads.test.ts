@@ -17,7 +17,7 @@ const SETTINGS = `{"oauthAccount":{"emailAddress":"canary-usage@example.test"}}`
 const b64 = (text: string) => Buffer.from(text).toString("base64");
 const USAGE: ClaudeLoginUsage = {
 	observedAt: "2026-11-17T11:00:00.000Z",
-	windows: [{ id: "five_hour", label: "5 hours", usedPercent: 28, resetAt: "2026-11-17T13:00:00.000Z" }],
+	windows: [{ id: "seven_day", label: "Weekly", usedPercent: 28, resetAt: "2026-11-21T13:00:00.000Z" }],
 };
 const RESETS = {
 	observedAt: "2026-11-17T11:00:00.000Z",
@@ -111,6 +111,23 @@ describe("the login helper's Claude routes", () => {
 		expect(await vault.useClaudeReset({ credentials, kind: "session" }, AbortSignal.timeout(5_000))).toEqual({
 			outcome: "unconfirmed",
 		});
+	});
+
+	it("drops a 5-hour window an older helper still reads, and keeps no reading made only of one", async () => {
+		const five = {
+			id: "five_hour",
+			label: "5 hours",
+			usedPercent: 0,
+		} as unknown as ClaudeLoginUsage["windows"][number];
+		const reads = {
+			readClaudeLogin: vi.fn(async () => ({ usage: { ...USAGE, windows: [five, ...USAGE.windows] }, resets: null })),
+			useClaudeReset: vi.fn(),
+		};
+		const { vault } = await helper(reads);
+		const request = { credentials: b64(CREDENTIALS), usage: true, resets: false };
+		expect(await vault.readClaudeLogin(request, AbortSignal.timeout(5_000))).toEqual({ usage: USAGE, resets: null });
+		reads.readClaudeLogin.mockResolvedValueOnce({ usage: { ...USAGE, windows: [five] }, resets: null });
+		expect(await vault.readClaudeLogin(request, AbortSignal.timeout(5_000))).toEqual({ usage: null, resets: null });
 	});
 
 	it("refuses a reader's answer out of shape", async () => {
