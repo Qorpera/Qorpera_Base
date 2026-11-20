@@ -531,9 +531,18 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 		// A question's answer is what the member said: their bubble. Anything else is what they did: a line.
 		const said = request.surface === "question" && item.answer.outcome === "answered";
 		const who = answeredBy ? context.memberName(answeredBy) : t("You");
+		const asked =
+			said && answeredBy && item.actorUserId && answeredBy !== item.actorUserId ? item.actorUserId : undefined;
+		const sentFor = asked
+			? own
+				? t("{name}'s pick, sent by you", { name: context.memberName(asked) })
+				: asked === context.viewerId
+					? t("Your pick, sent by {sender}", { sender: who })
+					: t("{name}'s pick, sent by {sender}", { name: context.memberName(asked), sender: who })
+			: undefined;
 		// Beside the answer: whose it is when it is not the member's own, and that it is on its way.
-		const beside = [own ? null : who, pending ? t("Sending") : null].filter(Boolean).join(" · ");
-		const whole = `${who}${answeredAt ? ` · ${fmtTime(answeredAt)}` : ""}${pending ? ` · ${t("Sending")}` : ""}`;
+		const beside = [sentFor ?? (own ? null : who), pending ? t("Sending") : null].filter(Boolean).join(" · ");
+		const whole = `${sentFor ?? who}${answeredAt ? ` · ${fmtTime(answeredAt)}` : ""}${pending ? ` · ${t("Sending")}` : ""}`;
 		result.push(
 			h(
 				"p",

@@ -2013,6 +2013,123 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		expect(parsed[0]?.votes).toEqual([{ userId: SARA, note: long, updatedAt: "2026-11-10T10:06:00Z" }]);
 	});
 
+	const login = {
+		computeIdentity: {
+			status: "active",
+			ownerUserId: MEMBER,
+			computeIdentityId: "77777777-7777-4777-8777-00000000000a",
+		},
+		connections: [
+			{
+				connectionId: "conn-2",
+				provider: "openai",
+				nativeHarness: "codex-cli",
+				connectionStatus: "active",
+				authorizationState: "active",
+				policy: { implementationStatus: "supported", enablementStatus: "enabled" },
+				sponsorBindingId: "77777777-7777-4777-8777-00000000000b",
+				sponsorVersion: 1,
+			},
+		],
+	};
+	const withLogin = { listConnections: vi.fn(async () => login), selectSessionAccount: undefined };
+	const sendPick = (dock: DecisionDock) => dock.el.querySelector<HTMLButtonElement>(".decision-pick-send");
+
+	it("offers to send another member's pick only once they voted, with the words about the login first", async () => {
+		const list: OpenDecision[] = [
+			others(CARD_B, name, [{ userId: MEMBER, choice: "mywave", updatedAt: "2026-11-10T10:05:00Z" }]),
+		];
+		const { host, open, answers } = company({ company: list, accounts: withLogin });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await rest();
+		expect(sendPick(dock)).toBeNull();
+		list[0] = others(CARD_B, name, [{ userId: SARA, choice: "Not yet", updatedAt: "2026-11-10T10:06:00Z" }]);
+		await open.refresh();
+		await rest();
+		expect(sendPick(dock)?.textContent).toBe("Send Jonas's pick: Not yet");
+		expect(dock.el.querySelector(".decision-pick-words")?.textContent).toBe(
+			"The work then runs on your login. The agent's next questions about this will come to you, and your approval rules apply.",
+		);
+		await vi.advanceTimersByTimeAsync(SETTLE_MS);
+		sendPick(dock)?.click();
+		await settle();
+		expect(answers).toEqual([]);
+		const block = dock.renderDecided(dock.decided[0]!);
+		expect(block.querySelector(".decided-rule")?.textContent).toBe("Jonas's pick");
+		expect(block.querySelector(".decided-answer")?.textContent).toBe("Not yet");
+		expect(block.querySelector(".decided-undo")).not.toBeNull();
+		await vi.advanceTimersByTimeAsync(UNDO_MS + 1);
+		await settle();
+		expect(answers).toEqual([[SESSION, CARD_B, "answered", { values: ["Not yet"] }]]);
+		dock.dispose();
+	});
+
+	it("takes no tap on the send button for a moment when the asked member changes their vote under it", async () => {
+		const list: OpenDecision[] = [
+			others(CARD_B, name, [{ userId: SARA, choice: "mywave", updatedAt: "2026-11-10T10:05:00Z" }]),
+		];
+		const { host, open } = company({ company: list, accounts: withLogin });
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await rest();
+		expect(sendPick(dock)?.textContent).toBe("Send Jonas's pick: mywave");
+		list[0] = others(CARD_B, name, [{ userId: SARA, choice: "Not yet", updatedAt: "2026-11-10T10:07:00Z" }]);
+		await open.refresh();
+		await rest();
+		expect(sendPick(dock)?.textContent).toBe("Send Jonas's pick: Not yet");
+		sendPick(dock)?.click();
+		await settle();
+		expect(dock.decided).toEqual([]);
+		list[0] = others(CARD_B, name, [{ userId: SARA, note: "Not sure yet.", updatedAt: "2026-11-10T10:08:00Z" }]);
+		await open.refresh();
+		await rest();
+		expect(sendPick(dock)).toBeNull();
+		dock.dispose();
+	});
+
+	it("offers no send to a member without a usable login, nor to a spectator", async () => {
+		const voted = () => [
+			others(CARD_B, name, [{ userId: SARA, choice: "mywave", updatedAt: "2026-11-10T10:05:00Z" }]),
+		];
+		const none = company({
+			company: voted(),
+			accounts: {
+				listConnections: vi.fn(async () => ({ ...login, connections: [] })),
+				selectSessionAccount: undefined,
+			},
+		});
+		const dock = new DecisionDock(none.host);
+		document.body.append(dock.el);
+		await rest();
+		expect(option(dock, "mywave")).not.toBeNull();
+		expect(sendPick(dock)).toBeNull();
+		dock.dispose();
+
+		const disabled = company({
+			company: voted(),
+			accounts: {
+				listConnections: vi.fn(async () => ({
+					...login,
+					connections: [{ ...login.connections[0], connectionStatus: "disabled" }],
+				})),
+				selectSessionAccount: undefined,
+			},
+		});
+		const second = new DecisionDock(disabled.host);
+		document.body.append(second.el);
+		await rest();
+		expect(sendPick(second)).toBeNull();
+		second.dispose();
+
+		const spectator = company({ company: voted(), accounts: withLogin, spectator: true });
+		const third = new DecisionDock(spectator.host);
+		document.body.append(third.el);
+		await rest();
+		expect(sendPick(third)).toBeNull();
+		third.dispose();
+	});
+
 	it("is not there with nothing to decide", async () => {
 		const { host } = company();
 		const dock = new DecisionDock(host);

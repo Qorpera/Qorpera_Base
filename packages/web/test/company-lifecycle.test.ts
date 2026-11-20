@@ -347,6 +347,25 @@ describe("answering an approval card of an agent's action (auto-review, v130)", 
 		expect(state.interactionAnswers).toBeUndefined();
 	});
 
+	it("says in plain words that a pick sent for another member is not their pick now", async () => {
+		const f = company();
+		vi.spyOn(f.api, "answerInteraction").mockRejectedValue(
+			new CloudRpcError(
+				"qorpera_answer_interaction",
+				{ code: "42501", message: "Only the member this card was raised for can answer it" },
+				403,
+			),
+		);
+		await expect(
+			f.controller.answerInteraction(session.sessionId, id(599), "answered", { values: ["finance"] }),
+		).rejects.toThrow();
+		const state = f.controller.conversation(session.sessionId).get();
+		expect(state.interactionError).toBe(
+			"Nothing was sent. This decision is another member's to answer, and what you sent is not their pick now. Look at their vote again.",
+		);
+		expect(state.interactionAnswers).toBeUndefined();
+	});
+
 	it("keeps the card open, saying why, where the cloud has no approvals yet", async () => {
 		const f = company();
 		vi.spyOn(f.api, "answerActionReview").mockRejectedValue(

@@ -14,6 +14,7 @@ import {
 } from "../cloud/open-decisions.ts";
 import type { OpenQuestion } from "../cloud/open-questions.ts";
 import type { ActionReviewAnswer } from "../cloud/review-rules.ts";
+import { selectSessionExecutionSponsor } from "../cloud/session-input.ts";
 import type { JsonValue } from "../cloud/types.ts";
 import type { CompanyController } from "./company.ts";
 import { Store, throttle } from "./state.ts";
@@ -59,6 +60,7 @@ export interface OpenQuestionsState {
 	readonly read: boolean;
 	/** The cloud has no such read yet (before 20260930706000): nothing is asked again. */
 	readonly unavailable: boolean;
+	readonly hasLogin?: boolean;
 }
 
 function unsettled(editor: EmailDraftEditor): boolean {
@@ -90,6 +92,7 @@ export class OpenQuestions {
 	#stopWatching: (() => void) | undefined;
 	#reads = 0;
 	#source: "company" | "member" | "questions" = "company";
+	#loginRead = false;
 	readonly #onTheirWay = new Set<string>();
 	readonly #drafts = new Map<string, OpenDraft>();
 	readonly #myVotes = new Map<
@@ -140,6 +143,8 @@ export class OpenQuestions {
 					const decisions = listed
 						.filter((decision) => !this.#answered.has(decision.interactionId))
 						.map((decision) => this.#withMyVote(decision));
+					if (decisions.some((decision) => decision.kind === "question" && decision.othersAnswer))
+						void this.readLogin();
 					for (const decision of decisions)
 						if (decision.kind === "draft" && !decision.othersAnswer)
 							this.#drafts.set(decision.interactionId, decision);
@@ -214,6 +219,27 @@ export class OpenQuestions {
 	async actDraft(draft: OpenDraft, action: EmailDraftAction, content: EmailDraftContent): Promise<EmailDraftState> {
 		await this.#chooseAccount(draft.sessionId);
 		return this.#company.actEmailDraft(draft.sessionId, draft.interactionId, action, content);
+	}
+
+	async readLogin(): Promise<void> {
+		if (this.#loginRead || !this.#accounts.listConnections) return;
+		this.#loginRead = true;
+		try {
+			const observed = await this.#accounts.listConnections(this.#company.signal);
+			const userId = this.#company.userId;
+			this.store.set({
+				hasLogin: observed.connections.some((connection) => {
+					try {
+						selectSessionExecutionSponsor(observed, connection.connectionId, userId);
+						return true;
+					} catch {
+						return false;
+					}
+				}),
+			});
+		} catch {
+			this.#loginRead = false;
+		}
 	}
 
 	get viewerId(): string {

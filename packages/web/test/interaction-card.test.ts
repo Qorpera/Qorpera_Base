@@ -322,8 +322,27 @@ describe("a card with its answer, in a thread", () => {
 		expect(card.querySelector("button, input")).toBeNull();
 	});
 
+	it("says whose pick an answer was and who sent it, when another member sent the asked member's pick", () => {
+		const sent = renderInteractionCard(item(question, { ...answered, answeredBy: OTHER }), thread());
+		const beside = sent.querySelector(".interaction-result .interaction-attribution > .interaction-beside");
+		expect(beside?.textContent).toBe("Your pick, sent by Sofie");
+		expect(sent.querySelector(".interaction-result .interaction-attribution > .visually-hidden")?.textContent).toBe(
+			`Your pick, sent by Sofie · ${fmtTime("2026-09-22T20:05:00Z")}`,
+		);
+		const mine = renderInteractionCard(
+			{ ...item(question, { ...answered, answeredBy: MEMBER }), actorUserId: OTHER },
+			thread(),
+		);
+		expect(
+			mine.querySelector(".interaction-result .interaction-attribution > .interaction-beside")?.textContent,
+		).toBe("Sofie's pick, sent by you");
+	});
+
 	it("says under the answer whose it is when it is another member's, and that it is on its way", () => {
-		const others = renderInteractionCard(item(question, { ...answered, answeredBy: OTHER }), thread());
+		const others = renderInteractionCard(
+			{ ...item(question, { ...answered, answeredBy: OTHER }), actorUserId: OTHER },
+			thread(),
+		);
 		const result = others.querySelector(".interaction-result");
 		expect(classes(result)).toEqual(["interaction-result", "is-said"]);
 		// The eye gets the name; a screen reader hears the name and the time, once (review r1 F1 on #1727).

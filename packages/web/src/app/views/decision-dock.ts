@@ -46,6 +46,7 @@ interface DecidedCard extends DecidedState {
 	readonly decision: OpenCard;
 	readonly outcome: InteractionOutcome;
 	readonly value: Record<string, JsonValue>;
+	readonly pickOf?: string;
 }
 
 interface DecidedApproval extends DecidedState {
@@ -90,7 +91,11 @@ function decidedWords(entry: Decided): { word: string; said: string } {
 	const values = Array.isArray(value.values)
 		? value.values.filter((picked): picked is string => typeof picked === "string")
 		: [];
-	return { word: t("Decided"), said: values.map((picked) => labels.get(picked) ?? picked).join(", ") };
+	const { pickOf } = entry as DecidedCard;
+	return {
+		word: pickOf ? t("{name}'s pick", { name: pickOf }) : t("Decided"),
+		said: values.map((picked) => labels.get(picked) ?? picked).join(", "),
+	};
 }
 
 function draftOutcome({ action, content }: DecidedDraft): string {
@@ -497,7 +502,13 @@ export class DecisionDock {
 				"div",
 				{ class: "decision-card" },
 				card,
-				h("div", { class: "decision-votes" }, h("ul", { class: "vote-notes" }), note),
+				h(
+					"div",
+					{ class: "decision-votes" },
+					h("ul", { class: "vote-notes" }),
+					note,
+					h("div", { class: "decision-pick" }),
+				),
 				error ? h("p", { class: "decision-error", role: "alert" }, error) : null,
 			),
 			h(
@@ -551,9 +562,11 @@ export class DecisionDock {
 	#paintVotes(current: OpenDecision): void {
 		const votes = current.votes ?? [];
 		const others = current.othersAnswer === true;
-		const key = JSON.stringify([current.interactionId, votes, others, presentationLocale()]);
+		const hasLogin = this.#host.questions.store.get().hasLogin === true;
+		const key = JSON.stringify([current.interactionId, votes, others, hasLogin, presentationLocale()]);
 		if (key === this.#votesKey) return;
 		this.#votesKey = key;
+		this.#paintPick(current, hasLogin);
 		const mine = this.#mine(current);
 		const face = (userId: string) => {
 			const avatar = personAvatar(this.#host.memberName(userId), userId);
@@ -599,6 +612,54 @@ export class DecisionDock {
 						),
 					),
 			);
+	}
+
+	#paintPick(current: OpenDecision, hasLogin: boolean): void {
+		const place = this.#stage.querySelector<HTMLElement>(".decision-pick");
+		if (!place) return;
+		const pick =
+			current.kind === "question" && current.othersAnswer && hasLogin && this.#host.questions.mayVote()
+				? (current.votes ?? []).find((vote) => vote.userId === current.actorUserId)?.choice
+				: undefined;
+		const option =
+			current.kind === "question" && pick !== undefined
+				? questionOptions(current.request).find((candidate) => candidate.value === pick)
+				: undefined;
+		if (place.dataset.pick !== (option?.value ?? "") && place.dataset.pick !== undefined && option)
+			this.#settlesAt = Date.now() + SETTLE_MS;
+		place.dataset.pick = option?.value ?? "";
+		if (current.kind !== "question" || !option) {
+			replace(place);
+			return;
+		}
+		const name = this.#host.memberName(current.actorUserId);
+		replace(
+			place,
+			h(
+				"p",
+				{ class: "decision-pick-words" },
+				t(
+					"The work then runs on your login. The agent's next questions about this will come to you, and your approval rules apply.",
+				),
+			),
+			h(
+				"button",
+				{
+					type: "button",
+					class: "decision-pick-send",
+					onclick: () =>
+						this.#hold({
+							decision: current,
+							outcome: "answered",
+							value: { values: [option.value] },
+							pickOf: name,
+							at: Date.now(),
+							state: "held",
+						}),
+				},
+				t("Send {name}'s pick: {option}", { name, option: option.label }),
+			),
+		);
 	}
 
 	#draftCard(draft: OpenDraft, name: string): HTMLElement {

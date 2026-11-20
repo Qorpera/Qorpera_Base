@@ -369,6 +369,13 @@ export const CONVERSATION: Record<string, string> = {
 	"Always allowed": "Altid tilladt",
 	"Nothing was sent": "Intet blev sendt",
 	"{name} asks {member}": "{name} spørger {member}",
+	"{name}'s pick": "{name}s valg",
+	"{name}'s pick, sent by you": "{name}s valg, sendt af dig",
+	"Your pick, sent by {sender}": "Dit valg, sendt af {sender}",
+	"{name}'s pick, sent by {sender}": "{name}s valg, sendt af {sender}",
+	"Send {name}'s pick: {option}": "Send {name}s valg: {option}",
+	"The work then runs on your login. The agent's next questions about this will come to you, and your approval rules apply.":
+		"Arbejdet kører derefter på dit login. Agentens næste spørgsmål om dette kommer til dig, og dine godkendelsesregler gælder.",
 	"Add a note…": "Tilføj en note…",
 	"Your note on this decision": "Din note til beslutningen",
 	"Voted for by {names}": "Valgt af {names}",
