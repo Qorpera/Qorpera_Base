@@ -1873,9 +1873,6 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .decision-card .interaction-call strong { font-weight: 450; }
 .decision-card .interaction-call strong b { color: var(--text); font-weight: 650; }
 .decision-card .interaction-dot { display: none; }
-.decision-stage.is-answered .decision-card { padding: 14px 18px; border: 1px solid var(--border); border-radius: 20px; background: var(--popover, var(--bg)); box-shadow: 0 1px 2px rgb(18 18 17 / 4%), 0 10px 28px rgb(18 18 17 / 7%); }
-.decision-stage.is-answered .decision-card > .interaction-card { padding: 0; border: 0; border-radius: 0; background: transparent; }
-.decision-sent { margin: 0 0 6px; color: var(--text-muted); font-size: 13px; font-weight: 600; line-height: 1.3; }
 .decision-error { margin: 6px 2px 0; color: var(--danger); font-size: 12.5px; line-height: 1.4; }
 .decision-figure { display: grid; flex: none; place-items: end center; width: 132px; }
 .decision-dock.is-narrow .decision-stage { position: relative; display: block; padding: 50px 0 0; }
@@ -1895,4 +1892,19 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .decision-tab-figure { display: grid; flex: none; place-items: center; }
 .decision-tab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (hover: none) { .decision-tab:not([aria-selected="true"]):hover { max-width: 160px; transform: none; } }
+.decided { display: flex; flex-direction: column; align-items: center; gap: 6px; align-self: stretch; margin-block: 14px; padding: 0 16px; text-align: center; }
+.decided > p { margin: 0; }
+.decided-rule { display: flex; align-items: center; gap: 12px; align-self: stretch; color: var(--text-muted); font-size: 11.5px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; }
+.decided-rule::before, .decided-rule::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.decided-ask { display: flex; align-items: center; justify-content: center; gap: 7px; max-width: min(100%, 560px); color: var(--text-muted); font-size: 13px; line-height: 1.35; }
+.decided-figure { display: grid; flex: none; place-items: center; }
+.decided-answer { max-width: min(100%, 560px); color: var(--text); font-size: 20px; font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
+.decided-by { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px 10px; color: var(--text-muted); font-size: 12.5px; line-height: 1.4; }
+.decided-undo { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 12px 0 6px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--bg); color: var(--text); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.decided-undo:hover { background: var(--hover); }
+.decided-undo:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.decided-ring { width: 16px; height: 16px; border-radius: 50%; background: conic-gradient(var(--text) var(--decided-gone, 0%), color-mix(in srgb, var(--text) 16%, transparent) 0); mask: radial-gradient(circle, transparent 5px, #000 5.5px); animation: decided-ring linear both; }
+@property --decided-gone { syntax: "<percentage>"; inherits: false; initial-value: 0%; }
+@keyframes decided-ring { from { --decided-gone: 0%; } to { --decided-gone: 100%; } }
+@media (prefers-reduced-motion: reduce) { .decided-ring { animation: none; } }
 @media (prefers-reduced-motion: reduce) { .decision-tab { transition: none; } }

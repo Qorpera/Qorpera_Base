@@ -54,8 +54,15 @@ function setup(cofounder: boolean) {
 		.set({ loading: false, projection: { items: [card], hiddenCount: 0, lastSequence: 1 } });
 	const store = new Store<OpenQuestionsState>({ questions: [listed], read: true, unavailable: false });
 	const stopped = vi.fn();
+	const answered = vi.fn(async () => {});
 	const decisions: QuestionDockHost = {
-		questions: { store, watch: () => stopped, refresh: async () => {}, forget: () => {} } as unknown as OpenQuestions,
+		questions: {
+			store,
+			watch: () => stopped,
+			refresh: async () => {},
+			forget: () => {},
+			answer: answered,
+		} as unknown as OpenQuestions,
 		agent: (agentId) => company.staffById(agentId),
 		memberName: () => "Jonas",
 		conversation: (sessionId) => company.conversation(sessionId, false) as Store<ConversationState>,
@@ -66,7 +73,11 @@ function setup(cofounder: boolean) {
 		view.dispose();
 		company.stop();
 	};
-	return { view, store, stopped };
+	const reopen = () =>
+		company.conversation(session.sessionId).set({
+			projection: { items: [{ ...card, answerFailed: true }], hiddenCount: 0, lastSequence: 1 },
+		});
+	return { view, store, stopped, answered, reopen };
 }
 
 describe("open decisions in the Co-Founder's chat", () => {
@@ -90,6 +101,54 @@ describe("open decisions in the Co-Founder's chat", () => {
 		f.view.dispose();
 		expect(f.stopped).toHaveBeenCalled();
 		expect(document.querySelector(".decision-dock")).toBeNull();
+	});
+
+	it("become a block of their own in the chat when decided, with Undo while the answer is held", async () => {
+		const f = setup(true);
+		await settle();
+		f.view.el.querySelector<HTMLButtonElement>(".decision-dock .interaction-options .btn")?.click();
+		await settle();
+		const block = f.view.el.querySelector<HTMLElement>(".messages .decided");
+		expect(block?.querySelector(".decided-rule")?.textContent).toBe("Decided");
+		expect(block?.querySelector(".decided-ask")?.textContent).toBe("Approve the mission?");
+		expect(block?.querySelector(".decided-answer")?.textContent).toBe("Approve");
+		expect(f.view.el.querySelector<HTMLElement>(".decision-dock")?.hidden).toBe(true);
+		expect(f.view.el.querySelector(".messages .interaction-card")).toBeNull();
+		expect(f.answered).not.toHaveBeenCalled();
+
+		block?.querySelector<HTMLButtonElement>(".decided-undo")?.click();
+		await settle();
+		expect(f.view.el.querySelector(".messages .decided")).toBeNull();
+		expect(f.view.el.querySelector<HTMLElement>(".decision-dock")?.hidden).toBe(false);
+		expect(f.answered).not.toHaveBeenCalled();
+
+		f.view.el.querySelector<HTMLButtonElement>(".decision-dock .interaction-options .btn")?.click();
+		await settle();
+		f.view.dispose();
+		expect(f.answered).toHaveBeenCalledTimes(1);
+		expect(f.answered).toHaveBeenCalledWith(listed, "answered", { values: ["Approve"] });
+	});
+
+	it("show the card again when a sent answer never reached the agent", async () => {
+		const f = setup(true);
+		await settle();
+		f.view.el.querySelector<HTMLButtonElement>(".decision-dock .interaction-options .btn")?.click();
+		await settle();
+		window.dispatchEvent(new Event("pagehide"));
+		await settle();
+		expect(f.answered).toHaveBeenCalledTimes(1);
+		expect(f.view.el.querySelector(".messages .decided .decided-by span")?.textContent).toBe(
+			`Sent to ${staff.displayName}`,
+		);
+		expect(f.view.el.querySelector(".messages .interaction-card")).toBeNull();
+
+		f.store.set({ questions: [] });
+		f.reopen();
+		await settle();
+		expect(f.view.el.querySelector(".messages .decided")).toBeNull();
+		expect(f.view.el.querySelector(".messages .interaction-card .interaction-title")?.textContent).toBe(
+			"Approve the mission?",
+		);
 	});
 
 	it("are gathered in no other agent's thread", async () => {
