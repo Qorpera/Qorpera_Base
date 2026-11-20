@@ -7,17 +7,11 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929026599_runtime_bundle_activation_v265.sql";
-const activationVersion = 265;
-const previousActivationVersion = 264;
-const previousActivationSha256 = "29f6ec5af8d03ce46e130b791039198d6cda63886b21a84f60f25c429658456f";
-const activationRequires = Object.freeze([
-	[
-		"20260930817000_narrate_app",
-		"#1940 (narrate_app): bundle 265's tool narrate_app is recorded by the observation recorder, whose name list holds it only once 817000 applied; without it every observation of the tool is refused (22023)",
-		"position('20260930817000' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_record_runtime_observation(uuid,jsonb)')), '')) > 0",
-	],
-]);
+const activation = "supabase/migrations/20260929026699_runtime_bundle_activation_v266.sql";
+const activationVersion = 266;
+const previousActivationVersion = 265;
+const previousActivationSha256 = "df25c9ccc2606496bc03843260c7f6a8c8cfbe09cbcdb0494acc87ea26805536";
+const activationRequires = Object.freeze([]);
 const activationRequiresSql = activationRequires
 	.map(([migration, why, present]) => {
 		const always = `${migration}.sql` < activation.slice(activation.lastIndexOf("/") + 1);
