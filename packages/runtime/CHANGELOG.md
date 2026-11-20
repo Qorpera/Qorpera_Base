@@ -12,7 +12,8 @@
   A card without `asksAgain` is appended, listed and answered exactly as before. When the kernel refuses a card that
   carries `asksAgain`, `ask_member` answers the agent with the kernel's words (`REFUSED: NOT_AVAILABLE: asksAgain must
   name ...; leave it out otherwise`) instead of an unconfirmed outcome, so it raises the card without the link; a retry
-  whose first attempt ended without an answer is never called refused. Other cards' refusals are relayed as before.
+  whose first attempt ended without an answer is never called refused. A card without `asksAgain` is unchanged here
+  too: the kernel's refusal of it is still answered as an unconfirmed outcome, not in words.
 - Release v268 (#1994 and #1997, thread decisions step 3; master since v267's release merge bbb86aaf1 holds exactly
   these two): two migrations, in this order. `20260930819000_decision_votes` (a new table of members' votes and notes on
   open decisions, row level security on and no grant; two member functions, `qorpera_list_company_open_decisions` and
