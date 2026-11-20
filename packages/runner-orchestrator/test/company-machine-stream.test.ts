@@ -1183,6 +1183,30 @@ describe("a desktop's live picture (20260930745000)", () => {
 		expect([...decoded.data.subarray(-3)]).toEqual([10, 20, 30]);
 	});
 
+	it("deflates Xvnc bands asynchronously so a 28-band 1600x1000 frame yields to the event loop between bands", async () => {
+		const bands = Array.from({ length: 28 }, (_, n) =>
+			fill(1600, n === 27 ? 1000 - 27 * 36 : 36, [n * 5, 100, 200 - n * 3]),
+		);
+		let ticks = 0;
+		const timer = setInterval(() => {
+			ticks++;
+		}, 1);
+		try {
+			const encoded = [];
+			for (let n = 0; n < bands.length; n++) {
+				encoded.push(await encodePng(1600, n === 27 ? 1000 - 27 * 36 : 36, bands[n]!));
+			}
+			expect(encoded).toHaveLength(28);
+			expect(ticks).toBeGreaterThan(0);
+			const sample = decodePng(encoded[13]!);
+			expect([sample.width, sample.height, sample.channels]).toEqual([1600, 36, 3]);
+			expect([...sample.data.subarray(0, 3)]).toEqual([65, 100, 161]);
+			expect([...sample.data.subarray(-3)]).toEqual([65, 100, 161]);
+		} finally {
+			clearInterval(timer);
+		}
+	});
+
 	it("ends every member's stream when the relay ends (the X server or the boot) with why", async () => {
 		const desktop = fakeDesktop();
 		const ended = vi.fn();
