@@ -107,14 +107,14 @@ begin
 	perform pg_temp.base_assert(public.qorpera_member_may_pick_claude('92400000-0000-4000-8000-000000000010', pg_temp.cm_owner()),
 		'1: fixture: the owner can run Claude Code here');
 	v_result := pg_temp.cm_get(pg_temp.cm_owner(), '92400000-0000-4000-8000-000000000031');
-	perform pg_temp.base_assert(pg_temp.cm_models(v_result) = 'gpt-6-astra,gpt-6.1-sol'
-		and v_result ->> 'model_id' = 'gpt-6-astra' and v_result ->> 'reasoning_effort' = 'low', '1: GPT only: ' || v_result::text);
+	perform pg_temp.base_assert(pg_temp.cm_models(v_result) = 'gpt-6-astra,gpt-6.2-sol'
+		and v_result ->> 'model_id' = 'gpt-6.2-sol' and v_result ->> 'reasoning_effort' = 'low', '1: GPT only: ' || v_result::text);
 	v_result := pg_temp.cm_set(pg_temp.cm_owner(), '92400000-0000-4000-8000-000000000031', 'claude-opus-5-5', 'high');
 	perform pg_temp.base_assert(pg_temp.cm_refused(v_result) = 'QRC02', '1: Claude refused: ' || v_result::text);
-	v_result := pg_temp.cm_set(pg_temp.cm_owner(), '92400000-0000-4000-8000-000000000031', 'gpt-6.1-sol', 'medium');
-	perform pg_temp.base_assert(v_result ->> 'model_id' = 'gpt-6.1-sol' and v_result ->> 'reasoning_effort' = 'medium'
-		and (v_result ->> 'version')::integer = 1 and pg_temp.cm_models(v_result) = 'gpt-6-astra,gpt-6.1-sol',
-		'1: GPT-6.1 Sol for everyone: ' || v_result::text);
+	v_result := pg_temp.cm_set(pg_temp.cm_owner(), '92400000-0000-4000-8000-000000000031', 'gpt-6.2-sol', 'medium');
+	perform pg_temp.base_assert(v_result ->> 'model_id' = 'gpt-6.2-sol' and v_result ->> 'reasoning_effort' = 'medium'
+		and (v_result ->> 'version')::integer = 1 and pg_temp.cm_models(v_result) = 'gpt-6-astra,gpt-6.2-sol',
+		'1: GPT-6.2 Sol for everyone: ' || v_result::text);
 	delete from public.qorpera_session_models where session_id = pg_temp.cm_session('92400000-0000-4000-8000-000000000031');
 end $$;
 
@@ -126,12 +126,12 @@ declare v_result jsonb; v_bob uuid := '92400000-0000-4000-8000-000000000031';
 	v_member uuid := '92400000-0000-4000-8000-000000000002';
 begin
 	v_result := pg_temp.cm_get(pg_temp.cm_owner(), v_bob);
-	perform pg_temp.base_assert(pg_temp.cm_models(v_result) = 'gpt-6-astra,gpt-6.1-sol,claude-fable-5-2,claude-opus-5-5',
+	perform pg_temp.base_assert(pg_temp.cm_models(v_result) = 'gpt-6-astra,gpt-6.2-sol,claude-fable-5-2,claude-opus-5-5',
 		'2: the owner may pick Claude: ' || v_result::text);
 	perform pg_temp.base_assert(not public.qorpera_member_may_pick_claude('92400000-0000-4000-8000-000000000010', v_member),
 		'2: a member off the Claude list may not pick Claude');
 	v_result := pg_temp.cm_get(v_member, v_bob);
-	perform pg_temp.base_assert(v_result ? 'error' or pg_temp.cm_models(v_result) = 'gpt-6-astra,gpt-6.1-sol',
+	perform pg_temp.base_assert(v_result ? 'error' or pg_temp.cm_models(v_result) = 'gpt-6-astra,gpt-6.2-sol',
 		'2: a member off the Claude list is offered GPT only: ' || v_result::text);
 	v_result := pg_temp.cm_set(v_member, v_bob, 'claude-fable-5-2', 'high');
 	perform pg_temp.base_assert(pg_temp.cm_refused(v_result) in ('QRC02', '42501'), '2: and may not pick it: ' || v_result::text);
@@ -152,15 +152,15 @@ begin
 		'2: Claude max to GPT comes with an allowed effort: ' || v_result::text);
 	v_result := pg_temp.cm_set(pg_temp.cm_owner(), v_bob, null, 'xhigh');
 	perform pg_temp.base_assert(pg_temp.cm_refused(v_result) = '22023', '2: xhigh on GPT is refused: ' || v_result::text);
-	v_result := pg_temp.cm_set(pg_temp.cm_owner(), v_bob, 'gpt-6.1-sol', 'max');
-	perform pg_temp.base_assert(pg_temp.cm_refused(v_result) = '22023', '2: max on GPT-6.1 Sol is refused: ' || v_result::text);
+	v_result := pg_temp.cm_set(pg_temp.cm_owner(), v_bob, 'gpt-6.2-sol', 'max');
+	perform pg_temp.base_assert(pg_temp.cm_refused(v_result) = '22023', '2: max on GPT-6.2 Sol is refused: ' || v_result::text);
 	v_result := pg_temp.cm_set(pg_temp.cm_owner(), v_bob, 'claude-sonnet-5-5', 'high');
 	perform pg_temp.base_assert(pg_temp.cm_refused(v_result) = '22023', '2: an unknown model is refused: ' || v_result::text);
 	v_result := pg_temp.cm_set(pg_temp.cm_owner(), v_bob, 'gpt-6-astra', 'ultra');
 	perform pg_temp.base_assert(pg_temp.cm_refused(v_result) = '22023', '2: an unknown effort is refused: ' || v_result::text);
 	v_result := pg_temp.cm_speed(pg_temp.cm_owner(), v_bob, 'standard');
 	perform pg_temp.base_assert(v_result ->> 'service_tier' = 'standard' and v_result ->> 'model_id' = 'gpt-6-astra'
-		and pg_temp.cm_models(v_result) = 'gpt-6-astra,gpt-6.1-sol,claude-fable-5-2,claude-opus-5-5',
+		and pg_temp.cm_models(v_result) = 'gpt-6-astra,gpt-6.2-sol,claude-fable-5-2,claude-opus-5-5',
 		'2: the speed answer names the models too: ' || v_result::text);
 	perform pg_temp.base_error(format('insert into public.qorpera_session_models(session_id, model_id, reasoning_effort, version,'
 		' updated_by_user_id) values (%L, %L, %L, 1, %L)', pg_temp.cm_session('92400000-0000-4000-8000-000000000032'), 'gpt-6-astra',
@@ -186,7 +186,7 @@ begin
 	perform pg_temp.base_assert(v_result ->> 'model_id' = 'gpt-6-astra' and v_result ->> 'reasoning_effort' = 'medium',
 		'2: but may switch it to GPT: ' || v_result::text);
 	v_result := pg_temp.cm_get(pg_temp.cm_owner(), v_bob);
-	perform pg_temp.base_assert(pg_temp.cm_models(v_result) = 'gpt-6-astra,gpt-6.1-sol',
+	perform pg_temp.base_assert(pg_temp.cm_models(v_result) = 'gpt-6-astra,gpt-6.2-sol',
 		'2: signed out of Claude, the owner is offered GPT only: ' || v_result::text);
 	v_result := pg_temp.cm_set(pg_temp.cm_owner(), v_bob, 'claude-opus-5-5', 'high');
 	perform pg_temp.base_assert(pg_temp.cm_refused(v_result) = 'QRC02', '2: and may not pick Claude: ' || v_result::text);
@@ -208,12 +208,12 @@ savepoint cm_sol;
 do $$
 declare v_run public.qorpera_execution_runs; v_binding jsonb; v_context jsonb;
 begin
-	perform pg_temp.cm_set(pg_temp.cm_owner(), '92400000-0000-4000-8000-000000000031', 'gpt-6.1-sol', 'medium');
+	perform pg_temp.cm_set(pg_temp.cm_owner(), '92400000-0000-4000-8000-000000000031', 'gpt-6.2-sol', 'medium');
 	v_run := pg_temp.cm_turn('92400000-0000-4000-8000-000000000031', 'Look at the numbers.');
-	perform pg_temp.base_assert(v_run.model_id = 'gpt-6.1-sol' and v_run.model_selection = 'session_override'
+	perform pg_temp.base_assert(v_run.model_id = 'gpt-6.2-sol' and v_run.model_selection = 'session_override'
 		and v_run.reasoning_effort = 'medium' and v_run.service_tier = 'fast' and v_run.claude_model is null
 		and v_run.claude_effort is null and v_run.runtime_bundle_sha256 = current_setting('qorpera_test.cm_bundle'),
-		'3: GPT-6.1 Sol reaches the run: ' || to_jsonb(v_run)::text);
+		'3: GPT-6.2 Sol reaches the run: ' || to_jsonb(v_run)::text);
 	v_binding := pg_temp.base_start(v_run.id);
 	v_context := public.qorpera_describe_company_run_context(v_binding);
 	perform pg_temp.base_assert(not (v_context ? 'claude') and v_context ->> 'serviceTier' = 'fast',

@@ -181,6 +181,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "The company's own work, and the way past a refusal",
 		text: "The automatic review no longer reads the company's own work as outside instructions: a coworker's message, its research or check in the company folder, a worker's report and an agent's own earlier words are information an agent uses in work its job covers, never a member's request. When the review refuses an action that is an agent's job and the agent believes the refusal is mistaken, the way forward is a member asking for that exact action in their own message in that agent's thread (for a worker, its owner's), which has it checked again with their words as the request. Never send the founders to Qorpera's support over a refusal, and never tell them there is no way forward.",
 	},
+	{
+		id: "gpt-6-2-sol-default",
+		kind: "model",
+		date: "2026-11-19",
+		title: "GPT-6.2 Sol is the platform's GPT model",
+		text: "Your runs and your workers on Codex now run on GPT-6.2 Sol (gpt-6.2-sol) unless your own agent file names a model or a member picked one for the conversation. A conversation's Model menu offers GPT-6.2 Sol and GPT-6 Astra; GPT-6.1 Sol is gone, and conversations that were on it now run GPT-6.2 Sol. Hiring is unchanged: a new agent names no model and runs on GPT-6.2 Sol.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

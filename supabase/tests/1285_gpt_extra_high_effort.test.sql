@@ -80,14 +80,14 @@ declare v_result jsonb; v_bob uuid := '92400000-0000-4000-8000-000000000031';
 begin
 	v_result := pg_temp.gx_get(v_bob);
 	perform pg_temp.base_assert(pg_temp.gx_efforts(v_result, 'gpt-6-astra') = 'low,medium,high'
-		and pg_temp.gx_efforts(v_result, 'gpt-6.1-sol') = 'low,medium,high'
+		and pg_temp.gx_efforts(v_result, 'gpt-6.2-sol') = 'low,medium,high'
 		and pg_temp.gx_efforts(v_result, 'claude-opus-5-5') = 'low,medium,high,xhigh,max'
 		and pg_temp.gx_efforts(v_result, 'claude-fable-5-2') = 'low,medium,high,xhigh,max'
 		and (select count(*) from jsonb_object_keys(v_result -> 'efforts')) = 4,
 		'1: without threadEfforts, GPT is offered low to high: ' || v_result::text);
 	v_result := pg_temp.gx_set(v_bob, 'claude-opus-5-5', 'xhigh');
 	perform pg_temp.base_assert(v_result ->> 'reasoning_effort' = 'xhigh', '1: Claude keeps extra high: ' || v_result::text);
-	v_result := pg_temp.gx_set(v_bob, 'gpt-6.1-sol');
+	v_result := pg_temp.gx_set(v_bob, 'gpt-6.2-sol');
 	perform pg_temp.base_assert(pg_temp.gx_refused(v_result) = '22023',
 		'1: Claude at extra high to GPT, the effort kept, is refused: ' || v_result::text);
 end $$;
@@ -97,7 +97,7 @@ declare v_result jsonb := pg_temp.gx_get('92400000-0000-4000-8000-000000000031')
 begin
 	perform pg_temp.base_assert(pg_temp.gx_efforts(v_result, 'gpt-6-astra') = 'low,medium,high'
 		and (select count(*) from jsonb_object_keys(v_result -> 'efforts')) = 2
-		and v_result -> 'models' = '["gpt-6-astra","gpt-6.1-sol"]'::jsonb,
+		and v_result -> 'models' = '["gpt-6-astra","gpt-6.2-sol"]'::jsonb,
 		'1: efforts name exactly the models offered: ' || v_result::text);
 end $$;
 delete from public.qorpera_session_models;
@@ -111,7 +111,7 @@ declare v_result jsonb; v_bob uuid := '92400000-0000-4000-8000-000000000031';
 begin
 	v_result := pg_temp.gx_get(v_bob);
 	perform pg_temp.base_assert(pg_temp.gx_efforts(v_result, 'gpt-6-astra') = 'low,medium,high,xhigh'
-		and pg_temp.gx_efforts(v_result, 'gpt-6.1-sol') = 'low,medium,high,xhigh'
+		and pg_temp.gx_efforts(v_result, 'gpt-6.2-sol') = 'low,medium,high,xhigh'
 		and pg_temp.gx_efforts(v_result, 'claude-opus-5-5') = 'low,medium,high,xhigh,max',
 		'2: with threadEfforts, GPT is offered extra high: ' || v_result::text);
 	v_result := pg_temp.gx_set(v_bob, null, 'xhigh');
@@ -121,9 +121,9 @@ begin
 	perform pg_temp.base_assert(v_result ->> 'model_id' = 'gpt-6-astra' and v_result ->> 'reasoning_effort' = 'xhigh'
 		and pg_temp.gx_efforts(v_result, 'gpt-6-astra') = 'low,medium,high,xhigh',
 		'2: GPT-6 Astra at extra high: ' || v_result::text);
-	v_result := pg_temp.gx_set(v_bob, 'gpt-6.1-sol');
-	perform pg_temp.base_assert(v_result ->> 'model_id' = 'gpt-6.1-sol' and v_result ->> 'reasoning_effort' = 'xhigh',
-		'2: GPT-6.1 Sol keeps extra high: ' || v_result::text);
+	v_result := pg_temp.gx_set(v_bob, 'gpt-6.2-sol');
+	perform pg_temp.base_assert(v_result ->> 'model_id' = 'gpt-6.2-sol' and v_result ->> 'reasoning_effort' = 'xhigh',
+		'2: GPT-6.2 Sol keeps extra high: ' || v_result::text);
 	v_result := pg_temp.gx_set(v_bob, null, 'max');
 	perform pg_temp.base_assert(pg_temp.gx_refused(v_result) = '22023', '2: max stays Claude only: ' || v_result::text);
 	v_result := pg_temp.gx_set(v_bob, 'claude-opus-5-5', 'max');
@@ -134,8 +134,8 @@ begin
 	perform pg_temp.base_assert(v_result ->> 'model_id' = 'gpt-6-astra' and v_result ->> 'reasoning_effort' = 'xhigh',
 		'2: Claude max to GPT steps down to extra high: ' || v_result::text);
 	v_result := pg_temp.gx_set(v_bob, 'claude-fable-5-2', 'xhigh');
-	v_result := pg_temp.gx_set(v_bob, 'gpt-6.1-sol');
-	perform pg_temp.base_assert(v_result ->> 'model_id' = 'gpt-6.1-sol' and v_result ->> 'reasoning_effort' = 'xhigh',
+	v_result := pg_temp.gx_set(v_bob, 'gpt-6.2-sol');
+	perform pg_temp.base_assert(v_result ->> 'model_id' = 'gpt-6.2-sol' and v_result ->> 'reasoning_effort' = 'xhigh',
 		'2: Claude at extra high to GPT keeps extra high: ' || v_result::text);
 	v_result := pg_temp.gx_set(v_carol, 'gpt-6-luna', 'xhigh');
 	perform pg_temp.base_assert(v_result ->> 'model_id' = 'gpt-6-luna' and v_result ->> 'reasoning_effort' = 'xhigh',
@@ -144,7 +144,7 @@ begin
 	perform pg_temp.base_error(format('insert into public.qorpera_session_models(session_id, reasoning_effort, version,'
 		' updated_by_user_id) values (%L, %L, 1, %L)', pg_temp.gx_session(v_carol), 'xhigh', pg_temp.gx_owner()), '23514');
 	insert into public.qorpera_session_models(session_id, model_id, reasoning_effort, version, updated_by_user_id)
-	values (pg_temp.gx_session(v_carol), 'gpt-6.1-sol', 'xhigh', 1, pg_temp.gx_owner());
+	values (pg_temp.gx_session(v_carol), 'gpt-6.2-sol', 'xhigh', 1, pg_temp.gx_owner());
 end $$;
 rollback to savepoint gx_set;
 
@@ -153,12 +153,12 @@ do $$
 declare v_run public.qorpera_execution_runs; v_binding jsonb; v_admission jsonb; v_authority jsonb;
 	v_bob uuid := '92400000-0000-4000-8000-000000000031';
 begin
-	perform pg_temp.gx_set(v_bob, 'gpt-6.1-sol', 'xhigh');
+	perform pg_temp.gx_set(v_bob, 'gpt-6.2-sol', 'xhigh');
 	v_run := pg_temp.gx_turn(v_bob, 'Think this through carefully.');
-	perform pg_temp.base_assert(v_run.model_id = 'gpt-6.1-sol' and v_run.model_selection = 'session_override'
+	perform pg_temp.base_assert(v_run.model_id = 'gpt-6.2-sol' and v_run.model_selection = 'session_override'
 		and v_run.reasoning_effort = 'xhigh' and v_run.claude_model is null
 		and v_run.runtime_bundle_sha256 = current_setting('qorpera_test.gx_bundle'),
-		'3: the member''s turn runs GPT-6.1 Sol at extra high: ' || to_jsonb(v_run)::text);
+		'3: the member''s turn runs GPT-6.2 Sol at extra high: ' || to_jsonb(v_run)::text);
 	v_binding := pg_temp.base_start(v_run.id);
 	v_authority := public.qorpera_describe_native_tool_authority(v_binding);
 	perform pg_temp.base_assert(v_authority #>> '{identity,reasoningEffort}' = 'xhigh',

@@ -152,7 +152,7 @@ begin
 		or v_run.environment_id <> v_env or v_run.session_id <> v_request.session_id or v_run.staff_agent_id <> v_cofounder
 		or v_run.staff_version <> (select version from public.qorpera_profile_staff where profile_id = v_profile and staff_agent_id = v_cofounder)
 		or v_run.input_ids <> array[v_request.input_id] or v_run.requested_by_user_id <> '85600000-0000-4000-8000-000000000001'
-		or v_run.model_id is distinct from 'gpt-6-astra' or v_run.model_selection is distinct from 'provider_mapping'
+		or v_run.model_id is distinct from 'gpt-6.2-sol' or v_run.model_selection is distinct from 'provider_mapping'
 		or v_run.compute_identity_id is distinct from v_request.compute_identity_id then
 		raise exception 'The first run is not pinned as agreed: %', to_jsonb(v_run); end if;
 	select * into strict v_job from public.qorpera_runner_jobs where id = v_run.job_id;
