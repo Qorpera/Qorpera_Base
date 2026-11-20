@@ -121,7 +121,7 @@ function parseClaudeUsage(value: unknown): WebClaudeUsage | undefined {
 			...(instant(window.resetAt) ? { resetAt: window.resetAt } : {}),
 		});
 	}
-	return windows.length
+	return windows.length || instant(input.limitResetAt)
 		? {
 				observedAt: input.observedAt,
 				windows,

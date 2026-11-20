@@ -571,6 +571,11 @@ describe("Claude reads and resets", () => {
 				logins: [
 					{ ...login, usage: { ...login.usage, windows: [fiveHour, ...login.usage.windows] } },
 					{ ...login, loginId: id(96), usage: { observedAt: timestamp, windows: [fiveHour] } },
+					{
+						...login,
+						loginId: id(95),
+						usage: { observedAt: timestamp, limitResetAt: timestamp, windows: [fiveHour] },
+					},
 				],
 			},
 			{
@@ -607,6 +612,7 @@ describe("Claude reads and resets", () => {
 		const older = await client.listClaudeLogins!();
 		expect(older.logins[0]?.usage).toEqual(login.usage);
 		expect(older.logins[1]).not.toHaveProperty("usage");
+		expect(older.logins[2]?.usage).toEqual({ observedAt: timestamp, limitResetAt: timestamp, windows: [] });
 		const bad = await client.listClaudeLogins!();
 		expect(bad.readable).toBe(false);
 		expect(bad.logins[0]).not.toHaveProperty("usage");

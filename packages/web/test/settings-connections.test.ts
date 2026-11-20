@@ -2067,6 +2067,26 @@ describe("Claude usage and limit resets on the Claude card", () => {
 		expect(client.signOutClaude).not.toHaveBeenCalled();
 	});
 
+	it("says the limit Claude Code refused at, with no bar, when the refusal named only a 5-hour window", async () => {
+		await claudeView(
+			login({
+				usage: { observedAt: new Date().toISOString(), limitResetAt: hours(3.2), windows: [] },
+				resets: { observedAt: new Date().toISOString(), entries: [fullReset] },
+			}),
+		);
+		expect(claudeCard().querySelector(".connection-usage")!.textContent).toMatch(/^Usage limit reached · resets in/);
+		expect(bars()).toEqual([]);
+		expect(claudeCard().querySelector(".connection-resets.is-ready strong")!.textContent).toBe(
+			"Keep going now with a reset",
+		);
+		view.dispose();
+		document.body.replaceChildren();
+		await claudeView(
+			login({ usage: { observedAt: new Date().toISOString(), limitResetAt: hours(-1), windows: [] } }),
+		);
+		expect(claudeCard().querySelector(".connection-usage")!.textContent).toBe("Usage unavailable");
+	});
+
 	it("lifts the row onto its own tile at a limit, and says only once a limit is hit for a reset saved for one", async () => {
 		await claudeView(
 			login({

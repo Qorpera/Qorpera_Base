@@ -989,7 +989,13 @@ export class ConnectionsView {
 	#claudeUsage(login: WebClaudeLogin, using: boolean): HTMLElement[] {
 		const limitResetAt = claudeLimitResetAt(login.usage, Date.now());
 		const refilling = new Set(using && this.#claudeReset ? REFILLS[this.#claudeReset.kind] : []);
-		const bars = this.#bars(login.usage, true, using ? undefined : limitResetAt, refilling, false);
+		const bars = this.#bars(
+			login.usage?.windows.length ? login.usage : undefined,
+			true,
+			using ? undefined : limitResetAt,
+			refilling,
+			false,
+		);
 		// WHY: an idle sign-in's key lapses after hours and only a Claude task renews it; till then a read finds nothing new.
 		if (
 			!using &&
