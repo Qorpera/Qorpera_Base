@@ -1612,4 +1612,35 @@ describe("trusted node inventory publisher composition", () => {
 		await assertion;
 		expect((await f.observer.observe(signal())).state).toBe("ready");
 	});
+	it("retries transient LXD_HOST_INVENTORY_UNCONFIRMED during VM transitions instead of flipping unavailable", async () => {
+		const f = observer();
+		f.ports.lxd.inspectHostInventory
+			.mockRejectedValueOnce(new Error("LXD_HOST_INVENTORY_UNCONFIRMED"))
+			.mockResolvedValueOnce(structuredClone(f.inventory));
+		const retryObserver = new RuntimeNodeInventoryObserver(f.policy, f.registry, {
+			...f.ports,
+			inventoryRetries: 2,
+			inventoryRetryDelayMs: 5,
+		});
+		const result = await retryObserver.observe(signal());
+		expect(result).toMatchObject({ state: "ready", reason: null });
+		expect(f.ports.lxd.inspectHostInventory).toHaveBeenCalledTimes(2);
+		expect(f.calls.at(-1)?.method).toBe("qorpera_observe_runtime_node_inventory");
+	});
+	it("still fails closed to unavailable if LXD_HOST_INVENTORY_UNCONFIRMED persists across retries", async () => {
+		const f = observer();
+		f.ports.lxd.inspectHostInventory.mockRejectedValue(new Error("LXD_HOST_INVENTORY_UNCONFIRMED"));
+		const retryObserver = new RuntimeNodeInventoryObserver(f.policy, f.registry, {
+			...f.ports,
+			inventoryRetries: 2,
+			inventoryRetryDelayMs: 5,
+		});
+		const result = await retryObserver.observe(signal());
+		expect(result).toMatchObject({
+			state: "unavailable",
+			reason: { check: "inventory", code: "LXD_HOST_INVENTORY_UNCONFIRMED" },
+		});
+		expect(f.ports.lxd.inspectHostInventory).toHaveBeenCalledTimes(3);
+		expect(f.calls.at(-1)?.method).toBe("qorpera_observe_runtime_node");
+	});
 });

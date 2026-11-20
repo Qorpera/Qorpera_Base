@@ -64,6 +64,7 @@ import stat
 import subprocess
 import sys
 import time
+import urllib.parse
 
 AGENTS = ipaddress.ip_network("10.210.0.0/16")
 # The exit (10.210.0.1) and any later service of its own live here; machines never get one of these.
@@ -484,6 +485,29 @@ def lxd_instances(socket_path, fixture):
     return instances
 
 
+def lxd_instance(socket_path, fixture, project, name):
+    """Single-instance re-read used to confirm a transient tap detach during VM start/stop."""
+    if fixture:
+        for item in lxd_instances(socket_path, fixture):
+            if item.get("project", "default") == project and item.get("name") == name:
+                return item
+        return None
+    q_name = urllib.parse.quote(name, safe="")
+    q_proj = urllib.parse.quote(project, safe="")
+    connection = UnixHTTPConnection(socket_path)
+    try:
+        connection.request("GET", f"/1.0/instances/{q_name}?project={q_proj}")
+        response = connection.getresponse()
+        body = json.loads(response.read())
+    finally:
+        connection.close()
+    if response.status == 404:
+        return None
+    if response.status != 200 or body.get("type") != "sync" or not isinstance(body.get("metadata"), dict):
+        raise RuntimeError(f"LXD answered {response.status}: {body.get('error', '')}")
+    return body["metadata"]
+
+
 def plug_nics(instance):
     return {
         name: device
@@ -579,6 +603,11 @@ class Reconciler:
         self.args = args
         self.problems = []
         self.nft = os.environ.get("QORPERA_AGENT_PLUG_NFT", "1") != "0"
+        self.port_recheck_seconds = (
+            args.port_recheck_seconds
+            if args.port_recheck_seconds is not None
+            else (0.0 if args.lxd_fixture else 0.75)
+        )
 
     def run(self, command):
         return subprocess.run(command, capture_output=True, text=True)
@@ -859,7 +888,22 @@ class Reconciler:
             ensure_lease(self.paths, entry)
         except OSError as error:
             self.problems.append(f"{where(entry)}: cannot write its lease: {error}")
-        self.problems += check_port(entry, instance)
+        port_problems = check_port(entry, instance)
+        if port_problems:
+            # WHY: LXD detaches tap* ~0.4s before flipping status to Stopped; re-confirm once before flagging unhealthy.
+            if self.port_recheck_seconds > 0:
+                time.sleep(self.port_recheck_seconds)
+            try:
+                fresh = lxd_instance(self.args.lxd_socket, self.args.lxd_fixture, entry["project"], entry["instance"])
+            except Exception:  # noqa: BLE001 - fail closed if confirmation read fails
+                fresh = instance
+            if fresh is None:
+                port_problems = []
+            else:
+                port_problems = check_port(entry, fresh)
+                if not port_problems:
+                    instance = fresh
+        self.problems += port_problems
         problems = check_machine(entry, instance)
         if problems:
             # A claim LXD does not back: unhealthy, logged, never attributed.
@@ -920,6 +964,13 @@ def main():
     parser.add_argument("--instance")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--interval", type=float, default=float(env("QORPERA_AGENT_PLUG_INTERVAL", "5")))
+    parser.add_argument(
+        "--port-recheck-seconds",
+        type=float,
+        default=float(env("QORPERA_AGENT_PLUG_PORT_RECHECK_SECONDS"))
+        if env("QORPERA_AGENT_PLUG_PORT_RECHECK_SECONDS") is not None
+        else None,
+    )
     parser.add_argument("--netns", default="qexit")
     parser.add_argument("--lxd-socket", default="/var/snap/lxd/common/lxd/unix.socket")
     # Test only: the instances from a JSON file instead of LXD, another way to reload the name service, and flushes

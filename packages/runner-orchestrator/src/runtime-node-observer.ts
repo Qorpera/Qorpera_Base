@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { type LxdHostInventoryClient, LxdUnixClient } from "./lxd-client.ts";
 import { inspectLxdHostInventorySocket } from "./lxd-office-physical-host.ts";
@@ -79,6 +80,8 @@ export class RuntimeNodeInventoryObserver {
 	readonly #host: typeof physicalHost;
 	readonly #releases: () => Promise<ReadonlySet<string>>;
 	readonly #healthRecord: (bootId: string) => Promise<void>;
+	readonly #inventoryRetries: number;
+	readonly #inventoryRetryDelayMs: number;
 	#pending = false;
 	constructor(
 		policy: RuntimeNodeInventoryPolicy,
@@ -88,6 +91,8 @@ export class RuntimeNodeInventoryObserver {
 			host?: typeof physicalHost;
 			releases?: () => Promise<ReadonlySet<string>>;
 			healthRecord?: (bootId: string) => Promise<void>;
+			inventoryRetries?: number;
+			inventoryRetryDelayMs?: number;
 		},
 	) {
 		this.#policy = parseRuntimeNodeInventoryPolicy(policy);
@@ -96,6 +101,8 @@ export class RuntimeNodeInventoryObserver {
 		this.#host = ports?.host ?? physicalHost;
 		this.#releases = ports?.releases ?? (() => readNodeReleaseImages());
 		this.#healthRecord = ports?.healthRecord ?? ((bootId) => assertNodeHealthRecord(bootId));
+		this.#inventoryRetries = ports?.inventoryRetries ?? 2;
+		this.#inventoryRetryDelayMs = ports?.inventoryRetryDelayMs ?? 250;
 	}
 	async observe(caller: AbortSignal): Promise<{
 		state: "ready" | "unavailable";
@@ -140,7 +147,22 @@ export class RuntimeNodeInventoryObserver {
 				check = "policy";
 				if (!isDeepStrictEqual(context.policy, this.#policy)) throw new Error("NODE_OBSERVER_POLICY_DIFFERS");
 				check = "inventory";
-				const inventory = await this.#lxd.inspectHostInventory(signal);
+				// WHY: a VM starting/stopping between double-scan listings raises LXD_HOST_INVENTORY_UNCONFIRMED.
+				let inventory = null;
+				for (let attempt = 0; ; attempt++) {
+					try {
+						inventory = await this.#lxd.inspectHostInventory(signal);
+						break;
+					} catch (error) {
+						if (
+							attempt >= this.#inventoryRetries ||
+							signal.aborted ||
+							runtimeNodeObserverCode(error) !== "LXD_HOST_INVENTORY_UNCONFIRMED"
+						)
+							throw error;
+						if (this.#inventoryRetryDelayMs > 0) await delay(this.#inventoryRetryDelayMs, undefined, { signal });
+					}
+				}
 				check = "host-again";
 				const after = await this.#host(this.#policy, signal);
 				if (!isDeepStrictEqual(before, after)) throw new Error("NODE_OBSERVER_HOST_CHANGED");

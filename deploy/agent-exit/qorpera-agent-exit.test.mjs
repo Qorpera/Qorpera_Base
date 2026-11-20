@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import {
 	chmodSync,
 	existsSync,
@@ -1329,6 +1330,90 @@ describe("the agent plug", { skip: pythonUsable ? false : "needs Python 3.11 or 
 			`add element bridge qorpera_agent_exit_bridge clients { ${fresh.hwaddr} . ${fresh.address} }`,
 			`insert rule bridge qorpera_agent_exit_bridge dhcp ether saddr ${fresh.hwaddr} ip saddr { 0.0.0.0, ${fresh.address} } @th,256,32 0 @th,288,48 0x${hex} accept comment "${fresh.address}"`,
 		]);
+	});
+
+	test("a stopping machine whose tap detached before LXD reports Stopped does not flap unhealthy; a truly detached running VM still does", async () => {
+		const stopping = plugged("--kind", "machine", "--company", "c6", "--machine", "m6", "--project", "qp", "--instance", "vm-stop-race");
+		const broken = plugged("--kind", "machine", "--company", "c7", "--machine", "m7", "--project", "qp", "--instance", "vm-detached");
+		const eStop = entry(stopping.address);
+		const eBroken = entry(broken.address);
+		const sock = join(run, "mock-lxd.sock");
+		const flushRaceLog = join(run, "flushes-race.log");
+		const calls = [];
+		const server = createServer((req, res) => {
+			calls.push(req.url);
+			res.writeHead(200, { "content-type": "application/json" });
+			if (req.url === "/1.0/instances?recursion=1&all-projects=true") {
+				res.end(JSON.stringify({ type: "sync", status_code: 200, metadata: [machine(eStop, { status: "Running" }), machine(eBroken, { status: "Running" })] }));
+				return;
+			}
+			if (req.url === `/1.0/instances/${eStop.instance}?project=${eStop.project}`) {
+				res.end(JSON.stringify({ type: "sync", status_code: 200, metadata: machine(eStop, { status: "Stopped" }) }));
+				return;
+			}
+			if (req.url === `/1.0/instances/${eBroken.instance}?project=${eBroken.project}`) {
+				res.end(JSON.stringify({ type: "sync", status_code: 200, metadata: machine(eBroken, { status: "Running" }) }));
+				return;
+			}
+			res.writeHead(404);
+			res.end(JSON.stringify({ type: "error", error: "not found" }));
+		});
+		await new Promise((resolve) => server.listen(sock, resolve));
+		try {
+			const res = await new Promise((resolve) => {
+				const child = spawn(
+					"python3",
+					[
+						plugTool,
+						"reconcile",
+						"--once",
+						...dirs(),
+						"--lxd-socket",
+						sock,
+						"--port-recheck-seconds",
+						"0.05",
+						"--reload-dns",
+						"true",
+						"--flush-log",
+						flushRaceLog,
+					],
+					{ env: { ...process.env, QORPERA_AGENT_PLUG_NFT: "0" } },
+				);
+				let stderr = "";
+				child.stderr.on("data", (c) => {
+					stderr += c;
+				});
+				child.on("close", (code) => resolve({ code, stderr }));
+			});
+			assert.equal(res.code, 0, res.stderr);
+			const status = JSON.parse(readFileSync(join(run, "plug.json"), "utf8"));
+			assert.equal(
+				status.problems.some((p) => p.includes("vm-stop-race")),
+				false,
+				`stop-race VM must not flag unhealthy: ${JSON.stringify(status.problems)}`,
+			);
+			assert.equal(
+				status.problems.some((p) => p.includes("vm-detached") && p.includes("is not a port of qagent0")),
+				true,
+				`truly detached running VM must still flag unhealthy: ${JSON.stringify(status.problems)}`,
+			);
+			const raceFlushes = readFileSync(flushRaceLog, "utf8").trim().split("\n").filter(Boolean);
+			assert.ok(raceFlushes.includes(stopping.address), "re-confirmed Stopped VM is flushed on the same pass");
+			assert.ok(calls.includes(`/1.0/instances/${eStop.instance}?project=${eStop.project}`));
+		} finally {
+			await new Promise((resolve) => server.close(resolve));
+			rmSync(sock, { force: true });
+			rmSync(flushRaceLog, { force: true });
+			rmSync(join(state, "clients", `${stopping.address}.json`), { force: true });
+			rmSync(join(state, "clients", `${broken.address}.json`), { force: true });
+			rmSync(join(state, "dhcp-hosts", stopping.address), { force: true });
+			rmSync(join(state, "dhcp-hosts", broken.address), { force: true });
+			rmSync(join(state, "seen", stopping.address), { force: true });
+			rmSync(join(state, "seen", broken.address), { force: true });
+			rmSync(join(state, "verified", stopping.address), { force: true });
+			rmSync(join(state, "verified", broken.address), { force: true });
+			rmSync(join(run, "plug-stopped", stopping.address), { force: true });
+		}
 	});
 
 	test("ports: a machine's own while LXD has its card (not stopped), never the exit's links; a missed read keeps it once", () => {

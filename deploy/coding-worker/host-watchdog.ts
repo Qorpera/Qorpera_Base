@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { runCodingHostWatchdog } from "../../packages/runner-orchestrator/src/coding-host-lease.ts";
 import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client.ts";
@@ -34,7 +35,19 @@ export async function runCodingHostWatchdogMain(environment: NodeJS.ProcessEnv =
 	if (!environment.CREDENTIALS_DIRECTORY) throw new Error("CODING_CREDENTIALS_REQUIRED");
 	const project = codingHostWatchdogProject(JSON.parse(await readCodingServiceCredential(environment.CREDENTIALS_DIRECTORY, "qorpera-coding-executor-config")));
 	// Each stop waits at most 30 seconds for LXD, the pass 45: the unit gives it 60.
-	const outcomes = await runCodingHostWatchdog({ client: new LxdUnixClient(undefined, 30), project, signal: AbortSignal.timeout(45_000) });
+	// WHY: transient VM start/stop between double-scan listings raises LXD_HOST_INVENTORY_UNCONFIRMED.
+	const signal = AbortSignal.timeout(45_000);
+	const client = new LxdUnixClient(undefined, 30);
+	let outcomes = null;
+	for (let attempt = 0; ; attempt++) {
+		try {
+			outcomes = await runCodingHostWatchdog({ client, project, signal });
+			break;
+		} catch (error) {
+			if (attempt >= 2 || signal.aborted || codingErrorCode(error) !== "LXD_HOST_INVENTORY_UNCONFIRMED") throw error;
+			await delay(250, undefined, { signal });
+		}
+	}
 	for (const outcome of outcomes)
 		console.log(JSON.stringify({ event: outcome.state === "failed" ? "coding-host-watchdog-error" : "coding-host-watchdog", ...outcome }));
 	return outcomes.some((outcome) => outcome.state === "failed") ? 1 : 0;
