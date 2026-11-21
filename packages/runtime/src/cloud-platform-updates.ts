@@ -230,6 +230,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Gemini 4 Neon in conversations",
 		text: "A member who adds a Gemini API key in Settings, AI subscriptions can pick Gemini 4 Neon in a conversation's Model menu (with Low, Medium, High and Extra high effort) or set it as their default for chats. Your attended conversation turns run directly on Gemini 4 Neon with your company files, machines, workers, apps, routines and search, while background workers, routines and coding sessions stay on Codex or Claude Code. Members can set a monthly USD spend cap; reaching it pauses Gemini turns and notifies them rather than switching logins.",
 	},
+	{
+		id: "code-status-and-preflight-checks",
+		kind: "capability",
+		date: "2026-11-21",
+		title: "Repository status and pre-flight checks",
+		text: "Before dispatching parallel coding sessions on a Qorpera repository, call manage_code with action status to inspect its live state in one step: active or blocked coding sessions across the team, active worktrees, recent landed changes, and its checks setup. Inside coding sessions, agents can also run the repository checks pre-flight before handing in, receiving structured pass or fail results per check without landing unfinished work.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

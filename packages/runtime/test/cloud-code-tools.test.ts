@@ -1,3 +1,10 @@
+import { createHash } from "node:crypto";
+import {
+	workerStandingTexts,
+	writeTodoFile,
+	writeWorkerBriefFile,
+	writeWorkerResultsFile,
+} from "@qorpera/cloud-client/company-state-files";
 import { CLOUD_CODE_TOOL_DESCRIPTION, cloudCodeTools } from "@qorpera/runtime/cloud-code-tools";
 import { type CloudCompanyFolderBytes, CloudCompanyFolderClient } from "@qorpera/runtime/cloud-company-folder-client";
 import type { CloudCompanyPathControl, CloudCompanyPathRpc } from "@qorpera/runtime/cloud-company-path-gateway";
@@ -11,6 +18,7 @@ import {
 	type CloudRuntimeObservation,
 } from "@qorpera/runtime/cloud-runtime-observability";
 import { describe, expect, it, vi } from "vitest";
+import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 /* manage_code (cloud-code-tools.ts, migration 20260930720000): an agent takes a change out of the main code of a
@@ -143,7 +151,7 @@ async function fixture(
 }
 
 describe("manage_code: the tool an agent's own run is offered", () => {
-	it("is one tool with three actions, described in plain words within the catalog's bound", async () => {
+	it("is one tool with four actions, described in plain words within the catalog's bound", async () => {
 		const f = await fixture(() => queued);
 		try {
 			expect(f.tools.map((tool) => [tool.name, tool.source])).toEqual([["manage_code", "runtime"]]);
@@ -153,30 +161,28 @@ describe("manage_code: the tool an agent's own run is offered", () => {
 			expect(Buffer.byteLength(tool.description)).toBeLessThan(1800);
 			for (const said of [
 				"Qorpera numbers every change that goes into a repository's main code and writes its record at code/<owner>/<name>/changes/<number>.md.",
-				"Every action takes operationKey, owner and name; undo and describe also take change, the number.",
+				"Every action takes owner and name; undo, describe and bring_in take operationKey, and undo and describe also take change, the number.",
+				"- status: inspect code/<owner>/<name>/ in one call (no operationKey): active or blocked coding sessions targeting it, active worktrees, recent changes from changes/index.md, and its checks configuration.",
 				"- undo: put main back as it was without that change, as a new change of its own: nothing is lost, and an undo can be undone.",
 				"When later changes built on it, nothing happens and you are told the files: then undo with andLater true, which takes out that change and every change after it, or send the session a follow-up.",
 				"After an undo, check main before you tell anyone.",
 				"- describe: set the change's notice and picture; what you leave out stays as it is.",
-				// Step 6 (STEP6-IMPORT-BUILD.md section 6): existing code comes in with its history, after a look.
 				'- bring_in: bring existing code in with its history, as a new repository code/<owner>/<name>/ (lowercase): from {"github":"owner/name"}, or from {"file":"code/_incoming/<folder>/<name>.bundle"}, a git bundle of at most 256 MB made on a machine (from a zip: git init, add, commit, then git bundle create with --all).',
 				"look true only reads it: size, history, who changed it lately, what stops it, files with key-like strings.",
 				"It takes minutes: call again with the same operationKey, and tell members it shows in Storage when it is in.",
 				"Replace keys it found where you can, and ask a member once for the rest.",
-				// What a member reads never carries the platform's own names for things.
 				"Change numbers are yours, never the members' words.",
 			])
 				expect(tool.description).toContain(said);
-			// Only how a bundle is made names git, for the machine it is made on.
 			expect(tool.description.replace(/ \(from a zip: [^)]*\)|a git bundle/g, "")).not.toMatch(
 				/commit|branch|pull request|merge|revert|git\b/i,
 			);
 			expect(tool.inputSchema).toMatchObject({
 				type: "object",
 				additionalProperties: false,
-				required: ["action", "operationKey", "owner", "name"],
+				required: ["action", "owner", "name"],
 				properties: {
-					action: { type: "string", enum: ["undo", "describe", "bring_in"] },
+					action: { type: "string", enum: ["undo", "describe", "bring_in", "status"] },
 					change: { type: "integer", minimum: 1 },
 					andLater: { type: "boolean" },
 					from: {
@@ -185,7 +191,6 @@ describe("manage_code: the tool an agent's own run is offered", () => {
 						properties: {
 							github: { type: "string" },
 							file: { type: "string" },
-							// The import's follow-ups (lead's decision 3): a branch beside github too.
 							branch: {
 								type: "string",
 								minLength: 1,
@@ -207,8 +212,17 @@ describe("manage_code: the tool an agent's own run is offered", () => {
 		const f = await fixture(() => queued);
 		try {
 			for (const [args, why] of [
-				[{ ...undo, action: "revert" }, "action is undo, describe or bring_in"],
-				[{ operationKey: "k", owner: "acme", name: "shop", change: 12 }, "action is undo, describe or bring_in"],
+				[{ ...undo, action: "revert" }, "action is undo, describe, bring_in or status"],
+				[
+					{ operationKey: "k", owner: "acme", name: "shop", change: 12 },
+					"action is undo, describe, bring_in or status",
+				],
+				[
+					{ action: "status", owner: "acme", name: "shop", operationKey: "k" },
+					"status takes only action, owner, name",
+				],
+				[{ action: "status", owner: "acme", name: "shop", change: 1 }, "status takes only action, owner, name"],
+				[{ action: "status", owner: "Acme", name: "shop" }, "owner and name are the repository's"],
 				[
 					{ ...undo, picture: "product/a.png" },
 					"undo takes only action, operationKey, owner, name, change, andLater, reason, notice",
@@ -1686,6 +1700,545 @@ describe("manage_code undo of the first change of code brought in", () => {
 			expect(answer).toEqual({ success: false, status: "denied", text: `REFUSED: ${why}` });
 			expect(answer.text).not.toMatch(/restore|put back from its copy/);
 		} finally {
+			f.run.close();
+		}
+	});
+});
+
+describe("manage_code status", () => {
+	const ancestors = (paths: readonly string[]) => {
+		const out = new Set<string>();
+		for (const path of paths) {
+			const parts = path.split("/");
+			for (let i = 1; i < parts.length; i++) out.add(parts.slice(0, i).join("/"));
+		}
+		return [...out];
+	};
+
+	const codingBrief = (options: {
+		id: string;
+		title: string;
+		dispatchedAt: string;
+		followUps?: number;
+		repository?: { host: "qorpera" | "github.com"; owner: string; name: string; baseBranch: string };
+		species?: "coding" | "in-house";
+	}) => {
+		const species = options.species ?? "coding";
+		return writeWorkerBriefFile({
+			id: options.id,
+			title: options.title,
+			species,
+			...(species === "coding"
+				? {
+						harness: "codex" as const,
+						repository: options.repository ?? {
+							host: "qorpera",
+							owner: "acme",
+							name: "shop",
+							baseBranch: "main",
+						},
+					}
+				: {}),
+			access: "read",
+			revival: "batch",
+			dispatchedAt: options.dispatchedAt,
+			followUps: options.followUps ?? 0,
+			followedUpAt: options.followUps ? options.dispatchedAt : null,
+			goal: "Deliver the requested change.",
+			doneWhen: "Checks pass and main is updated.",
+			context: null,
+			sources: [],
+			...workerStandingTexts({ species, access: "read", revival: "batch" }),
+			followUp: options.followUps ? "Keep going." : null,
+		});
+	};
+
+	const todo = (id: string, status: "open" | "blocked" | "done" | "cancelled" = "open") =>
+		writeTodoFile({
+			id,
+			title: "Shop work",
+			status,
+			requestedBy: null,
+			detail: "",
+		});
+
+	async function statusFixture(seed: {
+		files?: Record<string, string>;
+		folders?: string[];
+		links?: Record<string, string>;
+		rawFiles?: Record<string, Uint8Array>;
+	}) {
+		const allPaths = [
+			...Object.keys(seed.files ?? {}),
+			...Object.keys(seed.links ?? {}),
+			...Object.keys(seed.rawFiles ?? {}),
+			...(seed.folders ?? []),
+		];
+		const f = await folderWriterFixture({
+			files: seed.files,
+			folders: [...new Set([...(seed.folders ?? []), ...ancestors(allPaths)])],
+			links: seed.links,
+		});
+		for (const [path, bytes] of Object.entries(seed.rawFiles ?? {})) {
+			f.seed(path, bytes, "application/octet-stream");
+		}
+		const tools = cloudCodeTools({ folder: f.folder, identity: f.identity });
+		const boundary = new CloudNativeToolBoundary({
+			companyId: f.identity.companyId,
+			runId: f.identity.runId,
+			identity: f.identity,
+			tools,
+			assertActive: (signal) => f.run.assertActive(signal),
+			signal: f.run.signal,
+		});
+		let callId = 0;
+		const invoke = async (args: Record<string, unknown>) => {
+			const response = await boundary.invoke(`status_${++callId}`, "qorpera", "manage_code", args);
+			const envelope = JSON.parse(response.contentItems[0].text) as CloudToolResult;
+			return {
+				success: response.success,
+				status: envelope.status,
+				truncated: envelope.content.truncated,
+				text: envelope.content.text,
+			};
+		};
+		return { ...f, boundary, invoke };
+	}
+
+	it("summarizes sibling sessions, worktrees, recent changes, checks and records strict read provenance", async () => {
+		const activeId = "10000000-0000-4000-8000-000000000001";
+		const queuedId = "10000000-0000-4000-8000-000000000002";
+		const blockedId = "10000000-0000-4000-8000-000000000003";
+		const doneId = "10000000-0000-4000-8000-000000000004";
+		const closedTodoWorkerId = "10000000-0000-4000-8000-000000000005";
+		const otherRepoId = "10000000-0000-4000-8000-000000000006";
+		const githubRepoId = "10000000-0000-4000-8000-000000000007";
+		const inHouseId = "10000000-0000-4000-8000-000000000008";
+		const orphanWorktreeId = "10000000-0000-4000-8000-000000000099";
+
+		const f = await statusFixture({
+			folders: [
+				"code/acme/shop/main",
+				`code/acme/shop/worktrees/${activeId}`,
+				`code/acme/shop/worktrees/${doneId}`,
+				`code/acme/shop/worktrees/${orphanWorktreeId}`,
+			],
+			files: {
+				"code/acme/shop/changes/index.md": [
+					"# Changes",
+					"",
+					"Live: https://shop-demo.qorpera.com/ (change 12)",
+					"Ready in What's new: change 13",
+					"",
+					"- 13 · 2026-11-21 · ready · Add promo codes",
+					"- 12 · 2026-11-20 · live · Update cart totals",
+					"- 11 · 2026-11-19 · undone · Broken header",
+				].join("\n"),
+				"code/acme/shop/main/.qorpera/checks.json": JSON.stringify({
+					checks: [
+						{ name: "install", run: "npm ci", timeoutSeconds: 180 },
+						{ name: "lint", run: "npm run lint", needs: ["install"] },
+						{ name: "test", run: "npm test", cwd: "apps/web", needs: ["install"], timeoutSeconds: 300 },
+					],
+					site: { folder: "dist", name: "shop-demo", title: "Acme Shop" },
+				}),
+				"QorperaOS/agents/nora/todos/checkout.md": todo("20000000-0000-4000-8000-000000000001", "open"),
+				"QorperaOS/agents/nora/todos/checkout/cart-fix/brief.md": codingBrief({
+					id: activeId,
+					title: "Fix cart totals",
+					dispatchedAt: "2026-11-21T10:00:00.000Z",
+					followUps: 1,
+				}),
+				"QorperaOS/agents/nora/todos/checkout/queued-task/brief.md": codingBrief({
+					id: queuedId,
+					title: "Add coupon validation",
+					dispatchedAt: "2026-11-21T11:00:00.000Z",
+				}),
+				"QorperaOS/agents/nora/todos/checkout/already-done/brief.md": codingBrief({
+					id: doneId,
+					title: "Initial layout",
+					dispatchedAt: "2026-11-20T09:00:00.000Z",
+				}),
+				"QorperaOS/agents/nora/todos/checkout/already-done/results.md": writeWorkerResultsFile({
+					outcome: "succeeded",
+					reportedAt: "2026-11-20T10:00:00.000Z",
+					decision: null,
+					note: null,
+					summary: "Landed cleanly.",
+					needs: null,
+					files: [],
+				}),
+				"QorperaOS/agents/nora/todos/checkout/research/brief.md": codingBrief({
+					id: inHouseId,
+					title: "Market notes",
+					dispatchedAt: "2026-11-21T08:00:00.000Z",
+					species: "in-house",
+				}),
+				"QorperaOS/agents/nora/todos/archived-work.md": todo("20000000-0000-4000-8000-000000000002", "done"),
+				"QorperaOS/agents/nora/todos/archived-work/old-session/brief.md": codingBrief({
+					id: closedTodoWorkerId,
+					title: "Old finished todo worker",
+					dispatchedAt: "2026-11-19T08:00:00.000Z",
+				}),
+				"QorperaOS/agents/mira/todos/shipping.md": todo("20000000-0000-4000-8000-000000000003", "open"),
+				"QorperaOS/agents/mira/todos/shipping/rates/brief.md": codingBrief({
+					id: blockedId,
+					title: "Integrate shipping rates",
+					dispatchedAt: "2026-11-21T09:00:00.000Z",
+				}),
+				"QorperaOS/agents/mira/todos/shipping/rates/results.md": writeWorkerResultsFile({
+					outcome: "blocked",
+					reportedAt: "2026-11-21T09:30:00.000Z",
+					decision: null,
+					note: null,
+					summary: "Need carrier API sandbox key.",
+					needs: "Provide sandbox carrier credentials.",
+					files: [],
+				}),
+				"QorperaOS/agents/mira/todos/shipping/other-repo/brief.md": codingBrief({
+					id: otherRepoId,
+					title: "Touch other repo",
+					dispatchedAt: "2026-11-21T09:00:00.000Z",
+					repository: { host: "qorpera", owner: "acme", name: "billing", baseBranch: "main" },
+				}),
+				"QorperaOS/agents/mira/todos/shipping/github-repo/brief.md": codingBrief({
+					id: githubRepoId,
+					title: "Touch GitHub repo",
+					dispatchedAt: "2026-11-21T09:00:00.000Z",
+					repository: { host: "github.com", owner: "acme", name: "shop", baseBranch: "main" },
+				}),
+			},
+		});
+		try {
+			const answer = await f.invoke({ action: "status", owner: "acme", name: "shop" });
+			expect(answer).toMatchObject({ success: true, status: "ok", truncated: false });
+			const parsed = JSON.parse(answer.text);
+			expect(parsed).toMatchObject({
+				schema: "qorpera.code-status/v1",
+				repository: {
+					owner: "acme",
+					name: "shop",
+					path: "code/acme/shop",
+					hasMain: true,
+					restoring: false,
+				},
+				sessionsTruncated: false,
+				worktreesTruncated: false,
+				recentChanges: {
+					present: true,
+					notices: ["Live: https://shop-demo.qorpera.com/ (change 12)", "Ready in What's new: change 13"],
+					totalListed: 3,
+					changes: [
+						{ change: 13, date: "2026-11-21", state: "ready", summary: "Add promo codes" },
+						{ change: 12, date: "2026-11-20", state: "live", summary: "Update cart totals" },
+						{ change: 11, date: "2026-11-19", state: "undone", summary: "Broken header" },
+					],
+				},
+				checks: {
+					present: true,
+					valid: true,
+					path: "code/acme/shop/main/.qorpera/checks.json",
+					mode: "dag",
+					totalTimeoutSeconds: 1080,
+					checks: [
+						{ name: "install", cwd: ".", timeoutSeconds: 180 },
+						{ name: "lint", cwd: ".", timeoutSeconds: 600, needs: ["install"] },
+						{ name: "test", cwd: "apps/web", timeoutSeconds: 300, needs: ["install"] },
+					],
+					site: { folder: "dist", name: "shop-demo", title: "Acme Shop" },
+				},
+			});
+			expect(parsed.sessions).toEqual([
+				{
+					workerId: queuedId,
+					agent: "nora",
+					todoKey: "checkout",
+					workerKey: "queued-task",
+					title: "Add coupon validation",
+					state: "active",
+					harness: "codex",
+					dispatchedAt: "2026-11-21T11:00:00Z",
+					followUps: 0,
+					hasWorktree: false,
+					path: "QorperaOS/agents/nora/todos/checkout/queued-task",
+				},
+				{
+					workerId: activeId,
+					agent: "nora",
+					todoKey: "checkout",
+					workerKey: "cart-fix",
+					title: "Fix cart totals",
+					state: "active",
+					harness: "codex",
+					dispatchedAt: "2026-11-21T10:00:00Z",
+					followUps: 1,
+					hasWorktree: true,
+					path: "QorperaOS/agents/nora/todos/checkout/cart-fix",
+				},
+				{
+					workerId: blockedId,
+					agent: "mira",
+					todoKey: "shipping",
+					workerKey: "rates",
+					title: "Integrate shipping rates",
+					state: "blocked",
+					harness: "codex",
+					dispatchedAt: "2026-11-21T09:00:00Z",
+					followUps: 0,
+					needs: "Provide sandbox carrier credentials.",
+					hasWorktree: false,
+					path: "QorperaOS/agents/mira/todos/shipping/rates",
+				},
+			]);
+			expect(parsed.worktrees).toEqual([
+				{
+					workerId: activeId,
+					path: `code/acme/shop/worktrees/${activeId}`,
+					updatedAt: expect.any(String),
+					session: {
+						agent: "nora",
+						todoKey: "checkout",
+						workerKey: "cart-fix",
+						title: "Fix cart totals",
+						state: "active",
+					},
+				},
+				{
+					workerId: doneId,
+					path: `code/acme/shop/worktrees/${doneId}`,
+					updatedAt: expect.any(String),
+					session: {
+						agent: "nora",
+						todoKey: "checkout",
+						workerKey: "already-done",
+						title: "Initial layout",
+						state: "succeeded",
+					},
+				},
+				{
+					workerId: orphanWorktreeId,
+					path: `code/acme/shop/worktrees/${orphanWorktreeId}`,
+					updatedAt: expect.any(String),
+				},
+			]);
+			expect(f.releases).toHaveLength(1);
+			const release = f.releases[0] as { p_output_sha256: string; p_reads: { path: string }[] };
+			expect(release.p_output_sha256).toBe(createHash("sha256").update(answer.text, "utf8").digest("hex"));
+			const releasedPaths = release.p_reads.map((item) => item.path);
+			expect(releasedPaths).toContain("code/acme/shop");
+			expect(releasedPaths).toContain("code/acme/shop/changes/index.md");
+			expect(releasedPaths).toContain("code/acme/shop/main/.qorpera/checks.json");
+			expect(releasedPaths).toContain(`code/acme/shop/worktrees/${activeId}`);
+			expect(releasedPaths).toContain("QorperaOS/agents/nora/todos/checkout/cart-fix/brief.md");
+			expect(releasedPaths).toContain("QorperaOS/agents/mira/todos/shipping/rates/results.md");
+		} finally {
+			f.boundary.close();
+			f.run.close();
+		}
+	});
+
+	it("refuses when the repository is missing or not a folder", async () => {
+		const missing = await statusFixture({});
+		try {
+			const refused = await missing.invoke({ action: "status", owner: "acme", name: "ghost" });
+			expect(refused).toMatchObject({
+				success: false,
+				status: "denied",
+				text: "REFUSED: There is no repository at code/acme/ghost/: list code/ to see the repositories kept here.",
+			});
+			expect(missing.releases).toEqual([]);
+		} finally {
+			missing.boundary.close();
+			missing.run.close();
+		}
+		const notFolder = await statusFixture({ files: { "code/acme/shop": "not a folder" } });
+		try {
+			const refused = await notFolder.invoke({ action: "status", owner: "acme", name: "shop" });
+			expect(refused).toMatchObject({
+				success: false,
+				status: "denied",
+				text: "REFUSED: code/acme/shop is not a repository folder.",
+			});
+		} finally {
+			notFolder.boundary.close();
+			notFolder.run.close();
+		}
+	});
+
+	it("reports restoring state, missing index, and checks file missing, invalid, symlink, oversized and non-UTF-8 cases", async () => {
+		const bare = await statusFixture({
+			folders: ["code/acme/shop/main"],
+			files: { "code/acme/shop/restoring.json": "{}" },
+		});
+		try {
+			const parsed = JSON.parse((await bare.invoke({ action: "status", owner: "acme", name: "shop" })).text);
+			expect(parsed.repository).toMatchObject({ hasMain: true, restoring: true });
+			expect(parsed.recentChanges).toEqual({ present: false, notices: [], totalListed: 0, changes: [] });
+			expect(parsed.checks).toEqual({ present: false, path: "code/acme/shop/main/.qorpera/checks.json" });
+		} finally {
+			bare.boundary.close();
+			bare.run.close();
+		}
+
+		const invalidJson = await statusFixture({
+			folders: ["code/acme/shop/main"],
+			files: { "code/acme/shop/main/.qorpera/checks.json": '{"checks":[]}' },
+		});
+		try {
+			const parsed = JSON.parse((await invalidJson.invoke({ action: "status", owner: "acme", name: "shop" })).text);
+			expect(parsed.checks).toMatchObject({
+				present: true,
+				valid: false,
+				problems: [{ at: "/checks", code: "INVALID_VALUE" }],
+			});
+		} finally {
+			invalidJson.boundary.close();
+			invalidJson.run.close();
+		}
+
+		const linked = await statusFixture({
+			folders: ["code/acme/shop/main/.qorpera"],
+			links: { "code/acme/shop/main/.qorpera/checks.json": "../real.json" },
+		});
+		try {
+			const parsed = JSON.parse((await linked.invoke({ action: "status", owner: "acme", name: "shop" })).text);
+			expect(parsed.checks).toMatchObject({
+				present: true,
+				valid: false,
+				problems: [{ code: "NOT_A_FILE" }],
+			});
+		} finally {
+			linked.boundary.close();
+			linked.run.close();
+		}
+
+		const oversized = await statusFixture({
+			folders: ["code/acme/shop/main"],
+			files: { "code/acme/shop/main/.qorpera/checks.json": "x".repeat(16 * 1024 + 1) },
+		});
+		try {
+			const parsed = JSON.parse((await oversized.invoke({ action: "status", owner: "acme", name: "shop" })).text);
+			expect(parsed.checks).toMatchObject({
+				present: true,
+				valid: false,
+				problems: [{ code: "TOO_LARGE" }],
+			});
+		} finally {
+			oversized.boundary.close();
+			oversized.run.close();
+		}
+
+		const binary = await statusFixture({
+			folders: ["code/acme/shop/main"],
+			rawFiles: { "code/acme/shop/main/.qorpera/checks.json": new Uint8Array([0xff, 0xfe, 0x00]) },
+		});
+		try {
+			const parsed = JSON.parse((await binary.invoke({ action: "status", owner: "acme", name: "shop" })).text);
+			expect(parsed.checks).toMatchObject({
+				present: true,
+				valid: false,
+				problems: [{ code: "NOT_UTF8" }],
+			});
+		} finally {
+			binary.boundary.close();
+			binary.run.close();
+		}
+	});
+
+	it("redacts secrets before hashing the release and refuses when release read provenance is revoked", async () => {
+		const secret = "whsec_TESTSECRETVALUE1234567890";
+		const f = await statusFixture({
+			folders: ["code/acme/shop/main"],
+			files: {
+				"QorperaOS/agents/nora/todos/hooks.md": todo("20000000-0000-4000-8000-000000000010", "open"),
+				"QorperaOS/agents/nora/todos/hooks/verify/brief.md": codingBrief({
+					id: "10000000-0000-4000-8000-000000000010",
+					title: `Verify ${secret}`,
+					dispatchedAt: "2026-11-21T12:00:00.000Z",
+				}),
+			},
+		});
+		try {
+			const answer = await f.invoke({ action: "status", owner: "acme", name: "shop" });
+			expect(answer).toMatchObject({ success: true, status: "ok" });
+			expect(answer.text).not.toContain(secret);
+			expect(answer.text).toContain("whsec_[REDACTED]");
+			const release = f.releases[0] as { p_output_sha256: string };
+			expect(release.p_output_sha256).toBe(createHash("sha256").update(answer.text, "utf8").digest("hex"));
+		} finally {
+			f.boundary.close();
+			f.run.close();
+		}
+
+		const receipt = {
+			resourceId: "30000000-0000-4000-8000-000000000001",
+			resourceRevision: 1,
+			grantId: "30000000-0000-4000-8000-000000000002",
+			grantRevision: 1,
+		};
+		const revoked = await fixture((method, args) => {
+			if (method === "qorpera_folder_read") {
+				const path = args.p_path as string;
+				if (path === "code/acme/shop" || path === "code/acme/shop/main") {
+					return {
+						schema: "qorpera.folder-read/v1",
+						asOfSeq: 1,
+						found: true,
+						entry: {
+							path,
+							kind: "folder",
+							version: "30000000-0000-4000-8000-000000000010",
+							seq: 1,
+							updatedAt: "2026-11-21T00:00:00Z",
+							authority: receipt,
+						},
+					};
+				}
+				return { schema: "qorpera.folder-read/v1", asOfSeq: 1, found: false, entry: null };
+			}
+			if (method === "qorpera_folder_record_release") {
+				throw sqlError("42501", "A released read is no longer readable");
+			}
+			throw new Error(`Unexpected ${method}`);
+		});
+		try {
+			const refused = await revoked.invoke({ action: "status", owner: "acme", name: "shop" });
+			expect(refused).toMatchObject({ success: false, status: "denied" });
+			expect(refused.text).toContain("READ_REVOKED");
+			expect(refused.text).not.toContain("qorpera.code-status/v1");
+		} finally {
+			revoked.run.close();
+		}
+	});
+
+	it("shrinks large status payloads to fit one tool result and sets worktreesTruncated", async () => {
+		const worktreeFolders = Array.from(
+			{ length: 100 },
+			(_, i) => `code/acme/shop/worktrees/10000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`,
+		);
+		const files: Record<string, string> = {
+			"QorperaOS/agents/nora/todos/big.md": todo("20000000-0000-4000-8000-000000000020", "open"),
+		};
+		for (let i = 0; i < 40; i++) {
+			const id = `10000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`;
+			files[`QorperaOS/agents/nora/todos/big/task-${String(i).padStart(2, "0")}/brief.md`] = codingBrief({
+				id,
+				title: `Long sibling coding session title number ${i} ${"x".repeat(120)}`,
+				dispatchedAt: `2026-11-21T10:${String(i).padStart(2, "0")}:00.000Z`,
+			});
+		}
+		const f = await statusFixture({
+			folders: ["code/acme/shop/main", ...worktreeFolders],
+			files,
+		});
+		try {
+			const answer = await f.invoke({ action: "status", owner: "acme", name: "shop" });
+			expect(answer).toMatchObject({ success: true, status: "ok", truncated: false });
+			const parsed = JSON.parse(answer.text);
+			expect(parsed.worktreesTruncated || parsed.sessionsTruncated).toBe(true);
+			expect(parsed.worktrees.length).toBeLessThan(100);
+		} finally {
+			f.boundary.close();
 			f.run.close();
 		}
 	});

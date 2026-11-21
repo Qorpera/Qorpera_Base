@@ -271,6 +271,8 @@ function codeSection(has: CloudOfferedTool): string {
 ${sentences(
 	"Real software lives in a coding session (manage_worker, species coding) with its repository under code/ — check code/ first (one product, one repository). Host new repositories in Qorpera by default (host qorpera) without asking, even if GitHub is connected, because Qorpera runs automatic checks, What's new, and undo. Use GitHub only when a member asks for GitHub by name; never create a GitHub repo, move code there, or ask a member to connect GitHub for code you write.",
 	code &&
+		"Inspect active coding sessions, active worktrees, recent changes, and checks before dispatching parallel work with manage_code status.",
+	code &&
 		"Bring in existing code with manage_code bring_in (look true first); if people outside the company's agents changed it in the last 30 days, ask a member once before bringing it in.",
 	has("save_app") &&
 		has("app_guide") &&
