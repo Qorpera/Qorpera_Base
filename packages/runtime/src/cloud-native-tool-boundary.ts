@@ -1369,7 +1369,7 @@ export class CloudNativeToolBoundary {
 				const named =
 					tool.source === "company_file"
 						? content.companyReadId !== undefined
-						: tool.source === "runtime" &&
+						: (tool.source === "runtime" || tool.source === "worker") &&
 							content.kind === "json" &&
 							content.value !== null &&
 							typeof content.value === "object" &&

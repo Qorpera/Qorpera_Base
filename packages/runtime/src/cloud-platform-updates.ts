@@ -251,6 +251,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Repository status and pre-flight checks",
 		text: "Before dispatching parallel coding sessions on a Qorpera repository, call manage_code with action status to inspect its live state in one step: active or blocked coding sessions across the team, active worktrees, recent landed changes, and its checks setup. Inside coding sessions, agents can also run the repository checks pre-flight before handing in, receiving structured pass or fail results per check without landing unfinished work.",
 	},
+	{
+		id: "coding-visual-screenshot-inspection",
+		kind: "capability",
+		date: "2026-11-21",
+		title: "Visual screenshot inspection in coding sessions",
+		text: "Coding sessions can now visually inspect screenshots of web interfaces they build before handing work in. Inside a coding session, the agent can start a local dev or preview server, capture PNG, JPEG, or WebP screenshots with headless Chromium or Playwright across desktop and mobile viewports, and view the rendered images directly in its context to catch layout, styling, and responsive bugs before committing. Ask for visual verification when dispatching coding work on websites or UI changes.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;
