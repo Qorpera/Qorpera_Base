@@ -846,7 +846,9 @@ class Reconciler:
         self.problems = []
         at = time.time()
         # LXD first, then the map: a plug always comes before its machine, so every machine in this view of LXD
-        # already has its entry, and an entry's machine missing from it was really gone when LXD was read.
+        # already has its entry, and an entry's machine missing from it was really gone when LXD was read. Any
+        # later per-instance port re-read only refreshes or drops an entry already read from the map, so a 404
+        # still means the machine was gone at that point.
         try:
             instances = lxd_instances(self.args.lxd_socket, self.args.lxd_fixture)
         except Exception as error:  # noqa: BLE001 - LXD unreadable: change nothing, report it
@@ -883,7 +885,8 @@ class Reconciler:
             for project, name in recheck_keys:
                 try:
                     fresh = lxd_instance(self.args.lxd_socket, self.args.lxd_fixture, project, name)
-                except Exception:  # noqa: BLE001 - fail closed if confirmation read fails
+                except Exception as error:  # noqa: BLE001 - fail closed if confirmation read fails
+                    self.problems.append(f"cannot re-read {project}/{name}: {error}"[:300])
                     continue
                 if fresh is None:
                     by_name.pop((project, name), None)

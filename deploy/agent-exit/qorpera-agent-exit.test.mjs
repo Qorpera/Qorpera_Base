@@ -1393,7 +1393,6 @@ describe("the agent plug", { skip: pythonUsable ? false : "needs Python 3.11 or 
 		});
 		await new Promise((resolve) => server.listen(sock, resolve));
 		try {
-			const startedAt = Date.now();
 			const res = await new Promise((resolve) => {
 				const child = spawn(
 					"python3",
@@ -1405,7 +1404,7 @@ describe("the agent plug", { skip: pythonUsable ? false : "needs Python 3.11 or 
 						"--lxd-socket",
 						sock,
 						"--port-recheck-seconds",
-						"0.15",
+						"0.05",
 						"--reload-dns",
 						"true",
 						"--flush-log",
@@ -1419,9 +1418,7 @@ describe("the agent plug", { skip: pythonUsable ? false : "needs Python 3.11 or 
 				});
 				child.on("close", (code) => resolve({ code, stderr }));
 			});
-			const elapsedMs = Date.now() - startedAt;
 			assert.equal(res.code, 0, res.stderr);
-			assert.ok(elapsedMs < 550, `4 detached VMs should share one 0.15s sleep, took ${elapsedMs}ms`);
 			const status = JSON.parse(readFileSync(join(run, "plug.json"), "utf8"));
 			assert.equal(
 				status.problems.some((p) => p.includes("vm-stop-race")),
@@ -1448,6 +1445,11 @@ describe("the agent plug", { skip: pythonUsable ? false : "needs Python 3.11 or 
 				true,
 				`LXD 500 during recheck must fail closed as unhealthy: ${JSON.stringify(status.problems)}`,
 			);
+			assert.equal(
+				status.problems.some((p) => p.includes("cannot re-read qp/vm-recheck-500")),
+				true,
+				`LXD 500 during recheck must preserve diagnostic reason: ${JSON.stringify(status.problems)}`,
+			);
 			const raceFlushes = readFileSync(flushRaceLog, "utf8").trim().split("\n").filter(Boolean);
 			assert.ok(raceFlushes.includes(stopping.address), "re-confirmed Stopped VM is flushed on the same pass");
 			assert.equal(raceFlushes.includes(deleted.address), false, "404 VM takes missing path, not stale flush");
@@ -1463,11 +1465,13 @@ import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("plug", sys.argv[1])
 plug = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(plug)
+sleeps = []
+plug.time.sleep = lambda seconds: sleeps.append(seconds)
 paths = plug.Paths(sys.argv[2], sys.argv[3], sys.argv[4])
 class Args:
     lxd_socket = sys.argv[5]
     lxd_fixture = None
-    port_recheck_seconds = 0.0
+    port_recheck_seconds = 0.25
     reload_dns = "true"
     flush_log = sys.argv[6]
     netns = "qexit"
@@ -1478,6 +1482,7 @@ orig = r.sync_bridge
 def spy(ok, ports):
     captured["ports"] = sorted(ports)
     captured["ok"] = sorted(ok.keys())
+    captured["sleeps"] = list(sleeps)
     return orig(ok, ports)
 r.sync_bridge = spy
 r.pass_once()
@@ -1503,6 +1508,7 @@ print(json.dumps(captured))
 			});
 			assert.equal(bridgeCheck.status, 0, bridgeCheck.stderr);
 			const captured = JSON.parse(bridgeCheck.stdout.trim().split("\n").at(-1));
+			assert.deepEqual(captured.sleeps, [0.25], "4 detached VMs must share exactly one batched sleep per pass");
 			assert.equal(
 				captured.ports.some(([p]) => p === "tap-old-stop" || p === "tap-old-gone"),
 				false,
