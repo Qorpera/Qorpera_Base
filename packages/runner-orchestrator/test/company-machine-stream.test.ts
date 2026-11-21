@@ -296,7 +296,8 @@ describe("a desktop's live picture (20260930745000)", () => {
 
 	it("encodes an area as a PNG of its own pixels, and the pointer as RGBA with its mask", async () => {
 		const pixels = Buffer.alloc(5 * 3 * 4);
-		for (let i = 0; i < 15; i++) pixels.set([(255 - i * 17) & 0xff, (i * 53) & 0xff, (200 - i * 31) & 0xff, 0], i * 4);
+		for (let i = 0; i < 15; i++)
+			pixels.set([(255 - i * 17) & 0xff, (i * 53) & 0xff, (200 - i * 31) & 0xff, 0], i * 4);
 		const png = decodePng(await encodePng(5, 3, pixels));
 		expect(png).toMatchObject({ width: 5, height: 3, channels: 3 });
 		for (let i = 0; i < 15; i++) {
