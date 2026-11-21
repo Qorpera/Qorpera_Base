@@ -11,6 +11,7 @@ export const SURFACE_KINDS = [
 	"dashboard",
 	"brand",
 	"product",
+	"report",
 	"custom",
 	"inbox",
 	"money",
@@ -40,6 +41,7 @@ const KIND_SPECS: Readonly<Record<SurfaceKind, KindSpec>> = {
 	dashboard: { emblem: "chart", tint: "#12a467", subtitle: phrase("KPIs & cashflow") },
 	brand: { emblem: "spark", tint: "#d76f45", subtitle: phrase("Colors, type & voice") },
 	product: { emblem: "box", tint: "#ec7a2c", subtitle: phrase("Specs, colorways & BOM") },
+	report: { emblem: "book", tint: "#4a55a2", subtitle: phrase("Essays, analysis & charts") },
 	custom: { emblem: "star", tint: "#6c839b", subtitle: phrase("Custom surface") },
 	inbox: { emblem: "mail", tint: "#2f63d8", subtitle: phrase("Mail & follow-ups") },
 	money: { emblem: "bank", tint: "#0fa958", subtitle: phrase("Balances & invoices") },
@@ -109,6 +111,7 @@ export function inferSurfaceKind(surface: Pick<SurfaceSummary, "slug" | "icon" |
 		return "custom";
 	}
 	if (surface.archetype === "studio") {
+		if (icon === "book" || /report|journal|essay|analysis|blog|research|philosophy/.test(slug)) return "report";
 		if (icon === "database" || /(^|-)(data|database|tables|crm)(-|$)/.test(slug)) return "database";
 		if (icon === "box" || icon === "board" || /product|hardware|spec|headband/.test(slug)) return "product";
 		if (icon === "spark" || /brand/.test(slug)) return "brand";

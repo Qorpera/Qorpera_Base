@@ -262,6 +262,7 @@ describe("creating surfaces", () => {
 			"dashboard",
 			"brand",
 			"product",
+			"report",
 			"custom",
 		]);
 		const custom = sheet.querySelector<HTMLElement>(".surface-create-custom")!;
@@ -397,8 +398,8 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		const productSlugs = store.state.surfaces
 			.filter((surface) => surface.group === "products")
 			.map((surface) => surface.slug);
-		expect(productSlugs).toEqual(["website", "phone-app", "product", "financials"]);
-		expect(activeTaskSessions(store.state)).toHaveLength(4);
+		expect(productSlugs).toEqual(["website", "phone-app", "product", "financials", "reports"]);
+		expect(activeTaskSessions(store.state)).toHaveLength(5);
 		expect(store.state.automations.length).toBeGreaterThanOrEqual(2);
 
 		const productSurface = store.state.surfaces.find((surface) => surface.slug === "product")!;
@@ -466,21 +467,58 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		view.el.querySelectorAll<HTMLButtonElement>(".surface-compare-tab")[0]!.click();
 		view.update();
 		const openBtn = view.el.querySelectorAll<HTMLButtonElement>(".surface-compare-open")[1]!;
+		expect(view.el.querySelector(".surface-mount iframe.surface-local-frame")).toBeNull();
 		openBtn.click();
 		await flush();
 		view.update();
 		expect(store.state.mode).toBe("preview");
 		expect(view.el.querySelector<HTMLElement>(".surface-mount")?.hidden).toBe(false);
-		expect(localFrame.srcdoc).toContain("Portræt og telefon");
+		const freshFrame = view.el.querySelector<HTMLIFrameElement>(".surface-mount iframe.surface-local-frame")!;
+		expect(freshFrame).not.toBe(localFrame);
+		expect(freshFrame.srcdoc).toContain("Portræt og telefon");
 		view.dispose();
 		store.dispose();
 	});
 
-	it("renders Product Studio with interactive 3D viewer, grounded vendor cards, inline diffs, and side-by-side Compare", async () => {
+	it("renders Phone App Compare as two side-by-side phones with a Single phone A/B flipper", async () => {
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
 			localInteractive: true,
 			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		store.setDevice("mobile");
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "phone-app");
+		document.body.append(view.el);
+		await flush();
+		store.setMode("compare");
+		view.update();
+
+		expect(view.el.querySelector(".surface-viewport")?.classList.contains("is-compare-mobile")).toBe(true);
+		expect(view.el.querySelector(".surface-frames")?.classList.contains("is-mobile-side")).toBe(true);
+		expect(view.el.querySelectorAll(".surface-compare-column")).toHaveLength(2);
+
+		const singleBtn = view.el.querySelector<HTMLButtonElement>(
+			'[data-act="mobile-compare-layout"][data-layout="single"]',
+		)!;
+		singleBtn.click();
+		expect(view.el.querySelector(".surface-frames")?.classList.contains("is-mobile-single")).toBe(true);
+		expect(view.el.querySelectorAll(".surface-compare-column")).toHaveLength(1);
+		const flipButtons = [...view.el.querySelectorAll<HTMLButtonElement>('[data-act="mobile-compare-pick"]')];
+		expect(flipButtons).toHaveLength(2);
+		flipButtons[0]!.click();
+		expect(view.el.querySelector(".surface-compare-column strong")?.textContent).toBe("Live baseline");
+		view.dispose();
+		store.dispose();
+	});
+
+	it("organizes Product Studio into focused tabs without dumping everything on Overview and links to Reports", async () => {
+		const navigated: string[] = [];
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+			onNavigateSurface: (slug) => navigated.push(slug),
 		});
 		await store.load();
 		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "product");
@@ -489,7 +527,7 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		view.update();
 
 		expect(view.el.querySelector(".studio-3d-canvas")).not.toBeNull();
-		expect(view.el.querySelectorAll(".studio-vendor-card")).toHaveLength(4);
+		expect(view.el.querySelectorAll(".studio-vendor-card")).toHaveLength(0);
 		expect(view.el.querySelector(".studio-diff-prev")?.textContent).toBe("Prototype v2 (BrainBit evaluering)");
 		expect(view.el.querySelector(".studio-diff-next")?.textContent).toBe("Klar til Batch 1 (BrainBit låst)");
 
@@ -499,18 +537,65 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 
 		const tabs = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")];
 		expect(tabs.map((tab) => tab.textContent)).toEqual([
-			"All",
-			"3D Studio",
+			"Overview",
 			"Specs & BOM",
 			"Production & Vendors",
 			"Brief & Files",
 		]);
+
+		tabs[2]!.click();
+		expect(view.el.querySelectorAll(".studio-vendor-card")).toHaveLength(4);
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-open-surface"]')!.click();
+		expect(navigated).toEqual(["reports"]);
 
 		store.setMode("compare");
 		view.update();
 		expect(view.el.querySelectorAll(".studio-compare-card").length).toBeGreaterThanOrEqual(2);
 		expect(view.el.textContent).toContain("48 g");
 		expect(view.el.textContent).toContain("44 g");
+		view.dispose();
+		store.dispose();
+	});
+
+	it("renders Editorial Reports & Analysis kit with charts, tables, quotes, Public post lens, and Compare diffs", async () => {
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "reports");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		expect(view.el.querySelector(".report-headline")?.textContent).toBe(
+			"Designing the Thetaband App for Quiet Evenings",
+		);
+		expect(view.el.querySelector(".report-line-svg")).not.toBeNull();
+		expect(view.el.querySelector(".report-quote")).not.toBeNull();
+		expect(view.el.querySelector(".report-figure-panels")).not.toBeNull();
+
+		const pills = [...view.el.querySelectorAll<HTMLButtonElement>('[data-act="report-select"]')];
+		expect(pills).toHaveLength(2);
+		pills[1]!.click();
+		expect(view.el.querySelector(".report-headline")?.textContent).toBe("Why BrainBit OEM for Batch 1");
+		expect(view.el.querySelectorAll(".report-bar-row")).toHaveLength(3);
+		expect(view.el.querySelector(".report-table")).not.toBeNull();
+		expect(view.el.querySelector(".report-callout.is-decision")).not.toBeNull();
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="report-lens"][data-lens="public"]')!.click();
+		expect(view.el.querySelector(".surface-report")?.classList.contains("is-public-lens")).toBe(true);
+		expect(view.el.querySelector(".report-public-banner")?.textContent).toContain(
+			"thetaband.dk/journal/batch-1-hardware",
+		);
+		expect(view.el.querySelector(".report-callout.is-decision")).toBeNull();
+
+		store.setMode("compare");
+		view.update();
+		expect(view.el.querySelectorAll(".studio-compare-card")).toHaveLength(2);
+		expect(view.el.textContent).toContain("398 kr.");
+		expect(view.el.textContent).toContain("410 kr.");
 		view.dispose();
 		store.dispose();
 	});

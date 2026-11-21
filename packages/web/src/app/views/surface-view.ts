@@ -26,6 +26,7 @@ import {
 } from "../surfaces-store.ts";
 import { SurfaceDoorStage } from "./surface-door.ts";
 import { surfaceTile } from "./surface-rail.ts";
+import { SurfaceReportView } from "./surface-report-view.ts";
 import { SurfaceSessionDrawer } from "./surface-session-drawer.ts";
 import { SurfaceStudioView } from "./surface-studio-view.ts";
 
@@ -47,7 +48,7 @@ export interface SurfaceViewHost {
 
 interface CompareColumn {
 	readonly stage?: SurfaceDoorStage;
-	readonly localFrame?: HTMLIFrameElement;
+	localFrame?: HTMLIFrameElement;
 	localDoc?: string;
 	readonly column: HTMLElement;
 	readonly title: HTMLButtonElement;
@@ -137,8 +138,11 @@ export class SurfaceView {
 	#handoffTarget = "";
 	#target: PointToChangeTarget | undefined;
 	#mount: SurfaceMount | undefined;
+	#localHost: HTMLElement | undefined;
 	#localFrame: HTMLIFrameElement | undefined;
 	#localSiteShown = "";
+	#mobileCompareLayout: "side" | "single" = "side";
+	#mobileSingleId = "";
 	#mountedFor = "";
 	#barShown = "";
 	#framesShown = "";
@@ -254,6 +258,7 @@ export class SurfaceView {
 			this.#composer.hidden = true;
 			this.#frames.hidden = true;
 			this.#mountSlot.hidden = false;
+			this.#localHost = undefined;
 			this.#localFrame = undefined;
 			this.#localSiteShown = "";
 			this.#mountedFor = "";
@@ -281,9 +286,17 @@ export class SurfaceView {
 		this.#drawBar(surface);
 		this.#drawMount(surface);
 		this.#drawFrames(surface);
-		if (this.#localFrame) {
-			if (this.#mountSlot.hidden) this.#localSiteShown = "";
-			else this.#drawLocalLiveSite(surface);
+		if (this.#localHost) {
+			if (this.#mountSlot.hidden) {
+				// WHY: Unmount local srcdoc iframe while hidden so Chromium/Blink never re-attaches it in a 0x0 detached layout state.
+				if (this.#localFrame) {
+					this.#localHost.replaceChildren();
+					this.#localFrame = undefined;
+				}
+				this.#localSiteShown = "";
+			} else {
+				this.#drawLocalLiveSite(surface);
+			}
 		}
 		this.#drawChrome(surface);
 		this.#drawer.update();
@@ -467,20 +480,29 @@ export class SurfaceView {
 
 	#drawMount(surface: SurfaceSummary): void {
 		const store = this.#host.store;
-		const key = `${surface.id}:${surface.siteSlug ?? ""}:${surface.archetype}`;
+		const look = store.lookOf(surface);
+		const key = `${surface.id}:${surface.siteSlug ?? ""}:${surface.archetype}:${look.kind}`;
 		if (key !== this.#mountedFor) {
 			this.#mount?.dispose();
+			this.#localHost = undefined;
 			this.#localFrame = undefined;
 			this.#localSiteShown = "";
 			this.#mount =
 				this.#host.mount(surface, this.#lifetime.signal) ??
 				(surface.archetype === "studio"
-					? new SurfaceStudioView({
-							store,
-							surface,
-							signal: this.#lifetime.signal,
-							loadFiles: this.#host.loadStudioFiles,
-						})
+					? look.kind === "report"
+						? new SurfaceReportView({
+								store,
+								surface,
+								signal: this.#lifetime.signal,
+								loadFiles: this.#host.loadStudioFiles,
+							})
+						: new SurfaceStudioView({
+								store,
+								surface,
+								signal: this.#lifetime.signal,
+								loadFiles: this.#host.loadStudioFiles,
+							})
 					: undefined);
 			if (
 				!this.#mount &&
@@ -489,23 +511,8 @@ export class SurfaceView {
 				surface.archetype === "live_build"
 			) {
 				this.#mountedFor = key;
-				const frame = h("iframe", {
-					class: "surface-frame surface-local-frame",
-					sandbox: "allow-scripts",
-					title: t("Preview of {title}", { title: surface.title }),
-				});
-				frame.addEventListener(
-					"load",
-					() => {
-						frame.contentWindow?.postMessage(
-							{ type: SURFACE_INSPECTOR_MODE_MESSAGE, active: this.#pointing },
-							"*",
-						);
-					},
-					{ signal: this.#lifetime.signal },
-				);
-				this.#localFrame = frame;
-				this.#mountSlot.replaceChildren(h("div", { class: "surface-local-site" }, frame));
+				this.#localHost = h("div", { class: "surface-local-site" });
+				this.#mountSlot.replaceChildren(this.#localHost);
 			} else {
 				// WHY: Retry mount on next update when an ops view (e.g. Files) waits for company team permissions to load.
 				if (this.#mount) this.#mountedFor = key;
@@ -514,7 +521,7 @@ export class SurfaceView {
 						h(
 							"div",
 							{ class: "surface-empty" },
-							surfaceTile(surface, store.lookOf(surface), 30, "is-hero"),
+							surfaceTile(surface, look, 30, "is-hero"),
 							h("h2", null, surface.title),
 							h(
 								"p",
@@ -530,9 +537,28 @@ export class SurfaceView {
 		this.#mount?.update();
 	}
 
+	#createLocalFrame(title: string, html: string, attachInspector: boolean): HTMLIFrameElement {
+		const frame = h("iframe", {
+			class: "surface-frame surface-local-frame",
+			sandbox: "allow-scripts",
+			title,
+		});
+		if (attachInspector) {
+			frame.addEventListener(
+				"load",
+				() => {
+					frame.contentWindow?.postMessage({ type: SURFACE_INSPECTOR_MODE_MESSAGE, active: this.#pointing }, "*");
+				},
+				{ signal: this.#lifetime.signal },
+			);
+		}
+		frame.srcdoc = html;
+		return frame;
+	}
+
 	#drawLocalLiveSite(surface: SurfaceSummary): void {
-		const frame = this.#localFrame;
-		if (!frame) return;
+		const host = this.#localHost;
+		if (!host) return;
 		const store = this.#host.store;
 		const state = store.state;
 		const workspace = state.workspaces[surface.id];
@@ -557,9 +583,9 @@ export class SurfaceView {
 			workspace?.briefSummary,
 			appliedChanges.map((change) => [change.id, change.title, change.summary]),
 		]);
-		if (key === this.#localSiteShown) return;
+		if (key === this.#localSiteShown && this.#localFrame?.parentElement === host) return;
 		this.#localSiteShown = key;
-		frame.srcdoc = renderLocalSitePreviewHtml(
+		const html = renderLocalSitePreviewHtml(
 			store.companyName,
 			surface,
 			appliedChanges,
@@ -568,6 +594,10 @@ export class SurfaceView {
 			workspace?.briefSummary ?? undefined,
 			look.accent,
 		);
+		// WHY: Mount a fresh iframe element on every document swap so Blink always lays out and paints srcdoc cleanly.
+		const frame = this.#createLocalFrame(t("Preview of {title}", { title: surface.title }), html, true);
+		this.#localFrame = frame;
+		host.replaceChildren(frame);
 	}
 
 	#clearCompare(): void {
@@ -602,10 +632,14 @@ export class SurfaceView {
 			state.compareTargetId && targetOptions.some((option) => option.id === state.compareTargetId)
 				? state.compareTargetId
 				: (targetOptions[0]?.id ?? "sessions");
+		const mobileCompare = compare && state.device === "mobile";
 		const key = JSON.stringify([
 			mode,
 			compare,
 			localCompare,
+			mobileCompare,
+			this.#mobileCompareLayout,
+			this.#mobileSingleId,
 			activeTarget,
 			state.compareExcludedSessions,
 			showPrimary,
@@ -625,66 +659,14 @@ export class SurfaceView {
 		]);
 		if (key === this.#framesShown) return;
 		this.#framesShown = key;
+		this.#viewport.classList.toggle("is-compare-mobile", mobileCompare);
 		this.#frames.classList.toggle("is-compare", compare);
+		this.#frames.classList.toggle("is-mobile-side", mobileCompare && this.#mobileCompareLayout === "side");
+		this.#frames.classList.toggle("is-mobile-single", mobileCompare && this.#mobileCompareLayout === "single");
 		if (compare && (preview || localCompare)) {
 			if (this.#pointing) this.#setPointing(false);
 			this.#primaryDoor.clear();
 			const exploration = explorations.find((item) => item.id === activeTarget);
-			const showCompareBar =
-				targetOptions.length > 1 || (localCompare && Boolean(exploration) && plainSessions.length > 0);
-			this.#compareBar.hidden = !showCompareBar;
-			if (showCompareBar) {
-				const barChildren: HTMLElement[] = [];
-				if (targetOptions.length > 1) {
-					barChildren.push(
-						h(
-							"div",
-							{ class: "surface-compare-tabs", role: "tablist", "aria-label": t("Compare sets") },
-							targetOptions.map((option) =>
-								h(
-									"button",
-									{
-										type: "button",
-										role: "tab",
-										class: `surface-compare-tab${option.id === activeTarget ? " is-on" : ""}`,
-										"aria-selected": String(option.id === activeTarget),
-										"data-act": "compare-target",
-										"data-target": option.id,
-									},
-									option.label,
-								),
-							),
-						),
-					);
-				}
-				if (localCompare && exploration && plainSessions.length > 0) {
-					barChildren.push(
-						h(
-							"div",
-							{ class: "surface-compare-overlays" },
-							h("span", { class: "surface-compare-overlay-label" }, t("Layer with:")),
-							...plainSessions.map((session) => {
-								const on = !state.compareExcludedSessions[session.id];
-								return h(
-									"button",
-									{
-										type: "button",
-										class: `surface-compare-overlay${on ? " is-on" : ""}`,
-										"aria-pressed": String(on),
-										"data-act": "compare-overlay",
-										"data-session": session.id,
-									},
-									on ? icon("check") : null,
-									session.title,
-								);
-							}),
-						),
-					);
-				}
-				this.#compareBar.replaceChildren(...barChildren);
-			} else {
-				this.#compareBar.replaceChildren();
-			}
 
 			if (this.#framesMode !== "compare") {
 				this.#primaryDoor.el.remove();
@@ -782,7 +764,132 @@ export class SurfaceView {
 				}
 			}
 
-			const keep = new Set(items.map((item) => item.id));
+			const activeSingleId =
+				this.#mobileSingleId && items.some((item) => item.id === this.#mobileSingleId)
+					? this.#mobileSingleId
+					: (items[1]?.id ?? items[0]?.id ?? "");
+			const singleMode = mobileCompare && this.#mobileCompareLayout === "single" && items.length > 1;
+			const visibleItems = singleMode ? items.filter((item) => item.id === activeSingleId) : items;
+
+			const showCompareBar =
+				targetOptions.length > 1 ||
+				(localCompare && Boolean(exploration) && plainSessions.length > 0) ||
+				(mobileCompare && items.length > 1);
+			this.#compareBar.hidden = !showCompareBar;
+			if (showCompareBar) {
+				const barChildren: HTMLElement[] = [];
+				if (targetOptions.length > 1) {
+					barChildren.push(
+						h(
+							"div",
+							{ class: "surface-compare-tabs", role: "tablist", "aria-label": t("Compare sets") },
+							targetOptions.map((option) =>
+								h(
+									"button",
+									{
+										type: "button",
+										role: "tab",
+										class: `surface-compare-tab${option.id === activeTarget ? " is-on" : ""}`,
+										"aria-selected": String(option.id === activeTarget),
+										"data-act": "compare-target",
+										"data-target": option.id,
+									},
+									option.label,
+								),
+							),
+						),
+					);
+				}
+				if (singleMode) {
+					barChildren.push(
+						h(
+							"div",
+							{
+								class: "surface-compare-tabs surface-mobile-flip",
+								role: "tablist",
+								"aria-label": t("Phone screen"),
+							},
+							items.map((item) =>
+								h(
+									"button",
+									{
+										type: "button",
+										role: "tab",
+										class: `surface-compare-tab${item.id === activeSingleId ? " is-on" : ""}`,
+										"aria-selected": String(item.id === activeSingleId),
+										"data-act": "mobile-compare-pick",
+										"data-item": item.id,
+									},
+									item.label,
+								),
+							),
+						),
+					);
+				}
+				if (localCompare && exploration && plainSessions.length > 0) {
+					barChildren.push(
+						h(
+							"div",
+							{ class: "surface-compare-overlays" },
+							h("span", { class: "surface-compare-overlay-label" }, t("Layer with:")),
+							...plainSessions.map((session) => {
+								const on = !state.compareExcludedSessions[session.id];
+								return h(
+									"button",
+									{
+										type: "button",
+										class: `surface-compare-overlay${on ? " is-on" : ""}`,
+										"aria-pressed": String(on),
+										"data-act": "compare-overlay",
+										"data-session": session.id,
+									},
+									on ? icon("check") : null,
+									session.title,
+								);
+							}),
+						),
+					);
+				}
+				if (mobileCompare && items.length > 1) {
+					barChildren.push(
+						h(
+							"div",
+							{
+								class: "surface-seg surface-mobile-compare-seg",
+								role: "group",
+								"aria-label": t("Phone compare layout"),
+							},
+							h(
+								"button",
+								{
+									type: "button",
+									class: this.#mobileCompareLayout === "side" ? "is-on" : "",
+									"aria-pressed": String(this.#mobileCompareLayout === "side"),
+									"data-act": "mobile-compare-layout",
+									"data-layout": "side",
+								},
+								t("Side by side"),
+							),
+							h(
+								"button",
+								{
+									type: "button",
+									class: this.#mobileCompareLayout === "single" ? "is-on" : "",
+									"aria-pressed": String(this.#mobileCompareLayout === "single"),
+									"data-act": "mobile-compare-layout",
+									"data-layout": "single",
+								},
+								t("Single phone"),
+							),
+						),
+					);
+				}
+				this.#compareBar.replaceChildren(...barChildren);
+			} else {
+				this.#compareBar.replaceChildren();
+			}
+
+			const keep = new Set(visibleItems.map((item) => item.id));
 			for (const [id, entry] of this.#compareDoors) {
 				if (keep.has(id)) continue;
 				entry.abort.abort();
@@ -791,7 +898,7 @@ export class SurfaceView {
 				this.#compareDoors.delete(id);
 			}
 
-			for (const item of items) {
+			for (const item of visibleItems) {
 				let entry = this.#compareDoors.get(item.id);
 				if (!entry) {
 					const abort = new AbortController();
@@ -841,18 +948,14 @@ export class SurfaceView {
 						h("div", { class: "surface-compare-actions" }, steer ?? null, approve ?? null),
 					);
 					if (item.html !== undefined) {
-						const localFrame = h("iframe", {
-							class: "surface-frame surface-local-frame",
-							sandbox: "allow-scripts",
-							title: item.label,
-						});
+						const localFrame = this.#createLocalFrame(item.label, item.html, false);
 						const column = h(
 							"div",
 							{ class: "surface-compare-column" },
 							head,
 							h("div", { class: "surface-door-stage surface-local-site" }, localFrame),
 						);
-						entry = { localFrame, column, title, steer, approve, abort };
+						entry = { localFrame, localDoc: item.html, column, title, steer, approve, abort };
 					} else {
 						const stage = new SurfaceDoorStage(abort.signal);
 						const column = h("div", { class: "surface-compare-column" }, head, stage.el);
@@ -871,8 +974,10 @@ export class SurfaceView {
 				}
 				if (entry.localFrame && item.html !== undefined) {
 					if (entry.localDoc !== item.html) {
+						const fresh = this.#createLocalFrame(item.label, item.html, false);
+						entry.localFrame.replaceWith(fresh);
+						entry.localFrame = fresh;
 						entry.localDoc = item.html;
-						entry.localFrame.srcdoc = item.html;
 					}
 				} else if (entry.stage && item.frameState) {
 					entry.stage.sync(item.frameState, item.label);
@@ -1340,6 +1445,16 @@ export class SurfaceView {
 				return;
 			case "compare-overlay":
 				if (target.dataset.session) store.toggleCompareOverlay(target.dataset.session);
+				return;
+			case "mobile-compare-layout":
+				this.#mobileCompareLayout = target.dataset.layout === "single" ? "single" : "side";
+				this.#drawFrames(surface);
+				return;
+			case "mobile-compare-pick":
+				if (target.dataset.item) {
+					this.#mobileSingleId = target.dataset.item;
+					this.#drawFrames(surface);
+				}
 				return;
 			case "inspect-base":
 				store.setMode("live");

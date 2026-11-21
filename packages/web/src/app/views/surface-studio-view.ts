@@ -75,7 +75,7 @@ interface StudioDoc {
 	readonly changed: boolean;
 }
 
-type StudioTab = "all" | "3d" | "specs" | "vendors" | "files";
+type StudioTab = "overview" | "specs" | "vendors" | "files";
 
 const COLOR_VALUE = /^(?:#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})|(?:rgb|hsl)a?\([^)]+\)|oklch\([^)]+\))$/i;
 const COLOR_GROUPS = new Set(["colors", "color", "palette", "swatches", "colorways"]);
@@ -301,7 +301,7 @@ export class SurfaceStudioView {
 	#loading = false;
 	#lastConflict: SurfacePreviewConflict | null = null;
 	#viewer3d: Studio3DViewer | undefined;
-	#tab: StudioTab = "all";
+	#tab: StudioTab = "overview";
 	#shown = "";
 
 	constructor(options: SurfaceStudioOptions) {
@@ -618,30 +618,24 @@ export class SurfaceStudioView {
 			return;
 		}
 
+		const isVendorSpec = (spec: SpecSection) => /vendor|supplier/i.test(spec.path);
+		const primarySpec = specs.find((spec) => !isVendorSpec(spec));
+		const vendorSpecs = specs.filter(isVendorSpec);
+		const detailSpecs = specs.filter((spec) => !isVendorSpec(spec));
+		const tabbed = Boolean(modelConfig || vendors.length);
 		const availableTabs: { readonly id: StudioTab; readonly label: string }[] = [];
-		if (modelConfig) availableTabs.push({ id: "3d", label: t("3D Studio") });
-		if (colors.length || typography.length || specs.length)
-			availableTabs.push({ id: "specs", label: t("Specs & BOM") });
-		if (vendors.length) availableTabs.push({ id: "vendors", label: t("Production & Vendors") });
-		if (docs.length) availableTabs.push({ id: "files", label: t("Brief & Files") });
-		if (availableTabs.length >= 2 && (modelConfig || vendors.length)) {
-			if (this.#tab !== "all" && !availableTabs.some((tab) => tab.id === this.#tab)) this.#tab = "all";
+		if (tabbed) {
+			availableTabs.push({ id: "overview", label: t("Overview") });
+			if (detailSpecs.some((spec) => spec.tables.length > 0 || spec.entries.length > 0) || typography.length)
+				availableTabs.push({ id: "specs", label: t("Specs & BOM") });
+			if (vendors.length || vendorSpecs.length)
+				availableTabs.push({ id: "vendors", label: t("Production & Vendors") });
+			if (docs.length) availableTabs.push({ id: "files", label: t("Brief & Files") });
+			if (!availableTabs.some((tab) => tab.id === this.#tab)) this.#tab = availableTabs[0]!.id;
 			children.push(
 				h(
 					"div",
 					{ class: "studio-tabs", role: "tablist", "aria-label": t("Studio views") },
-					h(
-						"button",
-						{
-							type: "button",
-							role: "tab",
-							class: `studio-tab${this.#tab === "all" ? " is-on" : ""}`,
-							"aria-selected": String(this.#tab === "all"),
-							"data-act": "studio-tab",
-							"data-tab": "all",
-						},
-						t("All"),
-					),
 					...availableTabs.map((tab) =>
 						h(
 							"button",
@@ -658,19 +652,71 @@ export class SurfaceStudioView {
 					),
 				),
 			);
-		} else {
-			this.#tab = "all";
 		}
 
-		const showTab = (tab: StudioTab) => this.#tab === "all" || this.#tab === tab;
+		const renderSpecEntries = (entries: readonly SpecEntry[]) =>
+			h(
+				"dl",
+				{ class: "studio-kv" },
+				entries.flatMap((entry) => [
+					h("dt", { class: entry.changed ? "is-changed" : "" }, entry.key),
+					entry.changed && entry.prev !== undefined
+						? h(
+								"dd",
+								{ class: "is-changed studio-diff-dd" },
+								h("span", { class: "studio-diff-prev" }, entry.prev),
+								h("span", { class: "studio-diff-arrow", "aria-hidden": "true" }, "→"),
+								h("span", { class: "studio-diff-next" }, entry.value),
+							)
+						: h("dd", { class: entry.changed ? "is-changed" : "" }, entry.value),
+				]),
+			);
 
-		if (modelConfig && showTab("3d")) {
+		const renderSpecTables = (tables: readonly SpecTable[]) =>
+			tables.map((table) =>
+				h(
+					"div",
+					{ class: "studio-table-wrap" },
+					h("h3", { class: "studio-subhead" }, table.title),
+					h(
+						"table",
+						{ class: "studio-table" },
+						h(
+							"thead",
+							null,
+							h(
+								"tr",
+								null,
+								table.columns.map((col) => h("th", null, readableName(col))),
+							),
+						),
+						h(
+							"tbody",
+							null,
+							table.rows.map((row) =>
+								h(
+									"tr",
+									null,
+									table.columns.map((col) => h("td", null, row[col] ?? "–")),
+								),
+							),
+						),
+					),
+				),
+			);
+
+		const showOverview = !tabbed || this.#tab === "overview";
+		const showSpecs = !tabbed || this.#tab === "specs";
+		const showVendors = !tabbed || this.#tab === "vendors";
+		const showFiles = !tabbed || this.#tab === "files";
+
+		if (modelConfig && showOverview) {
 			if (!this.#viewer3d) this.#viewer3d = new Studio3DViewer(modelConfig, this.#lifetime.signal);
 			else this.#viewer3d.update(modelConfig);
 			sections.push(this.#viewer3d.el);
 		}
 
-		if (colors.length && showTab("specs")) {
+		if (colors.length && showOverview) {
 			sections.push(
 				h(
 					"section",
@@ -702,7 +748,24 @@ export class SurfaceStudioView {
 			);
 		}
 
-		if (typography.length && showTab("specs")) {
+		if (tabbed && showOverview && primarySpec && primarySpec.entries.length > 0) {
+			sections.push(
+				h(
+					"section",
+					{ class: `studio-section${primarySpec.changed ? " is-changed" : ""}`, "data-file": primarySpec.path },
+					h(
+						"div",
+						{ class: "studio-section-head" },
+						h("h2", null, t("Key specs")),
+						h("code", { class: "studio-file-tag" }, primarySpec.path),
+						primarySpec.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
+					),
+					renderSpecEntries(primarySpec.entries),
+				),
+			);
+		}
+
+		if (typography.length && showSpecs) {
 			sections.push(
 				h(
 					"section",
@@ -731,49 +794,101 @@ export class SurfaceStudioView {
 			);
 		}
 
-		if (vendors.length && showTab("vendors")) {
-			sections.push(
-				h(
-					"section",
-					{ class: "studio-section studio-vendors" },
+		if (showVendors && (vendors.length || vendorSpecs.length)) {
+			for (const spec of vendorSpecs) {
+				if (!spec.entries.length) continue;
+				sections.push(
 					h(
-						"div",
-						{ class: "studio-section-head" },
-						h("h2", null, t("Production & Vendors")),
-						h("span", { class: "studio-file-tag" }, t("{count} suppliers", { count: vendors.length })),
+						"section",
+						{ class: `studio-section${spec.changed ? " is-changed" : ""}`, "data-file": spec.path },
+						h(
+							"div",
+							{ class: "studio-section-head" },
+							h("h2", null, t("Production plan")),
+							h("code", { class: "studio-file-tag" }, spec.path),
+							spec.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
+						),
+						renderSpecEntries(spec.entries),
 					),
+				);
+			}
+			if (vendors.length) {
+				sections.push(
 					h(
-						"div",
-						{ class: "studio-vendor-grid" },
-						vendors.map((item) =>
-							h(
-								"article",
-								{ class: `studio-vendor-card${item.changed ? " is-changed" : ""}` },
+						"section",
+						{ class: "studio-section studio-vendors" },
+						h(
+							"div",
+							{ class: "studio-section-head" },
+							h("h2", null, t("Production & Vendors")),
+							h("span", { class: "studio-file-tag" }, t("{count} suppliers", { count: vendors.length })),
+						),
+						h(
+							"div",
+							{ class: "studio-vendor-grid" },
+							vendors.map((item) =>
 								h(
-									"div",
-									{ class: "studio-vendor-top" },
-									h("strong", null, item.vendor),
-									item.status ? h("span", { class: "studio-vendor-status" }, item.status) : null,
+									"article",
+									{ class: `studio-vendor-card${item.changed ? " is-changed" : ""}` },
+									h(
+										"div",
+										{ class: "studio-vendor-top" },
+										h("strong", null, item.vendor),
+										item.status ? h("span", { class: "studio-vendor-status" }, item.status) : null,
+									),
+									item.component ? h("p", { class: "studio-vendor-comp" }, item.component) : null,
+									h(
+										"div",
+										{ class: "studio-vendor-meta" },
+										item.unitPrice ? h("span", null, item.unitPrice) : null,
+										item.moq ? h("span", null, t("MOQ {moq}", { moq: item.moq })) : null,
+										item.leadTime ? h("span", null, item.leadTime) : null,
+										item.region ? h("span", null, item.region) : null,
+									),
+									item.certifications ? h("div", { class: "studio-vendor-certs" }, item.certifications) : null,
 								),
-								item.component ? h("p", { class: "studio-vendor-comp" }, item.component) : null,
-								h(
-									"div",
-									{ class: "studio-vendor-meta" },
-									item.unitPrice ? h("span", null, item.unitPrice) : null,
-									item.moq ? h("span", null, t("MOQ {moq}", { moq: item.moq })) : null,
-									item.leadTime ? h("span", null, item.leadTime) : null,
-									item.region ? h("span", null, item.region) : null,
-								),
-								item.certifications ? h("div", { class: "studio-vendor-certs" }, item.certifications) : null,
 							),
 						),
 					),
-				),
+				);
+			}
+			const reportSurface = state.surfaces.find(
+				(item) => item.status === "active" && store.lookOf(item).kind === "report",
 			);
+			if (reportSurface) {
+				sections.push(
+					h(
+						"div",
+						{ class: "studio-report-link" },
+						h(
+							"div",
+							{ class: "studio-report-link-copy" },
+							h("strong", null, t("Deep-dive vendor analysis")),
+							h(
+								"p",
+								null,
+								t("Read the full rationale, score comparison, and cost curves in {surface}.", {
+									surface: reportSurface.title,
+								}),
+							),
+						),
+						h(
+							"button",
+							{
+								type: "button",
+								class: "btn btn-small",
+								"data-act": "studio-open-surface",
+								"data-slug": reportSurface.slug,
+							},
+							t("Open report"),
+						),
+					),
+				);
+			}
 		}
 
-		if (showTab("specs")) {
-			for (const spec of specs) {
+		if (showSpecs) {
+			for (const spec of detailSpecs) {
 				sections.push(
 					h(
 						"section",
@@ -785,61 +900,14 @@ export class SurfaceStudioView {
 							h("code", { class: "studio-file-tag" }, spec.path),
 							spec.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
 						),
-						spec.entries.length
-							? h(
-									"dl",
-									{ class: "studio-kv" },
-									spec.entries.flatMap((entry) => [
-										h("dt", { class: entry.changed ? "is-changed" : "" }, entry.key),
-										entry.changed && entry.prev !== undefined
-											? h(
-													"dd",
-													{ class: "is-changed studio-diff-dd" },
-													h("span", { class: "studio-diff-prev" }, entry.prev),
-													h("span", { class: "studio-diff-arrow", "aria-hidden": "true" }, "→"),
-													h("span", { class: "studio-diff-next" }, entry.value),
-												)
-											: h("dd", { class: entry.changed ? "is-changed" : "" }, entry.value),
-									]),
-								)
-							: null,
-						...spec.tables.map((table) =>
-							h(
-								"div",
-								{ class: "studio-table-wrap" },
-								h("h3", { class: "studio-subhead" }, table.title),
-								h(
-									"table",
-									{ class: "studio-table" },
-									h(
-										"thead",
-										null,
-										h(
-											"tr",
-											null,
-											table.columns.map((col) => h("th", null, readableName(col))),
-										),
-									),
-									h(
-										"tbody",
-										null,
-										table.rows.map((row) =>
-											h(
-												"tr",
-												null,
-												table.columns.map((col) => h("td", null, row[col] ?? "–")),
-											),
-										),
-									),
-								),
-							),
-						),
+						spec.entries.length ? renderSpecEntries(spec.entries) : null,
+						...renderSpecTables(spec.tables),
 					),
 				);
 			}
 		}
 
-		if (showTab("files")) {
+		if (showFiles) {
 			for (const doc of docs) {
 				sections.push(
 					h(
@@ -874,6 +942,10 @@ export class SurfaceStudioView {
 				this.#tab = next;
 				this.update();
 			}
+			return;
+		}
+		if (act === "studio-open-surface" && target.dataset.slug) {
+			this.#options.store.navigateSurface(target.dataset.slug);
 			return;
 		}
 		if (act === "studio-reconcile") {

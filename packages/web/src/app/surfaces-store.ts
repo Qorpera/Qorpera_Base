@@ -1046,6 +1046,10 @@ export class SurfacesStore {
 		this.store.set({ mode });
 	}
 
+	navigateSurface(slug: string): void {
+		this.#options.onNavigateSurface?.(slug);
+	}
+
 	compareExploration(explorationId: string): void {
 		this.store.set({ mode: "compare", compareTargetId: explorationId });
 	}

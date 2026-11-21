@@ -150,6 +150,7 @@ function sessionRow(
 		{
 			type: "button",
 			class: "surface-session-main",
+			title: session.title,
 			"data-act": "open",
 			"data-surface": session.surfaceId,
 			"data-session": session.id,
@@ -388,6 +389,7 @@ function surfaceRow(
 		{
 			class: `rail-surface${active ? " active" : ""}`,
 			href: surfaceHash(profileId, surface.slug),
+			title: surface.title,
 			draggable: "false",
 			"data-surface-slug": surface.slug,
 			"data-surface-kind": look.kind,

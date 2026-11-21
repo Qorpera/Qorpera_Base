@@ -342,6 +342,16 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		folderRoot: "product",
 	},
 	{
+		id: "report",
+		slug: "reports",
+		kind: "report",
+		title: phrase("Report & Analysis"),
+		description: phrase("Long-form essays, vendor analyses, and design notes with inline charts and tables."),
+		archetype: "studio",
+		icon: "book",
+		folderRoot: "reports",
+	},
+	{
 		id: "custom",
 		slug: null,
 		kind: "custom",
