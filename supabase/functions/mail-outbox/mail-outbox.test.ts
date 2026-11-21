@@ -79,6 +79,7 @@ function outbox(
 		calls,
 		keys,
 		sleeps,
+		store,
 		handle: (request: Request) =>
 			handleMailOutbox(request, {
 				keys: [KEY, "legacy-service-role-key-0123456789"],
@@ -462,11 +463,27 @@ describe("mail outbox attachments", () => {
 	});
 
 	it("reads company attachments from self-hosted object-gateway when configured, without Supabase Storage", async () => {
+		const validToken = "B".repeat(43);
+		const digest = "d".repeat(64);
 		const requests: [string, RequestInit][] = [];
+		const okHeaders = { "content-type": "application/octet-stream", etag: `"sha256-${digest}"` };
 		const answers = [
-			new Response(new Uint8Array([9, 8, 7]), { status: 200 }),
+			new Response(new Uint8Array([9, 8, 7]), { status: 200, headers: okHeaders }),
 			new Response(JSON.stringify({ error: "Object not found" }), { status: 404 }),
 			new Response(JSON.stringify({ error: "Unavailable" }), { status: 503 }),
+			new Response("<html>proxy login</html>", { status: 200, headers: { "content-type": "text/html" } }),
+			new Response(new Uint8Array([1]), {
+				status: 200,
+				headers: { ...okHeaders, "content-length": String(9 * 1024 * 1024) },
+			}),
+			new Response(
+				new ReadableStream({
+					start(controller) {
+						controller.error(new Error("connection reset"));
+					},
+				}),
+				{ status: 200, headers: okHeaders },
+			),
 		];
 		const fetcher = (async (url: string, init: RequestInit) => {
 			requests.push([url, init]);
@@ -474,24 +491,41 @@ describe("mail outbox attachments", () => {
 		}) as unknown as typeof fetch;
 		const gatewayReader = createMailObjectReader({
 			objectGatewayUrl: "https://objects.internal.example/",
-			objectGatewayInternalToken: "internal-token-value",
+			objectGatewayInternalToken: validToken,
 			supabaseUrl: "https://project.example.test",
 			secretKey: KEY,
 			fetcher,
 		});
 		assert.ok(gatewayReader instanceof ObjectGatewayReader);
-		assert.deepEqual(await gatewayReader.get(COMPANY, "d".repeat(64)), new Uint8Array([9, 8, 7]));
-		assert.equal(await gatewayReader.get(COMPANY, "d".repeat(64)), null);
+		assert.deepEqual(await gatewayReader.get(COMPANY, digest), new Uint8Array([9, 8, 7]));
+		assert.equal(await gatewayReader.get(COMPANY, digest), null);
 		await assert.rejects(
-			gatewayReader.get(COMPANY, "d".repeat(64)),
+			gatewayReader.get(COMPANY, digest),
 			(error: unknown) => error instanceof MailSendError && error.retryable && /HTTP 503/.test(error.message),
 		);
-		assert.equal(
-			requests[0][0],
-			`https://objects.internal.example/v1/internal-objects/${COMPANY}/${"d".repeat(64)}`,
+		await assert.rejects(
+			gatewayReader.get(COMPANY, digest),
+			(error: unknown) => error instanceof MailSendError && error.retryable && /unexpected object response/.test(error.message),
 		);
-		assert.deepEqual(requests[0][1].headers, { authorization: "Bearer internal-token-value" });
+		await assert.rejects(
+			gatewayReader.get(COMPANY, digest),
+			(error: unknown) => error instanceof MailSendError && error.retryable && /size limit/.test(error.message),
+		);
+		await assert.rejects(
+			gatewayReader.get(COMPANY, digest),
+			(error: unknown) => error instanceof MailSendError && error.retryable && /connection reset/.test(error.message),
+		);
+		assert.equal(requests[0][0], `https://objects.internal.example/v1/internal-objects/${COMPANY}/${digest}`);
+		assert.deepEqual(requests[0][1].headers, { authorization: `Bearer ${validToken}` });
 		assert.equal(requests[0][1].redirect, "error");
+		assert.doesNotThrow(() => new ObjectGatewayReader("http://127.0.0.1:8080", validToken, fetcher));
+		assert.throws(() => new ObjectGatewayReader("http://objects.internal.example", validToken), /clean https origin/);
+		assert.throws(
+			() => new ObjectGatewayReader("https://objects.internal.example/v1/internal-objects", validToken),
+			/clean https origin/,
+		);
+		assert.throws(() => new ObjectGatewayReader("https://user:pass@objects.internal.example", validToken), /clean https origin/);
+		assert.throws(() => new ObjectGatewayReader("https://objects.internal.example", "short-token"), /43-character/);
 		assert.throws(
 			() =>
 				createMailObjectReader({
@@ -499,13 +533,45 @@ describe("mail outbox attachments", () => {
 					supabaseUrl: "https://project.example.test",
 					secretKey: KEY,
 				}),
-			/QORPERA_OBJECT_GATEWAY_INTERNAL_TOKEN/,
+			/must be set together/,
 		);
-		assert.throws(() => new ObjectGatewayReader("https://user:pass@objects.internal.example", "tok"), /clean http/);
+		assert.throws(
+			() =>
+				createMailObjectReader({
+					objectGatewayInternalToken: validToken,
+					supabaseUrl: "https://project.example.test",
+					secretKey: KEY,
+				}),
+			/must be set together/,
+		);
 		const fallback = createMailObjectReader({
 			supabaseUrl: "https://project.example.test",
 			secretKey: KEY,
 		});
 		assert.ok(fallback instanceof StorageObjectReader);
+		const { sender, sent } = recording();
+		const throwingObjects = outbox(
+			[job(1), job(2, { companyId: COMPANY, attachments: [companyFile(new Map(), csv, "a.csv")] })],
+			sender,
+			undefined,
+		);
+		const response = await handleMailOutbox(post(), {
+			keys: [KEY],
+			store: () => throwingObjects.store,
+			objects: () => {
+				throw new Error("bad object reader config");
+			},
+			sender,
+			pace: 0,
+		});
+		assert.deepEqual(await response.json(), {
+			claimed: 2,
+			sent: 1,
+			retrying: 1,
+			failed: 0,
+			rejected: 0,
+			messageIds: 0,
+		});
+		assert.equal(sent.length, 1);
 	});
 });

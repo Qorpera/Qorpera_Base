@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -272,7 +272,27 @@ describe("object gateway", () => {
 				headers: { authorization: `Bearer ${internalToken}` },
 			});
 			expect(badPath.status).toBe(404);
-			await writeFile(join(roots[roots.length - 1]!, profileId, sha256), Buffer.from("corrupted", "utf-8"));
+			const withQuery = await fetch(`${url}?extra=1`, {
+				headers: { authorization: `Bearer ${internalToken}` },
+			});
+			expect(withQuery.status).toBe(404);
+			const emptySha = await seed(service, Buffer.alloc(0));
+			const emptyRes = await fetch(`${service.baseUrl}/v1/internal-objects/${profileId}/${emptySha}`, {
+				headers: { authorization: `Bearer ${internalToken}` },
+			});
+			expect(emptyRes.status).toBe(200);
+			expect(emptyRes.headers.get("content-length")).toBe("0");
+			expect((await emptyRes.arrayBuffer()).byteLength).toBe(0);
+			const rootDir = roots[roots.length - 1]!;
+			const linkTarget = join(rootDir, "outside-secret");
+			await writeFile(linkTarget, payload);
+			const linkSha = "e".repeat(64);
+			await symlink(linkTarget, join(rootDir, profileId, linkSha));
+			const symlinkRes = await fetch(`${service.baseUrl}/v1/internal-objects/${profileId}/${linkSha}`, {
+				headers: { authorization: `Bearer ${internalToken}` },
+			});
+			expect(symlinkRes.status).toBe(503);
+			await writeFile(join(rootDir, profileId, sha256), Buffer.from("corrupted", "utf-8"));
 			const corrupted = await fetch(url, { headers: { authorization: `Bearer ${internalToken}` } });
 			expect(corrupted.status).toBe(503);
 			expect(readLegacySpy).not.toHaveBeenCalled();

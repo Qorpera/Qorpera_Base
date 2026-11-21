@@ -290,9 +290,7 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 					if (!options.internalObjectToken) throw new HttpError(404, "Not found");
 					if (!secureEqual(bearer(request), options.internalObjectToken)) throw new HttpError(401, "Unauthorized");
 					if (request.method !== "GET") throw new HttpError(405, "Method not allowed");
-					const match = INTERNAL_OBJECT_PATH_PATTERN.exec(
-						new URL(request.url, "http://object-gateway.invalid").pathname,
-					);
+					const match = INTERNAL_OBJECT_PATH_PATTERN.exec(request.url);
 					if (!match || !UUID_PATTERN.test(match[1] ?? "") || !SHA256_PATTERN.test(match[2] ?? ""))
 						throw new HttpError(404, "Not found");
 					let bytes: Uint8Array;
