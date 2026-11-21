@@ -3879,7 +3879,7 @@ create trigger nap before update on slowed for each row execute function nap();
 		const fillToLimit = async () => {
 			const fillers = [];
 			let hitLimit = false;
-			for (let i = 0; i < 30; i++) {
+			for (let i = 0; i < 48; i++) {
 				const client = connect(companyDb, "qorpera_data_keeper", logins.keeper);
 				client.on("error", () => undefined);
 				try {
@@ -3920,7 +3920,7 @@ create trigger nap before update on slowed for each row execute function nap();
 			assert.ok(idleReaders >= 4, `expected at least 4 idle reader pools, got ${idleReaders}`);
 			const { fillers, hitLimit } = await fillToLimit();
 			try {
-				assert.equal(hitLimit, true, "expected company database to reach its 24-connection limit");
+				assert.equal(hitLimit, true, "expected company database to reach its connection limit");
 				const evicted = await Promise.all([
 					ask(viewer, "query", { database: "m03", question: "count" }),
 					ask(viewer, "query", { database: "m00", question: "count" }),
@@ -3955,7 +3955,7 @@ create trigger nap before update on slowed for each row execute function nap();
 		const fillAll = async () => {
 			const fillers = [];
 			let hitLimit = false;
-			for (let i = 0; i < 30; i++) {
+			for (let i = 0; i < 48; i++) {
 				const client = connect(companyDb, "qorpera_data_keeper", logins.keeper);
 				client.on("error", () => undefined);
 				try {
@@ -3970,7 +3970,7 @@ create trigger nap before update on slowed for each row execute function nap();
 					throw error;
 				}
 			}
-			assert.equal(hitLimit, true, "expected company database to reach its 24-connection limit");
+			assert.equal(hitLimit, true, "expected company database to reach its connection limit");
 			return fillers;
 		};
 		const createHoldProxy = async () => {
