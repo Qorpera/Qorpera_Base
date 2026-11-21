@@ -18,12 +18,13 @@ image.
    `manifest.json` (`0444`) in either form:
    - **Signed node-release flat archive (recommended):**
      `node scripts/package-runtime-bundle-layer.mjs --archive qorpera-runtime-bundle-layer.tar.gz`
-     writes a deterministic POSIX ustar `.tar.gz` (~1.5 MB, flat filename
-     matching `deploy/node-agent/qorpera-node-agent.mjs`'s `FILE_NAME` and well
-     under `MAX_FILE_BYTES = 64 MiB`). `deploy/node-agent/make-release.mjs`
-     hashes and Ed25519-signs it directly inside `release.json` + `release.sig`,
-     and `qorpera-node-agent.mjs stage` verifies and installs it at
-     `/opt/qorpera-node/releases/<revision>/qorpera-runtime-bundle-layer.tar.gz`.
+     writes a flat POSIX ustar `.tar.gz` (~1.5 MB, deterministic tar stream and
+     gzip header for a given Node/zlib build, flat filename matching
+     `deploy/node-agent/qorpera-node-agent.mjs`'s `FILE_NAME` and well under
+     `MAX_FILE_BYTES = 64 MiB`). `deploy/node-agent/make-release.mjs` hashes and
+     Ed25519-signs the built archive bytes directly inside `release.json` +
+     `release.sig`, and `qorpera-node-agent.mjs stage` verifies and installs it
+     at `/opt/qorpera-node/releases/<revision>/qorpera-runtime-bundle-layer.tar.gz`.
    - **Verified directory:**
      `node scripts/package-runtime-bundle-layer.mjs --out <dir>` writes the
      unpacked directory plus `manifestSha256`.
