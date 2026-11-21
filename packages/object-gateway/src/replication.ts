@@ -140,6 +140,7 @@ export class ObjectGatewayReplication {
 				throw new ObjectDependencyError(409);
 			this.#invalidateDeleted(key(object));
 			await this.#journal.write(key(object), { ...object, state: "unconfirmed" });
+			this.#statusInFlight = undefined;
 			const result = await this.#store.put(profileId, sha256, bytes, proven);
 			await authority.confirm();
 			// The answer waits for the intent and the bytes only: on the NAS each synchronous write is a disk flush. The
@@ -219,6 +220,7 @@ export class ObjectGatewayReplication {
 		if (prior !== undefined && ["delete", "deleted"].includes(pendingObject(prior, name).state)) return;
 		this.#invalidateDeleted(name);
 		await this.#journal.write(name, { ...object, state: "replicate" });
+		this.#statusInFlight = undefined;
 	}
 
 	/** Folder GC, with the object's lock held: the object is gone, so its entry goes, unless it is the deleted-company
@@ -229,6 +231,7 @@ export class ObjectGatewayReplication {
 		if (prior === undefined || ["delete", "deleted"].includes(pendingObject(prior, name).state)) return;
 		this.#invalidateDeleted(name);
 		await this.#journal.remove(name);
+		this.#statusInFlight = undefined;
 	}
 
 	/** Up to `limit` blocked entries, by name after `after`, reading at most 500 entries. `next` is where the next call
@@ -284,6 +287,7 @@ export class ObjectGatewayReplication {
 			state: "blocked",
 			...(since === undefined ? {} : { missingSince: since }),
 		});
+		this.#statusInFlight = undefined;
 	}
 
 	audit(event: Record<string, unknown>): Promise<void> {
@@ -296,6 +300,7 @@ export class ObjectGatewayReplication {
 		await this.#journal.exclusive(name, async () => {
 			this.#invalidateDeleted(name);
 			await this.#journal.write(name, object);
+			this.#statusInFlight = undefined;
 			await this.#delete(object, false);
 		});
 	}
@@ -366,11 +371,15 @@ export class ObjectGatewayReplication {
 			throw new Error("Replication batch limit is invalid");
 		if (this.#running) return;
 		this.#running = true;
-		this.#lastError = false;
+		if (this.#lastError) {
+			this.#lastError = false;
+			this.#statusInFlight = undefined;
+		}
 		try {
 			// A refused audit shows as degraded and stops uploads; the entries below still go on.
 			await this.flushStoredLines().catch(() => {
 				this.#lastError = true;
+				this.#statusInFlight = undefined;
 			});
 			const names = await this.#journal.list("pending");
 			this.#pruneDeletedCache(names);
@@ -416,9 +425,11 @@ export class ObjectGatewayReplication {
 									await this.#replicate(object);
 							} catch (error) {
 								this.#lastError = true;
+								this.#statusInFlight = undefined;
 								if (error instanceof ObjectDependencyError && !error.unavailable && object.state !== "delete") {
 									this.#invalidateDeleted(name);
 									await this.#journal.write(name, { ...object, state: "blocked" });
+									this.#statusInFlight = undefined;
 									await this.audit({
 										event: "replication_blocked",
 										at: new Date().toISOString(),
@@ -431,6 +442,7 @@ export class ObjectGatewayReplication {
 					} catch {
 						pendingAborted = true;
 						this.#lastError = true;
+						this.#statusInFlight = undefined;
 					}
 				}
 			};
@@ -457,15 +469,18 @@ export class ObjectGatewayReplication {
 							}
 							this.#invalidateDeleted(name);
 							await this.#journal.write(name, { ...object, state: "unconfirmed" });
+							this.#statusInFlight = undefined;
 							try {
 								await this.#replicate({ ...object, state: "unconfirmed" });
 							} catch {
 								this.#lastError = true;
+								this.#statusInFlight = undefined;
 							}
 						});
 					} catch {
 						discoveredAborted = true;
 						this.#lastError = true;
+						this.#statusInFlight = undefined;
 					}
 				}
 			};
@@ -475,6 +490,7 @@ export class ObjectGatewayReplication {
 			if (!discoveredAborted) this.#scanCursor = discovered.length < limit ? undefined : discovered.at(-1);
 		} catch {
 			this.#lastError = true;
+			this.#statusInFlight = undefined;
 		} finally {
 			this.#running = false;
 		}

@@ -917,23 +917,19 @@ describe("cloud object outage continuity", () => {
 		const origList = journal.list.bind(journal);
 		journal.list = async (section) => {
 			listCalls++;
+			const result = await origList(section);
 			if (listCalls === 1) {
 				enteredList();
 				await listGate;
 			}
-			return origList(section);
+			return result;
 		};
 		const replication = new ObjectGatewayReplication(journal, fixture.objects, fixture.authority);
 		const first = replication.status();
 		await listEntered;
 		const second = replication.status();
 		const third = replication.status();
-		releaseList();
-		const [r1, r2, r3] = await Promise.all([first, second, third]);
 		expect(listCalls).toBe(1);
-		expect(r1).toEqual(r2);
-		expect(r2).toEqual(r3);
-		expect(r1.pending).toBe(0);
 
 		await replication.uploadWithAuthority(profileId, sha256, bytes, {
 			authorize: async () => {},
@@ -942,5 +938,11 @@ describe("cloud object outage continuity", () => {
 		const after = await replication.status();
 		expect(listCalls).toBe(2);
 		expect(after.pending).toBe(1);
+
+		releaseList();
+		const [r1, r2, r3] = await Promise.all([first, second, third]);
+		expect(r1).toEqual(r2);
+		expect(r2).toEqual(r3);
+		expect(r1.pending).toBe(0);
 	});
 });

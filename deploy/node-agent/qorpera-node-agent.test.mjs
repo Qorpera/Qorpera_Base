@@ -14,6 +14,7 @@ import {
 	symlink,
 	writeFile,
 } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -822,7 +823,6 @@ test("status checks multiple roles concurrently", async () => {
 });
 
 test("nodePorts lxdGet rejects truncated Unix socket responses cleanly", async () => {
-	const { createServer } = await import("node:net");
 	const dir = await mkdtemp(join(tmpdir(), "qorpera-node-lxd-"));
 	const sock = join(dir, "lxd.sock");
 	const server = createServer((socket) => {

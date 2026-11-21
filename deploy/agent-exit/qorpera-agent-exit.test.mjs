@@ -3355,7 +3355,7 @@ print(json.dumps({"state1": flow1.state, "hello1": len(flow1.hello), "state2": f
 		assert.deepEqual(JSON.parse(run.stdout), { state1: "done", hello1: 0, state2: "refused", hello2: 0, v1: 1 });
 	});
 
-	test("logger Writer reuses its open file descriptor and reopens on unlink or UTC day change", () => {
+	test("logger Writer reuses its open file descriptor, closes while paused, and reopens on unlink or UTC day change", () => {
 		const dir = mkdtempSync(join(tmpdir(), "qorpera-agent-exit-writer-"));
 		const script = String.raw`
 import importlib.util, json, os, sys
@@ -3363,6 +3363,7 @@ spec = importlib.util.spec_from_file_location("logmod", sys.argv[1])
 logmod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(logmod)
 w = logmod.Writer(sys.argv[2])
+pause_file = os.path.join(sys.argv[2], "paused")
 try:
     w.write({"ts": 1700000000.0, "event": "a"})
     fd1 = w._file.fileno()
@@ -3375,14 +3376,34 @@ try:
     reopened_after_unlink = (os.path.exists(p1) and w._ino == os.stat(p1).st_ino)
     w.write({"ts": 1700000000.0 + 86400.0, "event": "d"})
     rolled_day = (w._path != p1)
-    print(json.dumps({"same_fd": same_fd, "reopened_after_unlink": reopened_after_unlink, "rolled_day": rolled_day}))
+    w.pause(True, "disk low", pause_file)
+    closed_on_pause = (w._file is None)
+    w.gap("while paused")
+    closed_after_paused_gap = (w._file is None)
+    w.pause(False, "", pause_file)
+    reopened_on_resume = (w._file is not None)
+    print(json.dumps({
+        "same_fd": same_fd,
+        "reopened_after_unlink": reopened_after_unlink,
+        "rolled_day": rolled_day,
+        "closed_on_pause": closed_on_pause,
+        "closed_after_paused_gap": closed_after_paused_gap,
+        "reopened_on_resume": reopened_on_resume,
+    }))
 finally:
     w.close()
 `;
 		try {
 			const run = spawnSync("python3", ["-c", script, logger, dir], { encoding: "utf8" });
 			assert.equal(run.status, 0, run.stderr);
-			assert.deepEqual(JSON.parse(run.stdout), { same_fd: true, reopened_after_unlink: true, rolled_day: true });
+			assert.deepEqual(JSON.parse(run.stdout), {
+				same_fd: true,
+				reopened_after_unlink: true,
+				rolled_day: true,
+				closed_on_pause: true,
+				closed_after_paused_gap: true,
+				reopened_on_resume: true,
+			});
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

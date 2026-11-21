@@ -595,11 +595,13 @@ async function readRequest(request: IncomingMessage): Promise<unknown> {
 
 function response(reply: ServerResponse, status: number, value: JsonValue, headers: Record<string, string> = {}): void {
 	const body = JSON.stringify(value);
+	const closeUnread = !reply.req.complete;
 	reply.writeHead(status, {
 		"content-type": "application/json",
 		"content-length": Buffer.byteLength(body),
 		"cache-control": "no-store",
 		"x-content-type-options": "nosniff",
+		...(closeUnread ? { connection: "close" } : {}),
 		...headers,
 	});
 	reply.end(body);
@@ -779,7 +781,7 @@ export class HttpCloudSecretBrokerService {
 		this.#server = createServer((request, reply) => {
 			void this.#handle(request, reply).catch(() => reply.destroy());
 		});
-		// WHY: JSON routes enforce a 10 s body timeout in readRequest(); disabling server-wide requestTimeout stops Node from killing streaming MCP/git relays at 15 s.
+		// WHY: Disable server-wide requestTimeout so long streaming POST relays are not cut at 15 s; headersTimeout bounds headers, readRequest() bounds JSON bodies, #relay sets idleMs, and early rejections close unread bodies.
 		this.#server.requestTimeout = 0;
 		this.#server.headersTimeout = 10_000;
 		this.#server.keepAliveTimeout = 5000;

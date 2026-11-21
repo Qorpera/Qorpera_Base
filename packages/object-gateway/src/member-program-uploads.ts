@@ -80,6 +80,12 @@ function sweep(now: number): void {
 	for (const [user, upload] of uploads) if (now - upload.touched > IDLE_MS) drop(user);
 }
 
+function activeUploads(): number {
+	let count = 0;
+	for (const upload of uploads.values()) if (!upload.finished) count++;
+	return count;
+}
+
 export function forgetMemberProgramUploads(): void {
 	for (const user of [...uploads.keys()]) drop(user);
 	clearInterval(sweeping);
@@ -257,7 +263,7 @@ async function open(
 		send(response, 429, { error: "Another file of this member is going up" });
 		return;
 	}
-	if (uploads.size >= MAX_ACTIVE_UPLOADS) {
+	if (activeUploads() >= MAX_ACTIVE_UPLOADS) {
 		send(response, 429, { error: "Too many uploads are going up" });
 		return;
 	}
@@ -295,7 +301,7 @@ async function open(
 		send(response, 429, { error: "Another file of this member is going up" });
 		return;
 	}
-	if (uploads.size >= MAX_ACTIVE_UPLOADS) {
+	if (activeUploads() >= MAX_ACTIVE_UPLOADS) {
 		send(response, 429, { error: "Too many uploads are going up" });
 		return;
 	}

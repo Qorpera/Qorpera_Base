@@ -575,4 +575,22 @@ describe("a member's program file put into the company's place for programs", ()
 		const admitted = await g.open(file, path, "tok-000000000099");
 		expect(admitted.status).toBe(200);
 	});
+
+	it("does not count finished uploads against the global concurrent active upload cap", async () => {
+		const g = await gateway({
+			member: (token) => ({
+				schema: "qorpera.member-folder-writer/v1",
+				actor: { kind: "member", userId: `35000000-0000-4000-8000-${token.slice(-12).padStart(12, "0")}` },
+				profileId,
+			}),
+		});
+		const file = program(16);
+		for (let i = 0; i < 64; i++) {
+			const tok = `fin-${String(i).padStart(12, "0")}`;
+			const id = await uploadOf(await g.open(file, path, tok));
+			expect((await g.piece(id, 0, file.pieces[0]!, tok)).status).toBe(200);
+			expect((await g.finish(id, tok)).status).toBe(200);
+		}
+		expect((await g.open(file, path, "fin-000000000099")).status).toBe(200);
+	});
 });

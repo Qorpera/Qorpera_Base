@@ -309,6 +309,8 @@ class Writer:
         with self.lock:
             try:
                 self.recover()
+                if self.paused:
+                    self.close()
             except OSError:
                 pass
 
@@ -322,6 +324,8 @@ class Writer:
             try:
                 self.recover()
                 self.append(record)
+                if self.paused:
+                    self.close()
             except OSError as error:
                 if not self.unwritten:
                     self.unwritten_since = record.get("ts", time.time())
@@ -339,6 +343,8 @@ class Writer:
             self.paused = paused
             since, held = self.paused_at, self.held
             self.paused_at, self.held = (time.time(), 0) if paused else (None, 0)
+            if paused:
+                self.close()
         if paused:
             self.gap(f"paused: {reason}")
             mark(pause_file, reason)
