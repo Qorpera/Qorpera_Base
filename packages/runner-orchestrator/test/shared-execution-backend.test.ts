@@ -1507,15 +1507,13 @@ describe("warm conversations", () => {
 		const stopping = f.backend.stop(
 			{
 				runnerId,
-				runnerKind: "qorpera_computer",
-				providerAdapter: "native26-test",
-				status: "provisioned",
 				computeIdentityId,
 				workerClass: "managed_sandbox",
+				providerAdapter: "native26-test",
+				capabilities: ["agent_turn"],
 				templateKey: "qorpera-member-linux",
 				templateVersion: "v1",
-				computePolicySha256: "f".repeat(64),
-				capabilities: ["agent_turn"],
+				policySha256: "f".repeat(64),
 			},
 			"revoked",
 			signal,
