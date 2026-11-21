@@ -704,8 +704,9 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
   up to 50 quarantine entries per pass, from where the last pass stopped (a cursor, so entries that stay never starve
   the rest), each under the object's lock, re-checked to still exist there (a lane may have settled it while the scan
   waited), then `live` leaves it, `restore` and `remove` as above, `remove` always removing the replica too. A company
-  folder found empty is removed. Names that are not entries are left alone. The gateway runs the NAS probe, then the
-  scan, then the reconcile, so the scan never takes both NAS slots with the probe.
+  folder found empty is removed. Names that are not entries are left alone. The gateway serializes the NAS probe, the
+  scan's NAS calls, and reconciliation's NAS I/O through one shared maintenance gate, so maintenance never takes both
+  NAS slots at once while health probes stay fresh during long reconciliation passes.
 - **Replication:** folder GC's QRC01 409 from `authorize_replication` (an object GC holds, told apart by its message) is
   a lock conflict to the reconciler (`ObjectLockConflict`, 503): the entry stays pending, not `blocked`, and the circuit
   is left alone. snapshot-v1's cleanup fence also answers QRC01, with another message, and keeps its 409; no other RPC
