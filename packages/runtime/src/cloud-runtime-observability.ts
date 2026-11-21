@@ -640,17 +640,28 @@ export class CloudRuntimeObservability {
 
 	/** Rows the database refused, or null when the batch should be tried again. */
 	async #send(batch: readonly CloudRuntimeObservation[]): Promise<number | null> {
-		const deadline = new AbortController();
-		const signal = AbortSignal.any([this.#stop.signal, deadline.signal]);
+		const scope = new AbortController();
+		const onStop = (): void => scope.abort(this.#stop.signal.reason);
+		if (this.#stop.signal.aborted) onStop();
+		else this.#stop.signal.addEventListener("abort", onStop, { once: true });
+		let onAbort: (() => void) | undefined;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const aborted = new Promise<never>((_, reject) => {
-			const stop = () => reject(new Error("Runtime observation export stopped"));
-			signal.addEventListener("abort", stop, { once: true });
-			timer = setTimeout(() => deadline.abort(), this.#timeoutMs);
+			onAbort = () => reject(new Error("Runtime observation export stopped"));
+			if (scope.signal.aborted) {
+				onAbort();
+				return;
+			}
+			scope.signal.addEventListener("abort", onAbort, { once: true });
+			timer = setTimeout(() => scope.abort(), this.#timeoutMs);
 			timer.unref?.();
 		});
+		void aborted.catch(() => undefined);
 		try {
-			const refused = await Promise.race([Promise.resolve().then(() => this.#publish(batch, signal)), aborted]);
+			const refused = await Promise.race([
+				Promise.resolve().then(() => this.#publish(batch, scope.signal)),
+				aborted,
+			]);
 			return typeof refused === "number" && Number.isSafeInteger(refused) && refused >= 0
 				? Math.min(refused, batch.length)
 				: 0;
@@ -658,7 +669,8 @@ export class CloudRuntimeObservability {
 			return null;
 		} finally {
 			clearTimeout(timer);
-			deadline.abort();
+			this.#stop.signal.removeEventListener("abort", onStop);
+			if (onAbort) scope.signal.removeEventListener("abort", onAbort);
 		}
 	}
 

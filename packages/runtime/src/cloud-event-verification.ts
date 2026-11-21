@@ -1,5 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { isUuid, SHA256_HEX_PATTERN } from "@qorpera/contracts";
+import { withAbortScope } from "./abort-scope.ts";
 import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
 
 /**
@@ -440,7 +441,9 @@ export class CloudEventVerificationUpkeep {
 		this.#started = true;
 		const loop = (): void => {
 			if (this.#closing.signal.aborted) return;
-			this.#running = logEventVerificationPass(this.#verifications, this.#closing.signal).finally(() => {
+			this.#running = withAbortScope(this.#closing.signal, (signal) =>
+				logEventVerificationPass(this.#verifications, signal),
+			).finally(() => {
 				this.#running = undefined;
 				if (!this.#closing.signal.aborted) this.#timer = setTimeout(loop, this.#passEveryMs);
 			});
