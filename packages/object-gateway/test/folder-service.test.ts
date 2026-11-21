@@ -529,6 +529,28 @@ describe("objects on the storage server", () => {
 		expect(() => parseManifest(Buffer.from(manifest), wrong)).toThrow("does not match");
 		expect(() => parseManifest(Buffer.from(manifest), { ...wrong, executable: false, bytes: 9 })).toThrow();
 	});
+
+	it("caches parsed manifests while re-validating entry metadata and zero-copy single-chunk slices", async () => {
+		const root = await tempdir();
+		const entry = await storeFile(root, "f.txt", "abcdefgh", 1);
+		const tree = new ViewTree();
+		tree.put(entry);
+		const e = tree.get("f.txt")!;
+		const objects = new NasObjects({ root, cacheBytes: 4096 });
+		expect((await objects.read(PROFILE, e, 0, 4)).toString()).toBe("abcd");
+		expect((await objects.read(PROFILE, e, 2, 4)).toString()).toBe("cdef");
+		await expect(objects.read(PROFILE, { ...e, executable: true }, 0, 4)).rejects.toThrow("does not match");
+		await expect(objects.read(PROFILE, { ...e, mediaType: "application/json" }, 0, 4)).rejects.toThrow(
+			"does not match",
+		);
+		await expect(objects.read(PROFILE, { ...e, bytes: 9 }, 0, 4)).rejects.toThrow("does not match");
+		const chunks = [
+			{ sha256: hashOf("abcd"), bytes: 4 },
+			{ sha256: hashOf("efgh"), bytes: 4 },
+		];
+		expect((await objects.readChunks(PROFILE, chunks, 1, 2)).toString()).toBe("bc");
+		expect((await objects.readChunks(PROFILE, chunks, 2, 4)).toString()).toBe("cdef");
+	});
 });
 
 describe("folder service", () => {

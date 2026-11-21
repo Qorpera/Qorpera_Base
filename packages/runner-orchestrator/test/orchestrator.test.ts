@@ -2875,4 +2875,187 @@ describe("cloud runner orchestrator", () => {
 		await expect(orchestrator.runOnce()).rejects.toThrow("does not permit autonomous work");
 		expect(local.acquire).not.toHaveBeenCalled();
 	});
+
+	it("runs independent companies concurrently within a drain or materialization page with bounded concurrency, page-order errors and clean abort settling", async () => {
+		const ids = Array.from({ length: 6 }, (_, i) => `90000000-0000-4000-8000-00000000000${i + 1}`);
+		let inFlight = 0;
+		let maxInFlight = 0;
+		let releaseFour!: () => void;
+		const fourReached = new Promise<void>((resolve) => {
+			let seen = 0;
+			releaseFour = () => {
+				seen++;
+				if (seen === 4) resolve();
+			};
+		});
+		let openGate!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			openGate = resolve;
+		});
+		const errFirst = new CloudRunnerOrchestratorRequestError(503);
+		const errFourth = new CloudRunnerOrchestratorRequestError(502);
+		const control = controlPlane();
+		control.listFolderDrainDue = vi.fn(async () => ({ items: ids, hasMore: false }));
+		control.runFolderDrain = vi.fn(async (_drain, environmentId) => {
+			inFlight++;
+			maxInFlight = Math.max(maxInFlight, inFlight);
+			releaseFour();
+			if (environmentId === ids[3]) {
+				inFlight--;
+				throw errFourth;
+			}
+			await gate;
+			inFlight--;
+			if (environmentId === ids[0]) throw errFirst;
+			return { state: "done" };
+		});
+		const drains = new CloudFolderDrains({
+			drains: [{ name: "listen", companyLimit: 8 }],
+			concurrency: 4,
+		});
+		const running = drains.reconcile(control);
+		await fourReached;
+		expect(maxInFlight).toBe(4);
+		openGate();
+		await expect(running).rejects.toMatchObject({ errors: [errFirst, errFourth] });
+
+		let matInFlight = 0;
+		let matMaxInFlight = 0;
+		let matReleaseFour!: () => void;
+		const matFourReached = new Promise<void>((resolve) => {
+			let seen = 0;
+			matReleaseFour = () => {
+				seen++;
+				if (seen === 4) resolve();
+			};
+		});
+		let matOpenGate!: () => void;
+		const matGate = new Promise<void>((resolve) => {
+			matOpenGate = resolve;
+		});
+		const matControl = controlPlane();
+		matControl.listFolderMaterializationDue = vi.fn(async () => ({ items: ids, hasMore: false }));
+		matControl.materializeFolderCompany = vi.fn(async () => {
+			matInFlight++;
+			matMaxInFlight = Math.max(matMaxInFlight, matInFlight);
+			matReleaseFour();
+			await matGate;
+			matInFlight--;
+			return { state: "idle" as const, runIds: [] };
+		});
+		const materializer = new CloudFolderRunMaterializer({ concurrency: 4 });
+		const matRunning = materializer.reconcile(matControl);
+		await matFourReached;
+		expect(matMaxInFlight).toBe(4);
+		matOpenGate();
+		await expect(matRunning).resolves.toBeUndefined();
+
+		const ac = new AbortController();
+		let startedOnAbort = 0;
+		let settledOnAbort = 0;
+		let releaseAborted!: () => void;
+		const abortGate = new Promise<void>((resolve) => {
+			releaseAborted = resolve;
+		});
+		let twoStarted!: () => void;
+		const twoEntered = new Promise<void>((resolve) => {
+			twoStarted = resolve;
+		});
+		const abortControl = controlPlane();
+		abortControl.listFolderDrainDue = vi.fn(async () => ({ items: ids, hasMore: false }));
+		const workerAbortError = new Error("worker aborted");
+		abortControl.runFolderDrain = vi.fn(async () => {
+			startedOnAbort++;
+			if (startedOnAbort === 2) twoStarted();
+			await abortGate;
+			settledOnAbort++;
+			throw workerAbortError;
+		});
+		const abortDrains = new CloudFolderDrains({
+			drains: [{ name: "listen", companyLimit: 8 }],
+			concurrency: 2,
+		});
+		const abortRun = abortDrains.reconcile(abortControl, ac.signal);
+		await twoEntered;
+		ac.abort();
+		releaseAborted();
+		await expect(abortRun).rejects.toBe(workerAbortError);
+		expect(startedOnAbort).toBe(2);
+		expect(settledOnAbort).toBe(2);
+
+		const matAbortAc = new AbortController();
+		let matAbortStarted = 0;
+		let matAbortSettled = 0;
+		let releaseMatAbort!: () => void;
+		const matAbortGate = new Promise<void>((resolve) => {
+			releaseMatAbort = resolve;
+		});
+		let matTwoStarted!: () => void;
+		const matTwoEntered = new Promise<void>((resolve) => {
+			matTwoStarted = resolve;
+		});
+		const matAbortError = new Error("materializer worker aborted");
+		const matAbortControl = controlPlane();
+		matAbortControl.listFolderMaterializationDue = vi.fn(async () => ({ items: ids, hasMore: false }));
+		matAbortControl.materializeFolderCompany = vi.fn(async () => {
+			matAbortStarted++;
+			if (matAbortStarted === 2) matTwoStarted();
+			await matAbortGate;
+			matAbortSettled++;
+			throw matAbortError;
+		});
+		const abortMaterializer = new CloudFolderRunMaterializer({ concurrency: 2 });
+		const matAbortRun = abortMaterializer.reconcile(matAbortControl, matAbortAc.signal);
+		await matTwoEntered;
+		matAbortAc.abort();
+		releaseMatAbort();
+		await expect(matAbortRun).rejects.toBe(matAbortError);
+		expect(matAbortStarted).toBe(2);
+		expect(matAbortSettled).toBe(2);
+
+		const cleanAc = new AbortController();
+		let cleanStarted = 0;
+		let cleanSettled = 0;
+		let releaseClean!: () => void;
+		const cleanGate = new Promise<void>((resolve) => {
+			releaseClean = resolve;
+		});
+		let cleanTwoStarted!: () => void;
+		const cleanTwoEntered = new Promise<void>((resolve) => {
+			cleanTwoStarted = resolve;
+		});
+		const cleanControl = controlPlane();
+		cleanControl.listFolderDrainDue = vi.fn(async () => ({ items: ids, hasMore: false }));
+		cleanControl.runFolderDrain = vi.fn(async () => {
+			cleanStarted++;
+			if (cleanStarted === 2) cleanTwoStarted();
+			await cleanGate;
+			cleanSettled++;
+			return { state: "idle" as const, count: 0 };
+		});
+		const cleanRun = abortDrains.reconcile(cleanControl, cleanAc.signal);
+		await cleanTwoEntered;
+		const cleanReason = new Error("clean abort reason");
+		cleanAc.abort(cleanReason);
+		releaseClean();
+		await expect(cleanRun).rejects.toBe(cleanReason);
+		expect(cleanStarted).toBe(2);
+		expect(cleanSettled).toBe(2);
+
+		expect(() => new CloudFolderDrains({ concurrency: 0 })).toThrow(
+			"Folder drain concurrency is outside the supported range",
+		);
+		expect(() => new CloudFolderDrains({ concurrency: 17 })).toThrow(
+			"Folder drain concurrency is outside the supported range",
+		);
+		expect(() => new CloudFolderDrains({ concurrency: 1.5 })).toThrow(
+			"Folder drain concurrency is outside the supported range",
+		);
+		expect(() => new CloudFolderRunMaterializer({ concurrency: 0 })).toThrow(
+			"Folder materialization concurrency is outside the supported range",
+		);
+		expect(() => new CloudFolderRunMaterializer({ concurrency: 17 })).toThrow(
+			"Folder materialization concurrency is outside the supported range",
+		);
+	});
 });

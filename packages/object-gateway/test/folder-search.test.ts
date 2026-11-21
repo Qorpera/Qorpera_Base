@@ -13,7 +13,7 @@ import {
 	searchView,
 	treeOrder,
 } from "../src/folder-service/search.ts";
-import { type TreeEntry, ViewTree } from "../src/folder-service/view-tree.ts";
+import { byteOrder, sortByteOrder, type TreeEntry, ViewTree } from "../src/folder-service/view-tree.ts";
 
 const v = (n: number): string => `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
 const RECEIPT = {
@@ -799,5 +799,88 @@ describe("folder search, version 2 (keyholes S4)", () => {
 			expect(ours, `${pattern} on ${subject}`).toBe(js);
 		}
 		expect(() => compilePattern("[😀]", true)).toThrow(SearchPatternError);
+	});
+
+	it("preserves exact UTF-8 byteOrder, sortByteOrder, treeOrder, simple globs and chunk fast-path Unicode semantics", async () => {
+		const samples = [
+			"",
+			"a",
+			"ab",
+			"b",
+			"caf\u00e9",
+			"a\uD7FF",
+			"a\uE000",
+			"a\uFFFD",
+			"a\uD83D\uDE00",
+			"a\uD83D\uDE01",
+			"a\uD83D",
+		];
+		for (const x of samples) {
+			for (const y of samples) {
+				expect(byteOrder(x, y), `${JSON.stringify(x)} vs ${JSON.stringify(y)}`).toBe(
+					Buffer.compare(Buffer.from(x), Buffer.from(y)),
+				);
+			}
+		}
+		expect(sortByteOrder(samples.slice().reverse())).toEqual(
+			samples
+				.slice()
+				.reverse()
+				.sort((x, y) => Buffer.compare(Buffer.from(x), Buffer.from(y))),
+		);
+		expect(sortByteOrder(["z.ts", "a.ts", "m.ts"])).toEqual(["a.ts", "m.ts", "z.ts"]);
+		const treePaths = ["a", "a/b", "a/b/c", "a-b", "a0", "a\uE000", "a\uD83D\uDE00"];
+		expect(treePaths.slice().reverse().sort(treeOrder)).toEqual(treePaths);
+
+		expect(globMatches(compileGlob("*.ts"), "src/nested/file.ts")).toBe(true);
+		expect(globMatches(compileGlob("*.ts"), "src/nested/file.tsx")).toBe(false);
+		expect(globMatches(compileGlob("*.ts"), ".ts")).toBe(true);
+		expect(globMatches(compileGlob("a*b"), "ab")).toBe(true);
+		expect(globMatches(compileGlob("a*b"), "a")).toBe(false);
+		expect(globMatches(compileGlob("a**b"), "a123b")).toBe(true);
+		expect(globMatches(compileGlob("package.json"), "dir/package.json")).toBe(true);
+		expect(globMatches(compileGlob("package.json"), "dir/xpackage.json")).toBe(false);
+		expect(globMatches(compileGlob("*"), "dir/anything")).toBe(true);
+
+		const { source } = stage({
+			"ascii.txt": "alpha\nSharedExecutionProvider\nomega\n",
+			"kelvin.txt": "temp 300\u212a\nother\n",
+			"turkish.txt": "\u0130stanbul\nother\n",
+			"greek.txt": "\u039f\u03a3\n\u03ba\u03bf\u03c3\u03bc\u03bf\u03c2\n",
+			"miss.txt": "line one\nline two\nline three\n",
+		});
+		const cs = await searchView(source, request2("SharedExecutionProvider", { caseSensitive: true }));
+		expect(cs.hits.map((h) => [h.path, h.line])).toEqual([["ascii.txt", 2]]);
+		const ciAscii = await searchView(source, request2("sharedexecutionprovider", { caseSensitive: false }));
+		expect(ciAscii.hits.map((h) => [h.path, h.line])).toEqual([["ascii.txt", 2]]);
+		const ciKelvin = await searchView(source, request2("300k", { caseSensitive: false }));
+		expect(ciKelvin.hits.map((h) => [h.path, h.line])).toEqual([["kelvin.txt", 1]]);
+		const ciTurkish = await searchView(source, request2("i", { caseSensitive: false }));
+		expect(ciTurkish.hits.some((h) => h.path === "turkish.txt")).toBe(true);
+		const ciGreek = await searchView(source, request2("\u03bf\u03c3", { caseSensitive: false }));
+		expect(ciGreek.hits.map((h) => [h.path, h.line])).toEqual([
+			["greek.txt", 1],
+			["greek.txt", 2],
+		]);
+
+		const badUtf8 = Buffer.from([0x61, 0xff, 0x62, 0x0a]);
+		const badTree = new ViewTree();
+		badTree.put({
+			path: "bad.txt",
+			kind: "file",
+			version: v(99),
+			bytes: badUtf8.byteLength,
+			manifestSha256: "a".repeat(64),
+			fileSha256: "b".repeat(64),
+		});
+		const badSearch = await searchView(
+			{
+				tree: badTree,
+				read: async (_entry, offset, length) => badUtf8.subarray(offset, offset + length),
+				now: () => 0,
+			},
+			request2("a\uFFFDb", { caseSensitive: true }),
+		);
+		expect(badSearch.hits.map((h) => [h.path, h.line])).toEqual([["bad.txt", 1]]);
 	});
 });

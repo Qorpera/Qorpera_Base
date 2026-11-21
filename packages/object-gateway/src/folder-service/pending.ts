@@ -4,7 +4,7 @@ import { COMPANY_STATE_SEEDED_PATHS, osRelative } from "@qorpera/cloud-client/co
 import { folderKey } from "@qorpera/contracts";
 import { gitRefused, gitSharedPath, gitUnpublished } from "./git.ts";
 import { ErrorCode, ProtocolError, type WireEntry } from "./protocol.ts";
-import { byteOrder, nameOf, parentOf, type TreeEntry, type ViewTree, wireEntry } from "./view-tree.ts";
+import { byteOrder, nameOf, parentOf, sortByteOrder, type TreeEntry, type ViewTree, wireEntry } from "./view-tree.ts";
 
 /** The version-2 manifest's limits (C1D §2): chunks of at most 4 MiB, at most 64 of them. */
 export const CHUNK_BYTES = 4 * 1024 * 1024;
@@ -399,7 +399,7 @@ export class PendingView {
 		const names = new Set<string>();
 		if (r.source !== null) for (const name of this.#live().names(r.source)) names.add(name);
 		for (const name of this.#children.get(path) ?? []) names.add(name);
-		const sorted = [...names].filter((n) => Buffer.byteLength(n) <= 255).sort(byteOrder);
+		const sorted = sortByteOrder([...names].filter((n) => Buffer.byteLength(n) <= 255));
 		let start = 0;
 		if (after !== undefined) while (start < sorted.length && byteOrder(sorted[start]!, after) <= 0) start++;
 		const entries: WireEntry[] = [];

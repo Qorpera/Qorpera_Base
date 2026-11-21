@@ -47,9 +47,23 @@ export function nameOf(path: string): string {
 	return path.slice(path.lastIndexOf("/") + 1);
 }
 
+const HIGH_CODE_UNIT = /[\uD800-\uFFFF]/;
+
+function codeUnitOrder(a: string, b: string): number {
+	return a < b ? -1 : a > b ? 1 : 0;
+}
+
 /** Names in byte order of their UTF-8, the order the machine sees and pages by. */
 export function byteOrder(a: string, b: string): number {
+	if (a === b) return 0;
+	// WHY: UTF-16 code units < 0xD800 share exact UTF-8 byte order; avoid allocating two Buffers per comparison under --jitless.
+	if (!HIGH_CODE_UNIT.test(a) && !HIGH_CODE_UNIT.test(b)) return a < b ? -1 : 1;
 	return Buffer.compare(Buffer.from(a), Buffer.from(b));
+}
+
+export function sortByteOrder(names: string[]): string[] {
+	// WHY: check once per folder so ASCII/BMP folders sort via native code-unit comparison without per-comparison regex or Buffer overhead.
+	return names.sort(names.some((name) => HIGH_CODE_UNIT.test(name)) ? byteOrder : codeUnitOrder);
 }
 
 function entryOf(e: CoreEntry, previous: TreeEntry | undefined, folder: TreeEntry | undefined): TreeEntry {
@@ -219,7 +233,7 @@ export class ViewTree {
 		let names = this.#sorted.get(path);
 		if (!names) {
 			// A name over 255 bytes cannot be shown on Linux, and could not be paged after (`after` is a name).
-			names = [...(this.#children.get(path) ?? [])].filter((n) => Buffer.byteLength(n) <= 255).sort(byteOrder);
+			names = sortByteOrder([...(this.#children.get(path) ?? [])].filter((n) => Buffer.byteLength(n) <= 255));
 			this.#sorted.set(path, names);
 		}
 		return names;
