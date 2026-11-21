@@ -436,4 +436,27 @@ describe("a coding machine's values for the folder service's save check (5j-5 (a
 		expect(f.environment).toHaveBeenCalledTimes(3);
 		expect(f.secrets.values(machineId)).toBeUndefined();
 	});
+
+	it("reuses one cached mask per machine across output reads without leaking failed or publication-only values", async () => {
+		const workerId = randomUUID();
+		const f = fixture({ [workerId]: { API_KEY } });
+		const machineId = randomUUID();
+		const scope = f.scope(workerId);
+		const req = f.request(machineId, scope);
+		const session = f.secrets.session(machineId, scope);
+		await session.resolve(req, signal());
+		session.accepted(req);
+		const pubEnv = "publication-only-ephemeral-value";
+		f.environment.mockResolvedValueOnce(answer({ SHORT: "short77", GOOD: pubEnv }, [OLDER_KEY]));
+		await expect(f.secrets.publication(machineId, scope, signal())).rejects.toThrow(RangeError);
+		expect(masked(await readMask(session, req), `${API_KEY} ${OLDER_KEY} ${pubEnv}`)).toBe(
+			`*** ${OLDER_KEY} ${pubEnv}`,
+		);
+		f.environment.mockResolvedValueOnce(answer({ EPHEMERAL: pubEnv }, [OLDER_KEY]));
+		const pubMask = await f.secrets.publication(machineId, scope, signal());
+		expect(masked(pubMask.stream(), `${API_KEY} ${OLDER_KEY} ${pubEnv}`)).toBe("*** *** ***");
+		for (let i = 0; i < 10; i++) {
+			expect(masked(await readMask(session, req), `${API_KEY} ${OLDER_KEY} ${pubEnv}`)).toBe(`*** *** ${pubEnv}`);
+		}
+	});
 });

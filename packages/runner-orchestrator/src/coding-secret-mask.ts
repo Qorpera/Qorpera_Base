@@ -17,22 +17,14 @@ const AFTER_PERCENT = 1;
 const AFTER_DIGIT = 2;
 const AFTER_CR = 3;
 
-/** A form matched up to `index`, in `phase` after it (with `digit`, the first
- * hex digit after a `%`), from the raw offset `start`. */
-interface Candidate {
-	form: number;
-	index: number;
-	phase: number;
-	digit: number;
-	start: number;
-}
+const EMPTY_I32 = new Int32Array(0);
+const EMPTY_U32 = new Uint32Array(0);
+const EMPTY_F64 = new Float64Array(0);
 
-function hexDigit(byte: number): number {
-	if (byte >= 0x30 && byte <= 0x39) return byte - 0x30;
-	if (byte >= 0x41 && byte <= 0x46) return byte - 0x37;
-	if (byte >= 0x61 && byte <= 0x66) return byte - 0x57;
-	return -1;
-}
+const HEX = new Int8Array(256).fill(-1);
+for (let b = 0x30; b <= 0x39; b++) HEX[b] = b - 0x30;
+for (let b = 0x41; b <= 0x46; b++) HEX[b] = b - 0x37;
+for (let b = 0x61; b <= 0x66; b++) HEX[b] = b - 0x57;
 
 /** The base64 characters that only the value decides, at each of the three
  * offsets it can have inside a longer base64 run, in both alphabets. Padding
@@ -59,7 +51,9 @@ export class CodingSecretMask {
 	readonly #forms: Uint8Array[] = [];
 	readonly #known = new Set<string>();
 	readonly #values = new Set<string>();
-	readonly #byFirst = new Map<number, number[]>();
+	readonly #byFirst: (number[] | undefined)[] = new Array(256);
+	readonly #byFirstExact: (number[] | undefined)[] = new Array(256);
+	readonly #pairBits = new Uint8Array(8192);
 
 	constructor(values: Iterable<string | Uint8Array> = []) {
 		for (const value of values) this.add(value);
@@ -81,8 +75,28 @@ export class CodingSecretMask {
 		for (const form of base64Forms(bytes)) this.#addForm(new TextEncoder().encode(form));
 	}
 
+	clone(): CodingSecretMask {
+		const copy = new CodingSecretMask();
+		copy.#forms.push(...this.#forms);
+		for (const key of this.#known) copy.#known.add(key);
+		for (const value of this.#values) copy.#values.add(value);
+		for (let i = 0; i < 256; i++) {
+			const first = this.#byFirst[i];
+			if (first !== undefined) copy.#byFirst[i] = [...first];
+			const exact = this.#byFirstExact[i];
+			if (exact !== undefined) copy.#byFirstExact[i] = [...exact];
+		}
+		copy.#pairBits.set(this.#pairBits);
+		return copy;
+	}
+
 	stream(): CodingSecretMaskStream {
-		return new CodingSecretMaskStream(this.#forms, this.#byFirst);
+		return new CodingSecretMaskStream(this.#forms, this.#byFirst, this.#byFirstExact, this.#pairBits);
+	}
+
+	#setPair(first: number, second: number): void {
+		const pair = (first << 8) | second;
+		this.#pairBits[pair >>> 3] |= 1 << (pair & 7);
 	}
 
 	#addForm(bytes: Uint8Array): void {
@@ -90,11 +104,26 @@ export class CodingSecretMask {
 		if (this.#known.has(key)) return;
 		this.#known.add(key);
 		const form = this.#forms.push(bytes) - 1;
-		const firsts = bytes[0] === SPACE ? [SPACE, PLUS] : bytes[0] === LF ? [LF, CR] : [bytes[0]];
+		const b0 = bytes[0]!;
+		const exact = this.#byFirstExact[b0];
+		if (exact) exact.push(form);
+		else this.#byFirstExact[b0] = [form];
+		const firsts = b0 === SPACE ? [SPACE, PLUS] : b0 === LF ? [LF, CR] : [b0];
 		for (const first of firsts) {
-			const list = this.#byFirst.get(first);
+			const list = this.#byFirst[first];
 			if (list) list.push(form);
-			else this.#byFirst.set(first, [form]);
+			else this.#byFirst[first] = [form];
+		}
+		const b1 = bytes[1]!;
+		const seconds = b1 === SPACE ? [SPACE, PLUS] : b1 === LF ? [LF, CR] : [b1];
+		if (b0 === LF) {
+			// WHY: CR at byte 0 enters AFTER_CR and only survives on LF, whereas LF advances to bytes[1].
+			this.#setPair(CR, LF);
+			for (const second of seconds) this.#setPair(LF, second);
+		} else {
+			for (const first of firsts) {
+				for (const second of seconds) this.#setPair(first, second);
+			}
 		}
 	}
 }
@@ -107,19 +136,51 @@ export class CodingSecretMask {
  * (`masked`, then `resume`), so the bytes can be pushed again later. */
 export class CodingSecretMaskStream {
 	readonly #forms: readonly Uint8Array[];
-	readonly #byFirst: ReadonlyMap<number, readonly number[]>;
+	readonly #byFirst: readonly (readonly number[] | undefined)[];
+	readonly #byFirstExact: readonly (readonly number[] | undefined)[];
+	readonly #pairBits: Uint8Array;
 	#held = new Uint8Array(0);
 	#emitted = 0;
-	#candidates: Candidate[] = [];
+	#scanned = 0;
+	#curForm = EMPTY_I32;
+	#curIndex = EMPTY_I32;
+	#curPhase = EMPTY_I32;
+	#curDigit = EMPTY_I32;
+	#curStart = EMPTY_F64;
+	#curLen = 0;
+	#nxtForm = EMPTY_I32;
+	#nxtIndex = EMPTY_I32;
+	#nxtPhase = EMPTY_I32;
+	#nxtDigit = EMPTY_I32;
+	#nxtStart = EMPTY_F64;
+	#nxtLen = 0;
+	#dedupEpoch = EMPTY_U32;
+	#dedupLo = EMPTY_I32;
+	#dedupHi = EMPTY_I32;
+	#dedupMask = 0;
+	#epoch = 0;
+	#wildPhase = 0;
+	#wildDigit = 0;
+	#wildStart = 0;
+	#wildLimit = 0;
 	#masked: [number, number][] = [];
 	/** Whether the bytes returned so far end inside a masked range. */
 	#joined = false;
 	#ended = false;
 	#matched = false;
+	#scanOnly = false;
+	#pushUsed = false;
 
-	constructor(forms: readonly Uint8Array[], byFirst: ReadonlyMap<number, readonly number[]>) {
+	constructor(
+		forms: readonly Uint8Array[],
+		byFirst: readonly (readonly number[] | undefined)[],
+		byFirstExact: readonly (readonly number[] | undefined)[],
+		pairBits: Uint8Array,
+	) {
 		this.#forms = forms;
 		this.#byFirst = byFirst;
+		this.#byFirstExact = byFirstExact;
+		this.#pairBits = pairBits;
 	}
 
 	/** Whether a value matched in the bytes pushed so far (the push check, 5j-5 b), returned yet or not. */
@@ -144,7 +205,7 @@ export class CodingSecretMaskStream {
 	/** Before the first push: takes over from a stream whose `masked()` this was, at the start of the bytes it held
 	 * back, which are pushed again. From there it returns what that stream would have. */
 	resume(masked: number | null): void {
-		if (this.#ended || this.#emitted > 0 || this.#held.length > 0) {
+		if (this.#ended || this.#scanOnly || this.#emitted > 0 || this.#held.length > 0) {
 			throw new Error("a coding secret mask stream resumes only before its first push");
 		}
 		if (masked === null) return;
@@ -153,8 +214,21 @@ export class CodingSecretMaskStream {
 		this.#masked = masked > 0 ? [[0, masked]] : [];
 	}
 
+	scan(chunk: Uint8Array): boolean {
+		if (this.#ended) throw new Error("the coding secret mask stream has ended");
+		if (this.#pushUsed) throw new Error("a coding secret mask stream cannot mix scan and push");
+		this.#scanOnly = true;
+		if (this.#matched) return true;
+		if (chunk.length === 0 || this.#forms.length === 0) return false;
+		const base = this.#scanned;
+		this.#scanned += chunk.length;
+		return this.#runChunk(chunk, base, true);
+	}
+
 	push(chunk: Uint8Array): Uint8Array {
 		if (this.#ended) throw new Error("the coding secret mask stream has ended");
+		if (this.#scanOnly) throw new Error("a coding secret mask stream cannot mix scan and push");
+		this.#pushUsed = true;
 		if (chunk.length === 0) return new Uint8Array(0);
 		if (this.#forms.length === 0 && this.#held.length === 0 && this.#masked.length === 0) {
 			this.#emitted += chunk.length;
@@ -162,61 +236,368 @@ export class CodingSecretMaskStream {
 			return Uint8Array.from(chunk);
 		}
 		const base = this.#emitted + this.#held.length;
+		this.#runChunk(chunk, base, false);
+		let boundary = base + chunk.length;
+		if (this.#curLen > 0) boundary = Math.min(boundary, this.#curStart[0]!);
+		if (this.#wildPhase !== 0) boundary = Math.min(boundary, this.#wildStart);
+		if (this.#masked.length === 0) {
+			const count = boundary - this.#emitted;
+			if (this.#held.length === 0) {
+				if (count === chunk.length) {
+					this.#emitted = boundary;
+					this.#joined = false;
+					return Uint8Array.from(chunk);
+				}
+				if (count <= 0) {
+					this.#held = Uint8Array.from(chunk);
+					return new Uint8Array(0);
+				}
+				this.#held = chunk.slice(count);
+				this.#emitted = boundary;
+				this.#joined = false;
+				return chunk.slice(0, count);
+			}
+			if (count <= 0) {
+				const held = new Uint8Array(this.#held.length + chunk.length);
+				held.set(this.#held);
+				held.set(chunk, this.#held.length);
+				this.#held = held;
+				return new Uint8Array(0);
+			}
+			this.#emitted = boundary;
+			this.#joined = false;
+			if (count <= this.#held.length) {
+				const out = this.#held.slice(0, count);
+				const remain = this.#held.length - count;
+				const held = new Uint8Array(remain + chunk.length);
+				held.set(this.#held.subarray(count));
+				held.set(chunk, remain);
+				this.#held = held;
+				return out;
+			}
+			const fromChunk = count - this.#held.length;
+			const out = new Uint8Array(count);
+			out.set(this.#held);
+			out.set(chunk.subarray(0, fromChunk), this.#held.length);
+			this.#held = fromChunk < chunk.length ? chunk.slice(fromChunk) : new Uint8Array(0);
+			return out;
+		}
 		const held = new Uint8Array(this.#held.length + chunk.length);
 		held.set(this.#held);
 		held.set(chunk, this.#held.length);
 		this.#held = held;
-		for (let i = 0; i < chunk.length; i++) this.#step(chunk[i], base + i);
-		let boundary = this.#emitted + this.#held.length;
-		for (const candidate of this.#candidates) boundary = Math.min(boundary, candidate.start);
 		return this.#emit(boundary);
 	}
 
 	end(): Uint8Array {
 		if (this.#ended) return new Uint8Array(0);
 		this.#ended = true;
-		this.#candidates = [];
+		this.#curLen = 0;
+		this.#wildPhase = 0;
 		return this.#emit(this.#emitted + this.#held.length);
 	}
 
-	#step(byte: number, offset: number): void {
-		if (this.#candidates.length === 0 && byte !== PERCENT && !this.#byFirst.has(byte)) return;
-		// Candidates are kept in order of their start, so the first one kept for a
-		// state is the longest, and it alone can mask that state's match.
-		const next = new Map<number, Candidate>();
-		const count = this.#forms.length;
-		const keep = (candidate: Candidate) => {
-			if (candidate.phase === NEXT && candidate.index === this.#forms[candidate.form].length) {
-				this.#mask(candidate.start, offset + 1);
-				return;
+	#runChunk(chunk: Uint8Array, base: number, stopOnMatch: boolean): boolean {
+		const len = chunk.length;
+		const byFirst = this.#byFirst;
+		const byFirstExact = this.#byFirstExact;
+		const pairBits = this.#pairBits;
+		for (let i = 0; i < len; ) {
+			if (this.#curLen === 0 && this.#wildPhase === 0) {
+				const b0 = chunk[i]!;
+				if (b0 !== PERCENT) {
+					if (byFirst[b0] === undefined) {
+						i++;
+						continue;
+					}
+					if (i + 1 < len) {
+						const b1 = chunk[i + 1]!;
+						if (b1 !== PERCENT) {
+							const pair = (b0 << 8) | b1;
+							if ((pairBits[pair >>> 3]! & (1 << (pair & 7))) === 0) {
+								i++;
+								continue;
+							}
+						}
+					}
+				} else if (byFirst[PERCENT] === undefined && i + 1 < len) {
+					const hi = HEX[chunk[i + 1]!]!;
+					if (hi < 0) {
+						i++;
+						continue;
+					}
+					if (i + 2 < len) {
+						const lo = HEX[chunk[i + 2]!]!;
+						if (lo < 0 || byFirstExact[(hi << 4) | lo] === undefined) {
+							i++;
+							continue;
+						}
+					}
+				}
 			}
-			const key = ((candidate.index * 4 + candidate.phase) * 16 + candidate.digit) * count + candidate.form;
-			if (!next.has(key)) next.set(key, candidate);
-		};
-		for (const candidate of this.#candidates) this.#advance(candidate, byte, keep);
-		const starts = byte === PERCENT ? this.#forms.keys() : (this.#byFirst.get(byte) ?? []);
-		for (const form of starts) this.#advance({ form, index: 0, phase: NEXT, digit: 0, start: offset }, byte, keep);
-		this.#candidates = [...next.values()];
+			if (this.#step(chunk[i]!, base + i, stopOnMatch)) return true;
+			i++;
+		}
+		return false;
 	}
 
-	#advance(candidate: Candidate, byte: number, keep: (candidate: Candidate) => void): void {
-		const expected = this.#forms[candidate.form][candidate.index];
-		if (candidate.phase === NEXT) {
-			const literal = byte === expected || (expected === SPACE && byte === PLUS);
-			if (literal) keep({ ...candidate, index: candidate.index + 1 });
-			if (byte === PERCENT) keep({ ...candidate, phase: AFTER_PERCENT });
-			if (expected === LF && byte === CR) keep({ ...candidate, phase: AFTER_CR });
-		} else if (candidate.phase === AFTER_PERCENT) {
-			const digit = hexDigit(byte);
-			if (digit >= 0) keep({ ...candidate, phase: AFTER_DIGIT, digit });
-		} else if (candidate.phase === AFTER_DIGIT) {
-			const digit = hexDigit(byte);
-			if (digit >= 0 && candidate.digit * 16 + digit === expected) {
-				keep({ ...candidate, index: candidate.index + 1, phase: NEXT, digit: 0 });
+	#growNext(): void {
+		const cap = this.#nxtForm.length === 0 ? 16 : this.#nxtForm.length * 2;
+		const form = new Int32Array(cap);
+		const index = new Int32Array(cap);
+		const phase = new Int32Array(cap);
+		const digit = new Int32Array(cap);
+		const start = new Float64Array(cap);
+		form.set(this.#nxtForm);
+		index.set(this.#nxtIndex);
+		phase.set(this.#nxtPhase);
+		digit.set(this.#nxtDigit);
+		start.set(this.#nxtStart);
+		this.#nxtForm = form;
+		this.#nxtIndex = index;
+		this.#nxtPhase = phase;
+		this.#nxtDigit = digit;
+		this.#nxtStart = start;
+	}
+
+	#growDedup(): void {
+		const cap = this.#dedupEpoch.length === 0 ? 32 : this.#dedupEpoch.length * 2;
+		const epoch = new Uint32Array(cap);
+		const lo = new Int32Array(cap);
+		const hi = new Int32Array(cap);
+		const mask = cap - 1;
+		const curEpoch = 1;
+		this.#epoch = curEpoch;
+		for (let i = 0; i < this.#nxtLen; i++) {
+			const f = this.#nxtForm[i]!;
+			const h = (this.#nxtIndex[i]! << 6) | (this.#nxtPhase[i]! << 4) | this.#nxtDigit[i]!;
+			let slot = (Math.imul(f ^ h, 0x9e3779b1) >>> 0) & mask;
+			while (epoch[slot] === curEpoch) slot = (slot + 1) & mask;
+			epoch[slot] = curEpoch;
+			lo[slot] = f;
+			hi[slot] = h;
+		}
+		this.#dedupEpoch = epoch;
+		this.#dedupLo = lo;
+		this.#dedupHi = hi;
+		this.#dedupMask = mask;
+	}
+
+	#keep(
+		form: number,
+		index: number,
+		phase: number,
+		digit: number,
+		start: number,
+		offset: number,
+		stopOnMatch: boolean,
+	): boolean {
+		if (phase === NEXT && index === this.#forms[form]!.length) {
+			if (stopOnMatch) {
+				this.#matched = true;
+				return true;
+			}
+			this.#mask(start, offset + 1);
+			return false;
+		}
+		if (this.#nxtLen * 2 >= this.#dedupEpoch.length) this.#growDedup();
+		const hi = (index << 6) | (phase << 4) | digit;
+		const mask = this.#dedupMask;
+		const epoch = this.#epoch;
+		const dedupEpoch = this.#dedupEpoch;
+		const dedupLo = this.#dedupLo;
+		const dedupHi = this.#dedupHi;
+		let slot = (Math.imul(form ^ hi, 0x9e3779b1) >>> 0) & mask;
+		while (dedupEpoch[slot] === epoch) {
+			if (dedupLo[slot] === form && dedupHi[slot] === hi) return false;
+			slot = (slot + 1) & mask;
+		}
+		dedupEpoch[slot] = epoch;
+		dedupLo[slot] = form;
+		dedupHi[slot] = hi;
+		const n = this.#nxtLen;
+		if (n === this.#nxtForm.length) this.#growNext();
+		this.#nxtForm[n] = form;
+		this.#nxtIndex[n] = index;
+		this.#nxtPhase[n] = phase;
+		this.#nxtDigit[n] = digit;
+		this.#nxtStart[n] = start;
+		this.#nxtLen = n + 1;
+		return false;
+	}
+
+	#step(byte: number, offset: number, stopOnMatch: boolean): boolean {
+		let epoch = this.#epoch + 1;
+		if (epoch === 0xffffffff) {
+			this.#dedupEpoch.fill(0);
+			epoch = 1;
+		}
+		this.#epoch = epoch;
+		this.#nxtLen = 0;
+
+		// WHY: A single wildcard state tracks index-0 %XX across all forms in O(1), expanding only on the second hex digit.
+		const prevWildPhase = this.#wildPhase;
+		const prevWildDigit = this.#wildDigit;
+		const prevWildStart = this.#wildStart;
+		const prevWildLimit = this.#wildLimit;
+		let nextWildPhase = 0;
+		let nextWildDigit = 0;
+		let nextWildStart = 0;
+		let nextWildLimit = 0;
+		let wildExpandForms: readonly number[] | undefined;
+
+		if (prevWildPhase === AFTER_PERCENT) {
+			const digit = HEX[byte]!;
+			if (digit >= 0) {
+				nextWildPhase = AFTER_DIGIT;
+				nextWildDigit = digit;
+				nextWildStart = prevWildStart;
+				nextWildLimit = prevWildLimit;
+			}
+		} else if (prevWildPhase === AFTER_DIGIT) {
+			const digit = HEX[byte]!;
+			if (digit >= 0) {
+				wildExpandForms = this.#byFirstExact[(prevWildDigit << 4) | digit];
+			}
+		}
+
+		// WHY: Preserve non-decreasing start order so the first candidate kept for any state is always the longest match.
+		const curLen = this.#curLen;
+		const curForm = this.#curForm;
+		const curIndex = this.#curIndex;
+		const curPhase = this.#curPhase;
+		const curDigit = this.#curDigit;
+		const curStart = this.#curStart;
+		let k = 0;
+		if (wildExpandForms !== undefined) {
+			while (k < curLen && curStart[k]! <= prevWildStart) {
+				if (
+					this.#advance(
+						curForm[k]!,
+						curIndex[k]!,
+						curPhase[k]!,
+						curDigit[k]!,
+						curStart[k]!,
+						byte,
+						offset,
+						stopOnMatch,
+					)
+				) {
+					return true;
+				}
+				k++;
+			}
+			for (let w = 0; w < wildExpandForms.length; w++) {
+				const form = wildExpandForms[w]!;
+				if (form < prevWildLimit && this.#keep(form, 1, NEXT, 0, prevWildStart, offset, stopOnMatch)) {
+					return true;
+				}
+			}
+		}
+		while (k < curLen) {
+			if (
+				this.#advance(
+					curForm[k]!,
+					curIndex[k]!,
+					curPhase[k]!,
+					curDigit[k]!,
+					curStart[k]!,
+					byte,
+					offset,
+					stopOnMatch,
+				)
+			) {
+				return true;
+			}
+			k++;
+		}
+
+		if (byte === PERCENT) {
+			const literalStarts = this.#byFirst[PERCENT];
+			if (literalStarts !== undefined) {
+				for (let s = 0; s < literalStarts.length; s++) {
+					if (this.#keep(literalStarts[s]!, 1, NEXT, 0, offset, offset, stopOnMatch)) return true;
+				}
+			}
+			if (this.#forms.length > 0) {
+				nextWildPhase = AFTER_PERCENT;
+				nextWildDigit = 0;
+				nextWildStart = offset;
+				nextWildLimit = this.#forms.length;
+			}
+		} else {
+			const starts = this.#byFirst[byte];
+			if (starts !== undefined) {
+				for (let s = 0; s < starts.length; s++) {
+					const form = starts[s]!;
+					if (this.#forms[form]![0] === LF && byte === CR) {
+						if (this.#keep(form, 0, AFTER_CR, 0, offset, offset, stopOnMatch)) return true;
+					} else {
+						if (this.#keep(form, 1, NEXT, 0, offset, offset, stopOnMatch)) return true;
+					}
+				}
+			}
+		}
+
+		this.#wildPhase = nextWildPhase;
+		this.#wildDigit = nextWildDigit;
+		this.#wildStart = nextWildStart;
+		this.#wildLimit = nextWildLimit;
+
+		const tmpForm = this.#curForm;
+		const tmpIndex = this.#curIndex;
+		const tmpPhase = this.#curPhase;
+		const tmpDigit = this.#curDigit;
+		const tmpStart = this.#curStart;
+		this.#curForm = this.#nxtForm;
+		this.#curIndex = this.#nxtIndex;
+		this.#curPhase = this.#nxtPhase;
+		this.#curDigit = this.#nxtDigit;
+		this.#curStart = this.#nxtStart;
+		this.#nxtForm = tmpForm;
+		this.#nxtIndex = tmpIndex;
+		this.#nxtPhase = tmpPhase;
+		this.#nxtDigit = tmpDigit;
+		this.#nxtStart = tmpStart;
+		this.#curLen = this.#nxtLen;
+		return false;
+	}
+
+	#advance(
+		form: number,
+		index: number,
+		phase: number,
+		digit: number,
+		start: number,
+		byte: number,
+		offset: number,
+		stopOnMatch: boolean,
+	): boolean {
+		const expected = this.#forms[form]![index]!;
+		if (phase === NEXT) {
+			if (byte === expected || (expected === SPACE && byte === PLUS)) {
+				if (this.#keep(form, index + 1, NEXT, 0, start, offset, stopOnMatch)) return true;
+			}
+			if (byte === PERCENT) {
+				if (this.#keep(form, index, AFTER_PERCENT, 0, start, offset, stopOnMatch)) return true;
+			}
+			if (expected === LF && byte === CR) {
+				if (this.#keep(form, index, AFTER_CR, 0, start, offset, stopOnMatch)) return true;
+			}
+		} else if (phase === AFTER_PERCENT) {
+			const nextDigit = HEX[byte]!;
+			if (nextDigit >= 0) {
+				if (this.#keep(form, index, AFTER_DIGIT, nextDigit, start, offset, stopOnMatch)) return true;
+			}
+		} else if (phase === AFTER_DIGIT) {
+			const nextDigit = HEX[byte]!;
+			if (nextDigit >= 0 && (digit << 4) + nextDigit === expected) {
+				if (this.#keep(form, index + 1, NEXT, 0, start, offset, stopOnMatch)) return true;
 			}
 		} else if (byte === LF) {
-			keep({ ...candidate, index: candidate.index + 1, phase: NEXT });
+			if (this.#keep(form, index + 1, NEXT, 0, start, offset, stopOnMatch)) return true;
 		}
+		return false;
 	}
 
 	/** The ranges stay sorted and apart. A match ends at the byte just read, so

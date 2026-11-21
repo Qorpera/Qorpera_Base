@@ -266,4 +266,202 @@ describe("coding secret mask", () => {
 		expect(Buffer.from(empty.push(chunk)).toString()).toBe("plain output");
 		expect(empty.pending()).toBe(0);
 	});
+
+	it("scans match-only streams with early exit, clone isolation, and push parity", () => {
+		const base = new CodingSecretMask([SECRET, SPACED, "%percent-secret", "\nleading-newline"]);
+		const cloned = base.clone();
+		cloned.add("only-in-clone-secret");
+		expect(run(base, [bytes("only-in-clone-secret")])).toBe("only-in-clone-secret");
+		expect(run(cloned, [bytes("only-in-clone-secret")])).toBe("***");
+		for (const sample of [
+			`clean text %s %d %% %zz ${SECRET.slice(0, -1)}X`,
+			`x=${SECRET} trailing`,
+			`u=${percentEveryByte(SECRET, false)}`,
+			`s=${new URLSearchParams({ k: SPACED })}`,
+			`p=%percent-secret!`,
+			`cr=\r\nleading-newline!`,
+			`b64=${Buffer.from(`z${SECRET}`).toString("base64url")}`,
+		]) {
+			const raw = bytes(sample);
+			const pushed = base.stream();
+			pushed.push(raw);
+			pushed.end();
+			for (const chunkSize of [1, 3, 7, raw.length]) {
+				const scanned = base.stream();
+				let hit = false;
+				for (let i = 0; i < raw.length; i += chunkSize) {
+					if (scanned.scan(raw.subarray(i, i + chunkSize))) {
+						hit = true;
+						break;
+					}
+				}
+				scanned.end();
+				expect(hit).toBe(pushed.matched);
+				expect(scanned.matched).toBe(pushed.matched);
+			}
+		}
+		const mixA = base.stream();
+		mixA.scan(bytes("abc"));
+		expect(() => mixA.push(bytes("def"))).toThrow("cannot mix scan and push");
+		expect(() => mixA.resume(0)).toThrow("before its first push");
+		const mixB = base.stream();
+		mixB.push(bytes("abc"));
+		expect(() => mixB.scan(bytes("def"))).toThrow("cannot mix scan and push");
+	});
+
+	it("matches a reference byte-by-byte automaton across randomized splits, escapes, and dynamic additions", () => {
+		const hex = (b: number) =>
+			b >= 0x30 && b <= 0x39 ? b - 0x30 : b >= 0x41 && b <= 0x46 ? b - 0x37 : b >= 0x61 && b <= 0x66 ? b - 0x57 : -1;
+		const reference = (secrets: readonly string[], chunks: readonly Uint8Array[], addAt?: [number, string]) => {
+			const forms: Uint8Array[] = [];
+			const known = new Set<string>();
+			const addValue = (v: string) => {
+				const raw = bytes(v);
+				const addForm = (f: Uint8Array) => {
+					const k = Buffer.from(f).toString("latin1");
+					if (!known.has(k)) {
+						known.add(k);
+						forms.push(f);
+					}
+				};
+				addForm(raw);
+				for (let offset = 0; offset < 3; offset++) {
+					const buf = new Uint8Array(offset + raw.length + 2);
+					buf.set(raw, offset);
+					const b64 = Buffer.from(buf).toString("base64");
+					const form = b64.slice(Math.ceil((8 * offset) / 6), Math.floor((8 * (offset + raw.length)) / 6));
+					addForm(bytes(form));
+					addForm(bytes(form.replaceAll("+", "-").replaceAll("/", "_")));
+				}
+			};
+			for (const s of secrets) addValue(s);
+			let held = new Uint8Array(0);
+			let emitted = 0;
+			let cands: { form: number; index: number; phase: number; digit: number; start: number }[] = [];
+			let masked: [number, number][] = [];
+			let joined = false;
+			const out: Uint8Array[] = [];
+			const emit = (boundary: number) => {
+				const count = boundary - emitted;
+				if (count <= 0) return new Uint8Array(0);
+				const parts: Uint8Array[] = [];
+				const rest: [number, number][] = [];
+				let at = emitted;
+				let j = joined;
+				for (const [s, e] of masked) {
+					if (s >= boundary) {
+						rest.push([s, e]);
+						continue;
+					}
+					if (s > at) {
+						parts.push(held.subarray(at - emitted, s - emitted));
+						j = false;
+					}
+					if (!j) parts.push(bytes("***"));
+					j = true;
+					at = Math.min(e, boundary);
+					if (e > boundary) rest.push([boundary, e]);
+				}
+				if (boundary > at) {
+					parts.push(held.subarray(at - emitted, boundary - emitted));
+					j = false;
+				}
+				held = held.slice(count);
+				emitted = boundary;
+				masked = rest;
+				joined = j;
+				return Buffer.concat(parts);
+			};
+			for (let ci = 0; ci < chunks.length; ci++) {
+				if (addAt && ci === addAt[0]) addValue(addAt[1]);
+				const chunk = chunks[ci]!;
+				const base = emitted + held.length;
+				const nextHeld = new Uint8Array(held.length + chunk.length);
+				nextHeld.set(held);
+				nextHeld.set(chunk, held.length);
+				held = nextHeld;
+				for (let i = 0; i < chunk.length; i++) {
+					const b = chunk[i]!;
+					const offset = base + i;
+					const next = new Map<string, (typeof cands)[number]>();
+					const keep = (c: (typeof cands)[number]) => {
+						if (c.phase === 0 && c.index === forms[c.form]!.length) {
+							let from = c.start;
+							let to = offset + 1;
+							while (masked.length > 0 && masked[masked.length - 1]![1] >= from) {
+								const last = masked.pop()!;
+								from = Math.min(from, last[0]);
+								to = Math.max(to, last[1]);
+							}
+							masked.push([from, to]);
+							return;
+						}
+						const key = `${c.form}:${c.index}:${c.phase}:${c.digit}`;
+						if (!next.has(key)) next.set(key, c);
+					};
+					const advance = (c: (typeof cands)[number]) => {
+						const expected = forms[c.form]![c.index]!;
+						if (c.phase === 0) {
+							if (b === expected || (expected === 0x20 && b === 0x2b)) keep({ ...c, index: c.index + 1 });
+							if (b === 0x25) keep({ ...c, phase: 1 });
+							if (expected === 0x0a && b === 0x0d) keep({ ...c, phase: 3 });
+						} else if (c.phase === 1) {
+							const d = hex(b);
+							if (d >= 0) keep({ ...c, phase: 2, digit: d });
+						} else if (c.phase === 2) {
+							const d = hex(b);
+							if (d >= 0 && c.digit * 16 + d === expected)
+								keep({ ...c, index: c.index + 1, phase: 0, digit: 0 });
+						} else if (b === 0x0a) {
+							keep({ ...c, index: c.index + 1, phase: 0 });
+						}
+					};
+					for (const c of cands) advance(c);
+					for (let f = 0; f < forms.length; f++) advance({ form: f, index: 0, phase: 0, digit: 0, start: offset });
+					cands = [...next.values()];
+				}
+				let boundary = emitted + held.length;
+				for (const c of cands) boundary = Math.min(boundary, c.start);
+				out.push(emit(boundary));
+			}
+			cands = [];
+			out.push(emit(emitted + held.length));
+			return Buffer.concat(out).toString("utf8");
+		};
+		const secrets = ["%ab123456", "\nxyz98765", " spaced secret!", "abababab", "41secret99"];
+		const extra = "late_added_secret!";
+		const corpus = [
+			"%%25ab123456 %41%25ab123456 \r\n\nxyz98765 %0a\r\nxyz98765",
+			"%41secret99 41secret99 %4%41secret99 %20spaced+secret! %2bspaced+secret!",
+			`prefix abababababab %s %d %9 %9z %20 ${percentEveryByte("\nxyz98765", false)} ${extra} end`,
+			`${Buffer.from(`x${secrets[2]}`).toString("base64")} %0d\nxyz98765 %25ab123456`,
+		];
+		let seed = 0x12345678;
+		const nextInt = (max: number) => {
+			seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+			return seed % max;
+		};
+		for (const text of corpus) {
+			const raw = bytes(text);
+			for (let trial = 0; trial < 20; trial++) {
+				const chunks: Uint8Array[] = [];
+				for (let i = 0; i < raw.length; ) {
+					const step = 1 + nextInt(Math.min(11, raw.length - i));
+					chunks.push(raw.subarray(i, i + step));
+					i += step;
+				}
+				const m = new CodingSecretMask(secrets);
+				const s = m.stream();
+				const addIdx = trial % 2 === 0 ? Math.floor(chunks.length / 2) : undefined;
+				const got: Uint8Array[] = [];
+				for (let ci = 0; ci < chunks.length; ci++) {
+					if (addIdx !== undefined && ci === addIdx) m.add(extra);
+					got.push(s.push(chunks[ci]!));
+				}
+				got.push(s.end());
+				const expected = reference(secrets, chunks, addIdx !== undefined ? [addIdx, extra] : undefined);
+				expect(Buffer.concat(got).toString("utf8")).toBe(expected);
+			}
+		}
+	});
 });
