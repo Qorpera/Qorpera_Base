@@ -372,6 +372,12 @@ describe("coding secret mask", () => {
 				joined = j;
 				return Buffer.concat(parts);
 			};
+			const steps: { out: string; pending: number; masked: number | null }[] = [];
+			const maskedState = () => {
+				if (!joined) return null;
+				const first = masked[0];
+				return first !== undefined && first[0] === emitted ? first[1] - emitted : 0;
+			};
 			for (let ci = 0; ci < chunks.length; ci++) {
 				if (addAt && ci === addAt[0]) addValue(addAt[1]);
 				const chunk = chunks[ci]!;
@@ -422,11 +428,18 @@ describe("coding secret mask", () => {
 				}
 				let boundary = emitted + held.length;
 				for (const c of cands) boundary = Math.min(boundary, c.start);
-				out.push(emit(boundary));
+				const piece = emit(boundary);
+				out.push(piece);
+				steps.push({ out: Buffer.from(piece).toString("latin1"), pending: held.length, masked: maskedState() });
 			}
 			cands = [];
-			out.push(emit(emitted + held.length));
-			return Buffer.concat(out).toString("utf8");
+			const tail = emit(emitted + held.length);
+			out.push(tail);
+			return {
+				text: Buffer.concat(out).toString("utf8"),
+				tail: Buffer.from(tail).toString("latin1"),
+				steps,
+			};
 		};
 		const secrets = ["%ab123456", "\nxyz98765", " spaced secret!", "abababab", "41secret99"];
 		const extra = "late_added_secret!";
@@ -453,14 +466,33 @@ describe("coding secret mask", () => {
 				const m = new CodingSecretMask(secrets);
 				const s = m.stream();
 				const addIdx = trial % 2 === 0 ? Math.floor(chunks.length / 2) : undefined;
+				const expected = reference(secrets, chunks, addIdx !== undefined ? [addIdx, extra] : undefined);
 				const got: Uint8Array[] = [];
 				for (let ci = 0; ci < chunks.length; ci++) {
 					if (addIdx !== undefined && ci === addIdx) m.add(extra);
-					got.push(s.push(chunks[ci]!));
+					const piece = s.push(chunks[ci]!);
+					got.push(piece);
+					expect({
+						out: Buffer.from(piece).toString("latin1"),
+						pending: s.pending(),
+						masked: s.masked(),
+					}).toEqual(expected.steps[ci]);
 				}
-				got.push(s.end());
-				const expected = reference(secrets, chunks, addIdx !== undefined ? [addIdx, extra] : undefined);
-				expect(Buffer.concat(got).toString("utf8")).toBe(expected);
+				const endPiece = s.end();
+				got.push(endPiece);
+				expect(Buffer.from(endPiece).toString("latin1")).toBe(expected.tail);
+				expect(Buffer.concat(got).toString("utf8")).toBe(expected.text);
+			}
+			const fullMask = new CodingSecretMask([...secrets, extra]);
+			const wholeExpected = reference([...secrets, extra], [raw]).text;
+			for (let trial = 0; trial < 10; trial++) {
+				const cuts: number[] = [];
+				let pos = 0;
+				while (pos < raw.length - 1) {
+					pos += 1 + nextInt(Math.min(13, raw.length - pos - 1));
+					if (pos < raw.length) cuts.push(pos);
+				}
+				expect(takenOver(fullMask, text, cuts)).toBe(wholeExpected);
 			}
 		}
 	});

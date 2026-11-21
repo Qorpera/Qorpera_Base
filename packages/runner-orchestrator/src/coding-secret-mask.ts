@@ -77,7 +77,7 @@ export class CodingSecretMask {
 
 	clone(): CodingSecretMask {
 		const copy = new CodingSecretMask();
-		copy.#forms.push(...this.#forms);
+		for (const form of this.#forms) copy.#forms.push(form);
 		for (const key of this.#known) copy.#known.add(key);
 		for (const value of this.#values) copy.#values.add(value);
 		for (let i = 0; i < 256; i++) {
