@@ -2493,4 +2493,57 @@ describe("AppBridge database actions (qorpera.act)", () => {
 		}
 		company.abort();
 	});
+
+	it("coalesces concurrent CompanyApps.read() calls so a slow earlier read cannot overwrite newer apps", async () => {
+		const company = new AbortController();
+		let calls = 0;
+		let releaseFirst: (() => void) | undefined;
+		const firstFolder = fakeFolder({
+			"apps/alpha/app.json": JSON.stringify({ name: "Alpha", entry: "index.html", posted: true }),
+			"apps/alpha/index.html": "<p>Alpha</p>",
+		});
+		const secondFolder = fakeFolder({
+			"apps/alpha/app.json": JSON.stringify({ name: "Alpha", entry: "index.html", posted: true }),
+			"apps/alpha/index.html": "<p>Alpha</p>",
+			"apps/beta/app.json": JSON.stringify({ name: "Beta", entry: "index.html", posted: true }),
+			"apps/beta/index.html": "<p>Beta</p>",
+		});
+		const delayedFirst = {
+			...firstFolder,
+			list: async (...args: Parameters<typeof firstFolder.list>) => {
+				if (args[0] === "apps") {
+					await new Promise<void>((resolve) => {
+						releaseFirst = resolve;
+					});
+				}
+				return firstFolder.list(...args);
+			},
+		};
+		const published: string[][] = [];
+		const apps = new CompanyApps(
+			{
+				signal: company.signal,
+				folder: () => {
+					calls += 1;
+					return (calls === 1 ? delayedFirst : secondFolder) as never;
+				},
+				folderHints: () => ({ close: async () => {} }),
+			},
+			(list) => published.push(list.map((item) => item.name)),
+		);
+		const p1 = apps.read();
+		const p2 = apps.read();
+		const p3 = apps.read();
+		await vi.waitFor(() => expect(releaseFirst).toBeDefined());
+		expect(calls).toBe(1);
+		releaseFirst!();
+		const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
+		expect(calls).toBe(2);
+		expect(r1.map((item) => item.name)).toEqual(["alpha", "beta"]);
+		expect(r2.map((item) => item.name)).toEqual(["alpha", "beta"]);
+		expect(r3.map((item) => item.name)).toEqual(["alpha", "beta"]);
+		expect(published.at(-1)).toEqual(["alpha", "beta"]);
+		apps.dispose();
+		company.abort();
+	});
 });

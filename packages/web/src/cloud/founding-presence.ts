@@ -119,6 +119,8 @@ export function joinFoundingPresence(
 	let stopped = false;
 	let channel: RealtimeChannel | undefined;
 	let subscribed = false;
+	let connectGeneration = 0;
+	let removal: Promise<unknown> = Promise.resolve();
 	let retryTimer: ReturnType<typeof setTimeout> | undefined;
 	let heartbeat: ReturnType<typeof setInterval> | undefined;
 	let failures = 0;
@@ -354,9 +356,11 @@ export function joinFoundingPresence(
 	const retry = (failed: RealtimeChannel | undefined): void => {
 		if (stopped || retryTimer) return;
 		subscribed = false;
+		clearTimeout(syncTimer);
+		syncTimer = undefined;
 		if (failed && failed === channel) {
 			channel = undefined;
-			void cloud.supabase.removeChannel(failed).catch(() => undefined);
+			removal = cloud.supabase.removeChannel(failed).catch(() => undefined);
 		}
 		report([]);
 		listener.health("degraded");
@@ -370,10 +374,16 @@ export function joinFoundingPresence(
 
 	const connect = (): void => {
 		if (stopped) return;
+		const generation = ++connectGeneration;
 		listener.health("connecting");
-		register()
+		Promise.all([removal, register()])
 			.then(() => {
-				if (stopped) return;
+				if (stopped || generation !== connectGeneration) return;
+				const previous = channel;
+				if (previous) {
+					channel = undefined;
+					void cloud.supabase.removeChannel(previous).catch(() => undefined);
+				}
 				const next = cloud.supabase.channel(`qorpera-founding-${profileId}`, {
 					config: { private: true, presence: { key: clientId }, broadcast: { self: false } },
 				});
@@ -398,7 +408,7 @@ export function joinFoundingPresence(
 				});
 			})
 			.catch((error: unknown) => {
-				if (stopped) return;
+				if (stopped || generation !== connectGeneration) return;
 				if (finalRefusal(error)) end("unavailable");
 				else retry(undefined);
 			});
@@ -406,11 +416,12 @@ export function joinFoundingPresence(
 
 	connect();
 	heartbeat = setInterval(() => {
-		if (stopped || !channel) return;
+		const active = channel;
+		if (stopped || !active) return;
 		register().catch((error: unknown) => {
-			if (stopped) return;
+			if (stopped || active !== channel) return;
 			if (finalRefusal(error)) end("unavailable");
-			else retry(channel);
+			else retry(active);
 		});
 	}, HEARTBEAT_MS);
 
