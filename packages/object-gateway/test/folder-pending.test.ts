@@ -1538,4 +1538,92 @@ describe("a view's links (protocol 4)", () => {
 			1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 2,
 		]);
 	});
+
+	it("orders git objects before metadata, keeps git metadata atomic in one batch, and puts object deletes last", () => {
+		const seed: Record<string, Content> = {
+			code: null,
+			"code/acme": null,
+			"code/acme/app": null,
+			"code/acme/app/repo.git": null,
+			"code/acme/app/repo.git/objects": null,
+			"code/acme/app/repo.git/objects/00": null,
+			"code/acme/app/repo.git/objects/ff": null,
+			"code/acme/app/repo.git/worktrees": null,
+			"code/acme/app/repo.git/worktrees/w1": null,
+			"code/acme/app/repo.git/worktrees/w1/index": "idx-v1",
+			"code/acme/app/repo.git/worktrees/w1/logs": null,
+			"code/acme/app/repo.git/worktrees/w1/logs/HEAD": "log-v1",
+		};
+		for (let i = 0; i < 10; i++)
+			seed[`code/acme/app/repo.git/objects/ff/${String(i).padStart(38, "0")}`] = `old-obj-${i}`;
+		const f = setup(seed);
+		write(f.view, "code/acme/app/repo.git/worktrees/w1/index", "idx-v2", {
+			base: f.view.get("code/acme/app/repo.git/worktrees/w1/index")!.version,
+		});
+		write(f.view, "code/acme/app/repo.git/worktrees/w1/logs/HEAD", "log-v2", {
+			base: f.view.get("code/acme/app/repo.git/worktrees/w1/logs/HEAD")!.version,
+		});
+		for (let i = 0; i < 10; i++) f.view.unlink(`code/acme/app/repo.git/objects/ff/${String(i).padStart(38, "0")}`);
+		for (let i = 0; i < 999; i++)
+			write(f.view, `code/acme/app/repo.git/objects/00/${String(i).padStart(38, "a")}`, `obj-${i}`);
+
+		const plan = f.plan();
+		const indexPos = plan.units.findIndex(
+			(u) => u.unit.op === "write" && u.unit.path === "code/acme/app/repo.git/worktrees/w1/index",
+		);
+		const logPos = plan.units.findIndex(
+			(u) => u.unit.op === "write" && u.unit.path === "code/acme/app/repo.git/worktrees/w1/logs/HEAD",
+		);
+		let lastObjectAddPos = -1;
+		for (let i = plan.units.length - 1; i >= 0; i--) {
+			const u = plan.units[i]!.unit;
+			if (u.op === "write" && u.path.startsWith("code/acme/app/repo.git/objects/00/")) {
+				lastObjectAddPos = i;
+				break;
+			}
+		}
+		const firstObjectDeletePos = plan.units.findIndex(
+			(u) => u.unit.op === "delete" && u.unit.path.startsWith("code/acme/app/repo.git/objects/ff/"),
+		);
+		expect(lastObjectAddPos).toBeGreaterThanOrEqual(0);
+		expect(indexPos).toBeGreaterThan(lastObjectAddPos);
+		expect(logPos).toBeGreaterThan(lastObjectAddPos);
+		expect(firstObjectDeletePos).toBeGreaterThan(Math.max(indexPos, logPos));
+
+		const batches = planCommitBatches(plan.units);
+		expect(batches.map((b) => b.length)).toEqual([999, 12]);
+		const indexBatch = batches.findIndex((b) =>
+			b.some((u) => u.unit.op === "write" && u.unit.path === "code/acme/app/repo.git/worktrees/w1/index"),
+		);
+		const logBatch = batches.findIndex((b) =>
+			b.some((u) => u.unit.op === "write" && u.unit.path === "code/acme/app/repo.git/worktrees/w1/logs/HEAD"),
+		);
+		expect(indexBatch).toBe(1);
+		expect(logBatch).toBe(1);
+
+		const dotGit = setup({
+			code: null,
+			"code/acme": null,
+			"code/acme/app": null,
+			"code/acme/app/.git": null,
+			"code/acme/app/.git/objects": null,
+			"code/acme/app/.git/objects/01": null,
+			"code/acme/app/.git/index": "idx1",
+			"code/acme/app/.git/HEAD": "ref: refs/heads/main\n",
+		});
+		write(dotGit.view, "code/acme/app/.git/index", "idx2", {
+			base: dotGit.view.get("code/acme/app/.git/index")!.version,
+		});
+		write(dotGit.view, "code/acme/app/.git/HEAD", "ref: refs/heads/feat\n", {
+			base: dotGit.view.get("code/acme/app/.git/HEAD")!.version,
+		});
+		for (let i = 0; i < 999; i++)
+			write(dotGit.view, `code/acme/app/.git/objects/01/${String(i).padStart(38, "b")}`, `o-${i}`);
+		const dotBatches = planCommitBatches(dotGit.plan().units);
+		expect(dotBatches.map((b) => b.length)).toEqual([999, 2]);
+		expect(dotBatches[1]?.map((u) => u.paths[0]).sort()).toEqual([
+			"code/acme/app/.git/HEAD",
+			"code/acme/app/.git/index",
+		]);
+	});
 });

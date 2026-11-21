@@ -141,6 +141,7 @@ export interface FolderServiceOptions {
 	readonly dataDoor?: DataDoor;
 	readonly dataCallMs?: number;
 	readonly dataApplyMs?: number;
+	readonly maxBoundaryBatches?: number;
 }
 
 /** More changed paths than this in one push, or a message too large for one frame: the machine is told to drop
@@ -784,6 +785,7 @@ export class FolderService {
 	readonly #dataDoor: DataDoor | undefined;
 	readonly #dataCallMs: number;
 	readonly #dataApplyMs: number;
+	readonly #maxBoundaryBatches: number;
 	readonly #dataCalls = new Map<string, { running: number; began: number[] }>();
 
 	constructor(options: FolderServiceOptions) {
@@ -804,6 +806,7 @@ export class FolderService {
 		this.#dataDoor = options.dataDoor;
 		this.#dataCallMs = options.dataCallMs ?? DATA_CALL_MS;
 		this.#dataApplyMs = options.dataApplyMs ?? DATA_APPLY_MS;
+		this.#maxBoundaryBatches = Math.max(1, options.maxBoundaryBatches ?? MAX_BOUNDARY_BATCHES);
 	}
 
 	start(): void {
@@ -3732,20 +3735,9 @@ export class FolderService {
 			view.heard = "answered";
 			return { commitId: null, seq: null, paths: [...entries, ...dropped] };
 		}
-		const batches = planCommitBatches(plan.units);
+		const batches = final ? [] : planCommitBatches(plan.units);
 		if (batches.length > 1)
-			return await this.#commitBatches(
-				view,
-				pending,
-				plan,
-				batches,
-				credited,
-				entries,
-				dropped,
-				final,
-				last,
-				unasked,
-			);
+			return await this.#commitBatches(view, pending, plan, batches, credited, entries, dropped, last, unasked);
 		const structured = await this.#structured(
 			view,
 			plan.units.map((u) => u.unit),
@@ -3804,15 +3796,13 @@ export class FolderService {
 		credited: readonly (readonly string[] | undefined)[],
 		entries: ReportEntry[],
 		dropped: readonly ReportEntry[],
-		final: boolean,
 		last: boolean,
 		unasked: boolean,
 	): Promise<Report> {
 		const baseKey = `folder-view:${view.key}:${randomUUID()}`;
 		const actor = view.actor;
 		const keptNodes = new Set<string>(plan.keep);
-		const runCount = Math.min(batches.length, MAX_BOUNDARY_BATCHES);
-		const finalAllowed = final && runCount === batches.length;
+		const runCount = Math.min(batches.length, this.#maxBoundaryBatches);
 		let lastCommitId: string | null = null;
 		let lastSeq: number | null = null;
 		let unitOffset = 0;
@@ -3827,17 +3817,14 @@ export class FolderService {
 
 		for (let i = 0; i < runCount; i++) {
 			if (i > 0) {
-				if (view.closed) {
-					if (final) throw this.#closedOtherwise(view);
-					throw new ProtocolError(ErrorCode.viewClosed, view.closed);
-				}
+				if (view.closed) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
 				if (view.unproven) {
 					view.heard = "refused";
 					const laterRefused = remainingEntries(i, "refused", "unproven");
 					this.#notice(view, unasked, { commitId: null, seq: null, refused: "unproven", paths: laterRefused });
 					return {
-						commitId: lastCommitId,
-						seq: lastSeq,
+						commitId: null,
+						seq: null,
 						refused: "unproven",
 						paths: [...entries, ...laterRefused],
 					};
@@ -3847,7 +3834,6 @@ export class FolderService {
 			const batch = batches[i]!;
 			const offset = unitOffset;
 			unitOffset += batch.length;
-			const batchFinal = finalAllowed && i === runCount - 1;
 			const batchKey = i === 0 ? baseKey : `${baseKey}:b${i}`;
 
 			const batchKeep = new Set<string>(keptNodes);
@@ -3883,20 +3869,14 @@ export class FolderService {
 						if (node?.kind === "file" || node?.kind === "symlink") batchMade.set(path, node.version);
 					}
 
-			view.askingFinal = batchFinal;
-			let answer: Answer | undefined;
-			try {
-				answer = await this.#commit(view, actor, batchKey, units, batchFinal);
-			} finally {
-				view.askingFinal = false;
-			}
+			const answer = await this.#commit(view, actor, batchKey, units, false);
 			view.heard = heardOf(answer);
 
 			if (!answer) {
-				view.unanswered = { key: batchKey, actor, units, plan: batchPlan, made: batchMade, final: batchFinal };
+				view.unanswered = { key: batchKey, actor, units, plan: batchPlan, made: batchMade, final: false };
 				return {
-					commitId: lastCommitId,
-					seq: lastSeq,
+					commitId: null,
+					seq: null,
 					paths: [
 						...entries,
 						...(i === 0 ? dropped : []),
@@ -3905,14 +3885,6 @@ export class FolderService {
 					],
 				};
 			}
-
-			if (batchFinal && answer.commitId)
-				return this.#notice(
-					view,
-					unasked,
-					await this.#closedBy(view, batchPlan, answer, [...entries, ...(i === 0 ? dropped : [])]),
-				);
-			if (batchFinal && view.closed) throw this.#closedOtherwise(view);
 
 			if (answer.refused) {
 				if (answer.said === VIEW_ENDED) this.#close(view, VIEW_ENDED);
@@ -3926,8 +3898,8 @@ export class FolderService {
 						paths: [...batchHeld, ...laterRefused],
 					});
 					return {
-						commitId: lastCommitId,
-						seq: lastSeq,
+						commitId: null,
+						seq: null,
 						refused: answer.refused,
 						paths: [...entries, ...batchHeld, ...laterRefused],
 					};
@@ -3961,7 +3933,7 @@ export class FolderService {
 					paths: batchPaths,
 				});
 				entries.push(...batchPaths);
-				return { commitId: lastCommitId, seq: lastSeq, refused: answer.refused, paths: entries };
+				return { commitId: null, seq: null, refused: answer.refused, paths: entries };
 			}
 
 			const batchSettled = await this.#settle(view, batchPlan, batchMade, answer);
@@ -3971,10 +3943,11 @@ export class FolderService {
 			lastCommitId = answer.commitId || lastCommitId;
 			if (answer.seq !== null) lastSeq = answer.seq;
 			if (view.unsettled) {
-				if (i + 1 < batches.length) view.heard = "open";
+				const moreRemain = i + 1 < batches.length;
+				if (moreRemain) view.heard = "open";
 				return {
-					commitId: lastCommitId,
-					seq: lastSeq,
+					commitId: moreRemain ? null : lastCommitId,
+					seq: moreRemain ? null : lastSeq,
 					paths: [
 						...entries,
 						...remainingEntries(i + 1, "not_applied", "the last save has not come back through the feed yet"),
@@ -3993,6 +3966,7 @@ export class FolderService {
 					"the boundary split reached its batch limit; remaining changes stay pending",
 				),
 			);
+			return { commitId: null, seq: null, paths: entries };
 		}
 		return { commitId: lastCommitId, seq: lastSeq, paths: entries };
 	}
