@@ -899,4 +899,48 @@ describe("cloud object outage continuity", () => {
 			loops.stop();
 		}
 	});
+
+	it("coalesces overlapping status() scans while invalidating immediately after a mutation", async () => {
+		const fixture = await gateway();
+		const bytes = Buffer.from("status-coalesce-bytes");
+		const sha256 = createHash("sha256").update(bytes).digest("hex");
+		const journal = fixture.journal;
+		let listCalls = 0;
+		let releaseList!: () => void;
+		let enteredList!: () => void;
+		const listEntered = new Promise<void>((resolve) => {
+			enteredList = resolve;
+		});
+		const listGate = new Promise<void>((resolve) => {
+			releaseList = resolve;
+		});
+		const origList = journal.list.bind(journal);
+		journal.list = async (section) => {
+			listCalls++;
+			if (listCalls === 1) {
+				enteredList();
+				await listGate;
+			}
+			return origList(section);
+		};
+		const replication = new ObjectGatewayReplication(journal, fixture.objects, fixture.authority);
+		const first = replication.status();
+		await listEntered;
+		const second = replication.status();
+		const third = replication.status();
+		releaseList();
+		const [r1, r2, r3] = await Promise.all([first, second, third]);
+		expect(listCalls).toBe(1);
+		expect(r1).toEqual(r2);
+		expect(r2).toEqual(r3);
+		expect(r1.pending).toBe(0);
+
+		await replication.uploadWithAuthority(profileId, sha256, bytes, {
+			authorize: async () => {},
+			confirm: async () => {},
+		});
+		const after = await replication.status();
+		expect(listCalls).toBe(2);
+		expect(after.pending).toBe(1);
+	});
 });

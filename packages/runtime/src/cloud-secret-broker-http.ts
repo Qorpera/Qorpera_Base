@@ -779,7 +779,8 @@ export class HttpCloudSecretBrokerService {
 		this.#server = createServer((request, reply) => {
 			void this.#handle(request, reply).catch(() => reply.destroy());
 		});
-		this.#server.requestTimeout = 15_000;
+		// WHY: JSON routes enforce a 10 s body timeout in readRequest(); disabling server-wide requestTimeout stops Node from killing streaming MCP/git relays at 15 s.
+		this.#server.requestTimeout = 0;
 		this.#server.headersTimeout = 10_000;
 		this.#server.keepAliveTimeout = 5000;
 		this.#server.maxRequestsPerSocket = 10;
@@ -790,6 +791,10 @@ export class HttpCloudSecretBrokerService {
 		const address = this.#server.address();
 		if (!address || typeof address === "string") throw new Error("Cloud secret broker service address is invalid");
 		return address.port;
+	}
+
+	get requestTimeout(): number | undefined {
+		return this.#server?.requestTimeout;
 	}
 
 	async close(): Promise<void> {
@@ -853,38 +858,44 @@ export class HttpCloudSecretBrokerService {
 				? await scope.broker.codingMcpSignIn(shape.binding, AbortSignal.timeout(10_000), scope.companyId)
 				: await scope.broker.codingRepositoryFetch(shape.binding, AbortSignal.timeout(10_000), scope.companyId);
 		const idleMs = shape.kind === "mcp" ? MCP_RELAY_IDLE_MS : GIT_RELAY_IDLE_MS;
-		const answer = await openCloudSecretRelay(
-			this.#relayTransport,
-			{
-				origin: signIn.origin,
-				method: shape.relay.method,
-				path: `${signIn.path}${shape.relay.path}`,
-				headers: { ...shape.relay.headers, [signIn.headerName]: signIn.headerValue },
-				body: shape.relay.method === "POST" ? request : undefined,
-				idleMs,
-			},
-			controller.signal,
-		);
-		const status = answer.statusCode ?? 0;
-		const type = relayAnswerHeader(answer, "content-type");
-		const session = shape.kind === "mcp" ? relayAnswerHeader(answer, "mcp-session-id") : undefined;
-		const encoding = answer.headers["content-encoding"];
-		if (
-			status < 200 ||
-			(status >= 300 && status < 400) ||
-			status > 599 ||
-			(encoding !== undefined && encoding !== "identity") ||
-			(shape.kind === "git" && status === 200 && type !== shape.answerType)
-		)
-			throw new Error("Coding relay answer is refused");
-		reply.writeHead(status, {
-			"cache-control": "no-store",
-			...(type === undefined ? {} : { "content-type": type }),
-			...(session === undefined ? {} : { "mcp-session-id": session }),
-		});
-		reply.flushHeaders();
-		reply.setTimeout(idleMs, () => reply.destroy());
-		await pipeline(answer, reply);
+		const onRequestTimeout = () => controller.abort();
+		request.setTimeout(idleMs, onRequestTimeout);
+		try {
+			const answer = await openCloudSecretRelay(
+				this.#relayTransport,
+				{
+					origin: signIn.origin,
+					method: shape.relay.method,
+					path: `${signIn.path}${shape.relay.path}`,
+					headers: { ...shape.relay.headers, [signIn.headerName]: signIn.headerValue },
+					body: shape.relay.method === "POST" ? request : undefined,
+					idleMs,
+				},
+				controller.signal,
+			);
+			const status = answer.statusCode ?? 0;
+			const type = relayAnswerHeader(answer, "content-type");
+			const session = shape.kind === "mcp" ? relayAnswerHeader(answer, "mcp-session-id") : undefined;
+			const encoding = answer.headers["content-encoding"];
+			if (
+				status < 200 ||
+				(status >= 300 && status < 400) ||
+				status > 599 ||
+				(encoding !== undefined && encoding !== "identity") ||
+				(shape.kind === "git" && status === 200 && type !== shape.answerType)
+			)
+				throw new Error("Coding relay answer is refused");
+			reply.writeHead(status, {
+				"cache-control": "no-store",
+				...(type === undefined ? {} : { "content-type": type }),
+				...(session === undefined ? {} : { "mcp-session-id": session }),
+			});
+			reply.flushHeaders();
+			reply.setTimeout(idleMs, () => reply.destroy());
+			await pipeline(answer, reply);
+		} finally {
+			request.off("timeout", onRequestTimeout);
+		}
 	}
 
 	async #handle(request: IncomingMessage, reply: ServerResponse): Promise<void> {

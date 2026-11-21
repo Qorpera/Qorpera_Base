@@ -99,6 +99,7 @@ export class ObjectGatewayReplication {
 	readonly #deletedKeys = new Set<string>();
 	readonly #keyVersions = new Map<string, number>();
 	#mutationEpoch = 0;
+	#statusInFlight: Promise<{ pending: number; blocked: number; degraded: boolean }> | undefined;
 	readonly #nasGate: MaintenanceGate;
 
 	constructor(
@@ -186,12 +187,16 @@ export class ObjectGatewayReplication {
 				}
 				try {
 					await this.#journal.audit(...events);
-					this.#storedLinesRefused = false;
+					if (this.#storedLinesRefused) {
+						this.#storedLinesRefused = false;
+						this.#statusInFlight = undefined;
+					}
 					for (const item of batch) item.resolve();
 				} catch (error) {
 					if (lines.length > 0) {
 						this.#storedLines.unshift(...lines);
 						this.#storedLinesRefused = true;
+						this.#statusInFlight = undefined;
 					}
 					for (const item of batch) item.reject(error);
 				}
@@ -298,6 +303,7 @@ export class ObjectGatewayReplication {
 	#invalidateDeleted(name: string): void {
 		this.#deletedKeys.delete(name);
 		this.#keyVersions.set(name, ++this.#mutationEpoch);
+		this.#statusInFlight = undefined;
 	}
 
 	#rememberDeletedIfUnchanged(name: string, versionBeforeRead: number | undefined): void {
@@ -317,6 +323,18 @@ export class ObjectGatewayReplication {
 	}
 
 	async status(): Promise<{ pending: number; blocked: number; degraded: boolean }> {
+		if (this.#statusInFlight) return this.#statusInFlight;
+		// WHY: Coalesce overlapping /healthz and /readyz journal scans while invalidating on any state mutation.
+		const pending = this.#scanStatus();
+		this.#statusInFlight = pending;
+		try {
+			return await pending;
+		} finally {
+			if (this.#statusInFlight === pending) this.#statusInFlight = undefined;
+		}
+	}
+
+	async #scanStatus(): Promise<{ pending: number; blocked: number; degraded: boolean }> {
 		const names = await this.#journal.list("pending");
 		this.#pruneDeletedCache(names);
 		const toRead = names.filter((name) => !this.#deletedKeys.has(name));
@@ -487,6 +505,7 @@ export class ObjectGatewayReplication {
 			bytes: object.bytes,
 		});
 		await this.#journal.remove(key(object));
+		this.#statusInFlight = undefined;
 	}
 
 	async #delete(object: PendingObject, gated: boolean): Promise<void> {
@@ -507,6 +526,7 @@ export class ObjectGatewayReplication {
 		const name = key(object);
 		await this.#journal.write(name, { ...object, state: "deleted" });
 		this.#deletedKeys.add(name);
+		this.#statusInFlight = undefined;
 		await this.audit({
 			event: "object_deleted",
 			at: new Date().toISOString(),
