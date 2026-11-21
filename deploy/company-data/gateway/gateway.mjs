@@ -109,6 +109,7 @@ export const LIMITS = Object.freeze({
 	proofMs: 10_000,
 	/** A request's body. */
 	bodyBytes: 1024 * 1024,
+	parameterBytes: 64 * 1024,
 	/** A company's database, all its rows: at this size its steps stop applying, and its questions still answer. */
 	companyBytes: 1024 ** 3,
 	/** Counting the rows of the tables one describe call shows: all its counts together. */
@@ -176,7 +177,7 @@ const RECORD_SIZE = ["row_changes", "change_log", "record_bytes"]
 	.join(" + ");
 const OWN_SIZE = `select pg_catalog.pg_database_size(pg_catalog.current_database()) - (${RECORD_SIZE}) as bytes`;
 const RELATION =
-	"select a.attname as name, pg_catalog.format_type(a.atttypid, a.atttypmod) as type, c.relkind as kind, " +
+	"select a.attname as name, pg_catalog.format_type(a.atttypid, a.atttypmod) as type, c.relkind as kind, c.relrowsecurity as rls, " +
 	"(select k.n from unnest(i.indkey::int2[]) with ordinality k(attnum, n) where k.attnum = a.attnum) as key, " +
 	"pg_catalog.format_type(a.atttypid, -1) as base, c.relkind in ('r', 'p') and a.attgenerated = '' and a.attidentity <> 'a' as settable, " +
 	"(with recursive d(oid) as (select a.atttypid union all select t.typbasetype from d join pg_catalog.pg_type t on t.oid = d.oid and t.typtype = 'd') " +
@@ -185,6 +186,10 @@ const RELATION =
 	"join pg_catalog.pg_attribute a on a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped " +
 	"left join pg_catalog.pg_index i on i.indrelid = c.oid and i.indisprimary " +
 	"where c.relname = $2 and c.relkind in ('r', 'p', 'v', 'm') order by a.attnum";
+const SCHEMA_VIEWER_SCOPED =
+	"select exists (select 1 from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace and n.nspname = $1 where c.relrowsecurity) " +
+	"or exists (select 1 from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace and n.nspname = $1 where p.prosrc ~* 'qorpera\\.viewer|qorpera_data\\.viewer') " +
+	"or exists (select 1 from pg_catalog.pg_views v where v.schemaname = $1 and v.definition ~* 'qorpera\\.viewer|qorpera_data\\.viewer') as scoped";
 
 const TOML_KEY = `(?:[A-Za-z0-9_-]+|"[^"\\\\\\n]*"|'[^'\\n]*')`;
 const TOML_KEYS = `${TOML_KEY}(?:\\s*\\.\\s*${TOML_KEY})*`;
@@ -248,8 +253,10 @@ function namesViewer(text) {
 
 export function listMembers(toml, questions, cut = false) {
 	if (toml === null) return "writers";
-	if (cut && listLine(toml) === null) return "writers";
-	return listLine(toml) ?? (questions.some(namesViewer) ? "writers" : "readers");
+	const declared = listLine(toml);
+	if (declared !== null) return declared;
+	if (cut) return "writers";
+	return questions.some(namesViewer) ? "writers" : "readers";
 }
 
 function tomlWord(toml, key) {
@@ -412,13 +419,11 @@ export class Platform {
 			refuse(503, "The platform's answer is not a pass");
 		return {
 			environmentId: answer.environmentId,
-			runId: machine ? null : answer.runId,
 			machineId: machine ? answer.machineId : null,
 			requesterUserId: answer.requesterUserId,
 			agentId: answer.staffAgentId,
 			database: answer.database,
 			files: new Map(files.map((file) => [file.path, { sha256: file.sha256, bytes: file.bytes }])),
-			// The held step a member said yes to on its card, which this run used (20260930764000), or none.
 			allow: answer.allow ?? null,
 		};
 	}
@@ -529,8 +534,11 @@ export class Gateway {
 	#pools = new Map();
 	#proofs = new Map();
 	#texts = new Map();
+	#statements = new Map();
 	#folders = new Map();
 	#listeners = new Map();
+	#listenEpoch = 0;
+	#watchInFlight = new Map();
 	/** Company databases the watcher last found at their size limit. */
 	#full = new Set();
 	#closed = false;
@@ -645,15 +653,19 @@ export class Gateway {
 		if (mark) mark.sending.finally(() => this.#signalled.get(pid) === mark && this.#signalled.delete(pid));
 	}
 
-	/** Gives back every connection of a database that only waits, but the asking login's own. */
 	async #makeRoom(database, asking) {
-		const ending = [];
-		for (const [key, { pool }] of this.#pools) {
-			if (key === asking || !key.endsWith(`@${database}`) || pool.totalCount === 0 || pool.idleCount < pool.totalCount || pool.waitingCount > 0)
-				continue;
-			this.#pools.delete(key);
-			ending.push(pool.end().catch(() => undefined));
-		}
+		const reclaim = (filter) => {
+			const ending = [];
+			for (const [key, { pool }] of this.#pools) {
+				if (key === asking || !filter(key) || pool.totalCount === 0 || pool.idleCount < pool.totalCount || pool.waitingCount > 0)
+					continue;
+				this.#pools.delete(key);
+				ending.push(pool.end().catch(() => undefined));
+			}
+			return ending;
+		};
+		let ending = reclaim((key) => key.endsWith(`@${database}`));
+		if (ending.length === 0) ending = reclaim(() => true);
 		await Promise.all(ending);
 	}
 
@@ -741,31 +753,78 @@ export class Gateway {
 		return { files: files.slice(0, limit), more: files.length > limit };
 	}
 
-	/** A statement's values in its parameters' order. `:viewer` is the member looking; a run, which may read everything in
-	 * the database anyway, may name the member it asks for, else it is the member who asked the run. */
+	#statement(hash, text) {
+		const kept = this.#statements.get(hash);
+		if (kept !== undefined) return kept;
+		const parsed = readStatement(text);
+		if (this.#statements.size >= 5_000) this.#statements.delete(this.#statements.keys().next().value);
+		this.#statements.set(hash, parsed);
+		return parsed;
+	}
+
+	#checkJsonParam(value, depth = 0) {
+		if (depth > 16) return false;
+		if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+		if (typeof value === "number") return Number.isFinite(value);
+		if (Array.isArray(value)) return value.every((item) => this.#checkJsonParam(item, depth + 1));
+		if (typeof value === "object") {
+			const proto = Object.getPrototypeOf(value);
+			if (proto !== Object.prototype && proto !== null) return false;
+			return Object.values(value).every((item) => this.#checkJsonParam(item, depth + 1));
+		}
+		return false;
+	}
+
 	#values(caller, statement, params, kind = "question") {
 		if (!params || typeof params !== "object" || Array.isArray(params)) refuse(400, "Parameters are named values");
+		if (Buffer.byteLength(JSON.stringify(params)) > this.#limits.parameterBytes)
+			refuse(400, `Parameters take at most ${amount(this.#limits.parameterBytes)} together`);
 		let viewer = caller.userId;
 		if (Object.hasOwn(params, VIEWER)) {
 			if (!caller.run) refuse(400, ":viewer is filled by Qorpera");
 			viewer = params[VIEWER];
 			if (typeof viewer !== "string" || !ENVIRONMENT.test(viewer)) refuse(400, ":viewer is a member's id");
 		}
-		const values = statement.parameters.map((parameter) => {
-			if (parameter === VIEWER) return viewer;
+		const previewValues = [];
+		const values = statement.parameters.map((parameter, index) => {
+			if (parameter === VIEWER) {
+				previewValues.push(viewer);
+				return viewer;
+			}
 			if (!Object.hasOwn(params, parameter)) refuse(400, `The ${kind} takes :${parameter}`);
 			const value = params[parameter];
-			if (value === null || typeof value === "string") return value;
-			if (typeof value === "number" && Number.isFinite(value)) return String(value);
-			if (typeof value === "boolean") return value ? "true" : "false";
-			return refuse(400, `:${parameter} is text, a number, true, false or null`);
+			if (value === null || typeof value === "string") {
+				previewValues.push(value);
+				return value;
+			}
+			if (typeof value === "number" && Number.isFinite(value)) {
+				const text = String(value);
+				previewValues.push(text);
+				return text;
+			}
+			if (typeof value === "boolean") {
+				const text = value ? "true" : "false";
+				previewValues.push(text);
+				return text;
+			}
+			if (typeof value === "object" && this.#checkJsonParam(value)) {
+				const json = JSON.stringify(value);
+				previewValues.push(json);
+				if (!Array.isArray(value)) return json;
+				const scalar = value.every((item) => item === null || typeof item === "string" || typeof item === "boolean" || typeof item === "number");
+				const n = index + 1;
+				const asJson =
+					!scalar ||
+					new RegExp(`\\$${n}(?![0-9])\\s*::\\s*jsonb?\\b`, "i").test(statement.sql) ||
+					new RegExp(`jsonb?_(?:array_elements|array_elements_text|array_length|to_recordset|populate_recordset)\\s*\\(\\s*\\$${n}(?![0-9])`, "i").test(statement.sql);
+				return asJson ? json : value.map((item) => (item === null ? null : typeof item === "boolean" ? (item ? "true" : "false") : String(item)));
+			}
+			return refuse(400, `:${parameter} must be a JSON value`);
 		});
 		for (const given of Object.keys(params)) if (!statement.parameters.includes(given)) refuse(400, `The ${kind} takes no :${given}`);
-		return values;
+		return { values, viewer, previewValues };
 	}
 
-	/** One question or change (`kind`), ready: the caller may read its file, the gateway holds its text, its parameters
-	 * are filled. A member who may read a change's file may run it (§8). */
 	async #named(kind, caller, environmentId, asked, texts, proofs = null) {
 		const { folder, may } = NAMED[kind];
 		if (!asked || typeof asked !== "object") refuse(400, `Name a ${kind}`);
@@ -774,21 +833,19 @@ export class Gateway {
 			refuse(400, `Name a ${kind} as <database>/<${kind}>`);
 		const path = `data/${name}/${folder}/${file}.sql`;
 		const proof = (proofs ?? (await this.#proven(caller, environmentId, [path]))).get(path);
-		// The same answer for one that is not there and one this member may not read.
 		if (!proof) refuse(404, `No ${kind} ${name}/${file} that you may ${may}`);
 		if (proof.bytes > this.#limits.questionTextBytes) refuse(400, `The ${kind}'s file is larger than ${this.#limits.questionTextBytes / 1024} KiB`);
 		const database = companyDatabase(environmentId);
 		const text = await this.#text(database, proof.sha256, texts, this.#limits.questionTextBytes);
 		if (text === null) return { need: { path, sha256: proof.sha256 } };
-		const statement = readStatement(text);
+		const statement = this.#statement(proof.sha256, text);
 		if (!statement.ok) refuse(400, `${path}: ${statement.problem}`);
 		const n = await this.#folder(database, name);
 		if (n === null) refuse(409, `The database ${name} has no applied step yet`);
-		return { database, name, n, sql: statement.sql, values: this.#values(caller, statement, params, kind), sha256: proof.sha256, statement };
+		const bound = this.#values(caller, statement, params, kind);
+		return { database, name, n, sql: statement.sql, values: bound.values, viewer: bound.viewer, previewValues: bound.previewValues, sha256: proof.sha256, statement };
 	}
 
-	/** An agent's read of its own, ready to ask as a question is: one statement, run as the database folder's read role
-	 * in a read-only transaction. The run must be able to read the database's database.toml. */
 	async #ownRead(caller, environmentId, asked) {
 		const { database: name, sql, params = {} } = asked;
 		if (typeof name !== "string" || !DATABASE_NAME.test(name)) refuse(400, "Name a database");
@@ -801,7 +858,8 @@ export class Gateway {
 		const database = companyDatabase(environmentId);
 		const n = await this.#folder(database, name);
 		if (n === null) refuse(409, `The database ${name} has no applied step yet`);
-		return { database, name, n, sql: statement.sql, values: this.#values(caller, statement, params) };
+		const bound = this.#values(caller, statement, params);
+		return { database, name, n, sql: statement.sql, values: bound.values, viewer: bound.viewer };
 	}
 
 	/** Asks a ready question as the database folder's read role, in one read-only transaction. `ms`: the most it may
@@ -837,9 +895,10 @@ export class Gateway {
 				if (ms < 1) refuse(408, "No time was left for the statement");
 			}
 			const limit = Math.max(1, Math.floor(Math.min(cap, ms)));
+			const viewerSetting = ready.viewer && ENVIRONMENT.test(ready.viewer) ? `; set local "qorpera.viewer" = '${ready.viewer}'` : "";
 			await client.query(
 				`begin transaction read only; set local statement_timeout = ${limit}; set local timezone = 'UTC'; ` +
-					`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}${settings}`,
+					`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}, qorpera_ext${viewerSetting}${settings}`,
 			);
 			const answer = await work(client, { maxRows, maxBytes });
 			await client.query("rollback");
@@ -915,6 +974,7 @@ export class Gateway {
 		return this.#reading(ready, { ...options, settings: ROW_TEXT }, async (client, { maxBytes }) => {
 			const shape = await client.query({ text: RELATION, values: [ready.name, ready.table], types: TEXT_TYPES });
 			if (shape.rows.length === 0) refuse(404, `No table ${ready.table} in ${ready.name}`);
+			options.onShape?.({ kind: shape.rows[0].kind, rls: shape.rows[0].rls === "t" });
 			const columns = shape.rows.map((row, index) => ({ ...row, index }));
 			const key = columns.filter((column) => column.key !== null).sort((a, b) => Number(a.key) - Number(b.key));
 			const by = ready.order === null ? null : columns.find((column) => column.name === ready.order);
@@ -1074,7 +1134,7 @@ export class Gateway {
 		const database = companyDatabase(environmentId);
 		const n = await this.#folder(database, name);
 		if (n === null) refuse(409, `The database ${name} has no applied step yet`);
-		return { database, name, n, table, order, desc, limit, after };
+		return { database, name, n, table, order, desc, limit, after, viewer: caller.userId };
 	}
 
 	async rows(caller, environmentId, body) {
@@ -1223,30 +1283,35 @@ export class Gateway {
 		};
 		try {
 			if (gone?.aborted) refuse(499, "The caller went away");
-			await client.query(
-				`begin; set local statement_timeout = ${ms}; set local lock_timeout = ${ms}; set local timezone = 'UTC'; ` +
-					`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}${settings}`,
-			);
-			const { txid } = (await client.query("select pg_catalog.txid_current()::text as txid")).rows[0];
-			await this.#actorLine(ready.database, txid, actor);
 			const full = this.#full.has(ready.database);
-			const before = full ? Number((await client.query(WRITTEN)).rows[0].rows) : 0;
+			const viewerSetting = ready.viewer && ENVIRONMENT.test(ready.viewer) ? `; set local "qorpera.viewer" = '${ready.viewer}'` : "";
+			const started = await client.query(
+				`begin; set local statement_timeout = ${ms}; set local lock_timeout = ${ms}; set local timezone = 'UTC'; ` +
+					`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}, qorpera_ext${viewerSetting}${settings}; ` +
+					`select pg_catalog.txid_current()::text as txid${full ? `; ${WRITTEN}` : ""}`,
+			);
+			const txid = (full ? started[started.length - 2] : started[started.length - 1]).rows[0].txid;
+			const before = full ? Number(started[started.length - 1].rows[0].rows) : 0;
+			await this.#actorLine(ready.database, txid, actor);
 			const answer = await work(client, undone, held);
-			await client.query("set constraints all immediate");
-			const effects = (await client.query("select kind, object, rows from qorpera_data.effects()")).rows;
+			const checked = await client.query(
+				`set constraints all immediate; select kind, object, rows from qorpera_data.effects(); ` +
+					`select table_name, problem from qorpera_data.unwatched('${ready.name}')${full ? `; ${WRITTEN}` : ""}`,
+			);
+			const effects = checked[1].rows;
 			const beyond = effects.filter((effect) => effect.kind !== "deleted rows");
 			if (beyond.length > 0)
 				await undone(
 					400,
 					`A change adds, changes and deletes rows. This one also ${beyond.map((effect) => `${effect.kind} ${effect.object}`).join(", ")}, which is a step's work: nothing was changed`,
 				);
-			const unwatched = (await client.query("select table_name, problem from qorpera_data.unwatched($1)", [ready.name])).rows;
+			const unwatched = checked[2].rows;
 			if (unwatched.length > 0)
 				await undone(
 					400,
 					`A change may not remove or switch off Qorpera's triggers (${unwatched.map((row) => `${row.table_name} ${row.problem}`).join("; ")}): nothing was changed`,
 				);
-			if (full && Number((await client.query(WRITTEN)).rows[0].rows) > before)
+			if (full && Number(checked[3].rows[0].rows) > before)
 				await undone(507, `This company's database is at its size limit of ${amount(this.#limits.companyBytes)}: ${room}`);
 			await client.query("commit");
 			return answer;
@@ -1332,9 +1397,8 @@ export class Gateway {
 		const ready = await this.#named("change", caller, environmentId, body, body.texts);
 		if (ready.need) return { need: [ready.need] };
 		if (body.preview === true) {
-			// The member looking reads as "you": their id says nothing to them.
 			const values = new Map(
-				ready.statement.parameters.map((name, index) => [name, name === VIEWER && !caller.run ? "you" : ready.values[index]]),
+				ready.statement.parameters.map((name, index) => [name, name === VIEWER && !caller.run ? "you" : ready.previewValues[index]]),
 			);
 			return {
 				words: wordsWith(ready.statement.words, values),
@@ -1366,7 +1430,7 @@ export class Gateway {
 		const n = await this.#folder(database, name);
 		if (n === null) refuse(409, `The database ${name} has no applied step yet`);
 		const answer = await this.#writing(
-			{ database, name, n },
+			{ database, name, n, viewer: caller.userId },
 			{ kind: "member", id: caller.userId, via: "list" },
 			{ gone, settings: ROW_TEXT, room: "only removing a row runs until there is room" },
 			(client, undone) => this.#edited(client, undone, { name, table, op, key, values, seen }),
@@ -1399,11 +1463,15 @@ export class Gateway {
 				params.push(
 					value === null
 						? null
-						: column?.json === "t" || typeof value === "object"
+						: column?.json === "t"
 							? JSON.stringify(value)
-							: typeof value === "string"
+							: Array.isArray(value)
 								? value
-								: String(value),
+								: typeof value === "object"
+									? JSON.stringify(value)
+									: typeof value === "string"
+										? value
+										: String(value),
 				);
 				return column ? `$${params.length}::${column.base}` : `$${params.length}`;
 			};
@@ -1448,7 +1516,6 @@ export class Gateway {
 		return { columns: columns.map((column) => column.name), key: keyed.map((column) => column.name), row: op === "remove" ? null : asRow(result) };
 	}
 
-	/** One connection that listens on a company's database, shared by every watch call on it, open only while one is. */
 	#listen(database, heard) {
 		let listener = this.#listeners.get(database);
 		if (!listener) {
@@ -1461,15 +1528,42 @@ export class Gateway {
 				connectionTimeoutMillis: 5_000,
 				application_name: "qorpera-data-gateway listen",
 			});
-			listener = { client, heard: new Set(), ready: null, failed: false };
-			client.on("notification", () => {
-				for (const tell of [...listener.heard]) tell();
+			listener = {
+				client,
+				heard: new Set(),
+				ready: null,
+				epoch: ++this.#listenEpoch,
+				gen: 0,
+				wildcardGen: 0,
+				schemaGen: new Map(),
+				schemaDdlGen: new Map(),
+				tableGen: new Map(),
+				cache: new Map(),
+				viewerScoped: new Map(),
+			};
+			client.on("notification", (message) => {
+				const payload = typeof message?.payload === "string" ? message.payload : "";
+				const dot = payload.indexOf(".");
+				listener.gen++;
+				let notice = null;
+				if (dot > 0 && dot < payload.length - 1) {
+					const schema = payload.slice(0, dot);
+					const table = payload.slice(dot + 1);
+					listener.schemaGen.set(schema, listener.gen);
+					listener.tableGen.set(payload, listener.gen);
+					notice = { schema, table };
+				} else {
+					listener.wildcardGen = listener.gen;
+				}
+				for (const tell of [...listener.heard]) tell(notice);
 			});
 			const lost = () => {
-				listener.failed = true;
 				if (this.#listeners.get(database) === listener) this.#listeners.delete(database);
-				// A lost connection may have missed a notice: everyone asks again.
-				for (const tell of [...listener.heard]) tell();
+				listener.cache.clear();
+				listener.viewerScoped.clear();
+				listener.gen++;
+				listener.wildcardGen = listener.gen;
+				for (const tell of [...listener.heard]) tell(null);
 			};
 			client.on("error", lost);
 			client.on("end", lost);
@@ -1479,23 +1573,83 @@ export class Gateway {
 		}
 		listener.heard.add(heard);
 		return {
+			listener,
 			ready: listener.ready,
 			stop: () => {
 				listener.heard.delete(heard);
 				if (listener.heard.size === 0 && this.#listeners.get(database) === listener) {
 					this.#listeners.delete(database);
+					listener.cache.clear();
+					listener.viewerScoped.clear();
 					listener.client.end().catch(() => undefined);
 				}
 			},
 		};
 	}
 
-	/** Held until a watched answer differs from the etag the page holds, or the wait ends. One deadline covers the
-	 * whole call from when it arrives: reading the folder, asking the questions and waiting all fit inside `watchMs`.
-	 * When it passes, the call answers with what it has and starts no other question; a question running then is
-	 * bounded by the time left. Questions are asked a few at a time, and stop when the caller goes away. A call that
-	 * could not ask every question says `partial: true`, and the next call for the same questions goes on from the
-	 * first one it did not reach. Every way out of the call stops all of its work. */
+	#notifySchema(database, schema) {
+		const listener = this.#listeners.get(database);
+		if (!listener) return;
+		listener.gen++;
+		listener.schemaGen.set(schema, listener.gen);
+		listener.schemaDdlGen.set(schema, listener.gen);
+		listener.viewerScoped.delete(schema);
+		for (const tell of [...listener.heard]) tell({ schema, table: null });
+	}
+
+	async #schemaViewerScoped(database, schema, listener) {
+		if (listener.viewerScoped.has(schema)) return listener.viewerScoped.get(schema);
+		const pending = this.#pool(database, "qorpera_data_keeper")
+			.query(SCHEMA_VIEWER_SCOPED, [schema])
+			.then((result) => result.rows[0]?.scoped === true)
+			.catch(() => true);
+		listener.viewerScoped.set(schema, pending);
+		const scoped = await pending;
+		if (listener.viewerScoped.get(schema) === pending) listener.viewerScoped.set(schema, scoped);
+		return scoped;
+	}
+
+	#coalescedWatch(key, left, stop, run) {
+		if (stop.aborted) return Promise.reject(new Refusal(499, "The caller went away"));
+		if (left < this.#limits.questionMs) return run(stop);
+		let entry = this.#watchInFlight.get(key);
+		if (!entry) {
+			const controller = new AbortController();
+			const waiters = new Set();
+			const promise = run(controller.signal).finally(() => {
+				if (this.#watchInFlight.get(key) === entry) this.#watchInFlight.delete(key);
+			});
+			promise.catch(() => undefined);
+			entry = { controller, waiters, promise };
+			this.#watchInFlight.set(key, entry);
+		}
+		entry.waiters.add(stop);
+		return new Promise((resolve, reject) => {
+			const onAbort = () => {
+				entry.waiters.delete(stop);
+				if (entry.waiters.size === 0) entry.controller.abort();
+				reject(new Refusal(499, "The caller went away"));
+			};
+			if (stop.aborted) {
+				onAbort();
+				return;
+			}
+			stop.addEventListener("abort", onAbort, { once: true });
+			entry.promise.then(
+				(value) => {
+					stop.removeEventListener("abort", onAbort);
+					entry.waiters.delete(stop);
+					resolve(value);
+				},
+				(error) => {
+					stop.removeEventListener("abort", onAbort);
+					entry.waiters.delete(stop);
+					reject(error);
+				},
+			);
+		});
+	}
+
 	async watch(caller, environmentId, body, gone) {
 		const deadline = Date.now() + this.#limits.watchMs;
 		const watches = body.watches;
@@ -1513,7 +1667,6 @@ export class Gateway {
 		try {
 			return await Promise.race([
 				work,
-				// The answer never waits past the deadline: what was found by then, and that not every question was asked.
 				new Promise((resolve) =>
 					stop.signal.addEventListener(
 						"abort",
@@ -1550,16 +1703,39 @@ export class Gateway {
 			ready.push(one);
 		}
 		if (need.length > 0) return { need };
-		// Where the last call for these questions stopped, if it ran out of time.
 		const place = sha256(JSON.stringify([caller.userId, environmentId, watches.map((watched) => [watched.database, watched.question ?? null, watched.table ?? null, watched.params ?? {}, watched.order ?? null, watched.desc ?? false, watched.limit ?? null])]));
-		const now = Date.now();
-		for (const [key, kept] of this.#resume) if (now - kept.at > 300_000) this.#resume.delete(key);
+		if (this.#resume.size > 1_000) {
+			const now = Date.now();
+			for (const [key, kept] of this.#resume) if (now - kept.at > 300_000) this.#resume.delete(key);
+		}
 		let start = this.#resume.get(place)?.start ?? 0;
 		if (start >= ready.length) start = 0;
-		// A few at a time, as many as a folder's read login holds, from where the last call stopped; none started once
-		// the deadline has passed or the call has ended.
-		const differing = async () => {
-			const order = ready.map((_, step) => (start + step) % ready.length);
+		const database = companyDatabase(environmentId);
+		const tableMeta = new Map();
+		const dirty = new Set();
+		let wake = () => undefined;
+		const listening = this.#listen(database, (notice) => {
+			let matched = false;
+			for (let index = 0; index < ready.length; index++) {
+				if (notice === null) {
+					dirty.add(index);
+					matched = true;
+					continue;
+				}
+				const item = ready[index];
+				if (item.name !== notice.schema) continue;
+				if (item.table !== undefined && notice.table !== null) {
+					const meta = tableMeta.get(index);
+					if (meta && (meta.kind === "r" || meta.kind === "p") && item.table !== notice.table) continue;
+				}
+				dirty.add(index);
+				matched = true;
+			}
+			if (matched) wake();
+		});
+		const { listener } = listening;
+		const differing = async (subset = null) => {
+			const order = subset === null ? ready.map((_, step) => (start + step) % ready.length) : subset;
 			const asked = new Set();
 			const changed = [];
 			let next = 0;
@@ -1569,20 +1745,67 @@ export class Gateway {
 					const left = deadline - Date.now();
 					if (left <= 0) return;
 					try {
-						const answer = await (ready[index].table === undefined ? this.#ask : this.#page).call(this, ready[index], { ms: left, gone: stop });
+						const item = ready[index];
+						const isTable = item.table !== undefined;
+						const schemaScoped = await this.#schemaViewerScoped(database, item.name, listener);
+						if (stop.aborted) return;
+						const itemViewerScoped =
+							schemaScoped ||
+							(isTable
+								? tableMeta.get(index)?.rls === true
+								: item.statement.parameters.includes(VIEWER) || /qorpera\.viewer|qorpera_data\.viewer|current_setting/i.test(item.sql));
+						const scope = itemViewerScoped ? caller.userId : "*";
+						const baseKey = isTable
+							? `t|${database}|${item.name}|${scope}|${item.table}|${item.order ?? ""}|${item.desc ? 1 : 0}|${item.limit}|${this.#limits.questionBytes}`
+							: `q|${database}|${item.name}|${scope}|${item.sha256}|${JSON.stringify(item.values)}|${this.#limits.questionRows}|${this.#limits.questionBytes}`;
+						const itemGen = isTable
+							? Math.max(listener.wildcardGen, listener.schemaDdlGen.get(item.name) ?? 0, listener.tableGen.get(`${item.name}.${item.table}`) ?? 0)
+							: Math.max(listener.wildcardGen, listener.schemaGen.get(item.name) ?? 0);
+						let answer;
+						const cached = isTable && !itemViewerScoped ? listener.cache.get(baseKey) : undefined;
+						if (cached && cached.epoch === listener.epoch && cached.gen >= itemGen) {
+							tableMeta.set(index, cached.meta);
+							answer = cached.answer;
+						} else {
+							const beforeGen = listener.gen;
+							const runKey = `${baseKey}@e${listener.epoch}g${itemGen}`;
+							let meta = null;
+							const fetched = await this.#coalescedWatch(runKey, left, stop, async (gone) => {
+								if (isTable) {
+									let shape = null;
+									const page = await this.#page(item, {
+										ms: left,
+										gone,
+										onShape: (seen) => {
+											shape = seen;
+										},
+									});
+									return { answer: page, meta: shape };
+								}
+								return { answer: await this.#ask(item, { ms: left, gone }), meta: null };
+							});
+							answer = fetched.answer;
+							meta = fetched.meta;
+							if (isTable && meta) {
+								tableMeta.set(index, meta);
+								if ((meta.kind === "r" || meta.kind === "p") && !meta.rls && !itemViewerScoped) {
+									if (listener.cache.size >= 512) listener.cache.delete(listener.cache.keys().next().value);
+									listener.cache.set(baseKey, { epoch: listener.epoch, gen: beforeGen, answer, meta });
+								}
+							}
+						}
 						asked.add(index);
 						if (answer.etag !== watches[index].etag) {
 							changed.push({ index, answer: { ...answer, asOf: new Date().toISOString() } });
 							found({ changed: [...changed].sort((a, b) => a.index - b.index) });
 						}
 					} catch (error) {
-						// A question cut short by the deadline or a call that ended is not an answer.
 						if (stop.aborted || Date.now() >= deadline || (error.status === 408 && left < this.#limits.questionMs)) return;
 						throw error;
 					}
 				}
 			};
-			await Promise.all(Array.from({ length: Math.min(POOL_SIZE.r, ready.length) }, worker));
+			await Promise.all(Array.from({ length: Math.min(POOL_SIZE.r, order.length) }, worker));
 			const missed = order.find((index) => !asked.has(index));
 			if (missed === undefined) this.#resume.delete(place);
 			else {
@@ -1592,21 +1815,28 @@ export class Gateway {
 			}
 			return { changed: changed.sort((a, b) => a.index - b.index), partial: missed !== undefined };
 		};
-		const database = companyDatabase(environmentId);
-		let wake = () => undefined;
-		let dirty = false;
-		const listening = this.#listen(database, () => {
-			dirty = true;
-			wake();
-		});
 		try {
 			await listening.ready.catch((error) => {
 				throw storeProblem(error);
 			});
-			// Asked after the listening began, so no change between the two is missed.
-			let scan = await differing();
+			const settleDirty = async (current) => {
+				if (current.changed.length === 0 || current.partial || dirty.size === 0 || stop.aborted || Date.now() >= deadline) return current;
+				const seen = new Set(current.changed.map((one) => one.index));
+				const trailing = [...dirty].filter((index) => !seen.has(index)).sort((a, b) => a - b);
+				dirty.clear();
+				if (trailing.length === 0) return current;
+				const more = await differing(trailing);
+				if (more.changed.length === 0 && !more.partial) return current;
+				const merged = new Map(current.changed.map((one) => [one.index, one]));
+				for (const one of more.changed) merged.set(one.index, one);
+				return {
+					changed: [...merged.values()].sort((a, b) => a.index - b.index),
+					partial: current.partial || more.partial,
+				};
+			};
+			let scan = await settleDirty(await differing());
 			while (scan.changed.length === 0 && !scan.partial && Date.now() < holdUntil && !stop.aborted && !this.#closed) {
-				if (!dirty)
+				if (dirty.size === 0)
 					await new Promise((resolve) => {
 						const timer = setTimeout(resolve, holdUntil - Date.now());
 						const done = () => {
@@ -1618,10 +1848,10 @@ export class Gateway {
 						stop.addEventListener("abort", done, { once: true });
 					});
 				wake = () => undefined;
-				if (!dirty || stop.aborted) break;
-				dirty = false;
-				scan = await differing();
-				// A database that changes all the time is asked at most twice a second for one page.
+				if (dirty.size === 0 || stop.aborted) break;
+				const batch = [...dirty].sort((a, b) => a - b);
+				dirty.clear();
+				scan = await settleDirty(await differing(batch));
 				if (scan.changed.length === 0 && !scan.partial) await new Promise((resolve) => setTimeout(resolve, this.#limits.watchAgainMs));
 			}
 			const partial = scan.partial ? { partial: true } : {};
@@ -1818,7 +2048,7 @@ export class Gateway {
 		try {
 			await client.query(
 				`begin; set local lock_timeout = ${this.#limits.stepLockMs}; set local statement_timeout = ${this.#limits.stepMs}; ` +
-					`set local search_path = ${quoted(name)}`,
+					`set local search_path = ${quoted(name)}, qorpera_ext`,
 			);
 			if (!dry) await this.#actorLine(database, (await client.query("select pg_catalog.txid_current()::text as txid")).rows[0].txid, actor);
 			try {
@@ -1887,7 +2117,7 @@ export class Gateway {
 				const told = storeProblem(error);
 				return { name: step.name, state: "failed", detail: told.message, ...told.extra };
 			}
-			// Applied on a member's yes: what it destroyed, as they were shown it.
+			this.#notifySchema(database, name);
 			return { name: step.name, state: "applied", ...(ticket ? { destroyed: destroys } : {}) };
 		} catch (error) {
 			await client.query("rollback").catch(() => undefined);
@@ -1961,7 +2191,7 @@ export class Gateway {
 	 * own it said 0 for a small table that held rows. */
 	async #stored(database, name, n, until) {
 		const pool = this.#pool(database, "qorpera_data_keeper");
-		const [steps, columns, size] = await Promise.all([
+		const [steps, columns] = await Promise.all([
 			pool.query("select name, sha256, applied_at from qorpera_data.steps where database = $1 order by name", [name]),
 			pool.query(
 				`select c.relname as table, a.attname as column, pg_catalog.format_type(a.atttypid, a.atttypmod) as type,
@@ -1974,7 +2204,6 @@ export class Gateway {
 				where c.relkind in ('r', 'p', 'v', 'm') order by c.relname, a.attnum`,
 				[name],
 			),
-			pool.query(OWN_SIZE),
 		]).catch((error) => {
 			throw storeProblem(error);
 		});
@@ -1994,7 +2223,6 @@ export class Gateway {
 				name: table.name,
 				kind: table.kind === "r" || table.kind === "p" ? "table" : "view",
 				key: table.key,
-				// A view holds no rows of its own, so PostgreSQL's number for it says nothing.
 				...(table.counted !== null
 					? { rows: table.counted }
 					: table.estimate >= 0 && table.kind !== "v"
@@ -2002,7 +2230,6 @@ export class Gateway {
 						: {}),
 				columns: table.columns,
 			})),
-			companyBytes: Number(size.rows[0].bytes),
 		};
 	}
 
@@ -2292,7 +2519,6 @@ export class Gateway {
 		const caller = {
 			run: true,
 			userId: kept.requesterUserId,
-			runId: kept.runId,
 			machineId: kept.machineId,
 			agentId: kept.agentId,
 			key: `run:${sha256(body.pass)}`,
@@ -2313,8 +2539,12 @@ export class Gateway {
 
 	async close() {
 		this.#closed = true;
+		for (const entry of this.#watchInFlight.values()) entry.controller.abort();
+		this.#watchInFlight.clear();
 		for (const listener of this.#listeners.values()) {
-			for (const tell of [...listener.heard]) tell();
+			listener.cache.clear();
+			listener.viewerScoped.clear();
+			for (const tell of [...listener.heard]) tell(null);
 			await listener.client.end().catch(() => undefined);
 		}
 		this.#listeners.clear();
@@ -2382,19 +2612,19 @@ function answering(handle) {
 	};
 }
 
-/** The gateway's HTTP side for members: JSON in, JSON out, loopback. */
 export function serve(gateway, { host = "127.0.0.1", port = 0 } = {}) {
 	const server = http.createServer(answering((method, path, headers, read, gone) => gateway.handle(method, path, headers, read, gone)));
+	server.keepAliveTimeout = 65_000;
+	server.headersTimeout = 70_000;
 	return new Promise((resolve) => server.listen(port, host, () => resolve(server)));
 }
 
-/** The run door (SLICE5; nodework/road.md part (c)): its own listener, on its own host and port, for agents' tools on
- * the nodes. TLS when a certificate and key are given (PEM text); plain only for a test on loopback. It answers only
- * `POST /v1/run-data/(describe|apply|query|change)`, and only when the gateway holds the node's private token. */
 export function serveRuns(gateway, { host = "127.0.0.1", port = 0, cert = null, key = null } = {}) {
 	if ((cert === null) !== (key === null)) throw new Error("The run door needs both a certificate and its key, or neither");
 	if (cert === null && !["127.0.0.1", "::1", "localhost"].includes(host)) throw new Error("The run door off loopback needs TLS");
 	const handler = answering((method, path, headers, read) => gateway.handleRun(method, path, headers, read));
 	const server = cert === null ? http.createServer(handler) : https.createServer({ cert, key, minVersion: "TLSv1.2" }, handler);
+	server.keepAliveTimeout = 65_000;
+	server.headersTimeout = 70_000;
 	return new Promise((resolve) => server.listen(port, host, () => resolve(server)));
 }
