@@ -1267,18 +1267,17 @@ export class NativeProviderHost {
 		request: NativeAccountRefreshRequest,
 		signal?: AbortSignal,
 	): Promise<JsonValue> {
+		const control = this.#controlPlane;
 		if (
 			request.computeIdentityId !== this.#computeIdentityId ||
-			!this.#controlPlane.describeAccountRefresh ||
-			!this.#controlPlane.completeAccountRefresh
+			!control.describeAccountRefresh ||
+			!control.completeAccountRefresh
 		)
 			throw new Error("Account refresh authority unavailable");
-		const describeRefresh = this.#controlPlane.describeAccountRefresh;
-		const completeRefresh = this.#controlPlane.completeAccountRefresh;
 		return withAbortScopes(
 			[this.#metadataShutdown.signal, signal],
 			async (checked) => {
-				const authority = await describeRefresh(request.requestId, request.capability, checked);
+				const authority = await control.describeAccountRefresh!(request.requestId, request.capability, checked);
 				if (
 					authority.computeIdentityId !== request.computeIdentityId ||
 					authority.requestedByUserId !== request.requestedByUserId ||
@@ -1291,7 +1290,7 @@ export class NativeProviderHost {
 					checked.throwIfAborted();
 					// Completion records a finished attempt after the database rechecks the
 					// live epoch and requester. Failed provider reads remain unknown.
-					if (!(await completeRefresh(request.requestId, request.capability, checked)))
+					if (!(await control.completeAccountRefresh!(request.requestId, request.capability, checked)))
 						throw new Error("Account usage is unavailable");
 				}
 				checked.throwIfAborted();
@@ -1322,13 +1321,11 @@ export class NativeProviderHost {
 	async #refreshAccountMetadata(signal?: AbortSignal): Promise<void> {
 		const control = this.#controlPlane;
 		if (!control.listAccountRefreshes || !control.recordAccountMetadata) return;
-		const listAccountRefreshes = control.listAccountRefreshes;
-		const recordAccountMetadata = control.recordAccountMetadata;
 		await withAbortScopes(
 			[this.#metadataShutdown.signal, signal],
 			async (refreshSignal) => {
 				refreshSignal.throwIfAborted();
-				const accounts = await listAccountRefreshes(this.#computeIdentityId, refreshSignal);
+				const accounts = await control.listAccountRefreshes!(this.#computeIdentityId, refreshSignal);
 				for (const account of accounts.slice(0, 64)) {
 					if (refreshSignal.aborted) break;
 					if (account.nativeHarness !== "codex-cli") continue;
@@ -1353,7 +1350,7 @@ export class NativeProviderHost {
 								const metadata = (await collectCapsuleFiles(root, CODEX_CREDENTIAL_PATHS)).files[0]!;
 								const credential = Buffer.from(metadata.data, "base64").toString("utf8");
 								// Revocation or recovery during download must prevent provider credential use.
-								const current = await listAccountRefreshes(this.#computeIdentityId, accountSignal);
+								const current = await control.listAccountRefreshes!(this.#computeIdentityId, accountSignal);
 								if (
 									!current.some(
 										(item) =>
@@ -1374,7 +1371,7 @@ export class NativeProviderHost {
 								).catch(() => undefined);
 								accountSignal.throwIfAborted();
 								if (providerAccountEmail || providerAccountUsage || providerAccountIdentity) {
-									await recordAccountMetadata(
+									await control.recordAccountMetadata!(
 										this.#computeIdentityId,
 										account,
 										{

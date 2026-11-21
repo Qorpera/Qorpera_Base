@@ -39,7 +39,10 @@ export async function withAbortScopes<T>(
 	}
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	if (!scope.signal.aborted && timeoutMs !== undefined) {
-		timer = setTimeout(() => scope.abort(new Error("Operation timed out")), timeoutMs);
+		timer = setTimeout(
+			() => scope.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+			timeoutMs,
+		);
 		timer.unref?.();
 	}
 	try {

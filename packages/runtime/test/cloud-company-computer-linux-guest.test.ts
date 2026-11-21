@@ -2091,4 +2091,15 @@ describe("each desktop's mount of the company folder (helper stand-in; the mount
 		expect(h.ops()).toEqual(["mount", "list", "boundary"]);
 		expect(f.order).not.toContain("qorpera_folder_view_close:read");
 	});
+	it("closes the shared browser immediately on privacy.fence without stopResources", async () => {
+		const f = await fixture({ browser: true });
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledOnce(), { timeout: 3000 });
+		expect(browsers[0].ended()).toBe(false);
+		f.state.privacy = "entering";
+		f.state.version = 1;
+		await f.guest.privacy.fence(f.challenge, new AbortController().signal);
+		await vi.waitFor(() => expect(browsers[0].close).toHaveBeenCalledOnce());
+	});
 });

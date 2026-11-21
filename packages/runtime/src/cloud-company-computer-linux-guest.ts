@@ -100,6 +100,8 @@ interface NativeSession {
  * entitled is present (see `#ensureBrowser`). */
 interface ScreenBrowser {
 	manager: PersistentCompanyComputerBrowser;
+	lifetime: AbortController;
+	detachLifetime: () => void;
 	opening?: Promise<CompanyComputerBrowserSession>;
 	detachLogins?: () => Promise<void>;
 	closing?: Promise<void>;
@@ -842,20 +844,38 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				);
 			},
 		};
-		screen.browser ??= {
-			manager: new PersistentCompanyComputerBrowser({
-				layout: this.#options.layout,
-				boundary,
-				access: this.#screenBrowserControl,
-				launch: createCompanyComputerLinuxBrowserLaunch({
-					...this.#options,
-					runtimeRoot: this.#options.browserRuntimeRoot,
+		if (!screen.browser) {
+			const lifetime = new AbortController();
+			const onStop = (): void => {
+				lifetime.abort();
+				detachLifetime();
+			};
+			const detachLifetime = (): void => {
+				this.#stop.signal.removeEventListener("abort", onStop);
+				screen.stop.signal.removeEventListener("abort", onStop);
+			};
+			if (this.#stop.signal.aborted || screen.stop.signal.aborted) lifetime.abort();
+			else {
+				this.#stop.signal.addEventListener("abort", onStop, { once: true });
+				screen.stop.signal.addEventListener("abort", onStop, { once: true });
+			}
+			screen.browser = {
+				manager: new PersistentCompanyComputerBrowser({
+					layout: this.#options.layout,
 					boundary,
 					access: this.#screenBrowserControl,
-					xSocket: (exact) => this.#desktop.xSocket(exact),
+					launch: createCompanyComputerLinuxBrowserLaunch({
+						...this.#options,
+						runtimeRoot: this.#options.browserRuntimeRoot,
+						boundary,
+						access: this.#screenBrowserControl,
+						xSocket: (exact) => this.#desktop.xSocket(exact),
+					}),
 				}),
-			}),
-		};
+				lifetime,
+				detachLifetime,
+			};
+		}
 		const owned = screen.browser;
 		if (owned.closing) throw new Error("OFFICE_SCREEN_DRAINING");
 		const current = await owned.opening?.catch(() => undefined);
@@ -874,7 +894,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			await current.close();
 			if (owned.opening && (await owned.opening.catch(() => undefined)) === current) owned.opening = undefined;
 		}
-		owned.opening ??= withAbortScopes([this.#stop.signal, screen.stop.signal], async (lifetime) => {
+		owned.opening ??= (async () => {
+			const lifetime = owned.lifetime.signal;
 			// SQL resolves the screen agent's grant and records who was present.
 			const grant = await this.#screenBrowserControl.open(binding, opener, lifetime);
 			const session = await owned.manager.open(binding, grant, lifetime);
@@ -883,7 +904,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				.attach(binding.screenId, session.context as unknown as CompanyComputerLoginContext)
 				.catch(() => undefined);
 			return session;
-		});
+		})();
 		const opening = owned.opening;
 		void opening.catch(() => {
 			if (owned.opening === opening) owned.opening = undefined;
@@ -896,6 +917,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		const owned = screen.browser;
 		if (!owned) return Promise.resolve();
 		owned.closing ??= (async () => {
+			owned.detachLifetime();
 			await owned.opening?.catch(() => undefined);
 			// A last look at this browser's sign-ins before it closes.
 			await owned.detachLogins?.().catch(() => undefined);

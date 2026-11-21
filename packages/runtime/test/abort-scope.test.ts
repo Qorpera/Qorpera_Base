@@ -47,16 +47,16 @@ describe("abort scopes and daemon upkeep hygiene", () => {
 			).rejects.toBe(reason);
 			expect(getEventListeners(p3.signal, "abort")).toHaveLength(0);
 
-			await expect(
-				withAbortScopes(
-					[p1.signal],
-					async (signal) =>
-						await new Promise<never>((_resolve, reject) => {
-							signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-						}),
-					40,
-				),
-			).rejects.toThrow("Operation timed out");
+			const timeoutError = await withAbortScopes(
+				[p1.signal],
+				async (signal) =>
+					await new Promise<never>((_resolve, reject) => {
+						signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+					}),
+				40,
+			).catch((error: unknown) => error);
+			expect(timeoutError).toBeInstanceOf(DOMException);
+			expect((timeoutError as DOMException).name).toBe("TimeoutError");
 			expect(getEventListeners(p1.signal, "abort")).toHaveLength(0);
 			expect(watch.made()).toBe(0);
 		} finally {
