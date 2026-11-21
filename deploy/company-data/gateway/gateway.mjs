@@ -578,6 +578,7 @@ export class Gateway {
 	#onProvision;
 	/** For tests only: awaited before the gateway sends a cancel for a caller that went away. */
 	#beforeCancel;
+	#onAgentRead;
 	/** Backends that were sent a cancel, by pid, with when: such a backend's connection is never used again, since a
 	 * cancel that arrives late would stop whatever runs on it then. */
 	#signalled = new Map();
@@ -598,7 +599,16 @@ export class Gateway {
 	/** `store`: { host, port, logins: { admin, keeper, watch, folderKey } }: the three logins' passwords, and the key
 	 * each database folder's own logins' passwords are derived from (32 random bytes as hex). `runs`: { token }, the
 	 * node's private token an agent's tool brings to the run door. */
-	constructor({ store, platform, limits = LIMITS, runs = null, workers = 1, onProvision = () => undefined, beforeCancel = async () => undefined }) {
+	constructor({
+		store,
+		platform,
+		limits = LIMITS,
+		runs = null,
+		workers = 1,
+		onProvision = () => undefined,
+		beforeCancel = async () => undefined,
+		onAgentRead = () => undefined,
+	}) {
 		this.#store = store;
 		this.#platform = platform;
 		this.#limits = limits;
@@ -606,6 +616,18 @@ export class Gateway {
 		this.#runToken = typeof runs?.token === "string" && runs.token.length >= 32 ? runs.token : null;
 		this.#onProvision = onProvision;
 		this.#beforeCancel = beforeCancel;
+		this.#onAgentRead = onAgentRead;
+	}
+
+	setAgentRead(pid, delta) {
+		if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(delta) || delta === 0) return;
+		const next = (this.#agentReads.get(pid) ?? 0) + delta;
+		if (next > 0) this.#agentReads.set(pid, next);
+		else this.#agentReads.delete(pid);
+	}
+
+	setFullDatabases(databases) {
+		this.#full = new Set(Array.isArray(databases) ? databases.filter((one) => typeof one === "string") : []);
 	}
 
 	/** Where a login's password comes from: the gateway's three logins have their own, a folder's login has a derived one. */
@@ -713,18 +735,30 @@ export class Gateway {
 		for (const relKey of this.#relations.keys()) if (relKey.startsWith(prefix)) this.#relations.delete(relKey);
 	}
 
-	#preparedName(client, database, schema, key) {
-		let set = this.#prepared.get(client);
-		if (!set) {
-			set = new Set();
-			this.#prepared.set(client, set);
-		}
+	#preparedState(client, database, schema) {
 		const epoch = this.#schemaEpoch.get(`${database}/${schema}`) ?? 0;
+		let state = this.#prepared.get(client);
+		if (!state) {
+			state = { epoch, names: new Set() };
+			this.#prepared.set(client, state);
+			return { state, needsDeallocate: false };
+		}
+		if (state.epoch !== epoch) {
+			const hadAny = state.names.size > 0;
+			state.epoch = epoch;
+			state.names.clear();
+			return { state, needsDeallocate: hadAny };
+		}
+		return { state, needsDeallocate: false };
+	}
+
+	#preparedName(client, database, schema, key) {
+		const { state } = this.#preparedState(client, database, schema);
 		const suffix = key.length <= 40 && /^[A-Za-z0-9_]+$/.test(key) ? key : sha256(key).slice(0, 20);
-		const name = `qp_${epoch}_${suffix}`;
-		if (set.has(name)) return name;
-		if (set.size >= 64) return undefined;
-		set.add(name);
+		const name = `qp_${state.epoch}_${suffix}`;
+		if (state.names.has(name)) return name;
+		if (state.names.size >= 64) return undefined;
+		state.names.add(name);
 		return name;
 	}
 
@@ -807,7 +841,13 @@ export class Gateway {
 				found.set(path, resolved[index]);
 			});
 		}
-		if (this.#proofs.size > 20_000) for (const [key, kept] of this.#proofs) if (now - kept.at >= this.#limits.proofMs) this.#proofs.delete(key);
+		if (this.#proofs.size > 20_000) {
+			for (const [key, kept] of this.#proofs) if (now - kept.at >= this.#limits.proofMs) this.#proofs.delete(key);
+			for (const key of this.#proofs.keys()) {
+				if (this.#proofs.size <= 20_000) break;
+				this.#proofs.delete(key);
+			}
+		}
 		return found;
 	}
 
@@ -1030,7 +1070,10 @@ export class Gateway {
 			throw storeProblem(error);
 		});
 		const pid = client.processID;
-		if (agent) this.#agentReads.set(pid, (this.#agentReads.get(pid) ?? 0) + 1);
+		if (agent) {
+			this.setAgentRead(pid, 1);
+			this.#onAgentRead({ pid, delta: 1 });
+		}
 		let lost;
 		const onClientError = (error) => {
 			lost ??= error;
@@ -1051,7 +1094,8 @@ export class Gateway {
 				if (ms < 1) refuse(408, "No time was left for the statement");
 			}
 			const limit = Math.max(1, Math.floor(Math.min(cap, ms)));
-			const viewerSetting = ready.viewer && ENVIRONMENT.test(ready.viewer) ? `; set local "qorpera.viewer" = '${ready.viewer}'` : "";
+			const viewerSetting =
+				ready.viewer && ENVIRONMENT.test(ready.viewer) ? `; set local "qorpera.viewer" = '${ready.viewer}'` : `; set local "qorpera.viewer" = ''`;
 			await client.query(
 				`begin transaction read only; set local statement_timeout = ${limit}; set local timezone = 'UTC'; ` +
 					`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}, qorpera_ext${viewerSetting}${settings}`,
@@ -1060,16 +1104,18 @@ export class Gateway {
 			await client.query("rollback");
 			return answer;
 		} catch (error) {
-			if (error instanceof Refusal || (error?.code && !/^(57P0[123]|08...)$/.test(error.code))) await client.query("rollback").catch(() => undefined);
+			if (error instanceof Refusal || (error?.code && !/^(57P0[123]|08...)$/.test(error.code)))
+				await client.query("rollback").catch((rbError) => {
+					lost ??= rbError;
+				});
 			else lost = error;
 			throw storeProblem(error);
 		} finally {
 			gone?.removeEventListener("abort", cancel);
 			client.removeListener("error", onClientError);
 			if (agent) {
-				const left = (this.#agentReads.get(pid) ?? 1) - 1;
-				if (left > 0) this.#agentReads.set(pid, left);
-				else this.#agentReads.delete(pid);
+				this.setAgentRead(pid, -1);
+				this.#onAgentRead({ pid, delta: -1 });
 			}
 			this.#release(client, lost);
 		}
@@ -1084,7 +1130,10 @@ export class Gateway {
 			throw storeProblem(error);
 		});
 		const pid = client.processID;
-		if (agent) this.#agentReads.set(pid, (this.#agentReads.get(pid) ?? 0) + 1);
+		if (agent) {
+			this.setAgentRead(pid, 1);
+			this.#onAgentRead({ pid, delta: 1 });
+		}
 		let lost;
 		const onClientError = (error) => {
 			lost ??= error;
@@ -1105,9 +1154,13 @@ export class Gateway {
 				if (ms < 1) refuse(408, "No time was left for the statement");
 			}
 			const limit = Math.max(1, Math.floor(Math.min(cap, ms)));
-			const viewerSetting = ready.viewer && ENVIRONMENT.test(ready.viewer) ? `; set local "qorpera.viewer" = '${ready.viewer}'` : "";
+			const viewerSetting =
+				ready.viewer && ENVIRONMENT.test(ready.viewer) ? `; set local "qorpera.viewer" = '${ready.viewer}'` : `; set local "qorpera.viewer" = ''`;
+			const { state: prepState, needsDeallocate } = this.#preparedState(client, ready.database, ready.name);
+			const existedBefore = new Set(prepState.names);
+			const deallocatePrefix = needsDeallocate ? "deallocate all; " : "";
 			const beginSql =
-				`begin transaction read only; set local statement_timeout = ${limit}; set local timezone = 'UTC'; ` +
+				`${deallocatePrefix}begin transaction read only; set local statement_timeout = ${limit}; set local timezone = 'UTC'; ` +
 				`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}, qorpera_ext${viewerSetting}${settings}`;
 			const spec = buildQuery(client, { maxRows, maxBytes });
 			const stream = client.connection?.stream;
@@ -1132,15 +1185,16 @@ export class Gateway {
 			const [beginRes, queryRes, endRes] = await Promise.allSettled([beginP, queryP, endP]);
 			if (endRes.status === "rejected") lost = endRes.reason;
 			if (beginRes.status === "rejected") {
+				if (spec.name && !existedBefore.has(spec.name)) prepState.names.delete(spec.name);
 				if (!lost && !(beginRes.reason instanceof Refusal) && !(beginRes.reason?.code && !/^(57P0[123]|08...)$/.test(beginRes.reason.code)))
 					lost = beginRes.reason;
 				throw beginRes.reason;
 			}
 			if (queryRes.status === "rejected") {
 				const error = queryRes.reason;
-				if (spec.name && (error?.code === "0A000" || error?.code === "42P01" || error?.code === "42703"))
-					this.#prepared.get(client)?.delete(spec.name);
-				if (!lost && error?.code && /^(57P0[123]|08...)$/.test(error.code)) lost = error;
+				if (spec.name && (!existedBefore.has(spec.name) || error?.code === "0A000" || error?.code === "42P01" || error?.code === "42703"))
+					prepState.names.delete(spec.name);
+				if (!lost && !(error instanceof Refusal) && (!error?.code || /^(57P0[123]|08...)$/.test(error.code))) lost = error;
 				throw error;
 			}
 			return { result: queryRes.value, maxRows, maxBytes };
@@ -1148,9 +1202,8 @@ export class Gateway {
 			gone?.removeEventListener("abort", cancel);
 			client.removeListener("error", onClientError);
 			if (agent) {
-				const left = (this.#agentReads.get(pid) ?? 1) - 1;
-				if (left > 0) this.#agentReads.set(pid, left);
-				else this.#agentReads.delete(pid);
+				this.setAgentRead(pid, -1);
+				this.#onAgentRead({ pid, delta: -1 });
 			}
 			this.#release(client, lost);
 		}
@@ -1447,7 +1500,8 @@ export class Gateway {
 		const { database: name, table, order = null, desc = false, limit = this.#limits.pageRowsUsual, after = null } = asked;
 		if (typeof name !== "string" || !DATABASE_NAME.test(name)) refuse(400, "Name a database");
 		if (typeof table !== "string" || table === "" || Buffer.byteLength(table) > 63 || table.includes("\0")) refuse(400, "Name a table");
-		if (order !== null && (typeof order !== "string" || order === "" || Buffer.byteLength(order) > 63)) refuse(400, "order names a column");
+		if (order !== null && (typeof order !== "string" || order === "" || Buffer.byteLength(order) > 63 || order.includes("\0")))
+			refuse(400, "order names a column");
 		if (typeof desc !== "boolean") refuse(400, "desc is true or false");
 		if (!Number.isSafeInteger(limit) || limit < 1 || limit > this.#limits.pageRows) refuse(400, `A page holds 1 to ${this.#limits.pageRows} rows`);
 		if (after !== null && (first || !Array.isArray(after) || after.length > 33)) refuse(400, first ? "A watched table is its first page" : "after is the next a page gave");
@@ -1460,10 +1514,10 @@ export class Gateway {
 		return { database, name, n, table, order, desc, limit, after, viewer: caller.userId };
 	}
 
-	async rows(caller, environmentId, body) {
+	async rows(caller, environmentId, body, { gone = null } = {}) {
 		const ready = await this.#table(caller, environmentId, body, body.texts);
 		if (ready.need) return { need: ready.need };
-		const page = await this.#page(ready);
+		const page = await this.#page(ready, { gone });
 		const asOf = isoNow();
 		const out = { ...page, asOf };
 		if (typeof page[RAW_JSON] === "string") out[RAW_JSON] = `${page[RAW_JSON].slice(0, -1)},"etag":"${page.etag}","asOf":"${asOf}"}`;
@@ -1488,6 +1542,10 @@ export class Gateway {
 			throw storeProblem(error);
 		});
 		let lost;
+		const onClientError = (error) => {
+			lost ??= error;
+		};
+		client.on("error", onClientError);
 		const until = Date.now() + this.#limits.questionMs;
 		try {
 			await client.query(
@@ -1568,18 +1626,22 @@ export class Gateway {
 				...(days === undefined ? {} : { days }),
 			};
 		} catch (error) {
-			if (error instanceof Refusal || (error?.code && !/^(57P0[123]|08...)$/.test(error.code))) await client.query("rollback").catch(() => undefined);
+			if (error instanceof Refusal || (error?.code && !/^(57P0[123]|08...)$/.test(error.code)))
+				await client.query("rollback").catch((rbError) => {
+					lost ??= rbError;
+				});
 			else lost = error;
 			throw storeProblem(error);
 		} finally {
+			client.removeListener("error", onClientError);
 			this.#release(client, lost);
 		}
 	}
 
-	async query(caller, environmentId, body) {
+	async query(caller, environmentId, body, { gone = null } = {}) {
 		const ready = await this.#named("question", caller, environmentId, body, body.texts);
 		if (ready.need) return { need: [ready.need] };
-		const answer = await this.#ask(ready);
+		const answer = await this.#ask(ready, { gone });
 		if (typeof body.etag === "string" && body.etag === answer.etag) return { same: true, etag: answer.etag };
 		const asOf = isoNow();
 		const out = { ...answer, asOf };
@@ -1623,7 +1685,8 @@ export class Gateway {
 		try {
 			if (gone?.aborted) refuse(499, "The caller went away");
 			const full = this.#full.has(ready.database);
-			const viewerSetting = ready.viewer && ENVIRONMENT.test(ready.viewer) ? `; set local "qorpera.viewer" = '${ready.viewer}'` : "";
+			const viewerSetting =
+				ready.viewer && ENVIRONMENT.test(ready.viewer) ? `; set local "qorpera.viewer" = '${ready.viewer}'` : `; set local "qorpera.viewer" = ''`;
 			const started = await client.query(
 				`begin; set local statement_timeout = ${ms}; set local lock_timeout = ${ms}; set local timezone = 'UTC'; ` +
 					`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}, qorpera_ext${viewerSetting}${settings}; ` +
@@ -1677,7 +1740,10 @@ export class Gateway {
 					400,
 					`The change gives back more than ${amount(this.#limits.changeBytes)}, so it was stopped and nothing was changed: give back less, such as only an id`,
 				);
-			if (error instanceof Refusal || (error?.code && !/^(57P0[123]|08...)$/.test(error.code))) await client.query("rollback").catch(() => undefined);
+			if (error instanceof Refusal || (error?.code && !/^(57P0[123]|08...)$/.test(error.code)))
+				await client.query("rollback").catch((rbError) => {
+					lost ??= rbError;
+				});
 			else lost = error;
 			throw storeProblem(error);
 		} finally {
@@ -1722,7 +1788,8 @@ export class Gateway {
 		try {
 			if (gone?.aborted) refuse(499, "The caller went away");
 			const full = this.#full.has(ready.database);
-			const viewerSetting = ready.viewer && ENVIRONMENT.test(ready.viewer) ? `; set local "qorpera.viewer" = '${ready.viewer}'` : "";
+			const viewerSetting =
+				ready.viewer && ENVIRONMENT.test(ready.viewer) ? `; set local "qorpera.viewer" = '${ready.viewer}'` : `; set local "qorpera.viewer" = ''`;
 			const beginSql =
 				`begin; set local statement_timeout = ${ms}; set local lock_timeout = ${ms}; set local timezone = 'UTC'; ` +
 				`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}, qorpera_ext${viewerSetting}; ` +
@@ -1807,7 +1874,10 @@ export class Gateway {
 					400,
 					`The change gives back more than ${amount(this.#limits.changeBytes)}, so it was stopped and nothing was changed: give back less, such as only an id`,
 				);
-			if (error instanceof Refusal || (error?.code && !/^(57P0[123]|08...)$/.test(error.code))) await client.query("rollback").catch(() => undefined);
+			if (error instanceof Refusal || (error?.code && !/^(57P0[123]|08...)$/.test(error.code)))
+				await client.query("rollback").catch((rbError) => {
+					lost ??= rbError;
+				});
 			else lost = error;
 			throw error;
 		} finally {
@@ -2032,14 +2102,25 @@ export class Gateway {
 					const schema = payload.slice(0, dot);
 					const table = payload.slice(dot + 1);
 					listener.schemaGen.set(schema, listener.gen);
-					listener.tableGen.set(payload, listener.gen);
-					notice = { schema, table };
+					if (table === "*" || table === "!drop") {
+						listener.schemaDdlGen.set(schema, listener.gen);
+						listener.viewerScoped.delete(schema);
+						this.#bumpSchemaEpoch(database, schema);
+						if (table === "!drop") this.#folders.delete(`${database}/${schema}`);
+						notice = { schema, table: null, ddl: true };
+					} else {
+						listener.tableGen.set(payload, listener.gen);
+						notice = { schema, table };
+					}
 				} else {
 					listener.wildcardGen = listener.gen;
 				}
 				for (const tell of [...listener.heard]) tell(notice);
 			});
+			let dropped = false;
 			const lost = () => {
+				if (dropped) return;
+				dropped = true;
 				if (this.#listeners.get(database) === listener) this.#listeners.delete(database);
 				listener.cache.clear();
 				listener.viewerScoped.clear();
@@ -2154,21 +2235,23 @@ export class Gateway {
 		const work = this.#watching(caller, environmentId, body, stop.signal, deadline, holdUntil, (found) => {
 			best = found;
 		});
+		let abortTimer = null;
+		const aborted = new Promise((resolve) => {
+			stop.signal.addEventListener(
+				"abort",
+				() => {
+					abortTimer = setTimeout(() => resolve(best.changed.length > 0 ? { changed: best.changed, partial: true } : { same: true, partial: true }), 50);
+				},
+				{ once: true },
+			);
+		});
 		try {
-			return await Promise.race([
-				work,
-				new Promise((resolve) =>
-					stop.signal.addEventListener(
-						"abort",
-						() => setTimeout(() => resolve(best.changed.length > 0 ? { changed: best.changed, partial: true } : { same: true, partial: true }), 50),
-						{ once: true },
-					),
-				),
-			]);
+			return await Promise.race([work, aborted]);
 		} finally {
 			clearTimeout(timer);
 			gone.removeEventListener("abort", stopped);
 			stop.abort();
+			if (abortTimer) clearTimeout(abortTimer);
 			work.catch(() => undefined);
 		}
 	}
@@ -2551,6 +2634,15 @@ export class Gateway {
 	 * destroys). `dry`: nothing is kept; the answer says what the step would destroy, with the `allow` for it. */
 	async #step(database, name, n, step, text, { allow = null, dry = false, actor = null } = {}) {
 		const client = await this.#pool(database, `${database}_o${n}`).connect();
+		let lost;
+		const onClientError = (error) => {
+			lost ??= error;
+		};
+		client.on("error", onClientError);
+		const rollback = () =>
+			client.query("rollback").catch((rbError) => {
+				lost ??= rbError;
+			});
 		try {
 			await client.query(
 				`begin; set local lock_timeout = ${this.#limits.stepLockMs}; set local statement_timeout = ${this.#limits.stepMs}; ` +
@@ -2560,7 +2652,7 @@ export class Gateway {
 			try {
 				await client.query({ text: "select qorpera_data.apply_step($1)", values: [text], queryMode: "extended" });
 			} catch (error) {
-				await client.query("rollback").catch(() => undefined);
+				await rollback();
 				const told = storeProblem(error);
 				return {
 					name: step.name,
@@ -2577,13 +2669,13 @@ export class Gateway {
 			try {
 				await client.query("set constraints all immediate");
 			} catch (error) {
-				await client.query("rollback").catch(() => undefined);
+				await rollback();
 				return { name: step.name, state: "failed", detail: storeProblem(error).message, ...storeProblem(error).extra };
 			}
 			const effects = (await client.query("select kind, object, rows from qorpera_data.seal()")).rows;
 			const unwatched = (await client.query("select table_name, problem from qorpera_data.unwatched($1)", [name])).rows;
 			if (unwatched.length > 0) {
-				await client.query("rollback");
+				await rollback();
 				return {
 					name: step.name,
 					state: "failed",
@@ -2597,11 +2689,11 @@ export class Gateway {
 					? null
 					: `${step.name}.${step.sha256}.${sha256(JSON.stringify(destroys.map((one) => [one.what, one.object, one.rows ?? null])))}`;
 			if (dry) {
-				await client.query("rollback");
+				await rollback();
 				return { name: step.name, state: ticket ? "held" : "harmless", ...(ticket ? { destroys, allow: ticket } : {}) };
 			}
 			if (ticket && allow !== ticket) {
-				await client.query("rollback");
+				await rollback();
 				return {
 					name: step.name,
 					state: "held",
@@ -2614,22 +2706,24 @@ export class Gateway {
 				};
 			}
 			await client.query("select qorpera_data.record_step($1, $2, $3)", [name, step.name, step.sha256]);
+			await client.query("select pg_catalog.pg_notify('qorpera_data', $1)", [`${name}.*`]);
 			try {
 				await client.query("commit");
 			} catch (error) {
 				// The seal stopped something that destroys at commit (or commit failed otherwise): the step and its record
 				// are rolled back, and the data is as it was.
-				await client.query("rollback").catch(() => undefined);
+				await rollback();
 				const told = storeProblem(error);
 				return { name: step.name, state: "failed", detail: told.message, ...told.extra };
 			}
 			this.#notifySchema(database, name);
 			return { name: step.name, state: "applied", ...(ticket ? { destroyed: destroys } : {}) };
 		} catch (error) {
-			await client.query("rollback").catch(() => undefined);
+			await rollback();
 			throw storeProblem(error);
 		} finally {
-			this.#release(client);
+			client.removeListener("error", onClientError);
+			this.#release(client, lost);
 		}
 	}
 
@@ -2852,18 +2946,18 @@ export class Gateway {
 	}
 
 	/** data_query (§6): a question by name or a read of the run's own, with an agent's limits. */
-	async runQuery(caller, environmentId, body) {
+	async runQuery(caller, environmentId, body, { gone = null } = {}) {
 		if (body.sql !== undefined && body.question !== undefined) refuse(400, "Ask a question or give a read, not both");
 		const ready =
 			body.sql !== undefined ? await this.#ownRead(caller, environmentId, body) : await this.#named("question", caller, environmentId, body, body.texts);
 		if (ready.need) return { need: [ready.need] };
-		const { columns, rows, more } = await this.#ask(ready, { agent: true });
+		const { columns, rows, more } = await this.#ask(ready, { agent: true, gone });
 		return { columns, rows, more, asOf: new Date().toISOString() };
 	}
 
 	/** data_change (§8): a named change, with an agent's rows and bytes for what it gives back. */
-	runChange(caller, environmentId, body) {
-		return this.change(caller, environmentId, body, { agent: true });
+	runChange(caller, environmentId, body, { gone = null } = {}) {
+		return this.change(caller, environmentId, body, { agent: true, gone });
 	}
 
 	/** The watcher (§3), one look with `qorpera_data_watch`. It cancels any statement of a database folder's login that
@@ -2991,7 +3085,7 @@ export class Gateway {
 			refuse(400, "Texts are given by their hash");
 		switch (route[2]) {
 			case "query":
-				return this.query(caller, environmentId, body);
+				return this.query(caller, environmentId, body, { gone });
 			case "watch":
 				return this.watch(caller, environmentId, body, gone);
 			case "apply":
@@ -2999,7 +3093,7 @@ export class Gateway {
 			case "change":
 				return this.change(caller, environmentId, body, { gone });
 			case "rows":
-				return this.rows(caller, environmentId, body);
+				return this.rows(caller, environmentId, body, { gone });
 			case "edit":
 				return this.edit(caller, environmentId, body, { gone });
 			case "changes":
@@ -3012,7 +3106,7 @@ export class Gateway {
 	/** An agent's request on the run door (SLICE5): the node's private token as the bearer and a data pass in the body.
 	 * A wrong token, no pass and a pass that redeems to nothing get one answer, 401, with no detail. The pass names the
 	 * company, the run's requester and the files the run may read; nothing else in the request does. */
-	async handleRun(method, path, headers, read) {
+	async handleRun(method, path, headers, read, gone = null) {
 		const route = /^\/v1\/run-data\/(describe|apply|query|change)$/.exec(path);
 		if (!this.#runToken) refuse(404, "Not a call the data gateway answers");
 		if (!bearerIs(headers.authorization, this.#runToken)) refuse(401, "Not allowed");
@@ -3042,11 +3136,11 @@ export class Gateway {
 		};
 		switch (route[1]) {
 			case "query":
-				return this.runQuery(caller, kept.environmentId, body);
+				return this.runQuery(caller, kept.environmentId, body, { gone });
 			case "apply":
 				return this.apply(caller, kept.environmentId, body);
 			case "change":
-				return this.runChange(caller, kept.environmentId, body);
+				return this.runChange(caller, kept.environmentId, body, { gone });
 			default:
 				return this.runDescribe(caller, kept.environmentId, body);
 		}
@@ -3076,13 +3170,14 @@ export class Gateway {
 }
 
 /** The watcher's timer: one look every `everyMs`, never two at once. Gives the function that stops it. */
-export function startWatcher(gateway, { everyMs = 10_000, failed = () => undefined } = {}) {
+export function startWatcher(gateway, { everyMs = 10_000, failed = () => undefined, onLook = () => undefined } = {}) {
 	let looking = false;
 	const timer = setInterval(async () => {
 		if (looking) return;
 		looking = true;
 		try {
 			const looked = await gateway.watchOnce();
+			onLook(looked);
 			if (looked.unforgotten.length > 0) failed(new Error(`the record kept lines past their days in ${looked.unforgotten.length} company databases`));
 		} catch (error) {
 			failed(error);
@@ -3108,15 +3203,23 @@ function answering(handle) {
 				if (declared > maximum) return reject(new Refusal(413, "The body is too large"));
 				const parts = [];
 				let bytes = 0;
+				let settled = false;
+				const finish = (fn, value) => {
+					if (settled) return;
+					settled = true;
+					fn(value);
+				};
 				request.on("data", (part) => {
 					bytes += part.length;
 					if (bytes > maximum) {
-						reject(new Refusal(413, "The body is too large"));
+						finish(reject, new Refusal(413, "The body is too large"));
 						request.destroy();
 					} else parts.push(part);
 				});
-				request.on("end", () => resolve(parts.length === 0 ? "" : parts.length === 1 ? parts[0].toString("utf8") : Buffer.concat(parts).toString("utf8")));
-				request.on("error", () => reject(new Refusal(400, "The body did not arrive")));
+				request.on("end", () => finish(resolve, parts.length === 0 ? "" : parts.length === 1 ? parts[0].toString("utf8") : Buffer.concat(parts).toString("utf8")));
+				request.on("error", () => finish(reject, new Refusal(400, "The body did not arrive")));
+				request.on("aborted", () => finish(reject, new Refusal(400, "The body did not arrive")));
+				request.on("close", () => finish(reject, new Refusal(400, "The body did not arrive")));
 			});
 		let status = 200;
 		let value;
@@ -3142,19 +3245,30 @@ function answering(handle) {
 	};
 }
 
+function listenServer(server, port, host) {
+	return new Promise((resolve, reject) => {
+		const onError = (error) => reject(error);
+		server.once("error", onError);
+		server.listen(port, host, () => {
+			server.removeListener("error", onError);
+			resolve(server);
+		});
+	});
+}
+
 export function serve(gateway, { host = "127.0.0.1", port = 0 } = {}) {
 	const server = http.createServer(answering((method, path, headers, read, gone) => gateway.handle(method, path, headers, read, gone)));
 	server.keepAliveTimeout = 65_000;
 	server.headersTimeout = 70_000;
-	return new Promise((resolve) => server.listen(port, host, () => resolve(server)));
+	return listenServer(server, port, host);
 }
 
 export function serveRuns(gateway, { host = "127.0.0.1", port = 0, cert = null, key = null } = {}) {
 	if ((cert === null) !== (key === null)) throw new Error("The run door needs both a certificate and its key, or neither");
 	if (cert === null && !["127.0.0.1", "::1", "localhost"].includes(host)) throw new Error("The run door off loopback needs TLS");
-	const handler = answering((method, path, headers, read) => gateway.handleRun(method, path, headers, read));
+	const handler = answering((method, path, headers, read, gone) => gateway.handleRun(method, path, headers, read, gone));
 	const server = cert === null ? http.createServer(handler) : https.createServer({ cert, key, minVersion: "TLSv1.2" }, handler);
 	server.keepAliveTimeout = 65_000;
 	server.headersTimeout = 70_000;
-	return new Promise((resolve) => server.listen(port, host, () => resolve(server)));
+	return listenServer(server, port, host);
 }
