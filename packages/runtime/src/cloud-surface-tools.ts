@@ -11,6 +11,7 @@ import {
 	parseUuid,
 	type StudioPatchOp,
 	SURFACE_ARCHETYPES,
+	SURFACE_AUTOMATION_STATUSES,
 	SURFACE_GROUPS,
 	SURFACE_HEX_COLOR_PATTERN,
 	SURFACE_KINDS,
@@ -20,12 +21,19 @@ import {
 	SURFACE_MAX_PROMPT_CHARS,
 	SURFACE_MAX_TITLE_CHARS,
 	SURFACE_PREVIEW_MODES,
+	SURFACE_PUBLISH_STATUSES,
+	SURFACE_SESSION_STATES,
 	SURFACE_SOURCE_KINDS,
+	SURFACE_STATUSES,
 	type SurfaceArchetype,
+	type SurfaceAutomationStatus,
 	type SurfaceGroup,
 	type SurfaceKind,
 	type SurfacePreviewMode,
+	type SurfacePublishStatus,
+	type SurfaceSessionState,
 	type SurfaceSourceKind,
+	type SurfaceStatus,
 } from "@qorpera/contracts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import {
@@ -42,6 +50,85 @@ const MAX_SURFACE_PATH_CHARS = 512;
 const MAX_OWNER_LABEL_CHARS = 160;
 const MAX_VARIANT_LABEL_CHARS = 80;
 const MAX_OPS_ACTION_PAYLOAD_BYTES = 256 * 1024;
+const MAX_AUTOMATION_TITLE_CHARS = 120;
+const MAX_AUTOMATION_SCHEDULE_CHARS = 160;
+const MANAGE_SURFACE_AUTOMATION_ACTIONS = ["create", "update", "delete"] as const;
+
+export type ManageSurfaceAutomationAction = (typeof MANAGE_SURFACE_AUTOMATION_ACTIONS)[number];
+
+export interface SurfaceSenseActiveSession {
+	readonly id: string;
+	readonly title: string;
+	readonly state: SurfaceSessionState;
+	readonly explorationId: string | null;
+	readonly openChangeCount: number;
+	readonly hasConflict: boolean;
+}
+
+export interface SurfaceSenseEntry {
+	readonly id: string;
+	readonly slug: string;
+	readonly title: string;
+	readonly kind: SurfaceKind;
+	readonly archetype: SurfaceArchetype;
+	readonly status: SurfaceStatus;
+	readonly isGlobal: boolean;
+	readonly sourceKind: SurfaceSourceKind;
+	readonly repositoryKey: string | null;
+	readonly folderRoot: string | null;
+	readonly unpublishedChangeCount: number;
+	readonly publishStatus: SurfacePublishStatus;
+	readonly activeSessions: readonly SurfaceSenseActiveSession[];
+}
+
+export interface SurfaceSenseAutomation {
+	readonly id: string;
+	readonly key: string;
+	readonly title: string;
+	readonly scheduleSummary: string;
+	readonly targetSurfaceSlug: string | null;
+	readonly enabled: boolean;
+	readonly status: SurfaceAutomationStatus;
+}
+
+export interface SurfaceCompanySenses {
+	readonly surfaces: readonly SurfaceSenseEntry[];
+	readonly automations: readonly SurfaceSenseAutomation[];
+}
+
+export interface ManageSurfaceAutomationRequest {
+	readonly action: ManageSurfaceAutomationAction;
+	readonly automationId: string | null;
+	readonly title: string | null;
+	readonly prompt: string | null;
+	readonly scheduleSummary: string | null;
+	readonly targetSurfaceSlug: string | null;
+	readonly enabled: boolean | null;
+}
+
+export type ManageSurfaceAutomationResult =
+	| {
+			readonly deleted: true;
+			readonly id: string;
+	  }
+	| {
+			readonly id: string;
+			readonly key: string;
+			readonly title: string;
+			readonly prompt: string;
+			readonly scheduleSummary: string;
+			readonly targetSurfaceSlug: string | null;
+			readonly enabled: boolean;
+			readonly status: SurfaceAutomationStatus;
+	  };
+
+export interface SurfaceAutomationToolPort {
+	manageAutomation(
+		companyId: string,
+		request: ManageSurfaceAutomationRequest,
+		context: CloudToolContext,
+	): Promise<ManageSurfaceAutomationResult>;
+}
 
 export interface CodingRecordChangeRequest {
 	readonly title: string;
@@ -132,13 +219,17 @@ export interface CloudSurfaceToolsPort {
 	): Promise<{ readonly sessionId: string; readonly explorationId: string | null }>;
 	stageSurfacePatch?: SurfacePatchToolPort["stageSurfacePatch"];
 	stageSurfaceOpsAction?: SurfaceOpsActionToolPort["stageSurfaceOpsAction"];
+	listSurfaceSenses?(companyId: string, signal?: AbortSignal): Promise<SurfaceCompanySenses>;
+	manageAutomation?: SurfaceAutomationToolPort["manageAutomation"];
 }
 
 export type SurfaceControlPlaneRpc =
 	| "qorpera_propose_surface"
 	| "qorpera_service_start_surface_session"
 	| "qorpera_record_surface_change"
-	| "qorpera_surface_complete_session_turn";
+	| "qorpera_surface_complete_session_turn"
+	| "qorpera_surface_describe_company_senses"
+	| "qorpera_service_manage_surface_automation";
 
 export interface SurfaceToolsRpcClient {
 	call(
@@ -231,19 +322,158 @@ function parseRecordChangeResult(value: unknown, label: string): SurfaceChangeSt
 	};
 }
 
+function parseWireEnum<T extends string>(value: unknown, allowed: readonly T[], label: string): T {
+	if (typeof value !== "string" || !allowed.includes(value as T)) {
+		throw new Error(`${label} is invalid`);
+	}
+	return value as T;
+}
+
+function parseOptionalWireText(value: unknown, label: string, maxLength: number): string | null {
+	if (value === null || value === undefined) return null;
+	return parseBoundedText(value, label, maxLength, 0);
+}
+
+function parseSurfaceCompanySenses(value: unknown, label = "surfaceSenses"): SurfaceCompanySenses {
+	const raw = parseRecord(value, label);
+	const rawSurfaces = raw.surfaces ?? [];
+	const rawAutomations = raw.automations ?? [];
+	if (!Array.isArray(rawSurfaces)) throw new Error(`${label}.surfaces must be an array`);
+	if (!Array.isArray(rawAutomations)) throw new Error(`${label}.automations must be an array`);
+	const surfaces: SurfaceSenseEntry[] = rawSurfaces.map((item, index) => {
+		const row = parseRecord(item, `${label}.surfaces[${index}]`);
+		const rawSessions = row.activeSessions ?? [];
+		if (!Array.isArray(rawSessions)) {
+			throw new Error(`${label}.surfaces[${index}].activeSessions must be an array`);
+		}
+		const activeSessions: SurfaceSenseActiveSession[] = rawSessions.map((sessionItem, sessionIndex) => {
+			const s = parseRecord(sessionItem, `${label}.surfaces[${index}].activeSessions[${sessionIndex}]`);
+			if (typeof s.hasConflict !== "boolean") {
+				throw new Error(`${label}.surfaces[${index}].activeSessions[${sessionIndex}].hasConflict must be boolean`);
+			}
+			return {
+				id: parseUuid(s.id, `${label}.surfaces[${index}].activeSessions[${sessionIndex}].id`),
+				title: parseBoundedText(s.title, `${label}.surfaces[${index}].activeSessions[${sessionIndex}].title`, 160),
+				state: parseWireEnum(
+					s.state,
+					SURFACE_SESSION_STATES,
+					`${label}.surfaces[${index}].activeSessions[${sessionIndex}].state`,
+				),
+				explorationId:
+					s.explorationId === null || s.explorationId === undefined
+						? null
+						: parseUuid(
+								s.explorationId,
+								`${label}.surfaces[${index}].activeSessions[${sessionIndex}].explorationId`,
+							),
+				openChangeCount: parseInteger(
+					s.openChangeCount ?? 0,
+					`${label}.surfaces[${index}].activeSessions[${sessionIndex}].openChangeCount`,
+					0,
+					10_000,
+				),
+				hasConflict: s.hasConflict,
+			};
+		});
+		if (typeof row.isGlobal !== "boolean") {
+			throw new Error(`${label}.surfaces[${index}].isGlobal must be boolean`);
+		}
+		return {
+			id: parseUuid(row.id, `${label}.surfaces[${index}].id`),
+			slug: parseSurfaceSlug(row.slug, `${label}.surfaces[${index}].slug`),
+			title: parseBoundedText(row.title, `${label}.surfaces[${index}].title`, SURFACE_MAX_TITLE_CHARS),
+			kind: parseWireEnum(row.kind ?? "custom", SURFACE_KINDS, `${label}.surfaces[${index}].kind`),
+			archetype: parseWireEnum(row.archetype, SURFACE_ARCHETYPES, `${label}.surfaces[${index}].archetype`),
+			status: parseWireEnum(row.status, SURFACE_STATUSES, `${label}.surfaces[${index}].status`),
+			isGlobal: row.isGlobal,
+			sourceKind: parseWireEnum(row.sourceKind, SURFACE_SOURCE_KINDS, `${label}.surfaces[${index}].sourceKind`),
+			repositoryKey: parseOptionalWireText(row.repositoryKey, `${label}.surfaces[${index}].repositoryKey`, 200),
+			folderRoot: parseOptionalWireText(row.folderRoot, `${label}.surfaces[${index}].folderRoot`, 256),
+			unpublishedChangeCount: parseInteger(
+				row.unpublishedChangeCount ?? 0,
+				`${label}.surfaces[${index}].unpublishedChangeCount`,
+				0,
+				10_000,
+			),
+			publishStatus: parseWireEnum(
+				row.publishStatus ?? "idle",
+				SURFACE_PUBLISH_STATUSES,
+				`${label}.surfaces[${index}].publishStatus`,
+			),
+			activeSessions,
+		};
+	});
+	const automations: SurfaceSenseAutomation[] = rawAutomations.map((item, index) => {
+		const row = parseRecord(item, `${label}.automations[${index}]`);
+		if (typeof row.enabled !== "boolean") {
+			throw new Error(`${label}.automations[${index}].enabled must be boolean`);
+		}
+		return {
+			id: parseUuid(row.id, `${label}.automations[${index}].id`),
+			key: parseBoundedText(row.key, `${label}.automations[${index}].key`, 80),
+			title: parseBoundedText(row.title, `${label}.automations[${index}].title`, MAX_AUTOMATION_TITLE_CHARS),
+			scheduleSummary: parseBoundedText(
+				row.scheduleSummary,
+				`${label}.automations[${index}].scheduleSummary`,
+				MAX_AUTOMATION_SCHEDULE_CHARS,
+			),
+			targetSurfaceSlug:
+				row.targetSurfaceSlug === null || row.targetSurfaceSlug === undefined
+					? null
+					: parseSurfaceSlug(row.targetSurfaceSlug, `${label}.automations[${index}].targetSurfaceSlug`),
+			enabled: row.enabled,
+			status: parseWireEnum(row.status, SURFACE_AUTOMATION_STATUSES, `${label}.automations[${index}].status`),
+		};
+	});
+	return { surfaces, automations };
+}
+
+function parseManageSurfaceAutomationResult(value: unknown, label: string): ManageSurfaceAutomationResult {
+	const row = parseRecord(value, label);
+	if (row.deleted === true) {
+		return {
+			deleted: true,
+			id: parseUuid(row.id, `${label}.id`),
+		};
+	}
+	if (typeof row.enabled !== "boolean") {
+		throw new Error(`${label}.enabled must be boolean`);
+	}
+	return {
+		id: parseUuid(row.id, `${label}.id`),
+		key: parseBoundedText(row.key, `${label}.key`, 80),
+		title: parseBoundedText(row.title, `${label}.title`, MAX_AUTOMATION_TITLE_CHARS),
+		prompt: parseBoundedText(row.prompt, `${label}.prompt`, SURFACE_MAX_PROMPT_CHARS, 0),
+		scheduleSummary: parseBoundedText(row.scheduleSummary, `${label}.scheduleSummary`, MAX_AUTOMATION_SCHEDULE_CHARS),
+		targetSurfaceSlug:
+			row.targetSurfaceSlug === null || row.targetSurfaceSlug === undefined
+				? null
+				: parseSurfaceSlug(row.targetSurfaceSlug, `${label}.targetSurfaceSlug`),
+		enabled: row.enabled,
+		status: parseWireEnum(row.status, SURFACE_AUTOMATION_STATUSES, `${label}.status`),
+	};
+}
+
+export type ControlPlaneSurfaceToolsPort = CloudSurfaceToolsPort &
+	SurfacePatchToolPort &
+	SurfaceOpsActionToolPort &
+	SurfaceAutomationToolPort & {
+		listSurfaceSenses(companyId: string, signal?: AbortSignal): Promise<SurfaceCompanySenses>;
+	};
+
 // WHY: Bridges Surface runtime tools onto the cloud control-plane RPC transport without leaking service credentials to model turns.
 export function createControlPlaneSurfaceToolsPort(
 	control: SurfaceToolsRpcClient,
 	options?: ControlPlaneSurfaceToolsPortOptions,
-): CloudSurfaceToolsPort & SurfacePatchToolPort & SurfaceOpsActionToolPort;
+): ControlPlaneSurfaceToolsPort;
 export function createControlPlaneSurfaceToolsPort(
 	control: CloudCompanyPathControl,
 	options?: ControlPlaneSurfaceToolsPortOptions,
-): CloudSurfaceToolsPort & SurfacePatchToolPort & SurfaceOpsActionToolPort;
+): ControlPlaneSurfaceToolsPort;
 export function createControlPlaneSurfaceToolsPort(
 	control: SurfaceToolsRpcClient | CloudCompanyPathControl,
 	options: ControlPlaneSurfaceToolsPortOptions = {},
-): CloudSurfaceToolsPort & SurfacePatchToolPort & SurfaceOpsActionToolPort {
+): ControlPlaneSurfaceToolsPort {
 	const rpc = (method: SurfaceControlPlaneRpc, args: Record<string, unknown>, signal: AbortSignal) =>
 		(control as SurfaceToolsRpcClient).call(method, args, signal);
 
@@ -386,6 +616,33 @@ export function createControlPlaneSurfaceToolsPort(
 				context.signal,
 			);
 			return parseRecordChangeResult(response, "stageSurfaceOpsAction");
+		},
+
+		async listSurfaceSenses(companyId, signal) {
+			const response = await rpc(
+				"qorpera_surface_describe_company_senses",
+				{ p_company_id: companyId },
+				signal ?? new AbortController().signal,
+			);
+			return parseSurfaceCompanySenses(response, "listSurfaceSenses");
+		},
+
+		async manageAutomation(companyId, request, context) {
+			const response = await rpc(
+				"qorpera_service_manage_surface_automation",
+				{
+					p_company_id: companyId,
+					p_action: request.action,
+					p_automation_id: request.automationId,
+					p_title: request.title,
+					p_prompt: request.prompt,
+					p_schedule_summary: request.scheduleSummary,
+					p_target_surface_slug: request.targetSurfaceSlug,
+					p_enabled: request.enabled,
+				},
+				context.signal,
+			);
+			return parseManageSurfaceAutomationResult(response, "manageAutomation");
 		},
 	};
 }
@@ -921,6 +1178,162 @@ export function createStageSurfaceOpsActionTool(sessionId: string, port: Surface
 					actionKind: parsed.actionKind,
 					finishSession: parsed.finishSession,
 					staged: true,
+				}),
+			};
+		},
+	};
+}
+
+export function createManageSurfaceAutomationTool(companyId: string, port: SurfaceAutomationToolPort): CloudNativeTool {
+	return {
+		name: "manage_surface_automation",
+		source: "runtime",
+		description:
+			"Create, update, pause/resume, or delete a recurring Surface Automation that schedules repeatable work onto a target Surface (or decision cards) instead of hiring standalone org-chart roles.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["action"],
+			properties: {
+				action: {
+					type: "string",
+					enum: [...MANAGE_SURFACE_AUTOMATION_ACTIONS],
+					description: "Whether to create, update, or delete the recurring Surface Automation.",
+				},
+				automationId: {
+					type: "string",
+					description: "Automation UUID (required for update and delete; omit for create).",
+				},
+				title: {
+					type: "string",
+					minLength: 1,
+					maxLength: MAX_AUTOMATION_TITLE_CHARS,
+					description: "Short plain founder-facing title for the recurring automation (required for create).",
+				},
+				prompt: {
+					type: "string",
+					minLength: 1,
+					maxLength: SURFACE_MAX_PROMPT_CHARS,
+					description: "Self-contained instructions executed on each recurring run (required for create).",
+				},
+				scheduleSummary: {
+					type: "string",
+					minLength: 1,
+					maxLength: MAX_AUTOMATION_SCHEDULE_CHARS,
+					description: "Plain cadence summary such as 'Every Monday · 09:00' or 'Every day · 09:00'.",
+				},
+				targetSurfaceSlug: {
+					type: "string",
+					maxLength: 64,
+					description: "Optional lower-case hyphenated slug of the Surface where staged work should land.",
+				},
+				enabled: {
+					type: "boolean",
+					description: "Whether the automation is active (true) or paused (false).",
+				},
+			},
+		},
+		parseArguments(value: JsonValue): JsonValue {
+			let raw: Record<string, unknown>;
+			try {
+				raw = parseClosedRecord(
+					value,
+					"manage_surface_automation",
+					["action"],
+					["automationId", "title", "prompt", "scheduleSummary", "targetSurfaceSlug", "enabled"],
+				);
+			} catch (error) {
+				throw new CloudToolArgumentRefusal(error instanceof Error ? error.message : "Invalid arguments");
+			}
+			const action = parseEnumArg(raw.action, MANAGE_SURFACE_AUTOMATION_ACTIONS, "action");
+			let automationId: string | null = null;
+			if (raw.automationId !== undefined && raw.automationId !== null) {
+				if (!isUuid(raw.automationId)) {
+					throw new CloudToolArgumentRefusal("automationId must be a valid UUID");
+				}
+				automationId = raw.automationId;
+			}
+			const title = parseOptionalBounded(raw.title, "title", MAX_AUTOMATION_TITLE_CHARS);
+			const prompt = parseOptionalBounded(raw.prompt, "prompt", SURFACE_MAX_PROMPT_CHARS);
+			const scheduleSummary = parseOptionalBounded(
+				raw.scheduleSummary,
+				"scheduleSummary",
+				MAX_AUTOMATION_SCHEDULE_CHARS,
+			);
+			let targetSurfaceSlug: string | null = null;
+			if (raw.targetSurfaceSlug !== undefined && raw.targetSurfaceSlug !== null) {
+				if (!isSurfaceSlug(raw.targetSurfaceSlug)) {
+					throw new CloudToolArgumentRefusal(
+						"targetSurfaceSlug must be lower-case letters, digits, and single hyphens",
+					);
+				}
+				targetSurfaceSlug = raw.targetSurfaceSlug;
+			}
+			let enabled: boolean | null = null;
+			if (raw.enabled !== undefined && raw.enabled !== null) {
+				if (typeof raw.enabled !== "boolean") {
+					throw new CloudToolArgumentRefusal("enabled must be a boolean");
+				}
+				enabled = raw.enabled;
+			}
+			if (action === "create") {
+				if (automationId !== null) {
+					throw new CloudToolArgumentRefusal("automationId must be omitted when action is create");
+				}
+				if (title === null || title.length === 0) {
+					throw new CloudToolArgumentRefusal("title is required when action is create");
+				}
+				if (prompt === null || prompt.length === 0) {
+					throw new CloudToolArgumentRefusal("prompt is required when action is create");
+				}
+			} else if (action === "update") {
+				if (automationId === null) {
+					throw new CloudToolArgumentRefusal("automationId is required when action is update");
+				}
+				if (
+					title === null &&
+					prompt === null &&
+					scheduleSummary === null &&
+					targetSurfaceSlug === null &&
+					enabled === null
+				) {
+					throw new CloudToolArgumentRefusal(
+						"update requires at least one of title, prompt, scheduleSummary, targetSurfaceSlug, or enabled",
+					);
+				}
+			} else {
+				if (automationId === null) {
+					throw new CloudToolArgumentRefusal("automationId is required when action is delete");
+				}
+				if (
+					title !== null ||
+					prompt !== null ||
+					scheduleSummary !== null ||
+					targetSurfaceSlug !== null ||
+					enabled !== null
+				) {
+					throw new CloudToolArgumentRefusal("delete accepts only action and automationId");
+				}
+			}
+			return {
+				action,
+				automationId,
+				title,
+				prompt,
+				scheduleSummary,
+				targetSurfaceSlug,
+				enabled,
+			};
+		},
+		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
+			const parsed = argumentsValue as unknown as ManageSurfaceAutomationRequest;
+			const result = await port.manageAutomation(companyId, parsed, context);
+			return {
+				kind: "text",
+				value: cloudToolJsonText({
+					schema: "qorpera.surface-automation-managed/v1",
+					action: parsed.action,
+					...result,
 				}),
 			};
 		},

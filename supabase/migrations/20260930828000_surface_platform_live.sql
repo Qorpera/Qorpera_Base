@@ -52,7 +52,57 @@ alter table public.qorpera_surface_changes
 	add column published_by_user_id uuid references auth.users(id) on delete set null;
 
 alter table public.qorpera_surface_previews
+	add column exploration_session_id uuid references public.qorpera_surface_sessions(id) on delete set null,
 	add column lease_expires_at timestamptz;
+
+create or replace function public.qorpera_surface_upsert_preview(
+	p_surface public.qorpera_surfaces,
+	p_base_sha text,
+	p_selected_change_ids uuid[],
+	p_exploration_session_id uuid default null
+)
+returns public.qorpera_surface_previews
+language plpgsql security definer set search_path = '' as $$
+declare
+	v_key_input text;
+	v_comp_key text;
+	v_host_id text;
+	v_row public.qorpera_surface_previews%rowtype;
+begin
+	select string_agg(ch.id::text || ':' || coalesce(ch.head_sha, ''), ',' order by array_position(p_selected_change_ids, ch.id))
+	into v_key_input
+	from public.qorpera_surface_changes ch
+	where ch.id = any(coalesce(p_selected_change_ids, '{}'::uuid[]));
+
+	v_comp_key := encode(
+		extensions.digest(
+			coalesce(p_base_sha, 'base') || '|' || coalesce(p_exploration_session_id::text, '') || '|' || coalesce(v_key_input, ''),
+			'sha256'
+		),
+		'hex'
+	);
+	v_host_id := substr(v_comp_key, 1, 8);
+
+	insert into public.qorpera_surface_previews(
+		profile_id, surface_id, composition_key, short_host_id, base_sha,
+		selected_change_ids, exploration_session_id, status, expires_at
+	)
+	values (
+		p_surface.profile_id, p_surface.id, v_comp_key, v_host_id,
+		coalesce(p_base_sha, repeat('0', 40)), coalesce(p_selected_change_ids, '{}'::uuid[]),
+		p_exploration_session_id, 'composing', clock_timestamp() + interval '24 hours'
+	)
+	on conflict (surface_id, composition_key) do update set
+		exploration_session_id = excluded.exploration_session_id,
+		expires_at = clock_timestamp() + interval '24 hours',
+		status = case
+			when public.qorpera_surface_previews.status = 'failed' then 'composing'
+			else public.qorpera_surface_previews.status
+		end
+	returning * into v_row;
+
+	return v_row;
+end $$;
 
 create table public.qorpera_surface_jobs (
 	id uuid primary key default extensions.gen_random_uuid(),
@@ -1376,7 +1426,34 @@ begin
 				'shortHostId', p.short_host_id,
 				'baseSha', p.base_sha,
 				'selectedChangeIds', to_jsonb(p.selected_change_ids),
-				'repositoryKey', surf.repository_key
+				'repositoryKey', surf.repository_key,
+				'exploration', case
+					when exp_sess.id is not null and exp_sess.base_sha is not null and exp_sess.branch_head_sha is not null then
+						jsonb_build_object(
+							'sessionId', exp_sess.id,
+							'baseSha', exp_sess.base_sha,
+							'headSha', exp_sess.branch_head_sha
+						)
+					else null
+				end,
+				'changes', coalesce(
+					(
+						select jsonb_agg(
+							jsonb_build_object(
+								'changeId', ch.id,
+								'parentSha', ch.parent_sha,
+								'headSha', ch.head_sha,
+								'title', ch.title
+							)
+							order by array_position(p.selected_change_ids, ch.id)
+						)
+						from public.qorpera_surface_changes ch
+						where ch.id = any(p.selected_change_ids)
+							and ch.parent_sha is not null
+							and ch.head_sha is not null
+					),
+					'[]'::jsonb
+				)
 			)
 			order by p.created_at asc
 		),
@@ -1384,7 +1461,8 @@ begin
 	)
 	into v_previews
 	from claimed p
-	join public.qorpera_surfaces surf on surf.id = p.surface_id;
+	join public.qorpera_surfaces surf on surf.id = p.surface_id
+	left join public.qorpera_surface_sessions exp_sess on exp_sess.id = p.exploration_session_id;
 
 	with picked as (
 		select j.id
@@ -1413,9 +1491,106 @@ begin
 				'surfaceId', j.surface_id,
 				'sessionId', j.session_id,
 				'profileId', j.profile_id,
+				'sourceKind', surf.source_kind,
 				'repositoryKey', surf.repository_key,
 				'folderRoot', surf.folder_root,
-				'payload', j.payload
+				'autoPublish', surf.auto_publish,
+				'expectMainSha', surf.live_head_sha,
+				'sessionWorkerId', sess.worker_id,
+				'sessionState', sess.state,
+				'sessionHasActiveChat', coalesce(sess.has_active_chat, false),
+				'payload', j.payload,
+				'allSessionChangeStatuses', coalesce(
+					(
+						select jsonb_agg(
+							jsonb_build_object('changeId', ch.id, 'status', ch.status)
+							order by ch.seq asc
+						)
+						from public.qorpera_surface_changes ch
+						where ch.session_id = j.session_id
+					),
+					'[]'::jsonb
+				),
+				'approvedChanges', coalesce(
+					(
+						select jsonb_agg(
+							jsonb_build_object(
+								'changeId', ch.id,
+								'kind', ch.kind,
+								'parentSha', ch.parent_sha,
+								'headSha', ch.head_sha,
+								'title', ch.title,
+								'summary', ch.summary,
+								'patchManifest', ch.patch_manifest,
+								'affectedPaths', to_jsonb(ch.affected_paths)
+							)
+							order by ch.seq asc
+						)
+						from public.qorpera_surface_changes ch
+						where ch.id in (
+							select x::uuid
+							from jsonb_array_elements_text(coalesce(j.payload -> 'changeIds', '[]'::jsonb)) as x
+						)
+					),
+					'[]'::jsonb
+				),
+				'siblingRemainingChanges', coalesce(
+					(
+						select jsonb_agg(
+							jsonb_build_object(
+								'changeId', ch.id,
+								'parentSha', ch.parent_sha,
+								'headSha', ch.head_sha,
+								'title', ch.title
+							)
+							order by ch.seq asc
+						)
+						from public.qorpera_surface_changes ch
+						where ch.session_id = j.session_id
+							and ch.status in ('staged', 'conflicted')
+							and ch.parent_sha is not null
+							and ch.head_sha is not null
+							and not (ch.id in (
+								select x::uuid
+								from jsonb_array_elements_text(coalesce(j.payload -> 'changeIds', '[]'::jsonb)) as x
+							))
+					),
+					'[]'::jsonb
+				),
+				'peerSessions', coalesce(
+					(
+						select jsonb_agg(
+							jsonb_build_object(
+								'sessionId', peer.id,
+								'workerId', peer.worker_id,
+								'remainingChanges', coalesce(peer_changes.items, '[]'::jsonb)
+							)
+							order by peer.created_at asc
+						)
+						from public.qorpera_surface_sessions peer
+						join lateral (
+							select jsonb_agg(
+								jsonb_build_object(
+									'changeId', pch.id,
+									'parentSha', pch.parent_sha,
+									'headSha', pch.head_sha,
+									'title', pch.title
+								)
+								order by pch.seq asc
+							) as items
+							from public.qorpera_surface_changes pch
+							where pch.session_id = peer.id
+								and pch.status in ('staged', 'conflicted')
+								and pch.parent_sha is not null
+								and pch.head_sha is not null
+						) peer_changes on peer_changes.items is not null
+						where peer.surface_id = j.surface_id
+							and peer.id is distinct from j.session_id
+							and peer.worker_id is not null
+							and peer.state not in ('completed', 'discarded')
+					),
+					'[]'::jsonb
+				)
 			)
 			order by j.created_at asc
 		),
@@ -1423,7 +1598,8 @@ begin
 	)
 	into v_merges
 	from claimed j
-	join public.qorpera_surfaces surf on surf.id = j.surface_id;
+	join public.qorpera_surfaces surf on surf.id = j.surface_id
+	left join public.qorpera_surface_sessions sess on sess.id = j.session_id;
 
 	with picked as (
 		select j.id
@@ -1653,6 +1829,164 @@ end $$;
 revoke all on function public.qorpera_surface_complete_publish(uuid, text, text, text)
 	from public, anon, authenticated;
 grant execute on function public.qorpera_surface_complete_publish(uuid, text, text, text)
+	to service_role;
+
+create function public.qorpera_surface_describe_company_senses(p_company_id uuid)
+returns jsonb
+language sql stable security definer set search_path = '' as $$
+	select jsonb_build_object(
+		'surfaces', coalesce(
+			(
+				select jsonb_agg(
+					jsonb_build_object(
+						'id', s.id,
+						'slug', s.slug,
+						'title', s.title,
+						'kind', s.surface_kind,
+						'archetype', s.archetype,
+						'status', s.status,
+						'isGlobal', s.is_global,
+						'sourceKind', s.source_kind,
+						'repositoryKey', s.repository_key,
+						'folderRoot', s.folder_root,
+						'unpublishedChangeCount', s.unpublished_change_count,
+						'publishStatus', s.publish_status,
+						'activeSessions', coalesce(sess.items, '[]'::jsonb)
+					)
+					order by s.surface_group asc, s.sort_order asc, s.created_at asc
+				)
+				from public.qorpera_surfaces s
+				left join lateral (
+					select jsonb_agg(
+						jsonb_build_object(
+							'id', ss.id,
+							'title', ss.title,
+							'state', ss.state,
+							'explorationId', ss.exploration_id,
+							'openChangeCount', (
+								select count(*)::integer
+								from public.qorpera_surface_changes ch
+								where ch.session_id = ss.id and ch.status in ('staged', 'merging', 'conflicted')
+							),
+							'hasConflict', exists (
+								select 1 from public.qorpera_surface_changes ch
+								where ch.session_id = ss.id and ch.status = 'conflicted'
+							)
+						)
+						order by ss.updated_at desc
+					) as items
+					from public.qorpera_surface_sessions ss
+					where ss.surface_id = s.id and ss.state not in ('completed', 'discarded')
+				) sess on true
+				where s.profile_id = p_company_id and s.status in ('active', 'proposed')
+			),
+			'[]'::jsonb
+		),
+		'automations', coalesce(
+			(
+				select jsonb_agg(
+					jsonb_build_object(
+						'id', a.id,
+						'key', a.key,
+						'title', a.title,
+						'scheduleSummary', a.schedule_summary,
+						'targetSurfaceSlug', a.target_surface_slug,
+						'enabled', a.enabled,
+						'status', a.status
+					)
+					order by a.updated_at desc
+				)
+				from public.qorpera_surface_automations a
+				where a.profile_id = p_company_id
+			),
+			'[]'::jsonb
+		)
+	)
+$$;
+revoke all on function public.qorpera_surface_describe_company_senses(uuid) from public, anon, authenticated;
+grant execute on function public.qorpera_surface_describe_company_senses(uuid) to service_role;
+
+create function public.qorpera_service_manage_surface_automation(
+	p_company_id uuid,
+	p_action text,
+	p_automation_id uuid default null,
+	p_title text default null,
+	p_prompt text default null,
+	p_schedule_summary text default null,
+	p_target_surface_slug text default null,
+	p_enabled boolean default null
+)
+returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+	v_row public.qorpera_surface_automations%rowtype;
+	v_title text := btrim(coalesce(p_title, ''));
+	v_prompt text := btrim(coalesce(p_prompt, ''));
+	v_schedule text := coalesce(nullif(btrim(coalesce(p_schedule_summary, '')), ''), 'Every day · 09:00');
+	v_target text := nullif(lower(btrim(coalesce(p_target_surface_slug, ''))), '');
+	v_base_key text;
+	v_key text;
+	v_suffix integer := 1;
+begin
+	if p_action = 'create' then
+		if char_length(v_title) < 1 or char_length(v_title) > 120 then
+			raise exception 'Title must be 1..120 characters' using errcode = '22023';
+		end if;
+		if char_length(v_prompt) < 1 or char_length(v_prompt) > 16000 then
+			raise exception 'Prompt must be 1..16000 characters' using errcode = '22023';
+		end if;
+		v_base_key := left(btrim(lower(regexp_replace(v_title, '[^a-zA-Z0-9]+', '-', 'g')), '-'), 70);
+		if v_base_key = '' then v_base_key := 'agent'; end if;
+		v_key := v_base_key;
+		while exists (select 1 from public.qorpera_surface_automations where profile_id = p_company_id and key = v_key) loop
+			v_suffix := v_suffix + 1;
+			v_key := left(v_base_key, 66) || '-' || v_suffix::text;
+		end loop;
+		insert into public.qorpera_surface_automations(
+			profile_id, key, title, prompt, schedule_summary, target_surface_slug,
+			output_mode, enabled, status, last_outcome_summary
+		)
+		values (
+			p_company_id, v_key, v_title, v_prompt, v_schedule, v_target,
+			case when v_target is not null then 'surface_session' else 'decision_card' end,
+			coalesce(p_enabled, true), case when coalesce(p_enabled, true) then 'idle' else 'paused' end, left(v_prompt, 120)
+		)
+		returning * into v_row;
+	elsif p_action = 'update' then
+		select * into v_row from public.qorpera_surface_automations where id = p_automation_id and profile_id = p_company_id for update;
+		if v_row.id is null then raise exception 'Automation not found' using errcode = 'P0002'; end if;
+		update public.qorpera_surface_automations
+		set
+			title = coalesce(nullif(v_title, ''), title),
+			prompt = coalesce(nullif(v_prompt, ''), prompt),
+			schedule_summary = coalesce(nullif(btrim(coalesce(p_schedule_summary, '')), ''), schedule_summary),
+			target_surface_slug = coalesce(v_target, target_surface_slug),
+			enabled = coalesce(p_enabled, enabled),
+			status = case when coalesce(p_enabled, enabled) then 'idle' else 'paused' end,
+			updated_at = clock_timestamp()
+		where id = p_automation_id
+		returning * into v_row;
+	elsif p_action = 'delete' then
+		delete from public.qorpera_surface_automations where id = p_automation_id and profile_id = p_company_id;
+		return jsonb_build_object('deleted', true, 'id', p_automation_id);
+	else
+		raise exception 'Invalid automation action' using errcode = '22023';
+	end if;
+
+	return jsonb_build_object(
+		'id', v_row.id,
+		'key', v_row.key,
+		'title', v_row.title,
+		'prompt', v_row.prompt,
+		'scheduleSummary', v_row.schedule_summary,
+		'targetSurfaceSlug', v_row.target_surface_slug,
+		'enabled', v_row.enabled,
+		'status', v_row.status
+	);
+end $$;
+revoke all on function public.qorpera_service_manage_surface_automation(uuid, text, uuid, text, text, text, text, boolean)
+	from public, anon, authenticated;
+grant execute on function public.qorpera_service_manage_surface_automation(uuid, text, uuid, text, text, text, text, boolean)
 	to service_role;
 
 do $$ begin

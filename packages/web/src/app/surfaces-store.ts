@@ -2550,14 +2550,34 @@ export class SurfacesStore {
 		return this.state.variantPick[exploration.id] ?? exploration.variantSessionIds[0];
 	}
 
+	activePreviewSessions(surfaceId: string): SurfaceSession[] {
+		const workspace = this.workspace(surfaceId);
+		const pickedExplorationSessions = new Set(
+			openExplorations(workspace)
+				.map((exploration) => this.pickedVariant(exploration))
+				.filter((id): id is string => Boolean(id)),
+		);
+		const sessions: SurfaceSession[] = [];
+		for (const session of workspace?.activeSessions ?? []) {
+			if (session.explorationId && !pickedExplorationSessions.has(session.id)) continue;
+			sessions.push(session);
+		}
+		return sessions;
+	}
+
 	previewSelection(surfaceId: string): { toggledChangeIds: string[]; explorationSessionId: string | null } {
 		const workspace = this.workspace(surfaceId);
+		const explorations = openExplorations(workspace);
+		const primaryExploration = explorations[0];
+		const explorationSessionId = primaryExploration ? (this.pickedVariant(primaryExploration) ?? null) : null;
 		const toggledChangeIds: string[] = [];
-		for (const session of workspace?.activeSessions ?? [])
-			for (const change of session.changes)
+		for (const session of this.activePreviewSessions(surfaceId)) {
+			if (explorationSessionId && session.id === explorationSessionId) continue;
+			for (const change of session.changes) {
 				if (isOpenChange(change) && this.isChangeShown(change.id)) toggledChangeIds.push(change.id);
-		const exploration = openExplorations(workspace)[0];
-		return { toggledChangeIds, explorationSessionId: exploration ? (this.pickedVariant(exploration) ?? null) : null };
+			}
+		}
+		return { toggledChangeIds, explorationSessionId };
 	}
 
 	async #syncPreview(surfaceId: string): Promise<void> {

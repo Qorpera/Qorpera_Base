@@ -1,16 +1,24 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
 	type JsonValue,
+	SURFACE_CHANGE_STATUSES,
 	SURFACE_SESSION_STATES,
+	SURFACE_SOURCE_KINDS,
+	type SurfaceChangeStatus,
 	type SurfacePreviewConflict,
 	type SurfaceSessionQuestion,
 	type SurfaceSessionState,
+	type SurfaceSourceKind,
 } from "@qorpera/contracts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import { CloudRunnerProviderRequestError } from "./provider-http.ts";
 import type {
+	ClaimedSurfaceApprovedChange,
+	ClaimedSurfaceChangeRange,
 	ClaimedSurfaceJobs,
 	ClaimedSurfaceMergeJob,
+	ClaimedSurfacePeerSession,
+	ClaimedSurfacePreviewExploration,
 	ClaimedSurfacePreviewJob,
 	ClaimedSurfacePublishJob,
 	ClaimedSurfaceSessionJob,
@@ -1196,6 +1204,8 @@ function parseOrchestrationClaim(value: unknown): CloudRunnerOrchestrationClaim 
 }
 
 const SURFACE_SESSION_STATE_SET: ReadonlySet<string> = new Set(SURFACE_SESSION_STATES);
+const SURFACE_CHANGE_STATUS_SET: ReadonlySet<string> = new Set(SURFACE_CHANGE_STATUSES);
+const SURFACE_SOURCE_KIND_SET: ReadonlySet<string> = new Set(SURFACE_SOURCE_KINDS);
 
 function optionalResponseString(value: unknown, label: string): string | null {
 	if (value === null || value === undefined) return null;
@@ -1310,10 +1320,45 @@ function parseClaimedSurfaceSessionJob(value: unknown): ClaimedSurfaceSessionJob
 	};
 }
 
+function parseClaimedSurfaceChangeRange(value: unknown, label: string): ClaimedSurfaceChangeRange {
+	const input = record(value, label);
+	if (typeof input.title !== "string") {
+		throw new Error(`Runner orchestrator returned invalid ${label} title`);
+	}
+	return {
+		changeId: responseUuid(input.changeId, `${label} change id`),
+		parentSha: responseText(input.parentSha, `${label} parent sha`, 64),
+		headSha: responseText(input.headSha, `${label} head sha`, 64),
+		title: input.title,
+	};
+}
+
+function parseClaimedSurfacePreviewExploration(value: unknown): ClaimedSurfacePreviewExploration {
+	const input = record(value, "surface preview exploration");
+	return {
+		sessionId: responseUuid(input.sessionId, "surface exploration session id"),
+		baseSha: responseText(input.baseSha, "surface exploration base sha", 64),
+		headSha: responseText(input.headSha, "surface exploration head sha", 64),
+	};
+}
+
 function parseClaimedSurfacePreviewJob(value: unknown): ClaimedSurfacePreviewJob {
 	const input = record(value, "claimed surface preview");
 	if (!Array.isArray(input.selectedChangeIds)) {
 		throw new Error("Runner orchestrator returned invalid preview change ids");
+	}
+	const exploration =
+		input.exploration === undefined
+			? undefined
+			: input.exploration === null
+				? null
+				: parseClaimedSurfacePreviewExploration(input.exploration);
+	let changes: ClaimedSurfaceChangeRange[] | undefined;
+	if (input.changes !== undefined) {
+		if (!Array.isArray(input.changes)) {
+			throw new Error("Runner orchestrator returned invalid preview changes");
+		}
+		changes = input.changes.map((item) => parseClaimedSurfaceChangeRange(item, "preview change"));
 	}
 	return {
 		previewId: responseUuid(input.previewId, "surface preview id"),
@@ -1323,6 +1368,43 @@ function parseClaimedSurfacePreviewJob(value: unknown): ClaimedSurfacePreviewJob
 		baseSha: responseText(input.baseSha, "surface preview base sha", 64),
 		selectedChangeIds: input.selectedChangeIds.map((id) => responseUuid(id, "surface change id")),
 		repositoryKey: optionalResponseString(input.repositoryKey, "surface repository key"),
+		...(exploration !== undefined ? { exploration } : {}),
+		...(changes !== undefined ? { changes } : {}),
+	};
+}
+
+function parseClaimedSurfaceApprovedChange(value: unknown): ClaimedSurfaceApprovedChange {
+	const input = record(value, "approved surface change");
+	if (
+		typeof input.kind !== "string" ||
+		typeof input.title !== "string" ||
+		typeof input.summary !== "string" ||
+		!Array.isArray(input.affectedPaths) ||
+		!input.affectedPaths.every((item) => typeof item === "string")
+	) {
+		throw new Error("Runner orchestrator returned invalid approved surface change");
+	}
+	return {
+		changeId: responseUuid(input.changeId, "approved change id"),
+		kind: input.kind,
+		parentSha: optionalResponseString(input.parentSha, "approved change parent sha"),
+		headSha: optionalResponseString(input.headSha, "approved change head sha"),
+		title: input.title,
+		summary: input.summary,
+		patchManifest: input.patchManifest === undefined ? null : structuredClone(input.patchManifest),
+		affectedPaths: [...(input.affectedPaths as string[])],
+	};
+}
+
+function parseClaimedSurfacePeerSession(value: unknown): ClaimedSurfacePeerSession {
+	const input = record(value, "surface peer session");
+	if (!Array.isArray(input.remainingChanges)) {
+		throw new Error("Runner orchestrator returned invalid surface peer session changes");
+	}
+	return {
+		sessionId: responseUuid(input.sessionId, "surface peer session id"),
+		workerId: responseUuid(input.workerId, "surface peer worker id"),
+		remainingChanges: input.remainingChanges.map((item) => parseClaimedSurfaceChangeRange(item, "peer change")),
 	};
 }
 
@@ -1339,15 +1421,103 @@ function parseClaimedSurfaceMergeJob(value: unknown): ClaimedSurfaceMergeJob {
 		input.payload === null || input.payload === undefined
 			? {}
 			: (structuredClone(record(input.payload, "surface merge payload")) as Record<string, unknown>);
+	let sourceKind: SurfaceSourceKind | undefined;
+	if (input.sourceKind !== undefined && input.sourceKind !== null) {
+		if (typeof input.sourceKind !== "string" || !SURFACE_SOURCE_KIND_SET.has(input.sourceKind)) {
+			throw new Error("Runner orchestrator returned invalid surface source kind");
+		}
+		sourceKind = input.sourceKind as SurfaceSourceKind;
+	}
+	let autoPublish: boolean | undefined;
+	if (input.autoPublish !== undefined) {
+		if (typeof input.autoPublish !== "boolean") {
+			throw new Error("Runner orchestrator returned invalid surface autoPublish flag");
+		}
+		autoPublish = input.autoPublish;
+	}
+	const expectMainSha =
+		input.expectMainSha === undefined ? undefined : optionalResponseString(input.expectMainSha, "surface main sha");
+	const sessionWorkerId =
+		input.sessionWorkerId === undefined
+			? undefined
+			: input.sessionWorkerId === null
+				? null
+				: responseUuid(input.sessionWorkerId, "surface session worker id");
+	let sessionState: SurfaceSessionState | null | undefined;
+	if (input.sessionState !== undefined) {
+		if (input.sessionState === null) {
+			sessionState = null;
+		} else if (typeof input.sessionState === "string" && SURFACE_SESSION_STATE_SET.has(input.sessionState)) {
+			sessionState = input.sessionState as SurfaceSessionState;
+		} else {
+			throw new Error("Runner orchestrator returned invalid surface session state");
+		}
+	}
+	let sessionHasActiveChat: boolean | undefined;
+	if (input.sessionHasActiveChat !== undefined) {
+		if (typeof input.sessionHasActiveChat !== "boolean") {
+			throw new Error("Runner orchestrator returned invalid surface session chat flag");
+		}
+		sessionHasActiveChat = input.sessionHasActiveChat;
+	}
+	let allSessionChangeStatuses: { readonly changeId: string; readonly status: SurfaceChangeStatus }[] | undefined;
+	if (input.allSessionChangeStatuses !== undefined) {
+		if (!Array.isArray(input.allSessionChangeStatuses)) {
+			throw new Error("Runner orchestrator returned invalid session change statuses");
+		}
+		allSessionChangeStatuses = input.allSessionChangeStatuses.map((item) => {
+			const entry = record(item, "session change status");
+			if (typeof entry.status !== "string" || !SURFACE_CHANGE_STATUS_SET.has(entry.status)) {
+				throw new Error("Runner orchestrator returned invalid session change status");
+			}
+			return {
+				changeId: responseUuid(entry.changeId, "session change id"),
+				status: entry.status as SurfaceChangeStatus,
+			};
+		});
+	}
+	let approvedChanges: ClaimedSurfaceApprovedChange[] | undefined;
+	if (input.approvedChanges !== undefined) {
+		if (!Array.isArray(input.approvedChanges)) {
+			throw new Error("Runner orchestrator returned invalid approved changes");
+		}
+		approvedChanges = input.approvedChanges.map(parseClaimedSurfaceApprovedChange);
+	}
+	let siblingRemainingChanges: ClaimedSurfaceChangeRange[] | undefined;
+	if (input.siblingRemainingChanges !== undefined) {
+		if (!Array.isArray(input.siblingRemainingChanges)) {
+			throw new Error("Runner orchestrator returned invalid sibling changes");
+		}
+		siblingRemainingChanges = input.siblingRemainingChanges.map((item) =>
+			parseClaimedSurfaceChangeRange(item, "sibling change"),
+		);
+	}
+	let peerSessions: ClaimedSurfacePeerSession[] | undefined;
+	if (input.peerSessions !== undefined) {
+		if (!Array.isArray(input.peerSessions)) {
+			throw new Error("Runner orchestrator returned invalid peer sessions");
+		}
+		peerSessions = input.peerSessions.map(parseClaimedSurfacePeerSession);
+	}
 	return {
 		jobId: responseUuid(input.jobId, "surface merge job id"),
 		kind: input.kind,
 		surfaceId: responseUuid(input.surfaceId, "surface id"),
 		sessionId,
 		profileId: responseUuid(input.profileId, "surface profile id"),
+		...(sourceKind !== undefined ? { sourceKind } : {}),
 		repositoryKey: optionalResponseString(input.repositoryKey, "surface repository key"),
 		folderRoot: optionalResponseString(input.folderRoot, "surface folder root"),
+		...(autoPublish !== undefined ? { autoPublish } : {}),
+		...(expectMainSha !== undefined ? { expectMainSha } : {}),
+		...(sessionWorkerId !== undefined ? { sessionWorkerId } : {}),
+		...(sessionState !== undefined ? { sessionState } : {}),
+		...(sessionHasActiveChat !== undefined ? { sessionHasActiveChat } : {}),
 		payload,
+		...(allSessionChangeStatuses !== undefined ? { allSessionChangeStatuses } : {}),
+		...(approvedChanges !== undefined ? { approvedChanges } : {}),
+		...(siblingRemainingChanges !== undefined ? { siblingRemainingChanges } : {}),
+		...(peerSessions !== undefined ? { peerSessions } : {}),
 	};
 }
 

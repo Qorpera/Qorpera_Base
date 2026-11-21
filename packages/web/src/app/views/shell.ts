@@ -2254,6 +2254,7 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 						class: `rail-agent-hub-row${input.activeAgentId === agent.id ? " active" : ""}`,
 						href: `#/c/${input.profileId}/staff/${agent.id}`,
 						draggable: "false",
+						"data-agent-id": agent.id,
 					},
 					h(
 						"span",
@@ -2289,6 +2290,7 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 					class: `rail-agent-hub-row${input.activeAgentId === agent.id ? " active" : ""}`,
 					href: `#/c/${input.profileId}/staff/${agent.id}`,
 					draggable: "false",
+					"data-agent-id": agent.id,
 				},
 				h(
 					"span",

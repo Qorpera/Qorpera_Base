@@ -1,22 +1,42 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { JsonValue } from "@qorpera/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { cloudActionEffect } from "../src/cloud-action-review.ts";
+import type { CloudAgentSendReceipt } from "../src/cloud-agent-mouth.ts";
+import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
+import { cloudFolderFileTools } from "../src/cloud-folder-file-tools.ts";
 import {
 	cloudCompanyRuntimeInstructions,
 	compileCloudNativeCompanyInstructions,
 	parseCloudNativeCompanyContext,
 } from "../src/cloud-native-company-context.ts";
-import { createControlPlaneSurfaceToolsPort } from "../src/cloud-native-company-runtime.ts";
-import type { CloudToolContext } from "../src/cloud-native-tool-boundary.ts";
+import { CloudNativeCompanyRuntime, createControlPlaneSurfaceToolsPort } from "../src/cloud-native-company-runtime.ts";
+import type { NativeCompanyExecutionRequest, NativeProviderControlPlane } from "../src/cloud-native-provider-host.ts";
+import { type CloudNativeTool, type CloudToolContext, CloudToolRefusal } from "../src/cloud-native-tool-boundary.ts";
+import type { CloudNativeToolOperationControlPlane } from "../src/cloud-native-tool-operations.ts";
 import { cloudToolsOnDemand } from "../src/cloud-native-tools-on-demand.ts";
+import { CLOUD_RUNTIME_NATIVE_BINARY_SHA256 } from "../src/cloud-runtime-bundle.generated.ts";
+import * as runtimeBundle from "../src/cloud-runtime-bundle.ts";
+import {
+	CLOUD_RUNTIME_HIRE_OVERLAY_VERSION,
+	CLOUD_RUNTIME_SURFACE_FIRST_OVERLAY_VERSION,
+	cloudCoFounderPlanningRun,
+	cloudRuntimeHireBehavior,
+} from "../src/cloud-runtime-hire-overlays.ts";
 import {
 	createCodingRecordChangeTool,
+	createManageSurfaceAutomationTool,
 	createProposeSurfaceTool,
 	createStageSurfaceOpsActionTool,
 	createStageSurfacePatchTool,
 	createStartSurfaceSessionTool,
 } from "../src/cloud-surface-tools.ts";
 import { buildSurfaceTurnBrief, SURFACE_STAGED_CODING_INSTRUCTIONS } from "../src/cloud-surface-turn-context.ts";
+import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
 
 function toolContext(): CloudToolContext {
@@ -372,6 +392,9 @@ describe("cloud surface runtime tools", () => {
 		});
 
 		expect(text).toContain("# Surface Context: Website (website)");
+		expect(text).toContain("## Surface Projection & Parallel Preview");
+		expect(text).toContain("toggle multiple unmerged staged changes from concurrent sessions");
+		expect(text).toContain("atomic, self-contained, and conflict-minimizing");
 		expect(text).not.toContain("## Global Company Identity");
 		expect(text).toContain("QorperaOS/surfaces/website/brief.md");
 		expect(text).toContain("Warm Danish editorial tone");
@@ -379,6 +402,9 @@ describe("cloud surface runtime tools", () => {
 		expect(text).toContain("PreorderCta");
 		expect(text).toContain("src/pages/preorder.astro");
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("coding_record_change");
+		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("direct live projection");
+		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("toggled on or off simultaneously in Preview");
+		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("atomic, self-contained, and conflict-minimizing");
 	});
 
 	it("injects Global Company Identity into buildSurfaceTurnBrief when identityContext has content", () => {
@@ -605,6 +631,7 @@ describe("cloud surface runtime tools", () => {
 		for (const name of [
 			"propose_surface",
 			"start_surface_session",
+			"manage_surface_automation",
 			"coding_record_change",
 			"stage_surface_patch",
 			"stage_surface_ops_action",
@@ -614,11 +641,885 @@ describe("cloud surface runtime tools", () => {
 
 		const proposeTool = createProposeSurfaceTool({ proposeSurface: vi.fn() });
 		const startTool = createStartSurfaceSessionTool({ startSurfaceSession: vi.fn() });
-		const cofounderOffered = cloudToolsOnDemand([proposeTool, startTool], "cofounder");
+		const automationTool = createManageSurfaceAutomationTool(randomUUID(), { manageAutomation: vi.fn() });
+		const cofounderOffered = cloudToolsOnDemand([proposeTool, startTool, automationTool], "cofounder");
 		expect(cofounderOffered.deferred.size).toBe(0);
 
-		const employeeOffered = cloudToolsOnDemand([proposeTool, startTool], "employee");
+		const employeeOffered = cloudToolsOnDemand([proposeTool, startTool, automationTool], "employee");
 		expect(employeeOffered.deferred.has("propose_surface")).toBe(true);
 		expect(employeeOffered.deferred.has("start_surface_session")).toBe(true);
+		expect(employeeOffered.deferred.has("manage_surface_automation")).toBe(true);
+	});
+
+	it("validates and executes manage_surface_automation across create, update, and delete", async () => {
+		const companyId = randomUUID();
+		const automationId = randomUUID();
+		const manageAutomation = vi.fn().mockImplementation(async (_cid, req) => {
+			if (req.action === "delete") {
+				return { deleted: true as const, id: req.automationId };
+			}
+			return {
+				id: req.automationId ?? automationId,
+				key: "weekly-copy-audit",
+				title: req.title ?? "Weekly copy audit",
+				prompt: req.prompt ?? "Audit homepage copy for clarity.",
+				scheduleSummary: req.scheduleSummary ?? "Every Monday · 09:00",
+				targetSurfaceSlug: req.targetSurfaceSlug ?? "website",
+				enabled: req.enabled ?? true,
+				status: (req.enabled ?? true) ? ("idle" as const) : ("paused" as const),
+			};
+		});
+		const tool = createManageSurfaceAutomationTool(companyId, { manageAutomation });
+
+		const createdArgs = tool.parseArguments({
+			action: "create",
+			title: "Weekly copy audit",
+			prompt: "Audit homepage copy and stage clear conversion improvements.",
+			scheduleSummary: "Every Monday · 09:00",
+			targetSurfaceSlug: "website",
+			enabled: true,
+		});
+		const createdRes = await tool.execute(createdArgs, toolContext());
+		expect(manageAutomation).toHaveBeenCalledWith(
+			companyId,
+			{
+				action: "create",
+				automationId: null,
+				title: "Weekly copy audit",
+				prompt: "Audit homepage copy and stage clear conversion improvements.",
+				scheduleSummary: "Every Monday · 09:00",
+				targetSurfaceSlug: "website",
+				enabled: true,
+			},
+			expect.any(Object),
+		);
+		expect(JSON.parse(createdRes.value as string)).toMatchObject({
+			schema: "qorpera.surface-automation-managed/v1",
+			action: "create",
+			id: automationId,
+			key: "weekly-copy-audit",
+			targetSurfaceSlug: "website",
+			enabled: true,
+		});
+
+		const updatedArgs = tool.parseArguments({
+			action: "update",
+			automationId,
+			enabled: false,
+		});
+		const updatedRes = await tool.execute(updatedArgs, toolContext());
+		expect(JSON.parse(updatedRes.value as string)).toMatchObject({
+			action: "update",
+			id: automationId,
+			enabled: false,
+			status: "paused",
+		});
+
+		const deletedArgs = tool.parseArguments({
+			action: "delete",
+			automationId,
+		});
+		const deletedRes = await tool.execute(deletedArgs, toolContext());
+		expect(JSON.parse(deletedRes.value as string)).toMatchObject({
+			action: "delete",
+			deleted: true,
+			id: automationId,
+		});
+
+		expect(() => tool.parseArguments({ action: "create", title: "Missing prompt" })).toThrow();
+		expect(() => tool.parseArguments({ action: "create", prompt: "Missing title" })).toThrow();
+		expect(() =>
+			tool.parseArguments({ action: "create", automationId, title: "Has id", prompt: "Should fail" }),
+		).toThrow();
+		expect(() => tool.parseArguments({ action: "update", title: "Missing id" })).toThrow();
+		expect(() => tool.parseArguments({ action: "update", automationId })).toThrow();
+		expect(() => tool.parseArguments({ action: "delete" })).toThrow();
+		expect(() => tool.parseArguments({ action: "delete", automationId, title: "Unexpected" })).toThrow();
+		expect(() =>
+			tool.parseArguments({
+				action: "create",
+				title: "Bad slug",
+				prompt: "Check site",
+				targetSurfaceSlug: "Bad Slug!",
+			}),
+		).toThrow();
+		expect(() => tool.parseArguments({ action: "update", automationId: "not-a-uuid", enabled: false })).toThrow();
+	});
+
+	it("bridges listSurfaceSenses and manageAutomation on createControlPlaneSurfaceToolsPort", async () => {
+		const companyId = randomUUID();
+		const surfaceId = randomUUID();
+		const sessionId = randomUUID();
+		const automationId = randomUUID();
+		const calls: { method: string; args: Record<string, unknown> }[] = [];
+		const port = createControlPlaneSurfaceToolsPort({
+			async call(method, args) {
+				calls.push({ method, args });
+				if (method === "qorpera_surface_describe_company_senses") {
+					return {
+						surfaces: [
+							{
+								id: surfaceId,
+								slug: "website",
+								title: "Website",
+								kind: "website",
+								archetype: "live_build",
+								status: "active",
+								isGlobal: false,
+								sourceKind: "code_repo",
+								repositoryKey: "thetaband/website",
+								folderRoot: null,
+								unpublishedChangeCount: 2,
+								publishStatus: "idle",
+								activeSessions: [
+									{
+										id: sessionId,
+										title: "Hero refresh",
+										state: "ready",
+										explorationId: null,
+										openChangeCount: 1,
+										hasConflict: false,
+									},
+								],
+							},
+						],
+						automations: [
+							{
+								id: automationId,
+								key: "weekly-copy-audit",
+								title: "Weekly copy audit",
+								scheduleSummary: "Every Monday · 09:00",
+								targetSurfaceSlug: "website",
+								enabled: true,
+								status: "idle",
+							},
+						],
+					};
+				}
+				if (method === "qorpera_service_manage_surface_automation") {
+					if (args.p_action === "delete") {
+						return { deleted: true, id: automationId };
+					}
+					return {
+						id: automationId,
+						key: "weekly-copy-audit",
+						title: "Weekly copy audit",
+						prompt: "Review copy",
+						scheduleSummary: "Every Monday · 09:00",
+						targetSurfaceSlug: "website",
+						enabled: true,
+						status: "idle",
+					};
+				}
+				return {};
+			},
+		});
+
+		const senses = await port.listSurfaceSenses(companyId);
+		expect(calls[0]).toEqual({
+			method: "qorpera_surface_describe_company_senses",
+			args: { p_company_id: companyId },
+		});
+		expect(senses.surfaces).toHaveLength(1);
+		expect(senses.surfaces[0]).toMatchObject({
+			id: surfaceId,
+			slug: "website",
+			unpublishedChangeCount: 2,
+			publishStatus: "idle",
+			activeSessions: [{ id: sessionId, state: "ready", openChangeCount: 1, hasConflict: false }],
+		});
+		expect(senses.automations).toHaveLength(1);
+		expect(senses.automations[0]?.key).toBe("weekly-copy-audit");
+
+		const created = await port.manageAutomation(
+			companyId,
+			{
+				action: "create",
+				automationId: null,
+				title: "Weekly copy audit",
+				prompt: "Review copy",
+				scheduleSummary: "Every Monday · 09:00",
+				targetSurfaceSlug: "website",
+				enabled: true,
+			},
+			toolContext(),
+		);
+		expect(calls[1]).toEqual({
+			method: "qorpera_service_manage_surface_automation",
+			args: {
+				p_company_id: companyId,
+				p_action: "create",
+				p_automation_id: null,
+				p_title: "Weekly copy audit",
+				p_prompt: "Review copy",
+				p_schedule_summary: "Every Monday · 09:00",
+				p_target_surface_slug: "website",
+				p_enabled: true,
+			},
+		});
+		expect(created).toMatchObject({ id: automationId, key: "weekly-copy-audit", enabled: true });
+
+		const deleted = await port.manageAutomation(
+			companyId,
+			{
+				action: "delete",
+				automationId,
+				title: null,
+				prompt: null,
+				scheduleSummary: null,
+				targetSurfaceSlug: null,
+				enabled: null,
+			},
+			toolContext(),
+		);
+		expect(deleted).toEqual({ deleted: true, id: automationId });
+	});
+
+	it("builds a high-signal Surface-First Co-Founder overlay (v22) with zero legacy hiring or doc-sprawl while preserving v21", () => {
+		expect(CLOUD_RUNTIME_HIRE_OVERLAY_VERSION).toBe("qorpera.hire-overlay/v21");
+		expect(CLOUD_RUNTIME_SURFACE_FIRST_OVERLAY_VERSION).toBe("qorpera.hire-overlay/v22");
+
+		const surfaceHas = (tool: string) =>
+			new Set([
+				"company_read",
+				"company_write",
+				"propose_surface",
+				"start_surface_session",
+				"manage_surface_automation",
+				"update_reading",
+			]).has(tool);
+		const surfacePlaybook = cloudRuntimeHireBehavior("cofounder", {
+			has: surfaceHas,
+			visionAgreed: false,
+			surfaceFirst: true,
+		});
+		const surfacePlanning = cloudCoFounderPlanningRun({
+			has: surfaceHas,
+			visionAgreed: false,
+			surfaceFirst: true,
+		});
+		const combined = `${surfacePlaybook}\n${surfacePlanning}`;
+
+		expect(combined).toContain("code/<owner>/<name>");
+		expect(combined).toContain("identity/");
+		expect(combined).toContain("<folderRoot>/");
+		expect(combined).toContain("Preview");
+		expect(combined).toContain("activateImmediately: true");
+		expect(combined).toContain("propose_surface");
+		expect(combined).toContain("start_surface_session");
+		expect(combined).toContain("manage_surface_automation");
+		expect(combined).toContain("senses.surfaces");
+		expect(combined).toContain("QorperaOS/surfaces/<slug>/notes/");
+
+		for (const legacyTerm of [
+			"hire_team",
+			"hire_agent",
+			"save_app",
+			"organize_apps",
+			"offer_agents_to_member",
+			"vision-draft.md",
+			"company-plan.md",
+			"concept-brief.md",
+			"solution.md",
+			"Customer Researcher",
+			"Market Watcher",
+		]) {
+			expect(combined).not.toContain(legacyTerm);
+		}
+
+		const legacyPlaybook = cloudRuntimeHireBehavior("cofounder", {
+			has: () => true,
+			visionAgreed: false,
+		});
+		expect(legacyPlaybook).toContain("hire_team");
+		expect(legacyPlaybook).toContain("vision-draft.md");
+		expect(legacyPlaybook).toContain("company-plan.md");
+
+		const f = nativeCompanyContextFixture();
+		const context = parseCloudNativeCompanyContext(f.context, f.binding);
+		const surfaceInstructions = compileCloudNativeCompanyInstructions(context, null, {
+			head: "# Head",
+			tools: new Set([
+				"company_read",
+				"send_message",
+				"propose_surface",
+				"start_surface_session",
+				"manage_surface_automation",
+			]),
+			surfaceFirst: true,
+		});
+		expect(surfaceInstructions).toContain("Each Surface is a direct live projection");
+		expect(surfaceInstructions).toContain("senses.surfaces");
+		expect(surfaceInstructions).toContain("senses.automations");
+		expect(surfaceInstructions).toContain("manage_surface_automation");
+		expect(surfaceInstructions).not.toContain("hire_team");
+		expect(surfaceInstructions).not.toContain("vision-draft.md");
+		expect(surfaceInstructions).not.toContain("company-plan.md");
+	});
+
+	it("enforces surfaceFilePolicy on cloudFolderFileTools for cofounder doc-sprawl guard and surface_worker confinement", async () => {
+		const f = await folderWriterFixture({
+			folders: [
+				"identity",
+				"QorperaOS/surfaces",
+				"QorperaOS/surfaces/website",
+				"QorperaOS/surfaces/website/notes",
+				"strategy",
+				"reports",
+			],
+			files: {
+				"identity/tokens.json": '{"accent":"#d76f45"}',
+				"QorperaOS/surfaces/website/notes/existing.md": "# Existing note\n",
+				"strategy/existing.md": "# Legacy strategy\n",
+			},
+		});
+		try {
+			const makeCaller = (policy?: Parameters<typeof cloudFolderFileTools>[0]["surfaceFilePolicy"]) => {
+				const tools = cloudFolderFileTools({
+					folder: f.folder,
+					operations: f.operations(),
+					identity: f.identity,
+					...(policy ? { surfaceFilePolicy: policy } : {}),
+				});
+				const getTool = (name: string) => tools.find((candidate) => candidate.name === name) as CloudNativeTool;
+				return (name: string, args: JsonValue) =>
+					getTool(name).execute(getTool(name).parseArguments(args), f.context);
+			};
+
+			const cofounderBlocked = makeCaller({ mode: "cofounder", allowExplicitMemberDoc: false });
+			for (const blockedRoot of [
+				"strategy",
+				"research",
+				"operations",
+				"plans",
+				"docs",
+				"memos",
+				"reports",
+				"meetings",
+				"marketing",
+				"sales",
+			]) {
+				await expect(
+					cofounderBlocked("company_write", {
+						path: `${blockedRoot}/auto-dump.md`,
+						operationKey: `write-${blockedRoot}`,
+						expectedVersion: null,
+						text: "# Unrequested doc",
+					}),
+				).rejects.toSatisfy(
+					(error: unknown) =>
+						error instanceof CloudToolRefusal &&
+						error.message.includes("SURFACE_FILE_POLICY_REFUSED") &&
+						error.message.includes("start_surface_session") &&
+						error.message.includes("QorperaOS/surfaces/<slug>/notes/"),
+				);
+				await expect(
+					cofounderBlocked("company_mkdir", {
+						path: `${blockedRoot}/sub`,
+						operationKey: `mkdir-${blockedRoot}`,
+						expectedVersion: null,
+					}),
+				).rejects.toThrow(CloudToolRefusal);
+			}
+
+			await expect(
+				cofounderBlocked("company_write", {
+					path: "Strategy/UpperCase.md",
+					operationKey: "write-upper-strategy",
+					expectedVersion: null,
+					text: "# Blocked regardless of case",
+				}),
+			).rejects.toThrow(CloudToolRefusal);
+
+			const identityWrite = await cofounderBlocked("company_write", {
+				path: "identity/voice.md",
+				operationKey: "write-identity-voice",
+				expectedVersion: null,
+				text: "# Voice\nDirect and warm.",
+			});
+			expect(JSON.parse(String(identityWrite.value)).state).toBe("applied");
+
+			const noteWrite = await cofounderBlocked("company_write", {
+				path: "QorperaOS/surfaces/website/notes/rationale.md",
+				operationKey: "write-surface-note",
+				expectedVersion: null,
+				text: "# Rationale\nFocused Danish hero.",
+			});
+			expect(JSON.parse(String(noteWrite.value)).state).toBe("applied");
+
+			const cofounderExplicit = makeCaller({ mode: "cofounder", allowExplicitMemberDoc: true });
+			const explicitWrite = await cofounderExplicit("company_write", {
+				path: "strategy/requested-memo.md",
+				operationKey: "write-explicit-memo",
+				expectedVersion: null,
+				text: "# Requested Memo",
+			});
+			expect(JSON.parse(String(explicitWrite.value)).state).toBe("applied");
+
+			const workerCaller = makeCaller({
+				mode: "surface_worker",
+				allowedRoots: ["identity", "QorperaOS/surfaces/identity"],
+			});
+			const workerOk = await workerCaller("company_write", {
+				path: "identity/palette.json",
+				operationKey: "worker-write-ok",
+				expectedVersion: null,
+				text: '{"paper":"#f7f5f2"}',
+			});
+			expect(JSON.parse(String(workerOk.value)).state).toBe("applied");
+
+			await expect(
+				workerCaller("company_write", {
+					path: "code/website/index.html",
+					operationKey: "worker-write-outside",
+					expectedVersion: null,
+					text: "<h1>Nope</h1>",
+				}),
+			).rejects.toThrow(CloudToolRefusal);
+			await expect(
+				workerCaller("company_write", {
+					path: "identity-extra/escape.txt",
+					operationKey: "worker-write-prefix-escape",
+					expectedVersion: null,
+					text: "nope",
+				}),
+			).rejects.toThrow(CloudToolRefusal);
+			await expect(
+				workerCaller("company_mkdir", {
+					path: "strategy/new-folder",
+					operationKey: "worker-mkdir-outside",
+					expectedVersion: null,
+				}),
+			).rejects.toThrow(CloudToolRefusal);
+
+			const existingIdentity = await f.folder.read("identity/tokens.json", new AbortController().signal);
+			expect(existingIdentity.entry).not.toBeNull();
+			const workerEditOk = await workerCaller("company_edit", {
+				path: "identity/tokens.json",
+				operationKey: "worker-edit-ok",
+				expectedVersion: existingIdentity.entry!.version,
+				oldText: "#d76f45",
+				newText: "#c85a32",
+			});
+			expect(JSON.parse(String(workerEditOk.value)).state).toBe("applied");
+
+			const existingStrategy = await f.folder.read("strategy/existing.md", new AbortController().signal);
+			expect(existingStrategy.entry).not.toBeNull();
+			await expect(
+				workerCaller("company_edit", {
+					path: "strategy/existing.md",
+					operationKey: "worker-edit-outside",
+					expectedVersion: existingStrategy.entry!.version,
+					oldText: "# Legacy strategy",
+					newText: "# Mutated",
+				}),
+			).rejects.toThrow(CloudToolRefusal);
+
+			const legacyCaller = makeCaller(undefined);
+			const legacyWrite = await legacyCaller("company_write", {
+				path: "reports/legacy-ok.md",
+				operationKey: "legacy-write-ok",
+				expectedVersion: null,
+				text: "# Legacy report",
+			});
+			expect(JSON.parse(String(legacyWrite.value)).state).toBe("applied");
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("wires Surface-First runtime mode to strip legacy org-chart/app tools and inject senses.surfaces", async () => {
+		const tempRoot = await mkdtemp(join(tmpdir(), "qorpera-surface-runtime-test-"));
+		const rpcFixture = fileURLToPath(new URL("./fixtures/codex-boundary-rpc-fixture.cjs", import.meta.url));
+		const binarySha256 = createHash("sha256")
+			.update(await readFile(process.execPath))
+			.digest("hex");
+		const assertBundle = runtimeBundle.assertCloudRuntimeBundle;
+		const bundleSpy = vi
+			.spyOn(runtimeBundle, "assertCloudRuntimeBundle")
+			.mockImplementation((identity) => assertBundle(identity, CLOUD_RUNTIME_NATIVE_BINARY_SHA256));
+
+		try {
+			const f = nativeCompanyContextFixture();
+			f.context = { ...f.context, agentKind: "cofounder" };
+			const wakeInputId = randomUUID();
+			const surfaceId = randomUUID();
+			const sessionId = randomUUID();
+			const automationId = randomUUID();
+			const wake = {
+				schema: "qorpera.wake-envelope/v1",
+				id: randomUUID(),
+				runId: f.context.identity.runId,
+				kind: "human",
+				companyId: f.context.identity.companyId,
+				environmentId: f.context.identity.environmentId,
+				staffAgentId: f.context.identity.staffAgentId,
+				requesterUserId: f.context.identity.requesterUserId,
+				actorStaffId: null,
+				actorUserId: f.context.identity.requesterUserId,
+				audience: {
+					kind: f.context.identity.audienceKind,
+					userId: f.context.identity.audienceUserId,
+					sessionId: f.context.identity.sessionId,
+				},
+				source: { kind: "input", id: wakeInputId, occurrenceKey: `input:${wakeInputId}` },
+				policy: {
+					schema: "qorpera.wake-policy/v1",
+					kind: "human",
+					initial: "required",
+					final: "required",
+					silenceAllowed: false,
+					maxPublicSends: null,
+				},
+				time: {
+					utc: "2026-09-02T08:00:00.000000Z",
+					local: "2026-09-02T10:00:00.000000",
+					timeZone: "Europe/Copenhagen",
+				},
+				pins: {
+					companySnapshotId: randomUUID(),
+					staffVersion: f.context.identity.staffVersion,
+					wakeSchema: "qorpera.wake-envelope/v1",
+					runtimeBundleVersion: null,
+				},
+				routine: null,
+				payload: { inputIds: [wakeInputId] },
+				parentRunId: null,
+				causal: { rootId: randomUUID(), agentIds: [f.context.identity.staffAgentId] },
+			};
+
+			const folderFiles = new Map<string, string>([["note.md", "Quiet studio notes."]]);
+			const folderSha = (text: string) => createHash("sha256").update(text).digest("hex");
+			const folderVersion = (path: string, text: string) => {
+				const hex = createHash("sha256").update(`${path}\n${text}`).digest("hex");
+				return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+			};
+			const folderEntry = (path: string) => {
+				const text = folderFiles.get(path);
+				if (text === undefined) return null;
+				return {
+					path,
+					kind: "file",
+					version: folderVersion(path, text),
+					seq: 1,
+					updatedAt: "2026-10-01T00:00:00+00:00",
+					manifestSha256: folderSha(`manifest:${text}`),
+					fileSha256: folderSha(text),
+					bytes: Buffer.byteLength(text),
+					mediaType: "text/markdown",
+					executable: false,
+					authority: { resourceId: randomUUID(), resourceRevision: 1, grantId: randomUUID(), grantRevision: 1 },
+				};
+			};
+
+			let nativeAdmission: Record<string, unknown> | undefined;
+			const deliveries = new Map<string, CloudAgentSendReceipt>();
+			const control = {
+				describeToolAuthority: vi.fn(async () => structuredClone(f.authority)),
+				beginToolOperation: vi.fn<CloudNativeToolOperationControlPlane["beginToolOperation"]>(async () => {
+					throw new Error("No generic effects expected");
+				}),
+				completeToolOperation: vi.fn<CloudNativeToolOperationControlPlane["completeToolOperation"]>(async () => {
+					throw new Error("No generic effects expected");
+				}),
+				completeFolderToolOperation: vi.fn<
+					NonNullable<CloudNativeToolOperationControlPlane["completeFolderToolOperation"]>
+				>(async () => {
+					throw new Error("No folder writes expected");
+				}),
+				sendMessage: vi.fn<NativeProviderControlPlane["sendMessage"]>(async (request, input) => {
+					const receipt = deliveries.get(input.idempotencyKey) ?? {
+						schema: "qorpera.agent-send/v1",
+						runId: request.authority.runId,
+						sessionId: f.context.identity.sessionId as string,
+						messageId: randomUUID(),
+						phase: input.phase,
+						sequence: deliveries.size + 1,
+					};
+					deliveries.set(input.idempotencyKey, receipt);
+					return receipt;
+				}),
+				appendInteractionRequest: vi.fn<NonNullable<NativeProviderControlPlane["appendInteractionRequest"]>>(
+					async () => {
+						throw new Error("No cards expected");
+					},
+				),
+			};
+
+			const pathCall: CloudCompanyPathControl["call"] = async (method, args, signal) => {
+				if (method === "qorpera_company_machines_available") return true;
+				if (method === "qorpera_company_home_available")
+					return { schema: "qorpera.company-home/v1", available: false };
+				if (method === "qorpera_record_runtime_observation_batch") {
+					const batch = args.p_observations as { attemptId: string; phase: string }[];
+					return {
+						schema: "qorpera.runtime-observation-batch-receipt/v1",
+						runId: f.binding.runId,
+						receipts: batch.map((observation) => ({
+							schema: "qorpera.runtime-observation-receipt/v1",
+							runId: f.binding.runId,
+							attemptId: observation.attemptId,
+							phase: observation.phase,
+							ingestedAt: new Date().toISOString(),
+							replayed: false,
+						})),
+					};
+				}
+				if (method === "qorpera_folder_read") {
+					const entry = folderEntry(args.p_path as string);
+					return { schema: "qorpera.folder-read/v1", asOfSeq: 1, found: entry !== null, entry };
+				}
+				if (method === "qorpera_folder_list") {
+					return { schema: "qorpera.folder-list/v1", asOfSeq: 1, entries: [], next: null };
+				}
+				if (method === "qorpera_folder_record_release") {
+					return {
+						schema: "qorpera.folder-release/v1",
+						releaseId: args.p_release_id,
+						reads: (args.p_reads as unknown[]).length,
+						replay: false,
+					};
+				}
+				if (method === "qorpera_memory_run_log_place") return { off: true };
+				if (method === "qorpera_memory_run_resume_receipts") return null;
+				if (method === "qorpera_folder_note_interface_changes") {
+					return { schema: "qorpera.interface-change-notes/v1", noted: 0 };
+				}
+				if (method === "qorpera_begin_native_company_execution_v3") {
+					nativeAdmission = {
+						runId: f.binding.runId,
+						jobId: f.binding.jobId,
+						leaseId: f.binding.leaseId,
+						binarySha256: args.p_binary_sha256,
+						runtimeBundleSha256: args.p_runtime_bundle_sha256,
+						reasoningPolicySha256: args.p_reasoning_policy_sha256,
+						reasoningEffort: "low",
+						toolCatalogSha256: createHash("sha256")
+							.update(args.p_tool_catalog_text as string)
+							.digest("hex"),
+					};
+					return { schema: "qorpera.native-company-execution-admission/v1", ...nativeAdmission };
+				}
+				if (method === "qorpera_bind_native_company_context") {
+					const admission = nativeAdmission!;
+					return {
+						schema: "qorpera.native-company-execution-start/v1",
+						...admission,
+						contextSha256: args.p_context_sha256,
+						contextBytes: args.p_context_bytes,
+					};
+				}
+				if (method === "qorpera_describe_company_run_context") return structuredClone(f.context);
+				if (method === "qorpera_begin_action_review") {
+					return { schema: "qorpera.action-review-begin/v1", state: "approved", reviewId: randomUUID() };
+				}
+				if (method === "qorpera_read_native_wake") return structuredClone(wake);
+				if (method === "qorpera_describe_agent_open_work") {
+					return {
+						schema: "qorpera.agent-open-work/v1",
+						runId: f.binding.runId,
+						todos: { open: 0, blocked: 0 },
+						workers: { active: 0, blocked: 0 },
+					};
+				}
+				if (method === "qorpera_describe_company_senses") {
+					return {
+						schema: "qorpera.company-senses/v1",
+						runId: f.binding.runId,
+						agents: [{ handle: "cofounder", todos: { open: 0, blocked: 0, doneLast7d: 0 } }],
+						questions: { count: 0, oldest: [] },
+					};
+				}
+				if (method === "qorpera_list_native_connector_tools") return [];
+				if (method === "qorpera_assert_company_path_reads") return null;
+				if (method === "qorpera_check_native_run") return await control.describeToolAuthority();
+				if (method === "qorpera_fence_native_context") {
+					const authority = await control.describeToolAuthority();
+					const receipt = await pathCall(
+						"qorpera_record_native_context_view",
+						{ p_environment_id: args.p_environment_id, p_binding: args.p_binding, p_view: args.p_view },
+						signal,
+					);
+					return { schema: "qorpera.native-context-fence/v1", authority, receipt, kept: args.p_paths };
+				}
+				if (method === "qorpera_record_native_context_view") {
+					return {
+						schema: "qorpera.native-context-view-receipt/v1",
+						viewId: randomUUID(),
+						requestId: (args.p_view as Record<string, unknown>).requestId,
+						sha256: "b".repeat(64),
+						ordinal: 1,
+					};
+				}
+				throw new Error(`Unexpected RPC: ${method}`);
+			};
+
+			const evidencePath = join(tempRoot, "evidence.json");
+			const identityRoot = join(tempRoot, "identity");
+			await mkdir(join(identityRoot, "codex"), { recursive: true, mode: 0o700 });
+			await writeFile(join(identityRoot, "codex", "auth.json"), '{"tokens":{"access_token":"SYNTHETIC_SECRET"}}', {
+				mode: 0o600,
+			});
+
+			const listSurfaceSenses = vi.fn().mockResolvedValue({
+				surfaces: [
+					{
+						id: surfaceId,
+						slug: "website",
+						title: "Website",
+						kind: "website" as const,
+						archetype: "live_build" as const,
+						status: "active" as const,
+						isGlobal: false,
+						sourceKind: "code_repo" as const,
+						repositoryKey: "thetaband/website",
+						folderRoot: null,
+						unpublishedChangeCount: 1,
+						publishStatus: "idle" as const,
+						activeSessions: [
+							{
+								id: sessionId,
+								title: "Initial directions",
+								state: "ready" as const,
+								explorationId: null,
+								openChangeCount: 1,
+								hasConflict: false,
+							},
+						],
+					},
+				],
+				automations: [
+					{
+						id: automationId,
+						key: "weekly-audit",
+						title: "Weekly audit",
+						scheduleSummary: "Every Monday · 09:00",
+						targetSurfaceSlug: "website",
+						enabled: true,
+						status: "idle" as const,
+					},
+				],
+			});
+
+			const runtime = new CloudNativeCompanyRuntime({
+				controlPlane: control,
+				pathControl: { call: pathCall },
+				command: [process.execPath, rpcFixture, "company-runtime", evidencePath],
+				binarySha256,
+				timeoutMs: 10_000,
+				surfaceTools: {
+					proposeSurface: vi.fn(),
+					startSurfaceSession: vi.fn(),
+					listSurfaceSenses,
+					manageAutomation: vi.fn(),
+				},
+				folderBytes: () => ({
+					put: async () => {
+						throw new Error("No folder writes expected");
+					},
+					get: async (file: { fileSha256: string }) => {
+						const text = [...folderFiles.values()].find((value) => folderSha(value) === file.fileSha256);
+						if (text === undefined) throw new Error("No such file bytes");
+						return new TextEncoder().encode(text);
+					},
+					range: async (file: { fileSha256: string }, offset: number, length: number) => {
+						const text = [...folderFiles.values()].find((value) => folderSha(value) === file.fileSha256);
+						if (text === undefined) throw new Error("No such file bytes");
+						return new TextEncoder().encode(text).subarray(offset, offset + length);
+					},
+				}),
+			});
+
+			const request: NativeCompanyExecutionRequest = {
+				runtime: "company-path-v1",
+				authority: {
+					...f.binding,
+					encryptedCapsuleReference: `native-capsule/${f.binding.credentialCapsuleId}`,
+					attestationPolicySha256: "a".repeat(64),
+					expiresAt: "2099-08-28T12:00:00Z",
+				},
+				job: {
+					jobId: f.binding.jobId,
+					jobType: "agent_turn",
+					requiredCapability: "agent_turn",
+					attemptCount: 1,
+					payload: { instructions: "LOCAL_PAYLOAD_IS_NOT_AUTHORITY" },
+				},
+			};
+
+			await runtime.execute(request, identityRoot, new AbortController().signal);
+
+			const evidence = JSON.parse(await readFile(evidencePath, "utf8")) as {
+				threadParameters: {
+					developerInstructions: string;
+					dynamicTools: { tools: { name: string; description: string }[] }[];
+				};
+				turnParameters: { input: { text: string }[] };
+			};
+
+			const directTools = evidence.threadParameters.dynamicTools[0].tools.map((tool) => tool.name);
+			const moreTools = evidence.threadParameters.dynamicTools[0].tools.find((tool) => tool.name === "more_tools");
+			const deferredTools = moreTools
+				? [...moreTools.description.matchAll(/^- ([a-z][a-z0-9_]*)(?::|$)/gm)].map((match) => match[1])
+				: [];
+			const allOffered = new Set([...directTools, ...deferredTools]);
+
+			expect(directTools).toContain("propose_surface");
+			expect(directTools).toContain("start_surface_session");
+			expect(directTools).toContain("manage_surface_automation");
+			for (const stripped of [
+				"hire_agent",
+				"hire_team",
+				"end_role",
+				"save_app",
+				"post_app",
+				"app_guide",
+				"organize_apps",
+				"organize_sidebar",
+				"offer_agents_to_member",
+				"crew_and_members",
+			]) {
+				expect(allOffered.has(stripped)).toBe(false);
+			}
+
+			const instructions = evidence.threadParameters.developerInstructions;
+			expect(instructions).toContain("# Surfaces & Identity");
+			expect(instructions).toContain("Each Surface is a direct live projection");
+			expect(instructions).toContain("senses.surfaces");
+			expect(instructions).not.toContain("hire_team");
+			expect(instructions).not.toContain("vision-draft.md");
+			expect(instructions).not.toContain("company-plan.md");
+			expect(instructions).not.toContain("Customer Researcher");
+
+			const prompt = JSON.parse(evidence.turnParameters.input[0].text) as {
+				senses: {
+					agents: unknown[];
+					surfaces: { id: string; slug: string; activeSessions: { id: string; state: string }[] }[];
+					automations: { id: string; key: string }[];
+				};
+			};
+			expect(listSurfaceSenses).toHaveBeenCalledWith(f.context.identity.companyId, expect.any(AbortSignal));
+			expect(prompt.senses.agents).toHaveLength(1);
+			expect(prompt.senses.surfaces).toHaveLength(1);
+			expect(prompt.senses.surfaces[0]).toMatchObject({
+				id: surfaceId,
+				slug: "website",
+				activeSessions: [{ id: sessionId, state: "ready" }],
+			});
+			expect(prompt.senses.automations).toEqual([
+				{
+					id: automationId,
+					key: "weekly-audit",
+					title: "Weekly audit",
+					scheduleSummary: "Every Monday · 09:00",
+					targetSurfaceSlug: "website",
+					enabled: true,
+					status: "idle",
+				},
+			]);
+		} finally {
+			bundleSpy.mockRestore();
+			await rm(tempRoot, { recursive: true, force: true });
+		}
 	});
 });

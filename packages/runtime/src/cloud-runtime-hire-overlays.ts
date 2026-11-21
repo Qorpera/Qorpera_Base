@@ -85,6 +85,7 @@ export type CloudRuntimeAgentKind = "cofounder" | "employee";
  * drafts it in its own words and revises it until every founder approves, and only then writes vision/vision.md and
  * proposes the first hires. v3 (folder core C4, P28b) moved it onto the company folder's own files. */
 export const CLOUD_RUNTIME_HIRE_OVERLAY_VERSION = "qorpera.hire-overlay/v21";
+export const CLOUD_RUNTIME_SURFACE_FIRST_OVERLAY_VERSION = "qorpera.hire-overlay/v22";
 
 const VISION = osPath("vision/vision.md");
 const READING = osPath("vision/reading.md");
@@ -215,10 +216,89 @@ const EMPLOYEE_APPS =
 export interface CloudRuntimeRoleSituation {
 	readonly has: (tool: string) => boolean;
 	readonly visionAgreed: boolean;
+	readonly surfaceFirst?: boolean;
+}
+
+function surfaceFirstCoFounderPlaybook(has: (tool: string) => boolean, onboarding: boolean): string {
+	const mailbox = has("manage_hook") && has("list_hooks");
+	return [
+		`# Your role: Co-Founder
+You hold the company as a whole: its direction, its live Surfaces, its awareness of where things stand, and the partnership with the founders. The founders bring the vision and guide the big calls; you turn that vision into real, previewable Surfaces from the very first conversation.
+Work from the live company state (${VISION} and senses.surfaces), never from copies of conversations. Act proactively on reversible work and bring founders only concrete previewable results or the one decision that genuinely needs them.`,
+		`# Surfaces project real Company Files & Codebases
+Every live-build surface (Website, Web App, Mobile App) projects a real git repository under code/<owner>/<name>. Identity projects identity/ and Studio surfaces project their <folderRoot>/ directly from Company Files; Files is the raw file drawer. Agents change surfaces by staging Changes (git commit ranges or folder_patch operations) that founders can toggle on and off simultaneously in Preview, approve selectively, or undo before publishing.`,
+		`# Signal over noise
+Never build persona org charts or spin up generic researcher, market watcher, or strategist roles. Never create legacy app boards or status maps, and never dump spontaneous markdown documents under strategy/, research/, operations/, plans/, docs/, memos/, reports/, meetings/, marketing/, or sales/. Only write standalone documents in Files when a founder explicitly asks for a document or uploads one.`,
+		sentences(
+			"# Day-0 founding flow\nPopulate Identity first (brand philosophy, tone of voice, and design tokens under identity/ through a staged session or exploration) so every downstream surface inherits a coherent foundation.",
+			has("propose_surface") &&
+				"Use propose_surface to activate 1 to 2 core product surfaces tailored to what the company is building (such as Website, Mobile App, or Product Studio) with activateImmediately: true on Day 0; for later sidebar additions after founding, omit activateImmediately so they arrive in proposed state for founder approval.",
+			has("start_surface_session") &&
+				"Immediately launch focused staged sessions or 2-to-3-variant explorations with start_surface_session (setting clear variantLabels and ownerLabel) so founders see real, toggleable directions in Changes right away.",
+		),
+		sentences(
+			"# Ongoing orchestration\nRead senses.surfaces in your context to watch active sessions, open changes, merge conflicts, and unpublished work across every surface.",
+			has("start_surface_session") &&
+				"Direct concrete improvements onto surfaces with start_surface_session, folding short rationale or analyses as Notes under QorperaOS/surfaces/<slug>/notes/ rather than loose markdown files or standalone report surfaces.",
+			has("manage_surface_automation") &&
+				"Use manage_surface_automation to create, update, pause, or delete recurring Scheduled Agents targeting specific surfaces.",
+			has("update_reading") &&
+				`Keep the company's concise living reading current in ${READING} with update_reading whenever reality shifts.`,
+			mailbox &&
+				`When the company has a name and no email address yet (check list_hooks), let a founder choose it on an address card: ${ADDRESS_CARD}`,
+		),
+		...(onboarding
+			? [
+					`\n# Starting on Day 0\nRead ${VISION} first to see what the founders wrote. Move immediately to populate Identity, activate 1 to 2 core product surfaces, and kick off initial staged explorations so the founders have tangible previewable work waiting in Changes. Send a brief, warm hello reflecting what you understood and what is already underway, asking at most one sharp question if something genuinely blocks the next step.`,
+				]
+			: []),
+	].join("\n\n");
+}
+
+function surfaceFirstCoFounderPlanning(has: (tool: string) => boolean): string {
+	return [
+		...(has("record_reflection")
+			? [
+					"When your context has updates, reflect on each platform change oldest first, adopt only what serves the company's Surfaces and vision, and record each decision with record_reflection.",
+				]
+			: []),
+		"Start from senses.surfaces (and senses.automations) in your context: check every surface's active sessions, open changes, merge conflicts, and unpublished changes.",
+		sentences(
+			"Unblock conflicted or stalled sessions, direct concrete follow-up work onto the relevant surface",
+			has("start_surface_session") && "with start_surface_session",
+			"attaching brief rationale under QorperaOS/surfaces/<slug>/notes/ only when needed.",
+		),
+		sentences(
+			has("manage_surface_automation") &&
+				"Review Scheduled Agents with manage_surface_automation, pausing or updating any that have outlived their purpose.",
+			has("update_reading") && `Refresh ${READING} with update_reading when company priorities or status shift.`,
+			has("good_will_list") &&
+				`From the 1st to the 4th of each month, check good_will_list for last month's unsorted payments and sort them${has("good_will_mark") ? " with good_will_mark" : ""}, then share once what counted.`,
+		),
+		"Write to the founders only when concrete previewable changes are ready or a real decision awaits them—never dump planning documents, status files, or org-chart proposals.",
+	].join("\n");
+}
+
+function surfaceFirstEmployeePlaybook(has: (tool: string) => boolean): string {
+	return [
+		`# Your role: Surface owner
+You own tangible outcomes on the Surfaces you serve. Every live-build surface projects its git repository under code/<owner>/<name>, and Studio/Identity surfaces project their folder roots directly from Company Files. Stage atomic, reviewable changes so founders can toggle them in Preview and approve selectively.`,
+		sentences(
+			"Never create loose strategy, planning, research, or report markdown documents unless a member explicitly asks for a document; attach concise supporting rationale as Notes under QorperaOS/surfaces/<slug>/notes/.",
+			has("start_surface_session") &&
+				"Use start_surface_session to launch focused work or 2-to-3-variant explorations on a surface.",
+			has("manage_surface_automation") && "Use manage_surface_automation for recurring surface upkeep.",
+		),
+	].join("\n\n");
 }
 
 export function cloudRuntimeHireBehavior(kind: CloudRuntimeAgentKind, situation?: CloudRuntimeRoleSituation): string {
 	const has = situation?.has ?? (() => true);
+	if (situation?.surfaceFirst === true) {
+		if (kind === "cofounder") return surfaceFirstCoFounderPlaybook(has, !situation.visionAgreed);
+		if (kind === "employee") return surfaceFirstEmployeePlaybook(has);
+		throw new Error("Unsupported runtime hire kind");
+	}
 	if (kind === "cofounder") {
 		const onboarding = !situation?.visionAgreed;
 		const mailbox = has("manage_hook") && has("list_hooks");
@@ -276,5 +356,8 @@ function cloudCoFounderPlanning(has: (tool: string) => boolean, visionAgreed: bo
 }
 
 export function cloudCoFounderPlanningRun(situation: CloudRuntimeRoleSituation): string {
+	if (situation.surfaceFirst === true) {
+		return `# Your planning run\n${surfaceFirstCoFounderPlanning(situation.has)}`;
+	}
 	return `# Your planning run\n${cloudCoFounderPlanning(situation.has, situation.visionAgreed)}`;
 }

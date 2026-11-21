@@ -600,4 +600,91 @@ describe("SurfacesStore", () => {
 		realtimeConnected = false;
 		store.dispose();
 	});
+
+	it("composes concurrent toggled changes alongside only the picked exploration variant", async () => {
+		const explorationId = "88888888-8888-4888-8888-888888888881";
+		const variantA = "33333333-3333-4333-8333-333333333311";
+		const variantB = "33333333-3333-4333-8333-333333333312";
+		const variantC = "33333333-3333-4333-8333-333333333313";
+		const changeA = "44444444-4444-4444-8444-444444444411";
+		const changeB = "44444444-4444-4444-8444-444444444412";
+		const changeC = "44444444-4444-4444-8444-444444444413";
+		const peerSession = "33333333-3333-4333-8333-333333333399";
+		const peerChange = "44444444-4444-4444-8444-444444444499";
+
+		const setPreviewSelection = vi.fn(async () => workspace([]).previewState);
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace(
+					[
+						session(["staged"], {
+							id: variantA,
+							explorationId,
+							explorationVariantLabel: "Light",
+							changes: [change(changeA, 1, "staged", { sessionId: variantA })],
+						}),
+						session(["staged"], {
+							id: variantB,
+							explorationId,
+							explorationVariantLabel: "Warm",
+							changes: [change(changeB, 1, "staged", { sessionId: variantB })],
+						}),
+						session(["staged"], {
+							id: variantC,
+							explorationId,
+							explorationVariantLabel: "Editorial",
+							changes: [change(changeC, 1, "staged", { sessionId: variantC })],
+						}),
+						session(["staged", "staged"], {
+							id: SESSION,
+							changes: [change(CHANGES[0], 1, "staged"), change(CHANGES[1], 2, "staged")],
+						}),
+						session(["staged"], {
+							id: peerSession,
+							changes: [change(peerChange, 1, "staged", { sessionId: peerSession })],
+						}),
+					],
+					{
+						explorations: [
+							{
+								id: explorationId,
+								surfaceId: SURFACE,
+								title: "Hero direction",
+								status: "open",
+								chosenSessionId: null,
+								variantSessionIds: [variantA, variantB, variantC],
+								createdAt: "2026-11-21T10:00:00.000Z",
+								resolvedAt: null,
+							},
+						],
+					},
+				),
+			),
+			setPreviewSelection,
+		});
+
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+
+		expect(store.activePreviewSessions(SURFACE).map((item) => item.id)).toEqual([variantA, SESSION, peerSession]);
+		expect(store.previewSelection(SURFACE)).toEqual({
+			toggledChangeIds: [CHANGES[0], CHANGES[1], peerChange],
+			explorationSessionId: variantA,
+		});
+
+		await store.pickVariant(SURFACE, explorationId, variantB);
+		expect(store.activePreviewSessions(SURFACE).map((item) => item.id)).toEqual([variantB, SESSION, peerSession]);
+		expect(setPreviewSelection).toHaveBeenLastCalledWith(SURFACE, {
+			toggledChangeIds: [CHANGES[0], CHANGES[1], peerChange],
+			explorationSessionId: variantB,
+		});
+
+		await store.toggleChange(SURFACE, CHANGES[1]);
+		expect(setPreviewSelection).toHaveBeenLastCalledWith(SURFACE, {
+			toggledChangeIds: [CHANGES[0], peerChange],
+			explorationSessionId: variantB,
+		});
+		store.dispose();
+	});
 });

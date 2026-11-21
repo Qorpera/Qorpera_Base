@@ -19,7 +19,9 @@ export interface SurfaceCodingTurnBinding {
 }
 
 export const SURFACE_STAGED_CODING_INSTRUCTIONS =
-	"This session is scoped to a Qorpera Surface. Your commits are staged for founder preview and selective approval rather than auto-landed on main. " +
+	"This session is scoped to a Qorpera Surface — a direct live projection of its codebase or Company Files folder. " +
+	"Founders preview multiple unmerged staged changes from concurrent sessions toggled on or off simultaneously in Preview before approving or landing any of them onto main. " +
+	"Keep each staged change atomic, self-contained, and conflict-minimizing: touch only the files needed for this deliverable and avoid unrequested sweeping refactors across shared files. " +
 	"For each cohesive user-visible deliverable you complete, commit cleanly on the current branch and call coding_record_change with a plain founder-facing title, short summary, and commit SHA before moving to the next change. " +
 	"When all requested deliverables are committed and verified, call coding_finish to stage the session as ready for review.";
 
@@ -28,6 +30,10 @@ export function buildSurfaceTurnBrief(binding: SurfaceCodingTurnBinding): string
 	const sections: string[] = [
 		`# Surface Context: ${binding.surfaceTitle} (${binding.surfaceSlug})`,
 		`Session ID: ${binding.sessionId}`,
+		"## Surface Projection & Parallel Preview\n" +
+			"This Surface projects its underlying codebase or Company Files folder directly into the live Preview. " +
+			"Founders can toggle multiple unmerged staged changes from concurrent sessions on and off together in Preview before approving or publishing them. " +
+			"Keep each staged change atomic, self-contained, and conflict-minimizing — touch only the files required for your deliverable and avoid unnecessary edits to unrelated shared files.",
 	];
 
 	const identity = binding.identityContext;

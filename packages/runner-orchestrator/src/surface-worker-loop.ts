@@ -1,3 +1,5 @@
+import type { SurfaceChangeStatus, SurfaceSessionState, SurfaceSourceKind } from "@qorpera/contracts";
+
 export interface SurfaceMachinePlacementHint {
 	readonly strategy: "reuse_machine" | "spawn_overflow_machine";
 	readonly machineId: string | null;
@@ -22,6 +24,19 @@ export interface ClaimedSurfaceSessionJob {
 	readonly placement: SurfaceMachinePlacementHint;
 }
 
+export interface ClaimedSurfacePreviewExploration {
+	readonly sessionId: string;
+	readonly baseSha: string;
+	readonly headSha: string;
+}
+
+export interface ClaimedSurfaceChangeRange {
+	readonly changeId: string;
+	readonly parentSha: string;
+	readonly headSha: string;
+	readonly title: string;
+}
+
 export interface ClaimedSurfacePreviewJob {
 	readonly previewId: string;
 	readonly surfaceId: string;
@@ -30,6 +45,25 @@ export interface ClaimedSurfacePreviewJob {
 	readonly baseSha: string;
 	readonly selectedChangeIds: readonly string[];
 	readonly repositoryKey: string | null;
+	readonly exploration?: ClaimedSurfacePreviewExploration | null;
+	readonly changes?: readonly ClaimedSurfaceChangeRange[];
+}
+
+export interface ClaimedSurfaceApprovedChange {
+	readonly changeId: string;
+	readonly kind: string;
+	readonly parentSha: string | null;
+	readonly headSha: string | null;
+	readonly title: string;
+	readonly summary: string;
+	readonly patchManifest: unknown;
+	readonly affectedPaths: readonly string[];
+}
+
+export interface ClaimedSurfacePeerSession {
+	readonly sessionId: string;
+	readonly workerId: string;
+	readonly remainingChanges: readonly ClaimedSurfaceChangeRange[];
 }
 
 export interface ClaimedSurfaceMergeJob {
@@ -38,9 +72,22 @@ export interface ClaimedSurfaceMergeJob {
 	readonly surfaceId: string;
 	readonly sessionId: string | null;
 	readonly profileId: string;
+	readonly sourceKind?: SurfaceSourceKind;
 	readonly repositoryKey: string | null;
 	readonly folderRoot: string | null;
+	readonly autoPublish?: boolean;
+	readonly expectMainSha?: string | null;
+	readonly sessionWorkerId?: string | null;
+	readonly sessionState?: SurfaceSessionState | null;
+	readonly sessionHasActiveChat?: boolean;
 	readonly payload: Readonly<Record<string, unknown>>;
+	readonly allSessionChangeStatuses?: readonly {
+		readonly changeId: string;
+		readonly status: SurfaceChangeStatus;
+	}[];
+	readonly approvedChanges?: readonly ClaimedSurfaceApprovedChange[];
+	readonly siblingRemainingChanges?: readonly ClaimedSurfaceChangeRange[];
+	readonly peerSessions?: readonly ClaimedSurfacePeerSession[];
 }
 
 export interface ClaimedSurfacePublishJob {

@@ -341,9 +341,8 @@ export class SurfaceStudioView {
 		const store = this.#options.store;
 		const state = store.state;
 		if (state.mode === "live") return [];
-		const workspace = store.workspace(this.#options.surface.id);
 		const ordered: StudioPatchChange[] = [];
-		for (const session of workspace?.activeSessions ?? []) {
+		for (const session of store.activePreviewSessions(this.#options.surface.id)) {
 			for (const change of session.changes) {
 				if (change.kind !== "folder_patch" || !isOpenChange(change) || !store.isChangeShown(change.id)) continue;
 				const ops = this.#options.patches?.[change.id] ?? state.studioPatches[change.id];
