@@ -769,14 +769,17 @@ export function mountApplication(
 
 	async function ensureCompany(profileId: string): Promise<CompanyController | undefined> {
 		if (company?.profile.profileId === profileId) return company;
-		if (pendingCompany?.profileId === profileId && pendingCompany.revision === routeRevision)
-			return pendingCompany.promise;
+		if (pendingCompany?.profileId === profileId && pendingCompany.revision === routeRevision) {
+			if (!profiles.some((item) => item.profileId === profileId)) return pendingCompany.promise;
+			pendingCompany = undefined;
+		}
 		teardownCompany();
 		const current = captureRoute();
 		const currentHub = hub;
 		if (!profiles.find((item) => item.profileId === profileId) && currentHub.store.get().connectionLost)
 			return undefined;
 		let settled = false;
+		let clearOnFinish = true;
 		let pending: { profileId: string; revision: number; promise: Promise<CompanyController | undefined> } | undefined;
 		const promise = (async () => {
 			try {
@@ -787,7 +790,10 @@ export function mountApplication(
 					profile = currentHub.store.get().profiles.find((item) => item.profileId === profileId);
 				}
 				const userId = auth.userId;
-				if (!current() || !profile || !userId) return undefined;
+				if (!current() || !profile || !userId) {
+					if (current() && userId && !currentHub.store.get().connectionLost) clearOnFinish = false;
+					return undefined;
+				}
 				const controller: CompanyController = new CompanyController(
 					api,
 					profile,
@@ -934,10 +940,10 @@ export function mountApplication(
 				return controller;
 			} finally {
 				settled = true;
-				if (pending && pendingCompany === pending) pendingCompany = undefined;
+				if (clearOnFinish && pending && pendingCompany === pending) pendingCompany = undefined;
 			}
 		})();
-		if (!settled) {
+		if (!settled || !clearOnFinish) {
 			pending = { profileId, revision: routeRevision, promise };
 			pendingCompany = pending;
 		}
@@ -1167,7 +1173,7 @@ export function mountApplication(
 			rail.hidden = true;
 			renderTopbar(topbar, shellContext(authState.user, route), undefined);
 			const hubState = hub.store.get();
-			const transient = !hubState.loaded || hubState.connectionLost || Boolean(hubState.error);
+			const transient = hubState.connectionLost || (!hubState.loaded && !hubState.error);
 			replace(
 				main,
 				h(
@@ -1177,8 +1183,14 @@ export function mountApplication(
 						transient ? "neutral" : "danger",
 						transient
 							? t("Can't reach Qorpera. Trying again…")
-							: t("This company is not available to your account."),
+							: (hubState.error ?? t("This company is not available to your account.")),
 					),
+					hubState.error && !transient
+						? button(t("Try again"), () => {
+								pendingCompany = undefined;
+								void hub.refresh();
+							})
+						: null,
 					h("a", { href: "#/" }, t("Back to companies")),
 				),
 			);

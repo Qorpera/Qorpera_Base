@@ -2311,4 +2311,41 @@ describe("the rail's line under an idle agent's name in the app", () => {
 		await draw();
 		expect(f.api.getTeam).toHaveBeenCalledWith(profileA.profileId);
 	});
+
+	it("does not loop listProfiles when a company route is genuinely unavailable, and offers retry on non-connection errors", async () => {
+		const f = mounted(`#/c/${id(77)}`);
+		await draw();
+		expect(f.root.querySelector("main")?.textContent).toContain("This company is not available to your account.");
+		const callsAfterUnavailable = vi.mocked(f.api.listProfiles).mock.calls.length;
+		await vi.advanceTimersByTimeAsync(15_000);
+		await draw();
+		expect(vi.mocked(f.api.listProfiles).mock.calls.length).toBe(callsAfterUnavailable);
+		dispose?.();
+		dispose = undefined;
+
+		history.replaceState(null, "", `/#/c/${profileA.profileId}/file`);
+		const g = fixture();
+		let failList = true;
+		vi.mocked(g.api.listProfiles).mockImplementation(async () => {
+			if (failList) throw new Error("Database busy");
+			return [profileA];
+		});
+		const root = document.createElement("div");
+		document.body.append(root);
+		dispose = mountApplication(root, g.cloud, g.api);
+		await draw();
+		expect(root.textContent).toContain("Database busy");
+		expect(root.textContent).not.toContain("Can't reach Qorpera. Trying again…");
+		const retry = [...root.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Try again");
+		expect(retry).toBeTruthy();
+		const callsBeforeRetry = vi.mocked(g.api.listProfiles).mock.calls.length;
+		await vi.advanceTimersByTimeAsync(15_000);
+		await draw();
+		expect(vi.mocked(g.api.listProfiles).mock.calls.length).toBe(callsBeforeRetry);
+
+		failList = false;
+		retry!.click();
+		await draw();
+		expect(g.api.getTeam).toHaveBeenCalledWith(profileA.profileId);
+	});
 });

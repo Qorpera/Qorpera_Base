@@ -279,13 +279,18 @@ describe("a place in drawn Markdown, found in its source", () => {
 	it("decodes common HTML entities without DOMParser and caches rare entities across renders", () => {
 		const parseSpy = vi.spyOn(DOMParser.prototype, "parseFromString");
 		try {
-			const common = markdown("A &amp; B &lt; C &gt; D &quot;E&quot; &#39;F&#39; &apos;G&apos; &nbsp;H");
-			expect(common.textContent).toBe("A & B < C > D \"E\" 'F' 'G' \u00a0H");
+			const common = markdown(
+				"A &amp; &AMP; B &lt; &LT; C &gt; &GT; D &quot;E&quot; &QUOT; &#39;F&#39; &apos;G&apos; &nbsp;H",
+			);
+			expect(common.textContent).toBe("A & & B < < C > > D \"E\" \" 'F' 'G' \u00a0H");
 			expect(parseSpy).not.toHaveBeenCalled();
+
+			const invalidCase = markdown("&NBSP; and &APOS; and &Lt;");
+			expect(invalidCase.textContent).toBe("&NBSP; and &APOS; and \u226a");
 
 			const rare = markdown("&sect; and &para; then &sect; and &para;");
 			expect(rare.textContent).toBe("§ and ¶ then § and ¶");
-			expect(parseSpy).toHaveBeenCalledTimes(2);
+			expect(parseSpy).toHaveBeenCalledTimes(5);
 		} finally {
 			parseSpy.mockRestore();
 		}

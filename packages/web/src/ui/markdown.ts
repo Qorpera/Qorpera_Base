@@ -7,9 +7,13 @@ import { t } from "./preferences.ts";
 
 const COMMON_ENTITIES: Record<string, string> = {
 	"&amp;": "&",
+	"&AMP;": "&",
 	"&lt;": "<",
+	"&LT;": "<",
 	"&gt;": ">",
+	"&GT;": ">",
 	"&quot;": '"',
+	"&QUOT;": '"',
 	"&#39;": "'",
 	"&#x27;": "'",
 	"&apos;": "'",
@@ -24,7 +28,7 @@ let entityParser: DOMParser | undefined;
 function decodeEntities(value: string): string {
 	if (!value.includes("&")) return value;
 	return value.replace(/&(?:#\d+|#x[\da-f]+|[a-z][a-z\d]*);/gi, (entity) => {
-		const fast = COMMON_ENTITIES[entity] ?? COMMON_ENTITIES[entity.toLowerCase()];
+		const fast = COMMON_ENTITIES[entity];
 		if (fast !== undefined) return fast;
 		const cached = entityCache.get(entity);
 		if (cached !== undefined) return cached;
