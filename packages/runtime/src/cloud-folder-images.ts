@@ -311,9 +311,10 @@ function encodePng(rgba: Uint8Array, width: number, height: number): Buffer {
 	const stride = width * channels;
 	const filtered = Buffer.allocUnsafe((stride + 1) * height);
 	const zeroRow = new Uint8Array(stride);
+	const rowA = opaque ? new Uint8Array(stride) : zeroRow;
+	const rowB = opaque ? new Uint8Array(stride) : zeroRow;
 	let previous: Uint8Array = zeroRow;
-	let current = opaque ? new Uint8Array(stride) : zeroRow;
-	let scratchRow = opaque ? new Uint8Array(stride) : zeroRow;
+	let current: Uint8Array = rowA;
 	const subBuf = new Uint8Array(stride);
 	const upBuf = new Uint8Array(stride);
 	const avgBuf = new Uint8Array(stride);
@@ -419,14 +420,8 @@ function encodePng(rgba: Uint8Array, width: number, height: number): Buffer {
 		const offset = y * (stride + 1);
 		filtered[offset] = best;
 		filtered.set(bestBuf, offset + 1);
-		if (opaque) {
-			const next = previous === zeroRow ? scratchRow : previous;
-			previous = current;
-			current = next;
-			scratchRow = next;
-		} else {
-			previous = current;
-		}
+		previous = current;
+		if (opaque) current = current === rowA ? rowB : rowA;
 	}
 	const header = Buffer.alloc(13);
 	header.writeUInt32BE(width, 0);
