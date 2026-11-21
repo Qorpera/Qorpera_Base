@@ -802,6 +802,7 @@ export class FolderService {
 					storageRoot: options.objects.root,
 					...(options.searchIndexMiB === undefined ? {} : { indexMiB: options.searchIndexMiB }),
 					...(options.searchThreads === undefined ? {} : { threads: options.searchThreads }),
+					budgetWaitMs: SEARCH_WAIT_MS,
 					log: this.#log,
 				})
 			: undefined;

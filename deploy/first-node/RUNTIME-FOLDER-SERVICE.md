@@ -412,12 +412,14 @@ service, so the execution host stays small:
     Wave-2), we chose an off-event-loop pure-Rust Thompson NFA + trigram search worker inside `qorpera-folder` so
     patterns run on every node with **no change to `qorpera-folder-service.service`** (no experimental V8 flag). When
     `/opt/qorpera-folder-service/qorpera-folder` is present, `folder-service` lazily spawns a persistent
-    zero-credential child process (`qorpera-folder search-worker --storage-root <dir> --index-mib 384 --threads 4`)
+    zero-credential child process (`qorpera-folder search-worker --storage-root <dir> --index-mib 512 --threads 4`)
     over 4-byte length-prefixed JSON frames on stdin/stdout and advertises `regex: true` in `hello`.
     - **Content-addressed index & linear-time regex.** All worker caches are budgeted inside `--index-mib` (default
-      `384 MiB`: `65%` / `249.6 MiB` arena-packed `CompactTree` synced views at ~136 bytes/path, holding all
-      `SEARCH_PATHS = 1,500,000` paths simultaneously; `25%` / `96 MiB` sharded LRU trigram filters; `10%` / `38.4 MiB`
-      verified manifests/chunks), keyed by `(profile_id, manifest_sha256)`. On cache miss, objects are opened under
+      `512 MiB`: `65%` / `332.8 MiB` (`349.0 MB`) arena-packed `CompactTree` synced views at `112 + path byte length`
+      bytes/entry — ~136 bytes/path at 24-byte benchmark paths, ~192 bytes/path at 80-byte company-repo paths — holding
+      all `SEARCH_PATHS = 1,500,000` paths simultaneously plus ~61 MB of transient patch-copy headroom for average paths
+      up to ~80 bytes; `25%` / `128.0 MiB` sharded LRU trigram filters; `10%` / `51.2 MiB` verified manifests/chunks),
+      keyed by `(profile_id, manifest_sha256)`. On cache miss, objects are opened under
       `--storage-root/<profile_id>/<sha256>` with `O_NOFOLLOW` and verified against SHA-256 and manifest metadata
       before indexing; verified immutable objects share index entries across parallel views with zero cross-tenant
       leakage. Warm trigram skips check the company's profile directory once per search (catching an unmounted share
@@ -434,10 +436,13 @@ service, so the execution host stays small:
       yielding `O(N + K)` merge in Node and a single-pass `O(N + K)` linear merge in Rust (measured under `--jitless`:
       at 100,000 paths, 1-delta `16.0 ms` / `3.1 ms` lag and 512-delta `28.2 ms` / `13.0 ms` lag; at 1,000,000 paths,
       1-delta `115.3 ms` / `18.2 ms` lag and 512-delta `132.7 ms` / `18.9 ms` lag), falling back to a cooperative full
-      sync on delta rollover, idle eviction under custom small budgets, or worker restart. Node owns snapshot lifetime
-      and enforces the `65%` tree budget via idle-only LRU eviction (`inUse === 0`) plus FIFO back-pressure when all
-      cached views are actively searching, so neither active nor mid-sync snapshots are ever silently evicted; the
-      worker's reader thread resolves each snapshot `Arc` synchronously before a later `dropTree` frame can remove it.
+      sync on delta rollover, idle eviction when total tree bytes plus transient patch copies exceed the budget, or
+      worker restart. Node owns snapshot lifetime, verifies worker generation across every yield and frame send so
+      restarts never leak or install stale-generation trees, and enforces the `65%` tree budget via idle-only LRU
+      eviction (`inUse === 0`) plus FIFO back-pressure bounded by `SEARCH_WAIT_MS` (20 s, failing with `UNAVAILABLE` /
+      `SEARCH_BUSY` on timeout and draining any smaller waiters behind a timed-out head), so neither active nor mid-sync
+      snapshots are ever silently evicted; the worker's reader thread resolves each snapshot `Arc` synchronously before
+      a later `dropTree` frame can remove it.
     - **JS fallback.** When `folderProgram` is unset (legacy unit tests), `folder-service` falls back to in-process
       `search.ts` and `regex.ts` (`SEARCH_RUNNING = 4`, advertising `regex: true` only if node started with
       `--enable-experimental-regexp-engine`).
@@ -479,12 +484,14 @@ service, so the execution host stays small:
   company take about 1 GiB of the service's memory beside its object cache (`cacheMiB`, 1 GiB by default). The
   Node-side `SyncedTreeSnapshot` holds only references to existing `TreeEntry` objects and builds `SearchRead` entries
   on demand for the `<= 4,000` returned read ranges (~12 MiB pointer overhead at `SEARCH_PATHS = 1,500,000`). The
-  persistent Rust search worker budgets all three caches inside `--index-mib 384` (`249.6 MiB` arena-packed
-  `CompactTree` synced views at ~136 bytes/path — enough to hold all `1,500,000` `SEARCH_PATHS` at once — `96.0 MiB`
-  trigram filters, and `38.4 MiB` verified manifests/chunks; measured on `node02` at `47.3 MiB` `VmRSS` after indexing
-  10,000 files, `19.0 MiB` `VmRSS` for a 100,000-path synced tree, and `130.5 MiB` `VmRSS` for a 1,000,000-path synced
-  tree, returning to `130.7 MiB` after a 512-delta `patchTree` + old-snapshot drop), keeping combined Node (~2.15 GiB)
-  + Rust (~0.42 GiB) worst-case memory (~2.57 GiB) comfortably inside the unit's 3 GiB `MemoryMax`.
+  persistent Rust search worker budgets all three caches inside `--index-mib 512` (`332.8 MiB` / `349.0 MB`
+  arena-packed `CompactTree` synced views at `112 + path byte length` bytes/entry — holding all `1,500,000`
+  `SEARCH_PATHS` plus ~61 MB transient patch-copy headroom for average paths up to ~80 bytes, or falling back to
+  idle-only LRU eviction + bounded FIFO back-pressure above that — `128.0 MiB` trigram filters, and `51.2 MiB` verified
+  manifests/chunks; measured on `node02` at `47.3 MiB` `VmRSS` after indexing 10,000 files, `19.0 MiB` `VmRSS` for a
+  100,000-path synced tree with ~24-byte paths, and `130.5 MiB` `VmRSS` for a 1,000,000-path synced tree, returning to
+  `130.7 MiB` after a 512-delta `patchTree` + old-snapshot drop), keeping combined Node (~2.15 GiB) + Rust (~0.53 GiB)
+  worst-case memory (~2.68 GiB) comfortably inside the unit's 3 GiB `MemoryMax`.
 - **Bounds for search in every run (keyholes S4).** The unit's `MemoryMax` is 3 GiB.
   - The trees of the node's run views hold at most 1,500,000 paths in all (`SEARCH_PATHS`, about 1 GiB), counting the
     trees being listed for them page by page (a first listing, and a listing again, which holds the old tree and the

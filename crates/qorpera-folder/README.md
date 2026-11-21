@@ -56,11 +56,11 @@ The company folder inside a Qorpera machine, and the node side of its link.
   off-event-loop content-addressed trigram + linear-time Thompson NFA regex search worker spawned lazily by
   `folder-service` (`src/search.rs`, `src/re.rs`). Reads 4-byte big-endian length-prefixed JSON requests (`syncTree`,
   `patchTree`, `dropTree`, `search`) on stdin, verifies objects under `--storage-root` with `O_NOFOLLOW` and SHA-256,
-  budgets arena-packed `CompactTree` synced views (`65%`, managed by caller lifetime/back-pressure with single-pass
-  `O(N + K)` `patchTree` merges), sharded LRU trigram filters (`25%`), and verified manifests/chunks (`10%`) inside
-  `--index-mib` (default 384, range 1..2048; keyed by `(profile_id, manifest_sha256)`), executes concurrent searches
-  across `--threads` worker threads (default 4, range 1..32), preserves exact `reads` provenance on warm trigram skips,
-  and exits 0 cleanly on stdin EOF.
+  budgets arena-packed `CompactTree` synced views (`65%`, `112 + path length` bytes/entry, managed by caller
+  lifetime and `SEARCH_WAIT_MS`-bounded FIFO back-pressure with single-pass `O(N + K)` `patchTree` merges), sharded
+  LRU trigram filters (`25%`), and verified manifests/chunks (`10%`) inside `--index-mib` (default 512, range 1..2048;
+  keyed by `(profile_id, manifest_sha256)`), executes concurrent searches across `--threads` worker threads (default 4,
+  range 1..32), preserves exact `reads` provenance on warm trigram skips, and exits 0 cleanly on stdin EOF.
 
 Design, protocol and rollout: `deploy/first-node/RUNTIME-FOLDER-SERVICE.md`. The node side of the protocol is
 `packages/object-gateway/src/folder-service/`.

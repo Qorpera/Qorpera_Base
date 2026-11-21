@@ -2,15 +2,18 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import type { CoreReceipt } from "./core.ts";
 import { ObjectUnavailableError } from "./objects.ts";
-import type { SearchCursor, SearchRequest } from "./protocol.ts";
+import { ErrorCode, ProtocolError, type SearchCursor, type SearchRequest } from "./protocol.ts";
 import { SearchPatternError } from "./regex.ts";
 import { SEARCH_SLICE_MS, type SearchAnswer, type SearchFile, type SearchHit, type SearchRead } from "./search.ts";
 import { byteOrder, type TreeDelta, type TreeEntry, type ViewTree } from "./view-tree.ts";
 
-const DEFAULT_INDEX_MIB = 384;
+const DEFAULT_INDEX_MIB = 512;
 const DEFAULT_THREADS = 4;
+const DEFAULT_BUDGET_WAIT_MS = 20_000;
 const TREE_BUDGET_RATIO = 0.65;
 const COMPACT_ENTRY_BYTES = 112;
+const ESTIMATE_ENTRY_BYTES = COMPACT_ENTRY_BYTES + 80;
+const SEARCH_BUSY = "SEARCH_BUSY: the node's folder search is busy; try again shortly";
 const MAX_FRAME_BYTES = 64 * 1024 * 1024;
 const SYNC_CHUNK_ENTRIES = 2_048;
 const DELTA_COPY_CHUNK = 4_096;
@@ -146,6 +149,7 @@ interface SyncedTreeSnapshot {
 export interface AcquireSnapshotOptions {
 	readonly missedSnapshotId?: number;
 	readonly serving?: () => void;
+	readonly waitDeadline?: number;
 }
 
 export interface NativeSearchWorkerOptions {
@@ -153,6 +157,7 @@ export interface NativeSearchWorkerOptions {
 	readonly storageRoot: string;
 	readonly indexMiB?: number;
 	readonly threads?: number;
+	readonly budgetWaitMs?: number;
 	readonly log?: (line: string) => void;
 }
 
@@ -206,8 +211,14 @@ function entryCompactBytes(entry: TreeEntry): number {
 	return COMPACT_ENTRY_BYTES + Buffer.byteLength(entry.path);
 }
 
-function estimateTreeBytes(treeSize: number): number {
-	return Math.max(1_024, (treeSize + 1) * 160);
+function estimateTreeBytes(treeSize: number, base?: SyncedTreeSnapshot): number {
+	if (base && base.entries.length > 0) {
+		const avg = base.bytes / base.entries.length;
+		const kept = Math.min(treeSize, base.entries.length);
+		const added = Math.max(0, treeSize - base.entries.length);
+		return Math.max(1_024, Math.ceil(kept * avg + added * ESTIMATE_ENTRY_BYTES + ESTIMATE_ENTRY_BYTES));
+	}
+	return Math.max(1_024, (treeSize + 1) * ESTIMATE_ENTRY_BYTES);
 }
 
 function toWorkerEntry(idx: number, entry: TreeEntry): WorkerEntry {
@@ -359,6 +370,7 @@ export class NativeSearchWorker {
 	readonly #indexMiB: number;
 	readonly #treeBudgetBytes: number;
 	readonly #threads: number;
+	readonly #budgetWaitMs: number;
 	readonly #log: ((line: string) => void) | undefined;
 	#proc: ChildProcessWithoutNullStreams | undefined;
 	#generation = 0;
@@ -385,6 +397,7 @@ export class NativeSearchWorker {
 		this.#indexMiB = options.indexMiB ?? DEFAULT_INDEX_MIB;
 		this.#treeBudgetBytes = Math.max(64 * 1024, Math.floor(this.#indexMiB * 1024 * 1024 * TREE_BUDGET_RATIO));
 		this.#threads = options.threads ?? DEFAULT_THREADS;
+		this.#budgetWaitMs = Math.max(1, options.budgetWaitMs ?? DEFAULT_BUDGET_WAIT_MS);
 		this.#log = options.log;
 		this.#finalizer = new FinalizationRegistry(({ generation, snapshotId }) => {
 			if (this.#closed || !this.#proc || this.#generation !== generation) return;
@@ -410,9 +423,14 @@ export class NativeSearchWorker {
 		return this.#treeBudgetBytes;
 	}
 
+	get budgetWaitMs(): number {
+		return this.#budgetWaitMs;
+	}
+
 	async acquireSnapshot(tree: ViewTree, options: AcquireSnapshotOptions = {}): Promise<SyncedTreeSnapshot> {
 		if (this.#closed) throw new ObjectUnavailableError("Search worker is closed");
 		const { missedSnapshotId, serving } = options;
+		const waitDeadline = options.waitDeadline ?? performance.now() + this.#budgetWaitMs;
 		for (let round = 0; round < 4; round++) {
 			this.#ensureRunning();
 			const generation = this.#generation;
@@ -447,7 +465,7 @@ export class NativeSearchWorker {
 				}
 				continue;
 			}
-			const promise = this.#syncOrPatch(tree, generation, current, missedSnapshotId, serving);
+			const promise = this.#syncOrPatch(tree, generation, current, missedSnapshotId, serving, waitDeadline);
 			this.#inFlight.set(tree, promise);
 			try {
 				const synced = await promise;
@@ -483,8 +501,8 @@ export class NativeSearchWorker {
 		}
 	}
 
-	async search(frame: Omit<SearchFrame, "op" | "id">): Promise<WorkerOk> {
-		const resp = await this.#sendFrame({ op: "search", ...frame });
+	async search(frame: Omit<SearchFrame, "op" | "id">, generation?: number): Promise<WorkerOk> {
+		const resp = await this.#sendFrame({ op: "search", ...frame }, generation);
 		if (resp.ok) return resp.ok;
 		throw new ObjectUnavailableError("Search worker sent an empty response");
 	}
@@ -494,6 +512,7 @@ export class NativeSearchWorker {
 		this.#closed = true;
 		const proc = this.#proc;
 		this.#proc = undefined;
+		this.#generation++;
 		this.#chunks = [];
 		this.#buffered = 0;
 		this.#expectedLen = 0;
@@ -586,6 +605,7 @@ export class NativeSearchWorker {
 		needed: number,
 		excludeSnapshotId: number | undefined,
 		serving: (() => void) | undefined,
+		waitDeadline: number,
 	): Promise<() => void> {
 		if (this.#closed) throw new ObjectUnavailableError("Search worker is closed");
 		serving?.();
@@ -596,8 +616,31 @@ export class NativeSearchWorker {
 				return this.#makeReservationReleaser(needed);
 			}
 		}
+		const remainingMs = Math.ceil(waitDeadline - performance.now());
+		if (remainingMs <= 0) throw new ProtocolError(ErrorCode.unavailable, SEARCH_BUSY);
 		const release = await new Promise<() => void>((resolve, reject) => {
-			this.#budgetWaiters.push({ needed, excludeSnapshotId, wake: resolve, reject });
+			const waiter: BudgetWaiter = {
+				needed,
+				excludeSnapshotId,
+				wake: (releaser) => {
+					clearTimeout(timer);
+					resolve(releaser);
+				},
+				reject: (error) => {
+					clearTimeout(timer);
+					reject(error);
+				},
+			};
+			const timer = setTimeout(() => {
+				const at = this.#budgetWaiters.indexOf(waiter);
+				if (at >= 0) {
+					this.#budgetWaiters.splice(at, 1);
+					this.#drainBudgetWaiters();
+				}
+				reject(new ProtocolError(ErrorCode.unavailable, SEARCH_BUSY));
+			}, remainingMs);
+			timer.unref();
+			this.#budgetWaiters.push(waiter);
 		});
 		try {
 			if (this.#closed) throw new ObjectUnavailableError("Search worker is closed");
@@ -615,6 +658,7 @@ export class NativeSearchWorker {
 		base: SyncedTreeSnapshot | undefined,
 		missedSnapshotId: number | undefined,
 		serving: (() => void) | undefined,
+		waitDeadline: number,
 	): Promise<SyncedTreeSnapshot> {
 		const canTryPatch =
 			base !== undefined &&
@@ -624,13 +668,16 @@ export class NativeSearchWorker {
 			base.revision >= 0 &&
 			base.revision !== tree.revision;
 
-		const estimatedBytes = estimateTreeBytes(tree.size);
+		const estimatedBytes = estimateTreeBytes(tree.size, canTryPatch ? base : undefined);
 		const releaseReservation = await this.#reserveBudget(
 			estimatedBytes,
 			canTryPatch ? base.snapshotId : undefined,
 			serving,
+			waitDeadline,
 		);
 		try {
+			if (this.#closed) throw new ObjectUnavailableError("Search worker is closed");
+			this.#ensureRunning();
 			const liveGen = this.#generation;
 			if (liveGen !== generation) {
 				return await this.#fullSync(tree, liveGen, undefined, serving);
@@ -643,14 +690,21 @@ export class NativeSearchWorker {
 					let patched: SyncedTreeSnapshot | undefined;
 					try {
 						const applied = await applyDeltasAsync(base.entries, base.bytes, deltas, serving);
+						if (this.#closed) throw new ObjectUnavailableError("Search worker is closed");
+						if (!this.#proc || this.#generation !== generation) throw new MissingTreeError();
 						const snapshotId = this.#nextSnapshotId++;
-						await this.#sendFrame({
-							op: "patchTree",
-							baseSnapshotId: base.snapshotId,
-							snapshotId,
-							upserts: applied.upserts,
-							removes: applied.removes,
-						});
+						await this.#sendFrame(
+							{
+								op: "patchTree",
+								baseSnapshotId: base.snapshotId,
+								snapshotId,
+								upserts: applied.upserts,
+								removes: applied.removes,
+							},
+							generation,
+						);
+						if (this.#closed) throw new ObjectUnavailableError("Search worker is closed");
+						if (!this.#proc || this.#generation !== generation) throw new MissingTreeError();
 						patched = {
 							snapshotId,
 							generation,
@@ -665,6 +719,8 @@ export class NativeSearchWorker {
 						};
 					} catch (error) {
 						if (!(error instanceof MissingTreeError)) throw error;
+						if (this.#closed) throw new ObjectUnavailableError("Search worker is closed");
+						if (!this.#proc || this.#generation !== generation) throw error;
 					} finally {
 						base.inUse--;
 					}
@@ -675,7 +731,14 @@ export class NativeSearchWorker {
 					if (base.retired && base.inUse === 0 && !base.dropped) this.#dropSnapshot(base);
 				}
 			}
-			return await this.#fullSync(tree, generation, base && !base.dropped ? base : undefined, serving);
+			if (this.#closed) throw new ObjectUnavailableError("Search worker is closed");
+			if (!this.#proc || this.#generation !== generation) throw new MissingTreeError();
+			return await this.#fullSync(
+				tree,
+				generation,
+				base && !base.dropped && base.generation === generation ? base : undefined,
+				serving,
+			);
 		} finally {
 			releaseReservation();
 		}
@@ -703,13 +766,16 @@ export class NativeSearchWorker {
 				walked++;
 				if (chunk.length > SYNC_CHUNK_ENTRIES) {
 					const toSend = chunk.splice(0, SYNC_CHUNK_ENTRIES);
-					await this.#sendFrame({
-						op: "syncTree",
-						snapshotId,
-						append: !firstChunk,
-						complete: false,
-						entries: toSend,
-					});
+					await this.#sendFrame(
+						{
+							op: "syncTree",
+							snapshotId,
+							append: !firstChunk,
+							complete: false,
+							entries: toSend,
+						},
+						generation,
+					);
 					firstChunk = false;
 					serving?.();
 					await nextTurn();
@@ -720,13 +786,16 @@ export class NativeSearchWorker {
 					turnAt = performance.now();
 				}
 			}
-			await this.#sendFrame({
-				op: "syncTree",
-				snapshotId,
-				append: !firstChunk,
-				complete: true,
-				entries: chunk,
-			});
+			await this.#sendFrame(
+				{
+					op: "syncTree",
+					snapshotId,
+					append: !firstChunk,
+					complete: true,
+					entries: chunk,
+				},
+				generation,
+			);
 			firstChunk = false;
 		} catch (error) {
 			if (!firstChunk && !this.#closed && this.#proc && this.#generation === generation) {
@@ -743,16 +812,21 @@ export class NativeSearchWorker {
 			const endRevision = tree.revision;
 			const deltas = tree.changesSince(startRevision);
 			if (deltas !== undefined && deltas.length > 0 && !deltas.some((d) => hasOverlongName(d.path))) {
-				const patched = await applyDeltasAsync(entries, finalBytes, deltas, serving);
-				const patchedId = this.#nextSnapshotId++;
 				try {
-					await this.#sendFrame({
-						op: "patchTree",
-						baseSnapshotId: snapshotId,
-						snapshotId: patchedId,
-						upserts: patched.upserts,
-						removes: patched.removes,
-					});
+					const patched = await applyDeltasAsync(entries, finalBytes, deltas, serving);
+					if (this.#closed) throw new ObjectUnavailableError("Search worker is closed");
+					if (!this.#proc || this.#generation !== generation) throw new MissingTreeError();
+					const patchedId = this.#nextSnapshotId++;
+					await this.#sendFrame(
+						{
+							op: "patchTree",
+							baseSnapshotId: snapshotId,
+							snapshotId: patchedId,
+							upserts: patched.upserts,
+							removes: patched.removes,
+						},
+						generation,
+					);
 					if (!this.#closed && this.#proc && this.#generation === generation) {
 						this.#sendDropTree(snapshotId);
 					}
@@ -771,6 +845,8 @@ export class NativeSearchWorker {
 			}
 		}
 
+		if (this.#closed) throw new ObjectUnavailableError("Search worker is closed");
+		if (!this.#proc || this.#generation !== generation) throw new MissingTreeError();
 		const next: SyncedTreeSnapshot = {
 			snapshotId: finalId,
 			generation,
@@ -821,8 +897,12 @@ export class NativeSearchWorker {
 
 	#sendFrame(
 		request: Omit<SearchFrame, "id"> | Omit<SyncTreeFrame, "id"> | Omit<PatchTreeFrame, "id">,
+		expectedGeneration?: number,
 	): Promise<WorkerResponse> {
 		if (this.#closed) return Promise.reject(new ObjectUnavailableError("Search worker is closed"));
+		if (expectedGeneration !== undefined && (!this.#proc || this.#generation !== expectedGeneration)) {
+			return Promise.reject(new MissingTreeError());
+		}
 		const proc = this.#ensureRunning();
 		const id = this.#nextId++;
 		const payload = Buffer.from(JSON.stringify({ id, ...request }), "utf8");
@@ -945,6 +1025,7 @@ export class NativeSearchWorker {
 	#failProc(proc: ChildProcessWithoutNullStreams, error: Error): void {
 		if (this.#proc !== proc) return;
 		this.#proc = undefined;
+		this.#generation++;
 		this.#chunks = [];
 		this.#buffered = 0;
 		this.#expectedLen = 0;
@@ -1012,9 +1093,11 @@ export async function searchViewNative(
 	const links = source.links ?? false;
 	const sliceMs = source.sliceMs ?? SEARCH_SLICE_MS;
 	const deadline = source.now() + sliceMs;
+	const waitDeadline = performance.now() + worker.budgetWaitMs;
 
 	let activeSnapshot: SyncedTreeSnapshot | undefined = await worker.acquireSnapshot(source.tree, {
 		serving: source.serving,
+		waitDeadline,
 	});
 	source.serving?.();
 	let profileId: string | null = source.cachedProfile?.() ?? null;
@@ -1023,24 +1106,27 @@ export async function searchViewNative(
 		for (let attempt = 0; attempt < 3; attempt++) {
 			const snapshot = activeSnapshot;
 			try {
-				const ok = await worker.search({
-					snapshotId: snapshot.snapshotId,
-					profileId,
-					version: request.version,
-					query: request.query,
-					regex: useRegex,
-					path: request.path,
-					glob: request.glob,
-					namesOnly: request.namesOnly,
-					filesOnly,
-					caseSensitive: request.caseSensitive,
-					context,
-					links,
-					after: request.after,
-					sliceMs: Math.max(0, Math.ceil(deadline - source.now())),
-					...(source.longestLine === undefined ? {} : { longestLine: source.longestLine }),
-					...(source.pieceBytes === undefined ? {} : { pieceBytes: source.pieceBytes }),
-				});
+				const ok = await worker.search(
+					{
+						snapshotId: snapshot.snapshotId,
+						profileId,
+						version: request.version,
+						query: request.query,
+						regex: useRegex,
+						path: request.path,
+						glob: request.glob,
+						namesOnly: request.namesOnly,
+						filesOnly,
+						caseSensitive: request.caseSensitive,
+						context,
+						links,
+						after: request.after,
+						sliceMs: Math.max(0, Math.ceil(deadline - source.now())),
+						...(source.longestLine === undefined ? {} : { longestLine: source.longestLine }),
+						...(source.pieceBytes === undefined ? {} : { pieceBytes: source.pieceBytes }),
+					},
+					snapshot.generation,
+				);
 				source.serving?.();
 				for (const line of ok.logs) source.log?.(line);
 				const reads = expandReadRanges(snapshot.entries, ok.readRanges);
@@ -1071,6 +1157,7 @@ export async function searchViewNative(
 					activeSnapshot = await worker.acquireSnapshot(source.tree, {
 						missedSnapshotId,
 						serving: source.serving,
+						waitDeadline,
 					});
 					source.serving?.();
 					continue;

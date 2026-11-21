@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CoreEntry } from "../src/folder-service/core.ts";
 import { MountGrants } from "../src/folder-service/mounts.ts";
 import { NasObjects } from "../src/folder-service/objects.ts";
@@ -812,5 +812,185 @@ describe.skipIf(!program)("native Rust search-worker E2E", () => {
 		);
 		expect(finalNative).toEqual(finalJs);
 		expect(finalNative.hits).toHaveLength(13);
+	});
+
+	it("recovers without leaking stale-generation snapshots when the worker restarts mid-patch", async () => {
+		const root = await makeTempDir();
+		const sharedObj = await storeFile(root, "mod/shared.ts", "export const base_item = 1;\n", 1, 4096);
+		const otherObj = await storeFile(root, "other/marker.ts", "export const OTHER_RESPAWN_OK = 1;\n", 2, 4096);
+		const patchedObj = await storeFile(root, "mod/target.ts", "export const MID_PATCH_RESPAWN_OK = 1;\n", 3, 4096);
+		const worker = new NativeSearchWorker({
+			folderProgram: program!,
+			storageRoot: root,
+			indexMiB: 16,
+			threads: 2,
+			log: () => {},
+		});
+		cleanup.push(() => worker.close());
+
+		const entriesA: CoreEntry[] = [folder("mod", 10)];
+		for (let i = 0; i < 200; i++) {
+			entriesA.push({
+				...sharedObj,
+				path: `mod/f_${String(i).padStart(4, "0")}.ts`,
+				version: v(100 + i),
+			});
+		}
+		const treeA = makeTree(entriesA);
+		const treeOther = makeTree([folder("other", 20), otherObj]);
+
+		const initialA = await searchViewNative(
+			worker,
+			{ tree: treeA, links: true, resolveProfile: async () => PROFILE, now: Date.now },
+			makeRequest({ query: "base_item", filesOnly: true }),
+		);
+		expect(initialA.files).toHaveLength(200);
+		const pid1 = worker.pid!;
+		expect(pid1).toBeGreaterThan(0);
+
+		for (let k = 0; k < 80; k++) {
+			treeA.put({
+				...sharedObj,
+				path: `mod/patch_${String(k).padStart(3, "0")}.ts`,
+				version: v(2_000 + k),
+			});
+		}
+		treeA.put(patchedObj);
+
+		const realNow = performance.now.bind(performance);
+		let fakeClock = realNow();
+		const nowSpy = vi.spyOn(performance, "now").mockImplementation(() => {
+			fakeClock += 15;
+			return fakeClock;
+		});
+		cleanup.push(() => nowSpy.mockRestore());
+
+		let servingCalls = 0;
+		let killed = false;
+		let respawnedPid = 0;
+		let respawnDone = false;
+		let respawnPromise: Promise<void> | undefined;
+
+		const patchedResult = await searchViewNative(
+			worker,
+			{
+				tree: treeA,
+				links: true,
+				resolveProfile: async () => PROFILE,
+				now: Date.now,
+				serving: () => {
+					servingCalls++;
+					if (servingCalls === 2 && !killed) {
+						killed = true;
+						process.kill(pid1, "SIGKILL");
+						respawnPromise = (async () => {
+							await waitForExit(pid1);
+							const otherAns = await searchViewNative(
+								worker,
+								{ tree: treeOther, links: true, resolveProfile: async () => PROFILE, now: Date.now },
+								makeRequest({ query: "OTHER_RESPAWN_OK" }),
+							);
+							expect(otherAns.hits.map((h) => h.path)).toEqual(["other/marker.ts"]);
+							respawnedPid = worker.pid!;
+							respawnDone = true;
+						})();
+					} else if (killed && !respawnDone) {
+						const until = realNow() + 2;
+						while (realNow() < until) {}
+					}
+				},
+			},
+			makeRequest({ query: "MID_PATCH_RESPAWN_OK" }),
+		);
+		nowSpy.mockRestore();
+		if (respawnPromise) await respawnPromise;
+
+		expect(killed).toBe(true);
+		expect(respawnDone).toBe(true);
+		expect(respawnedPid).toBeGreaterThan(0);
+		expect(respawnedPid).not.toBe(pid1);
+		expect(worker.pid).toBe(respawnedPid);
+		expect(patchedResult.hits.map((h) => h.path)).toEqual(["mod/target.ts"]);
+
+		const compactBytes = (tree: ViewTree): number => {
+			let total = 64;
+			for (const entry of tree.walk("")) total += 112 + Buffer.byteLength(entry.path);
+			return total;
+		};
+		expect(worker.liveTreeBytes).toBe(compactBytes(treeA) + compactBytes(treeOther));
+	});
+
+	it("bounds tree budget waits with SEARCH_BUSY when a pinned view starves queued syncs and drains smaller waiters behind it", async () => {
+		const root = await makeTempDir();
+		const sharedObj = await storeFile(root, "d00/shared.ts", "export const shared_val = 1;\n", 1, 4096);
+		const sentinelB = await storeFile(root, "d00/sentinel_b.ts", "export const BUDGET_WAIT_B = 1;\n", 2, 4096);
+		const sentinelC = await storeFile(root, "d00/sentinel_c.ts", "export const BUDGET_WAIT_C = 1;\n", 3, 4096);
+		const worker = new NativeSearchWorker({
+			folderProgram: program!,
+			storageRoot: root,
+			indexMiB: 1,
+			threads: 2,
+			budgetWaitMs: 120,
+			log: () => {},
+		});
+		cleanup.push(() => worker.close());
+
+		const makeSizedTree = (prefix: string, count: number, extra: CoreEntry): ViewTree => {
+			const entries: CoreEntry[] = [folder("d00", 10), extra];
+			for (let i = 0; i < count; i++) {
+				entries.push({
+					...sharedObj,
+					path: `d00/${prefix}_${String(i).padStart(4, "0")}.ts`,
+					version: v(10_000 + i),
+				});
+			}
+			return makeTree(entries);
+		};
+
+		const treeA = makeSizedTree("a", 2_500, sharedObj);
+		const treeB = makeSizedTree("b", 2_500, sentinelB);
+		const treeC = makeSizedTree("c", 50, sentinelC);
+
+		const snapA = await worker.acquireSnapshot(treeA);
+		let releasedA = false;
+		cleanup.push(() => {
+			if (!releasedA) {
+				releasedA = true;
+				worker.releaseSnapshot(snapA);
+			}
+		});
+
+		const settledB = searchViewNative(
+			worker,
+			{ tree: treeB, links: true, resolveProfile: async () => PROFILE, now: Date.now },
+			makeRequest({ query: "BUDGET_WAIT_B" }),
+		).then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		const waitC = searchViewNative(
+			worker,
+			{ tree: treeC, links: true, resolveProfile: async () => PROFILE, now: Date.now },
+			makeRequest({ query: "BUDGET_WAIT_C" }),
+		);
+
+		const caughtB = await settledB;
+		expect(caughtB).toBeInstanceOf(ProtocolError);
+		expect((caughtB as ProtocolError).code).toBe(ErrorCode.unavailable);
+		expect((caughtB as ProtocolError).message).toMatch(/^SEARCH_BUSY: /);
+
+		const answerC = await waitC;
+		expect(answerC.hits.map((h) => h.path)).toEqual(["d00/sentinel_c.ts"]);
+
+		releasedA = true;
+		worker.releaseSnapshot(snapA);
+
+		const answerB = await searchViewNative(
+			worker,
+			{ tree: treeB, links: true, resolveProfile: async () => PROFILE, now: Date.now },
+			makeRequest({ query: "BUDGET_WAIT_B" }),
+		);
+		expect(answerB.hits.map((h) => h.path)).toEqual(["d00/sentinel_b.ts"]);
 	});
 });
