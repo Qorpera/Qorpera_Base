@@ -231,6 +231,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "A member who adds a Gemini API key in Settings, AI subscriptions can pick Gemini 4 Neon in a conversation's Model menu (with Low, Medium, High and Extra high effort) or set it as their default for chats. Your attended conversation turns run directly on Gemini 4 Neon with your company files, machines, workers, apps, routines and search, while background workers, routines and coding sessions stay on Codex or Claude Code. Members can set a monthly USD spend cap; reaching it pauses Gemini turns and notifies them rather than switching logins.",
 	},
 	{
+		id: "data-in-coding-sessions",
+		kind: "capability",
+		date: "2026-11-21",
+		title: "Company databases in coding sessions",
+		text: "A coding session can now reach the company's databases with the command data: data describe, data query (a named question, or --sql with one select), data change (a named change) and data apply, each printing JSON with no database credentials on disk. It acts as the session's own company folder (what both the coding agent and the member may read under /company/data/), with :viewer set to that member unless a call gives viewer=<member id>, and records every read into the session's provenance. A held destructive step still waits for a member's yes through data_apply.",
+	},
+	{
 		id: "parallel-code-checks",
 		kind: "capability",
 		date: "2026-11-21",

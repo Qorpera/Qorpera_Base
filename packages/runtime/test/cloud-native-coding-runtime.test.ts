@@ -304,6 +304,8 @@ describe("the coding composition of a native turn", () => {
 					"Never commit test output or logs as proof; the record says which checks passed. Write tests with a change that can be tested. Keep a README that says how to install, test, build and start the project.",
 					"the landing merges your commit with it, and the checks run on that merge; if the two conflict, the turn fails and says so",
 					"The secret values this session was given, when it was given any, are environment variables of every command, under the names the company saved them with: use them for what the work needs",
+					"Commands in this VM can reach the company's databases under /company/data/ with the data CLI",
+					"data describe [<database>], data apply <database>, data query <database> <question> [name=value ...] (or --sql '<one select>'), and data change <database> <change> [name=value ...] print JSON",
 					// 3 November 2026: Codex's read-only sandbox notice made a session ask for "a writable coding environment"
 					// before it tried one edit. The notice is about the harness's own tools; the repository VM is writable.
 					"The read-only sandbox your harness describes covers only its own built-in tools, which this session does not use; it says nothing about the repository VM.",

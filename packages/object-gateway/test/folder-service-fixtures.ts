@@ -905,7 +905,7 @@ export class FakeCore implements FolderCore {
 		await this.dataPassGate;
 		const view = this.#check(actor, environmentId);
 		if (this.dataPassFailure) throw this.dataPassFailure;
-		if (view?.kind !== "test_machine")
+		if (view?.kind !== "test_machine" && view?.kind !== "coding_session")
 			throw new CoreRefusal("invalid", "A machine's data pass is for a company machine's view");
 		const files = this.#visible(actor).filter((e) => e.kind === "file");
 		const names = files.flatMap((e) => /^data\/([a-z][a-z0-9_]{0,39})\/database\.toml$/.exec(e.path)?.[1] ?? []);
