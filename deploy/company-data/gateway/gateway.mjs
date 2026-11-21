@@ -360,6 +360,7 @@ export function parsePublicConfig(toml) {
 
 export class DataChangeNotifier {
 	#triggers = new Map();
+	#byEnv = new Map();
 	#timers = new Map();
 	#lastFired = new Map();
 	#pending = new Map();
@@ -368,12 +369,27 @@ export class DataChangeNotifier {
 		if (typeof id !== "string" || !id || typeof onWake !== "function") throw new Error("Invalid data-change trigger");
 		this.unregister(id);
 		const tableSet = Array.isArray(tables) && tables.length > 0 ? new Set(tables.map((t) => String(t).toLowerCase())) : null;
-		this.#triggers.set(id, { id, environmentId, database, tables: tableSet, minIntervalMs: Math.max(10, minIntervalMs), onWake });
+		const trigger = { id, environmentId, database, tables: tableSet, minIntervalMs: Math.max(10, minIntervalMs), onWake };
+		this.#triggers.set(id, trigger);
+		let envSet = this.#byEnv.get(environmentId);
+		if (!envSet) {
+			envSet = new Set();
+			this.#byEnv.set(environmentId, envSet);
+		}
+		envSet.add(trigger);
 		return () => this.unregister(id);
 	}
 
 	unregister(id) {
-		this.#triggers.delete(id);
+		const trigger = this.#triggers.get(id);
+		if (trigger) {
+			this.#triggers.delete(id);
+			const envSet = this.#byEnv.get(trigger.environmentId);
+			if (envSet) {
+				envSet.delete(trigger);
+				if (envSet.size === 0) this.#byEnv.delete(trigger.environmentId);
+			}
+		}
 		const timer = this.#timers.get(id);
 		if (timer) clearTimeout(timer);
 		this.#timers.delete(id);
@@ -383,9 +399,10 @@ export class DataChangeNotifier {
 
 	notify(environmentId, notice) {
 		if (notice?.ddl) return;
-		const now = Date.now();
-		for (const trigger of this.#triggers.values()) {
-			if (trigger.environmentId !== environmentId) continue;
+		const envSet = this.#byEnv.get(environmentId);
+		if (!envSet || envSet.size === 0) return;
+		const now = performance.now();
+		for (const trigger of [...envSet]) {
 			if (notice !== null && notice.schema !== trigger.database) continue;
 			if (notice !== null && notice.table !== null && trigger.tables && !trigger.tables.has(notice.table.toLowerCase())) continue;
 			const tableName = notice?.table ?? "*";
@@ -395,7 +412,8 @@ export class DataChangeNotifier {
 				this.#pending.set(trigger.id, batch);
 			}
 			batch.add(tableName);
-			const elapsed = now - (this.#lastFired.get(trigger.id) ?? 0);
+			const last = this.#lastFired.get(trigger.id);
+			const elapsed = last === undefined ? trigger.minIntervalMs : Math.max(0, now - last);
 			if (elapsed >= trigger.minIntervalMs) {
 				this.#flush(trigger);
 			} else if (!this.#timers.has(trigger.id)) {
@@ -413,7 +431,7 @@ export class DataChangeNotifier {
 		const tables = [...(this.#pending.get(trigger.id) ?? [])];
 		this.#pending.delete(trigger.id);
 		if (tables.length === 0) return;
-		this.#lastFired.set(trigger.id, Date.now());
+		this.#lastFired.set(trigger.id, performance.now());
 		Promise.resolve(trigger.onWake({ id: trigger.id, environmentId: trigger.environmentId, database: trigger.database, tables, at: isoNow() })).catch(
 			() => undefined,
 		);
@@ -424,6 +442,7 @@ export class DataChangeNotifier {
 		this.#timers.clear();
 		this.#pending.clear();
 		this.#triggers.clear();
+		this.#byEnv.clear();
 		this.#lastFired.clear();
 	}
 }
@@ -3598,8 +3617,9 @@ export class Gateway {
 
 	async registerDataTrigger({ id, environmentId, database: name, tables = null, minIntervalMs = 60_000, onWake }) {
 		if (typeof name !== "string" || !DATABASE_NAME.test(name)) refuse(400, "Name a database");
+		if (this.#closed) refuse(503, "The data store did not answer");
 		const database = companyDatabase(environmentId);
-		this.#triggerStops.get(id)?.();
+		this.#triggerStops.get(id)?.stop();
 		const unregister = this.#notifier.register({ id, environmentId, database: name, tables, minIntervalMs, onWake });
 		let stopped = false;
 		let listening = null;
@@ -3620,6 +3640,7 @@ export class Gateway {
 					.catch(() => {
 						if (listening === next) {
 							listening = null;
+							next.stop();
 							scheduleReconnect();
 						}
 					});
@@ -3644,6 +3665,7 @@ export class Gateway {
 			return sub;
 		};
 
+		let entry;
 		const stop = () => {
 			if (stopped) return;
 			stopped = true;
@@ -3654,10 +3676,11 @@ export class Gateway {
 			unregister();
 			listening?.stop();
 			listening = null;
-			if (this.#triggerStops.get(id) === stop) this.#triggerStops.delete(id);
+			if (this.#triggerStops.get(id) === entry) this.#triggerStops.delete(id);
 		};
+		entry = { database, schema: name, stop };
 
-		this.#triggerStops.set(id, stop);
+		this.#triggerStops.set(id, entry);
 		const initial = attach();
 		try {
 			await initial.ready;
@@ -3669,7 +3692,7 @@ export class Gateway {
 	}
 
 	unregisterDataTrigger(id) {
-		this.#triggerStops.get(id)?.();
+		this.#triggerStops.get(id)?.stop();
 	}
 
 	async provisionDirectLogin(environmentId, name, { access = "read-write", connectionLimit = 4 } = {}) {
@@ -3786,14 +3809,16 @@ export class Gateway {
 	}
 
 	#takeRateToken(key, limitPerMinute) {
-		const now = Date.now();
+		const now = performance.now();
 		let bucket = this.#rateBuckets.get(key);
 		if (!bucket) {
 			if (this.#rateBuckets.size >= 10_000) this.#rateBuckets.delete(this.#rateBuckets.keys().next().value);
 			bucket = { tokens: limitPerMinute, updatedAt: now };
 			this.#rateBuckets.set(key, bucket);
 		} else {
-			const refill = ((now - bucket.updatedAt) / 60_000) * limitPerMinute;
+			this.#rateBuckets.delete(key);
+			this.#rateBuckets.set(key, bucket);
+			const refill = (Math.max(0, now - bucket.updatedAt) / 60_000) * limitPerMinute;
 			bucket.tokens = Math.min(limitPerMinute, bucket.tokens + refill);
 			bucket.updatedAt = now;
 		}
@@ -3882,6 +3907,9 @@ export class Gateway {
 	}
 
 	async evictDatabase(database, name, n = null) {
+		for (const entry of [...this.#triggerStops.values()]) {
+			if (entry.database === database && entry.schema === name) entry.stop();
+		}
 		const folderKey = `${database}/${name}`;
 		const knownN = n ?? this.#folders.get(folderKey) ?? null;
 		this.#folders.delete(folderKey);
@@ -3895,13 +3923,18 @@ export class Gateway {
 	}
 
 	async evictCompany(database) {
+		for (const entry of [...this.#triggerStops.values()]) {
+			if (entry.database === database) entry.stop();
+		}
 		const listener = this.#listeners.get(database);
 		if (listener) {
 			listener.stopped = true;
 			this.#listeners.delete(database);
 			listener.cache.clear();
 			listener.viewerScoped.clear();
+			const waiting = [...listener.heard];
 			listener.heard.clear();
+			for (const tell of waiting) tell(null);
 			await listener.client?.end().catch(() => undefined);
 		}
 		for (const [key, entry] of this.#watchInFlight) {
@@ -4215,7 +4248,7 @@ export class Gateway {
 
 	async close() {
 		this.#closed = true;
-		for (const stop of [...this.#triggerStops.values()]) stop();
+		for (const entry of [...this.#triggerStops.values()]) entry.stop();
 		this.#triggerStops.clear();
 		this.#notifier.close();
 		this.#rateBuckets.clear();
@@ -4261,11 +4294,13 @@ export function startWatcher(gateway, { everyMs = 10_000, failed = () => undefin
 	return () => clearInterval(timer);
 }
 
+const BODY_READ_TIMEOUT_MS = 15_000;
+
 /** One request to `handle(method, path, headers, read, gone)`: JSON in, JSON out. */
-function answering(handle) {
+function answering(handle, bodyTimeoutMs = BODY_READ_TIMEOUT_MS) {
 	return async (request, response) => {
 		const gone = new AbortController();
-		response.on("close", () => {
+		response.once("close", () => {
 			if (!response.writableEnded) gone.abort();
 		});
 		const read = (maximum) =>
@@ -4273,25 +4308,41 @@ function answering(handle) {
 				const declared = Number(request.headers["content-length"]);
 				if (!Number.isSafeInteger(declared) || declared < 0) return reject(new Refusal(411, "Say the body's length"));
 				if (declared > maximum) return reject(new Refusal(413, "The body is too large"));
+				if (declared === 0 && request.complete) return resolve("");
 				const parts = [];
 				let bytes = 0;
 				let settled = false;
 				const finish = (fn, value) => {
 					if (settled) return;
 					settled = true;
+					clearTimeout(timer);
+					request.off("data", onData);
+					request.off("end", onEnd);
+					request.off("error", onFailed);
+					request.off("aborted", onFailed);
+					request.off("close", onFailed);
 					fn(value);
 				};
-				request.on("data", (part) => {
+				const onData = (part) => {
 					bytes += part.length;
 					if (bytes > maximum) {
+						request.pause();
 						finish(reject, new Refusal(413, "The body is too large"));
-						request.destroy();
 					} else parts.push(part);
-				});
-				request.on("end", () => finish(resolve, parts.length === 0 ? "" : parts.length === 1 ? parts[0].toString("utf8") : Buffer.concat(parts).toString("utf8")));
-				request.on("error", () => finish(reject, new Refusal(400, "The body did not arrive")));
-				request.on("aborted", () => finish(reject, new Refusal(400, "The body did not arrive")));
-				request.on("close", () => finish(reject, new Refusal(400, "The body did not arrive")));
+				};
+				const onEnd = () =>
+					finish(resolve, parts.length === 0 ? "" : parts.length === 1 ? parts[0].toString("utf8") : Buffer.concat(parts).toString("utf8"));
+				const onFailed = () => finish(reject, new Refusal(400, "The body did not arrive"));
+				const timer = setTimeout(() => {
+					request.pause();
+					finish(reject, new Refusal(408, "The body took too long"));
+				}, bodyTimeoutMs);
+				timer.unref?.();
+				request.on("data", onData);
+				request.on("end", onEnd);
+				request.on("error", onFailed);
+				request.on("aborted", onFailed);
+				request.on("close", onFailed);
 			});
 		let status = 200;
 		let value;
@@ -4309,11 +4360,24 @@ function answering(handle) {
 			status = refusal.status;
 			value = { error: refusal.message, ...refusal.extra };
 		}
-		if (gone.signal.aborted) return;
+		if (gone.signal.aborted) {
+			request.destroy();
+			return;
+		}
 		const text = value && typeof value === "object" && typeof value[RAW_JSON] === "string" ? value[RAW_JSON] : JSON.stringify(value);
 		const payload = Buffer.from(text, "utf8");
-		response.writeHead(status, { "content-type": "application/json", "content-length": payload.length, "cache-control": "no-store" });
-		response.end(payload);
+		const hasDeclaredBody =
+			(request.headers["content-length"] !== undefined && request.headers["content-length"] !== "0") ||
+			request.headers["transfer-encoding"] !== undefined;
+		const closeUnread = hasDeclaredBody && !request.complete;
+		response.writeHead(status, {
+			"content-type": "application/json",
+			"content-length": payload.length,
+			"cache-control": "no-store",
+			...(closeUnread ? { connection: "close" } : {}),
+		});
+		if (closeUnread) response.end(payload, () => request.destroy());
+		else response.end(payload);
 	};
 }
 
@@ -4328,17 +4392,17 @@ function listenServer(server, port, host) {
 	});
 }
 
-export function serve(gateway, { host = "127.0.0.1", port = 0 } = {}) {
-	const server = http.createServer(answering((method, path, headers, read, gone) => gateway.handle(method, path, headers, read, gone)));
+export function serve(gateway, { host = "127.0.0.1", port = 0, bodyTimeoutMs = BODY_READ_TIMEOUT_MS } = {}) {
+	const server = http.createServer(answering((method, path, headers, read, gone) => gateway.handle(method, path, headers, read, gone), bodyTimeoutMs));
 	server.keepAliveTimeout = 65_000;
 	server.headersTimeout = 70_000;
 	return listenServer(server, port, host);
 }
 
-export function serveRuns(gateway, { host = "127.0.0.1", port = 0, cert = null, key = null } = {}) {
+export function serveRuns(gateway, { host = "127.0.0.1", port = 0, cert = null, key = null, bodyTimeoutMs = BODY_READ_TIMEOUT_MS } = {}) {
 	if ((cert === null) !== (key === null)) throw new Error("The run door needs both a certificate and its key, or neither");
 	if (cert === null && !["127.0.0.1", "::1", "localhost"].includes(host)) throw new Error("The run door off loopback needs TLS");
-	const handler = answering((method, path, headers, read, gone) => gateway.handleRun(method, path, headers, read, gone));
+	const handler = answering((method, path, headers, read, gone) => gateway.handleRun(method, path, headers, read, gone), bodyTimeoutMs);
 	const server = cert === null ? http.createServer(handler) : https.createServer({ cert, key, minVersion: "TLSv1.2" }, handler);
 	server.keepAliveTimeout = 65_000;
 	server.headersTimeout = 70_000;
