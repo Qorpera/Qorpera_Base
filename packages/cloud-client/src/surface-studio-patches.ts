@@ -1,14 +1,6 @@
-import type { SurfacePreviewConflict } from "@qorpera/contracts";
+import type { StudioPatchChange, StudioPatchOp, SurfacePreviewConflict } from "@qorpera/contracts";
 
-export type StudioPatchOp =
-	| { readonly op: "write_text"; readonly path: string; readonly content: string }
-	| { readonly op: "delete"; readonly path: string }
-	| { readonly op: "merge_json"; readonly path: string; readonly patch: Readonly<Record<string, unknown>> };
-
-export interface StudioPatchChange {
-	readonly changeId: string;
-	readonly ops: readonly StudioPatchOp[];
-}
+export type { StudioPatchChange, StudioPatchOp };
 
 export type StudioPreviewComposition =
 	| {

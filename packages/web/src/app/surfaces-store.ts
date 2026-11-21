@@ -5,10 +5,12 @@ import {
 	type StartSurfaceSessionOptions,
 } from "@qorpera/cloud-client/surfaces";
 import {
+	type CrossSurfaceHandoffRequest,
 	countOpenSurfaceChanges,
 	nextSurfaceSessionLifecycleState,
 	OPEN_SURFACE_CHANGE_STATUSES,
 	RUNNING_SURFACE_SESSION_STATES,
+	type StudioPatchOp,
 	type SurfaceAutomationSummary,
 	type SurfaceChangeUnit,
 	type SurfaceExplorationSet,
@@ -25,6 +27,8 @@ export type SurfacesClient = Pick<
 	CloudSurfacesClient,
 	| "listSurfaces"
 	| "getSurfaceWorkspace"
+	| "approveProposedSurface"
+	| "archiveSurface"
 	| "setSurfaceAutoPublish"
 	| "startSurfaceSession"
 	| "replySurfaceSession"
@@ -35,6 +39,7 @@ export type SurfacesClient = Pick<
 	| "undoSurfaceChange"
 	| "chooseExploration"
 	| "reconcileChanges"
+	| "spawnCrossSurfaceSession"
 	| "setPreviewSelection"
 	| "publishSurface"
 	| "listAutomations"
@@ -73,9 +78,11 @@ export interface SurfacesState {
 	readonly migration?: SurfaceMigrationChecklist;
 	readonly migrationDismissed: boolean;
 	readonly drawer?: { readonly surfaceId: string; readonly sessionId: string };
+	readonly highlight?: { readonly surfaceId: string; readonly sessionId: string };
 	readonly mode: SurfacePreviewMode;
 	readonly device: SurfaceDevice;
 	readonly hiddenChanges: Readonly<Record<string, true>>;
+	readonly studioPatches: Readonly<Record<string, readonly StudioPatchOp[]>>;
 	readonly variantPick: Readonly<Record<string, string>>;
 	readonly historyOpen: boolean;
 	readonly collapsed: Readonly<Record<string, true>>;
@@ -277,6 +284,12 @@ export function surfaceBySlug(state: Pick<SurfacesState, "surfaces">, slug: stri
 	return state.surfaces.find((surface) => surface.slug === slug);
 }
 
+export function productBuildSurfaces(state: Pick<SurfacesState, "surfaces">, excludeId?: string): SurfaceSummary[] {
+	return state.surfaces.filter(
+		(surface) => surface.status === "active" && surface.archetype === "live_build" && surface.id !== excludeId,
+	);
+}
+
 function replaceSession(
 	workspace: SurfaceWorkspace,
 	session: SurfaceSession,
@@ -331,6 +344,7 @@ export interface SurfacesStoreOptions {
 	readonly migration: () => SurfaceMigrationInput;
 	readonly signal: AbortSignal;
 	readonly unavailableMessage: string;
+	readonly onNavigateSurface?: (slug: string) => void;
 }
 
 export class SurfacesStore {
@@ -340,6 +354,7 @@ export class SurfacesStore {
 	#pollTimer: ReturnType<typeof setInterval> | undefined;
 	#undoSeq = 0;
 	#noteSeq = 0;
+	#localSeq = 0;
 	#loaded: Promise<void> | undefined;
 
 	constructor(options: SurfacesStoreOptions) {
@@ -353,6 +368,7 @@ export class SurfacesStore {
 			mode: "preview",
 			device: "desktop",
 			hiddenChanges: {},
+			studioPatches: {},
 			variantPick: {},
 			historyOpen: false,
 			collapsed: {},
@@ -525,6 +541,14 @@ export class SurfacesStore {
 		this.store.set({ error: undefined });
 	}
 
+	clearHighlight(): void {
+		if (this.state.highlight) this.store.set({ highlight: undefined });
+	}
+
+	setStudioPatch(changeId: string, ops: readonly StudioPatchOp[]): void {
+		this.store.set((state) => ({ studioPatches: { ...state.studioPatches, [changeId]: ops } }));
+	}
+
 	#sessionAt(sessionId: string): { workspace: SurfaceWorkspace; session: SurfaceSession } | undefined {
 		for (const workspace of Object.values(this.state.workspaces)) {
 			const session =
@@ -623,6 +647,141 @@ export class SurfacesStore {
 		void this.refreshWorkspace(surfaceId);
 		void this.refreshSurfaces();
 		return reconciled;
+	}
+
+	async approveProposedSurface(surfaceId: string): Promise<SurfaceSummary | undefined> {
+		if (!this.#options.client || isLocalSurfaceId(surfaceId)) {
+			const existing = this.state.surfaces.find((surface) => surface.id === surfaceId);
+			if (!existing) return undefined;
+			const activated: SurfaceSummary = { ...existing, status: "active" };
+			this.#putSurface(activated);
+			return activated;
+		}
+		const updated = await this.#run(`surface:${surfaceId}`, (client) => client.approveProposedSurface(surfaceId));
+		if (!updated) return undefined;
+		this.#putSurface(updated);
+		return updated;
+	}
+
+	async archiveSurface(surfaceId: string): Promise<boolean> {
+		const remove = () => {
+			this.store.set((state) => {
+				const workspaces = { ...state.workspaces };
+				delete workspaces[surfaceId];
+				return {
+					surfaces: state.surfaces.filter((surface) => surface.id !== surfaceId),
+					workspaces,
+					...(state.drawer?.surfaceId === surfaceId ? { drawer: undefined } : {}),
+					...(state.highlight?.surfaceId === surfaceId ? { highlight: undefined } : {}),
+				};
+			});
+		};
+		if (!this.#options.client || isLocalSurfaceId(surfaceId)) {
+			remove();
+			return true;
+		}
+		const archived = await this.#run(`surface:${surfaceId}`, (client) => client.archiveSurface(surfaceId));
+		if (!archived) return false;
+		remove();
+		return true;
+	}
+
+	async spawnCrossSurfaceSession(request: CrossSurfaceHandoffRequest): Promise<SurfaceSession | undefined> {
+		const prompt = request.prompt.trim();
+		const targetSlug = request.targetSurfaceSlug.trim();
+		if (!prompt || !targetSlug) return undefined;
+		const targetSurface = surfaceBySlug(this.state, targetSlug);
+		const sourceSurface = this.state.surfaces.find((item) => item.id === request.sourceSurfaceId);
+		const placeAndNavigate = (session: SurfaceSession, slug: string): SurfaceSession => {
+			const existing =
+				this.workspace(session.surfaceId) ?? (targetSurface ? localWorkspace(targetSurface) : undefined);
+			if (existing) {
+				const next = replaceSession(existing, session, "open");
+				const nextSurface: SurfaceSummary = {
+					...existing.surface,
+					activeSessionCount: next.activeSessions.length,
+					runningSessionCount: next.activeSessions.filter(isRunningSession).length,
+				};
+				this.#putWorkspace({ ...next, surface: nextSurface });
+			}
+			this.store.set((state) => {
+				const collapsed = { ...state.collapsed };
+				delete collapsed[session.id];
+				return { collapsed, highlight: { surfaceId: session.surfaceId, sessionId: session.id } };
+			});
+			this.#options.onNavigateSurface?.(slug);
+			return session;
+		};
+		const createLocal = (): SurfaceSession | undefined => {
+			if (!targetSurface) {
+				this.store.set({ error: this.#options.unavailableMessage });
+				return undefined;
+			}
+			const now = new Date().toISOString();
+			const id = `local-session-${++this.#localSeq}`;
+			const originLabel = sourceSurface ? t("From {source}", { source: sourceSurface.title }) : null;
+			const local: SurfaceSession = {
+				id,
+				surfaceId: targetSurface.id,
+				workerId: null,
+				title: request.title?.trim() || originLabel || prompt.slice(0, 60),
+				prompt,
+				state: "queued",
+				originKind: "cross_surface",
+				originLabel,
+				explorationId: null,
+				explorationVariantLabel: null,
+				hasActiveChat: false,
+				question: null,
+				changes: [],
+				messages: [
+					{
+						id: `local-message-${++this.#localSeq}`,
+						sessionId: id,
+						authorKind: "member",
+						text: prompt,
+						changeId: null,
+						createdAt: now,
+					},
+				],
+				openChangeCount: 0,
+				createdAt: now,
+				updatedAt: now,
+				closedAt: null,
+			};
+			return placeAndNavigate(local, targetSurface.slug);
+		};
+		const client = this.#options.client;
+		if (!client || isLocalSurfaceId(request.sourceSurfaceId) || (targetSurface && isLocalSurfaceId(targetSurface.id)))
+			return createLocal();
+		const busyKey = `handoff:${request.sourceSurfaceId}:${targetSlug}`;
+		if (this.state.busy[busyKey]) return undefined;
+		this.store.set((state) => ({ busy: { ...state.busy, [busyKey]: true }, error: undefined }));
+		try {
+			const created = await client.spawnCrossSurfaceSession({
+				...request,
+				prompt,
+				targetSurfaceSlug: targetSlug,
+			});
+			if (this.#options.signal.aborted) return undefined;
+			placeAndNavigate(created, targetSurface?.slug ?? targetSlug);
+			void this.refreshWorkspace(created.surfaceId);
+			void this.refreshSurfaces();
+			return created;
+		} catch (error) {
+			if (this.#options.signal.aborted) return undefined;
+			if (isMissingSurfaceRpcError(error) && targetSurface) return createLocal();
+			this.store.set({
+				error: isMissingSurfaceRpcError(error) ? this.#options.unavailableMessage : describe(error),
+			});
+			return undefined;
+		} finally {
+			this.store.set((state) => {
+				const busy = { ...state.busy };
+				delete busy[busyKey];
+				return { busy };
+			});
+		}
 	}
 
 	#applySession(session: SurfaceSession, outcome: ApprovalOutcome): void {
@@ -845,8 +1004,9 @@ export class SurfacesStore {
 	#putSurface(surface: SurfaceSummary): void {
 		this.store.set((state) => {
 			const workspace = state.workspaces[surface.id];
+			const nextSurfaces = sortSurfaces(state.surfaces.map((item) => (item.id === surface.id ? surface : item)));
 			return {
-				surfaces: state.surfaces.map((item) => (item.id === surface.id ? surface : item)),
+				surfaces: nextSurfaces,
 				workspaces: workspace ? { ...state.workspaces, [surface.id]: { ...workspace, surface } } : state.workspaces,
 			};
 		});

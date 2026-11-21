@@ -45,3 +45,4 @@ export * from "./runtime-node-releases.ts";
 export * from "./service.ts";
 export * from "./surface-change-dispatcher.ts";
 export * from "./surface-preview-runner.ts";
+export * from "./surface-worker-loop.ts";

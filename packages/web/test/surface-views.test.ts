@@ -94,6 +94,60 @@ describe("the surface rail", () => {
 		);
 		store.dispose();
 	});
+
+	it("renders proposed surfaces calmly with 1-click Approve and Dismiss actions", async () => {
+		const proposedApp = summary({
+			id: "55555555-5555-4555-8555-555555555511",
+			slug: "meditation-app",
+			title: "Meditation App",
+			status: "proposed",
+		});
+		const proposedPress = summary({
+			id: "55555555-5555-4555-8555-555555555512",
+			slug: "press-kit",
+			title: "Press Kit",
+			status: "proposed",
+		});
+		const approveProposedSurface = vi.fn(async () => ({ ...proposedApp, status: "active" as const }));
+		const archiveSurface = vi.fn(async () => ({ ...proposedPress, status: "archived" as const }));
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [summary(), proposedApp, proposedPress]),
+				approveProposedSurface,
+				archiveSurface,
+			}),
+		);
+		await store.load();
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+		document.body.append(rail.el);
+		rail.update("website");
+
+		const proposedRows = [...rail.el.querySelectorAll(".rail-surface-proposed")];
+		expect(proposedRows.map((row) => row.querySelector(".rail-surface-name")?.textContent)).toEqual([
+			"Meditation App",
+			"Press Kit",
+		]);
+		expect(proposedRows[0]?.querySelector(".rail-proposed-tag")?.textContent).toBe("Proposed");
+		expect(rail.el.querySelectorAll("a.rail-surface")).toHaveLength(1);
+
+		rail.el
+			.querySelector<HTMLButtonElement>(`[data-act="approve-surface"][data-surface="${proposedApp.id}"]`)!
+			.click();
+		await flush();
+		rail.update("website");
+		expect(approveProposedSurface).toHaveBeenCalledWith(proposedApp.id);
+		expect(rail.el.querySelectorAll("a.rail-surface")).toHaveLength(2);
+		expect(rail.el.querySelectorAll(".rail-surface-proposed")).toHaveLength(1);
+
+		rail.el
+			.querySelector<HTMLButtonElement>(`[data-act="dismiss-surface"][data-surface="${proposedPress.id}"]`)!
+			.click();
+		await flush();
+		rail.update("website");
+		expect(archiveSurface).toHaveBeenCalledWith(proposedPress.id);
+		expect(rail.el.querySelectorAll(".rail-surface-proposed")).toHaveLength(0);
+		store.dispose();
+	});
 });
 
 describe("the surface page", () => {
@@ -488,6 +542,101 @@ describe("the surface page", () => {
 		expect(drawer.querySelectorAll(".surface-message.is-pending")).toHaveLength(0);
 		expect(drawer.querySelectorAll(".surface-message.is-member").length).toBe(2);
 		view.dispose();
+		store.dispose();
+	});
+
+	it("hands off directly from Brand Studio and via inline prompt from Inbox to Website", async () => {
+		const brand = summary({
+			id: "22222222-2222-4222-8222-222222222229",
+			slug: "brand",
+			title: "Brand",
+			archetype: "studio",
+			folderRoot: "brand",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const inbox = summary({
+			id: "22222222-2222-4222-8222-222222222230",
+			slug: "inbox",
+			title: "Inbox",
+			group: "operations",
+			archetype: "ops",
+			icon: "mail",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const spawned = session([], {
+			id: "33333333-3333-4333-8333-333333333388",
+			surfaceId: SURFACE,
+			state: "queued",
+			originKind: "cross_surface",
+			originLabel: "From Brand",
+		});
+		const spawnCrossSurfaceSession = vi.fn(async () => spawned);
+		const navigated: string[] = [];
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [summary(), brand, inbox]),
+				getSurfaceWorkspace: vi.fn(async (id: string) =>
+					workspace([], { surface: id === brand.id ? brand : id === inbox.id ? inbox : summary() }),
+				),
+				spawnCrossSurfaceSession,
+			}),
+			{ onNavigateSurface: (slug) => navigated.push(slug) },
+		);
+		await store.load();
+
+		const brandView = new SurfaceView(
+			{
+				store,
+				mount: () => undefined,
+				openMigration: () => undefined,
+				loadStudioFiles: async () => ({ "brand/voice.md": "Warm Nordic minimalism.\n" }),
+			},
+			"brand",
+		);
+		document.body.append(brandView.el);
+		await flush();
+		brandView.update();
+		expect(brandView.el.querySelector(".surface-studio")).not.toBeNull();
+		const syncBarBtn = brandView.el.querySelector<HTMLButtonElement>(".surface-handoff-btn")!;
+		expect(syncBarBtn.textContent).toContain("Sync to Website");
+		syncBarBtn.click();
+		await flush();
+		expect(spawnCrossSurfaceSession).toHaveBeenNthCalledWith(
+			1,
+			expect.objectContaining({
+				sourceSurfaceId: brand.id,
+				targetSurfaceSlug: "website",
+			}),
+		);
+		expect(navigated).toEqual(["website"]);
+		brandView.dispose();
+
+		const inboxView = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "inbox");
+		document.body.append(inboxView.el);
+		await flush();
+		inboxView.update();
+		const sendBarBtn = inboxView.el.querySelector<HTMLButtonElement>(".surface-handoff-btn")!;
+		expect(sendBarBtn.textContent).toContain("Send to Website…");
+		sendBarBtn.click();
+		const form = inboxView.el.querySelector<HTMLFormElement>(".surface-handoff-bar")!;
+		expect(form.hidden).toBe(false);
+		const handoffInput = form.querySelector<HTMLInputElement>(".surface-handoff-input")!;
+		handoffInput.value = "Fix Mette's Safari checkout bug";
+		form.dispatchEvent(new Event("submit", { cancelable: true }));
+		await flush();
+		expect(spawnCrossSurfaceSession).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({
+				sourceSurfaceId: inbox.id,
+				targetSurfaceSlug: "website",
+				prompt: "Fix Mette's Safari checkout bug",
+			}),
+		);
+		expect(form.hidden).toBe(true);
+		expect(navigated).toEqual(["website", "website"]);
+		inboxView.dispose();
 		store.dispose();
 	});
 });

@@ -190,6 +190,8 @@ export function fakeClient(overrides: Partial<SurfacesClient> = {}): SurfacesCli
 	return {
 		listSurfaces: vi.fn(async () => [summary()]),
 		getSurfaceWorkspace: vi.fn(async () => workspace([session(["staged", "staged", "staged"])])),
+		approveProposedSurface: vi.fn(async (id: string) => summary({ id, status: "active" })),
+		archiveSurface: vi.fn(async (id: string) => summary({ id, status: "archived" })),
 		setSurfaceAutoPublish: vi.fn(async (_id: string, enabled: boolean) => summary({ autoPublish: enabled })),
 		startSurfaceSession: vi.fn(fail),
 		replySurfaceSession: vi.fn(fail),
@@ -200,6 +202,7 @@ export function fakeClient(overrides: Partial<SurfacesClient> = {}): SurfacesCli
 		undoSurfaceChange: vi.fn(fail),
 		chooseExploration: vi.fn(fail),
 		reconcileChanges: vi.fn(fail),
+		spawnCrossSurfaceSession: vi.fn(fail),
 		setPreviewSelection: vi.fn(fail),
 		publishSurface: vi.fn(async () => summary({ unpublishedChangeCount: 0 })),
 		listAutomations: vi.fn(async () => []),
@@ -210,7 +213,10 @@ export function fakeClient(overrides: Partial<SurfacesClient> = {}): SurfacesCli
 	} as SurfacesClient;
 }
 
-export function storeWith(client: SurfacesClient | undefined) {
+export function storeWith(
+	client: SurfacesClient | undefined,
+	extra: { onNavigateSurface?: (slug: string) => void } = {},
+) {
 	return new SurfacesStore({
 		companyId: COMPANY,
 		client,
@@ -226,5 +232,6 @@ export function storeWith(client: SurfacesClient | undefined) {
 		}),
 		signal: new AbortController().signal,
 		unavailableMessage: "Surfaces aren't enabled for this company yet.",
+		...extra,
 	});
 }

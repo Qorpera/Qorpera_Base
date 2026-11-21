@@ -99,6 +99,24 @@ export interface SurfaceSessionMessage {
 	readonly createdAt: string;
 }
 
+export type StudioPatchOp =
+	| { readonly op: "write_text"; readonly path: string; readonly content: string }
+	| { readonly op: "delete"; readonly path: string }
+	| { readonly op: "merge_json"; readonly path: string; readonly patch: Readonly<Record<string, unknown>> };
+
+export interface StudioPatchChange {
+	readonly changeId: string;
+	readonly ops: readonly StudioPatchOp[];
+}
+
+export interface CrossSurfaceHandoffRequest {
+	readonly sourceSurfaceId: string;
+	readonly targetSurfaceSlug: string;
+	readonly prompt: string;
+	readonly title?: string;
+	readonly sourceRef?: Readonly<Record<string, unknown>>;
+}
+
 export interface SurfaceSummary {
 	readonly id: string;
 	readonly slug: string;

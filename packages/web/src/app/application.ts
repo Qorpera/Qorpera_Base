@@ -860,6 +860,8 @@ export function mountApplication(
 				},
 				signal: controller.signal,
 				unavailableMessage: t("Surfaces aren't enabled for this company yet."),
+				onNavigateSurface: (slug) =>
+					navigate({ name: "company", profileId: profile.profileId, section: "surface", id: slug }),
 			});
 			attachSurfaces(controller, surfaces);
 			surfaces.store.subscribe(() => render());
@@ -2677,8 +2679,59 @@ export function mountApplication(
 				const surfaces = surfacesOf(controller);
 				if (!surfaces) return;
 				if (!surfaceView) {
+					const loadStudioFiles = async (
+						surface: SurfaceSummary,
+						signal: AbortSignal,
+					): Promise<Readonly<Record<string, string>>> => {
+						const root = surface.folderRoot?.replace(/^\/+|\/+$/g, "");
+						const team = controller.store.get().team;
+						if (!root || !team) return {};
+						const folder = new WebCompanyFiles(
+							cloud,
+							controller.profile,
+							controller.userId,
+							team.role,
+							AbortSignal.any([controller.signal, signal]),
+							companyCurrent,
+							team.capabilities.write,
+						).folder();
+						const files: Record<string, string> = {};
+						const decoder = new TextDecoder();
+						const textFile = /\.(?:json|md|markdown|txt|toml|ya?ml|css)$/i;
+						const maxBytes = 256 * 1024;
+						const readFolder = async (parent: string, depth: number) => {
+							const page = await folder.list(parent, null, 100, signal);
+							for (const entry of page.entries) {
+								if (signal.aborted || Object.keys(files).length >= 24) return;
+								if (entry.kind === "folder" && depth < 1) {
+									await readFolder(entry.path, depth + 1);
+									continue;
+								}
+								if (
+									entry.kind !== "file" ||
+									!entry.file ||
+									!textFile.test(entry.path) ||
+									entry.file.bytes > maxBytes
+								)
+									continue;
+								const bytes = await folder.readFile(entry.file, signal, maxBytes, { cached: true });
+								files[entry.path] = decoder.decode(bytes);
+							}
+						};
+						try {
+							await readFolder(root, 0);
+						} catch {
+							return files;
+						}
+						return files;
+					};
 					const view = new SurfaceView(
-						{ store: surfaces, mount: surfaceMount, openMigration: () => openMigrationSheet(surfaces) },
+						{
+							store: surfaces,
+							mount: surfaceMount,
+							openMigration: () => openMigrationSheet(surfaces),
+							loadStudioFiles,
+						},
 						route.id ?? "",
 					);
 					surfaceView = { company: controller, view };

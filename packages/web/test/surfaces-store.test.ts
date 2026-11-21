@@ -324,4 +324,95 @@ describe("SurfacesStore", () => {
 		expect(store.state.error).toBe("offline");
 		store.dispose();
 	});
+
+	it("spawns a cross-surface session via cloud RPC, highlights it, and navigates to the target surface", async () => {
+		const brand = summary({
+			id: "22222222-2222-4222-8222-222222222229",
+			slug: "brand",
+			title: "Brand",
+			archetype: "studio",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const spawned = session([], {
+			id: "33333333-3333-4333-8333-333333333399",
+			surfaceId: SURFACE,
+			title: "Sync Brand",
+			state: "queued",
+			originKind: "cross_surface",
+			originLabel: "From Brand",
+		});
+		const spawnCrossSurfaceSession = vi.fn(async () => spawned);
+		const navigated: string[] = [];
+		const store = storeWith(
+			fakeClient({ listSurfaces: vi.fn(async () => [summary(), brand]), spawnCrossSurfaceSession }),
+			{ onNavigateSurface: (slug) => navigated.push(slug) },
+		);
+		await store.load();
+		const result = await store.spawnCrossSurfaceSession({
+			sourceSurfaceId: brand.id,
+			targetSurfaceSlug: "website",
+			prompt: "Sync updated accent token",
+			title: "Sync Brand",
+		});
+		expect(spawnCrossSurfaceSession).toHaveBeenCalledWith({
+			sourceSurfaceId: brand.id,
+			targetSurfaceSlug: "website",
+			prompt: "Sync updated accent token",
+			title: "Sync Brand",
+		});
+		expect(result?.id).toBe(spawned.id);
+		expect(store.state.highlight).toEqual({ surfaceId: SURFACE, sessionId: spawned.id });
+		expect(navigated).toEqual(["website"]);
+		store.dispose();
+	});
+
+	it("falls back cleanly to creating a local cross-surface session and navigating when offline", async () => {
+		const navigated: string[] = [];
+		const store = storeWith(undefined, { onNavigateSurface: (slug) => navigated.push(slug) });
+		await store.load();
+		const inbox = store.state.surfaces.find((item) => item.slug === "inbox")!;
+		const created = await store.spawnCrossSurfaceSession({
+			sourceSurfaceId: inbox.id,
+			targetSurfaceSlug: "thetaband",
+			prompt: "Fix Safari checkout layout bug from Mette",
+		});
+		expect(created?.originKind).toBe("cross_surface");
+		expect(created?.originLabel).toBe("From Inbox");
+		expect(navigated).toEqual(["thetaband"]);
+		expect(store.state.highlight?.sessionId).toBe(created?.id);
+		expect(store.workspace(created!.surfaceId)?.activeSessions.map((item) => item.id)).toContain(created?.id);
+		store.dispose();
+	});
+
+	it("approves or dismisses proposed surfaces cleanly", async () => {
+		const proposedA = summary({
+			id: "22222222-2222-4222-8222-222222222241",
+			slug: "app",
+			title: "Meditation App",
+			status: "proposed",
+		});
+		const proposedB = summary({
+			id: "22222222-2222-4222-8222-222222222242",
+			slug: "press",
+			title: "Press Kit",
+			status: "proposed",
+		});
+		const approveProposedSurface = vi.fn(async () => ({ ...proposedA, status: "active" as const }));
+		const archiveSurface = vi.fn(async () => ({ ...proposedB, status: "archived" as const }));
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [summary(), proposedA, proposedB]),
+				approveProposedSurface,
+				archiveSurface,
+			}),
+		);
+		await store.load();
+		const approved = await store.approveProposedSurface(proposedA.id);
+		expect(approved?.status).toBe("active");
+		expect(store.state.surfaces.find((item) => item.id === proposedA.id)?.status).toBe("active");
+		expect(await store.archiveSurface(proposedB.id)).toBe(true);
+		expect(store.state.surfaces.find((item) => item.id === proposedB.id)).toBeUndefined();
+		store.dispose();
+	});
 });

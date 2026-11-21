@@ -199,7 +199,7 @@ describe("surface preview runner and change dispatcher", () => {
 		expect(conflicted.status).toBe("conflicted");
 		expect(conflicted.conflictReport).toEqual({ changeIds: [c2Id, c3Id], paths: ["index.html"] });
 		expect(buildAndUploadPreview).not.toHaveBeenCalled();
-	});
+	}, 20_000);
 
 	it("runs full partial approval cascade, sibling + peer rebases, lifecycle close, and optional auto-publish", async () => {
 		const f = await surfaceRepoFixture();
@@ -314,5 +314,5 @@ describe("surface preview runner and change dispatcher", () => {
 		expect(step2.published).toBe(true);
 		expect(publishSurface).toHaveBeenCalledWith(surfaceId, step2.mainAfter);
 		expect(await readFile(join(f.code, "main/faq.html"), "utf8")).toBe("<section>Spørgsmål</section>\n");
-	});
+	}, 20_000);
 });

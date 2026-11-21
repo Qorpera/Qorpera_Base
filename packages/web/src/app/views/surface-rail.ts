@@ -164,6 +164,7 @@ function sessionRow(store: SurfacesStore, state: SurfacesState, session: Surface
 				conflicted && "is-conflicted",
 				open && "is-open",
 				state.drawer?.sessionId === session.id && "is-selected",
+				state.highlight?.sessionId === session.id && "is-highlighted",
 			]
 				.filter(Boolean)
 				.join(" "),
@@ -395,6 +396,46 @@ function surfaceRow(surface: SurfaceSummary, profileId: string, active: boolean)
 	);
 }
 
+function proposedSurfaceRow(surface: SurfaceSummary, busy: boolean): HTMLElement {
+	return h(
+		"div",
+		{ class: "rail-surface-proposed", "data-proposed-surface": surface.slug },
+		interfaceEmblem(surfaceEmblem(surface), 18),
+		h("span", { class: "rail-surface-name" }, surface.title),
+		h("span", { class: "rail-proposed-tag" }, t("Proposed")),
+		h(
+			"span",
+			{ class: "rail-proposed-actions" },
+			h(
+				"button",
+				{
+					type: "button",
+					class: "rail-proposed-btn is-approve",
+					disabled: busy,
+					"aria-label": t("Approve {title}", { title: surface.title }),
+					title: t("Approve surface"),
+					"data-act": "approve-surface",
+					"data-surface": surface.id,
+				},
+				icon("check"),
+			),
+			h(
+				"button",
+				{
+					type: "button",
+					class: "rail-proposed-btn is-dismiss",
+					disabled: busy,
+					"aria-label": t("Dismiss {title}", { title: surface.title }),
+					title: t("Dismiss proposed surface"),
+					"data-act": "dismiss-surface",
+					"data-surface": surface.id,
+				},
+				icon("close"),
+			),
+		),
+	);
+}
+
 export class SurfaceRail {
 	readonly el = h("div", { class: "rail-surfaces" });
 	readonly #store: SurfacesStore;
@@ -422,6 +463,7 @@ export class SurfaceRail {
 			state.historyOpen,
 			state.collapsed,
 			state.drawer,
+			state.highlight,
 			state.busy,
 		]);
 		if (key === this.#shown) return;
@@ -431,8 +473,15 @@ export class SurfaceRail {
 			["products", t("Building")],
 			["operations", t("Running")],
 		] as const) {
-			const surfaces = state.surfaces.filter((surface) => surface.group === group);
-			if (!surfaces.length && !(group === "products" && canAddProgram && state.source !== "loading")) continue;
+			const groupSurfaces = state.surfaces.filter((surface) => surface.group === group);
+			const activeSurfaces = groupSurfaces.filter((surface) => surface.status === "active");
+			const proposedSurfaces = groupSurfaces.filter((surface) => surface.status === "proposed");
+			if (
+				!activeSurfaces.length &&
+				!proposedSurfaces.length &&
+				!(group === "products" && canAddProgram && state.source !== "loading")
+			)
+				continue;
 			groups.push(
 				h(
 					"div",
@@ -454,11 +503,14 @@ export class SurfaceRail {
 								)
 							: null,
 					),
-					surfaces.flatMap((surface) => {
+					activeSurfaces.flatMap((surface) => {
 						const active = surface.slug === activeSlug;
 						const row = surfaceRow(surface, this.#profileId, active);
 						return active ? [row, treeFor(this.#store, state, surface)] : [row];
 					}),
+					proposedSurfaces.map((surface) =>
+						proposedSurfaceRow(surface, Boolean(state.busy[`surface:${surface.id}`])),
+					),
 				),
 			);
 		}
@@ -477,9 +529,16 @@ export class SurfaceRail {
 		switch (act) {
 			case "open":
 				if (surface && session) {
+					if (state.highlight?.sessionId === session) store.clearHighlight();
 					if (state.drawer?.sessionId === session) store.closeDrawer();
 					else store.openDrawer(surface, session);
 				}
+				return;
+			case "approve-surface":
+				if (surface) void store.approveProposedSurface(surface);
+				return;
+			case "dismiss-surface":
+				if (surface) void store.archiveSurface(surface);
 				return;
 			case "toggle":
 				if (surface && change) void store.toggleChange(surface, change);

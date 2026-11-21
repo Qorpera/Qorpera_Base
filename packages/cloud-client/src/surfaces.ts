@@ -1,4 +1,5 @@
 import {
+	type CrossSurfaceHandoffRequest,
 	isSurfaceSlug,
 	type PointToChangeTarget,
 	parsePointToChangeTarget,
@@ -544,6 +545,17 @@ export class CloudSurfacesClient {
 		const data = await this.#rpc("qorpera_reconcile_surface_changes", {
 			p_surface_id: surfaceId,
 			p_change_ids: [...changeIds],
+		});
+		return parseSurfaceSession(data, "session");
+	}
+
+	async spawnCrossSurfaceSession(request: CrossSurfaceHandoffRequest): Promise<SurfaceSession> {
+		const data = await this.#rpc("qorpera_spawn_cross_surface_session", {
+			p_source_surface_id: request.sourceSurfaceId,
+			p_target_surface_slug: request.targetSurfaceSlug,
+			p_prompt: request.prompt,
+			p_title: request.title ?? null,
+			p_source_ref: request.sourceRef ?? null,
 		});
 		return parseSurfaceSession(data, "session");
 	}

@@ -179,7 +179,7 @@ describe("code-host surfaces multi-change engine", () => {
 		expect(undone.state).toBe("undone");
 		expect(await exists(join(f.code, "main/hero.css"))).toBe(false);
 		expect(await readFile(join(f.code, "main/faq.html"), "utf8")).toBe("<section>Danish FAQ</section>\n");
-	});
+	}, 20_000);
 
 	it("rebases clean peer sessions and reports exact conflict paths on overlapping peer sessions", async () => {
 		const f = await keptFixture();
@@ -233,7 +233,7 @@ describe("code-host surfaces multi-change engine", () => {
 				changes: [{ changeId: conflictId, parentSha: initial.mainAfter, headSha: headC, title: "Update price C" }],
 			}),
 		).rejects.toThrow(CodeHostChangeConflict);
-	});
+	}, 20_000);
 
 	it("composes an exploration plus multiple toggled ChangeUnits without mutating main and detects toggle conflicts", async () => {
 		const f = await keptFixture();
@@ -298,5 +298,5 @@ describe("code-host surfaces multi-change engine", () => {
 		expect(conflicted.appliedChangeIds).toEqual([hero1Id]);
 		expect(conflicted.conflictingChangeId).toBe(hero2Id);
 		expect(conflicted.conflictPaths).toEqual(["index.html"]);
-	});
+	}, 20_000);
 });

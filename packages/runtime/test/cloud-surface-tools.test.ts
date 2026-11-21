@@ -6,6 +6,7 @@ import {
 	createProposeSurfaceTool,
 	createStartSurfaceSessionTool,
 } from "../src/cloud-surface-tools.ts";
+import { buildSurfaceTurnBrief, SURFACE_STAGED_CODING_INSTRUCTIONS } from "../src/cloud-surface-turn-context.ts";
 
 function toolContext(): CloudToolContext {
 	return {
@@ -86,5 +87,34 @@ describe("cloud surface runtime tools", () => {
 			sessionId,
 			explorationId,
 		});
+	});
+
+	it("builds Surface turn brief with brief.md, Point-to-Change target, and conflict paths", () => {
+		const sessionId = randomUUID();
+		const text = buildSurfaceTurnBrief({
+			sessionId,
+			surfaceSlug: "website",
+			surfaceTitle: "Website",
+			briefMarkdown: "Warm Danish editorial tone. Terracotta accent #d76f45.",
+			pointToChangeTarget: {
+				route: "/preorder",
+				selector: "section.pricing > button.cta",
+				textSnippet: "Se forudbestillingen",
+				tagName: "button",
+				componentHint: "PreorderCta",
+				boundingBox: { x: 100, y: 200, width: 220, height: 48 },
+				viewport: { width: 1280, height: 800 },
+			},
+			conflictPaths: ["src/pages/preorder.astro"],
+			recordChange: vi.fn(),
+		});
+
+		expect(text).toContain("# Surface Context: Website (website)");
+		expect(text).toContain("QorperaOS/surfaces/website/brief.md");
+		expect(text).toContain("Warm Danish editorial tone");
+		expect(text).toContain("section.pricing > button.cta");
+		expect(text).toContain("PreorderCta");
+		expect(text).toContain("src/pages/preorder.astro");
+		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("coding_record_change");
 	});
 });

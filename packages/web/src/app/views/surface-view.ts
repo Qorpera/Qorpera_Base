@@ -6,8 +6,10 @@ import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { t } from "../../ui/preferences.ts";
 import {
 	formatConflictPaths,
+	isOpenChange,
 	migrationPending,
 	openExplorations,
+	productBuildSurfaces,
 	runningSessionTotal,
 	type SurfacePreviewMode,
 	type SurfacesStore,
@@ -16,6 +18,7 @@ import {
 import { SurfaceDoorStage } from "./surface-door.ts";
 import { surfaceEmblem } from "./surface-rail.ts";
 import { SurfaceSessionDrawer } from "./surface-session-drawer.ts";
+import { SurfaceStudioView } from "./surface-studio-view.ts";
 
 export interface SurfaceMount {
 	readonly el: HTMLElement;
@@ -27,6 +30,10 @@ export interface SurfaceViewHost {
 	readonly store: SurfacesStore;
 	mount(surface: SurfaceSummary, signal: AbortSignal): SurfaceMount | undefined;
 	openMigration(): void;
+	readonly loadStudioFiles?: (
+		surface: SurfaceSummary,
+		signal: AbortSignal,
+	) => Promise<Readonly<Record<string, string>>>;
 }
 
 interface CompareColumn {
@@ -74,6 +81,20 @@ export class SurfaceView {
 	readonly #mountSlot = h("div", { class: "surface-mount" });
 	readonly #frames = h("div", { class: "surface-frames", hidden: true });
 	readonly #banner = h("div", { class: "surface-banners" });
+	readonly #handoffTargetTag = h("span", { class: "surface-handoff-target" });
+	readonly #handoffSelect = h("select", { class: "surface-handoff-select", "aria-label": t("Target surface") });
+	readonly #handoffInput = h("input", { class: "surface-handoff-input", type: "text", autocomplete: "off" });
+	readonly #handoffSubmit = h("button", { type: "submit", class: "btn btn-primary btn-small" }, t("Start session"));
+	readonly #handoffForm = h(
+		"form",
+		{ class: "surface-handoff-bar", hidden: true },
+		icon("forward"),
+		this.#handoffTargetTag,
+		this.#handoffSelect,
+		this.#handoffInput,
+		this.#handoffSubmit,
+		h("button", { type: "button", class: "btn btn-small", "data-act": "handoff-cancel" }, t("Cancel")),
+	);
 	readonly #chips = h("div", { class: "surface-chips" });
 	readonly #targetRow = h("div", { class: "surface-target-row" });
 	readonly #point = h(
@@ -97,6 +118,8 @@ export class SurfaceView {
 	readonly #compareDoors = new Map<string, CompareColumn>();
 	#framesMode: "none" | "primary" | "compare" = "none";
 	#pointing = false;
+	#handoffOpen = false;
+	#handoffTarget = "";
 	#target: PointToChangeTarget | undefined;
 	#mount: SurfaceMount | undefined;
 	#mountedFor = "";
@@ -118,8 +141,27 @@ export class SurfaceView {
 			},
 		});
 		this.#viewport.append(this.#mountSlot, this.#frames);
-		this.#stage.append(this.#viewport, this.#banner, this.#composer, this.#drawer.el, this.#toast);
+		this.#stage.append(this.#viewport, this.#handoffForm, this.#banner, this.#composer, this.#drawer.el, this.#toast);
 		this.el.append(this.#bar, this.#stage);
+		this.#handoffForm.addEventListener(
+			"submit",
+			(event) => {
+				event.preventDefault();
+				void this.#submitHandoff();
+			},
+			{ signal },
+		);
+		this.#handoffSelect.addEventListener(
+			"change",
+			() => {
+				this.#handoffTarget = this.#handoffSelect.value;
+				const chosen = productBuildSurfaces(this.#host.store.state, this.surface?.id).find(
+					(item) => item.slug === this.#handoffTarget,
+				);
+				if (chosen) this.#handoffInput.placeholder = t("What should {name} do?", { name: chosen.title });
+			},
+			{ signal },
+		);
 		this.#composer.addEventListener(
 			"submit",
 			(event) => {
@@ -197,11 +239,25 @@ export class SurfaceView {
 		const state = this.#host.store.state;
 		const workspace = state.workspaces[surface.id];
 		const explorations = openExplorations(workspace);
+		const studioHasChanges =
+			surface.archetype === "studio" &&
+			Boolean(
+				workspace?.activeSessions.some((session) =>
+					session.changes.some((change) => change.kind === "folder_patch" && isOpenChange(change)),
+				),
+			);
+		const handoffTargets =
+			surface.archetype === "studio" || surface.archetype === "ops" ? productBuildSurfaces(state, surface.id) : [];
+		const busyHandoff = handoffTargets.some((target) => Boolean(state.busy[`handoff:${surface.id}:${target.slug}`]));
 		const key = JSON.stringify([
 			surface,
 			state.mode,
 			state.device,
 			explorations.length,
+			studioHasChanges,
+			handoffTargets.map((target) => [target.slug, target.title]),
+			busyHandoff,
+			this.#handoffOpen,
 			Boolean(state.busy[`publish:${surface.id}`]),
 		]);
 		if (key === this.#barShown) return;
@@ -222,6 +278,14 @@ export class SurfaceView {
 				label,
 			);
 		const count = surface.unpublishedChangeCount;
+		const handoffLabel =
+			handoffTargets.length === 1
+				? surface.archetype === "studio"
+					? t("Sync to {target}", { target: handoffTargets[0]!.title })
+					: t("Send to {target}…", { target: handoffTargets[0]!.title })
+				: surface.archetype === "studio"
+					? t("Sync to…")
+					: t("Send to…");
 		this.#bar.replaceChildren(
 			h(
 				"div",
@@ -248,11 +312,31 @@ export class SurfaceView {
 							seg("preview", t("Preview"), t("Base with the changes you have turned on")),
 							explorations.length ? seg("compare", t("Compare"), t("Every direction side by side")) : null,
 						)
-					: null,
+					: studioHasChanges
+						? h(
+								"div",
+								{ class: "surface-seg", role: "group", "aria-label": t("What the surface shows") },
+								seg("live", t("Base"), t("Saved studio files without open changes")),
+								seg("preview", t("Preview"), t("Base with the changes you have turned on")),
+							)
+						: null,
 			),
 			h(
 				"div",
 				{ class: "surface-bar-tools" },
+				handoffTargets.length > 0
+					? h(
+							"button",
+							{
+								type: "button",
+								class: `surface-handoff-btn${this.#handoffOpen ? " is-on" : ""}`,
+								disabled: busyHandoff,
+								"data-act": "handoff-open",
+							},
+							icon("forward"),
+							handoffLabel,
+						)
+					: null,
 				live
 					? h(
 							"div",
@@ -320,7 +404,17 @@ export class SurfaceView {
 		const key = `${surface.id}:${surface.siteSlug ?? ""}:${surface.archetype}`;
 		if (key !== this.#mountedFor) {
 			this.#mount?.dispose();
-			this.#mount = this.#host.mount(surface, this.#lifetime.signal);
+			this.#mount =
+				this.#host.mount(surface, this.#lifetime.signal) ??
+				(surface.archetype === "studio"
+					? new SurfaceStudioView({
+							store: this.#host.store,
+							surface,
+							signal: this.#lifetime.signal,
+							loadFiles: this.#host.loadStudioFiles,
+							onHandoff: (targetSlug) => void this.#syncStudioTo(surface, targetSlug),
+						})
+					: undefined);
 			this.#mountedFor = key;
 			this.#mountSlot.replaceChildren(
 				this.#mount?.el ??
@@ -626,6 +720,11 @@ export class SurfaceView {
 
 	#keydown(event: KeyboardEvent): void {
 		if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+		if (event.key === "Escape" && this.#handoffOpen) {
+			event.preventDefault();
+			this.#closeHandoff();
+			return;
+		}
 		if (event.key === "Escape" && this.#pointing) {
 			event.preventDefault();
 			this.#setPointing(false);
@@ -637,6 +736,78 @@ export class SurfaceView {
 		if (this.#point.hidden || this.#point.disabled) return;
 		event.preventDefault();
 		this.#setPointing(!this.#pointing);
+	}
+
+	async #syncStudioTo(surface: SurfaceSummary, targetSlug: string): Promise<void> {
+		const target = productBuildSurfaces(this.#host.store.state, surface.id).find((item) => item.slug === targetSlug);
+		if (!target) return;
+		await this.#host.store.spawnCrossSurfaceSession({
+			sourceSurfaceId: surface.id,
+			targetSurfaceSlug: target.slug,
+			title: t("Sync {source}", { source: surface.title }),
+			prompt: t("Sync the latest updates from {source} into {target}.", {
+				source: surface.title,
+				target: target.title,
+			}),
+			sourceRef: { surfaceSlug: surface.slug, ...(surface.folderRoot ? { folderRoot: surface.folderRoot } : {}) },
+		});
+	}
+
+	#openHandoffPrompt(surface: SurfaceSummary): void {
+		const targets = productBuildSurfaces(this.#host.store.state, surface.id);
+		if (!targets.length) return;
+		if (!targets.some((item) => item.slug === this.#handoffTarget)) this.#handoffTarget = targets[0]!.slug;
+		const chosen = targets.find((item) => item.slug === this.#handoffTarget) ?? targets[0]!;
+		this.#handoffOpen = true;
+		this.#handoffForm.hidden = false;
+		if (targets.length === 1) {
+			this.#handoffSelect.hidden = true;
+			this.#handoffTargetTag.hidden = false;
+			this.#handoffTargetTag.textContent = chosen.title;
+		} else {
+			this.#handoffTargetTag.hidden = true;
+			this.#handoffSelect.hidden = false;
+			this.#handoffSelect.replaceChildren(
+				...targets.map((item) =>
+					h("option", { value: item.slug, selected: item.slug === chosen.slug }, item.title),
+				),
+			);
+			this.#handoffSelect.value = chosen.slug;
+		}
+		this.#handoffInput.placeholder = t("What should {name} do?", { name: chosen.title });
+		this.#handoffInput.setAttribute("aria-label", t("What should {name} do?", { name: chosen.title }));
+		this.#drawBar(surface);
+		this.#handoffInput.focus({ preventScroll: true });
+	}
+
+	#closeHandoff(): void {
+		if (!this.#handoffOpen) return;
+		this.#handoffOpen = false;
+		this.#handoffForm.hidden = true;
+		const surface = this.surface;
+		if (surface) this.#drawBar(surface);
+	}
+
+	async #submitHandoff(): Promise<void> {
+		const surface = this.surface;
+		const prompt = this.#handoffInput.value.trim();
+		if (!surface || !prompt) return;
+		const targets = productBuildSurfaces(this.#host.store.state, surface.id);
+		const target = targets.find((item) => item.slug === this.#handoffTarget) ?? targets[0];
+		if (!target) return;
+		this.#handoffInput.value = "";
+		const created = await this.#host.store.spawnCrossSurfaceSession({
+			sourceSurfaceId: surface.id,
+			targetSurfaceSlug: target.slug,
+			title: t("From {source}", { source: surface.title }),
+			prompt,
+			sourceRef: { surfaceSlug: surface.slug },
+		});
+		if (!created) {
+			this.#handoffInput.value = prompt;
+			return;
+		}
+		this.#closeHandoff();
 	}
 
 	#drawToast(): void {
@@ -714,6 +885,34 @@ export class SurfaceView {
 				if (ids.length) void store.reconcileChanges(surface.id, ids);
 				return;
 			}
+			case "handoff-open": {
+				const targets = productBuildSurfaces(store.state, surface.id);
+				if (!targets.length) return;
+				if (surface.archetype === "studio") {
+					if (targets.length === 1) {
+						void this.#syncStudioTo(surface, targets[0]!.slug);
+						return;
+					}
+					const box = target.getBoundingClientRect();
+					openContextMenu({
+						label: t("Sync to…"),
+						x: box.left,
+						y: box.bottom + 4,
+						opener: target,
+						items: targets.map((item) => ({
+							label: item.title,
+							select: () => void this.#syncStudioTo(surface, item.slug),
+						})),
+					});
+					return;
+				}
+				if (this.#handoffOpen) this.#closeHandoff();
+				else this.#openHandoffPrompt(surface);
+				return;
+			}
+			case "handoff-cancel":
+				this.#closeHandoff();
+				return;
 			case "publish":
 				void store.publish(surface.id);
 				return;
