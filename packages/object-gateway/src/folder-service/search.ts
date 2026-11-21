@@ -1,4 +1,3 @@
-import { isAscii } from "node:buffer";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import type { CoreReceipt } from "./core.ts";
 import { ObjectIntegrityError, ObjectMissingError } from "./objects.ts";
@@ -127,13 +126,7 @@ export interface SearchSource {
 	readonly longestLine?: number;
 }
 
-const REGEX_META = /[.*+?^${}()|[\]\\]/g;
 const SURROGATE = /[\uD800-\uDFFF]/;
-
-function isAsciiString(text: string): boolean {
-	for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) > 0x7f) return false;
-	return true;
-}
 
 /** Depth-first order of two paths: name by name, a folder before what it holds. */
 export function treeOrder(a: string, b: string): number {
@@ -309,7 +302,7 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 		const folded = fold(query);
 		find = (text) => text.indexOf(folded);
 	}
-	// WHY: skip decoding/lowercasing non-matching 4 MiB chunks under --jitless via native Buffer.indexOf or pure-literal ASCII /i regex.
+	// WHY: skip decoding non-matching 4 MiB chunks under --jitless via native Boyer-Moore Buffer.indexOf for exact literal queries.
 	const queryBytes =
 		!regex &&
 		request.caseSensitive &&
@@ -319,14 +312,8 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 		!SURROGATE.test(query)
 			? Buffer.from(query, "utf8")
 			: undefined;
-	const asciiCaseInsensitive =
-		!regex && !request.caseSensitive && query !== null && query.length > 0 && isAsciiString(query)
-			? new RegExp(query.replace(REGEX_META, "\\$&"), "i")
-			: undefined;
 	const chunkHasMatch = (chunk: Buffer): boolean => {
 		if (queryBytes !== undefined) return chunk.indexOf(queryBytes) >= 0;
-		if (asciiCaseInsensitive !== undefined && isAscii(chunk))
-			return asciiCaseInsensitive.test(chunk.toString("latin1"));
 		return find(fold(chunk.toString("utf8"))) >= 0;
 	};
 	/** Bytes of a long line's end kept for a match across two stretches: the query's longest UTF-8 form (a regular
