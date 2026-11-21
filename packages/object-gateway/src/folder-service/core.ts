@@ -1,7 +1,7 @@
 import { isUuid, parseRecord, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import { ObjectDependency, ObjectDependencyError } from "../dependency.ts";
 import { supabaseRequestHeaders } from "../supabase-headers.ts";
-import { nodeRequest, type Transport } from "./https-request.ts";
+import { type BufferedResponse, nodeRequest, ResponseTooLargeError, type Transport } from "./https-request.ts";
 import { validTarget } from "./protocol.ts";
 
 /** Who a mount reads as. A step 1 operator mount reads as a member or the platform; a machine view (step 2 on) as
@@ -731,9 +731,16 @@ function actorJson(actor: FolderActor): Record<string, string> {
 	}
 }
 
-/** Entries per list page and changes per feed page. An entry can hold a 4,096-byte path (twice that escaped) and a
- * link's 4,095-byte target (control characters escaped, six times): about 33 KB, so 200 fit an answer's 8 MiB. */
-export const CORE_PAGE = 200;
+export const CORE_PAGE = 1000;
+// WHY: worst-case escaped 4 KiB paths and symlink targets (~33 KB each) can exceed the 8 MiB response cap at 1000.
+const CORE_PAGE_FALLBACK = 200;
+
+class CoreResponseTooLarge extends ObjectDependencyError {
+	constructor() {
+		super(413);
+		this.name = "CoreResponseTooLarge";
+	}
+}
 
 interface SupabaseFolderCoreOptions {
 	readonly projectUrl: string;
@@ -764,14 +771,13 @@ export class SupabaseFolderCore implements FolderCore {
 
 	async list(environmentId: string, actor: FolderActor, after: string | null, signal?: AbortSignal) {
 		return parseListPage(
-			await this.#rpc(
+			await this.#pagedRpc(
 				"qorpera_folder_list",
 				{
 					p_environment_id: environmentId,
 					p_actor: actorJson(actor),
 					p_parent: "",
 					p_after: after,
-					p_limit: CORE_PAGE,
 					p_recursive: true,
 				},
 				signal,
@@ -787,13 +793,12 @@ export class SupabaseFolderCore implements FolderCore {
 		signal?: AbortSignal,
 	) {
 		return parseFeedPage(
-			await this.#rpc(
+			await this.#pagedRpc(
 				"qorpera_folder_feed",
 				{
 					p_environment_id: environmentId,
 					p_actor: actorJson(actor),
 					p_after_seq: afterSeq,
-					p_limit: CORE_PAGE,
 					p_cursor: cursor,
 				},
 				signal,
@@ -1057,6 +1062,21 @@ export class SupabaseFolderCore implements FolderCore {
 		);
 	}
 
+	async #pagedRpc(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+		try {
+			return await this.#request(
+				`/rest/v1/rpc/${name}`,
+				{ method: "POST", body: JSON.stringify({ ...args, p_limit: CORE_PAGE }) },
+				signal,
+				[],
+				true,
+			);
+		} catch (error) {
+			if (!(error instanceof CoreResponseTooLarge)) throw error;
+			return this.#rpc(name, { ...args, p_limit: CORE_PAGE_FALLBACK }, signal);
+		}
+	}
+
 	async #rpc(
 		name: string,
 		args: Record<string, unknown>,
@@ -1071,14 +1091,21 @@ export class SupabaseFolderCore implements FolderCore {
 		init: { method: "GET" | "POST"; body?: string },
 		caller?: AbortSignal,
 		invalid: readonly string[] = [],
+		retryTooLarge = false,
 	): Promise<unknown> {
 		return this.#api.run(async (signal) => {
-			const response = await this.#transport(
-				new URL(`${this.#url}${path}`),
-				{ ...init, headers: { ...supabaseRequestHeaders(this.#key), "content-type": "application/json" } },
-				8 * 1024 * 1024,
-				caller ? AbortSignal.any([signal, caller]) : signal,
-			);
+			let response: BufferedResponse;
+			try {
+				response = await this.#transport(
+					new URL(`${this.#url}${path}`),
+					{ ...init, headers: { ...supabaseRequestHeaders(this.#key), "content-type": "application/json" } },
+					8 * 1024 * 1024,
+					caller ? AbortSignal.any([signal, caller]) : signal,
+				);
+			} catch (error) {
+				if (retryTooLarge && error instanceof ResponseTooLargeError) throw new CoreResponseTooLarge();
+				throw error;
+			}
 			let value: unknown;
 			try {
 				value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(response.body));
