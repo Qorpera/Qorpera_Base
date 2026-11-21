@@ -220,11 +220,29 @@ function bufferRaster(rgba: Uint8Array, width: number, height: number): Raster {
 function resample(source: Raster, width: number, height: number): Uint8Array {
 	const sourceWidth = source.width;
 	const sourceHeight = source.height;
-	const sums = new Float32Array(width * height * 4);
-	const line = new Float32Array(width * 4 + 4);
-	const addLine = (target: number, weight: number) => {
-		for (let i = 0, j = target * width * 4; i < width * 4; i++, j++) sums[j] += line[i] * weight;
-	};
+	const width4 = width * 4;
+	if (width === sourceWidth && height === sourceHeight) {
+		const out = new Uint8Array(width4 * height);
+		let y = 0;
+		source.rows((row) => {
+			if (y < sourceHeight) {
+				const base = y * width4;
+				out.set(row.subarray(0, width4), base);
+				for (let i = base, end = base + width4; i < end; i += 4) {
+					if (out[i + 3] === 0) {
+						out[i] = 0;
+						out[i + 1] = 0;
+						out[i + 2] = 0;
+					}
+				}
+			}
+			y++;
+		});
+		if (y !== sourceHeight) throw new Error("The image delivered the wrong number of rows");
+		return out;
+	}
+	const sums = new Float32Array(width4 * height);
+	const line = new Float32Array(width4 + 4);
 	let y = 0;
 	source.rows((row) => {
 		line.fill(0);
@@ -241,27 +259,34 @@ function resample(source: Raster, width: number, height: number): Uint8Array {
 			const leftUnits = Math.min(start + width, boundary) - start;
 			const left = (leftUnits / sourceWidth) * alpha;
 			const j = column * 4;
-			line[j] += row[i] * left;
-			line[j + 1] += row[i + 1] * left;
-			line[j + 2] += row[i + 2] * left;
+			const r = row[i];
+			const g = row[i + 1];
+			const b = row[i + 2];
+			line[j] += r * left;
+			line[j + 1] += g * left;
+			line[j + 2] += b * left;
 			line[j + 3] += left;
 			if (leftUnits < width) {
 				const right = ((width - leftUnits) / sourceWidth) * alpha;
-				line[j + 4] += row[i] * right;
-				line[j + 5] += row[i + 1] * right;
-				line[j + 6] += row[i + 2] * right;
+				line[j + 4] += r * right;
+				line[j + 5] += g * right;
+				line[j + 6] += b * right;
 				line[j + 7] += right;
 			}
 		}
 		const rowStart = y * height;
 		const target = Math.floor(rowStart / sourceHeight);
 		const topUnits = Math.min(rowStart + height, (target + 1) * sourceHeight) - rowStart;
-		addLine(target, topUnits / sourceHeight);
-		if (topUnits < height) addLine(target + 1, (height - topUnits) / sourceHeight);
+		const topWeight = topUnits / sourceHeight;
+		for (let i = 0, j = target * width4; i < width4; i++, j++) sums[j] += line[i] * topWeight;
+		if (topUnits < height) {
+			const bottomWeight = (height - topUnits) / sourceHeight;
+			for (let i = 0, j = (target + 1) * width4; i < width4; i++, j++) sums[j] += line[i] * bottomWeight;
+		}
 		y++;
 	});
 	if (y !== sourceHeight) throw new Error("The image delivered the wrong number of rows");
-	const out = new Uint8Array(width * height * 4);
+	const out = new Uint8Array(width4 * height);
 	for (let i = 0; i < out.length; i += 4) {
 		const alpha = sums[i + 3];
 		if (alpha <= 0) continue;
@@ -276,37 +301,132 @@ function resample(source: Raster, width: number, height: number): Uint8Array {
 /** An 8-bit PNG of RGBA pixels: RGB when every pixel is opaque, each row with the filter that varies least. */
 function encodePng(rgba: Uint8Array, width: number, height: number): Buffer {
 	let opaque = true;
-	for (let i = 3; i < rgba.length && opaque; i += 4) opaque = rgba[i] === 255;
+	for (let i = 3; i < rgba.length; i += 4) {
+		if (rgba[i] !== 255) {
+			opaque = false;
+			break;
+		}
+	}
 	const channels = opaque ? 3 : 4;
 	const stride = width * channels;
-	const filtered = Buffer.alloc((stride + 1) * height);
-	let previous = new Uint8Array(stride);
-	let current = new Uint8Array(stride);
+	const filtered = Buffer.allocUnsafe((stride + 1) * height);
+	const zeroRow = new Uint8Array(stride);
+	let previous: Uint8Array = zeroRow;
+	let current = opaque ? new Uint8Array(stride) : zeroRow;
+	let scratchRow = opaque ? new Uint8Array(stride) : zeroRow;
+	const subBuf = new Uint8Array(stride);
+	const upBuf = new Uint8Array(stride);
+	const avgBuf = new Uint8Array(stride);
+	const paethBuf = new Uint8Array(stride);
 	for (let y = 0; y < height; y++) {
-		for (let x = 0, i = y * width * 4, j = 0; x < width; x++, i += 4) {
-			current[j++] = rgba[i];
-			current[j++] = rgba[i + 1];
-			current[j++] = rgba[i + 2];
-			if (channels === 4) current[j++] = rgba[i + 3];
+		if (opaque) {
+			for (let i = y * width * 4, end = i + width * 4, j = 0; i < end; i += 4, j += 3) {
+				current[j] = rgba[i];
+				current[j + 1] = rgba[i + 1];
+				current[j + 2] = rgba[i + 2];
+			}
+		} else {
+			current = rgba.subarray(y * stride, (y + 1) * stride);
 		}
 		let best = 0;
-		let bestScore = Number.POSITIVE_INFINITY;
-		for (let filter = 0; filter < 5; filter++) {
+		let bestBuf = current;
+		let bestScore = 0;
+		for (let i = 0; i < stride; i++) {
+			const v = current[i];
+			bestScore += v < 128 ? v : 256 - v;
+		}
+		{
 			let score = 0;
-			for (let i = 0; i < stride && score < bestScore; i++) {
-				const value = (current[i] - predicted(filter, current, previous, i, channels)) & 0xff;
-				score += value < 128 ? value : 256 - value;
+			let i = 0;
+			for (; i < channels && i < stride && score < bestScore; i++) {
+				const v = current[i];
+				subBuf[i] = v;
+				score += v < 128 ? v : 256 - v;
+			}
+			for (; i < stride && score < bestScore; i++) {
+				const v = (current[i] - current[i - channels]) & 0xff;
+				subBuf[i] = v;
+				score += v < 128 ? v : 256 - v;
 			}
 			if (score < bestScore) {
 				bestScore = score;
-				best = filter;
+				best = 1;
+				bestBuf = subBuf;
+			}
+		}
+		{
+			let score = 0;
+			for (let i = 0; i < stride && score < bestScore; i++) {
+				const v = (current[i] - previous[i]) & 0xff;
+				upBuf[i] = v;
+				score += v < 128 ? v : 256 - v;
+			}
+			if (score < bestScore) {
+				bestScore = score;
+				best = 2;
+				bestBuf = upBuf;
+			}
+		}
+		{
+			let score = 0;
+			let i = 0;
+			for (; i < channels && i < stride && score < bestScore; i++) {
+				const v = (current[i] - (previous[i] >>> 1)) & 0xff;
+				avgBuf[i] = v;
+				score += v < 128 ? v : 256 - v;
+			}
+			for (; i < stride && score < bestScore; i++) {
+				const v = (current[i] - ((current[i - channels] + previous[i]) >>> 1)) & 0xff;
+				avgBuf[i] = v;
+				score += v < 128 ? v : 256 - v;
+			}
+			if (score < bestScore) {
+				bestScore = score;
+				best = 3;
+				bestBuf = avgBuf;
+			}
+		}
+		{
+			let score = 0;
+			let i = 0;
+			for (; i < channels && i < stride && score < bestScore; i++) {
+				const v = (current[i] - previous[i]) & 0xff;
+				paethBuf[i] = v;
+				score += v < 128 ? v : 256 - v;
+			}
+			for (; i < stride && score < bestScore; i++) {
+				const left = current[i - channels];
+				const up = previous[i];
+				const upLeft = previous[i - channels];
+				const p = left + up - upLeft;
+				let pa = p - left;
+				if (pa < 0) pa = -pa;
+				let pb = p - up;
+				if (pb < 0) pb = -pb;
+				let pc = p - upLeft;
+				if (pc < 0) pc = -pc;
+				const pred = pa <= pb && pa <= pc ? left : pb <= pc ? up : upLeft;
+				const v = (current[i] - pred) & 0xff;
+				paethBuf[i] = v;
+				score += v < 128 ? v : 256 - v;
+			}
+			if (score < bestScore) {
+				bestScore = score;
+				best = 4;
+				bestBuf = paethBuf;
 			}
 		}
 		const offset = y * (stride + 1);
 		filtered[offset] = best;
-		for (let i = 0; i < stride; i++)
-			filtered[offset + 1 + i] = (current[i] - predicted(best, current, previous, i, channels)) & 0xff;
-		[previous, current] = [current, previous];
+		filtered.set(bestBuf, offset + 1);
+		if (opaque) {
+			const next = previous === zeroRow ? scratchRow : previous;
+			previous = current;
+			current = next;
+			scratchRow = next;
+		} else {
+			previous = current;
+		}
 	}
 	const header = Buffer.alloc(13);
 	header.writeUInt32BE(width, 0);
@@ -319,25 +439,6 @@ function encodePng(rgba: Uint8Array, width: number, height: number): Buffer {
 		pngChunk("IDAT", deflateSync(filtered, { level: 6 })),
 		pngChunk("IEND", new Uint8Array(0)),
 	]);
-}
-
-/** What PNG filter `filter` predicts for byte i of a row, from the bytes left of it and the row above. */
-function predicted(filter: number, row: Uint8Array, above: Uint8Array, i: number, step: number): number {
-	if (filter === 0) return 0;
-	const left = i >= step ? row[i - step] : 0;
-	if (filter === 1) return left;
-	if (filter === 2) return above[i];
-	if (filter === 3) return (left + above[i]) >>> 1;
-	return paeth(left, above[i], i >= step ? above[i - step] : 0);
-}
-
-function paeth(left: number, up: number, upLeft: number): number {
-	const estimate = left + up - upLeft;
-	const toLeft = Math.abs(estimate - left);
-	const toUp = Math.abs(estimate - up);
-	const toUpLeft = Math.abs(estimate - upLeft);
-	if (toLeft <= toUp && toLeft <= toUpLeft) return left;
-	return toUp <= toUpLeft ? up : upLeft;
 }
 
 function pngChunk(type: string, data: Uint8Array): Buffer {
@@ -494,17 +595,34 @@ function pngRaster(bytes: Uint8Array): Raster {
 		const end = start + length;
 		const above = length + 1;
 		if (filter > 4) unreadable("a PNG row has an unknown filter");
-		if (filter === 1) for (let i = start + step; i < end; i++) data[i] += data[i - step];
-		else if (filter === 2 && !first) for (let i = start; i < end; i++) data[i] += data[i - above];
-		else if (filter === 3)
-			for (let i = start; i < end; i++)
-				data[i] += ((i - start >= step ? data[i - step] : 0) + (first ? 0 : data[i - above])) >>> 1;
-		else if (filter === 4)
-			for (let i = start; i < end; i++) {
-				const hasLeft = i - start >= step;
-				const left = hasLeft ? data[i - step] : 0;
-				data[i] += first ? left : paeth(left, data[i - above], hasLeft ? data[i - above - step] : 0);
+		const stepEnd = Math.min(start + step, end);
+		if (filter === 1 || (filter === 4 && first)) {
+			for (let i = stepEnd; i < end; i++) data[i] += data[i - step];
+		} else if (filter === 2) {
+			if (!first) for (let i = start; i < end; i++) data[i] += data[i - above];
+		} else if (filter === 3) {
+			if (first) {
+				for (let i = stepEnd; i < end; i++) data[i] += data[i - step] >>> 1;
+			} else {
+				for (let i = start; i < stepEnd; i++) data[i] += data[i - above] >>> 1;
+				for (let i = stepEnd; i < end; i++) data[i] += (data[i - step] + data[i - above]) >>> 1;
 			}
+		} else if (filter === 4) {
+			for (let i = start; i < stepEnd; i++) data[i] += data[i - above];
+			for (let i = stepEnd; i < end; i++) {
+				const left = data[i - step];
+				const up = data[i - above];
+				const upLeft = data[i - above - step];
+				const p = left + up - upLeft;
+				let pa = p - left;
+				if (pa < 0) pa = -pa;
+				let pb = p - up;
+				if (pb < 0) pb = -pb;
+				let pc = p - upLeft;
+				if (pc < 0) pc = -pc;
+				data[i] += pa <= pb && pa <= pc ? left : pb <= pc ? up : upLeft;
+			}
+		}
 		at = end;
 		return start;
 	};
@@ -551,6 +669,17 @@ function pngRowReader(png: PngImage): (data: Uint8Array, start: number, width: n
 	const transparency = png.transparency ?? new Uint8Array(0);
 	if (depth === 8 && colour === 6)
 		return (data, start, width, out) => out.set(data.subarray(start, start + width * 4));
+	const keyed = (colour === 0 && transparency.byteLength >= 2) || (colour === 2 && transparency.byteLength >= 6);
+	if (depth === 8 && colour === 2 && !keyed) {
+		return (data, start, width, out) => {
+			for (let i = start, end = start + width * 3, o = 0; i < end; i += 3, o += 4) {
+				out[o] = data[i];
+				out[o + 1] = data[i + 1];
+				out[o + 2] = data[i + 2];
+				out[o + 3] = 255;
+			}
+		};
+	}
 	const mask = (1 << depth) - 1;
 	const scale = depth < 8 ? 255 / mask : 1;
 	/** Sample i of a row at the image's depth. */
@@ -564,7 +693,6 @@ function pngRowReader(png: PngImage): (data: Uint8Array, start: number, width: n
 	/** A colour key from tRNS, as wide as the samples it is compared with, or -1. */
 	const key = (i: number) =>
 		transparency.byteLength >= 2 * i + 2 ? (transparency[2 * i] << 8) | transparency[2 * i + 1] : -1;
-	const keyed = (colour === 0 && transparency.byteLength >= 2) || (colour === 2 && transparency.byteLength >= 6);
 	const [red, green, blue] = keyed ? [key(0), key(1), key(2)] : [-1, -1, -1];
 	const colours = palette.byteLength / 3;
 	return (data, start, width, out) => {

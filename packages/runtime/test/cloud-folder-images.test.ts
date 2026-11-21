@@ -542,3 +542,56 @@ it("reads and converts one image at a time, and a call that stops waiting never 
 	);
 	expect(order).not.toContain("e starts");
 });
+
+it("preserves exact pixel output across 1:1 transparent zeroing and all five PNG row filters on RGB and RGBA inputs", () => {
+	const rgba = folderImageView(
+		rgbaPng(9, 7, (x, y) =>
+			x === 0 && y === 0
+				? [200, 150, 100, 0]
+				: [(x * 29) & 255, (y * 37) & 255, (x + y) * 13, 255 - ((x + y) % 5) * 40],
+		),
+	);
+	const decodedRgba = shown(rgba);
+	expect(decodedRgba.at(0, 0)).toEqual([0, 0, 0, 0]);
+	expect(decodedRgba.at(5, 4)).toEqual([(5 * 29) & 255, (4 * 37) & 255, 9 * 13, 255 - (9 % 5) * 40]);
+
+	const width = 11;
+	const height = 6;
+	const rawRgb = Array.from({ length: height }, (_, y) =>
+		Array.from({ length: width * 3 }, (_, i) => ((y * 53 + i * 17) ^ (y * i)) & 255),
+	);
+	const encodedRows: Buffer[] = [];
+	const prev = new Uint8Array(width * 3);
+	for (let y = 0; y < height; y++) {
+		const filter = y % 5;
+		const row = Uint8Array.from(rawRgb[y]!);
+		const out = Buffer.alloc(1 + width * 3);
+		out[0] = filter;
+		for (let i = 0; i < width * 3; i++) {
+			const left = i >= 3 ? row[i - 3]! : 0;
+			const up = prev[i]!;
+			const upLeft = i >= 3 ? prev[i - 3]! : 0;
+			let pred = 0;
+			if (filter === 1) pred = left;
+			else if (filter === 2) pred = up;
+			else if (filter === 3) pred = (left + up) >>> 1;
+			else if (filter === 4) {
+				const p = left + up - upLeft;
+				const pa = Math.abs(p - left);
+				const pb = Math.abs(p - up);
+				const pc = Math.abs(p - upLeft);
+				pred = pa <= pb && pa <= pc ? left : pb <= pc ? up : upLeft;
+			}
+			out[1 + i] = (row[i]! - pred) & 0xff;
+		}
+		encodedRows.push(out);
+		prev.set(row);
+	}
+	const rgbView = folderImageView(pngFile(pngHeader(width, height, 8, 2), Buffer.concat(encodedRows)));
+	const decodedRgb = shown(rgbView);
+	for (let y = 0; y < height; y++) {
+		for (let x = 0; x < width; x++) {
+			expect(decodedRgb.at(x, y)).toEqual([rawRgb[y]![x * 3], rawRgb[y]![x * 3 + 1], rawRgb[y]![x * 3 + 2], 255]);
+		}
+	}
+});
