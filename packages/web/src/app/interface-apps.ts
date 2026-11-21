@@ -2298,37 +2298,58 @@ export class CompanyApps {
 		return () => this.#listeners.delete(listener);
 	}
 
+	#reading: Promise<readonly CompanyApp[]> | undefined;
+	#readAgain = false;
+
 	/** Reads the apps now, and publishes them when they changed. */
 	async read(): Promise<readonly CompanyApp[]> {
 		if (this.#stop.signal.aborted) return this.#last;
-		try {
-			const folder = this.#source.folder();
-			const [apps, groups] = await Promise.all([
-				readApps(folder, this.#stop.signal),
-				this.#publishGroups ? readAppGroups(folder, this.#stop.signal).catch(() => null) : null,
-			]);
-			// A failed read of the groups keeps what was read before.
-			if (groups !== null) {
-				const shownGroups = JSON.stringify(groups ?? null);
-				if (shownGroups !== this.#shownGroups && !this.#stop.signal.aborted) {
-					this.#shownGroups = shownGroups;
-					this.#publishGroups?.(groups);
-				}
-			}
-			const shown = JSON.stringify(apps);
-			this.#last = apps;
-			if (shown !== this.#shown && !this.#stop.signal.aborted) {
-				this.#shown = shown;
-				this.#publish(apps);
-				this.#warm();
-			}
-			// After every read that worked, whatever woke it (a hint, the minute's clock, the tab coming back): what reads
-			// beside the apps (their icons) reads again too, as a change of those changes no manifest.
-			if (!this.#stop.signal.aborted) for (const reader of [...this.#readers]) reader();
-		} catch {
-			/* What was read before stands. */
+		if (this.#reading) {
+			this.#readAgain = true;
+			return this.#reading;
 		}
-		return this.#last;
+		let settled = false;
+		let run: Promise<readonly CompanyApp[]> | undefined;
+		run = (async (): Promise<readonly CompanyApp[]> => {
+			try {
+				do {
+					this.#readAgain = false;
+					try {
+						const folder = this.#source.folder();
+						const [apps, groups] = await Promise.all([
+							readApps(folder, this.#stop.signal),
+							this.#publishGroups ? readAppGroups(folder, this.#stop.signal).catch(() => null) : null,
+						]);
+						// A failed read of the groups keeps what was read before.
+						if (groups !== null) {
+							const shownGroups = JSON.stringify(groups ?? null);
+							if (shownGroups !== this.#shownGroups && !this.#stop.signal.aborted) {
+								this.#shownGroups = shownGroups;
+								this.#publishGroups?.(groups);
+							}
+						}
+						const shown = JSON.stringify(apps);
+						this.#last = apps;
+						if (shown !== this.#shown && !this.#stop.signal.aborted) {
+							this.#shown = shown;
+							this.#publish(apps);
+							this.#warm();
+						}
+						// After every read that worked, whatever woke it (a hint, the minute's clock, the tab coming back): what reads
+						// beside the apps (their icons) reads again too, as a change of those changes no manifest.
+						if (!this.#stop.signal.aborted) for (const reader of [...this.#readers]) reader();
+					} catch {
+						/* What was read before stands. */
+					}
+				} while (this.#readAgain && !this.#stop.signal.aborted);
+				return this.#last;
+			} finally {
+				settled = true;
+				if (this.#reading === run) this.#reading = undefined;
+			}
+		})();
+		if (!settled) this.#reading = run;
+		return run;
 	}
 
 	/** Reads the apps' pages ahead (`warmApps`), a moment after they changed, so the company's own first reads go

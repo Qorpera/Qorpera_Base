@@ -308,4 +308,27 @@ describe("a founding table's live presence", () => {
 		expect(hub.devices.size).toBe(0);
 		expect(last(annaTab.health)).toBe("stopped");
 	});
+
+	it("waits for channel removal before recreating a topic on retry", async () => {
+		vi.useFakeTimers();
+		const hub = new Hub();
+		hub.refuseJoin = true;
+		const annaTab = open(hub, anna);
+		let releaseRemove: (() => void) | undefined;
+		const removeSpy = vi.mocked(annaTab.cloud.supabase.removeChannel);
+		const origRemove = removeSpy.getMockImplementation()!;
+		removeSpy.mockImplementationOnce(async (ch) => {
+			await new Promise<void>((resolve) => {
+				releaseRemove = resolve;
+			});
+			return origRemove(ch);
+		});
+		await until(() => releaseRemove !== undefined, "deferred channel removal");
+		hub.refuseJoin = false;
+		await vi.advanceTimersByTimeAsync(1_100);
+		expect(annaTab.cloud.supabase.channel).toHaveBeenCalledTimes(1);
+		releaseRemove!();
+		await until(() => last(annaTab.health) === "connected", "reconnected after removal");
+		expect(annaTab.cloud.supabase.channel).toHaveBeenCalledTimes(2);
+	});
 });

@@ -121,4 +121,36 @@ describe("the Company File's hint channel", () => {
 		expect(reads).toHaveBeenCalledTimes(3);
 		apps.dispose();
 	});
+
+	it("disconnects the dedicated Realtime client on close and when the company signal aborts", async () => {
+		const removeAllChannels = vi.fn(async () => []);
+		const disconnect = vi.fn();
+		const target = realtime.client as typeof realtime.client & {
+			removeAllChannels?: () => Promise<unknown[]>;
+			realtime: { setAuth: () => Promise<void>; disconnect?: () => void };
+		};
+		target.removeAllChannels = removeAllChannels;
+		target.realtime.disconnect = disconnect;
+		try {
+			const files = company();
+			const hints = files.folderHints(() => {});
+			await settle();
+			await hints.close();
+			expect(removeAllChannels).toHaveBeenCalledTimes(1);
+			expect(disconnect).toHaveBeenCalledTimes(1);
+
+			const stop = new AbortController();
+			stops.push(stop);
+			const secondFiles = new WebCompanyFiles(fixture().cloud, profileA, userA.id, "owner", stop.signal, () => {});
+			secondFiles.folderHints(() => {});
+			await settle();
+			stop.abort();
+			await settle();
+			expect(removeAllChannels).toHaveBeenCalledTimes(2);
+			expect(disconnect).toHaveBeenCalledTimes(2);
+		} finally {
+			delete target.removeAllChannels;
+			delete target.realtime.disconnect;
+		}
+	});
 });
