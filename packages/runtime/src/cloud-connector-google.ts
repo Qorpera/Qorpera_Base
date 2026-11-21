@@ -5,6 +5,7 @@ import { cloudConnector } from "./cloud-connector-catalog.ts";
 import {
 	ConnectorRequestError,
 	clipText,
+	codePointCount,
 	connectorRequest,
 	decodeBase64Url,
 	decodeUtf8,
@@ -47,6 +48,7 @@ const THREAD_BUDGET_BYTES = 18 * 1024;
 const LIST_BYTES = 24 * 1024;
 const FILE_CONTENT_BYTES = 24 * 1024;
 const MAX_MEDIA_BYTES = 1024 * 1024;
+const GMAIL_METADATA_CONCURRENCY = 5;
 const EMAIL = /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/;
 const GOOGLE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -219,12 +221,16 @@ function headerValue(value: string): string {
 	// Unicode code point boundary and fold with whitespace between words.
 	const words: string[] = [];
 	let chunk = "";
+	let chunkBytes = 0;
 	for (const character of value) {
-		if (Buffer.byteLength(chunk + character, "utf8") > 45) {
+		const charBytes = Buffer.byteLength(character, "utf8");
+		if (chunkBytes + charBytes > 45) {
 			words.push(`=?UTF-8?B?${Buffer.from(chunk, "utf8").toString("base64")}?=`);
 			chunk = "";
+			chunkBytes = 0;
 		}
 		chunk += character;
+		chunkBytes += charBytes;
 	}
 	if (chunk) words.push(`=?UTF-8?B?${Buffer.from(chunk, "utf8").toString("base64")}?=`);
 	return words.join("\r\n ");
@@ -372,21 +378,60 @@ export function createGmailConnectorAdapters(options: {
 						})
 					).json,
 				);
-				let results: JsonValue[] = [];
+				const ids: string[] = [];
 				for (const item of jsonArray(listing.messages).slice(0, limit)) {
 					const id = jsonString(jsonRecord(item).id, 64);
-					if (!id || !GOOGLE_ID.test(id)) continue;
-					const message = jsonRecord(
-						(
-							await google(context, `${messages}/${id}`, {
-								query: { format: "metadata", metadataHeaders: ["From", "To", "Cc", "Subject", "Date"] },
-							})
-						).json,
-					);
-					results.push(messageSummary(message));
+					if (id && GOOGLE_ID.test(id)) ids.push(id);
 				}
-				const fitted = fitItems(results, LIST_BYTES);
-				results = fitted.items;
+				const fetched = new Array<JsonValue>(ids.length);
+				if (ids.length > 0) {
+					const scope = new AbortController();
+					const onAbort = () => scope.abort(context.signal.reason);
+					if (context.signal.aborted) onAbort();
+					else context.signal.addEventListener("abort", onAbort, { once: true });
+					const scopedContext: ConnectorOperationContext = { ...context, signal: scope.signal };
+					let nextIndex = 0;
+					let firstError: unknown;
+					let failed = false;
+					try {
+						const workers = Math.min(GMAIL_METADATA_CONCURRENCY, ids.length);
+						await Promise.all(
+							Array.from({ length: workers }, async () => {
+								while (!failed && !scope.signal.aborted) {
+									const index = nextIndex;
+									nextIndex += 1;
+									if (index >= ids.length) return;
+									try {
+										const message = jsonRecord(
+											(
+												await google(scopedContext, `${messages}/${ids[index]}`, {
+													query: {
+														format: "metadata",
+														metadataHeaders: ["From", "To", "Cc", "Subject", "Date"],
+													},
+												})
+											).json,
+										);
+										fetched[index] = messageSummary(message);
+									} catch (error) {
+										if (!failed) {
+											failed = true;
+											firstError = error;
+											scope.abort();
+										}
+										return;
+									}
+								}
+							}),
+						);
+					} finally {
+						context.signal.removeEventListener("abort", onAbort);
+					}
+					if (failed) throw firstError;
+					context.signal.throwIfAborted();
+				}
+				const fitted = fitItems(fetched, LIST_BYTES);
+				const results = fitted.items;
 				return {
 					messages: results,
 					estimated_total: jsonInteger(listing.resultSizeEstimate),
@@ -428,7 +473,7 @@ export function createGmailConnectorAdapters(options: {
 						Math.min(THREAD_MESSAGE_CHARS, budget),
 						Math.min(THREAD_MESSAGE_BYTES, byteBudget),
 					);
-					budget -= [...text.text].length;
+					budget -= codePointCount(text.text);
 					byteBudget -= jsonTextBytes(text.text);
 					const summary = messageSummary(message);
 					included.push({
