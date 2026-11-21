@@ -25,7 +25,9 @@ import {
 	type CodeCheck,
 	type CodeChecksRun,
 	type CodeSiteRecipe,
+	codeChecksPlan,
 	codeChecksTail,
+	MAX_PARALLEL_CHECKS,
 } from "./code-checks.ts";
 import { codeAreaPath } from "./code-host-jobs.ts";
 import {
@@ -587,6 +589,11 @@ const CODE_CHECKS_COPY_MS = 300_000;
 const CODE_CHECKS_SLACK_MS = 60_000;
 /** How often a running check is read. */
 const CODE_CHECKS_POLL_MS = 3_000;
+const CODE_CHECKS_POLL_STEPS_MS: readonly number[] = [250, 500, 1_000, 2_000];
+function codeChecksPollDelayMs(attempt: number, configuredPollMs: number | undefined): number {
+	if (configuredPollMs !== undefined) return configuredPollMs;
+	return CODE_CHECKS_POLL_STEPS_MS[Math.min(attempt, CODE_CHECKS_POLL_STEPS_MS.length - 1)] as number;
+}
 /** How many reads in a row a check's calls may go unanswered (the transport, the guest, the run authority) before the
  * run ends as not run: a call that fails is asked again at the next read until then (a minute at the default pace). */
 const CODE_CHECKS_UNANSWERED_READS = 20;
@@ -782,7 +789,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	// forgets them, and then only the scripts' own rules and the copy's end of earlier runs' processes hold.
 	/** Per session, the command whose stop could not be confirmed: it may still run. No run of the session's checks
 	 * starts, nor touches a folder, until a cancel and a read before it confirm that it ended. It is uncertain too. */
-	readonly #checksMayRun = new Map<string, string>();
+	readonly #checksMayRun = new Map<string, Set<string>>();
 	/** Per session, every command not seen to end for certain: a start never answered (its `cancelled` may be
 	 * provisional, and the start may land at any time), a stop not confirmed, a receipt or a `hidden` that says
 	 * `unconfirmed`. Looked at again after the next run's fence stands, before its first check (#checksLookAgain). */
@@ -2038,11 +2045,14 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				throw new CodingChecksUnauthorized(error);
 			}
 		};
+		const dependencies = codeChecksPlan(input.checks);
+		if (dependencies === null)
+			return answer({ state: "not_run", why: "transport", code: "CODE_CHECKS_PLAN_INVALID" });
 		// A command of an earlier run that may still run is cancelled and read again first: while it may, no run starts
 		// and no folder is touched. Its end seen here clears only this guard: it stays uncertain, and is looked at again
 		// after this run's fence (a provisional `cancelled` here proves nothing). The turn's abort is thrown on.
-		const earlier = this.#checksMayRun.get(claim.workerId);
-		if (earlier !== undefined) {
+		const earlierCommands = this.#checksMayRun.get(claim.workerId);
+		for (const earlier of [...(earlierCommands ?? [])]) {
 			let end: "ended" | "lost" | "unkept" | "running" = "running";
 			try {
 				end = await this.#stopChecksCommand(
@@ -2059,7 +2069,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			this.#checksReport({ event: "code-checks", step: "earlier", ...said, commandId: earlier, end });
 			if (end === "running")
 				return answer({ state: "not_run", why: "machine", code: CODE_CHECKS_EARLIER_RUN_NOT_STOPPED });
-			if (this.#checksMayRun.get(claim.workerId) === earlier) this.#checksMayRun.delete(claim.workerId);
+			earlierCommands?.delete(earlier);
+			if (earlierCommands?.size === 0) this.#checksMayRun.delete(claim.workerId);
 		}
 		// The run's wall budget: the copy's, each check's with its slack, and the site's when it takes one.
 		const budget = AbortSignal.timeout(
@@ -2069,119 +2080,277 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					CODE_CHECKS_COPY_MS + (recipe === null ? 0 : CODE_SITE_BUDGET_MS),
 				),
 		);
-		let copyMs = 0;
-		const passed: { name: string; run: string; ms: number }[] = [];
-		for (let index = 0; index <= input.checks.length; index++) {
-			const check = index === 0 ? undefined : (input.checks[index - 1] as CodeCheck);
-			// Its whole output, on the machine's disk until the next run.
-			const log = check ? `.qorpera-checks/${name}/out/${index}-${check.name}.log` : "";
-			let transport: LxdCodingFolderCommandTransport;
-			try {
-				transport = this.#folderTransport(folder, ready, {
-					cwd: check ? `${dir}/src` : home,
-					environment: check
-						? {
+		let copyTransport: LxdCodingFolderCommandTransport;
+		try {
+			copyTransport = this.#folderTransport(folder, ready, {
+				cwd: home,
+				environment: {
+					...base,
+					QORPERA_CHECKS_REPOSITORY: repository,
+					QORPERA_CHECKS_COMMIT: input.commit,
+				},
+				authorize: checked,
+			});
+		} catch (error) {
+			this.#checksReport({ event: "code-checks-error", step: "run", ...said, error });
+			return answer({ state: "not_run", why: "transport", code: errorCodeOf(error) });
+		}
+		const copyCommand = {
+			commandId: commandId(0),
+			inputSha256: digest(
+				JSON.stringify({
+					schema: "qorpera.code-checks-command/v1",
+					commit: input.commit,
+					index: 0,
+					run: CODE_CHECKS_COPY,
+				}),
+			),
+			command: CODE_CHECKS_COPY,
+			timeoutMs: CODE_CHECKS_COPY_MS,
+		};
+		const copyStep = { ...said, folder: name, index: 0 };
+		this.#checksReport({ event: "code-checks", step: "started", ...copyStep });
+		const copyStarted = performance.now();
+		const copyEnded = await this.#checksCommand(
+			copyTransport,
+			ready.scope,
+			copyCommand,
+			true,
+			budget,
+			signal,
+			folder,
+		);
+		const copyMs = elapsed(copyStarted);
+		if ("cancelled" in copyEnded) return answer({ state: "not_run", why: "machine", code: "CODE_CHECKS_CANCELLED" });
+		if ("why" in copyEnded) {
+			this.#checksReport({
+				event: "code-checks",
+				step: "ended",
+				...copyStep,
+				ms: copyMs,
+				state: "not_run",
+				...(copyEnded.stopped === undefined ? {} : { stopped: copyEnded.stopped }),
+			});
+			if (copyEnded.error !== undefined)
+				this.#checksReport({ event: "code-checks-error", step: "command", ...copyStep, error: copyEnded.error });
+			return answer({ state: "not_run", why: copyEnded.why, code: copyEnded.code });
+		}
+		if (copyEnded.error !== undefined)
+			this.#checksReport({ event: "code-checks-error", step: "tail", ...copyStep, error: copyEnded.error });
+		this.#checksReport({
+			event: "code-checks",
+			step: "ended",
+			...copyStep,
+			ms: copyMs,
+			state: copyEnded.receipt.state,
+			exitCode: copyEnded.receipt.exitCode,
+		});
+		if (copyEnded.receipt.state !== "succeeded")
+			return answer(
+				copyEnded.receipt.state === "failed"
+					? { state: "not_run", why: "copy", code: `CODE_CHECKS_COPY_EXIT_${copyEnded.receipt.exitCode}` }
+					: { state: "not_run", why: "machine", code: `CODE_CHECKS_${copyEnded.receipt.state.toUpperCase()}` },
+			);
+		const running = await this.#checksLookAgain(claim, ready, folder, home, base, checked, said, signal);
+		if (running !== undefined) {
+			this.#markChecksMayRun(claim.workerId, running);
+			return answer({ state: "not_run", why: "machine", code: CODE_CHECKS_EARLIER_RUN_NOT_STOPPED });
+		}
+		const totalChecks = input.checks.length;
+		const remainingDeps = dependencies.map((deps) => deps.length);
+		const dependents: number[][] = Array.from({ length: totalChecks }, () => []);
+		for (let i = 0; i < totalChecks; i++) {
+			for (const dep of dependencies[i] as readonly number[]) dependents[dep]?.push(i);
+		}
+		const readyQueue: number[] = [];
+		for (let i = 0; i < totalChecks; i++) {
+			if (remainingDeps[i] === 0) readyQueue.push(i);
+		}
+		const passedByIndex = new Map<number, { name: string; run: string; ms: number }>();
+		const runAbort = new AbortController();
+		type TerminalOutcome =
+			| {
+					readonly kind: "failed";
+					readonly checkIndex: number;
+					readonly failed: Extract<CodeChecksRun, { state: "failed" }>["failed"];
+			  }
+			| {
+					readonly kind: "not_run";
+					readonly why: Extract<CodeChecksRun, { state: "not_run" }>["why"];
+					readonly code: string;
+			  };
+		let terminal: TerminalOutcome | undefined;
+		let abortedError: unknown;
+		let hasAbortedError = false;
+		const inFlight = new Set<Promise<void>>();
+		const stopRun = (outcome: TerminalOutcome) => {
+			if (terminal === undefined) {
+				terminal = outcome;
+				runAbort.abort();
+			}
+		};
+		const launch = (checkIndex: number) => {
+			const check = input.checks[checkIndex] as CodeCheck;
+			const index = checkIndex + 1;
+			const log = `.qorpera-checks/${name}/out/${index}-${check.name}.log`;
+			const step = { ...said, folder: name, index, check: check.name };
+			const task = (async () => {
+				try {
+					let transport: LxdCodingFolderCommandTransport;
+					try {
+						transport = this.#folderTransport(folder, ready, {
+							cwd: `${dir}/src`,
+							environment: {
 								...base,
 								QORPERA_CHECK_CWD: check.cwd,
 								QORPERA_CHECK_RUN: check.run,
 								QORPERA_CHECK_LOG: `${home}/${log}`,
-							}
-						: {
-								...base,
-								QORPERA_CHECKS_REPOSITORY: repository,
-								QORPERA_CHECKS_COMMIT: input.commit,
 							},
-					authorize: checked,
-				});
-			} catch (error) {
-				this.#checksReport({ event: "code-checks-error", step: "run", ...said, error });
-				return answer({ state: "not_run", why: "transport", code: errorCodeOf(error) });
-			}
-			const command = {
-				commandId: commandId(index),
-				inputSha256: digest(
-					JSON.stringify({
-						schema: "qorpera.code-checks-command/v1",
-						commit: input.commit,
-						index,
-						run: check ? check.run : CODE_CHECKS_COPY,
-					}),
-				),
-				command: check ? CODE_CHECKS_CHECK : CODE_CHECKS_COPY,
-				timeoutMs: check ? check.timeoutSeconds * 1000 : CODE_CHECKS_COPY_MS,
-			};
-			const step = { ...said, folder: name, index, ...(check ? { check: check.name } : {}) };
-			this.#checksReport({ event: "code-checks", step: "started", ...step });
-			const started = performance.now();
-			const ended = await this.#checksCommand(transport, ready.scope, command, !check, budget, signal, folder);
-			const ms = elapsed(started);
-			if ("why" in ended) {
-				this.#checksReport({
-					event: "code-checks",
-					step: "ended",
-					...step,
-					ms,
-					state: "not_run",
-					...(ended.stopped === undefined ? {} : { stopped: ended.stopped }),
-				});
-				if (ended.error !== undefined)
-					this.#checksReport({ event: "code-checks-error", step: "command", ...step, error: ended.error });
-				return answer({ state: "not_run", why: ended.why, code: ended.code });
-			}
-			const { receipt } = ended;
-			if (ended.error !== undefined)
-				this.#checksReport({ event: "code-checks-error", step: "tail", ...step, error: ended.error });
-			this.#checksReport({
-				event: "code-checks",
-				step: "ended",
-				...step,
-				ms,
-				state: receipt.state,
-				exitCode: receipt.exitCode,
-			});
-			if (!check) {
-				// The copy is the platform's own command on a commit the code host just read: any ending but success is no
-				// fault of the code.
-				if (receipt.state === "succeeded") {
-					copyMs = ms;
-					// The fence stands: every command of an earlier run not seen to end for certain is cancelled and read once
-					// more before the first check starts. One that landed before the fence and still runs is stopped and
-					// confirmed, or no check of this run starts.
-					const running = await this.#checksLookAgain(claim, ready, folder, home, base, checked, said, signal);
-					if (running !== undefined) {
-						this.#checksMayRun.set(claim.workerId, running);
-						return answer({ state: "not_run", why: "machine", code: CODE_CHECKS_EARLIER_RUN_NOT_STOPPED });
+							authorize: checked,
+						});
+					} catch (error) {
+						this.#checksReport({ event: "code-checks-error", step: "run", ...said, error });
+						stopRun({ kind: "not_run", why: "transport", code: errorCodeOf(error) });
+						return;
 					}
-					continue;
+					const command = {
+						commandId: commandId(index),
+						inputSha256: digest(
+							JSON.stringify({
+								schema: "qorpera.code-checks-command/v1",
+								commit: input.commit,
+								index,
+								run: check.run,
+							}),
+						),
+						command: CODE_CHECKS_CHECK,
+						timeoutMs: check.timeoutSeconds * 1000,
+					};
+					this.#checksReport({ event: "code-checks", step: "started", ...step });
+					const started = performance.now();
+					const ended = await this.#checksCommand(
+						transport,
+						ready.scope,
+						command,
+						false,
+						budget,
+						signal,
+						folder,
+						runAbort.signal,
+					);
+					const ms = elapsed(started);
+					if ("cancelled" in ended) {
+						this.#checksReport({
+							event: "code-checks",
+							step: "ended",
+							...step,
+							ms,
+							state: "cancelled",
+							stopped: ended.stopped,
+						});
+						return;
+					}
+					if ("why" in ended) {
+						this.#checksReport({
+							event: "code-checks",
+							step: "ended",
+							...step,
+							ms,
+							state: "not_run",
+							...(ended.stopped === undefined ? {} : { stopped: ended.stopped }),
+						});
+						if (ended.error !== undefined)
+							this.#checksReport({ event: "code-checks-error", step: "command", ...step, error: ended.error });
+						stopRun({ kind: "not_run", why: ended.why, code: ended.code });
+						return;
+					}
+					const { receipt } = ended;
+					if (ended.error !== undefined)
+						this.#checksReport({ event: "code-checks-error", step: "tail", ...step, error: ended.error });
+					this.#checksReport({
+						event: "code-checks",
+						step: "ended",
+						...step,
+						ms,
+						state: receipt.state,
+						exitCode: receipt.exitCode,
+					});
+					const run = clipped(check.run, CODE_CHECKS_RUN_BYTES);
+					if (receipt.state === "succeeded") {
+						passedByIndex.set(checkIndex, { name: check.name, run, ms });
+						for (const next of dependents[checkIndex] as readonly number[]) {
+							remainingDeps[next] = (remainingDeps[next] as number) - 1;
+							if (remainingDeps[next] === 0) readyQueue.push(next);
+						}
+						return;
+					}
+					if (receipt.state !== "failed") {
+						stopRun({ kind: "not_run", why: "machine", code: `CODE_CHECKS_${receipt.state.toUpperCase()}` });
+						return;
+					}
+					stopRun({
+						kind: "failed",
+						checkIndex,
+						failed: {
+							name: check.name,
+							run,
+							ms,
+							exitCode: receipt.exitCode,
+							atLimit: receipt.exitCode === 124 && ms >= check.timeoutSeconds * 1000,
+							tail: ended.tail,
+							log: `~/${log}`,
+						},
+					});
+				} catch (error) {
+					if (!hasAbortedError) {
+						hasAbortedError = true;
+						abortedError = error;
+					}
+					runAbort.abort();
 				}
-				return answer(
-					receipt.state === "failed"
-						? { state: "not_run", why: "copy", code: `CODE_CHECKS_COPY_EXIT_${receipt.exitCode}` }
-						: { state: "not_run", why: "machine", code: `CODE_CHECKS_${receipt.state.toUpperCase()}` },
-				);
+			})().finally(() => {
+				inFlight.delete(task);
+			});
+			inFlight.add(task);
+		};
+		while (!runAbort.signal.aborted && !signal.aborted && (readyQueue.length > 0 || inFlight.size > 0)) {
+			readyQueue.sort((a, b) => a - b);
+			while (
+				!runAbort.signal.aborted &&
+				!signal.aborted &&
+				inFlight.size < MAX_PARALLEL_CHECKS &&
+				readyQueue.length > 0
+			) {
+				launch(readyQueue.shift() as number);
 			}
-			const run = clipped(check.run, CODE_CHECKS_RUN_BYTES);
-			if (receipt.state === "succeeded") {
-				passed.push({ name: check.name, run, ms });
-				continue;
+			if (inFlight.size > 0) await Promise.race(inFlight);
+		}
+		if (inFlight.size > 0) await Promise.allSettled([...inFlight]);
+		if (signal.aborted) throw signal.reason;
+		if (hasAbortedError) throw abortedError;
+		if (terminal !== undefined) {
+			if (terminal.kind === "not_run") return answer({ state: "not_run", why: terminal.why, code: terminal.code });
+			const passedChecks: { name: string; ms: number }[] = [];
+			const notRun: string[] = [];
+			for (let i = 0; i < totalChecks; i++) {
+				const done = passedByIndex.get(i);
+				if (done !== undefined) passedChecks.push({ name: done.name, ms: done.ms });
+				else if (i !== terminal.checkIndex) notRun.push((input.checks[i] as CodeCheck).name);
 			}
-			if (receipt.state !== "failed")
-				return answer({ state: "not_run", why: "machine", code: `CODE_CHECKS_${receipt.state.toUpperCase()}` });
 			return answer({
 				state: "failed",
 				ms: elapsed(began),
-				passed: passed.map(({ name, ms }) => ({ name, ms })),
-				failed: {
-					name: check.name,
-					run,
-					ms,
-					exitCode: receipt.exitCode,
-					atLimit: receipt.exitCode === 124 && ms >= check.timeoutSeconds * 1000,
-					tail: ended.tail,
-					log: `~/${log}`,
-				},
-				notRun: input.checks.slice(index).map(({ name }) => name),
+				passed: passedChecks,
+				failed: terminal.failed,
+				notRun,
 			});
+		}
+		const passed: { name: string; run: string; ms: number }[] = [];
+		for (let i = 0; i < totalChecks; i++) {
+			const done = passedByIndex.get(i);
+			if (done === undefined)
+				return answer({ state: "not_run", why: "transport", code: "CODE_CHECKS_PLAN_INVALID" });
+			passed.push(done);
 		}
 		const ms = elapsed(began);
 		if (recipe === null) return answer({ state: "passed", ms, copyMs, checks: passed, site: null });
@@ -2440,6 +2609,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const bounded = AbortSignal.any([run.budget, AbortSignal.timeout(command.timeoutMs + CODE_CHECKS_SLACK_MS)]);
 		const ended = await this.#checksCommand(transport, ready.scope, command, true, bounded, signal, folder);
 		const ms = Math.round(performance.now() - started);
+		if ("cancelled" in ended) return { code: "CODE_CHECKS_CANCELLED", ended: ended.ended };
 		if ("why" in ended) {
 			this.#checksReport({
 				event: "code-checks",
@@ -2544,6 +2714,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		}
 		return undefined;
 	}
+	#markChecksMayRun(workerId: string, commandId: string): void {
+		const commands = this.#checksMayRun.get(workerId) ?? new Set<string>();
+		this.#checksMayRun.set(workerId, commands.add(commandId));
+	}
 	/** One command of a run of the checks, to its end: started, then read every CODE_CHECKS_POLL_MS until it ends. A
 	 * call that fails is asked again at the next read (a start again is the same command) until the time of
 	 * CODE_CHECKS_UNANSWERED_READS reads passed without an answer. A command that ended is shown only as a model's
@@ -2565,8 +2739,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		budget: AbortSignal,
 		signal: AbortSignal,
 		folder: FolderOptions,
+		cancel?: AbortSignal,
 	): Promise<
 		| { receipt: CloudCodingCommandReceipt; tail: string; error?: unknown }
+		| { cancelled: true; stopped: boolean; ended: boolean }
 		| {
 				why: "machine" | "transport" | "authority" | "budget";
 				code: string;
@@ -2576,7 +2752,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		  }
 	> {
 		const live = AbortSignal.any([signal, budget]);
-		const pollMs = folder.checksPollMs ?? CODE_CHECKS_POLL_MS;
+		const pollLive = cancel ? AbortSignal.any([signal, budget, cancel]) : live;
+		const unansweredLimitMs = CODE_CHECKS_UNANSWERED_READS * (folder.checksPollMs ?? CODE_CHECKS_POLL_MS);
 		const { commandId } = command;
 		// The command's last receipt: none while its start was never answered.
 		let receipt: CloudCodingCommandReceipt | undefined;
@@ -2591,7 +2768,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		// (a `cancelled` may be provisional, and the start may land later); one the host never kept is not.
 		const stopped = async <T extends object>(then: T): Promise<T & { stopped: boolean; ended: boolean }> => {
 			const end = await this.#stopChecksCommand(transport, scope, commandId, folder);
-			if (end === "running") this.#checksMayRun.set(scope.workerId, commandId);
+			if (end === "running") this.#markChecksMayRun(scope.workerId, commandId);
 			if (end !== "unkept" && (receipt === undefined || end !== "ended")) uncertain();
 			if (signal.aborted) throw signal.reason;
 			return {
@@ -2601,29 +2778,35 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			};
 		};
 		const overBudget = { why: "budget" as const, code: "CODE_CHECKS_BUDGET" };
+		const siblingCancelled = { cancelled: true as const };
 		const failed = (error: unknown) => ({
 			why: error instanceof CodingChecksUnauthorized ? ("authority" as const) : ("transport" as const),
 			code: errorCodeOf(error),
 			error,
 		});
 		let unanswered: number | undefined;
+		let pollAttempt = 0;
 		for (;;) {
 			try {
 				receipt = receipt
-					? await transport.read(scope, { commandId, tail: true, limit: 4096 }, live)
-					: await transport.start(scope, command, live);
+					? await transport.read(scope, { commandId, tail: true, limit: 4096 }, pollLive)
+					: await transport.start(scope, command, pollLive);
 				unanswered = undefined;
 				if (receipt.state !== "running") break;
 			} catch (error) {
 				// Given up (`stopped` throws the turn's abort on), or past the budget.
 				if (signal.aborted || budget.aborted) return await stopped(overBudget);
+				if (cancel?.aborted) return await stopped(siblingCancelled);
 				unanswered ??= performance.now();
-				if (performance.now() - unanswered >= CODE_CHECKS_UNANSWERED_READS * pollMs)
-					return await stopped(failed(error));
+				if (performance.now() - unanswered >= unansweredLimitMs) return await stopped(failed(error));
 			}
 			try {
-				await setTimeout(pollMs, undefined, { signal: live });
+				await setTimeout(codeChecksPollDelayMs(pollAttempt++, folder.checksPollMs), undefined, {
+					signal: pollLive,
+				});
 			} catch {
+				if (signal.aborted || budget.aborted) return await stopped(overBudget);
+				if (cancel?.aborted) return await stopped(siblingCancelled);
 				return await stopped(overBudget);
 			}
 		}
@@ -2632,7 +2815,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		if (receipt.state === "unconfirmed") uncertain();
 		let tail = "",
 			unread: unknown;
-		if (receipt.state === "failed" && !copy)
+		if (receipt.state === "failed" && !copy && !cancel?.aborted)
 			try {
 				const end = await transport.read(scope, { commandId, tail: true, limit: 16384 }, live);
 				// A read that starts inside the output may start inside a line: from its first whole line, unless it is all
@@ -2689,7 +2872,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	): Promise<"ended" | "lost" | "unkept" | "running"> {
 		const bound = AbortSignal.timeout(folder.checksStopMs ?? CODE_CHECKS_STOP_MS);
 		const checked = turn ? AbortSignal.any([turn, bound]) : bound;
-		const pollMs = folder.checksPollMs ?? CODE_CHECKS_POLL_MS;
+		let pollAttempt = 0;
 		for (;;) {
 			try {
 				const { state } = await transport.cancel(scope, commandId, checked);
@@ -2705,7 +2888,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				}
 			}
 			try {
-				await setTimeout(pollMs, undefined, { signal: checked });
+				await setTimeout(codeChecksPollDelayMs(pollAttempt++, folder.checksPollMs), undefined, { signal: checked });
 			} catch {
 				if (turn?.aborted) throw turn.reason;
 				return "running";

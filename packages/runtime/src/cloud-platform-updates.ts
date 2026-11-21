@@ -230,6 +230,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Gemini 4 Neon in conversations",
 		text: "A member who adds a Gemini API key in Settings, AI subscriptions can pick Gemini 4 Neon in a conversation's Model menu (with Low, Medium, High and Extra high effort) or set it as their default for chats. Your attended conversation turns run directly on Gemini 4 Neon with your company files, machines, workers, apps, routines and search, while background workers, routines and coding sessions stay on Codex or Claude Code. Members can set a monthly USD spend cap; reaching it pauses Gemini turns and notifies them rather than switching logins.",
 	},
+	{
+		id: "parallel-code-checks",
+		kind: "capability",
+		date: "2026-11-21",
+		title: "Repository checks can run side by side",
+		text: "A repository's checks can now run in parallel instead of one after another: when any check lists needs (the names of checks that must pass before it starts), Qorpera runs up to four ready checks at once and stops siblings right away if one fails. For example, install can run first, then lint, typecheck and tests side by side, and build once they pass. Existing check lists without needs stay sequential as before. Ask coding sessions to declare needs on repositories with slow check suites so changes land faster.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;
