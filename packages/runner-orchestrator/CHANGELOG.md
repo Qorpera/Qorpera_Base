@@ -52,6 +52,8 @@ Code no production path called, deleted with the tests that alone kept it alive 
 
 ### Added
 
+- Parallel DAG execution for `.qorpera/checks.json` (`code-checks.ts`, `coding-executor-host.ts`): check items accept an optional `needs` array of check names, validated at parse time against unknown names, self-dependencies, duplicates, and cycles (`codeChecksPlan`). Files omitting `needs` on every item remain strictly sequential; when any check declares `needs`, `LxdCodingExecutorHost.#runChecks` runs ready checks concurrently (bounded by `MAX_PARALLEL_CHECKS = 4`), cancels in-flight siblings immediately on first failure or abort while tracking every unconfirmed stop in `#checksMayRun`, keeps `CODE_CHECKS_DRILL` strictly after all repository checks and site collection strictly after all checks pass, preserves deterministic file-order results, and uses progressive check poll backoff (`250 -> 500 -> 1000 -> 2000 ms`) instead of a flat 3 s wait.
+
 - Every company website can have an address of its own, the kernel's side (own code storage, step 5, release 5.1, part
   A1; migration `20260930756000`, SQL test 1252; `lanes/own-code-storage/STEP5-BUILD.md`). Inert until the operator sets
   `qorpera_site_settings.hosts_domain` and then `hosts_enabled`: while on, a files site's link is
