@@ -71,7 +71,8 @@ import {
 	activeTaskSessions,
 	hasConflictedChange,
 	isOpenChange,
-	migrationPending,
+	isRunningSession,
+	openExplorations,
 	surfacesOf,
 } from "../surfaces-store.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
@@ -81,7 +82,7 @@ import { personFace } from "./friends.ts";
 import { memberPresence } from "./member-chat.ts";
 import type { SettingsTab } from "./settings.ts";
 import { CrewFigures, crewWave } from "./surface-crew.ts";
-import { openCreateSurfaceSheet, openMigrationSheet, openScheduleAgentSheet } from "./surface-migration-sheet.ts";
+import { openCreateSurfaceSheet, openScheduleAgentSheet } from "./surface-migration-sheet.ts";
 import { isActionChange, SurfaceRail } from "./surface-rail.ts";
 
 /* The company shell: a rail with conversations and the account menu, and the
@@ -1871,14 +1872,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		...sectionGroups.filter(({ rows: r }) => r.length || !railQuery).map(({ group }) => group.el),
 		unassignedRows.length || (sectioned && !railQuery) ? parts.unassigned.el : null,
 	].filter((element) => element !== null);
-	const legacyCount =
-		pinnedElements.length +
-		sectionGroups.reduce((total, group) => total + group.rows.length, 0) +
-		unassignedRows.length;
-	const onLegacyRoute =
-		context.route.name === "company" &&
-		(context.route.section === "staff" || context.route.section === "chat") &&
-		!isActive(cofounderId ?? "");
 	const companyAgents = active.filter(
 		(agent) => agent.id !== cofounderId && !foldedAgents[agent.id] && !hidden.has(agent.id),
 	);
@@ -1886,15 +1879,19 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const scheduledStaff = companyAgents.filter(
 		(agent) => !agentWorks(company.agentState(agent.id)) && Boolean(state.agentNotes?.[agent.id]?.next),
 	);
+	const idleStaff = companyAgents.filter(
+		(agent) => !agentWorks(company.agentState(agent.id)) && !state.agentNotes?.[agent.id]?.next,
+	);
+	const activeAgentId =
+		context.route.name === "company" && context.route.section === "staff" ? context.route.id : undefined;
 	const agentsHub =
 		surfaceRail && !railQuery
-			? syncAgentsHub(company, parts.redraw, {
+			? syncAgentsHub(company, {
 					profileId,
+					activeAgentId,
 					workingStaff,
 					scheduledStaff,
-					legacyNodes,
-					legacyCount,
-					forceLegacyOpen: onLegacyRoute,
+					idleStaff,
 				})
 			: null;
 	reconcile(
@@ -1972,129 +1969,113 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 interface AgentsHubParts {
 	readonly el: HTMLElement;
 	readonly title: HTMLElement;
-	readonly migrate: HTMLButtonElement;
 	readonly workingWrap: HTMLElement;
 	readonly workingTitle: HTMLElement;
 	readonly workingList: HTMLElement;
 	readonly scheduledWrap: HTMLElement;
 	readonly scheduledTitle: HTMLElement;
 	readonly scheduledList: HTMLElement;
-	readonly legacyWrap: HTMLElement;
-	readonly legacyToggle: HTMLButtonElement;
-	readonly legacyLabel: HTMLElement;
-	readonly legacyCount: HTMLElement;
-	readonly legacyBody: HTMLElement;
+	readonly idleWrap: HTMLElement;
+	readonly idleTitle: HTMLElement;
+	readonly idleList: HTMLElement;
 	readonly workingCrew: CrewFigures;
 	readonly scheduledCrew: CrewFigures;
 	workingKey: string;
 	scheduledKey: string;
-	openLegacy: boolean;
+	idleKey: string;
 }
 
 interface AgentsHubInput {
 	readonly profileId: string;
+	readonly activeAgentId: string | undefined;
 	readonly workingStaff: readonly HostedStaffAgent[];
 	readonly scheduledStaff: readonly HostedStaffAgent[];
-	readonly legacyNodes: readonly HTMLElement[];
-	readonly legacyCount: number;
-	readonly forceLegacyOpen: boolean;
+	readonly idleStaff: readonly HostedStaffAgent[];
 }
 
 const agentsHubs = new WeakMap<CompanyController, AgentsHubParts>();
-function syncAgentsHub(company: CompanyController, redraw: () => void, input: AgentsHubInput): HTMLElement | null {
+function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLElement | null {
 	const store = surfacesOf(company);
 	if (!store) return null;
 	const state = store.state;
 	const tasks = activeTaskSessions(state);
+	const explorations = state.surfaces
+		.filter((surface) => surface.status === "active")
+		.flatMap((surface) => {
+			const workspace = state.workspaces[surface.id];
+			return openExplorations(workspace).map((exploration) => ({
+				surface,
+				exploration,
+				variants: exploration.variantSessionIds
+					.map((id) => workspace?.activeSessions.find((session) => session.id === id))
+					.filter((session): session is NonNullable<typeof session> => Boolean(session)),
+			}));
+		});
 	const automations = state.automations;
-	const hasWorking = input.workingStaff.length > 0 || tasks.length > 0;
+	const hasWorking = input.workingStaff.length > 0 || tasks.length > 0 || explorations.length > 0;
 	const hasScheduled = automations.length > 0 || input.scheduledStaff.length > 0;
-	const hasLegacy = input.legacyCount > 0;
-	if (!hasWorking && !hasScheduled && !hasLegacy) return null;
+	const hasIdle = input.idleStaff.length > 0;
+	if (!hasWorking && !hasScheduled && !hasIdle) return null;
 
 	let hub = agentsHubs.get(company);
 	if (!hub) {
 		const title = h("span", null, t("Agents"));
-		const migrate = h(
-			"button",
-			{
-				type: "button",
-				class: "rail-legacy-migrate",
-				hidden: true,
-				onclick: (event: MouseEvent) => {
-					event.stopPropagation();
-					openMigrationSheet(store);
-				},
-			},
-			t("Move"),
-		);
 		const workingTitle = h("div", { class: "rail-agents-subhead" }, t("Working"));
 		const workingList = h("div", { class: "rail-agents-list" });
 		const workingWrap = h("div", { class: "rail-agents-sub", hidden: true }, workingTitle, workingList);
 		const scheduledTitle = h("div", { class: "rail-agents-subhead" }, t("Scheduled"));
 		const scheduledList = h("div", { class: "rail-agents-list" });
 		const scheduledWrap = h("div", { class: "rail-agents-sub", hidden: true }, scheduledTitle, scheduledList);
-		const legacyLabel = h("span", { class: "rail-legacy-label" });
-		const legacyCount = h("span", { class: "rail-legacy-count" });
-		const legacyChevron = h("span", { class: "rail-legacy-chevron", "aria-hidden": "true" }, icon("chevron"));
-		const legacyToggle = h(
-			"button",
-			{ type: "button", class: "rail-legacy-toggle", "aria-expanded": "false" },
-			legacyChevron,
-			legacyLabel,
-			legacyCount,
-		);
-		const legacyBody = h("div", { class: "rail-legacy-body", hidden: true });
-		const legacyWrap = h("div", { class: "rail-agents-legacy", hidden: true }, legacyToggle, legacyBody);
+		const idleTitle = h("div", { class: "rail-agents-subhead" }, t("Ready"));
+		const idleList = h("div", { class: "rail-agents-list" });
+		const idleWrap = h("div", { class: "rail-agents-sub", hidden: true }, idleTitle, idleList);
 		const el = h(
 			"div",
 			{ class: "rail-agents-hub", role: "group", "aria-label": t("Agents") },
-			h("div", { class: "rail-section-title rail-agents-head" }, title, migrate),
+			h("div", { class: "rail-section-title rail-agents-head" }, title),
 			workingWrap,
 			scheduledWrap,
-			legacyWrap,
+			idleWrap,
 		);
 		hub = {
 			el,
 			title,
-			migrate,
 			workingWrap,
 			workingTitle,
 			workingList,
 			scheduledWrap,
 			scheduledTitle,
 			scheduledList,
-			legacyWrap,
-			legacyToggle,
-			legacyLabel,
-			legacyCount,
-			legacyBody,
+			idleWrap,
+			idleTitle,
+			idleList,
 			workingCrew: new CrewFigures(),
 			scheduledCrew: new CrewFigures(),
 			workingKey: "",
 			scheduledKey: "",
-			openLegacy: false,
+			idleKey: "",
 		};
-		legacyToggle.addEventListener("click", () => {
-			hub!.openLegacy = !hub!.openLegacy;
-			redraw();
-		});
 		agentsHubs.set(company, hub);
 	}
 
 	const locale = presentationLocale();
 	hub.title.textContent = t("Agents");
 	hub.el.setAttribute("aria-label", t("Agents"));
-	const canMigrate = migrationPending(state.migration);
-	hub.migrate.hidden = !canMigrate;
-	hub.migrate.textContent = t("Move");
-	hub.migrate.title = t("Move to Surfaces");
 
 	hub.workingTitle.textContent = t("Working");
 	hub.workingWrap.hidden = !hasWorking;
 	const workingKey = JSON.stringify([
 		locale,
+		input.activeAgentId,
 		input.workingStaff.map((agent) => [agent.id, agent.displayName, company.agentState(agent.id)]),
+		explorations.map(({ surface, exploration, variants }) => [
+			surface.slug,
+			surface.title,
+			exploration.id,
+			exploration.title,
+			variants.length,
+			variants.some(isRunningSession),
+		]),
 		tasks.map(({ surface, session, running }) => [
 			surface.slug,
 			surface.title,
@@ -2114,7 +2095,7 @@ function syncAgentsHub(company: CompanyController, redraw: () => void, input: Ag
 				return h(
 					"a",
 					{
-						class: "rail-agent-hub-row is-working",
+						class: `rail-agent-hub-row is-working${input.activeAgentId === agent.id ? " active" : ""}`,
 						href: `#/c/${input.profileId}/staff/${agent.id}`,
 						draggable: "false",
 					},
@@ -2129,6 +2110,32 @@ function syncAgentsHub(company: CompanyController, redraw: () => void, input: Ag
 						h("strong", null, agent.displayName),
 						h("small", null, stateLine(look) ?? t("Working")),
 					),
+				);
+			}),
+			...explorations.map(({ surface, exploration, variants }) => {
+				const running = variants.some(isRunningSession);
+				const status: HTMLElement | string = running
+					? crewWave()
+					: t("{count} options", { count: variants.length });
+				return h(
+					"button",
+					{
+						type: "button",
+						class: `rail-agent-hub-row${running ? " is-working" : ""}`,
+						"data-hub-exploration": exploration.id,
+						onclick: () => {
+							location.hash = surfaceHash(input.profileId, surface.slug);
+							store.openExplorationDrawer(surface.id, exploration.id);
+						},
+					},
+					hub!.workingCrew.takeExploration(exploration, variants, 32),
+					h(
+						"span",
+						{ class: "rail-agent-hub-copy" },
+						h("strong", null, exploration.title),
+						h("small", null, status),
+					),
+					h("span", { class: "rail-agent-surface-tag" }, surface.title),
 				);
 			}),
 			...tasks.map(({ surface, session, running }) => {
@@ -2177,6 +2184,7 @@ function syncAgentsHub(company: CompanyController, redraw: () => void, input: Ag
 	const surfaceTitleBySlug = new Map(state.surfaces.map((surface) => [surface.slug, surface.title]));
 	const scheduledKey = JSON.stringify([
 		locale,
+		input.activeAgentId,
 		automations.map((item) => [
 			item.id,
 			item.title,
@@ -2243,7 +2251,7 @@ function syncAgentsHub(company: CompanyController, redraw: () => void, input: Ag
 				return h(
 					"a",
 					{
-						class: "rail-agent-hub-row",
+						class: `rail-agent-hub-row${input.activeAgentId === agent.id ? " active" : ""}`,
 						href: `#/c/${input.profileId}/staff/${agent.id}`,
 						draggable: "false",
 					},
@@ -2265,15 +2273,39 @@ function syncAgentsHub(company: CompanyController, redraw: () => void, input: Ag
 		hub.scheduledCrew.settle();
 	}
 
-	const expanded = hub.openLegacy || input.forceLegacyOpen;
-	hub.legacyWrap.hidden = !hasLegacy;
-	hub.legacyLabel.textContent = hasWorking || hasScheduled ? t("Other agents") : t("Agents");
-	hub.legacyCount.textContent = String(input.legacyCount);
-	hub.legacyToggle.setAttribute("aria-expanded", String(expanded));
-	hub.legacyWrap.classList.toggle("is-open", expanded);
-	hub.legacyBody.hidden = !expanded;
-	hub.legacyBody.inert = !expanded;
-	reconcile(hub.legacyBody, input.legacyNodes);
+	hub.idleTitle.textContent = t("Ready");
+	hub.idleWrap.hidden = !hasIdle;
+	const idleKey = JSON.stringify([
+		locale,
+		input.activeAgentId,
+		input.idleStaff.map((agent) => [agent.id, agent.displayName, agent.role]),
+	]);
+	if (idleKey !== hub.idleKey) {
+		hub.idleKey = idleKey;
+		const idleRows = input.idleStaff.map((agent) =>
+			h(
+				"a",
+				{
+					class: `rail-agent-hub-row${input.activeAgentId === agent.id ? " active" : ""}`,
+					href: `#/c/${input.profileId}/staff/${agent.id}`,
+					draggable: "false",
+				},
+				h(
+					"span",
+					{ class: "rail-agent-hub-fig" },
+					agentFigure(agent, agent.displayName, { size: 32, activity: "Idle", alive: true }),
+				),
+				h(
+					"span",
+					{ class: "rail-agent-hub-copy" },
+					h("strong", null, agent.displayName),
+					agent.role ? h("small", null, agent.role) : null,
+				),
+			),
+		);
+		hub.idleList.replaceChildren(...idleRows);
+	}
+
 	return hub.el;
 }
 

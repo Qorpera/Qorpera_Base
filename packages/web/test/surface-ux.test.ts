@@ -1,13 +1,23 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AuthController } from "../src/app/auth.ts";
+import { CompanyController } from "../src/app/company.ts";
 import { inferSurfaceKind, opsComposerPlaceholder } from "../src/app/surface-kinds.ts";
 import { recipientOf, renderLocalSitePreviewHtml } from "../src/app/surface-local-sandbox.ts";
-import { activeTaskSessions, clearLocalSandboxCache, synthesizeSurfaces } from "../src/app/surfaces-store.ts";
+import {
+	activeTaskSessions,
+	attachSurfaces,
+	clearLocalSandboxCache,
+	synthesizeSurfaces,
+} from "../src/app/surfaces-store.ts";
+import { renderRail } from "../src/app/views/shell.ts";
 import { CrewFigures, crewLook, sessionCrew } from "../src/app/views/surface-crew.ts";
 import { openCreateSurfaceSheet, openScheduleAgentSheet } from "../src/app/views/surface-migration-sheet.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { SurfaceView } from "../src/app/views/surface-view.ts";
+import { linkHref } from "../src/ui/dom.ts";
 import { RailLayout } from "../src/ui/rail-layout.ts";
+import { fixture, id, profileA, staff, stubFigureMotion, userA } from "./fixtures.ts";
 import {
 	COMPANY,
 	change,
@@ -27,6 +37,7 @@ afterEach(() => {
 	document.body.replaceChildren();
 	vi.useRealTimers();
 	vi.restoreAllMocks();
+	vi.unstubAllGlobals();
 });
 
 const inbox = summary({
@@ -677,6 +688,110 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		view.el.querySelector<HTMLButtonElement>('[data-act="mode"][data-mode="live"]')!.click();
 		view.update();
 		expect(view.el.querySelector(".studio-diff-prev")).toBeNull();
+		view.dispose();
+		store.dispose();
+	});
+
+	it("unifies sidebar Agents into Working, Scheduled, and Ready with no Move button, no Other agents drawer, and no duplicate agents", async () => {
+		stubFigureMotion();
+		vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+		const f = fixture();
+		const cofounder = { ...staff, id: id(10), displayName: "Co-Founder", templateId: "co-founder" };
+		const working = { ...staff, id: id(11), displayName: "Strategi", role: "Strategy" };
+		const scheduled = { ...staff, id: id(12), displayName: "Marked", role: "Market research" };
+		const idle = { ...staff, id: id(13), displayName: "Webdesign", role: "Site craft" };
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({
+			loading: false,
+			staff: [cofounder, working, scheduled, idle],
+			activity: [
+				{
+					staffAgentId: working.id,
+					runId: id(80),
+					sourceKind: "session_turn",
+					activity: "working",
+					jobStatus: "leased",
+					updatedAt: "2026-11-21T10:00:00Z",
+				},
+			],
+			agentNotes: {
+				[scheduled.id]: { next: { title: "Hold markedsoverblik", at: "2026-11-22T08:00:00Z" } },
+			},
+		});
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: profileA.profileId, sites: [], pages: ["mailbox", "members"] }),
+		});
+		await store.load();
+		attachSurfaces(company, store);
+
+		const container = document.createElement("aside");
+		const frame = document.createElement("div");
+		frame.className = "frame";
+		frame.append(container);
+		document.body.append(frame);
+		const auth = new AuthController(f.cloud);
+		renderRail(container, company, {
+			profiles: [profileA],
+			user: userA,
+			route: { name: "company", profileId: profileA.profileId, section: "surface", id: "website" },
+			auth,
+			invitations: 0,
+			openSettings: () => {},
+			openFeedback: () => {},
+			openFriends: () => {},
+			agentActions: {},
+		});
+
+		const hub = container.querySelector<HTMLElement>(".rail-agents-hub");
+		expect(hub).not.toBeNull();
+		expect(hub?.querySelector(".rail-legacy-migrate")).toBeNull();
+		expect(hub?.querySelector(".rail-agents-legacy")).toBeNull();
+		expect(hub?.textContent).not.toContain("Other agents");
+
+		const subheads = [...hub!.querySelectorAll<HTMLElement>(".rail-agents-subhead")].map((el) => el.textContent);
+		expect(subheads).toEqual(["Working", "Scheduled", "Ready"]);
+
+		const staffHrefs = [...hub!.querySelectorAll<HTMLAnchorElement>("a.rail-agent-hub-row")]
+			.map((a) => linkHref(a))
+			.filter((href): href is string => Boolean(href?.includes("/staff/")));
+		expect(staffHrefs).toEqual([
+			`#/c/${profileA.profileId}/staff/${working.id}`,
+			`#/c/${profileA.profileId}/staff/${scheduled.id}`,
+			`#/c/${profileA.profileId}/staff/${idle.id}`,
+		]);
+		expect(new Set(staffHrefs).size).toBe(3);
+		expect(hub?.querySelector("[data-hub-exploration]")).not.toBeNull();
+
+		auth.dispose();
+		store.dispose();
+		company.stop();
+		vi.unstubAllGlobals();
+	});
+
+	it("keeps the header pill balanced into three flex groups with collapse nested in the right tools", async () => {
+		stubFigureMotion();
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const pill = view.el.querySelector<HTMLElement>(".surface-pill");
+		expect(pill?.classList.contains("is-spacious")).toBe(true);
+		expect([...(pill?.children ?? [])].map((child) => child.className)).toEqual([
+			"surface-pill-modes",
+			"surface-bar-crew",
+			"surface-pill-right",
+		]);
+		expect(pill?.querySelector(".surface-pill-right .surface-pill-collapse")).not.toBeNull();
+
 		view.dispose();
 		store.dispose();
 	});

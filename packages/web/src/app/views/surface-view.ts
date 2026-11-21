@@ -736,25 +736,25 @@ export class SurfaceView {
 		}
 
 		const showPanelToggle = surface.archetype !== "ops" || headerAgents.length > 0;
+		const collapseBtn = h(
+			"button",
+			{
+				type: "button",
+				class: "surface-pill-collapse",
+				"aria-label": t("Collapse bar"),
+				title: t("Collapse bar"),
+				"data-act": "collapse-pill",
+			},
+			icon("chevron-down"),
+		);
 		const pillParts: HTMLElement[] = [];
 		if (modeNav) pillParts.push(modeNav);
 		if (headerCrew) pillParts.push(headerCrew);
-		if (rightTools.length > 0) pillParts.push(h("div", { class: "surface-pill-right" }, ...rightTools));
 		const spacious = Boolean(modeNav && rightTools.length > 0);
-		if (pillParts.length > 0) {
-			pillParts.push(
-				h(
-					"button",
-					{
-						type: "button",
-						class: "surface-pill-collapse",
-						"aria-label": t("Collapse bar"),
-						title: t("Collapse bar"),
-						"data-act": "collapse-pill",
-					},
-					icon("chevron-down"),
-				),
-			);
+		if (rightTools.length > 0) {
+			pillParts.push(h("div", { class: "surface-pill-right" }, ...rightTools, collapseBtn));
+		} else if (pillParts.length > 0) {
+			pillParts.push(collapseBtn);
 		}
 
 		const hasAnything = pillParts.length > 0 || showPanelToggle;

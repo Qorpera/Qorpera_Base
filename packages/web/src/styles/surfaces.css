@@ -86,7 +86,7 @@
  * above the Co-Founder folds away (shell.ts marks the rail; its elements stay for the legacy rail and its tests). */
 .has-surface-rail .rail-apps, .has-surface-rail > .rail-apps-drawer { display: none !important; }
 
-/* Unified Agents hub: Working task-driven agents at the top, Scheduled agents underneath, legacy tucked quietly below. */
+/* Unified Agents hub: Working task-driven agents at the top, Scheduled agents underneath, idle agents under Ready. */
 .rail-agents-hub {
 	display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; margin-top: 8px; padding-top: 8px;
 	border-top: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
@@ -106,6 +106,7 @@
 	transition: background-color var(--motion-fast) ease;
 }
 .rail-agent-hub-row:hover { background: var(--rail-hover); text-decoration: none; }
+.rail-agent-hub-row.active { background: color-mix(in srgb, var(--text) 7%, transparent); }
 .rail-agent-hub-fig { display: grid; place-items: center; width: 32px; height: 32px; flex: none; }
 .rail-agent-hub-copy { display: grid; flex: 1; min-width: 0; gap: 1px; }
 .rail-agent-hub-copy strong {
@@ -385,23 +386,23 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .surface-bar {
 	position: absolute; z-index: 10; top: 0; left: 0; right: 0;
 	display: flex; align-items: flex-start; justify-content: center;
-	padding: 10px 56px 0 12px; background: transparent; pointer-events: none;
+	padding: 10px 52px 0 10px; background: transparent; pointer-events: none;
 }
-.frame.rail-hidden-desktop .surface-bar { padding-inline: 58px; }
+.frame.rail-hidden-desktop .surface-bar { padding-inline: 54px; }
 .surface-bar[hidden] { display: none; }
 .surface-pill {
-	pointer-events: auto; display: inline-flex; align-items: center; gap: 12px; min-width: 0; max-width: 100%; height: 42px;
-	padding: 5px 6px 5px 8px; overflow-x: auto; scrollbar-width: none;
+	pointer-events: auto; display: inline-flex; align-items: center; gap: 10px; min-width: 0; max-width: 100%; height: 42px;
+	padding: 4px 6px; overflow-x: auto; scrollbar-width: none;
 	border: 1px solid color-mix(in srgb, var(--text) 10%, transparent); border-radius: 999px;
 	background: color-mix(in srgb, var(--bg) 94%, transparent); color: var(--text);
 	box-shadow: 0 1px 2px rgb(18 18 17 / 5%), 0 10px 28px -10px rgb(18 18 17 / 16%);
 	backdrop-filter: blur(18px) saturate(1.6);
 }
 .surface-pill.is-spacious {
-	width: min(640px, 100%); justify-content: space-between; gap: 14px;
+	width: min(620px, 100%); justify-content: space-between; gap: 10px;
 }
 .surface-pill-collapse {
-	display: grid; place-items: center; width: 26px; height: 26px; flex: none; padding: 0; margin-left: -4px;
+	display: grid; place-items: center; width: 24px; height: 24px; flex: none; padding: 0; margin-left: -2px;
 	border: 0; border-radius: 50%; background: transparent; color: var(--text-soft); cursor: pointer;
 	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
 }
@@ -434,23 +435,23 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .surface-canvas.is-dragging-notch { user-select: none; cursor: grabbing; }
 .surface-canvas.is-dragging-notch iframe { pointer-events: none; }
 .surface-pill::-webkit-scrollbar { display: none; }
-.surface-pill-modes { display: inline-flex; align-items: center; gap: 3px; flex: none; }
+.surface-pill-modes { display: inline-flex; align-items: center; gap: 2px; flex: none; }
 .surface-pill-modes button {
-	display: inline-flex; align-items: center; height: 30px; padding: 0 12px; border: 0; border-radius: 999px;
-	background: none; color: var(--text-muted); font: inherit; font-size: 12.5px; font-weight: 560;
+	display: inline-flex; align-items: center; height: 30px; padding: 0 10px; border: 0; border-radius: 999px;
+	background: none; color: var(--text-muted); font: inherit; font-size: 12px; font-weight: 560;
 	white-space: nowrap; cursor: pointer; transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
 }
 .surface-pill-modes button:hover { color: var(--text); background: color-mix(in srgb, var(--text) 5%, transparent); }
 .surface-pill-modes button.is-on {
 	background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); font-weight: 660;
 }
-.surface-pill-right { display: inline-flex; align-items: center; gap: 8px; flex: none; }
+.surface-pill-right { display: inline-flex; align-items: center; gap: 6px; flex: none; }
 .surface-pill-device {
 	display: inline-flex; align-items: center; gap: 2px; padding: 2px; border-radius: 999px;
 	background: color-mix(in srgb, var(--text) 5%, transparent);
 }
 .surface-pill-device button {
-	display: inline-flex; align-items: center; justify-content: center; height: 26px; padding: 0 8px; border: 0;
+	display: inline-flex; align-items: center; justify-content: center; height: 26px; padding: 0 7px; border: 0;
 	border-radius: 999px; background: none; color: var(--text-muted); cursor: pointer;
 	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
 }
@@ -487,12 +488,12 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .surface-publish.has-changes { background: var(--primary); color: var(--on-primary); }
 .surface-publish button {
 	display: inline-flex; align-items: center; gap: 5px; height: 30px; border: 0; background: none; color: inherit;
-	font: inherit; font-size: 12.5px; font-weight: 650; cursor: pointer;
+	font: inherit; font-size: 12px; font-weight: 650; cursor: pointer;
 }
-.surface-publish-main { padding: 0 6px 0 12px; border-radius: 999px 0 0 999px; }
+.surface-publish-main { padding: 0 5px 0 10px; border-radius: 999px 0 0 999px; }
 .surface-publish-main:disabled { cursor: default; color: var(--text-soft); }
 .surface-publish.has-changes .surface-publish-main:disabled { color: inherit; opacity: 0.7; }
-.surface-publish-menu { padding: 0 9px 0 3px; border-radius: 0 999px 999px 0; opacity: 0.7; }
+.surface-publish-menu { padding: 0 7px 0 2px; border-radius: 0 999px 999px 0; opacity: 0.7; }
 .surface-publish-menu:hover { opacity: 1; }
 .surface-publish-menu .icon { width: 13px; height: 13px; }
 .surface-count {
@@ -502,7 +503,7 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 
 /* Right sidepanel toggle pinned to the top-right edge, mirroring the left sidebar reopen button. */
 .surface-panel-toggle {
-	position: absolute; top: 10px; right: 14px; pointer-events: auto;
+	position: absolute; top: 10px; right: 10px; pointer-events: auto;
 	display: grid; place-items: center; width: 34px; height: 34px; flex: none; padding: 0;
 	border: 1px solid color-mix(in srgb, var(--text) 11%, transparent); border-radius: 10px;
 	background: color-mix(in srgb, var(--bg) 86%, transparent); color: var(--text-muted);
@@ -524,9 +525,9 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 }
 
 /* Animated agents living right in the center navigation pill. */
-.surface-bar-crew { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.surface-bar-crew { display: inline-flex; align-items: center; gap: 5px; flex: none; }
 .surface-bar-agent, .surface-bar-agent-more {
-	position: relative; display: inline-flex; align-items: center; gap: 5px; height: 32px; padding: 0 8px 0 4px;
+	position: relative; display: inline-flex; align-items: center; gap: 4px; height: 30px; padding: 0 6px 0 3px;
 	border: 1px solid color-mix(in srgb, var(--text) 9%, transparent); border-radius: 999px;
 	background: color-mix(in srgb, var(--text) 2.5%, var(--bg)); color: var(--text); font: inherit;
 	font-size: 11.5px; font-weight: 650; cursor: pointer;
@@ -547,10 +548,10 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 	animation: surface-agent-nudge 2.2s ease-in-out infinite;
 }
 .surface-bar-agent.is-ready { border-color: color-mix(in srgb, var(--text) 12%, transparent); }
-.surface-bar-agent .surface-crew { --crew-size: 26px; width: 26px; height: 26px; }
+.surface-bar-agent .surface-crew { --crew-size: 24px; width: 24px; height: 24px; }
 .surface-bar-agent-count {
-	min-width: 17px; height: 17px; padding: 0 5px; border-radius: 999px; background: var(--sidebar-selection); color: #fff;
-	font-size: 10.5px; font-weight: 700; line-height: 17px; text-align: center; font-variant-numeric: tabular-nums;
+	min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; background: var(--sidebar-selection); color: #fff;
+	font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; font-variant-numeric: tabular-nums;
 }
 .surface-bar-agent-badge {
 	padding: 2px 6px; border-radius: 999px; font-size: 10.5px; font-weight: 700; white-space: nowrap;
@@ -570,22 +571,25 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .surface-stage.is-resizing { user-select: none; cursor: col-resize; }
 .surface-stage.is-resizing .surface-canvas iframe { pointer-events: none; }
 .surface-canvas { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-@media (max-width: 1260px) {
-	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-bar { padding: 10px 54px 0 6px; }
-	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-pill { gap: 3px; padding: 3px 4px 3px 4px; height: 36px; }
-	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-pill.is-spacious { gap: 3px; width: auto; max-width: 100%; }
+@media (max-width: 1180px) {
+	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-bar { padding: 10px 46px 0 8px; }
+	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-panel-toggle { right: 8px; width: 32px; height: 32px; }
+	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-pill { gap: 5px; padding: 3px 4px 3px 5px; height: 36px; }
+	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-pill.is-spacious { width: 100%; gap: 5px; }
 	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-pill-modes { gap: 1px; }
-	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-pill-modes button { height: 26px; padding: 0 5px; font-size: 11px; }
-	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-pill-right { gap: 3px; }
-	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-pill-device button { height: 24px; padding: 0 4px; }
+	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-pill-modes button { height: 26px; padding: 0 7px; font-size: 11px; }
+	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-pill-right { gap: 4px; }
+	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-pill-device { padding: 1.5px; }
+	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-pill-device button { height: 23px; padding: 0 4.5px; }
+	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-pill-device .icon { width: 12px; height: 12px; }
 	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-publish button { height: 26px; font-size: 11px; }
-	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-publish-main { padding: 0 3px 0 6px; }
-	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-publish-menu { padding: 0 4px 0 1px; }
+	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-publish-main { padding: 0 3px 0 7px; }
+	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-publish-menu { padding: 0 5px 0 1px; }
 	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-bar-crew { gap: 3px; }
-	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-bar-agent { height: 26px; padding: 0 4px 0 3px; gap: 3px; }
-	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-bar-agent .surface-crew { --crew-size: 22px; width: 22px; height: 22px; }
-	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-bar-agent-count { min-width: 15px; height: 15px; padding: 0 4px; font-size: 9.5px; line-height: 15px; }
-	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-pill-collapse { width: 20px; height: 20px; margin-left: -1px; }
+	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-bar-agent { height: 26px; padding: 0 4px 0 2px; gap: 3px; }
+	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-bar-agent .surface-crew { --crew-size: 20px; width: 20px; height: 20px; }
+	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-bar-agent-count { min-width: 14px; height: 14px; padding: 0 3px; font-size: 9px; line-height: 14px; }
+	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-pill-collapse { width: 22px; height: 22px; margin-left: -1px; }
 }
 .surface-viewport { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; }
 .surface-viewport[data-device="mobile"] { align-items: center; justify-content: center; padding: 56px 0 96px; background: color-mix(in srgb, var(--text) 3%, var(--bg)); }
