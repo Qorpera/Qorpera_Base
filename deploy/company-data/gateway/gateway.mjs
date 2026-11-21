@@ -403,6 +403,7 @@ export class DataChangeNotifier {
 		if (!envSet || envSet.size === 0) return;
 		const now = performance.now();
 		for (const trigger of [...envSet]) {
+			if (this.#triggers.get(trigger.id) !== trigger) continue;
 			if (notice !== null && notice.schema !== trigger.database) continue;
 			if (notice !== null && notice.table !== null && trigger.tables && !trigger.tables.has(notice.table.toLowerCase())) continue;
 			const tableName = notice?.table ?? "*";
@@ -2811,7 +2812,7 @@ export class Gateway {
 				};
 			};
 			let scan = await settleDirty(await differing());
-			while (scan.changed.length === 0 && !scan.partial && Date.now() < holdUntil && !stop.aborted && !this.#closed) {
+			while (scan.changed.length === 0 && !scan.partial && Date.now() < holdUntil && !stop.aborted && !this.#closed && !listener.stopped) {
 				if (dirty.size === 0)
 					await new Promise((resolve) => {
 						const timer = setTimeout(resolve, holdUntil - Date.now());
@@ -2824,7 +2825,7 @@ export class Gateway {
 						stop.addEventListener("abort", done, { once: true });
 					});
 				wake = () => undefined;
-				if (dirty.size === 0 || stop.aborted) break;
+				if (dirty.size === 0 || stop.aborted || listener.stopped) break;
 				const batch = [...dirty].sort((a, b) => a - b);
 				dirty.clear();
 				scan = await settleDirty(await differing(batch));
