@@ -429,4 +429,89 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		view.dispose();
 		store.dispose();
 	});
+
+	it("re-renders Preview cleanly after Compare, supports clicking into variants, and compares Base vs sessions", async () => {
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox", "bank", "members"] }),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+		const localFrame = view.el.querySelector<HTMLIFrameElement>(".surface-mount iframe.surface-local-frame")!;
+		expect(localFrame.srcdoc).toContain("Følg din meditationspraksis.");
+
+		store.setMode("compare");
+		view.update();
+		const compareTabs = [...view.el.querySelectorAll<HTMLButtonElement>(".surface-compare-tab")];
+		expect(compareTabs.map((tab) => tab.textContent)).toEqual(["Forsidens udtryk (3)", "Base & sessions"]);
+		const overlay = view.el.querySelector<HTMLButtonElement>(".surface-compare-overlay")!;
+		expect(overlay.getAttribute("aria-pressed")).toBe("true");
+		overlay.click();
+		view.update();
+		expect(view.el.querySelector<HTMLButtonElement>(".surface-compare-overlay")?.getAttribute("aria-pressed")).toBe(
+			"false",
+		);
+
+		view.el.querySelectorAll<HTMLButtonElement>(".surface-compare-tab")[1]!.click();
+		view.update();
+		expect([...view.el.querySelectorAll(".surface-compare-column strong")].map((node) => node.textContent)).toEqual([
+			"Live baseline",
+			"Forudbestilling & levering",
+		]);
+
+		view.el.querySelectorAll<HTMLButtonElement>(".surface-compare-tab")[0]!.click();
+		view.update();
+		const openBtn = view.el.querySelectorAll<HTMLButtonElement>(".surface-compare-open")[1]!;
+		openBtn.click();
+		await flush();
+		view.update();
+		expect(store.state.mode).toBe("preview");
+		expect(view.el.querySelector<HTMLElement>(".surface-mount")?.hidden).toBe(false);
+		expect(localFrame.srcdoc).toContain("Portræt og telefon");
+		view.dispose();
+		store.dispose();
+	});
+
+	it("renders Product Studio with interactive 3D viewer, grounded vendor cards, inline diffs, and side-by-side Compare", async () => {
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "product");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		expect(view.el.querySelector(".studio-3d-canvas")).not.toBeNull();
+		expect(view.el.querySelectorAll(".studio-vendor-card")).toHaveLength(4);
+		expect(view.el.querySelector(".studio-diff-prev")?.textContent).toBe("Prototype v2 (BrainBit evaluering)");
+		expect(view.el.querySelector(".studio-diff-next")?.textContent).toBe("Klar til Batch 1 (BrainBit låst)");
+
+		const explodeBtn = view.el.querySelector<HTMLButtonElement>('[data-act="3d-explode"]')!;
+		explodeBtn.click();
+		expect(view.el.querySelector<HTMLElement>(".studio-3d-callouts")?.hidden).toBe(false);
+
+		const tabs = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")];
+		expect(tabs.map((tab) => tab.textContent)).toEqual([
+			"All",
+			"3D Studio",
+			"Specs & BOM",
+			"Production & Vendors",
+			"Brief & Files",
+		]);
+
+		store.setMode("compare");
+		view.update();
+		expect(view.el.querySelectorAll(".studio-compare-card").length).toBeGreaterThanOrEqual(2);
+		expect(view.el.textContent).toContain("48 g");
+		expect(view.el.textContent).toContain("44 g");
+		view.dispose();
+		store.dispose();
+	});
 });

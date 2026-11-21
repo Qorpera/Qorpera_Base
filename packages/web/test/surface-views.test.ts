@@ -52,7 +52,7 @@ afterEach(() => {
 });
 
 describe("the surface rail", () => {
-	it("lists Building and Running and nests the active surface's sessions and changes under it", async () => {
+	it("lists Building and Running and nests clean session navigation rows under the active surface without rail switches", async () => {
 		const client = fakeClient({
 			listSurfaces: vi.fn(async () => [
 				summary({ unpublishedChangeCount: 1 }),
@@ -81,17 +81,11 @@ describe("the surface rail", () => {
 		expect(active?.querySelector(".interface-emblem")).not.toBeNull();
 		const add = rail.el.querySelector(".rail-surface-add");
 		expect(add ? linkHref(add) : null).toBe(`#/c/${COMPANY}/new-program`);
-		const changes = [...rail.el.querySelectorAll(".surface-change .surface-change-title")].map(
-			(node) => node.textContent,
-		);
-		expect(changes).toEqual(["Change 1", "Change 2", "Change 3"]);
-		rail.el.querySelector<HTMLElement>(`.surface-switch[data-change="${CHANGES[1]}"]`)!.click();
-		await flush();
-		expect(store.isChangeShown(CHANGES[1])).toBe(false);
-		rail.update("website", true);
-		expect(rail.el.querySelector(`.surface-switch[data-change="${CHANGES[1]}"]`)?.getAttribute("aria-checked")).toBe(
-			"false",
-		);
+		expect(rail.el.querySelector(".surface-switch")).toBeNull();
+		const sessionBtn = rail.el.querySelector<HTMLButtonElement>(".surface-session-main")!;
+		expect(sessionBtn.querySelector(".surface-session-status")?.textContent).toBe("3 changes ready");
+		sessionBtn.click();
+		expect(store.state.drawer?.sessionId).toBe(SESSION);
 		store.dispose();
 	});
 
@@ -468,9 +462,7 @@ describe("the surface page", () => {
 		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
 		document.body.append(rail.el);
 		rail.update("website");
-		expect(rail.el.querySelector(".surface-change.is-conflicted .surface-change-paths")?.textContent).toBe(
-			"src/hero.tsx, src/theme.css",
-		);
+		expect(rail.el.querySelector(".surface-conflict-paths")?.textContent).toBe("src/hero.tsx, src/theme.css");
 		rail.el.querySelector<HTMLButtonElement>(`.surface-reconcile[data-change="${CHANGES[0]}"]`)!.click();
 		await flush();
 		expect(reconcileChanges).toHaveBeenNthCalledWith(1, SURFACE, [CHANGES[0]]);

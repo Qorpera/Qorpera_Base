@@ -2744,11 +2744,11 @@ export function mountApplication(
 					);
 					surfaceView = { company: controller, view };
 				}
-				surfaceView.view.update();
 				if (surfaceView.view.el.parentElement !== main) {
 					replace(main, surfaceView.view.el);
 					if (!frame.inert) surfaceView.view.focus();
 				}
+				surfaceView.view.update();
 				return;
 			}
 			case "new-program": {

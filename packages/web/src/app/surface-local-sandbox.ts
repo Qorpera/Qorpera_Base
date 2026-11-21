@@ -111,10 +111,21 @@ export function starterStudioFiles(
 			return {
 				[`${root}/specs.json`]: JSON.stringify(
 					{
+						model: {
+							kind: "headband",
+							dimensions: "168 × 54 mm · 44 g · 4-ch dry EEG",
+							layers: [
+								"Strikket yderbånd (44 g)",
+								"BrainBit 4-ch EEG modul",
+								"4 tørre guldelektroder",
+								"LiPo 280 mAh + USB-C",
+							],
+						},
 						overview: {
 							product: "Thetaband Gen 1",
+							status: "Prototype v2 (BrainBit evaluering)",
 							electronics: "BrainBit 4-ch dry EEG",
-							weight: "44 g",
+							weight: "48 g",
 							battery: "8 timer meditation",
 							retailPrice: "1.995 kr. inkl. moms",
 						},
@@ -125,11 +136,65 @@ export function starterStudioFiles(
 							{ name: "Aftenler", hex: "#b8684c" },
 						],
 						bom: [
-							{ part: "BrainBit EEG-modul", supplier: "BrainBit OEM", unitCost: "215 kr." },
-							{ part: "Strikket tekstilbånd", supplier: "Nordic Knit", unitCost: "64 kr." },
-							{ part: "Tørre elektroder (4 stk.)", supplier: "BrainBit OEM", unitCost: "52 kr." },
+							{ part: "BrainBit EEG-modul", supplier: "BrainBit LLC", unitCost: "215 kr." },
+							{ part: "Strikket tekstilbånd", supplier: "Nordic Knit ApS", unitCost: "64 kr." },
+							{ part: "Tørre elektroder (4 stk.)", supplier: "BrainBit LLC", unitCost: "52 kr." },
 							{ part: "LiPo 280 mAh + USB-C", supplier: "Shenzhen Cell", unitCost: "38 kr." },
 							{ part: "Emballage & guidekort", supplier: "Aarhus Print", unitCost: "41 kr." },
+						],
+					},
+					null,
+					2,
+				),
+				[`${root}/vendors.json`]: JSON.stringify(
+					{
+						production: {
+							targetBatch: "Batch 1 · 500 stk.",
+							landedCogs: "410 kr. pr. enhed",
+							criticalPath: "6–8 uger (BrainBit OEM)",
+							compliance: "CE / RoHS / OEKO-TEX 100",
+						},
+						vendors: [
+							{
+								vendor: "BrainBit LLC",
+								component: "4-ch EEG-elektronik & tørre elektroder",
+								region: "EU / US OEM",
+								moq: "500 stk.",
+								leadTime: "6–8 uger",
+								unitPrice: "267 kr.",
+								status: "Anbefalet · sample bestilt",
+								certifications: "CE / RoHS pre-certified",
+							},
+							{
+								vendor: "Nordic Knit ApS",
+								component: "Aftageligt vaskbart tekstilbånd",
+								region: "Ikast, Danmark",
+								moq: "300 stk.",
+								leadTime: "3–4 uger",
+								unitPrice: "64 kr.",
+								status: "Prøve i hånd",
+								certifications: "OEKO-TEX 100",
+							},
+							{
+								vendor: "Shenzhen Cell / EU Dist.",
+								component: "LiPo 280 mAh + USB-C ladekredsløb",
+								region: "Shenzhen / NL lager",
+								moq: "1.000 stk.",
+								leadTime: "4 uger",
+								unitPrice: "38 kr.",
+								status: "Quote modtaget",
+								certifications: "UN38.3 / IEC 62133",
+							},
+							{
+								vendor: "Aarhus Print & Pack",
+								component: "Æske & 4-trins startguide",
+								region: "Aarhus, Danmark",
+								moq: "500 stk.",
+								leadTime: "2 uger",
+								unitPrice: "41 kr.",
+								status: "Klar til tryk",
+								certifications: "FSC",
+							},
 						],
 					},
 					null,
@@ -141,6 +206,11 @@ export function starterStudioFiles(
 		return {
 			[`${root}/specs.json`]: JSON.stringify(
 				{
+					model: {
+						kind: "device",
+						dimensions: "110 × 68 × 18 mm · 44 g",
+						layers: ["Outer enclosure", "Main PCB", "Battery & base"],
+					},
 					overview: { product: `${name} Core`, status: "Prototype v1", targetWeight: "44 g" },
 					colorways: [
 						{ name: "Sandstone", hex: "#e6dfd3" },
@@ -1352,10 +1422,11 @@ export function starterOrchestrationPlan(companyName: string): StarterSurfaceBun
 						reply: "Har opdateret product/specs.json og product/brief.md med BrainBit-elektronik og 410 kr. landed COGS. Slå hver ændring til/fra for at se forskellen.",
 						changes: [
 							{
-								heading: "Lås BrainBit OEM & Batch 1 vægtmål (44 g)",
-								summary: "Opdaterer product/specs.json med status klar til Batch 1-prøveserie.",
+								heading: "Lås BrainBit OEM & sænk vægt til 44 g",
+								summary:
+									"Opdaterer product/specs.json og product/vendors.json med låst BrainBit-ordre og 44 g vægtmål.",
 								kind: "folder_patch",
-								paths: ["product/specs.json"],
+								paths: ["product/specs.json", "product/vendors.json"],
 								studioPatch: [
 									{
 										op: "merge_json",
@@ -1363,7 +1434,17 @@ export function starterOrchestrationPlan(companyName: string): StarterSurfaceBun
 										patch: {
 											overview: {
 												status: "Klar til Batch 1 (BrainBit låst)",
-												landedCogs: "410 kr. pr. enhed",
+												weight: "44 g",
+											},
+										},
+									},
+									{
+										op: "merge_json",
+										path: "product/vendors.json",
+										patch: {
+											production: {
+												criticalPath: "6 uger (BrainBit OEM reserveret)",
+												landedCogs: "398 kr. pr. enhed",
 											},
 										},
 									},

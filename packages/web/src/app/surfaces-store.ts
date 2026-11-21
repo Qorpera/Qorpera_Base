@@ -121,6 +121,8 @@ export interface SurfacesState {
 	readonly drawer?: { readonly surfaceId: string; readonly sessionId: string };
 	readonly highlight?: { readonly surfaceId: string; readonly sessionId: string };
 	readonly mode: SurfacePreviewMode;
+	readonly compareTargetId?: string;
+	readonly compareExcludedSessions: Readonly<Record<string, true>>;
 	readonly device: SurfaceDevice;
 	readonly hiddenChanges: Readonly<Record<string, true>>;
 	readonly studioPatches: Readonly<Record<string, readonly StudioPatchOp[]>>;
@@ -458,6 +460,7 @@ export class SurfacesStore {
 			localStudioBase: {},
 			surfaceLooks: {},
 			mode: "preview",
+			compareExcludedSessions: {},
 			device: "desktop",
 			hiddenChanges: {},
 			studioPatches: {},
@@ -1041,6 +1044,34 @@ export class SurfacesStore {
 
 	setMode(mode: SurfacePreviewMode): void {
 		this.store.set({ mode });
+	}
+
+	compareExploration(explorationId: string): void {
+		this.store.set({ mode: "compare", compareTargetId: explorationId });
+	}
+
+	setCompareTarget(targetId: string): void {
+		this.store.set({ mode: "compare", compareTargetId: targetId });
+	}
+
+	toggleCompareOverlay(sessionId: string): void {
+		this.store.set((state) => {
+			const compareExcludedSessions = { ...state.compareExcludedSessions };
+			if (compareExcludedSessions[sessionId]) delete compareExcludedSessions[sessionId];
+			else compareExcludedSessions[sessionId] = true;
+			return { compareExcludedSessions };
+		});
+	}
+
+	async inspectVariant(
+		surfaceId: string,
+		explorationId: string | undefined,
+		sessionId: string,
+		openDrawer = false,
+	): Promise<void> {
+		if (explorationId) await this.pickVariant(surfaceId, explorationId, sessionId);
+		this.store.set({ mode: "preview" });
+		if (openDrawer) this.openDrawer(surfaceId, sessionId);
 	}
 
 	setDevice(device: SurfaceDevice): void {
