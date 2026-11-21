@@ -1,25 +1,45 @@
+import { createHash } from "node:crypto";
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
-import { parseCloudCodingRepository, parseGitHubCodingRepository } from "@qorpera/contracts";
-import type {
-	CloudCompanyCodeDescribed,
-	CloudCompanyCodeImport,
-	CloudCompanyCodeImportAsked,
-	CloudCompanyCodeImportLook,
-	CloudCompanyCodeImportSource,
-	CloudCompanyCodeRefusal,
-	CloudCompanyCodeRequest,
-	CloudCompanyCodeUndo,
-	CloudCompanyFolderClient,
+import {
+	COMPANY_STATE_FILE_MAX_BYTES,
+	osPath,
+	osRelative,
+	parseCompanyStateFile,
+	type TodoFile,
+	type WorkerBriefFile,
+	type WorkerResultsFile,
+} from "@qorpera/cloud-client/company-state-files";
+import { type JsonValue, parseCloudCodingRepository, parseGitHubCodingRepository } from "@qorpera/contracts";
+import { MAX_CODE_CHECKS_FILE_BYTES, parseCodeChangesIndex, parseCodeChecksText } from "./cloud-code-checks.ts";
+import {
+	type CloudCompanyCodeDescribed,
+	type CloudCompanyCodeImport,
+	type CloudCompanyCodeImportAsked,
+	type CloudCompanyCodeImportLook,
+	type CloudCompanyCodeImportSource,
+	type CloudCompanyCodeRefusal,
+	type CloudCompanyCodeRequest,
+	type CloudCompanyCodeUndo,
+	type CloudCompanyFolderClient,
+	type CloudCompanyFolderEntry,
+	type CloudCompanyFolderRelease,
+	cloudCompanyFolderRelease,
 } from "./cloud-company-folder-client.ts";
+import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import { cloudControlPause } from "./cloud-control-errors.ts";
+import { releaseId, unavailable } from "./cloud-folder-file-tools.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import {
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
 	type CloudToolContent,
+	type CloudToolContext,
 	CloudToolRefusal,
+	cloudToolJsonText,
+	redactCloudWebhookSecrets,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
+import { fitsOneResult } from "./cloud-worker-tools.ts";
 
 /*
  * `manage_code` (own code storage, step 2b; migration 20260930720000): what an agent does about the changes in the
@@ -52,12 +72,24 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
  */
 
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;
-const ACTIONS = ["undo", "describe", "bring_in"] as const;
+const ACTIONS = ["undo", "describe", "bring_in", "status"] as const;
 const KEYS = {
 	undo: ["action", "operationKey", "owner", "name", "change", "andLater", "reason", "notice"],
 	describe: ["action", "operationKey", "owner", "name", "change", "notice", "picture"],
 	bring_in: ["action", "operationKey", "owner", "name", "from", "look"],
+	status: ["action", "owner", "name"],
 } as const;
+const STATUS_MAX_WORKTREES = 100;
+const STATUS_MAX_RECENT_CHANGES = 15;
+const STATUS_MAX_AGENTS_SCAN = 40;
+const STATUS_MAX_TODO_ENTRIES = 200;
+const STATUS_MAX_BRIEFS_READ = 40;
+const STATUS_MAX_INDEX_BYTES = 64 * 1024;
+const STATUS_JSON_BYTES = 64 * 1024;
+const STATUS_READ_CONCURRENCY = 4;
+const STATUS_AGENT_DIR = /^agents\/([^/]+)$/;
+const STATUS_TODO_FILE = /^agents\/[^/]+\/todos\/([^/]+)\.md$/;
+const STATUS_WORKER_FILE = /^agents\/[^/]+\/todos\/([^/]+)\/([^/]+)\/(brief|results)\.md$/;
 /** A git bundle an agent wrote for bring_in, as a company path, and the most bytes of its path: exactly the path
  * `qorpera_code_import_from_valid` takes (20260930736000, as the executor's `codeImportIncomingPathValid`), so a path
  * SQL would refuse is refused here in words. The folder is not git's own `repo.git`, and no part holds `..`. */
@@ -80,12 +112,18 @@ const SHOWN_PATH_BYTES = 2000;
 
 export const CLOUD_CODE_TOOL_DESCRIPTION = [
 	"Look after the company's code kept in Qorpera. Qorpera numbers every change that goes into a repository's main code and writes its record at code/<owner>/<name>/changes/<number>.md. Change numbers are yours, never the members' words.",
-	"Every action takes operationKey, owner and name; undo and describe also take change, the number.",
+	"Every action takes owner and name; undo, describe and bring_in take operationKey, and undo and describe also take change, the number.",
+	"- status: inspect code/<owner>/<name>/ in one call (no operationKey): active or blocked coding sessions targeting it, active worktrees, recent changes from changes/index.md, and its checks configuration.",
 	"- undo: put main back as it was without that change, as a new change of its own: nothing is lost, and an undo can be undone. Give reason in one line, and notice when customers will see the undo. When later changes built on it, nothing happens and you are told the files: then undo with andLater true, which takes out that change and every change after it, or send the session a follow-up. After an undo, check main before you tell anyone.",
 	"- describe: set the change's notice and picture; what you leave out stays as it is.",
 	'- bring_in: bring existing code in with its history, as a new repository code/<owner>/<name>/ (lowercase): from {"github":"owner/name"}, or from {"file":"code/_incoming/<folder>/<name>.bundle"}, a git bundle of at most 256 MB made on a machine (from a zip: git init, add, commit, then git bundle create with --all). look true only reads it: size, history, who changed it lately, what stops it, files with key-like strings. It takes minutes: call again with the same operationKey, and tell members it shows in Storage when it is in. Replace keys it found where you can, and ask a member once for the rest.',
 ].join("\n");
 
+interface CodeStatus {
+	readonly action: "status";
+	readonly owner: string;
+	readonly name: string;
+}
 interface CodeUndo {
 	readonly action: "undo";
 	readonly operationKey: string;
@@ -113,7 +151,7 @@ interface CodeBringIn {
 	readonly from: CloudCompanyCodeImportSource;
 	readonly look: boolean;
 }
-type CodeCall = CodeUndo | CodeDescribe | CodeBringIn;
+type CodeCall = CodeStatus | CodeUndo | CodeDescribe | CodeBringIn;
 
 /** One line of text within its bound, trimmed; an empty one is one left out. */
 function line(value: unknown, field: string, characters: number): string | undefined {
@@ -212,10 +250,10 @@ function source(value: unknown): CloudCompanyCodeImportSource {
 function parse(value: unknown): CodeCall {
 	const a = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 	const action = ACTIONS.find((known) => known === a.action);
-	if (action === undefined) throw new CloudToolArgumentRefusal("action is undo, describe or bring_in");
+	if (action === undefined) throw new CloudToolArgumentRefusal("action is undo, describe, bring_in or status");
 	if (Object.keys(a).some((key) => !(KEYS[action] as readonly string[]).includes(key)))
 		throw new CloudToolArgumentRefusal(`${action} takes only ${KEYS[action].join(", ")}`);
-	if (typeof a.operationKey !== "string" || !OPERATION_KEY.test(a.operationKey))
+	if (action !== "status" && (typeof a.operationKey !== "string" || !OPERATION_KEY.test(a.operationKey)))
 		throw new CloudToolArgumentRefusal(
 			"operationKey is 1 to 96 letters, digits, dots, colons, hyphens and underscores, and starts with a letter or digit",
 		);
@@ -227,12 +265,20 @@ function parse(value: unknown): CodeCall {
 			"owner and name are the repository's, as in code/<owner>/<name>/: lowercase, such as owner company and name shop",
 		);
 	}
+	if (action === "status") {
+		return {
+			action,
+			owner: a.owner as string,
+			name: a.name as string,
+		};
+	}
+	const operationKey = a.operationKey as string;
 	if (action === "bring_in") {
 		if (a.look !== undefined && typeof a.look !== "boolean")
 			throw new CloudToolArgumentRefusal("look is true or false");
 		return {
 			action,
-			operationKey: a.operationKey,
+			operationKey,
 			owner: a.owner as string,
 			name: a.name as string,
 			from: source(a.from),
@@ -244,7 +290,7 @@ function parse(value: unknown): CodeCall {
 			"change is the change's number, a whole number from 1: changes/index.md in the repository's folder lists them",
 		);
 	const shared = {
-		operationKey: a.operationKey,
+		operationKey,
 		owner: a.owner as string,
 		name: a.name as string,
 		change: a.change as number,
@@ -305,7 +351,7 @@ function codeMark(code: string | null): string {
 }
 
 /** Why SQL raised instead of taking the call: nothing was asked and nothing was saved. */
-function raised(reason: CloudCompanyCodeRefusal, request: CodeCall): string {
+function raised(reason: CloudCompanyCodeRefusal, request: Exclude<CodeCall, CodeStatus>): string {
 	switch (reason) {
 		case "no_change":
 		case "invalid":
@@ -674,11 +720,78 @@ function importOpen(request: CodeBringIn, seen: CloudCompanyCodeImport | undefin
 	return `It is being ${request.look ? "looked at" : "brought in"} (${step}${waits}). Call bring_in again with the same operationKey to see how it went.`;
 }
 
+interface CodeStatusSession {
+	readonly workerId: string;
+	readonly agent: string;
+	readonly todoKey: string;
+	readonly workerKey: string;
+	readonly title: string;
+	readonly state: string;
+	readonly harness: string | null;
+	readonly dispatchedAt: string;
+	readonly followUps: number;
+	readonly needs: string | null;
+	readonly hasWorktree: boolean;
+	readonly path: string;
+}
+
+interface CodeStatusWorktree {
+	readonly workerId: string;
+	readonly path: string;
+	readonly updatedAt: string;
+	readonly session?: {
+		readonly agent: string;
+		readonly todoKey: string;
+		readonly workerKey: string;
+		readonly title: string;
+		readonly state: string;
+	};
+}
+
+function truncateChars(value: string, maxChars: number): string {
+	const chars = Array.from(value);
+	return chars.length <= maxChars ? value : `${chars.slice(0, maxChars - 1).join("")}…`;
+}
+
+async function runBounded<T, R>(items: readonly T[], concurrency: number, work: (item: T) => Promise<R>): Promise<R[]> {
+	if (items.length === 0) return [];
+	const results = new Array<R>(items.length);
+	let cursor = 0;
+	let firstError: unknown;
+	let failed = false;
+	const worker = async (): Promise<void> => {
+		while (!failed) {
+			const index = cursor++;
+			if (index >= items.length) return;
+			try {
+				results[index] = await work(items[index]!);
+			} catch (error) {
+				if (!failed) {
+					failed = true;
+					firstError = error;
+				}
+				return;
+			}
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+	if (failed) throw firstError;
+	return results;
+}
+
 /** The company's code kept in Qorpera, for an agent's own company run: `manage_code`. */
 export function cloudCodeTools(options: {
 	folder: Pick<
 		CloudCompanyFolderClient,
-		"requestCodeUndo" | "codeRequest" | "describeCodeChange" | "requestCodeImport" | "codeImport"
+		| "requestCodeUndo"
+		| "codeRequest"
+		| "describeCodeChange"
+		| "requestCodeImport"
+		| "codeImport"
+		| "read"
+		| "readText"
+		| "list"
+		| "release"
 	>;
 	identity: CloudNativeToolIdentity;
 	/** The pause between looks at an undo's or an import's request and how long the tool waits for it, when not 2 s and
@@ -691,6 +804,426 @@ export function cloudCodeTools(options: {
 	const lookMs = options.lookMs ?? UNDO_LOOK_MS;
 	const waitMs = options.waitMs ?? UNDO_WAIT_MS;
 	const said = (value: string): CloudToolContent => ({ kind: "text", value });
+
+	const status = async (request: CodeStatus, context: CloudToolContext): Promise<CloudToolContent> => {
+		const signal = context.signal;
+		const repoPath = `code/${request.owner}/${request.name}`;
+		const readEntries = new Map<string, CloudCompanyFolderRelease>();
+		const track = (entry: CloudCompanyFolderEntry | null | undefined): void => {
+			if (!entry) return;
+			const key = `${entry.path}:${entry.version}`;
+			if (!readEntries.has(key)) readEntries.set(key, cloudCompanyFolderRelease(entry));
+		};
+		const readEntry = async (path: string): Promise<CloudCompanyFolderEntry | null> => {
+			try {
+				const found = (await folder.read(path, signal)).entry;
+				track(found);
+				return found;
+			} catch (error) {
+				return unavailable(error, "read");
+			}
+		};
+		const readTextBounded = async (
+			path: string,
+			maxBytes: number,
+		): Promise<
+			| { readonly kind: "ok"; readonly text: string }
+			| { readonly kind: "missing" }
+			| { readonly kind: "unreadable"; readonly code: string }
+		> => {
+			try {
+				const found = await folder.readText(path, maxBytes, signal);
+				if (!found) return { kind: "missing" };
+				track(found.entry);
+				return { kind: "ok", text: found.text };
+			} catch (error) {
+				if (error instanceof CloudCompanyPathNotText) {
+					const meta = await readEntry(path);
+					if (!meta) return { kind: "missing" };
+					if (meta.kind !== "file") return { kind: "unreadable", code: "NOT_A_FILE" };
+					if (meta.file.bytes > maxBytes) return { kind: "unreadable", code: "TOO_LARGE" };
+					return { kind: "unreadable", code: "NOT_UTF8" };
+				}
+				return unavailable(error, "read");
+			}
+		};
+		const listEntries = async (
+			parent: string,
+			options: { limit?: number; recursive?: boolean },
+		): Promise<{ readonly entries: readonly CloudCompanyFolderEntry[]; readonly next: string | null }> => {
+			try {
+				const page = await folder.list(parent, options, signal);
+				for (const entry of page.entries) track(entry);
+				return { entries: page.entries, next: page.next };
+			} catch (error) {
+				return unavailable(error, "listed");
+			}
+		};
+
+		const repoEntry = await readEntry(repoPath);
+		if (!repoEntry) {
+			throw new CloudToolRefusal(
+				`There is no repository at ${repoPath}/: list code/ to see the repositories kept here.`,
+			);
+		}
+		if (repoEntry.kind !== "folder") {
+			throw new CloudToolRefusal(`${repoPath} is not a repository folder.`);
+		}
+
+		const checksPath = `${repoPath}/main/.qorpera/checks.json`;
+		const [mainEntry, restoringEntry, indexRead, checksRead, worktreesFolder] = await Promise.all([
+			readEntry(`${repoPath}/main`),
+			readEntry(`${repoPath}/restoring.json`),
+			readTextBounded(`${repoPath}/changes/index.md`, STATUS_MAX_INDEX_BYTES),
+			readTextBounded(checksPath, MAX_CODE_CHECKS_FILE_BYTES),
+			readEntry(`${repoPath}/worktrees`),
+		]);
+
+		let worktreesTruncated = false;
+		const rawWorktrees: { readonly workerId: string; readonly path: string; readonly updatedAt: string }[] = [];
+		if (worktreesFolder?.kind === "folder") {
+			const prefix = `${repoPath}/worktrees/`;
+			const page = await listEntries(`${repoPath}/worktrees`, { limit: STATUS_MAX_WORKTREES + 1 });
+			const folders = page.entries.filter((entry) => entry.kind === "folder");
+			if (folders.length > STATUS_MAX_WORKTREES || page.next !== null) worktreesTruncated = true;
+			for (const entry of folders.slice(0, STATUS_MAX_WORKTREES)) {
+				const workerId = entry.path.slice(prefix.length);
+				if (workerId && !workerId.includes("/")) {
+					rawWorktrees.push({ workerId, path: entry.path, updatedAt: entry.updatedAt });
+				}
+			}
+		}
+		const worktreeIds = new Set(rawWorktrees.map((wt) => wt.workerId));
+
+		let sessionsTruncated = false;
+		const sessionsByWorkerId = new Map<string, CodeStatusSession>();
+		const activeOrBlocked: CodeStatusSession[] = [];
+		const agentsRoot = osPath("agents");
+		const agentsFolder = await readEntry(agentsRoot);
+		if (agentsFolder?.kind === "folder") {
+			const agentPage = await listEntries(agentsRoot, { limit: STATUS_MAX_AGENTS_SCAN + 1 });
+			const handles: string[] = [];
+			for (const entry of agentPage.entries) {
+				if (entry.kind !== "folder") continue;
+				const rel = osRelative(entry.path);
+				const match = rel === null ? null : STATUS_AGENT_DIR.exec(rel);
+				if (match) handles.push(match[1]!);
+			}
+			if (handles.length > STATUS_MAX_AGENTS_SCAN || agentPage.next !== null) sessionsTruncated = true;
+			const scannedHandles = handles.slice(0, STATUS_MAX_AGENTS_SCAN);
+
+			interface WorkerCandidate {
+				readonly agent: string;
+				readonly todoKey: string;
+				readonly workerKey: string;
+				readonly folderPath: string;
+				readonly briefPath: string;
+				readonly briefUpdatedAt: string;
+				readonly resultsPath: string | null;
+				readonly resultsUpdatedAt: string | null;
+				readonly todoPath: string | null;
+			}
+			const candidates: WorkerCandidate[] = [];
+			await runBounded(scannedHandles, STATUS_READ_CONCURRENCY, async (handle) => {
+				const todosRoot = osPath(`agents/${handle}/todos`);
+				const todosFolder = await readEntry(todosRoot);
+				if (todosFolder?.kind !== "folder") return;
+				const page = await listEntries(todosRoot, { recursive: true, limit: STATUS_MAX_TODO_ENTRIES });
+				if (page.next !== null) sessionsTruncated = true;
+				const todoPaths = new Map<string, string>();
+				const grouped = new Map<
+					string,
+					{
+						todoKey: string;
+						workerKey: string;
+						brief?: CloudCompanyFolderEntry;
+						results?: CloudCompanyFolderEntry;
+					}
+				>();
+				for (const entry of page.entries) {
+					if (entry.kind !== "file") continue;
+					const rel = osRelative(entry.path);
+					if (rel === null) continue;
+					const todoMatch = STATUS_TODO_FILE.exec(rel);
+					if (todoMatch) {
+						todoPaths.set(todoMatch[1]!, entry.path);
+						continue;
+					}
+					const workerMatch = STATUS_WORKER_FILE.exec(rel);
+					if (!workerMatch) continue;
+					const todoKey = workerMatch[1]!;
+					const workerKey = workerMatch[2]!;
+					const fileKind = workerMatch[3] as "brief" | "results";
+					const key = `${todoKey}/${workerKey}`;
+					let group = grouped.get(key);
+					if (!group) {
+						group = { todoKey, workerKey };
+						grouped.set(key, group);
+					}
+					if (fileKind === "brief") group.brief = entry;
+					else group.results = entry;
+				}
+				for (const group of grouped.values()) {
+					if (!group.brief) continue;
+					candidates.push({
+						agent: handle,
+						todoKey: group.todoKey,
+						workerKey: group.workerKey,
+						folderPath: osPath(`agents/${handle}/todos/${group.todoKey}/${group.workerKey}`),
+						briefPath: group.brief.path,
+						briefUpdatedAt: group.brief.updatedAt,
+						resultsPath: group.results?.path ?? null,
+						resultsUpdatedAt: group.results?.updatedAt ?? null,
+						todoPath: todoPaths.get(group.todoKey) ?? null,
+					});
+				}
+			});
+
+			candidates.sort((a, b) => {
+				const aHasResults = a.resultsPath !== null ? 1 : 0;
+				const bHasResults = b.resultsPath !== null ? 1 : 0;
+				if (aHasResults !== bHasResults) return aHasResults - bHasResults;
+				const aAt = a.resultsUpdatedAt ?? a.briefUpdatedAt;
+				const bAt = b.resultsUpdatedAt ?? b.briefUpdatedAt;
+				return bAt.localeCompare(aAt);
+			});
+			if (candidates.length > STATUS_MAX_BRIEFS_READ) sessionsTruncated = true;
+			const toRead = candidates.slice(0, STATUS_MAX_BRIEFS_READ);
+			const todoCache = new Map<string, Promise<TodoFile | null>>();
+			const loadTodo = (todoPath: string): Promise<TodoFile | null> => {
+				let cached = todoCache.get(todoPath);
+				if (!cached) {
+					cached = (async () => {
+						const found = await readTextBounded(todoPath, COMPANY_STATE_FILE_MAX_BYTES);
+						if (found.kind !== "ok") return null;
+						const parsed = parseCompanyStateFile(todoPath, found.text);
+						return parsed?.ok && parsed.file.kind === "todo" ? parsed.file : null;
+					})();
+					todoCache.set(todoPath, cached);
+				}
+				return cached;
+			};
+
+			await runBounded(toRead, STATUS_READ_CONCURRENCY, async (candidate) => {
+				const foundBrief = await readTextBounded(candidate.briefPath, COMPANY_STATE_FILE_MAX_BYTES);
+				if (foundBrief.kind !== "ok") return;
+				const parsedBrief = parseCompanyStateFile(candidate.briefPath, foundBrief.text);
+				if (!parsedBrief?.ok || parsedBrief.file.kind !== "worker-brief") return;
+				const brief: WorkerBriefFile = parsedBrief.file;
+				if (
+					brief.species !== "coding" ||
+					brief.repository?.host !== "qorpera" ||
+					brief.repository.owner.toLowerCase() !== request.owner ||
+					brief.repository.name.toLowerCase() !== request.name
+				)
+					return;
+				let state = "active";
+				let needs: string | null = null;
+				if (candidate.resultsPath !== null) {
+					const foundResults = await readTextBounded(candidate.resultsPath, COMPANY_STATE_FILE_MAX_BYTES);
+					if (foundResults.kind === "ok") {
+						const parsedResults = parseCompanyStateFile(candidate.resultsPath, foundResults.text);
+						const results: WorkerResultsFile | null =
+							parsedResults?.ok && parsedResults.file.kind === "worker-results" ? parsedResults.file : null;
+						if (results) {
+							state = results.outcome;
+							needs = results.outcome === "blocked" && results.needs ? truncateChars(results.needs, 300) : null;
+						} else state = "reported";
+					}
+				} else if (candidate.todoPath !== null) {
+					const todo = await loadTodo(candidate.todoPath);
+					if (todo && (todo.status === "done" || todo.status === "cancelled")) state = todo.status;
+				}
+				const session: CodeStatusSession = {
+					workerId: brief.id,
+					agent: candidate.agent,
+					todoKey: candidate.todoKey,
+					workerKey: candidate.workerKey,
+					title: brief.title,
+					state,
+					harness: brief.harness ?? null,
+					dispatchedAt: brief.dispatchedAt,
+					followUps: brief.followUps,
+					needs,
+					hasWorktree: worktreeIds.has(brief.id),
+					path: candidate.folderPath,
+				};
+				sessionsByWorkerId.set(brief.id, session);
+				if (state === "active" || state === "blocked") activeOrBlocked.push(session);
+			});
+
+			activeOrBlocked.sort((a, b) => {
+				if (a.state !== b.state) return a.state === "active" ? -1 : 1;
+				return b.dispatchedAt.localeCompare(a.dispatchedAt);
+			});
+		}
+
+		const worktrees: CodeStatusWorktree[] = rawWorktrees.map((wt) => {
+			const matched = sessionsByWorkerId.get(wt.workerId);
+			return {
+				workerId: wt.workerId,
+				path: wt.path,
+				updatedAt: wt.updatedAt,
+				...(matched
+					? {
+							session: {
+								agent: matched.agent,
+								todoKey: matched.todoKey,
+								workerKey: matched.workerKey,
+								title: matched.title,
+								state: matched.state,
+							},
+						}
+					: {}),
+			};
+		});
+
+		const parsedIndex =
+			indexRead.kind === "ok" ? parseCodeChangesIndex(indexRead.text, STATUS_MAX_RECENT_CHANGES) : null;
+		let checksSummary: Record<string, JsonValue>;
+		if (checksRead.kind === "missing") {
+			checksSummary = { present: false, path: checksPath };
+		} else if (checksRead.kind === "unreadable") {
+			checksSummary = {
+				present: true,
+				valid: false,
+				path: checksPath,
+				problems: [
+					{
+						at: "",
+						code: checksRead.code,
+						message:
+							checksRead.code === "TOO_LARGE"
+								? "The checks file is over 16 KiB."
+								: checksRead.code === "NOT_A_FILE"
+									? "The checks file is not a regular file."
+									: "The checks file is not UTF-8 text.",
+					},
+				],
+			};
+		} else {
+			const parsedChecks = parseCodeChecksText(checksRead.text);
+			checksSummary = parsedChecks.ok
+				? {
+						present: true,
+						valid: true,
+						path: checksPath,
+						mode: parsedChecks.mode,
+						totalTimeoutSeconds: parsedChecks.totalTimeoutSeconds,
+						checks: parsedChecks.checks.map((entry) => ({
+							name: entry.name,
+							cwd: entry.cwd,
+							timeoutSeconds: entry.timeoutSeconds,
+							...(entry.needs !== undefined ? { needs: [...entry.needs] } : {}),
+						})),
+						site: parsedChecks.site
+							? {
+									folder: parsedChecks.site.folder,
+									name: parsedChecks.site.name,
+									title: parsedChecks.site.title,
+								}
+							: null,
+					}
+				: {
+						present: true,
+						valid: false,
+						path: checksPath,
+						problems: parsedChecks.problems
+							.slice(0, 10)
+							.map((problem) => ({ at: problem.at, code: problem.code, message: problem.message })),
+					};
+		}
+
+		const renderStatus = (sessionCount: number, worktreeCount: number, changeCount: number): string =>
+			cloudToolJsonText(
+				{
+					schema: "qorpera.code-status/v1",
+					repository: {
+						owner: request.owner,
+						name: request.name,
+						path: repoPath,
+						hasMain: mainEntry?.kind === "folder",
+						restoring: restoringEntry !== null,
+					},
+					sessions: activeOrBlocked.slice(0, sessionCount).map((session) => ({
+						workerId: session.workerId,
+						agent: session.agent,
+						todoKey: session.todoKey,
+						workerKey: session.workerKey,
+						title: session.title,
+						state: session.state,
+						harness: session.harness,
+						dispatchedAt: session.dispatchedAt,
+						followUps: session.followUps,
+						...(session.needs !== null ? { needs: session.needs } : {}),
+						hasWorktree: session.hasWorktree,
+						path: session.path,
+					})),
+					sessionsTruncated: sessionsTruncated || sessionCount < activeOrBlocked.length,
+					worktrees: worktrees.slice(0, worktreeCount).map((wt) => ({
+						workerId: wt.workerId,
+						path: wt.path,
+						updatedAt: wt.updatedAt,
+						...(wt.session ? { session: { ...wt.session } } : {}),
+					})),
+					worktreesTruncated: worktreesTruncated || worktreeCount < worktrees.length,
+					recentChanges:
+						indexRead.kind === "missing"
+							? { present: false, notices: [], totalListed: 0, changes: [] }
+							: indexRead.kind === "unreadable"
+								? { present: true, unreadable: true, notices: [], totalListed: 0, changes: [] }
+								: {
+										present: true,
+										notices: [...(parsedIndex?.notices ?? [])],
+										totalListed: parsedIndex?.totalListed ?? 0,
+										changes: (parsedIndex?.changes ?? []).slice(0, changeCount).map((entry) => ({
+											change: entry.change,
+											date: entry.date,
+											state: entry.state,
+											summary: entry.summary,
+										})),
+									},
+					checks: checksSummary,
+				},
+				STATUS_JSON_BYTES,
+			);
+
+		const tryRender = (sc: number, wc: number, cc: number): string | undefined => {
+			try {
+				const candidate = redactCloudWebhookSecrets(renderStatus(sc, wc, cc));
+				return fitsOneResult(candidate) ? candidate : undefined;
+			} catch {
+				return undefined;
+			}
+		};
+		let sessionCount = activeOrBlocked.length;
+		let worktreeCount = worktrees.length;
+		let changeCount = parsedIndex?.changes.length ?? 0;
+		let text = tryRender(sessionCount, worktreeCount, changeCount);
+		while (text === undefined && (sessionCount > 0 || worktreeCount > 0 || changeCount > 0)) {
+			if (worktreeCount > sessionCount && worktreeCount > 0) worktreeCount = Math.floor(worktreeCount / 2);
+			else if (sessionCount > 0) sessionCount = Math.floor(sessionCount / 2);
+			else if (changeCount > 0) changeCount = Math.floor(changeCount / 2);
+			else worktreeCount = Math.floor(worktreeCount / 2);
+			text = tryRender(sessionCount, worktreeCount, changeCount);
+		}
+		if (text === undefined) {
+			throw new CloudToolRefusal(
+				"COMPANY_FILE_ANSWER_TOO_LONG: repository status is too long to show in one tool result",
+			);
+		}
+		context.observation?.update({ outputBytes: Buffer.byteLength(text) });
+		const reads = [...readEntries.values()];
+		if (reads.length > 0) {
+			const outputSha256 = createHash("sha256").update(text, "utf8").digest("hex");
+			try {
+				await folder.release(releaseId(expected.runId, context.callId, outputSha256), reads, outputSha256, signal);
+			} catch (error) {
+				unavailable(error, "shown");
+			}
+		}
+		return { kind: "text", value: text };
+	};
 
 	const undo = async (request: CodeUndo, signal: AbortSignal): Promise<CloudToolContent> => {
 		const { action: _action, ...asked } = request;
@@ -756,10 +1289,14 @@ export function cloudCodeTools(options: {
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
-			required: ["action", "operationKey", "owner", "name"],
+			required: ["action", "owner", "name"],
 			properties: {
 				action: { type: "string", enum: [...ACTIONS] },
-				operationKey: { type: "string", pattern: OPERATION_KEY.source },
+				operationKey: {
+					type: "string",
+					pattern: OPERATION_KEY.source,
+					description: "Required for undo, describe and bring_in; omit for status.",
+				},
 				owner: { type: "string", minLength: 1, maxLength: 39 },
 				name: { type: "string", minLength: 1, maxLength: 100 },
 				change: { type: "integer", minimum: 1 },
@@ -813,6 +1350,7 @@ export function cloudCodeTools(options: {
 				throw new Error("Code tool identity differs");
 			context.signal.throwIfAborted();
 			const request = value as unknown as CodeCall;
+			if (request.action === "status") return status(request, context);
 			if (request.action === "bring_in") return bringIn(request, context.signal);
 			return request.action === "undo" ? undo(request, context.signal) : describe(request, context.signal);
 		},

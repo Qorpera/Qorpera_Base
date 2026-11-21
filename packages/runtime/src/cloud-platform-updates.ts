@@ -244,6 +244,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Repository checks can run side by side",
 		text: "A repository's checks can now run in parallel instead of one after another: when any check lists needs (the names of checks that must pass before it starts), Qorpera runs up to four ready checks at once and stops siblings right away if one fails. For example, install can run first, then lint, typecheck and tests side by side, and build once they pass. Existing check lists without needs stay sequential as before. Ask coding sessions to declare needs on repositories with slow check suites so changes land faster.",
 	},
+	{
+		id: "code-status-and-preflight-checks",
+		kind: "capability",
+		date: "2026-11-21",
+		title: "Repository status and pre-flight checks",
+		text: "Before dispatching parallel coding sessions on a Qorpera repository, call manage_code with action status to inspect its live state in one step: active or blocked coding sessions across the team, active worktrees, recent landed changes, and its checks setup. Inside coding sessions, agents can also run the repository checks pre-flight before handing in, receiving structured pass or fail results per check without landing unfinished work.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;
