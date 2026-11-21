@@ -1596,4 +1596,62 @@ describe("warm conversations", () => {
 		expect(maxRelease).toBe(2);
 		expect(await liveJournalNames(pair)).toEqual([]);
 	});
+
+	it("does not resurrect an archived journal or disturb a reused slot when stop() retires during qorpera_reserve_runtime_machine", async () => {
+		let inReserve!: () => void;
+		let releaseReserve!: () => void;
+		const entered = new Promise<void>((resolve) => {
+			inReserve = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			releaseReserve = resolve;
+		});
+		let holdFirstReserve = true;
+		let releasesForFirst = 0;
+		const firstAcq = sharedExecutionAcquisitionId(runId, 1);
+		const f = await fixture({
+			slotCount: 1,
+			runnerIdFor: (id) => (id === runId ? runnerId : "30000000-0000-4000-8000-000000000099"),
+			onRpc: async (name, body) => {
+				if (name === "qorpera_reserve_runtime_machine" && holdFirstReserve && body.p_allocation_id === firstAcq) {
+					holdFirstReserve = false;
+					inReserve();
+					await gate;
+				}
+				if (name === "qorpera_release_runtime_machine" && body.p_allocation_id === firstAcq) {
+					releasesForFirst++;
+				}
+			},
+		});
+		const signal = new AbortController().signal;
+		const first = f.backend.acquire(runId, work(), signal);
+		await entered;
+		f.release = "refused";
+		await f.backend.stop(
+			{
+				runnerId,
+				computeIdentityId,
+				workerClass: "managed_sandbox",
+				providerAdapter: "native26-test",
+				capabilities: ["agent_turn"],
+				templateKey: "qorpera-member-linux",
+				templateVersion: "v1",
+				policySha256: "f".repeat(64),
+			},
+			"revoked",
+			signal,
+		);
+		expect(await liveJournalNames(f)).toEqual([]);
+		f.release = "released";
+		const runTwo = await f.backend.acquire(secondRun, work({ runId: secondRun, sourceId: secondRun }), signal);
+		expect(runTwo.runnerId).toBe("30000000-0000-4000-8000-000000000099");
+		f.units.log.length = 0;
+		releaseReserve();
+		await expect(first).rejects.toThrow("Shared execution sandbox stopped before start");
+		expect(await liveJournalNames(f)).toEqual([`${sharedExecutionAcquisitionId(secondRun, 1)}.json`]);
+		expect(f.units.activeUnits.has(hostUnit(0))).toBe(true);
+		expect(f.units.activeUnits.has(runnerUnit(0))).toBe(true);
+		expect(f.units.log).toEqual([]);
+		expect(releasesForFirst).toBe(2);
+	});
 });

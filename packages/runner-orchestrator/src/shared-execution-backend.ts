@@ -514,6 +514,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	/** Acquisitions whose retirement is in flight; a second retire of the same one is a no-op. */
 	readonly #retiring = new Set<string>();
 	readonly #claimingSlots = new Set<number>();
+	// WHY: strict lock order #runLocks -> #slotLocks -> #serial prevents deadlocks while allowing distinct slots to progress concurrently.
 	readonly #runLocks = new Map<string, Promise<void>>();
 	readonly #slotLocks = new Map<number, Promise<void>>();
 	#endedRunnersCheckedAt = 0;
@@ -548,9 +549,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		return this.#config.slotCount;
 	}
 
-	/** Every live journal is reconciled on every pass; one failing journal must
-	 * not stop the retirement of finished sandboxes behind it. Unit states are
-	 * read in one query, and no lock is held while units are stopped. */
+	// WHY: #serial is not held while stopping units so other slots stay responsive; per-slot #slotLocks serializes each slot's own stop/wipe.
 	async reconcile(signal?: AbortSignal): Promise<void> {
 		await this.#exclusive(() => this.#ensureRoots());
 		const journals = await this.#journals();
@@ -929,7 +928,9 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		if (current.capacityReleased) throw new Error("Released sandbox capacity cannot be reserved again");
 		if (!current.capacityRequested) {
 			await this.#exclusive(async () => {
-				const latest = (await this.#readJournal(current.acquisitionId)) ?? current;
+				const latest = await this.#readJournal(current.acquisitionId);
+				if (!latest || latest.physicalState !== "reserving")
+					throw new Error("Shared execution sandbox stopped before start");
 				await this.#writeJournal({ ...latest, capacityRequested: true });
 			});
 		}
@@ -954,7 +955,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		) {
 			// A committed refusal means no allocation exists: nothing is owed.
 			await this.#exclusive(async () => {
-				const latest = (await this.#readJournal(current.acquisitionId)) ?? current;
+				const latest = await this.#readJournal(current.acquisitionId);
+				if (!latest || latest.physicalState !== "reserving") return;
 				await this.#writeJournal({ ...latest, capacityRequested: false });
 			});
 			throw new ProviderAdmissionRefused(
@@ -970,10 +972,43 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			result.instanceSha256 !== current.instanceSha256
 		)
 			throw new Error("Sandbox start was not admitted by the company ceiling");
+		let stoppedAfterCommit = false;
 		await this.#exclusive(async () => {
-			const latest = (await this.#readJournal(current.acquisitionId)) ?? current;
+			const latest = await this.#readJournal(current.acquisitionId);
+			if (!latest || latest.physicalState !== "reserving") {
+				stoppedAfterCommit = true;
+				return;
+			}
 			await this.#writeJournal({ ...latest, capacityRegistered: true });
 		});
+		if (stoppedAfterCommit) {
+			// WHY: a reservation that committed after retirement must release or archive as owed without resurrecting the live journal.
+			const committed = { ...current, capacityRequested: true, capacityRegistered: true };
+			try {
+				await this.#releaseMachine(committed, signal);
+			} catch (error) {
+				await this.#exclusive(async () => {
+					const archive = join(this.#config.stateRoot, "journals", "archive");
+					await mkdir(archive, { recursive: true, mode: 0o700 });
+					await writeFile(
+						join(archive, `${committed.acquisitionId}.${this.#now()}.lost.json`),
+						`${JSON.stringify(
+							{
+								...committed,
+								physicalState: "lost",
+								capacityReleased: false,
+								stopReason: `reserved_after_retire: ${error instanceof Error ? error.message : String(error)}`,
+								updatedAt: new Date(this.#now()).toISOString(),
+							},
+							null,
+							2,
+						)}\n`,
+						{ mode: 0o600 },
+					);
+				});
+			}
+			throw new Error("Shared execution sandbox stopped before start");
+		}
 		// G2-3: this run's machine's identity credential is bound to its allocation, as an exec slot, before the host
 		// can use it; only its hash leaves the service.
 		await this.#rpc(
@@ -1029,12 +1064,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		if (!confirmed) throw new Error("Sandbox capacity release was not confirmed");
 	}
 
-	/** Stop both units, wipe the slot, release the company ceiling exactly once
-	 * and record the terminal state. Runs in three phases so that no lock is
-	 * held while units are stopping; a second retire of the same acquisition
-	 * while one is in flight is a no-op. After MAX_RETIRE_ATTEMPTS failures the
-	 * sandbox is recorded as lost: the slot returns to service and the archived
-	 * journal keeps the reason. */
+	// WHY: holds only #slotLocks (never #serial) across unit stop/kill and slot wipe so concurrent #ensureReady on the same slot serializes while other slots continue.
 	async #retire(
 		acquisitionId: string,
 		reason: string,
@@ -1536,6 +1566,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		await this.#wipeSlot(slot);
 	}
 
+	/** Warm records on slots no live journal holds (a crash can leave both on one slot). */
 	async #parkedSlots(): Promise<SharedExecutionWarmSlot[]> {
 		const held = new Set<number>([
 			...this.#claimingSlots,
