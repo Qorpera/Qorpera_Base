@@ -235,4 +235,34 @@ describe("approved group avatar compositor", () => {
 		await settle();
 		expect(contexts.has(canvas)).toBe(false);
 	});
+
+	it("batches layout reads before canvas writes on theme changes and ignores unrelated DOM insertions", async () => {
+		const a = await show(2);
+		const b = await show(3);
+		const events: string[] = [];
+		vi.spyOn(a.canvas, "getBoundingClientRect").mockImplementation(() => {
+			events.push("read:a");
+			return { width: 48, height: 44 } as DOMRect;
+		});
+		vi.spyOn(b.canvas, "getBoundingClientRect").mockImplementation(() => {
+			events.push("read:b");
+			return { width: 48, height: 44 } as DOMRect;
+		});
+		a.context.drawImage.mockImplementation(() => {
+			events.push("write:a");
+		});
+		b.context.drawImage.mockImplementation(() => {
+			events.push("write:b");
+		});
+		const extra = document.createElement("div");
+		document.body.append(extra);
+		await settle();
+		expect(events).toEqual([]);
+
+		document.documentElement.dataset.theme = "dark";
+		await settle();
+		expect(events.slice(0, 2)).toEqual(["read:a", "read:b"]);
+		expect(events.slice(2)).toContain("write:a");
+		expect(events.slice(2)).toContain("write:b");
+	});
 });

@@ -32,6 +32,7 @@ const loaded = new WeakMap<FigureArtwork["prepare"], Map<FigureId, Promise<void>
 const masks = new WeakMap<FigureArtwork["prepare"], Map<string, Mask>>();
 const groups = new Map<HTMLCanvasElement, Group>();
 let mutations: MutationObserver | undefined;
+let themeMutations: MutationObserver | undefined;
 let resize: ResizeObserver | undefined;
 let lifetime: AbortController | undefined;
 
@@ -132,11 +133,11 @@ function knockout(artwork: FigureArtwork, figure: FigureId, side: number, radius
 	return mask;
 }
 
-function draw(group: Group): void {
+function draw(group: Group, measured?: DOMRect): void {
 	if (!group.ready || !groups.has(group.canvas) || !group.canvas.isConnected) return;
 	const { canvas, artwork } = group;
 	const ratio = Math.min(3, Math.max(2, window.devicePixelRatio || 1));
-	const bounds = canvas.getBoundingClientRect();
+	const bounds = measured ?? canvas.getBoundingClientRect();
 	canvas.width = Math.max(1, Math.round((bounds.width || group.width) * ratio));
 	canvas.height = Math.max(1, Math.round((bounds.height || group.height) * ratio));
 	const context = canvas.getContext("2d");
@@ -178,6 +179,26 @@ function draw(group: Group): void {
 	}
 }
 
+let sweepScheduled = false;
+
+function redrawGroups(targets: Iterable<Group>): void {
+	const measured: [Group, DOMRect][] = [];
+	for (const group of targets) {
+		if (!group.ready || !groups.has(group.canvas) || !group.canvas.isConnected) continue;
+		measured.push([group, group.canvas.getBoundingClientRect()]);
+	}
+	for (const [group, bounds] of measured) draw(group, bounds);
+}
+
+function scheduleSweep(): void {
+	if (sweepScheduled) return;
+	sweepScheduled = true;
+	queueMicrotask(() => {
+		sweepScheduled = false;
+		sweep();
+	});
+}
+
 function sweep(): void {
 	for (const canvas of groups.keys()) {
 		if (canvas.isConnected) continue;
@@ -187,9 +208,11 @@ function sweep(): void {
 	if (groups.size) return;
 	resize?.disconnect();
 	mutations?.disconnect();
+	themeMutations?.disconnect();
 	lifetime?.abort();
 	resize = undefined;
 	mutations = undefined;
+	themeMutations = undefined;
 	lifetime = undefined;
 }
 
@@ -198,30 +221,27 @@ function observe(): void {
 	lifetime = new AbortController();
 	if (typeof ResizeObserver !== "undefined") {
 		resize = new ResizeObserver((entries) => {
+			const targets: Group[] = [];
 			for (const entry of entries) {
 				const group = groups.get(entry.target as HTMLCanvasElement);
-				if (group) draw(group);
+				if (group) targets.push(group);
 			}
+			if (targets.length) redrawGroups(targets);
 		});
 	}
 	mutations = new MutationObserver((records) => {
-		sweep();
-		if (records.some((record) => record.type === "attributes" && record.target === document.documentElement))
-			for (const group of groups.values()) draw(group);
+		if (records.some((record) => record.removedNodes.length > 0)) scheduleSweep();
 	});
 	mutations.observe(document.documentElement, {
 		childList: true,
 		subtree: true,
+	});
+	themeMutations = new MutationObserver(() => redrawGroups(groups.values()));
+	themeMutations.observe(document.documentElement, {
 		attributes: true,
 		attributeFilter: ["data-theme"],
 	});
-	window.addEventListener(
-		"resize",
-		() => {
-			for (const group of groups.values()) draw(group);
-		},
-		{ signal: lifetime.signal },
-	);
+	window.addEventListener("resize", () => redrawGroups(groups.values()), { signal: lifetime.signal });
 }
 
 /** The approved group cluster, composed from the room's actual agent roster.

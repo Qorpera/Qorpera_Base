@@ -99,4 +99,30 @@ describe("sidebars follow Safari's toolbar", () => {
 		expect(root.dataset.chrome).toBeUndefined();
 		expect(root.dataset.windowInactive).toBeUndefined();
 	});
+
+	it("pauses Safari blur polling while hidden, resumes on visible, and clears deferred timers on stop", () => {
+		browser(SAFARI);
+		let visibility: DocumentVisibilityState = "visible";
+		Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+		stopWatching = watchTheme();
+		vi.advanceTimersByTime(50);
+		window.dispatchEvent(new Event("blur"));
+		vi.advanceTimersByTime(1);
+		expect(vi.getTimerCount()).toBe(1);
+
+		visibility = "hidden";
+		document.dispatchEvent(new Event("visibilitychange"));
+		expect(vi.getTimerCount()).toBe(0);
+
+		focused = false;
+		visibility = "visible";
+		document.dispatchEvent(new Event("visibilitychange"));
+		expect(root.dataset.windowInactive).toBe("");
+		expect(vi.getTimerCount()).toBe(1);
+
+		window.dispatchEvent(new Event("blur"));
+		stopWatching();
+		stopWatching = undefined;
+		expect(vi.getTimerCount()).toBe(0);
+	});
 });
