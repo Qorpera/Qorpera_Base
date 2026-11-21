@@ -3751,9 +3751,9 @@ describe("a member's live picture of a desktop (20260930745000)", () => {
 				}),
 		});
 		const startedAt = performance.now();
-		expect(await stalledPeer.memberStream({ passId: a.passId, epoch: null }, sinkOf(), new AbortController().signal)).toBe(
-			"STREAM_UNAVAILABLE",
-		);
+		expect(
+			await stalledPeer.memberStream({ passId: a.passId, epoch: null }, sinkOf(), new AbortController().signal),
+		).toBe("STREAM_UNAVAILABLE");
 		expect(fetchAborted).toBe(true);
 		expect(performance.now() - startedAt).toBeLessThan(2_000);
 

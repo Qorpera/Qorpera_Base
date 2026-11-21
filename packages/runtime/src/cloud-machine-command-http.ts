@@ -1680,7 +1680,9 @@ export function createHttpMemberMachineScreenPeer(options: {
 				}
 				if (response.status === 409) {
 					const { code } = JSON.parse(
-						new TextDecoder("utf8", { fatal: true }).decode(await readBoundedCloudResponse(response, 4096, signal)),
+						new TextDecoder("utf8", { fatal: true }).decode(
+							await readBoundedCloudResponse(response, 4096, signal),
+						),
 					) as { code?: unknown };
 					return isCloudMemberMachinePointerRefusal(code) ? code : "STREAM_UNAVAILABLE";
 				}

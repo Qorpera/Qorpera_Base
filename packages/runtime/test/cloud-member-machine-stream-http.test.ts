@@ -685,7 +685,9 @@ describe("the live-picture listener (20260930745000)", () => {
 
 		const ok = await rawCoalesced(masked(0x9, Buffer.from("coal")));
 		expect(ok.status).toBe("HTTP/1.1 101 Switching Protocols");
-		await vi.waitFor(() => expect(ok.frames.some((f) => f.opcode === 0xa && f.payload.toString() === "coal")).toBe(true));
+		await vi.waitFor(() =>
+			expect(ok.frames.some((f) => f.opcode === 0xa && f.payload.toString() === "coal")).toBe(true),
+		);
 		ok.socket.destroy();
 		await vi.waitFor(() => expect(signals[1]?.aborted).toBe(true));
 
