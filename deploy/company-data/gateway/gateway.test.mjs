@@ -11,6 +11,7 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http from "node:http";
+import net from "node:net";
 import { after, before, describe, it } from "node:test";
 import pg from "pg";
 import { checkLocale, LOCALE_QUERY, POSTGRES_IMAGE, POSTGRES_LOCALE } from "../../../scripts/test-hosted-db.mjs";
@@ -3604,7 +3605,7 @@ create trigger nap before update on slowed for each row execute function nap();
 		});
 	});
 
-	it("ends listen clients when watch stops or gateway closes mid-connect", async () => {
+	it("retries listen on 53300 and ends listen clients that finish connecting after stop or close", async () => {
 		const companyDb = companyDatabase(ENV_A);
 		const gatewayBackends = async () =>
 			(await asAdmin("postgres", "select count(*)::int as n from pg_stat_activity where datname = $1 and application_name like 'qorpera-data-gateway %'", [companyDb]))[0].n;
@@ -3633,18 +3634,76 @@ create trigger nap before update on slowed for each row execute function nap();
 			assert.equal(hitLimit, true, "expected company database to reach its 24-connection limit");
 			return fillers;
 		};
+		const createHoldProxy = async () => {
+			let holdNext = false;
+			let held = null;
+			const sockets = new Set();
+			const proxy = net.createServer((clientSocket) => {
+				sockets.add(clientSocket);
+				clientSocket.on("error", () => undefined);
+				clientSocket.once("close", () => sockets.delete(clientSocket));
+				const closed = new Promise((resolve) => clientSocket.once("close", resolve));
+				const connectUpstream = () => {
+					if (clientSocket.destroyed) return;
+					const upstream = net.connect(storePort, "127.0.0.1");
+					sockets.add(upstream);
+					upstream.on("error", () => clientSocket.destroy());
+					clientSocket.on("error", () => upstream.destroy());
+					upstream.once("close", () => {
+						sockets.delete(upstream);
+						clientSocket.destroy();
+					});
+					clientSocket.once("close", () => upstream.destroy());
+					clientSocket.pipe(upstream);
+					upstream.pipe(clientSocket);
+				};
+				if (holdNext) {
+					holdNext = false;
+					clientSocket.pause();
+					held?.resolve({
+						release: () => {
+							connectUpstream();
+							clientSocket.resume();
+						},
+						closed,
+					});
+					return;
+				}
+				connectUpstream();
+			});
+			await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+			return {
+				port: proxy.address().port,
+				armHold: () =>
+					new Promise((resolve) => {
+						holdNext = true;
+						held = { resolve };
+					}),
+				close: async () => {
+					for (const sock of sockets) sock.destroy();
+					await new Promise((resolve) => proxy.close(resolve));
+				},
+			};
+		};
 		const startRawWatch = (etag) => {
 			const text = JSON.stringify({ watches: [{ database: "m00", question: "count", etag }], wait: 2 });
-			const req = http.request({
-				host: "127.0.0.1",
-				port,
-				path: `/v1/company-data/${ENV_A}/watch`,
-				method: "POST",
-				headers: { authorization: `Bearer ${viewer}`, "content-type": "application/json", "content-length": Buffer.byteLength(text) },
-			});
+			let responded = false;
+			const req = http.request(
+				{
+					host: "127.0.0.1",
+					port,
+					path: `/v1/company-data/${ENV_A}/watch`,
+					method: "POST",
+					headers: { authorization: `Bearer ${viewer}`, "content-type": "application/json", "content-length": Buffer.byteLength(text) },
+				},
+				(res) => {
+					responded = true;
+					res.resume();
+				},
+			);
 			req.on("error", () => undefined);
 			req.end(text);
-			return req;
+			return { req, hasResponded: () => responded };
 		};
 		await withGateway({ limits: { ...LIMITS_HERE, watchMs: 2_000 } }, async () => {
 			const seed = await ask(viewer, "query", { database: "m00", question: "count" });
@@ -3652,30 +3711,71 @@ create trigger nap before update on slowed for each row execute function nap();
 			await dropGatewayBackends();
 			const fillers = await fillAll();
 			try {
-				const req = startRawWatch(seed.value.etag);
+				let settled = false;
+				const watchDone = ask(viewer, "watch", {
+					watches: [{ database: "m00", question: "count", etag: seed.value.etag }],
+					wait: 0.1,
+				}).finally(() => {
+					settled = true;
+				});
 				await sleep(150);
-				req.destroy();
-				await sleep(50);
+				assert.equal(settled, false, "watch returned early instead of retrying 53300 while connecting");
+				await Promise.all(fillers.splice(0, 2).map((client) => client.end().catch(() => undefined)));
+				const res = await watchDone;
+				assert.equal(res.status, 200, JSON.stringify(res.value));
 			} finally {
 				await Promise.all(fillers.map((client) => client.end().catch(() => undefined)));
 			}
-			await sleep(350);
-			assert.equal(await listening(), 0);
+			assert.equal(await until(listening, 0), 0);
 		});
-		let closeFillers = [];
+		const waitClosed = async (closed) => {
+			let timer;
+			try {
+				return await Promise.race([
+					closed.then(() => true),
+					new Promise((resolve) => {
+						timer = setTimeout(resolve, 2_000, false);
+					}),
+				]);
+			} finally {
+				clearTimeout(timer);
+			}
+		};
+		const proxy = await createHoldProxy();
 		try {
-			await withGateway({ limits: { ...LIMITS_HERE, watchMs: 2_000 } }, async () => {
-				const seed = await ask(viewer, "query", { database: "m00", question: "count" });
-				assert.equal(seed.status, 200);
-				await dropGatewayBackends();
-				closeFillers = await fillAll();
-				startRawWatch(seed.value.etag);
-				await sleep(150);
-			});
+			await withGateway(
+				{ store: { host: "127.0.0.1", port: proxy.port, logins }, limits: { ...LIMITS_HERE, watchMs: 2_000 } },
+				async () => {
+					const seed = await ask(viewer, "query", { database: "m00", question: "count" });
+					assert.equal(seed.status, 200);
+					const held = proxy.armHold();
+					const watchReq = startRawWatch(seed.value.etag);
+					const conn = await held;
+					assert.equal(watchReq.hasResponded(), false);
+					watchReq.req.destroy();
+					await sleep(50);
+					conn.release();
+					assert.equal(await waitClosed(conn.closed), true, "listen client that connected after stop() was not ended");
+					assert.equal(await until(listening, 0), 0);
+				},
+			);
+			let closeConn = null;
+			await withGateway(
+				{ store: { host: "127.0.0.1", port: proxy.port, logins }, limits: { ...LIMITS_HERE, watchMs: 2_000 } },
+				async () => {
+					const seed = await ask(viewer, "query", { database: "m00", question: "count" });
+					assert.equal(seed.status, 200);
+					const held = proxy.armHold();
+					const watchReq = startRawWatch(seed.value.etag);
+					closeConn = await held;
+					assert.equal(watchReq.hasResponded(), false);
+				},
+			);
+			closeConn.release();
+			assert.equal(await waitClosed(closeConn.closed), true, "listen client that connected after gateway.close() was not ended");
+			assert.equal(await until(listening, 0), 0);
 		} finally {
-			await Promise.all(closeFillers.map((client) => client.end().catch(() => undefined)));
+			await proxy.close();
 		}
-		await sleep(350);
-		assert.equal(await listening(), 0);
 	});
 });
