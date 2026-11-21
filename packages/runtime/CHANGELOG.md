@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- `hashArtifact()` in `cloud-codex-tool-session.ts` raises its `createReadStream` `highWaterMark` from 64 KiB to 1 MiB (`ARTIFACT_HASH_HIGH_WATER_MARK`) to reduce syscall overhead when hashing the ~319 MB Codex binary while keeping exact full-file SHA-256 verification unchanged.
 - The thread read says what woke each run (thread decisions step 5, the fold; Jonas, 20 Nov 2026: "Fold them").
   Migration `20260930822000_thread_run_wakes`: one text patch of `qorpera_read_session_events` (anchor required exactly
   once; the tail read goes through it): each event a run wrote gets `run_wake`, the wake's kind, by the unique index

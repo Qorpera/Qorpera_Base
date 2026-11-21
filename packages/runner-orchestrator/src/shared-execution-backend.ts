@@ -438,17 +438,30 @@ function assertGovernedWork(work: CloudRunnerWork): asserts work is CloudRunnerW
 		);
 }
 
+async function settleAll<T>(promises: readonly Promise<T>[]): Promise<T[]> {
+	const results = await Promise.allSettled(promises);
+	const firstFailure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+	if (firstFailure) throw firstFailure.reason;
+	return results.map((result) => (result as PromiseFulfilledResult<T>).value);
+}
+
 async function writePrivateFile(path: string, content: string, owner?: SharedExecutionAccount): Promise<void> {
 	const temporary = `${path}.${process.pid}.tmp`;
+	let renamed = false;
 	const handle = await open(temporary, "wx", 0o600);
 	try {
-		await handle.writeFile(content);
-		if (owner) await handle.chown(owner.uid, owner.gid);
-		await handle.sync();
+		try {
+			await handle.writeFile(content);
+			if (owner) await handle.chown(owner.uid, owner.gid);
+			await handle.sync();
+		} finally {
+			await handle.close();
+		}
+		await rename(temporary, path);
+		renamed = true;
 	} finally {
-		await handle.close();
+		if (!renamed) await rm(temporary, { force: true }).catch(() => undefined);
 	}
-	await rename(temporary, path);
 }
 
 async function emptyDirectory(path: string): Promise<void> {
@@ -502,6 +515,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	readonly #retiring = new Set<string>();
 	readonly #claimingSlots = new Set<number>();
 	readonly #runLocks = new Map<string, Promise<void>>();
+	readonly #slotLocks = new Map<number, Promise<void>>();
 	#endedRunnersCheckedAt = 0;
 	#serial: Promise<void> = Promise.resolve();
 
@@ -820,19 +834,20 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		const timeout = AbortSignal.any([signal, AbortSignal.timeout(this.#config.startTimeoutMs ?? 30_000)]);
 		try {
 			let current = journal;
-			if (current.physicalState === "reserving") {
-				await this.#reserveMachine(current, timeout);
-				const reserved = await this.#exclusive(
-					async () => (await this.#readJournal(current.acquisitionId)) ?? current,
-				);
+			if (current.physicalState === "reserving") await this.#reserveMachine(current, timeout);
+			let alreadyReady: CloudRunnerInstance | undefined;
+			// WHY: serialize per-slot materialization and unit start against #retire and duplicate acquire() via #slotLocks.
+			await this.#withSlotLock(current.slot, async () => {
+				const reserved = await this.#exclusive(() => this.#readJournal(current.acquisitionId));
+				if (!reserved || reserved.physicalState === "stopping" || terminal(reserved.physicalState))
+					throw new Error("Shared execution sandbox stopped before start");
 				if (reserved.physicalState === "reserving") {
-					// WHY: the live journal already exclusively owns `reserved.slot`, so materialization runs outside #serial.
 					if (!reserved.reusedHost && (await this.#units.active(this.#unit("host", reserved.slot), timeout)))
 						await this.#units.kill(this.#unit("host", reserved.slot), timeout);
 					const hostIdentity = await this.#writeMaterial(reserved, work, timeout);
 					current = await this.#exclusive(async () => {
-						const latest = (await this.#readJournal(current.acquisitionId)) ?? reserved;
-						if (latest.physicalState !== "reserving")
+						const latest = await this.#readJournal(current.acquisitionId);
+						if (!latest || latest.physicalState !== "reserving")
 							throw new Error("Shared execution sandbox stopped before start");
 						const next = {
 							...latest,
@@ -843,37 +858,42 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 						return next;
 					});
 				} else {
-					if (reserved.physicalState === "stopping" || terminal(reserved.physicalState))
-						throw new Error("Shared execution sandbox stopped before start");
 					current = reserved;
 				}
-			}
-			// A warm slot's host is already running; if it stopped meanwhile, the run fails
-			// its start and its retry starts a fresh sandbox.
-			if (current.reusedHost && !(await this.#units.active(this.#unit("host", current.slot), timeout)))
-				throw new Error("The warm slot's native host is no longer running");
-			// The relay is a socket the native host connects to at its first search: asked for before the host. A relay
-			// that does not start costs the run its search (the tool answers that the folder cannot be searched), never
-			// the run itself.
-			if (this.#config.folderSearch && !(await this.#units.active(folderRelayUnit(current.slot), timeout)))
-				await this.#units.start(folderRelayUnit(current.slot), timeout).catch((error: unknown) => {
-					console.error(
-						`shared-execution: slot ${current.slot}: the folder relay did not start: ${String(error)}`,
-					);
-				});
-			// A replay after a restart may find either unit not yet started. The runner
-			// unit is ordered after the host unit's start (After=, BindsTo=), not after its
-			// health: it boots and activates while the host loads. The assignment is
-			// delivered only once both answer, so no job reaches a host that is not ready.
-			for (const kind of ["host", "runner"] as const)
-				if (!(await this.#units.active(this.#unit(kind, current.slot), timeout)))
-					await this.#units.start(this.#unit(kind, current.slot), timeout);
+				if (current.physicalState === "registered" || current.physicalState === "assigned") {
+					alreadyReady = current.runner;
+					return;
+				}
+				// A warm slot's host is already running; if it stopped meanwhile, the run fails
+				// its start and its retry starts a fresh sandbox.
+				if (current.reusedHost && !(await this.#units.active(this.#unit("host", current.slot), timeout)))
+					throw new Error("The warm slot's native host is no longer running");
+				// The relay is a socket the native host connects to at its first search: asked for before the host. A relay
+				// that does not start costs the run its search (the tool answers that the folder cannot be searched), never
+				// the run itself.
+				if (this.#config.folderSearch && !(await this.#units.active(folderRelayUnit(current.slot), timeout)))
+					await this.#units.start(folderRelayUnit(current.slot), timeout).catch((error: unknown) => {
+						console.error(
+							`shared-execution: slot ${current.slot}: the folder relay did not start: ${String(error)}`,
+						);
+					});
+				// A replay after a restart may find either unit not yet started. The runner
+				// unit is ordered after the host unit's start (After=, BindsTo=), not after its
+				// health: it boots and activates while the host loads. The assignment is
+				// delivered only once both answer, so no job reaches a host that is not ready.
+				for (const kind of ["host", "runner"] as const)
+					if (!(await this.#units.active(this.#unit(kind, current.slot), timeout)))
+						await this.#units.start(this.#unit(kind, current.slot), timeout);
+			});
+			if (alreadyReady) return alreadyReady;
 			await Promise.all([
 				this.#waitHealthy(current.hostPort, timeout, "native provider host"),
 				this.#waitHealthy(current.inboxPort, timeout, "runner assignment inbox"),
 			]);
 			return this.#exclusive(async () => {
-				const latest = (await this.#readJournal(current.acquisitionId)) ?? current;
+				const latest = await this.#readJournal(current.acquisitionId);
+				if (!latest || latest.physicalState === "stopping" || terminal(latest.physicalState))
+					throw new Error("Shared execution sandbox stopped before start");
 				if (latest.physicalState === "starting")
 					await this.#writeJournal({ ...latest, physicalState: "registered" });
 				return latest.runner;
@@ -1034,55 +1054,62 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			if (!marked) return;
 			// Parking keeps the host for the conversation's next run: only the runner stops.
 			const park = options.park === true;
-			await this.#units.stop(this.#unit("runner", marked.slot), signal).catch(() => undefined);
-			// A runner unit that exited (its run ended, or it crashed: "idle" covers both) leaves its host nothing to save:
-			// the capsule is resealed inside the run, not after it, and the slot's scratch is wiped below. Such a host
-			// outlives SIGTERM, so waiting out its TimeoutStopSec only kept the slot from the next run (production, 6 Nov
-			// 2026: 11.2 s from a wake's end to its slot's release, 2.1 s for a run that parks). It gets a moment, then the
-			// kill below. A revoked or undelivered run's host keeps the full wait.
-			if (!park)
-				await this.#units
-					.stop(
-						this.#unit("host", marked.slot),
-						signal,
-						marked.stopReason === "idle" ? ENDED_RUN_HOST_STOP_MS : undefined,
-					)
-					.catch(() => undefined);
-			signal?.throwIfAborted();
-			const slotUnits = park
-				? [this.#unit("runner", marked.slot)]
-				: [this.#unit("runner", marked.slot), this.#unit("host", marked.slot)];
-			let stillActive = await this.#units.activeSet(slotUnits, signal);
-			if (stillActive.size > 0) {
-				// A stop the unit ignored is answered with SIGKILL before the slot
-				// can be considered for anything else.
-				for (const unit of stillActive) await this.#units.kill(unit, signal);
-				signal?.throwIfAborted();
-				stillActive = await this.#units.activeSet(slotUnits, signal);
-			}
-			if (stillActive.size > 0) {
-				await this.#exclusive(async () => {
-					const current = (await this.#readJournal(acquisitionId)) ?? marked;
-					if (terminal(current.physicalState)) return;
-					// Never give the slot up while a process still runs in it: the
-					// journal stays `stopping`, which keeps the slot out of service
-					// (quarantined) until the units are really gone.
-					await this.#writeJournal({ ...current, retireAttempts: (current.retireAttempts ?? 0) + 1 });
-				});
-				throw new Error("Sandbox units are still running; the slot stays quarantined");
-			}
-			const current = await this.#exclusive(async () => (await this.#readJournal(acquisitionId)) ?? marked);
-			if (terminal(current.physicalState)) return;
-			// WHY: the `stopping` journal and `#retiring` hold the slot, so wipe/release runs outside #serial.
-			if (park) await this.#wipeRunner(current.slot);
-			else await this.#wipeSlot(current.slot);
+			const current = await this.#withSlotLock(
+				marked.slot,
+				async (): Promise<SharedExecutionJournal | undefined> => {
+					await this.#units.stop(this.#unit("runner", marked.slot), signal).catch(() => undefined);
+					// A runner unit that exited (its run ended, or it crashed: "idle" covers both) leaves its host nothing to save:
+					// the capsule is resealed inside the run, not after it, and the slot's scratch is wiped below. Such a host
+					// outlives SIGTERM, so waiting out its TimeoutStopSec only kept the slot from the next run (production, 6 Nov
+					// 2026: 11.2 s from a wake's end to its slot's release, 2.1 s for a run that parks). It gets a moment, then the
+					// kill below. A revoked or undelivered run's host keeps the full wait.
+					if (!park)
+						await this.#units
+							.stop(
+								this.#unit("host", marked.slot),
+								signal,
+								marked.stopReason === "idle" ? ENDED_RUN_HOST_STOP_MS : undefined,
+							)
+							.catch(() => undefined);
+					signal?.throwIfAborted();
+					const slotUnits = park
+						? [this.#unit("runner", marked.slot)]
+						: [this.#unit("runner", marked.slot), this.#unit("host", marked.slot)];
+					let stillActive = await this.#units.activeSet(slotUnits, signal);
+					if (stillActive.size > 0) {
+						// A stop the unit ignored is answered with SIGKILL before the slot
+						// can be considered for anything else.
+						for (const unit of stillActive) await this.#units.kill(unit, signal);
+						signal?.throwIfAborted();
+						stillActive = await this.#units.activeSet(slotUnits, signal);
+					}
+					if (stillActive.size > 0) {
+						await this.#exclusive(async () => {
+							const live = await this.#readJournal(acquisitionId);
+							if (!live || terminal(live.physicalState)) return;
+							// Never give the slot up while a process still runs in it: the
+							// journal stays `stopping`, which keeps the slot out of service
+							// (quarantined) until the units are really gone.
+							await this.#writeJournal({ ...live, retireAttempts: (live.retireAttempts ?? 0) + 1 });
+						});
+						throw new Error("Sandbox units are still running; the slot stays quarantined");
+					}
+					const latest = await this.#exclusive(() => this.#readJournal(acquisitionId));
+					if (!latest || terminal(latest.physicalState)) return undefined;
+					// WHY: #slotLocks and the `stopping` journal hold this slot, so wipe runs outside #serial.
+					if (park) await this.#wipeRunner(latest.slot);
+					else await this.#wipeSlot(latest.slot);
+					return latest;
+				},
+			);
+			if (!current) return;
 			try {
 				await this.#releaseMachine(current, signal);
 			} catch (error) {
 				let lost = false;
 				await this.#exclusive(async () => {
-					const latest = (await this.#readJournal(acquisitionId)) ?? current;
-					if (terminal(latest.physicalState)) {
+					const latest = await this.#readJournal(acquisitionId);
+					if (!latest || terminal(latest.physicalState)) {
 						lost = true;
 						return;
 					}
@@ -1105,8 +1132,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				throw error;
 			}
 			await this.#exclusive(async () => {
-				const latest = (await this.#readJournal(acquisitionId)) ?? current;
-				if (terminal(latest.physicalState)) return;
+				const latest = await this.#readJournal(acquisitionId);
+				if (!latest || terminal(latest.physicalState)) return;
 				if (
 					park &&
 					latest.warmKey &&
@@ -1239,7 +1266,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			if (!TOKEN_PATTERN.test(value)) throw new Error("Stored slot credential is invalid");
 			return value;
 		};
-		const [activationToken, assignmentToken, nativeBridgeToken, nativeIdentityToken] = await Promise.all([
+		const [activationToken, assignmentToken, nativeBridgeToken, nativeIdentityToken] = await settleAll([
 			read("qorpera-runner-activation"),
 			read("qorpera-runner-assignment"),
 			read("qorpera-native-bridge"),
@@ -1416,7 +1443,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			),
 		];
 		if (!identity && !vaultState) {
-			await Promise.all(baseWrites);
+			await settleAll(baseWrites);
 			return undefined;
 		}
 		const files: Array<[string, string]> = [
@@ -1432,7 +1459,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			[join(credentialDirectory, "qorpera-native-provider-master-key"), identity ? `${identity.masterKey}\n` : ""],
 			[join(credentialDirectory, "qorpera-native-identity-epoch"), identity ? identity.epochCredential : ""],
 		];
-		await Promise.all([...baseWrites, ...files.map(([path, content]) => replacePrivate(path, content))]);
+		await settleAll([...baseWrites, ...files.map(([path, content]) => replacePrivate(path, content))]);
 		if (identity) return { epoch: identity.epoch, masterKeySha256: sha256(identity.masterKey) };
 		return { epoch: (vaultState as SharedExecutionIdentityState).epoch, masterKeySha256: VAULT_LOGIN_MARKER };
 	}
@@ -1442,12 +1469,12 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			rm(this.#warmPath(slot), { force: true }),
 			rm(this.#slotRun(slot), { recursive: true, force: true }),
 			emptyDirectory(join(this.#slotState(slot), "host")),
-			this.#wipeRunner(slot),
+			this.#wipeRunner(slot, false),
 		]);
 	}
 
 	/** The runner's part of a slot; a parked host keeps its own scratch and credentials. */
-	async #wipeRunner(slot: number): Promise<void> {
+	async #wipeRunner(slot: number, wipeRunCredentials = true): Promise<void> {
 		await Promise.all([
 			emptyDirectory(join(this.#slotState(slot), "runner", "state")),
 			emptyDirectory(join(this.#slotState(slot), "runner", "workspace")),
@@ -1458,8 +1485,12 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			rm(join(this.#slotState(slot), "runner", ".cache"), { recursive: true, force: true }),
 			// The runner's configuration holds its run's identity credential (G2-3); it goes with the runner.
 			rm(join(this.#slotState(slot), "runner", "config.json"), { force: true }),
-			rm(join(this.#slotRun(slot), "credentials", "qorpera-runner-activation"), { force: true }),
-			rm(join(this.#slotRun(slot), "credentials", "qorpera-runner-assignment"), { force: true }),
+			...(wipeRunCredentials
+				? [
+						rm(join(this.#slotRun(slot), "credentials", "qorpera-runner-activation"), { force: true }),
+						rm(join(this.#slotRun(slot), "credentials", "qorpera-runner-assignment"), { force: true }),
+					]
+				: []),
 		]);
 	}
 
@@ -1616,17 +1647,28 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		}
 		this.#swept = true;
 		for (const warm of warmSlots) {
-			const taken = live.some((journal) => journal.slot === warm.slot) || claiming.has(warm.slot);
+			if (claiming.has(warm.slot)) continue;
+			const taken = live.some((journal) => journal.slot === warm.slot);
 			if (!taken && Date.parse(warm.warmUntil) > this.#now() && active.has(this.#unit("host", warm.slot))) continue;
 			await this.#exclusive(async () => {
 				if (this.#claimingSlots.has(warm.slot)) return;
 				const current = (await this.#warmSlots()).find((candidate) => candidate.slot === warm.slot);
 				// Another pass may have replaced the record meanwhile: act on this exact one only.
 				if (!current || JSON.stringify(current) !== JSON.stringify(warm)) return;
+				const liveNow = (await this.#journals()).some(
+					(journal) => !terminal(journal.physicalState) && journal.slot === warm.slot,
+				);
 				// A slot a live run holds keeps its host; only the stale record goes.
-				if (live.some((journal) => journal.slot === warm.slot))
+				if (liveNow) {
 					await rm(this.#warmPath(warm.slot), { force: true });
-				else await this.#evict(warm.slot, signal);
+					return;
+				}
+				if (
+					Date.parse(current.warmUntil) > this.#now() &&
+					(await this.#units.active(this.#unit("host", warm.slot), signal))
+				)
+					return;
+				await this.#evict(warm.slot, signal);
 			});
 		}
 	}
@@ -1811,6 +1853,22 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		} finally {
 			release();
 			if (this.#runLocks.get(runId) === current) this.#runLocks.delete(runId);
+		}
+	}
+
+	async #withSlotLock<T>(slot: number, action: () => Promise<T>): Promise<T> {
+		const previous = this.#slotLocks.get(slot) ?? Promise.resolve();
+		let release = (): void => undefined;
+		const current = new Promise<void>((resolveWait) => {
+			release = resolveWait;
+		});
+		this.#slotLocks.set(slot, current);
+		await previous;
+		try {
+			return await action();
+		} finally {
+			release();
+			if (this.#slotLocks.get(slot) === current) this.#slotLocks.delete(slot);
 		}
 	}
 
