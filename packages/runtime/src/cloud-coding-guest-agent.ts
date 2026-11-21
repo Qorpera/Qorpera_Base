@@ -134,6 +134,7 @@ export interface CodingGuestAgentPorts {
 	sleep?: (ms: number) => Promise<void>;
 	readMountinfo?: () => Promise<string>;
 	chown?: (path: string, uid: number, gid: number) => Promise<void>;
+	removeTree?: (path: string) => Promise<void>;
 	lockWaitSeconds?: number;
 	ring?: { segmentBytes: number; segments: number };
 	requireRoot?: boolean;
@@ -171,6 +172,7 @@ function settle(ports: CodingGuestAgentPorts): Agent {
 		sleep: ports.sleep ?? ((ms: number) => new Promise((done) => setTimeout(done, ms))),
 		readMountinfo: ports.readMountinfo ?? (() => readFile("/proc/self/mountinfo", "utf8")),
 		chown: ports.chown ?? chown,
+		removeTree: ports.removeTree ?? ((path: string) => rm(path, { recursive: true, force: true })),
 		lockWaitSeconds: ports.lockWaitSeconds ?? 60,
 		ring: ports.ring ?? { segmentBytes: CODING_GUEST.segmentBytes, segments: CODING_GUEST.segments },
 		requireRoot: ports.requireRoot ?? true,
@@ -655,14 +657,16 @@ async function ensurePackageCaches(at: Agent): Promise<boolean> {
 	}
 }
 
-async function pruneOrphanFolderCaches(at: Agent, activeWorker: string): Promise<void> {
+async function collectOrphanFolderCaches(at: Agent, activeWorker: string): Promise<string[]> {
 	const done = join(at.runtimeRoot, "folder-caches.pruned");
-	if (await exists(done)) return;
+	if (await exists(done)) return [];
 	const owner = process.geteuid?.();
 	const parent = await missing(() => lstat(dirname(at.folderCacheRoot)));
-	if (parent !== undefined && (!parent.isDirectory() || parent.uid !== owner)) return;
+	if (parent !== undefined && (!parent.isDirectory() || parent.uid !== owner)) return [];
 	const root = parent ? await missing(() => lstat(at.folderCacheRoot)) : undefined;
-	if (root !== undefined && (!root.isDirectory() || root.uid !== owner)) return;
+	if (root !== undefined && (!root.isDirectory() || root.uid !== owner)) return [];
+	const trash: string[] = [];
+	let staging: string | undefined;
 	let ok = true;
 	if (root) {
 		const entries = await readdir(at.folderCacheRoot).catch(() => {
@@ -670,6 +674,10 @@ async function pruneOrphanFolderCaches(at: Agent, activeWorker: string): Promise
 			return [];
 		});
 		for (const name of entries) {
+			if (name.startsWith(".trash-")) {
+				trash.push(join(at.folderCacheRoot, name));
+				continue;
+			}
 			if (name !== "machine") {
 				const match = SESSION_CACHE.exec(name);
 				if (!match || match[1] === activeWorker) continue;
@@ -679,12 +687,20 @@ async function pruneOrphanFolderCaches(at: Agent, activeWorker: string): Promise
 				});
 				if (sessionDir === null || sessionDir?.isDirectory()) continue;
 			}
-			await rm(join(at.folderCacheRoot, name), { recursive: true, force: true }).catch(() => {
+			try {
+				if (!staging) {
+					staging = join(at.folderCacheRoot, `.trash-${randomUUID()}`);
+					await mkdir(staging, { mode: 0o700 });
+					trash.push(staging);
+				}
+				await rename(join(at.folderCacheRoot, name), join(staging, name));
+			} catch {
 				ok = false;
-			});
+			}
 		}
 	}
 	if (ok) await ignore(writeText(done, "", 0o600));
+	return trash;
 }
 
 /** The machine's NAT for the sessions' namespaces, which may reach out but not each other. Replaced whole. */
@@ -996,25 +1012,31 @@ export async function mountCodingGuestSession(
 	// The view's pass and the program's state must never reach the machine's disk.
 	if (mountOf(await at.readMountinfo(), at.folderRoot)?.fstype !== "tmpfs")
 		throw new Error("CODING_GUEST_FOLDER_NOT_IN_MEMORY");
-	const mount = await locked(at, session.lock, "CODING_GUEST_SESSION_BUSY", async () => {
-		const held = await readSessionUser(session);
-		if (held && (held.uid !== request.uid || held.gid !== request.gid))
-			throw new Error("CODING_GUEST_SESSION_USER_CHANGED");
-		let caches = false;
-		const name = await locked(at, machineLock(at), "CODING_GUEST_MACHINE_BUSY", async () => {
-			caches = await ensurePackageCaches(at);
-			const user = await ensureUser(at, request.uid, request.gid);
-			await ensureDataCommand(at);
-			await pruneOrphanFolderCaches(at, session.worker);
-			return user;
+	let trash: string[] = [];
+	let mount: { mount: CodingGuestMountAnswer["mount"]; caches: boolean };
+	try {
+		mount = await locked(at, session.lock, "CODING_GUEST_SESSION_BUSY", async () => {
+			const held = await readSessionUser(session);
+			if (held && (held.uid !== request.uid || held.gid !== request.gid))
+				throw new Error("CODING_GUEST_SESSION_USER_CHANGED");
+			let caches = false;
+			const name = await locked(at, machineLock(at), "CODING_GUEST_MACHINE_BUSY", async () => {
+				caches = await ensurePackageCaches(at);
+				const user = await ensureUser(at, request.uid, request.gid);
+				await ensureDataCommand(at);
+				trash = await collectOrphanFolderCaches(at, session.worker);
+				return user;
+			});
+			await mkdir(session.session, { recursive: true, mode: 0o755 });
+			if (!held) await writeJson(session.user, { schema: USER_SCHEMA, uid: request.uid, gid: request.gid });
+			await ensureNetwork(at, session);
+			const shown = await showView(at, session, request.view, request.uid, request.gid);
+			if (shown.mount === "mounted") await ensureUserManager(at, session, request.uid, name, shown.restarted);
+			return { mount: shown.mount, caches };
 		});
-		await mkdir(session.session, { recursive: true, mode: 0o755 });
-		if (!held) await writeJson(session.user, { schema: USER_SCHEMA, uid: request.uid, gid: request.gid });
-		await ensureNetwork(at, session);
-		const shown = await showView(at, session, request.view, request.uid, request.gid);
-		if (shown.mount === "mounted") await ensureUserManager(at, session, request.uid, name, shown.restarted);
-		return { mount: shown.mount, caches };
-	});
+	} finally {
+		for (const path of trash) await ignore(at.removeTree(path));
+	}
 	// Said only when asked (v2): an executor from before reads exactly the v1 answer.
 	return Object.freeze({
 		schema: "qorpera.coding-guest-mounted/v1",

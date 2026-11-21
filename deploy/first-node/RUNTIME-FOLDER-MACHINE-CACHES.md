@@ -167,10 +167,13 @@ is never under `/run`, which empties at every start and is memory.
     machine still joins its sessions (contract item 11), so this isolation is for performance rather than security: it
     eliminates cross-session `<cache-dir>/names` `flock` contention and `O(N^2)` `peers.rs` invalidation broadcasts.
     Each session's cache directory stays warm across views and `quiesce`/sleep/wake, is removed by `stop-session`, and
-    the guest agent removes any orphaned `cache/s-*` (without a matching `state/sessions/<worker32>` directory) and any
-    legacy `cache/machine` once per boot at the first mount. Package downloads remain shared across sessions via
-    `/var/cache/qorpera-packages` (`CODING_PACKAGE_CACHES`). Trade-off: a cache built by one coding session in a path
-    outside its own worktree (`worktrees/<worker>/`) is no longer visible to sibling sessions on the same machine;
+    once per boot at the first mount the guest agent renames any orphaned `cache/s-*` (without a matching
+    `state/sessions/<worker32>` directory) and any legacy `cache/machine` into `cache/.trash-<uuid>` under the machine
+    lock and deletes them (along with any leftover `.trash-*`) after releasing the machine and session locks; reclaiming
+    a session the orchestrator lost without sending `stop-session` remains the orchestrator's job. Package downloads
+    remain shared across sessions via `/var/cache/qorpera-packages` (`CODING_PACKAGE_CACHES`). Trade-off: a cache built
+    by one coding session in a path outside its own worktree (`worktrees/<worker>/`) is no longer visible to sibling
+    sessions on the same machine;
   - the folder helper refuses a mismatch: a desktop with an owner's cache, a command with the desktops' cache, or an
     owner of another shape;
   - a company-wide view renews only while its agent and member still read the folder's root, as its open required

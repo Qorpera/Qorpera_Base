@@ -238,8 +238,12 @@ units, its Docker daemon and its root all see the same tree. Each session's prog
 performance, replacing the earlier shared `/var/lib/qorpera-folder/cache/machine` to eliminate cross-session
 `<cache-dir>/names` `flock` contention and `O(N^2)` FUSE `peers.rs` invalidation broadcasts; see
 RUNTIME-FOLDER-MACHINE-CACHES.md). Each session's cache directory stays warm across views and `quiesce`/sleep/wake, is
-removed on `stop-session`, and the guest agent removes any orphaned `cache/s-*` (lacking `state/sessions/<worker32>`)
-and any legacy `cache/machine` once per boot at the first mount. Package downloads remain shared across sessions via
+removed on `stop-session`, and once per boot at the first mount the guest agent renames any orphaned `cache/s-*`
+(lacking `state/sessions/<worker32>`) and any legacy `cache/machine` into `cache/.trash-<uuid>` under the machine lock
+and deletes them (plus any leftover `.trash-*` from an earlier interrupted boot) after releasing the machine and session
+locks. Reclaiming a session whose `stop-session` never arrived (leaving both `state/sessions/<worker32>` and
+`cache/s-<worker32>` on disk after an orchestrator crash or lost detach) remains the orchestrator's responsibility (or
+ends when the machine is removed or rebuilt). Package downloads remain shared across sessions via
 `/var/cache/qorpera-packages`, while caches built outside a session's own worktree are no longer shared across sibling
 sessions. Each unit of the session gets `/company` bound to that
 path (`BindPaths`), as step 4's commands do. The program reaches the node's folder service on vsock, as on every
