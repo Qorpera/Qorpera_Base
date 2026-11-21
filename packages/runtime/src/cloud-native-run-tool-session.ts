@@ -435,14 +435,14 @@ export async function runCloudNativeRunToolSession(options: {
 		// A run that failed on its own commits the steps it finished, as closing would have, within 10 s: a timed batch
 		// still running stops then too. A stopped run does not: its authority is gone, and a later attempt may already be
 		// writing the log.
-		if (executionFailed && !closingStarted && !run.signal.aborted && adapters?.runLog)
-			await withTimeoutSignal(10_000, (closeSignal) => adapters.runLog!.log.close(closeSignal)).catch(
-				() => undefined,
-			);
+		const runLog = adapters?.runLog;
+		if (executionFailed && !closingStarted && !run.signal.aborted && runLog)
+			await withTimeoutSignal(10_000, (closeSignal) => runLog.log.close(closeSignal)).catch(() => undefined);
 		run.close();
-		if (adapters?.close) {
+		const closeAdapters = adapters?.close;
+		if (closeAdapters) {
 			try {
-				await withTimeoutSignal(10_000, (closeSignal) => cloudToolRequest(adapters.close!, closeSignal, 10_000));
+				await withTimeoutSignal(10_000, (closeSignal) => cloudToolRequest(closeAdapters, closeSignal, 10_000));
 			} catch {
 				// Keep the original execution failure, but never report success with unknown cleanup.
 				if (!executionFailed) cleanupError = new Error("Native resource cleanup was not confirmed");
