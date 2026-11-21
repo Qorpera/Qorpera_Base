@@ -9,7 +9,9 @@
 //   DATA_RUN_DOOR, DATA_RUN_SECRETS    the run door (run-door.yml): address:port to listen on, and the folder of its
 //                                      token, door.key and door.crt. Unset, no run door listens and the gateway holds
 //                                      no run token.
+import cluster from "node:cluster";
 import { readdirSync, readFileSync } from "node:fs";
+import { availableParallelism } from "node:os";
 import { join } from "node:path";
 import { Gateway, Platform, serve, serveRuns, startWatcher } from "../gateway/gateway.mjs";
 
@@ -71,42 +73,81 @@ if (process.env.DATA_RUN_DOOR) {
 	}
 }
 
+const rawWorkers = (process.env.DATA_WORKERS ?? "1").trim().toLowerCase();
+const workerCount =
+	rawWorkers === "auto"
+		? Math.max(1, Math.min(4, availableParallelism()))
+		: Math.max(1, Math.min(16, Number.isInteger(Number(rawWorkers)) ? Number(rawWorkers) : 1));
+
 const gateway = new Gateway({
 	store: { host: setting("DATA_STORE_HOST"), port: Number(process.env.DATA_STORE_PORT ?? 5432), logins },
 	platform: new Platform({ url: setting("DATA_PLATFORM_URL"), publishableKey: setting("DATA_PLATFORM_KEY") }),
+	workers: workerCount,
 	...(runs ? { runs: { token: runs.token } } : {}),
 });
-const server = await serve(gateway, { host, port });
-let runServer = null;
-if (runs) {
-	try {
-		runServer = await serveRuns(gateway, { host: runs.host, port: runs.port, cert: runs.cert, key: runs.key });
-	} catch (error) {
-		runsOff = `it did not start: ${String(error?.message ?? error).slice(0, 200)}`;
-	}
-}
-// The watcher (design §3): every 10 s it ends what runs past its limit and closes writes at a company's size limit.
-const stopWatcher = startWatcher(gateway, {
-	failed: (error) => console.error(`data gateway: the watcher's look failed: ${error?.code ?? ""} ${String(error?.message ?? error).slice(0, 200)}`),
-});
-// Names only: never a secret.
-console.log(`data gateway: listening on ${host}:${port}, store ${process.env.DATA_STORE_HOST}, secrets ${Object.keys(logins).join(", ")}`);
-if (runServer) console.log(`data gateway: run door listening on ${runs.host}:${runs.port} over TLS`);
-else if (runsOff) console.error(`data gateway: run door: off (${runsOff})`);
-else console.log("data gateway: no run door");
 
-let stopping = false;
-const stop = async () => {
-	if (stopping) return;
-	stopping = true;
-	stopWatcher();
-	for (const one of [server, runServer]) {
-		if (!one) continue;
-		one.close();
-		one.closeAllConnections();
+if (workerCount > 1 && cluster.isPrimary) {
+	const stopWatcher = startWatcher(gateway, {
+		failed: (error) =>
+			console.error(`data gateway: the watcher's look failed: ${error?.code ?? ""} ${String(error?.message ?? error).slice(0, 200)}`),
+	});
+	let stopping = false;
+	for (let i = 0; i < workerCount; i++) cluster.fork();
+	cluster.on("exit", (worker) => {
+		if (!stopping) {
+			console.error(`data gateway: worker ${worker.process.pid} exited, restarting`);
+			cluster.fork();
+		}
+	});
+	console.log(
+		`data gateway: primary started ${workerCount} workers on ${host}:${port}, store ${process.env.DATA_STORE_HOST}, secrets ${Object.keys(logins).join(", ")}`,
+	);
+	const stop = async () => {
+		if (stopping) return;
+		stopping = true;
+		stopWatcher();
+		for (const worker of Object.values(cluster.workers ?? {})) worker?.kill("SIGTERM");
+		await gateway.close();
+		process.exit(0);
+	};
+	process.on("SIGTERM", stop);
+	process.on("SIGINT", stop);
+} else {
+	const server = await serve(gateway, { host, port });
+	let runServer = null;
+	if (runs) {
+		try {
+			runServer = await serveRuns(gateway, { host: runs.host, port: runs.port, cert: runs.cert, key: runs.key });
+		} catch (error) {
+			runsOff = `it did not start: ${String(error?.message ?? error).slice(0, 200)}`;
+		}
 	}
-	await gateway.close();
-	process.exit(0);
-};
-process.on("SIGTERM", stop);
-process.on("SIGINT", stop);
+	const stopWatcher =
+		cluster.isWorker
+			? () => undefined
+			: startWatcher(gateway, {
+					failed: (error) =>
+						console.error(`data gateway: the watcher's look failed: ${error?.code ?? ""} ${String(error?.message ?? error).slice(0, 200)}`),
+				});
+	if (!cluster.isWorker) {
+		console.log(`data gateway: listening on ${host}:${port}, store ${process.env.DATA_STORE_HOST}, secrets ${Object.keys(logins).join(", ")}`);
+		if (runServer) console.log(`data gateway: run door listening on ${runs.host}:${runs.port} over TLS`);
+		else if (runsOff) console.error(`data gateway: run door: off (${runsOff})`);
+		else console.log("data gateway: no run door");
+	}
+	let stopping = false;
+	const stop = async () => {
+		if (stopping) return;
+		stopping = true;
+		stopWatcher();
+		for (const one of [server, runServer]) {
+			if (!one) continue;
+			one.close();
+			one.closeAllConnections();
+		}
+		await gateway.close();
+		process.exit(0);
+	};
+	process.on("SIGTERM", stop);
+	process.on("SIGINT", stop);
+}

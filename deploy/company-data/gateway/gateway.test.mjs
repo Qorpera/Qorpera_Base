@@ -14,7 +14,7 @@ import http from "node:http";
 import { after, before, describe, it } from "node:test";
 import pg from "pg";
 import { checkLocale, LOCALE_QUERY, POSTGRES_IMAGE, POSTGRES_LOCALE } from "../../../scripts/test-hosted-db.mjs";
-import { companyDatabase, folderPassword, Gateway, LIMITS, listMembers, Platform, serve, serveRuns } from "./gateway.mjs";
+import { companyDatabase, folderPassword, Gateway, LIMITS, listMembers, Platform, POOL_SIZE, serve, serveRuns } from "./gateway.mjs";
 
 const dockerUsable = process.platform === "linux" && spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0;
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
@@ -655,26 +655,22 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 			const applied = await ask(contributor, "apply", { database: "queue" });
 			assert.equal(applied.value.applied, true, JSON.stringify(applied.value));
 			const things = (answer) => answer.value.tables.find((table) => table.name === "things");
-			const sevens = [[[7]], [[7]], [[7]]];
+			const sevens = Array.from({ length: POOL_SIZE.r }, () => [[7]]);
 			assert.deepEqual((await ask(viewer, "query", { database: "queue", question: "slow" })).value.rows, [[7]], "the question's text is kept");
-			const slow = [1, 2, 3].map(() => call(viewer, "query", { database: "queue", question: "slow" }));
+			const slow = Array.from({ length: POOL_SIZE.r }, () => call(viewer, "query", { database: "queue", question: "slow" }));
 			await sleep(150);
 			const began = Date.now();
 			const busy = await describeOne(viewer, "queue");
 			const took = Date.now() - began;
 			assert.equal(busy.status, 200, JSON.stringify(busy.value));
-			// Not counted: a count that waited on for a connection would have got one when the questions ended, and counted.
 			assert.deepEqual([things(busy).rows, things(busy).rowsAbout], [undefined, undefined]);
 			assert.ok(took < 3_000, `the describe took ${took} ms: it did not wait as long as the pool lets a call wait (5 s)`);
 			assert.deepEqual((await Promise.all(slow)).map((answer) => answer.value.rows), sevens);
-			// With connections free again a describe counts.
 			assert.equal(things(await describeOne(viewer, "queue")).rows, 7);
-			// The connection that came too late for the count was given back: three slow questions still run side by
-			// side (one after two others would take 2.8 s).
 			const again = Date.now();
-			const second = await Promise.all([1, 2, 3].map(() => call(viewer, "query", { database: "queue", question: "slow" })));
+			const second = await Promise.all(Array.from({ length: POOL_SIZE.r }, () => call(viewer, "query", { database: "queue", question: "slow" })));
 			assert.deepEqual(second.map((answer) => answer.value.rows), sevens);
-			assert.ok(Date.now() - again < 2_500, `three slow questions took ${Date.now() - again} ms`);
+			assert.ok(Date.now() - again < 2_500, `${POOL_SIZE.r} slow questions took ${Date.now() - again} ms`);
 		});
 	});
 

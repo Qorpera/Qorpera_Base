@@ -24,9 +24,13 @@ const TOML_PATH = /^data\/([a-z][a-z0-9_]{0,39})\/database\.toml$/;
 /** A database folder's own login: the company's database, then o (owner), w (write) or r (read) and the folder's number. */
 const FOLDER_LOGIN = /^c_[0-9a-f]{32}_([owr])[0-9]+$/;
 /** Connections each login may hold: a folder's role holds as many as its CONNECTION LIMIT allows. */
-const POOL_SIZE = { o: 1, w: 2, r: 3, qorpera_data_keeper: 2, qorpera_data_admin: 1, qorpera_data_watch: 1, record: 1 };
+export const POOL_SIZE = Object.freeze({ o: 1, w: 8, r: 12, qorpera_data_keeper: 4, qorpera_data_admin: 1, qorpera_data_watch: 1, record: 1 });
+const WATCH_WORKERS = 3;
 /** Connections a company's database takes, all logins together. */
-const COMPANY_CONNECTIONS = 24;
+const COMPANY_CONNECTIONS = 36;
+const RAW_JSON = Symbol("rawJson");
+const VOLATILE_SQL =
+	/\b(?:now|clock_timestamp|statement_timestamp|transaction_timestamp|timeofday|current_timestamp|current_date|current_time|localtime|localtimestamp|random|setseed|gen_random_uuid|uuid_generate_v[14]|pg_sleep|txid_current|pg_current_xact_id|nextval|setval|currval|lastval)\b/i;
 /** What a member's yes to a held step is for (§3): the step, the hash of its text, and the hash of what it would
  * destroy, as `<step>.<sha256>.<sha256>`. A held step's answer carries it as `allow`; a run's pass carries the one a
  * member said yes to. A step is applied on a yes only when all three are still what the member was shown. */
@@ -186,10 +190,13 @@ const RELATION =
 	"join pg_catalog.pg_attribute a on a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped " +
 	"left join pg_catalog.pg_index i on i.indrelid = c.oid and i.indisprimary " +
 	"where c.relname = $2 and c.relkind in ('r', 'p', 'v', 'm') order by a.attnum";
-const SCHEMA_VIEWER_SCOPED =
-	"select exists (select 1 from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace and n.nspname = $1 where c.relrowsecurity) " +
-	"or exists (select 1 from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace and n.nspname = $1 where p.prosrc ~* 'qorpera\\.viewer|qorpera_data\\.viewer') " +
-	"or exists (select 1 from pg_catalog.pg_views v where v.schemaname = $1 and v.definition ~* 'qorpera\\.viewer|qorpera_data\\.viewer') as scoped";
+const SCHEMA_VIEWER_OBJECTS =
+	"select c.relname as name from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace and n.nspname = $1 " +
+	"where c.relrowsecurity or c.relkind in ('v', 'm') " +
+	"union " +
+	"select p.proname as name from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace and n.nspname = $1";
+
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const TOML_KEY = `(?:[A-Za-z0-9_-]+|"[^"\\\\\\n]*"|'[^'\\n]*')`;
 const TOML_KEYS = `${TOML_KEY}(?:\\s*\\.\\s*${TOML_KEY})*`;
@@ -295,6 +302,17 @@ const refuse = (status, message, extra) => {
 };
 
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
+let cachedIsoMs = -1;
+let cachedIsoText = "";
+const isoNow = () => {
+	const ms = Date.now();
+	if (ms !== cachedIsoMs) {
+		cachedIsoMs = ms;
+		cachedIsoText = new Date(ms).toISOString();
+	}
+	return cachedIsoText;
+};
+const EMPTY_VALUES = Object.freeze([]);
 const amount = (bytes) =>
 	bytes % 1024 ** 3 === 0 ? `${bytes / 1024 ** 3} GiB` : bytes % 1024 ** 2 === 0 ? `${bytes / 1024 ** 2} MiB` : `${bytes} bytes`;
 const quoted = (name) => `"${name.replace(/"/g, '""')}"`;
@@ -531,6 +549,7 @@ export class Gateway {
 	#store;
 	#platform;
 	#limits;
+	#workers;
 	#pools = new Map();
 	#proofs = new Map();
 	#texts = new Map();
@@ -539,6 +558,15 @@ export class Gateway {
 	#listeners = new Map();
 	#listenEpoch = 0;
 	#watchInFlight = new Map();
+	#tagSalt = randomBytes(16);
+	#schemaEpoch = new Map();
+	#relations = new Map();
+	#prepared = new WeakMap();
+	#askPlans = new Map();
+	#tokens = new Map();
+	#provenInFlight = new Map();
+	#mayWriteInFlight = new Map();
+	#folderInFlight = new Map();
 	/** Company databases the watcher last found at their size limit. */
 	#full = new Set();
 	#closed = false;
@@ -570,10 +598,11 @@ export class Gateway {
 	/** `store`: { host, port, logins: { admin, keeper, watch, folderKey } }: the three logins' passwords, and the key
 	 * each database folder's own logins' passwords are derived from (32 random bytes as hex). `runs`: { token }, the
 	 * node's private token an agent's tool brings to the run door. */
-	constructor({ store, platform, limits = LIMITS, runs = null, onProvision = () => undefined, beforeCancel = async () => undefined }) {
+	constructor({ store, platform, limits = LIMITS, runs = null, workers = 1, onProvision = () => undefined, beforeCancel = async () => undefined }) {
 		this.#store = store;
 		this.#platform = platform;
 		this.#limits = limits;
+		this.#workers = Math.max(1, Number.isInteger(workers) ? workers : 1);
 		this.#runToken = typeof runs?.token === "string" && runs.token.length >= 32 ? runs.token : null;
 		this.#onProvision = onProvision;
 		this.#beforeCancel = beforeCancel;
@@ -594,14 +623,18 @@ export class Gateway {
 		let opened = this.#pools.get(key);
 		if (!opened) {
 			const kind = FOLDER_LOGIN.exec(user)?.[1];
+			const baseMax = POOL_SIZE[kind ?? door];
+			const max = this.#workers > 1 && (kind === "r" || kind === "w" || door === "qorpera_data_keeper")
+				? Math.max(1, Math.floor(baseMax / this.#workers))
+				: baseMax;
 			const pool = new pg.Pool({
 				host: this.#store.host,
 				port: this.#store.port,
 				user,
 				password: this.#password(user),
 				database,
-				max: POOL_SIZE[kind ?? door],
-				// A step's login holds one connection, and steps are rare: it is given back soon.
+				max,
+				pipeline: kind === "r" || kind === "w",
 				idleTimeoutMillis: kind === "o" ? 1_000 : 5_000,
 				connectionTimeoutMillis: CONNECT_MS,
 				application_name: `qorpera-data-gateway ${kind ?? user.slice("qorpera_data_".length)}`,
@@ -669,24 +702,109 @@ export class Gateway {
 		await Promise.all(ending);
 	}
 
-	/** The files the caller may read now, each `{ sha256, bytes }` or null: a member's kept for a few seconds per member
-	 * and path, a run's from its redeemed pass. */
+	#tag(key) {
+		return createHmac("sha256", this.#tagSalt).update(key).digest("hex").slice(0, 16);
+	}
+
+	#bumpSchemaEpoch(database, schema) {
+		const key = `${database}/${schema}`;
+		this.#schemaEpoch.set(key, (this.#schemaEpoch.get(key) ?? 0) + 1);
+		const prefix = `${key}/`;
+		for (const relKey of this.#relations.keys()) if (relKey.startsWith(prefix)) this.#relations.delete(relKey);
+	}
+
+	#preparedName(client, database, schema, key) {
+		let set = this.#prepared.get(client);
+		if (!set) {
+			set = new Set();
+			this.#prepared.set(client, set);
+		}
+		const epoch = this.#schemaEpoch.get(`${database}/${schema}`) ?? 0;
+		const suffix = key.length <= 40 && /^[A-Za-z0-9_]+$/.test(key) ? key : sha256(key).slice(0, 20);
+		const name = `qp_${epoch}_${suffix}`;
+		if (set.has(name)) return name;
+		if (set.size >= 64) return undefined;
+		set.add(name);
+		return name;
+	}
+
+	#askPlan(ready, maxRows, maxBytes) {
+		const cacheKey = ready.sha256 ? `${ready.sha256}|${maxRows}|${maxBytes}` : null;
+		if (cacheKey) {
+			const kept = this.#askPlans.get(cacheKey);
+			if (kept) return kept;
+		}
+		const tag = this.#tag(ready.sha256 ?? ready.sql);
+		const [asked, inner, sized, madeAs, bytesSoFar, rowsMade] = ["asked", "inner", "sized", "made", "bytes", "rows"].map(
+			(name) => `qorpera_${name}_${tag}`,
+		);
+		const text =
+			`with ${asked} as materialized (select * from (\n${ready.sql}\n) ${inner} limit ${maxRows + 1}), ` +
+			`${sized} as (select ${asked}.*, ` +
+			`sum(octet_length(row(${asked}.*)::text)) over (rows between unbounded preceding and current row) as ${bytesSoFar} ` +
+			`from ${asked}) ` +
+			`select ${sized}.*, ${madeAs}.${rowsMade} from (select count(*) as ${rowsMade} from ${asked}) ${madeAs} ` +
+			`left join ${sized} on ${sized}.${bytesSoFar} <= ${maxBytes}`;
+		const plan = { text, key: ready.sha256 ? `${ready.sha256.slice(0, 16)}_${maxRows}_${maxBytes}` : null };
+		if (cacheKey) {
+			if (this.#askPlans.size >= 5_000) this.#askPlans.delete(this.#askPlans.keys().next().value);
+			this.#askPlans.set(cacheKey, plan);
+		}
+		return plan;
+	}
+
+	#cacheRelation(database, schema, table, rows) {
+		const key = `${database}/${schema}/${table}`;
+		if (this.#relations.size >= 2_000) this.#relations.delete(this.#relations.keys().next().value);
+		this.#relations.set(key, rows);
+	}
+
 	async #proven(caller, environmentId, paths) {
 		if (caller.files) return new Map(paths.map((path) => [path, caller.files.get(path) ?? null]));
 		const now = Date.now();
 		const found = new Map();
+		const waiting = [];
 		const ask = [];
 		for (const path of paths) {
-			const kept = this.#proofs.get(`${caller.key}|${environmentId}|${path}`);
-			if (kept && now - kept.at < this.#limits.proofMs) found.set(path, kept.value);
-			else ask.push(path);
+			const cacheKey = `${caller.key}|${environmentId}|${path}`;
+			const kept = this.#proofs.get(cacheKey);
+			if (kept && now - kept.at < this.#limits.proofMs) {
+				found.set(path, kept.value);
+				continue;
+			}
+			const pending = this.#provenInFlight.get(cacheKey);
+			if (pending) {
+				waiting.push([path, pending]);
+				continue;
+			}
+			ask.push(path);
 		}
-		for (let from = 0; from < ask.length; from += 64) {
-			const part = ask.slice(from, from + 64);
-			const values = await this.#platform.memberReads(caller.token, environmentId, part);
-			part.forEach((path, index) => {
-				found.set(path, values[index]);
-				this.#proofs.set(`${caller.key}|${environmentId}|${path}`, { at: now, value: values[index] });
+		if (ask.length > 0) {
+			for (let from = 0; from < ask.length; from += 64) {
+				const part = ask.slice(from, from + 64);
+				const batch = this.#platform.memberReads(caller.token, environmentId, part);
+				part.forEach((path, index) => {
+					const cacheKey = `${caller.key}|${environmentId}|${path}`;
+					const entry = batch.then((values) => {
+						const value = values[index];
+						this.#proofs.set(cacheKey, { at: Date.now(), value });
+						return value;
+					});
+					entry.catch(() => undefined);
+					this.#provenInFlight.set(cacheKey, entry);
+					waiting.push([
+						path,
+						entry.finally(() => {
+							if (this.#provenInFlight.get(cacheKey) === entry) this.#provenInFlight.delete(cacheKey);
+						}),
+					]);
+				});
+			}
+		}
+		if (waiting.length > 0) {
+			const resolved = await Promise.all(waiting.map(([, pending]) => pending));
+			waiting.forEach(([path], index) => {
+				found.set(path, resolved[index]);
 			});
 		}
 		if (this.#proofs.size > 20_000) for (const [key, kept] of this.#proofs) if (now - kept.at >= this.#limits.proofMs) this.#proofs.delete(key);
@@ -723,19 +841,29 @@ export class Gateway {
 		return text;
 	}
 
-	/** A database folder's number in the company's database (its roles carry it), or null when it was never applied. */
 	async #folder(database, name) {
 		const key = `${database}/${name}`;
 		const kept = this.#folders.get(key);
 		if (kept !== undefined) return kept;
-		const row = await this.#pool(database, "qorpera_data_keeper")
-			.query("select n from qorpera_data.databases where name = $1", [name])
-			.catch((error) => {
-				throw storeProblem(error);
-			});
-		if (!row.rows[0]) return null;
-		this.#folders.set(key, row.rows[0].n);
-		return row.rows[0].n;
+		let pending = this.#folderInFlight.get(key);
+		if (!pending) {
+			pending = this.#pool(database, "qorpera_data_keeper")
+				.query("select n from qorpera_data.databases where name = $1", [name])
+				.then((row) => {
+					if (!row.rows[0]) return null;
+					this.#folders.set(key, row.rows[0].n);
+					return row.rows[0].n;
+				})
+				.catch((error) => {
+					throw storeProblem(error);
+				})
+				.finally(() => {
+					if (this.#folderInFlight.get(key) === pending) this.#folderInFlight.delete(key);
+				});
+			pending.catch(() => undefined);
+			this.#folderInFlight.set(key, pending);
+		}
+		return pending;
 	}
 
 	/** The files directly in a folder that the caller may list: a member's from the platform, a run's from its pass. */
@@ -777,51 +905,76 @@ export class Gateway {
 
 	#values(caller, statement, params, kind = "question") {
 		if (!params || typeof params !== "object" || Array.isArray(params)) refuse(400, "Parameters are named values");
-		if (Buffer.byteLength(JSON.stringify(params)) > this.#limits.parameterBytes)
-			refuse(400, `Parameters take at most ${amount(this.#limits.parameterBytes)} together`);
+		const givenKeys = Object.keys(params);
+		if (statement.parameters.length === 0 && givenKeys.length === 0)
+			return { values: EMPTY_VALUES, viewer: caller.userId, previewValues: EMPTY_VALUES };
 		let viewer = caller.userId;
 		if (Object.hasOwn(params, VIEWER)) {
 			if (!caller.run) refuse(400, ":viewer is filled by Qorpera");
 			viewer = params[VIEWER];
 			if (typeof viewer !== "string" || !ENVIRONMENT.test(viewer)) refuse(400, ":viewer is a member's id");
 		}
-		const previewValues = [];
-		const values = statement.parameters.map((parameter, index) => {
+		const maxParamBytes = this.#limits.parameterBytes;
+		let roughBytes = 2;
+		let needsExactSize = false;
+		const previewValues = new Array(statement.parameters.length);
+		const values = new Array(statement.parameters.length);
+		for (let index = 0; index < statement.parameters.length; index++) {
+			const parameter = statement.parameters[index];
 			if (parameter === VIEWER) {
-				previewValues.push(viewer);
-				return viewer;
+				previewValues[index] = viewer;
+				values[index] = viewer;
+				roughBytes += 50;
+				continue;
 			}
 			if (!Object.hasOwn(params, parameter)) refuse(400, `The ${kind} takes :${parameter}`);
 			const value = params[parameter];
-			if (value === null || typeof value === "string") {
-				previewValues.push(value);
-				return value;
-			}
-			if (typeof value === "number" && Number.isFinite(value)) {
+			if (value === null) {
+				previewValues[index] = null;
+				values[index] = null;
+				roughBytes += parameter.length + 10;
+			} else if (typeof value === "string") {
+				previewValues[index] = value;
+				values[index] = value;
+				roughBytes += parameter.length + value.length * 6 + 8;
+			} else if (typeof value === "number" && Number.isFinite(value)) {
 				const text = String(value);
-				previewValues.push(text);
-				return text;
-			}
-			if (typeof value === "boolean") {
+				previewValues[index] = text;
+				values[index] = text;
+				roughBytes += parameter.length + text.length + 8;
+			} else if (typeof value === "boolean") {
 				const text = value ? "true" : "false";
-				previewValues.push(text);
-				return text;
-			}
-			if (typeof value === "object" && this.#checkJsonParam(value)) {
+				previewValues[index] = text;
+				values[index] = text;
+				roughBytes += parameter.length + 12;
+			} else if (typeof value === "object" && this.#checkJsonParam(value)) {
+				needsExactSize = true;
 				const json = JSON.stringify(value);
-				previewValues.push(json);
-				if (!Array.isArray(value)) return json;
-				const scalar = value.every((item) => item === null || typeof item === "string" || typeof item === "boolean" || typeof item === "number");
-				const n = index + 1;
-				const asJson =
-					!scalar ||
-					new RegExp(`\\$${n}(?![0-9])\\s*::\\s*jsonb?\\b`, "i").test(statement.sql) ||
-					new RegExp(`jsonb?_(?:array_elements|array_elements_text|array_length|to_recordset|populate_recordset)\\s*\\(\\s*\\$${n}(?![0-9])`, "i").test(statement.sql);
-				return asJson ? json : value.map((item) => (item === null ? null : typeof item === "boolean" ? (item ? "true" : "false") : String(item)));
+				previewValues[index] = json;
+				if (!Array.isArray(value)) {
+					values[index] = json;
+				} else {
+					const scalar = value.every((item) => item === null || typeof item === "string" || typeof item === "boolean" || typeof item === "number");
+					const n = index + 1;
+					const asJson =
+						!scalar ||
+						new RegExp(`\\$${n}(?![0-9])\\s*::\\s*jsonb?\\b`, "i").test(statement.sql) ||
+						new RegExp(`jsonb?_(?:array_elements|array_elements_text|array_length|to_recordset|populate_recordset)\\s*\\(\\s*\\$${n}(?![0-9])`, "i").test(statement.sql);
+					values[index] = asJson
+						? json
+						: value.map((item) => (item === null ? null : typeof item === "boolean" ? (item ? "true" : "false") : String(item)));
+				}
+			} else {
+				return refuse(400, `:${parameter} must be a JSON value`);
 			}
-			return refuse(400, `:${parameter} must be a JSON value`);
-		});
-		for (const given of Object.keys(params)) if (!statement.parameters.includes(given)) refuse(400, `The ${kind} takes no :${given}`);
+		}
+		if (needsExactSize || roughBytes > maxParamBytes || givenKeys.length > statement.parameters.length) {
+			if (Buffer.byteLength(JSON.stringify(params)) > maxParamBytes)
+				refuse(400, `Parameters take at most ${amount(maxParamBytes)} together`);
+		}
+		if (givenKeys.length > statement.parameters.length || (givenKeys.length > 0 && !givenKeys.every((given) => statement.parameters.includes(given)))) {
+			for (const given of givenKeys) if (!statement.parameters.includes(given)) refuse(400, `The ${kind} takes no :${given}`);
+		}
 		return { values, viewer, previewValues };
 	}
 
@@ -878,8 +1031,11 @@ export class Gateway {
 		});
 		const pid = client.processID;
 		if (agent) this.#agentReads.set(pid, (this.#agentReads.get(pid) ?? 0) + 1);
-		// A connection its backend left (the watcher ended it) is not given back to the pool.
 		let lost;
+		const onClientError = (error) => {
+			lost ??= error;
+		};
+		client.on("error", onClientError);
 		const cancel = () => {
 			const pid = client.processID;
 			const sending = this.#beforeCancel()
@@ -909,6 +1065,88 @@ export class Gateway {
 			throw storeProblem(error);
 		} finally {
 			gone?.removeEventListener("abort", cancel);
+			client.removeListener("error", onClientError);
+			if (agent) {
+				const left = (this.#agentReads.get(pid) ?? 1) - 1;
+				if (left > 0) this.#agentReads.set(pid, left);
+				else this.#agentReads.delete(pid);
+			}
+			this.#release(client, lost);
+		}
+	}
+
+	async #readingPipelined(ready, { ms = Number.POSITIVE_INFINITY, gone = null, agent = false, until = null, settings = "" }, buildQuery) {
+		const cap = agent ? this.#limits.agentMs : this.#limits.questionMs;
+		const maxRows = agent ? this.#limits.agentRows : this.#limits.questionRows;
+		const maxBytes = agent ? this.#limits.agentBytes : this.#limits.questionBytes;
+		const connecting = this.#pool(ready.database, `${ready.database}_r${ready.n}`).connect();
+		const client = await (until === null ? connecting : inTime(connecting, until)).catch((error) => {
+			throw storeProblem(error);
+		});
+		const pid = client.processID;
+		if (agent) this.#agentReads.set(pid, (this.#agentReads.get(pid) ?? 0) + 1);
+		let lost;
+		const onClientError = (error) => {
+			lost ??= error;
+		};
+		client.on("error", onClientError);
+		const cancel = () => {
+			const pid = client.processID;
+			const sending = this.#beforeCancel()
+				.then(() => this.#pool("postgres", "qorpera_data_watch").query("select pg_catalog.pg_cancel_backend($1)", [pid]))
+				.catch(() => undefined);
+			this.#signal(pid, sending);
+		};
+		gone?.addEventListener("abort", cancel, { once: true });
+		try {
+			if (gone?.aborted) refuse(499, "The caller went away");
+			if (until !== null) {
+				ms = Math.min(ms, until - Date.now());
+				if (ms < 1) refuse(408, "No time was left for the statement");
+			}
+			const limit = Math.max(1, Math.floor(Math.min(cap, ms)));
+			const viewerSetting = ready.viewer && ENVIRONMENT.test(ready.viewer) ? `; set local "qorpera.viewer" = '${ready.viewer}'` : "";
+			const beginSql =
+				`begin transaction read only; set local statement_timeout = ${limit}; set local timezone = 'UTC'; ` +
+				`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}, qorpera_ext${viewerSetting}${settings}`;
+			const spec = buildQuery(client, { maxRows, maxBytes });
+			const stream = client.connection?.stream;
+			let beginP;
+			let queryP;
+			let endP;
+			stream?.cork?.();
+			try {
+				beginP = client.query(beginSql);
+				queryP = client.query({
+					...(spec.name ? { name: spec.name } : {}),
+					text: spec.text,
+					values: spec.values,
+					rowMode: "array",
+					queryMode: "extended",
+					types: TEXT_TYPES,
+				});
+				endP = client.query("rollback");
+			} finally {
+				stream?.uncork?.();
+			}
+			const [beginRes, queryRes, endRes] = await Promise.allSettled([beginP, queryP, endP]);
+			if (endRes.status === "rejected") lost = endRes.reason;
+			if (beginRes.status === "rejected") {
+				if (!lost && !(beginRes.reason instanceof Refusal) && !(beginRes.reason?.code && !/^(57P0[123]|08...)$/.test(beginRes.reason.code)))
+					lost = beginRes.reason;
+				throw beginRes.reason;
+			}
+			if (queryRes.status === "rejected") {
+				const error = queryRes.reason;
+				if (spec.name && (error?.code === "0A000" || error?.code === "42P01" || error?.code === "42703"))
+					this.#prepared.get(client)?.delete(spec.name);
+				if (!lost && error?.code && /^(57P0[123]|08...)$/.test(error.code)) lost = error;
+				throw error;
+			}
+			return { result: queryRes.value, maxRows, maxBytes };
+		} finally {
+			gone?.removeEventListener("abort", cancel);
+			client.removeListener("error", onClientError);
 			if (agent) {
 				const left = (this.#agentReads.get(pid) ?? 1) - 1;
 				if (left > 0) this.#agentReads.set(pid, left);
@@ -919,147 +1157,220 @@ export class Gateway {
 	}
 
 	async #ask(ready, options = {}) {
-		return this.#reading(ready, options, async (client, { maxRows, maxBytes }) => {
-			// As a subquery, so only something that gives rows runs, and once: one statement whatever the answer. No more
-			// rows than the answer may hold are made, and the store itself stops handing rows over once they pass the
-			// answer's size: a question whose rows are huge cannot fill the gateway's memory. There is always one row at
-			// least, carrying how many rows the question made: with no answer row in it (all its answer columns null)
-			// when the question made none, or when its first row alone is past the answer's size.
-			// A question's own columns may carry any name, so every name the gateway adds ends in a tag made for this
-			// call, which no question can know, and the whole row is `row(alias.*)`, which no column can stand for. The
-			// gateway's three added columns are taken off by their place, last.
-			const tag = randomBytes(8).toString("hex");
-			const [asked, inner, sized, madeAs, at, bytesSoFar, rowsMade] = ["asked", "inner", "sized", "made", "at", "bytes", "rows"].map(
-				(name) => `qorpera_${name}_${tag}`,
-			);
-			const result = await client.query({
-				text:
-					`with ${asked} as (select * from (\n${ready.sql}\n) ${inner} limit ${maxRows + 1}), ` +
-					`${sized} as (select ${asked}.*, row_number() over () as ${at}, ` +
-					`sum(octet_length(row(${asked}.*)::text)) over (rows between unbounded preceding and current row) as ${bytesSoFar} ` +
-					`from ${asked}) ` +
-					`select ${sized}.*, ${madeAs}.${rowsMade} from (select count(*) as ${rowsMade} from ${asked}) ${madeAs} ` +
-					`left join ${sized} on ${sized}.${bytesSoFar} <= ${maxBytes} order by ${sized}.${at}`,
-				values: ready.values,
-				rowMode: "array",
-				queryMode: "extended",
-				types: TEXT_TYPES,
+		const run = () =>
+			this.#readingPipelined(ready, options, (client, { maxRows, maxBytes }) => {
+				const plan = this.#askPlan(ready, maxRows, maxBytes);
+				return {
+					name: plan.key ? this.#preparedName(client, ready.database, ready.name, plan.key) : undefined,
+					text: plan.text,
+					values: ready.values,
+				};
 			});
-			const width = result.fields.length - 3;
-			const fields = result.fields.slice(0, width);
-			const made = Number(result.rows[0][width + 2]);
-			// The row with no answer in it has no running size.
-			const given = result.rows[0][width + 1] === null ? [] : result.rows;
-			for (const row of given) for (let index = 0; index < width; index++) this.taken.bytes += row[index]?.length ?? 0;
-			this.taken.rows += given.length;
-			let more = made > maxRows || given.length < Math.min(made, maxRows);
-			const columns = fields.map((field) => field.name);
-			const rows = [];
-			let bytes = 0;
-			for (const row of given.slice(0, maxRows)) {
-				const shapedRow = row.slice(0, width).map((value, index) => shaped(value, fields[index].dataTypeID));
-				bytes += Buffer.byteLength(JSON.stringify(shapedRow)) + 1;
-				if (bytes > maxBytes) {
+		let ran;
+		try {
+			ran = await run();
+		} catch (error) {
+			if (ready.sha256 && error?.code === "0A000") {
+				this.#bumpSchemaEpoch(ready.database, ready.name);
+				try {
+					ran = await run();
+				} catch (retryError) {
+					throw storeProblem(retryError);
+				}
+			} else {
+				throw storeProblem(error);
+			}
+		}
+		const { result, maxRows, maxBytes } = ran;
+		const fields = result.fields;
+		const width = fields.length - 2;
+		const made = Number(result.rows[0][width + 1]);
+		const given = result.rows[0][width] === null ? [] : result.rows;
+		let takenBytes = 0;
+		for (let r = 0; r < given.length; r++) {
+			const row = given[r];
+			for (let index = 0; index < width; index++) takenBytes += row[index]?.length ?? 0;
+		}
+		this.taken.bytes += takenBytes;
+		this.taken.rows += given.length;
+		let more = made > maxRows || given.length < Math.min(made, maxRows);
+		const columns = new Array(width);
+		const typeIds = new Array(width);
+		for (let index = 0; index < width; index++) {
+			columns[index] = fields[index].name;
+			typeIds[index] = fields[index].dataTypeID;
+		}
+		const rowLimit = Math.min(given.length, maxRows);
+		const rows = [];
+		const rowJsons = [];
+		let roughBytes = 0;
+		let exactBytes = -1;
+		for (let r = 0; r < rowLimit; r++) {
+			const row = given[r];
+			const shapedRow = new Array(width);
+			for (let index = 0; index < width; index++) shapedRow[index] = shaped(row[index], typeIds[index]);
+			const encoded = JSON.stringify(shapedRow);
+			roughBytes += encoded.length * 3 + 1;
+			if (exactBytes >= 0 || roughBytes > maxBytes) {
+				if (exactBytes < 0) {
+					exactBytes = 0;
+					for (let j = 0; j < rowJsons.length; j++) exactBytes += Buffer.byteLength(rowJsons[j]) + 1;
+				}
+				exactBytes += Buffer.byteLength(encoded) + 1;
+				if (exactBytes > maxBytes) {
 					more = true;
 					break;
 				}
-				rows.push(shapedRow);
 			}
-			const answer = { columns, rows, more };
-			return { ...answer, etag: sha256(JSON.stringify(answer)).slice(0, 32) };
-		});
+			rows.push(shapedRow);
+			rowJsons.push(encoded);
+		}
+		const rawBase = `{"columns":${JSON.stringify(columns)},"rows":[${rowJsons.join(",")}],"more":${more}}`;
+		const etag = sha256(rawBase).slice(0, 32);
+		const answer = { columns, rows, more, etag };
+		answer[RAW_JSON] = rawBase;
+		return answer;
+	}
+
+	#buildPageQuery(ready, shapeRows, maxBytes) {
+		const columns = shapeRows.map((row, index) => ({ ...row, index }));
+		const key = columns.filter((column) => column.key !== null).sort((a, b) => Number(a.key) - Number(b.key));
+		const by = ready.order === null ? null : columns.find((column) => column.name === ready.order);
+		if (ready.order !== null && !by) refuse(400, `No column ${ready.order} in ${ready.table}`);
+		if (key.length === 0 && ready.after !== null) refuse(400, `${ready.table} has no key: it gives its first page alone`);
+		const tag = this.#tag(`${ready.database}|${ready.name}|${ready.table}`);
+		const [row, asked, sized, madeAs, seen, size, bytesSoFar, rowsMade] = ["row", "asked", "sized", "made", "seen", "size", "bytes", "rows"].map(
+			(name) => `qorpera_${name}_${tag}`,
+		);
+		const ref = (column) => `${row}.${quoted(column.name)}`;
+		const placed = by ? [by, ...key] : key;
+		const values = [];
+		const value = (column, text) => {
+			values.push(text);
+			return `$${values.length}::${column.type}`;
+		};
+		let where = "";
+		if (ready.after !== null) {
+			const after = ready.after;
+			if (after.length !== placed.length || !after.every((one, index) => (index === 0 && by ? one === null : false) || typeof one === "string"))
+				refuse(400, "after is the next a page gave, for the same order");
+			const keyAfter = key.length === 0 ? "" : `(${key.map(ref).join(", ")}) ${by || !ready.desc ? ">" : "<"} (${key.map((column, index) => value(column, after[placed.length - key.length + index])).join(", ")})`;
+			if (!by) where = `where ${keyAfter}`;
+			else if (after[0] === null) where = `where ${ref(by)} is null and ${keyAfter}`;
+			else {
+				const from = value(by, after[0]);
+				where = `where (${ref(by)} ${ready.desc ? "<" : ">"} ${from} or (${ref(by)} = ${from} and ${keyAfter}) or ${ref(by)} is null)`;
+			}
+		}
+		const order = [
+			...(by ? [`${ref(by)} ${ready.desc ? "desc" : "asc"} nulls last`] : []),
+			...key.map((column) => `${ref(column)} ${!by && ready.desc ? "desc" : "asc"}`),
+		];
+		const text =
+			`with ${asked} as materialized (select ${row}.*, ${SEEN(row)} as ${seen}, ` +
+			`pg_catalog.octet_length(${row}::text) as ${size} from ${quoted(ready.name)}.${quoted(ready.table)} ${row} ${where} ` +
+			`${order.length > 0 ? `order by ${order.join(", ")}` : ""} limit ${ready.limit + 1}), ` +
+			`${sized} as (select ${asked}.*, ` +
+			`sum(${asked}.${size}) over (rows between unbounded preceding and current row) as ${bytesSoFar} from ${asked}) ` +
+			`select ${sized}.*, ${madeAs}.* from (select count(*) as ${rowsMade}${placed
+				.map((column, index) => `, (select ${asked}.${quoted(column.name)} from ${asked} limit 1) as qorpera_first_${index}_${tag}`)
+				.join("")} from ${asked}) ${madeAs} ` +
+			`left join ${sized} on ${sized}.${bytesSoFar} <= ${maxBytes}`;
+		return { columns, key, placed, text, values };
+	}
+
+	#formatPageResult(ready, built, result, maxBytes) {
+		const { columns, key, placed } = built;
+		const width = columns.length;
+		const fields = result.fields.slice(0, width);
+		const made = Number(result.rows[0][width + 3]);
+		const given = result.rows[0][width + 2] === null ? [] : result.rows;
+		for (const one of given) for (let index = 0; index < width; index++) this.taken.bytes += one[index]?.length ?? 0;
+		this.taken.rows += given.length;
+		let more = made > ready.limit || given.length < Math.min(made, ready.limit);
+		const rows = [];
+		const rowJsons = [];
+		let last = null;
+		let bytes = 0;
+		for (const one of given.slice(0, ready.limit)) {
+			const shapedRow = { values: one.slice(0, width).map((text, index) => shaped(text, fields[index].dataTypeID)), seen: one[width] };
+			const encoded = JSON.stringify(shapedRow);
+			bytes += Buffer.byteLength(encoded) + 1;
+			if (bytes > maxBytes) {
+				more = true;
+				break;
+			}
+			rows.push(shapedRow);
+			rowJsons.push(encoded);
+			last = one;
+		}
+		const tooLarge = rows.length === 0 && made > 0;
+		const next =
+			!more || key.length === 0
+				? null
+				: last !== null
+					? placed.map((column) => last[column.index])
+					: placed.map((_, index) => result.rows[0][width + 4 + index]);
+		const colNames = columns.map((column) => column.name);
+		const keyNames = key.map((column) => column.name);
+		const answer = {
+			columns: colNames,
+			key: keyNames,
+			rows,
+			more,
+			...(next === null ? {} : { next }),
+			...(tooLarge ? { tooLarge: true } : {}),
+		};
+		const tail = `${next === null ? "" : `,"next":${JSON.stringify(next)}`}${tooLarge ? ',"tooLarge":true' : ""}`;
+		const rawBase = `{"columns":${JSON.stringify(colNames)},"key":${JSON.stringify(keyNames)},"rows":[${rowJsons.join(",")}],"more":${more}${tail}}`;
+		const etag = sha256(rawBase).slice(0, 32);
+		const out = { ...answer, etag };
+		out[RAW_JSON] = rawBase;
+		return out;
 	}
 
 	async #page(ready, options = {}) {
+		const relKey = `${ready.database}/${ready.name}/${ready.table}`;
+		const cachedShape = this.#relations.get(relKey);
+		if (cachedShape) {
+			let built;
+			try {
+				const ran = await this.#readingPipelined(ready, { ...options, settings: ROW_TEXT }, (client, { maxBytes }) => {
+					built = this.#buildPageQuery(ready, cachedShape, maxBytes);
+					return {
+						name: this.#preparedName(client, ready.database, ready.name, built.text),
+						text: built.text,
+						values: built.values,
+					};
+				});
+				options.onShape?.({ kind: cachedShape[0].kind, rls: cachedShape[0].rls === "t" });
+				return this.#formatPageResult(ready, built, ran.result, ran.maxBytes);
+			} catch (error) {
+				if (error instanceof Refusal) throw error;
+				if (error?.code === "42P01" || error?.code === "42703" || error?.code === "0A000") {
+					this.#relations.delete(relKey);
+					this.#bumpSchemaEpoch(ready.database, ready.name);
+				} else {
+					throw storeProblem(error);
+				}
+			}
+		}
 		return this.#reading(ready, { ...options, settings: ROW_TEXT }, async (client, { maxBytes }) => {
 			const shape = await client.query({ text: RELATION, values: [ready.name, ready.table], types: TEXT_TYPES });
 			if (shape.rows.length === 0) refuse(404, `No table ${ready.table} in ${ready.name}`);
+			this.#cacheRelation(ready.database, ready.name, ready.table, shape.rows);
 			options.onShape?.({ kind: shape.rows[0].kind, rls: shape.rows[0].rls === "t" });
-			const columns = shape.rows.map((row, index) => ({ ...row, index }));
-			const key = columns.filter((column) => column.key !== null).sort((a, b) => Number(a.key) - Number(b.key));
-			const by = ready.order === null ? null : columns.find((column) => column.name === ready.order);
-			if (ready.order !== null && !by) refuse(400, `No column ${ready.order} in ${ready.table}`);
-			if (key.length === 0 && ready.after !== null) refuse(400, `${ready.table} has no key: it gives its first page alone`);
-			const tag = randomBytes(8).toString("hex");
-			const [row, asked, sized, madeAs, seen, size, at, bytesSoFar, rowsMade] = ["row", "asked", "sized", "made", "seen", "size", "at", "bytes", "rows"].map(
-				(name) => `qorpera_${name}_${tag}`,
-			);
-			const ref = (column) => `${row}.${quoted(column.name)}`;
-			const placed = by ? [by, ...key] : key;
-			const values = [];
-			const value = (column, text) => {
-				values.push(text);
-				return `$${values.length}::${column.type}`;
-			};
-			let where = "";
-			if (ready.after !== null) {
-				const after = ready.after;
-				if (after.length !== placed.length || !after.every((one, index) => (index === 0 && by ? one === null : false) || typeof one === "string"))
-					refuse(400, "after is the next a page gave, for the same order");
-				const keyAfter = key.length === 0 ? "" : `(${key.map(ref).join(", ")}) ${by || !ready.desc ? ">" : "<"} (${key.map((column, index) => value(column, after[placed.length - key.length + index])).join(", ")})`;
-				if (!by) where = `where ${keyAfter}`;
-				else if (after[0] === null) where = `where ${ref(by)} is null and ${keyAfter}`;
-				else {
-					const from = value(by, after[0]);
-					where = `where (${ref(by)} ${ready.desc ? "<" : ">"} ${from} or (${ref(by)} = ${from} and ${keyAfter}) or ${ref(by)} is null)`;
-				}
-			}
-			const order = [
-				...(by ? [`${ref(by)} ${ready.desc ? "desc" : "asc"} nulls last`] : []),
-				...key.map((column) => `${ref(column)} ${!by && ready.desc ? "desc" : "asc"}`),
-			];
+			const built = this.#buildPageQuery(ready, shape.rows, maxBytes);
+			const prepName = this.#preparedName(client, ready.database, ready.name, built.text);
 			const result = await client.query({
-				text:
-					`with ${asked} as (select ${row}.*, ${SEEN(row)} as ${seen}, ` +
-					`pg_catalog.octet_length(${row}::text) as ${size} from ${quoted(ready.name)}.${quoted(ready.table)} ${row} ${where} ` +
-					`${order.length > 0 ? `order by ${order.join(", ")}` : ""} limit ${ready.limit + 1}), ` +
-					`${sized} as (select ${asked}.*, row_number() over () as ${at}, ` +
-					`sum(${asked}.${size}) over (rows between unbounded preceding and current row) as ${bytesSoFar} from ${asked}) ` +
-					`select ${sized}.*, ${madeAs}.* from (select count(*) as ${rowsMade}${placed
-						.map((column, index) => `, (select ${asked}.${quoted(column.name)} from ${asked} limit 1) as qorpera_first_${index}_${tag}`)
-						.join("")} from ${asked}) ${madeAs} ` +
-					`left join ${sized} on ${sized}.${bytesSoFar} <= ${maxBytes} order by ${sized}.${at}`,
-				values,
+				...(prepName ? { name: prepName } : {}),
+				text: built.text,
+				values: built.values,
 				rowMode: "array",
 				queryMode: "extended",
 				types: TEXT_TYPES,
 			});
-			const width = columns.length;
-			const fields = result.fields.slice(0, width);
-			const made = Number(result.rows[0][width + 4]);
-			const given = result.rows[0][width + 3] === null ? [] : result.rows;
-			for (const one of given) for (let index = 0; index < width; index++) this.taken.bytes += one[index]?.length ?? 0;
-			this.taken.rows += given.length;
-			let more = made > ready.limit || given.length < Math.min(made, ready.limit);
-			const rows = [];
-			let last = null;
-			let bytes = 0;
-			for (const one of given.slice(0, ready.limit)) {
-				const shapedRow = { values: one.slice(0, width).map((text, index) => shaped(text, fields[index].dataTypeID)), seen: one[width] };
-				bytes += Buffer.byteLength(JSON.stringify(shapedRow)) + 1;
-				if (bytes > maxBytes) {
-					more = true;
-					break;
-				}
-				rows.push(shapedRow);
-				last = one;
-			}
-			const tooLarge = rows.length === 0 && made > 0;
-			const next =
-				!more || key.length === 0
-					? null
-					: last !== null
-						? placed.map((column) => last[column.index])
-						: placed.map((_, index) => result.rows[0][width + 5 + index]);
-			const answer = {
-				columns: columns.map((column) => column.name),
-				key: key.map((column) => column.name),
-				rows,
-				more,
-				...(next === null ? {} : { next }),
-				...(tooLarge ? { tooLarge: true } : {}),
-			};
-			return { ...answer, etag: sha256(JSON.stringify(answer)).slice(0, 32) };
+			return this.#formatPageResult(ready, built, result, maxBytes);
 		});
 	}
 
@@ -1067,9 +1378,21 @@ export class Gateway {
 		const key = `${caller.key}|${environmentId}|write:data/${name}`;
 		const kept = this.#proofs.get(key);
 		if (kept && Date.now() - kept.at < this.#limits.proofMs) return kept.value;
-		const value = await this.#platform.memberMayWrite(caller.token, environmentId, `data/${name}`);
-		this.#proofs.set(key, { at: Date.now(), value });
-		return value;
+		let pending = this.#mayWriteInFlight.get(key);
+		if (!pending) {
+			pending = this.#platform
+				.memberMayWrite(caller.token, environmentId, `data/${name}`)
+				.then((value) => {
+					this.#proofs.set(key, { at: Date.now(), value });
+					return value;
+				})
+				.finally(() => {
+					if (this.#mayWriteInFlight.get(key) === pending) this.#mayWriteInFlight.delete(key);
+				});
+			pending.catch(() => undefined);
+			this.#mayWriteInFlight.set(key, pending);
+		}
+		return pending;
 	}
 
 	async #folderFiles(caller, environmentId, name, texts, database, toml, { changes = true } = {}) {
@@ -1140,7 +1463,11 @@ export class Gateway {
 	async rows(caller, environmentId, body) {
 		const ready = await this.#table(caller, environmentId, body, body.texts);
 		if (ready.need) return { need: ready.need };
-		return { ...(await this.#page(ready)), asOf: new Date().toISOString() };
+		const page = await this.#page(ready);
+		const asOf = isoNow();
+		const out = { ...page, asOf };
+		if (typeof page[RAW_JSON] === "string") out[RAW_JSON] = `${page[RAW_JSON].slice(0, -1)},"etag":"${page.etag}","asOf":"${asOf}"}`;
+		return out;
 	}
 
 	async changes(caller, environmentId, body) {
@@ -1254,12 +1581,19 @@ export class Gateway {
 		if (ready.need) return { need: [ready.need] };
 		const answer = await this.#ask(ready);
 		if (typeof body.etag === "string" && body.etag === answer.etag) return { same: true, etag: answer.etag };
-		return { ...answer, asOf: new Date().toISOString() };
+		const asOf = isoNow();
+		const out = { ...answer, asOf };
+		if (typeof answer[RAW_JSON] === "string") out[RAW_JSON] = `${answer[RAW_JSON].slice(0, -1)},"etag":"${answer.etag}","asOf":"${asOf}"}`;
+		return out;
 	}
 
-	async #actorLine(database, txid, actor) {
+	async #actorLine(database, txid, actor, { asyncCommit = false } = {}) {
+		// WHY: When called from #writing, the main write tx commits with synchronous_commit = on after actorP resolves, so WAL flush covers both records in one fsync.
+		const sql = asyncCommit
+			? "with _ as (select pg_catalog.set_config('synchronous_commit', 'off', true)) insert into qorpera_data.change_log (txid, by_kind, by_id, via) select $1::bigint, $2, $3, $4 from _"
+			: "insert into qorpera_data.change_log (txid, by_kind, by_id, via) values ($1::bigint, $2, $3, $4)";
 		await this.#pool(database, "qorpera_data_keeper")
-			.query("insert into qorpera_data.change_log (txid, by_kind, by_id, via) values ($1::bigint, $2, $3, $4)", [txid, actor.kind, actor.id, actor.via])
+			.query(sql, [txid, actor.kind, actor.id, actor.via])
 			.catch((error) => {
 				throw storeProblem(error);
 			});
@@ -1277,6 +1611,11 @@ export class Gateway {
 		});
 		const held = { cut: false };
 		let lost;
+		let discarded = false;
+		const onClientError = (error) => {
+			lost ??= error;
+		};
+		client.on("error", onClientError);
 		const undone = async (status, message, extra) => {
 			await client.query("rollback");
 			refuse(status, message, extra);
@@ -1292,12 +1631,16 @@ export class Gateway {
 			);
 			const txid = (full ? started[started.length - 2] : started[started.length - 1]).rows[0].txid;
 			const before = full ? Number(started[started.length - 1].rows[0].rows) : 0;
-			await this.#actorLine(ready.database, txid, actor);
+			const actorP = this.#actorLine(ready.database, txid, actor, { asyncCommit: true });
+			actorP.catch(() => undefined);
 			const answer = await work(client, undone, held);
-			const checked = await client.query(
-				`set constraints all immediate; select kind, object, rows from qorpera_data.effects(); ` +
-					`select table_name, problem from qorpera_data.unwatched('${ready.name}')${full ? `; ${WRITTEN}` : ""}`,
-			);
+			const [checked] = await Promise.all([
+				client.query(
+					`set constraints all immediate; select kind, object, rows from qorpera_data.effects(); ` +
+						`select table_name, problem from qorpera_data.unwatched('${ready.name}')${full ? `; ${WRITTEN}` : ""}`,
+				),
+				actorP,
+			]);
 			const effects = checked[1].rows;
 			const beyond = effects.filter((effect) => effect.kind !== "deleted rows");
 			if (beyond.length > 0)
@@ -1313,7 +1656,20 @@ export class Gateway {
 				);
 			if (full && Number(checked[3].rows[0].rows) > before)
 				await undone(507, `This company's database is at its size limit of ${amount(this.#limits.companyBytes)}: ${room}`);
-			await client.query("commit");
+			const stream = client.connection?.stream;
+			let commitP;
+			let discardP;
+			stream?.cork?.();
+			try {
+				commitP = client.query("commit");
+				discardP = client.query("discard all");
+			} finally {
+				stream?.uncork?.();
+			}
+			const [commitRes, discardRes] = await Promise.allSettled([commitP, discardP]);
+			discarded = discardRes.status === "fulfilled";
+			if (discardRes.status === "rejected") lost = discardRes.reason;
+			if (commitRes.status === "rejected") throw commitRes.reason;
 			return answer;
 		} catch (error) {
 			if (held.cut)
@@ -1325,8 +1681,139 @@ export class Gateway {
 			else lost = error;
 			throw storeProblem(error);
 		} finally {
+			client.removeListener("error", onClientError);
 			if (!held.cut) {
-				if (!lost)
+				if (!lost && !discarded)
+					await client.query("discard all").catch((error) => {
+						lost = error;
+					});
+				this.#release(client, lost);
+			}
+		}
+	}
+
+	async #writingPipelined(ready, actor, { gone = null, room }) {
+		const ms = this.#limits.changeMs;
+		const client = await inTime(
+			this.#pool(ready.database, `${ready.database}_w${ready.n}`).connect(),
+			Date.now() + Math.min(ms, CONNECT_MS - 1_000),
+		).catch((error) => {
+			throw storeProblem(error);
+		});
+		const held = { cut: false };
+		let lost;
+		let discarded = false;
+		const onClientError = (error) => {
+			lost ??= error;
+		};
+		client.on("error", onClientError);
+		const undone = async (status, message, extra) => {
+			await client.query("rollback");
+			refuse(status, message, extra);
+		};
+		const stream = client.connection.stream;
+		let taken = 0;
+		const counting = (piece) => {
+			taken += piece.length;
+			if (taken <= this.#limits.changeBytes || held.cut) return;
+			held.cut = true;
+			this.#letGo(client, true);
+		};
+		try {
+			if (gone?.aborted) refuse(499, "The caller went away");
+			const full = this.#full.has(ready.database);
+			const viewerSetting = ready.viewer && ENVIRONMENT.test(ready.viewer) ? `; set local "qorpera.viewer" = '${ready.viewer}'` : "";
+			const beginSql =
+				`begin; set local statement_timeout = ${ms}; set local lock_timeout = ${ms}; set local timezone = 'UTC'; ` +
+				`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}, qorpera_ext${viewerSetting}; ` +
+				`select pg_catalog.txid_current()::text as txid${full ? `; ${WRITTEN}` : ""}`;
+			const checkSql =
+				`set constraints all immediate; select kind, object, rows from qorpera_data.effects(); ` +
+				`select table_name, problem from qorpera_data.unwatched('${ready.name}')${full ? `; ${WRITTEN}` : ""}`;
+			// WHY: discard all runs after every write on _wN, which deallocates prepared statements on that connection.
+			let beginP;
+			let queryP;
+			let checkP;
+			let actorP = null;
+			stream.on("data", counting);
+			stream.cork?.();
+			try {
+				beginP = client.query(beginSql);
+				beginP
+					.then((started) => {
+						const txid = (full ? started[started.length - 2] : started[started.length - 1]).rows[0].txid;
+						actorP = this.#actorLine(ready.database, txid, actor, { asyncCommit: true });
+						actorP.catch(() => undefined);
+					})
+					.catch(() => undefined);
+				queryP = client.query({
+					text: ready.sql,
+					values: ready.values,
+					rowMode: "array",
+					queryMode: "extended",
+					types: TEXT_TYPES,
+				});
+				checkP = client.query(checkSql);
+			} finally {
+				stream.uncork?.();
+			}
+			const [beginRes, queryRes, checkRes] = await Promise.allSettled([beginP, queryP, checkP]);
+			stream.off("data", counting);
+			if (held.cut) throw new Error("The change gave back too much");
+			if (beginRes.status === "rejected") throw beginRes.reason;
+			if (queryRes.status === "rejected") throw queryRes.reason;
+			const result = queryRes.value;
+			if (!CHANGE_COMMANDS.includes(result.command))
+				await undone(400, "A change is one insert, update, delete or merge, or a select that calls a function: nothing was changed");
+			if (checkRes.status === "rejected") throw checkRes.reason;
+			const started = beginRes.value;
+			const txid = (full ? started[started.length - 2] : started[started.length - 1]).rows[0].txid;
+			const before = full ? Number(started[started.length - 1].rows[0].rows) : 0;
+			const checked = checkRes.value;
+			const effects = checked[1].rows;
+			const beyond = effects.filter((effect) => effect.kind !== "deleted rows");
+			if (beyond.length > 0)
+				await undone(
+					400,
+					`A change adds, changes and deletes rows. This one also ${beyond.map((effect) => `${effect.kind} ${effect.object}`).join(", ")}, which is a step's work: nothing was changed`,
+				);
+			const unwatched = checked[2].rows;
+			if (unwatched.length > 0)
+				await undone(
+					400,
+					`A change may not remove or switch off Qorpera's triggers (${unwatched.map((row) => `${row.table_name} ${row.problem}`).join("; ")}): nothing was changed`,
+				);
+			if (full && Number(checked[3].rows[0].rows) > before)
+				await undone(507, `This company's database is at its size limit of ${amount(this.#limits.companyBytes)}: ${room}`);
+			await (actorP ?? this.#actorLine(ready.database, txid, actor, { asyncCommit: true }));
+			let commitP;
+			let discardP;
+			stream.cork?.();
+			try {
+				commitP = client.query("commit");
+				discardP = client.query("discard all");
+			} finally {
+				stream.uncork?.();
+			}
+			const [commitRes, discardRes] = await Promise.allSettled([commitP, discardP]);
+			discarded = discardRes.status === "fulfilled";
+			if (discardRes.status === "rejected") lost = discardRes.reason;
+			if (commitRes.status === "rejected") throw commitRes.reason;
+			return result;
+		} catch (error) {
+			stream.off("data", counting);
+			if (held.cut)
+				throw new Refusal(
+					400,
+					`The change gives back more than ${amount(this.#limits.changeBytes)}, so it was stopped and nothing was changed: give back less, such as only an id`,
+				);
+			if (error instanceof Refusal || (error?.code && !/^(57P0[123]|08...)$/.test(error.code))) await client.query("rollback").catch(() => undefined);
+			else lost = error;
+			throw error;
+		} finally {
+			client.removeListener("error", onClientError);
+			if (!held.cut) {
+				if (!lost && !discarded)
 					await client.query("discard all").catch((error) => {
 						lost = error;
 					});
@@ -1344,32 +1831,22 @@ export class Gateway {
 	async #act(ready, actor, { agent = false, gone = null } = {}) {
 		const maxRows = agent ? this.#limits.agentRows : this.#limits.questionRows;
 		const maxBytes = agent ? this.#limits.agentBytes : this.#limits.questionBytes;
-		const result = await this.#writing(
-			ready,
-			actor,
-			{ gone, room: "only a change that deletes rows and writes none runs until there is room" },
-			async (client, undone, held) => {
-				const stream = client.connection.stream;
-				let taken = 0;
-				const counting = (piece) => {
-					taken += piece.length;
-					if (taken <= this.#limits.changeBytes || held.cut) return;
-					held.cut = true;
-					this.#letGo(client, true);
-				};
-				let result;
-				stream.on("data", counting);
+		const opts = { gone, room: "only a change that deletes rows and writes none runs until there is room" };
+		let result;
+		try {
+			result = await this.#writingPipelined(ready, actor, opts);
+		} catch (error) {
+			if (ready.sha256 && error?.code === "0A000") {
+				this.#bumpSchemaEpoch(ready.database, ready.name);
 				try {
-					result = await client.query({ text: ready.sql, values: ready.values, rowMode: "array", queryMode: "extended", types: TEXT_TYPES });
-				} finally {
-					stream.off("data", counting);
+					result = await this.#writingPipelined(ready, actor, opts);
+				} catch (retryError) {
+					throw storeProblem(retryError);
 				}
-				if (held.cut) throw new Error("The change gave back too much");
-				if (!CHANGE_COMMANDS.includes(result.command))
-					await undone(400, "A change is one insert, update, delete or merge, or a select that calls a function: nothing was changed");
-				return result;
-			},
-		);
+			} else {
+				throw storeProblem(error);
+			}
+		}
 		const answer = result.command === "SELECT" ? {} : { changed: result.rowCount ?? 0 };
 		if (result.fields.length === 0) return answer;
 		const rows = [];
@@ -1433,13 +1910,18 @@ export class Gateway {
 			{ database, name, n, viewer: caller.userId },
 			{ kind: "member", id: caller.userId, via: "list" },
 			{ gone, settings: ROW_TEXT, room: "only removing a row runs until there is room" },
-			(client, undone) => this.#edited(client, undone, { name, table, op, key, values, seen }),
+			(client, undone) => this.#edited(client, undone, { database, name, table, op, key, values, seen }),
 		);
 		return { ...answer, asOf: new Date().toISOString() };
 	}
 
-	async #edited(client, undone, { name, table, op, key, values, seen }) {
-		const columns = (await client.query({ text: RELATION, values: [name, table], types: TEXT_TYPES })).rows;
+	async #edited(client, undone, { database, name, table, op, key, values, seen }) {
+		const relKey = `${database}/${name}/${table}`;
+		let columns = this.#relations.get(relKey);
+		if (!columns) {
+			columns = (await client.query({ text: RELATION, values: [name, table], types: TEXT_TYPES })).rows;
+			if (columns.length > 0) this.#cacheRelation(database, name, table, columns);
+		}
 		if (columns.length === 0) await undone(404, `No table ${table} in ${name}`);
 		if (columns[0].kind !== "r" && columns[0].kind !== "p") await undone(400, `${table} is a view: the list changes no rows of it`);
 		const keyed = columns.filter((column) => column.key !== null).sort((a, b) => Number(a.key) - Number(b.key));
@@ -1452,7 +1934,7 @@ export class Gateway {
 		}
 		if (op !== "add" && (Object.keys(key).length !== keyed.length || !keyed.every((column) => Object.hasOwn(key, column.name) && key[column.name] !== null)))
 			await undone(400, `A ${op} names the whole key of ${table}: ${keyed.map((column) => column.name).join(", ")}`);
-		const tag = randomBytes(8).toString("hex");
+		const tag = this.#tag(`${database}|${name}|${table}|edit`);
 		const [row, written, seenAs, size] = ["row", "written", "seen", "size"].map((part) => `qorpera_${part}_${tag}`);
 		const relation = `${quoted(name)}.${quoted(table)}`;
 		const maxBytes = this.#limits.questionBytes;
@@ -1588,6 +2070,7 @@ export class Gateway {
 	}
 
 	#notifySchema(database, schema) {
+		this.#bumpSchemaEpoch(database, schema);
 		const listener = this.#listeners.get(database);
 		if (!listener) return;
 		listener.gen++;
@@ -1597,16 +2080,23 @@ export class Gateway {
 		for (const tell of [...listener.heard]) tell({ schema, table: null });
 	}
 
-	async #schemaViewerScoped(database, schema, listener) {
+	async #schemaViewerObjects(database, schema, listener) {
 		if (listener.viewerScoped.has(schema)) return listener.viewerScoped.get(schema);
 		const pending = this.#pool(database, "qorpera_data_keeper")
-			.query(SCHEMA_VIEWER_SCOPED, [schema])
-			.then((result) => result.rows[0]?.scoped === true)
-			.catch(() => true);
+			.query(SCHEMA_VIEWER_OBJECTS, [schema])
+			.then((result) => {
+				const names = new Set(result.rows.map((row) => String(row.name).toLowerCase()));
+				const regex =
+					names.size > 0
+						? new RegExp(`(?<![A-Za-z0-9_])(?:${[...names].map(escapeRegExp).join("|")})(?![A-Za-z0-9_])`, "i")
+						: null;
+				return { all: false, names, regex };
+			})
+			.catch(() => ({ all: true, names: new Set(), regex: null }));
 		listener.viewerScoped.set(schema, pending);
-		const scoped = await pending;
-		if (listener.viewerScoped.get(schema) === pending) listener.viewerScoped.set(schema, scoped);
-		return scoped;
+		const found = await pending;
+		if (listener.viewerScoped.get(schema) === pending) listener.viewerScoped.set(schema, found);
+		return found;
 	}
 
 	#coalescedWatch(key, left, stop, run) {
@@ -1747,13 +2237,25 @@ export class Gateway {
 					try {
 						const item = ready[index];
 						const isTable = item.table !== undefined;
-						const schemaScoped = await this.#schemaViewerScoped(database, item.name, listener);
+						const schemaObjs = await this.#schemaViewerObjects(database, item.name, listener);
 						if (stop.aborted) return;
-						const itemViewerScoped =
-							schemaScoped ||
-							(isTable
-								? tableMeta.get(index)?.rls === true
-								: item.statement.parameters.includes(VIEWER) || /qorpera\.viewer|qorpera_data\.viewer|current_setting/i.test(item.sql));
+						let knownMeta = isTable ? tableMeta.get(index) : null;
+						if (isTable && !knownMeta) {
+							const rel = this.#relations.get(`${database}/${item.name}/${item.table}`);
+							if (rel?.length) {
+								knownMeta = { kind: rel[0].kind, rls: rel[0].rls === "t" };
+								tableMeta.set(index, knownMeta);
+							}
+						}
+						const itemViewerScoped = schemaObjs.all
+							? true
+							: isTable
+								? knownMeta && (knownMeta.kind === "r" || knownMeta.kind === "p")
+									? knownMeta.rls
+									: schemaObjs.names.has(item.table.toLowerCase())
+								: item.statement.parameters.includes(VIEWER) ||
+									/qorpera\.viewer|qorpera_data\.viewer|current_setting/i.test(item.sql) ||
+									(schemaObjs.regex !== null && schemaObjs.regex.test(item.sql));
 						const scope = itemViewerScoped ? caller.userId : "*";
 						const baseKey = isTable
 							? `t|${database}|${item.name}|${scope}|${item.table}|${item.order ?? ""}|${item.desc ? 1 : 0}|${item.limit}|${this.#limits.questionBytes}`
@@ -1761,10 +2263,11 @@ export class Gateway {
 						const itemGen = isTable
 							? Math.max(listener.wildcardGen, listener.schemaDdlGen.get(item.name) ?? 0, listener.tableGen.get(`${item.name}.${item.table}`) ?? 0)
 							: Math.max(listener.wildcardGen, listener.schemaGen.get(item.name) ?? 0);
+						const cacheable = !itemViewerScoped && (isTable || !VOLATILE_SQL.test(item.sql));
 						let answer;
-						const cached = isTable && !itemViewerScoped ? listener.cache.get(baseKey) : undefined;
+						const cached = cacheable ? listener.cache.get(baseKey) : undefined;
 						if (cached && cached.epoch === listener.epoch && cached.gen >= itemGen) {
-							tableMeta.set(index, cached.meta);
+							if (isTable && cached.meta) tableMeta.set(index, cached.meta);
 							answer = cached.answer;
 						} else {
 							const beforeGen = listener.gen;
@@ -1788,10 +2291,13 @@ export class Gateway {
 							meta = fetched.meta;
 							if (isTable && meta) {
 								tableMeta.set(index, meta);
-								if ((meta.kind === "r" || meta.kind === "p") && !meta.rls && !itemViewerScoped) {
+								if ((meta.kind === "r" || meta.kind === "p") && !meta.rls && cacheable) {
 									if (listener.cache.size >= 512) listener.cache.delete(listener.cache.keys().next().value);
 									listener.cache.set(baseKey, { epoch: listener.epoch, gen: beforeGen, answer, meta });
 								}
+							} else if (!isTable && cacheable) {
+								if (listener.cache.size >= 512) listener.cache.delete(listener.cache.keys().next().value);
+								listener.cache.set(baseKey, { epoch: listener.epoch, gen: beforeGen, answer, meta: null });
 							}
 						}
 						asked.add(index);
@@ -1805,7 +2311,7 @@ export class Gateway {
 					}
 				}
 			};
-			await Promise.all(Array.from({ length: Math.min(POOL_SIZE.r, order.length) }, worker));
+			await Promise.all(Array.from({ length: Math.min(WATCH_WORKERS, POOL_SIZE.r, order.length) }, worker));
 			const missed = order.find((index) => !asked.has(index));
 			if (missed === undefined) this.#resume.delete(place);
 			else {
@@ -2446,15 +2952,12 @@ export class Gateway {
 		return unforgotten;
 	}
 
-	/** A member's request, begun as that member. */
-	async handle(method, path, headers, read, gone) {
-		const route = /^\/v1\/company-data\/([^/]+)\/(query|watch|apply|describe|change|rows|edit|changes)$/.exec(path);
-		if (!route) refuse(404, "Not a call the data gateway answers");
-		if (method !== "POST") refuse(405, "Use POST");
-		const token = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/.exec(headers.authorization ?? "")?.[1];
+	#parseCaller(authorization) {
+		if (typeof authorization !== "string") refuse(401, "Sign in");
+		const kept = this.#tokens.get(authorization);
+		if (kept) return kept;
+		const token = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/.exec(authorization)?.[1];
 		if (!token) refuse(401, "Sign in");
-		const environmentId = route[1];
-		companyDatabase(environmentId);
 		let userId = null;
 		try {
 			userId = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8")).sub ?? null;
@@ -2462,8 +2965,20 @@ export class Gateway {
 			refuse(401, "Sign in");
 		}
 		if (typeof userId !== "string" || !ENVIRONMENT.test(userId)) refuse(401, "Sign in");
-		// The token's own words are used only after the platform took the token for a read: a forged one proves nothing.
 		const caller = { token, userId, key: sha256(token) };
+		if (this.#tokens.size >= 4_096) this.#tokens.delete(this.#tokens.keys().next().value);
+		this.#tokens.set(authorization, caller);
+		return caller;
+	}
+
+	/** A member's request, begun as that member. */
+	async handle(method, path, headers, read, gone) {
+		const route = /^\/v1\/company-data\/([^/]+)\/(query|watch|apply|describe|change|rows|edit|changes)$/.exec(path);
+		if (!route) refuse(404, "Not a call the data gateway answers");
+		if (method !== "POST") refuse(405, "Use POST");
+		const caller = this.#parseCaller(headers.authorization);
+		const environmentId = route[1];
+		companyDatabase(environmentId);
 		let body;
 		try {
 			body = JSON.parse(await read(this.#limits.bodyBytes));
@@ -2548,6 +3063,13 @@ export class Gateway {
 			await listener.client.end().catch(() => undefined);
 		}
 		this.#listeners.clear();
+		this.#relations.clear();
+		this.#schemaEpoch.clear();
+		this.#askPlans.clear();
+		this.#tokens.clear();
+		this.#provenInFlight.clear();
+		this.#mayWriteInFlight.clear();
+		this.#folderInFlight.clear();
 		await Promise.all([...this.#pools.values()].map(({ pool }) => pool.end().catch(() => undefined)));
 		this.#pools.clear();
 	}
@@ -2593,22 +3115,30 @@ function answering(handle) {
 						request.destroy();
 					} else parts.push(part);
 				});
-				request.on("end", () => resolve(Buffer.concat(parts).toString("utf8")));
+				request.on("end", () => resolve(parts.length === 0 ? "" : parts.length === 1 ? parts[0].toString("utf8") : Buffer.concat(parts).toString("utf8")));
 				request.on("error", () => reject(new Refusal(400, "The body did not arrive")));
 			});
 		let status = 200;
 		let value;
 		try {
-			value = await handle(request.method, new URL(request.url, "http://gateway").pathname, request.headers, read, gone.signal);
+			const rawUrl = request.url ?? "/";
+			const pathname =
+				rawUrl.startsWith("/") && !rawUrl.includes("..") && !rawUrl.includes("#")
+					? rawUrl.includes("?")
+						? rawUrl.slice(0, rawUrl.indexOf("?"))
+						: rawUrl
+					: new URL(rawUrl, "http://gateway").pathname;
+			value = await handle(request.method, pathname, request.headers, read, gone.signal);
 		} catch (error) {
 			const refusal = error instanceof Refusal ? error : new Refusal(500, "The data gateway failed");
 			status = refusal.status;
 			value = { error: refusal.message, ...refusal.extra };
 		}
 		if (gone.signal.aborted) return;
-		const text = JSON.stringify(value);
-		response.writeHead(status, { "content-type": "application/json", "content-length": Buffer.byteLength(text), "cache-control": "no-store" });
-		response.end(text);
+		const text = value && typeof value === "object" && typeof value[RAW_JSON] === "string" ? value[RAW_JSON] : JSON.stringify(value);
+		const payload = Buffer.from(text, "utf8");
+		response.writeHead(status, { "content-type": "application/json", "content-length": payload.length, "cache-control": "no-store" });
+		response.end(payload);
 	};
 }
 
