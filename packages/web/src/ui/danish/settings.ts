@@ -345,7 +345,8 @@ export const SETTINGS: Record<string, string> = {
 	"Keep going now with a reset": "Fortsæt nu med en nulstilling",
 	"Gemini API key": "Gemini-API-nøgle",
 	"Gemini 4 Neon": "Gemini 4 Neon",
-	"Enter a valid Gemini API key starting with AIza.": "Skriv en gyldig Gemini-API-nøgle, der begynder med AIza.",
+	"Enter a valid Gemini API key from Google AI Studio (starting with AQ. or AIza).":
+		"Skriv en gyldig Gemini-API-nøgle fra Google AI Studio (der begynder med AQ. eller AIza).",
 	"Enter a monthly cap between $1 and $100,000, or leave it blank for no limit.":
 		"Skriv en månedlig grænse mellem $1 og $100.000, eller lad feltet være tomt for ingen grænse.",
 	"Gemini API key saved.": "Gemini-API-nøglen er gemt.",

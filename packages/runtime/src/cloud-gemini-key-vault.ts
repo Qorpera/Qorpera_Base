@@ -5,7 +5,7 @@ import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
 
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const CAPABILITY = /^[A-Za-z0-9_-]{32,256}$/;
-const GEMINI_API_KEY = /^AIza[A-Za-z0-9_-]{20,200}$/;
+const GEMINI_API_KEY = /^(?:AIza[A-Za-z0-9_-]{20,200}|AQ\.[A-Za-z0-9._-]{20,200})$/;
 const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
 const GEMINI_API_KEY_FIELD = "gemini_api_key";
 const GEMINI_VERIFY_URL = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1";
@@ -23,7 +23,8 @@ export function isGeminiApiKeyFormat(value: unknown): value is string {
 
 export function geminiKeyHint(apiKey: string): string {
 	if (!isGeminiApiKeyFormat(apiKey)) throw new Error("Gemini API key is invalid");
-	return `${apiKey.slice(0, 4)}...${apiKey.slice(-4)}`;
+	const prefix = apiKey.startsWith("AQ.") ? "AQ" : apiKey.slice(0, 4);
+	return `${prefix}...${apiKey.slice(-4)}`;
 }
 
 export function geminiNeonSpendMicrodollars(usage: {

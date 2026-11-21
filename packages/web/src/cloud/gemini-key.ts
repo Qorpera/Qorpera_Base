@@ -5,7 +5,7 @@ import { boundedInteger, CloudShapeError, nonEmptyString, record, timestamp, UUI
 export const GEMINI_MIN_CAP_CENTS = 100;
 export const GEMINI_MAX_CAP_CENTS = 10_000_000;
 
-const GEMINI_API_KEY_PATTERN = /^AIza[0-9A-Za-z_-]{20,200}$/;
+const GEMINI_API_KEY_PATTERN = /^(?:AIza[0-9A-Za-z_-]{20,200}|AQ\.[0-9A-Za-z._-]{20,200})$/;
 const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
 const CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{32,256}$/;
 
