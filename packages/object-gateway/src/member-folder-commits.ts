@@ -14,6 +14,8 @@ import { UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
 import {
 	type FolderWriterActor,
+	mapBounded,
+	PLATFORM_STAGE_CONCURRENCY,
 	type PlatformFileReference,
 	PlatformFolderProblem,
 	PlatformFolderWriter,
@@ -428,6 +430,7 @@ export async function serveMemberFolderCommit(
 				new TextEncoder().encode(fileText),
 				{ mediaType: mediaType(filePath), executable: false },
 				signal,
+				{ profileId: member.profileId },
 			);
 		// A state file named by its reference is read back for its parse before any byte is staged, as the member may
 		// read it: bytes it may not read, or that are not the reference's, refuse the change set.
@@ -443,37 +446,60 @@ export async function serveMemberFolderCommit(
 				}
 				readBack.set(item, memberFolderStructuredBytes(item.path, bytes));
 			}
+		const structuredByUnit = new Map<Unit, Record<string, unknown>[]>();
+		const toStage: { path: string; text: string }[] = [];
+		for (const item of units) {
+			if (item.op === "write") {
+				const entry = "text" in item ? memberFolderStructured(item.path, item.text) : readBack.get(item);
+				if (entry) structuredByUnit.set(item, [entry]);
+				if ("text" in item) toStage.push({ path: item.path, text: item.text });
+			} else if (item.op === "new_folder") {
+				const entries: Record<string, unknown>[] = [];
+				for (const content of item.contents) {
+					if (content.kind !== "file") continue;
+					const entry = memberFolderStructured(content.whole, content.text);
+					if (entry) entries.push(entry);
+					toStage.push({ path: content.whole, text: content.text });
+				}
+				if (entries.length) structuredByUnit.set(item, entries);
+			}
+		}
+		const stagedFiles = await mapBounded(
+			toStage,
+			PLATFORM_STAGE_CONCURRENCY,
+			(task) => stage(task.path, task.text),
+			signal,
+		);
+		let stageCursor = 0;
 		const sent: Record<string, unknown>[] = [];
 		for (const item of units) {
 			switch (item.op) {
 				case "write": {
-					const entry = "text" in item ? memberFolderStructured(item.path, item.text) : readBack.get(item);
+					const entries = structuredByUnit.get(item);
 					sent.push({
 						op: "write",
 						path: item.path,
 						...(item.expectedVersion ? { expectedVersion: item.expectedVersion } : {}),
-						file: "text" in item ? await stage(item.path, item.text) : item.file,
-						...(entry ? { structured: [entry] } : {}),
+						file: "text" in item ? stagedFiles[stageCursor++] : item.file,
+						...(entries ? { structured: entries } : {}),
 					});
 					break;
 				}
 				case "new_folder": {
 					const contents: Record<string, unknown>[] = [];
-					const entries: Record<string, unknown>[] = [];
 					for (const content of item.contents) {
 						if (content.kind === "folder") {
 							contents.push({ path: content.path, kind: "folder" });
 							continue;
 						}
-						contents.push({ path: content.path, kind: "file", file: await stage(content.whole, content.text) });
-						const entry = memberFolderStructured(content.whole, content.text);
-						if (entry) entries.push(entry);
+						contents.push({ path: content.path, kind: "file", file: stagedFiles[stageCursor++] });
 					}
+					const entries = structuredByUnit.get(item);
 					sent.push({
 						op: "new_folder",
 						path: item.path,
 						contents,
-						...(entries.length ? { structured: entries } : {}),
+						...(entries ? { structured: entries } : {}),
 					});
 					break;
 				}

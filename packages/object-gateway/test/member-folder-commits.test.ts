@@ -4,6 +4,7 @@ import { writeAgentFile } from "@qorpera/cloud-client/company-state-files";
 import { afterEach, describe, expect, it } from "vitest";
 import { ObjectDependencyError } from "../src/dependency.ts";
 import { followUpMemberCommit, serveMemberFolderCommit } from "../src/member-folder-commits.ts";
+import { PlatformFolderWriter } from "../src/platform-folder-writer.ts";
 
 const environmentId = "34000000-0000-4000-8000-000000000020";
 const profileId = "34000000-0000-4000-8000-000000000010";
@@ -703,5 +704,69 @@ describe("a member's change set to a folder-v2 company", () => {
 		expect(made).toBeGreaterThanOrEqual(1);
 		expect(made).toBeLessThan(8);
 		expect(calls.length).toBe(made);
+	});
+
+	it("stages multi-file commits with bounded concurrency, skips redundant outer authorize RPCs, and preserves unit order", async () => {
+		const g = await gateway();
+		const units = Array.from({ length: 8 }, (_, index) => ({
+			op: "write",
+			path: `notes/doc-${index}.md`,
+			text: `Document body ${index}\n`,
+		}));
+		const response = await g.send(request(units, "web:batch-parallel-01"));
+		expect(response.status).toBe(200);
+		const committed = g.commits()[0]?.args.p_units as { path: string; file: { fileSha256: string } }[];
+		expect(committed.map((unit) => unit.path)).toEqual(units.map((unit) => unit.path));
+		for (let i = 0; i < units.length; i++) {
+			expect(committed[i]?.file.fileSha256).toBe(digest(units[i]!.text));
+		}
+		const authorizes = g.calls.filter((call) => call.method === "qorpera_folder_authorize_object_upload");
+		expect(authorizes).toHaveLength(units.length * 2);
+	});
+
+	it("fails closed with 403 when authorize returns a mismatched profileId inside uploadWithAuthority", async () => {
+		const wrongProfile = "34000000-0000-4000-8000-000000000099";
+		let written = 0;
+		const writer = new PlatformFolderWriter({
+			authority: {
+				async publisher(method, args) {
+					if (method === "qorpera_folder_open_upload") {
+						return {
+							schema: "qorpera.folder-upload/v1",
+							intentId: "34000000-0000-4000-8000-0000000000f1",
+							manifestSha256: digest(args.p_manifest as string),
+							present: [],
+						};
+					}
+					if (method === "qorpera_folder_authorize_object_upload") {
+						return { schema: "qorpera.folder-object-upload/v1", profileId: wrongProfile };
+					}
+					throw new Error(`unexpected ${method}`);
+				},
+			},
+			store: {
+				async get() {
+					throw new Error("unused");
+				},
+			},
+			replication: {
+				async uploadWithAuthority(_profile, _hash, _bytes, callbacks) {
+					await callbacks.authorize();
+					written++;
+					await callbacks.confirm();
+					return "stored" as const;
+				},
+			},
+		});
+		await expect(
+			writer.stage(
+				environmentId,
+				new TextEncoder().encode("should refuse\n"),
+				{ mediaType: "text/markdown", executable: false },
+				new AbortController().signal,
+				{ profileId },
+			),
+		).rejects.toMatchObject({ status: 403 });
+		expect(written).toBe(0);
 	});
 });

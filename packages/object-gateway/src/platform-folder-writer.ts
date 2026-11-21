@@ -20,6 +20,44 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const CHUNK_BYTES = 4 * 1024 * 1024;
 const MAX_CHUNKS = 64;
 const MAX_MANIFEST_BYTES = 32 * 1024;
+export const PLATFORM_STAGE_CONCURRENCY = 4;
+
+export async function mapBounded<T, R>(
+	items: readonly T[],
+	concurrency: number,
+	fn: (item: T, index: number) => Promise<R>,
+	signal?: AbortSignal,
+): Promise<R[]> {
+	if (items.length === 0) return [];
+	if (signal?.aborted) throw signal.reason;
+	const results = new Array<R>(items.length);
+	let next = 0;
+	let stop = false;
+	let firstErrorIndex = Number.POSITIVE_INFINITY;
+	let firstError: unknown;
+	const worker = async (): Promise<void> => {
+		for (;;) {
+			if (stop || signal?.aborted) return;
+			const index = next++;
+			if (index >= items.length) return;
+			try {
+				results[index] = await fn(items[index] as T, index);
+			} catch (error) {
+				stop = true;
+				if (index < firstErrorIndex) {
+					firstErrorIndex = index;
+					firstError = error;
+				}
+				return;
+			}
+		}
+	};
+	const count = Math.max(1, Math.min(concurrency, items.length));
+	await Promise.all(Array.from({ length: count }, () => worker()));
+	if (firstErrorIndex !== Number.POSITIVE_INFINITY) throw firstError;
+	if (signal?.aborted) throw signal.reason;
+	return results;
+}
 
 /** Why a platform write could not be done as asked: a code a worker's finish keeps, never a message. */
 export class PlatformFolderProblem extends Error {
@@ -151,16 +189,21 @@ export class PlatformFolderWriter {
 		bytes: Uint8Array,
 		kind: { readonly mediaType: string; readonly executable: boolean },
 		signal: AbortSignal,
+		options?: { readonly profileId?: string },
 	): Promise<PlatformFileReference> {
 		if (bytes.byteLength > MAX_CHUNKS * CHUNK_BYTES) platformFolderProblem("file_too_large");
 		const objects = new Map<string, Uint8Array>();
 		const chunks: { sha256: string; bytes: number }[] = [];
+		const multiChunk = bytes.byteLength > CHUNK_BYTES;
+		const whole = multiChunk ? createHash("sha256") : undefined;
 		for (let offset = 0; offset < bytes.byteLength; offset += CHUNK_BYTES) {
 			const chunk = bytes.subarray(offset, Math.min(offset + CHUNK_BYTES, bytes.byteLength));
-			chunks.push({ sha256: contentHash(chunk), bytes: chunk.byteLength });
-			objects.set(contentHash(chunk), chunk);
+			const hash = contentHash(chunk);
+			chunks.push({ sha256: hash, bytes: chunk.byteLength });
+			objects.set(hash, chunk);
+			whole?.update(chunk);
 		}
-		const fileSha256 = contentHash(bytes);
+		const fileSha256 = whole ? whole.digest("hex") : (chunks[0]?.sha256 ?? contentHash(bytes));
 		// The canonical version-2 manifest: keys in this order, no spaces, so the same file gives the same manifest.
 		const manifestText = JSON.stringify({
 			schema: "qorpera.cloud-file-manifest/v2",
@@ -188,18 +231,34 @@ export class PlatformFolderWriter {
 			return platformFolderProblem("stage_invalid");
 		const intentId = open.intentId;
 		const present = new Set(open.present as string[]);
+		let knownProfileId =
+			typeof options?.profileId === "string" && UUID.test(options.profileId) ? options.profileId : undefined;
 		const putAll = async (hashes: Iterable<string>) => {
-			for (const hash of hashes) {
-				const object = objects.get(hash) ?? platformFolderProblem("stage_invalid");
-				const authorize = () => this.#uploadProfile(environmentId, intentId, hash, object.byteLength, signal);
-				const profileId = await authorize();
-				await this.#options.replication.uploadWithAuthority(profileId, hash, object, {
-					authorize: async () => {
-						if ((await authorize()) !== profileId) throw new ObjectDependencyError(403);
-					},
-					confirm: () => this.#confirm(environmentId, intentId, hash, object.byteLength, signal),
-				});
+			const list = [...new Set(hashes)];
+			if (list.length === 0) return;
+			for (const hash of list) if (!objects.has(hash)) platformFolderProblem("stage_invalid");
+			if (!knownProfileId) {
+				const first = list[0] as string;
+				const firstObject = objects.get(first) as Uint8Array;
+				knownProfileId = await this.#uploadProfile(environmentId, intentId, first, firstObject.byteLength, signal);
 			}
+			const profileId = knownProfileId;
+			await mapBounded(
+				list,
+				PLATFORM_STAGE_CONCURRENCY,
+				async (hash) => {
+					const object = objects.get(hash) as Uint8Array;
+					const authorize = () => this.#uploadProfile(environmentId, intentId, hash, object.byteLength, signal);
+					// WHY: uploadWithAuthority re-runs authorize() inside the exclusive journal lane and fails closed on profile mismatch.
+					await this.#options.replication.uploadWithAuthority(profileId, hash, object, {
+						authorize: async () => {
+							if ((await authorize()) !== profileId) throw new ObjectDependencyError(403);
+						},
+						confirm: () => this.#confirm(environmentId, intentId, hash, object.byteLength, signal),
+					});
+				},
+				signal,
+			);
 		};
 		await putAll([...objects.keys()].filter((hash) => !present.has(hash)));
 		let sealed = await this.#seal(environmentId, intentId, signal);
@@ -260,9 +319,12 @@ export class PlatformFolderWriter {
 			declared += chunk.bytes as number;
 		}
 		if (declared !== file.bytes) platformFolderProblem("file_unreadable");
-		const parts: Uint8Array[] = [];
-		for (const chunk of chunks)
-			parts.push(await this.#object(environmentId, chunk.sha256 as string, chunk.bytes as number, signal));
+		const parts = await mapBounded(
+			chunks,
+			PLATFORM_STAGE_CONCURRENCY,
+			(chunk) => this.#object(environmentId, chunk.sha256 as string, chunk.bytes as number, signal),
+			signal,
+		);
 		const bytes = Buffer.concat(parts);
 		if (bytes.byteLength !== file.bytes || contentHash(bytes) !== file.fileSha256)
 			platformFolderProblem("file_unreadable");
