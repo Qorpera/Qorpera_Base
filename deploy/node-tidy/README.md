@@ -24,8 +24,9 @@ An image stays when any of these holds:
   `extraRoots`. Overridden drop-ins are not followed, so the pins of earlier cuts do not count as live.
 - It is an Ubuntu base image.
 - It was uploaded in the last `recentHours` (48). That covers an image a cut is importing.
+- A JSON hold file in optional `holdDir` (schema `qorpera.node-tidy-hold/v1`: `{ schema, fingerprint, reason, stagingFiles? }`) pins its 64-hex `fingerprint` across all projects and keeps any listed `stagingFiles` basenames even past `recentHours` / `stagingMaxAgeHours`. Temporary `.tmp-*` entries in `holdDir` are ignored while being atomically written.
 
-Image transfer files matching `staging` are removed once they are older than `stagingMaxAgeHours` (6).
+Image transfer files matching `staging` are removed once they are older than `stagingMaxAgeHours` (6), unless held by `holdDir`.
 
 ## When it refuses
 
@@ -33,7 +34,8 @@ The tool deletes nothing, not even transfer files, and exits 2 when:
 
 - no live runtime pin is found;
 - the live pin names no local image;
-- more than `maxDelete` (20) images would go.
+- more than `maxDelete` (20) images would go;
+- `holdDir` is configured and exists, but is not a real directory, cannot be read, or contains any non-`.tmp-*` entry that is not a regular file (`O_NOFOLLOW`), exceeds 64 KiB, is not valid JSON, or fails the `qorpera.node-tidy-hold/v1` schema.
 
 A refusal means the node looks unlike what these rules expect, so a person should look.
 

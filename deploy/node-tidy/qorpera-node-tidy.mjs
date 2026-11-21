@@ -5,7 +5,8 @@
 // lock around image transfer, import and cleanup, so a held lock means "not now".
 
 import { execFile } from "node:child_process";
-import { lstat, readdir, readFile, readlink, unlink } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readdir, readFile, readlink, unlink } from "node:fs/promises";
 import { request } from "node:http";
 import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -82,15 +83,54 @@ export async function readHoldDir(holdDir) {
 		return { held: [], stagingFiles: new Set(), refusal: `holdDir could not be read: ${error.code ?? error.message}` };
 	}
 	if (!dirInfo.isDirectory()) return { held: [], stagingFiles: new Set(), refusal: "holdDir is not a directory" };
-	for (const name of (await readdir(holdDir)).sort()) {
+	let entries;
+	try {
+		entries = (await readdir(holdDir)).sort();
+	} catch (error) {
+		return { held: [], stagingFiles: new Set(), refusal: `holdDir could not be read: ${error.code ?? error.message}` };
+	}
+	for (const name of entries) {
 		if (name.startsWith(".tmp-")) continue;
 		const path = join(holdDir, name);
-		const info = await lstat(path).catch(() => null);
-		if (!info?.isFile() || info.size > MAX_HOLD_FILE_BYTES)
-			return { held: [], stagingFiles: new Set(), refusal: `hold file ${name} is unsafe or oversized` };
+		let handle;
+		try {
+			handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+		} catch (error) {
+			if (error.code === "ELOOP" || error.code === "EISDIR")
+				return { held: [], stagingFiles: new Set(), refusal: `hold file ${name} is unsafe or oversized` };
+			return {
+				held: [],
+				stagingFiles: new Set(),
+				refusal: `hold file ${name} could not be read: ${error.code ?? error.message}`,
+			};
+		}
+		let text;
+		try {
+			const info = await handle.stat();
+			if (!info.isFile() || info.size > MAX_HOLD_FILE_BYTES)
+				return { held: [], stagingFiles: new Set(), refusal: `hold file ${name} is unsafe or oversized` };
+			const buffer = Buffer.allocUnsafe(MAX_HOLD_FILE_BYTES + 1);
+			let total = 0;
+			while (total < buffer.byteLength) {
+				const { bytesRead } = await handle.read(buffer, total, buffer.byteLength - total, null);
+				if (bytesRead === 0) break;
+				total += bytesRead;
+			}
+			if (total > MAX_HOLD_FILE_BYTES)
+				return { held: [], stagingFiles: new Set(), refusal: `hold file ${name} is unsafe or oversized` };
+			text = buffer.subarray(0, total).toString("utf8");
+		} catch (error) {
+			return {
+				held: [],
+				stagingFiles: new Set(),
+				refusal: `hold file ${name} could not be read: ${error.code ?? error.message}`,
+			};
+		} finally {
+			await handle.close();
+		}
 		let parsed;
 		try {
-			parsed = JSON.parse(await readFile(path, "utf8"));
+			parsed = JSON.parse(text);
 		} catch {
 			return { held: [], stagingFiles: new Set(), refusal: `hold file ${name} is not valid JSON` };
 		}
@@ -120,7 +160,7 @@ export async function readHoldDir(holdDir) {
 	return { held, stagingFiles, refusal: null };
 }
 
-function parseConfig(value) {
+export function parseConfig(value) {
 	const keys = [
 		"schema",
 		"lxdSocket",
@@ -364,7 +404,8 @@ export async function tidy({ config, apply, lxd, systemd, now = Date.now(), remo
 	held = [...held, ...holdState.held];
 	const images = await lxd.images();
 	const rawPlan = planImages({ images, instances: await lxd.instances(), referenced, pins, held, now, config });
-	const plan = holdState.refusal ? { ...rawPlan, remove: [], refusal: holdState.refusal } : rawPlan;
+	const refusal = [rawPlan.refusal, holdState.refusal].filter(Boolean).join("; ") || null;
+	const plan = refusal ? { ...rawPlan, remove: [], refusal } : rawPlan;
 	const stagingFiles = [];
 	for (const pattern of config.staging)
 		for (const path of await expand(pattern)) {

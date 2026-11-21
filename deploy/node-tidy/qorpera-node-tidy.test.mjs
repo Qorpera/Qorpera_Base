@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { agentPins, planImages, planStaging, tidy } from "./qorpera-node-tidy.mjs";
+import { agentPins, parseConfig, planImages, planStaging, readHoldDir, tidy } from "./qorpera-node-tidy.mjs";
 
 const HOUR = 60 * 60_000;
 const now = Date.parse("2026-09-23T18:00:00.000Z");
@@ -388,6 +388,90 @@ test("holdDir fails closed and deletes nothing when a hold file is corrupt or a 
 		assert.deepEqual(node.deleted, []);
 	} finally {
 		await rm(node.root, { recursive: true, force: true });
+	}
+});
+
+test("parseConfig validates optional holdDir and rejects relative or non-string values", () => {
+	assert.equal(parseConfig(config({ holdDir: "/etc/qorpera-node-tidy.holds.d" })).holdDir, "/etc/qorpera-node-tidy.holds.d");
+	assert.throws(() => parseConfig(config({ holdDir: "relative/holds.d" })), /invalid/);
+	assert.throws(() => parseConfig(config({ holdDir: 42 })), /invalid/);
+});
+
+test("readHoldDir fails closed on unreadable dir, non-directory, oversized files, subdirs, and invalid schemas", async () => {
+	const root = await mkdtemp(join(tmpdir(), "qorpera-node-tidy-hold-"));
+	try {
+		const missing = await readHoldDir(join(root, "does-not-exist"));
+		assert.equal(missing.refusal, null);
+		assert.deepEqual(missing.held, []);
+
+		const regularFile = join(root, "not-a-dir");
+		await writeFile(regularFile, "{}");
+		assert.match((await readHoldDir(regularFile)).refusal ?? "", /not a directory/);
+
+		const realDir = join(root, "real-dir");
+		await mkdir(realDir);
+		const dirLink = join(root, "dir-link");
+		await symlink(realDir, dirLink);
+		assert.match((await readHoldDir(dirLink)).refusal ?? "", /not a directory/);
+
+		if (process.getuid?.() !== 0) {
+			const lockedDir = join(root, "locked");
+			await mkdir(lockedDir);
+			await chmod(lockedDir, 0o000);
+			try {
+				assert.match((await readHoldDir(lockedDir)).refusal ?? "", /holdDir could not be read: EACCES/);
+			} finally {
+				await chmod(lockedDir, 0o700);
+			}
+		}
+
+		const subHoldDir = join(root, "with-subdir");
+		await mkdir(join(subHoldDir, "nested"), { recursive: true });
+		assert.match((await readHoldDir(subHoldDir)).refusal ?? "", /unsafe or oversized/);
+
+		const bigDir = join(root, "with-big");
+		await mkdir(bigDir);
+		await writeFile(join(bigDir, "huge.json"), " ".repeat(65_537));
+		assert.match((await readHoldDir(bigDir)).refusal ?? "", /unsafe or oversized/);
+
+		const invalidPayloads = [
+			"null",
+			"[]",
+			JSON.stringify({ schema: "qorpera.node-tidy-hold/v1", fingerprint: fp("a"), reason: "ok", extra: 1 }),
+			JSON.stringify({ schema: "wrong/v1", fingerprint: fp("a"), reason: "ok" }),
+			JSON.stringify({ schema: "qorpera.node-tidy-hold/v1", fingerprint: "not-hex", reason: "ok" }),
+			JSON.stringify({ schema: "qorpera.node-tidy-hold/v1", fingerprint: fp("a"), reason: "   " }),
+			JSON.stringify({ schema: "qorpera.node-tidy-hold/v1", fingerprint: fp("a"), reason: "ok", stagingFiles: ["../x"] }),
+			JSON.stringify({ schema: "qorpera.node-tidy-hold/v1", fingerprint: fp("a"), reason: "ok", stagingFiles: ["a/b"] }),
+			JSON.stringify({ schema: "qorpera.node-tidy-hold/v1", fingerprint: fp("a"), reason: "ok", stagingFiles: ["."] }),
+			JSON.stringify({ schema: "qorpera.node-tidy-hold/v1", fingerprint: fp("a"), reason: "ok", stagingFiles: [".."] }),
+		];
+		for (let i = 0; i < invalidPayloads.length; i++) {
+			const dir = join(root, `schema-${i}`);
+			await mkdir(dir);
+			await writeFile(join(dir, "bad.json"), invalidPayloads[i]);
+			assert.match((await readHoldDir(dir)).refusal ?? "", /is invalid/, `payload #${i} must be refused`);
+		}
+
+		const node = await nodeFixture();
+		try {
+			const badHold = join(node.root, "bad-holds");
+			await mkdir(badHold);
+			await writeFile(join(badHold, "corrupt.json"), "{");
+			const both = await tidy({
+				config: { ...node.config, holdDir: badHold },
+				apply: false,
+				lxd: node.lxd,
+				systemd: { ...node.systemd, startPaths: async () => [] },
+				now,
+			});
+			assert.match(both.refusal ?? "", /no live runtime pin was found/);
+			assert.match(both.refusal ?? "", /not valid JSON/);
+		} finally {
+			await rm(node.root, { recursive: true, force: true });
+		}
+	} finally {
+		await rm(root, { recursive: true, force: true });
 	}
 });
 
