@@ -452,4 +452,88 @@ describe("a pack's check", () => {
 		await expect(left.end()).rejects.toThrow(UNCHECKED);
 		expect(await outcome(slow, Buffer.from("not a pack"), "pack", noSecrets())).toBe(CHECKED);
 	});
+
+	it("pipes cat-file directly into folderProgram with --spec-fd 3, enforces default concurrency 4, and handles every scanner outcome", async () => {
+		const pack = packOf(honest);
+		const capturedArgs = join(root, "scanner-args");
+		const capturedSpec = join(root, "scanner-spec");
+		const capturedBytes = join(root, "scanner-bytes");
+		const replyFile = join(root, "scanner-reply");
+		const exitFile = join(root, "scanner-exit");
+		const fakeScanner = join(root, "fake-scanner");
+		await writeFile(
+			fakeScanner,
+			[
+				"#!/bin/sh",
+				`printf '%s' "$*" > ${capturedArgs}`,
+				`cat <&3 > ${capturedSpec}`,
+				`wc -c > ${capturedBytes}`,
+				`cat ${replyFile}`,
+				`exit $(cat ${exitFile})`,
+				"",
+			].join("\n"),
+		);
+		await chmod(fakeScanner, 0o755);
+
+		const secrets = secretsOf(VALUE);
+		const runWith = async (reply: string, code: number) => {
+			await writeFile(replyFile, reply);
+			await writeFile(exitFile, String(code));
+			return outcome(new SaveChecks({ ...reading, folderProgram: fakeScanner }), pack, "pack", secrets);
+		};
+
+		expect(await runWith('{"status":"clean","rebuilt":123}\n', 0)).toBe(CHECKED);
+		expect(await readFile(capturedArgs, "utf8")).toBe("scan-pack --spec-fd 3");
+		expect(Number((await readFile(capturedBytes, "utf8")).trim())).toBeGreaterThan(0);
+		const parsedSpec = JSON.parse(await readFile(capturedSpec, "utf8")) as Record<string, unknown>;
+		expect(parsedSpec).toEqual({
+			...secrets.toSpec(),
+			rebuiltMax: 256 * 1024 ** 2,
+		});
+
+		expect(await runWith('{"status":"secret"}\n', 0)).toBe(CARRIES);
+		expect(await runWith('{"status":"unchecked","reason":"rebuilt_limit"}\n', 0)).toBe(UNCHECKED);
+		expect(await runWith('{"status":"clean"}\n', 0)).toBe(UNCHECKED);
+		expect(await runWith("not-json\n", 0)).toBe(UNCHECKED);
+		expect(await runWith('{"status":"clean","rebuilt":1}\nextra\n', 0)).toBe(UNCHECKED);
+		expect(await runWith(`${"x".repeat(5000)}\n`, 0)).toBe(UNCHECKED);
+		expect(await runWith("", 1)).toBe(UNCHECKED);
+
+		await writeFile(replyFile, "");
+		await writeFile(exitFile, "2");
+		const usageErr = await outcome(
+			new SaveChecks({ ...reading, folderProgram: fakeScanner }),
+			pack,
+			"pack",
+			secrets,
+		).catch((e: unknown) => e);
+		expect(usageErr).toBeInstanceOf(Error);
+		expect(usageErr).not.toBeInstanceOf(SecretRefusal);
+
+		for (const broken of [{ folderProgram: "/nonexistent/qorpera-folder" }, { folderProgram: root }]) {
+			const err = await outcome(new SaveChecks({ ...reading, ...broken }), pack, "pack", secrets).catch(
+				(e: unknown) => e,
+			);
+			expect(err, JSON.stringify(broken)).toBeInstanceOf(Error);
+			expect(err, JSON.stringify(broken)).not.toBeInstanceOf(SecretRefusal);
+			await scratchIsEmpty();
+		}
+
+		await writeFile(replyFile, '{"status":"clean","rebuilt":1}\n');
+		await writeFile(exitFile, "0");
+		const parallel = new SaveChecks({ ...reading, folderProgram: fakeScanner, waitingMax: 0 });
+		const active = [0, 1, 2, 3].map(() => parallel.start(secrets, pack.length, "pack"));
+		for (const check of active) await check.push(pack.subarray(0, 20));
+		expect(await readdir(scratch)).toHaveLength(4);
+		const fifth = parallel.start(secrets, pack.length, "pack");
+		const fifthErr = await fifth.push(pack.subarray(0, 20)).catch((e: unknown) => e);
+		expect(fifthErr).toBeInstanceOf(SecretRefusal);
+		expect((fifthErr as SecretRefusal).again).toBe(true);
+		await fifth.abort();
+		for (const check of active) {
+			await check.push(pack.subarray(20));
+			await check.end();
+		}
+		await scratchIsEmpty();
+	});
 });

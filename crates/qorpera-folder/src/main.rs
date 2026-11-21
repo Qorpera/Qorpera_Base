@@ -1,8 +1,10 @@
 //! qorpera-folder: the company folder inside a Qorpera machine, and the node's vsock bridge to the
 //! folder service. See README.md and deploy/first-node/RUNTIME-FOLDER-SERVICE.md.
 
-use qorpera_folder::{bridge, cache, command, data, link, lxd, mount, proto, reads::ReadLog, relay, viewfile::{self, DaemonLock, ViewFile}};
+use qorpera_folder::{bridge, cache, command, data, link, lxd, mount, proto, reads::ReadLog, relay, scan, viewfile::{self, DaemonLock, ViewFile}};
 use std::ffi::CString;
+use std::io::Write;
+use std::os::fd::RawFd;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -15,6 +17,7 @@ const USAGE: &str = "Usage:
   qorpera-folder relay --listen systemd|unix:<socket> [--connect vsock:2:5250]
   qorpera-folder command --shell-pid <pid> --tree <dir> --network yes|no -- <program> [args]
   qorpera-folder data [--view-file /run/qorpera-folder/view.json] [--root /company] [--connect vsock:2:5250] describe [<database>] | apply <database> | query <database> <question> [name=value ...] | query <database> --sql '<one select>' [name=value ...] | change <database> <change> [name=value ...]
+  qorpera-folder scan-pack --spec-fd <fd>
   qorpera-folder version
 
 mount: shows the view named in <file> (JSON {\"environmentId\", \"viewId\", \"pass\"}; a regular file owned by this
@@ -63,7 +66,12 @@ is printed as one line of JSON. When the store asks for a file's text, the comma
 by its hash; a file written a moment ago is used once it is saved to the folder (the command asks again for 10 s).
 Exit codes: 0 an answer, 1 a refusal (its words on standard error), 2 usage, 3 the databases cannot be reached from
 this machine now, no answer came, or the answer could not be printed (an apply or a change may then have run: look
-before running it again).";
+before running it again).
+
+scan-pack: reads a git cat-file --batch-all-objects --batch --unordered stream on standard input, scans each object
+against the keyed secret-hash specification JSON read from --spec-fd <fd> (>= 3), and prints one JSON result line on
+standard output ({\"status\":\"clean\",\"rebuilt\":...}, {\"status\":\"secret\"}, or {\"status\":\"unchecked\",\"reason\":...}).
+Exit codes: 0 result printed, 1 invalid specification or I/O failure, 2 usage.";
 
 /// The node closed or refused the view: a supervisor must not simply start the mount again.
 const EXIT_VIEW_CLOSED: u8 = 3;
@@ -77,6 +85,7 @@ fn main() -> ExitCode {
 		Some("relay") => relay(&args[1..]),
 		Some("command") => command(&args[1..]),
 		Some("data") => data(&args[1..]),
+		Some("scan-pack") => scan_pack(&args[1..]),
 		Some("version" | "--version") => {
 			println!("qorpera-folder {} (protocol {})", env!("CARGO_PKG_VERSION"), proto::PROTOCOL);
 			Ok(ExitCode::SUCCESS)
@@ -409,6 +418,34 @@ fn data(args: &[String]) -> Result<ExitCode, Usage> {
 	Ok(ExitCode::from(data::run(&addr, &view, &root, &call, &data::Waits::default(), &mut std::io::stdout(), &mut std::io::stderr())))
 }
 
+fn scan_pack_fd(args: &[String]) -> Result<RawFd, Usage> {
+	let o = options(args, &["spec-fd"])?;
+	let raw = o.get("spec-fd").ok_or_else(|| Usage("--spec-fd is required".into()))?;
+	let fd: RawFd = raw.parse().map_err(|_| Usage("--spec-fd must be a file descriptor".into()))?;
+	if fd < 3 {
+		return Err(Usage("--spec-fd must be 3 or higher".into()));
+	}
+	Ok(fd)
+}
+
+fn scan_pack(args: &[String]) -> Result<ExitCode, Usage> {
+	let fd = scan_pack_fd(args)?;
+	match scan::run_from_fd(fd) {
+		Ok(outcome) => {
+			let line = serde_json::to_string(&outcome).expect("a scan outcome serializes");
+			let mut stdout = std::io::stdout().lock();
+			if writeln!(stdout, "{line}").is_err() || stdout.flush().is_err() {
+				return Ok(ExitCode::FAILURE);
+			}
+			Ok(ExitCode::SUCCESS)
+		}
+		Err(msg) => {
+			eprintln!("qorpera-folder scan-pack: {msg}");
+			Ok(ExitCode::FAILURE)
+		}
+	}
+}
+
 /// `command`'s options, then `--` and the program with its arguments.
 fn command_request(args: &[String]) -> Result<command::Request, Usage> {
 	let split = args.iter().position(|a| a == "--").ok_or_else(|| Usage("command needs -- <program> [args]".into()))?;
@@ -509,6 +546,24 @@ mod tests {
 			vec!["--shell-pid", "1578", "--tree", "/t", "--network", "no", "--", "/usr/bin/true", "a\0b"],
 		] {
 			assert!(command_args(&bad).is_err(), "{bad:?}");
+		}
+	}
+
+	#[test]
+	fn scan_pack_requires_spec_fd_at_least_three() {
+		let parse = |args: &[&str]| scan_pack_fd(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+		assert_eq!(parse(&["--spec-fd", "3"]).ok(), Some(3));
+		assert_eq!(parse(&["--spec-fd", "12"]).ok(), Some(12));
+		for bad in [
+			vec![],
+			vec!["--spec-fd"],
+			vec!["--spec-fd", "0"],
+			vec!["--spec-fd", "2"],
+			vec!["--spec-fd", "-1"],
+			vec!["--spec-fd", "abc"],
+			vec!["--spec-fd", "3", "--other", "1"],
+		] {
+			assert!(parse(&bad).is_err(), "{bad:?}");
 		}
 	}
 }
