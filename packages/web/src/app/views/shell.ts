@@ -1929,25 +1929,28 @@ function placeOf(element: HTMLElement): string | undefined {
  * current row, so a member moving never rebuilds a row. */
 function paintPresence(container: HTMLElement, parts: RailParts, company: CompanyController): void {
 	const places = company.peopleByPlace();
-	for (const element of parts.presenceElements) {
-		if (!element.isConnected) parts.presenceElements.delete(element);
-	}
 	if (places.size === 0) {
 		if (parts.presenceElements.size === 0) return;
 		for (const element of [...parts.presenceElements]) paintHere(element, [], parts.presenceElements);
 		return;
 	}
+	const visited = new Set<HTMLElement>();
 	const inApps = new Map<string, { userId: string; name: string }>();
 	for (const element of container.querySelectorAll<HTMLElement>(
 		"[data-agent-id], [data-cofounder-id], [data-room-id], [data-app-key], [data-owed-place]",
 	)) {
+		visited.add(element);
 		const place = placeOf(element);
 		const people = (place && places.get(place)) || [];
 		if (element.dataset.appKey || element.dataset.owedPlace)
 			for (const person of people) inApps.set(person.userId, person);
 		paintHere(element, people, parts.presenceElements);
 	}
+	visited.add(parts.apps);
 	paintHere(parts.apps, parts.appsOpen ? [] : [...inApps.values()], parts.presenceElements);
+	for (const element of [...parts.presenceElements]) {
+		if (!visited.has(element)) paintHere(element, [], parts.presenceElements);
+	}
 }
 
 function paintHere(
