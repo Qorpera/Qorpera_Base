@@ -56,6 +56,7 @@ import fcntl
 import http.client
 import ipaddress
 import json
+import math
 import os
 import re
 import secrets
@@ -454,13 +455,14 @@ def backed(paths, entries, instances, loaded=()):
 
 
 class UnixHTTPConnection(http.client.HTTPConnection):
-    def __init__(self, path):
+    def __init__(self, path, timeout=30):
         super().__init__("lxd")
         self.path = path
+        self.timeout = timeout
 
     def connect(self):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.settimeout(30)
+        self.sock.settimeout(self.timeout)
         self.sock.connect(self.path)
 
 
@@ -485,7 +487,7 @@ def lxd_instances(socket_path, fixture):
     return instances
 
 
-def lxd_instance(socket_path, fixture, project, name):
+def lxd_instance(socket_path, fixture, project, name, timeout=5):
     """Single-instance re-read used to confirm a transient tap detach during VM start/stop."""
     if fixture:
         for item in lxd_instances(socket_path, fixture):
@@ -494,18 +496,29 @@ def lxd_instance(socket_path, fixture, project, name):
         return None
     q_name = urllib.parse.quote(name, safe="")
     q_proj = urllib.parse.quote(project, safe="")
-    connection = UnixHTTPConnection(socket_path)
+    connection = UnixHTTPConnection(socket_path, timeout=timeout)
     try:
         connection.request("GET", f"/1.0/instances/{q_name}?project={q_proj}")
         response = connection.getresponse()
-        body = json.loads(response.read())
+        raw = response.read()
     finally:
         connection.close()
     if response.status == 404:
         return None
-    if response.status != 200 or body.get("type") != "sync" or not isinstance(body.get("metadata"), dict):
-        raise RuntimeError(f"LXD answered {response.status}: {body.get('error', '')}")
-    return body["metadata"]
+    body = json.loads(raw)
+    if (
+        response.status != 200
+        or not isinstance(body, dict)
+        or body.get("type") != "sync"
+        or body.get("status_code") != 200
+        or not isinstance(body.get("metadata"), dict)
+    ):
+        err = body.get("error", "") if isinstance(body, dict) else ""
+        raise RuntimeError(f"LXD answered {response.status}: {err}")
+    meta = body["metadata"]
+    if meta.get("name") != name or meta.get("project", "default") != project:
+        raise RuntimeError(f"LXD returned unexpected instance {meta.get('project')}/{meta.get('name')}")
+    return meta
 
 
 def plug_nics(instance):
@@ -854,7 +867,29 @@ class Reconciler:
                               lambda: self.history("unattributed", stray, cards=cards))
                 except Exception as error:  # noqa: BLE001 - logged as a problem; the pass goes on
                     self.problems.append(f"cannot log {project}/{name}: {error}"[:300])
-        for address, entry in sorted(entries.items(), key=lambda item: ipaddress.ip_address(item[0])):
+        sorted_entries = sorted(entries.items(), key=lambda item: ipaddress.ip_address(item[0]))
+        recheck_keys = []
+        seen_recheck = set()
+        for _, entry in sorted_entries:
+            key = (entry["project"], entry["instance"])
+            instance = by_name.get(key)
+            if instance is not None and key not in seen_recheck and check_port(entry, instance):
+                seen_recheck.add(key)
+                recheck_keys.append(key)
+        if recheck_keys:
+            # WHY: sleep once per pass before re-reading detached instances so tap-teardown bursts stay O(1) and sync_bridge sees fresh state.
+            if self.port_recheck_seconds > 0:
+                time.sleep(self.port_recheck_seconds)
+            for project, name in recheck_keys:
+                try:
+                    fresh = lxd_instance(self.args.lxd_socket, self.args.lxd_fixture, project, name)
+                except Exception:  # noqa: BLE001 - fail closed if confirmation read fails
+                    continue
+                if fresh is None:
+                    by_name.pop((project, name), None)
+                else:
+                    by_name[(project, name)] = fresh
+        for address, entry in sorted_entries:
             try:
                 self.reconcile_entry(at, address, entry, by_name.get((entry["project"], entry["instance"])))
             except Exception as error:  # noqa: BLE001 - one entry never stops the pass for the others
@@ -865,7 +900,7 @@ class Reconciler:
             except Exception as error:  # noqa: BLE001 - a later stage, and the bridge rules, still run
                 self.problems.append(f"{type(error).__name__}: {error}"[:300])
         entries = read_entries(self.paths)[0]
-        ok, ports = backed(self.paths, entries, instances, current_ports() if self.nft else ())
+        ok, ports = backed(self.paths, entries, list(by_name.values()), current_ports() if self.nft else ())
         self.sync_bridge(ok, ports)
         return self.write_status(at, entries)
 
@@ -888,22 +923,7 @@ class Reconciler:
             ensure_lease(self.paths, entry)
         except OSError as error:
             self.problems.append(f"{where(entry)}: cannot write its lease: {error}")
-        port_problems = check_port(entry, instance)
-        if port_problems:
-            # WHY: LXD detaches tap* ~0.4s before flipping status to Stopped; re-confirm once before flagging unhealthy.
-            if self.port_recheck_seconds > 0:
-                time.sleep(self.port_recheck_seconds)
-            try:
-                fresh = lxd_instance(self.args.lxd_socket, self.args.lxd_fixture, entry["project"], entry["instance"])
-            except Exception:  # noqa: BLE001 - fail closed if confirmation read fails
-                fresh = instance
-            if fresh is None:
-                port_problems = []
-            else:
-                port_problems = check_port(entry, fresh)
-                if not port_problems:
-                    instance = fresh
-        self.problems += port_problems
+        self.problems += check_port(entry, instance)
         problems = check_machine(entry, instance)
         if problems:
             # A claim LXD does not back: unhealthy, logged, never attributed.
@@ -964,12 +984,11 @@ def main():
     parser.add_argument("--instance")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--interval", type=float, default=float(env("QORPERA_AGENT_PLUG_INTERVAL", "5")))
+    raw_port_recheck = env("QORPERA_AGENT_PLUG_PORT_RECHECK_SECONDS") or None
     parser.add_argument(
         "--port-recheck-seconds",
         type=float,
-        default=float(env("QORPERA_AGENT_PLUG_PORT_RECHECK_SECONDS"))
-        if env("QORPERA_AGENT_PLUG_PORT_RECHECK_SECONDS") is not None
-        else None,
+        default=raw_port_recheck,
     )
     parser.add_argument("--netns", default="qexit")
     parser.add_argument("--lxd-socket", default="/var/snap/lxd/common/lxd/unix.socket")
@@ -981,6 +1000,13 @@ def main():
     parser.add_argument("--flush-log")
     parser.add_argument("--parse-conntrack", action="store_true")
     args = parser.parse_args()
+    if args.port_recheck_seconds is not None:
+        try:
+            args.port_recheck_seconds = float(args.port_recheck_seconds)
+        except ValueError:
+            parser.error("--port-recheck-seconds must be a finite number between 0 and 10")
+        if not math.isfinite(args.port_recheck_seconds) or args.port_recheck_seconds < 0 or args.port_recheck_seconds > 10:
+            parser.error("--port-recheck-seconds must be a finite number between 0 and 10")
     if args.parse_conntrack:
         for twin in parse_twins(sys.stdin.read()):
             print(json.dumps(list(twin)))

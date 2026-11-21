@@ -1332,34 +1332,68 @@ describe("the agent plug", { skip: pythonUsable ? false : "needs Python 3.11 or 
 		]);
 	});
 
-	test("a stopping machine whose tap detached before LXD reports Stopped does not flap unhealthy; a truly detached running VM still does", async () => {
+	test("a stopping machine whose tap detached before LXD reports Stopped does not flap unhealthy; 404, errors, batched sleeps and bridge ports behave cleanly", async () => {
 		const stopping = plugged("--kind", "machine", "--company", "c6", "--machine", "m6", "--project", "qp", "--instance", "vm-stop-race");
 		const broken = plugged("--kind", "machine", "--company", "c7", "--machine", "m7", "--project", "qp", "--instance", "vm-detached");
+		const deleted = plugged("--kind", "machine", "--company", "c8", "--machine", "m8", "--project", "qp", "--instance", "vm-gone-race");
+		const errVm = plugged("--kind", "machine", "--company", "c9", "--machine", "m9", "--project", "qp", "--instance", "vm-recheck-500");
 		const eStop = entry(stopping.address);
 		const eBroken = entry(broken.address);
+		const eDeleted = entry(deleted.address);
+		const eErr = entry(errVm.address);
 		const sock = join(run, "mock-lxd.sock");
 		const flushRaceLog = join(run, "flushes-race.log");
 		const calls = [];
 		const server = createServer((req, res) => {
 			calls.push(req.url);
-			res.writeHead(200, { "content-type": "application/json" });
 			if (req.url === "/1.0/instances?recursion=1&all-projects=true") {
-				res.end(JSON.stringify({ type: "sync", status_code: 200, metadata: [machine(eStop, { status: "Running" }), machine(eBroken, { status: "Running" })] }));
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end(
+					JSON.stringify({
+						type: "sync",
+						status_code: 200,
+						metadata: [
+							{ ...machine(eStop, { status: "Running" }), config: { "volatile.agent.host_name": "tap-old-stop" } },
+							{ ...machine(eBroken, { status: "Running" }), config: { "volatile.agent.host_name": "tap-still-broken" } },
+							{ ...machine(eDeleted, { status: "Running" }), config: { "volatile.agent.host_name": "tap-old-gone" } },
+							machine(eErr, { status: "Running" }),
+						],
+					}),
+				);
 				return;
 			}
 			if (req.url === `/1.0/instances/${eStop.instance}?project=${eStop.project}`) {
+				res.writeHead(200, { "content-type": "application/json" });
 				res.end(JSON.stringify({ type: "sync", status_code: 200, metadata: machine(eStop, { status: "Stopped" }) }));
 				return;
 			}
 			if (req.url === `/1.0/instances/${eBroken.instance}?project=${eBroken.project}`) {
-				res.end(JSON.stringify({ type: "sync", status_code: 200, metadata: machine(eBroken, { status: "Running" }) }));
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end(
+					JSON.stringify({
+						type: "sync",
+						status_code: 200,
+						metadata: { ...machine(eBroken, { status: "Running" }), config: { "volatile.agent.host_name": "tap-still-broken" } },
+					}),
+				);
 				return;
 			}
-			res.writeHead(404);
+			if (req.url === `/1.0/instances/${eDeleted.instance}?project=${eDeleted.project}`) {
+				res.writeHead(404, { "content-type": "text/plain" });
+				res.end("not found");
+				return;
+			}
+			if (req.url === `/1.0/instances/${eErr.instance}?project=${eErr.project}`) {
+				res.writeHead(500, { "content-type": "application/json" });
+				res.end(JSON.stringify({ type: "error", error: "lxd busy" }));
+				return;
+			}
+			res.writeHead(404, { "content-type": "application/json" });
 			res.end(JSON.stringify({ type: "error", error: "not found" }));
 		});
 		await new Promise((resolve) => server.listen(sock, resolve));
 		try {
+			const startedAt = Date.now();
 			const res = await new Promise((resolve) => {
 				const child = spawn(
 					"python3",
@@ -1371,7 +1405,7 @@ describe("the agent plug", { skip: pythonUsable ? false : "needs Python 3.11 or 
 						"--lxd-socket",
 						sock,
 						"--port-recheck-seconds",
-						"0.05",
+						"0.15",
 						"--reload-dns",
 						"true",
 						"--flush-log",
@@ -1385,7 +1419,9 @@ describe("the agent plug", { skip: pythonUsable ? false : "needs Python 3.11 or 
 				});
 				child.on("close", (code) => resolve({ code, stderr }));
 			});
+			const elapsedMs = Date.now() - startedAt;
 			assert.equal(res.code, 0, res.stderr);
+			assert.ok(elapsedMs < 550, `4 detached VMs should share one 0.15s sleep, took ${elapsedMs}ms`);
 			const status = JSON.parse(readFileSync(join(run, "plug.json"), "utf8"));
 			assert.equal(
 				status.problems.some((p) => p.includes("vm-stop-race")),
@@ -1393,26 +1429,104 @@ describe("the agent plug", { skip: pythonUsable ? false : "needs Python 3.11 or 
 				`stop-race VM must not flag unhealthy: ${JSON.stringify(status.problems)}`,
 			);
 			assert.equal(
+				status.problems.some((p) => p.includes("vm-gone-race")),
+				false,
+				`deleted-during-recheck VM must not flag unhealthy: ${JSON.stringify(status.problems)}`,
+			);
+			assert.equal(
+				existsSync(join(state, "verified", deleted.address)),
+				false,
+				"deleted-during-recheck VM must not be marked verified from stale snapshot",
+			);
+			assert.equal(
 				status.problems.some((p) => p.includes("vm-detached") && p.includes("is not a port of qagent0")),
 				true,
 				`truly detached running VM must still flag unhealthy: ${JSON.stringify(status.problems)}`,
 			);
+			assert.equal(
+				status.problems.some((p) => p.includes("vm-recheck-500") && p.includes("is not a port of qagent0")),
+				true,
+				`LXD 500 during recheck must fail closed as unhealthy: ${JSON.stringify(status.problems)}`,
+			);
 			const raceFlushes = readFileSync(flushRaceLog, "utf8").trim().split("\n").filter(Boolean);
 			assert.ok(raceFlushes.includes(stopping.address), "re-confirmed Stopped VM is flushed on the same pass");
+			assert.equal(raceFlushes.includes(deleted.address), false, "404 VM takes missing path, not stale flush");
 			assert.ok(calls.includes(`/1.0/instances/${eStop.instance}?project=${eStop.project}`));
+
+			const bridgeCheck = spawnSync(
+				"python3",
+				[
+					"-c",
+					`
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("plug", sys.argv[1])
+plug = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(plug)
+paths = plug.Paths(sys.argv[2], sys.argv[3], sys.argv[4])
+class Args:
+    lxd_socket = sys.argv[5]
+    lxd_fixture = None
+    port_recheck_seconds = 0.0
+    reload_dns = "true"
+    flush_log = sys.argv[6]
+    netns = "qexit"
+r = plug.Reconciler(paths, Args())
+r.nft = False
+captured = {}
+orig = r.sync_bridge
+def spy(ok, ports):
+    captured["ports"] = sorted(ports)
+    captured["ok"] = sorted(ok.keys())
+    return orig(ok, ports)
+r.sync_bridge = spy
+r.pass_once()
+print(json.dumps(captured))
+`,
+					plugTool,
+					state,
+					run,
+					log,
+					sock,
+					flushRaceLog,
+				],
+				{ encoding: "utf8" },
+			);
+			assert.equal(bridgeCheck.status, 0, bridgeCheck.stderr);
+			const captured = JSON.parse(bridgeCheck.stdout);
+			assert.equal(
+				captured.ports.some(([p]) => p === "tap-old-stop" || p === "tap-old-gone"),
+				false,
+				`backed() must use re-queried by_name so stale stopped/404 taps are dropped: ${JSON.stringify(captured.ports)}`,
+			);
+			assert.equal(
+				captured.ports.some(([p, mac]) => p === "tap-still-broken" && mac === eBroken.hwaddr),
+				true,
+				`backed() must retain running VM tap ports from updated by_name: ${JSON.stringify(captured.ports)}`,
+			);
+
+			const emptyEnv = spawnSync("python3", [plugTool, "list", ...dirs()], {
+				encoding: "utf8",
+				env: { ...process.env, QORPERA_AGENT_PLUG_PORT_RECHECK_SECONDS: "" },
+			});
+			assert.equal(emptyEnv.status, 0, emptyEnv.stderr);
+			for (const bad of ["-1", "inf", "nan", "11"]) {
+				const badFlag = spawnSync("python3", [plugTool, "list", ...dirs(), "--port-recheck-seconds", bad], {
+					encoding: "utf8",
+				});
+				assert.notEqual(badFlag.status, 0, `--port-recheck-seconds ${bad} must be rejected`);
+			}
 		} finally {
 			await new Promise((resolve) => server.close(resolve));
 			rmSync(sock, { force: true });
 			rmSync(flushRaceLog, { force: true });
-			rmSync(join(state, "clients", `${stopping.address}.json`), { force: true });
-			rmSync(join(state, "clients", `${broken.address}.json`), { force: true });
-			rmSync(join(state, "dhcp-hosts", stopping.address), { force: true });
-			rmSync(join(state, "dhcp-hosts", broken.address), { force: true });
-			rmSync(join(state, "seen", stopping.address), { force: true });
-			rmSync(join(state, "seen", broken.address), { force: true });
-			rmSync(join(state, "verified", stopping.address), { force: true });
-			rmSync(join(state, "verified", broken.address), { force: true });
-			rmSync(join(run, "plug-stopped", stopping.address), { force: true });
+			for (const addr of [stopping.address, broken.address, deleted.address, errVm.address]) {
+				rmSync(join(state, "clients", `${addr}.json`), { force: true });
+				rmSync(join(state, "dhcp-hosts", addr), { force: true });
+				rmSync(join(state, "seen", addr), { force: true });
+				rmSync(join(state, "verified", addr), { force: true });
+				rmSync(join(run, "plug-stopped", addr), { force: true });
+				rmSync(join(run, "plug-missing", addr), { force: true });
+			}
 		}
 	});
 

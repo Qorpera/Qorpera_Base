@@ -82,6 +82,7 @@ export class RuntimeNodeInventoryObserver {
 	readonly #healthRecord: (bootId: string) => Promise<void>;
 	readonly #inventoryRetries: number;
 	readonly #inventoryRetryDelayMs: number;
+	readonly #now: () => number;
 	#pending = false;
 	constructor(
 		policy: RuntimeNodeInventoryPolicy,
@@ -93,6 +94,7 @@ export class RuntimeNodeInventoryObserver {
 			healthRecord?: (bootId: string) => Promise<void>;
 			inventoryRetries?: number;
 			inventoryRetryDelayMs?: number;
+			now?: () => number;
 		},
 	) {
 		this.#policy = parseRuntimeNodeInventoryPolicy(policy);
@@ -101,8 +103,20 @@ export class RuntimeNodeInventoryObserver {
 		this.#host = ports?.host ?? physicalHost;
 		this.#releases = ports?.releases ?? (() => readNodeReleaseImages());
 		this.#healthRecord = ports?.healthRecord ?? ((bootId) => assertNodeHealthRecord(bootId));
-		this.#inventoryRetries = ports?.inventoryRetries ?? 2;
-		this.#inventoryRetryDelayMs = ports?.inventoryRetryDelayMs ?? 250;
+		const inventoryRetries = ports?.inventoryRetries ?? 2;
+		const inventoryRetryDelayMs = ports?.inventoryRetryDelayMs ?? 250;
+		if (
+			!Number.isInteger(inventoryRetries) ||
+			inventoryRetries < 0 ||
+			inventoryRetries > 10 ||
+			!Number.isInteger(inventoryRetryDelayMs) ||
+			inventoryRetryDelayMs < 0 ||
+			inventoryRetryDelayMs > 5_000
+		)
+			throw new Error("NODE_OBSERVER_RETRY_CONFIG_INVALID");
+		this.#inventoryRetries = inventoryRetries;
+		this.#inventoryRetryDelayMs = inventoryRetryDelayMs;
+		this.#now = ports?.now ?? (() => performance.now());
 	}
 	async observe(caller: AbortSignal): Promise<{
 		state: "ready" | "unavailable";
@@ -117,7 +131,7 @@ export class RuntimeNodeInventoryObserver {
 		let check = "host";
 		try {
 			const signal = AbortSignal.any([caller, AbortSignal.timeout(15000)]),
-				started = performance.now();
+				started = this.#now();
 			const observedAt = new Date().toISOString(),
 				observationId = timeOrderedUuid();
 			const before = await this.#host(this.#policy, signal);
@@ -147,16 +161,21 @@ export class RuntimeNodeInventoryObserver {
 				check = "policy";
 				if (!isDeepStrictEqual(context.policy, this.#policy)) throw new Error("NODE_OBSERVER_POLICY_DIFFERS");
 				check = "inventory";
-				// WHY: a VM starting/stopping between double-scan listings raises LXD_HOST_INVENTORY_UNCONFIRMED.
+				// WHY: retry fast double-scan VM transition mismatches without burning the publish budget on hung LXD.
 				let inventory = null;
 				for (let attempt = 0; ; attempt++) {
+					const attemptStarted = this.#now();
 					try {
 						inventory = await this.#lxd.inspectHostInventory(signal);
 						break;
 					} catch (error) {
+						const attemptElapsed = this.#now() - attemptStarted;
+						const totalElapsed = this.#now() - started;
 						if (
 							attempt >= this.#inventoryRetries ||
 							signal.aborted ||
+							attemptElapsed >= 2_000 ||
+							totalElapsed + this.#inventoryRetryDelayMs >= 8_000 ||
 							runtimeNodeObserverCode(error) !== "LXD_HOST_INVENTORY_UNCONFIRMED"
 						)
 							throw error;
@@ -210,7 +229,7 @@ export class RuntimeNodeInventoryObserver {
 				};
 			}
 			signal.throwIfAborted();
-			if (performance.now() - started >= 15000) throw new Error("NODE_OBSERVER_EXPIRED");
+			if (this.#now() - started >= 15000) throw new Error("NODE_OBSERVER_EXPIRED");
 			check = "publish";
 			// Keep submission outside the scan catch: an ambiguous publication
 			// never retries the same ID with different bytes or a new timestamp.
