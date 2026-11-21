@@ -28,7 +28,49 @@ export const STRIPE_API_VERSION = "2026-08-26.dahlia";
 const SIGNATURE_TOLERANCE_SECONDS = 300;
 const STRIPE_TIMEOUT_MS = 20_000;
 const CREDIT_CHECKOUT_SECONDS = 3600;
+const MAX_WEBHOOK_BODY_BYTES = 512 * 1024;
+const MAX_MEMBER_BODY_BYTES = 16 * 1024;
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+async function readBoundedText(request: Request, maxBytes: number): Promise<string | null> {
+	const rawLength = request.headers.get("content-length");
+	if (rawLength !== null) {
+		const declared = Number(rawLength);
+		if (!Number.isFinite(declared) || declared < 0 || declared > maxBytes) {
+			void request.body?.cancel().catch(() => undefined);
+			return null;
+		}
+	}
+	const reader = request.body?.getReader();
+	if (!reader) return "";
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	let overflow = false;
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			total += value.byteLength;
+			if (total > maxBytes) {
+				overflow = true;
+				return null;
+			}
+			chunks.push(value);
+		}
+	} finally {
+		if (overflow) void reader.cancel().catch(() => undefined);
+	}
+	if (chunks.length === 0) return "";
+	if (chunks.length === 1) return UTF8_DECODER.decode(chunks[0]!);
+	const merged = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		merged.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return UTF8_DECODER.decode(merged);
+}
 
 type Json = Record<string, unknown>;
 
@@ -250,9 +292,11 @@ async function startCheckout(
 	const token = bearer(request);
 	const member = token ? await deps.auth.member(token) : null;
 	if (!member) return json({ error: "Sign in to buy computer hours" }, 401, cors);
+	const rawBody = await readBoundedText(request, MAX_MEMBER_BODY_BYTES);
+	if (rawBody === null) return json({ error: "Request body too large" }, 413, cors);
 	let body: Json | undefined;
 	try {
-		body = object(await request.json());
+		body = object(JSON.parse(rawBody));
 	} catch {
 		body = undefined;
 	}
@@ -661,7 +705,8 @@ async function applyEvent(event: Json, deps: BillingDependencies): Promise<Outco
 }
 
 async function receiveWebhook(request: Request, deps: BillingDependencies): Promise<Response> {
-	const rawBody = await request.text();
+	const rawBody = await readBoundedText(request, MAX_WEBHOOK_BODY_BYTES);
+	if (rawBody === null) return json({ error: "Request body too large" }, 413);
 	const nowSeconds = deps.options.nowSeconds?.() ?? Math.floor(Date.now() / 1000);
 	if (
 		!(await verifyStripeSignature(
@@ -718,9 +763,11 @@ async function goodWillCard(request: Request, deps: BillingDependencies, cors: R
 	const token = bearer(request);
 	const member = token ? await deps.auth.member(token) : null;
 	if (!member) return json({ error: "Sign in to add a card" }, 401, cors);
+	const rawBody = await readBoundedText(request, MAX_MEMBER_BODY_BYTES);
+	if (rawBody === null) return json({ error: "Request body too large" }, 413, cors);
 	let body: Json | undefined;
 	try {
-		body = object(await request.json());
+		body = object(JSON.parse(rawBody));
 	} catch {
 		body = undefined;
 	}

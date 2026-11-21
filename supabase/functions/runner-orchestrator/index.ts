@@ -1,11 +1,43 @@
-import { createClient } from "npm:@supabase/supabase-js@2.112.3";
+import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2.112.3";
 import {
 	FOLDER_DRAINS,
+	orchestratorAuthFailure,
 	parseRunnerOrchestratorBearer,
 	readRunnerOrchestratorRequest,
 	runnerOrchestratorRpcStatus,
 	type RunnerOrchestratorRequest,
 } from "./runner-orchestrator.ts";
+
+const RPC_TIMEOUT_MS = 25_000;
+const UTF8_ENCODER = new TextEncoder();
+let cachedClient: { readonly key: string; readonly client: SupabaseClient } | undefined;
+
+function timedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+	const controller = new AbortController();
+	const parent = init?.signal;
+	const onAbort = (): void => controller.abort(parent?.reason);
+	if (parent?.aborted) onAbort();
+	else parent?.addEventListener("abort", onAbort, { once: true });
+	const timer = setTimeout(
+		() => controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+		RPC_TIMEOUT_MS,
+	);
+	return fetch(input, { ...init, signal: controller.signal }).finally(() => {
+		clearTimeout(timer);
+		parent?.removeEventListener("abort", onAbort);
+	});
+}
+
+function getClient(supabaseUrl: string, serviceKey: string): SupabaseClient {
+	const key = `${supabaseUrl}\0${serviceKey}`;
+	if (cachedClient?.key === key) return cachedClient.client;
+	const client = createClient(supabaseUrl, serviceKey, {
+		auth: { autoRefreshToken: false, persistSession: false },
+		global: { fetch: timedFetch },
+	});
+	cachedClient = { key, client };
+	return client;
+}
 
 function jsonResponse(value: unknown, status = 200): Response {
 	return Response.json(value, { status, headers: { "cache-control": "no-store" } });
@@ -32,7 +64,7 @@ function configuredServiceKey(): string | undefined {
 }
 
 async function sha256(value: string): Promise<string> {
-	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+	const digest = await crypto.subtle.digest("SHA-256", UTF8_ENCODER.encode(value));
 	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
@@ -49,14 +81,14 @@ Deno.serve(async (request) => {
 	} catch {
 		return jsonResponse({ error: "Invalid orchestrator request" }, 400);
 	}
-	const client = createClient(supabaseUrl, serviceKey, {
-		auth: { autoRefreshToken: false, persistSession: false },
-	});
+	const client = getClient(supabaseUrl, serviceKey);
+	const tokenSha256 = await sha256(token);
 	const { data: valid, error: validationError } = await client.rpc("qorpera_runner_orchestrator_control_valid", {
 		p_orchestrator_id: action.orchestratorId,
-		p_control_token_sha256: await sha256(token),
+		p_control_token_sha256: tokenSha256,
 	});
-	if (validationError || valid !== true) return jsonResponse({ error: "Orchestrator authorization was rejected" }, 401);
+	const authFailure = orchestratorAuthFailure(validationError, valid);
+	if (authFailure) return jsonResponse({ error: authFailure.error }, authFailure.status);
 	let rpc: string;
 	let args: Record<string, unknown>;
 	switch (action.action) {
@@ -64,7 +96,7 @@ Deno.serve(async (request) => {
 			rpc = "qorpera_rotate_runner_orchestrator_control";
 			args = {
 				p_orchestrator_id: action.orchestratorId,
-				p_presented_token_sha256: await sha256(token),
+				p_presented_token_sha256: tokenSha256,
 				p_next_token_sha256: action.nextControlTokenSha256,
 				p_control_token_seconds: action.controlTokenSeconds,
 			};
