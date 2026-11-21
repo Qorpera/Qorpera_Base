@@ -134,7 +134,7 @@ export interface CodingGuestAgentPorts {
 	sleep?: (ms: number) => Promise<void>;
 	readMountinfo?: () => Promise<string>;
 	chown?: (path: string, uid: number, gid: number) => Promise<void>;
-	removeTree?: (path: string) => Promise<void>;
+	removeTree?: (path: string) => void;
 	lockWaitSeconds?: number;
 	ring?: { segmentBytes: number; segments: number };
 	requireRoot?: boolean;
@@ -172,7 +172,7 @@ function settle(ports: CodingGuestAgentPorts): Agent {
 		sleep: ports.sleep ?? ((ms: number) => new Promise((done) => setTimeout(done, ms))),
 		readMountinfo: ports.readMountinfo ?? (() => readFile("/proc/self/mountinfo", "utf8")),
 		chown: ports.chown ?? chown,
-		removeTree: ports.removeTree ?? ((path: string) => rm(path, { recursive: true, force: true })),
+		removeTree: ports.removeTree ?? detachRemove,
 		lockWaitSeconds: ports.lockWaitSeconds ?? 60,
 		ring: ports.ring ?? { segmentBytes: CODING_GUEST.segmentBytes, segments: CODING_GUEST.segments },
 		requireRoot: ports.requireRoot ?? true,
@@ -657,15 +657,24 @@ async function ensurePackageCaches(at: Agent): Promise<boolean> {
 	}
 }
 
-async function collectOrphanFolderCaches(at: Agent, activeWorker: string): Promise<string[]> {
+function detachRemove(path: string): void {
+	const child = spawn("/bin/rm", ["-rf", "--", path], {
+		env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8" },
+		detached: true,
+		stdio: "ignore",
+	});
+	child.once("error", () => undefined);
+	child.unref();
+}
+
+async function collectOrphanFolderCaches(at: Agent, activeWorker: string): Promise<string | undefined> {
 	const done = join(at.runtimeRoot, "folder-caches.pruned");
-	if (await exists(done)) return [];
+	if (await exists(done)) return undefined;
 	const owner = process.geteuid?.();
 	const parent = await missing(() => lstat(dirname(at.folderCacheRoot)));
-	if (parent !== undefined && (!parent.isDirectory() || parent.uid !== owner)) return [];
+	if (parent !== undefined && (!parent.isDirectory() || parent.uid !== owner)) return undefined;
 	const root = parent ? await missing(() => lstat(at.folderCacheRoot)) : undefined;
-	if (root !== undefined && (!root.isDirectory() || root.uid !== owner)) return [];
-	const trash: string[] = [];
+	if (root !== undefined && (!root.isDirectory() || root.uid !== owner)) return undefined;
 	let staging: string | undefined;
 	let ok = true;
 	if (root) {
@@ -674,11 +683,7 @@ async function collectOrphanFolderCaches(at: Agent, activeWorker: string): Promi
 			return [];
 		});
 		for (const name of entries) {
-			if (name.startsWith(".trash-")) {
-				trash.push(join(at.folderCacheRoot, name));
-				continue;
-			}
-			if (name !== "machine") {
+			if (name !== "machine" && !name.startsWith(".trash-")) {
 				const match = SESSION_CACHE.exec(name);
 				if (!match || match[1] === activeWorker) continue;
 				const sessionDir = await missing(() => lstat(join(at.stateRoot, "sessions", match[1]))).catch(() => {
@@ -689,9 +694,9 @@ async function collectOrphanFolderCaches(at: Agent, activeWorker: string): Promi
 			}
 			try {
 				if (!staging) {
-					staging = join(at.folderCacheRoot, `.trash-${randomUUID()}`);
-					await mkdir(staging, { mode: 0o700 });
-					trash.push(staging);
+					const next = join(at.folderCacheRoot, `.trash-${randomUUID()}`);
+					await mkdir(next, { mode: 0o700 });
+					staging = next;
 				}
 				await rename(join(at.folderCacheRoot, name), join(staging, name));
 			} catch {
@@ -700,7 +705,7 @@ async function collectOrphanFolderCaches(at: Agent, activeWorker: string): Promi
 		}
 	}
 	if (ok) await ignore(writeText(done, "", 0o600));
-	return trash;
+	return staging;
 }
 
 /** The machine's NAT for the sessions' namespaces, which may reach out but not each other. Replaced whole. */
@@ -1012,7 +1017,7 @@ export async function mountCodingGuestSession(
 	// The view's pass and the program's state must never reach the machine's disk.
 	if (mountOf(await at.readMountinfo(), at.folderRoot)?.fstype !== "tmpfs")
 		throw new Error("CODING_GUEST_FOLDER_NOT_IN_MEMORY");
-	let trash: string[] = [];
+	let trash: string | undefined;
 	let mount: { mount: CodingGuestMountAnswer["mount"]; caches: boolean };
 	try {
 		mount = await locked(at, session.lock, "CODING_GUEST_SESSION_BUSY", async () => {
@@ -1035,7 +1040,7 @@ export async function mountCodingGuestSession(
 			return { mount: shown.mount, caches };
 		});
 	} finally {
-		for (const path of trash) await ignore(at.removeTree(path));
+		if (trash) await ignore(Promise.resolve().then(() => at.removeTree(trash)));
 	}
 	// Said only when asked (v2): an executor from before reads exactly the v1 answer.
 	return Object.freeze({

@@ -239,9 +239,9 @@ performance, replacing the earlier shared `/var/lib/qorpera-folder/cache/machine
 `<cache-dir>/names` `flock` contention and `O(N^2)` FUSE `peers.rs` invalidation broadcasts; see
 RUNTIME-FOLDER-MACHINE-CACHES.md). Each session's cache directory stays warm across views and `quiesce`/sleep/wake, is
 removed on `stop-session`, and once per boot at the first mount the guest agent renames any orphaned `cache/s-*`
-(lacking `state/sessions/<worker32>`) and any legacy `cache/machine` into `cache/.trash-<uuid>` under the machine lock
-and deletes them (plus any leftover `.trash-*` from an earlier interrupted boot) after releasing the machine and session
-locks. Reclaiming a session whose `stop-session` never arrived (leaving both `state/sessions/<worker32>` and
+(lacking `state/sessions/<worker32>`), any legacy `cache/machine`, and any leftover `.trash-*` into one
+`cache/.trash-<uuid>` under the machine lock and deletes it in a detached `rm -rf` child after releasing the machine
+and session locks so mount latency does not depend on cache size. Reclaiming a session whose `stop-session` never arrived (leaving both `state/sessions/<worker32>` and
 `cache/s-<worker32>` on disk after an orchestrator crash or lost detach) remains the orchestrator's responsibility (or
 ends when the machine is removed or rebuilt). Package downloads remain shared across sessions via
 `/var/cache/qorpera-packages`, while caches built outside a session's own worktree are no longer shared across sibling

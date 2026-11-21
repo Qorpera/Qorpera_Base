@@ -168,9 +168,10 @@ is never under `/run`, which empties at every start and is memory.
     eliminates cross-session `<cache-dir>/names` `flock` contention and `O(N^2)` `peers.rs` invalidation broadcasts.
     Each session's cache directory stays warm across views and `quiesce`/sleep/wake, is removed by `stop-session`, and
     once per boot at the first mount the guest agent renames any orphaned `cache/s-*` (without a matching
-    `state/sessions/<worker32>` directory) and any legacy `cache/machine` into `cache/.trash-<uuid>` under the machine
-    lock and deletes them (along with any leftover `.trash-*`) after releasing the machine and session locks; reclaiming
-    a session the orchestrator lost without sending `stop-session` remains the orchestrator's job. Package downloads
+    `state/sessions/<worker32>` directory), any legacy `cache/machine`, and any leftover `.trash-*` into one
+    `cache/.trash-<uuid>` under the machine lock and deletes it in a detached `rm -rf` child after releasing the
+    machine and session locks; reclaiming a session the orchestrator lost without sending `stop-session` remains the
+    orchestrator's job. Package downloads
     remain shared across sessions via `/var/cache/qorpera-packages` (`CODING_PACKAGE_CACHES`). Trade-off: a cache built
     by one coding session in a path outside its own worktree (`worktrees/<worker>/`) is no longer visible to sibling
     sessions on the same machine;

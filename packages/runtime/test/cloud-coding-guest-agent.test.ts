@@ -867,7 +867,10 @@ describe("mounting a session", () => {
 		await gone(sOrphan.folderCache);
 		await gone(legacyMachine);
 		await gone(leftoverTrash);
-		expect((await readdir(m.folderCacheRoot)).filter((name) => name.startsWith(".trash-"))).toEqual([]);
+		await vi.waitFor(
+			async () => expect((await readdir(m.folderCacheRoot)).filter((name) => name.startsWith(".trash-"))).toEqual([]),
+			{ timeout: 10000 },
+		);
 		expect(await readFile(join(sKept.folderCache, "marker"), "utf8")).toBe("data");
 		expect(await readFile(join(sMounting.folderCache, "marker"), "utf8")).toBe("data");
 		expect(await readFile(join(unrelated, "marker"), "utf8")).toBe("data");
@@ -883,9 +886,13 @@ describe("mounting a session", () => {
 			"mounted",
 		);
 		await gone(laterOrphan.folderCache);
+		await vi.waitFor(
+			async () => expect((await readdir(m.folderCacheRoot)).filter((name) => name.startsWith(".trash-"))).toEqual([]),
+			{ timeout: 10000 },
+		);
 		expect(await readFile(join(sKept.folderCache, "marker"), "utf8")).toBe("data");
 	});
-	it("releases the machine and session locks before deleting pruned cache trash so sibling mounts proceed immediately", async () => {
+	it("returns from mount without waiting for trash deletion and does not block sibling mounts", async () => {
 		const m = await machine();
 		const first = randomUUID();
 		const second = randomUUID();
@@ -895,34 +902,23 @@ describe("mounting a session", () => {
 		await writeFile(join(orphan.folderCache, "file"), "old");
 		await mkdir(legacyMachine, { recursive: true, mode: 0o700 });
 		await writeFile(join(legacyMachine, "file"), "legacy");
-		let deletingStarted: () => void = () => undefined;
-		let finishDelete: () => void = () => undefined;
-		const deleting = new Promise<void>((done) => {
-			deletingStarted = done;
-		});
-		const gate = new Promise<void>((done) => {
-			finishDelete = done;
-		});
-		const removed: string[] = [];
-		m.ports.removeTree = async (path) => {
-			removed.push(path);
-			deletingStarted();
-			await gate;
-			await rm(path, { recursive: true, force: true });
+		const scheduled: string[] = [];
+		m.ports.removeTree = (path) => {
+			scheduled.push(path);
 		};
-		const firstMount = call(m, "mount", mountRequest(first, VIEW, 200001));
-		await deleting;
+		expect((await call(m, "mount", mountRequest(first, VIEW, 200001))).line.mount).toBe("mounted");
 		await gone(orphan.folderCache);
 		await gone(legacyMachine);
+		expect(scheduled).toHaveLength(1);
+		expect(basename(scheduled[0])).toMatch(/^\.trash-/);
+		expect(await readFile(join(scheduled[0], basename(orphan.folderCache), "file"), "utf8")).toBe("old");
+		expect(await readFile(join(scheduled[0], "machine", "file"), "utf8")).toBe("legacy");
 		expect((await call(m, "mount", mountRequest(second, { ...VIEW, viewId: "view-2" }, 200002))).line.mount).toBe(
 			"mounted",
 		);
 		expect((await call(m, "mount", mountRequest(first, VIEW, 200001))).line.mount).toBe("mounted");
-		finishDelete();
-		expect((await firstMount).line.mount).toBe("mounted");
-		expect(removed).toHaveLength(1);
-		expect(basename(removed[0])).toMatch(/^\.trash-/);
-		expect((await readdir(m.folderCacheRoot)).filter((name) => name.startsWith(".trash-"))).toEqual([]);
+		expect(scheduled).toHaveLength(1);
+		await rm(scheduled[0], { recursive: true, force: true });
 	});
 	it("refuses another user for a mounted session", async () => {
 		const m = await machine();
