@@ -103,6 +103,7 @@ declare
 	v_menu jsonb;
 	v_run public.qorpera_execution_runs;
 	v_binding jsonb;
+	v_model_binding jsonb;
 	v_context jsonb;
 	v_opened jsonb;
 	v_usage jsonb;
@@ -123,7 +124,7 @@ begin
 		'2: ticket issued: ' || v_ticket::text);
 	v_cap_sha := encode(extensions.digest(v_ticket ->> 'capability', 'sha256'), 'hex');
 
-	set local role qorpera_secret_broker;
+	set local session authorization qorpera_secret_broker;
 	v_described := public.qorpera_describe_gemini_key_ticket(
 		v_authority.id, v_authority.capability_sha256, (v_ticket ->> 'ticketId')::uuid, v_cap_sha);
 	perform pg_temp.base_assert(v_described ->> 'schema' = 'qorpera.gemini-key-ticket-description/v1'
@@ -133,7 +134,7 @@ begin
 	v_saved := public.qorpera_complete_gemini_key_save(
 		v_authority.id, v_authority.capability_sha256, (v_ticket ->> 'ticketId')::uuid, v_cap_sha,
 		v_described ->> 'keyId', v_envelope_b64, v_envelope_sha, 'AIza...9z8y');
-	reset role;
+	reset session authorization;
 	perform pg_temp.base_assert(v_saved ->> 'schema' = 'qorpera.gemini-key-saved/v1'
 		and v_saved ->> 'keyHint' = 'AIza...9z8y' and (v_saved ->> 'monthlyCapCents')::bigint = 500,
 		'2: key completed: ' || v_saved::text);
@@ -175,15 +176,16 @@ begin
 	perform pg_temp.base_assert(v_immut_refused, '5: execution Gemini choice is immutable');
 
 	v_binding := pg_temp.base_start(v_run.id);
+	v_model_binding := v_binding - array['provider', 'nativeHarness', 'model'];
 	v_context := public.qorpera_describe_company_run_context(v_binding);
 	perform pg_temp.base_assert(v_context -> 'gemini' ->> 'model' = 'gemini-4-neon'
 		and v_context -> 'gemini' ->> 'effort' = 'low'
 		and v_context -> 'gemini' ->> 'keyId' = v_saved ->> 'id',
 		'5: run context includes gemini choice: ' || coalesce(v_context -> 'gemini', 'null'::jsonb)::text);
 
-	set local role qorpera_secret_broker;
-	v_opened := public.qorpera_open_gemini_key_for_run(v_authority.id, v_authority.capability_sha256, v_binding);
-	reset role;
+	set local session authorization qorpera_secret_broker;
+	v_opened := public.qorpera_open_gemini_key_for_run(v_authority.id, v_authority.capability_sha256, v_model_binding);
+	reset session authorization;
 	perform pg_temp.base_assert(v_opened ->> 'state' = 'open'
 		and v_opened ->> 'encryptedEnvelopeBase64' = v_envelope_b64
 		and (v_opened ->> 'monthlyCapCents')::bigint = 500,
@@ -200,9 +202,9 @@ begin
 	perform pg_temp.base_assert((v_usage ->> 'monthSpendMicrodollars')::bigint = 6000000,
 		'7: usage recording is monotonic and idempotent');
 
-	set local role qorpera_secret_broker;
-	v_opened := public.qorpera_open_gemini_key_for_run(v_authority.id, v_authority.capability_sha256, v_binding);
-	reset role;
+	set local session authorization qorpera_secret_broker;
+	v_opened := public.qorpera_open_gemini_key_for_run(v_authority.id, v_authority.capability_sha256, v_model_binding);
+	reset session authorization;
 	perform pg_temp.base_assert(v_opened ->> 'state' = 'refused' and v_opened ->> 'reason' = 'CAP_REACHED',
 		'8: vault refuses with CAP_REACHED once cap hit: ' || v_opened::text);
 
@@ -228,9 +230,9 @@ begin
 		format('select public.qorpera_revoke_gemini_key(%L)', pg_temp.gm_profile()));
 	perform pg_temp.base_assert(v_state -> 'key' = 'null'::jsonb, '10: revoked key is cleared');
 
-	set local role qorpera_secret_broker;
-	v_opened := public.qorpera_open_gemini_key_for_run(v_authority.id, v_authority.capability_sha256, v_binding);
-	reset role;
+	set local session authorization qorpera_secret_broker;
+	v_opened := public.qorpera_open_gemini_key_for_run(v_authority.id, v_authority.capability_sha256, v_model_binding);
+	reset session authorization;
 	perform pg_temp.base_assert(v_opened ->> 'state' = 'refused' and v_opened ->> 'reason' = 'REVOKED',
 		'10: vault refuses revoked key: ' || v_opened::text);
 end $$;
