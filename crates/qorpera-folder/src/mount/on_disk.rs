@@ -280,6 +280,8 @@ impl Shared {
 	fn exclude(&self, local: &Local, area: &str) -> Option<Arc<Patterns>> {
 		let seed = format!("{area}/repo.git");
 		self.seed(local, &seed).ok()?;
+		// WHY: load git_gen before open_in so an in-place same-length rewrite within one coarse fs timestamp tick misses cache.
+		let git_gen = local.git_gen.load(Ordering::Acquire);
 		let rel = format!("{seed}/info/exclude");
 		let disk = local.open_in(Area::Git, &rel).ok()?;
 		let meta = disk.metadata().ok().filter(|m| m.is_file())?;
@@ -287,7 +289,7 @@ impl Shared {
 			return None;
 		}
 		let version = format!(
-			"disk:{}:{}:{}:{}.{}:{}.{}",
+			"disk:{git_gen}:{}:{}:{}:{}.{}:{}.{}",
 			meta.dev(),
 			meta.ino(),
 			meta.len(),
@@ -891,6 +893,9 @@ impl FolderFs {
 	/// (`mount/kernel.rs`): EIO if one does not answer. Git's session-local files are this mount's alone.
 	fn tell(&self, area: Area, changes: impl FnOnce() -> Vec<Change>) -> Result<(), i32> {
 		if area != Area::Cache {
+			if let Some(local) = &self.s.local {
+				local.git_gen.fetch_add(1, Ordering::Release);
+			}
 			return Ok(());
 		}
 		self.s.kernel.tell(&changes())
@@ -1146,6 +1151,9 @@ impl FolderFs {
 		}
 		let written = self.local().and_then(|l| {
 			let n = l.write(fh, offset, data)?;
+			if l.opened(fh).is_some_and(|ino| l.name(ino).is_none_or(|(_, _, area)| area == Area::Git)) {
+				l.git_gen.fetch_add(1, Ordering::Release);
+			}
 			let cache = |ino: &u64| l.name(*ino).is_some_and(|(_, _, area)| area == Area::Cache);
 			match l.opened(fh).filter(|ino| l.shared() && cache(ino)) {
 				Some(ino) if writeback => self.s.kernel.later(vec![Change::ino(ino)]),
