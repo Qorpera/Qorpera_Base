@@ -2080,6 +2080,7 @@ describe("app relay: concurrency hardening and backpressure", () => {
 		const siteId = randomUUID();
 		const token = "u".repeat(32);
 		let releaseHold = null;
+		let earlyPausedDone = false;
 		const app = createServer((req, res) => {
 			if (req.url === "/hold") {
 				res.writeHead(200, { "content-type": "text/plain" });
@@ -2104,6 +2105,16 @@ describe("app relay: concurrency hardening and backpressure", () => {
 				res.write("early-ok");
 				req.resume();
 				req.once("end", () => res.end());
+				return;
+			}
+			if (req.url === "/early-paused") {
+				req.once("data", () => {
+					const body = Buffer.alloc(16 * 1024, 0x45);
+					res.writeHead(413, { "content-type": "application/octet-stream", "content-length": String(body.length) });
+					res.end(body, () => {
+						earlyPausedDone = true;
+					});
+				});
 				return;
 			}
 			if (req.url === "/delayed-upload") {
@@ -2169,6 +2180,7 @@ describe("app relay: concurrency hardening and backpressure", () => {
 			hostSuffix: SUFFIX,
 			fetch: fetcher,
 			maxQueuedBytes: 512 * 1024,
+			// WHY: armTimer is an idle timer and /early drains a 768 KiB upload under 512 KiB maxQueuedBytes before ending.
 			responseTimeoutMs: 2_000,
 			pausedMs: 8_000,
 			sharedPausedMs: 600,
@@ -2294,7 +2306,43 @@ describe("app relay: concurrency hardening and backpressure", () => {
 			slowSock.on("error", reject);
 		});
 		await until(() => relay.pauseCount("shop") > beforePauses, "the slow download to pause the link", 3_000);
+		let earlyPausedReq;
+		const earlyPausedRes = new Promise((resolve, reject) => {
+			earlyPausedReq = request(
+				{
+					host: "127.0.0.1",
+					port: relayPort,
+					path: "/early-paused",
+					method: "POST",
+					headers: {
+						"x-forwarded-host": HOST,
+						cookie: `${GATE_COOKIE}=${token}`,
+						"content-length": String(256 * 1024),
+					},
+				},
+				(res) => {
+					let bytes = 0;
+					res.on("data", (chunk) => {
+						bytes += chunk.length;
+					});
+					res.on("end", () => resolve({ status: res.statusCode, bytes }));
+					res.on("close", () => {
+						if (!res.complete) reject(new Error(`earlyPaused closed incomplete (${bytes} bytes)`));
+					});
+					res.on("error", reject);
+				},
+			);
+			earlyPausedReq.on("error", () => {});
+			earlyPausedReq.write(Buffer.from("a"));
+		});
+		await until(() => earlyPausedDone, "the early response to finish while the link is paused", 3_000);
+		await new Promise((r) => setTimeout(r, 50));
+		earlyPausedReq.end(Buffer.alloc(256 * 1024 - 1, 0x46));
+		await new Promise((r) => setTimeout(r, 80));
 		slowSock.resume();
+		const earlyPaused = await earlyPausedRes;
+		assert.equal(earlyPaused.status, 413);
+		assert.equal(earlyPaused.bytes, 16 * 1024);
 		const slowBytes = await slowSteady;
 		releaseHold();
 		const heldRes = await heldReq;
