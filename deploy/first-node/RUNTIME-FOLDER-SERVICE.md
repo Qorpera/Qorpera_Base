@@ -116,11 +116,11 @@ checked yet, answers `{nonce: null, notices: [], last: 0, more: false}`, and a p
 does not match is `VIEW_REFUSED`. Any other frame is `BAD_REQUEST`, and any error ends the connection. A service
 before this role answers the hello `BAD_REQUEST` ("Bad role"), which the helper reads as no notices.
 
-**The `data` role (protocol 5, company databases slice 8a: `RUNTIME-COMPANY-DATABASES.md` §9a).** A company machine's
-`data` command says `role: "data"` in a protocol-5 hello with the boot's view id and pass (no `previous`, no
-`abandon`). The service takes it only for a `test_machine` view it holds open now (a machine's folder program holds
-it, or did a moment ago), whose pass the core has checked, from the machine the view is served to: anything else is
-`VIEW_REFUSED`, as for any hello. `h` answers `{protocol, viewId}`. The connection then only asks `T` `{verb, body}` (`describe`, `apply`,
+**The `data` role (protocol 5, company databases slice 8a and coding sessions: `RUNTIME-COMPANY-DATABASES.md` §9a).** A
+company machine's or coding session's `data` command says `role: "data"` in a protocol-5 hello with the view id and
+pass (no `previous`, no `abandon`). The service takes it only for a `test_machine` or `coding_session` view it holds
+open now (a machine's folder program holds it, or did a moment ago), whose pass the core has checked, from the machine
+the view is served to: anything else is `VIEW_REFUSED`, as for any hello. `h` answers `{protocol, viewId}`. The connection then only asks `T` `{verb, body}` (`describe`, `apply`,
 `query` or `change`, and the body the data gateway takes for it, without a pass; a frame of up to 1 MiB) and is
 answered `t` `{status, value}`: the gateway's status and JSON, or the service's own refusal in the same form
 (`value.error` says why). For each call the service asks the core for a data pass as the view

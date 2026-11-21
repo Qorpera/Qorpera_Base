@@ -11,6 +11,9 @@ import { createFolderServer } from "../src/folder-service/server.ts";
 import { FolderService } from "../src/folder-service/service.ts";
 import { FolderStaging } from "../src/folder-service/staging.ts";
 import {
+	CODING,
+	CODING_MACHINE_ID,
+	codingGrants,
 	ENV,
 	FakeCore,
 	FakeUploads,
@@ -29,12 +32,19 @@ afterEach(async () => {
 });
 
 const TEST_VIEW = "7e57f1e0-0001-4a00-8b00-000000000001";
+const CODING_VIEW = "c0de0000-0001-4a00-8b00-000000000001";
 const PASS = "testpass_0123456789-abcdefghijklmnopqrstuvw";
 const AT_TEST: BridgeInfo = { cid: 95, lookup: "found", machine: TEST_MACHINE };
+const AT_CODING: BridgeInfo = { cid: 91, lookup: "found", machine: CODING };
 const ELSEWHERE: BridgeInfo = {
 	cid: 97,
 	lookup: "found",
 	machine: { ...TEST_MACHINE, name: `qorpera-machine-${"f".repeat(32)}` },
+};
+const OTHER_CODING: BridgeInfo = {
+	cid: 98,
+	lookup: "found",
+	machine: { ...CODING, name: `qorpera-coding-machine-${"f".repeat(32)}` },
 };
 const FILES: Record<string, string> = {
 	"data/shop/database.toml": 'format = "qorpera.database/v1"\nname = "Shop"\n',
@@ -64,7 +74,10 @@ function data(args: readonly string[]): Promise<{ code: number | null; out: stri
 }
 
 describe.skipIf(!program)("the data command against the folder service", () => {
-	async function machine() {
+	async function machine(kind: "test_machine" | "coding_session" = "test_machine") {
+		const viewId = kind === "coding_session" ? CODING_VIEW : TEST_VIEW;
+		const bridgeHere = kind === "coding_session" ? AT_CODING : AT_TEST;
+		const bridgeOther = kind === "coding_session" ? OTHER_CODING : ELSEWHERE;
 		const dir = await mkdtemp(join(tmpdir(), "qorpera-folder-data-e2e-"));
 		cleanup.push(() => rm(dir, { recursive: true, force: true }));
 		const root = join(dir, "objects");
@@ -79,7 +92,9 @@ describe.skipIf(!program)("the data command against the folder service", () => {
 			await writeFile(join(company, path), text);
 		}
 		core.seed(entries);
-		core.openView(TEST_VIEW, PASS, { kind: "test_machine", machineId: PLACEMENT });
+		if (kind === "coding_session")
+			core.openView(viewId, PASS, { kind: "coding_session", codingMachineId: CODING_MACHINE_ID });
+		else core.openView(viewId, PASS, { kind: "test_machine", machineId: PLACEMENT });
 		const calls: { verb: DataVerb; body: Record<string, unknown> }[] = [];
 		let answer: (verb: DataVerb, body: Record<string, unknown>) => DoorAnswer = () => ({
 			status: 200,
@@ -96,16 +111,13 @@ describe.skipIf(!program)("the data command against the folder service", () => {
 		const service = new FolderService({
 			core,
 			objects,
-			grants: testGrants(),
+			grants: kind === "coding_session" ? codingGrants() : testGrants(),
 			staging: new FolderStaging(core, new FakeUploads(root, core), objects),
 			log: () => undefined,
 			dataDoor: door,
 		});
 		cleanup.push(() => service.stop());
-		const held = await service.open(
-			{ protocol: 4, environmentId: ENV, viewId: TEST_VIEW, pass: PASS, role: "io" },
-			AT_TEST,
-		);
+		const held = await service.open({ protocol: 4, environmentId: ENV, viewId, pass: PASS, role: "io" }, bridgeHere);
 		cleanup.push(() => held.release());
 		const serviceSocket = join(dir, "service.sock");
 		const server = createFolderServer(service, () => {});
@@ -129,16 +141,16 @@ describe.skipIf(!program)("the data command against the folder service", () => {
 			return `unix:${path}`;
 		};
 		const viewFile = join(dir, "view.json");
-		await writeFile(viewFile, JSON.stringify({ environmentId: ENV, viewId: TEST_VIEW, pass: PASS }), { mode: 0o600 });
+		await writeFile(viewFile, JSON.stringify({ environmentId: ENV, viewId, pass: PASS }), { mode: 0o600 });
 		await chmod(viewFile, 0o600);
-		const here = ["--view-file", viewFile, "--root", company, "--connect", await bridged("bridge.sock", AT_TEST)];
+		const here = ["--view-file", viewFile, "--root", company, "--connect", await bridged("bridge.sock", bridgeHere)];
 		const elsewhere = [
 			"--view-file",
 			viewFile,
 			"--root",
 			company,
 			"--connect",
-			await bridged("other.sock", ELSEWHERE),
+			await bridged("other.sock", bridgeOther),
 		];
 		return {
 			dir,
@@ -248,5 +260,40 @@ describe.skipIf(!program)("the data command against the folder service", () => {
 			expect(refused.err).toContain("qorpera-folder data");
 		}
 		expect(calls).toEqual([]);
+	});
+
+	it("works end-to-end for a coding_session view, records provenance into the coding machine, and refuses other coding machines", async () => {
+		const { core, service, calls, here, elsewhere, answers } = await machine("coding_session");
+		const question = "data/shop/queries/count.sql";
+		const hash = sha(core.entries.get(question));
+		answers((verb, body) =>
+			verb === "query" && body.texts === undefined
+				? json(200, { need: [{ path: question, sha256: hash }] })
+				: verb === "query"
+					? json(200, { columns: ["count"], rows: [[5]], more: false })
+					: json(200, { ok: true }),
+		);
+		expect(await data([...here, "query", "shop", "count", "since=2026-01-01"])).toEqual({
+			code: 0,
+			out: '{"columns":["count"],"more":false,"rows":[[5]]}\n',
+			err: "",
+		});
+		expect(await data([...here, "describe", "shop"])).toMatchObject({ code: 0 });
+		expect(await data([...here, "apply", "shop"])).toMatchObject({ code: 0 });
+		expect(await data([...here, "change", "shop", "add", "id:=9"])).toMatchObject({ code: 0 });
+		expect(core.dataPasses.every((pass) => pass.viewId === CODING_VIEW)).toBe(true);
+		expect(calls[1]).toMatchObject({ verb: "query", body: { texts: { [hash]: FILES[question] } } });
+		expect(await service.boundary(CODING_MACHINE_ID)).toMatchObject({ reads: "released" });
+		expect([...(core.readSets.get(`machine:${CODING_MACHINE_ID}`)?.keys() ?? [])].sort()).toEqual([
+			"data/shop/actions/add.sql",
+			"data/shop/database.toml",
+			"data/shop/queries/count.sql",
+			"data/shop/tables/001-orders.sql",
+		]);
+		expect(await data([...elsewhere, "describe"])).toMatchObject({
+			code: 3,
+			out: "",
+			err: expect.stringContaining("The view, its pass or this machine did not match"),
+		});
 	});
 });

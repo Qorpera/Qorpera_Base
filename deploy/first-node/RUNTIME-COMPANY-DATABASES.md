@@ -737,27 +737,42 @@ command has the other three verbs.
 
 ### Who the command is
 
-- A machine's one identity is its folder view (RUNTIME-FOLDER-TEST-MACHINES.md): each boot whose starter's agent and
-  member read the company folder's root has one open `test_machine` view, and the node serves it to that machine
-  only. The command acts as that view: what it may read under `data/<name>/` is what the view may read. A machine
+- A machine's identity is its folder view: each company machine boot whose starter's agent and member read the company
+  folder's root has one open `test_machine` view (`RUNTIME-FOLDER-TEST-MACHINES.md`), and each attached coding session
+  has one open `coding_session` view (`RUNTIME-FOLDER-CODING-MACHINES.md`, migration `20260930829000`). The node serves
+  each view to its own CID-authenticated machine only. The command acts as that view: what it may read under
+  `data/<name>/` is what the view may read (`coding_agent ∩ member` for a coding session, company audience). A machine
   without `/company` has no databases to reach, and `data` says so.
-- So a program on a machine reaches the company's databases as it reaches the company's files, and no further.
-  Root on the machine is the agent's, every command started there is reviewed as an outside effect (`machine_run`),
-  and the files of every database folder are already in `/company`. What is new: a program there can read rows and
-  run changes, where before it could only read and write the files that define them. A database in a folder the
-  company-wide view does not show (a member's private folder) is not reached.
-- `:viewer` is the member the view names (the starter's), unless the call names one, as for a run.
+- Inside a coding VM, the guest agent installs `/usr/local/bin/data` (also baked into `deploy/coding-machine/build-coding-image.sh`)
+  and bind-mounts each session's `/run/qorpera-folder/views/<worker32>.json` read-only at `/run/qorpera-folder/view.json`
+  in every session command unit and `user@<uid>.service`, giving each session its own default view with no environment
+  variable and zero database credentials on disk. Sessions on one coding machine share root (`%qorpera-coding` has
+  `NOPASSWD: ALL`), and a coding machine holds one member's sessions for one coding agent, repository, and setup digest
+  (`RUNTIME-FOLDER-CODING-MACHINES.md`), so the security boundary is the CID-authenticated machine rather than the
+  session.
+- So a program on a company machine or in a coding session reaches the company's databases as it reaches the company's
+  files, and no further. Root on a company machine is the agent's, where every command started there is reviewed as an
+  outside effect (`machine_run`); root on a coding VM is the member's, where shell commands are not reviewed one by one
+  and allowing `data` matches a run's `data_change` / `data_apply` tools and the session's own `/company` writes (with
+  destructive schema steps still held for a member's yes through `data_apply`, and every read recorded in the coding
+  machine's provenance set). The files of every readable database folder are already in `/company`. What is new: a
+  program there can read rows and run changes, where before it could only read and write the files that define them. A
+  database in a folder the view does not show (such as a member's private folder, or a folder either the coding agent or
+  member may not read) is not reached.
+- `:viewer` is the member the view names (the starter's, or the coding session's member), unless the call names one, as
+  for a run.
 
 ### The road
 
 1. `data` is a subcommand of the folder program (`qorpera-folder data`: the Rust program that mounts `/company`,
-   `crates/qorpera-folder`; `/usr/local/bin/data` runs it). It reads the boot's view from
-   `/run/qorpera-folder/view.json` (root's, 0600: the machine gets no new secret), opens AF_VSOCK to the node
-   (`2:5250`) and says hello in a new role, `data` (protocol 5), as the `notices` role does: it mounts nothing, and no
+   `crates/qorpera-folder`; `/usr/local/bin/data` runs it). It reads the view from `/run/qorpera-folder/view.json`
+   (root's, 0600, bound per session inside a coding VM: the machine gets no new secret), opens AF_VSOCK to the node
+   (`2:5250`) and says hello in the `data` role (protocol 5), as the `notices` role does: it mounts nothing, and no
    view is opened or held for it.
 2. The node's bridge names the machine behind the connection (its CID, asked of LXD), as for every hello. The folder
-   service takes a `data` hello only for a view it serves to that very machine now: a `test_machine` view, the
-   caller its machine, the pass's hash the view's. Anything else gets the one refusal a hello has.
+   service takes a `data` hello only for a `test_machine` or `coding_session` view it serves to that very machine now:
+   the caller its CID-authenticated machine, the pass's hash the view's. Anything else (`run_box`, `code_host`,
+   `computer_desktop`, `computer_shell_command`, wrong machine, closed view) gets the one refusal a hello has.
 3. A request is one frame, `{verb, body}`, at most 1 MiB: the `data` role alone takes a request that large (any
    other role's requests stay at 64 KiB). The folder service asks the core for a data pass as the view (below) and
    sends the body with the pass to the gateway's run door on its own node, with the node's token and the kit's CA
@@ -795,16 +810,18 @@ folder service calls the provider hosts' origin and needs no forward of its own.
 
 ### The pass
 
-- `qorpera_machine_data_pass(p_environment_id, p_actor, p_database)` (migration `20260930775000`), for the service
-  role: `p_actor` is
-  `{"kind":"view", viewId, pass}`, and the view must be an open, valid `test_machine` view. It lists and keeps the
-  files as `qorpera_run_data_pass` does (one listing, used by both), as the view may read them now, with the view,
-  its machine, its agent and its member. `qorpera_data_passes.kind` gains `machine`; such a pass names no run and no
-  job. It answers the pass and the entries it kept (above). It is refused while the company's execution is paused,
-  as a run's pass is: a machine that keeps running through a pause reads and writes no rows.
-- `qorpera_data_pass_redeem` answers a machine's pass once, within its 60 s, while its view is open and valid, with
-  `kind: "machine"`. The gateway takes it at the run door as it takes a run's, with an agent's limits. A machine's
-  pass never carries an `allow`.
+- `qorpera_machine_data_pass(p_environment_id, p_actor, p_database)` (migrations `20260930775000`, `20260930829000`),
+  for the service role: `p_actor` is `{"kind":"view", viewId, pass}`, and the view must be an open, valid `test_machine`
+  or `coding_session` view (for `coding_session`, the session must not be archived and its coding machine must not be
+  marked for restart or removal). It lists and keeps the files as `qorpera_run_data_pass` does (one listing, used by
+  both), as the view may read them now, with the view, its machine, its agent and its member. `qorpera_data_passes.kind`
+  keeps `machine`; such a pass names no run and no job. It answers the pass and the entries it kept (above). It is
+  refused while the company's execution is paused or deleting, as a run's pass is: a machine that keeps running through
+  a pause reads and writes no rows.
+- `qorpera_data_pass_redeem` answers a machine's pass once, within its 60 s, while its `test_machine` or
+  `coding_session` view is open and valid (and for `coding_session`, neither archived nor restarting/removing), the
+  company is not paused or deleting, and the agent and member still stand, with `kind: "machine"`. The gateway takes it
+  at the run door as it takes a run's, with an agent's limits. A machine's pass never carries an `allow`.
 
 ### Limits
 
@@ -822,10 +839,11 @@ folder service calls the provider hosts' origin and needs no forward of its own.
 - It gives no yes for a held step and deletes no database folder.
 - It adds no listener in a machine and none on a node: the folder service stays the one host service on vsock, and
   `security.devlxd` stays off.
-- The Company Computer's desktop (`computer_shell`) and a coding session's machine get no `data` in this slice: only
-  a company machine's view is taken.
-- No call is reviewed by itself. Starting a command on a machine is; what the command then writes, to the folder or
-  to rows, is the command's.
+- The Company Computer's desktop (`computer_shell`), `run_box`, and `code_host` views get no `data`: only
+  `test_machine` and `coding_session` views are taken.
+- No call is reviewed by itself. On a company machine, starting a command (`machine_run`) is reviewed; on a coding
+  machine, shell commands are not reviewed one by one, and `data` matches a run's `data_change` / `data_apply` tools
+  and the session's own folder writes. What a command writes, to the folder or to rows, is the command's.
 
 ### Parts and rollout
 

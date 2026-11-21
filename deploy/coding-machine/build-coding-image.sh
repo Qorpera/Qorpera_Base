@@ -172,6 +172,9 @@ lx exec "$BUILDER" -- env \
 		/tmp/git-build.log /tmp/chromium.zip /tmp/chromium
 	install -d -o root -g root -m 0755 /company /opt/qorpera-guest /usr/local/libexec/qorpera-coding \
 		/etc/systemd/system/user@.service.d /etc/docker
+	printf "%s\n" "#!/bin/sh" "[ \"\$(id -u)\" = 0 ] || exec sudo -n /opt/qorpera-folder/qorpera-folder data \"\$@\"" \
+		"exec /opt/qorpera-folder/qorpera-folder data \"\$@\"" >/usr/local/bin/data
+	chmod 0555 /usr/local/bin/data
 '
 for entry in "${FILES[@]}"; do
 	read -r source destination mode <<<"$entry"
@@ -246,6 +249,7 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" GIT_VERSION="$GIT_VERSION
 		[[ $(readlink "/etc/systemd/system/$unit") == /dev/null ]] || refuse "$unit is not masked"
 	done
 	visudo -cf /etc/sudoers.d/qorpera-coding
+	[[ $(stat -c "%U:%G %a" /usr/local/bin/data) == "root:root 555" ]] || refuse "/usr/local/bin/data has wrong mode"
 	getent group qorpera-coding >/dev/null || refuse "no group qorpera-coding"
 	# Sessions'"'"' users are plain /etc/passwd users (5g), with sub-ids only where 5g gives them.
 	[[ ! -s /etc/subuid && ! -s /etc/subgid ]] || refuse "the image has sub-ids: $(cat /etc/subuid /etc/subgid)"

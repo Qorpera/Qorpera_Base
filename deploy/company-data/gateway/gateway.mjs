@@ -131,7 +131,10 @@ const NEAR_SHARE = 0.8;
 const COUNT_SMALL_PAGES = 64;
 const COUNT_BATCH_SIZE = 32;
 const COUNT_BATCH_MAX_MS = 250;
+const COUNT_LOCK_MAX_MS = 250;
+const COUNT_COMPANY_CONCURRENCY = 8;
 const DESCRIBE_CONCURRENCY = 4;
+const ROOMY_RETRY_MS = 1_500;
 const ROW_TEXT =
 	"; set local intervalstyle = 'postgres'; set local extra_float_digits = 1; set local bytea_output = 'hex'; set local lc_monetary = 'C'";
 const SEEN = (row) => `pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(${row}::text, 'UTF8')), 'hex')`;
@@ -335,6 +338,48 @@ async function mapBounded(items, concurrency, work) {
 	};
 	await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
 	return results;
+}
+
+function acquirePermit(gates, key, limit, until) {
+	const left = until - Date.now();
+	if (left < 1) return Promise.resolve(null);
+	let gate = gates.get(key);
+	if (!gate) {
+		gate = { active: 0, waiters: [] };
+		gates.set(key, gate);
+	}
+	const makeRelease = () => {
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			const next = gate.waiters.shift();
+			if (next) {
+				clearTimeout(next.timer);
+				next.resolve(makeRelease());
+				return;
+			}
+			gate.active--;
+			if (gate.active === 0 && gate.waiters.length === 0 && gates.get(key) === gate) gates.delete(key);
+		};
+	};
+	if (gate.active < limit) {
+		gate.active++;
+		return Promise.resolve(makeRelease());
+	}
+	return new Promise((resolve) => {
+		const waiter = {
+			resolve,
+			timer: setTimeout(() => {
+				const idx = gate.waiters.indexOf(waiter);
+				if (idx >= 0) gate.waiters.splice(idx, 1);
+				if (gate.active === 0 && gate.waiters.length === 0 && gates.get(key) === gate) gates.delete(key);
+				resolve(null);
+			}, left),
+		};
+		waiter.timer.unref?.();
+		gate.waiters.push(waiter);
+	});
 }
 const amount = (bytes) =>
 	bytes % 1024 ** 3 === 0 ? `${bytes / 1024 ** 3} GiB` : bytes % 1024 ** 2 === 0 ? `${bytes / 1024 ** 2} MiB` : `${bytes} bytes`;
@@ -618,6 +663,8 @@ export class Gateway {
 	#exists = new Set();
 	#unsettled = new Map();
 	#swept = new Map();
+	#inFlightCounts = new Map();
+	#companyCountGates = new Map();
 	/** What questions have taken from the store so far: rows, and the characters of their values. */
 	taken = { rows: 0, bytes: 0 };
 
@@ -674,49 +721,65 @@ export class Gateway {
 	 * the idle ones of its other logins are given back and the call tries again. */
 	#pool(database, user, door = user) {
 		const key = `${door}@${database}`;
-		let opened = this.#pools.get(key);
-		if (!opened) {
-			const kind = FOLDER_LOGIN.exec(user)?.[1];
-			const baseMax = POOL_SIZE[kind ?? door];
-			const max = this.#workers > 1 && (kind === "r" || kind === "w" || door === "qorpera_data_keeper")
-				? Math.max(1, Math.floor(baseMax / this.#workers))
-				: baseMax;
-			const pool = new pg.Pool({
-				host: this.#store.host,
-				port: this.#store.port,
-				user,
-				password: this.#password(user),
-				database,
-				max,
-				pipeline: kind === "r" || kind === "w",
-				idleTimeoutMillis: kind === "o" ? 1_000 : 5_000,
-				connectionTimeoutMillis: CONNECT_MS,
-				application_name: `qorpera-data-gateway ${kind ?? user.slice("qorpera_data_".length)}`,
-			});
-			pool.on("error", () => undefined);
-			const roomy = async (work) => {
-				for (let attempt = 0; ; attempt++) {
-					try {
-						return await work();
-					} catch (error) {
-						if (error?.code !== "53300" || attempt === 3) throw error;
-						await this.#makeRoom(database, key);
-						await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
-					}
+		const currentPool = () => {
+			if (this.#closed) throw new Refusal(503, "The data store did not answer");
+			let entry = this.#pools.get(key);
+			if (!entry) {
+				const kind = FOLDER_LOGIN.exec(user)?.[1];
+				const baseMax = POOL_SIZE[kind ?? door];
+				const max = this.#workers > 1 && (kind === "r" || kind === "w" || door === "qorpera_data_keeper")
+					? Math.max(1, Math.floor(baseMax / this.#workers))
+					: baseMax;
+				const pool = new pg.Pool({
+					host: this.#store.host,
+					port: this.#store.port,
+					user,
+					password: this.#password(user),
+					database,
+					max,
+					pipeline: kind === "r" || kind === "w",
+					idleTimeoutMillis: kind === "o" ? 1_000 : 5_000,
+					connectionTimeoutMillis: CONNECT_MS,
+					application_name: `qorpera-data-gateway ${kind ?? user.slice("qorpera_data_".length)}`,
+				});
+				pool.on("error", () => undefined);
+				entry = { pool, active: 0 };
+				this.#pools.set(key, entry);
+			}
+			return entry;
+		};
+		const roomy = async (work, deadline) => {
+			const retryUntil =
+				deadline === undefined ? Date.now() + ROOMY_RETRY_MS : Math.min(deadline, Date.now() + ROOMY_RETRY_MS);
+			for (let attempt = 0; ; attempt++) {
+				// WHY: Look up a live pool per attempt and guard with entry.active so #makeRoom never ends a pool mid-call.
+				const entry = currentPool();
+				entry.active++;
+				let error;
+				try {
+					return await work(entry.pool);
+				} catch (caught) {
+					error = caught;
+				} finally {
+					entry.active--;
 				}
-			};
-			// A connection whose backend was sent a cancel is let go, never handed out.
-			const connect = async () => {
-				for (;;) {
-					const client = await roomy(() => pool.connect());
-					if (!this.#signalled.has(client.processID)) return client;
-					this.#letGo(client);
-				}
-			};
-			opened = { pool, query: (...args) => roomy(() => pool.query(...args)), connect };
-			this.#pools.set(key, opened);
-		}
-		return opened;
+				const remaining = retryUntil - Date.now();
+				if (this.#closed || error?.code !== "53300" || remaining <= 0) throw error;
+				await this.#makeRoom(database, key);
+				const delay = Math.min(remaining, Math.min(200, 50 * (attempt + 1)));
+				await new Promise((resolve) => setTimeout(resolve, delay));
+				if (this.#closed) throw error;
+			}
+		};
+		// A connection whose backend was sent a cancel is let go, never handed out.
+		const connect = async (deadline) => {
+			for (;;) {
+				const client = await roomy((pool) => pool.connect(), deadline);
+				if (!this.#signalled.has(client.processID)) return client;
+				this.#letGo(client);
+			}
+		};
+		return { query: (...args) => roomy((pool) => pool.query(...args)), connect };
 	}
 
 	/** Marks a backend as sent a cancel. `sending`: the cancel on its way, if the gateway sends it. */
@@ -743,8 +806,16 @@ export class Gateway {
 	async #makeRoom(database, asking) {
 		const reclaim = (filter) => {
 			const ending = [];
-			for (const [key, { pool }] of this.#pools) {
-				if (key === asking || !filter(key) || pool.totalCount === 0 || pool.idleCount < pool.totalCount || pool.waitingCount > 0)
+			for (const [key, entry] of this.#pools) {
+				const { pool } = entry;
+				if (
+					key === asking ||
+					!filter(key) ||
+					entry.active > 0 ||
+					pool.totalCount === 0 ||
+					pool.idleCount < pool.totalCount ||
+					pool.waitingCount > 0
+				)
 					continue;
 				this.#pools.delete(key);
 				ending.push(pool.end().catch(() => undefined));
@@ -1139,7 +1210,7 @@ export class Gateway {
 		const cap = agent ? this.#limits.agentMs : this.#limits.questionMs;
 		const maxRows = agent ? this.#limits.agentRows : this.#limits.questionRows;
 		const maxBytes = agent ? this.#limits.agentBytes : this.#limits.questionBytes;
-		const connecting = this.#pool(ready.database, `${ready.database}_r${ready.n}`).connect();
+		const connecting = this.#pool(ready.database, `${ready.database}_r${ready.n}`).connect(until ?? undefined);
 		const client = await (until === null ? connecting : inTime(connecting, until)).catch((error) => {
 			throw storeProblem(error);
 		});
@@ -1614,7 +1685,8 @@ export class Gateway {
 	}
 
 	async #record(database, name, after, zone) {
-		const client = await inTime(this.#pool(database, "qorpera_data_keeper", "record").connect(), Date.now() + CONNECT_MS - 1_000).catch((error) => {
+		const connectUntil = Date.now() + CONNECT_MS - 1_000;
+		const client = await inTime(this.#pool(database, "qorpera_data_keeper", "record").connect(connectUntil), connectUntil).catch((error) => {
 			throw storeProblem(error);
 		});
 		let lost;
@@ -1741,10 +1813,8 @@ export class Gateway {
 
 	async #writing(ready, actor, { gone = null, settings = "", room }, work) {
 		const ms = this.#limits.changeMs;
-		const client = await inTime(
-			this.#pool(ready.database, `${ready.database}_w${ready.n}`).connect(),
-			Date.now() + Math.min(ms, CONNECT_MS - 1_000),
-		).catch((error) => {
+		const connectUntil = Date.now() + Math.min(ms, CONNECT_MS - 1_000);
+		const client = await inTime(this.#pool(ready.database, `${ready.database}_w${ready.n}`).connect(connectUntil), connectUntil).catch((error) => {
 			throw storeProblem(error);
 		});
 		const held = { cut: false };
@@ -2147,19 +2217,12 @@ export class Gateway {
 	#listen(database, heard) {
 		let listener = this.#listeners.get(database);
 		if (!listener) {
-			const client = new pg.Client({
-				host: this.#store.host,
-				port: this.#store.port,
-				user: "qorpera_data_keeper",
-				password: this.#store.logins.keeper,
-				database,
-				connectionTimeoutMillis: 5_000,
-				application_name: "qorpera-data-gateway listen",
-			});
 			listener = {
-				client,
+				client: null,
 				heard: new Set(),
 				ready: null,
+				failed: false,
+				stopped: false,
 				epoch: ++this.#listenEpoch,
 				gen: 0,
 				wildcardGen: 0,
@@ -2169,30 +2232,6 @@ export class Gateway {
 				cache: new Map(),
 				viewerScoped: new Map(),
 			};
-			client.on("notification", (message) => {
-				const payload = typeof message?.payload === "string" ? message.payload : "";
-				const dot = payload.indexOf(".");
-				listener.gen++;
-				let notice = null;
-				if (dot > 0 && dot < payload.length - 1) {
-					const schema = payload.slice(0, dot);
-					const table = payload.slice(dot + 1);
-					listener.schemaGen.set(schema, listener.gen);
-					if (table === "*" || table === "!drop") {
-						listener.schemaDdlGen.set(schema, listener.gen);
-						listener.viewerScoped.delete(schema);
-						this.#bumpSchemaEpoch(database, schema);
-						if (table === "!drop") this.#folders.delete(`${database}/${schema}`);
-						notice = { schema, table: null, ddl: true };
-					} else {
-						listener.tableGen.set(payload, listener.gen);
-						notice = { schema, table };
-					}
-				} else {
-					listener.wildcardGen = listener.gen;
-				}
-				for (const tell of [...listener.heard]) tell(notice);
-			});
 			let dropped = false;
 			const lost = () => {
 				if (dropped) return;
@@ -2204,9 +2243,73 @@ export class Gateway {
 				listener.wildcardGen = listener.gen;
 				for (const tell of [...listener.heard]) tell(null);
 			};
-			client.on("error", lost);
-			client.on("end", lost);
-			listener.ready = client.connect().then(() => client.query("listen qorpera_data"));
+			const connectListen = async () => {
+				const retryUntil = Date.now() + ROOMY_RETRY_MS;
+				for (let attempt = 0; ; attempt++) {
+					if (this.#closed) throw new Refusal(503, "The data store did not answer");
+					if (listener.stopped) return;
+					const client = new pg.Client({
+						host: this.#store.host,
+						port: this.#store.port,
+						user: "qorpera_data_keeper",
+						password: this.#store.logins.keeper,
+						database,
+						connectionTimeoutMillis: 5_000,
+						application_name: "qorpera-data-gateway listen",
+					});
+					client.on("error", () => undefined);
+					try {
+						await client.connect();
+					} catch (error) {
+						await client.end().catch(() => undefined);
+						const remaining = retryUntil - Date.now();
+						if (this.#closed || listener.stopped || error?.code !== "53300" || remaining <= 0) throw error;
+						await this.#makeRoom(database, "");
+						await new Promise((resolve) => setTimeout(resolve, Math.min(remaining, Math.min(200, 50 * (attempt + 1)))));
+						continue;
+					}
+					if (this.#closed || listener.stopped) {
+						await client.end().catch(() => undefined);
+						if (this.#closed) throw new Refusal(503, "The data store did not answer");
+						return;
+					}
+					listener.client = client;
+					client.on("notification", (message) => {
+						const payload = typeof message?.payload === "string" ? message.payload : "";
+						const dot = payload.indexOf(".");
+						listener.gen++;
+						let notice = null;
+						if (dot > 0 && dot < payload.length - 1) {
+							const schema = payload.slice(0, dot);
+							const table = payload.slice(dot + 1);
+							listener.schemaGen.set(schema, listener.gen);
+							if (table === "*" || table === "!drop") {
+								listener.schemaDdlGen.set(schema, listener.gen);
+								listener.viewerScoped.delete(schema);
+								this.#bumpSchemaEpoch(database, schema);
+								if (table === "!drop") this.#folders.delete(`${database}/${schema}`);
+								notice = { schema, table: null, ddl: true };
+							} else {
+								listener.tableGen.set(payload, listener.gen);
+								notice = { schema, table };
+							}
+						} else {
+							listener.wildcardGen = listener.gen;
+						}
+						for (const tell of [...listener.heard]) tell(notice);
+					});
+					client.on("error", lost);
+					client.on("end", lost);
+					try {
+						await client.query("listen qorpera_data");
+					} catch (error) {
+						await client.end().catch(() => undefined);
+						throw error;
+					}
+					return;
+				}
+			};
+			listener.ready = connectListen();
 			listener.ready.catch(lost);
 			this.#listeners.set(database, listener);
 		}
@@ -2217,10 +2320,11 @@ export class Gateway {
 			stop: () => {
 				listener.heard.delete(heard);
 				if (listener.heard.size === 0 && this.#listeners.get(database) === listener) {
+					listener.stopped = true;
 					this.#listeners.delete(database);
 					listener.cache.clear();
 					listener.viewerScoped.clear();
-					listener.client.end().catch(() => undefined);
+					listener.client?.end().catch(() => undefined);
 				}
 			},
 		};
@@ -2360,6 +2464,7 @@ export class Gateway {
 		let start = this.#resume.get(place)?.start ?? 0;
 		if (start >= ready.length) start = 0;
 		const database = companyDatabase(environmentId);
+		if (stop.aborted) return { same: true, partial: true };
 		const tableMeta = new Map();
 		const dirty = new Set();
 		let wake = () => undefined;
@@ -2382,6 +2487,8 @@ export class Gateway {
 			}
 			if (matched) wake();
 		});
+		const onStop = () => listening.stop();
+		stop.addEventListener("abort", onStop, { once: true });
 		const { listener } = listening;
 		const differing = async (subset = null) => {
 			const order = subset === null ? ready.map((_, step) => (start + step) % ready.length) : subset;
@@ -2481,9 +2588,24 @@ export class Gateway {
 			return { changed: changed.sort((a, b) => a.index - b.index), partial: missed !== undefined };
 		};
 		try {
-			await listening.ready.catch((error) => {
+			const ready = listening.ready.catch((error) => {
+				if (stop.aborted) return;
 				throw storeProblem(error);
 			});
+			let wakeReady;
+			try {
+				await Promise.race([
+					ready,
+					new Promise((resolve) => {
+						wakeReady = resolve;
+						if (stop.aborted) resolve();
+						else stop.addEventListener("abort", resolve, { once: true });
+					}),
+				]);
+			} finally {
+				stop.removeEventListener("abort", wakeReady);
+			}
+			if (stop.aborted) return { same: true, partial: true };
 			const settleDirty = async (current) => {
 				if (current.changed.length === 0 || current.partial || dirty.size === 0 || stop.aborted || Date.now() >= deadline) return current;
 				const seen = new Set(current.changed.map((one) => one.index));
@@ -2522,6 +2644,7 @@ export class Gateway {
 			const partial = scan.partial ? { partial: true } : {};
 			return scan.changed.length > 0 ? { changed: scan.changed, ...partial } : { same: true, ...partial };
 		} finally {
+			stop.removeEventListener("abort", onStop);
 			listening.stop();
 		}
 	}
@@ -2914,18 +3037,70 @@ export class Gateway {
 	}
 
 	async #count(database, name, n, tables, until) {
-		if (tables.length === 0 || until - Date.now() < 1) return;
-		const rank = (table) => (table.kind === "v" ? 2 : table.kind === "p" ? 1 : 0);
-		const order = [...tables].sort((a, b) => rank(a) - rank(b) || a.pages - b.pages || (a.name < b.name ? -1 : 1));
-		let client;
-		try {
-			client = await inTime(this.#pool(database, `${database}_r${n}`).connect(), until);
-		} catch (error) {
-			if (storeProblem(error) instanceof Refusal) return;
-			throw error;
+		if (tables.length === 0 || until - Date.now() < 1 || this.#closed) return;
+		const folderKey = `${database}:${name}:${n}`;
+		let pending = tables;
+		while (pending.length > 0 && until - Date.now() >= 1 && !this.#closed) {
+			const existing = this.#inFlightCounts.get(folderKey);
+			if (existing) {
+				const left = until - Date.now();
+				if (left < 1) return;
+				let timer;
+				await Promise.race([
+					existing.done,
+					new Promise((resolve) => {
+						timer = setTimeout(resolve, left);
+						timer.unref?.();
+					}),
+				]);
+				clearTimeout(timer);
+				for (const table of pending) {
+					const rows = existing.counts.get(table.name);
+					if (rows !== undefined) table.counted = rows;
+				}
+				if (until - Date.now() < 1 || this.#closed) return;
+				pending = pending.filter((table) => !existing.attempted.has(table.name));
+				if (pending.length === 0) return;
+				const allCovered = pending.every((table) => existing.requested.has(table.name));
+				if (allCovered && (existing.failed || existing.until >= until)) return;
+				continue;
+			}
+			// WHY: Coalesce concurrent counts per schema and cap company-wide counts so describe bursts never starve live pools.
+			const run = {
+				until,
+				requested: new Set(pending.map((table) => table.name)),
+				attempted: new Set(),
+				counts: new Map(),
+				failed: false,
+				done: null,
+			};
+			const work = this.#countOnce(database, name, n, pending, until, run).finally(() => {
+				if (this.#inFlightCounts.get(folderKey) === run) this.#inFlightCounts.delete(folderKey);
+			});
+			run.done = work.catch(() => undefined);
+			this.#inFlightCounts.set(folderKey, run);
+			await work;
+			return;
 		}
+	}
+
+	async #countOnce(database, name, n, tables, until, run) {
+		const releaseCompany = await acquirePermit(this.#companyCountGates, database, COUNT_COMPANY_CONCURRENCY, until);
+		if (!releaseCompany) return;
+		let client;
 		let lost;
 		try {
+			const rank = (table) => (table.kind === "v" ? 2 : table.kind === "p" ? 1 : 0);
+			const order = [...tables].sort((a, b) => rank(a) - rank(b) || a.pages - b.pages || (a.name < b.name ? -1 : 1));
+			try {
+				client = await inTime(this.#pool(database, `${database}_r${n}`).connect(until), until);
+			} catch (error) {
+				if (storeProblem(error) instanceof Refusal) {
+					if (Date.now() < until) run.failed = true;
+					return;
+				}
+				throw error;
+			}
 			if (until - Date.now() < 1) return;
 			await client.query(
 				`begin transaction read only; set local timezone = 'UTC'; set local datestyle = 'ISO'; set local search_path = ${quoted(name)}`,
@@ -2935,7 +3110,10 @@ export class Gateway {
 				const left = until - Date.now();
 				if (left < 1) return false;
 				const limit = Math.max(1, Math.floor(Math.min(this.#limits.questionMs, left)));
-				await client.query(`savepoint qorpera_count; set local statement_timeout = ${limit}; set local lock_timeout = 0`);
+				const lockLimit = Math.min(limit, COUNT_LOCK_MAX_MS);
+				await client.query(
+					`savepoint qorpera_count; set local statement_timeout = ${limit}; set local lock_timeout = ${lockLimit}`,
+				);
 				try {
 					const answer = await client.query({
 						text: `select count(*) from ${quoted(name)}.${quoted(table.name)}`,
@@ -2943,14 +3121,20 @@ export class Gateway {
 						types: TEXT_TYPES,
 					});
 					await client.query("release savepoint qorpera_count");
+					run.attempted.add(table.name);
 					const rows = Number(answer.rows[0]?.[0]);
-					if (Number.isSafeInteger(rows) && rows >= 0) table.counted = rows;
+					if (Number.isSafeInteger(rows) && rows >= 0) {
+						table.counted = rows;
+						run.counts.set(table.name, rows);
+					}
 					return true;
 				} catch (error) {
 					if (isFatal(error)) {
 						lost = error;
+						run.failed = true;
 						return false;
 					}
+					if (error?.code !== "57014" || limit >= this.#limits.questionMs) run.attempted.add(table.name);
 					await client.query("rollback to savepoint qorpera_count; release savepoint qorpera_count");
 					return true;
 				}
@@ -2986,12 +3170,17 @@ export class Gateway {
 						await client.query("release savepoint qorpera_count");
 						const row = answer.rows[0];
 						for (let i = 0; i < batch.length; i++) {
+							run.attempted.add(batch[i].name);
 							const rows = Number(row?.[i]);
-							if (Number.isSafeInteger(rows) && rows >= 0) batch[i].counted = rows;
+							if (Number.isSafeInteger(rows) && rows >= 0) {
+								batch[i].counted = rows;
+								run.counts.set(batch[i].name, rows);
+							}
 						}
 					} catch (error) {
 						if (isFatal(error)) {
 							lost = error;
+							run.failed = true;
 							break;
 						}
 						await client.query("rollback to savepoint qorpera_count; release savepoint qorpera_count");
@@ -3010,10 +3199,16 @@ export class Gateway {
 			}
 			if (!lost) await client.query("rollback").catch(() => undefined);
 		} catch (error) {
-			if (error?.code && !/^(57P0[123]|08...)$/.test(error.code)) await client.query("rollback").catch(() => undefined);
-			else lost = error;
+			run.failed = true;
+			if (client) {
+				if (error?.code && !/^(57P0[123]|08...)$/.test(error.code)) await client.query("rollback").catch(() => undefined);
+				else lost = error;
+			} else if (!(storeProblem(error) instanceof Refusal)) {
+				throw error;
+			}
 		} finally {
-			this.#release(client, lost);
+			if (client) this.#release(client, lost);
+			releaseCompany();
 		}
 	}
 
@@ -3257,11 +3452,12 @@ export class Gateway {
 	async evictCompany(database) {
 		const listener = this.#listeners.get(database);
 		if (listener) {
+			listener.stopped = true;
 			this.#listeners.delete(database);
 			listener.cache.clear();
 			listener.viewerScoped.clear();
 			listener.heard.clear();
-			await listener.client.end().catch(() => undefined);
+			await listener.client?.end().catch(() => undefined);
 		}
 		for (const [key, entry] of this.#watchInFlight) {
 			if (key.includes(`|${database}|`)) {
@@ -3537,10 +3733,11 @@ export class Gateway {
 		for (const entry of this.#watchInFlight.values()) entry.controller.abort();
 		this.#watchInFlight.clear();
 		for (const listener of this.#listeners.values()) {
+			listener.stopped = true;
 			listener.cache.clear();
 			listener.viewerScoped.clear();
 			for (const tell of [...listener.heard]) tell(null);
-			await listener.client.end().catch(() => undefined);
+			await listener.client?.end().catch(() => undefined);
 		}
 		this.#listeners.clear();
 		this.#relations.clear();
