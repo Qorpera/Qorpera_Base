@@ -58,7 +58,8 @@ function database(
 	const calls: { method: string; args: Record<string, unknown> }[] = [];
 	const claims = [...(options.claims ?? [])];
 	const objects = new Map<string, Uint8Array>();
-	let manifest = "";
+	const manifests = new Map<string, string>();
+	let intentSeq = 0;
 	const authority = {
 		async publisher(method: string, args: Record<string, unknown>) {
 			calls.push({ method, args });
@@ -75,28 +76,33 @@ function database(
 				case "qorpera_folder_follow_up_now":
 					if (options.followUpThrows) throw options.followUpThrows;
 					return { schema: "qorpera.folder-follow-up/v1", result: "done" };
-				case "qorpera_folder_open_upload":
+				case "qorpera_folder_open_upload": {
 					if (options.openInvalid) return { schema: "qorpera.folder-upload/v0" };
-					manifest = args.p_manifest as string;
+					const openedId = `34000000-0000-4000-8000-${String(++intentSeq).padStart(12, "0")}`;
+					const manifest = args.p_manifest as string;
+					manifests.set(openedId, manifest);
 					return {
 						schema: "qorpera.folder-upload/v1",
-						intentId,
+						intentId: openedId,
 						manifestSha256: digest(manifest),
 						expiresAt: "x",
 						present: [],
 					};
+				}
 				case "qorpera_folder_authorize_object_upload":
 					return { schema: "qorpera.folder-object-upload/v1", profileId };
 				case "qorpera_folder_confirm_object":
 					return { schema: "qorpera.folder-object/v1", sha256: args.p_sha256, bytes: args.p_bytes };
 				case "qorpera_folder_seal_upload": {
+					const sealedId = (args.p_intent as string) ?? intentId;
 					if (options.sealIncomplete)
-						return { schema: "qorpera.folder-seal/v1", state: "incomplete", intentId, missing: [] };
+						return { schema: "qorpera.folder-seal/v1", state: "incomplete", intentId: sealedId, missing: [] };
+					const manifest = manifests.get(sealedId) ?? "";
 					const parsed = JSON.parse(manifest);
 					return {
 						schema: "qorpera.folder-seal/v1",
 						state: "sealed",
-						intentId,
+						intentId: sealedId,
 						file: {
 							manifestSha256: digest(manifest),
 							fileSha256: parsed.fileSha256,
@@ -143,6 +149,7 @@ describe("parseCompanyCreationClaim", () => {
 		const parsed = parseCompanyCreationClaim(claim());
 		expect(parsed).toMatchObject({
 			creationId,
+			profileId,
 			environmentId,
 			generation: 2,
 			cofounderId,
