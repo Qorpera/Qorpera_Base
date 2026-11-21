@@ -3736,5 +3736,65 @@ describe("a member's live picture of a desktop (20260930745000)", () => {
 				allowLoopback: true,
 			}).memberStream({ passId: a.passId, epoch: null }, sinkOf(), new AbortController().signal),
 		).toBe("STREAM_UNAVAILABLE");
+
+		let fetchAborted = false;
+		const stalledPeer = createHttpMemberMachineScreenPeer({
+			url: "https://node-stalled.example",
+			token,
+			streamConnectTimeoutMs: 50,
+			fetch: (_input, init) =>
+				new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener("abort", () => {
+						fetchAborted = true;
+						reject(init.signal?.reason ?? new Error("aborted"));
+					});
+				}),
+		});
+		const startedAt = performance.now();
+		expect(
+			await stalledPeer.memberStream({ passId: a.passId, epoch: null }, sinkOf(), new AbortController().signal),
+		).toBe("STREAM_UNAVAILABLE");
+		expect(fetchAborted).toBe(true);
+		expect(performance.now() - startedAt).toBeLessThan(2_000);
+
+		const delayed = fixture("mx-a");
+		delayed.host.memberStream.mockImplementationOnce(async (_stream, sink, signal) => {
+			await new Promise<void>((resolve) => {
+				const timer = setTimeout(resolve, 750);
+				signal.addEventListener(
+					"abort",
+					() => {
+						clearTimeout(timer);
+						resolve();
+					},
+					{ once: true },
+				);
+			});
+			if (signal.aborted) return "closed";
+			await sink.send(Buffer.from("late-first-frame"));
+			return "DESKTOP_ENDED";
+		});
+		const delayedHttp = new HttpCloudCodingCommandService({
+			token,
+			proveBinding: null,
+			authorize: async () => {
+				throw new Error("not a coding command");
+			},
+			execute: async () => {
+				throw new Error("not a coding command");
+			},
+			machines: { ...machineCommandRoutes(delayed.router, { call: delayed.call }, true) },
+		});
+		const delayedPort = await delayedHttp.start();
+		cleanups.push(() => delayedHttp.close());
+		const delayedSink = sinkOf();
+		const delayedReason = await createHttpMemberMachineScreenPeer({
+			url: `http://127.0.0.1:${delayedPort}`,
+			token,
+			allowLoopback: true,
+			streamConnectTimeoutMs: 400,
+		}).memberStream({ passId: delayed.passId, epoch: null }, delayedSink, new AbortController().signal);
+		expect(delayedReason).toBe("DESKTOP_ENDED");
+		expect(delayedSink.messages.map(String)).toEqual(["late-first-frame"]);
 	});
 });

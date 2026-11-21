@@ -771,9 +771,11 @@ export class HttpCloudCodingCommandService {
 					if (begun) return;
 					begun = true;
 					reply.writeHead(200, { "content-type": "application/octet-stream", "cache-control": "no-store" });
+					reply.flushHeaders();
 				};
 				const way: MemberStreamWay = { unflushed: 0 };
 				const sink = {
+					ready: begin,
 					send: async (message: Buffer) => {
 						if (controller.signal.aborted) throw new Error(ERROR);
 						begin();
