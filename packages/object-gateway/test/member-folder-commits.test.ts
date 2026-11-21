@@ -4,7 +4,7 @@ import { writeAgentFile } from "@qorpera/cloud-client/company-state-files";
 import { afterEach, describe, expect, it } from "vitest";
 import { ObjectDependencyError } from "../src/dependency.ts";
 import { followUpMemberCommit, serveMemberFolderCommit } from "../src/member-folder-commits.ts";
-import { PlatformFolderWriter } from "../src/platform-folder-writer.ts";
+import { mapBounded, PLATFORM_STAGE_CONCURRENCY, PlatformFolderWriter } from "../src/platform-folder-writer.ts";
 
 const environmentId = "34000000-0000-4000-8000-000000000020";
 const profileId = "34000000-0000-4000-8000-000000000010";
@@ -43,6 +43,7 @@ async function gateway(
 		noFollowUps?: boolean;
 		/** The stored objects the member may read, by hash. */
 		readable?: ReadonlyMap<string, Uint8Array>;
+		onUpload?: () => Promise<void>;
 	} = {},
 ) {
 	let followUps = 0;
@@ -116,6 +117,8 @@ async function gateway(
 			throw new Error(`unexpected ${method}`);
 		},
 	};
+	let activeUploads = 0;
+	let peakUploads = 0;
 	const replication = {
 		async uploadWithAuthority(
 			profile: string,
@@ -125,10 +128,17 @@ async function gateway(
 		) {
 			expect(profile).toBe(profileId);
 			expect(digest(bytes)).toBe(hash);
-			await callbacks.authorize();
-			stored.set(hash, bytes);
-			await callbacks.confirm();
-			return "stored" as const;
+			activeUploads++;
+			peakUploads = Math.max(peakUploads, activeUploads);
+			try {
+				await options.onUpload?.();
+				await callbacks.authorize();
+				stored.set(hash, bytes);
+				await callbacks.confirm();
+				return "stored" as const;
+			} finally {
+				activeUploads--;
+			}
 		},
 	};
 	const fetched: string[] = [];
@@ -169,7 +179,7 @@ async function gateway(
 	const commits = () => calls.filter((call) => call.method === "qorpera_folder_commit");
 	const staged = () => calls.filter((call) => call.method === "qorpera_folder_open_upload");
 	const read = () => calls.filter((call) => call.method === "qorpera_folder_authorize_object_download");
-	return { calls, stored, fetched, send, commits, staged, read };
+	return { calls, stored, fetched, send, commits, staged, read, peakUploads: () => peakUploads };
 }
 
 const request = (units: unknown[], operationKey = "web:34000000-0000-4000-8000-0000000000d1") => ({
@@ -707,7 +717,9 @@ describe("a member's change set to a folder-v2 company", () => {
 	});
 
 	it("stages multi-file commits with bounded concurrency, skips redundant outer authorize RPCs, and preserves unit order", async () => {
-		const g = await gateway();
+		const g = await gateway({
+			onUpload: () => new Promise((resolve) => setTimeout(resolve, 15)),
+		});
 		const units = Array.from({ length: 8 }, (_, index) => ({
 			op: "write",
 			path: `notes/doc-${index}.md`,
@@ -715,6 +727,7 @@ describe("a member's change set to a folder-v2 company", () => {
 		}));
 		const response = await g.send(request(units, "web:batch-parallel-01"));
 		expect(response.status).toBe(200);
+		expect(g.peakUploads()).toBe(PLATFORM_STAGE_CONCURRENCY);
 		const committed = g.commits()[0]?.args.p_units as { path: string; file: { fileSha256: string } }[];
 		expect(committed.map((unit) => unit.path)).toEqual(units.map((unit) => unit.path));
 		for (let i = 0; i < units.length; i++) {
@@ -722,6 +735,146 @@ describe("a member's change set to a folder-v2 company", () => {
 		}
 		const authorizes = g.calls.filter((call) => call.method === "qorpera_folder_authorize_object_upload");
 		expect(authorizes).toHaveLength(units.length * 2);
+	});
+
+	it("stages a single multi-chunk file with concurrent object uploads up to PLATFORM_STAGE_CONCURRENCY", async () => {
+		let inFlight = 0;
+		let peak = 0;
+		let manifestText = "";
+		const payload = new Uint8Array(10 * 1024 * 1024);
+		for (let i = 0; i < payload.length; i += 4096) payload[i] = (i >>> 12) & 0xff;
+		const writer = new PlatformFolderWriter({
+			authority: {
+				async publisher(method, args) {
+					if (method === "qorpera_folder_open_upload") {
+						manifestText = args.p_manifest as string;
+						return {
+							schema: "qorpera.folder-upload/v1",
+							intentId: "34000000-0000-4000-8000-0000000000f2",
+							manifestSha256: digest(manifestText),
+							present: [],
+						};
+					}
+					if (method === "qorpera_folder_authorize_object_upload") {
+						return { schema: "qorpera.folder-object-upload/v1", profileId };
+					}
+					if (method === "qorpera_folder_confirm_object") {
+						return { schema: "qorpera.folder-object/v1", sha256: args.p_sha256, bytes: args.p_bytes };
+					}
+					if (method === "qorpera_folder_seal_upload") {
+						const parsed = JSON.parse(manifestText);
+						return {
+							schema: "qorpera.folder-seal/v1",
+							state: "sealed",
+							intentId: args.p_intent,
+							file: {
+								manifestSha256: digest(manifestText),
+								fileSha256: parsed.fileSha256,
+								bytes: parsed.bytes,
+								mediaType: parsed.mediaType,
+								executable: parsed.executable,
+							},
+						};
+					}
+					throw new Error(`unexpected ${method}`);
+				},
+			},
+			store: {
+				async get() {
+					throw new Error("unused");
+				},
+			},
+			replication: {
+				async uploadWithAuthority(_profile, _hash, _bytes, callbacks) {
+					inFlight++;
+					peak = Math.max(peak, inFlight);
+					try {
+						await new Promise((resolve) => setTimeout(resolve, 15));
+						await callbacks.authorize();
+						await callbacks.confirm();
+						return "stored" as const;
+					} finally {
+						inFlight--;
+					}
+				},
+			},
+		});
+		const file = await writer.stage(
+			environmentId,
+			payload,
+			{ mediaType: "application/octet-stream", executable: false },
+			new AbortController().signal,
+			{ profileId },
+		);
+		expect(file.fileSha256).toBe(digest(payload));
+		expect(file.bytes).toBe(payload.byteLength);
+		expect(peak).toBe(PLATFORM_STAGE_CONCURRENCY);
+	});
+
+	it("enforces mapBounded earliest-error rethrow, full in-flight settlement, stop-on-failure, and abort-reason propagation", async () => {
+		const err0 = new Error("index-0-failed");
+		const err1 = new Error("index-1-failed");
+		const started: number[] = [];
+		const settled: number[] = [];
+		let release0!: () => void;
+		const gate0 = new Promise<void>((resolve) => {
+			release0 = resolve;
+		});
+		let oneFailed!: () => void;
+		const sawOneFail = new Promise<void>((resolve) => {
+			oneFailed = resolve;
+		});
+		const runFailure = mapBounded([0, 1, 2, 3, 4], 2, async (item) => {
+			started.push(item);
+			if (item === 1) {
+				settled.push(item);
+				oneFailed();
+				throw err1;
+			}
+			if (item === 0) {
+				await gate0;
+				settled.push(item);
+				throw err0;
+			}
+			settled.push(item);
+			return item;
+		});
+		await sawOneFail;
+		release0();
+		await expect(runFailure).rejects.toBe(err0);
+		expect(started).toEqual([0, 1]);
+		expect(settled.sort()).toEqual([0, 1]);
+
+		const controller = new AbortController();
+		const abortReason = new Error("cancelled-cleanly");
+		const abortStarted: number[] = [];
+		const abortSettled: number[] = [];
+		let releaseAbort!: () => void;
+		const abortGate = new Promise<void>((resolve) => {
+			releaseAbort = resolve;
+		});
+		let bothEntered!: () => void;
+		const sawBoth = new Promise<void>((resolve) => {
+			bothEntered = resolve;
+		});
+		const runAbort = mapBounded(
+			[0, 1, 2, 3],
+			2,
+			async (item) => {
+				abortStarted.push(item);
+				if (abortStarted.length === 2) bothEntered();
+				await abortGate;
+				abortSettled.push(item);
+				return item;
+			},
+			controller.signal,
+		);
+		await sawBoth;
+		controller.abort(abortReason);
+		releaseAbort();
+		await expect(runAbort).rejects.toBe(abortReason);
+		expect(abortStarted).toEqual([0, 1]);
+		expect(abortSettled.sort()).toEqual([0, 1]);
 	});
 
 	it("fails closed with 403 when authorize returns a mismatched profileId inside uploadWithAuthority", async () => {
