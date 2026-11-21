@@ -197,8 +197,8 @@ function connect() {
 		};
 		app.on("response", (response) => {
 			answered = true;
-			// WHY: A fixed-length 4xx/5xx error response is complete without more upload bytes; stop writing so a closed app socket does not TCP-RST unread response bytes while chunked streaming errors still receive the upload.
-			if ((response.statusCode ?? 0) >= 400 && response.headers["content-length"] !== undefined) uploadClosed.add(app);
+			// WHY: 413 means the app rejected the upload payload; stop writing more BODY/END frames so a closed app socket does not TCP-RST unread response bytes under backpressure.
+			if (response.statusCode === 413) uploadClosed.add(app);
 			if (!appAnswers) console.log(`The app on port ${port} answers again`);
 			appAnswers = true;
 			const headers = [];
@@ -231,11 +231,8 @@ function connect() {
 		});
 		app.on("error", () => {
 			if (streams.get(id) !== app) return;
-			// WHY: An early response can close the request socket with EPIPE/ECONNRESET while upload chunks are still arriving;
-			// response.on("error") and response.on("close") own response-side failures once headers arrive.
-			if (answered) return;
 			reset();
-			if (appAnswers) {
+			if (!answered && appAnswers) {
 				appAnswers = false;
 				console.log(`The app on port ${port} is not answering`);
 			}
