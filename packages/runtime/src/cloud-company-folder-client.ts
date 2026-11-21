@@ -2525,39 +2525,50 @@ export class CloudCompanyFolderClient {
 	}
 
 	async #stageAll(
-		items: readonly { readonly key: string; readonly hash: string; readonly file: PlannedFile }[],
+		groups: readonly (readonly { readonly key: string; readonly hash: string; readonly file: PlannedFile }[])[],
 		signal: AbortSignal,
 	): Promise<Map<string, CloudFileReference>> {
 		const staged = new Map<string, CloudFileReference>();
-		if (items.length === 0) return staged;
-		if (items.length === 1 || signal.aborted) {
-			const item = items[0]!;
-			staged.set(item.key, await this.#stageUnique(item.file, item.hash, signal));
-			if (items.length === 1) return staged;
+		if (groups.length === 0) return staged;
+		if (groups.length === 1) {
+			for (const item of groups[0]!) {
+				staged.set(item.key, await this.#stageUnique(item.file, item.hash, signal));
+			}
+			return staged;
+		}
+		let cursor = 0;
+		if (signal.aborted) {
+			for (const item of groups[0]!) {
+				staged.set(item.key, await this.#stageUnique(item.file, item.hash, signal));
+			}
+			cursor = 1;
 		}
 		const abort = new AbortController();
 		const stageSignal = AbortSignal.any([signal, abort.signal]);
-		let cursor = 0;
 		let firstError: unknown;
 		let failed = false;
 		const worker = async (): Promise<void> => {
 			while (!failed) {
 				const index = cursor++;
-				if (index >= items.length) return;
-				const item = items[index]!;
-				try {
-					staged.set(item.key, await this.#stageUnique(item.file, item.hash, stageSignal));
-				} catch (error) {
-					if (!failed) {
-						failed = true;
-						firstError = error;
-						abort.abort();
+				if (index >= groups.length) return;
+				for (const item of groups[index]!) {
+					if (failed) return;
+					try {
+						staged.set(item.key, await this.#stageUnique(item.file, item.hash, stageSignal));
+					} catch (error) {
+						if (!failed) {
+							failed = true;
+							firstError = error;
+							abort.abort();
+						}
+						return;
 					}
-					return;
 				}
 			}
 		};
-		await Promise.allSettled(Array.from({ length: Math.min(STAGE_CONCURRENCY, items.length) }, () => worker()));
+		await Promise.allSettled(
+			Array.from({ length: Math.min(STAGE_CONCURRENCY, groups.length - cursor) }, () => worker()),
+		);
 		if (failed) throw firstError;
 		return staged;
 	}
@@ -2708,7 +2719,8 @@ export class CloudCompanyFolderClient {
 		if (!Array.isArray(units) || units.length < 1 || units.length > MAX_UNITS)
 			throw new Error("Invalid Company folder change set");
 		const plans = units.map(plan);
-		const unique: { readonly key: string; readonly hash: string; readonly file: PlannedFile }[] = [];
+		const groups: { readonly key: string; readonly hash: string; readonly file: PlannedFile }[][] = [];
+		const byHash = new Map<string, { readonly key: string; readonly hash: string; readonly file: PlannedFile }[]>();
 		const seen = new Set<string>();
 		const fileKeys = new Map<PlannedFile, string>();
 		const track = (file: PlannedFile): void => {
@@ -2717,7 +2729,14 @@ export class CloudCompanyFolderClient {
 			fileKeys.set(file, key);
 			if (!seen.has(key)) {
 				seen.add(key);
-				unique.push({ key, hash, file });
+				// WHY: Group same-byte files onto one worker so distinct media types/modes never race on the same object key.
+				let group = byHash.get(hash);
+				if (!group) {
+					group = [];
+					byHash.set(hash, group);
+					groups.push(group);
+				}
+				group.push({ key, hash, file });
 			}
 		};
 		for (const unit of plans) {
@@ -2728,7 +2747,7 @@ export class CloudCompanyFolderClient {
 				}
 			}
 		}
-		const staged = await this.#stageAll(unique, signal);
+		const staged = await this.#stageAll(groups, signal);
 		const fileOf = (file: PlannedFile): CloudCompanyFolderFile => {
 			const reference = staged.get(fileKeys.get(file)!)!;
 			return {

@@ -325,39 +325,39 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 	}
 
 	async #fetchChunks(
-		items: readonly { readonly sha256: string; readonly bytes: number }[],
+		entries: readonly { readonly sha256: string; readonly bytes: number }[],
+		onChunk: (sha256: string, part: Uint8Array) => void,
 		signal: AbortSignal,
-	): Promise<Map<string, Uint8Array>> {
-		const unique = new Map<string, number>();
-		for (const item of items) {
-			const expected = unique.get(item.sha256);
-			if (expected === undefined) unique.set(item.sha256, item.bytes);
-			else if (expected !== item.bytes) invalid();
-		}
-		const entries = [...unique.entries()];
-		const fetched = new Map<string, Uint8Array>();
-		if (entries.length === 0) return fetched;
-		if (entries.length === 1 || signal.aborted) {
-			const [hash, expectedBytes] = entries[0]!;
+	): Promise<void> {
+		if (entries.length === 0) return;
+		if (entries.length === 1) {
+			const { sha256: hash, bytes: expectedBytes } = entries[0]!;
 			const part = await this.#fetchObject(hash, expectedBytes, signal);
 			if (part.byteLength !== expectedBytes) invalid();
-			fetched.set(hash, part);
-			if (entries.length === 1) return fetched;
+			onChunk(hash, part);
+			return;
+		}
+		let cursor = 0;
+		if (signal.aborted) {
+			const { sha256: hash, bytes: expectedBytes } = entries[0]!;
+			const part = await this.#fetchObject(hash, expectedBytes, signal);
+			if (part.byteLength !== expectedBytes) invalid();
+			onChunk(hash, part);
+			cursor = 1;
 		}
 		const abort = new AbortController();
 		const fetchSignal = AbortSignal.any([signal, abort.signal]);
-		let cursor = 0;
 		let firstError: unknown;
 		let failed = false;
 		const worker = async (): Promise<void> => {
 			while (!failed) {
 				const index = cursor++;
 				if (index >= entries.length) return;
-				const [hash, expectedBytes] = entries[index]!;
+				const { sha256: hash, bytes: expectedBytes } = entries[index]!;
 				try {
 					const part = await this.#fetchObject(hash, expectedBytes, fetchSignal);
 					if (part.byteLength !== expectedBytes) invalid();
-					fetched.set(hash, part);
+					if (!failed) onChunk(hash, part);
 				} catch (error) {
 					if (!failed) {
 						failed = true;
@@ -368,9 +368,10 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 				}
 			}
 		};
-		await Promise.allSettled(Array.from({ length: Math.min(CHUNK_CONCURRENCY, entries.length) }, () => worker()));
+		await Promise.allSettled(
+			Array.from({ length: Math.min(CHUNK_CONCURRENCY, entries.length - cursor) }, () => worker()),
+		);
 		if (failed) throw firstError;
-		return fetched;
 	}
 
 	/** A file's bytes: its manifest, then each chunk, each checked against its hash and the file's reference. */
@@ -390,19 +391,30 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 				throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder bytes do not match their entry");
 			return part;
 		}
-		const fetched = await this.#fetchChunks(chunks, signal);
-		const bytes = Buffer.allocUnsafe(file.bytes);
-		const whole = createHash("sha256");
+		const unique = new Map<string, { readonly sha256: string; readonly bytes: number; readonly offsets: number[] }>();
 		let offset = 0;
 		for (const chunk of chunks) {
-			const part = fetched.get(chunk.sha256);
-			if (!part || part.byteLength !== chunk.bytes) invalid();
-			bytes.set(part, offset);
-			whole.update(part);
-			offset += part.byteLength;
+			let entry = unique.get(chunk.sha256);
+			if (!entry) {
+				entry = { sha256: chunk.sha256, bytes: chunk.bytes, offsets: [] };
+				unique.set(chunk.sha256, entry);
+			} else if (entry.bytes !== chunk.bytes) {
+				invalid();
+			}
+			entry.offsets.push(offset);
+			offset += chunk.bytes;
 		}
+		const bytes = Buffer.allocUnsafe(file.bytes);
+		await this.#fetchChunks(
+			[...unique.values()],
+			(hash, part) => {
+				const entry = unique.get(hash)!;
+				for (const pos of entry.offsets) bytes.set(part, pos);
+			},
+			signal,
+		);
 		// The chunks are the manifest's; the manifest's fileSha256 is only its writer's word.
-		if (whole.digest("hex") !== file.fileSha256)
+		if (sha256(bytes) !== file.fileSha256)
 			throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder bytes do not match their entry");
 		return bytes;
 	}
@@ -417,24 +429,43 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 		if (offset >= end) return new Uint8Array();
 		if (offset === 0 && end === file.bytes) return this.get(file, signal);
 		const chunks = await this.#chunks(file, signal);
-		const needed: { readonly sha256: string; readonly bytes: number; readonly position: number }[] = [];
+		const unique = new Map<
+			string,
+			{
+				readonly sha256: string;
+				readonly bytes: number;
+				readonly copies: { readonly srcStart: number; readonly srcEnd: number; readonly dstOffset: number }[];
+			}
+		>();
 		let position = 0;
 		for (const chunk of chunks) {
 			if (position < end && position + chunk.bytes > offset) {
-				needed.push({ sha256: chunk.sha256, bytes: chunk.bytes, position });
+				let entry = unique.get(chunk.sha256);
+				if (!entry) {
+					entry = { sha256: chunk.sha256, bytes: chunk.bytes, copies: [] };
+					unique.set(chunk.sha256, entry);
+				} else if (entry.bytes !== chunk.bytes) {
+					invalid();
+				}
+				entry.copies.push({
+					srcStart: Math.max(0, offset - position),
+					srcEnd: Math.min(chunk.bytes, end - position),
+					dstOffset: Math.max(0, position - offset),
+				});
 			}
 			position += chunk.bytes;
 		}
-		const fetched = await this.#fetchChunks(needed, signal);
 		const bytes = Buffer.allocUnsafe(end - offset);
-		for (const item of needed) {
-			const part = fetched.get(item.sha256);
-			if (!part || part.byteLength !== item.bytes) invalid();
-			bytes.set(
-				part.subarray(Math.max(0, offset - item.position), Math.min(item.bytes, end - item.position)),
-				Math.max(0, item.position - offset),
-			);
-		}
+		await this.#fetchChunks(
+			[...unique.values()],
+			(hash, part) => {
+				const entry = unique.get(hash)!;
+				for (const copy of entry.copies) {
+					bytes.set(part.subarray(copy.srcStart, copy.srcEnd), copy.dstOffset);
+				}
+			},
+			signal,
+		);
 		return bytes;
 	}
 

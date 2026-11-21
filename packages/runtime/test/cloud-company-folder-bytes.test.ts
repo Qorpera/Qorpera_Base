@@ -838,3 +838,78 @@ it("fetches multi-chunk files and ranges concurrently up to the cap and deduplic
 	expect(chunkGets).toBe(4);
 	expect(peak).toBe(4);
 });
+
+it("aborts in-flight sibling chunk fetches and propagates the first typed error on failure", async () => {
+	const { bytes, sql, origin, token, binding, holder, control, identity } = await fixture();
+	const content = Buffer.concat([
+		randomBytes(4 * 1024 * 1024),
+		randomBytes(4 * 1024 * 1024),
+		randomBytes(4 * 1024 * 1024),
+		randomBytes(1024),
+	]);
+	const sig = new AbortController().signal;
+	const ref = await bytes.put(content, "application/octet-stream", false, sig);
+	sql.readable.add(ref.manifestSha256);
+	const file = { ...ref, executable: false };
+
+	const runAbortCase = async (mode: "contended" | "corrupt"): Promise<{ aborted: number; error: unknown }> => {
+		let chunkCall = 0;
+		let aborted = 0;
+		const client = new HttpCloudCompanyFolderBytes({
+			baseUrl: origin,
+			token,
+			binding,
+			holder: () => holder,
+			identity,
+			control,
+			fetch: async (input, init) => {
+				const url = String(input);
+				if (url.endsWith(`/${ref.manifestSha256}`)) return await fetch(input, init);
+				const index = ++chunkCall;
+				if (index === 2) {
+					await new Promise((resolve) => setTimeout(resolve, 25));
+					if (mode === "contended") {
+						return new Response(JSON.stringify({ error: "locked" }), {
+							status: 409,
+							headers: { "content-type": "application/json" },
+						});
+					}
+					return new Response(Buffer.alloc(4 * 1024 * 1024, 0xaa), {
+						status: 200,
+						headers: { "content-type": "application/octet-stream" },
+					});
+				}
+				return await new Promise<Response>((resolve, reject) => {
+					const timer = setTimeout(() => {
+						void fetch(input, init).then(resolve, reject);
+					}, 2_000);
+					init?.signal?.addEventListener(
+						"abort",
+						() => {
+							clearTimeout(timer);
+							aborted++;
+							reject(init.signal?.reason ?? new DOMException("Aborted", "AbortError"));
+						},
+						{ once: true },
+					);
+				});
+			},
+		});
+		let caught: unknown;
+		try {
+			await client.get(file, sig);
+		} catch (error) {
+			caught = error;
+		}
+		return { aborted, error: caught };
+	};
+
+	const contended = await runAbortCase("contended");
+	expect(contended.error).toBeInstanceOf(CloudCompanyFolderError);
+	expect(contended.error).toMatchObject({ failure: "contended", category: "stale_version" });
+	expect(contended.aborted).toBeGreaterThanOrEqual(2);
+
+	const corrupt = await runAbortCase("corrupt");
+	expect(corrupt.error).toMatchObject({ category: "invalid_response" });
+	expect(corrupt.aborted).toBeGreaterThanOrEqual(2);
+});
