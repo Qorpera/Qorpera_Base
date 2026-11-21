@@ -25,35 +25,49 @@ export const PLATFORM_STAGE_CONCURRENCY = 4;
 export async function mapBounded<T, R>(
 	items: readonly T[],
 	concurrency: number,
-	fn: (item: T, index: number) => Promise<R>,
+	fn: (item: T, index: number, signal: AbortSignal) => Promise<R>,
 	signal?: AbortSignal,
 ): Promise<R[]> {
 	if (items.length === 0) return [];
 	if (signal?.aborted) throw signal.reason;
 	const results = new Array<R>(items.length);
+	const siblingAbort = new Error("Sibling worker failed");
+	const child = new AbortController();
+	const onParentAbort = () => child.abort(signal?.reason);
+	if (signal) signal.addEventListener("abort", onParentAbort, { once: true });
 	let next = 0;
 	let stop = false;
 	let firstErrorIndex = Number.POSITIVE_INFINITY;
 	let firstError: unknown;
 	const worker = async (): Promise<void> => {
 		for (;;) {
-			if (stop || signal?.aborted) return;
+			if (stop || child.signal.aborted) return;
 			const index = next++;
 			if (index >= items.length) return;
 			try {
-				results[index] = await fn(items[index] as T, index);
+				results[index] = await fn(items[index] as T, index, child.signal);
 			} catch (error) {
-				stop = true;
-				if (index < firstErrorIndex) {
+				const causedBySibling =
+					stop &&
+					!signal?.aborted &&
+					child.signal.aborted &&
+					(error === siblingAbort || (error instanceof Error && error.name === "AbortError"));
+				if (!causedBySibling && index < firstErrorIndex) {
 					firstErrorIndex = index;
 					firstError = error;
 				}
+				stop = true;
+				if (!child.signal.aborted) child.abort(siblingAbort);
 				return;
 			}
 		}
 	};
-	const count = Math.max(1, Math.min(concurrency, items.length));
-	await Promise.all(Array.from({ length: count }, () => worker()));
+	try {
+		const count = Math.max(1, Math.min(concurrency, items.length));
+		await Promise.all(Array.from({ length: count }, () => worker()));
+	} finally {
+		if (signal) signal.removeEventListener("abort", onParentAbort);
+	}
 	if (firstErrorIndex !== Number.POSITIVE_INFINITY) throw firstError;
 	if (signal?.aborted) throw signal.reason;
 	return results;
@@ -250,15 +264,16 @@ export class PlatformFolderWriter {
 			await mapBounded(
 				list,
 				objectConcurrency,
-				async (hash) => {
+				async (hash, _index, stepSignal) => {
 					const object = objects.get(hash) as Uint8Array;
-					const authorize = () => this.#uploadProfile(environmentId, intentId, hash, object.byteLength, signal);
+					const authorize = () =>
+						this.#uploadProfile(environmentId, intentId, hash, object.byteLength, stepSignal);
 					// WHY: uploadWithAuthority re-runs authorize() inside the exclusive journal lane and fails closed on profile mismatch.
 					await this.#options.replication.uploadWithAuthority(profileId, hash, object, {
 						authorize: async () => {
 							if ((await authorize()) !== profileId) throw new ObjectDependencyError(403);
 						},
-						confirm: () => this.#confirm(environmentId, intentId, hash, object.byteLength, signal),
+						confirm: () => this.#confirm(environmentId, intentId, hash, object.byteLength, stepSignal),
 					});
 				},
 				signal,
@@ -326,7 +341,8 @@ export class PlatformFolderWriter {
 		const parts = await mapBounded(
 			chunks,
 			PLATFORM_STAGE_CONCURRENCY,
-			(chunk) => this.#object(environmentId, chunk.sha256 as string, chunk.bytes as number, signal),
+			(chunk, _index, stepSignal) =>
+				this.#object(environmentId, chunk.sha256 as string, chunk.bytes as number, stepSignal),
 			signal,
 		);
 		const bytes = Buffer.concat(parts);
