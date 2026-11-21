@@ -90,6 +90,7 @@ function run(
 		recordContextView?: Parameters<typeof runCloudCodexToolSession>[0]["recordContextView"];
 		composeContext?: Parameters<typeof runCloudCodexToolSession>[0]["composeContext"];
 		runLog?: CloudRunLog;
+		reviewer?: CloudActionReviewChannel;
 		compactor?: MemoryCompactChannel;
 		voice?: CloudVoiceChannel;
 		pictures?: CloudPictureChannel;
@@ -3009,5 +3010,68 @@ describe("warm conversations: spare Codex processes", () => {
 		expect(await starts(evidence)).toBe(1);
 		const bootstrap = JSON.parse(await readFile(evidence, "utf8")) as { bootstrap: string };
 		expect(bootstrap.bootstrap).toContain("Spare-run law");
+	});
+});
+
+describe("side-thread turn/start cancellation", () => {
+	it("cancels a stalled compaction turn/start promptly and interrupts the late turn once its id arrives", async () => {
+		const compactor = new MemoryCompactChannel();
+		let abortedError: unknown;
+		const { result, evidence } = run("compact-side-turn-start-stalled", {
+			compactor,
+			closing: async (signal) => {
+				const thread = await compactor.call("PRIVATE_COMPACT_SYSTEM", signal);
+				const cancel = new AbortController();
+				const sending = thread.send("PRIVATE_WINDOW", cancel.signal);
+				await vi.waitFor(() => stat(`${evidence}.compact-turn-start`), { timeout: 5_000 });
+				cancel.abort();
+				abortedError = await sending.catch((error: unknown) => error);
+				expect(existsSync(evidence)).toBe(false);
+				await vi.waitFor(() => stat(evidence), { timeout: 5_000 });
+				thread.close?.();
+			},
+		});
+		await result;
+		expect(abortedError).toBeInstanceOf(Error);
+		expect((abortedError as Error).message).toBe("Native compaction cancelled");
+		const recorded = JSON.parse(await readFile(evidence, "utf8")) as { interrupt?: Record<string, unknown> };
+		expect(recorded.interrupt).toEqual({ threadId: "thread_compact", turnId: "turn_compact_1" });
+	});
+
+	it("cancels a stalled review turn/start promptly and interrupts the late turn once its id arrives", async () => {
+		const reviewer = new CloudActionReviewChannel();
+		let abortedError: unknown;
+		let evidence = "";
+		const started = run("review-turn-start-stalled", {
+			reviewer,
+			tools: [
+				{
+					name: "send_email",
+					description: "Send an email",
+					source: "connector",
+					inputSchema: { type: "object", properties: { to: { type: "string" } }, additionalProperties: false },
+					parseArguments: (value) => value,
+					execute: async () => {
+						const cancel = new AbortController();
+						const reviewing = reviewer.review(
+							{ instructions: "REVIEW_SYS", prompt: "REVIEW_PROMPT", effort: "low", model: "offline-probe" },
+							cancel.signal,
+						);
+						await vi.waitFor(() => stat(`${evidence}.review-turn-start`), { timeout: 5_000 });
+						cancel.abort();
+						abortedError = await reviewing.catch((error: unknown) => error);
+						expect(existsSync(`${evidence}.review-interrupt`)).toBe(false);
+						await vi.waitFor(() => stat(`${evidence}.review-interrupt`), { timeout: 5_000 });
+						return { kind: "text", value: "Done." };
+					},
+				},
+			],
+		});
+		evidence = started.evidence;
+		await started.result;
+		expect(abortedError).toBeInstanceOf(Error);
+		expect((abortedError as Error).message).toBe("Native review cancelled");
+		const interrupt = JSON.parse(await readFile(`${evidence}.review-interrupt`, "utf8")) as Record<string, unknown>;
+		expect(interrupt).toEqual({ threadId: "thread_review", turnId: "turn_review" });
 	});
 });

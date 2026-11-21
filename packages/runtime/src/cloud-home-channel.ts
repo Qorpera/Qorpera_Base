@@ -15,7 +15,6 @@
 // The handshake is the first line ON the socket, never the URL or a header: a run's holder and its binding are not
 // things to put in a request line that proxies and logs keep.
 
-import { StringDecoder } from "node:string_decoder";
 import { type JsonValue, POSTGRES_UUID_PATTERN } from "@qorpera/contracts";
 import type { CloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 
@@ -74,7 +73,7 @@ const BASE64_LINE = /^[A-Za-z0-9+/]+={0,2}$/;
 /** An `sftp` channel's bytes as its lines: each chunk, in order, cut at CLOUD_HOME_SFTP_PIECE_BYTES, as base64. */
 export async function* cloudHomeSftpLines(chunks: AsyncIterable<Buffer | Uint8Array>): AsyncGenerator<string> {
 	for await (const chunk of chunks) {
-		const bytes = Buffer.from(chunk);
+		const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
 		for (let at = 0; at < bytes.byteLength; at += CLOUD_HOME_SFTP_PIECE_BYTES)
 			yield bytes.subarray(at, at + CLOUD_HOME_SFTP_PIECE_BYTES).toString("base64");
 	}
@@ -160,16 +159,32 @@ export interface CloudHomeChannelSide {
  * host (review round 1, F9). One reader per connection, used by both ends of the channel.
  */
 export async function* cloudHomeChannelLines(chunks: AsyncIterable<Buffer | Uint8Array>): AsyncGenerator<string> {
-	const decoder = new StringDecoder("utf8");
-	let rest = "";
+	let parts: Buffer[] = [];
+	let lineBytes = 0;
 	for await (const chunk of chunks) {
-		rest += decoder.write(Buffer.from(chunk));
-		if (Buffer.byteLength(rest) > CLOUD_HOME_CHANNEL_LINE_BYTES) throw new Error("Home line too large");
-		let end = rest.indexOf("\n");
-		while (end >= 0) {
-			yield rest.slice(0, end);
-			rest = rest.slice(end + 1);
-			end = rest.indexOf("\n");
+		const view = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+		let start = 0;
+		while (start < view.byteLength) {
+			const nl = view.indexOf(0x0a, start);
+			if (nl < 0) {
+				const tailLength = view.byteLength - start;
+				if (lineBytes + tailLength > CLOUD_HOME_CHANNEL_LINE_BYTES) throw new Error("Home line too large");
+				parts.push(Buffer.from(view.subarray(start)));
+				lineBytes += tailLength;
+				break;
+			}
+			const pieceLength = nl - start;
+			if (lineBytes + pieceLength > CLOUD_HOME_CHANNEL_LINE_BYTES) throw new Error("Home line too large");
+			if (parts.length === 0) {
+				yield view.toString("utf8", start, nl);
+			} else {
+				if (pieceLength > 0) parts.push(view.subarray(start, nl));
+				const line = Buffer.concat(parts, lineBytes + pieceLength).toString("utf8");
+				parts = [];
+				lineBytes = 0;
+				yield line;
+			}
+			start = nl + 1;
 		}
 	}
 }
