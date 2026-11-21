@@ -1707,4 +1707,48 @@ describe("warm conversations", () => {
 		expect(f.units.activeUnits.has(runnerUnit(0))).toBe(true);
 		expect(await liveJournalNames(f)).toEqual([`${sharedExecutionAcquisitionId(runId, 1)}.json`]);
 	});
+
+	it("does not block concurrent free-slot acquires during slow warm-slot eviction and cancels deliver response bodies", async () => {
+		const f = await fixture({ warmIdleMs: 300_000, slotCount: 4 });
+		const signal = new AbortController().signal;
+		await f.backend.acquire(runId, work(), signal);
+		await finishRun(f);
+
+		let enteredKill!: () => void;
+		let releaseKill!: () => void;
+		const killStarted = new Promise<void>((resolve) => {
+			enteredKill = resolve;
+		});
+		const killGate = new Promise<void>((resolve) => {
+			releaseKill = resolve;
+		});
+		const origKill = f.units.kill.bind(f.units);
+		f.units.kill = async (unit: string) => {
+			if (unit === hostUnit(0)) {
+				enteredKill();
+				await killGate;
+			}
+			return origKill(unit);
+		};
+
+		const evicting = f.backend.acquire(
+			secondRun,
+			work({ runId: secondRun, sourceId: secondRun, staffVersion: 2 }),
+			signal,
+		);
+		await killStarted;
+
+		const thirdRun = "30000000-0000-4000-8000-000000000097";
+		const otherSession = "30000000-0000-4000-8000-000000000098";
+		const concurrent = await f.backend.acquire(
+			thirdRun,
+			work({ runId: thirdRun, sourceId: thirdRun, sessionId: otherSession }),
+			signal,
+		);
+		expect(concurrent.runnerId).toBeTruthy();
+
+		releaseKill();
+		const evictedRunner = await evicting;
+		expect(evictedRunner.runnerId).toBeTruthy();
+	});
 });

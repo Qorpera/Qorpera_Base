@@ -951,6 +951,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	readonly #retirementReported = new Map<string, number>();
 	/** When each dead journal reconcile cannot finish was last named in the log. */
 	readonly #deadReported = new Map<string, number>();
+	readonly #runnerAcquisition = new Map<string, string>();
+	readonly #acquisitionRunner = new Map<string, string>();
 	#endedRunnersCheckedAt = 0;
 	readonly adapterId: string;
 	readonly #config: LxdCloudRunnerProviderConfig;
@@ -2407,6 +2409,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 					"LXD journal cannot switch runtime mode or governed configuration; use a separate rollout lane",
 				);
 			}
+			this.#runnerAcquisition.set(journal.runner.runnerId, journal.acquisitionId);
+			this.#acquisitionRunner.set(journal.acquisitionId, journal.runner.runnerId);
 			return journal;
 		} catch (error) {
 			if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
@@ -2445,6 +2449,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		} finally {
 			await directory.close();
 		}
+		this.#runnerAcquisition.set(updated.runner.runnerId, updated.acquisitionId);
+		this.#acquisitionRunner.set(updated.acquisitionId, updated.runner.runnerId);
 	}
 
 	/** When a journal needs no further reconciliation (stopped or lost, no guest, capacity never registered or
@@ -2477,13 +2483,40 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			}
 		}
 		this.#settled.delete(acquisitionId);
+		// WHY: Evict per-acquisition tracking maps on archive so long-running providers do not grow unboundedly.
+		this.#registeredCapacity.delete(acquisitionId);
+		this.#releasedCapacity.delete(acquisitionId);
+		this.#registeredNodeCapacity.delete(acquisitionId);
+		this.#requestedCreates.delete(acquisitionId);
+		this.#retirementTried.delete(acquisitionId);
+		this.#retirementReported.delete(acquisitionId);
+		this.#deadReported.delete(acquisitionId);
+		const runnerId = this.#acquisitionRunner.get(acquisitionId);
+		if (runnerId !== undefined) {
+			this.#acquisitionRunner.delete(acquisitionId);
+			if (this.#runnerAcquisition.get(runnerId) === acquisitionId) this.#runnerAcquisition.delete(runnerId);
+		}
 	}
 
 	async #findJournalByRunner(runnerId: string, signal?: AbortSignal): Promise<LxdProviderJournal | undefined> {
+		const indexed = this.#runnerAcquisition.get(runnerId);
+		if (indexed !== undefined) {
+			const hit = await this.#scanJournal(indexed, signal);
+			if (hit?.runner.runnerId === runnerId) return hit;
+		}
 		await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
+		const settledIds: string[] = [];
 		for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
 			if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name)) continue;
+			if (this.#settled.has(entry.name)) {
+				settledIds.push(entry.name);
+				continue;
+			}
 			const journal = await this.#scanJournal(entry.name, signal);
+			if (journal?.runner.runnerId === runnerId) return journal;
+		}
+		for (const id of settledIds) {
+			const journal = await this.#scanJournal(id, signal);
 			if (journal?.runner.runnerId === runnerId) return journal;
 		}
 		return undefined;
@@ -2504,7 +2537,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	async #assertCapacityInventory(signal: AbortSignal): Promise<void> {
 		await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
 		for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
-			if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name)) continue;
+			// WHY: Settled journals already have no guest and confirmed capacity release, so acquire() need not re-read them.
+			if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name) || this.#settled.has(entry.name)) continue;
 			const journal = await this.#scanJournal(entry.name, signal);
 			if (!journal || (journal.capacityRegistered && journal.nodeCapacity) || journal.physicalState === "reserving")
 				continue;

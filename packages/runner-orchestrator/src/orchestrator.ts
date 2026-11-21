@@ -2483,6 +2483,9 @@ export class CloudRunnerOrchestrator {
 		const clientAssignmentId = this.#clientAssignmentId();
 		requiredUuid(clientAssignmentId, "Client assignment id");
 		const acquisitionController = new AbortController();
+		const onOuterAbort = () => acquisitionController.abort(signal?.reason);
+		if (signal?.aborted) acquisitionController.abort(signal.reason);
+		else signal?.addEventListener("abort", onOuterAbort, { once: true });
 		let rejectRenewal: (error: unknown) => void = () => undefined;
 		const renewalFailure = new Promise<never>((_resolve, reject) => {
 			rejectRenewal = reject;
@@ -2497,12 +2500,16 @@ export class CloudRunnerOrchestrator {
 				 * abandoning an otherwise healthy acquisition. */
 				for (let renewAttempt = 1; ; renewAttempt++) {
 					try {
-						claim = signal
-							? await this.#controlPlane.renewClaim(claim, this.#claimLeaseSeconds, signal)
-							: await this.#controlPlane.renewClaim(claim, this.#claimLeaseSeconds);
+						// WHY: Pass acquisitionController.signal so an in-flight renewClaim aborts immediately when acquire() succeeds.
+						claim = await this.#controlPlane.renewClaim(
+							claim,
+							this.#claimLeaseSeconds,
+							acquisitionController.signal,
+						);
 						break;
 					} catch (error) {
-						if (renewAttempt >= 3 || acquisitionController.signal.aborted) {
+						if (acquisitionController.signal.aborted) return;
+						if (renewAttempt >= 3) {
 							acquisitionController.abort();
 							rejectRenewal(error);
 							return;
@@ -2513,10 +2520,7 @@ export class CloudRunnerOrchestrator {
 				}
 			}
 		})();
-		const acquisitionSignal = signal
-			? AbortSignal.any([acquisitionController.signal, signal])
-			: acquisitionController.signal;
-		const acquisition = this.#providerAdapter.acquire(claim.work, acquisitionSignal);
+		const acquisition = this.#providerAdapter.acquire(claim.work, acquisitionController.signal);
 		let runner: CloudRunnerInstance;
 		try {
 			runner = await Promise.race([acquisition, renewalFailure]);
@@ -2533,6 +2537,8 @@ export class CloudRunnerOrchestrator {
 				.catch(() => undefined);
 			if (released?.deferred && typeof error === "object" && error !== null) this.#deferredDispatches.add(error);
 			throw error;
+		} finally {
+			signal?.removeEventListener("abort", onOuterAbort);
 		}
 		if (
 			!runner.capabilities.includes(claim.work.requiredCapability) ||
@@ -3356,22 +3362,36 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 		signal?: AbortSignal,
 		controlToken = this.#controlToken,
 	): Promise<unknown> {
-		const requestSignal = signal
-			? AbortSignal.any([signal, AbortSignal.timeout(CONTROL_PLANE_REQUEST_TIMEOUT_MS)])
-			: AbortSignal.timeout(CONTROL_PLANE_REQUEST_TIMEOUT_MS);
-		const response = await this.#fetch(this.#url, {
-			method: "POST",
-			headers: {
-				apikey: this.#publishableKey,
-				authorization: `Bearer ${controlToken}`,
-				"content-type": "application/json",
-			},
-			body: JSON.stringify(body),
-			redirect: "error",
-			signal: requestSignal,
-		});
-		if (!response.ok) throw new CloudRunnerOrchestratorRequestError(response.status);
-		const encoded = await response.text();
+		const controller = new AbortController();
+		const onOuterAbort = () => controller.abort(signal?.reason);
+		if (signal?.aborted) controller.abort(signal.reason);
+		else signal?.addEventListener("abort", onOuterAbort, { once: true });
+		const timer = setTimeout(() => {
+			controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+		}, CONTROL_PLANE_REQUEST_TIMEOUT_MS);
+		let encoded: string;
+		try {
+			const response = await this.#fetch(this.#url, {
+				method: "POST",
+				headers: {
+					apikey: this.#publishableKey,
+					authorization: `Bearer ${controlToken}`,
+					"content-type": "application/json",
+				},
+				body: JSON.stringify(body),
+				redirect: "error",
+				signal: controller.signal,
+			});
+			if (!response.ok) {
+				// WHY: Cancel non-ok response bodies so Undici releases the pooled socket.
+				void response.body?.cancel().catch(() => undefined);
+				throw new CloudRunnerOrchestratorRequestError(response.status);
+			}
+			encoded = await response.text();
+		} finally {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", onOuterAbort);
+		}
 		if (Buffer.byteLength(encoded) > 2 * 1024 * 1024) {
 			throw new Error("Runner orchestrator response exceeds its byte limit");
 		}
