@@ -434,6 +434,7 @@
 .composer-model-fast[aria-checked="true"] .icon { fill: currentColor; }
 .composer-provider-mark { display: block; width: 17px; height: 17px; background: currentColor; mask-position: center; mask-repeat: no-repeat; mask-size: contain; -webkit-mask-position: center; -webkit-mask-repeat: no-repeat; -webkit-mask-size: contain; }
 .composer-provider-anthropic { background: #d97757; }
+.composer-provider-google { background: #4285f4; }
 .composer-model-provider:disabled .composer-provider-mark { opacity: .55; }
 .composer-model-center { grid-column: 2; display: grid; justify-items: center; min-width: 0; padding-top: 5px; text-align: center; }
 .composer-model-title { margin: 0; color: color-mix(in srgb, var(--composer-accent) 82%, var(--text)); font-size: 17px; font-weight: 600; line-height: 1.3; }

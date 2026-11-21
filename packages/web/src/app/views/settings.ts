@@ -1,6 +1,7 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import { WebCompanyFiles } from "../../cloud/company-files.ts";
+import { createWebGeminiKey } from "../../cloud/gemini-key.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
 import { createWebReviewRules } from "../../cloud/review-rules.ts";
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
@@ -23,6 +24,7 @@ import { LeaderboardView } from "./leaderboard.ts";
 import { AccountSubscriptionsView } from "./settings-ai-subscriptions.ts";
 import { CompanyBrandView } from "./settings-brand.ts";
 import { ConnectionsView, memberPlanSignIn, memberProviderSignIns } from "./settings-connections.ts";
+import { GeminiKeyView } from "./settings-gemini-key.ts";
 import { GoodWillView, MyGoodWillView } from "./settings-good-will.ts";
 import { RulesView } from "./settings-rules.ts";
 import { storageSummary } from "./storage-summary.ts";
@@ -55,7 +57,7 @@ const TABS = [
 		label: phrase("AI subscriptions"),
 		icon: "key",
 		keywords:
-			"ai subscriptions my connections model accounts providers sign in openai chatgpt codex anthropic claude usage ai-abonnementer mine forbindelser modelkonti udbydere abonnementer log ind forbrug",
+			"ai subscriptions my connections model accounts providers sign in openai chatgpt codex anthropic claude google gemini neon api key usage ai-abonnementer mine forbindelser modelkonti udbydere abonnementer log ind forbrug",
 	},
 ] as const;
 type SettingsCategory = (typeof TABS)[number]["id"];
@@ -148,6 +150,7 @@ export class SettingsView {
 	#unsubscribe: (() => void) | undefined;
 	#companyLifetime = new AbortController();
 	#connections: ConnectionsView | undefined;
+	#geminiKey: GeminiKeyView | undefined;
 	/** AI subscriptions with no company open: the member's account logins. */
 	#accountSubscriptions: AccountSubscriptionsView | undefined;
 	#rules: RulesView | undefined;
@@ -440,6 +443,7 @@ export class SettingsView {
 		this.#companyLifetime.abort();
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
+		this.#geminiKey?.dispose();
 		this.#accountSubscriptions?.dispose();
 		this.#rules?.dispose();
 		this.#goodWill?.dispose();
@@ -732,12 +736,19 @@ export class SettingsView {
 						if (auth.userId !== memberId) throw new Error("The account changed.");
 					},
 				);
+				const checkCurrent = () => {
+					lifetime.throwIfAborted();
+					if (this.#auth.userId !== memberId || this.#company !== company || company.store.get().accessLost)
+						throw new Error("The account or company changed.");
+				};
 				this.#connections = new ConnectionsView(
-					createWebNativeSubscription(this.#api.cloud, company.profile.profileId, memberId, lifetime, () => {
-						lifetime.throwIfAborted();
-						if (this.#auth.userId !== memberId || this.#company !== company || company.store.get().accessLost)
-							throw new Error("The account or company changed.");
-					}),
+					createWebNativeSubscription(
+						this.#api.cloud,
+						company.profile.profileId,
+						memberId,
+						lifetime,
+						checkCurrent,
+					),
 					lifetime,
 					signIns,
 					(input) => signIn.beginProviderLogin(input),
@@ -745,9 +756,14 @@ export class SettingsView {
 					undefined,
 					memberPlanSignIn(memberId, company.profile.profileId),
 				);
-				// Coding values (environment variables a coding session gets) are no longer drawn here (Jonas, 9 Nov 2026:
-				// not something to show founders); the cloud keeps them.
-				this.#panels.set(tab, connectionsPage(t("AI subscriptions"), subscriptionsLead(), this.#connections.el));
+				this.#geminiKey = new GeminiKeyView(
+					createWebGeminiKey(this.#api.cloud, company.profile.profileId, memberId, lifetime, checkCurrent),
+					lifetime,
+				);
+				this.#panels.set(
+					tab,
+					connectionsPage(t("AI subscriptions"), subscriptionsLead(), this.#connections.el, this.#geminiKey.el),
+				);
 			}
 		}
 		const panel =
@@ -779,18 +795,20 @@ export class SettingsView {
 				const signIn = createWebNativeSubscription(cloud, profileId, memberId, new AbortController().signal, () => {
 					if (auth.userId !== memberId) throw new Error("The account changed.");
 				});
+				const checkCurrent = () => {
+					lifetime.throwIfAborted();
+					if (
+						auth.userId !== memberId ||
+						this.#company ||
+						!this.#profiles.some((item) => item.profileId === profileId)
+					)
+						throw new Error("The account or company changed.");
+				};
 				return {
-					client: createWebNativeSubscription(cloud, profileId, memberId, lifetime, () => {
-						lifetime.throwIfAborted();
-						if (
-							auth.userId !== memberId ||
-							this.#company ||
-							!this.#profiles.some((item) => item.profileId === profileId)
-						)
-							throw new Error("The account or company changed.");
-					}),
+					client: createWebNativeSubscription(cloud, profileId, memberId, lifetime, checkCurrent),
 					signIns: memberProviderSignIns(memberId, profileId),
 					begin: (input) => signIn.beginProviderLogin(input),
+					gemini: createWebGeminiKey(cloud, profileId, memberId, lifetime, checkCurrent),
 				};
 			},
 			lifetime,
@@ -842,6 +860,8 @@ export class SettingsView {
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
 		this.#connections = undefined;
+		this.#geminiKey?.dispose();
+		this.#geminiKey = undefined;
 		this.#accountSubscriptions?.dispose();
 		this.#accountSubscriptions = undefined;
 		this.#rules?.dispose();

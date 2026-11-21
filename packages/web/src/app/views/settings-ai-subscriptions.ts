@@ -1,8 +1,10 @@
+import type { WebGeminiKey } from "../../cloud/gemini-key.ts";
 import type { WebNativeSubscription } from "../../cloud/native-subscription.ts";
 import type { HostedProfile } from "../../cloud/types.ts";
 import { button, h, notice, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import { type ConnectionsClient, ConnectionsView, type ProviderSignIns } from "./settings-connections.ts";
+import { GeminiKeyView } from "./settings-gemini-key.ts";
 
 /** One of the member's companies, as AI subscriptions with no company open reach it. */
 export interface AccountSubscriptionsCompany {
@@ -12,6 +14,7 @@ export interface AccountSubscriptionsCompany {
 	signIns: ProviderSignIns;
 	/** Starts a sign-in that outlives this page. */
 	begin: WebNativeSubscription["beginProviderLogin"];
+	gemini?: WebGeminiKey;
 }
 
 /** AI subscriptions with no company open: the member's account logins (20260930548000), one ChatGPT sign-in used in
@@ -25,6 +28,7 @@ export class AccountSubscriptionsView {
 	readonly #open: (profile: HostedProfile) => AccountSubscriptionsCompany;
 	readonly #lifetime = new AbortController();
 	#connections: ConnectionsView | undefined;
+	#geminiKey: GeminiKeyView | undefined;
 
 	constructor(
 		profiles: readonly HostedProfile[],
@@ -42,6 +46,8 @@ export class AccountSubscriptionsView {
 		this.#lifetime.abort();
 		this.#connections?.dispose();
 		this.#connections = undefined;
+		this.#geminiKey?.dispose();
+		this.#geminiKey = undefined;
 		this.el.replaceChildren();
 		this.el.remove();
 	}
@@ -87,7 +93,8 @@ export class AccountSubscriptionsView {
 				undefined,
 				{ companyName: profile.profileName },
 			);
-			replace(this.el, this.#connections.el);
+			this.#geminiKey = company.gemini ? new GeminiKeyView(company.gemini, signal) : undefined;
+			replace(this.el, this.#connections.el, this.#geminiKey?.el);
 			return;
 		}
 		replace(

@@ -733,4 +733,54 @@ describe("the composer menu with an animation engine", () => {
 			expect.objectContaining({ duration: 220 }),
 		);
 	});
+
+	it("cycles through OpenAI, Anthropic, and Gemini 4 Neon and displays a spend cap notice on Gemini", async () => {
+		const f = await setup();
+		const allThree = [...ALL_OFFERED, "gemini-4-neon"];
+		f.models.set(session.sessionId, {
+			sessionId: session.sessionId,
+			modelId: "gpt-6.2-sol",
+			reasoningEffort: "high",
+			serviceTier: "fast",
+			models: allThree,
+			version: 0,
+		});
+		const panel = await open(f.view);
+		const provider = part(panel, "provider") as HTMLButtonElement;
+		expect(provider.getAttribute("aria-label")).toBe("Switch to Claude");
+		provider.click();
+		await settle();
+		expect(f.set).toHaveBeenLastCalledWith(
+			session.sessionId,
+			{ modelId: "claude-fable-5-2" },
+			0,
+			expect.any(AbortSignal),
+		);
+		expect(provider.getAttribute("aria-label")).toBe("Switch to Gemini");
+		provider.click();
+		await settle();
+		expect(f.set).toHaveBeenLastCalledWith(
+			session.sessionId,
+			{ modelId: "gemini-4-neon" },
+			1,
+			expect.any(AbortSignal),
+		);
+		expect(part(panel, "pick").textContent).toBe("Gemini 4 Neon");
+		expect(part(panel, "fast").hidden).toBe(true);
+		expect(slider(panel).getAttribute("aria-valuemax")).toBe("3");
+		expect(provider.getAttribute("aria-label")).toBe("Switch to GPT");
+		expect(provider.title).toContain("Gemini 4 Neon answers this conversation using your Gemini API key.");
+
+		f.models.set(session.sessionId, {
+			sessionId: session.sessionId,
+			modelId: "gemini-4-neon",
+			reasoningEffort: "high",
+			models: allThree,
+			geminiCapReached: true,
+			version: 2,
+		});
+		button(f.view.el, "Chat settings and more").click();
+		await open(f.view, "Model: Gemini 4 Neon, High effort");
+		expect(panel.textContent).toContain("Your monthly Gemini spend cap was reached.");
+	});
 });

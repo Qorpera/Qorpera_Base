@@ -343,6 +343,48 @@ export const SETTINGS: Record<string, string> = {
 	"your weekly reset day stays {day}": "din ugentlige nulstillingsdag er stadig {day}",
 	"Use a reset": "Brug en nulstilling",
 	"Keep going now with a reset": "Fortsæt nu med en nulstilling",
+	"Gemini API key": "Gemini-API-nøgle",
+	"Gemini 4 Neon": "Gemini 4 Neon",
+	"Enter a valid Gemini API key starting with AIza.": "Skriv en gyldig Gemini-API-nøgle, der begynder med AIza.",
+	"Enter a monthly cap between $1 and $100,000, or leave it blank for no limit.":
+		"Skriv en månedlig grænse mellem $1 og $100.000, eller lad feltet være tomt for ingen grænse.",
+	"Gemini API key saved.": "Gemini-API-nøglen er gemt.",
+	"Google did not accept that API key. Check it and try again.":
+		"Google godtog ikke API-nøglen. Tjek den, og prøv igen.",
+	"The Gemini API key could not be saved. Try again.": "Gemini-API-nøglen kunne ikke gemmes. Prøv igen.",
+	"Gemini settings changed elsewhere. Refresh and try again.":
+		"Gemini-indstillingerne blev ændret et andet sted. Opdater, og prøv igen.",
+	"Gemini settings could not be saved. Try again.": "Gemini-indstillingerne kunne ikke gemmes. Prøv igen.",
+	"Gemini 4 Neon is now the default for your chats.": "Gemini 4 Neon er nu standard for dine chats.",
+	"Gemini 4 Neon is no longer the default for your chats.": "Gemini 4 Neon er ikke længere standard for dine chats.",
+	"Monthly spend cap saved.": "Månedlig forbrugsgrænse gemt.",
+	"Gemini API key removed.": "Gemini-API-nøglen er fjernet.",
+	"The Gemini API key could not be removed. Try again.": "Gemini-API-nøglen kunne ikke fjernes. Prøv igen.",
+	"Paste your Gemini API key": "Indsæt din Gemini-API-nøgle",
+	"No limit": "Ingen grænse",
+	"Monthly spend cap (USD)": "Månedlig forbrugsgrænse (USD)",
+	"Use Gemini 4 Neon by default for my chats": "Brug Gemini 4 Neon som standard til mine chats",
+	"Encrypted in the shared vault. Qorpera verifies the key with Google before saving and never shows it again.":
+		"Krypteret i den delte boks. Qorpera bekræfter nøglen hos Google, før den gemmes, og viser den aldrig igen.",
+	"Your Gemini API key could not be read.": "Din Gemini-API-nøgle kunne ikke hentes.",
+	"Add API key": "Tilføj API-nøgle",
+	"Use your own Gemini API key (including AI Ultra API credits) for conversations in all your companies. Background work and routines keep using your other logins.":
+		"Brug din egen Gemini-API-nøgle (herunder AI Ultra API-kredit) til samtaler i alle dine virksomheder. Baggrundsarbejde og rutiner bruger fortsat dine andre logins.",
+	"Gemini API keys are not available in this company yet.":
+		"Gemini-API-nøgler er ikke tilgængelige i denne virksomhed endnu.",
+	"Key {hint}": "Nøgle {hint}",
+	"Spend in {month}": "Forbrug i {month}",
+	"{spent} of {cap} · Cap reached": "{spent} af {cap} · Grænse nået",
+	"{spent} of {cap}": "{spent} af {cap}",
+	"{spent} · No monthly cap": "{spent} · Ingen månedlig grænse",
+	"Gemini conversations are paused until next month or until you raise the cap.":
+		"Gemini-samtaler er sat på pause indtil næste måned, eller indtil du hæver grænsen.",
+	"New conversations without a chosen model use Gemini 4 Neon. Background workers and routines keep using your other logins.":
+		"Nye samtaler uden en valgt model bruger Gemini 4 Neon. Baggrundsmedarbejdere og rutiner bruger fortsat dine andre logins.",
+	"Leave empty for no cap. Conversations pause instead of switching to another account when the cap is reached.":
+		"Lad feltet være tomt for ingen grænse. Samtaler sættes på pause i stedet for at skifte til en anden konto, når grænsen nås.",
+	"Removing…": "Fjerner…",
+	"Remove key": "Fjern nøgle",
 
 	// Connect, Disconnect, Working… and Connected (several pages)
 	Connect: "Forbind",

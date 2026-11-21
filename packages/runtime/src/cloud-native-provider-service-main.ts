@@ -625,7 +625,18 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 						});
 						// The same broker serves the company's website accounts (A1-4), opens its signed hooks (E3b-2) and
 						// takes coding values off its machines (save_coding_value, 20260930705000).
-						return { secretBroker: broker, companyAccounts: broker, eventHooks: broker, codingValues: broker };
+						return {
+							secretBroker: broker,
+							companyAccounts: broker,
+							eventHooks: broker,
+							codingValues: broker,
+							geminiKeys: {
+								origin: secretBrokerOrigin,
+								runtimeToken: secretBrokerToken,
+								companyId: state.companyId,
+								holder,
+							},
+						};
 					})()
 				: {}),
 		});
