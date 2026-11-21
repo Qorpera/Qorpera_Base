@@ -11,6 +11,9 @@ import {
 	CLOUD_MEMBER_DATA_QUESTION,
 	CLOUD_MEMBER_DATA_WATCHES,
 	type CloudMemberDataAnswer,
+	type CloudMemberDataChanged,
+	type CloudMemberDataChangePreview,
+	type CloudMemberDataChangeRequest,
 	CloudMemberDataError,
 	type CloudMemberDataParamValue,
 	type CloudMemberDataQuestion,
@@ -31,6 +34,7 @@ import {
 	APP_MANIFEST_MAX_BYTES,
 	APP_NUMBERS_DATABASE,
 	APP_WRITE_ANSWERS,
+	APP_WRITE_DATA,
 	APPS_FOLDER,
 	type AppManifest,
 	type AppProblem,
@@ -58,7 +62,9 @@ import {
 	appQuestions,
 	noteKept,
 	type PreparedAsk,
+	type PreparedDataAsk,
 	prepareAnswer,
+	prepareDataChange,
 	prepareRow,
 	prepareTell,
 	restoreTell,
@@ -892,6 +898,7 @@ const CALL_COST: Readonly<Record<string, number>> = {
 	answer: REQUEST_COST,
 	setRow: REQUEST_COST,
 	addRow: REQUEST_COST,
+	act: REQUEST_COST,
 	tell: REQUEST_COST,
 };
 const MAX_DATA_PARAMS = 64;
@@ -1007,7 +1014,7 @@ export class AppBridge {
 		// A call is a method and a few short values (a row's cells may be longer): anything larger is no call this bridge
 		// takes.
 		const maxParams =
-			call.method === "query" || call.method === "watch"
+			call.method === "query" || call.method === "watch" || call.method === "act"
 				? MAX_DATA_CALL_PARAMS_CHARS
 				: call.method === "setRow" || call.method === "addRow"
 					? MAX_ROW_PARAMS_CHARS
@@ -1126,6 +1133,8 @@ export class AppBridge {
 			case "addRow":
 			case "tell":
 				return this.#change(call);
+			case "act":
+				return this.#act(call);
 			case "query":
 			case "watch":
 				return this.#data(call);
@@ -1202,6 +1211,31 @@ export class AppBridge {
 		if (result.outcome === "saved") return { ok: true, value: { saved: true } };
 		// Only a web page's request is opened; a change never is.
 		return refuse(result.outcome === "opened" ? "Not a change" : GATE_SAYS[result.outcome]);
+	}
+
+	async #act(call: AppCall): Promise<AppAnswer> {
+		const asked = appDataChange(call.params);
+		if (typeof asked === "string") return refuse(asked);
+		const required = `${APP_WRITE_DATA}${asked.database}/${asked.change}`;
+		if (!this.#app.manifest.writes.includes(required as AppManifest["writes"][number]))
+			return refuse(`Add "${required}" to writes in app.toml to run ${asked.database}/${asked.change}`);
+		const gate = this.#gate;
+		const data = this.#host.data;
+		if (!gate?.askData || !data) return refuse("Database changes can't be run from this page");
+		const closed = gate.closed();
+		if (closed) return refuse(GATE_SAYS[closed]);
+		let prepared: PreparedDataAsk;
+		try {
+			prepared = await prepareDataChange(data, asked, this.#signal);
+		} catch (error) {
+			if (error instanceof AppActionRefused || error instanceof CloudMemberDataError) return refuse(error.message);
+			throw error;
+		}
+		const result = await gate.askData(prepared.ask, prepared.perform);
+		if ("message" in result) return refuse(result.message);
+		if (result.outcome !== "saved") return refuse(GATE_SAYS[result.outcome]);
+		const shown = fittedChangeResult(result.result);
+		return shown ? { ok: true, value: shown } : refuse(ANSWER_TOO_LARGE);
 	}
 
 	/** A web page the member clicked a link to (Jonas, 13 November 2026: "Show the address first"): put on the bar, its
@@ -1384,6 +1418,60 @@ export function appDataQuestion(params: Record<string, unknown>): CloudMemberDat
 	return { database, question, params: built };
 }
 
+export function appDataChange(params: Record<string, unknown>): CloudMemberDataChangeRequest | string {
+	const name = params.name;
+	const parts = typeof name === "string" ? name.split("/") : [];
+	const [database = "", change = ""] = parts;
+	if (
+		parts.length !== 2 ||
+		database === APP_NUMBERS_DATABASE ||
+		!CLOUD_MEMBER_DATA_DATABASE.test(database) ||
+		!CLOUD_MEMBER_DATA_QUESTION.test(change)
+	)
+		return "Name a change as <database>/<change>";
+	const given = params.params ?? {};
+	if (typeof given !== "object" || given === null || Array.isArray(given))
+		return "A change's parameters are named values";
+	const values: [string, CloudMemberDataParamValue][] = [];
+	const entries = Object.entries(given);
+	if (entries.length > MAX_DATA_PARAMS) return `A change takes at most ${MAX_DATA_PARAMS} parameters`;
+	for (const [key, value] of entries) {
+		if (key === "viewer") return ":viewer is filled by Qorpera with the member acting";
+		if (!DATA_PARAM.test(key)) return "A parameter's name is a-z, 0-9 and _";
+		if (!isDataParamValue(value)) return `:${key} must be a JSON value`;
+		values.push([key, value]);
+	}
+	const built = Object.fromEntries(values);
+	if (UTF8.encode(JSON.stringify(built)).byteLength > MAX_DATA_PARAM_BYTES)
+		return "A change's parameters take at most 64 KiB together";
+	return { database, change, params: built };
+}
+
+export interface PageDataChangeResult {
+	readonly changed?: number;
+	readonly columns?: string[];
+	readonly rows?: Record<string, unknown>[];
+	readonly more?: boolean;
+	readonly asOf: string;
+}
+
+export function fittedChangeResult(changed: CloudMemberDataChanged): PageDataChangeResult | null {
+	const shown: PageDataChangeResult = {
+		...(changed.changed === undefined ? {} : { changed: changed.changed }),
+		...(changed.columns === undefined || changed.rows === undefined
+			? {}
+			: {
+					columns: [...changed.columns],
+					rows: changed.rows.map((row) =>
+						Object.fromEntries(changed.columns!.map((column, index) => [column, row[index]])),
+					),
+					more: changed.more ?? false,
+				}),
+		asOf: changed.asOf,
+	};
+	return UTF8.encode(JSON.stringify(shown)).byteLength > DATA_ANSWER_BYTES ? null : shown;
+}
+
 /** An answer as a page gets it, rows as objects by column name as `table` gives them: `{ columns, rows, more, asOf }`.
  * The etag stays here. Two columns of one name: the later one's value stands in the row, and `columns` names both.
  * `Object.fromEntries` makes each name an own property, so a column named `__proto__` or `constructor` is a plain key
@@ -1438,6 +1526,8 @@ export interface CompanyLiveSource {
 export interface CompanyDataClient {
 	query(asked: CloudMemberDataQuestion, signal: AbortSignal): Promise<CloudMemberDataAnswer>;
 	watch(watches: readonly CloudMemberDataWatch[], signal: AbortSignal): Promise<CloudMemberDataWatchAnswer>;
+	previewChange?(asked: CloudMemberDataChangeRequest, signal: AbortSignal): Promise<CloudMemberDataChangePreview>;
+	change?(asked: CloudMemberDataChangeRequest, signal: AbortSignal): Promise<CloudMemberDataChanged>;
 }
 
 /** Watches one page holds, at most. */
@@ -1523,6 +1613,27 @@ export class CompanyData implements CompanyLiveSource {
 		const answer = await this.#client().query(asked, AbortSignal.any([signal, this.#signal]));
 		this.#current();
 		return answer;
+	}
+
+	async previewChange(
+		asked: CloudMemberDataChangeRequest,
+		signal: AbortSignal,
+	): Promise<CloudMemberDataChangePreview> {
+		this.#current();
+		const client = this.#client();
+		if (!client.previewChange) throw new CloudMemberDataError("Database changes are not available here");
+		const preview = await client.previewChange(asked, AbortSignal.any([signal, this.#signal]));
+		this.#current();
+		return preview;
+	}
+
+	async change(asked: CloudMemberDataChangeRequest, signal: AbortSignal): Promise<CloudMemberDataChanged> {
+		this.#current();
+		const client = this.#client();
+		if (!client.change) throw new CloudMemberDataError("Database changes are not available here");
+		const result = await client.change(asked, AbortSignal.any([signal, this.#signal]));
+		this.#current();
+		return result;
 	}
 
 	/** Starts a watch for the page whose lifetime `page` is: its first answer and its id. Later answers that differ go

@@ -1,3 +1,4 @@
+import { CLOUD_MEMBER_DATA_DATABASE, CLOUD_MEMBER_DATA_QUESTION } from "./cloud-member-data.ts";
 import { AGENT_COLOURS, type AgentColour, companyPathKey } from "./company-state-shared.ts";
 import { INTERFACE_EMBLEMS, type InterfaceEmblem, isInterfaceName } from "./interfaces.ts";
 import { parseTomlSubset, TomlSubsetError } from "./toml-subset.ts";
@@ -60,16 +61,34 @@ export const APP_CLOSED_FOLDERS: readonly string[] = Object.freeze([
  * draws outside the app's frame, and the save is the member's own. */
 export const APP_WRITE_ANSWERS = "answers";
 export const APP_WRITE_TABLE = "table:";
-export type AppWrite = typeof APP_WRITE_ANSWERS | `${typeof APP_WRITE_TABLE}${string}`;
+export const APP_WRITE_DATA = "data:";
+export type AppWrite =
+	| typeof APP_WRITE_ANSWERS
+	| `${typeof APP_WRITE_TABLE}${string}`
+	| `${typeof APP_WRITE_DATA}${string}/${string}`;
 export const APP_WRITES_MAX = 16;
 /** Tables no app writes: the platform's own pages keep them (who owns and supervises what, on Members). */
 export const APP_WRITE_KEPT_TABLES: readonly string[] = Object.freeze(["areas"]);
 /** What `writes` must be, as a problem says it. */
-export const APP_WRITES_SHAPE = `a list of at most ${APP_WRITES_MAX} of ${APP_WRITE_ANSWERS} and ${APP_WRITE_TABLE}<name>, a company table's folder name`;
+export const APP_WRITES_SHAPE = `a list of at most ${APP_WRITES_MAX} of ${APP_WRITE_ANSWERS}, ${APP_WRITE_TABLE}<name>, and ${APP_WRITE_DATA}<database>/<change>`;
 
 /** The table a `writes` entry names, or null when the entry is not a table's. */
 export function appWriteTable(write: string): string | null {
 	return write.startsWith(APP_WRITE_TABLE) ? write.slice(APP_WRITE_TABLE.length) : null;
+}
+
+export function appWriteData(write: string): { readonly database: string; readonly change: string } | null {
+	if (!write.startsWith(APP_WRITE_DATA)) return null;
+	const parts = write.slice(APP_WRITE_DATA.length).split("/");
+	const [database = "", change = ""] = parts;
+	if (
+		parts.length !== 2 ||
+		database === APP_NUMBERS_DATABASE ||
+		!CLOUD_MEMBER_DATA_DATABASE.test(database) ||
+		!CLOUD_MEMBER_DATA_QUESTION.test(change)
+	)
+		return null;
+	return { database, change };
 }
 
 /** A manifest's `writes` as given (a TOML or JSON list), checked: the entries without repeats, or why not. */
@@ -80,7 +99,8 @@ export function parseAppWrites(
 	const writes: AppWrite[] = [];
 	for (const write of value) {
 		const table = typeof write === "string" ? appWriteTable(write) : null;
-		if (write !== APP_WRITE_ANSWERS && (table === null || !isInterfaceName(table)))
+		const data = typeof write === "string" ? appWriteData(write) : null;
+		if (write !== APP_WRITE_ANSWERS && (table === null || !isInterfaceName(table)) && data === null)
 			return { problem: `writes must be ${APP_WRITES_SHAPE}` };
 		if (table !== null && APP_WRITE_KEPT_TABLES.includes(table))
 			return { problem: `writes may not name the table ${table}: members change it on its own page` };

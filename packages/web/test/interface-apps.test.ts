@@ -2221,3 +2221,146 @@ describe("following the company's apps from a hidden tab", () => {
 		expect(second).toEqual([true, false]);
 	});
 });
+
+describe("AppBridge database actions (qorpera.act)", () => {
+	const sha = "a".repeat(64);
+	const makeApp = (
+		writes: readonly string[],
+	): CompanyApp & { readonly manifest: NonNullable<CompanyApp["manifest"]> } => {
+		const parsed = parseAppManifest(
+			`name = "Shop"\nreads = ["data"]\nwrites = [${writes.map((w) => JSON.stringify(w)).join(", ")}]\n`,
+		);
+		if (!parsed.ok) throw new Error(JSON.stringify(parsed.problems));
+		return { name: "shop", path: "apps/shop", manifest: parsed.manifest, problems: [], version: "1" };
+	};
+
+	it("previews, gates on member approval with the previewed sha256, and shapes returned rows", async () => {
+		const previewCalls: unknown[] = [];
+		const changeCalls: unknown[] = [];
+		const company = new AbortController();
+		const client: CompanyDataClient = {
+			query: async () => {
+				throw new Error("not used");
+			},
+			watch: async () => ({ same: true }),
+			previewChange: async (asked) => {
+				previewCalls.push(asked);
+				return {
+					words: ["Add item ", { name: "sku", value: "SKU-1" }],
+					values: [{ name: "sku", value: "SKU-1" }],
+					sha256: sha,
+				};
+			},
+			change: async (asked) => {
+				changeCalls.push(asked);
+				return {
+					changed: 1,
+					columns: ["id", "sku"],
+					rows: [[42, "SKU-1"]],
+					more: false,
+					asOf: "2026-11-21T12:00:00.000Z",
+				};
+			},
+		};
+		const data = new CompanyData(() => client, company.signal);
+		let seenAsk: unknown = null;
+		const bridge = new AppBridge(
+			{ folder: () => fakeFolder({}), agents: () => [], data },
+			makeApp(["data:shop/add-item"]),
+			crypto.randomUUID(),
+			company.signal,
+			{
+				closed: () => null,
+				ask: async () => ({ outcome: "declined" }),
+				askData: async (ask, perform) => {
+					seenAsk = ask;
+					const result = await perform();
+					return { outcome: "saved", result };
+				},
+			},
+		);
+
+		const ok = await bridge.answer({
+			method: "act",
+			params: { name: "shop/add-item", params: { sku: "SKU-1", tags: ["new"], meta: { priority: 1 } } },
+		});
+		expect(ok).toEqual({
+			ok: true,
+			value: {
+				changed: 1,
+				columns: ["id", "sku"],
+				rows: [{ id: 42, sku: "SKU-1" }],
+				more: false,
+				asOf: "2026-11-21T12:00:00.000Z",
+			},
+		});
+		expect(previewCalls).toEqual([
+			{ database: "shop", change: "add-item", params: { sku: "SKU-1", tags: ["new"], meta: { priority: 1 } } },
+		]);
+		expect(changeCalls).toEqual([
+			{
+				database: "shop",
+				change: "add-item",
+				params: { sku: "SKU-1", tags: ["new"], meta: { priority: 1 } },
+				sha256: sha,
+			},
+		]);
+		expect(seenAsk).toEqual({
+			kind: "data",
+			database: "shop",
+			change: "add-item",
+			words: ["Add item ", { name: "sku", value: "SKU-1" }],
+			values: [{ name: "sku", value: "SKU-1" }],
+			sha256: sha,
+		});
+		company.abort();
+	});
+
+	it("enforces writes allowlist, rejects :viewer and reserved qorpera db, and handles gate decline", async () => {
+		const company = new AbortController();
+		const client: CompanyDataClient = {
+			query: async () => {
+				throw new Error("not used");
+			},
+			watch: async () => ({ same: true }),
+			previewChange: async () => ({ words: ["Delete"], values: [], sha256: sha }),
+			change: async () => {
+				throw new Error("must not run on decline");
+			},
+		};
+		const data = new CompanyData(() => client, company.signal);
+		const bridge = new AppBridge(
+			{ folder: () => fakeFolder({}), agents: () => [], data },
+			makeApp(["data:shop/add-item"]),
+			crypto.randomUUID(),
+			company.signal,
+			{
+				closed: () => null,
+				ask: async () => ({ outcome: "declined" }),
+				askData: async () => ({ outcome: "declined" }),
+			},
+		);
+
+		expect(await bridge.answer({ method: "act", params: { name: "shop/other-change", params: {} } })).toEqual({
+			ok: false,
+			error: 'Add "data:shop/other-change" to writes in app.toml to run shop/other-change',
+		});
+		expect(await bridge.answer({ method: "act", params: { name: "qorpera/money-now", params: {} } })).toEqual({
+			ok: false,
+			error: "Name a change as <database>/<change>",
+		});
+		expect(
+			await bridge.answer({ method: "act", params: { name: "shop/add-item", params: { viewer: "x" } } }),
+		).toEqual({
+			ok: false,
+			error: ":viewer is filled by Qorpera with the member acting",
+		});
+		expect(
+			await bridge.answer({ method: "act", params: { name: "shop/add-item", params: { sku: "SKU-2" } } }),
+		).toEqual({
+			ok: false,
+			error: "The member said not now",
+		});
+		company.abort();
+	});
+});

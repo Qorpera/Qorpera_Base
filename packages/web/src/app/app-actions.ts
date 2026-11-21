@@ -1,3 +1,9 @@
+import {
+	type CloudMemberDataChanged,
+	type CloudMemberDataChangePreview,
+	type CloudMemberDataChangeRequest,
+	CloudMemberDataError,
+} from "@qorpera/cloud-client/cloud-member-data";
 import { osPath } from "@qorpera/cloud-client/company-state-files";
 import { APP_WRITE_KEPT_TABLES, type AppManifest } from "@qorpera/cloud-client/interface-apps";
 import {
@@ -125,6 +131,25 @@ export type AppGateOutcome =
 	| { readonly outcome: "told"; readonly sent: boolean }
 	| { readonly outcome: "failed"; readonly message: string };
 
+export interface AppDataAsk {
+	readonly kind: "data";
+	readonly database: string;
+	readonly change: string;
+	readonly words: CloudMemberDataChangePreview["words"];
+	readonly values: CloudMemberDataChangePreview["values"];
+	readonly sha256: string;
+}
+
+export interface PreparedDataAsk {
+	readonly ask: AppDataAsk;
+	readonly perform: () => Promise<CloudMemberDataChanged>;
+}
+
+export type AppDataGateOutcome =
+	| { readonly outcome: "saved"; readonly result: CloudMemberDataChanged }
+	| { readonly outcome: "declined" | "busy" | "quiet" | "gone" }
+	| { readonly outcome: "failed"; readonly message: string };
+
 /** The member's yes, asked outside the app's frame (views/app-ask-bar.ts): the one way a request becomes a change. */
 export interface AppGate {
 	/** Why no request can be shown now, or null. */
@@ -132,6 +157,7 @@ export interface AppGate {
 	/** Shows the request and, when the member allows it, makes the change with `perform`; `keep` keeps a held note's
 	 * words. */
 	readonly ask: (ask: AppAsk, perform: PreparedAsk["perform"], keep?: PreparedAsk["keep"]) => Promise<AppGateOutcome>;
+	readonly askData?: (ask: AppDataAsk, perform: PreparedDataAsk["perform"]) => Promise<AppDataGateOutcome>;
 }
 
 /** A request the app is told no to, with the reason its page is given. Nothing was shown and nothing changed. */
@@ -600,5 +626,42 @@ function noteSending(
 			return went;
 		},
 		keep: (words) => source.hold(app, words === undefined ? undefined : { ...note, words }),
+	};
+}
+
+export interface AppDataChangeSource {
+	previewChange(asked: CloudMemberDataChangeRequest, signal: AbortSignal): Promise<CloudMemberDataChangePreview>;
+	change(asked: CloudMemberDataChangeRequest, signal: AbortSignal): Promise<CloudMemberDataChanged>;
+}
+
+export async function prepareDataChange(
+	source: AppDataChangeSource,
+	asked: CloudMemberDataChangeRequest,
+	signal: AbortSignal,
+): Promise<PreparedDataAsk> {
+	let preview: CloudMemberDataChangePreview;
+	try {
+		preview = await source.previewChange(asked, signal);
+	} catch (error) {
+		if (error instanceof CloudMemberDataError) throw new AppActionRefused(error.message);
+		throw error;
+	}
+	return {
+		ask: {
+			kind: "data",
+			database: asked.database,
+			change: asked.change,
+			words: preview.words,
+			values: preview.values,
+			sha256: preview.sha256,
+		},
+		perform: async () => {
+			try {
+				return await source.change({ ...asked, sha256: preview.sha256 }, signal);
+			} catch (error) {
+				if (error instanceof CloudMemberDataError) throw new AppActionRefused(error.message);
+				throw error;
+			}
+		},
 	};
 }

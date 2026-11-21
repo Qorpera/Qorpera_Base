@@ -578,6 +578,7 @@
 			setRow: freeze((table, key, cells) => call("setRow", { table: String(table), key, cells })),
 			addRow: freeze((table, cells) => call("addRow", { table: String(table), cells })),
 			query: freeze((name, params) => call("query", { name: String(name), params: params === undefined ? {} : params })),
+			act: freeze((name, params) => call("act", { name: String(name), params: params === undefined ? {} : params })),
 			watch: freeze(watchQuestion),
 			// A note to the app's owner, about a thing in the app: the member writes it on the app's bar, where `text` is
 			// only the draft they start from.
