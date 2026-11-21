@@ -439,6 +439,9 @@ export class ConversationView {
 				readonly team: ReturnType<CompanyController["store"]["get"]>["team"];
 				readonly staff: ReturnType<CompanyController["store"]["get"]>["staff"];
 				readonly interfaceFolder: ReturnType<CompanyController["store"]["get"]>["interfaceFolder"];
+				readonly mentionsReady: ReturnType<CompanyController["store"]["get"]>["mentionsReady"];
+				readonly groups: ReturnType<CompanyController["store"]["get"]>["groups"];
+				readonly accessLost: ReturnType<CompanyController["store"]["get"]>["accessLost"];
 				readonly agentName: string;
 				readonly agent: HostedStaffAgent | undefined;
 				readonly agentState: string;
@@ -2152,7 +2155,7 @@ export class ConversationView {
 	 * ready from this thread's agent (not in a group chat), and the cards of sites its messages link. */
 	#threadPieces(room: boolean, known: boolean): void {
 		const company = this.#company.store.get();
-		const signal = AbortSignal.any([this.#lifetime.signal, this.#company.signal]);
+		const signal = this.#notificationSignal;
 		const releases = this.#actions.codeReleases;
 		if (!this.#ready && releases && known && !room && company.whatsNew !== undefined)
 			this.#ready = new ThreadReady(this.#company, this.#sessionId, releases.client, releases.options, signal, {
@@ -2668,6 +2671,9 @@ export class ConversationView {
 			prevSnap.team === companyState.team &&
 			prevSnap.staff === companyState.staff &&
 			prevSnap.interfaceFolder === companyState.interfaceFolder &&
+			prevSnap.mentionsReady === companyState.mentionsReady &&
+			prevSnap.groups === companyState.groups &&
+			prevSnap.accessLost === companyState.accessLost &&
 			prevSnap.agentName === agentName &&
 			prevSnap.agent === agent &&
 			prevSnap.agentState === this.#agentState &&
@@ -2848,6 +2854,9 @@ export class ConversationView {
 			team: companyState.team,
 			staff: companyState.staff,
 			interfaceFolder: companyState.interfaceFolder,
+			mentionsReady: companyState.mentionsReady,
+			groups: companyState.groups,
+			accessLost: companyState.accessLost,
 			agentName,
 			agent,
 			agentState: this.#agentState,

@@ -1539,8 +1539,7 @@ describe("the element in the thread", () => {
 		const firstBubble = element.el.querySelector(".coding-bubble");
 		expect(firstIntro).not.toBeNull();
 		expect(firstBubble).not.toBeNull();
-		expect(logins).toHaveBeenCalledTimes(2);
-		expect(element.el.textContent).toContain("Use two@example.test");
+		expect(logins).toHaveBeenCalledTimes(1);
 
 		state.events.push(event(3, "step", { text: "git diff", status: "passed" }, "executor"));
 		await vi.advanceTimersByTimeAsync(10_000);
@@ -1549,6 +1548,7 @@ describe("the element in the thread", () => {
 		expect(element.el.querySelector(".coding-bubble")).toBe(firstBubble);
 		expect(element.el.querySelectorAll(".coding-row-step")).toHaveLength(2);
 		expect(logins).toHaveBeenCalledTimes(2);
+		expect(element.el.textContent).toContain("Use two@example.test");
 
 		read.mockImplementationOnce((_workerId, _after, signal) => {
 			seenSignal = signal;

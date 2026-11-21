@@ -403,7 +403,7 @@ export class CodingSessionElement {
 	/** Per action, the request id kept for a retry after a refusal. */
 	readonly #requestIds = new Map<"answer" | "delegate" | "archive" | "login", string>();
 	/** The owner's logins while the card offers them, for the session's state they were read for. */
-	#logins: { key: string; value?: CodingSessionLogins } | undefined;
+	#logins: { key: string; value?: CodingSessionLogins; retryAfter?: number } | undefined;
 	#poll: ReturnType<typeof setTimeout> | undefined;
 	#request: AbortController | undefined;
 	#refreshing: Promise<void> | undefined;
@@ -689,7 +689,9 @@ export class CodingSessionElement {
 		const key = this.#loginOfferKey(owns);
 		if (!key) return null;
 		const logins = this.#options.api.logins;
-		if (this.#logins?.key !== key && logins) {
+		const needsFetch =
+			this.#logins?.key !== key || (this.#logins.retryAfter !== undefined && Date.now() >= this.#logins.retryAfter);
+		if (needsFetch && logins) {
 			const asked = { key };
 			this.#logins = asked;
 			void logins(this.#session.workerId).then(
@@ -700,7 +702,7 @@ export class CodingSessionElement {
 					this.#render();
 				},
 				() => {
-					if (this.#logins === asked) this.#logins = undefined;
+					if (this.#logins === asked) this.#logins = { key, retryAfter: Date.now() + 5_000 };
 				},
 			);
 		}
