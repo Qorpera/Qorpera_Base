@@ -634,6 +634,7 @@ export async function runCloudGeminiToolSession(options: {
 				const correction = await options.turnCorrection(sessionSignal);
 				if (correction) {
 					correctionSent = true;
+					if (response.parts.length === 0) contents.push({ role: "model", parts: [{ text: "" }] });
 					contents.push({ role: "user", parts: [{ text: redactCloudWebhookSecrets(correction) }] });
 					continue;
 				}

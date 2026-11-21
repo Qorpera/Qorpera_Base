@@ -668,8 +668,8 @@ revoke all on function public.qorpera_record_gemini_run_usage(jsonb, jsonb),
 grant execute on function public.qorpera_record_gemini_run_usage(jsonb, jsonb),
 	public.qorpera_record_gemini_cap_reached(jsonb)
 	to service_role;
-insert into public.qorpera_native_host_calls(name, scope)
-values ('qorpera_record_gemini_run_usage', 'binding'), ('qorpera_record_gemini_cap_reached', 'binding');
+insert into public.qorpera_native_host_calls(name, scope) values
+	('qorpera_record_gemini_run_usage', 'binding'), ('qorpera_record_gemini_cap_reached', 'binding');
 
 alter table public.qorpera_session_models drop constraint qorpera_session_models_model_id_check;
 alter table public.qorpera_session_models

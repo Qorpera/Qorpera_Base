@@ -59,6 +59,7 @@ select pg_temp.acct_assert(not exists (
 		-- Which machines a member watched and when (20260930712000): the member's own record, no picture.
 		'qorpera_company_machine_screen_watches',
 		'qorpera_founding_presence_devices', 'qorpera_friendships',
+		'qorpera_gemini_key_tickets', 'qorpera_gemini_keys',
 		'qorpera_mail_thread_reads', 'qorpera_member_email_actions', 'qorpera_member_email_drafts',
 		-- The pages a member hid from their own rail (20260930697000).
 		'qorpera_member_hidden_interface_pages', 'qorpera_member_notifications',

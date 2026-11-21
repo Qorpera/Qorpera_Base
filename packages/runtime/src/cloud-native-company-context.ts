@@ -38,11 +38,12 @@ import {
 import { type CloudRuntimeToolOperation, cloudRuntimeErrorCategory } from "./cloud-runtime-observability.ts";
 import {
 	CLOUD_RUNTIME_CLAUDE_MODELS,
+	CLOUD_RUNTIME_GEMINI_EFFORTS,
+	CLOUD_RUNTIME_GEMINI_MODELS,
 	type CloudRuntimeClaudeChoice,
 	type CloudRuntimeGeminiChoice,
 	type CloudRuntimeServiceTier,
 	isCloudRuntimeClaudeChoice,
-	isCloudRuntimeGeminiChoice,
 	isCloudRuntimeServiceTier,
 } from "./cloud-runtime-policy.ts";
 import { type CloudAgentSkillsBlock, unavailableCloudAgentSkills } from "./cloud-skill-tools.ts";
@@ -750,6 +751,21 @@ function contextSource(value: unknown): CloudCompanyContextSource {
 	};
 }
 
+function isGeminiChoice(value: unknown): value is CloudRuntimeGeminiChoice {
+	const record =
+		value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+	return (
+		record !== undefined &&
+		Object.keys(record).length === 3 &&
+		typeof record.model === "string" &&
+		Object.hasOwn(CLOUD_RUNTIME_GEMINI_MODELS, record.model) &&
+		typeof record.effort === "string" &&
+		(CLOUD_RUNTIME_GEMINI_EFFORTS as readonly string[]).includes(record.effort) &&
+		typeof record.keyId === "string" &&
+		isUuid(record.keyId)
+	);
+}
+
 export function parseCloudNativeCompanyContext(
 	value: unknown,
 	binding: CloudNativeToolBinding,
@@ -765,7 +781,7 @@ export function parseCloudNativeCompanyContext(
 	const { serviceTier, origin: originValue, claude: claudeValue, gemini: geminiValue, ...always } = record ?? {};
 	if (tiered && !isCloudRuntimeServiceTier(serviceTier)) throw new Error("Invalid cloud company context");
 	if (picked && !isCloudRuntimeClaudeChoice(claudeValue)) throw new Error("Invalid cloud company context");
-	if (geminiPicked && !isCloudRuntimeGeminiChoice(geminiValue)) throw new Error("Invalid cloud company context");
+	if (geminiPicked && !isGeminiChoice(geminiValue)) throw new Error("Invalid cloud company context");
 	const data = closed(record ? always : value, [
 		"schema",
 		"identity",
@@ -884,7 +900,7 @@ export function parseCloudNativeCompanyContext(
 		...(isCloudRuntimeClaudeChoice(claudeValue)
 			? { claude: { model: claudeValue.model, effort: claudeValue.effort } }
 			: {}),
-		...(isCloudRuntimeGeminiChoice(geminiValue)
+		...(isGeminiChoice(geminiValue)
 			? { gemini: { model: geminiValue.model, effort: geminiValue.effort, keyId: geminiValue.keyId.toLowerCase() } }
 			: {}),
 		folder,

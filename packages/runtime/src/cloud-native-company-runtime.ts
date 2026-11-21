@@ -1105,7 +1105,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					);
 					if (openedKey.state === "refused") {
 						if (openedKey.reason === "CAP_REACHED") {
-							await this.#recordGeminiCapReached(binding);
 							throw tagNativeRuntimeFailure(
 								new GeminiCapReachedError(openedKey.monthlyCapCents, openedKey.monthSpendMicrodollars),
 								"native-tools",

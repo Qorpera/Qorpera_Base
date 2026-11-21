@@ -332,6 +332,22 @@ export async function runCloudNativeRunToolSession(options: {
 			);
 			await assertActive(recordSignal);
 		};
+		const closing =
+			runLog || options.closing
+				? async (closeSignal: AbortSignal) => {
+						closingStarted = true;
+						try {
+							if (runLog)
+								try {
+									await runLog.log.close(closeSignal);
+								} finally {
+									await runLog.lines.finish(closeSignal);
+								}
+						} finally {
+							await options.closing?.(closeSignal);
+						}
+					}
+				: undefined;
 		if (options.gemini) {
 			result = await runCloudGeminiToolSession({
 				boundary,
@@ -348,18 +364,7 @@ export async function runCloudNativeRunToolSession(options: {
 				runtimeInstructions: options.runtimeInstructions,
 				...(options.opening ? { opening: options.opening } : {}),
 				...(options.turnCorrection ? { turnCorrection: options.turnCorrection } : {}),
-				...(runLog || options.closing
-					? {
-							closing: async (closeSignal: AbortSignal) => {
-								closingStarted = true;
-								try {
-									if (runLog) await runLog.log.close(closeSignal);
-								} finally {
-									await options.closing?.(closeSignal);
-								}
-							},
-						}
-					: {}),
+				...(closing ? { closing } : {}),
 				...(reviewer ? { reviewer } : {}),
 				beforeModelStart,
 				...(activeAdapters.fenceContextView ? { recordChecksAuthority: true } : {}),
@@ -386,23 +391,7 @@ export async function runCloudNativeRunToolSession(options: {
 				...(options.pictures ? { pictures: options.pictures } : {}),
 				...(options.turnCorrection ? { turnCorrection: options.turnCorrection } : {}),
 				...(options.light ? { light: options.light } : {}),
-				...(runLog || options.closing
-					? {
-							closing: async (signal: AbortSignal) => {
-								closingStarted = true;
-								try {
-									if (runLog)
-										try {
-											await runLog.log.close(signal);
-										} finally {
-											await runLog.lines.finish(signal);
-										}
-								} finally {
-									await options.closing?.(signal);
-								}
-							},
-						}
-					: {}),
+				...(closing ? { closing } : {}),
 				...(home ? { home } : {}),
 				identityRoot: options.identityRoot,
 				...(options.reusedIdentityRoot ? { reusedIdentityRoot: true } : {}),

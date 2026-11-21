@@ -1,5 +1,3 @@
-import { isUuid } from "@qorpera/contracts";
-
 /** Versioned policy of the currently implemented native runtime, not a future wake bus.
  * A routine's own version may select any allowed effort (contract 17); the
  * agent chooses it when it sets the routine up. A member's turn in a
@@ -100,19 +98,4 @@ export interface CloudRuntimeGeminiChoice {
 	readonly model: CloudRuntimeGeminiModel;
 	readonly effort: CloudRuntimeGeminiEffort;
 	readonly keyId: string;
-}
-
-export function isCloudRuntimeGeminiChoice(value: unknown): value is CloudRuntimeGeminiChoice {
-	const record =
-		value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
-	return (
-		record !== undefined &&
-		Object.keys(record).length === 3 &&
-		typeof record.model === "string" &&
-		Object.hasOwn(CLOUD_RUNTIME_GEMINI_MODELS, record.model) &&
-		typeof record.effort === "string" &&
-		(CLOUD_RUNTIME_GEMINI_EFFORTS as readonly string[]).includes(record.effort) &&
-		typeof record.keyId === "string" &&
-		isUuid(record.keyId)
-	);
 }
