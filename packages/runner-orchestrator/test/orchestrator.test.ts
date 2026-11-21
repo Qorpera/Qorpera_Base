@@ -3248,7 +3248,7 @@ describe("cloud runner orchestrator", () => {
 			await gate;
 			inFlight--;
 			perHeadActive.delete(input.routineId);
-			return { state: "enqueued", runId: "11111111-1111-4111-8111-111111111111" };
+			return { occurrenceId: input.occurrenceId, status: "queued" as const, scheduledFor: input.scheduledFor };
 		});
 
 		const reconciler = new CloudRoutineScheduleReconciler({
@@ -3277,7 +3277,7 @@ describe("cloud runner orchestrator", () => {
 				throw err0;
 			}
 			if (input.routineId === routineIds[3]) throw err3;
-			return { state: "enqueued", runId: "11111111-1111-4111-8111-111111111111" };
+			return { occurrenceId: input.occurrenceId, status: "queued" as const, scheduledFor: input.scheduledFor };
 		});
 		const orderReconciler = new CloudRoutineScheduleReconciler({
 			now: () => new Date("2026-08-20T12:30:00.000Z"),
@@ -3292,21 +3292,9 @@ describe("cloud runner orchestrator", () => {
 		const dynControl = controlPlane();
 		dynControl.listFolderDynamicRoutines = vi.fn(async () => ({
 			items: [
-				{
-					environmentId: "99999999-9999-4999-8999-999999999991",
-					routineId: routineIds[0]!,
-					agentId: "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
-				},
-				{
-					environmentId: "99999999-9999-4999-8999-999999999992",
-					routineId: routineIds[1]!,
-					agentId: "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
-				},
-				{
-					environmentId: "99999999-9999-4999-8999-999999999993",
-					routineId: routineIds[2]!,
-					agentId: "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
-				},
+				{ routineId: routineIds[0]!, version: 1 },
+				{ routineId: routineIds[1]!, version: 1 },
+				{ routineId: routineIds[2]!, version: 1 },
 			],
 			hasMore: false,
 		}));
@@ -3321,7 +3309,7 @@ describe("cloud runner orchestrator", () => {
 			await new Promise((resolve) => setTimeout(resolve, 5));
 			dynInFlight--;
 			if (routine.routineId === routineIds[2]) throw dynErr2;
-			return { state: "idle" as const };
+			return { status: "inserted" as const, occurrenceId: "17171717-1717-4717-8717-171717171717" };
 		});
 		const dynReconciler = new CloudRoutineScheduleReconciler({
 			now: () => new Date("2026-08-20T12:30:00.000Z"),
