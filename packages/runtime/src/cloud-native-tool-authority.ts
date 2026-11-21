@@ -295,6 +295,29 @@ export function cloudToolRequest<T>(
 	});
 }
 
+async function withCombinedAbort<T>(
+	a: AbortSignal,
+	b: AbortSignal,
+	use: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+	if (a === b) return use(a);
+	const controller = new AbortController();
+	const abortFromA = () => controller.abort(a.reason);
+	const abortFromB = () => controller.abort(b.reason);
+	if (a.aborted) controller.abort(a.reason);
+	else if (b.aborted) controller.abort(b.reason);
+	else {
+		a.addEventListener("abort", abortFromA, { once: true });
+		b.addEventListener("abort", abortFromB, { once: true });
+	}
+	try {
+		return await use(controller.signal);
+	} finally {
+		a.removeEventListener("abort", abortFromA);
+		b.removeEventListener("abort", abortFromB);
+	}
+}
+
 /** Live authority, not a path grant. Each effect gateway must still check its exact target atomically. */
 export class CloudNativeToolRun {
 	readonly binding: CloudNativeToolBinding;
@@ -302,6 +325,8 @@ export class CloudNativeToolRun {
 	readonly #reader: CloudNativeToolAuthorityReader;
 	readonly #holdMs: number | undefined;
 	readonly #runRowMs: number | undefined;
+	readonly #parentSignal: AbortSignal;
+	readonly #onParentAbort: () => void;
 	readonly #stop = new AbortController();
 	#identity?: CloudNativeToolIdentity;
 	#identityText?: string;
@@ -323,12 +348,17 @@ export class CloudNativeToolRun {
 		this.#reader = reader;
 		this.#holdMs = holdMs;
 		this.#runRowMs = runRowMs;
-		this.signal = AbortSignal.any([signal, this.#stop.signal]);
+		this.#parentSignal = signal;
+		this.#onParentAbort = () => this.close(signal.reason);
+		if (signal.aborted) this.#stop.abort(signal.reason);
+		else signal.addEventListener("abort", this.#onParentAbort, { once: true });
+		this.signal = this.#stop.signal;
 		this.signal.addEventListener(
 			"abort",
 			() => {
 				clearTimeout(this.#watchdog);
 				clearTimeout(this.#refresh);
+				this.#parentSignal.removeEventListener("abort", this.#onParentAbort);
 			},
 			{ once: true },
 		);
@@ -407,18 +437,19 @@ export class CloudNativeToolRun {
 		timeoutMs?: number,
 		runRowMs?: number,
 	): Promise<boolean> {
-		const combined = AbortSignal.any([signal, this.signal]);
-		try {
-			combined.throwIfAborted();
-			if (this.#identity && performance.now() >= this.#deadline) throw new Error("Cloud tool authority expired");
-			const { value, started } = await this.retry(read, combined, timeoutMs, runRowMs);
-			if (value === undefined) return false;
-			this.#apply(value, started, combined);
-			return true;
-		} catch (error) {
-			this.close();
-			throw new Error("Cloud tool authority unavailable", { cause: error });
-		}
+		return withCombinedAbort(signal, this.signal, async (combined) => {
+			try {
+				combined.throwIfAborted();
+				if (this.#identity && performance.now() >= this.#deadline) throw new Error("Cloud tool authority expired");
+				const { value, started } = await this.retry(read, combined, timeoutMs, runRowMs);
+				if (value === undefined) return false;
+				this.#apply(value, started, combined);
+				return true;
+			} catch (error) {
+				if (!this.#isCallerOnlyAbort(signal, error)) this.close();
+				throw new Error("Cloud tool authority unavailable", { cause: error });
+			}
+		});
 	}
 
 	/**
@@ -448,35 +479,47 @@ export class CloudNativeToolRun {
 		timeoutMs?: number,
 		runRowMs?: number,
 	): Promise<{ value: T; started: number }> {
-		const combined = AbortSignal.any([signal, this.signal]);
-		const begun = performance.now();
-		// Read at each step: a refresh that lands meanwhile extends it.
-		const limit = (): number => (this.#identity ? this.#deadline : begun + CLOUD_NATIVE_TOOL_AUTHORITY_WINDOW_MS);
-		let attemptLimitMs = timeoutMs ?? REQUEST_TIMEOUT_MS;
-		for (let attempt = 0; ; attempt += 1) {
-			combined.throwIfAborted();
-			const started = performance.now();
-			try {
-				// Every attempt ends by the limit: none starts with less than 1 ms of it.
-				const attemptMs = Math.min(attemptLimitMs, Math.floor(limit() - started));
-				if (attemptMs < 1) throw new Error("Cloud tool authority unavailable");
-				return { value: await cloudToolRequest(read, combined, attemptMs), started };
-			} catch (error) {
-				if (error instanceof CloudRuntimeDiagnosticError && error.category === "timeout")
-					attemptLimitMs = Math.min(CLOUD_TOOL_REQUEST_MAX_MS, attemptLimitMs * 2);
-				const pause = cloudControlBackoffMs(attempt);
-				if (combined.aborted || !cloudControlRetryable(error) || performance.now() + pause >= limit()) throw error;
-				// A read of the run's row waits out the copy it replaces, unless the database answered that it ended (R1).
-				// The limit is read again after the wait: a refresh that lands meanwhile extends it.
-				const copyMs =
-					runRowMs === undefined || cloudControlEnded(error)
-						? 0
-						: Math.ceil(started + runRowMs - performance.now());
-				const waitMs = Math.max(pause, copyMs);
-				if (!this.#identity && performance.now() + waitMs >= limit()) throw error;
-				await cloudControlPause(waitMs, combined);
+		return withCombinedAbort(signal, this.signal, async (combined) => {
+			const begun = performance.now();
+			// Read at each step: a refresh that lands meanwhile extends it.
+			const limit = (): number => (this.#identity ? this.#deadline : begun + CLOUD_NATIVE_TOOL_AUTHORITY_WINDOW_MS);
+			let attemptLimitMs = timeoutMs ?? REQUEST_TIMEOUT_MS;
+			for (let attempt = 0; ; attempt += 1) {
+				combined.throwIfAborted();
+				const started = performance.now();
+				try {
+					// Every attempt ends by the limit: none starts with less than 1 ms of it.
+					const attemptMs = Math.min(attemptLimitMs, Math.floor(limit() - started));
+					if (attemptMs < 1) throw new Error("Cloud tool authority unavailable");
+					return { value: await cloudToolRequest(read, combined, attemptMs), started };
+				} catch (error) {
+					if (error instanceof CloudRuntimeDiagnosticError && error.category === "timeout")
+						attemptLimitMs = Math.min(CLOUD_TOOL_REQUEST_MAX_MS, attemptLimitMs * 2);
+					const pause = cloudControlBackoffMs(attempt);
+					if (combined.aborted || !cloudControlRetryable(error) || performance.now() + pause >= limit())
+						throw error;
+					// A read of the run's row waits out the copy it replaces, unless the database answered that it ended (R1).
+					// The limit is read again after the wait: a refresh that lands meanwhile extends it.
+					const copyMs =
+						runRowMs === undefined || cloudControlEnded(error)
+							? 0
+							: Math.ceil(started + runRowMs - performance.now());
+					const waitMs = Math.max(pause, copyMs);
+					if (!this.#identity && performance.now() + waitMs >= limit()) throw error;
+					await cloudControlPause(waitMs, combined);
+				}
 			}
-		}
+		});
+	}
+
+	#isCallerOnlyAbort(signal: AbortSignal, error: unknown): boolean {
+		if (signal === this.signal || !signal.aborted || this.signal.aborted) return false;
+		if (this.#identity && performance.now() >= this.#deadline) return false;
+		return (
+			error === signal.reason ||
+			(error instanceof CloudRuntimeDiagnosticError && error.category === "cancelled") ||
+			(error instanceof Error && error.name === "AbortError")
+		);
 	}
 
 	async #check(
@@ -485,21 +528,53 @@ export class CloudNativeToolRun {
 		timeoutMs: number | undefined,
 		runRowMs: number | undefined,
 	): Promise<void> {
-		const combined = AbortSignal.any([signal, this.signal]);
-		const check = this.#checking.then(async () => {
-			combined.throwIfAborted();
-			if (this.#identity && performance.now() >= this.#deadline) throw new Error("Cloud tool authority expired");
-			// The attempt that answered dates the authority it read.
-			const { value, started } = await this.retry(read, combined, timeoutMs, runRowMs);
-			this.#apply(value, started, combined);
-		});
-		this.#checking = check.catch(() => {
+		if (this.signal.aborted) {
 			this.close();
+			throw new Error("Cloud tool authority unavailable", { cause: this.signal.reason });
+		}
+		if (signal !== this.signal && signal.aborted) {
+			throw new Error("Cloud tool authority unavailable", { cause: signal.reason });
+		}
+		const check = this.#checking.then(() =>
+			withCombinedAbort(signal, this.signal, async (combined) => {
+				combined.throwIfAborted();
+				if (this.#identity && performance.now() >= this.#deadline) throw new Error("Cloud tool authority expired");
+				// The attempt that answered dates the authority it read.
+				const { value, started } = await this.retry(read, combined, timeoutMs, runRowMs);
+				this.#apply(value, started, combined);
+			}),
+		);
+		const wait =
+			signal === this.signal
+				? check
+				: new Promise<void>((resolve, reject) => {
+						const onAbort = () => {
+							// WHY: a caller signal derived from this.signal aborts when check closes the run; let check's cause win.
+							if (!this.signal.aborted) reject(signal.reason);
+						};
+						if (signal.aborted && !this.signal.aborted) {
+							onAbort();
+							return;
+						}
+						signal.addEventListener("abort", onAbort, { once: true });
+						check.then(
+							() => {
+								signal.removeEventListener("abort", onAbort);
+								resolve();
+							},
+							(error) => {
+								signal.removeEventListener("abort", onAbort);
+								reject(error);
+							},
+						);
+					});
+		this.#checking = check.catch((error) => {
+			if (!this.#isCallerOnlyAbort(signal, error)) this.close();
 		});
 		try {
-			await check;
+			await wait;
 		} catch (error) {
-			this.close();
+			if (!this.#isCallerOnlyAbort(signal, error)) this.close();
 			// The cause only tells a timed-out check apart in observations.
 			throw new Error("Cloud tool authority unavailable", { cause: error });
 		}
@@ -535,9 +610,11 @@ export class CloudNativeToolRun {
 		);
 	}
 
-	close(): void {
+	close(reason?: unknown): void {
 		clearTimeout(this.#watchdog);
 		clearTimeout(this.#refresh);
-		this.#stop.abort();
+		this.#parentSignal.removeEventListener("abort", this.#onParentAbort);
+		if (reason !== undefined) this.#stop.abort(reason);
+		else this.#stop.abort();
 	}
 }
