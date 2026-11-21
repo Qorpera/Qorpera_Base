@@ -63,7 +63,6 @@ describe("SurfaceStudioView", () => {
 			{ op: "write_text", path: "brand/voice.md", content: "Warm, quiet, Danish craft.\n" },
 		]);
 
-		const onHandoff = vi.fn();
 		const view = new SurfaceStudioView({
 			store,
 			surface: brand,
@@ -75,7 +74,6 @@ describe("SurfaceStudioView", () => {
 				}),
 				"brand/voice.md": "Calm and direct.\n",
 			},
-			onHandoff,
 		});
 		document.body.append(view.el);
 
@@ -103,11 +101,7 @@ describe("SurfaceStudioView", () => {
 		view.update();
 		expect(view.el.querySelector(".studio-badge")?.textContent).toBe("Base");
 		expect(view.el.querySelector('[data-file="brand/voice.md"]')?.textContent).toContain("Calm and direct.");
-
-		const syncBtn = view.el.querySelector<HTMLButtonElement>(".studio-sync-btn")!;
-		expect(syncBtn.textContent).toContain("Sync to Website");
-		syncBtn.click();
-		expect(onHandoff).toHaveBeenCalledWith("website");
+		expect(view.el.querySelector(".studio-sync-btn")).toBeNull();
 
 		view.dispose();
 		store.dispose();

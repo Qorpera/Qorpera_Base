@@ -596,18 +596,7 @@ describe("the surface page", () => {
 		await flush();
 		brandView.update();
 		expect(brandView.el.querySelector(".surface-studio")).not.toBeNull();
-		const syncBarBtn = brandView.el.querySelector<HTMLButtonElement>(".surface-handoff-btn")!;
-		expect(syncBarBtn.textContent).toContain("Sync to Website");
-		syncBarBtn.click();
-		await flush();
-		expect(spawnCrossSurfaceSession).toHaveBeenNthCalledWith(
-			1,
-			expect.objectContaining({
-				sourceSurfaceId: brand.id,
-				targetSurfaceSlug: "website",
-			}),
-		);
-		expect(navigated).toEqual(["website"]);
+		expect(brandView.el.querySelector(".surface-handoff-btn")).toBeNull();
 		brandView.dispose();
 
 		const inboxView = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "inbox");
@@ -624,7 +613,7 @@ describe("the surface page", () => {
 		form.dispatchEvent(new Event("submit", { cancelable: true }));
 		await flush();
 		expect(spawnCrossSurfaceSession).toHaveBeenNthCalledWith(
-			2,
+			1,
 			expect.objectContaining({
 				sourceSurfaceId: inbox.id,
 				targetSurfaceSlug: "website",
@@ -632,7 +621,7 @@ describe("the surface page", () => {
 			}),
 		);
 		expect(form.hidden).toBe(true);
-		expect(navigated).toEqual(["website", "website"]);
+		expect(navigated).toEqual(["website"]);
 		inboxView.dispose();
 		store.dispose();
 	});

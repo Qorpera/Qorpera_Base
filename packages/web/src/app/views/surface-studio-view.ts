@@ -1,11 +1,10 @@
 import { composeStudioPreview } from "@qorpera/cloud-client/surface-studio-patches";
 import type { StudioPatchChange, StudioPatchOp, SurfacePreviewConflict, SurfaceSummary } from "@qorpera/contracts";
-import { openContextMenu } from "../../ui/context-menu.ts";
-import { h, icon } from "../../ui/dom.ts";
+import { h } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { t } from "../../ui/preferences.ts";
-import { formatConflictPaths, isOpenChange, productBuildSurfaces, type SurfacesStore } from "../surfaces-store.ts";
+import { formatConflictPaths, isOpenChange, type SurfacesStore } from "../surfaces-store.ts";
 import { surfaceEmblem } from "./surface-rail.ts";
 import { SurfaceReportView } from "./surface-report-view.ts";
 import { type Studio3DConfig, Studio3DViewer } from "./surface-studio-3d.ts";
@@ -17,7 +16,6 @@ export interface SurfaceStudioOptions {
 	readonly baseFiles?: Readonly<Record<string, string>>;
 	readonly patches?: Readonly<Record<string, readonly StudioPatchOp[]>>;
 	readonly loadFiles?: (surface: SurfaceSummary, signal: AbortSignal) => Promise<Readonly<Record<string, string>>>;
-	readonly onHandoff?: (targetSurfaceSlug: string) => void;
 }
 
 interface ColorToken {
@@ -368,9 +366,7 @@ export class SurfaceStudioView {
 		const baseFiles = this.#effectiveBaseFiles(surface.id);
 		const workspace = store.workspace(surface.id);
 		const ordered = this.#orderedChanges();
-		const targets = productBuildSurfaces(state, surface.id);
 		const busyReconcile = Boolean(state.busy[`reconcile:${surface.id}`]);
-		const busyHandoff = targets.some((target) => Boolean(state.busy[`handoff:${surface.id}:${target.slug}`]));
 		const key = JSON.stringify([
 			this.#loading,
 			state.mode,
@@ -380,9 +376,7 @@ export class SurfaceStudioView {
 			surface.title,
 			surface.folderRoot,
 			workspace?.briefSummary,
-			targets.map((target) => [target.slug, target.title]),
 			busyReconcile,
-			busyHandoff,
 		]);
 		if (key === this.#shown) return;
 		this.#shown = key;
@@ -470,19 +464,6 @@ export class SurfaceStudioView {
 					surface.folderRoot ? h("span", { class: "studio-path" }, surface.folderRoot) : null,
 					h("span", { class: badgeClass }, badgeText),
 				),
-				targets.length > 0 && this.#options.onHandoff
-					? h(
-							"button",
-							{
-								type: "button",
-								class: "btn btn-small studio-sync-btn",
-								"data-act": "studio-sync",
-								disabled: busyHandoff,
-							},
-							icon("forward"),
-							targets.length === 1 ? t("Sync to {target}", { target: targets[0]!.title }) : t("Sync to…"),
-						)
-					: null,
 			),
 		];
 
@@ -974,26 +955,6 @@ export class SurfaceStudioView {
 			const ids = this.#lastConflict?.changeIds ?? [];
 			if (ids.length) void this.#options.store.reconcileChanges(this.#options.surface.id, ids);
 			return;
-		}
-		if (act === "studio-sync" && this.#options.onHandoff) {
-			const targets = productBuildSurfaces(this.#options.store.state, this.#options.surface.id);
-			if (targets.length === 1) {
-				this.#options.onHandoff(targets[0]!.slug);
-				return;
-			}
-			if (targets.length > 1) {
-				const box = target.getBoundingClientRect();
-				openContextMenu({
-					label: t("Sync to…"),
-					x: box.left,
-					y: box.bottom + 4,
-					opener: target,
-					items: targets.map((surface) => ({
-						label: surface.title,
-						select: () => this.#options.onHandoff?.(surface.slug),
-					})),
-				});
-			}
 		}
 	}
 }

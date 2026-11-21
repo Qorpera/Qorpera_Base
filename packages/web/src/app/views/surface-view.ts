@@ -504,8 +504,7 @@ export class SurfaceView {
 					session.changes.some((change) => change.kind === "folder_patch" && isOpenChange(change)),
 				),
 			);
-		const handoffTargets =
-			surface.archetype === "studio" || surface.archetype === "ops" ? productBuildSurfaces(state, surface.id) : [];
+		const handoffTargets = surface.archetype === "ops" ? productBuildSurfaces(state, surface.id) : [];
 		const busyHandoff = handoffTargets.some((target) => Boolean(state.busy[`handoff:${surface.id}:${target.slug}`]));
 		const activeDrawerSession =
 			state.drawer?.surfaceId === surface.id && !state.drawer.explorationId ? state.drawer.sessionId : "";
@@ -647,13 +646,7 @@ export class SurfaceView {
 
 		const count = surface.unpublishedChangeCount;
 		const handoffLabel =
-			handoffTargets.length === 1
-				? surface.archetype === "studio"
-					? t("Sync to {target}", { target: handoffTargets[0]!.title })
-					: t("Send to {target}…", { target: handoffTargets[0]!.title })
-				: surface.archetype === "studio"
-					? t("Sync to…")
-					: t("Send to…");
+			handoffTargets.length === 1 ? t("Send to {target}…", { target: handoffTargets[0]!.title }) : t("Send to…");
 
 		const rightTools: HTMLElement[] = [];
 		if (handoffTargets.length > 0) {
@@ -1277,21 +1270,6 @@ export class SurfaceView {
 		this.#setPointing(!this.#pointing);
 	}
 
-	async #syncStudioTo(surface: SurfaceSummary, targetSlug: string): Promise<void> {
-		const target = productBuildSurfaces(this.#host.store.state, surface.id).find((item) => item.slug === targetSlug);
-		if (!target) return;
-		await this.#host.store.spawnCrossSurfaceSession({
-			sourceSurfaceId: surface.id,
-			targetSurfaceSlug: target.slug,
-			title: t("Sync {source}", { source: surface.title }),
-			prompt: t("Sync the latest updates from {source} into {target}.", {
-				source: surface.title,
-				target: target.title,
-			}),
-			sourceRef: { surfaceSlug: surface.slug, ...(surface.folderRoot ? { folderRoot: surface.folderRoot } : {}) },
-		});
-	}
-
 	#openHandoffPrompt(surface: SurfaceSummary): void {
 		const targets = productBuildSurfaces(this.#host.store.state, surface.id);
 		if (!targets.length) return;
@@ -1456,24 +1434,6 @@ export class SurfaceView {
 			case "handoff-open": {
 				const targets = productBuildSurfaces(store.state, surface.id);
 				if (!targets.length) return;
-				if (surface.archetype === "studio") {
-					if (targets.length === 1) {
-						void this.#syncStudioTo(surface, targets[0]!.slug);
-						return;
-					}
-					const box = target.getBoundingClientRect();
-					openContextMenu({
-						label: t("Sync to…"),
-						x: box.left,
-						y: box.bottom + 4,
-						opener: target,
-						items: targets.map((item) => ({
-							label: item.title,
-							select: () => void this.#syncStudioTo(surface, item.slug),
-						})),
-					});
-					return;
-				}
 				if (this.#handoffOpen) this.#closeHandoff();
 				else this.#openHandoffPrompt(surface);
 				return;
