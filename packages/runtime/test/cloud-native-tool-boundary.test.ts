@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { getEventListeners } from "node:events";
 import type { JsonValue } from "@qorpera/contracts";
 import {
 	CLOUD_AGENT_SEND_SCHEMA,
@@ -1023,5 +1024,43 @@ describe("cloud-owned native tool boundary", () => {
 				},
 			]),
 		).toThrow("Invalid tool JSON");
+	});
+
+	it("detaches folder-report wait listeners from run signal and preserves replay tamper detection", async () => {
+		const stop = new AbortController();
+		const { tool } = fixture();
+		const reports: CloudNativeFolderReports = {
+			next: async () => undefined,
+		};
+		const boundary = new CloudNativeToolBoundary({
+			companyId,
+			runId,
+			tools: [tool],
+			assertActive: async () => undefined,
+			folderReports: reports,
+			signal: stop.signal,
+		});
+		try {
+			for (let i = 0; i < 40; i++) {
+				const res = await boundary.invoke(`call_${i}`, "qorpera", tool.name, { path: "projects/roadmap.md" });
+				expect(res.success).toBe(true);
+			}
+			expect(getEventListeners(stop.signal, "abort")).toHaveLength(0);
+
+			const first = await boundary.fenceNativeResults([
+				{ kind: "function_call_output", callId: "replay_1", output: "initial native result" },
+			]);
+			const replayed = await boundary.fenceNativeResults([
+				{ kind: "function_call_output", callId: "replay_1", output: first[0]!.output },
+			]);
+			expect(replayed).toEqual(first);
+			await expect(
+				boundary.fenceNativeResults([
+					{ kind: "function_call_output", callId: "replay_1", output: `${first[0]!.output} tampered` },
+				]),
+			).rejects.toThrow("Native result changed after release");
+		} finally {
+			boundary.close();
+		}
 	});
 });

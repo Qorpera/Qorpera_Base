@@ -53,6 +53,16 @@ import type { CloudVoiceChannel } from "./cloud-voice-channel.ts";
 import type { MemoryCompactChannel } from "./memory-tree/compact.ts";
 import type { CloudRunStepLines } from "./memory-tree/step-lines.ts";
 
+async function withTimeoutSignal<T>(timeoutMs: number, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(new Error("Operation timed out")), timeoutMs);
+	try {
+		return await fn(controller.signal);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 export interface CloudNativeRunToolAdapters {
 	tools: readonly CloudNativeTool[];
 	/** Tools among `tools` that the run opens through more_tools instead of its catalog (T3-6, cloudToolsOnDemand). */
@@ -426,11 +436,13 @@ export async function runCloudNativeRunToolSession(options: {
 		// still running stops then too. A stopped run does not: its authority is gone, and a later attempt may already be
 		// writing the log.
 		if (executionFailed && !closingStarted && !run.signal.aborted && adapters?.runLog)
-			await adapters.runLog.log.close(AbortSignal.timeout(10_000)).catch(() => undefined);
+			await withTimeoutSignal(10_000, (closeSignal) => adapters.runLog!.log.close(closeSignal)).catch(
+				() => undefined,
+			);
 		run.close();
 		if (adapters?.close) {
 			try {
-				await cloudToolRequest(adapters.close, AbortSignal.timeout(10_000));
+				await withTimeoutSignal(10_000, (closeSignal) => cloudToolRequest(adapters.close!, closeSignal, 10_000));
 			} catch {
 				// Keep the original execution failure, but never report success with unknown cleanup.
 				if (!executionFailed) cleanupError = new Error("Native resource cleanup was not confirmed");

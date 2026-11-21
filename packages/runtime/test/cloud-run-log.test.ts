@@ -2232,4 +2232,30 @@ describe("the tool boundary with a work log", () => {
 		expect(committed[1]?.narrow).toBeUndefined();
 		expect(committed.map((line) => line.args_hash)).toEqual(retryHashes);
 	});
+
+	it("clips 960 KiB arguments cleanly, bounds large read lists, and preserves watermark integrity across refresh", async () => {
+		const { log, folder, signal } = runLog();
+		const huge = `${"a".repeat(950_000)}😀${"b".repeat(10_000)}`;
+		const manyReads = Array.from({ length: 5_000 }, (_, i) => ({ path: `docs/file-${i}.md`, version: `v${i}` }));
+		const j0 = log.step({
+			call: "call-huge",
+			tool: "company_write",
+			argumentsText: JSON.stringify({ content: huge }),
+			argumentSha256: createHash("sha256").update(huge).digest("hex"),
+		});
+		log.finish(j0, envelope("done"), [{ releaseId: randomUUID(), reads: manyReads }]);
+		await log.flush(signal);
+		const firstLine = folder.all()[0]!;
+		expect(Buffer.byteLength(JSON.stringify(firstLine.args))).toBeLessThanOrEqual(CLOUD_RUN_LOG_FIELD_BYTES);
+		expect(firstLine.reads_cut).toBe(true);
+		expect(Buffer.byteLength(JSON.stringify(firstLine.reads))).toBeLessThanOrEqual(CLOUD_RUN_LOG_READS_BYTES);
+
+		for (let i = 1; i <= 120; i++) {
+			const j = step(log, "company_read", { path: `docs/step-${i}.md` });
+			log.finish(j, envelope(`ok-${i}`), []);
+		}
+		await log.flush(signal);
+		expect(folder.all()).toHaveLength(121);
+		expect(log.steps()).toHaveLength(121);
+	});
 });

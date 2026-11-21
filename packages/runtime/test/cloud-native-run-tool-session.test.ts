@@ -580,3 +580,26 @@ it("commits a failed run's finished steps, but not a stopped run's", async () =>
 	expect(s.log.close).not.toHaveBeenCalled();
 	expect(s.lines.finish).not.toHaveBeenCalled();
 });
+
+it("gives adapters.close its full 10 s budget instead of cutting it off at the 5 s default", async () => {
+	const f = fixture();
+	let closeSignal: AbortSignal | undefined;
+	const close = vi.fn(async (signal: AbortSignal) => {
+		closeSignal = signal;
+		await new Promise<void>((resolve, reject) => {
+			const timer = setTimeout(resolve, 5_300);
+			signal.addEventListener(
+				"abort",
+				() => {
+					clearTimeout(timer);
+					reject(signal.reason ?? new Error("aborted"));
+				},
+				{ once: true },
+			);
+		});
+	});
+	const result = await f.start({ tools: () => ({ ...f.tools(), close }) });
+	expect(result.providerSessionId).toBe("thread_fixture");
+	expect(close).toHaveBeenCalledOnce();
+	expect(closeSignal?.aborted).toBe(false);
+});
