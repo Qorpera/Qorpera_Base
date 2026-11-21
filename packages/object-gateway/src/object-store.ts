@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import { mkdir, open, readdir, readFile, rename, rm, rmdir, stat } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 import { ObjectDependencyError, type ObjectDependencyHealth } from "./dependency.ts";
@@ -218,6 +219,27 @@ export class FileSystemObjectStore {
 		return reading;
 	}
 
+	getVerified(profileId: string, sha256: string, maxBytes = MAX_QUARANTINED_BYTES): Promise<Uint8Array> {
+		if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > MAX_QUARANTINED_BYTES)
+			return Promise.reject(new Error("Object size limit is invalid"));
+		let path: string;
+		try {
+			path = this.#objectPath(profileId, sha256);
+		} catch (error) {
+			return Promise.reject(error);
+		}
+		const shared = `${path}:verified:${maxBytes}`;
+		const underWay = this.#reading.get(shared);
+		if (underWay) return underWay;
+		const reading = this.#io(path, () => this.#getVerified(profileId, sha256, maxBytes));
+		this.#reading.set(shared, reading);
+		const settled = () => {
+			if (this.#reading.get(shared) === reading) this.#reading.delete(shared);
+		};
+		reading.then(settled, settled);
+		return reading;
+	}
+
 	async #get(profileId: string, sha256: string, expectedBytes: number): Promise<Uint8Array> {
 		const path = this.#objectPath(profileId, sha256);
 		try {
@@ -234,6 +256,38 @@ export class FileSystemObjectStore {
 				throw new Error("Object not found");
 			}
 			throw error;
+		}
+	}
+
+	async #getVerified(profileId: string, sha256: string, maxBytes: number): Promise<Uint8Array> {
+		const path = this.#objectPath(profileId, sha256);
+		let handle: Awaited<ReturnType<typeof open>> | undefined;
+		try {
+			handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+			const info = await handle.stat();
+			if (!info.isFile() || info.size > maxBytes) {
+				throw new Error("Stored object failed integrity verification");
+			}
+			const buffer = Buffer.allocUnsafe(info.size);
+			let offset = 0;
+			while (offset < info.size) {
+				const { bytesRead } = await handle.read(buffer, offset, info.size - offset, offset);
+				if (bytesRead === 0) throw new Error("Stored object failed integrity verification");
+				offset += bytesRead;
+			}
+			const extra = Buffer.allocUnsafe(1);
+			const trailing = await handle.read(extra, 0, 1, offset);
+			if (trailing.bytesRead > 0 || digest(buffer) !== sha256)
+				throw new Error("Stored object failed integrity verification");
+			return buffer;
+		} catch (error) {
+			if (error && typeof error === "object" && "code" in error) {
+				if (error.code === "ENOENT") throw new Error("Object not found");
+				if (error.code === "ELOOP") throw new Error("Stored object failed integrity verification");
+			}
+			throw error;
+		} finally {
+			await handle?.close().catch(() => undefined);
 		}
 	}
 

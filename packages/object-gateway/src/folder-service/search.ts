@@ -566,6 +566,7 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 					if (regex && newline - from > longestLine) longLines++;
 					line++;
 					from = newline + 1;
+					if ((line & 0x1fff) === 0 && performance.now() - turnAt >= TURN_MS) await turn();
 				}
 				if (context > 0) {
 					const tail: ContextLine[] = [];
@@ -649,14 +650,55 @@ function wholeUtf8(bytes: Buffer): number {
 	return bytes.byteLength - (start - 1) >= size ? bytes.byteLength : start - 1;
 }
 
+const CONTROL_CHARS = /[\u0000-\u0008\u000a-\u001f\u007f]/g;
+const NON_ASCII = /[^\x00-\x7f]/;
+
 /** A line as a hit shows it: around its first match, at most HIT_CHARS long, control characters as spaces. `found` is
  * the match's index in the folded line, placed back on the line's own characters. */
 function around(line: string, found: number, caseSensitive: boolean): string {
-	const chars = Array.from(line.replace(/[\u0000-\u0008\u000a-\u001f\u007f]/g, " "));
-	if (chars.length <= HIT_CHARS) return chars.join("");
+	if (line.length <= HIT_CHARS) return line.replace(CONTROL_CHARS, " ");
+	// WHY: avoid 1M-element Array.from() allocations on long minified lines under --jitless while matching codepoint slicing.
+	if (!NON_ASCII.test(line)) {
+		const at = Math.min(Math.max(0, found), line.length);
+		const start = Math.max(0, Math.min(at - HIT_CHARS / 4, line.length - HIT_CHARS));
+		const slice = line.slice(start, start + HIT_CHARS).replace(CONTROL_CHARS, " ");
+		return `${start > 0 ? "…" : ""}${slice}${start + HIT_CHARS < line.length ? "…" : ""}`;
+	}
+	let total = 0;
 	let at = 0;
-	for (let folded = 0; at < chars.length && folded < found; at++)
-		folded += caseSensitive ? chars[at]!.length : chars[at]!.toLowerCase().length;
-	const start = Math.max(0, Math.min(at - HIT_CHARS / 4, chars.length - HIT_CHARS));
-	return `${start > 0 ? "…" : ""}${chars.slice(start, start + HIT_CHARS).join("")}${start + HIT_CHARS < chars.length ? "…" : ""}`;
+	let folded = 0;
+	let matched = false;
+	for (let i = 0; i < line.length; ) {
+		const cp = line.codePointAt(i)!;
+		const units = cp > 0xffff ? 2 : 1;
+		if (!matched) {
+			if (folded >= found) {
+				at = total;
+				matched = true;
+			} else {
+				folded += caseSensitive || cp < 0x80 ? units : line.slice(i, i + units).toLowerCase().length;
+			}
+		}
+		total++;
+		i += units;
+	}
+	if (!matched) at = total;
+	if (total <= HIT_CHARS) return line.replace(CONTROL_CHARS, " ");
+	const start = Math.max(0, Math.min(at - HIT_CHARS / 4, total - HIT_CHARS));
+	const end = start + HIT_CHARS;
+	let startIdx = 0;
+	let endIdx = line.length;
+	let count = 0;
+	for (let i = 0; i < line.length; ) {
+		if (count === start) startIdx = i;
+		const cp = line.codePointAt(i)!;
+		i += cp > 0xffff ? 2 : 1;
+		count++;
+		if (count === end) {
+			endIdx = i;
+			break;
+		}
+	}
+	const slice = line.slice(startIdx, endIdx).replace(CONTROL_CHARS, " ");
+	return `${start > 0 ? "…" : ""}${slice}${end < total ? "…" : ""}`;
 }

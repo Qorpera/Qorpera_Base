@@ -3466,6 +3466,7 @@ export class CompanyController {
 		void this.#sessionsChanged();
 		void this.refreshActivity();
 		void this.refreshMentions();
+		void this.refreshSidebar();
 		this.memberChats.hinted();
 		this.#atComputers.read();
 		if (this.#openSessionId) void this.loadConversation(this.#openSessionId);

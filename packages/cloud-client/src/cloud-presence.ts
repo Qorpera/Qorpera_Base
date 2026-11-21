@@ -1,5 +1,5 @@
 import { REALTIME_SUBSCRIBE_STATES, type RealtimeChannel, type SupabaseClient } from "@supabase/supabase-js";
-import type { HostedPresenceIdentity, HostedPrimaryDatabase } from "./hosted-primary.ts";
+import type { HostedPresenceIdentity } from "./hosted-primary.ts";
 import { PresenceSignatures } from "./presence-signatures.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -74,14 +74,15 @@ export interface PresenceDevices {
 	unregisterPresenceDevice(profileId: string, clientId: string): Promise<void>;
 }
 
+type PresenceSupabaseClient = Pick<SupabaseClient, "channel" | "removeChannel"> & {
+	readonly realtime?: Partial<Pick<SupabaseClient["realtime"], "setAuth">>;
+};
+
 export class SupabaseCloudPresenceTransport {
-	readonly #client: Pick<SupabaseClient<HostedPrimaryDatabase>, "channel" | "removeChannel">;
+	readonly #client: PresenceSupabaseClient;
 	readonly #primary: PresenceDevices;
 
-	constructor(
-		client: Pick<SupabaseClient<HostedPrimaryDatabase>, "channel" | "removeChannel">,
-		primary: PresenceDevices,
-	) {
+	constructor(client: PresenceSupabaseClient, primary: PresenceDevices) {
 		this.#client = client;
 		this.#primary = primary;
 	}
@@ -239,6 +240,7 @@ export class SupabaseCloudPresenceTransport {
 				})
 				.catch(() => undefined);
 		};
+		let removing: Promise<unknown> = Promise.resolve();
 		const scheduleReconnect = (failed: RealtimeChannel, detail: string): void => {
 			if (stopped || failed !== channel || reconnectTimer) return;
 			subscribed = false;
@@ -246,7 +248,7 @@ export class SupabaseCloudPresenceTransport {
 			onHealth?.({ phase: "degraded", error: detail });
 			console.error(`presence channel degraded: ${detail}`);
 			channel = undefined;
-			void this.#client.removeChannel(failed).catch(() => undefined);
+			removing = this.#client.removeChannel(failed).catch(() => undefined);
 			const delay = Math.min(30_000, 1_000 * 2 ** Math.min(reconnectAttempts, 5));
 			reconnectAttempts++;
 			reconnectTimer = setTimeout(() => {
@@ -269,7 +271,9 @@ export class SupabaseCloudPresenceTransport {
 		const connect = (): void => {
 			if (stopped) return;
 			void register()
-				.then(() => {
+				.then(async () => {
+					await removing;
+					await this.#client.realtime?.setAuth?.().catch(() => undefined);
 					if (stopped) return;
 					const next = this.#client.channel(`qorpera-presence-${profileId}`, {
 						config: { private: true, presence: { key: clientId }, broadcast: { self: false } },
@@ -401,7 +405,7 @@ export class SupabaseCloudPresenceTransport {
 					});
 				})
 				.catch((error: unknown) => {
-					if (stopped) return;
+					if (stopped || reconnectTimer) return;
 					onHealth?.({
 						phase: "degraded",
 						error: error instanceof Error ? error.message : "Presence identity registration failed",
@@ -443,7 +447,7 @@ export class SupabaseCloudPresenceTransport {
 				const active = channel;
 				channel = undefined;
 				// Leave first: others stop seeing this tab at once, and the topic is free again.
-				if (active) await this.#client.removeChannel(active);
+				if (active) await this.#client.removeChannel(active).catch(() => undefined);
 				await registration?.catch(() => undefined);
 				await this.#primary.unregisterPresenceDevice(profileId, clientId).catch(() => undefined);
 				report([]);

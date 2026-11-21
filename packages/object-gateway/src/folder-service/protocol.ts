@@ -126,7 +126,11 @@ export function encodeJson(kind: number, value: unknown): Buffer {
 
 /** Splits a byte stream into frames. A bad length is a protocol error: the connection is then closed. */
 export class FrameReader {
-	#buffer: Buffer = Buffer.alloc(0);
+	readonly #header = Buffer.allocUnsafeSlow(4);
+	#headerLen = 0;
+	#frame: Buffer | null = null;
+	#frameLen = 0;
+	#frameFilled = 0;
 	/** The largest payload accepted now. */
 	limit: number;
 
@@ -134,18 +138,77 @@ export class FrameReader {
 		this.limit = limit;
 	}
 
-	push(data: Buffer): Frame[] {
-		this.#buffer = this.#buffer.byteLength === 0 ? data : Buffer.concat([this.#buffer, data]);
-		const frames: Frame[] = [];
-		for (;;) {
-			if (this.#buffer.byteLength < 5) break;
-			const length = this.#buffer.readUInt32BE(0);
-			if (length === 0 || length - 1 > this.limit) throw new ProtocolError(ErrorCode.badRequest, "Bad frame length");
-			if (this.#buffer.byteLength < 4 + length) break;
-			frames.push({ kind: this.#buffer[4]!, payload: this.#buffer.subarray(5, 4 + length) });
-			this.#buffer = this.#buffer.subarray(4 + length);
+	get allocatedBytes(): number {
+		return this.#frame?.byteLength ?? 0;
+	}
+
+	#startPartial(length: number, data: Buffer, offset: number): void {
+		const avail = data.byteLength - offset;
+		// WHY: Grow partial frames geometrically from 256 B up to length to bound both 1-byte-chunk floods and 4-byte idle preallocation.
+		const initial = Math.min(length, Math.max(avail, 256));
+		const buf = Buffer.allocUnsafeSlow(initial);
+		if (avail > 0) data.copy(buf, 0, offset, data.byteLength);
+		this.#frame = buf;
+		this.#frameLen = length;
+		this.#frameFilled = avail;
+	}
+
+	#appendPartial(data: Buffer, offset: number): number {
+		const need = this.#frameLen - this.#frameFilled;
+		const take = Math.min(need, data.byteLength - offset);
+		let buf = this.#frame!;
+		if (this.#frameFilled + take > buf.byteLength) {
+			let nextCap = buf.byteLength;
+			while (nextCap < this.#frameFilled + take) nextCap = Math.min(this.#frameLen, nextCap * 2);
+			const grown = Buffer.allocUnsafeSlow(nextCap);
+			buf.copy(grown, 0, 0, this.#frameFilled);
+			buf = grown;
+			this.#frame = buf;
 		}
-		if (this.#buffer.byteLength === 0) this.#buffer = Buffer.alloc(0);
+		data.copy(buf, this.#frameFilled, offset, offset + take);
+		this.#frameFilled += take;
+		return offset + take;
+	}
+
+	push(data: Buffer): Frame[] {
+		const frames: Frame[] = [];
+		let offset = 0;
+		while (offset < data.byteLength) {
+			if (this.#frame !== null) {
+				offset = this.#appendPartial(data, offset);
+				if (this.#frameFilled === this.#frameLen) {
+					const done = this.#frame;
+					const len = this.#frameLen;
+					this.#frame = null;
+					this.#frameLen = 0;
+					this.#frameFilled = 0;
+					frames.push({ kind: done[0]!, payload: done.subarray(1, len) });
+				}
+				continue;
+			}
+			let length: number;
+			if (this.#headerLen > 0 || data.byteLength - offset < 4) {
+				const take = Math.min(4 - this.#headerLen, data.byteLength - offset);
+				data.copy(this.#header, this.#headerLen, offset, offset + take);
+				this.#headerLen += take;
+				offset += take;
+				if (this.#headerLen < 4) break;
+				length = this.#header.readUInt32BE(0);
+				this.#headerLen = 0;
+			} else {
+				length = data.readUInt32BE(offset);
+				offset += 4;
+			}
+			if (length === 0 || length - 1 > this.limit) throw new ProtocolError(ErrorCode.badRequest, "Bad frame length");
+			if (data.byteLength - offset >= length) {
+				const start = offset;
+				offset += length;
+				frames.push({ kind: data[start]!, payload: data.subarray(start + 1, offset) });
+				continue;
+			}
+			this.#startPartial(length, data, offset);
+			offset = data.byteLength;
+		}
 		return frames;
 	}
 }

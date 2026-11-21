@@ -79,15 +79,21 @@ const workerCount =
 		? Math.max(1, Math.min(4, availableParallelism()))
 		: Math.max(1, Math.min(16, Number.isInteger(Number(rawWorkers)) ? Number(rawWorkers) : 1));
 
+const adminToken = process.env.DATA_ADMIN_TOKEN?.trim() || null;
+
 const gateway = new Gateway({
 	store: { host: setting("DATA_STORE_HOST"), port: Number(process.env.DATA_STORE_PORT ?? 5432), logins },
 	platform: new Platform({ url: setting("DATA_PLATFORM_URL"), publishableKey: setting("DATA_PLATFORM_KEY") }),
 	workers: workerCount,
 	...(runs ? { runs: { token: runs.token } } : {}),
+	...(adminToken ? { admin: { token: adminToken } } : {}),
 	...(cluster.isWorker
 		? {
 				onAgentRead: ({ pid, delta }) => {
 					if (process.connected) process.send?.({ type: "agentRead", pid, delta });
+				},
+				onDrop: (event) => {
+					if (process.connected) process.send?.({ type: "drop", ...event });
 				},
 			}
 		: {}),
@@ -119,6 +125,15 @@ if (workerCount > 1 && cluster.isPrimary) {
 			if (lastFull.length > 0 && worker.isConnected()) worker.send({ type: "full", databases: lastFull });
 		});
 		worker.on("message", (message) => {
+			if (message?.type === "drop") {
+				if (message.kind === "company" && typeof message.database === "string") void gateway.evictCompany(message.database);
+				else if (message.kind === "database" && typeof message.database === "string" && typeof message.schema === "string")
+					void gateway.evictDatabase(message.database, message.schema, message.n ?? null);
+				for (const peer of Object.values(cluster.workers ?? {})) {
+					if (peer && peer.id !== worker.id && peer.isConnected()) peer.send(message);
+				}
+				return;
+			}
 			if (message?.type !== "agentRead" || !Number.isInteger(message.pid) || !Number.isInteger(message.delta)) return;
 			const owned = workerReads.get(worker.id);
 			if (!owned) return;
@@ -186,6 +201,11 @@ if (workerCount > 1 && cluster.isPrimary) {
 	if (cluster.isWorker) {
 		process.on("message", (message) => {
 			if (message?.type === "full") gateway.setFullDatabases(message.databases);
+			else if (message?.type === "drop") {
+				if (message.kind === "company" && typeof message.database === "string") void gateway.evictCompany(message.database);
+				else if (message.kind === "database" && typeof message.database === "string" && typeof message.schema === "string")
+					void gateway.evictDatabase(message.database, message.schema, message.n ?? null);
+			}
 		});
 	}
 	const server = await serve(gateway, { host, port });

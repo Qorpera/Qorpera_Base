@@ -802,6 +802,7 @@ export class Gateway {
 	/** For tests only: awaited before the gateway sends a cancel for a caller that went away. */
 	#beforeCancel;
 	#onAgentRead;
+	#onDrop;
 	/** Backends that were sent a cancel, by pid, with when: such a backend's connection is never used again, since a
 	 * cancel that arrives late would stop whatever runs on it then. */
 	#signalled = new Map();
@@ -811,6 +812,7 @@ export class Gateway {
 	/** The node's private token the run door takes ("a host of ours"); without it the run door answers nothing. */
 	#runToken;
 	#hookToken;
+	#adminToken;
 	#publicReader;
 	#rateBuckets = new Map();
 	#triggerStops = new Map();
@@ -835,11 +837,13 @@ export class Gateway {
 		limits = LIMITS,
 		runs = null,
 		hooks = null,
+		admin = null,
 		publicReader = null,
 		workers = 1,
 		onProvision = () => undefined,
 		beforeCancel = async () => undefined,
 		onAgentRead = () => undefined,
+		onDrop = () => undefined,
 	}) {
 		this.#store = store;
 		this.#platform = platform;
@@ -847,13 +851,21 @@ export class Gateway {
 		this.#workers = Math.max(1, Number.isInteger(workers) ? workers : 1);
 		this.#runToken = typeof runs?.token === "string" && runs.token.length >= 32 ? runs.token : null;
 		this.#hookToken = typeof hooks?.token === "string" && hooks.token.length >= 32 ? hooks.token : null;
+		this.#adminToken = typeof admin?.token === "string" && admin.token.length >= 32 ? admin.token : null;
 		if (this.#runToken && this.#hookToken && bearerIs(`Bearer ${this.#hookToken}`, this.#runToken)) {
 			throw new Error("The hook token must be distinct from the run door token");
+		}
+		if (this.#runToken && this.#adminToken && bearerIs(`Bearer ${this.#adminToken}`, this.#runToken)) {
+			throw new Error("The admin token must be distinct from the run door token");
+		}
+		if (this.#adminToken && this.#hookToken && bearerIs(`Bearer ${this.#adminToken}`, this.#hookToken)) {
+			throw new Error("The admin token must be distinct from the hook token");
 		}
 		this.#publicReader = typeof publicReader === "function" ? publicReader : null;
 		this.#onProvision = onProvision;
 		this.#beforeCancel = beforeCancel;
 		this.#onAgentRead = onAgentRead;
+		this.#onDrop = onDrop;
 	}
 
 	setAgentRead(pid, delta) {
@@ -3859,6 +3871,191 @@ export class Gateway {
 		return { ...(await this.#act(ready, { kind: "hook", id: hookId, via: file }, { gone })), asOf: isoNow() };
 	}
 
+	async #closePools(match) {
+		const ending = [];
+		for (const [key, { pool }] of this.#pools) {
+			if (!match(key)) continue;
+			this.#pools.delete(key);
+			ending.push(pool.end().catch(() => undefined));
+		}
+		await Promise.all(ending);
+	}
+
+	async evictDatabase(database, name, n = null) {
+		const folderKey = `${database}/${name}`;
+		const knownN = n ?? this.#folders.get(folderKey) ?? null;
+		this.#folders.delete(folderKey);
+		this.#folderInFlight.delete(folderKey);
+		this.#bumpSchemaEpoch(database, name);
+		this.#notifySchema(database, name);
+		if (knownN !== null) {
+			const roles = ["o", "w", "r", "s"].map((kind) => `${database}_${kind}${knownN}`);
+			await this.#closePools((key) => roles.some((role) => key === `${role}@${database}`));
+		}
+	}
+
+	async evictCompany(database) {
+		const listener = this.#listeners.get(database);
+		if (listener) {
+			listener.stopped = true;
+			this.#listeners.delete(database);
+			listener.cache.clear();
+			listener.viewerScoped.clear();
+			listener.heard.clear();
+			await listener.client?.end().catch(() => undefined);
+		}
+		for (const [key, entry] of this.#watchInFlight) {
+			if (key.includes(`|${database}|`)) {
+				entry.controller.abort();
+				this.#watchInFlight.delete(key);
+			}
+		}
+		await this.#closePools((key) => key.endsWith(`@${database}`));
+		this.#provisioned.delete(database);
+		this.#exists.delete(database);
+		this.#full.delete(database);
+		this.#unsettled.delete(database);
+		this.#swept.delete(database);
+		for (const map of [this.#folders, this.#folderInFlight, this.#relations, this.#schemaEpoch]) {
+			for (const key of map.keys()) if (key.startsWith(`${database}/`)) map.delete(key);
+		}
+	}
+
+	async dropDatabase(environmentId, name) {
+		if (typeof name !== "string" || !DATABASE_NAME.test(name) || name === "qorpera" || /^(pg_|qorpera_)/.test(name))
+			refuse(400, "Name a database");
+		const database = companyDatabase(environmentId);
+		if (!(await this.#companyExists(database))) return { dropped: false, database, schema: name, rolesDropped: [] };
+		const watch = this.#pool("postgres", "qorpera_data_watch");
+		let client;
+		try {
+			client = await this.#pool(database, "qorpera_data_admin").connect();
+		} catch (error) {
+			if (error?.code === "3D000") {
+				this.#exists.delete(database);
+				this.#provisioned.delete(database);
+				return { dropped: false, database, schema: name, rolesDropped: [] };
+			}
+			throw storeProblem(error);
+		}
+		let lost;
+		const onClientError = (error) => {
+			lost ??= error;
+		};
+		client.on("error", onClientError);
+		let n = null;
+		const rolesDropped = [];
+		try {
+			await client.query("begin; set local lock_timeout = 5000");
+			await client.query("select pg_catalog.pg_advisory_xact_lock(hashtext('qorpera_data.databases'))");
+			const found = await client.query("select n from qorpera_data.databases where name = $1", [name]);
+			if (found.rowCount === 0) {
+				await client.query("rollback");
+				this.#folders.delete(`${database}/${name}`);
+				this.#folderInFlight.delete(`${database}/${name}`);
+				return { dropped: false, database, schema: name, rolesDropped: [] };
+			}
+			n = found.rows[0].n;
+			const roles = ["o", "w", "r", "s"].map((kind) => `${database}_${kind}${n}`);
+			const existing = (
+				await client.query("select rolname::text as name from pg_catalog.pg_roles where rolname = any($1::text[]) order by rolname", [roles])
+			).rows.map((row) => row.name);
+			if (existing.length > 0) {
+				const roleList = existing.map(quoted).join(", ");
+				for (const role of existing) await client.query(`alter role ${quoted(role)} nologin`);
+				await client.query(`revoke all on database ${quoted(database)} from ${roleList}`);
+			}
+			await this.#closePools((key) => roles.some((role) => key === `${role}@${database}`));
+			await watch
+				.query("select pg_catalog.pg_terminate_backend(pid) from pg_catalog.pg_stat_activity where datname = $1 and usename = any($2::text[])", [
+					database,
+					roles,
+				])
+				.catch(() => undefined);
+			await client.query(`drop schema if exists ${quoted(name)} cascade`);
+			await client.query("delete from qorpera_data.databases where name = $1", [name]);
+			if (existing.length > 0) {
+				const roleList = existing.map(quoted).join(", ");
+				await client.query(`drop owned by ${roleList}`);
+				for (const role of existing) {
+					await client.query(`drop role if exists ${quoted(role)}`);
+					rolesDropped.push(role);
+				}
+			}
+			await client.query("select pg_catalog.pg_notify('qorpera_data', $1)", [`${name}.!drop`]);
+			await client.query("commit");
+		} catch (error) {
+			await client.query("rollback").catch((rbError) => {
+				lost ??= rbError;
+			});
+			throw storeProblem(error);
+		} finally {
+			client.removeListener("error", onClientError);
+			this.#release(client, lost);
+		}
+		await this.evictDatabase(database, name, n);
+		this.#onDrop({ kind: "database", database, schema: name, n });
+		return { dropped: true, database, schema: name, rolesDropped };
+	}
+
+	async dropCompany(environmentId) {
+		const database = companyDatabase(environmentId);
+		const admin = await this.#pool("postgres", "qorpera_data_admin").connect().catch((error) => {
+			throw storeProblem(error);
+		});
+		let lost;
+		const onClientError = (error) => {
+			lost ??= error;
+		};
+		admin.on("error", onClientError);
+		const watch = this.#pool("postgres", "qorpera_data_watch");
+		try {
+			await admin.query("select pg_catalog.pg_advisory_lock(hashtext('qorpera_data.company'), hashtext($1))", [database]);
+			try {
+				const exists = (await admin.query("select 1 from pg_catalog.pg_database where datname = $1", [database])).rowCount > 0;
+				if (exists) {
+					await admin.query(`alter database ${quoted(database)} allow_connections false`).catch(() => undefined);
+				}
+				await this.evictCompany(database);
+				this.#onDrop({ kind: "company", database });
+				if (exists) {
+					for (let attempt = 0; attempt < 5; attempt++) {
+						await watch
+							.query("select pg_catalog.pg_terminate_backend(pid) from pg_catalog.pg_stat_activity where datname = $1 and pid <> pg_catalog.pg_backend_pid()", [
+								database,
+							])
+							.catch(() => undefined);
+						try {
+							await admin.query(`drop database if exists ${quoted(database)}`);
+							break;
+						} catch (error) {
+							if (error?.code !== "55006" || attempt === 4) throw error;
+							await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+						}
+					}
+				}
+				const roles = (
+					await admin.query("select rolname::text as name from pg_catalog.pg_roles where rolname ~ $1 order by rolname", [`^${database}_[owrs][0-9]+$`])
+				).rows.map((row) => row.name);
+				const rolesDropped = [];
+				for (const role of roles) {
+					await admin.query(`drop role if exists ${quoted(role)}`);
+					rolesDropped.push(role);
+				}
+				return { dropped: exists || rolesDropped.length > 0, database, rolesDropped };
+			} finally {
+				await admin.query("select pg_catalog.pg_advisory_unlock(hashtext('qorpera_data.company'), hashtext($1))", [database]).catch((err) => {
+					lost ??= err;
+				});
+			}
+		} catch (error) {
+			throw storeProblem(error);
+		} finally {
+			admin.removeListener("error", onClientError);
+			this.#release(admin, lost);
+		}
+	}
+
 	#parseCaller(authorization) {
 		if (typeof authorization !== "string") refuse(401, "Sign in");
 		const kept = this.#tokens.get(authorization);
@@ -3919,6 +4116,23 @@ export class Gateway {
 			}
 			if (!body || typeof body !== "object" || Array.isArray(body)) refuse(400, "The body is not an object");
 			return this.hookChange(hookRoute[1], body, { gone });
+		}
+		const adminRoute = /^\/v1\/admin\/company-data\/([^/]+)\/(drop-database|drop-company)$/.exec(path);
+		if (adminRoute) {
+			if (!this.#adminToken) refuse(404, "Not a call the data gateway answers");
+			if (!bearerIs(headers.authorization, this.#adminToken)) refuse(401, "Not allowed");
+			if (method !== "POST") refuse(405, "Use POST");
+			let body = {};
+			const raw = await read(this.#limits.bodyBytes);
+			if (raw.trim() !== "") {
+				try {
+					body = JSON.parse(raw);
+				} catch {
+					refuse(400, "The body is not JSON");
+				}
+			}
+			if (!body || typeof body !== "object" || Array.isArray(body)) refuse(400, "The body is not an object");
+			return adminRoute[2] === "drop-database" ? this.dropDatabase(adminRoute[1], body.database) : this.dropCompany(adminRoute[1]);
 		}
 		const route = /^\/v1\/company-data\/([^/]+)\/(query|watch|apply|describe|change|rows|edit|changes)$/.exec(path);
 		if (!route) refuse(404, "Not a call the data gateway answers");
