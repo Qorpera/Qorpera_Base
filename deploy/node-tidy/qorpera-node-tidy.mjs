@@ -67,7 +67,7 @@ export function planImages({ images, instances, referenced, pins, held = [], now
 	};
 }
 
-/** Image transfer files older than the configured age, excluding any basename held by holdDir. */
+/** Image transfer files older than the configured age. */
 export function planStaging(files, now, maxAgeHours, heldStaging = new Set()) {
 	return files.filter((file) => !heldStaging.has(basename(file.path)) && now - file.mtimeMs >= maxAgeHours * HOUR_MS);
 }
@@ -180,7 +180,6 @@ export function parseConfig(value) {
 		"stagingMaxAgeHours",
 	];
 	// agentRoot is optional: a node that runs the node agent names its folder (/opt/qorpera-node).
-	// holdDir is optional: a root-owned folder under /etc or /opt holding release-cut image and staging holds.
 	const given = Object.keys(value ?? {}).filter((key) => key !== "agentRoot" && key !== "holdDir");
 	if (!value || typeof value !== "object" || given.sort().join() !== [...keys].sort().join())
 		throw new Error("Node tidy configuration has unexpected fields");
