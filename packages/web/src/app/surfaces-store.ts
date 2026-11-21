@@ -119,9 +119,10 @@ export interface SurfacesState {
 	readonly foldedAgentIds: Readonly<Record<string, true>>;
 	readonly localStudioBase: Readonly<Record<string, Readonly<Record<string, string>>>>;
 	readonly surfaceLooks: Readonly<Record<string, SurfaceLook>>;
-	readonly drawer?: { readonly surfaceId: string; readonly sessionId: string };
+	readonly drawer?: { readonly surfaceId: string; readonly sessionId: string; readonly explorationId?: string };
 	readonly highlight?: { readonly surfaceId: string; readonly sessionId: string };
 	readonly mode: SurfacePreviewMode;
+	readonly activeReportSlug?: string;
 	readonly previewPanel: SurfacePreviewPanelState;
 	readonly compareTargetId?: string;
 	readonly compareFocusSessionId?: string;
@@ -356,10 +357,92 @@ export function productBuildSurfaces(state: Pick<SurfacesState, "surfaces">, exc
 	);
 }
 
-export function surfaceHasReports(state: Pick<SurfacesState, "localStudioBase">, surfaceId: string): boolean {
+export interface SurfaceReportSummary {
+	readonly path: string;
+	readonly slug: string;
+	readonly title: string;
+	readonly category: string;
+	readonly readingTime: string;
+	readonly ownerTitle?: string;
+}
+
+export function surfaceReports(
+	state: Pick<SurfacesState, "localStudioBase">,
+	surfaceId: string,
+): SurfaceReportSummary[] {
 	const files = state.localStudioBase[surfaceId];
-	if (!files) return false;
-	return Object.keys(files).some((path) => /\.report\.json$/i.test(path));
+	if (!files) return [];
+	const results: SurfaceReportSummary[] = [];
+	for (const path of Object.keys(files).sort()) {
+		if (!/\.report\.json$/i.test(path)) continue;
+		const content = files[path];
+		if (!content) continue;
+		try {
+			const parsed: unknown = JSON.parse(content);
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+			const rec = parsed as Record<string, unknown>;
+			const slug =
+				typeof rec.slug === "string" && rec.slug.trim()
+					? rec.slug.trim()
+					: path.replace(/^.*\//, "").replace(/\.report\.json$/i, "");
+			const title =
+				(typeof rec.headline === "string" && rec.headline.trim()) ||
+				(typeof rec.title === "string" && rec.title.trim()) ||
+				slug;
+			const category = typeof rec.category === "string" ? rec.category.trim() : "";
+			const readingTime = typeof rec.readingTime === "string" ? rec.readingTime.trim() : "";
+			const ownerTitle =
+				typeof rec.ownerTitle === "string" && rec.ownerTitle.trim() ? rec.ownerTitle.trim() : undefined;
+			results.push({ path, slug, title, category, readingTime, ...(ownerTitle ? { ownerTitle } : {}) });
+		} catch {}
+	}
+	return results;
+}
+
+export function surfaceHasReports(state: Pick<SurfacesState, "localStudioBase">, surfaceId: string): boolean {
+	return surfaceReports(state, surfaceId).length > 0;
+}
+
+export function reportsOwnedBy(
+	state: Pick<SurfacesState, "localStudioBase" | "workspaces" | "studioPatches">,
+	surfaceId: string,
+	owner: { readonly kind: "exploration"; readonly id: string } | { readonly kind: "session"; readonly id: string },
+): SurfaceReportSummary[] {
+	const reports = surfaceReports(state, surfaceId);
+	if (reports.length === 0) return [];
+	const workspace = state.workspaces[surfaceId];
+	if (!workspace) return [];
+	const explorations = openExplorations(workspace);
+	const plainSessions = workspace.activeSessions.filter((session) => !session.explorationId);
+	const ownerKeyFor = (report: SurfaceReportSummary): string | undefined => {
+		if (report.ownerTitle) {
+			const wanted = report.ownerTitle.toLowerCase();
+			const exp = explorations.find((item) => item.title.toLowerCase() === wanted);
+			if (exp) return `exploration:${exp.id}`;
+			const sess = plainSessions.find((item) => item.title.toLowerCase() === wanted);
+			if (sess) return `session:${sess.id}`;
+		}
+		for (const sess of plainSessions) {
+			const touches = sess.changes.some(
+				(change) =>
+					change.affectedPaths.includes(report.path) ||
+					(state.studioPatches[change.id] ?? []).some((op) => op.path === report.path),
+			);
+			if (touches) return `session:${sess.id}`;
+		}
+		for (const exp of explorations) {
+			const variants = workspace.activeSessions.filter((item) => item.explorationId === exp.id);
+			const touches = variants.some((variant) =>
+				variant.changes.some((change) => change.affectedPaths.includes(report.path)),
+			);
+			if (touches) return `exploration:${exp.id}`;
+		}
+		if (plainSessions[0]) return `session:${plainSessions[0].id}`;
+		if (explorations[0]) return `exploration:${explorations[0].id}`;
+		return undefined;
+	};
+	const wantedKey = `${owner.kind}:${owner.id}`;
+	return reports.filter((report) => ownerKeyFor(report) === wantedKey);
 }
 
 function replaceSession(
@@ -1058,7 +1141,26 @@ export class SurfacesStore {
 	}
 
 	setMode(mode: SurfacePreviewMode): void {
-		this.store.set({ mode, ...(mode !== "compare" ? { compareFocusSessionId: undefined } : {}) });
+		this.store.set({
+			mode,
+			...(mode !== "compare" ? { compareFocusSessionId: undefined } : {}),
+			...(mode !== "report" ? { activeReportSlug: undefined } : {}),
+		});
+	}
+
+	openReport(surfaceId: string, slug?: string): void {
+		const state = this.state;
+		const reports = surfaceReports(state, surfaceId);
+		const targetSlug = slug ?? reports[0]?.slug;
+		if (state.mode === "report" && (!targetSlug || state.activeReportSlug === targetSlug || reports.length <= 1)) {
+			this.store.set({ mode: "preview", activeReportSlug: undefined });
+			return;
+		}
+		this.store.set({
+			mode: "report",
+			activeReportSlug: targetSlug,
+			...(state.previewPanel === "closed" ? { previewPanel: "open" as const } : {}),
+		});
 	}
 
 	openPreviewPanel(): void {
@@ -1076,7 +1178,7 @@ export class SurfacesStore {
 		if (state.drawer?.surfaceId === surfaceId) return true;
 		if (state.previewPanel === "closed") return false;
 		if (state.previewPanel === "open") return true;
-		if (state.mode === "live" || state.mode === "report") return false;
+		if (state.mode === "live") return false;
 		const surface = state.surfaces.find((item) => item.id === surfaceId);
 		if (!surface || surface.archetype === "ops") return false;
 		const workspace = state.workspaces[surfaceId];
@@ -1693,6 +1795,114 @@ export class SurfacesStore {
 		return true;
 	}
 
+	async discardChange(sessionId: string, changeId: string): Promise<boolean> {
+		const drawerOpen = this.drawerOpenOn(sessionId);
+		const found = this.#sessionAt(sessionId);
+		if (!found) return false;
+		if (this.isLocalInteractive && isLocalSurfaceId(found.workspace.surface.id)) {
+			const now = new Date().toISOString();
+			const target = found.session.changes.find((item) => item.id === changeId);
+			const changes = found.session.changes.map((change) =>
+				change.id === changeId ? { ...change, status: "discarded" as const, resolvedAt: now } : change,
+			);
+			const openCount = countOpenSurfaceChanges(changes);
+			const hasMerged = changes.some((change) => change.status === "merged");
+			const allDiscarded = openCount === 0 && !hasMerged;
+			const updated: SurfaceSession = {
+				...found.session,
+				state: allDiscarded ? "discarded" : openCount === 0 && !drawerOpen ? "completed" : "ready",
+				hasActiveChat: !allDiscarded && drawerOpen,
+				changes,
+				openChangeCount: openCount,
+				messages: [
+					...found.session.messages,
+					{
+						id: `local-message-${++this.#localSeq}`,
+						sessionId,
+						authorKind: "system",
+						text: t("Discarded “{title}”", { title: target?.title ?? found.session.title }),
+						changeId,
+						createdAt: now,
+					},
+				],
+				updatedAt: now,
+				closedAt: allDiscarded || (openCount === 0 && !drawerOpen) ? now : null,
+			};
+			this.store.set((state) => {
+				if (!state.hiddenChanges[changeId]) return {};
+				const hiddenChanges = { ...state.hiddenChanges };
+				delete hiddenChanges[changeId];
+				return { hiddenChanges };
+			});
+			const outcome: ApprovalOutcome = allDiscarded ? "history" : approvalOutcome(updated, drawerOpen);
+			if (outcome === "history" && this.drawerOpenOn(sessionId)) this.store.set({ drawer: undefined });
+			this.#applySession(updated, outcome);
+			return true;
+		}
+		const updated = await this.#run(`change:${changeId}`, (client) => client.discardSurfaceChange(changeId));
+		if (!updated) return false;
+		const openCount = countOpenSurfaceChanges(updated.changes);
+		const hasMerged = updated.changes.some((change) => change.status === "merged");
+		const outcome: ApprovalOutcome = openCount === 0 && !hasMerged ? "history" : approvalOutcome(updated, drawerOpen);
+		if (outcome === "history" && this.drawerOpenOn(sessionId)) {
+			this.store.set({ drawer: undefined });
+			void this.#options.client?.setSessionChatOpen(sessionId, false).catch(() => undefined);
+		}
+		this.#applySession(updated, outcome);
+		void this.refreshSurfaces();
+		return true;
+	}
+
+	async discardExploration(exploration: SurfaceExplorationSet): Promise<boolean> {
+		if (this.isLocalInteractive && isLocalSurfaceId(exploration.surfaceId)) {
+			const workspace = this.workspace(exploration.surfaceId);
+			if (!workspace) return false;
+			const now = new Date().toISOString();
+			const variantIds = new Set(exploration.variantSessionIds);
+			const closedVariants: SurfaceSession[] = [];
+			const remainingActive: SurfaceSession[] = [];
+			for (const session of workspace.activeSessions) {
+				if (!variantIds.has(session.id)) {
+					remainingActive.push(session);
+					continue;
+				}
+				closedVariants.push({
+					...session,
+					state: "discarded",
+					changes: session.changes.map((change) =>
+						isOpenChange(change) ? { ...change, status: "discarded" as const, resolvedAt: now } : change,
+					),
+					openChangeCount: 0,
+					updatedAt: now,
+					closedAt: now,
+				});
+			}
+			const nextExplorations = workspace.explorations.map((item) =>
+				item.id === exploration.id ? { ...item, status: "discarded" as const, resolvedAt: now } : item,
+			);
+			const nextWorkspace: SurfaceWorkspace = {
+				...workspace,
+				activeSessions: remainingActive,
+				recentHistory: [...closedVariants, ...workspace.recentHistory],
+				explorations: nextExplorations,
+			};
+			if (
+				this.state.drawer?.explorationId === exploration.id ||
+				(this.state.drawer && variantIds.has(this.state.drawer.sessionId))
+			)
+				this.store.set({ drawer: undefined });
+			this.#putWorkspace({ ...nextWorkspace, surface: this.#syncLocalSurfaceCounts(nextWorkspace) });
+			return true;
+		}
+		for (const variantId of exploration.variantSessionIds) {
+			await this.discardSession(variantId);
+		}
+		if (this.state.drawer?.explorationId === exploration.id) this.store.set({ drawer: undefined });
+		await this.refreshWorkspace(exploration.surfaceId);
+		void this.refreshSurfaces();
+		return true;
+	}
+
 	async discardSession(sessionId: string): Promise<boolean> {
 		const session = this.session(sessionId);
 		if (!session) return false;
@@ -1823,7 +2033,12 @@ export class SurfacesStore {
 				explorations: nextExplorations,
 			};
 			this.#putWorkspace({ ...nextWorkspace, surface: this.#syncLocalSurfaceCounts(nextWorkspace) });
-			this.store.set({ mode: this.state.mode === "compare" ? "preview" : this.state.mode });
+			this.store.set((state) => ({
+				mode: state.mode === "compare" ? "preview" : state.mode,
+				...(state.drawer?.explorationId === exploration.id || state.drawer?.sessionId === sessionId
+					? { drawer: undefined }
+					: {}),
+			}));
 			if (mergedIds.length > 0) this.#offerUndo(chosen.explorationVariantLabel ?? chosen.title, mergedIds);
 			return true;
 		}
@@ -1831,7 +2046,12 @@ export class SurfacesStore {
 			client.chooseExploration(exploration.id, sessionId),
 		);
 		if (!chosen) return false;
-		this.store.set({ mode: this.state.mode === "compare" ? "preview" : this.state.mode });
+		this.store.set((state) => ({
+			mode: state.mode === "compare" ? "preview" : state.mode,
+			...(state.drawer?.explorationId === exploration.id || state.drawer?.sessionId === sessionId
+				? { drawer: undefined }
+				: {}),
+		}));
 		await this.refreshWorkspace(exploration.surfaceId);
 		this.#offerUndo(
 			chosen.explorationVariantLabel ?? chosen.title,
@@ -1847,6 +2067,13 @@ export class SurfacesStore {
 		const existing = this.session(sessionId);
 		if (this.isLocalInteractive && existing && isLocalSurfaceId(existing.surfaceId)) {
 			const now = new Date().toISOString();
+			const refMatch = message.match(/^Re:\s*\[([^\]]+)\]\s*\n([\s\S]*)$/);
+			const replyAck = refMatch
+				? t("Got it — updated “{title}” with “{note}”.", {
+						title: refMatch[1]!.trim(),
+						note: refMatch[2]!.trim(),
+					})
+				: t("Got it — updated the open changes with “{note}”.", { note: message });
 			const updated: SurfaceSession = {
 				...existing,
 				messages: [
@@ -1863,7 +2090,7 @@ export class SurfacesStore {
 						id: `local-message-${++this.#localSeq}`,
 						sessionId,
 						authorKind: "session",
-						text: t("Got it — updated the open changes with “{note}”.", { note: message }),
+						text: replyAck,
 						changeId: null,
 						createdAt: now,
 					},
@@ -1896,9 +2123,21 @@ export class SurfacesStore {
 
 	openDrawer(surfaceId: string, sessionId: string): void {
 		const previous = this.state.drawer;
-		if (previous?.sessionId === sessionId) return;
+		if (previous?.sessionId === sessionId && !previous.explorationId) return;
 		if (previous) this.closeDrawer();
 		this.store.set({ drawer: { surfaceId, sessionId } });
+		if (!isLocalSurfaceId(surfaceId))
+			void this.#options.client?.setSessionChatOpen(sessionId, true).catch(() => undefined);
+	}
+
+	openExplorationDrawer(surfaceId: string, explorationId: string): void {
+		const previous = this.state.drawer;
+		if (previous?.explorationId === explorationId) return;
+		const exploration = this.workspace(surfaceId)?.explorations.find((item) => item.id === explorationId);
+		const sessionId = exploration ? this.pickedVariant(exploration) : undefined;
+		if (!exploration || !sessionId) return;
+		if (previous) this.closeDrawer();
+		this.store.set({ drawer: { surfaceId, sessionId, explorationId } });
 		if (!isLocalSurfaceId(surfaceId))
 			void this.#options.client?.setSessionChatOpen(sessionId, true).catch(() => undefined);
 	}
@@ -1922,7 +2161,12 @@ export class SurfacesStore {
 			const hiddenChanges = { ...state.hiddenChanges };
 			if (hiddenChanges[changeId]) delete hiddenChanges[changeId];
 			else hiddenChanges[changeId] = true;
-			return { hiddenChanges, ...(state.mode === "live" ? { mode: "preview" as const } : {}) };
+			return {
+				hiddenChanges,
+				...(state.mode === "live" || state.mode === "report"
+					? { mode: "preview" as const, activeReportSlug: undefined }
+					: {}),
+			};
 		});
 		await this.#syncPreview(surfaceId);
 	}
@@ -1930,7 +2174,10 @@ export class SurfacesStore {
 	async pickVariant(surfaceId: string, explorationId: string, sessionId: string): Promise<void> {
 		this.store.set((state) => ({
 			variantPick: { ...state.variantPick, [explorationId]: sessionId },
-			...(state.mode === "live" ? { mode: "preview" as const } : {}),
+			...(state.drawer?.explorationId === explorationId ? { drawer: { surfaceId, sessionId, explorationId } } : {}),
+			...(state.mode === "live" || state.mode === "report"
+				? { mode: "preview" as const, activeReportSlug: undefined }
+				: {}),
 		}));
 		await this.#syncPreview(surfaceId);
 	}

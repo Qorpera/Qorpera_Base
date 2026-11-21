@@ -202,15 +202,21 @@ function sessionRow(
 }
 
 function explorationRow(
-	store: SurfacesStore,
+	state: SurfacesState,
 	exploration: SurfaceExplorationSet,
 	variants: readonly SurfaceSession[],
+	crew: CrewFigures,
 ): HTMLElement {
-	const picked = store.pickedVariant(exploration);
 	const running = variants.some(isRunningSession);
+	const selected = state.drawer?.explorationId === exploration.id;
+	const status = running ? crewWave() : t("{count} options", { count: variants.length });
 	return h(
 		"div",
-		{ class: "surface-session surface-exploration is-open" },
+		{
+			class: ["surface-session", "surface-exploration", running && "is-running", selected && "is-selected"]
+				.filter(Boolean)
+				.join(" "),
+		},
 		h(
 			"div",
 			{ class: "surface-session-head" },
@@ -219,37 +225,17 @@ function explorationRow(
 				{
 					type: "button",
 					class: "surface-session-main surface-exploration-trigger",
+					title: exploration.title,
 					"data-act": "open-exploration",
+					"data-surface": exploration.surfaceId,
 					"data-exploration": exploration.id,
 				},
-				h("span", { class: "surface-state is-exploring", "aria-hidden": "true" }),
-				h("span", { class: "surface-session-title" }, exploration.title),
+				crew.takeExploration(exploration, variants, 32),
 				h(
 					"span",
-					{ class: "surface-session-meta" },
-					running ? t("Working") : t("{count} live", { count: variants.length }),
-				),
-			),
-		),
-		h(
-			"div",
-			{ class: "surface-changes", role: "radiogroup", "aria-label": exploration.title },
-			variants.map((session) =>
-				h(
-					"button",
-					{
-						type: "button",
-						class: "surface-variant",
-						role: "radio",
-						"aria-checked": String(session.id === picked),
-						"data-act": "variant",
-						"data-surface": exploration.surfaceId,
-						"data-exploration": exploration.id,
-						"data-session": session.id,
-					},
-					h("span", { class: "surface-radio", "aria-hidden": "true" }),
-					h("span", { class: "surface-change-title" }, session.explorationVariantLabel ?? session.title),
-					isRunningSession(session) ? h("span", { class: "surface-state is-running" }) : null,
+					{ class: "surface-session-text" },
+					h("span", { class: "surface-session-title" }, exploration.title),
+					h("span", { class: "surface-session-status" }, status),
 				),
 			),
 		),
@@ -325,9 +311,10 @@ function treeFor(
 			...plain.map((session) => sessionRow(state, session, surface, look, crew)),
 			...explorations.map((exploration) =>
 				explorationRow(
-					store,
+					state,
 					exploration,
 					sessions.filter((session) => session.explorationId === exploration.id),
+					crew,
 				),
 			),
 		);
@@ -580,7 +567,7 @@ export class SurfaceRail {
 			case "open":
 				if (surface && session) {
 					if (state.highlight?.sessionId === session) store.clearHighlight();
-					if (state.drawer?.sessionId === session) store.closeDrawer();
+					if (state.drawer?.sessionId === session && !state.drawer.explorationId) store.closeDrawer();
 					else store.openDrawer(surface, session);
 				}
 				return;
@@ -609,8 +596,13 @@ export class SurfaceRail {
 				if (surface && exploration && session) void store.inspectVariant(surface, exploration, session, false);
 				return;
 			case "open-exploration":
-				store.setMode("preview");
-				store.openPreviewPanel();
+				if (surface && exploration) {
+					if (state.drawer?.explorationId === exploration) store.closeDrawer();
+					else store.openExplorationDrawer(surface, exploration);
+				} else {
+					store.setMode("preview");
+					store.openPreviewPanel();
+				}
 				return;
 			case "choose": {
 				const workspace = activeSurface ? state.workspaces[activeSurface.id] : undefined;

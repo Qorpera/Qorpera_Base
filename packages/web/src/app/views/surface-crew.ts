@@ -1,4 +1,4 @@
-import type { SurfaceSession } from "@qorpera/contracts";
+import type { SurfaceExplorationSet, SurfaceSession } from "@qorpera/contracts";
 import { AGENT_COLOUR_HEX } from "../../cloud/agent-colours.ts";
 import { AGENT_LOOK, stateLine } from "../../ui/agent-activity.ts";
 import { FIGURE_IDS, type FigureId, figureElement } from "../../ui/avatar.ts";
@@ -49,6 +49,18 @@ export function crewLook(session: SurfaceSession): CrewLook {
 	return { tone: "ready", activity: "Idle", alive: true, label: t("Ready") };
 }
 
+export function explorationCrewLook(variants: readonly SurfaceSession[]): CrewLook {
+	if (variants.some((variant) => variant.state === "needs_input"))
+		return { tone: "waiting", activity: "Waiting", ask: "question", alive: true, label: t("Needs you") };
+	if (variants.some(isRunningSession))
+		return { tone: "working", activity: "Working", alive: true, label: t("Working") };
+	if (variants.some((variant) => variant.state === "failed"))
+		return { tone: "attention", activity: "Idle", ask: "bang", alive: true, label: t("Failed") };
+	if (variants.some(hasConflictedChange))
+		return { tone: "attention", activity: "Idle", ask: "bang", alive: true, label: t("Conflict") };
+	return { tone: "ready", activity: "Idle", alive: true, label: t("Ready") };
+}
+
 export function crewWave(): HTMLElement | string {
 	return stateLine(AGENT_LOOK.working) ?? t("Working");
 }
@@ -84,6 +96,49 @@ export class CrewFigures {
 				look.tone === "merged"
 					? h("span", { class: "surface-crew-pip", "aria-hidden": "true" }, icon("check"))
 					: null,
+			);
+			stand.style.setProperty("--crew-colour", crew.color);
+			stand.style.setProperty("--crew-size", `${size}px`);
+		}
+		this.#used.set(key, stand);
+		return stand;
+	}
+
+	takeExploration(
+		exploration: Pick<SurfaceExplorationSet, "id">,
+		variants: readonly SurfaceSession[],
+		size: number,
+		className = "",
+	): HTMLElement {
+		const look = explorationCrewLook(variants);
+		const crew = sessionCrew(exploration.id);
+		const key = JSON.stringify([
+			"exploration",
+			exploration.id,
+			size,
+			look.tone,
+			look.activity,
+			look.ask ?? "",
+			className,
+		]);
+		let stand = this.#used.get(key) ?? this.#kept.get(key);
+		if (!stand) {
+			const figure = figureElement(crew.figure, crew.color, {
+				size,
+				identity: `surface-exploration:${exploration.id}`,
+				activity: look.activity,
+				alive: look.alive,
+				...(look.ask ? { ask: look.ask } : {}),
+			});
+			stand = h(
+				"span",
+				{
+					class: ["surface-crew", `is-${look.tone}`, className].filter(Boolean).join(" "),
+					role: "img",
+					"aria-label": look.label,
+					"data-figure": crew.figure,
+				},
+				figure,
 			);
 			stand.style.setProperty("--crew-colour", crew.color);
 			stand.style.setProperty("--crew-size", `${size}px`);

@@ -414,7 +414,7 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		vi.unstubAllGlobals();
 	});
 
-	it("centralizes the spacious white pill header, defaults the Preview panel to all agents without side-by-side compare, and keeps focused toggles headline-only", async () => {
+	it("centralizes the spacious white pill header with agent-owned explorations, Notes inside the owning agent, expandable drawer, and 2nd-row Approve/Change/Discard", async () => {
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
 			localInteractive: true,
@@ -440,10 +440,15 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		expect(view.el.querySelector(".surface-bar-lead")).toBeNull();
 		expect(view.el.querySelector(".surface-pill.is-spacious")).not.toBeNull();
 		const modeLabels = [...view.el.querySelectorAll(".surface-pill-modes button")].map((btn) => btn.textContent);
-		expect(modeLabels).toEqual(["Live", "Preview", "Notes"]);
-		const headerAgent = view.el.querySelector<HTMLButtonElement>(".surface-pill .surface-bar-agent")!;
-		expect(headerAgent.querySelector(".surface-crew .figure")).not.toBeNull();
-		expect(headerAgent.querySelector(".surface-bar-agent-count")?.textContent).toBe("2");
+		expect(modeLabels).toEqual(["Live", "Preview"]);
+		expect(view.el.querySelector(".surface-pill-device")).not.toBeNull();
+
+		const headerAgents = [...view.el.querySelectorAll<HTMLButtonElement>(".surface-pill .surface-bar-agent")];
+		expect(headerAgents).toHaveLength(2);
+		expect(headerAgents[0]?.querySelector(".surface-crew .figure")).not.toBeNull();
+		expect(headerAgents[0]?.querySelector(".surface-bar-agent-count")?.textContent).toBe("3");
+		expect(headerAgents[1]?.querySelector(".surface-crew .figure")).not.toBeNull();
+		expect(headerAgents[1]?.querySelector(".surface-bar-agent-count")?.textContent).toBe("2");
 
 		const stage = view.el.querySelector(".surface-stage")!;
 		expect(stage.children[0]?.classList.contains("surface-canvas")).toBe(true);
@@ -451,19 +456,37 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		const drawer = view.el.querySelector<HTMLElement>(".surface-drawer")!;
 		expect(drawer.classList.contains("is-open")).toBe(true);
 		expect(drawer.classList.contains("is-overview")).toBe(true);
+		expect(drawer.querySelector(".surface-drawer-resizer")).not.toBeNull();
 		expect(drawer.querySelector(".surface-overview-compare")).toBeNull();
-		expect(drawer.querySelectorAll(".surface-overview-option")).toHaveLength(3);
-		expect(drawer.querySelectorAll(".surface-overview-change .surface-switch")).toHaveLength(2);
 
-		const localFrame = view.el.querySelector<HTMLIFrameElement>(".surface-mount iframe.surface-local-frame")!;
-		expect(localFrame.srcdoc).toContain("Lyse flader");
+		const explorationCard = drawer.querySelector<HTMLElement>(".surface-overview-card.is-exploration")!;
+		expect(explorationCard.querySelector(".surface-overview-agent-head .surface-crew .figure")).not.toBeNull();
+		const ownedNote = explorationCard.querySelector<HTMLButtonElement>(".surface-agent-note")!;
+		expect(ownedNote.textContent).toContain("How Thetaband Presents Itself at First Visit");
+		const optionsBox = explorationCard.querySelector(".surface-overview-options")!;
+		expect(ownedNote.compareDocumentPosition(optionsBox) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+		ownedNote.click();
+		view.update();
+		expect(view.el.querySelector<HTMLElement>(".surface-report-slot")?.hidden).toBe(false);
+		expect(view.el.querySelector(".report-headline")?.textContent).toBe(
+			"How Thetaband Presents Itself at First Visit",
+		);
+		expect(drawer.classList.contains("is-open")).toBe(true);
 
 		drawer.querySelectorAll<HTMLButtonElement>(".surface-overview-option")[1]!.click();
 		await flush();
 		view.update();
+		expect(view.el.querySelector<HTMLElement>(".surface-report-slot")?.hidden).toBe(true);
 		const switchedFrame = view.el.querySelector<HTMLIFrameElement>(".surface-mount iframe.surface-local-frame")!;
-		expect(switchedFrame).not.toBe(localFrame);
 		expect(switchedFrame.srcdoc).toContain("Portræt og telefon");
+
+		drawer.querySelector<HTMLButtonElement>('[data-act="focus-exploration"]')!.click();
+		view.update();
+		expect(drawer.classList.contains("is-overview")).toBe(false);
+		expect(drawer.querySelector(".surface-drawer-head h2")?.textContent).toBe("Forsidens udtryk");
+		expect(drawer.querySelector(".surface-drawer-body > .surface-agent-note")).not.toBeNull();
+		expect(drawer.querySelectorAll(".surface-drawer-option-row")).toHaveLength(3);
 
 		drawer.querySelector<HTMLButtonElement>('[data-act="choose-variant"]')!.click();
 		await flush();
@@ -476,10 +499,43 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		expect(drawer.classList.contains("is-overview")).toBe(false);
 		expect(drawer.querySelector(".surface-message.is-session")).not.toBeNull();
 		expect(drawer.querySelector<HTMLFormElement>(".surface-drawer-foot")?.hidden).toBe(false);
-		const focusedCopy = drawer.querySelector(".surface-drawer-change-copy")!;
-		expect(focusedCopy.querySelector("strong")?.textContent).toBe("Tydelig pris: 1.995 kr. inkl. fragt");
-		expect(focusedCopy.querySelector("span")).toBeNull();
-		expect(focusedCopy.querySelector("small")).toBeNull();
+		const firstChange = drawer.querySelector<HTMLElement>(".surface-drawer-change")!;
+		expect(firstChange.querySelector(".surface-drawer-change-title")?.textContent).toBe(
+			"Tydelig pris: 1.995 kr. inkl. fragt",
+		);
+		const rowActions = [...firstChange.querySelectorAll<HTMLButtonElement>(".surface-drawer-change-acts button")].map(
+			(btn) => btn.textContent,
+		);
+		expect(rowActions).toEqual(["Approve", "Change", "Discard"]);
+
+		firstChange.querySelector<HTMLButtonElement>('[data-act="quote-change"]')!.click();
+		const replyStrip = drawer.querySelector<HTMLElement>(".surface-drawer-reply")!;
+		expect(replyStrip.hidden).toBe(false);
+		expect(replyStrip.textContent).toContain("Tydelig pris: 1.995 kr. inkl. fragt");
+		const drawerInput = drawer.querySelector<HTMLInputElement>(".surface-drawer-input")!;
+		expect(document.activeElement).toBe(drawerInput);
+		drawerInput.value = "Gør prisen endnu mere rolig";
+		drawer
+			.querySelector<HTMLFormElement>(".surface-drawer-foot")!
+			.dispatchEvent(new Event("submit", { cancelable: true }));
+		await flush();
+		view.update();
+		expect(replyStrip.hidden).toBe(true);
+		expect(drawer.querySelector(".surface-message-ref")?.textContent).toContain(
+			"Tydelig pris: 1.995 kr. inkl. fragt",
+		);
+
+		drawer.querySelector<HTMLButtonElement>('[data-act="discard-change"]')!.click();
+		await flush();
+		view.update();
+		expect(drawer.querySelectorAll(".surface-drawer-change")).toHaveLength(1);
+
+		const expandBtn = drawer.querySelector<HTMLButtonElement>('[data-act="toggle-expand"]')!;
+		expect(drawer.classList.contains("is-expanded")).toBe(false);
+		expandBtn.click();
+		expect(drawer.classList.contains("is-expanded")).toBe(true);
+		drawer.querySelector<HTMLButtonElement>('[data-act="toggle-expand"]')!.click();
+		expect(drawer.classList.contains("is-expanded")).toBe(false);
 
 		drawer.querySelector<HTMLButtonElement>('[data-act="back-overview"]')!.click();
 		view.update();
@@ -496,25 +552,27 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		store.dispose();
 	});
 
-	it("renders Phone App in Preview with toggles and folded Design Notes essay", async () => {
+	it("renders Phone App without a desktop/mobile toggle and opens Design Notes from the owning agent", async () => {
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
 			localInteractive: true,
 			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
 		});
 		await store.load();
-		store.setDevice("mobile");
 		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "phone-app");
 		document.body.append(view.el);
 		await flush();
 		view.update();
 
+		expect(view.el.querySelector(".surface-pill-device")).toBeNull();
 		expect(view.el.querySelector<HTMLElement>(".surface-viewport")?.dataset.device).toBe("mobile");
 		expect(view.el.querySelector(".surface-mount iframe.surface-local-frame")?.getAttribute("srcdoc")).toContain(
 			"Thetaband",
 		);
 
-		view.el.querySelector<HTMLButtonElement>('[data-act="mode"][data-mode="report"]')!.click();
+		const agentNote = view.el.querySelector<HTMLButtonElement>(".surface-drawer .surface-agent-note")!;
+		expect(agentNote.textContent).toContain("Designing the Thetaband App for Quiet Evenings");
+		agentNote.click();
 		view.update();
 		expect(view.el.querySelector<HTMLElement>(".surface-report-slot")?.hidden).toBe(false);
 		expect(view.el.querySelector(".report-headline")?.textContent).toBe(

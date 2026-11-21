@@ -157,6 +157,14 @@ export function isOpsKind(kind: SurfaceKind): boolean {
 	return kind === "inbox" || kind === "money" || kind === "members" || kind === "data" || kind === "files";
 }
 
+export function supportsViewportSplit(
+	surface: Pick<SurfaceSummary, "archetype">,
+	look: Pick<SurfaceLook, "kind">,
+): boolean {
+	if (surface.archetype !== "live_build") return false;
+	return look.kind === "website" || look.kind === "web_app" || look.kind === "custom";
+}
+
 export function opsComposerPlaceholder(kind: SurfaceKind): string {
 	switch (kind) {
 		case "inbox":

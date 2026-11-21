@@ -592,6 +592,7 @@ export class SurfaceReportView {
 		const key = JSON.stringify([
 			this.#loading,
 			state.mode,
+			state.activeReportSlug,
 			this.#activeSlug,
 			this.#lens,
 			baseFiles,
@@ -629,7 +630,9 @@ export class SurfaceReportView {
 			if (/\.(?:md|markdown)$/i.test(path)) markdownDocs.push({ path, content, changed });
 		}
 
-		if (reports.length && !reports.some((item) => item.slug === this.#activeSlug)) {
+		if (state.activeReportSlug && reports.some((item) => item.slug === state.activeReportSlug)) {
+			this.#activeSlug = state.activeReportSlug;
+		} else if (reports.length && !reports.some((item) => item.slug === this.#activeSlug)) {
 			this.#activeSlug = reports[0]!.slug;
 		}
 		const activeReport = reports.find((item) => item.slug === this.#activeSlug) ?? reports[0];

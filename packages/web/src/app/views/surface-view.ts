@@ -4,12 +4,14 @@ import {
 	parsePointToChangeTarget,
 	SURFACE_INSPECTOR_MODE_MESSAGE,
 	SURFACE_INSPECTOR_PICK_MESSAGE,
+	type SurfaceExplorationSet,
+	type SurfaceSession,
 	type SurfaceSummary,
 } from "@qorpera/contracts";
 import { openContextMenu } from "../../ui/context-menu.ts";
 import { growToText, h, icon } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
-import { opsComposerPlaceholder } from "../surface-kinds.ts";
+import { opsComposerPlaceholder, supportsViewportSplit } from "../surface-kinds.ts";
 import { renderLocalSitePreviewHtml } from "../surface-local-sandbox.ts";
 import {
 	formatConflictPaths,
@@ -148,7 +150,6 @@ export class SurfaceView {
 	#framesShown = "";
 	#chromeShown = "";
 	#toastShown: number | undefined;
-	#deviceDefaulted = false;
 
 	constructor(host: SurfaceViewHost, slug: string) {
 		this.#host = host;
@@ -282,13 +283,8 @@ export class SurfaceView {
 			return;
 		}
 		this.#composer.hidden = false;
-		if (!this.#deviceDefaulted && surface.archetype === "live_build") {
-			this.#deviceDefaulted = true;
-			const wanted = store.lookOf(surface).kind === "mobile_app" ? "mobile" : "desktop";
-			if (state.device !== wanted) queueMicrotask(() => store.setDevice(wanted));
-		}
-		const reportMode =
-			surface.archetype === "live_build" && state.mode === "report" && surfaceHasReports(state, surface.id);
+		const look = store.lookOf(surface);
+		const reportMode = state.mode === "report" && look.kind !== "report" && surfaceHasReports(state, surface.id);
 		this.#drawBar(surface);
 		this.#drawMount(surface);
 		if (reportMode) {
@@ -331,29 +327,78 @@ export class SurfaceView {
 		this.#drawToast();
 		const panelOpen = store.isPreviewPanelOpen(surface.id);
 		this.el.classList.toggle("has-drawer", panelOpen);
-		this.#viewport.dataset.device = surface.archetype === "live_build" && !reportMode ? state.device : "desktop";
+		const effectiveDevice =
+			reportMode || surface.archetype !== "live_build"
+				? "desktop"
+				: look.kind === "mobile_app"
+					? "mobile"
+					: supportsViewportSplit(surface, look)
+						? state.device
+						: "desktop";
+		this.#viewport.dataset.device = effectiveDevice;
 	}
 
 	#drawBar(surface: SurfaceSummary): void {
 		const store = this.#host.store;
 		const state = store.state;
+		const look = store.lookOf(surface);
 		const workspace = state.workspaces[surface.id];
 		const explorations = openExplorations(workspace);
 		const plainSessions = (workspace?.activeSessions ?? []).filter((session) => !session.explorationId);
-		const rankedSessions = [...plainSessions].sort((a, b) => {
-			const rank = (s: (typeof plainSessions)[number]) =>
-				s.state === "needs_input"
-					? 0
-					: hasConflictedChange(s)
-						? 1
-						: isRunningSession(s)
-							? 2
-							: s.changes.some(isOpenChange)
-								? 3
-								: 4;
+		type HeaderAgent =
+			| {
+					readonly kind: "exploration";
+					readonly id: string;
+					readonly title: string;
+					readonly exploration: SurfaceExplorationSet;
+					readonly variants: readonly SurfaceSession[];
+					readonly needsInput: boolean;
+					readonly conflicted: boolean;
+					readonly running: boolean;
+					readonly badgeCount: number;
+			  }
+			| {
+					readonly kind: "session";
+					readonly id: string;
+					readonly title: string;
+					readonly session: SurfaceSession;
+					readonly needsInput: boolean;
+					readonly conflicted: boolean;
+					readonly running: boolean;
+					readonly badgeCount: number;
+			  };
+		const headerAgents: HeaderAgent[] = [
+			...explorations.map((exploration) => {
+				const variants = exploration.variantSessionIds
+					.map((id) => workspace?.activeSessions.find((session) => session.id === id))
+					.filter((session): session is SurfaceSession => Boolean(session));
+				return {
+					kind: "exploration" as const,
+					id: exploration.id,
+					title: exploration.title,
+					exploration,
+					variants,
+					needsInput: variants.some((v) => v.state === "needs_input"),
+					conflicted: variants.some(hasConflictedChange),
+					running: variants.some(isRunningSession),
+					badgeCount: variants.length,
+				};
+			}),
+			...plainSessions.map((session) => ({
+				kind: "session" as const,
+				id: session.id,
+				title: session.title,
+				session,
+				needsInput: session.state === "needs_input",
+				conflicted: hasConflictedChange(session),
+				running: isRunningSession(session),
+				badgeCount: session.changes.filter(isOpenChange).length,
+			})),
+		].sort((a, b) => {
+			const rank = (agent: HeaderAgent) =>
+				agent.needsInput ? 0 : agent.conflicted ? 1 : agent.running ? 2 : agent.badgeCount > 0 ? 3 : 4;
 			return rank(a) - rank(b);
 		});
-		const hasReports = surface.archetype === "live_build" && surfaceHasReports(state, surface.id);
 		const studioHasChanges =
 			surface.archetype === "studio" &&
 			Boolean(
@@ -364,30 +409,37 @@ export class SurfaceView {
 		const handoffTargets =
 			surface.archetype === "studio" || surface.archetype === "ops" ? productBuildSurfaces(state, surface.id) : [];
 		const busyHandoff = handoffTargets.some((target) => Boolean(state.busy[`handoff:${surface.id}:${target.slug}`]));
-		const activeDrawerSession = state.drawer?.surfaceId === surface.id ? state.drawer.sessionId : "";
+		const activeDrawerSession =
+			state.drawer?.surfaceId === surface.id && !state.drawer.explorationId ? state.drawer.sessionId : "";
+		const activeDrawerExploration = state.drawer?.surfaceId === surface.id ? (state.drawer.explorationId ?? "") : "";
 		const panelOpen = store.isPreviewPanelOpen(surface.id);
 		const openWorkCount =
 			plainSessions.reduce((sum, session) => sum + session.changes.filter(isOpenChange).length, 0) +
 			explorations.length;
+		const showViewportSplit = supportsViewportSplit(surface, look);
 		const key = JSON.stringify([
 			surface.id,
 			surface.title,
 			surface.archetype,
+			look.kind,
 			surface.liveUrl,
 			surface.unpublishedChangeCount,
 			state.mode,
 			state.device,
-			hasReports,
+			showViewportSplit,
 			studioHasChanges,
 			activeDrawerSession,
+			activeDrawerExploration,
 			panelOpen,
 			openWorkCount,
-			rankedSessions.map((s) => [
-				s.id,
-				s.title,
-				s.state,
-				s.changes.filter(isOpenChange).length,
-				hasConflictedChange(s),
+			headerAgents.map((agent) => [
+				agent.kind,
+				agent.id,
+				agent.title,
+				agent.needsInput,
+				agent.conflicted,
+				agent.running,
+				agent.badgeCount,
 			]),
 			handoffTargets.map((target) => [target.slug, target.title]),
 			busyHandoff,
@@ -419,9 +471,8 @@ export class SurfaceView {
 					{ class: "surface-pill-modes", role: "group", "aria-label": t("What the surface shows") },
 					seg("live", t("Live"), t("What visitors see right now")),
 					seg("preview", t("Preview"), t("Base with the changes you have turned on")),
-					hasReports ? seg("report", t("Notes"), t("Design notes, rationale, and analysis")) : null,
 				)
-			: studioHasChanges
+			: studioHasChanges || (surface.archetype === "studio" && state.mode === "report")
 				? h(
 						"div",
 						{ class: "surface-pill-modes", role: "group", "aria-label": t("What the surface shows") },
@@ -430,28 +481,27 @@ export class SurfaceView {
 					)
 				: null;
 
-		const visibleAgents = rankedSessions.slice(0, 3);
-		const overflowAgents = rankedSessions.length - visibleAgents.length;
+		const visibleAgents = headerAgents.slice(0, 3);
+		const overflowAgents = headerAgents.length - visibleAgents.length;
 		const headerCrew =
 			visibleAgents.length > 0
 				? h(
 						"div",
 						{ class: "surface-bar-crew", role: "group", "aria-label": t("Active agents on this surface") },
-						...visibleAgents.map((session) => {
-							const openChanges = session.changes.filter(isOpenChange).length;
-							const needsInput = session.state === "needs_input";
-							const conflicted = hasConflictedChange(session);
-							const running = isRunningSession(session);
-							const active = activeDrawerSession === session.id;
-							const attention = needsInput || conflicted;
-							const badge = needsInput
+						...visibleAgents.map((agent) => {
+							const active =
+								agent.kind === "exploration"
+									? activeDrawerExploration === agent.id
+									: activeDrawerSession === agent.id;
+							const attention = agent.needsInput || agent.conflicted;
+							const badge = agent.needsInput
 								? h("span", { class: "surface-bar-agent-badge is-attention" }, t("Needs you"))
-								: conflicted
+								: agent.conflicted
 									? h("span", { class: "surface-bar-agent-badge is-danger" }, t("Conflict"))
-									: running
+									: agent.running
 										? h("span", { class: "surface-bar-agent-badge is-working" }, t("Working"))
-										: openChanges > 0
-											? h("span", { class: "surface-bar-agent-count" }, String(openChanges))
+										: agent.badgeCount > 0
+											? h("span", { class: "surface-bar-agent-count" }, String(agent.badgeCount))
 											: null;
 							return h(
 								"button",
@@ -461,18 +511,22 @@ export class SurfaceView {
 										"surface-bar-agent",
 										active && "is-active",
 										attention && "is-attention",
-										running && "is-working",
-										!attention && !running && openChanges > 0 && "is-ready",
+										agent.running && "is-working",
+										!attention && !agent.running && agent.badgeCount > 0 && "is-ready",
 									]
 										.filter(Boolean)
 										.join(" "),
 									"aria-pressed": String(active),
-									"aria-label": session.title,
-									title: session.title,
-									"data-act": "bar-agent",
-									"data-session": session.id,
+									"aria-label": agent.title,
+									title: agent.title,
+									"data-act": agent.kind === "exploration" ? "bar-exploration" : "bar-agent",
+									...(agent.kind === "exploration"
+										? { "data-exploration": agent.id }
+										: { "data-session": agent.id }),
 								},
-								this.#headerCrew.take(session, 26),
+								agent.kind === "exploration"
+									? this.#headerCrew.takeExploration(agent.exploration, agent.variants, 26)
+									: this.#headerCrew.take(agent.session, 26),
 								badge,
 							);
 						}),
@@ -518,7 +572,7 @@ export class SurfaceView {
 				),
 			);
 		}
-		if (live) {
+		if (showViewportSplit) {
 			rightTools.push(
 				h(
 					"div",
@@ -582,7 +636,7 @@ export class SurfaceView {
 			);
 		}
 
-		const showPanelToggle = surface.archetype !== "ops" || rankedSessions.length > 0 || explorations.length > 0;
+		const showPanelToggle = surface.archetype !== "ops" || headerAgents.length > 0;
 		const pillParts: HTMLElement[] = [];
 		if (modeNav) pillParts.push(modeNav);
 		if (headerCrew) pillParts.push(headerCrew);
@@ -1300,27 +1354,44 @@ export class SurfaceView {
 				});
 				return;
 			}
+			case "bar-exploration": {
+				const explorationId = target.dataset.exploration;
+				if (!explorationId) return;
+				if (store.state.drawer?.explorationId === explorationId) store.openPreviewPanel();
+				else store.openExplorationDrawer(surface.id, explorationId);
+				return;
+			}
 			case "bar-agent": {
 				const sessionId = target.dataset.session;
 				if (!sessionId) return;
-				if (store.state.drawer?.sessionId === sessionId) store.openPreviewPanel();
+				if (store.state.drawer?.sessionId === sessionId && !store.state.drawer.explorationId)
+					store.openPreviewPanel();
 				else store.openDrawer(surface.id, sessionId);
 				return;
 			}
 			case "bar-agents-more": {
-				const sessions = (store.workspace(surface.id)?.activeSessions ?? []).filter((s) => !s.explorationId);
-				if (!sessions.length) return;
+				const workspace = store.workspace(surface.id);
+				const explorations = openExplorations(workspace);
+				const sessions = (workspace?.activeSessions ?? []).filter((s) => !s.explorationId);
+				if (!explorations.length && !sessions.length) return;
 				const box = target.getBoundingClientRect();
 				openContextMenu({
 					label: t("Active agents on this surface"),
 					x: box.left,
 					y: box.bottom + 4,
 					opener: target,
-					items: sessions.map((s) => ({
-						label: s.title,
-						checked: store.state.drawer?.sessionId === s.id,
-						select: () => store.openDrawer(surface.id, s.id),
-					})),
+					items: [
+						...explorations.map((exp) => ({
+							label: exp.title,
+							checked: store.state.drawer?.explorationId === exp.id,
+							select: () => store.openExplorationDrawer(surface.id, exp.id),
+						})),
+						...sessions.map((s) => ({
+							label: s.title,
+							checked: store.state.drawer?.sessionId === s.id && !store.state.drawer.explorationId,
+							select: () => store.openDrawer(surface.id, s.id),
+						})),
+					],
 				});
 				return;
 			}

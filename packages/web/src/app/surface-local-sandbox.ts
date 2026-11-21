@@ -285,6 +285,7 @@ function thetabandWebsitePositioningReport(): string {
 	return JSON.stringify(
 		{
 			slug: "launch-positioning",
+			ownerTitle: "Forsidens udtryk",
 			category: "Homepage Strategy",
 			headline: "How Thetaband Presents Itself at First Visit",
 			subtitle:
@@ -1798,7 +1799,11 @@ export function starterOrchestrationPlan(companyName: string): StarterSurfaceBun
 								summary:
 									"Opdaterer product/specs.json og product/vendors.json med låst BrainBit-ordre og 44 g vægtmål.",
 								kind: "folder_patch",
-								paths: ["product/specs.json", "product/vendors.json"],
+								paths: [
+									"product/specs.json",
+									"product/vendors.json",
+									"product/vendor-selection-brainbit.report.json",
+								],
 								studioPatch: [
 									{
 										op: "merge_json",
