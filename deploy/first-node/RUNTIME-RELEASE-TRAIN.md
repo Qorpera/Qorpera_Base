@@ -199,11 +199,13 @@ plus the overlapping `home-path` subset or unconditional `C4c` nested-VM proof:
   those subsystems).
 - Verify the release branch on the node test machines with:
   ```sh
-  node scripts/run-on-node.mjs release-check --from-release <prev-release-sha>
+  node scripts/run-on-node.mjs --from-release <prev-release-sha> release-check
   ```
   When only release-derived files differ from `origin/master`, `release-check`
   runs `lint`, `typecheck`, `checks` and `scripts` with
-  `QORPERA_ENFORCE_RUNTIME_BUNDLE=1`, `hosted-db --only 001,838,<new-sql-tests>`
+  `QORPERA_ENFORCE_RUNTIME_BUNDLE=1`, `hosted-db --only 001_,838_,<new-sql-tests>`
   (replaying all migrations including the new activation), and the two provers
-  not covered by `changed`. If any non-derived file differs from
-  `origin/master`, `release-check` automatically falls back to full `changed`.
+  not covered by `changed` (with `QORPERA_CODEX_FENCE_BINARY` wired to the test
+  machine's pinned binary). If any non-derived file differs from
+  `origin/master`, `release-check` automatically falls back to full `changed`
+  with `QORPERA_ENFORCE_RUNTIME_BUNDLE=1` enforced.

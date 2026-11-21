@@ -851,11 +851,22 @@ test("planReleaseCheck runs the fast enforced release subset when only derived f
 		"supabase/migrations/20260929027099_runtime_bundle_activation_v270.sql",
 		"packages/runtime/CHANGELOG.md",
 	];
-	const fast = planReleaseCheck(derived, [
-		"packages/runtime/src/cloud-native-company-context.ts",
-		"supabase/migrations/20260930822000_thread_run_wakes.sql",
-		"supabase/tests/1311_thread_run_wakes.test.sql",
-	]);
+	const fast = planReleaseCheck(
+		derived,
+		[
+			"packages/runtime/src/cloud-native-company-context.ts",
+			"supabase/migrations/20260930822000_thread_run_wakes.sql",
+			"supabase/tests/1311_thread_run_wakes.test.sql",
+			"supabase/tests/1248_deleted.test.sql",
+		],
+		{
+			existingFiles: [
+				"packages/runtime/src/cloud-native-company-context.ts",
+				"supabase/migrations/20260930822000_thread_run_wakes.sql",
+				"supabase/tests/1311_thread_run_wakes.test.sql",
+			],
+		},
+	);
 	assert.equal(fast.derivedOnly, true);
 	assert.deepEqual(
 		fast.steps.map((step) => step.name),
@@ -868,11 +879,20 @@ test("planReleaseCheck runs the fast enforced release subset when only derived f
 	);
 	assert.match(fast.steps.find((step) => step.name === "scripts").commands[0], /^QORPERA_ENFORCE_RUNTIME_BUNDLE=1 /);
 	assert.deepEqual(fast.steps.find((step) => step.name === "hosted-db-release").commands, [
-		"node scripts/test-hosted-db.mjs --only 001,838,1311",
+		"node scripts/test-hosted-db.mjs --only 001_,838_,1311_",
 	]);
 	assert.deepEqual(fast.steps.find((step) => step.name === "release-provers").commands, [
-		"node scripts/prove-home-channel.mjs",
-		"node scripts/prove-hire-team.mjs",
+		'QORPERA_CODEX_FENCE_BINARY="${QORPERA_CODEX_FENCE_BINARY:-/opt/qorpera-codex-fence/codex}" node scripts/prove-home-channel.mjs',
+		'QORPERA_CODEX_FENCE_BINARY="${QORPERA_CODEX_FENCE_BINARY:-/opt/qorpera-codex-fence/codex}" node scripts/prove-hire-team.mjs',
+	]);
+
+	const withActivationScript = planReleaseCheck(
+		[...derived, "scripts/test-runtime-bundle-activation.mjs"],
+		["supabase/migrations/20260930822000_thread_run_wakes.sql"],
+	);
+	assert.deepEqual(withActivationScript.steps.find((step) => step.name === "hosted-db-release").commands, [
+		"node scripts/test-hosted-db.mjs --only 001_,838_",
+		"node scripts/test-runtime-bundle-activation.mjs",
 	]);
 
 	const sqlOnly = planReleaseCheck(derived, [
@@ -884,8 +904,23 @@ test("planReleaseCheck runs the fast enforced release subset when only derived f
 		["lint", "typecheck", "checks", "scripts", "hosted-db-release"],
 	);
 
-	const fallback = planReleaseCheck([...derived, "packages/runtime/src/cloud-native-company-context.ts"]);
+	const fallback = planReleaseCheck([
+		...derived,
+		"packages/runtime/src/cloud-native-company-context.ts",
+		"packages/web/src/app/views/thread.ts",
+	]);
 	assert.equal(fallback.derivedOnly, false);
 	assert.ok(fallback.steps.some((step) => step.name === "runtime"));
 	assert.ok(fallback.steps.some((step) => step.name === "runner-orchestrator-1"));
+	assert.ok(
+		fallback.steps
+			.find((step) => step.name === "checks")
+			.alone.includes("QORPERA_ENFORCE_RUNTIME_BUNDLE=1 npm run check:runtime-bundle:release-train"),
+	);
+	assert.match(fallback.steps.find((step) => step.name === "scripts").commands[0], /^QORPERA_ENFORCE_RUNTIME_BUNDLE=1 /);
+	assert.ok(
+		fallback.steps
+			.find((step) => step.name === "web")
+			.alone.some((command) => command.includes("QORPERA_ENFORCE_RUNTIME_BUNDLE=1 npm run build:release --workspace packages/web")),
+	);
 });

@@ -61,7 +61,7 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
          --front                    wait at the front of the CPU lane's queue, ahead of every run without it, and
                                     take the slot kept for such runs when it is free (pr-loop's batch runs,
                                     which test every approved head at once)
-         --cores N                  changed: run the steps side by side within N cores, their tree-wide parts
+         --cores N                  changed / release-check: run the steps side by side within N cores, their tree-wide parts
                                     first and alone (default: 6; with --front, 2, what one slot gives). The run starts
                                     in one slot and takes up to 3 as they free (one such run per machine), each only
                                     while the machine has 2 GiB available. A --front run takes them ahead of the queue,
@@ -69,12 +69,12 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
                                     run side by side, only while no other run waits for a slot or is being copied there,
                                     and only while another of them stays free for the next run; while a run waits, it
                                     gives them back as its running steps fit in fewer. --cores 2 keeps to one slot
-         --parts N                  changed: split the steps into N parts by their CPU work, each a run of its own, all
+         --parts N                  changed / release-check: split the steps into N parts by their CPU work, each a run of its own, all
                                     at once (N at most the machines' count). Each waits on every machine and runs on the
                                     first with a slot for it, the part with the most work queued first. One exit code,
                                     status and record: the run passes only if every part passed. With one machine open,
                                     or --machine, one part
-         --fail-fast                changed: stop at the first failed step: no step starts after it, the steps running
+         --fail-fast                changed / release-check: stop at the first failed step: no step starts after it, the steps running
                                     side by side end, and so do the other parts' (pr-loop's batch runs, which are
                                     bisected when they fail). Without --cores, the shortest steps first
          --tree NAME               copy against the machine's shared base copy NAME, not this checkout's own,
@@ -1400,7 +1400,10 @@ async function main() {
 	if (options.suite === "changed" || options.suite === "release-check") {
 		const { mergeBase, files: changed } = changedFiles(root, options.base, untracked);
 		const releaseFiles = options.fromRelease ? changedFiles(root, options.fromRelease, untracked).files : null;
-		plan = options.suite === "release-check" ? planReleaseCheck(changed, releaseFiles) : planChanged(changed);
+		plan =
+			options.suite === "release-check"
+				? planReleaseCheck(changed, releaseFiles, { existingFiles: files })
+				: planChanged(changed);
 		for (const line of describePlan(plan, `${options.base} ${mergeBase.slice(0, 9)}, ${changed.length} files`)) console.log(line);
 		changedPlan = { base: options.base, mergeBase, files: changed.length, full: plan.full, steps: plan.steps.map((step) => step.name) };
 		const comments = checkComments({ base: options.base, cwd: root }).findings;
@@ -1931,7 +1934,8 @@ function githubStatus(root, options, source) {
 		},
 		post(state, description) {
 			if (!decision.post || options.dryRun || abandoned) return { ...plan, ...(abandoned ? { posted: false, reason: abandoned } : {}) };
-			const text = options.suite === "changed" ? `${description} vs master` : description;
+			const text =
+				options.suite === "changed" || options.suite === "release-check" ? `${description} vs master` : description;
 			const ok = send(state, text.length > 140 ? `${text.slice(0, 139)}…` : text);
 			if (state === "pending" && ok && !pending) {
 				pending = true;
