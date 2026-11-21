@@ -2287,6 +2287,7 @@ describe("app relay: concurrency hardening and backpressure", () => {
 		});
 		await until(() => releaseHold !== null, "the concurrent hold request to reach the app", 3_000);
 		let slowSock;
+		let holdSlow = true;
 		const slowSteady = new Promise((resolve, reject) => {
 			slowSock = connect(relayPort, "127.0.0.1", () => {
 				slowSock.pause();
@@ -2298,8 +2299,9 @@ describe("app relay: concurrency hardening and backpressure", () => {
 			slowSock.on("data", (c) => {
 				bytes += c.length;
 				slowSock.pause();
+				if (holdSlow) return;
 				setTimeout(() => {
-					if (!slowSock.destroyed) slowSock.resume();
+					if (!slowSock.destroyed && !holdSlow) slowSock.resume();
 				}, 3);
 			});
 			slowSock.on("end", () => resolve(bytes));
@@ -2336,9 +2338,10 @@ describe("app relay: concurrency hardening and backpressure", () => {
 			earlyPausedReq.write(Buffer.from("a"));
 		});
 		await until(() => earlyPausedDone, "the early response to finish while the link is paused", 3_000);
-		await new Promise((r) => setTimeout(r, 50));
+		await new Promise((r) => setTimeout(r, 40));
 		earlyPausedReq.end(Buffer.alloc(256 * 1024 - 1, 0x46));
-		await new Promise((r) => setTimeout(r, 80));
+		await new Promise((r) => setTimeout(r, 40));
+		holdSlow = false;
 		slowSock.resume();
 		const earlyPaused = await earlyPausedRes;
 		assert.equal(earlyPaused.status, 413);
