@@ -538,7 +538,13 @@ export function renderMailbox(
 			: null,
 	]);
 	const page: Page = { company, ui, name, profileId, redraw, options };
-	if (moveFocus !== undefined) ui.pendingFocus = moveFocus;
+	if (moveFocus !== undefined) {
+		ui.pendingFocus = moveFocus;
+	} else if (ui.pendingFocus !== null) {
+		const active = document.activeElement;
+		if (active instanceof HTMLElement && container.contains(active) && active.dataset.focusKey !== undefined)
+			ui.pendingFocus = null;
+	}
 	const targetFocus = moveFocus ?? ui.pendingFocus ?? undefined;
 	show(container, key, () => settle(container.firstElementChild, drawPage(page)), targetFocus);
 	if (ui.pendingFocus !== null) {

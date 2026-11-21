@@ -502,10 +502,11 @@ export class CompanyMail {
 
 	async #refreshPage(): Promise<void> {
 		const { lists, threads, letters } = this.#watched;
+		// WHY: lists land first so #readFirst can clear #marked and schedule a fresh thread read for newly arrived mail.
+		await Promise.all([...lists].map(([key, request]) => this.#readFirst(key, request)));
 		// The letters list follows the page too: a letter written into the folder shows within the page's read.
 		const connection = this.#state?.digitalPost?.connection;
 		await Promise.all([
-			...[...lists].map(([key, request]) => this.#readFirst(key, request)),
 			...[...threads].map((thread) => this.#readThread(thread)),
 			...(connection?.connected || (connection?.letters ?? 0) > 0
 				? [this.#once("digital-post-index", () => this.#readIndex())]

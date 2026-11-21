@@ -5,7 +5,7 @@ import { figureElement } from "./avatar.ts";
 import { attachCompanyLogo } from "./company-logos.ts";
 import { leave } from "./motion.ts";
 import { attachPersonPicture } from "./person-pictures.ts";
-import { presentationDay, presentationLocale, t, timeZoneOption } from "./preferences.ts";
+import { presentationDay, presentationLocale, systemTimeZone, t, timeZoneOption } from "./preferences.ts";
 
 export type Child = Node | string | number | boolean | null | undefined | Child[];
 type Attrs = Record<string, unknown>;
@@ -128,6 +128,17 @@ export function replace(parent: Element, ...children: Child[]): void {
 
 const MAX_DATE_FORMATS = 32;
 const dateFormats = new Map<string, Intl.DateTimeFormat>();
+let taskSystemZone: string | undefined;
+
+function resolvedSystemZone(): string {
+	if (taskSystemZone === undefined) {
+		taskSystemZone = systemTimeZone();
+		queueMicrotask(() => {
+			taskSystemZone = undefined;
+		});
+	}
+	return taskSystemZone;
+}
 
 export function formatPresentationDate(
 	date: Date,
@@ -135,7 +146,8 @@ export function formatPresentationDate(
 	locale = presentationLocale(),
 	timeZone = timeZoneOption().timeZone,
 ): string {
-	const key = `${kind}\0${locale}\0${timeZone ?? ""}`;
+	const zoneKey = timeZone ? `z:${timeZone}` : `s:${resolvedSystemZone()}`;
+	const key = `${kind}\0${locale}\0${zoneKey}`;
 	let format = dateFormats.get(key);
 	if (!format) {
 		if (dateFormats.size >= MAX_DATE_FORMATS) dateFormats.clear();

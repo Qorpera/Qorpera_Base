@@ -14,7 +14,7 @@ import {
 } from "../src/cloud/routines.ts";
 import type { HostedProfileRole } from "../src/cloud/types.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
-import { h } from "../src/ui/dom.ts";
+import { formatPresentationDate, h } from "../src/ui/dom.ts";
 import { setLanguagePreference, setTimeZonePreference } from "../src/ui/preferences.ts";
 import { fixture, id, profileA, scrolledTo, session, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
 import { type FolderFake, folderFake } from "./folder-fake.ts";
@@ -3180,6 +3180,7 @@ describe("Digital Post", () => {
 			expect(controller.store.get().mail?.digitalPost?.open[letterFolder(7)]?.status).toBe("ready"),
 		);
 		expect(controller.store.get().mail?.digitalPost?.open[letterFolder(3)]).toBeUndefined();
+		expect(folder.folder.read).not.toHaveBeenCalledWith(`${letterFolder(3)}/letter.md`, expect.anything());
 
 		let receivedSignal: AbortSignal | undefined;
 		folder.folder.read.mockImplementationOnce(
@@ -3214,5 +3215,60 @@ describe("Digital Post", () => {
 		} finally {
 			setTimeZonePreference("system");
 		}
+	});
+
+	it("follows device system time zone changes in formatPresentationDate", async () => {
+		setTimeZonePreference("system");
+		const RealDateTimeFormat = Intl.DateTimeFormat;
+		let deviceZone = "America/New_York";
+		const createdZones: string[] = [];
+		const spy = vi.spyOn(Intl, "DateTimeFormat").mockImplementation(function (
+			this: unknown,
+			locale?: Intl.LocalesArgument,
+			options?: Intl.DateTimeFormatOptions,
+		) {
+			if (locale === undefined && options === undefined) {
+				return { resolvedOptions: () => ({ timeZone: deviceZone }) } as Intl.DateTimeFormat;
+			}
+			const zone = options?.timeZone ?? deviceZone;
+			createdZones.push(zone);
+			return new RealDateTimeFormat(locale, { ...options, timeZone: zone });
+		} as unknown as typeof Intl.DateTimeFormat);
+		try {
+			const sample = new Date("2026-10-06T12:00:00Z");
+			const ny = formatPresentationDate(sample, "time", "en", undefined);
+			expect(ny).toContain("08:00");
+			deviceZone = "Asia/Tokyo";
+			await Promise.resolve();
+			const tokyo = formatPresentationDate(sample, "time", "en", undefined);
+			expect(tokyo).toContain("09:00");
+			expect(createdZones).toEqual(["America/New_York", "Asia/Tokyo"]);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("restores focus to Send after reopening an evicted thread on failed send", async () => {
+		const { main, fake, controller } = await mailbox((mail) => {
+			mail.threads = [summary(1)];
+		});
+		await openFirst(main);
+		button(main, "Reply")!.click();
+		type(reply(main).querySelector("textarea")!, "Retry me.");
+		let release = () => {};
+		fake.sendHold = new Promise((resolve) => {
+			release = resolve;
+		});
+		fake.sendError = { message: "The mailbox is paused; resume it to send from it", code: "0A000" };
+		reply(main).requestSubmit();
+		button(main, "Back to Inbox")!.click();
+		await vi.waitFor(() => expect(controller.store.get().mail?.threads[thread(1)]).toBeUndefined());
+		release();
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-write-error")?.textContent).toBe(
+				"The mailbox is paused; resume it to send from it",
+			),
+		);
+		expect(document.activeElement).toBe(button(reply(main), "Send"));
 	});
 });
