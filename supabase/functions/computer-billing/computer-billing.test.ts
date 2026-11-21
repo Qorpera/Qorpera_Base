@@ -932,4 +932,64 @@ describe("Good will", () => {
 		assert.equal(other.doorCalls.length, 0);
 		assert.equal(finished(other)?.outcome, "ignored");
 	});
+
+	it("rejects oversized chunked webhook and member bodies with 413 and cancels the stream early", async () => {
+		const f = fixture();
+		let pulled = 0;
+		let cancelled = false;
+		const oversizedWebhook = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				pulled += 1;
+				if (pulled > 32) {
+					controller.close();
+					return;
+				}
+				controller.enqueue(new Uint8Array(64 * 1024));
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const webhookReq = new Request("https://example.test/functions/v1/computer-billing/webhook", {
+			method: "POST",
+			body: oversizedWebhook,
+			duplex: "half",
+		} as RequestInit);
+		const webhookRes = await handleComputerBilling(webhookReq, f.deps);
+		assert.equal(webhookRes.status, 413);
+		assert.equal(cancelled, true);
+		assert.ok(pulled <= 10, `expected early stream cancellation, saw ${pulled} chunks`);
+
+		const checkoutReq = new Request("https://example.test/functions/v1/computer-billing/checkout", {
+			method: "POST",
+			headers: {
+				authorization: "Bearer member-token",
+				origin: "https://app.qorpera.com",
+			},
+			body: JSON.stringify({ itemKey: "x".repeat(20_000) }),
+		});
+		const checkoutRes = await handleComputerBilling(checkoutReq, f.deps);
+		assert.equal(checkoutRes.status, 413);
+		assert.equal(checkoutRes.headers.get("access-control-allow-origin"), "https://app.qorpera.com");
+
+		const badUtf8Webhook = new Request("https://example.test/functions/v1/computer-billing/webhook", {
+			method: "POST",
+			headers: { "stripe-signature": "t=1700000000,v1=deadbeef" },
+			body: new Uint8Array([0xff, 0xfe, 0xfd]),
+		});
+		const badUtf8WebhookRes = await handleComputerBilling(badUtf8Webhook, f.deps);
+		assert.equal(badUtf8WebhookRes.status, 400);
+
+		const badUtf8Checkout = new Request("https://example.test/functions/v1/computer-billing/checkout", {
+			method: "POST",
+			headers: {
+				authorization: "Bearer member-token",
+				origin: "https://app.qorpera.com",
+			},
+			body: new Uint8Array([0xff, 0xfe, 0xfd]),
+		});
+		const badUtf8CheckoutRes = await handleComputerBilling(badUtf8Checkout, f.deps);
+		assert.equal(badUtf8CheckoutRes.status, 400);
+		assert.equal(badUtf8CheckoutRes.headers.get("access-control-allow-origin"), "https://app.qorpera.com");
+	});
 });
