@@ -96,6 +96,13 @@ PEM_CERTIFICATES = re.compile(
     rb"(-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]{1,16384}-----END CERTIFICATE-----\r?\n?)+")
 # Our own CA as install-agent-exit.sh --database-ca places it beside Supabase's; in direct mode it must be the pinned CA.
 OWN_CA = LIBEXEC + "/database-own-ca.crt"
+OWN_CA_SHA = LIBEXEC + "/database-own-ca.sha256"
+OWN_CA_DROP_IN = "/etc/systemd/system/qorpera-agent-exit-rules.service.d/database-own-ca.conf"
+OWN_CA_DROP_IN_CONTENT = (
+    "[Service]\n"
+    "LoadCredential=qorpera-agent-exit-rules-database-own-ca:/usr/local/libexec/qorpera-agent-exit/database-own-ca.crt\n"
+    "LoadCredential=qorpera-agent-exit-rules-database-own-ca-sha256:/usr/local/libexec/qorpera-agent-exit/database-own-ca.sha256\n"
+).encode("ascii")
 PSQL_LINE = re.compile(r"psql: error: [ -~]{0,300}")
 
 
@@ -380,7 +387,7 @@ def check_node(node, ca_sha256=None):
         installed = False
     if not installed:
         raise node_failed(node, "its root helper does not answer", err)
-    paths = [path for path, _ in INSTALLED] + [PROGRAM] + ([OWN_CA] if ca_sha256 is not None else [])
+    paths = [path for path, _ in INSTALLED] + [PROGRAM] + ([OWN_CA, OWN_CA_SHA, OWN_CA_DROP_IN] if ca_sha256 is not None else [])
     code, out, err = run(node, ["/usr/bin/sha256sum", "--"] + paths)
     found = {}
     for line in out.splitlines():
@@ -390,9 +397,18 @@ def check_node(node, ca_sha256=None):
     for path, local in INSTALLED:
         if found.get(path) != sha256_file(local):
             raise node_failed(node, f"{path} is not this checkout's: install the exit from it first", err)
-    if ca_sha256 is not None and found.get(OWN_CA) != ca_sha256:
-        raise node_failed(
-            node, f"{OWN_CA} is not the direct database's pinned CA: install the exit with that CA first", err)
+    if ca_sha256 is not None:
+        if found.get(OWN_CA) != ca_sha256:
+            raise node_failed(
+                node, f"{OWN_CA} is not the direct database's pinned CA: install the exit with that CA first", err)
+        expected_sha_file = hashlib.sha256(f"{ca_sha256}\n".encode("ascii")).hexdigest()
+        if found.get(OWN_CA_SHA) != expected_sha_file:
+            raise node_failed(
+                node, f"{OWN_CA_SHA} does not match the direct database's pinned CA: reinstall the exit with that CA", err)
+        expected_drop_in = hashlib.sha256(OWN_CA_DROP_IN_CONTENT).hexdigest()
+        if found.get(OWN_CA_DROP_IN) != expected_drop_in:
+            raise node_failed(
+                node, f"{OWN_CA_DROP_IN} is missing or changed: reinstall the exit with that CA", err)
     if PROGRAM not in found:
         raise node_failed(node, f"{PROGRAM} is missing: install the exit with its rules reader package first", err)
     code, _, err = run(node, ["/usr/bin/test", "-d", CLIENTS])

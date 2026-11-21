@@ -253,7 +253,7 @@ export async function runCloudSecretBrokerServiceMain(
 	// (scripts/package-cloud-secret-broker.mjs --database-ca), and then that CA alone (database-ca.ts).
 	const ssl = databaseTls(
 		{
-			supabaseCa: await readCredential(directory, "qorpera-cloud-secret-database-ca"),
+			supabaseCa: await readOptionalCredential(directory, "qorpera-cloud-secret-database-ca"),
 			ownCa: await readOptionalCredential(directory, "qorpera-cloud-secret-database-own-ca", readCredentialBytes),
 			ownCaSha256: await readOptionalCredential(directory, "qorpera-cloud-secret-database-own-ca-sha256"),
 		},

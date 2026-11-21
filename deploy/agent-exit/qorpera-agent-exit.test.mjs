@@ -252,6 +252,8 @@ def rollout(argv=(), fail=None):
             lines = [login.sha256_file(local) + "  " + path for path, local in login.INSTALLED]
             if is_direct and how != "no-own-ca":
                 lines.append(pin + "  " + login.OWN_CA)
+                lines.append(hashlib.sha256((pin + "\n").encode("ascii")).hexdigest() + "  " + login.OWN_CA_SHA)
+                lines.append(hashlib.sha256(login.OWN_CA_DROP_IN_CONTENT).hexdigest() + "  " + login.OWN_CA_DROP_IN)
             if how == "stale":
                 lines[0] = "0" * 64 + "  " + login.TOOL
             return 0, "\n".join(lines + ["1" * 64 + "  " + login.PROGRAM]) + "\n", []

@@ -96,7 +96,7 @@ import re, sys
 with open(sys.argv[1], "rb") as f:
     data = f.read()
 pem = rb"-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----\r?\n?"
-sys.exit(0 if re.fullmatch(pem, data) else 1)
+sys.exit(0 if len(data) <= 65536 and re.fullmatch(pem, data) else 1)
 ' "$OWN_CA_COPY" || {
 		echo "$OWN_CA: not one PEM certificate; refusing to install" >&2
 		exit 65
@@ -145,12 +145,14 @@ pin qorpera-agent-exit-sni.service "$EXPECTED_SNI_UNIT_SHA256"
 python3 -c '
 import hashlib, json, os, sys
 package = sys.argv[1]
-files = ["qorpera-agent-exit-rules.mjs", "qorpera-agent-exit-rules.service", "supabase-prod-ca-2021.crt"]
+base_files = ["qorpera-agent-exit-rules.mjs", "qorpera-agent-exit-rules.service", "supabase-prod-ca-2021.crt"]
+own_ca_files = ["database-own-ca.crt", "database-own-ca.sha256", "database-own-ca.conf"]
 with open(os.path.join(package, "manifest.json"), encoding="utf-8") as f:
     manifest = json.load(f)
 assert sorted(manifest) == ["artifacts", "schema"] and manifest["schema"] == "qorpera.agent-exit-rules-package/v1"
-assert [artifact["file"] for artifact in manifest["artifacts"]] == files
-assert sorted(os.listdir(package)) == sorted(files + ["manifest.json"])
+names = [artifact["file"] for artifact in manifest["artifacts"]]
+assert names in (base_files, base_files + own_ca_files)
+assert sorted(os.listdir(package)) == sorted(names + ["manifest.json"])
 for artifact in manifest["artifacts"]:
     path = os.path.join(package, artifact["file"])
     assert not os.path.islink(path) and os.path.isfile(path)
@@ -171,6 +173,44 @@ package_pin() {
 }
 package_pin qorpera-agent-exit-rules.service "$EXPECTED_RULES_UNIT_SHA256"
 package_pin supabase-prod-ca-2021.crt "$EXPECTED_RULES_CA_SHA256"
+if [[ -f "$PACKAGE/database-own-ca.crt" ]]; then
+	PKG_OWN_CA_SHA256=$(python3 -c '
+import hashlib, re, sys
+pkg = sys.argv[1]
+with open(pkg + "/database-own-ca.crt", "rb") as f:
+    crt = f.read()
+with open(pkg + "/database-own-ca.sha256", encoding="utf-8") as f:
+    sha_txt = f.read().strip()
+with open(pkg + "/database-own-ca.conf", encoding="utf-8") as f:
+    conf_txt = f.read()
+expected_conf = (
+    "[Service]\n"
+    "LoadCredential=qorpera-agent-exit-rules-database-own-ca:/usr/local/libexec/qorpera-agent-exit/database-own-ca.crt\n"
+    "LoadCredential=qorpera-agent-exit-rules-database-own-ca-sha256:/usr/local/libexec/qorpera-agent-exit/database-own-ca.sha256\n"
+)
+pem = rb"-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----\r?\n?"
+actual = hashlib.sha256(crt).hexdigest()
+assert len(crt) <= 65536 and re.fullmatch(pem, crt)
+assert re.fullmatch(r"[0-9a-f]{64}", sha_txt) and sha_txt == actual
+assert conf_txt == expected_conf
+print(actual)
+' "$PACKAGE") || {
+		echo "$PACKAGE: packaged database-own-ca artifacts are invalid; refusing to install" >&2
+		exit 65
+	}
+	if [[ -n $OWN_CA_COPY ]]; then
+		[[ $OWN_CA_SHA256 == "$PKG_OWN_CA_SHA256" ]] || {
+			echo "--database-ca-sha256 ($OWN_CA_SHA256) does not match packaged CA ($PKG_OWN_CA_SHA256); refusing to install" >&2
+			exit 65
+		}
+	else
+		OWN_CA="$PACKAGE/database-own-ca.crt"
+		OWN_CA_SHA256="$PKG_OWN_CA_SHA256"
+		OWN_CA_COPY=$(mktemp)
+		trap 'rm -f "$OWN_CA_COPY"' EXIT
+		cat -- "$OWN_CA" >"$OWN_CA_COPY"
+	fi
+fi
 # The unit runs /usr/bin/node; the package is built for Node 22.19 or later.
 /usr/bin/node -e 'const [major, minor] = process.versions.node.split(".").map(Number);
 process.exit(major > 22 || (major === 22 && minor >= 19) ? 0 : 1)' 2>/dev/null || {
