@@ -80,7 +80,7 @@ function fixture() {
 			publicKey,
 		}),
 	);
-	const list = vi.fn(async () => [identity]);
+	const list = vi.fn(async (_profile: string, _ids: string[]) => [identity]);
 	const unregister = vi.fn(async () => {});
 	const members = vi.fn();
 	const typing = vi.fn();
@@ -367,6 +367,58 @@ describe("shared browser presence", () => {
 			expect(verifySpy).toHaveBeenCalledTimes(2);
 		} finally {
 			gate.resolve([]);
+			await handle.stop();
+		}
+	});
+	it("never evicts replay floors for active or recently seen clients even past MAX_TRACKED_CLIENTS", async () => {
+		const f = fixture();
+		const fakeSignature = `${"A".repeat(86)}==`;
+		let now = 1_700_000_000_000;
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+		vi.spyOn(PresenceSignatures, "verify").mockResolvedValue(true);
+		f.list.mockImplementation(async (_profile: string, ids: string[]) =>
+			ids.map((clientId) => ({
+				clientId,
+				userId: identity.userId,
+				name: "Member",
+				publicKey: identity.publicKey,
+			})),
+		);
+		const handle = f.join();
+		try {
+			await vi.waitFor(() => expect(f.channels).toHaveLength(1));
+			const c = f.channels[0];
+			c.status("SUBSCRIBED");
+			c.state = { [remoteId]: [signed("open_thread", 10, "legal-agent")] };
+			c.broadcast({ client_id: remoteId, staff_agent_id: "legal-agent", sequence: 10, signature: fakeSignature });
+			await vi.waitFor(() => expect(f.typing).toHaveBeenCalledTimes(1));
+
+			for (let i = 1; i <= 4_120; i++) {
+				const attackerId = `20000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
+				c.broadcast({
+					client_id: attackerId,
+					staff_agent_id: "legal-agent",
+					sequence: 1,
+					signature: fakeSignature,
+				});
+			}
+			await vi.waitFor(() => expect(f.typing).toHaveBeenCalledTimes(4_121));
+
+			c.broadcast({ client_id: remoteId, staff_agent_id: "legal-agent", sequence: 5, signature: fakeSignature });
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(f.typing).toHaveBeenCalledTimes(4_121);
+
+			now += 7 * 60_000;
+			const lateAttacker = "30000000-0000-4000-8000-000000000001";
+			c.broadcast({ client_id: lateAttacker, staff_agent_id: "legal-agent", sequence: 1, signature: fakeSignature });
+			await vi.waitFor(() => expect(f.typing).toHaveBeenCalledTimes(4_122));
+
+			c.broadcast({ client_id: remoteId, staff_agent_id: "legal-agent", sequence: 9, signature: fakeSignature });
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(f.typing).toHaveBeenCalledTimes(4_122);
+		} finally {
 			await handle.stop();
 		}
 	});

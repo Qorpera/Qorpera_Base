@@ -11,15 +11,26 @@ const IDENTITY_TTL_MS = 60_000;
 const SYNC_RETRY_MS = 3_000;
 const SYNC_RETRY_MAX_MS = 30_000;
 const MAX_TRACKED_CLIENTS = 4_096;
+const SEQUENCE_RETENTION_MS = 6 * 60_000;
 const TEXT_ENCODER = new TextEncoder();
 
-function recordSequence(map: Map<string, number>, key: string, sequence: number): void {
+function recordSequence(
+	map: Map<string, { sequence: number; at: number }>,
+	key: string,
+	sequence: number,
+	now: number,
+	isProtected: (clientId: string) => boolean,
+): void {
 	map.delete(key);
 	if (map.size >= MAX_TRACKED_CLIENTS) {
-		const oldest = map.keys().next().value;
-		if (oldest !== undefined) map.delete(oldest);
+		for (const [existing, entry] of map) {
+			if (now - entry.at < SEQUENCE_RETENTION_MS) break;
+			if (isProtected(existing)) continue;
+			map.delete(existing);
+			if (map.size < MAX_TRACKED_CLIENTS) break;
+		}
 	}
-	map.set(key, sequence);
+	map.set(key, { sequence, at: now });
 }
 
 function broadcastBytes(
@@ -136,8 +147,13 @@ export class SupabaseCloudPresenceTransport {
 		let outbound = Promise.resolve();
 		let broadcastSequence = 0;
 		let presenceGeneration = 0;
-		const lastBroadcastSequence = new Map<string, number>();
-		const lastPresenceSequence = new Map<string, number>();
+		const isSequenceProtected = (id: string): boolean => {
+			if (identities.has(id)) return true;
+			const state = channel?.presenceState();
+			return state !== undefined && Object.hasOwn(state, id);
+		};
+		const lastBroadcastSequence = new Map<string, { sequence: number; at: number }>();
+		const lastPresenceSequence = new Map<string, { sequence: number; at: number }>();
 		// Async browser signing must preserve sequence order, including track/send.
 		// Work queued by a disconnected channel can never publish on its replacement.
 		const publish = (
@@ -257,7 +273,7 @@ export class SupabaseCloudPresenceTransport {
 					const identity = resolved.get(remoteClientId);
 					if (!identity || stopped) return;
 					const sequence = data.sequence as number;
-					if (sequence <= (lastBroadcastSequence.get(identity.clientId) ?? 0)) return;
+					if (sequence <= (lastBroadcastSequence.get(identity.clientId)?.sequence ?? 0)) return;
 					const activity =
 						event === "agent_activity" &&
 						(data.activity === "working" || data.activity === "writing" || data.activity === "idle")
@@ -272,9 +288,13 @@ export class SupabaseCloudPresenceTransport {
 						))
 					)
 						return;
-					if (stopped || source !== channel || sequence <= (lastBroadcastSequence.get(identity.clientId) ?? 0))
+					if (
+						stopped ||
+						source !== channel ||
+						sequence <= (lastBroadcastSequence.get(identity.clientId)?.sequence ?? 0)
+					)
 						return;
-					recordSequence(lastBroadcastSequence, identity.clientId, sequence);
+					recordSequence(lastBroadcastSequence, identity.clientId, sequence, Date.now(), isSequenceProtected);
 					accept(data, identity);
 				})
 				.catch(() => undefined);
@@ -357,7 +377,10 @@ export class SupabaseCloudPresenceTransport {
 								const byClient = new Map<string, typeof visible>();
 								for (const member of visible) {
 									const identity = resolved.get(member.clientId);
-									if (!identity || member.sequence < (lastPresenceSequence.get(member.clientId) ?? 0))
+									if (
+										!identity ||
+										member.sequence < (lastPresenceSequence.get(member.clientId)?.sequence ?? 0)
+									)
 										continue;
 									const list = byClient.get(member.clientId);
 									if (list) list.push(member);
@@ -396,9 +419,16 @@ export class SupabaseCloudPresenceTransport {
 								);
 								if (next !== channel || stopped || generation !== presenceGeneration) return;
 								const members: PresenceMember[] = [];
+								const recordedAt = Date.now();
 								for (const member of verified) {
 									if (!member) continue;
-									recordSequence(lastPresenceSequence, member.clientId, member.sequence);
+									recordSequence(
+										lastPresenceSequence,
+										member.clientId,
+										member.sequence,
+										recordedAt,
+										isSequenceProtected,
+									);
 									const { sequence: _sequence, ...publicMember } = member;
 									members.push(publicMember);
 								}
