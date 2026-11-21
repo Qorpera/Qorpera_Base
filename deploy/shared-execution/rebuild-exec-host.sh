@@ -121,7 +121,7 @@ expected_files = [
     "qorpera-lxd-native-login-bootstrap.mjs",
     "qorpera-claude-home-shell.mjs",
 ]
-pinned_files = {"qorpera-native-provider-host.mjs", "qorpera-ephemeral-runner.mjs"}
+pinned_files = {"qorpera-native-provider-host.mjs"}
 expected_uid = os.geteuid()
 
 def is_sha64(value):

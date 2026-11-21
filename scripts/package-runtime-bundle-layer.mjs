@@ -19,7 +19,7 @@ export const RUNTIME_HOST_LAYER_FILES = Object.freeze([
 	"qorpera-claude-home-shell.mjs",
 ]);
 
-const BUNDLE_PINNED_ARTIFACTS = new Set(["qorpera-native-provider-host.mjs", "qorpera-ephemeral-runner.mjs"]);
+const BUNDLE_PINNED_ARTIFACTS = new Set(["qorpera-native-provider-host.mjs"]);
 const SHA_64 = /^[0-9a-f]{64}$/;
 
 function readRegularFileNoFollow(filePath, label) {

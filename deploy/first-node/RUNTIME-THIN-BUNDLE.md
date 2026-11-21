@@ -32,9 +32,8 @@ uploading, importing, and deleting a full 1.82 GB LXD image.
      components), ownership, non-group/world-writable modes, exact directory
      contents (`manifest.json` + the 7 `.mjs` files, rejecting extra files),
      `manifest.json` SHA-256 against `EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256`,
-     every artifact's byte length and SHA-256 via `O_NOFOLLOW`, and that both
-     `qorpera-native-provider-host.mjs` and `qorpera-ephemeral-runner.mjs`
-     embed `manifest.runtimeBundleSha256`.
+     every artifact's byte length and SHA-256 via `O_NOFOLLOW`, and that
+     `qorpera-native-provider-host.mjs` embeds `manifest.runtimeBundleSha256`.
    - Preflight snapshots the verified bytes into a root-only `0700` temporary
      directory (cleaned up on `EXIT`), then after `lxc rebuild` pushes only from
      that snapshot with `--mode 0555 --uid 0 --gid 0`, re-verifies every

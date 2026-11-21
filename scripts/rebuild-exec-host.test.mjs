@@ -314,10 +314,11 @@ test(
 			mkdirSync(dir, { recursive: true, mode: 0o755 });
 			chmodSync(dir, 0o755);
 			const artifacts = layerFiles.map((file) => {
+				const includePin = !omitPin && file === "qorpera-native-provider-host.mjs";
 				const content = Buffer.from(
-					omitPin
-						? `export const file = ${JSON.stringify(file)};\n`
-						: `export const bundle = ${JSON.stringify(bundleSha)};\nexport const file = ${JSON.stringify(file)};\n`,
+					includePin
+						? `export const bundle = ${JSON.stringify(bundleSha)};\nexport const file = ${JSON.stringify(file)};\n`
+						: `export const file = ${JSON.stringify(file)};\n`,
 				);
 				const filePath = join(dir, file);
 				writeFileSync(filePath, content, { mode: 0o555 });

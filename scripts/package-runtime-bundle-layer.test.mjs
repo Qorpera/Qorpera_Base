@@ -20,8 +20,11 @@ function writeFakeLayer(dir, bundleSha, { omitPin = false } = {}) {
 	chmodSync(dir, 0o755);
 	const artifacts = [];
 	for (const file of RUNTIME_HOST_LAYER_FILES) {
+		const includePin = !omitPin && file === "qorpera-native-provider-host.mjs";
 		const content = Buffer.from(
-			omitPin ? `export const file = ${JSON.stringify(file)};\n` : `export const bundle = ${JSON.stringify(bundleSha)};\nexport const file = ${JSON.stringify(file)};\n`,
+			includePin
+				? `export const bundle = ${JSON.stringify(bundleSha)};\nexport const file = ${JSON.stringify(file)};\n`
+				: `export const file = ${JSON.stringify(file)};\n`,
 		);
 		const filePath = join(dir, file);
 		writeFileSync(filePath, content, { mode: 0o555 });
