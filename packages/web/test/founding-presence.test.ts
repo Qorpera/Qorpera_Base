@@ -27,6 +27,7 @@ class FakeChannel {
 	readonly #hub: Hub;
 	sync: (() => void) | undefined;
 	live: Handler | undefined;
+	statusCallback: ((status: string) => void) | undefined;
 	constructor(hub: Hub, topic: string, options: Record<string, unknown>) {
 		this.#hub = hub;
 		this.topic = topic;
@@ -39,6 +40,7 @@ class FakeChannel {
 		return this;
 	}
 	subscribe(callback: (status: string) => void) {
+		this.statusCallback = callback;
 		this.#hub.channels.add(this);
 		queueMicrotask(() => callback(this.#hub.refuseJoin ? "CHANNEL_ERROR" : "SUBSCRIBED"));
 		return this;
@@ -330,5 +332,33 @@ describe("a founding table's live presence", () => {
 		releaseRemove!();
 		await until(() => last(annaTab.health) === "connected", "reconnected after removal");
 		expect(annaTab.cloud.supabase.channel).toHaveBeenCalledTimes(2);
+
+		const secondChannel = [...hub.channels][0]!;
+		let rejectHeartbeat: ((error: Error) => void) | undefined;
+		const rpcSpy = vi.mocked(annaTab.cloud.rpc);
+		const origRpc = rpcSpy.getMockImplementation()!;
+		rpcSpy.mockImplementationOnce(async (name, args) => {
+			if (name === "qorpera_register_founding_presence") {
+				return await new Promise((_resolve, reject) => {
+					rejectHeartbeat = reject;
+				});
+			}
+			return origRpc(name, args);
+		});
+		await vi.advanceTimersByTimeAsync(60_000);
+		await until(() => rejectHeartbeat !== undefined, "pending heartbeat register");
+
+		secondChannel.statusCallback?.("CHANNEL_ERROR");
+		await until(() => last(annaTab.health) === "degraded", "second channel dropped");
+		const removeCountBeforeStaleReject = removeSpy.mock.calls.length;
+		rejectHeartbeat!(new Error("stale heartbeat failed"));
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(removeSpy).toHaveBeenCalledTimes(removeCountBeforeStaleReject);
+		await vi.advanceTimersByTimeAsync(1_100);
+		await until(() => last(annaTab.health) === "connected", "third channel connected");
+		expect(annaTab.cloud.supabase.channel).toHaveBeenCalledTimes(3);
+		expect(hub.channels.size).toBe(1);
+		expect(last(annaTab.health)).toBe("connected");
 	});
 });
