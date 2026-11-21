@@ -741,8 +741,11 @@ describe("a member's change set to a folder-v2 company", () => {
 		let inFlight = 0;
 		let peak = 0;
 		let manifestText = "";
-		const payload = new Uint8Array(10 * 1024 * 1024);
-		for (let i = 0; i < payload.length; i += 4096) payload[i] = (i >>> 12) & 0xff;
+		const payload = new Uint8Array(14 * 1024 * 1024);
+		payload[0] = 1;
+		payload[4 * 1024 * 1024] = 2;
+		payload[8 * 1024 * 1024] = 3;
+		payload[12 * 1024 * 1024] = 4;
 		const writer = new PlatformFolderWriter({
 			authority: {
 				async publisher(method, args) {
