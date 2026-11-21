@@ -6,6 +6,7 @@ import {
 	assertCompanyComputerScreenBinding,
 	type CompanyComputerScreenBinding,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
+import { withAbortScopes } from "./abort-scope.ts";
 import type { CompanyComputerGuestBoundary, CompanyComputerGuestCommands } from "./cloud-company-computer-guest.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 import {
@@ -129,136 +130,141 @@ export class CompanyComputerLinuxCommands implements CompanyComputerGuestCommand
 		input: Parameters<CompanyComputerGuestCommands["run"]>[0],
 		capture?: string,
 	): Promise<{ code: number; stdout: string; stderr: string }> {
-		const signal = AbortSignal.any([input.signal, this.#stop.signal]);
-		await this.#ready(signal);
-		const program = input.program === "/bin/bash" ? "/usr/bin/bash" : input.program;
-		for (const path of ["/usr/bin/bwrap", "/usr/bin/tini", "/usr/bin/bash", program]) await assertRootOwned(path);
-		await assertRootOwned("/usr", true);
-		const handles: FileHandle[] = [];
-		try {
-			const workbench = await openCompanyComputerLinuxDirectory(this.#layout.workbenchRoot, false);
-			handles.push(workbench);
-			const home = await openCompanyComputerLinuxDirectory(this.#layout.desktopHome, true);
-			handles.push(home);
-			await assertCompanyComputerWorkbenchMount(workbench, this.#mount, [
-				this.#layout.workbenchRoot,
-				this.#layout.desktopHome,
-			]);
-			// Only the screen's own tools reach its display. A shell command never
-			// does: any X client of the screen could read what a member types there.
-			const display = program !== "/usr/bin/bash";
-			if (display) {
-				const socket = await lstat(this.#xSocket);
-				if (
-					!socket.isSocket() ||
-					socket.uid !== process.getuid?.() ||
-					(await realpath(this.#xSocket)) !== this.#xSocket
-				)
-					throw new Error("OFFICE_X_SOCKET_UNAVAILABLE");
-				const socketParent = await lstat(dirname(this.#xSocket));
-				if (
-					!socketParent.isDirectory() ||
-					socketParent.uid !== process.getuid?.() ||
-					(socketParent.mode & 0o077) !== 0
-				)
-					throw new Error("UNSAFE_OFFICE_X_SOCKET_DIRECTORY");
-			}
-			const args = [
-				...companyComputerLinuxSandboxArgs(),
-				"--bind-fd",
-				"3",
-				this.#layout.workbenchRoot,
-				"--bind-fd",
-				"4",
-				"/home/qorpera",
-				...(display ? ["--ro-bind", this.#xSocket, `/tmp/.X11-unix/X${this.#binding.screenOrdinal}`] : []),
-			];
-			if (capture) {
-				const handle = await open(capture, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-				handles.push(handle);
-				args.push("--bind-fd", "5", "/qorpera-capture");
-			}
-			for (const [name, value] of Object.entries({
-				HOME: "/home/qorpera",
-				...(display ? { DISPLAY: companyComputerScreenDisplay(this.#binding.screenOrdinal) } : {}),
-				PATH: "/usr/local/bin:/usr/bin:/bin",
-				LANG: "C.UTF-8",
-			}))
-				args.push("--setenv", name, value);
-			args.push("--chdir", "/home/qorpera", "--remount-ro", "/");
-			signal.throwIfAborted();
-			const launched = spawnCompanyComputerLinuxProcess({
-				args,
-				command: [program, ...input.args],
-				files: handles,
-				stdin: "pipe",
-			});
-			const { child, stop } = launched;
-			let failure: Error | undefined;
-			void launched.started.catch((error: Error) => {
-				failure ??= error;
-				stop();
-			});
-			let length = 0;
-			const stdout: Buffer[] = [];
-			const stderr: Buffer[] = [];
-			const collect = (target: Buffer[], bytes: Buffer): void => {
-				length += bytes.length;
-				if (length > input.maxOutputBytes) {
-					failure ??= new Error("OFFICE_COMMAND_OUTPUT_LIMIT");
-					stop();
-				} else target.push(bytes);
-			};
-			child.stdout!.on("data", (bytes: Buffer) => collect(stdout, bytes));
-			child.stderr!.on("data", (bytes: Buffer) => collect(stderr, bytes));
-			child.stdin!.on("error", () => undefined);
-			child.once("error", () => {
-				failure ??= new Error("OFFICE_COMMAND_START_FAILED");
-			});
-			const exited = new Promise<{ code: number; stdout: string; stderr: string }>((resolveExit, reject) => {
-				child.once("close", (code) => {
-					this.#active.delete(activeChild);
-					if (failure || code === null) reject(failure ?? new Error("OFFICE_COMMAND_STOPPED"));
-					else
-						resolveExit({
-							code,
-							stdout: Buffer.concat(stdout).toString("utf8"),
-							stderr: Buffer.concat(stderr).toString("utf8"),
-						});
-				});
-			});
-			const activeChild: CommandProcess = { stop, exited };
-			this.#active.add(activeChild);
-			void exited.catch(() => undefined);
-			const cancelled = (): void => {
-				failure ??= new Error("OFFICE_COMMAND_CANCELLED");
-				stop();
-			};
-			signal.addEventListener("abort", cancelled, { once: true });
-			const timeout = setTimeout(() => {
-				failure ??= new Error("OFFICE_COMMAND_TIMEOUT");
-				stop();
-			}, input.timeoutMs);
-			if (signal.aborted) cancelled();
-			child.stdin!.end(input.stdin ?? "");
+		return withAbortScopes([input.signal, this.#stop.signal], async (signal) => {
+			await this.#ready(signal);
+			const program = input.program === "/bin/bash" ? "/usr/bin/bash" : input.program;
+			for (const path of ["/usr/bin/bwrap", "/usr/bin/tini", "/usr/bin/bash", program]) await assertRootOwned(path);
+			await assertRootOwned("/usr", true);
+			const handles: FileHandle[] = [];
 			try {
-				// This deadline can report uncertainty, never successful drain. The
-				// active entry remains until the actual namespace process closes.
-				const result = await cloudToolRequest(() => exited, new AbortController().signal, input.timeoutMs + 5000);
-				await launched.started;
+				const workbench = await openCompanyComputerLinuxDirectory(this.#layout.workbenchRoot, false);
+				handles.push(workbench);
+				const home = await openCompanyComputerLinuxDirectory(this.#layout.desktopHome, true);
+				handles.push(home);
+				await assertCompanyComputerWorkbenchMount(workbench, this.#mount, [
+					this.#layout.workbenchRoot,
+					this.#layout.desktopHome,
+				]);
+				// Only the screen's own tools reach its display. A shell command never
+				// does: any X client of the screen could read what a member types there.
+				const display = program !== "/usr/bin/bash";
+				if (display) {
+					const socket = await lstat(this.#xSocket);
+					if (
+						!socket.isSocket() ||
+						socket.uid !== process.getuid?.() ||
+						(await realpath(this.#xSocket)) !== this.#xSocket
+					)
+						throw new Error("OFFICE_X_SOCKET_UNAVAILABLE");
+					const socketParent = await lstat(dirname(this.#xSocket));
+					if (
+						!socketParent.isDirectory() ||
+						socketParent.uid !== process.getuid?.() ||
+						(socketParent.mode & 0o077) !== 0
+					)
+						throw new Error("UNSAFE_OFFICE_X_SOCKET_DIRECTORY");
+				}
+				const args = [
+					...companyComputerLinuxSandboxArgs(),
+					"--bind-fd",
+					"3",
+					this.#layout.workbenchRoot,
+					"--bind-fd",
+					"4",
+					"/home/qorpera",
+					...(display ? ["--ro-bind", this.#xSocket, `/tmp/.X11-unix/X${this.#binding.screenOrdinal}`] : []),
+				];
+				if (capture) {
+					const handle = await open(capture, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+					handles.push(handle);
+					args.push("--bind-fd", "5", "/qorpera-capture");
+				}
+				for (const [name, value] of Object.entries({
+					HOME: "/home/qorpera",
+					...(display ? { DISPLAY: companyComputerScreenDisplay(this.#binding.screenOrdinal) } : {}),
+					PATH: "/usr/local/bin:/usr/bin:/bin",
+					LANG: "C.UTF-8",
+				}))
+					args.push("--setenv", name, value);
+				args.push("--chdir", "/home/qorpera", "--remount-ro", "/");
 				signal.throwIfAborted();
-				await this.#ready(signal);
-				if (Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) > input.maxOutputBytes)
-					throw new Error("OFFICE_COMMAND_OUTPUT_LIMIT");
-				return result;
+				const launched = spawnCompanyComputerLinuxProcess({
+					args,
+					command: [program, ...input.args],
+					files: handles,
+					stdin: "pipe",
+				});
+				const { child, stop } = launched;
+				let failure: Error | undefined;
+				void launched.started.catch((error: Error) => {
+					failure ??= error;
+					stop();
+				});
+				let length = 0;
+				const stdout: Buffer[] = [];
+				const stderr: Buffer[] = [];
+				const collect = (target: Buffer[], bytes: Buffer): void => {
+					length += bytes.length;
+					if (length > input.maxOutputBytes) {
+						failure ??= new Error("OFFICE_COMMAND_OUTPUT_LIMIT");
+						stop();
+					} else target.push(bytes);
+				};
+				child.stdout!.on("data", (bytes: Buffer) => collect(stdout, bytes));
+				child.stderr!.on("data", (bytes: Buffer) => collect(stderr, bytes));
+				child.stdin!.on("error", () => undefined);
+				child.once("error", () => {
+					failure ??= new Error("OFFICE_COMMAND_START_FAILED");
+				});
+				const exited = new Promise<{ code: number; stdout: string; stderr: string }>((resolveExit, reject) => {
+					child.once("close", (code) => {
+						this.#active.delete(activeChild);
+						if (failure || code === null) reject(failure ?? new Error("OFFICE_COMMAND_STOPPED"));
+						else
+							resolveExit({
+								code,
+								stdout: Buffer.concat(stdout).toString("utf8"),
+								stderr: Buffer.concat(stderr).toString("utf8"),
+							});
+					});
+				});
+				const activeChild: CommandProcess = { stop, exited };
+				this.#active.add(activeChild);
+				void exited.catch(() => undefined);
+				const cancelled = (): void => {
+					failure ??= new Error("OFFICE_COMMAND_CANCELLED");
+					stop();
+				};
+				signal.addEventListener("abort", cancelled, { once: true });
+				const timeout = setTimeout(() => {
+					failure ??= new Error("OFFICE_COMMAND_TIMEOUT");
+					stop();
+				}, input.timeoutMs);
+				if (signal.aborted) cancelled();
+				child.stdin!.end(input.stdin ?? "");
+				try {
+					// This deadline can report uncertainty, never successful drain. The
+					// active entry remains until the actual namespace process closes.
+					const result = await cloudToolRequest(
+						() => exited,
+						new AbortController().signal,
+						input.timeoutMs + 5000,
+					);
+					await launched.started;
+					signal.throwIfAborted();
+					await this.#ready(signal);
+					if (Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) > input.maxOutputBytes)
+						throw new Error("OFFICE_COMMAND_OUTPUT_LIMIT");
+					return result;
+				} finally {
+					clearTimeout(timeout);
+					signal.removeEventListener("abort", cancelled);
+					stop();
+				}
 			} finally {
-				clearTimeout(timeout);
-				signal.removeEventListener("abort", cancelled);
-				stop();
+				await Promise.all(handles.map((handle) => handle.close()));
 			}
-		} finally {
-			await Promise.all(handles.map((handle) => handle.close()));
-		}
+		});
 	}
 
 	async run(
@@ -290,7 +296,7 @@ export class CompanyComputerLinuxCommands implements CompanyComputerGuestCommand
 			throw new Error("INVALID_OFFICE_COMMAND");
 		const copied = { ...input, args: [...input.args], environment: { ...input.environment } };
 		return this.#track(
-			(deadline) => this.#execute({ ...copied, signal: AbortSignal.any([copied.signal, deadline]) }),
+			(deadline) => withAbortScopes([copied.signal, deadline], (signal) => this.#execute({ ...copied, signal })),
 			input.timeoutMs + 15000,
 		);
 	}
@@ -298,7 +304,7 @@ export class CompanyComputerLinuxCommands implements CompanyComputerGuestCommand
 	async capturePng(input: Parameters<CompanyComputerGuestCommands["capturePng"]>[0]): Promise<Uint8Array> {
 		const copied = { ...input };
 		return this.#track(
-			(deadline) => this.#capture({ ...copied, signal: AbortSignal.any([copied.signal, deadline]) }),
+			(deadline) => withAbortScopes([copied.signal, deadline], (signal) => this.#capture({ ...copied, signal })),
 			20000,
 		);
 	}
@@ -311,40 +317,41 @@ export class CompanyComputerLinuxCommands implements CompanyComputerGuestCommand
 			input.maxBytes > 16 * 1024 * 1024
 		)
 			throw new Error("INVALID_OFFICE_CAPTURE");
-		const signal = AbortSignal.any([input.signal, this.#stop.signal]);
-		await this.#ready(signal);
-		const root = await openCompanyComputerLinuxDirectory(this.#captureRoot, true);
-		await root.close();
-		const directory = await mkdtemp(join(this.#captureRoot, "capture-"));
-		try {
-			const result = await this.#execute(
-				{
-					program: "/usr/bin/scrot",
-					args: ["--silent", "/qorpera-capture/screen.png"],
-					environment: {},
-					workingDirectory: "/home/qorpera",
-					timeoutMs: 5000,
-					maxOutputBytes: 4096,
-					signal,
-				},
-				directory,
-			);
-			if (result.code !== 0) throw new Error("OFFICE_CAPTURE_FAILED");
-			const file = await open(join(directory, "screen.png"), constants.O_RDONLY | constants.O_NOFOLLOW);
+		return withAbortScopes([input.signal, this.#stop.signal], async (signal) => {
+			await this.#ready(signal);
+			const root = await openCompanyComputerLinuxDirectory(this.#captureRoot, true);
+			await root.close();
+			const directory = await mkdtemp(join(this.#captureRoot, "capture-"));
 			try {
-				const info = await file.stat();
-				if (!info.isFile() || info.nlink !== 1 || info.size < 33 || info.size > input.maxBytes)
-					throw new Error("INVALID_OFFICE_CAPTURE");
-				const bytes = await file.readFile();
-				if (bytes.length !== info.size) throw new Error("INVALID_OFFICE_CAPTURE");
-				signal.throwIfAborted();
-				return Uint8Array.from(bytes);
+				const result = await this.#execute(
+					{
+						program: "/usr/bin/scrot",
+						args: ["--silent", "/qorpera-capture/screen.png"],
+						environment: {},
+						workingDirectory: "/home/qorpera",
+						timeoutMs: 5000,
+						maxOutputBytes: 4096,
+						signal,
+					},
+					directory,
+				);
+				if (result.code !== 0) throw new Error("OFFICE_CAPTURE_FAILED");
+				const file = await open(join(directory, "screen.png"), constants.O_RDONLY | constants.O_NOFOLLOW);
+				try {
+					const info = await file.stat();
+					if (!info.isFile() || info.nlink !== 1 || info.size < 33 || info.size > input.maxBytes)
+						throw new Error("INVALID_OFFICE_CAPTURE");
+					const bytes = await file.readFile();
+					if (bytes.length !== info.size) throw new Error("INVALID_OFFICE_CAPTURE");
+					signal.throwIfAborted();
+					return Uint8Array.from(bytes);
+				} finally {
+					await file.close();
+				}
 			} finally {
-				await file.close();
+				await rm(directory, { recursive: true, force: true });
 			}
-		} finally {
-			await rm(directory, { recursive: true, force: true });
-		}
+		});
 	}
 
 	close(): Promise<void> {
