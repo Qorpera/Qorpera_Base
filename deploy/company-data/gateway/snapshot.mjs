@@ -1,7 +1,20 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { createHash, randomBytes } from "node:crypto";
+import {
+	closeSync,
+	cpSync,
+	mkdirSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	readSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+	writeSync,
+} from "node:fs";
+import { dirname, join, resolve, sep } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import pg from "pg";
 import { DATABASE_NAME } from "./gateway.mjs";
 
@@ -11,10 +24,28 @@ const BLOCK_BYTES = 8192;
 const DEFAULT_LOCK_WAIT_MS = 2_000;
 const DEFAULT_MAX_TRIES = 8;
 const CURSOR_BATCH = 2_000;
+const CSV_READ_CHUNK = 256 * 1024;
 
 const quoted = (name) => `"${String(name).replace(/"/g, '""')}"`;
 const literal = (value) => `'${String(value).replace(/'/g, "''")}'`;
 const TEXT_TYPES = { getTypeParser: () => (value) => value };
+
+function safeTableDir(name) {
+	if (/^[a-z0-9_]{1,63}$/.test(name)) return name;
+	return `t_${createHash("sha256").update(name).digest("hex").slice(0, 24)}`;
+}
+
+function safeChildPath(baseDir, relPath) {
+	if (typeof relPath !== "string" || relPath.length === 0 || relPath.includes("\0") || relPath.startsWith("/")) {
+		throw new Error(`Invalid snapshot relative path: ${String(relPath)}`);
+	}
+	const root = resolve(baseDir);
+	const target = resolve(root, relPath);
+	if (!target.startsWith(`${root}${sep}`)) {
+		throw new Error(`Snapshot path escapes directory: ${relPath}`);
+	}
+	return target;
+}
 
 function hashBytes(buffer) {
 	const whole = createHash("sha256").update(buffer).digest("hex");
@@ -25,60 +56,301 @@ function hashBytes(buffer) {
 	return { bytes: buffer.length, sha256: whole, pieces };
 }
 
+function hashFileStreamed(filePath) {
+	const whole = createHash("sha256");
+	const pieces = [];
+	let pieceHash = createHash("sha256");
+	let pieceFill = 0;
+	let total = 0;
+	const fd = openSync(filePath, "r");
+	const buf = Buffer.allocUnsafe(CSV_READ_CHUNK);
+	try {
+		for (;;) {
+			const n = readSync(fd, buf, 0, buf.length, null);
+			if (n <= 0) break;
+			const slice = buf.subarray(0, n);
+			whole.update(slice);
+			total += n;
+			let pos = 0;
+			while (pos < n) {
+				const take = Math.min(n - pos, PIECE_BYTES - pieceFill);
+				pieceHash.update(slice.subarray(pos, pos + take));
+				pieceFill += take;
+				pos += take;
+				if (pieceFill === PIECE_BYTES) {
+					pieces.push(pieceHash.digest("hex"));
+					pieceHash = createHash("sha256");
+					pieceFill = 0;
+				}
+			}
+		}
+		if (pieceFill > 0) pieces.push(pieceHash.digest("hex"));
+	} finally {
+		closeSync(fd);
+	}
+	return { bytes: total, sha256: whole.digest("hex"), pieces };
+}
+
 function csvCell(value) {
 	if (value === null || value === undefined) return "";
 	const text = String(value);
+	if (text === "") return '""';
 	if (!/[",\r\n]/.test(text)) return text;
 	return `"${text.replace(/"/g, '""')}"`;
 }
 
-function parseCsv(text) {
-	const rows = [];
+async function forEachCsvRow(filePath, onRow) {
+	const fd = openSync(filePath, "r");
+	const buf = Buffer.allocUnsafe(CSV_READ_CHUNK);
+	const decoder = new StringDecoder("utf8");
 	let row = [];
 	let field = "";
 	let inQuotes = false;
-	for (let i = 0; i < text.length; i++) {
-		const ch = text[i];
-		if (inQuotes) {
-			if (ch === '"') {
-				if (text[i + 1] === '"') {
+	let fieldQuoted = false;
+	let pendingQuote = false;
+	let pendingCr = false;
+	let rowIndex = 0;
+
+	const emitRow = async () => {
+		row.push(fieldQuoted ? field : field === "" ? null : field);
+		const finished = row;
+		row = [];
+		field = "";
+		fieldQuoted = false;
+		await onRow(finished, rowIndex++);
+	};
+
+	const processText = async (text) => {
+		for (let i = 0; i < text.length; i++) {
+			const ch = text[i];
+			if (pendingCr) {
+				pendingCr = false;
+				if (ch === "\n") continue;
+			}
+			if (pendingQuote) {
+				pendingQuote = false;
+				if (ch === '"') {
 					field += '"';
-					i++;
-				} else {
-					inQuotes = false;
+					continue;
 				}
+				inQuotes = false;
+			}
+			if (inQuotes) {
+				if (ch === '"') {
+					pendingQuote = true;
+				} else {
+					field += ch;
+				}
+			} else if (ch === '"' && field.length === 0 && !fieldQuoted) {
+				inQuotes = true;
+				fieldQuoted = true;
+			} else if (ch === ",") {
+				row.push(fieldQuoted ? field : field === "" ? null : field);
+				field = "";
+				fieldQuoted = false;
+			} else if (ch === "\r") {
+				pendingCr = true;
+				await emitRow();
+			} else if (ch === "\n") {
+				await emitRow();
 			} else {
 				field += ch;
 			}
-		} else if (ch === '"') {
-			inQuotes = true;
-		} else if (ch === ",") {
-			row.push(field);
-			field = "";
-		} else if (ch === "\r") {
-			if (text[i + 1] === "\n") i++;
-			row.push(field);
-			rows.push(row);
-			row = [];
-			field = "";
-		} else if (ch === "\n") {
-			row.push(field);
-			rows.push(row);
-			row = [];
-			field = "";
+		}
+	};
+
+	try {
+		for (;;) {
+			const n = readSync(fd, buf, 0, buf.length, null);
+			if (n <= 0) break;
+			await processText(decoder.write(buf.subarray(0, n)));
+		}
+		const tail = decoder.end();
+		if (tail.length > 0) await processText(tail);
+		if (pendingQuote) {
+			pendingQuote = false;
+			inQuotes = false;
+		}
+		if (field.length > 0 || fieldQuoted || row.length > 0) {
+			await emitRow();
+		}
+	} finally {
+		closeSync(fd);
+	}
+}
+
+function splitSqlStatements(sql) {
+	const statements = [];
+	let start = 0;
+	let i = 0;
+	let inSingle = false;
+	let inDouble = false;
+	let dollarTag = null;
+	let inLineComment = false;
+	let blockCommentDepth = 0;
+	let lineStart = true;
+
+	while (i < sql.length) {
+		const ch = sql[i];
+		const next = sql[i + 1] ?? "";
+		if (inLineComment) {
+			if (ch === "\n") {
+				inLineComment = false;
+				lineStart = true;
+			}
+			i++;
+			continue;
+		}
+		if (blockCommentDepth > 0) {
+			if (ch === "/" && next === "*") {
+				blockCommentDepth++;
+				i += 2;
+				continue;
+			}
+			if (ch === "*" && next === "/") {
+				blockCommentDepth--;
+				i += 2;
+				continue;
+			}
+			i++;
+			continue;
+		}
+		if (dollarTag !== null) {
+			if (sql.startsWith(dollarTag, i)) {
+				i += dollarTag.length;
+				dollarTag = null;
+				continue;
+			}
+			i++;
+			continue;
+		}
+		if (inSingle) {
+			if (ch === "'" && next === "'") {
+				i += 2;
+				continue;
+			}
+			if (ch === "'") inSingle = false;
+			i++;
+			continue;
+		}
+		if (inDouble) {
+			if (ch === '"' && next === '"') {
+				i += 2;
+				continue;
+			}
+			if (ch === '"') inDouble = false;
+			i++;
+			continue;
+		}
+		if (lineStart && ch === "\\") {
+			const before = sql.slice(start, i).trim();
+			if (before.length > 0) statements.push(before);
+			const nl = sql.indexOf("\n", i);
+			i = nl === -1 ? sql.length : nl + 1;
+			start = i;
+			lineStart = true;
+			continue;
+		}
+		if (ch === "-" && next === "-") {
+			inLineComment = true;
+			i += 2;
+			continue;
+		}
+		if (ch === "/" && next === "*") {
+			blockCommentDepth = 1;
+			i += 2;
+			continue;
+		}
+		if (ch === "'") {
+			inSingle = true;
+			lineStart = false;
+			i++;
+			continue;
+		}
+		if (ch === '"') {
+			inDouble = true;
+			lineStart = false;
+			i++;
+			continue;
+		}
+		if (ch === "$") {
+			const tagMatch = /^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/.exec(sql.slice(i));
+			if (tagMatch) {
+				dollarTag = tagMatch[0];
+				lineStart = false;
+				i += dollarTag.length;
+				continue;
+			}
+		}
+		if (ch === ";") {
+			const stmt = sql.slice(start, i + 1).trim();
+			if (stmt.length > 0) statements.push(stmt);
+			i++;
+			start = i;
+			lineStart = false;
+			continue;
+		}
+		if (ch === "\n") {
+			lineStart = true;
+		} else if (ch !== " " && ch !== "\t" && ch !== "\r") {
+			lineStart = false;
+		}
+		i++;
+	}
+	const tail = sql.slice(start).trim();
+	if (tail.length > 0) statements.push(tail);
+	return statements;
+}
+
+function stripLeadingSqlComments(stmt) {
+	let s = stmt.trimStart();
+	for (;;) {
+		if (s.startsWith("--")) {
+			const nl = s.indexOf("\n");
+			s = nl === -1 ? "" : s.slice(nl + 1).trimStart();
+		} else if (s.startsWith("/*")) {
+			const end = s.indexOf("*/");
+			s = end === -1 ? "" : s.slice(end + 2).trimStart();
 		} else {
-			field += ch;
+			return s;
 		}
 	}
-	if (field.length > 0 || row.length > 0) {
-		row.push(field);
-		rows.push(row);
+}
+
+function classifySchemaSql(rawSchema) {
+	const preData = [];
+	const postData = [];
+	const materializedViews = [];
+	for (const rawStmt of splitSqlStatements(rawSchema)) {
+		const core = stripLeadingSqlComments(rawStmt);
+		if (!core || core === ";") continue;
+		if (/^CREATE\s+(?:CONSTRAINT\s+)?TRIGGER\s+"?qorpera_/i.test(core)) continue;
+		if (/^CREATE\s+SCHEMA\s+(?!IF\s+NOT\s+EXISTS\b)/i.test(core)) {
+			preData.push(core.replace(/^CREATE\s+SCHEMA\s+/i, "CREATE SCHEMA IF NOT EXISTS "));
+			continue;
+		}
+		const matView = /^CREATE\s+MATERIALIZED\s+VIEW\s+((?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)(?:\.(?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*))?)/i.exec(core);
+		if (matView) {
+			preData.push(core);
+			materializedViews.push(matView[1]);
+			continue;
+		}
+		const isPostData =
+			/^ALTER\s+TABLE\s+(?:ONLY\s+)?[\s\S]+\bADD\s+CONSTRAINT\b[\s\S]+\bFOREIGN\s+KEY\b/i.test(core) ||
+			/^CREATE\s+(?:CONSTRAINT\s+)?TRIGGER\b/i.test(core) ||
+			/^CREATE\s+POLICY\b/i.test(core) ||
+			/^ALTER\s+TABLE\s+(?:ONLY\s+)?[\s\S]+\b(?:ENABLE|FORCE)\s+ROW\s+LEVEL\s+SECURITY\b/i.test(core);
+		if (isPostData) postData.push(core);
+		else preData.push(core);
 	}
-	return rows;
+	for (const mv of materializedViews) {
+		postData.push(`REFRESH MATERIALIZED VIEW ${mv};`);
+	}
+	return { preData, postData };
 }
 
 function runPgDump({ host, port, user, password, database, schema, snapshotId, lockWaitMs }) {
-	return new Promise((resolve, reject) => {
+	return new Promise((resolvePromise, reject) => {
 		const child = spawn(
 			"pg_dump",
 			[
@@ -101,41 +373,60 @@ function runPgDump({ host, port, user, password, database, schema, snapshotId, l
 		);
 		let out = "";
 		let err = "";
+		let timedOut = false;
+		const timer = setTimeout(() => {
+			timedOut = true;
+			child.kill("SIGKILL");
+		}, Math.max(30_000, lockWaitMs * 5));
+		timer.unref?.();
 		child.stdout.on("data", (chunk) => {
 			out += chunk;
 		});
 		child.stderr.on("data", (chunk) => {
 			err += chunk;
 		});
-		child.on("error", reject);
+		child.on("error", (error) => {
+			clearTimeout(timer);
+			error.nonRetryable = true;
+			reject(error);
+		});
 		child.on("close", (code) => {
-			if (code === 0) resolve(out);
-			else reject(new Error(err.trim() || `pg_dump exited ${code}`));
+			clearTimeout(timer);
+			if (code === 0 && !timedOut) resolvePromise(out);
+			else {
+				const message = timedOut ? "pg_dump timed out" : err.trim() || `pg_dump exited ${code}`;
+				const error = new Error(message);
+				if (!timedOut && /authentication failed|role .* does not exist|database .* does not exist/i.test(message)) {
+					error.nonRetryable = true;
+				}
+				reject(error);
+			}
 		});
 	});
 }
 
 async function listSchemaTables(client, schema) {
 	const res = await client.query(
-		`select c.relname as name,
+		`select c.oid::text as oid, c.relname as name,
 			(select array_agg(a.attname::text order by k.n)
 				from pg_catalog.pg_index i
 				join lateral unnest(i.indkey::int2[]) with ordinality k(attnum, n) on true
 				join pg_catalog.pg_attribute a on a.attrelid = c.oid and a.attnum = k.attnum
 				where i.indrelid = c.oid and i.indisprimary) as pk_cols,
-			(select array_agg(pg_catalog.format_type(a.atttypid, -1) order by k.n)
+			(select array_agg(pg_catalog.format_type(a.atttypid, a.atttypmod) order by k.n)
 				from pg_catalog.pg_index i
 				join lateral unnest(i.indkey::int2[]) with ordinality k(attnum, n) on true
 				join pg_catalog.pg_attribute a on a.attrelid = c.oid and a.attnum = k.attnum
 				where i.indrelid = c.oid and i.indisprimary) as pk_types,
-			pg_catalog.pg_relation_size(c.oid) as heap_bytes
+			pg_catalog.pg_table_size(c.oid) as heap_bytes
 		from pg_catalog.pg_class c
 		join pg_catalog.pg_namespace n on n.oid = c.relnamespace and n.nspname = $1
-		where c.relkind = 'r' and c.relpersistence = 'p' and not c.relispartition
+		where c.relkind = 'r' and c.relpersistence = 'p'
 		order by c.relname`,
 		[schema],
 	);
 	return res.rows.map((row) => ({
+		oid: row.oid,
 		name: row.name,
 		pkCols: Array.isArray(row.pk_cols) ? row.pk_cols : null,
 		pkTypes: Array.isArray(row.pk_types) ? row.pk_types : null,
@@ -143,21 +434,44 @@ async function listSchemaTables(client, schema) {
 	}));
 }
 
+function tableSignature(tables) {
+	return JSON.stringify(tables.map((t) => [t.oid, t.name, t.pkCols, t.pkTypes]));
+}
+
 async function computeTableCuts(client, schema, table, partBytes) {
-	if (!table.pkCols || table.pkCols.length !== 1) return [];
+	if (!table.pkCols || table.pkCols.length === 0) return [];
 	if (table.heapBytes <= partBytes) return [];
 	const rel = `${quoted(schema)}.${quoted(table.name)}`;
-	const keyCol = quoted(table.pkCols[0]);
 	const countRes = await client.query(`select count(*)::bigint as n from ${rel}`);
 	const totalRows = Number(countRes.rows[0]?.n ?? 0);
 	if (totalRows <= 0) return [];
 	const rowsPerPart = Math.max(1_000, Math.round(partBytes / Math.max(1, table.heapBytes / totalRows)));
 	if (totalRows <= rowsPerPart) return [];
+	const keyExprs = table.pkCols.map(quoted);
+	const orderBy = keyExprs.join(", ");
+	if (table.pkCols.length === 1) {
+		const keyCol = keyExprs[0];
+		const cutRes = await client.query(
+			`select ${keyCol}::text as k from (select ${keyCol}, row_number() over (order by ${keyCol}) as rn from ${rel}) s
+			where rn % ${rowsPerPart} = 0 order by ${keyCol}`,
+		);
+		return cutRes.rows.map((r) => r.k);
+	}
+	const selectCols = keyExprs.map((col, idx) => `${col}::text as k${idx}`).join(", ");
+	const innerCols = keyExprs.join(", ");
 	const cutRes = await client.query(
-		`select ${keyCol}::text as k from (select ${keyCol}, row_number() over (order by ${keyCol}) as rn from ${rel}) s
-		where rn % ${rowsPerPart} = 0 order by ${keyCol}`,
+		`select ${selectCols} from (select ${innerCols}, row_number() over (order by ${orderBy}) as rn from ${rel}) s
+		where rn % ${rowsPerPart} = 0 order by ${orderBy}`,
 	);
-	return cutRes.rows.map((r) => r.k);
+	return cutRes.rows.map((row) => table.pkCols.map((_, idx) => row[`k${idx}`]));
+}
+
+function tupleExpr(cols) {
+	return `(${cols.map(quoted).join(", ")})`;
+}
+
+function tupleLiteral(values, types) {
+	return `(${values.map((v, idx) => `${literal(v)}::${types[idx]}`).join(", ")})`;
 }
 
 function buildPartQueries(schema, table, cuts, partBytes) {
@@ -165,7 +479,7 @@ function buildPartQueries(schema, table, cuts, partBytes) {
 	if (table.pkCols && table.pkCols.length === 1) {
 		const keyCol = quoted(table.pkCols[0]);
 		const keyType = table.pkTypes[0];
-		const list = cuts ?? [];
+		const list = (cuts ?? []).filter((c) => typeof c === "string");
 		return Array.from({ length: list.length + 1 }, (_, index) => {
 			const low = index === 0 ? null : list[index - 1];
 			const high = index === list.length ? null : list[index];
@@ -177,7 +491,16 @@ function buildPartQueries(schema, table, cuts, partBytes) {
 	}
 	if (table.pkCols && table.pkCols.length > 1) {
 		const orderBy = table.pkCols.map(quoted).join(", ");
-		return [`select * from ${rel} order by ${orderBy}`];
+		const list = (cuts ?? []).filter((c) => Array.isArray(c) && c.length === table.pkCols.length && c.every((v) => typeof v === "string"));
+		const lhs = tupleExpr(table.pkCols);
+		return Array.from({ length: list.length + 1 }, (_, index) => {
+			const low = index === 0 ? null : list[index - 1];
+			const high = index === list.length ? null : list[index];
+			const clauses = [];
+			if (low !== null) clauses.push(`${lhs} > ${tupleLiteral(low, table.pkTypes)}`);
+			if (high !== null) clauses.push(`${lhs} <= ${tupleLiteral(high, table.pkTypes)}`);
+			return `select * from ${rel}${clauses.length ? ` where ${clauses.join(" and ")}` : ""} order by ${orderBy}`;
+		});
 	}
 	const blocksPerPart = Math.max(1, Math.floor((partBytes * 0.85) / BLOCK_BYTES));
 	const blocks = Math.ceil(table.heapBytes / BLOCK_BYTES);
@@ -189,14 +512,41 @@ function buildPartQueries(schema, table, cuts, partBytes) {
 	});
 }
 
-async function queryToCsv(client, sql) {
-	const cursorName = `qsnap_${Math.random().toString(16).slice(2, 10)}`;
+async function writeQueryToCsvFile(client, sql, fullPath) {
+	const cursorName = `qsnap_${randomBytes(6).toString("hex")}`;
+	mkdirSync(dirname(fullPath), { recursive: true });
+	const fd = openSync(fullPath, "w");
+	const whole = createHash("sha256");
+	const pieces = [];
+	let pieceHash = createHash("sha256");
+	let pieceFill = 0;
+	let totalBytes = 0;
+
+	const writeChunk = (text) => {
+		const buf = Buffer.from(text, "utf8");
+		writeSync(fd, buf, 0, buf.length);
+		whole.update(buf);
+		totalBytes += buf.length;
+		let pos = 0;
+		while (pos < buf.length) {
+			const take = Math.min(buf.length - pos, PIECE_BYTES - pieceFill);
+			pieceHash.update(buf.subarray(pos, pos + take));
+			pieceFill += take;
+			pos += take;
+			if (pieceFill === PIECE_BYTES) {
+				pieces.push(pieceHash.digest("hex"));
+				pieceHash = createHash("sha256");
+				pieceFill = 0;
+			}
+		}
+	};
+
 	await client.query(`declare ${cursorName} no scroll cursor for ${sql}`);
 	try {
-		const lines = [];
 		let headerWritten = false;
 		for (;;) {
 			const batch = await client.query({ text: `fetch ${CURSOR_BATCH} from ${cursorName}`, rowMode: "array", types: TEXT_TYPES });
+			const lines = [];
 			if (!headerWritten) {
 				lines.push(batch.fields.map((field) => csvCell(field.name)).join(","));
 				headerWritten = true;
@@ -204,10 +554,13 @@ async function queryToCsv(client, sql) {
 			for (const row of batch.rows) {
 				lines.push(row.map(csvCell).join(","));
 			}
+			if (lines.length > 0) writeChunk(`${lines.join("\n")}\n`);
 			if (batch.rows.length < CURSOR_BATCH) break;
 		}
-		return `${lines.join("\n")}\n`;
+		if (pieceFill > 0) pieces.push(pieceHash.digest("hex"));
+		return { bytes: totalBytes, sha256: whole.digest("hex"), pieces };
 	} finally {
+		closeSync(fd);
 		await client.query(`close ${cursorName}`).catch(() => undefined);
 	}
 }
@@ -265,6 +618,8 @@ export async function exportDatabaseSnapshot({
 	let tries = 0;
 	let tables = [];
 	let schemaSql = "";
+	const resolvedOut = resolve(outDir);
+	const stageDir = `${resolvedOut}.stage-${randomBytes(6).toString("hex")}`;
 	try {
 		for (;;) {
 			tries++;
@@ -273,25 +628,29 @@ export async function exportDatabaseSnapshot({
 			}
 			tables = await listSchemaTables(client, schema);
 			await client.query("begin isolation level repeatable read, read only");
-			await client.query("set local timezone = 'UTC'; set local datestyle = 'ISO'; set local bytea_output = 'hex'");
+			await client.query(
+				`set local timezone = 'UTC'; set local datestyle = 'ISO'; set local intervalstyle = 'postgres'; ` +
+					`set local lc_monetary = 'C'; set local bytea_output = 'hex'; set local lock_timeout = '${lockWaitMs}ms'`,
+			);
 			if (tables.length > 0) {
 				try {
 					const lockList = tables.map((t) => `${quoted(schema)}.${quoted(t.name)}`).join(", ");
 					await client.query(`lock table ${lockList} in access share mode`);
 				} catch (error) {
 					await client.query("rollback");
-					restarts.push(`table disappeared before lock: ${error.message}`);
+					restarts.push(`table lock failed: ${error.message}`);
 					continue;
 				}
 			}
 			const snapRes = await client.query("select pg_catalog.pg_export_snapshot() as id");
 			const snapshotId = snapRes.rows[0].id;
 			const recheck = await listSchemaTables(client, schema);
-			if (JSON.stringify(recheck.map((t) => t.name)) !== JSON.stringify(tables.map((t) => t.name))) {
+			if (tableSignature(recheck) !== tableSignature(tables)) {
 				await client.query("rollback");
 				restarts.push("tables changed between discovery and lock");
 				continue;
 			}
+			tables = recheck;
 			try {
 				schemaSql = await dumpSchema({
 					host: store.host,
@@ -306,16 +665,17 @@ export async function exportDatabaseSnapshot({
 				break;
 			} catch (error) {
 				await client.query("rollback");
+				if (error?.nonRetryable) throw error;
 				restarts.push(`schema dump lock wait: ${error.message}`);
 			}
 		}
 
-		mkdirSync(outDir, { recursive: true });
+		mkdirSync(stageDir, { recursive: true });
 		const files = {};
 		const writeTracked = (relPath, content) => {
 			const buf = Buffer.isBuffer(content) ? content : Buffer.from(content, "utf8");
-			const full = join(outDir, relPath);
-			mkdirSync(join(full, ".."), { recursive: true });
+			const full = safeChildPath(stageDir, relPath);
+			mkdirSync(dirname(full), { recursive: true });
 			writeFileSync(full, buf);
 			files[relPath] = hashBytes(buf);
 		};
@@ -331,9 +691,16 @@ export async function exportDatabaseSnapshot({
 		const seqLines = [];
 		for (const { name } of seqRows) {
 			const fq = `${quoted(schema)}.${quoted(name)}`;
-			const state = (await client.query(`select last_value::text as v, is_called from ${fq}`)).rows[0];
-			if (state?.v !== null && state?.v !== undefined) {
-				seqLines.push(`select pg_catalog.setval(${literal(`${schema}.${name}`)}, ${state.v}, ${state.is_called ? "true" : "false"});`);
+			await client.query("savepoint sp_seq");
+			try {
+				const state = (await client.query(`select last_value::text as v, is_called from ${fq}`)).rows[0];
+				await client.query("release savepoint sp_seq");
+				if (state?.v !== null && state?.v !== undefined) {
+					seqLines.push(`select pg_catalog.setval(${literal(fq)}, ${state.v}, ${state.is_called ? "true" : "false"});`);
+				}
+			} catch (error) {
+				await client.query("rollback to savepoint sp_seq");
+				if (error?.code !== "42P01") throw error;
 			}
 		}
 		writeTracked("sequences.sql", `${seqLines.join("\n")}${seqLines.length ? "\n" : ""}`);
@@ -342,17 +709,48 @@ export async function exportDatabaseSnapshot({
 		const fingerprints = {};
 		const tableParts = {};
 		for (const table of tables) {
-			if (!Array.isArray(nextCuts[table.name])) {
+			const existingCuts = nextCuts[table.name];
+			if (!Array.isArray(existingCuts) || (existingCuts.length === 0 && table.heapBytes > partBytes)) {
 				nextCuts[table.name] = await computeTableCuts(client, schema, table, partBytes);
 			}
-			const queries = buildPartQueries(schema, table, nextCuts[table.name], partBytes);
-			tableParts[table.name] = [];
-			for (let index = 0; index < queries.length; index++) {
-				const csv = await queryToCsv(client, queries[index]);
-				const relPath = `tables/${table.name}/${String(index + 1).padStart(4, "0")}.csv`;
-				writeTracked(relPath, csv);
-				tableParts[table.name].push(relPath);
+			const dirSlug = safeTableDir(table.name);
+			const exportParts = async (cutsForTable) => {
+				const queries = buildPartQueries(schema, table, cutsForTable, partBytes);
+				const relPaths = [];
+				const metas = [];
+				for (let index = 0; index < queries.length; index++) {
+					const relPath = `tables/${dirSlug}/${String(index + 1).padStart(4, "0")}.csv`;
+					const fullPath = safeChildPath(stageDir, relPath);
+					await client.query("savepoint sp_part");
+					try {
+						const meta = await writeQueryToCsvFile(client, queries[index], fullPath);
+						await client.query("release savepoint sp_part");
+						relPaths.push(relPath);
+						metas.push([relPath, meta]);
+					} catch (error) {
+						await client.query("rollback to savepoint sp_part");
+						rmSync(fullPath, { force: true });
+						throw error;
+					}
+				}
+				return { relPaths, metas };
+			};
+
+			let exported;
+			try {
+				exported = await exportParts(nextCuts[table.name]);
+			} catch (error) {
+				if (Array.isArray(existingCuts) && existingCuts.length > 0 && /^(22P02|42883|42601)$/.test(error?.code ?? "")) {
+					rmSync(safeChildPath(stageDir, `tables/${dirSlug}`), { recursive: true, force: true });
+					nextCuts[table.name] = await computeTableCuts(client, schema, table, partBytes);
+					exported = await exportParts(nextCuts[table.name]);
+				} else {
+					throw error;
+				}
 			}
+			tableParts[table.name] = exported.relPaths;
+			for (const [relPath, meta] of exported.metas) files[relPath] = meta;
+
 			const fp = (
 				await client.query(
 					`select count(*)::text as n, coalesce(sum(pg_catalog.hashtextextended(t::text, 0)), 0)::text as h from ${quoted(schema)}.${quoted(table.name)} t`,
@@ -373,13 +771,25 @@ export async function exportDatabaseSnapshot({
 			files,
 		};
 		const manifestJson = `${JSON.stringify(manifest, null, 2)}\n`;
-		writeFileSync(join(outDir, "snapshot.json"), manifestJson, "utf8");
+		writeFileSync(join(stageDir, "snapshot.json"), manifestJson, "utf8");
+
+		mkdirSync(dirname(resolvedOut), { recursive: true });
+		rmSync(resolvedOut, { recursive: true, force: true });
+		try {
+			renameSync(stageDir, resolvedOut);
+		} catch {
+			cpSync(stageDir, resolvedOut, { recursive: true });
+			rmSync(stageDir, { recursive: true, force: true });
+		}
 		return {
 			manifest,
 			ms: Date.now() - startedAt,
 			restarts,
 			totalBytes: Object.values(files).reduce((sum, f) => sum + f.bytes, 0),
 		};
+	} catch (error) {
+		rmSync(stageDir, { recursive: true, force: true });
+		throw error;
 	} finally {
 		await client.end().catch(() => undefined);
 	}
@@ -393,9 +803,23 @@ export async function restoreDatabaseSnapshot({
 	user = "qorpera_data_admin",
 	password = store.logins.admin,
 	applySchema = true,
+	verifyHashes = true,
 }) {
 	if (!DATABASE_NAME.test(schema)) throw new Error(`Invalid database schema name: ${schema}`);
-	const manifest = JSON.parse(readFileSync(join(snapshotDir, "snapshot.json"), "utf8"));
+	const manifest = JSON.parse(readFileSync(safeChildPath(snapshotDir, "snapshot.json"), "utf8"));
+	if (!manifest || manifest.format !== "qorpera.database-snapshot/v1" || !Array.isArray(manifest.tables)) {
+		throw new Error("Invalid snapshot manifest");
+	}
+	if (verifyHashes && manifest.files && typeof manifest.files === "object") {
+		for (const [relPath, expected] of Object.entries(manifest.files)) {
+			const full = safeChildPath(snapshotDir, relPath);
+			const actual = hashFileStreamed(full);
+			if (actual.sha256 !== expected.sha256 || actual.bytes !== expected.bytes) {
+				throw new Error(`Snapshot integrity check failed for ${relPath}`);
+			}
+		}
+	}
+
 	const client = new pg.Client({
 		host: store.host,
 		port: store.port,
@@ -407,25 +831,43 @@ export async function restoreDatabaseSnapshot({
 	await client.connect();
 	try {
 		await client.query("begin");
-		await client.query("set local timezone = 'UTC'; set local datestyle = 'ISO'; set local bytea_output = 'hex'");
+		await client.query(
+			"set local timezone = 'UTC'; set local datestyle = 'ISO'; set local intervalstyle = 'postgres'; " +
+				"set local lc_monetary = 'C'; set local bytea_output = 'hex'",
+		);
+		let postData = [];
 		if (applySchema) {
-			const rawSchema = readFileSync(join(snapshotDir, "schema.sql"), "utf8");
-			const schemaSql = rawSchema
-				.split("\n")
-				.filter((line) => !/^\\(?:restrict|unrestrict)\b/.test(line) && !/^CREATE TRIGGER qorpera_/.test(line))
-				.join("\n");
-			if (schemaSql.trim().length > 0) await client.query(schemaSql);
+			const rawSchema = readFileSync(safeChildPath(snapshotDir, "schema.sql"), "utf8");
+			const split = classifySchemaSql(rawSchema);
+			postData = split.postData;
+			for (const stmt of split.preData) {
+				await client.query(stmt);
+			}
 		}
+
+		let replicaMode = false;
+		await client.query("savepoint sp_rep");
+		try {
+			await client.query("set local session_replication_role = 'replica'");
+			await client.query("release savepoint sp_rep");
+			replicaMode = true;
+		} catch {
+			await client.query("rollback to savepoint sp_rep");
+		}
+
 		const restoredRows = {};
 		for (const table of manifest.tables) {
 			let inserted = 0;
 			const rel = `${quoted(schema)}.${quoted(table.name)}`;
-			const partDir = join(snapshotDir, "tables", table.name);
-			const parts = table.parts ?? readdirSync(partDir).sort().map((f) => `tables/${table.name}/${f}`);
+			const parts = Array.isArray(table.parts)
+				? table.parts
+				: readdirSync(safeChildPath(snapshotDir, `tables/${safeTableDir(table.name)}`))
+						.sort()
+						.map((f) => `tables/${safeTableDir(table.name)}/${f}`);
 			const colTypes = new Map(
 				(
 					await client.query(
-						`select a.attname as name, pg_catalog.format_type(a.atttypid, -1) as type, a.attgenerated <> '' as gen
+						`select a.attname as name, pg_catalog.format_type(a.atttypid, a.atttypmod) as type, a.attgenerated <> '' as gen
 						from pg_catalog.pg_attribute a
 						join pg_catalog.pg_class c on c.oid = a.attrelid
 						join pg_catalog.pg_namespace n on n.oid = c.relnamespace and n.nspname = $1
@@ -435,29 +877,30 @@ export async function restoreDatabaseSnapshot({
 				).rows.map((r) => [r.name, { type: r.type, gen: r.gen }]),
 			);
 			for (const relPath of parts) {
-				const raw = readFileSync(join(snapshotDir, relPath), "utf8");
-				const parsed = parseCsv(raw);
-				if (parsed.length <= 1) continue;
-				const header = parsed[0];
-				const keepIndexes = [];
-				const keepCols = [];
-				for (let c = 0; c < header.length; c++) {
-					const info = colTypes.get(header[c]);
-					if (info && !info.gen) {
-						keepIndexes.push(c);
-						keepCols.push({ name: header[c], type: info.type });
+				const fullPath = safeChildPath(snapshotDir, relPath);
+				let keepIndexes = null;
+				let keepCols = null;
+				let pendingRows = [];
+				let maxBatch = 2_000;
+
+				const flushBatch = async () => {
+					if (pendingRows.length === 0) return;
+					const slice = pendingRows;
+					pendingRows = [];
+					if (keepCols.length === 0) {
+						for (let i = 0; i < slice.length; i++) {
+							await client.query(`insert into ${rel} default values`);
+						}
+						inserted += slice.length;
+						return;
 					}
-				}
-				const batchSize = Math.max(1, Math.floor(10_000 / Math.max(1, keepCols.length)));
-				for (let start = 1; start < parsed.length; start += batchSize) {
-					const slice = parsed.slice(start, start + batchSize);
 					const values = [];
 					const tuples = [];
 					for (const row of slice) {
 						const placeholders = [];
 						for (let k = 0; k < keepIndexes.length; k++) {
-							const cell = row[keepIndexes[k]] ?? "";
-							values.push(cell === "" ? null : cell);
+							const cell = row[keepIndexes[k]] ?? null;
+							values.push(cell);
 							placeholders.push(`$${values.length}::${keepCols[k].type}`);
 						}
 						tuples.push(`(${placeholders.join(", ")})`);
@@ -467,12 +910,41 @@ export async function restoreDatabaseSnapshot({
 						values,
 					);
 					inserted += slice.length;
-				}
+				};
+
+				await forEachCsvRow(fullPath, async (row, rowIndex) => {
+					if (rowIndex === 0) {
+						keepIndexes = [];
+						keepCols = [];
+						for (let c = 0; c < row.length; c++) {
+							const colName = row[c] ?? "";
+							const info = colTypes.get(colName);
+							if (info && !info.gen) {
+								keepIndexes.push(c);
+								keepCols.push({ name: colName, type: info.type });
+							}
+						}
+						maxBatch = Math.max(1, Math.min(2_000, Math.floor(60_000 / Math.max(1, keepCols.length))));
+						return;
+					}
+					pendingRows.push(row);
+					if (pendingRows.length >= maxBatch) await flushBatch();
+				});
+				await flushBatch();
 			}
 			restoredRows[table.name] = inserted;
 		}
-		const sequencesSql = readFileSync(join(snapshotDir, "sequences.sql"), "utf8");
+
+		if (replicaMode) {
+			await client.query("set local session_replication_role = 'origin'");
+		}
+
+		const sequencesSql = readFileSync(safeChildPath(snapshotDir, "sequences.sql"), "utf8");
 		if (sequencesSql.trim().length > 0) await client.query(sequencesSql);
+
+		for (const stmt of postData) {
+			await client.query(stmt);
+		}
 
 		const verified = {};
 		for (const table of manifest.tables) {
@@ -483,8 +955,12 @@ export async function restoreDatabaseSnapshot({
 			).rows[0];
 			verified[table.name] = { rows: Number(fp.n), hash: fp.h, matched: Number(fp.n) === table.rows && fp.h === table.hash };
 		}
+		const allMatched = Object.values(verified).every((v) => v.matched);
+		if (!allMatched) {
+			throw new Error(`Snapshot restore verification mismatch: ${JSON.stringify(verified)}`);
+		}
 		await client.query("commit");
-		return { restoredRows, verified, allMatched: Object.values(verified).every((v) => v.matched) };
+		return { restoredRows, verified, allMatched };
 	} catch (error) {
 		await client.query("rollback").catch(() => undefined);
 		throw error;

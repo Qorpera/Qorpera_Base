@@ -55,22 +55,27 @@ begin
 	values (v_env, v_path, 'file', v_v3, v_c3, v_m3, v_m3, 300, 'text/csv', false);
 
 	v_res := public.qorpera_data_snapshot_prune(100);
-	if (v_res->>'pruned')::int <> 1 or (v_res->>'released')::int <> 1 then
+	if (v_res->>'pruned')::int <> 2 or (v_res->>'released')::int <> 2 then
 		raise exception 'unexpected prune result: %', v_res;
 	end if;
 
-	if exists (select 1 from public.qorpera_folder_path_versions where version = v_v2) then
-		raise exception 'replaced snapshot version v2 was not pruned';
-	end if;
-	if not exists (select 1 from public.qorpera_folder_path_versions where version = v_v1) then
-		raise exception 'initial snapshot version v1 should be retained';
+	if exists (select 1 from public.qorpera_folder_path_versions where version in (v_v1, v_v2)) then
+		raise exception 'replaced snapshot versions v1 and v2 were not pruned';
 	end if;
 	if not exists (select 1 from public.qorpera_folder_path_versions where version = v_v3) then
 		raise exception 'live snapshot version v3 should be retained';
 	end if;
-	if not exists (select 1 from public.qorpera_folder_object_gc where profile_id = v_profile and sha256 = v_m2) then
-		raise exception 'pruned manifest m2 was not queued in qorpera_folder_object_gc';
+	if not exists (select 1 from public.qorpera_folder_object_gc where profile_id = v_profile and sha256 = v_m1)
+		or not exists (select 1 from public.qorpera_folder_object_gc where profile_id = v_profile and sha256 = v_m2) then
+		raise exception 'pruned manifests m1 and m2 were not queued in qorpera_folder_object_gc';
 	end if;
+
+	begin
+		perform public.qorpera_data_snapshot_prune(0);
+		raise exception 'expected p_versions = 0 to be rejected';
+	exception when invalid_parameter_value then
+		null;
+	end;
 end $$;
 
 rollback;

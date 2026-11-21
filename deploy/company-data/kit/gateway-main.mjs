@@ -79,25 +79,97 @@ const workerCount =
 		? Math.max(1, Math.min(4, availableParallelism()))
 		: Math.max(1, Math.min(16, Number.isInteger(Number(rawWorkers)) ? Number(rawWorkers) : 1));
 
+const adminToken = process.env.DATA_ADMIN_TOKEN?.trim() || null;
+
 const gateway = new Gateway({
 	store: { host: setting("DATA_STORE_HOST"), port: Number(process.env.DATA_STORE_PORT ?? 5432), logins },
 	platform: new Platform({ url: setting("DATA_PLATFORM_URL"), publishableKey: setting("DATA_PLATFORM_KEY") }),
 	workers: workerCount,
 	...(runs ? { runs: { token: runs.token } } : {}),
+	...(adminToken ? { admin: { token: adminToken } } : {}),
+	...(cluster.isWorker
+		? {
+				onAgentRead: ({ pid, delta }) => {
+					if (process.connected) process.send?.({ type: "agentRead", pid, delta });
+				},
+				onDrop: (event) => {
+					if (process.connected) process.send?.({ type: "drop", ...event });
+				},
+			}
+		: {}),
 });
 
 if (workerCount > 1 && cluster.isPrimary) {
+	let lastFull = [];
+	const workerReads = new Map();
+	const broadcast = (message) => {
+		for (const worker of Object.values(cluster.workers ?? {})) {
+			if (worker?.isConnected()) worker.send(message);
+		}
+	};
 	const stopWatcher = startWatcher(gateway, {
 		failed: (error) =>
 			console.error(`data gateway: the watcher's look failed: ${error?.code ?? ""} ${String(error?.message ?? error).slice(0, 200)}`),
+		onLook: (looked) => {
+			lastFull = looked.full;
+			broadcast({ type: "full", databases: lastFull });
+		},
 	});
 	let stopping = false;
-	for (let i = 0; i < workerCount; i++) cluster.fork();
-	cluster.on("exit", (worker) => {
-		if (!stopping) {
-			console.error(`data gateway: worker ${worker.process.pid} exited, restarting`);
-			cluster.fork();
+	const crashTimes = [];
+	const restartTimers = new Set();
+	const spawnWorker = () => {
+		const worker = cluster.fork();
+		workerReads.set(worker.id, new Map());
+		worker.on("online", () => {
+			if (lastFull.length > 0 && worker.isConnected()) worker.send({ type: "full", databases: lastFull });
+		});
+		worker.on("message", (message) => {
+			if (message?.type === "drop") {
+				if (message.kind === "company" && typeof message.database === "string") void gateway.evictCompany(message.database);
+				else if (message.kind === "database" && typeof message.database === "string" && typeof message.schema === "string")
+					void gateway.evictDatabase(message.database, message.schema, message.n ?? null);
+				for (const peer of Object.values(cluster.workers ?? {})) {
+					if (peer && peer.id !== worker.id && peer.isConnected()) peer.send(message);
+				}
+				return;
+			}
+			if (message?.type !== "agentRead" || !Number.isInteger(message.pid) || !Number.isInteger(message.delta)) return;
+			const owned = workerReads.get(worker.id);
+			if (!owned) return;
+			const next = (owned.get(message.pid) ?? 0) + message.delta;
+			if (next > 0) owned.set(message.pid, next);
+			else owned.delete(message.pid);
+			gateway.setAgentRead(message.pid, message.delta);
+		});
+		return worker;
+	};
+	for (let i = 0; i < workerCount; i++) spawnWorker();
+	cluster.on("exit", (worker, code, signal) => {
+		const owned = workerReads.get(worker.id);
+		if (owned) {
+			for (const [pid, count] of owned) gateway.setAgentRead(pid, -count);
+			workerReads.delete(worker.id);
 		}
+		if (stopping) return;
+		const now = Date.now();
+		crashTimes.push(now);
+		while (crashTimes.length > 0 && now - crashTimes[0] > 30_000) crashTimes.shift();
+		if (crashTimes.length > 10) {
+			console.error("data gateway: workers crashed repeatedly within 30s, exiting");
+			stopping = true;
+			stopWatcher();
+			for (const timer of restartTimers) clearTimeout(timer);
+			gateway.close().finally(() => process.exit(1));
+			return;
+		}
+		const delay = Math.min(5_000, 200 * 2 ** Math.min(5, crashTimes.length - 1));
+		console.error(`data gateway: worker ${worker.process.pid} exited (code=${code} signal=${signal}), restarting in ${delay}ms`);
+		const timer = setTimeout(() => {
+			restartTimers.delete(timer);
+			if (!stopping) spawnWorker();
+		}, delay);
+		restartTimers.add(timer);
 	});
 	console.log(
 		`data gateway: primary started ${workerCount} workers on ${host}:${port}, store ${process.env.DATA_STORE_HOST}, secrets ${Object.keys(logins).join(", ")}`,
@@ -106,13 +178,36 @@ if (workerCount > 1 && cluster.isPrimary) {
 		if (stopping) return;
 		stopping = true;
 		stopWatcher();
-		for (const worker of Object.values(cluster.workers ?? {})) worker?.kill("SIGTERM");
+		for (const timer of restartTimers) clearTimeout(timer);
+		restartTimers.clear();
+		const active = Object.values(cluster.workers ?? {}).filter(Boolean);
+		const drained = Promise.all(
+			active.map(
+				(worker) =>
+					new Promise((resolve) => {
+						if (worker.isDead()) return resolve();
+						worker.once("exit", resolve);
+						worker.kill("SIGTERM");
+					}),
+			),
+		);
+		await Promise.race([drained, new Promise((resolve) => setTimeout(resolve, 5_000))]);
 		await gateway.close();
 		process.exit(0);
 	};
 	process.on("SIGTERM", stop);
 	process.on("SIGINT", stop);
 } else {
+	if (cluster.isWorker) {
+		process.on("message", (message) => {
+			if (message?.type === "full") gateway.setFullDatabases(message.databases);
+			else if (message?.type === "drop") {
+				if (message.kind === "company" && typeof message.database === "string") void gateway.evictCompany(message.database);
+				else if (message.kind === "database" && typeof message.database === "string" && typeof message.schema === "string")
+					void gateway.evictDatabase(message.database, message.schema, message.n ?? null);
+			}
+		});
+	}
 	const server = await serve(gateway, { host, port });
 	let runServer = null;
 	if (runs) {
@@ -140,11 +235,14 @@ if (workerCount > 1 && cluster.isPrimary) {
 		if (stopping) return;
 		stopping = true;
 		stopWatcher();
-		for (const one of [server, runServer]) {
-			if (!one) continue;
-			one.close();
-			one.closeAllConnections();
-		}
+		const closings = [server, runServer].filter(Boolean).map((one) => {
+			one.closeIdleConnections?.();
+			return new Promise((resolve) => {
+				one.close(() => resolve());
+			});
+		});
+		await Promise.race([Promise.all(closings), new Promise((resolve) => setTimeout(resolve, 4_000))]);
+		for (const one of [server, runServer]) one?.closeAllConnections?.();
 		await gateway.close();
 		process.exit(0);
 	};

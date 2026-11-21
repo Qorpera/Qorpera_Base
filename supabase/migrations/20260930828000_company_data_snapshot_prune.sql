@@ -33,7 +33,7 @@ revoke all on public.qorpera_data_snapshot_prune_cursor, public.qorpera_data_sna
 	from public, anon, authenticated, service_role;
 
 create index qorpera_data_snapshot_prune_due on public.qorpera_folder_path_versions(created_at, version)
-	where op = 'write' and prior_version is not null
+	where op in ('write', 'delete', 'move_out') and prior_version is not null
 		and public.qorpera_company_data_snapshot_path(public.qorpera_folder_key(path));
 
 create function public.qorpera_data_snapshot_version_held(p_profile_id uuid, p_manifest_sha256 text)
@@ -60,6 +60,8 @@ declare
 	v_last_at timestamptz; v_last uuid; v_more boolean := false;
 	v_checked integer := 0; v_read integer := 0; v_pruned integer := 0; v_held integer := 0; v_released integer := 0;
 begin
+	if p_versions is null or p_versions < 1 or p_versions > 10000 then
+		raise exception 'p_versions must be between 1 and 10000' using errcode = '22023'; end if;
 	if current_setting('transaction_isolation') <> 'read committed' then
 		raise exception 'The data snapshot prune runs at read committed' using errcode = '25000'; end if;
 	select * into v_cursor from public.qorpera_data_snapshot_prune_cursor where id for update skip locked;
@@ -93,12 +95,12 @@ begin
 		end if;
 	end loop;
 
-	for v_row in select n.created_at, n.version as later, v.version, v.environment_id, f.profile_id, v.manifest_sha256
+	for v_row in select n.created_at, n.version as later, v.version, v.environment_id, f.profile_id, v.manifest_sha256, v.bytes
 		from public.qorpera_folder_path_versions n
 		left join public.qorpera_folder_path_versions v on v.version = n.prior_version and v.op = 'write'
-			and v.prior_version is not null and v.environment_id = n.environment_id and v.key_sha256 = n.key_sha256
+			and v.environment_id = n.environment_id and v.key_sha256 = n.key_sha256
 		left join public.qorpera_company_files f on f.environment_id = n.environment_id
-		where n.op = 'write' and n.prior_version is not null
+		where n.op in ('write', 'delete', 'move_out') and n.prior_version is not null
 			and public.qorpera_company_data_snapshot_path(public.qorpera_folder_key(n.path))
 			and n.created_at <= v_before and (n.created_at, n.version) > (v_cursor.created_at, v_cursor.version)
 		order by n.created_at, n.version limit p_versions
@@ -114,7 +116,7 @@ begin
 			end if;
 			if v_state is null then v_more := true; exit; end if;
 			if v_state = 'open' then
-				if public.qorpera_data_snapshot_version_held(v_row.profile_id, v_row.manifest_sha256) then
+				if coalesce(v_row.bytes, 0) > 0 and public.qorpera_data_snapshot_version_held(v_row.profile_id, v_row.manifest_sha256) then
 					insert into public.qorpera_data_snapshot_prune_held(version, environment_id, profile_id)
 					values (v_row.version, v_row.environment_id, v_row.profile_id) on conflict (version) do nothing;
 					v_held := v_held + 1;
@@ -140,7 +142,7 @@ begin
 			where ch.profile_id = x.p and ch.manifest_sha256 = x.m)))
 	order by i.id for key share;
 
-	for v_profile in select distinct p from unnest(v_profiles) p loop
+	for v_profile in select distinct p from unnest(v_profiles) p order by p loop
 		select coalesce(array_agg(h.sha256 order by h.sha256 collate "C"), '{}') into v_hashes from (
 			select x.m as sha256 from unnest(v_profiles, v_manifests) x(p, m) where x.p = v_profile and x.m is not null
 			union

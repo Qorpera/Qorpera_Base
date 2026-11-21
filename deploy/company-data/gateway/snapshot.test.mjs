@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -229,7 +229,136 @@ describe("company-data snapshots and lifecycle cleanup", { skip: !dockerUsable }
 		await asSuperuser("postgres", `drop database if exists ${restoreDb} with (force)`);
 	});
 
-	it("drops a single database folder cleanly (schema, roles, metadata) while preserving sibling databases, then drops the whole company database", async () => {
+	it("round-trips empty strings vs NULL, char(N)/bit(N), reverse-alphabetical and self-referencing FKs, user triggers, partitioned tables, composite PKs, reserved table names, and rejects tampered files", async () => {
+		const database = companyDatabase(envId);
+		const store = { host: "127.0.0.1", port, logins };
+		files.set("data/edge/database.toml", 'format = "qorpera.database/v1"\nname = "Edge"\n');
+		files.set(
+			"data/edge/tables/001-edge.sql",
+			`
+			create table users (
+				id int primary key,
+				bio text not null default '',
+				opt text,
+				code char(6) not null,
+				flags bit(4) not null
+			);
+			create table assignments (
+				id int primary key,
+				user_id int not null references users(id),
+				note text not null default ''
+			);
+			create table employees (
+				id int primary key,
+				manager_id int references employees(id),
+				updated_at text not null
+			);
+			create function stamp_employee() returns trigger language plpgsql as $$
+			begin
+				new.updated_at := 'mutated-by-trigger';
+				return new;
+			end $$;
+			create trigger trg_stamp before insert on employees for each row execute function stamp_employee();
+			create table events (
+				day int not null,
+				seq int not null,
+				label text not null,
+				primary key (day, seq)
+			) partition by range (day);
+			create table events_p1 partition of events for values from (1) to (10);
+			create table events_p2 partition of events for values from (10) to (20);
+			create table "order" (
+				id serial primary key,
+				label text not null
+			);
+			create table "User Items/2026" (
+				id int primary key,
+				v text not null
+			);
+			insert into users values
+				(1, '', null, 'ABCDEF', B'1010'),
+				(2, 'hi', '', '123456', B'0101');
+			insert into assignments values (10, 1, ''), (11, 2, 'ok');
+			insert into employees values (2, null, 'orig-2');
+			insert into employees values (1, 2, 'orig-1');
+			update employees set updated_at = 'kept-1' where id = 1;
+			update employees set updated_at = 'kept-2' where id = 2;
+			insert into events values (2, 1, 'oct-a'), (5, 2, 'oct-b'), (12, 1, 'nov-a');
+			insert into "order" (label) values ('reserved-1'), ('reserved-2');
+			insert into "User Items/2026" values (1, 'slash-safe');
+			`,
+		);
+		const applied = await post(`/v1/company-data/${envId}/apply`, { database: "edge", texts: textsOf() });
+		assert.equal(applied.status, 200, JSON.stringify(applied.value));
+
+		const edgeDir = join(workDir, "edge-snap");
+		const exported = await exportDatabaseSnapshot({
+			store,
+			database,
+			schema: "edge",
+			outDir: edgeDir,
+			partBytes: 64 * 1024,
+			dumpSchema: dockerDumpSchema,
+		});
+		const tableNames = exported.manifest.tables.map((t) => t.name).sort();
+		assert.ok(tableNames.includes("events_p1") && tableNames.includes("events_p2"), JSON.stringify(tableNames));
+		assert.ok(tableNames.includes("User Items/2026"));
+
+		const restoreDb = "qsnap_restore_edge";
+		await asSuperuser("postgres", `create database ${restoreDb} template qorpera_company_template`);
+		try {
+			const restored = await restoreDatabaseSnapshot({
+				store: { host: "127.0.0.1", port, logins: { admin: "test-password" } },
+				user: "postgres",
+				password: "test-password",
+				database: restoreDb,
+				schema: "edge",
+				snapshotDir: edgeDir,
+			});
+			assert.equal(restored.allMatched, true, JSON.stringify(restored));
+
+			const users = await asSuperuser(restoreDb, "select id, bio, opt, code, flags::text from edge.users order by id");
+			assert.deepEqual(users, [
+				{ id: 1, bio: "", opt: null, code: "ABCDEF", flags: "1010" },
+				{ id: 2, bio: "hi", opt: "", code: "123456", flags: "0101" },
+			]);
+			const emps = await asSuperuser(restoreDb, "select id, manager_id, updated_at from edge.employees order by id");
+			assert.deepEqual(emps, [
+				{ id: 1, manager_id: 2, updated_at: "kept-1" },
+				{ id: 2, manager_id: null, updated_at: "kept-2" },
+			]);
+			const evs = await asSuperuser(restoreDb, "select day, seq, label from edge.events order by day, seq");
+			assert.deepEqual(evs, [
+				{ day: 2, seq: 1, label: "oct-a" },
+				{ day: 5, seq: 2, label: "oct-b" },
+				{ day: 12, seq: 1, label: "nov-a" },
+			]);
+			const nextOrder = await asSuperuser(restoreDb, 'insert into edge."order" (label) values (\'reserved-3\') returning id');
+			assert.equal(Number(nextOrder[0].id), 3);
+			const rowChangesCount = await asSuperuser(restoreDb, "select count(*)::int as n from qorpera_data.row_changes where schema = 'edge'");
+			assert.equal(rowChangesCount[0].n, 1, "only post-restore insert was audited; restore itself did not flood row_changes");
+
+			const anyCsv = exported.manifest.tables[0].parts[0];
+			writeFileSync(join(edgeDir, anyCsv), "tampered\n", "utf8");
+			await assert.rejects(
+				() =>
+					restoreDatabaseSnapshot({
+						store: { host: "127.0.0.1", port, logins: { admin: "test-password" } },
+						user: "postgres",
+						password: "test-password",
+						database: restoreDb,
+						schema: "edge",
+						snapshotDir: edgeDir,
+						applySchema: false,
+					}),
+				/integrity check failed/,
+			);
+		} finally {
+			await asSuperuser("postgres", `drop database if exists ${restoreDb} with (force)`);
+		}
+	});
+
+	it("drops a single database folder cleanly (schema, roles, metadata) while preserving sibling databases, allows clean re-creation, then drops the whole company database", async () => {
 		const database = companyDatabase(envId);
 		const denied = await post(`/v1/admin/company-data/${envId}/drop-database`, { database: "crm" }, "Bearer wrong");
 		assert.equal(denied.status, 401);
@@ -245,10 +374,17 @@ describe("company-data snapshots and lifecycle cleanup", { skip: !dockerUsable }
 		const remainingRoles = await asSuperuser("postgres", "select rolname from pg_roles where rolname = any($1::text[])", [droppedCrm.value.rolesDropped]);
 		assert.equal(remainingRoles.length, 0);
 
+		const recreatedCrm = await post(`/v1/company-data/${envId}/apply`, { database: "crm", texts: textsOf() });
+		assert.equal(recreatedCrm.status, 200, JSON.stringify(recreatedCrm.value));
+		assert.equal(recreatedCrm.value.applied, true);
+		const droppedCrmAgain = await post(`/v1/admin/company-data/${envId}/drop-database`, { database: "crm" }, `Bearer ${adminToken}`);
+		assert.equal(droppedCrmAgain.status, 200, JSON.stringify(droppedCrmAgain.value));
+		assert.equal(droppedCrmAgain.value.dropped, true);
+
 		const droppedCompany = await post(`/v1/admin/company-data/${envId}/drop-company`, {}, `Bearer ${adminToken}`);
 		assert.equal(droppedCompany.status, 200, JSON.stringify(droppedCompany.value));
 		assert.equal(droppedCompany.value.dropped, true);
-		assert.equal(droppedCompany.value.rolesDropped.length, 3);
+		assert.ok(droppedCompany.value.rolesDropped.length >= 3);
 
 		const dbs = await asSuperuser("postgres", "select datname from pg_database where datname = $1", [database]);
 		assert.equal(dbs.length, 0);
