@@ -927,12 +927,18 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	async #reserveMachine(current: SharedExecutionJournal, signal: AbortSignal): Promise<void> {
 		if (current.capacityReleased) throw new Error("Released sandbox capacity cannot be reserved again");
 		if (!current.capacityRequested) {
+			let alreadyAdvanced = false;
 			await this.#exclusive(async () => {
 				const latest = await this.#readJournal(current.acquisitionId);
-				if (!latest || latest.physicalState !== "reserving")
+				if (!latest || latest.physicalState === "stopping" || terminal(latest.physicalState))
 					throw new Error("Shared execution sandbox stopped before start");
+				if (latest.physicalState !== "reserving") {
+					alreadyAdvanced = true;
+					return;
+				}
 				await this.#writeJournal({ ...latest, capacityRequested: true });
 			});
+			if (alreadyAdvanced) return;
 		}
 		const result = record(
 			await this.#rpc(
@@ -972,17 +978,22 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			result.instanceSha256 !== current.instanceSha256
 		)
 			throw new Error("Sandbox start was not admitted by the company ceiling");
-		let stoppedAfterCommit = false;
+		let outcome: "reserving" | "advanced" | "retired" = "reserving";
 		await this.#exclusive(async () => {
 			const latest = await this.#readJournal(current.acquisitionId);
-			if (!latest || latest.physicalState !== "reserving") {
-				stoppedAfterCommit = true;
+			if (!latest || latest.physicalState === "stopping" || terminal(latest.physicalState)) {
+				outcome = "retired";
+				return;
+			}
+			if (latest.physicalState !== "reserving") {
+				outcome = "advanced";
 				return;
 			}
 			await this.#writeJournal({ ...latest, capacityRegistered: true });
 		});
-		if (stoppedAfterCommit) {
-			// WHY: a reservation that committed after retirement must release or archive as owed without resurrecting the live journal.
+		if (outcome === "advanced") return;
+		if (outcome === "retired") {
+			// WHY: release or atomically archive a post-retire commit without resurrecting live state; SQL release is idempotent (coalesce(released_at, ...)).
 			const committed = { ...current, capacityRequested: true, capacityRegistered: true };
 			try {
 				await this.#releaseMachine(committed, signal);
@@ -990,21 +1001,29 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				await this.#exclusive(async () => {
 					const archive = join(this.#config.stateRoot, "journals", "archive");
 					await mkdir(archive, { recursive: true, mode: 0o700 });
-					await writeFile(
-						join(archive, `${committed.acquisitionId}.${this.#now()}.lost.json`),
-						`${JSON.stringify(
-							{
-								...committed,
-								physicalState: "lost",
-								capacityReleased: false,
-								stopReason: `reserved_after_retire: ${error instanceof Error ? error.message : String(error)}`,
-								updatedAt: new Date(this.#now()).toISOString(),
-							},
-							null,
-							2,
-						)}\n`,
-						{ mode: 0o600 },
-					);
+					const target = join(archive, `${committed.acquisitionId}.${this.#now()}.lost.json`);
+					const temporary = `${target}.${process.pid}.tmp`;
+					try {
+						await writeFile(
+							temporary,
+							`${JSON.stringify(
+								{
+									...committed,
+									physicalState: "lost",
+									capacityReleased: false,
+									stopReason: `reserved_after_retire: ${error instanceof Error ? error.message : String(error)}`,
+									updatedAt: new Date(this.#now()).toISOString(),
+								},
+								null,
+								2,
+							)}\n`,
+							{ encoding: "utf-8", mode: 0o600, flag: "w" },
+						);
+						await rename(temporary, target);
+					} catch (writeError) {
+						await rm(temporary, { force: true }).catch(() => undefined);
+						throw writeError;
+					}
 				});
 			}
 			throw new Error("Shared execution sandbox stopped before start");

@@ -1654,4 +1654,57 @@ describe("warm conversations", () => {
 		expect(f.units.log).toEqual([]);
 		expect(releasesForFirst).toBe(2);
 	});
+
+	it("keeps a live sandbox intact when a duplicate acquire's reserve RPC returns after the first acquire registered", async () => {
+		let aInReserve!: () => void;
+		let releaseA!: () => void;
+		let bInReserve!: () => void;
+		let releaseB!: () => void;
+		const aEntered = new Promise<void>((resolve) => {
+			aInReserve = resolve;
+		});
+		const gateA = new Promise<void>((resolve) => {
+			releaseA = resolve;
+		});
+		const bEntered = new Promise<void>((resolve) => {
+			bInReserve = resolve;
+		});
+		const gateB = new Promise<void>((resolve) => {
+			releaseB = resolve;
+		});
+		let reserveCalls = 0;
+		let releaseCalls = 0;
+		const f = await fixture({
+			slotCount: 1,
+			onRpc: async (name) => {
+				if (name === "qorpera_reserve_runtime_machine") {
+					reserveCalls++;
+					if (reserveCalls === 1) {
+						aInReserve();
+						await gateA;
+					} else if (reserveCalls === 2) {
+						bInReserve();
+						await gateB;
+					}
+				}
+				if (name === "qorpera_release_runtime_machine") {
+					releaseCalls++;
+				}
+			},
+		});
+		const signal = new AbortController().signal;
+		const first = f.backend.acquire(runId, work(), signal);
+		await aEntered;
+		const second = f.backend.acquire(runId, work(), signal);
+		await bEntered;
+		releaseA();
+		const runnerA = await first;
+		releaseB();
+		const runnerB = await second;
+		expect(runnerB).toEqual(runnerA);
+		expect(releaseCalls).toBe(0);
+		expect(f.units.activeUnits.has(hostUnit(0))).toBe(true);
+		expect(f.units.activeUnits.has(runnerUnit(0))).toBe(true);
+		expect(await liveJournalNames(f)).toEqual([`${sharedExecutionAcquisitionId(runId, 1)}.json`]);
+	});
 });
