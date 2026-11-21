@@ -67,7 +67,7 @@ export interface ProviderEmail {
 	text: string;
 	headers?: Record<string, string>;
 	/** Each file's name and its bytes in base64. */
-	attachments?: { filename: string; content: string }[];
+	attachments?: { filename: string; content: string | readonly string[] }[];
 }
 
 export class MailSendError extends Error {
@@ -206,9 +206,14 @@ export function parseMailClaim(value: unknown): {
 	return { jobs, rejected };
 }
 
-/** One attached file's bytes from the company's objects: its manifest, then its chunks, each checked against its
- * digest, and the whole against the file's. Not in Storage yet is worth another try; anything else is not. */
-export async function attachmentBytes(companyId: string, file: MailAttachment, objects: ObjectReader): Promise<Uint8Array> {
+async function verifiedManifestChunks(
+	companyId: string,
+	file: MailAttachment,
+	objects: ObjectReader,
+): Promise<{
+	readonly object: (sha256: string) => Promise<Uint8Array>;
+	readonly chunks: readonly { readonly sha256: string; readonly bytes: number }[];
+}> {
 	const object = async (sha256: string): Promise<Uint8Array> => {
 		const bytes = await objects.get(companyId, sha256);
 		if (!bytes) throw new MailSendError(`The attachment ${file.filename} is not in storage yet`, true);
@@ -246,17 +251,45 @@ export async function attachmentBytes(companyId: string, file: MailAttachment, o
 		chunks.reduce((sum, chunk) => sum + ((chunk as Record<string, unknown>).bytes as number), 0) !== file.bytes
 	)
 		throw new MailSendError(`The attachment ${file.filename} has an invalid manifest`, false);
-	const output = new Uint8Array(file.bytes);
-	let offset = 0;
-	for (const chunk of chunks as { sha256: string; bytes: number }[]) {
+	return { object, chunks: chunks as { sha256: string; bytes: number }[] };
+}
+
+export async function attachmentBase64(companyId: string, file: MailAttachment, objects: ObjectReader): Promise<string[]> {
+	const { object, chunks } = await verifiedManifestChunks(companyId, file, objects);
+	const hash = createHash("sha256");
+	const parts: string[] = [];
+	const carry = new Uint8Array(3);
+	let carryLen = 0;
+	for (const chunk of chunks) {
 		const bytes = await object(chunk.sha256);
 		if (bytes.length !== chunk.bytes) throw new MailSendError(`The attachment ${file.filename} failed its integrity check`, false);
-		output.set(bytes, offset);
-		offset += bytes.length;
+		hash.update(bytes);
+		let start = 0;
+		if (carryLen > 0) {
+			const need = 3 - carryLen;
+			if (bytes.length < need) {
+				carry.set(bytes, carryLen);
+				carryLen += bytes.length;
+				continue;
+			}
+			carry.set(bytes.subarray(0, need), carryLen);
+			parts.push(Buffer.from(carry.buffer, 0, 3).toString("base64"));
+			carryLen = 0;
+			start = need;
+		}
+		const remaining = bytes.length - start;
+		const aligned = remaining - (remaining % 3);
+		if (aligned > 0) {
+			parts.push(Buffer.from(bytes.buffer, bytes.byteOffset + start, aligned).toString("base64"));
+		}
+		const tailStart = start + aligned;
+		carryLen = bytes.length - tailStart;
+		if (carryLen > 0) carry.set(bytes.subarray(tailStart), 0);
 	}
-	if (createHash("sha256").update(output).digest("hex") !== file.fileSha256)
+	if (carryLen > 0) parts.push(Buffer.from(carry.buffer, 0, carryLen).toString("base64"));
+	if (hash.digest("hex") !== file.fileSha256)
 		throw new MailSendError(`The attachment ${file.filename} failed its integrity check`, false);
-	return output;
+	return parts;
 }
 
 /** Supabase Storage's headers for a secret key: a legacy JWT key goes as the bearer too. */
@@ -450,7 +483,7 @@ export function parseMessageIdsDue(value: unknown): { mailId: string; providerMe
 }
 
 /** What the provider is asked to send: no empty cc, no empty headers, each file's bytes in base64. */
-export function providerEmail(job: MailJob, contents: readonly string[] = []): ProviderEmail {
+export function providerEmail(job: MailJob, contents: readonly (string | readonly string[])[] = []): ProviderEmail {
 	if (contents.length !== job.attachments.length) throw new Error("The email's attachments are not all read");
 	return {
 		from: job.from,
@@ -485,6 +518,31 @@ export async function providerFailure(response: Response): Promise<MailSendError
 	return new MailSendError(`${message} (${response.status}${code ? `/${code}` : ""})`.slice(0, 1000), retryable);
 }
 
+const SAFE_BASE64 = /^[A-Za-z0-9+/=]*$/;
+
+function encodeResendPayload(email: ProviderEmail): { readonly body: string | Blob; readonly byteLength: number } {
+	if (!email.attachments?.length) {
+		const request = JSON.stringify(email);
+		return { body: request, byteLength: Buffer.byteLength(request, "utf8") };
+	}
+	const { attachments, ...head } = email;
+	const prefix = JSON.stringify(head);
+	const parts: BlobPart[] = [prefix.slice(0, -1), ',"attachments":['];
+	for (let index = 0; index < attachments.length; index += 1) {
+		const item = attachments[index]!;
+		if (index > 0) parts.push(",");
+		const segments = typeof item.content === "string" ? [item.content] : item.content;
+		if (segments.every((segment) => SAFE_BASE64.test(segment))) {
+			parts.push('{"filename":', JSON.stringify(item.filename), ',"content":"', ...segments, '"}');
+		} else {
+			parts.push('{"filename":', JSON.stringify(item.filename), ',"content":', JSON.stringify(segments.join("")), "}");
+		}
+	}
+	parts.push("]}");
+	const body = new Blob(parts, { type: "application/json" });
+	return { body, byteLength: body.size };
+}
+
 /** Resend's send API with the platform's key. */
 export class ResendSender implements MailSender {
 	readonly #apiKey: string;
@@ -495,7 +553,7 @@ export class ResendSender implements MailSender {
 	}
 
 	async send(email: ProviderEmail, idempotencyKey: string): Promise<string> {
-		const request = JSON.stringify(email);
+		const { body: payload, byteLength } = encodeResendPayload(email);
 		let response: Response;
 		try {
 			response = await this.#fetch("https://api.resend.com/emails", {
@@ -505,9 +563,9 @@ export class ResendSender implements MailSender {
 					"Content-Type": "application/json",
 					"Idempotency-Key": idempotencyKey,
 				},
-				body: request,
+				body: payload,
 				// A second more for each MiB an email with attachments carries.
-				signal: AbortSignal.timeout(SEND_TIMEOUT_MS + Math.floor(request.length / (1024 * 1024)) * 1000),
+				signal: AbortSignal.timeout(SEND_TIMEOUT_MS + Math.floor(byteLength / (1024 * 1024)) * 1000),
 			});
 		} catch (error) {
 			throw new MailSendError(error instanceof Error ? error.message : "Resend request failed", true);
@@ -583,13 +641,12 @@ export async function handleMailOutbox(request: Request, outbox: MailOutbox): Pr
 		let providerMessageId: string;
 		try {
 			// Each file in base64 as soon as it is read, without a copy: its bytes are dropped before the next one.
-			const contents: string[] = [];
+			const contents: string[][] = [];
 			if (job.attachments.length > 0) {
 				objects ??= outbox.objects?.(presented);
 				for (const file of job.attachments) {
 					if (!objects || !job.companyId) throw new MailSendError("Attachments cannot be read here", true);
-					const bytes = await attachmentBytes(job.companyId, file, objects);
-					contents.push(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64"));
+					contents.push(await attachmentBase64(job.companyId, file, objects));
 				}
 			}
 			providerMessageId = await outbox.sender.send(providerEmail(job, contents), `company-mail/${job.mailId}`);
