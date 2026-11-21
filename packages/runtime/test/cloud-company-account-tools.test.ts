@@ -335,11 +335,11 @@ describe("company_account", () => {
 		const instructions = CLOUD_COMPANY_RUNTIME_INSTRUCTIONS;
 		for (const rule of [
 			"# Accounts on websites",
-			"Open one only when an open todo of yours needs it",
-			"A site that checks for automated browsers is a person's task in their own browser",
-			"Never ask anyone for a password and never type one yourself: on a machine the vault types it with fill_company_account",
-			"open the page with desktop open and click into the field first",
-			"stop at once without retrying: mark the account needs_person",
+			"Open one only when an open todo genuinely needs it",
+			"Sites that block automated browsers are a human task in a member's own browser",
+			"Never ask anyone for a password and never type one yourself: on a machine, use fill_company_account",
+			"opening the page with desktop open and clicking the field",
+			"stop immediately without retrying, mark the account needs_person",
 		])
 			expect(instructions, rule).toContain(rule);
 	});

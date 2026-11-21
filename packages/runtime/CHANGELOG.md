@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 - Support for Gemini 4 Neon (`gemini-4-neon`) in attended conversations backed by a member's own Gemini API key (e.g. bundled Google AI Ultra API credits), with optional default-for-chats toggle and monthly USD spend cap. Migration `20260930823000_gemini_4_neon` adds RLS-protected `qorpera_gemini_keys`, `qorpera_gemini_key_tickets`, and `qorpera_gemini_run_usage`, widens `qorpera_session_models_model_id_check` and `qorpera_member_notifications_kind` (`gemini_cap_reached`), pins `gemini_model`/`gemini_effort`/`gemini_key_id` on `qorpera_execution_runs`, and exposes member settings, shared-vault capture/open, and binding-scoped usage/cap RPCs. The shared vault (`cloud-gemini-key-vault.ts`, `POST /v1/gemini-keys/:ticketId`, `POST /v1/gemini-keys/open`) verifies keys with Google before sealing under the member key and refuses runs when revoked or capped. Attended runs (`cloud-gemini-tool-session.ts`) execute directly against the Gemini REST API with Qorpera's tool boundary, action-review gate, `google_search`, opaque `thoughtSignature` preservation, multimodal PNG forwarding, and `thinkingConfig.thinkingLevel` (`low`, `medium`, `high`, `xhigh`); background workers, routines, and coding sessions stay on Codex or Claude Code, and hitting a cap pauses Gemini turns and notifies the member without switching logins or tainting Codex usage signals.
+- Release v270 (#2005, thread decisions step 5, the fold, and #2006, the system prompt overhaul; master since v269's
+  release merge bd48f5e9e holds them alone): one migration, `20260930822000_thread_run_wakes` (one anchored text patch of
+  `qorpera_read_session_events`, refusing unless its anchor stands exactly once: each event a run wrote carries
+  `run_wake`, the kind of wake that started that run, through the unique index on `qorpera_wake_occurrences.run_id`; the
+  tail read goes through it; no table, trigger, grant or new function; an event no run wrote, or of a run with no wake,
+  reads as before). Runtime bundle 270
+  `91df0bffb97a021554a0520013daeb21930ca38242a93cf8acc8e2c6829db72c` (activation `20260929027099`, which requires
+  822000; #2006's words and prompt assembly: the staff and worker constitutions, the role overlays
+  `qorpera.hire-overlay/v21`, the tool-result rules, `send_message`, `ask_member` and `send_coworker_message`'s
+  descriptions, the Claude Code worker's brief, the Co-Founder's seeded instructions, the platform update
+  `clearer-agent-voice`; no tool name, input schema or handler changes), the runner image of node release 157 with the
+  native provider host `33ee585ba3fe8faf9eb5157d8ec40f5e2c052ac725645ab55a740ccbc19f15bc` (it carries the runtime; the
+  patched Codex 0.170.0 `9d6a86ec` as in v269). The shared vault (784784b9), the model login helper (cedd6a37) and its
+  isolation child stay as v269 left them, and the coding executor stays f8db2998: their builds at this release are
+  v269's byte for byte (the executor's manifest names the new bundle only). The company machine image, the folder
+  service, the shared execution package and the test machines do not move. Node 1's object gateway does not move either,
+  by the lead's decision, although this release builds it differently: #2006's new seeded Co-Founder instructions
+  (`COMPANY_STATE_COFOUNDER_INSTRUCTIONS`, written into a new company's Co-Founder agent.md) are NOT live with this
+  release; a company created before the gateway's own later step is seeded with the old text, as every existing company
+  was. Way back: bundle 269 by the release lane's emergency path; the migration stays (bundle 269 never reads
+  `run_wake`, and the web draws an event without it as before).
+- System prompt overhaul (`qorpera.hire-overlay/v21`): reordered staff instructions so conversational warmth and plain-language guidance open immediately after company identity and `# Trust and authority` + `# Tool results` sit right before untrusted context and head data; rewrote constitution, role overlays, wake protocols, and communication tool descriptions (`send_message`, `ask_member`, `send_coworker_message`) for clearer, more natural prose with less duplication; listed all 12 `save_app` kits in `# Apps`; gated `# Registration and bank` to Co-Founder and finance/money/bank roles; upgraded `CLAUDE_WORKER_SYSTEM_NOTE` with full-ambition, visual-inspection, WebP, plain-language, and security guidance; added platform update `clearer-agent-voice`.
+- The thread read says what woke each run (thread decisions step 5, the fold; Jonas, 20 Nov 2026: "Fold them").
+  Migration `20260930822000_thread_run_wakes`: one text patch of `qorpera_read_session_events` (anchor required exactly
+  once; the tail read goes through it): each event a run wrote gets `run_wake`, the wake's kind, by the unique index
+  on `qorpera_wake_occurrences.run_id`. No table, no trigger, no grant change, no new function; who may read a thread
+  is unchanged, and the field tells a reader nothing the agent's activity does not already show. Runtime code is
+  untouched.
 - Release v269 (#2001, thread decisions step 4, and #2003, its words; master since v268's release merge afaae0474 holds
   them and the web-only #2000 and #2002): one migration, `20260930821000_decision_rounds` (two internal functions nobody
   may call, `qorpera_assert_asks_again` and `qorpera_decision_round`; three anchored text patches, each refusing unless
