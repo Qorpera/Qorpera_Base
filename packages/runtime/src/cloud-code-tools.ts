@@ -258,6 +258,7 @@ function parse(value: unknown): CodeCall {
 			"operationKey is 1 to 96 letters, digits, dots, colons, hyphens and underscores, and starts with a letter or digit",
 		);
 	try {
+		// The repository's folder, code/<owner>/<name>/, by the rule its coding sessions were started under.
 		parseCloudCodingRepository({ host: "qorpera", owner: a.owner, name: a.name, baseBranch: "main" });
 	} catch {
 		throw new CloudToolArgumentRefusal(
@@ -778,6 +779,7 @@ async function runBounded<T, R>(items: readonly T[], concurrency: number, work: 
 	return results;
 }
 
+/** The company's code kept in Qorpera, for an agent's own company run: `manage_code`. */
 export function cloudCodeTools(options: {
 	folder: Pick<
 		CloudCompanyFolderClient,
@@ -792,6 +794,8 @@ export function cloudCodeTools(options: {
 		| "release"
 	>;
 	identity: CloudNativeToolIdentity;
+	/** The pause between looks at an undo's or an import's request and how long the tool waits for it, when not 2 s and
+	 * 30 s. */
 	lookMs?: number;
 	waitMs?: number;
 }): readonly CloudNativeTool[] {
@@ -1104,13 +1108,11 @@ export function cloudCodeTools(options: {
 						present: true,
 						valid: true,
 						path: checksPath,
-						mode: parsedChecks.mode,
 						totalTimeoutSeconds: parsedChecks.totalTimeoutSeconds,
 						checks: parsedChecks.checks.map((entry) => ({
 							name: entry.name,
 							cwd: entry.cwd,
 							timeoutSeconds: entry.timeoutSeconds,
-							...(entry.needs !== undefined ? { needs: [...entry.needs] } : {}),
 						})),
 						site: parsedChecks.site
 							? {
@@ -1288,7 +1290,11 @@ export function cloudCodeTools(options: {
 			required: ["action", "owner", "name"],
 			properties: {
 				action: { type: "string", enum: [...ACTIONS] },
-				operationKey: { type: "string", pattern: OPERATION_KEY.source },
+				operationKey: {
+					type: "string",
+					pattern: OPERATION_KEY.source,
+					description: "Required for undo, describe and bring_in; omit for status.",
+				},
 				owner: { type: "string", minLength: 1, maxLength: 39 },
 				name: { type: "string", minLength: 1, maxLength: 100 },
 				change: { type: "integer", minimum: 1 },

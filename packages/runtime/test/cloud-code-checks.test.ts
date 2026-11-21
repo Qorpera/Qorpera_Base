@@ -64,47 +64,59 @@ function receiptOf(
 }
 
 describe("parseCodeChecksText", () => {
-	it("parses JSONC with comments, defaults, needs DAG and valid site", () => {
-		const text = `{
+	it("parses JSONC with comments, leading BOM, defaults and valid site", () => {
+		const text = `\uFEFF{
 			// single-line comment
 			"$schema": "https://qorpera.com/schemas/checks.json",
 			/* multi-line
 			   comment */
 			"checks": [
 				{ "name": "install", "run": "npm ci", "timeoutSeconds": 180 },
-				{ "name": "lint", "run": "npm run lint", "needs": ["install"] },
-				{ "name": "test", "run": "npm test", "cwd": "packages/app", "needs": ["install"], "timeoutSeconds": 300 },
-				{ "name": "build", "run": "npm run build", "needs": ["lint", "test"] }
+				{ "name": "lint", "run": "npm run lint" },
+				{ "name": "test", "run": "npm test", "cwd": "packages/app", "timeoutSeconds": 300 }
 			],
 			"site": { "folder": "dist", "name": "acme-shop", "title": "Acme Shop" }
 		}`;
 		expect(parseCodeChecksText(text)).toEqual({
 			ok: true,
-			mode: "dag",
-			totalTimeoutSeconds: 1680,
+			totalTimeoutSeconds: 1080,
 			checks: [
 				{ name: "install", run: "npm ci", timeoutSeconds: 180, cwd: "." },
-				{ name: "lint", run: "npm run lint", timeoutSeconds: 600, cwd: ".", needs: ["install"] },
-				{ name: "test", run: "npm test", timeoutSeconds: 300, cwd: "packages/app", needs: ["install"] },
-				{ name: "build", run: "npm run build", timeoutSeconds: 600, cwd: ".", needs: ["lint", "test"] },
+				{ name: "lint", run: "npm run lint", timeoutSeconds: 600, cwd: "." },
+				{ name: "test", run: "npm test", timeoutSeconds: 300, cwd: "packages/app" },
 			],
 			site: { folder: "dist", name: "acme-shop", title: "Acme Shop" },
 		});
 	});
 
-	it("returns sequential mode when no check declares needs", () => {
-		const parsed = parseCodeChecksText('{"checks":[{"name":"test","run":"npm test"}]}');
-		expect(parsed).toEqual({
-			ok: true,
-			mode: "sequential",
-			totalTimeoutSeconds: 600,
-			checks: [{ name: "test", run: "npm test", timeoutSeconds: 600, cwd: "." }],
-			site: null,
+	it("rejects unknown check keys including needs to match the landing validator", () => {
+		expect(
+			parseCodeChecksText(
+				JSON.stringify({
+					checks: [
+						{ name: "install", run: "npm ci" },
+						{ name: "test", run: "npm test", needs: ["install"] },
+					],
+				}),
+			),
+		).toEqual({
+			ok: false,
+			problems: [
+				{
+					at: "/checks/1/needs",
+					code: "UNKNOWN_KEY",
+					message: "This key is not in the checks file's schema.",
+				},
+			],
 		});
 	});
 
-	it("rejects oversized files, syntax errors, trailing commas and duplicate keys", () => {
+	it("rejects oversized files (including BOM bytes), syntax errors, trailing commas and duplicate keys", () => {
 		expect(parseCodeChecksText(" ".repeat(MAX_CODE_CHECKS_FILE_BYTES + 1))).toMatchObject({
+			ok: false,
+			problems: [{ code: "TOO_LARGE" }],
+		});
+		expect(parseCodeChecksText(`\uFEFF${" ".repeat(MAX_CODE_CHECKS_FILE_BYTES - 2)}`)).toMatchObject({
 			ok: false,
 			problems: [{ code: "TOO_LARGE" }],
 		});
@@ -183,53 +195,6 @@ describe("parseCodeChecksText", () => {
 			const res = parseCodeChecksText(JSON.stringify({ checks: [{ name: "build", run: "true" }], site }));
 			expect(res.ok, JSON.stringify(site)).toBe(false);
 		}
-	});
-
-	it("detects unknown dependencies, self-dependencies, duplicates and dependency cycles", () => {
-		expect(
-			parseCodeChecksText(
-				JSON.stringify({
-					checks: [
-						{ name: "a", run: "true", needs: ["a"] },
-						{ name: "b", run: "true", needs: ["missing", "a", "a"] },
-					],
-				}),
-			),
-		).toMatchObject({
-			ok: false,
-			problems: expect.arrayContaining([
-				expect.objectContaining({ code: "SELF_DEPENDENCY" }),
-				expect.objectContaining({ code: "UNKNOWN_DEPENDENCY" }),
-				expect.objectContaining({ code: "DUPLICATE" }),
-			]),
-		});
-		expect(
-			parseCodeChecksText(
-				JSON.stringify({
-					checks: [
-						{ name: "a", run: "true", needs: ["b"] },
-						{ name: "b", run: "true", needs: ["a"] },
-					],
-				}),
-			),
-		).toMatchObject({
-			ok: false,
-			problems: [expect.objectContaining({ code: "CYCLE" })],
-		});
-		expect(
-			parseCodeChecksText(
-				JSON.stringify({
-					checks: [
-						{ name: "a", run: "true", needs: ["c"] },
-						{ name: "b", run: "true", needs: ["a"] },
-						{ name: "c", run: "true", needs: ["b"] },
-					],
-				}),
-			),
-		).toMatchObject({
-			ok: false,
-			problems: [expect.objectContaining({ code: "CYCLE" })],
-		});
 	});
 });
 
@@ -335,11 +300,12 @@ describe("coding_run_command runChecks pre-flight runner", () => {
 				};
 			}),
 		};
-		const abort = new AbortController();
+		const runAbort = new AbortController();
+		const callAbort = new AbortController();
 		const run = await CloudNativeToolRun.open(
 			binding,
 			{ describeToolAuthority: async () => structuredClone(authority) },
-			abort.signal,
+			runAbort.signal,
 		);
 		const operations = new CloudNativeToolOperations(run, control);
 		const gateway: CloudCodingCommandGateway = {
@@ -370,7 +336,7 @@ describe("coding_run_command runChecks pre-flight runner", () => {
 			identity,
 			tools,
 			assertActive: (signal) => run.assertActive(signal),
-			signal: abort.signal,
+			signal: callAbort.signal,
 		});
 		const invoke = async (args: Record<string, unknown>) => {
 			const response = await boundary.invoke(`pf_${randomUUID()}`, "qorpera", "coding_run_command", args);
@@ -382,13 +348,14 @@ describe("coding_run_command runChecks pre-flight runner", () => {
 				text: envelope.content.text as string,
 			};
 		};
-		return { scope, identity, run, boundary, gateway, begunOperations, invoke };
+		return { scope, identity, run, runAbort, callAbort, boundary, gateway, begunOperations, invoke };
 	}
 
 	it.each([
 		[44, "missing", undefined],
 		[45, "invalid", "NOT_A_FILE"],
 		[46, "invalid", "TOO_LARGE"],
+		[47, "invalid", "NOT_UTF8"],
 	])("handles checks file read exit code %i as %s", async (exitCode, state, problemCode) => {
 		const f = await preflightFixture({
 			onStart: (input, ctx) =>
@@ -400,6 +367,45 @@ describe("coding_run_command runChecks pre-flight runner", () => {
 			const parsed = JSON.parse(result.text);
 			expect(parsed.state).toBe(state);
 			if (problemCode) expect(parsed.problems[0]?.code).toBe(problemCode);
+		} finally {
+			f.boundary.close();
+			f.run.close();
+		}
+	});
+
+	it("clamps short remaining checks-file page reads to at least 4 bytes", async () => {
+		const readLimits: number[] = [];
+		const shortText = '{"a":}';
+		const f = await preflightFixture({
+			onStart: (input, ctx) =>
+				receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+					state: "succeeded",
+					output: shortText.slice(0, 4),
+					offset: 0,
+					nextOffset: 4,
+					totalBytes: 6,
+					truncated: true,
+				}),
+			onRead: (input, ctx) => {
+				readLimits.push(input.limit ?? 0);
+				return receiptOf(ctx.workerId, input.commandId, "a".repeat(64), {
+					state: "succeeded",
+					output: shortText.slice(4),
+					offset: 4,
+					nextOffset: 6,
+					totalBytes: 6,
+					truncated: false,
+				});
+			},
+		});
+		try {
+			const result = await f.invoke({ operationKey: "short-file", runChecks: true });
+			expect(result.success).toBe(true);
+			expect(readLimits).toEqual([4]);
+			expect(JSON.parse(result.text)).toMatchObject({
+				state: "invalid",
+				problems: [{ code: "SYNTAX" }],
+			});
 		} finally {
 			f.boundary.close();
 			f.run.close();
@@ -430,14 +436,14 @@ describe("coding_run_command runChecks pre-flight runner", () => {
 		}
 	});
 
-	it("runs sequential checks in order with CI=true QORPERA_CHECKS=1 and matches command-authority digest parity", async () => {
-		const checksFile = JSON.stringify({
+	it("runs sequential checks in order (including BOM file) with CI=true QORPERA_CHECKS=1 and matches command-authority digest parity", async () => {
+		const checksFile = `\uFEFF${JSON.stringify({
 			checks: [
 				{ name: "lint", run: "npm run lint", timeoutSeconds: 60 },
 				{ name: "test", run: "npm test", cwd: "apps/web", timeoutSeconds: 120 },
 			],
 			site: { folder: "dist", name: "acme-app", title: "Acme App" },
-		});
+		})}`;
 		const startedCommands: {
 			commandId: string;
 			inputSha256: string;
@@ -466,9 +472,7 @@ describe("coding_run_command runChecks pre-flight runner", () => {
 			expect(parsed).toMatchObject({
 				schema: "qorpera.coding-preflight-checks/v1",
 				state: "passed",
-				mode: "sequential",
 				notRun: [],
-				skipped: [],
 				site: { folder: "dist", name: "acme-app", title: "Acme App" },
 			});
 			expect(parsed.checks).toMatchObject([
@@ -578,7 +582,6 @@ describe("coding_run_command runChecks pre-flight runner", () => {
 		expect(fast.checks[0].tail).toContain("whsec_[REDACTED]");
 		expect(fast.checks[0].tail).not.toContain(secret);
 		expect(fast.notRun).toEqual(["test", "build"]);
-		expect(fast.skipped).toEqual([]);
 
 		const all = await runOnce(false);
 		expect(all.state).toBe("failed");
@@ -588,187 +591,14 @@ describe("coding_run_command runChecks pre-flight runner", () => {
 			["build", "passed"],
 		]);
 		expect(all.notRun).toEqual([]);
-		expect(all.skipped).toEqual([]);
-	});
-
-	it("runs parallel needs DAG waves concurrently and waits for all parents before downstream checks", async () => {
-		const checksFile = JSON.stringify({
-			checks: [
-				{ name: "install", run: "npm ci" },
-				{ name: "lint", run: "npm run lint", needs: ["install"] },
-				{ name: "typecheck", run: "npm run typecheck", needs: ["install"] },
-				{ name: "build", run: "npm run build", needs: ["lint", "typecheck"] },
-			],
-		});
-		let activeChecks = 0;
-		let maxConcurrent = 0;
-		const finished = new Set<string>();
-		const runningChecks = new Map<string, { name: string; pollsLeft: number; inputSha256: string }>();
-		const f = await preflightFixture({
-			pollMs: 5,
-			onStart: (input, ctx) => {
-				if (input.command.includes(".qorpera/checks.json")) {
-					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
-						state: "succeeded",
-						output: checksFile,
-					});
-				}
-				const name = input.command.includes("npm ci")
-					? "install"
-					: input.command.includes("npm run lint")
-						? "lint"
-						: input.command.includes("npm run typecheck")
-							? "typecheck"
-							: "build";
-				if (name === "build") {
-					expect(finished.has("lint")).toBe(true);
-					expect(finished.has("typecheck")).toBe(true);
-				}
-				activeChecks++;
-				maxConcurrent = Math.max(maxConcurrent, activeChecks);
-				runningChecks.set(input.commandId, {
-					name,
-					pollsLeft: name === "lint" || name === "typecheck" ? 2 : 1,
-					inputSha256: input.inputSha256,
-				});
-				return receiptOf(ctx.workerId, input.commandId, input.inputSha256, { state: "running", exitCode: null });
-			},
-			onRead: (input, ctx) => {
-				const entry = runningChecks.get(input.commandId)!;
-				entry.pollsLeft--;
-				if (entry.pollsLeft > 0) {
-					return receiptOf(ctx.workerId, input.commandId, entry.inputSha256, { state: "running", exitCode: null });
-				}
-				activeChecks--;
-				finished.add(entry.name);
-				return receiptOf(ctx.workerId, input.commandId, entry.inputSha256, { state: "succeeded", output: "ok\n" });
-			},
-		});
-		try {
-			const result = await f.invoke({ operationKey: "dag-wave", runChecks: true });
-			const parsed = JSON.parse(result.text);
-			expect(parsed.state).toBe("passed");
-			expect(parsed.mode).toBe("dag");
-			expect(maxConcurrent).toBe(2);
-			expect(parsed.checks.map((c: { name: string; status: string }) => [c.name, c.status])).toEqual([
-				["install", "passed"],
-				["lint", "passed"],
-				["typecheck", "passed"],
-				["build", "passed"],
-			]);
-		} finally {
-			f.boundary.close();
-			f.run.close();
-		}
-	});
-
-	it("cancels running wave siblings on DAG failFast:true and skips transitive dependents on DAG failFast:false", async () => {
-		const checksFile = JSON.stringify({
-			checks: [
-				{ name: "a", run: "run-a", needs: [] },
-				{ name: "b", run: "run-b", needs: [] },
-				{ name: "c", run: "run-c", needs: ["a"] },
-				{ name: "d", run: "run-d", needs: ["c"] },
-			],
-		});
-		const states = new Map<string, { name: string; polls: number; inputSha256: string }>();
-		const cancelledIds: string[] = [];
-		const tailReadIds: string[] = [];
-		const fastFixture = await preflightFixture({
-			pollMs: 5,
-			onStart: (input, ctx) => {
-				if (input.command.includes(".qorpera/checks.json")) {
-					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
-						state: "succeeded",
-						output: checksFile,
-					});
-				}
-				const name = input.command.includes("run-a") ? "a" : "b";
-				states.set(input.commandId, { name, polls: 0, inputSha256: input.inputSha256 });
-				return receiptOf(ctx.workerId, input.commandId, input.inputSha256, { state: "running", exitCode: null });
-			},
-			onRead: (input, ctx) => {
-				if (input.tail) tailReadIds.push(input.commandId);
-				const entry = states.get(input.commandId)!;
-				entry.polls++;
-				if (entry.name === "a") {
-					return receiptOf(ctx.workerId, input.commandId, entry.inputSha256, {
-						state: "failed",
-						exitCode: 1,
-						output: "a failed\n",
-					});
-				}
-				return receiptOf(ctx.workerId, input.commandId, entry.inputSha256, { state: "running", exitCode: null });
-			},
-			onCancel: (commandId, ctx) => {
-				cancelledIds.push(commandId);
-				const entry = states.get(commandId)!;
-				return receiptOf(ctx.workerId, commandId, entry.inputSha256, { state: "cancelled", exitCode: null });
-			},
-		});
-		try {
-			const res = await fastFixture.invoke({ operationKey: "dag-ff-true", runChecks: true, failFast: true });
-			const parsed = JSON.parse(res.text);
-			expect(parsed.state).toBe("failed");
-			expect(cancelledIds).toHaveLength(1);
-			expect(tailReadIds).not.toContain(cancelledIds[0]);
-			expect(parsed.checks).toMatchObject([
-				{ name: "a", status: "failed", exitCode: 1, tail: "a failed" },
-				{ name: "b", status: "cancelled", exitCode: null },
-			]);
-			expect(parsed.checks[1].tail).toBeUndefined();
-			expect(parsed.notRun).toEqual(["c", "d"]);
-		} finally {
-			fastFixture.boundary.close();
-			fastFixture.run.close();
-		}
-
-		const fullFixture = await preflightFixture({
-			onStart: (input, ctx) => {
-				if (input.command.includes(".qorpera/checks.json")) {
-					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
-						state: "succeeded",
-						output: checksFile,
-					});
-				}
-				if (input.command.includes("run-a")) {
-					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
-						state: "failed",
-						exitCode: 1,
-						output: "boom\n",
-					});
-				}
-				return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
-					state: "succeeded",
-					output: "ok\n",
-				});
-			},
-		});
-		try {
-			const res = await fullFixture.invoke({ operationKey: "dag-ff-false", runChecks: true, failFast: false });
-			const parsed = JSON.parse(res.text);
-			expect(parsed.state).toBe("failed");
-			expect(parsed.checks.map((c: { name: string; status: string }) => [c.name, c.status])).toEqual([
-				["a", "failed"],
-				["b", "passed"],
-			]);
-			expect(parsed.skipped).toEqual([
-				{ name: "c", blockedBy: ["a"] },
-				{ name: "d", blockedBy: ["c"] },
-			]);
-			expect(parsed.notRun).toEqual([]);
-		} finally {
-			fullFixture.boundary.close();
-			fullFixture.run.close();
-		}
 	});
 
 	it("supports checkNames subset selection and reports unknown check names with availableChecks", async () => {
 		const checksFile = JSON.stringify({
 			checks: [
 				{ name: "install", run: "npm ci" },
-				{ name: "test", run: "npm test", needs: ["install"] },
-				{ name: "build", run: "npm run build", needs: ["test"] },
+				{ name: "test", run: "npm test" },
+				{ name: "build", run: "npm run build" },
 			],
 		});
 		const f = await preflightFixture({
@@ -803,12 +633,13 @@ describe("coding_run_command runChecks pre-flight runner", () => {
 		}
 	});
 
-	it("enforces timeout with cancellation, reports machine_stopped as not_run, and refuses after authority revocation", async () => {
+	it("cancels timed-out checks through coding_cancel_command receipt, cancels running checks on abort, and reports machine_stopped and authority revocation", async () => {
 		const checksFile = JSON.stringify({
 			checks: [{ name: "slow", run: "sleep 30", timeoutSeconds: 10 }],
 		});
 		let cancelled = false;
 		let checkSha = "";
+		let checkCommandId = "";
 		vi.useFakeTimers();
 		try {
 			const f = await preflightFixture({
@@ -822,6 +653,7 @@ describe("coding_run_command runChecks pre-flight runner", () => {
 						});
 					}
 					checkSha = input.inputSha256;
+					checkCommandId = input.commandId;
 					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, { state: "running", exitCode: null });
 				},
 				onRead: (input, ctx) =>
@@ -851,12 +683,84 @@ describe("coding_run_command runChecks pre-flight runner", () => {
 					timedOut: true,
 					tail: "timed out output",
 				});
+				const cancelOp = f.begunOperations.find((op) =>
+					op.logicalOperationKey.startsWith("coding_cancel_command:"),
+				);
+				expect(cancelOp).toBeDefined();
+				expect(cancelOp?.logicalOperationKey.endsWith(":c:0:cancel")).toBe(true);
+				const cancelKey = cancelOp!.logicalOperationKey.slice("coding_cancel_command:".length);
+				const expectedCancelDigest = createHash("sha256")
+					.update(
+						cloudNativeToolOperationEnvelope(f.identity, {
+							tool: "coding_cancel_command",
+							toolVersion: "v1",
+							logicalOperationKey: cancelKey,
+							arguments: { commandId: checkCommandId, operationKey: cancelKey },
+							target: { schema: "qorpera.coding-command-target/v1", ...f.scope },
+							requiresCompanyRevision: false,
+						}),
+					)
+					.digest("hex");
+				expect(cancelOp?.inputSha256).toBe(expectedCancelDigest);
 			} finally {
 				f.boundary.close();
 				f.run.close();
 			}
 		} finally {
 			vi.useRealTimers();
+		}
+
+		for (const abortWholeRun of [false, true]) {
+			const cancelledIds: string[] = [];
+			let runningId = "";
+			let runningSha = "";
+			let startedCheck!: () => void;
+			const checkStarted = new Promise<void>((resolve) => {
+				startedCheck = resolve;
+			});
+			let cancelCalled!: () => void;
+			const cancelledPromise = new Promise<void>((resolve) => {
+				cancelCalled = resolve;
+			});
+			const aborted = await preflightFixture({
+				pollMs: 200,
+				onStart: (input, ctx) => {
+					if (input.command.includes(".qorpera/checks.json")) {
+						return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+							state: "succeeded",
+							output: checksFile,
+						});
+					}
+					runningId = input.commandId;
+					runningSha = input.inputSha256;
+					startedCheck();
+					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, { state: "running", exitCode: null });
+				},
+				onCancel: (commandId, ctx) => {
+					cancelledIds.push(commandId);
+					cancelCalled();
+					return receiptOf(ctx.workerId, commandId, runningSha, { state: "cancelled", exitCode: null });
+				},
+			});
+			try {
+				const pending = aborted.invoke({ operationKey: `abort-${String(abortWholeRun)}`, runChecks: true });
+				await checkStarted;
+				await new Promise((resolve) => setTimeout(resolve, 15));
+				if (abortWholeRun) aborted.runAbort.abort();
+				aborted.callAbort.abort();
+				const result = await pending;
+				expect(result.success).toBe(false);
+				await cancelledPromise;
+				expect(cancelledIds).toEqual([runningId]);
+				if (!abortWholeRun) {
+					expect(
+						aborted.begunOperations.some((op) => op.logicalOperationKey.startsWith("coding_cancel_command:")),
+					).toBe(true);
+				}
+			} finally {
+				aborted.boundary.close();
+				aborted.run.close();
+			}
 		}
 
 		const stopped = await preflightFixture({

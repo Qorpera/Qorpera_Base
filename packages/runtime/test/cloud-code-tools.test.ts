@@ -167,13 +167,16 @@ describe("manage_code: the tool an agent's own run is offered", () => {
 				"When later changes built on it, nothing happens and you are told the files: then undo with andLater true, which takes out that change and every change after it, or send the session a follow-up.",
 				"After an undo, check main before you tell anyone.",
 				"- describe: set the change's notice and picture; what you leave out stays as it is.",
+				// Step 6 (STEP6-IMPORT-BUILD.md section 6): existing code comes in with its history, after a look.
 				'- bring_in: bring existing code in with its history, as a new repository code/<owner>/<name>/ (lowercase): from {"github":"owner/name"}, or from {"file":"code/_incoming/<folder>/<name>.bundle"}, a git bundle of at most 256 MB made on a machine (from a zip: git init, add, commit, then git bundle create with --all).',
 				"look true only reads it: size, history, who changed it lately, what stops it, files with key-like strings.",
 				"It takes minutes: call again with the same operationKey, and tell members it shows in Storage when it is in.",
 				"Replace keys it found where you can, and ask a member once for the rest.",
+				// What a member reads never carries the platform's own names for things.
 				"Change numbers are yours, never the members' words.",
 			])
 				expect(tool.description).toContain(said);
+			// Only how a bundle is made names git, for the machine it is made on.
 			expect(tool.description.replace(/ \(from a zip: [^)]*\)|a git bundle/g, "")).not.toMatch(
 				/commit|branch|pull request|merge|revert|git\b/i,
 			);
@@ -183,6 +186,9 @@ describe("manage_code: the tool an agent's own run is offered", () => {
 				required: ["action", "owner", "name"],
 				properties: {
 					action: { type: "string", enum: ["undo", "describe", "bring_in", "status"] },
+					operationKey: {
+						description: "Required for undo, describe and bring_in; omit for status.",
+					},
 					change: { type: "integer", minimum: 1 },
 					andLater: { type: "boolean" },
 					from: {
@@ -191,6 +197,7 @@ describe("manage_code: the tool an agent's own run is offered", () => {
 						properties: {
 							github: { type: "string" },
 							file: { type: "string" },
+							// The import's follow-ups (lead's decision 3): a branch beside github too.
 							branch: {
 								type: "string",
 								minLength: 1,
@@ -1834,14 +1841,14 @@ describe("manage_code status", () => {
 					"- 12 · 2026-11-20 · live · Update cart totals",
 					"- 11 · 2026-11-19 · undone · Broken header",
 				].join("\n"),
-				"code/acme/shop/main/.qorpera/checks.json": JSON.stringify({
+				"code/acme/shop/main/.qorpera/checks.json": `\uFEFF${JSON.stringify({
 					checks: [
 						{ name: "install", run: "npm ci", timeoutSeconds: 180 },
-						{ name: "lint", run: "npm run lint", needs: ["install"] },
-						{ name: "test", run: "npm test", cwd: "apps/web", needs: ["install"], timeoutSeconds: 300 },
+						{ name: "lint", run: "npm run lint" },
+						{ name: "test", run: "npm test", cwd: "apps/web", timeoutSeconds: 300 },
 					],
 					site: { folder: "dist", name: "shop-demo", title: "Acme Shop" },
-				}),
+				})}`,
 				"QorperaOS/agents/nora/todos/checkout.md": todo("20000000-0000-4000-8000-000000000001", "open"),
 				"QorperaOS/agents/nora/todos/checkout/cart-fix/brief.md": codingBrief({
 					id: activeId,
@@ -1938,12 +1945,11 @@ describe("manage_code status", () => {
 					present: true,
 					valid: true,
 					path: "code/acme/shop/main/.qorpera/checks.json",
-					mode: "dag",
 					totalTimeoutSeconds: 1080,
 					checks: [
 						{ name: "install", cwd: ".", timeoutSeconds: 180 },
-						{ name: "lint", cwd: ".", timeoutSeconds: 600, needs: ["install"] },
-						{ name: "test", cwd: "apps/web", timeoutSeconds: 300, needs: ["install"] },
+						{ name: "lint", cwd: ".", timeoutSeconds: 600 },
+						{ name: "test", cwd: "apps/web", timeoutSeconds: 300 },
 					],
 					site: { folder: "dist", name: "shop-demo", title: "Acme Shop" },
 				},
@@ -2082,14 +2088,18 @@ describe("manage_code status", () => {
 
 		const invalidJson = await statusFixture({
 			folders: ["code/acme/shop/main"],
-			files: { "code/acme/shop/main/.qorpera/checks.json": '{"checks":[]}' },
+			files: {
+				"code/acme/shop/main/.qorpera/checks.json": JSON.stringify({
+					checks: [{ name: "test", run: "npm test", needs: ["install"] }],
+				}),
+			},
 		});
 		try {
 			const parsed = JSON.parse((await invalidJson.invoke({ action: "status", owner: "acme", name: "shop" })).text);
 			expect(parsed.checks).toMatchObject({
 				present: true,
 				valid: false,
-				problems: [{ at: "/checks", code: "INVALID_VALUE" }],
+				problems: [{ at: "/checks/0/needs", code: "UNKNOWN_KEY" }],
 			});
 		} finally {
 			invalidJson.boundary.close();
