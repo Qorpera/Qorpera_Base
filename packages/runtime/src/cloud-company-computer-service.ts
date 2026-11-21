@@ -2,6 +2,7 @@ import type {
 	CompanyComputerScope,
 	CompanyComputerScreenBinding,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
+import { withAbortScopes } from "./abort-scope.ts";
 import { createCompanyComputerViewerRefusalReporter } from "./cloud-company-computer-diagnostics.ts";
 import { CompanyComputerDrainSupervisor } from "./cloud-company-computer-drain.ts";
 import { CompanyComputerScreenActionGate } from "./cloud-company-computer-leases.ts";
@@ -60,7 +61,10 @@ export async function startCompanyComputerOfficeService(options: {
 	writeDiagnostic?: (line: string) => void;
 }): Promise<{ nativePort: number; viewerPort: number; finished: Promise<void>; close(): Promise<void> }> {
 	const stop = new AbortController();
-	const signal = AbortSignal.any([options.signal, stop.signal]);
+	const onCallerAbort = (): void => stop.abort(options.signal.reason);
+	if (options.signal.aborted) stop.abort(options.signal.reason);
+	else options.signal.addEventListener("abort", onCallerAbort, { once: true });
+	const signal = stop.signal;
 	const gate = new CompanyComputerScreenActionGate();
 	let ready = false;
 	let listenerFailed = false;
@@ -76,6 +80,7 @@ export async function startCompanyComputerOfficeService(options: {
 	let closing: Promise<void> | undefined;
 	const cleanup = (): Promise<void> => {
 		ready = false;
+		options.signal.removeEventListener("abort", onCallerAbort);
 		stop.abort();
 		closing ??= cloudToolRequest(
 			async (cleanupSignal) => {
@@ -114,15 +119,15 @@ export async function startCompanyComputerOfficeService(options: {
 		const authority: CompanyComputerViewerAuthority = {
 			redeem: async (capability, checked) => {
 				assertAdmitting();
-				return control.redeem(capability, AbortSignal.any([signal, checked]));
+				return withAbortScopes([signal, checked], (combined) => control.redeem(capability, combined));
 			},
 			check: async (grant, checked) => {
 				assertServing();
-				return control.check(grant, AbortSignal.any([signal, checked]));
+				return withAbortScopes([signal, checked], (combined) => control.check(grant, combined));
 			},
 			admitInputWindow: async (grant, checked) => {
 				assertServing();
-				return control.admitInputWindow(grant, AbortSignal.any([signal, checked]));
+				return withAbortScopes([signal, checked], (combined) => control.admitInputWindow(grant, combined));
 			},
 			recordInput: (grant, input) => {
 				assertServing();
@@ -158,16 +163,17 @@ export async function startCompanyComputerOfficeService(options: {
 			guest: {
 				connect: async (grant, checked) => {
 					assertAdmitting();
-					const combined = AbortSignal.any([signal, checked]);
-					const connected = await options.guest.viewer.connect(grant, combined);
-					try {
-						combined.throwIfAborted();
-						assertAdmitting();
-						return connected;
-					} catch (error) {
-						connected.socket.destroy();
-						throw error;
-					}
+					return withAbortScopes([signal, checked], async (combined) => {
+						const connected = await options.guest.viewer.connect(grant, combined);
+						try {
+							combined.throwIfAborted();
+							assertAdmitting();
+							return connected;
+						} catch (error) {
+							connected.socket.destroy();
+							throw error;
+						}
+					});
 				},
 			},
 		});
