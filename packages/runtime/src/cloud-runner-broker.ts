@@ -934,13 +934,16 @@ export class CloudRunnerJobBroker {
 		return authority;
 	}
 
-	async releaseNativeAuthority(status: "released" | "revoked" | "expired" = "released"): Promise<void> {
+	async releaseNativeAuthority(
+		status: "released" | "revoked" | "expired" = "released",
+		signal?: AbortSignal,
+	): Promise<void> {
 		if (!this.#nativeAuthority) return;
 		const release = this.#options.transport.releaseNativeAuthority;
 		if (!release) throw new Error("Runner broker does not support native subscription authority release");
 		const leaseId = this.#nativeAuthority.leaseId;
 		const value = record(
-			await release.call(this.#options.transport, this.#authority(), leaseId, status),
+			await release.call(this.#options.transport, this.#releaseAuthority(signal), leaseId, status),
 			"native provider authority release",
 		);
 		if (value.lease_id !== leaseId || value.status !== status) {
@@ -974,6 +977,20 @@ export class CloudRunnerJobBroker {
 			sessionToken: credentials.sessionToken,
 			leaseToken: credentials.leaseToken,
 			...(this.#options.signal ? { signal: this.#options.signal } : {}),
+		};
+		requiredAuthority(authority);
+		return authority;
+	}
+
+	#releaseAuthority(signal?: AbortSignal): CloudRunnerBrokerAuthority {
+		const credentials = this.#options.credentials();
+		const authority = {
+			runnerId: this.#options.runnerId,
+			jobId: this.#options.job.jobId,
+			sessionToken: credentials.sessionToken,
+			leaseToken: credentials.leaseToken,
+			// WHY: Execution revocation aborts #options.signal before finally runs; use the release signal instead.
+			...(signal ? { signal } : {}),
 		};
 		requiredAuthority(authority);
 		return authority;

@@ -554,6 +554,8 @@ export class EphemeralCloudRunnerWorker {
 					nativeDeadline = Date.parse(renewed.expiresAt);
 					armDeadline();
 				};
+				let releaseError: unknown;
+				let hasReleaseError = false;
 				try {
 					execution = await this.#executeJob({
 						job,
@@ -576,12 +578,19 @@ export class EphemeralCloudRunnerWorker {
 					// atomically with the durable completion receipt; a run with no staged
 					// completion releases it here.
 					if (!this.#options.runner.stagedCompletion(job.jobId)) {
-						await withCloudDeadline(
-							() => broker.releaseNativeAuthority(executionAbort.signal.aborted ? "revoked" : "released"),
-							Math.max(1, Math.min(30_000, leaseDeadline - this.#now())),
-						);
+						const releaseStatus = executionAbort.signal.aborted ? "revoked" : "released";
+						try {
+							await withCloudDeadline(
+								(releaseSignal) => broker.releaseNativeAuthority(releaseStatus, releaseSignal),
+								Math.max(1, Math.min(30_000, leaseDeadline - this.#now())),
+							);
+						} catch (error) {
+							releaseError = error;
+							hasReleaseError = true;
+						}
 					}
 				}
+				if (hasReleaseError) throw releaseError;
 			} catch (error) {
 				await stopMaintenance();
 				if (maintenanceError) throw maintenanceError;

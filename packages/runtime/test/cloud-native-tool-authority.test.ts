@@ -846,3 +846,49 @@ it("detaches parent AbortSignal listeners after each cloudToolRequest settles", 
 	}
 	expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
 });
+
+it("isolates per-call signal aborts in assertActive and assertActiveWith without closing the run", async () => {
+	const { run, reader, authority, abort } = await admit();
+	const baseline = getEventListeners(run.signal, "abort").length;
+	let releaseCheck: (() => void) | undefined;
+	reader.describeToolAuthority.mockImplementationOnce(
+		() =>
+			new Promise<typeof authority>((resolve) => {
+				releaseCheck = () => resolve(structuredClone(authority));
+			}),
+	);
+	const caller1 = new AbortController();
+	const pendingCheck = run.assertActive(caller1.signal);
+	await vi.waitFor(() => expect(releaseCheck).toBeDefined());
+	caller1.abort(new Error("CALLER_TIMEOUT"));
+	await expect(pendingCheck).rejects.toThrow("Cloud tool authority unavailable");
+	expect(run.signal.aborted).toBe(false);
+
+	const caller2 = new AbortController();
+	caller2.abort(new Error("ALREADY_ABORTED"));
+	await expect(run.assertActive(caller2.signal)).rejects.toThrow("Cloud tool authority unavailable");
+	expect(run.signal.aborted).toBe(false);
+
+	const caller3 = new AbortController();
+	const pendingWith = run.assertActiveWith(
+		(requestSignal) =>
+			new Promise((_resolve, reject) => {
+				requestSignal.addEventListener("abort", () => reject(requestSignal.reason), { once: true });
+				caller3.abort(new Error("FENCE_CALLER_ABORT"));
+			}),
+		caller3.signal,
+	);
+	await expect(pendingWith).rejects.toThrow("Cloud tool authority unavailable");
+	expect(run.signal.aborted).toBe(false);
+
+	await expect(run.assertActive(new AbortController().signal)).resolves.toBeUndefined();
+	expect(getEventListeners(run.signal, "abort")).toHaveLength(baseline);
+
+	reader.describeToolAuthority.mockRejectedValueOnce(
+		new CloudControlRpcRefused("42501", "revoked", "Native control-plane RPC failed (403)"),
+	);
+	await expect(run.assertActive(new AbortController().signal)).rejects.toThrow("Cloud tool authority unavailable");
+	expect(run.signal.aborted).toBe(true);
+	expect(getEventListeners(run.signal, "abort")).toHaveLength(0);
+	expect(getEventListeners(abort.signal, "abort")).toHaveLength(0);
+});
