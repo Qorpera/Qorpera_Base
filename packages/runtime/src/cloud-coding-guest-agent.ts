@@ -66,6 +66,7 @@ import { ensureFolderCacheDir, FOLDER_CACHE } from "./cloud-folder-cache-dir.ts"
 
 const executeFile = promisify(execFile);
 const COMPACT = /^[0-9a-f]{32}$/;
+const SESSION_CACHE = /^s-([0-9a-f]{32})$/;
 const SEGMENT = /^[0-9]{16}\.out$/;
 const SIGNAL = /^SIG[A-Z0-9]{2,12}$/;
 const ENDED = new Set<string>(["exited", "cancelled", "timed_out", "lost"]);
@@ -110,8 +111,7 @@ export interface CodingGuestAgentPorts {
 	stateRoot?: string;
 	runtimeRoot?: string;
 	folderRoot?: string;
-	/** The folder programs' cache folder on the machine's disk, which every session's program shares. */
-	folderCache?: string;
+	folderCacheRoot?: string;
 	/** Where the user managers' drop-ins go. */
 	systemdRoot?: string;
 	/** The machine's package caches (CODING_PACKAGE_CACHES): their folder, the tmpfiles file that makes them, and the most
@@ -134,6 +134,7 @@ export interface CodingGuestAgentPorts {
 	sleep?: (ms: number) => Promise<void>;
 	readMountinfo?: () => Promise<string>;
 	chown?: (path: string, uid: number, gid: number) => Promise<void>;
+	removeTree?: (path: string) => void;
 	lockWaitSeconds?: number;
 	ring?: { segmentBytes: number; segments: number };
 	requireRoot?: boolean;
@@ -149,7 +150,7 @@ function settle(ports: CodingGuestAgentPorts): Agent {
 		stateRoot: ports.stateRoot ?? CODING_GUEST.state,
 		runtimeRoot: ports.runtimeRoot ?? CODING_GUEST.runtime,
 		folderRoot: ports.folderRoot ?? CODING_GUEST.folder,
-		folderCache: ports.folderCache ?? FOLDER_CACHE.machine,
+		folderCacheRoot: ports.folderCacheRoot ?? FOLDER_CACHE.root,
 		systemdRoot: ports.systemdRoot ?? "/run/systemd/system",
 		packageCaches: ports.packageCaches ?? {
 			root: CODING_PACKAGE_CACHES.root,
@@ -171,6 +172,7 @@ function settle(ports: CodingGuestAgentPorts): Agent {
 		sleep: ports.sleep ?? ((ms: number) => new Promise((done) => setTimeout(done, ms))),
 		readMountinfo: ports.readMountinfo ?? (() => readFile("/proc/self/mountinfo", "utf8")),
 		chown: ports.chown ?? chown,
+		removeTree: ports.removeTree ?? detachRemove,
 		lockWaitSeconds: ports.lockWaitSeconds ?? 60,
 		ring: ports.ring ?? { segmentBytes: CODING_GUEST.segmentBytes, segments: CODING_GUEST.segments },
 		requireRoot: ports.requireRoot ?? true,
@@ -325,9 +327,7 @@ function places(at: Agent, workerId: string) {
 		/** The program's local folder, on the machine's disk: the session's own git files. It outlives a new view (the
 		 * program keeps what is still the session's) and goes with the session. */
 		folderLocal: join(session, "folder-local"),
-		/** The machine's cache folder: every session's program keeps its caches there, and it outlives them all. Root
-		 * already joins one member's sessions on one machine, so walls between their caches would protect nothing. */
-		folderCache: at.folderCache,
+		folderCache: join(at.folderCacheRoot, `s-${worker}`),
 		mountpoint: join(at.folderRoot, "mounts", worker),
 		folderUnit: `qorpera-folder-${worker}.service`,
 		slice: `qorpera-coding-${worker}.slice`,
@@ -657,6 +657,57 @@ async function ensurePackageCaches(at: Agent): Promise<boolean> {
 	}
 }
 
+function detachRemove(path: string): void {
+	const child = spawn("/bin/rm", ["-rf", "--", path], {
+		env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8" },
+		detached: true,
+		stdio: "ignore",
+	});
+	child.once("error", () => undefined);
+	child.unref();
+}
+
+async function collectOrphanFolderCaches(at: Agent, activeWorker: string): Promise<string | undefined> {
+	const done = join(at.runtimeRoot, "folder-caches.pruned");
+	if (await exists(done)) return undefined;
+	const owner = process.geteuid?.();
+	const parent = await missing(() => lstat(dirname(at.folderCacheRoot)));
+	if (parent !== undefined && (!parent.isDirectory() || parent.uid !== owner)) return undefined;
+	const root = parent ? await missing(() => lstat(at.folderCacheRoot)) : undefined;
+	if (root !== undefined && (!root.isDirectory() || root.uid !== owner)) return undefined;
+	let staging: string | undefined;
+	let ok = true;
+	if (root) {
+		const entries = await readdir(at.folderCacheRoot).catch(() => {
+			ok = false;
+			return [];
+		});
+		for (const name of entries) {
+			if (name !== "machine" && !name.startsWith(".trash-")) {
+				const match = SESSION_CACHE.exec(name);
+				if (!match || match[1] === activeWorker) continue;
+				const sessionDir = await missing(() => lstat(join(at.stateRoot, "sessions", match[1]))).catch(() => {
+					ok = false;
+					return null;
+				});
+				if (sessionDir === null || sessionDir?.isDirectory()) continue;
+			}
+			try {
+				if (!staging) {
+					const next = join(at.folderCacheRoot, `.trash-${randomUUID()}`);
+					await mkdir(next, { mode: 0o700 });
+					staging = next;
+				}
+				await rename(join(at.folderCacheRoot, name), join(staging, name));
+			} catch {
+				ok = false;
+			}
+		}
+	}
+	if (ok) await ignore(writeText(done, "", 0o600));
+	return staging;
+}
+
 /** The machine's NAT for the sessions' namespaces, which may reach out but not each other. Replaced whole. */
 const NAT_RULES = `table inet qorpera_guest
 delete table inet qorpera_guest
@@ -966,24 +1017,32 @@ export async function mountCodingGuestSession(
 	// The view's pass and the program's state must never reach the machine's disk.
 	if (mountOf(await at.readMountinfo(), at.folderRoot)?.fstype !== "tmpfs")
 		throw new Error("CODING_GUEST_FOLDER_NOT_IN_MEMORY");
-	const mount = await locked(at, session.lock, "CODING_GUEST_SESSION_BUSY", async () => {
-		const held = await readSessionUser(session);
-		if (held && (held.uid !== request.uid || held.gid !== request.gid))
-			throw new Error("CODING_GUEST_SESSION_USER_CHANGED");
-		let caches = false;
-		const name = await locked(at, machineLock(at), "CODING_GUEST_MACHINE_BUSY", async () => {
-			caches = await ensurePackageCaches(at);
-			const user = await ensureUser(at, request.uid, request.gid);
-			await ensureDataCommand(at);
-			return user;
+	let trash: string | undefined;
+	let mount: { mount: CodingGuestMountAnswer["mount"]; caches: boolean };
+	try {
+		mount = await locked(at, session.lock, "CODING_GUEST_SESSION_BUSY", async () => {
+			const held = await readSessionUser(session);
+			if (held && (held.uid !== request.uid || held.gid !== request.gid))
+				throw new Error("CODING_GUEST_SESSION_USER_CHANGED");
+			let caches = false;
+			const name = await locked(at, machineLock(at), "CODING_GUEST_MACHINE_BUSY", async () => {
+				caches = await ensurePackageCaches(at);
+				const user = await ensureUser(at, request.uid, request.gid);
+				await ensureDataCommand(at);
+				trash = await collectOrphanFolderCaches(at, session.worker);
+				return user;
+			});
+			await mkdir(session.session, { recursive: true, mode: 0o755 });
+			if (!held) await writeJson(session.user, { schema: USER_SCHEMA, uid: request.uid, gid: request.gid });
+			await ensureNetwork(at, session);
+			const shown = await showView(at, session, request.view, request.uid, request.gid);
+			if (shown.mount === "mounted") await ensureUserManager(at, session, request.uid, name, shown.restarted);
+			return { mount: shown.mount, caches };
 		});
-		await mkdir(session.session, { recursive: true, mode: 0o755 });
-		if (!held) await writeJson(session.user, { schema: USER_SCHEMA, uid: request.uid, gid: request.gid });
-		await ensureNetwork(at, session);
-		const shown = await showView(at, session, request.view, request.uid, request.gid);
-		if (shown.mount === "mounted") await ensureUserManager(at, session, request.uid, name, shown.restarted);
-		return { mount: shown.mount, caches };
-	});
+	} finally {
+		const doomed = trash;
+		if (doomed) await ignore(Promise.resolve().then(() => at.removeTree(doomed)));
+	}
 	// Said only when asked (v2): an executor from before reads exactly the v1 answer.
 	return Object.freeze({
 		schema: "qorpera.coding-guest-mounted/v1",
@@ -1515,6 +1574,7 @@ export async function stopCodingGuestSession(
 			if (name.startsWith(`${session.worker}-`)) await rm(join(inputs, name), { force: true });
 		// Nothing of the session runs any more, so nothing moves in its output folders while they go.
 		await rm(session.session, { recursive: true, force: true });
+		await rm(session.folderCache, { recursive: true, force: true });
 	});
 	return Object.freeze({ schema: "qorpera.coding-guest-session-stopped/v1", workerId: request.workerId });
 }
