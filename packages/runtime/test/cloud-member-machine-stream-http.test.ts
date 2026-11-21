@@ -615,9 +615,29 @@ describe("the live-picture listener (20260930745000)", () => {
 		).toThrow("Member machine stream listener is invalid");
 	});
 
-	it("accepts a coalesced control frame in the upgrade head and rejects oversized upgrade heads with 404", async () => {
+	it("accepts a coalesced control frame in the upgrade head, releases admission immediately on a coalesced close, and rejects oversized upgrade heads with 404", async () => {
 		const signals: AbortSignal[] = [];
-		const { port } = await listener((ticket) => (ticket === TICKET ? waiting(signals) : null));
+		let active = 0;
+		let abortedOnEntry = 0;
+		const { port } = await listener((ticket) => {
+			if (ticket !== TICKET || active >= 1) return null;
+			active++;
+			return async (_sink, signal) => {
+				signals.push(signal);
+				if (signal.aborted) {
+					abortedOnEntry++;
+					active--;
+					return "closed";
+				}
+				try {
+					return await new Promise<string>((resolve) =>
+						signal.addEventListener("abort", () => resolve("closed"), { once: true }),
+					);
+				} finally {
+					active--;
+				}
+			};
+		}, 1);
 
 		const rawCoalesced = async (extra: Buffer) => {
 			const socket = connect({ port, host: "127.0.0.1" });
@@ -657,11 +677,17 @@ describe("the live-picture listener (20260930745000)", () => {
 			return { socket, status: head.split("\r\n")[0] ?? "", frames, closed };
 		};
 
+		const closedInHead = await rawCoalesced(masked(0x8, Buffer.from([0x03, 0xe8])));
+		expect(closedInHead.status).toBe("HTTP/1.1 101 Switching Protocols");
+		await closedInHead.closed;
+		await vi.waitFor(() => expect(abortedOnEntry).toBe(1));
+		expect(active).toBe(0);
+
 		const ok = await rawCoalesced(masked(0x9, Buffer.from("coal")));
 		expect(ok.status).toBe("HTTP/1.1 101 Switching Protocols");
 		await vi.waitFor(() => expect(ok.frames.some((f) => f.opcode === 0xa && f.payload.toString() === "coal")).toBe(true));
 		ok.socket.destroy();
-		await vi.waitFor(() => expect(signals[0]?.aborted).toBe(true));
+		await vi.waitFor(() => expect(signals[1]?.aborted).toBe(true));
 
 		const oversized = await rawCoalesced(Buffer.alloc(200, 0x41));
 		expect(oversized.status).toBe("HTTP/1.1 404 Not Found");

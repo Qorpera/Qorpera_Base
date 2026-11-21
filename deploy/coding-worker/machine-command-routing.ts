@@ -616,6 +616,7 @@ export class MachineCommandRouter {
 				if (!this.#streamPass(asked)) lapsed.abort();
 			}, MEMBER_STREAM_PASS_CHECK_MS);
 			try {
+				if (signal.aborted) return "closed";
 				const pass = this.#streamPass(asked);
 				if (!pass) return "POINTER_PASS_ENDED";
 				let reason: string;
@@ -652,6 +653,8 @@ export class MachineCommandRouter {
 		// v242 release review r1 F2).
 		if (authority.milliseconds <= 0 || askedAt + authority.milliseconds <= performance.now())
 			throw new CloudMemberMachinePointerRefusal("POINTER_PASS_ENDED");
+		// WHY: Flush HTTP 200 headers as soon as the pass is authorized so peer connect timeouts do not trip on slow desktop startup or pending cycles.
+		sink.ready?.();
 		return this.#options.memberStreamLocal({ placementId: authority.placementId, bootId: authority.bootId,
 			userId: authority.userId, generation: authority.generation, epoch: request.epoch }, sink, signal);
 	}

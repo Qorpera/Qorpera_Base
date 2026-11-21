@@ -120,6 +120,7 @@ const MAX_CONNECTIONS = 256;
 
 /** Where a member's stream goes: `send` resolves once the message is on its way and the way is not full. */
 export interface CloudMemberMachineStreamSink {
+	ready?(): void;
 	send(message: Buffer): Promise<void>;
 }
 /** A stream admitted on its ticket: running it streams to `sink` until `signal` aborts or it ends, and answers why. */
@@ -432,9 +433,8 @@ export class CloudMemberMachineStreamListener {
 			}
 			carry = null;
 		});
-		// WHY: Process any control frame coalesced with the HTTP upgrade packet after handlers are attached.
+		// WHY: Process any control frame coalesced with the HTTP upgrade packet after handlers are attached; still invoke run() so admission slots release immediately.
 		if (head.byteLength > 0) onData(head);
-		if (ended) return;
 		const way: MemberStreamWay = { unflushed: 0 };
 		const sink: CloudMemberMachineStreamSink = {
 			send: async (message) => {
