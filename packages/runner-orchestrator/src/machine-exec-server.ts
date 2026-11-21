@@ -6,18 +6,11 @@
 // is a small pipe of its own: what has not been read yet waits in memory, bounded, and a side that fills up ends the
 // channel rather than the machine's command.
 
-import { StringDecoder } from "node:string_decoder";
-
-/** What may wait unread in one direction before the channel is ended. A command's output can be large (P1 saw 2.4 MB
- * from one `seq`), but it is read as it comes; this bounds only what the other side has not taken yet. */
 export const LINE_PIPE_BYTES = 16 * 1024 * 1024;
 
-/**
- * One direction of the channel: bytes pushed in, read out as an async iterable (for LXD's stdin) or as complete lines
- * (for its stdout). Ending it ends both its reads.
- */
 export class LinePipe {
-	readonly #chunks: Buffer[] = [];
+	#chunks: Buffer[] = [];
+	#head = 0;
 	#bytes = 0;
 	#ended = false;
 	#failed = false;
@@ -31,6 +24,7 @@ export class LinePipe {
 			this.end();
 			return;
 		}
+		if (chunk.byteLength === 0) return;
 		this.#chunks.push(chunk);
 		this.#wake?.();
 		this.#wake = undefined;
@@ -49,8 +43,16 @@ export class LinePipe {
 	/** The bytes, as LXD's streamed stdin takes them. */
 	async *read(): AsyncGenerator<Uint8Array> {
 		for (;;) {
-			const chunk = this.#chunks.shift();
-			if (chunk) {
+			if (this.#head < this.#chunks.length) {
+				const chunk = this.#chunks[this.#head]!;
+				this.#head += 1;
+				if (this.#head === this.#chunks.length) {
+					this.#chunks.length = 0;
+					this.#head = 0;
+				} else if (this.#head >= 64 && this.#head * 2 >= this.#chunks.length) {
+					this.#chunks = this.#chunks.slice(this.#head);
+					this.#head = 0;
+				}
 				this.#bytes -= chunk.byteLength;
 				yield chunk;
 				continue;
@@ -62,21 +64,34 @@ export class LinePipe {
 		}
 	}
 
-	/** The same bytes as complete lines, without their newline, decoded across chunk boundaries: a character split
-	 * between two reads must arrive whole (review round 1, F9). The runtime's own readers share
-	 * `cloudHomeChannelLines`; this package cannot import it, so it keeps the same decoder of its own. */
 	async *lines(): AsyncGenerator<string> {
-		const decoder = new StringDecoder("utf8");
-		let rest = "";
+		let parts: Buffer[] = [];
+		let lineBytes = 0;
 		for await (const chunk of this.read()) {
-			rest += decoder.write(Buffer.from(chunk));
-			let end = rest.indexOf("\n");
-			while (end >= 0) {
-				yield rest.slice(0, end);
-				rest = rest.slice(end + 1);
-				end = rest.indexOf("\n");
+			const view = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+			let start = 0;
+			while (start < view.byteLength) {
+				const nl = view.indexOf(0x0a, start);
+				if (nl < 0) {
+					const tailLength = view.byteLength - start;
+					if (lineBytes + tailLength > LINE_PIPE_BYTES) return;
+					parts.push(Buffer.from(view.subarray(start)));
+					lineBytes += tailLength;
+					break;
+				}
+				const pieceLength = nl - start;
+				if (lineBytes + pieceLength > LINE_PIPE_BYTES) return;
+				if (parts.length === 0) {
+					yield view.toString("utf8", start, nl);
+				} else {
+					if (pieceLength > 0) parts.push(view.subarray(start, nl));
+					const line = Buffer.concat(parts, lineBytes + pieceLength).toString("utf8");
+					parts = [];
+					lineBytes = 0;
+					yield line;
+				}
+				start = nl + 1;
 			}
-			if (Buffer.byteLength(rest) > LINE_PIPE_BYTES) return;
 		}
 	}
 }
@@ -91,7 +106,7 @@ const BASE64_LINE = /^[A-Za-z0-9+/]+={0,2}$/;
  * base64 (the runtime's cloudHomeSftpLines). */
 export async function* sftpLines(chunks: AsyncIterable<Uint8Array>): AsyncGenerator<string> {
 	for await (const chunk of chunks) {
-		const bytes = Buffer.from(chunk);
+		const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
 		for (let at = 0; at < bytes.byteLength; at += SFTP_PIECE_BYTES)
 			yield bytes.subarray(at, at + SFTP_PIECE_BYTES).toString("base64");
 	}

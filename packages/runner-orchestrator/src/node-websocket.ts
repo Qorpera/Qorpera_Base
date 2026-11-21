@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomFillSync } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import type { Socket } from "node:net";
@@ -6,6 +6,137 @@ import type { Socket } from "node:net";
 const ACCEPT_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const MAX_MESSAGE_BYTES = 1024 * 1024;
 const CLOSE_GRACE_MS = 1000;
+const EMPTY_BUFFER = Buffer.alloc(0);
+const UTF8_FATAL_DECODER = new TextDecoder("utf-8", { fatal: true });
+const MASK_SCRATCH = new Uint8Array(4);
+const MASK_WORD = new Uint32Array(MASK_SCRATCH.buffer);
+
+class ReceiveQueue {
+	#chunks: Buffer[] = [];
+	#head = 0;
+	#headOffset = 0;
+	#bytes = 0;
+
+	get byteLength(): number {
+		return this.#bytes;
+	}
+
+	push(chunk: Buffer): void {
+		if (chunk.byteLength === 0) return;
+		this.#chunks.push(chunk);
+		this.#bytes += chunk.byteLength;
+	}
+
+	peekByte(index: number): number {
+		let remaining = index;
+		let chunkIndex = this.#head;
+		let offset = this.#headOffset;
+		while (chunkIndex < this.#chunks.length) {
+			const chunk = this.#chunks[chunkIndex]!;
+			const available = chunk.byteLength - offset;
+			if (remaining < available) return chunk[offset + remaining]!;
+			remaining -= available;
+			chunkIndex += 1;
+			offset = 0;
+		}
+		throw new RangeError("ReceiveQueue index out of range");
+	}
+
+	readUInt16BE(offset: number): number {
+		const head = this.#chunks[this.#head];
+		if (head && this.#headOffset + offset + 2 <= head.byteLength) {
+			return head.readUInt16BE(this.#headOffset + offset);
+		}
+		return (this.peekByte(offset) << 8) | this.peekByte(offset + 1);
+	}
+
+	readUInt32BE(offset: number): number {
+		const head = this.#chunks[this.#head];
+		if (head && this.#headOffset + offset + 4 <= head.byteLength) {
+			return head.readUInt32BE(this.#headOffset + offset);
+		}
+		return (
+			(((this.peekByte(offset) << 24) >>> 0) |
+				(this.peekByte(offset + 1) << 16) |
+				(this.peekByte(offset + 2) << 8) |
+				this.peekByte(offset + 3)) >>>
+			0
+		);
+	}
+
+	consume(count: number): void {
+		let remaining = count;
+		this.#bytes -= count;
+		while (remaining > 0) {
+			const chunk = this.#chunks[this.#head]!;
+			const available = chunk.byteLength - this.#headOffset;
+			if (remaining < available) {
+				this.#headOffset += remaining;
+				return;
+			}
+			remaining -= available;
+			this.#head += 1;
+			this.#headOffset = 0;
+		}
+		this.#compact();
+	}
+
+	take(skip: number, length: number): { readonly payload: Buffer; readonly owned: boolean } {
+		if (skip > 0) this.consume(skip);
+		if (length === 0) return { payload: EMPTY_BUFFER, owned: true };
+		const first = this.#chunks[this.#head]!;
+		const available = first.byteLength - this.#headOffset;
+		if (length <= available) {
+			const start = this.#headOffset;
+			const payload = first.subarray(start, start + length);
+			this.#bytes -= length;
+			if (length === available) {
+				this.#head += 1;
+				this.#headOffset = 0;
+				this.#compact();
+			} else {
+				this.#headOffset += length;
+			}
+			return { payload, owned: false };
+		}
+		const out = Buffer.allocUnsafe(length);
+		let written = 0;
+		while (written < length) {
+			const chunk = this.#chunks[this.#head]!;
+			const chunkAvail = chunk.byteLength - this.#headOffset;
+			const takeBytes = Math.min(length - written, chunkAvail);
+			chunk.copy(out, written, this.#headOffset, this.#headOffset + takeBytes);
+			written += takeBytes;
+			this.#bytes -= takeBytes;
+			if (takeBytes === chunkAvail) {
+				this.#head += 1;
+				this.#headOffset = 0;
+			} else {
+				this.#headOffset += takeBytes;
+			}
+		}
+		this.#compact();
+		return { payload: out, owned: true };
+	}
+
+	clear(): void {
+		this.#chunks = [];
+		this.#head = 0;
+		this.#headOffset = 0;
+		this.#bytes = 0;
+	}
+
+	#compact(): void {
+		if (this.#head === this.#chunks.length) {
+			this.#chunks.length = 0;
+			this.#head = 0;
+			this.#headOffset = 0;
+		} else if (this.#head >= 32 && this.#head * 2 >= this.#chunks.length) {
+			this.#chunks = this.#chunks.slice(this.#head);
+			this.#head = 0;
+		}
+	}
+}
 
 export interface NodeWebSocketHandlers {
 	/** One complete text message. */
@@ -29,10 +160,11 @@ export interface NodeWebSocketOptions {
 export class NodeWebSocket {
 	readonly #socket: Socket;
 	readonly #handlers: NodeWebSocketHandlers;
-	#buffer: Buffer = Buffer.alloc(0);
+	readonly #queue = new ReceiveQueue();
 	#fragments: Buffer[] = [];
 	#fragmentBytes = 0;
 	#fragmentOpcode = 0;
+	#closeTimer: ReturnType<typeof setTimeout> | undefined;
 	#closing = false;
 	#closed = false;
 
@@ -43,7 +175,13 @@ export class NodeWebSocket {
 		socket.setNoDelay(true);
 		socket.on("data", (chunk: Buffer) => this.#receive(chunk));
 		socket.on("error", (error: Error) => this.#end(`WebSocket connection failed: ${error.message}`));
-		socket.once("close", () => this.#end("WebSocket connection closed"));
+		socket.once("close", () => {
+			if (this.#closeTimer !== undefined) {
+				clearTimeout(this.#closeTimer);
+				this.#closeTimer = undefined;
+			}
+			this.#end("WebSocket connection closed");
+		});
 	}
 
 	/** Opens `ws:` or `wss:` `url`. Rejects when the handshake is refused, fails, takes longer than `timeoutMs` or is
@@ -158,40 +296,70 @@ export class NodeWebSocket {
 			// The socket is already gone; ending it below is enough.
 		}
 		this.#socket.end();
-		setTimeout(() => this.#socket.destroy(), CLOSE_GRACE_MS).unref();
+		if (!this.#socket.destroyed && this.#closeTimer === undefined) {
+			this.#closeTimer = setTimeout(() => {
+				this.#closeTimer = undefined;
+				this.#socket.destroy();
+			}, CLOSE_GRACE_MS);
+			this.#closeTimer.unref();
+		}
 	}
 
 	/** Writes one masked frame; false when the socket's write buffer is past its high-water mark. */
 	#write(opcode: number, payload: Buffer): boolean {
 		const length = payload.byteLength;
-		const header = Buffer.alloc(length < 126 ? 2 : length < 65_536 ? 4 : 10);
-		header[0] = 0x80 | opcode;
-		if (length < 126) header[1] = 0x80 | length;
-		else if (length < 65_536) {
-			header[1] = 0x80 | 126;
-			header.writeUInt16BE(length, 2);
-		} else {
-			header[1] = 0x80 | 127;
-			header.writeUInt32BE(0, 2);
-			header.writeUInt32BE(length, 6);
+		randomFillSync(MASK_SCRATCH);
+		const m0 = MASK_SCRATCH[0]!;
+		const m1 = MASK_SCRATCH[1]!;
+		const m2 = MASK_SCRATCH[2]!;
+		const m3 = MASK_SCRATCH[3]!;
+		if (length < 126) {
+			const frame = Buffer.allocUnsafe(6 + length);
+			frame[0] = 0x80 | opcode;
+			frame[1] = 0x80 | length;
+			frame[2] = m0;
+			frame[3] = m1;
+			frame[4] = m2;
+			frame[5] = m3;
+			for (let index = 0; index < length; index++) frame[6 + index] = payload[index]! ^ MASK_SCRATCH[index & 3]!;
+			return this.#socket.write(frame);
 		}
-		const mask = randomBytes(4);
-		// Masked four bytes at a time (a fresh buffer is 4-byte aligned): under --jitless this loop is most of what a
-		// long input costs.
-		const masked = Buffer.allocUnsafeSlow(length);
-		payload.copy(masked);
-		const words = new Uint32Array(masked.buffer, masked.byteOffset, length >>> 2);
-		const key = new Uint32Array(Uint8Array.from(mask).buffer)[0]!;
+		const headerLen = length < 65_536 ? 4 : 10;
+		const payloadOffset = headerLen + 4;
+		// WHY: a 10-byte header + 4-byte mask places the payload at offset 14 (2 mod 4); shifting the frame 2 bytes into
+		// a fresh unpooled buffer aligns the payload on a 4-byte boundary for 32-bit XOR under --jitless without copying.
+		const alignPad = (4 - (payloadOffset & 3)) & 3;
+		const raw = Buffer.allocUnsafeSlow(alignPad + payloadOffset + length);
+		const frame = alignPad === 0 ? raw : raw.subarray(alignPad);
+		frame[0] = 0x80 | opcode;
+		if (headerLen === 4) {
+			frame[1] = 0x80 | 126;
+			frame.writeUInt16BE(length, 2);
+		} else {
+			frame[1] = 0x80 | 127;
+			frame.writeUInt32BE(0, 2);
+			frame.writeUInt32BE(length, 6);
+		}
+		frame[headerLen] = m0;
+		frame[headerLen + 1] = m1;
+		frame[headerLen + 2] = m2;
+		frame[headerLen + 3] = m3;
+		payload.copy(frame, payloadOffset);
+		const words = new Uint32Array(raw.buffer, alignPad + payloadOffset, length >>> 2);
+		const key = MASK_WORD[0]!;
 		for (let index = 0; index < words.length; index++) words[index] = words[index]! ^ key;
-		for (let index = words.length * 4; index < length; index++) masked[index] = masked[index]! ^ mask[index & 3]!;
-		return this.#socket.write(Buffer.concat([header, mask, masked]));
+		for (let index = words.length * 4; index < length; index++) {
+			frame[payloadOffset + index] = frame[payloadOffset + index]! ^ MASK_SCRATCH[index & 3]!;
+		}
+		return this.#socket.write(frame);
 	}
 
 	#receive(chunk: Buffer): void {
-		this.#buffer = this.#buffer.byteLength > 0 ? Buffer.concat([this.#buffer, chunk]) : chunk;
-		while (!this.#closed && this.#buffer.byteLength >= 2) {
-			const first = this.#buffer[0]!;
-			const second = this.#buffer[1]!;
+		if (this.#closed) return;
+		this.#queue.push(chunk);
+		while (!this.#closed && this.#queue.byteLength >= 2) {
+			const first = this.#queue.peekByte(0);
+			const second = this.#queue.peekByte(1);
 			const final = (first & 0x80) !== 0;
 			const opcode = first & 0x0f;
 			// Reserved bits (no extension is negotiated) and masked server frames are protocol errors.
@@ -202,25 +370,24 @@ export class NodeWebSocket {
 			let length = second & 0x7f;
 			let offset = 2;
 			if (length === 126) {
-				if (this.#buffer.byteLength < 4) return;
-				length = this.#buffer.readUInt16BE(2);
+				if (this.#queue.byteLength < 4) return;
+				length = this.#queue.readUInt16BE(2);
 				offset = 4;
 			} else if (length === 127) {
-				if (this.#buffer.byteLength < 10) return;
-				if (this.#buffer.readUInt32BE(2) !== 0) {
+				if (this.#queue.byteLength < 10) return;
+				if (this.#queue.readUInt32BE(2) !== 0) {
 					this.#fail("WebSocket frame is too large");
 					return;
 				}
-				length = this.#buffer.readUInt32BE(6);
+				length = this.#queue.readUInt32BE(6);
 				offset = 10;
 			}
 			if (length > MAX_MESSAGE_BYTES) {
 				this.#fail("WebSocket frame is too large");
 				return;
 			}
-			if (this.#buffer.byteLength < offset + length) return;
-			const payload = this.#buffer.subarray(offset, offset + length);
-			this.#buffer = this.#buffer.subarray(offset + length);
+			if (this.#queue.byteLength < offset + length) return;
+			const { payload, owned } = this.#queue.take(offset, length);
 			if (opcode >= 0x8) {
 				if (!final || length > 125) {
 					this.#fail("WebSocket control frame is invalid");
@@ -252,19 +419,26 @@ export class NodeWebSocket {
 				this.#fail("WebSocket message is too large");
 				return;
 			}
-			this.#fragments.push(Buffer.from(payload));
-			if (!final) continue;
-			const message = Buffer.concat(this.#fragments);
+			let message: Buffer;
+			let messageOwned = owned;
+			if (this.#fragments.length === 0 && final) {
+				message = payload;
+			} else {
+				this.#fragments.push(owned ? payload : Buffer.from(payload));
+				if (!final) continue;
+				message = Buffer.concat(this.#fragments, this.#fragmentBytes);
+				messageOwned = true;
+				this.#fragments = [];
+			}
 			const text = this.#fragmentOpcode === 0x1;
-			this.#fragments = [];
 			this.#fragmentBytes = 0;
 			if (!text) {
-				this.#handlers.binary?.(message);
+				if (this.#handlers.binary) this.#handlers.binary(messageOwned ? message : Buffer.from(message));
 				continue;
 			}
 			let decoded: string;
 			try {
-				decoded = new TextDecoder("utf-8", { fatal: true }).decode(message);
+				decoded = UTF8_FATAL_DECODER.decode(message);
 			} catch {
 				this.#fail("WebSocket text is not UTF-8");
 				return;
@@ -281,6 +455,9 @@ export class NodeWebSocket {
 	#end(reason: string): void {
 		if (this.#closed) return;
 		this.#closed = true;
+		this.#queue.clear();
+		this.#fragments = [];
+		this.#fragmentBytes = 0;
 		this.#handlers.close(reason);
 	}
 }
