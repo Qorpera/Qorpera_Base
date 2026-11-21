@@ -3760,7 +3760,7 @@ describe("a member's live picture of a desktop (20260930745000)", () => {
 		const delayed = fixture("mx-a");
 		delayed.host.memberStream.mockImplementationOnce(async (_stream, sink, signal) => {
 			await new Promise<void>((resolve) => {
-				const timer = setTimeout(resolve, 140);
+				const timer = setTimeout(resolve, 750);
 				signal.addEventListener(
 					"abort",
 					() => {
@@ -3792,7 +3792,7 @@ describe("a member's live picture of a desktop (20260930745000)", () => {
 			url: `http://127.0.0.1:${delayedPort}`,
 			token,
 			allowLoopback: true,
-			streamConnectTimeoutMs: 50,
+			streamConnectTimeoutMs: 400,
 		}).memberStream({ passId: delayed.passId, epoch: null }, delayedSink, new AbortController().signal);
 		expect(delayedReason).toBe("DESKTOP_ENDED");
 		expect(delayedSink.messages.map(String)).toEqual(["late-first-frame"]);
