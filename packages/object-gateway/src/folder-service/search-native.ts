@@ -387,7 +387,11 @@ export class NativeSearchWorker {
 			if (inflight) {
 				try {
 					const synced = await inflight;
-					if (synced.generation === this.#generation && synced.snapshotId !== missedSnapshotId && !synced.retired) {
+					if (
+						synced.generation === this.#generation &&
+						synced.snapshotId !== missedSnapshotId &&
+						!synced.retired
+					) {
 						synced.inUse++;
 						return synced;
 					}
