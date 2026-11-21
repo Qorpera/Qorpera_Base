@@ -44,6 +44,7 @@ const OPERATION_KEY = /^[A-Za-z0-9._:-]{8,200}$/;
 const MEDIA_TYPE = /^[a-z0-9!#$&^_.+-]{1,127}\/[a-z0-9!#$&^_.+-]{1,127}$/;
 /** The commit's bound on units in one change set. */
 const MAX_UNITS = 1000;
+const STAGE_CONCURRENCY = 4;
 /** One listing page. SQL accepts up to 1000. An entry with its receipt is about 550 bytes plus its path (at most
  * 4096, twice that escaped) and a link's target (at most 4095, six times that escaped): about 33 KB, so 200 fit the
  * control's 8 MiB bound for listings. */
@@ -2511,34 +2512,54 @@ export class CloudCompanyFolderClient {
 		}
 	}
 
-	/** Stages one file's bytes once per commit (per content, media type and bit) and returns its reference, checked
-	 * against the bytes. */
-	async #stage(
-		file: PlannedFile,
-		staged: Map<string, CloudFileReference>,
+	async #stageUnique(file: PlannedFile, hash: string, signal: AbortSignal): Promise<CloudFileReference> {
+		const reference = await this.#bytes.put(file.bytes, file.mediaType, file.executable, signal);
+		if (
+			!SHA.test(reference.manifestSha256) ||
+			reference.fileSha256 !== hash ||
+			reference.bytes !== file.bytes.byteLength ||
+			reference.mediaType !== file.mediaType
+		)
+			throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder bytes were stored differently");
+		return reference;
+	}
+
+	async #stageAll(
+		items: readonly { readonly key: string; readonly hash: string; readonly file: PlannedFile }[],
 		signal: AbortSignal,
-	): Promise<CloudCompanyFolderFile> {
-		const hash = sha256(file.bytes);
-		const key = `${hash}:${file.mediaType}:${file.executable}`;
-		let reference = staged.get(key);
-		if (!reference) {
-			reference = await this.#bytes.put(file.bytes, file.mediaType, file.executable, signal);
-			if (
-				!SHA.test(reference.manifestSha256) ||
-				reference.fileSha256 !== hash ||
-				reference.bytes !== file.bytes.byteLength ||
-				reference.mediaType !== file.mediaType
-			)
-				throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder bytes were stored differently");
-			staged.set(key, reference);
+	): Promise<Map<string, CloudFileReference>> {
+		const staged = new Map<string, CloudFileReference>();
+		if (items.length === 0) return staged;
+		if (items.length === 1 || signal.aborted) {
+			const item = items[0]!;
+			staged.set(item.key, await this.#stageUnique(item.file, item.hash, signal));
+			if (items.length === 1) return staged;
 		}
-		return {
-			manifestSha256: reference.manifestSha256,
-			fileSha256: reference.fileSha256,
-			bytes: reference.bytes,
-			mediaType: file.mediaType,
-			executable: file.executable,
+		const abort = new AbortController();
+		const stageSignal = AbortSignal.any([signal, abort.signal]);
+		let cursor = 0;
+		let firstError: unknown;
+		let failed = false;
+		const worker = async (): Promise<void> => {
+			while (!failed) {
+				const index = cursor++;
+				if (index >= items.length) return;
+				const item = items[index]!;
+				try {
+					staged.set(item.key, await this.#stageUnique(item.file, item.hash, stageSignal));
+				} catch (error) {
+					if (!failed) {
+						failed = true;
+						firstError = error;
+						abort.abort();
+					}
+					return;
+				}
+			}
 		};
+		await Promise.allSettled(Array.from({ length: Math.min(STAGE_CONCURRENCY, items.length) }, () => worker()));
+		if (failed) throw firstError;
+		return staged;
 	}
 
 	/** Commits one change set as the run (core §3): it stages the units (see `stage`), then commits them as
@@ -2687,11 +2708,41 @@ export class CloudCompanyFolderClient {
 		if (!Array.isArray(units) || units.length < 1 || units.length > MAX_UNITS)
 			throw new Error("Invalid Company folder change set");
 		const plans = units.map(plan);
-		const staged = new Map<string, CloudFileReference>();
+		const unique: { readonly key: string; readonly hash: string; readonly file: PlannedFile }[] = [];
+		const seen = new Set<string>();
+		const fileKeys = new Map<PlannedFile, string>();
+		const track = (file: PlannedFile): void => {
+			const hash = sha256(file.bytes);
+			const key = `${hash}:${file.mediaType}:${file.executable}`;
+			fileKeys.set(file, key);
+			if (!seen.has(key)) {
+				seen.add(key);
+				unique.push({ key, hash, file });
+			}
+		};
+		for (const unit of plans) {
+			if (unit.op === "write") track(unit.file);
+			else if (unit.op === "new_folder") {
+				for (const item of unit.contents) {
+					if ("file" in item) track(item.file);
+				}
+			}
+		}
+		const staged = await this.#stageAll(unique, signal);
+		const fileOf = (file: PlannedFile): CloudCompanyFolderFile => {
+			const reference = staged.get(fileKeys.get(file)!)!;
+			return {
+				manifestSha256: reference.manifestSha256,
+				fileSha256: reference.fileSha256,
+				bytes: reference.bytes,
+				mediaType: file.mediaType,
+				executable: file.executable,
+			};
+		};
 		const sent: Record<string, unknown>[] = [];
 		for (const unit of plans) {
 			if (unit.op === "write") {
-				const file = await this.#stage(unit.file, staged, signal);
+				const file = fileOf(unit.file);
 				const entry = structured(unit.file.path, unit.file.bytes);
 				sent.push({ ...unit.sql, file, ...(entry ? { structured: [entry] } : {}) });
 			} else if (unit.op === "new_folder") {
@@ -2702,7 +2753,7 @@ export class CloudCompanyFolderClient {
 						contents.push({ path: item.path, kind: "folder" });
 						continue;
 					}
-					contents.push({ path: item.path, kind: "file", file: await this.#stage(item.file, staged, signal) });
+					contents.push({ path: item.path, kind: "file", file: fileOf(item.file) });
 					const entry = structured(item.file.path, item.file.bytes);
 					if (entry) entries.push(entry);
 				}

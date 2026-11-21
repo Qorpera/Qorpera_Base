@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { CloudFileReference } from "@qorpera/cloud-client/node/cloud-object-store";
 import { isUuid, parseClosedRecord, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import {
@@ -30,6 +31,8 @@ import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 const CHUNK_BYTES = 4 * 1024 * 1024;
 const MAX_CHUNKS = 64;
 const MAX_MANIFEST_BYTES = 32 * 1024;
+const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const CHUNK_CONCURRENCY = 4;
 /** An open intent lasts 15 minutes; a long upload renews it before that. */
 const RENEW_AFTER_MS = 10 * 60 * 1000;
 /** A busy gateway (503) is asked twice more, after a short random wait: meant for its NAS lanes, two operations in
@@ -66,19 +69,36 @@ function answer(value: unknown, keys: readonly string[]): Record<string, unknown
 	}
 }
 
+function requestBody(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
+	return bytes.buffer instanceof ArrayBuffer
+		? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+		: Uint8Array.from(bytes);
+}
+
 /** The canonical version-2 manifest of a file: keys in this order, no spaces, so the same file, media type and bit
  * always give the same manifest hash, and a retried commit sends the same reference. */
 function manifestOf(bytes: Uint8Array, mediaType: string, executable: boolean): { manifest: Manifest; text: string } {
 	if (bytes.byteLength > MAX_CHUNKS * CHUNK_BYTES)
 		throw new CloudRuntimeDiagnosticError("invalid_arguments", "Company folder file is larger than 256 MiB");
+	let fileSha256: string;
 	const chunks: { sha256: string; bytes: number }[] = [];
-	for (let offset = 0; offset < bytes.byteLength; offset += CHUNK_BYTES) {
-		const chunk = bytes.subarray(offset, Math.min(offset + CHUNK_BYTES, bytes.byteLength));
-		chunks.push({ sha256: sha256(chunk), bytes: chunk.byteLength });
+	if (bytes.byteLength === 0) {
+		fileSha256 = EMPTY_SHA256;
+	} else if (bytes.byteLength <= CHUNK_BYTES) {
+		fileSha256 = sha256(bytes);
+		chunks.push({ sha256: fileSha256, bytes: bytes.byteLength });
+	} else {
+		const whole = createHash("sha256");
+		for (let offset = 0; offset < bytes.byteLength; offset += CHUNK_BYTES) {
+			const chunk = bytes.subarray(offset, Math.min(offset + CHUNK_BYTES, bytes.byteLength));
+			whole.update(chunk);
+			chunks.push({ sha256: sha256(chunk), bytes: chunk.byteLength });
+		}
+		fileSha256 = whole.digest("hex");
 	}
 	const manifest: Manifest = {
 		schema: "qorpera.cloud-file-manifest/v2",
-		fileSha256: sha256(bytes),
+		fileSha256,
 		bytes: bytes.byteLength,
 		mediaType,
 		executable,
@@ -278,7 +298,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 			hash,
 			{
 				method: "PUT",
-				body: Uint8Array.from(object),
+				body: requestBody(object),
 				headers: {
 					"content-type": "application/octet-stream",
 					"content-length": String(object.byteLength),
@@ -304,19 +324,85 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 			invalid();
 	}
 
+	async #fetchChunks(
+		items: readonly { readonly sha256: string; readonly bytes: number }[],
+		signal: AbortSignal,
+	): Promise<Map<string, Uint8Array>> {
+		const unique = new Map<string, number>();
+		for (const item of items) {
+			const expected = unique.get(item.sha256);
+			if (expected === undefined) unique.set(item.sha256, item.bytes);
+			else if (expected !== item.bytes) invalid();
+		}
+		const entries = [...unique.entries()];
+		const fetched = new Map<string, Uint8Array>();
+		if (entries.length === 0) return fetched;
+		if (entries.length === 1 || signal.aborted) {
+			const [hash, expectedBytes] = entries[0]!;
+			const part = await this.#fetchObject(hash, expectedBytes, signal);
+			if (part.byteLength !== expectedBytes) invalid();
+			fetched.set(hash, part);
+			if (entries.length === 1) return fetched;
+		}
+		const abort = new AbortController();
+		const fetchSignal = AbortSignal.any([signal, abort.signal]);
+		let cursor = 0;
+		let firstError: unknown;
+		let failed = false;
+		const worker = async (): Promise<void> => {
+			while (!failed) {
+				const index = cursor++;
+				if (index >= entries.length) return;
+				const [hash, expectedBytes] = entries[index]!;
+				try {
+					const part = await this.#fetchObject(hash, expectedBytes, fetchSignal);
+					if (part.byteLength !== expectedBytes) invalid();
+					fetched.set(hash, part);
+				} catch (error) {
+					if (!failed) {
+						failed = true;
+						firstError = error;
+						abort.abort();
+					}
+					return;
+				}
+			}
+		};
+		await Promise.allSettled(Array.from({ length: Math.min(CHUNK_CONCURRENCY, entries.length) }, () => worker()));
+		if (failed) throw firstError;
+		return fetched;
+	}
+
 	/** A file's bytes: its manifest, then each chunk, each checked against its hash and the file's reference. */
 	async get(file: CloudCompanyFolderFile, signal: AbortSignal): Promise<Uint8Array> {
 		const chunks = await this.#chunks(file, signal);
-		const bytes = Buffer.allocUnsafe(file.bytes);
-		let offset = 0;
-		for (const chunk of chunks) {
+		if (chunks.length === 0) {
+			if (file.fileSha256 !== EMPTY_SHA256)
+				throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder bytes do not match their entry");
+			return new Uint8Array(0);
+		}
+		if (chunks.length === 1) {
+			const chunk = chunks[0]!;
 			const part = await this.#fetchObject(chunk.sha256, chunk.bytes, signal);
 			if (part.byteLength !== chunk.bytes) invalid();
+			// WHY: #fetchObject already verified sha256(part) === chunk.sha256, so a single chunk needs no second hash or copy.
+			if (chunk.sha256 !== file.fileSha256)
+				throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder bytes do not match their entry");
+			return part;
+		}
+		const fetched = await this.#fetchChunks(chunks, signal);
+		const bytes = Buffer.allocUnsafe(file.bytes);
+		const whole = createHash("sha256");
+		let offset = 0;
+		for (const chunk of chunks) {
+			const part = fetched.get(chunk.sha256);
+			if (!part || part.byteLength !== chunk.bytes) invalid();
 			bytes.set(part, offset);
+			whole.update(part);
 			offset += part.byteLength;
 		}
 		// The chunks are the manifest's; the manifest's fileSha256 is only its writer's word.
-		if (sha256(bytes) !== file.fileSha256)
+		if (whole.digest("hex") !== file.fileSha256)
 			throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder bytes do not match their entry");
 		return bytes;
 	}
@@ -331,18 +417,23 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 		if (offset >= end) return new Uint8Array();
 		if (offset === 0 && end === file.bytes) return this.get(file, signal);
 		const chunks = await this.#chunks(file, signal);
-		const bytes = Buffer.allocUnsafe(end - offset);
+		const needed: { readonly sha256: string; readonly bytes: number; readonly position: number }[] = [];
 		let position = 0;
 		for (const chunk of chunks) {
 			if (position < end && position + chunk.bytes > offset) {
-				const part = await this.#fetchObject(chunk.sha256, chunk.bytes, signal);
-				if (part.byteLength !== chunk.bytes) invalid();
-				bytes.set(
-					part.subarray(Math.max(0, offset - position), Math.min(chunk.bytes, end - position)),
-					Math.max(0, position - offset),
-				);
+				needed.push({ sha256: chunk.sha256, bytes: chunk.bytes, position });
 			}
 			position += chunk.bytes;
+		}
+		const fetched = await this.#fetchChunks(needed, signal);
+		const bytes = Buffer.allocUnsafe(end - offset);
+		for (const item of needed) {
+			const part = fetched.get(item.sha256);
+			if (!part || part.byteLength !== item.bytes) invalid();
+			bytes.set(
+				part.subarray(Math.max(0, offset - item.position), Math.min(item.bytes, end - item.position)),
+				Math.max(0, item.position - offset),
+			);
 		}
 		return bytes;
 	}
@@ -492,7 +583,10 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 					}
 					requestSignal.throwIfAborted();
 					if (declared !== null && count !== Number(declared)) invalid();
-					return { status: response.status, body: Buffer.concat(chunks, count) };
+					return {
+						status: response.status,
+						body: chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, count),
+					};
 				} finally {
 					requestSignal.removeEventListener("abort", cancel);
 					cancel();

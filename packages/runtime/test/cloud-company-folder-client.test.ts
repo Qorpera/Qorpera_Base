@@ -2930,4 +2930,76 @@ describe("the company's code: an import and how it stands (20260930736000)", () 
 			expect(read.look?.branches).toEqual(sent.branches);
 		}
 	});
+
+	it("stages distinct files concurrently up to the cap while coalescing duplicates and aborting siblings on failure", async () => {
+		const { client, bytes } = fixture(() => ({}));
+		let inFlight = 0;
+		let peak = 0;
+		vi.mocked(bytes.put).mockImplementation(async (data, mediaType) => {
+			inFlight++;
+			peak = Math.max(peak, inFlight);
+			await new Promise((resolve) => setTimeout(resolve, 15));
+			inFlight--;
+			return {
+				manifestSha256: sha(`manifest:${sha(data)}`),
+				fileSha256: sha(data),
+				bytes: data.byteLength,
+				mediaType,
+			};
+		});
+		const units = [
+			...Array.from({ length: 10 }, (_, i) => ({
+				op: "write" as const,
+				path: `batch/file-${i}.txt`,
+				content: { text: `content-${i}` },
+			})),
+			{
+				op: "new_folder" as const,
+				path: "batch/sub",
+				contents: [
+					{ path: "dup.txt", kind: "file" as const, content: { text: "content-0" } },
+					{ path: "extra.txt", kind: "file" as const, content: { text: "extra-content" } },
+				],
+			},
+		];
+		const staged = await client.stage(units, signal());
+		expect(staged.unitCount).toBe(11);
+		expect(bytes.put).toHaveBeenCalledTimes(11);
+		expect(peak).toBe(4);
+		let abortedSiblings = 0;
+		vi.mocked(bytes.put).mockImplementation(async (data, mediaType, _exec, putSignal) => {
+			const text = new TextDecoder().decode(data);
+			if (text === "fail-me") throw new Error("boom");
+			return await new Promise<CloudFileReference>((resolve, reject) => {
+				const timer = setTimeout(() => {
+					resolve({
+						manifestSha256: sha(`manifest:${sha(data)}`),
+						fileSha256: sha(data),
+						bytes: data.byteLength,
+						mediaType,
+					});
+				}, 500);
+				putSignal.addEventListener(
+					"abort",
+					() => {
+						clearTimeout(timer);
+						abortedSiblings++;
+						reject(putSignal.reason ?? new Error("aborted"));
+					},
+					{ once: true },
+				);
+			});
+		});
+		await expect(
+			client.stage(
+				[
+					{ op: "write", path: "a.txt", content: { text: "slow-1" } },
+					{ op: "write", path: "b.txt", content: { text: "fail-me" } },
+					{ op: "write", path: "c.txt", content: { text: "slow-2" } },
+				],
+				signal(),
+			),
+		).rejects.toThrow("boom");
+		expect(abortedSiblings).toBeGreaterThanOrEqual(1);
+	});
 });

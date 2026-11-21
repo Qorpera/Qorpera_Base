@@ -326,6 +326,7 @@ async function fixture(options: { upperCaseBinding?: boolean; productionCircuit?
 		replication,
 		gatewayCalls,
 		environmentId,
+		identity: { ...f.authority.identity, runId: binding.runId, jobId: binding.jobId },
 		actor: JSON.parse(actor) as Record<string, string>,
 		slowRequests(minutes: number) {
 			requestMinutes = minutes;
@@ -783,4 +784,57 @@ it("reads a body cut off after its headers as a lost answer, and a cancel while 
 	await new Promise((resolve) => setTimeout(resolve, 20));
 	abort.abort();
 	await expect(pending).rejects.toMatchObject({ category: "cancelled" });
+});
+
+it("fetches multi-chunk files and ranges concurrently up to the cap and deduplicates identical chunks", async () => {
+	const { bytes, sql, origin, token, binding, holder, control, identity } = await fixture();
+	const repeated = randomBytes(4 * 1024 * 1024);
+	const tail = randomBytes(1024 * 1024);
+	const content = Buffer.concat([
+		repeated,
+		repeated,
+		randomBytes(4 * 1024 * 1024),
+		randomBytes(4 * 1024 * 1024),
+		tail,
+	]);
+	const sig = new AbortController().signal;
+	const ref = await bytes.put(content, "application/octet-stream", false, sig);
+	sql.readable.add(ref.manifestSha256);
+	let inFlight = 0;
+	let peak = 0;
+	let chunkGets = 0;
+	const tracked = new HttpCloudCompanyFolderBytes({
+		baseUrl: origin,
+		token,
+		binding,
+		holder: () => holder,
+		identity,
+		control,
+		fetch: async (input, init) => {
+			const url = String(input);
+			const isChunk = !url.endsWith(`/${ref.manifestSha256}`);
+			if (isChunk) {
+				chunkGets++;
+				inFlight++;
+				peak = Math.max(peak, inFlight);
+				await new Promise((resolve) => setTimeout(resolve, 20));
+			}
+			try {
+				return await fetch(input, init);
+			} finally {
+				if (isChunk) inFlight--;
+			}
+		},
+	});
+	const file = { ...ref, executable: false };
+	const full = await tracked.get(file, sig);
+	expect(Buffer.from(full).equals(content)).toBe(true);
+	expect(chunkGets).toBe(4);
+	expect(peak).toBe(4);
+	peak = 0;
+	chunkGets = 0;
+	const slice = await tracked.range(file, 4 * 1024 * 1024 - 8, 12 * 1024 * 1024 + 16, sig);
+	expect(Buffer.from(slice).equals(content.subarray(4 * 1024 * 1024 - 8, 16 * 1024 * 1024 + 8))).toBe(true);
+	expect(chunkGets).toBe(4);
+	expect(peak).toBe(4);
 });
