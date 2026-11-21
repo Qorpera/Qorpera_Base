@@ -2363,4 +2363,134 @@ describe("AppBridge database actions (qorpera.act)", () => {
 		});
 		company.abort();
 	});
+
+	it("prevents inFlight leaks across minute rollovers, blocks DAG/circular/BigInt DoS, serializes concurrent acts, and truncates oversized post-commit rows", async () => {
+		const company = new AbortController();
+		const sha = "c".repeat(64);
+		let previewCount = 0;
+		let releasePreview: (() => void) | undefined;
+		let changeMode: "huge" | "drop" = "huge";
+		const client: CompanyDataClient = {
+			query: async () => ({ columns: [], rows: [], more: false, etag: "e", asOf: "2026-11-21T12:00:00.000Z" }),
+			watch: async () => ({ same: true }),
+			previewChange: async () => {
+				previewCount++;
+				if (releasePreview === undefined && previewCount === 1) {
+					await new Promise<void>((resolve) => {
+						releasePreview = resolve;
+					});
+				}
+				return {
+					words: ["Run change"],
+					values: [],
+					sha256: sha,
+				};
+			},
+			change: async () => {
+				if (changeMode === "drop") throw new TypeError("fetch failed");
+				return {
+					changed: 400,
+					columns: ["id", "payload"],
+					rows: Array.from({ length: 400 }, (_, i) => [i + 1, "x".repeat(4_000)]),
+					more: false,
+					asOf: "2026-11-21T12:00:00.000Z",
+				};
+			},
+		};
+		const data = new CompanyData(() => client, company.signal);
+		const key = crypto.randomUUID();
+		const bridge = new AppBridge(
+			{ folder: () => fakeFolder({}), agents: () => [], data },
+			makeApp(["data:shop/add-item"]),
+			key,
+			company.signal,
+			{
+				closed: () => null,
+				ask: async () => ({ outcome: "declined" }),
+				askData: async (_ask, perform) => {
+					try {
+						return { outcome: "saved", result: await perform() };
+					} catch (error) {
+						return { outcome: "failed", message: error instanceof Error ? error.message : "failed" };
+					}
+				},
+			},
+		);
+
+		let dag: unknown = { a: "0123456789" };
+		for (let i = 0; i < 16; i++) dag = [dag, dag, dag, dag];
+		expect(await bridge.answer({ method: "act", params: { name: "shop/add-item", params: { dag } } })).toEqual({
+			ok: false,
+			error: "Not a call the app answers",
+		});
+		const cyclic: Record<string, unknown> = {};
+		cyclic.self = cyclic;
+		expect(await bridge.answer({ method: "act", params: { name: "shop/add-item", params: cyclic } })).toEqual({
+			ok: false,
+			error: "Not a call the app answers",
+		});
+		expect(await bridge.answer({ method: "act", params: { name: "shop/add-item", params: { n: 1n } } })).toEqual({
+			ok: false,
+			error: "Not a call the app answers",
+		});
+
+		const first = bridge.answer({ method: "act", params: { name: "shop/add-item", params: { sku: "1" } } });
+		const second = await bridge.answer({ method: "act", params: { name: "shop/add-item", params: { sku: "2" } } });
+		expect(second).toEqual({ ok: false, error: "Another request is waiting for the member's answer" });
+		expect(previewCount).toBe(1);
+		releasePreview?.();
+		const firstRes = await first;
+		expect(firstRes.ok).toBe(true);
+		if (firstRes.ok) {
+			const value = firstRes.value as { changed: number; more: boolean; rows: unknown[] };
+			expect(value.changed).toBe(400);
+			expect(value.more).toBe(true);
+			expect(value.rows.length).toBeGreaterThan(0);
+			expect(value.rows.length).toBeLessThan(400);
+		}
+
+		changeMode = "drop";
+		const dropped = await bridge.answer({ method: "act", params: { name: "shop/add-item", params: { sku: "3" } } });
+		expect(dropped.ok).toBe(false);
+		if (!dropped.ok) expect(dropped.error).toContain("Check before trying again");
+
+		const nowSpy = vi.spyOn(Date, "now");
+		try {
+			let clock = 60_000 * 100;
+			nowSpy.mockImplementation(() => clock);
+			for (let round = 0; round < 10; round++) {
+				let finishSlow: (() => void) | undefined;
+				const slowClient: CompanyDataClient = {
+					query: async () => {
+						await new Promise<void>((resolve) => {
+							finishSlow = resolve;
+						});
+						return { columns: [], rows: [], more: false, etag: "e", asOf: "2026-11-21T12:00:00.000Z" };
+					},
+					watch: async () => ({ same: true }),
+				};
+				const slowBridge = new AppBridge(
+					{
+						folder: () => fakeFolder({}),
+						agents: () => [],
+						data: new CompanyData(() => slowClient, company.signal),
+					},
+					makeApp([]),
+					key,
+					company.signal,
+				);
+				const pending = slowBridge.answer({ method: "query", params: { name: "shop/q", params: {} } });
+				clock += 60_000;
+				const probe = slowBridge.answer({ method: "agents", params: {} });
+				finishSlow?.();
+				await Promise.all([pending, probe]);
+			}
+			const afterRollovers = await bridge.answer({ method: "agents", params: {} });
+			expect(afterRollovers.ok).toBe(false);
+			if (!afterRollovers.ok) expect(afterRollovers.error).not.toContain("Too many calls");
+		} finally {
+			nowSpy.mockRestore();
+		}
+		company.abort();
+	});
 });

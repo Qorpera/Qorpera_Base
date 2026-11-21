@@ -929,11 +929,61 @@ const told = new Map<string, number>();
 function budget(key: string): { inFlight: number; minute: number; calls: number } {
 	const now = Math.floor(Date.now() / 60_000);
 	let entry = budgets.get(key);
-	if (!entry || entry.minute !== now) {
-		entry = { inFlight: entry?.inFlight ?? 0, minute: now, calls: 0 };
+	if (!entry) {
+		entry = { inFlight: 0, minute: now, calls: 0 };
 		budgets.set(key, entry);
+	} else if (entry.minute !== now) {
+		entry.minute = now;
+		entry.calls = 0;
 	}
 	return entry;
+}
+
+function withinParamBudget(
+	value: unknown,
+	maxChars: number,
+	state: { nodes: number; chars: number; seen: Set<object> },
+	depth = 0,
+): boolean {
+	if (depth > 16 || ++state.nodes > 4_096) return false;
+	if (value === null || value === undefined) {
+		state.chars += 4;
+		return state.chars <= maxChars;
+	}
+	const kind = typeof value;
+	if (kind === "boolean") {
+		state.chars += 5;
+		return state.chars <= maxChars;
+	}
+	if (kind === "number") {
+		state.chars += Number.isFinite(value) ? String(value).length : 4;
+		return state.chars <= maxChars;
+	}
+	if (kind === "string") {
+		state.chars += (value as string).length + 2;
+		return state.chars <= maxChars;
+	}
+	if (kind !== "object") return false;
+	const obj = value as object;
+	if (state.seen.has(obj)) return false;
+	state.seen.add(obj);
+	if (Array.isArray(obj)) {
+		state.chars += 2;
+		for (let i = 0; i < obj.length; i++) {
+			if (!withinParamBudget(obj[i], maxChars, state, depth + 1)) return false;
+			state.chars += 1;
+		}
+		return state.chars <= maxChars;
+	}
+	const proto = Object.getPrototypeOf(obj);
+	if (proto !== Object.prototype && proto !== null) return false;
+	state.chars += 2;
+	for (const [k, v] of Object.entries(obj)) {
+		state.chars += k.length + 4;
+		if (state.chars > maxChars) return false;
+		if (!withinParamBudget(v, maxChars, state, depth + 1)) return false;
+	}
+	return state.chars <= maxChars;
 }
 
 const refuse = (error: string): AppAnswer => ({ ok: false, error });
@@ -984,6 +1034,7 @@ export class AppBridge {
 	readonly #follow: ((link: AppLink) => void) | undefined;
 	readonly #page: (() => AppDataPage | undefined) | undefined;
 	#files: PageFiles | undefined;
+	#preparing = false;
 
 	/** `gate`: where a request for a change is put to the member; without one the app only reads. `follow` opens a
 	 * link the member clicked in the page, once it is checked; without it no link opens. `page`: the page the calls come
@@ -1019,8 +1070,18 @@ export class AppBridge {
 				: call.method === "setRow" || call.method === "addRow"
 					? MAX_ROW_PARAMS_CHARS
 					: MAX_PARAMS_CHARS;
-		if (call.method.length > 32 || JSON.stringify(call.params).length > maxParams)
+		if (
+			call.method.length > 32 ||
+			!withinParamBudget(call.params, maxParams, { nodes: 0, chars: 0, seen: new Set() })
+		)
 			return refuse("Not a call the app answers");
+		let serializedParams: string;
+		try {
+			serializedParams = JSON.stringify(call.params);
+		} catch {
+			return refuse("Not a call the app answers");
+		}
+		if (serializedParams.length > maxParams) return refuse("Not a call the app answers");
 		// Ending a watch goes first, outside the budget and the calls in flight: it only takes work away, and a refused
 		// one would keep the watch's place taken until the page reloads, since the page's stop runs once.
 		if (call.method === "unwatch") return this.#unwatch(call);
@@ -1191,26 +1252,32 @@ export class AppBridge {
 			prepare = () => prepareRow(writer(), call.method === "addRow", call.params, this.#signal, current);
 		}
 		// One request at a time: while one waits for the member, another is refused before anything is read.
+		if (this.#preparing) return refuse(GATE_SAYS.busy);
 		const closed = gate.closed();
 		if (closed) return refuse(GATE_SAYS[closed]);
-		let prepared: PreparedAsk;
+		this.#preparing = true;
 		try {
-			prepared = await prepare();
-		} catch (error) {
-			if (error instanceof AppActionRefused) return refuse(error.message);
-			throw error;
+			let prepared: PreparedAsk;
+			try {
+				prepared = await prepare();
+			} catch (error) {
+				if (error instanceof AppActionRefused) return refuse(error.message);
+				throw error;
+			}
+			const result = await gate.ask(
+				prepared.ask,
+				call.method === "tell" ? this.#told(prepared.perform) : prepared.perform,
+				prepared.keep,
+			);
+			if ("message" in result) return refuse(result.message);
+			if (result.outcome === "told")
+				return { ok: true, value: result.sent ? { sent: true } : { sent: false, waiting: true } };
+			if (result.outcome === "saved") return { ok: true, value: { saved: true } };
+			// Only a web page's request is opened; a change never is.
+			return refuse(result.outcome === "opened" ? "Not a change" : GATE_SAYS[result.outcome]);
+		} finally {
+			this.#preparing = false;
 		}
-		const result = await gate.ask(
-			prepared.ask,
-			call.method === "tell" ? this.#told(prepared.perform) : prepared.perform,
-			prepared.keep,
-		);
-		if ("message" in result) return refuse(result.message);
-		if (result.outcome === "told")
-			return { ok: true, value: result.sent ? { sent: true } : { sent: false, waiting: true } };
-		if (result.outcome === "saved") return { ok: true, value: { saved: true } };
-		// Only a web page's request is opened; a change never is.
-		return refuse(result.outcome === "opened" ? "Not a change" : GATE_SAYS[result.outcome]);
 	}
 
 	async #act(call: AppCall): Promise<AppAnswer> {
@@ -1222,20 +1289,26 @@ export class AppBridge {
 		const gate = this.#gate;
 		const data = this.#host.data;
 		if (!gate?.askData || !data) return refuse("Database changes can't be run from this page");
+		if (this.#preparing) return refuse(GATE_SAYS.busy);
 		const closed = gate.closed();
 		if (closed) return refuse(GATE_SAYS[closed]);
-		let prepared: PreparedDataAsk;
+		this.#preparing = true;
 		try {
-			prepared = await prepareDataChange(data, asked, this.#signal);
-		} catch (error) {
-			if (error instanceof AppActionRefused || error instanceof CloudMemberDataError) return refuse(error.message);
-			throw error;
+			let prepared: PreparedDataAsk;
+			try {
+				prepared = await prepareDataChange(data, asked, this.#signal);
+			} catch (error) {
+				if (error instanceof AppActionRefused || error instanceof CloudMemberDataError)
+					return refuse(error.message);
+				return refuse(error instanceof Error ? error.message : "Database change preview failed");
+			}
+			const result = await gate.askData(prepared.ask, prepared.perform);
+			if ("message" in result) return refuse(result.message);
+			if (result.outcome !== "saved") return refuse(GATE_SAYS[result.outcome]);
+			return { ok: true, value: fittedChangeResult(result.result) };
+		} finally {
+			this.#preparing = false;
 		}
-		const result = await gate.askData(prepared.ask, prepared.perform);
-		if ("message" in result) return refuse(result.message);
-		if (result.outcome !== "saved") return refuse(GATE_SAYS[result.outcome]);
-		const shown = fittedChangeResult(result.result);
-		return shown ? { ok: true, value: shown } : refuse(ANSWER_TOO_LARGE);
 	}
 
 	/** A web page the member clicked a link to (Jonas, 13 November 2026: "Show the address first"): put on the bar, its
@@ -1381,15 +1454,21 @@ export class AppDataRefused extends Error {}
 /** A page's question, checked: `name` is `<database>/<question>`, `params` at most 16 named short values (text, a
  * finite number, true, false or null), never `viewer`, which the gateway fills with the member looking. Otherwise the
  * words of the refusal. */
-function isDataParamValue(value: unknown, depth = 0): value is CloudMemberDataParamValue {
-	if (depth > 16) return false;
+function isDataParamValue(
+	value: unknown,
+	state: { nodes: number; seen: Set<object> } = { nodes: 0, seen: new Set() },
+	depth = 0,
+): value is CloudMemberDataParamValue {
+	if (depth > 16 || ++state.nodes > 4_096) return false;
 	if (value === null || typeof value === "boolean" || typeof value === "string") return true;
 	if (typeof value === "number") return Number.isFinite(value);
-	if (Array.isArray(value)) return value.every((item) => isDataParamValue(item, depth + 1));
 	if (typeof value === "object") {
+		if (state.seen.has(value)) return false;
+		state.seen.add(value);
+		if (Array.isArray(value)) return value.every((item) => isDataParamValue(item, state, depth + 1));
 		const proto = Object.getPrototypeOf(value);
 		if (proto !== Object.prototype && proto !== null) return false;
-		return Object.values(value).every((item) => isDataParamValue(item, depth + 1));
+		return Object.values(value).every((item) => isDataParamValue(item, state, depth + 1));
 	}
 	return false;
 }
@@ -1455,21 +1534,27 @@ export interface PageDataChangeResult {
 	readonly asOf: string;
 }
 
-export function fittedChangeResult(changed: CloudMemberDataChanged): PageDataChangeResult | null {
-	const shown: PageDataChangeResult = {
+export function fittedChangeResult(changed: CloudMemberDataChanged): PageDataChangeResult {
+	const base: PageDataChangeResult = {
 		...(changed.changed === undefined ? {} : { changed: changed.changed }),
-		...(changed.columns === undefined || changed.rows === undefined
-			? {}
-			: {
-					columns: [...changed.columns],
-					rows: changed.rows.map((row) =>
-						Object.fromEntries(changed.columns!.map((column, index) => [column, row[index]])),
-					),
-					more: changed.more ?? false,
-				}),
 		asOf: changed.asOf,
 	};
-	return UTF8.encode(JSON.stringify(shown)).byteLength > DATA_ANSWER_BYTES ? null : shown;
+	if (changed.columns === undefined || changed.rows === undefined) return base;
+	const columns = [...changed.columns];
+	const rows = changed.rows.map((row) => Object.fromEntries(columns.map((column, index) => [column, row[index]])));
+	const full: PageDataChangeResult = { ...base, columns, rows, more: changed.more ?? false };
+	if (UTF8.encode(JSON.stringify(full)).byteLength <= DATA_ANSWER_BYTES) return full;
+	const kept: Record<string, unknown>[] = [];
+	const shellBytes = UTF8.encode(JSON.stringify({ ...base, columns, rows: [], more: true })).byteLength;
+	if (shellBytes > DATA_ANSWER_BYTES) return { ...base, more: true };
+	let bytes = shellBytes;
+	for (const row of rows) {
+		const rowBytes = UTF8.encode(JSON.stringify(row)).byteLength + (kept.length > 0 ? 1 : 0);
+		if (bytes + rowBytes > DATA_ANSWER_BYTES) break;
+		kept.push(row);
+		bytes += rowBytes;
+	}
+	return { ...base, columns, rows: kept, more: true };
 }
 
 /** An answer as a page gets it, rows as objects by column name as `table` gives them: `{ columns, rows, more, asOf }`.

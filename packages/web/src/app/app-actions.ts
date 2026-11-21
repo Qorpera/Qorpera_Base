@@ -660,7 +660,9 @@ export async function prepareDataChange(
 				return await source.change({ ...asked, sha256: preview.sha256 }, signal);
 			} catch (error) {
 				if (error instanceof CloudMemberDataError) throw new AppActionRefused(error.message);
-				throw error;
+				throw new AppActionRefused(
+					t("The database connection was interrupted; the change may have completed. Check before trying again."),
+				);
 			}
 		},
 	};
