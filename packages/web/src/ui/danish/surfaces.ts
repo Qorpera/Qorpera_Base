@@ -45,6 +45,7 @@ export const SURFACES: Record<string, string> = {
 	Conflict: "Konflikt",
 	Reverted: "Rullet tilbage",
 	Merging: "Fletter",
+	"1 file · +{added} −{removed}": "1 fil · +{added} −{removed}",
 	"{files} files · +{added} −{removed}": "{files} filer · +{added} −{removed}",
 	"Steer this session…": "Styr denne session…",
 	"Close session": "Luk sessionen",
@@ -130,4 +131,32 @@ export const SURFACES: Record<string, string> = {
 	Palette: "Farvepalet",
 	Typography: "Typografi",
 	"Aa Bb Cc · 123": "Aa Bb Cc · Ææ Øø Åå · 123",
+	"New surface": "Ny surface",
+	"Add a surface": "Tilføj en surface",
+	"Each surface is a shared place your sessions build and update together.":
+		"Hver surface er et fælles sted, som dine sessioner bygger og opdaterer sammen.",
+	"Surface type": "Type af surface",
+	"Surface name": "Navn på surface",
+	"First session (optional)": "Første session (valgfrit)",
+	"Optional: describe the first change to start right away…":
+		"Valgfrit: beskriv den første ændring for at gå i gang med det samme…",
+	"Create surface": "Opret surface",
+	"Import a program instead": "Importér et program i stedet",
+	Website: "Hjemmeside",
+	"Marketing site or storefront with live preview and publish.":
+		"Hjemmeside eller butik med live forhåndsvisning og udgivelse.",
+	"Web App": "Webapp",
+	"Interactive product or customer portal built in parallel sessions.":
+		"Interaktivt produkt eller kundeportal bygget i parallelle sessioner.",
+	"Color palette, typography, and voice guidelines synced to code.":
+		"Farvepalet, typografi og tone-of-voice synkroniseret med koden.",
+	Product: "Produkt",
+	"Product specs, colorways, BOM, and design briefs in one place.":
+		"Produktspecifikationer, farvevarianter, BOM og designbriefs samlet ét sted.",
+	"Local preview — changes stay in this browser until Surfaces migrations are deployed.":
+		"Lokal forhåndsvisning — ændringer bliver i denne browser, indtil Surfaces-migrationerne er udrullet.",
+	"Got it — updated the open changes with “{note}”.": "Forstået — opdaterede de åbne ændringer med “{note}”.",
+	"Scheduled check": "Planlagt tjek",
+	"Folded from agent": "Samlet fra agent",
+	Move: "Flyt",
 };

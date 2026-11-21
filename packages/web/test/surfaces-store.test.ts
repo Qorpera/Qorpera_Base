@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseRoute, routeHash, surfaceHash } from "../src/app/router.ts";
 import {
 	approvalOutcome,
+	clearLocalSandboxCache,
 	migrationPending,
 	runningSessionTotal,
 	SURFACE_UNDO_MS,
@@ -27,6 +28,7 @@ import {
 } from "./surface-fixtures.ts";
 
 afterEach(() => {
+	clearLocalSandboxCache();
 	vi.useRealTimers();
 });
 
@@ -414,5 +416,61 @@ describe("SurfacesStore", () => {
 		expect(await store.archiveSurface(proposedB.id)).toBe(true);
 		expect(store.state.surfaces.find((item) => item.id === proposedB.id)).toBeUndefined();
 		store.dispose();
+	});
+
+	it("supports interactive local preview sessions, partial approval, undo, migration, and tab persistence", async () => {
+		vi.useFakeTimers();
+		const navigated: string[] = [];
+		const store = storeWith(undefined, {
+			companyName: "Wristband company",
+			localInteractive: true,
+			onNavigateSurface: (slug) => navigated.push(slug),
+		});
+		await store.load();
+		const brand = await store.createSurface({
+			title: "Brand",
+			slug: "brand",
+			archetype: "studio",
+			icon: "spark",
+			folderRoot: "brand",
+		});
+		expect(brand?.slug).toBe("brand");
+		expect(navigated).toEqual(["brand"]);
+		expect(store.state.localStudioBase[brand!.id]?.["brand/tokens.json"]).toContain("#2a5d9e");
+
+		const started = await store.startSession(
+			brand!.id,
+			"Warm up the accent color to terracotta and refine the headline voice",
+		);
+		expect(started?.state).toBe("running");
+		vi.advanceTimersByTime(700);
+		const ready = store.session(started!.id)!;
+		expect(ready.state).toBe("ready");
+		expect(ready.changes).toHaveLength(2);
+
+		expect(await store.approveChange(ready.id, ready.changes[0]!.id)).toBe("open");
+		expect(store.workspace(brand!.id)?.activeSessions).toHaveLength(1);
+		expect(store.state.surfaces.find((item) => item.id === brand!.id)?.unpublishedChangeCount).toBe(1);
+		expect(store.state.localStudioBase[brand!.id]?.["brand/tokens.json"]).toContain("#c65d3b");
+
+		expect(await store.undo()).toBe(true);
+		expect(store.state.localStudioBase[brand!.id]?.["brand/tokens.json"]).toContain("#2a5d9e");
+
+		const migrated = await store.applyMigration({
+			activateSurfaceSlugs: [],
+			agentDecisions: [{ agentId: CHANGES[0], action: "fold_to_automation", targetSurfaceSlug: null }],
+			archiveBoardNames: [],
+		});
+		expect(migrated).toBe(true);
+		expect(store.state.foldedAgentIds[CHANGES[0]]).toBe(true);
+		expect(store.state.automations).toHaveLength(1);
+		store.dispose();
+
+		const restored = storeWith(undefined, { companyName: "Wristband company", localInteractive: true });
+		await restored.load();
+		expect(restored.state.surfaces.some((item) => item.slug === "brand")).toBe(true);
+		expect(restored.state.foldedAgentIds[CHANGES[0]]).toBe(true);
+		expect(restored.state.automations).toHaveLength(1);
+		restored.dispose();
 	});
 });

@@ -266,10 +266,17 @@ export class SurfaceStudioView {
 		return ordered;
 	}
 
+	#effectiveBaseFiles(surfaceId: string): Readonly<Record<string, string>> {
+		const localBase = this.#options.store.state.localStudioBase[surfaceId];
+		if (!localBase) return this.#baseFiles;
+		return Object.keys(this.#baseFiles).length > 0 ? { ...this.#baseFiles, ...localBase } : localBase;
+	}
+
 	update(): void {
 		const store = this.#options.store;
 		const state = store.state;
 		const surface = state.surfaces.find((item) => item.id === this.#options.surface.id) ?? this.#options.surface;
+		const baseFiles = this.#effectiveBaseFiles(surface.id);
 		const workspace = store.workspace(surface.id);
 		const ordered = this.#orderedChanges();
 		const targets = productBuildSurfaces(state, surface.id);
@@ -277,7 +284,7 @@ export class SurfaceStudioView {
 		const busyHandoff = targets.some((target) => Boolean(state.busy[`handoff:${surface.id}:${target.slug}`]));
 		const key = JSON.stringify([
 			this.#loading,
-			this.#baseFiles,
+			baseFiles,
 			ordered,
 			surface.title,
 			surface.folderRoot,
@@ -289,7 +296,7 @@ export class SurfaceStudioView {
 		if (key === this.#shown) return;
 		this.#shown = key;
 
-		const composition = composeStudioPreview(this.#baseFiles, ordered);
+		const composition = composeStudioPreview(baseFiles, ordered);
 		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
 		const files = composition.files;
 		const filePaths = Object.keys(files).sort();
@@ -301,7 +308,7 @@ export class SurfaceStudioView {
 
 		for (const path of filePaths) {
 			const content = files[path] ?? "";
-			const baseContent = this.#baseFiles[path];
+			const baseContent = baseFiles[path];
 			const changed = baseContent !== content;
 			if (path.toLowerCase().endsWith(".json")) {
 				const parsed = parseJsonObject(content);

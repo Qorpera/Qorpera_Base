@@ -41,11 +41,13 @@ function changeTag(change: SurfaceChangeUnit): HTMLElement | null {
 function diffLine(change: SurfaceChangeUnit): string {
 	const stats = change.diffStats;
 	if (!stats) return "";
-	return t("{files} files · +{added} −{removed}", {
-		files: stats.filesChanged,
-		added: stats.additions,
-		removed: stats.deletions,
-	});
+	return stats.filesChanged === 1
+		? t("1 file · +{added} −{removed}", { added: stats.additions, removed: stats.deletions })
+		: t("{files} files · +{added} −{removed}", {
+				files: stats.filesChanged,
+				added: stats.additions,
+				removed: stats.deletions,
+			});
 }
 
 export class SurfaceSessionDrawer {

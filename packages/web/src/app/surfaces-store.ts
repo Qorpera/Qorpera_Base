@@ -1,3 +1,4 @@
+import { composeStudioPreview } from "@qorpera/cloud-client/surface-studio-patches";
 import {
 	type ApplySurfaceMigrationInput,
 	type CloudSurfacesClient,
@@ -22,6 +23,7 @@ import {
 } from "@qorpera/contracts";
 import { phrase, t } from "../ui/preferences.ts";
 import { Store } from "./state.ts";
+import { slugifySurfaceTitle, starterStudioFiles, synthesizeLocalChanges } from "./surface-local-sandbox.ts";
 
 export type SurfacesClient = Pick<
 	CloudSurfacesClient,
@@ -70,6 +72,15 @@ export interface SurfaceNote {
 	readonly priorMatches: number;
 }
 
+export interface CreateSurfaceInput {
+	readonly title: string;
+	readonly slug?: string;
+	readonly archetype: "live_build" | "studio";
+	readonly icon?: string;
+	readonly folderRoot?: string;
+	readonly initialPrompt?: string;
+}
+
 export interface SurfacesState {
 	readonly source: SurfacesSource;
 	readonly surfaces: readonly SurfaceSummary[];
@@ -77,6 +88,8 @@ export interface SurfacesState {
 	readonly automations: readonly SurfaceAutomationSummary[];
 	readonly migration?: SurfaceMigrationChecklist;
 	readonly migrationDismissed: boolean;
+	readonly foldedAgentIds: Readonly<Record<string, true>>;
+	readonly localStudioBase: Readonly<Record<string, Readonly<Record<string, string>>>>;
 	readonly drawer?: { readonly surfaceId: string; readonly sessionId: string };
 	readonly highlight?: { readonly surfaceId: string; readonly sessionId: string };
 	readonly mode: SurfacePreviewMode;
@@ -339,6 +352,8 @@ function describe(error: unknown): string {
 
 export interface SurfacesStoreOptions {
 	readonly companyId: string;
+	readonly companyName?: string;
+	readonly localInteractive?: boolean;
 	readonly client: SurfacesClient | undefined;
 	readonly synthesize: () => SurfaceSynthesisInput;
 	readonly migration: () => SurfaceMigrationInput;
@@ -347,9 +362,32 @@ export interface SurfacesStoreOptions {
 	readonly onNavigateSurface?: (slug: string) => void;
 }
 
+interface LocalSandboxCacheEntry {
+	readonly surfaces: readonly SurfaceSummary[];
+	readonly workspaces: Readonly<Record<string, SurfaceWorkspace>>;
+	readonly automations: readonly SurfaceAutomationSummary[];
+	readonly migration?: SurfaceMigrationChecklist;
+	readonly migrationDismissed: boolean;
+	readonly foldedAgentIds: Readonly<Record<string, true>>;
+	readonly localStudioBase: Readonly<Record<string, Readonly<Record<string, string>>>>;
+	readonly studioPatches: Readonly<Record<string, readonly StudioPatchOp[]>>;
+	readonly hiddenChanges: Readonly<Record<string, true>>;
+	readonly localCreatedIds: readonly string[];
+	readonly localSeq: number;
+}
+
+const localSandboxCache = new Map<string, LocalSandboxCacheEntry>();
+
+export function clearLocalSandboxCache(): void {
+	localSandboxCache.clear();
+}
+
 export class SurfacesStore {
 	readonly store: Store<SurfacesState>;
 	readonly #options: SurfacesStoreOptions;
+	readonly #localTimers = new Set<ReturnType<typeof setTimeout>>();
+	readonly #localCreatedIds = new Set<string>();
+	readonly #studioUndoSnapshots = new Map<string, Readonly<Record<string, string>>>();
 	#undoTimer: ReturnType<typeof setTimeout> | undefined;
 	#pollTimer: ReturnType<typeof setInterval> | undefined;
 	#undoSeq = 0;
@@ -365,6 +403,8 @@ export class SurfacesStore {
 			workspaces: {},
 			automations: [],
 			migrationDismissed: false,
+			foldedAgentIds: {},
+			localStudioBase: {},
 			mode: "preview",
 			device: "desktop",
 			hiddenChanges: {},
@@ -376,18 +416,74 @@ export class SurfacesStore {
 			busy: {},
 		});
 		options.signal.addEventListener("abort", () => this.dispose(), { once: true });
+		if (options.localInteractive) {
+			this.store.subscribe(() => {
+				if (this.isLocalInteractive) this.#persistLocalSandbox();
+			});
+		}
+	}
+
+	#persistLocalSandbox(): void {
+		const state = this.state;
+		localSandboxCache.set(this.#options.companyId, {
+			surfaces: state.surfaces,
+			workspaces: state.workspaces,
+			automations: state.automations,
+			migration: state.migration,
+			migrationDismissed: state.migrationDismissed,
+			foldedAgentIds: state.foldedAgentIds,
+			localStudioBase: state.localStudioBase,
+			studioPatches: state.studioPatches,
+			hiddenChanges: state.hiddenChanges,
+			localCreatedIds: [...this.#localCreatedIds],
+			localSeq: this.#localSeq,
+		});
 	}
 
 	get state(): SurfacesState {
 		return this.store.get();
 	}
 
+	get isLocalInteractive(): boolean {
+		return this.state.source === "local" && this.#options.localInteractive === true;
+	}
+
+	get companyName(): string {
+		return this.#options.companyName?.trim() || "";
+	}
+
 	dispose(): void {
 		if (this.#undoTimer) clearTimeout(this.#undoTimer);
 		if (this.#pollTimer) clearInterval(this.#pollTimer);
+		for (const timer of this.#localTimers) clearTimeout(timer);
+		this.#localTimers.clear();
 		this.#undoTimer = undefined;
 		this.#pollTimer = undefined;
 		this.store.dispose();
+	}
+
+	#scheduleLocal(delayMs: number, work: () => void): void {
+		const timer = setTimeout(() => {
+			this.#localTimers.delete(timer);
+			if (!this.#options.signal.aborted) work();
+		}, delayMs);
+		this.#localTimers.add(timer);
+	}
+
+	#syncLocalSurfaceCounts(workspace: SurfaceWorkspace): SurfaceSummary {
+		const activeSessions = workspace.activeSessions;
+		const running = activeSessions.filter(isRunningSession).length;
+		const pending = activeSessions.reduce((sum, session) => sum + session.changes.filter(isOpenChange).length, 0);
+		const needsAttention = activeSessions.filter(
+			(session) => session.state === "needs_input" || hasConflictedChange(session),
+		).length;
+		return {
+			...workspace.surface,
+			activeSessionCount: activeSessions.length,
+			runningSessionCount: running,
+			pendingChangeCount: pending,
+			needsAttentionCount: needsAttention,
+		};
 	}
 
 	load(): Promise<void> {
@@ -415,6 +511,26 @@ export class SurfacesStore {
 	}
 
 	#useLocal(error?: string): void {
+		const cached = this.#options.localInteractive ? localSandboxCache.get(this.#options.companyId) : undefined;
+		if (cached) {
+			for (const id of cached.localCreatedIds) this.#localCreatedIds.add(id);
+			this.#localSeq = Math.max(this.#localSeq, cached.localSeq);
+			this.store.set({
+				source: "local",
+				surfaces: cached.surfaces,
+				workspaces: cached.workspaces,
+				automations: cached.automations,
+				migration: cached.migration,
+				migrationDismissed: cached.migrationDismissed,
+				foldedAgentIds: cached.foldedAgentIds,
+				localStudioBase: cached.localStudioBase,
+				studioPatches: cached.studioPatches,
+				hiddenChanges: cached.hiddenChanges,
+				...(error ? { error } : {}),
+			});
+			this.resynthesize();
+			return;
+		}
 		this.store.set({
 			source: "local",
 			surfaces: synthesizeSurfaces(this.#options.synthesize()),
@@ -444,8 +560,44 @@ export class SurfacesStore {
 
 	resynthesize(): void {
 		if (this.state.source !== "local") return;
-		const surfaces = synthesizeSurfaces(this.#options.synthesize());
-		if (JSON.stringify(surfaces) !== JSON.stringify(this.state.surfaces)) this.store.set({ surfaces });
+		const existingById = new Map(this.state.surfaces.map((surface) => [surface.id, surface]));
+		const synthesized = synthesizeSurfaces(this.#options.synthesize()).map((surface) => {
+			const prev = existingById.get(surface.id);
+			return prev
+				? {
+						...surface,
+						autoPublish: prev.autoPublish,
+						hasUnpublishedChanges: prev.hasUnpublishedChanges,
+						unpublishedChangeCount: prev.unpublishedChangeCount,
+						activeSessionCount: prev.activeSessionCount,
+						runningSessionCount: prev.runningSessionCount,
+						pendingChangeCount: prev.pendingChangeCount,
+						needsAttentionCount: prev.needsAttentionCount,
+					}
+				: surface;
+		});
+		const keptCreated = this.state.surfaces.filter((surface) => this.#localCreatedIds.has(surface.id));
+		const taken = new Set(synthesized.map((surface) => surface.slug));
+		const mergedSurfaces = sortSurfaces([
+			...synthesized,
+			...keptCreated.filter((surface) => !taken.has(surface.slug)),
+		]);
+		const nextSurfaces =
+			JSON.stringify(mergedSurfaces) !== JSON.stringify(this.state.surfaces) ? mergedSurfaces : undefined;
+		const nextMigration = !this.state.migration?.alreadyMigrated
+			? (() => {
+					const synthesizedMigration = synthesizeMigration(this.#options.migration());
+					return JSON.stringify(synthesizedMigration) !== JSON.stringify(this.state.migration)
+						? synthesizedMigration
+						: undefined;
+				})()
+			: undefined;
+		if (nextSurfaces || nextMigration) {
+			this.store.set({
+				...(nextSurfaces ? { surfaces: nextSurfaces } : {}),
+				...(nextMigration ? { migration: nextMigration } : {}),
+			});
+		}
 	}
 
 	workspace(surfaceId: string): SurfaceWorkspace | undefined {
@@ -497,7 +649,7 @@ export class SurfacesStore {
 		const running = Object.values(this.state.workspaces).some((workspace) =>
 			workspace.activeSessions.some(isRunningSession),
 		);
-		if (running && !this.#pollTimer && this.#options.client) {
+		if (running && !this.#pollTimer && this.#options.client && this.state.source === "cloud") {
 			this.#pollTimer = setInterval(() => {
 				for (const workspace of Object.values(this.state.workspaces))
 					if (workspace.activeSessions.some(isRunningSession)) void this.refreshWorkspace(workspace.surface.id);
@@ -509,7 +661,36 @@ export class SurfacesStore {
 	}
 
 	canStartSessions(surface: SurfaceSummary): boolean {
-		return this.state.source === "cloud" && !isLocalSurfaceId(surface.id) && Boolean(this.#options.client);
+		if (this.state.source === "cloud" && !isLocalSurfaceId(surface.id) && Boolean(this.#options.client)) return true;
+		return this.isLocalInteractive;
+	}
+
+	async createSurface(input: CreateSurfaceInput): Promise<SurfaceSummary | undefined> {
+		const title = input.title.trim();
+		if (!title) return undefined;
+		const taken = new Set(this.state.surfaces.map((surface) => surface.slug));
+		const slug = slugifySurfaceTitle(input.slug?.trim() || title, taken);
+		const icon = input.icon ?? (input.archetype === "studio" ? "spark" : "globe");
+		const folderRoot =
+			input.archetype === "studio" ? (input.folderRoot?.trim() || slug).replace(/^\/+|\/+$/g, "") : null;
+		const sortOrder = this.state.surfaces.filter((surface) => surface.group === "products").length;
+		const created = localSurface(slug, title, "products", input.archetype, icon, sortOrder, {
+			sourceKind: input.archetype === "studio" ? "folder" : "code_repo",
+			folderRoot,
+			previewMode: input.archetype === "studio" ? "studio_overlay" : "static_site",
+		});
+		this.#localCreatedIds.add(created.id);
+		const starterFiles = input.archetype === "studio" ? starterStudioFiles(created, this.companyName) : undefined;
+		this.store.set((state) => ({
+			surfaces: sortSurfaces([...state.surfaces, created]),
+			workspaces: { ...state.workspaces, [created.id]: localWorkspace(created) },
+			...(starterFiles ? { localStudioBase: { ...state.localStudioBase, [created.id]: starterFiles } } : {}),
+			error: undefined,
+		}));
+		this.#options.onNavigateSurface?.(created.slug);
+		const prompt = input.initialPrompt?.trim();
+		if (prompt && this.canStartSessions(created)) void this.startSession(created.id, prompt);
+		return created;
 	}
 
 	setMode(mode: SurfacePreviewMode): void {
@@ -588,6 +769,50 @@ export class SurfacesStore {
 		}
 	}
 
+	#stageLocalSession(surface: SurfaceSummary, sessionId: string, prompt: string): void {
+		this.#scheduleLocal(650, () => {
+			const workspace = this.workspace(surface.id);
+			const current = workspace?.activeSessions.find((item) => item.id === sessionId);
+			if (!workspace || !current) return;
+			const plan = synthesizeLocalChanges(
+				workspace.surface,
+				sessionId,
+				prompt,
+				() => `local-change-${++this.#localSeq}`,
+				this.companyName,
+			);
+			const now = new Date().toISOString();
+			const ready: SurfaceSession = {
+				...current,
+				state: "ready",
+				changes: [...plan.changes],
+				openChangeCount: plan.changes.length,
+				messages: [
+					...current.messages,
+					{
+						id: `local-message-${++this.#localSeq}`,
+						sessionId,
+						authorKind: "session",
+						text: plan.replyText,
+						changeId: null,
+						createdAt: now,
+					},
+				],
+				updatedAt: now,
+			};
+			if (Object.keys(plan.studioPatches).length > 0) {
+				this.store.set((state) => ({
+					studioPatches: { ...state.studioPatches, ...plan.studioPatches },
+				}));
+			}
+			const nextWorkspace = replaceSession(workspace, ready, "open");
+			this.#putWorkspace({
+				...nextWorkspace,
+				surface: this.#syncLocalSurfaceCounts(nextWorkspace),
+			});
+		});
+	}
+
 	async startSession(
 		surfaceId: string,
 		prompt: string,
@@ -595,6 +820,51 @@ export class SurfacesStore {
 	): Promise<SurfaceSession | undefined> {
 		const text = prompt.trim();
 		if (!text) return undefined;
+		if (this.isLocalInteractive && isLocalSurfaceId(surfaceId)) {
+			const surface = this.state.surfaces.find((item) => item.id === surfaceId);
+			if (!surface) return undefined;
+			const workspace = this.workspace(surfaceId) ?? localWorkspace(surface);
+			const now = new Date().toISOString();
+			const id = `local-session-${++this.#localSeq}`;
+			const cleanTitle = text.split(/[.!?\n]/)[0]?.trim() || text;
+			const title = cleanTitle.length <= 42 ? cleanTitle : `${cleanTitle.slice(0, 39).trimEnd()}…`;
+			const local: SurfaceSession = {
+				id,
+				surfaceId,
+				workerId: null,
+				title,
+				prompt: text,
+				state: "running",
+				originKind: options.originKind ?? "member",
+				originLabel: options.originLabel ?? null,
+				explorationId: null,
+				explorationVariantLabel: null,
+				hasActiveChat: false,
+				question: null,
+				changes: [],
+				messages: [
+					{
+						id: `local-message-${++this.#localSeq}`,
+						sessionId: id,
+						authorKind: "member",
+						text,
+						changeId: null,
+						createdAt: now,
+					},
+				],
+				openChangeCount: 0,
+				createdAt: now,
+				updatedAt: now,
+				closedAt: null,
+			};
+			const nextWorkspace = { ...workspace, activeSessions: [...workspace.activeSessions, local] };
+			this.#putWorkspace({
+				...nextWorkspace,
+				surface: this.#syncLocalSurfaceCounts(nextWorkspace),
+			});
+			this.#stageLocalSession(surface, id, text);
+			return local;
+		}
 		const session = await this.#run(`start:${surfaceId}:${text}`, (client) =>
 			client.startSurfaceSession(surfaceId, text, options),
 		);
@@ -749,7 +1019,9 @@ export class SurfacesStore {
 				updatedAt: now,
 				closedAt: null,
 			};
-			return placeAndNavigate(local, targetSurface.slug);
+			const placed = placeAndNavigate(local, targetSurface.slug);
+			if (this.isLocalInteractive) this.#stageLocalSession(targetSurface, placed.id, prompt);
+			return placed;
 		};
 		const client = this.#options.client;
 		if (!client || isLocalSurfaceId(request.sourceSurfaceId) || (targetSurface && isLocalSurfaceId(targetSurface.id)))
@@ -787,8 +1059,91 @@ export class SurfacesStore {
 	#applySession(session: SurfaceSession, outcome: ApprovalOutcome): void {
 		const workspace = this.state.workspaces[session.surfaceId];
 		if (!workspace) return;
-		this.#putWorkspace(replaceSession(workspace, session, outcome));
+		const next = replaceSession(workspace, session, outcome);
+		this.#putWorkspace(
+			isLocalSurfaceId(session.surfaceId) ? { ...next, surface: this.#syncLocalSurfaceCounts(next) } : next,
+		);
 		if (outcome === "history" && this.state.drawer?.sessionId === session.id) this.store.set({ drawer: undefined });
+	}
+
+	#commitLocalChangesToBase(surfaceId: string, changeIds: readonly string[]): void {
+		const workspace = this.workspace(surfaceId);
+		if (!workspace) return;
+		if (workspace.surface.archetype === "studio") {
+			const currentBase = this.state.localStudioBase[surfaceId];
+			if (currentBase) {
+				const ordered = changeIds
+					.map((id) => ({ changeId: id, ops: this.state.studioPatches[id] ?? [] }))
+					.filter((item) => item.ops.length > 0);
+				if (ordered.length > 0) {
+					for (const item of ordered) this.#studioUndoSnapshots.set(item.changeId, currentBase);
+					const composed = composeStudioPreview(currentBase, ordered);
+					this.store.set((state) => ({
+						localStudioBase: { ...state.localStudioBase, [surfaceId]: composed.files },
+					}));
+				}
+			}
+		}
+		if (workspace.surface.archetype !== "ops") {
+			const surface = workspace.surface;
+			const added = surface.autoPublish ? 0 : changeIds.length;
+			if (added > 0) {
+				this.#putSurface({
+					...surface,
+					hasUnpublishedChanges: true,
+					unpublishedChangeCount: surface.unpublishedChangeCount + added,
+				});
+			}
+		}
+	}
+
+	#undoLocalChangeIds(changeIds: readonly string[]): SurfaceSession | undefined {
+		let restored: SurfaceSession | undefined;
+		for (const changeId of changeIds) {
+			let found: { workspace: SurfaceWorkspace; session: SurfaceSession } | undefined;
+			for (const workspace of Object.values(this.state.workspaces)) {
+				const session =
+					workspace.activeSessions.find((item) => item.changes.some((change) => change.id === changeId)) ??
+					workspace.recentHistory.find((item) => item.changes.some((change) => change.id === changeId));
+				if (session) {
+					found = { workspace, session };
+					break;
+				}
+			}
+			if (!found) continue;
+			const now = new Date().toISOString();
+			const changes = found.session.changes.map((change) =>
+				change.id === changeId
+					? { ...change, status: "staged" as const, canUndo: false, resolvedAt: null }
+					: change,
+			);
+			restored = {
+				...found.session,
+				state: "ready",
+				changes,
+				openChangeCount: countOpenSurfaceChanges(changes),
+				updatedAt: now,
+				closedAt: null,
+			};
+			const snapshot = this.#studioUndoSnapshots.get(changeId);
+			if (snapshot) {
+				this.#studioUndoSnapshots.delete(changeId);
+				this.store.set((state) => ({
+					localStudioBase: { ...state.localStudioBase, [found!.workspace.surface.id]: snapshot },
+				}));
+			}
+			const surface = found.workspace.surface;
+			if (surface.unpublishedChangeCount > 0) {
+				const nextCount = Math.max(0, surface.unpublishedChangeCount - 1);
+				this.#putSurface({
+					...surface,
+					hasUnpublishedChanges: nextCount > 0,
+					unpublishedChangeCount: nextCount,
+				});
+			}
+			this.#applySession(restored, "open");
+		}
+		return restored;
 	}
 
 	#offerUndo(label: string, changeIds: readonly string[]): void {
@@ -806,6 +1161,40 @@ export class SurfacesStore {
 
 	async approveChange(sessionId: string, changeId: string): Promise<ApprovalOutcome | undefined> {
 		const drawerOpen = this.drawerOpenOn(sessionId);
+		const found = this.#sessionAt(sessionId);
+		if (this.isLocalInteractive && found && isLocalSurfaceId(found.workspace.surface.id)) {
+			const now = new Date().toISOString();
+			const target = found.session.changes.find((item) => item.id === changeId);
+			const changes = found.session.changes.map((change) =>
+				change.id === changeId ? { ...change, status: "merged" as const, canUndo: true, resolvedAt: now } : change,
+			);
+			const openCount = countOpenSurfaceChanges(changes);
+			const updated: SurfaceSession = {
+				...found.session,
+				state: openCount === 0 && !drawerOpen ? "completed" : "ready",
+				hasActiveChat: drawerOpen,
+				changes,
+				openChangeCount: openCount,
+				messages: [
+					...found.session.messages,
+					{
+						id: `local-message-${++this.#localSeq}`,
+						sessionId,
+						authorKind: "system",
+						text: t("Merged “{title}” into Base", { title: target?.title ?? found.session.title }),
+						changeId,
+						createdAt: now,
+					},
+				],
+				updatedAt: now,
+				closedAt: openCount === 0 && !drawerOpen ? now : null,
+			};
+			this.#commitLocalChangesToBase(found.workspace.surface.id, [changeId]);
+			const outcome = approvalOutcome(updated, drawerOpen);
+			this.#applySession(updated, outcome);
+			this.#offerUndo(target?.title ?? updated.title, [changeId]);
+			return outcome;
+		}
 		const updated = await this.#run(`change:${changeId}`, (client) => client.approveSurfaceChange(changeId));
 		if (!updated) return undefined;
 		const outcome = approvalOutcome(updated, drawerOpen);
@@ -818,6 +1207,28 @@ export class SurfacesStore {
 
 	async approveAll(sessionId: string): Promise<boolean> {
 		const before = this.session(sessionId);
+		const found = this.#sessionAt(sessionId);
+		if (this.isLocalInteractive && found && isLocalSurfaceId(found.workspace.surface.id)) {
+			const now = new Date().toISOString();
+			const openIds = found.session.changes.filter(isOpenChange).map((change) => change.id);
+			const changes = found.session.changes.map((change) =>
+				isOpenChange(change) ? { ...change, status: "merged" as const, canUndo: true, resolvedAt: now } : change,
+			);
+			const updated: SurfaceSession = {
+				...found.session,
+				state: "completed",
+				hasActiveChat: false,
+				changes,
+				openChangeCount: 0,
+				updatedAt: now,
+				closedAt: now,
+			};
+			this.#commitLocalChangesToBase(found.workspace.surface.id, openIds);
+			if (this.drawerOpenOn(sessionId)) this.store.set({ drawer: undefined });
+			this.#applySession(updated, "history");
+			if (openIds.length > 0) this.#offerUndo(updated.title, openIds);
+			return true;
+		}
 		const updated = await this.#run(`session:${sessionId}`, (client) => client.approveSessionAll(sessionId));
 		if (!updated) return false;
 		const merged = updated.changes
@@ -839,6 +1250,24 @@ export class SurfacesStore {
 	async discardSession(sessionId: string): Promise<boolean> {
 		const session = this.session(sessionId);
 		if (!session) return false;
+		if (this.isLocalInteractive && isLocalSurfaceId(session.surfaceId)) {
+			const now = new Date().toISOString();
+			const changes = session.changes.map((change) =>
+				isOpenChange(change) ? { ...change, status: "discarded" as const } : change,
+			);
+			const updated: SurfaceSession = {
+				...session,
+				state: "discarded",
+				hasActiveChat: false,
+				changes,
+				openChangeCount: 0,
+				updatedAt: now,
+				closedAt: now,
+			};
+			if (this.drawerOpenOn(sessionId)) this.store.set({ drawer: undefined });
+			this.#applySession(updated, "history");
+			return true;
+		}
 		let latest: SurfaceSession | undefined = session;
 		for (const change of session.changes.filter(isOpenChange)) {
 			const next = await this.#run(`change:${change.id}`, (client) => client.discardSurfaceChange(change.id));
@@ -858,6 +1287,9 @@ export class SurfacesStore {
 		if (!undo) return false;
 		if (this.#undoTimer) clearTimeout(this.#undoTimer);
 		this.store.set({ undo: undefined });
+		if (this.isLocalInteractive && undo.changeIds.every((id) => id.startsWith("local-"))) {
+			return Boolean(this.#undoLocalChangeIds(undo.changeIds));
+		}
 		let restored: SurfaceSession | undefined;
 		for (const changeId of undo.changeIds) {
 			const next = await this.#run(`undo:${changeId}`, (client) => client.undoSurfaceChange(changeId));
@@ -872,8 +1304,12 @@ export class SurfacesStore {
 	async revertSession(sessionId: string): Promise<boolean> {
 		const session = this.session(sessionId);
 		if (!session) return false;
+		const undoable = session.changes.filter((item) => item.status === "merged" && item.canUndo);
+		if (this.isLocalInteractive && isLocalSurfaceId(session.surfaceId)) {
+			return Boolean(this.#undoLocalChangeIds(undoable.map((item) => item.id)));
+		}
 		let restored: SurfaceSession | undefined;
-		for (const change of session.changes.filter((item) => item.status === "merged" && item.canUndo)) {
+		for (const change of undoable) {
 			const next = await this.#run(`undo:${change.id}`, (client) => client.undoSurfaceChange(change.id));
 			if (!next) return false;
 			restored = next;
@@ -902,6 +1338,34 @@ export class SurfacesStore {
 		const message = text.trim();
 		if (!message || this.state.busy[`reply:${sessionId}`]) return false;
 		const existing = this.session(sessionId);
+		if (this.isLocalInteractive && existing && isLocalSurfaceId(existing.surfaceId)) {
+			const now = new Date().toISOString();
+			const updated: SurfaceSession = {
+				...existing,
+				messages: [
+					...existing.messages,
+					{
+						id: `local-message-${++this.#localSeq}`,
+						sessionId,
+						authorKind: "member",
+						text: message,
+						changeId: null,
+						createdAt: now,
+					},
+					{
+						id: `local-message-${++this.#localSeq}`,
+						sessionId,
+						authorKind: "session",
+						text: t("Got it — updated the open changes with “{note}”.", { note: message }),
+						changeId: null,
+						createdAt: now,
+					},
+				],
+				updatedAt: now,
+			};
+			this.#applySession(updated, "open");
+			return true;
+		}
 		const priorMatches =
 			(existing ? memberMessageMatches(existing, message) : 0) +
 			this.state.notes.filter((note) => note.sessionId === sessionId && note.text === message).length;
@@ -986,6 +1450,12 @@ export class SurfacesStore {
 	}
 
 	async publish(surfaceId: string): Promise<boolean> {
+		if (this.isLocalInteractive && isLocalSurfaceId(surfaceId)) {
+			const surface = this.state.surfaces.find((item) => item.id === surfaceId);
+			if (!surface) return false;
+			this.#putSurface({ ...surface, hasUnpublishedChanges: false, unpublishedChangeCount: 0 });
+			return true;
+		}
 		const surface = await this.#run(`publish:${surfaceId}`, (client) => client.publishSurface(surfaceId));
 		if (!surface) return false;
 		this.#putSurface(surface);
@@ -993,6 +1463,12 @@ export class SurfacesStore {
 	}
 
 	async setAutoPublish(surfaceId: string, enabled: boolean): Promise<boolean> {
+		if (this.isLocalInteractive && isLocalSurfaceId(surfaceId)) {
+			const surface = this.state.surfaces.find((item) => item.id === surfaceId);
+			if (!surface) return false;
+			this.#putSurface({ ...surface, autoPublish: enabled });
+			return true;
+		}
 		const surface = await this.#run(`auto:${surfaceId}`, (client) =>
 			client.setSurfaceAutoPublish(surfaceId, enabled),
 		);
@@ -1024,6 +1500,12 @@ export class SurfacesStore {
 	}
 
 	async toggleAutomation(automationId: string, enabled: boolean): Promise<boolean> {
+		if (this.isLocalInteractive && automationId.startsWith("local-")) {
+			this.store.set((state) => ({
+				automations: state.automations.map((item) => (item.id === automationId ? { ...item, enabled } : item)),
+			}));
+			return true;
+		}
 		const updated = await this.#run(`automation:${automationId}`, (client) =>
 			client.toggleAutomation(automationId, enabled),
 		);
@@ -1035,6 +1517,40 @@ export class SurfacesStore {
 	}
 
 	async applyMigration(input: ApplySurfaceMigrationInput): Promise<boolean> {
+		if (this.isLocalInteractive) {
+			const migration = this.state.migration;
+			const agentsById = new Map((migration?.specialistAgents ?? []).map((agent) => [agent.agentId, agent]));
+			const folded: Record<string, true> = { ...this.state.foldedAgentIds };
+			const newAutomations: SurfaceAutomationSummary[] = [];
+			for (const decision of input.agentDecisions) {
+				if (decision.action !== "keep") folded[decision.agentId] = true;
+				if (decision.action === "fold_to_automation") {
+					const agent = agentsById.get(decision.agentId);
+					if (!agent) continue;
+					newAutomations.push({
+						id: `local-automation-${++this.#localSeq}`,
+						key: agent.handle.toLowerCase().replace(/[^a-z0-9]+/g, "-") || `automation-${this.#localSeq}`,
+						title: agent.name,
+						scheduleSummary: agent.role || t("Scheduled check"),
+						targetSurfaceSlug: decision.targetSurfaceSlug ?? null,
+						outputMode: "surface_session",
+						enabled: true,
+						status: "idle",
+						lastRunAt: null,
+						lastOutcomeSummary: t("Folded from agent"),
+						nextRunAt: null,
+					});
+				}
+			}
+			this.store.set((state) => ({
+				automations: [...state.automations, ...newAutomations],
+				foldedAgentIds: folded,
+				migrationDismissed: true,
+				...(migration ? { migration: { ...migration, alreadyMigrated: true } } : {}),
+				error: undefined,
+			}));
+			return true;
+		}
 		const surfaces = await this.#run("migration", (client) =>
 			client.applyMigrationChecklist(this.#options.companyId, input),
 		);

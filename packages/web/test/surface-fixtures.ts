@@ -8,7 +8,12 @@ import type {
 	SurfaceWorkspace,
 } from "@qorpera/contracts";
 import { vi } from "vitest";
-import { type SurfacesClient, SurfacesStore, synthesizeMigration } from "../src/app/surfaces-store.ts";
+import {
+	type SurfacesClient,
+	SurfacesStore,
+	type SurfacesStoreOptions,
+	synthesizeMigration,
+} from "../src/app/surfaces-store.ts";
 
 export const COMPANY = "11111111-1111-4111-8111-111111111111";
 export const SURFACE = "22222222-2222-4222-8222-222222222222";
@@ -213,10 +218,7 @@ export function fakeClient(overrides: Partial<SurfacesClient> = {}): SurfacesCli
 	} as SurfacesClient;
 }
 
-export function storeWith(
-	client: SurfacesClient | undefined,
-	extra: { onNavigateSurface?: (slug: string) => void } = {},
-) {
+export function storeWith(client: SurfacesClient | undefined, extra: Partial<SurfacesStoreOptions> = {}) {
 	return new SurfacesStore({
 		companyId: COMPANY,
 		client,

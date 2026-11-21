@@ -440,12 +440,14 @@ export class SurfaceRail {
 	readonly el = h("div", { class: "rail-surfaces" });
 	readonly #store: SurfacesStore;
 	readonly #profileId: string;
+	readonly #onAddSurface: (() => void) | undefined;
 	#shown = "";
 	#active: string | undefined;
 
-	constructor(store: SurfacesStore, profileId: string, signal: AbortSignal) {
+	constructor(store: SurfacesStore, profileId: string, signal: AbortSignal, onAddSurface?: () => void) {
 		this.#store = store;
 		this.#profileId = profileId;
+		this.#onAddSurface = onAddSurface;
 		this.el.addEventListener("click", (event) => this.#click(event), { signal });
 	}
 
@@ -491,16 +493,28 @@ export class SurfaceRail {
 						{ class: "rail-section-title rail-surface-title" },
 						h("span", null, label),
 						group === "products" && canAddProgram
-							? h(
-									"a",
-									{
-										class: "rail-surface-add",
-										href: `#/c/${this.#profileId}/new-program`,
-										"aria-label": t("New program"),
-										title: t("New program"),
-									},
-									icon("plus"),
-								)
+							? this.#onAddSurface
+								? h(
+										"button",
+										{
+											type: "button",
+											class: "rail-surface-add",
+											"aria-label": t("New surface"),
+											title: t("New surface"),
+											"data-act": "add-surface",
+										},
+										icon("plus"),
+									)
+								: h(
+										"a",
+										{
+											class: "rail-surface-add",
+											href: `#/c/${this.#profileId}/new-program`,
+											"aria-label": t("New program"),
+											title: t("New program"),
+										},
+										icon("plus"),
+									)
 							: null,
 					),
 					activeSurfaces.flatMap((surface) => {
@@ -511,6 +525,22 @@ export class SurfaceRail {
 					proposedSurfaces.map((surface) =>
 						proposedSurfaceRow(surface, Boolean(state.busy[`surface:${surface.id}`])),
 					),
+					group === "products" &&
+						!activeSurfaces.length &&
+						!proposedSurfaces.length &&
+						canAddProgram &&
+						this.#onAddSurface
+						? h(
+								"button",
+								{
+									type: "button",
+									class: "rail-surface-create",
+									"data-act": "add-surface",
+								},
+								icon("plus"),
+								h("span", null, t("Add a surface")),
+							)
+						: null,
 				),
 			);
 		}
@@ -527,6 +557,9 @@ export class SurfaceRail {
 		const state = store.state;
 		const activeSurface = state.surfaces.find((item) => item.slug === this.#active);
 		switch (act) {
+			case "add-surface":
+				this.#onAddSurface?.();
+				return;
 			case "open":
 				if (surface && session) {
 					if (state.highlight?.sessionId === session) store.clearHighlight();

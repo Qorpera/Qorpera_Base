@@ -828,8 +828,12 @@ export function mountApplication(
 					)(sessionId, clientInputId, text, signal, files, executionSponsor, roomTarget),
 			);
 			company = controller;
+			const localDev =
+				typeof location !== "undefined" && (location.hostname === "127.0.0.1" || location.hostname === "localhost");
 			const surfaces = new SurfacesStore({
 				companyId: profile.profileId,
+				companyName: profile.profileName,
+				localInteractive: localDev,
 				client: new CloudSurfacesClient(cloud.supabase),
 				synthesize: () => ({
 					companyId: profile.profileId,

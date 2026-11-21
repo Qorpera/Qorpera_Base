@@ -1,11 +1,19 @@
 import type { StartSurfaceSessionOptions } from "@qorpera/cloud-client/surfaces";
-import type { PointToChangeTarget, SurfaceSummary } from "@qorpera/contracts";
+import {
+	type PointToChangeTarget,
+	parsePointToChangeTarget,
+	SURFACE_INSPECTOR_MODE_MESSAGE,
+	SURFACE_INSPECTOR_PICK_MESSAGE,
+	type SurfaceSummary,
+} from "@qorpera/contracts";
 import { openContextMenu } from "../../ui/context-menu.ts";
 import { growToText, h, icon } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { t } from "../../ui/preferences.ts";
+import { renderLocalSitePreviewHtml } from "../surface-local-sandbox.ts";
 import {
 	formatConflictPaths,
+	isLocalSurfaceId,
 	isOpenChange,
 	migrationPending,
 	openExplorations,
@@ -76,6 +84,7 @@ export class SurfaceView {
 	readonly #host: SurfaceViewHost;
 	readonly #lifetime = new AbortController();
 	readonly #bar = h("header", { class: "surface-bar" });
+	readonly #topSlot = h("div", { class: "surface-top-slot", hidden: true });
 	readonly #stage = h("div", { class: "surface-stage" });
 	readonly #viewport = h("div", { class: "surface-viewport" });
 	readonly #mountSlot = h("div", { class: "surface-mount" });
@@ -122,6 +131,8 @@ export class SurfaceView {
 	#handoffTarget = "";
 	#target: PointToChangeTarget | undefined;
 	#mount: SurfaceMount | undefined;
+	#localFrame: HTMLIFrameElement | undefined;
+	#localSiteShown = "";
 	#mountedFor = "";
 	#barShown = "";
 	#framesShown = "";
@@ -140,9 +151,21 @@ export class SurfaceView {
 				if (surface) this.#drawChrome(surface);
 			},
 		});
+		this.#topSlot.append(this.#handoffForm, this.#banner);
 		this.#viewport.append(this.#mountSlot, this.#frames);
-		this.#stage.append(this.#viewport, this.#handoffForm, this.#banner, this.#composer, this.#drawer.el, this.#toast);
-		this.el.append(this.#bar, this.#stage);
+		this.#stage.append(this.#viewport, this.#composer, this.#drawer.el, this.#toast);
+		this.el.append(this.#bar, this.#topSlot, this.#stage);
+		window.addEventListener(
+			"message",
+			(event: MessageEvent) => {
+				if (!this.#localFrame || event.source !== this.#localFrame.contentWindow) return;
+				const data = event.data as { type?: unknown; target?: unknown } | null;
+				if (!data || data.type !== SURFACE_INSPECTOR_PICK_MESSAGE) return;
+				const picked = parsePointToChangeTarget(data.target);
+				if (picked) this.#onPick(picked);
+			},
+			{ signal },
+		);
 		this.#handoffForm.addEventListener(
 			"submit",
 			(event) => {
@@ -216,6 +239,23 @@ export class SurfaceView {
 		const surface = this.surface;
 		if (!surface) {
 			this.#bar.replaceChildren();
+			this.#banner.replaceChildren();
+			this.#toast.replaceChildren();
+			this.#handoffOpen = false;
+			this.#handoffForm.hidden = true;
+			this.#topSlot.hidden = true;
+			this.#composer.hidden = true;
+			this.#frames.hidden = true;
+			this.#mountSlot.hidden = false;
+			this.#localFrame = undefined;
+			this.#localSiteShown = "";
+			this.#mountedFor = "";
+			this.#barShown = "";
+			this.#framesShown = "";
+			this.#chromeShown = "";
+			this.#toastShown = undefined;
+			this.el.classList.remove("has-drawer", "has-banner", "is-pointing");
+			this.#drawer.update();
 			this.#mountSlot.replaceChildren(
 				h(
 					"div",
@@ -225,6 +265,7 @@ export class SurfaceView {
 			);
 			return;
 		}
+		this.#composer.hidden = false;
 		this.#drawBar(surface);
 		this.#drawMount(surface);
 		this.#drawFrames(surface);
@@ -401,39 +442,94 @@ export class SurfaceView {
 	}
 
 	#drawMount(surface: SurfaceSummary): void {
+		const store = this.#host.store;
 		const key = `${surface.id}:${surface.siteSlug ?? ""}:${surface.archetype}`;
 		if (key !== this.#mountedFor) {
 			this.#mount?.dispose();
+			this.#localFrame = undefined;
+			this.#localSiteShown = "";
 			this.#mount =
 				this.#host.mount(surface, this.#lifetime.signal) ??
 				(surface.archetype === "studio"
 					? new SurfaceStudioView({
-							store: this.#host.store,
+							store,
 							surface,
 							signal: this.#lifetime.signal,
 							loadFiles: this.#host.loadStudioFiles,
-							onHandoff: (targetSlug) => void this.#syncStudioTo(surface, targetSlug),
 						})
 					: undefined);
-			this.#mountedFor = key;
-			this.#mountSlot.replaceChildren(
-				this.#mount?.el ??
-					h(
-						"div",
-						{ class: "surface-empty" },
-						interfaceEmblem(surfaceEmblem(surface), 44),
-						h("h2", null, surface.title),
+			if (
+				!this.#mount &&
+				store.isLocalInteractive &&
+				isLocalSurfaceId(surface.id) &&
+				surface.archetype === "live_build"
+			) {
+				this.#mountedFor = key;
+				const frame = h("iframe", {
+					class: "surface-frame surface-local-frame",
+					sandbox: "allow-scripts",
+					title: t("Preview of {title}", { title: surface.title }),
+				});
+				frame.addEventListener(
+					"load",
+					() => {
+						frame.contentWindow?.postMessage(
+							{ type: SURFACE_INSPECTOR_MODE_MESSAGE, active: this.#pointing },
+							"*",
+						);
+					},
+					{ signal: this.#lifetime.signal },
+				);
+				this.#localFrame = frame;
+				this.#mountSlot.replaceChildren(h("div", { class: "surface-local-site" }, frame));
+			} else {
+				// WHY: Retry mount on next update when an ops view (e.g. Files) waits for company team permissions to load.
+				if (this.#mount) this.#mountedFor = key;
+				this.#mountSlot.replaceChildren(
+					this.#mount?.el ??
 						h(
-							"p",
-							null,
-							surface.archetype === "live_build"
-								? t("Nothing is live yet. Describe what to build below.")
-								: t("This surface has nothing to show yet."),
+							"div",
+							{ class: "surface-empty" },
+							interfaceEmblem(surfaceEmblem(surface), 44),
+							h("h2", null, surface.title),
+							h(
+								"p",
+								null,
+								surface.archetype === "live_build"
+									? t("Nothing is live yet. Describe what to build below.")
+									: t("This surface has nothing to show yet."),
+							),
 						),
-					),
-			);
+				);
+			}
 		}
+		if (this.#localFrame) this.#drawLocalLiveSite(surface);
 		this.#mount?.update();
+	}
+
+	#drawLocalLiveSite(surface: SurfaceSummary): void {
+		const frame = this.#localFrame;
+		if (!frame) return;
+		const store = this.#host.store;
+		const state = store.state;
+		const workspace = state.workspaces[surface.id];
+		const mode = state.mode === "live" ? "live" : "preview";
+		const appliedChanges =
+			mode === "live"
+				? []
+				: (workspace?.activeSessions ?? []).flatMap((session) =>
+						session.changes.filter((change) => isOpenChange(change) && store.isChangeShown(change.id)),
+					);
+		const key = JSON.stringify([
+			surface.id,
+			surface.title,
+			store.companyName,
+			mode,
+			appliedChanges.map((change) => [change.id, change.title, change.summary]),
+		]);
+		if (key === this.#localSiteShown) return;
+		this.#localSiteShown = key;
+		frame.srcdoc = renderLocalSitePreviewHtml(store.companyName, surface, appliedChanges, mode);
 	}
 
 	#clearCompare(): void {
@@ -549,10 +645,12 @@ export class SurfaceView {
 		const hasPreviewDoor = Boolean(
 			preview?.primary.status === "ready" && preview.primary.doorActionUrl && preview.primary.memberPass,
 		);
-		const pointEnabled = pointVisible && canStart && (hasPreviewDoor || this.#primaryDoor.hasShown);
+		const pointEnabled =
+			pointVisible && canStart && (hasPreviewDoor || this.#primaryDoor.hasShown || Boolean(this.#localFrame));
 		if (this.#pointing && !pointEnabled) {
 			this.#pointing = false;
 			this.#primaryDoor.setInspectorMode(false);
+			this.#localFrame?.contentWindow?.postMessage({ type: SURFACE_INSPECTOR_MODE_MESSAGE, active: false }, "*");
 		}
 		const running = runningSessionTotal(state);
 		const pending = migrationPending(state.migration) && !state.migrationDismissed;
@@ -688,7 +786,12 @@ export class SurfaceView {
 			);
 		}
 		this.#banner.replaceChildren(...banners);
+		this.#syncTopSlot();
 		this.el.classList.toggle("has-banner", banners.length > 0);
+	}
+
+	#syncTopSlot(): void {
+		this.#topSlot.hidden = !this.#handoffOpen && this.#banner.childElementCount === 0;
 	}
 
 	#setPointing(active: boolean): void {
@@ -699,11 +802,13 @@ export class SurfaceView {
 			if (this.#host.store.state.mode !== "preview") {
 				this.#host.store.setMode("preview");
 				this.#drawBar(surface);
+				this.#drawMount(surface);
 				this.#drawFrames(surface);
 			}
 		}
 		this.#pointing = active;
 		this.#primaryDoor.setInspectorMode(active);
+		this.#localFrame?.contentWindow?.postMessage({ type: SURFACE_INSPECTOR_MODE_MESSAGE, active }, "*");
 		this.el.classList.toggle("is-pointing", active);
 		if (surface) this.#drawChrome(surface);
 	}
@@ -712,6 +817,7 @@ export class SurfaceView {
 		this.#target = target;
 		this.#pointing = false;
 		this.#primaryDoor.setInspectorMode(false);
+		this.#localFrame?.contentWindow?.postMessage({ type: SURFACE_INSPECTOR_MODE_MESSAGE, active: false }, "*");
 		this.el.classList.toggle("is-pointing", false);
 		const surface = this.surface;
 		if (surface) this.#drawChrome(surface);
@@ -732,7 +838,8 @@ export class SurfaceView {
 		}
 		if (event.key !== "p" && event.key !== "P") return;
 		if (isEditableTarget(event.target)) return;
-		if (this.#host.store.state.drawer || document.querySelector(".surface-dialog-backdrop, .modal-backdrop")) return;
+		if (this.#host.store.state.drawer || document.querySelector("dialog.surface-dialog[open], .settings-overlay"))
+			return;
 		if (this.#point.hidden || this.#point.disabled) return;
 		event.preventDefault();
 		this.#setPointing(!this.#pointing);
@@ -760,6 +867,7 @@ export class SurfaceView {
 		const chosen = targets.find((item) => item.slug === this.#handoffTarget) ?? targets[0]!;
 		this.#handoffOpen = true;
 		this.#handoffForm.hidden = false;
+		this.#syncTopSlot();
 		if (targets.length === 1) {
 			this.#handoffSelect.hidden = true;
 			this.#handoffTargetTag.hidden = false;
@@ -784,6 +892,7 @@ export class SurfaceView {
 		if (!this.#handoffOpen) return;
 		this.#handoffOpen = false;
 		this.#handoffForm.hidden = true;
+		this.#syncTopSlot();
 		const surface = this.surface;
 		if (surface) this.#drawBar(surface);
 	}

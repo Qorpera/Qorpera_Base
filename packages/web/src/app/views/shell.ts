@@ -67,14 +67,14 @@ import { interfaceBadge } from "../interface-badge.ts";
 import { type CompanyInterface, companyInterfaces, hiddenInterfaces } from "../interfaces.ts";
 import { contactPlaces, MEMBERS_ZONE, type RailContact, railContacts, weave } from "../rail-contacts.ts";
 import { appHash, conceptsHash, type Route, siteHash } from "../router.ts";
-import { surfacesOf } from "../surfaces-store.ts";
+import { migrationPending, surfacesOf } from "../surfaces-store.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import type { AgentCardActions } from "./agent-details.ts";
 import type { CardFootActions } from "./card-foot.ts";
 import { personFace } from "./friends.ts";
 import { memberPresence } from "./member-chat.ts";
 import type { SettingsTab } from "./settings.ts";
-import { openAutomationsSheet } from "./surface-migration-sheet.ts";
+import { openAutomationsSheet, openCreateSurfaceSheet, openMigrationSheet } from "./surface-migration-sheet.ts";
 import { SurfaceRail } from "./surface-rail.ts";
 
 /* The company shell: a rail with conversations and the account menu, and the
@@ -1469,9 +1469,12 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		return placed && sectionNames.some((item) => item.sectionId === placed) ? placed : undefined;
 	};
 	const inWholeSection = (itemId: string) => wholeSections.has(sectionOf(itemId));
+	const surfacesStore = surfacesOf(company);
+	const foldedAgents = surfacesStore?.state.foldedAgentIds ?? {};
 	const shown = (agent: HostedStaffAgent | undefined): agent is HostedStaffAgent =>
 		// A hidden agent is still found by searching for it.
 		Boolean(agent) &&
+		!foldedAgents[agent!.id] &&
 		(matches(agent!.displayName) || inWholeSection(agent!.id)) &&
 		(!hidden.has(agent!.id) || Boolean(railQuery));
 	const roomShown = (roomId: string) =>
@@ -1769,6 +1772,23 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		above ||= count > 0;
 	}
 	reconcile(parts.cofounderGroup, cofounderElement ? [cofounderElement] : []);
+	const legacyNodes = [
+		sidebar && !railQuery ? parts.pinnedGroup : pinnedElements.length ? parts.pinnedGroup : null,
+		...sectionGroups.filter(({ rows: r }) => r.length || !railQuery).map(({ group }) => group.el),
+		unassignedRows.length || (sectioned && !railQuery) ? parts.unassigned.el : null,
+	].filter((element) => element !== null);
+	const legacyCount =
+		pinnedElements.length +
+		sectionGroups.reduce((total, group) => total + group.rows.length, 0) +
+		unassignedRows.length;
+	const onLegacyRoute =
+		context.route.name === "company" &&
+		(context.route.section === "staff" || context.route.section === "chat") &&
+		!isActive(cofounderId ?? "");
+	const legacyFold =
+		surfaceRail && !railQuery && legacyCount > 0
+			? syncLegacyAgentsFold(company, parts.redraw, legacyNodes, legacyCount, onLegacyRoute)
+			: null;
 	reconcile(
 		parts.list,
 		[
@@ -1788,15 +1808,11 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			resetNotice(),
 			cofounderElement ? parts.cofounderGroup : null,
 			surfaceRail && !railQuery ? surfaceRail.el : null,
-			// The pinned row stays in place while empty, hidden, so a drag can still reach it.
-			sidebar && !railQuery ? parts.pinnedGroup : pinnedElements.length ? parts.pinnedGroup : null,
 			parts.loading ?? null,
-			// A section shows while it has rows, and always when nothing is being searched.
-			...sectionGroups.filter(({ rows: r }) => r.length || !railQuery).map(({ group }) => group.el),
-			unassignedRows.length || (sectioned && !railQuery) ? parts.unassigned.el : null,
+			...(legacyFold ? [legacyFold] : surfaceRail && !railQuery ? [] : legacyNodes),
 			memberRows.length || (placing && !railQuery) ? parts.members.el : null,
 			hiddenCount ? hiddenGroup.el : null,
-			empty ? parts.empty : null,
+			empty && !surfaceRail ? parts.empty : null,
 			parts.selection.moving ?? null,
 		].filter((element) => element !== null),
 	);
@@ -1838,13 +1854,85 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		);
 		parts.connectionShown = connection;
 	}
-	const automations = surfaceRail ? automationsEntry(company) : null;
-	if (automations && automations.parentElement !== parts.foot) parts.foot.prepend(automations);
 	// The account menu is shared with the top bar; it moves back only when it is not here.
 	const menu = accountMenuElement(context, company);
 	if (menu.parentElement !== parts.foot) parts.foot.append(menu);
+	const automations = surfaceRail ? automationsEntry(company) : null;
+	if (automations && automations.nextElementSibling !== menu) parts.foot.insertBefore(automations, menu);
 	paintPresence(container, parts, company);
 	restoreFocus();
+}
+
+interface LegacyAgentsFold {
+	readonly el: HTMLElement;
+	readonly toggle: HTMLButtonElement;
+	readonly label: HTMLElement;
+	readonly count: HTMLElement;
+	readonly migrate: HTMLButtonElement;
+	readonly body: HTMLElement;
+	open: boolean;
+}
+
+const legacyAgentFolds = new WeakMap<CompanyController, LegacyAgentsFold>();
+function syncLegacyAgentsFold(
+	company: CompanyController,
+	redraw: () => void,
+	nodes: readonly HTMLElement[],
+	count: number,
+	forceOpen: boolean,
+): HTMLElement {
+	const store = surfacesOf(company);
+	let fold = legacyAgentFolds.get(company);
+	if (!fold) {
+		const label = h("span", { class: "rail-legacy-label" });
+		const countEl = h("span", { class: "rail-legacy-count" });
+		const chevron = h("span", { class: "rail-legacy-chevron", "aria-hidden": "true" }, icon("chevron"));
+		const toggle = h(
+			"button",
+			{ type: "button", class: "rail-legacy-toggle", "aria-expanded": "false" },
+			chevron,
+			label,
+			countEl,
+		);
+		const migrate = h(
+			"button",
+			{
+				type: "button",
+				class: "rail-legacy-migrate",
+				hidden: true,
+				onclick: (event: MouseEvent) => {
+					event.stopPropagation();
+					if (store) openMigrationSheet(store);
+				},
+			},
+			t("Move"),
+		);
+		const body = h("div", { class: "rail-legacy-body", hidden: true });
+		const el = h(
+			"div",
+			{ class: "rail-legacy-agents" },
+			h("div", { class: "rail-legacy-head" }, toggle, migrate),
+			body,
+		);
+		fold = { el, toggle, label, count: countEl, migrate, body, open: false };
+		toggle.addEventListener("click", () => {
+			fold!.open = !fold!.open;
+			redraw();
+		});
+		legacyAgentFolds.set(company, fold);
+	}
+	const expanded = fold.open || forceOpen;
+	fold.label.textContent = t("Agents");
+	fold.count.textContent = String(count);
+	fold.toggle.setAttribute("aria-expanded", String(expanded));
+	fold.el.classList.toggle("is-open", expanded);
+	const canMigrate = Boolean(store && migrationPending(store.state.migration));
+	fold.migrate.hidden = !canMigrate;
+	fold.migrate.textContent = t("Move");
+	fold.migrate.title = t("Move to Surfaces");
+	fold.body.hidden = !expanded;
+	reconcile(fold.body, expanded ? nodes : []);
+	return fold.el;
 }
 
 const surfaceRails = new WeakMap<CompanyController, SurfaceRail>();
@@ -1853,7 +1941,9 @@ function surfaceRailFor(company: CompanyController): SurfaceRail | undefined {
 	if (!store) return undefined;
 	let rail = surfaceRails.get(company);
 	if (!rail) {
-		rail = new SurfaceRail(store, company.profile.profileId, company.signal);
+		rail = new SurfaceRail(store, company.profile.profileId, company.signal, () =>
+			openCreateSurfaceSheet(store, company.profile.profileId),
+		);
 		surfaceRails.set(company, rail);
 	}
 	return rail;

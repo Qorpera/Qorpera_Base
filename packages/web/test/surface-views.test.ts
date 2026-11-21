@@ -639,4 +639,29 @@ describe("the surface page", () => {
 		inboxView.dispose();
 		store.dispose();
 	});
+
+	it("hides the composer on unavailable surfaces and opens onAddSurface from an empty Building group", async () => {
+		const store = storeWith(undefined, {
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: [] }),
+		});
+		await store.load();
+		const onAdd = vi.fn();
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal, onAdd);
+		document.body.append(rail.el);
+		rail.update("missing", true);
+		const createBtn = rail.el.querySelector<HTMLButtonElement>(".rail-surface-create")!;
+		expect(createBtn.textContent).toContain("Add a surface");
+		createBtn.click();
+		expect(onAdd).toHaveBeenCalledTimes(1);
+
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "missing");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+		expect(view.el.querySelector<HTMLElement>(".surface-composer")?.hidden).toBe(true);
+		expect(view.el.querySelector<HTMLElement>(".surface-top-slot")?.hidden).toBe(true);
+		expect(view.el.querySelector(".surface-empty")?.textContent).toContain("This surface isn't available.");
+		view.dispose();
+		store.dispose();
+	});
 });
