@@ -76,7 +76,7 @@ Exit codes: 0 result printed, 1 invalid specification or I/O failure, 2 usage.
 
 search-worker: persistent off-event-loop content-addressed trigram + linear-time regex search worker for folder-service.
 Reads 4-byte big-endian length-prefixed JSON requests on stdin, verifies objects under --storage-root with O_NOFOLLOW
-and SHA-256, maintains a bounded LRU trigram/object cache (--index-mib, default 256, 1..2048), executes queries across
+and SHA-256, maintains a bounded LRU trigram/object/tree cache (--index-mib, default 384, 1..2048), executes queries across
 --threads worker threads (default 4, 1..32), and writes matching length-prefixed JSON responses on stdout until stdin EOF.
 Exit codes: 0 clean shutdown on stdin EOF, 1 I/O or protocol failure, 2 usage.";
 
@@ -457,7 +457,7 @@ fn scan_pack(args: &[String]) -> Result<ExitCode, Usage> {
 fn search_worker_options(args: &[String]) -> Result<(PathBuf, usize, usize), Usage> {
 	let o = options(args, &["storage-root", "index-mib", "threads"])?;
 	let root = o.get("storage-root").filter(|p| !p.is_empty()).ok_or_else(|| Usage("--storage-root is required".into()))?;
-	let index_mib: usize = number(&o, "index-mib", 256)?;
+	let index_mib: usize = number(&o, "index-mib", 384)?;
 	if !(1..=2048).contains(&index_mib) {
 		return Err(Usage("--index-mib must be 1 to 2048".into()));
 	}
@@ -603,7 +603,7 @@ mod tests {
 	#[test]
 	fn search_worker_validates_storage_root_index_mib_and_threads() {
 		let parse = |args: &[&str]| search_worker_options(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-		assert_eq!(parse(&["--storage-root", "/srv/objects"]).ok(), Some((PathBuf::from("/srv/objects"), 256, 4)));
+		assert_eq!(parse(&["--storage-root", "/srv/objects"]).ok(), Some((PathBuf::from("/srv/objects"), 384, 4)));
 		assert_eq!(
 			parse(&["--storage-root", "/srv/objects", "--index-mib", "512", "--threads", "8"]).ok(),
 			Some((PathBuf::from("/srv/objects"), 512, 8))

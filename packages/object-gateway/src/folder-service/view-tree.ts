@@ -369,8 +369,8 @@ export class ViewTree {
 
 	#recordDelta(path: string, entry: TreeEntry | undefined): void {
 		this.#revision++;
-		if (this.#deltas.length >= MAX_DELTAS) {
-			this.#deltas.splice(0, MAX_DELTAS >> 1);
+		if (this.#deltas.length >= MAX_DELTAS * 2) {
+			this.#deltas.splice(0, MAX_DELTAS);
 			this.#deltaBaseRev = this.#deltas[0]!.rev - 1;
 		}
 		this.#deltas.push({ rev: this.#revision, path, entry });

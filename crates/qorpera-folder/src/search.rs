@@ -23,7 +23,6 @@ pub const DEFAULT_PIECE_BYTES: usize = 4 * 1024 * 1024;
 pub const DEFAULT_REGEX_PIECE_BYTES: usize = 256 * 1024;
 pub const DEFAULT_LONGEST_LINE: usize = 1024 * 1024;
 const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
-const MAX_SYNCED_TREES: usize = 256;
 const INDEX_SHARDS: usize = 16;
 const SMALL_EXACT_TRIGRAM_LIMIT: usize = 32;
 const SMALL_FILE_COLLECT_LIMIT: u64 = 16 * 1024;
@@ -553,186 +552,488 @@ impl TrigramBuilder {
 	}
 }
 
-#[derive(Clone)]
-enum CompactVersion {
-	Empty,
-	Uuid([u8; 16]),
-	Other(Box<str>),
-}
+const MEDIA_NONE: u16 = 0;
+const MEDIA_EXTRA: u16 = u16::MAX;
+const EXTRA_NONE: u32 = u32::MAX;
 
-impl CompactVersion {
-	fn from_str_val(s: &str) -> Self {
-		if s.is_empty() {
-			Self::Empty
-		} else if let Some(uuid) = parse_uuid(s) {
-			Self::Uuid(uuid)
-		} else {
-			Self::Other(Box::from(s))
-		}
-	}
+const FLAG_EXEC: u32 = 1 << 2;
+const FLAG_HAS_M_SHA: u32 = 1 << 3;
+const FLAG_HAS_F_SHA: u32 = 1 << 4;
+const FLAG_GM: u32 = 1 << 7;
 
-	#[inline]
-	fn is_empty(&self) -> bool {
-		matches!(self, Self::Empty)
-	}
-
-	fn to_string_val(&self) -> String {
-		match self {
-			Self::Empty => String::new(),
-			Self::Uuid(u) => format_uuid(u),
-			Self::Other(s) => s.to_string(),
-		}
-	}
-
-	fn eq_str(&self, other: &str) -> bool {
-		match self {
-			Self::Empty => other.is_empty(),
-			Self::Uuid(u) => parse_uuid(other) == Some(*u),
-			Self::Other(s) => s.as_ref() == other,
-		}
-	}
-
-	fn heap_bytes(&self) -> usize {
-		match self {
-			Self::Empty | Self::Uuid(_) => 0,
-			Self::Other(s) => s.len(),
-		}
-	}
+struct MediaInternerState {
+	by_str: HashMap<Box<str>, u16>,
+	list: Vec<Arc<str>>,
 }
 
 struct MediaInterner {
-	inner: Mutex<HashMap<Box<str>, Arc<str>>>,
+	inner: Mutex<MediaInternerState>,
 }
 
 impl MediaInterner {
 	fn new() -> Self {
-		Self { inner: Mutex::new(HashMap::new()) }
+		Self { inner: Mutex::new(MediaInternerState { by_str: HashMap::new(), list: Vec::new() }) }
 	}
 
-	fn intern(&self, s: &str) -> Arc<str> {
+	fn intern_id(&self, s: &str) -> u16 {
 		let mut guard = self.inner.lock().unwrap();
-		if let Some(existing) = guard.get(s) {
-			return existing.clone();
+		if let Some(&id) = guard.by_str.get(s) {
+			return id;
 		}
-		let arc: Arc<str> = Arc::from(s);
-		if guard.len() < 4_096 {
-			guard.insert(Box::from(s), arc.clone());
+		if guard.list.len() >= (MEDIA_EXTRA as usize) - 1 {
+			return MEDIA_EXTRA;
 		}
-		arc
+		let id = (guard.list.len() + 1) as u16;
+		guard.list.push(Arc::from(s));
+		guard.by_str.insert(Box::from(s), id);
+		id
+	}
+
+	fn resolve(&self, id: u16) -> Option<Arc<str>> {
+		if id == MEDIA_NONE || id == MEDIA_EXTRA {
+			return None;
+		}
+		let guard = self.inner.lock().unwrap();
+		guard.list.get((id - 1) as usize).cloned()
 	}
 }
 
 #[derive(Clone)]
-enum EntryBody {
-	File {
-		bytes: u64,
-		m_sha: Option<[u8; 32]>,
-		f_sha: Option<[u8; 32]>,
-		media_type: Option<Arc<str>>,
-		executable: bool,
-	},
-	Folder,
-	Symlink {
-		target: Option<Box<str>>,
-	},
+struct ExtraMeta {
+	version: Option<Box<str>>,
+	target: Option<Box<str>>,
+	media: Option<Box<str>>,
 }
 
-#[derive(Clone)]
-struct SyncedEntry {
-	i: u32,
+impl ExtraMeta {
+	fn heap_bytes(&self) -> usize {
+		self.version.as_deref().map_or(0, |s| s.len() + 16)
+			+ self.target.as_deref().map_or(0, |s| s.len() + 16)
+			+ self.media.as_deref().map_or(0, |s| s.len() + 16)
+	}
+}
+
+#[derive(Clone, Copy)]
+struct CompactEntry {
+	path_off: u32,
+	path_len: u32,
 	rb: u32,
-	p: Box<str>,
-	v: CompactVersion,
-	body: EntryBody,
-	gm: bool,
+	flags: u32,
+	bytes: u64,
+	extra_idx: u32,
+	inline_i: u32,
+	version: [u8; 16],
+	m_sha: [u8; 32],
+	f_sha: [u8; 32],
 }
 
-impl SyncedEntry {
-	fn from_wire(w: WorkerEntry, media: &MediaInterner) -> Self {
-		let body = match w.k {
-			0 => EntryBody::File {
-				bytes: w.b,
-				m_sha: w.m.as_deref().and_then(parse_hex_sha256),
-				f_sha: w.f.as_deref().and_then(parse_hex_sha256),
-				media_type: w.t.as_deref().map(|s| media.intern(s)),
-				executable: w.x,
-			},
-			1 => EntryBody::Folder,
-			_ => EntryBody::Symlink { target: w.tg.map(String::into_boxed_str) },
-		};
-		Self {
-			i: w.i,
-			rb: w.rb.min(u32::MAX as usize) as u32,
-			p: w.p.into_boxed_str(),
-			v: CompactVersion::from_str_val(&w.v),
-			body,
-			gm: w.gm,
-		}
-	}
-
+impl CompactEntry {
 	#[inline]
 	fn kind_code(&self) -> u8 {
-		match self.body {
-			EntryBody::File { .. } => 0,
-			EntryBody::Folder => 1,
-			EntryBody::Symlink { .. } => 2,
-		}
-	}
-
-	#[inline]
-	fn bytes(&self) -> u64 {
-		match self.body {
-			EntryBody::File { bytes, .. } => bytes,
-			_ => 0,
-		}
-	}
-
-	#[inline]
-	fn manifest_sha(&self) -> Option<[u8; 32]> {
-		match self.body {
-			EntryBody::File { m_sha, .. } => m_sha,
-			_ => None,
-		}
-	}
-
-	#[inline]
-	fn file_sha(&self) -> Option<[u8; 32]> {
-		match self.body {
-			EntryBody::File { f_sha, .. } => f_sha,
-			_ => None,
-		}
-	}
-
-	#[inline]
-	fn media_type(&self) -> Option<&str> {
-		match &self.body {
-			EntryBody::File { media_type, .. } => media_type.as_deref(),
-			_ => None,
-		}
+		(self.flags & 0b11) as u8
 	}
 
 	#[inline]
 	fn executable(&self) -> bool {
-		match self.body {
-			EntryBody::File { executable, .. } => executable,
-			_ => false,
+		(self.flags & FLAG_EXEC) != 0
+	}
+
+	#[inline]
+	fn has_m_sha(&self) -> bool {
+		(self.flags & FLAG_HAS_M_SHA) != 0
+	}
+
+	#[inline]
+	fn has_f_sha(&self) -> bool {
+		(self.flags & FLAG_HAS_F_SHA) != 0
+	}
+
+	#[inline]
+	fn ver_kind(&self) -> u8 {
+		((self.flags >> 5) & 0b11) as u8
+	}
+
+	#[inline]
+	fn gm(&self) -> bool {
+		(self.flags & FLAG_GM) != 0
+	}
+
+	#[inline]
+	fn media_id(&self) -> u16 {
+		(self.flags >> 16) as u16
+	}
+}
+
+#[derive(Clone)]
+struct CompactTree {
+	entries: Vec<CompactEntry>,
+	paths: Vec<u8>,
+	extras: Vec<ExtraMeta>,
+}
+
+enum DeltaOp {
+	Remove(String),
+	Upsert(WorkerEntry),
+}
+
+impl DeltaOp {
+	fn path(&self) -> &str {
+		match self {
+			Self::Remove(p) => p.as_str(),
+			Self::Upsert(w) => w.p.as_str(),
+		}
+	}
+}
+
+impl CompactTree {
+	fn new() -> Self {
+		Self { entries: Vec::new(), paths: Vec::new(), extras: Vec::new() }
+	}
+
+	fn with_capacity(entries_cap: usize, paths_cap: usize) -> Self {
+		Self {
+			entries: Vec::with_capacity(entries_cap),
+			paths: Vec::with_capacity(paths_cap),
+			extras: Vec::new(),
+		}
+	}
+
+	fn from_wire(incoming: &[WorkerEntry], media: &MediaInterner) -> Self {
+		let path_bytes: usize = incoming.iter().map(|w| w.p.len()).sum();
+		let mut tree = Self::with_capacity(incoming.len(), path_bytes);
+		tree.extend_wire(incoming, media);
+		tree
+	}
+
+	fn extend_wire(&mut self, incoming: &[WorkerEntry], media: &MediaInterner) {
+		let extra_paths: usize = incoming.iter().map(|w| w.p.len()).sum();
+		self.entries.reserve(incoming.len());
+		self.paths.reserve(extra_paths);
+		for w in incoming {
+			self.push_wire_ref(w, media);
+		}
+	}
+
+	fn push_wire_ref(&mut self, w: &WorkerEntry, media: &MediaInterner) {
+		let path_off = u32::try_from(self.paths.len()).expect("tree paths exceed 4 GiB");
+		let path_len = u32::try_from(w.p.len()).expect("entry path exceeds u32");
+		self.paths.extend_from_slice(w.p.as_bytes());
+		let kind = w.k.min(2) as u32;
+		let mut flags = kind;
+		if w.gm {
+			flags |= FLAG_GM;
+		}
+		let mut version = [0u8; 16];
+		let mut extra_ver: Option<Box<str>> = None;
+		if w.v.is_empty() {
+		} else if let Some(uuid) = parse_uuid(&w.v) {
+			version = uuid;
+			flags |= 1 << 5;
+		} else {
+			flags |= 2 << 5;
+			extra_ver = Some(Box::from(w.v.as_str()));
+		}
+		let mut m_sha = [0u8; 32];
+		let mut f_sha = [0u8; 32];
+		let mut bytes = 0u64;
+		let mut extra_media: Option<Box<str>> = None;
+		let mut extra_target: Option<Box<str>> = None;
+		if w.k == 0 {
+			bytes = w.b;
+			if w.x {
+				flags |= FLAG_EXEC;
+			}
+			if let Some(m) = w.m.as_deref().and_then(parse_hex_sha256) {
+				m_sha = m;
+				flags |= FLAG_HAS_M_SHA;
+			}
+			if let Some(f) = w.f.as_deref().and_then(parse_hex_sha256) {
+				f_sha = f;
+				flags |= FLAG_HAS_F_SHA;
+			}
+			if let Some(t) = w.t.as_deref() {
+				let id = media.intern_id(t);
+				flags |= (id as u32) << 16;
+				if id == MEDIA_EXTRA {
+					extra_media = Some(Box::from(t));
+				}
+			}
+		} else if w.k == 2 {
+			if let Some(tg) = w.tg.as_deref() {
+				extra_target = Some(Box::from(tg));
+			}
+		}
+		let extra_idx = if extra_ver.is_some() || extra_target.is_some() || extra_media.is_some() {
+			let idx = self.extras.len() as u32;
+			self.extras.push(ExtraMeta { version: extra_ver, target: extra_target, media: extra_media });
+			idx
+		} else {
+			EXTRA_NONE
+		};
+		self.entries.push(CompactEntry {
+			path_off,
+			path_len,
+			rb: w.rb.min(u32::MAX as usize) as u32,
+			flags,
+			bytes,
+			extra_idx,
+			inline_i: w.i,
+			version,
+			m_sha,
+			f_sha,
+		});
+	}
+
+	fn push_from_base(&mut self, base: &CompactTree, idx: usize) {
+		let mut raw = base.entries[idx];
+		let p_start = raw.path_off as usize;
+		let p_end = p_start + raw.path_len as usize;
+		let new_off = u32::try_from(self.paths.len()).expect("tree paths exceed 4 GiB");
+		self.paths.extend_from_slice(&base.paths[p_start..p_end]);
+		raw.path_off = new_off;
+		if raw.extra_idx != EXTRA_NONE {
+			let new_extra = self.extras.len() as u32;
+			self.extras.push(base.extras[raw.extra_idx as usize].clone());
+			raw.extra_idx = new_extra;
+		}
+		self.entries.push(raw);
+	}
+
+	fn extend_tail_from_base(&mut self, base: &CompactTree, start: usize) {
+		if start >= base.entries.len() {
+			return;
+		}
+		if base.extras.is_empty() {
+			let first_off = base.entries[start].path_off as usize;
+			let new_base_off = self.paths.len();
+			self.paths.extend_from_slice(&base.paths[first_off..]);
+			let shift = new_base_off as isize - first_off as isize;
+			self.entries.reserve(base.entries.len() - start);
+			for raw in &base.entries[start..] {
+				let mut copied = *raw;
+				copied.path_off = (copied.path_off as isize + shift) as u32;
+				self.entries.push(copied);
+			}
+			return;
+		}
+		for idx in start..base.entries.len() {
+			self.push_from_base(base, idx);
+		}
+	}
+
+	fn patch(base: &CompactTree, upserts: Vec<WorkerEntry>, removes: Vec<String>, media: &MediaInterner) -> Self {
+		let upserts_count = upserts.len();
+		let upsert_path_bytes: usize = upserts.iter().map(|w| w.p.len()).sum();
+		let mut ops: Vec<DeltaOp> = Vec::with_capacity(removes.len() + upserts_count);
+		for rm in removes {
+			ops.push(DeltaOp::Remove(rm));
+		}
+		for up in upserts {
+			ops.push(DeltaOp::Upsert(up));
+		}
+		ops.sort_by(|a, b| tree_order(a.path(), b.path()));
+		let mut deduped: Vec<DeltaOp> = Vec::with_capacity(ops.len());
+		for op in ops {
+			if deduped.last().is_some_and(|prev| prev.path() == op.path()) {
+				*deduped.last_mut().unwrap() = op;
+			} else {
+				deduped.push(op);
+			}
+		}
+		let mut out = Self::with_capacity(base.entries.len() + upserts_count, base.paths.len() + upsert_path_bytes);
+		let mut bi = 0usize;
+		let mut oi = 0usize;
+		while bi < base.entries.len() && oi < deduped.len() {
+			match tree_order(base.path(bi), deduped[oi].path()) {
+				Ordering::Less => {
+					out.push_from_base(base, bi);
+					bi += 1;
+				}
+				Ordering::Equal => {
+					if let DeltaOp::Upsert(w) = &deduped[oi] {
+						out.push_wire_ref(w, media);
+					}
+					bi += 1;
+					oi += 1;
+				}
+				Ordering::Greater => {
+					if let DeltaOp::Upsert(w) = &deduped[oi] {
+						out.push_wire_ref(w, media);
+					}
+					oi += 1;
+				}
+			}
+		}
+		if bi < base.entries.len() {
+			out.extend_tail_from_base(base, bi);
+		}
+		while oi < deduped.len() {
+			if let DeltaOp::Upsert(w) = &deduped[oi] {
+				out.push_wire_ref(w, media);
+			}
+			oi += 1;
+		}
+		out.shrink_to_fit();
+		out
+	}
+
+	fn shrink_to_fit(&mut self) {
+		self.entries.shrink_to_fit();
+		self.paths.shrink_to_fit();
+		self.extras.shrink_to_fit();
+	}
+
+	#[inline]
+	fn len(&self) -> usize {
+		self.entries.len()
+	}
+
+	#[inline]
+	fn path(&self, idx: usize) -> &str {
+		let e = &self.entries[idx];
+		let s = e.path_off as usize;
+		let bytes = &self.paths[s..s + e.path_len as usize];
+		std::str::from_utf8(bytes).unwrap()
+	}
+
+	#[inline]
+	fn entry(&self, idx: usize) -> EntryRef<'_> {
+		EntryRef { tree: self, raw: &self.entries[idx] }
+	}
+
+	fn partition_point(&self, pred: impl Fn(&str) -> bool) -> usize {
+		self.partition_point_in(0..self.entries.len(), pred)
+	}
+
+	fn partition_point_in(&self, range: std::ops::Range<usize>, pred: impl Fn(&str) -> bool) -> usize {
+		let mut lo = 0usize;
+		let mut hi = range.end - range.start;
+		while lo < hi {
+			let mid = lo + (hi - lo) / 2;
+			if pred(self.path(range.start + mid)) {
+				lo = mid + 1;
+			} else {
+				hi = mid;
+			}
+		}
+		lo
+	}
+
+	fn mem_bytes(&self) -> usize {
+		let entries_b = self.entries.capacity() * std::mem::size_of::<CompactEntry>();
+		let paths_b = self.paths.capacity();
+		let extras_b = self.extras.capacity() * std::mem::size_of::<ExtraMeta>()
+			+ self.extras.iter().map(ExtraMeta::heap_bytes).sum::<usize>();
+		entries_b + paths_b + extras_b + 64
+	}
+}
+
+#[derive(Clone, Copy)]
+struct EntryRef<'a> {
+	tree: &'a CompactTree,
+	raw: &'a CompactEntry,
+}
+
+impl<'a> EntryRef<'a> {
+	#[inline]
+	fn path(&self) -> &'a str {
+		let s = self.raw.path_off as usize;
+		std::str::from_utf8(&self.tree.paths[s..s + self.raw.path_len as usize]).unwrap()
+	}
+
+	#[inline]
+	fn kind_code(&self) -> u8 {
+		self.raw.kind_code()
+	}
+
+	#[inline]
+	fn bytes(&self) -> u64 {
+		self.raw.bytes
+	}
+
+	#[inline]
+	fn rb(&self) -> usize {
+		self.raw.rb as usize
+	}
+
+	#[inline]
+	fn gm(&self) -> bool {
+		self.raw.gm()
+	}
+
+	#[inline]
+	fn inline_i(&self) -> u32 {
+		self.raw.inline_i
+	}
+
+	#[inline]
+	fn executable(&self) -> bool {
+		self.raw.executable()
+	}
+
+	#[inline]
+	fn manifest_sha(&self) -> Option<[u8; 32]> {
+		if self.raw.has_m_sha() { Some(self.raw.m_sha) } else { None }
+	}
+
+	#[inline]
+	fn file_sha(&self) -> Option<[u8; 32]> {
+		if self.raw.has_f_sha() { Some(self.raw.f_sha) } else { None }
+	}
+
+	#[inline]
+	fn media_id(&self) -> u16 {
+		self.raw.media_id()
+	}
+
+	fn extra_media(&self) -> Option<&'a str> {
+		if self.raw.extra_idx == EXTRA_NONE {
+			return None;
+		}
+		self.tree.extras[self.raw.extra_idx as usize].media.as_deref()
+	}
+
+	fn media_type(&self, media: &MediaInterner) -> Option<String> {
+		let id = self.raw.media_id();
+		if id == MEDIA_NONE {
+			None
+		} else if id == MEDIA_EXTRA {
+			self.extra_media().map(str::to_string)
+		} else {
+			media.resolve(id).map(|s| s.to_string())
 		}
 	}
 
 	#[inline]
-	fn target(&self) -> Option<&str> {
-		match &self.body {
-			EntryBody::Symlink { target } => target.as_deref(),
-			_ => None,
+	fn version_is_empty(&self) -> bool {
+		self.raw.ver_kind() == 0
+	}
+
+	fn version_string(&self) -> String {
+		match self.raw.ver_kind() {
+			0 => String::new(),
+			1 => format_uuid(&self.raw.version),
+			_ => self.tree.extras[self.raw.extra_idx as usize]
+				.version
+				.as_deref()
+				.unwrap_or("")
+				.to_string(),
 		}
 	}
 
-	fn mem_bytes(&self) -> usize {
-		let base = std::mem::size_of::<Self>() + 40;
-		let path_b = self.p.len() + 16;
-		let ver_b = self.v.heap_bytes();
-		let tg_b = self.target().map_or(0, |t| t.len() + 16);
-		base + path_b + ver_b + tg_b
+	fn version_eq(&self, other: &str) -> bool {
+		match self.raw.ver_kind() {
+			0 => other.is_empty(),
+			1 => parse_uuid(other) == Some(self.raw.version),
+			_ => self.tree.extras[self.raw.extra_idx as usize].version.as_deref() == Some(other),
+		}
+	}
+
+	fn target(&self) -> Option<&'a str> {
+		if self.raw.extra_idx == EXTRA_NONE {
+			return None;
+		}
+		self.tree.extras[self.raw.extra_idx as usize].target.as_deref()
 	}
 }
 
@@ -741,31 +1042,37 @@ struct ManifestMeta {
 	v2: bool,
 	file_sha256: [u8; 32],
 	bytes: u64,
-	media_type: Option<Arc<str>>,
+	media_id: u16,
+	media_extra: Option<Arc<str>>,
 	executable: Option<bool>,
 }
 
 impl ManifestMeta {
 	fn from_manifest(m: &ParsedManifest, media: &MediaInterner) -> Self {
-		Self {
-			v2: m.v2,
-			file_sha256: m.file_sha256,
-			bytes: m.bytes,
-			media_type: m.media_type.as_deref().map(|s| media.intern(s)),
-			executable: m.executable,
-		}
+		let (media_id, media_extra) = match m.media_type.as_deref() {
+			None => (MEDIA_NONE, None),
+			Some(s) => {
+				let id = media.intern_id(s);
+				if id == MEDIA_EXTRA { (id, Some(Arc::from(s))) } else { (id, None) }
+			}
+		};
+		Self { v2: m.v2, file_sha256: m.file_sha256, bytes: m.bytes, media_id, media_extra, executable: m.executable }
 	}
 
-	fn matches_entry(&self, entry: &SyncedEntry) -> bool {
+	fn matches_entry(&self, entry: EntryRef<'_>) -> bool {
 		if entry.file_sha() != Some(self.file_sha256) || self.bytes != entry.bytes() {
 			return false;
 		}
-		if self.v2
-			&& (self.media_type.is_none()
-				|| self.media_type.as_deref() != entry.media_type()
-				|| self.executable != Some(entry.executable()))
-		{
-			return false;
+		if self.v2 {
+			if self.media_id == MEDIA_NONE
+				|| self.media_id != entry.media_id()
+				|| self.executable != Some(entry.executable())
+			{
+				return false;
+			}
+			if self.media_id == MEDIA_EXTRA && self.media_extra.as_deref() != entry.extra_media() {
+				return false;
+			}
 		}
 		true
 	}
@@ -818,16 +1125,13 @@ enum CachedObject {
 }
 
 struct TreeSlot {
-	entries: Arc<Vec<Arc<SyncedEntry>>>,
+	tree: Arc<CompactTree>,
 	bytes: usize,
-	stamp: u64,
 }
 
 struct TreeCacheState {
 	slots: HashMap<u64, TreeSlot>,
 	total_bytes: usize,
-	max_bytes: usize,
-	clock: u64,
 }
 
 struct TreeCache {
@@ -835,45 +1139,45 @@ struct TreeCache {
 }
 
 impl TreeCache {
-	fn new(max_bytes: usize) -> Self {
-		Self {
-			inner: Mutex::new(TreeCacheState {
-				slots: HashMap::new(),
-				total_bytes: 0,
-				max_bytes: max_bytes.max(64 * 1024),
-				clock: 0,
-			}),
-		}
+	fn new() -> Self {
+		Self { inner: Mutex::new(TreeCacheState { slots: HashMap::new(), total_bytes: 0 }) }
 	}
 
-	fn sync(&self, snapshot_id: u64, incoming: Vec<WorkerEntry>, append: bool, media: &MediaInterner) -> bool {
-		let mut converted = Vec::with_capacity(incoming.len());
-		let mut added_bytes = 0usize;
-		for w in incoming {
-			let e = SyncedEntry::from_wire(w, media);
-			added_bytes += e.mem_bytes();
-			converted.push(Arc::new(e));
-		}
-		let mut guard = self.inner.lock().unwrap();
-		guard.clock += 1;
-		let stamp = guard.clock;
+	fn sync(
+		&self,
+		snapshot_id: u64,
+		incoming: Vec<WorkerEntry>,
+		append: bool,
+		complete: bool,
+		media: &MediaInterner,
+	) -> bool {
 		if append {
+			let mut guard = self.inner.lock().unwrap();
 			let Some(slot) = guard.slots.get_mut(&snapshot_id) else {
 				return false;
 			};
-			Arc::make_mut(&mut slot.entries).extend(converted);
-			slot.bytes += added_bytes;
-			slot.stamp = stamp;
-			guard.total_bytes += added_bytes;
-			Self::evict(&mut guard, snapshot_id);
+			let old_bytes = slot.bytes;
+			let tree = Arc::make_mut(&mut slot.tree);
+			tree.extend_wire(&incoming, media);
+			if complete {
+				tree.shrink_to_fit();
+			}
+			let new_bytes = tree.mem_bytes();
+			slot.bytes = new_bytes;
+			guard.total_bytes = guard.total_bytes.saturating_sub(old_bytes) + new_bytes;
 			return true;
 		}
+		let mut tree = CompactTree::from_wire(&incoming, media);
+		if complete {
+			tree.shrink_to_fit();
+		}
+		let bytes = tree.mem_bytes();
+		let mut guard = self.inner.lock().unwrap();
 		if let Some(old) = guard.slots.remove(&snapshot_id) {
 			guard.total_bytes = guard.total_bytes.saturating_sub(old.bytes);
 		}
-		guard.slots.insert(snapshot_id, TreeSlot { entries: Arc::new(converted), bytes: added_bytes, stamp });
-		guard.total_bytes += added_bytes;
-		Self::evict(&mut guard, snapshot_id);
+		guard.slots.insert(snapshot_id, TreeSlot { tree: Arc::new(tree), bytes });
+		guard.total_bytes += bytes;
 		true
 	}
 
@@ -885,58 +1189,22 @@ impl TreeCache {
 		removes: Vec<String>,
 		media: &MediaInterner,
 	) -> bool {
-		let converted: Vec<Arc<SyncedEntry>> =
-			upserts.into_iter().map(|w| Arc::new(SyncedEntry::from_wire(w, media))).collect();
-		let mut guard = self.inner.lock().unwrap();
-		let Some(base) = guard.slots.get(&base_snapshot_id) else {
+		let base = {
+			let guard = self.inner.lock().unwrap();
+			guard.slots.get(&base_snapshot_id).map(|s| s.tree.clone())
+		};
+		let Some(base_tree) = base else {
 			return false;
 		};
-		let mut entries = (*base.entries).clone();
-		let mut bytes = base.bytes;
-		for rm_path in &removes {
-			let pos = entries.partition_point(|e| tree_order(&e.p, rm_path) == Ordering::Less);
-			if pos < entries.len() && entries[pos].p.as_ref() == rm_path.as_str() {
-				bytes = bytes.saturating_sub(entries[pos].mem_bytes());
-				entries.remove(pos);
-			}
-		}
-		for up in converted {
-			let pos = entries.partition_point(|e| tree_order(&e.p, &up.p) == Ordering::Less);
-			let up_bytes = up.mem_bytes();
-			if pos < entries.len() && entries[pos].p.as_ref() == up.p.as_ref() {
-				bytes = bytes.saturating_sub(entries[pos].mem_bytes()) + up_bytes;
-				entries[pos] = up;
-			} else {
-				bytes += up_bytes;
-				entries.insert(pos, up);
-			}
-		}
-		guard.clock += 1;
-		let stamp = guard.clock;
+		let patched = CompactTree::patch(&base_tree, upserts, removes, media);
+		let bytes = patched.mem_bytes();
+		let mut guard = self.inner.lock().unwrap();
 		if let Some(old) = guard.slots.remove(&snapshot_id) {
 			guard.total_bytes = guard.total_bytes.saturating_sub(old.bytes);
 		}
-		guard.slots.insert(snapshot_id, TreeSlot { entries: Arc::new(entries), bytes, stamp });
+		guard.slots.insert(snapshot_id, TreeSlot { tree: Arc::new(patched), bytes });
 		guard.total_bytes += bytes;
-		Self::evict(&mut guard, snapshot_id);
 		true
-	}
-
-	fn evict(guard: &mut TreeCacheState, keep: u64) {
-		while (guard.slots.len() > MAX_SYNCED_TREES || guard.total_bytes > guard.max_bytes) && guard.slots.len() > 1 {
-			let oldest = guard
-				.slots
-				.iter()
-				.filter(|(&id, _)| id != keep)
-				.min_by_key(|(_, s)| s.stamp)
-				.map(|(&id, _)| id);
-			let Some(evict_id) = oldest else {
-				break;
-			};
-			if let Some(removed) = guard.slots.remove(&evict_id) {
-				guard.total_bytes = guard.total_bytes.saturating_sub(removed.bytes);
-			}
-		}
 	}
 
 	fn drop_tree(&self, snapshot_id: u64) {
@@ -946,13 +1214,9 @@ impl TreeCache {
 		}
 	}
 
-	fn get(&self, snapshot_id: u64) -> Option<Arc<Vec<Arc<SyncedEntry>>>> {
-		let mut guard = self.inner.lock().unwrap();
-		guard.clock += 1;
-		let stamp = guard.clock;
-		let slot = guard.slots.get_mut(&snapshot_id)?;
-		slot.stamp = stamp;
-		Some(slot.entries.clone())
+	fn get(&self, snapshot_id: u64) -> Option<Arc<CompactTree>> {
+		let guard = self.inner.lock().unwrap();
+		guard.slots.get(&snapshot_id).map(|s| s.tree.clone())
 	}
 
 	#[cfg(test)]
@@ -996,20 +1260,19 @@ impl ObjectError {
 impl SharedIndex {
 	pub fn new(storage_root: PathBuf, index_mib: usize) -> Self {
 		let total = index_mib.max(1) * 1024 * 1024;
-		let trigram_bytes = (total * 50) / 100;
-		let tree_bytes = (total * 35) / 100;
-		let object_bytes = total - trigram_bytes - tree_bytes;
+		let trigram_bytes = (total * 25) / 100;
+		let object_bytes = (total * 10) / 100;
 		Self {
 			storage_root,
 			trigrams: ShardedLru::new(trigram_bytes),
 			objects: ShardedLru::new(object_bytes),
-			trees: TreeCache::new(tree_bytes),
+			trees: TreeCache::new(),
 			media: MediaInterner::new(),
 		}
 	}
 
-	pub fn sync_tree(&self, snapshot_id: u64, entries: Vec<WorkerEntry>, append: bool) -> bool {
-		self.trees.sync(snapshot_id, entries, append, &self.media)
+	pub fn sync_tree(&self, snapshot_id: u64, entries: Vec<WorkerEntry>, append: bool, complete: bool) -> bool {
+		self.trees.sync(snapshot_id, entries, append, complete, &self.media)
 	}
 
 	pub fn patch_tree(
@@ -1026,7 +1289,7 @@ impl SharedIndex {
 		self.trees.drop_tree(snapshot_id);
 	}
 
-	fn get_tree(&self, snapshot_id: u64) -> Option<Arc<Vec<Arc<SyncedEntry>>>> {
+	fn get_tree(&self, snapshot_id: u64) -> Option<Arc<CompactTree>> {
 		self.trees.get(snapshot_id)
 	}
 
@@ -1109,7 +1372,7 @@ impl SharedIndex {
 		&self,
 		profile_id: &str,
 		profile_uuid: [u8; 16],
-		entry: &SyncedEntry,
+		entry: EntryRef<'_>,
 	) -> Result<Arc<ParsedManifest>, ObjectError> {
 		let manifest_sha = entry
 			.manifest_sha()
@@ -1117,12 +1380,12 @@ impl SharedIndex {
 		let key = ObjectKey { profile_uuid, sha256: manifest_sha };
 		let shard = shard_of(&key);
 		if let Some(CachedObject::Manifest(parsed)) = self.objects.get(shard, &key) {
-			verify_manifest_against_entry(&parsed, entry)?;
+			verify_manifest_against_entry(&parsed, entry, &self.media)?;
 			return Ok(parsed);
 		}
 		let manifest_hex = hex_encode_32(&manifest_sha);
 		let raw = self.read_verified_file(profile_id, &manifest_hex, manifest_sha, MAX_MANIFEST_BYTES, None)?;
-		let parsed = Arc::new(parse_manifest_bytes(&raw, entry)?);
+		let parsed = Arc::new(parse_manifest_bytes(&raw, entry, &self.media)?);
 		let cost = 256 + parsed.chunks.len() * 128;
 		self.objects.insert(shard, key, CachedObject::Manifest(parsed.clone()), cost);
 		Ok(parsed)
@@ -1153,7 +1416,7 @@ impl SharedIndex {
 		&self,
 		profile_uuid: [u8; 16],
 		manifest_sha: [u8; 32],
-		entry: &SyncedEntry,
+		entry: EntryRef<'_>,
 		trigram_query: &CompiledTrigramQuery,
 		use_regex: bool,
 		longest_line: usize,
@@ -1193,17 +1456,25 @@ impl SharedIndex {
 	}
 }
 
-fn verify_manifest_against_entry(m: &ParsedManifest, entry: &SyncedEntry) -> Result<(), ObjectError> {
+fn verify_manifest_against_entry(
+	m: &ParsedManifest,
+	entry: EntryRef<'_>,
+	media: &MediaInterner,
+) -> Result<(), ObjectError> {
 	if entry.file_sha() != Some(m.file_sha256) || m.bytes != entry.bytes() {
 		return Err(ObjectError::Integrity("Manifest does not match its entry".to_string()));
 	}
-	if m.v2 && (m.media_type.is_none() || m.media_type.as_deref() != entry.media_type() || m.executable != Some(entry.executable())) {
+	if m.v2
+		&& (m.media_type.is_none()
+			|| m.media_type.as_deref() != entry.media_type(media).as_deref()
+			|| m.executable != Some(entry.executable()))
+	{
 		return Err(ObjectError::Integrity("Manifest does not match its entry".to_string()));
 	}
 	Ok(())
 }
 
-fn parse_manifest_bytes(raw: &[u8], entry: &SyncedEntry) -> Result<ParsedManifest, ObjectError> {
+fn parse_manifest_bytes(raw: &[u8], entry: EntryRef<'_>, media: &MediaInterner) -> Result<ParsedManifest, ObjectError> {
 	let text = std::str::from_utf8(raw).map_err(|_| ObjectError::Integrity("Manifest is not JSON".to_string()))?;
 	let val: serde_json::Value =
 		serde_json::from_str(text).map_err(|_| ObjectError::Integrity("Manifest is not JSON".to_string()))?;
@@ -1270,7 +1541,7 @@ fn parse_manifest_bytes(raw: &[u8], entry: &SyncedEntry) -> Result<ParsedManifes
 		return Err(ObjectError::Integrity("Manifest chunks do not add up to the file".to_string()));
 	}
 	let parsed = ParsedManifest { v2, file_sha256, bytes, media_type, executable, chunks };
-	verify_manifest_against_entry(&parsed, entry)?;
+	verify_manifest_against_entry(&parsed, entry, media)?;
 	Ok(parsed)
 }
 
@@ -1377,6 +1648,10 @@ pub struct WorkerRequest {
 	pub entries: Vec<WorkerEntry>,
 }
 
+fn default_true() -> bool {
+	true
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SyncTreeMessage {
@@ -1384,6 +1659,8 @@ struct SyncTreeMessage {
 	snapshot_id: u64,
 	#[serde(default)]
 	append: bool,
+	#[serde(default = "default_true")]
+	complete: bool,
 	entries: Vec<WorkerEntry>,
 }
 
@@ -1526,44 +1803,43 @@ fn is_descendant(entry_path: &str, dir_path: &str) -> bool {
 		&& entry_path.as_bytes().starts_with(dir_path.as_bytes())
 }
 
-fn slice_tree<'a>(entries: &'a [Arc<SyncedEntry>], path: &str, from: Option<&str>) -> (usize, &'a [Arc<SyncedEntry>]) {
+fn slice_tree(tree: &CompactTree, path: &str, from: Option<&str>) -> std::ops::Range<usize> {
+	let n = tree.len();
 	let (lo, hi) = if path.is_empty() {
-		(0usize, entries.len())
+		(0usize, n)
 	} else {
-		let start = entries.partition_point(|e| tree_order(&e.p, path) == Ordering::Less);
-		if start >= entries.len() || entries[start].p.as_ref() != path {
-			return (0, &[]);
+		let start = tree.partition_point(|p| tree_order(p, path) == Ordering::Less);
+		if start >= n || tree.path(start) != path {
+			return 0..0;
 		}
-		if entries[start].kind_code() != 1 {
+		if tree.entries[start].kind_code() != 1 {
 			(start, start + 1)
 		} else {
-			let sub = &entries[start + 1..];
-			let rel_end = sub.partition_point(|e| is_descendant(&e.p, path));
+			let rel_end = tree.partition_point_in(start + 1..n, |p| is_descendant(p, path));
 			(start, start + 1 + rel_end)
 		}
 	};
 	if lo >= hi {
-		return (0, &[]);
+		return 0..0;
 	}
 	let Some(f) = from else {
-		return (lo, &entries[lo..hi]);
+		return lo..hi;
 	};
 	if f == path {
-		return (lo, &entries[lo..hi]);
+		return lo..hi;
 	}
 	let under_path = if path.is_empty() { true } else { is_descendant(f, path) };
 	if !under_path {
 		if !path.is_empty() && f.as_bytes() < path.as_bytes() {
-			return (lo, &entries[lo..hi]);
+			return lo..hi;
 		}
-		return (0, &[]);
+		return 0..0;
 	}
-	if entries[lo].kind_code() != 1 {
-		return (0, &[]);
+	if tree.entries[lo].kind_code() != 1 {
+		return 0..0;
 	}
-	let sub = &entries[lo + 1..hi];
-	let rel = sub.partition_point(|e| tree_order(&e.p, f) == Ordering::Less);
-	(lo + 1 + rel, &sub[rel..])
+	let rel = tree.partition_point_in(lo + 1..hi, |p| tree_order(p, f) == Ordering::Less);
+	(lo + 1 + rel)..hi
 }
 
 enum GlobPart {
@@ -1942,8 +2218,8 @@ fn kind_name(k: u8) -> &'static str {
 	}
 }
 
-fn at_cursor(entry: &SyncedEntry, offset: u64, line: u64) -> SearchCursor {
-	SearchCursor { path: entry.p.to_string(), version: entry.v.to_string_val(), offset, line }
+fn at_cursor(entry: EntryRef<'_>, offset: u64, line: u64) -> SearchCursor {
+	SearchCursor { path: entry.path().to_string(), version: entry.version_string(), offset, line }
 }
 
 fn hit_measure(shown: &SearchHit, v2: bool) -> usize {
@@ -1999,7 +2275,7 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 fn execute_search_with_tree(
 	index: &SharedIndex,
 	req: &WorkerRequest,
-	resolved_tree: Option<Arc<Vec<Arc<SyncedEntry>>>>,
+	resolved_tree: Option<Arc<CompactTree>>,
 ) -> Result<WorkerOk, WorkerError> {
 	let v2 = req.version == 2;
 	let use_regex = v2 && req.regex;
@@ -2013,15 +2289,16 @@ fn execute_search_with_tree(
 	} else {
 		None
 	};
-	let inline_entries: Vec<Arc<SyncedEntry>> = if use_ranges {
-		Vec::new()
-	} else {
-		req.entries.iter().map(|e| Arc::new(SyncedEntry::from_wire(e.clone(), &index.media))).collect()
-	};
+	let inline_tree = if use_ranges { CompactTree::new() } else { CompactTree::from_wire(&req.entries, &index.media) };
 	let glob = if use_ranges { req.glob.as_deref().map(CompiledGlob::parse) } else { None };
-	let (slice_start, entry_slice): (usize, &[Arc<SyncedEntry>]) = match &synced_tree {
-		Some(tree) => slice_tree(tree, &req.path, req.after.as_ref().map(|a| a.path.as_str())),
-		None => (0, &inline_entries),
+	let tree_ref: &CompactTree = match &synced_tree {
+		Some(tree) => tree.as_ref(),
+		None => &inline_tree,
+	};
+	let entry_range = if use_ranges {
+		slice_tree(tree_ref, &req.path, req.after.as_ref().map(|a| a.path.as_str()))
+	} else {
+		0..tree_ref.len()
 	};
 	let deadline = Instant::now() + Duration::from_millis(req.slice_ms);
 	let piece_bytes = req
@@ -2045,12 +2322,12 @@ fn execute_search_with_tree(
 	let mut scratch = ExecScratch::new();
 	let mut profile_uuid_checked: Option<[u8; 16]> = None;
 
-	let record_read = |entry: &SyncedEntry,
+	let record_read = |entry: EntryRef<'_>,
 	                   entry_idx: u32,
 	                   state: &mut PageState,
 	                   read_indices: &mut Vec<u32>,
 	                   read_ranges: &mut Vec<u32>| {
-		if entry.v.is_empty() {
+		if entry.version_is_empty() {
 			return;
 		}
 		if use_ranges {
@@ -2059,7 +2336,7 @@ fn execute_search_with_tree(
 			read_indices.push(entry_idx);
 		}
 		state.reads_count += 1;
-		state.read_bytes += entry.rb as usize;
+		state.read_bytes += entry.rb();
 	};
 
 	let push_hit = |shown: SearchHit, state: &mut PageState, hits: &mut Vec<SearchHit>| -> bool {
@@ -2073,25 +2350,26 @@ fn execute_search_with_tree(
 		true
 	};
 
-	for (local_idx, entry_arc) in entry_slice.iter().enumerate() {
-		let entry = entry_arc.as_ref();
-		let entry_idx = if use_ranges { (slice_start + local_idx) as u32 } else { entry.i };
+	for tree_idx in entry_range {
+		let entry = tree_ref.entry(tree_idx);
+		let entry_idx = if use_ranges { tree_idx as u32 } else { entry.inline_i() };
+		let entry_path = entry.path();
 		let kind = entry.kind_code();
 		let entry_bytes = entry.bytes();
 		if kind == 2 && !req.links {
 			continue;
 		}
 		let glob_matched = if use_ranges {
-			glob.as_ref().map_or(true, |g| g.matches_entry(&entry.p, &req.path))
+			glob.as_ref().map_or(true, |g| g.matches_entry(entry_path, &req.path))
 		} else {
-			entry.gm
+			entry.gm()
 		};
 		let is_text = !req.names_only && kind == 0 && entry_bytes > 0 && glob_matched;
 		if state.examined > 0
 			&& (state.reads_count >= READS_PER_ANSWER
 				|| state.read_bytes >= READS_BYTES
 				|| Instant::now() >= deadline
-				|| (files_only && is_text && state.hit_bytes + shown_line(&entry.p, 0, "") + 8 > budget))
+				|| (files_only && is_text && state.hit_bytes + shown_line(entry_path, 0, "") + 8 > budget))
 		{
 			return Ok(WorkerOk {
 				hits,
@@ -2112,17 +2390,17 @@ fn execute_search_with_tree(
 		if kind == 1 {
 			record_read(entry, entry_idx, &mut state, &mut read_indices, &mut read_ranges);
 			if req.names_only
-				&& entry.p.as_ref() != req.path.as_str()
-				&& !entry.v.is_empty()
+				&& entry_path != req.path.as_str()
+				&& !entry.version_is_empty()
 				&& glob_matched
-				&& matcher.find_str(basename(&entry.p), &mut scratch).is_some()
+				&& matcher.find_str(basename(entry_path), &mut scratch).is_some()
 			{
 				let hit = SearchHit {
-					path: entry.p.to_string(),
+					path: entry_path.to_string(),
 					kind: "folder".to_string(),
 					line: 0,
 					text: String::new(),
-					version: entry.v.to_string_val(),
+					version: entry.version_string(),
 					offset: 0,
 					target: None,
 					before: None,
@@ -2149,13 +2427,13 @@ fn execute_search_with_tree(
 			continue;
 		}
 		if req.names_only {
-			if glob_matched && matcher.find_str(basename(&entry.p), &mut scratch).is_some() {
+			if glob_matched && matcher.find_str(basename(entry_path), &mut scratch).is_some() {
 				let hit = SearchHit {
-					path: entry.p.to_string(),
+					path: entry_path.to_string(),
 					kind: kind_name(kind).to_string(),
 					line: 0,
 					text: String::new(),
-					version: entry.v.to_string_val(),
+					version: entry.version_string(),
 					offset: 0,
 					target: if kind == 2 { entry.target().map(str::to_string) } else { None },
 					before: None,
@@ -2211,8 +2489,8 @@ fn execute_search_with_tree(
 					}
 					logs.push(format!(
 						"folder-service: search passed over {} ({}): {}",
-						entry.p,
-						entry.v.to_string_val(),
+						entry_path,
+						entry.version_string(),
 						err.message()
 					));
 					unreadable += 1;
@@ -2224,7 +2502,7 @@ fn execute_search_with_tree(
 		let resume = req
 			.after
 			.as_ref()
-			.filter(|a| a.path.as_str() == entry.p.as_ref() && entry.v.eq_str(&a.version));
+			.filter(|a| a.path.as_str() == entry_path && entry.version_eq(&a.version));
 		let manifest_sha = entry.manifest_sha();
 		let mut already_indexed = false;
 
@@ -2235,8 +2513,8 @@ fn execute_search_with_tree(
 					TrigramProbe::MetadataMismatch => {
 						logs.push(format!(
 							"folder-service: search passed over {} ({}): Manifest does not match its entry",
-							entry.p,
-							entry.v.to_string_val()
+							entry_path,
+							entry.version_string()
 						));
 						unreadable += 1;
 						continue;
@@ -2265,8 +2543,8 @@ fn execute_search_with_tree(
 			Err(err) => {
 				logs.push(format!(
 					"folder-service: search passed over {} ({}): {}",
-					entry.p,
-					entry.v.to_string_val(),
+					entry_path,
+					entry.version_string(),
 					err.message()
 				));
 				unreadable += 1;
@@ -2304,8 +2582,8 @@ fn execute_search_with_tree(
 				Err(err) => {
 					logs.push(format!(
 						"folder-service: search passed over {} ({}): {}",
-						entry.p,
-						entry.v.to_string_val(),
+						entry_path,
+						entry.version_string(),
 						err.message()
 					));
 					unreadable += 1;
@@ -2403,11 +2681,11 @@ fn execute_search_with_tree(
 								count += 1;
 							} else {
 								let shown = SearchHit {
-									path: entry.p.to_string(),
+									path: entry_path.to_string(),
 									kind: "file".to_string(),
 									line: line + 1,
 									text: around(&text_line, found, req.case_sensitive),
-									version: entry.v.to_string_val(),
+									version: entry.version_string(),
 									offset: line_start,
 									target: None,
 									before: if context > 0 {
@@ -2429,8 +2707,8 @@ fn execute_search_with_tree(
 									};
 									if count > 0 {
 										files.push(SearchFile {
-											path: entry.p.to_string(),
-											version: entry.v.to_string_val(),
+											path: entry_path.to_string(),
+											version: entry.version_string(),
 											count,
 											partial: Some(true),
 										});
@@ -2495,11 +2773,11 @@ fn execute_search_with_tree(
 								count += 1;
 							} else {
 								let shown = SearchHit {
-									path: entry.p.to_string(),
+									path: entry_path.to_string(),
 									kind: "file".to_string(),
 									line: line + 1,
 									text: around(&text_line, found, req.case_sensitive),
-									version: entry.v.to_string_val(),
+									version: entry.version_string(),
 									offset: line_start,
 									target: None,
 									before: if context > 0 {
@@ -2521,8 +2799,8 @@ fn execute_search_with_tree(
 									};
 									if count > 0 {
 										files.push(SearchFile {
-											path: entry.p.to_string(),
-											version: entry.v.to_string_val(),
+											path: entry_path.to_string(),
+											version: entry.version_string(),
 											count,
 											partial: Some(true),
 										});
@@ -2577,11 +2855,11 @@ fn execute_search_with_tree(
 								count += 1;
 							} else {
 								let shown = SearchHit {
-									path: entry.p.to_string(),
+									path: entry_path.to_string(),
 									kind: "file".to_string(),
 									line: line + 1,
 									text: around(&text_line, found, req.case_sensitive),
-									version: entry.v.to_string_val(),
+									version: entry.version_string(),
 									offset: line_start,
 									target: None,
 									before: if context > 0 {
@@ -2603,8 +2881,8 @@ fn execute_search_with_tree(
 									};
 									if count > 0 {
 										files.push(SearchFile {
-											path: entry.p.to_string(),
-											version: entry.v.to_string_val(),
+											path: entry_path.to_string(),
+											version: entry.version_string(),
 											count,
 											partial: Some(true),
 										});
@@ -2650,8 +2928,8 @@ fn execute_search_with_tree(
 				};
 				if count > 0 {
 					files.push(SearchFile {
-						path: entry.p.to_string(),
-						version: entry.v.to_string_val(),
+						path: entry_path.to_string(),
+						version: entry.version_string(),
 						count,
 						partial: Some(true),
 					});
@@ -2681,12 +2959,12 @@ fn execute_search_with_tree(
 
 		if count > 0 || (files_only && continued && !skipped) {
 			files.push(SearchFile {
-				path: entry.p.to_string(),
-				version: entry.v.to_string_val(),
+				path: entry_path.to_string(),
+				version: entry.version_string(),
 				count,
 				partial: None,
 			});
-			state.hit_bytes += shown_line(&entry.p, count, "");
+			state.hit_bytes += shown_line(entry_path, count, "");
 		}
 		if !skipped {
 			searched += 1;
@@ -2744,7 +3022,7 @@ fn write_frame<W: Write>(writer: &mut W, payload: &[u8]) -> io::Result<()> {
 
 struct SearchJob {
 	req: WorkerRequest,
-	synced_tree: Option<Arc<Vec<Arc<SyncedEntry>>>>,
+	synced_tree: Option<Arc<CompactTree>>,
 }
 
 struct JobQueue {
@@ -2819,7 +3097,7 @@ pub fn run_worker_io<R: Read, W: Write + Send + 'static>(
 			Ok(None) => break,
 			Ok(Some(bytes)) => match parse_worker_message(&bytes) {
 				Ok(WorkerMessage::SyncTree(msg)) => {
-					let resp = if index.sync_tree(msg.snapshot_id, msg.entries, msg.append) {
+					let resp = if index.sync_tree(msg.snapshot_id, msg.entries, msg.append, msg.complete) {
 						WorkerResponse { id: msg.id, synced: Some(true), ok: None, error: None }
 					} else {
 						WorkerResponse {
@@ -3061,8 +3339,8 @@ mod tests {
 		}
 		let r = execute_search(&index, &base_request(entries, Some("file_0399_content"))).unwrap();
 		assert_eq!(r.hits.len(), 1);
-		assert!(index.trigrams.total_bytes() <= (1024 * 1024 * 50) / 100 + 65536);
-		assert!(index.objects.total_bytes() <= (1024 * 1024 * 15) / 100 + 65536);
+		assert!(index.trigrams.total_bytes() <= (1024 * 1024 * 25) / 100 + 65536);
+		assert!(index.objects.total_bytes() <= (1024 * 1024 * 10) / 100 + 65536);
 		let _ = fs::remove_dir_all(&dir);
 	}
 
@@ -3219,23 +3497,21 @@ mod tests {
 			write_object_file(&dir, "docs-other/c.ts", "00000000-0000-4000-8000-000000000014", b"needle three\n", 1024, 5),
 		];
 		let media = MediaInterner::new();
-		let synced_vec: Vec<Arc<SyncedEntry>> =
-			entries.iter().map(|e| Arc::new(SyncedEntry::from_wire(e.clone(), &media))).collect();
+		let compact = CompactTree::from_wire(&entries, &media);
 		assert_eq!(tree_order("docs/b.ts", "docs-other"), Ordering::Less);
-		assert_eq!(slice_tree(&synced_vec, "docs", None).1.len(), 3);
-		let (sub_start, sub_slice) = slice_tree(&synced_vec, "docs", Some("docs/b.ts"));
-		assert_eq!(sub_start, 3);
-		assert_eq!(sub_slice.len(), 1);
-		assert_eq!(sub_slice[0].p.as_ref(), "docs/b.ts");
+		assert_eq!(slice_tree(&compact, "docs", None), 1..4);
+		let sub_range = slice_tree(&compact, "docs", Some("docs/b.ts"));
+		assert_eq!(sub_range, 3..4);
+		assert_eq!(compact.path(sub_range.start), "docs/b.ts");
 		let g = CompiledGlob::parse("**/*.ts");
 		assert!(!g.matches_entry("docs/a.md", ""));
 		assert!(g.matches_entry("docs/b.ts", ""));
 		assert!(g.matches_entry("docs/b.ts", "docs"));
 
 		let index = SharedIndex::new(dir.clone(), 8);
-		assert!(!index.sync_tree(999, entries[..1].to_vec(), true));
-		assert!(index.sync_tree(42, entries[..3].to_vec(), false));
-		assert!(index.sync_tree(42, entries[3..].to_vec(), true));
+		assert!(!index.sync_tree(999, entries[..1].to_vec(), true, true));
+		assert!(index.sync_tree(42, entries[..3].to_vec(), false, false));
+		assert!(index.sync_tree(42, entries[3..].to_vec(), true, true));
 
 		let mut need_prof = base_request(Vec::new(), Some("needle"));
 		need_prof.snapshot_id = Some(42);
@@ -3359,7 +3635,7 @@ mod tests {
 		assert_eq!(by_id[&4]["ok"]["hits"][0]["path"], "b.rs");
 
 		let index = SharedIndex::new(dir.clone(), 1);
-		let batch: Vec<WorkerEntry> = (0..500u32)
+		let batch: Vec<WorkerEntry> = (0..2_000u32)
 			.map(|i| WorkerEntry {
 				i,
 				k: 1,
@@ -3375,12 +3651,52 @@ mod tests {
 				gm: false,
 			})
 			.collect();
-		for snap in 1..=10u64 {
-			assert!(index.sync_tree(snap, batch.clone(), false));
+		assert!(index.sync_tree(1, batch, false, true));
+		let before_bytes = index.trees.total_bytes();
+		assert!(before_bytes < 2_000 * 170, "compact tree was {before_bytes} bytes");
+
+		let mut upserts = Vec::new();
+		let mut removes = Vec::new();
+		for i in 0..256u32 {
+			removes.push(format!("folder_{:04}/nested/subpath", i * 4));
+			upserts.push(WorkerEntry {
+				i: 0,
+				k: 1,
+				p: format!("folder_{:04}/nested/subpath", i * 4 + 1),
+				v: format!("00000000-0000-4000-8000-10000000{i:04x}"),
+				m: None,
+				f: None,
+				b: 0,
+				t: None,
+				x: false,
+				tg: None,
+				rb: 120,
+				gm: false,
+			});
+			upserts.push(WorkerEntry {
+				i: 0,
+				k: 1,
+				p: format!("folder_{:04}/nested/added", i * 4 + 2),
+				v: format!("00000000-0000-4000-8000-20000000{i:04x}"),
+				m: None,
+				f: None,
+				b: 0,
+				t: None,
+				x: false,
+				tg: None,
+				rb: 120,
+				gm: false,
+			});
 		}
-		assert!(index.trees.total_bytes() <= (1024 * 1024 * 35) / 100 + 65536);
-		assert!(index.get_tree(10).is_some());
-		assert!(index.get_tree(1).is_none());
+		assert!(index.patch_tree(1, 2, upserts, removes));
+		let patched = index.get_tree(2).unwrap();
+		assert_eq!(patched.len(), 2_000);
+		for i in 1..patched.len() {
+			assert_eq!(tree_order(patched.path(i - 1), patched.path(i)), Ordering::Less);
+		}
+		index.drop_tree(1);
+		index.drop_tree(2);
+		assert_eq!(index.trees.total_bytes(), 0);
 
 		let _ = fs::remove_dir_all(&dir);
 	}

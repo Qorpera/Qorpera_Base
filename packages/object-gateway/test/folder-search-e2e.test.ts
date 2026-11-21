@@ -575,7 +575,7 @@ describe.skipIf(!program)("native Rust search-worker E2E", () => {
 		expect(finalRust.hits).toHaveLength(40);
 
 		const rolloverEntry = await storeFile(root, "repo/rollover_marker.ts", "rollover_final_token\n", 9_999, 4096);
-		for (let i = 0; i < 600; i++) {
+		for (let i = 0; i < 1_100; i++) {
 			tree.put({ ...rolloverEntry, path: `repo/rollover_${i % 10}.ts`, version: v(2_000 + i) });
 		}
 		tree.put(rolloverEntry);
@@ -596,5 +596,221 @@ describe.skipIf(!program)("native Rust search-worker E2E", () => {
 		);
 		expect(afterRollover).toEqual(jsAfterRollover);
 		expect(afterRollover.hits.some((h) => h.path === "repo/rollover_marker.ts")).toBe(true);
+	});
+
+	it("reconciles mid-sync mutations and delta rollover during multi-chunk (> 2048 entries) full sync", async () => {
+		const root = await makeTempDir();
+		const baseObj = await storeFile(root, "pkg_00/base.ts", "export const base_val = 1;\n", 1, 4096);
+		const earlyMut = await storeFile(
+			root,
+			"pkg_00/file_0000.ts",
+			"export const MID_SYNC_EARLY_MUTATION = 1;\n",
+			2,
+			4096,
+		);
+		const lateAdd = await storeFile(root, "pkg_99/file_9999.ts", "export const MID_SYNC_LATE_ADD = 1;\n", 3, 4096);
+		const objects = new NasObjects({ root, cacheBytes: 2 * 1024 * 1024 });
+		const worker = new NativeSearchWorker({
+			folderProgram: program!,
+			storageRoot: root,
+			indexMiB: 16,
+			threads: 2,
+			log: () => {},
+		});
+		cleanup.push(() => worker.close());
+
+		const buildLargeTree = (seedOffset: number): ViewTree => {
+			const entries: CoreEntry[] = [];
+			for (let d = 0; d < 26; d++) {
+				entries.push(folder(`pkg_${String(d).padStart(2, "0")}`, seedOffset + d + 1));
+			}
+			for (let i = 0; i < 2_574; i++) {
+				const d = i % 26;
+				entries.push({
+					...baseObj,
+					path: `pkg_${String(d).padStart(2, "0")}/file_${String(i).padStart(4, "0")}.ts`,
+					version: v(seedOffset + 100 + i),
+				});
+			}
+			return makeTree(entries);
+		};
+
+		const tree1 = buildLargeTree(1_000);
+		let servingCalls = 0;
+		let mutatedMidSync = false;
+		const midSyncAnswer = await searchViewNative(
+			worker,
+			{
+				tree: tree1,
+				links: true,
+				resolveProfile: async () => PROFILE,
+				now: Date.now,
+				serving: () => {
+					servingCalls++;
+					if (servingCalls === 2 && !mutatedMidSync) {
+						mutatedMidSync = true;
+						tree1.put(earlyMut);
+						tree1.remove("pkg_00/file_0000.ts");
+						tree1.put(earlyMut);
+						tree1.remove("pkg_01/file_0001.ts");
+						tree1.put(lateAdd);
+					}
+				},
+			},
+			makeRequest({ query: "MID_SYNC_" }),
+		);
+		expect(mutatedMidSync).toBe(true);
+		const jsTree1 = await searchView(
+			{
+				tree: tree1,
+				links: true,
+				read: (entry, offset, length) => objects.read(PROFILE, entry, offset, length),
+				now: Date.now,
+			},
+			makeRequest({ query: "MID_SYNC_" }),
+		);
+		expect(midSyncAnswer).toEqual(jsTree1);
+		expect(midSyncAnswer.hits.map((h) => h.path)).toEqual(["pkg_00/file_0000.ts", "pkg_99/file_9999.ts"]);
+		expect(midSyncAnswer.reads.some((r) => r.path === "pkg_01/file_0001.ts")).toBe(false);
+
+		const tree2 = buildLargeTree(20_000);
+		const rolloverFinal = await storeFile(
+			root,
+			"pkg_00/file_0000.ts",
+			"export const ROLLOVER_MID_SYNC_OK = 1;\n",
+			9,
+			4096,
+		);
+		let servingCalls2 = 0;
+		let overflowedMidSync = false;
+		const firstAfterOverflow = await searchViewNative(
+			worker,
+			{
+				tree: tree2,
+				links: true,
+				resolveProfile: async () => PROFILE,
+				now: Date.now,
+				serving: () => {
+					servingCalls2++;
+					if (servingCalls2 === 2 && !overflowedMidSync) {
+						overflowedMidSync = true;
+						for (let k = 0; k < 1_100; k++) {
+							tree2.put({ ...baseObj, path: `pkg_00/churn_${k % 5}.ts`, version: v(40_000 + k) });
+						}
+						tree2.put(rolloverFinal);
+					}
+				},
+			},
+			makeRequest({ query: "ROLLOVER_MID_SYNC_OK" }),
+		);
+		expect(overflowedMidSync).toBe(true);
+		expect(firstAfterOverflow.unreadable).toBe(0);
+
+		const refreshed = await searchViewNative(
+			worker,
+			{ tree: tree2, links: true, resolveProfile: async () => PROFILE, now: Date.now },
+			makeRequest({ query: "ROLLOVER_MID_SYNC_OK" }),
+		);
+		const jsTree2 = await searchView(
+			{
+				tree: tree2,
+				links: true,
+				read: (entry, offset, length) => objects.read(PROFILE, entry, offset, length),
+				now: Date.now,
+			},
+			makeRequest({ query: "ROLLOVER_MID_SYNC_OK" }),
+		);
+		expect(refreshed).toEqual(jsTree2);
+		expect(refreshed.hits.map((h) => h.path)).toEqual(["pkg_00/file_0000.ts"]);
+	});
+
+	it("serves concurrent multi-view searches exceeding treeBudgetBytes via back-pressure and idle eviction without UNAVAILABLE", async () => {
+		const root = await makeTempDir();
+		const sharedObj = await storeFile(root, "d00/shared.ts", "export const shared_filler = 1;\n", 1, 4096);
+		const objects = new NasObjects({ root, cacheBytes: 2 * 1024 * 1024 });
+		const worker = new NativeSearchWorker({
+			folderProgram: program!,
+			storageRoot: root,
+			indexMiB: 1,
+			threads: 4,
+			log: () => {},
+		});
+		cleanup.push(() => worker.close());
+
+		const trees: ViewTree[] = [];
+		const extraPatches: CoreEntry[][] = [];
+		for (let t = 0; t < 6; t++) {
+			const sentinel = await storeFile(
+				root,
+				`d00/sentinel_v${t}.ts`,
+				`export const VIEW_SENTINEL_${t} = "ok_${t}";\n`,
+				100 + t,
+				4096,
+			);
+			const entries: CoreEntry[] = [folder("d00", 200 + t), sentinel];
+			for (let i = 0; i < 2_498; i++) {
+				entries.push({
+					...sharedObj,
+					path: `d00/f_${String(t)}_${String(i).padStart(4, "0")}.ts`,
+					version: v(50_000 + t * 5_000 + i),
+				});
+			}
+			trees.push(makeTree(entries));
+			const patchBatch: CoreEntry[] = [];
+			for (let k = 0; k < 12; k++) {
+				patchBatch.push({
+					...sentinel,
+					path: `d00/patched_${t}_${String(k).padStart(2, "0")}.ts`,
+					version: v(90_000 + t * 100 + k),
+				});
+			}
+			extraPatches.push(patchBatch);
+		}
+
+		const concurrent = await Promise.all(
+			trees.flatMap((tree, idx) => [
+				searchViewNative(
+					worker,
+					{ tree, links: true, resolveProfile: async () => PROFILE, now: Date.now },
+					makeRequest({ query: `VIEW_SENTINEL_${idx}`, regex: idx % 2 === 0 }),
+				),
+				(async () => {
+					if (idx < 3) {
+						for (const p of extraPatches[idx]!) tree.put(p);
+					}
+					return searchViewNative(
+						worker,
+						{ tree, links: true, resolveProfile: async () => PROFILE, now: Date.now },
+						makeRequest({ query: `sentinel_v${idx}`, namesOnly: true }),
+					);
+				})(),
+			]),
+		);
+
+		for (let idx = 0; idx < trees.length; idx++) {
+			const contentAns = concurrent[idx * 2]!;
+			const nameAns = concurrent[idx * 2 + 1]!;
+			expect(contentAns.hits.some((h) => h.path === `d00/sentinel_v${idx}.ts`)).toBe(true);
+			expect(nameAns.hits.map((h) => h.path)).toEqual([`d00/sentinel_v${idx}.ts`]);
+		}
+		expect(worker.liveTreeBytes).toBeLessThanOrEqual(worker.treeBudgetBytes);
+
+		const verifyReq = makeRequest({ query: "VIEW_SENTINEL_0" });
+		const finalNative = await searchViewNative(
+			worker,
+			{ tree: trees[0]!, links: true, resolveProfile: async () => PROFILE, now: Date.now },
+			verifyReq,
+		);
+		const finalJs = await searchView(
+			{
+				tree: trees[0]!,
+				links: true,
+				read: (entry, offset, length) => objects.read(PROFILE, entry, offset, length),
+				now: Date.now,
+			},
+			verifyReq,
+		);
+		expect(finalNative).toEqual(finalJs);
+		expect(finalNative.hits).toHaveLength(13);
 	});
 });

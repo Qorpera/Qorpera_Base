@@ -412,10 +412,11 @@ service, so the execution host stays small:
     Wave-2), we chose an off-event-loop pure-Rust Thompson NFA + trigram search worker inside `qorpera-folder` so
     patterns run on every node with **no change to `qorpera-folder-service.service`** (no experimental V8 flag). When
     `/opt/qorpera-folder-service/qorpera-folder` is present, `folder-service` lazily spawns a persistent
-    zero-credential child process (`qorpera-folder search-worker --storage-root <dir> --index-mib 256 --threads 4`)
+    zero-credential child process (`qorpera-folder search-worker --storage-root <dir> --index-mib 384 --threads 4`)
     over 4-byte length-prefixed JSON frames on stdin/stdout and advertises `regex: true` in `hello`.
-    - **Content-addressed index & linear-time regex.** The worker maintains a sharded LRU cache strictly bounded by
-      `--index-mib` (default `256 MiB`: `50%` trigram filters, `35%` compact `Arc`-shared synced view trees, `15%`
+    - **Content-addressed index & linear-time regex.** All worker caches are budgeted inside `--index-mib` (default
+      `384 MiB`: `65%` / `249.6 MiB` arena-packed `CompactTree` synced views at ~136 bytes/path, holding all
+      `SEARCH_PATHS = 1,500,000` paths simultaneously; `25%` / `96 MiB` sharded LRU trigram filters; `10%` / `38.4 MiB`
       verified manifests/chunks), keyed by `(profile_id, manifest_sha256)`. On cache miss, objects are opened under
       `--storage-root/<profile_id>/<sha256>` with `O_NOFOLLOW` and verified against SHA-256 and manifest metadata
       before indexing; verified immutable objects share index entries across parallel views with zero cross-tenant
@@ -425,14 +426,18 @@ service, so the execution host stays small:
       matches a full scan identically. Patterns run on a pure-Rust Thompson NFA engine (`crates/qorpera-folder/src/re.rs`,
       `O(m * n)` worst-case, zero backtracking) with exact `REGEX_*` refusal codes and Unicode case folding (`ς -> σ`)
       matching `regex.ts` (count limit 16, no back-references, lookaround, inline flags, `\p` or POSIX classes).
-    - **Incremental tree sync & event-loop budget.** Each `ViewTree` syncs to the worker once on first search via
-      `2,048`-entry chunks, yielding to the Node event loop every `10 ms` (`setImmediate`) and checking `serving()` on
-      each turn (measured on `node02` under `node --jitless` at 100,000 paths: `695 ms` total, `12.8 ms` max event-loop
-      lag). Subsequent feed mutations apply an incremental `patchTree` delta from `ViewTree.changesSince(rev)` (up to
-      512 recent mutations; measured at 100,000 paths: `2.7 ms` total, `0.0 ms` max event-loop lag), falling back to a
-      cooperative full sync only on delta rollover or worker restart. In-flight searches reference-count snapshots on
-      both sides (the worker's reader thread resolves each snapshot `Arc` synchronously before a later `dropTree` frame
-      can drop it) and coalesce concurrent syncs per `ViewTree`.
+    - **Incremental tree sync, budget back-pressure & event-loop budget.** Each `ViewTree` syncs to the worker once on
+      first search via `2,048`-entry chunks, yielding to the Node event loop every `10 ms` (`setImmediate`) and
+      checking `serving()` on each turn (measured on `node02` under `node --jitless`: 100,000 paths in `680.6 ms`,
+      `12.6–32.1 ms` max lag; 1,000,000 paths in `7,025.2 ms`, `17.4 ms` max lag). Subsequent feed mutations apply an
+      incremental `patchTree` delta from `ViewTree.changesSince(rev)` (retaining at least 512 newest revisions) using a
+      yielding `O(N + K)` merge in Node and a single-pass `O(N + K)` linear merge in Rust (measured under `--jitless`:
+      at 100,000 paths, 1-delta `16.0 ms` / `3.1 ms` lag and 512-delta `28.2 ms` / `13.0 ms` lag; at 1,000,000 paths,
+      1-delta `115.3 ms` / `18.2 ms` lag and 512-delta `132.7 ms` / `18.9 ms` lag), falling back to a cooperative full
+      sync on delta rollover, idle eviction under custom small budgets, or worker restart. Node owns snapshot lifetime
+      and enforces the `65%` tree budget via idle-only LRU eviction (`inUse === 0`) plus FIFO back-pressure when all
+      cached views are actively searching, so neither active nor mid-sync snapshots are ever silently evicted; the
+      worker's reader thread resolves each snapshot `Arc` synchronously before a later `dropTree` frame can remove it.
     - **JS fallback.** When `folderProgram` is unset (legacy unit tests), `folder-service` falls back to in-process
       `search.ts` and `regex.ts` (`SEARCH_RUNNING = 4`, advertising `regex: true` only if node started with
       `--enable-experimental-regexp-engine`).
@@ -461,7 +466,9 @@ service, so the execution host stays small:
     another); an operator mount's view is `BAD_REQUEST`. A storage server that cannot be read now fails the page
     (`UNAVAILABLE`), and so does a share with no folder for the company's objects (an unmounted share shows an empty
     mountpoint), so a page never looks empty because the share is gone. A file whose bytes are missing from a share
-    that is there, or fail their hash check, is passed over, counted in `unreadable`, logged and not read. A `path` that names a file may give an empty page; that only confirms what the
+    that is there, or fail their hash check, is passed over, counted in `unreadable`, logged and not read (on a cache
+    miss; once verified and cached in `NasObjects` or the worker's content-addressed trigram index, immutable objects
+    are served or skipped from memory after checking the company's profile directory once per search). A `path` that names a file may give an empty page; that only confirms what the
     model named.
 - **What a page read.** `reads` names every folder whose names it walked, every file whose bytes it read (binary
   ones too), and every entry whose name is a hit, each with its receipt. A folder shown only because it holds readable
@@ -472,11 +479,12 @@ service, so the execution host stays small:
   company take about 1 GiB of the service's memory beside its object cache (`cacheMiB`, 1 GiB by default). The
   Node-side `SyncedTreeSnapshot` holds only references to existing `TreeEntry` objects and builds `SearchRead` entries
   on demand for the `<= 4,000` returned read ranges (~12 MiB pointer overhead at `SEARCH_PATHS = 1,500,000`). The
-  persistent Rust search worker budgets all three caches strictly inside `--index-mib 256` (`128 MiB` trigram filters,
-  `89.6 MiB` compact `Arc`-shared synced trees at ~241 bytes/path, `38.4 MiB` verified manifests/chunks; measured on
-  `node02` at `48.2 MiB` `VmRSS` after indexing 10,000 files and `71.2 MiB` `VmRSS` with an additional 100,000-path
-  synced tree, dropping to `70.5 MiB` after incremental `patchTree` + old-snapshot release), keeping combined Node +
-  Rust worst-case memory (~2.4 GiB) comfortably inside the unit's 3 GiB `MemoryMax`.
+  persistent Rust search worker budgets all three caches inside `--index-mib 384` (`249.6 MiB` arena-packed
+  `CompactTree` synced views at ~136 bytes/path — enough to hold all `1,500,000` `SEARCH_PATHS` at once — `96.0 MiB`
+  trigram filters, and `38.4 MiB` verified manifests/chunks; measured on `node02` at `47.3 MiB` `VmRSS` after indexing
+  10,000 files, `19.0 MiB` `VmRSS` for a 100,000-path synced tree, and `130.5 MiB` `VmRSS` for a 1,000,000-path synced
+  tree, returning to `130.7 MiB` after a 512-delta `patchTree` + old-snapshot drop), keeping combined Node (~2.15 GiB)
+  + Rust (~0.42 GiB) worst-case memory (~2.57 GiB) comfortably inside the unit's 3 GiB `MemoryMax`.
 - **Bounds for search in every run (keyholes S4).** The unit's `MemoryMax` is 3 GiB.
   - The trees of the node's run views hold at most 1,500,000 paths in all (`SEARCH_PATHS`, about 1 GiB), counting the
     trees being listed for them page by page (a first listing, and a listing again, which holds the old tree and the
