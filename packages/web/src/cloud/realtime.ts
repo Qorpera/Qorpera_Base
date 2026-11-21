@@ -152,7 +152,10 @@ function keepSubscribed(cloud: Cloud, source: ChannelSource, onHealth: RealtimeH
 				failed = true;
 				subscribed = false;
 				missed = true;
-				if (source.refused?.(error instanceof Error ? error.message : undefined)) {
+				if (
+					cloud.supabase.realtime?.isConnected() !== false &&
+					source.refused?.(error instanceof Error ? error.message : undefined)
+				) {
 					tryNow();
 					return;
 				}
@@ -194,6 +197,7 @@ function keepSubscribed(cloud: Cloud, source: ChannelSource, onHealth: RealtimeH
 		const topic = source.topic();
 		if (!(await free(topic, old))) {
 			renewing = false;
+			report("Realtime channel cleanup timed out");
 			schedule();
 			return;
 		}
@@ -251,7 +255,7 @@ function keepSubscribed(cloud: Cloud, source: ChannelSource, onHealth: RealtimeH
 			clearTimeout(grace);
 			grace = undefined;
 			listening.abort();
-			if (channel) void cloud.supabase.removeChannel(channel);
+			if (channel) void cloud.supabase.removeChannel(channel).catch(() => undefined);
 			channel = undefined;
 			onHealth("stopped");
 		},
@@ -307,7 +311,7 @@ export function subscribeCompanyRealtime(
 			return {
 				live: () => subscription.live(),
 				stop() {
-					onSidebar = undefined;
+					if (onSidebar === listener) onSidebar = undefined;
 				},
 			};
 		},
