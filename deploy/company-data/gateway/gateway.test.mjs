@@ -11,6 +11,7 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http from "node:http";
+import net from "node:net";
 import { after, before, describe, it } from "node:test";
 import pg from "pg";
 import { checkLocale, LOCALE_QUERY, POSTGRES_IMAGE, POSTGRES_LOCALE } from "../../../scripts/test-hosted-db.mjs";
@@ -3679,5 +3680,51 @@ create trigger nap before update on slowed for each row execute function nap();
 		} finally {
 			await keeperWatch.catch(() => {});
 		}
+	});
+
+	it("invalidates sibling gateway watches across processes on DDL, rejects EADDRINUSE cleanly, and survives aborted HTTP bodies", async () => {
+		const initial = await ask(viewer, "rows", { database: "multi", table: "alpha" });
+		assert.equal(initial.status, 200);
+		const before = gateway.taken.rows;
+		const watching = ask(viewer, "watch", {
+			watches: [{ database: "multi", table: "alpha", etag: initial.value.etag }],
+			wait: 2.5,
+		});
+		try {
+			for (let i = 0; i < 60 && gateway.taken.rows - before < 5; i++) await sleep(25);
+			put(ENV_A, {
+				"data/multi/tables/002-add-note.sql": "alter table alpha add column note text not null default 'ok';\n",
+			});
+			await withGateway({}, async () => {
+				const applied = await ask(owner, "apply", { database: "multi" });
+				assert.equal(applied.status, 200, JSON.stringify(applied.value));
+				assert.equal(applied.value.applied, true);
+			});
+			const woke = await watching;
+			assert.equal(woke.status, 200, JSON.stringify(woke.value));
+			assert.equal(woke.value.changed?.length, 1);
+			assert.ok(woke.value.changed[0].answer.columns.includes("note"), JSON.stringify(woke.value.changed[0].answer.columns));
+		} finally {
+			await watching.catch(() => {});
+		}
+		await assert.rejects(() => serve(gateway, { host: "127.0.0.1", port }), { code: "EADDRINUSE" });
+		await new Promise((resolve) => {
+			const sock = net.connect(port, "127.0.0.1", () => {
+				sock.write(
+					`POST /v1/company-data/${ENV_A}/query HTTP/1.1\r\n` +
+						`Host: 127.0.0.1:${port}\r\n` +
+						`Authorization: Bearer ${viewer}\r\n` +
+						"Content-Type: application/json\r\n" +
+						"Content-Length: 200\r\n\r\n{\"dat",
+				);
+				setTimeout(() => {
+					sock.destroy();
+					resolve();
+				}, 20);
+			});
+			sock.on("error", () => resolve());
+		});
+		const healthy = await ask(viewer, "rows", { database: "multi", table: "alpha" });
+		assert.equal(healthy.status, 200, JSON.stringify(healthy.value));
 	});
 });
