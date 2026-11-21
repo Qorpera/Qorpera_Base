@@ -785,8 +785,24 @@ test("sqlOnlyPackets enforces single-transaction safety, pg_temp cleanup, read-o
 	]);
 	assert.ok(packets["00-check.sql"].includes(`set search_path=""`));
 	assert.ok(packets["05-rehearse-migrations.sql"].includes("drop function"));
+	assert.equal(packets["05-rehearse-migrations.sql"].split("set local lock_timeout = '5s';").length - 1, 3);
+	assert.ok(packets["05-rehearse-migrations.sql"].includes("as sql_only_rehearsal;"));
+	assert.ok(packets["10-migration-20260930822000_thread_run_wakes.sql"].includes("as sql_only_migration;"));
+	assert.doesNotMatch(
+		packets["10-migration-20260930822000_thread_run_wakes.sql"],
+		/array\[\$q_[0-9a-f]{12}(?:_\d+)?\$\s*begin;/i,
+	);
 	assert.ok(packets["10-migration-20260930822100_thread_run_wakes_followup.sql"].includes("20260930822000"));
 	assert.ok(packets["20-post-check.sql"].includes("'hasFlag', to_jsonb((select true))"));
+
+	assert.throws(
+		() =>
+			validateReleaseManifest({
+				...manifest,
+				migrations: [manifest.migrations[1], manifest.migrations[0]],
+			}),
+		/migrations must be sorted by ascending id/,
+	);
 
 	assert.throws(
 		() =>

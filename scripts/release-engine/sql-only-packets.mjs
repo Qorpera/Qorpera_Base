@@ -171,12 +171,16 @@ export function sqlOnlyPackets(manifest, migrationsByFile) {
 		gate("sql_only_rehearse", [activeCheck, ...ordered.map((migration) => notRecordedCheck(migration.name))]),
 	];
 	for (const migration of ordered) {
+		rehearseLines.push("set local lock_timeout = '5s';\nset local statement_timeout = '120s';");
 		rehearseLines.push(migration.body.trimEnd());
-		rehearseLines.push(historyInsert(migration.name, migration.text));
+		rehearseLines.push(historyInsert(migration.name, migration.body));
 		for (const tempFn of redeclared.get(migration.name) ?? []) {
 			rehearseLines.push(dropTempFunction(tempFn));
 		}
 	}
+	rehearseLines.push(
+		`select jsonb_build_object('rehearsed', jsonb_build_array(${ordered.map((migration) => literal(migration.name)).join(", ")}), 'ok', true) as sql_only_rehearsal;`,
+	);
 	files["05-rehearse-migrations.sql"] = wrapPacket(rehearseLines);
 
 	for (let idx = 0; idx < ordered.length; idx++) {
@@ -186,7 +190,8 @@ export function sqlOnlyPackets(manifest, migrationsByFile) {
 		files[`10-migration-${migration.name}`] = wrapPacket([
 			gate(`sql_only_mig_${idx}`, checks),
 			migration.body.trimEnd(),
-			historyInsert(migration.name, migration.text),
+			historyInsert(migration.name, migration.body),
+			`select jsonb_build_object('migration', ${literal(migration.name)}, 'recorded', true) as sql_only_migration;`,
 		]);
 	}
 

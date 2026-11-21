@@ -116,11 +116,17 @@ export function validateReleaseManifest(manifest) {
 		assertCondition(manifest.migrations.length > 0, "sql-only mode requires at least one migration");
 	}
 	const seenIds = new Set();
+	let previousId = null;
 	for (const migration of manifest.migrations) {
 		assertExactKeys(migration, ["id", "file", "anchors", "postChecks"], "migration");
 		assertStringMatch(migration.id, MIGRATION_ID, `invalid migration id: ${migration.id}`);
 		assertCondition(!seenIds.has(migration.id), `duplicate migration id: ${migration.id}`);
+		assertCondition(
+			previousId === null || migration.id > previousId,
+			`migrations must be sorted by ascending id (${migration.id} after ${previousId})`,
+		);
 		seenIds.add(migration.id);
+		previousId = migration.id;
 		assertStringMatch(migration.file, MIGRATION_FILE, `invalid migration file: ${migration.file}`);
 		assertCondition(
 			migration.file.startsWith(`supabase/migrations/${migration.id}_`),

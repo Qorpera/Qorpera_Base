@@ -91,6 +91,7 @@ export const HOSTED_DB_SCRIPTS = [
 	"scripts/test-runtime-office-current-provider-activation.mjs",
 	"scripts/test-folder-service-core-shapes.mjs",
 	"scripts/test-runtime-roll.mjs",
+	"scripts/test-sql-only-packets.mjs",
 	"scripts/test-object-gateway-connection-files.mjs",
 	"scripts/test-object-gateway-company-creation.mjs",
 	"scripts/test-agent-exit-placement-undo.mjs",
