@@ -9,8 +9,9 @@ machines (#419) are a separate product feature.
 | --- | --- | --- | --- |
 | `node02`: `qorpera-testvm-node02` | `company41-node-02` | `tester@10.201.0.2` | since 2026-09-28; 10 vCPU since 2026-09-29; 24 GiB since 2026-11-07 |
 | `node01`: `qorpera-testvm-node01` | `company41-node-01` | `tester@10.201.0.3` | planned: [NODE-01.md](NODE-01.md) (design and runbook) |
+| `node03`: `qorpera-testvm-node03` | `company41-node-03` | `tester@10.201.0.4` | since 2026-11-15; 10 vCPU, 20 GiB: [NODE-03.md](NODE-03.md). Node 3 is a test and internal-use machine, not a fleet node |
 
-`scripts/run-on-node.mjs` lists both and sends each run to the one with the most free slots (below). A
+`scripts/run-on-node.mjs` lists all three and sends each run to the one with the most free slots (below). A
 machine that does not answer is skipped, so the list may name a machine before it exists.
 
 ## What it is
@@ -18,17 +19,17 @@ machine that does not answer is skipped, so the list may name a machine before i
 | Item | Value |
 | --- | --- |
 | VM | `qorpera-testvm-<node>` in LXD project `testmachines` (restricted: managed disks and NICs on `testmach0` only, no containers, no low-level VM options; project limits 10 vCPU, the VM's memory, 160 GiB) |
-| Size | 10 vCPU, 16 GiB RAM (24 GiB on node 2), 150 GiB root disk on pool `qorpera-vm`, `boot.autostart=false`, marker `user.test-machine-purpose`. Node 2's was made at 6 vCPU for PR #326's physical acceptance (6+ CPUs, 16 GiB, KVM), resized to 10 on 2026-09-29 (12 does not fit node 2: below) and to 24 GiB on 2026-11-07 for nested VM tests inside it. Setup records whether `/dev/kvm` is present |
+| Size | 10 vCPU, 16 GiB RAM (24 GiB on node 2, 20 GiB on node 3), 150 GiB root disk on pool `qorpera-vm`, `boot.autostart=false`, marker `user.test-machine-purpose`. Node 2's was made at 6 vCPU for PR #326's physical acceptance (6+ CPUs, 16 GiB, KVM), resized to 10 on 2026-09-29 (12 does not fit node 2: below) and to 24 GiB on 2026-11-07 for nested VM tests inside it. Setup records whether `/dev/kvm` is present |
 | Image | Ubuntu 26.04 server, then [`guest-setup.sh`](guest-setup.sh): Docker Engine (rootful), Node 24.21.0 (pinned checksum), Git, build tools, Python, bubblewrap, LXD 6.9 rev 40424 for nested tests. The pinned PostgreSQL image of `scripts/test-hosted-db.mjs`, `node:24-bookworm-slim` and `node:22-bookworm-slim` (the runtime office probes, as in CI) and api-front's pinned `envoyproxy/envoy:v1.39.1` (`deploy/sites/envoy-front-sites.test.mjs`) are pre-pulled. Stopped containers, dangling images and build cache older than a week are pruned weekly |
 | Self-update | `apt-daily*` and `unattended-upgrades` are masked, as for coding images (`deploy/coding-worker/COMMAND-GUEST.md`), and every snap is held |
-| Network | Bridge `testmach0` on each node (10.201.0.1/24, NAT, no IPv6; the guest guard's `testmach0` subnet), VM at 10.201.0.2 (node 2) or 10.201.0.3 (node 1) with MAC/IP filtering and port isolation. The addresses differ so that each machine's host key has its own line in `~/.ssh/known_hosts_qorpera_test_machines` |
+| Network | Bridge `testmach0` on each node (10.201.0.1/24, NAT, no IPv6; the guest guard's `testmach0` subnet), VM at 10.201.0.2 (node 2), 10.201.0.3 (node 1) or 10.201.0.4 (node 3) with MAC/IP filtering and port isolation. The addresses differ so that each machine's host key has its own line in `~/.ssh/known_hosts_qorpera_test_machines` |
 | Egress | ACL `testmach-egress`: the internet only. Rejected: 10/8 except the bridge's own /24, 172.16/12, 192.168/16 (LAN and NAS), 100.64/10 (Tailscale), 169.254/16, 127/8, 0/8, 192.0.0/24, 198.18/15, 224/4 and all IPv6. The node itself (the gateway) is rejected on every TCP and UDP port except DNS and DHCP; ICMP to it is not blocked. LXD applies reject rules before allow rules, so the rejects are written to leave the needed holes rather than relying on allow rules |
 | Ingress | Only SSH from the node (10.201.0.1). Developer sessions jump through the node's normal SSH login |
 | Login | User `tester` (docker and passwordless sudo inside the VM), key only. Root login and passwords are off |
 | Runner users | `ci01` to `ci16`, same rights as `tester`. Each run takes a free one for its whole duration (below) |
 
 Real-binary tests (`QORPERA_CODEX_FENCE_BINARY`) find the pinned patched Codex at `/opt/qorpera-codex-fence/codex` on
-both machines (a file in the guest, so no new enrollment). Pass it with `--env`; such a run needs no `--machine`. The tests
+every machine (a file in the guest, so no new enrollment). Pass it with `--env`; such a run needs no `--machine`. The tests
 refuse a file whose sha256 is not `nativeCompany.binarySha256` in
 `deploy/first-node/native-codex/guest-package-manifest.json`; `QORPERA_CODEX_FENCE_UNPINNED=1` lets a build that is not yet
 the pin run. Without the variable they are skipped, as before.
@@ -40,6 +41,9 @@ without the right file (the machine then counts as not set up). From the node th
 lxc file push --create-dirs --mode 0755 /home/company41-admin/cut-v263-codex170/codex \
   qorpera-testvm-node02/opt/qorpera-codex-fence/codex --project testmachines
 ```
+
+`--create-dirs` leaves the folder `0750` and owned by the pushing side's uid, which hides the file from the runner
+users. `guest-setup.sh` makes the folder and the file root's and `0755` after it has checked the hash.
 
 Or from the other test machine, through the Mac:
 
@@ -220,22 +224,22 @@ many of its five slots runs hold, how many runs wait in its queue and how many a
 (a marker per run, from its first SSH call until it takes a queue ticket). A probe answers in about a second;
 its connection must reach the machine within 6 s. Once one machine has answered with a free slot, the others
 get 2 s more; otherwise every probe gets up to 12 s. The wrapper takes the machine with the most free slots,
-counting waiting and arriving runs against them; on a tie, the list order (`node02`, then `node01`). The
+counting waiting and arriving runs against them; on a tie, the list order (`node03`, then `node02`, then `node01`: node 3 holds no company work, so idle machines' runs go there first). The
 answers are printed before the run starts. A machine that did not answer (its VM stopped after a node reboot,
 its node being updated, a machine not built yet, a slow moment) is tried only when no machine that answered is
 open. If a machine fails before the suite starts (the first SSH call or the copy), the run moves to the next
 one, and the final error names each machine's failure; a copy that an interrupt ended, or that failed on files
 of this tree (rsync 23, 24), stops the run instead. A suite that has started is never repeated elsewhere: its failure is the result.
 
-Each machine keeps its own queue, so a run that had to queue stays in that machine's queue even if the other
+Each machine keeps its own queue, so a run that had to queue stays in that machine's queue even if another
 frees up first. The choice makes that rare: a run joins the shorter queue. Two runs that ask within a moment of
 each other, before either has made its marker, can still choose the same machine.
 
-`--machine node01` (or `node02`) skips the choice. Use it to work with one machine's state: a Docker image ID
+`--machine node01` (or `node02`, `node03`) skips the choice. Use it to work with one machine's state: a Docker image ID
 (the systemd suites below), a `--keep` run directory, or a check of a machine that is closed.
 
 To take a machine out of the choice (maintenance, removal), close it from inside: as root, write a reason to
-`/etc/qorpera-test-machine-closed`. New runs go to the other machine; runs already running or queued there
+`/etc/qorpera-test-machine-closed`. New runs go to the other machines; runs already running or queued there
 finish; `--machine` and a `QORPERA_TEST_MACHINE*` target still reach it. A machine without
 `/etc/qorpera-test-machine-versions`, which `guest-setup.sh` writes last, is left out too (`setUp` false, "not
 set up" in the output). `--dry-run` shows `closed`, `setUp`, `busy`, `waiting` and `arriving` per machine. Delete the file to open it again.
@@ -262,7 +266,7 @@ result. A failed post never changes the run's exit code.
 The statuses are advisory: the repository's plan has no branch protection, so merging cannot require them,
 and anyone with write access can post a `qorpera-ci/…` state.
 
-Access needs the key `~/.ssh/id_ed25519_qorpera_testvm` (one key for both machines) and SSH to
+Access needs the key `~/.ssh/id_ed25519_qorpera_testvm` (one key for all machines) and SSH to
 `company41-node-02` and `company41-node-01`. The first connection to a machine records its host key
 (`StrictHostKeyChecking=accept-new`). `QORPERA_TEST_MACHINE` and `QORPERA_TEST_MACHINE_JUMP` point a run at one
 other machine instead of the list (no status is posted then); `QORPERA_TEST_MACHINE_KEY` replaces the key.

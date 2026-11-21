@@ -785,7 +785,7 @@ test("a front run goes to the machine with the fewest runs in its slots and fron
 test("one test machine per node, each with its own address and so its own host key", () => {
 	assert.deepEqual(
 		MACHINES.map((machine) => machine.name),
-		["node02", "node01"],
+		["node03", "node02", "node01"],
 	);
 	for (const field of ["name", "host", "jump"])
 		assert.equal(new Set(MACHINES.map((machine) => machine[field])).size, MACHINES.length, field);
@@ -796,11 +796,13 @@ test("one test machine per node, each with its own address and so its own host k
 test("--machine picks one machine; QORPERA_TEST_MACHINE* replaces the list", () => {
 	assert.equal(parseArgs(["--machine", "node01", "hosted-db"]).machine, "node01");
 	assert.equal(parseArgs(["--machine", "node02", "changed"]).machine, "node02");
+	assert.equal(parseArgs(["--machine", "node03", "test"]).machine, "node03");
 	assert.equal(parseArgs(["hosted-db"]).machine, null);
-	assert.throws(() => parseArgs(["--machine", "node03", "hosted-db"]), /Unknown machine node03 \(node02, node01\)/);
+	assert.throws(() => parseArgs(["--machine", "node04", "hosted-db"]), /Unknown machine node04 \(node03, node02, node01\)/);
 	assert.throws(() => parseArgs(["--machine"]), /--machine needs a value/);
 	assert.deepEqual(candidateMachines(null, {}), MACHINES);
-	assert.deepEqual(candidateMachines("node01", {}), [MACHINES[1]]);
+	assert.deepEqual(candidateMachines("node01", {}), [MACHINES[2]]);
+	assert.deepEqual(candidateMachines("node03", {}), [MACHINES[0]]);
 	assert.deepEqual(candidateMachines(null, { QORPERA_TEST_MACHINE: "me@192.0.2.9" }), [
 		{ name: "custom", host: "me@192.0.2.9", jump: "company41-node-02" },
 	]);

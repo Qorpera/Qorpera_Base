@@ -1,5 +1,5 @@
 #!/bin/bash
-# Runs as root INSIDE a test machine (qorpera-testvm-node02, qorpera-testvm-node01): lxc exec qorpera-testvm-<node>
+# Runs as root INSIDE a test machine (qorpera-testvm-node03, -node02, -node01): lxc exec qorpera-testvm-<node>
 # --project testmachines -- bash -s -- "<tester public key>" < guest-setup.sh. Idempotent. Changes nothing in LXD's
 # view of the VM, so its enrollment digest stays.
 # Ubuntu 26.04 + rootful Docker Engine + Node 24 (pinned) + Git/build tools/Python/bubblewrap, no self-update (apt
@@ -166,6 +166,10 @@ echo "${CODEX_SHA256}  /opt/qorpera-codex-fence/codex" | sha256sum -c - || {
 	log "/opt/qorpera-codex-fence/codex is missing or not the pinned build: push it (deploy/test-machine/README.md), then run this again"
 	exit 1
 }
+# `lxc file push --create-dirs` leaves the folder 0750 and owned by the pushing side's uid, so the runner users could
+# not reach the file and the real-binary tests said it was missing (node 3's machine, 15 Nov 2026).
+chown root:root /opt/qorpera-codex-fence /opt/qorpera-codex-fence/codex
+chmod 0755 /opt/qorpera-codex-fence /opt/qorpera-codex-fence/codex
 
 log "the CPU lane's kept slot (5): its lock file root's and read-only"
 # scripts/run-on-node.mjs keeps slot 5 for --front runs and opens a slot's lock file for reading where it can. A client

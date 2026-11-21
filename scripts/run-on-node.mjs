@@ -41,7 +41,7 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
          --record FILE              also write the run record as JSON to FILE
          --allow-secrets            copy untracked files that look like secrets (.env*, *.pem, keys)
          --base REF                 compare against REF for changed (default: origin/master)
-         --machine NAME             run on this machine only (node02, node01)
+         --machine NAME             run on this machine only (node03, node02, node01)
          --quick                    this run takes under 3 minutes (one test file, a lint of a few files): it takes the
                                     quick lane, so it never waits behind long runs, and it is stopped at 3 minutes
                                     (exit 124, or 137 if it would not stop), its containers removed. For a command
@@ -71,7 +71,8 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
          --no-status                do not post the result as a GitHub status on the commit
          --dry-run                  print what would run and where, change nothing
 
-Machines: node02 (tester@10.201.0.2 via company41-node-02), node01 (tester@10.201.0.3 via company41-node-01).
+Machines: node03 (tester@10.201.0.4 via company41-node-03), node02 (tester@10.201.0.2 via company41-node-02),
+node01 (tester@10.201.0.3 via company41-node-01).
 A run asks each how many runs it holds and takes the one with the most free slots (ties: this order). If that
 machine fails before the suite starts (unreachable, copy failed), the run moves to the next one.
 hosted-db -- --only <tests> and --quick take the quick lane: two slots and a queue of its own, so they never wait behind
@@ -87,12 +88,18 @@ Target (environment): QORPERA_TEST_MACHINE      one other machine instead of the
                       QORPERA_TEST_MACHINE_KEY  default ~/.ssh/id_ed25519_qorpera_testvm`;
 
 /** The operator test machines, one VM per node (deploy/test-machine/README.md), each reached through its node's
- * own SSH login. Both nodes' bridges are 10.201.0.0/24; each VM has its own address there, so each has its own
- * line in the known-hosts file. On a tie the earlier machine wins. */
+ * own SSH login. Every node's bridge is 10.201.0.0/24; each VM has its own address there, so each has its own
+ * line in the known-hosts file. On a tie the earlier machine wins. Node 3 comes first: it is a test and
+ * internal-use machine that holds no company work (deploy/test-machine/NODE-03.md), so while the machines are
+ * equally free a run stays off the two production nodes. */
 export const MACHINES = [
+	{ name: "node03", host: "tester@10.201.0.4", jump: "company41-node-03" },
 	{ name: "node02", host: "tester@10.201.0.2", jump: "company41-node-02" },
 	{ name: "node01", host: "tester@10.201.0.3", jump: "company41-node-01" },
 ];
+/** What QORPERA_TEST_MACHINE and QORPERA_TEST_MACHINE_JUMP fall back to when only one of them is set, as the usage
+ * text says: node 2's machine, whatever the order of the list. */
+const CUSTOM_DEFAULT = MACHINES.find((machine) => machine.name === "node02");
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const HOME = "/home/tester";
 const LOCKS = "/run/lock";
@@ -935,8 +942,8 @@ export function candidateMachines(machine, env) {
 		return [
 			{
 				name: "custom",
-				host: env.QORPERA_TEST_MACHINE || MACHINES[0].host,
-				jump: env.QORPERA_TEST_MACHINE_JUMP ?? MACHINES[0].jump,
+				host: env.QORPERA_TEST_MACHINE || CUSTOM_DEFAULT.host,
+				jump: env.QORPERA_TEST_MACHINE_JUMP ?? CUSTOM_DEFAULT.jump,
 			},
 		];
 	}
