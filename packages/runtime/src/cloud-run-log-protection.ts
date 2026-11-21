@@ -1,6 +1,12 @@
 import { isUuid, parseClosedRecord, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import { cloudToolRequest } from "./cloud-native-tool-authority.ts";
-import { type CloudRunLogProtection, CloudRunLogUnavailable, cloudRunLogStepPaths } from "./cloud-run-log.ts";
+import {
+	type CloudRunLogProtection,
+	type CloudRunLogStepClassification,
+	type CloudRunLogStepInput,
+	CloudRunLogUnavailable,
+	cloudRunLogStepPaths,
+} from "./cloud-run-log.ts";
 
 /** W1b's lease-scoped host calls. The native host holds the lease credential; this adapter holds no company key. */
 export type CloudRunLogProtectionCall = (
@@ -60,18 +66,42 @@ export class CloudRunLogRpcProtection implements CloudRunLogProtection {
 
 	async narrow(
 		runId: string,
-		step: Parameters<CloudRunLogProtection["narrow"]>[1],
+		step: CloudRunLogStepInput,
 		signal: AbortSignal,
-	): Promise<{ readonly log: boolean; readonly narrow: boolean }> {
+	): Promise<CloudRunLogStepClassification> {
+		const results = await this.narrowBatch(runId, [step], signal);
+		return results[0]!;
+	}
+
+	async narrowBatch(
+		runId: string,
+		steps: readonly CloudRunLogStepInput[],
+		signal: AbortSignal,
+	): Promise<readonly CloudRunLogStepClassification[]> {
 		this.#assertRun(runId, signal);
-		// No clipping: the full arguments, pre-envelope result needles, and all released reads participate. Invalid
-		// needles are filtered before JSONB decoding, which would otherwise refuse the RPC and wedge later log steps.
-		const paths = cloudRunLogStepPaths(step.argumentsText, step.resultPaths, step.readPaths);
-		let narrow = false;
+		if (steps.length === 0) return [];
+		const stepPaths: (readonly string[])[] = [];
+		for (let index = 0; index < steps.length; index++) {
+			const step = steps[index];
+			if (!step) throw new CloudRunLogUnavailable("paths_invalid");
+			stepPaths.push(cloudRunLogStepPaths(step.argumentsText, step.resultPaths, step.readPaths));
+		}
+		const uniquePaths: string[] = [];
+		const seen = new Set<string>();
+		for (const paths of stepPaths) {
+			for (const path of paths) {
+				if (!seen.has(path)) {
+					seen.add(path);
+					uniquePaths.push(path);
+				}
+			}
+		}
 		let log = false;
-		// Even a call with no paths must re-read the log and machine flags. Each RPC accepts at most 1,024 paths.
-		for (let offset = 0; offset < Math.max(paths.length, 1); offset += 1024) {
-			const batch = paths.slice(offset, offset + 1024);
+		let machine = false;
+		const restricted = new Set<string>();
+		// WHY: even a batch with no paths must call SQL once to re-read current log and machine flags; each RPC takes at most 1,024 paths.
+		for (let offset = 0; offset < Math.max(uniquePaths.length, 1); offset += 1024) {
+			const batch = uniquePaths.slice(offset, offset + 1024);
 			const value = await this.#request("qorpera_memory_step_narrow", { p_paths: batch }, signal);
 			let answer: Record<string, unknown>;
 			try {
@@ -85,18 +115,22 @@ export class CloudRunLogRpcProtection implements CloudRunLogProtection {
 				!Array.isArray(answer.restricted)
 			)
 				throw new CloudRunLogUnavailable("protection_response_invalid");
-			// SQL echoes a subset in input order. Reject foreign, duplicate, reordered and sparse entries too.
+			// WHY: SQL echoes a subset in input order; reject foreign, duplicate, reordered, or sparse entries rather than trusting malformed output.
 			let previous = -1;
 			for (let index = 0; index < answer.restricted.length; index++) {
 				const path: unknown = answer.restricted[index];
 				const found = typeof path === "string" ? batch.indexOf(path, previous + 1) : -1;
 				if (found < 0) throw new CloudRunLogUnavailable("protection_response_invalid");
 				previous = found;
+				restricted.add(path as string);
 			}
 			log ||= answer.log;
-			narrow ||= answer.machine || answer.restricted.length > 0;
+			machine ||= answer.machine;
 		}
-		return { log, narrow };
+		return stepPaths.map((paths) => ({
+			log,
+			narrow: machine || paths.some((path) => restricted.has(path)),
+		}));
 	}
 
 	async hashes(runId: string, digests: readonly string[], signal: AbortSignal): Promise<readonly string[]> {
