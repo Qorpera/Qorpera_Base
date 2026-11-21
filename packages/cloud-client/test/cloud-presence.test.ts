@@ -404,20 +404,24 @@ describe("shared browser presence", () => {
 			}
 			await vi.waitFor(() => expect(f.typing).toHaveBeenCalledTimes(4_121));
 
-			c.broadcast({ client_id: remoteId, staff_agent_id: "legal-agent", sequence: 5, signature: fakeSignature });
-			await Promise.resolve();
-			await Promise.resolve();
-			expect(f.typing).toHaveBeenCalledTimes(4_121);
+			c.broadcast({ client_id: remoteId, staff_agent_id: "replayed-1", sequence: 5, signature: fakeSignature });
+			c.broadcast({ client_id: remoteId, staff_agent_id: "sentinel-1", sequence: 11, signature: fakeSignature });
+			await vi.waitFor(() => expect(f.typing).toHaveBeenCalledTimes(4_122));
+			expect(f.typing.mock.calls.at(-1)?.[0]).toMatchObject({ clientId: remoteId, staffAgentId: "sentinel-1" });
 
 			now += 7 * 60_000;
 			const lateAttacker = "30000000-0000-4000-8000-000000000001";
 			c.broadcast({ client_id: lateAttacker, staff_agent_id: "legal-agent", sequence: 1, signature: fakeSignature });
-			await vi.waitFor(() => expect(f.typing).toHaveBeenCalledTimes(4_122));
+			await vi.waitFor(() => expect(f.typing).toHaveBeenCalledTimes(4_123));
 
-			c.broadcast({ client_id: remoteId, staff_agent_id: "legal-agent", sequence: 9, signature: fakeSignature });
-			await Promise.resolve();
-			await Promise.resolve();
-			expect(f.typing).toHaveBeenCalledTimes(4_122);
+			const listCallsBeforeReplay = f.list.mock.calls.length;
+			c.broadcast({ client_id: remoteId, staff_agent_id: "replayed-2", sequence: 9, signature: fakeSignature });
+			await vi.waitFor(() => expect(f.list.mock.calls.length).toBeGreaterThan(listCallsBeforeReplay));
+			expect(f.list.mock.calls.at(-1)?.[1]).toEqual([remoteId]);
+			c.broadcast({ client_id: remoteId, staff_agent_id: "sentinel-2", sequence: 12, signature: fakeSignature });
+			await vi.waitFor(() => expect(f.typing).toHaveBeenCalledTimes(4_124));
+			expect(f.typing.mock.calls.at(-1)?.[0]).toMatchObject({ clientId: remoteId, staffAgentId: "sentinel-2" });
+			expect(f.typing.mock.calls.some((call) => String(call[0]?.staffAgentId).startsWith("replayed-"))).toBe(false);
 		} finally {
 			await handle.stop();
 		}
