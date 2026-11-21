@@ -3237,4 +3237,20 @@ describe("the composer's microphone", () => {
 		expect(f.company.conversation(session.sessionId).get().draft).toBe("Book a meeting");
 		expect(button(shell, "Stop dictation")).toBe(mic);
 	});
+
+	it("skips full message serialization when typing draft keystrokes", () => {
+		const f = setup();
+		const field = f.view.el.querySelector<HTMLTextAreaElement>(".composer-input")!;
+		const stringifySpy = vi.spyOn(JSON, "stringify");
+		try {
+			field.value = "Drafting a reply";
+			field.dispatchEvent(new Event("input"));
+			field.value = "Drafting a reply with more words";
+			field.dispatchEvent(new Event("input"));
+			const serializedProjection = stringifySpy.mock.calls.some(([arg]) => Array.isArray(arg) && arg.length > 20);
+			expect(serializedProjection).toBe(false);
+		} finally {
+			stringifySpy.mockRestore();
+		}
+	});
 });

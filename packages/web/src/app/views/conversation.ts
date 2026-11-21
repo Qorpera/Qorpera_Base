@@ -21,10 +21,12 @@ import { sessionAttachmentProblem } from "../../cloud/session-attachments.ts";
 import {
 	decisionRound,
 	foldText,
+	latestReworkingReplyAfter,
 	type RunAcknowledgement,
 	reworkingNote,
 	runAcknowledgements,
 	type TranscriptCard,
+	type TranscriptInteraction,
 	type TranscriptItem,
 	type TranscriptMessage,
 	type TranscriptPeerLink,
@@ -419,6 +421,40 @@ export class ConversationView {
 	#pairOpener: HTMLElement | undefined;
 	#headerKey = "";
 	#renderedKey = "";
+	#messagesSnap:
+		| {
+				readonly projection: ConversationState["projection"];
+				readonly optimistic: ConversationState["optimistic"];
+				readonly codingSessions: ConversationState["codingSessions"];
+				readonly proposals: ConversationState["proposals"];
+				readonly discardingProposals: ConversationState["discardingProposals"];
+				readonly interactionAnswers: ConversationState["interactionAnswers"];
+				readonly interactionError: ConversationState["interactionError"];
+				readonly hasEarlier: ConversationState["hasEarlier"];
+				readonly earlierLoading: ConversationState["earlierLoading"];
+				readonly earlierError: ConversationState["earlierError"];
+				readonly loading: ConversationState["loading"];
+				readonly error: ConversationState["error"];
+				readonly session: HostedSession | undefined;
+				readonly team: ReturnType<CompanyController["store"]["get"]>["team"];
+				readonly staff: ReturnType<CompanyController["store"]["get"]>["staff"];
+				readonly interfaceFolder: ReturnType<CompanyController["store"]["get"]>["interfaceFolder"];
+				readonly agentName: string;
+				readonly agent: HostedStaffAgent | undefined;
+				readonly agentState: string;
+				readonly working: boolean;
+				readonly waitingRun: boolean;
+				readonly runAtWork: string | undefined;
+				readonly computerShown: boolean;
+				readonly decisionsWaiting: unknown;
+				readonly decisionsDecidedKey: unknown;
+				readonly clock: string;
+				readonly readyShown: unknown;
+				readonly siteCardsKey: unknown;
+				readonly nextExpiryAt: number;
+		  }
+		| undefined;
+	readonly #foldPreviews = new Map<string, { readonly raw: string; readonly preview: string }>();
 	#stickToBottom = true;
 	/** Where the last pin that moved the thread put it. Its scroll event arrives a frame
 	 * later, when the pane may already have shrunk (the composer or a notice above it
@@ -514,7 +550,12 @@ export class ConversationView {
 		toggleNavigation?: () => void,
 	) {
 		this.#company = company;
-		this.#notificationSignal = AbortSignal.any([this.#lifetime.signal, company.signal]);
+		const scoped = new AbortController();
+		const abortScoped = () => scoped.abort();
+		this.#lifetime.signal.addEventListener("abort", abortScoped, { once: true });
+		if (company.signal.aborted) scoped.abort(company.signal.reason);
+		else company.signal.addEventListener("abort", abortScoped, { once: true, signal: this.#lifetime.signal });
+		this.#notificationSignal = scoped.signal;
 		this.#sessionId = sessionId;
 		this.#actions = actions;
 		this.#ownPanels = !actions.computerPanels;
@@ -615,6 +656,7 @@ export class ConversationView {
 			// thread stays pinned to its end if a name re-wraps a line.
 			listed: () => {
 				this.#renderedKey = "";
+				this.#messagesSnap = undefined;
 				this.update();
 			},
 			quotes: () => this.#quotePieces(),
@@ -981,6 +1023,8 @@ export class ConversationView {
 		this.#sharedDrafts.dispose();
 		for (const drawn of this.#drawn.values()) drawn.message?.files?.view.dispose();
 		this.#drawn.clear();
+		this.#foldPreviews.clear();
+		this.#messagesSnap = undefined;
 		this.#closeCodingSession();
 		clearTimeout(this.#codingPoll);
 		clearTimeout(this.#firstWordsTimer);
@@ -1340,6 +1384,7 @@ export class ConversationView {
 		const undo = this.#actions.undoInterfaceChange;
 		if (!undo || this.#undos.get(change.commitId)?.state === "sending") return;
 		this.#undos.set(change.commitId, { state: "sending" });
+		this.#messagesSnap = undefined;
 		this.update();
 		let state: InterfaceUndoState;
 		try {
@@ -1349,6 +1394,7 @@ export class ConversationView {
 		}
 		if (this.#lifetime.signal.aborted) return;
 		this.#undos.set(change.commitId, state);
+		this.#messagesSnap = undefined;
 		this.update();
 	}
 
@@ -1779,7 +1825,11 @@ export class ConversationView {
 		}
 		this.#firstWordsThrough = newest;
 		for (const id of this.#firstWords.keys()) if (!acknowledgements.has(id)) this.#firstWords.delete(id);
-		if (held.length) this.#firstWordsTimer = setTimeout(() => this.update(), next - now);
+		if (held.length)
+			this.#firstWordsTimer = setTimeout(() => {
+				this.#messagesSnap = undefined;
+				this.update();
+			}, next - now);
 		return held;
 	}
 
@@ -2133,6 +2183,7 @@ export class ConversationView {
 		queueMicrotask(() => {
 			if (this.#disposed) return;
 			this.#renderedKey = "";
+			this.#messagesSnap = undefined;
 			this.update();
 		});
 	}
@@ -2585,6 +2636,53 @@ export class ConversationView {
 	}
 
 	#renderMessages(conversation: ConversationState, agentName: string, agent: HostedStaffAgent | undefined): void {
+		const companyState = this.#company.store.get();
+		const session = companyState.sessions.find((item) => item.sessionId === this.#sessionId);
+		const room = isGroupChat(session);
+		const runAtWork =
+			!room && this.#working && !conversation.loading
+				? this.#company.activityFor(session?.staffAgentId)?.runId
+				: undefined;
+		const computerShown = this.#panel !== undefined && this.#computerSlot.contains(this.#panel.el);
+		const clock = this.#clock();
+		const nowMs = Date.now();
+		const prevSnap = this.#messagesSnap;
+		if (
+			prevSnap !== undefined &&
+			this.#renderedKey !== "" &&
+			this.#firstWordsTimer === undefined &&
+			nowMs < prevSnap.nextExpiryAt &&
+			prevSnap.projection === conversation.projection &&
+			prevSnap.optimistic === conversation.optimistic &&
+			prevSnap.codingSessions === conversation.codingSessions &&
+			prevSnap.proposals === conversation.proposals &&
+			prevSnap.discardingProposals === conversation.discardingProposals &&
+			prevSnap.interactionAnswers === conversation.interactionAnswers &&
+			prevSnap.interactionError === conversation.interactionError &&
+			prevSnap.hasEarlier === conversation.hasEarlier &&
+			prevSnap.earlierLoading === conversation.earlierLoading &&
+			prevSnap.earlierError === conversation.earlierError &&
+			prevSnap.loading === conversation.loading &&
+			prevSnap.error === conversation.error &&
+			prevSnap.session === session &&
+			prevSnap.team === companyState.team &&
+			prevSnap.staff === companyState.staff &&
+			prevSnap.interfaceFolder === companyState.interfaceFolder &&
+			prevSnap.agentName === agentName &&
+			prevSnap.agent === agent &&
+			prevSnap.agentState === this.#agentState &&
+			prevSnap.working === this.#working &&
+			prevSnap.waitingRun === this.#waitingRun &&
+			prevSnap.runAtWork === runAtWork &&
+			prevSnap.computerShown === computerShown &&
+			prevSnap.decisionsWaiting === this.#decisions?.waiting &&
+			prevSnap.decisionsDecidedKey === this.#decisions?.decidedKey &&
+			prevSnap.clock === clock &&
+			prevSnap.readyShown === this.#ready?.shown &&
+			prevSnap.siteCardsKey === this.#siteCards?.key
+		) {
+			return;
+		}
 		// Read before any message is drawn: a message brought up to date in place (erased) drops a link in it that had
 		// the keyboard.
 		const focused = document.activeElement;
@@ -2608,12 +2706,10 @@ export class ConversationView {
 				}),
 			),
 		];
-		const session = this.#company.store.get().sessions.find((item) => item.sessionId === this.#sessionId);
-		const room = this.#isRoom;
 		// Group chats carry no cards; elsewhere the kernel's answerer, per card.
-		const canWrite = this.#company.store.get().team?.capabilities.write === true && !room;
-		const role = this.#company.store.get().team?.role ?? "";
-		const members = this.#company.store.get().team?.members;
+		const canWrite = companyState.team?.capabilities.write === true && !room;
+		const role = companyState.team?.role ?? "";
+		const members = companyState.team?.members;
 		const canAnswer = (actorUserId: string) =>
 			canWrite && !!session && answersInteraction(session, actorUserId, this.#company.userId);
 		const canDecide = (actorUserId: string) => canAnswer(actorUserId) && ["owner", "admin"].includes(role);
@@ -2633,7 +2729,6 @@ export class ConversationView {
 		const moreProposals = conversation.proposals?.moreProposals ?? 0;
 		const discarding = conversation.discardingProposals ?? [];
 		const mentionTargets = this.#shownMentionTargets();
-		const clock = this.#clock();
 		const skillNames = [...this.#skills.names()].sort().join(" ");
 		// A coworker's chip shows its figure and name.
 		const coworker = (staffId: string) => {
@@ -2643,7 +2738,7 @@ export class ConversationView {
 		// An agent's interface change names each table by its title as the folder has it now (a folder's name is one
 		// name in any case). An interface is named by its folder: the folder's QorperaOS/interfaces/ is not read
 		// (Interfaces C6a).
-		const folder = this.#company.store.get().interfaceFolder;
+		const folder = companyState.interfaceFolder;
 		const titleOf = (subject: InterfaceChangeSubject) => {
 			if (subject.kind === "interface") return undefined;
 			const name = companyPathKey(subject.name);
@@ -2655,23 +2750,26 @@ export class ConversationView {
 				item.kind === "interface_change" ? [[item.id, interfaceChangeText(item.change, titleOf)] as const] : [],
 			),
 		);
-		const undoes = Boolean(this.#actions.undoInterfaceChange) && this.#company.store.get().team?.capabilities.write;
-		const runAtWork =
-			!room && this.#working && !conversation.loading
-				? this.#company.activityFor(session?.staffAgentId)?.runId
-				: undefined;
+		const undoes = Boolean(this.#actions.undoInterfaceChange) && companyState.team?.capabilities.write;
 		const acknowledgements = runAcknowledgements(items, !conversation.hasEarlier, room);
 		const heldWords = this.#holdFirstWords(items, acknowledgements, runAtWork, room || conversation.loading === true);
-		const computerShown = this.#panel !== undefined && this.#computerSlot.contains(this.#panel.el);
 		// Approval cards of agents' actions (auto-review, v130) show their own outcome.
 		const reviews = new Map<string, ActionReviewCard>();
 		const requests = new Set<string>();
-		for (const item of items)
+		let nextExpiryAt = Number.POSITIVE_INFINITY;
+		const expiredFlags: boolean[] = [];
+		for (const item of items) {
 			if (item.kind === "authorization_request") {
 				requests.add(item.id.toLowerCase());
 				const review = actionReviewCard(authorizationData(item.body));
 				if (review) reviews.set(item.id.toLowerCase(), review);
+			} else if (item.kind === "interaction" && item.request.expiresAt) {
+				const expiresMs = Date.parse(item.request.expiresAt);
+				const expired = expiresMs <= nowMs;
+				expiredFlags.push(expired);
+				if (!expired && expiresMs < nextExpiryAt) nextExpiryAt = expiresMs;
 			}
+		}
 		const folds = room
 			? new Map<string, UnaskedGroup>()
 			: unaskedGroups(items, (item) => {
@@ -2698,11 +2796,7 @@ export class ConversationView {
 			agentName,
 			room,
 			answerable,
-			items.flatMap((item) =>
-				item.kind === "interaction" && item.request.expiresAt
-					? [Date.parse(item.request.expiresAt) <= Date.now()]
-					: [],
-			),
+			expiredFlags,
 			role,
 			session?.status,
 			canWrite,
@@ -2737,14 +2831,51 @@ export class ConversationView {
 			this.#ready?.shown,
 			this.#siteCards?.key,
 		]);
+		this.#messagesSnap = {
+			projection: conversation.projection,
+			optimistic: conversation.optimistic,
+			codingSessions: conversation.codingSessions,
+			proposals: conversation.proposals,
+			discardingProposals: conversation.discardingProposals,
+			interactionAnswers: conversation.interactionAnswers,
+			interactionError: conversation.interactionError,
+			hasEarlier: conversation.hasEarlier,
+			earlierLoading: conversation.earlierLoading,
+			earlierError: conversation.earlierError,
+			loading: conversation.loading,
+			error: conversation.error,
+			session,
+			team: companyState.team,
+			staff: companyState.staff,
+			interfaceFolder: companyState.interfaceFolder,
+			agentName,
+			agent,
+			agentState: this.#agentState,
+			working: this.#working,
+			waitingRun: this.#waitingRun,
+			runAtWork,
+			computerShown,
+			decisionsWaiting: this.#decisions?.waiting,
+			decisionsDecidedKey: this.#decisions?.decidedKey,
+			clock,
+			readyShown: this.#ready?.shown,
+			siteCardsKey: this.#siteCards?.key,
+			nextExpiryAt,
+		};
 		if (key === this.#renderedKey) return;
 		this.#renderedKey = key;
+		const itemsById = new Map<string, TranscriptItem>();
+		const interactionCards = new Map<string, TranscriptInteraction>();
 		const decisions = new Map<string, TranscriptCard>();
-		for (const item of items)
-			if (item.kind === "authorization_decision") {
+		for (const item of items) {
+			itemsById.set(item.id, item);
+			if (item.kind === "interaction") interactionCards.set(item.id.toLowerCase(), item);
+			else if (item.kind === "authorization_decision") {
 				const request = authorizationRequestId(item.body);
 				if (request) decisions.set(request, item);
 			}
+		}
+		const latestReplyAfter = latestReworkingReplyAfter(items, acknowledgements);
 		const locale = presentationLocale();
 		// Shown times (fmtTime) read by the zone and by their day against today: the time alone
 		// today, with the day this year, with the year before that. Only an item whose reading
@@ -2951,14 +3082,21 @@ export class ConversationView {
 				const open = this.#openFolds.has(folded);
 				if (item.id === folded) {
 					const group = folds.get(folded)!;
-					const newest = items.find((candidate) => candidate.id === group.messages[group.messages.length - 1]);
-					const text =
-						newest?.kind === "agent"
-							? foldText(
-									[...markdown(newest.text).children].map((block) => block.textContent ?? "").join(" ") ||
-										newest.text,
-								)
-							: "";
+					const newestId = group.messages[group.messages.length - 1];
+					const newest = newestId !== undefined ? itemsById.get(newestId) : undefined;
+					let text = "";
+					if (newest?.kind === "agent") {
+						const cached = this.#foldPreviews.get(newest.id);
+						if (cached && cached.raw === newest.text) {
+							text = cached.preview;
+						} else {
+							text = foldText(
+								[...markdown(newest.text).children].map((block) => block.textContent ?? "").join(" ") ||
+									newest.text,
+							);
+							this.#foldPreviews.set(newest.id, { raw: newest.text, preview: text });
+						}
+					}
 					nodes.push(
 						keep(`fold ${folded}`, JSON.stringify([group.messages.length, text, open, locale]), "", () => {
 							const row = threadFold({
@@ -2967,6 +3105,7 @@ export class ConversationView {
 								open,
 								toggle: () => {
 									if (!this.#openFolds.delete(folded)) this.#openFolds.add(folded);
+									this.#messagesSnap = undefined;
 									this.update();
 								},
 							});
@@ -3178,8 +3317,15 @@ export class ConversationView {
 				const answers = canAnswer(item.actorUserId);
 				const takeOver = Boolean(agent) && item.request.surface === "takeover";
 				const address = questionInput(item.request) === "mail_address";
-				const reworking = reworkingNote(items, index, answer, this.#working || this.#waitingRun, acknowledgements);
-				const round = decisionRound(items, { ...item, ...(answer ? { answer } : {}) });
+				const reworking = reworkingNote(
+					items,
+					index,
+					answer,
+					this.#working || this.#waitingRun,
+					acknowledgements,
+					latestReplyAfter[index],
+				);
+				const round = decisionRound(items, { ...item, ...(answer ? { answer } : {}) }, interactionCards);
 				const cardKey = JSON.stringify([
 					item.request,
 					round ?? null,
@@ -4006,7 +4152,8 @@ export class ConversationView {
 			names: this.#codingNames(agentName),
 			viewerOwns: (current: CodingSession) => current.ownerUserId === company.userId,
 			api: {
-				read: (workerId: string, afterEvent: number) => company.readCodingSession(workerId, afterEvent),
+				read: (workerId: string, afterEvent: number, signal?: AbortSignal) =>
+					company.readCodingSession(workerId, afterEvent, signal),
 				answer: (workerId: string, text: string, clientRequestId: string) =>
 					company.answerCodingSession(sessionId, workerId, text, clientRequestId),
 				delegate: (workerId: string, clientRequestId: string) =>
@@ -4017,7 +4164,7 @@ export class ConversationView {
 				chooseLogin: (workerId: string, connectionId: string) =>
 					company.chooseCodingSessionLogin(sessionId, workerId, connectionId),
 			},
-			signal: AbortSignal.any([this.#lifetime.signal, company.signal]),
+			signal: this.#notificationSignal,
 			askAgent: this.#actions.sendMessage
 				? (text: string) => {
 						this.#closeCodingSession();
