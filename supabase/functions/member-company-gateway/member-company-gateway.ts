@@ -38,6 +38,7 @@ const POINTER_TIMEOUT_MS = 5_000;
  * functions answers every preflight itself, so this is for a bridge without one; nothing depends on a preflight. */
 const POINTER_PREFLIGHT_SECONDS = 600;
 const COMPANY_DATA = new RegExp(`^/v1/company-data/${UUID}/(query|watch|apply|describe|rows|edit|change|changes)$`);
+const COMPANY_DATA_PUBLIC = new RegExp(`^/v1/company-data-public/${UUID}/(query|change)$`);
 const LARGE_DATA_CALLS: ReadonlySet<string> = new Set(["apply", "rows", "edit", "changes"]);
 const DATA_WRITES: Record<string, string> = {
 	apply: "Company data is unavailable just now. Steps sent may still apply.",
@@ -147,6 +148,7 @@ export interface MemberCompanyGatewayOptions {
 interface RoutePolicy {
 	method: string;
 	headers: string[];
+	proxyHeaders?: string[];
 	maxBody?: number;
 	timeoutMs?: number;
 	unavailable: string;
@@ -159,6 +161,7 @@ interface RoutePolicy {
 	forwardsOrigin?: boolean;
 	/** Only a member's own unexpired token of this project goes on (memberTokenShaped): the route asks no auth service. */
 	memberToken?: boolean;
+	publicRoute?: boolean;
 	passesBodyThrough?: boolean;
 }
 
@@ -232,6 +235,16 @@ function route(path: string): RoutePolicy | undefined {
 			maxBody: LARGE_DATA_CALLS.has(verb) ? MAX_WRITE_BYTES : verb === "watch" ? MAX_WATCH_BYTES : MAX_DATA_BYTES,
 			...(verb === "watch" ? { timeoutMs: WATCH_TIMEOUT_MS } : {}),
 			unavailable: DATA_WRITES[verb] ?? "Company data is unavailable just now.",
+		};
+	const publicVerb = COMPANY_DATA_PUBLIC.exec(path)?.[1];
+	if (publicVerb)
+		return {
+			method: "POST",
+			headers: ["content-type"],
+			proxyHeaders: ["x-forwarded-for"],
+			maxBody: MAX_DATA_BYTES,
+			publicRoute: true,
+			unavailable: DATA_WRITES[publicVerb] ?? "Company data is unavailable just now.",
 		};
 	const upload = PROGRAM_UPLOAD.exec(path);
 	if (upload)
@@ -408,8 +421,17 @@ export async function forwardMemberCompanyGateway(
 		vary: "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
 	});
 	const fail = (status: number, error: string) => Response.json({ error }, { status, headers });
+	const url = new URL(request.url);
+	const prefix = "/member-company-gateway";
+	const path = url.pathname.startsWith(`/functions/v1${prefix}/`)
+		? url.pathname.slice(`/functions/v1${prefix}`.length)
+		: url.pathname.startsWith(`${prefix}/`)
+			? url.pathname.slice(prefix.length)
+			: "";
+	const policy = !url.search && route(path);
 	if (
 		origin &&
+		!policy?.publicRoute &&
 		!allowed.some((value) => {
 			try {
 				const parsed = new URL(value);
@@ -420,15 +442,7 @@ export async function forwardMemberCompanyGateway(
 		})
 	)
 		return fail(403, "Browser origin is not allowed");
-	if (origin) headers.set("access-control-allow-origin", origin);
-	const url = new URL(request.url);
-	const prefix = "/member-company-gateway";
-	const path = url.pathname.startsWith(`/functions/v1${prefix}/`)
-		? url.pathname.slice(`/functions/v1${prefix}`.length)
-		: url.pathname.startsWith(`${prefix}/`)
-			? url.pathname.slice(prefix.length)
-			: "";
-	const policy = !url.search && route(path);
+	if (origin) headers.set("access-control-allow-origin", policy?.publicRoute ? "*" : origin);
 	if (!policy) return fail(404, "Member route is not available");
 	if (request.method === "OPTIONS") {
 		const requested = (request.headers.get("access-control-request-headers") ?? "")
@@ -448,7 +462,7 @@ export async function forwardMemberCompanyGateway(
 		return new Response(null, { status: 204, headers });
 	}
 	if (request.method !== policy.method) return fail(405, "Method not allowed");
-	if (!/^Bearer [A-Za-z0-9._~-]{1,8192}$/.test(request.headers.get("authorization") ?? ""))
+	if (!policy.publicRoute && !/^Bearer [A-Za-z0-9._~-]{1,8192}$/.test(request.headers.get("authorization") ?? ""))
 		return fail(401, "Member sign-in is required");
 	let upstream: URL;
 	try {
@@ -493,7 +507,7 @@ export async function forwardMemberCompanyGateway(
 		)
 	)
 		return refuse(401, "Member sign-in is required");
-	if (size > 0 && !(policy.readsSmallBodyFirst && size <= (policy.maxBody ?? 0))) {
+	if (!policy.publicRoute && size > 0 && !(policy.readsSmallBodyFirst && size <= (policy.maxBody ?? 0))) {
 		let signedIn: boolean;
 		try {
 			if (!options.memberSignedIn) throw new Error("Member sign-in check is not configured");
@@ -515,7 +529,7 @@ export async function forwardMemberCompanyGateway(
 	const watch = policy.passesBodyThrough ? watchUpstream(request.signal, timeout) : undefined;
 	try {
 		const forwarded = new Headers();
-		for (const name of policy.headers) {
+		for (const name of [...policy.headers, ...(policy.proxyHeaders ?? [])]) {
 			const value = request.headers.get(name);
 			if (value !== null) forwarded.set(name, value);
 		}

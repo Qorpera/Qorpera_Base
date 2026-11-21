@@ -27,6 +27,13 @@ create extension ltree schema qorpera_ext;
 create extension "uuid-ossp" schema qorpera_ext;
 create extension tablefunc schema qorpera_ext;
 
+do $$
+begin
+	if exists (select 1 from pg_catalog.pg_available_extensions where name = 'vector') then
+		create extension if not exists vector schema qorpera_ext;
+	end if;
+end $$;
+
 -- A database folder `data/<name>/` and the number its three logins carry.
 create table qorpera_data.databases (
 	name text primary key check (name ~ '^[a-z][a-z0-9_]{0,39}$'),
@@ -123,7 +130,7 @@ create index row_changes_schema_seq_idx on qorpera_data.row_changes (schema, seq
 create table qorpera_data.change_log (
 	txid bigint primary key,
 	at timestamptz not null default now(),
-	by_kind text not null check (by_kind in ('member', 'agent', 'machine', 'step')),
+	by_kind text not null check (by_kind in ('member', 'agent', 'machine', 'step', 'public', 'hook')),
 	by_id text,
 	via text
 );

@@ -273,6 +273,161 @@ export function listMembers(toml, questions, cut = false) {
 	return questions.some(namesViewer) ? "writers" : "readers";
 }
 
+function parseTomlStringArray(raw) {
+	const trimmed = raw.trim();
+	if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return null;
+	const inner = trimmed.slice(1, -1).trim();
+	if (inner === "") return [];
+	const items = [];
+	let current = "";
+	let quote = null;
+	let escaped = false;
+	let expectComma = false;
+	for (let i = 0; i < inner.length; i++) {
+		const ch = inner[i];
+		if (quote) {
+			if (ch.charCodeAt(0) < 0x20) return null;
+			if (escaped) {
+				current += ch;
+				escaped = false;
+			} else if (quote === '"' && ch === "\\") {
+				escaped = true;
+			} else if (ch === quote) {
+				items.push(current);
+				current = "";
+				quote = null;
+				expectComma = true;
+			} else {
+				current += ch;
+			}
+		} else if (/\s/.test(ch)) {
+			continue;
+		} else if (ch === ",") {
+			if (!expectComma) return null;
+			expectComma = false;
+		} else if (ch === '"' || ch === "'") {
+			if (expectComma) return null;
+			quote = ch;
+		} else {
+			return null;
+		}
+	}
+	return quote === null ? items : null;
+}
+
+export function parsePublicConfig(toml) {
+	const empty = { questions: [], changes: [], rateLimit: 60 };
+	if (typeof toml !== "string" || toml === "") return empty;
+	let section = [];
+	const questions = [];
+	const changes = [];
+	let rateLimit = 60;
+	for (const line of toml.split(/\r?\n/)) {
+		if (/^\s*(?:#.*)?$/.test(line)) continue;
+		const header = TOML_HEADER.exec(line);
+		if (header) {
+			section = tomlParts(header[1]);
+			continue;
+		}
+		const pair = TOML_PAIR.exec(line);
+		if (!pair) continue;
+		const value = tomlValue(pair[2]);
+		if (value === null) return empty;
+		const key = [...section, ...tomlParts(pair[1])];
+		if (key[0] !== "public" || key.length !== 2) continue;
+		if (key[1] === "questions" || key[1] === "changes") {
+			const parsed = parseTomlStringArray(value);
+			if (!parsed) return empty;
+			const target = key[1] === "questions" ? questions : changes;
+			const cap = key[1] === "questions" ? 64 : 32;
+			for (const name of parsed) {
+				if (!FILE_NAME.test(name) || name.length > 60) return empty;
+				if (!target.includes(name)) {
+					if (target.length >= cap) return empty;
+					target.push(name);
+				}
+			}
+		} else if (key[1] === "rate_limit") {
+			const num = Number(value);
+			if (!Number.isInteger(num) || num < 1 || num > 6000) return empty;
+			rateLimit = num;
+		} else {
+			return empty;
+		}
+	}
+	return { questions, changes, rateLimit };
+}
+
+export class DataChangeNotifier {
+	#triggers = new Map();
+	#timers = new Map();
+	#lastFired = new Map();
+	#pending = new Map();
+
+	register({ id, environmentId, database, tables = null, minIntervalMs = 60_000, onWake }) {
+		if (typeof id !== "string" || !id || typeof onWake !== "function") throw new Error("Invalid data-change trigger");
+		this.unregister(id);
+		const tableSet = Array.isArray(tables) && tables.length > 0 ? new Set(tables.map((t) => String(t).toLowerCase())) : null;
+		this.#triggers.set(id, { id, environmentId, database, tables: tableSet, minIntervalMs: Math.max(10, minIntervalMs), onWake });
+		return () => this.unregister(id);
+	}
+
+	unregister(id) {
+		this.#triggers.delete(id);
+		const timer = this.#timers.get(id);
+		if (timer) clearTimeout(timer);
+		this.#timers.delete(id);
+		this.#pending.delete(id);
+		this.#lastFired.delete(id);
+	}
+
+	notify(environmentId, notice) {
+		if (notice?.ddl) return;
+		const now = Date.now();
+		for (const trigger of this.#triggers.values()) {
+			if (trigger.environmentId !== environmentId) continue;
+			if (notice !== null && notice.schema !== trigger.database) continue;
+			if (notice !== null && notice.table !== null && trigger.tables && !trigger.tables.has(notice.table.toLowerCase())) continue;
+			const tableName = notice?.table ?? "*";
+			let batch = this.#pending.get(trigger.id);
+			if (!batch) {
+				batch = new Set();
+				this.#pending.set(trigger.id, batch);
+			}
+			batch.add(tableName);
+			const elapsed = now - (this.#lastFired.get(trigger.id) ?? 0);
+			if (elapsed >= trigger.minIntervalMs) {
+				this.#flush(trigger);
+			} else if (!this.#timers.has(trigger.id)) {
+				const timer = setTimeout(() => {
+					this.#timers.delete(trigger.id);
+					if (this.#triggers.has(trigger.id)) this.#flush(trigger);
+				}, trigger.minIntervalMs - elapsed);
+				timer.unref?.();
+				this.#timers.set(trigger.id, timer);
+			}
+		}
+	}
+
+	#flush(trigger) {
+		const tables = [...(this.#pending.get(trigger.id) ?? [])];
+		this.#pending.delete(trigger.id);
+		if (tables.length === 0) return;
+		this.#lastFired.set(trigger.id, Date.now());
+		Promise.resolve(trigger.onWake({ id: trigger.id, environmentId: trigger.environmentId, database: trigger.database, tables, at: isoNow() })).catch(
+			() => undefined,
+		);
+	}
+
+	close() {
+		for (const timer of this.#timers.values()) clearTimeout(timer);
+		this.#timers.clear();
+		this.#pending.clear();
+		this.#triggers.clear();
+		this.#lastFired.clear();
+	}
+}
+
 function tomlWord(toml, key) {
 	const found = new RegExp(`^${key}\\s*=\\s*("(?:[^"\\\\]|\\\\.)*")\\s*(#.*)?$`, "m").exec(toml ?? "")?.[1];
 	try {
@@ -656,7 +811,12 @@ export class Gateway {
 	#resume = new Map();
 	/** The node's private token the run door takes ("a host of ours"); without it the run door answers nothing. */
 	#runToken;
+	#hookToken;
 	#adminToken;
+	#publicReader;
+	#rateBuckets = new Map();
+	#triggerStops = new Map();
+	#notifier = new DataChangeNotifier();
 	/** Backends running an agent's read now, by pid, with how many: the watcher gives them an agent's limit. */
 	#agentReads = new Map();
 	/** Company databases this gateway has seen exist. */
@@ -676,7 +836,9 @@ export class Gateway {
 		platform,
 		limits = LIMITS,
 		runs = null,
+		hooks = null,
 		admin = null,
+		publicReader = null,
 		workers = 1,
 		onProvision = () => undefined,
 		beforeCancel = async () => undefined,
@@ -688,10 +850,18 @@ export class Gateway {
 		this.#limits = limits;
 		this.#workers = Math.max(1, Number.isInteger(workers) ? workers : 1);
 		this.#runToken = typeof runs?.token === "string" && runs.token.length >= 32 ? runs.token : null;
+		this.#hookToken = typeof hooks?.token === "string" && hooks.token.length >= 32 ? hooks.token : null;
 		this.#adminToken = typeof admin?.token === "string" && admin.token.length >= 32 ? admin.token : null;
+		if (this.#runToken && this.#hookToken && bearerIs(`Bearer ${this.#hookToken}`, this.#runToken)) {
+			throw new Error("The hook token must be distinct from the run door token");
+		}
 		if (this.#runToken && this.#adminToken && bearerIs(`Bearer ${this.#adminToken}`, this.#runToken)) {
 			throw new Error("The admin token must be distinct from the run door token");
 		}
+		if (this.#adminToken && this.#hookToken && bearerIs(`Bearer ${this.#adminToken}`, this.#hookToken)) {
+			throw new Error("The admin token must be distinct from the hook token");
+		}
+		this.#publicReader = typeof publicReader === "function" ? publicReader : null;
 		this.#onProvision = onProvision;
 		this.#beforeCancel = beforeCancel;
 		this.#onAgentRead = onAgentRead;
@@ -3340,10 +3510,10 @@ export class Gateway {
 					case when s.statement = any($5::text[]) then pg_catalog.pg_terminate_backend(a.pid) else pg_catalog.pg_cancel_backend(a.pid) end as ended
 				from pg_catalog.pg_stat_activity a
 				cross join lateral (select a.pid::text || '@' || a.query_start::text as statement) s
-				where a.datname ~ '^c_[0-9a-f]{32}$' and a.state = 'active' and a.usename ~ '^c_[0-9a-f]{32}_[owr][0-9]+$'
-				and clock_timestamp() - a.query_start > make_interval(secs => (case substring(a.usename from '_([owr])[0-9]+$')
+				where a.datname ~ '^c_[0-9a-f]{32}$' and a.state = 'active' and a.usename ~ '^c_[0-9a-f]{32}_[owrs][0-9]+$'
+				and clock_timestamp() - a.query_start > make_interval(secs => (case substring(a.usename from '_([owrs])[0-9]+$')
 					when 'r' then case when a.pid = any($6::int[]) then $7::float8 else $1::float8 end
-					when 'w' then $2::float8 when 'o' then $3::float8
+					when 'w' then $2::float8 when 's' then $2::float8 when 'o' then $3::float8
 				end + $4::float8) / 1000)`,
 				[this.#limits.questionMs, this.#limits.changeMs, this.#limits.stepMs, OVERRUN_MS, this.#cancelled, [...this.#agentReads.keys()], this.#limits.agentMs],
 			);
@@ -3424,6 +3594,281 @@ export class Gateway {
 		const live = new Set(databases);
 		for (const known of [this.#unsettled, this.#swept]) for (const database of known.keys()) if (!live.has(database)) known.delete(database);
 		return unforgotten;
+	}
+
+	async registerDataTrigger({ id, environmentId, database: name, tables = null, minIntervalMs = 60_000, onWake }) {
+		if (typeof name !== "string" || !DATABASE_NAME.test(name)) refuse(400, "Name a database");
+		const database = companyDatabase(environmentId);
+		this.#triggerStops.get(id)?.();
+		const unregister = this.#notifier.register({ id, environmentId, database: name, tables, minIntervalMs, onWake });
+		let stopped = false;
+		let listening = null;
+		let reconnectTimer = null;
+		let attempts = 0;
+
+		const scheduleReconnect = () => {
+			if (stopped || this.#closed || reconnectTimer) return;
+			const delay = Math.min(10_000, 100 * 2 ** Math.min(6, attempts++));
+			reconnectTimer = setTimeout(() => {
+				reconnectTimer = null;
+				if (stopped || this.#closed) return;
+				const next = attach();
+				next.ready
+					.then(() => {
+						attempts = 0;
+					})
+					.catch(() => {
+						if (listening === next) {
+							listening = null;
+							scheduleReconnect();
+						}
+					});
+			}, delay);
+			reconnectTimer.unref?.();
+		};
+
+		const attach = () => {
+			const sub = this.#listen(database, (notice) => {
+				if (stopped) return;
+				if (notice === null) {
+					if (listening === sub) {
+						listening = null;
+						sub.stop();
+						scheduleReconnect();
+					}
+					return;
+				}
+				this.#notifier.notify(environmentId, notice);
+			});
+			listening = sub;
+			return sub;
+		};
+
+		const stop = () => {
+			if (stopped) return;
+			stopped = true;
+			if (reconnectTimer) {
+				clearTimeout(reconnectTimer);
+				reconnectTimer = null;
+			}
+			unregister();
+			listening?.stop();
+			listening = null;
+			if (this.#triggerStops.get(id) === stop) this.#triggerStops.delete(id);
+		};
+
+		this.#triggerStops.set(id, stop);
+		const initial = attach();
+		try {
+			await initial.ready;
+		} catch (error) {
+			stop();
+			throw storeProblem(error);
+		}
+		return stop;
+	}
+
+	unregisterDataTrigger(id) {
+		this.#triggerStops.get(id)?.();
+	}
+
+	async provisionDirectLogin(environmentId, name, { access = "read-write", connectionLimit = 4 } = {}) {
+		if (typeof name !== "string" || !DATABASE_NAME.test(name) || name === "qorpera" || /^(pg_|qorpera_)/.test(name))
+			refuse(400, "Name a database");
+		if (access !== "read-only" && access !== "read-write") refuse(400, "access is read-only or read-write");
+		if (!Number.isInteger(connectionLimit) || connectionLimit < 1 || connectionLimit > 12)
+			refuse(400, "connectionLimit must be 1 to 12");
+		const database = companyDatabase(environmentId);
+		const n = await this.#folder(database, name);
+		if (n === null) refuse(409, `The database ${name} has no applied step yet`);
+		const roleName = `${database}_s${n}`;
+		const ownerRole = quoted(`${database}_o${n}`);
+		const role = quoted(roleName);
+		const schema = quoted(name);
+		const password = randomBytes(24).toString("base64url");
+		const client = await this.#pool(database, "qorpera_data_admin").connect().catch((error) => {
+			throw storeProblem(error);
+		});
+		let lost;
+		const onClientError = (error) => {
+			lost ??= error;
+		};
+		client.on("error", onClientError);
+		try {
+			await client.query("begin; set local lock_timeout = 5000");
+			await client.query("select pg_catalog.pg_advisory_xact_lock(hashtext('qorpera_data.direct'), hashtext($1))", [roleName]);
+			const has = await client.query("select 1 from pg_catalog.pg_roles where rolname = $1", [roleName]);
+			const options = `login noinherit connection limit ${connectionLimit} password '${password}'`;
+			await client.query(has.rowCount === 0 ? `create role ${role} ${options}` : `alter role ${role} ${options}`);
+			await client.query(`alter role ${role} set search_path = ${schema}, qorpera_ext`);
+			await client.query(`alter role ${role} set statement_timeout = ${this.#limits.changeMs}`);
+			await client.query(`grant connect on database ${quoted(database)} to ${role}`);
+			await client.query(`grant usage on schema ${schema}, qorpera_ext to ${role}`);
+			await client.query(`revoke all on all tables in schema ${schema} from ${role}`);
+			await client.query(`revoke all on all sequences in schema ${schema} from ${role}`);
+			await client.query(`grant select on all tables in schema ${schema} to ${role}`);
+			await client.query(`alter default privileges for role ${ownerRole} in schema ${schema} revoke all on tables from ${role}`);
+			await client.query(`alter default privileges for role ${ownerRole} in schema ${schema} revoke all on sequences from ${role}`);
+			await client.query(`alter default privileges for role ${ownerRole} in schema ${schema} grant select on tables to ${role}`);
+			if (access === "read-write") {
+				await client.query(`grant insert, update, delete on all tables in schema ${schema} to ${role}`);
+				await client.query(`grant usage, select on all sequences in schema ${schema} to ${role}`);
+				await client.query(`alter default privileges for role ${ownerRole} in schema ${schema} grant insert, update, delete on tables to ${role}`);
+				await client.query(`alter default privileges for role ${ownerRole} in schema ${schema} grant usage, select on sequences to ${role}`);
+			}
+			await client.query("commit");
+			const host = this.#store.host;
+			const port = this.#store.port;
+			const urlHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+			return {
+				host,
+				port,
+				database,
+				schema: name,
+				user: roleName,
+				password,
+				access,
+				connectionLimit,
+				connectionString: `postgres://${encodeURIComponent(roleName)}:${encodeURIComponent(password)}@${urlHost}:${port}/${database}`,
+			};
+		} catch (error) {
+			await client.query("rollback").catch((rbError) => {
+				lost ??= rbError;
+			});
+			throw storeProblem(error);
+		} finally {
+			client.removeListener("error", onClientError);
+			this.#release(client, lost);
+		}
+	}
+
+	async revokeDirectLogin(environmentId, name) {
+		if (typeof name !== "string" || !DATABASE_NAME.test(name)) refuse(400, "Name a database");
+		const database = companyDatabase(environmentId);
+		const n = await this.#folder(database, name);
+		if (n === null) return { revoked: false, user: null };
+		const roleName = `${database}_s${n}`;
+		const role = quoted(roleName);
+		const client = await this.#pool(database, "qorpera_data_admin").connect().catch((error) => {
+			throw storeProblem(error);
+		});
+		let lost;
+		const onClientError = (error) => {
+			lost ??= error;
+		};
+		client.on("error", onClientError);
+		try {
+			await client.query("begin; set local lock_timeout = 5000");
+			await client.query("select pg_catalog.pg_advisory_xact_lock(hashtext('qorpera_data.direct'), hashtext($1))", [roleName]);
+			const has = await client.query("select 1 from pg_catalog.pg_roles where rolname = $1", [roleName]);
+			if (has.rowCount === 0) {
+				await client.query("rollback");
+				return { revoked: false, user: null };
+			}
+			await client.query(`alter role ${role} nologin`);
+			await client.query(`revoke all on database ${quoted(database)} from ${role}`);
+			await this.#pool("postgres", "qorpera_data_watch")
+				.query("select pg_catalog.pg_terminate_backend(pid) from pg_catalog.pg_stat_activity where datname = $1 and usename = $2", [database, roleName])
+				.catch(() => undefined);
+			await client.query(`drop owned by ${role}`);
+			await client.query(`drop role if exists ${role}`);
+			await client.query("commit");
+			return { revoked: true, user: roleName };
+		} catch (error) {
+			await client.query("rollback").catch((rbError) => {
+				lost ??= rbError;
+			});
+			throw storeProblem(error);
+		} finally {
+			client.removeListener("error", onClientError);
+			this.#release(client, lost);
+		}
+	}
+
+	#takeRateToken(key, limitPerMinute) {
+		const now = Date.now();
+		let bucket = this.#rateBuckets.get(key);
+		if (!bucket) {
+			if (this.#rateBuckets.size >= 10_000) this.#rateBuckets.delete(this.#rateBuckets.keys().next().value);
+			bucket = { tokens: limitPerMinute, updatedAt: now };
+			this.#rateBuckets.set(key, bucket);
+		} else {
+			const refill = ((now - bucket.updatedAt) / 60_000) * limitPerMinute;
+			bucket.tokens = Math.min(limitPerMinute, bucket.tokens + refill);
+			bucket.updatedAt = now;
+		}
+		if (bucket.tokens < 1) refuse(429, "Too many requests: slow down and try again");
+		bucket.tokens -= 1;
+	}
+
+	async #publicNamed(kind, environmentId, asked, clientKey) {
+		if (!this.#publicReader) refuse(404, "Public data access is not enabled");
+		if (!asked || typeof asked !== "object") refuse(400, `Name a ${kind}`);
+		const { database: name, [kind]: file, params = {} } = asked;
+		if (typeof name !== "string" || !DATABASE_NAME.test(name) || typeof file !== "string" || !FILE_NAME.test(file) || file.length > 60)
+			refuse(400, `Name a ${kind} as <database>/<${kind}>`);
+		this.#takeRateToken(`pub-pre:${environmentId}:${clientKey}`, 300);
+		const tomlPath = `data/${name}/database.toml`;
+		const sqlPath = `data/${name}/${NAMED[kind].folder}/${file}.sql`;
+		const read = await this.#publicReader(environmentId, [tomlPath, sqlPath]);
+		const tomlText = read?.get ? read.get(tomlPath) : read?.[tomlPath];
+		const sqlText = read?.get ? read.get(sqlPath) : read?.[sqlPath];
+		if (typeof tomlText !== "string") refuse(404, `No public ${kind} ${name}/${file}`);
+		const pub = parsePublicConfig(tomlText);
+		const allowed = kind === "question" ? pub.questions : pub.changes;
+		if (!allowed.includes(file)) refuse(404, `No public ${kind} ${name}/${file}`);
+		this.#takeRateToken(`pub:${environmentId}:${name}:${clientKey}`, pub.rateLimit);
+		if (typeof sqlText !== "string" || Buffer.byteLength(sqlText) > this.#limits.questionTextBytes)
+			refuse(404, `No public ${kind} ${name}/${file}`);
+		const hash = sha256(sqlText);
+		const statement = this.#statement(hash, sqlText);
+		if (!statement.ok) refuse(400, `${sqlPath}: ${statement.problem}`);
+		if (statement.parameters.includes(VIEWER) || /qorpera\.viewer|qorpera_data\.viewer/i.test(statement.sql))
+			refuse(400, `A public ${kind} cannot depend on :viewer`);
+		const database = companyDatabase(environmentId);
+		const n = await this.#folder(database, name);
+		if (n === null) refuse(409, `The database ${name} has no applied step yet`);
+		const bound = this.#values({ userId: null, run: false }, statement, params, kind);
+		return { database, name, n, sql: statement.sql, values: bound.values, viewer: null, previewValues: bound.previewValues, sha256: hash, statement };
+	}
+
+	async publicQuery(environmentId, body, clientKey, { gone = null } = {}) {
+		const ready = await this.#publicNamed("question", environmentId, body, clientKey);
+		const answer = await this.#ask(ready, { gone });
+		if (typeof body.etag === "string" && body.etag === answer.etag) return { same: true, etag: answer.etag };
+		const asOf = isoNow();
+		const out = { ...answer, asOf };
+		if (typeof answer[RAW_JSON] === "string") out[RAW_JSON] = `${answer[RAW_JSON].slice(0, -1)},"etag":"${answer.etag}","asOf":"${asOf}"}`;
+		return out;
+	}
+
+	async publicChange(environmentId, body, clientKey, { gone = null } = {}) {
+		const ready = await this.#publicNamed("change", environmentId, body, clientKey);
+		return { ...(await this.#act(ready, { kind: "public", id: null, via: body.change }, { gone })), asOf: isoNow() };
+	}
+
+	async hookChange(environmentId, body, { gone = null } = {}) {
+		if (!this.#publicReader) refuse(404, "Hook data access is not enabled");
+		const { database: name, change: file, params = {}, hookId = null } = body;
+		if (typeof name !== "string" || !DATABASE_NAME.test(name) || typeof file !== "string" || !FILE_NAME.test(file) || file.length > 60)
+			refuse(400, "Name a change as <database>/<change>");
+		if (hookId !== null && (typeof hookId !== "string" || hookId.length > 128)) refuse(400, "Invalid hookId");
+		const sqlPath = `data/${name}/actions/${file}.sql`;
+		const read = await this.#publicReader(environmentId, [sqlPath]);
+		const sqlText = read?.get ? read.get(sqlPath) : read?.[sqlPath];
+		if (typeof sqlText !== "string" || Buffer.byteLength(sqlText) > this.#limits.questionTextBytes)
+			refuse(404, `No change ${name}/${file}`);
+		const hash = sha256(sqlText);
+		const statement = this.#statement(hash, sqlText);
+		if (!statement.ok) refuse(400, `${sqlPath}: ${statement.problem}`);
+		if (statement.parameters.includes(VIEWER) || /qorpera\.viewer|qorpera_data\.viewer/i.test(statement.sql))
+			refuse(400, "A webhook change cannot depend on :viewer");
+		const database = companyDatabase(environmentId);
+		const n = await this.#folder(database, name);
+		if (n === null) refuse(409, `The database ${name} has no applied step yet`);
+		const bound = this.#values({ userId: null, run: false }, statement, params, "change");
+		const ready = { database, name, n, sql: statement.sql, values: bound.values, viewer: null, previewValues: bound.previewValues, sha256: hash, statement };
+		return { ...(await this.#act(ready, { kind: "hook", id: hookId, via: file }, { gone })), asOf: isoNow() };
 	}
 
 	async #closePools(match) {
@@ -3632,6 +4077,46 @@ export class Gateway {
 
 	/** A member's request, begun as that member. */
 	async handle(method, path, headers, read, gone) {
+		const publicRoute = /^\/v1\/company-data-public\/([^/]+)\/(query|change)$/.exec(path);
+		if (publicRoute) {
+			if (method !== "POST") refuse(405, "Use POST");
+			companyDatabase(publicRoute[1]);
+			let body;
+			try {
+				body = JSON.parse(await read(this.#limits.bodyBytes));
+			} catch (error) {
+				if (error instanceof Refusal) throw error;
+				refuse(400, "The body is not JSON");
+			}
+			if (!body || typeof body !== "object" || Array.isArray(body)) refuse(400, "The body is not an object");
+			const forwardedParts =
+				typeof headers["x-forwarded-for"] === "string"
+					? headers["x-forwarded-for"]
+							.split(",")
+							.map((part) => part.trim())
+							.filter(Boolean)
+					: [];
+			const clientKey = forwardedParts.at(-1) || "direct";
+			return publicRoute[2] === "query"
+				? this.publicQuery(publicRoute[1], body, clientKey, { gone })
+				: this.publicChange(publicRoute[1], body, clientKey, { gone });
+		}
+		const hookRoute = /^\/v1\/hook-data\/([^/]+)\/change$/.exec(path);
+		if (hookRoute) {
+			if (!this.#hookToken) refuse(404, "Not a call the data gateway answers");
+			if (!bearerIs(headers.authorization, this.#hookToken)) refuse(401, "Not allowed");
+			if (method !== "POST") refuse(405, "Use POST");
+			companyDatabase(hookRoute[1]);
+			let body;
+			try {
+				body = JSON.parse(await read(this.#limits.bodyBytes));
+			} catch (error) {
+				if (error instanceof Refusal) throw error;
+				refuse(400, "The body is not JSON");
+			}
+			if (!body || typeof body !== "object" || Array.isArray(body)) refuse(400, "The body is not an object");
+			return this.hookChange(hookRoute[1], body, { gone });
+		}
 		const adminRoute = /^\/v1\/admin\/company-data\/([^/]+)\/(drop-database|drop-company)$/.exec(path);
 		if (adminRoute) {
 			if (!this.#adminToken) refuse(404, "Not a call the data gateway answers");
@@ -3730,6 +4215,10 @@ export class Gateway {
 
 	async close() {
 		this.#closed = true;
+		for (const stop of [...this.#triggerStops.values()]) stop();
+		this.#triggerStops.clear();
+		this.#notifier.close();
+		this.#rateBuckets.clear();
 		for (const entry of this.#watchInFlight.values()) entry.controller.abort();
 		this.#watchInFlight.clear();
 		for (const listener of this.#listeners.values()) {

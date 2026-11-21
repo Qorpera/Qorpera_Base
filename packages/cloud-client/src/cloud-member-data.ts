@@ -66,7 +66,7 @@ const FOLDER_BODY_BYTES: Readonly<Record<string, number>> = {
 	changes: 900 * 1024,
 };
 const CHANGE_OPS: ReadonlySet<unknown> = new Set(["add", "change", "remove"]);
-const ACTORS: ReadonlySet<unknown> = new Set(["member", "agent", "machine", "step"]);
+const ACTORS: ReadonlySet<unknown> = new Set(["member", "agent", "machine", "step", "public", "hook"]);
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const AFTER = /^[1-9][0-9]{0,18}$/;
 export const CLOUD_MEMBER_DATA_ZONE = /^[A-Za-z][A-Za-z0-9_+-]{0,30}(?:\/[A-Za-z0-9_+-]{1,30}){0,2}$/;
@@ -171,7 +171,7 @@ export interface CloudMemberDataEdited {
 }
 
 export type CloudMemberDataChangeOp = "add" | "change" | "remove";
-export type CloudMemberDataActor = "member" | "agent" | "machine" | "step";
+export type CloudMemberDataActor = "member" | "agent" | "machine" | "step" | "public" | "hook";
 export type CloudMemberDataRecordValues = Readonly<Record<string, unknown>>;
 
 export interface CloudMemberDataChangedTable {
