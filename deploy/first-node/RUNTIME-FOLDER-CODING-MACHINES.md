@@ -630,21 +630,25 @@ environment over exec stdin, and into a snapshot build's `install`. Nothing writ
 A program that encodes a value another way gets past the mask; that is why it is best effort.
 
 **Git's storage in a save.** A pack is read by the node's git, the reader git servers run on every push they take:
-`index-pack --stdin` in a scratch repository, then `cat-file --batch-all-objects --batch`, streamed into the scan. A
-pack git refuses (broken, cut off, thin, with bytes after it) is "could not be checked". So is a loose object that does
-not inflate, has bytes after it, has no header or more than its header's size, or is over 1 GiB inflated. Git runs
-under `prlimit --as` (1 GiB), with the system's and the user's config ignored (`GIT_CONFIG_NOSYSTEM`,
-`GIT_CONFIG_GLOBAL=/dev/null`, `HOME` the scratch directory), no hooks and no remotes, for at most 30 minutes, and one
-pack at a time on a node, so a burst of packs waits its turn and starves nothing else; the scratch directory is
-removed however the check ends. At most 8 checks wait for a turn on a node, with at most 2 GiB of packs together; a
-pack past either is refused as "could not be checked" for now, and checked again at the next boundary (one session's
-boundary checks at most 8 files at once, so this is several sessions at once). A pack over 512 MiB, or one whose objects rebuild more than 64 times its size (at
-least 256 MiB, at most 4 GiB), is "could not be checked" too. Packs of code rebuild 14 to 26 times their size (express
-16, Qorpera_Base 14, git/git 26), and the scan runs at about 10.7 MiB a second under `--jitless` on the test node
-(up from about 6 MiB a second before inlining `foundRange`), so a pack the size of Qorpera_Base's (183 MiB, 2.6 GiB
-rebuilt) takes about 4.2 minutes (down from about 7.5 minutes) and its boundary waits for it. A machine with no
-values inflates and reads nothing. `install-folder-service.sh` refuses a node without `/usr/bin/git` and
-`/usr/bin/prlimit`.
+`index-pack --stdin` in a scratch repository, then `cat-file --batch-all-objects --batch --unordered`, piped directly
+into `qorpera-folder scan-pack --spec-fd 3` (with the keyed secret-hash spec passed over fd 3 and the in-process JS
+scanner kept as fallback). A pack git refuses (broken, cut off, thin, with bytes after it) is "could not be checked". So
+is a loose object that does not inflate, has bytes after it, has no header or more than its header's size, or is over
+1 GiB inflated. Git and the scanner run under `prlimit --as` (1 GiB), with the system's and the user's config ignored
+(`GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL=/dev/null`, `HOME` the scratch directory), no hooks and no remotes, for at
+most 30 minutes, up to 2 packs at a time on a node when using the native Rust scanner (1 on the JS fallback) and at most
+512 MiB of running pack copies in scratch tmpfs together (`runningBytes`, bounding only the scratch pack copies while
+`prlimit --as` bounds each check's `git` and scanner process individually rather than in total), so large packs
+serialize and a burst of packs waits its turn without starving other work; the scratch directory is removed however the
+check ends. At most 8
+checks wait for a turn on a node, with at most 2 GiB of packs together; a pack past either is refused as "could not be
+checked" for now, and checked again at the next boundary (one session's boundary checks at most 8 files at once, so this
+is several sessions at once). A pack over 512 MiB, or one whose objects rebuild more than 64 times its size (at least
+256 MiB, at most 4 GiB), is "could not be checked" too. Packs of code rebuild 14 to 26 times their size (express 16,
+Qorpera_Base 14, git/git 26), and the native Rust scanner runs at about 510–520 MiB a second on the test node (up from
+about 10.7 MiB a second under `--jitless` JS), so a pack the size of Qorpera_Base's (183 MiB, 2.6 GiB rebuilt) scans in
+about 5 seconds off the Node event loop rather than 4.2 minutes. A machine with no values inflates and reads nothing.
+`install-folder-service.sh` refuses a node without `/usr/bin/git` and `/usr/bin/prlimit`.
 
 **A refused git change is held whole.** Once the check refuses anything in a code area's `repo.git` (an object, a
 pack, a new name), everything else changed in that `repo.git` waits with it, as "it waits for a change that carries a
