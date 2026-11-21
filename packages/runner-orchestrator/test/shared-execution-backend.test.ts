@@ -147,6 +147,7 @@ interface Fixture {
 		authorization: string | null;
 	}>;
 	deliveries: Array<{ port: number; authorization: string | null; body: Record<string, unknown> }>;
+	deliverBodiesCancelled: number;
 	stateRoot: string;
 	runRoot: string;
 	identityRoot: string;
@@ -236,6 +237,7 @@ async function fixture(
 		rpc: [],
 		hostCalls: [],
 		deliveries: [],
+		deliverBodiesCancelled: 0,
 		stateRoot,
 		runRoot,
 		identityRoot,
@@ -367,7 +369,15 @@ async function fixture(
 					authorization: headers.get("authorization"),
 					body: JSON.parse(String(init.body)),
 				});
-				return new Response("", { status: 202 });
+				const stream = new ReadableStream({
+					start(controller) {
+						controller.enqueue(new TextEncoder().encode("accepted"));
+					},
+					cancel() {
+						state.deliverBodiesCancelled++;
+					},
+				});
+				return new Response(stream, { status: 202 });
 			}
 		}
 		return new Response("not found", { status: 404 });
@@ -1731,11 +1741,8 @@ describe("warm conversations", () => {
 			return origKill(unit);
 		};
 
-		const evicting = f.backend.acquire(
-			secondRun,
-			work({ runId: secondRun, sourceId: secondRun, staffVersion: 2 }),
-			signal,
-		);
+		const secondWork = work({ runId: secondRun, sourceId: secondRun, staffVersion: 2 });
+		const evicting = f.backend.acquire(secondRun, secondWork, signal);
 		await killStarted;
 
 		const thirdRun = "30000000-0000-4000-8000-000000000097";
@@ -1750,5 +1757,130 @@ describe("warm conversations", () => {
 		releaseKill();
 		const evictedRunner = await evicting;
 		expect(evictedRunner.runnerId).toBeTruthy();
+		const baseDelivery = delivery(token());
+		await f.backend.deliver(evictedRunner, {
+			...baseDelivery,
+			assignment: { ...baseDelivery.assignment, runId: secondRun, runnerId: evictedRunner.runnerId },
+			work: secondWork,
+		});
+		expect(f.deliverBodiesCancelled).toBe(1);
+	});
+
+	it("keeps a stale slot reserved until its own eviction finishes even when another stale eviction fails", async () => {
+		const f = await fixture({
+			warmIdleMs: 300_000,
+			slotCount: 4,
+			runnerIdFor: (id) => id.replace(/^30000000/, "40000000"),
+		});
+		const signal = new AbortController().signal;
+		const runA = "30000000-0000-4000-8000-0000000000a1";
+		const runB = "30000000-0000-4000-8000-0000000000a2";
+		const runC = "30000000-0000-4000-8000-0000000000a3";
+		const runD = "30000000-0000-4000-8000-0000000000a4";
+		await Promise.all([
+			f.backend.acquire(runA, work({ runId: runA, sourceId: runA, staffVersion: 1 }), signal),
+			f.backend.acquire(runB, work({ runId: runB, sourceId: runB, staffVersion: 2 }), signal),
+		]);
+		await finishRun(f, 0);
+		await finishRun(f, 1);
+
+		let enteredKill0!: () => void;
+		let releaseKill0!: () => void;
+		let failedKill1!: () => void;
+		const kill0Started = new Promise<void>((resolve) => {
+			enteredKill0 = resolve;
+		});
+		const kill0Gate = new Promise<void>((resolve) => {
+			releaseKill0 = resolve;
+		});
+		const kill1Failed = new Promise<void>((resolve) => {
+			failedKill1 = resolve;
+		});
+		const origKill = f.units.kill.bind(f.units);
+		f.units.kill = async (unit: string) => {
+			if (unit === hostUnit(0)) {
+				enteredKill0();
+				await kill0Gate;
+			}
+			if (unit === hostUnit(1)) {
+				failedKill1();
+				throw new Error("stale slot 1 kill failed");
+			}
+			return origKill(unit);
+		};
+
+		let settled = false;
+		const failingAcquire = f.backend
+			.acquire(runC, work({ runId: runC, sourceId: runC, staffVersion: 3 }), signal)
+			.then(
+				() => {
+					settled = true;
+					return "resolved";
+				},
+				(error: unknown) => {
+					settled = true;
+					return error;
+				},
+			);
+		await Promise.all([kill0Started, kill1Failed]);
+		await delay(20);
+		expect(settled).toBe(false);
+
+		const concurrent = await f.backend.acquire(
+			runD,
+			work({ runId: runD, sourceId: runD, sessionId: "30000000-0000-4000-8000-0000000000a9" }),
+			signal,
+		);
+		expect(concurrent.runnerId).toBe(runD.replace(/^30000000/, "40000000"));
+		expect(f.units.activeUnits.has(hostUnit(2))).toBe(true);
+
+		releaseKill0();
+		const outcome = await failingAcquire;
+		expect(outcome).toBeInstanceOf(Error);
+		expect((outcome as Error).message).toContain("stale slot 1 kill failed");
+	});
+
+	it("does not block concurrent free-slot acquires while reconcile evicts an expired warm slot", async () => {
+		const f = await fixture({
+			warmIdleMs: 300_000,
+			slotCount: 4,
+			runnerIdFor: (id) => id.replace(/^30000000/, "50000000"),
+		});
+		const signal = new AbortController().signal;
+		await f.backend.acquire(runId, work(), signal);
+		await finishRun(f, 0);
+		f.clock.now += 400_000;
+
+		let enteredKill!: () => void;
+		let releaseKill!: () => void;
+		const killStarted = new Promise<void>((resolve) => {
+			enteredKill = resolve;
+		});
+		const killGate = new Promise<void>((resolve) => {
+			releaseKill = resolve;
+		});
+		const origKill = f.units.kill.bind(f.units);
+		f.units.kill = async (unit: string) => {
+			if (unit === hostUnit(0)) {
+				enteredKill();
+				await killGate;
+			}
+			return origKill(unit);
+		};
+
+		const reconciling = f.backend.reconcile(signal);
+		await killStarted;
+
+		const otherRun = "30000000-0000-4000-8000-0000000000b1";
+		const concurrent = await f.backend.acquire(
+			otherRun,
+			work({ runId: otherRun, sourceId: otherRun, sessionId: "30000000-0000-4000-8000-0000000000b9" }),
+			signal,
+		);
+		expect(concurrent.runnerId).toBeTruthy();
+		expect(f.units.activeUnits.has(hostUnit(1))).toBe(true);
+
+		releaseKill();
+		await reconciling;
 	});
 });

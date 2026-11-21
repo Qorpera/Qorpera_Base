@@ -700,22 +700,25 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 						}
 					}
 				}
-				for (const s of stale) this.#claimingSlots.add(s.slot);
 				if (warmCandidate) {
+					for (const s of stale) this.#claimingSlots.add(s.slot);
 					this.#claimingSlots.add(warmCandidate.slot);
 					return { slot: warmCandidate.slot, warmCandidate, stale, evictSelected: false };
 				}
 				const free = await this.#freeSlot();
 				const lowestStale = stale.length > 0 ? Math.min(...stale.map((s) => s.slot)) : undefined;
 				if (free !== undefined && (lowestStale === undefined || free < lowestStale)) {
+					for (const s of stale) this.#claimingSlots.add(s.slot);
 					this.#claimingSlots.add(free);
 					return { slot: free, warmCandidate: undefined, stale, evictSelected: false };
 				}
 				if (lowestStale !== undefined) {
+					for (const s of stale) this.#claimingSlots.add(s.slot);
 					return { slot: lowestStale, warmCandidate: undefined, stale, evictSelected: false };
 				}
 				const [oldest] = [...parked].sort((a, b) => Date.parse(a.warmUntil) - Date.parse(b.warmUntil));
 				if (!oldest) throw new ProviderAdmissionRefused("deferred", REFUSAL_CAPACITY, "Every sandbox slot is busy");
+				for (const s of stale) this.#claimingSlots.add(s.slot);
 				this.#claimingSlots.add(oldest.slot);
 				return { slot: oldest.slot, warmCandidate: undefined, stale, evictSelected: true };
 			});
@@ -724,7 +727,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			let warm: SharedExecutionWarmSlot | undefined;
 			try {
 				if (claimed.stale.length > 0) {
-					await Promise.all(
+					// WHY: Wait for every stale eviction to finish before releasing #claimingSlots even if one fails.
+					const outcomes = await Promise.allSettled(
 						claimed.stale.map(async (staleSlot) => {
 							try {
 								await this.#evict(staleSlot.slot, signal);
@@ -736,6 +740,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 							}
 						}),
 					);
+					const failed = outcomes.find((o): o is PromiseRejectedResult => o.status === "rejected");
+					if (failed) throw failed.reason;
 				}
 				if (claimed.warmCandidate) {
 					warm = await this.#validateWarmSlot(claimed.warmCandidate, work, signal);
