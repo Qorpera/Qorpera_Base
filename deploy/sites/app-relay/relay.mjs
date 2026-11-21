@@ -105,7 +105,7 @@ const MAX_REFUSALS_KEPT = 10_000;
 const STREAM_PAUSE_BYTES = 256 * 1024;
 const PROGRAM_PAUSE_BYTES = 2 * 1024 * 1024;
 const RELAY_PAUSE_BYTES = 32 * 1024 * 1024;
-const SHARED_PAUSED_MS = 1_000;
+const SHARED_PAUSED_MS = 4_000;
 const MAX_RPC_ANSWER_BYTES = 64 * 1024;
 const RPC_TIMEOUT_MS = 20_000;
 const MAX_PASSWORD = 1024;
@@ -1006,6 +1006,8 @@ class Program {
 		this.next = 1;
 		this.blocked = 0;
 		this.blocking = new Set();
+		this.buffered = 0;
+		this.pauseCount = 0;
 		this.uploadQueue = [];
 		this.keptAliveAt = Date.now();
 		this.nextCheckAt = nextCheckAt;
@@ -1026,7 +1028,10 @@ class Program {
 	block(blocker) {
 		if (this.blocking.has(blocker)) return;
 		this.blocking.add(blocker);
-		if (this.blocked++ === 0) this.ws.pause();
+		if (this.blocked++ === 0) {
+			this.pauseCount++;
+			this.ws.pause();
+		}
 	}
 
 	unblock(blocker) {
@@ -1036,12 +1041,6 @@ class Program {
 
 	tightenBlocked() {
 		for (const blocker of this.blocking) blocker.tighten();
-	}
-
-	bufferedBytes() {
-		let total = 0;
-		for (const stream of this.streams.values()) total += stream.bufferedBytes();
-		return total;
 	}
 
 	pumpUploads(highWater) {
@@ -1082,6 +1081,7 @@ export function createRelay({
 	keepaliveMs = KEEPALIVE_MS,
 	silentMs = SILENT_MS,
 	pausedMs = PAUSED_MS,
+	sharedPausedMs = SHARED_PAUSED_MS,
 	recheckMs = RECHECK_MS,
 	connectLimit = CONNECT_LIMIT,
 	maxSessionsKept = MAX_SESSIONS_KEPT,
@@ -1121,11 +1121,23 @@ export function createRelay({
 	const uploadHighWater = Math.max(1024, Math.min(Math.floor(maxQueuedBytes / 2), 4 * 1024 * 1024));
 	let pendingTotal = 0;
 	let pendingUntrusted = 0;
+	let relayBuffered = 0;
+	let bufferedPrograms = 0;
 
-	function relayBufferedBytes() {
-		let total = 0;
-		for (const program of programs.values()) total += program.bufferedBytes();
-		return total;
+	function adjustBuffered(program, delta) {
+		if (delta === 0) return;
+		const was = program.buffered;
+		const next = Math.max(0, was + delta);
+		const actual = next - was;
+		program.buffered = next;
+		relayBuffered = Math.max(0, relayBuffered + actual);
+		if (was === 0 && next > 0) bufferedPrograms++;
+		else if (was > 0 && next === 0) bufferedPrograms = Math.max(0, bufferedPrograms - 1);
+	}
+
+	function socketWriteQueue(res) {
+		const size = res.socket?._handle?.writeQueueSize;
+		return typeof size === "number" && size >= 0 ? size : 0;
 	}
 
 	function scheduleCheck(now = Date.now()) {
@@ -1453,12 +1465,27 @@ export function createRelay({
 		let blocked = null;
 		let blockedAt = 0;
 		let lastBlockedWritable = 0;
+		let lastBlockedQueue = 0;
+		let streamBuffered = 0;
 		let tightened = false;
 		let received = 0;
 		let reqPaused = false;
 		let reqEnded = false;
 		let uploadEntry = null;
 		let timer = null;
+		const syncBuffered = (next = res.writableLength) => {
+			const bounded = Math.max(0, next);
+			const delta = bounded - streamBuffered;
+			if (delta !== 0) {
+				streamBuffered = bounded;
+				adjustBuffered(program, delta);
+			}
+			return bounded;
+		};
+		const overRelayCap = () =>
+			relayBuffered >= RELAY_PAUSE_BYTES &&
+			bufferedPrograms > 0 &&
+			program.buffered >= Math.floor(RELAY_PAUSE_BYTES / bufferedPrograms);
 		const armTimer = () => {
 			if (timer) clearTimeout(timer);
 			timer = setTimeout(() => fail(504, text.slow, text.again), responseTimeoutMs);
@@ -1469,19 +1496,24 @@ export function createRelay({
 				if (over) return;
 				const elapsed = Date.now() - blockedAt;
 				if (!tightened || elapsed >= pausedMs) return fail(502, text.notAnswering, text.notAnsweringLead);
-				const currentWritable = res.writableLength;
-				// WHY: Allow steadily draining slow visitors to finish while cutting truly stalled shared streams after 1 s.
-				if (currentWritable < lastBlockedWritable) {
+				const currentWritable = syncBuffered();
+				const currentQueue = socketWriteQueue(res);
+				// WHY: Check writableLength and libuv writeQueueSize so slow mobile links draining mid-chunk count as progressing.
+				if (
+					currentWritable < lastBlockedWritable ||
+					(currentWritable === lastBlockedWritable && currentQueue < lastBlockedQueue)
+				) {
 					lastBlockedWritable = currentWritable;
+					lastBlockedQueue = currentQueue;
 					if (
 						currentWritable <= STREAM_PAUSE_BYTES / 2 &&
-						program.bufferedBytes() < PROGRAM_PAUSE_BYTES &&
-						relayBufferedBytes() < RELAY_PAUSE_BYTES
+						program.buffered < PROGRAM_PAUSE_BYTES &&
+						!overRelayCap()
 					) {
 						unblock();
 						return;
 					}
-					armBlockedTimer(Math.min(SHARED_PAUSED_MS, Math.max(1, pausedMs - elapsed)));
+					armBlockedTimer(Math.min(sharedPausedMs, Math.max(1, pausedMs - elapsed)));
 					return;
 				}
 				fail(502, text.notAnswering, text.notAnsweringLead);
@@ -1491,18 +1523,25 @@ export function createRelay({
 			tighten: () => {
 				if (!blocked || tightened) return;
 				tightened = true;
-				lastBlockedWritable = res.writableLength;
-				const limit = Math.min(pausedMs, SHARED_PAUSED_MS);
+				lastBlockedWritable = syncBuffered();
+				lastBlockedQueue = socketWriteQueue(res);
+				const limit = Math.min(pausedMs, sharedPausedMs);
 				const left = Math.max(0, Math.min(limit, pausedMs - (Date.now() - blockedAt)));
 				armBlockedTimer(left);
 			},
 		};
 		const block = () => {
 			if (blocked || over) return;
+			// WHY: Pause the app-response timer while the relay itself has paused reading from the program for a slow visitor.
+			if (timer) {
+				clearTimeout(timer);
+				timer = null;
+			}
 			blockedAt = Date.now();
-			lastBlockedWritable = res.writableLength;
+			lastBlockedWritable = syncBuffered();
+			lastBlockedQueue = socketWriteQueue(res);
 			tightened = program.streams.size > 1;
-			const limit = tightened ? Math.min(pausedMs, SHARED_PAUSED_MS) : pausedMs;
+			const limit = tightened ? Math.min(pausedMs, sharedPausedMs) : pausedMs;
 			armBlockedTimer(limit);
 			program.block(blocker);
 		};
@@ -1512,6 +1551,7 @@ export function createRelay({
 			blocked = null;
 			tightened = false;
 			program.unblock(blocker);
+			if (!over) armTimer();
 		};
 		const done = () => {
 			over = true;
@@ -1519,6 +1559,7 @@ export function createRelay({
 				clearTimeout(timer);
 				timer = null;
 			}
+			syncBuffered(0);
 			program.streams.delete(id);
 			uploadEntry = null;
 			unblock();
@@ -1572,16 +1613,17 @@ export function createRelay({
 				} catch {
 					return broken();
 				}
-				if (
+				const currentBuffered = syncBuffered();
+				if (blocked) {
+					lastBlockedWritable = currentBuffered;
+					lastBlockedQueue = socketWriteQueue(res);
+				} else if (
 					!room &&
-					(res.writableLength >= STREAM_PAUSE_BYTES ||
-						program.bufferedBytes() >= PROGRAM_PAUSE_BYTES ||
-						relayBufferedBytes() >= RELAY_PAUSE_BYTES)
+					(currentBuffered >= STREAM_PAUSE_BYTES ||
+						program.buffered >= PROGRAM_PAUSE_BYTES ||
+						overRelayCap())
 				)
 					block();
-			},
-			bufferedBytes() {
-				return res.writableLength;
 			},
 			end() {
 				if (!answered) return broken();
@@ -1600,7 +1642,10 @@ export function createRelay({
 			},
 		});
 		program.tightenBlocked();
-		res.on("drain", unblock);
+		res.on("drain", () => {
+			syncBuffered();
+			unblock();
+		});
 		// The visitor left: the program stops too.
 		res.on("close", () => {
 			if (over) return;
@@ -1740,12 +1785,14 @@ export function createRelay({
 			}
 			program.uploadQueue.length = 0;
 			for (const stream of [...program.streams.values()]) stream.gone();
+			adjustBuffered(program, -program.buffered);
 		};
 		if (old) {
 			// Only the newest program serves a link; the older one's open requests end with it.
 			old.ws.close(CLOSE.replaced, "replaced");
 			old.uploadQueue.length = 0;
 			for (const stream of [...old.streams.values()]) stream.gone();
+			adjustBuffered(old, -old.buffered);
 		}
 		program.send(
 			TYPE.hello,
@@ -1866,6 +1913,7 @@ export function createRelay({
 	/** Whether a link's program is connected, and dropping it (its socket closed at once): for operators and tests. */
 	server.isConnected = (slug) => programs.has(slug);
 	server.dropProgram = (slug) => programs.get(slug)?.ws.terminate();
+	server.pauseCount = (slug) => programs.get(slug)?.pauseCount ?? 0;
 	return server;
 }
 

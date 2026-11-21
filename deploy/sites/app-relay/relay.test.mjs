@@ -2107,7 +2107,7 @@ describe("app relay: concurrency hardening and backpressure", () => {
 				return;
 			}
 			if (req.url === "/steady-big") {
-				const total = 4 * 1024 * 1024;
+				const total = 12 * 1024 * 1024;
 				res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(total) });
 				const chunk = Buffer.alloc(64 * 1024, 0x41);
 				let left = total / chunk.length;
@@ -2154,8 +2154,9 @@ describe("app relay: concurrency hardening and backpressure", () => {
 			hostSuffix: SUFFIX,
 			fetch: fetcher,
 			maxQueuedBytes: 512 * 1024,
-			responseTimeoutMs: 400,
-			pausedMs: 5_000,
+			responseTimeoutMs: 800,
+			pausedMs: 8_000,
+			sharedPausedMs: 600,
 			log: () => {},
 		});
 		const relayPort = await listen(relay);
@@ -2235,29 +2236,31 @@ describe("app relay: concurrency hardening and backpressure", () => {
 		const early = await post("/early", Buffer.alloc(768 * 1024, 0x44));
 		assert.equal(early.status, 200);
 		assert.equal(early.text, "early-ok");
+		const beforePauses = relay.pauseCount("shop");
+		let slowSock;
 		const slowSteady = new Promise((resolve, reject) => {
-			const sock = connect(relayPort, "127.0.0.1", () => {
-				sock.write(
+			slowSock = connect(relayPort, "127.0.0.1", () => {
+				slowSock.pause();
+				slowSock.write(
 					`GET /steady-big HTTP/1.1\r\nHost: ${HOST}\r\nX-Forwarded-Host: ${HOST}\r\nCookie: ${GATE_COOKIE}=${token}\r\nConnection: close\r\n\r\n`,
 				);
 			});
 			let bytes = 0;
-			sock.on("data", (c) => {
+			slowSock.on("data", (c) => {
 				bytes += c.length;
-				sock.pause();
-				setTimeout(() => sock.resume(), 15);
+				slowSock.pause();
+				setTimeout(() => {
+					if (!slowSock.destroyed) slowSock.resume();
+				}, 3);
 			});
-			sock.on("end", () => resolve(bytes));
-			sock.on("error", reject);
+			slowSock.on("end", () => resolve(bytes));
+			slowSock.on("error", reject);
 		});
-		const besideSlow = await Promise.all([
-			slowSteady,
-			(async () => {
-				await sleep(80);
-				return post("/early", Buffer.alloc(16, 0x45));
-			})(),
-		]);
-		assert.ok(besideSlow[0] > 4 * 1024 * 1024, `expected full steady download, got ${besideSlow[0]}`);
+		await until(() => relay.pauseCount("shop") > beforePauses, "the slow download to pause the link", 3_000);
+		slowSock.resume();
+		const besideSlow = await Promise.all([slowSteady, post("/early", Buffer.alloc(16, 0x45))]);
+		assert.ok(relay.pauseCount("shop") > beforePauses);
+		assert.ok(besideSlow[0] > 12 * 1024 * 1024, `expected full steady download, got ${besideSlow[0]}`);
 		assert.equal(besideSlow[1].status, 200);
 		const stalledEnded = await new Promise((resolve) => {
 			const req = request(

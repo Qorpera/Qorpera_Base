@@ -164,8 +164,8 @@ to start with any other role), `QORPERA_APP_HOST_SUFFIX` (`-preview.qorpera.com`
   after the head: the connection ends. Request bodies ≤ 10 MiB, queued across the link socket with per-stream
   backpressure so concurrent upload bursts do not trip the 8 MiB send cap.
   A visitor who stops reading while the program waits on them (after 256 KiB per stream, 2 MiB per link, or 32 MiB
-  across the relay) is cut off after 30 s — or after 1 s without forward progress when other visitors share the program
-  — so the program serves everyone else again. Hop-by-hop headers dropped both ways. To the app: the gate cookie taken out of `Cookie`, `X-Forwarded-Proto:
+  across the relay for links above their share) is cut off after 30 s — or after 4 s without forward progress when other
+  visitors share the program — so the program serves everyone else again. Hop-by-hop headers dropped both ways. To the app: the gate cookie taken out of `Cookie`, `X-Forwarded-Proto:
   https`, `X-Forwarded-Host`, `X-Forwarded-For` = the visitor's CF-Connecting-IP only, and `Transfer-Encoding: chunked`
   when the visitor's body came chunked (so the app never reads a body as a request of its own). From the app: the
   app's cache headers (`Cache-Control`, `Expires`, `CDN-Cache-Control`, `Cloudflare-CDN-Cache-Control`,
