@@ -267,6 +267,16 @@ interface SurfacePreset {
 
 const SURFACE_PRESETS: readonly SurfacePreset[] = [
 	{
+		id: "identity",
+		slug: "identity",
+		kind: "identity",
+		title: phrase("Identity"),
+		description: phrase("Global branding, voice, design tokens, and philosophy shared across every product."),
+		archetype: "studio",
+		icon: "spark",
+		folderRoot: "identity",
+	},
+	{
 		id: "website",
 		slug: "website",
 		kind: "website",
@@ -320,16 +330,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		description: phrase("MRR, runway, cashflow, P&L, and KPIs at a glance."),
 		archetype: "live_build",
 		icon: "chart",
-	},
-	{
-		id: "brand",
-		slug: "brand",
-		kind: "brand",
-		title: phrase("Brand Studio"),
-		description: phrase("Color palette, typography, and voice guidelines synced to code."),
-		archetype: "studio",
-		icon: "spark",
-		folderRoot: "brand",
 	},
 	{
 		id: "product",

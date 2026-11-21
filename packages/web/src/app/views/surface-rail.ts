@@ -42,7 +42,7 @@ export function surfaceEmblem(surface: Pick<SurfaceSummary, "icon" | "archetype"
 export function surfaceTile(
 	surface: Pick<SurfaceSummary, "icon">,
 	look: SurfaceLook,
-	emblemSize = 22,
+	emblemSize = 25,
 	className = "",
 ): HTMLElement {
 	const tile = h(

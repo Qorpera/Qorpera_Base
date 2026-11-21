@@ -350,6 +350,82 @@ function thetabandWebsitePositioningReport(): string {
 	);
 }
 
+function thetabandPhilosophyReport(): string {
+	return JSON.stringify(
+		{
+			slug: "thetaband-philosophy",
+			category: "Company Philosophy",
+			headline: "Calm Technology You Actually Put On",
+			subtitle:
+				"Why Thetaband starts from Nordic restraint, honest biofeedback, and a single shared design language across headband, app, and storefront.",
+			author: "Co-Founder & Brand",
+			date: "November 2026",
+			readingTime: "4 min read",
+			publicUrl: "thetaband.dk/philosophy",
+			keyMetrics: [
+				{ label: "Visual posture", value: "Quiet Nordic", delta: "Warm paper & muted lavender" },
+				{ label: "Shared token pkg", value: "@thetaband/tokens", delta: "Website · Phone App · Product" },
+				{ label: "Voice rule #1", value: "Concrete", delta: "0 wellness hype or clinical claims" },
+				{ label: "Hardware feel", value: "44 g knit", delta: "Soft textile before electronics" },
+			],
+			sections: [
+				{
+					id: "shared-spine",
+					kicker: "01 · PRINCIPLE",
+					heading: "One identity spine across hardware, software, and words",
+					paragraphs: [
+						"Most consumer hardware startups split into three disconnected dialects: an industrial designer picks muted textiles, a web agency writes loud conversion copy, and an app team ships generic dark-mode graphs. Customers feel the seam immediately.",
+						"**Thetaband Identity** holds our shared source of truth — color tokens, typography, voice rules, and company philosophy — as versioned assets that Website, Phone App, and Product agents read before proposing a single change.",
+					],
+					blocks: [
+						{
+							kind: "figure",
+							heading: "How Thetaband sounds and looks",
+							caption: "Every agent checks proposals against this posture before staging them.",
+							panels: [
+								{
+									label: "What we never sound like",
+									heading: "Biohacking hype",
+									body: "“Unlock peak brain performance with AI neuro-optimization! Limited-time drop — crush your stress streak today!”",
+								},
+								{
+									label: "Thetaband voice",
+									heading: "Warm, grounded Danish craft",
+									body: "“Et blødt EEG-pandebånd på 44 g og rolig lydfeedback. 1.995 kr. inkl. moms og 30 dages ro-garanti.”",
+									accent: "#7c6fd6",
+								},
+							],
+						},
+					],
+				},
+				{
+					id: "restraint",
+					kicker: "02 · DESIGN LANGUAGE",
+					heading: "Design for 21:30, not for a pitch deck",
+					paragraphs: [
+						"A meditation product earns trust in low evening light. Our palette starts from warm paper (`#f8f7f4`), soft knitted lavender (`#c8c2e8`), and Nordic slate (`#3c4a54`) — colors that sit comfortably on a bedside table, an iOS screen, and a Danish living-room web page alike.",
+					],
+					blocks: [
+						{
+							kind: "quote",
+							text: "If a design decision feels loud in a quiet room at 21:30, it doesn't belong in Thetaband.",
+							attribution: "Thetaband Identity Principle",
+						},
+						{
+							kind: "callout",
+							tone: "public_lens",
+							heading: "External perception check",
+							body: "Treat every customer touchpoint — pre-order box, iOS pairing screen, and support email — as the same calm object. Honest pricing, transparent BrainBit hardware specs, and Nordic restraint beat artificial urgency.",
+						},
+					],
+				},
+			],
+		},
+		null,
+		2,
+	);
+}
+
 export function starterStudioFiles(
 	surface: Pick<SurfaceSummary, "slug" | "title" | "folderRoot">,
 	companyName: string,
@@ -557,6 +633,138 @@ export function starterStudioFiles(
 				2,
 			),
 			[`${root}/brief.md`]: `# ${surface.title}\n\n${description?.trim() || `Built for **${name}** with calm industrial craft, clear pricing, and zero clutter.`}\n`,
+		};
+	}
+	if (kind === "identity") {
+		if (isThetabandCompany(name)) {
+			return {
+				[`${root}/tokens.json`]: JSON.stringify(
+					{
+						colors: {
+							"Warm Paper": "#f8f7f4",
+							"Lys Lavendel": "#c8c2e8",
+							"Aften Lavendel": "#7c6fd6",
+							"Nordisk Skifer": "#3c4a54",
+							Sandsten: "#e6dfd3",
+							Aftenler: "#b8684c",
+						},
+						typography: {
+							display: "'Newsreader', Georgia, serif",
+							body: "'Inter', -apple-system, sans-serif",
+							mono: "'JetBrains Mono', ui-monospace, monospace",
+						},
+					},
+					null,
+					2,
+				),
+				[`${root}/design-system.json`]: JSON.stringify(
+					{
+						system: {
+							package: "@thetaband/identity",
+							posture: "Calm Nordic craft · low-contrast evening warmth",
+							radiusScale: "8px / 14px / 22px / pill",
+							motion: "Quiet spring (220ms) — never snappy or flashy",
+							glassSurface: "Translucent warm frost (40% bg + 5px blur)",
+						},
+						consumers: [
+							{
+								surface: "Website",
+								package: "@thetaband/tokens/web.css",
+								inherits: "Palette, Newsreader headings, calm CTA rhythm",
+								status: "Synced",
+							},
+							{
+								surface: "Phone App",
+								package: "@thetaband/tokens/ios.swift",
+								inherits: "Evening palette, 4-channel status tones, audio-first spacing",
+								status: "Synced",
+							},
+							{
+								surface: "Product",
+								package: "identity/tokens.json → textile swatches",
+								inherits: "Lys Lavendel, Sandsten, Nordisk Skifer, Aftenler",
+								status: "Synced",
+							},
+						],
+					},
+					null,
+					2,
+				),
+				[`${root}/voice.md`]: `# Thetaband Voice & Positioning\n\nVi taler roligt, konkret og jordnært — som en god dansk produktdesigner, aldrig som en biohacking-annonce.\n\n### Grundregler\n- **Led med det mærkbare:** 44 g strikket tekstil, 20 sekunders signal-tjek, 1.995 kr. inkl. moms.\n- **Ingen overdrivelser:** Undgå "revolutionerende", "optimer din hjerne" eller kliniske søvnløfter.\n- **Samme stemme overalt:** Forside, iOS-app, emballage og kundemails lyder som det samme menneske.\n`,
+				[`${root}/philosophy.report.json`]: thetabandPhilosophyReport(),
+			};
+		}
+		return {
+			[`${root}/tokens.json`]: JSON.stringify(
+				{
+					colors: {
+						paper: "#f8f7f4",
+						surface: "#efede8",
+						ink: "#171715",
+						accent: "#d76f45",
+					},
+					typography: {
+						display: "'Newsreader', Georgia, serif",
+						body: "'Inter', system-ui, sans-serif",
+						mono: "'JetBrains Mono', ui-monospace, monospace",
+					},
+				},
+				null,
+				2,
+			),
+			[`${root}/design-system.json`]: JSON.stringify(
+				{
+					system: {
+						package: `@${name.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "company"}/identity`,
+						posture: "Clear, cohesive, and unmistakable across every surface",
+						radiusScale: "8px / 14px / 22px / pill",
+						motion: "Calm, purposeful transitions",
+					},
+					consumers: [
+						{ surface: "Website", package: "tokens/web.css", inherits: "Colors, type, tone", status: "Active" },
+						{ surface: "App", package: "tokens/app.json", inherits: "UI tokens & components", status: "Active" },
+						{
+							surface: "Product",
+							package: "identity/voice.md",
+							inherits: "Positioning & craft",
+							status: "Active",
+						},
+					],
+				},
+				null,
+				2,
+			),
+			[`${root}/voice.md`]: `# ${name} Identity & Voice\n\n${description?.trim() || "Direct, calm, and grounded. Lead with what customers actually feel and get — never generic buzzwords."}\n`,
+			[`${root}/philosophy.report.json`]: JSON.stringify(
+				{
+					slug: "company-philosophy",
+					category: "Company Philosophy",
+					headline: `How ${name} Designs, Speaks, and Builds`,
+					subtitle:
+						description?.trim() ||
+						`The shared identity spine that aligns every surface, agent, and customer touchpoint for ${name}.`,
+					author: "Co-Founder",
+					date: "November 2026",
+					readingTime: "3 min read",
+					keyMetrics: [
+						{ label: "Scope", value: "Company-wide", delta: "Website · Apps · Product" },
+						{ label: "Design tokens", value: "identity/tokens.json", delta: "Single source of truth" },
+						{ label: "Voice guide", value: "identity/voice.md", delta: "Read by every agent" },
+					],
+					sections: [
+						{
+							id: "shared-craft",
+							kicker: "01 · FOUNDATION",
+							heading: "Why Identity sits above individual interfaces",
+							paragraphs: [
+								`Every product surface ${name} creates draws from the same palette, typography, voice, and philosophy defined here — keeping the website, apps, and physical or operational work coherent from day one.`,
+							],
+						},
+					],
+				},
+				null,
+				2,
+			),
 		};
 	}
 	return {
@@ -1699,6 +1907,65 @@ export function starterOrchestrationPlan(companyName: string): StarterSurfaceBun
 	if (isThetabandCompany(companyName)) {
 		return {
 			surfaces: [
+				{
+					slug: "identity",
+					name: "Identity",
+					kind: "identity",
+					archetype: "studio",
+					icon: "spark",
+					folderRoot: "identity",
+					brief: "Thetabands samlede brand, stemme, designsystem (@thetaband/tokens) og filosofi på tværs af Website, Phone App og Product.",
+					session: {
+						heading: "Globale design-tokens & dansk tone-of-voice",
+						prompt:
+							"Finpuds den varme aften-accent i @thetaband/tokens og stram vores danske stemmeregler på tværs af fladerne.",
+						reply: "Klar med 2 opdateringer i Identity: opdateret Aften Lavendel-accent + delte pakkestier i design-system.json, samt skærpede stemmeregler i voice.md.",
+						changes: [
+							{
+								heading: "Opdatér Aften Lavendel & @thetaband/tokens-eksport",
+								summary:
+									"Skifter primær aften-accent til #6f61cf og tilføjer delte pakkereferencer til Website, Phone App og Product.",
+								kind: "folder_patch",
+								paths: ["identity/tokens.json", "identity/design-system.json"],
+								studioPatch: [
+									{
+										op: "merge_json",
+										path: "identity/tokens.json",
+										patch: {
+											colors: {
+												"Aften Lavendel": "#6f61cf",
+											},
+										},
+									},
+									{
+										op: "merge_json",
+										path: "identity/design-system.json",
+										patch: {
+											system: {
+												posture: "Calm Nordic craft · unified evening palette v1.2",
+											},
+										},
+									},
+								],
+							},
+							{
+								heading: "Skærp dansk stemmeguide: rolig kraft, nul hype",
+								summary:
+									"Tilføjer konkrete Vi siger / Vi siger aldrig-eksempler i identity/voice.md til alle agenter.",
+								kind: "folder_patch",
+								paths: ["identity/voice.md"],
+								studioPatch: [
+									{
+										op: "write_text",
+										path: "identity/voice.md",
+										content:
+											'# Thetaband Voice & Positioning\n\nVi taler roligt, konkret og jordnært — som en god dansk produktdesigner, aldrig som en biohacking-annonce.\n\n### Grundregler\n- **Led med det mærkbare:** 44 g strikket tekstil, 20 sekunders signal-tjek, 1.995 kr. inkl. moms.\n- **Ingen overdrivelser:** Undgå "revolutionerende", "optimer din hjerne" eller kliniske søvnløfter.\n- **Samme stemme overalt:** Forside, iOS-app, emballage og kundemails lyder som det samme menneske.\n\n### Vi siger / Vi siger aldrig\n- **Vi siger:** *"Rolig lydfeedback der hjælper dig tilbage til fokus."* — **Aldrig:** *"Hack dine hjernebølger med AI!"*\n- **Vi siger:** *"1.995 kr. inkl. moms, fri dansk fragt og 30 dages ro-garanti."* — **Aldrig:** *"Eksklusivt drop — kun få tilbage!"*\n',
+									},
+								],
+							},
+						],
+					},
+				},
 				{
 					slug: "website",
 					name: "Website",

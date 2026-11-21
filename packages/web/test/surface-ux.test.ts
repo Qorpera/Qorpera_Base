@@ -270,13 +270,13 @@ describe("creating surfaces", () => {
 			(card) => card.dataset.preset,
 		);
 		expect(presets).toEqual([
+			"identity",
 			"website",
 			"web_app",
 			"mobile_app",
 			"desktop_app",
 			"database",
 			"dashboard",
-			"brand",
 			"product",
 			"report",
 			"custom",
@@ -439,8 +439,8 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		const productSlugs = store.state.surfaces
 			.filter((surface) => surface.group === "products")
 			.map((surface) => surface.slug);
-		expect(productSlugs).toEqual(["website", "phone-app", "product", "financials"]);
-		expect(activeTaskSessions(store.state)).toHaveLength(4);
+		expect(productSlugs).toEqual(["identity", "website", "phone-app", "product", "financials"]);
+		expect(activeTaskSessions(store.state)).toHaveLength(5);
 		expect(store.state.automations.length).toBeGreaterThanOrEqual(2);
 
 		const productSurface = store.state.surfaces.find((surface) => surface.slug === "product")!;
@@ -791,6 +791,40 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 			"surface-pill-right",
 		]);
 		expect(pill?.querySelector(".surface-pill-right .surface-pill-collapse")).not.toBeNull();
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("renders the foundational Identity interface with global reach chips, Design System, Philosophy, and Voice & Files", async () => {
+		stubFigureMotion();
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "identity");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const tabs = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map((tab) => tab.textContent);
+		expect(tabs).toEqual(["Overview", "Design System", "Philosophy", "Voice & Files"]);
+
+		const reachChips = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-reach-chip")].map(
+			(chip) => chip.dataset.slug,
+		);
+		expect(reachChips).toEqual(["website", "phone-app", "product", "financials"]);
+		expect(view.el.querySelector('[data-token="colors.Aften Lavendel"] code')?.textContent).toBe("#6f61cf");
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="analysis"]')!.click();
+		expect(view.el.querySelector(".report-headline")?.textContent).toBe("Calm Technology You Actually Put On");
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
+		expect(view.el.querySelector('[data-file="identity/voice.md"]')?.textContent).toContain(
+			"Vi siger / Vi siger aldrig",
+		);
 
 		view.dispose();
 		store.dispose();

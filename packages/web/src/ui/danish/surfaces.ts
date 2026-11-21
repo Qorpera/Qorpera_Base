@@ -140,8 +140,8 @@ export const SURFACES: Record<string, string> = {
 	"Web App": "Webapp",
 	"Interactive product or customer portal built in parallel sessions.":
 		"Interaktivt produkt eller kundeportal bygget i parallelle sessioner.",
-	"Color palette, typography, and voice guidelines synced to code.":
-		"Farvepalet, typografi og tone-of-voice synkroniseret med koden.",
+	"Global branding, voice, design tokens, and philosophy shared across every product.":
+		"Global branding, stemme, designtokens og filosofi delt på tværs af alle produkter.",
 	"Product specs, colorways, BOM, and design briefs in one place.":
 		"Produktspecifikationer, farvevarianter, BOM og designbriefs samlet ét sted.",
 	"Local preview — changes stay in this browser until Surfaces migrations are deployed.":
@@ -202,7 +202,15 @@ export const SURFACES: Record<string, string> = {
 	"Tables, schemas, records, and queries.": "Tabeller, skemaer, poster og forespørgsler.",
 	"Financial Dashboard": "Økonomioverblik",
 	"MRR, runway, cashflow, P&L, and KPIs at a glance.": "MRR, runway, likviditet, resultat og nøgletal på ét blik.",
-	"Brand Studio": "Brandstudie",
+	Identity: "Identitet",
+	"Brand, voice, design & philosophy": "Brand, stemme, design og filosofi",
+	"Design System": "Designsystem",
+	Philosophy: "Filosofi",
+	"Voice & Files": "Stemme og filer",
+	"Shapes these interfaces": "Former disse flader",
+	"Shared company assets": "Delte virksomhedsfiler",
+	"Design tokens, voice rules, and philosophy live here and flow into every surface below.":
+		"Designtokens, stemmeregler og filosofi bor her og flyder ud i alle flader herunder.",
 	"Product Studio": "Produktstudie",
 	"Custom Surface": "Egen surface",
 	"Anything else: an inventory tracker, investor room, support desk…":

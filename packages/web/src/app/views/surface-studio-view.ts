@@ -5,7 +5,7 @@ import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { t } from "../../ui/preferences.ts";
 import { formatConflictPaths, isOpenChange, type SurfacesStore } from "../surfaces-store.ts";
-import { surfaceEmblem } from "./surface-rail.ts";
+import { surfaceEmblem, surfaceTile } from "./surface-rail.ts";
 import { SurfaceReportView } from "./surface-report-view.ts";
 import { type Studio3DConfig, Studio3DViewer } from "./surface-studio-3d.ts";
 
@@ -367,6 +367,9 @@ export class SurfaceStudioView {
 		const workspace = store.workspace(surface.id);
 		const ordered = this.#orderedChanges();
 		const busyReconcile = Boolean(state.busy[`reconcile:${surface.id}`]);
+		const downstreamSurfaces = state.surfaces.filter(
+			(item) => item.status === "active" && item.group === "products" && item.id !== surface.id,
+		);
 		const key = JSON.stringify([
 			this.#loading,
 			state.mode,
@@ -376,6 +379,7 @@ export class SurfaceStudioView {
 			surface.title,
 			surface.folderRoot,
 			workspace?.briefSummary,
+			downstreamSurfaces.map((item) => [item.id, item.slug, item.title]),
 			busyReconcile,
 		]);
 		if (key === this.#shown) return;
@@ -607,20 +611,26 @@ export class SurfaceStudioView {
 			return;
 		}
 
+		const isIdentity =
+			store.lookOf(surface).kind === "identity" ||
+			surface.slug === "identity" ||
+			filePaths.some((path) => path.startsWith("identity/"));
 		const isVendorSpec = (spec: SpecSection) => /vendor|supplier/i.test(spec.path);
 		const primarySpec = specs.find((spec) => !isVendorSpec(spec));
 		const vendorSpecs = specs.filter(isVendorSpec);
 		const detailSpecs = specs.filter((spec) => !isVendorSpec(spec));
-		const tabbed = Boolean(modelConfig || vendors.length || reportPaths.length);
+		const tabbed = Boolean(modelConfig || vendors.length || reportPaths.length || isIdentity);
 		const availableTabs: { readonly id: StudioTab; readonly label: string }[] = [];
 		if (tabbed) {
 			availableTabs.push({ id: "overview", label: t("Overview") });
 			if (detailSpecs.some((spec) => spec.tables.length > 0 || spec.entries.length > 0) || typography.length)
-				availableTabs.push({ id: "specs", label: t("Specs & BOM") });
+				availableTabs.push({ id: "specs", label: isIdentity ? t("Design System") : t("Specs & BOM") });
 			if (vendors.length || vendorSpecs.length)
 				availableTabs.push({ id: "vendors", label: t("Production & Vendors") });
-			if (reportPaths.length > 0) availableTabs.push({ id: "analysis", label: t("Analysis") });
-			if (docs.length) availableTabs.push({ id: "files", label: t("Brief & Files") });
+			if (reportPaths.length > 0)
+				availableTabs.push({ id: "analysis", label: isIdentity ? t("Philosophy") : t("Analysis") });
+			if (docs.length)
+				availableTabs.push({ id: "files", label: isIdentity ? t("Voice & Files") : t("Brief & Files") });
 			if (!availableTabs.some((tab) => tab.id === this.#tab)) this.#tab = availableTabs[0]!.id;
 			children.push(
 				h(
@@ -701,6 +711,43 @@ export class SurfaceStudioView {
 		const showAnalysis = tabbed && this.#tab === "analysis";
 		const showFiles = !tabbed || this.#tab === "files";
 
+		if (isIdentity && showOverview && downstreamSurfaces.length > 0) {
+			sections.push(
+				h(
+					"section",
+					{ class: "studio-reach", "data-identity-reach": "true" },
+					h(
+						"div",
+						{ class: "studio-reach-head" },
+						h("h2", null, t("Shapes these interfaces")),
+						h("span", { class: "studio-file-tag" }, t("Shared company assets")),
+					),
+					h(
+						"p",
+						{ class: "studio-reach-sub" },
+						t("Design tokens, voice rules, and philosophy live here and flow into every surface below."),
+					),
+					h(
+						"div",
+						{ class: "studio-reach-chips" },
+						downstreamSurfaces.map((target) =>
+							h(
+								"button",
+								{
+									type: "button",
+									class: "studio-reach-chip",
+									"data-act": "studio-open-surface",
+									"data-slug": target.slug,
+								},
+								surfaceTile(target, store.lookOf(target), 12, "is-tiny"),
+								h("span", null, target.title),
+							),
+						),
+					),
+				),
+			);
+		}
+
 		if (modelConfig && showOverview) {
 			if (!this.#viewer3d) this.#viewer3d = new Studio3DViewer(modelConfig, this.#lifetime.signal);
 			else this.#viewer3d.update(modelConfig);
@@ -739,7 +786,7 @@ export class SurfaceStudioView {
 			);
 		}
 
-		if (tabbed && showOverview && primarySpec && primarySpec.entries.length > 0) {
+		if (tabbed && showOverview && primarySpec && primarySpec.entries.length > 0 && !isIdentity) {
 			sections.push(
 				h(
 					"section",
@@ -756,7 +803,7 @@ export class SurfaceStudioView {
 			);
 		}
 
-		if (typography.length && showSpecs) {
+		if (typography.length && (showSpecs || (isIdentity && showOverview))) {
 			sections.push(
 				h(
 					"section",

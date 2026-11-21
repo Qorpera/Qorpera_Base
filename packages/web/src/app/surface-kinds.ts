@@ -3,6 +3,7 @@ import type { Emblem } from "../ui/interface-emblem.ts";
 import { phrase, t } from "../ui/preferences.ts";
 
 export const SURFACE_KINDS = [
+	"identity",
 	"website",
 	"web_app",
 	"mobile_app",
@@ -33,6 +34,7 @@ interface KindSpec {
 }
 
 const KIND_SPECS: Readonly<Record<SurfaceKind, KindSpec>> = {
+	identity: { emblem: "spark", tint: "#d76f45", subtitle: phrase("Brand, voice, design & philosophy") },
 	website: { emblem: "globe", tint: "#2a9ae0", subtitle: phrase("Marketing site") },
 	web_app: { emblem: "spark", tint: "#5a5fe0", subtitle: phrase("Interactive web app") },
 	mobile_app: { emblem: "phone", tint: "#8b5cf6", subtitle: phrase("iOS & Android app") },
@@ -111,6 +113,7 @@ export function inferSurfaceKind(surface: Pick<SurfaceSummary, "slug" | "icon" |
 		return "custom";
 	}
 	if (surface.archetype === "studio") {
+		if (/identity|manifesto/.test(slug)) return "identity";
 		if (icon === "book" || /report|journal|essay|analysis|blog|research|philosophy/.test(slug)) return "report";
 		if (icon === "database" || /(^|-)(data|database|tables|crm)(-|$)/.test(slug)) return "database";
 		if (icon === "box" || icon === "board" || /product|hardware|spec|headband/.test(slug)) return "product";
