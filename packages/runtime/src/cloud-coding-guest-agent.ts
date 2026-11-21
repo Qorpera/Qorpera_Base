@@ -1040,7 +1040,8 @@ export async function mountCodingGuestSession(
 			return { mount: shown.mount, caches };
 		});
 	} finally {
-		if (trash) await ignore(Promise.resolve().then(() => at.removeTree(trash)));
+		const doomed = trash;
+		if (doomed) await ignore(Promise.resolve().then(() => at.removeTree(doomed)));
 	}
 	// Said only when asked (v2): an executor from before reads exactly the v1 answer.
 	return Object.freeze({
