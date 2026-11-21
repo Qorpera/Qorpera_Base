@@ -19,12 +19,15 @@ import { linkHref } from "../src/ui/dom.ts";
 import { RailLayout } from "../src/ui/rail-layout.ts";
 import { fixture, id, profileA, staff, stubFigureMotion, userA } from "./fixtures.ts";
 import {
+	CHANGES,
 	COMPANY,
 	change,
 	fakeClient,
+	MESSAGE_IDS,
 	SESSION,
 	SURFACE,
 	session,
+	sessionMessage,
 	storeWith,
 	summary,
 	workspace,
@@ -854,6 +857,65 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		expect(viewport.style.getPropertyValue("--phone-w")).toBe("412px");
 		expect(viewport.style.getPropertyValue("--phone-h")).toBe("915px");
 		expect(viewport.dataset.phoneCutout).toBe("punch");
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("renders multiplayer surface presence in the header pill and teammate attribution in drawer chat and patch notes", async () => {
+		stubFigureMotion();
+		const madsId = "99999999-9999-4999-8999-999999999999";
+		const site = summary({
+			id: SURFACE,
+			slug: "website",
+			title: "Website",
+			unpublishedChangeCount: 1,
+			hasUnpublishedChanges: true,
+		});
+		const approved = change(CHANGES[0], 1, "merged", {
+			title: "Update pricing hero",
+			summary: "Clarifies all-in DKK pricing.",
+			approvedByUserId: madsId,
+			publishedAt: null,
+			resolvedAt: "2026-11-21T19:30:00Z",
+		});
+		const open = change(CHANGES[1], 2, "staged", { title: "Refine Danish FAQ" });
+		const activeSess = session(["merged", "staged"], {
+			id: SESSION,
+			surfaceId: site.id,
+			title: "Launch polish",
+			changes: [approved, open],
+			messages: [
+				sessionMessage(MESSAGE_IDS[0], "member", "Please clarify Batch 1 delivery.", {
+					authorUserId: madsId,
+				}),
+			],
+		});
+		const client = fakeClient({
+			listSurfaces: vi.fn().mockResolvedValue([site]),
+			getSurfaceWorkspace: vi.fn().mockResolvedValue(workspace([activeSess], { surface: site })),
+		});
+		const store = storeWith(client, {
+			memberName: (id) => (id === madsId ? "Mads" : undefined),
+			peopleAtSurface: (slug) => (slug === "website" ? [{ userId: madsId, name: "Mads" }] : []),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const presence = view.el.querySelector<HTMLElement>(".surface-pill-presence");
+		expect(presence).not.toBeNull();
+		expect(presence?.title).toBe("Mads is here");
+
+		store.openDrawer(site.id, activeSess.id);
+		view.update();
+		expect(view.el.querySelector(".surface-message-author")?.textContent).toBe("Mads");
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="publish"]')!.click();
+		expect(document.querySelector(".surface-patchnote-approver")?.textContent).toBe("Approved by Mads");
+		document.querySelector<HTMLButtonElement>('.surface-publish-sheet [data-act="cancel"]')?.click();
 
 		view.dispose();
 		store.dispose();

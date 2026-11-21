@@ -354,9 +354,11 @@ export class SurfaceStudioView {
 	}
 
 	#effectiveBaseFiles(surfaceId: string): Readonly<Record<string, string>> {
-		const localBase = this.#options.store.state.localStudioBase[surfaceId];
-		if (!localBase) return this.#baseFiles;
-		return Object.keys(this.#baseFiles).length > 0 ? { ...this.#baseFiles, ...localBase } : localBase;
+		const state = this.#options.store.state;
+		const cloudBase = state.cloudSurfaceFiles[surfaceId];
+		const localBase = state.localStudioBase[surfaceId];
+		if (!cloudBase && !localBase) return this.#baseFiles;
+		return { ...this.#baseFiles, ...(cloudBase ?? {}), ...(localBase ?? {}) };
 	}
 
 	update(): void {

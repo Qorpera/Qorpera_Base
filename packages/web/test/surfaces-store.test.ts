@@ -5,10 +5,12 @@ import {
 	approvalOutcome,
 	clearLocalSandboxCache,
 	migrationPending,
+	reportsOwnedBy,
 	runningSessionTotal,
 	SURFACE_UNDO_MS,
 	synthesizeMigration,
 	synthesizeSurfaces,
+	unpublishedChanges,
 } from "../src/app/surfaces-store.ts";
 import { deferred } from "./fixtures.ts";
 import {
@@ -472,5 +474,130 @@ describe("SurfacesStore", () => {
 		expect(restored.state.foldedAgentIds[CHANGES[0]]).toBe(true);
 		expect(restored.state.automations).toHaveLength(1);
 		restored.dispose();
+	});
+
+	it("bootstraps Day-0 cloud surfaces, hydrates patchManifest & cloud Notes, and responds to Realtime live hints", async () => {
+		vi.useFakeTimers();
+		const appSurfaceId = "22222222-2222-4222-8222-222222222229";
+		const identity = summary({
+			id: SURFACE,
+			slug: "identity",
+			title: "Identity",
+			archetype: "studio",
+			kind: "identity",
+			accentHex: "#d76f45",
+			isGlobal: true,
+			folderRoot: "identity",
+		});
+		const createdApp = summary({
+			id: appSurfaceId,
+			slug: "mobile-app",
+			title: "Mobile App",
+			archetype: "live_build",
+			kind: "mobile_app",
+		});
+		const mergedUnpublished = change(CHANGES[0], 1, "merged", {
+			kind: "folder_patch",
+			publishedAt: null,
+			approvedByUserId: COMPANY,
+			patchManifest: [{ op: "merge_json", path: "identity/tokens.json", patch: { accent: "#d76f45" } }],
+		});
+		const mergedPublished = change(CHANGES[1], 2, "merged", {
+			kind: "folder_patch",
+			publishedAt: "2026-11-21T18:00:00Z",
+		});
+		const activeSess = session(["merged", "merged"], {
+			id: SESSION,
+			surfaceId: identity.id,
+			state: "running",
+			notePaths: ["QorperaOS/surfaces/identity/notes/brand-notes.report.json"],
+			changes: [mergedUnpublished, mergedPublished],
+		});
+		const bootstrapCompanySurfaces = vi.fn().mockResolvedValue([identity]);
+		const createSurface = vi.fn().mockResolvedValue(createdApp);
+		const createAutomation = vi.fn().mockResolvedValue({
+			id: CHANGES[2],
+			key: "weekly-check",
+			title: "Weekly check",
+			prompt: "Review conversion metrics",
+			scheduleSummary: "Every Monday · 09:00",
+			targetSurfaceSlug: "identity",
+			outputMode: "surface_session" as const,
+			enabled: true,
+			status: "idle" as const,
+			lastRunAt: null,
+			lastOutcomeSummary: null,
+			nextRunAt: null,
+		});
+		const deleteAutomation = vi.fn().mockResolvedValue(true);
+		const client = fakeClient({
+			listSurfaces: vi.fn().mockResolvedValueOnce([]).mockResolvedValue([identity, createdApp]),
+			bootstrapCompanySurfaces,
+			createSurface,
+			createAutomation,
+			deleteAutomation,
+			getSurfaceWorkspace: vi.fn().mockResolvedValue(workspace([activeSess], { surface: identity })),
+		});
+		const loadCloudFiles = vi.fn().mockResolvedValue({
+			"QorperaOS/surfaces/identity/notes/brand-notes.report.json": JSON.stringify({
+				slug: "brand-notes",
+				headline: "Calm Danish Brand Voice",
+				category: "Identity",
+				readingTime: "2 min",
+			}),
+		});
+		let realtimeConnected = true;
+		const store = storeWith(client, {
+			realtimeLive: () => realtimeConnected,
+			loadCloudFiles,
+			memberName: (id) => (id === COMPANY ? "Mads" : undefined),
+			peopleAtSurface: (slug) => (slug === "identity" ? [{ userId: COMPANY, name: "Mads" }] : []),
+		});
+
+		await store.load();
+		expect(bootstrapCompanySurfaces).toHaveBeenCalledWith(COMPANY);
+		expect(store.state.source).toBe("cloud");
+		expect(store.lookOf(identity)).toEqual({ kind: "identity", accent: "#d76f45" });
+
+		await store.openSurface("identity");
+		await Promise.resolve();
+		expect(loadCloudFiles).toHaveBeenCalledTimes(1);
+		expect(store.state.studioPatches[CHANGES[0]]).toEqual([
+			{ op: "merge_json", path: "identity/tokens.json", patch: { accent: "#d76f45" } },
+		]);
+		expect(reportsOwnedBy(store.state, identity.id, { kind: "session", id: activeSess.id })).toHaveLength(1);
+		expect(unpublishedChanges(store.state, identity.id).map((entry) => entry.change.id)).toEqual([CHANGES[0]]);
+		expect(store.memberName(COMPANY)).toBe("Mads");
+		expect(store.peopleAtSurface("identity")).toEqual([{ userId: COMPANY, name: "Mads" }]);
+
+		const callsBefore = vi.mocked(client.getSurfaceWorkspace).mock.calls.length;
+		vi.advanceTimersByTime(10_000);
+		expect(vi.mocked(client.getSurfaceWorkspace).mock.calls.length).toBe(callsBefore);
+
+		store.onRealtimeHint("surfaces");
+		vi.advanceTimersByTime(200);
+		expect(vi.mocked(client.getSurfaceWorkspace).mock.calls.length).toBeGreaterThan(callsBefore);
+
+		const created = await store.createSurface({
+			title: "Mobile App",
+			archetype: "live_build",
+			kind: "mobile_app",
+		});
+		expect(createSurface).toHaveBeenCalledTimes(1);
+		expect(created?.id).toBe(createdApp.id);
+
+		const auto = await store.createScheduledAgent({
+			title: "Weekly check",
+			prompt: "Review conversion metrics",
+			scheduleSummary: "Every Monday · 09:00",
+			targetSurfaceSlug: "identity",
+		});
+		expect(createAutomation).toHaveBeenCalledTimes(1);
+		expect(auto?.id).toBe(CHANGES[2]);
+		expect(await store.deleteScheduledAgent(CHANGES[2])).toBe(true);
+		expect(deleteAutomation).toHaveBeenCalledWith(CHANGES[2]);
+
+		realtimeConnected = false;
+		store.dispose();
 	});
 });

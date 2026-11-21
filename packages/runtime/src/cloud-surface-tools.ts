@@ -4,19 +4,30 @@ import {
 	type JsonValue,
 	parseBoundedText,
 	parseClosedRecord,
+	parseInteger,
+	parseRecord,
+	parseStudioPatchOps,
+	parseSurfaceSlug,
+	parseUuid,
+	type StudioPatchOp,
 	SURFACE_ARCHETYPES,
 	SURFACE_GROUPS,
+	SURFACE_HEX_COLOR_PATTERN,
+	SURFACE_KINDS,
 	SURFACE_MAX_CHANGE_SUMMARY_CHARS,
 	SURFACE_MAX_CHANGE_TITLE_CHARS,
+	SURFACE_MAX_COMPARE_VARIANTS,
 	SURFACE_MAX_PROMPT_CHARS,
 	SURFACE_MAX_TITLE_CHARS,
 	SURFACE_PREVIEW_MODES,
 	SURFACE_SOURCE_KINDS,
 	type SurfaceArchetype,
 	type SurfaceGroup,
+	type SurfaceKind,
 	type SurfacePreviewMode,
 	type SurfaceSourceKind,
 } from "@qorpera/contracts";
+import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import {
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
@@ -25,6 +36,12 @@ import {
 } from "./cloud-native-tool-boundary.ts";
 
 const GIT_SHA = /^[0-9a-f]{40}$/;
+const OPS_ACTION_KIND_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,79}$/;
+const MAX_SURFACE_NOTE_PATHS = 64;
+const MAX_SURFACE_PATH_CHARS = 512;
+const MAX_OWNER_LABEL_CHARS = 160;
+const MAX_VARIANT_LABEL_CHARS = 80;
+const MAX_OPS_ACTION_PAYLOAD_BYTES = 256 * 1024;
 
 export interface CodingRecordChangeRequest {
 	readonly title: string;
@@ -38,6 +55,10 @@ export interface ProposeSurfaceRequest {
 	readonly title: string;
 	readonly group: SurfaceGroup;
 	readonly archetype: SurfaceArchetype;
+	readonly kind?: SurfaceKind;
+	readonly accentHex?: string | null;
+	readonly isGlobal?: boolean;
+	readonly activateImmediately?: boolean;
 	readonly sourceKind: SurfaceSourceKind;
 	readonly icon: string;
 	readonly repositoryKey: string | null;
@@ -52,6 +73,46 @@ export interface StartSurfaceSessionToolRequest {
 	readonly title: string | null;
 	readonly explorationCount: 2 | 3 | null;
 	readonly explorationTitle: string | null;
+	readonly ownerLabel?: string | null;
+	readonly variantLabels?: readonly string[] | null;
+}
+
+export interface StageSurfacePatchRequest {
+	readonly title: string;
+	readonly summary: string;
+	readonly ops: readonly StudioPatchOp[];
+	readonly notePaths: readonly string[];
+	readonly finishSession: boolean;
+}
+
+export interface StageSurfaceOpsActionRequest {
+	readonly title: string;
+	readonly summary: string;
+	readonly actionKind: string;
+	readonly actionPayload: Readonly<Record<string, JsonValue>>;
+	readonly finishSession: boolean;
+}
+
+export interface SurfaceChangeStagedResult {
+	readonly changeId: string;
+	readonly seq: number;
+	readonly openChangeCount: number;
+}
+
+export interface SurfacePatchToolPort {
+	stageSurfacePatch(
+		sessionId: string,
+		request: StageSurfacePatchRequest,
+		context: CloudToolContext,
+	): Promise<SurfaceChangeStagedResult>;
+}
+
+export interface SurfaceOpsActionToolPort {
+	stageSurfaceOpsAction(
+		sessionId: string,
+		request: StageSurfaceOpsActionRequest,
+		context: CloudToolContext,
+	): Promise<SurfaceChangeStagedResult>;
 }
 
 export interface CloudSurfaceToolsPort {
@@ -59,7 +120,7 @@ export interface CloudSurfaceToolsPort {
 		sessionId: string,
 		request: CodingRecordChangeRequest,
 		context: CloudToolContext,
-	): Promise<{ readonly changeId: string; readonly seq: number; readonly openChangeCount: number }>;
+	): Promise<SurfaceChangeStagedResult>;
 	proposeSurface(
 		companyId: string,
 		request: ProposeSurfaceRequest,
@@ -69,6 +130,28 @@ export interface CloudSurfaceToolsPort {
 		request: StartSurfaceSessionToolRequest,
 		context: CloudToolContext,
 	): Promise<{ readonly sessionId: string; readonly explorationId: string | null }>;
+	stageSurfacePatch?: SurfacePatchToolPort["stageSurfacePatch"];
+	stageSurfaceOpsAction?: SurfaceOpsActionToolPort["stageSurfaceOpsAction"];
+}
+
+export type SurfaceControlPlaneRpc =
+	| "qorpera_propose_surface"
+	| "qorpera_service_start_surface_session"
+	| "qorpera_record_surface_change"
+	| "qorpera_surface_complete_session_turn";
+
+export interface SurfaceToolsRpcClient {
+	call(
+		method: SurfaceControlPlaneRpc,
+		argumentsValue: Record<string, unknown>,
+		signal: AbortSignal,
+		timeoutMs?: number,
+	): Promise<unknown>;
+}
+
+export interface ControlPlaneSurfaceToolsPortOptions {
+	readonly defaultOriginKind?: "cofounder" | "automation";
+	readonly defaultOriginLabel?: string;
 }
 
 function parseEnumArg<T extends string>(value: unknown, allowed: readonly T[], field: string): T {
@@ -81,10 +164,230 @@ function parseEnumArg<T extends string>(value: unknown, allowed: readonly T[], f
 function parseOptionalBounded(value: unknown, field: string, maxLength: number): string | null {
 	if (value === undefined || value === null) return null;
 	try {
-		return parseBoundedText(value, field, maxLength);
+		return parseBoundedText(value, field, maxLength).trim();
 	} catch {
 		throw new CloudToolArgumentRefusal(`${field} must be a non-empty string up to ${maxLength} characters`);
 	}
+}
+
+function parseBooleanArg(value: unknown, field: string, fallback: boolean): boolean {
+	if (value === undefined || value === null) return fallback;
+	if (typeof value !== "boolean") {
+		throw new CloudToolArgumentRefusal(`${field} must be a boolean`);
+	}
+	return value;
+}
+
+function parseOptionalAccentHexArg(value: unknown, field: string): string | null {
+	if (value === undefined || value === null) return null;
+	if (typeof value !== "string" || !SURFACE_HEX_COLOR_PATTERN.test(value)) {
+		throw new CloudToolArgumentRefusal(`${field} must be a 6-digit hex color like #d76f45`);
+	}
+	return value;
+}
+
+function assertSafeRelativePath(path: string, field: string): string {
+	const trimmed = path.trim();
+	if (
+		trimmed.length === 0 ||
+		trimmed.startsWith("/") ||
+		trimmed.includes("\\") ||
+		trimmed.split("/").some((segment) => segment === "..")
+	) {
+		throw new CloudToolArgumentRefusal(`${field} must be a safe relative path`);
+	}
+	return trimmed;
+}
+
+function parseOptionalNotePathsArg(value: unknown): string[] {
+	if (value === undefined || value === null) return [];
+	if (!Array.isArray(value) || value.length > MAX_SURFACE_NOTE_PATHS) {
+		throw new CloudToolArgumentRefusal(`notePaths must be an array of at most ${MAX_SURFACE_NOTE_PATHS} paths`);
+	}
+	return value.map((item, index) => {
+		let bounded: string;
+		try {
+			bounded = parseBoundedText(item, `notePaths[${index}]`, MAX_SURFACE_PATH_CHARS);
+		} catch {
+			throw new CloudToolArgumentRefusal(
+				`notePaths[${index}] must be a non-empty path up to ${MAX_SURFACE_PATH_CHARS} characters`,
+			);
+		}
+		return assertSafeRelativePath(bounded, `notePaths[${index}]`);
+	});
+}
+
+function parseRecordChangeResult(value: unknown, label: string): SurfaceChangeStagedResult {
+	const row = parseRecord(value, label);
+	const session =
+		row.session && typeof row.session === "object" && !Array.isArray(row.session)
+			? (row.session as Record<string, unknown>)
+			: null;
+	const openRaw = session?.openChangeCount ?? row.openChangeCount ?? 1;
+	return {
+		changeId: parseUuid(row.changeId, `${label}.changeId`),
+		seq: parseInteger(row.seq, `${label}.seq`, 1, 10_000),
+		openChangeCount: parseInteger(openRaw, `${label}.openChangeCount`, 0, 10_000),
+	};
+}
+
+// WHY: Bridges Surface runtime tools onto the cloud control-plane RPC transport without leaking service credentials to model turns.
+export function createControlPlaneSurfaceToolsPort(
+	control: SurfaceToolsRpcClient,
+	options?: ControlPlaneSurfaceToolsPortOptions,
+): CloudSurfaceToolsPort & SurfacePatchToolPort & SurfaceOpsActionToolPort;
+export function createControlPlaneSurfaceToolsPort(
+	control: CloudCompanyPathControl,
+	options?: ControlPlaneSurfaceToolsPortOptions,
+): CloudSurfaceToolsPort & SurfacePatchToolPort & SurfaceOpsActionToolPort;
+export function createControlPlaneSurfaceToolsPort(
+	control: SurfaceToolsRpcClient | CloudCompanyPathControl,
+	options: ControlPlaneSurfaceToolsPortOptions = {},
+): CloudSurfaceToolsPort & SurfacePatchToolPort & SurfaceOpsActionToolPort {
+	const rpc = (method: SurfaceControlPlaneRpc, args: Record<string, unknown>, signal: AbortSignal) =>
+		(control as SurfaceToolsRpcClient).call(method, args, signal);
+
+	return {
+		async recordChange(sessionId, request, context) {
+			const response = await rpc(
+				"qorpera_record_surface_change",
+				{
+					p_session_id: sessionId,
+					p_title: request.title,
+					p_summary: request.summary,
+					p_kind: "git_range",
+					p_parent_sha: null,
+					p_head_sha: request.commitSha,
+					p_depends_on_change_ids: [...request.dependsOnChangeIds],
+					p_affected_paths: [],
+					p_diff_stats: null,
+					p_patch_manifest: null,
+					p_finish_session: false,
+				},
+				context.signal,
+			);
+			return parseRecordChangeResult(response, "recordChange");
+		},
+
+		async proposeSurface(companyId, request, context) {
+			const response = await rpc(
+				"qorpera_propose_surface",
+				{
+					p_company_id: companyId,
+					p_slug: request.slug,
+					p_title: request.title,
+					p_group: request.group,
+					p_archetype: request.archetype,
+					p_source_kind: request.sourceKind,
+					p_icon: request.icon,
+					p_repository_key: request.repositoryKey,
+					p_folder_root: request.folderRoot,
+					p_preview_mode: request.previewMode,
+					p_brief_summary: request.briefSummary,
+					p_kind: request.kind ?? "custom",
+					p_accent_hex: request.accentHex ?? null,
+					p_is_global: request.isGlobal ?? false,
+					p_activate_immediately: request.activateImmediately ?? false,
+				},
+				context.signal,
+			);
+			const row = parseRecord(response, "proposeSurface");
+			if (row.status !== "proposed" && row.status !== "active") {
+				throw new Error("proposeSurface.status is invalid");
+			}
+			return {
+				id: parseUuid(row.id, "proposeSurface.id"),
+				slug: parseSurfaceSlug(row.slug, "proposeSurface.slug"),
+				status: row.status,
+			};
+		},
+
+		async startSurfaceSession(request, context) {
+			const response = await rpc(
+				"qorpera_service_start_surface_session",
+				{
+					p_company_id: context.companyId,
+					p_surface_id: request.surfaceId,
+					p_prompt: request.prompt,
+					p_title: request.title,
+					p_origin_kind: options.defaultOriginKind ?? "cofounder",
+					p_origin_label: request.ownerLabel ?? options.defaultOriginLabel ?? "Co-Founder",
+					p_exploration_count: request.explorationCount,
+					p_exploration_title: request.explorationTitle,
+					p_variant_labels: request.variantLabels ? [...request.variantLabels] : null,
+				},
+				context.signal,
+			);
+			const row = parseRecord(response, "startSurfaceSession");
+			return {
+				sessionId: parseUuid(row.sessionId, "startSurfaceSession.sessionId"),
+				explorationId:
+					row.explorationId === null || row.explorationId === undefined
+						? null
+						: parseUuid(row.explorationId, "startSurfaceSession.explorationId"),
+			};
+		},
+
+		async stageSurfacePatch(sessionId, request, context) {
+			const affectedPaths = [...new Set(request.ops.map((op) => op.path))];
+			const response = await rpc(
+				"qorpera_record_surface_change",
+				{
+					p_session_id: sessionId,
+					p_title: request.title,
+					p_summary: request.summary,
+					p_kind: "folder_patch",
+					p_parent_sha: null,
+					p_head_sha: null,
+					p_depends_on_change_ids: [],
+					p_affected_paths: affectedPaths,
+					p_diff_stats: null,
+					p_patch_manifest: [...request.ops],
+					p_finish_session: request.finishSession,
+				},
+				context.signal,
+			);
+			if (request.notePaths.length > 0) {
+				await rpc(
+					"qorpera_surface_complete_session_turn",
+					{
+						p_session_id: sessionId,
+						p_state: request.finishSession ? "ready" : "running",
+						p_reply_text: null,
+						p_question: null,
+						p_note_paths: [...request.notePaths],
+						p_branch_head_sha: null,
+					},
+					context.signal,
+				);
+			}
+			return parseRecordChangeResult(response, "stageSurfacePatch");
+		},
+
+		async stageSurfaceOpsAction(sessionId, request, context) {
+			const response = await rpc(
+				"qorpera_record_surface_change",
+				{
+					p_session_id: sessionId,
+					p_title: request.title,
+					p_summary: request.summary,
+					p_kind: "ops_action",
+					p_parent_sha: null,
+					p_head_sha: null,
+					p_depends_on_change_ids: [],
+					p_affected_paths: [],
+					p_diff_stats: null,
+					p_patch_manifest: {
+						actionKind: request.actionKind,
+						actionPayload: request.actionPayload,
+					},
+					p_finish_session: request.finishSession,
+				},
+				context.signal,
+			);
+			return parseRecordChangeResult(response, "stageSurfaceOpsAction");
+		},
+	};
 }
 
 export function createCodingRecordChangeTool(
@@ -168,22 +471,40 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 		name: "propose_surface",
 		source: "runtime",
 		description:
-			"Propose a new primary Surface for the company sidebar. New surfaces start in proposed state until a founder approves them, keeping primary navigation focused and clutter-free.",
+			"Create or propose a primary Surface for the company sidebar. New surfaces start in proposed state until a founder approves them unless activateImmediately is true for Day-0 founding.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
 			required: ["slug", "title", "group", "archetype", "sourceKind"],
 			properties: {
-				slug: { type: "string" },
-				title: { type: "string" },
+				slug: { type: "string", description: "Lower-case hyphenated surface slug." },
+				title: { type: "string", maxLength: SURFACE_MAX_TITLE_CHARS, description: "Display title in the sidebar." },
 				group: { type: "string", enum: [...SURFACE_GROUPS] },
 				archetype: { type: "string", enum: [...SURFACE_ARCHETYPES] },
+				kind: {
+					type: "string",
+					enum: [...SURFACE_KINDS],
+					description: "Semantic kind of surface (identity, website, web_app, mobile_app, product, etc.).",
+				},
+				accentHex: {
+					type: "string",
+					pattern: SURFACE_HEX_COLOR_PATTERN.source,
+					description: "Optional #rrggbb accent color for the surface icon and badge.",
+				},
+				isGlobal: {
+					type: "boolean",
+					description: "True for global cross-surface workspaces like Identity whose assets feed every surface.",
+				},
+				activateImmediately: {
+					type: "boolean",
+					description: "Set true during Day-0 founding for 1-2 core product surfaces; omit or false to propose.",
+				},
 				sourceKind: { type: "string", enum: [...SURFACE_SOURCE_KINDS] },
-				icon: { type: "string" },
-				repositoryKey: { type: "string" },
-				folderRoot: { type: "string" },
+				icon: { type: "string", maxLength: 40 },
+				repositoryKey: { type: "string", maxLength: 200 },
+				folderRoot: { type: "string", maxLength: 256 },
 				previewMode: { type: "string", enum: [...SURFACE_PREVIEW_MODES] },
-				briefSummary: { type: "string" },
+				briefSummary: { type: "string", maxLength: 4000 },
 			},
 		},
 		parseArguments(value: JsonValue): JsonValue {
@@ -193,7 +514,17 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 					value,
 					"propose_surface",
 					["slug", "title", "group", "archetype", "sourceKind"],
-					["icon", "repositoryKey", "folderRoot", "previewMode", "briefSummary"],
+					[
+						"kind",
+						"accentHex",
+						"isGlobal",
+						"activateImmediately",
+						"icon",
+						"repositoryKey",
+						"folderRoot",
+						"previewMode",
+						"briefSummary",
+					],
 				);
 			} catch (error) {
 				throw new CloudToolArgumentRefusal(error instanceof Error ? error.message : "Invalid arguments");
@@ -210,11 +541,16 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 			const group = parseEnumArg(raw.group, SURFACE_GROUPS, "group");
 			const archetype = parseEnumArg(raw.archetype, SURFACE_ARCHETYPES, "archetype");
 			const sourceKind = parseEnumArg(raw.sourceKind, SURFACE_SOURCE_KINDS, "sourceKind");
+			const kind =
+				raw.kind === undefined || raw.kind === null ? "custom" : parseEnumArg(raw.kind, SURFACE_KINDS, "kind");
+			const accentHex = parseOptionalAccentHexArg(raw.accentHex, "accentHex");
+			const isGlobal = parseBooleanArg(raw.isGlobal, "isGlobal", false);
+			const activateImmediately = parseBooleanArg(raw.activateImmediately, "activateImmediately", false);
 			const icon = parseOptionalBounded(raw.icon, "icon", 40) ?? "page";
 			const repositoryKey = parseOptionalBounded(raw.repositoryKey, "repositoryKey", 200);
 			const folderRoot = parseOptionalBounded(raw.folderRoot, "folderRoot", 256);
 			const previewMode =
-				raw.previewMode === undefined
+				raw.previewMode === undefined || raw.previewMode === null
 					? sourceKind === "code_repo"
 						? "static_site"
 						: sourceKind === "folder"
@@ -227,6 +563,10 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 				title,
 				group,
 				archetype,
+				kind,
+				accentHex,
+				isGlobal,
+				activateImmediately,
 				sourceKind,
 				icon,
 				repositoryKey,
@@ -258,17 +598,29 @@ export function createStartSurfaceSessionTool(
 		name: "start_surface_session",
 		source: "runtime",
 		description:
-			"Launch a parallel scoped Session directly on a Surface. Optionally set explorationCount (2 or 3) to spawn side-by-side comparable variants.",
+			"Launch a parallel scoped Session directly on a Surface. Optionally set explorationCount (2 or 3) and variantLabels to spawn side-by-side comparable directions.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
 			required: ["surfaceId", "prompt"],
 			properties: {
 				surfaceId: { type: "string" },
-				prompt: { type: "string" },
-				title: { type: "string" },
+				prompt: { type: "string", maxLength: SURFACE_MAX_PROMPT_CHARS },
+				title: { type: "string", maxLength: 160 },
 				explorationCount: { type: "integer", enum: [2, 3] },
-				explorationTitle: { type: "string" },
+				explorationTitle: { type: "string", maxLength: 160 },
+				ownerLabel: {
+					type: "string",
+					maxLength: MAX_OWNER_LABEL_CHARS,
+					description: "Optional owning agent or role label shown on the session or exploration.",
+				},
+				variantLabels: {
+					type: "array",
+					minItems: 2,
+					maxItems: SURFACE_MAX_COMPARE_VARIANTS,
+					items: { type: "string", minLength: 1, maxLength: MAX_VARIANT_LABEL_CHARS },
+					description: "Optional 2 to 3 custom labels for side-by-side exploration variants.",
+				},
 			},
 		},
 		parseArguments(value: JsonValue): JsonValue {
@@ -278,7 +630,7 @@ export function createStartSurfaceSessionTool(
 					value,
 					"start_surface_session",
 					["surfaceId", "prompt"],
-					["title", "explorationCount", "explorationTitle"],
+					["title", "explorationCount", "explorationTitle", "ownerLabel", "variantLabels"],
 				);
 			} catch (error) {
 				throw new CloudToolArgumentRefusal(error instanceof Error ? error.message : "Invalid arguments");
@@ -292,6 +644,7 @@ export function createStartSurfaceSessionTool(
 			}
 			const title = parseOptionalBounded(raw.title, "title", 160);
 			const explorationTitle = parseOptionalBounded(raw.explorationTitle, "explorationTitle", 160);
+			const ownerLabel = parseOptionalBounded(raw.ownerLabel, "ownerLabel", MAX_OWNER_LABEL_CHARS);
 			let explorationCount: 2 | 3 | null = null;
 			if (raw.explorationCount !== undefined && raw.explorationCount !== null) {
 				if (raw.explorationCount !== 2 && raw.explorationCount !== 3) {
@@ -299,12 +652,39 @@ export function createStartSurfaceSessionTool(
 				}
 				explorationCount = raw.explorationCount;
 			}
+			let variantLabels: string[] | null = null;
+			if (raw.variantLabels !== undefined && raw.variantLabels !== null) {
+				if (
+					!Array.isArray(raw.variantLabels) ||
+					raw.variantLabels.length < 2 ||
+					raw.variantLabels.length > SURFACE_MAX_COMPARE_VARIANTS
+				) {
+					throw new CloudToolArgumentRefusal("variantLabels must contain 2 or 3 non-empty labels");
+				}
+				variantLabels = raw.variantLabels.map((item, index) => {
+					try {
+						return parseBoundedText(item, `variantLabels[${index}]`, MAX_VARIANT_LABEL_CHARS).trim();
+					} catch {
+						throw new CloudToolArgumentRefusal(
+							`variantLabels[${index}] must be a non-empty string up to ${MAX_VARIANT_LABEL_CHARS} characters`,
+						);
+					}
+				});
+				if (explorationCount !== null && variantLabels.length !== explorationCount) {
+					throw new CloudToolArgumentRefusal("variantLabels length must match explorationCount");
+				}
+				if (explorationCount === null) {
+					explorationCount = variantLabels.length as 2 | 3;
+				}
+			}
 			return {
 				surfaceId: raw.surfaceId,
 				prompt,
 				title,
 				explorationCount,
 				explorationTitle,
+				ownerLabel,
+				variantLabels,
 			};
 		},
 		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
@@ -316,6 +696,231 @@ export function createStartSurfaceSessionTool(
 					schema: "qorpera.surface-session-started/v1",
 					sessionId: result.sessionId,
 					explorationId: result.explorationId,
+				}),
+			};
+		},
+	};
+}
+
+export function createStageSurfacePatchTool(sessionId: string, port: SurfacePatchToolPort): CloudNativeTool {
+	return {
+		name: "stage_surface_patch",
+		source: "worker",
+		description:
+			"Stage a cohesive folder_patch ChangeUnit on a Studio or Identity Surface session. Members toggle and preview each patch live before approving it; attach any supporting analyses as notePaths.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["title", "summary", "ops"],
+			properties: {
+				title: {
+					type: "string",
+					minLength: 1,
+					maxLength: SURFACE_MAX_CHANGE_TITLE_CHARS,
+					description: "Short plain founder-facing title for this staged patch.",
+				},
+				summary: {
+					type: "string",
+					maxLength: SURFACE_MAX_CHANGE_SUMMARY_CHARS,
+					description: "1-2 sentences describing what the founder will see.",
+				},
+				ops: {
+					type: "array",
+					minItems: 1,
+					maxItems: 256,
+					description:
+						"Ordered StudioPatchOp entries (write_text, delete, or merge_json) relative to the surface folder root.",
+					items: {
+						type: "object",
+						additionalProperties: true,
+						required: ["op", "path"],
+						properties: {
+							op: { type: "string", enum: ["write_text", "delete", "merge_json"] },
+							path: { type: "string", minLength: 1, maxLength: MAX_SURFACE_PATH_CHARS },
+							content: { type: "string" },
+							patch: { type: "object", additionalProperties: true },
+						},
+					},
+				},
+				notePaths: {
+					type: "array",
+					maxItems: MAX_SURFACE_NOTE_PATHS,
+					items: { type: "string", minLength: 1, maxLength: MAX_SURFACE_PATH_CHARS },
+					description: "Optional supporting Note or report file paths folded onto this session.",
+				},
+				finishSession: {
+					type: "boolean",
+					description: "Set true when this patch completes the turn and marks the session ready for review.",
+				},
+			},
+		},
+		parseArguments(value: JsonValue): JsonValue {
+			let raw: Record<string, unknown>;
+			try {
+				raw = parseClosedRecord(
+					value,
+					"stage_surface_patch",
+					["title", "summary", "ops"],
+					["notePaths", "finishSession"],
+				);
+			} catch (error) {
+				throw new CloudToolArgumentRefusal(error instanceof Error ? error.message : "Invalid arguments");
+			}
+			let title: string;
+			let summary: string;
+			try {
+				title = parseBoundedText(raw.title, "title", SURFACE_MAX_CHANGE_TITLE_CHARS).trim();
+				summary = parseBoundedText(raw.summary, "summary", SURFACE_MAX_CHANGE_SUMMARY_CHARS, 0).trim();
+			} catch {
+				throw new CloudToolArgumentRefusal("title and summary must be valid bounded text");
+			}
+			let ops: StudioPatchOp[];
+			try {
+				ops = parseStudioPatchOps(raw.ops, "ops");
+			} catch (error) {
+				throw new CloudToolArgumentRefusal(
+					error instanceof Error ? error.message : "ops must be valid StudioPatchOp entries",
+				);
+			}
+			if (ops.length === 0) {
+				throw new CloudToolArgumentRefusal("ops must contain at least one patch operation");
+			}
+			const normalizedOps: StudioPatchOp[] = ops.map((op, index) => {
+				const safePath = assertSafeRelativePath(op.path, `ops[${index}].path`);
+				if (op.op === "write_text") return { op: "write_text", path: safePath, content: op.content };
+				if (op.op === "delete") return { op: "delete", path: safePath };
+				return { op: "merge_json", path: safePath, patch: op.patch };
+			});
+			const notePaths = parseOptionalNotePathsArg(raw.notePaths);
+			const finishSession = parseBooleanArg(raw.finishSession, "finishSession", false);
+			return {
+				title,
+				summary,
+				ops: normalizedOps as unknown as JsonValue,
+				notePaths,
+				finishSession,
+			};
+		},
+		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
+			const parsed = argumentsValue as unknown as StageSurfacePatchRequest;
+			const result = await port.stageSurfacePatch(sessionId, parsed, context);
+			return {
+				kind: "text",
+				value: cloudToolJsonText({
+					schema: "qorpera.surface-patch-staged/v1",
+					sessionId,
+					changeId: result.changeId,
+					seq: result.seq,
+					openChangeCount: result.openChangeCount,
+					opCount: parsed.ops.length,
+					notePaths: [...parsed.notePaths],
+					finishSession: parsed.finishSession,
+					staged: true,
+				}),
+			};
+		},
+	};
+}
+
+export function createStageSurfaceOpsActionTool(sessionId: string, port: SurfaceOpsActionToolPort): CloudNativeTool {
+	return {
+		name: "stage_surface_ops_action",
+		source: "worker",
+		description:
+			"Stage a structured ops_action ChangeUnit on an operational Surface session (inbox, money, data, files, members) so members can review and approve or send it cleanly from the Action card.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["title", "summary", "actionKind", "actionPayload"],
+			properties: {
+				title: {
+					type: "string",
+					minLength: 1,
+					maxLength: SURFACE_MAX_CHANGE_TITLE_CHARS,
+					description: "Short plain founder-facing title for this operational action.",
+				},
+				summary: {
+					type: "string",
+					maxLength: SURFACE_MAX_CHANGE_SUMMARY_CHARS,
+					description: "1-2 sentences describing what this action will do when approved.",
+				},
+				actionKind: {
+					type: "string",
+					minLength: 1,
+					maxLength: 80,
+					pattern: OPS_ACTION_KIND_PATTERN.source,
+					description: "Action kind identifier (e.g. inbox.draft_email, money.prepare_payment, data.upsert_row).",
+				},
+				actionPayload: {
+					type: "object",
+					additionalProperties: true,
+					description: "JSON record holding the structured fields for the staged action or draft.",
+				},
+				finishSession: {
+					type: "boolean",
+					description: "Set true when this action completes the turn and marks the session ready for approval.",
+				},
+			},
+		},
+		parseArguments(value: JsonValue): JsonValue {
+			let raw: Record<string, unknown>;
+			try {
+				raw = parseClosedRecord(
+					value,
+					"stage_surface_ops_action",
+					["title", "summary", "actionKind", "actionPayload"],
+					["finishSession"],
+				);
+			} catch (error) {
+				throw new CloudToolArgumentRefusal(error instanceof Error ? error.message : "Invalid arguments");
+			}
+			let title: string;
+			let summary: string;
+			let actionKind: string;
+			try {
+				title = parseBoundedText(raw.title, "title", SURFACE_MAX_CHANGE_TITLE_CHARS).trim();
+				summary = parseBoundedText(raw.summary, "summary", SURFACE_MAX_CHANGE_SUMMARY_CHARS, 0).trim();
+				actionKind = parseBoundedText(raw.actionKind, "actionKind", 80).trim();
+			} catch {
+				throw new CloudToolArgumentRefusal("title, summary, and actionKind must be valid bounded text");
+			}
+			if (!OPS_ACTION_KIND_PATTERN.test(actionKind)) {
+				throw new CloudToolArgumentRefusal(
+					"actionKind must use letters, digits, dots, colons, underscores, or hyphens",
+				);
+			}
+			let actionPayload: Record<string, unknown>;
+			try {
+				actionPayload = parseRecord(raw.actionPayload, "actionPayload");
+			} catch {
+				throw new CloudToolArgumentRefusal("actionPayload must be a JSON object");
+			}
+			if (Buffer.byteLength(JSON.stringify(actionPayload)) > MAX_OPS_ACTION_PAYLOAD_BYTES) {
+				throw new CloudToolArgumentRefusal("actionPayload exceeds maximum size");
+			}
+			const finishSession = parseBooleanArg(raw.finishSession, "finishSession", false);
+			return {
+				title,
+				summary,
+				actionKind,
+				actionPayload: actionPayload as JsonValue,
+				finishSession,
+			};
+		},
+		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
+			const parsed = argumentsValue as unknown as StageSurfaceOpsActionRequest;
+			const result = await port.stageSurfaceOpsAction(sessionId, parsed, context);
+			return {
+				kind: "text",
+				value: cloudToolJsonText({
+					schema: "qorpera.surface-ops-action-staged/v1",
+					sessionId,
+					changeId: result.changeId,
+					seq: result.seq,
+					openChangeCount: result.openChangeCount,
+					actionKind: parsed.actionKind,
+					finishSession: parsed.finishSession,
+					staged: true,
 				}),
 			};
 		},

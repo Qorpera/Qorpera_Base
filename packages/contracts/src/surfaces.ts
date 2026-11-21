@@ -27,6 +27,31 @@ export type SurfaceGroup = (typeof SURFACE_GROUPS)[number];
 export const SURFACE_ARCHETYPES = ["live_build", "studio", "ops"] as const;
 export type SurfaceArchetype = (typeof SURFACE_ARCHETYPES)[number];
 
+export const SURFACE_KINDS = [
+	"identity",
+	"website",
+	"web_app",
+	"mobile_app",
+	"desktop_app",
+	"database",
+	"dashboard",
+	"brand",
+	"product",
+	"report",
+	"custom",
+	"inbox",
+	"money",
+	"members",
+	"data",
+	"files",
+] as const;
+export type SurfaceKind = (typeof SURFACE_KINDS)[number];
+
+export const SURFACE_PUBLISH_STATUSES = ["idle", "publishing", "failed"] as const;
+export type SurfacePublishStatus = (typeof SURFACE_PUBLISH_STATUSES)[number];
+
+export const SURFACE_HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
+
 export const SURFACE_STATUSES = ["proposed", "active", "archived"] as const;
 export type SurfaceStatus = (typeof SURFACE_STATUSES)[number];
 
@@ -94,6 +119,7 @@ export interface SurfaceSessionMessage {
 	readonly id: string;
 	readonly sessionId: string;
 	readonly authorKind: SurfaceSessionMessageAuthor;
+	readonly authorUserId?: string | null;
 	readonly text: string;
 	readonly changeId: string | null;
 	readonly createdAt: string;
@@ -123,6 +149,9 @@ export interface SurfaceSummary {
 	readonly title: string;
 	readonly group: SurfaceGroup;
 	readonly archetype: SurfaceArchetype;
+	readonly kind?: SurfaceKind;
+	readonly accentHex?: string | null;
+	readonly isGlobal?: boolean;
 	readonly status: SurfaceStatus;
 	readonly icon: string;
 	readonly sourceKind: SurfaceSourceKind;
@@ -131,6 +160,7 @@ export interface SurfaceSummary {
 	readonly siteSlug: string | null;
 	readonly previewMode: SurfacePreviewMode;
 	readonly autoPublish: boolean;
+	readonly publishStatus?: SurfacePublishStatus;
 	readonly liveUrl: string | null;
 	readonly hasUnpublishedChanges: boolean;
 	readonly unpublishedChangeCount: number;
@@ -160,10 +190,13 @@ export interface SurfaceChangeUnit {
 	readonly headSha: string | null;
 	readonly dependsOnChangeIds: readonly string[];
 	readonly affectedPaths: readonly string[];
+	readonly patchManifest?: readonly StudioPatchOp[] | null;
 	readonly diffStats: SurfaceChangeDiffStats | null;
 	readonly conflictPaths: readonly string[] | null;
 	readonly landedChangeNumber: number | null;
 	readonly canUndo: boolean;
+	readonly publishedAt?: string | null;
+	readonly approvedByUserId?: string | null;
 	readonly createdAt: string;
 	readonly resolvedAt: string | null;
 }
@@ -182,10 +215,12 @@ export interface SurfaceSession {
 	readonly state: SurfaceSessionState;
 	readonly originKind: SurfaceSessionOriginKind;
 	readonly originLabel: string | null;
+	readonly createdByUserId?: string | null;
 	readonly explorationId: string | null;
 	readonly explorationVariantLabel: string | null;
 	readonly hasActiveChat: boolean;
 	readonly question: SurfaceSessionQuestion | null;
+	readonly notePaths?: readonly string[];
 	readonly changes: readonly SurfaceChangeUnit[];
 	readonly messages: readonly SurfaceSessionMessage[];
 	readonly openChangeCount: number;
@@ -199,6 +234,8 @@ export interface SurfaceExplorationSet {
 	readonly surfaceId: string;
 	readonly title: string;
 	readonly status: SurfaceExplorationStatus;
+	readonly ownerLabel?: string | null;
+	readonly notePaths?: readonly string[];
 	readonly chosenSessionId: string | null;
 	readonly variantSessionIds: readonly string[];
 	readonly createdAt: string;
@@ -254,6 +291,7 @@ export interface SurfaceAutomationSummary {
 	readonly id: string;
 	readonly key: string;
 	readonly title: string;
+	readonly prompt?: string | null;
 	readonly scheduleSummary: string;
 	readonly targetSurfaceSlug: string | null;
 	readonly outputMode: SurfaceAutomationOutputMode;
@@ -371,6 +409,34 @@ function parseUuidArray(value: unknown, label: string, maxItems: number): string
 	return value.map((item, index) => parseUuid(item, `${label}[${index}]`));
 }
 
+function parseOptionalAccentHex(value: unknown, label: string): string | null {
+	if (value === null || value === undefined) return null;
+	if (typeof value !== "string" || !SURFACE_HEX_COLOR_PATTERN.test(value)) throw new WireValueError(label);
+	return value;
+}
+
+export function parseStudioPatchOps(value: unknown, label = "patchManifest"): StudioPatchOp[] {
+	if (!Array.isArray(value) || value.length > 256) throw new WireValueError(label);
+	return value.map((item, index) => {
+		const raw = parseRecord(item, `${label}[${index}]`);
+		const path = parseBoundedText(raw.path, `${label}[${index}].path`, 512);
+		if (raw.op === "write_text") {
+			if (typeof raw.content !== "string" || raw.content.length > 512_000) {
+				throw new WireValueError(`${label}[${index}].content`);
+			}
+			return { op: "write_text", path, content: raw.content };
+		}
+		if (raw.op === "delete") {
+			return { op: "delete", path };
+		}
+		if (raw.op === "merge_json") {
+			const patch = parseRecord(raw.patch, `${label}[${index}].patch`);
+			return { op: "merge_json", path, patch };
+		}
+		throw new WireValueError(`${label}[${index}].op`);
+	});
+}
+
 export function isSurfaceSlug(value: unknown): value is string {
 	return typeof value === "string" && value.length >= 1 && value.length <= 64 && SURFACE_SLUG_PATTERN.test(value);
 }
@@ -384,12 +450,28 @@ export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceS
 	const raw = parseRecord(value, label);
 	if (typeof raw.autoPublish !== "boolean") throw new WireValueError(`${label}.autoPublish`);
 	if (typeof raw.hasUnpublishedChanges !== "boolean") throw new WireValueError(`${label}.hasUnpublishedChanges`);
+	const kind =
+		raw.kind === undefined || raw.kind === null ? undefined : parseEnum(raw.kind, SURFACE_KINDS, `${label}.kind`);
+	const accentHex =
+		raw.accentHex === undefined ? undefined : parseOptionalAccentHex(raw.accentHex, `${label}.accentHex`);
+	let isGlobal: boolean | undefined;
+	if (raw.isGlobal !== undefined && raw.isGlobal !== null) {
+		if (typeof raw.isGlobal !== "boolean") throw new WireValueError(`${label}.isGlobal`);
+		isGlobal = raw.isGlobal;
+	}
+	const publishStatus =
+		raw.publishStatus === undefined || raw.publishStatus === null
+			? undefined
+			: parseEnum(raw.publishStatus, SURFACE_PUBLISH_STATUSES, `${label}.publishStatus`);
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		slug: parseSurfaceSlug(raw.slug, `${label}.slug`),
 		title: parseBoundedText(raw.title, `${label}.title`, SURFACE_MAX_TITLE_CHARS),
 		group: parseEnum(raw.group, SURFACE_GROUPS, `${label}.group`),
 		archetype: parseEnum(raw.archetype, SURFACE_ARCHETYPES, `${label}.archetype`),
+		...(kind !== undefined ? { kind } : {}),
+		...(accentHex !== undefined ? { accentHex } : {}),
+		...(isGlobal !== undefined ? { isGlobal } : {}),
 		status: parseEnum(raw.status, SURFACE_STATUSES, `${label}.status`),
 		icon: parseBoundedText(raw.icon, `${label}.icon`, 40),
 		sourceKind: parseEnum(raw.sourceKind, SURFACE_SOURCE_KINDS, `${label}.sourceKind`),
@@ -398,6 +480,7 @@ export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceS
 		siteSlug: parseOptionalText(raw.siteSlug, `${label}.siteSlug`, 64),
 		previewMode: parseEnum(raw.previewMode, SURFACE_PREVIEW_MODES, `${label}.previewMode`),
 		autoPublish: raw.autoPublish,
+		...(publishStatus !== undefined ? { publishStatus } : {}),
 		liveUrl: parseOptionalText(raw.liveUrl, `${label}.liveUrl`, 512),
 		hasUnpublishedChanges: raw.hasUnpublishedChanges,
 		unpublishedChangeCount: parseInteger(
@@ -426,6 +509,20 @@ export function parseSurfaceChangeUnit(value: unknown, label = "change"): Surfac
 			deletions: parseInteger(stats.deletions, `${label}.diffStats.deletions`, 0, 10_000_000),
 		};
 	}
+	const patchManifest =
+		raw.patchManifest === undefined
+			? undefined
+			: raw.patchManifest === null
+				? null
+				: Array.isArray(raw.patchManifest)
+					? parseStudioPatchOps(raw.patchManifest, `${label}.patchManifest`)
+					: null;
+	const publishedAt =
+		raw.publishedAt === undefined ? undefined : parseOptionalTimestamp(raw.publishedAt, `${label}.publishedAt`);
+	const approvedByUserId =
+		raw.approvedByUserId === undefined
+			? undefined
+			: parseOptionalUuid(raw.approvedByUserId, `${label}.approvedByUserId`);
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		sessionId: parseUuid(raw.sessionId, `${label}.sessionId`),
@@ -439,6 +536,7 @@ export function parseSurfaceChangeUnit(value: unknown, label = "change"): Surfac
 		headSha: parseOptionalText(raw.headSha, `${label}.headSha`, 64),
 		dependsOnChangeIds: parseUuidArray(raw.dependsOnChangeIds ?? [], `${label}.dependsOnChangeIds`, 64),
 		affectedPaths: parseStringArray(raw.affectedPaths ?? [], `${label}.affectedPaths`, 500, 512),
+		...(patchManifest !== undefined ? { patchManifest } : {}),
 		diffStats,
 		conflictPaths:
 			raw.conflictPaths === null || raw.conflictPaths === undefined
@@ -449,6 +547,8 @@ export function parseSurfaceChangeUnit(value: unknown, label = "change"): Surfac
 				? null
 				: parseInteger(raw.landedChangeNumber, `${label}.landedChangeNumber`, 1, 10_000_000),
 		canUndo: raw.canUndo,
+		...(publishedAt !== undefined ? { publishedAt } : {}),
+		...(approvedByUserId !== undefined ? { approvedByUserId } : {}),
 		createdAt: parseTimestamp(raw.createdAt, `${label}.createdAt`).text,
 		resolvedAt: parseOptionalTimestamp(raw.resolvedAt, `${label}.resolvedAt`),
 	};
@@ -456,10 +556,13 @@ export function parseSurfaceChangeUnit(value: unknown, label = "change"): Surfac
 
 export function parseSurfaceSessionMessage(value: unknown, label = "message"): SurfaceSessionMessage {
 	const raw = parseRecord(value, label);
+	const authorUserId =
+		raw.authorUserId === undefined ? undefined : parseOptionalUuid(raw.authorUserId, `${label}.authorUserId`);
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		sessionId: parseUuid(raw.sessionId, `${label}.sessionId`),
 		authorKind: parseEnum(raw.authorKind, SURFACE_SESSION_MESSAGE_AUTHORS, `${label}.authorKind`),
+		...(authorUserId !== undefined ? { authorUserId } : {}),
 		text: parseBoundedText(raw.text, `${label}.text`, SURFACE_MAX_PROMPT_CHARS, 0),
 		changeId: parseOptionalUuid(raw.changeId, `${label}.changeId`),
 		createdAt: parseTimestamp(raw.createdAt, `${label}.createdAt`).text,
@@ -482,6 +585,14 @@ export function parseSurfaceSession(value: unknown, label = "session"): SurfaceS
 			options: parseStringArray(q.options ?? [], `${label}.question.options`, 12, 240),
 		};
 	}
+	const createdByUserId =
+		raw.createdByUserId === undefined
+			? undefined
+			: parseOptionalUuid(raw.createdByUserId, `${label}.createdByUserId`);
+	const notePaths =
+		raw.notePaths === undefined || raw.notePaths === null
+			? undefined
+			: parseStringArray(raw.notePaths, `${label}.notePaths`, 64, 512);
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		surfaceId: parseUuid(raw.surfaceId, `${label}.surfaceId`),
@@ -491,10 +602,12 @@ export function parseSurfaceSession(value: unknown, label = "session"): SurfaceS
 		state: parseEnum(raw.state, SURFACE_SESSION_STATES, `${label}.state`),
 		originKind: parseEnum(raw.originKind, SURFACE_SESSION_ORIGIN_KINDS, `${label}.originKind`),
 		originLabel: parseOptionalText(raw.originLabel, `${label}.originLabel`, 160),
+		...(createdByUserId !== undefined ? { createdByUserId } : {}),
 		explorationId: parseOptionalUuid(raw.explorationId, `${label}.explorationId`),
 		explorationVariantLabel: parseOptionalText(raw.explorationVariantLabel, `${label}.explorationVariantLabel`, 80),
 		hasActiveChat: raw.hasActiveChat,
 		question,
+		...(notePaths !== undefined ? { notePaths } : {}),
 		changes,
 		messages,
 		openChangeCount: parseInteger(
@@ -511,11 +624,19 @@ export function parseSurfaceSession(value: unknown, label = "session"): SurfaceS
 
 export function parseSurfaceExplorationSet(value: unknown, label = "exploration"): SurfaceExplorationSet {
 	const raw = parseRecord(value, label);
+	const ownerLabel =
+		raw.ownerLabel === undefined ? undefined : parseOptionalText(raw.ownerLabel, `${label}.ownerLabel`, 160);
+	const notePaths =
+		raw.notePaths === undefined || raw.notePaths === null
+			? undefined
+			: parseStringArray(raw.notePaths, `${label}.notePaths`, 64, 512);
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		surfaceId: parseUuid(raw.surfaceId, `${label}.surfaceId`),
 		title: parseBoundedText(raw.title, `${label}.title`, 160),
 		status: parseEnum(raw.status, SURFACE_EXPLORATION_STATUSES, `${label}.status`),
+		...(ownerLabel !== undefined ? { ownerLabel } : {}),
+		...(notePaths !== undefined ? { notePaths } : {}),
 		chosenSessionId: parseOptionalUuid(raw.chosenSessionId, `${label}.chosenSessionId`),
 		variantSessionIds: parseUuidArray(raw.variantSessionIds ?? [], `${label}.variantSessionIds`, 8),
 		createdAt: parseTimestamp(raw.createdAt, `${label}.createdAt`).text,
@@ -632,10 +753,13 @@ export function parsePointToChangeTarget(value: unknown, label = "target"): Poin
 export function parseSurfaceAutomationSummary(value: unknown, label = "automation"): SurfaceAutomationSummary {
 	const raw = parseRecord(value, label);
 	if (typeof raw.enabled !== "boolean") throw new WireValueError(`${label}.enabled`);
+	const prompt =
+		raw.prompt === undefined ? undefined : parseOptionalText(raw.prompt, `${label}.prompt`, SURFACE_MAX_PROMPT_CHARS);
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		key: parseBoundedText(raw.key, `${label}.key`, 80),
 		title: parseBoundedText(raw.title, `${label}.title`, 120),
+		...(prompt !== undefined ? { prompt } : {}),
 		scheduleSummary: parseBoundedText(raw.scheduleSummary, `${label}.scheduleSummary`, 160),
 		targetSurfaceSlug:
 			raw.targetSurfaceSlug === null || raw.targetSurfaceSlug === undefined

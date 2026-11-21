@@ -190,6 +190,55 @@ Deno.serve(async (request) => {
 				p_error: action.error,
 			};
 			break;
+		case "surface_claim_jobs":
+			rpc = "qorpera_surface_claim_pending_jobs";
+			args = {
+				p_limit: action.limit,
+			};
+			break;
+		case "surface_complete_preview":
+			rpc = "qorpera_surface_complete_preview";
+			args = {
+				p_preview_id: action.previewId,
+				p_status: action.status,
+				p_composite_tree_sha: action.compositeTreeSha ?? null,
+				p_site_version_id: action.siteVersionId ?? null,
+				p_conflict_report: action.conflictReport ?? null,
+				p_error_detail: action.errorDetail ?? null,
+			};
+			break;
+		case "surface_complete_session_turn":
+			rpc = "qorpera_surface_complete_session_turn";
+			args = {
+				p_session_id: action.sessionId,
+				p_state: action.state,
+				p_reply_text: action.replyText ?? null,
+				p_question: action.question ?? null,
+				p_note_paths: action.notePaths ?? null,
+				p_branch_head_sha: action.branchHeadSha ?? null,
+			};
+			break;
+		case "surface_complete_merge":
+			rpc = "qorpera_surface_complete_merge";
+			args = {
+				p_job_id: action.jobId,
+				p_status: action.status,
+				p_main_before: action.mainBefore ?? null,
+				p_main_after: action.mainAfter ?? null,
+				p_conflict_change_id: action.conflictChangeId ?? null,
+				p_conflict_paths: action.conflictPaths ?? null,
+				p_error_detail: action.errorDetail ?? null,
+			};
+			break;
+		case "surface_complete_publish":
+			rpc = "qorpera_surface_complete_publish";
+			args = {
+				p_job_id: action.jobId,
+				p_status: action.status,
+				p_published_head_sha: action.publishedHeadSha ?? null,
+				p_error_detail: action.errorDetail ?? null,
+			};
+			break;
 	}
 	const { data, error } = await client.rpc(rpc, args);
 	if (error) return jsonResponse({ error: "Orchestrator request was rejected" }, runnerOrchestratorRpcStatus(error));

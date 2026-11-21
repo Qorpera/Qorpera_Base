@@ -43,6 +43,7 @@ export function openPublishPatchnotesSheet(store: SurfacesStore, initialSurface:
 							{ class: "surface-patchnotes-list" },
 							...entries.map(({ change, session, exploration }) => {
 								const sourceLabel = exploration ? exploration.title : session.title;
+								const approver = store.memberName(change.approvedByUserId);
 								const busy =
 									rollingBack === change.id || Boolean(state.busy[`undo:${change.id}`]) || publishing;
 								const stamp = fmtTime(change.resolvedAt ?? change.createdAt);
@@ -72,6 +73,13 @@ export function openPublishPatchnotesSheet(store: SurfacesStore, initialSurface:
 										"div",
 										{ class: "surface-patchnote-meta" },
 										h("span", { class: "surface-patchnote-source" }, sourceLabel),
+										approver
+											? h(
+													"span",
+													{ class: "surface-patchnote-approver" },
+													t("Approved by {name}", { name: approver }),
+												)
+											: null,
 										stamp ? h("time", { datetime: change.resolvedAt ?? change.createdAt }, stamp) : null,
 									),
 								);
@@ -90,12 +98,13 @@ export function openPublishPatchnotesSheet(store: SurfacesStore, initialSurface:
 						]
 					: [h("p", { class: "surface-patchnotes-empty" }, t("No unpublished changes in Base right now."))];
 
+		const publishInProgress = publishing || surface.publishStatus === "publishing";
 		const cancelBtn = h(
 			"button",
-			{ type: "button", class: "btn", disabled: publishing, "data-act": "cancel" },
+			{ type: "button", class: "btn", disabled: publishInProgress, "data-act": "cancel" },
 			t("Cancel"),
 		);
-		const publishLabel = publishing
+		const publishLabel = publishInProgress
 			? t("Publishing…")
 			: total === 1
 				? t("Publish 1 change")
@@ -107,7 +116,7 @@ export function openPublishPatchnotesSheet(store: SurfacesStore, initialSurface:
 			{
 				type: "button",
 				class: "btn btn-primary",
-				disabled: publishing || total === 0,
+				disabled: publishInProgress || total === 0,
 				"data-act": "confirm-publish",
 			},
 			publishLabel,

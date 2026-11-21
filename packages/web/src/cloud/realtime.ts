@@ -17,7 +17,8 @@ export type RealtimeResource =
 	| "company-file"
 	| "sidebar"
 	| "member-chats"
-	| "machines";
+	| "machines"
+	| "surfaces";
 export type RealtimePhase = "connecting" | "connected" | "degraded" | "stopped";
 
 export interface RealtimeSubscription {
@@ -56,6 +57,7 @@ const HINT_EVENTS: readonly RealtimeResource[] = [
 	"sidebar",
 	"member-chats",
 	"machines",
+	"surfaces",
 ];
 
 /** Realtime's answer to a private join the database does not allow: one before 20260930653000 has no such topic. A

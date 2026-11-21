@@ -145,4 +145,109 @@ describe("surfaces contracts", () => {
 		);
 		expect(SURFACE_SITE_DOOR_ACTION_PATTERN.test("https://thetaband--next.qorpera.com/__qorpera/member")).toBe(false);
 	});
+
+	it("parses Identity global metadata, attribution, patchManifest, Notes, and publish durability fields", () => {
+		const surfaceId = randomUUID();
+		const sessionId = randomUUID();
+		const changeId = randomUUID();
+		const messageId = randomUUID();
+		const userId = randomUUID();
+		const now = "2026-11-21T20:00:00Z";
+
+		const summary = parseSurfaceSummary({
+			id: surfaceId,
+			slug: "identity",
+			title: "Identity",
+			group: "products",
+			archetype: "studio",
+			kind: "identity",
+			accentHex: "#d76f45",
+			isGlobal: true,
+			status: "active",
+			icon: "spark",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "identity",
+			siteSlug: null,
+			previewMode: "studio_overlay",
+			autoPublish: false,
+			publishStatus: "publishing",
+			liveUrl: null,
+			hasUnpublishedChanges: true,
+			unpublishedChangeCount: 1,
+			activeSessionCount: 1,
+			runningSessionCount: 0,
+			pendingChangeCount: 1,
+			needsAttentionCount: 0,
+			sortOrder: 0,
+		});
+		expect(summary.kind).toBe("identity");
+		expect(summary.accentHex).toBe("#d76f45");
+		expect(summary.isGlobal).toBe(true);
+		expect(summary.publishStatus).toBe("publishing");
+
+		const session = parseSurfaceSession({
+			id: sessionId,
+			surfaceId,
+			workerId: null,
+			title: "Design tokens & Danish voice",
+			prompt: "Define core tokens",
+			state: "ready",
+			originKind: "cofounder",
+			originLabel: "Co-Founder",
+			createdByUserId: userId,
+			explorationId: null,
+			explorationVariantLabel: null,
+			hasActiveChat: false,
+			question: null,
+			notePaths: ["identity/notes/calm-tech.report.json"],
+			changes: [
+				{
+					id: changeId,
+					sessionId,
+					surfaceId,
+					seq: 1,
+					title: "Update palette tokens",
+					summary: "Refines warm linen palette.",
+					kind: "folder_patch",
+					status: "merged",
+					parentSha: null,
+					headSha: null,
+					dependsOnChangeIds: [],
+					affectedPaths: ["tokens.json"],
+					patchManifest: [{ op: "merge_json", path: "tokens.json", patch: { accent: "#d76f45" } }],
+					diffStats: { filesChanged: 1, additions: 4, deletions: 1 },
+					conflictPaths: null,
+					landedChangeNumber: null,
+					canUndo: true,
+					publishedAt: null,
+					approvedByUserId: userId,
+					createdAt: now,
+					resolvedAt: now,
+				},
+			],
+			messages: [
+				{
+					id: messageId,
+					sessionId,
+					authorKind: "member",
+					authorUserId: userId,
+					text: "Make the accent slightly warmer",
+					changeId: null,
+					createdAt: now,
+				},
+			],
+			createdAt: now,
+			updatedAt: now,
+			closedAt: null,
+		});
+		expect(session.createdByUserId).toBe(userId);
+		expect(session.notePaths).toEqual(["identity/notes/calm-tech.report.json"]);
+		expect(session.changes[0]?.patchManifest).toEqual([
+			{ op: "merge_json", path: "tokens.json", patch: { accent: "#d76f45" } },
+		]);
+		expect(session.changes[0]?.approvedByUserId).toBe(userId);
+		expect(session.changes[0]?.publishedAt).toBeNull();
+		expect(session.messages[0]?.authorUserId).toBe(userId);
+	});
 });

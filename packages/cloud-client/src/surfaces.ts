@@ -11,6 +11,8 @@ import {
 	parseSurfaceWorkspace,
 	SURFACE_ARCHETYPES,
 	SURFACE_GROUPS,
+	SURFACE_HEX_COLOR_PATTERN,
+	SURFACE_KINDS,
 	SURFACE_MAX_TITLE_CHARS,
 	SURFACE_PREVIEW_MODES,
 	SURFACE_SCHEMA_VERSION,
@@ -20,6 +22,7 @@ import {
 	type SurfaceAutomationSummary,
 	type SurfaceChangeUnit,
 	type SurfaceGroup,
+	type SurfaceKind,
 	type SurfaceMigrationChecklist,
 	type SurfacePreviewCompositionState,
 	type SurfacePreviewMode,
@@ -52,6 +55,9 @@ export interface SurfaceManifestFile {
 	readonly title: string;
 	readonly group: SurfaceGroup;
 	readonly archetype: SurfaceArchetype;
+	readonly kind?: SurfaceKind;
+	readonly accentHex?: string | null;
+	readonly isGlobal?: boolean;
 	readonly icon: string;
 	readonly status: SurfaceStatus;
 	readonly autoPublish: boolean;
@@ -86,6 +92,9 @@ const TOP_KEYS = new Set([
 	"title",
 	"group",
 	"archetype",
+	"kind",
+	"accent",
+	"global",
 	"icon",
 	"status",
 	"auto_publish",
@@ -232,6 +241,16 @@ export function parseSurfaceManifestToml(path: string, text: string): SurfaceMan
 
 	const group = readOneOf(root, "group", SURFACE_GROUPS, lines, "", problems);
 	const archetype = readOneOf(root, "archetype", SURFACE_ARCHETYPES, lines, "", problems);
+	const kind = Object.hasOwn(root, "kind") ? readOneOf(root, "kind", SURFACE_KINDS, lines, "", problems) : null;
+	const accentHex = readOptionalString(root, "accent", 16, lines, "", problems);
+	if (accentHex !== null && !SURFACE_HEX_COLOR_PATTERN.test(accentHex)) {
+		problems.push({
+			line: lines.get("accent") ?? null,
+			key: "accent",
+			message: "accent must be a 6-digit hex color like #2a9ae0",
+		});
+	}
+	const isGlobal = Object.hasOwn(root, "global") ? readOptionalBool(root, "global", false, lines, "", problems) : null;
 	const status = readOneOf(root, "status", SURFACE_STATUSES, lines, "", problems);
 	const icon = readOptionalString(root, "icon", 40, lines, "", problems) ?? "page";
 	const autoPublish = readOptionalBool(root, "auto_publish", false, lines, "", problems);
@@ -298,6 +317,9 @@ export function parseSurfaceManifestToml(path: string, text: string): SurfaceMan
 			title,
 			group,
 			archetype,
+			...(kind ? { kind } : {}),
+			...(accentHex !== null ? { accentHex } : {}),
+			...(isGlobal !== null ? { isGlobal } : {}),
 			icon,
 			status,
 			autoPublish,
@@ -325,6 +347,9 @@ export function renderSurfaceManifestToml(file: SurfaceManifestFile): string {
 		`title = ${escapeTomlString(file.title)}`,
 		`group = ${escapeTomlString(file.group)}`,
 		`archetype = ${escapeTomlString(file.archetype)}`,
+		...(file.kind ? [`kind = ${escapeTomlString(file.kind)}`] : []),
+		...(file.accentHex ? [`accent = ${escapeTomlString(file.accentHex)}`] : []),
+		...(file.isGlobal ? ["global = true"] : []),
 		`icon = ${escapeTomlString(file.icon)}`,
 		`status = ${escapeTomlString(file.status)}`,
 		`auto_publish = ${file.autoPublish ? "true" : "false"}`,
@@ -390,8 +415,35 @@ export interface StartSurfaceSessionOptions {
 	readonly target?: PointToChangeTarget;
 	readonly explorationCount?: 2 | 3;
 	readonly explorationTitle?: string;
+	readonly variantLabels?: readonly string[];
 	readonly originKind?: "member" | "cofounder" | "automation" | "point_to_change" | "cross_surface";
 	readonly originLabel?: string;
+}
+
+export interface CreateSurfaceRpcInput {
+	readonly title: string;
+	readonly slug?: string;
+	readonly archetype: SurfaceArchetype;
+	readonly kind?: SurfaceKind;
+	readonly icon?: string;
+	readonly accentHex?: string | null;
+	readonly folderRoot?: string | null;
+	readonly briefSummary?: string | null;
+	readonly isGlobal?: boolean;
+}
+
+export interface CreateSurfaceAutomationInput {
+	readonly title: string;
+	readonly prompt: string;
+	readonly scheduleSummary?: string;
+	readonly targetSurfaceSlug?: string | null;
+}
+
+export interface UpdateSurfaceAutomationInput {
+	readonly title?: string;
+	readonly prompt?: string;
+	readonly scheduleSummary?: string;
+	readonly targetSurfaceSlug?: string | null;
 }
 
 export interface SetSurfacePreviewSelectionInput {
@@ -451,6 +503,28 @@ export class CloudSurfacesClient {
 		return data.map((item, index) => parseSurfaceSummary(item, `surfaces[${index}]`));
 	}
 
+	async createSurface(companyId: string, input: CreateSurfaceRpcInput): Promise<SurfaceSummary> {
+		const data = await this.#rpc("qorpera_create_surface", {
+			p_company_id: companyId,
+			p_title: input.title,
+			p_slug: input.slug ?? null,
+			p_archetype: input.archetype,
+			p_kind: input.kind ?? "custom",
+			p_icon: input.icon ?? "globe",
+			p_accent_hex: input.accentHex ?? null,
+			p_folder_root: input.folderRoot ?? null,
+			p_brief_summary: input.briefSummary ?? null,
+			p_is_global: input.isGlobal ?? input.kind === "identity",
+		});
+		return parseSurfaceSummary(data, "surface");
+	}
+
+	async bootstrapCompanySurfaces(companyId: string): Promise<SurfaceSummary[]> {
+		const data = await this.#rpc("qorpera_bootstrap_company_surfaces", { p_company_id: companyId });
+		if (!Array.isArray(data)) throw new CloudSurfacesError("Invalid qorpera_bootstrap_company_surfaces payload");
+		return data.map((item, index) => parseSurfaceSummary(item, `surfaces[${index}]`));
+	}
+
 	async getSurfaceWorkspace(surfaceId: string): Promise<SurfaceWorkspace> {
 		const data = await this.#rpc("qorpera_get_surface_workspace", { p_surface_id: surfaceId });
 		return parseSurfaceWorkspace(data, "workspace");
@@ -489,6 +563,7 @@ export class CloudSurfacesClient {
 			p_origin_ref: target,
 			p_exploration_count: options.explorationCount ?? null,
 			p_exploration_title: options.explorationTitle ?? null,
+			...(options.variantLabels ? { p_variant_labels: [...options.variantLabels] } : {}),
 		});
 		return parseSurfaceSession(data, "session");
 	}
@@ -541,6 +616,10 @@ export class CloudSurfacesClient {
 		return parseSurfaceSession(data, "session");
 	}
 
+	async discardExploration(explorationId: string): Promise<void> {
+		await this.#rpc("qorpera_discard_exploration", { p_exploration_id: explorationId });
+	}
+
 	async reconcileChanges(surfaceId: string, changeIds: readonly string[]): Promise<SurfaceSession> {
 		const data = await this.#rpc("qorpera_reconcile_surface_changes", {
 			p_surface_id: surfaceId,
@@ -591,6 +670,37 @@ export class CloudSurfacesClient {
 			p_enabled: enabled,
 		});
 		return parseSurfaceAutomationSummary(data, "automation");
+	}
+
+	async createAutomation(companyId: string, input: CreateSurfaceAutomationInput): Promise<SurfaceAutomationSummary> {
+		const data = await this.#rpc("qorpera_create_surface_automation", {
+			p_company_id: companyId,
+			p_title: input.title,
+			p_prompt: input.prompt,
+			p_schedule_summary: input.scheduleSummary ?? "Every day · 09:00",
+			p_target_surface_slug: input.targetSurfaceSlug ?? null,
+		});
+		return parseSurfaceAutomationSummary(data, "automation");
+	}
+
+	async updateAutomation(
+		automationId: string,
+		input: UpdateSurfaceAutomationInput,
+	): Promise<SurfaceAutomationSummary> {
+		const data = await this.#rpc("qorpera_update_surface_automation", {
+			p_automation_id: automationId,
+			p_title: input.title ?? null,
+			p_prompt: input.prompt ?? null,
+			p_schedule_summary: input.scheduleSummary ?? null,
+			p_target_surface_slug: input.targetSurfaceSlug ?? null,
+			p_clear_target: input.targetSurfaceSlug === null,
+		});
+		return parseSurfaceAutomationSummary(data, "automation");
+	}
+
+	async deleteAutomation(automationId: string): Promise<boolean> {
+		const data = await this.#rpc("qorpera_delete_surface_automation", { p_automation_id: automationId });
+		return data === true;
 	}
 
 	async getMigrationChecklist(companyId: string): Promise<SurfaceMigrationChecklist> {

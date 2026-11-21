@@ -191,6 +191,14 @@ import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import { cloudSiteTools } from "./cloud-site-tools.ts";
 import { cloudSkillTools, composeCloudAgentSkills, unavailableCloudAgentSkills } from "./cloud-skill-tools.ts";
 import {
+	type CloudSurfaceToolsPort,
+	type ControlPlaneSurfaceToolsPortOptions,
+	createControlPlaneSurfaceToolsPort,
+	createProposeSurfaceTool,
+	createStartSurfaceSessionTool,
+	type SurfaceToolsRpcClient,
+} from "./cloud-surface-tools.ts";
+import {
 	CLOUD_ASK_MEMBER_INPUT_SCHEMA,
 	cloudAskMemberFinalKey,
 	cloudAskMemberInstructions,
@@ -263,6 +271,55 @@ async function chatGptPlanRun(identityRoot: string): Promise<boolean> {
 	}
 }
 
+export { type ControlPlaneSurfaceToolsPortOptions, createControlPlaneSurfaceToolsPort, type SurfaceToolsRpcClient };
+
+export interface CloudNativeCompanyRuntimeOptions {
+	presence?: CloudCompanyPathPresenceFactory;
+	controlPlane: NativeCompanyControl;
+	pathControl: CloudCompanyPathControl;
+	command: readonly [string, ...string[]];
+	binarySha256: string;
+	timeoutMs?: number;
+	isolation?: NativeIsolationConfiguration;
+	/** How a ChatGPT plan run's Codex gets the plan's token; `command` unless the host chose the fallback. */
+	chatGptPlanAuth?: CloudChatGptPlanAuth;
+	secretBroker?: CloudSecretOperationClient;
+	/** The vault's company accounts route (A1-4): without it no run is offered company_account. */
+	companyAccounts?: CloudCompanyAccountClient;
+	/** The vault's event hooks route (E3b-2): without it a run's GitHub or HMAC hook is refused as unavailable. */
+	eventHooks?: CloudCompanyFolderSignedHooks;
+	/** Explicit cloud-office adapter; no local execution or inferred resource grant. */
+	computerSession?: CloudCompanyComputerSessionFactory;
+	/** The coding composition (Order 9): only a node with the coding command
+	 * gateway installed carries it. A coding wake on a node without it fails visibly. */
+	coding?: CloudNativeCodingDriver;
+	/** Company machines' command gateway (the coding executor's ingress, 2026-09-28).
+	 * Without it no run is offered the machine tools. */
+	machines?: (binding: CloudNativeToolBinding) => CloudMachineCommandGateway;
+	/**
+	 * The agent's home (lanes/agent-box-20261113, slice 1): the channel from this run's slot to its own machine, for
+	 * Codex's own shell and file tools. Given only where the host is configured for it; used only for a run whose
+	 * company has the switch on (`qorpera_company_home_available`). Without either, every run is exactly as today.
+	 */
+	homeChannel?: (binding: CloudNativeToolBinding) => CloudCodexHomeChannel;
+	/** The Claude Code worker's composition (slice C4c): with the home channel, a plain worker the agent handed to
+	 * Claude Code runs here, on the agent's machine and its member's Claude sign-in. Without it such a run is refused. */
+	claudeWorker?: CloudClaudeWorkerHost;
+	/** The vault's coding value route (20260930705000): with machines, a company agent's own run is offered
+	 * save_coding_value. */
+	codingValues?: CloudMachineCodingValues;
+	/** A company run's file bytes (core C1d: the object gateway's folder route). Every company run is a folder-v2
+	 * run (legacy sweep step C, C-P1). */
+	folderBytes: (binding: CloudNativeToolBinding, identity: CloudNativeToolIdentity) => CloudCompanyFolderBytes;
+	/** The slot's relay to the node's folder search (F3, the shared execution host only): a folder-v2 run gets
+	 * company_search over it. */
+	folderSearch?: { readonly socketPath: string };
+	/** The data gateway's run door (company databases, slices 5 and 7): with it a run is offered data_describe,
+	 * data_query and, unless it is a worker, data_apply and data_change; without it none of them. */
+	companyData?: CloudCompanyDataDoor;
+	surfaceTools?: Pick<CloudSurfaceToolsPort, "proposeSurface" | "startSurfaceSession">;
+}
+
 /** Cloud-only composition of the native fence, live path gateway and public mouth.
  * Object transport and cloud authority stay in this trusted host. No model tool
  * receives a service key, raw object capability, recipient or canonical mount.
@@ -287,56 +344,13 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #codingValues: CloudMachineCodingValues | undefined;
 	readonly #folderSearch: { readonly socketPath: string } | undefined;
 	readonly #companyData: CloudCompanyDataDoor | undefined;
+	readonly #surfaceTools: Pick<CloudSurfaceToolsPort, "proposeSurface" | "startSurfaceSession"> | undefined;
 	readonly #folderBytes: (
 		binding: CloudNativeToolBinding,
 		identity: CloudNativeToolIdentity,
 	) => CloudCompanyFolderBytes;
 
-	constructor(options: {
-		presence?: CloudCompanyPathPresenceFactory;
-		controlPlane: NativeCompanyControl;
-		pathControl: CloudCompanyPathControl;
-		command: readonly [string, ...string[]];
-		binarySha256: string;
-		timeoutMs?: number;
-		isolation?: NativeIsolationConfiguration;
-		/** How a ChatGPT plan run's Codex gets the plan's token; `command` unless the host chose the fallback. */
-		chatGptPlanAuth?: CloudChatGptPlanAuth;
-		secretBroker?: CloudSecretOperationClient;
-		/** The vault's company accounts route (A1-4): without it no run is offered company_account. */
-		companyAccounts?: CloudCompanyAccountClient;
-		/** The vault's event hooks route (E3b-2): without it a run's GitHub or HMAC hook is refused as unavailable. */
-		eventHooks?: CloudCompanyFolderSignedHooks;
-		/** Explicit cloud-office adapter; no local execution or inferred resource grant. */
-		computerSession?: CloudCompanyComputerSessionFactory;
-		/** The coding composition (Order 9): only a node with the coding command
-		 * gateway installed carries it. A coding wake on a node without it fails visibly. */
-		coding?: CloudNativeCodingDriver;
-		/** Company machines' command gateway (the coding executor's ingress, 2026-09-28).
-		 * Without it no run is offered the machine tools. */
-		machines?: (binding: CloudNativeToolBinding) => CloudMachineCommandGateway;
-		/**
-		 * The agent's home (lanes/agent-box-20261113, slice 1): the channel from this run's slot to its own machine, for
-		 * Codex's own shell and file tools. Given only where the host is configured for it; used only for a run whose
-		 * company has the switch on (`qorpera_company_home_available`). Without either, every run is exactly as today.
-		 */
-		homeChannel?: (binding: CloudNativeToolBinding) => CloudCodexHomeChannel;
-		/** The Claude Code worker's composition (slice C4c): with the home channel, a plain worker the agent handed to
-		 * Claude Code runs here, on the agent's machine and its member's Claude sign-in. Without it such a run is refused. */
-		claudeWorker?: CloudClaudeWorkerHost;
-		/** The vault's coding value route (20260930705000): with machines, a company agent's own run is offered
-		 * save_coding_value. */
-		codingValues?: CloudMachineCodingValues;
-		/** A company run's file bytes (core C1d: the object gateway's folder route). Every company run is a folder-v2
-		 * run (legacy sweep step C, C-P1). */
-		folderBytes: (binding: CloudNativeToolBinding, identity: CloudNativeToolIdentity) => CloudCompanyFolderBytes;
-		/** The slot's relay to the node's folder search (F3, the shared execution host only): a folder-v2 run gets
-		 * company_search over it. */
-		folderSearch?: { readonly socketPath: string };
-		/** The data gateway's run door (company databases, slices 5 and 7): with it a run is offered data_describe,
-		 * data_query and, unless it is a worker, data_apply and data_change; without it none of them. */
-		companyData?: CloudCompanyDataDoor;
-	}) {
+	constructor(options: CloudNativeCompanyRuntimeOptions) {
 		this.#control = options.controlPlane;
 		this.#presenceFactory = options.presence;
 		this.#paths = options.pathControl;
@@ -359,6 +373,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#folderBytes = options.folderBytes;
 		this.#folderSearch = options.folderSearch ? Object.freeze({ ...options.folderSearch }) : undefined;
 		this.#companyData = options.companyData;
+		this.#surfaceTools = options.surfaceTools;
 	}
 
 	/** The effort and tier of the last successful run per identity root: a spare starts with them. */
@@ -1495,6 +1510,25 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										// The company's code kept in Qorpera (20260930720000): an agent's own run takes a change
 										// out of main again and describes one; a worker reports to its agent instead.
 										...(work.isWorker ? [] : cloudCodeTools({ folder: folder.client, identity })),
+										...(work.isWorker || !this.#surfaceTools
+											? []
+											: [
+													createProposeSurfaceTool(this.#surfaceTools),
+													createStartSurfaceSessionTool({
+														startSurfaceSession: (sessionRequest, toolContext) =>
+															this.#surfaceTools!.startSurfaceSession(
+																{
+																	...sessionRequest,
+																	ownerLabel:
+																		sessionRequest.ownerLabel ??
+																		(context.agentKind === "cofounder"
+																			? "Co-Founder"
+																			: context.agent.name),
+																},
+																toolContext,
+															),
+													}),
+												]),
 									]
 								: []),
 							...(identity.sessionId && wake.policy.final !== "forbidden" ? [send] : []),

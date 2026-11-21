@@ -9,7 +9,7 @@ import {
 	type SurfaceSummary,
 } from "@qorpera/contracts";
 import { openContextMenu } from "../../ui/context-menu.ts";
-import { growToText, h, icon } from "../../ui/dom.ts";
+import { growToText, h, icon, personAvatar } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import { opsComposerPlaceholder, supportsViewportSplit } from "../surface-kinds.ts";
 import { renderLocalSitePreviewHtml } from "../surface-local-sandbox.ts";
@@ -675,6 +675,8 @@ export class SurfaceView {
 			this.#handoffOpen,
 			this.#pillCollapsed,
 			Boolean(state.busy[`publish:${surface.id}`]),
+			surface.publishStatus ?? "idle",
+			store.peopleAtSurface(surface.slug).map((person) => [person.userId, person.name]),
 		]);
 		if (key === this.#barShown) return;
 		this.#barShown = key;
@@ -781,6 +783,23 @@ export class SurfaceView {
 			handoffTargets.length === 1 ? t("Send to {target}…", { target: handoffTargets[0]!.title }) : t("Send to…");
 
 		const rightTools: HTMLElement[] = [];
+		const presentHere = store.peopleAtSurface(surface.slug);
+		if (presentHere.length > 0) {
+			const presentLabel =
+				presentHere.length === 1
+					? t("{name} is here", { name: presentHere[0]!.name })
+					: t("{names} are here", { names: presentHere.map((person) => person.name).join(", ") });
+			rightTools.push(
+				h(
+					"span",
+					{ class: "surface-pill-presence", title: presentLabel, "aria-label": presentLabel },
+					...presentHere.slice(0, 3).map((person) => personAvatar(person.name, person.userId)),
+					presentHere.length > 3
+						? h("span", { class: "surface-pill-presence-more" }, `+${presentHere.length - 3}`)
+						: null,
+				),
+			);
+		}
 		if (handoffTargets.length > 0) {
 			rightTools.push(
 				h(
@@ -829,6 +848,7 @@ export class SurfaceView {
 			);
 		}
 		if (surface.archetype !== "ops") {
+			const publishBusy = Boolean(state.busy[`publish:${surface.id}`]) || surface.publishStatus === "publishing";
 			rightTools.push(
 				h(
 					"div",
@@ -838,12 +858,16 @@ export class SurfaceView {
 						{
 							type: "button",
 							class: "surface-publish-main",
-							disabled: !count || Boolean(state.busy[`publish:${surface.id}`]),
-							title: count ? t("Publish Base to the live surface") : t("Live matches Base"),
+							disabled: !count || publishBusy,
+							title: publishBusy
+								? t("Publishing…")
+								: count
+									? t("Publish Base to the live surface")
+									: t("Live matches Base"),
 							"data-act": "publish",
 						},
-						t("Publish"),
-						count ? h("span", { class: "surface-count" }, String(count)) : null,
+						publishBusy ? t("Publishing…") : t("Publish"),
+						!publishBusy && count ? h("span", { class: "surface-count" }, String(count)) : null,
 					),
 					h(
 						"button",

@@ -114,21 +114,27 @@ function actionCard(
 	);
 }
 
-function memberBubble(text: string, extraClass = "", title?: string): HTMLElement {
+function memberBubble(text: string, extraClass = "", title?: string, authorName?: string): HTMLElement {
 	const reply = splitChangeReply(text);
 	const className = ["surface-message", "is-member", extraClass].filter(Boolean).join(" ");
-	if (reply) {
-		return h(
-			"div",
-			{ class: className, ...(title ? { title } : {}) },
-			h("span", { class: "surface-message-ref" }, icon("link"), h("span", null, reply.title)),
-			h("span", { class: "surface-message-text" }, reply.body),
-		);
-	}
-	return h("p", { class: className, ...(title ? { title } : {}) }, text);
+	const bubble = reply
+		? h(
+				"div",
+				{ class: className, ...(title ? { title } : {}) },
+				h("span", { class: "surface-message-ref" }, icon("link"), h("span", null, reply.title)),
+				h("span", { class: "surface-message-text" }, reply.body),
+			)
+		: h("p", { class: className, ...(title ? { title } : {}) }, text);
+	if (!authorName) return bubble;
+	return h(
+		"div",
+		{ class: "surface-message-group is-member" },
+		h("span", { class: "surface-message-author" }, authorName),
+		bubble,
+	);
 }
 
-function messageRow(message: SurfaceSessionMessage): HTMLElement {
+function messageRow(message: SurfaceSessionMessage, authorName?: string): HTMLElement {
 	if (message.authorKind === "system")
 		return h(
 			"div",
@@ -144,7 +150,7 @@ function messageRow(message: SurfaceSessionMessage): HTMLElement {
 		);
 	if (message.authorKind === "session")
 		return h("p", { class: "surface-message is-session", title: fmtTime(message.createdAt) }, message.text);
-	return memberBubble(message.text, "", fmtTime(message.createdAt));
+	return memberBubble(message.text, "", fmtTime(message.createdAt), authorName);
 }
 
 function changeTag(change: SurfaceChangeUnit): HTMLElement | null {
@@ -527,6 +533,7 @@ export class SurfaceSessionDrawer {
 			state.busy,
 			this.#armedApprove,
 			state.localStudioBase[surface.id],
+			state.cloudSurfaceFiles[surface.id],
 			explorations,
 			plainSessions,
 		]);
@@ -952,9 +959,10 @@ export class SurfaceSessionDrawer {
 		parts.push(h("div", { class: "surface-drawer-rule" }));
 		if (picked) {
 			if (picked.messages.length > 0) {
-				for (const message of picked.messages) parts.push(messageRow(message));
+				for (const message of picked.messages)
+					parts.push(messageRow(message, store.memberName(message.authorUserId)));
 			} else if (picked.prompt) {
-				parts.push(memberBubble(picked.prompt));
+				parts.push(memberBubble(picked.prompt, "", undefined, store.memberName(picked.createdByUserId)));
 			}
 			for (const note of notes) parts.push(memberBubble(note.text, "is-pending"));
 		}
@@ -1306,9 +1314,10 @@ export class SurfaceSessionDrawer {
 		}
 		parts.push(h("div", { class: "surface-drawer-rule" }));
 		if (session.messages.length > 0) {
-			for (const message of session.messages) parts.push(messageRow(message));
+			for (const message of session.messages)
+				parts.push(messageRow(message, store.memberName(message.authorUserId)));
 		} else if (session.prompt) {
-			parts.push(memberBubble(session.prompt));
+			parts.push(memberBubble(session.prompt, "", undefined, store.memberName(session.createdByUserId)));
 		}
 		for (const note of notes) parts.push(memberBubble(note.text, "is-pending"));
 		return parts;

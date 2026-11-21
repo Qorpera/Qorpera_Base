@@ -1777,6 +1777,26 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .surface-schedule-pill:hover { background: var(--rail-hover); color: var(--text); }
 .surface-schedule-select { width: 100%; height: 38px; padding: 0 10px; }
 
+/* Multiplayer surface presence in the header pill and teammate attribution in session chat. */
+.surface-pill-presence {
+	display: inline-flex; align-items: center; padding: 0 2px;
+}
+.surface-pill-presence .avatar {
+	width: 20px; height: 20px; font-size: 9px;
+	box-shadow: 0 0 0 1.5px var(--bg);
+}
+.surface-pill-presence .avatar + .avatar { margin-left: -6px; }
+.surface-pill-presence-more {
+	margin-left: 4px; font-size: 11px; font-weight: 600; color: var(--text-muted);
+}
+.surface-message-group.is-member {
+	display: flex; flex-direction: column; align-items: flex-end; gap: 3px;
+}
+.surface-message-author {
+	font-size: 10.5px; font-weight: 550; color: var(--text-muted); padding: 0 4px;
+}
+.surface-patchnote-approver { color: var(--text-muted); }
+
 @media (prefers-reduced-motion: reduce) {
 	.surface-state.is-running, .surface-ring, .surface-toast, .rail-surface-working, .surface-bar-agent.is-attention { animation: none; }
 	.rail-surface:hover .surface-tile, .surface-bar-agent:hover, .surface-bar-explore:hover { transform: none; }

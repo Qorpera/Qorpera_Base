@@ -60,4 +60,43 @@ describe("cloud-client surface state files", () => {
 			operations: ["inbox", "money", "files"],
 		});
 	});
+
+	it("round-trips Identity global surface.toml fields and rejects bad accent hex", () => {
+		const path = surfaceManifestPath("identity");
+		const text = renderSurfaceManifestToml({
+			schema: "qorpera.surface/v1",
+			slug: "identity",
+			title: "Identity",
+			group: "products",
+			archetype: "studio",
+			kind: "identity",
+			accentHex: "#d76f45",
+			isGlobal: true,
+			icon: "spark",
+			status: "active",
+			autoPublish: false,
+			source: {
+				kind: "folder",
+				repository: null,
+				baseBranch: null,
+				siteSlug: null,
+				folderRoot: "identity",
+			},
+			preview: {
+				mode: "studio_overlay",
+				defaultRoute: "/",
+				allowCompare: false,
+				allowPointToChange: false,
+			},
+		});
+		const parsed = parseSurfaceManifestToml(path, text);
+		expect(parsed.ok).toBe(true);
+		if (!parsed.ok) throw new Error("expected valid identity manifest");
+		expect(parsed.file.kind).toBe("identity");
+		expect(parsed.file.accentHex).toBe("#d76f45");
+		expect(parsed.file.isGlobal).toBe(true);
+
+		const badAccent = parseSurfaceManifestToml(path, text.replace("#d76f45", "not-a-color"));
+		expect(badAccent.ok).toBe(false);
+	});
 });

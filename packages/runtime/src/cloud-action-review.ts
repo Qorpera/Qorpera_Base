@@ -435,6 +435,12 @@ export function cloudActionEffect(
 			return "internal";
 		case "narrate_app":
 			return "internal";
+		case "propose_surface":
+		case "start_surface_session":
+		case "coding_record_change":
+		case "stage_surface_patch":
+		case "stage_surface_ops_action":
+			return "internal";
 		default:
 			return "external";
 	}

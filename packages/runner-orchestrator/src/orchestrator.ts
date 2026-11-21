@@ -1,7 +1,21 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { JsonValue } from "@qorpera/contracts";
+import {
+	type JsonValue,
+	SURFACE_SESSION_STATES,
+	type SurfacePreviewConflict,
+	type SurfaceSessionQuestion,
+	type SurfaceSessionState,
+} from "@qorpera/contracts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import { CloudRunnerProviderRequestError } from "./provider-http.ts";
+import type {
+	ClaimedSurfaceJobs,
+	ClaimedSurfaceMergeJob,
+	ClaimedSurfacePreviewJob,
+	ClaimedSurfacePublishJob,
+	ClaimedSurfaceSessionJob,
+	SurfaceMachinePlacementHint,
+} from "./surface-worker-loop.ts";
 
 export type CloudRunnerCapability = "agent_turn" | "git_worktree" | "company_substrate";
 export type CloudComputeIdentityOwnershipKind = "member" | "company" | "department" | "security_boundary";
@@ -263,6 +277,64 @@ export interface CloudRoutineWakeOccurrence {
 	scheduledFor: string;
 }
 
+export interface CompleteSurfacePreviewInput {
+	readonly previewId: string;
+	readonly status: "ready" | "conflicted" | "failed";
+	readonly compositeTreeSha?: string | null;
+	readonly siteVersionId?: string | null;
+	readonly conflictReport?: SurfacePreviewConflict | Readonly<Record<string, unknown>> | null;
+	readonly errorDetail?: string | null;
+}
+
+export interface CompleteSurfacePreviewResult {
+	readonly previewId: string;
+	readonly status: "ready" | "conflicted" | "failed";
+	readonly shortHostId: string;
+	readonly compositeTreeSha: string | null;
+}
+
+export interface CompleteSurfaceSessionTurnInput {
+	readonly sessionId: string;
+	readonly state: SurfaceSessionState;
+	readonly replyText?: string | null;
+	readonly question?: SurfaceSessionQuestion | Readonly<Record<string, unknown>> | null;
+	readonly notePaths?: readonly string[] | null;
+	readonly branchHeadSha?: string | null;
+}
+
+export interface CompleteSurfaceSessionTurnResult {
+	readonly id: string;
+	readonly state: SurfaceSessionState;
+	readonly [key: string]: unknown;
+}
+
+export interface CompleteSurfaceMergeInput {
+	readonly jobId: string;
+	readonly status: "landed" | "conflicted" | "failed";
+	readonly mainBefore?: string | null;
+	readonly mainAfter?: string | null;
+	readonly conflictChangeId?: string | null;
+	readonly conflictPaths?: readonly string[] | null;
+	readonly errorDetail?: string | null;
+}
+
+export interface CompleteSurfaceMergeResult {
+	readonly jobId: string;
+	readonly status: "landed" | "conflicted" | "failed";
+}
+
+export interface CompleteSurfacePublishInput {
+	readonly jobId: string;
+	readonly status: "published" | "failed";
+	readonly publishedHeadSha?: string | null;
+	readonly errorDetail?: string | null;
+}
+
+export interface CompleteSurfacePublishResult {
+	readonly jobId: string;
+	readonly status: "published" | "failed";
+}
+
 export interface CloudRunnerOrchestratorControlPlane {
 	renewControl?(signal?: AbortSignal): Promise<void>;
 	/** One answer for the lists of an idle pass (migration 20260930612000): spares a pass's list requests, nothing else. */
@@ -336,6 +408,20 @@ export interface CloudRunnerOrchestratorControlPlane {
 		error: string,
 		signal?: AbortSignal,
 	): Promise<{ deferred: boolean } | undefined>;
+	claimSurfaceJobs?(limit?: number, signal?: AbortSignal): Promise<ClaimedSurfaceJobs>;
+	completeSurfacePreview?(
+		input: CompleteSurfacePreviewInput,
+		signal?: AbortSignal,
+	): Promise<CompleteSurfacePreviewResult>;
+	completeSurfaceSessionTurn?(
+		input: CompleteSurfaceSessionTurnInput,
+		signal?: AbortSignal,
+	): Promise<CompleteSurfaceSessionTurnResult>;
+	completeSurfaceMerge?(input: CompleteSurfaceMergeInput, signal?: AbortSignal): Promise<CompleteSurfaceMergeResult>;
+	completeSurfacePublish?(
+		input: CompleteSurfacePublishInput,
+		signal?: AbortSignal,
+	): Promise<CompleteSurfacePublishResult>;
 }
 
 /** One pass's answer to "which lists have anything?": the drains by name, `materialize` and `routine_heads`. A list may
@@ -532,6 +618,50 @@ type CloudRunnerOrchestratorRequest =
 			claimId: string;
 			clientAssignmentId: string;
 			error: string;
+	  }
+	| {
+			action: "surface_claim_jobs";
+			orchestratorId: string;
+			limit: number;
+	  }
+	| {
+			action: "surface_complete_preview";
+			orchestratorId: string;
+			previewId: string;
+			status: "ready" | "conflicted" | "failed";
+			compositeTreeSha?: string;
+			siteVersionId?: string;
+			conflictReport?: Record<string, unknown>;
+			errorDetail?: string;
+	  }
+	| {
+			action: "surface_complete_session_turn";
+			orchestratorId: string;
+			sessionId: string;
+			state: SurfaceSessionState;
+			replyText?: string;
+			question?: Record<string, unknown>;
+			notePaths?: readonly string[];
+			branchHeadSha?: string;
+	  }
+	| {
+			action: "surface_complete_merge";
+			orchestratorId: string;
+			jobId: string;
+			status: "landed" | "conflicted" | "failed";
+			mainBefore?: string;
+			mainAfter?: string;
+			conflictChangeId?: string;
+			conflictPaths?: readonly string[];
+			errorDetail?: string;
+	  }
+	| {
+			action: "surface_complete_publish";
+			orchestratorId: string;
+			jobId: string;
+			status: "published" | "failed";
+			publishedHeadSha?: string;
+			errorDetail?: string;
 	  };
 
 function requiredUuid(value: string, label: string): void {
@@ -1062,6 +1192,249 @@ function parseOrchestrationClaim(value: unknown): CloudRunnerOrchestrationClaim 
 		status: input.status,
 		work: parseRunnerWork(input.work),
 		leaseExpiresAt: responseTimestamp(input.lease_expires_at, "orchestration lease expiry"),
+	};
+}
+
+const SURFACE_SESSION_STATE_SET: ReadonlySet<string> = new Set(SURFACE_SESSION_STATES);
+
+function optionalResponseString(value: unknown, label: string): string | null {
+	if (value === null || value === undefined) return null;
+	if (typeof value !== "string") throw new Error(`Runner orchestrator returned invalid ${label}`);
+	return value;
+}
+
+function validateSurfaceShortText(value: string, label: string, maxBytes: number): string {
+	if (
+		typeof value !== "string" ||
+		value !== value.trim() ||
+		Buffer.byteLength(value, "utf-8") < 1 ||
+		Buffer.byteLength(value, "utf-8") > maxBytes ||
+		/[\0\r\n]/.test(value)
+	) {
+		throw new Error(`${label} is invalid`);
+	}
+	return value;
+}
+
+function validateSurfaceErrorDetail(value: string, label: string): string {
+	const trimmed = value.trim();
+	if (trimmed.length < 1 || trimmed.length > 1000 || trimmed.includes("\0")) {
+		throw new Error(`${label} is invalid`);
+	}
+	return trimmed;
+}
+
+function validateSurfaceRecordPayload(
+	value: Readonly<Record<string, unknown>>,
+	label: string,
+	maxBytes: number,
+): Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error(`${label} is invalid`);
+	}
+	const cloned = structuredClone(value) as Record<string, unknown>;
+	if (Buffer.byteLength(JSON.stringify(cloned), "utf-8") > maxBytes) {
+		throw new Error(`${label} exceeds its byte limit`);
+	}
+	return cloned;
+}
+
+function validateSurfaceStringList(
+	values: readonly string[],
+	label: string,
+	maxItems: number,
+	maxBytes: number,
+): string[] {
+	if (!Array.isArray(values) || values.length > maxItems) throw new Error(`${label} is invalid`);
+	return values.map((item) => validateSurfaceShortText(item, label, maxBytes));
+}
+
+function parseSurfacePlacementHint(value: unknown): SurfaceMachinePlacementHint {
+	const input = record(value, "surface placement hint");
+	if (input.strategy !== "reuse_machine" && input.strategy !== "spawn_overflow_machine") {
+		throw new Error("Runner orchestrator returned invalid surface placement strategy");
+	}
+	const machineId =
+		input.machineId === null || input.machineId === undefined
+			? null
+			: responseUuid(input.machineId, "surface machine id");
+	return {
+		strategy: input.strategy,
+		machineId,
+		activeTurns: responseInteger(input.activeTurns, "surface active turns", 0, 100_000),
+		targetDensity: responseInteger(input.targetDensity, "surface target density", 1, 10_000),
+	};
+}
+
+function parseClaimedSurfaceSessionJob(value: unknown): ClaimedSurfaceSessionJob {
+	const input = record(value, "claimed surface session");
+	if (input.state !== "queued" && input.state !== "reconciling") {
+		throw new Error("Runner orchestrator returned invalid claimed surface session state");
+	}
+	if (typeof input.prompt !== "string" || typeof input.originKind !== "string") {
+		throw new Error("Runner orchestrator returned invalid claimed surface session");
+	}
+	const folderRoot =
+		input.folderRoot === undefined ? undefined : optionalResponseString(input.folderRoot, "surface folder root");
+	const surfaceSlug =
+		input.surfaceSlug === undefined || input.surfaceSlug === null
+			? undefined
+			: responseText(input.surfaceSlug, "surface slug", 64);
+	const surfaceTitle =
+		input.surfaceTitle === undefined || input.surfaceTitle === null
+			? undefined
+			: (optionalResponseString(input.surfaceTitle, "surface title") ?? undefined);
+	const surfaceArchetype =
+		input.surfaceArchetype === undefined || input.surfaceArchetype === null
+			? undefined
+			: responseText(input.surfaceArchetype, "surface archetype", 32);
+	const briefSummary =
+		input.briefSummary === undefined
+			? undefined
+			: optionalResponseString(input.briefSummary, "surface brief summary");
+	return {
+		sessionId: responseUuid(input.sessionId, "surface session id"),
+		surfaceId: responseUuid(input.surfaceId, "surface id"),
+		profileId: responseUuid(input.profileId, "surface profile id"),
+		state: input.state,
+		prompt: input.prompt,
+		originKind: input.originKind,
+		originRef: input.originRef ?? null,
+		repositoryKey: optionalResponseString(input.repositoryKey, "surface repository key"),
+		...(folderRoot !== undefined ? { folderRoot } : {}),
+		...(surfaceSlug !== undefined ? { surfaceSlug } : {}),
+		...(surfaceTitle !== undefined ? { surfaceTitle } : {}),
+		...(surfaceArchetype !== undefined ? { surfaceArchetype } : {}),
+		...(briefSummary !== undefined ? { briefSummary } : {}),
+		placement: parseSurfacePlacementHint(input.placement),
+	};
+}
+
+function parseClaimedSurfacePreviewJob(value: unknown): ClaimedSurfacePreviewJob {
+	const input = record(value, "claimed surface preview");
+	if (!Array.isArray(input.selectedChangeIds)) {
+		throw new Error("Runner orchestrator returned invalid preview change ids");
+	}
+	return {
+		previewId: responseUuid(input.previewId, "surface preview id"),
+		surfaceId: responseUuid(input.surfaceId, "surface id"),
+		profileId: responseUuid(input.profileId, "surface profile id"),
+		shortHostId: responseText(input.shortHostId, "surface preview host id", 64),
+		baseSha: responseText(input.baseSha, "surface preview base sha", 64),
+		selectedChangeIds: input.selectedChangeIds.map((id) => responseUuid(id, "surface change id")),
+		repositoryKey: optionalResponseString(input.repositoryKey, "surface repository key"),
+	};
+}
+
+function parseClaimedSurfaceMergeJob(value: unknown): ClaimedSurfaceMergeJob {
+	const input = record(value, "claimed surface merge");
+	if (input.kind !== "land_change" && input.kind !== "undo_change") {
+		throw new Error("Runner orchestrator returned invalid surface merge kind");
+	}
+	const sessionId =
+		input.sessionId === null || input.sessionId === undefined
+			? null
+			: responseUuid(input.sessionId, "surface merge session id");
+	const payload =
+		input.payload === null || input.payload === undefined
+			? {}
+			: (structuredClone(record(input.payload, "surface merge payload")) as Record<string, unknown>);
+	return {
+		jobId: responseUuid(input.jobId, "surface merge job id"),
+		kind: input.kind,
+		surfaceId: responseUuid(input.surfaceId, "surface id"),
+		sessionId,
+		profileId: responseUuid(input.profileId, "surface profile id"),
+		repositoryKey: optionalResponseString(input.repositoryKey, "surface repository key"),
+		folderRoot: optionalResponseString(input.folderRoot, "surface folder root"),
+		payload,
+	};
+}
+
+function parseClaimedSurfacePublishJob(value: unknown): ClaimedSurfacePublishJob {
+	const input = record(value, "claimed surface publish");
+	const siteId =
+		input.siteId === null || input.siteId === undefined ? null : responseUuid(input.siteId, "surface site id");
+	const payload =
+		input.payload === null || input.payload === undefined
+			? {}
+			: (structuredClone(record(input.payload, "surface publish payload")) as Record<string, unknown>);
+	return {
+		jobId: responseUuid(input.jobId, "surface publish job id"),
+		surfaceId: responseUuid(input.surfaceId, "surface id"),
+		profileId: responseUuid(input.profileId, "surface profile id"),
+		repositoryKey: optionalResponseString(input.repositoryKey, "surface repository key"),
+		siteId,
+		payload,
+	};
+}
+
+function parseClaimedSurfaceJobs(value: unknown): ClaimedSurfaceJobs {
+	const input = record(value, "claimed surface jobs");
+	if (!Array.isArray(input.sessions) || !Array.isArray(input.previews)) {
+		throw new Error("Runner orchestrator returned invalid claimed surface jobs");
+	}
+	const rawMerges = input.merges === undefined || input.merges === null ? [] : input.merges;
+	const rawPublishes = input.publishes === undefined || input.publishes === null ? [] : input.publishes;
+	if (!Array.isArray(rawMerges) || !Array.isArray(rawPublishes)) {
+		throw new Error("Runner orchestrator returned invalid claimed surface jobs");
+	}
+	return {
+		sessions: input.sessions.map(parseClaimedSurfaceSessionJob),
+		previews: input.previews.map(parseClaimedSurfacePreviewJob),
+		merges: rawMerges.map(parseClaimedSurfaceMergeJob),
+		publishes: rawPublishes.map(parseClaimedSurfacePublishJob),
+	};
+}
+
+function parseCompleteSurfacePreviewResult(value: unknown): CompleteSurfacePreviewResult {
+	const input = record(value, "surface preview completion");
+	if (input.status !== "ready" && input.status !== "conflicted" && input.status !== "failed") {
+		throw new Error("Runner orchestrator returned invalid surface preview status");
+	}
+	const compositeTreeSha =
+		input.compositeTreeSha === null || input.compositeTreeSha === undefined
+			? null
+			: responseText(input.compositeTreeSha, "composite tree sha", 64);
+	return {
+		previewId: responseUuid(input.previewId, "surface preview id"),
+		status: input.status,
+		shortHostId: responseText(input.shortHostId, "surface preview host id", 64),
+		compositeTreeSha,
+	};
+}
+
+function parseCompleteSurfaceSessionTurnResult(value: unknown): CompleteSurfaceSessionTurnResult {
+	const input = record(value, "surface session completion");
+	if (typeof input.state !== "string" || !SURFACE_SESSION_STATE_SET.has(input.state)) {
+		throw new Error("Runner orchestrator returned invalid surface session state");
+	}
+	return {
+		...(structuredClone(input) as Record<string, unknown>),
+		id: responseUuid(input.id, "surface session id"),
+		state: input.state as SurfaceSessionState,
+	};
+}
+
+function parseCompleteSurfaceMergeResult(value: unknown): CompleteSurfaceMergeResult {
+	const input = record(value, "surface merge completion");
+	if (input.status !== "landed" && input.status !== "conflicted" && input.status !== "failed") {
+		throw new Error("Runner orchestrator returned invalid surface merge status");
+	}
+	return {
+		jobId: responseUuid(input.jobId, "surface merge job id"),
+		status: input.status,
+	};
+}
+
+function parseCompleteSurfacePublishResult(value: unknown): CompleteSurfacePublishResult {
+	const input = record(value, "surface publish completion");
+	if (input.status !== "published" && input.status !== "failed") {
+		throw new Error("Runner orchestrator returned invalid surface publish status");
+	}
+	return {
+		jobId: responseUuid(input.jobId, "surface publish job id"),
+		status: input.status,
 	};
 }
 
@@ -3189,6 +3562,187 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 			signal,
 		);
 		return { deferred: (released as { deferred?: unknown } | null)?.deferred === true };
+	}
+
+	async claimSurfaceJobs(limit = 16, signal?: AbortSignal): Promise<ClaimedSurfaceJobs> {
+		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 64) {
+			throw new Error("Surface job claim limit is outside the supported range");
+		}
+		return parseClaimedSurfaceJobs(
+			await this.#request({ action: "surface_claim_jobs", orchestratorId: this.#orchestratorId, limit }, signal),
+		);
+	}
+
+	async completeSurfacePreview(
+		input: CompleteSurfacePreviewInput,
+		signal?: AbortSignal,
+	): Promise<CompleteSurfacePreviewResult> {
+		requiredUuid(input.previewId, "Surface preview id");
+		if (input.status !== "ready" && input.status !== "conflicted" && input.status !== "failed") {
+			throw new Error("Surface preview status is invalid");
+		}
+		const compositeTreeSha =
+			input.compositeTreeSha === null || input.compositeTreeSha === undefined
+				? undefined
+				: validateSurfaceShortText(input.compositeTreeSha, "Composite tree sha", 64);
+		let siteVersionId: string | undefined;
+		if (input.siteVersionId !== null && input.siteVersionId !== undefined) {
+			requiredUuid(input.siteVersionId, "Site version id");
+			siteVersionId = input.siteVersionId;
+		}
+		const conflictReport =
+			input.conflictReport === null || input.conflictReport === undefined
+				? undefined
+				: validateSurfaceRecordPayload(
+						input.conflictReport as Readonly<Record<string, unknown>>,
+						"Preview conflict report",
+						16 * 1024,
+					);
+		const errorDetail =
+			input.errorDetail === null || input.errorDetail === undefined
+				? undefined
+				: validateSurfaceErrorDetail(input.errorDetail, "Preview error detail");
+		return parseCompleteSurfacePreviewResult(
+			await this.#request(
+				{
+					action: "surface_complete_preview",
+					orchestratorId: this.#orchestratorId,
+					previewId: input.previewId,
+					status: input.status,
+					...(compositeTreeSha !== undefined ? { compositeTreeSha } : {}),
+					...(siteVersionId !== undefined ? { siteVersionId } : {}),
+					...(conflictReport !== undefined ? { conflictReport } : {}),
+					...(errorDetail !== undefined ? { errorDetail } : {}),
+				},
+				signal,
+			),
+		);
+	}
+
+	async completeSurfaceSessionTurn(
+		input: CompleteSurfaceSessionTurnInput,
+		signal?: AbortSignal,
+	): Promise<CompleteSurfaceSessionTurnResult> {
+		requiredUuid(input.sessionId, "Surface session id");
+		if (!SURFACE_SESSION_STATE_SET.has(input.state)) {
+			throw new Error("Surface session state is invalid");
+		}
+		let replyText: string | undefined;
+		if (input.replyText !== null && input.replyText !== undefined) {
+			if (typeof input.replyText !== "string" || input.replyText.length > 16_000 || input.replyText.includes("\0")) {
+				throw new Error("Surface session reply is invalid");
+			}
+			replyText = input.replyText;
+		}
+		const question =
+			input.question === null || input.question === undefined
+				? undefined
+				: validateSurfaceRecordPayload(
+						input.question as Readonly<Record<string, unknown>>,
+						"Surface session question",
+						8 * 1024,
+					);
+		const notePaths =
+			input.notePaths === null || input.notePaths === undefined
+				? undefined
+				: validateSurfaceStringList(input.notePaths, "Surface session note paths", 64, 512);
+		const branchHeadSha =
+			input.branchHeadSha === null || input.branchHeadSha === undefined
+				? undefined
+				: validateSurfaceShortText(input.branchHeadSha, "Surface branch head sha", 64);
+		return parseCompleteSurfaceSessionTurnResult(
+			await this.#request(
+				{
+					action: "surface_complete_session_turn",
+					orchestratorId: this.#orchestratorId,
+					sessionId: input.sessionId,
+					state: input.state,
+					...(replyText !== undefined ? { replyText } : {}),
+					...(question !== undefined ? { question } : {}),
+					...(notePaths !== undefined ? { notePaths } : {}),
+					...(branchHeadSha !== undefined ? { branchHeadSha } : {}),
+				},
+				signal,
+			),
+		);
+	}
+
+	async completeSurfaceMerge(
+		input: CompleteSurfaceMergeInput,
+		signal?: AbortSignal,
+	): Promise<CompleteSurfaceMergeResult> {
+		requiredUuid(input.jobId, "Surface merge job id");
+		if (input.status !== "landed" && input.status !== "conflicted" && input.status !== "failed") {
+			throw new Error("Surface merge status is invalid");
+		}
+		const mainBefore =
+			input.mainBefore === null || input.mainBefore === undefined
+				? undefined
+				: validateSurfaceShortText(input.mainBefore, "Merge main before sha", 64);
+		const mainAfter =
+			input.mainAfter === null || input.mainAfter === undefined
+				? undefined
+				: validateSurfaceShortText(input.mainAfter, "Merge main after sha", 64);
+		let conflictChangeId: string | undefined;
+		if (input.conflictChangeId !== null && input.conflictChangeId !== undefined) {
+			requiredUuid(input.conflictChangeId, "Merge conflict change id");
+			conflictChangeId = input.conflictChangeId;
+		}
+		const conflictPaths =
+			input.conflictPaths === null || input.conflictPaths === undefined
+				? undefined
+				: validateSurfaceStringList(input.conflictPaths, "Merge conflict paths", 256, 512);
+		const errorDetail =
+			input.errorDetail === null || input.errorDetail === undefined
+				? undefined
+				: validateSurfaceErrorDetail(input.errorDetail, "Merge error detail");
+		return parseCompleteSurfaceMergeResult(
+			await this.#request(
+				{
+					action: "surface_complete_merge",
+					orchestratorId: this.#orchestratorId,
+					jobId: input.jobId,
+					status: input.status,
+					...(mainBefore !== undefined ? { mainBefore } : {}),
+					...(mainAfter !== undefined ? { mainAfter } : {}),
+					...(conflictChangeId !== undefined ? { conflictChangeId } : {}),
+					...(conflictPaths !== undefined ? { conflictPaths } : {}),
+					...(errorDetail !== undefined ? { errorDetail } : {}),
+				},
+				signal,
+			),
+		);
+	}
+
+	async completeSurfacePublish(
+		input: CompleteSurfacePublishInput,
+		signal?: AbortSignal,
+	): Promise<CompleteSurfacePublishResult> {
+		requiredUuid(input.jobId, "Surface publish job id");
+		if (input.status !== "published" && input.status !== "failed") {
+			throw new Error("Surface publish status is invalid");
+		}
+		const publishedHeadSha =
+			input.publishedHeadSha === null || input.publishedHeadSha === undefined
+				? undefined
+				: validateSurfaceShortText(input.publishedHeadSha, "Published head sha", 64);
+		const errorDetail =
+			input.errorDetail === null || input.errorDetail === undefined
+				? undefined
+				: validateSurfaceErrorDetail(input.errorDetail, "Publish error detail");
+		return parseCompleteSurfacePublishResult(
+			await this.#request(
+				{
+					action: "surface_complete_publish",
+					orchestratorId: this.#orchestratorId,
+					jobId: input.jobId,
+					status: input.status,
+					...(publishedHeadSha !== undefined ? { publishedHeadSha } : {}),
+					...(errorDetail !== undefined ? { errorDetail } : {}),
+				},
+				signal,
+			),
+		);
 	}
 
 	#assertIdentity(orchestratorId: string): void {

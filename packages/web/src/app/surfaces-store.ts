@@ -55,7 +55,18 @@ export type SurfacesClient = Pick<
 	| "toggleAutomation"
 	| "getMigrationChecklist"
 	| "applyMigrationChecklist"
->;
+> &
+	Partial<
+		Pick<
+			CloudSurfacesClient,
+			| "createSurface"
+			| "bootstrapCompanySurfaces"
+			| "discardExploration"
+			| "createAutomation"
+			| "updateAutomation"
+			| "deleteAutomation"
+		>
+	>;
 
 export type SurfacesSource = "loading" | "cloud" | "local";
 export type SurfacePreviewMode = "live" | "preview" | "compare" | "report";
@@ -118,6 +129,7 @@ export interface SurfacesState {
 	readonly migrationDismissed: boolean;
 	readonly foldedAgentIds: Readonly<Record<string, true>>;
 	readonly localStudioBase: Readonly<Record<string, Readonly<Record<string, string>>>>;
+	readonly cloudSurfaceFiles: Readonly<Record<string, Readonly<Record<string, string>>>>;
 	readonly surfaceLooks: Readonly<Record<string, SurfaceLook>>;
 	readonly drawer?: { readonly surfaceId: string; readonly sessionId: string; readonly explorationId?: string };
 	readonly highlight?: { readonly surfaceId: string; readonly sessionId: string };
@@ -368,7 +380,13 @@ export function unpublishedChanges(
 			? workspace.explorations.find((item) => item.id === session.explorationId)
 			: undefined;
 		for (const change of session.changes) {
-			if (change.status !== "merged" || state.publishedChangeIds[change.id] || seen.has(change.id)) continue;
+			if (
+				change.status !== "merged" ||
+				change.publishedAt ||
+				state.publishedChangeIds[change.id] ||
+				seen.has(change.id)
+			)
+				continue;
 			seen.add(change.id);
 			items.push({ change, session, ...(exploration ? { exploration } : {}) });
 		}
@@ -398,10 +416,12 @@ export interface SurfaceReportSummary {
 }
 
 export function surfaceReports(
-	state: Pick<SurfacesState, "localStudioBase">,
+	state: Pick<SurfacesState, "localStudioBase"> & Partial<Pick<SurfacesState, "cloudSurfaceFiles">>,
 	surfaceId: string,
 ): SurfaceReportSummary[] {
-	const files = state.localStudioBase[surfaceId];
+	const cloudFiles = state.cloudSurfaceFiles?.[surfaceId];
+	const localFiles = state.localStudioBase[surfaceId];
+	const files = cloudFiles && localFiles ? { ...cloudFiles, ...localFiles } : (cloudFiles ?? localFiles);
 	if (!files) return [];
 	const results: SurfaceReportSummary[] = [];
 	for (const path of Object.keys(files).sort()) {
@@ -430,12 +450,16 @@ export function surfaceReports(
 	return results;
 }
 
-export function surfaceHasReports(state: Pick<SurfacesState, "localStudioBase">, surfaceId: string): boolean {
+export function surfaceHasReports(
+	state: Pick<SurfacesState, "localStudioBase"> & Partial<Pick<SurfacesState, "cloudSurfaceFiles">>,
+	surfaceId: string,
+): boolean {
 	return surfaceReports(state, surfaceId).length > 0;
 }
 
 export function reportsOwnedBy(
-	state: Pick<SurfacesState, "localStudioBase" | "workspaces" | "studioPatches">,
+	state: Pick<SurfacesState, "localStudioBase" | "workspaces" | "studioPatches"> &
+		Partial<Pick<SurfacesState, "cloudSurfaceFiles">>,
 	surfaceId: string,
 	owner: { readonly kind: "exploration"; readonly id: string } | { readonly kind: "session"; readonly id: string },
 ): SurfaceReportSummary[] {
@@ -446,6 +470,12 @@ export function reportsOwnedBy(
 	const explorations = openExplorations(workspace);
 	const plainSessions = workspace.activeSessions.filter((session) => !session.explorationId);
 	const ownerKeyFor = (report: SurfaceReportSummary): string | undefined => {
+		for (const exp of explorations) {
+			if (exp.notePaths?.includes(report.path)) return `exploration:${exp.id}`;
+		}
+		for (const sess of plainSessions) {
+			if (sess.notePaths?.includes(report.path)) return `session:${sess.id}`;
+		}
 		if (report.ownerTitle) {
 			const wanted = report.ownerTitle.toLowerCase();
 			const exp = explorations.find((item) => item.title.toLowerCase() === wanted);
@@ -527,12 +557,20 @@ export interface SurfacesStoreOptions {
 	readonly companyId: string;
 	readonly companyName?: string;
 	readonly localInteractive?: boolean;
+	readonly sandboxMode?: boolean;
 	readonly client: SurfacesClient | undefined;
 	readonly synthesize: () => SurfaceSynthesisInput;
 	readonly migration: () => SurfaceMigrationInput;
 	readonly signal: AbortSignal;
 	readonly unavailableMessage: string;
 	readonly onNavigateSurface?: (slug: string) => void;
+	readonly realtimeLive?: () => boolean;
+	readonly memberName?: (userId: string) => string | undefined;
+	readonly peopleAtSurface?: (slug: string) => readonly { readonly userId: string; readonly name: string }[];
+	readonly loadCloudFiles?: (
+		surface: SurfaceSummary,
+		signal: AbortSignal,
+	) => Promise<Readonly<Record<string, string>>>;
 }
 
 interface LocalSandboxCacheEntry {
@@ -564,8 +602,11 @@ export class SurfacesStore {
 	readonly #localTimers = new Set<ReturnType<typeof setTimeout>>();
 	readonly #localCreatedIds = new Set<string>();
 	readonly #studioUndoSnapshots = new Map<string, Readonly<Record<string, string>>>();
+	readonly #cloudFilesLoading = new Set<string>();
 	#undoTimer: ReturnType<typeof setTimeout> | undefined;
 	#pollTimer: ReturnType<typeof setInterval> | undefined;
+	#hintTimer: ReturnType<typeof setTimeout> | undefined;
+	#pendingHintFiles = false;
 	#undoSeq = 0;
 	#noteSeq = 0;
 	#localSeq = 0;
@@ -582,6 +623,7 @@ export class SurfacesStore {
 			migrationDismissed: false,
 			foldedAgentIds: {},
 			localStudioBase: {},
+			cloudSurfaceFiles: {},
 			surfaceLooks: {},
 			mode: "preview",
 			previewPanel: "auto",
@@ -636,17 +678,28 @@ export class SurfacesStore {
 		return this.#options.companyName?.trim() || "";
 	}
 
-	lookOf(surface: Pick<SurfaceSummary, "id" | "slug" | "icon" | "archetype">): SurfaceLook {
+	memberName(userId: string | null | undefined): string | undefined {
+		if (!userId) return undefined;
+		return this.#options.memberName?.(userId);
+	}
+
+	peopleAtSurface(slug: string): readonly { readonly userId: string; readonly name: string }[] {
+		return this.#options.peopleAtSurface?.(slug) ?? [];
+	}
+
+	lookOf(surface: Pick<SurfaceSummary, "id" | "slug" | "icon" | "archetype" | "kind" | "accentHex">): SurfaceLook {
 		return surfaceLookOf(surface, this.state.surfaceLooks);
 	}
 
 	dispose(): void {
 		if (this.#undoTimer) clearTimeout(this.#undoTimer);
 		if (this.#pollTimer) clearInterval(this.#pollTimer);
+		if (this.#hintTimer) clearTimeout(this.#hintTimer);
 		for (const timer of this.#localTimers) clearTimeout(timer);
 		this.#localTimers.clear();
 		this.#undoTimer = undefined;
 		this.#pollTimer = undefined;
+		this.#hintTimer = undefined;
 		this.store.dispose();
 	}
 
@@ -681,13 +734,23 @@ export class SurfacesStore {
 
 	async #load(): Promise<void> {
 		const client = this.#options.client;
-		if (!client) {
+		if (!client || this.#options.sandboxMode === true) {
 			this.#useLocal();
 			return;
 		}
 		try {
-			const surfaces = await client.listSurfaces(this.#options.companyId);
+			let surfaces = await client.listSurfaces(this.#options.companyId);
 			if (this.#options.signal.aborted) return;
+			if (surfaces.length === 0 && client.bootstrapCompanySurfaces) {
+				try {
+					surfaces = await client.bootstrapCompanySurfaces(this.#options.companyId);
+					if (this.#options.signal.aborted) return;
+				} catch (bootstrapError) {
+					if (!isMissingSurfaceRpcError(bootstrapError)) {
+						/* WHY: Viewers without write rights cannot bootstrap rows; fall through cleanly. */
+					}
+				}
+			}
 			if (surfaces.length === 0) this.#useLocal();
 			else this.store.set({ source: "cloud", surfaces: sortSurfaces(surfaces) });
 		} catch (error) {
@@ -728,7 +791,11 @@ export class SurfacesStore {
 			migration: synthesizeMigration(this.#options.migration()),
 			...(error ? { error } : {}),
 		});
-		if (this.#options.localInteractive && isThetabandCompany(this.companyName)) {
+		if (
+			this.#options.localInteractive &&
+			this.#options.sandboxMode !== false &&
+			isThetabandCompany(this.companyName)
+		) {
 			this.orchestrateStarterSurfaces();
 		}
 	}
@@ -941,6 +1008,23 @@ export class SurfacesStore {
 		const prompt = input.prompt.trim();
 		const schedule = input.scheduleSummary.trim() || t("Every day · 09:00");
 		if (!title || !prompt) return undefined;
+		if (this.state.source === "cloud" && this.#options.client?.createAutomation) {
+			const created = await this.#run("automation:create", (client) =>
+				client.createAutomation!(this.#options.companyId, {
+					title,
+					prompt,
+					scheduleSummary: schedule,
+					targetSurfaceSlug: input.targetSurfaceSlug || null,
+				}),
+			);
+			if (!created) return undefined;
+			this.store.set((state) => ({
+				automations: [created, ...state.automations.filter((item) => item.id !== created.id)],
+				scheduledAgentPrompts: { ...state.scheduledAgentPrompts, [created.id]: created.prompt ?? prompt },
+				error: undefined,
+			}));
+			return created;
+		}
 		if (!this.isLocalInteractive) {
 			this.store.set({ error: this.#options.unavailableMessage });
 			return undefined;
@@ -951,6 +1035,7 @@ export class SurfacesStore {
 			id,
 			key,
 			title,
+			prompt,
 			scheduleSummary: schedule,
 			targetSurfaceSlug: input.targetSurfaceSlug || null,
 			outputMode: input.targetSurfaceSlug ? "surface_session" : "decision_card",
@@ -974,6 +1059,26 @@ export class SurfacesStore {
 	): Promise<SurfaceAutomationSummary | undefined> {
 		const existing = this.state.automations.find((item) => item.id === id);
 		if (!existing) return undefined;
+		if (this.state.source === "cloud" && !id.startsWith("local-") && this.#options.client?.updateAutomation) {
+			const updated = await this.#run(`automation:${id}`, (client) =>
+				client.updateAutomation!(id, {
+					...(patch.title !== undefined ? { title: patch.title.trim() } : {}),
+					...(patch.prompt !== undefined ? { prompt: patch.prompt.trim() } : {}),
+					...(patch.scheduleSummary !== undefined ? { scheduleSummary: patch.scheduleSummary.trim() } : {}),
+					...(patch.targetSurfaceSlug !== undefined ? { targetSurfaceSlug: patch.targetSurfaceSlug } : {}),
+				}),
+			);
+			if (!updated) return undefined;
+			this.store.set((state) => ({
+				automations: state.automations.map((item) => (item.id === id ? updated : item)),
+				scheduledAgentPrompts: {
+					...state.scheduledAgentPrompts,
+					[id]: updated.prompt ?? patch.prompt?.trim() ?? state.scheduledAgentPrompts[id] ?? "",
+				},
+				error: undefined,
+			}));
+			return updated;
+		}
 		if (!this.isLocalInteractive || !id.startsWith("local-")) {
 			this.store.set({ error: this.#options.unavailableMessage });
 			return undefined;
@@ -985,6 +1090,7 @@ export class SurfacesStore {
 		const updated: SurfaceAutomationSummary = {
 			...existing,
 			title,
+			prompt,
 			scheduleSummary: schedule,
 			targetSurfaceSlug: target,
 			outputMode: target ? "surface_session" : "decision_card",
@@ -999,6 +1105,19 @@ export class SurfacesStore {
 	}
 
 	async deleteScheduledAgent(id: string): Promise<boolean> {
+		if (this.state.source === "cloud" && !id.startsWith("local-") && this.#options.client?.deleteAutomation) {
+			const ok = await this.#run(`automation:delete:${id}`, (client) => client.deleteAutomation!(id));
+			if (!ok) return false;
+			this.store.set((state) => {
+				const scheduledAgentPrompts = { ...state.scheduledAgentPrompts };
+				delete scheduledAgentPrompts[id];
+				return {
+					automations: state.automations.filter((item) => item.id !== id),
+					scheduledAgentPrompts,
+				};
+			});
+			return true;
+		}
 		if (!this.isLocalInteractive || !id.startsWith("local-")) return false;
 		this.store.set((state) => {
 			const scheduledAgentPrompts = { ...state.scheduledAgentPrompts };
@@ -1014,7 +1133,16 @@ export class SurfacesStore {
 	async #loadAutomations(client: SurfacesClient): Promise<void> {
 		try {
 			const automations = await client.listAutomations(this.#options.companyId);
-			if (!this.#options.signal.aborted) this.store.set({ automations });
+			if (!this.#options.signal.aborted) {
+				const prompts: Record<string, string> = {};
+				for (const item of automations) {
+					if (item.prompt) prompts[item.id] = item.prompt;
+				}
+				this.store.set((state) => ({
+					automations,
+					scheduledAgentPrompts: { ...state.scheduledAgentPrompts, ...prompts },
+				}));
+			}
 		} catch {
 			/* WHY: Automations are a quiet extra; a failed read must not block the surfaces themselves. */
 		}
@@ -1104,29 +1232,106 @@ export class SurfacesStore {
 
 	#putWorkspace(workspace: SurfaceWorkspace): void {
 		const sessions = [...workspace.activeSessions, ...workspace.recentHistory];
+		const extractedPatches: Record<string, readonly StudioPatchOp[]> = {};
+		for (const session of sessions) {
+			for (const change of session.changes) {
+				if (change.patchManifest && change.patchManifest.length > 0) {
+					extractedPatches[change.id] = change.patchManifest;
+				}
+			}
+		}
 		this.store.set((state) => {
 			const notes = reconcileNotes(state.notes, sessions);
+			const nextPatches =
+				Object.keys(extractedPatches).length > 0
+					? { ...state.studioPatches, ...extractedPatches }
+					: state.studioPatches;
 			return {
 				workspaces: { ...state.workspaces, [workspace.surface.id]: workspace },
 				surfaces: state.surfaces.map((surface) =>
 					surface.id === workspace.surface.id ? workspace.surface : surface,
 				),
+				...(nextPatches !== state.studioPatches ? { studioPatches: nextPatches } : {}),
 				...(notes.length !== state.notes.length ? { notes } : {}),
 			};
 		});
+		if (
+			this.state.source === "cloud" &&
+			!isLocalSurfaceId(workspace.surface.id) &&
+			this.#options.loadCloudFiles &&
+			!this.state.cloudSurfaceFiles[workspace.surface.id]
+		) {
+			void this.refreshCloudFiles(workspace.surface);
+		}
 		this.#syncPolling();
 	}
 
+	async refreshCloudFiles(surface: SurfaceSummary): Promise<void> {
+		const loadFiles = this.#options.loadCloudFiles;
+		if (!loadFiles || isLocalSurfaceId(surface.id) || this.#cloudFilesLoading.has(surface.id)) return;
+		this.#cloudFilesLoading.add(surface.id);
+		try {
+			const files = await loadFiles(surface, this.#options.signal);
+			if (this.#options.signal.aborted) return;
+			this.store.set((state) => ({
+				cloudSurfaceFiles: { ...state.cloudSurfaceFiles, [surface.id]: files },
+			}));
+		} catch {
+			/* WHY: Missing notes or studio folders are non-fatal; views fall back gracefully. */
+		} finally {
+			this.#cloudFilesLoading.delete(surface.id);
+		}
+	}
+
+	onRealtimeHint(resource: "surfaces" | "company-file"): void {
+		if (this.#options.signal.aborted) return;
+		if (resource === "company-file") this.#pendingHintFiles = true;
+		if (this.#hintTimer) return;
+		this.#hintTimer = setTimeout(() => {
+			this.#hintTimer = undefined;
+			if (this.#options.signal.aborted) return;
+			const reloadFiles = this.#pendingHintFiles;
+			this.#pendingHintFiles = false;
+			if (this.state.source === "cloud") {
+				void this.refreshSurfaces();
+				const client = this.#options.client;
+				if (client) void this.#loadAutomations(client);
+				for (const workspace of Object.values(this.state.workspaces)) {
+					if (!isLocalSurfaceId(workspace.surface.id)) {
+						void this.refreshWorkspace(workspace.surface.id);
+						if (reloadFiles) void this.refreshCloudFiles(workspace.surface);
+					}
+				}
+			}
+		}, 180);
+	}
+
 	#syncPolling(): void {
-		const running = Object.values(this.state.workspaces).some((workspace) =>
-			workspace.activeSessions.some(isRunningSession),
+		const running = Object.values(this.state.workspaces).some(
+			(workspace) =>
+				workspace.surface.publishStatus === "publishing" ||
+				workspace.activeSessions.some(
+					(session) => isRunningSession(session) || session.changes.some((change) => change.status === "merging"),
+				),
 		);
-		if (running && !this.#pollTimer && this.#options.client && this.state.source === "cloud") {
+		const realtimeConnected = this.#options.realtimeLive?.() === true;
+		if (running && !realtimeConnected && !this.#pollTimer && this.#options.client && this.state.source === "cloud") {
 			this.#pollTimer = setInterval(() => {
+				if (this.#options.realtimeLive?.() === true) {
+					this.#syncPolling();
+					return;
+				}
 				for (const workspace of Object.values(this.state.workspaces))
-					if (workspace.activeSessions.some(isRunningSession)) void this.refreshWorkspace(workspace.surface.id);
+					if (
+						workspace.surface.publishStatus === "publishing" ||
+						workspace.activeSessions.some(
+							(session) =>
+								isRunningSession(session) || session.changes.some((change) => change.status === "merging"),
+						)
+					)
+						void this.refreshWorkspace(workspace.surface.id);
 			}, POLL_MS);
-		} else if (!running && this.#pollTimer) {
+		} else if ((!running || realtimeConnected) && this.#pollTimer) {
 			clearInterval(this.#pollTimer);
 			this.#pollTimer = undefined;
 		}
@@ -1140,12 +1345,51 @@ export class SurfacesStore {
 	async createSurface(input: CreateSurfaceInput): Promise<SurfaceSummary | undefined> {
 		const title = input.title.trim();
 		if (!title) return undefined;
-		const taken = new Set(this.state.surfaces.map((surface) => surface.slug));
-		const slug = slugifySurfaceTitle(input.slug?.trim() || title, taken);
 		const icon = input.icon ?? (input.archetype === "studio" ? "spark" : "globe");
 		const description = input.description?.trim() || null;
 		const folderRoot =
-			input.archetype === "studio" ? (input.folderRoot?.trim() || slug).replace(/^\/+|\/+$/g, "") : null;
+			input.archetype === "studio"
+				? (input.folderRoot?.trim() || input.slug?.trim() || slugifySurfaceTitle(title, new Set())).replace(
+						/^\/+|\/+$/g,
+						"",
+					)
+				: null;
+		if (this.state.source === "cloud" && this.#options.client?.createSurface) {
+			const created = await this.#run("surface:create", (client) =>
+				client.createSurface!(this.#options.companyId, {
+					title,
+					...(input.slug?.trim() ? { slug: input.slug.trim() } : {}),
+					archetype: input.archetype,
+					...(input.kind ? { kind: input.kind } : {}),
+					icon,
+					...(input.accent ? { accentHex: input.accent } : {}),
+					folderRoot,
+					briefSummary: description,
+					isGlobal: input.kind === "identity",
+				}),
+			);
+			if (!created) return undefined;
+			const look: SurfaceLook = {
+				kind: input.kind ?? surfaceLookOf(created).kind,
+				...(input.accent ? { accent: input.accent } : {}),
+			};
+			this.store.set((state) => ({
+				surfaces: sortSurfaces([...state.surfaces.filter((item) => item.id !== created.id), created]),
+				workspaces: {
+					...state.workspaces,
+					[created.id]: { ...localWorkspace(created), briefSummary: description },
+				},
+				surfaceLooks: { ...state.surfaceLooks, [created.id]: look },
+				...(look.kind === "mobile_app" ? { device: "mobile" as const } : {}),
+				error: undefined,
+			}));
+			this.#options.onNavigateSurface?.(created.slug);
+			const prompt = input.initialPrompt?.trim();
+			if (prompt && this.canStartSessions(created)) void this.startSession(created.id, prompt);
+			return created;
+		}
+		const taken = new Set(this.state.surfaces.map((surface) => surface.slug));
+		const slug = slugifySurfaceTitle(input.slug?.trim() || title, taken);
 		const sortOrder = this.state.surfaces.filter((surface) => surface.group === "products").length;
 		const created = localSurface(slug, title, "products", input.archetype, icon, sortOrder, {
 			sourceKind: input.archetype === "studio" ? "folder" : "code_repo",
@@ -1929,8 +2173,16 @@ export class SurfacesStore {
 			this.#putWorkspace({ ...nextWorkspace, surface: this.#syncLocalSurfaceCounts(nextWorkspace) });
 			return true;
 		}
-		for (const variantId of exploration.variantSessionIds) {
-			await this.discardSession(variantId);
+		if (this.#options.client?.discardExploration && !isLocalSurfaceId(exploration.surfaceId)) {
+			const result = await this.#run(`exploration:discard:${exploration.id}`, async (client) => {
+				await client.discardExploration!(exploration.id);
+				return true;
+			});
+			if (!result) return false;
+		} else {
+			for (const variantId of exploration.variantSessionIds) {
+				await this.discardSession(variantId);
+			}
 		}
 		if (this.state.drawer?.explorationId === exploration.id) this.store.set({ drawer: undefined });
 		await this.refreshWorkspace(exploration.surfaceId);

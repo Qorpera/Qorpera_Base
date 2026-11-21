@@ -305,6 +305,7 @@ export const SURFACES: Record<string, string> = {
 	"No unpublished changes in Base right now.": "Ingen uudgivne ændringer i Base lige nu.",
 	"Publish 1 change": "Udgiv 1 ændring",
 	"Publish {count} changes": "Udgiv {count} ændringer",
+	"Approved by {name}": "Godkendt af {name}",
 	"Review everything approved into Base. Roll back any change before going live.":
 		"Gennemgå alt der er godkendt til Base. Rul enhver ændring tilbage, før du udgiver.",
 };

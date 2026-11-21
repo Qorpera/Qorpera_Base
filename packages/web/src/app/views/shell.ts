@@ -2325,9 +2325,9 @@ function surfaceRailFor(company: CompanyController): SurfaceRail | undefined {
 
 /* ---- Who is where ---------------------------------------------------------------- */
 
-/** The rail place an entry stands for (app/presence-place.ts): its agent, its group chat, or its page or app. */
 function placeOf(element: HTMLElement): string | undefined {
-	const { agentId, cofounderId, roomId, appKey, owedPlace } = element.dataset;
+	const { agentId, cofounderId, roomId, appKey, owedPlace, surfaceSlug } = element.dataset;
+	if (surfaceSlug) return `surface:${surfaceSlug.toLowerCase()}`;
 	if (agentId || cofounderId) return `agent:${(agentId ?? cofounderId)!.toLowerCase()}`;
 	if (roomId) return `room:${roomId.toLowerCase()}`;
 	if (owedPlace) return owedPlace;
@@ -2337,15 +2337,11 @@ function placeOf(element: HTMLElement): string | undefined {
 		: `page:${appKey}`;
 }
 
-/** The other members in the company now, each as a small picture on the agent, group chat, page or app they are in
- * (Jonas, 9 Nov 2026: "a visual in the sidepanel that indicates what agent/interface the user is inside of, like a
- * little notch"). Pages and apps show theirs on the apps button too while the drawer is shut. Set in place, like the
- * current row, so a member moving never rebuilds a row. */
 function paintPresence(container: HTMLElement, parts: RailParts, company: CompanyController): void {
 	const places = company.peopleByPlace();
 	const inApps = new Map<string, { userId: string; name: string }>();
 	for (const element of container.querySelectorAll<HTMLElement>(
-		"[data-agent-id], [data-cofounder-id], [data-room-id], [data-app-key], [data-owed-place]",
+		"[data-surface-slug], [data-agent-id], [data-cofounder-id], [data-room-id], [data-app-key], [data-owed-place]",
 	)) {
 		const place = placeOf(element);
 		const people = (place && places.get(place)) || [];

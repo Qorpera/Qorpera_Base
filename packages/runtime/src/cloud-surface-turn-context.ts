@@ -1,11 +1,18 @@
 import type { PointToChangeTarget } from "@qorpera/contracts";
 import type { CloudSurfaceToolsPort } from "./cloud-surface-tools.ts";
 
+export interface SurfaceIdentityContext {
+	readonly briefMarkdown?: string | null;
+	readonly tokensJson?: string | null;
+	readonly voiceSummary?: string | null;
+}
+
 export interface SurfaceCodingTurnBinding {
 	readonly sessionId: string;
 	readonly surfaceSlug: string;
 	readonly surfaceTitle: string;
 	readonly briefMarkdown: string | null;
+	readonly identityContext?: SurfaceIdentityContext | null;
 	readonly pointToChangeTarget?: PointToChangeTarget | null;
 	readonly conflictPaths?: readonly string[] | null;
 	readonly recordChange: CloudSurfaceToolsPort["recordChange"];
@@ -16,12 +23,34 @@ export const SURFACE_STAGED_CODING_INSTRUCTIONS =
 	"For each cohesive user-visible deliverable you complete, commit cleanly on the current branch and call coding_record_change with a plain founder-facing title, short summary, and commit SHA before moving to the next change. " +
 	"When all requested deliverables are committed and verified, call coding_finish to stage the session as ready for review.";
 
-// WHY: Injects Surface domain taste (brief.md), Point-to-Change DOM context, and conflict paths directly into scoped coding turns.
+// WHY: Injects global company Identity assets, Surface domain taste (brief.md), Point-to-Change DOM context, and conflict paths directly into scoped coding turns.
 export function buildSurfaceTurnBrief(binding: SurfaceCodingTurnBinding): string {
 	const sections: string[] = [
 		`# Surface Context: ${binding.surfaceTitle} (${binding.surfaceSlug})`,
 		`Session ID: ${binding.sessionId}`,
 	];
+
+	const identity = binding.identityContext;
+	if (identity) {
+		const identityParts: string[] = [];
+		const identityBrief = identity.briefMarkdown?.trim();
+		const identityVoice = identity.voiceSummary?.trim();
+		const identityTokens = identity.tokensJson?.trim();
+		if (identityBrief) {
+			identityParts.push(`### Brand & Philosophy\n${identityBrief.slice(0, 4000)}`);
+		}
+		if (identityVoice) {
+			identityParts.push(`### Voice & Tone\n${identityVoice.slice(0, 2000)}`);
+		}
+		if (identityTokens) {
+			identityParts.push(`### Design Tokens\n\`\`\`json\n${identityTokens.slice(0, 4000)}\n\`\`\``);
+		}
+		if (identityParts.length > 0) {
+			sections.push(
+				`## Global Company Identity\nApply the company's global brand, voice, and design tokens across this surface unless the member explicitly asks to diverge.\n\n${identityParts.join("\n\n")}`,
+			);
+		}
+	}
 
 	const brief = binding.briefMarkdown?.trim();
 	if (brief) {

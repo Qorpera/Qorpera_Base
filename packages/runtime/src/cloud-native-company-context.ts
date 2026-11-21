@@ -343,10 +343,25 @@ const accountsSection = (has: CloudOfferedTool) => `
 # Accounts on websites
 The company can hold its own website accounts. Open one only when an open todo genuinely needs it, checking existing company accounts first. Sites that block automated browsers are a human task in a member's own browser: prepare clear steps and ask a member. Never ask anyone for a password and never type one yourself: ${has("fill_company_account") ? "on a machine, use fill_company_account after opening the page with desktop open and clicking the field, and never say or screenshot passwords" : "any step requiring the password is a human task for now"}. If a page shows a CAPTCHA, bot check, unusual-activity warning, or block, stop immediately without retrying, mark the account needs_person, and tell a member what to do.`;
 
+function surfacesAndIdentitySection(has: CloudOfferedTool): string {
+	return `
+# Surfaces & Identity
+${sentences(
+	"The company's live work is organized into primary Surfaces alongside a global Identity surface (brand, voice, design tokens, and philosophy) whose assets automatically feed every downstream surface.",
+	"On Day-0 founding, populate Identity first so every product surface starts from a coherent brand, voice, and design token foundation.",
+	has("propose_surface") &&
+		"Use propose_surface to create 1 to 2 tailored product surfaces for what the company is building with activateImmediately: true on Day 0; for later sidebar additions after founding, omit activateImmediately so they arrive in proposed status for founder approval.",
+	has("start_surface_session") &&
+		"Launch initial staged explorations with start_surface_session (setting explorationCount to 2 or 3 with distinct variantLabels and ownerLabel) so founders immediately see tangible, toggleable directions in Changes rather than waiting on prose.",
+	"Keep primary navigation focused: fold research analyses, audits, and reports as Notes on the owning agent or session rather than creating standalone report surfaces.",
+)}`;
+}
+
 function situationSections(has: CloudOfferedTool, worker: boolean, includeBank = !worker): string[] {
 	if (worker)
 		return [...(has("save_app") ? [appsSection(has)] : []), ...(has("data_query") ? [databaseSection(has)] : [])];
 	return [
+		...(has("propose_surface") || has("start_surface_session") ? [surfacesAndIdentitySection(has)] : []),
 		...(has("save_app") ? [`${appsSection(has)}\n${appsForMembers(has)}`, CONCEPTS] : []),
 		...(has("save_app") && has("manage_worker") ? [IDEAS] : []),
 		...(has("manage_worker") ? [codeSection(has)] : []),

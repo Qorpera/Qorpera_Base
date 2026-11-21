@@ -54,7 +54,14 @@ const STAFF_DIRECT = [
 /** The tools each kind of run carries in full. The Co-Founder hires, whatever the count says. A worker reads, writes
  * what its dispatch lets it, works on machines and reports. */
 export const CLOUD_DIRECT_TOOLS: Readonly<Record<CloudToolKind, ReadonlySet<string>>> = {
-	cofounder: new Set([...STAFF_DIRECT, "hire_agent", "hire_team", "update_reading"]),
+	cofounder: new Set([
+		...STAFF_DIRECT,
+		"hire_agent",
+		"hire_team",
+		"update_reading",
+		"propose_surface",
+		"start_surface_session",
+	]),
 	employee: new Set(STAFF_DIRECT),
 	worker: new Set([
 		"company_read",
@@ -136,6 +143,8 @@ const INDEX_LINES: Readonly<Record<string, string>> = {
 	save_coding_value: "save a key made on npm, GitHub, Stripe or Resend as a coding value",
 	fill_company_account: "have the vault type a company account's login or password on a machine",
 	record_reflection: "record what the company decided about a platform update",
+	propose_surface: "create or propose a primary Surface for the company sidebar",
+	start_surface_session: "launch a scoped session or 2-3 comparable directions on a Surface",
 };
 
 /** Bytes of a tool's description: the boundary's bound. */

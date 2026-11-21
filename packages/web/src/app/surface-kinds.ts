@@ -1,26 +1,8 @@
-import type { SurfaceSummary } from "@qorpera/contracts";
+import { SURFACE_KINDS, type SurfaceKind, type SurfaceSummary } from "@qorpera/contracts";
 import type { Emblem } from "../ui/interface-emblem.ts";
 import { phrase, t } from "../ui/preferences.ts";
 
-export const SURFACE_KINDS = [
-	"identity",
-	"website",
-	"web_app",
-	"mobile_app",
-	"desktop_app",
-	"database",
-	"dashboard",
-	"brand",
-	"product",
-	"report",
-	"custom",
-	"inbox",
-	"money",
-	"members",
-	"data",
-	"files",
-] as const;
-export type SurfaceKind = (typeof SURFACE_KINDS)[number];
+export { SURFACE_KINDS, type SurfaceKind };
 
 export interface SurfaceLook {
 	readonly kind: SurfaceKind;
@@ -129,10 +111,16 @@ export function inferSurfaceKind(surface: Pick<SurfaceSummary, "slug" | "icon" |
 }
 
 export function surfaceLookOf(
-	surface: Pick<SurfaceSummary, "id" | "slug" | "icon" | "archetype">,
+	surface: Pick<SurfaceSummary, "id" | "slug" | "icon" | "archetype" | "kind" | "accentHex">,
 	looks: Readonly<Record<string, SurfaceLook>> = {},
 ): SurfaceLook {
-	return looks[surface.id] ?? { kind: inferSurfaceKind(surface) };
+	const local = looks[surface.id];
+	if (local) return local;
+	const kind = surface.kind && surface.kind !== "custom" ? surface.kind : inferSurfaceKind(surface);
+	return {
+		kind,
+		...(surface.accentHex ? { accent: surface.accentHex } : {}),
+	};
 }
 
 export function surfaceKindEmblem(kind: SurfaceKind): Emblem {

@@ -873,10 +873,63 @@ export function mountApplication(
 			company = controller;
 			const localDev =
 				typeof location !== "undefined" && (location.hostname === "127.0.0.1" || location.hostname === "localhost");
+			const sandboxParam =
+				typeof location !== "undefined" && new URLSearchParams(location.search).get("sandbox") === "1";
+			const loadSurfaceCloudFiles = async (
+				surface: SurfaceSummary,
+				signal: AbortSignal,
+			): Promise<Readonly<Record<string, string>>> => {
+				const team = controller.store.get().team;
+				if (!team) return {};
+				const roots = [
+					surface.folderRoot?.replace(/^\/+|\/+$/g, ""),
+					`QorperaOS/surfaces/${surface.slug}/notes`,
+				].filter((item): item is string => Boolean(item));
+				if (!roots.length) return {};
+				const folder = new WebCompanyFiles(
+					cloud,
+					controller.profile,
+					controller.userId,
+					team.role,
+					AbortSignal.any([controller.signal, signal]),
+					() => {
+						if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
+							throw new Error(t("Company access changed."));
+					},
+					team.capabilities.write,
+				).folder();
+				const files: Record<string, string> = {};
+				const decoder = new TextDecoder();
+				const textFile = /\.(?:json|md|markdown|txt|toml|ya?ml|css)$/i;
+				const maxBytes = 256 * 1024;
+				const readFolder = async (parent: string, depth: number) => {
+					const page = await folder.list(parent, null, 100, signal);
+					for (const entry of page.entries) {
+						if (signal.aborted || Object.keys(files).length >= 32) return;
+						if (entry.kind === "folder" && depth < 1) {
+							await readFolder(entry.path, depth + 1);
+							continue;
+						}
+						if (entry.kind !== "file" || !entry.file || !textFile.test(entry.path) || entry.file.bytes > maxBytes)
+							continue;
+						const bytes = await folder.readFile(entry.file, signal, maxBytes, { cached: true });
+						files[entry.path] = decoder.decode(bytes);
+					}
+				};
+				for (const root of roots) {
+					try {
+						await readFolder(root, 0);
+					} catch {
+						/* WHY: Optional studio or notes folders may not exist yet on a new surface. */
+					}
+				}
+				return files;
+			};
 			const surfaces = new SurfacesStore({
 				companyId: profile.profileId,
 				companyName: profile.profileName,
 				localInteractive: localDev,
+				...(sandboxParam ? { sandboxMode: true } : {}),
 				client: new CloudSurfacesClient(cloud.supabase),
 				synthesize: () => ({
 					companyId: profile.profileId,
@@ -909,10 +962,21 @@ export function mountApplication(
 				unavailableMessage: t("Surfaces aren't enabled for this company yet."),
 				onNavigateSurface: (slug) =>
 					navigate({ name: "company", profileId: profile.profileId, section: "surface", id: slug }),
+				realtimeLive: () => controller.store.get().realtime === "connected",
+				memberName: (memberId) => {
+					const found = controller.store.get().team?.members.find((member) => member.userId === memberId);
+					return found?.displayName || found?.email;
+				},
+				peopleAtSurface: (slug) => controller.peopleByPlace().get(`surface:${slug.toLowerCase()}`) ?? [],
+				loadCloudFiles: loadSurfaceCloudFiles,
 			});
 			attachSurfaces(controller, surfaces);
 			surfaces.store.subscribe(() => render());
 			controller.store.subscribe(() => surfaces.resynthesize());
+			const stopSurfaceHints = controller.onInvalidate((resource) => {
+				if (resource === "surfaces" || resource === "company-file") surfaces.onRealtimeHint(resource);
+			});
+			controller.signal.addEventListener("abort", stopSurfaceHints, { once: true });
 			void surfaces.load();
 			// A member who may write the folder brings the logo everyone sees in step with QorperaOS/brand/logo.svg once
 			// the company has opened: its Branding & Identity agent may have drawn a new one meanwhile.
@@ -2044,17 +2108,19 @@ export function mountApplication(
 		}
 		// Where this tab is in the rail, for the other members' rails (a conversation says its own: company.ts).
 		controller.setOpenPlace(
-			route.section === "interface" && route.id
-				? `page:${route.id}`
-				: route.section === "app" && route.id
-					? `app:${route.id}`
-					: route.section === "staff" && route.id
-						? `agent:${route.id.toLowerCase()}`
-						: route.section === "site" && route.id
-							? `site:${route.id}`
-							: route.section === "concepts" || route.section === "sites" || route.section === "whats-new"
-								? route.section
-								: undefined,
+			route.section === "surface" && route.id
+				? `surface:${route.id.toLowerCase()}`
+				: route.section === "interface" && route.id
+					? `page:${route.id}`
+					: route.section === "app" && route.id
+						? `app:${route.id}`
+						: route.section === "staff" && route.id
+							? `agent:${route.id.toLowerCase()}`
+							: route.section === "site" && route.id
+								? `site:${route.id}`
+								: route.section === "concepts" || route.section === "sites" || route.section === "whats-new"
+									? route.section
+									: undefined,
 		);
 		// A card's request waits only while its agent's chat is on the way.
 		if (route.section !== "chat" && route.section !== "staff") agentPage = undefined;
@@ -2738,9 +2804,12 @@ export function mountApplication(
 						surface: SurfaceSummary,
 						signal: AbortSignal,
 					): Promise<Readonly<Record<string, string>>> => {
-						const root = surface.folderRoot?.replace(/^\/+|\/+$/g, "");
+						const roots = [
+							surface.folderRoot?.replace(/^\/+|\/+$/g, ""),
+							`QorperaOS/surfaces/${surface.slug}/notes`,
+						].filter((item): item is string => Boolean(item));
 						const team = controller.store.get().team;
-						if (!root || !team) return {};
+						if (!roots.length || !team) return {};
 						const folder = new WebCompanyFiles(
 							cloud,
 							controller.profile,
@@ -2757,7 +2826,7 @@ export function mountApplication(
 						const readFolder = async (parent: string, depth: number) => {
 							const page = await folder.list(parent, null, 100, signal);
 							for (const entry of page.entries) {
-								if (signal.aborted || Object.keys(files).length >= 24) return;
+								if (signal.aborted || Object.keys(files).length >= 32) return;
 								if (entry.kind === "folder" && depth < 1) {
 									await readFolder(entry.path, depth + 1);
 									continue;
@@ -2773,10 +2842,12 @@ export function mountApplication(
 								files[entry.path] = decoder.decode(bytes);
 							}
 						};
-						try {
-							await readFolder(root, 0);
-						} catch {
-							return files;
+						for (const root of roots) {
+							try {
+								await readFolder(root, 0);
+							} catch {
+								/* WHY: Optional studio or notes folders may not exist yet. */
+							}
 						}
 						return files;
 					};
