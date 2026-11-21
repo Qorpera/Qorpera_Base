@@ -7,6 +7,7 @@ import {
 	type CodeHostJob,
 	CodeHostJobFailure,
 	CodeHostRefusal,
+	codeAreaPath,
 	type writeCodeChangeRecords,
 } from "./code-host-jobs.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
@@ -1333,7 +1334,12 @@ export class CodeChangeRecords {
 					this.#now(),
 				)
 			: null;
-		const writer = { shell: job.shell, layout: job.layout, signal };
+		const writer: CodeHostJob = {
+			shell: job.shell,
+			layout: job.layout,
+			signal,
+			...(job.preparedKeptArea === undefined ? {} : { preparedKeptArea: job.preparedKeptArea }),
+		};
 		const wrote = await this.#write(writer, { repository, records, index });
 		// The job names the records whose file now holds its text, also one that held it already. It leaves out a record
 		// whose two ends of main the repository no longer holds (a restore went back past them): that one is written
@@ -1341,11 +1347,14 @@ export class CodeChangeRecords {
 		const held = new Set(Array.isArray(wrote?.written) ? wrote.written : []);
 		const without = due.changes.filter((change) => diffDue(change) && !held.has(change.n));
 		if (without.length) {
-			const again = await this.#write(writer, {
-				repository,
-				records: without.map((change) => ({ n: change.n, text: codeChangeRecordText(change), ...copy(change) })),
-				index: null,
-			});
+			const again = await this.#write(
+				{ ...writer, preparedKeptArea: codeAreaPath(repository) },
+				{
+					repository,
+					records: without.map((change) => ({ n: change.n, text: codeChangeRecordText(change), ...copy(change) })),
+					index: null,
+				},
+			);
 			for (const n of Array.isArray(again?.written) ? again.written : []) held.add(n);
 		}
 		const found = new Map<number, CodeChangeDiff>();

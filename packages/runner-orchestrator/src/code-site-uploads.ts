@@ -47,6 +47,8 @@ export const CODE_SITE_REQUEST_BYTES = 120 * 1024;
 export const CODE_SITE_PART_BYTES = 88 * 1024;
 /** The most parts one put carries (the kernel's bound; a site's 500 files never need more). */
 export const CODE_SITE_PUT_PARTS = 500;
+export const CODE_SITE_PUT_CONCURRENCY = 8;
+const CODE_SITE_MAX_PUT_CONCURRENCY = 16;
 /** The most files one call lists, and the most its request is as JSON. */
 export const CODE_SITE_LIST_FILES = 150;
 export const CODE_SITE_LIST_BYTES = 100 * 1024;
@@ -110,6 +112,7 @@ export interface CodeSiteUploadsOptions {
 	report?: (event: Record<string, unknown>) => void;
 	/** How many due sites one pass takes, 1 to 20. Default 10. */
 	limit?: number;
+	putConcurrency?: number;
 }
 
 /** A site the kernel named: the change whose tree is due, and the tree as its row has it (null when the row's `site`
@@ -157,6 +160,7 @@ export class CodeSiteUploads {
 	readonly #machineIdSha256: string;
 	readonly #report: (event: Record<string, unknown>) => void;
 	readonly #limit: number;
+	readonly #putConcurrency: number;
 	/** How many passes in a row each site's upload met a busy kernel, by its repository and change. */
 	readonly #busy = new Map<string, number>();
 	/** A wake that came while nothing waited: the next wait ends at once. */
@@ -165,6 +169,7 @@ export class CodeSiteUploads {
 
 	constructor(options: CodeSiteUploadsOptions) {
 		const limit = options.limit ?? 10;
+		const putConcurrency = options.putConcurrency ?? CODE_SITE_PUT_CONCURRENCY;
 		if (
 			typeof options.owner !== "string" ||
 			!options.owner ||
@@ -172,7 +177,9 @@ export class CodeSiteUploads {
 			!SHA256.test(options.machineIdSha256) ||
 			typeof options.read !== "function" ||
 			!whole(limit, 1) ||
-			limit > 20
+			limit > 20 ||
+			!whole(putConcurrency, 1) ||
+			putConcurrency > CODE_SITE_MAX_PUT_CONCURRENCY
 		)
 			throw new Error("INVALID_CODE_SITE_UPLOADS");
 		this.#control = options.control;
@@ -190,6 +197,7 @@ export class CodeSiteUploads {
 			}
 		};
 		this.#limit = limit;
+		this.#putConcurrency = putConcurrency;
 	}
 
 	/** A landing kept a site: the wait between passes ends now, or the next one does not begin. */
@@ -370,9 +378,9 @@ export class CodeSiteUploads {
 		signal: AbortSignal,
 	): Promise<{ state: Done; versionId: string; slug: string; sent: number; calls: number }> {
 		let calls = 0;
-		const ask = async (step: string, args: Record<string, unknown>) => {
+		const ask = async (step: string, args: Record<string, unknown>, callSignal: AbortSignal = signal) => {
 			calls += 1;
-			return await this.#ask(step, args, signal);
+			return await this.#ask(step, args, callSignal);
 		};
 		const begun = await ask("begin", {
 			...this.#which(due),
@@ -392,7 +400,7 @@ export class CodeSiteUploads {
 		// An upload that stopped after its listing goes on from the bytes.
 		const left = listed ? undefined : await this.#list(version, tree.files, ask);
 		const missing = left === 0 ? [] : await this.#missing(version, tree.files, ask);
-		const sent = await this.#put(version, missing, ask);
+		const sent = await this.#put(version, missing, ask, signal);
 		const finished = await ask("finish", version);
 		if (!STATES.includes(finished.state as Done)) throw unread("finish");
 		return { state: finished.state as Done, versionId, slug, sent, calls };
@@ -466,52 +474,62 @@ export class CodeSiteUploads {
 	/** The files' bytes as parts of at most 88 KiB, in C order: parts share a call while together they are at most 88 KiB,
 	 * 500 parts and a request of 120 KiB. A file's parts are cut at fixed places, so an upload that stopped half way
 	 * sends the same parts again. Answers the bytes sent, before base64. */
+	// WHY: qorpera_code_site_put locks site FOR SHARE then version FOR UPDATE and reassembles parts ORDER BY part, so concurrent batches overlap WAN RTT without deadlocks or part races.
 	async #put(
 		version: Record<string, unknown>,
 		files: readonly CodeSiteUploadFile[],
-		ask: (step: string, args: Record<string, unknown>) => Promise<Record<string, unknown>>,
+		ask: (step: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<Record<string, unknown>>,
+		signal: AbortSignal,
 	): Promise<number> {
-		const envelope = jsonBytes({ ...version, p_parts: { parts: [] } });
-		let parts: { path: string; part: number; of: number; contentBase64: string }[] = [];
-		let carried = 0,
-			used = envelope,
-			sent = 0;
-		const send = async () => {
-			if (!parts.length) return;
-			const answer = await ask("put", { ...version, p_parts: { parts } });
-			if (answer.state !== "kept" || !whole(answer.filed)) throw unread("put");
-			sent += carried;
-			parts = [];
-			carried = 0;
-			used = envelope;
-		};
-		for (const file of files) {
-			const of = Math.max(1, Math.ceil(file.bytes / CODE_SITE_PART_BYTES));
-			for (let part = 0; part < of; part++) {
-				const piece = file.content.subarray(part * CODE_SITE_PART_BYTES, (part + 1) * CODE_SITE_PART_BYTES);
-				const entry = {
-					path: file.path,
-					part,
-					of,
-					contentBase64: Buffer.from(piece.buffer, piece.byteOffset, piece.byteLength).toString("base64"),
-				};
-				const size = jsonBytes(entry) + 1;
-				if (
-					parts.length &&
-					(parts.length >= CODE_SITE_PUT_PARTS ||
-						carried + piece.byteLength > CODE_SITE_PART_BYTES ||
-						used + size > CODE_SITE_REQUEST_BYTES)
-				)
-					await send();
-				// A site path is at most 512 bytes, so a whole part always fits: this holds without it.
-				if (used + size > CODE_SITE_REQUEST_BYTES)
-					throw new SiteStopped("put", UPLOAD_FAILED, new Error("CODE_SITE_PART_TOO_LARGE"), file.path);
-				parts.push(entry);
-				carried += piece.byteLength;
-				used += size;
-			}
+		const batches = planPutBatches(version, files);
+		if (!batches.length) {
+			signal.throwIfAborted();
+			return 0;
 		}
-		await send();
+		const batchAbort = new AbortController();
+		const forward = (): void => batchAbort.abort(signal.reason);
+		if (signal.aborted) forward();
+		else signal.addEventListener("abort", forward, { once: true });
+		let next = 0;
+		let sent = 0;
+		let failed = false;
+		let firstError: unknown;
+		const worker = async (): Promise<void> => {
+			while (!failed && !batchAbort.signal.aborted) {
+				const index = next++;
+				const batch = batches[index];
+				if (!batch) return;
+				const parts = batch.parts.map(({ file, part, of, start, end }) => {
+					const piece = file.content.subarray(start, end);
+					return {
+						path: file.path,
+						part,
+						of,
+						contentBase64: Buffer.from(piece.buffer, piece.byteOffset, piece.byteLength).toString("base64"),
+					};
+				});
+				try {
+					const answer = await ask("put", { ...version, p_parts: { parts } }, batchAbort.signal);
+					if (answer.state !== "kept" || !whole(answer.filed)) throw unread("put");
+					sent += batch.bytes;
+				} catch (error) {
+					if (!failed) {
+						failed = true;
+						firstError = error;
+						batchAbort.abort(error);
+					}
+					return;
+				}
+			}
+		};
+		try {
+			const workers = Math.min(this.#putConcurrency, batches.length);
+			await Promise.all(Array.from({ length: workers }, () => worker()));
+		} finally {
+			signal.removeEventListener("abort", forward);
+		}
+		if (failed) throw firstError;
+		signal.throwIfAborted();
 		return sent;
 	}
 
@@ -625,4 +643,52 @@ function named(due: Due): Record<string, unknown> {
 		repository: `${due.target.owner}/${due.target.name}`,
 		change: due.change,
 	};
+}
+
+interface PutPartSpec {
+	readonly file: CodeSiteUploadFile;
+	readonly part: number;
+	readonly of: number;
+	readonly start: number;
+	readonly end: number;
+}
+
+interface PutBatch {
+	readonly parts: readonly PutPartSpec[];
+	readonly bytes: number;
+}
+
+function planPutBatches(version: Record<string, unknown>, files: readonly CodeSiteUploadFile[]): PutBatch[] {
+	const envelope = jsonBytes({ ...version, p_parts: { parts: [] } });
+	const batches: PutBatch[] = [];
+	let parts: PutPartSpec[] = [];
+	let carried = 0;
+	let used = envelope;
+	for (const file of files) {
+		const of = Math.max(1, Math.ceil(file.bytes / CODE_SITE_PART_BYTES));
+		for (let part = 0; part < of; part++) {
+			const start = part * CODE_SITE_PART_BYTES;
+			const end = Math.min(file.bytes, start + CODE_SITE_PART_BYTES);
+			const length = end - start;
+			const size = jsonBytes({ path: file.path, part, of, contentBase64: "" }) + Math.ceil(length / 3) * 4 + 1;
+			if (
+				parts.length &&
+				(parts.length >= CODE_SITE_PUT_PARTS ||
+					carried + length > CODE_SITE_PART_BYTES ||
+					used + size > CODE_SITE_REQUEST_BYTES)
+			) {
+				batches.push({ parts, bytes: carried });
+				parts = [];
+				carried = 0;
+				used = envelope;
+			}
+			if (used + size > CODE_SITE_REQUEST_BYTES)
+				throw new SiteStopped("put", UPLOAD_FAILED, new Error("CODE_SITE_PART_TOO_LARGE"), file.path);
+			parts.push({ file, part, of, start, end });
+			carried += length;
+			used += size;
+		}
+	}
+	if (parts.length) batches.push({ parts, bytes: carried });
+	return batches;
 }

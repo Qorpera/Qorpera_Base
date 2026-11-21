@@ -1,5 +1,6 @@
 import { CODE_CHECKS_FILE, type CodeCommitFile } from "./code-host-jobs.ts";
 import {
+	CODE_CHECKS_DRILL,
 	type CodeSiteCollected,
 	type CodeSiteProblem,
 	codeSiteFolderValid,
@@ -25,12 +26,15 @@ const CODE_CHECK_MIN_SECONDS = 10;
 const MAX_RUN_BYTES = 4096;
 const MAX_CWD_BYTES = 300;
 
+export const MAX_PARALLEL_CHECKS = 4;
+
 /** One check: `run` is a bash command run from `cwd`, a folder of the repository ("." is its top). */
 export interface CodeCheck {
 	readonly name: string;
 	readonly run: string;
 	readonly timeoutSeconds: number;
 	readonly cwd: string;
+	readonly needs?: readonly string[];
 }
 
 /** One problem with the checks file. Any problem refuses the whole file. */
@@ -62,8 +66,6 @@ export type CodeChecksRead =
 	/** `blob` is null when the path holds no regular file (a folder, a link or a submodule). */
 	| { readonly state: "refused"; readonly blob: string | null; readonly problems: readonly CodeChecksProblem[] };
 
-/** What a change changed in the checks, by name: only in the candidate, only in main, and in both with another `run`,
- * `cwd` or `timeoutSeconds`. */
 export interface CodeChecksChanged {
 	readonly added: string[];
 	readonly removed: string[];
@@ -241,6 +243,7 @@ function checksOf(value: unknown, at: string, refuse: Refuse): CodeCheck[] {
 	if (value.length < 1 || value.length > MAX_CODE_CHECKS)
 		refuse(at, "INVALID_VALUE", `Must hold 1 to ${MAX_CODE_CHECKS} checks.`);
 	const checks: CodeCheck[] = [];
+	const parsed: { name: string | null; needs: readonly { name: string; at: string }[] }[] = [];
 	const names = new Set<string>();
 	let total = 0;
 	for (const [index, item] of value.entries()) {
@@ -253,6 +256,8 @@ function checksOf(value: unknown, at: string, refuse: Refuse): CodeCheck[] {
 		let run: string | null = null;
 		let timeoutSeconds = CODE_CHECK_DEFAULT_SECONDS;
 		let cwd = ".";
+		let needs: string[] | undefined;
+		const needsEntries: { name: string; at: string }[] = [];
 		for (const [key, field] of Object.entries(item)) {
 			const fieldAt = pointer(itemAt, key);
 			if (key === "name") {
@@ -295,13 +300,53 @@ function checksOf(value: unknown, at: string, refuse: Refuse): CodeCheck[] {
 						`Must be a folder of the repository: a relative path without . or .. parts, at most ${MAX_CWD_BYTES} bytes.`,
 					);
 				else cwd = field;
+			} else if (key === "needs") {
+				if (!Array.isArray(field)) refuse(fieldAt, "WRONG_TYPE", "Must be an array.");
+				else {
+					const listed: string[] = [];
+					const seen = new Set<string>();
+					for (const [depIndex, dep] of field.entries()) {
+						const depAt = pointer(fieldAt, depIndex);
+						if (typeof dep !== "string") refuse(depAt, "WRONG_TYPE", "Must be a string.");
+						else if (!NAME.test(dep))
+							refuse(
+								depAt,
+								"INVALID_VALUE",
+								"Must be 1 to 40 of a-z, 0-9, '.', '_' and '-', starting with a letter or a digit.",
+							);
+						else if (seen.has(dep)) refuse(depAt, "DUPLICATE", `The check "${dep}" is listed twice in needs.`);
+						else {
+							seen.add(dep);
+							listed.push(dep);
+							needsEntries.push({ name: dep, at: depAt });
+						}
+					}
+					needs = listed;
+				}
 			} else refuse(fieldAt, "UNKNOWN_KEY", UNKNOWN);
 		}
 		if (!("name" in item)) refuse(itemAt, "MISSING_KEY", "Needs name.");
 		if (!("run" in item)) refuse(itemAt, "MISSING_KEY", "Needs run.");
 		total += timeoutSeconds;
-		if (name !== null && run !== null) checks.push({ name, run, timeoutSeconds, cwd });
+		parsed.push({ name, needs: needsEntries });
+		if (name !== null && run !== null)
+			checks.push(
+				needs === undefined ? { name, run, timeoutSeconds, cwd } : { name, run, timeoutSeconds, cwd, needs },
+			);
 	}
+	const edges = new Map<string, string[]>();
+	for (const entry of parsed) {
+		const validDeps: string[] = [];
+		for (const dep of entry.needs) {
+			if (entry.name !== null && dep.name === entry.name)
+				refuse(dep.at, "INVALID_VALUE", `The check "${dep.name}" cannot depend on itself.`);
+			else if (!names.has(dep.name)) refuse(dep.at, "INVALID_VALUE", `No check is named "${dep.name}".`);
+			else validDeps.push(dep.name);
+		}
+		if (entry.name !== null) edges.set(entry.name, validDeps);
+	}
+	const cycle = findCheckCycle(edges);
+	if (cycle !== null) refuse(at, "CYCLE", `The checks form a dependency cycle: ${cycle.join(" -> ")}.`);
 	if (total > CODE_CHECKS_TOTAL_SECONDS)
 		refuse(
 			at,
@@ -309,6 +354,89 @@ function checksOf(value: unknown, at: string, refuse: Refuse): CodeCheck[] {
 			`The time limits add up to ${total} s; all checks together may take at most ${CODE_CHECKS_TOTAL_SECONDS} s.`,
 		);
 	return checks;
+}
+
+function findCheckCycle(edges: ReadonlyMap<string, readonly string[]>): string[] | null {
+	const state = new Map<string, 1 | 2>();
+	const stack: string[] = [];
+	const visit = (node: string): string[] | null => {
+		state.set(node, 1);
+		stack.push(node);
+		for (const dep of edges.get(node) ?? []) {
+			const seen = state.get(dep);
+			if (seen === 1) return [...stack.slice(stack.indexOf(dep)), dep];
+			if (seen === undefined) {
+				const cycle = visit(dep);
+				if (cycle !== null) return cycle;
+			}
+		}
+		stack.pop();
+		state.set(node, 2);
+		return null;
+	};
+	for (const name of edges.keys()) {
+		if (state.has(name)) continue;
+		const cycle = visit(name);
+		if (cycle !== null) return cycle;
+	}
+	return null;
+}
+
+export function codeChecksPlan(checks: readonly CodeCheck[]): readonly (readonly number[])[] | null {
+	if (checks.length === 0) return [];
+	if (!checks.some((check) => check.needs !== undefined))
+		return checks.map((_, index) => (index === 0 ? [] : [index - 1]));
+	const last = checks.at(-1);
+	const earlier = checks.slice(0, -1);
+	const hasTrailingDrill =
+		last !== undefined &&
+		last.needs === undefined &&
+		last.name === CODE_CHECKS_DRILL.name &&
+		last.run === CODE_CHECKS_DRILL.run &&
+		last.timeoutSeconds === CODE_CHECKS_DRILL.timeoutSeconds &&
+		last.cwd === CODE_CHECKS_DRILL.cwd &&
+		(earlier.some((check) => check.name === CODE_CHECKS_DRILL.name) ||
+			!earlier.some((check) => check.needs?.includes(CODE_CHECKS_DRILL.name)));
+	const repoCount = hasTrailingDrill ? checks.length - 1 : checks.length;
+	const indexByName = new Map<string, number>();
+	for (let index = 0; index < repoCount; index++) {
+		const check = checks[index] as CodeCheck;
+		if (indexByName.has(check.name)) return null;
+		indexByName.set(check.name, index);
+	}
+	const dependencies: number[][] = [];
+	for (let index = 0; index < repoCount; index++) {
+		const check = checks[index] as CodeCheck;
+		const seen = new Set<number>();
+		const deps: number[] = [];
+		for (const depName of check.needs ?? []) {
+			const depIndex = indexByName.get(depName);
+			if (depIndex === undefined || depIndex === index) return null;
+			if (!seen.has(depIndex)) {
+				seen.add(depIndex);
+				deps.push(depIndex);
+			}
+		}
+		dependencies.push(deps);
+	}
+	if (hasTrailingDrill) dependencies.push(Array.from({ length: repoCount }, (_, index) => index));
+	const indegree = dependencies.map((deps) => deps.length);
+	const dependents: number[][] = Array.from({ length: checks.length }, () => []);
+	for (let index = 0; index < dependencies.length; index++) {
+		for (const dep of dependencies[index] as readonly number[]) dependents[dep]?.push(index);
+	}
+	const ready: number[] = [];
+	for (let index = 0; index < indegree.length; index++) if (indegree[index] === 0) ready.push(index);
+	let visited = 0;
+	while (ready.length > 0) {
+		const current = ready.shift() as number;
+		visited++;
+		for (const next of dependents[current] as readonly number[]) {
+			indegree[next] = (indegree[next] as number) - 1;
+			if (indegree[next] === 0) ready.push(next);
+		}
+	}
+	return visited === checks.length ? dependencies : null;
 }
 
 /** "." (the top), or a relative path of the repository with no empty, `.` or `..` part (so no leading or trailing `/`
@@ -340,16 +468,45 @@ export function codeChecksGate(main: CodeChecksRead, candidate: CodeChecksRead):
 	return { gate: "refused", summary: codeChecksRefusedSummary(candidate, main.state !== "missing") };
 }
 
+function effectiveNeedsOf(checks: readonly CodeCheck[]): ReadonlyMap<string, readonly string[]> {
+	const plan = codeChecksPlan(checks);
+	const depsByName = new Map<string, readonly string[]>();
+	if (plan === null) return depsByName;
+	for (let index = 0; index < checks.length; index++) {
+		const check = checks[index] as CodeCheck;
+		depsByName.set(
+			check.name,
+			(plan[index] as readonly number[]).map((dep) => (checks[dep] as CodeCheck).name),
+		);
+	}
+	return depsByName;
+}
+
+function sameNeeds(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+	if (a === undefined || b === undefined) return a === b;
+	if (a.length !== b.length) return false;
+	const left = [...a].sort();
+	const right = [...b].sort();
+	return left.every((name, index) => name === right[index]);
+}
+
 /** Against main's valid file (else every check counts as added). Null when nothing changed. */
 function changedOf(main: readonly CodeCheck[], candidate: readonly CodeCheck[]): CodeChecksChanged | null {
 	const before = new Map(main.map((check) => [check.name, check]));
+	const beforeNeeds = effectiveNeedsOf(main);
+	const afterNeeds = effectiveNeedsOf(candidate);
 	const after = new Set(candidate.map((check) => check.name));
 	const added: string[] = [];
 	const run: string[] = [];
 	for (const check of candidate) {
 		const was = before.get(check.name);
 		if (!was) added.push(check.name);
-		else if (was.run !== check.run || was.cwd !== check.cwd || was.timeoutSeconds !== check.timeoutSeconds)
+		else if (
+			was.run !== check.run ||
+			was.cwd !== check.cwd ||
+			was.timeoutSeconds !== check.timeoutSeconds ||
+			!sameNeeds(beforeNeeds.get(check.name), afterNeeds.get(check.name))
+		)
 			run.push(check.name);
 	}
 	const removed = main.filter((check) => !after.has(check.name)).map((check) => check.name);
@@ -500,7 +657,7 @@ export function codeChecksFailedSummary(
 		`${opening}Nothing went into main: the check "${shown(failed.name, 40)}" failed on this change` +
 		`${how === "merged" ? " merged with main as it is now" : ""}. It ran ${code(failed.run, MAX_PASSED_RUN_BYTES)} ` +
 		`and ${exit} after ${Math.round(millis(failed.ms) / 1000)} s${limit}${killed}.`;
-	const passed = run.passed.length > 0 ? ` Checks that passed before it: ${namesOf(run.passed)}.` : "";
+	const passed = run.passed.length > 0 ? ` Checks that passed: ${namesOf(run.passed)}.` : "";
 	const foot =
 		`Its whole output is in ${shown(failed.log, 200)} on the session's machine.${passed} Fix the cause in the code, ` +
 		"never by removing or weakening the check or its tests; run the checks yourself from a clean copy, commit and " +

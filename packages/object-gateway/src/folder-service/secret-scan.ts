@@ -52,6 +52,13 @@ export interface SecretValue {
 	readonly whole: string;
 }
 
+export interface SecretSpec {
+	readonly key: string;
+	readonly values: readonly SecretValue[];
+	readonly confirmFloor: number;
+	readonly confirmFactor: number;
+}
+
 interface Matcher {
 	readonly c0: number;
 	readonly c1: number;
@@ -160,6 +167,15 @@ export class SecretSet {
 	/** A scan of a file of `size` bytes, given its bytes in order. */
 	scan(size: number): SecretScan {
 		return new SecretScan(this.#matching(), Math.max(CONFIRM_FLOOR, CONFIRM_FACTOR * size));
+	}
+
+	toSpec(): SecretSpec {
+		return {
+			key: this.#key.toString("base64url"),
+			values: [...this.#values.values()],
+			confirmFloor: CONFIRM_FLOOR,
+			confirmFactor: CONFIRM_FACTOR,
+		};
 	}
 
 	#matching(): Matcher | undefined {
