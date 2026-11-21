@@ -534,16 +534,21 @@ describe("dedicated coding executor control", () => {
 
 		const executorToken = randomBytes(32).toString("base64url");
 		const scope = { companyId: randomUUID(), workerId: randomUUID(), leaseToken: randomUUID() };
-		const failFetch: typeof fetch = async () => new Response(null, { status: 503 });
+		const failFetch = vi.fn<typeof fetch>(async () => new Response(null, { status: 503 }));
 
 		const memberControl = new MemberMachineScreenControl({
 			supabaseUrl: "https://project.supabase.co",
 			publishableKey: "sb_publishable_test_key",
 			fetch: failFetch,
 		});
-		await memberControl
-			.begin("member-token", { companyId: scope.companyId, machineId: randomUUID(), confirmed: true }, parent.signal)
-			.catch(() => undefined);
+		await expect(
+			memberControl.begin(
+				"member-token",
+				{ companyId: scope.companyId, machineId: randomUUID(), confirmed: true },
+				parent.signal,
+			),
+		).rejects.toThrow();
+		expect(failFetch).toHaveBeenCalledTimes(1);
 		expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
 
 		const envClient = new BrokerCodingEnvironment({
@@ -552,7 +557,8 @@ describe("dedicated coding executor control", () => {
 			executorOwner: "coding-node-01",
 			fetch: failFetch,
 		});
-		await envClient.environment(scope, parent.signal).catch(() => undefined);
+		await expect(envClient.environment(scope, parent.signal)).rejects.toThrow();
+		expect(failFetch).toHaveBeenCalledTimes(2);
 		expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
 
 		const fillClient = new BrokerMachineAccountFill({
@@ -561,8 +567,8 @@ describe("dedicated coding executor control", () => {
 			executorOwner: "coding-node-01",
 			fetch: failFetch,
 		});
-		await fillClient
-			.seal(
+		await expect(
+			fillClient.seal(
 				{
 					companyId: scope.companyId,
 					binding: {
@@ -585,8 +591,9 @@ describe("dedicated coding executor control", () => {
 					fillPublicKey: "pub",
 				},
 				parent.signal,
-			)
-			.catch(() => undefined);
+			),
+		).rejects.toThrow();
+		expect(failFetch).toHaveBeenCalledTimes(3);
 		expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
 
 		const repoCreds = new BrokerRepositoryCredentials({
@@ -595,14 +602,15 @@ describe("dedicated coding executor control", () => {
 			executorOwner: "coding-node-01",
 			fetch: failFetch,
 		});
-		await repoCreds
-			.withRepositoryToken(
+		await expect(
+			repoCreds.withRepositoryToken(
 				scope,
 				{ host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" },
 				async () => undefined,
 				parent.signal,
-			)
-			.catch(() => undefined);
+			),
+		).rejects.toThrow();
+		expect(failFetch).toHaveBeenCalledTimes(4);
 		expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
 	});
 });
