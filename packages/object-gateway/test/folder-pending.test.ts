@@ -1625,5 +1625,59 @@ describe("a view's links (protocol 4)", () => {
 			"code/acme/app/.git/HEAD",
 			"code/acme/app/.git/index",
 		]);
+
+		const rootGitUnits: PlannedUnit[] = [
+			...Array.from(
+				{ length: 999 },
+				(_, i): PlannedUnit => ({
+					unit: {
+						op: "write",
+						path: `.git/objects/02/${String(i).padStart(38, "c")}`,
+						file: {
+							manifestSha256: hash(`rm:${i}`),
+							fileSha256: hash(`rf:${i}`),
+							bytes: 10,
+							mediaType: "application/octet-stream",
+							executable: false,
+						},
+					},
+					paths: [`.git/objects/02/${String(i).padStart(38, "c")}`],
+					bytes: true,
+				}),
+			),
+			{
+				unit: {
+					op: "write",
+					path: ".git/index",
+					file: {
+						manifestSha256: hash("rm:idx"),
+						fileSha256: hash("rf:idx"),
+						bytes: 16,
+						mediaType: "application/octet-stream",
+						executable: false,
+					},
+				},
+				paths: [".git/index"],
+				bytes: true,
+			},
+			{
+				unit: {
+					op: "write",
+					path: ".git/HEAD",
+					file: {
+						manifestSha256: hash("rm:head"),
+						fileSha256: hash("rf:head"),
+						bytes: 20,
+						mediaType: "text/plain",
+						executable: false,
+					},
+				},
+				paths: [".git/HEAD"],
+				bytes: true,
+			},
+		];
+		const rootGitBatches = planCommitBatches(rootGitUnits);
+		expect(rootGitBatches.map((b) => b.length)).toEqual([999, 2]);
+		expect(rootGitBatches[1]?.map((u) => u.paths[0]).sort()).toEqual([".git/HEAD", ".git/index"]);
 	});
 });

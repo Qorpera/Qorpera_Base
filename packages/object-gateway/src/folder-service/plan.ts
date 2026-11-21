@@ -556,6 +556,7 @@ function frees(item: Item, keyOf: (path: string) => string): string | undefined 
 function gitDirOf(path: string): { readonly dir: string; readonly rest: string } | undefined {
 	const place = gitPlace(path);
 	if (place.kind === "git") return place.rest === "" ? undefined : { dir: `${place.area}/repo.git`, rest: place.rest };
+	if (path.startsWith(".git/")) return { dir: ".git", rest: path.slice(5) };
 	const idx = path.indexOf("/.git/");
 	if (idx !== -1) return { dir: path.slice(0, idx + 5), rest: path.slice(idx + 6) };
 	return undefined;
