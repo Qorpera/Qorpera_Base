@@ -71,6 +71,9 @@ PACKAGE="${EXEC_PACKAGE}"
 STAGING="${EXEC_STAGING}"
 SLOTS="${EXEC_SLOTS}"
 BUNDLE="${EXEC_RUNTIME_BUNDLE_SHA256:-}"
+BUNDLE_DIR="${EXEC_RUNTIME_BUNDLE_DIR:-}"
+BUNDLE_MANIFEST_SHA256="${EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256:-}"
+BUNDLE_SNAPSHOT=""
 for name in VM PROJECT; do
 	[[ ${!name} =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$ ]] || { echo "EXEC_${name} is not an LXD name." >&2; exit 1; }
 done
@@ -89,6 +92,120 @@ fi
 if [[ -n ${BUNDLE} && ! ${BUNDLE} =~ ^[0-9a-f]{64}$ ]]; then
 	echo "EXEC_RUNTIME_BUNDLE_SHA256 must be a sha256." >&2
 	exit 1
+fi
+if [[ -n ${BUNDLE_MANIFEST_SHA256} && -z ${BUNDLE_DIR} ]]; then
+	echo "EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256 requires EXEC_RUNTIME_BUNDLE_DIR." >&2
+	exit 1
+fi
+if [[ -n ${BUNDLE_DIR} ]]; then
+	if [[ ! ${BUNDLE_MANIFEST_SHA256} =~ ^[0-9a-f]{64}$ ]]; then
+		echo "EXEC_RUNTIME_BUNDLE_DIR requires a 64-hex EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256 pin." >&2
+		exit 1
+	fi
+	if [[ ${BUNDLE_DIR} != /* || ${BUNDLE_DIR} == *".."* || ! -d ${BUNDLE_DIR} || -L ${BUNDLE_DIR} ]]; then
+		echo "EXEC_RUNTIME_BUNDLE_DIR must be an absolute non-symlink directory." >&2
+		exit 1
+	fi
+	BUNDLE_SNAPSHOT=$(mktemp -d)
+	chmod 0700 "${BUNDLE_SNAPSHOT}"
+	trap 'rm -rf -- "${BUNDLE_SNAPSHOT}"' EXIT
+	python3 - "${BUNDLE_DIR}" "${BUNDLE_MANIFEST_SHA256}" "${BUNDLE}" "${BUNDLE_SNAPSHOT}" <<'PY'
+import hashlib, json, os, stat, sys
+directory, expected_manifest_sha, expected_bundle, snapshot_dir = sys.argv[1:5]
+expected_files = [
+    "qorpera-ephemeral-runner.mjs",
+    "qorpera-native-provider-host.mjs",
+    "qorpera-identity-recovery-restore.mjs",
+    "qorpera-native-isolation-child.mjs",
+    "qorpera-lxd-runner-bootstrap.mjs",
+    "qorpera-lxd-native-login-bootstrap.mjs",
+    "qorpera-claude-home-shell.mjs",
+]
+pinned_files = {"qorpera-native-provider-host.mjs"}
+expected_uid = os.geteuid()
+
+def is_sha64(value):
+    return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+if os.path.realpath(directory) != os.path.normpath(directory):
+    sys.exit("EXEC_RUNTIME_BUNDLE_DIR must not contain symlinked path components.")
+dir_stat = os.lstat(directory)
+if not stat.S_ISDIR(dir_stat.st_mode) or dir_stat.st_uid != expected_uid or (dir_stat.st_mode & 0o022) != 0:
+    sys.exit("EXEC_RUNTIME_BUNDLE_DIR has unsafe ownership or permissions.")
+
+entries = sorted(os.listdir(directory))
+expected_entries = sorted(["manifest.json", *expected_files])
+if entries != expected_entries:
+    sys.exit(f"EXEC_RUNTIME_BUNDLE_DIR must contain exact expected files (found {entries}).")
+
+def read_verified_file(path, label):
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as err:
+        sys.exit(f"EXEC_RUNTIME_BUNDLE_DIR unsafe file {label}: {err}")
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != expected_uid or (st.st_mode & 0o022) != 0:
+            sys.exit(f"EXEC_RUNTIME_BUNDLE_DIR unsafe file mode or owner for {label}.")
+        chunks = []
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+manifest_bytes = read_verified_file(os.path.join(directory, "manifest.json"), "manifest.json")
+if hashlib.sha256(manifest_bytes).hexdigest() != expected_manifest_sha:
+    sys.exit("EXEC_RUNTIME_BUNDLE_DIR manifest.json does not match EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256.")
+try:
+    manifest = json.loads(manifest_bytes.decode("utf-8"))
+except Exception as err:
+    sys.exit(f"EXEC_RUNTIME_BUNDLE_DIR manifest.json is not valid JSON: {err}")
+if not isinstance(manifest, dict):
+    sys.exit("EXEC_RUNTIME_BUNDLE_DIR manifest.json must be a JSON object.")
+if manifest.get("schema") != "qorpera.runtime-bundle-layer/v1":
+    sys.exit("EXEC_RUNTIME_BUNDLE_DIR has an invalid manifest schema.")
+bundle_sha = manifest.get("runtimeBundleSha256")
+if not is_sha64(bundle_sha):
+    sys.exit("EXEC_RUNTIME_BUNDLE_DIR has an invalid runtimeBundleSha256.")
+if expected_bundle and bundle_sha != expected_bundle:
+    sys.exit("EXEC_RUNTIME_BUNDLE_DIR bundle sha256 does not match EXEC_RUNTIME_BUNDLE_SHA256.")
+artifacts = manifest.get("artifacts")
+if not isinstance(artifacts, list) or len(artifacts) != len(expected_files):
+    sys.exit("EXEC_RUNTIME_BUNDLE_DIR artifacts list is invalid.")
+by_name = {}
+for item in artifacts:
+    if not isinstance(item, dict):
+        sys.exit("EXEC_RUNTIME_BUNDLE_DIR artifact entry must be an object.")
+    name = item.get("file")
+    if not isinstance(name, str) or name not in expected_files or name in by_name:
+        sys.exit(f"EXEC_RUNTIME_BUNDLE_DIR unexpected or duplicate artifact: {name}")
+    size = item.get("bytes")
+    digest = item.get("sha256")
+    if not isinstance(size, int) or isinstance(size, bool) or size < 1 or not is_sha64(digest):
+        sys.exit(f"EXEC_RUNTIME_BUNDLE_DIR invalid metadata for artifact: {name}")
+    by_name[name] = (size, digest)
+
+bundle_pin_bytes = bundle_sha.encode("ascii")
+for name in expected_files:
+    size, digest = by_name[name]
+    data = read_verified_file(os.path.join(directory, name), name)
+    actual_digest = hashlib.sha256(data).hexdigest()
+    if len(data) != size or actual_digest != digest:
+        sys.exit(f"EXEC_RUNTIME_BUNDLE_DIR digest mismatch for {name}")
+    if name in pinned_files and bundle_pin_bytes not in data:
+        sys.exit(f"EXEC_RUNTIME_BUNDLE_DIR compiled artifact {name} does not embed runtimeBundleSha256.")
+    out_fd = os.open(os.path.join(snapshot_dir, name), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
+    with os.fdopen(out_fd, "wb") as out_handle:
+        out_handle.write(data)
+    sha_fd = os.open(os.path.join(snapshot_dir, f"{name}.sha256"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
+    with os.fdopen(sha_fd, "w", encoding="ascii") as sha_handle:
+        sha_handle.write(f"{actual_digest}\n")
+PY
 fi
 for file in qorpera-shared-execution-service.mjs install-shared-execution-guest.sh manifest.json qorpera-folder qorpera-folder-mount@.service \
 	qorpera-folder-relay@.socket qorpera-folder-relay@.service; do
@@ -199,6 +316,29 @@ lxc file push --project "${PROJECT}" -r -p "${PACKAGE}" "${VM}/var/lib/qorpera-b
 exec_in mv "/var/lib/qorpera-bootstrap/$(basename "${PACKAGE}")" /var/lib/qorpera-bootstrap/shared-execution
 exec_in env "QORPERA_SHARED_EXECUTION_SLOTS=${SLOTS}" bash /var/lib/qorpera-bootstrap/shared-execution/install-shared-execution-guest.sh \
 	| grep -v 'CPUAccounting\|strict user' | tail -1
+if [[ -n ${BUNDLE_SNAPSHOT} ]]; then
+	echo "Installing thin runtime bundle layer."
+	for artifact in \
+		qorpera-ephemeral-runner.mjs \
+		qorpera-native-provider-host.mjs \
+		qorpera-identity-recovery-restore.mjs \
+		qorpera-native-isolation-child.mjs \
+		qorpera-lxd-runner-bootstrap.mjs \
+		qorpera-lxd-native-login-bootstrap.mjs \
+		qorpera-claude-home-shell.mjs; do
+		push "${BUNDLE_SNAPSHOT}/${artifact}" "/opt/qorpera-runner/${artifact}" 0555
+		expected_sha=$(tr -d '\n' < "${BUNDLE_SNAPSHOT}/${artifact}.sha256")
+		guest_sha=$(exec_in sha256sum "/opt/qorpera-runner/${artifact}" | awk '{ print $1 }')
+		if [[ ${guest_sha} != "${expected_sha}" ]]; then
+			echo "Guest checksum mismatch for /opt/qorpera-runner/${artifact}." >&2
+			exit 1
+		fi
+		exec_in node --check "/opt/qorpera-runner/${artifact}"
+	done
+	rm -rf -- "${BUNDLE_SNAPSHOT}"
+	BUNDLE_SNAPSHOT=""
+	trap - EXIT
+fi
 
 echo "Configuring: the fence digest is taken from the image, never from the previous host."
 fence=$(exec_in sha256sum /opt/qorpera-harnesses/native-company/codex | cut -d' ' -f1)
