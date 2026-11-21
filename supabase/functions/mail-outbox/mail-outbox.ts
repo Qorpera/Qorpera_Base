@@ -67,7 +67,7 @@ export interface ProviderEmail {
 	text: string;
 	headers?: Record<string, string>;
 	/** Each file's name and its bytes in base64. */
-	attachments?: { filename: string; content: string }[];
+	attachments?: { filename: string; content: string | readonly string[] }[];
 }
 
 export class MailSendError extends Error {
@@ -254,24 +254,7 @@ async function verifiedManifestChunks(
 	return { object, chunks: chunks as { sha256: string; bytes: number }[] };
 }
 
-/** One attached file's bytes from the company's objects: its manifest, then its chunks, each checked against its
- * digest, and the whole against the file's. Not in Storage yet is worth another try; anything else is not. */
-export async function attachmentBytes(companyId: string, file: MailAttachment, objects: ObjectReader): Promise<Uint8Array> {
-	const { object, chunks } = await verifiedManifestChunks(companyId, file, objects);
-	const output = new Uint8Array(file.bytes);
-	let offset = 0;
-	for (const chunk of chunks) {
-		const bytes = await object(chunk.sha256);
-		if (bytes.length !== chunk.bytes) throw new MailSendError(`The attachment ${file.filename} failed its integrity check`, false);
-		output.set(bytes, offset);
-		offset += bytes.length;
-	}
-	if (createHash("sha256").update(output).digest("hex") !== file.fileSha256)
-		throw new MailSendError(`The attachment ${file.filename} failed its integrity check`, false);
-	return output;
-}
-
-export async function attachmentBase64(companyId: string, file: MailAttachment, objects: ObjectReader): Promise<string> {
+export async function attachmentBase64(companyId: string, file: MailAttachment, objects: ObjectReader): Promise<string[]> {
 	const { object, chunks } = await verifiedManifestChunks(companyId, file, objects);
 	const hash = createHash("sha256");
 	const parts: string[] = [];
@@ -306,7 +289,7 @@ export async function attachmentBase64(companyId: string, file: MailAttachment, 
 	if (carryLen > 0) parts.push(Buffer.from(carry.buffer, 0, carryLen).toString("base64"));
 	if (hash.digest("hex") !== file.fileSha256)
 		throw new MailSendError(`The attachment ${file.filename} failed its integrity check`, false);
-	return parts.join("");
+	return parts;
 }
 
 /** Supabase Storage's headers for a secret key: a legacy JWT key goes as the bearer too. */
@@ -500,7 +483,7 @@ export function parseMessageIdsDue(value: unknown): { mailId: string; providerMe
 }
 
 /** What the provider is asked to send: no empty cc, no empty headers, each file's bytes in base64. */
-export function providerEmail(job: MailJob, contents: readonly string[] = []): ProviderEmail {
+export function providerEmail(job: MailJob, contents: readonly (string | readonly string[])[] = []): ProviderEmail {
 	if (contents.length !== job.attachments.length) throw new Error("The email's attachments are not all read");
 	return {
 		from: job.from,
@@ -548,10 +531,11 @@ function encodeResendPayload(email: ProviderEmail): { readonly body: string | Bl
 	for (let index = 0; index < attachments.length; index += 1) {
 		const item = attachments[index]!;
 		if (index > 0) parts.push(",");
-		if (SAFE_BASE64.test(item.content)) {
-			parts.push('{"filename":', JSON.stringify(item.filename), ',"content":"', item.content, '"}');
+		const segments = typeof item.content === "string" ? [item.content] : item.content;
+		if (segments.every((segment) => SAFE_BASE64.test(segment))) {
+			parts.push('{"filename":', JSON.stringify(item.filename), ',"content":"', ...segments, '"}');
 		} else {
-			parts.push('{"filename":', JSON.stringify(item.filename), ',"content":', JSON.stringify(item.content), "}");
+			parts.push('{"filename":', JSON.stringify(item.filename), ',"content":', JSON.stringify(segments.join("")), "}");
 		}
 	}
 	parts.push("]}");
@@ -657,7 +641,7 @@ export async function handleMailOutbox(request: Request, outbox: MailOutbox): Pr
 		let providerMessageId: string;
 		try {
 			// Each file in base64 as soon as it is read, without a copy: its bytes are dropped before the next one.
-			const contents: string[] = [];
+			const contents: string[][] = [];
 			if (job.attachments.length > 0) {
 				objects ??= outbox.objects?.(presented);
 				for (const file of job.attachments) {
