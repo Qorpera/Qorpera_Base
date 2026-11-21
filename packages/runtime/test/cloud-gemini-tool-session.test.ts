@@ -10,6 +10,7 @@ import {
 	runCloudGeminiToolSession,
 } from "@qorpera/runtime/cloud-gemini-tool-session";
 import { type CloudNativeTool, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { cloudRunWorkComposer } from "@qorpera/runtime/memory-tree/run-work";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
@@ -531,5 +532,195 @@ describe("runCloudGeminiToolSession", () => {
 		expect(contents).toHaveLength(1);
 		expect(contents[0]?.role).toBe("user");
 		expect(contents[0]?.parts).toEqual([{ text: "Finish the task" }, { text: workEnvelope }]);
+	});
+
+	it("folds earlier mixed text and tool-call turns through cloudRunWorkComposer without orphaned functionCall parts", async () => {
+		const bigText = "A".repeat(36_000);
+		const boundary = makeBoundary([
+			{
+				name: "big_read",
+				description: "Read a chunk",
+				source: "company_file",
+				inputSchema: {
+					type: "object",
+					additionalProperties: false,
+					properties: { part: { type: "integer" } },
+					required: ["part"],
+				},
+				parseArguments: (args) => args,
+				execute: async (args) => {
+					const part = (args as { part: number }).part;
+					return { kind: "text", value: part === 1 ? bigText : "small-part-2" };
+				},
+			},
+		]);
+		const composer = cloudRunWorkComposer({
+			steps: async () => [
+				{ j: 0, call: "call_1" },
+				{ j: 1, call: "call_2" },
+			],
+			lines: async (r) => (r >= 1 ? ["0+1|Read part 1"] : []),
+		});
+		const { baseUrl, requests } = await startMockGemini((_req, index) => {
+			if (index === 0) {
+				return {
+					body: {
+						candidates: [
+							{
+								content: {
+									role: "model",
+									parts: [
+										{ thought: true, text: "Thinking about part 1" },
+										{ text: "Checking part 1..." },
+										{
+											functionCall: { id: "call_1", name: "big_read", args: { part: 1 } },
+											thoughtSignature: "sig-1",
+										},
+									],
+								},
+							},
+						],
+						usageMetadata: { promptTokenCount: 1000, candidatesTokenCount: 40 },
+					},
+				};
+			}
+			if (index === 1) {
+				return {
+					body: {
+						candidates: [
+							{
+								content: {
+									role: "model",
+									parts: [
+										{ text: "Checking part 2..." },
+										{
+											functionCall: { id: "call_2", name: "big_read", args: { part: 2 } },
+											thoughtSignature: "sig-2",
+										},
+									],
+								},
+							},
+						],
+						usageMetadata: { promptTokenCount: 10_000, candidatesTokenCount: 40 },
+					},
+				};
+			}
+			return {
+				body: {
+					candidates: [{ content: { role: "model", parts: [{ text: "Both parts checked." }] } }],
+					usageMetadata: { promptTokenCount: 2000, candidatesTokenCount: 20 },
+				},
+			};
+		});
+
+		await runCloudGeminiToolSession({
+			boundary,
+			model: "gemini-4-neon",
+			effort: "high",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: baseUrl,
+			allowLoopback: true,
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			prompt: "Read both parts",
+			composeContext: composer,
+			signal: AbortSignal.timeout(10_000),
+		});
+
+		expect(requests).toHaveLength(3);
+		const thirdContents = requests[2]?.body.contents as Array<{
+			role: string;
+			parts: Array<Record<string, unknown>>;
+		}>;
+		expect(thirdContents.map((entry) => entry.role)).toEqual(["user", "model", "user"]);
+		expect(thirdContents[0]?.parts).toHaveLength(2);
+		expect(String(thirdContents[0]?.parts[1]?.text)).toContain("0+1|Read part 1");
+		expect(thirdContents[1]?.parts).toEqual([
+			{ text: "Checking part 2..." },
+			{
+				functionCall: { id: "call_2", name: "big_read", args: { part: 2 } },
+				thoughtSignature: "sig-2",
+			},
+		]);
+		const callIds = thirdContents.flatMap((entry) =>
+			entry.parts
+				.map((part) => (part.functionCall as { id?: string } | undefined)?.id)
+				.filter((id): id is string => Boolean(id)),
+		);
+		const responseIds = thirdContents.flatMap((entry) =>
+			entry.parts
+				.map((part) => (part.functionResponse as { id?: string } | undefined)?.id)
+				.filter((id): id is string => Boolean(id)),
+		);
+		expect(callIds).toEqual(["call_2"]);
+		expect(responseIds).toEqual(["call_2"]);
+	});
+
+	it("drops folded function_call parts at part granularity even when the same response's visible text is kept", async () => {
+		const boundary = makeBoundary([
+			{
+				name: "step_read",
+				description: "Read step",
+				source: "company_file",
+				inputSchema: { type: "object", additionalProperties: false },
+				parseArguments: () => ({}),
+				execute: async () => ({ kind: "text", value: "ok" }),
+			},
+		]);
+		const workEnvelope = JSON.stringify({ schema: "qorpera.run-work/v1", lines: ["0+1|Folded call_1"] });
+		const { baseUrl, requests } = await startMockGemini((_req, index) => {
+			if (index === 0) {
+				return {
+					body: {
+						candidates: [
+							{
+								content: {
+									role: "model",
+									parts: [
+										{ text: "Let me check..." },
+										{ functionCall: { id: "call_1", name: "step_read", args: {} } },
+									],
+								},
+							},
+						],
+						usageMetadata: { promptTokenCount: 300, candidatesTokenCount: 20 },
+					},
+				};
+			}
+			return {
+				body: {
+					candidates: [{ content: { role: "model", parts: [{ text: "Finished." }] } }],
+					usageMetadata: { promptTokenCount: 300, candidatesTokenCount: 10 },
+				},
+			};
+		});
+
+		await runCloudGeminiToolSession({
+			boundary,
+			model: "gemini-4-neon",
+			effort: "low",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: baseUrl,
+			allowLoopback: true,
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			prompt: "Run one step",
+			composeContext: async (request) => {
+				if (request.items.length <= 1) return { input: request.items.map((_, keep) => ({ keep })) };
+				return { input: [{ keep: 0 }, { keep: 1 }, { work: workEnvelope }] };
+			},
+			signal: AbortSignal.timeout(10_000),
+		});
+
+		expect(requests).toHaveLength(2);
+		const secondContents = requests[1]?.body.contents as Array<{
+			role: string;
+			parts: Array<Record<string, unknown>>;
+		}>;
+		expect(secondContents).toEqual([
+			{ role: "user", parts: [{ text: "Run one step" }] },
+			{ role: "model", parts: [{ text: "Let me check..." }] },
+			{ role: "user", parts: [{ text: workEnvelope }] },
+		]);
 	});
 });

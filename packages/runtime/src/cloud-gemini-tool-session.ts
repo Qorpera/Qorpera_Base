@@ -388,12 +388,16 @@ async function generateGeminiContent(options: {
 	}
 }
 
-interface GeminiHistoryEntry {
-	readonly content: GeminiContent;
-	readonly items: readonly CloudNativeContextItem[];
+interface GeminiHistoryItem {
+	readonly role: "user" | "model";
+	readonly item: CloudNativeContextItem;
+	readonly parts: readonly GeminiPart[];
 }
 
-function appendMergedContent(target: GeminiContent[], content: GeminiContent): void {
+function appendMergedContent(
+	target: GeminiContent[],
+	content: { role: "user" | "model"; parts: readonly GeminiPart[] },
+): void {
 	const previous = target.at(-1);
 	if (previous && previous.role === content.role) {
 		previous.parts = [...previous.parts, ...content.parts];
@@ -402,8 +406,14 @@ function appendMergedContent(target: GeminiContent[], content: GeminiContent): v
 	target.push({ role: content.role, parts: [...content.parts] });
 }
 
+function mergeHistoryItems(history: readonly GeminiHistoryItem[]): GeminiContent[] {
+	const merged: GeminiContent[] = [];
+	for (const entry of history) appendMergedContent(merged, entry);
+	return merged;
+}
+
 async function composeGeminiContents(
-	history: readonly GeminiHistoryEntry[],
+	history: readonly GeminiHistoryItem[],
 	composer: CloudCodexContextComposer | undefined,
 	context: {
 		readonly requestId: string;
@@ -413,15 +423,7 @@ async function composeGeminiContents(
 	},
 	signal: AbortSignal,
 ): Promise<GeminiContent[]> {
-	if (!composer) return history.map((entry) => entry.content);
-	const items: CloudNativeContextItem[] = [];
-	const itemOwner: number[] = [];
-	for (const [historyIndex, entry] of history.entries()) {
-		for (const item of entry.items) {
-			items.push(item);
-			itemOwner.push(historyIndex);
-		}
-	}
+	if (!composer) return mergeHistoryItems(history);
 	const composed = await composer(
 		{
 			schema: CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
@@ -430,12 +432,11 @@ async function composeGeminiContents(
 			turnId: context.turnId,
 			purpose: "turn",
 			model: context.model,
-			items,
+			items: history.map((entry) => entry.item),
 		},
 		signal,
 	);
 	const result: GeminiContent[] = [];
-	const emitted = new Set<number>();
 	for (const entry of composed.input) {
 		if ("work" in entry) {
 			appendMergedContent(result, {
@@ -444,12 +445,10 @@ async function composeGeminiContents(
 			});
 			continue;
 		}
-		const owner = itemOwner[entry.keep];
-		if (owner === undefined || emitted.has(owner)) continue;
-		emitted.add(owner);
-		appendMergedContent(result, history[owner].content);
+		const kept = history[entry.keep];
+		if (kept) appendMergedContent(result, kept);
 	}
-	return result.length > 0 ? result : history.map((entry) => entry.content);
+	return result.length > 0 ? result : mergeHistoryItems(history);
 }
 
 export async function runCloudGeminiToolSession(options: {
@@ -611,19 +610,18 @@ export async function runCloudGeminiToolSession(options: {
 	}
 
 	try {
-		const history: GeminiHistoryEntry[] = [
+		const history: GeminiHistoryItem[] = [
 			{
-				content: { role: "user", parts: [{ text: initialPrompt }] },
-				items: [
-					{
-						kind: "message",
-						role: "user",
-						callId: null,
-						id: null,
-						bytes: Buffer.byteLength(initialPrompt),
-						media: 0,
-					},
-				],
+				role: "user",
+				parts: [{ text: initialPrompt }],
+				item: {
+					kind: "message",
+					role: "user",
+					callId: null,
+					id: null,
+					bytes: Buffer.byteLength(initialPrompt),
+					media: 0,
+				},
 			},
 		];
 		let pendingFenceInputs: CloudNativeResultInput[] = [];
@@ -681,34 +679,55 @@ export async function runCloudGeminiToolSession(options: {
 			const assignedCallIds = functionCalls.map((call, index) =>
 				call.id !== undefined && CALL_ID.test(call.id) ? call.id : `gemini-${fencedRequests}-${index + 1}`,
 			);
-			if (response.parts.length > 0) {
-				const modelItems: CloudNativeContextItem[] = [];
-				if (visibleText || functionCalls.length === 0) {
-					modelItems.push({
-						kind: "agent_message",
-						role: "assistant",
-						callId: null,
-						id: null,
-						bytes: Buffer.byteLength(visibleText),
-						media: 0,
+			let callCursor = 0;
+			for (const part of response.parts) {
+				if (isPlainObject(part.functionCall) && typeof part.functionCall.name === "string") {
+					const callId = assignedCallIds[callCursor] ?? `gemini-${fencedRequests}-${callCursor + 1}`;
+					callCursor += 1;
+					const args = part.functionCall.args !== undefined ? part.functionCall.args : {};
+					history.push({
+						role: "model",
+						parts: [part],
+						item: {
+							kind: "function_call",
+							role: null,
+							callId,
+							id: null,
+							bytes: Buffer.byteLength(JSON.stringify(args)),
+							media: 0,
+						},
+					});
+				} else if (part.thought === true) {
+					history.push({
+						role: "model",
+						parts: [part],
+						item: {
+							kind: "reasoning",
+							role: null,
+							callId: null,
+							id: null,
+							bytes: Buffer.byteLength(JSON.stringify(part)),
+							media: 0,
+						},
+					});
+				} else {
+					const text = typeof part.text === "string" ? part.text : JSON.stringify(part);
+					history.push({
+						role: "model",
+						parts: [part],
+						item: {
+							kind: "message",
+							role: "assistant",
+							callId: null,
+							id: null,
+							bytes: Buffer.byteLength(text),
+							media: 0,
+						},
 					});
 				}
-				for (const [index, call] of functionCalls.entries()) {
-					modelItems.push({
-						kind: "function_call",
-						role: null,
-						callId: assignedCallIds[index],
-						id: null,
-						bytes: Buffer.byteLength(JSON.stringify(call.args)),
-						media: 0,
-					});
-				}
-				history.push({ content: { role: "model", parts: response.parts }, items: modelItems });
 			}
 
 			if (functionCalls.length > 0) {
-				const responseParts: GeminiPart[] = [];
-				const responseItems: CloudNativeContextItem[] = [];
 				let stopAfterBatch = false;
 				for (const [index, call] of functionCalls.entries()) {
 					sessionSignal.throwIfAborted();
@@ -720,14 +739,7 @@ export async function runCloudGeminiToolSession(options: {
 						(item): item is { type: "inputImage"; imageUrl: string } =>
 							item.type === "inputImage" && item.imageUrl.startsWith(PNG_DATA_URL_PREFIX),
 					);
-					responseItems.push({
-						kind: "function_call_output",
-						role: null,
-						callId,
-						id: null,
-						bytes: Buffer.byteLength(envelopeText),
-						media: imageItem ? 1 : 0,
-					});
+					const callParts: GeminiPart[] = [];
 					if (imageItem) {
 						const base64 = imageItem.imageUrl.slice(PNG_DATA_URL_PREFIX.length);
 						const imageSha256 = createHash("sha256").update(Buffer.from(base64, "base64")).digest("hex");
@@ -739,14 +751,14 @@ export async function runCloudGeminiToolSession(options: {
 								{ type: "input_image", sha256: imageSha256 },
 							],
 						});
-						responseParts.push({
+						callParts.push({
 							functionResponse: {
 								...(call.id ? { id: call.id } : {}),
 								name: call.name,
 								response: { output: envelopeText },
 							},
 						});
-						responseParts.push({
+						callParts.push({
 							inlineData: { mimeType: "image/png", data: base64 },
 						});
 					} else {
@@ -755,7 +767,7 @@ export async function runCloudGeminiToolSession(options: {
 							callId,
 							output: envelopeText,
 						});
-						responseParts.push({
+						callParts.push({
 							functionResponse: {
 								...(call.id ? { id: call.id } : {}),
 								name: call.name,
@@ -763,10 +775,21 @@ export async function runCloudGeminiToolSession(options: {
 							},
 						});
 					}
+					history.push({
+						role: "user",
+						parts: callParts,
+						item: {
+							kind: "function_call_output",
+							role: null,
+							callId,
+							id: null,
+							bytes: Buffer.byteLength(envelopeText),
+							media: imageItem ? 1 : 0,
+						},
+					});
 					if (result.completesTurn === true || (result.completesTurn === "alone" && functionCalls.length === 1))
 						stopAfterBatch = true;
 				}
-				history.push({ content: { role: "user", parts: responseParts }, items: responseItems });
 				if (stopAfterBatch) break;
 				continue;
 			}
@@ -777,23 +800,23 @@ export async function runCloudGeminiToolSession(options: {
 					correctionSent = true;
 					if (response.parts.length === 0) {
 						history.push({
-							content: { role: "model", parts: [{ text: "" }] },
-							items: [{ kind: "agent_message", role: "assistant", callId: null, id: null, bytes: 0, media: 0 }],
+							role: "model",
+							parts: [{ text: "" }],
+							item: { kind: "message", role: "assistant", callId: null, id: null, bytes: 0, media: 0 },
 						});
 					}
 					const redactedCorrection = redactCloudWebhookSecrets(correction);
 					history.push({
-						content: { role: "user", parts: [{ text: redactedCorrection }] },
-						items: [
-							{
-								kind: "message",
-								role: "user",
-								callId: null,
-								id: null,
-								bytes: Buffer.byteLength(redactedCorrection),
-								media: 0,
-							},
-						],
+						role: "user",
+						parts: [{ text: redactedCorrection }],
+						item: {
+							kind: "message",
+							role: "user",
+							callId: null,
+							id: null,
+							bytes: Buffer.byteLength(redactedCorrection),
+							media: 0,
+						},
 					});
 					continue;
 				}
@@ -810,6 +833,8 @@ export async function runCloudGeminiToolSession(options: {
 		};
 	} finally {
 		options.reviewer?.attach(undefined);
+		// WHY: qorpera_record_gemini_run_usage requires an active lease, so if this attempt was cut off and superseded
+		// before its final response flushed, this retry is refused and logged rather than blocking teardown.
 		if (options.onUsage && usageDirty) {
 			const flushed = await flushUsage(AbortSignal.timeout(10_000));
 			if (!flushed) {
