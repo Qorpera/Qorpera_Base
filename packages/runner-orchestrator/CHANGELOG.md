@@ -333,6 +333,7 @@ Code no production path called, deleted with the tests that alone kept it alive 
 
 ### Changed
 - Desktop stream PNG encoding (`encodePng` in `company-machine-stream.ts`) fuses BGRA channel reordering and PNG Sub row filtering into one pass, yields the event loop via `setImmediate` before single-threaded level-3 `zlib.deflateSync` (staying strictly single-threaded under `CPUQuota=100%` without libuv CFS throttling while preventing sub-turn `1600x36` Xvnc bands from chaining in one turn), and assembles IHDR/IDAT/IEND directly into a single buffer.
+- `SharedExecutionProviderBackend` scopes `#serial` to slot/journal state transitions, uses per-run (`#runLocks`) and per-slot (`#slotLocks`) mutexes so distinct slots provision, materialize, wipe, and retire concurrently without racing `#retire()` or duplicate `acquire()`, runs independent slot credential/directory operations in parallel (`Promise.allSettled`), and updates the shared-execution service bundle pin in `install-shared-execution-guest.sh`.
 - A site's name follows the name rule D20 (own code storage, step 5, release 5.1, part X1): no two hyphens in a row,
   not ending `-preview`, not holding `qorpera`, and none of 118 reserved names, `CODE_SITE_RESERVED_NAMES`, which is
   `qorpera_site_reserved_names()`'s text byte for byte (a test pins its SHA-256 and compares it with the migration). A

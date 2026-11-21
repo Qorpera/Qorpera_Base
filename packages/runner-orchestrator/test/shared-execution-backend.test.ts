@@ -177,6 +177,9 @@ async function fixture(
 		warmIdleMs?: number;
 		folderSearch?: boolean;
 		executionHostCredential?: string;
+		runnerIdFor?: (runId: string) => string;
+		onRpc?: (name: string, body: Record<string, unknown>) => Promise<void> | void;
+		onIdentityAuthority?: (runId?: string) => Promise<void> | void;
 	} = {},
 ): Promise<Fixture> {
 	const stateRoot = join(await root(), "state");
@@ -296,6 +299,7 @@ async function fixture(
 				return new Response("a direct database call", { status: 403 });
 			}
 			state.rpc.push({ name, body });
+			await options.onRpc?.(name, body);
 			if (name === "qorpera_compute_identity_login_in_vault") return Response.json(state.loginInVault);
 			if (name === "qorpera_runtime_ended_runners")
 				return state.endedRunners === undefined
@@ -310,7 +314,7 @@ async function fixture(
 				state.activations.set(String(body.p_client_runner_id), String(body.p_activation_token_sha256));
 				state.provisioned++;
 				return Response.json({
-					runner_id: runnerId,
+					runner_id: options.runnerIdFor ? options.runnerIdFor(String(body.p_run_id)) : runnerId,
 					runner_kind: "qorpera_computer",
 					provider_adapter: "native26-test",
 					status: "provisioned",
@@ -371,7 +375,10 @@ async function fixture(
 	state.backend = new SharedExecutionProviderBackend(config, {
 		fetch: fakeFetch as typeof fetch,
 		units: state.units,
-		identityAuthority: async () => state.identityState,
+		identityAuthority: async (_id, _signal, activeRunId) => {
+			await options.onIdentityAuthority?.(activeRunId);
+			return state.identityState;
+		},
 		account: async () => ({ uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 }),
 		...(options.mountInfoPath
 			? { requireIdentityMount: true, mountInfoPath: options.mountInfoPath }
@@ -1135,6 +1142,134 @@ describe("shared execution provider backend", () => {
 		await stopping;
 		expect(await journal(f)).toMatchObject({ physicalState: "stopped", stopReason: "revoked" });
 	});
+
+	it("acquires distinct slots in parallel without holding the service lock across RPCs or material writes", async () => {
+		const f = await fixture({ slotCount: 4 });
+		const signal = new AbortController().signal;
+		const stateRoot = join(await root(), "state");
+		const runRoot = join(await root(), "run");
+		const identityRoot = f.identityRoot;
+		const units = new FakeUnits();
+		let inFlightProvisions = 0;
+		let maxConcurrentProvisions = 0;
+		let allFourProvisioning: () => void = () => undefined;
+		const fourEntered = new Promise<void>((resolveWait) => {
+			allFourProvisioning = resolveWait;
+		});
+		let releaseProvisions: () => void = () => undefined;
+		const gateProvisions = new Promise<void>((resolveWait) => {
+			releaseProvisions = resolveWait;
+		});
+		let runnerSeq = 0;
+		const gatedFetch = async (input: string | URL, init?: RequestInit): Promise<Response> => {
+			const url = new URL(String(input));
+			if (url.pathname.startsWith("/rest/v1/rpc/")) {
+				const outer = JSON.parse(String(init?.body)) as { p_name: string; p_args: Record<string, unknown> };
+				const name = outer.p_name;
+				const body = outer.p_args;
+				if (name === "qorpera_compute_identity_login_in_vault") return Response.json(false);
+				if (name === "qorpera_provision_execution_runner") {
+					inFlightProvisions++;
+					maxConcurrentProvisions = Math.max(maxConcurrentProvisions, inFlightProvisions);
+					if (inFlightProvisions === 4) allFourProvisioning();
+					await gateProvisions;
+					inFlightProvisions--;
+					return Response.json({
+						runner_id: `30000000-0000-4000-8009-${String(++runnerSeq).padStart(12, "0")}`,
+						runner_kind: "qorpera_computer",
+						provider_adapter: "native26-test",
+						status: "provisioned",
+						compute_identity_id: computeIdentityId,
+						logical_computer_id: null,
+						worker_class: "managed_sandbox",
+						template_key: "qorpera-member-linux",
+						template_version: "v1",
+						compute_policy_sha256: "f".repeat(64),
+						capabilities: ["agent_turn"],
+					});
+				}
+				if (name === "qorpera_reserve_runtime_machine")
+					return Response.json({
+						state: "reserved",
+						allocationId: body.p_allocation_id,
+						instanceSha256: body.p_instance_sha256,
+					});
+				if (name === "qorpera_bind_native_identity_credential")
+					return Response.json({ allocationId: body.p_allocation_id, holderKind: body.p_holder_kind });
+				if (name === "qorpera_release_runtime_machine")
+					return Response.json({
+						state: "released",
+						allocationId: body.p_allocation_id,
+						instanceSha256: body.p_instance_sha256,
+					});
+			}
+			if (url.hostname === "127.0.0.1" && url.pathname === "/healthz") return Response.json({ ok: true });
+			return new Response("not found", { status: 404 });
+		};
+		const backend = new SharedExecutionProviderBackend(
+			{
+				adapterId: "native26-test",
+				hostId: "qorpera-exec-test",
+				supabaseUrl: "https://project.supabase.test",
+				supabasePublishableKey: "publishable-key",
+				executionHostCredential: hostCredential,
+				stateRoot,
+				runRoot,
+				identityRoot,
+				slotCount: 4,
+				portBase: 20_000,
+				hostUnitPrefix: "qorpera-shared-run-host@",
+				runnerUnitPrefix: "qorpera-shared-runner@",
+				hostAccountPrefix: "qorpera-shared-host",
+				runnerAccountPrefix: "qorpera-shared-runner",
+				runnerImage: `localhost/qorpera/sandbox-probe:test@sha256:${"1".repeat(64)}`,
+				runnerPodmanPath: "/usr/bin/podman",
+				runnerEntrypoint: "/qorpera/bin/run-job",
+				runnerVersion: "test",
+				codexPath: "/opt/qorpera-harnesses/native-company/codex",
+				claudePath: "/usr/local/bin/claude",
+				nativeCompanyRuntime: f.runtime,
+				startTimeoutMs: 5000,
+			},
+			{
+				fetch: gatedFetch as typeof fetch,
+				units,
+				identityAuthority: async () => f.identityState,
+				account: async () => ({ uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 }),
+				requireIdentityMount: false,
+				identityOwnerUid: process.getuid?.() ?? 0,
+			},
+		);
+		const runIds = [1, 2, 3, 4].map((n) => `30000000-0000-4000-8000-00000000010${n}`);
+		const fifthRun = "30000000-0000-4000-8000-000000000105";
+		const acquires = runIds.map((id) => backend.acquire(id, work({ runId: id, sourceId: id }), signal));
+		await Promise.race([
+			fourEntered,
+			delay(2000).then(() => {
+				throw new Error(`Expected 4 concurrent provisions, saw max=${maxConcurrentProvisions}`);
+			}),
+		]);
+		expect(maxConcurrentProvisions).toBe(4);
+		const fifthError = await backend
+			.acquire(fifthRun, work({ runId: fifthRun, sourceId: fifthRun }), signal)
+			.catch((error) => error);
+		expect(fifthError).toBeInstanceOf(ProviderAdmissionRefused);
+		expect(fifthError).toMatchObject({ reason: "SANDBOX_CAPACITY_EXHAUSTED" });
+		await backend.reconcile(signal);
+		releaseProvisions();
+		const runners = await Promise.all(acquires);
+		expect(runners).toHaveLength(4);
+		const slots = new Set<number>();
+		for (const id of runIds) {
+			const record = JSON.parse(await readFile(join(stateRoot, "journals", `${id}.json`), "utf-8")) as {
+				slot: number;
+				physicalState: string;
+			};
+			expect(record.physicalState).toBe("registered");
+			slots.add(record.slot);
+		}
+		expect(slots).toEqual(new Set([0, 1, 2, 3]));
+	});
 });
 
 describe("warm conversations", () => {
@@ -1312,5 +1447,264 @@ describe("warm conversations", () => {
 			signal,
 		);
 		expect(f.units.log).toEqual([`kill ${hostUnit(0)}`, `start ${hostUnit(0)}`, `start ${runnerUnit(0)}`]);
+	});
+
+	it("serializes concurrent duplicate acquire() of the same run via per-slot lock without retiring the live sandbox", async () => {
+		let inMaterial!: () => void;
+		let releaseMaterial!: () => void;
+		const entered = new Promise<void>((resolve) => {
+			inMaterial = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			releaseMaterial = resolve;
+		});
+		let authorityCalls = 0;
+		const f = await fixture({
+			onIdentityAuthority: async () => {
+				authorityCalls++;
+				inMaterial();
+				await gate;
+			},
+		});
+		const signal = new AbortController().signal;
+		const first = f.backend.acquire(runId, work(), signal);
+		await entered;
+		const second = f.backend.acquire(runId, work(), signal);
+		await new Promise<void>((resolve) => setTimeout(resolve, 20));
+		releaseMaterial();
+		const [r1, r2] = await Promise.all([first, second]);
+		expect(r1.runnerId).toBe(runnerId);
+		expect(r2.runnerId).toBe(runnerId);
+		expect(authorityCalls).toBe(1);
+		expect(f.units.activeUnits.has(hostUnit(0))).toBe(true);
+		expect(f.units.activeUnits.has(runnerUnit(0))).toBe(true);
+	});
+
+	it("serializes stop() during materialization against slot wipe and never resurrects an archived journal", async () => {
+		let inMaterial!: () => void;
+		let releaseMaterial!: () => void;
+		const entered = new Promise<void>((resolve) => {
+			inMaterial = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			releaseMaterial = resolve;
+		});
+		let holdFirst = true;
+		const f = await fixture({
+			slotCount: 1,
+			runnerIdFor: (id) => (id === runId ? runnerId : "30000000-0000-4000-8000-000000000099"),
+			onIdentityAuthority: async (id) => {
+				if (holdFirst && id === runId) {
+					holdFirst = false;
+					inMaterial();
+					await gate;
+				}
+			},
+		});
+		const signal = new AbortController().signal;
+		const first = f.backend.acquire(runId, work(), signal);
+		await entered;
+		const stopping = f.backend.stop(
+			{
+				runnerId,
+				computeIdentityId,
+				workerClass: "managed_sandbox",
+				providerAdapter: "native26-test",
+				capabilities: ["agent_turn"],
+				templateKey: "qorpera-member-linux",
+				templateVersion: "v1",
+				policySha256: "f".repeat(64),
+			},
+			"revoked",
+			signal,
+		);
+		await new Promise<void>((resolve) => setTimeout(resolve, 20));
+		releaseMaterial();
+		await expect(first).rejects.toThrow("Shared execution sandbox stopped before start");
+		await stopping;
+		expect(await liveJournalNames(f)).toEqual([]);
+		expect(f.units.activeUnits.size).toBe(0);
+		const runTwo = await f.backend.acquire(secondRun, work({ runId: secondRun, sourceId: secondRun }), signal);
+		expect(runTwo.runnerId).toBe("30000000-0000-4000-8000-000000000099");
+		expect(f.units.activeUnits.has(hostUnit(0))).toBe(true);
+	});
+
+	it("keeps an unexpired warm slot parked when a concurrent claim fails while reconcile() runs", async () => {
+		let inProvision!: () => void;
+		let releaseProvision!: () => void;
+		const entered = new Promise<void>((resolve) => {
+			inProvision = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			releaseProvision = resolve;
+		});
+		const f = await fixture({
+			warmIdleMs: 300_000,
+			onRpc: async (name, body) => {
+				if (name === "qorpera_provision_execution_runner" && body.p_run_id === secondRun) {
+					inProvision();
+					await gate;
+				}
+			},
+		});
+		const signal = new AbortController().signal;
+		await f.backend.acquire(runId, work(), signal);
+		await finishRun(f);
+		f.activations.set(sharedExecutionAcquisitionId(secondRun, 1), "a".repeat(64));
+		const failingClaim = f.backend.acquire(secondRun, work({ runId: secondRun, sourceId: secondRun }), signal);
+		await entered;
+		const reconciling = f.backend.reconcile(signal);
+		await new Promise<void>((resolve) => setTimeout(resolve, 20));
+		releaseProvision();
+		await expect(failingClaim).rejects.toThrow();
+		await reconciling;
+		expect(await readdir(join(f.stateRoot, "warm"))).toEqual(["0.json"]);
+		expect(f.units.activeUnits.has(hostUnit(0))).toBe(true);
+	});
+
+	it("releases a claimed slot when provisioning fails and overlaps concurrent retirements across distinct slots", async () => {
+		const single = await fixture({ slotCount: 1 });
+		const signal = new AbortController().signal;
+		single.activations.set(sharedExecutionAcquisitionId(runId, 1), "a".repeat(64));
+		await expect(single.backend.acquire(runId, work(), signal)).rejects.toThrow();
+		const reused = await single.backend.acquire(secondRun, work({ runId: secondRun, sourceId: secondRun }), signal);
+		expect(reused.runnerId).toBe(runnerId);
+
+		let inRelease = 0;
+		let maxRelease = 0;
+		let bothInRelease!: () => void;
+		const reachedBoth = new Promise<void>((resolve) => {
+			bothInRelease = resolve;
+		});
+		const pair = await fixture({
+			slotCount: 2,
+			runnerIdFor: (id) => (id === runId ? runnerId : "30000000-0000-4000-8000-000000000099"),
+			onRpc: async (name) => {
+				if (name !== "qorpera_release_runtime_machine") return;
+				inRelease++;
+				maxRelease = Math.max(maxRelease, inRelease);
+				if (inRelease === 2) bothInRelease();
+				await reachedBoth;
+				inRelease--;
+			},
+		});
+		const [r1, r2] = await Promise.all([
+			pair.backend.acquire(runId, work(), signal),
+			pair.backend.acquire(secondRun, work({ runId: secondRun, sourceId: secondRun }), signal),
+		]);
+		await Promise.all([pair.backend.stop(r1, "revoked", signal), pair.backend.stop(r2, "revoked", signal)]);
+		expect(maxRelease).toBe(2);
+		expect(await liveJournalNames(pair)).toEqual([]);
+	});
+
+	it("does not resurrect an archived journal or disturb a reused slot when stop() retires during qorpera_reserve_runtime_machine", async () => {
+		let inReserve!: () => void;
+		let releaseReserve!: () => void;
+		const entered = new Promise<void>((resolve) => {
+			inReserve = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			releaseReserve = resolve;
+		});
+		let holdFirstReserve = true;
+		let releasesForFirst = 0;
+		const firstAcq = sharedExecutionAcquisitionId(runId, 1);
+		const f = await fixture({
+			slotCount: 1,
+			runnerIdFor: (id) => (id === runId ? runnerId : "30000000-0000-4000-8000-000000000099"),
+			onRpc: async (name, body) => {
+				if (name === "qorpera_reserve_runtime_machine" && holdFirstReserve && body.p_allocation_id === firstAcq) {
+					holdFirstReserve = false;
+					inReserve();
+					await gate;
+				}
+				if (name === "qorpera_release_runtime_machine" && body.p_allocation_id === firstAcq) {
+					releasesForFirst++;
+				}
+			},
+		});
+		const signal = new AbortController().signal;
+		const first = f.backend.acquire(runId, work(), signal);
+		await entered;
+		f.release = "refused";
+		await f.backend.stop(
+			{
+				runnerId,
+				computeIdentityId,
+				workerClass: "managed_sandbox",
+				providerAdapter: "native26-test",
+				capabilities: ["agent_turn"],
+				templateKey: "qorpera-member-linux",
+				templateVersion: "v1",
+				policySha256: "f".repeat(64),
+			},
+			"revoked",
+			signal,
+		);
+		expect(await liveJournalNames(f)).toEqual([]);
+		f.release = "released";
+		const runTwo = await f.backend.acquire(secondRun, work({ runId: secondRun, sourceId: secondRun }), signal);
+		expect(runTwo.runnerId).toBe("30000000-0000-4000-8000-000000000099");
+		f.units.log.length = 0;
+		releaseReserve();
+		await expect(first).rejects.toThrow("Shared execution sandbox stopped before start");
+		expect(await liveJournalNames(f)).toEqual([`${sharedExecutionAcquisitionId(secondRun, 1)}.json`]);
+		expect(f.units.activeUnits.has(hostUnit(0))).toBe(true);
+		expect(f.units.activeUnits.has(runnerUnit(0))).toBe(true);
+		expect(f.units.log).toEqual([]);
+		expect(releasesForFirst).toBe(2);
+	});
+
+	it("keeps a live sandbox intact when a duplicate acquire's reserve RPC returns after the first acquire registered", async () => {
+		let aInReserve!: () => void;
+		let releaseA!: () => void;
+		let bInReserve!: () => void;
+		let releaseB!: () => void;
+		const aEntered = new Promise<void>((resolve) => {
+			aInReserve = resolve;
+		});
+		const gateA = new Promise<void>((resolve) => {
+			releaseA = resolve;
+		});
+		const bEntered = new Promise<void>((resolve) => {
+			bInReserve = resolve;
+		});
+		const gateB = new Promise<void>((resolve) => {
+			releaseB = resolve;
+		});
+		let reserveCalls = 0;
+		let releaseCalls = 0;
+		const f = await fixture({
+			slotCount: 1,
+			onRpc: async (name) => {
+				if (name === "qorpera_reserve_runtime_machine") {
+					reserveCalls++;
+					if (reserveCalls === 1) {
+						aInReserve();
+						await gateA;
+					} else if (reserveCalls === 2) {
+						bInReserve();
+						await gateB;
+					}
+				}
+				if (name === "qorpera_release_runtime_machine") {
+					releaseCalls++;
+				}
+			},
+		});
+		const signal = new AbortController().signal;
+		const first = f.backend.acquire(runId, work(), signal);
+		await aEntered;
+		const second = f.backend.acquire(runId, work(), signal);
+		await bEntered;
+		releaseA();
+		const runnerA = await first;
+		releaseB();
+		const runnerB = await second;
+		expect(runnerB).toEqual(runnerA);
+		expect(releaseCalls).toBe(0);
+		expect(f.units.activeUnits.has(hostUnit(0))).toBe(true);
+		expect(f.units.activeUnits.has(runnerUnit(0))).toBe(true);
+		expect(await liveJournalNames(f)).toEqual([`${sharedExecutionAcquisitionId(runId, 1)}.json`]);
 	});
 });
