@@ -3289,7 +3289,7 @@ describe("the composer's microphone", () => {
 						userId: userB.id,
 						email: "ada@example.test",
 						displayName: "Ada Lovelace",
-						role: "member",
+						role: "contributor",
 						joinedAt: timestamp,
 					},
 				],
