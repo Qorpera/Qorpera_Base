@@ -603,4 +603,55 @@ describe("cloud object outage continuity", () => {
 		await fixture.authority.probeHealth();
 		expect((await fixture.request("/healthz")).status).toBe(200);
 	});
+
+	it("reconciles pending objects concurrently up to the cap, coalesces audit syncs, and skips cached deleted tombstones", async () => {
+		const fixture = await gateway();
+		const items = Array.from({ length: 12 }, (_, index) => {
+			const body = Buffer.from(`concurrent-replication-object-${index}`);
+			return { body, hash: createHash("sha256").update(body).digest("hex") };
+		});
+		for (const item of items) {
+			expect(await fixture.upload(item.hash, item.body)).toBe("stored");
+		}
+		let inFlight = 0;
+		let peak = 0;
+		const writeReplica = fixture.authority.writeReplica.bind(fixture.authority);
+		vi.spyOn(fixture.authority, "writeReplica").mockImplementation(async (profile, hash, data) => {
+			inFlight++;
+			peak = Math.max(peak, inFlight);
+			await new Promise((resolve) => setTimeout(resolve, 15));
+			try {
+				await writeReplica(profile, hash, data);
+			} finally {
+				inFlight--;
+			}
+		});
+		const auditSpy = vi.spyOn(fixture.journal, "audit");
+		const writeSpy = vi.spyOn(fixture.journal, "write");
+		await fixture.replication.reconcile();
+		expect(peak).toBe(4);
+		expect(writeSpy).not.toHaveBeenCalled();
+		expect(fixture.cloud.replicas.size).toBe(12);
+		expect(await fixture.replication.status()).toEqual({ pending: 0, blocked: 0, degraded: false });
+		expect(auditSpy.mock.calls.length).toBeLessThanOrEqual(13);
+
+		const deletedBody = Buffer.from("tombstone-object");
+		const deletedHash = createHash("sha256").update(deletedBody).digest("hex");
+		expect(await fixture.upload(deletedHash, deletedBody)).toBe("stored");
+		fixture.cloud.deletion = true;
+		await fixture.replication.remove(profileId, deletedHash, deletedBody.length, authorizationId);
+		fixture.cloud.deletion = false;
+		const readSpy = vi.spyOn(fixture.journal, "read");
+		expect(await fixture.replication.status()).toEqual({ pending: 0, blocked: 0, degraded: false });
+		expect(readSpy).not.toHaveBeenCalled();
+
+		fixture.cloud.catalog.set(`${profileId}/${deletedHash}`, {
+			backend: "supabase-storage",
+			bytes: deletedBody.length,
+		});
+		fixture.cloud.replicas.set(`${profileId}/${deletedHash}`, Uint8Array.from(deletedBody));
+		await fixture.replication.reconcile();
+		expect(Buffer.from(await fixture.objects.get(profileId, deletedHash, deletedBody.length))).toEqual(deletedBody);
+		expect(await fixture.replication.status()).toEqual({ pending: 0, blocked: 0, degraded: false });
+	});
 });

@@ -194,20 +194,28 @@ if (process.argv[2] === "migrate") {
 } else {
 	const host = process.env.QORPERA_OBJECT_GATEWAY_HOST?.trim() || "127.0.0.1";
 	const server = createServer({ requestTimeout: 15_000, headersTimeout: 10_000 }, handler);
+	// WHY: Keep readiness health probes independent of slow reconciliation so /readyz never ages out during bursts.
+	let probing = false;
+	const probe = async (): Promise<void> => {
+		if (probing) return;
+		probing = true;
+		try {
+			await Promise.all([authority.probeHealth(), store.probe()]);
+		} catch {
+			process.stderr.write("Object gateway health probe requires operator attention\n");
+		} finally {
+			probing = false;
+		}
+	};
+	const probes = setInterval(() => {
+		void probe();
+	}, 15_000);
 	let maintaining = false;
 	const maintain = async (): Promise<void> => {
 		if (maintaining) return;
 		maintaining = true;
 		try {
-			await Promise.all([
-				authority.probeHealth(),
-				// One after another, so the probe and the scan never take both NAS slots at once; folder GC's quarantine
-				// before the reconcile, so a replicate entry the scan writes finds its object back in place.
-				store
-					.probe()
-					.then(() => folderGc.recover())
-					.then(() => replication.reconcile()),
-			]);
+			await folderGc.recover().then(() => replication.reconcile());
 		} catch {
 			process.stderr.write("Object gateway maintenance requires operator attention\n");
 		} finally {
@@ -217,7 +225,7 @@ if (process.argv[2] === "migrate") {
 	const maintenance = setInterval(() => {
 		void maintain();
 	}, 15_000);
-	void maintain();
+	void probe().then(() => maintain());
 	// Stored objects' audit lines are in memory at most this long, however long a maintenance pass takes.
 	let writingLines = false;
 	const storedLineWrites = setInterval(() => {
@@ -337,6 +345,7 @@ if (process.argv[2] === "migrate") {
 
 	for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		process.on(signal, () => {
+			clearInterval(probes);
 			clearInterval(maintenance);
 			clearInterval(storedLineWrites);
 			clearInterval(connectionFileWrites);
