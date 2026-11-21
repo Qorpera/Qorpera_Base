@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import type { CloudCodingRepository } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CodeChangeRecords } from "../src/code-change-records.ts";
 import {
 	CODE_CHECKS_MAIN_MOVED,
 	type CodeCheck,
@@ -30,6 +31,7 @@ import {
 	landCodeBranch,
 	retireCodeWorktrees,
 	startCodeArea,
+	writeCodeChangeRecords,
 } from "../src/code-host-jobs.ts";
 import {
 	CODE_CHANGE_RECORD_MS,
@@ -2451,5 +2453,404 @@ describe("the repository's checks before a landing (own code storage, step 3)", 
 				]);
 			}
 		});
+	});
+});
+
+describe("per-repository landing queue and inline record batching", () => {
+	const CHECKS_JSON = `${JSON.stringify({ checks: [{ name: "test", run: "npm test" }] }, null, "\t")}\n`;
+	const PASSED_RUN: Extract<CodeChecksRun, { state: "passed" }> = {
+		state: "passed",
+		ms: 100,
+		copyMs: 10,
+		checks: [{ name: "test", run: "npm test", ms: 90 }],
+		site: null,
+	};
+
+	function resetMocks() {
+		for (const mock of [
+			landCodeBranch,
+			readCodeChecks,
+			codeChecksGate,
+			codeChecksPassed,
+			codeChecksFailedSummary,
+			codeChecksNotRunSummary,
+		])
+			vi.mocked(mock).mockReset();
+	}
+
+	async function startCheckedRepo(
+		f: Awaited<ReturnType<typeof fixture>>,
+		repository: CloudCodingRepository,
+		repositories: CodeHostRepositories,
+	) {
+		const claim = { ...f.session.claim, repository, baseSha: null };
+		const { baseSha } = await repositories.start({ claim, assertAuthorized: f.authorized }, signal());
+		const initWorkerId = randomUUID();
+		const initSession: CodingFolderRepositorySession = {
+			...f.session,
+			claim: { ...claim, workerId: initWorkerId, branch: `qorpera/coding/${initWorkerId}` },
+			baseSha,
+		};
+		await repositories.prepare(initSession, signal());
+		const initTree = join(
+			f.companyRoot,
+			`code/${repository.owner.toLowerCase()}/${repository.name.toLowerCase()}/worktrees/${initWorkerId}`,
+		);
+		await mkdir(join(initTree, ".qorpera"), { recursive: true });
+		await writeFile(join(initTree, ".qorpera/checks.json"), CHECKS_JSON);
+		await f.git(initTree, "add", ".qorpera/checks.json");
+		const checksBase = await f.commit(initTree, "base.js");
+		await repositories.land(initSession, checksBase, signal());
+		return checksBase;
+	}
+
+	async function makeWorkerSession(
+		f: Awaited<ReturnType<typeof fixture>>,
+		repository: CloudCodingRepository,
+		baseSha: string,
+		repositories: CodeHostRepositories,
+		hooks: Pick<CodingFolderRepositorySession, "checksSwitch" | "runChecks" | "recordChange">,
+	) {
+		const workerId = randomUUID();
+		const claim: CodingSessionClaim = {
+			...f.session.claim,
+			workerId,
+			repository,
+			branch: `qorpera/coding/${workerId}`,
+			baseSha,
+		};
+		const session: CodingFolderRepositorySession = {
+			...f.session,
+			claim,
+			baseSha,
+			...hooks,
+		};
+		await repositories.prepare(session, signal());
+		const tree = join(
+			f.companyRoot,
+			`code/${repository.owner.toLowerCase()}/${repository.name.toLowerCase()}/worktrees/${workerId}`,
+		);
+		return { workerId, session, tree };
+	}
+
+	it("serializes 6 concurrent landings with checks on the same repo in FIFO order with zero stale retries", async () => {
+		resetMocks();
+		const f = await fixture();
+		const logged: Record<string, unknown>[] = [];
+		const repositories = new CodeHostRepositories(f.jobs, { report: (event) => logged.push(event) });
+		const repo: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
+		const checksBase = await startCheckedRepo(f, repo, repositories);
+
+		let activeChecks = 0;
+		let maxConcurrentChecks = 0;
+		let totalCheckRuns = 0;
+		const checkOrder: number[] = [];
+
+		const workers = await Promise.all(
+			Array.from({ length: 6 }, async (_, index) => {
+				const worker = await makeWorkerSession(f, repo, checksBase, repositories, {
+					checksSwitch: async () => ({ checks: true, site: false }),
+					runChecks: async () => {
+						activeChecks += 1;
+						maxConcurrentChecks = Math.max(maxConcurrentChecks, activeChecks);
+						totalCheckRuns += 1;
+						checkOrder.push(index);
+						await new Promise((resolve) => setTimeout(resolve, 15));
+						activeChecks -= 1;
+						return PASSED_RUN;
+					},
+				});
+				const head = await f.commit(worker.tree, `worker-${index}.js`);
+				return { ...worker, head };
+			}),
+		);
+
+		const results = await Promise.all(
+			workers.map((worker) => repositories.land(worker.session, worker.head, signal())),
+		);
+
+		expect(results.map((result) => result.state)).toEqual([
+			"fast-forward",
+			"merged",
+			"merged",
+			"merged",
+			"merged",
+			"merged",
+		]);
+		expect(maxConcurrentChecks).toBe(1);
+		expect(totalCheckRuns).toBe(6);
+		expect(checkOrder).toEqual([0, 1, 2, 3, 4, 5]);
+		expect(logged.filter((event) => event.event === "code-checks" && event.step === "stale")).toEqual([]);
+		const mainFiles = (await readdir(join(f.companyRoot, "code/qorpera/example/main"))).sort();
+		for (let index = 0; index < 6; index += 1) expect(mainFiles).toContain(`worker-${index}.js`);
+	});
+
+	it("runs checks in parallel across distinct repositories of the same company", async () => {
+		resetMocks();
+		const f = await fixture();
+		const repositories = new CodeHostRepositories(f.jobs);
+		const alphaRepo: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "alpha", baseBranch: "main" };
+		const betaRepo: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "beta", baseBranch: "main" };
+		const alphaBase = await startCheckedRepo(f, alphaRepo, repositories);
+		const betaBase = await startCheckedRepo(f, betaRepo, repositories);
+
+		const alphaEntered = held();
+		const betaEntered = held();
+		let activeChecks = 0;
+		let maxConcurrentChecks = 0;
+
+		const alpha = await makeWorkerSession(f, alphaRepo, alphaBase, repositories, {
+			checksSwitch: async () => ({ checks: true, site: false }),
+			runChecks: async () => {
+				activeChecks += 1;
+				maxConcurrentChecks = Math.max(maxConcurrentChecks, activeChecks);
+				alphaEntered.give();
+				await betaEntered.turn;
+				activeChecks -= 1;
+				return PASSED_RUN;
+			},
+		});
+		const beta = await makeWorkerSession(f, betaRepo, betaBase, repositories, {
+			checksSwitch: async () => ({ checks: true, site: false }),
+			runChecks: async () => {
+				activeChecks += 1;
+				maxConcurrentChecks = Math.max(maxConcurrentChecks, activeChecks);
+				betaEntered.give();
+				await alphaEntered.turn;
+				activeChecks -= 1;
+				return PASSED_RUN;
+			},
+		});
+		const alphaHead = await f.commit(alpha.tree, "alpha.js");
+		const betaHead = await f.commit(beta.tree, "beta.js");
+
+		const [alphaLanded, betaLanded] = await Promise.all([
+			repositories.land(alpha.session, alphaHead, signal()),
+			repositories.land(beta.session, betaHead, signal()),
+		]);
+
+		expect(maxConcurrentChecks).toBe(2);
+		expect(alphaLanded).toMatchObject({ state: "fast-forward", mainSha: alphaHead });
+		expect(betaLanded).toMatchObject({ state: "fast-forward", mainSha: betaHead });
+	});
+
+	it("rejects an aborted queued landing immediately without stalling subsequent landings and releases on failure", async () => {
+		resetMocks();
+		const f = await fixture();
+		const repositories = new CodeHostRepositories(f.jobs);
+		const repo: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
+		const checksBase = await startCheckedRepo(f, repo, repositories);
+
+		const firstStarted = held();
+		const firstRelease = held();
+		const secondSwitch = vi.fn(async () => ({ checks: true, site: false }));
+		const secondChecks = vi.fn(async () => PASSED_RUN);
+
+		const s0 = await makeWorkerSession(f, repo, checksBase, repositories, {
+			checksSwitch: async () => ({ checks: true, site: false }),
+			runChecks: async () => {
+				firstStarted.give();
+				await firstRelease.turn;
+				return PASSED_RUN;
+			},
+		});
+		const s1 = await makeWorkerSession(f, repo, checksBase, repositories, {
+			checksSwitch: secondSwitch,
+			runChecks: secondChecks,
+		});
+		const s2 = await makeWorkerSession(f, repo, checksBase, repositories, {
+			checksSwitch: async () => ({ checks: true, site: false }),
+			runChecks: async () => PASSED_RUN,
+		});
+		const h0 = await f.commit(s0.tree, "w0.js");
+		const h1 = await f.commit(s1.tree, "w1.js");
+		const h2 = await f.commit(s2.tree, "w2.js");
+
+		const land0 = repositories.land(s0.session, h0, signal());
+		await firstStarted.turn;
+
+		const abort1 = new AbortController();
+		const land1 = repositories.land(s1.session, h1, abort1.signal);
+		const land2 = repositories.land(s2.session, h2, signal());
+
+		const reason = new Error("SESSION_CANCELLED");
+		abort1.abort(reason);
+		await expect(land1).rejects.toBe(reason);
+		expect(secondSwitch).not.toHaveBeenCalled();
+		expect(secondChecks).not.toHaveBeenCalled();
+
+		firstRelease.give();
+		const [r0, r2] = await Promise.all([land0, land2]);
+		expect(r0).toMatchObject({ state: "fast-forward", mainSha: h0 });
+		expect(r2).toMatchObject({ state: "merged" });
+		const mainFiles = (await readdir(join(f.companyRoot, "code/qorpera/example/main"))).sort();
+		expect(mainFiles).toContain("w0.js");
+		expect(mainFiles).toContain("w2.js");
+		expect(mainFiles).not.toContain("w1.js");
+
+		const preAborted = new AbortController();
+		preAborted.abort(reason);
+		await expect(repositories.land(s1.session, h1, preAborted.signal)).rejects.toBe(reason);
+
+		const failStarted = held();
+		const failRelease = held();
+		const failing = await makeWorkerSession(f, repo, r2.mainSha, repositories, {
+			checksSwitch: async () => ({ checks: true, site: false }),
+			runChecks: async () => {
+				failStarted.give();
+				await failRelease.turn;
+				return {
+					state: "failed",
+					ms: 50,
+					passed: [],
+					failed: {
+						name: "test",
+						run: "npm test",
+						ms: 50,
+						exitCode: 1,
+						atLimit: false,
+						tail: "failed",
+						log: "~/.qorpera-checks/out/1-test.log",
+					},
+					notRun: [],
+				};
+			},
+		});
+		const afterFail = await makeWorkerSession(f, repo, r2.mainSha, repositories, {
+			checksSwitch: async () => ({ checks: true, site: false }),
+			runChecks: async () => PASSED_RUN,
+		});
+		const hFail = await f.commit(failing.tree, "bad.js");
+		const hAfter = await f.commit(afterFail.tree, "good.js");
+
+		const failingLand = repositories.land(failing.session, hFail, signal());
+		await failStarted.turn;
+		const afterLand = repositories.land(afterFail.session, hAfter, signal());
+		failRelease.give();
+
+		await expect(failingLand).rejects.toMatchObject({ message: "CODING_CHECKS_FAILED" });
+		await expect(afterLand).resolves.toMatchObject({ state: "fast-forward", mainSha: hAfter });
+	});
+
+	it("skips redundant prepare when land runs inline writeCodeChangeRecords inside the same job", async () => {
+		resetMocks();
+		const f = await fixture();
+		const repo: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
+		const commands: CodeHostCommand[] = [];
+		const shell = localShell(commands);
+		const unused = async (): Promise<never> => {
+			throw new Error("CODE_HOST_GC_UNUSED");
+		};
+		const gc: CodeHostGcBlock = { begin: unused, end: unused };
+		const jobs: Pick<CodeHostJobs, "run"> = {
+			async run(_companyId, _environmentId, given, job) {
+				return await job(
+					{
+						shell,
+						layout: { companyRoot: f.companyRoot, scratchRoot: join(f.root, "scratch"), git: GIT },
+						signal: given,
+					},
+					gc,
+				);
+			},
+		};
+		const baseRepositories = new CodeHostRepositories(jobs);
+		const claim = { ...f.session.claim, repository: repo, baseSha: null };
+		const { baseSha } = await baseRepositories.start({ claim, assertAuthorized: f.authorized }, signal());
+		const workerId = randomUUID();
+		let lastReport: CodeChangeReport | undefined;
+		const session: CodingFolderRepositorySession = {
+			...f.session,
+			claim: { ...claim, workerId, branch: `qorpera/coding/${workerId}` },
+			baseSha,
+			recordChange: async (report) => {
+				lastReport = report;
+				return { state: "recorded", change: 1 };
+			},
+		};
+		await baseRepositories.prepare(session, signal());
+		const tree = join(f.companyRoot, "code/qorpera/example/worktrees", workerId);
+		const head = await f.commit(tree, "cart.js");
+
+		const records = new CodeChangeRecords({
+			control: {
+				async call(method) {
+					if (method === "qorpera_code_change_files")
+						return {
+							schema: "qorpera.code-change-files/v1",
+							repository: { companyId: COMPANY, environmentId: ENVIRONMENT, owner: "qorpera", name: "example" },
+							changes: [
+								{
+									n: 1,
+									version: 1,
+									kind: "landing",
+									state: "landed",
+									how: "fast-forward",
+									createdAt: "2026-11-21T12:00:00Z",
+									title: "Add cart",
+									session: `code/qorpera/example/worktrees/${workerId}`,
+									turn: 1,
+									mainBefore: baseSha,
+									mainAfter: head,
+									headSha: head,
+									summary: "Added cart",
+									notice: null,
+									picture: null,
+									pictureProblem: null,
+									filesChanged: 1,
+									paths: [{ path: "cart.js", change: "added" }],
+									pathsMore: 0,
+									needsDiff: false,
+									refusal: null,
+									undoes: null,
+									revertedBy: null,
+									restoredFrom: null,
+									checksState: "off",
+									checks: null,
+								},
+							],
+							index: {
+								version: 1,
+								lines: [
+									{
+										n: 1,
+										createdAt: "2026-11-21T12:00:00Z",
+										state: "landed",
+										kind: "landing",
+										line: "Add cart",
+									},
+								],
+							},
+						};
+					if (method === "qorpera_code_change_files_written")
+						return { schema: "qorpera.code-change-files-written/v1", state: "recorded" };
+					throw new Error(`unexpected method: ${method}`);
+				},
+			},
+			hosts: jobs,
+			write: writeCodeChangeRecords,
+			owner: "test-node",
+			machineIdSha256: "a".repeat(64),
+		});
+		const repositories = new CodeHostRepositories(jobs, { records });
+
+		commands.length = 0;
+		expect(await repositories.land(session, head, signal())).toEqual({
+			state: "fast-forward",
+			mainSha: head,
+			filesChanged: 1,
+			change: 1,
+		});
+		expect(lastReport).toMatchObject({ state: "landed", mainAfter: head });
+		expect(await readFile(join(f.companyRoot, "code/qorpera/example/changes/1.md"), "utf8")).toContain("# Change 1");
+		expect(await readFile(join(f.companyRoot, "code/qorpera/example/changes/index.md"), "utf8")).toContain(
+			"Add cart",
+		);
+		const repairCalls = commands.filter(
+			(command) => command.argv[0] === "/bin/sh" && (command.argv[2] ?? "").includes('cmp -s - "$p"'),
+		);
+		const refCalls = commands.filter((command) => command.argv.includes("for-each-ref"));
+		expect(repairCalls).toHaveLength(1);
+		expect(refCalls).toHaveLength(1);
 	});
 });

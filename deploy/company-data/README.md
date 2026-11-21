@@ -152,13 +152,17 @@ since answers 409. A caller that leaves before the change began gets none; once 
 A change is not run twice for one call, and a call is not remembered: a caller whose call ended without an answer does
 not know whether the change ran, and reads before it asks again (`data_change` says so).
 
-A table's `rows` are counted when it is described, as the database folder's read login, each count a question of its
-own (read only, a question's time at most): tables first, the smallest first, then views. `rows` is never a guess.
-All the counts of one call are over within 1.5 s (`countMs`), the wait for one of the read login's three connections
-included: a count that finds none free in that time is given up. A table that was not counted carries PostgreSQL's
-own estimate as `rowsAbout`, a name of its own so that nothing that passes `rows` on passes a guess for a count, and
-neither when PostgreSQL has none (it has none before a table is first analysed, and autovacuum leaves a table of a
-few rows alone; a view never has one). A describe is never refused over a count.
+A table's `rows` are counted when it is described, as the database folder's read login in a read-only transaction (small
+plain tables batched together, falling back to one at a time on a slow, locked or denied table; larger tables and views
+one at a time, each at most a question's time and at most 250 ms waiting on a lock): tables first, the smallest first,
+then views. `rows` is never a guess. At most one count runs per database folder at a time — concurrent `describe` calls
+on the same folder share its in-flight result within their own `countMs` — and at most 8 per company at a time, so count
+bursts leave read and company connections free for live queries. All the counts of one call are over within 1.5 s
+(`countMs`), waits for a company count slot or a read connection included: a count that finds none free in that time is
+given up, and a locked table is skipped after 250 ms so later tables are still counted. A table that was not counted
+carries PostgreSQL's own estimate as `rowsAbout`, a name of its own so that nothing that passes `rows` on passes a guess
+for a count, and neither when PostgreSQL has none (it has none before a table is first analysed, and autovacuum leaves a
+table of a few rows alone; a view never has one). A describe is never refused over a count.
 
 ### The run door (agents)
 
@@ -240,7 +244,7 @@ comes with its own part.
 | A body | 1 MiB |
 | A company's database | 1 GiB of its own data (without the record): the watcher closes its steps and its changes that write, questions still answer; `watchOnce` names a company past 80 % in `near` |
 | The record of row changes | 100 MiB by its lines' bytes, the oldest go first (`qorpera_data.record_limit`) |
-| A describe call's row counts | over within 1.5 s together (`countMs`), waits for a connection included; a table not counted shows `rowsAbout` or nothing |
+| A describe call's row counts | over within 1.5 s together (`countMs`), waits for a count slot or connection included; 1 in-flight count per folder (shared by concurrent describes), 8 per company, 250 ms lock wait per table; a table not counted shows `rowsAbout` or nothing |
 
 The watcher also ends a statement of a folder's login that runs 2 s past its door's limit.
 

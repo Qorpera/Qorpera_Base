@@ -282,6 +282,7 @@ describe("the coding composition of a native turn", () => {
 					"Only work whose every check passes goes in; otherwise nothing goes in and the turn fails with the check that failed and the end of its output.",
 					'When the repository has no checks file, add one in this change: {"checks":[{"name":"install","run":"npm ci"},{"name":"test","run":"npm test"},{"name":"build","run":"npm run build"}]} for a Node project, or the commands that install, test and build yours;',
 					"each check has a name (lower case, digits, . _ -), a run command, and may have timeoutSeconds (10 to 1800, 600 when left out; at most 3600 in all) and cwd (a folder of the repository).",
+					'Checks run sequentially unless any check lists "needs" (an array of check names that must pass first), in which case ready checks run in parallel up to 4 at once (e.g. install first, then lint, typecheck and test with "needs":["install"], then build with "needs":["lint","typecheck","test"]); parallel checks share one copy, so do not let two of them write the same files.',
 					// Own code storage, step 4 (20260930729000): a website's built folder, named in the checks file, is the
 					// change's site for What's new, within a site's limits and with none of the session's secret values.
 					'When the project is a website, add "site": {"folder": "dist"} to the checks file, with the folder your build writes:',
@@ -303,6 +304,8 @@ describe("the coding composition of a native turn", () => {
 					"Never commit test output or logs as proof; the record says which checks passed. Write tests with a change that can be tested. Keep a README that says how to install, test, build and start the project.",
 					"the landing merges your commit with it, and the checks run on that merge; if the two conflict, the turn fails and says so",
 					"The secret values this session was given, when it was given any, are environment variables of every command, under the names the company saved them with: use them for what the work needs",
+					"Commands in this VM can reach the company's databases under /company/data/ with the data CLI",
+					"data describe [<database>], data apply <database>, data query <database> <question> [name=value ...] (or --sql '<one select>'), and data change <database> <change> [name=value ...] print JSON",
 					// 3 November 2026: Codex's read-only sandbox notice made a session ask for "a writable coding environment"
 					// before it tried one edit. The notice is about the harness's own tools; the repository VM is writable.
 					"The read-only sandbox your harness describes covers only its own built-in tools, which this session does not use; it says nothing about the repository VM.",
