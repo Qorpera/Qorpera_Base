@@ -25,30 +25,42 @@ import {
 	createRelay,
 	decodeFrame,
 	decodeMessage,
+	decodeWsClose,
 	encodeFrame,
 	encodeMessage,
+	encodeWsClose,
 	FORWARDED_CACHE_HEADERS,
 	GATE_COOKIE,
 	gateCookie,
 	gateTokens,
 	headerPairs,
+	isValidCloseCode,
+	isValidVisitorWsOrigin,
 	jwtRole,
 	language,
 	MAX_QUEUED_BYTES,
+	MAX_WS_MESSAGE_BYTES,
+	MAX_WS_PER_SITE,
+	MAX_WS_QUEUED_BYTES,
 	PAGE_SECURITY_POLICY,
 	parseConnectAnswer,
 	parseSessionAnswer,
 	parseUnlockAnswer,
+	parseWsProtocols,
 	passwordPage,
 	RELAY_ROLE,
 	relayHeaders,
 	requestHeaders,
 	responseHeaders,
 	safeNext,
+	sanitizeCloseCode,
 	TYPE,
+	truncateUtf8,
 	WebSocketConnection,
 	WebSocketError,
 	withoutGateCookie,
+	wsRequestHeaders,
+	wsResponseHeaders,
 } from "./relay.mjs";
 
 const SUFFIX = "-preview.example.test";
@@ -995,10 +1007,13 @@ describe("app relay: end to end with the link program", () => {
 		assert.ok(!app.seen.some((seen) => seen.url === "/echo?too-large"));
 	});
 
-	it("answers a visitor's WebSocket with 501, and an unknown host's with 404", async () => {
-		const live = await rawUpgrade(relayPort, HOST, "/socket");
-		assert.equal(live.status, 501);
-		live.socket.destroy();
+	it("refuses a visitor WebSocket without origin (403) or session (401), and an unknown host's with 404", async () => {
+		const noOrigin = await rawUpgrade(relayPort, HOST, "/socket");
+		assert.equal(noOrigin.status, 403);
+		noOrigin.socket.destroy();
+		const noSession = await rawUpgrade(relayPort, HOST, "/socket", `Origin: ${ORIGIN}\r\n`);
+		assert.equal(noSession.status, 401);
+		noSession.socket.destroy();
 		const unknown = await rawUpgrade(relayPort, "evil.example", "/.qorpera/connect");
 		assert.equal(unknown.status, 404);
 		unknown.socket.destroy();
@@ -1876,7 +1891,154 @@ describe("app relay: the pure parts", () => {
 		const decoded = decodeMessage(message);
 		assert.deepEqual([decoded.type, decoded.stream, decoded.payload.toString()], [TYPE.body, 0xfffffffe, "abc"]);
 		assert.throws(() => decodeMessage(Buffer.from([1, 0, 0])));
-		assert.deepEqual(TYPE, { head: 1, body: 2, end: 3, response: 4, reset: 5, hello: 6, keepalive: 7 });
+		assert.deepEqual(TYPE, {
+			head: 1,
+			body: 2,
+			end: 3,
+			response: 4,
+			reset: 5,
+			hello: 6,
+			keepalive: 7,
+			wsOpen: 8,
+			wsOpenOk: 9,
+			wsData: 10,
+			wsClose: 11,
+		});
+	});
+
+	it("validates visitor WebSocket origins, protocols, headers and RFC 6455 close codes", () => {
+		const host = "shop-preview.qorpera.com";
+		const own = `https://${host}`;
+		assert.equal(isValidVisitorWsOrigin({ origin: own }, host), true);
+		assert.equal(isValidVisitorWsOrigin({ origin: own, "sec-fetch-site": "same-origin" }, host), true);
+		assert.equal(isValidVisitorWsOrigin({ origin: own }, host, ["Origin", own]), true);
+		for (const headers of [
+			{},
+			{ origin: "" },
+			{ origin: "null" },
+			{ origin: "null", "sec-fetch-site": "same-origin" },
+			{ origin: `http://${host}` },
+			{ origin: `${own}:443` },
+			{ origin: `${own}/` },
+			{ origin: "https://lab-preview.qorpera.com" },
+			{ origin: "https://evil.example" },
+			{ origin: "https://SHOP-preview.qorpera.com" },
+			{ origin: own, "sec-fetch-site": "cross-site" },
+			{ origin: own, "sec-fetch-site": "same-site" },
+		]) {
+			assert.equal(isValidVisitorWsOrigin(headers, host), false, JSON.stringify(headers));
+		}
+		assert.equal(
+			isValidVisitorWsOrigin({ origin: own }, host, ["Origin", own, "Origin", "https://evil.example"]),
+			false,
+		);
+
+		assert.deepEqual(parseWsProtocols([]), { ok: true, protocols: [] });
+		assert.deepEqual(parseWsProtocols(["Sec-WebSocket-Protocol", "vite-hmr, chat.v1"]), {
+			ok: true,
+			protocols: ["vite-hmr", "chat.v1"],
+		});
+		assert.deepEqual(
+			parseWsProtocols(["Sec-WebSocket-Protocol", "vite-hmr", "sec-websocket-protocol", "graphql-ws"]),
+			{ ok: true, protocols: ["vite-hmr", "graphql-ws"] },
+		);
+		for (const bad of [
+			["Sec-WebSocket-Protocol", ""],
+			["Sec-WebSocket-Protocol", "a, a"],
+			["Sec-WebSocket-Protocol", "bad protocol"],
+			["Sec-WebSocket-Protocol", "a,"],
+			["Sec-WebSocket-Protocol", "a".repeat(257)],
+		]) {
+			assert.equal(parseWsProtocols(bad).ok, false, JSON.stringify(bad));
+		}
+
+		const wsReq = wsRequestHeaders(
+			[
+				"Host",
+				"evil.example",
+				"Connection",
+				"Upgrade, X-Hop",
+				"Upgrade",
+				"websocket",
+				"X-Hop",
+				"1",
+				"Authorization",
+				"Bearer secret",
+				"Cookie",
+				`${GATE_COOKIE}=${"t".repeat(32)}; app_sid=abc`,
+				"Sec-WebSocket-Key",
+				"dGhlIHNhbXBsZSBub25jZQ==",
+				"Sec-WebSocket-Version",
+				"13",
+				"Sec-WebSocket-Extensions",
+				"permessage-deflate",
+				"Sec-WebSocket-Protocol",
+				"vite-hmr",
+				"Content-Length",
+				"10",
+				"X-Envoy-Attempt-Count",
+				"1",
+				"Origin",
+				own,
+				"User-Agent",
+				"test-browser",
+			],
+			{ host, client: "203.0.113.9", protocols: ["vite-hmr", "chat"] },
+		);
+		assert.deepEqual(wsReq, [
+			["host", host],
+			["Cookie", "app_sid=abc"],
+			["Origin", own],
+			["User-Agent", "test-browser"],
+			["sec-websocket-protocol", "vite-hmr, chat"],
+			["x-forwarded-proto", "https"],
+			["x-forwarded-host", host],
+			["x-forwarded-for", "203.0.113.9"],
+		]);
+
+		assert.deepEqual(
+			wsResponseHeaders([
+				["Set-Cookie", "sid=1; Domain=qorpera.com; Path=/; HttpOnly"],
+				["Set-Cookie", `${GATE_COOKIE}=forged; Path=/`],
+				["Sec-WebSocket-Accept", "ignored"],
+				["Sec-WebSocket-Protocol", "ignored"],
+				["Sec-WebSocket-Extensions", "permessage-deflate"],
+				["Cache-Control", "public"],
+				["Upgrade", "websocket"],
+				["Connection", "Upgrade, X-Secret"],
+				["X-Secret", "drop"],
+				["X-App-Ws", "ok"],
+			]),
+			[
+				["Set-Cookie", "sid=1; Path=/; HttpOnly"],
+				["X-App-Ws", "ok"],
+			],
+		);
+		assert.equal(wsResponseHeaders("bad"), null);
+
+		for (const valid of [1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014, 3000, 4000, 4999]) {
+			assert.equal(isValidCloseCode(valid), true, String(valid));
+			assert.equal(sanitizeCloseCode(valid), valid, String(valid));
+		}
+		for (const invalid of [0, 999, 1004, 1005, 1006, 1015, 1016, 2999, 5000, 65535, NaN]) {
+			assert.equal(isValidCloseCode(invalid), false, String(invalid));
+			assert.equal(sanitizeCloseCode(invalid), 1000, String(invalid));
+		}
+
+		const truncated = truncateUtf8(`${"a".repeat(122)}ø`, 123);
+		assert.equal(truncated.length, 122);
+		assert.equal(truncated.toString("utf8"), "a".repeat(122));
+		const exact = truncateUtf8(`${"a".repeat(121)}ø`, 123);
+		assert.equal(exact.length, 123);
+		assert.equal(exact.toString("utf8"), `${"a".repeat(121)}ø`);
+
+		const encodedInvalid = encodeWsClose(1006, "bad code");
+		assert.equal(encodedInvalid.readUInt16BE(0), 1000);
+		assert.deepEqual(decodeWsClose(encodedInvalid), { code: 1000, reason: "bad code" });
+		assert.deepEqual(decodeWsClose(Buffer.from([0x03, 0xee, 0xff, 0xfe])), { code: 1000, reason: "" });
+		assert.equal(MAX_WS_PER_SITE, 32);
+		assert.equal(MAX_WS_MESSAGE_BYTES, 1024 * 1024);
+		assert.equal(MAX_WS_QUEUED_BYTES, 2 * 1024 * 1024);
 	});
 
 	it("takes the database's answers only in their exact shape", () => {
@@ -2435,5 +2597,757 @@ describe("app relay: concurrency hardening and backpressure", () => {
 		);
 		await until(() => slowRes.destroyed, "stalled shared stream to be destroyed once writeQueueSize stops moving", 1_000);
 		assert.equal(fastRes.destroyed, false);
+	});
+});
+
+describe("app relay: visitor WebSockets", () => {
+	function wsTestApp() {
+		const state = {
+			upgrades: [],
+			closed: [],
+			pongs: [],
+			abortedHangs: 0,
+			sockets: new Set(),
+		};
+		const server = createServer((req, res) => {
+			if (req.url === "/http") {
+				res.writeHead(200, { "content-type": "text/plain", "content-length": "2" });
+				res.end("ok");
+				return;
+			}
+			res.writeHead(404);
+			res.end();
+		});
+		server.on("upgrade", (req, socket, head) => {
+			state.sockets.add(socket);
+			socket.on("close", () => state.sockets.delete(socket));
+			socket.on("error", () => socket.destroy());
+			const parsed = new URL(req.url, "http://127.0.0.1");
+			const pathname = parsed.pathname;
+			const record = {
+				url: req.url,
+				headers: headerPairs(req.rawHeaders),
+			};
+			state.upgrades.push(record);
+			if (pathname === "/ws/reject-404") {
+				socket.end("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+				return;
+			}
+			if (pathname === "/ws/reject-403") {
+				socket.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+				return;
+			}
+			if (pathname === "/ws/reject-200") {
+				socket.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi");
+				return;
+			}
+			if (pathname === "/ws/bad-accept") {
+				socket.end(
+					"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: invalid==\r\n\r\n",
+				);
+				return;
+			}
+			if (pathname === "/ws/bad-ext") {
+				const accept = acceptKey(req.headers);
+				socket.end(
+					`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\nSec-WebSocket-Extensions: permessage-deflate\r\n\r\n`,
+				);
+				return;
+			}
+			if (pathname === "/ws/hang") {
+				socket.on("end", () => socket.end());
+				socket.on("close", () => {
+					state.abortedHangs++;
+				});
+				socket.resume();
+				return;
+			}
+			const accept = acceptKey(req.headers);
+			if (!accept) {
+				socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+				return;
+			}
+			let extra = "";
+			if (pathname === "/ws/subproto") {
+				if (parsed.searchParams.get("badproto") === "1") {
+					extra += "Sec-WebSocket-Protocol: unlisted\r\n";
+				} else {
+					const offered = String(req.headers["sec-websocket-protocol"] ?? "")
+						.split(",")
+						.map((p) => p.trim())
+						.filter(Boolean);
+					if (offered.includes("vite-hmr")) extra += "Sec-WebSocket-Protocol: vite-hmr\r\n";
+					else if (offered.length > 0) extra += `Sec-WebSocket-Protocol: ${offered[0]}\r\n`;
+				}
+			}
+			if (parsed.searchParams.get("setcookie") === "1") {
+				extra += `Set-Cookie: ws_sid=9; Domain=example.test; Path=/\r\n`;
+				extra += `Set-Cookie: ${GATE_COOKIE}=forged; Path=/\r\n`;
+				extra += "X-Upstream-Ws: yes\r\n";
+			}
+			const responseHead = Buffer.from(
+				`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n${extra}\r\n`,
+			);
+			if (parsed.searchParams.get("pipelined") === "1") {
+				socket.write(Buffer.concat([responseHead, encodeFrame(0x1, Buffer.from("welcome"))]));
+			} else {
+				socket.write(responseHead);
+			}
+			const conn = new WebSocketConnection(socket, head, {
+				allowText: true,
+				maxPayload: 2 * 1024 * 1024,
+				maxQueued: 8 * 1024 * 1024,
+			});
+			conn.onMessage = (payload, opcode) => {
+				if (opcode === 0x1 && payload.toString("utf8") === "trigger-upstream-close") {
+					conn.close(4001, "lukket å");
+					return;
+				}
+				if (opcode === 0x1 && payload.toString("utf8") === "trigger-oversized") {
+					conn.send(Buffer.alloc(128 * 1024, 0x42), 0x2);
+					return;
+				}
+				if (opcode === 0x1 && payload.toString("utf8") === "trigger-ping") {
+					socket.write(encodeFrame(0x9, Buffer.from("up-ping")));
+					return;
+				}
+				conn.send(payload, opcode);
+			};
+			conn.onCloseFrame = (code, reason) => {
+				state.closed.push({ url: req.url, code, reason });
+			};
+			if (parsed.searchParams.get("flood") === "1") {
+				const chunk = Buffer.alloc(32 * 1024, 0x7a);
+				let sent = 0;
+				const pump = () => {
+					while (sent < 64 * 1024 * 1024 && !conn.closed && !socket.destroyed) {
+						sent += chunk.length;
+						if (!conn.send(chunk, 0x2)) return;
+					}
+				};
+				conn.onDrain = pump;
+				pump();
+			}
+			if (parsed.searchParams.get("ping") === "1") {
+				let pongBuf = Buffer.alloc(0);
+				socket.on("data", (chunk) => {
+					pongBuf = Buffer.concat([pongBuf, chunk]);
+					for (;;) {
+						let frame;
+						try {
+							frame = decodeFrame(pongBuf, { masked: true });
+						} catch {
+							return;
+						}
+						if (!frame) return;
+						pongBuf = pongBuf.subarray(frame.size);
+						if (frame.opcode === 0xa) state.pongs.push(frame.payload.toString("utf8"));
+					}
+				});
+				socket.write(encodeFrame(0x9, Buffer.from("srv-ping")));
+			}
+		});
+		state.server = server;
+		return state;
+	}
+
+	async function startStack(t, relayOptions = {}) {
+		const db = fakeDatabase();
+		const app = wsTestApp();
+		const dbPort = await listen(db.server);
+		const appPort = await listen(app.server);
+		for (const site of db.sites.values()) site.port = appPort;
+		const logs = [];
+		const relay = createRelay({
+			api: `http://127.0.0.1:${dbPort}/`,
+			...RELAY,
+			hostSuffix: SUFFIX,
+			responseTimeoutMs: 800,
+			sessionCacheMs: 200,
+			lockedCacheMs: 200,
+			recheckMs: 0,
+			log: (line) => logs.push(line),
+			...relayOptions,
+		});
+		const relayPort = await listen(relay);
+		const front = testFront(relayPort);
+		const frontPort = await listen(front);
+		const programs = [];
+		const spawnClient = (claim, slug = "shop", port = appPort) => {
+			const child = spawn(process.execPath, [CLIENT, slug, String(port), claim, SUFFIX], {
+				env: { ...process.env, QORPERA_APP_RELAY_ORIGIN: `ws://127.0.0.1:${frontPort}` },
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+			const entry = { child, output: "" };
+			child.stdout.on("data", (d) => {
+				entry.output += d;
+			});
+			child.stderr.on("data", (d) => {
+				entry.output += d;
+			});
+			entry.exited = new Promise((resolve) => child.on("exit", resolve));
+			programs.push(entry);
+			return entry;
+		};
+		const token = db.session("shop");
+		const client = spawnClient(db.claim("shop"));
+		await until(() => client.output.includes(`Connected: https://${HOST}/`), "client to connect");
+		t.after(async () => {
+			for (const p of programs) p.child.kill("SIGKILL");
+			for (const s of app.sockets) s.destroy();
+			await new Promise((resolve) => relay.close(resolve));
+			front.close();
+			db.server.close();
+			db.server.closeAllConnections();
+			app.server.close();
+			app.server.closeAllConnections();
+		});
+		const visitorUpgrade = (path, { cookie = `${GATE_COOKIE}=${token}`, origin = ORIGIN, extra = "", host = HOST } = {}) => {
+			let headers = "";
+			if (origin !== null) headers += `Origin: ${origin}\r\n`;
+			if (cookie !== null) headers += `Cookie: ${cookie}\r\n`;
+			headers += `CF-Connecting-IP: 203.0.113.9\r\n${extra}`;
+			return rawUpgrade(relayPort, host, path, headers);
+		};
+		return { db, app, relay, relayPort, frontPort, appPort, token, logs, spawnClient, visitorUpgrade };
+	}
+
+	it("tunnels authenticated bidirectional text, binary, fragmented, empty and pipelined frames alongside HTTP without leaking gate cookies", async (t) => {
+		const { app, relay, relayPort, token, visitorUpgrade } = await startStack(t);
+		const conn = await visitorUpgrade("/ws/echo?setcookie=1&pipelined=1&ping=1", {
+			cookie: `theme=dark; ${GATE_COOKIE}=${token}; lang=da`,
+			extra: "Authorization: Bearer should-not-leak\r\nX-Forwarded-For: 198.51.100.1\r\nX-App-Client: yes\r\n",
+		});
+		t.after(() => conn.socket.destroy());
+		assert.equal(conn.status, 101, conn.head);
+		const expectedAccept = acceptKey({
+			upgrade: "websocket",
+			connection: "Upgrade",
+			"sec-websocket-version": "13",
+			"sec-websocket-key": conn.key,
+		});
+		assert.ok(conn.head.includes(`Sec-WebSocket-Accept: ${expectedAccept}`));
+		assert.ok(conn.head.includes("Set-Cookie: ws_sid=9; Path=/"));
+		assert.ok(!conn.head.includes("Domain="));
+		assert.ok(!conn.head.includes(GATE_COOKIE));
+		assert.ok(conn.head.includes("X-Upstream-Ws: yes"));
+		assert.equal(relay.wsCount("shop"), 1);
+
+		const reader = frameReader(conn.socket, conn.rest);
+		const welcome = await reader.next();
+		assert.equal(welcome.opcode, 0x1);
+		assert.equal(welcome.payload.toString("utf8"), "welcome");
+
+		await until(() => app.pongs.includes("srv-ping"), "client to answer upstream ping with masked pong");
+
+		const seen = app.upgrades.at(-1);
+		assert.equal(seen.url, "/ws/echo?setcookie=1&pipelined=1&ping=1");
+		assert.deepEqual(values(seen.headers, "host"), [HOST]);
+		assert.deepEqual(values(seen.headers, "origin"), [ORIGIN]);
+		assert.deepEqual(values(seen.headers, "cookie"), ["theme=dark; lang=da"]);
+		assert.deepEqual(values(seen.headers, "authorization"), []);
+		assert.deepEqual(values(seen.headers, "x-forwarded-proto"), ["https"]);
+		assert.deepEqual(values(seen.headers, "x-forwarded-host"), [HOST]);
+		assert.deepEqual(values(seen.headers, "x-forwarded-for"), ["203.0.113.9"]);
+		assert.deepEqual(values(seen.headers, "x-app-client"), ["yes"]);
+		assert.ok(!JSON.stringify(seen.headers).includes(token));
+
+		const httpWhileWsOpen = get(relayPort, HOST, "/http", token);
+		conn.socket.write(encodeFrame(0x1, Buffer.from("hej verden øæå"), { mask: mask() }));
+		const textEcho = await reader.next();
+		assert.equal(textEcho.opcode, 0x1);
+		assert.equal(textEcho.payload.toString("utf8"), "hej verden øæå");
+
+		const binaryPayload = randomBytes(96 * 1024 + 13);
+		conn.socket.write(encodeFrame(0x2, binaryPayload, { mask: mask() }));
+		const binaryEcho = await reader.next();
+		assert.equal(binaryEcho.opcode, 0x2);
+		assert.ok(binaryEcho.payload.equals(binaryPayload));
+
+		const multiByte = Buffer.from("split-ø-char", "utf8");
+		conn.socket.write(encodeFrame(0x1, multiByte.subarray(0, 7), { mask: mask(), fin: false }));
+		conn.socket.write(encodeFrame(0x9, Buffer.from("mid-ping"), { mask: mask() }));
+		conn.socket.write(encodeFrame(0x0, multiByte.subarray(7), { mask: mask(), fin: true }));
+		const pong = await reader.next();
+		assert.equal(pong.opcode, 0xa);
+		assert.equal(pong.payload.toString("utf8"), "mid-ping");
+		const fragEcho = await reader.next();
+		assert.equal(fragEcho.opcode, 0x1);
+		assert.equal(fragEcho.payload.toString("utf8"), "split-ø-char");
+
+		conn.socket.write(encodeFrame(0x1, Buffer.alloc(0), { mask: mask() }));
+		const emptyText = await reader.next();
+		assert.equal(emptyText.opcode, 0x1);
+		assert.equal(emptyText.payload.length, 0);
+
+		conn.socket.write(encodeFrame(0x2, Buffer.alloc(0), { mask: mask() }));
+		const emptyBin = await reader.next();
+		assert.equal(emptyBin.opcode, 0x2);
+		assert.equal(emptyBin.payload.length, 0);
+
+		assert.equal((await httpWhileWsOpen).text, "ok");
+
+		conn.socket.write(encodeFrame(0x8, encodeWsClose(1000, "done"), { mask: mask() }));
+		await reader.closed;
+		await until(() => relay.wsCount("shop") === 0, "wsCount to return to zero");
+	});
+
+	it("negotiates Sec-WebSocket-Protocol and rejects invalid or unlisted subprotocols", async (t) => {
+		const { relay, visitorUpgrade } = await startStack(t);
+		const negotiated = await visitorUpgrade("/ws/subproto", {
+			extra: "Sec-WebSocket-Protocol: chat, vite-hmr\r\n",
+		});
+		t.after(() => negotiated.socket.destroy());
+		assert.equal(negotiated.status, 101, negotiated.head);
+		assert.match(negotiated.head, /\r\nSec-WebSocket-Protocol: vite-hmr(\r\n|$)/);
+		const reader = frameReader(negotiated.socket, negotiated.rest);
+		negotiated.socket.write(encodeFrame(0x1, Buffer.from("hmr"), { mask: mask() }));
+		assert.equal((await reader.next()).payload.toString("utf8"), "hmr");
+		negotiated.socket.write(encodeFrame(0x8, encodeWsClose(1000), { mask: mask() }));
+		await reader.closed;
+
+		const badSyntax = await visitorUpgrade("/ws/subproto", {
+			extra: "Sec-WebSocket-Protocol: invalid protocol\r\n",
+		});
+		assert.equal(badSyntax.status, 400);
+		badSyntax.socket.destroy();
+
+		const unlisted = await visitorUpgrade("/ws/subproto?badproto=1", {
+			extra: "Sec-WebSocket-Protocol: vite-hmr\r\n",
+		});
+		assert.equal(unlisted.status, 502);
+		unlisted.socket.destroy();
+
+		await until(() => relay.wsCount("shop") === 0, "wsCount to return to zero");
+	});
+
+	it("rejects unauthenticated visitor WebSockets (401) and missing or mismatched origins (403) before upgrade", async (t) => {
+		const { db, app, visitorUpgrade } = await startStack(t);
+		const upgradesBefore = app.upgrades.length;
+
+		const callsBeforeOrigin = db.calls.length;
+		for (const origin of [
+			null,
+			"",
+			"null",
+			`http://${HOST}`,
+			`https://${HOST}:443`,
+			`https://${HOST}/`,
+			`https://${LAB}`,
+			"https://evil.example",
+			`https://${HOST.toUpperCase()}`,
+		]) {
+			const res = await visitorUpgrade("/ws/echo", { origin });
+			assert.equal(res.status, 403, String(origin));
+			res.socket.destroy();
+		}
+		for (const extra of [
+			"Sec-Fetch-Site: cross-site\r\n",
+			"Sec-Fetch-Site: same-site\r\n",
+			`Origin: https://evil.example\r\n`,
+		]) {
+			const res = await visitorUpgrade("/ws/echo", { extra });
+			assert.equal(res.status, 403, extra);
+			res.socket.destroy();
+		}
+		assert.equal(db.calls.length, callsBeforeOrigin);
+
+		const noCookie = await visitorUpgrade("/ws/echo", { cookie: null });
+		assert.equal(noCookie.status, 401);
+		assert.ok(!noCookie.head.includes("set-cookie:"));
+		noCookie.socket.destroy();
+
+		const malformedCookie = await visitorUpgrade("/ws/echo", { cookie: `${GATE_COOKIE}=short` });
+		assert.equal(malformedCookie.status, 401);
+		malformedCookie.socket.destroy();
+
+		const badToken = await visitorUpgrade("/ws/echo", { cookie: `${GATE_COOKIE}=${"B".repeat(32)}` });
+		assert.equal(badToken.status, 401);
+		assert.ok(badToken.head.toLowerCase().includes(`set-cookie: ${CLEAR_GATE_COOKIE.toLowerCase()}`));
+		badToken.socket.destroy();
+
+		for (const platformPath of ["/.qorpera/unlock", "/.qorpera/client.mjs", "/.qorpera/other", "/%2eqorpera/x"]) {
+			const res = await visitorUpgrade(platformPath);
+			assert.equal(res.status, 404, platformPath);
+			res.socket.destroy();
+		}
+		assert.equal(app.upgrades.length, upgradesBefore);
+	});
+
+	it("handles upstream non-101, bad 101 handshake, handshake timeout and ECONNREFUSED cleanly without leaking streams", async (t) => {
+		const { db, app, relay, relayPort, token, visitorUpgrade } = await startStack(t, { responseTimeoutMs: 250 });
+
+		for (const [path, expected] of [
+			["/ws/reject-404", 404],
+			["/ws/reject-403", 403],
+			["/ws/reject-200", 502],
+			["/ws/bad-accept", 502],
+			["/ws/bad-ext", 502],
+		]) {
+			const res = await visitorUpgrade(path);
+			assert.equal(res.status, expected, path);
+			res.socket.destroy();
+		}
+
+		const timedOut = await visitorUpgrade("/ws/hang");
+		assert.equal(timedOut.status, 504);
+		timedOut.socket.destroy();
+		await until(() => app.abortedHangs >= 1, "hanging upstream upgrade to abort");
+
+		assert.equal(relay.isConnected("shop"), true);
+		assert.equal(relay.wsCount("shop"), 0);
+		assert.equal((await get(relayPort, HOST, "/http", token)).text, "ok");
+
+		const closedServer = createTcpServer();
+		const deadPort = await listen(closedServer);
+		await new Promise((resolve) => closedServer.close(resolve));
+		db.sites.get("lab").port = deadPort;
+		const labToken = db.session("lab");
+		const labFront = createTcpServer((visitor) => {
+			const upstream = connect(relayPort, "127.0.0.1");
+			let head = Buffer.alloc(0);
+			let open = false;
+			visitor.on("data", (chunk) => {
+				if (open) return void upstream.write(chunk);
+				head = Buffer.concat([head, chunk]);
+				const end = head.indexOf("\r\n");
+				if (end === -1) return;
+				open = true;
+				upstream.write(
+					Buffer.concat([
+						head.subarray(0, end + 2),
+						Buffer.from(`X-Forwarded-Host: ${LAB}\r\n`),
+						head.subarray(end + 2),
+					]),
+				);
+			});
+			upstream.on("data", (chunk) => visitor.write(chunk));
+			const end = () => {
+				visitor.destroy();
+				upstream.destroy();
+			};
+			visitor.on("close", end);
+			visitor.on("error", end);
+			upstream.on("close", end);
+			upstream.on("error", end);
+		});
+		const labFrontPort = await listen(labFront);
+		const labClient = spawn(process.execPath, [CLIENT, "lab", String(deadPort), db.claim("lab"), SUFFIX], {
+			env: { ...process.env, QORPERA_APP_RELAY_ORIGIN: `ws://127.0.0.1:${labFrontPort}` },
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		t.after(() => {
+			labClient.kill("SIGKILL");
+			labFront.close();
+		});
+		await until(() => relay.isConnected("lab"), "lab client to connect");
+		const refused = await visitorUpgrade("/ws/echo", {
+			host: LAB,
+			origin: `https://${LAB}`,
+			cookie: `${GATE_COOKIE}=${labToken}`,
+		});
+		assert.equal(refused.status, 502);
+		refused.socket.destroy();
+		assert.equal(relay.isConnected("lab"), true);
+		assert.equal(relay.wsCount("lab"), 0);
+	});
+
+	it("propagates valid close codes both ways, rejects invalid wire codes and invalid UTF-8, and sanitizes tunnel WS_CLOSE", async (t) => {
+		const { db, app, relay, relayPort, visitorUpgrade } = await startStack(t);
+
+		const visitorCloses = await visitorUpgrade("/ws/echo");
+		t.after(() => visitorCloses.socket.destroy());
+		assert.equal(visitorCloses.status, 101);
+		const reader1 = frameReader(visitorCloses.socket, visitorCloses.rest);
+		visitorCloses.socket.write(encodeFrame(0x8, encodeWsClose(4000, "farvel ø"), { mask: mask() }));
+		await reader1.closed;
+		await until(
+			() => app.closed.some((c) => c.code === 4000 && c.reason === "farvel ø"),
+			"upstream to receive visitor close code and reason",
+		);
+
+		const upstreamCloses = await visitorUpgrade("/ws/echo");
+		t.after(() => upstreamCloses.socket.destroy());
+		assert.equal(upstreamCloses.status, 101);
+		const reader2 = frameReader(upstreamCloses.socket, upstreamCloses.rest);
+		upstreamCloses.socket.write(encodeFrame(0x1, Buffer.from("trigger-upstream-close"), { mask: mask() }));
+		const closeFrame = await reader2.next();
+		assert.equal(closeFrame.opcode, 0x8);
+		assert.equal(closeFrame.payload.readUInt16BE(0), 4001);
+		assert.equal(closeFrame.payload.subarray(2).toString("utf8"), "lukket å");
+		upstreamCloses.socket.write(encodeFrame(0x8, closeFrame.payload.subarray(0, 2), { mask: mask() }));
+		await reader2.closed;
+
+		for (const badCode of [1005, 1006, 1015]) {
+			const badClose = await visitorUpgrade("/ws/echo");
+			const r = frameReader(badClose.socket, badClose.rest);
+			const badPayload = Buffer.alloc(2);
+			badPayload.writeUInt16BE(badCode, 0);
+			badClose.socket.write(encodeFrame(0x8, badPayload, { mask: mask() }));
+			const reply = await r.next();
+			assert.equal(reply.opcode, 0x8);
+			assert.equal(reply.payload.readUInt16BE(0), 1002, String(badCode));
+			badClose.socket.destroy();
+		}
+
+		const badUtf8 = await visitorUpgrade("/ws/echo");
+		const rUtf8 = frameReader(badUtf8.socket, badUtf8.rest);
+		badUtf8.socket.write(encodeFrame(0x1, Buffer.from([0xff, 0xfe]), { mask: mask() }));
+		const utf8Close = await rUtf8.next();
+		assert.equal(utf8Close.opcode, 0x8);
+		assert.equal(utf8Close.payload.readUInt16BE(0), 1007);
+		badUtf8.socket.destroy();
+
+		const labToken = db.session("lab");
+		const labProg = await rawUpgrade(relayPort, LAB, "/.qorpera/connect", bearer(db.claim("lab")));
+		t.after(() => labProg.socket.destroy());
+		const progFrames = frameReader(labProg.socket, labProg.rest);
+		assert.equal(decodeMessage((await progFrames.message()).payload).type, TYPE.hello);
+
+		for (const badWireCode of [1005, 1006, 1015]) {
+			const visitorPromise = visitorUpgrade("/ws/sanitize", {
+				host: LAB,
+				origin: `https://${LAB}`,
+				cookie: `${GATE_COOKIE}=${labToken}`,
+			});
+			const openMsg = decodeMessage((await progFrames.message()).payload);
+			assert.equal(openMsg.type, TYPE.wsOpen);
+			labProg.socket.write(
+				encodeFrame(0x2, encodeMessage(TYPE.wsOpenOk, openMsg.stream, Buffer.from("{}")), { mask: mask() }),
+			);
+			const vis = await visitorPromise;
+			assert.equal(vis.status, 101);
+			const visFrames = frameReader(vis.socket, vis.rest);
+			const rawClose = Buffer.alloc(2);
+			rawClose.writeUInt16BE(badWireCode, 0);
+			labProg.socket.write(encodeFrame(0x2, encodeMessage(TYPE.wsClose, openMsg.stream, rawClose), { mask: mask() }));
+			const gotClose = await visFrames.next();
+			assert.equal(gotClose.opcode, 0x8);
+			assert.equal(gotClose.payload.readUInt16BE(0), 1000, String(badWireCode));
+			vis.socket.destroy();
+		}
+
+		await until(() => relay.wsCount("shop") === 0 && relay.wsCount("lab") === 0, "all WS streams cleaned up");
+	});
+
+	it("enforces oversized message rejection, per-site cap and slow-consumer backpressure drop", async (t) => {
+		const { relay, relayPort, token, visitorUpgrade } = await startStack(t, {
+			maxWsPerSite: 2,
+			maxWsMessageBytes: 64 * 1024,
+			maxWsQueuedBytes: 64 * 1024,
+		});
+
+		const overVis = await visitorUpgrade("/ws/echo");
+		assert.equal(overVis.status, 101);
+		const overVisReader = frameReader(overVis.socket, overVis.rest);
+		overVis.socket.write(encodeFrame(0x2, Buffer.alloc(64 * 1024 + 1, 0x41), { mask: mask() }));
+		const close1 = await overVisReader.next();
+		assert.equal(close1.opcode, 0x8);
+		assert.equal(close1.payload.readUInt16BE(0), 1009);
+		overVis.socket.destroy();
+
+		const overUp = await visitorUpgrade("/ws/echo");
+		assert.equal(overUp.status, 101);
+		const overUpReader = frameReader(overUp.socket, overUp.rest);
+		overUp.socket.write(encodeFrame(0x1, Buffer.from("trigger-oversized"), { mask: mask() }));
+		const close2 = await overUpReader.next();
+		assert.equal(close2.opcode, 0x8);
+		assert.equal(close2.payload.readUInt16BE(0), 1009);
+		overUp.socket.destroy();
+		await until(() => relay.wsCount("shop") === 0, "oversized streams to clear");
+
+		const healthy = await visitorUpgrade("/ws/echo");
+		const slow = await visitorUpgrade("/ws/echo?flood=1");
+		t.after(() => {
+			healthy.socket.destroy();
+			slow.socket.destroy();
+		});
+		assert.equal(healthy.status, 101);
+		assert.equal(slow.status, 101);
+		assert.equal(relay.wsCount("shop"), 2);
+
+		const third = await visitorUpgrade("/ws/echo");
+		assert.equal(third.status, 503);
+		third.socket.destroy();
+
+		slow.socket.pause();
+		await until(() => relay.wsCount("shop") === 1, "slow consumer to be dropped", 5000);
+		assert.equal((await get(relayPort, HOST, "/http", token)).text, "ok");
+
+		const healthyReader = frameReader(healthy.socket, healthy.rest);
+		healthy.socket.write(encodeFrame(0x1, Buffer.from("still-alive"), { mask: mask() }));
+		const echoFrame = await healthyReader.next(1000);
+		assert.equal(echoFrame.payload.toString("utf8"), "still-alive");
+
+		const replacement = await visitorUpgrade("/ws/echo");
+		t.after(() => replacement.socket.destroy());
+		assert.equal(replacement.status, 101);
+		assert.equal(relay.wsCount("shop"), 2);
+
+		healthy.socket.write(encodeFrame(0x8, encodeWsClose(1000), { mask: mask() }));
+		await healthyReader.closed;
+		replacement.socket.write(encodeFrame(0x8, encodeWsClose(1000), { mask: mask() }));
+		await frameReader(replacement.socket, replacement.rest).closed;
+		slow.socket.destroy();
+		await until(() => relay.wsCount("shop") === 0, "all sockets closed");
+	});
+
+	it("keeps active visitor WebSockets alive with ping/pong and closes silent visitors on idle timeout", async (t) => {
+		const { relay, visitorUpgrade } = await startStack(t, {
+			wsPingMs: 90,
+			wsIdleMs: 300,
+		});
+
+		const active = await visitorUpgrade("/ws/echo");
+		const silent = await visitorUpgrade("/ws/echo");
+		t.after(() => {
+			active.socket.destroy();
+			silent.socket.destroy();
+		});
+		assert.equal(active.status, 101);
+		assert.equal(silent.status, 101);
+		assert.equal(relay.wsCount("shop"), 2);
+
+		const activeReader = frameReader(active.socket, active.rest);
+		const silentReader = frameReader(silent.socket, silent.rest);
+		let pongsSent = 0;
+		const keepAlive = (async () => {
+			while (pongsSent < 4) {
+				const frame = await activeReader.next(1500);
+				if (frame.opcode === 0x9) {
+					pongsSent++;
+					active.socket.write(encodeFrame(0xa, frame.payload, { mask: mask() }));
+				}
+			}
+		})();
+
+		let silentClose;
+		do silentClose = await silentReader.next(2000);
+		while (silentClose.opcode === 0x9);
+		assert.equal(silentClose.opcode, 0x8);
+		assert.equal(silentClose.payload.readUInt16BE(0), 1001);
+		silent.socket.destroy();
+
+		await keepAlive;
+		assert.ok(pongsSent >= 4);
+		assert.equal(relay.wsCount("shop"), 1);
+
+		active.socket.write(encodeFrame(0x1, Buffer.from("still-open"), { mask: mask() }));
+		let echoFrame;
+		do echoFrame = await activeReader.next(1000);
+		while (echoFrame.opcode === 0x9);
+		assert.equal(echoFrame.payload.toString("utf8"), "still-open");
+
+		active.socket.write(encodeFrame(0x8, encodeWsClose(1000), { mask: mask() }));
+		await activeReader.closed;
+		await until(() => relay.wsCount("shop") === 0, "active socket closed");
+	});
+
+	it("closes active visitor WebSockets cleanly on tunnel drop, client replacement, site disable/retake and relay shutdown", async (t) => {
+		const { db, relay, spawnClient, visitorUpgrade } = await startStack(t, { recheckMs: 120 });
+
+		const wsDrop = await visitorUpgrade("/ws/echo");
+		t.after(() => wsDrop.socket.destroy());
+		assert.equal(wsDrop.status, 101);
+		const dropReader = frameReader(wsDrop.socket, wsDrop.rest);
+		relay.dropProgram("shop");
+		const dropClose = await dropReader.next();
+		assert.equal(dropClose.opcode, 0x8);
+		assert.equal(dropClose.payload.readUInt16BE(0), 1001);
+		wsDrop.socket.destroy();
+
+		await until(() => relay.isConnected("shop"), "client to reconnect after drop");
+
+		const wsReplace = await visitorUpgrade("/ws/echo");
+		t.after(() => wsReplace.socket.destroy());
+		assert.equal(wsReplace.status, 101);
+		const replaceReader = frameReader(wsReplace.socket, wsReplace.rest);
+		const newer = spawnClient(db.claim("shop"));
+		await until(() => newer.output.includes(`Connected: https://${HOST}/`), "newer client to connect");
+		const replaceClose = await replaceReader.next();
+		assert.equal(replaceClose.opcode, 0x8);
+		assert.equal(replaceClose.payload.readUInt16BE(0), 1001);
+		wsReplace.socket.destroy();
+
+		const wsDisable = await visitorUpgrade("/ws/echo");
+		t.after(() => wsDisable.socket.destroy());
+		assert.equal(wsDisable.status, 101);
+		const disableReader = frameReader(wsDisable.socket, wsDisable.rest);
+		db.sites.get("shop").key = null;
+		const disableClose = await disableReader.next(3000);
+		assert.equal(disableClose.opcode, 0x8);
+		assert.equal(disableClose.payload.readUInt16BE(0), 1001);
+		wsDisable.socket.destroy();
+		await until(() => !relay.isConnected("shop"), "disabled program to disconnect");
+
+		const whenOff = await visitorUpgrade("/ws/echo");
+		assert.equal(whenOff.status, 503);
+		whenOff.socket.destroy();
+
+		const restored = spawnClient(db.claim("shop"));
+		await until(() => restored.output.includes(`Connected: https://${HOST}/`), "restored client to connect");
+
+		db.retake("shop");
+		const newOwnerToken = db.session("shop");
+		const staleAttempt = await visitorUpgrade("/ws/echo", { cookie: `${GATE_COOKIE}=${newOwnerToken}` });
+		assert.equal(staleAttempt.status, 503);
+		staleAttempt.socket.destroy();
+		await until(() => !relay.isConnected("shop"), "stale site program to be dropped");
+
+		const ownClient = spawnClient(db.claim("shop"));
+		await until(() => ownClient.output.includes(`Connected: https://${HOST}/`), "new site client to connect");
+		const wsShutdown = await visitorUpgrade("/ws/echo", { cookie: `${GATE_COOKIE}=${newOwnerToken}` });
+		t.after(() => wsShutdown.socket.destroy());
+		assert.equal(wsShutdown.status, 101);
+		const shutdownReader = frameReader(wsShutdown.socket, wsShutdown.rest);
+		const closedRelay = new Promise((resolve) => relay.close(resolve));
+		const shutdownClose = await shutdownReader.next();
+		assert.equal(shutdownClose.opcode, 0x8);
+		assert.equal(shutdownClose.payload.readUInt16BE(0), 1001);
+		wsShutdown.socket.destroy();
+		await closedRelay;
+	});
+
+	it("closes open visitor WebSockets with 1008 within the session cache window when a session is revoked", async (t) => {
+		const { db, app, relay, token, visitorUpgrade } = await startStack(t, {
+			sessionCacheMs: 150,
+			lockedCacheMs: 150,
+			recheckMs: 0,
+		});
+		const ws1 = await visitorUpgrade("/ws/echo");
+		const ws2 = await visitorUpgrade("/ws/echo");
+		t.after(() => {
+			ws1.socket.destroy();
+			ws2.socket.destroy();
+		});
+		assert.equal(ws1.status, 101);
+		assert.equal(ws2.status, 101);
+		assert.equal(relay.wsCount("shop"), 2);
+
+		const r1 = frameReader(ws1.socket, ws1.rest);
+		const r2 = frameReader(ws2.socket, ws2.rest);
+		ws1.socket.write(encodeFrame(0x1, Buffer.from("before-revoke"), { mask: mask() }));
+		assert.equal((await r1.next()).payload.toString("utf8"), "before-revoke");
+
+		const callsBeforeRevoke = db.sessionCalls().length;
+		db.sites.get("shop").sessions.delete(token);
+
+		const [close1, close2] = await Promise.all([r1.next(1500), r2.next(1500)]);
+		assert.equal(close1.opcode, 0x8);
+		assert.equal(close1.payload.readUInt16BE(0), 1008);
+		assert.equal(close1.payload.subarray(2).toString("utf8"), "session ended");
+		assert.equal(close2.opcode, 0x8);
+		assert.equal(close2.payload.readUInt16BE(0), 1008);
+		assert.equal(close2.payload.subarray(2).toString("utf8"), "session ended");
+		assert.equal(db.sessionCalls().length - callsBeforeRevoke, 1);
+
+		ws1.socket.destroy();
+		ws2.socket.destroy();
+		await until(() => relay.wsCount("shop") === 0, "revoked visitor sockets to clear");
+		await until(
+			() => app.closed.filter((c) => c.code === 1008).length >= 2,
+			"upstream to receive 1008 close frames for revoked sockets",
+		);
+		assert.equal(relay.isConnected("shop"), true);
 	});
 });
