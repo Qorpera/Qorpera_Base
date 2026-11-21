@@ -6,6 +6,7 @@ import {
 	parsePointToChangeTarget,
 	parseSurfaceSession,
 	parseSurfaceSummary,
+	SURFACE_SITE_DOOR_ACTION_PATTERN,
 } from "../src/surfaces.ts";
 
 describe("surfaces contracts", () => {
@@ -137,5 +138,11 @@ describe("surfaces contracts", () => {
 		});
 		expect(target.route).toBe("/preorder");
 		expect(target.componentHint).toBe("PreorderCta");
+		expect(session.messages).toEqual([]);
+		expect(SURFACE_SITE_DOOR_ACTION_PATTERN.test("https://thetaband.qorpera.com/__qorpera/member")).toBe(true);
+		expect(SURFACE_SITE_DOOR_ACTION_PATTERN.test("https://thetaband--pab12cd34.qorpera.com/__qorpera/member")).toBe(
+			true,
+		);
+		expect(SURFACE_SITE_DOOR_ACTION_PATTERN.test("https://thetaband--next.qorpera.com/__qorpera/member")).toBe(false);
 	});
 });

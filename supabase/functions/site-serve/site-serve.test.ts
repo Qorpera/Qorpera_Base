@@ -15,6 +15,7 @@ import {
 	HOST_COOKIE,
 	HOST_PAGE_SECURITY_POLICY,
 	handleSiteServe,
+	INSPECTOR_PATH,
 	isSitePath,
 	language,
 	MAX_FILE_BYTES,
@@ -3145,5 +3146,83 @@ describe("site-serve: a page view's count", () => {
 		const missing = new PostgrestSiteStore("https://project.example.test", "sb_secret_fixture", (async () =>
 			new Response(JSON.stringify(PGRST202), { status: 404 })) as typeof fetch);
 		await assert.rejects(missing.countView(OWN, "index.html", TOKEN), MissingFunction);
+	});
+});
+
+
+describe("site-serve: isolated preview origins (--p<id>) and Point-to-Change inspector", () => {
+	const PREVIEW = "look-shop--pab12cd34.qorpera.com";
+	const MEMBER_PASS = "A".repeat(43);
+
+	it("parses valid --p<8chars> preview hosts and rejects malformed preview suffixes", () => {
+		assert.deepEqual(siteHost(PREVIEW), {
+			host: PREVIEW,
+			slug: "look-shop",
+			scope: "preview",
+			previewId: "ab12cd34",
+		});
+		assert.equal(siteHost("look-shop--p123.qorpera.com"), null);
+		assert.equal(siteHost("look-shop--pab12cd345.qorpera.com"), null);
+		assert.equal(siteHost("look-shop--preview.qorpera.com"), null);
+	});
+
+	it("serves preview HTML framed by webOrigins with inspector tag, skips view counting, and keeps live HTML untouched", async () => {
+		const previewStore = store({}, {}, { serveHost: hostFile(HTML, { scope: "preview" }) });
+		const previewRes = await handleSiteServe(
+			hostRequest(PREVIEW, "/", { headers: { cookie: `${HOST_COOKIE}=${TOKEN}`, "sec-fetch-dest": "iframe", "sec-fetch-mode": "navigate", "sec-fetch-site": "same-site" } }),
+			{ origin: ORIGIN, store: previewStore.store },
+		);
+		assert.equal(previewRes.status, 200);
+		assert.equal(previewRes.headers.get("content-security-policy"), "frame-ancestors 'self' https://app.qorpera.com");
+		assert.equal(previewRes.headers.get("etag"), null);
+		const previewBody = await previewRes.text();
+		assert.ok(previewBody.includes(`<script src="${INSPECTOR_PATH}" defer></script>`));
+		assert.equal(previewStore.calls.countView.length, 0);
+
+		const inspectorRes = await handleSiteServe(hostRequest(PREVIEW, INSPECTOR_PATH), {
+			origin: ORIGIN,
+			store: previewStore.store,
+		});
+		assert.equal(inspectorRes.status, 200);
+		assert.equal(inspectorRes.headers.get("content-type"), "text/javascript; charset=utf-8");
+		assert.ok((await inspectorRes.text()).includes("qorpera-inspector-pick"));
+
+		const liveStore = store({}, {}, { serveHost: hostFile(HTML, { scope: "site" }) });
+		const liveRes = await handleSiteServe(
+			hostRequest(OWN, "/", { headers: { cookie: `${HOST_COOKIE}=${TOKEN}` } }),
+			{ origin: ORIGIN, store: liveStore.store },
+		);
+		assert.equal(liveRes.status, 200);
+		assert.equal(await liveRes.text(), HTML);
+
+		const liveInspectorRes = await handleSiteServe(hostRequest(OWN, INSPECTOR_PATH), {
+			origin: ORIGIN,
+			store: liveStore.store,
+		});
+		assert.equal(liveInspectorRes.status, 404);
+	});
+
+	it("accepts member pass on preview host for isolated cookie jar and refuses password unlock", async () => {
+		const previewStore = store(
+			{},
+			{},
+			{
+				memberPass: { state: "open", token: NEW_TOKEN, maxAge: 3600 },
+			},
+		);
+		const passRes = await handleSiteServe(
+			memberOn(PREVIEW, `pass=${MEMBER_PASS}&path=/preorder`, { origin: "https://app.qorpera.com" }),
+			{ origin: ORIGIN, store: previewStore.store },
+		);
+		assert.equal(passRes.status, 303);
+		assert.equal(passRes.headers.get("location"), "/preorder");
+		assert.ok((passRes.headers.get("set-cookie") ?? "").includes(`${HOST_COOKIE}=${NEW_TOKEN}`));
+
+		const unlockRes = await handleSiteServe(unlockOn(PREVIEW, "password=secret&next=/"), {
+			origin: ORIGIN,
+			store: previewStore.store,
+		});
+		assert.equal(unlockRes.status, 401);
+		assert.equal(previewStore.calls.unlockHost.length, 0);
 	});
 });

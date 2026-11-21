@@ -2,12 +2,12 @@ import {
 	type ApplySurfaceMigrationInput,
 	type CloudSurfacesClient,
 	isMissingSurfaceRpcError,
+	type StartSurfaceSessionOptions,
 } from "@qorpera/cloud-client/surfaces";
 import {
 	countOpenSurfaceChanges,
 	nextSurfaceSessionLifecycleState,
 	OPEN_SURFACE_CHANGE_STATUSES,
-	type PointToChangeTarget,
 	RUNNING_SURFACE_SESSION_STATES,
 	type SurfaceAutomationSummary,
 	type SurfaceChangeUnit,
@@ -34,6 +34,7 @@ export type SurfacesClient = Pick<
 	| "discardSurfaceChange"
 	| "undoSurfaceChange"
 	| "chooseExploration"
+	| "reconcileChanges"
 	| "setPreviewSelection"
 	| "publishSurface"
 	| "listAutomations"
@@ -57,9 +58,11 @@ export interface SurfaceUndo {
 }
 
 export interface SurfaceNote {
+	readonly id: number;
 	readonly sessionId: string;
 	readonly text: string;
 	readonly at: string;
+	readonly priorMatches: number;
 }
 
 export interface SurfacesState {
@@ -211,6 +214,32 @@ export function isOpenChange(change: Pick<SurfaceChangeUnit, "status">): boolean
 	return OPEN_SURFACE_CHANGE_STATUSES.has(change.status);
 }
 
+export function hasConflictedChange(session: Pick<SurfaceSession, "changes">): boolean {
+	return session.changes.some((change) => change.status === "conflicted");
+}
+
+export function formatConflictPaths(paths: readonly string[]): string {
+	if (paths.length === 0) return "";
+	if (paths.length <= 2) return paths.join(", ");
+	return t("{path} and {count} more", { path: paths[0]!, count: paths.length - 1 });
+}
+
+function memberMessageMatches(session: SurfaceSession, text: string): number {
+	let count = 0;
+	for (const message of session.messages)
+		if (message.authorKind === "member" && message.text.trim() === text) count += 1;
+	return count;
+}
+
+function reconcileNotes(notes: readonly SurfaceNote[], sessions: readonly SurfaceSession[]): SurfaceNote[] {
+	if (notes.length === 0) return [];
+	const byId = new Map(sessions.map((session) => [session.id, session]));
+	return notes.filter((note) => {
+		const session = byId.get(note.sessionId);
+		return !session || memberMessageMatches(session, note.text) <= note.priorMatches;
+	});
+}
+
 // WHY: Encodes Jonas's rule that a partially approved session stays open, and a fully approved one only lingers while its chat is open.
 export function approvalOutcome(session: SurfaceSession, drawerOpen: boolean): ApprovalOutcome {
 	if (countOpenSurfaceChanges(session.changes) > 0) return "open";
@@ -310,6 +339,7 @@ export class SurfacesStore {
 	#undoTimer: ReturnType<typeof setTimeout> | undefined;
 	#pollTimer: ReturnType<typeof setInterval> | undefined;
 	#undoSeq = 0;
+	#noteSeq = 0;
 	#loaded: Promise<void> | undefined;
 
 	constructor(options: SurfacesStoreOptions) {
@@ -433,10 +463,17 @@ export class SurfacesStore {
 	}
 
 	#putWorkspace(workspace: SurfaceWorkspace): void {
-		this.store.set((state) => ({
-			workspaces: { ...state.workspaces, [workspace.surface.id]: workspace },
-			surfaces: state.surfaces.map((surface) => (surface.id === workspace.surface.id ? workspace.surface : surface)),
-		}));
+		const sessions = [...workspace.activeSessions, ...workspace.recentHistory];
+		this.store.set((state) => {
+			const notes = reconcileNotes(state.notes, sessions);
+			return {
+				workspaces: { ...state.workspaces, [workspace.surface.id]: workspace },
+				surfaces: state.surfaces.map((surface) =>
+					surface.id === workspace.surface.id ? workspace.surface : surface,
+				),
+				...(notes.length !== state.notes.length ? { notes } : {}),
+			};
+		});
 		this.#syncPolling();
 	}
 
@@ -530,7 +567,7 @@ export class SurfacesStore {
 	async startSession(
 		surfaceId: string,
 		prompt: string,
-		options: { title?: string; target?: PointToChangeTarget; explorationCount?: 2 | 3 } = {},
+		options: StartSurfaceSessionOptions = {},
 	): Promise<SurfaceSession | undefined> {
 		const text = prompt.trim();
 		if (!text) return undefined;
@@ -542,6 +579,50 @@ export class SurfacesStore {
 		if (workspace) this.#putWorkspace({ ...workspace, activeSessions: [...workspace.activeSessions, session] });
 		void this.refreshWorkspace(surfaceId);
 		return session;
+	}
+
+	async reconcileChanges(surfaceId: string, changeIds: readonly string[]): Promise<SurfaceSession | undefined> {
+		const ids = [...new Set(changeIds.filter(Boolean))];
+		if (!ids.length) return undefined;
+		if (isLocalSurfaceId(surfaceId) || !this.#options.client) {
+			const workspace = this.workspace(surfaceId);
+			const target = workspace?.activeSessions.find((session) =>
+				session.changes.some((change) => ids.includes(change.id)),
+			);
+			if (workspace && target) {
+				const updated: SurfaceSession = {
+					...target,
+					state: "reconciling",
+					changes: target.changes.map((change) =>
+						ids.includes(change.id) ? { ...change, status: "staged", conflictPaths: null } : change,
+					),
+					updatedAt: new Date().toISOString(),
+				};
+				this.#putWorkspace({
+					...replaceSession(workspace, updated, "open"),
+					previewState: {
+						...workspace.previewState,
+						primary: {
+							...workspace.previewState.primary,
+							status:
+								workspace.previewState.primary.status === "conflicted"
+									? "composing"
+									: workspace.previewState.primary.status,
+							conflictReport: null,
+						},
+					},
+				});
+				return updated;
+			}
+			this.store.set({ error: this.#options.unavailableMessage });
+			return undefined;
+		}
+		const reconciled = await this.#run(`reconcile:${surfaceId}`, (client) => client.reconcileChanges(surfaceId, ids));
+		if (!reconciled) return undefined;
+		this.#applySession(reconciled, "open");
+		void this.refreshWorkspace(surfaceId);
+		void this.refreshSurfaces();
+		return reconciled;
 	}
 
 	#applySession(session: SurfaceSession, outcome: ApprovalOutcome): void {
@@ -660,13 +741,26 @@ export class SurfacesStore {
 
 	async reply(sessionId: string, text: string): Promise<boolean> {
 		const message = text.trim();
-		if (!message) return false;
+		if (!message || this.state.busy[`reply:${sessionId}`]) return false;
+		const existing = this.session(sessionId);
+		const priorMatches =
+			(existing ? memberMessageMatches(existing, message) : 0) +
+			this.state.notes.filter((note) => note.sessionId === sessionId && note.text === message).length;
+		const note: SurfaceNote = {
+			id: ++this.#noteSeq,
+			sessionId,
+			text: message,
+			at: new Date().toISOString(),
+			priorMatches,
+		};
+		this.store.set((state) => ({ notes: [...state.notes, note] }));
 		const updated = await this.#run(`reply:${sessionId}`, (client) => client.replySurfaceSession(sessionId, message));
-		if (!updated) return false;
-		this.store.set((state) => ({
-			notes: [...state.notes, { sessionId, text: message, at: new Date().toISOString() }],
-		}));
-		this.#applySession(updated, "open");
+		if (!updated) {
+			this.store.set((state) => ({ notes: state.notes.filter((item) => item.id !== note.id) }));
+			return false;
+		}
+		if (this.state.workspaces[updated.surfaceId]) this.#applySession(updated, "open");
+		else this.store.set((state) => ({ notes: reconcileNotes(state.notes, [updated]) }));
 		return true;
 	}
 

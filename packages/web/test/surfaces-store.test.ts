@@ -9,13 +9,18 @@ import {
 	synthesizeMigration,
 	synthesizeSurfaces,
 } from "../src/app/surfaces-store.ts";
+import { deferred } from "./fixtures.ts";
 import {
 	CHANGES,
 	COMPANY,
+	change,
 	fakeClient,
+	MESSAGE_IDS,
+	pointTarget,
 	SESSION,
 	SURFACE,
 	session,
+	sessionMessage,
 	storeWith,
 	summary,
 	workspace,
@@ -204,6 +209,119 @@ describe("SurfacesStore", () => {
 		await store.load();
 		expect(await store.publish(SURFACE)).toBe(false);
 		expect(store.state.error).toBe("Surfaces aren't enabled for this company yet.");
+		store.dispose();
+	});
+
+	it("reconciles conflicted changes through the cloud client and refreshes the workspace", async () => {
+		const conflicted = session(["conflicted", "staged"], {
+			changes: [
+				change(CHANGES[0], 1, "conflicted", { conflictPaths: ["src/hero.tsx"] }),
+				change(CHANGES[1], 2, "staged"),
+			],
+		});
+		const reconciling = session(["staged", "staged"], { state: "reconciling" });
+		const getSurfaceWorkspace = vi
+			.fn()
+			.mockResolvedValueOnce(workspace([conflicted]))
+			.mockResolvedValueOnce(workspace([reconciling]));
+		const reconcileChanges = vi.fn(async () => reconciling);
+		const store = storeWith(fakeClient({ getSurfaceWorkspace, reconcileChanges }));
+		await store.load();
+		await store.openSurface("website");
+		const result = await store.reconcileChanges(SURFACE, [CHANGES[0], CHANGES[0]]);
+		expect(reconcileChanges).toHaveBeenCalledWith(SURFACE, [CHANGES[0]]);
+		expect(result?.state).toBe("reconciling");
+		expect(store.workspace(SURFACE)?.activeSessions[0]?.state).toBe("reconciling");
+		store.dispose();
+	});
+
+	it("falls back cleanly when reconciling a local surface conflict without a cloud client", async () => {
+		const store = storeWith(undefined);
+		await store.load();
+		await store.openSurface("thetaband");
+		const local = store.state.surfaces[0]!;
+		const localConflicted = session(["conflicted"], {
+			surfaceId: local.id,
+			changes: [change(CHANGES[0], 1, "conflicted", { surfaceId: local.id, conflictPaths: ["index.html"] })],
+		});
+		const existing = store.workspace(local.id)!;
+		store.store.set({
+			workspaces: {
+				...store.state.workspaces,
+				[local.id]: {
+					...existing,
+					activeSessions: [localConflicted],
+					previewState: {
+						...existing.previewState,
+						primary: {
+							...existing.previewState.primary,
+							status: "conflicted",
+							conflictReport: { changeIds: [CHANGES[0]], paths: ["index.html"] },
+						},
+					},
+				},
+			},
+		});
+		const reconciled = await store.reconcileChanges(local.id, [CHANGES[0]]);
+		expect(reconciled?.state).toBe("reconciling");
+		expect(store.workspace(local.id)?.previewState.primary.conflictReport).toBeNull();
+		expect(store.workspace(local.id)?.previewState.primary.status).toBe("composing");
+		store.dispose();
+	});
+
+	it("forwards Point-to-Change metadata when starting a session", async () => {
+		const target = pointTarget();
+		const started = session(["staged"], {
+			state: "running",
+			originKind: "point_to_change",
+			originLabel: "PreorderCta · /pricing",
+		});
+		const startSurfaceSession = vi.fn(async () => started);
+		const store = storeWith(fakeClient({ startSurfaceSession }));
+		await store.load();
+		await store.openSurface("website");
+		await store.startSession(SURFACE, "Gør knappen roligere", {
+			target,
+			originKind: "point_to_change",
+			originLabel: "PreorderCta · /pricing",
+		});
+		expect(startSurfaceSession).toHaveBeenCalledWith(SURFACE, "Gør knappen roligere", {
+			target,
+			originKind: "point_to_change",
+			originLabel: "PreorderCta · /pricing",
+		});
+		store.dispose();
+	});
+
+	it("appends an optimistic reply and reconciles it once durable session.messages arrives", async () => {
+		const pending = deferred<ReturnType<typeof session>>();
+		const replySurfaceSession = vi.fn(() => pending.promise);
+		const store = storeWith(fakeClient({ replySurfaceSession }));
+		await store.load();
+		await store.openSurface("website");
+		const sending = store.reply(SESSION, "Hold overskriften kort");
+		expect(store.state.notes).toHaveLength(1);
+		expect(store.state.notes[0]?.text).toBe("Hold overskriften kort");
+		pending.resolve(
+			session(["staged"], {
+				messages: [sessionMessage(MESSAGE_IDS[0], "member", "Hold overskriften kort")],
+			}),
+		);
+		expect(await sending).toBe(true);
+		expect(store.state.notes).toHaveLength(0);
+		expect(store.session(SESSION)?.messages).toHaveLength(1);
+		store.dispose();
+	});
+
+	it("removes an optimistic reply when the reply RPC fails", async () => {
+		const store = storeWith(
+			fakeClient({ replySurfaceSession: vi.fn(async () => Promise.reject(new Error("offline"))) }),
+		);
+		await store.load();
+		await store.openSurface("website");
+		expect(await store.reply(SESSION, "Prøv igen")).toBe(false);
+		expect(store.state.notes).toHaveLength(0);
+		expect(store.state.error).toBe("offline");
 		store.dispose();
 	});
 });

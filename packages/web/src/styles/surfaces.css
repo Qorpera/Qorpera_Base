@@ -51,8 +51,26 @@ span.surface-session-main { cursor: default; }
 	color: var(--text); font-size: 12px;
 }
 .surface-change:hover, .surface-variant:hover, .surface-history-row:hover { background: var(--rail-hover); }
+.surface-change-copy { display: grid; flex: 1; min-width: 0; gap: 1px; padding: 3px 0; }
 .surface-change-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.surface-change-paths {
+	overflow: hidden; color: var(--danger); font-size: 10.5px; line-height: 14px; text-overflow: ellipsis; white-space: nowrap;
+}
+.surface-conflict-paths {
+	margin: 0 6px 4px 28px; overflow: hidden; color: var(--danger); font-size: 11px; line-height: 15px;
+	text-overflow: ellipsis; white-space: nowrap;
+}
 .surface-change.is-hidden .surface-change-title, .surface-change.is-merged .surface-change-title { color: var(--rail-small); }
+.surface-change.is-conflicted { align-items: center; }
+.surface-change.is-conflicted .surface-change-title { color: var(--text); }
+.surface-reconcile {
+	flex: none; height: 21px; padding: 0 8px; border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+	border-radius: 999px; background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger);
+	font: inherit; font-size: 11px; font-weight: 650; white-space: nowrap; cursor: pointer;
+	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
+}
+.surface-reconcile:hover:not(:disabled) { background: var(--danger); color: #fff; }
+.surface-reconcile:disabled { opacity: 0.5; cursor: default; }
 .surface-change-mark { display: grid; place-items: center; width: 24px; color: var(--agent-active); }
 .surface-change-mark .icon { width: 12px; height: 12px; stroke-width: 2.6; }
 .surface-change-merged { color: var(--agent-active); font-size: 11px; font-weight: 600; }
@@ -109,7 +127,7 @@ span.surface-session-main { cursor: default; }
 .surface-state { display: grid; place-items: center; width: 14px; height: 14px; flex: none; }
 .surface-state.is-ready::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--agent-active); }
 .surface-state.is-asking::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--warning); }
-.surface-state.is-failed::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
+.surface-state.is-failed::before, .surface-state.is-conflicted::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
 .surface-state.is-merged { color: var(--agent-active); }
 .surface-state.is-merged .icon { width: 12px; height: 12px; stroke-width: 2.6; }
 .surface-state.is-exploring::before {
@@ -194,13 +212,32 @@ span.surface-session-main { cursor: default; }
 .surface-mount > .surface-site, .surface-mount > .surface-ops, .surface-mount > .surface-files { min-height: 100%; }
 .surface-mount .site-view, .surface-site > * { height: 100%; }
 .surface-ops > .page, .surface-files { padding-bottom: 120px; }
+.surface-door-stage { position: relative; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden; }
+.surface-page.is-pointing .surface-door-stage::after {
+	content: ""; position: absolute; z-index: 4; inset: 0; border-radius: inherit;
+	box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 44%, transparent); pointer-events: none;
+}
 .surface-frame { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
-.surface-frame.is-waiting { display: grid; place-content: center; justify-items: center; gap: 10px; color: var(--text-muted); font-size: 13px; background: color-mix(in srgb, var(--text) 3%, var(--bg)); }
+.surface-door-stage > .surface-frame { position: absolute; inset: 0; }
+.surface-frame.is-staging { z-index: 1; opacity: 0; pointer-events: none; }
+.surface-frame.is-shown { z-index: 2; opacity: 1; }
+.surface-frame.is-waiting {
+	z-index: 3; display: grid; place-content: center; justify-items: center; gap: 10px; padding: 24px; color: var(--text-muted);
+	font-size: 13px; text-align: center; background: color-mix(in srgb, var(--text) 3%, var(--bg));
+}
+.surface-frame.is-waiting[hidden] { display: none; }
+.surface-preview-pill {
+	position: absolute; z-index: 5; top: 12px; right: 14px; display: inline-flex; align-items: center; gap: 7px; height: 28px;
+	padding: 0 11px; border: 1px solid var(--surface-glass-edge); border-radius: 999px; background: var(--surface-glass-strong);
+	box-shadow: var(--surface-glass-shadow); backdrop-filter: var(--surface-glass-blur); color: var(--text-muted);
+	font-size: 12px; font-weight: 600; pointer-events: none;
+}
+.surface-preview-pill[hidden] { display: none; }
 .surface-frames.is-compare { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 14px; padding: 4px 14px 96px; background: color-mix(in srgb, var(--text) 3%, var(--bg)); }
 .surface-page.has-banner .surface-frames.is-compare { padding-top: 64px; }
 .surface-compare-column { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .surface-compare-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 2px 10px; font-size: 13px; }
-.surface-compare-column .surface-frame { flex: 1; border-radius: 14px; overflow: hidden; box-shadow: 0 0 0 1px var(--border), 0 10px 30px -12px rgb(18 18 17 / 22%); }
+.surface-compare-column .surface-door-stage { flex: 1; border-radius: 14px; box-shadow: 0 0 0 1px var(--border), 0 10px 30px -12px rgb(18 18 17 / 22%); }
 .surface-empty { display: grid; place-content: center; justify-items: center; gap: 8px; height: 100%; padding: 40px; color: var(--text-muted); text-align: center; }
 .surface-empty h2 { margin: 6px 0 0; color: var(--text); font-size: 18px; }
 .surface-empty p { margin: 0; max-width: 380px; }
@@ -212,8 +249,10 @@ span.surface-session-main { cursor: default; }
 	border-radius: 16px; background: var(--surface-glass-strong); box-shadow: var(--surface-glass-shadow);
 	backdrop-filter: var(--surface-glass-blur); font-size: 13px; pointer-events: auto;
 }
-.surface-banner > span { flex: 1; }
+.surface-banner > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .surface-banner.is-error { color: var(--danger); }
+.surface-banner.is-conflict { border-color: color-mix(in srgb, var(--danger) 28%, var(--surface-glass-edge)); }
+.surface-banner.is-conflict > .surface-state { flex: none; }
 
 /* WHY: The composer is conversation.css's .thread-foot glass, so a session starts from the same object a chat does. */
 .surface-composer {
@@ -221,21 +260,60 @@ span.surface-session-main { cursor: default; }
 	transition: left var(--motion-slow) var(--ease-out), width var(--motion-slow) var(--ease-out);
 }
 .surface-page.has-drawer .surface-composer { left: calc((100% - 404px) / 2); width: min(560px, calc(100% - 444px)); }
-.surface-chips { display: flex; justify-content: center; margin-bottom: 8px; }
+.surface-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-bottom: 8px; }
 .surface-chips:empty { display: none; }
 .surface-chip {
 	display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 11px; border: 1px solid var(--surface-glass-edge);
 	border-radius: 999px; background: var(--surface-glass); box-shadow: var(--surface-glass-shadow); backdrop-filter: var(--surface-glass-blur);
 	color: var(--text-muted); font-size: 12px; font-weight: 600;
 }
+.surface-chip .icon { width: 13px; height: 13px; }
+.surface-chip.is-pointing {
+	border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+	background: color-mix(in srgb, var(--accent) 12%, var(--surface-glass-strong)); color: var(--accent);
+}
+.surface-target-row { display: flex; justify-content: flex-start; margin-bottom: 6px; }
+.surface-target-row:empty { display: none; }
+.surface-target-pill {
+	display: inline-flex; align-items: center; gap: 7px; max-width: 100%; height: 30px; padding: 0 5px 0 10px;
+	border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--surface-glass-edge)); border-radius: 999px;
+	background: var(--surface-glass-strong); box-shadow: var(--surface-glass-shadow); backdrop-filter: var(--surface-glass-blur);
+	font-size: 12px;
+}
+.surface-target-pill > .icon { width: 13px; height: 13px; flex: none; color: var(--accent); }
+.surface-target-name { flex: none; font-weight: 650; color: var(--text); }
+.surface-target-route { flex: none; color: var(--text-soft); font-family: var(--mono); font-size: 11px; }
+.surface-target-snippet {
+	min-width: 0; overflow: hidden; color: var(--text-muted); text-overflow: ellipsis; white-space: nowrap;
+}
+.surface-target-clear {
+	display: grid; place-items: center; width: 20px; height: 20px; flex: none; border: 0; border-radius: 50%;
+	background: none; color: var(--text-soft); cursor: pointer;
+}
+.surface-target-clear:hover { background: var(--hover); color: var(--text); }
+.surface-target-clear .icon { width: 12px; height: 12px; }
 .surface-composer-shell {
-	position: relative; isolation: isolate; display: flex; align-items: flex-end; gap: 4px; padding: 6px 6px 6px 12px;
+	position: relative; isolation: isolate; display: flex; align-items: flex-end; gap: 4px; padding: 6px 6px 6px 8px;
 	border: 1px solid var(--surface-glass-edge); border-radius: 24px; box-shadow: var(--surface-glass-shadow);
 }
 .surface-composer-shell::before {
 	content: ""; position: absolute; z-index: -1; inset: 0; border-radius: inherit; background: var(--surface-glass);
 	backdrop-filter: var(--surface-glass-blur); pointer-events: none;
 }
+.surface-point {
+	display: inline-flex; align-items: center; gap: 5px; height: 34px; flex: none; padding: 0 11px 0 9px; border: 1px solid transparent;
+	border-radius: 17px; background: color-mix(in srgb, var(--text) 5%, transparent); color: var(--text-muted); font: inherit;
+	font-size: 12.5px; font-weight: 600; cursor: pointer;
+	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease, border-color var(--motion-fast) ease;
+}
+.surface-point[hidden] { display: none; }
+.surface-point:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 9%, transparent); color: var(--text); }
+.surface-point.is-on {
+	border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+	background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent);
+}
+.surface-point:disabled { opacity: 0.45; cursor: default; }
+.surface-point .icon { width: 15px; height: 15px; }
 .surface-input {
 	flex: 1; min-width: 0; min-height: 34px; max-height: 140px; padding: 7px 4px; border: 0; outline: 0; resize: none;
 	background: transparent; color: var(--text); font: inherit; font-size: 14px; line-height: 20px;
@@ -269,19 +347,39 @@ span.surface-session-main { cursor: default; }
 .surface-drawer-change { display: flex; align-items: flex-start; gap: 10px; padding: 10px 8px; border-radius: 12px; }
 .surface-drawer-change:hover { background: var(--hover); }
 .surface-drawer-change .surface-switch { margin-top: 3px; }
-.surface-drawer-change-copy { display: grid; flex: 1; min-width: 0; gap: 1px; }
+.surface-drawer-change-copy { display: grid; flex: 1; min-width: 0; gap: 2px; }
+.surface-drawer-change-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.surface-drawer-change-head strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .surface-drawer-change-copy strong { font-size: 13px; font-weight: 600; line-height: 18px; }
 .surface-drawer-change-copy span { color: var(--text-muted); font-size: 12px; line-height: 16px; }
 .surface-drawer-change-copy small { color: var(--text-soft); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.surface-drawer-change-copy .surface-conflict-paths { margin: 2px 0 0; color: var(--danger); }
+.surface-drawer-change.is-conflicted { background: color-mix(in srgb, var(--danger) 5%, transparent); }
 .surface-drawer-change.is-closed strong { color: var(--text-muted); }
+.surface-btn-reconcile {
+	border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+	background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger);
+}
+.surface-btn-reconcile:hover:not(:disabled) { background: var(--danger); color: #fff; }
 .surface-drawer-actions { display: flex; gap: 8px; padding: 6px 8px 4px; }
 .surface-drawer-rule { height: 1px; margin: 12px 6px 8px; background: var(--border); }
-.surface-tag { display: inline-flex; align-items: center; gap: 4px; height: 24px; color: var(--text-muted); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.surface-tag { display: inline-flex; align-items: center; gap: 4px; height: 20px; color: var(--text-muted); font-size: 11.5px; font-weight: 600; white-space: nowrap; }
 .surface-tag.is-merged { color: var(--agent-active); }
 .surface-tag.is-conflicted { color: var(--danger); }
 .surface-tag .icon { width: 12px; height: 12px; stroke-width: 2.6; }
 .surface-message { margin: 8px 6px; font-size: 13px; line-height: 19px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .surface-message.is-member { margin-left: 44px; padding: 8px 12px; border-radius: 16px 16px 4px 16px; background: color-mix(in srgb, var(--text) 6%, transparent); }
+.surface-message.is-member.is-pending { opacity: 0.65; }
+.surface-message.is-session { margin-right: 24px; padding: 2px 2px; color: var(--text); }
+.surface-message.is-system {
+	display: flex; align-items: center; gap: 7px; margin: 10px 6px; padding: 5px 10px; border-radius: 10px;
+	background: color-mix(in srgb, var(--text) 3.5%, transparent); color: var(--text-muted); font-size: 12px; line-height: 16px;
+}
+.surface-system-mark { display: grid; place-items: center; width: 14px; height: 14px; flex: none; color: var(--agent-active); }
+.surface-system-mark .icon { width: 12px; height: 12px; stroke-width: 2.6; }
+.surface-system-dot { width: 6px; height: 6px; flex: none; margin: 0 4px; border-radius: 50%; background: var(--text-soft); }
+.surface-system-text { flex: 1; min-width: 0; }
+.surface-message.is-system time { flex: none; color: var(--text-soft); font-size: 11px; font-variant-numeric: tabular-nums; }
 .surface-question { margin: 6px; padding: 12px; border-radius: 14px; background: color-mix(in srgb, var(--warning) 12%, transparent); font-size: 13px; }
 .surface-question p { margin: 0 0 8px; }
 .surface-question-options { display: flex; flex-wrap: wrap; gap: 6px; }

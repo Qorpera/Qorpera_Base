@@ -1,8 +1,33 @@
-import type { SurfaceChangeUnit, SurfaceSession } from "@qorpera/contracts";
+import type { SurfaceChangeUnit, SurfaceSession, SurfaceSessionMessage } from "@qorpera/contracts";
 import { fmtTime, h, icon } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
-import { isOpenChange, isRunningSession, type SurfacesStore, sessionHeld } from "../surfaces-store.ts";
+import {
+	formatConflictPaths,
+	isOpenChange,
+	isRunningSession,
+	type SurfacesStore,
+	sessionHeld,
+} from "../surfaces-store.ts";
 import { sessionStatus } from "./surface-rail.ts";
+
+function messageRow(message: SurfaceSessionMessage): HTMLElement {
+	if (message.authorKind === "system")
+		return h(
+			"div",
+			{
+				class: "surface-message is-system",
+				...(message.changeId ? { "data-change-id": message.changeId } : {}),
+			},
+			message.changeId
+				? h("span", { class: "surface-system-mark", "aria-hidden": "true" }, icon("check"))
+				: h("span", { class: "surface-system-dot", "aria-hidden": "true" }),
+			h("span", { class: "surface-system-text" }, message.text),
+			h("time", { datetime: message.createdAt }, fmtTime(message.createdAt)),
+		);
+	if (message.authorKind === "session")
+		return h("p", { class: "surface-message is-session", title: fmtTime(message.createdAt) }, message.text);
+	return h("p", { class: "surface-message is-member", title: fmtTime(message.createdAt) }, message.text);
+}
 
 function changeTag(change: SurfaceChangeUnit): HTMLElement | null {
 	if (change.status === "merged") return h("span", { class: "surface-tag is-merged" }, icon("check"), t("Merged"));
@@ -32,6 +57,7 @@ export class SurfaceSessionDrawer {
 	readonly #form = h("form", { class: "surface-drawer-foot" }, this.#input, this.#send);
 	readonly #store: SurfacesStore;
 	#shown = "";
+	#sessionId = "";
 	#messages = 0;
 
 	constructor(store: SurfacesStore, signal: AbortSignal) {
@@ -45,7 +71,9 @@ export class SurfaceSessionDrawer {
 				const text = this.#input.value.trim();
 				if (!sessionId || !text) return;
 				this.#input.value = "";
-				void store.reply(sessionId, text);
+				void store.reply(sessionId, text).then((ok) => {
+					if (!ok && !this.#input.value) this.#input.value = text;
+				});
 			},
 			{ signal },
 		);
@@ -60,6 +88,8 @@ export class SurfaceSessionDrawer {
 		this.el.inert = !session;
 		if (!session) {
 			this.#shown = "";
+			this.#sessionId = "";
+			this.#messages = 0;
 			return;
 		}
 		const notes = state.notes.filter((note) => note.sessionId === session.id);
@@ -90,8 +120,9 @@ export class SurfaceSessionDrawer {
 			),
 		);
 		this.#body.replaceChildren(...this.#content(session, notes));
-		const count = 1 + notes.length;
-		if (count !== this.#messages) {
+		const count = (session.messages.length || (session.prompt ? 1 : 0)) + notes.length;
+		if (session.id !== this.#sessionId || count !== this.#messages) {
+			this.#sessionId = session.id;
 			this.#messages = count;
 			this.#body.scrollTop = this.#body.scrollHeight;
 		}
@@ -150,13 +181,16 @@ export class SurfaceSessionDrawer {
 						: t("{count} changes · toggle to preview", { count: listed.length }),
 				),
 			);
+			const busyReconcile = Boolean(store.state.busy[`reconcile:${session.surfaceId}`]);
 			for (const change of listed) {
 				const open = isOpenChange(change);
+				const conflicted = change.status === "conflicted";
 				const shown = store.isChangeShown(change.id);
+				const conflictPaths = change.conflictPaths?.length ? formatConflictPaths(change.conflictPaths) : "";
 				parts.push(
 					h(
 						"div",
-						{ class: `surface-drawer-change${open ? "" : " is-closed"}` },
+						{ class: `surface-drawer-change${open ? "" : " is-closed"}${conflicted ? " is-conflicted" : ""}` },
 						open
 							? h("button", {
 									type: "button",
@@ -171,39 +205,79 @@ export class SurfaceSessionDrawer {
 						h(
 							"div",
 							{ class: "surface-drawer-change-copy" },
-							h("strong", null, change.title),
+							conflicted
+								? h(
+										"div",
+										{ class: "surface-drawer-change-head" },
+										h("strong", null, change.title),
+										changeTag(change),
+									)
+								: h("strong", null, change.title),
 							change.summary ? h("span", null, change.summary) : null,
+							conflicted && conflictPaths
+								? h(
+										"small",
+										{ class: "surface-conflict-paths", title: change.conflictPaths?.join(", ") },
+										t("Conflicts in {paths}", { paths: conflictPaths }),
+									)
+								: null,
 							diffLine(change) ? h("small", null, diffLine(change)) : null,
 						),
-						open && change.status !== "conflicted" && !isRunningSession(session)
+						conflicted && !isRunningSession(session)
 							? h(
 									"button",
 									{
 										type: "button",
-										class: "btn btn-small",
-										"data-act": "approve",
+										class: "btn btn-small surface-btn-reconcile",
+										"data-act": "reconcile",
 										"data-change": change.id,
-										disabled: Boolean(store.state.busy[`change:${change.id}`]),
+										disabled: busyReconcile,
 									},
-									t("Approve"),
+									t("Reconcile"),
 								)
-							: changeTag(change),
+							: open && !conflicted && !isRunningSession(session)
+								? h(
+										"button",
+										{
+											type: "button",
+											class: "btn btn-small",
+											"data-act": "approve",
+											"data-change": change.id,
+											disabled: Boolean(store.state.busy[`change:${change.id}`]),
+										},
+										t("Approve"),
+									)
+								: conflicted
+									? null
+									: changeTag(change),
 					),
 				);
 			}
 			const open = session.changes.filter(isOpenChange).length;
+			const conflictedCount = session.changes.filter((change) => change.status === "conflicted").length;
 			if (!isRunningSession(session))
 				parts.push(
 					h(
 						"div",
 						{ class: "surface-drawer-actions" },
-						open > 1
+						conflictedCount > 1
 							? h(
 									"button",
-									{ type: "button", class: "btn btn-primary btn-small", "data-act": "approve-all" },
-									t("Approve all {count}", { count: open }),
+									{
+										type: "button",
+										class: "btn btn-primary btn-small",
+										"data-act": "reconcile-all",
+										disabled: busyReconcile,
+									},
+									t("Reconcile all"),
 								)
-							: null,
+							: open > 1 && conflictedCount === 0
+								? h(
+										"button",
+										{ type: "button", class: "btn btn-primary btn-small", "data-act": "approve-all" },
+										t("Approve all {count}", { count: open }),
+									)
+								: null,
 						open > 0
 							? h("button", { type: "button", class: "btn btn-small", "data-act": "discard" }, t("Discard"))
 							: null,
@@ -211,8 +285,12 @@ export class SurfaceSessionDrawer {
 				);
 		}
 		parts.push(h("div", { class: "surface-drawer-rule" }));
-		if (session.prompt) parts.push(h("p", { class: "surface-message is-member" }, session.prompt));
-		for (const note of notes) parts.push(h("p", { class: "surface-message is-member" }, note.text));
+		if (session.messages.length > 0) {
+			for (const message of session.messages) parts.push(messageRow(message));
+		} else if (session.prompt) {
+			parts.push(h("p", { class: "surface-message is-member" }, session.prompt));
+		}
+		for (const note of notes) parts.push(h("p", { class: "surface-message is-member is-pending" }, note.text));
 		return parts;
 	}
 
@@ -236,6 +314,15 @@ export class SurfaceSessionDrawer {
 			case "approve-all":
 				void store.approveAll(drawer.sessionId);
 				return;
+			case "reconcile":
+				if (change) void store.reconcileChanges(drawer.surfaceId, [change]);
+				return;
+			case "reconcile-all": {
+				const session = store.session(drawer.sessionId);
+				const ids = session?.changes.filter((item) => item.status === "conflicted").map((item) => item.id) ?? [];
+				if (ids.length) void store.reconcileChanges(drawer.surfaceId, ids);
+				return;
+			}
 			case "discard":
 				void store.discardSession(drawer.sessionId);
 				return;

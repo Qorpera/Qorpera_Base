@@ -1,4 +1,12 @@
-import type { SurfaceChangeUnit, SurfaceSession, SurfaceSummary, SurfaceWorkspace } from "@qorpera/contracts";
+import type {
+	PointToChangeTarget,
+	SurfaceChangeUnit,
+	SurfacePreviewFrameState,
+	SurfaceSession,
+	SurfaceSessionMessage,
+	SurfaceSummary,
+	SurfaceWorkspace,
+} from "@qorpera/contracts";
 import { vi } from "vitest";
 import { type SurfacesClient, SurfacesStore, synthesizeMigration } from "../src/app/surfaces-store.ts";
 
@@ -10,6 +18,14 @@ export const CHANGES = [
 	"44444444-4444-4444-8444-444444444442",
 	"44444444-4444-4444-8444-444444444443",
 ] as const;
+export const PREVIEW_IDS = ["66666666-6666-4666-8666-666666666661", "66666666-6666-4666-8666-666666666662"] as const;
+export const MESSAGE_IDS = [
+	"77777777-7777-4777-8777-777777777771",
+	"77777777-7777-4777-8777-777777777772",
+	"77777777-7777-4777-8777-777777777773",
+	"77777777-7777-4777-8777-777777777774",
+] as const;
+export const VALID_PASS = "B".repeat(43);
 const NOW = "2026-11-21T10:00:00.000Z";
 
 export function summary(overrides: Partial<SurfaceSummary> = {}): SurfaceSummary {
@@ -39,7 +55,12 @@ export function summary(overrides: Partial<SurfaceSummary> = {}): SurfaceSummary
 	};
 }
 
-export function change(id: string, seq: number, status: SurfaceChangeUnit["status"] = "staged"): SurfaceChangeUnit {
+export function change(
+	id: string,
+	seq: number,
+	status: SurfaceChangeUnit["status"] = "staged",
+	overrides: Partial<SurfaceChangeUnit> = {},
+): SurfaceChangeUnit {
 	return {
 		id,
 		sessionId: SESSION,
@@ -59,6 +80,51 @@ export function change(id: string, seq: number, status: SurfaceChangeUnit["statu
 		canUndo: status === "merged",
 		createdAt: NOW,
 		resolvedAt: null,
+		...overrides,
+	};
+}
+
+export function sessionMessage(
+	id: string,
+	authorKind: SurfaceSessionMessage["authorKind"],
+	text: string,
+	overrides: Partial<SurfaceSessionMessage> = {},
+): SurfaceSessionMessage {
+	return {
+		id,
+		sessionId: SESSION,
+		authorKind,
+		text,
+		changeId: null,
+		createdAt: NOW,
+		...overrides,
+	};
+}
+
+export function pointTarget(overrides: Partial<PointToChangeTarget> = {}): PointToChangeTarget {
+	return {
+		route: "/pricing",
+		selector: "main > section.hero > button.cta",
+		textSnippet: "Forudbestil · 1.995 kr.",
+		tagName: "BUTTON",
+		componentHint: "PreorderCta",
+		boundingBox: { x: 120, y: 340, width: 220, height: 48 },
+		viewport: { width: 1280, height: 800 },
+		...overrides,
+	};
+}
+
+export function previewFrame(overrides: Partial<SurfacePreviewFrameState> = {}): SurfacePreviewFrameState {
+	return {
+		previewId: PREVIEW_IDS[0],
+		status: "ready",
+		doorActionUrl: "https://thetaband--p12ab34cd.qorpera.com/__qorpera/member",
+		memberPass: VALID_PASS,
+		activeRoute: "/",
+		toggledChangeIds: [CHANGES[0]],
+		conflictReport: null,
+		errorDetail: null,
+		...overrides,
 	};
 }
 
@@ -81,7 +147,8 @@ export function session(
 		hasActiveChat: false,
 		question: null,
 		changes,
-		openChangeCount: changes.filter((item) => item.status === "staged").length,
+		messages: [],
+		openChangeCount: changes.filter((item) => item.status === "staged" || item.status === "conflicted").length,
 		createdAt: NOW,
 		updatedAt: NOW,
 		closedAt: null,
@@ -89,7 +156,10 @@ export function session(
 	};
 }
 
-export function workspace(active: readonly SurfaceSession[]): SurfaceWorkspace {
+export function workspace(
+	active: readonly SurfaceSession[],
+	overrides: Partial<SurfaceWorkspace> = {},
+): SurfaceWorkspace {
 	return {
 		surface: summary(),
 		briefSummary: null,
@@ -111,6 +181,7 @@ export function workspace(active: readonly SurfaceSession[]): SurfaceWorkspace {
 			},
 			compareFrames: [],
 		},
+		...overrides,
 	};
 }
 
@@ -128,6 +199,7 @@ export function fakeClient(overrides: Partial<SurfacesClient> = {}): SurfacesCli
 		discardSurfaceChange: vi.fn(fail),
 		undoSurfaceChange: vi.fn(fail),
 		chooseExploration: vi.fn(fail),
+		reconcileChanges: vi.fn(fail),
 		setPreviewSelection: vi.fn(fail),
 		publishSurface: vi.fn(async () => summary({ unpublishedChangeCount: 0 })),
 		listAutomations: vi.fn(async () => []),

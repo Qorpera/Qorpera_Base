@@ -1,9 +1,11 @@
-import type { SurfacePreviewFrameState, SurfaceSummary } from "@qorpera/contracts";
+import type { StartSurfaceSessionOptions } from "@qorpera/cloud-client/surfaces";
+import type { PointToChangeTarget, SurfaceSummary } from "@qorpera/contracts";
 import { openContextMenu } from "../../ui/context-menu.ts";
 import { growToText, h, icon } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { t } from "../../ui/preferences.ts";
 import {
+	formatConflictPaths,
 	migrationPending,
 	openExplorations,
 	runningSessionTotal,
@@ -11,6 +13,7 @@ import {
 	type SurfacesStore,
 	surfaceBySlug,
 } from "../surfaces-store.ts";
+import { SurfaceDoorStage } from "./surface-door.ts";
 import { surfaceEmblem } from "./surface-rail.ts";
 import { SurfaceSessionDrawer } from "./surface-session-drawer.ts";
 
@@ -26,6 +29,14 @@ export interface SurfaceViewHost {
 	openMigration(): void;
 }
 
+interface CompareColumn {
+	readonly stage: SurfaceDoorStage;
+	readonly column: HTMLElement;
+	readonly title: HTMLElement;
+	readonly approve: HTMLButtonElement;
+	readonly abort: AbortController;
+}
+
 function hostOf(url: string | null): string {
 	if (!url) return "";
 	try {
@@ -35,35 +46,21 @@ function hostOf(url: string | null): string {
 	}
 }
 
-function previewStatusText(frame: SurfacePreviewFrameState): string {
-	switch (frame.status) {
-		case "composing":
-			return t("Composing preview…");
-		case "building":
-			return t("Building preview…");
-		case "conflicted":
-			return t("These changes conflict. Turn one off to preview the rest.");
-		case "failed":
-			return frame.errorDetail ?? t("The preview could not be built.");
-		default:
-			return "";
-	}
+function targetOriginLabel(target: PointToChangeTarget): string {
+	const element = target.componentHint?.trim() || target.tagName.toLowerCase();
+	const label = target.route && target.route !== "/" ? `${element} · ${target.route}` : element;
+	return label.slice(0, 160);
 }
 
-function frameOf(frame: SurfacePreviewFrameState, title: string): HTMLElement {
-	if (frame.status === "ready" && frame.doorActionUrl)
-		return h("iframe", {
-			class: "surface-frame",
-			src: frame.doorActionUrl,
-			title,
-			referrerpolicy: "no-referrer",
-		});
-	return h(
-		"div",
-		{ class: "surface-frame is-waiting" },
-		h("span", { class: "surface-state is-running" }),
-		h("p", null, previewStatusText(frame) || t("Preview appears here when a change is ready.")),
-	);
+function isEditableTarget(target: EventTarget | null): boolean {
+	if (!(target instanceof Element)) return false;
+	if (
+		target instanceof HTMLInputElement ||
+		target instanceof HTMLTextAreaElement ||
+		target instanceof HTMLSelectElement
+	)
+		return true;
+	return target instanceof HTMLElement && target.isContentEditable;
 }
 
 export class SurfaceView {
@@ -78,16 +75,29 @@ export class SurfaceView {
 	readonly #frames = h("div", { class: "surface-frames", hidden: true });
 	readonly #banner = h("div", { class: "surface-banners" });
 	readonly #chips = h("div", { class: "surface-chips" });
+	readonly #targetRow = h("div", { class: "surface-target-row" });
+	readonly #point = h(
+		"button",
+		{ type: "button", class: "surface-point", "data-act": "point", "aria-pressed": "false", hidden: true },
+		icon("crosshair"),
+		h("span", null, t("Point")),
+	);
 	readonly #input = h("textarea", { class: "surface-input", rows: 1 });
 	readonly #send = h("button", { type: "submit", class: "surface-send" }, icon("send"));
 	readonly #composer = h(
 		"form",
 		{ class: "surface-composer" },
 		this.#chips,
-		h("div", { class: "surface-composer-shell" }, this.#input, this.#send),
+		this.#targetRow,
+		h("div", { class: "surface-composer-shell" }, this.#point, this.#input, this.#send),
 	);
 	readonly #toast = h("div", { class: "surface-toast-host", role: "status" });
 	readonly #drawer: SurfaceSessionDrawer;
+	readonly #primaryDoor: SurfaceDoorStage;
+	readonly #compareDoors = new Map<string, CompareColumn>();
+	#framesMode: "none" | "primary" | "compare" = "none";
+	#pointing = false;
+	#target: PointToChangeTarget | undefined;
 	#mount: SurfaceMount | undefined;
 	#mountedFor = "";
 	#barShown = "";
@@ -100,6 +110,13 @@ export class SurfaceView {
 		this.slug = slug;
 		const signal = this.#lifetime.signal;
 		this.#drawer = new SurfaceSessionDrawer(host.store, signal);
+		this.#primaryDoor = new SurfaceDoorStage(signal, {
+			onPick: (target) => this.#onPick(target),
+			onShownChange: () => {
+				const surface = this.surface;
+				if (surface) this.#drawChrome(surface);
+			},
+		});
 		this.#viewport.append(this.#mountSlot, this.#frames);
 		this.#stage.append(this.#viewport, this.#banner, this.#composer, this.#drawer.el, this.#toast);
 		this.el.append(this.#bar, this.#stage);
@@ -129,6 +146,7 @@ export class SurfaceView {
 			},
 			{ signal },
 		);
+		window.addEventListener("keydown", (event) => this.#keydown(event), { signal });
 		this.el.addEventListener("click", (event) => this.#click(event), { signal });
 		void host.store.openSurface(slug);
 	}
@@ -142,6 +160,8 @@ export class SurfaceView {
 	}
 
 	dispose(): void {
+		this.#clearCompare();
+		this.#primaryDoor.dispose();
 		this.#lifetime.abort();
 		this.#mount?.dispose();
 		this.#mount = undefined;
@@ -322,6 +342,15 @@ export class SurfaceView {
 		this.#mount?.update();
 	}
 
+	#clearCompare(): void {
+		for (const entry of this.#compareDoors.values()) {
+			entry.abort.abort();
+			entry.stage.dispose();
+			entry.column.remove();
+		}
+		this.#compareDoors.clear();
+	}
+
 	#drawFrames(surface: SurfaceSummary): void {
 		const state = this.#host.store.state;
 		const workspace = state.workspaces[surface.id];
@@ -329,52 +358,86 @@ export class SurfaceView {
 		const mode = surface.archetype === "live_build" ? state.mode : "live";
 		const compare = mode === "compare" && openExplorations(workspace).length > 0;
 		const showPrimary = mode === "preview" && preview !== undefined && preview.primary.status !== "live_baseline";
-		const key = JSON.stringify([mode, compare, showPrimary, preview, surface.id]);
+		const key = JSON.stringify([mode, compare, showPrimary, preview, surface.id, surface.title]);
 		if (key === this.#framesShown) return;
 		this.#framesShown = key;
 		this.#frames.classList.toggle("is-compare", compare);
 		if (compare && preview) {
+			if (this.#pointing) this.#setPointing(false);
+			this.#primaryDoor.clear();
 			const exploration = openExplorations(workspace)[0]!;
 			const sessions = workspace!.activeSessions.filter((session) => session.explorationId === exploration.id);
-			const frames = sessions.map((session) => {
+			const keep = new Set(sessions.map((session) => session.id));
+			for (const [id, entry] of this.#compareDoors) {
+				if (keep.has(id)) continue;
+				entry.abort.abort();
+				entry.stage.dispose();
+				entry.column.remove();
+				this.#compareDoors.delete(id);
+			}
+			if (this.#framesMode !== "compare") {
+				this.#primaryDoor.el.remove();
+				this.#framesMode = "compare";
+			}
+			for (const session of sessions) {
 				const compared = preview.compareFrames.find((item) => item.sessionId === session.id);
 				const label = compared?.label ?? session.explorationVariantLabel ?? session.title;
-				return h(
-					"div",
-					{ class: "surface-compare-column" },
-					h(
+				const frameState = compared
+					? compared.frame
+					: { ...preview.primary, status: "building" as const, doorActionUrl: null, memberPass: null };
+				let entry = this.#compareDoors.get(session.id);
+				if (!entry) {
+					const abort = new AbortController();
+					const stage = new SurfaceDoorStage(abort.signal);
+					const title = h("strong", null, label);
+					const approve = h(
+						"button",
+						{
+							type: "button",
+							class: "btn btn-small",
+							"data-act": "choose",
+							"data-exploration": exploration.id,
+							"data-session": session.id,
+						},
+						t("Approve"),
+					);
+					const column = h(
 						"div",
-						{ class: "surface-compare-head" },
-						h("strong", null, label),
-						h(
-							"button",
-							{
-								type: "button",
-								class: "btn btn-small",
-								"data-act": "choose",
-								"data-exploration": exploration.id,
-								"data-session": session.id,
-							},
-							t("Approve"),
-						),
-					),
-					compared
-						? frameOf(compared.frame, label)
-						: frameOf({ ...preview.primary, status: "building", doorActionUrl: null }, label),
-				);
-			});
-			this.#frames.replaceChildren(...frames);
+						{ class: "surface-compare-column" },
+						h("div", { class: "surface-compare-head" }, title, approve),
+						stage.el,
+					);
+					entry = { stage, column, title, approve, abort };
+					this.#compareDoors.set(session.id, entry);
+					this.#frames.append(column);
+				} else {
+					entry.title.textContent = label;
+					entry.approve.dataset.exploration = exploration.id;
+				}
+				entry.stage.sync(frameState, label);
+			}
 			this.#frames.hidden = false;
 			this.#mountSlot.hidden = true;
 			return;
 		}
 		if (showPrimary && preview) {
-			this.#frames.replaceChildren(frameOf(preview.primary, t("Preview of {title}", { title: surface.title })));
+			this.#clearCompare();
+			if (this.#framesMode !== "primary") {
+				this.#frames.replaceChildren(this.#primaryDoor.el);
+				this.#framesMode = "primary";
+			}
+			this.#primaryDoor.sync(preview.primary, t("Preview of {title}", { title: surface.title }));
 			this.#frames.hidden = false;
 			this.#mountSlot.hidden = true;
 			return;
 		}
-		this.#frames.replaceChildren();
+		this.#clearCompare();
+		this.#primaryDoor.clear();
+		if (this.#pointing) this.#setPointing(false);
+		if (this.#framesMode !== "none") {
+			this.#frames.replaceChildren();
+			this.#framesMode = "none";
+		}
 		this.#frames.hidden = true;
 		this.#mountSlot.hidden = false;
 	}
@@ -382,15 +445,35 @@ export class SurfaceView {
 	#drawChrome(surface: SurfaceSummary): void {
 		const store = this.#host.store;
 		const state = store.state;
+		const workspace = state.workspaces[surface.id];
+		const preview = workspace?.previewState;
+		const conflict = preview?.primary.conflictReport ?? null;
+		const hasConflict = Boolean(conflict && (conflict.changeIds.length > 0 || conflict.paths.length > 0));
+		const busyReconcile = Boolean(state.busy[`reconcile:${surface.id}`]);
 		const canStart = store.canStartSessions(surface);
+		const pointVisible = surface.archetype === "live_build";
+		const hasPreviewDoor = Boolean(
+			preview?.primary.status === "ready" && preview.primary.doorActionUrl && preview.primary.memberPass,
+		);
+		const pointEnabled = pointVisible && canStart && (hasPreviewDoor || this.#primaryDoor.hasShown);
+		if (this.#pointing && !pointEnabled) {
+			this.#pointing = false;
+			this.#primaryDoor.setInspectorMode(false);
+		}
 		const running = runningSessionTotal(state);
 		const pending = migrationPending(state.migration) && !state.migrationDismissed;
 		const key = JSON.stringify([
 			surface.id,
 			canStart,
+			pointVisible,
+			pointEnabled,
+			this.#pointing,
+			this.#target,
 			running,
 			pending,
 			state.error,
+			hasConflict ? conflict : null,
+			busyReconcile,
 			state.migration?.specialistAgents.length,
 			state.migration?.legacyBoards.length,
 		]);
@@ -403,18 +486,58 @@ export class SurfaceView {
 		this.#input.setAttribute("aria-label", t("Describe a change"));
 		this.#send.setAttribute("aria-label", t("Start session"));
 		this.#send.disabled = !canStart;
-		this.#chips.replaceChildren(
-			running > 0
-				? h(
-						"span",
-						{ class: "surface-chip" },
-						h("span", { class: "surface-state is-running" }),
-						running === 1
-							? t("1 session running")
-							: t("{count} sessions running in parallel", { count: running }),
-					)
-				: "",
-		);
+		this.#point.hidden = !pointVisible;
+		this.#point.disabled = !pointEnabled;
+		this.#point.classList.toggle("is-on", this.#pointing);
+		this.#point.setAttribute("aria-pressed", String(this.#pointing));
+		this.#point.title = pointEnabled ? t("Point at an element (P)") : t("Point is available when a preview is open");
+		this.el.classList.toggle("is-pointing", this.#pointing);
+		const chips: HTMLElement[] = [];
+		if (this.#pointing)
+			chips.push(
+				h(
+					"span",
+					{ class: "surface-chip is-pointing" },
+					icon("crosshair"),
+					t("Click anything on the page to target it · Esc to cancel"),
+				),
+			);
+		if (running > 0)
+			chips.push(
+				h(
+					"span",
+					{ class: "surface-chip" },
+					h("span", { class: "surface-state is-running" }),
+					running === 1 ? t("1 session running") : t("{count} sessions running in parallel", { count: running }),
+				),
+			);
+		this.#chips.replaceChildren(...chips);
+		if (this.#target) {
+			const label = this.#target.componentHint?.trim() || this.#target.tagName.toLowerCase();
+			const snippet = this.#target.textSnippet.trim();
+			this.#targetRow.replaceChildren(
+				h(
+					"div",
+					{ class: "surface-target-pill" },
+					icon("crosshair"),
+					h("strong", { class: "surface-target-name" }, label),
+					h("span", { class: "surface-target-route" }, this.#target.route),
+					snippet ? h("span", { class: "surface-target-snippet", title: snippet }, snippet) : null,
+					h(
+						"button",
+						{
+							type: "button",
+							class: "surface-target-clear",
+							"aria-label": t("Remove target"),
+							"data-act": "clear-target",
+						},
+						icon("close"),
+					),
+				),
+			);
+		} else {
+			this.#targetRow.replaceChildren();
+		}
 		const banners: HTMLElement[] = [];
 		if (state.error)
 			banners.push(
@@ -425,6 +548,31 @@ export class SurfaceView {
 					h("button", { type: "button", class: "btn btn-small", "data-act": "dismiss-error" }, t("Dismiss")),
 				),
 			);
+		if (hasConflict && conflict) {
+			const paths = formatConflictPaths(conflict.paths);
+			banners.push(
+				h(
+					"div",
+					{ class: "surface-banner is-conflict", role: "alert" },
+					h("span", { class: "surface-state is-conflicted", "aria-hidden": "true" }),
+					h(
+						"span",
+						{ title: conflict.paths.join(", ") || undefined },
+						paths ? t("Preview conflict in {paths}", { paths }) : t("Preview changes conflict."),
+					),
+					h(
+						"button",
+						{
+							type: "button",
+							class: "btn btn-primary btn-small",
+							"data-act": "reconcile",
+							disabled: busyReconcile || conflict.changeIds.length === 0,
+						},
+						t("Reconcile"),
+					),
+				),
+			);
+		}
 		if (pending && state.migration) {
 			const agents = state.migration.specialistAgents.length;
 			const boards = state.migration.legacyBoards.length;
@@ -447,6 +595,48 @@ export class SurfaceView {
 		}
 		this.#banner.replaceChildren(...banners);
 		this.el.classList.toggle("has-banner", banners.length > 0);
+	}
+
+	#setPointing(active: boolean): void {
+		if (active === this.#pointing) return;
+		const surface = this.surface;
+		if (active) {
+			if (!surface || surface.archetype !== "live_build" || !this.#host.store.canStartSessions(surface)) return;
+			if (this.#host.store.state.mode !== "preview") {
+				this.#host.store.setMode("preview");
+				this.#drawBar(surface);
+				this.#drawFrames(surface);
+			}
+		}
+		this.#pointing = active;
+		this.#primaryDoor.setInspectorMode(active);
+		this.el.classList.toggle("is-pointing", active);
+		if (surface) this.#drawChrome(surface);
+	}
+
+	#onPick(target: PointToChangeTarget): void {
+		this.#target = target;
+		this.#pointing = false;
+		this.#primaryDoor.setInspectorMode(false);
+		this.el.classList.toggle("is-pointing", false);
+		const surface = this.surface;
+		if (surface) this.#drawChrome(surface);
+		this.focus();
+	}
+
+	#keydown(event: KeyboardEvent): void {
+		if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+		if (event.key === "Escape" && this.#pointing) {
+			event.preventDefault();
+			this.#setPointing(false);
+			return;
+		}
+		if (event.key !== "p" && event.key !== "P") return;
+		if (isEditableTarget(event.target)) return;
+		if (this.#host.store.state.drawer || document.querySelector(".surface-dialog-backdrop, .modal-backdrop")) return;
+		if (this.#point.hidden || this.#point.disabled) return;
+		event.preventDefault();
+		this.#setPointing(!this.#pointing);
 	}
 
 	#drawToast(): void {
@@ -475,13 +665,23 @@ export class SurfaceView {
 		const surface = this.surface;
 		const text = this.#input.value.trim();
 		if (!surface || !text || this.#input.disabled) return;
+		const target = this.#target;
+		const options: StartSurfaceSessionOptions = target
+			? { target, originKind: "point_to_change", originLabel: targetOriginLabel(target) }
+			: {};
 		this.#input.value = "";
 		growToText(this.#input);
 		this.#send.classList.remove("is-ready");
-		const session = await this.#host.store.startSession(surface.id, text);
+		const session = await this.#host.store.startSession(surface.id, text, options);
 		if (!session) {
 			this.#input.value = text;
 			growToText(this.#input);
+			this.#send.classList.toggle("is-ready", text.length > 0);
+			return;
+		}
+		if (target) {
+			this.#target = undefined;
+			this.#drawChrome(surface);
 		}
 	}
 
@@ -493,12 +693,27 @@ export class SurfaceView {
 		if (!surface) return;
 		const { act } = target.dataset;
 		switch (act) {
-			case "mode":
-				store.setMode(target.dataset.mode as SurfacePreviewMode);
+			case "mode": {
+				const next = target.dataset.mode as SurfacePreviewMode;
+				if (next !== "preview" && this.#pointing) this.#setPointing(false);
+				store.setMode(next);
 				return;
+			}
 			case "device":
 				store.setDevice(target.dataset.device === "mobile" ? "mobile" : "desktop");
 				return;
+			case "point":
+				this.#setPointing(!this.#pointing);
+				return;
+			case "clear-target":
+				this.#target = undefined;
+				this.#drawChrome(surface);
+				return;
+			case "reconcile": {
+				const ids = store.workspace(surface.id)?.previewState.primary.conflictReport?.changeIds ?? [];
+				if (ids.length) void store.reconcileChanges(surface.id, ids);
+				return;
+			}
 			case "publish":
 				void store.publish(surface.id);
 				return;

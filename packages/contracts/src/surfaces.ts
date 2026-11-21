@@ -82,6 +82,23 @@ export type SurfaceAutomationOutputMode = (typeof SURFACE_AUTOMATION_OUTPUT_MODE
 export const SURFACE_AUTOMATION_STATUSES = ["idle", "running", "needs_attention", "paused"] as const;
 export type SurfaceAutomationStatus = (typeof SURFACE_AUTOMATION_STATUSES)[number];
 
+export const SURFACE_SESSION_MESSAGE_AUTHORS = ["member", "session", "system"] as const;
+export type SurfaceSessionMessageAuthor = (typeof SURFACE_SESSION_MESSAGE_AUTHORS)[number];
+
+export const SURFACE_INSPECTOR_MODE_MESSAGE = "qorpera-inspector-mode";
+export const SURFACE_INSPECTOR_PICK_MESSAGE = "qorpera-inspector-pick";
+export const SURFACE_SITE_DOOR_ACTION_PATTERN =
+	/^https:\/\/[a-z0-9]+(?:-[a-z0-9]+)*(?:--p[a-z0-9]{8})?\.qorpera\.com\/__qorpera\/member$/;
+
+export interface SurfaceSessionMessage {
+	readonly id: string;
+	readonly sessionId: string;
+	readonly authorKind: SurfaceSessionMessageAuthor;
+	readonly text: string;
+	readonly changeId: string | null;
+	readonly createdAt: string;
+}
+
 export interface SurfaceSummary {
 	readonly id: string;
 	readonly slug: string;
@@ -152,6 +169,7 @@ export interface SurfaceSession {
 	readonly hasActiveChat: boolean;
 	readonly question: SurfaceSessionQuestion | null;
 	readonly changes: readonly SurfaceChangeUnit[];
+	readonly messages: readonly SurfaceSessionMessage[];
 	readonly openChangeCount: number;
 	readonly createdAt: string;
 	readonly updatedAt: string;
@@ -418,11 +436,26 @@ export function parseSurfaceChangeUnit(value: unknown, label = "change"): Surfac
 	};
 }
 
+export function parseSurfaceSessionMessage(value: unknown, label = "message"): SurfaceSessionMessage {
+	const raw = parseRecord(value, label);
+	return {
+		id: parseUuid(raw.id, `${label}.id`),
+		sessionId: parseUuid(raw.sessionId, `${label}.sessionId`),
+		authorKind: parseEnum(raw.authorKind, SURFACE_SESSION_MESSAGE_AUTHORS, `${label}.authorKind`),
+		text: parseBoundedText(raw.text, `${label}.text`, SURFACE_MAX_PROMPT_CHARS, 0),
+		changeId: parseOptionalUuid(raw.changeId, `${label}.changeId`),
+		createdAt: parseTimestamp(raw.createdAt, `${label}.createdAt`).text,
+	};
+}
+
 export function parseSurfaceSession(value: unknown, label = "session"): SurfaceSession {
 	const raw = parseRecord(value, label);
 	if (typeof raw.hasActiveChat !== "boolean") throw new WireValueError(`${label}.hasActiveChat`);
 	if (!Array.isArray(raw.changes)) throw new WireValueError(`${label}.changes`);
 	const changes = raw.changes.map((item, index) => parseSurfaceChangeUnit(item, `${label}.changes[${index}]`));
+	const rawMessages = raw.messages === undefined || raw.messages === null ? [] : raw.messages;
+	if (!Array.isArray(rawMessages)) throw new WireValueError(`${label}.messages`);
+	const messages = rawMessages.map((item, index) => parseSurfaceSessionMessage(item, `${label}.messages[${index}]`));
 	let question: SurfaceSessionQuestion | null = null;
 	if (raw.question !== null && raw.question !== undefined) {
 		const q = parseRecord(raw.question, `${label}.question`);
@@ -445,6 +478,7 @@ export function parseSurfaceSession(value: unknown, label = "session"): SurfaceS
 		hasActiveChat: raw.hasActiveChat,
 		question,
 		changes,
+		messages,
 		openChangeCount: parseInteger(
 			raw.openChangeCount ?? countOpenSurfaceChanges(changes),
 			`${label}.openChangeCount`,

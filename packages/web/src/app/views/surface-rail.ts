@@ -5,6 +5,8 @@ import { type Emblem, interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { t } from "../../ui/preferences.ts";
 import { surfaceHash } from "../router.ts";
 import {
+	formatConflictPaths,
+	hasConflictedChange,
 	isOpenChange,
 	isRunningSession,
 	openExplorations,
@@ -26,6 +28,8 @@ export function sessionStatus(session: SurfaceSession): HTMLElement {
 	if (session.state === "needs_input")
 		return h("span", { class: "surface-state is-asking", "aria-label": t("Needs your answer") });
 	if (session.state === "failed") return h("span", { class: "surface-state is-failed", "aria-label": t("Failed") });
+	if (hasConflictedChange(session))
+		return h("span", { class: "surface-state is-conflicted", "aria-label": t("Conflict") });
 	if (sessionHeld(session))
 		return h("span", { class: "surface-state is-merged", "aria-label": t("Merged") }, icon("check"));
 	return h("span", { class: "surface-state is-ready", "aria-label": t("Ready") });
@@ -60,10 +64,29 @@ function approveButton(sessionId: string, changeId: string, title: string): HTML
 	);
 }
 
+function reconcileButton(surfaceId: string, changeId: string, title: string, busy: boolean): HTMLElement {
+	return h(
+		"button",
+		{
+			type: "button",
+			class: "surface-reconcile",
+			disabled: busy,
+			"aria-label": t("Reconcile {title}", { title }),
+			title: t("Reconcile conflict"),
+			"data-act": "reconcile",
+			"data-surface": surfaceId,
+			"data-change": changeId,
+		},
+		t("Reconcile"),
+	);
+}
+
 function sessionRow(store: SurfacesStore, state: SurfacesState, session: SurfaceSession): HTMLElement {
 	const running = isRunningSession(session);
 	const open = !state.collapsed[session.id];
 	const held = sessionHeld(session);
+	const conflicted = !running && hasConflictedChange(session);
+	const busyReconcile = Boolean(state.busy[`reconcile:${session.surfaceId}`]);
 	const openChanges = session.changes.filter(isOpenChange);
 	const merged = session.changes.filter((change) => change.status === "merged").length;
 	const main = h(
@@ -83,19 +106,23 @@ function sessionRow(store: SurfacesStore, state: SurfacesState, session: Surface
 	if (single) {
 		const change = openChanges[0]!;
 		head.append(
-			approveButton(session.id, change.id, change.title),
+			change.status === "conflicted"
+				? reconcileButton(session.surfaceId, change.id, change.title, busyReconcile)
+				: approveButton(session.id, change.id, change.title),
 			changeSwitch(session.surfaceId, change.id, store.isChangeShown(change.id), change.title),
 		);
 	} else {
 		const meta = running
 			? t("Working")
-			: held
-				? t("All merged")
-				: session.changes.length
-					? `${merged}/${session.changes.length}`
-					: "";
+			: conflicted
+				? t("Conflict")
+				: held
+					? t("All merged")
+					: session.changes.length
+						? `${merged}/${session.changes.length}`
+						: "";
 		if (meta) main.append(h("span", { class: "surface-session-meta" }, meta));
-		if (!running && openChanges.length > 1)
+		if (!running && !conflicted && openChanges.length > 1)
 			head.append(
 				h(
 					"button",
@@ -134,6 +161,7 @@ function sessionRow(store: SurfacesStore, state: SurfacesState, session: Surface
 			class: [
 				"surface-session",
 				running && "is-running",
+				conflicted && "is-conflicted",
 				open && "is-open",
 				state.drawer?.sessionId === session.id && "is-selected",
 			]
@@ -142,6 +170,10 @@ function sessionRow(store: SurfacesStore, state: SurfacesState, session: Surface
 		},
 		head,
 	);
+	if (single && openChanges[0]?.status === "conflicted" && openChanges[0].conflictPaths?.length) {
+		const paths = openChanges[0].conflictPaths;
+		row.append(h("p", { class: "surface-conflict-paths", title: paths.join(", ") }, formatConflictPaths(paths)));
+	}
 	if (!single && open && session.changes.length > 1)
 		row.append(
 			h(
@@ -159,6 +191,34 @@ function sessionRow(store: SurfacesStore, state: SurfacesState, session: Surface
 								h("span", { class: "surface-change-merged" }, t("Merged")),
 							);
 						const shown = store.isChangeShown(change.id);
+						if (change.status === "conflicted") {
+							const paths = change.conflictPaths?.length ? formatConflictPaths(change.conflictPaths) : "";
+							return h(
+								"div",
+								{ class: `surface-change is-conflicted${shown ? "" : " is-hidden"}` },
+								changeSwitch(session.surfaceId, change.id, shown, change.title),
+								h(
+									"div",
+									{ class: "surface-change-copy" },
+									h(
+										"span",
+										{
+											class: "surface-change-title",
+											title: change.conflictPaths?.join(", ") || change.summary,
+										},
+										change.title,
+									),
+									paths
+										? h(
+												"small",
+												{ class: "surface-change-paths", title: change.conflictPaths?.join(", ") },
+												paths,
+											)
+										: null,
+								),
+								running ? null : reconcileButton(session.surfaceId, change.id, change.title, busyReconcile),
+							);
+						}
 						return h(
 							"div",
 							{ class: `surface-change${shown ? "" : " is-hidden"}` },
@@ -362,6 +422,7 @@ export class SurfaceRail {
 			state.historyOpen,
 			state.collapsed,
 			state.drawer,
+			state.busy,
 		]);
 		if (key === this.#shown) return;
 		this.#shown = key;
@@ -425,6 +486,9 @@ export class SurfaceRail {
 				return;
 			case "approve":
 				if (session && change) void store.approveChange(session, change);
+				return;
+			case "reconcile":
+				if (surface && change) void store.reconcileChanges(surface, [change]);
 				return;
 			case "approve-all":
 				if (session) void store.approveAll(session);

@@ -21,4 +21,5 @@ export * from "./member-browser-recovery-session.ts";
 export * from "./member-company-browser-session.ts";
 export * from "./member-company-path-presence.ts";
 export * from "./native-provider-login.ts";
+export * from "./surface-studio-patches.ts";
 export * from "./surfaces.ts";

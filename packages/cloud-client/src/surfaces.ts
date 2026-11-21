@@ -23,6 +23,7 @@ import {
 	type SurfacePreviewCompositionState,
 	type SurfacePreviewMode,
 	type SurfaceSession,
+	type SurfaceSessionMessage,
 	type SurfaceSourceKind,
 	type SurfaceStatus,
 	type SurfaceSummary,
@@ -539,6 +540,14 @@ export class CloudSurfacesClient {
 		return parseSurfaceSession(data, "session");
 	}
 
+	async reconcileChanges(surfaceId: string, changeIds: readonly string[]): Promise<SurfaceSession> {
+		const data = await this.#rpc("qorpera_reconcile_surface_changes", {
+			p_surface_id: surfaceId,
+			p_change_ids: [...changeIds],
+		});
+		return parseSurfaceSession(data, "session");
+	}
+
 	async setPreviewSelection(
 		surfaceId: string,
 		selection: SetSurfacePreviewSelectionInput,
@@ -596,6 +605,7 @@ export type {
 	SurfaceMigrationChecklist,
 	SurfacePreviewCompositionState,
 	SurfaceSession,
+	SurfaceSessionMessage,
 	SurfaceSummary,
 	SurfaceWorkspace,
 };
