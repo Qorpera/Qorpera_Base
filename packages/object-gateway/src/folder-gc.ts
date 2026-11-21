@@ -1,3 +1,4 @@
+import type { MaintenanceGate } from "./maintenance.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
 import type { BlockedObject, ObjectGatewayReplication } from "./replication.ts";
 import type { ObjectBackend } from "./supabase-authority.ts";
@@ -55,6 +56,7 @@ export class ObjectGatewayFolderGc {
 	readonly #replication: ObjectGatewayReplication;
 	readonly #authority: FolderGcAuthority;
 	readonly #now: () => number;
+	readonly #nasGate: MaintenanceGate;
 	#running = false;
 	#lastError = false;
 	#quarantineCursor: string | undefined;
@@ -66,11 +68,13 @@ export class ObjectGatewayFolderGc {
 		replication: ObjectGatewayReplication,
 		authority: FolderGcAuthority,
 		now: () => number = Date.now,
+		nasGate: MaintenanceGate = { run: (operation) => operation() },
 	) {
 		this.#store = store;
 		this.#replication = replication;
 		this.#authority = authority;
 		this.#now = now;
+		this.#nasGate = nasGate;
 	}
 
 	/** The lane for one marked object: DELETE /v1/folder-gc/<profileId>/<sha256> with its GC lease. */
@@ -132,20 +136,20 @@ export class ObjectGatewayFolderGc {
 	async #quarantined(limit: number): Promise<void> {
 		try {
 			// From where the last scan stopped, so entries that stay (a live lease, a failure) never starve the rest.
-			const entries = await this.#store.listQuarantine(limit, this.#quarantineCursor);
+			const entries = await this.#nasGate.run(() => this.#store.listQuarantine(limit, this.#quarantineCursor));
 			this.#quarantineCursor = entries.length < limit ? undefined : entries.at(-1)?.name;
 			for (const entry of entries) {
 				try {
 					await this.#replication.exclusive(entry.profileId, entry.sha256, async () => {
 						// A lane of this object that held the lock meanwhile has settled the entry itself.
-						if (!(await this.#store.isQuarantined(entry))) return;
+						if (!(await this.#nasGate.run(() => this.#store.isQuarantined(entry)))) return;
 						const state = await this.#authority.folderQuarantineState(
 							entry.profileId,
 							entry.sha256,
 							entry.leaseId,
 						);
-						if (state === "restore") await this.#restore(entry);
-						else if (state === "remove") await this.#remove(entry, true);
+						if (state === "restore") await this.#restore(entry, this.#nasGate);
+						else if (state === "remove") await this.#remove(entry, true, this.#nasGate);
 					});
 				} catch {
 					this.#lastError = true;
@@ -221,7 +225,7 @@ export class ObjectGatewayFolderGc {
 						});
 						return;
 					}
-					await this.#store.remove(entry.profileId, entry.sha256);
+					await this.#nasGate.run(() => this.#store.remove(entry.profileId, entry.sha256));
 					// No Storage-first writer exists for a folder-v2 company (C1D §9.3), so a replica of an object with no
 					// catalog row can only be one this gateway wrote: it goes too.
 					await this.#authority.removeReplica(entry.profileId, entry.sha256);
@@ -248,20 +252,23 @@ export class ObjectGatewayFolderGc {
 	/** Put back: first the replicate entry, so a stop between the two still copies the replica again once the file is
 	 * back; then the file returns to its NAS path, or the marker goes (the reconcile then copies the replica to the
 	 * NAS). */
-	async #restore(object: Quarantined): Promise<void> {
+	async #restore(object: Quarantined, nasGate?: MaintenanceGate): Promise<void> {
 		await this.#replication.requeueLocked({
 			profileId: object.profileId,
 			sha256: object.sha256,
 			bytes: object.bytes,
 		});
-		await this.#store.restoreQuarantined(object.profileId, object.sha256, object.leaseId, object.bytes);
+		const restore = () =>
+			this.#store.restoreQuarantined(object.profileId, object.sha256, object.leaseId, object.bytes);
+		await (nasGate ? nasGate.run(restore) : restore());
 	}
 
 	/** Removed for good: the replica (if the lane has not removed it already), then the quarantined file and marker, the
 	 * lane's own record, last; then the object's journal entry, unless it is the deleted-company lane's. */
-	async #remove(object: Quarantined, replica: boolean): Promise<void> {
+	async #remove(object: Quarantined, replica: boolean, nasGate?: MaintenanceGate): Promise<void> {
 		if (replica) await this.#authority.removeReplica(object.profileId, object.sha256);
-		await this.#store.removeQuarantined(object.profileId, object.sha256, object.leaseId, object.bytes);
+		const remove = () => this.#store.removeQuarantined(object.profileId, object.sha256, object.leaseId, object.bytes);
+		await (nasGate ? nasGate.run(remove) : remove());
 		await this.#replication.forgetLocked(object.profileId, object.sha256);
 	}
 
