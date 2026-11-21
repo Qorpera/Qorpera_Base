@@ -43,6 +43,28 @@ begin
 	end if;
 end $$;
 
+create schema if not exists qorpera_ext;
+revoke all on schema qorpera_ext from public;
+grant usage on schema qorpera_ext to public;
+
+create extension if not exists pgcrypto schema qorpera_ext;
+create extension if not exists pg_trgm schema qorpera_ext;
+create extension if not exists citext schema qorpera_ext;
+create extension if not exists btree_gin schema qorpera_ext;
+create extension if not exists btree_gist schema qorpera_ext;
+create extension if not exists unaccent schema qorpera_ext;
+create extension if not exists fuzzystrmatch schema qorpera_ext;
+create extension if not exists ltree schema qorpera_ext;
+create extension if not exists "uuid-ossp" schema qorpera_ext;
+create extension if not exists tablefunc schema qorpera_ext;
+
+do $$
+begin
+	if exists (select 1 from pg_catalog.pg_available_extensions where name = 'vector') then
+		create extension if not exists vector schema qorpera_ext;
+	end if;
+end $$;
+
 create table if not exists qorpera_data.row_changes (
 	txid bigint not null default txid_current(),
 	seq bigint generated always as identity primary key,
@@ -62,10 +84,12 @@ create index if not exists row_changes_schema_seq_idx on qorpera_data.row_change
 create table if not exists qorpera_data.change_log (
 	txid bigint primary key,
 	at timestamptz not null default now(),
-	by_kind text not null check (by_kind in ('member', 'agent', 'machine', 'step')),
+	by_kind text not null check (by_kind in ('member', 'agent', 'machine', 'step', 'public', 'hook')),
 	by_id text,
 	via text
 );
+alter table qorpera_data.change_log drop constraint if exists change_log_by_kind_check;
+alter table qorpera_data.change_log add constraint change_log_by_kind_check check (by_kind in ('member', 'agent', 'machine', 'step', 'public', 'hook'));
 create index if not exists change_log_at_idx on qorpera_data.change_log (at);
 
 create table if not exists qorpera_data.record_limit (
@@ -313,7 +337,13 @@ begin
 	end loop;
 end $$;
 
+create or replace function qorpera_data.viewer() returns uuid
+language sql stable set search_path = '' as $$
+	select nullif(pg_catalog.current_setting('qorpera.viewer', true), '')::uuid
+$$;
+grant execute on function qorpera_data.viewer() to public;
+
 select qorpera_data.give_triggers(c.oid::regclass)
 from pg_catalog.pg_class c join pg_catalog.pg_namespace s on s.oid = c.relnamespace
 where c.relkind in ('r', 'p') and c.relpersistence = 'p'
-	and s.nspname not in ('qorpera_data', 'pg_catalog', 'information_schema', 'pg_toast') and s.nspname !~ '^pg_';
+	and s.nspname not in ('qorpera_data', 'qorpera_ext', 'pg_catalog', 'information_schema', 'pg_toast') and s.nspname !~ '^pg_';

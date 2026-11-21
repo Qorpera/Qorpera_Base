@@ -132,7 +132,7 @@ it("tells in the guide writes how a page lets a member act, and that nothing is 
 	const f = await fixture();
 	const tool = f.tool("save_app");
 	expect(tool.description).toContain(
-		"asks a member to change an answer or a table row (qorpera.answer, setRow, addRow; writes names them)",
+		"asks a member to change an answer, a table row or a database action (qorpera.answer, setRow, addRow, act; writes names them)",
 	);
 	const writes = appGuide("writes");
 	for (const rule of [
@@ -154,6 +154,8 @@ it("tells in the guide writes how a page lets a member act, and that nothing is 
 		"A page cannot change a key cell or a column that names a member or an agent, and cannot remove a row",
 		"the table areas is never written from an app",
 		"manage_routine with a trigger of kind file_change and path QorperaOS/tables/<name>/rows.csv",
+		"data:<database>/<change>: a member runs a named change",
+		"qorpera.act('<database>/<change>', params)",
 	])
 		expect(writes).toContain(rule);
 });

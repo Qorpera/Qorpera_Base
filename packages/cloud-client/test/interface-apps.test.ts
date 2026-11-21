@@ -6,6 +6,7 @@ import {
 	appNumbersRead,
 	appPath,
 	appRelativePath,
+	appWriteData,
 	appWriteTable,
 	isAppManifestPath,
 	parseAppManifest,
@@ -167,9 +168,19 @@ describe("interface apps", () => {
 		}
 		expect(parseAppManifest('name = "A"\nwrites = "answers"\n').ok).toBe(false);
 		expect(parseAppWrites(["table:orders"])).toEqual({ writes: ["table:orders"] });
+		expect(parseAppWrites(["data:shop/add-item", "data:shop/add-item"])).toEqual({ writes: ["data:shop/add-item"] });
+		expect(parseAppWrites(["data:qorpera/money-now"])).toHaveProperty("problem");
+		expect(parseAppWrites(["data:shop/Bad_Name"])).toHaveProperty("problem");
+		expect(parseAppWrites(["data:shop"])).toHaveProperty("problem");
 		expect(parseAppWrites([1])).toHaveProperty("problem");
 		expect(appWriteTable("table:orders")).toBe("orders");
 		expect(appWriteTable("answers")).toBeNull();
+		expect(appWriteData("data:shop/add-item")).toEqual({ database: "shop", change: "add-item" });
+		expect(appWriteData("data:qorpera/money-now")).toBeNull();
+		expect(appWriteData("table:orders")).toBeNull();
+		const dataManifest = parseAppManifest('name = "Shop"\nwrites = ["data:shop/add-item", "answers"]\n');
+		expect(dataManifest.ok && dataManifest.manifest.writes).toEqual(["data:shop/add-item", "answers"]);
+		if (dataManifest.ok) expect(parseAppManifest(writeAppManifest(dataManifest.manifest))).toEqual(dataManifest);
 	});
 
 	it("reads reading, the company's reading of itself, as a read of its own", () => {

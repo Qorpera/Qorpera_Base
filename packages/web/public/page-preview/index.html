@@ -479,7 +479,12 @@
 			new PromiseOf((resolve, reject) => {
 				const id = ++next;
 				apply(set, pending, [id, [resolve, reject]]);
-				apply(send, port, [{ type: "qorpera-app-call", id, method, params }]);
+				try {
+					apply(send, port, [{ type: "qorpera-app-call", id, method, params }]);
+				} catch {
+					apply(drop, pending, [id]);
+					reject(new ErrorOf("The app could not read that"));
+				}
 			});
 		// A call answered to plain callbacks. One that can't be sent (its values can't be copied) is answered at once.
 		const ask = (method, params, done, failed) => {
@@ -578,6 +583,15 @@
 			setRow: freeze((table, key, cells) => call("setRow", { table: String(table), key, cells })),
 			addRow: freeze((table, cells) => call("addRow", { table: String(table), cells })),
 			query: freeze((name, params) => call("query", { name: String(name), params: params === undefined ? {} : params })),
+			act: freeze((name, params) => {
+				let target;
+				try {
+					target = toText(name);
+				} catch {
+					return new PromiseOf((_, reject) => reject(new ErrorOf("Name a change as <database>/<change>")));
+				}
+				return call("act", { name: target, params: params === undefined ? {} : params });
+			}),
 			watch: freeze(watchQuestion),
 			// A note to the app's owner, about a thing in the app: the member writes it on the app's bar, where `text` is
 			// only the draft they start from.

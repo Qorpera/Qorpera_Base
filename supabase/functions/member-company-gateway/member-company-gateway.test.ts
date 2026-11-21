@@ -1475,6 +1475,92 @@ describe("public member Company File gateway", () => {
 			200,
 		);
 	});
+	it("forwards public company data queries and changes without member sign-in and strips credentials", async () => {
+		const seen: Array<{ method?: string; path: string; headers: Record<string, string>; body: string }> = [];
+		const fetchImplementation: typeof fetch = async (url, init) => {
+			seen.push({
+				method: init?.method,
+				path: new URL(String(url)).pathname,
+				headers: Object.fromEntries(new Headers(init?.headers)),
+				body: new TextDecoder().decode(init?.body as Uint8Array),
+			});
+			return Response.json({ rows: [], columns: [] });
+		};
+		for (const verb of ["query", "change"] as const) {
+			const path = `/v1/company-data-public/${id}/${verb}`;
+			const body = JSON.stringify({ database: "shop", question: "open-catalog" });
+			const req = new Request(base + path, {
+				method: "POST",
+				headers: {
+					origin: "https://shop.customer.example",
+					authorization: "Bearer should-not-forward",
+					cookie: "secret=1",
+					"content-type": "application/json",
+					"content-length": String(body.length),
+					"x-forwarded-for": "203.0.113.9",
+				},
+				body,
+			});
+			const response = await forwardMemberCompanyGateway(req, {
+				upstreamUrl,
+				fetchImplementation,
+			});
+			assert.equal(response.status, 200, verb);
+			assert.equal(response.headers.get("access-control-allow-origin"), "*");
+			const preflight = await forwardMemberCompanyGateway(
+				new Request(base + path, {
+					method: "OPTIONS",
+					headers: {
+						origin: "https://shop.customer.example",
+						"access-control-request-method": "POST",
+						"access-control-request-headers": "content-type",
+					},
+				}),
+				{ upstreamUrl, fetchImplementation },
+			);
+			assert.equal(preflight.status, 204, verb);
+			assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
+			assert.equal(preflight.headers.get("access-control-allow-methods"), "POST");
+			const forgedPreflight = await forwardMemberCompanyGateway(
+				new Request(base + path, {
+					method: "OPTIONS",
+					headers: {
+						origin: "https://shop.customer.example",
+						"access-control-request-method": "POST",
+						"access-control-request-headers": "x-forwarded-for",
+					},
+				}),
+				{ upstreamUrl, fetchImplementation },
+			);
+			assert.equal(forgedPreflight.status, 403, verb);
+		}
+		assert.equal(seen.length, 2);
+		for (const call of seen) {
+			assert.equal(call.method, "POST");
+			assert.equal(call.headers.authorization, undefined);
+			assert.equal(call.headers.cookie, undefined);
+			assert.equal(call.headers["content-type"], "application/json");
+			assert.equal(call.headers["x-forwarded-for"], "203.0.113.9");
+		}
+		const nonPublic = await forwardMemberCompanyGateway(
+			new Request(`${base}/v1/company-data-public/${id}/apply`, {
+				method: "POST",
+				headers: { origin: "https://app.qorpera.com", "content-length": "2" },
+				body: "{}",
+			}),
+			{ upstreamUrl, fetchImplementation: async () => assert.fail("must not forward") },
+		);
+		assert.equal(nonPublic.status, 404);
+		const memberRoute = await forwardMemberCompanyGateway(
+			new Request(`${base}/v1/company-data/${id}/query`, {
+				method: "POST",
+				headers: { origin: "https://shop.customer.example", "content-length": "2" },
+				body: "{}",
+			}),
+			{ upstreamUrl, fetchImplementation: async () => assert.fail("must not forward") },
+		);
+		assert.equal(memberRoute.status, 403);
+	});
 });
 
 describe("the bridge's own entrypoint (index.ts)", () => {

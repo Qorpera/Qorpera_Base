@@ -157,7 +157,7 @@ describe("parameters", () => {
 	});
 
 	it("are written in small letters: a colon before anything else is left as it is", () => {
-		const result = read("select arr[1:2], :Upper, ':'");
+		const result = read("select arr[1:2], arr[a:b], arr[1:n], :Upper, ':'");
 		assert.deepEqual(result.parameters, []);
 	});
 });
