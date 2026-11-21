@@ -380,6 +380,7 @@ export interface CloudFolderDrainsOptions {
 	now?: () => Date;
 	pageSize?: number;
 	drains?: readonly CloudFolderDrainSpec[];
+	concurrency?: number;
 }
 
 export interface CloudFolderRunMaterializerOptions {
@@ -387,6 +388,7 @@ export interface CloudFolderRunMaterializerOptions {
 	pageSize?: number;
 	/** At most this many of one company's items per request (1 to 16; default 16). */
 	companyLimit?: number;
+	concurrency?: number;
 }
 
 export interface CloudRunnerProviderAdapter {
@@ -1754,6 +1756,41 @@ function folderDrainBackoff(previous: FolderDrainBackoff | undefined, now: numbe
 	};
 }
 
+const DEFAULT_COMPANY_CONCURRENCY = 4;
+const MAX_COMPANY_CONCURRENCY = 16;
+
+// WHY: companies in one drain or materialization page are independent transactions; bounded concurrency cuts multi-company reconcile latency while settling in-flight workers cleanly on abort.
+async function runBounded<T>(
+	items: readonly T[],
+	concurrency: number,
+	signal: AbortSignal | undefined,
+	run: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+	if (items.length === 0) return;
+	const workerCount = Math.min(concurrency, items.length);
+	let nextIndex = 0;
+	let abortError: unknown;
+	let hasAbortError = false;
+	const worker = async (): Promise<void> => {
+		while (!hasAbortError && !signal?.aborted) {
+			const index = nextIndex++;
+			if (index >= items.length) return;
+			try {
+				await run(items[index]!, index);
+			} catch (error) {
+				if (!hasAbortError) {
+					hasAbortError = true;
+					abortError = error;
+				}
+				return;
+			}
+		}
+	};
+	await Promise.all(Array.from({ length: workerCount }, () => worker()));
+	if (hasAbortError) throw abortError;
+	signal?.throwIfAborted();
+}
+
 /** The per-company folder drains (folder core C4, P29: the shared step before the materializer;
  * deploy/first-node/RUNTIME-COMPANY-FOLDER-LISTENER.md §9): for each drain in order, every company with due work in its
  * own request and transaction. Each drain has its own pause and backoff, and each of its companies its own: a drain
@@ -1762,6 +1799,7 @@ function folderDrainBackoff(previous: FolderDrainBackoff | undefined, now: numbe
 export class CloudFolderDrains implements CloudRunnerOccurrenceReconciler {
 	readonly #now: () => Date;
 	readonly #pageSize: number;
+	readonly #concurrency: number;
 	readonly #drains: readonly CloudFolderDrainSpec[];
 	readonly #drainBackoff = new Map<string, FolderDrainBackoff>();
 	/** Keyed by drain name and environment id. */
@@ -1770,9 +1808,17 @@ export class CloudFolderDrains implements CloudRunnerOccurrenceReconciler {
 	constructor(options: CloudFolderDrainsOptions = {}) {
 		this.#now = options.now ?? (() => new Date());
 		this.#pageSize = options.pageSize ?? 100;
+		this.#concurrency = options.concurrency ?? DEFAULT_COMPANY_CONCURRENCY;
 		this.#drains = options.drains ?? CLOUD_FOLDER_DRAINS;
 		if (!Number.isSafeInteger(this.#pageSize) || this.#pageSize < 1 || this.#pageSize > 500) {
 			throw new Error("Folder drain page size is outside the supported range");
+		}
+		if (
+			!Number.isSafeInteger(this.#concurrency) ||
+			this.#concurrency < 1 ||
+			this.#concurrency > MAX_COMPANY_CONCURRENCY
+		) {
+			throw new Error("Folder drain concurrency is outside the supported range");
 		}
 		const names = new Set<string>();
 		for (const drain of this.#drains) {
@@ -1791,6 +1837,7 @@ export class CloudFolderDrains implements CloudRunnerOccurrenceReconciler {
 		due?: CloudOrchestratorPassDue,
 	): Promise<void> {
 		if (!controlPlane.listFolderDrainDue || !controlPlane.runFolderDrain) return;
+		const runFolderDrain = controlPlane.runFolderDrain.bind(controlPlane);
 		const now = this.#now().getTime();
 		// A company no longer due is forgotten once its wait has long passed.
 		for (const [key, backoff] of this.#companyBackoff) {
@@ -1830,23 +1877,30 @@ export class CloudFolderDrains implements CloudRunnerOccurrenceReconciler {
 					listed = false;
 					break;
 				}
-				for (const environmentId of page.items) {
+				const runnable = page.items.filter((environmentId) => {
 					const key = `${drain.name} ${environmentId}`;
-					if (now < (this.#companyBackoff.get(key)?.until ?? 0)) continue;
+					return now >= (this.#companyBackoff.get(key)?.until ?? 0);
+				});
+				const pageFailures = new Array<unknown>(runnable.length);
+				const hasFailure = new Array<boolean>(runnable.length).fill(false);
+				await runBounded(runnable, this.#concurrency, signal, async (environmentId, index) => {
+					const key = `${drain.name} ${environmentId}`;
 					due?.worked();
 					try {
-						if (signal) await controlPlane.runFolderDrain(drain.name, environmentId, drain.companyLimit, signal);
-						else await controlPlane.runFolderDrain(drain.name, environmentId, drain.companyLimit);
+						if (signal) await runFolderDrain(drain.name, environmentId, drain.companyLimit, signal);
+						else await runFolderDrain(drain.name, environmentId, drain.companyLimit);
 						this.#companyBackoff.delete(key);
 					} catch (error) {
 						if (signal?.aborted) throw error;
-						failures.push(error);
+						hasFailure[index] = true;
+						pageFailures[index] = error;
 						this.#companyBackoff.set(
 							key,
 							folderDrainBackoff(this.#companyBackoff.get(key), this.#now().getTime()),
 						);
 					}
-				}
+				});
+				for (let i = 0; i < runnable.length; i++) if (hasFailure[i]) failures.push(pageFailures[i]);
 				const next = page.hasMore ? page.nextAfterEnvironmentId : undefined;
 				if (page.hasMore && !next) {
 					failed(new Error(`Folder drain ${drain.name} pagination lost its cursor`));
@@ -1873,6 +1927,7 @@ export class CloudFolderRunMaterializer implements CloudRunnerOccurrenceReconcil
 	readonly #now: () => Date;
 	readonly #pageSize: number;
 	readonly #companyLimit: number;
+	readonly #concurrency: number;
 	/** A control plane that answers the list with 400 does not know it yet (its edge function predates this
 	 * orchestrator): report that once and ask again after a while. */
 	#pausedUntil = 0;
@@ -1881,11 +1936,19 @@ export class CloudFolderRunMaterializer implements CloudRunnerOccurrenceReconcil
 		this.#now = options.now ?? (() => new Date());
 		this.#pageSize = options.pageSize ?? 100;
 		this.#companyLimit = options.companyLimit ?? 16;
+		this.#concurrency = options.concurrency ?? DEFAULT_COMPANY_CONCURRENCY;
 		if (!Number.isSafeInteger(this.#pageSize) || this.#pageSize < 1 || this.#pageSize > 500) {
 			throw new Error("Folder materialization page size is outside the supported range");
 		}
 		if (!Number.isSafeInteger(this.#companyLimit) || this.#companyLimit < 1 || this.#companyLimit > 16) {
 			throw new Error("Folder materialization company limit is outside the supported range");
+		}
+		if (
+			!Number.isSafeInteger(this.#concurrency) ||
+			this.#concurrency < 1 ||
+			this.#concurrency > MAX_COMPANY_CONCURRENCY
+		) {
+			throw new Error("Folder materialization concurrency is outside the supported range");
 		}
 	}
 
@@ -1895,6 +1958,7 @@ export class CloudFolderRunMaterializer implements CloudRunnerOccurrenceReconcil
 		due?: CloudOrchestratorPassDue,
 	): Promise<void> {
 		if (!controlPlane.listFolderMaterializationDue || !controlPlane.materializeFolderCompany) return;
+		const materializeFolderCompany = controlPlane.materializeFolderCompany.bind(controlPlane);
 		const now = this.#now().getTime();
 		if (now < this.#pausedUntil || due?.quiet("materialize")) return;
 		const failures: unknown[] = [];
@@ -1913,16 +1977,20 @@ export class CloudFolderRunMaterializer implements CloudRunnerOccurrenceReconcil
 				failures.push(error);
 				break;
 			}
-			for (const profileId of page.items) {
+			const pageFailures = new Array<unknown>(page.items.length);
+			const hasFailure = new Array<boolean>(page.items.length).fill(false);
+			await runBounded(page.items, this.#concurrency, signal, async (profileId, index) => {
 				due?.worked();
 				try {
-					if (signal) await controlPlane.materializeFolderCompany(profileId, this.#companyLimit, signal);
-					else await controlPlane.materializeFolderCompany(profileId, this.#companyLimit);
+					if (signal) await materializeFolderCompany(profileId, this.#companyLimit, signal);
+					else await materializeFolderCompany(profileId, this.#companyLimit);
 				} catch (error) {
 					if (signal?.aborted) throw error;
-					failures.push(error);
+					hasFailure[index] = true;
+					pageFailures[index] = error;
 				}
-			}
+			});
+			for (let i = 0; i < page.items.length; i++) if (hasFailure[i]) failures.push(pageFailures[i]);
 			const next = page.hasMore ? page.nextAfterProfileId : undefined;
 			if (page.hasMore && !next) throw new Error("Folder materialization pagination lost its cursor");
 			if (next !== undefined && afterProfileId !== undefined && next <= afterProfileId)
