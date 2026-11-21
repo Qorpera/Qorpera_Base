@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { getEventListeners } from "node:events";
 import type { CloudConnectorOAuthFlows } from "@qorpera/runtime/cloud-connector-oauth";
 import type { ModelLoginSignInHelper } from "@qorpera/runtime/cloud-model-login-sign-in";
 import { CloudModelLoginUpkeep } from "@qorpera/runtime/cloud-model-login-upkeep";
@@ -741,4 +742,53 @@ it("serves each request from its company's services on the shared vault, and not
 				modelLoginUsage: {} as never,
 			}),
 	).toThrow("Cloud secret broker service configuration is invalid");
+});
+
+it("aborts resolve promptly while a refresh is in flight and skips companies dropped mid-collect", async () => {
+	const one = randomUUID();
+	const two = randomUUID();
+	const missing = randomUUID();
+	const { principal, state } = principalFixture({ registered: [one, two] });
+	let releaseRefresh: (() => void) | undefined;
+	const origCompanies = principal.companies.getMockImplementation()!;
+	principal.companies.mockImplementationOnce(async () => {
+		await new Promise<void>((resolve) => {
+			releaseRefresh = resolve;
+		});
+		return origCompanies();
+	});
+	const helper = helperFixture();
+	const collected: string[] = [];
+	helper.listCompletedSignIns.mockImplementation(async (request: { companyId: string }) => {
+		collected.push(request.companyId);
+		if (request.companyId === one) {
+			state.registered = [one];
+			await companies.refresh(new AbortController().signal);
+		}
+		return [];
+	});
+	const companies = new SharedCloudSecretBrokerCompanies({
+		principal,
+		keyring: new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) }),
+		adapters: [],
+		helper,
+	});
+
+	const refresh = companies.refresh(new AbortController().signal);
+	await vi.waitFor(() => expect(releaseRefresh).toBeDefined());
+	const caller = new AbortController();
+	const pendingResolve = companies.resolve(missing, caller.signal);
+	const reason = new Error("CALLER_ABORTED");
+	caller.abort(reason);
+	await expect(pendingResolve).rejects.toBe(reason);
+	expect(getEventListeners(caller.signal, "abort")).toHaveLength(0);
+
+	releaseRefresh!();
+	await refresh;
+
+	companies.signingIn(one);
+	companies.signingIn(two);
+	await companies.collect();
+	expect(collected).toEqual([one]);
+	await companies.close();
 });
