@@ -2146,4 +2146,90 @@ describe("the tool boundary with a work log", () => {
 				}),
 		).toThrow("Invalid cloud tool boundary");
 	});
+
+	it("batches step narrow and keyed-hash RPCs across a 16-step flush while preserving ascending narrow propagation and atomic failure", async () => {
+		const runId = randomUUID();
+		const call = vi.fn(
+			async (
+				method: "qorpera_memory_step_narrow" | "qorpera_memory_step_hashes",
+				args: Readonly<Record<string, unknown>>,
+			) => {
+				if (method === "qorpera_memory_step_hashes")
+					return (args.p_digests as string[]).map((digest) => keyed(runId, digest));
+				const paths = args.p_paths as string[];
+				return {
+					log: false,
+					machine: false,
+					restricted: paths.filter((path) => path.startsWith("restricted/")),
+				};
+			},
+		);
+		const rpc = new CloudRunLogRpcProtection({ environmentId: randomUUID(), jobId: randomUUID(), runId, call });
+		const { folder, log, signal } = runLog({ runId, protection: rpc });
+		for (let i = 0; i < 16; i++) {
+			const args = i === 10 ? '{"path":"restricted/vault.md"}' : '{"path":"public/shared.md"}';
+			const j = step(log, "company_read", args);
+			log.finish(j, envelope(`result-${i}`), [
+				{ releaseId: randomUUID(), reads: [read(i === 10 ? "restricted/vault.md" : "public/shared.md")] },
+			]);
+		}
+		await log.flush(signal);
+		expect(call.mock.calls.map((c) => c[0])).toEqual(["qorpera_memory_step_narrow", "qorpera_memory_step_hashes"]);
+		const narrowPaths = call.mock.calls[0]?.[1].p_paths as string[];
+		expect(narrowPaths).toEqual(["public/shared.md", "restricted/vault.md"]);
+		const hashDigests = call.mock.calls[1]?.[1].p_digests as string[];
+		expect(hashDigests).toHaveLength(2 + 6);
+		const lines = folder.all();
+		expect(lines).toHaveLength(16);
+		for (let i = 0; i < 10; i++) expect(lines[i]?.narrow).toBeUndefined();
+		for (let i = 10; i < 16; i++) {
+			expect(lines[i]?.narrow).toBe(true);
+			expect(lines[i]?.result_hash).toBe(keyed(runId, sha(envelope(`result-${i}`))));
+		}
+
+		for (const malformed of [[], Array(2), [{ log: false, narrow: false }]] as unknown[]) {
+			const bad = runLog({
+				protection: {
+					...protection,
+					narrowBatch: async () => malformed as never,
+				},
+			});
+			bad.log.finish(step(bad.log, "company_read"), envelope("a"), []);
+			bad.log.finish(step(bad.log, "company_read"), envelope("b"), []);
+			await expect(bad.log.flush(bad.signal)).rejects.toMatchObject({ reason: "protection_invalid" });
+			expect(bad.folder.commits).toEqual([]);
+		}
+
+		let narrowAttempt = 0;
+		let hashAttempt = 0;
+		const retryRunId = randomUUID();
+		const retryHashes: string[] = [];
+		const atomic = runLog({
+			runId: retryRunId,
+			protection: {
+				narrow: protection.narrow,
+				narrowBatch: async (_run, inputs) => {
+					narrowAttempt++;
+					return inputs.map((_input, idx) => ({ log: false, narrow: narrowAttempt === 1 && idx === 0 }));
+				},
+				hashes: async (_run, digests) => {
+					hashAttempt++;
+					if (hashAttempt === 1) throw new CloudRunLogUnavailable("protection_unavailable");
+					const out = digests.map((_, idx) => `${hashAttempt}`.repeat(63) + `${idx}`);
+					retryHashes.push(...out);
+					return out;
+				},
+			},
+		});
+		atomic.log.finish(step(atomic.log, "company_read", { path: "public/a.md" }), envelope("first"), []);
+		atomic.log.finish(step(atomic.log, "company_read", { path: "public/b.md" }), envelope("second"), []);
+		await expect(atomic.log.flush(atomic.signal)).rejects.toMatchObject({ reason: "protection_unavailable" });
+		expect(atomic.folder.commits).toEqual([]);
+		await atomic.log.flush(atomic.signal);
+		const committed = atomic.folder.all();
+		expect(committed).toHaveLength(2);
+		expect(committed[0]?.narrow).toBeUndefined();
+		expect(committed[1]?.narrow).toBeUndefined();
+		expect(committed.map((line) => line.args_hash)).toEqual(retryHashes);
+	});
 });

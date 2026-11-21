@@ -171,6 +171,20 @@ export interface CloudRunLogRelease {
 	readonly reads: readonly Pick<CloudCompanyFolderRelease, "path" | "version">[];
 }
 
+export interface CloudRunLogStepInput {
+	readonly j: number;
+	readonly argumentsText: string;
+	readonly result: string | null;
+	readonly releases: readonly string[];
+	readonly readPaths: readonly string[];
+	readonly resultPaths: readonly string[];
+}
+
+export interface CloudRunLogStepClassification {
+	readonly log: boolean;
+	readonly narrow: boolean;
+}
+
 /** Trusted platform operations, bound to this run's live lease. No agent-selected classification or local secret.
  * An unavailable or incomplete operation must throw: the log has no unprotected fallback. */
 export interface CloudRunLogProtection {
@@ -179,18 +193,12 @@ export interface CloudRunLogProtection {
 	 * The adapter sends their `cloudRunLogStepPaths` through qorpera_memory_step_narrow, in chunks of at most 1,024, and
 	 * combines its machine and restricted answers. Its log flag is separate: it says some part of the log is narrow, not
 	 * that a pending earlier step is narrow. It must not infer sharing from paths or ordinary grant metadata. */
-	narrow(
+	narrow(runId: string, step: CloudRunLogStepInput, signal: AbortSignal): Promise<CloudRunLogStepClassification>;
+	narrowBatch?(
 		runId: string,
-		step: {
-			readonly j: number;
-			readonly argumentsText: string;
-			readonly result: string | null;
-			readonly releases: readonly string[];
-			readonly readPaths: readonly string[];
-			readonly resultPaths: readonly string[];
-		},
+		steps: readonly CloudRunLogStepInput[],
 		signal: AbortSignal,
-	): Promise<{ readonly log: boolean; readonly narrow: boolean }>;
+	): Promise<readonly CloudRunLogStepClassification[]>;
 	/** qorpera_memory_step_hashes: HMAC(platform company key, run id + ":" + digest), in input order. The key never
 	 * leaves the platform. The supplied digests are SHA-256; the returned values, and only those, may be stored. */
 	hashes(runId: string, digests: readonly string[], signal: AbortSignal): Promise<readonly string[]>;
@@ -1120,54 +1128,100 @@ export class CloudRunLog {
 		return `${this.#place!.path}/log/${blockName(first)}`;
 	}
 
-	/** Classifies an immutable snapshot before serializing it. A call may finish while the platform is answering a
-	 * pre-commit; that result is filled by a later pass, never spliced into a line classified as pending. */
-	async #protectedLine(step: Step, snapshot: Step, pending: boolean, signal: AbortSignal): Promise<Line> {
-		const classification = await this.#protection.narrow(
-			this.#runId,
-			{
-				j: snapshot.j,
-				argumentsText: snapshot.argumentsText,
-				result: snapshot.result,
-				releases: snapshot.releases,
-				readPaths: snapshot.readPaths,
-				resultPaths: snapshot.resultPaths,
-			},
-			signal,
-		);
-		if (!classification || typeof classification.log !== "boolean" || typeof classification.narrow !== "boolean")
-			throw new CloudRunLogUnavailable("protection_invalid");
-		// A committed later pending line also raises SQL's log flag. The known start remains the boundary: that
-		// flag alone must not redact an earlier public fill. A log with no trusted start cannot be safely interpreted.
-		if (classification.log && this.#narrowFrom === Number.POSITIVE_INFINITY)
-			throw new CloudRunLogUnavailable("protection_narrow_start_unknown");
-		// A pending line names its arguments' paths; the finished line adds those of its result (§4.5). Reads stay with
-		// the reads copy and the release records. Paths are never cut: a step that names more than its line holds is
-		// written narrow, and so is every step after it.
-		const paths = cloudRunLogStepPaths(snapshot.argumentsText, pending ? [] : snapshot.resultPaths, []);
-		if (
-			classification.narrow ||
-			paths.length > CLOUD_RUN_LOG_PATHS ||
-			Buffer.byteLength(JSON.stringify(paths)) > CLOUD_RUN_LOG_FIELD_BYTES
-		)
-			this.#narrowFrom = Math.min(this.#narrowFrom, step.j);
-		snapshot.narrow = step.j >= this.#narrowFrom;
+	async #prepareLines(
+		candidates: readonly { readonly step: Step; readonly snapshot: Step; readonly pending: boolean }[],
+		signal: AbortSignal,
+	): Promise<Map<number, Line>> {
+		const prepared = new Map<number, Line>();
+		if (candidates.length === 0) return prepared;
+		const inputs: CloudRunLogStepInput[] = candidates.map(({ snapshot }) => ({
+			j: snapshot.j,
+			argumentsText: snapshot.argumentsText,
+			result: snapshot.result,
+			releases: snapshot.releases,
+			readPaths: snapshot.readPaths,
+			resultPaths: snapshot.resultPaths,
+		}));
+		let classifications: readonly CloudRunLogStepClassification[];
+		if (this.#protection.narrowBatch) {
+			classifications = await this.#protection.narrowBatch(this.#runId, inputs, signal);
+			if (!Array.isArray(classifications) || classifications.length !== candidates.length)
+				throw new CloudRunLogUnavailable("protection_invalid");
+		} else {
+			const single: CloudRunLogStepClassification[] = [];
+			for (const input of inputs) single.push(await this.#protection.narrow(this.#runId, input, signal));
+			classifications = single;
+		}
+		let narrowFrom = this.#narrowFrom;
 		const digests: string[] = [];
-		if (step.argsHash === undefined && step.argsDigest !== null) digests.push(step.argsDigest);
-		// result_hash keys SHA-256 of the exact delivered envelope's UTF-8 bytes, never the larger raw result (§4.5).
-		if (snapshot.narrow && !pending) digests.push(createHash("sha256").update(snapshot.result!).digest("hex"));
+		const digestIndexes = new Map<string, number>();
+		const internDigest = (digest: string): number => {
+			let index = digestIndexes.get(digest);
+			if (index === undefined) {
+				index = digests.length;
+				digests.push(digest);
+				digestIndexes.set(digest, index);
+			}
+			return index;
+		};
+		const planned: {
+			readonly step: Step;
+			readonly snapshot: Step;
+			readonly pending: boolean;
+			readonly paths: readonly string[];
+			readonly narrow: boolean;
+			readonly argsDigestIndex: number;
+			readonly resultDigestIndex: number;
+		}[] = [];
+		for (let index = 0; index < candidates.length; index++) {
+			const classification = classifications[index];
+			if (!classification || typeof classification.log !== "boolean" || typeof classification.narrow !== "boolean")
+				throw new CloudRunLogUnavailable("protection_invalid");
+			// WHY: a committed later pending line raises SQL's log flag; keep the known start as the boundary instead of redacting an earlier public fill, and fail closed if the start is unknown.
+			if (classification.log && narrowFrom === Number.POSITIVE_INFINITY)
+				throw new CloudRunLogUnavailable("protection_narrow_start_unknown");
+			const { step, snapshot, pending } = candidates[index]!;
+			const paths = cloudRunLogStepPaths(snapshot.argumentsText, pending ? [] : snapshot.resultPaths, []);
+			if (
+				classification.narrow ||
+				paths.length > CLOUD_RUN_LOG_PATHS ||
+				Buffer.byteLength(JSON.stringify(paths)) > CLOUD_RUN_LOG_FIELD_BYTES
+			)
+				narrowFrom = Math.min(narrowFrom, step.j);
+			const narrow = step.j >= narrowFrom;
+			const argsDigestIndex =
+				step.argsHash === undefined && step.argsDigest !== null ? internDigest(step.argsDigest) : -1;
+			// WHY: result_hash keys SHA-256 of the exact delivered envelope's UTF-8 bytes, never the larger raw result (§4.5).
+			const resultDigestIndex =
+				narrow && !pending ? internDigest(createHash("sha256").update(snapshot.result!).digest("hex")) : -1;
+			planned.push({ step, snapshot, pending, paths, narrow, argsDigestIndex, resultDigestIndex });
+		}
 		const hashes = digests.length ? await this.#protection.hashes(this.#runId, digests, signal) : [];
-		if (
-			!Array.isArray(hashes) ||
-			hashes.length !== digests.length ||
-			digests.some((_, index) => typeof hashes[index] !== "string" || !SHA256_HEX_PATTERN.test(hashes[index]!))
-		)
+		if (!Array.isArray(hashes) || hashes.length !== digests.length)
 			throw new CloudRunLogUnavailable("protection_invalid");
+		for (let index = 0; index < digests.length; index++) {
+			if (typeof hashes[index] !== "string" || !SHA256_HEX_PATTERN.test(hashes[index]!))
+				throw new CloudRunLogUnavailable("protection_invalid");
+		}
 		signal.throwIfAborted();
-		if (step.argsHash === undefined) step.argsHash = step.argsDigest === null ? null : hashes[0]!;
-		snapshot.argsHash = step.argsHash;
-		step.narrow = snapshot.narrow;
-		return this.#line(snapshot, pending, snapshot.narrow && !pending ? hashes.at(-1)! : null, paths);
+		this.#narrowFrom = narrowFrom;
+		for (const item of planned) {
+			if (item.step.argsHash === undefined)
+				item.step.argsHash = item.argsDigestIndex < 0 ? null : hashes[item.argsDigestIndex]!;
+			item.snapshot.argsHash = item.step.argsHash;
+			item.snapshot.narrow = item.narrow;
+			item.step.narrow = item.narrow;
+			prepared.set(
+				item.step.j,
+				this.#line(
+					item.snapshot,
+					item.pending,
+					item.resultDigestIndex < 0 ? null : hashes[item.resultDigestIndex]!,
+					item.paths,
+				),
+			);
+		}
+		return prepared;
 	}
 
 	/** A step's line as stored, fitted so it never passes CLOUD_RUN_LOG_STEP_BYTES with its newline. */
@@ -1254,7 +1308,6 @@ export class CloudRunLog {
 		const fills = this.#fills();
 		// Prepare in step order, so a narrow result fences all later lines in this same change set. Do this before
 		// constructing any unit: a failed protection request must not stage even an earlier public line.
-		const prepared = new Map<number, Line>();
 		const candidates = [...fills, ...ready]
 			.sort((a, b) => a.j - b.j)
 			.map((step) => ({
@@ -1262,8 +1315,7 @@ export class CloudRunLog {
 				snapshot: { ...step },
 				pending: step.result === null || this.#blockedBefore(step.j),
 			}));
-		for (const { step, snapshot, pending } of candidates)
-			prepared.set(step.j, await this.#protectedLine(step, snapshot, pending, signal));
+		const prepared = await this.#prepareLines(candidates, signal);
 		// Each touched block's new lines, starting from the lines the file has.
 		const touched = new Map<number, Line[]>();
 		const lines = (first: number): Line[] => {
