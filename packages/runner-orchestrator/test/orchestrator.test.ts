@@ -1982,7 +1982,62 @@ describe("cloud runner orchestrator", () => {
 		});
 
 		await expect(orchestrator.runOnce()).resolves.toMatchObject({ status: "assigned" });
-		expect(control.renewClaim).toHaveBeenCalledWith(expect.objectContaining({ claimId }), 30);
+		expect(control.renewClaim).toHaveBeenCalledWith(
+			expect.objectContaining({ claimId }),
+			30,
+			expect.any(AbortSignal),
+		);
+	});
+
+	it("aborts an in-flight renewClaim immediately when acquire finishes", async () => {
+		const control = controlPlane();
+		const local = localAdapter();
+		let renewAborted = false;
+		let renewStarted!: () => void;
+		const renewGate = new Promise<void>((resolve) => {
+			renewStarted = resolve;
+		});
+		vi.mocked(control.renewClaim).mockImplementation(
+			(_c, _s, signal) =>
+				new Promise((_resolve, reject) => {
+					renewStarted();
+					signal?.addEventListener(
+						"abort",
+						() => {
+							renewAborted = true;
+							reject(new Error("aborted"));
+						},
+						{ once: true },
+					);
+				}),
+		);
+		local.acquire.mockImplementationOnce(async () => {
+			await renewGate;
+			return {
+				runnerId,
+				logicalComputerId,
+				workerClass: "managed_sandbox" as const,
+				providerAdapter: "local",
+				capabilities: ["agent_turn"] as const,
+				templateKey: "qorpera-test",
+				templateVersion: "test-v1",
+				policySha256: "f".repeat(64),
+			};
+		});
+		const orchestrator = new CloudRunnerOrchestrator({
+			orchestratorId,
+			controlPlane: control,
+			providerAdapter: local.adapter,
+			claimLeaseSeconds: 30,
+			claimRenewalIntervalMs: 10,
+			clientClaimId: () => claimId,
+			clientAssignmentId: () => assignmentId,
+			createCapability: () => capability,
+		});
+		const began = performance.now();
+		await expect(orchestrator.runOnce()).resolves.toMatchObject({ status: "assigned" });
+		expect(renewAborted).toBe(true);
+		expect(performance.now() - began).toBeLessThan(1_000);
 	});
 
 	describe("one answer for an idle pass's lists", () => {
