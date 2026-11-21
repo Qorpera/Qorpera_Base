@@ -26,8 +26,8 @@ today's coding machines are from master at dc4988f7a.
 >   sessions and the vault relay (5j-6c, the host's forwarder; 5j-6d, the full URL form; 5j-7, sign-ins and their
 >   proof; the VM's vsock relay and git's `insteadOf`), and the 5m live proof run (the note under 5m's proofs). The
 >   broker routes already merged for the relay (5j-6b, #1266) stay, unused;
-> - **parked:** 5k (a second machine when one is full), which is capacity work, and 5l (the retirements after
->   step 6), both on that list. Their unmerged work is kept;
+> - **parked:** 5l (the retirements after step 6). 5k (a second machine when one is full) was un-parked and implemented
+>   in migration `20260930828000` (SQL tests `1317`, `1318`) and `coding-executor-host.ts`;
 > - **kept:** machine and coding execution, folder access, root and Docker, code custody (a push and its pull
 >   request keep their credentials), vault secrets in coding commands, masked in output and refused in a save into
 >   the folder or a push (5j-4, 5j-5), credential handling, connectors, persistence, recovery and access control.
@@ -102,8 +102,8 @@ Each capability of item 11, and how it works on our nodes. "The VM" is the membe
 | Each session mounts with its own authority | One view per session, served only to its own machine (below). | 5a, 5c, 5g |
 | Branches leave only as PRs | The code host bundles the session's branch; the broker checks and pushes it and opens a draft PR. | 5e |
 
-> **Scope reset, 2026-10-17.** The rows for a setup file and snapshots (5h), for ports and the browser (5i) and for
-> MCP servers (5j-6c to 5j-7) are deferred, and the second machine (5k) is parked (the note at the top). The secrets
+> **Scope reset, 2026-10-17 (updated for 5k).** The rows for a setup file and snapshots (5h), for ports and the browser
+> (5i) and for MCP servers (5j-6c to 5j-7) are deferred; the second machine (5k) is un-parked and active. The secrets
 > row stays core (5j-4, 5j-5). "Any language" holds through the base image and ordinary package installs; its setup
 > file part is deferred.
 
@@ -734,13 +734,27 @@ Docker and compose on a nested VM first; Q11 asks for the fallback if the proof 
 
 ## More machines
 
-> **Scope reset, 2026-10-17.** 5k and Q9 are parked: capacity work, stopped in this rebuild. 5k's unmerged work
-> is kept (the note at the top).
+When a machine is full, a new session opens the member's next machine (the lowest free `number`) for the same coding
+agent, repository and setup digest on the same node, so it starts from the same snapshot (5k; migration
+`20260930828000`, SQL tests `1317` and `1318`, Q9 settled):
 
-When a machine is full, a new attach opens the member's next machine for the same coding agent, repository and setup
-digest (`number` + 1), from the same snapshot (5k). What "full" means is Q9 (recommended: counted by size, the sessions'
-declared or measured memory and processor against the machine's, with a guest hint that can only open a new machine,
-never keep a session on a full one). Sessions never move between machines while attached.
+- A machine's sessions are every session not archived that has it as its machine or that a plan placed on it before
+  its run authority (`qorpera_coding_session_loads`), attached or not. Each counts at the larger of the company's
+  session size (the executor's `session_cpu_millis` and `session_memory_bytes`, configured via
+  `qorpera_configure_coding_session_size` and inherited on auto-enrollment) and the processor and memory last measured
+  for it. A machine is full for a new session when they and the new one (at most the machine's own size, so an empty
+  machine always takes one) need more processor or memory than the machine has. Archiving a session frees its room.
+- On each keeper pass, the executor measures per-session CPU (from guest usage deltas) and cgroup memory plus guest
+  `/proc/meminfo` pressure and reports them via `qorpera_record_coding_machine_load` (update-only on place rows so it
+  never locks `qorpera_coding_sessions` after `qorpera_coding_machines`, preserving lock order with
+  `qorpera_keep_coding_attachments`).
+- The guest/executor fullness hint (`full_until`, good for two minutes after a report with `full: true`, cleared on a
+  report with `full: false`) only turns new sessions away. It never moves or refuses a session that has the machine.
+- A session has one machine for life and never moves, attached or not. Its plan takes its own machine without asking
+  whether it is full, so a reattach always fits.
+- While a session's machine retires, the session is refused (`MACHINE_RETIRING`). A session whose machine is gone for
+  good (removed) is placed like a new session, at its last measured load. A new disk (5g) keeps the machine's id, so it
+  moves no session. New sessions pass a retiring machine by and open the lowest free number instead of waiting for it.
 
 ## The code host
 
@@ -794,7 +808,7 @@ Migration slots and SQL test numbers are reserved in the registry when a slice i
 | 5h | Setup file and snapshots: the three formats and their mapping, the strict schema, builder VMs, the digest with each named Dockerfile's bytes, snapshot keys and refresh, one build at a time, a failed build keeps the old snapshot, `install` at attach, image and Dockerfile setups (BuildKit, the image built again from the worktree at attach), compose devcontainers settled | Parser tests for each format and each ignored or refused key; a refresh on a setup change and on a default-branch change; a failed build keeps the old snapshot and reports its log; a second build for the same repository and member waits; a change to a named Dockerfile alone gives a new digest, so the next new session gets a new machine; a context file changed on a session's branch is in the image built at attach |
 | 5i | Previews and the browser: the preview proxy, single-use capabilities and host cookies, member-only access, host-initiated streams; the `coding_browser` tool with a boundary before each screenshot | Proxy tests: a capability works once, a cookie works only on its host, another member is refused; a screenshot waits for a boundary |
 | 5j | Secrets and the vault relay: environment secrets (member and company, with grants), host-side injection, masking in output, logs, receipts, terminals, saves and pushes, the relay for MCP sign-ins and git fetch | Masking across chunk boundaries and in base64 and URL forms; a save carrying a value refused; a push carrying a value refused; a company secret without a grant not injected; the relay forwards a sign-in only to its own origin and refuses a push; the SQL part may land before 5g |
-| 5k | A second machine: `number`, the full rule, opening the next machine from the same snapshot | A full machine opens the next one for the same agent, repository and digest; a session never moves while attached |
+| 5k | A second machine: `number`, the full rule, opening the next machine from the same snapshot (migration `20260930828000`). SQL session size, update-only load record (`qorpera_record_coding_machine_load`), and executor keeper load reporting (`coding-executor-host.ts`) | A full machine opens the lowest free number for the same agent, repository and digest; a session never moves while its machine is live; a reattach always fits; the fullness hint only turns new sessions away; a removed machine's session is placed anew; concurrent plans, keep attachments, and load reports serialize with zero lock-order inversions (`1317`, `1318`, `coding-executor-host.test.ts`) |
 | 5l | Retirements after step 6: the private repository folder, `cloud-coding-git-guest.ts`, `coding-git-transfer.ts`, the 64 MiB cap, the storage and command helpers, the NAS data and custody plugs, COMMAND-GUEST.md | The changed tests pass with the old paths gone; `git grep` finds no caller |
 | 5m | Live proof (below) | — |
 
@@ -803,10 +817,10 @@ Migration slots and SQL test numbers are reserved in the registry when a slice i
 folder before 5g. 5h, 5i, 5j and 5k each need 5g and can run side by side (5j's SQL can land earlier). 5l needs 5g and
 step 6. 5m comes last.
 
-> **Scope reset, 2026-10-17.** The rest of 5h (after the merged setup parser and snapshot records), 5i, 5j's relay
-> and MCP part (5j-6c, 5j-6d, 5j-7) and the 5m run are deferred, and 5k and 5l are parked (the note at the top).
-> 5j's secrets, masking and refusals (5j-4, 5j-5) stay core. The note under the proofs below says which proofs
-> core acceptance still needs.
+> **Scope reset, 2026-10-17 (updated for 5k).** The rest of 5h (after the merged setup parser and snapshot records), 5i,
+> 5j's relay and MCP part (5j-6c, 5j-6d, 5j-7) and the 5m run are deferred, and 5l is parked; 5k is un-parked and
+> active (the note at the top). 5j's secrets, masking and refusals (5j-4, 5j-5) stay core. The note under the proofs
+> below says which proofs core acceptance still needs.
 
 **Live proof (5m)**, on a test company, without Codex:
 - a snapshot builds for each setup format (ours, Cursor's, a devcontainer with a feature); a broken `install` keeps the
@@ -891,13 +905,13 @@ only if a rule is wrong.
   only).
 - **Q7 (coordinator).** Where snapshots are kept: per node, rebuilt where missing (recommended), or on the NAS.
 - **Q8 (coordinator).** The LXD projects for `codingMachineProjects`, and the code host's project.
-- **Q9 (coordinator).** When a machine is full: counted by size (recommended), with a guest hint that can only open a
-  new machine.
+- **Q9 (coordinator, settled).** When a machine is full: counted by size and measured load, with a guest/executor
+  fullness hint that can only open a new machine ("More machines", migration `20260930828000`).
 - **Q10 (Jonas).** May the member type into a session's terminal, or only watch?
 - **Q11 (coordinator, only if 5f's proof fails).** The fallback if rootless Docker does not work in the VM.
 - **Q12 (coordinator, only if 5h's proof fails).** Image and Dockerfile setups if commands can't run in the built
   container.
 - **Q13 (coordinator).** Packs over 256 MiB (§6's open question 4).
 
-> **Scope reset, 2026-10-17.** Q6 (5i), Q7 and Q12 (5h) and Q9 (5k) wait with their deferred or parked slices, and
-> P1 and P2 with the 5m run. In Q3, retiring the private repository folder waits with 5l.
+> **Scope reset, 2026-10-17 (updated for 5k).** Q6 (5i) and Q7 and Q12 (5h) wait with their deferred slices, and P1 and
+> P2 with the 5m run. Q9 (5k) is settled and active. In Q3, retiring the private repository folder waits with 5l.

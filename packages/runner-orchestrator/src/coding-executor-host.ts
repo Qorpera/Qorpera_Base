@@ -133,6 +133,7 @@ export const CODING_HOST_RPCS = [
 	"qorpera_authorize_coding_machine_run",
 	"qorpera_attach_coding_session",
 	"qorpera_keep_coding_attachments",
+	"qorpera_record_coding_machine_load",
 	"qorpera_record_coding_session_detached",
 	"qorpera_record_coding_machine_stopped",
 	"qorpera_archive_quiet_coding_sessions",
@@ -323,6 +324,7 @@ interface Attachment {
 	turn: { sequence: number; turnId: string; open: boolean };
 	/** When this process took it on (performance clock). */
 	since: number;
+	folder?: { uid: number };
 }
 /** The guest a session attaches on: its boot and its configuration's digest, and on the folder model its user. */
 interface AttachedGuest {
@@ -334,6 +336,7 @@ interface AttachedGuest {
  * clock), to tell busy commands from waiting ones. */
 interface SessionSample extends IdleRuleSample {
 	bootId: string;
+	cpuUsageUsec: number;
 }
 /** A command whose processes still run, as the guest names it. */
 interface ObservedCommand {
@@ -469,6 +472,35 @@ const CODING_ATTACH_LEASE_MARGIN_MS = 15_000;
  * stuck machine never holds up a pass: with a pass every 10 s, every guest lease
  * (45 s) is renewed at least every 30 s. */
 const CODING_KEEP_MACHINE_MS = 15_000;
+const CODING_LOAD_MAX_CPU_MILLIS = 999_999_999;
+const CODING_LOAD_MAX_MEMORY_BYTES = 1_099_511_627_776;
+const CODING_LOAD_FULL_PERCENT = 85;
+const CODING_MEMINFO_MAX_BYTES = 8_192;
+const CODING_CGROUP_MEMORY_MAX_BYTES = 64;
+
+function sessionCpuMillis(
+	sample: SessionSample | undefined,
+	bootId: string,
+	uptimeMs: number,
+	cpuUsageUsec: number,
+): number {
+	if (!sample || sample.bootId !== bootId || uptimeMs <= sample.at || cpuUsageUsec < sample.cpuUsageUsec) return 0;
+	return Math.min(
+		CODING_LOAD_MAX_CPU_MILLIS,
+		Math.max(0, Math.round((cpuUsageUsec - sample.cpuUsageUsec) / (uptimeMs - sample.at))),
+	);
+}
+
+function meminfoMemoryFull(content: string): boolean {
+	const total = /^MemTotal:\s+([0-9]+)\s+kB$/m.exec(content);
+	const available = /^MemAvailable:\s+([0-9]+)\s+kB$/m.exec(content);
+	if (!total || !available) return false;
+	const totalKb = Number(total[1]);
+	const availableKb = Number(available[1]);
+	if (!Number.isSafeInteger(totalKb) || totalKb <= 0 || !Number.isSafeInteger(availableKb) || availableKb < 0)
+		return false;
+	return availableKb * 100 < totalKb * (100 - CODING_LOAD_FULL_PERCENT);
+}
 /** A session's first mount has less than its attachment's minute, and a machine still booting (a fresh machine's
  * first boot starts the image's services and sets up its new machine id) can take longer than that just to start the
  * guest agent: a turn waits this long at most for the boot to finish before it attaches. */
@@ -2806,6 +2838,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			token: attached.attachmentToken,
 			turn: turnState,
 			since: started,
+			...(guest.folder ? { folder: guest.folder } : {}),
 		};
 		this.#attachments.set(claim.workerId, attachment);
 		this.#attachSerials.set(claim.workerId, ++this.#attachSerial);
@@ -3600,15 +3633,17 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		// under a new generation.
 		const lost = new Set<string>();
 		const sessions: { workerId: string; busy: boolean; running: ObservedCommand[] }[] = [];
+		const sessionCpu: { workerId: string; cpuMillis: number }[] = [];
 		for (const [workerId, seen] of observed.sessions) {
 			if (seen.lease?.expiresInMs === 0 && seen.lease.tokenSha256 === generations.get(workerId)) {
 				lost.add(workerId);
 				continue;
 			}
 			const sample = this.#samples.get(workerId);
-			const now = {
+			const now: SessionSample = {
 				bootId: observed.bootId,
 				cpuSeconds: seen.cpuUsageUsec / 1e6,
+				cpuUsageUsec: seen.cpuUsageUsec,
 				ioBytes: seen.ioBytes,
 				at: seen.uptimeMs,
 			};
@@ -3618,9 +3653,12 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			const busy =
 				!seen.ioComplete ||
 				(sample !== undefined && sample.bootId === observed.bootId && idleRuleBusy(sample, now));
+			const cpuMillis = sessionCpuMillis(sample, observed.bootId, seen.uptimeMs, seen.cpuUsageUsec);
 			this.#samples.set(workerId, now);
 			sessions.push({ workerId, busy, running: seen.running });
+			sessionCpu.push({ workerId, cpuMillis });
 		}
+		const bindingText = lxdCodingMachinePlan(machine).text;
 		const started = performance.now();
 		const kept = record(
 			await this.#call(
@@ -3628,7 +3666,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				{
 					p_machine_id: machine.machineId,
 					p_owner: this.#options.owner,
-					p_binding_text: lxdCodingMachinePlan(machine).text,
+					p_binding_text: bindingText,
 					p_machine_id_sha256: this.#options.machineIdSha256,
 					p_observation: {
 						schema: "qorpera.coding-machine-observation/v1",
@@ -3653,6 +3691,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			return { workerId, item };
 		});
 		const renewals: Promise<CodingKeepOutcome>[] = [];
+		const keptWorkers = new Set<string>();
 		for (const { workerId, item } of items) {
 			const outcome = (state: CodingKeepOutcome["state"], code?: string): CodingKeepOutcome => ({
 				machineId: machine.machineId,
@@ -3667,6 +3706,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					renewals.push(Promise.resolve(outcome("not-now", "GUEST_LEASE_EXPIRED")));
 					continue;
 				}
+				keptWorkers.add(workerId);
 				// Each session's renewal on its own, one guest lease step at a time per session.
 				renewals.push(
 					abortable(
@@ -3699,7 +3739,118 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				);
 			else throw new Error("CODING_HOST_ATTACHMENTS_INVALID");
 		}
-		return [...(await Promise.all(renewals)), ...((await secrets) ?? [])];
+		const activeCpu = sessionCpu.filter(({ workerId }) => keptWorkers.has(workerId));
+		const load = this.#recordMachineLoad(machine, bindingText, observed.bootId, activeCpu, deadline).then(
+			(): CodingKeepOutcome[] => [],
+			(error: unknown): CodingKeepOutcome[] => {
+				if (signal.aborted) return [];
+				const code = deadline.aborted ? "CODING_HOST_KEEP_DEADLINE" : errorCodeOf(error);
+				return [{ machineId: machine.machineId, workerId: null, step: "load", state: "failed", code }];
+			},
+		);
+		return [...(await Promise.all(renewals)), ...(await load), ...((await secrets) ?? [])];
+	}
+	async #recordMachineLoad(
+		machine: Readonly<LxdCodingMachineBinding>,
+		bindingText: string,
+		bootId: string,
+		sessions: readonly { workerId: string; cpuMillis: number }[],
+		signal: AbortSignal,
+	): Promise<void> {
+		const name = lxdCodingMachineName(machine.machineId);
+		const [meminfoFull, measured] = await Promise.all([
+			this.#readMachineMemoryFull(machine.project, name, signal),
+			Promise.all(
+				sessions.map(async ({ workerId, cpuMillis }) => ({
+					workerId,
+					cpuMillis,
+					memoryBytes: await this.#readSessionMemoryBytes(machine.project, name, bootId, workerId, signal),
+				})),
+			),
+		]);
+		let totalCpuMillis = 0;
+		let totalMemoryBytes = 0;
+		for (const item of measured) {
+			totalCpuMillis += item.cpuMillis;
+			totalMemoryBytes += item.memoryBytes;
+		}
+		const full =
+			meminfoFull ||
+			totalCpuMillis * 100 >= machine.cpus * 1000 * CODING_LOAD_FULL_PERCENT ||
+			totalMemoryBytes * 100 >= machine.memoryBytes * CODING_LOAD_FULL_PERCENT;
+		const recorded = record(
+			await this.#call(
+				"qorpera_record_coding_machine_load",
+				{
+					p_machine_id: machine.machineId,
+					p_owner: this.#options.owner,
+					p_binding_text: bindingText,
+					p_machine_id_sha256: this.#options.machineIdSha256,
+					p_load: {
+						schema: "qorpera.coding-machine-load/v1",
+						full,
+						sessions: measured,
+					},
+				},
+				signal,
+			),
+		);
+		if (
+			recorded.schema !== "qorpera.coding-machine-load-recorded/v1" ||
+			recorded.machineId !== machine.machineId ||
+			!Number.isSafeInteger(recorded.sessions) ||
+			Number(recorded.sessions) < 0
+		)
+			throw new Error("CODING_HOST_MACHINE_LOAD_INVALID");
+	}
+	async #readMachineMemoryFull(project: string, name: string, signal: AbortSignal): Promise<boolean> {
+		try {
+			const file = await this.#options.client.readInstanceFile(
+				project,
+				name,
+				"/proc/meminfo",
+				CODING_MEMINFO_MAX_BYTES,
+				signal,
+			);
+			if (file.uid !== 0 || file.gid !== 0) return false;
+			return meminfoMemoryFull(file.content.toString("utf8"));
+		} catch (error) {
+			if (signal.aborted) throw error;
+			return false;
+		}
+	}
+	async #readSessionMemoryBytes(
+		project: string,
+		name: string,
+		bootId: string,
+		workerId: string,
+		signal: AbortSignal,
+	): Promise<number> {
+		const slice = `qorpera-coding-${workerId.replaceAll("-", "")}.slice`;
+		const paths = [`/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/${slice}/memory.current`];
+		const attachment = this.#attachments.get(workerId);
+		if (attachment?.bootId === bootId && attachment.folder)
+			paths.push(`/sys/fs/cgroup/user.slice/user-${attachment.folder.uid}.slice/memory.current`);
+		let total = 0;
+		for (const path of paths) {
+			try {
+				const file = await this.#options.client.readInstanceFile(
+					project,
+					name,
+					path,
+					CODING_CGROUP_MEMORY_MAX_BYTES,
+					signal,
+				);
+				if (file.uid !== 0 || file.gid !== 0) continue;
+				const text = file.content.toString("utf8").trim();
+				if (!/^[0-9]{1,15}$/.test(text)) continue;
+				const bytes = Number(text);
+				if (Number.isSafeInteger(bytes) && bytes > 0) total += bytes;
+			} catch (error) {
+				if (signal.aborted) throw error;
+			}
+		}
+		return Math.min(CODING_LOAD_MAX_MEMORY_BYTES, total);
 	}
 	/** Takes a released session off, beside the keeper's passes, and records it
 	 * detached with what it stopped. A session whose turn this process still runs

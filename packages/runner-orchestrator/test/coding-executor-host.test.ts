@@ -508,6 +508,16 @@ async function fixture() {
 					),
 				};
 			}
+			case "qorpera_record_coding_machine_load": {
+				if (args.p_owner !== "coding-host" || args.p_binding_text !== plan.text)
+					throw new Error("Coding machine custody differs");
+				const sessions = (args.p_load as { sessions?: unknown[] } | undefined)?.sessions;
+				return {
+					schema: "qorpera.coding-machine-load-recorded/v1",
+					machineId: args.p_machine_id,
+					sessions: Array.isArray(sessions) ? sessions.length : 0,
+				};
+			}
 			case "qorpera_record_coding_session_detached":
 				if (attachments.get(String(args.p_worker_id)) === args.p_attachment_token)
 					attachments.delete(String(args.p_worker_id));
@@ -8399,5 +8409,371 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				await chmod(locked, 0o755);
 			}
 		});
+	});
+});
+
+describe("coding machine load reporting and horizontal overflow (step 5k)", () => {
+	it("includes qorpera_record_coding_machine_load in CODING_HOST_RPCS and reports CPU, cgroup memory, and fullness hints on the folder model", async () => {
+		expect(CODING_HOST_RPCS).toContain("qorpera_record_coding_machine_load");
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		f.state.listed = [f.entry()];
+		const slicePath = `/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-${f.claim.workerId.replaceAll("-", "")}.slice/memory.current`;
+		const userPath = "/sys/fs/cgroup/user.slice/user-200000.slice/memory.current";
+		const setFile = (path: string, text: string) =>
+			f.files.set(path, { uid: 0, gid: 0, mode: 0o444, content: Buffer.from(text) });
+		setFile(slicePath, "536870912\n");
+		setFile(userPath, "134217728\n");
+		setFile("/proc/meminfo", "MemTotal:       8388608 kB\nMemAvailable:   4194304 kB\n");
+		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 600_000, cpuUsageUsec: 1_000_000 }));
+		expect(await f.host.keep(f.signal)).toEqual([
+			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+		]);
+		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toEqual({
+			p_machine_id: f.machine.machineId,
+			p_owner: "coding-host",
+			p_binding_text: f.plan.text,
+			p_machine_id_sha256: "f".repeat(64),
+			p_load: {
+				schema: "qorpera.coding-machine-load/v1",
+				full: false,
+				sessions: [{ workerId: f.claim.workerId, cpuMillis: 0, memoryBytes: 671_088_640 }],
+			},
+		});
+		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 610_000, cpuUsageUsec: 1_000_000 + 35_000_000 }));
+		expect(await f.host.keep(f.signal)).toEqual([
+			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+		]);
+		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
+			p_load: {
+				schema: "qorpera.coding-machine-load/v1",
+				full: true,
+				sessions: [{ workerId: f.claim.workerId, cpuMillis: 3500, memoryBytes: 671_088_640 }],
+			},
+		});
+		setFile("/proc/meminfo", "MemTotal:       8388608 kB\nMemAvailable:   800000 kB\n");
+		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 620_000, cpuUsageUsec: 36_000_000 }));
+		expect(await f.host.keep(f.signal)).toEqual([
+			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+		]);
+		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
+			p_load: {
+				full: true,
+				sessions: [{ workerId: f.claim.workerId, cpuMillis: 0, memoryBytes: 671_088_640 }],
+			},
+		});
+		setFile("/proc/meminfo", "MemTotal:       8388608 kB\nMemAvailable:   6000000 kB\n");
+		setFile(slicePath, "7516192768\n");
+		setFile(userPath, "0\n");
+		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 630_000, cpuUsageUsec: 36_000_000 }));
+		await f.host.keep(f.signal);
+		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
+			p_load: {
+				full: true,
+				sessions: [{ workerId: f.claim.workerId, cpuMillis: 0, memoryBytes: 7_516_192_768 }],
+			},
+		});
+		setFile(slicePath, "1048576\n");
+		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 640_000, cpuUsageUsec: 36_000_000 }));
+		await f.host.keep(f.signal);
+		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
+			p_load: {
+				full: false,
+				sessions: [{ workerId: f.claim.workerId, cpuMillis: 0, memoryBytes: 1_048_576 }],
+			},
+		});
+	});
+
+	it("excludes released sessions from load reports and keeps renewing when load reporting fails or returns invalid data", async () => {
+		const f = await folderFixture();
+		const second = f.another();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		await f.host.prepareWorkspace(second, f.turnOf(second), f.signal);
+		f.host.endTurn(f.claim);
+		f.host.endTurn(second);
+		f.state.release.set(second.workerId, "ARCHIVED");
+		f.state.listed = [f.entry()];
+		const releasingSlice = `/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-${second.workerId.replaceAll("-", "")}.slice/memory.current`;
+		f.files.set(releasingSlice, { uid: 0, gid: 0, mode: 0o444, content: Buffer.from("8000000000\n") });
+		expect(await pass(f)).toEqual(
+			expect.arrayContaining([
+				{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+				{
+					machineId: f.machine.machineId,
+					workerId: second.workerId,
+					step: "detach",
+					state: "done",
+					code: "ARCHIVED",
+				},
+			]),
+		);
+		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
+			p_load: {
+				full: false,
+				sessions: [{ workerId: f.claim.workerId, cpuMillis: 0, memoryBytes: 0 }],
+			},
+		});
+		f.state.listed = [f.entry()];
+		const control = f.call.getMockImplementation()!;
+		f.call.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_record_coding_machine_load") throw new Error("CODING_CONTROL_UNCONFIRMED");
+			return control(method, args, signal);
+		});
+		expect(await f.host.keep(f.signal)).toEqual([
+			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+			{
+				machineId: f.machine.machineId,
+				workerId: null,
+				step: "load",
+				state: "failed",
+				code: "CODING_CONTROL_UNCONFIRMED",
+			},
+		]);
+		f.call.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_record_coding_machine_load")
+				return { schema: "wrong", machineId: f.machine.machineId, sessions: 1 };
+			return control(method, args, signal);
+		});
+		expect(await f.host.keep(f.signal)).toEqual([
+			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+			{
+				machineId: f.machine.machineId,
+				workerId: null,
+				step: "load",
+				state: "failed",
+				code: "CODING_HOST_MACHINE_LOAD_INVALID",
+			},
+		]);
+	});
+
+	it("reports load on the NAS model and runs overflow sessions on a second machine for the same member", async () => {
+		const f = await fixture();
+		const overflow = f.another();
+		const secondMachine: LxdCodingMachineBinding = { ...f.machine, machineId: randomUUID() };
+		const secondPlan = lxdCodingMachinePlan(secondMachine);
+		const secondNodeId = randomUUID();
+		const secondBootId = randomUUID();
+		const secondFiles = new Map(f.files);
+		secondFiles.set("/proc/sys/kernel/random/boot_id", {
+			uid: 0,
+			gid: 0,
+			mode: 0o444,
+			content: Buffer.from(`${secondBootId}\n`),
+		});
+		const control = f.call.getMockImplementation()!;
+		const attachedByMachine = new Map<string, Map<string, string>>([
+			[f.machine.machineId, new Map()],
+			[secondMachine.machineId, new Map()],
+		]);
+		f.call.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_plan_coding_machine" && args.p_worker_id === overflow.workerId)
+				return {
+					schema: "qorpera.coding-machine-plan/v1",
+					state: "planned",
+					machineId: secondMachine.machineId,
+					binding: secondMachine,
+				};
+			if (method === "qorpera_authorize_coding_machine_run" && args.p_binding_text === secondPlan.text)
+				return {
+					schema: "qorpera.coding-machine-admission/v1",
+					machineId: secondMachine.machineId,
+					workerId: args.p_worker_id,
+					instanceSha256: secondPlan.instanceSha256,
+					intent: "run",
+					guestUid: 200001,
+					validForMs: 5000,
+					nodeId: secondNodeId,
+					nodeVersion: 1,
+				};
+			if (method === "qorpera_attach_coding_session" && args.p_binding_text === secondPlan.text) {
+				const workerId = String(args.p_worker_id);
+				const token = randomUUID();
+				attachedByMachine.get(secondMachine.machineId)!.set(workerId, token);
+				return {
+					schema: "qorpera.coding-attachment/v1",
+					state: "attached",
+					workerId,
+					machineId: secondMachine.machineId,
+					attachmentToken: token,
+					validForMs: 59000,
+					turn: { sequence: 1, turnId: codingHostId("turn", `${workerId}:1`), open: true },
+				};
+			}
+			if (method === "qorpera_keep_coding_attachments" && args.p_machine_id === secondMachine.machineId) {
+				const map = attachedByMachine.get(secondMachine.machineId)!;
+				return {
+					schema: "qorpera.coding-attachments/v1",
+					machineId: secondMachine.machineId,
+					sessions: [...map].map(([workerId, attachmentToken]) => ({
+						workerId,
+						state: "kept",
+						attachmentToken,
+						validForMs: 59000,
+						turn: { sequence: 1, turnId: codingHostId("turn", `${workerId}:1`), open: false },
+					})),
+				};
+			}
+			if (method === "qorpera_record_coding_machine_load" && args.p_machine_id === secondMachine.machineId) {
+				if (args.p_binding_text !== secondPlan.text) throw new Error("Coding machine custody differs");
+				const sessions = (args.p_load as { sessions?: unknown[] } | undefined)?.sessions;
+				return {
+					schema: "qorpera.coding-machine-load-recorded/v1",
+					machineId: secondMachine.machineId,
+					sessions: Array.isArray(sessions) ? sessions.length : 0,
+				};
+			}
+			return control(method, args, signal);
+		});
+		const devicesByName = new Map<string, Record<string, Record<string, string>>>([
+			[f.plan.request.name, structuredClone(f.base)],
+			[secondPlan.request.name, structuredClone(f.base)],
+		]);
+		const getInstance = vi.mocked(f.client.getInstance).getMockImplementation()!;
+		vi.mocked(f.client.getInstance).mockImplementation(async (project, name, signal) => {
+			if (name !== secondPlan.request.name) return getInstance(project, name, signal);
+			return {
+				name: secondPlan.request.name,
+				type: "virtual-machine",
+				status: "Running",
+				statusCode: 103,
+				profiles: [],
+				config: { ...secondPlan.request.config, "volatile.base_image": secondMachine.imageFingerprint },
+				expandedConfig: { ...secondPlan.request.config, "volatile.base_image": secondMachine.imageFingerprint },
+				devices: structuredClone(devicesByName.get(name)!),
+				expandedDevices: structuredClone(devicesByName.get(name)!),
+			};
+		});
+		const replaceDevices = vi.mocked(f.client.replaceInstanceDevices).getMockImplementation()!;
+		vi.mocked(f.client.replaceInstanceDevices).mockImplementation(async (project, name, devices, signal) => {
+			devicesByName.set(name, structuredClone(devices) as Record<string, Record<string, string>>);
+			if (name === f.plan.request.name) await replaceDevices(project, name, devices, signal);
+		});
+		const readInstanceFile = vi.mocked(f.client.readInstanceFile).getMockImplementation()!;
+		vi.mocked(f.client.readInstanceFile).mockImplementation(async (project, name, path, limit, signal) => {
+			if (name !== secondPlan.request.name) return readInstanceFile(project, name, path, limit, signal);
+			const file = secondFiles.get(path);
+			if (!file) throw new Error("Missing file");
+			return file;
+		});
+		const pushInstanceFile = vi.mocked(f.client.pushInstanceFile).getMockImplementation()!;
+		vi.mocked(f.client.pushInstanceFile).mockImplementation(async (project, name, path, content, mode, signal) => {
+			if (name !== secondPlan.request.name) return pushInstanceFile(project, name, path, content, mode, signal);
+			secondFiles.set(path, { uid: 0, gid: 0, mode, content: Buffer.from(content) });
+		});
+		const execInstance = vi.mocked(f.client.execInstance).getMockImplementation()!;
+		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
+			if (name !== secondPlan.request.name) return execInstance(project, name, command, signal);
+			if (command[0] === "/usr/bin/mountpoint") return;
+			if (command[1] === "is-failed") throw new Error("LXD instance command failed");
+			if (command[1] !== "/opt/qorpera-coding/cloud-coding-storage-guest.mjs") return;
+			if (command[2] === "install") {
+				const workerId = command[3]!;
+				const inbox = secondFiles.get(f.configuration(workerId, "configuration-inbox.json"));
+				if (!inbox) throw new Error("Missing configuration inbox");
+				const packet = JSON.parse(inbox.content.toString());
+				secondFiles.set(f.configuration(workerId, "storage.json"), {
+					uid: 0,
+					gid: 0,
+					mode: 0o444,
+					content: Buffer.from(JSON.stringify(packet.storage)),
+				});
+				secondFiles.set(f.configuration(workerId, "guest.json"), {
+					uid: 0,
+					gid: 0,
+					mode: 0o444,
+					content: Buffer.from(JSON.stringify(packet.guest)),
+				});
+			}
+			if (command[2] === "observe") {
+				const seen = f.state.observed.get(overflow.workerId) ?? { cpuUsageUsec: 0, running: [] };
+				const lease = f.state.guestLeases.get(overflow.workerId);
+				secondFiles.set("/run/qorpera-coding/observation.json", {
+					uid: 0,
+					gid: 0,
+					mode: 0o444,
+					content: Buffer.from(
+						JSON.stringify({
+							schema: "qorpera.coding-guest-observation/v3",
+							bootId: secondBootId,
+							uptimeMs: f.state.uptimeMs,
+							sessions: [
+								{
+									workerId: overflow.workerId,
+									cpuUsageUsec: seen.cpuUsageUsec,
+									ioBytes: seen.ioBytes ?? 0,
+									running: seen.running.length,
+									lease: lease
+										? {
+												tokenSha256: lease.tokenSha256,
+												expiresInMs: Math.max(0, lease.expiresAtMs - f.state.uptimeMs),
+											}
+										: null,
+								},
+							],
+						}),
+					),
+				});
+			}
+		});
+		const w1 = await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		const w2 = await f.host.prepareWorkspace(overflow, f.turnOf(overflow), f.signal);
+		expect(w1.vmId).toBe(f.machine.machineId);
+		expect(w2.vmId).toBe(secondMachine.machineId);
+		expect(await f.hostLease(f.machine.machineId)).toBe("live");
+		expect(await f.hostLease(secondMachine.machineId)).toBe("live");
+		f.host.endTurn(f.claim);
+		f.host.endTurn(overflow);
+		const secondAttached = [...attachedByMachine.get(secondMachine.machineId)!].map(
+			([workerId, attachmentToken]) => ({
+				workerId,
+				attachmentToken,
+			}),
+		);
+		f.state.listed = [
+			f.entry(),
+			f.entry({
+				machineId: secondMachine.machineId,
+				binding: secondMachine,
+				instanceSha256: secondPlan.instanceSha256,
+				attached: secondAttached,
+			}),
+		];
+		f.state.observed.set(f.claim.workerId, { cpuUsageUsec: 1_000_000, running: [] });
+		f.state.observed.set(overflow.workerId, { cpuUsageUsec: 2_000_000, running: [] });
+		const firstPass = await f.host.keep(f.signal);
+		expect(firstPass).toEqual(
+			expect.arrayContaining([
+				{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+				{ machineId: secondMachine.machineId, workerId: overflow.workerId, step: "keep", state: "done" },
+			]),
+		);
+		f.state.uptimeMs += 10_000;
+		f.state.observed.set(f.claim.workerId, { cpuUsageUsec: 1_000_000 + 2_000_000, running: [] });
+		f.state.observed.set(overflow.workerId, { cpuUsageUsec: 2_000_000 + 5_000_000, running: [] });
+		await f.host.keep(f.signal);
+		const loads = f.calls("qorpera_record_coding_machine_load").slice(-2);
+		expect(loads).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					p_machine_id: f.machine.machineId,
+					p_binding_text: f.plan.text,
+					p_load: {
+						schema: "qorpera.coding-machine-load/v1",
+						full: false,
+						sessions: [{ workerId: f.claim.workerId, cpuMillis: 200, memoryBytes: 0 }],
+					},
+				}),
+				expect.objectContaining({
+					p_machine_id: secondMachine.machineId,
+					p_binding_text: secondPlan.text,
+					p_load: {
+						schema: "qorpera.coding-machine-load/v1",
+						full: false,
+						sessions: [{ workerId: overflow.workerId, cpuMillis: 500, memoryBytes: 0 }],
+					},
+				}),
+			]),
+		);
 	});
 });
