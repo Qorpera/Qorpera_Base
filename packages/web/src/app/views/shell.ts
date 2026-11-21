@@ -66,16 +66,23 @@ import { type CompanyApp, companyConcepts } from "../interface-apps.ts";
 import { interfaceBadge } from "../interface-badge.ts";
 import { type CompanyInterface, companyInterfaces, hiddenInterfaces } from "../interfaces.ts";
 import { contactPlaces, MEMBERS_ZONE, type RailContact, railContacts, weave } from "../rail-contacts.ts";
-import { appHash, conceptsHash, type Route, siteHash } from "../router.ts";
-import { migrationPending, surfacesOf } from "../surfaces-store.ts";
+import { appHash, conceptsHash, type Route, siteHash, surfaceHash } from "../router.ts";
+import {
+	activeTaskSessions,
+	hasConflictedChange,
+	isOpenChange,
+	migrationPending,
+	surfacesOf,
+} from "../surfaces-store.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import type { AgentCardActions } from "./agent-details.ts";
 import type { CardFootActions } from "./card-foot.ts";
 import { personFace } from "./friends.ts";
 import { memberPresence } from "./member-chat.ts";
 import type { SettingsTab } from "./settings.ts";
-import { openAutomationsSheet, openCreateSurfaceSheet, openMigrationSheet } from "./surface-migration-sheet.ts";
-import { SurfaceRail } from "./surface-rail.ts";
+import { CrewFigures, crewWave } from "./surface-crew.ts";
+import { openCreateSurfaceSheet, openMigrationSheet, openScheduleAgentSheet } from "./surface-migration-sheet.ts";
+import { isActionChange, SurfaceRail } from "./surface-rail.ts";
 
 /* The company shell: a rail with conversations and the account menu, and the
  * main pane. A compact toolbar keeps the rail accessible on small screens. */
@@ -827,6 +834,60 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			},
 			{ signal: company.signal },
 		);
+		let pressClosesAdd = false;
+		document.addEventListener(
+			"pointerdown",
+			(event) => {
+				pressClosesAdd =
+					add.getAttribute("aria-expanded") === "true" &&
+					event.target instanceof Node &&
+					add.contains(event.target);
+			},
+			{ capture: true, signal: company.signal },
+		);
+		add.addEventListener(
+			"click",
+			(event) => {
+				const store = surfacesOf(company);
+				if (!store) return;
+				event.preventDefault();
+				if (pressClosesAdd) {
+					pressClosesAdd = false;
+					return;
+				}
+				if (openMenu()?.el.isConnected && add.getAttribute("aria-expanded") === "true") return;
+				const box = add.getBoundingClientRect();
+				add.setAttribute("aria-expanded", "true");
+				openContextMenu({
+					label: t("Create"),
+					x: box.left,
+					y: box.bottom + 4,
+					opener: add,
+					onClose: () => add.setAttribute("aria-expanded", "false"),
+					items: [
+						{
+							label: t("New surface"),
+							icon: "grid",
+							select: () => openCreateSurfaceSheet(store, company.profile.profileId),
+						},
+						{
+							label: t("New scheduled agent"),
+							icon: "clock",
+							select: () => openScheduleAgentSheet(store),
+						},
+						{ kind: "separator" },
+						{
+							label: t("New conversation"),
+							icon: "plus",
+							select: () => {
+								location.hash = `#/c/${company.profile.profileId}/new`;
+							},
+						},
+					],
+				});
+			},
+			{ signal: company.signal },
+		);
 		// The search button opens the field over the name. Esc or the close button folds it back, clears it and
 		// hands focus back to the button; so does leaving it empty.
 		const openSearch = () => {
@@ -1406,10 +1467,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		};
 	};
 	const surfaceRail = surfaceRailFor(company);
-	surfaceRail?.update(
-		route.name === "company" && route.section === "surface" ? route.id : undefined,
-		state.team?.capabilities.write === true,
-	);
 	const cofounderElement =
 		cofounder && matches(cofounder.displayName)
 			? row(
@@ -1759,17 +1816,32 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// the sections above it, as Unassigned's does. With nobody in it, it shows only while a contact is dragged, so one
 	// can be dropped back there (styles/app.css).
 	const placing = state.memberContactPlacing === true && contacts.length > 0;
-	zone(parts.members.el, placing);
+	const hasMembersSurface = Boolean(
+		surfaceRail &&
+			!railQuery &&
+			surfacesStore?.state.surfaces.some((surface) => surface.status === "active" && surface.slug === "members"),
+	);
+	const memberUnread = contacts.reduce(
+		(sum, contact) =>
+			sum + (contact.zone === MEMBERS_ZONE && !contact.hidden ? (memberChats?.[contact.userId]?.unread ?? 0) : 0),
+		0,
+	);
+	zone(parts.members.el, placing && !hasMembersSurface);
 	parts.members.title.hidden = !sectioned;
 	parts.members.el.classList.toggle("is-empty", !memberRows.length);
-	reconcile(parts.members.list, memberRows);
+	reconcile(parts.members.list, hasMembersSurface ? [] : memberRows);
+	surfaceRail?.update(
+		route.name === "company" && route.section === "surface" ? route.id : undefined,
+		false,
+		hasMembersSurface ? { rows: memberRows, unread: memberUnread, active: Boolean(activeMemberId) } : undefined,
+	);
 	// Collapsed, where section titles hide, a short line parts each group of agents from the
 	// group above it: never under the Co-Founder, never around a section with no one in it.
 	let above = pinnedElements.length > 0;
 	for (const [element, count] of [
 		...sectionGroups.map(({ group, rows: sectionRows }) => [group.el, sectionRows.length] as const),
 		[parts.unassigned.el, unassignedRows.length] as const,
-		[parts.members.el, memberRows.length] as const,
+		[parts.members.el, hasMembersSurface ? 0 : memberRows.length] as const,
 	]) {
 		element.classList.toggle("rail-divided", above && count > 0);
 		above ||= count > 0;
@@ -1788,9 +1860,23 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		context.route.name === "company" &&
 		(context.route.section === "staff" || context.route.section === "chat") &&
 		!isActive(cofounderId ?? "");
-	const legacyFold =
-		surfaceRail && !railQuery && legacyCount > 0
-			? syncLegacyAgentsFold(company, parts.redraw, legacyNodes, legacyCount, onLegacyRoute)
+	const companyAgents = active.filter(
+		(agent) => agent.id !== cofounderId && !foldedAgents[agent.id] && !hidden.has(agent.id),
+	);
+	const workingStaff = companyAgents.filter((agent) => agentWorks(company.agentState(agent.id)));
+	const scheduledStaff = companyAgents.filter(
+		(agent) => !agentWorks(company.agentState(agent.id)) && Boolean(state.agentNotes?.[agent.id]?.next),
+	);
+	const agentsHub =
+		surfaceRail && !railQuery
+			? syncAgentsHub(company, parts.redraw, {
+					profileId,
+					workingStaff,
+					scheduledStaff,
+					legacyNodes,
+					legacyCount,
+					forceLegacyOpen: onLegacyRoute,
+				})
 			: null;
 	reconcile(
 		parts.list,
@@ -1812,8 +1898,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			cofounderElement ? parts.cofounderGroup : null,
 			surfaceRail && !railQuery ? surfaceRail.el : null,
 			parts.loading ?? null,
-			...(legacyFold ? [legacyFold] : surfaceRail && !railQuery ? [] : legacyNodes),
-			memberRows.length || (placing && !railQuery) ? parts.members.el : null,
+			...(agentsHub ? [agentsHub] : surfaceRail && !railQuery ? [] : legacyNodes),
+			!hasMembersSurface && (memberRows.length || (placing && !railQuery)) ? parts.members.el : null,
 			hiddenCount ? hiddenGroup.el : null,
 			empty && !surfaceRail ? parts.empty : null,
 			parts.selection.moving ?? null,
@@ -1860,43 +1946,56 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// The account menu is shared with the top bar; it moves back only when it is not here.
 	const menu = accountMenuElement(context, company);
 	if (menu.parentElement !== parts.foot) parts.foot.append(menu);
-	const automations = surfaceRail ? automationsEntry(company) : null;
-	if (automations && automations.nextElementSibling !== menu) parts.foot.insertBefore(automations, menu);
 	paintPresence(container, parts, company);
 	restoreFocus();
 }
 
-interface LegacyAgentsFold {
+interface AgentsHubParts {
 	readonly el: HTMLElement;
-	readonly toggle: HTMLButtonElement;
-	readonly label: HTMLElement;
-	readonly count: HTMLElement;
+	readonly title: HTMLElement;
 	readonly migrate: HTMLButtonElement;
-	readonly body: HTMLElement;
-	open: boolean;
+	readonly workingWrap: HTMLElement;
+	readonly workingTitle: HTMLElement;
+	readonly workingList: HTMLElement;
+	readonly scheduledWrap: HTMLElement;
+	readonly scheduledTitle: HTMLElement;
+	readonly scheduledList: HTMLElement;
+	readonly legacyWrap: HTMLElement;
+	readonly legacyToggle: HTMLButtonElement;
+	readonly legacyLabel: HTMLElement;
+	readonly legacyCount: HTMLElement;
+	readonly legacyBody: HTMLElement;
+	readonly workingCrew: CrewFigures;
+	readonly scheduledCrew: CrewFigures;
+	workingKey: string;
+	scheduledKey: string;
+	openLegacy: boolean;
 }
 
-const legacyAgentFolds = new WeakMap<CompanyController, LegacyAgentsFold>();
-function syncLegacyAgentsFold(
-	company: CompanyController,
-	redraw: () => void,
-	nodes: readonly HTMLElement[],
-	count: number,
-	forceOpen: boolean,
-): HTMLElement {
+interface AgentsHubInput {
+	readonly profileId: string;
+	readonly workingStaff: readonly HostedStaffAgent[];
+	readonly scheduledStaff: readonly HostedStaffAgent[];
+	readonly legacyNodes: readonly HTMLElement[];
+	readonly legacyCount: number;
+	readonly forceLegacyOpen: boolean;
+}
+
+const agentsHubs = new WeakMap<CompanyController, AgentsHubParts>();
+function syncAgentsHub(company: CompanyController, redraw: () => void, input: AgentsHubInput): HTMLElement | null {
 	const store = surfacesOf(company);
-	let fold = legacyAgentFolds.get(company);
-	if (!fold) {
-		const label = h("span", { class: "rail-legacy-label" });
-		const countEl = h("span", { class: "rail-legacy-count" });
-		const chevron = h("span", { class: "rail-legacy-chevron", "aria-hidden": "true" }, icon("chevron"));
-		const toggle = h(
-			"button",
-			{ type: "button", class: "rail-legacy-toggle", "aria-expanded": "false" },
-			chevron,
-			label,
-			countEl,
-		);
+	if (!store) return null;
+	const state = store.state;
+	const tasks = activeTaskSessions(state);
+	const automations = state.automations;
+	const hasWorking = input.workingStaff.length > 0 || tasks.length > 0;
+	const hasScheduled = automations.length > 0 || input.scheduledStaff.length > 0;
+	const hasLegacy = input.legacyCount > 0;
+	if (!hasWorking && !hasScheduled && !hasLegacy) return null;
+
+	let hub = agentsHubs.get(company);
+	if (!hub) {
+		const title = h("span", null, t("Agents"));
 		const migrate = h(
 			"button",
 			{
@@ -1905,38 +2004,258 @@ function syncLegacyAgentsFold(
 				hidden: true,
 				onclick: (event: MouseEvent) => {
 					event.stopPropagation();
-					if (store) openMigrationSheet(store);
+					openMigrationSheet(store);
 				},
 			},
 			t("Move"),
 		);
-		const body = h("div", { class: "rail-legacy-body", hidden: true });
+		const workingTitle = h("div", { class: "rail-agents-subhead" }, t("Working"));
+		const workingList = h("div", { class: "rail-agents-list" });
+		const workingWrap = h("div", { class: "rail-agents-sub", hidden: true }, workingTitle, workingList);
+		const scheduledTitle = h("div", { class: "rail-agents-subhead" }, t("Scheduled"));
+		const scheduledList = h("div", { class: "rail-agents-list" });
+		const scheduledWrap = h("div", { class: "rail-agents-sub", hidden: true }, scheduledTitle, scheduledList);
+		const legacyLabel = h("span", { class: "rail-legacy-label" });
+		const legacyCount = h("span", { class: "rail-legacy-count" });
+		const legacyChevron = h("span", { class: "rail-legacy-chevron", "aria-hidden": "true" }, icon("chevron"));
+		const legacyToggle = h(
+			"button",
+			{ type: "button", class: "rail-legacy-toggle", "aria-expanded": "false" },
+			legacyChevron,
+			legacyLabel,
+			legacyCount,
+		);
+		const legacyBody = h("div", { class: "rail-legacy-body", hidden: true });
+		const legacyWrap = h("div", { class: "rail-agents-legacy", hidden: true }, legacyToggle, legacyBody);
 		const el = h(
 			"div",
-			{ class: "rail-legacy-agents" },
-			h("div", { class: "rail-legacy-head" }, toggle, migrate),
-			body,
+			{ class: "rail-agents-hub", role: "group", "aria-label": t("Agents") },
+			h("div", { class: "rail-section-title rail-agents-head" }, title, migrate),
+			workingWrap,
+			scheduledWrap,
+			legacyWrap,
 		);
-		fold = { el, toggle, label, count: countEl, migrate, body, open: false };
-		toggle.addEventListener("click", () => {
-			fold!.open = !fold!.open;
+		hub = {
+			el,
+			title,
+			migrate,
+			workingWrap,
+			workingTitle,
+			workingList,
+			scheduledWrap,
+			scheduledTitle,
+			scheduledList,
+			legacyWrap,
+			legacyToggle,
+			legacyLabel,
+			legacyCount,
+			legacyBody,
+			workingCrew: new CrewFigures(),
+			scheduledCrew: new CrewFigures(),
+			workingKey: "",
+			scheduledKey: "",
+			openLegacy: false,
+		};
+		legacyToggle.addEventListener("click", () => {
+			hub!.openLegacy = !hub!.openLegacy;
 			redraw();
 		});
-		legacyAgentFolds.set(company, fold);
+		agentsHubs.set(company, hub);
 	}
-	const expanded = fold.open || forceOpen;
-	fold.label.textContent = t("Agents");
-	fold.count.textContent = String(count);
-	fold.toggle.setAttribute("aria-expanded", String(expanded));
-	fold.el.classList.toggle("is-open", expanded);
-	const canMigrate = Boolean(store && migrationPending(store.state.migration));
-	fold.migrate.hidden = !canMigrate;
-	fold.migrate.textContent = t("Move");
-	fold.migrate.title = t("Move to Surfaces");
-	fold.body.hidden = !expanded;
-	fold.body.inert = !expanded;
-	reconcile(fold.body, nodes);
-	return fold.el;
+
+	const locale = presentationLocale();
+	hub.title.textContent = t("Agents");
+	hub.el.setAttribute("aria-label", t("Agents"));
+	const canMigrate = migrationPending(state.migration);
+	hub.migrate.hidden = !canMigrate;
+	hub.migrate.textContent = t("Move");
+	hub.migrate.title = t("Move to Surfaces");
+
+	hub.workingTitle.textContent = t("Working");
+	hub.workingWrap.hidden = !hasWorking;
+	const workingKey = JSON.stringify([
+		locale,
+		input.workingStaff.map((agent) => [agent.id, agent.displayName, company.agentState(agent.id)]),
+		tasks.map(({ surface, session, running }) => [
+			surface.slug,
+			surface.title,
+			session.id,
+			session.title,
+			session.state,
+			running,
+			session.openChangeCount,
+			hasConflictedChange(session),
+		]),
+	]);
+	if (workingKey !== hub.workingKey) {
+		hub.workingKey = workingKey;
+		const workingRows: HTMLElement[] = [
+			...input.workingStaff.map((agent) => {
+				const look = AGENT_LOOK[company.agentState(agent.id)];
+				return h(
+					"a",
+					{
+						class: "rail-agent-hub-row is-working",
+						href: `#/c/${input.profileId}/staff/${agent.id}`,
+						draggable: "false",
+					},
+					h(
+						"span",
+						{ class: "rail-agent-hub-fig" },
+						agentFigure(agent, agent.displayName, { size: 32, activity: look.figure, alive: true }),
+					),
+					h(
+						"span",
+						{ class: "rail-agent-hub-copy" },
+						h("strong", null, agent.displayName),
+						h("small", null, stateLine(look) ?? t("Working")),
+					),
+				);
+			}),
+			...tasks.map(({ surface, session, running }) => {
+				const liveChanges = session.changes.filter((change) => change.status !== "discarded");
+				const actions = liveChanges.length > 0 && liveChanges.every((change) => isActionChange(change, surface));
+				const open = liveChanges.filter(isOpenChange).length;
+				const status: HTMLElement | string = running
+					? crewWave()
+					: session.state === "needs_input"
+						? t("Needs you")
+						: hasConflictedChange(session)
+							? t("Conflict")
+							: actions
+								? open > 1
+									? t("{count} actions ready", { count: open })
+									: t("Action ready")
+								: open === 1
+									? t("1 change ready")
+									: open > 1
+										? t("{count} changes ready", { count: open })
+										: t("Ready");
+				return h(
+					"button",
+					{
+						type: "button",
+						class: `rail-agent-hub-row${running ? " is-working" : ""}`,
+						"data-hub-session": session.id,
+						onclick: () => {
+							location.hash = surfaceHash(input.profileId, surface.slug);
+							store.openDrawer(surface.id, session.id);
+						},
+					},
+					hub!.workingCrew.take(session, 32),
+					h("span", { class: "rail-agent-hub-copy" }, h("strong", null, session.title), h("small", null, status)),
+					h("span", { class: "rail-agent-surface-tag" }, surface.title),
+				);
+			}),
+		];
+		hub.workingList.replaceChildren(...workingRows);
+		hub.workingCrew.settle();
+	}
+
+	hub.scheduledTitle.textContent = t("Scheduled");
+	hub.scheduledWrap.hidden = !hasScheduled;
+	const companyState = company.store.get();
+	const surfaceTitleBySlug = new Map(state.surfaces.map((surface) => [surface.slug, surface.title]));
+	const scheduledKey = JSON.stringify([
+		locale,
+		automations.map((item) => [
+			item.id,
+			item.title,
+			item.scheduleSummary,
+			item.enabled,
+			item.targetSurfaceSlug,
+			Boolean(state.busy[`automation:${item.id}`]),
+		]),
+		input.scheduledStaff.map((agent) => [agent.id, agent.displayName, companyState.agentNotes?.[agent.id]?.next]),
+	]);
+	if (scheduledKey !== hub.scheduledKey) {
+		hub.scheduledKey = scheduledKey;
+		const scheduledRows: HTMLElement[] = [
+			...automations.map((automation) => {
+				const targetTitle = automation.targetSurfaceSlug
+					? surfaceTitleBySlug.get(automation.targetSurfaceSlug)
+					: undefined;
+				const toggle = h("button", {
+					type: "button",
+					class: "surface-switch",
+					role: "switch",
+					"aria-checked": String(automation.enabled),
+					"aria-label": t("Turn {name} on or off", { name: automation.title }),
+					disabled: Boolean(state.busy[`automation:${automation.id}`]),
+					onclick: (event: MouseEvent) => {
+						event.stopPropagation();
+						void store.toggleAutomation(automation.id, !automation.enabled);
+					},
+				});
+				return h(
+					"div",
+					{
+						class: `rail-agent-sched${automation.enabled ? "" : " is-paused"}`,
+						"data-scheduled-agent": automation.id,
+					},
+					h(
+						"button",
+						{
+							type: "button",
+							class: "rail-agent-hub-row",
+							onclick: () => openScheduleAgentSheet(store, automation),
+						},
+						hub!.scheduledCrew.takeScheduled(automation.id, automation.enabled, 32, automation.title),
+						h(
+							"span",
+							{ class: "rail-agent-hub-copy" },
+							h("strong", null, automation.title),
+							h(
+								"small",
+								{ title: automation.scheduleSummary },
+								targetTitle ? `${targetTitle} · ${automation.scheduleSummary}` : automation.scheduleSummary,
+							),
+						),
+					),
+					toggle,
+				);
+			}),
+			...input.scheduledStaff.map((agent) => {
+				const note = idleLine({
+					failed: false,
+					hiredAt: agent.createdAt,
+					note: companyState.agentNotes?.[agent.id],
+				});
+				return h(
+					"a",
+					{
+						class: "rail-agent-hub-row",
+						href: `#/c/${input.profileId}/staff/${agent.id}`,
+						draggable: "false",
+					},
+					h(
+						"span",
+						{ class: "rail-agent-hub-fig" },
+						agentFigure(agent, agent.displayName, { size: 32, activity: "Idle", alive: true }),
+					),
+					h(
+						"span",
+						{ class: "rail-agent-hub-copy" },
+						h("strong", null, agent.displayName),
+						note?.text ? h("small", null, note.text) : null,
+					),
+				);
+			}),
+		];
+		hub.scheduledList.replaceChildren(...scheduledRows);
+		hub.scheduledCrew.settle();
+	}
+
+	const expanded = hub.openLegacy || input.forceLegacyOpen;
+	hub.legacyWrap.hidden = !hasLegacy;
+	hub.legacyLabel.textContent = hasWorking || hasScheduled ? t("Other agents") : t("Agents");
+	hub.legacyCount.textContent = String(input.legacyCount);
+	hub.legacyToggle.setAttribute("aria-expanded", String(expanded));
+	hub.legacyWrap.classList.toggle("is-open", expanded);
+	hub.legacyBody.hidden = !expanded;
+	hub.legacyBody.inert = !expanded;
+	reconcile(hub.legacyBody, input.legacyNodes);
+	return hub.el;
 }
 
 const surfaceRails = new WeakMap<CompanyController, SurfaceRail>();
@@ -1951,28 +2270,6 @@ function surfaceRailFor(company: CompanyController): SurfaceRail | undefined {
 		surfaceRails.set(company, rail);
 	}
 	return rail;
-}
-
-const automationEntries = new WeakMap<CompanyController, HTMLButtonElement>();
-function automationsEntry(company: CompanyController): HTMLButtonElement | null {
-	const store = surfacesOf(company);
-	if (!store) return null;
-	let entry = automationEntries.get(company);
-	if (!entry) {
-		entry = h("button", { type: "button", class: "rail-automations", onclick: () => openAutomationsSheet(store) });
-		automationEntries.set(company, entry);
-	}
-	const active = store.state.automations.filter((automation) => automation.enabled).length;
-	const shown = JSON.stringify([active, presentationLocale()]);
-	if (entry.dataset.shown !== shown) {
-		entry.dataset.shown = shown;
-		entry.replaceChildren(
-			icon("bolt"),
-			h("span", { class: "rail-automations-label" }, t("Automations")),
-			active ? h("span", { class: "rail-automations-count" }, t("{count} active", { count: active })) : "",
-		);
-	}
-	return entry;
 }
 
 /* ---- Who is where ---------------------------------------------------------------- */

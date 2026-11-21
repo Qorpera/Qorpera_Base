@@ -45,7 +45,9 @@ export interface SurfaceViewHost {
 }
 
 interface CompareColumn {
-	readonly stage: SurfaceDoorStage;
+	readonly stage?: SurfaceDoorStage;
+	readonly localFrame?: HTMLIFrameElement;
+	localDoc?: string;
 	readonly column: HTMLElement;
 	readonly title: HTMLElement;
 	readonly approve: HTMLButtonElement;
@@ -523,18 +525,22 @@ export class SurfaceView {
 		const workspace = state.workspaces[surface.id];
 		const mode = state.mode === "live" ? "live" : "preview";
 		const look = store.lookOf(surface);
+		const exploration = openExplorations(workspace)[0];
+		const pickedId = exploration ? store.pickedVariant(exploration) : undefined;
 		const appliedChanges =
 			mode === "live"
 				? []
-				: (workspace?.activeSessions ?? []).flatMap((session) =>
-						session.changes.filter((change) => isOpenChange(change) && store.isChangeShown(change.id)),
-					);
+				: (workspace?.activeSessions ?? []).flatMap((session) => {
+						if (session.explorationId && session.id !== pickedId) return [];
+						return session.changes.filter((change) => isOpenChange(change) && store.isChangeShown(change.id));
+					});
 		const key = JSON.stringify([
 			surface.id,
 			surface.title,
 			store.companyName,
 			mode,
 			look,
+			pickedId,
 			workspace?.briefSummary,
 			appliedChanges.map((change) => [change.id, change.title, change.summary]),
 		]);
@@ -554,24 +560,42 @@ export class SurfaceView {
 	#clearCompare(): void {
 		for (const entry of this.#compareDoors.values()) {
 			entry.abort.abort();
-			entry.stage.dispose();
+			entry.stage?.dispose();
 			entry.column.remove();
 		}
 		this.#compareDoors.clear();
 	}
 
 	#drawFrames(surface: SurfaceSummary): void {
-		const state = this.#host.store.state;
+		const store = this.#host.store;
+		const state = store.state;
 		const workspace = state.workspaces[surface.id];
 		const preview = workspace?.previewState;
 		const mode = surface.archetype === "live_build" ? state.mode : "live";
 		const compare = mode === "compare" && openExplorations(workspace).length > 0;
+		const localCompare = compare && store.isLocalInteractive && isLocalSurfaceId(surface.id);
 		const showPrimary = mode === "preview" && preview !== undefined && preview.primary.status !== "live_baseline";
-		const key = JSON.stringify([mode, compare, showPrimary, preview, surface.id, surface.title]);
+		const key = JSON.stringify([
+			mode,
+			compare,
+			localCompare,
+			showPrimary,
+			preview,
+			surface.id,
+			surface.title,
+			localCompare
+				? workspace?.activeSessions.map((session) => [
+						session.id,
+						session.explorationVariantLabel,
+						session.changes.length,
+					])
+				: null,
+			localCompare ? state.hiddenChanges : null,
+		]);
 		if (key === this.#framesShown) return;
 		this.#framesShown = key;
 		this.#frames.classList.toggle("is-compare", compare);
-		if (compare && preview) {
+		if (compare && (preview || localCompare)) {
 			if (this.#pointing) this.#setPointing(false);
 			this.#primaryDoor.clear();
 			const exploration = openExplorations(workspace)[0]!;
@@ -580,7 +604,7 @@ export class SurfaceView {
 			for (const [id, entry] of this.#compareDoors) {
 				if (keep.has(id)) continue;
 				entry.abort.abort();
-				entry.stage.dispose();
+				entry.stage?.dispose();
 				entry.column.remove();
 				this.#compareDoors.delete(id);
 			}
@@ -588,16 +612,20 @@ export class SurfaceView {
 				this.#primaryDoor.el.remove();
 				this.#framesMode = "compare";
 			}
+			const look = store.lookOf(surface);
+			const sharedChanges = localCompare
+				? workspace!.activeSessions
+						.filter((session) => !session.explorationId)
+						.flatMap((session) =>
+							session.changes.filter((change) => isOpenChange(change) && store.isChangeShown(change.id)),
+						)
+				: [];
 			for (const session of sessions) {
-				const compared = preview.compareFrames.find((item) => item.sessionId === session.id);
+				const compared = preview?.compareFrames.find((item) => item.sessionId === session.id);
 				const label = compared?.label ?? session.explorationVariantLabel ?? session.title;
-				const frameState = compared
-					? compared.frame
-					: { ...preview.primary, status: "building" as const, doorActionUrl: null, memberPass: null };
 				let entry = this.#compareDoors.get(session.id);
 				if (!entry) {
 					const abort = new AbortController();
-					const stage = new SurfaceDoorStage(abort.signal);
 					const title = h("strong", null, label);
 					const approve = h(
 						"button",
@@ -610,20 +638,56 @@ export class SurfaceView {
 						},
 						t("Approve"),
 					);
-					const column = h(
-						"div",
-						{ class: "surface-compare-column" },
-						h("div", { class: "surface-compare-head" }, title, approve),
-						stage.el,
-					);
-					entry = { stage, column, title, approve, abort };
+					if (localCompare) {
+						const localFrame = h("iframe", {
+							class: "surface-frame surface-local-frame",
+							sandbox: "allow-scripts",
+							title: label,
+						});
+						const column = h(
+							"div",
+							{ class: "surface-compare-column" },
+							h("div", { class: "surface-compare-head" }, title, approve),
+							h("div", { class: "surface-door-stage surface-local-site" }, localFrame),
+						);
+						entry = { localFrame, column, title, approve, abort };
+					} else {
+						const stage = new SurfaceDoorStage(abort.signal);
+						const column = h(
+							"div",
+							{ class: "surface-compare-column" },
+							h("div", { class: "surface-compare-head" }, title, approve),
+							stage.el,
+						);
+						entry = { stage, column, title, approve, abort };
+					}
 					this.#compareDoors.set(session.id, entry);
-					this.#frames.append(column);
+					this.#frames.append(entry.column);
 				} else {
 					entry.title.textContent = label;
 					entry.approve.dataset.exploration = exploration.id;
 				}
-				entry.stage.sync(frameState, label);
+				if (entry.localFrame) {
+					const variantChanges = [...session.changes.filter(isOpenChange), ...sharedChanges];
+					const html = renderLocalSitePreviewHtml(
+						store.companyName,
+						surface,
+						variantChanges,
+						"preview",
+						look.kind === "custom" ? "website" : look.kind,
+						workspace?.briefSummary ?? undefined,
+						look.accent,
+					);
+					if (entry.localDoc !== html) {
+						entry.localDoc = html;
+						entry.localFrame.srcdoc = html;
+					}
+				} else if (entry.stage && preview) {
+					const frameState = compared
+						? compared.frame
+						: { ...preview.primary, status: "building" as const, doorActionUrl: null, memberPass: null };
+					entry.stage.sync(frameState, label);
+				}
 			}
 			this.#frames.hidden = false;
 			this.#mountSlot.hidden = true;

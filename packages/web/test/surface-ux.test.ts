@@ -2,9 +2,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { inferSurfaceKind, opsComposerPlaceholder } from "../src/app/surface-kinds.ts";
 import { recipientOf, renderLocalSitePreviewHtml } from "../src/app/surface-local-sandbox.ts";
-import { clearLocalSandboxCache, synthesizeSurfaces } from "../src/app/surfaces-store.ts";
+import { activeTaskSessions, clearLocalSandboxCache, synthesizeSurfaces } from "../src/app/surfaces-store.ts";
 import { CrewFigures, crewLook, sessionCrew } from "../src/app/views/surface-crew.ts";
-import { openCreateSurfaceSheet } from "../src/app/views/surface-migration-sheet.ts";
+import { openCreateSurfaceSheet, openScheduleAgentSheet } from "../src/app/views/surface-migration-sheet.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { SurfaceView } from "../src/app/views/surface-view.ts";
 import {
@@ -322,5 +322,111 @@ describe("creating surfaces", () => {
 		expect(renderLocalSitePreviewHtml("Brooks", surface, [], "live", "website", "A calm brief.")).toContain(
 			"A calm brief.",
 		);
+	});
+});
+
+describe("unified agents, nested members, and Thetaband orchestration", () => {
+	it("nests human member threads directly under the Members surface with teammate count", async () => {
+		const store = storeWith(undefined, {
+			companyName: "Brooks",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox", "members"] }),
+		});
+		await store.load();
+		await store.openSurface("members");
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+		document.body.append(rail.el);
+		const marie = document.createElement("a");
+		marie.className = "rail-row";
+		marie.dataset.memberId = "user-marie";
+		marie.textContent = "Marie Malling";
+		rail.update("members", false, { rows: [marie], unread: 0, active: false });
+
+		const membersRow = rail.el.querySelector('.rail-surface[data-surface-slug="members"]')!;
+		expect(membersRow.querySelector(".rail-surface-sub")?.textContent).toBe("1 teammate");
+		const tree = membersRow.nextElementSibling!;
+		expect(tree.querySelector('.rail-members [data-member-id="user-marie"]')).toBe(marie);
+		expect(tree.querySelector(".surface-tree-empty")).toBeNull();
+		expect(rail.el.querySelector('[aria-label="Building"]')).toBeNull();
+		store.dispose();
+	});
+
+	it("creates and edits a prompt + schedule agent without HR persona charters", async () => {
+		const store = storeWith(undefined, {
+			companyName: "Brooks",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const dialog = HTMLDialogElement.prototype;
+		dialog.showModal ??= function (this: HTMLDialogElement) {
+			this.open = true;
+		};
+		dialog.close ??= function (this: HTMLDialogElement) {
+			this.open = false;
+		};
+		openScheduleAgentSheet(store);
+		const sheet = document.querySelector(".surface-schedule-sheet")!;
+		const [nameInput, scheduleInput] = sheet.querySelectorAll<HTMLInputElement>("input.surface-create-input");
+		const promptInput = sheet.querySelector<HTMLTextAreaElement>("textarea.surface-create-prompt")!;
+		nameInput!.value = "Morning inbox triage";
+		promptInput.value = "Summarize urgent customer replies and draft follow-ups.";
+		scheduleInput!.value = "Every day · 09:00";
+		sheet.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+		await flush();
+		expect(store.state.automations).toHaveLength(1);
+		const created = store.state.automations[0]!;
+		expect(created.title).toBe("Morning inbox triage");
+		expect(store.state.scheduledAgentPrompts[created.id]).toBe(
+			"Summarize urgent customer replies and draft follow-ups.",
+		);
+		await store.updateScheduledAgent(created.id, { scheduleSummary: "Every Monday · 09:00" });
+		expect(store.state.automations[0]?.scheduleSummary).toBe("Every Monday · 09:00");
+		await store.deleteScheduledAgent(created.id);
+		expect(store.state.automations).toHaveLength(0);
+		store.dispose();
+	});
+
+	it("orchestrates Website, Phone App, Product, and Financials for Thetaband with working local Compare 3", async () => {
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox", "bank", "members"] }),
+		});
+		await store.load();
+		const productSlugs = store.state.surfaces
+			.filter((surface) => surface.group === "products")
+			.map((surface) => surface.slug);
+		expect(productSlugs).toEqual(["website", "phone-app", "product", "financials"]);
+		expect(activeTaskSessions(store.state)).toHaveLength(4);
+		expect(store.state.automations.length).toBeGreaterThanOrEqual(2);
+
+		const productSurface = store.state.surfaces.find((surface) => surface.slug === "product")!;
+		expect(store.state.localStudioBase[productSurface.id]?.["product/specs.json"]).toContain("BrainBit");
+
+		const website = store.state.surfaces.find((surface) => surface.slug === "website")!;
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		store.setMode("compare");
+		view.update();
+		const columns = [...view.el.querySelectorAll(".surface-compare-column")];
+		expect(columns).toHaveLength(3);
+		expect(columns.map((column) => column.querySelector("strong")?.textContent)).toEqual([
+			"Lyse flader",
+			"Portræt og telefon",
+			"Fire trin",
+		]);
+		const frames = [...view.el.querySelectorAll<HTMLIFrameElement>(".surface-compare-column iframe")];
+		expect(frames).toHaveLength(3);
+		expect(frames[0]!.srcdoc).toContain("Følg din meditationspraksis.");
+		columns[1]!.querySelector<HTMLButtonElement>('[data-act="choose"]')!.click();
+		await flush();
+		view.update();
+		expect(store.state.mode).toBe("preview");
+		expect(store.workspace(website.id)?.explorations[0]?.status).toBe("chosen");
+		expect(store.state.surfaces.find((surface) => surface.id === website.id)?.unpublishedChangeCount).toBe(1);
+		view.dispose();
+		store.dispose();
 	});
 });

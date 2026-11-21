@@ -92,6 +92,8 @@ import {
 	type ConversationState,
 } from "../company.ts";
 import { type QuotePiece, quotePieces } from "../quotes.ts";
+import { surfaceHash } from "../router.ts";
+import { activeTaskSessions, surfacesOf } from "../surfaces-store.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
 import { ComposerLogins } from "./composer-logins.ts";
@@ -116,6 +118,8 @@ import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
 import { SharedDrafts } from "./shared-drafts.ts";
 import { type AppLook, appLook } from "./shell.ts";
+import { openCreateSurfaceSheet } from "./surface-migration-sheet.ts";
+import { surfaceTile } from "./surface-rail.ts";
 import { ThreadReady } from "./thread-ready.ts";
 import { ThreadSites } from "./thread-sites.ts";
 
@@ -297,6 +301,8 @@ export class ConversationView {
 	readonly #company: CompanyController;
 	readonly #sessionId: string;
 	readonly #header = h("header", { class: "thread-header" });
+	readonly #orchestrator = h("div", { class: "cofounder-orchestrator", hidden: true });
+	#orchestratorKey = "";
 	/** The thread's scroller: "Show earlier", the older items it read, then the live log. */
 	readonly #messages = h("div", { class: "messages" });
 	/** The live log: the items the thread opened with and everything that comes after. A screen
@@ -903,6 +909,7 @@ export class ConversationView {
 			"div",
 			{ class: "thread-conversation" },
 			this.#header,
+			this.#orchestrator,
 			this.#messages,
 			this.#earlierStatus,
 			this.#foot,
@@ -947,9 +954,11 @@ export class ConversationView {
 			{ signal: this.#lifetime.signal },
 		);
 		company.setOpenSession(sessionId);
+		const surfacesStore = surfacesOf(company);
 		this.#unsubscribe.push(
 			company.conversation(sessionId).subscribe(() => this.update()),
 			company.store.subscribe(() => this.update()),
+			...(surfacesStore ? [surfacesStore.store.subscribe(() => this.update())] : []),
 		);
 		this.update();
 	}
@@ -2341,9 +2350,11 @@ export class ConversationView {
 		this.#agentState = room ? "idle" : this.#company.agentState(session?.staffAgentId);
 		this.#working = agentWorks(this.#agentState);
 		this.#waitingRun = !room && this.#company.pausedRunFor(session?.staffAgentId) !== undefined;
-		if (!room && session?.staffAgentId !== undefined && session.staffAgentId === this.#company.cofounderId())
-			this.#gatherDecisions();
+		const isCofounder =
+			!room && session?.staffAgentId !== undefined && session.staffAgentId === this.#company.cofounderId();
+		if (isCofounder) this.#gatherDecisions();
 		this.#renderHeader(session, agent);
+		this.#renderOrchestrator(isCofounder);
 		this.#threadPieces(room, Boolean(session));
 		if (!room) this.#computerByItself(agent);
 		this.#renderHere();
@@ -2484,6 +2495,96 @@ export class ConversationView {
 			const open = this.#panels.get(agent.id);
 			if (open && !open.attached) this.#showPanel(agent);
 		}
+	}
+
+	#renderOrchestrator(isCofounder: boolean): void {
+		const store = surfacesOf(this.#company);
+		if (!isCofounder || !store || store.state.source === "loading") {
+			this.#orchestrator.hidden = true;
+			if (this.#orchestratorKey) {
+				this.#orchestratorKey = "";
+				this.#orchestrator.replaceChildren();
+			}
+			return;
+		}
+		const state = store.state;
+		const products = state.surfaces.filter((surface) => surface.group === "products" && surface.status === "active");
+		const tasks = activeTaskSessions(state);
+		const scheduledCount = state.automations.filter((item) => item.enabled).length;
+		const profileId = this.#company.profile.profileId;
+		const key = JSON.stringify([
+			presentationLocale(),
+			store.isLocalInteractive,
+			products.map((surface) => [
+				surface.id,
+				surface.slug,
+				surface.title,
+				surface.activeSessionCount,
+				surface.runningSessionCount,
+				store.lookOf(surface),
+			]),
+			tasks.length,
+			scheduledCount,
+		]);
+		this.#orchestrator.hidden = false;
+		if (key === this.#orchestratorKey) return;
+		this.#orchestratorKey = key;
+		const summaryParts: string[] = [];
+		if (tasks.length) summaryParts.push(t("{count} active", { count: tasks.length }));
+		if (scheduledCount) summaryParts.push(t("{count} scheduled", { count: scheduledCount }));
+		const pills: HTMLElement[] = products.map((surface) => {
+			const look = store.lookOf(surface);
+			return h(
+				"a",
+				{
+					class: "cofounder-orch-pill",
+					href: surfaceHash(profileId, surface.slug),
+					draggable: "false",
+					"data-orch-surface": surface.slug,
+				},
+				surfaceTile(surface, look, 13, "is-tiny"),
+				h("span", null, surface.title),
+				surface.activeSessionCount > 0
+					? h("span", { class: "cofounder-orch-count" }, String(surface.activeSessionCount))
+					: null,
+			);
+		});
+		const actions: HTMLElement[] = [];
+		if (store.isLocalInteractive && products.length === 0) {
+			actions.push(
+				h(
+					"button",
+					{
+						type: "button",
+						class: "cofounder-orch-btn is-primary",
+						onclick: () => store.orchestrateStarterSurfaces(),
+					},
+					icon("plus"),
+					t("Start starter interfaces"),
+				),
+			);
+		}
+		actions.push(
+			h(
+				"button",
+				{
+					type: "button",
+					class: "cofounder-orch-btn",
+					onclick: () => openCreateSurfaceSheet(store, profileId),
+				},
+				icon("plus"),
+				t("Surface"),
+			),
+		);
+		this.#orchestrator.replaceChildren(
+			h(
+				"div",
+				{ class: "cofounder-orch-lead" },
+				h("span", { class: "cofounder-orch-role" }, t("Company orchestrator")),
+				summaryParts.length ? h("span", { class: "cofounder-orch-meta" }, summaryParts.join(" · ")) : null,
+			),
+			h("div", { class: "cofounder-orch-pills" }, ...pills, ...actions),
+		);
 	}
 
 	/** Faces of the other members looking at this conversation now, newest arrival last. */

@@ -92,6 +92,34 @@ export class CrewFigures {
 		return stand;
 	}
 
+	takeScheduled(id: string, enabled: boolean, size: number, label: string): HTMLElement {
+		const crew = sessionCrew(id);
+		const key = JSON.stringify(["scheduled", id, enabled, size]);
+		let stand = this.#used.get(key) ?? this.#kept.get(key);
+		if (!stand) {
+			const figure = figureElement(crew.figure, crew.color, {
+				size,
+				identity: `scheduled-agent:${id}`,
+				activity: "Idle",
+				alive: enabled,
+			});
+			stand = h(
+				"span",
+				{
+					class: `surface-crew ${enabled ? "is-ready" : "is-merged"}`,
+					role: "img",
+					"aria-label": label,
+					"data-figure": crew.figure,
+				},
+				figure,
+			);
+			stand.style.setProperty("--crew-colour", crew.color);
+			stand.style.setProperty("--crew-size", `${size}px`);
+		}
+		this.#used.set(key, stand);
+		return stand;
+	}
+
 	settle(): void {
 		this.#kept = this.#used;
 		this.#used = new Map();

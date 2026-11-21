@@ -640,19 +640,16 @@ describe("the surface page", () => {
 		store.dispose();
 	});
 
-	it("hides the composer on unavailable surfaces and opens onAddSurface from an empty Building group", async () => {
+	it("hides the composer on unavailable surfaces and omits an empty Building group", async () => {
 		const store = storeWith(undefined, {
 			synthesize: () => ({ companyId: COMPANY, sites: [], pages: [] }),
 		});
 		await store.load();
-		const onAdd = vi.fn();
-		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal, onAdd);
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
 		document.body.append(rail.el);
 		rail.update("missing", true);
-		const createBtn = rail.el.querySelector<HTMLButtonElement>(".rail-surface-create")!;
-		expect(createBtn.textContent).toContain("Add a surface");
-		createBtn.click();
-		expect(onAdd).toHaveBeenCalledTimes(1);
+		expect(rail.el.querySelector(".rail-surface-create")).toBeNull();
+		expect(rail.el.querySelector('[aria-label="Building"]')).toBeNull();
 
 		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "missing");
 		document.body.append(view.el);

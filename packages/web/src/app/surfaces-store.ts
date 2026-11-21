@@ -24,7 +24,13 @@ import {
 import { phrase, t } from "../ui/preferences.ts";
 import { Store } from "./state.ts";
 import { isOpsKind, type SurfaceKind, type SurfaceLook, surfaceLookOf } from "./surface-kinds.ts";
-import { slugifySurfaceTitle, starterStudioFiles, synthesizeLocalChanges } from "./surface-local-sandbox.ts";
+import {
+	isThetabandCompany,
+	slugifySurfaceTitle,
+	starterOrchestrationPlan,
+	starterStudioFiles,
+	synthesizeLocalChanges,
+} from "./surface-local-sandbox.ts";
 
 export type SurfacesClient = Pick<
 	CloudSurfacesClient,
@@ -88,11 +94,25 @@ export interface CreateSurfaceInput {
 	readonly description?: string;
 }
 
+export interface CreateScheduledAgentInput {
+	readonly title: string;
+	readonly prompt: string;
+	readonly scheduleSummary: string;
+	readonly targetSurfaceSlug?: string | null;
+}
+
+export interface ActiveTaskSessionEntry {
+	readonly surface: SurfaceSummary;
+	readonly session: SurfaceSession;
+	readonly running: boolean;
+}
+
 export interface SurfacesState {
 	readonly source: SurfacesSource;
 	readonly surfaces: readonly SurfaceSummary[];
 	readonly workspaces: Readonly<Record<string, SurfaceWorkspace>>;
 	readonly automations: readonly SurfaceAutomationSummary[];
+	readonly scheduledAgentPrompts: Readonly<Record<string, string>>;
 	readonly migration?: SurfaceMigrationChecklist;
 	readonly migrationDismissed: boolean;
 	readonly foldedAgentIds: Readonly<Record<string, true>>;
@@ -299,6 +319,24 @@ export function runningSessionTotal(state: Pick<SurfacesState, "surfaces" | "wor
 	return total;
 }
 
+export function activeTaskSessions(state: Pick<SurfacesState, "surfaces" | "workspaces">): ActiveTaskSessionEntry[] {
+	const items: ActiveTaskSessionEntry[] = [];
+	for (const surface of state.surfaces) {
+		if (surface.status !== "active") continue;
+		const workspace = state.workspaces[surface.id];
+		if (!workspace) continue;
+		for (const session of workspace.activeSessions) {
+			if (session.explorationId) continue;
+			items.push({ surface, session, running: isRunningSession(session) });
+		}
+	}
+	return items.sort((a, b) => {
+		const rank = (entry: ActiveTaskSessionEntry) =>
+			entry.running ? 0 : entry.session.state === "needs_input" || hasConflictedChange(entry.session) ? 1 : 2;
+		return rank(a) - rank(b) || b.session.updatedAt.localeCompare(a.session.updatedAt);
+	});
+}
+
 export function openExplorations(workspace: SurfaceWorkspace | undefined): SurfaceExplorationSet[] {
 	return workspace?.explorations.filter((set) => set.status === "open") ?? [];
 }
@@ -376,6 +414,7 @@ interface LocalSandboxCacheEntry {
 	readonly surfaces: readonly SurfaceSummary[];
 	readonly workspaces: Readonly<Record<string, SurfaceWorkspace>>;
 	readonly automations: readonly SurfaceAutomationSummary[];
+	readonly scheduledAgentPrompts: Readonly<Record<string, string>>;
 	readonly migration?: SurfaceMigrationChecklist;
 	readonly migrationDismissed: boolean;
 	readonly foldedAgentIds: Readonly<Record<string, true>>;
@@ -413,6 +452,7 @@ export class SurfacesStore {
 			surfaces: [],
 			workspaces: {},
 			automations: [],
+			scheduledAgentPrompts: {},
 			migrationDismissed: false,
 			foldedAgentIds: {},
 			localStudioBase: {},
@@ -441,6 +481,7 @@ export class SurfacesStore {
 			surfaces: state.surfaces,
 			workspaces: state.workspaces,
 			automations: state.automations,
+			scheduledAgentPrompts: state.scheduledAgentPrompts,
 			migration: state.migration,
 			migrationDismissed: state.migrationDismissed,
 			foldedAgentIds: state.foldedAgentIds,
@@ -537,6 +578,7 @@ export class SurfacesStore {
 				surfaces: cached.surfaces,
 				workspaces: cached.workspaces,
 				automations: cached.automations,
+				scheduledAgentPrompts: cached.scheduledAgentPrompts ?? {},
 				migration: cached.migration,
 				migrationDismissed: cached.migrationDismissed,
 				foldedAgentIds: cached.foldedAgentIds,
@@ -555,6 +597,282 @@ export class SurfacesStore {
 			migration: synthesizeMigration(this.#options.migration()),
 			...(error ? { error } : {}),
 		});
+		if (this.#options.localInteractive && isThetabandCompany(this.companyName)) {
+			this.orchestrateStarterSurfaces();
+		}
+	}
+
+	orchestrateStarterSurfaces(): readonly SurfaceSummary[] {
+		if (!this.isLocalInteractive) return [];
+		const plan = starterOrchestrationPlan(this.companyName);
+		const now = new Date().toISOString();
+		const createdSurfaces: SurfaceSummary[] = [];
+		const taken = new Set(this.state.surfaces.map((surface) => surface.slug));
+		const nextSurfaces = [...this.state.surfaces];
+		const nextWorkspaces: Record<string, SurfaceWorkspace> = { ...this.state.workspaces };
+		const nextLooks: Record<string, SurfaceLook> = { ...this.state.surfaceLooks };
+		const nextStudioBase: Record<string, Readonly<Record<string, string>>> = { ...this.state.localStudioBase };
+		const nextStudioPatches: Record<string, readonly StudioPatchOp[]> = { ...this.state.studioPatches };
+
+		for (const [index, spec] of plan.surfaces.entries()) {
+			if (taken.has(spec.slug)) continue;
+			taken.add(spec.slug);
+			const surface = localSurface(spec.slug, spec.name, "products", spec.archetype, spec.icon, index, {
+				sourceKind: spec.archetype === "studio" ? "folder" : "code_repo",
+				folderRoot: spec.folderRoot ?? null,
+				previewMode: spec.archetype === "studio" ? "studio_overlay" : "static_site",
+				liveUrl: spec.liveUrl ?? null,
+			});
+			this.#localCreatedIds.add(surface.id);
+			const look: SurfaceLook = { kind: spec.kind };
+			nextLooks[surface.id] = look;
+			if (spec.archetype === "studio") {
+				nextStudioBase[surface.id] = starterStudioFiles(surface, this.companyName, spec.kind, spec.brief);
+			}
+			const sessions: SurfaceSession[] = [];
+			const explorations: SurfaceExplorationSet[] = [];
+			const mainSessionId = `local-session-${++this.#localSeq}`;
+			const mainChanges: SurfaceChangeUnit[] = spec.session.changes.map((entry, changeIndex) => {
+				const changeId = `local-change-${++this.#localSeq}`;
+				if (entry.studioPatch?.length) nextStudioPatches[changeId] = entry.studioPatch;
+				return {
+					id: changeId,
+					sessionId: mainSessionId,
+					surfaceId: surface.id,
+					seq: changeIndex + 1,
+					kind: entry.kind,
+					title: entry.heading,
+					summary: entry.summary,
+					status: "staged",
+					parentSha: null,
+					headSha: null,
+					dependsOnChangeIds: [],
+					diffStats: { filesChanged: entry.paths.length || 1, additions: 24 + changeIndex * 11, deletions: 4 },
+					affectedPaths: [...entry.paths],
+					conflictPaths: null,
+					landedChangeNumber: null,
+					canUndo: false,
+					createdAt: now,
+					resolvedAt: null,
+				};
+			});
+			sessions.push({
+				id: mainSessionId,
+				surfaceId: surface.id,
+				workerId: null,
+				title: spec.session.heading,
+				prompt: spec.session.prompt,
+				state: "ready",
+				originKind: "cofounder",
+				originLabel: "Co-Founder",
+				explorationId: null,
+				explorationVariantLabel: null,
+				hasActiveChat: false,
+				question: null,
+				changes: mainChanges,
+				messages: [
+					{
+						id: `local-message-${++this.#localSeq}`,
+						sessionId: mainSessionId,
+						authorKind: "member",
+						text: spec.session.prompt,
+						changeId: null,
+						createdAt: now,
+					},
+					{
+						id: `local-message-${++this.#localSeq}`,
+						sessionId: mainSessionId,
+						authorKind: "session",
+						text: spec.session.reply,
+						changeId: null,
+						createdAt: now,
+					},
+				],
+				openChangeCount: mainChanges.length,
+				createdAt: now,
+				updatedAt: now,
+				closedAt: null,
+			});
+
+			if (spec.exploration) {
+				const explorationId = `local-exploration-${++this.#localSeq}`;
+				const variantIds: string[] = [];
+				for (const variant of spec.exploration.variants) {
+					const variantSessionId = `local-session-${++this.#localSeq}`;
+					const changeId = `local-change-${++this.#localSeq}`;
+					variantIds.push(variantSessionId);
+					sessions.push({
+						id: variantSessionId,
+						surfaceId: surface.id,
+						workerId: null,
+						title: variant.label,
+						prompt: variant.summary,
+						state: "ready",
+						originKind: "cofounder",
+						originLabel: "Co-Founder",
+						explorationId,
+						explorationVariantLabel: variant.label,
+						hasActiveChat: false,
+						question: null,
+						changes: [
+							{
+								id: changeId,
+								sessionId: variantSessionId,
+								surfaceId: surface.id,
+								seq: 1,
+								kind: "git_range",
+								title: variant.changeTitle,
+								summary: variant.summary,
+								status: "staged",
+								parentSha: null,
+								headSha: null,
+								dependsOnChangeIds: [],
+								diffStats: { filesChanged: 3, additions: 86, deletions: 18 },
+								affectedPaths: ["src/sections/Hero.tsx", "src/styles/theme.css"],
+								conflictPaths: null,
+								landedChangeNumber: null,
+								canUndo: false,
+								createdAt: now,
+								resolvedAt: null,
+							},
+						],
+						messages: [
+							{
+								id: `local-message-${++this.#localSeq}`,
+								sessionId: variantSessionId,
+								authorKind: "session",
+								text: variant.summary,
+								changeId: null,
+								createdAt: now,
+							},
+						],
+						openChangeCount: 1,
+						createdAt: now,
+						updatedAt: now,
+						closedAt: null,
+					});
+				}
+				explorations.push({
+					id: explorationId,
+					surfaceId: surface.id,
+					title: spec.exploration.heading,
+					status: "open",
+					chosenSessionId: null,
+					variantSessionIds: variantIds,
+					createdAt: now,
+					resolvedAt: null,
+				});
+			}
+
+			const draftWorkspace: SurfaceWorkspace = {
+				...localWorkspace(surface),
+				briefSummary: spec.brief,
+				activeSessions: sessions,
+				explorations,
+			};
+			const syncedSurface = this.#syncLocalSurfaceCounts(draftWorkspace);
+			nextWorkspaces[surface.id] = { ...draftWorkspace, surface: syncedSurface };
+			nextSurfaces.push(syncedSurface);
+			createdSurfaces.push(syncedSurface);
+		}
+
+		const existingKeys = new Set(this.state.automations.map((item) => item.key));
+		const nextAutomations = [...this.state.automations];
+		const nextPrompts = { ...this.state.scheduledAgentPrompts };
+		for (const auto of plan.automations) {
+			if (existingKeys.has(auto.key)) continue;
+			const id = `local-automation-${++this.#localSeq}`;
+			const { heading, ...rest } = auto;
+			nextAutomations.push({ ...rest, id, title: heading });
+			nextPrompts[id] = auto.scheduleSummary;
+		}
+
+		this.store.set({
+			surfaces: sortSurfaces(nextSurfaces),
+			workspaces: nextWorkspaces,
+			surfaceLooks: nextLooks,
+			localStudioBase: nextStudioBase,
+			studioPatches: nextStudioPatches,
+			automations: nextAutomations,
+			scheduledAgentPrompts: nextPrompts,
+			error: undefined,
+		});
+		return createdSurfaces;
+	}
+
+	async createScheduledAgent(input: CreateScheduledAgentInput): Promise<SurfaceAutomationSummary | undefined> {
+		const title = input.title.trim();
+		const prompt = input.prompt.trim();
+		const schedule = input.scheduleSummary.trim() || t("Every day · 09:00");
+		if (!title || !prompt) return undefined;
+		if (!this.isLocalInteractive) {
+			this.store.set({ error: this.#options.unavailableMessage });
+			return undefined;
+		}
+		const id = `local-automation-${++this.#localSeq}`;
+		const key = slugifySurfaceTitle(title, new Set(this.state.automations.map((item) => item.key)));
+		const created: SurfaceAutomationSummary = {
+			id,
+			key,
+			title,
+			scheduleSummary: schedule,
+			targetSurfaceSlug: input.targetSurfaceSlug || null,
+			outputMode: input.targetSurfaceSlug ? "surface_session" : "decision_card",
+			enabled: true,
+			status: "idle",
+			lastRunAt: null,
+			lastOutcomeSummary: prompt.length <= 68 ? prompt : `${prompt.slice(0, 65).trimEnd()}…`,
+			nextRunAt: null,
+		};
+		this.store.set((state) => ({
+			automations: [...state.automations, created],
+			scheduledAgentPrompts: { ...state.scheduledAgentPrompts, [id]: prompt },
+			error: undefined,
+		}));
+		return created;
+	}
+
+	async updateScheduledAgent(
+		id: string,
+		patch: Partial<CreateScheduledAgentInput>,
+	): Promise<SurfaceAutomationSummary | undefined> {
+		const existing = this.state.automations.find((item) => item.id === id);
+		if (!existing) return undefined;
+		if (!this.isLocalInteractive || !id.startsWith("local-")) {
+			this.store.set({ error: this.#options.unavailableMessage });
+			return undefined;
+		}
+		const title = patch.title?.trim() || existing.title;
+		const schedule = patch.scheduleSummary?.trim() || existing.scheduleSummary;
+		const prompt = patch.prompt?.trim() ?? this.state.scheduledAgentPrompts[id] ?? existing.lastOutcomeSummary ?? "";
+		const target = patch.targetSurfaceSlug !== undefined ? patch.targetSurfaceSlug : existing.targetSurfaceSlug;
+		const updated: SurfaceAutomationSummary = {
+			...existing,
+			title,
+			scheduleSummary: schedule,
+			targetSurfaceSlug: target,
+			outputMode: target ? "surface_session" : "decision_card",
+			lastOutcomeSummary: prompt ? (prompt.length <= 68 ? prompt : `${prompt.slice(0, 65).trimEnd()}…`) : null,
+		};
+		this.store.set((state) => ({
+			automations: state.automations.map((item) => (item.id === id ? updated : item)),
+			scheduledAgentPrompts: { ...state.scheduledAgentPrompts, [id]: prompt },
+			error: undefined,
+		}));
+		return updated;
+	}
+
+	async deleteScheduledAgent(id: string): Promise<boolean> {
+		if (!this.isLocalInteractive || !id.startsWith("local-")) return false;
+		this.store.set((state) => {
+			const scheduledAgentPrompts = { ...state.scheduledAgentPrompts };
+			delete scheduledAgentPrompts[id];
+			return {
+				automations: state.automations.filter((item) => item.id !== id),
+				scheduledAgentPrompts,
+			};
+		});
+		return true;
 	}
 
 	async #loadAutomations(client: SurfacesClient): Promise<void> {
@@ -1366,6 +1684,67 @@ export class SurfacesStore {
 	}
 
 	async chooseVariant(exploration: SurfaceExplorationSet, sessionId: string): Promise<boolean> {
+		if (this.isLocalInteractive && isLocalSurfaceId(exploration.surfaceId)) {
+			const workspace = this.workspace(exploration.surfaceId);
+			if (!workspace) return false;
+			const now = new Date().toISOString();
+			const variantIds = new Set(exploration.variantSessionIds);
+			const chosen = workspace.activeSessions.find((item) => item.id === sessionId);
+			if (!chosen) return false;
+			const mergedIds = chosen.changes.filter(isOpenChange).map((change) => change.id);
+			const closedVariants: SurfaceSession[] = [];
+			const remainingActive: SurfaceSession[] = [];
+			for (const session of workspace.activeSessions) {
+				if (!variantIds.has(session.id)) {
+					remainingActive.push(session);
+					continue;
+				}
+				if (session.id === sessionId) {
+					closedVariants.push({
+						...session,
+						state: "completed",
+						changes: session.changes.map((change) =>
+							isOpenChange(change)
+								? { ...change, status: "merged" as const, canUndo: true, resolvedAt: now }
+								: change,
+						),
+						openChangeCount: 0,
+						updatedAt: now,
+						closedAt: now,
+					});
+				} else {
+					closedVariants.push({
+						...session,
+						state: "discarded",
+						changes: session.changes.map((change) =>
+							isOpenChange(change) ? { ...change, status: "discarded" as const } : change,
+						),
+						openChangeCount: 0,
+						updatedAt: now,
+						closedAt: now,
+					});
+				}
+			}
+			const nextExplorations = workspace.explorations.map((item) =>
+				item.id === exploration.id
+					? { ...item, status: "chosen" as const, chosenSessionId: sessionId, resolvedAt: now }
+					: item,
+			);
+			this.#commitLocalChangesToBase(exploration.surfaceId, mergedIds);
+			const refreshedSurface =
+				this.state.surfaces.find((item) => item.id === exploration.surfaceId) ?? workspace.surface;
+			const nextWorkspace: SurfaceWorkspace = {
+				...workspace,
+				surface: refreshedSurface,
+				activeSessions: remainingActive,
+				recentHistory: [...closedVariants, ...workspace.recentHistory],
+				explorations: nextExplorations,
+			};
+			this.#putWorkspace({ ...nextWorkspace, surface: this.#syncLocalSurfaceCounts(nextWorkspace) });
+			this.store.set({ mode: this.state.mode === "compare" ? "preview" : this.state.mode });
+			if (mergedIds.length > 0) this.#offerUndo(chosen.explorationVariantLabel ?? chosen.title, mergedIds);
+			return true;
+		}
 		const chosen = await this.#run(`exploration:${exploration.id}`, (client) =>
 			client.chooseExploration(exploration.id, sessionId),
 		);

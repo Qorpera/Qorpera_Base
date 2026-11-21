@@ -12,7 +12,7 @@ type AgentAction = ApplySurfaceMigrationInput["agentDecisions"][number]["action"
 function agentActionLabel(action: AgentAction): string {
 	switch (action) {
 		case "fold_to_automation":
-			return t("Fold into an Automation");
+			return t("Fold into a scheduled agent");
 		case "fold_to_surface_brief":
 			return t("Fold into a Surface brief");
 		case "archive_readonly":
@@ -573,4 +573,145 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 	dialog.open();
 	nameInput.focus({ preventScroll: true });
 	nameInput.select();
+}
+
+const SCHEDULE_PRESETS: readonly string[] = [
+	phrase("Every day · 09:00"),
+	phrase("Every evening · 21:45"),
+	phrase("Every Monday · 09:00"),
+	phrase("Every hour"),
+];
+
+export function openScheduleAgentSheet(store: SurfacesStore, existing?: SurfaceAutomationSummary): void {
+	const editing = Boolean(existing);
+	const titleText = editing ? t("Scheduled agent") : t("New scheduled agent");
+	const dialog = new SurfaceDialog(titleText, "surface-sheet surface-schedule-sheet", () => undefined);
+	const nameInput = h("input", {
+		type: "text",
+		class: "surface-create-input",
+		value: existing?.title ?? "",
+		placeholder: t("e.g. Weekly cashflow check"),
+		autocomplete: "off",
+	});
+	const initialPrompt = existing
+		? (store.state.scheduledAgentPrompts[existing.id] ?? existing.lastOutcomeSummary ?? existing.scheduleSummary)
+		: "";
+	const promptInput = h(
+		"textarea",
+		{
+			class: "surface-create-prompt",
+			rows: 3,
+			placeholder: t("What should this agent do each time it runs?"),
+		},
+		initialPrompt,
+	);
+	const scheduleInput = h("input", {
+		type: "text",
+		class: "surface-create-input",
+		value: existing?.scheduleSummary ?? t(SCHEDULE_PRESETS[0]!),
+		placeholder: t("Every day · 09:00"),
+		autocomplete: "off",
+	});
+	const presets = h(
+		"div",
+		{ class: "surface-schedule-presets", role: "group", "aria-label": t("Schedule") },
+		SCHEDULE_PRESETS.map((preset) => {
+			const label = t(preset);
+			return h(
+				"button",
+				{
+					type: "button",
+					class: "surface-schedule-pill",
+					onclick: () => {
+						scheduleInput.value = label;
+					},
+				},
+				label,
+			);
+		}),
+	);
+	const surfaces = store.state.surfaces.filter((surface) => surface.status === "active");
+	const targetSelect = h(
+		"select",
+		{ class: "surface-sheet-select surface-schedule-select", "aria-label": t("Target surface") },
+		h("option", { value: "", selected: !existing?.targetSurfaceSlug }, t("Co-Founder decisions")),
+		...surfaces.map((surface) =>
+			h("option", { value: surface.slug, selected: existing?.targetSurfaceSlug === surface.slug }, surface.title),
+		),
+	);
+	const status = h("p", { class: "surface-sheet-status", role: "status" });
+	const submit = h(
+		"button",
+		{ type: "submit", class: "btn btn-primary" },
+		editing ? t("Save") : t("Create scheduled agent"),
+	);
+	const remove =
+		editing && existing && store.isLocalInteractive && existing.id.startsWith("local-")
+			? h(
+					"button",
+					{
+						type: "button",
+						class: "btn",
+						onclick: async () => {
+							await store.deleteScheduledAgent(existing.id);
+							dialog.close(false);
+						},
+					},
+					t("Delete"),
+				)
+			: null;
+	const form = h(
+		"form",
+		{ class: "surface-create-form" },
+		h("h2", null, titleText),
+		h(
+			"p",
+			{ class: "surface-sheet-lead" },
+			t("A scheduled agent runs its prompt on a clock and surfaces its work where it belongs."),
+		),
+		h("label", { class: "surface-create-field" }, h("span", null, t("Name")), nameInput),
+		h("label", { class: "surface-create-field" }, h("span", null, t("Prompt")), promptInput),
+		h("label", { class: "surface-create-field" }, h("span", null, t("Schedule")), scheduleInput, presets),
+		h("label", { class: "surface-create-field" }, h("span", null, t("Where results go")), targetSelect),
+		store.isLocalInteractive
+			? h(
+					"p",
+					{ class: "surface-local-note" },
+					t("Local preview — changes stay in this browser until Surfaces migrations are deployed."),
+				)
+			: null,
+		h("div", { class: "surface-sheet-actions" }, remove, status, submit),
+	);
+	form.addEventListener("submit", async (event) => {
+		event.preventDefault();
+		const title = nameInput.value.trim();
+		const prompt = promptInput.value.trim();
+		if (!title) {
+			nameInput.focus();
+			return;
+		}
+		if (!prompt) {
+			promptInput.focus();
+			return;
+		}
+		submit.disabled = true;
+		const payload = {
+			title,
+			prompt,
+			scheduleSummary: scheduleInput.value.trim() || t(SCHEDULE_PRESETS[0]!),
+			targetSurfaceSlug: targetSelect.value || null,
+		};
+		const done =
+			editing && existing
+				? await store.updateScheduledAgent(existing.id, payload)
+				: await store.createScheduledAgent(payload);
+		if (done) dialog.close(false);
+		else {
+			submit.disabled = false;
+			status.textContent = store.state.error ?? t("That didn't work. Try again.");
+		}
+	});
+	dialog.content.append(form);
+	dialog.open();
+	nameInput.focus({ preventScroll: true });
 }

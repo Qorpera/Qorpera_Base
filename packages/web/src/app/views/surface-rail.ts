@@ -436,35 +436,60 @@ function historyRows(state: SurfacesState, sessions: readonly SurfaceSession[]):
 	];
 }
 
-function treeFor(store: SurfacesStore, state: SurfacesState, surface: SurfaceSummary, crew: CrewFigures): HTMLElement {
+export interface SurfaceRailMembers {
+	readonly rows: readonly HTMLElement[];
+	readonly unread: number;
+	readonly active: boolean;
+}
+
+function reconcileChildren(parent: HTMLElement, children: readonly HTMLElement[]): void {
+	const kept = new Set<Element>(children);
+	for (const child of [...parent.children]) if (!kept.has(child)) child.remove();
+	children.forEach((child, index) => {
+		if (parent.children[index] !== child) parent.insertBefore(child, parent.children[index] ?? null);
+	});
+}
+
+function treeFor(
+	store: SurfacesStore,
+	state: SurfacesState,
+	surface: SurfaceSummary,
+	crew: CrewFigures,
+	active: boolean,
+	membersList?: HTMLElement,
+): HTMLElement {
 	const workspace = state.workspaces[surface.id];
 	const explorations = openExplorations(workspace);
 	const sessions = workspace?.activeSessions ?? [];
 	const plain = sessions.filter((session) => !session.explorationId);
 	const look = store.lookOf(surface);
-	const children: HTMLElement[] = [
-		...plain.map((session) => sessionRow(store, state, session, surface, look, crew)),
-		...explorations.map((exploration) =>
-			explorationRow(
-				store,
-				exploration,
-				sessions.filter((session) => session.explorationId === exploration.id),
-			),
-		),
-	];
-	if (!children.length && workspace)
+	const children: HTMLElement[] = [];
+	if (membersList) children.push(membersList);
+	if (active) {
 		children.push(
-			h(
-				"p",
-				{ class: "surface-tree-empty" },
-				store.canStartSessions(surface)
-					? surface.archetype === "ops"
-						? t("Nothing waiting. Ask an agent below.")
-						: t("No open sessions. Describe a change below.")
-					: t("Nothing in progress."),
+			...plain.map((session) => sessionRow(store, state, session, surface, look, crew)),
+			...explorations.map((exploration) =>
+				explorationRow(
+					store,
+					exploration,
+					sessions.filter((session) => session.explorationId === exploration.id),
+				),
 			),
 		);
-	children.push(...historyRows(state, workspace?.recentHistory ?? []));
+		if (!children.length && workspace)
+			children.push(
+				h(
+					"p",
+					{ class: "surface-tree-empty" },
+					store.canStartSessions(surface)
+						? surface.archetype === "ops"
+							? t("Nothing waiting. Ask an agent below.")
+							: t("No open sessions. Describe a change below.")
+						: t("Nothing in progress."),
+				),
+			);
+		children.push(...historyRows(state, workspace?.recentHistory ?? []));
+	}
 	const tree = h("div", { class: "surface-tree" }, children);
 	tree.style.setProperty("--surface-tint", surfaceTint(look));
 	return tree;
@@ -478,16 +503,26 @@ function hostOf(url: string): string {
 	}
 }
 
-function surfaceSubtitle(surface: SurfaceSummary, look: SurfaceLook): string {
+function surfaceSubtitle(surface: SurfaceSummary, look: SurfaceLook, members?: SurfaceRailMembers): string {
 	if (surface.needsAttentionCount > 0) return t("Needs you");
 	if (surface.activeSessionCount === 1) return t("1 session active");
 	if (surface.activeSessionCount > 1) return t("{count} sessions active", { count: surface.activeSessionCount });
+	if (look.kind === "members" && members && members.rows.length > 0) {
+		if (members.unread > 0) return t("{count} unread", { count: members.unread });
+		return members.rows.length === 1 ? t("1 teammate") : t("{count} teammates", { count: members.rows.length });
+	}
 	if (surface.archetype === "live_build" && surface.liveUrl)
 		return t("Live · {host}", { host: hostOf(surface.liveUrl) });
 	return surfaceKindSubtitle(look.kind);
 }
 
-function surfaceRow(surface: SurfaceSummary, look: SurfaceLook, profileId: string, active: boolean): HTMLElement {
+function surfaceRow(
+	surface: SurfaceSummary,
+	look: SurfaceLook,
+	profileId: string,
+	active: boolean,
+	members?: SurfaceRailMembers,
+): HTMLElement {
 	const meta: HTMLElement[] = [];
 	if (surface.runningSessionCount > 0)
 		meta.push(h("span", { class: "rail-surface-working", "aria-label": t("Working") }));
@@ -508,7 +543,7 @@ function surfaceRow(surface: SurfaceSummary, look: SurfaceLook, profileId: strin
 			"span",
 			{ class: "rail-surface-text" },
 			h("span", { class: "rail-surface-name" }, surface.title),
-			h("span", { class: "rail-surface-sub" }, surfaceSubtitle(surface, look)),
+			h("span", { class: "rail-surface-sub" }, surfaceSubtitle(surface, look, members)),
 		),
 		meta.length ? h("span", { class: "rail-surface-meta" }, meta) : null,
 	);
@@ -558,6 +593,7 @@ function proposedSurfaceRow(surface: SurfaceSummary, look: SurfaceLook, busy: bo
 
 export class SurfaceRail {
 	readonly el = h("div", { class: "rail-surfaces" });
+	readonly #membersList = h("div", { class: "rail-members rail-surface-members" });
 	readonly #store: SurfacesStore;
 	readonly #profileId: string;
 	readonly #onAddSurface: (() => void) | undefined;
@@ -572,12 +608,17 @@ export class SurfaceRail {
 		this.el.addEventListener("click", (event) => this.#click(event), { signal });
 	}
 
-	update(activeSlug: string | undefined, canAddProgram = false): void {
+	update(activeSlug: string | undefined, canAddProgram = false, members?: SurfaceRailMembers): void {
 		this.#active = activeSlug;
+		const memberRows = members?.rows ?? [];
+		reconcileChildren(this.#membersList, memberRows);
 		const state = this.#store.state;
 		const key = JSON.stringify([
 			activeSlug,
 			canAddProgram,
+			memberRows.length,
+			members?.unread ?? 0,
+			members?.active ?? false,
 			state.source,
 			state.surfaces,
 			activeSlug ? state.workspaces[state.surfaces.find((s) => s.slug === activeSlug)?.id ?? ""] : null,
@@ -600,12 +641,7 @@ export class SurfaceRail {
 			const groupSurfaces = state.surfaces.filter((surface) => surface.group === group);
 			const activeSurfaces = groupSurfaces.filter((surface) => surface.status === "active");
 			const proposedSurfaces = groupSurfaces.filter((surface) => surface.status === "proposed");
-			if (
-				!activeSurfaces.length &&
-				!proposedSurfaces.length &&
-				!(group === "products" && canAddProgram && state.source !== "loading")
-			)
-				continue;
+			if (!activeSurfaces.length && !proposedSurfaces.length) continue;
 			groups.push(
 				h(
 					"div",
@@ -640,9 +676,23 @@ export class SurfaceRail {
 							: null,
 					),
 					activeSurfaces.flatMap((surface) => {
+						const look = surfaceLookOf(surface, state.surfaceLooks);
 						const active = surface.slug === activeSlug;
-						const row = surfaceRow(surface, surfaceLookOf(surface, state.surfaceLooks), this.#profileId, active);
-						return active ? [row, treeFor(this.#store, state, surface, this.#crew)] : [row];
+						const hasMembers = look.kind === "members" && memberRows.length > 0;
+						const row = surfaceRow(surface, look, this.#profileId, active, hasMembers ? members : undefined);
+						return active || hasMembers
+							? [
+									row,
+									treeFor(
+										this.#store,
+										state,
+										surface,
+										this.#crew,
+										active,
+										hasMembers ? this.#membersList : undefined,
+									),
+								]
+							: [row];
 					}),
 					proposedSurfaces.map((surface) =>
 						proposedSurfaceRow(
@@ -651,22 +701,6 @@ export class SurfaceRail {
 							Boolean(state.busy[`surface:${surface.id}`]),
 						),
 					),
-					group === "products" &&
-						!activeSurfaces.length &&
-						!proposedSurfaces.length &&
-						canAddProgram &&
-						this.#onAddSurface
-						? h(
-								"button",
-								{
-									type: "button",
-									class: "rail-surface-create",
-									"data-act": "add-surface",
-								},
-								icon("plus"),
-								h("span", null, t("Add a surface")),
-							)
-						: null,
 				),
 			);
 		}

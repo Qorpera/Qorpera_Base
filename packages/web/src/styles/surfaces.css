@@ -50,10 +50,63 @@
 .rail-legacy-migrate[hidden] { display: none; }
 .rail-legacy-body { padding-top: 4px; }
 .rail-legacy-body[hidden] { display: none; }
-.rail-compact .rail-legacy-agents, .rail-compact .rail-surface-create { display: none; }
+.rail-compact .rail-legacy-agents, .rail-compact .rail-agents-hub, .rail-compact .rail-surface-create { display: none; }
 /* WHY: The surface-first rail lists Inbox, Money, Members and Databases itself, so the icon drawer that repeated them
  * above the Co-Founder folds away (shell.ts marks the rail; its elements stay for the legacy rail and its tests). */
 .has-surface-rail .rail-apps, .has-surface-rail > .rail-apps-drawer { display: none !important; }
+
+/* Unified Agents hub: Working task-driven agents at the top, Scheduled agents underneath, legacy tucked quietly below. */
+.rail-agents-hub {
+	display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; margin-top: 8px; padding-top: 8px;
+	border-top: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
+}
+.rail-agents-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.rail-agents-sub { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
+.rail-agents-sub[hidden] { display: none; }
+.rail-agents-subhead {
+	padding: 2px 10px 1px; color: var(--rail-small); font-size: 11px; font-weight: 650;
+	letter-spacing: 0.02em; text-transform: uppercase; opacity: 0.82;
+}
+.rail-agents-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; }
+.rail-agent-hub-row {
+	display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 5px 8px;
+	border: 0; border-radius: 10px; background: none; color: var(--text); font: inherit; text-align: left;
+	text-decoration: none; cursor: pointer; -webkit-font-smoothing: auto;
+	transition: background-color var(--motion-fast) ease;
+}
+.rail-agent-hub-row:hover { background: var(--rail-hover); text-decoration: none; }
+.rail-agent-hub-fig { display: grid; place-items: center; width: 32px; height: 32px; flex: none; }
+.rail-agent-hub-copy { display: grid; flex: 1; min-width: 0; gap: 1px; }
+.rail-agent-hub-copy strong {
+	overflow: hidden; font-size: 13px; font-weight: 620; line-height: 18px;
+	text-overflow: ellipsis; white-space: nowrap;
+}
+.rail-agent-hub-copy small {
+	overflow: hidden; color: var(--rail-small); font-size: 11.5px; font-weight: 480; line-height: 15px;
+	text-overflow: ellipsis; white-space: nowrap;
+}
+.rail-agent-surface-tag {
+	flex: none; max-width: 82px; padding: 2px 7px; overflow: hidden; border-radius: 999px;
+	background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--rail-small);
+	font-size: 10.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap;
+}
+.rail-agent-sched {
+	display: flex; align-items: center; gap: 4px; padding-right: 6px; border-radius: 10px;
+	transition: background-color var(--motion-fast) ease;
+}
+.rail-agent-sched:hover { background: var(--rail-hover); }
+.rail-agent-sched .rail-agent-hub-row { flex: 1; min-width: 0; }
+.rail-agent-sched .rail-agent-hub-row:hover { background: none; }
+.rail-agent-sched.is-paused .rail-agent-hub-copy strong { color: var(--rail-small); }
+.rail-agents-legacy { margin-top: 2px; }
+.rail-agents-legacy[hidden] { display: none; }
+.rail-agents-legacy.is-open .rail-legacy-chevron { transform: rotate(90deg); }
+
+/* Human member threads nested directly beneath the Members surface. */
+.rail-surface-members { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; padding: 2px 0; }
+.rail-surface-members .rail-row { min-height: 44px; padding: 4px 8px 4px 4px; border-radius: 10px; }
+.rail-surface-members .rail-row-stand { width: 34px; height: 34px; }
+.rail-surface-members .person-avatar { width: 30px; height: 30px; font-size: 11.5px; }
 
 /* A surface's identity tile: a soft squircle in its own colour with a crisp emblem in that colour, deepened on light
  * themes and brightened on dark ones by mixing toward the text colour. */
@@ -66,6 +119,7 @@
 }
 .surface-tile .interface-emblem { --emblem-ink: color-mix(in srgb, var(--surface-tint, var(--text)) 84%, var(--text)); }
 :root[data-theme="dark"] .surface-tile { background: color-mix(in srgb, var(--surface-tint, var(--text)) 22%, transparent); }
+.surface-tile.is-tiny { --tile-size: 20px; border-radius: 6px; }
 .surface-tile.is-small { --tile-size: 28px; border-radius: 8px; }
 .surface-tile.is-bar { --tile-size: 26px; border-radius: 8px; }
 .surface-tile.is-sheet { --tile-size: 34px; border-radius: 10px; }
@@ -802,6 +856,57 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .studio-empty h2 { margin: 6px 0 0; color: var(--text); font-size: 18px; }
 .studio-empty p { margin: 0; max-width: 420px; font-size: 13.5px; line-height: 1.5; }
 .studio-brief { color: var(--text); }
+
+/* Co-Founder company lead orchestrator bar above the Co-Founder thread. */
+.cofounder-orchestrator {
+	flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 14px;
+	padding: 10px 20px; border-bottom: 1px solid var(--border);
+	background: color-mix(in srgb, var(--bg) 88%, var(--text) 2%);
+}
+.cofounder-orchestrator[hidden] { display: none; }
+.cofounder-orch-lead { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.cofounder-orch-role {
+	font-size: 12px; font-weight: 650; color: var(--text); letter-spacing: -0.005em; white-space: nowrap;
+}
+.cofounder-orch-meta {
+	font-size: 12px; font-weight: 500; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.cofounder-orch-pills { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.cofounder-orch-pill {
+	display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 9px 0 4px; border-radius: 999px;
+	border: 1px solid color-mix(in srgb, var(--text) 10%, transparent); background: var(--bg); color: var(--text);
+	font-size: 12.5px; font-weight: 580; text-decoration: none;
+	transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease;
+}
+.cofounder-orch-pill:hover {
+	background: var(--rail-hover); border-color: color-mix(in srgb, var(--text) 20%, transparent); text-decoration: none;
+}
+.cofounder-orch-count {
+	min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px;
+	background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text-muted);
+	font-size: 10.5px; font-weight: 650; line-height: 16px; text-align: center; font-variant-numeric: tabular-nums;
+}
+.cofounder-orch-btn {
+	display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 10px; border-radius: 999px;
+	border: 1px solid color-mix(in srgb, var(--text) 14%, transparent); background: transparent; color: var(--text-muted);
+	font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
+}
+.cofounder-orch-btn:hover { background: var(--rail-hover); color: var(--text); }
+.cofounder-orch-btn.is-primary { border-color: transparent; background: var(--primary); color: var(--on-primary); }
+.cofounder-orch-btn.is-primary:hover { filter: brightness(1.06); color: var(--on-primary); }
+.cofounder-orch-btn .icon { width: 12px; height: 12px; }
+
+/* Scheduled agent creation / edit sheet. */
+.surface-schedule-presets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.surface-schedule-pill {
+	height: 26px; padding: 0 10px; border: 1px solid color-mix(in srgb, var(--text) 13%, transparent);
+	border-radius: 999px; background: color-mix(in srgb, var(--text) 3%, transparent); color: var(--text-muted);
+	font: inherit; font-size: 12px; font-weight: 550; cursor: pointer;
+	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
+}
+.surface-schedule-pill:hover { background: var(--rail-hover); color: var(--text); }
+.surface-schedule-select { width: 100%; height: 38px; padding: 0 10px; }
 
 @media (prefers-reduced-motion: reduce) {
 	.surface-state.is-running, .surface-ring, .surface-toast, .rail-surface-working { animation: none; }
