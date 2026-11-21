@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { boundedObjectOperation, ObjectDependencyError } from "./dependency.ts";
 import { assertNativeToken, type NativeBindingProof, nativeBinding, nativeHolder, UUID } from "./native-objects.ts";
-import type { FileSystemObjectStore } from "./object-store.ts";
+import { type FileSystemObjectStore, type VerifiedObjectBytes, verifyObjectBytes } from "./object-store.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
 
 /** A folder-v2 run as the folder core's actor (core C1b §1): its binding's run, job, runner and assignment. */
@@ -110,9 +110,9 @@ export async function serveFolderObject(
 				throw error;
 			throw fallback;
 		}
+		if (bytes.byteLength !== authority.bytes || createHash("sha256").update(bytes).digest("hex") !== sha256)
+			throw new ObjectDependencyError(503);
 	}
-	if (bytes.byteLength !== authority.bytes || createHash("sha256").update(bytes).digest("hex") !== sha256)
-		throw new ObjectDependencyError(503);
 	// Recheck after potentially slow NAS I/O.
 	const current = await options.authority.authorizeFolderDownload(environmentId, actor, sha256);
 	if (current.profileId !== authority.profileId || current.bytes !== authority.bytes)
@@ -156,14 +156,25 @@ export async function putFolderObject(
 		if (count !== length) throw new ObjectDependencyError(400);
 		return Buffer.concat(chunks);
 	});
-	if (createHash("sha256").update(bytes).digest("hex") !== sha256) throw new ObjectDependencyError(400);
-	const status = await replication.uploadWithAuthority(profileId, sha256, bytes, {
-		authorize: async () => {
-			const again = await authority.authorizeFolderUpload(environmentId, actor, intent, sha256, length);
-			if (again.profileId !== profileId) throw new ObjectDependencyError(403);
+	let verified: VerifiedObjectBytes;
+	try {
+		verified = verifyObjectBytes(sha256, bytes);
+	} catch {
+		throw new ObjectDependencyError(400);
+	}
+	const status = await replication.uploadWithAuthority(
+		profileId,
+		sha256,
+		bytes,
+		{
+			authorize: async () => {
+				const again = await authority.authorizeFolderUpload(environmentId, actor, intent, sha256, length);
+				if (again.profileId !== profileId) throw new ObjectDependencyError(403);
+			},
+			confirm: () => authority.confirmFolderObject(environmentId, actor, intent, sha256, length),
 		},
-		confirm: () => authority.confirmFolderObject(environmentId, actor, intent, sha256, length),
-	});
+		verified,
+	);
 	response.writeHead(status === "stored" ? 201 : 200, {
 		"cache-control": "no-store",
 		"content-type": "application/json",

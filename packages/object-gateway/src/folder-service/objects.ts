@@ -5,7 +5,7 @@ import { resolve, sep } from "node:path";
 import { isUuid, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import type { TreeEntry } from "./view-tree.ts";
 
-const CHUNK_BYTES = 4 * 1024 * 1024;
+export const CHUNK_BYTES = 4 * 1024 * 1024;
 const MAX_CHUNKS = 64;
 const MAX_MANIFEST_BYTES = 32 * 1024;
 
@@ -134,6 +134,14 @@ class ByteCache {
 		return this.#bytes;
 	}
 
+	get max(): number {
+		return this.#max;
+	}
+
+	has(key: string): boolean {
+		return this.#items.has(key);
+	}
+
 	get(key: string): Buffer | undefined {
 		const value = this.#items.get(key);
 		if (value) {
@@ -196,6 +204,29 @@ export class NasObjects {
 
 	get cachedBytes(): number {
 		return this.#cache.bytes;
+	}
+
+	get maxCacheBytes(): number {
+		return this.#cache.max;
+	}
+
+	has(profileId: string, sha256: string): boolean {
+		return this.#cache.has(`${profileId}/${sha256}`);
+	}
+
+	put(profileId: string, sha256: string, bytes: Uint8Array): void {
+		if (!isUuid(profileId) || !SHA256_HEX_PATTERN.test(sha256))
+			throw new ObjectIntegrityError("Object identity is invalid");
+		if (bytes.byteLength < 1 || bytes.byteLength > CHUNK_BYTES)
+			throw new ObjectIntegrityError("Object has the wrong size");
+		if (digest(bytes) !== sha256) throw new ObjectIntegrityError("Object failed its hash check");
+		if (bytes.byteLength > this.#cache.max) return;
+		const key = `${profileId}/${sha256}`;
+		if (this.#cache.get(key)) return;
+		// WHY: unpooled Buffer avoids pinning large socket frame slabs and insulates cached bytes from caller mutation.
+		const copy = Buffer.allocUnsafeSlow(bytes.byteLength);
+		copy.set(bytes);
+		this.#cache.set(key, copy);
 	}
 
 	/** `length` bytes of a file from `offset` (fewer at its end). */
@@ -284,7 +315,11 @@ export class NasObjects {
 	#object(profileId: string, hash: string, maximum: number, exact?: number): Promise<Buffer> {
 		const key = `${profileId}/${hash}`;
 		const cached = this.#cache.get(key);
-		if (cached) return Promise.resolve(cached);
+		if (cached) {
+			if (cached.byteLength > maximum || (exact !== undefined && cached.byteLength !== exact))
+				return Promise.reject(new ObjectIntegrityError("Object has the wrong size"));
+			return Promise.resolve(cached);
+		}
 		let pending = this.#pending.get(key);
 		if (!pending) {
 			const created = this.#turn(() => this.#load(profileId, hash, maximum, exact));

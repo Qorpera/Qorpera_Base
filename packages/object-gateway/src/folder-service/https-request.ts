@@ -1,6 +1,13 @@
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 
+export class ResponseTooLargeError extends Error {
+	constructor() {
+		super("The answer is too large");
+		this.name = "ResponseTooLargeError";
+	}
+}
+
 export interface BufferedResponse {
 	readonly status: number;
 	readonly body: Buffer;
@@ -37,7 +44,7 @@ export const nodeRequest: Transport = (url, init, maxBytes, signal) =>
 				let bytes = 0;
 				response.on("data", (chunk: Buffer) => {
 					bytes += chunk.byteLength;
-					if (bytes > maxBytes) response.destroy(new Error("The answer is too large"));
+					if (bytes > maxBytes) response.destroy(new ResponseTooLargeError());
 					else chunks.push(chunk);
 				});
 				response.once("error", reject);

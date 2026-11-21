@@ -128,6 +128,10 @@ export const LIMITS = Object.freeze({
 });
 
 const NEAR_SHARE = 0.8;
+const COUNT_SMALL_PAGES = 64;
+const COUNT_BATCH_SIZE = 32;
+const COUNT_BATCH_MAX_MS = 250;
+const DESCRIBE_CONCURRENCY = 4;
 const ROW_TEXT =
 	"; set local intervalstyle = 'postgres'; set local extra_float_digits = 1; set local bytea_output = 'hex'; set local lc_monetary = 'C'";
 const SEEN = (row) => `pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(${row}::text, 'UTF8')), 'hex')`;
@@ -468,6 +472,25 @@ const isoNow = () => {
 	return cachedIsoText;
 };
 const EMPTY_VALUES = Object.freeze([]);
+
+async function mapBounded(items, concurrency, work) {
+	if (items.length === 0) return [];
+	if (items.length === 1 || concurrency <= 1) {
+		const out = [];
+		for (let i = 0; i < items.length; i++) out.push(await work(items[i], i));
+		return out;
+	}
+	const results = new Array(items.length);
+	let cursor = 0;
+	const worker = async () => {
+		while (cursor < items.length) {
+			const index = cursor++;
+			results[index] = await work(items[index], index);
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+	return results;
+}
 const amount = (bytes) =>
 	bytes % 1024 ** 3 === 0 ? `${bytes / 1024 ** 3} GiB` : bytes % 1024 ** 2 === 0 ? `${bytes / 1024 ** 2} MiB` : `${bytes} bytes`;
 const quoted = (name) => `"${name.replace(/"/g, '""')}"`;
@@ -1018,34 +1041,76 @@ export class Gateway {
 		return found;
 	}
 
+	#cacheText(hash, text) {
+		if (this.#texts.size >= 5_000) this.#texts.delete(this.#texts.keys().next().value);
+		this.#texts.set(hash, text);
+	}
+
+	async #textsFor(database, hashes, supplied, maximum) {
+		const found = new Map();
+		const toSelect = [];
+		const toInsertHashes = [];
+		const toInsertTexts = [];
+		const seen = new Set();
+		for (const hash of hashes) {
+			if (seen.has(hash)) continue;
+			seen.add(hash);
+			const kept = this.#texts.get(hash);
+			if (kept !== undefined) {
+				found.set(hash, kept);
+				continue;
+			}
+			const given = supplied?.[hash];
+			if (typeof given === "string" && Buffer.byteLength(given) <= maximum && sha256(given) === hash) {
+				found.set(hash, given);
+				this.#cacheText(hash, given);
+				if (database !== null) {
+					toInsertHashes.push(hash);
+					toInsertTexts.push(given);
+				}
+			} else if (database !== null) {
+				toSelect.push(hash);
+			}
+		}
+		if (database !== null && (toSelect.length > 0 || toInsertHashes.length > 0)) {
+			const pool = this.#pool(database, "qorpera_data_keeper");
+			const tasks = [];
+			if (toSelect.length > 0) {
+				tasks.push(
+					pool
+						.query("select sha256, text from qorpera_data.texts where sha256 = any($1::text[])", [toSelect])
+						.then((result) => {
+							for (const row of result.rows) {
+								if (typeof row.text === "string" && sha256(row.text) === row.sha256) {
+									found.set(row.sha256, row.text);
+									this.#cacheText(row.sha256, row.text);
+								}
+							}
+						})
+						.catch((error) => {
+							throw storeProblem(error);
+						}),
+				);
+			}
+			if (toInsertHashes.length > 0) {
+				tasks.push(
+					pool
+						.query(
+							"insert into qorpera_data.texts (sha256, text) select * from unnest($1::text[], $2::text[]) on conflict (sha256) do nothing",
+							[toInsertHashes, toInsertTexts],
+						)
+						.catch(() => undefined),
+				);
+			}
+			await Promise.all(tasks);
+		}
+		return found;
+	}
+
 	/** A text by the hash the folder gave: from what the gateway holds, from the company's database, or from the caller.
 	 * `database` null: the company has no database yet, so only what the gateway holds and what the caller gives. */
 	async #text(database, hash, supplied, maximum) {
-		const kept = this.#texts.get(hash);
-		if (kept !== undefined) return kept;
-		let text = null;
-		const given = supplied?.[hash];
-		if (typeof given === "string" && Buffer.byteLength(given) <= maximum && sha256(given) === hash) text = given;
-		if (database !== null) {
-			const pool = this.#pool(database, "qorpera_data_keeper");
-			if (text === null) {
-				const row = await pool.query("select text from qorpera_data.texts where sha256 = $1", [hash]).catch((error) => {
-					throw storeProblem(error);
-				});
-				// A kept text is trusted only by its hash, read again here.
-				if (row.rows[0] && sha256(row.rows[0].text) === hash) text = row.rows[0].text;
-			} else {
-				await pool
-					.query("insert into qorpera_data.texts (sha256, text) values ($1, $2) on conflict (sha256) do nothing", [hash, text])
-					.catch(() => undefined);
-			}
-		}
-		// Kept in memory also before the company has a database, so a describe whose texts come in several rounds ends.
-		if (text !== null) {
-			if (this.#texts.size >= 5_000) this.#texts.delete(this.#texts.keys().next().value);
-			this.#texts.set(hash, text);
-		}
-		return text;
+		return (await this.#textsFor(database, [hash], supplied, maximum)).get(hash) ?? null;
 	}
 
 	async #folder(database, name) {
@@ -1621,23 +1686,25 @@ export class Gateway {
 			this.#listedPage(caller, environmentId, `${root}/queries`, 1000),
 			changes ? this.#listed(caller, environmentId, `${root}/actions`, 1000) : [],
 		]);
+		const queryFiles = questions.files.filter((file) => file.name.endsWith(".sql"));
+		const actionFiles = actions.filter((file) => file.name.endsWith(".sql"));
+		const hashes = [];
+		const maxBytes = this.#limits.questionTextBytes;
+		if (toml.bytes <= maxBytes) hashes.push(toml.sha256);
+		for (const file of queryFiles) if (file.bytes <= maxBytes) hashes.push(file.sha256);
+		for (const file of actionFiles) if (file.bytes <= maxBytes) hashes.push(file.sha256);
+		const resolved = await this.#textsFor(database, hashes, texts, maxBytes);
 		const need = [];
-		const read = async (path, file) => {
-			if (file.bytes > this.#limits.questionTextBytes) return null;
-			const text = await this.#text(database, file.sha256, texts, this.#limits.questionTextBytes);
+		const read = (path, file) => {
+			if (file.bytes > maxBytes) return null;
+			const text = resolved.get(file.sha256) ?? null;
 			if (text === null) need.push({ path, sha256: file.sha256 });
 			return text;
 		};
-		const each = (folder, files) =>
-			Promise.all(
-				files
-					.filter((file) => file.name.endsWith(".sql"))
-					.map(async (file) => ({ name: file.name.slice(0, -4), text: await read(`${root}/${folder}/${file.name}`, file) })),
-			);
 		const found = {
-			toml: await read(`${root}/database.toml`, toml),
-			questions: await each("queries", questions.files),
-			changes: await each("actions", actions),
+			toml: read(`${root}/database.toml`, toml),
+			questions: queryFiles.map((file) => ({ name: file.name.slice(0, -4), text: read(`${root}/queries/${file.name}`, file) })),
+			changes: actionFiles.map((file) => ({ name: file.name.slice(0, -4), text: read(`${root}/actions/${file.name}`, file) })),
 			cut: questions.more,
 		};
 		return need.length > 0 ? { need } : found;
@@ -2774,8 +2841,14 @@ export class Gateway {
 		}
 		const need = [];
 		const texts = new Map();
+		const resolved = await this.#textsFor(
+			database,
+			waiting.map((step) => step.sha256),
+			body.texts,
+			this.#limits.stepTextBytes,
+		);
 		for (const step of waiting) {
-			const text = await this.#text(database, step.sha256, body.texts, this.#limits.stepTextBytes);
+			const text = resolved.get(step.sha256) ?? null;
 			if (text === null) need.push({ path: `${root}/tables/${step.name}.sql`, sha256: step.sha256 });
 			else texts.set(step.name, text);
 		}
@@ -2911,33 +2984,38 @@ export class Gateway {
 		if (asked !== null && readable.length === 0) refuse(404, `No database ${asked} that you may read`);
 		const database = companyDatabase(environmentId);
 		const exists = await this.#companyExists(database);
+		const folderResults = await mapBounded(readable, DESCRIBE_CONCURRENCY, (name) =>
+			this.#folderFiles(caller, environmentId, name, body.texts, exists ? database : null, tomls.get(`data/${name}/database.toml`)),
+		);
 		const found = [];
 		const need = [];
-		for (const name of readable) {
-			const files = await this.#folderFiles(caller, environmentId, name, body.texts, exists ? database : null, tomls.get(`data/${name}/database.toml`));
+		for (let i = 0; i < readable.length; i++) {
+			const files = folderResults[i];
 			if (files.need) need.push(...files.need);
-			else found.push([name, files]);
+			else found.push([readable[i], files]);
 		}
 		if (need.length > 0) return { need };
 		const countUntil = Date.now() + this.#limits.countMs;
-		const databases = [];
-		for (const [name, files] of found) {
-			const write = await this.#mayWrite(caller, environmentId, name);
-			const list = write || listMembers(files.toml, files.questions.map((question) => question.text), files.cut) === "readers";
-			const n = list && exists ? await this.#folder(database, name) : null;
-			const stored = n === null ? { applied: [], tables: [] } : await this.#stored(database, name, n, countUntil);
-			databases.push({
-				database: name,
-				name: tomlWord(files.toml, "name"),
-				about: tomlWord(files.toml, "about"),
-				write,
-				list,
-				...(list ? { applied: stored.applied.map((step) => ({ name: step.name, at: step.at })), tables: stored.tables } : {}),
-				questions: namedFiles(files.questions),
-				changes: namedFiles(files.changes),
-			});
-		}
-		return { databases, companyBytes: exists ? await this.#ownBytes(database) : 0, limitBytes: this.#limits.companyBytes };
+		const [databases, companyBytes] = await Promise.all([
+			mapBounded(found, DESCRIBE_CONCURRENCY, async ([name, files]) => {
+				const write = await this.#mayWrite(caller, environmentId, name);
+				const list = write || listMembers(files.toml, files.questions.map((question) => question.text), files.cut) === "readers";
+				const n = list && exists ? await this.#folder(database, name) : null;
+				const stored = n === null ? { applied: [], tables: [] } : await this.#stored(database, name, n, countUntil);
+				return {
+					database: name,
+					name: tomlWord(files.toml, "name"),
+					about: tomlWord(files.toml, "about"),
+					write,
+					list,
+					...(list ? { applied: stored.applied.map((step) => ({ name: step.name, at: step.at })), tables: stored.tables } : {}),
+					questions: namedFiles(files.questions),
+					changes: namedFiles(files.changes),
+				};
+			}),
+			exists ? this.#ownBytes(database) : 0,
+		]);
+		return { databases, companyBytes, limitBytes: this.#limits.companyBytes };
 	}
 
 	async #ownBytes(database) {
@@ -2949,13 +3027,6 @@ export class Gateway {
 		return Number(size.rows[0].bytes);
 	}
 
-	/** A database folder's applied steps (with their hashes), tables and columns, and the company database's size.
-	 * A table's `rows` are counted now, as the folder's read role `n`, while the time until `until` lasts (`#count`):
-	 * `rows` is never a guess. One that was not counted carries PostgreSQL's own estimate as `rowsAbout` when it has
-	 * one, under a name of its own so that nothing that passes `rows` on can pass a guess for a count (an agent's
-	 * shorter describe keeps a table's name, `rows` and columns). It carries neither when PostgreSQL has none: the
-	 * estimate is unset until a table is first analysed, and autovacuum leaves a table of a few rows alone, so on its
-	 * own it said 0 for a small table that held rows. */
 	async #stored(database, name, n, until) {
 		const pool = this.#pool(database, "qorpera_data_keeper");
 		const [steps, columns] = await Promise.all([
@@ -3000,25 +3071,107 @@ export class Gateway {
 		};
 	}
 
-	/** Counts the rows of a database folder's `tables` (`counted`), each as a question of its own: the folder's read
-	 * role, a read-only transaction, a question's time at most. Tables and materialized views go first, the ones
-	 * PostgreSQL holds as smallest before the others, then partitioned tables, then views, whose count runs their own
-	 * statement. Every count is over by `until`, its wait for one of the read role's connections included, and
-	 * nothing is started after it. A count that ran out of time, found no connection free or was refused leaves its
-	 * table uncounted: a describe is never refused over a count. The table is named with its schema: a name alone
-	 * would find a catalog relation of the same name first (`pg_tables`), whatever the search path. */
 	async #count(database, name, n, tables, until) {
+		if (tables.length === 0 || until - Date.now() < 1) return;
 		const rank = (table) => (table.kind === "v" ? 2 : table.kind === "p" ? 1 : 0);
 		const order = [...tables].sort((a, b) => rank(a) - rank(b) || a.pages - b.pages || (a.name < b.name ? -1 : 1));
-		for (const table of order) {
+		let client;
+		try {
+			client = await inTime(this.#pool(database, `${database}_r${n}`).connect(), until);
+		} catch (error) {
+			if (storeProblem(error) instanceof Refusal) return;
+			throw error;
+		}
+		let lost;
+		try {
 			if (until - Date.now() < 1) return;
-			const sql = `select count(*) from ${quoted(name)}.${quoted(table.name)}`;
-			const answer = await this.#ask({ database, name, n, sql, values: [] }, { until }).catch((error) => {
-				if (error instanceof Refusal) return null;
-				throw error;
-			});
-			const rows = Number(answer?.rows[0]?.[0]);
-			if (answer && Number.isSafeInteger(rows) && rows >= 0) table.counted = rows;
+			await client.query(
+				`begin transaction read only; set local timezone = 'UTC'; set local datestyle = 'ISO'; set local search_path = ${quoted(name)}`,
+			);
+			const isFatal = (error) => !error?.code || /^(57P0[123]|08...)$/.test(error.code);
+			const countOne = async (table) => {
+				const left = until - Date.now();
+				if (left < 1) return false;
+				const limit = Math.max(1, Math.floor(Math.min(this.#limits.questionMs, left)));
+				await client.query(`savepoint qorpera_count; set local statement_timeout = ${limit}; set local lock_timeout = 0`);
+				try {
+					const answer = await client.query({
+						text: `select count(*) from ${quoted(name)}.${quoted(table.name)}`,
+						rowMode: "array",
+						types: TEXT_TYPES,
+					});
+					await client.query("release savepoint qorpera_count");
+					const rows = Number(answer.rows[0]?.[0]);
+					if (Number.isSafeInteger(rows) && rows >= 0) table.counted = rows;
+					return true;
+				} catch (error) {
+					if (isFatal(error)) {
+						lost = error;
+						return false;
+					}
+					await client.query("rollback to savepoint qorpera_count; release savepoint qorpera_count");
+					return true;
+				}
+			};
+			let idx = 0;
+			while (idx < order.length && until - Date.now() >= 1) {
+				if (order[idx].kind === "r" && order[idx].pages <= COUNT_SMALL_PAGES) {
+					const batch = [];
+					while (
+						idx < order.length &&
+						batch.length < COUNT_BATCH_SIZE &&
+						order[idx].kind === "r" &&
+						order[idx].pages <= COUNT_SMALL_PAGES
+					) {
+						batch.push(order[idx++]);
+					}
+					if (batch.length === 1) {
+						if (!(await countOne(batch[0]))) break;
+						continue;
+					}
+					const left = until - Date.now();
+					if (left < 1) break;
+					const batchLimit = Math.max(1, Math.floor(Math.min(this.#limits.questionMs, left / 2, COUNT_BATCH_MAX_MS)));
+					await client.query(
+						`savepoint qorpera_count; set local statement_timeout = ${batchLimit}; set local lock_timeout = ${batchLimit}`,
+					);
+					try {
+						const answer = await client.query({
+							text: `select ${batch.map((table) => `(select count(*) from ${quoted(name)}.${quoted(table.name)})`).join(", ")}`,
+							rowMode: "array",
+							types: TEXT_TYPES,
+						});
+						await client.query("release savepoint qorpera_count");
+						const row = answer.rows[0];
+						for (let i = 0; i < batch.length; i++) {
+							const rows = Number(row?.[i]);
+							if (Number.isSafeInteger(rows) && rows >= 0) batch[i].counted = rows;
+						}
+					} catch (error) {
+						if (isFatal(error)) {
+							lost = error;
+							break;
+						}
+						await client.query("rollback to savepoint qorpera_count; release savepoint qorpera_count");
+						let keepGoing = true;
+						for (const table of batch) {
+							if (!(await countOne(table))) {
+								keepGoing = false;
+								break;
+							}
+						}
+						if (!keepGoing) break;
+					}
+				} else {
+					if (!(await countOne(order[idx++]))) break;
+				}
+			}
+			if (!lost) await client.query("rollback").catch(() => undefined);
+		} catch (error) {
+			if (error?.code && !/^(57P0[123]|08...)$/.test(error.code)) await client.query("rollback").catch(() => undefined);
+			else lost = error;
+		} finally {
+			this.#release(client, lost);
 		}
 	}
 
@@ -3047,68 +3200,77 @@ export class Gateway {
 		const wanted = (asked === null ? names : [asked]).sort();
 		const database = companyDatabase(environmentId);
 		const exists = await this.#companyExists(database);
-		const texts = new Map();
-		const need = [];
+		const wantedFiles = [];
 		for (const name of wanted) {
 			for (const [path, file] of caller.files) {
 				const within = path.startsWith(`data/${name}/`) ? path.slice(`data/${name}/`.length) : "";
 				if (within !== "database.toml" && !/^(queries|actions)\/[^/]+\.sql$/.test(within)) continue;
 				if (file.bytes > this.#limits.questionTextBytes) continue;
-				const text = await this.#text(exists ? database : null, file.sha256, body.texts, this.#limits.questionTextBytes);
-				if (text === null) need.push({ path, sha256: file.sha256 });
-				else texts.set(path, text);
+				wantedFiles.push({ path, sha256: file.sha256 });
 			}
 		}
+		const resolvedTexts = await this.#textsFor(
+			exists ? database : null,
+			wantedFiles.map((item) => item.sha256),
+			body.texts,
+			this.#limits.questionTextBytes,
+		);
+		const texts = new Map();
+		const need = [];
+		for (const item of wantedFiles) {
+			const text = resolvedTexts.get(item.sha256) ?? null;
+			if (text === null) need.push(item);
+			else texts.set(item.path, text);
+		}
 		if (need.length > 0) return { need };
-		const databases = [];
-		let companyBytes = 0;
-		if (exists)
-			companyBytes = await this.#ownBytes(database);
 		// One call's counts share one time, however many databases it shows.
 		const countUntil = Date.now() + this.#limits.countMs;
-		for (const name of wanted) {
-			const n = exists ? await this.#folder(database, name) : null;
-			const stored = n === null ? { applied: [], tables: [] } : await this.#stored(database, name, n, countUntil);
-			const root = `data/${name}`;
-			const steps = [...caller.files]
-				.filter(([path]) => path.startsWith(`${root}/tables/`) && path.endsWith(".sql"))
-				.map(([path, file]) => ({ name: path.slice(`${root}/tables/`.length, -4), sha256: file.sha256 }))
-				.sort((a, b) => (a.name < b.name ? -1 : 1));
-			const live = new Map(steps.map((step) => [step.name, step.sha256]));
-			const applied = new Map(stored.applied.map((step) => [step.name, step]));
-			const toml = texts.get(`${root}/database.toml`) ?? "";
-			// A question's or a change's words, and its parameters when it reads as one statement; a file larger than one
-			// may be has neither.
-			const named = (folder) =>
-				[...caller.files]
-					// The files directly in the folder, as their texts were asked for: one in a folder below is no question.
-					.filter(([path]) => path.startsWith(`${root}/${folder}/`) && /^[^/]+\.sql$/.test(path.slice(`${root}/${folder}/`.length)))
-					.map(([path]) => {
-						const text = texts.get(path);
-						const statement = text === undefined ? null : readStatement(text);
-						return {
-							name: path.slice(`${root}/${folder}/`.length, -4),
-							words: text === undefined ? null : leadingWords(text).join(" "),
-							parameters: statement?.ok ? statement.parameters : null,
-							...(statement && !statement.ok ? { problem: statement.problem } : {}),
-						};
-					})
+		const [companyBytes, databases] = await Promise.all([
+			exists ? this.#ownBytes(database) : 0,
+			mapBounded(wanted, DESCRIBE_CONCURRENCY, async (name) => {
+				const n = exists ? await this.#folder(database, name) : null;
+				const stored = n === null ? { applied: [], tables: [] } : await this.#stored(database, name, n, countUntil);
+				const root = `data/${name}`;
+				const steps = [...caller.files]
+					.filter(([path]) => path.startsWith(`${root}/tables/`) && path.endsWith(".sql"))
+					.map(([path, file]) => ({ name: path.slice(`${root}/tables/`.length, -4), sha256: file.sha256 }))
 					.sort((a, b) => (a.name < b.name ? -1 : 1));
-			databases.push({
-				database: name,
-				name: tomlWord(toml, "name"),
-				about: tomlWord(toml, "about"),
-				steps: {
-					applied: stored.applied.filter((step) => live.get(step.name) === step.sha256).map((step) => ({ name: step.name, at: step.at })),
-					waiting: steps.filter((step) => !applied.has(step.name)).map((step) => step.name),
-					changed: stored.applied.filter((step) => live.has(step.name) && live.get(step.name) !== step.sha256).map((step) => step.name),
-					missing: stored.applied.filter((step) => !live.has(step.name)).map((step) => step.name),
-				},
-				tables: stored.tables,
-				questions: named("queries"),
-				changes: named("actions"),
-			});
-		}
+				const live = new Map(steps.map((step) => [step.name, step.sha256]));
+				const applied = new Map(stored.applied.map((step) => [step.name, step]));
+				const toml = texts.get(`${root}/database.toml`) ?? "";
+				// A question's or a change's words, and its parameters when it reads as one statement; a file larger than one
+				// may be has neither.
+				const named = (folder) =>
+					[...caller.files]
+						// The files directly in the folder, as their texts were asked for: one in a folder below is no question.
+						.filter(([path]) => path.startsWith(`${root}/${folder}/`) && /^[^/]+\.sql$/.test(path.slice(`${root}/${folder}/`.length)))
+						.map(([path]) => {
+							const text = texts.get(path);
+							const statement = text === undefined ? null : readStatement(text);
+							return {
+								name: path.slice(`${root}/${folder}/`.length, -4),
+								words: text === undefined ? null : leadingWords(text).join(" "),
+								parameters: statement?.ok ? statement.parameters : null,
+								...(statement && !statement.ok ? { problem: statement.problem } : {}),
+							};
+						})
+						.sort((a, b) => (a.name < b.name ? -1 : 1));
+				return {
+					database: name,
+					name: tomlWord(toml, "name"),
+					about: tomlWord(toml, "about"),
+					steps: {
+						applied: stored.applied.filter((step) => live.get(step.name) === step.sha256).map((step) => ({ name: step.name, at: step.at })),
+						waiting: steps.filter((step) => !applied.has(step.name)).map((step) => step.name),
+						changed: stored.applied.filter((step) => live.has(step.name) && live.get(step.name) !== step.sha256).map((step) => step.name),
+						missing: stored.applied.filter((step) => !live.has(step.name)).map((step) => step.name),
+					},
+					tables: stored.tables,
+					questions: named("queries"),
+					changes: named("actions"),
+				};
+			}),
+		]);
 		return { databases, companyBytes, limitBytes: this.#limits.companyBytes };
 	}
 
@@ -3155,13 +3317,17 @@ export class Gateway {
 			);
 			const near = [];
 			const full = new Set();
-			for (const row of sizes.rows) {
-				const whole = Number(row.bytes);
-				if (whole < NEAR_SHARE * this.#limits.companyBytes) continue;
-				const record = await this.#pool(row.database, "qorpera_data_keeper")
+			const candidates = sizes.rows.filter((row) => Number(row.bytes) >= NEAR_SHARE * this.#limits.companyBytes);
+			const records = await mapBounded(candidates, DESCRIBE_CONCURRENCY, (row) =>
+				this.#pool(row.database, "qorpera_data_keeper")
 					.query(`select ${RECORD_SIZE} as bytes`)
 					.then((answer) => Number(answer.rows[0].bytes))
-					.catch(() => 0);
+					.catch(() => 0),
+			);
+			for (let i = 0; i < candidates.length; i++) {
+				const row = candidates[i];
+				const whole = Number(row.bytes);
+				const record = records[i];
 				if (whole - record >= NEAR_SHARE * this.#limits.companyBytes) near.push(row.database);
 				if (whole - record >= this.#limits.companyBytes) full.add(row.database);
 			}
@@ -3183,23 +3349,32 @@ export class Gateway {
 	async #settle(databases) {
 		const now = Date.now();
 		const unforgotten = [];
-		for (const database of databases) {
-			const sweep = now - (this.#swept.get(database) ?? Number.NEGATIVE_INFINITY) >= this.#limits.sweepMs;
-			const waiting = [...(this.#unsettled.get(database) ?? [])];
-			if (!sweep && waiting.length === 0) continue;
+		const active = databases
+			.map((database) => ({
+				database,
+				sweep: now - (this.#swept.get(database) ?? Number.NEGATIVE_INFINITY) >= this.#limits.sweepMs,
+				waiting: [...(this.#unsettled.get(database) ?? [])],
+			}))
+			.filter((entry) => entry.sweep || entry.waiting.length > 0);
+		const results = await mapBounded(active, DESCRIBE_CONCURRENCY, async ({ database, sweep, waiting }) => {
 			const keeper = this.#pool(database, "qorpera_data_keeper");
+			let forgotFailed = false;
 			const looked = await keeper
 				.query(SETTLE, [sweep ? null : waiting])
 				.then(async (answer) => {
 					if (sweep) {
 						await keeper.query(FORGET, [this.#limits.recordDays]).catch((error) => {
-							if (error?.code !== "42883") unforgotten.push(database);
+							if (error?.code !== "42883") forgotFailed = true;
 						});
 						await keeper.query(UNROWED);
 					}
 					return answer;
 				})
 				.catch(() => null);
+			return { database, sweep, waiting, looked, forgotFailed };
+		});
+		for (const { database, sweep, waiting, looked, forgotFailed } of results) {
+			if (forgotFailed) unforgotten.push(database);
 			if (looked === null) continue;
 			if (sweep) this.#swept.set(database, now);
 			const running = new Set(looked.rows.map((line) => line.txid));
@@ -3209,7 +3384,8 @@ export class Gateway {
 			if (unsettled.size === 0) this.#unsettled.delete(database);
 			else this.#unsettled.set(database, unsettled);
 		}
-		for (const known of [this.#unsettled, this.#swept]) for (const database of known.keys()) if (!databases.includes(database)) known.delete(database);
+		const live = new Set(databases);
+		for (const known of [this.#unsettled, this.#swept]) for (const database of known.keys()) if (!live.has(database)) known.delete(database);
 		return unforgotten;
 	}
 
