@@ -14,11 +14,12 @@ import {
 	symlink,
 	writeFile,
 } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { buildRelease } from "./make-release.mjs";
-import { NodeAgent, readReleaseKeys, roleChanged, withNodeLock } from "./qorpera-node-agent.mjs";
+import { NodeAgent, nodePorts, readReleaseKeys, roleChanged, withNodeLock } from "./qorpera-node-agent.mjs";
 
 const keys = generateKeyPairSync("ed25519");
 const privatePem = keys.privateKey.export({ type: "pkcs8", format: "pem" });
@@ -772,5 +773,70 @@ test("the installer refuses a key that would make a ninth, counting the legacy k
 		assert.equal(await setSize(seven, "not a key\n", "h"), 9);
 	} finally {
 		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("status checks multiple roles concurrently", async () => {
+	const root = await mkdtemp(join(tmpdir(), "qorpera-node-agent-status-"));
+	try {
+		await mkdir(join(root, "etc/qorpera-node/keys"), { recursive: true });
+		await writeFile(join(root, "etc/qorpera-node/keys/release.pem"), publicPem);
+		await chmod(join(root, "etc/qorpera-node/keys"), 0o755);
+		await chmod(join(root, "etc/qorpera-node/keys/release.pem"), 0o444);
+		await writeFile(
+			join(root, "etc/qorpera-node/node.json"),
+			JSON.stringify({
+				schema: "qorpera.node/v1",
+				restartOrder: ["provider", "orchestrator"],
+				pauseDeferredRoles: ["orchestrator"],
+				roles: {
+					provider: { unit: UNITS.provider, exec: ["/usr/bin/node"], health: ["http://p/healthz"] },
+					orchestrator: { unit: UNITS.orchestrator, exec: ["/usr/bin/node"], health: ["http://o/healthz"] },
+				},
+			}),
+		);
+		let inFlight = 0;
+		let bothEntered;
+		const barrier = new Promise((resolve) => {
+			bothEntered = resolve;
+		});
+		const ports = {
+			mainPid: async () => 123,
+			cmdline: async () => ["/usr/bin/node"],
+			healthy: async () => {
+				inFlight++;
+				if (inFlight === 2) bothEntered();
+				await Promise.race([
+					barrier,
+					new Promise((_, reject) => setTimeout(() => reject(new Error("sequential status deadlock")), 1500)),
+				]);
+				return true;
+			},
+		};
+		const agent = new NodeAgent({ root, ports, owner: null });
+		const report = await agent.status();
+		assert.deepEqual(report.roles.provider.healthy, [true]);
+		assert.deepEqual(report.roles.orchestrator.healthy, [true]);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("nodePorts lxdGet rejects truncated Unix socket responses cleanly", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "qorpera-node-lxd-"));
+	const sock = join(dir, "lxd.sock");
+	const server = createServer((socket) => {
+		socket.once("data", () => {
+			socket.write("HTTP/1.1 200 OK\r\nContent-Length: 500\r\n\r\n{\"metadata\":");
+			socket.destroy();
+		});
+	});
+	await new Promise((resolve) => server.listen(sock, resolve));
+	try {
+		const ports = nodePorts(sock);
+		await assert.rejects(() => ports.instances(), /aborted|truncated|JSON/i);
+	} finally {
+		await new Promise((resolve) => server.close(resolve));
+		await rm(dir, { recursive: true, force: true });
 	}
 });

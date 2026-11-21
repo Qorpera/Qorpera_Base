@@ -365,20 +365,30 @@ export async function followUpMemberCommit(
 	signal: AbortSignal,
 	timeMs = FOLLOW_UP_MS,
 ): Promise<number> {
-	const budget = AbortSignal.any([signal, AbortSignal.timeout(timeMs)]);
+	const controller = new AbortController();
+	const onAbort = () => controller.abort(signal.reason);
+	if (signal.aborted) controller.abort(signal.reason);
+	else signal.addEventListener("abort", onAbort, { once: true });
+	const timer = setTimeout(
+		() => controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+		timeMs,
+	);
 	let calls = 0;
 	try {
-		while (calls < MAX_FOLLOW_UPS && !budget.aborted) {
+		while (calls < MAX_FOLLOW_UPS && !controller.signal.aborted) {
 			calls++;
 			const answer = (await authority.publisher(
 				"qorpera_folder_follow_up_commit",
 				{ p_environment_id: environmentId, p_commit_id: commitId },
-				budget,
+				controller.signal,
 			)) as { schema?: unknown; more?: unknown } | null;
 			if (answer?.schema !== "qorpera.folder-follow-up/v1" || answer.more !== true) break;
 		}
 	} catch {
 		/* Best effort: the core's own step follows the commit up. */
+	} finally {
+		clearTimeout(timer);
+		signal.removeEventListener("abort", onAbort);
 	}
 	return calls;
 }

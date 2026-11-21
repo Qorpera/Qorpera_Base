@@ -922,4 +922,23 @@ describe("capturing an MCP sign-in", () => {
 			expect(f.completeCapture).not.toHaveBeenCalled();
 		}
 	});
+
+	it("keeps server requestTimeout disabled so streaming MCP and git relays are not cut off at 15 s", async () => {
+		const f = await fixture();
+		f.answer((_req, reply) => {
+			reply.writeHead(200, { "content-type": "application/json" });
+			reply.end(JSON.stringify({ ok: true }));
+		});
+		const service = services.at(-1)!;
+		expect(service.requestTimeout).toBe(0);
+		const payload = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" });
+		const res = await f.call("/v1/coding-mcp", {
+			method: "POST",
+			headers: { ...mcpHeaders(), "content-type": "application/json" },
+			body: payload,
+		});
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ ok: true });
+		expect(f.seen.at(-1)?.body.toString("utf8")).toBe(payload);
+	});
 });
