@@ -368,9 +368,11 @@ describe("updates in a run's context and instructions", () => {
 
 	it("opens the planning run with the reflection, only for a run that can record it", () => {
 		const planning = compile("cofounder", routine, ["record_reflection", "company_read"]);
-		expect(planning).toContain(`# Your planning run\n${SENTENCE}, the platform the company runs on has changed`);
+		expect(planning).toContain(`# Your planning run\n${SENTENCE}, the platform has changed`);
 		expect(planning.split(SENTENCE)).toHaveLength(2);
-		expect(planning.indexOf(SENTENCE)).toBeLessThan(planning.indexOf("In a planning run, read the vision"));
+		expect(planning.indexOf(SENTENCE)).toBeLessThan(
+			planning.indexOf("Read the vision, the plan, every agent's agent.md"),
+		);
 		expect(compile("cofounder", routine, ["company_read"])).not.toContain(SENTENCE);
 		expect(compile("cofounder", wake("human", "input", "required"), ["record_reflection"])).not.toContain(SENTENCE);
 		expect(compile("employee", routine, ["record_reflection"])).not.toContain(SENTENCE);
