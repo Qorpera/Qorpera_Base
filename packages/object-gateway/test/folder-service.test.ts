@@ -1481,7 +1481,7 @@ describe("SupabaseFolderCore paging and oversized fallback", () => {
 		).rejects.toBeInstanceOf(ResponseTooLargeError);
 	});
 
-	it("decodes fragmented and multi-frame streams in FrameReader without retaining large slabs for tiny tails", () => {
+	it("decodes fragmented and multi-frame streams in FrameReader without retaining large slabs or unbounded chunk wrappers", () => {
 		const reader = new FrameReader();
 		const bigPayload = Buffer.alloc(512 * 1024, 0x37);
 		const bigFrame = encodeFrame(Kind.data, bigPayload);
@@ -1492,16 +1492,38 @@ describe("SupabaseFolderCore paging and oversized fallback", () => {
 		expect(decoded).toHaveLength(1);
 		expect(decoded[0]!.kind).toBe(Kind.data);
 		expect(decoded[0]!.payload.equals(bigPayload)).toBe(true);
+		expect(reader.allocatedBytes).toBe(0);
 
-		const batch = Buffer.concat(Array.from({ length: 100 }, (_, i) => encodeJson(Kind.list, { path: `d/${i}` })));
+		const slabReader = new FrameReader();
+		const filler = encodeFrame(Kind.data, Buffer.alloc(10_000, 0x22));
 		const tailFrame = encodeFrame(Kind.data, Buffer.from("tail-ok"));
-		const combined = Buffer.concat([batch, tailFrame.subarray(0, 6)]);
-		const fromBatch = reader.push(combined);
-		expect(fromBatch).toHaveLength(100);
-		expect(reader.push(Buffer.alloc(0))).toEqual([]);
-		const finishedTail = reader.push(tailFrame.subarray(6));
+		const slab = Buffer.concat([filler, tailFrame.subarray(0, 6)]);
+		expect(slab.byteLength).toBeGreaterThan(8192);
+		const fromSlab = slabReader.push(slab);
+		expect(fromSlab).toHaveLength(1);
+		expect(slabReader.push(Buffer.alloc(0))).toEqual([]);
+		const finishedTail = slabReader.push(tailFrame.subarray(6));
 		expect(finishedTail).toHaveLength(1);
 		expect(finishedTail[0]!.payload.toString("utf8")).toBe("tail-ok");
+		expect(finishedTail[0]!.payload.buffer).not.toBe(slab.buffer);
+
+		const dripReader = new FrameReader();
+		const maxPayload = Buffer.alloc(MAX_PAYLOAD, 0x5c);
+		const maxFrame = encodeFrame(Kind.data, maxPayload);
+		expect(dripReader.push(maxFrame.subarray(0, 4))).toEqual([]);
+		expect(dripReader.allocatedBytes).toBeLessThanOrEqual(256);
+		let maxAllocated = dripReader.allocatedBytes;
+		const dripOut: Frame[] = [];
+		for (let i = 4; i < maxFrame.byteLength; i++) {
+			dripOut.push(...dripReader.push(maxFrame.subarray(i, i + 1)));
+			if (dripReader.allocatedBytes > maxAllocated) maxAllocated = dripReader.allocatedBytes;
+		}
+		expect(dripOut).toHaveLength(1);
+		expect(dripOut[0]!.payload.byteLength).toBe(MAX_PAYLOAD);
+		expect(dripOut[0]!.payload[0]).toBe(0x5c);
+		expect(dripOut[0]!.payload[MAX_PAYLOAD - 1]).toBe(0x5c);
+		expect(maxAllocated).toBeLessThanOrEqual(MAX_PAYLOAD + 1);
+		expect(dripReader.allocatedBytes).toBe(0);
 
 		const zeroLen = new FrameReader();
 		expect(zeroLen.push(Buffer.from([0, 0]))).toEqual([]);

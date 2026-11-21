@@ -754,10 +754,10 @@ interface SupabaseFolderCoreOptions {
 	readonly requestTimeoutMs?: number;
 }
 
-/** The folder core over PostgREST, with the service credential: list, feed, the clock, the download check for the
- * storage profile, view renewals, and (step 3) staging and the commit. */
 const CLOCKS_BATCH = 100;
 
+/** The folder core over PostgREST, with the service credential: list, feed, the clock, the download check for the
+ * storage profile, view renewals, and (step 3) staging and the commit. */
 export class SupabaseFolderCore implements FolderCore {
 	readonly #url: string;
 	readonly #key: string;
