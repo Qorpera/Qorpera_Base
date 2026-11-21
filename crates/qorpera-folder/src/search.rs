@@ -24,7 +24,6 @@ pub const DEFAULT_REGEX_PIECE_BYTES: usize = 256 * 1024;
 pub const DEFAULT_LONGEST_LINE: usize = 1024 * 1024;
 const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SYNCED_TREES: usize = 256;
-const MAX_SYNCED_ENTRIES: usize = 1_500_000;
 const INDEX_SHARDS: usize = 16;
 const SMALL_EXACT_TRIGRAM_LIMIT: usize = 32;
 const SMALL_FILE_COLLECT_LIMIT: u64 = 16 * 1024;
@@ -57,6 +56,32 @@ fn hex_nibble(b: u8) -> Option<u8> {
 		b'a'..=b'f' => Some(b - b'a' + 10),
 		_ => None,
 	}
+}
+
+const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+
+fn hex_encode_32(bytes: &[u8; 32]) -> String {
+	let mut out = [0u8; 64];
+	for i in 0..32 {
+		out[i * 2] = HEX_CHARS[(bytes[i] >> 4) as usize];
+		out[i * 2 + 1] = HEX_CHARS[(bytes[i] & 0x0f) as usize];
+	}
+	String::from_utf8(out.to_vec()).unwrap()
+}
+
+fn format_uuid(bytes: &[u8; 16]) -> String {
+	let mut out = [0u8; 36];
+	let mut oi = 0usize;
+	for (i, &b) in bytes.iter().enumerate() {
+		if matches!(i, 4 | 6 | 8 | 10) {
+			out[oi] = b'-';
+			oi += 1;
+		}
+		out[oi] = HEX_CHARS[(b >> 4) as usize];
+		out[oi + 1] = HEX_CHARS[(b & 0x0f) as usize];
+		oi += 2;
+	}
+	String::from_utf8(out.to_vec()).unwrap()
 }
 
 fn parse_uuid(s: &str) -> Option<[u8; 16]> {
@@ -529,33 +554,216 @@ impl TrigramBuilder {
 }
 
 #[derive(Clone)]
+enum CompactVersion {
+	Empty,
+	Uuid([u8; 16]),
+	Other(Box<str>),
+}
+
+impl CompactVersion {
+	fn from_str_val(s: &str) -> Self {
+		if s.is_empty() {
+			Self::Empty
+		} else if let Some(uuid) = parse_uuid(s) {
+			Self::Uuid(uuid)
+		} else {
+			Self::Other(Box::from(s))
+		}
+	}
+
+	#[inline]
+	fn is_empty(&self) -> bool {
+		matches!(self, Self::Empty)
+	}
+
+	fn to_string_val(&self) -> String {
+		match self {
+			Self::Empty => String::new(),
+			Self::Uuid(u) => format_uuid(u),
+			Self::Other(s) => s.to_string(),
+		}
+	}
+
+	fn eq_str(&self, other: &str) -> bool {
+		match self {
+			Self::Empty => other.is_empty(),
+			Self::Uuid(u) => parse_uuid(other) == Some(*u),
+			Self::Other(s) => s.as_ref() == other,
+		}
+	}
+
+	fn heap_bytes(&self) -> usize {
+		match self {
+			Self::Empty | Self::Uuid(_) => 0,
+			Self::Other(s) => s.len(),
+		}
+	}
+}
+
+struct MediaInterner {
+	inner: Mutex<HashMap<Box<str>, Arc<str>>>,
+}
+
+impl MediaInterner {
+	fn new() -> Self {
+		Self { inner: Mutex::new(HashMap::new()) }
+	}
+
+	fn intern(&self, s: &str) -> Arc<str> {
+		let mut guard = self.inner.lock().unwrap();
+		if let Some(existing) = guard.get(s) {
+			return existing.clone();
+		}
+		let arc: Arc<str> = Arc::from(s);
+		if guard.len() < 4_096 {
+			guard.insert(Box::from(s), arc.clone());
+		}
+		arc
+	}
+}
+
+#[derive(Clone)]
+enum EntryBody {
+	File {
+		bytes: u64,
+		m_sha: Option<[u8; 32]>,
+		f_sha: Option<[u8; 32]>,
+		media_type: Option<Arc<str>>,
+		executable: bool,
+	},
+	Folder,
+	Symlink {
+		target: Option<Box<str>>,
+	},
+}
+
+#[derive(Clone)]
+struct SyncedEntry {
+	i: u32,
+	rb: u32,
+	p: Box<str>,
+	v: CompactVersion,
+	body: EntryBody,
+	gm: bool,
+}
+
+impl SyncedEntry {
+	fn from_wire(w: WorkerEntry, media: &MediaInterner) -> Self {
+		let body = match w.k {
+			0 => EntryBody::File {
+				bytes: w.b,
+				m_sha: w.m.as_deref().and_then(parse_hex_sha256),
+				f_sha: w.f.as_deref().and_then(parse_hex_sha256),
+				media_type: w.t.as_deref().map(|s| media.intern(s)),
+				executable: w.x,
+			},
+			1 => EntryBody::Folder,
+			_ => EntryBody::Symlink { target: w.tg.map(String::into_boxed_str) },
+		};
+		Self {
+			i: w.i,
+			rb: w.rb.min(u32::MAX as usize) as u32,
+			p: w.p.into_boxed_str(),
+			v: CompactVersion::from_str_val(&w.v),
+			body,
+			gm: w.gm,
+		}
+	}
+
+	#[inline]
+	fn kind_code(&self) -> u8 {
+		match self.body {
+			EntryBody::File { .. } => 0,
+			EntryBody::Folder => 1,
+			EntryBody::Symlink { .. } => 2,
+		}
+	}
+
+	#[inline]
+	fn bytes(&self) -> u64 {
+		match self.body {
+			EntryBody::File { bytes, .. } => bytes,
+			_ => 0,
+		}
+	}
+
+	#[inline]
+	fn manifest_sha(&self) -> Option<[u8; 32]> {
+		match self.body {
+			EntryBody::File { m_sha, .. } => m_sha,
+			_ => None,
+		}
+	}
+
+	#[inline]
+	fn file_sha(&self) -> Option<[u8; 32]> {
+		match self.body {
+			EntryBody::File { f_sha, .. } => f_sha,
+			_ => None,
+		}
+	}
+
+	#[inline]
+	fn media_type(&self) -> Option<&str> {
+		match &self.body {
+			EntryBody::File { media_type, .. } => media_type.as_deref(),
+			_ => None,
+		}
+	}
+
+	#[inline]
+	fn executable(&self) -> bool {
+		match self.body {
+			EntryBody::File { executable, .. } => executable,
+			_ => false,
+		}
+	}
+
+	#[inline]
+	fn target(&self) -> Option<&str> {
+		match &self.body {
+			EntryBody::Symlink { target } => target.as_deref(),
+			_ => None,
+		}
+	}
+
+	fn mem_bytes(&self) -> usize {
+		let base = std::mem::size_of::<Self>() + 40;
+		let path_b = self.p.len() + 16;
+		let ver_b = self.v.heap_bytes();
+		let tg_b = self.target().map_or(0, |t| t.len() + 16);
+		base + path_b + ver_b + tg_b
+	}
+}
+
+#[derive(Clone)]
 struct ManifestMeta {
 	v2: bool,
-	file_sha256: Arc<str>,
+	file_sha256: [u8; 32],
 	bytes: u64,
 	media_type: Option<Arc<str>>,
 	executable: Option<bool>,
 }
 
 impl ManifestMeta {
-	fn from_manifest(m: &ParsedManifest) -> Self {
+	fn from_manifest(m: &ParsedManifest, media: &MediaInterner) -> Self {
 		Self {
 			v2: m.v2,
-			file_sha256: Arc::from(m.file_sha256.as_str()),
+			file_sha256: m.file_sha256,
 			bytes: m.bytes,
-			media_type: m.media_type.as_deref().map(Arc::from),
+			media_type: m.media_type.as_deref().map(|s| media.intern(s)),
 			executable: m.executable,
 		}
 	}
 
-	fn matches_entry(&self, entry: &WorkerEntry) -> bool {
-		if entry.f.as_deref() != Some(self.file_sha256.as_ref()) || self.bytes != entry.b {
+	fn matches_entry(&self, entry: &SyncedEntry) -> bool {
+		if entry.file_sha() != Some(self.file_sha256) || self.bytes != entry.bytes() {
 			return false;
 		}
 		if self.v2
 			&& (self.media_type.is_none()
-				|| self.media_type.as_deref() != entry.t.as_deref()
-				|| self.executable != Some(entry.x))
+				|| self.media_type.as_deref() != entry.media_type()
+				|| self.executable != Some(entry.executable()))
 		{
 			return false;
 		}
@@ -577,7 +785,7 @@ impl IndexedEntry {
 	}
 
 	fn cost(&self) -> usize {
-		let base = 240;
+		let base = 200;
 		match self {
 			Self::Binary { .. } => base,
 			Self::Text { filter, .. } => base + filter.heap_bytes(),
@@ -596,7 +804,7 @@ struct ManifestChunk {
 #[derive(Debug, Clone)]
 struct ParsedManifest {
 	v2: bool,
-	file_sha256: String,
+	file_sha256: [u8; 32],
 	bytes: u64,
 	media_type: Option<String>,
 	executable: Option<bool>,
@@ -610,13 +818,15 @@ enum CachedObject {
 }
 
 struct TreeSlot {
-	entries: Arc<Vec<WorkerEntry>>,
+	entries: Arc<Vec<Arc<SyncedEntry>>>,
+	bytes: usize,
 	stamp: u64,
 }
 
 struct TreeCacheState {
 	slots: HashMap<u64, TreeSlot>,
-	total_entries: usize,
+	total_bytes: usize,
+	max_bytes: usize,
 	clock: u64,
 }
 
@@ -625,40 +835,95 @@ struct TreeCache {
 }
 
 impl TreeCache {
-	fn new() -> Self {
-		Self { inner: Mutex::new(TreeCacheState { slots: HashMap::new(), total_entries: 0, clock: 0 }) }
+	fn new(max_bytes: usize) -> Self {
+		Self {
+			inner: Mutex::new(TreeCacheState {
+				slots: HashMap::new(),
+				total_bytes: 0,
+				max_bytes: max_bytes.max(64 * 1024),
+				clock: 0,
+			}),
+		}
 	}
 
-	fn sync(&self, snapshot_id: u64, mut incoming: Vec<WorkerEntry>, append: bool) {
-		for entry in &mut incoming {
-			entry.m_sha = entry.m.as_deref().and_then(parse_hex_sha256);
+	fn sync(&self, snapshot_id: u64, incoming: Vec<WorkerEntry>, append: bool, media: &MediaInterner) -> bool {
+		let mut converted = Vec::with_capacity(incoming.len());
+		let mut added_bytes = 0usize;
+		for w in incoming {
+			let e = SyncedEntry::from_wire(w, media);
+			added_bytes += e.mem_bytes();
+			converted.push(Arc::new(e));
 		}
 		let mut guard = self.inner.lock().unwrap();
 		guard.clock += 1;
 		let stamp = guard.clock;
 		if append {
-			if let Some(slot) = guard.slots.get_mut(&snapshot_id) {
-				let added = incoming.len();
-				Arc::make_mut(&mut slot.entries).extend(incoming);
-				slot.stamp = stamp;
-				guard.total_entries += added;
-				Self::evict(&mut guard, snapshot_id);
-				return;
-			}
+			let Some(slot) = guard.slots.get_mut(&snapshot_id) else {
+				return false;
+			};
+			Arc::make_mut(&mut slot.entries).extend(converted);
+			slot.bytes += added_bytes;
+			slot.stamp = stamp;
+			guard.total_bytes += added_bytes;
+			Self::evict(&mut guard, snapshot_id);
+			return true;
 		}
 		if let Some(old) = guard.slots.remove(&snapshot_id) {
-			guard.total_entries = guard.total_entries.saturating_sub(old.entries.len());
+			guard.total_bytes = guard.total_bytes.saturating_sub(old.bytes);
 		}
-		let count = incoming.len();
-		guard.slots.insert(snapshot_id, TreeSlot { entries: Arc::new(incoming), stamp });
-		guard.total_entries += count;
+		guard.slots.insert(snapshot_id, TreeSlot { entries: Arc::new(converted), bytes: added_bytes, stamp });
+		guard.total_bytes += added_bytes;
 		Self::evict(&mut guard, snapshot_id);
+		true
+	}
+
+	fn patch(
+		&self,
+		base_snapshot_id: u64,
+		snapshot_id: u64,
+		upserts: Vec<WorkerEntry>,
+		removes: Vec<String>,
+		media: &MediaInterner,
+	) -> bool {
+		let converted: Vec<Arc<SyncedEntry>> =
+			upserts.into_iter().map(|w| Arc::new(SyncedEntry::from_wire(w, media))).collect();
+		let mut guard = self.inner.lock().unwrap();
+		let Some(base) = guard.slots.get(&base_snapshot_id) else {
+			return false;
+		};
+		let mut entries = (*base.entries).clone();
+		let mut bytes = base.bytes;
+		for rm_path in &removes {
+			let pos = entries.partition_point(|e| tree_order(&e.p, rm_path) == Ordering::Less);
+			if pos < entries.len() && entries[pos].p.as_ref() == rm_path.as_str() {
+				bytes = bytes.saturating_sub(entries[pos].mem_bytes());
+				entries.remove(pos);
+			}
+		}
+		for up in converted {
+			let pos = entries.partition_point(|e| tree_order(&e.p, &up.p) == Ordering::Less);
+			let up_bytes = up.mem_bytes();
+			if pos < entries.len() && entries[pos].p.as_ref() == up.p.as_ref() {
+				bytes = bytes.saturating_sub(entries[pos].mem_bytes()) + up_bytes;
+				entries[pos] = up;
+			} else {
+				bytes += up_bytes;
+				entries.insert(pos, up);
+			}
+		}
+		guard.clock += 1;
+		let stamp = guard.clock;
+		if let Some(old) = guard.slots.remove(&snapshot_id) {
+			guard.total_bytes = guard.total_bytes.saturating_sub(old.bytes);
+		}
+		guard.slots.insert(snapshot_id, TreeSlot { entries: Arc::new(entries), bytes, stamp });
+		guard.total_bytes += bytes;
+		Self::evict(&mut guard, snapshot_id);
+		true
 	}
 
 	fn evict(guard: &mut TreeCacheState, keep: u64) {
-		while (guard.slots.len() > MAX_SYNCED_TREES || guard.total_entries > MAX_SYNCED_ENTRIES)
-			&& guard.slots.len() > 1
-		{
+		while (guard.slots.len() > MAX_SYNCED_TREES || guard.total_bytes > guard.max_bytes) && guard.slots.len() > 1 {
 			let oldest = guard
 				.slots
 				.iter()
@@ -669,7 +934,7 @@ impl TreeCache {
 				break;
 			};
 			if let Some(removed) = guard.slots.remove(&evict_id) {
-				guard.total_entries = guard.total_entries.saturating_sub(removed.entries.len());
+				guard.total_bytes = guard.total_bytes.saturating_sub(removed.bytes);
 			}
 		}
 	}
@@ -677,17 +942,22 @@ impl TreeCache {
 	fn drop_tree(&self, snapshot_id: u64) {
 		let mut guard = self.inner.lock().unwrap();
 		if let Some(removed) = guard.slots.remove(&snapshot_id) {
-			guard.total_entries = guard.total_entries.saturating_sub(removed.entries.len());
+			guard.total_bytes = guard.total_bytes.saturating_sub(removed.bytes);
 		}
 	}
 
-	fn get(&self, snapshot_id: u64) -> Option<Arc<Vec<WorkerEntry>>> {
+	fn get(&self, snapshot_id: u64) -> Option<Arc<Vec<Arc<SyncedEntry>>>> {
 		let mut guard = self.inner.lock().unwrap();
 		guard.clock += 1;
 		let stamp = guard.clock;
 		let slot = guard.slots.get_mut(&snapshot_id)?;
 		slot.stamp = stamp;
 		Some(slot.entries.clone())
+	}
+
+	#[cfg(test)]
+	fn total_bytes(&self) -> usize {
+		self.inner.lock().unwrap().total_bytes
 	}
 }
 
@@ -705,6 +975,7 @@ pub struct SharedIndex {
 	trigrams: ShardedLru<ObjectKey, IndexedEntry>,
 	objects: ShardedLru<ObjectKey, CachedObject>,
 	trees: TreeCache,
+	media: MediaInterner,
 }
 
 #[derive(Debug)]
@@ -725,25 +996,37 @@ impl ObjectError {
 impl SharedIndex {
 	pub fn new(storage_root: PathBuf, index_mib: usize) -> Self {
 		let total = index_mib.max(1) * 1024 * 1024;
-		let trigram_bytes = (total * 3) / 4;
-		let object_bytes = total - trigram_bytes;
+		let trigram_bytes = (total * 50) / 100;
+		let tree_bytes = (total * 35) / 100;
+		let object_bytes = total - trigram_bytes - tree_bytes;
 		Self {
 			storage_root,
 			trigrams: ShardedLru::new(trigram_bytes),
 			objects: ShardedLru::new(object_bytes),
-			trees: TreeCache::new(),
+			trees: TreeCache::new(tree_bytes),
+			media: MediaInterner::new(),
 		}
 	}
 
-	pub fn sync_tree(&self, snapshot_id: u64, entries: Vec<WorkerEntry>, append: bool) {
-		self.trees.sync(snapshot_id, entries, append);
+	pub fn sync_tree(&self, snapshot_id: u64, entries: Vec<WorkerEntry>, append: bool) -> bool {
+		self.trees.sync(snapshot_id, entries, append, &self.media)
+	}
+
+	pub fn patch_tree(
+		&self,
+		base_snapshot_id: u64,
+		snapshot_id: u64,
+		upserts: Vec<WorkerEntry>,
+		removes: Vec<String>,
+	) -> bool {
+		self.trees.patch(base_snapshot_id, snapshot_id, upserts, removes, &self.media)
 	}
 
 	pub fn drop_tree(&self, snapshot_id: u64) {
 		self.trees.drop_tree(snapshot_id);
 	}
 
-	fn get_tree(&self, snapshot_id: u64) -> Option<Arc<Vec<WorkerEntry>>> {
+	fn get_tree(&self, snapshot_id: u64) -> Option<Arc<Vec<Arc<SyncedEntry>>>> {
 		self.trees.get(snapshot_id)
 	}
 
@@ -826,15 +1109,10 @@ impl SharedIndex {
 		&self,
 		profile_id: &str,
 		profile_uuid: [u8; 16],
-		entry: &WorkerEntry,
+		entry: &SyncedEntry,
 	) -> Result<Arc<ParsedManifest>, ObjectError> {
-		let manifest_hex = entry
-			.m
-			.as_deref()
-			.ok_or_else(|| ObjectError::Integrity("Object identity is invalid".to_string()))?;
 		let manifest_sha = entry
-			.m_sha
-			.or_else(|| parse_hex_sha256(manifest_hex))
+			.manifest_sha()
 			.ok_or_else(|| ObjectError::Integrity("Object identity is invalid".to_string()))?;
 		let key = ObjectKey { profile_uuid, sha256: manifest_sha };
 		let shard = shard_of(&key);
@@ -842,7 +1120,8 @@ impl SharedIndex {
 			verify_manifest_against_entry(&parsed, entry)?;
 			return Ok(parsed);
 		}
-		let raw = self.read_verified_file(profile_id, manifest_hex, manifest_sha, MAX_MANIFEST_BYTES, None)?;
+		let manifest_hex = hex_encode_32(&manifest_sha);
+		let raw = self.read_verified_file(profile_id, &manifest_hex, manifest_sha, MAX_MANIFEST_BYTES, None)?;
 		let parsed = Arc::new(parse_manifest_bytes(&raw, entry)?);
 		let cost = 256 + parsed.chunks.len() * 128;
 		self.objects.insert(shard, key, CachedObject::Manifest(parsed.clone()), cost);
@@ -874,7 +1153,7 @@ impl SharedIndex {
 		&self,
 		profile_uuid: [u8; 16],
 		manifest_sha: [u8; 32],
-		entry: &WorkerEntry,
+		entry: &SyncedEntry,
 		trigram_query: &CompiledTrigramQuery,
 		use_regex: bool,
 		longest_line: usize,
@@ -914,17 +1193,17 @@ impl SharedIndex {
 	}
 }
 
-fn verify_manifest_against_entry(m: &ParsedManifest, entry: &WorkerEntry) -> Result<(), ObjectError> {
-	if entry.f.as_deref() != Some(m.file_sha256.as_str()) || m.bytes != entry.b {
+fn verify_manifest_against_entry(m: &ParsedManifest, entry: &SyncedEntry) -> Result<(), ObjectError> {
+	if entry.file_sha() != Some(m.file_sha256) || m.bytes != entry.bytes() {
 		return Err(ObjectError::Integrity("Manifest does not match its entry".to_string()));
 	}
-	if m.v2 && (m.media_type.is_none() || m.media_type != entry.t || m.executable != Some(entry.x)) {
+	if m.v2 && (m.media_type.is_none() || m.media_type.as_deref() != entry.media_type() || m.executable != Some(entry.executable())) {
 		return Err(ObjectError::Integrity("Manifest does not match its entry".to_string()));
 	}
 	Ok(())
 }
 
-fn parse_manifest_bytes(raw: &[u8], entry: &WorkerEntry) -> Result<ParsedManifest, ObjectError> {
+fn parse_manifest_bytes(raw: &[u8], entry: &SyncedEntry) -> Result<ParsedManifest, ObjectError> {
 	let text = std::str::from_utf8(raw).map_err(|_| ObjectError::Integrity("Manifest is not JSON".to_string()))?;
 	let val: serde_json::Value =
 		serde_json::from_str(text).map_err(|_| ObjectError::Integrity("Manifest is not JSON".to_string()))?;
@@ -944,8 +1223,8 @@ fn parse_manifest_bytes(raw: &[u8], entry: &WorkerEntry) -> Result<ParsedManifes
 	let file_sha256 = obj
 		.get("fileSha256")
 		.and_then(|v| v.as_str())
-		.ok_or_else(|| ObjectError::Integrity("Manifest does not match its entry".to_string()))?
-		.to_string();
+		.and_then(parse_hex_sha256)
+		.ok_or_else(|| ObjectError::Integrity("Manifest does not match its entry".to_string()))?;
 	let bytes = obj
 		.get("bytes")
 		.and_then(|v| v.as_u64())
@@ -987,7 +1266,7 @@ fn parse_manifest_bytes(raw: &[u8], entry: &WorkerEntry) -> Result<ParsedManifes
 			.checked_add(c_bytes)
 			.ok_or_else(|| ObjectError::Integrity("Manifest chunks do not add up to the file".to_string()))?;
 	}
-	if start != entry.b {
+	if start != entry.bytes() {
 		return Err(ObjectError::Integrity("Manifest chunks do not add up to the file".to_string()));
 	}
 	let parsed = ParsedManifest { v2, file_sha256, bytes, media_type, executable, chunks };
@@ -1045,14 +1324,13 @@ pub struct PageState {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct WorkerEntry {
+	#[serde(default)]
 	pub i: u32,
 	pub k: u8,
 	pub p: String,
 	pub v: String,
 	#[serde(default)]
 	pub m: Option<String>,
-	#[serde(skip)]
-	pub m_sha: Option<[u8; 32]>,
 	#[serde(default)]
 	pub f: Option<String>,
 	#[serde(default)]
@@ -1111,6 +1389,18 @@ struct SyncTreeMessage {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct PatchTreeMessage {
+	id: u64,
+	base_snapshot_id: u64,
+	snapshot_id: u64,
+	#[serde(default)]
+	upserts: Vec<WorkerEntry>,
+	#[serde(default)]
+	removes: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct DropTreeMessage {
 	#[serde(default)]
 	id: u64,
@@ -1121,12 +1411,14 @@ struct DropTreeMessage {
 #[serde(tag = "op", rename_all = "camelCase")]
 enum TaggedWorkerMessage {
 	SyncTree(SyncTreeMessage),
+	PatchTree(PatchTreeMessage),
 	DropTree(DropTreeMessage),
 	Search(WorkerRequest),
 }
 
 enum WorkerMessage {
 	SyncTree(SyncTreeMessage),
+	PatchTree(PatchTreeMessage),
 	DropTree(DropTreeMessage),
 	Search(WorkerRequest),
 }
@@ -1135,6 +1427,7 @@ fn parse_worker_message(bytes: &[u8]) -> Result<WorkerMessage, serde_json::Error
 	if let Ok(tagged) = serde_json::from_slice::<TaggedWorkerMessage>(bytes) {
 		return Ok(match tagged {
 			TaggedWorkerMessage::SyncTree(m) => WorkerMessage::SyncTree(m),
+			TaggedWorkerMessage::PatchTree(m) => WorkerMessage::PatchTree(m),
 			TaggedWorkerMessage::DropTree(m) => WorkerMessage::DropTree(m),
 			TaggedWorkerMessage::Search(m) => WorkerMessage::Search(m),
 		});
@@ -1233,15 +1526,15 @@ fn is_descendant(entry_path: &str, dir_path: &str) -> bool {
 		&& entry_path.as_bytes().starts_with(dir_path.as_bytes())
 }
 
-fn slice_tree<'a>(entries: &'a [WorkerEntry], path: &str, from: Option<&str>) -> &'a [WorkerEntry] {
+fn slice_tree<'a>(entries: &'a [Arc<SyncedEntry>], path: &str, from: Option<&str>) -> (usize, &'a [Arc<SyncedEntry>]) {
 	let (lo, hi) = if path.is_empty() {
 		(0usize, entries.len())
 	} else {
 		let start = entries.partition_point(|e| tree_order(&e.p, path) == Ordering::Less);
-		if start >= entries.len() || entries[start].p != path {
-			return &[];
+		if start >= entries.len() || entries[start].p.as_ref() != path {
+			return (0, &[]);
 		}
-		if entries[start].k != 1 {
+		if entries[start].kind_code() != 1 {
 			(start, start + 1)
 		} else {
 			let sub = &entries[start + 1..];
@@ -1250,27 +1543,27 @@ fn slice_tree<'a>(entries: &'a [WorkerEntry], path: &str, from: Option<&str>) ->
 		}
 	};
 	if lo >= hi {
-		return &[];
+		return (0, &[]);
 	}
 	let Some(f) = from else {
-		return &entries[lo..hi];
+		return (lo, &entries[lo..hi]);
 	};
 	if f == path {
-		return &entries[lo..hi];
+		return (lo, &entries[lo..hi]);
 	}
 	let under_path = if path.is_empty() { true } else { is_descendant(f, path) };
 	if !under_path {
 		if !path.is_empty() && f.as_bytes() < path.as_bytes() {
-			return &entries[lo..hi];
+			return (lo, &entries[lo..hi]);
 		}
-		return &[];
+		return (0, &[]);
 	}
-	if entries[lo].k != 1 {
-		return &[];
+	if entries[lo].kind_code() != 1 {
+		return (0, &[]);
 	}
 	let sub = &entries[lo + 1..hi];
 	let rel = sub.partition_point(|e| tree_order(&e.p, f) == Ordering::Less);
-	&sub[rel..]
+	(lo + 1 + rel, &sub[rel..])
 }
 
 enum GlobPart {
@@ -1649,8 +1942,8 @@ fn kind_name(k: u8) -> &'static str {
 	}
 }
 
-fn at_cursor(entry: &WorkerEntry, offset: u64, line: u64) -> SearchCursor {
-	SearchCursor { path: entry.p.clone(), version: entry.v.clone(), offset, line }
+fn at_cursor(entry: &SyncedEntry, offset: u64, line: u64) -> SearchCursor {
+	SearchCursor { path: entry.p.to_string(), version: entry.v.to_string_val(), offset, line }
 }
 
 fn hit_measure(shown: &SearchHit, v2: bool) -> usize {
@@ -1699,25 +1992,36 @@ fn read_manifest_slice(
 }
 
 pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<WorkerOk, WorkerError> {
+	let resolved_tree = req.snapshot_id.and_then(|sid| index.get_tree(sid));
+	execute_search_with_tree(index, req, resolved_tree)
+}
+
+fn execute_search_with_tree(
+	index: &SharedIndex,
+	req: &WorkerRequest,
+	resolved_tree: Option<Arc<Vec<Arc<SyncedEntry>>>>,
+) -> Result<WorkerOk, WorkerError> {
 	let v2 = req.version == 2;
 	let use_regex = v2 && req.regex;
 	let files_only = v2 && req.files_only;
 	let context = if v2 { req.context.min(5) } else { 0 };
 	let (matcher, trigram_query) = Matcher::build(req.query.as_deref(), use_regex, req.case_sensitive)
 		.map_err(|e| WorkerError::simple("pattern", e.0))?;
-	let synced_tree = match req.snapshot_id {
-		Some(sid) => Some(
-			index
-				.get_tree(sid)
-				.ok_or_else(|| WorkerError::simple("missing_tree", "Synced tree snapshot not found"))?,
-		),
-		None => None,
+	let use_ranges = req.snapshot_id.is_some();
+	let synced_tree = if use_ranges {
+		Some(resolved_tree.ok_or_else(|| WorkerError::simple("missing_tree", "Synced tree snapshot not found"))?)
+	} else {
+		None
 	};
-	let use_ranges = synced_tree.is_some();
+	let inline_entries: Vec<Arc<SyncedEntry>> = if use_ranges {
+		Vec::new()
+	} else {
+		req.entries.iter().map(|e| Arc::new(SyncedEntry::from_wire(e.clone(), &index.media))).collect()
+	};
 	let glob = if use_ranges { req.glob.as_deref().map(CompiledGlob::parse) } else { None };
-	let entry_slice: &[WorkerEntry] = match &synced_tree {
+	let (slice_start, entry_slice): (usize, &[Arc<SyncedEntry>]) = match &synced_tree {
 		Some(tree) => slice_tree(tree, &req.path, req.after.as_ref().map(|a| a.path.as_str())),
-		None => &req.entries,
+		None => (0, &inline_entries),
 	};
 	let deadline = Instant::now() + Duration::from_millis(req.slice_ms);
 	let piece_bytes = req
@@ -1741,7 +2045,8 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 	let mut scratch = ExecScratch::new();
 	let mut profile_uuid_checked: Option<[u8; 16]> = None;
 
-	let record_read = |entry: &WorkerEntry,
+	let record_read = |entry: &SyncedEntry,
+	                   entry_idx: u32,
 	                   state: &mut PageState,
 	                   read_indices: &mut Vec<u32>,
 	                   read_ranges: &mut Vec<u32>| {
@@ -1749,12 +2054,12 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 			return;
 		}
 		if use_ranges {
-			push_read_range(read_ranges, entry.i);
+			push_read_range(read_ranges, entry_idx);
 		} else {
-			read_indices.push(entry.i);
+			read_indices.push(entry_idx);
 		}
 		state.reads_count += 1;
-		state.read_bytes += entry.rb;
+		state.read_bytes += entry.rb as usize;
 	};
 
 	let push_hit = |shown: SearchHit, state: &mut PageState, hits: &mut Vec<SearchHit>| -> bool {
@@ -1768,8 +2073,12 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 		true
 	};
 
-	for entry in entry_slice {
-		if entry.k == 2 && !req.links {
+	for (local_idx, entry_arc) in entry_slice.iter().enumerate() {
+		let entry = entry_arc.as_ref();
+		let entry_idx = if use_ranges { (slice_start + local_idx) as u32 } else { entry.i };
+		let kind = entry.kind_code();
+		let entry_bytes = entry.bytes();
+		if kind == 2 && !req.links {
 			continue;
 		}
 		let glob_matched = if use_ranges {
@@ -1777,7 +2086,7 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 		} else {
 			entry.gm
 		};
-		let is_text = !req.names_only && entry.k == 0 && entry.b > 0 && glob_matched;
+		let is_text = !req.names_only && kind == 0 && entry_bytes > 0 && glob_matched;
 		if state.examined > 0
 			&& (state.reads_count >= READS_PER_ANSWER
 				|| state.read_bytes >= READS_BYTES
@@ -1800,20 +2109,20 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 			});
 		}
 		state.examined += 1;
-		if entry.k == 1 {
-			record_read(entry, &mut state, &mut read_indices, &mut read_ranges);
+		if kind == 1 {
+			record_read(entry, entry_idx, &mut state, &mut read_indices, &mut read_ranges);
 			if req.names_only
-				&& entry.p != req.path
+				&& entry.p.as_ref() != req.path.as_str()
 				&& !entry.v.is_empty()
 				&& glob_matched
 				&& matcher.find_str(basename(&entry.p), &mut scratch).is_some()
 			{
 				let hit = SearchHit {
-					path: entry.p.clone(),
+					path: entry.p.to_string(),
 					kind: "folder".to_string(),
 					line: 0,
 					text: String::new(),
-					version: entry.v.clone(),
+					version: entry.v.to_string_val(),
 					offset: 0,
 					target: None,
 					before: None,
@@ -1842,13 +2151,13 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 		if req.names_only {
 			if glob_matched && matcher.find_str(basename(&entry.p), &mut scratch).is_some() {
 				let hit = SearchHit {
-					path: entry.p.clone(),
-					kind: kind_name(entry.k).to_string(),
+					path: entry.p.to_string(),
+					kind: kind_name(kind).to_string(),
 					line: 0,
 					text: String::new(),
-					version: entry.v.clone(),
+					version: entry.v.to_string_val(),
 					offset: 0,
-					target: if entry.k == 2 { entry.tg.clone() } else { None },
+					target: if kind == 2 { entry.target().map(str::to_string) } else { None },
 					before: None,
 					after: None,
 					from: None,
@@ -1869,7 +2178,7 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 						state,
 					});
 				}
-				record_read(entry, &mut state, &mut read_indices, &mut read_ranges);
+				record_read(entry, entry_idx, &mut state, &mut read_indices, &mut read_ranges);
 			}
 			continue;
 		}
@@ -1881,7 +2190,7 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 				return Err(WorkerError {
 					kind: "need_profile",
 					message: "Storage profile lookup required".to_string(),
-					entry_index: Some(entry.i),
+					entry_index: Some(entry_idx),
 				});
 			}
 			return Err(WorkerError::simple(
@@ -1900,7 +2209,12 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 					if matches!(err, ObjectError::Unavailable(_)) {
 						return Err(WorkerError::simple("unavailable", err.message()));
 					}
-					logs.push(format!("folder-service: search passed over {} ({}): {}", entry.p, entry.v, err.message()));
+					logs.push(format!(
+						"folder-service: search passed over {} ({}): {}",
+						entry.p,
+						entry.v.to_string_val(),
+						err.message()
+					));
 					unreadable += 1;
 					continue;
 				}
@@ -1910,8 +2224,8 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 		let resume = req
 			.after
 			.as_ref()
-			.filter(|a| a.path == entry.p && a.version == entry.v);
-		let manifest_sha = entry.m_sha.or_else(|| entry.m.as_deref().and_then(parse_hex_sha256));
+			.filter(|a| a.path.as_str() == entry.p.as_ref() && entry.v.eq_str(&a.version));
+		let manifest_sha = entry.manifest_sha();
 		let mut already_indexed = false;
 
 		if resume.is_none() && piece_bytes >= BINARY_PROBE {
@@ -1921,18 +2235,19 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 					TrigramProbe::MetadataMismatch => {
 						logs.push(format!(
 							"folder-service: search passed over {} ({}): Manifest does not match its entry",
-							entry.p, entry.v
+							entry.p,
+							entry.v.to_string_val()
 						));
 						unreadable += 1;
 						continue;
 					}
 					TrigramProbe::Binary => {
-						record_read(entry, &mut state, &mut read_indices, &mut read_ranges);
+						record_read(entry, entry_idx, &mut state, &mut read_indices, &mut read_ranges);
 						binary += 1;
 						continue;
 					}
 					TrigramProbe::Skip { extra_long_lines } => {
-						record_read(entry, &mut state, &mut read_indices, &mut read_ranges);
+						record_read(entry, entry_idx, &mut state, &mut read_indices, &mut read_ranges);
 						long_lines += extra_long_lines;
 						searched += 1;
 						continue;
@@ -1948,7 +2263,12 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 			Ok(m) => m,
 			Err(ObjectError::Unavailable(msg)) => return Err(WorkerError::simple("unavailable", msg)),
 			Err(err) => {
-				logs.push(format!("folder-service: search passed over {} ({}): {}", entry.p, entry.v, err.message()));
+				logs.push(format!(
+					"folder-service: search passed over {} ({}): {}",
+					entry.p,
+					entry.v.to_string_val(),
+					err.message()
+				));
 				unreadable += 1;
 				continue;
 			}
@@ -1972,7 +2292,7 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 		let mut wanted: usize = 0;
 		let mut builder: Option<TrigramBuilder> =
 			if offset == 0 && piece_bytes >= BINARY_PROBE && !already_indexed && manifest_sha.is_some() {
-				Some(TrigramBuilder::new(entry.b))
+				Some(TrigramBuilder::new(entry_bytes))
 			} else {
 				None
 			};
@@ -1985,7 +2305,7 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 					logs.push(format!(
 						"folder-service: search passed over {} ({}): {}",
 						entry.p,
-						entry.v,
+						entry.v.to_string_val(),
 						err.message()
 					));
 					unreadable += 1;
@@ -1996,14 +2316,14 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 			};
 			if !started {
 				started = true;
-				record_read(entry, &mut state, &mut read_indices, &mut read_ranges);
+				record_read(entry, entry_idx, &mut state, &mut read_indices, &mut read_ranges);
 				if offset == 0 && piece[..piece.len().min(BINARY_PROBE)].contains(&0) {
 					if piece_bytes >= BINARY_PROBE {
 						if let Some(m_sha) = manifest_sha {
 							index.put_trigram(
 								profile_uuid,
 								m_sha,
-								IndexedEntry::Binary { meta: ManifestMeta::from_manifest(&manifest) },
+								IndexedEntry::Binary { meta: ManifestMeta::from_manifest(&manifest, &index.media) },
 							);
 						}
 					}
@@ -2014,7 +2334,7 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 				}
 			}
 			let end = offset + piece.len() as u64;
-			let last = end >= entry.b || piece.is_empty();
+			let last = end >= entry_bytes || piece.is_empty();
 			if let Some(b) = builder.as_mut() {
 				b.push_raw_chunk(&piece, last);
 			}
@@ -2083,11 +2403,11 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 								count += 1;
 							} else {
 								let shown = SearchHit {
-									path: entry.p.clone(),
+									path: entry.p.to_string(),
 									kind: "file".to_string(),
 									line: line + 1,
 									text: around(&text_line, found, req.case_sensitive),
-									version: entry.v.clone(),
+									version: entry.v.to_string_val(),
 									offset: line_start,
 									target: None,
 									before: if context > 0 {
@@ -2109,8 +2429,8 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 									};
 									if count > 0 {
 										files.push(SearchFile {
-											path: entry.p.clone(),
-											version: entry.v.clone(),
+											path: entry.p.to_string(),
+											version: entry.v.to_string_val(),
 											count,
 											partial: Some(true),
 										});
@@ -2175,11 +2495,11 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 								count += 1;
 							} else {
 								let shown = SearchHit {
-									path: entry.p.clone(),
+									path: entry.p.to_string(),
 									kind: "file".to_string(),
 									line: line + 1,
 									text: around(&text_line, found, req.case_sensitive),
-									version: entry.v.clone(),
+									version: entry.v.to_string_val(),
 									offset: line_start,
 									target: None,
 									before: if context > 0 {
@@ -2201,8 +2521,8 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 									};
 									if count > 0 {
 										files.push(SearchFile {
-											path: entry.p.clone(),
-											version: entry.v.clone(),
+											path: entry.p.to_string(),
+											version: entry.v.to_string_val(),
 											count,
 											partial: Some(true),
 										});
@@ -2257,11 +2577,11 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 								count += 1;
 							} else {
 								let shown = SearchHit {
-									path: entry.p.clone(),
+									path: entry.p.to_string(),
 									kind: "file".to_string(),
 									line: line + 1,
 									text: around(&text_line, found, req.case_sensitive),
-									version: entry.v.clone(),
+									version: entry.v.to_string_val(),
 									offset: line_start,
 									target: None,
 									before: if context > 0 {
@@ -2283,8 +2603,8 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 									};
 									if count > 0 {
 										files.push(SearchFile {
-											path: entry.p.clone(),
-											version: entry.v.clone(),
+											path: entry.p.to_string(),
+											version: entry.v.to_string_val(),
 											count,
 											partial: Some(true),
 										});
@@ -2330,8 +2650,8 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 				};
 				if count > 0 {
 					files.push(SearchFile {
-						path: entry.p.clone(),
-						version: entry.v.clone(),
+						path: entry.p.to_string(),
+						version: entry.v.to_string_val(),
 						count,
 						partial: Some(true),
 					});
@@ -2355,12 +2675,17 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 
 		if let (Some(m_sha), Some(b)) = (manifest_sha, builder) {
 			if !skipped {
-				index.put_trigram(profile_uuid, m_sha, b.finish(ManifestMeta::from_manifest(&manifest)));
+				index.put_trigram(profile_uuid, m_sha, b.finish(ManifestMeta::from_manifest(&manifest, &index.media)));
 			}
 		}
 
 		if count > 0 || (files_only && continued && !skipped) {
-			files.push(SearchFile { path: entry.p.clone(), version: entry.v.clone(), count, partial: None });
+			files.push(SearchFile {
+				path: entry.p.to_string(),
+				version: entry.v.to_string_val(),
+				count,
+				partial: None,
+			});
 			state.hit_bytes += shown_line(&entry.p, count, "");
 		}
 		if !skipped {
@@ -2417,8 +2742,13 @@ fn write_frame<W: Write>(writer: &mut W, payload: &[u8]) -> io::Result<()> {
 	writer.flush()
 }
 
+struct SearchJob {
+	req: WorkerRequest,
+	synced_tree: Option<Arc<Vec<Arc<SyncedEntry>>>>,
+}
+
 struct JobQueue {
-	queue: Mutex<(VecDeque<WorkerRequest>, bool)>,
+	queue: Mutex<(VecDeque<SearchJob>, bool)>,
 	ready: Condvar,
 }
 
@@ -2427,17 +2757,17 @@ impl JobQueue {
 		Self { queue: Mutex::new((VecDeque::new(), false)), ready: Condvar::new() }
 	}
 
-	fn push(&self, req: WorkerRequest) {
+	fn push(&self, job: SearchJob) {
 		let mut guard = self.queue.lock().unwrap();
-		guard.0.push_back(req);
+		guard.0.push_back(job);
 		self.ready.notify_one();
 	}
 
-	fn pop(&self) -> Option<WorkerRequest> {
+	fn pop(&self) -> Option<SearchJob> {
 		let mut guard = self.queue.lock().unwrap();
 		loop {
-			if let Some(req) = guard.0.pop_front() {
-				return Some(req);
+			if let Some(job) = guard.0.pop_front() {
+				return Some(job);
 			}
 			if guard.1 {
 				return None;
@@ -2469,9 +2799,9 @@ pub fn run_worker_io<R: Read, W: Write + Send + 'static>(
 		let q = queue.clone();
 		let w = out.clone();
 		handles.push(std::thread::spawn(move || {
-			while let Some(req) = q.pop() {
-				let id = req.id;
-				let resp = match execute_search(&idx, &req) {
+			while let Some(job) = q.pop() {
+				let id = job.req.id;
+				let resp = match execute_search_with_tree(&idx, &job.req, job.synced_tree) {
 					Ok(ok) => WorkerResponse { id, synced: None, ok: Some(ok), error: None },
 					Err(error) => WorkerResponse { id, synced: None, ok: None, error: Some(error) },
 				};
@@ -2489,9 +2819,34 @@ pub fn run_worker_io<R: Read, W: Write + Send + 'static>(
 			Ok(None) => break,
 			Ok(Some(bytes)) => match parse_worker_message(&bytes) {
 				Ok(WorkerMessage::SyncTree(msg)) => {
-					index.sync_tree(msg.snapshot_id, msg.entries, msg.append);
-					let resp = WorkerResponse { id: msg.id, synced: Some(true), ok: None, error: None };
+					let resp = if index.sync_tree(msg.snapshot_id, msg.entries, msg.append) {
+						WorkerResponse { id: msg.id, synced: Some(true), ok: None, error: None }
+					} else {
+						WorkerResponse {
+							id: msg.id,
+							synced: None,
+							ok: None,
+							error: Some(WorkerError::simple("missing_tree", "Synced tree snapshot not found")),
+						}
+					};
 					let payload = serde_json::to_vec(&resp).expect("sync response serializes");
+					let mut guard = out.lock().unwrap();
+					if write_frame(&mut *guard, &payload).is_err() {
+						break;
+					}
+				}
+				Ok(WorkerMessage::PatchTree(msg)) => {
+					let resp = if index.patch_tree(msg.base_snapshot_id, msg.snapshot_id, msg.upserts, msg.removes) {
+						WorkerResponse { id: msg.id, synced: Some(true), ok: None, error: None }
+					} else {
+						WorkerResponse {
+							id: msg.id,
+							synced: None,
+							ok: None,
+							error: Some(WorkerError::simple("missing_tree", "Base snapshot not found")),
+						}
+					};
+					let payload = serde_json::to_vec(&resp).expect("patch response serializes");
 					let mut guard = out.lock().unwrap();
 					if write_frame(&mut *guard, &payload).is_err() {
 						break;
@@ -2508,7 +2863,11 @@ pub fn run_worker_io<R: Read, W: Write + Send + 'static>(
 						}
 					}
 				}
-				Ok(WorkerMessage::Search(req)) => queue.push(req),
+				Ok(WorkerMessage::Search(req)) => {
+					// WHY: resolve the snapshot Arc synchronously on the reader thread so a subsequent dropTree never races a queued search.
+					let synced_tree = req.snapshot_id.and_then(|sid| index.get_tree(sid));
+					queue.push(SearchJob { req, synced_tree });
+				}
 				Err(e) => {
 					read_err = Some(format!("bad search request json: {e}"));
 					break;
@@ -2618,7 +2977,6 @@ mod tests {
 			p: path.to_string(),
 			v: version.to_string(),
 			m: Some(manifest_sha),
-			m_sha: None,
 			f: Some(file_sha),
 			b: content.len() as u64,
 			t: Some("text/plain".to_string()),
@@ -2703,8 +3061,8 @@ mod tests {
 		}
 		let r = execute_search(&index, &base_request(entries, Some("file_0399_content"))).unwrap();
 		assert_eq!(r.hits.len(), 1);
-		assert!(index.trigrams.total_bytes() <= (1024 * 1024 * 3) / 4 + 65536);
-		assert!(index.objects.total_bytes() <= (1024 * 1024) / 4 + 65536);
+		assert!(index.trigrams.total_bytes() <= (1024 * 1024 * 50) / 100 + 65536);
+		assert!(index.objects.total_bytes() <= (1024 * 1024 * 15) / 100 + 65536);
 		let _ = fs::remove_dir_all(&dir);
 	}
 
@@ -2773,7 +3131,6 @@ mod tests {
 			p: "a.md".to_string(),
 			v: "00000000-0000-4000-8000-000000000001".to_string(),
 			m: Some("a".repeat(64)),
-			m_sha: None,
 			f: Some("b".repeat(64)),
 			b: 10,
 			t: Some("text/plain".to_string()),
@@ -2845,7 +3202,6 @@ mod tests {
 			p: p.to_string(),
 			v: v.to_string(),
 			m: None,
-			m_sha: None,
 			f: None,
 			b: 0,
 			t: None,
@@ -2862,17 +3218,24 @@ mod tests {
 			folder_entry(4, "docs-other", "00000000-0000-4000-8000-000000000013"),
 			write_object_file(&dir, "docs-other/c.ts", "00000000-0000-4000-8000-000000000014", b"needle three\n", 1024, 5),
 		];
+		let media = MediaInterner::new();
+		let synced_vec: Vec<Arc<SyncedEntry>> =
+			entries.iter().map(|e| Arc::new(SyncedEntry::from_wire(e.clone(), &media))).collect();
 		assert_eq!(tree_order("docs/b.ts", "docs-other"), Ordering::Less);
-		assert_eq!(slice_tree(&entries, "docs", None).len(), 3);
-		assert_eq!(slice_tree(&entries, "docs", Some("docs/b.ts")).len(), 1);
+		assert_eq!(slice_tree(&synced_vec, "docs", None).1.len(), 3);
+		let (sub_start, sub_slice) = slice_tree(&synced_vec, "docs", Some("docs/b.ts"));
+		assert_eq!(sub_start, 3);
+		assert_eq!(sub_slice.len(), 1);
+		assert_eq!(sub_slice[0].p.as_ref(), "docs/b.ts");
 		let g = CompiledGlob::parse("**/*.ts");
 		assert!(!g.matches_entry("docs/a.md", ""));
 		assert!(g.matches_entry("docs/b.ts", ""));
 		assert!(g.matches_entry("docs/b.ts", "docs"));
 
 		let index = SharedIndex::new(dir.clone(), 8);
-		index.sync_tree(42, entries[..3].to_vec(), false);
-		index.sync_tree(42, entries[3..].to_vec(), true);
+		assert!(!index.sync_tree(999, entries[..1].to_vec(), true));
+		assert!(index.sync_tree(42, entries[..3].to_vec(), false));
+		assert!(index.sync_tree(42, entries[3..].to_vec(), true));
 
 		let mut need_prof = base_request(Vec::new(), Some("needle"));
 		need_prof.snapshot_id = Some(42);
@@ -2889,9 +3252,135 @@ mod tests {
 		assert_eq!(ok.read_ranges, vec![1, 1, 3, 3]);
 		assert!(ok.read_indices.is_empty());
 
+		let added = write_object_file(
+			&dir,
+			"docs/a2.ts",
+			"00000000-0000-4000-8000-000000000015",
+			b"needle patched\n",
+			1024,
+			0,
+		);
+		assert!(!index.patch_tree(999, 43, vec![added.clone()], vec![]));
+		assert!(index.patch_tree(42, 43, vec![added], vec!["docs/b.ts".to_string()]));
+		let mut patched_req = base_request(Vec::new(), Some("needle"));
+		patched_req.snapshot_id = Some(43);
+		patched_req.glob = Some("*.ts".to_string());
+		let patched_ok = execute_search(&index, &patched_req).unwrap();
+		assert_eq!(
+			patched_ok.hits.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(),
+			vec!["docs/a2.ts", "docs-other/c.ts"]
+		);
+		assert_eq!(patched_ok.read_ranges, vec![1, 1, 3, 3]);
+
 		index.drop_tree(42);
 		let missing = execute_search(&index, &req).unwrap_err();
 		assert_eq!(missing.kind, "missing_tree");
+
+		let _ = fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn reader_thread_resolves_snapshot_before_subsequent_drop_tree_and_bounds_tree_budget() {
+		let dir = temp_dir("drop-race");
+		let e0 = write_object_file(&dir, "a.rs", "00000000-0000-4000-8000-000000000001", b"alpha_one\n", 1024, 0);
+		let e1 = write_object_file(&dir, "b.rs", "00000000-0000-4000-8000-000000000002", b"beta_two\n", 1024, 1);
+
+		let mut input = Vec::new();
+		let mut push_msg = |v: serde_json::Value| {
+			let s = v.to_string();
+			input.extend_from_slice(&(s.len() as u32).to_be_bytes());
+			input.extend_from_slice(s.as_bytes());
+		};
+		push_msg(serde_json::json!({
+			"op": "syncTree",
+			"id": 1,
+			"snapshotId": 10,
+			"append": false,
+			"entries": [
+				{ "i": 0, "k": 0, "p": e0.p, "v": e0.v, "m": e0.m, "f": e0.f, "b": e0.b, "t": e0.t, "x": false, "rb": 120 }
+			]
+		}));
+		push_msg(serde_json::json!({
+			"op": "search",
+			"id": 2,
+			"snapshotId": 10,
+			"profileId": TEST_PROFILE,
+			"version": 2,
+			"query": "alpha_one",
+			"regex": false,
+			"path": "",
+			"namesOnly": false,
+			"filesOnly": false,
+			"caseSensitive": false,
+			"context": 0,
+			"links": true,
+			"after": null,
+			"sliceMs": 2000
+		}));
+		push_msg(serde_json::json!({
+			"op": "patchTree",
+			"id": 3,
+			"baseSnapshotId": 10,
+			"snapshotId": 11,
+			"upserts": [
+				{ "i": 0, "k": 0, "p": e1.p, "v": e1.v, "m": e1.m, "f": e1.f, "b": e1.b, "t": e1.t, "x": false, "rb": 120 }
+			],
+			"removes": []
+		}));
+		push_msg(serde_json::json!({ "op": "dropTree", "id": 0, "snapshotId": 10 }));
+		push_msg(serde_json::json!({
+			"op": "search",
+			"id": 4,
+			"snapshotId": 11,
+			"profileId": TEST_PROFILE,
+			"version": 2,
+			"query": "beta_two",
+			"regex": false,
+			"path": "",
+			"namesOnly": false,
+			"filesOnly": false,
+			"caseSensitive": false,
+			"context": 0,
+			"links": true,
+			"after": null,
+			"sliceMs": 2000
+		}));
+
+		let (tx_writer, mut rx_reader) = pipe_buffer();
+		run_worker_io(dir.clone(), 1, 1, Cursor::new(input), tx_writer).unwrap();
+		let mut by_id: HashMap<u64, serde_json::Value> = HashMap::new();
+		while let Some(frame) = read_frame(&mut rx_reader).unwrap() {
+			let v: serde_json::Value = serde_json::from_slice(&frame).unwrap();
+			by_id.insert(v["id"].as_u64().unwrap(), v);
+		}
+		assert_eq!(by_id[&1]["synced"], true);
+		assert_eq!(by_id[&2]["ok"]["hits"][0]["path"], "a.rs");
+		assert_eq!(by_id[&3]["synced"], true);
+		assert_eq!(by_id[&4]["ok"]["hits"][0]["path"], "b.rs");
+
+		let index = SharedIndex::new(dir.clone(), 1);
+		let batch: Vec<WorkerEntry> = (0..500u32)
+			.map(|i| WorkerEntry {
+				i,
+				k: 1,
+				p: format!("folder_{i:04}/nested/subpath"),
+				v: format!("00000000-0000-4000-8000-{i:012x}"),
+				m: None,
+				f: None,
+				b: 0,
+				t: None,
+				x: false,
+				tg: None,
+				rb: 120,
+				gm: false,
+			})
+			.collect();
+		for snap in 1..=10u64 {
+			assert!(index.sync_tree(snap, batch.clone(), false));
+		}
+		assert!(index.trees.total_bytes() <= (1024 * 1024 * 35) / 100 + 65536);
+		assert!(index.get_tree(10).is_some());
+		assert!(index.get_tree(1).is_none());
 
 		let _ = fs::remove_dir_all(&dir);
 	}

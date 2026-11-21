@@ -24,6 +24,13 @@ export interface TreeEntry {
 	readonly authority?: CoreReceipt;
 }
 
+export interface TreeDelta {
+	readonly path: string;
+	readonly entry: TreeEntry | undefined;
+}
+
+const MAX_DELTAS = 512;
+
 export type ChildrenResult =
 	| { readonly entries: readonly WireEntry[]; readonly next: string | null }
 	| "not_found"
@@ -131,6 +138,8 @@ export class ViewTree {
 	readonly #children = new Map<string, Set<string>>();
 	readonly #sorted = new Map<string, string[]>();
 	readonly #namesByKey = new Map<string, Map<string, string[]>>();
+	readonly #deltas: { readonly rev: number; readonly path: string; readonly entry: TreeEntry | undefined }[] = [];
+	#deltaBaseRev = 0;
 	#revision = 0;
 
 	get size(): number {
@@ -139,6 +148,20 @@ export class ViewTree {
 
 	get revision(): number {
 		return this.#revision;
+	}
+
+	changesSince(revision: number): readonly TreeDelta[] | undefined {
+		if (revision === this.#revision) return [];
+		if (revision < this.#deltaBaseRev || revision > this.#revision) return undefined;
+		const latest = new Map<string, TreeEntry | undefined>();
+		for (let i = this.#deltas.length - 1; i >= 0; i--) {
+			const delta = this.#deltas[i]!;
+			if (delta.rev <= revision) break;
+			if (!latest.has(delta.path)) latest.set(delta.path, delta.entry);
+		}
+		const out: TreeDelta[] = [];
+		for (const [path, entry] of latest) out.push({ path, entry });
+		return out;
 	}
 
 	get(path: string): TreeEntry | undefined {
@@ -344,8 +367,17 @@ export class ViewTree {
 		return undefined;
 	}
 
-	#link(entry: TreeEntry): void {
+	#recordDelta(path: string, entry: TreeEntry | undefined): void {
 		this.#revision++;
+		if (this.#deltas.length >= MAX_DELTAS) {
+			this.#deltas.splice(0, MAX_DELTAS >> 1);
+			this.#deltaBaseRev = this.#deltas[0]!.rev - 1;
+		}
+		this.#deltas.push({ rev: this.#revision, path, entry });
+	}
+
+	#link(entry: TreeEntry): void {
+		this.#recordDelta(entry.path, entry);
 		const parent = parentOf(entry.path);
 		this.#entries.set(entry.path, entry);
 		let names = this.#children.get(parent);
@@ -361,7 +393,7 @@ export class ViewTree {
 	}
 
 	#unlink(path: string): void {
-		this.#revision++;
+		this.#recordDelta(path, undefined);
 		const parent = parentOf(path);
 		this.#entries.delete(path);
 		this.#children.delete(path);

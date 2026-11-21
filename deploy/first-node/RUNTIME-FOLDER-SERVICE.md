@@ -406,18 +406,36 @@ service, so the execution host stays small:
     after it up to the next hit, each its first 200 characters: no line is shown twice. A page that ends at a hit, or
     out of time, goes on from the first of the lines a next hit would show before it (`from`), and a page out of time
     stops only once that moves the search on, so pages show the same lines around each hit as one long page would.
-  - **Native search worker & regular expressions.** When `/opt/qorpera-folder-service/qorpera-folder` is present,
-    `folder-service` lazily spawns a persistent zero-credential child process
-    (`qorpera-folder search-worker --storage-root <dir> --index-mib 256 --threads 4`) over length-prefixed JSON frames
-    on stdin/stdout and advertises `regex: true` in `hello` with no change to `qorpera-folder-service.service` (no
-    `--enable-experimental-regexp-engine` flag). The worker maintains a content-addressed LRU trigram and object cache
-    keyed by `(profile_id, manifest_sha256)` (`O_NOFOLLOW` + SHA-256 verified against the caller's authorized entries,
-    sharing indexed files across parallel views with zero cross-tenant leakage) and runs a pure-Rust linear-time
-    Thompson NFA engine (`crates/qorpera-folder/src/re.rs`, `O(m * n)` worst-case, zero backtracking) with exact
-    `REGEX_*` refusal codes and Unicode case folding (`ς -> σ`) matching `regex.ts`. Files skipped by the trigram
-    index are still recorded in `reads` at their searched version so read-provenance accounting stays identical to a
-    full scan. When `folderProgram` is unset (legacy unit tests), `folder-service` falls back to in-process `search.ts`
-    and `regex.ts` (capped at `SEARCH_RUNNING = 4`).
+  - **Native search worker & regular expressions (Wave-2 decision, 21 Nov 2026).** In v240 (13 Nov 2026), regular
+    expressions shipped off as the founder's open engine choice: V8's linear-time engine (`l` flag) requires starting
+    node with `--enable-experimental-regexp-engine` in `qorpera-folder-service.service`. On 21 Nov 2026 (Jonas,
+    Wave-2), we chose an off-event-loop pure-Rust Thompson NFA + trigram search worker inside `qorpera-folder` so
+    patterns run on every node with **no change to `qorpera-folder-service.service`** (no experimental V8 flag). When
+    `/opt/qorpera-folder-service/qorpera-folder` is present, `folder-service` lazily spawns a persistent
+    zero-credential child process (`qorpera-folder search-worker --storage-root <dir> --index-mib 256 --threads 4`)
+    over 4-byte length-prefixed JSON frames on stdin/stdout and advertises `regex: true` in `hello`.
+    - **Content-addressed index & linear-time regex.** The worker maintains a sharded LRU cache strictly bounded by
+      `--index-mib` (default `256 MiB`: `50%` trigram filters, `35%` compact `Arc`-shared synced view trees, `15%`
+      verified manifests/chunks), keyed by `(profile_id, manifest_sha256)`. On cache miss, objects are opened under
+      `--storage-root/<profile_id>/<sha256>` with `O_NOFOLLOW` and verified against SHA-256 and manifest metadata
+      before indexing; verified immutable objects share index entries across parallel views with zero cross-tenant
+      leakage. Warm trigram skips check the company's profile directory once per search (catching an unmounted share
+      without firing per-file `lstat` RPCs on NFS, matching `NasObjects`'s in-memory `ByteCache` semantics for immutable
+      objects) and still record every skipped file in `reads` at its searched version so read-provenance accounting
+      matches a full scan identically. Patterns run on a pure-Rust Thompson NFA engine (`crates/qorpera-folder/src/re.rs`,
+      `O(m * n)` worst-case, zero backtracking) with exact `REGEX_*` refusal codes and Unicode case folding (`ς -> σ`)
+      matching `regex.ts` (count limit 16, no back-references, lookaround, inline flags, `\p` or POSIX classes).
+    - **Incremental tree sync & event-loop budget.** Each `ViewTree` syncs to the worker once on first search via
+      `2,048`-entry chunks, yielding to the Node event loop every `10 ms` (`setImmediate`) and checking `serving()` on
+      each turn (measured on `node02` under `node --jitless` at 100,000 paths: `695 ms` total, `12.8 ms` max event-loop
+      lag). Subsequent feed mutations apply an incremental `patchTree` delta from `ViewTree.changesSince(rev)` (up to
+      512 recent mutations; measured at 100,000 paths: `2.7 ms` total, `0.0 ms` max event-loop lag), falling back to a
+      cooperative full sync only on delta rollover or worker restart. In-flight searches reference-count snapshots on
+      both sides (the worker's reader thread resolves each snapshot `Arc` synchronously before a later `dropTree` frame
+      can drop it) and coalesce concurrent syncs per `ViewTree`.
+    - **JS fallback.** When `folderProgram` is unset (legacy unit tests), `folder-service` falls back to in-process
+      `search.ts` and `regex.ts` (`SEARCH_RUNNING = 4`, advertising `regex: true` only if node started with
+      `--enable-experimental-regexp-engine`).
   - **Globs.** `glob` keeps to matching paths: `*` and `?` within a name, a whole `**` part for any number of folders
     (a `**` inside a name is a `*`; a trailing `**` also matches the folder itself, so `docs/**` keeps `docs`); a glob
     without '/' is matched against the name. Matching walks the name and the
@@ -452,8 +470,13 @@ service, so the execution host stays small:
   under the hash of the text it shows (`qorpera_folder_record_release`, P8), before the model sees it.
 - **Memory.** A searching run holds its view's tree, about 670 bytes a path: 16 runs at once of a 100,000-path
   company take about 1 GiB of the service's memory beside its object cache (`cacheMiB`, 1 GiB by default). The
-  persistent Rust search worker adds a bounded LRU content-addressed trigram and object cache (`--index-mib 256`,
-  256 MiB by default) shared across all views on the node, keeping total usage inside the unit's 3 GiB `MemoryMax`.
+  Node-side `SyncedTreeSnapshot` holds only references to existing `TreeEntry` objects and builds `SearchRead` entries
+  on demand for the `<= 4,000` returned read ranges (~12 MiB pointer overhead at `SEARCH_PATHS = 1,500,000`). The
+  persistent Rust search worker budgets all three caches strictly inside `--index-mib 256` (`128 MiB` trigram filters,
+  `89.6 MiB` compact `Arc`-shared synced trees at ~241 bytes/path, `38.4 MiB` verified manifests/chunks; measured on
+  `node02` at `48.2 MiB` `VmRSS` after indexing 10,000 files and `71.2 MiB` `VmRSS` with an additional 100,000-path
+  synced tree, dropping to `70.5 MiB` after incremental `patchTree` + old-snapshot release), keeping combined Node +
+  Rust worst-case memory (~2.4 GiB) comfortably inside the unit's 3 GiB `MemoryMax`.
 - **Bounds for search in every run (keyholes S4).** The unit's `MemoryMax` is 3 GiB.
   - The trees of the node's run views hold at most 1,500,000 paths in all (`SEARCH_PATHS`, about 1 GiB), counting the
     trees being listed for them page by page (a first listing, and a listing again, which holds the old tree and the
@@ -495,7 +518,8 @@ service, so the execution host stays small:
     new admission rule, with its own review): a slice of its own.
   - **Releasing search version 2.** The folder service on each node first, while no company machine runs on the node
     (a restart of the service ends its machines' mounts: wait or pause them as on 11 Nov), its unit unchanged
-    (patterns off, above); then the runtime bundle (its `company_search` asks version 2 of a node that says it, version 1 of one that does
+    (patterns stayed off in v240 and turned on via the Rust `search-worker` on 21 Nov 2026 without changing the unit);
+    then the runtime bundle (its `company_search` asks version 2 of a node that says it, version 1 of one that does
     not); then each node's shared execution service, after the hello check above (its new default turns search on
     unless the host's environment says `off`). Any order works for what is live: an old runtime asks version 1 of a
     new service, and a new runtime asks only version 1's parts of an old one, saying so for the rest.

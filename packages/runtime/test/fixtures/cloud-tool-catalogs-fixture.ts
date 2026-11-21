@@ -6,6 +6,7 @@ import { cloudEventTools } from "@qorpera/runtime/cloud-event-tools";
 import { cloudAppGroupsTool } from "@qorpera/runtime/cloud-folder-app-groups";
 import { cloudAppTools } from "@qorpera/runtime/cloud-folder-app-tools";
 import { cloudFolderFileTools } from "@qorpera/runtime/cloud-folder-file-tools";
+import { cloudFolderSearchTool } from "@qorpera/runtime/cloud-folder-search-tool";
 import { cloudInterfaceTools } from "@qorpera/runtime/cloud-folder-interface-tools";
 import { cloudInterfaceWriteTools } from "@qorpera/runtime/cloud-folder-interface-writes";
 import { cloudPictureTool } from "@qorpera/runtime/cloud-folder-picture-tool";
@@ -70,6 +71,7 @@ export async function catalogs() {
 	const place = { core: "folder-v2", handle: "alice" } as const;
 	const shared = (worker: boolean): CloudNativeTool[] => [
 		...cloudFolderFileTools({ folder, operations, identity }),
+		cloudFolderSearchTool({ search: standIn(), folder, runId: identity.runId }),
 		...cloudInterfaceTools({ folder, identity, timeZone: "UTC" }),
 		...cloudInterfaceWriteTools({ folder, operations, identity }),
 		...cloudAppTools({ folder, operations, identity }),

@@ -1,15 +1,17 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import type { CoreReceipt } from "./core.ts";
 import { ObjectUnavailableError } from "./objects.ts";
 import type { SearchCursor, SearchRequest } from "./protocol.ts";
 import { SearchPatternError } from "./regex.ts";
 import { SEARCH_SLICE_MS, type SearchAnswer, type SearchFile, type SearchHit, type SearchRead } from "./search.ts";
-import type { TreeEntry, ViewTree } from "./view-tree.ts";
+import { byteOrder, type TreeDelta, type TreeEntry, type ViewTree } from "./view-tree.ts";
 
 const DEFAULT_INDEX_MIB = 256;
 const DEFAULT_THREADS = 4;
 const MAX_FRAME_BYTES = 64 * 1024 * 1024;
-const SYNC_CHUNK_ENTRIES = 16_384;
+const SYNC_CHUNK_ENTRIES = 2_048;
+const TURN_MS = 10;
 const STOP_KILL_MS = 2_000;
 const MAX_STDERR_BYTES = 8 * 1024;
 
@@ -56,6 +58,15 @@ interface SyncTreeFrame {
 	readonly snapshotId: number;
 	readonly append: boolean;
 	readonly entries: readonly WorkerEntry[];
+}
+
+interface PatchTreeFrame {
+	readonly op: "patchTree";
+	readonly id: number;
+	readonly baseSnapshotId: number;
+	readonly snapshotId: number;
+	readonly upserts: readonly WorkerEntry[];
+	readonly removes: readonly string[];
 }
 
 interface DropTreeFrame {
@@ -113,8 +124,13 @@ interface SyncedTreeSnapshot {
 	readonly generation: number;
 	readonly revision: number;
 	readonly entries: readonly TreeEntry[];
-	readonly reads: readonly SearchRead[];
-	readonly ready: Promise<void>;
+	inUse: number;
+	retired: boolean;
+}
+
+export interface AcquireSnapshotOptions {
+	readonly missedSnapshotId?: number;
+	readonly serving?: () => void;
 }
 
 export interface NativeSearchWorkerOptions {
@@ -171,18 +187,145 @@ function readEncodedBytes(entry: TreeEntry): number {
 	);
 }
 
-function expandReadRanges(reads: readonly SearchRead[], ranges: readonly number[] | undefined): SearchRead[] {
-	if (!ranges || ranges.length === 0) return [];
-	if (ranges.length === 2) {
-		const start = ranges[0]!;
-		const count = ranges[1]!;
-		return reads.slice(start, start + count);
+function toWorkerEntry(idx: number, entry: TreeEntry): WorkerEntry {
+	const k: 0 | 1 | 2 = entry.kind === "file" ? 0 : entry.kind === "folder" ? 1 : 2;
+	const rb = readEncodedBytes(entry);
+	if (entry.kind === "file" && entry.bytes > 0) {
+		return {
+			i: idx,
+			k,
+			p: entry.path,
+			v: entry.version,
+			...(entry.manifestSha256 === undefined ? {} : { m: entry.manifestSha256 }),
+			...(entry.fileSha256 === undefined ? {} : { f: entry.fileSha256 }),
+			b: entry.bytes,
+			...(entry.mediaType === undefined ? {} : { t: entry.mediaType }),
+			x: entry.executable,
+			rb,
+		};
 	}
+	return {
+		i: idx,
+		k,
+		p: entry.path,
+		v: entry.version,
+		...(entry.kind === "symlink" && entry.target !== undefined ? { tg: entry.target } : {}),
+		rb,
+	};
+}
+
+function hasOverlongName(path: string): boolean {
+	if (path.length <= 85) return false;
+	for (const seg of path.split("/")) {
+		if (Buffer.byteLength(seg) > 255) return true;
+	}
+	return false;
+}
+
+function treePathOrder(a: string, b: string): number {
+	if (a === b) return 0;
+	if (a === "") return -1;
+	if (b === "") return 1;
+	let ai = 0;
+	let bi = 0;
+	while (true) {
+		const aSlash = a.indexOf("/", ai);
+		const bSlash = b.indexOf("/", bi);
+		const aEnd = aSlash < 0 ? a.length : aSlash;
+		const bEnd = bSlash < 0 ? b.length : bSlash;
+		const ord = byteOrder(a.slice(ai, aEnd), b.slice(bi, bEnd));
+		if (ord !== 0) return ord;
+		if (aSlash < 0 && bSlash < 0) return 0;
+		if (aSlash < 0) return -1;
+		if (bSlash < 0) return 1;
+		ai = aSlash + 1;
+		bi = bSlash + 1;
+	}
+}
+
+function lowerBoundPath(entries: readonly TreeEntry[], path: string): number {
+	let lo = 0;
+	let hi = entries.length;
+	while (lo < hi) {
+		const mid = (lo + hi) >>> 1;
+		if (treePathOrder(entries[mid]!.path, path) < 0) lo = mid + 1;
+		else hi = mid;
+	}
+	return lo;
+}
+
+function applyDeltas(
+	base: readonly TreeEntry[],
+	deltas: readonly TreeDelta[],
+): { readonly entries: TreeEntry[]; readonly upserts: WorkerEntry[]; readonly removes: string[] } {
+	const upserts: WorkerEntry[] = [];
+	const removes: string[] = [];
+	if (deltas.length <= 8) {
+		const next = base.slice();
+		for (const delta of deltas) {
+			const pos = lowerBoundPath(next, delta.path);
+			const exists = pos < next.length && next[pos]!.path === delta.path;
+			if (delta.entry === undefined) {
+				if (exists) next.splice(pos, 1);
+				removes.push(delta.path);
+			} else {
+				if (exists) next[pos] = delta.entry;
+				else next.splice(pos, 0, delta.entry);
+				upserts.push(toWorkerEntry(0, delta.entry));
+			}
+		}
+		return { entries: next, upserts, removes };
+	}
+	const pending = new Map<string, TreeEntry | undefined>();
+	for (const delta of deltas) {
+		pending.set(delta.path, delta.entry);
+		if (delta.entry === undefined) removes.push(delta.path);
+		else upserts.push(toWorkerEntry(0, delta.entry));
+	}
+	const kept: TreeEntry[] = [];
+	for (let i = 0; i < base.length; i++) {
+		const entry = base[i]!;
+		if (pending.has(entry.path)) {
+			const replacement = pending.get(entry.path);
+			pending.delete(entry.path);
+			if (replacement !== undefined) kept.push(replacement);
+		} else {
+			kept.push(entry);
+		}
+	}
+	const inserted: TreeEntry[] = [];
+	for (const entry of pending.values()) {
+		if (entry !== undefined) inserted.push(entry);
+	}
+	if (inserted.length === 0) return { entries: kept, upserts, removes };
+	inserted.sort((a, b) => treePathOrder(a.path, b.path));
+	const merged: TreeEntry[] = [];
+	let ki = 0;
+	let ii = 0;
+	while (ki < kept.length && ii < inserted.length) {
+		if (treePathOrder(kept[ki]!.path, inserted[ii]!.path) <= 0) merged.push(kept[ki++]!);
+		else merged.push(inserted[ii++]!);
+	}
+	while (ki < kept.length) merged.push(kept[ki++]!);
+	while (ii < inserted.length) merged.push(inserted[ii++]!);
+	return { entries: merged, upserts, removes };
+}
+
+function expandReadRanges(entries: readonly TreeEntry[], ranges: readonly number[] | undefined): SearchRead[] {
+	if (!ranges || ranges.length === 0) return [];
 	const out: SearchRead[] = [];
 	for (let i = 0; i + 1 < ranges.length; i += 2) {
 		const start = ranges[i]!;
 		const end = start + ranges[i + 1]!;
-		for (let j = start; j < end; j++) out.push(reads[j]!);
+		for (let j = start; j < end; j++) {
+			const entry = entries[j]!;
+			out.push({
+				path: entry.path,
+				kind: entry.kind,
+				version: entry.version,
+				...(entry.authority === undefined ? {} : { authority: entry.authority }),
+			});
+		}
 	}
 	return out;
 }
@@ -199,6 +342,7 @@ export class NativeSearchWorker {
 	#nextSnapshotId = 1;
 	readonly #pending = new Map<number, PendingCall>();
 	readonly #snapshots = new WeakMap<ViewTree, SyncedTreeSnapshot>();
+	readonly #inFlight = new WeakMap<ViewTree, Promise<SyncedTreeSnapshot>>();
 	readonly #finalizer: FinalizationRegistry<{ readonly generation: number; readonly snapshotId: number }>;
 	#chunks: Buffer[] = [];
 	#buffered = 0;
@@ -223,93 +367,63 @@ export class NativeSearchWorker {
 		return this.#proc?.pid;
 	}
 
-	async ensureSnapshot(tree: ViewTree, force = false): Promise<SyncedTreeSnapshot> {
+	async acquireSnapshot(tree: ViewTree, options: AcquireSnapshotOptions = {}): Promise<SyncedTreeSnapshot> {
 		if (this.#closed) throw new ObjectUnavailableError("Search worker is closed");
-		this.#ensureRunning();
-		const generation = this.#generation;
-		const revision = tree.revision;
-		const existing = this.#snapshots.get(tree);
-		if (!force && existing && existing.generation === generation && existing.revision === revision) {
-			await existing.ready;
-			return existing;
-		}
-		const snapshotId = this.#nextSnapshotId++;
-		const entries: TreeEntry[] = [];
-		const reads: SearchRead[] = [];
-		const wire: WorkerEntry[] = [];
-		for (const entry of tree.walk("")) {
-			const idx = entries.length;
-			entries.push(entry);
-			reads.push({
-				path: entry.path,
-				kind: entry.kind,
-				version: entry.version,
-				...(entry.authority === undefined ? {} : { authority: entry.authority }),
-			});
-			const k: 0 | 1 | 2 = entry.kind === "file" ? 0 : entry.kind === "folder" ? 1 : 2;
-			const rb = readEncodedBytes(entry);
-			if (entry.kind === "file" && entry.bytes > 0) {
-				wire.push({
-					i: idx,
-					k,
-					p: entry.path,
-					v: entry.version,
-					...(entry.manifestSha256 === undefined ? {} : { m: entry.manifestSha256 }),
-					...(entry.fileSha256 === undefined ? {} : { f: entry.fileSha256 }),
-					b: entry.bytes,
-					...(entry.mediaType === undefined ? {} : { t: entry.mediaType }),
-					x: entry.executable,
-					rb,
-				});
-			} else {
-				wire.push({
-					i: idx,
-					k,
-					p: entry.path,
-					v: entry.version,
-					...(entry.kind === "symlink" && entry.target !== undefined ? { tg: entry.target } : {}),
-					rb,
-				});
+		const { missedSnapshotId, serving } = options;
+		for (let round = 0; round < 4; round++) {
+			this.#ensureRunning();
+			const generation = this.#generation;
+			const current = this.#snapshots.get(tree);
+			if (
+				current &&
+				current.generation === generation &&
+				current.revision === tree.revision &&
+				current.snapshotId !== missedSnapshotId
+			) {
+				current.inUse++;
+				return current;
 			}
-		}
-
-		const ready = (async (): Promise<void> => {
-			if (wire.length === 0) {
-				await this.#sendFrame({ op: "syncTree", snapshotId, append: false, entries: [] });
-			} else {
-				for (let offset = 0; offset < wire.length; offset += SYNC_CHUNK_ENTRIES) {
-					const chunk = wire.slice(offset, offset + SYNC_CHUNK_ENTRIES);
-					await this.#sendFrame({
-						op: "syncTree",
-						snapshotId,
-						append: offset > 0,
-						entries: chunk,
-					});
-				}
-			}
-		})();
-
-		const snapshot: SyncedTreeSnapshot = { snapshotId, generation, revision, entries, reads, ready };
-		this.#snapshots.set(tree, snapshot);
-		this.#finalizer.unregister(tree);
-		this.#finalizer.register(tree, { generation, snapshotId }, tree);
-		if (existing && existing.generation === generation) {
-			void ready.then(
-				() => {
-					if (!this.#closed && this.#proc && this.#generation === generation) {
-						this.#sendDropTree(existing.snapshotId);
+			const inflight = this.#inFlight.get(tree);
+			if (inflight) {
+				try {
+					const synced = await inflight;
+					if (synced.generation === this.#generation && synced.snapshotId !== missedSnapshotId && !synced.retired) {
+						synced.inUse++;
+						return synced;
 					}
-				},
-				() => {},
-			);
+				} catch (error) {
+					if (!(error instanceof MissingTreeError)) throw error;
+				}
+				continue;
+			}
+			const promise = this.#syncOrPatch(tree, generation, current, missedSnapshotId, serving);
+			this.#inFlight.set(tree, promise);
+			try {
+				const synced = await promise;
+				if (synced.generation === this.#generation && synced.snapshotId !== missedSnapshotId && !synced.retired) {
+					synced.inUse++;
+					return synced;
+				}
+			} catch (error) {
+				if (!(error instanceof MissingTreeError)) throw error;
+			} finally {
+				if (this.#inFlight.get(tree) === promise) this.#inFlight.delete(tree);
+			}
 		}
-		try {
-			await ready;
-		} catch (error) {
-			if (this.#snapshots.get(tree) === snapshot) this.#snapshots.delete(tree);
-			throw error;
+		throw new ObjectUnavailableError("Search snapshot could not be synchronized");
+	}
+
+	releaseSnapshot(snapshot: SyncedTreeSnapshot): void {
+		if (snapshot.inUse > 0) snapshot.inUse--;
+		if (
+			snapshot.retired &&
+			snapshot.inUse === 0 &&
+			!this.#closed &&
+			this.#proc &&
+			this.#generation === snapshot.generation
+		) {
+			this.#sendDropTree(snapshot.snapshotId);
 		}
-		return snapshot;
 	}
 
 	async search(frame: Omit<SearchFrame, "op" | "id">): Promise<WorkerOk> {
@@ -334,6 +448,161 @@ export class NativeSearchWorker {
 		this.#terminate(proc, true);
 	}
 
+	async #syncOrPatch(
+		tree: ViewTree,
+		generation: number,
+		base: SyncedTreeSnapshot | undefined,
+		missedSnapshotId: number | undefined,
+		serving: (() => void) | undefined,
+	): Promise<SyncedTreeSnapshot> {
+		if (
+			base &&
+			base.generation === generation &&
+			base.snapshotId !== missedSnapshotId &&
+			base.revision >= 0 &&
+			base.revision !== tree.revision
+		) {
+			const targetRev = tree.revision;
+			const deltas = tree.changesSince(base.revision);
+			if (deltas !== undefined && deltas.length > 0 && !deltas.some((d) => hasOverlongName(d.path))) {
+				const { entries, upserts, removes } = applyDeltas(base.entries, deltas);
+				const snapshotId = this.#nextSnapshotId++;
+				try {
+					await this.#sendFrame({
+						op: "patchTree",
+						baseSnapshotId: base.snapshotId,
+						snapshotId,
+						upserts,
+						removes,
+					});
+					const next: SyncedTreeSnapshot = {
+						snapshotId,
+						generation,
+						revision: targetRev,
+						entries,
+						inUse: 0,
+						retired: false,
+					};
+					this.#installSnapshot(tree, next, base);
+					return next;
+				} catch (error) {
+					if (!(error instanceof MissingTreeError)) throw error;
+				}
+			}
+		}
+		return this.#fullSync(tree, generation, base, serving);
+	}
+
+	async #fullSync(
+		tree: ViewTree,
+		generation: number,
+		previous: SyncedTreeSnapshot | undefined,
+		serving: (() => void) | undefined,
+	): Promise<SyncedTreeSnapshot> {
+		const startRevision = tree.revision;
+		const snapshotId = this.#nextSnapshotId++;
+		const entries: TreeEntry[] = [];
+		let chunk: WorkerEntry[] = [];
+		let firstChunk = true;
+		let walked = 0;
+		let turnAt = performance.now();
+		try {
+			for (const entry of tree.walk("")) {
+				entries.push(entry);
+				chunk.push(toWorkerEntry(entries.length - 1, entry));
+				walked++;
+				if (chunk.length >= SYNC_CHUNK_ENTRIES) {
+					await this.#sendFrame({
+						op: "syncTree",
+						snapshotId,
+						append: !firstChunk,
+						entries: chunk,
+					});
+					firstChunk = false;
+					chunk = [];
+					serving?.();
+					await nextTurn();
+					turnAt = performance.now();
+				} else if ((walked & 255) === 0 && performance.now() - turnAt >= TURN_MS) {
+					serving?.();
+					await nextTurn();
+					turnAt = performance.now();
+				}
+			}
+			if (chunk.length > 0 || firstChunk) {
+				await this.#sendFrame({
+					op: "syncTree",
+					snapshotId,
+					append: !firstChunk,
+					entries: chunk,
+				});
+				firstChunk = false;
+			}
+		} catch (error) {
+			if (!firstChunk && !this.#closed && this.#proc && this.#generation === generation) {
+				this.#sendDropTree(snapshotId);
+			}
+			throw error;
+		}
+
+		let finalId = snapshotId;
+		let finalEntries = entries;
+		let finalRevision = startRevision;
+		if (tree.revision !== startRevision) {
+			const endRevision = tree.revision;
+			const deltas = tree.changesSince(startRevision);
+			if (deltas !== undefined && deltas.length > 0 && !deltas.some((d) => hasOverlongName(d.path))) {
+				const patched = applyDeltas(entries, deltas);
+				const patchedId = this.#nextSnapshotId++;
+				try {
+					await this.#sendFrame({
+						op: "patchTree",
+						baseSnapshotId: snapshotId,
+						snapshotId: patchedId,
+						upserts: patched.upserts,
+						removes: patched.removes,
+					});
+					if (!this.#closed && this.#proc && this.#generation === generation) {
+						this.#sendDropTree(snapshotId);
+					}
+					finalId = patchedId;
+					finalEntries = patched.entries;
+					finalRevision = endRevision;
+				} catch (error) {
+					if (!this.#closed && this.#proc && this.#generation === generation) {
+						this.#sendDropTree(snapshotId);
+					}
+					throw error;
+				}
+			} else {
+				finalRevision = -1;
+			}
+		}
+
+		const next: SyncedTreeSnapshot = {
+			snapshotId: finalId,
+			generation,
+			revision: finalRevision,
+			entries: finalEntries,
+			inUse: 0,
+			retired: false,
+		};
+		this.#installSnapshot(tree, next, previous);
+		return next;
+	}
+
+	#installSnapshot(tree: ViewTree, next: SyncedTreeSnapshot, previous: SyncedTreeSnapshot | undefined): void {
+		this.#snapshots.set(tree, next);
+		this.#finalizer.unregister(tree);
+		this.#finalizer.register(tree, { generation: next.generation, snapshotId: next.snapshotId }, tree);
+		if (previous && previous.generation === next.generation && previous.snapshotId !== next.snapshotId) {
+			previous.retired = true;
+			if (previous.inUse === 0 && !this.#closed && this.#proc && this.#generation === previous.generation) {
+				this.#sendDropTree(previous.snapshotId);
+			}
+		}
+	}
+
 	#sendDropTree(snapshotId: number): void {
 		const proc = this.#proc;
 		if (!proc || this.#closed) return;
@@ -347,7 +616,9 @@ export class NativeSearchWorker {
 		} catch {}
 	}
 
-	#sendFrame(request: Omit<SearchFrame, "id"> | Omit<SyncTreeFrame, "id">): Promise<WorkerResponse> {
+	#sendFrame(
+		request: Omit<SearchFrame, "id"> | Omit<SyncTreeFrame, "id"> | Omit<PatchTreeFrame, "id">,
+	): Promise<WorkerResponse> {
 		if (this.#closed) return Promise.reject(new ObjectUnavailableError("Search worker is closed"));
 		const proc = this.#ensureRunning();
 		const id = this.#nextId++;
@@ -532,67 +803,80 @@ export async function searchViewNative(
 	const sliceMs = source.sliceMs ?? SEARCH_SLICE_MS;
 	const deadline = source.now() + sliceMs;
 
-	let snapshot = await worker.ensureSnapshot(source.tree, false);
+	let activeSnapshot: SyncedTreeSnapshot | undefined = await worker.acquireSnapshot(source.tree, {
+		serving: source.serving,
+	});
 	source.serving?.();
 	let profileId: string | null = source.cachedProfile?.() ?? null;
 
-	for (let attempt = 0; attempt < 3; attempt++) {
-		try {
-			const ok = await worker.search({
-				snapshotId: snapshot.snapshotId,
-				profileId,
-				version: request.version,
-				query: request.query,
-				regex: useRegex,
-				path: request.path,
-				glob: request.glob,
-				namesOnly: request.namesOnly,
-				filesOnly,
-				caseSensitive: request.caseSensitive,
-				context,
-				links,
-				after: request.after,
-				sliceMs: Math.max(0, Math.ceil(deadline - source.now())),
-				...(source.longestLine === undefined ? {} : { longestLine: source.longestLine }),
-				...(source.pieceBytes === undefined ? {} : { pieceBytes: source.pieceBytes }),
-			});
-			source.serving?.();
-			for (const line of ok.logs) source.log?.(line);
-			const reads = expandReadRanges(snapshot.reads, ok.readRanges);
-			return v2
-				? {
-						hits: ok.hits,
-						files: ok.files,
-						searched: ok.searched,
-						binary: ok.binary,
-						unreadable: ok.unreadable,
-						longLines: ok.longLines,
-						reads,
-						next: ok.next,
-					}
-				: {
-						hits: ok.hits,
-						searched: ok.searched,
-						binary: ok.binary,
-						unreadable: ok.unreadable,
-						reads,
-						next: ok.next,
-					};
-		} catch (error) {
-			if (error instanceof MissingTreeError) {
-				snapshot = await worker.ensureSnapshot(source.tree, true);
+	try {
+		for (let attempt = 0; attempt < 3; attempt++) {
+			const snapshot = activeSnapshot;
+			try {
+				const ok = await worker.search({
+					snapshotId: snapshot.snapshotId,
+					profileId,
+					version: request.version,
+					query: request.query,
+					regex: useRegex,
+					path: request.path,
+					glob: request.glob,
+					namesOnly: request.namesOnly,
+					filesOnly,
+					caseSensitive: request.caseSensitive,
+					context,
+					links,
+					after: request.after,
+					sliceMs: Math.max(0, Math.ceil(deadline - source.now())),
+					...(source.longestLine === undefined ? {} : { longestLine: source.longestLine }),
+					...(source.pieceBytes === undefined ? {} : { pieceBytes: source.pieceBytes }),
+				});
 				source.serving?.();
-				continue;
+				for (const line of ok.logs) source.log?.(line);
+				const reads = expandReadRanges(snapshot.entries, ok.readRanges);
+				return v2
+					? {
+							hits: ok.hits,
+							files: ok.files,
+							searched: ok.searched,
+							binary: ok.binary,
+							unreadable: ok.unreadable,
+							longLines: ok.longLines,
+							reads,
+							next: ok.next,
+						}
+					: {
+							hits: ok.hits,
+							searched: ok.searched,
+							binary: ok.binary,
+							unreadable: ok.unreadable,
+							reads,
+							next: ok.next,
+						};
+			} catch (error) {
+				if (error instanceof MissingTreeError) {
+					const missedSnapshotId = snapshot.snapshotId;
+					worker.releaseSnapshot(snapshot);
+					activeSnapshot = undefined;
+					activeSnapshot = await worker.acquireSnapshot(source.tree, {
+						missedSnapshotId,
+						serving: source.serving,
+					});
+					source.serving?.();
+					continue;
+				}
+				if (error instanceof NeedProfileError && profileId === null) {
+					const target = snapshot.entries[error.entryIndex];
+					if (!target) throw new ObjectUnavailableError("Search worker referenced an unknown entry");
+					profileId = await source.resolveProfile(target);
+					source.serving?.();
+					continue;
+				}
+				throw error;
 			}
-			if (error instanceof NeedProfileError && profileId === null) {
-				const target = snapshot.entries[error.entryIndex];
-				if (!target) throw new ObjectUnavailableError("Search worker referenced an unknown entry");
-				profileId = await source.resolveProfile(target);
-				source.serving?.();
-				continue;
-			}
-			throw error;
 		}
+		throw new ObjectUnavailableError("Search could not complete after snapshot retries");
+	} finally {
+		if (activeSnapshot !== undefined) worker.releaseSnapshot(activeSnapshot);
 	}
-	throw new ObjectUnavailableError("Search could not complete after snapshot retries");
 }

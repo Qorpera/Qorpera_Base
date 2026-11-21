@@ -167,18 +167,23 @@ describe.skipIf(!program)("native Rust search-worker E2E", () => {
 		});
 	});
 
-	it("matches JS searchView exactly across pagination, context, long lines, globs, and provenance reads", async () => {
+	it("matches JS searchView exactly across cold and warm trigram passes, Unicode folding, regex, pagination, context, long lines, globs, and provenance reads", async () => {
 		const root = await makeTempDir();
 		const lines = Array.from({ length: 40 }, (_, i) =>
 			i % 5 === 2 ? `item_${i} needle MATCH_${i} end` : `plain line ${i} without term`,
 		).join("\n");
+		const unicodeText = ["kelvin \u212A value", "turkish \u0130stanbul city", "ΟΔΟΣ ΚΟΣΜΟΣ", "plain ascii line"].join(
+			"\n",
+		);
 		const tree = makeTree([
 			folder("src", 1),
 			folder("src/sub", 2),
 			await storeFile(root, "src/a.ts", `${lines}\n`, 3, 128),
+			await storeFile(root, "src/nomatch.txt", "unrelated content for skip\n", 7, 1024),
 			await storeFile(root, "src/sub/b.ts", `${"x".repeat(45)}\n${"x".repeat(30)}\nneedle here\n`, 4, 32),
 			await storeFile(root, "src/sub/c.bin", Buffer.from("needle\0binary\n"), 5, 32),
 			link("src/sub/needle-link", "../a.ts", 6),
+			await storeFile(root, "src/unicode.txt", `${unicodeText}\n`, 8, 1024),
 		]);
 		const objects = new NasObjects({ root, cacheBytes: 1024 * 1024 });
 		const worker = new NativeSearchWorker({
@@ -190,21 +195,20 @@ describe.skipIf(!program)("native Rust search-worker E2E", () => {
 		cleanup.push(() => worker.close());
 
 		const cases: { req: SearchRequest; pieceBytes?: number; longestLine?: number; links?: boolean }[] = [
+			{ req: makeRequest({ query: "needle", context: 2 }), links: true },
 			{ req: makeRequest({ query: "needle", context: 2 }), pieceBytes: 64, links: true },
+			{ req: makeRequest({ query: "MATCH_", caseSensitive: true, filesOnly: true }), links: true },
 			{ req: makeRequest({ query: "MATCH_", caseSensitive: true, filesOnly: true }), pieceBytes: 64, links: true },
+			{ req: makeRequest({ query: "never_exists_in_any_file_trigram_skip" }), links: true },
+			{ req: makeRequest({ query: "kelvin k value", caseSensitive: false }), links: true },
+			{ req: makeRequest({ query: "KELVIN \u212A VALUE", caseSensitive: false }), links: true },
+			{ req: makeRequest({ query: "i\u0307stanbul", caseSensitive: false }), links: true },
+			{ req: makeRequest({ query: "οδος κοσμος", caseSensitive: false }), links: true },
 			{ req: makeRequest({ query: "needle", glob: "sub/*.ts" }), links: true },
 			{ req: makeRequest({ query: "needle", namesOnly: true }), links: true },
 			{ req: makeRequest({ query: "needle", namesOnly: true }), links: false },
 			{ req: makeRequest({ version: 1, query: "needle" }), links: true },
 		];
-		if (linearRegexAvailable()) {
-			cases.push({
-				req: makeRequest({ query: "^x+$", regex: true }),
-				pieceBytes: 32,
-				longestLine: 40,
-				links: true,
-			});
-		}
 
 		for (const tc of cases) {
 			const jsAnswer = await searchView(
@@ -218,19 +222,93 @@ describe.skipIf(!program)("native Rust search-worker E2E", () => {
 				},
 				tc.req,
 			);
-			const rustAnswer = await searchViewNative(
-				worker,
-				{
-					tree,
-					links: tc.links ?? true,
-					resolveProfile: async () => PROFILE,
-					now: Date.now,
-					...(tc.pieceBytes === undefined ? {} : { pieceBytes: tc.pieceBytes }),
-					...(tc.longestLine === undefined ? {} : { longestLine: tc.longestLine }),
-				},
-				tc.req,
-			);
-			expect(rustAnswer).toEqual(jsAnswer);
+			const source = {
+				tree,
+				links: tc.links ?? true,
+				resolveProfile: async () => PROFILE,
+				now: Date.now,
+				...(tc.pieceBytes === undefined ? {} : { pieceBytes: tc.pieceBytes }),
+				...(tc.longestLine === undefined ? {} : { longestLine: tc.longestLine }),
+			};
+			const coldAnswer = await searchViewNative(worker, source, tc.req);
+			expect(coldAnswer).toEqual(jsAnswer);
+			const warmAnswer = await searchViewNative(worker, source, tc.req);
+			expect(warmAnswer).toEqual(jsAnswer);
+		}
+
+		const regexCases: {
+			req: SearchRequest;
+			longestLine?: number;
+			expectedPaths: string[];
+			expectedLines: number[];
+			expectedLongLines: number;
+		}[] = [
+			{
+				req: makeRequest({ query: "^x+$", regex: true }),
+				longestLine: 40,
+				expectedPaths: ["src/sub/b.ts"],
+				expectedLines: [2],
+				expectedLongLines: 1,
+			},
+			{
+				req: makeRequest({ query: "kelvin\\s+k\\s+value", regex: true, caseSensitive: false }),
+				expectedPaths: ["src/unicode.txt"],
+				expectedLines: [1],
+				expectedLongLines: 0,
+			},
+			{
+				req: makeRequest({ query: "οδος\\s+κοσμος", regex: true, caseSensitive: false }),
+				expectedPaths: ["src/unicode.txt"],
+				expectedLines: [3],
+				expectedLongLines: 0,
+			},
+			{
+				req: makeRequest({ query: "zzzz_regex_warm_skip_[0-9]+", regex: true }),
+				longestLine: 40,
+				expectedPaths: [],
+				expectedLines: [],
+				expectedLongLines: 1,
+			},
+		];
+		const expectedAllReadPaths = [
+			"src",
+			"src/a.ts",
+			"src/nomatch.txt",
+			"src/sub",
+			"src/sub/b.ts",
+			"src/sub/c.bin",
+			"src/unicode.txt",
+		];
+		for (const rc of regexCases) {
+			const source = {
+				tree,
+				links: true,
+				resolveProfile: async () => PROFILE,
+				now: Date.now,
+				...(rc.longestLine === undefined ? {} : { longestLine: rc.longestLine }),
+			};
+			const cold = await searchViewNative(worker, source, rc.req);
+			const warm = await searchViewNative(worker, source, rc.req);
+			expect(warm).toEqual(cold);
+			expect(cold.hits.map((h) => h.path)).toEqual(rc.expectedPaths);
+			expect(cold.hits.map((h) => h.line)).toEqual(rc.expectedLines);
+			expect(cold.longLines).toBe(rc.expectedLongLines);
+			expect(cold.searched).toBe(4);
+			expect(cold.binary).toBe(1);
+			expect(cold.reads.map((r) => r.path)).toEqual(expectedAllReadPaths);
+			if (linearRegexAvailable()) {
+				const jsRegex = await searchView(
+					{
+						tree,
+						links: true,
+						read: (entry, offset, length) => objects.read(PROFILE, entry, offset, length),
+						now: Date.now,
+						...(rc.longestLine === undefined ? {} : { longestLine: rc.longestLine }),
+					},
+					rc.req,
+				);
+				expect(cold).toEqual(jsRegex);
+			}
 		}
 	});
 
@@ -402,5 +480,121 @@ describe.skipIf(!program)("native Rust search-worker E2E", () => {
 			),
 		).rejects.toThrow("closed");
 		expect(new ProtocolError(ErrorCode.unavailable, "x").code).toBe(ErrorCode.unavailable);
+	});
+
+	it("handles 16 concurrent searches under continuous live tree mutations and delta rollover without snapshot failures", async () => {
+		const root = await makeTempDir();
+		const seeded: CoreEntry[] = [
+			folder("repo", 1),
+			await storeFile(root, "repo/sentinel.ts", 'export const ALWAYS_PRESENT_SENTINEL = "ok";\n', 2, 4096),
+		];
+		for (let i = 0; i < 120; i++) {
+			seeded.push(
+				await storeFile(
+					root,
+					`repo/item_${String(i).padStart(3, "0")}.ts`,
+					`export const val_${i} = "initial_${i}";\n`,
+					10 + i,
+					4096,
+				),
+			);
+		}
+		const tree = makeTree(seeded);
+		const objects = new NasObjects({ root, cacheBytes: 1024 * 1024 });
+		const worker = new NativeSearchWorker({
+			folderProgram: program!,
+			storageRoot: root,
+			indexMiB: 8,
+			threads: 4,
+			log: () => {},
+		});
+		cleanup.push(() => worker.close());
+
+		const preparedUpdates: CoreEntry[] = [];
+		for (let m = 0; m < 40; m++) {
+			preparedUpdates.push(
+				await storeFile(
+					root,
+					`repo/live_${String(m).padStart(2, "0")}.ts`,
+					`export const live_token_${m} = "mutated_${m}";\n`,
+					1_000 + m,
+					4096,
+				),
+			);
+		}
+
+		let mutating = true;
+		const mutator = (async () => {
+			for (let m = 0; m < preparedUpdates.length; m++) {
+				tree.put(preparedUpdates[m]!);
+				if (m % 4 === 0) tree.remove(`repo/item_${String(m).padStart(3, "0")}.ts`);
+				await new Promise((resolve) => setTimeout(resolve, 2));
+			}
+			mutating = false;
+		})();
+
+		const searchLoops = Array.from({ length: SEARCH_RUNNING_NATIVE }, (_, lane) =>
+			(async () => {
+				let runs = 0;
+				while (mutating || runs < 3) {
+					const req =
+						lane % 3 === 0
+							? makeRequest({ query: "ALWAYS_PRESENT_SENTINEL", regex: false })
+							: lane % 3 === 1
+								? makeRequest({ query: "ALWAYS_PRESENT_[A-Z]+", regex: true })
+								: makeRequest({ query: "sentinel", namesOnly: true });
+					const ans = await searchViewNative(
+						worker,
+						{ tree, links: true, resolveProfile: async () => PROFILE, now: Date.now },
+						req,
+					);
+					expect(ans.hits.some((h) => h.path === "repo/sentinel.ts")).toBe(true);
+					runs++;
+				}
+			})(),
+		);
+
+		await Promise.all([mutator, ...searchLoops]);
+
+		const finalReq = makeRequest({ query: "mutated_" });
+		const finalRust = await searchViewNative(
+			worker,
+			{ tree, links: true, resolveProfile: async () => PROFILE, now: Date.now },
+			finalReq,
+		);
+		const finalJs = await searchView(
+			{
+				tree,
+				links: true,
+				read: (entry, offset, length) => objects.read(PROFILE, entry, offset, length),
+				now: Date.now,
+			},
+			finalReq,
+		);
+		expect(finalRust).toEqual(finalJs);
+		expect(finalRust.hits).toHaveLength(40);
+
+		const rolloverEntry = await storeFile(root, "repo/rollover_marker.ts", "rollover_final_token\n", 9_999, 4096);
+		for (let i = 0; i < 600; i++) {
+			tree.put({ ...rolloverEntry, path: `repo/rollover_${i % 10}.ts`, version: v(2_000 + i) });
+		}
+		tree.put(rolloverEntry);
+		expect(tree.changesSince(1)).toBeUndefined();
+		const afterRollover = await searchViewNative(
+			worker,
+			{ tree, links: true, resolveProfile: async () => PROFILE, now: Date.now },
+			makeRequest({ query: "rollover_final_token" }),
+		);
+		const jsAfterRollover = await searchView(
+			{
+				tree,
+				links: true,
+				read: (entry, offset, length) => objects.read(PROFILE, entry, offset, length),
+				now: Date.now,
+			},
+			makeRequest({ query: "rollover_final_token" }),
+		);
+		expect(afterRollover).toEqual(jsAfterRollover);
+		expect(afterRollover.hits.some((h) => h.path === "repo/rollover_marker.ts")).toBe(true);
 	});
 });

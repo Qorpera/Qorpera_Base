@@ -72,7 +72,7 @@ describe("the list of platform updates", () => {
 
 	it("names only tools the Co-Founder's company runs have", async () => {
 		const { staff } = await catalogs();
-		const tools = new Set([...staff.map((tool) => tool.name), "company_search"]);
+		const tools = new Set(staff.map((tool) => tool.name));
 		const named = new Set(
 			PLATFORM_UPDATES.flatMap((update) =>
 				[...update.text.matchAll(/\b[a-z]+(?:_[a-z]+)+\b/g)].map(([name]) => name),
