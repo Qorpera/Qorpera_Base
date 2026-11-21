@@ -85,7 +85,22 @@ export const RECHECK_MS = 5 * 60_000;
 /** Connects: refused ones a minute per address (an IPv6 /64) and link, outside the trusted addresses; in flight in
  * all, for everyone. */
 export const CONNECT_LIMIT = Object.freeze({ refusedPerMinute: 10, total: 512 });
-export const TYPE = Object.freeze({ head: 1, body: 2, end: 3, response: 4, reset: 5, hello: 6, keepalive: 7 });
+export const MAX_WS_PER_SITE = 32;
+export const MAX_WS_MESSAGE_BYTES = 1024 * 1024;
+export const MAX_WS_QUEUED_BYTES = 2 * 1024 * 1024;
+export const TYPE = Object.freeze({
+	head: 1,
+	body: 2,
+	end: 3,
+	response: 4,
+	reset: 5,
+	hello: 6,
+	keepalive: 7,
+	wsOpen: 8,
+	wsOpenOk: 9,
+	wsData: 10,
+	wsClose: 11,
+});
 export const CLOSE = Object.freeze({ refused: 4001, replaced: 4002, portChanged: 1012, tooManyPings: 1008 });
 
 const SLUG = "[a-z0-9][a-z0-9-]{1,46}[a-z0-9]";
@@ -110,6 +125,17 @@ const MAX_RPC_ANSWER_BYTES = 64 * 1024;
 const RPC_TIMEOUT_MS = 20_000;
 const MAX_PASSWORD = 1024;
 const MAX_NEXT = 2048;
+const MAX_VISITOR_UPGRADING = 512;
+const MAX_WS_PROTOCOLS = 32;
+const MAX_WS_PROTOCOL_LENGTH = 256;
+const WS_HANDSHAKE_DROPPED = new Set([
+	"content-length",
+	"sec-websocket-key",
+	"sec-websocket-version",
+	"sec-websocket-extensions",
+	"sec-websocket-accept",
+]);
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 const EMPTY = Buffer.alloc(0);
 
 /** Headers that belong to one connection, never passed on (RFC 9110 7.6.1), either way. */
@@ -289,6 +315,104 @@ export function responseHeaders(pairs) {
 		headers.push([name, value]);
 	}
 	headers.push(...(noStore ? NO_STORE_CACHE_HEADERS : FORWARDED_CACHE_HEADERS).map((pair) => [...pair]));
+	return headers;
+}
+
+export function parseWsProtocols(raw) {
+	const protocols = [];
+	const seen = new Set();
+	for (const [name, value] of headerPairs(raw)) {
+		if (name.toLowerCase() !== "sec-websocket-protocol") continue;
+		const parts = value.split(",");
+		for (const part of parts) {
+			const token = part.trim();
+			if (
+				!token ||
+				token.length > MAX_WS_PROTOCOL_LENGTH ||
+				!HEADER_NAME.test(token) ||
+				seen.has(token) ||
+				protocols.length >= MAX_WS_PROTOCOLS
+			)
+				return { ok: false, protocols: [] };
+			seen.add(token);
+			protocols.push(token);
+		}
+	}
+	return { ok: true, protocols };
+}
+
+export function isValidVisitorWsOrigin(headers, host, raw) {
+	const site = headers["sec-fetch-site"];
+	if (site === "same-site" || site === "cross-site") return false;
+	const expected = `https://${host}`;
+	if (Array.isArray(raw)) {
+		const origins = [];
+		for (const [name, value] of headerPairs(raw)) {
+			const lower = name.toLowerCase();
+			if (lower === "sec-fetch-site" && (value === "same-site" || value === "cross-site")) return false;
+			if (lower === "origin") origins.push(value);
+		}
+		return origins.length === 1 && origins[0] === expected;
+	}
+	return headers.origin === expected;
+}
+
+export function wsRequestHeaders(raw, { host, client, protocols = [] }) {
+	const pairs = headerPairs(raw);
+	const listed = connectionListed(pairs);
+	const headers = [["host", host]];
+	for (const [name, value] of pairs) {
+		const lower = name.toLowerCase();
+		if (
+			HOP_BY_HOP.has(lower) ||
+			listed.has(lower) ||
+			VISITOR_DROPPED.has(lower) ||
+			WS_HANDSHAKE_DROPPED.has(lower) ||
+			lower === "authorization" ||
+			lower === "sec-websocket-protocol" ||
+			lower.startsWith("x-envoy-")
+		)
+			continue;
+		if (lower === "cookie") {
+			const kept = withoutGateCookie(value);
+			if (kept !== null) headers.push([name, kept]);
+			continue;
+		}
+		headers.push([name, value]);
+	}
+	if (protocols.length > 0) headers.push(["sec-websocket-protocol", protocols.join(", ")]);
+	headers.push(["x-forwarded-proto", "https"], ["x-forwarded-host", host]);
+	if (client) headers.push(["x-forwarded-for", client]);
+	return headers;
+}
+
+export function wsResponseHeaders(pairs) {
+	if (!Array.isArray(pairs) || pairs.length > 100) return null;
+	if (
+		!pairs.every((pair) => Array.isArray(pair) && pair.length === 2 && pair.every((item) => typeof item === "string"))
+	)
+		return null;
+	const listed = connectionListed(pairs);
+	const headers = [];
+	for (const [name, value] of pairs) {
+		const lower = name.toLowerCase();
+		if (
+			!HEADER_NAME.test(name) ||
+			!HEADER_VALUE.test(value) ||
+			HOP_BY_HOP.has(lower) ||
+			listed.has(lower) ||
+			APP_CACHE_HEADERS.has(lower) ||
+			WS_HANDSHAKE_DROPPED.has(lower) ||
+			lower === "sec-websocket-protocol"
+		)
+			continue;
+		if (lower === "set-cookie") {
+			const cookie = appCookie(value);
+			if (cookie !== null) headers.push([name, cookie]);
+			continue;
+		}
+		headers.push([name, value]);
+	}
 	return headers;
 }
 
@@ -475,6 +599,47 @@ export function decodeMessage(message) {
 	return { type: message[0], stream: message.readUInt32BE(1), payload: message.subarray(5) };
 }
 
+export function isValidCloseCode(code) {
+	return (
+		Number.isInteger(code) &&
+		((code >= 1000 && code <= 1003) || (code >= 1007 && code <= 1014) || (code >= 3000 && code <= 4999))
+	);
+}
+
+export function sanitizeCloseCode(code, fallback = 1000) {
+	return isValidCloseCode(code) ? code : fallback;
+}
+
+export function truncateUtf8(text, maxBytes = 123) {
+	const buf = Buffer.from(String(text ?? ""), "utf8");
+	if (buf.length <= maxBytes) return buf;
+	let end = maxBytes;
+	while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
+	return buf.subarray(0, end);
+}
+
+export function encodeWsClose(code = 1000, reason = "") {
+	const safeCode = sanitizeCloseCode(code);
+	const text = truncateUtf8(reason, 123);
+	const payload = Buffer.allocUnsafe(2 + text.length);
+	payload.writeUInt16BE(safeCode, 0);
+	text.copy(payload, 2);
+	return payload;
+}
+
+export function decodeWsClose(payload) {
+	if (!payload || payload.length === 0) return { code: 1000, reason: "" };
+	if (payload.length < 2) return { code: 1000, reason: "" };
+	const code = sanitizeCloseCode(payload.readUInt16BE(0));
+	let reason = "";
+	try {
+		reason = UTF8_DECODER.decode(payload.subarray(2));
+	} catch {
+		reason = "";
+	}
+	return { code, reason };
+}
+
 /** The server's side of one upgraded connection: binary messages in and out, pings answered (a few a second), a close
  * handshake. A peer that lets more than `maxQueued` bytes pile up unread is cut off. */
 export class WebSocketConnection {
@@ -483,9 +648,11 @@ export class WebSocketConnection {
 	#buffered = 0;
 	#fragments = null;
 	#fragmentBytes = 0;
+	#fragmentOpcode = 0;
 	#maxPayload;
 	#maxQueued;
 	#pingsPerSecond;
+	#allowText;
 	#pings = 0;
 	#pingSecond = 0;
 	#closeTimer = null;
@@ -494,17 +661,25 @@ export class WebSocketConnection {
 	lastSeen = Date.now();
 	onMessage = () => {};
 	onClose = () => {};
+	onCloseFrame = () => {};
+	onProtocolError = () => {};
 	onDrain = () => {};
 
 	constructor(
 		socket,
 		head,
-		{ maxPayload = MAX_FRAME_BYTES, maxQueued = MAX_QUEUED_BYTES, pingsPerSecond = MAX_PINGS_PER_SECOND } = {},
+		{
+			maxPayload = MAX_FRAME_BYTES,
+			maxQueued = MAX_QUEUED_BYTES,
+			pingsPerSecond = MAX_PINGS_PER_SECOND,
+			allowText = false,
+		} = {},
 	) {
 		this.#socket = socket;
 		this.#maxPayload = maxPayload;
 		this.#maxQueued = maxQueued;
 		this.#pingsPerSecond = pingsPerSecond;
+		this.#allowText = allowText;
 		socket.setNoDelay(true);
 		socket.setTimeout(0);
 		socket.setKeepAlive(true, 30_000);
@@ -546,6 +721,7 @@ export class WebSocketConnection {
 
 	/** Writes a frame unless the peer has let too much pile up: then the connection ends at once. */
 	#write(frame) {
+		if (this.#socket.destroyed) return false;
 		if (this.#socket.writableLength + frame.length > this.#maxQueued) {
 			this.terminate();
 			return false;
@@ -593,7 +769,6 @@ export class WebSocketConnection {
 	}
 
 	#read(chunk) {
-		this.lastSeen = Date.now();
 		if (chunk.length > 0) {
 			this.#chunks.push(chunk);
 			this.#buffered += chunk.length;
@@ -618,17 +793,50 @@ export class WebSocketConnection {
 		} catch (error) {
 			this.#chunks = [];
 			this.#buffered = 0;
-			this.close(error instanceof WebSocketError ? error.code : 1011, "protocol error");
+			if (this.closing) {
+				this.#socket.destroy();
+				return;
+			}
+			const code = error instanceof WebSocketError ? error.code : 1011;
+			const reason = error instanceof WebSocketError ? error.message : "protocol error";
+			this.onProtocolError(code, reason);
+			this.close(code, reason);
 		}
 	}
 
+	#deliver(payload, opcode) {
+		if (opcode === 0x1) {
+			try {
+				UTF8_DECODER.decode(payload);
+			} catch {
+				throw new WebSocketError(1007, "invalid utf-8");
+			}
+		}
+		this.onMessage(payload, opcode);
+	}
+
 	#frame({ fin, opcode, payload }) {
+		this.lastSeen = Date.now();
 		if (opcode === 0x8) {
 			// The peer's close: answered with its code (when it sent one), then the TCP connection ends.
+			if (payload.length === 1) throw new WebSocketError(1002, "invalid close frame");
+			let code = 1000;
+			let reason = "";
+			if (payload.length >= 2) {
+				code = payload.readUInt16BE(0);
+				if (!isValidCloseCode(code)) throw new WebSocketError(1002, "invalid close code");
+				try {
+					reason = UTF8_DECODER.decode(payload.subarray(2));
+				} catch {
+					throw new WebSocketError(1007, "invalid close reason");
+				}
+			}
+			const peerInitiated = !this.closing;
 			if (!this.closing) {
 				this.closing = true;
 				this.#write(encodeFrame(0x8, payload.length >= 2 ? payload.subarray(0, 2) : EMPTY));
 			}
+			if (peerInitiated) this.onCloseFrame(code, reason);
 			this.#socket.end();
 			return;
 		}
@@ -643,12 +851,21 @@ export class WebSocketConnection {
 			return;
 		}
 		if (opcode === 0xa || this.closing) return;
-		if (opcode === 0x1) throw new WebSocketError(1003, "text messages are not used");
-		if (opcode === 0x2) {
+		if (opcode === 0x1) {
+			if (!this.#allowText) throw new WebSocketError(1003, "text messages are not used");
 			if (this.#fragments) throw new WebSocketError(1002, "a new message inside a fragmented one");
-			if (fin) return this.onMessage(payload);
+			if (fin) return this.#deliver(payload, 0x1);
 			this.#fragments = [payload];
 			this.#fragmentBytes = payload.length;
+			this.#fragmentOpcode = 0x1;
+			return;
+		}
+		if (opcode === 0x2) {
+			if (this.#fragments) throw new WebSocketError(1002, "a new message inside a fragmented one");
+			if (fin) return this.#deliver(payload, 0x2);
+			this.#fragments = [payload];
+			this.#fragmentBytes = payload.length;
+			this.#fragmentOpcode = 0x2;
 			return;
 		}
 		// A continuation.
@@ -658,24 +875,28 @@ export class WebSocketConnection {
 		this.#fragments.push(payload);
 		if (!fin) return;
 		const message = Buffer.concat(this.#fragments);
+		const messageOpcode = this.#fragmentOpcode;
 		this.#fragments = null;
-		this.onMessage(message);
+		this.#fragmentBytes = 0;
+		this.#fragmentOpcode = 0;
+		this.#deliver(message, messageOpcode);
 	}
 
 	/** Sends one binary message; false when the socket's buffer is full (onDrain follows). */
-	send(message) {
+	send(message, opcode = 0x2) {
 		if (this.closing || this.closed) return true;
-		return this.#write(encodeFrame(0x2, message));
+		return this.#write(encodeFrame(opcode, message));
+	}
+
+	ping(payload = EMPTY) {
+		if (this.closing || this.closed) return true;
+		return this.#write(encodeFrame(0x9, payload));
 	}
 
 	close(code = 1000, reason = "") {
 		if (this.closing || this.closed) return;
 		this.closing = true;
-		const text = Buffer.from(reason).subarray(0, 123);
-		const payload = Buffer.alloc(2 + text.length);
-		payload.writeUInt16BE(code, 0);
-		text.copy(payload, 2);
-		this.#write(encodeFrame(0x8, payload));
+		this.#write(encodeFrame(0x8, encodeWsClose(code, reason)));
 		// The peer answers with its close; a peer that does not is cut off.
 		this.#closeTimer = setTimeout(() => this.#socket.destroy(), 3000);
 		this.#closeTimer.unref();
@@ -816,8 +1037,6 @@ const TEXT = {
 		again: "Try again in a moment.",
 		tooLarge: "Too large",
 		tooLargeLead: "What was sent is too large for an app link.",
-		live: "Not supported",
-		liveLead: "Live connections (WebSocket) do not work on app links yet.",
 		footer: "Shared with Qorpera",
 	},
 	da: {
@@ -842,8 +1061,6 @@ const TEXT = {
 		again: "Prøv igen om lidt.",
 		tooLarge: "For stort",
 		tooLargeLead: "Det sendte er for stort til et app-link.",
-		live: "Understøttes ikke",
-		liveLead: "Live-forbindelser (WebSocket) virker ikke på app-links endnu.",
 		footer: "Delt med Qorpera",
 	},
 };
@@ -924,6 +1141,7 @@ function answer(req, res, status, html, extra = {}, referrer = "no-referrer") {
 /** An answer written on an upgrade's raw socket (no HTTP response object there), then the socket is closed: it may be
  * paused, and http.Server's sockets wait half open for the peer's FIN otherwise. */
 function rawAnswer(socket, status, html, extra = {}) {
+	if (socket.destroyed) return;
 	const body = Buffer.from(html);
 	const headers = {
 		...pageHeaders(),
@@ -1003,6 +1221,8 @@ class Program {
 		this.siteId = siteId;
 		this.port = port;
 		this.streams = new Map();
+		this.wsStreams = new Set();
+		this.wsCount = 0;
 		this.next = 1;
 		this.blocked = 0;
 		this.blocking = new Set();
@@ -1051,11 +1271,12 @@ class Program {
 				this.uploadQueue.shift();
 				continue;
 			}
+			const type = entry.type ?? TYPE.body;
 			while (entry.offset < entry.slices.length) {
 				const slice = entry.slices[entry.offset];
 				if (this.ws.needsDrain && this.ws.queuedBytes + slice.length > highWater) return;
 				entry.offset++;
-				const room = this.send(TYPE.body, entry.id, slice);
+				const room = this.send(type, entry.id, slice);
 				if (this.ws.closed) return;
 				if (!room || (this.ws.needsDrain && this.ws.queuedBytes >= highWater)) return;
 			}
@@ -1079,6 +1300,11 @@ export function createRelay({
 	lockedCacheMs = LOCKED_CACHE_MS,
 	maxBodyBytes = MAX_BODY_BYTES,
 	maxQueuedBytes = MAX_QUEUED_BYTES,
+	maxWsPerSite = MAX_WS_PER_SITE,
+	maxWsMessageBytes = MAX_WS_MESSAGE_BYTES,
+	maxWsQueuedBytes = MAX_WS_QUEUED_BYTES,
+	wsPingMs = KEEPALIVE_MS,
+	wsIdleMs = SILENT_MS,
 	keepaliveMs = KEEPALIVE_MS,
 	silentMs = SILENT_MS,
 	pausedMs = PAUSED_MS,
@@ -1122,6 +1348,7 @@ export function createRelay({
 	const uploadHighWater = Math.max(1024, Math.min(Math.floor(maxQueuedBytes / 2), 4 * 1024 * 1024));
 	let pendingTotal = 0;
 	let pendingUntrusted = 0;
+	let visitorUpgrading = 0;
 	let relayBuffered = 0;
 	let bufferedPrograms = 0;
 
@@ -1642,6 +1869,7 @@ export function createRelay({
 			gone() {
 				fail(502, text.notAnswering, text.notAnsweringLead, { tellProgram: false });
 			},
+			broken,
 		});
 		program.tightenBlocked();
 		res.on("drain", () => {
@@ -1745,6 +1973,360 @@ export function createRelay({
 		});
 	}
 
+	function forwardVisitorWs(req, socket, headBytes, lang, site, program, accept, offeredProtocols, releaseUpgrading) {
+		const text = TEXT[lang];
+		if (program.ws.closed || socket.destroyed) {
+			releaseUpgrading();
+			if (!socket.destroyed)
+				rawAnswer(socket, 503, messagePage(lang, text.notRunning, text.again), { "retry-after": "10" });
+			return;
+		}
+		if (program.wsCount >= maxWsPerSite || program.streams.size >= MAX_STREAMS) {
+			releaseUpgrading();
+			rawAnswer(socket, 503, messagePage(lang, text.unavailable, text.unavailableLead), { "retry-after": "5" });
+			return;
+		}
+		const id = program.allocate();
+		program.wsCount++;
+		let opened = false;
+		let over = false;
+		let visitorClosed = false;
+		let visitorPaused = false;
+		let visitorWs = null;
+		let wsTracker = null;
+		let wsUploadEntry = null;
+		let wsPendingBytes = 0;
+		let pendingClose = null;
+		let timer = null;
+		const onPrematureClose = () => {
+			if (over || opened) return;
+			done();
+			if (!program.ws.closed) program.send(TYPE.reset, id);
+		};
+		const done = () => {
+			if (over) return;
+			over = true;
+			if (timer) {
+				clearTimeout(timer);
+				timer = null;
+			}
+			socket.off("close", onPrematureClose);
+			releaseUpgrading();
+			program.streams.delete(id);
+			program.wsCount = Math.max(0, program.wsCount - 1);
+			if (wsTracker) {
+				program.wsStreams.delete(wsTracker);
+				wsTracker = null;
+			}
+			wsUploadEntry = null;
+			wsPendingBytes = 0;
+			pendingClose = null;
+		};
+		const failBeforeOpen = (status, title, lead, extra = {}, tellProgram = true) => {
+			if (over) return;
+			done();
+			if (tellProgram && !program.ws.closed) program.send(TYPE.reset, id);
+			rawAnswer(socket, status, messagePage(lang, title, lead), extra);
+		};
+		const closeBoth = (code, reason) => {
+			if (over) return;
+			const encoded = encodeWsClose(code, reason);
+			done();
+			if (!program.ws.closed) program.send(TYPE.wsClose, id, encoded);
+			visitorWs?.close(code, reason);
+		};
+		const dropSlowVisitor = () => {
+			if (over) return;
+			const encoded = encodeWsClose(1008, "backpressure");
+			done();
+			if (!program.ws.closed) program.send(TYPE.wsClose, id, encoded);
+			visitorWs?.terminate();
+		};
+		const pauseVisitor = () => {
+			if (!visitorPaused && visitorWs && !visitorWs.closed) {
+				visitorPaused = true;
+				visitorWs.pause();
+			}
+		};
+		const resumeVisitor = () => {
+			if (visitorPaused && visitorWs && !visitorWs.closed) {
+				visitorPaused = false;
+				visitorWs.resume();
+			}
+		};
+		const queueFrame = (frame) => {
+			pauseVisitor();
+			if (wsUploadEntry) {
+				if (frame) wsUploadEntry.slices.push(frame);
+				return;
+			}
+			wsUploadEntry = {
+				type: TYPE.wsData,
+				id,
+				slices: frame ? [frame] : [],
+				offset: 0,
+				isOver: () => over,
+				onDrained: () => {
+					wsUploadEntry = null;
+					wsPendingBytes = 0;
+					if (over) return;
+					if (pendingClose !== null) {
+						const closePayload = pendingClose;
+						pendingClose = null;
+						done();
+						if (!program.ws.closed) program.send(TYPE.wsClose, id, closePayload);
+					} else {
+						resumeVisitor();
+					}
+				},
+			};
+			program.uploadQueue.push(wsUploadEntry);
+		};
+		const notifyClientClose = (encoded, abortPending = false) => {
+			if (over || visitorClosed) return;
+			visitorClosed = true;
+			if (!abortPending && wsUploadEntry && !program.ws.closed) {
+				pendingClose = encoded;
+				return;
+			}
+			done();
+			if (!program.ws.closed) program.send(TYPE.wsClose, id, encoded);
+		};
+		socket.on("close", onPrematureClose);
+		timer = setTimeout(() => failBeforeOpen(504, text.slow, text.again), responseTimeoutMs);
+		program.streams.set(id, {
+			wsOpenOk(payload) {
+				if (over) return;
+				if (opened) return closeBoth(1011, "protocol error");
+				let head;
+				try {
+					head = JSON.parse(payload.toString("utf8"));
+				} catch {
+					return failBeforeOpen(502, text.notAnswering, text.notAnsweringLead);
+				}
+				if (!head || typeof head !== "object" || Array.isArray(head))
+					return failBeforeOpen(502, text.notAnswering, text.notAnsweringLead);
+				let protocol = null;
+				if (head.protocol !== undefined && head.protocol !== null) {
+					if (typeof head.protocol !== "string" || !offeredProtocols.includes(head.protocol))
+						return failBeforeOpen(502, text.notAnswering, text.notAnsweringLead);
+					protocol = head.protocol;
+				}
+				let extraHeaders = [];
+				if (head.headers !== undefined && head.headers !== null) {
+					extraHeaders = wsResponseHeaders(head.headers);
+					if (!extraHeaders) return failBeforeOpen(502, text.notAnswering, text.notAnsweringLead);
+				}
+				if (timer) {
+					clearTimeout(timer);
+					timer = null;
+				}
+				socket.off("close", onPrematureClose);
+				releaseUpgrading();
+				if (socket.destroyed) {
+					done();
+					if (!program.ws.closed) program.send(TYPE.reset, id);
+					return;
+				}
+				let response = `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n`;
+				if (protocol !== null) response += `Sec-WebSocket-Protocol: ${protocol}\r\n`;
+				for (const [name, value] of extraHeaders) response += `${name}: ${value}\r\n`;
+				response += "\r\n";
+				socket.write(response);
+				opened = true;
+				visitorWs = new WebSocketConnection(socket, headBytes, {
+					maxPayload: maxWsMessageBytes,
+					maxQueued: maxWsQueuedBytes,
+					allowText: true,
+				});
+				wsTracker = {
+					ws: visitorWs,
+					pingedAt: Date.now(),
+					idleClose: () => closeBoth(1001, "idle timeout"),
+				};
+				program.wsStreams.add(wsTracker);
+				visitorWs.onMessage = (message, opcode) => {
+					if (over || visitorClosed || program.ws.closed) return;
+					const frame = Buffer.allocUnsafe(1 + message.length);
+					frame[0] = opcode;
+					message.copy(frame, 1);
+					if (wsUploadEntry || program.uploadQueue.length > 0) {
+						if (wsPendingBytes + frame.length > maxWsQueuedBytes) {
+							dropSlowVisitor();
+							return;
+						}
+						wsPendingBytes += frame.length;
+						queueFrame(frame);
+						return;
+					}
+					if (program.ws.needsDrain && program.ws.queuedBytes + frame.length > uploadHighWater) {
+						if (wsPendingBytes + frame.length > maxWsQueuedBytes) {
+							dropSlowVisitor();
+							return;
+						}
+						wsPendingBytes += frame.length;
+						queueFrame(frame);
+						return;
+					}
+					if (program.ws.queuedBytes + frame.length + 19 > maxQueuedBytes) {
+						closeBoth(1009, "message too large");
+						return;
+					}
+					const room = program.send(TYPE.wsData, id, frame);
+					if (over || program.ws.closed) return;
+					if (!room || (program.ws.needsDrain && program.ws.queuedBytes >= uploadHighWater)) queueFrame(null);
+				};
+				visitorWs.onCloseFrame = (code, reason) => notifyClientClose(encodeWsClose(code, reason));
+				visitorWs.onProtocolError = (code, reason) => notifyClientClose(encodeWsClose(code, reason), true);
+				visitorWs.onClose = () => notifyClientClose(encodeWsClose(1001, ""), true);
+			},
+			wsData(payload) {
+				if (over) return;
+				if (!opened) return failBeforeOpen(502, text.notAnswering, text.notAnsweringLead);
+				if (payload.length < 1) return closeBoth(1011, "invalid message");
+				const opcode = payload[0];
+				if (opcode !== 1 && opcode !== 2) return closeBoth(1011, "invalid message");
+				const data = payload.subarray(1);
+				if (data.length > maxWsMessageBytes) return closeBoth(1009, "message too large");
+				if (opcode === 1) {
+					try {
+						UTF8_DECODER.decode(data);
+					} catch {
+						return closeBoth(1007, "invalid utf-8");
+					}
+				}
+				visitorWs.send(data, opcode);
+			},
+			wsClose(payload) {
+				if (over) return;
+				if (!opened) {
+					const status = payload.length >= 2 ? payload.readUInt16BE(0) : 502;
+					const validStatus = status >= 400 && status <= 599 && STATUS_CODES[status] !== undefined;
+					failBeforeOpen(
+						validStatus ? status : 502,
+						validStatus && status === 404 ? text.notFound : text.notAnswering,
+						validStatus && status === 404 ? text.nothing : text.notAnsweringLead,
+						{},
+						false,
+					);
+					return;
+				}
+				const { code, reason } = decodeWsClose(payload);
+				done();
+				visitorWs.close(code, reason);
+			},
+			reset() {
+				if (over) return;
+				if (!opened) return failBeforeOpen(502, text.notAnswering, text.notAnsweringLead, {}, false);
+				done();
+				visitorWs.close(1001, "app disconnected");
+			},
+			gone() {
+				if (over) return;
+				if (!opened) return failBeforeOpen(503, text.notRunning, text.again, { "retry-after": "10" }, false);
+				done();
+				visitorWs.close(1001, "app disconnected");
+			},
+			broken() {
+				if (over) return;
+				if (!opened) return failBeforeOpen(502, text.notAnswering, text.notAnsweringLead);
+				closeBoth(1011, "protocol error");
+			},
+		});
+		program.tightenBlocked();
+		program.send(
+			TYPE.wsOpen,
+			id,
+			Buffer.from(
+				JSON.stringify({
+					path: req.url,
+					headers: wsRequestHeaders(req.rawHeaders, {
+						host: site.host,
+						client: clientAddress(req.headers["cf-connecting-ip"]),
+						protocols: offeredProtocols,
+					}),
+				}),
+			),
+		);
+	}
+
+	async function upgradeVisitor(req, socket, head, lang, site) {
+		const text = TEXT[lang];
+		const url = req.url ?? "";
+		const path = url.split("?")[0];
+		if (!url.startsWith("/") || isPlatformPath(path))
+			return rawAnswer(socket, 404, messagePage(lang, text.notFound, text.nothing));
+		const accept = req.method === "GET" ? acceptKey(req.headers) : null;
+		if (!accept) return rawAnswer(socket, 400, messagePage(lang, text.notFound, text.nothing));
+		const parsedProtocols = parseWsProtocols(req.rawHeaders);
+		if (!parsedProtocols.ok) return rawAnswer(socket, 400, messagePage(lang, text.notFound, text.nothing));
+		if (!isValidVisitorWsOrigin(req.headers, site.host, req.rawHeaders))
+			return rawAnswer(socket, 403, messagePage(lang, text.otherSite, text.otherSiteLead));
+		if (visitorUpgrading >= MAX_VISITOR_UPGRADING)
+			return rawAnswer(socket, 503, messagePage(lang, text.unavailable, text.again), { "retry-after": "5" });
+		socket.pause();
+		upgrading.add(socket);
+		visitorUpgrading++;
+		let released = false;
+		const releaseUpgrading = () => {
+			if (released) return;
+			released = true;
+			upgrading.delete(socket);
+			visitorUpgrading = Math.max(0, visitorUpgrading - 1);
+		};
+		let handedOff = false;
+		try {
+			const tokens = gateTokens(req.headers.cookie);
+			let matchedToken = null;
+			let siteId = null;
+			for (const token of tokens) {
+				const found = await sessionSite(site.slug, token);
+				if (socket.destroyed) return;
+				if (found) {
+					matchedToken = token;
+					siteId = found;
+					break;
+				}
+			}
+			if (!siteId) {
+				rawAnswer(
+					socket,
+					401,
+					passwordPage(lang, safeNext(url)),
+					tokens.length > 0 ? { "set-cookie": CLEAR_GATE_COOKIE } : {},
+				);
+				return;
+			}
+			let program = programs.get(site.slug);
+			if (program && program.siteId !== siteId) {
+				const fresh = await sessionSite(site.slug, matchedToken, true);
+				if (socket.destroyed) return;
+				if (!fresh) {
+					rawAnswer(socket, 401, passwordPage(lang, safeNext(url)), { "set-cookie": CLEAR_GATE_COOKIE });
+					return;
+				}
+				program = programs.get(site.slug);
+				if (program && program.siteId !== fresh) {
+					if (!(await stillHolds(program)) && programs.get(site.slug) === program) drop(program, "its site is gone");
+					if (!socket.destroyed)
+						rawAnswer(socket, 503, messagePage(lang, text.notRunning, text.again), { "retry-after": "10" });
+					return;
+				}
+			}
+			if (!program) {
+				rawAnswer(socket, 503, messagePage(lang, text.notRunning, text.again), { "retry-after": "10" });
+				return;
+			}
+			handedOff = true;
+			forwardVisitorWs(req, socket, head, lang, site, program, accept, parsedProtocols.protocols, releaseUpgrading);
+		} catch (error) {
+			failure(error);
+			rawAnswer(socket, 503, messagePage(lang, text.unavailable, text.unavailableLead), { "retry-after": "30" });
+		} finally {
+			if (!handedOff) releaseUpgrading();
+		}
+	}
+
 	function programMessage(program, message) {
 		let decoded;
 		try {
@@ -1755,16 +2337,21 @@ export function createRelay({
 		}
 		const { type, stream: id, payload } = decoded;
 		if (type === TYPE.keepalive) return;
-		if (![TYPE.response, TYPE.body, TYPE.end, TYPE.reset].includes(type)) {
+		if (
+			![TYPE.response, TYPE.body, TYPE.end, TYPE.reset, TYPE.wsOpenOk, TYPE.wsData, TYPE.wsClose].includes(type)
+		) {
 			program.ws.close(1002, "invalid message");
 			return;
 		}
 		// A stream that is over already (a timeout, a visitor who left): its late messages are dropped.
 		const stream = program.streams.get(id);
 		if (!stream) return;
-		if (type === TYPE.response) stream.response(payload);
-		else if (type === TYPE.body) stream.body(payload);
-		else if (type === TYPE.end) stream.end();
+		if (type === TYPE.response) stream.response ? stream.response(payload) : stream.broken();
+		else if (type === TYPE.body) stream.body ? stream.body(payload) : stream.broken();
+		else if (type === TYPE.end) stream.end ? stream.end() : stream.broken();
+		else if (type === TYPE.wsOpenOk) stream.wsOpenOk ? stream.wsOpenOk(payload) : stream.broken();
+		else if (type === TYPE.wsData) stream.wsData ? stream.wsData(payload) : stream.broken();
+		else if (type === TYPE.wsClose) stream.wsClose ? stream.wsClose(payload) : stream.broken();
 		else stream.reset();
 	}
 
@@ -1811,7 +2398,7 @@ export function createRelay({
 		const site = appHost(req.headers["x-forwarded-host"], hostSuffix);
 		if (!site) return rawAnswer(socket, 404, messagePage(lang, text.notFound, text.nothing));
 		if ((req.url ?? "").split("?")[0] !== "/.qorpera/connect")
-			return rawAnswer(socket, 501, messagePage(lang, text.live, text.liveLead));
+			return upgradeVisitor(req, socket, head, lang, site);
 		const accept = req.method === "GET" ? acceptKey(req.headers) : null;
 		if (!accept) return rawAnswer(socket, 400, messagePage(lang, text.notFound, text.nothing));
 		/** The handshake completed: a refusal is a close code, which the program reads and stops at. */
@@ -1819,7 +2406,10 @@ export function createRelay({
 			socket.write(
 				`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
 			);
-			return new WebSocketConnection(socket, head, { maxQueued: maxQueuedBytes });
+			return new WebSocketConnection(socket, head, {
+				maxPayload: Math.max(MAX_FRAME_BYTES, maxWsMessageBytes + 64),
+				maxQueued: maxQueuedBytes,
+			});
 		};
 		const secret = /^Bearer (\S+)$/.exec(String(req.headers.authorization ?? ""))?.[1];
 		const id = req.headers["x-qorpera-program"];
@@ -1870,6 +2460,16 @@ export function createRelay({
 				program.keptAliveAt = now;
 				program.send(TYPE.keepalive, 0);
 			}
+			for (const visitor of [...program.wsStreams]) {
+				if (now - visitor.ws.lastSeen > wsIdleMs) {
+					visitor.idleClose();
+					continue;
+				}
+				if (now - visitor.pingedAt >= wsPingMs) {
+					visitor.pingedAt = now;
+					visitor.ws.ping();
+				}
+			}
 			if (recheckMs > 0 && now >= program.nextCheckAt) {
 				program.nextCheckAt = scheduleCheck(now);
 				rpc("qorpera_site_app_connect", { p_slug: program.slug, p_secret: program.key, p_program: program.id })
@@ -1901,12 +2501,18 @@ export function createRelay({
 			socket.destroy();
 		});
 	});
-	const timer = setInterval(sweep, Math.max(50, Math.min(keepaliveMs, silentMs, recheckMs || 5000, 5000) / 2));
+	const timer = setInterval(
+		sweep,
+		Math.max(50, Math.min(keepaliveMs, silentMs, wsPingMs, wsIdleMs, recheckMs || 5000, 5000) / 2),
+	);
 	timer.unref();
 	const close = server.close.bind(server);
 	server.close = (callback) => {
 		clearInterval(timer);
-		for (const program of programs.values()) program.ws.close(1001, "going away");
+		for (const program of programs.values()) {
+			for (const stream of [...program.streams.values()]) stream.gone();
+			program.ws.close(1001, "going away");
+		}
 		for (const socket of upgrading) socket.destroy();
 		close(callback);
 		server.closeAllConnections();
@@ -1917,6 +2523,7 @@ export function createRelay({
 	server.dropProgram = (slug) => programs.get(slug)?.ws.terminate();
 	server.pauseCount = (slug) => programs.get(slug)?.pauseCount ?? 0;
 	server.sharedProgressChecks = (slug) => programs.get(slug)?.sharedProgressChecks ?? 0;
+	server.wsCount = (slug) => programs.get(slug)?.wsCount ?? 0;
 	return server;
 }
 
