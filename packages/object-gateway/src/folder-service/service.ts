@@ -193,10 +193,7 @@ const SERVED_RELEASED_KEPT = 100_000;
  * reads on through every round has its boundary answered as having no answer yet. */
 const MACHINE_RELEASE_ROUNDS = 8;
 const STOPPING = "The folder service is stopping; try again";
-/** Search pages (keyholes S4, search for every run): at most this many run at once on the node's one event loop, each
- * giving it a turn every 10 ms, so every other machine's request waits at most about 40 ms between them; at most
- * SEARCH_WAITING more wait their turn, each for at most SEARCH_WAIT_MS, in the order they came. */
-export const SEARCH_RUNNING = 4;
+export const SEARCH_RUNNING = 12;
 const SEARCH_WAITING = 32;
 const SEARCH_WAIT_MS = 20_000;
 /** Paths the trees of the node's run views (each searching run's) may hold in all: about 670 bytes a path, so about
@@ -258,7 +255,7 @@ interface ChunkUpload {
 	readonly sha256: string;
 	readonly bytes: number;
 	next: number;
-	readonly upload: Upload | undefined;
+	upload: Upload | undefined;
 }
 
 /** An intent that roots bytes of a file the view holds pending (C1D §3.5): a chunk's own, or the file's sealed one. It
@@ -3055,21 +3052,30 @@ export class FolderService {
 					sha256: part.sha256,
 					bytes: part.bytes,
 					next: 0,
-					upload: intent.present
-						? undefined
-						: staging.upload(view.environmentId, view.actor, intent.intentId, part.sha256, part.bytes),
+					upload: undefined,
 				};
 				view.uploads.set(key, started);
-				if (!this.#profiles.has(view.environmentId))
-					this.#profiles.set(
+				let profileId = this.#profiles.get(view.environmentId);
+				if (!profileId) {
+					profileId = await this.#core.uploadProfile(
 						view.environmentId,
-						await this.#core.uploadProfile(
-							view.environmentId,
-							view.actor,
-							intent.intentId,
-							part.sha256,
-							part.bytes,
-						),
+						view.actor,
+						intent.intentId,
+						part.sha256,
+						part.bytes,
+					);
+					this.#profiles.set(view.environmentId, profileId);
+				}
+				if (view.uploads.get(key) !== started)
+					throw new ProtocolError(ErrorCode.badRequest, "Chunk parts out of order");
+				if (!intent.present)
+					started.upload = staging.upload(
+						view.environmentId,
+						view.actor,
+						intent.intentId,
+						part.sha256,
+						part.bytes,
+						profileId,
 					);
 			} catch (error) {
 				// A chunk that could not be started is no longer on its way: the request fails, the connection stays.
@@ -3983,27 +3989,30 @@ export class FolderService {
 					this.#log(`folder-service: ${view.key}: a file could not be staged: ${(error as Error).message}`);
 				},
 			);
-		// A few files at a time, each few after the last: each file's entry is there from now until its steps end.
-		let before: Promise<unknown> = Promise.resolve();
-		for (let i = 0; i < jobs.length; i += STAGING_PARALLEL) {
-			const start = before;
-			const these = jobs.slice(i, i + STAGING_PARALLEL).map((job) => {
-				const running: Running = {
-					version: job.node.version,
-					path: job.path,
-					secrets,
-					done: start
-						.then(() => Promise.all(job.steps.map(logged)))
-						.then(() => {
-							if (this.#running.get(job.node) === running) this.#running.delete(job.node);
-						}),
-				};
-				this.#running.set(job.node, running);
-				return running.done;
+		// WHY: register every job in #running synchronously before workers start so overlapping boundaries see CHECK_RUNNING.
+		const queued = jobs.map((job) => {
+			let finish!: () => void;
+			const done = new Promise<void>((resolve) => {
+				finish = resolve;
 			});
-			ends.push(...these);
-			before = Promise.all(these);
-		}
+			const running: Running = { version: job.node.version, path: job.path, secrets, done };
+			this.#running.set(job.node, running);
+			ends.push(done);
+			return { job, running, finish };
+		});
+		let next = 0;
+		const worker = async (): Promise<void> => {
+			while (next < queued.length) {
+				const item = queued[next++]!;
+				try {
+					await Promise.all(item.job.steps.map(logged));
+				} finally {
+					if (this.#running.get(item.job.node) === item.running) this.#running.delete(item.job.node);
+					item.finish();
+				}
+			}
+		};
+		for (let i = 0; i < Math.min(STAGING_PARALLEL, queued.length); i++) void worker();
 		const all = Promise.all(ends);
 		if (only.waitMs === undefined) {
 			await all;

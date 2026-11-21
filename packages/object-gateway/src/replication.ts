@@ -1,8 +1,13 @@
-import { createHash } from "node:crypto";
 import { ObjectDependencyError } from "./dependency.ts";
 import type { ObjectGatewayJournal } from "./journal.ts";
 import type { LegacyObjectMigrationItem } from "./migration.ts";
-import type { FileSystemObjectStore, ObjectWriteResult } from "./object-store.ts";
+import {
+	type FileSystemObjectStore,
+	isVerifiedObjectBytes,
+	type ObjectWriteResult,
+	type VerifiedObjectBytes,
+	verifyObjectBytes,
+} from "./object-store.ts";
 import type { ObjectGatewayAuthority } from "./supabase-authority.ts";
 
 export interface ObjectReplicationAuthority extends ObjectGatewayAuthority {
@@ -59,8 +64,11 @@ function key(object: LegacyObjectMigrationItem): string {
 	return `pending/${object.profileId}-${object.sha256}`;
 }
 
-function verify(bytes: Uint8Array, object: LegacyObjectMigrationItem): void {
-	if (bytes.byteLength !== object.bytes || createHash("sha256").update(bytes).digest("hex") !== object.sha256) {
+function verify(bytes: Uint8Array, object: LegacyObjectMigrationItem): VerifiedObjectBytes {
+	if (bytes.byteLength !== object.bytes) throw new Error("Replica failed integrity verification");
+	try {
+		return verifyObjectBytes(object.sha256, bytes);
+	} catch {
 		throw new Error("Replica failed integrity verification");
 	}
 }
@@ -100,9 +108,10 @@ export class ObjectGatewayReplication {
 			authorize(): Promise<void>;
 			confirm(): Promise<void>;
 		},
+		verified?: VerifiedObjectBytes,
 	): Promise<ObjectWriteResult> {
 		const object = { profileId, sha256, bytes: bytes.byteLength };
-		verify(bytes, object);
+		const proven = isVerifiedObjectBytes(verified, sha256, bytes) ? verified! : verify(bytes, object);
 		return this.#journal.exclusive(key(object), async () => {
 			// A line the audit refused stops uploads until it is written, as it did when each upload wrote its own.
 			if (this.#storedLinesRefused || this.#storedLines.length >= this.#maxStoredLines)
@@ -113,7 +122,7 @@ export class ObjectGatewayReplication {
 			if (prior !== undefined && pendingObject(prior, key(object)).state === "delete")
 				throw new ObjectDependencyError(409);
 			await this.#journal.write(key(object), { ...object, state: "unconfirmed" });
-			const result = await this.#store.put(profileId, sha256, bytes);
+			const result = await this.#store.put(profileId, sha256, bytes, proven);
 			await authority.confirm();
 			// The answer waits for the intent and the bytes only: on the NAS each synchronous write is a disk flush. The
 			// entry stays `unconfirmed`, which the reconcile treats as it treats `replicate` (a crash just here left it so
@@ -343,8 +352,8 @@ export class ObjectGatewayReplication {
 		} catch (error) {
 			if (!(error instanceof Error) || error.message !== "Object not found") throw error;
 			bytes = await this.#authority.readLegacyObject(object.profileId, object.sha256);
-			verify(bytes, object);
-			await this.#store.put(object.profileId, object.sha256, bytes);
+			const verified = verify(bytes, object);
+			await this.#store.put(object.profileId, object.sha256, bytes, verified);
 		}
 		await this.#authority.confirmReplica(object.profileId, object.sha256, object.bytes);
 		await this.#journal.write(key(object), { ...object, state: "replicate" });

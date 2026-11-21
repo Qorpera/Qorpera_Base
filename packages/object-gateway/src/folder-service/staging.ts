@@ -3,7 +3,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import type { FolderActor, FolderCore } from "./core.ts";
 import { type ContentCheck, SaveChecks, type StoredForm } from "./git-objects.ts";
-import type { NasObjects } from "./objects.ts";
+import { CHUNK_BYTES, type NasObjects } from "./objects.ts";
 import type { ChunkRef, Content, FileRef } from "./pending.ts";
 import { ErrorCode, ProtocolError } from "./protocol.ts";
 import type { SecretSet } from "./secret-scan.ts";
@@ -156,17 +156,22 @@ export function mediaTypeOf(name: string): string {
  * goes under an intent of its own (a one-chunk manifest, never sealed); a closed file's manifest goes under the file's
  * intent, which holds the chunks the view put already (3a) and is sealed. Every intent is the view's actor's.
  */
+const UPLOAD_BUFFER_CAP_BYTES = 32 * 1024 * 1024;
+
 export class FolderStaging {
 	readonly #core: FolderCore;
 	readonly #uploads: FolderUploads;
 	readonly #objects: NasObjects;
 	readonly #checks: SaveChecks;
+	readonly #uploadBufferMax: number;
+	#uploadBufferBytes = 0;
 
 	constructor(core: FolderCore, uploads: FolderUploads, objects: NasObjects, checks = new SaveChecks()) {
 		this.#core = core;
 		this.#uploads = uploads;
 		this.#objects = objects;
 		this.#checks = checks;
+		this.#uploadBufferMax = Math.min(UPLOAD_BUFFER_CAP_BYTES, objects.maxCacheBytes);
 	}
 
 	/** Opens a chunk's own intent. `present`: the actor holds it already, and need not send it. */
@@ -209,8 +214,82 @@ export class FolderStaging {
 	}
 
 	/** Starts streaming a chunk under its intent. */
-	upload(environmentId: string, actor: FolderActor, intentId: string, sha256: string, bytes: number): Upload {
-		return this.#uploads.start(environmentId, actor, intentId, sha256, bytes);
+	upload(
+		environmentId: string,
+		actor: FolderActor,
+		intentId: string,
+		sha256: string,
+		bytes: number,
+		profileId?: string,
+	): Upload {
+		const inner = this.#uploads.start(environmentId, actor, intentId, sha256, bytes);
+		if (
+			!profileId ||
+			bytes < 1 ||
+			bytes > CHUNK_BYTES ||
+			bytes > this.#objects.maxCacheBytes ||
+			this.#objects.has(profileId, sha256)
+		)
+			return inner;
+		let single: Buffer | undefined;
+		let buffer: Buffer | undefined;
+		let reserved = 0;
+		let written = 0;
+		let overflow = false;
+		const release = (): void => {
+			if (reserved > 0) {
+				this.#uploadBufferBytes -= reserved;
+				reserved = 0;
+			}
+			single = undefined;
+			buffer = undefined;
+		};
+		return {
+			write: async (part) => {
+				try {
+					await inner.write(part);
+				} catch (error) {
+					release();
+					throw error;
+				}
+				if (overflow || part.byteLength === 0) return;
+				if (written + part.byteLength > bytes) {
+					overflow = true;
+					release();
+					return;
+				}
+				if (written === 0 && part.byteLength === bytes) {
+					single = part;
+					written = part.byteLength;
+					return;
+				}
+				if (!buffer) {
+					if (this.#uploadBufferBytes + bytes > this.#uploadBufferMax) {
+						overflow = true;
+						return;
+					}
+					this.#uploadBufferBytes += bytes;
+					reserved = bytes;
+					buffer = Buffer.allocUnsafeSlow(bytes);
+				}
+				part.copy(buffer, written);
+				written += part.byteLength;
+			},
+			end: async () => {
+				try {
+					await inner.end();
+					const body = single ?? buffer;
+					// WHY: seed ByteCache only after the gateway confirms the upload; manifests stay uncached so publish reads remain verified.
+					if (!overflow && body && written === bytes) this.#objects.put(profileId, sha256, body);
+				} finally {
+					release();
+				}
+			},
+			abort: () => {
+				release();
+				inner.abort();
+			},
+		};
 	}
 
 	/** Stages a whole file: its hash from its chunks on the share, its manifest, any chunk the actor does not hold, and
@@ -227,12 +306,16 @@ export class FolderStaging {
 		secrets?: SecretSet,
 		form: StoredForm = "plain",
 	): Promise<{ readonly file: FileRef; readonly intentId: string }> {
-		const hash = createHash("sha256");
-		await this.#read(profileId, content, secrets && this.#checks.start(secrets, content.size, form), (bytes) =>
-			hash.update(bytes),
+		const singleChunk = content.chunks.length === 1 && content.chunks[0]!.bytes === content.size;
+		const hash = singleChunk ? undefined : createHash("sha256");
+		await this.#read(
+			profileId,
+			content,
+			secrets && this.#checks.start(secrets, content.size, form),
+			hash ? (bytes) => hash.update(bytes) : undefined,
 		);
 		const text = manifestText({
-			fileSha256: hash.digest("hex"),
+			fileSha256: singleChunk ? content.chunks[0]!.sha256 : hash!.digest("hex"),
 			bytes: content.size,
 			mediaType,
 			executable,

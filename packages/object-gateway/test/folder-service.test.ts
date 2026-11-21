@@ -1,11 +1,20 @@
 import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
-import { connect, type Server, type Socket } from "node:net";
+import { createServer as createHttpServer } from "node:http";
+import { type AddressInfo, connect, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { type CoreEntry, parseCommitAnswer, parseFeedPage, parseListPage } from "../src/folder-service/core.ts";
+import {
+	CORE_PAGE,
+	type CoreEntry,
+	parseCommitAnswer,
+	parseFeedPage,
+	parseListPage,
+	SupabaseFolderCore,
+} from "../src/folder-service/core.ts";
+import { nodeRequest, ResponseTooLargeError } from "../src/folder-service/https-request.ts";
 import { MountGrants, parseOperatorMounts } from "../src/folder-service/mounts.ts";
-import { NasObjects, ObjectIntegrityError, parseManifest } from "../src/folder-service/objects.ts";
+import { CHUNK_BYTES, NasObjects, ObjectIntegrityError, parseManifest } from "../src/folder-service/objects.ts";
 import {
 	type BridgeInfo,
 	encodeFrame,
@@ -21,7 +30,7 @@ import {
 	parseRead,
 } from "../src/folder-service/protocol.ts";
 import { createFolderServer } from "../src/folder-service/server.ts";
-import { FolderService, type FolderServiceOptions } from "../src/folder-service/service.ts";
+import { FolderService, type FolderServiceOptions, SEARCH_RUNNING } from "../src/folder-service/service.ts";
 import { type TreeEntry, ViewTree } from "../src/folder-service/view-tree.ts";
 import {
 	BRIDGE,
@@ -1354,5 +1363,120 @@ describe("run box views", () => {
 				{ id: VIEW, environmentId: ENV, actor: { kind: "platform" }, machine: MACHINE, passSha256: hashOf("p") },
 			]),
 		).toThrow("not uuids");
+	});
+});
+
+describe("NasObjects write-through put", () => {
+	it("seeds hash-verified chunks into ByteCache, isolates caller buffers, and enforces bounds", async () => {
+		const root = await tempdir();
+		const objects = new NasObjects({ root, cacheBytes: 16 });
+		const source = Buffer.from("hello world");
+		const sha = hashOf(source);
+		objects.put(PROFILE, sha, source);
+		source.fill(0);
+		expect(objects.has(PROFILE, sha)).toBe(true);
+		expect(objects.cachedBytes).toBe(11);
+		expect((await objects.chunk(PROFILE, sha, 11)).toString()).toBe("hello world");
+		await expect(objects.chunk(PROFILE, sha, 10)).rejects.toThrow(ObjectIntegrityError);
+
+		expect(() => objects.put("not-a-uuid", sha, Buffer.from("hello world"))).toThrow(ObjectIntegrityError);
+		expect(() => objects.put(PROFILE, "bad-hash", Buffer.from("hello world"))).toThrow(ObjectIntegrityError);
+		expect(() => objects.put(PROFILE, hashOf(""), Buffer.alloc(0))).toThrow(ObjectIntegrityError);
+		expect(() => objects.put(PROFILE, hashOf("x"), Buffer.alloc(CHUNK_BYTES + 1))).toThrow(ObjectIntegrityError);
+		expect(() => objects.put(PROFILE, hashOf("expected"), Buffer.from("tampered"))).toThrow(ObjectIntegrityError);
+		expect(objects.has(PROFILE, hashOf("expected"))).toBe(false);
+
+		const overCap = Buffer.alloc(20, 0x41);
+		const overSha = hashOf(overCap);
+		objects.put(PROFILE, overSha, overCap);
+		expect(objects.has(PROFILE, overSha)).toBe(false);
+		expect(objects.cachedBytes).toBe(11);
+	});
+});
+
+describe("SupabaseFolderCore paging and oversized fallback", () => {
+	it("requests CORE_PAGE = 1000 and falls back to 200 on ResponseTooLargeError without opening the circuit", async () => {
+		expect(CORE_PAGE).toBe(1000);
+		expect(SEARCH_RUNNING).toBe(12);
+		const seen: Array<{ path: string; limit: number }> = [];
+		const core = new SupabaseFolderCore({
+			projectUrl: "https://core.example",
+			secretKey: "sb_secret_test",
+			transport: async (url, req) => {
+				const body = JSON.parse(req.body ?? "{}") as { p_limit: number };
+				seen.push({ path: url.pathname, limit: body.p_limit });
+				if (body.p_limit === CORE_PAGE && seen.length <= 3) throw new ResponseTooLargeError();
+				if (url.pathname.endsWith("/qorpera_folder_list")) {
+					return {
+						status: 200,
+						body: Buffer.from(
+							JSON.stringify({
+								schema: "qorpera.folder-list/v1",
+								asOfSeq: 5,
+								entries: [],
+								nextAfter: null,
+							}),
+						),
+					};
+				}
+				return {
+					status: 200,
+					body: Buffer.from(
+						JSON.stringify({
+							schema: "qorpera.folder-feed/v1",
+							asOfSeq: 5,
+							resync: false,
+							more: false,
+							events: [],
+							next: { afterSeq: 5, cursor: null },
+						}),
+					),
+				};
+			},
+		});
+		const actor = { kind: "platform" as const };
+		const listed = await core.list(ENV, actor, null);
+		expect(listed.asOfSeq).toBe(5);
+		const fed = await core.feed(ENV, actor, 5, null);
+		expect(fed.more).toBe(false);
+		const listedAgain = await core.list(ENV, actor, null);
+		expect(listedAgain.asOfSeq).toBe(5);
+		expect(seen).toEqual([
+			{ path: "/rest/v1/rpc/qorpera_folder_list", limit: 1000 },
+			{ path: "/rest/v1/rpc/qorpera_folder_list", limit: 200 },
+			{ path: "/rest/v1/rpc/qorpera_folder_feed", limit: 1000 },
+			{ path: "/rest/v1/rpc/qorpera_folder_feed", limit: 200 },
+			{ path: "/rest/v1/rpc/qorpera_folder_list", limit: 1000 },
+		]);
+
+		const alwaysLarge = new SupabaseFolderCore({
+			projectUrl: "https://core.example",
+			secretKey: "sb_secret_test",
+			transport: async () => {
+				throw new ResponseTooLargeError();
+			},
+		});
+		await expect(alwaysLarge.list(ENV, actor, null)).rejects.toThrow("Object dependency is unavailable");
+	});
+
+	it("rejects with ResponseTooLargeError from nodeRequest when response exceeds maxBytes", async () => {
+		const server = createHttpServer((_req, res) => {
+			res.writeHead(200);
+			res.end("x".repeat(256));
+		});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		cleanup.push(async () => {
+			server.closeAllConnections();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		});
+		const { port } = server.address() as AddressInfo;
+		await expect(
+			nodeRequest(
+				new URL(`http://127.0.0.1:${port}/`),
+				{ method: "GET", headers: {} },
+				64,
+				new AbortController().signal,
+			),
+		).rejects.toBeInstanceOf(ResponseTooLargeError);
 	});
 });

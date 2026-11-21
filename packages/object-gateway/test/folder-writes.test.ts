@@ -21,7 +21,7 @@ import {
 } from "../src/folder-service/protocol.ts";
 import { createFolderServer } from "../src/folder-service/server.ts";
 import { FolderService, LISTING_ONLY, type ViewHandle } from "../src/folder-service/service.ts";
-import { FolderStaging, GatewayUploads } from "../src/folder-service/staging.ts";
+import { FolderStaging, type FolderUploads, GatewayUploads, manifestText } from "../src/folder-service/staging.ts";
 import {
 	BRIDGE,
 	ENV,
@@ -33,6 +33,7 @@ import {
 	MEMBER,
 	PASS,
 	PROFILE,
+	secretsOf,
 	storeFile,
 	v,
 	writableGrants,
@@ -49,17 +50,26 @@ afterEach(async () => {
 const BIG = 4 * 1024 * 1024;
 const hello: Hello = { protocol: 2, environmentId: ENV, viewId: "proof", pass: PASS, role: "io" };
 
-async function fixture(options: { quietMs?: number; readOnly?: boolean; now?: () => number; platform?: boolean } = {}) {
+async function fixture(
+	options: {
+		quietMs?: number;
+		readOnly?: boolean;
+		now?: () => number;
+		platform?: boolean;
+		wrapUploads?: (inner: FakeUploads) => FolderUploads;
+	} = {},
+) {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-folder-writes-"));
 	const core = new FakeCore();
 	const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
 	const uploads = new FakeUploads(root, core);
+	const folderUploads = options.wrapUploads ? options.wrapUploads(uploads) : uploads;
 	const start = () =>
 		new FolderService({
 			core,
 			objects,
 			grants: options.readOnly ? grants() : writableGrants(options.quietMs, options.platform),
-			staging: new FolderStaging(core, uploads, objects),
+			staging: new FolderStaging(core, folderUploads, objects),
 			log: () => undefined,
 			...(options.now ? { now: options.now } : {}),
 		});
@@ -81,7 +91,7 @@ async function fixture(options: { quietMs?: number; readOnly?: boolean; now?: ()
 		service.stop();
 		service = start();
 	};
-	return { root, core, uploads, service, open, restart };
+	return { root, core, objects, uploads, service, open, restart };
 }
 
 /** A small file, written as the folder program writes it: opened with truncate, its one chunk, closed. */
@@ -2088,4 +2098,176 @@ describe("a draft against every pair of events", () => {
 			expect(failures).toEqual([]);
 			expect(ran).toBeGreaterThan(80);
 		}, 300_000);
+});
+
+describe("write-through ByteCache and sliding-window staging", () => {
+	it("serves stageFile and secret scans from write-through ByteCache with zero NAS chunk reads", async () => {
+		const { root, core, objects, uploads, open } = await fixture();
+		const view = await open();
+
+		const singleBytes = Buffer.from("single-part write-through payload");
+		const singleSha = hashOf(singleBytes);
+		const singleHandle = await view.open({ path: "single.txt", create: true, exclusive: false, truncate: true });
+		await view.chunk({
+			handle: singleHandle.handle,
+			index: 0,
+			sha256: singleSha,
+			bytes: singleBytes.byteLength,
+			offset: 0,
+			data: singleBytes,
+		});
+		expect(objects.has(PROFILE, singleSha)).toBe(true);
+		await rm(join(root, PROFILE, singleSha));
+		await view.close(singleHandle.handle, singleBytes.byteLength);
+
+		const multiBytes = Buffer.from("first half of chunk + second half of chunk");
+		const multiSha = hashOf(multiBytes);
+		const mid = Math.floor(multiBytes.byteLength / 2);
+		const multiHandle = await view.open({ path: "multi.txt", create: true, exclusive: false, truncate: true });
+		await view.chunk({
+			handle: multiHandle.handle,
+			index: 0,
+			sha256: multiSha,
+			bytes: multiBytes.byteLength,
+			offset: 0,
+			data: multiBytes.subarray(0, mid),
+		});
+		expect(objects.has(PROFILE, multiSha)).toBe(false);
+		await view.chunk({
+			handle: multiHandle.handle,
+			index: 0,
+			sha256: multiSha,
+			bytes: multiBytes.byteLength,
+			offset: mid,
+			data: multiBytes.subarray(mid),
+		});
+		expect(objects.has(PROFILE, multiSha)).toBe(true);
+		await rm(join(root, PROFILE, multiSha));
+		await view.close(multiHandle.handle, multiBytes.byteLength);
+
+		const report = await view.publish();
+		expect(byPath(report.paths)).toEqual([
+			{ path: "multi.txt", outcome: "saved" },
+			{ path: "single.txt", outcome: "saved" },
+		]);
+
+		const staging = new FolderStaging(core, uploads, objects);
+		const staged = await staging.stageFile(
+			ENV,
+			{ kind: "member", userId: MEMBER },
+			PROFILE,
+			{
+				size: singleBytes.byteLength + multiBytes.byteLength,
+				chunks: [
+					{ sha256: singleSha, bytes: singleBytes.byteLength },
+					{ sha256: multiSha, bytes: multiBytes.byteLength },
+				],
+			},
+			"text/plain",
+			false,
+			secretsOf("not-present-secret-value"),
+		);
+		expect(staged.file.fileSha256).toBe(hashOf(Buffer.concat([singleBytes, multiBytes])));
+
+		uploads.failures = 1;
+		const failedBytes = Buffer.from("never-cached-on-failure");
+		const failedSha = hashOf(failedBytes);
+		const failedHandle = await view.open({ path: "fail.txt", create: true, exclusive: false, truncate: true });
+		await refused(
+			view.chunk({
+				handle: failedHandle.handle,
+				index: 0,
+				sha256: failedSha,
+				bytes: failedBytes.byteLength,
+				offset: 0,
+				data: failedBytes,
+			}),
+			"UNAVAILABLE",
+		);
+		expect(objects.has(PROFILE, failedSha)).toBe(false);
+		await view.close(failedHandle.handle, 0);
+	});
+
+	it("stages remaining files past STAGING_PARALLEL without stalling behind one slow file", async () => {
+		const count = 12;
+		const files = Array.from({ length: count }, (_, i) => {
+			const name = `f${String(i).padStart(2, "0")}.txt`;
+			const body = Buffer.from(`sliding-window-file-${i}`);
+			const sha = hashOf(body);
+			const manifestSha = hashOf(
+				manifestText({
+					fileSha256: sha,
+					bytes: body.byteLength,
+					mediaType: "text/plain",
+					executable: false,
+					chunks: [{ sha256: sha, bytes: body.byteLength }],
+				}),
+			);
+			return { name, body, sha, manifestSha };
+		});
+		const manifestShas = new Set(files.map((f) => f.manifestSha));
+		const slowManifestSha = files[0]!.manifestSha;
+		let rejectManifests = true;
+		let releaseSlow!: () => void;
+		const slowGate = new Promise<void>((resolve) => {
+			releaseSlow = resolve;
+		});
+		let activeManifests = 0;
+		let peakManifests = 0;
+		const completedFast = new Set<string>();
+		let allFastDone!: () => void;
+		const fastFinished = new Promise<void>((resolve) => {
+			allFastDone = resolve;
+		});
+
+		const { open } = await fixture({
+			wrapUploads: (inner) => ({
+				start(environmentId, actor, intentId, sha256, bytes) {
+					const base = inner.start(environmentId, actor, intentId, sha256, bytes);
+					if (!manifestShas.has(sha256)) return base;
+					return {
+						write: (part) => base.write(part),
+						abort: () => base.abort(),
+						end: async () => {
+							if (rejectManifests) throw new Error("defer staging until publish");
+							activeManifests++;
+							peakManifests = Math.max(peakManifests, activeManifests);
+							try {
+								if (sha256 === slowManifestSha) await slowGate;
+								await base.end();
+								if (sha256 !== slowManifestSha) {
+									completedFast.add(sha256);
+									if (completedFast.size === count - 1) allFastDone();
+								}
+							} finally {
+								activeManifests--;
+							}
+						},
+					};
+				},
+			}),
+		});
+		const view = await open();
+		for (const file of files) {
+			const opened = await view.open({ path: file.name, create: true, exclusive: false, truncate: true });
+			await view.chunk({
+				handle: opened.handle,
+				index: 0,
+				sha256: file.sha,
+				bytes: file.body.byteLength,
+				offset: 0,
+				data: file.body,
+			});
+			await view.close(opened.handle, file.body.byteLength);
+		}
+		rejectManifests = false;
+		const publishing = view.publish();
+		await fastFinished;
+		expect(completedFast.size).toBe(count - 1);
+		expect(peakManifests).toBeLessThanOrEqual(8);
+		releaseSlow();
+		const report = await publishing;
+		expect(report.paths).toHaveLength(count);
+		expect(report.paths.every((p) => p.outcome === "saved")).toBe(true);
+	});
 });
