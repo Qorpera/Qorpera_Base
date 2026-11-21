@@ -2,7 +2,7 @@ set local lock_timeout = '3s';
 
 do $$ begin
 	if to_regprocedure('public.qorpera_data_snapshot_prune(integer)') is not null then
-		raise exception 'Company data snapshot prune (20260930828000) is already applied'; end if;
+		raise exception 'Company data snapshot prune (20260930830000) is already applied'; end if;
 end $$;
 
 create function public.qorpera_company_data_snapshot_path(p_key text)
