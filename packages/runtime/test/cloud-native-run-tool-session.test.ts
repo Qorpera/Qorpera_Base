@@ -582,24 +582,69 @@ it("commits a failed run's finished steps, but not a stopped run's", async () =>
 });
 
 it("gives adapters.close its full 10 s budget instead of cutting it off at the 5 s default", async () => {
-	const f = fixture();
-	let closeSignal: AbortSignal | undefined;
-	const close = vi.fn(async (signal: AbortSignal) => {
-		closeSignal = signal;
-		await new Promise<void>((resolve, reject) => {
-			const timer = setTimeout(resolve, 5_300);
-			signal.addEventListener(
-				"abort",
-				() => {
-					clearTimeout(timer);
-					reject(signal.reason ?? new Error("aborted"));
-				},
-				{ once: true },
-			);
+	try {
+		const f = fixture();
+		let closeSignal: AbortSignal | undefined;
+		let enteredClose = () => {};
+		const closeEntered = new Promise<void>((resolve) => {
+			enteredClose = resolve;
 		});
-	});
-	const result = await f.start({ tools: () => ({ ...f.tools(), close }) });
-	expect(result.providerSessionId).toBe("thread_fixture");
-	expect(close).toHaveBeenCalledOnce();
-	expect(closeSignal?.aborted).toBe(false);
+		const close = vi.fn(async (signal: AbortSignal) => {
+			closeSignal = signal;
+			enteredClose();
+			await new Promise<void>((resolve, reject) => {
+				const timer = setTimeout(resolve, 6_000);
+				signal.addEventListener(
+					"abort",
+					() => {
+						clearTimeout(timer);
+						reject(signal.reason ?? new Error("aborted"));
+					},
+					{ once: true },
+				);
+			});
+		});
+		const running = f.start({
+			tools: (_identity, _operations, run) => {
+				run.signal.addEventListener("abort", () => vi.useFakeTimers(), { once: true });
+				return { ...f.tools(), close };
+			},
+		});
+		await closeEntered;
+		await vi.advanceTimersByTimeAsync(6_000);
+		const result = await running;
+		expect(result.providerSessionId).toBe("thread_fixture");
+		expect(close).toHaveBeenCalledOnce();
+		expect(closeSignal?.aborted).toBe(false);
+		expect(vi.getTimerCount()).toBe(0);
+		vi.useRealTimers();
+
+		const stalled = fixture();
+		let enteredHang = () => {};
+		const hangEntered = new Promise<void>((resolve) => {
+			enteredHang = resolve;
+		});
+		const hang = vi.fn(async (signal: AbortSignal) => {
+			enteredHang();
+			await new Promise<void>((_resolve, reject) => {
+				signal.addEventListener("abort", () => reject(signal.reason ?? new Error("aborted")), { once: true });
+			});
+		});
+		const failing = stalled.start({
+			tools: (_identity, _operations, run) => {
+				run.signal.addEventListener("abort", () => vi.useFakeTimers(), { once: true });
+				return { ...stalled.tools(), close: hang };
+			},
+		});
+		const outcome = failing.then(
+			() => "resolved",
+			(error: Error) => error.message,
+		);
+		await hangEntered;
+		await vi.advanceTimersByTimeAsync(10_500);
+		expect(await outcome).toBe("Native resource cleanup was not confirmed");
+		expect(vi.getTimerCount()).toBe(0);
+	} finally {
+		vi.useRealTimers();
+	}
 });

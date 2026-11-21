@@ -2233,7 +2233,7 @@ describe("the tool boundary with a work log", () => {
 		expect(committed.map((line) => line.args_hash)).toEqual(retryHashes);
 	});
 
-	it("clips 960 KiB arguments cleanly, bounds large read lists, and preserves watermark integrity across refresh", async () => {
+	it("clips 960 KiB arguments cleanly, bounds large read lists, and re-appends a pending step after block rewrite", async () => {
 		const { log, folder, signal } = runLog();
 		const huge = `${"a".repeat(950_000)}😀${"b".repeat(10_000)}`;
 		const manyReads = Array.from({ length: 5_000 }, (_, i) => ({ path: `docs/file-${i}.md`, version: `v${i}` }));
@@ -2256,6 +2256,23 @@ describe("the tool boundary with a work log", () => {
 		}
 		await log.flush(signal);
 		expect(folder.all()).toHaveLength(121);
-		expect(log.steps()).toHaveLength(121);
+
+		const pendingStep = step(log, "company_write", { path: "docs/rewrite-target.md", text: "v1" });
+		await log.precommit(pendingStep, signal);
+		const lastBlock = folder.blocks().at(-1)!;
+		let rewritten = false;
+		folder.before = () => {
+			if (rewritten) return;
+			rewritten = true;
+			folder.rewrite(lastBlock, (lines) => lines.filter((line) => !line.includes("rewrite-target.md")));
+		};
+		log.finish(pendingStep, envelope("reappended"), []);
+		await log.flush(signal);
+		expect(rewritten).toBe(true);
+		const all = folder.all();
+		expect(all).toHaveLength(122);
+		expect(all.at(-1)?.j).toBe(pendingStep);
+		expect((all.at(-1)?.result as { content: { text: string } }).content.text).toBe("reappended");
+		expect(log.steps()).toHaveLength(122);
 	});
 });
