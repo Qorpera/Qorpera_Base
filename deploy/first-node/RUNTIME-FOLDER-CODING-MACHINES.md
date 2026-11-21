@@ -233,9 +233,15 @@ clean stop). It is how a crash is noticed (rule 4 in "Reads").
 The guest agent starts one folder program per session (P1 proposes it stays that way), as root, at
 `/run/qorpera-folder/mounts/<worker32>`, with `--owner-uid` set to the session's uid and `allow_other`, so the session's
 units, its Docker daemon and its root all see the same tree. Each session's program gets its own
-`--local-dir /var/lib/qorpera-folder/local/<worker>` (5d's local layer), and all of them share the machine's one
-`--cache-dir /var/lib/qorpera-folder/cache/machine`, with a lock per top cache folder (item 8's MC3,
-RUNTIME-FOLDER-MACHINE-CACHES.md). Each unit of the session gets `/company` bound to that
+`--local-dir /var/lib/qorpera-guest/sessions/<worker32>/folder-local` (5d's local layer) and its own isolated
+`--cache-dir /var/lib/qorpera-folder/cache/s-<worker32>` (64 bytes <= 80; amended 21 November 2026 in PR #2075, Wave-3
+performance, replacing the earlier shared `/var/lib/qorpera-folder/cache/machine` to eliminate cross-session
+`<cache-dir>/names` `flock` contention and `O(N^2)` FUSE `peers.rs` invalidation broadcasts; see
+RUNTIME-FOLDER-MACHINE-CACHES.md). Each session's cache directory stays warm across views and `quiesce`/sleep/wake, is
+removed on `stop-session`, and the guest agent removes any orphaned `cache/s-*` (lacking `state/sessions/<worker32>`)
+and any legacy `cache/machine` once per boot at the first mount. Package downloads remain shared across sessions via
+`/var/cache/qorpera-packages`, while caches built outside a session's own worktree are no longer shared across sibling
+sessions. Each unit of the session gets `/company` bound to that
 path (`BindPaths`), as step 4's commands do. The program reaches the node's folder service on vsock, as on every
 machine (step 1); the CID check is the boundary, so §6's "command units get RestrictAddressFamilies without AF_VSOCK"
 no longer holds (root can open vsock anyway). A folder program that restarts (a crash, or root killing it) follows

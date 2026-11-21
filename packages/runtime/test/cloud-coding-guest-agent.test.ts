@@ -782,6 +782,7 @@ describe("mounting a session", () => {
 			[
 				"a link at cache root",
 				async (m, s) => {
+					await mkdir(join(m.work, "machine"), { recursive: true });
 					await rm(dirname(s.folderCache), { recursive: true });
 					await symlink(m.work, dirname(s.folderCache));
 				},
@@ -789,6 +790,7 @@ describe("mounting a session", () => {
 			[
 				"a link above cache root",
 				async (m, s) => {
+					await mkdir(join(m.work, "cache", "machine"), { recursive: true });
 					await rm(dirname(dirname(s.folderCache)), { recursive: true });
 					await symlink(m.work, dirname(dirname(s.folderCache)));
 				},
@@ -806,6 +808,9 @@ describe("mounting a session", () => {
 				m.calls.some(([tool]) => tool === "systemd-run"),
 				name,
 			).toBe(false);
+			if (name === "a link at cache root") expect((await lstat(join(m.work, "machine"))).isDirectory()).toBe(true);
+			if (name === "a link above cache root")
+				expect((await lstat(join(m.work, "cache", "machine"))).isDirectory()).toBe(true);
 		}
 	});
 	it("gives each session its own isolated 0700 cache dir disjoint from folderLocal and within the 80-byte production limit", async () => {
@@ -834,6 +839,41 @@ describe("mounting a session", () => {
 			expect(productionCacheDir).toBe(`/var/lib/qorpera-folder/cache/s-${s.w}`);
 			expect(Buffer.byteLength(productionCacheDir)).toBeLessThanOrEqual(80);
 		}
+	});
+	it("prunes orphaned per-session cache dirs and legacy cache/machine once per boot while keeping active sessions", async () => {
+		const m = await machine();
+		const kept = randomUUID();
+		const orphan = randomUUID();
+		const mounting = randomUUID();
+		const sKept = sessionAt(m, kept);
+		const sOrphan = sessionAt(m, orphan);
+		const sMounting = sessionAt(m, mounting);
+		const legacyMachine = join(m.folderCacheRoot, "machine");
+		const unrelated = join(m.folderCacheRoot, "custom");
+		await mkdir(sKept.session, { recursive: true });
+		for (const dir of [sKept.folderCache, sOrphan.folderCache, sMounting.folderCache, legacyMachine, unrelated]) {
+			await mkdir(dir, { recursive: true, mode: 0o700 });
+			await writeFile(join(dir, "marker"), "data");
+		}
+		expect((await call(m, "mount", mountRequest(mounting))).line.mount).toBe("mounted");
+		await gone(sOrphan.folderCache);
+		await gone(legacyMachine);
+		expect(await readFile(join(sKept.folderCache, "marker"), "utf8")).toBe("data");
+		expect(await readFile(join(sMounting.folderCache, "marker"), "utf8")).toBe("data");
+		expect(await readFile(join(unrelated, "marker"), "utf8")).toBe("data");
+		const laterOrphan = sessionAt(m, randomUUID());
+		await mkdir(laterOrphan.folderCache, { recursive: true, mode: 0o700 });
+		await writeFile(join(laterOrphan.folderCache, "marker"), "later");
+		expect((await call(m, "mount", mountRequest(kept, { ...VIEW, viewId: "view-2" }, 200002))).line.mount).toBe(
+			"mounted",
+		);
+		expect(await readFile(join(laterOrphan.folderCache, "marker"), "utf8")).toBe("later");
+		await rm(join(m.runRoot, "folder-caches.pruned"));
+		expect((await call(m, "mount", mountRequest(kept, { ...VIEW, viewId: "view-2" }, 200002))).line.mount).toBe(
+			"mounted",
+		);
+		await gone(laterOrphan.folderCache);
+		expect(await readFile(join(sKept.folderCache, "marker"), "utf8")).toBe("data");
 	});
 	it("refuses another user for a mounted session", async () => {
 		const m = await machine();

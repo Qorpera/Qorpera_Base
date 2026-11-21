@@ -144,10 +144,13 @@ is never under `/run`, which empties at every start and is memory.
   (`cloud-company-computer-folder-helper.ts`, step 4), on coding machines the guest agent (step 5's 5f and 5g), on test
   machines 6d's guest. Without the flag, the program keeps its cache under `--local-dir`, for that mount only (5d's
   behaviour).
-- **Coding machines** (step 5's plan, from its owner on 15 October): the guest agent starts one folder program per
-  session, each with its own uid and worktree (`worktrees/<worker>/`), and gives each its own `--local-dir`,
-  `/var/lib/qorpera-folder/local/<worker>`. A member's parallel sessions run their programs at once on the one
-  machine. They share the machine's `--cache-dir`.
+- **Coding machines** (step 5's plan, from its owner on 15 October; amended 21 November 2026 in PR #2075 for Wave-3
+  performance): the guest agent starts one folder program per session, each with its own uid and worktree
+  (`worktrees/<worker>/`), and gives each its own `--local-dir`, `/var/lib/qorpera-guest/sessions/<worker32>/folder-local`.
+  A member's parallel sessions run their programs at once on the one machine. Originally they shared the machine's
+  `--cache-dir` (`/var/lib/qorpera-folder/cache/machine`), which caused cross-session `<cache-dir>/names` `flock`
+  contention and `O(N^2)` FUSE `peers.rs` cache-invalidation broadcasts; each session now gets its own isolated
+  `--cache-dir`, `/var/lib/qorpera-folder/cache/s-<worker32>` (64 bytes, within the 80-byte socket-path limit).
 - **The key.** Company machines carry many owners: desktop holders change, and every offline command gets a view and
   a mount of its own (4b). A cache made in one view must not show in a view of a different authority. So:
   - **company machines, desktops:** one cache for all the machine's desktops, `/var/lib/qorpera-folder/cache/desktop`.
@@ -158,9 +161,16 @@ is never under `/run`, which empties at every start and is memory.
     also takes `member-<uuid>`, for a member's view of that kind; the core opens none today. All of one agent's
     commands share it, so `npm install` in one command and `npm test` in the next work as on one disk. A command never
     sees the desktops' cache, so an install made on the desktop is made again by a command: that costs speed only;
-  - **coding and test machines:** one cache per machine, `/var/lib/qorpera-folder/cache/machine`. Root inside the
-    machine already joins its sessions (contract item 11, "Root makes one member's sessions on one machine no walls
-    between each other"), so walls between their caches would protect nothing;
+  - **test machines:** one cache per machine, `/var/lib/qorpera-folder/cache/machine`;
+  - **coding machines:** one cache per session, `/var/lib/qorpera-folder/cache/s-<worker32>` (64 bytes <= 80; amended
+    21 November 2026 in PR #2075, Wave-3 performance, overriding the 15 October shared `machine` cache). Root inside the
+    machine still joins its sessions (contract item 11), so this isolation is for performance rather than security: it
+    eliminates cross-session `<cache-dir>/names` `flock` contention and `O(N^2)` `peers.rs` invalidation broadcasts.
+    Each session's cache directory stays warm across views and `quiesce`/sleep/wake, is removed by `stop-session`, and
+    the guest agent removes any orphaned `cache/s-*` (without a matching `state/sessions/<worker32>` directory) and any
+    legacy `cache/machine` once per boot at the first mount. Package downloads remain shared across sessions via
+    `/var/cache/qorpera-packages` (`CODING_PACKAGE_CACHES`). Trade-off: a cache built by one coding session in a path
+    outside its own worktree (`worktrees/<worker>/`) is no longer visible to sibling sessions on the same machine;
   - the folder helper refuses a mismatch: a desktop with an owner's cache, a command with the desktops' cache, or an
     owner of another shape;
   - a company-wide view renews only while its agent and member still read the folder's root, as its open required
@@ -176,8 +186,11 @@ is never under `/run`, which empties at every start and is memory.
 - **A cache is kept at its path.** A `node_modules` made in one folder serves that folder only. A command on a company
   machine that works in the folder the last one worked in finds it. A new coding session works in a new worktree, so
   it installs again, as a new git worktree on a local disk does; the package managers' own stores in the user's home
-  on the machine (npm's, pip's, cargo's) keep that install off the network. `.pnpm-store` at the top of `/company` is
-  one per cache, so pnpm's sessions share it. A cache kept by content (a lockfile's hash, say) to carry
+  on the machine (npm's, pip's, cargo's) and the shared package caches at `/var/cache/qorpera-packages`
+  (`CODING_PACKAGE_CACHES`, which routes npm, pnpm, pip, uv and Playwright stores) keep that install off the network.
+  With per-session caches on coding machines (PR #2075), `.pnpm-store` at the top of `/company` is per-session rather
+  than shared across coding sessions; pnpm shares its store through `/var/cache/qorpera-packages/pnpm` instead. A cache
+  kept by content (a lockfile's hash, say) to carry
   `node_modules` from one worktree to the next is not in this plan.
 - **Several mounts at once.** Several folder programs can serve one cache folder at a time (a desktop and two commands
   of one agent), all as one account. A process sees what another mount wrote at once, as on one disk; "The kernel

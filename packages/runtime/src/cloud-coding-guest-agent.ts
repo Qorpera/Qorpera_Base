@@ -66,6 +66,7 @@ import { ensureFolderCacheDir, FOLDER_CACHE } from "./cloud-folder-cache-dir.ts"
 
 const executeFile = promisify(execFile);
 const COMPACT = /^[0-9a-f]{32}$/;
+const SESSION_CACHE = /^s-([0-9a-f]{32})$/;
 const SEGMENT = /^[0-9]{16}\.out$/;
 const SIGNAL = /^SIG[A-Z0-9]{2,12}$/;
 const ENDED = new Set<string>(["exited", "cancelled", "timed_out", "lost"]);
@@ -654,6 +655,38 @@ async function ensurePackageCaches(at: Agent): Promise<boolean> {
 	}
 }
 
+async function pruneOrphanFolderCaches(at: Agent, activeWorker: string): Promise<void> {
+	const done = join(at.runtimeRoot, "folder-caches.pruned");
+	if (await exists(done)) return;
+	const owner = process.geteuid?.();
+	const parent = await missing(() => lstat(dirname(at.folderCacheRoot)));
+	if (parent !== undefined && (!parent.isDirectory() || parent.uid !== owner)) return;
+	const root = parent ? await missing(() => lstat(at.folderCacheRoot)) : undefined;
+	if (root !== undefined && (!root.isDirectory() || root.uid !== owner)) return;
+	let ok = true;
+	if (root) {
+		const entries = await readdir(at.folderCacheRoot).catch(() => {
+			ok = false;
+			return [];
+		});
+		for (const name of entries) {
+			if (name !== "machine") {
+				const match = SESSION_CACHE.exec(name);
+				if (!match || match[1] === activeWorker) continue;
+				const sessionDir = await missing(() => lstat(join(at.stateRoot, "sessions", match[1]))).catch(() => {
+					ok = false;
+					return null;
+				});
+				if (sessionDir === null || sessionDir?.isDirectory()) continue;
+			}
+			await rm(join(at.folderCacheRoot, name), { recursive: true, force: true }).catch(() => {
+				ok = false;
+			});
+		}
+	}
+	if (ok) await ignore(writeText(done, "", 0o600));
+}
+
 /** The machine's NAT for the sessions' namespaces, which may reach out but not each other. Replaced whole. */
 const NAT_RULES = `table inet qorpera_guest
 delete table inet qorpera_guest
@@ -972,6 +1005,7 @@ export async function mountCodingGuestSession(
 			caches = await ensurePackageCaches(at);
 			const user = await ensureUser(at, request.uid, request.gid);
 			await ensureDataCommand(at);
+			await pruneOrphanFolderCaches(at, session.worker);
 			return user;
 		});
 		await mkdir(session.session, { recursive: true, mode: 0o755 });
