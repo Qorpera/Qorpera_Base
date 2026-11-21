@@ -60,6 +60,52 @@ interface CompareColumn {
 }
 
 const NOTCH_POS_KEY = "qorpera.web.surface-notch-x.v1";
+const PHONE_MODEL_KEY = "qorpera.web.surface-phone-model.v1";
+
+interface PhoneModelSpec {
+	readonly id: string;
+	readonly label: string;
+	readonly shortLabel: string;
+	readonly width: number;
+	readonly height: number;
+	readonly radius: number;
+	readonly cutout: "island" | "punch" | "none";
+}
+
+const PHONE_MODELS: readonly PhoneModelSpec[] = [
+	{
+		id: "iphone-16",
+		label: "iPhone 16",
+		shortLabel: "iPhone 16",
+		width: 393,
+		height: 852,
+		radius: 50,
+		cutout: "island",
+	},
+	{
+		id: "iphone-16-pro-max",
+		label: "iPhone 16 Pro Max",
+		shortLabel: "16 Pro Max",
+		width: 440,
+		height: 956,
+		radius: 54,
+		cutout: "island",
+	},
+	{
+		id: "iphone-se",
+		label: "iPhone SE",
+		shortLabel: "iPhone SE",
+		width: 375,
+		height: 667,
+		radius: 26,
+		cutout: "none",
+	},
+	{ id: "pixel-9", label: "Pixel 9", shortLabel: "Pixel 9", width: 412, height: 915, radius: 36, cutout: "punch" },
+];
+
+function phoneModelById(id: string | null | undefined): PhoneModelSpec {
+	return PHONE_MODELS.find((model) => model.id === id) ?? PHONE_MODELS[0]!;
+}
 
 function hostOf(url: string | null): string {
 	if (!url) return "";
@@ -93,6 +139,18 @@ export class SurfaceView {
 	readonly #host: SurfaceViewHost;
 	readonly #lifetime = new AbortController();
 	readonly #bar = h("header", { class: "surface-bar" });
+	readonly #panelToggle = h("button", {
+		type: "button",
+		class: "surface-panel-toggle",
+		"data-act": "toggle-panel",
+		hidden: true,
+	});
+	readonly #phoneBar = h("div", {
+		class: "surface-phone-bar",
+		role: "group",
+		"aria-label": t("Phone model"),
+		hidden: true,
+	});
 	readonly #topSlot = h("div", { class: "surface-top-slot", hidden: true });
 	readonly #stage = h("div", { class: "surface-stage" });
 	readonly #canvas = h("div", { class: "surface-canvas" });
@@ -156,6 +214,9 @@ export class SurfaceView {
 	#pillCollapsed = false;
 	#notchRatio = 0.5;
 	#suppressNotchClick = false;
+	#phoneModelId = PHONE_MODELS[0]!.id;
+	#phoneBarShown = "";
+	#viewportResizeObserver: ResizeObserver | undefined;
 
 	constructor(host: SurfaceViewHost, slug: string) {
 		this.#host = host;
@@ -163,6 +224,8 @@ export class SurfaceView {
 		try {
 			const stored = Number(localStorage.getItem(NOTCH_POS_KEY));
 			if (Number.isFinite(stored) && stored >= 0.08 && stored <= 0.92) this.#notchRatio = stored;
+			const storedModel = localStorage.getItem(PHONE_MODEL_KEY);
+			if (storedModel) this.#phoneModelId = phoneModelById(storedModel).id;
 		} catch {
 			/* WHY: Local browser storage is optional in private/sandboxed contexts. */
 		}
@@ -176,12 +239,23 @@ export class SurfaceView {
 			},
 		});
 		this.#topSlot.append(this.#handoffForm, this.#banner);
-		this.#viewport.append(this.#mountSlot, this.#reportSlot, this.#frames);
+		this.#viewport.append(this.#phoneBar, this.#mountSlot, this.#reportSlot, this.#frames);
 		this.#canvas.append(this.#bar, this.#topSlot, this.#viewport, this.#composer, this.#toast);
 		this.#stage.append(this.#canvas, this.#drawer.el);
-		this.el.append(this.#stage);
+		this.el.append(this.#stage, this.#panelToggle);
 		this.#wireNotchDrag(signal);
-		window.addEventListener("resize", () => this.#applyNotchPosition(), { signal });
+		if (typeof ResizeObserver !== "undefined") {
+			this.#viewportResizeObserver = new ResizeObserver(() => this.#syncPhoneViewport());
+			this.#viewportResizeObserver.observe(this.#viewport);
+		}
+		window.addEventListener(
+			"resize",
+			() => {
+				this.#applyNotchPosition();
+				this.#syncPhoneViewport();
+			},
+			{ signal },
+		);
 		window.addEventListener(
 			"message",
 			(event: MessageEvent) => {
@@ -336,6 +410,8 @@ export class SurfaceView {
 	}
 
 	dispose(): void {
+		this.#viewportResizeObserver?.disconnect();
+		this.#viewportResizeObserver = undefined;
 		this.#clearCompare();
 		this.#primaryDoor.dispose();
 		this.#attachedReport?.dispose();
@@ -353,6 +429,8 @@ export class SurfaceView {
 		if (!surface) {
 			this.#bar.replaceChildren();
 			this.#bar.hidden = true;
+			this.#panelToggle.hidden = true;
+			this.#phoneBar.hidden = true;
 			this.#banner.replaceChildren();
 			this.#toast.replaceChildren();
 			this.#handoffOpen = false;
@@ -434,6 +512,60 @@ export class SurfaceView {
 						? state.device
 						: "desktop";
 		this.#viewport.dataset.device = effectiveDevice;
+		this.#syncPhoneViewport();
+	}
+
+	#syncPhoneViewport(): void {
+		const isMobile = this.#viewport.dataset.device === "mobile";
+		this.#phoneBar.hidden = !isMobile;
+		if (!isMobile) {
+			this.#viewport.removeAttribute("data-phone-cutout");
+			this.#viewport.style.removeProperty("--phone-w");
+			this.#viewport.style.removeProperty("--phone-h");
+			this.#viewport.style.removeProperty("--phone-r");
+			this.#viewport.style.removeProperty("--phone-scale");
+			return;
+		}
+		const model = phoneModelById(this.#phoneModelId);
+		const rect = this.#viewport.getBoundingClientRect();
+		const availW = rect.width > 0 ? Math.max(220, rect.width - 36) : model.width + 24;
+		const availH = rect.height > 0 ? Math.max(260, rect.height - 208) : model.height + 24;
+		const scale = Math.min(1, availW / (model.width + 20), availH / (model.height + 20));
+		this.#viewport.dataset.phoneCutout = model.cutout;
+		this.#viewport.style.setProperty("--phone-w", `${model.width}px`);
+		this.#viewport.style.setProperty("--phone-h", `${model.height}px`);
+		this.#viewport.style.setProperty("--phone-r", `${model.radius}px`);
+		this.#viewport.style.setProperty("--phone-scale", scale.toFixed(4));
+
+		const pct = Math.round(scale * 100);
+		const barKey = `${model.id}:${pct}`;
+		if (barKey === this.#phoneBarShown) return;
+		this.#phoneBarShown = barKey;
+		this.#phoneBar.replaceChildren(
+			h(
+				"div",
+				{ class: "surface-phone-models" },
+				...PHONE_MODELS.map((item) =>
+					h(
+						"button",
+						{
+							type: "button",
+							class: `surface-phone-model${item.id === model.id ? " is-on" : ""}`,
+							"aria-pressed": String(item.id === model.id),
+							"data-act": "phone-model",
+							"data-phone-model": item.id,
+							title: `${item.label} (${item.width} × ${item.height})`,
+						},
+						item.shortLabel,
+					),
+				),
+			),
+			h(
+				"span",
+				{ class: "surface-phone-dims" },
+				pct < 100 ? `${model.width} × ${model.height} · ${pct}%` : `${model.width} × ${model.height}`,
+			),
+		);
 	}
 
 	#drawBar(surface: SurfaceSummary): void {
@@ -750,10 +882,20 @@ export class SurfaceView {
 			pillParts.push(collapseBtn);
 		}
 
-		const hasAnything = pillParts.length > 0 || showPanelToggle;
-		this.#bar.hidden = !hasAnything;
+		this.#bar.hidden = pillParts.length === 0;
 		this.#bar.classList.toggle("is-collapsed", this.#pillCollapsed && pillParts.length > 0);
 		const panelLabel = panelOpen ? t("Close panel") : t("Preview panel");
+		this.#panelToggle.hidden = !showPanelToggle;
+		this.#panelToggle.classList.toggle("is-on", panelOpen);
+		this.#panelToggle.setAttribute("aria-pressed", String(panelOpen));
+		this.#panelToggle.setAttribute("aria-label", panelLabel);
+		this.#panelToggle.title = panelLabel;
+		this.#panelToggle.replaceChildren(
+			icon("panel-right"),
+			...(!panelOpen && openWorkCount > 0
+				? [h("span", { class: "surface-panel-toggle-dot", "aria-hidden": "true" }, String(openWorkCount))]
+				: []),
+		);
 		const notchLabel =
 			effectiveMode === "live"
 				? live
@@ -790,25 +932,6 @@ export class SurfaceView {
 		this.#bar.replaceChildren(
 			h("h1", { class: "visually-hidden surface-title" }, surface.title),
 			...(centerControl ? [centerControl] : []),
-			...(showPanelToggle
-				? [
-						h(
-							"button",
-							{
-								type: "button",
-								class: `surface-panel-toggle${panelOpen ? " is-on" : ""}`,
-								"aria-pressed": String(panelOpen),
-								"aria-label": panelLabel,
-								title: panelLabel,
-								"data-act": "toggle-panel",
-							},
-							icon("panel-right"),
-							!panelOpen && openWorkCount > 0
-								? h("span", { class: "surface-panel-toggle-dot", "aria-hidden": "true" }, String(openWorkCount))
-								: null,
-						),
-					]
-				: []),
 		);
 		if (this.#pillCollapsed) this.#applyNotchPosition();
 		this.#headerCrew.settle();
@@ -1407,6 +1530,18 @@ export class SurfaceView {
 			case "device":
 				store.setDevice(target.dataset.device === "mobile" ? "mobile" : "desktop");
 				return;
+			case "phone-model": {
+				const model = phoneModelById(target.dataset.phoneModel);
+				this.#phoneModelId = model.id;
+				try {
+					localStorage.setItem(PHONE_MODEL_KEY, model.id);
+				} catch {
+					/* WHY: Local browser storage is optional in private/sandboxed contexts. */
+				}
+				this.#phoneBarShown = "";
+				this.#syncPhoneViewport();
+				return;
+			}
 			case "collapse-pill":
 				this.#pillCollapsed = true;
 				this.#drawBar(surface);

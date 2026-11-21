@@ -1,6 +1,6 @@
 import { composeStudioPreview } from "@qorpera/cloud-client/surface-studio-patches";
 import type { StudioPatchChange, StudioPatchOp, SurfacePreviewConflict, SurfaceSummary } from "@qorpera/contracts";
-import { h, icon } from "../../ui/dom.ts";
+import { h } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { t } from "../../ui/preferences.ts";
@@ -105,8 +105,6 @@ interface ReportDocument {
 	readonly changed: boolean;
 	readonly base?: ReportDocument;
 }
-
-type ReportLens = "internal" | "public";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const SERIES_COLORS = ["#4a55a2", "#c65d3b", "#2d6a57", "#d4950f"];
@@ -467,8 +465,7 @@ function renderFigureBlock(block: Extract<ReportBlock, { kind: "figure" }>): HTM
 	);
 }
 
-function renderCalloutBlock(block: Extract<ReportBlock, { kind: "callout" }>, lens: ReportLens): HTMLElement | null {
-	if (lens === "public" && (block.tone === "decision" || block.tone === "tradeoff")) return null;
+function renderCalloutBlock(block: Extract<ReportBlock, { kind: "callout" }>): HTMLElement {
 	const toneLabel =
 		block.tone === "public_lens"
 			? t("External perspective")
@@ -493,7 +490,7 @@ function renderCalloutBlock(block: Extract<ReportBlock, { kind: "callout" }>, le
 	);
 }
 
-function renderBlock(block: ReportBlock, lens: ReportLens): HTMLElement | null {
+function renderBlock(block: ReportBlock): HTMLElement {
 	switch (block.kind) {
 		case "quote":
 			return h(
@@ -511,7 +508,7 @@ function renderBlock(block: ReportBlock, lens: ReportLens): HTMLElement | null {
 		case "figure":
 			return renderFigureBlock(block);
 		case "callout":
-			return renderCalloutBlock(block, lens);
+			return renderCalloutBlock(block);
 	}
 }
 
@@ -523,7 +520,6 @@ export class SurfaceReportView {
 	#loading = false;
 	#lastConflict: SurfacePreviewConflict | null = null;
 	#activeSlug = "";
-	#lens: ReportLens = "internal";
 	#shown = "";
 
 	constructor(options: SurfaceReportOptions) {
@@ -594,7 +590,6 @@ export class SurfaceReportView {
 			state.mode,
 			state.activeReportSlug,
 			this.#activeSlug,
-			this.#lens,
 			baseFiles,
 			ordered,
 			surface.title,
@@ -652,64 +647,39 @@ export class SurfaceReportView {
 					? "studio-badge is-live"
 					: "studio-badge";
 
-		const chrome = h(
-			"div",
-			{ class: "report-chrome" },
-			reports.length > 1
-				? h(
-						"div",
-						{ class: "report-switcher", role: "tablist", "aria-label": t("Articles & reports") },
-						reports.map((report) =>
-							h(
-								"button",
-								{
-									type: "button",
-									role: "tab",
-									class: `report-switch-pill${report.slug === activeReport?.slug ? " is-on" : ""}`,
-									"aria-selected": String(report.slug === activeReport?.slug),
-									"data-act": "report-select",
-									"data-slug": report.slug,
-								},
-								report.changed ? h("span", { class: "report-changed-dot", "aria-hidden": "true" }) : null,
-								report.headline,
-							),
-						),
-					)
-				: h("span", { class: "report-chrome-spacer" }),
-			h(
-				"div",
-				{ class: "report-chrome-tools" },
-				this.#lens === "internal" && !this.#options.embedded ? h("span", { class: badgeClass }, badgeText) : null,
-				h(
+		const showChrome = reports.length > 1 || !this.#options.embedded;
+		const chrome = showChrome
+			? h(
 					"div",
-					{ class: "surface-seg report-lens-seg", role: "group", "aria-label": t("Reading perspective") },
-					h(
-						"button",
-						{
-							type: "button",
-							class: this.#lens === "internal" ? "is-on" : "",
-							"aria-pressed": String(this.#lens === "internal"),
-							"data-act": "report-lens",
-							"data-lens": "internal",
-						},
-						t("Internal brief"),
-					),
-					h(
-						"button",
-						{
-							type: "button",
-							class: this.#lens === "public" ? "is-on" : "",
-							"aria-pressed": String(this.#lens === "public"),
-							"data-act": "report-lens",
-							"data-lens": "public",
-						},
-						t("Public post"),
-					),
-				),
-			),
-		);
+					{ class: "report-chrome" },
+					reports.length > 1
+						? h(
+								"div",
+								{ class: "report-switcher", role: "tablist", "aria-label": t("Articles & reports") },
+								reports.map((report) =>
+									h(
+										"button",
+										{
+											type: "button",
+											role: "tab",
+											class: `report-switch-pill${report.slug === activeReport?.slug ? " is-on" : ""}`,
+											"aria-selected": String(report.slug === activeReport?.slug),
+											"data-act": "report-select",
+											"data-slug": report.slug,
+										},
+										report.changed ? h("span", { class: "report-changed-dot", "aria-hidden": "true" }) : null,
+										report.headline,
+									),
+								),
+							)
+						: h("span", { class: "report-chrome-spacer" }),
+					!this.#options.embedded
+						? h("div", { class: "report-chrome-tools" }, h("span", { class: badgeClass }, badgeText))
+						: null,
+				)
+			: null;
 
-		const children: HTMLElement[] = [chrome];
+		const children: HTMLElement[] = chrome ? [chrome] : [];
 
 		if (composition.status === "conflicted") {
 			const paths = formatConflictPaths(composition.conflictReport.paths);
@@ -739,7 +709,6 @@ export class SurfaceReportView {
 
 		if (state.mode === "compare") {
 			children.push(this.#renderCompare(reports));
-			this.el.classList.toggle("is-public-lens", this.#lens === "public");
 			this.el.replaceChildren(...children);
 			return;
 		}
@@ -763,7 +732,6 @@ export class SurfaceReportView {
 							],
 				),
 			);
-			this.el.classList.toggle("is-public-lens", this.#lens === "public");
 			this.el.replaceChildren(...children);
 			return;
 		}
@@ -778,20 +746,6 @@ export class SurfaceReportView {
 			const article = h(
 				"article",
 				{ class: "report-article", "data-report-slug": activeReport.slug },
-				this.#lens === "public"
-					? h(
-							"div",
-							{ class: "report-public-banner" },
-							icon("globe"),
-							h(
-								"span",
-								null,
-								activeReport.publicUrl
-									? `${activeReport.publicUrl} · ${t("External reader preview")}`
-									: t("External reader preview"),
-							),
-						)
-					: null,
 				h(
 					"header",
 					{ class: "report-hero" },
@@ -800,11 +754,9 @@ export class SurfaceReportView {
 					activeReport.subtitle
 						? h(
 								"p",
-								{ class: `report-dek${subtitleChanged && this.#lens === "internal" ? " is-changed" : ""}` },
+								{ class: `report-dek${subtitleChanged ? " is-changed" : ""}` },
 								activeReport.subtitle,
-								subtitleChanged && this.#lens === "internal"
-									? h("span", { class: "studio-changed-pill" }, t("Updated"))
-									: null,
+								subtitleChanged ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
 							)
 						: null,
 					metaParts.length ? h("div", { class: "report-byline" }, metaParts.join(" · ")) : null,
@@ -812,13 +764,11 @@ export class SurfaceReportView {
 				activeReport.keyMetrics.length
 					? h(
 							"div",
-							{ class: `report-metrics${metricsChanged && this.#lens === "internal" ? " is-changed" : ""}` },
+							{ class: `report-metrics${metricsChanged ? " is-changed" : ""}` },
 							activeReport.keyMetrics.map((metric, idx) => {
 								const prevMetric = activeReport.base?.keyMetrics[idx];
 								const changedMetric = Boolean(
-									this.#lens === "internal" &&
-										prevMetric &&
-										(prevMetric.value !== metric.value || prevMetric.delta !== metric.delta),
+									prevMetric && (prevMetric.value !== metric.value || prevMetric.delta !== metric.delta),
 								);
 								return h(
 									"div",
@@ -832,9 +782,7 @@ export class SurfaceReportView {
 					: null,
 				...activeReport.sections.map((section, idx) => {
 					const baseSection = activeReport.base?.sections[idx];
-					const sectionChanged = Boolean(
-						this.#lens === "internal" && baseSection && JSON.stringify(baseSection) !== JSON.stringify(section),
-					);
+					const sectionChanged = Boolean(baseSection && JSON.stringify(baseSection) !== JSON.stringify(section));
 					return h(
 						"section",
 						{
@@ -849,7 +797,7 @@ export class SurfaceReportView {
 							sectionChanged ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
 						),
 						...section.paragraphs.map((paragraph) => h("div", { class: "report-prose" }, markdown(paragraph))),
-						...(section.blocks ?? []).map((block) => renderBlock(block, this.#lens)),
+						...(section.blocks ?? []).map((block) => renderBlock(block)),
 					);
 				}),
 			);
@@ -900,7 +848,6 @@ export class SurfaceReportView {
 			);
 		}
 
-		this.el.classList.toggle("is-public-lens", this.#lens === "public");
 		this.el.replaceChildren(...children);
 	}
 
@@ -999,14 +946,6 @@ export class SurfaceReportView {
 		if (act === "report-select" && target.dataset.slug) {
 			if (target.dataset.slug !== this.#activeSlug) {
 				this.#activeSlug = target.dataset.slug;
-				this.update();
-			}
-			return;
-		}
-		if (act === "report-lens") {
-			const next: ReportLens = target.dataset.lens === "public" ? "public" : "internal";
-			if (next !== this.#lens) {
-				this.#lens = next;
 				this.update();
 			}
 			return;

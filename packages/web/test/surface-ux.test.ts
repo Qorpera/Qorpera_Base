@@ -640,7 +640,7 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		store.dispose();
 	});
 
-	it("organizes Product Studio with folded Vendor Analysis tab, charts, tables, and Public post lens", async () => {
+	it("organizes Product Studio with folded Vendor Analysis tab, charts, tables, and no Internal/Public lens toggle", async () => {
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
 			localInteractive: true,
@@ -677,13 +677,7 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		expect(view.el.querySelectorAll(".report-bar-row")).toHaveLength(3);
 		expect(view.el.querySelector(".report-table")).not.toBeNull();
 		expect(view.el.querySelector(".report-callout.is-decision")).not.toBeNull();
-
-		view.el.querySelector<HTMLButtonElement>('[data-act="report-lens"][data-lens="public"]')!.click();
-		expect(view.el.querySelector(".surface-report")?.classList.contains("is-public-lens")).toBe(true);
-		expect(view.el.querySelector(".report-public-banner")?.textContent).toContain(
-			"thetaband.dk/journal/batch-1-hardware",
-		);
-		expect(view.el.querySelector(".report-callout.is-decision")).toBeNull();
+		expect(view.el.querySelector('[data-act="report-lens"]')).toBeNull();
 
 		view.el.querySelector<HTMLButtonElement>('[data-act="mode"][data-mode="live"]')!.click();
 		view.update();
@@ -825,6 +819,45 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		expect(view.el.querySelector('[data-file="identity/voice.md"]')?.textContent).toContain(
 			"Vi siger / Vi siger aldrig",
 		);
+
+		const panelToggle = view.el.querySelector<HTMLButtonElement>(":scope > .surface-panel-toggle");
+		expect(panelToggle).not.toBeNull();
+		expect(view.el.querySelector(".surface-canvas .surface-panel-toggle")).toBeNull();
+		expect(view.el.querySelector('.surface-drawer [data-act="close-panel"]')).toBeNull();
+		expect(view.el.querySelector('.surface-drawer [data-act="close"]')).toBeNull();
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("lets mobile previews switch between exact phone models and updates logical viewport dimensions", async () => {
+		stubFigureMotion();
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "phone-app");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const viewport = view.el.querySelector<HTMLElement>(".surface-viewport")!;
+		expect(viewport.dataset.device).toBe("mobile");
+		expect(viewport.style.getPropertyValue("--phone-w")).toBe("393px");
+		expect(viewport.style.getPropertyValue("--phone-h")).toBe("852px");
+		expect(viewport.dataset.phoneCutout).toBe("island");
+
+		view.el.querySelector<HTMLButtonElement>('[data-phone-model="iphone-se"]')!.click();
+		expect(viewport.style.getPropertyValue("--phone-w")).toBe("375px");
+		expect(viewport.style.getPropertyValue("--phone-h")).toBe("667px");
+		expect(viewport.dataset.phoneCutout).toBe("none");
+
+		view.el.querySelector<HTMLButtonElement>('[data-phone-model="pixel-9"]')!.click();
+		expect(viewport.style.getPropertyValue("--phone-w")).toBe("412px");
+		expect(viewport.style.getPropertyValue("--phone-h")).toBe("915px");
+		expect(viewport.dataset.phoneCutout).toBe("punch");
 
 		view.dispose();
 		store.dispose();

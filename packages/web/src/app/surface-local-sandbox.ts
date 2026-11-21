@@ -1008,7 +1008,7 @@ export function synthesizeLocalChanges(
 					},
 				],
 			},
-			replyText: `Staged editorial update “${title}”. Switch between Base, Preview, and Compare or flip to Public post to judge how it reads externally.`,
+			replyText: `Staged editorial update “${title}”. Switch between Base and Preview to review the changes.`,
 		};
 	}
 

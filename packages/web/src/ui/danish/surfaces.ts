@@ -46,7 +46,6 @@ export const SURFACES: Record<string, string> = {
 	Reverted: "Rullet tilbage",
 	Merging: "Fletter",
 	"Steer this session…": "Styr denne session…",
-	"Close session": "Luk sessionen",
 	"Working — changes appear in Preview when they are ready.":
 		"Arbejder — ændringerne vises i forhåndsvisningen, når de er klar.",
 	"All changes merged": "Alle ændringer er flettet",
@@ -293,13 +292,10 @@ export const SURFACES: Record<string, string> = {
 	"Trade-off": "Afvejning",
 	"Key takeaway": "Hovedpointe",
 	"Articles & reports": "Artikler og rapporter",
-	"Reading perspective": "Læseperspektiv",
-	"Internal brief": "Internt notat",
-	"Public post": "Offentligt opslag",
 	"No reports yet. Describe an analysis, vendor comparison, or design essay below.":
 		"Ingen rapporter endnu. Beskriv en analyse, leverandørsammenligning eller et designessay nedenfor.",
-	"External reader preview": "Forhåndsvisning som ekstern læser",
 	"In this report": "I denne rapport",
+	"Phone model": "Telefonmodel",
 	Subtitle: "Undertitel",
 	Confirm: "Bekræft",
 	"Review & publish": "Gennemgå & udgiv",

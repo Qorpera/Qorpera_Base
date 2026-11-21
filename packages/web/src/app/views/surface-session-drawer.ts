@@ -587,16 +587,7 @@ export class SurfaceSessionDrawer {
 				h("h2", null, surface.archetype === "ops" ? t("Agents") : t("Preview")),
 				summaryParts.length > 0 ? h("p", null, summaryParts.join(" · ")) : null,
 			),
-			h(
-				"div",
-				{ class: "surface-drawer-head-acts" },
-				this.#expandButton(),
-				h(
-					"button",
-					{ type: "button", class: "icon-button", "aria-label": t("Close panel"), "data-act": "close-panel" },
-					icon("close"),
-				),
-			),
+			h("div", { class: "surface-drawer-head-acts" }, this.#expandButton()),
 		);
 
 		const parts: HTMLElement[] = [];
@@ -925,16 +916,7 @@ export class SurfaceSessionDrawer {
 			),
 			this.#crew.takeExploration(exploration, variants, 36, "is-large"),
 			h("div", { class: "surface-drawer-title" }, h("h2", null, exploration.title), h("p", null, subtitle)),
-			h(
-				"div",
-				{ class: "surface-drawer-head-acts" },
-				this.#expandButton(),
-				h(
-					"button",
-					{ type: "button", class: "icon-button", "aria-label": t("Close session"), "data-act": "close" },
-					icon("close"),
-				),
-			),
+			h("div", { class: "surface-drawer-head-acts" }, this.#expandButton()),
 		);
 		this.#crew.settle();
 
@@ -1093,16 +1075,7 @@ export class SurfaceSessionDrawer {
 						.join(" · "),
 				),
 			),
-			h(
-				"div",
-				{ class: "surface-drawer-head-acts" },
-				this.#expandButton(),
-				h(
-					"button",
-					{ type: "button", class: "icon-button", "aria-label": t("Close session"), "data-act": "close" },
-					icon("close"),
-				),
-			),
+			h("div", { class: "surface-drawer-head-acts" }, this.#expandButton()),
 		);
 		this.#crew.settle();
 		this.#body.replaceChildren(...this.#content(session, notes, resolvedSurface, look, ownedNotes));

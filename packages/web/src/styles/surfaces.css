@@ -85,6 +85,21 @@
 /* WHY: The surface-first rail lists Inbox, Money, Members and Databases itself, so the icon drawer that repeated them
  * above the Co-Founder folds away (shell.ts marks the rail; its elements stay for the legacy rail and its tests). */
 .has-surface-rail .rail-apps, .has-surface-rail > .rail-apps-drawer { display: none !important; }
+/* White left sidepanel matching the right preview panel, seamlessly connecting across the thin top/bottom frame. */
+.rail.has-surface-rail {
+	--rail: var(--bg);
+	--rail-hover: color-mix(in srgb, var(--text) 5%, transparent);
+	background: var(--bg);
+	border-right: 0;
+}
+.frame:has(.rail.has-surface-rail) .rail-reopen-btn {
+	top: 16px; left: 16px;
+	background: color-mix(in srgb, var(--bg) 42%, transparent);
+	backdrop-filter: blur(5px);
+}
+.frame:has(.rail.has-surface-rail) .rail-reopen-btn:hover {
+	background: color-mix(in srgb, var(--bg) 82%, transparent);
+}
 
 /* Unified Agents hub: Working task-driven agents at the top, Scheduled agents underneath, idle agents under Ready. */
 .rail-agents-hub {
@@ -388,7 +403,9 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 	display: flex; align-items: flex-start; justify-content: center;
 	padding: 10px 52px 0 10px; background: transparent; pointer-events: none;
 }
+.surface-page.has-drawer .surface-bar { padding: 10px 10px 0 10px; }
 .frame.rail-hidden-desktop .surface-bar { padding-inline: 54px; }
+.frame.rail-hidden-desktop .surface-page.has-drawer .surface-bar { padding: 10px 10px 0 54px; }
 .surface-bar[hidden] { display: none; }
 .surface-pill {
 	pointer-events: auto; display: inline-flex; align-items: center; gap: 10px; min-width: 0; max-width: 100%; height: 42px;
@@ -507,22 +524,25 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 	font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums;
 }
 
-/* Right sidepanel toggle pinned to the top-right edge, mirroring the left sidebar reopen button. */
+/* Right sidepanel toggle pinned statically to the top-right corner of the page (never pushed by the drawer). */
 .surface-panel-toggle {
-	position: absolute; top: 10px; right: 10px; pointer-events: auto;
+	position: absolute; z-index: 25; top: 16px; right: 16px; pointer-events: auto;
 	display: grid; place-items: center; width: 34px; height: 34px; flex: none; padding: 0;
 	border: 1px solid color-mix(in srgb, var(--text) 12%, transparent); border-radius: 10px;
 	background: color-mix(in srgb, var(--bg) 42%, transparent); color: var(--text-muted);
 	box-shadow: 0 2px 10px -4px rgb(18 18 17 / 16%); backdrop-filter: blur(5px); cursor: pointer;
-	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease, border-color var(--motion-fast) ease;
+	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease, border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
 }
 .surface-panel-toggle:hover {
 	background: color-mix(in srgb, var(--bg) 82%, transparent); color: var(--text); border-color: color-mix(in srgb, var(--text) 22%, transparent);
 }
 .surface-panel-toggle.is-on {
-	background: color-mix(in srgb, var(--text) 6%, var(--bg)); color: var(--text);
-	border-color: color-mix(in srgb, var(--text) 18%, transparent);
+	border-color: transparent; background: transparent; box-shadow: none; backdrop-filter: none; color: #676664;
 }
+.surface-panel-toggle.is-on:hover {
+	border-color: transparent; background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text);
+}
+.surface-panel-toggle[hidden] { display: none; }
 .surface-panel-toggle .icon { width: 18px; height: 18px; }
 .surface-panel-toggle-dot {
 	position: absolute; top: -5px; right: -5px; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 999px;
@@ -573,13 +593,20 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 	50% { transform: translateY(-1.5px); box-shadow: 0 0 0 4px color-mix(in srgb, var(--warning) 0%, transparent); }
 }
 
-.surface-stage { position: relative; flex: 1; min-height: 0; display: flex; overflow: hidden; }
+.surface-stage { position: relative; flex: 1; min-height: 0; display: flex; overflow: hidden; background: var(--bg); }
 .surface-stage.is-resizing { user-select: none; cursor: col-resize; }
 .surface-stage.is-resizing .surface-canvas iframe { pointer-events: none; }
-.surface-canvas { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.surface-canvas {
+	position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
+	margin: 8px 8px 8px 2px; border-radius: 16px;
+	border: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
+	background: var(--bg);
+	box-shadow: 0 1px 3px rgb(18 18 17 / 4%);
+}
+.surface-page.has-drawer .surface-canvas { margin-right: 2px; }
+.frame.rail-hidden-desktop .surface-canvas { margin-left: 8px; }
 @media (max-width: 1180px) {
-	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-bar { padding: 10px 46px 0 8px; }
-	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-panel-toggle { right: 8px; width: 32px; height: 32px; }
+	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-bar { padding: 10px 8px 0 8px; }
 	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-pill { gap: 5px; padding: 3px 4px 3px 5px; height: 36px; }
 	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-pill.is-spacious { width: 100%; gap: 5px; }
 	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-pill-modes { gap: 1px; }
@@ -598,13 +625,46 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-pill-collapse { width: 22px; height: 22px; margin-left: -1px; }
 }
 .surface-viewport { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; }
-.surface-viewport[data-device="mobile"] { align-items: center; justify-content: center; padding: 56px 0 96px; background: color-mix(in srgb, var(--text) 3%, var(--bg)); }
+.surface-viewport[data-device="mobile"] {
+	align-items: center; justify-content: center; padding: 98px 16px 86px; overflow: hidden;
+	background: color-mix(in srgb, var(--text) 2.5%, var(--bg));
+}
 .surface-viewport[data-device="mobile"].is-compare-mobile { align-items: stretch; justify-content: stretch; padding: 0; }
+.surface-phone-bar {
+	position: absolute; z-index: 6; top: 58px; left: 50%; transform: translateX(-50%);
+	display: inline-flex; align-items: center; gap: 8px; max-width: calc(100% - 24px); padding: 3px 10px 3px 4px;
+	border: 1px solid color-mix(in srgb, var(--text) 10%, transparent); border-radius: 999px;
+	background: color-mix(in srgb, var(--bg) 62%, transparent); backdrop-filter: blur(8px);
+	box-shadow: 0 2px 10px -4px rgb(18 18 17 / 12%);
+}
+.surface-phone-bar[hidden] { display: none; }
+.surface-phone-models { display: inline-flex; align-items: center; gap: 2px; }
+.surface-phone-model {
+	height: 24px; padding: 0 9px; border: 0; border-radius: 999px; background: transparent; color: var(--text-muted);
+	font: inherit; font-size: 11.5px; font-weight: 560; white-space: nowrap; cursor: pointer;
+	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
+}
+.surface-phone-model:hover { color: var(--text); background: color-mix(in srgb, var(--text) 5%, transparent); }
+.surface-phone-model.is-on { background: color-mix(in srgb, var(--text) 9%, transparent); color: var(--text); font-weight: 660; }
+.surface-phone-dims {
+	color: var(--text-soft); font-size: 11px; font-weight: 580; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
 .surface-mount, .surface-frames, .surface-report-slot { position: relative; flex: 1; min-width: 0; min-height: 0; overflow: auto; }
 .surface-mount[hidden], .surface-frames[hidden], .surface-report-slot[hidden] { display: none; }
+/* WHY: Phone dimensions come from JS CSS custom properties (--phone-w/--phone-h/--phone-r) so design-px scaling never distorts real device CSS viewports. */
 .surface-viewport[data-device="mobile"]:not(.is-compare-mobile) :is(.surface-mount, .surface-frames) {
-	flex: none; width: 390px; height: min(820px, 100%); border-radius: 44px; background: var(--bg);
-	box-shadow: 0 0 0 9px #0f0f0f, 0 30px 70px -20px rgb(18 18 17 / 45%);
+	flex: none; width: var(--phone-w); height: var(--phone-h); border-radius: var(--phone-r);
+	overflow: hidden; transform: scale(var(--phone-scale, 1)); transform-origin: center center;
+	background: var(--bg);
+	box-shadow: 0 0 0 9px #141413, 0 28px 64px -20px rgb(18 18 17 / 42%);
+}
+.surface-viewport[data-device="mobile"][data-phone-cutout="island"]:not(.is-compare-mobile) :is(.surface-mount, .surface-frames)::after {
+	content: ""; position: absolute; z-index: 6; top: 10px; left: 50%; width: 96px; height: 24px;
+	transform: translateX(-50%); border-radius: 999px; background: #141413; pointer-events: none;
+}
+.surface-viewport[data-device="mobile"][data-phone-cutout="punch"]:not(.is-compare-mobile) :is(.surface-mount, .surface-frames)::after {
+	content: ""; position: absolute; z-index: 6; top: 12px; left: 50%; width: 12px; height: 12px;
+	transform: translateX(-50%); border-radius: 50%; background: #141413; pointer-events: none;
 }
 .surface-mount > .surface-site, .surface-mount > .surface-ops, .surface-mount > .surface-files, .surface-mount > .surface-local-site { min-height: 100%; }
 .surface-mount > .surface-ops, .surface-mount > .surface-local-site { height: 100%; }
@@ -775,10 +835,10 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 /* ---- the pushed session side panel -------------------------------------------- */
 .surface-drawer {
 	position: relative; z-index: 6; flex: none; width: 0; min-width: 0; height: 100%;
-	border-left: 0 solid var(--border); background: var(--bg); opacity: 0; overflow: hidden; pointer-events: none;
+	border-left: 0; background: var(--bg); opacity: 0; overflow: hidden; pointer-events: none;
 	transition: width var(--motion-slow) var(--ease-out), opacity var(--motion-base) ease;
 }
-.surface-drawer.is-open { width: var(--drawer-width, 296px); max-width: calc(100vw - 16px); border-left-width: 1px; opacity: 1; pointer-events: auto; }
+.surface-drawer.is-open { width: var(--drawer-width, 296px); max-width: calc(100vw - 16px); opacity: 1; pointer-events: auto; }
 .surface-drawer.is-resizing { transition: none; }
 .surface-drawer-resizer {
 	position: absolute; z-index: 8; top: 0; bottom: 0; left: 0; width: 8px; cursor: col-resize; touch-action: none;
@@ -795,7 +855,10 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 @media (max-width: 780px) {
 	.surface-drawer { position: absolute; top: 0; right: 0; bottom: 0; box-shadow: -12px 0 36px rgb(18 18 17 / 18%); }
 }
-.surface-drawer-head { display: flex; align-items: center; gap: 10px; padding: 14px 12px 12px 14px; border-bottom: 1px solid var(--border); }
+.surface-drawer-head {
+	display: flex; align-items: center; gap: 10px; min-height: 66px; padding: 14px 56px 12px 14px;
+	border-bottom: 1px solid color-mix(in srgb, var(--text) 7%, transparent);
+}
 .surface-drawer-head.is-overview { padding-left: 16px; }
 .surface-drawer-head-acts { display: inline-flex; align-items: center; gap: 2px; flex: none; }
 .surface-drawer-expand { width: 28px; height: 28px; border-radius: 8px; color: var(--text-muted); }
@@ -1430,7 +1493,6 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 	position: static; padding-top: 0; background: transparent; backdrop-filter: none;
 }
 .surface-report.is-embedded .report-layout { padding-top: 22px; }
-.surface-report.is-public-lens { background: var(--bg); }
 .report-chrome {
 	position: sticky; top: 0; z-index: 4; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
 	gap: 10px 14px; max-width: 1060px; margin: 0 auto; padding: 62px 0 12px;
@@ -1462,12 +1524,6 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 	}
 }
 .report-article { display: grid; gap: 30px; min-width: 0; }
-.report-public-banner {
-	display: inline-flex; align-items: center; gap: 8px; justify-self: start; padding: 5px 12px;
-	border: 1px solid var(--border); border-radius: 999px; background: color-mix(in srgb, var(--text) 3%, var(--bg));
-	color: var(--text-muted); font-size: 12px; font-weight: 580;
-}
-.report-public-banner .icon { width: 13px; height: 13px; color: var(--accent); }
 .report-hero { display: grid; gap: 12px; padding-bottom: 22px; border-bottom: 1px solid var(--border); }
 .report-category {
 	font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent);
