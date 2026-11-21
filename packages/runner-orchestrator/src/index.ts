@@ -1,3 +1,4 @@
+export * from "./code-host-surfaces.ts";
 export * from "./coding-command-transport.ts";
 export * from "./coding-executor.ts";
 export * from "./coding-executor-host.ts";

@@ -1,3 +1,5 @@
+import { CloudSurfacesClient } from "@qorpera/cloud-client/surfaces";
+import type { SurfaceSummary } from "@qorpera/contracts";
 import type { User } from "@supabase/supabase-js";
 import { CloudApi } from "../cloud/api.ts";
 import { forgetChatGptPlanSignIn, takeChatGptPlanReturn } from "../cloud/chatgpt-plan-sign-in.ts";
@@ -53,9 +55,10 @@ import {
 	companyConcepts,
 	sharedFolderHints,
 } from "./interface-apps.ts";
+import type { InterfaceWrites } from "./interface-claims.ts";
 import { CompanyInterfaceFolder } from "./interface-folder.ts";
 import { CompanyInterfacePages } from "./interface-pages.ts";
-import { pagesOn } from "./interfaces.ts";
+import { companyInterfaces, pagesOn } from "./interfaces.ts";
 import { MemberPictures } from "./member-pictures.ts";
 import { newVersionNotice, runningBuildFiles, watchNewVersion } from "./new-version.ts";
 import { watchOnline } from "./online-mark.ts";
@@ -64,6 +67,7 @@ import { type CompanyReleaseReads, companyReleaseReads } from "./release-reads.t
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
+import { attachSurfaces, SurfacesStore, surfacesOf } from "./surfaces-store.ts";
 import { showWaitingInTitle } from "./tab-title.ts";
 import { noteReceiver, type TellAccounts, tellAgent } from "./tell-agent.ts";
 import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
@@ -72,6 +76,7 @@ import { AgentDetails } from "./views/agent-details.ts";
 import { savedAgentDraft } from "./views/agent-edits.ts";
 import { AppPanel, type AppPanelHost, type SidePanelTarget, sameTarget } from "./views/app-panel.ts";
 import { noteBankReturn } from "./views/bank.ts";
+import { CompanyFolderBrowser } from "./views/company-folder.ts";
 import { chooseInCompanyFolder } from "./views/company-folder-choose.ts";
 import { ComputerPanels } from "./views/computer.ts";
 import { ConceptsView } from "./views/concepts.ts";
@@ -103,6 +108,8 @@ import { appLook, renderRail, renderTopbar, type ShellContext } from "./views/sh
 import { renderNameAsk, renderPasswordAsk, renderSignIn } from "./views/signin.ts";
 import { SiteView } from "./views/site-view.ts";
 import { landStartCrown, settleStartCrown } from "./views/start-crown.ts";
+import { openMigrationSheet } from "./views/surface-migration-sheet.ts";
+import { type SurfaceMount, SurfaceView } from "./views/surface-view.ts";
 import { renderTeam, type TeamFeedback } from "./views/team.ts";
 import { liveVersions, WhatsNewView, whatsNewEntry } from "./views/whats-new.ts";
 import type { WorkspaceActions } from "./workspace-actions.ts";
@@ -515,6 +522,7 @@ export function mountApplication(
 		| { readonly company: CompanyController; readonly view: WhatsNewView; readonly el: HTMLElement }
 		| undefined;
 	let newProgramPage: { readonly company: CompanyController; readonly view: NewProgramPage } | undefined;
+	let surfaceView: { readonly company: CompanyController; readonly view: SurfaceView } | undefined;
 	let releasesRead: CompanyController | undefined;
 	/** The open company's mail as the member reads it, for the Mailbox page (Interfaces step I5c). */
 	let mail: CompanyMail | undefined;
@@ -696,6 +704,8 @@ export function mountApplication(
 		whatsNewPage = undefined;
 		newProgramPage?.view.dispose();
 		newProgramPage = undefined;
+		surfaceView?.view.dispose();
+		surfaceView = undefined;
 		if (newConversation && !newConversation.hasInput) {
 			newConversation.dispose();
 			newConversation = undefined;
@@ -723,6 +733,8 @@ export function mountApplication(
 		appReturn = undefined;
 		newProgramPage?.view.dispose();
 		newProgramPage = undefined;
+		surfaceView?.view.dispose();
+		surfaceView = undefined;
 		conceptsView?.dispose();
 		conceptsView = undefined;
 		mail?.dispose();
@@ -816,6 +828,43 @@ export function mountApplication(
 					)(sessionId, clientInputId, text, signal, files, executionSponsor, roomTarget),
 			);
 			company = controller;
+			const surfaces = new SurfacesStore({
+				companyId: profile.profileId,
+				client: new CloudSurfacesClient(cloud.supabase),
+				synthesize: () => ({
+					companyId: profile.profileId,
+					sites: controller.store.get().siteList ?? [],
+					pages: companyInterfaces(controller).map((entry) => entry.name),
+				}),
+				migration: () => {
+					const state = controller.store.get();
+					const cofounderId = controller.cofounderId();
+					return {
+						companyId: profile.profileId,
+						agents: state.staff
+							.filter((agent) => agent.employmentStatus === "active" && agent.id !== cofounderId)
+							.map((agent) => ({
+								id: agent.id,
+								handle: agent.displayName,
+								name: agent.displayName,
+								role: agent.role,
+							})),
+						boards: (state.apps ?? [])
+							.filter((app) => app.manifest?.posted === true && !app.manifest.concept)
+							.map((app) => ({
+								name: app.name,
+								title: app.manifest?.name ?? app.name,
+								kit: app.manifest?.kit ?? null,
+							})),
+					};
+				},
+				signal: controller.signal,
+				unavailableMessage: t("Surfaces aren't enabled for this company yet."),
+			});
+			attachSurfaces(controller, surfaces);
+			surfaces.store.subscribe(() => render());
+			controller.store.subscribe(() => surfaces.resynthesize());
+			void surfaces.load();
 			// A member who may write the folder brings the logo everyone sees in step with QorperaOS/brand/logo.svg once
 			// the company has opened: its Branding & Identity agent may have drawn a new one meanwhile.
 			const syncLogo = controller.store.subscribe(() => {
@@ -1981,11 +2030,122 @@ export function mountApplication(
 			newProgramPage?.view.dispose();
 			newProgramPage = undefined;
 		}
+		if (route.section !== "surface" || surfaceView?.company !== controller || surfaceView.view.slug !== route.id) {
+			surfaceView?.view.dispose();
+			surfaceView = undefined;
+		}
 		if (route.section !== "new") {
 			newConversation?.dispose();
 			newConversation = undefined;
 		}
 		if (route.section !== "meet") meetState = {};
+		const interfaceWrites = (): InterfaceWrites => ({
+			mailManage: () => {
+				const environment = {
+					profileId: controller.profile.profileId,
+					environmentId: controller.profile.environmentId,
+				};
+				const keys = createDigitalPostKeys(cloud, environment);
+				const accounts = createWebNativeSubscription(
+					cloud,
+					controller.profile.profileId,
+					controller.userId,
+					controller.signal,
+					companyCurrent,
+				);
+				return {
+					hooks: createWebEventHooks(cloud, environment),
+					digitalPost: {
+						read: () => readDigitalPost(cloud, environment.environmentId),
+						save: (apiKey, existingSecretId, abort) => keys.save(apiKey, existingSecretId, abort),
+						disconnect: (secretId, abort) => keys.disconnect(secretId, abort),
+					},
+					// Who answers an address: the agent's routine that starts on its mail, written as the member's own
+					// save, on one of the member's own model accounts.
+					routines: createWebRoutines(cloud, controller.profile, controller.signal, companyCurrent, () =>
+						memberFolder(companyCurrent, t("Company access changed.")),
+					),
+					accounts: (signal) => accounts.listConnections(signal),
+				};
+			},
+			bankConnection: () => createWebConnectors(cloud, controller.profile),
+			openSettings: (tab) => openSettings(tab),
+			data: () => companyDatabases,
+			dataAsk: (agentId, note) => {
+				let accounts = askAccounts.get(controller);
+				if (!accounts) {
+					accounts = createWebNativeSubscription(
+						cloud,
+						controller.profile.profileId,
+						controller.userId,
+						controller.signal,
+						companyCurrent,
+					);
+					askAccounts.set(controller, accounts);
+				}
+				return tellAgent(controller, accounts, agentId, note);
+			},
+		});
+		const surfaceMount = (surface: SurfaceSummary, signal: AbortSignal): SurfaceMount | undefined => {
+			if (surface.archetype === "live_build" && surface.siteSlug) {
+				const slug = surface.siteSlug;
+				const website = () =>
+					controller.store
+						.get()
+						.siteList?.find((site) => site.slug === slug && site.kind === "files" && site.state === "live");
+				if (!website()) return undefined;
+				const sites = createWebSites(cloud, controller.profile);
+				const view = new SiteView(
+					{
+						site: website,
+						pass: (site, passSignal) => sites.memberPass(site, passSignal),
+						numbers: numbersHost(),
+						timeZone: () => controller.store.get().team?.timeZone,
+					},
+					slug,
+					AbortSignal.any([controller.signal, signal]),
+				);
+				return {
+					el: h("div", { class: "surface-site" }, view.el),
+					update: () => view.update(),
+					dispose: () => view.dispose(),
+				};
+			}
+			if (surface.archetype !== "ops") return undefined;
+			const page =
+				surface.slug === "inbox" || surface.icon === "mail"
+					? "mailbox"
+					: surface.slug === "money" || surface.icon === "coin" || surface.icon === "bank"
+						? "bank"
+						: undefined;
+			if (page) {
+				const el = h("div", { class: "surface-ops" });
+				const update = () => renderInterface(el, controller, page, interfaceWrites());
+				return { el, update, dispose: () => el.replaceChildren() };
+			}
+			const team = controller.store.get().team;
+			if (!team) return undefined;
+			const el = h("div", { class: "surface-files" });
+			const browser = new CompanyFolderBrowser(
+				el,
+				new WebCompanyFiles(
+					cloud,
+					controller.profile,
+					controller.userId,
+					team.role,
+					AbortSignal.any([controller.signal, signal]),
+					companyCurrent,
+					team.capabilities.write,
+				),
+				() => ({
+					me: controller.userId,
+					members: controller.store.get().team?.members ?? [],
+					staff: controller.store.get().staff,
+				}),
+			);
+			void browser.open().catch(() => undefined);
+			return { el, update: () => undefined, dispose: () => browser.dispose() };
+		};
 		switch (route.section) {
 			case "new": {
 				if (!newConversation) {
@@ -2434,53 +2594,7 @@ export function mountApplication(
 				);
 				return;
 			case "interface":
-				renderInterface(main, controller, route.id ?? "", {
-					mailManage: () => {
-						const environment = {
-							profileId: controller.profile.profileId,
-							environmentId: controller.profile.environmentId,
-						};
-						const keys = createDigitalPostKeys(cloud, environment);
-						const accounts = createWebNativeSubscription(
-							cloud,
-							controller.profile.profileId,
-							controller.userId,
-							controller.signal,
-							companyCurrent,
-						);
-						return {
-							hooks: createWebEventHooks(cloud, environment),
-							digitalPost: {
-								read: () => readDigitalPost(cloud, environment.environmentId),
-								save: (apiKey, existingSecretId, abort) => keys.save(apiKey, existingSecretId, abort),
-								disconnect: (secretId, abort) => keys.disconnect(secretId, abort),
-							},
-							// Who answers an address: the agent's routine that starts on its mail, written as the member's own
-							// save, on one of the member's own model accounts.
-							routines: createWebRoutines(cloud, controller.profile, controller.signal, companyCurrent, () =>
-								memberFolder(companyCurrent, t("Company access changed.")),
-							),
-							accounts: (signal) => accounts.listConnections(signal),
-						};
-					},
-					bankConnection: () => createWebConnectors(cloud, controller.profile),
-					openSettings: (tab) => openSettings(tab),
-					data: () => companyDatabases,
-					dataAsk: (agentId, note) => {
-						let accounts = askAccounts.get(controller);
-						if (!accounts) {
-							accounts = createWebNativeSubscription(
-								cloud,
-								controller.profile.profileId,
-								controller.userId,
-								controller.signal,
-								companyCurrent,
-							);
-							askAccounts.set(controller, accounts);
-						}
-						return tellAgent(controller, accounts, agentId, note);
-					},
-				});
+				renderInterface(main, controller, route.id ?? "", interfaceWrites());
 				return;
 			case "sites": {
 				// The websites the company's agents published (Jonas, 9 Nov 2026: out of Settings, into the apps drawer).
@@ -2557,6 +2671,23 @@ export function mountApplication(
 				}
 				siteView.view.update();
 				if (siteView.el.parentElement !== main) replace(main, siteView.el);
+				return;
+			}
+			case "surface": {
+				const surfaces = surfacesOf(controller);
+				if (!surfaces) return;
+				if (!surfaceView) {
+					const view = new SurfaceView(
+						{ store: surfaces, mount: surfaceMount, openMigration: () => openMigrationSheet(surfaces) },
+						route.id ?? "",
+					);
+					surfaceView = { company: controller, view };
+				}
+				surfaceView.view.update();
+				if (surfaceView.view.el.parentElement !== main) {
+					replace(main, surfaceView.view.el);
+					if (!frame.inert) surfaceView.view.focus();
+				}
 				return;
 			}
 			case "new-program": {

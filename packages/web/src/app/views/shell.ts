@@ -67,12 +67,15 @@ import { interfaceBadge } from "../interface-badge.ts";
 import { type CompanyInterface, companyInterfaces, hiddenInterfaces } from "../interfaces.ts";
 import { contactPlaces, MEMBERS_ZONE, type RailContact, railContacts, weave } from "../rail-contacts.ts";
 import { appHash, conceptsHash, type Route, siteHash } from "../router.ts";
+import { surfacesOf } from "../surfaces-store.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import type { AgentCardActions } from "./agent-details.ts";
 import type { CardFootActions } from "./card-foot.ts";
 import { personFace } from "./friends.ts";
 import { memberPresence } from "./member-chat.ts";
 import type { SettingsTab } from "./settings.ts";
+import { openAutomationsSheet } from "./surface-migration-sheet.ts";
+import { SurfaceRail } from "./surface-rail.ts";
 
 /* The company shell: a rail with conversations and the account menu, and the
  * main pane. A compact toolbar keeps the rail accessible on small screens. */
@@ -1311,8 +1314,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	if (section === "new") parts.add.setAttribute("aria-current", "page");
 	else parts.add.removeAttribute("aria-current");
 
-	const addsPrograms = hasApps && state.team?.capabilities.write === true;
-	drawInterfaces(parts, company, interfacesShown, postedApps, concepts, sites, route, addsPrograms);
+	drawInterfaces(parts, company, interfacesShown, postedApps, concepts, sites, route);
 	drawOwed(parts, company, owed, route);
 	parts.context = context;
 	const active = state.staff.filter((agent) => agent.employmentStatus === "active");
@@ -1400,6 +1402,11 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			...(agent.id === cofounder?.id && state.openDecisions ? { decisions: state.openDecisions } : {}),
 		};
 	};
+	const surfaceRail = surfaceRailFor(company);
+	surfaceRail?.update(
+		route.name === "company" && route.section === "surface" ? route.id : undefined,
+		state.team?.capabilities.write === true,
+	);
 	const cofounderElement =
 		cofounder && matches(cofounder.displayName)
 			? row(
@@ -1780,6 +1787,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			),
 			resetNotice(),
 			cofounderElement ? parts.cofounderGroup : null,
+			surfaceRail && !railQuery ? surfaceRail.el : null,
 			// The pinned row stays in place while empty, hidden, so a drag can still reach it.
 			sidebar && !railQuery ? parts.pinnedGroup : pinnedElements.length ? parts.pinnedGroup : null,
 			parts.loading ?? null,
@@ -1830,11 +1838,47 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		);
 		parts.connectionShown = connection;
 	}
+	const automations = surfaceRail ? automationsEntry(company) : null;
+	if (automations && automations.parentElement !== parts.foot) parts.foot.prepend(automations);
 	// The account menu is shared with the top bar; it moves back only when it is not here.
 	const menu = accountMenuElement(context, company);
 	if (menu.parentElement !== parts.foot) parts.foot.append(menu);
 	paintPresence(container, parts, company);
 	restoreFocus();
+}
+
+const surfaceRails = new WeakMap<CompanyController, SurfaceRail>();
+function surfaceRailFor(company: CompanyController): SurfaceRail | undefined {
+	const store = surfacesOf(company);
+	if (!store) return undefined;
+	let rail = surfaceRails.get(company);
+	if (!rail) {
+		rail = new SurfaceRail(store, company.profile.profileId, company.signal);
+		surfaceRails.set(company, rail);
+	}
+	return rail;
+}
+
+const automationEntries = new WeakMap<CompanyController, HTMLButtonElement>();
+function automationsEntry(company: CompanyController): HTMLButtonElement | null {
+	const store = surfacesOf(company);
+	if (!store) return null;
+	let entry = automationEntries.get(company);
+	if (!entry) {
+		entry = h("button", { type: "button", class: "rail-automations", onclick: () => openAutomationsSheet(store) });
+		automationEntries.set(company, entry);
+	}
+	const active = store.state.automations.filter((automation) => automation.enabled).length;
+	const shown = JSON.stringify([active, presentationLocale()]);
+	if (entry.dataset.shown !== shown) {
+		entry.dataset.shown = shown;
+		entry.replaceChildren(
+			icon("bolt"),
+			h("span", { class: "rail-automations-label" }, t("Automations")),
+			active ? h("span", { class: "rail-automations-count" }, t("{count} active", { count: active })) : "",
+		);
+	}
+	return entry;
 }
 
 /* ---- Who is where ---------------------------------------------------------------- */
@@ -1997,7 +2041,6 @@ function drawInterfaces(
 	concepts: number,
 	sites: number,
 	route: Route,
-	addsPrograms: boolean,
 ): void {
 	const profileId = company.profile.profileId;
 	const activeName = route.name === "company" && route.section === "interface" ? route.id : undefined;
@@ -2184,15 +2227,8 @@ function drawInterfaces(
 	parts.groupRows = groupRows;
 	parts.appTree = tree;
 	parts.appTiles = tiles;
-	if (addsPrograms) {
-		if (parts.newProgram?.textContent !== t("New program"))
-			parts.newProgram = newProgramIcon(`#/c/${profileId}/new-program`);
-		const open = route.name === "company" && route.section === "new-program";
-		parts.newProgram.classList.toggle("active", open);
-		if (open) parts.newProgram.setAttribute("aria-current", "page");
-		else parts.newProgram.removeAttribute("aria-current");
-		drawn.push(parts.newProgram);
-	} else parts.newProgram = undefined;
+	// WHY: New program lives behind the Building section's + now, never as a drawer tile that cannot be removed.
+	parts.newProgram = undefined;
 	for (const [index, element] of drawn.entries()) element.style.setProperty("--i", String(index));
 	// A lifted icon keeps the order the drag shows; the drag's end draws the drawer afresh.
 	if (!parts.appsDrag.dragging) placeTiles(parts, drawn);
@@ -2570,15 +2606,6 @@ function whatsNewIcon(href: string, count: number): HTMLElement {
 		},
 		h("span", { class: "rail-app-stand" }, interfaceEmblem("spark", 34), countBadge(count)),
 		h("span", { class: "rail-app-name" }, label),
-	);
-}
-
-function newProgramIcon(href: string): HTMLElement {
-	return h(
-		"a",
-		{ class: "rail-app rail-new-program", href, draggable: "false" },
-		h("span", { class: "rail-app-stand" }, h("span", { class: "rail-new-program-mark", "aria-hidden": "true" })),
-		h("span", { class: "rail-app-name" }, t("New program")),
 	);
 }
 
