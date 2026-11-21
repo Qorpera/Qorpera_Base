@@ -5,13 +5,38 @@ import { folderLinkPath } from "./folder-links.ts";
 import { interfaceEmblem } from "./interface-emblem.ts";
 import { t } from "./preferences.ts";
 
+const COMMON_ENTITIES: Record<string, string> = {
+	"&amp;": "&",
+	"&lt;": "<",
+	"&gt;": ">",
+	"&quot;": '"',
+	"&#39;": "'",
+	"&#x27;": "'",
+	"&apos;": "'",
+	"&nbsp;": "\u00a0",
+};
+const MAX_ENTITY_CACHE = 512;
+const entityCache = new Map<string, string>();
+let entityParser: DOMParser | undefined;
+
 // Parse only a single validated character reference, never source markup.
 // The result still enters the page through a text node or a checked URL.
 function decodeEntities(value: string): string {
-	return value.replace(
-		/&(?:#\d+|#x[\da-f]+|[a-z][a-z\d]*);/gi,
-		(entity) => new DOMParser().parseFromString(entity, "text/html").body.textContent ?? entity,
-	);
+	if (!value.includes("&")) return value;
+	return value.replace(/&(?:#\d+|#x[\da-f]+|[a-z][a-z\d]*);/gi, (entity) => {
+		const fast = COMMON_ENTITIES[entity] ?? COMMON_ENTITIES[entity.toLowerCase()];
+		if (fast !== undefined) return fast;
+		const cached = entityCache.get(entity);
+		if (cached !== undefined) return cached;
+		entityParser ??= new DOMParser();
+		const decoded = entityParser.parseFromString(entity, "text/html").body.textContent ?? entity;
+		if (entityCache.size >= MAX_ENTITY_CACHE) {
+			const oldest = entityCache.keys().next().value;
+			if (oldest !== undefined) entityCache.delete(oldest);
+		}
+		entityCache.set(entity, decoded);
+		return decoded;
+	});
 }
 
 /** Only explicit web/mail links can leave a transcript. Images are links,

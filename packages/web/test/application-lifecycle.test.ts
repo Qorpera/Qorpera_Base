@@ -2285,4 +2285,30 @@ describe("the rail's line under an idle agent's name in the app", () => {
 			{ timeout: 3000 },
 		);
 	});
+
+	it("opens a company route after a transient listProfiles outage recovers", async () => {
+		history.replaceState(null, "", `/#/c/${profileA.profileId}/file`);
+		const f = fixture();
+		f.cloud.config.publishableKey = "sb_publishable_fixturekey";
+		f.cloud.config.objectGatewayUrl = "https://objects.fixture.invalid";
+		f.cloud.config.nativeProviderLoginUrl = "https://login.fixture.invalid/";
+		let offline = true;
+		vi.mocked(f.api.listProfiles).mockImplementation(async () => {
+			if (offline) throw new TypeError("Failed to fetch");
+			return [profileA];
+		});
+		const root = document.createElement("div");
+		document.body.append(root);
+		dispose = mountApplication(root, f.cloud, f.api);
+		await draw();
+		expect(root.textContent).toContain("Can't reach Qorpera. Trying again…");
+		expect(root.textContent).not.toContain("This company is not available to your account.");
+		expect(f.api.getTeam).not.toHaveBeenCalled();
+
+		offline = false;
+		window.dispatchEvent(new Event("online"));
+		await vi.advanceTimersByTimeAsync(5_000);
+		await draw();
+		expect(f.api.getTeam).toHaveBeenCalledWith(profileA.profileId);
+	});
 });

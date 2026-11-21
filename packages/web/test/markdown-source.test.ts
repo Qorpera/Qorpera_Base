@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { markdown, markdownSourceOffset } from "../src/ui/markdown.ts";
 
 afterEach(() => document.body.replaceChildren());
@@ -274,5 +274,20 @@ describe("a place in drawn Markdown, found in its source", () => {
 		expect(at("a | b", 2)).toBeUndefined();
 		expect(at("b", 1, 1)).toBe(table.lastIndexOf("b") + 1);
 		expect(at("d", 1)).toBe(table.indexOf("d") + 1);
+	});
+
+	it("decodes common HTML entities without DOMParser and caches rare entities across renders", () => {
+		const parseSpy = vi.spyOn(DOMParser.prototype, "parseFromString");
+		try {
+			const common = markdown("A &amp; B &lt; C &gt; D &quot;E&quot; &#39;F&#39; &apos;G&apos; &nbsp;H");
+			expect(common.textContent).toBe("A & B < C > D \"E\" 'F' 'G' \u00a0H");
+			expect(parseSpy).not.toHaveBeenCalled();
+
+			const rare = markdown("&sect; and &para; then &sect; and &para;");
+			expect(rare.textContent).toBe("§ and ¶ then § and ¶");
+			expect(parseSpy).toHaveBeenCalledTimes(2);
+		} finally {
+			parseSpy.mockRestore();
+		}
 	});
 });
