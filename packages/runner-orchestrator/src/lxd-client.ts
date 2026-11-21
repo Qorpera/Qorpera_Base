@@ -37,6 +37,17 @@ const MAX_INSTANCE_PROGRAM_BYTES = 16 * 1024 * 1024;
 const GUEST_PROGRAM_PATH = /^\/opt\/qorpera-(guest|folder)\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const MAX_EXEC_STREAM_INPUT_BYTES = 64 * 1024;
 const MAX_EXEC_STREAM_OUTPUT_BYTES = 8 * 1024 * 1024;
+const CODING_MEMORY_CODING_SLICE =
+	/^\/sys\/fs\/cgroup\/qorpera\.slice\/qorpera-coding\.slice\/qorpera-coding-[0-9a-f]{32}\.slice\/memory\.stat$/;
+const CODING_MEMORY_USER_SLICE = /^\/sys\/fs\/cgroup\/user\.slice\/user-([2-5][0-9]{5})\.slice\/memory\.stat$/;
+const CODING_MEMORY_HEADER = /^=== (\/[A-Za-z0-9/_.-]+) ===$/;
+const CODING_MEMORY_BATCH_SIZE = 58;
+const CODING_MEMORY_MAX_GROUPS = 1024;
+const CODING_MEMORY_TIMEOUT_MS = 10_000;
+const CODING_MEMORY_MAX_STDOUT_BYTES = 256 * 1024;
+const CODING_MEMORY_MAX_STDERR_BYTES = 1024;
+const CODING_MEMORY_READ_SCRIPT =
+	'for p in "$@"; do printf "=== %s ===\\n" "$p"; [ -r "$p" ] && /usr/bin/cat -- "$p" 2>/dev/null || :; printf "\\n"; done';
 /** LXD starts the command once all three are connected, and gives up after 10 seconds. */
 const EXEC_STREAM_CONNECT_MS = 10_000;
 /** After the operation ends, its streams' end barriers are already sent; this covers only their delivery. */
@@ -235,8 +246,11 @@ export interface LxdOperationReference {
 export type LxdOperationState = "pending" | "succeeded" | "failed";
 
 export interface LxdExecStreamRequest {
-	/** Run as root in `/`, with LXD's default environment. */
+	/** WHY: Defaults to root (0:0) in `/` with LXD's default environment; optional user/group (0-65535)
+	 * allow unprivileged stream exec. */
 	readonly command: readonly string[];
+	readonly user?: number;
+	readonly group?: number;
 	/** Written to the command's stdin, which is then closed. Never recorded or logged. */
 	readonly stdin: Buffer;
 	/** A command printing more than this on stdout is killed and the call fails. */
@@ -250,6 +264,20 @@ export interface LxdExecStreamResult {
 	readonly exitCode: number;
 	readonly stdout: Buffer;
 	readonly stderr: Buffer;
+}
+
+export interface LxdCodingMachineMemory {
+	readonly meminfo: string;
+	readonly stats: ReadonlyMap<string, string>;
+}
+
+export interface LxdCodingMemoryClient {
+	readCodingMachineMemory(
+		project: string,
+		name: string,
+		groups: readonly string[],
+		signal?: AbortSignal,
+	): Promise<LxdCodingMachineMemory>;
 }
 
 /** Exec over LXD's websockets: input on stdin and output read off the stream, never in an argument or on the
@@ -1536,9 +1564,18 @@ async function pipeInput(
 	}
 }
 
+function validCodingMemoryPath(path: string): boolean {
+	if (CODING_MEMORY_CODING_SLICE.test(path)) return true;
+	const user = CODING_MEMORY_USER_SLICE.exec(path);
+	if (!user) return false;
+	const uid = Number(user[1]);
+	return Number.isSafeInteger(uid) && uid >= 200_000 && uid <= 524_287;
+}
+
 export class LxdUnixClient
 	implements
 		LxdCodeHostClient,
+		LxdCodingMemoryClient,
 		LxdInstanceExecStreamClient,
 		LxdInstanceExecPipeClient,
 		LxdInstanceProgramClient,
@@ -3607,6 +3644,62 @@ export class LxdUnixClient
 		if (metadata.return !== 0) throw new Error("LXD instance command failed");
 	}
 
+	async readCodingMachineMemory(
+		project: string,
+		name: string,
+		groups: readonly string[],
+		signal?: AbortSignal,
+	): Promise<LxdCodingMachineMemory> {
+		if (!INSTANCE_NAME.test(project) || !INSTANCE_NAME.test(name)) throw new Error("LXD instance scope is invalid");
+		if (groups.length > CODING_MEMORY_MAX_GROUPS || !groups.every(validCodingMemoryPath))
+			throw new Error("LXD_CODING_MEMORY_PATH_INVALID");
+		const allPaths = ["/proc/meminfo", ...new Set(groups)];
+		const stats = new Map<string, string>();
+		let meminfo = "";
+		const timeoutMs = Math.min(CODING_MEMORY_TIMEOUT_MS, this.#operationTimeoutSeconds * 1000);
+		// WHY: LXD 6.9 serves procfs and cgroup v2 files as zero bytes via /files; batch-read via unprivileged websocket exec.
+		for (let offset = 0; offset < allPaths.length; offset += CODING_MEMORY_BATCH_SIZE) {
+			const batch = allPaths.slice(offset, offset + CODING_MEMORY_BATCH_SIZE);
+			const batchSet = new Set(batch);
+			const result = await this.execInstanceStream(
+				project,
+				name,
+				{
+					command: ["/bin/sh", "-c", CODING_MEMORY_READ_SCRIPT, "qorpera-memory", ...batch],
+					user: 65534,
+					group: 65534,
+					stdin: Buffer.alloc(0),
+					maxStdoutBytes: CODING_MEMORY_MAX_STDOUT_BYTES,
+					maxStderrBytes: CODING_MEMORY_MAX_STDERR_BYTES,
+					timeoutMs,
+				},
+				signal,
+			);
+			if (result.exitCode !== 0) throw new Error("LXD_CODING_MEMORY_READ_FAILED");
+			const buffers = new Map<string, string[]>();
+			let current: string | undefined;
+			for (const line of result.stdout.toString("utf8").split("\n")) {
+				const header = CODING_MEMORY_HEADER.exec(line);
+				if (header && batchSet.has(header[1]!)) {
+					current = header[1]!;
+					if (buffers.has(current)) throw new Error("LXD_CODING_MEMORY_READ_FAILED");
+					buffers.set(current, []);
+					continue;
+				}
+				if (current !== undefined) buffers.get(current)!.push(line);
+			}
+			for (const path of batch) {
+				const section = buffers.get(path);
+				if (section === undefined) throw new Error("LXD_CODING_MEMORY_READ_FAILED");
+				const text = section.join("\n").trim();
+				if (path === "/proc/meminfo") meminfo = text;
+				else if (text) stats.set(path, text);
+			}
+		}
+		if (!meminfo) throw new Error("LXD_CODING_MEMORY_READ_FAILED");
+		return { meminfo, stats };
+	}
+
 	/** LXD's non-interactive exec with `wait-for-websocket`: one websocket each for stdin, stdout and stderr, binary
 	 * messages, and an empty text message as each stream's end. The control websocket is left unconnected, so closing
 	 * the stdout websocket before the command ends makes LXD kill it (SIGKILL): every early exit here does that. */
@@ -3616,8 +3709,14 @@ export class LxdUnixClient
 		request: LxdExecStreamRequest,
 		signal?: AbortSignal,
 	): Promise<LxdExecStreamResult> {
-		const { command, stdin, maxStdoutBytes, maxStderrBytes, timeoutMs } = request;
+		const { command, stdin, maxStdoutBytes, maxStderrBytes, timeoutMs, user = 0, group = 0 } = request;
 		if (
+			!Number.isSafeInteger(user) ||
+			user < 0 ||
+			user > 65535 ||
+			!Number.isSafeInteger(group) ||
+			group < 0 ||
+			group > 65535 ||
 			command.length < 1 ||
 			command.length > 64 ||
 			command.some((argument) => !argument || /[\0\r\n]/.test(argument) || Buffer.byteLength(argument) > 4096) ||
@@ -3641,8 +3740,8 @@ export class LxdUnixClient
 				interactive: false,
 				"wait-for-websocket": true,
 				"record-output": false,
-				user: 0,
-				group: 0,
+				user,
+				group,
 				cwd: "/",
 				environment: {},
 			},

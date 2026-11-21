@@ -289,7 +289,7 @@ export interface CodingKeepOutcome {
 	/** keep: attachment and guest lease renewed; detach: the session was taken off; secrets: the folder service was given
 	 * the machine's secret values again (5j-5 (a)), reported only when that failed, or was not-now because the service is
 	 * from before the check. */
-	step: "keep" | "detach" | "secrets";
+	step: "keep" | "detach" | "secrets" | "load";
 	state: "done" | "not-now" | "failed";
 	code?: string;
 }
