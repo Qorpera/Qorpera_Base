@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { classifyReleaseDiff } from "./release-prep-plan.mjs";
+import { buildRuntimeRollPacketArgs, readPrStateViaGh } from "./release-engine/adapters.mjs";
 import { parseSubcommandFlags, runCli } from "./release-engine/cli.mjs";
 import {
 	keptHoldText,
@@ -27,6 +28,7 @@ import {
 	evaluatePostChecks,
 	evaluateWatchTick,
 } from "./release-engine/sql-checks.mjs";
+import { SQL_ONLY_PACKET_SCHEMA, sqlOnlyPackets, writeSqlOnlyPackets } from "./release-engine/sql-only-packets.mjs";
 
 const SHA_40 = "a".repeat(40);
 const SHA_40_B = "b".repeat(40);
@@ -711,7 +713,142 @@ test("NON_RETRYABLE_CODES covers safety refusals, image-build rejects injection/
 		assert.deepEqual(JSON.parse(dryRun.out).executed, ["migrate", "models-read", "after-read"]);
 
 		await assert.rejects(() => capture(["validate"]), /Missing required flag: --manifest/);
+
+		const packetsOut = join(dir, "sql-only-packets");
+		const packetsRes = await capture(
+			["packets", "--manifest", outManifest, "--out", packetsOut, "--repo", repoDir],
+			dir,
+		);
+		assert.equal(packetsRes.code, 0);
+		const packetsSummary = JSON.parse(packetsRes.out);
+		assert.deepEqual(packetsSummary.order, [
+			"00-check.sql",
+			"05-rehearse-migrations.sql",
+			"10-migration-20260930822000_thread_run_wakes.sql",
+			"20-post-check.sql",
+		]);
+		assert.deepEqual(packetsSummary.dryRunOnly, [
+			"00-check.sql",
+			"05-rehearse-migrations.sql",
+			"20-post-check.sql",
+		]);
+		const writtenManifest = JSON.parse(readFileSync(join(packetsOut, "packet.json"), "utf8"));
+		assert.equal(writtenManifest.schema, SQL_ONLY_PACKET_SCHEMA);
+		assert.equal(Object.keys(writtenManifest.files).length, 4);
+		await assert.rejects(
+			() => capture(["packets", "--manifest", outManifest, "--out", packetsOut, "--repo", repoDir], dir),
+			/packets are written once/,
+		);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+test("sqlOnlyPackets enforces single-transaction safety, pg_temp cleanup, read-only postChecks, and adapters validate gh/runtime-roll args", () => {
+	const manifest = makeSqlOnlyManifest({
+		migrations: [
+			{
+				id: "20260930822000",
+				file: "supabase/migrations/20260930822000_thread_run_wakes.sql",
+				anchors: [
+					{
+						functionSignature: "public.qorpera_test(uuid)",
+						snippet: `set search_path=""`,
+						expectedCount: 1,
+					},
+				],
+				postChecks: [
+					{ name: "hasFlag", sql: "select true;", expected: true },
+				],
+			},
+			{
+				id: "20260930822100",
+				file: "supabase/migrations/20260930822100_thread_run_wakes_followup.sql",
+				anchors: [],
+				postChecks: [],
+			},
+		],
+	});
+	const migMap = {
+		"supabase/migrations/20260930822000_thread_run_wakes.sql":
+			"begin;\ncreate function pg_temp.helper() returns int language sql as $$ select 1 $$; select pg_temp.helper();\ncommit;\n",
+		"supabase/migrations/20260930822100_thread_run_wakes_followup.sql":
+			"create function pg_temp.helper() returns int language sql as $$ select 2 $$; select pg_temp.helper();\n",
+	};
+	const packets = sqlOnlyPackets(manifest, migMap);
+	assert.deepEqual(Object.keys(packets), [
+		"00-check.sql",
+		"05-rehearse-migrations.sql",
+		"10-migration-20260930822000_thread_run_wakes.sql",
+		"10-migration-20260930822100_thread_run_wakes_followup.sql",
+		"20-post-check.sql",
+	]);
+	assert.ok(packets["00-check.sql"].includes(`set search_path=""`));
+	assert.ok(packets["05-rehearse-migrations.sql"].includes("drop function"));
+	assert.ok(packets["10-migration-20260930822100_thread_run_wakes_followup.sql"].includes("20260930822000"));
+	assert.ok(packets["20-post-check.sql"].includes("'hasFlag', to_jsonb((select true))"));
+
+	assert.throws(
+		() =>
+			sqlOnlyPackets(manifest, {
+				...migMap,
+				"supabase/migrations/20260930822000_thread_run_wakes.sql": "create index concurrently idx_x on t(a);",
+			}),
+		/cannot run in a transaction/,
+	);
+	assert.throws(
+		() =>
+			sqlOnlyPackets(
+				makeSqlOnlyManifest({
+					migrations: [
+						{
+							id: "20260930822000",
+							file: "supabase/migrations/20260930822000_thread_run_wakes.sql",
+							anchors: [],
+							postChecks: [{ name: "mutating", sql: "with d as (delete from t returning 1) select count(*) from d", expected: 0 }],
+						},
+					],
+				}),
+				{ "supabase/migrations/20260930822000_thread_run_wakes.sql": "select 1;" },
+			),
+		/mutating SQL keywords/,
+	);
+	assert.throws(() => writeSqlOnlyPackets("", manifest, migMap), /non-empty path/);
+
+	const ghState = readPrStateViaGh(2014, {
+		exec: (bin, args) => {
+			assert.equal(bin, "gh");
+			assert.deepEqual(args, ["pr", "view", "2014", "--repo", "Qorpera/Qorpera_Base", "--json", "state,mergeable"]);
+			return JSON.stringify({ state: "OPEN", mergeable: "MERGEABLE" });
+		},
+	});
+	assert.deepEqual(ghState, { state: "OPEN", mergeable: "MERGEABLE" });
+	assert.throws(() => readPrStateViaGh(0), /Invalid PR number/);
+	assert.throws(() => readPrStateViaGh(2014, { repo: "bad repo" }), /Invalid GitHub repository slug/);
+
+	const thin = makeThinManifest({ armed: true });
+	const rollArgs = buildRuntimeRollPacketArgs(thin, {
+		activation: "supabase/migrations/20260929027199_runtime_bundle_activation_v271.sql",
+		toSha: "e".repeat(64),
+		nodeAId: "11111111-1111-1111-1111-111111111111",
+		nodeBId: "22222222-2222-2222-2222-222222222222",
+		reason: "v271 thin runtime cut",
+		outDir: "/tmp/roll-packets",
+		repo: "/tmp/repo",
+	});
+	assert.equal(rollArgs[0], "packets");
+	assert.ok(rollArgs.includes("--activation"));
+	assert.ok(rollArgs.includes("20260929027199_runtime_bundle_activation_v271.sql"));
+	assert.throws(
+		() =>
+			buildRuntimeRollPacketArgs(manifest, {
+				activation: "20260929027199_runtime_bundle_activation_v271.sql",
+				toSha: "e".repeat(64),
+				nodeAId: "11111111-1111-1111-1111-111111111111",
+				nodeBId: "22222222-2222-2222-2222-222222222222",
+				reason: "bad",
+				outDir: "/tmp/x",
+			}),
+		/sql-only manifests use writeSqlOnlyPackets/,
+	);
 });

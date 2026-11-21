@@ -48,5 +48,14 @@ node scripts/release-engine/cli.mjs init --from <prev-release-sha> --to HEAD \
 node scripts/release-engine/cli.mjs validate --manifest release-v271.json
 node scripts/release-engine/cli.mjs plan --manifest release-v271.json
 node scripts/release-engine/cli.mjs anchor-sql --manifest release-v271.json
+node scripts/release-engine/cli.mjs packets --manifest release-v271.json --out ./packets-v271
 node scripts/release-engine/cli.mjs dry-run --manifest release-v271.json
 ```
+
+For `sql-only` manifests, `packets` reads each migration directly from
+`manifest.baseCommit` and writes a verified, single-transaction packet directory
+(`00-check.sql`, `05-rehearse-migrations.sql`, `10-migration-*.sql`,
+`20-post-check.sql`, and `packet.json`) ready for the coordinator's SQL packet
+runner. Runtime cuts (`thin-runtime` and `full-image`) continue to emit full
+rolling-update packets through `scripts/runtime-roll.mjs packets` (assisted by
+`buildRuntimeRollPacketArgs` in `scripts/release-engine/adapters.mjs`).
