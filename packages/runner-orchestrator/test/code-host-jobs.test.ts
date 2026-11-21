@@ -3391,3 +3391,195 @@ describe("code host: a landing in two jobs with the checks between them (own cod
 		expect(await readdir(c.scratchRoot)).toEqual([]);
 	});
 });
+
+describe("code host exec batching", () => {
+	it("batches prepare into two commands, folds worktree locked into types, and repairs all expected files", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const s = await session(f, c, baseSha);
+
+		const beforePrepare = c.log.length;
+		const prepared = await withJob(c.job, kept, (run) => run.prepare(s.workerId));
+		const prepareCommands = c.log.slice(beforePrepare);
+		expect(prepared).toMatchObject({
+			made: true,
+			seeded: true,
+			main: "present",
+			worktree: { tree: "directory", admin: "directory", locked: "file" },
+		});
+		expect(prepareCommands).toHaveLength(4);
+
+		const beforePresent = c.log.length;
+		expect(await addCodeWorktree(c.job, { repository: kept, workerId: s.workerId, baseSha })).toEqual({
+			state: "present",
+			headSha: baseSha,
+			restored: [],
+		});
+		expect(c.log.slice(beforePresent)).toHaveLength(6);
+
+		await writeFile(join(c.repo, "config"), "[core]\n\tbare = true\n\thooksPath = /elsewhere\n");
+		await writeFile(join(c.repo, "commondir"), "/elsewhere\n");
+		await writeFile(join(c.code, "main/.git"), "gitdir: /elsewhere\n");
+		await rm(join(c.repo, "worktrees/main/locked"));
+		const beforeRepair = c.log.length;
+		const repaired = await withJob(c.job, kept, async (run) => {
+			await run.prepare();
+			return run.restored;
+		});
+		expect(c.log.slice(beforeRepair)).toHaveLength(4);
+		expect(repaired).toEqual([
+			"code/qorpera/example/repo.git/config",
+			"code/qorpera/example/repo.git/commondir",
+			"code/qorpera/example/main/.git",
+			"code/qorpera/example/repo.git/worktrees/main/locked",
+		]);
+		expect(await readFile(join(c.repo, "config"), "utf8")).toBe(CODE_AREA_CONFIG);
+		expect(await exists(join(c.repo, "commondir"))).toBe(false);
+		expect(await exists(join(c.repo, "worktrees/main/locked"))).toBe(true);
+	});
+
+	it("readMany reads present, empty, binary, and missing files in one exec and rejects malformed output", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const s = await session(f, c, baseSha);
+		const emptyPath = join(s.tree, "empty.bin");
+		const binaryPath = join(s.tree, "data.bin");
+		const missingPath = join(s.tree, "does-not-exist");
+		const binary = Buffer.from([0x00, 0x0a, 0x46, 0x20, 0x31, 0x0a, 0xff]);
+		await writeFile(emptyPath, "");
+		await writeFile(binaryPath, binary);
+
+		const beforeEmpty = c.log.length;
+		const emptyResult = await withJob(c.job, kept, (run) => run.readMany([]));
+		expect(emptyResult).toEqual([]);
+		expect(c.log.slice(beforeEmpty)).toHaveLength(2);
+
+		const beforeRead = c.log.length;
+		const values = await withJob(c.job, kept, (run) =>
+			run.readMany([emptyPath, missingPath, binaryPath, join(c.code, "main/.git")]),
+		);
+		expect(c.log.slice(beforeRead)).toHaveLength(3);
+		expect(values[0]?.equals(Buffer.alloc(0))).toBe(true);
+		expect(values[1]).toBeNull();
+		expect(values[2]?.equals(binary)).toBe(true);
+		expect(values[3]?.toString("utf8")).toBe(`gitdir: ${c.repo}/worktrees/main\n`);
+
+		const badJob: CodeHostJob = {
+			...c.job,
+			shell: {
+				async run(command, signal) {
+					if (command.argv[0] === "/bin/sh") return { status: 0, stdout: Buffer.from("F 999\nabc"), stderr: "" };
+					return c.job.shell.run(command, signal);
+				},
+			},
+		};
+		await expect(withJob(badJob, kept, (run) => run.readMany([emptyPath]))).rejects.toMatchObject({
+			code: "CODE_HOST_READ_FAILED",
+		});
+	});
+
+	it("refsNamed batches ref lookups and validates lazily, and areCommits batches commit checks", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const s = await session(f, c, baseSha);
+		const head = await s.commit({ "file.txt": "hello\n" }, "hello");
+		const blob = await f.git(c.repo, "--git-dir=.", "rev-parse", `${head}:file.txt`);
+		const tree = await f.git(c.repo, "--git-dir=.", "rev-parse", `${head}^{tree}`);
+		await writeFile(join(c.repo, "refs/heads/sym"), "ref: refs/heads/main\n");
+		await writeFile(join(c.repo, "refs/heads/blobref"), `${blob}\n`);
+
+		const beforeRefs = c.log.length;
+		await withJob(c.job, kept, async (run) => {
+			const named = await run.refsNamed([
+				CODE_AREA_IN_QORPERA_REF,
+				"refs/heads/main",
+				"refs/heads/main",
+				"refs/heads/missing",
+				"refs/heads/sym",
+				"refs/heads/blobref",
+			]);
+			expect(named(CODE_AREA_IN_QORPERA_REF)).toBe(baseSha);
+			expect(named("refs/heads/main")).toBe(baseSha);
+			expect(named("refs/heads/missing")).toBeNull();
+			expect(() => named("refs/heads/sym")).toThrow("CODE_HOST_REF_IS_SYMBOLIC");
+			expect(() => named("refs/heads/blobref")).toThrow("CODE_HOST_REF_NOT_A_COMMIT");
+		});
+		expect(c.log.slice(beforeRefs).filter((command) => command.argv.includes("for-each-ref"))).toHaveLength(1);
+
+		const beforeCommits = c.log.length;
+		const checked = await withJob(c.job, kept, async (run) => {
+			expect(await run.areCommits(run.repo, [])).toEqual([]);
+			return await run.areCommits(run.repo, [head, blob, tree, "f".repeat(40)]);
+		});
+		expect(checked).toEqual([true, false, false, false]);
+		expect(c.log.slice(beforeCommits).filter((command) => command.argv.includes("cat-file"))).toHaveLength(1);
+	});
+
+	it("writeCodeChangeRecords skips prepare only for a matching preparedKeptArea and still enforces ownPaths", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const s = await session(f, c, baseSha);
+		const head = await s.commit({ "a.txt": "a\n" }, "a");
+		await landCodeBranch(c.job, { repository: kept, workerId: s.workerId, headSha: head });
+
+		const beforePrepared = c.log.length;
+		const wrote = await writeCodeChangeRecords(
+			{ ...c.job, preparedKeptArea: codeAreaPath(kept) },
+			{ repository: kept, records: [{ n: 1, text: "# Change 1\n" }], index: "# Index\n" },
+		);
+		expect(wrote).toEqual({ written: [1], diffs: [], restored: [] });
+		const preparedCommands = c.log.slice(beforePrepared);
+		expect(preparedCommands.some((command) => (command.argv[2] ?? "").includes('cmp -s - "$p"'))).toBe(false);
+		expect(preparedCommands.some((command) => command.argv.includes("for-each-ref"))).toBe(false);
+		expect(await readFile(join(c.code, "changes/1.md"), "utf8")).toBe("# Change 1\n");
+
+		await writeFile(join(c.code, "restoring.json"), "{}\n");
+		await expect(
+			writeCodeChangeRecords(
+				{ ...c.job, preparedKeptArea: "code/qorpera/other" },
+				{ repository: kept, records: [{ n: 2, text: "# Change 2\n" }], index: null },
+			),
+		).rejects.toMatchObject({ code: "CODE_HOST_RESTORE_IN_PROGRESS" });
+		await rm(join(c.code, "restoring.json"));
+
+		await rm(join(c.code, "changes"), { recursive: true });
+		await mkdir(join(f.root, "outside"));
+		await symlink(join(f.root, "outside"), join(c.code, "changes"));
+		await expect(
+			writeCodeChangeRecords(
+				{ ...c.job, preparedKeptArea: codeAreaPath(kept) },
+				{ repository: kept, records: [{ n: 3, text: "# Change 3\n" }], index: null },
+			),
+		).rejects.toMatchObject({ code: "CODE_HOST_LINK", paths: ["code/qorpera/example/changes"] });
+	});
+
+	it("deduplicates unchanged checks file reads and skips redundant branch checks in landCodeBranch", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const s = await session(f, c, baseSha);
+		const checksBody = `${JSON.stringify({ checks: [{ name: "test", run: "npm test" }] })}\n`;
+		const h1 = await s.commit({ [CODE_CHECKS_FILE]: checksBody, "a.txt": "a\n" }, "init checks");
+		await landCodeBranch(c.job, { repository: kept, workerId: s.workerId, headSha: h1 });
+
+		const h2 = await s.commit({ "b.txt": "b\n" }, "add b");
+		const before = c.log.length;
+		const toCheck = await landCodeBranch(c.job, {
+			repository: kept,
+			workerId: s.workerId,
+			headSha: h2,
+			checks: true,
+		});
+		expect(toCheck.state).toBe("to-check");
+		if (toCheck.state !== "to-check") throw new Error("expected to-check");
+		expect(toCheck.checks).toEqual(toCheck.mainChecks);
+		const jobACommands = c.log.slice(before);
+		expect(jobACommands.filter((command) => command.argv.includes("for-each-ref"))).toHaveLength(1);
+		expect(jobACommands.filter((command) => command.argv.includes("cat-file"))).toHaveLength(1);
+		expect(jobACommands.filter((command) => command.argv.includes(CODE_CHECKS_FILE))).toHaveLength(1);
+	});
+});

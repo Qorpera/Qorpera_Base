@@ -1108,11 +1108,13 @@ export function cloudCodeTools(options: {
 						present: true,
 						valid: true,
 						path: checksPath,
+						mode: parsedChecks.mode,
 						totalTimeoutSeconds: parsedChecks.totalTimeoutSeconds,
 						checks: parsedChecks.checks.map((entry) => ({
 							name: entry.name,
 							cwd: entry.cwd,
 							timeoutSeconds: entry.timeoutSeconds,
+							...(entry.needs !== undefined ? { needs: [...entry.needs] } : {}),
 						})),
 						site: parsedChecks.site
 							? {

@@ -19,6 +19,7 @@ pub mod proto;
 pub mod reads;
 pub mod records;
 pub mod relay;
+pub mod scan;
 pub mod transport;
 pub mod tree;
 pub mod versions;

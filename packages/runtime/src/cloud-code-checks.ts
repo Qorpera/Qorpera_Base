@@ -22,6 +22,7 @@ import { fitsOneResult } from "./cloud-worker-tools.ts";
 
 export const MAX_CODE_CHECKS_FILE_BYTES = 16 * 1024;
 export const CODE_CHECK_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,39}$/;
+export const MAX_PARALLEL_PREFLIGHT_CHECKS = 4;
 
 const MAX_CODE_CHECKS = 20;
 const CODE_CHECK_DEFAULT_SECONDS = 600;
@@ -81,6 +82,7 @@ export interface CodePreflightCheck {
 	readonly run: string;
 	readonly timeoutSeconds: number;
 	readonly cwd: string;
+	readonly needs?: readonly string[];
 }
 
 export interface CodePreflightSite {
@@ -100,6 +102,7 @@ export type ParsedCodeChecks =
 			readonly ok: true;
 			readonly checks: readonly CodePreflightCheck[];
 			readonly totalTimeoutSeconds: number;
+			readonly mode: "sequential" | "dag";
 			readonly site: CodePreflightSite | null;
 	  }
 	| { readonly ok: false; readonly problems: readonly CodeChecksProblem[] };
@@ -126,6 +129,7 @@ export interface CodingPreflightCheckRequest {
 interface PreflightCheckOutcome {
 	readonly name: string;
 	readonly cwd: string;
+	readonly needs?: readonly string[];
 	readonly status: "passed" | "failed" | "cancelled" | "machine_stopped" | "unconfirmed";
 	readonly exitCode: number | null;
 	readonly timedOut: boolean;
@@ -364,6 +368,32 @@ function parseSite(value: unknown, at: string, refuse: Refuse): CodePreflightSit
 	return folder === null ? null : { folder, name, title };
 }
 
+function findCheckCycle(edges: ReadonlyMap<string, readonly string[]>): string[] | null {
+	const state = new Map<string, 1 | 2>();
+	const stack: string[] = [];
+	const visit = (node: string): string[] | null => {
+		state.set(node, 1);
+		stack.push(node);
+		for (const dep of edges.get(node) ?? []) {
+			const seen = state.get(dep);
+			if (seen === 1) return [...stack.slice(stack.indexOf(dep)), dep];
+			if (seen === undefined) {
+				const cycle = visit(dep);
+				if (cycle !== null) return cycle;
+			}
+		}
+		stack.pop();
+		state.set(node, 2);
+		return null;
+	};
+	for (const name of edges.keys()) {
+		if (state.has(name)) continue;
+		const cycle = visit(name);
+		if (cycle !== null) return cycle;
+	}
+	return null;
+}
+
 function parseChecksArray(
 	value: unknown,
 	at: string,
@@ -376,6 +406,7 @@ function parseChecksArray(
 	if (value.length < 1 || value.length > MAX_CODE_CHECKS)
 		refuse(at, "INVALID_VALUE", `Must hold 1 to ${MAX_CODE_CHECKS} checks.`);
 	const checks: CodePreflightCheck[] = [];
+	const parsed: { name: string | null; needs: readonly { name: string; at: string }[] }[] = [];
 	const names = new Set<string>();
 	let total = 0;
 	for (const [index, item] of value.entries()) {
@@ -388,6 +419,8 @@ function parseChecksArray(
 		let run: string | null = null;
 		let timeoutSeconds = CODE_CHECK_DEFAULT_SECONDS;
 		let cwd = ".";
+		let needs: string[] | undefined;
+		const needsEntries: { name: string; at: string }[] = [];
 		for (const [key, field] of Object.entries(item)) {
 			const fieldAt = pointer(itemAt, key);
 			if (key === "name") {
@@ -430,15 +463,53 @@ function parseChecksArray(
 						`Must be a folder of the repository: a relative path without . or .. parts, at most ${MAX_CWD_BYTES} bytes.`,
 					);
 				else cwd = field;
+			} else if (key === "needs") {
+				if (!Array.isArray(field)) refuse(fieldAt, "WRONG_TYPE", "Must be an array.");
+				else {
+					const listed: string[] = [];
+					const seen = new Set<string>();
+					for (const [depIndex, dep] of field.entries()) {
+						const depAt = pointer(fieldAt, depIndex);
+						if (typeof dep !== "string") refuse(depAt, "WRONG_TYPE", "Must be a string.");
+						else if (!CODE_CHECK_NAME_PATTERN.test(dep))
+							refuse(
+								depAt,
+								"INVALID_VALUE",
+								"Must be 1 to 40 of a-z, 0-9, '.', '_' and '-', starting with a letter or a digit.",
+							);
+						else if (seen.has(dep)) refuse(depAt, "DUPLICATE", `The check "${dep}" is listed twice in needs.`);
+						else {
+							seen.add(dep);
+							listed.push(dep);
+							needsEntries.push({ name: dep, at: depAt });
+						}
+					}
+					needs = listed;
+				}
 			} else refuse(fieldAt, "UNKNOWN_KEY", UNKNOWN_KEY_MESSAGE);
 		}
 		if (!("name" in item)) refuse(itemAt, "MISSING_KEY", "Needs name.");
 		if (!("run" in item)) refuse(itemAt, "MISSING_KEY", "Needs run.");
 		total += timeoutSeconds;
-		if (name !== null && run !== null) {
-			checks.push({ name, run, timeoutSeconds, cwd });
-		}
+		parsed.push({ name, needs: needsEntries });
+		if (name !== null && run !== null)
+			checks.push(
+				needs === undefined ? { name, run, timeoutSeconds, cwd } : { name, run, timeoutSeconds, cwd, needs },
+			);
 	}
+	const edges = new Map<string, string[]>();
+	for (const entry of parsed) {
+		const validDeps: string[] = [];
+		for (const dep of entry.needs) {
+			if (entry.name !== null && dep.name === entry.name)
+				refuse(dep.at, "INVALID_VALUE", `The check "${dep.name}" cannot depend on itself.`);
+			else if (!names.has(dep.name)) refuse(dep.at, "INVALID_VALUE", `No check is named "${dep.name}".`);
+			else validDeps.push(dep.name);
+		}
+		if (entry.name !== null) edges.set(entry.name, validDeps);
+	}
+	const cycle = findCheckCycle(edges);
+	if (cycle !== null) refuse(at, "CYCLE", `The checks form a dependency cycle: ${cycle.join(" -> ")}.`);
 	if (total > CODE_CHECKS_TOTAL_SECONDS)
 		refuse(
 			at,
@@ -492,6 +563,7 @@ export function parseCodeChecksText(text: string): ParsedCodeChecks {
 		ok: true,
 		checks: parsedChecks.checks,
 		totalTimeoutSeconds: parsedChecks.totalTimeoutSeconds,
+		mode: parsedChecks.checks.some((check) => check.needs !== undefined) ? "dag" : "sequential",
 		site,
 	};
 }
@@ -582,9 +654,11 @@ function preflightSubOperationKey(operationKey: string, suffix: string): string 
 function serializePreflightOutcome(
 	payload: {
 		readonly state: "passed" | "failed" | "not_run";
+		readonly mode: "sequential" | "dag";
 		readonly ms: number;
 		readonly checks: readonly PreflightCheckOutcome[];
 		readonly notRun: readonly string[];
+		readonly skipped: readonly { readonly name: string; readonly blockedBy: readonly string[] }[];
 		readonly site: CodePreflightSite | null;
 	},
 	tailCap: number,
@@ -593,6 +667,7 @@ function serializePreflightOutcome(
 		(entry): Record<string, JsonValue> => ({
 			name: entry.name,
 			cwd: entry.cwd,
+			...(entry.needs && entry.needs.length > 0 ? { needs: [...entry.needs] } : {}),
 			status: entry.status,
 			exitCode: entry.exitCode,
 			...(entry.timedOut ? { timedOut: true } : {}),
@@ -606,9 +681,11 @@ function serializePreflightOutcome(
 			schema: "qorpera.coding-preflight-checks/v1",
 			state: payload.state,
 			file: ".qorpera/checks.json",
+			mode: payload.mode,
 			ms: payload.ms,
 			checks,
 			notRun: [...payload.notRun],
+			skipped: payload.skipped.map((item) => ({ name: item.name, blockedBy: [...item.blockedBy] })),
 			site: payload.site
 				? { folder: payload.site.folder, name: payload.site.name, title: payload.site.title }
 				: null,
@@ -694,7 +771,7 @@ export async function runCodingPreflightChecks(options: {
 		}
 	};
 
-	const cancelOnTimeout = async (
+	const cancelBestEffort = async (
 		suffix: string,
 		commandId: string,
 	): Promise<CloudCodingCommandReceipt | undefined> => {
@@ -804,7 +881,8 @@ export async function runCodingPreflightChecks(options: {
 		suffix: string,
 		initial: CloudCodingCommandReceipt,
 		timeoutMs: number,
-	): Promise<{ receipt: CloudCodingCommandReceipt; timedOut: boolean }> => {
+		stopSignal: AbortSignal,
+	): Promise<{ receipt: CloudCodingCommandReceipt; timedOut: boolean; cancelledByWave: boolean }> => {
 		let current = initial;
 		const deadline = Date.now() + timeoutMs + timeoutGraceMs;
 		let delay = basePollMs;
@@ -813,19 +891,36 @@ export async function runCodingPreflightChecks(options: {
 				await cancelOnAbort(suffix, current.commandId);
 				context.signal.throwIfAborted();
 			}
+			if (stopSignal.aborted) {
+				const cancelled = await cancelBestEffort(suffix, current.commandId);
+				return {
+					receipt: { ...(cancelled ?? current), state: "cancelled", exitCode: null },
+					timedOut: false,
+					cancelledByWave: true,
+				};
+			}
 			const remaining = deadline - Date.now();
 			if (remaining <= 0) {
-				const cancelled = await cancelOnTimeout(suffix, current.commandId);
+				const cancelled = await cancelBestEffort(suffix, current.commandId);
 				return {
 					receipt: { ...(cancelled ?? current), state: "failed", exitCode: cancelled?.exitCode ?? null },
 					timedOut: true,
+					cancelledByWave: false,
 				};
 			}
 			try {
-				await cloudControlPause(Math.min(delay, remaining), context.signal);
+				await cloudControlPause(Math.min(delay, remaining), stopSignal);
 			} catch (error) {
-				if (context.signal.aborted) await cancelOnAbort(suffix, current.commandId);
-				throw error;
+				if (context.signal.aborted) {
+					await cancelOnAbort(suffix, current.commandId);
+					throw error;
+				}
+				const cancelled = await cancelBestEffort(suffix, current.commandId);
+				return {
+					receipt: { ...(cancelled ?? current), state: "cancelled", exitCode: null },
+					timedOut: false,
+					cancelledByWave: true,
+				};
 			}
 			delay = Math.min(maxPollMs, Math.max(basePollMs, Math.round(delay * 1.5)));
 			try {
@@ -840,7 +935,7 @@ export async function runCodingPreflightChecks(options: {
 				throw error;
 			}
 		}
-		return { receipt: current, timedOut: false };
+		return { receipt: current, timedOut: false, cancelledByWave: false };
 	};
 
 	const finish = async (text: string): Promise<CloudToolContent> => {
@@ -849,7 +944,7 @@ export async function runCodingPreflightChecks(options: {
 	};
 
 	const readStarted = await startSubCommand("read", READ_CHECKS_COMMAND, READ_CHECKS_TIMEOUT_MS);
-	const readWaited = await waitUntilDone("read", readStarted, READ_CHECKS_TIMEOUT_MS);
+	const readWaited = await waitUntilDone("read", readStarted, READ_CHECKS_TIMEOUT_MS, context.signal);
 	if (readWaited.timedOut) {
 		return finish(
 			cloudToolJsonText({
@@ -944,6 +1039,7 @@ export async function runCodingPreflightChecks(options: {
 
 	const originalIndexByName = new Map(parsed.checks.map((check, index) => [check.name, index]));
 	let selected = parsed.checks;
+	const selectedNames = new Set(parsed.checks.map((check) => check.name));
 	if (request.checkNames !== undefined) {
 		const unknown = request.checkNames.filter((name) => !originalIndexByName.has(name));
 		if (unknown.length > 0) {
@@ -961,8 +1057,9 @@ export async function runCodingPreflightChecks(options: {
 				}),
 			);
 		}
-		const wanted = new Set(request.checkNames);
-		selected = parsed.checks.filter((check) => wanted.has(check.name));
+		selectedNames.clear();
+		for (const name of request.checkNames) selectedNames.add(name);
+		selected = parsed.checks.filter((check) => selectedNames.has(check.name));
 	}
 
 	const commandProblems: CodeChecksProblem[] = [];
@@ -993,63 +1090,138 @@ export async function runCodingPreflightChecks(options: {
 		);
 	}
 
+	const isDag = parsed.mode === "dag";
+	const maxConcurrent = isDag ? MAX_PARALLEL_PREFLIGHT_CHECKS : 1;
+	const depsByName = new Map<string, readonly string[]>();
+	for (const check of selected) {
+		depsByName.set(check.name, isDag ? (check.needs ?? []).filter((dep) => selectedNames.has(dep)) : []);
+	}
+
 	const runStartedAt = Date.now();
-	const outcomes: PreflightCheckOutcome[] = [];
-	const notRun: string[] = [];
+	const outcomes = new Map<string, PreflightCheckOutcome>();
+	const skipped = new Map<string, readonly string[]>();
+	const pending = new Set<string>(selected.map((check) => check.name));
+	const checkByName = new Map(selected.map((check) => [check.name, check]));
+	const waveAbort = new AbortController();
+	const waveSignal = AbortSignal.any([context.signal, waveAbort.signal]);
+	const running = new Map<string, Promise<string>>();
+	let stoppedByFailure = false;
 	let anyFailed = false;
 	let anyNotRun = false;
 
-	for (let index = 0; index < selected.length; index++) {
-		const check = selected[index]!;
+	const startCheck = async (check: CodePreflightCheck): Promise<void> => {
 		const checkStartedAt = Date.now();
 		const originalIndex = originalIndexByName.get(check.name)!;
 		const suffix = `c:${originalIndex}`;
 		const cmd = commandsByName.get(check.name)!;
 		const timeoutMs = check.timeoutSeconds * 1000;
 		const startedReceipt = await startSubCommand(suffix, cmd, timeoutMs);
-		const waited = await waitUntilDone(suffix, startedReceipt, timeoutMs);
-		const elapsedMs = Math.max(0, Date.now() - checkStartedAt);
-		const finalReceipt = waited.receipt;
-		const status: PreflightCheckOutcome["status"] =
-			finalReceipt.state === "succeeded"
-				? "passed"
-				: finalReceipt.state === "failed"
-					? "failed"
-					: finalReceipt.state === "cancelled"
-						? "cancelled"
-						: finalReceipt.state === "machine_stopped"
-							? "machine_stopped"
-							: "unconfirmed";
-		const tail = status === "passed" ? undefined : await readOutputTail(finalReceipt, context.signal);
-		outcomes.push({
-			name: check.name,
-			cwd: check.cwd,
-			status,
-			exitCode: finalReceipt.exitCode,
-			timedOut: waited.timedOut,
-			ms: elapsedMs,
-			commandId: finalReceipt.commandId,
-			...(tail !== undefined ? { tail } : {}),
-		});
-		if (status !== "passed") {
-			if (status === "machine_stopped" || status === "unconfirmed") anyNotRun = true;
-			else anyFailed = true;
-			if (request.failFast) {
-				for (let rest = index + 1; rest < selected.length; rest++) notRun.push(selected[rest]!.name);
-				break;
+		const promise = (async (): Promise<string> => {
+			const waited = await waitUntilDone(suffix, startedReceipt, timeoutMs, waveSignal);
+			const elapsedMs = Math.max(0, Date.now() - checkStartedAt);
+			const finalReceipt = waited.receipt;
+			const status: PreflightCheckOutcome["status"] =
+				finalReceipt.state === "succeeded"
+					? "passed"
+					: finalReceipt.state === "failed"
+						? "failed"
+						: finalReceipt.state === "cancelled"
+							? "cancelled"
+							: finalReceipt.state === "machine_stopped"
+								? "machine_stopped"
+								: "unconfirmed";
+			const tail =
+				status === "passed" || waited.cancelledByWave
+					? undefined
+					: await readOutputTail(finalReceipt, context.signal);
+			outcomes.set(check.name, {
+				name: check.name,
+				cwd: check.cwd,
+				...(check.needs !== undefined ? { needs: check.needs } : {}),
+				status,
+				exitCode: finalReceipt.exitCode,
+				timedOut: waited.timedOut,
+				ms: elapsedMs,
+				commandId: finalReceipt.commandId,
+				...(tail !== undefined ? { tail } : {}),
+			});
+			if (status !== "passed") {
+				if (status === "machine_stopped" || status === "unconfirmed") anyNotRun = true;
+				else if (!waited.cancelledByWave) anyFailed = true;
+				if (request.failFast && !waited.cancelledByWave) {
+					stoppedByFailure = true;
+					waveAbort.abort();
+				}
 			}
+			return check.name;
+		})();
+		promise.catch(() => {
+			waveAbort.abort();
+		});
+		running.set(check.name, promise);
+	};
+
+	try {
+		while (pending.size > 0 || running.size > 0) {
+			if (!stoppedByFailure && !waveAbort.signal.aborted) {
+				let progressed = true;
+				while (progressed) {
+					progressed = false;
+					for (const name of [...pending]) {
+						const deps = depsByName.get(name) ?? [];
+						const blockedBy = deps.filter((dep) => {
+							const depOutcome = outcomes.get(dep);
+							return (depOutcome !== undefined && depOutcome.status !== "passed") || skipped.has(dep);
+						});
+						if (blockedBy.length > 0) {
+							pending.delete(name);
+							skipped.set(name, blockedBy);
+							progressed = true;
+						}
+					}
+				}
+				for (const name of [...pending]) {
+					if (running.size >= maxConcurrent || stoppedByFailure || waveAbort.signal.aborted) break;
+					const deps = depsByName.get(name) ?? [];
+					if (deps.every((dep) => outcomes.get(dep)?.status === "passed")) {
+						pending.delete(name);
+						await startCheck(checkByName.get(name)!);
+					}
+				}
+			}
+			if (running.size === 0) break;
+			const finishedName = await Promise.race(running.values());
+			running.delete(finishedName);
 		}
+	} finally {
+		waveAbort.abort();
+		if (running.size > 0) await Promise.allSettled(running.values());
 	}
 
+	const orderedOutcomes: PreflightCheckOutcome[] = [];
+	for (const check of selected) {
+		const outcome = outcomes.get(check.name);
+		if (outcome) orderedOutcomes.push(outcome);
+	}
+	const notRun = selected.map((check) => check.name).filter((name) => pending.has(name));
+	const skippedList = selected
+		.filter((check) => skipped.has(check.name))
+		.map((check) => ({ name: check.name, blockedBy: skipped.get(check.name)! }));
 	const totalMs = Math.max(0, Date.now() - runStartedAt);
 	const overallState: "passed" | "failed" | "not_run" =
-		anyNotRun && !anyFailed ? "not_run" : anyFailed || notRun.length > 0 ? "failed" : "passed";
+		anyNotRun && !anyFailed
+			? "not_run"
+			: anyFailed || notRun.length > 0 || skippedList.length > 0
+				? "failed"
+				: "passed";
 
 	const payload = {
 		state: overallState,
+		mode: parsed.mode,
 		ms: totalMs,
-		checks: outcomes,
+		checks: orderedOutcomes,
 		notRun,
+		skipped: skippedList,
 		site: parsed.site,
 	};
 	for (const tailCap of [MAX_TAIL_BYTES, 800, 400, 200, 0]) {

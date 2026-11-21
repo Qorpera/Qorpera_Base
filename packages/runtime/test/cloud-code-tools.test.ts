@@ -1844,8 +1844,8 @@ describe("manage_code status", () => {
 				"code/acme/shop/main/.qorpera/checks.json": `\uFEFF${JSON.stringify({
 					checks: [
 						{ name: "install", run: "npm ci", timeoutSeconds: 180 },
-						{ name: "lint", run: "npm run lint" },
-						{ name: "test", run: "npm test", cwd: "apps/web", timeoutSeconds: 300 },
+						{ name: "lint", run: "npm run lint", needs: ["install"] },
+						{ name: "test", run: "npm test", cwd: "apps/web", timeoutSeconds: 300, needs: ["install"] },
 					],
 					site: { folder: "dist", name: "shop-demo", title: "Acme Shop" },
 				})}`,
@@ -1945,11 +1945,12 @@ describe("manage_code status", () => {
 					present: true,
 					valid: true,
 					path: "code/acme/shop/main/.qorpera/checks.json",
+					mode: "dag",
 					totalTimeoutSeconds: 1080,
 					checks: [
 						{ name: "install", cwd: ".", timeoutSeconds: 180 },
-						{ name: "lint", cwd: ".", timeoutSeconds: 600 },
-						{ name: "test", cwd: "apps/web", timeoutSeconds: 300 },
+						{ name: "lint", cwd: ".", timeoutSeconds: 600, needs: ["install"] },
+						{ name: "test", cwd: "apps/web", timeoutSeconds: 300, needs: ["install"] },
 					],
 					site: { folder: "dist", name: "shop-demo", title: "Acme Shop" },
 				},
@@ -2099,7 +2100,7 @@ describe("manage_code status", () => {
 			expect(parsed.checks).toMatchObject({
 				present: true,
 				valid: false,
-				problems: [{ at: "/checks/0/needs", code: "UNKNOWN_KEY" }],
+				problems: [{ at: "/checks/0/needs/0", code: "INVALID_VALUE", message: 'No check is named "install".' }],
 			});
 		} finally {
 			invalidJson.boundary.close();

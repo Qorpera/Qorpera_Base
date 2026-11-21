@@ -79,6 +79,7 @@ describe("parseCodeChecksText", () => {
 		}`;
 		expect(parseCodeChecksText(text)).toEqual({
 			ok: true,
+			mode: "sequential",
 			totalTimeoutSeconds: 1080,
 			checks: [
 				{ name: "install", run: "npm ci", timeoutSeconds: 180, cwd: "." },
@@ -89,13 +90,61 @@ describe("parseCodeChecksText", () => {
 		});
 	});
 
-	it("rejects unknown check keys including needs to match the landing validator", () => {
+	it("parses valid needs DAGs (including empty needs and forward references) and validates needs in parity with runner-orchestrator", () => {
+		const diamond = parseCodeChecksText(
+			JSON.stringify({
+				checks: [
+					{ name: "build", run: "npm run build", needs: ["lint", "test"] },
+					{ name: "install", run: "npm ci", needs: [] },
+					{ name: "lint", run: "npm run lint", needs: ["install"] },
+					{ name: "test", run: "npm test", needs: ["install"] },
+				],
+			}),
+		);
+		expect(diamond).toEqual({
+			ok: true,
+			mode: "dag",
+			totalTimeoutSeconds: 2400,
+			checks: [
+				{ name: "build", run: "npm run build", timeoutSeconds: 600, cwd: ".", needs: ["lint", "test"] },
+				{ name: "install", run: "npm ci", timeoutSeconds: 600, cwd: ".", needs: [] },
+				{ name: "lint", run: "npm run lint", timeoutSeconds: 600, cwd: ".", needs: ["install"] },
+				{ name: "test", run: "npm test", timeoutSeconds: 600, cwd: ".", needs: ["install"] },
+			],
+			site: null,
+		});
+
 		expect(
 			parseCodeChecksText(
 				JSON.stringify({
 					checks: [
-						{ name: "install", run: "npm ci" },
-						{ name: "test", run: "npm test", needs: ["install"] },
+						{ name: "a", run: "true", needs: "install" },
+						{ name: "b", run: "true", needs: [42, "BadName", "a", "a", "b", "missing"] },
+					],
+				}),
+			),
+		).toEqual({
+			ok: false,
+			problems: [
+				{ at: "/checks/0/needs", code: "WRONG_TYPE", message: "Must be an array." },
+				{ at: "/checks/1/needs/0", code: "WRONG_TYPE", message: "Must be a string." },
+				{
+					at: "/checks/1/needs/1",
+					code: "INVALID_VALUE",
+					message: "Must be 1 to 40 of a-z, 0-9, '.', '_' and '-', starting with a letter or a digit.",
+				},
+				{ at: "/checks/1/needs/3", code: "DUPLICATE", message: 'The check "a" is listed twice in needs.' },
+				{ at: "/checks/1/needs/4", code: "INVALID_VALUE", message: 'The check "b" cannot depend on itself.' },
+				{ at: "/checks/1/needs/5", code: "INVALID_VALUE", message: 'No check is named "missing".' },
+			],
+		});
+
+		expect(
+			parseCodeChecksText(
+				JSON.stringify({
+					checks: [
+						{ name: "a", run: "true", needs: ["b"] },
+						{ name: "b", run: "true", needs: ["a"] },
 					],
 				}),
 			),
@@ -103,9 +152,30 @@ describe("parseCodeChecksText", () => {
 			ok: false,
 			problems: [
 				{
-					at: "/checks/1/needs",
-					code: "UNKNOWN_KEY",
-					message: "This key is not in the checks file's schema.",
+					at: "/checks",
+					code: "CYCLE",
+					message: "The checks form a dependency cycle: a -> b -> a.",
+				},
+			],
+		});
+
+		expect(
+			parseCodeChecksText(
+				JSON.stringify({
+					checks: [
+						{ name: "a", run: "true", needs: ["b"] },
+						{ name: "b", run: "true", needs: ["c"] },
+						{ name: "c", run: "true", needs: ["a"] },
+					],
+				}),
+			),
+		).toEqual({
+			ok: false,
+			problems: [
+				{
+					at: "/checks",
+					code: "CYCLE",
+					message: "The checks form a dependency cycle: a -> b -> c -> a.",
 				},
 			],
 		});
@@ -472,7 +542,9 @@ describe("coding_run_command runChecks pre-flight runner", () => {
 			expect(parsed).toMatchObject({
 				schema: "qorpera.coding-preflight-checks/v1",
 				state: "passed",
+				mode: "sequential",
 				notRun: [],
+				skipped: [],
 				site: { folder: "dist", name: "acme-app", title: "Acme App" },
 			});
 			expect(parsed.checks).toMatchObject([
@@ -809,6 +881,302 @@ describe("coding_run_command runChecks pre-flight runner", () => {
 		} finally {
 			revoked.boundary.close();
 			revoked.run.close();
+		}
+	});
+
+	it("runs needs DAG checks in parallel waves capped at 4 and respects dependency order and checkNames subsets", async () => {
+		const diamondFile = JSON.stringify({
+			checks: [
+				{ name: "install", run: "npm ci" },
+				{ name: "lint", run: "npm run lint", needs: ["install"] },
+				{ name: "typecheck", run: "npm run typecheck", needs: ["install"] },
+				{ name: "build", run: "npm run build", needs: ["lint", "typecheck"] },
+			],
+		});
+		const startedOrder: string[] = [];
+		const finished = new Set<string>();
+		let active = 0;
+		let peakActive = 0;
+		const reads = new Map<string, number>();
+		const cmdName = new Map<string, string>();
+		const nameFromCommand = (command: string): string => {
+			if (command.includes("npm ci")) return "install";
+			if (command.includes("npm run lint")) return "lint";
+			if (command.includes("npm run typecheck")) return "typecheck";
+			return "build";
+		};
+		const f = await preflightFixture({
+			pollMs: 5,
+			onStart: (input, ctx) => {
+				if (input.command.includes(".qorpera/checks.json")) {
+					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+						state: "succeeded",
+						output: diamondFile,
+					});
+				}
+				const name = nameFromCommand(input.command);
+				startedOrder.push(name);
+				cmdName.set(input.commandId, name);
+				if (name === "lint" || name === "typecheck") {
+					active++;
+					peakActive = Math.max(peakActive, active);
+					reads.set(input.commandId, 0);
+					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, { state: "running", exitCode: null });
+				}
+				if (name === "build") {
+					expect(finished.has("lint")).toBe(true);
+					expect(finished.has("typecheck")).toBe(true);
+				}
+				finished.add(name);
+				return receiptOf(ctx.workerId, input.commandId, input.inputSha256, { state: "succeeded", output: "ok\n" });
+			},
+			onRead: (input, ctx) => {
+				const count = (reads.get(input.commandId) ?? 0) + 1;
+				reads.set(input.commandId, count);
+				if (count < 2) {
+					return receiptOf(ctx.workerId, input.commandId, "a".repeat(64), { state: "running", exitCode: null });
+				}
+				active--;
+				finished.add(cmdName.get(input.commandId)!);
+				return receiptOf(ctx.workerId, input.commandId, "a".repeat(64), { state: "succeeded", output: "ok\n" });
+			},
+		});
+		try {
+			const result = await f.invoke({ operationKey: "dag-diamond", runChecks: true });
+			expect(result).toMatchObject({ success: true, status: "ok", truncated: false });
+			const parsed = JSON.parse(result.text);
+			expect(parsed).toMatchObject({
+				schema: "qorpera.coding-preflight-checks/v1",
+				state: "passed",
+				mode: "dag",
+				notRun: [],
+				skipped: [],
+			});
+			expect(peakActive).toBe(2);
+			expect(startedOrder[0]).toBe("install");
+			expect(startedOrder[3]).toBe("build");
+			expect(parsed.checks.map((c: { name: string }) => c.name)).toEqual(["install", "lint", "typecheck", "build"]);
+			expect(parsed.checks[1].needs).toEqual(["install"]);
+			expect(parsed.checks[3].needs).toEqual(["lint", "typecheck"]);
+
+			const subset = JSON.parse(
+				(await f.invoke({ operationKey: "dag-subset", runChecks: true, checkNames: ["build"] })).text,
+			);
+			expect(subset.state).toBe("passed");
+			expect(subset.mode).toBe("dag");
+			expect(subset.checks).toHaveLength(1);
+			expect(subset.checks[0].name).toBe("build");
+		} finally {
+			f.boundary.close();
+			f.run.close();
+		}
+
+		const wideFile = JSON.stringify({
+			checks: Array.from({ length: 5 }, (_, i) => ({ name: `w${i}`, run: `echo w${i}`, needs: [] })),
+		});
+		let wideActive = 0;
+		let widePeak = 0;
+		const wideReads = new Map<string, number>();
+		const wide = await preflightFixture({
+			pollMs: 5,
+			onStart: (input, ctx) => {
+				if (input.command.includes(".qorpera/checks.json")) {
+					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+						state: "succeeded",
+						output: wideFile,
+					});
+				}
+				wideActive++;
+				widePeak = Math.max(widePeak, wideActive);
+				wideReads.set(input.commandId, 0);
+				return receiptOf(ctx.workerId, input.commandId, input.inputSha256, { state: "running", exitCode: null });
+			},
+			onRead: (input, ctx) => {
+				const count = (wideReads.get(input.commandId) ?? 0) + 1;
+				wideReads.set(input.commandId, count);
+				if (count < 2) {
+					return receiptOf(ctx.workerId, input.commandId, "a".repeat(64), { state: "running", exitCode: null });
+				}
+				wideActive--;
+				return receiptOf(ctx.workerId, input.commandId, "a".repeat(64), { state: "succeeded", output: "ok\n" });
+			},
+		});
+		try {
+			const parsed = JSON.parse((await wide.invoke({ operationKey: "dag-wide", runChecks: true })).text);
+			expect(parsed.state).toBe("passed");
+			expect(parsed.mode).toBe("dag");
+			expect(widePeak).toBe(4);
+		} finally {
+			wide.boundary.close();
+			wide.run.close();
+		}
+	});
+
+	it("cancels running DAG siblings via coding_cancel_command on failFast:true and skips transitive dependents on failFast:false", async () => {
+		const dagFile = JSON.stringify({
+			checks: [
+				{ name: "a", run: "npm run a", needs: [] },
+				{ name: "b", run: "npm run b", needs: [] },
+				{ name: "c", run: "npm run c", needs: ["a"] },
+				{ name: "d", run: "npm run d", needs: ["c"] },
+			],
+		});
+		const cancelledIds: string[] = [];
+		let bCommandId = "";
+		let aReads = 0;
+		const fastFixture = await preflightFixture({
+			pollMs: 5,
+			onStart: (input, ctx) => {
+				if (input.command.includes(".qorpera/checks.json")) {
+					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+						state: "succeeded",
+						output: dagFile,
+					});
+				}
+				if (input.command.includes("npm run b")) bCommandId = input.commandId;
+				return receiptOf(ctx.workerId, input.commandId, input.inputSha256, { state: "running", exitCode: null });
+			},
+			onRead: (input, ctx) => {
+				if (input.commandId === bCommandId) {
+					return receiptOf(ctx.workerId, input.commandId, "a".repeat(64), { state: "running", exitCode: null });
+				}
+				aReads++;
+				if (aReads === 1) {
+					return receiptOf(ctx.workerId, input.commandId, "a".repeat(64), { state: "running", exitCode: null });
+				}
+				return receiptOf(ctx.workerId, input.commandId, "a".repeat(64), {
+					state: "failed",
+					exitCode: 1,
+					output: "a failed\n",
+				});
+			},
+			onCancel: (commandId, ctx) => {
+				cancelledIds.push(commandId);
+				return receiptOf(ctx.workerId, commandId, "a".repeat(64), { state: "cancelled", exitCode: null });
+			},
+		});
+		try {
+			const fast = JSON.parse(
+				(await fastFixture.invoke({ operationKey: "dag-ff-true", runChecks: true, failFast: true })).text,
+			);
+			expect(fast.state).toBe("failed");
+			expect(fast.mode).toBe("dag");
+			expect(cancelledIds).toEqual([bCommandId]);
+			expect(
+				fastFixture.begunOperations.some(
+					(op) =>
+						op.logicalOperationKey.startsWith("coding_cancel_command:pf:") &&
+						op.logicalOperationKey.endsWith(":c:1:cancel"),
+				),
+			).toBe(true);
+			expect(fast.checks).toMatchObject([
+				{ name: "a", status: "failed", exitCode: 1, tail: "a failed" },
+				{ name: "b", status: "cancelled", exitCode: null },
+			]);
+			expect(fast.checks[1].tail).toBeUndefined();
+			expect(fast.notRun).toEqual(["c", "d"]);
+			expect(fast.skipped).toEqual([]);
+		} finally {
+			fastFixture.boundary.close();
+			fastFixture.run.close();
+		}
+
+		const continueFixture = await preflightFixture({
+			pollMs: 5,
+			onStart: (input, ctx) => {
+				if (input.command.includes(".qorpera/checks.json")) {
+					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+						state: "succeeded",
+						output: dagFile,
+					});
+				}
+				if (input.command.includes("npm run a")) {
+					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+						state: "failed",
+						exitCode: 1,
+						output: "broken a\n",
+					});
+				}
+				return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+					state: "succeeded",
+					output: "ok b\n",
+				});
+			},
+		});
+		try {
+			const cont = JSON.parse(
+				(await continueFixture.invoke({ operationKey: "dag-ff-false", runChecks: true, failFast: false })).text,
+			);
+			expect(cont.state).toBe("failed");
+			expect(cont.mode).toBe("dag");
+			expect(cont.checks.map((c: { name: string; status: string }) => [c.name, c.status])).toEqual([
+				["a", "failed"],
+				["b", "passed"],
+			]);
+			expect(cont.notRun).toEqual([]);
+			expect(cont.skipped).toEqual([
+				{ name: "c", blockedBy: ["a"] },
+				{ name: "d", blockedBy: ["c"] },
+			]);
+		} finally {
+			continueFixture.boundary.close();
+			continueFixture.run.close();
+		}
+	});
+
+	it("avoids unhandled rejections and cancels siblings if an in-flight DAG check rejects while another check starts", async () => {
+		const dagFile = JSON.stringify({
+			checks: [
+				{ name: "a", run: "npm run a", needs: [] },
+				{ name: "b", run: "npm run b", needs: [] },
+			],
+		});
+		const unhandled: unknown[] = [];
+		const onUnhandled = (reason: unknown) => {
+			unhandled.push(reason);
+		};
+		process.on("unhandledRejection", onUnhandled);
+		let aRejected!: () => void;
+		const aFailedPromise = new Promise<void>((resolve) => {
+			aRejected = resolve;
+		});
+		const cancelledIds: string[] = [];
+		let bCommandId = "";
+		const f = await preflightFixture({
+			pollMs: 5,
+			onStart: async (input, ctx) => {
+				if (input.command.includes(".qorpera/checks.json")) {
+					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+						state: "succeeded",
+						output: dagFile,
+					});
+				}
+				if (input.command.includes("npm run b")) {
+					bCommandId = input.commandId;
+					await aFailedPromise;
+					await new Promise((resolve) => setTimeout(resolve, 15));
+				}
+				return receiptOf(ctx.workerId, input.commandId, input.inputSha256, { state: "running", exitCode: null });
+			},
+			onRead: async () => {
+				aRejected();
+				throw new Error("transport boom");
+			},
+			onCancel: (commandId, ctx) => {
+				cancelledIds.push(commandId);
+				return receiptOf(ctx.workerId, commandId, "a".repeat(64), { state: "cancelled", exitCode: null });
+			},
+		});
+		try {
+			const result = await f.invoke({ operationKey: "dag-reject", runChecks: true });
+			expect(result.success).toBe(false);
+			await new Promise((resolve) => setTimeout(resolve, 25));
+			expect(unhandled).toEqual([]);
+			expect(cancelledIds).toEqual([bCommandId]);
+		} finally {
+			process.off("unhandledRejection", onUnhandled);
+			f.boundary.close();
+			f.run.close();
 		}
 	});
 });

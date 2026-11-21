@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { leaveCleanStop, takeCleanStop } from "./clean-stop.ts";
 import { CONTROL_SOCKET, createControlServer } from "./control.ts";
 import { SupabaseFolderCore } from "./core.ts";
 import { httpsDataDoor } from "./data-door.ts";
+import { SaveChecks } from "./git-objects.ts";
 import { parseMachineProject, parseMachineRef } from "./machines.ts";
 import { MountGrants, parseOperatorMounts } from "./mounts.ts";
 import { NasObjects } from "./objects.ts";
@@ -100,6 +101,7 @@ const core = new SupabaseFolderCore({
 	projectUrl: settings.supabaseUrl,
 	secretKey: credential("qorpera-supabase-service-key"),
 });
+const FOLDER_PROGRAM = "/opt/qorpera-folder-service/qorpera-folder";
 const objects = new NasObjects({ root: settings.storageRoot, cacheBytes: (settings.cacheMiB ?? 1024) * 1024 * 1024 });
 const service = new FolderService({
 	core,
@@ -110,6 +112,7 @@ const service = new FolderService({
 					core,
 					new GatewayUploads({ url: settings.gatewayUrl, token: credential("qorpera-folder-gateway-token") }),
 					objects,
+					new SaveChecks(existsSync(FOLDER_PROGRAM) ? { folderProgram: FOLDER_PROGRAM } : {}),
 				),
 			}
 		: {}),

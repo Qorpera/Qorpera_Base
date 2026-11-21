@@ -61,9 +61,9 @@ export async function serveMemberFolderObject(
 				throw error;
 			throw fallback;
 		}
+		if (bytes.byteLength !== admitted.bytes || createHash("sha256").update(bytes).digest("hex") !== sha256)
+			throw new ObjectDependencyError(503);
 	}
-	if (bytes.byteLength !== admitted.bytes || createHash("sha256").update(bytes).digest("hex") !== sha256)
-		throw new ObjectDependencyError(503);
 	observation?.update({ logicalObjectReadBytes: bytes.byteLength });
 	const current = await authority.authorizeMemberFolderObject(token, environmentId, sha256);
 	if (current.profileId !== admitted.profileId || current.bytes !== admitted.bytes)
