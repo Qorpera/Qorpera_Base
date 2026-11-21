@@ -744,10 +744,11 @@ agent, repository and setup digest on the same node, so it starts from the same 
   `qorpera_configure_coding_session_size` and inherited on auto-enrollment) and the processor and memory last measured
   for it. A machine is full for a new session when they and the new one (at most the machine's own size, so an empty
   machine always takes one) need more processor or memory than the machine has. Archiving a session frees its room.
-- On each keeper pass, the executor measures per-session CPU (from guest usage deltas) and cgroup memory plus guest
-  `/proc/meminfo` pressure and reports them via `qorpera_record_coding_machine_load` (update-only on place rows so it
-  never locks `qorpera_coding_sessions` after `qorpera_coding_machines`, preserving lock order with
-  `qorpera_keep_coding_attachments`).
+- On each keeper pass, the executor measures per-session CPU (from guest usage deltas) and non-reclaimable cgroup
+  memory (`anon + shmem + kernel` from `memory.stat`, excluding reclaimable file page cache) plus guest `/proc/meminfo`
+  pressure via a batched unprivileged websocket exec (`LxdUnixClient.readCodingMachineMemory`), and reports them via
+  `qorpera_record_coding_machine_load` (update-only on place rows so it never locks `qorpera_coding_sessions` after
+  `qorpera_coding_machines`, preserving lock order with `qorpera_keep_coding_attachments`).
 - The guest/executor fullness hint (`full_until`, good for two minutes after a report with `full: true`, cleared on a
   report with `full: false`) only turns new sessions away. It never moves or refuses a session that has the machine.
 - A session has one machine for life and never moves, attached or not. Its plan takes its own machine without asking

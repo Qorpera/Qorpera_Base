@@ -635,6 +635,17 @@ async function fixture() {
 			if (!file) throw new Error("Missing file");
 			return file;
 		}),
+		readCodingMachineMemory: vi.fn(async (_project, _name, groups) => {
+			const meminfo =
+				files.get("/proc/meminfo")?.content.toString("utf8") ??
+				"MemTotal:        8388608 kB\nMemAvailable:    6291456 kB\n";
+			const stats = new Map<string, string>();
+			for (const path of groups) {
+				const content = files.get(path)?.content.toString("utf8").trim();
+				if (content) stats.set(path, content);
+			}
+			return { meminfo, stats };
+		}),
 		pushInstanceFile: vi.fn(async (_project, _name, path, content, mode) => {
 			files.set(path, { uid: 0, gid: 0, mode, content: Buffer.from(content) });
 		}),
@@ -8413,23 +8424,52 @@ describe("a run of a repository's checks in the session's machine (own code stor
 });
 
 describe("coding machine load reporting and horizontal overflow (step 5k)", () => {
-	it("includes qorpera_record_coding_machine_load in CODING_HOST_RPCS and reports CPU, cgroup memory, and fullness hints on the folder model", async () => {
+	it("includes qorpera_record_coding_machine_load in CODING_HOST_RPCS, excludes reclaimable file cache via memory.stat, and reports fullness hints on the folder model", async () => {
 		expect(CODING_HOST_RPCS).toContain("qorpera_record_coding_machine_load");
 		const f = await folderFixture();
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
 		f.host.endTurn(f.claim);
 		f.state.listed = [f.entry()];
-		const slicePath = `/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-${f.claim.workerId.replaceAll("-", "")}.slice/memory.current`;
-		const userPath = "/sys/fs/cgroup/user.slice/user-200000.slice/memory.current";
+		const slicePath = `/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-${f.claim.workerId.replaceAll("-", "")}.slice/memory.stat`;
+		const userPath = "/sys/fs/cgroup/user.slice/user-200000.slice/memory.stat";
 		const setFile = (path: string, text: string) =>
 			f.files.set(path, { uid: 0, gid: 0, mode: 0o444, content: Buffer.from(text) });
-		setFile(slicePath, "536870912\n");
-		setFile(userPath, "134217728\n");
+		setFile(
+			slicePath,
+			[
+				"anon 536870912",
+				"file 6442450944",
+				"kernel 8388608",
+				"shmem 16777216",
+				"inactive_file 6000000000",
+				"active_file 442450944",
+				"",
+			].join("\n"),
+		);
+		setFile(
+			userPath,
+			["anon 134217728", "file 2147483648", "kernel 4194304", "shmem 0", "inactive_file 2147483648", ""].join("\n"),
+		);
 		setFile("/proc/meminfo", "MemTotal:       8388608 kB\nMemAvailable:   4194304 kB\n");
+		const expectedWorkingSet = 536_870_912 + 8_388_608 + 16_777_216 + 134_217_728 + 4_194_304;
+		vi.mocked(f.client.readInstanceFile).mockClear();
+		vi.mocked(f.client.readCodingMachineMemory).mockClear();
 		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 600_000, cpuUsageUsec: 1_000_000 }));
 		expect(await f.host.keep(f.signal)).toEqual([
 			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
 		]);
+		expect(f.client.readCodingMachineMemory).toHaveBeenCalledTimes(1);
+		expect(f.client.readCodingMachineMemory).toHaveBeenCalledWith(
+			f.machine.project,
+			f.plan.request.name,
+			[slicePath, userPath],
+			expect.any(AbortSignal),
+		);
+		expect(
+			vi
+				.mocked(f.client.readInstanceFile)
+				.mock.calls.some(([, , path]) => path === "/proc/meminfo" || path.startsWith("/sys/fs/cgroup/")),
+		).toBe(false);
 		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toEqual({
 			p_machine_id: f.machine.machineId,
 			p_owner: "coding-host",
@@ -8438,7 +8478,7 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 			p_load: {
 				schema: "qorpera.coding-machine-load/v1",
 				full: false,
-				sessions: [{ workerId: f.claim.workerId, cpuMillis: 0, memoryBytes: 671_088_640 }],
+				sessions: [{ workerId: f.claim.workerId, cpuMillis: 0, memoryBytes: expectedWorkingSet }],
 			},
 		});
 		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 610_000, cpuUsageUsec: 1_000_000 + 35_000_000 }));
@@ -8449,7 +8489,7 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 			p_load: {
 				schema: "qorpera.coding-machine-load/v1",
 				full: true,
-				sessions: [{ workerId: f.claim.workerId, cpuMillis: 3500, memoryBytes: 671_088_640 }],
+				sessions: [{ workerId: f.claim.workerId, cpuMillis: 3500, memoryBytes: expectedWorkingSet }],
 			},
 		});
 		setFile("/proc/meminfo", "MemTotal:       8388608 kB\nMemAvailable:   800000 kB\n");
@@ -8460,12 +8500,12 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
 			p_load: {
 				full: true,
-				sessions: [{ workerId: f.claim.workerId, cpuMillis: 0, memoryBytes: 671_088_640 }],
+				sessions: [{ workerId: f.claim.workerId, cpuMillis: 0, memoryBytes: expectedWorkingSet }],
 			},
 		});
 		setFile("/proc/meminfo", "MemTotal:       8388608 kB\nMemAvailable:   6000000 kB\n");
-		setFile(slicePath, "7516192768\n");
-		setFile(userPath, "0\n");
+		setFile(slicePath, "anon 7516192768\nfile 1048576\nkernel 0\nshmem 0\n");
+		setFile(userPath, "anon 0\nfile 4294967296\n");
 		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 630_000, cpuUsageUsec: 36_000_000 }));
 		await f.host.keep(f.signal);
 		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
@@ -8474,7 +8514,7 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 				sessions: [{ workerId: f.claim.workerId, cpuMillis: 0, memoryBytes: 7_516_192_768 }],
 			},
 		});
-		setFile(slicePath, "1048576\n");
+		setFile(slicePath, "anon 1048576\nfile 6442450944\n");
 		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 640_000, cpuUsageUsec: 36_000_000 }));
 		await f.host.keep(f.signal);
 		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
@@ -8485,7 +8525,7 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 		});
 	});
 
-	it("excludes released sessions from load reports and keeps renewing when load reporting fails or returns invalid data", async () => {
+	it("excludes released sessions from load reports and keeps renewing when memory read or load RPC fails", async () => {
 		const f = await folderFixture();
 		const second = f.another();
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
@@ -8494,8 +8534,8 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 		f.host.endTurn(second);
 		f.state.release.set(second.workerId, "ARCHIVED");
 		f.state.listed = [f.entry()];
-		const releasingSlice = `/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-${second.workerId.replaceAll("-", "")}.slice/memory.current`;
-		f.files.set(releasingSlice, { uid: 0, gid: 0, mode: 0o444, content: Buffer.from("8000000000\n") });
+		const releasingSlice = `/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-${second.workerId.replaceAll("-", "")}.slice/memory.stat`;
+		f.files.set(releasingSlice, { uid: 0, gid: 0, mode: 0o444, content: Buffer.from("anon 8000000000\n") });
 		expect(await pass(f)).toEqual(
 			expect.arrayContaining([
 				{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
@@ -8515,6 +8555,19 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 			},
 		});
 		f.state.listed = [f.entry()];
+		const loadCallsBefore = f.calls("qorpera_record_coding_machine_load").length;
+		vi.mocked(f.client.readCodingMachineMemory).mockRejectedValueOnce(new Error("LXD_CODING_MEMORY_READ_FAILED"));
+		expect(await f.host.keep(f.signal)).toEqual([
+			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+			{
+				machineId: f.machine.machineId,
+				workerId: null,
+				step: "load",
+				state: "failed",
+				code: "LXD_CODING_MEMORY_READ_FAILED",
+			},
+		]);
+		expect(f.calls("qorpera_record_coding_machine_load")).toHaveLength(loadCallsBefore);
 		const control = f.call.getMockImplementation()!;
 		f.call.mockImplementation(async (method, args, signal) => {
 			if (method === "qorpera_record_coding_machine_load") throw new Error("CODING_CONTROL_UNCONFIRMED");
@@ -8560,6 +8613,20 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 			gid: 0,
 			mode: 0o444,
 			content: Buffer.from(`${secondBootId}\n`),
+		});
+		const firstSlice = `/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-${f.claim.workerId.replaceAll("-", "")}.slice/memory.stat`;
+		const secondSlice = `/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-${overflow.workerId.replaceAll("-", "")}.slice/memory.stat`;
+		f.files.set(firstSlice, {
+			uid: 0,
+			gid: 0,
+			mode: 0o444,
+			content: Buffer.from("anon 268435456\nfile 3221225472\nkernel 4194304\n"),
+		});
+		secondFiles.set(secondSlice, {
+			uid: 0,
+			gid: 0,
+			mode: 0o444,
+			content: Buffer.from("anon 134217728\nfile 2147483648\nshmem 8388608\n"),
 		});
 		const control = f.call.getMockImplementation()!;
 		const attachedByMachine = new Map<string, Map<string, string>>([
@@ -8655,6 +8722,19 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 			const file = secondFiles.get(path);
 			if (!file) throw new Error("Missing file");
 			return file;
+		});
+		const readCodingMachineMemory = vi.mocked(f.client.readCodingMachineMemory).getMockImplementation()!;
+		vi.mocked(f.client.readCodingMachineMemory).mockImplementation(async (project, name, groups, signal) => {
+			if (name !== secondPlan.request.name) return readCodingMachineMemory(project, name, groups, signal);
+			const meminfo =
+				secondFiles.get("/proc/meminfo")?.content.toString("utf8") ??
+				"MemTotal:        8388608 kB\nMemAvailable:    6291456 kB\n";
+			const stats = new Map<string, string>();
+			for (const path of groups) {
+				const content = secondFiles.get(path)?.content.toString("utf8").trim();
+				if (content) stats.set(path, content);
+			}
+			return { meminfo, stats };
 		});
 		const pushInstanceFile = vi.mocked(f.client.pushInstanceFile).getMockImplementation()!;
 		vi.mocked(f.client.pushInstanceFile).mockImplementation(async (project, name, path, content, mode, signal) => {
@@ -8761,7 +8841,7 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 					p_load: {
 						schema: "qorpera.coding-machine-load/v1",
 						full: false,
-						sessions: [{ workerId: f.claim.workerId, cpuMillis: 200, memoryBytes: 0 }],
+						sessions: [{ workerId: f.claim.workerId, cpuMillis: 200, memoryBytes: 268_435_456 + 4_194_304 }],
 					},
 				}),
 				expect.objectContaining({
@@ -8770,7 +8850,7 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 					p_load: {
 						schema: "qorpera.coding-machine-load/v1",
 						full: false,
-						sessions: [{ workerId: overflow.workerId, cpuMillis: 500, memoryBytes: 0 }],
+						sessions: [{ workerId: overflow.workerId, cpuMillis: 500, memoryBytes: 134_217_728 + 8_388_608 }],
 					},
 				}),
 			]),

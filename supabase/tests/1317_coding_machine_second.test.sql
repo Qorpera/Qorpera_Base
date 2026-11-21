@@ -261,9 +261,11 @@ begin
 		and not has_table_privilege('service_role', 'public.qorpera_coding_session_loads', 'select'), 'grants');
 	perform pg_temp.ok(
 		position('20260930828000 (step 5k)' in obj_description('public.qorpera_plan_coding_machine(uuid,uuid,text,text)'::regprocedure, 'pg_proc')) > 0
+		and position('20260930828000 (step 5k)' in pg_get_functiondef('public.qorpera_plan_coding_machine(uuid,uuid,text,text)'::regprocedure)) > 0
+		and position('20260930828000 (step 5k)' in pg_get_functiondef('public.qorpera_coding_executor_enroll(uuid,text)'::regprocedure)) > 0
 		and position('20260930828000 (step 5k)' in obj_description('public.qorpera_coding_session_loads'::regclass, 'pg_class')) > 0
 		and position('20260930394000 (step 5a)' in pg_get_functiondef('public.qorpera_plan_coding_machine(uuid,uuid,text,text)'::regprocedure)) > 0,
-		'the plan names step 5k and keeps step 5a''s markers');
+		'the plan and enroll bodies name step 5k and keep step 5a''s markers');
 end $$;
 
 rollback;

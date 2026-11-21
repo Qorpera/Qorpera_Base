@@ -35,7 +35,8 @@ $old$	insert into public.qorpera_coding_executors(environment_id, owner, enabled
 		v_like.vm_policy, v_like.nas_policy,
 		v_like.nas_machine_id_sha256, v_like.machine_sleep_after_seconds, v_like.machine_remove_after_seconds,
 		v_like.session_archive_after_seconds)$old$,
-$new$	insert into public.qorpera_coding_executors(environment_id, owner, enabled, harnesses, vm_policy, nas_policy,
+$new$	-- WHY: 20260930828000 (step 5k): copy template session sizing onto auto-enrolled executors.
+	insert into public.qorpera_coding_executors(environment_id, owner, enabled, harnesses, vm_policy, nas_policy,
 		nas_machine_id_sha256, machine_sleep_after_seconds, machine_remove_after_seconds, session_archive_after_seconds,
 		session_cpu_millis, session_memory_bytes)
 	values (p_environment_id, v_owner, true, case when p_harness is null then v_like.harnesses else array[p_harness] end,
@@ -151,6 +152,7 @@ $new$		if v_machine.retire_requested_at is not null or v_machine.removing_at is 
 			return jsonb_build_object('state','refused','reason','MACHINE_RETIRING','machineId',v_machine.id); end if;
 	end if;
 	if v_machine.id is null then
+		-- WHY: 20260930828000 (step 5k): pick the lowest-number non-full machine or allocate the lowest free number.
 		v_number := 1;
 		for v_candidate in select * from public.qorpera_coding_machines machine
 			where machine.profile_id = v_worker.profile_id and machine.environment_id = v_worker.environment_id

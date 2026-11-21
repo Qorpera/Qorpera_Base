@@ -118,6 +118,7 @@ import { type CodingNasStorage, createCodingNasStorage } from "./coding-storage.
 import { type LxdCodingVmBinding, lxdCodingVmPlan, lxdLegacyCodingMachineJournalPlan } from "./coding-vm.ts";
 import { publishCloudCodingDraftPullRequest } from "./coding-workspace.ts";
 import type {
+	LxdCodingMemoryClient,
 	LxdImageClient,
 	LxdInspectableClient,
 	LxdInstanceDeviceClient,
@@ -197,6 +198,7 @@ export interface LxdCodingExecutorHostOptions {
 	storagePolicy: CloudCodingNasPolicy;
 	client: Pick<LxdTrackedClient, "getInstance" | "submitInstanceOperation" | "inspectInstanceOperation"> &
 		Pick<LxdInspectableClient, "readInstanceFile" | "pushInstanceFile" | "execInstance"> &
+		LxdCodingMemoryClient &
 		LxdInstanceDeviceClient &
 		LxdImageClient &
 		LxdProjectClient;
@@ -475,8 +477,11 @@ const CODING_KEEP_MACHINE_MS = 15_000;
 const CODING_LOAD_MAX_CPU_MILLIS = 999_999_999;
 const CODING_LOAD_MAX_MEMORY_BYTES = 1_099_511_627_776;
 const CODING_LOAD_FULL_PERCENT = 85;
-const CODING_MEMINFO_MAX_BYTES = 8_192;
-const CODING_CGROUP_MEMORY_MAX_BYTES = 64;
+const CGROUP_MEMORY_STAT_PATTERNS = [
+	/^anon ([0-9]{1,15})$/m,
+	/^shmem ([0-9]{1,15})$/m,
+	/^kernel ([0-9]{1,15})$/m,
+] as const;
 
 function sessionCpuMillis(
 	sample: SessionSample | undefined,
@@ -489,6 +494,18 @@ function sessionCpuMillis(
 		CODING_LOAD_MAX_CPU_MILLIS,
 		Math.max(0, Math.round((cpuUsageUsec - sample.cpuUsageUsec) / (uptimeMs - sample.at))),
 	);
+}
+
+function cgroupMemoryStatBytes(content: string): number {
+	// WHY: Count anon, shmem, and kernel from memory.stat so reclaimable file page cache never inflates fullness.
+	let total = 0;
+	for (const pattern of CGROUP_MEMORY_STAT_PATTERNS) {
+		const match = pattern.exec(content);
+		if (!match) continue;
+		const bytes = Number(match[1]);
+		if (Number.isSafeInteger(bytes) && bytes > 0) total += bytes;
+	}
+	return Math.min(CODING_LOAD_MAX_MEMORY_BYTES, total);
 }
 
 function meminfoMemoryFull(content: string): boolean {
@@ -3758,22 +3775,35 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		signal: AbortSignal,
 	): Promise<void> {
 		const name = lxdCodingMachineName(machine.machineId);
-		const [meminfoFull, measured] = await Promise.all([
-			this.#readMachineMemoryFull(machine.project, name, signal),
-			Promise.all(
-				sessions.map(async ({ workerId, cpuMillis }) => ({
-					workerId,
-					cpuMillis,
-					memoryBytes: await this.#readSessionMemoryBytes(machine.project, name, bootId, workerId, signal),
-				})),
-			),
-		]);
+		const groupsByWorker = new Map<string, string[]>();
+		const allGroups: string[] = [];
+		for (const { workerId } of sessions) {
+			const slice = `qorpera-coding-${workerId.replaceAll("-", "")}.slice`;
+			const paths = [`/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/${slice}/memory.stat`];
+			const attachment = this.#attachments.get(workerId);
+			if (attachment?.bootId === bootId && attachment.folder)
+				paths.push(`/sys/fs/cgroup/user.slice/user-${attachment.folder.uid}.slice/memory.stat`);
+			groupsByWorker.set(workerId, paths);
+			allGroups.push(...paths);
+		}
+		const { meminfo, stats } = await this.#options.client.readCodingMachineMemory(
+			machine.project,
+			name,
+			allGroups,
+			signal,
+		);
+		const meminfoFull = meminfoMemoryFull(meminfo);
 		let totalCpuMillis = 0;
 		let totalMemoryBytes = 0;
-		for (const item of measured) {
-			totalCpuMillis += item.cpuMillis;
-			totalMemoryBytes += item.memoryBytes;
-		}
+		const measured = sessions.map(({ workerId, cpuMillis }) => {
+			let memoryBytes = 0;
+			for (const path of groupsByWorker.get(workerId) ?? [])
+				memoryBytes += cgroupMemoryStatBytes(stats.get(path) ?? "");
+			memoryBytes = Math.min(CODING_LOAD_MAX_MEMORY_BYTES, memoryBytes);
+			totalCpuMillis += cpuMillis;
+			totalMemoryBytes += memoryBytes;
+			return { workerId, cpuMillis, memoryBytes };
+		});
 		const full =
 			meminfoFull ||
 			totalCpuMillis * 100 >= machine.cpus * 1000 * CODING_LOAD_FULL_PERCENT ||
@@ -3802,55 +3832,6 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			Number(recorded.sessions) < 0
 		)
 			throw new Error("CODING_HOST_MACHINE_LOAD_INVALID");
-	}
-	async #readMachineMemoryFull(project: string, name: string, signal: AbortSignal): Promise<boolean> {
-		try {
-			const file = await this.#options.client.readInstanceFile(
-				project,
-				name,
-				"/proc/meminfo",
-				CODING_MEMINFO_MAX_BYTES,
-				signal,
-			);
-			if (file.uid !== 0 || file.gid !== 0) return false;
-			return meminfoMemoryFull(file.content.toString("utf8"));
-		} catch (error) {
-			if (signal.aborted) throw error;
-			return false;
-		}
-	}
-	async #readSessionMemoryBytes(
-		project: string,
-		name: string,
-		bootId: string,
-		workerId: string,
-		signal: AbortSignal,
-	): Promise<number> {
-		const slice = `qorpera-coding-${workerId.replaceAll("-", "")}.slice`;
-		const paths = [`/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/${slice}/memory.current`];
-		const attachment = this.#attachments.get(workerId);
-		if (attachment?.bootId === bootId && attachment.folder)
-			paths.push(`/sys/fs/cgroup/user.slice/user-${attachment.folder.uid}.slice/memory.current`);
-		let total = 0;
-		for (const path of paths) {
-			try {
-				const file = await this.#options.client.readInstanceFile(
-					project,
-					name,
-					path,
-					CODING_CGROUP_MEMORY_MAX_BYTES,
-					signal,
-				);
-				if (file.uid !== 0 || file.gid !== 0) continue;
-				const text = file.content.toString("utf8").trim();
-				if (!/^[0-9]{1,15}$/.test(text)) continue;
-				const bytes = Number(text);
-				if (Number.isSafeInteger(bytes) && bytes > 0) total += bytes;
-			} catch (error) {
-				if (signal.aborted) throw error;
-			}
-		}
-		return Math.min(CODING_LOAD_MAX_MEMORY_BYTES, total);
 	}
 	/** Takes a released session off, beside the keeper's passes, and records it
 	 * detached with what it stopped. A session whose turn this process still runs
