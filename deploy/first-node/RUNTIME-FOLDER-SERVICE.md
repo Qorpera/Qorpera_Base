@@ -612,9 +612,11 @@ In slice 4b the core opens a view of its own for an offline shell command (`comp
   change set). The report then has `refused` with that reason, `commitId` and `seq` null, and each path `refused` and
   kept pending. The view stays open, so a final refused while the company is paused can be asked again once the pause
   lifts; but a final refused after a renewal closed the view meanwhile did not close it, and the machine hears
-  `VIEW_CLOSED` with why it closed. A boundary is never split: a final carrying more than 1000 units is refused `invalid` every time, and, as
-  after any final refused for good, the office service closes that view itself (slice 4d,
-  RUNTIME-FOLDER-COMPANY-MACHINES.md).
+  `VIEW_CLOSED` with why it closed. A final boundary is never split: a final carrying more than 1000 units (or exceeding
+  the core's structured-file limits) is refused `invalid` every time, and, as after any final refused for good, the
+  office service closes that view itself (slice 4d, RUNTIME-FOLDER-COMPANY-MACHINES.md). Non-final boundaries that
+  exceed those limits split across consecutive dependency-preserving change sets (RUNTIME-FOLDER-WRITES.md,
+  "A boundary").
 - **The command's end.** Once the command's end is recorded (C1B §8), the core saves only the final. A change set it
   refuses whole (a quiet period's included) stays pending, so the final carries it.
 - **Kept for the final.** A command's view that its own machine has held is kept when its last connection leaves: its

@@ -50,7 +50,15 @@ import {
 	PendingView,
 	PublishFirst,
 } from "./pending.ts";
-import { type BoundaryPlan, type CommitUnit, planBoundary, type SecretCheck, WAITS_FOR_UNCHECKED } from "./plan.ts";
+import {
+	type BoundaryPlan,
+	type CommitUnit,
+	type PlannedUnit,
+	planBoundary,
+	planCommitBatches,
+	type SecretCheck,
+	WAITS_FOR_UNCHECKED,
+} from "./plan.ts";
 import {
 	type BridgeInfo,
 	type ChunkPart,
@@ -137,6 +145,7 @@ export interface FolderServiceOptions {
 	readonly dataDoor?: DataDoor;
 	readonly dataCallMs?: number;
 	readonly dataApplyMs?: number;
+	readonly maxBoundaryBatches?: number;
 }
 
 /** More changed paths than this in one push, or a message too large for one frame: the machine is told to drop
@@ -168,6 +177,7 @@ const STAGING_PARALLEL = 8;
 const CHECK_WAIT_MS = 10_000;
 /** Reads in one release: the core's bound (core §6). */
 const RELEASE_READS = 10_000;
+const MAX_BOUNDARY_BATCHES = 100;
 /** The receipt of a read logged with none: it names no resource, so the core checks the path again and files the
  * receipt it reads now (`qorpera_folder_release_pairs`). */
 const NO_RECEIPT = {
@@ -781,6 +791,7 @@ export class FolderService {
 	readonly #dataDoor: DataDoor | undefined;
 	readonly #dataCallMs: number;
 	readonly #dataApplyMs: number;
+	readonly #maxBoundaryBatches: number;
 	readonly #dataCalls = new Map<string, { running: number; began: number[] }>();
 
 	constructor(options: FolderServiceOptions) {
@@ -811,6 +822,7 @@ export class FolderService {
 		this.#dataDoor = options.dataDoor;
 		this.#dataCallMs = options.dataCallMs ?? DATA_CALL_MS;
 		this.#dataApplyMs = options.dataApplyMs ?? DATA_APPLY_MS;
+		this.#maxBoundaryBatches = Math.max(1, options.maxBoundaryBatches ?? MAX_BOUNDARY_BATCHES);
 	}
 
 	start(): void {
@@ -3673,7 +3685,7 @@ export class FolderService {
 				this.#notice(view, unasked, { ...committed(answer), paths: settled });
 			}
 		}
-		const report = this.#notice(view, unasked, await this.#planned(view, pending, final, last, deadline));
+		const report = await this.#planned(view, pending, final, last, unasked, deadline);
 		return settled.length === 0 ? report : { ...report, paths: [...settled, ...report.paths] };
 	}
 
@@ -3683,6 +3695,7 @@ export class FolderService {
 		pending: PendingView,
 		final: boolean,
 		last: boolean,
+		unasked: boolean,
 		deadline = this.#checkDeadline(),
 	): Promise<Report> {
 		const entries: ReportEntry[] = [];
@@ -3720,24 +3733,28 @@ export class FolderService {
 		const machine = view.access?.machine;
 		const release = machine === undefined ? await this.#releaseReads(view) : await this.#releaseMachine(machine);
 		// Another view of the machine went while the release ran, with reads it never released.
-		if (view.unproven) return this.#unprovenReport(view, pending);
+		if (view.unproven) return this.#notice(view, unasked, this.#unprovenReport(view, pending));
 		if (release !== "released") {
 			view.heard = release === "unanswered" || mayLift(release) ? "open" : "refused";
-			return release === "unanswered"
-				? {
-						commitId: null,
-						seq: null,
-						paths: [
-							...entries,
-							...held(plan, () => ({ outcome: "not_applied", reason: "the save did not get through yet" })),
-						],
-					}
-				: {
-						commitId: null,
-						seq: null,
-						refused: release,
-						paths: [...entries, ...held(plan, () => ({ outcome: "refused", reason: release }))],
-					};
+			return this.#notice(
+				view,
+				unasked,
+				release === "unanswered"
+					? {
+							commitId: null,
+							seq: null,
+							paths: [
+								...entries,
+								...held(plan, () => ({ outcome: "not_applied", reason: "the save did not get through yet" })),
+							],
+						}
+					: {
+							commitId: null,
+							seq: null,
+							refused: release,
+							paths: [...entries, ...held(plan, () => ({ outcome: "refused", reason: release }))],
+						},
+			);
 		}
 		const dropped = plan.dropped.map(
 			(d): ReportEntry => ({ path: d.path, outcome: "not_applied", reason: d.reason }),
@@ -3753,6 +3770,9 @@ export class FolderService {
 			view.heard = "answered";
 			return { commitId: null, seq: null, paths: [...entries, ...dropped] };
 		}
+		const batches = final ? [] : planCommitBatches(plan.units);
+		if (batches.length > 1)
+			return await this.#commitBatches(view, pending, plan, batches, credited, entries, dropped, last, unasked);
 		const structured = await this.#structured(
 			view,
 			plan.units.map((u) => u.unit),
@@ -3786,7 +3806,8 @@ export class FolderService {
 			view.unanswered = { key, actor, units, plan, made, final };
 			return { commitId: null, seq: null, paths: [...entries, ...dropped, ...notYet(plan)] };
 		}
-		if (final && answer.commitId) return await this.#closedBy(view, plan, answer, [...entries, ...dropped]);
+		if (final && answer.commitId)
+			return this.#notice(view, unasked, await this.#closedBy(view, plan, answer, [...entries, ...dropped]));
 		// A final refused once a renewal had closed the view meanwhile did not close it.
 		if (final && view.closed) throw this.#closedOtherwise(view);
 		// A change set refused whole that holds is not settled: what it carried stays pending, and the report says why. A
@@ -3794,12 +3815,195 @@ export class FolderService {
 		// it; a desktop's refused by the pause or the run check, for a later boundary (F3 4c). Any other is let go.
 		if (answer.said === VIEW_ENDED) this.#close(view, VIEW_ENDED);
 		if (holds(view, answer, last))
-			return {
+			return this.#notice(view, unasked, {
 				...committed(answer),
 				paths: [...entries, ...held(plan, (i) => ({ outcome: "refused", reason: answer.units[i]?.reason }))],
-			};
+			});
 		entries.push(...dropped, ...(await this.#settle(view, plan, made, answer)));
-		return { ...committed(answer), paths: entries };
+		return this.#notice(view, unasked, { ...committed(answer), paths: entries });
+	}
+
+	async #commitBatches(
+		view: View,
+		pending: PendingView,
+		plan: BoundaryPlan,
+		batches: readonly (readonly PlannedUnit[])[],
+		credited: readonly (readonly string[] | undefined)[],
+		entries: ReportEntry[],
+		dropped: readonly ReportEntry[],
+		last: boolean,
+		unasked: boolean,
+	): Promise<Report> {
+		const baseKey = `folder-view:${view.key}:${randomUUID()}`;
+		const actor = view.actor;
+		const keptNodes = new Set<string>(plan.keep);
+		const runCount = Math.min(batches.length, this.#maxBoundaryBatches);
+		let lastCommitId: string | null = null;
+		let lastSeq: number | null = null;
+		let unitOffset = 0;
+
+		const remainingEntries = (fromIndex: number, outcome: ReportEntry["outcome"], reason: string): ReportEntry[] => {
+			const out: ReportEntry[] = [];
+			for (let j = fromIndex; j < batches.length; j++)
+				for (const planned of batches[j]!)
+					for (const path of planned.paths) out.push({ path, outcome, reason, kept: true });
+			return out;
+		};
+
+		for (let i = 0; i < runCount; i++) {
+			if (i > 0) {
+				if (view.closed) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
+				if (view.unproven) {
+					view.heard = "refused";
+					const laterRefused = remainingEntries(i, "refused", "unproven");
+					this.#notice(view, unasked, { commitId: null, seq: null, refused: "unproven", paths: laterRefused });
+					return {
+						commitId: null,
+						seq: null,
+						refused: "unproven",
+						paths: [...entries, ...laterRefused],
+					};
+				}
+			}
+
+			const batch = batches[i]!;
+			const offset = unitOffset;
+			unitOffset += batch.length;
+			const batchKey = i === 0 ? baseKey : `${baseKey}:b${i}`;
+
+			const batchKeep = new Set<string>(keptNodes);
+			const batchRemovals = new Set<string>(plan.removals);
+			for (let j = i + 1; j < batches.length; j++)
+				for (const planned of batches[j]!) {
+					const target = planned.unit.op === "delete" ? batchRemovals : batchKeep;
+					for (const path of planned.paths) target.add(path);
+				}
+			const batchPlan: BoundaryPlan = {
+				units: batch,
+				waiting: [],
+				dropped: i === 0 ? plan.dropped : [],
+				keep: batchKeep,
+				removals: batchRemovals,
+				refused: [],
+				gitHeld: plan.gitHeld,
+			};
+
+			const structured = await this.#structured(
+				view,
+				batch.map((u) => u.unit),
+			);
+			const units = structured.map((unit, j): CreditedUnit => {
+				const credits = credited[offset + j];
+				return credits ? { ...unit, credits } : unit;
+			});
+			const batchMade = new Map<string, string>();
+			for (const u of batch)
+				if (u.bytes)
+					for (const path of u.paths) {
+						const node = pending.nodes().get(path);
+						if (node?.kind === "file" || node?.kind === "symlink") batchMade.set(path, node.version);
+					}
+
+			const answer = await this.#commit(view, actor, batchKey, units, false);
+			view.heard = heardOf(answer);
+
+			if (!answer) {
+				view.unanswered = { key: batchKey, actor, units, plan: batchPlan, made: batchMade, final: false };
+				return {
+					commitId: null,
+					seq: null,
+					paths: [
+						...entries,
+						...(i === 0 ? dropped : []),
+						...notYet(batchPlan),
+						...remainingEntries(i + 1, "not_applied", "the save did not get through yet"),
+					],
+				};
+			}
+
+			if (answer.refused) {
+				if (answer.said === VIEW_ENDED) this.#close(view, VIEW_ENDED);
+				if (holds(view, answer, last)) {
+					const batchHeld = held(batchPlan, (idx) => ({ outcome: "refused", reason: answer.units[idx]?.reason }));
+					const laterRefused = remainingEntries(i + 1, "refused", answer.refused);
+					this.#notice(view, unasked, {
+						commitId: null,
+						seq: null,
+						refused: answer.refused,
+						paths: [...batchHeld, ...laterRefused],
+					});
+					return {
+						commitId: null,
+						seq: null,
+						refused: answer.refused,
+						paths: [...entries, ...batchHeld, ...laterRefused],
+					};
+				}
+				const remainingUnits = batches.slice(i).flat();
+				const remainingPlan: BoundaryPlan = {
+					units: remainingUnits,
+					waiting: [],
+					dropped: i === 0 ? plan.dropped : [],
+					keep: keptNodes,
+					removals: plan.removals,
+					refused: [],
+					gitHeld: plan.gitHeld,
+				};
+				const remainingAnswer: CommitAnswer = {
+					commitId: "",
+					seq: null,
+					units: remainingUnits.map((_, idx) => ({
+						unit: idx + 1,
+						outcome: "refused",
+						reason: answer.refused!,
+						version: null,
+					})),
+				};
+				const settledRefusal = await this.#settle(view, remainingPlan, new Map(), remainingAnswer);
+				const batchPaths = [...(i === 0 ? dropped : []), ...settledRefusal];
+				this.#notice(view, unasked, {
+					commitId: null,
+					seq: null,
+					refused: answer.refused,
+					paths: batchPaths,
+				});
+				entries.push(...batchPaths);
+				return { commitId: null, seq: null, refused: answer.refused, paths: entries };
+			}
+
+			const batchSettled = await this.#settle(view, batchPlan, batchMade, answer);
+			const batchPaths = [...(i === 0 ? dropped : []), ...batchSettled];
+			this.#notice(view, unasked, { ...committed(answer), paths: batchPaths });
+			entries.push(...batchPaths);
+			lastCommitId = answer.commitId || lastCommitId;
+			if (answer.seq !== null) lastSeq = answer.seq;
+			if (view.unsettled) {
+				const moreRemain = i + 1 < batches.length;
+				if (moreRemain) view.heard = "open";
+				return {
+					commitId: moreRemain ? null : lastCommitId,
+					seq: moreRemain ? null : lastSeq,
+					paths: [
+						...entries,
+						...remainingEntries(i + 1, "not_applied", "the last save has not come back through the feed yet"),
+					],
+				};
+			}
+			for (const entry of batchSettled) if (entry.kept) keptNodes.add(entry.path);
+		}
+
+		if (runCount < batches.length) {
+			view.heard = "open";
+			entries.push(
+				...remainingEntries(
+					runCount,
+					"not_applied",
+					"the boundary split reached its batch limit; remaining changes stay pending",
+				),
+			);
+			return { commitId: null, seq: null, paths: entries };
+		}
+		return { commitId: lastCommitId, seq: lastSeq, paths: entries };
 	}
 
 	// ---- The read log (protocol 3, F3 4c; RUNTIME-FOLDER-COMPANY-MACHINES.md, "Reads") ----------------------------------
