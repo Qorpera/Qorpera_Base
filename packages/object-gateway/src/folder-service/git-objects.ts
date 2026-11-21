@@ -71,6 +71,7 @@ export interface PackReading {
 	readonly memoryBytes?: number;
 	/** Checks of packs at once on the node; the others wait their turn. */
 	readonly atOnce?: number;
+	readonly runningBytes?: number;
 	/** Checks of packs that may wait for a turn at once, and the bytes of their packs together. A check past either is
 	 * refused as not checked now (`SecretRefusal.again`), and its file is checked again at the next boundary. */
 	readonly waitingMax?: number;
@@ -90,7 +91,7 @@ type ResolvedPackReading = Omit<Required<PackReading>, "folderProgram"> & {
 	readonly folderProgram: string | undefined;
 };
 
-const NATIVE_AT_ONCE = 4;
+const NATIVE_AT_ONCE = 2;
 const SCAN_RESULT_MAX = 4096;
 
 const READING: ResolvedPackReading = {
@@ -101,6 +102,7 @@ const READING: ResolvedPackReading = {
 	timeoutMs: 30 * 60 * 1000,
 	memoryBytes: 1024 ** 3,
 	atOnce: 1,
+	runningBytes: 512 * 1024 ** 2,
 	waitingMax: 8,
 	waitingBytes: 2 * 1024 ** 3,
 	packMax: 512 * 1024 ** 2,
@@ -122,7 +124,12 @@ export class SaveChecks {
 			atOnce: reading.atOnce ?? (folderProgram ? NATIVE_AT_ONCE : READING.atOnce),
 			folderProgram,
 		};
-		this.#turns = new Turns(this.#reading.atOnce, this.#reading.waitingMax, this.#reading.waitingBytes);
+		this.#turns = new Turns(
+			this.#reading.atOnce,
+			this.#reading.runningBytes,
+			this.#reading.waitingMax,
+			this.#reading.waitingBytes,
+		);
 	}
 
 	/** The check of a file of `size` bytes stored in `form`, for `secrets`. With no values there is nothing to look for,
@@ -263,22 +270,32 @@ class LooseCheck implements ContentCheck {
 /** Turns for the node's pack checks: at most `atOnce` at a time, the rest in order, at most `waitingMax` of them with
  * at most `waitingBytes` of packs together; one past either is refused as not checked now. */
 class Turns {
-	#free: number;
+	readonly #atOnce: number;
+	readonly #runningBytes: number;
 	readonly #waitingMax: number;
 	readonly #waitingBytes: number;
 	readonly #waiting: { readonly bytes: number; readonly go: () => void }[] = [];
+	#running = 0;
+	#runningFor = 0;
 	#waitingFor = 0;
 
-	constructor(atOnce: number, waitingMax: number, waitingBytes: number) {
-		this.#free = atOnce;
+	constructor(atOnce: number, runningBytes: number, waitingMax: number, waitingBytes: number) {
+		this.#atOnce = atOnce;
+		this.#runningBytes = runningBytes;
 		this.#waitingMax = waitingMax;
 		this.#waitingBytes = waitingBytes;
 	}
 
+	#canRun(bytes: number): boolean {
+		return this.#running < this.#atOnce && (this.#running === 0 || this.#runningFor + bytes <= this.#runningBytes);
+	}
+
 	/** A turn for the check of a pack of `bytes`. */
 	async take(bytes: number): Promise<() => void> {
-		if (this.#free > 0) this.#free--;
-		else if (this.#waiting.length >= this.#waitingMax || this.#waitingFor + bytes > this.#waitingBytes)
+		if (this.#waiting.length === 0 && this.#canRun(bytes)) {
+			this.#running++;
+			this.#runningFor += bytes;
+		} else if (this.#waiting.length >= this.#waitingMax || this.#waitingFor + bytes > this.#waitingBytes)
 			throw new SecretRefusal(UNCHECKED, true);
 		else {
 			this.#waitingFor += bytes;
@@ -288,11 +305,15 @@ class Turns {
 		return () => {
 			if (given) return;
 			given = true;
-			const next = this.#waiting.shift();
-			if (next) {
+			this.#running--;
+			this.#runningFor -= bytes;
+			while (this.#waiting.length > 0 && this.#canRun((this.#waiting[0] as { readonly bytes: number }).bytes)) {
+				const next = this.#waiting.shift() as { readonly bytes: number; readonly go: () => void };
 				this.#waitingFor -= next.bytes;
+				this.#running++;
+				this.#runningFor += next.bytes;
 				next.go();
-			} else this.#free++;
+			}
 		};
 	}
 }
@@ -570,7 +591,7 @@ class PackRun {
 			await cat.closed;
 			throw this.#failure;
 		}
-		if (scanned === 2 || scanned === 126 || scanned === 127) {
+		if (scanned === 1 || scanned === 2 || scanned === 126 || scanned === 127) {
 			kill(cat);
 			await cat.closed;
 			throw new Error("folder program could not run scan-pack for the save check");
