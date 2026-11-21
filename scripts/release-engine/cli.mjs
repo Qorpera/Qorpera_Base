@@ -41,10 +41,10 @@ const SUBCOMMAND_FLAGS = {
 };
 
 export function parseSubcommandFlags(action, argv) {
-	const schema = SUBCOMMAND_FLAGS[action];
-	if (!schema) {
+	if (typeof action !== "string" || !Object.hasOwn(SUBCOMMAND_FLAGS, action)) {
 		throw new Error("Usage: node scripts/release-engine/cli.mjs <init|validate|plan|anchor-sql|dry-run> [flags]");
 	}
+	const schema = SUBCOMMAND_FLAGS[action];
 	const flags = {};
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
@@ -60,7 +60,7 @@ export function parseSubcommandFlags(action, argv) {
 			throw new Error(`Unknown flag for ${action}: --${key}`);
 		}
 		const next = argv[i + 1];
-		if (next === undefined || next.startsWith("--")) {
+		if (next === undefined || next.length === 0 || next.startsWith("--")) {
 			throw new Error(`Flag --${key} requires a value`);
 		}
 		flags[key] = next;

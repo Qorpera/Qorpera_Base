@@ -468,6 +468,50 @@ test("runReleaseDriver enforces dryRun hold isolation, fail-closed PR checks, re
 		assert.equal(invalidExitStop.exitCode, 1);
 		assert.equal(readFileSync(holdFile, "utf8"), "prep hold v271\n");
 
+		const emptyFromRefused = await runReleaseDriver(
+			armed,
+			{ dryRun: true, stateDir: dir, from: "", env: {} },
+			{ runPhase: async () => ({ exitCode: 0 }) },
+		);
+		assert.equal(emptyFromRefused.ok, false);
+		assert.equal(emptyFromRefused.exitCode, 2);
+
+		let syncReadCalls = 0;
+		const syncPrReturnStop = await runReleaseDriver(
+			armed,
+			{ dryRun: false, stateDir: dir, holdFile, prepHoldFile, env: {} },
+			{
+				nowIso: () => "2026-11-21T01:13:30Z",
+				readPrState: () => {
+					syncReadCalls += 1;
+					return { state: "OPEN", mergeable: "MERGEABLE" };
+				},
+				runPhase: async (step) => (step === "models-read" ? { exitCode: 87, reason: "sync check" } : { exitCode: 0 }),
+			},
+		);
+		assert.equal(syncPrReturnStop.ok, false);
+		assert.equal(syncReadCalls, 2);
+		assert.match(readFileSync(holdFile, "utf8"), /Release PR #2020 state: OPEN\./);
+		rmSync(holdFile, { force: true });
+
+		let syncThrowCalls = 0;
+		const syncPrThrowStop = await runReleaseDriver(
+			armed,
+			{ dryRun: false, stateDir: dir, holdFile, env: {} },
+			{
+				nowIso: () => "2026-11-21T01:13:45Z",
+				readPrState: () => {
+					syncThrowCalls += 1;
+					if (syncThrowCalls === 1) return { state: "OPEN", mergeable: "MERGEABLE" };
+					throw new Error("gh sync error");
+				},
+				runPhase: async (step) => (step === "models-read" ? { exitCode: 87, reason: "sync throw" } : { exitCode: 0 }),
+			},
+		);
+		assert.equal(syncPrThrowStop.ok, false);
+		assert.match(readFileSync(holdFile, "utf8"), /Release PR #2020 state unreadable\./);
+		rmSync(holdFile, { force: true });
+
 		writeFileSync(holdFile, "foreign lead hold\n", "utf8");
 		const foreignRespected = await runReleaseDriver(
 			armed,
@@ -569,9 +613,12 @@ test("NON_RETRYABLE_CODES covers safety refusals, image-build rejects injection/
 		assert.equal(second.reused, true);
 		assert.equal(second.receipt.fingerprint, SHA_64);
 
+		assert.throws(() => parseSubcommandFlags("constructor", ["--manifest", "a.json"]), /Usage:/);
 		assert.throws(() => parseSubcommandFlags("init", ["--unknown", "1"]), /Unknown flag/);
 		assert.throws(() => parseSubcommandFlags("init", ["--prev-version", "--pr", "10"]), /requires a value/);
+		assert.throws(() => parseSubcommandFlags("init", ["--out", ""]), /requires a value/);
 		assert.throws(() => parseSubcommandFlags("dry-run", ["--manifest", "a.json", "--from"]), /requires a value/);
+		assert.throws(() => parseSubcommandFlags("dry-run", ["--manifest", "a.json", "--from", ""]), /requires a value/);
 
 		const manifestPath = join(dir, "manifest.json");
 		const manifest = makeSqlOnlyManifest({

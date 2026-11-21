@@ -133,7 +133,10 @@ export async function runReleaseDriver(manifest, options = {}, ports = {}) {
 
 	const steps = stepsForManifest(manifest);
 	let startIndex = 0;
-	if (fromStep) {
+	if (fromStep !== null) {
+		if (typeof fromStep !== "string" || fromStep.length === 0) {
+			return { ok: false, exitCode: 2, reason: `Unknown --from step '${fromStep}'`, log };
+		}
 		startIndex = steps.indexOf(fromStep);
 		if (startIndex < 0) {
 			return { ok: false, exitCode: 2, reason: `Unknown --from step '${fromStep}'`, log };
@@ -215,9 +218,9 @@ export async function runReleaseDriver(manifest, options = {}, ports = {}) {
 
 	const finalizeHold = async ({ completed, failedStep, stopWhy }) => {
 		if (dryRun || !holdFile || !holdOwned) return;
-		const stillOwnedByDriver = existsSync(holdFile) && readFileSync(holdFile, "utf8") === driverHoldText;
+		const isStillOwned = () => existsSync(holdFile) && readFileSync(holdFile, "utf8") === driverHoldText;
 		if (completed) {
-			if (stillOwnedByDriver) {
+			if (isStillOwned()) {
 				rmSync(holdFile, { force: true });
 			}
 			holdOwned = false;
@@ -226,12 +229,18 @@ export async function runReleaseDriver(manifest, options = {}, ports = {}) {
 		if (onProd) {
 			let prSummary = "SQL-only release (no release PR).";
 			if (manifest.releasePrNumber !== null && typeof readPrState === "function") {
-				const pr = await readPrState(manifest.releasePrNumber).catch(() => null);
-				prSummary = pr?.state
-					? `Release PR #${manifest.releasePrNumber} state: ${pr.state}.`
+				let pr = null;
+				try {
+					pr = await readPrState(manifest.releasePrNumber);
+				} catch {
+					pr = null;
+				}
+				const prState = typeof pr?.state === "string" ? pr.state.trim() : "";
+				prSummary = prState
+					? `Release PR #${manifest.releasePrNumber} state: ${prState}.`
 					: `Release PR #${manifest.releasePrNumber} state unreadable.`;
 			}
-			if (stillOwnedByDriver || !existsSync(holdFile)) {
+			if (isStillOwned() || !existsSync(holdFile)) {
 				atomicWriteFile(
 					holdFile,
 					keptHoldText({
@@ -247,7 +256,7 @@ export async function runReleaseDriver(manifest, options = {}, ports = {}) {
 			holdOwned = false;
 			return;
 		}
-		if (stillOwnedByDriver) {
+		if (isStillOwned()) {
 			if (holdOrigin === "prep" && prepHoldFile && existsSync(prepHoldFile)) {
 				atomicWriteFile(holdFile, readFileSync(prepHoldFile, "utf8"));
 			} else {
