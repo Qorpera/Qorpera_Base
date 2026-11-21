@@ -868,7 +868,8 @@ describe("mounting a session", () => {
 		await gone(legacyMachine);
 		await gone(leftoverTrash);
 		await vi.waitFor(
-			async () => expect((await readdir(m.folderCacheRoot)).filter((name) => name.startsWith(".trash-"))).toEqual([]),
+			async () =>
+				expect((await readdir(m.folderCacheRoot)).filter((name) => name.startsWith(".trash-"))).toEqual([]),
 			{ timeout: 10000 },
 		);
 		expect(await readFile(join(sKept.folderCache, "marker"), "utf8")).toBe("data");
@@ -887,7 +888,8 @@ describe("mounting a session", () => {
 		);
 		await gone(laterOrphan.folderCache);
 		await vi.waitFor(
-			async () => expect((await readdir(m.folderCacheRoot)).filter((name) => name.startsWith(".trash-"))).toEqual([]),
+			async () =>
+				expect((await readdir(m.folderCacheRoot)).filter((name) => name.startsWith(".trash-"))).toEqual([]),
 			{ timeout: 10000 },
 		);
 		expect(await readFile(join(sKept.folderCache, "marker"), "utf8")).toBe("data");
