@@ -65,6 +65,7 @@ const FINAL = new Set(["seed_invalid", "stage_invalid"]);
 
 export interface CompanyCreationClaim {
 	readonly creationId: string;
+	readonly profileId: string;
 	readonly environmentId: string;
 	readonly generation: number;
 	readonly cofounderId: string;
@@ -108,6 +109,7 @@ export function parseCompanyCreationClaim(value: unknown): CompanyCreationClaim 
 		platformFolderProblem("claim_invalid");
 	return {
 		creationId: claim.creationId as string,
+		profileId: claim.profileId as string,
 		environmentId: claim.environmentId as string,
 		generation: claim.generation as number,
 		cofounderId: claim.cofounderId as string,

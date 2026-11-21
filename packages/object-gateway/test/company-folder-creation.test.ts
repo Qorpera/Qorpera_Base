@@ -149,6 +149,7 @@ describe("parseCompanyCreationClaim", () => {
 		const parsed = parseCompanyCreationClaim(claim());
 		expect(parsed).toMatchObject({
 			creationId,
+			profileId,
 			environmentId,
 			generation: 2,
 			cofounderId,
