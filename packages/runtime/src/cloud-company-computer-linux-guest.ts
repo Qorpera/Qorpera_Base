@@ -917,12 +917,15 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		const owned = screen.browser;
 		if (!owned) return Promise.resolve();
 		owned.closing ??= (async () => {
-			owned.detachLifetime();
-			await owned.opening?.catch(() => undefined);
-			// A last look at this browser's sign-ins before it closes.
-			await owned.detachLogins?.().catch(() => undefined);
-			owned.detachLogins = undefined;
-			await owned.manager.close();
+			try {
+				await owned.opening?.catch(() => undefined);
+				// A last look at this browser's sign-ins before it closes.
+				await owned.detachLogins?.().catch(() => undefined);
+				owned.detachLogins = undefined;
+				await owned.manager.close();
+			} finally {
+				owned.detachLifetime();
+			}
 		})();
 		return owned.closing;
 	}
