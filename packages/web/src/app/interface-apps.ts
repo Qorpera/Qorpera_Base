@@ -12,6 +12,7 @@ import {
 	CLOUD_MEMBER_DATA_WATCHES,
 	type CloudMemberDataAnswer,
 	CloudMemberDataError,
+	type CloudMemberDataParamValue,
 	type CloudMemberDataQuestion,
 	type CloudMemberDataWatch,
 	type CloudMemberDataWatchAnswer,
@@ -893,10 +894,10 @@ const CALL_COST: Readonly<Record<string, number>> = {
 	addRow: REQUEST_COST,
 	tell: REQUEST_COST,
 };
-/** A question's parameters: at most this many, each value at most this long. */
-const MAX_DATA_PARAMS = 16;
-const MAX_DATA_VALUE_CHARS = 1024;
-const DATA_PARAM = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+const MAX_DATA_PARAMS = 64;
+const MAX_DATA_PARAM_BYTES = 64 * 1024;
+const MAX_DATA_CALL_PARAMS_CHARS = MAX_DATA_PARAM_BYTES + 4096;
+const DATA_PARAM = /^[a-z_][a-z0-9_]{0,39}$/;
 const NO_DATA_READ = 'Add "data" to reads in app.toml to ask the company\'s databases';
 /** A question of the platform's numbers that is not one, in the cloud's own words for it. */
 const noNumbersQuestion = (question: string) => `No question ${APP_NUMBERS_DATABASE}/${question} that you may read`;
@@ -1005,11 +1006,13 @@ export class AppBridge {
 	async answer(call: AppCall): Promise<AppAnswer> {
 		// A call is a method and a few short values (a row's cells may be longer): anything larger is no call this bridge
 		// takes.
-		const row = call.method === "setRow" || call.method === "addRow";
-		if (
-			call.method.length > 32 ||
-			JSON.stringify(call.params).length > (row ? MAX_ROW_PARAMS_CHARS : MAX_PARAMS_CHARS)
-		)
+		const maxParams =
+			call.method === "query" || call.method === "watch"
+				? MAX_DATA_CALL_PARAMS_CHARS
+				: call.method === "setRow" || call.method === "addRow"
+					? MAX_ROW_PARAMS_CHARS
+					: MAX_PARAMS_CHARS;
+		if (call.method.length > 32 || JSON.stringify(call.params).length > maxParams)
 			return refuse("Not a call the app answers");
 		// Ending a watch goes first, outside the budget and the calls in flight: it only takes work away, and a refused
 		// one would keep the watch's place taken until the page reloads, since the page's stop runs once.
@@ -1344,6 +1347,19 @@ export class AppDataRefused extends Error {}
 /** A page's question, checked: `name` is `<database>/<question>`, `params` at most 16 named short values (text, a
  * finite number, true, false or null), never `viewer`, which the gateway fills with the member looking. Otherwise the
  * words of the refusal. */
+function isDataParamValue(value: unknown, depth = 0): value is CloudMemberDataParamValue {
+	if (depth > 16) return false;
+	if (value === null || typeof value === "boolean" || typeof value === "string") return true;
+	if (typeof value === "number") return Number.isFinite(value);
+	if (Array.isArray(value)) return value.every((item) => isDataParamValue(item, depth + 1));
+	if (typeof value === "object") {
+		const proto = Object.getPrototypeOf(value);
+		if (proto !== Object.prototype && proto !== null) return false;
+		return Object.values(value).every((item) => isDataParamValue(item, depth + 1));
+	}
+	return false;
+}
+
 export function appDataQuestion(params: Record<string, unknown>): CloudMemberDataQuestion | string {
 	const name = params.name;
 	const parts = typeof name === "string" ? name.split("/") : [];
@@ -1353,25 +1369,19 @@ export function appDataQuestion(params: Record<string, unknown>): CloudMemberDat
 	const given = params.params ?? {};
 	if (typeof given !== "object" || given === null || Array.isArray(given))
 		return "A question's parameters are named values";
-	const values: [string, string | number | boolean | null][] = [];
+	const values: [string, CloudMemberDataParamValue][] = [];
 	const entries = Object.entries(given);
 	if (entries.length > MAX_DATA_PARAMS) return `A question takes at most ${MAX_DATA_PARAMS} parameters`;
 	for (const [key, value] of entries) {
 		if (key === "viewer") return ":viewer is filled by Qorpera with the member looking";
-		if (!DATA_PARAM.test(key)) return "A parameter's name is a letter, then letters, digits and _";
-		if (
-			!(
-				value === null ||
-				typeof value === "boolean" ||
-				(typeof value === "number" && Number.isFinite(value)) ||
-				(typeof value === "string" && value.length <= MAX_DATA_VALUE_CHARS)
-			)
-		)
-			return `:${key} is short text, a number, true, false or null`;
+		if (!DATA_PARAM.test(key)) return "A parameter's name is a-z, 0-9 and _";
+		if (!isDataParamValue(value)) return `:${key} must be a JSON value`;
 		values.push([key, value]);
 	}
-	// Own properties, each made as given: a parameter named `__proto__` or `constructor` stays a parameter.
-	return { database, question, params: Object.fromEntries(values) };
+	const built = Object.fromEntries(values);
+	if (UTF8.encode(JSON.stringify(built)).byteLength > MAX_DATA_PARAM_BYTES)
+		return "A question's parameters take at most 64 KiB together";
+	return { database, question, params: built };
 }
 
 /** An answer as a page gets it, rows as objects by column name as `table` gives them: `{ columns, rows, more, asOf }`.

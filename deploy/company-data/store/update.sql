@@ -43,6 +43,21 @@ begin
 	end if;
 end $$;
 
+create schema if not exists qorpera_ext;
+revoke all on schema qorpera_ext from public;
+grant usage on schema qorpera_ext to public;
+
+create extension if not exists pgcrypto schema qorpera_ext;
+create extension if not exists pg_trgm schema qorpera_ext;
+create extension if not exists citext schema qorpera_ext;
+create extension if not exists btree_gin schema qorpera_ext;
+create extension if not exists btree_gist schema qorpera_ext;
+create extension if not exists unaccent schema qorpera_ext;
+create extension if not exists fuzzystrmatch schema qorpera_ext;
+create extension if not exists ltree schema qorpera_ext;
+create extension if not exists "uuid-ossp" schema qorpera_ext;
+create extension if not exists tablefunc schema qorpera_ext;
+
 create table if not exists qorpera_data.row_changes (
 	txid bigint not null default txid_current(),
 	seq bigint generated always as identity primary key,
@@ -313,7 +328,13 @@ begin
 	end loop;
 end $$;
 
+create or replace function qorpera_data.viewer() returns uuid
+language sql stable set search_path = '' as $$
+	select nullif(pg_catalog.current_setting('qorpera.viewer', true), '')::uuid
+$$;
+grant execute on function qorpera_data.viewer() to public;
+
 select qorpera_data.give_triggers(c.oid::regclass)
 from pg_catalog.pg_class c join pg_catalog.pg_namespace s on s.oid = c.relnamespace
 where c.relkind in ('r', 'p') and c.relpersistence = 'p'
-	and s.nspname not in ('qorpera_data', 'pg_catalog', 'information_schema', 'pg_toast') and s.nspname !~ '^pg_';
+	and s.nspname not in ('qorpera_data', 'qorpera_ext', 'pg_catalog', 'information_schema', 'pg_toast') and s.nspname !~ '^pg_';

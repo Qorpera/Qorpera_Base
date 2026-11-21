@@ -1284,17 +1284,28 @@ describe("the company's databases on an app's page", () => {
 		});
 		expect(await one.answer(query("shop/sales", [1]))).toMatchObject({ ok: false });
 		expect(await one.answer(query("shop/sales", { "a-b": 1 }))).toMatchObject({ ok: false });
-		for (const value of [{}, [1], Number.NaN, Number.POSITIVE_INFINITY, "x".repeat(1025)])
+		expect(await one.answer(query("shop/sales", { Upper: 1 }))).toMatchObject({ ok: false });
+		for (const value of [Number.NaN, Number.POSITIVE_INFINITY])
 			expect(await one.answer(query("shop/sales", { since: value })), String(value)).toEqual({
 				ok: false,
-				error: ":since is short text, a number, true, false or null",
+				error: ":since must be a JSON value",
 			});
-		const many = Object.fromEntries(Array.from({ length: 17 }, (_, index) => [`p${index}`, index]));
+		expect(await one.answer(query("shop/sales", { since: "x".repeat(65 * 1024) }))).toEqual({
+			ok: false,
+			error: "A question's parameters take at most 64 KiB together",
+		});
+		const many = Object.fromEntries(Array.from({ length: 65 }, (_, index) => [`p${index}`, index]));
 		expect(await one.answer(query("shop/sales", many))).toEqual({
 			ok: false,
-			error: "A question takes at most 16 parameters",
+			error: "A question takes at most 64 parameters",
 		});
 		expect(asked).toEqual([]);
+		expect((await one.answer(query("shop/sales", { ids: [1, 2], meta: { tier: "pro" } }))).ok).toBe(true);
+		expect(asked.pop()).toEqual({
+			database: "shop",
+			question: "sales",
+			params: { ids: [1, 2], meta: { tier: "pro" } },
+		});
 		// A question is one call of the app's 120 a minute.
 		const key = crypto.randomUUID();
 		let refused = 0;

@@ -9,8 +9,7 @@ const DOLLAR_TAG = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/;
 // a dollar quote or a `$1`.
 const NAME_PART = /[A-Za-z0-9_$\u0080-￿]/;
 
-/** Parameters a file may name, at most. */
-export const MAX_PARAMETERS = 16;
+export const MAX_PARAMETERS = 64;
 /** The parameter the gateway fills itself: the member looking. */
 export const VIEWER = "viewer";
 
@@ -129,7 +128,7 @@ export function readStatement(text) {
 			} else if (char === ":" && next === ":") {
 				keep("::", true);
 				at += 2;
-			} else if (char === ":" && NAME.test(text.slice(at + 1))) {
+			} else if (char === ":" && !NAME_PART.test(text[at - 1] ?? "") && NAME.test(text.slice(at + 1))) {
 				const name = NAME.exec(text.slice(at + 1))[0];
 				if (name.length > 40) return { ok: false, problem: `The parameter :${name.slice(0, 40)}… has too long a name` };
 				let number = parameters.indexOf(name) + 1;

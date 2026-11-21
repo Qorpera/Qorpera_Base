@@ -12,6 +12,21 @@ revoke all on database qorpera_company_template from public;
 create schema qorpera_data;
 grant usage on schema qorpera_data to public;
 
+create schema qorpera_ext;
+revoke all on schema qorpera_ext from public;
+grant usage on schema qorpera_ext to public;
+
+create extension pgcrypto schema qorpera_ext;
+create extension pg_trgm schema qorpera_ext;
+create extension citext schema qorpera_ext;
+create extension btree_gin schema qorpera_ext;
+create extension btree_gist schema qorpera_ext;
+create extension unaccent schema qorpera_ext;
+create extension fuzzystrmatch schema qorpera_ext;
+create extension ltree schema qorpera_ext;
+create extension "uuid-ossp" schema qorpera_ext;
+create extension tablefunc schema qorpera_ext;
+
 -- A database folder `data/<name>/` and the number its three logins carry.
 create table qorpera_data.databases (
 	name text primary key check (name ~ '^[a-z][a-z0-9_]{0,39}$'),
@@ -437,9 +452,14 @@ begin
 	insert into qorpera_data.steps (database, name, sha256) values (p_database, p_name, p_sha256);
 end $$;
 
+create function qorpera_data.viewer() returns uuid
+language sql stable set search_path = '' as $$
+	select nullif(pg_catalog.current_setting('qorpera.viewer', true), '')::uuid
+$$;
+
 -- None of these shows or does anything a folder's own login may not.
 grant execute on function qorpera_data.effects(), qorpera_data.seal(), qorpera_data.unwatched(text), qorpera_data.apply_step(text),
-	qorpera_data.record_step(text, text, text) to public;
+	qorpera_data.record_step(text, text, text), qorpera_data.viewer() to public;
 
 -- A login with CREATEDB may copy a database marked as a template; nobody connects to it afterwards.
 alter database qorpera_company_template is_template true;
