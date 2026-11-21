@@ -26,6 +26,7 @@ import type { ObjectGatewayAuthority } from "./supabase-authority.ts";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const OBJECT_PATH_PATTERN = /^\/v1\/profile-objects\/([^/]+)\/([^/]+)$/;
+const INTERNAL_OBJECT_PATH_PATTERN = /^\/v1\/internal-objects\/([^/]+)\/([^/]+)$/;
 const FOLDER_GC_PATH_PATTERN = /^\/v1\/folder-gc\/([^/]+)\/([^/]+)$/;
 const MAX_OBJECT_BYTES = 8 * 1024 * 1024;
 const PROGRAM_FINISH_PATH_PATTERN = /^\/v1\/member-program-uploads\/[0-9a-f-]{36}\/[0-9a-f-]{36}$/;
@@ -51,6 +52,7 @@ export interface ObjectGatewayServiceOptions {
 	memberPresence?: MemberCompanyAuthority;
 	memberObservations?: MemberCompanyObservations;
 	memberClientOrigins?: readonly string[];
+	internalObjectToken?: string;
 }
 
 class HttpError extends Error {
@@ -126,6 +128,15 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 			))
 	) {
 		throw new Error("The folder service's staging requires replication and a distinct private credential");
+	}
+	if (
+		options.internalObjectToken !== undefined &&
+		(!/^[A-Za-z0-9_-]{43}$/.test(options.internalObjectToken) ||
+			[options.controlToken, options.nativeObjects?.token, options.folderServiceObjects?.token].some(
+				(token) => token !== undefined && secureEqual(token, options.internalObjectToken!),
+			))
+	) {
+		throw new Error("Internal object reads require a distinct private credential");
 	}
 	return (request, response) => {
 		if (memberCors(request, response)) return;
@@ -273,6 +284,33 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 						options.store,
 						options.replication,
 					);
+					return;
+				}
+				if (request.url?.startsWith("/v1/internal-objects/")) {
+					if (!options.internalObjectToken) throw new HttpError(404, "Not found");
+					if (!secureEqual(bearer(request), options.internalObjectToken)) throw new HttpError(401, "Unauthorized");
+					if (request.method !== "GET") throw new HttpError(405, "Method not allowed");
+					const match = INTERNAL_OBJECT_PATH_PATTERN.exec(
+						new URL(request.url, "http://object-gateway.invalid").pathname,
+					);
+					if (!match || !UUID_PATTERN.test(match[1] ?? "") || !SHA256_PATTERN.test(match[2] ?? ""))
+						throw new HttpError(404, "Not found");
+					let bytes: Uint8Array;
+					try {
+						bytes = await options.store.getVerified(match[1]!, match[2]!, MAX_OBJECT_BYTES);
+					} catch (error) {
+						if (error instanceof Error && error.message === "Object not found")
+							throw new HttpError(404, "Object not found");
+						throw error;
+					}
+					response.writeHead(200, {
+						"cache-control": "no-store",
+						"content-type": "application/octet-stream",
+						"content-length": String(bytes.byteLength),
+						"x-content-type-options": "nosniff",
+						etag: `"sha256-${match[2]!}"`,
+					});
+					response.end(bytes);
 					return;
 				}
 				if (request.url?.startsWith("/v1/folder-gc/")) {

@@ -1,5 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2.112.3";
-import { handleMailOutbox, type MailOutboxStore, ResendSender, StorageObjectReader } from "./mail-outbox.ts";
+import { createMailObjectReader, handleMailOutbox, type MailOutboxStore, ResendSender } from "./mail-outbox.ts";
 
 function required(name: string): string {
 	const value = Deno.env.get(name)?.trim();
@@ -23,6 +23,11 @@ function secretKeys(): string[] {
 }
 
 const supabaseUrl = required("SUPABASE_URL");
+const objectGatewayUrl = Deno.env.get("QORPERA_OBJECT_GATEWAY_URL")?.trim() || undefined;
+const objectGatewayInternalToken = Deno.env.get("QORPERA_OBJECT_GATEWAY_INTERNAL_TOKEN")?.trim() || undefined;
+if (objectGatewayUrl && !objectGatewayInternalToken) {
+	throw new Error("QORPERA_OBJECT_GATEWAY_INTERNAL_TOKEN is required when QORPERA_OBJECT_GATEWAY_URL is set");
+}
 const sender = new ResendSender(required("RESEND_API_KEY"));
 
 function store(secretKey: string): MailOutboxStore {
@@ -71,7 +76,13 @@ Deno.serve((request) =>
 	handleMailOutbox(request, {
 		keys: secretKeys(),
 		store,
-		objects: (secretKey) => new StorageObjectReader(supabaseUrl, secretKey),
+		objects: (secretKey) =>
+			createMailObjectReader({
+				objectGatewayUrl,
+				objectGatewayInternalToken,
+				supabaseUrl,
+				secretKey,
+			}),
 		sender,
 	}),
 );

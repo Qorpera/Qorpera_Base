@@ -187,6 +187,9 @@ const handler = createObjectGatewayHandler({
 				},
 			}
 		: {}),
+	...(process.env.QORPERA_OBJECT_GATEWAY_INTERNAL_TOKEN
+		? { internalObjectToken: required(process.env, "QORPERA_OBJECT_GATEWAY_INTERNAL_TOKEN") }
+		: {}),
 });
 if (process.argv[2] === "migrate") {
 	const migrated = await migrateLegacyObjects(authority, store);

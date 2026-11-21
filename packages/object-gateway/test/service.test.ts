@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -213,6 +213,71 @@ describe("object gateway", () => {
 			expect(removed.status).toBe(204);
 			expect(service.authority.confirmedDeletes).toEqual([sha256]);
 		} finally {
+			await service.close();
+		}
+	});
+
+	it("serves verified content-addressed bytes to internal platform callers without touching Supabase Storage", async () => {
+		const internalToken = "A".repeat(43);
+		const readLegacySpy = vi.spyOn(FakeAuthority.prototype, "readLegacyObject");
+		const unconfigured = await gateway();
+		try {
+			const sha256 = await seed(unconfigured, Buffer.from("off", "utf-8"));
+			expect(
+				(
+					await fetch(`${unconfigured.baseUrl}/v1/internal-objects/${profileId}/${sha256}`, {
+						headers: { authorization: `Bearer ${internalToken}` },
+					})
+				).status,
+			).toBe(404);
+		} finally {
+			await unconfigured.close();
+		}
+		expect(() =>
+			createObjectGatewayHandler({
+				store: new FileSystemObjectStore(tmpdir()),
+				authority: new FakeAuthority(),
+				controlToken: internalToken,
+				internalObjectToken: internalToken,
+			}),
+		).toThrow("distinct private credential");
+		expect(() =>
+			createObjectGatewayHandler({
+				store: new FileSystemObjectStore(tmpdir()),
+				authority: new FakeAuthority(),
+				controlToken,
+				internalObjectToken: "short-token",
+			}),
+		).toThrow("distinct private credential");
+		const service = await gateway({ internalObjectToken: internalToken });
+		try {
+			const payload = Buffer.from("mail attachment chunk", "utf-8");
+			const sha256 = await seed(service, payload);
+			const url = `${service.baseUrl}/v1/internal-objects/${profileId}/${sha256}`;
+			expect((await fetch(url)).status).toBe(401);
+			expect((await fetch(url, { headers: { authorization: `Bearer ${controlToken}` } })).status).toBe(401);
+			expect(
+				(await fetch(url, { method: "DELETE", headers: { authorization: `Bearer ${internalToken}` } })).status,
+			).toBe(405);
+			const ok = await fetch(url, { headers: { authorization: `Bearer ${internalToken}` } });
+			expect(ok.status).toBe(200);
+			expect(ok.headers.get("content-type")).toBe("application/octet-stream");
+			expect(ok.headers.get("etag")).toBe(`"sha256-${sha256}"`);
+			expect(Buffer.from(await ok.arrayBuffer())).toEqual(payload);
+			const missing = await fetch(`${service.baseUrl}/v1/internal-objects/${profileId}/${"f".repeat(64)}`, {
+				headers: { authorization: `Bearer ${internalToken}` },
+			});
+			expect(missing.status).toBe(404);
+			const badPath = await fetch(`${service.baseUrl}/v1/internal-objects/not-a-uuid/${sha256}`, {
+				headers: { authorization: `Bearer ${internalToken}` },
+			});
+			expect(badPath.status).toBe(404);
+			await writeFile(join(roots[roots.length - 1]!, profileId, sha256), Buffer.from("corrupted", "utf-8"));
+			const corrupted = await fetch(url, { headers: { authorization: `Bearer ${internalToken}` } });
+			expect(corrupted.status).toBe(503);
+			expect(readLegacySpy).not.toHaveBeenCalled();
+		} finally {
+			readLegacySpy.mockRestore();
 			await service.close();
 		}
 	});

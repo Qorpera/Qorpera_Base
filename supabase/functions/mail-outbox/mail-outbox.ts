@@ -310,6 +310,71 @@ export class StorageObjectReader implements ObjectReader {
 	}
 }
 
+export class ObjectGatewayReader implements ObjectReader {
+	readonly #gatewayUrl: string;
+	readonly #internalToken: string;
+	readonly #fetch: typeof fetch;
+
+	constructor(gatewayUrl: string, internalToken: string, fetcher: typeof fetch = fetch) {
+		const parsed = new URL(gatewayUrl);
+		if (
+			(parsed.protocol !== "https:" && parsed.protocol !== "http:") ||
+			parsed.username ||
+			parsed.password ||
+			parsed.search ||
+			parsed.hash
+		) {
+			throw new Error("QORPERA_OBJECT_GATEWAY_URL must be a clean http or https origin");
+		}
+		const trimmedToken = internalToken.trim();
+		if (!trimmedToken) throw new Error("QORPERA_OBJECT_GATEWAY_INTERNAL_TOKEN is required");
+		this.#gatewayUrl = `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, "");
+		this.#internalToken = trimmedToken;
+		this.#fetch = fetcher;
+	}
+
+	async get(companyId: string, sha256: string): Promise<Uint8Array | null> {
+		if (!UUID.test(companyId) || !SHA.test(sha256)) return null;
+		let response: Response;
+		try {
+			response = await this.#fetch(`${this.#gatewayUrl}/v1/internal-objects/${companyId}/${sha256}`, {
+				headers: { authorization: `Bearer ${this.#internalToken}` },
+				redirect: "error",
+				signal: AbortSignal.timeout(30_000),
+			});
+		} catch (error) {
+			throw new MailSendError(error instanceof Error ? error.message : "Object gateway request failed", true);
+		}
+		if (response.status === 404) {
+			void response.body?.cancel().catch(() => undefined);
+			return null;
+		}
+		if (!response.ok) {
+			void response.body?.cancel().catch(() => undefined);
+			throw new MailSendError(`Object gateway returned HTTP ${response.status}`, true);
+		}
+		return new Uint8Array(await response.arrayBuffer());
+	}
+}
+
+export function createMailObjectReader(options: {
+	objectGatewayUrl?: string;
+	objectGatewayInternalToken?: string;
+	supabaseUrl: string;
+	secretKey: string;
+	fetcher?: typeof fetch;
+}): ObjectReader {
+	const gatewayUrl = options.objectGatewayUrl?.trim();
+	if (gatewayUrl) {
+		const internalToken = options.objectGatewayInternalToken?.trim();
+		if (!internalToken) {
+			throw new Error("QORPERA_OBJECT_GATEWAY_INTERNAL_TOKEN is required when QORPERA_OBJECT_GATEWAY_URL is set");
+		}
+		return new ObjectGatewayReader(gatewayUrl, internalToken, options.fetcher);
+	}
+	return new StorageObjectReader(options.supabaseUrl, options.secretKey, options.fetcher);
+}
+
 /** The sent emails due for their Message-ID; an answer that cannot be read is none. */
 export function parseMessageIdsDue(value: unknown): { mailId: string; providerMessageId: string }[] {
 	if (!Array.isArray(value) || value.length > 10) return [];

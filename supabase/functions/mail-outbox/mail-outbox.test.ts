@@ -4,12 +4,14 @@ import { describe, it } from "node:test";
 import {
 	attachmentBytes,
 	BATCH,
+	createMailObjectReader,
 	handleMailOutbox,
 	type MailJob,
 	type MailOutboxStore,
 	MailSendError,
 	type MailSender,
 	MAX_ATTACHMENT_BYTES,
+	ObjectGatewayReader,
 	type ObjectReader,
 	PACE_MS,
 	type ProviderEmail,
@@ -457,5 +459,53 @@ describe("mail outbox attachments", () => {
 			`https://project.example.test/storage/v1/object/authenticated/qorpera-profile-objects/${COMPANY}/${"c".repeat(64)}`,
 		);
 		assert.deepEqual(requests[0][1].headers, { apikey: "sb_secret_0123456789abcdefghij" });
+	});
+
+	it("reads company attachments from self-hosted object-gateway when configured, without Supabase Storage", async () => {
+		const requests: [string, RequestInit][] = [];
+		const answers = [
+			new Response(new Uint8Array([9, 8, 7]), { status: 200 }),
+			new Response(JSON.stringify({ error: "Object not found" }), { status: 404 }),
+			new Response(JSON.stringify({ error: "Unavailable" }), { status: 503 }),
+		];
+		const fetcher = (async (url: string, init: RequestInit) => {
+			requests.push([url, init]);
+			return answers.shift()!;
+		}) as unknown as typeof fetch;
+		const gatewayReader = createMailObjectReader({
+			objectGatewayUrl: "https://objects.internal.example/",
+			objectGatewayInternalToken: "internal-token-value",
+			supabaseUrl: "https://project.example.test",
+			secretKey: KEY,
+			fetcher,
+		});
+		assert.ok(gatewayReader instanceof ObjectGatewayReader);
+		assert.deepEqual(await gatewayReader.get(COMPANY, "d".repeat(64)), new Uint8Array([9, 8, 7]));
+		assert.equal(await gatewayReader.get(COMPANY, "d".repeat(64)), null);
+		await assert.rejects(
+			gatewayReader.get(COMPANY, "d".repeat(64)),
+			(error: unknown) => error instanceof MailSendError && error.retryable && /HTTP 503/.test(error.message),
+		);
+		assert.equal(
+			requests[0][0],
+			`https://objects.internal.example/v1/internal-objects/${COMPANY}/${"d".repeat(64)}`,
+		);
+		assert.deepEqual(requests[0][1].headers, { authorization: "Bearer internal-token-value" });
+		assert.equal(requests[0][1].redirect, "error");
+		assert.throws(
+			() =>
+				createMailObjectReader({
+					objectGatewayUrl: "https://objects.internal.example",
+					supabaseUrl: "https://project.example.test",
+					secretKey: KEY,
+				}),
+			/QORPERA_OBJECT_GATEWAY_INTERNAL_TOKEN/,
+		);
+		assert.throws(() => new ObjectGatewayReader("https://user:pass@objects.internal.example", "tok"), /clean http/);
+		const fallback = createMailObjectReader({
+			supabaseUrl: "https://project.example.test",
+			secretKey: KEY,
+		});
+		assert.ok(fallback instanceof StorageObjectReader);
 	});
 });
