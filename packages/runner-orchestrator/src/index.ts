@@ -42,3 +42,4 @@ export * from "./runtime-node-observer.ts";
 export * from "./runtime-node-observer-service.ts";
 export * from "./runtime-node-releases.ts";
 export * from "./service.ts";
+export * from "./site-blob-upload.ts";

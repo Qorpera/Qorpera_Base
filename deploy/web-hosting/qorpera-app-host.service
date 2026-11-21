@@ -1,0 +1,26 @@
+[Unit]
+Description=Qorpera Production Web App Host
+After=network-online.target snap.lxd.daemon.unix.socket
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=qorpera-apphost
+Group=lxd
+LoadCredentialEncrypted=control_token:/etc/credstore.encrypted/qorpera-web-control-token
+Environment=QORPERA_APP_HOST_BIND=127.0.0.1:8096
+Environment=QORPERA_APP_HOST_CONTROL_TOKEN_FILE=%d/control_token
+Environment=QORPERA_APP_HOST_DRIVER=lxd
+Environment=QORPERA_APP_HOST_LXD_PROJECT=qorpera-web-apps
+Environment=QORPERA_APP_HOST_LXD_PROFILE=qorpera-web-apps-egress
+Environment=QORPERA_APP_HOST_CONTAINER_BIND_IP=127.0.0.1
+ExecStart=/usr/local/bin/qorpera-app-host
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

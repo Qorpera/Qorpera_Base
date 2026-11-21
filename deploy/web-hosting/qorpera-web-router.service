@@ -1,0 +1,33 @@
+[Unit]
+Description=Qorpera Native Web Router
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=qorpera-web-blobs
+LoadCredentialEncrypted=control_token:/etc/credstore.encrypted/qorpera-web-control-token
+LoadCredentialEncrypted=cookie_secret:/etc/credstore.encrypted/qorpera-web-cookie-secret
+LoadCredentialEncrypted=database_url:/etc/credstore.encrypted/qorpera-web-database-url
+Environment=QORPERA_WEB_ROUTER_PUBLIC_BIND=127.0.0.1:8095
+Environment=QORPERA_WEB_ROUTER_INTERNAL_BIND=127.0.0.1:8094
+Environment=QORPERA_WEB_ROUTER_BLOB_ROOT=/var/lib/qorpera-web-blobs
+Environment=QORPERA_WEB_ROUTER_CONTROL_TOKEN_FILE=%d/control_token
+Environment=QORPERA_WEB_ROUTER_COOKIE_SECRET_FILE=%d/cookie_secret
+Environment=QORPERA_WEB_ROUTER_DATABASE_URL_FILE=%d/database_url
+Environment=QORPERA_WEB_APP_HOST_URL=http://127.0.0.1:8096
+ExecStart=/usr/local/bin/qorpera-web-router
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target
