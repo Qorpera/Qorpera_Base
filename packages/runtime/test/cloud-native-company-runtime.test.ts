@@ -25,6 +25,7 @@ import type {
 } from "@qorpera/runtime/cloud-company-path-presence";
 import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
 import { CloudControlRpcEnded, CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
+import { GeminiCapReachedError, GeminiKeyRevokedError } from "@qorpera/runtime/cloud-gemini-tool-session";
 import { CLOUD_LIGHT_ASK_NAME_APP_GROUP, composeCloudLightAsk } from "@qorpera/runtime/cloud-light-ask";
 import { compileCloudNativeCompanyInstructions } from "@qorpera/runtime/cloud-native-company-context";
 import { CLAUDE_WORKER_NOT_CARRIED, CloudNativeCompanyRuntime } from "@qorpera/runtime/cloud-native-company-runtime";
@@ -4292,5 +4293,230 @@ describe("the platform's updates in a Co-Founder's planning run", () => {
 		} finally {
 			logged.mockRestore();
 		}
+	});
+});
+
+describe("Gemini 4 Neon conversation runs", () => {
+	const GEMINI_KEY_ID = "8a2f0000-0000-4000-8000-000000000041";
+	const GEMINI_API_KEY = "AIzaSyRuntimeGeminiWiringTest0123456789abcd";
+	const VAULT_TOKEN = "B".repeat(43);
+
+	const rpcCalls = (f: Awaited<ReturnType<typeof fixture>>, method: CloudCompanyPathRpc) =>
+		f.pathCall.mock.calls.filter(([name]) => name === method);
+
+	function geminiVaultClient(
+		answer: Record<string, unknown>,
+	): NonNullable<ConstructorParameters<typeof CloudNativeCompanyRuntime>[0]["geminiKeys"]> {
+		return {
+			origin: "https://vault.example",
+			runtimeToken: VAULT_TOKEN,
+			companyId: "22222222-2222-4222-8222-222222222222",
+			holder: () => "H".repeat(43),
+			fetch: async () => Response.json(answer),
+		};
+	}
+
+	it("refuses at CAP_REACHED, records the cap notice once, never records a Codex usage signal, and never starts Codex", async () => {
+		const f = await fixture(
+			"company-runtime",
+			false,
+			undefined,
+			false,
+			false,
+			15_000,
+			false,
+			{},
+			{
+				geminiKeys: geminiVaultClient({
+					schema: "qorpera.gemini-key-for-run/v1",
+					state: "refused",
+					reason: "CAP_REACHED",
+					spendMonth: "2026-11",
+					monthSpendMicrodollars: 5_000_000,
+					monthlyCapCents: 500,
+				}),
+			},
+		);
+		f.context.gemini = { model: "gemini-4-neon", effort: "high", keyId: GEMINI_KEY_ID };
+		const original = f.pathCall.getMockImplementation()!;
+		f.pathCall.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_record_gemini_cap_reached") {
+				return { schema: "qorpera.gemini-cap-notice/v1", recorded: true };
+			}
+			return original(method, args, signal);
+		});
+
+		const error = await f.runtime
+			.execute(f.request, f.identityRoot, new AbortController().signal)
+			.catch((caught: unknown) => caught);
+		expect(error).toBeInstanceOf(GeminiCapReachedError);
+		expect(nativeRuntimeFailureMetadata(error)).toEqual({
+			stage: "native-tools",
+			category: "budget_exhausted",
+			codexError: null,
+			usageSignal: null,
+		});
+		expect(rpcCalls(f, "qorpera_record_gemini_cap_reached")).toHaveLength(1);
+		expect(rpcCalls(f, "qorpera_record_provider_usage_signal")).toHaveLength(0);
+		await expect(readFile(f.evidence, "utf8")).rejects.toThrow();
+	});
+
+	it("isolates Gemini 5xx failures from Codex usage signals and never starts Codex", async () => {
+		const geminiFetch = vi.fn<typeof fetch>(
+			async () =>
+				new Response(JSON.stringify({ error: { message: "overloaded" } }), {
+					status: 503,
+					headers: { "content-type": "application/json" },
+				}),
+		);
+		const f = await fixture(
+			"company-runtime",
+			false,
+			undefined,
+			false,
+			false,
+			15_000,
+			false,
+			{},
+			{
+				geminiKeys: geminiVaultClient({
+					schema: "qorpera.gemini-key-for-run/v1",
+					state: "open",
+					geminiKeyId: GEMINI_KEY_ID,
+					apiKey: GEMINI_API_KEY,
+					spendMonth: "2026-11",
+					monthSpendMicrodollars: 0,
+					monthlyCapCents: 10_000,
+				}),
+				geminiFetch,
+			},
+		);
+		f.context.gemini = { model: "gemini-4-neon", effort: "low", keyId: GEMINI_KEY_ID };
+
+		await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow(
+			/temporarily busy/,
+		);
+		expect(rpcCalls(f, "qorpera_record_provider_usage_signal")).toHaveLength(0);
+		expect(rpcCalls(f, "qorpera_record_gemini_cap_reached")).toHaveLength(0);
+		await expect(readFile(f.evidence, "utf8")).rejects.toThrow();
+	});
+
+	it("maps REVOKED from the vault to GeminiKeyRevokedError without recording a Codex usage signal", async () => {
+		const revoked = await fixture(
+			"company-runtime",
+			false,
+			undefined,
+			false,
+			false,
+			15_000,
+			false,
+			{},
+			{
+				geminiKeys: geminiVaultClient({
+					schema: "qorpera.gemini-key-for-run/v1",
+					state: "refused",
+					reason: "REVOKED",
+				}),
+			},
+		);
+		revoked.context.gemini = { model: "gemini-4-neon", effort: "low", keyId: GEMINI_KEY_ID };
+		await expect(
+			revoked.runtime.execute(revoked.request, revoked.identityRoot, new AbortController().signal),
+		).rejects.toBeInstanceOf(GeminiKeyRevokedError);
+		expect(rpcCalls(revoked, "qorpera_record_provider_usage_signal")).toHaveLength(0);
+		await expect(readFile(revoked.evidence, "utf8")).rejects.toThrow();
+	});
+
+	it("runs a Gemini conversation end to end without Codex, omits Codex-only tools, and records Gemini usage", async () => {
+		const seenBodies: Record<string, unknown>[] = [];
+		const geminiFetch = vi.fn<typeof fetch>(async (_input, init) => {
+			const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+			seenBodies.push(body);
+			if (seenBodies.length === 1) {
+				return Response.json({
+					candidates: [
+						{
+							content: {
+								role: "model",
+								parts: [
+									{
+										functionCall: {
+											id: "send_1",
+											name: "send_message",
+											args: {
+												idempotencyKey: "gemini-final-1",
+												text: "Hello from Gemini 4 Neon.",
+												phase: "final",
+											},
+										},
+									},
+								],
+							},
+						},
+					],
+					usageMetadata: {
+						promptTokenCount: 1500,
+						cachedContentTokenCount: 500,
+						candidatesTokenCount: 40,
+						thoughtsTokenCount: 10,
+					},
+				});
+			}
+			return Response.json({
+				candidates: [{ content: { role: "model", parts: [{ text: "Done" }] } }],
+				usageMetadata: { promptTokenCount: 200, candidatesTokenCount: 10 },
+			});
+		});
+
+		const f = await fixture(
+			"company-runtime",
+			false,
+			undefined,
+			false,
+			false,
+			15_000,
+			false,
+			{ home: true },
+			{
+				geminiKeys: geminiVaultClient({
+					schema: "qorpera.gemini-key-for-run/v1",
+					state: "open",
+					geminiKeyId: GEMINI_KEY_ID,
+					apiKey: GEMINI_API_KEY,
+					spendMonth: "2026-11",
+					monthSpendMicrodollars: 10_000,
+					monthlyCapCents: 10_000,
+				}),
+				geminiFetch,
+			},
+		);
+		f.context.gemini = { model: "gemini-4-neon", effort: "high", keyId: GEMINI_KEY_ID };
+		const original = f.pathCall.getMockImplementation()!;
+		f.pathCall.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_record_gemini_run_usage") {
+				return {
+					schema: "qorpera.gemini-run-usage/v1",
+					spendMonth: "2026-11",
+					monthSpendMicrodollars: 13_825,
+					monthlyCapCents: 10_000,
+					capReached: false,
+				};
+			}
+			return original(method, args, signal);
+		});
+
+		const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		expect(result.providerSessionId).toMatch(/^gemini:gemini-4-neon:/);
+		expect(result.delivery.messageCount).toBe(1);
+		expect(seenBodies).toHaveLength(2);
+		const tools = seenBodies[0]?.tools as Array<{ functionDeclarations?: Array<{ name: string }> }>;
+		const offered = (tools[0]?.functionDeclarations ?? []).map((decl) => decl.name);
+		expect(offered).toContain("send_message");
+		expect(offered).not.toContain("make_picture");
+		expect(offered).not.toContain("narrate_app");
+		expect(offered).not.toContain("home");
+		expect(rpcCalls(f, "qorpera_record_gemini_run_usage")).toHaveLength(2);
+		expect(rpcCalls(f, "qorpera_record_provider_usage_signal")).toHaveLength(0);
+		await expect(readFile(f.evidence, "utf8")).rejects.toThrow();
 	});
 });

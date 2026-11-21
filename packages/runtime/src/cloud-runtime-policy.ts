@@ -36,6 +36,7 @@ export const CLOUD_RUNTIME_MODEL_POLICY = Object.freeze({
 	unattended: "high",
 	claudeChoice: "thread",
 	threadEfforts: CLOUD_RUNTIME_THREAD_EFFORTS,
+	geminiChoice: "thread",
 } as const);
 
 export const CLOUD_RUNTIME_SERVICE_TIERS = Object.freeze(["fast", "standard"] as const);
@@ -81,4 +82,20 @@ export function isCloudRuntimeClaudeChoice(value: unknown): value is CloudRuntim
 		typeof record.effort === "string" &&
 		(CLOUD_RUNTIME_CLAUDE_EFFORTS as readonly string[]).includes(record.effort)
 	);
+}
+
+export const CLOUD_RUNTIME_GEMINI_MODELS = Object.freeze({
+	"gemini-4-neon": "Gemini 4 Neon",
+} as const);
+
+export type CloudRuntimeGeminiModel = keyof typeof CLOUD_RUNTIME_GEMINI_MODELS;
+
+export const CLOUD_RUNTIME_GEMINI_EFFORTS = Object.freeze(["low", "medium", "high", "xhigh"] as const);
+
+export type CloudRuntimeGeminiEffort = (typeof CLOUD_RUNTIME_GEMINI_EFFORTS)[number];
+
+export interface CloudRuntimeGeminiChoice {
+	readonly model: CloudRuntimeGeminiModel;
+	readonly effort: CloudRuntimeGeminiEffort;
+	readonly keyId: string;
 }

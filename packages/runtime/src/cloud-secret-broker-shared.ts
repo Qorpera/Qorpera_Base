@@ -18,6 +18,7 @@ import {
 } from "./cloud-connector-token-revocation.ts";
 import { CloudDigitalPostSyncs, logDigitalPostSyncPass } from "./cloud-digital-post-sync.ts";
 import { CloudEventVerifications, logEventVerificationPass } from "./cloud-event-verification.ts";
+import { CloudGeminiKeyVault } from "./cloud-gemini-key-vault.ts";
 import type { ModelLoginSignInHelper } from "./cloud-model-login-sign-in.ts";
 import { CloudModelLoginUpkeep } from "./cloud-model-login-upkeep.ts";
 import {
@@ -73,6 +74,7 @@ export interface CloudSecretBrokerCompanyScope {
 	readonly modelLoginUsage: CloudModelLoginUsage;
 	/** A Claude Code worker's run's Claude login (20260930771000): the shared vault keeps members' Claude logins. */
 	readonly claudeLogins?: CloudClaudeLoginVault;
+	readonly geminiKeys?: CloudGeminiKeyVault;
 }
 
 /** How a broker service finds the company a request is for. */
@@ -430,6 +432,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 					keyring: this.#keyring,
 					...(this.#claudeRenewer ? { renewer: this.#claudeRenewer } : {}),
 				}),
+				geminiKeys: new CloudGeminiKeyVault({ authority, keyring: this.#keyring }),
 			},
 			// Its timer never runs: the shared upkeep loop runs each company's pass in turn. It also reads the usage of the
 			// company's logins at their usage limit that are due a reading (20260930575000).

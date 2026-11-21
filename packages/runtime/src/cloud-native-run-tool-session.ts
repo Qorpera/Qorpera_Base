@@ -9,6 +9,11 @@ import {
 	type CloudCodexToolSessionResult,
 	runCloudCodexToolSession,
 } from "./cloud-codex-tool-session.ts";
+import {
+	type GeminiToolSessionUsage,
+	type GeminiUsageReceipt,
+	runCloudGeminiToolSession,
+} from "./cloud-gemini-tool-session.ts";
 import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
 import { tagNativeRuntimeFailure } from "./cloud-native-failure.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
@@ -39,7 +44,11 @@ import type { CloudPictureChannel } from "./cloud-picture-channel.ts";
 import { type CloudRunLog, CloudRunLogGone } from "./cloud-run-log.ts";
 import { NATIVE_AUTHORITY_LEASE_SECONDS } from "./cloud-runner-broker.ts";
 import { type CloudRuntimeObservability, cloudRuntimeErrorCategory } from "./cloud-runtime-observability.ts";
-import type { CloudRuntimeServiceTier } from "./cloud-runtime-policy.ts";
+import type {
+	CloudRuntimeGeminiEffort,
+	CloudRuntimeGeminiModel,
+	CloudRuntimeServiceTier,
+} from "./cloud-runtime-policy.ts";
 import type { CloudVoiceChannel } from "./cloud-voice-channel.ts";
 import type { MemoryCompactChannel } from "./memory-tree/compact.ts";
 import type { CloudRunStepLines } from "./memory-tree/step-lines.ts";
@@ -144,6 +153,20 @@ export async function runCloudNativeRunToolSession(options: {
 	observability?: CloudRuntimeObservability;
 	/** Auto-review (v130): the review step for acting calls, given the reviewer this run's Codex session answers. */
 	actionReview?: (reviewer: CloudActionReviewer) => CloudNativeActionReview;
+	gemini?: {
+		readonly model: CloudRuntimeGeminiModel;
+		readonly effort: CloudRuntimeGeminiEffort;
+		readonly apiKey: string;
+		readonly apiBaseUrl?: string;
+		readonly allowLoopback?: boolean;
+		readonly fetch?: typeof fetch;
+		readonly initialSpendMicrodollars: number;
+		readonly monthlyCapCents: number | null;
+		readonly onUsage?: (
+			usage: GeminiToolSessionUsage,
+			signal: AbortSignal,
+		) => Promise<GeminiUsageReceipt | undefined>;
+	};
 }): Promise<CloudCodexToolSessionResult> {
 	const admission = options.observability?.start("run_authority");
 	let run: CloudNativeToolRun;
@@ -279,84 +302,110 @@ export async function runCloudNativeRunToolSession(options: {
 			...(home ? { home } : {}),
 		});
 		const runLog = adapters.runLog;
-		result = await runCloudCodexToolSession({
-			observability: options.observability,
-			command: options.command,
-			binarySha256: options.binarySha256,
-			boundary,
-			model: run.identity.model,
-			reasoningEffort: run.identity.reasoningEffort,
-			serviceTier: options.serviceTier,
-			prompt: options.prompt,
-			runtimeInstructions: options.runtimeInstructions,
-			...(options.composeContext ? { composeContext: options.composeContext } : {}),
-			// The bind rechecks the run's lease, and the first request's fence its authority.
-			...(options.opening ? { opening: options.opening } : {}),
-			...(options.compactor ? { compactor: options.compactor } : {}),
-			...(options.voice ? { voice: options.voice } : {}),
-			...(options.pictures ? { pictures: options.pictures } : {}),
-			...(options.turnCorrection ? { turnCorrection: options.turnCorrection } : {}),
-			...(options.light ? { light: options.light } : {}),
-			// At closing the run's log commits its last steps and its step lines build what is left, then the run's
-			// conversation lines close (§7.1).
-			...(runLog || options.closing
-				? {
-						closing: async (signal: AbortSignal) => {
-							closingStarted = true;
-							try {
-								if (runLog)
-									try {
-										await runLog.log.close(signal);
-									} finally {
-										await runLog.lines.finish(signal);
-									}
-							} finally {
-								await options.closing?.(signal);
-							}
-						},
+		const beforeModelStart = async (startSignal: AbortSignal) => {
+			await assertActive(startSignal);
+			await cloudToolRequest(
+				(requestSignal) => options.beginExecution(boundary!.specification, requestSignal),
+				startSignal,
+				CLOUD_RUN_ROW_READ_MS,
+			);
+			await assertActive(startSignal);
+		};
+		const recordContextView = async (
+			frame: CloudNativeFenceRequest,
+			outputs: readonly CloudNativeFencedResult[],
+			recordSignal: AbortSignal,
+		) => {
+			if (activeAdapters.fenceContextView) {
+				if (
+					!fenceUnavailable &&
+					(await fenceContext(activeAdapters.fenceContextView, frame, outputs, recordSignal))
+				)
+					return;
+				fenceUnavailable = true;
+				await assertActive(recordSignal);
+			}
+			await assertActive(recordSignal);
+			await cloudToolRequest(
+				(requestSignal) => activeAdapters.recordContextView(frame, outputs, requestSignal),
+				recordSignal,
+			);
+			await assertActive(recordSignal);
+		};
+		const closing =
+			runLog || options.closing
+				? async (closeSignal: AbortSignal) => {
+						closingStarted = true;
+						try {
+							if (runLog)
+								try {
+									await runLog.log.close(closeSignal);
+								} finally {
+									await runLog.lines.finish(closeSignal);
+								}
+						} finally {
+							await options.closing?.(closeSignal);
+						}
 					}
-				: {}),
-			...(home ? { home } : {}),
-			identityRoot: options.identityRoot,
-			...(options.reusedIdentityRoot ? { reusedIdentityRoot: true } : {}),
-			isolation: options.isolation,
-			...(options.chatGptPlanAuth ? { chatGptPlanAuth: options.chatGptPlanAuth } : {}),
-			signal: run.signal,
-			timeoutMs: options.timeoutMs,
-			...(reviewer ? { reviewer } : {}),
-			beforeModelStart: async (signal) => {
-				await assertActive(signal);
-				// The run's admission is a write sent once (no retry here; an answer that is late or lost fails the attempt,
-				// and the runner reports that retryable on the job's first two attempts only): it waits as long as the
-				// database may run it, not the 5 s default (3 Nov 2026: the database answered every caller in 3 to 6.6 s
-				// for 8 s).
-				await cloudToolRequest(
-					(requestSignal) => options.beginExecution(boundary!.specification, requestSignal),
-					signal,
-					CLOUD_RUN_ROW_READ_MS,
-				);
-				await assertActive(signal);
-			},
-			// With the one-call fence the result fence does not check before this step: the call below
-			// makes that check itself, before anything is released.
-			...(activeAdapters.fenceContextView ? { recordChecksAuthority: true } : {}),
-			recordContextView: async (frame, outputs, signal) => {
-				if (activeAdapters.fenceContextView) {
-					if (!fenceUnavailable && (await fenceContext(activeAdapters.fenceContextView, frame, outputs, signal)))
-						return;
-					fenceUnavailable = true;
-					// The database has no one-call fence yet: the separate calls, all of them, starting
-					// with the check the result fence left to this step (it still does, every request).
-					await assertActive(signal);
-				}
-				await assertActive(signal);
-				await cloudToolRequest(
-					(requestSignal) => activeAdapters.recordContextView(frame, outputs, requestSignal),
-					signal,
-				);
-				await assertActive(signal);
-			},
-		});
+				: undefined;
+		if (options.gemini) {
+			result = await runCloudGeminiToolSession({
+				boundary,
+				model: options.gemini.model,
+				effort: options.gemini.effort,
+				apiKey: options.gemini.apiKey,
+				...(options.gemini.apiBaseUrl ? { apiBaseUrl: options.gemini.apiBaseUrl } : {}),
+				...(options.gemini.allowLoopback ? { allowLoopback: true } : {}),
+				...(options.gemini.fetch ? { fetch: options.gemini.fetch } : {}),
+				initialSpendMicrodollars: options.gemini.initialSpendMicrodollars,
+				monthlyCapCents: options.gemini.monthlyCapCents,
+				...(options.gemini.onUsage ? { onUsage: options.gemini.onUsage } : {}),
+				prompt: options.prompt,
+				runtimeInstructions: options.runtimeInstructions,
+				...(options.composeContext ? { composeContext: options.composeContext } : {}),
+				...(options.opening ? { opening: options.opening } : {}),
+				...(options.turnCorrection ? { turnCorrection: options.turnCorrection } : {}),
+				...(closing ? { closing } : {}),
+				...(reviewer ? { reviewer } : {}),
+				beforeModelStart,
+				...(activeAdapters.fenceContextView ? { recordChecksAuthority: true } : {}),
+				recordContextView,
+				observability: options.observability,
+				signal: run.signal,
+				timeoutMs: options.timeoutMs,
+			});
+		} else {
+			result = await runCloudCodexToolSession({
+				observability: options.observability,
+				command: options.command,
+				binarySha256: options.binarySha256,
+				boundary,
+				model: run.identity.model,
+				reasoningEffort: run.identity.reasoningEffort,
+				serviceTier: options.serviceTier,
+				prompt: options.prompt,
+				runtimeInstructions: options.runtimeInstructions,
+				...(options.composeContext ? { composeContext: options.composeContext } : {}),
+				...(options.opening ? { opening: options.opening } : {}),
+				...(options.compactor ? { compactor: options.compactor } : {}),
+				...(options.voice ? { voice: options.voice } : {}),
+				...(options.pictures ? { pictures: options.pictures } : {}),
+				...(options.turnCorrection ? { turnCorrection: options.turnCorrection } : {}),
+				...(options.light ? { light: options.light } : {}),
+				...(closing ? { closing } : {}),
+				...(home ? { home } : {}),
+				identityRoot: options.identityRoot,
+				...(options.reusedIdentityRoot ? { reusedIdentityRoot: true } : {}),
+				isolation: options.isolation,
+				...(options.chatGptPlanAuth ? { chatGptPlanAuth: options.chatGptPlanAuth } : {}),
+				signal: run.signal,
+				timeoutMs: options.timeoutMs,
+				...(reviewer ? { reviewer } : {}),
+				beforeModelStart,
+				...(activeAdapters.fenceContextView ? { recordChecksAuthority: true } : {}),
+				recordContextView,
+			});
+		}
 		// The log's folder was deleted: the run's acting calls since could not run, and it ends with that error (§4.5). A
 		// usage limit the provider met after the run's answer stays the login's to record (the 2026-11-13 amendment).
 		if (runLog?.log.gone)

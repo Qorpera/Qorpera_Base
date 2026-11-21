@@ -47,6 +47,7 @@ import {
 	EventHookVault,
 } from "./cloud-event-hook-vault.ts";
 import type { EventVerificationAuthority } from "./cloud-event-verification.ts";
+import type { GeminiKeyVaultAuthority } from "./cloud-gemini-key-vault.ts";
 import type {
 	AccountModelLoginAuthority,
 	ModelLoginAuthority,
@@ -1581,6 +1582,7 @@ export class PostgresCloudSecretBrokerAuthority
 		ModelLoginSignInAuthority,
 		ModelLoginUsageAuthority,
 		ClaudeLoginRunAuthority,
+		GeminiKeyVaultAuthority,
 		ConnectorTokenRevocationAuthority,
 		EventVerificationAuthority,
 		CompanyAccountAuthority,
@@ -2522,6 +2524,45 @@ export class PostgresCloudSecretBrokerAuthority
 				Buffer.from(seal.encryptedEnvelope).toString("base64"),
 				seal.envelopeSha256,
 			],
+			signal,
+		);
+	}
+
+	describeGeminiKeyTicket(
+		request: Parameters<GeminiKeyVaultAuthority["describeGeminiKeyTicket"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_describe_gemini_key_ticket($1::uuid,$2::text,$3::uuid,$4::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, request.ticketId, request.capabilitySha256],
+			signal,
+		);
+	}
+
+	completeGeminiKeySave(
+		completion: Parameters<GeminiKeyVaultAuthority["completeGeminiKeySave"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_complete_gemini_key_save($1::uuid,$2::text,$3::uuid,$4::text,$5::text,$6::text,$7::text,$8::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				completion.ticketId,
+				completion.capabilitySha256,
+				completion.keyId,
+				Buffer.from(completion.encryptedEnvelope).toString("base64"),
+				completion.envelopeSha256,
+				completion.keyHint,
+			],
+			signal,
+		);
+	}
+
+	openGeminiKeyForRun(binding: ModelLoginRunBinding, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_open_gemini_key_for_run($1::uuid,$2::text,$3::jsonb) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, JSON.stringify(binding)],
 			signal,
 		);
 	}

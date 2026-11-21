@@ -223,6 +223,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Warmer, clearer conversations and sharper workers",
 		text: "Your team's platform instructions have been updated for warmer, more natural conversations with founders: match the moment (talk like a colleague when exploring, lead with outcomes for updates and decisions), avoid internal jargon, and use all twelve app kits accurately. Write workers running on Claude Code also now receive the company's quality, visual-check, and plain-language standards directly. Review your team's job descriptions and routines only if any carry old robotic reporting templates or outdated kit lists.",
 	},
+	{
+		id: "gemini-4-neon-conversations",
+		kind: "model",
+		date: "2026-11-21",
+		title: "Gemini 4 Neon in conversations",
+		text: "A member who adds a Gemini API key in Settings, AI subscriptions can pick Gemini 4 Neon in a conversation's Model menu (with Low, Medium, High and Extra high effort) or set it as their default for chats. Your attended conversation turns run directly on Gemini 4 Neon with your company files, machines, workers, apps, routines and search, while background workers, routines and coding sessions stay on Codex or Claude Code. Members can set a monthly USD spend cap; reaching it pauses Gemini turns and notifies them rather than switching logins.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

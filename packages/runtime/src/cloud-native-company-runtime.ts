@@ -107,6 +107,12 @@ import { CloudFolderSearch, cloudFolderSearchTool } from "./cloud-folder-search-
 import { CloudFolderSidebar } from "./cloud-folder-sidebar.ts";
 import { CloudFolderTodos } from "./cloud-folder-todos.ts";
 import { CloudFolderWorkers } from "./cloud-folder-workers.ts";
+import {
+	GEMINI_ACTION_REVIEW_MODEL,
+	GeminiCapReachedError,
+	GeminiKeyRevokedError,
+	type GeminiUsageReceipt,
+} from "./cloud-gemini-tool-session.ts";
 import { cloudGoodWillTools } from "./cloud-good-will-tools.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
 import { composeCloudLightAsk } from "./cloud-light-ask.ts";
@@ -185,7 +191,7 @@ import {
 	type CloudRuntimeServiceTier,
 	isCloudRuntimeServiceTier,
 } from "./cloud-runtime-policy.ts";
-import type { ClaudeLoginRunClient } from "./cloud-secret-broker-http.ts";
+import { type ClaudeLoginRunClient, type GeminiKeyRunClient, openGeminiKeyForRun } from "./cloud-secret-broker-http.ts";
 import { type CloudSecretOperationClient, cloudSecretTools, describeCloudSecretTools } from "./cloud-secret-tools.ts";
 import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import { cloudSiteTools } from "./cloud-site-tools.ts";
@@ -284,6 +290,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #machines: ((binding: CloudNativeToolBinding) => CloudMachineCommandGateway) | undefined;
 	readonly #homeChannel: ((binding: CloudNativeToolBinding) => CloudCodexHomeChannel) | undefined;
 	readonly #claudeWorker: CloudClaudeWorkerHost | undefined;
+	readonly #geminiKeys: GeminiKeyRunClient | undefined;
+	readonly #geminiApiBaseUrl: string | undefined;
+	readonly #geminiAllowLoopback: boolean | undefined;
+	readonly #geminiFetch: typeof fetch | undefined;
 	readonly #codingValues: CloudMachineCodingValues | undefined;
 	readonly #folderSearch: { readonly socketPath: string } | undefined;
 	readonly #companyData: CloudCompanyDataDoor | undefined;
@@ -324,6 +334,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		/** The Claude Code worker's composition (slice C4c): with the home channel, a plain worker the agent handed to
 		 * Claude Code runs here, on the agent's machine and its member's Claude sign-in. Without it such a run is refused. */
 		claudeWorker?: CloudClaudeWorkerHost;
+		geminiKeys?: GeminiKeyRunClient;
+		geminiApiBaseUrl?: string;
+		geminiAllowLoopback?: boolean;
+		geminiFetch?: typeof fetch;
 		/** The vault's coding value route (20260930705000): with machines, a company agent's own run is offered
 		 * save_coding_value. */
 		codingValues?: CloudMachineCodingValues;
@@ -353,6 +367,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#computerSession = options.computerSession;
 		this.#homeChannel = options.homeChannel;
 		this.#claudeWorker = options.claudeWorker;
+		this.#geminiKeys = options.geminiKeys;
+		this.#geminiApiBaseUrl = options.geminiApiBaseUrl;
+		this.#geminiAllowLoopback = options.geminiAllowLoopback;
+		this.#geminiFetch = options.geminiFetch;
 		this.#coding = options.coding;
 		this.#machines = options.machines;
 		this.#codingValues = options.codingValues;
@@ -422,6 +440,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const composition = observability.start("company_context");
 		let stage: NativeRuntimeFailureStage = "company-context";
 		let presence: CloudCompanyPathPresence | undefined;
+		let isGeminiRun = false;
 		try {
 			// Both reads need only the binding: ask for them together and check them in
 			// the original order, so a failure still names its stage. Since 20260930499000 only the
@@ -488,6 +507,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				: Promise.resolve(undefined);
 			homeRequest.catch(() => undefined);
 			const context = parseCloudNativeCompanyContext(await contextRequest, binding);
+			isGeminiRun = context.gemini !== undefined;
 			// Where the agent's folder is: its folder name.
 			const agentFolders = cloudAgentFolderPlace(context);
 			stage = "bundle-compatibility";
@@ -614,6 +634,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			// (only a run recorded in the Shared context beta has one, 20260930508000); a run that has the view has zoom
 			// and the conversation's prompt cache key (§6.2). A worker is not one; it gets its parent's view (W4).
 			const memoryTree =
+				!isGeminiRun &&
 				context.identity.audienceKind === "company" &&
 				context.identity.sessionId !== null &&
 				cloudWakeIsConversationPost(wake) &&
@@ -1041,13 +1062,97 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				// Pictures are made on the run's own Codex sign-in (cloud-picture-channel.ts), which a run on a member's
 				// ChatGPT plan has not: it gets no picture lane and is not offered make_picture. Its identity root says so, as
 				// the session reads it.
-				const pictures = (await chatGptPlanRun(identityRoot)) ? undefined : new CloudPictureChannel();
+				const pictures =
+					isGeminiRun || (await chatGptPlanRun(identityRoot)) ? undefined : new CloudPictureChannel();
 				const voice = pictures ? new CloudVoiceChannel() : undefined;
+				let geminiSession:
+					| {
+							readonly model: NonNullable<CloudNativeCompanyContext["gemini"]>["model"];
+							readonly effort: NonNullable<CloudNativeCompanyContext["gemini"]>["effort"];
+							readonly apiKey: string;
+							readonly apiBaseUrl?: string;
+							readonly allowLoopback?: boolean;
+							readonly fetch?: typeof fetch;
+							readonly initialSpendMicrodollars: number;
+							readonly monthlyCapCents: number | null;
+							readonly onUsage: (
+								usage: {
+									readonly inputTokens: number;
+									readonly cachedTokens: number;
+									readonly outputTokens: number;
+								},
+								requestSignal: AbortSignal,
+							) => Promise<GeminiUsageReceipt | undefined>;
+					  }
+					| undefined;
+				if (context.gemini) {
+					if (!this.#geminiKeys)
+						throw new Error(
+							"Gemini 4 Neon conversations require the company vault, which this host does not carry; nothing ran on Codex",
+						);
+					const openedKey = await openGeminiKeyForRun(
+						this.#geminiKeys,
+						{
+							leaseId: binding.leaseId,
+							runId: binding.runId,
+							jobId: binding.jobId,
+							runnerId: binding.runnerId,
+							assignmentId: binding.assignmentId,
+							credentialCapsuleId: binding.credentialCapsuleId,
+							computeIdentityId: binding.computeIdentityId,
+						},
+						signal,
+					);
+					if (openedKey.state === "refused") {
+						if (openedKey.reason === "CAP_REACHED") {
+							throw tagNativeRuntimeFailure(
+								new GeminiCapReachedError(openedKey.monthlyCapCents, openedKey.monthSpendMicrodollars),
+								"native-tools",
+								"budget_exhausted",
+							);
+						}
+						throw tagNativeRuntimeFailure(new GeminiKeyRevokedError(), "native-tools", "authority_unavailable");
+					}
+					geminiSession = {
+						model: context.gemini.model,
+						effort: context.gemini.effort,
+						apiKey: openedKey.apiKey,
+						...(this.#geminiApiBaseUrl ? { apiBaseUrl: this.#geminiApiBaseUrl } : {}),
+						...(this.#geminiAllowLoopback ? { allowLoopback: true } : {}),
+						...(this.#geminiFetch ? { fetch: this.#geminiFetch } : {}),
+						initialSpendMicrodollars: openedKey.monthSpendMicrodollars,
+						monthlyCapCents: openedKey.monthlyCapCents,
+						onUsage: async (usage, requestSignal) => {
+							const recorded = (await this.#paths.call(
+								"qorpera_record_gemini_run_usage",
+								{ p_binding: binding, p_usage: usage },
+								requestSignal,
+							)) as {
+								monthSpendMicrodollars?: unknown;
+								monthlyCapCents?: unknown;
+								capReached?: unknown;
+							} | null;
+							if (
+								!recorded ||
+								typeof recorded.monthSpendMicrodollars !== "number" ||
+								(recorded.monthlyCapCents !== null && typeof recorded.monthlyCapCents !== "number") ||
+								typeof recorded.capReached !== "boolean"
+							)
+								return undefined;
+							return {
+								monthSpendMicrodollars: recorded.monthSpendMicrodollars,
+								monthlyCapCents: recorded.monthlyCapCents,
+								capReached: recorded.capReached,
+							};
+						},
+					};
+				}
 				const result = await runCloudNativeRunToolSession({
 					observability,
 					binding,
 					serviceTier,
 					controlPlane: this.#control,
+					...(geminiSession ? { gemini: geminiSession } : {}),
 					beginExecution: async (specification, requestSignal) => {
 						const toolCatalogText = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
 						// Sent once, it waits as long as the database may run it, as the bind below does.
@@ -1111,7 +1216,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					isolation: this.#isolation,
 					// The agent's home (slice 1): built only when this company's switch is on AND this agent has a
 					// machine running. The review and the work log are handed to it where they are built, below.
-					...(home && this.#homeChannel
+					...(home && this.#homeChannel && !isGeminiRun
 						? {
 								home: (input: {
 									review: CloudCodexHomeReview;
@@ -1161,6 +1266,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 									this.#paths.call(method, argumentsValue, requestSignal),
 							},
 							reviewer,
+							...(isGeminiRun ? { reviewerModel: GEMINI_ACTION_REVIEW_MODEL } : {}),
 							request: cloudActionReviewRequest(context, wake),
 							// What the agent works for, from its files as this run read them: a run no member started is
 							// judged by it (2026-10-22 amendment, item 2). A vision too large to read as text is left out.
@@ -1556,17 +1662,22 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				// The provider failed the turn after the run's answer: the run is delivered, and what it met is still the
 				// login's to know, as for a failed run (contract 17; the 2026-11-13 amendment). Recorded first, so nothing
 				// after it can lose it.
-				if (result.usageSignal) await this.#recordUsageSignalKind(binding, result.usageSignal);
+				if (result.usageSignal && !isGeminiRun) await this.#recordUsageSignalKind(binding, result.usageSignal);
 				stage = "public-completion";
 				const delivery = await mouth.finish(wake.policy.final === "required");
-				this.#spareEfforts.set(identityRoot, { reasoningEffort: context.identity.reasoningEffort, serviceTier });
+				if (!isGeminiRun)
+					this.#spareEfforts.set(identityRoot, { reasoningEffort: context.identity.reasoningEffort, serviceTier });
 				return { providerSessionId: result.providerSessionId, delivery };
 			} finally {
 				await mouth.close();
 			}
 		} catch (error) {
 			composition.finish("failed", { errorCategory: cloudRuntimeErrorCategory(error, signal) });
-			await this.#recordUsageSignal(binding, error);
+			if (isGeminiRun) {
+				if (error instanceof GeminiCapReachedError) await this.#recordGeminiCapReached(binding);
+			} else {
+				await this.#recordUsageSignal(binding, error);
+			}
 			throw tagNativeRuntimeFailure(error, stage, cloudRuntimeErrorCategory(error, signal));
 		} finally {
 			await presence?.close().catch(() => undefined);
@@ -2081,6 +2192,19 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	 * version before the job fails. Recording never retries the provider, never
 	 * masks the failure, and carries no provider text.
 	 */
+	async #recordGeminiCapReached(binding: CloudNativeToolBinding): Promise<void> {
+		try {
+			await this.#paths.call(
+				"qorpera_record_gemini_cap_reached",
+				{ p_binding: binding },
+				AbortSignal.timeout(10_000),
+				10_000,
+			);
+		} catch {
+			console.error("Gemini spend cap notice was not recorded");
+		}
+	}
+
 	async #recordUsageSignal(binding: CloudNativeToolBinding, error: unknown): Promise<void> {
 		const kind = nativeProviderUsageSignal(error);
 		if (kind) await this.#recordUsageSignalKind(binding, kind);

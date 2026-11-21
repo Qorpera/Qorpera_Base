@@ -60,6 +60,12 @@ import {
 	parseEventHookFillRequest,
 	parseEventHookRequest,
 } from "./cloud-event-hook-vault.ts";
+import {
+	type CloudGeminiKeyVault,
+	type GeminiKeyForRun,
+	GeminiKeyInvalidError,
+	isGeminiApiKeyFormat,
+} from "./cloud-gemini-key-vault.ts";
 import { CLAUDE_LOGIN_FILES } from "./cloud-model-login-sign-in.ts";
 import {
 	type CloudModelLoginVault,
@@ -442,6 +448,30 @@ function parseClaudeLoginSealRequest(value: unknown): {
 	};
 }
 
+function parseGeminiKeySaveRequest(
+	value: unknown,
+	ticketId: string,
+): { ticketId: string; capability: string; apiKey: string } {
+	const input = record(value, "Gemini key save request");
+	exact(input, ["schema", "capability", "apiKey"], "Gemini key save request");
+	if (
+		input.schema !== "qorpera.gemini-key-save-request/v1" ||
+		typeof input.capability !== "string" ||
+		!/^[A-Za-z0-9_-]{32,256}$/.test(input.capability) ||
+		typeof input.apiKey !== "string" ||
+		input.apiKey.length > 512
+	)
+		throw new Error("Gemini key save request is invalid");
+	return { ticketId: ticketId.toLowerCase(), capability: input.capability, apiKey: input.apiKey };
+}
+
+function parseGeminiKeyOpenRequest(value: unknown): ModelLoginRunBinding {
+	const input = record(value, "Gemini key open request");
+	exact(input, ["schema", "binding"], "Gemini key open request");
+	if (input.schema !== "qorpera.gemini-key-open-request/v1") throw new Error("Gemini key open request is invalid");
+	return parseModelLoginRunBinding(input.binding);
+}
+
 function parseModelLogin(value: unknown): ModelLoginIssue {
 	const input = record(value, "Model login");
 	// A ChatGPT plan login: the access token alone (null while the host holds this version).
@@ -652,6 +682,7 @@ export interface HttpCloudSecretBrokerServiceOptions {
 	/** Usage of the logins the vault keeps (change 2C): `/v1/model-logins/<company>/account-refresh`
 	 * under the account refresh's own capability. Absent means the route answers 404. */
 	readonly modelLoginUsage?: CloudModelLoginUsage;
+	readonly geminiKeys?: CloudGeminiKeyVault;
 }
 
 /** What a request's company gets: a single-company broker's own services (some may be off), or one
@@ -666,6 +697,7 @@ interface RequestScope {
 	/** A Claude Code worker's run's Claude login (20260930771000): `/v1/claude-logins/open` and `/seal`. Only the shared
 	 * vault keeps Claude logins (its company scopes carry them); without it the routes answer 404. */
 	readonly claudeLogins?: CloudClaudeLoginVault;
+	readonly geminiKeys?: CloudGeminiKeyVault;
 }
 
 /**
@@ -694,6 +726,7 @@ export class HttpCloudSecretBrokerService {
 	readonly #modelLogins: CloudModelLoginVault | undefined;
 	readonly #modelLoginSignIns: CloudModelLoginSignIns | undefined;
 	readonly #modelLoginUsage: CloudModelLoginUsage | undefined;
+	readonly #geminiKeys: CloudGeminiKeyVault | undefined;
 	#server?: Server;
 
 	constructor(
@@ -723,7 +756,7 @@ export class HttpCloudSecretBrokerService {
 		if (target instanceof CloudSecretBroker) this.#broker = target;
 		else {
 			// The shared vault gets each company's login vault, sign-ins and usage from its own list.
-			if (options.modelLogins || options.modelLoginSignIns || options.modelLoginUsage)
+			if (options.modelLogins || options.modelLoginSignIns || options.modelLoginUsage || options.geminiKeys)
 				throw new Error("Cloud secret broker service configuration is invalid");
 			this.#companies = target;
 		}
@@ -738,6 +771,7 @@ export class HttpCloudSecretBrokerService {
 		this.#modelLogins = options.modelLogins;
 		this.#modelLoginSignIns = options.modelLoginSignIns;
 		this.#modelLoginUsage = options.modelLoginUsage;
+		this.#geminiKeys = options.geminiKeys;
 	}
 
 	async start(): Promise<number> {
@@ -775,6 +809,7 @@ export class HttpCloudSecretBrokerService {
 				modelLogins: this.#modelLogins,
 				modelLoginSignIns: this.#modelLoginSignIns,
 				modelLoginUsage: this.#modelLoginUsage,
+				...(this.#geminiKeys ? { geminiKeys: this.#geminiKeys } : {}),
 			};
 		}
 		if (companyId === undefined || !UUID.test(companyId)) return undefined;
@@ -856,6 +891,7 @@ export class HttpCloudSecretBrokerService {
 		const url = new URL(request.url ?? "/", "http://cloud-secret-broker.invalid");
 		const path = url.pathname;
 		const capture = /^\/v1\/captures\/([0-9a-f-]{36})$/i.exec(path);
+		const geminiKeySave = /^\/v1\/gemini-keys\/([0-9a-f-]{36})$/i.exec(path);
 		const emailDraft = /^\/v1\/email-drafts\/([0-9a-f-]{36})$/i.exec(path);
 		const oauthStart = /^\/v1\/oauth\/([0-9a-f-]{36})\/start$/i.exec(path);
 		const oauthConfirm = /^\/v1\/oauth\/([0-9a-f-]{36})\/confirm$/i.exec(path);
@@ -866,6 +902,7 @@ export class HttpCloudSecretBrokerService {
 		const accountRefresh = /^\/v1\/model-logins\/([0-9a-f-]{36})\/account-refresh$/i.exec(path);
 		const memberRoute = Boolean(
 			(capture && UUID.test(capture[1])) ||
+				(geminiKeySave && UUID.test(geminiKeySave[1])) ||
 				(emailDraft && UUID.test(emailDraft[1])) ||
 				(oauthStart && UUID.test(oauthStart[1])) ||
 				(oauthConfirm && UUID.test(oauthConfirm[1])),
@@ -929,6 +966,26 @@ export class HttpCloudSecretBrokerService {
 					AbortSignal.timeout(15_000),
 				);
 				response(reply, 200, descriptor as unknown as JsonValue, cors);
+				return;
+			}
+			if (geminiKeySave && UUID.test(geminiKeySave[1])) {
+				if (!scope.geminiKeys) {
+					response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" }, cors);
+					return;
+				}
+				try {
+					const saved = await scope.geminiKeys.saveFromTicket(
+						parseGeminiKeySaveRequest(await readRequest(request), geminiKeySave[1]),
+						AbortSignal.timeout(20_000),
+					);
+					response(reply, 200, { ...saved }, cors);
+				} catch (error) {
+					if (error instanceof GeminiKeyInvalidError) {
+						response(reply, 403, { schema: "qorpera.gemini-key-error/v1", reason: "invalid_key" }, cors);
+						return;
+					}
+					throw error;
+				}
 				return;
 			}
 			if (emailDraft && UUID.test(emailDraft[1])) {
@@ -1270,6 +1327,16 @@ export class HttpCloudSecretBrokerService {
 					await this.#proven(request, seal.binding);
 					response(reply, 200, { ...(await scope.claudeLogins.sealBack(seal, AbortSignal.timeout(20_000))) });
 				}
+				return;
+			}
+			if (
+				path === "/v1/gemini-keys/open" &&
+				scope.geminiKeys !== undefined &&
+				tokenMatches(this.#runtimeToken, request.headers.authorization)
+			) {
+				const binding = parseGeminiKeyOpenRequest(await readRequest(request));
+				await this.#proven(request, binding);
+				response(reply, 200, { ...(await scope.geminiKeys.open(binding, AbortSignal.timeout(20_000))) });
 				return;
 			}
 			// The coding executor's repository token (bundle v88): only the
@@ -2055,4 +2122,124 @@ export async function sealClaudeLoginBack(
 			fileSha256: { ...request.opened.fileSha256, ...Object.fromEntries(digests) },
 		},
 	};
+}
+
+export type GeminiKeyRunClient = ClaudeLoginRunClient;
+
+export async function openGeminiKeyForRun(
+	options: GeminiKeyRunClient,
+	binding: ModelLoginRunBinding,
+	signal: AbortSignal,
+): Promise<GeminiKeyForRun> {
+	const origin = brokerOrigin(options.origin, options.allowLoopback);
+	if (!TOKEN.test(options.runtimeToken) || typeof options.companyId !== "string" || !UUID.test(options.companyId))
+		throw new Error("Gemini key client is invalid");
+	const body = Buffer.from(
+		JSON.stringify({
+			schema: "qorpera.gemini-key-open-request/v1",
+			binding: parseModelLoginRunBinding(binding),
+		}),
+	);
+	try {
+		const raw = await withCloudDeadline(
+			async (requestSignal) => {
+				const responseValue = await (options.fetch ?? fetch)(
+					`${origin}/v1/gemini-keys/open?company=${options.companyId.toLowerCase()}`,
+					{
+						method: "POST",
+						redirect: "error",
+						headers: {
+							authorization: `Bearer ${options.runtimeToken}`,
+							"x-qorpera-identity": options.holder(),
+							"content-type": "application/json",
+						},
+						body,
+						signal: requestSignal,
+					},
+				);
+				if (!responseValue.ok) {
+					void responseValue.body?.cancel().catch(() => undefined);
+					if (responseValue.status === 503) throw new CloudSecretBrokerBusyError();
+					throw new Error("Cloud secret broker refused the Gemini key");
+				}
+				const bytes = await readBoundedCloudResponse(responseValue, MAX_RESPONSE_BYTES, requestSignal);
+				try {
+					return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+				} catch {
+					throw new Error("Cloud secret broker returned an invalid Gemini key response");
+				} finally {
+					bytes.fill(0);
+				}
+			},
+			25_000,
+			signal,
+		);
+		const answer = record(raw, "Gemini key");
+		if (answer.schema !== "qorpera.gemini-key-for-run/v1") throw new Error("Gemini key is invalid");
+		if (answer.state === "refused") {
+			if (answer.reason === "REVOKED") {
+				exact(answer, ["schema", "state", "reason"], "Gemini key");
+				return { schema: "qorpera.gemini-key-for-run/v1", state: "refused", reason: "REVOKED" };
+			}
+			if (answer.reason === "CAP_REACHED") {
+				exact(
+					answer,
+					["schema", "state", "reason", "spendMonth", "monthSpendMicrodollars", "monthlyCapCents"],
+					"Gemini key",
+				);
+				if (
+					typeof answer.spendMonth !== "string" ||
+					!/^\d{4}-(0[1-9]|1[0-2])$/.test(answer.spendMonth) ||
+					typeof answer.monthSpendMicrodollars !== "number" ||
+					!Number.isSafeInteger(answer.monthSpendMicrodollars) ||
+					answer.monthSpendMicrodollars < 0 ||
+					typeof answer.monthlyCapCents !== "number" ||
+					!Number.isSafeInteger(answer.monthlyCapCents) ||
+					answer.monthlyCapCents < 100
+				)
+					throw new Error("Gemini key is invalid");
+				return {
+					schema: "qorpera.gemini-key-for-run/v1",
+					state: "refused",
+					reason: "CAP_REACHED",
+					spendMonth: answer.spendMonth,
+					monthSpendMicrodollars: answer.monthSpendMicrodollars,
+					monthlyCapCents: answer.monthlyCapCents,
+				};
+			}
+			throw new Error("Gemini key is invalid");
+		}
+		exact(
+			answer,
+			["schema", "state", "geminiKeyId", "apiKey", "spendMonth", "monthSpendMicrodollars", "monthlyCapCents"],
+			"Gemini key",
+		);
+		if (
+			answer.state !== "open" ||
+			typeof answer.geminiKeyId !== "string" ||
+			!UUID.test(answer.geminiKeyId) ||
+			!isGeminiApiKeyFormat(answer.apiKey) ||
+			typeof answer.spendMonth !== "string" ||
+			!/^\d{4}-(0[1-9]|1[0-2])$/.test(answer.spendMonth) ||
+			typeof answer.monthSpendMicrodollars !== "number" ||
+			!Number.isSafeInteger(answer.monthSpendMicrodollars) ||
+			answer.monthSpendMicrodollars < 0 ||
+			(answer.monthlyCapCents !== null &&
+				(typeof answer.monthlyCapCents !== "number" ||
+					!Number.isSafeInteger(answer.monthlyCapCents) ||
+					answer.monthlyCapCents < 100))
+		)
+			throw new Error("Gemini key is invalid");
+		return {
+			schema: "qorpera.gemini-key-for-run/v1",
+			state: "open",
+			geminiKeyId: answer.geminiKeyId.toLowerCase(),
+			apiKey: answer.apiKey,
+			spendMonth: answer.spendMonth,
+			monthSpendMicrodollars: answer.monthSpendMicrodollars,
+			monthlyCapCents: answer.monthlyCapCents,
+		};
+	} finally {
+		body.fill(0);
+	}
 }
