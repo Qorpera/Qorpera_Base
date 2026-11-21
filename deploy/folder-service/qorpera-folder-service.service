@@ -20,7 +20,7 @@ LoadCredential=qorpera-supabase-service-key:/etc/qorpera-folder-service/supabase
 # Object reads run on libuv's pool; a hung NFS read holds a thread until it returns.
 Environment=UV_THREADPOOL_SIZE=32
 # CommonJS and node:https, never fetch: fetch needs WebAssembly, which --jitless removes.
-ExecStart=/usr/bin/node --jitless --enable-experimental-regexp-engine /opt/qorpera-folder-service/qorpera-folder-service.cjs
+ExecStart=/usr/bin/node --jitless /opt/qorpera-folder-service/qorpera-folder-service.cjs
 Restart=on-failure
 RestartSec=5s
 # On a node with coding machines, qorpera-folder-control.socket (enabled there alone) passes its socket too, by its

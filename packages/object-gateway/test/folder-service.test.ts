@@ -30,7 +30,7 @@ import {
 	parseRead,
 } from "../src/folder-service/protocol.ts";
 import { createFolderServer } from "../src/folder-service/server.ts";
-import { FolderService, type FolderServiceOptions, SEARCH_RUNNING } from "../src/folder-service/service.ts";
+import { FolderService, type FolderServiceOptions } from "../src/folder-service/service.ts";
 import { type TreeEntry, ViewTree } from "../src/folder-service/view-tree.ts";
 import {
 	BRIDGE,
@@ -1397,7 +1397,6 @@ describe("NasObjects write-through put", () => {
 describe("SupabaseFolderCore paging and oversized fallback", () => {
 	it("requests CORE_PAGE = 1000 and falls back to 200 on ResponseTooLargeError without opening the circuit", async () => {
 		expect(CORE_PAGE).toBe(1000);
-		expect(SEARCH_RUNNING).toBe(12);
 		const seen: Array<{ path: string; limit: number }> = [];
 		const core = new SupabaseFolderCore({
 			projectUrl: "https://core.example",

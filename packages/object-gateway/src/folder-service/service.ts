@@ -193,7 +193,10 @@ const SERVED_RELEASED_KEPT = 100_000;
  * reads on through every round has its boundary answered as having no answer yet. */
 const MACHINE_RELEASE_ROUNDS = 8;
 const STOPPING = "The folder service is stopping; try again";
-export const SEARCH_RUNNING = 12;
+/** Search pages (keyholes S4, search for every run): at most this many run at once on the node's one event loop, each
+ * giving it a turn every 10 ms, so every other machine's request waits at most about 40 ms between them; at most
+ * SEARCH_WAITING more wait their turn, each for at most SEARCH_WAIT_MS, in the order they came. */
+export const SEARCH_RUNNING = 4;
 const SEARCH_WAITING = 32;
 const SEARCH_WAIT_MS = 20_000;
 /** Paths the trees of the node's run views (each searching run's) may hold in all: about 670 bytes a path, so about
@@ -1530,7 +1533,11 @@ export class FolderService {
 					throw error;
 				});
 				view.handles.delete(handle);
-				for (const key of [...view.uploads.keys()]) if (key.startsWith(`${handle}:`)) view.uploads.delete(key);
+				for (const [key, upload] of view.uploads)
+					if (key.startsWith(`${handle}:`)) {
+						upload.upload?.abort();
+						view.uploads.delete(key);
+					}
 				const path = node.open === 0 ? this.#pathOfNode(view, node) : undefined;
 				// Staged as a boundary stages it, so a boundary meanwhile joins it rather than checking the bytes again. A
 				// coding view's close waits for its check as long as a boundary does at most: a large pack's goes on.

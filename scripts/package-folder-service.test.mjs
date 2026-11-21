@@ -63,17 +63,13 @@ test("packages the folder service, the folder program, the units and the install
 		const checked = spawnSync(process.execPath, ["--check", join(destination, "qorpera-folder-service.cjs")], { encoding: "utf8" });
 		assert.equal(checked.status, 0, checked.stderr);
 		// Outside systemd it refuses to start. It loads under the unit's flags (--jitless: no WebAssembly) to get there.
-		const unitFlags = ["--jitless", "--enable-experimental-regexp-engine"];
+		const unitFlags = ["--jitless"];
 		const unconfigured = spawnSync(process.execPath, [...unitFlags, join(destination, "qorpera-folder-service.cjs")], {
 			encoding: "utf8",
 			env: { PATH: process.env.PATH },
 		});
 		assert.notEqual(unconfigured.status, 0);
 		assert.match(unconfigured.stderr, /CREDENTIALS_DIRECTORY is not set/);
-		const regexEngine = spawnSync(process.execPath, [...unitFlags, "-e", 'new RegExp("foo|bar", "l")'], {
-			encoding: "utf8",
-		});
-		assert.equal(regexEngine.status, 0, regexEngine.stderr);
 
 		// The installers' pins are the units' hashes.
 		const pins = {
@@ -100,10 +96,8 @@ test("packages the folder service, the folder program, the units and the install
 		for (const line of ["ProtectSystem=strict", "NoNewPrivileges=yes", "LimitCORE=0", "CapabilityBoundingSet=", "MemoryDenyWriteExecute=yes"])
 			assert.match(service, new RegExp(`^${line}$`, "m"));
 		assert.match(service, /^RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6$/m);
-		assert.match(
-			service,
-			/^ExecStart=\/usr\/bin\/node --jitless --enable-experimental-regexp-engine \/opt\/qorpera-folder-service\/qorpera-folder-service\.cjs$/m,
-		);
+		// Patterns off as committed: no --enable-experimental-regexp-engine (above).
+		assert.match(service, /^ExecStart=\/usr\/bin\/node --jitless \/opt\/qorpera-folder-service\/qorpera-folder-service\.cjs$/m);
 		assert.ok(!/SupplementaryGroups/.test(service), "the service never holds LXD's group");
 		assert.match(service, /^StartLimitIntervalSec=0$/m);
 		assert.match(service, /^LoadCredential=qorpera-supabase-service-key:\/etc\/qorpera-folder-service\/supabase-key$/m);

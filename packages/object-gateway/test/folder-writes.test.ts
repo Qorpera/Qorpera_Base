@@ -56,12 +56,13 @@ async function fixture(
 		readOnly?: boolean;
 		now?: () => number;
 		platform?: boolean;
+		cacheBytes?: number;
 		wrapUploads?: (inner: FakeUploads) => FolderUploads;
 	} = {},
 ) {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-folder-writes-"));
 	const core = new FakeCore();
-	const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
+	const objects = new NasObjects({ root, cacheBytes: options.cacheBytes ?? 64 * 1024 * 1024 });
 	const uploads = new FakeUploads(root, core);
 	const folderUploads = options.wrapUploads ? options.wrapUploads(uploads) : uploads;
 	const start = () =>
@@ -2186,6 +2187,45 @@ describe("write-through ByteCache and sliding-window staging", () => {
 		);
 		expect(objects.has(PROFILE, failedSha)).toBe(false);
 		await view.close(failedHandle.handle, 0);
+	});
+
+	it("aborts in-flight multi-part uploads on close so the upload buffer budget never leaks", async () => {
+		const { objects, open } = await fixture({ cacheBytes: 1024 });
+		const view = await open();
+		for (let i = 0; i < 4; i++) {
+			const partial = Buffer.alloc(512, 0x30 + i);
+			const opened = await view.open({ path: `aborted-${i}.bin`, create: true, exclusive: false, truncate: true });
+			await view.chunk({
+				handle: opened.handle,
+				index: 0,
+				sha256: hashOf(partial),
+				bytes: partial.byteLength,
+				offset: 0,
+				data: partial.subarray(0, 256),
+			});
+			await view.close(opened.handle, 0);
+		}
+		const complete = Buffer.alloc(512, 0x7a);
+		const completeSha = hashOf(complete);
+		const opened = await view.open({ path: "complete.bin", create: true, exclusive: false, truncate: true });
+		await view.chunk({
+			handle: opened.handle,
+			index: 0,
+			sha256: completeSha,
+			bytes: complete.byteLength,
+			offset: 0,
+			data: complete.subarray(0, 256),
+		});
+		await view.chunk({
+			handle: opened.handle,
+			index: 0,
+			sha256: completeSha,
+			bytes: complete.byteLength,
+			offset: 256,
+			data: complete.subarray(256),
+		});
+		expect(objects.has(PROFILE, completeSha)).toBe(true);
+		await view.close(opened.handle, complete.byteLength);
 	});
 
 	it("stages remaining files past STAGING_PARALLEL without stalling behind one slow file", async () => {

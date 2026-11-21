@@ -151,13 +151,13 @@ export function mediaTypeOf(name: string): string {
 	return (extension && known[extension]) || "application/octet-stream";
 }
 
+const UPLOAD_BUFFER_CAP_BYTES = 32 * 1024 * 1024;
+
 /**
  * Staging for one node's views (RUNTIME-FOLDER-WRITES.md, "Pending bytes"): a chunk sent while its file is still open
  * goes under an intent of its own (a one-chunk manifest, never sealed); a closed file's manifest goes under the file's
  * intent, which holds the chunks the view put already (3a) and is sealed. Every intent is the view's actor's.
  */
-const UPLOAD_BUFFER_CAP_BYTES = 32 * 1024 * 1024;
-
 export class FolderStaging {
 	readonly #core: FolderCore;
 	readonly #uploads: FolderUploads;
