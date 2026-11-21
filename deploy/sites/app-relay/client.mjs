@@ -74,6 +74,7 @@ function connect() {
 	ws.binaryType = "arraybuffer";
 	current = ws;
 	const streams = new Map(); // stream id -> the request to the app
+	const uploadClosed = new WeakSet();
 	const send = (type, stream, payload) => {
 		if (ws.readyState === WebSocket.OPEN) ws.send(message(type, stream, payload));
 	};
@@ -127,7 +128,7 @@ function connect() {
 		else if (type === HEAD) start(id, payload);
 		else if (type === BODY) {
 			const app = streams.get(id);
-			if (!app || app.destroyed || app.writableEnded) return;
+			if (!app || app.destroyed || app.writableEnded || uploadClosed.has(app)) return;
 			let totalBuffered = 0;
 			for (const stream of streams.values()) totalBuffered += stream.writableLength;
 			// WHY: Bound aggregate local upload buffering (64 MiB) while still allowing any single valid 10 MiB delayed-read upload.
@@ -140,7 +141,7 @@ function connect() {
 			app.write(payload);
 		} else if (type === END) {
 			const app = streams.get(id);
-			if (app && !app.destroyed && !app.writableEnded) app.end();
+			if (app && !app.destroyed && !app.writableEnded && !uploadClosed.has(app)) app.end();
 		} else if (type === RESET) {
 			const app = streams.get(id);
 			streams.delete(id);
@@ -196,6 +197,8 @@ function connect() {
 		};
 		app.on("response", (response) => {
 			answered = true;
+			// WHY: Once the app rejects a request with 4xx/5xx, stop writing upload chunks so a closed app socket does not TCP-RST unread response bytes.
+			if ((response.statusCode ?? 0) >= 400) uploadClosed.add(app);
 			if (!appAnswers) console.log(`The app on port ${port} answers again`);
 			appAnswers = true;
 			const headers = [];
@@ -218,6 +221,7 @@ function connect() {
 				if (streams.get(id) !== app) return;
 				streams.delete(id);
 				send(END, id);
+				if (!app.writableEnded) app.destroy();
 			});
 			// The app broke off its answer.
 			response.on("error", reset);

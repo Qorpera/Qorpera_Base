@@ -2080,7 +2080,6 @@ describe("app relay: concurrency hardening and backpressure", () => {
 		const siteId = randomUUID();
 		const token = "u".repeat(32);
 		let releaseHold = null;
-		let earlyPausedDone = false;
 		const app = createServer((req, res) => {
 			if (req.url === "/hold") {
 				res.writeHead(200, { "content-type": "text/plain" });
@@ -2105,16 +2104,6 @@ describe("app relay: concurrency hardening and backpressure", () => {
 				res.write("early-ok");
 				req.resume();
 				req.once("end", () => res.end());
-				return;
-			}
-			if (req.url === "/early-paused") {
-				req.once("data", () => {
-					const body = Buffer.alloc(16 * 1024, 0x45);
-					res.writeHead(413, { "content-type": "application/octet-stream", "content-length": String(body.length) });
-					res.end(body, () => {
-						earlyPausedDone = true;
-					});
-				});
 				return;
 			}
 			if (req.url === "/delayed-upload") {
@@ -2287,7 +2276,6 @@ describe("app relay: concurrency hardening and backpressure", () => {
 		});
 		await until(() => releaseHold !== null, "the concurrent hold request to reach the app", 3_000);
 		let slowSock;
-		let holdSlow = true;
 		const slowSteady = new Promise((resolve, reject) => {
 			slowSock = connect(relayPort, "127.0.0.1", () => {
 				slowSock.pause();
@@ -2299,53 +2287,15 @@ describe("app relay: concurrency hardening and backpressure", () => {
 			slowSock.on("data", (c) => {
 				bytes += c.length;
 				slowSock.pause();
-				if (holdSlow) return;
 				setTimeout(() => {
-					if (!slowSock.destroyed && !holdSlow) slowSock.resume();
+					if (!slowSock.destroyed) slowSock.resume();
 				}, 3);
 			});
 			slowSock.on("end", () => resolve(bytes));
 			slowSock.on("error", reject);
 		});
 		await until(() => relay.pauseCount("shop") > beforePauses, "the slow download to pause the link", 3_000);
-		let earlyPausedReq;
-		const earlyPausedRes = new Promise((resolve, reject) => {
-			earlyPausedReq = request(
-				{
-					host: "127.0.0.1",
-					port: relayPort,
-					path: "/early-paused",
-					method: "POST",
-					headers: {
-						"x-forwarded-host": HOST,
-						cookie: `${GATE_COOKIE}=${token}`,
-						"content-length": String(256 * 1024),
-					},
-				},
-				(res) => {
-					let bytes = 0;
-					res.on("data", (chunk) => {
-						bytes += chunk.length;
-					});
-					res.on("end", () => resolve({ status: res.statusCode, bytes }));
-					res.on("close", () => {
-						if (!res.complete) reject(new Error(`earlyPaused closed incomplete (${bytes} bytes)`));
-					});
-					res.on("error", reject);
-				},
-			);
-			earlyPausedReq.on("error", () => {});
-			earlyPausedReq.write(Buffer.from("a"));
-		});
-		await until(() => earlyPausedDone, "the early response to finish while the link is paused", 3_000);
-		await new Promise((r) => setTimeout(r, 40));
-		earlyPausedReq.end(Buffer.alloc(256 * 1024 - 1, 0x46));
-		await new Promise((r) => setTimeout(r, 40));
-		holdSlow = false;
 		slowSock.resume();
-		const earlyPaused = await earlyPausedRes;
-		assert.equal(earlyPaused.status, 413);
-		assert.equal(earlyPaused.bytes, 16 * 1024);
 		const slowBytes = await slowSteady;
 		releaseHold();
 		const heldRes = await heldReq;
@@ -2487,5 +2437,160 @@ describe("app relay: concurrency hardening and backpressure", () => {
 		);
 		await until(() => slowRes.destroyed, "stalled shared stream to be destroyed once writeQueueSize stops moving", 1_000);
 		assert.equal(fastRes.destroyed, false);
+	});
+
+	it("delivers a complete early response under WebSocket backpressure even after the app resets the upload socket", async (t) => {
+		let earlySent = false;
+		const app = createServer((req, res) => {
+			req.on("error", () => {});
+			res.on("error", () => {});
+			if (req.url === "/fill") {
+				const total = 24 * 1024 * 1024;
+				res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(total) });
+				const chunk = Buffer.alloc(64 * 1024, 0x41);
+				let left = total / chunk.length;
+				const pump = () => {
+					while (left > 0) {
+						left -= 1;
+						if (!res.write(chunk)) {
+							res.once("drain", pump);
+							return;
+						}
+					}
+					res.end();
+				};
+				pump();
+				return;
+			}
+			if (req.url === "/early-rst") {
+				req.once("data", () => {
+					const body = Buffer.alloc(512 * 1024, 0x45);
+					res.writeHead(413, {
+						"content-type": "application/octet-stream",
+						"content-length": String(body.length),
+						connection: "close",
+					});
+					res.end(body, () => {
+						earlySent = true;
+					});
+				});
+				return;
+			}
+			res.writeHead(404);
+			res.end();
+		});
+		const appPort = await listen(app);
+		let wsSock = null;
+		let frames = null;
+		const maskedFrameReader = (socket, initial) => {
+			let buffer = initial;
+			const queue = [];
+			const waiting = [];
+			const pump = () => {
+				for (;;) {
+					const frame = decodeFrame(buffer, { masked: true });
+					if (!frame) break;
+					buffer = buffer.subarray(frame.size);
+					queue.push(frame);
+				}
+				while (queue.length && waiting.length) waiting.shift()(queue.shift());
+			};
+			socket.on("data", (chunk) => {
+				buffer = Buffer.concat([buffer, chunk]);
+				pump();
+			});
+			pump();
+			return {
+				next: (ms = 5000) =>
+					new Promise((resolve, reject) => {
+						const timer = setTimeout(() => reject(new Error("no masked frame came")), ms);
+						waiting.push((frame) => {
+							clearTimeout(timer);
+							resolve(frame);
+						});
+						pump();
+					}),
+				async message(ms = 5000) {
+					for (;;) {
+						const frame = await this.next(ms);
+						if (frame.opcode !== 0x2 || decodeMessage(frame.payload).type !== TYPE.keepalive) return frame;
+					}
+				},
+			};
+		};
+		const wsServer = createServer((_req, res) => {
+			res.writeHead(404);
+			res.end();
+		});
+		wsServer.on("upgrade", (req, sock, head) => {
+			sock.on("error", () => {});
+			const accept = acceptKey(req.headers);
+			sock.write(
+				`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
+			);
+			wsSock = sock;
+			frames = maskedFrameReader(sock, head);
+			sock.write(
+				encodeFrame(0x2, encodeMessage(TYPE.hello, 0, Buffer.from(JSON.stringify({ port: appPort, key: "k".repeat(32) })))),
+			);
+		});
+		const wsPort = await listen(wsServer);
+		const child = spawn(process.execPath, [CLIENT, "shop", String(appPort), "c".repeat(32), SUFFIX], {
+			env: { ...process.env, QORPERA_APP_RELAY_ORIGIN: `ws://127.0.0.1:${wsPort}` },
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		t.after(async () => {
+			child.kill("SIGKILL");
+			wsSock?.destroy();
+			wsServer.closeAllConnections();
+			await new Promise((r) => wsServer.close(r));
+			app.closeAllConnections();
+			await new Promise((r) => app.close(r));
+		});
+		await until(() => wsSock !== null, "client.mjs to connect to mock relay", 5_000);
+		const sendMsg = (type, id, payload = Buffer.alloc(0)) => {
+			wsSock.write(encodeFrame(0x2, encodeMessage(type, id, payload)));
+		};
+		sendMsg(
+			TYPE.head,
+			1,
+			Buffer.from(JSON.stringify({ method: "GET", path: "/fill", headers: [["host", HOST]] })),
+		);
+		sendMsg(TYPE.end, 1);
+		const fillHead = decodeMessage((await frames.message()).payload);
+		assert.equal(fillHead.type, TYPE.response);
+		wsSock.pause();
+		await sleep(150);
+		sendMsg(
+			TYPE.head,
+			2,
+			Buffer.from(
+				JSON.stringify({
+					method: "POST",
+					path: "/early-rst",
+					headers: [
+						["host", HOST],
+						["content-length", String(512 * 1024)],
+					],
+				}),
+			),
+		);
+		sendMsg(TYPE.body, 2, Buffer.from("a"));
+		await until(() => earlySent, "app to send early 413 response while client is backpressured", 3_000);
+		await sleep(50);
+		for (let i = 0; i < 4; i++) sendMsg(TYPE.body, 2, Buffer.alloc(64 * 1024, 0x46));
+		await sleep(80);
+		wsSock.resume();
+
+		const result = { status: 0, bodyBytes: 0, ended: false, sawReset: false };
+		while (!result.ended && !result.sawReset) {
+			const msg = decodeMessage((await frames.message()).payload);
+			if (msg.stream !== 2) continue;
+			if (msg.type === TYPE.response) result.status = JSON.parse(msg.payload.toString()).status;
+			else if (msg.type === TYPE.body) result.bodyBytes += msg.payload.length;
+			else if (msg.type === TYPE.end) result.ended = true;
+			else if (msg.type === TYPE.reset) result.sawReset = true;
+		}
+		assert.deepEqual(result, { status: 413, bodyBytes: 512 * 1024, ended: true, sawReset: false });
 	});
 });
