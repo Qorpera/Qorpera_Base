@@ -321,7 +321,7 @@ describe("the coding composition of a native turn", () => {
 					"keep it small (a few hundred KB; one over 4 MB is not used), commit it under docs/changes/ with a name of its own, and give its path in the repository.",
 					"Neither is required: never hold work back for them.",
 					"For UI or web changes, verify what you built visually before coding_finish: start a local dev or preview server, capture PNG, JPEG, or WebP screenshots with the machine's headless Chromium or Playwright",
-					"call coding_run_command with inspectImage set to that relative workspace path to view each screenshot directly in your context",
+					"call coding_run_command with inspectImage set to that relative workspace path (using a fresh operationKey for each new or re-captured screenshot) to view each screenshot directly in your context",
 				])
 					expect(options.runtimeInstructions).toContain(rule);
 				await options.beginExecution(

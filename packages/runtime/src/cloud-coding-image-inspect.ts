@@ -10,7 +10,13 @@ import {
 import type { CloudCodingCommandGateway } from "./cloud-coding-command-tools.ts";
 import { cloudCommandFits, fitCloudCommandPage } from "./cloud-command-page-fit.ts";
 import { cloudControlPause } from "./cloud-control-errors.ts";
-import { type FolderImageFormat, FolderImageRefusal, folderImageView, oneImageAtATime } from "./cloud-folder-images.ts";
+import {
+	type FolderImageFormat,
+	FolderImageRefusal,
+	type FolderImageView,
+	folderImageView,
+	oneImageAtATime,
+} from "./cloud-folder-images.ts";
 import { type CloudNativeToolIdentity, cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import {
 	CloudToolArgumentRefusal,
@@ -98,7 +104,7 @@ function shellQuote(value: string): string {
 }
 
 export function buildInspectImageCommand(relativePath: string): string {
-	return `if [ -x /usr/bin/node ]; then NODE_BIN=/usr/bin/node; else NODE_BIN=node; fi; "$NODE_BIN" -e ${shellQuote(INSPECT_IMAGE_SCRIPT)} -- ${shellQuote(relativePath)}`;
+	return `if [ -x /usr/bin/node ]; then NODE_BIN=/usr/bin/node; else NODE_BIN=node; fi; NODE_OPTIONS= "$NODE_BIN" -e ${shellQuote(INSPECT_IMAGE_SCRIPT)} -- ${shellQuote(relativePath)} 2>/dev/null`;
 }
 
 export function decodeInspectImageOutput(rawOutput: string): Buffer | null {
@@ -378,17 +384,15 @@ export async function inspectCodingWorkspaceImage(options: {
 	const rawBytes = decodeInspectImageOutput(chunks.join(""));
 	if (!rawBytes) return refuse("CODING_IMAGE_UNREADABLE: the workspace image payload was invalid or truncated.");
 
-	const view = await oneImageAtATime(context.signal, async () => {
-		try {
-			return folderImageView(rawBytes);
-		} catch (error) {
-			if (!(error instanceof FolderImageRefusal)) throw error;
-			await checkAuthority(context);
-			throw new CloudToolRefusal(
-				`${error.reason === "too_large" ? "CODING_IMAGE_TOO_LARGE" : "CODING_IMAGE_UNREADABLE"}: ${error.message}.`,
-			);
-		}
-	});
+	let view: FolderImageView;
+	try {
+		view = await oneImageAtATime(context.signal, async () => folderImageView(rawBytes));
+	} catch (error) {
+		if (!(error instanceof FolderImageRefusal)) throw error;
+		return refuse(
+			`${error.reason === "too_large" ? "CODING_IMAGE_TOO_LARGE" : "CODING_IMAGE_UNREADABLE"}: ${error.message}.`,
+		);
+	}
 	if (!SUPPORTED_FORMATS.has(view.format))
 		return refuse("CODING_IMAGE_UNSUPPORTED_FORMAT: only PNG, JPEG, and WebP images can be inspected.");
 
@@ -397,6 +401,7 @@ export async function inspectCodingWorkspaceImage(options: {
 		schema: CODING_INSPECT_IMAGE_SCHEMA,
 		kind: "image",
 		path: request.inspectImage,
+		commandId: current.commandId,
 		mediaType: `image/${view.format}`,
 		totalBytes: rawBytes.byteLength,
 		width: view.width,

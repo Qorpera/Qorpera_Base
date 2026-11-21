@@ -512,6 +512,7 @@ describe("coding_run_command inspectImage visual screenshot inspection", () => {
 		options: {
 			pageBytes?: number;
 			startEmpty?: boolean;
+			env?: NodeJS.ProcessEnv;
 			authorize?: CloudCodingCommandGateway["authorize"];
 			pollMs?: number;
 			timeoutGraceMs?: number;
@@ -577,21 +578,24 @@ describe("coding_run_command inspectImage visual screenshot inspection", () => {
 		const gateway: CloudCodingCommandGateway = {
 			authorize: vi.fn<CloudCodingCommandGateway["authorize"]>(options.authorize ?? (async () => undefined)),
 			start: vi.fn<CloudCodingCommandGateway["start"]>(async (_scope, input) => {
-				let stdout = "";
+				let outputText = "";
 				let exitCode = 0;
 				try {
 					const ran = await execFileAsync("/bin/bash", ["--noprofile", "--norc", "-c", input.command], {
 						cwd: workspace,
+						env: { ...process.env, ...options.env },
 						maxBuffer: 16 * 1024 * 1024,
 						encoding: "utf8",
 					});
-					stdout = ran.stdout;
+					outputText = `${ran.stdout}${ran.stderr}`;
 				} catch (error) {
-					const err = error as { code?: number; stdout?: string };
+					const err = error as { code?: number; stdout?: string; stderr?: string };
 					exitCode = typeof err.code === "number" && err.code >= 1 && err.code <= 255 ? err.code : 1;
-					stdout = typeof err.stdout === "string" ? err.stdout : "";
+					const stdout = typeof err.stdout === "string" ? err.stdout : "";
+					const stderr = typeof err.stderr === "string" ? err.stderr : "";
+					outputText = `${stdout}${stderr}`;
 				}
-				const buf = Buffer.from(stdout, "utf8");
+				const buf = Buffer.from(outputText, "utf8");
 				const state = exitCode === 0 ? "succeeded" : "failed";
 				logs.set(input.commandId, { inputSha256: input.inputSha256, state, exitCode, buf });
 				const firstLen = options.startEmpty ? 0 : Math.min(buf.length, options.pageBytes ?? 4096);
@@ -692,7 +696,10 @@ describe("coding_run_command inspectImage visual screenshot inspection", () => {
 	}
 
 	it("returns sanitized multimodal PNG images for PNG, JPEG, and WebP screenshots and strips metadata", async () => {
-		const f = await workspaceFixture({ pageBytes: 120 });
+		const f = await workspaceFixture({
+			pageBytes: 120,
+			env: { NODE_OPTIONS: "--trace-warnings --experimental-vm-modules" },
+		});
 		try {
 			expect(f.boundary.captureImagesEnabled).toBe(true);
 			await mkdir(join(f.workspace, "docs", "changes"), { recursive: true });
@@ -725,6 +732,9 @@ describe("coding_run_command inspectImage visual screenshot inspection", () => {
 					schema: CODING_INSPECT_IMAGE_SCHEMA,
 					kind: "image",
 					path: rel,
+					commandId: expect.stringMatching(
+						/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+					),
 					mediaType,
 					totalBytes: rawBytes.byteLength,
 					width: expectedWidth,
@@ -819,6 +829,21 @@ describe("coding_run_command inspectImage visual screenshot inspection", () => {
 			expect(res2.success).toBe(true);
 			expect(res2.contentItems).toHaveLength(2);
 			expect(f.gateway.start).toHaveBeenCalledTimes(1);
+			const answer1 = JSON.parse(JSON.parse(res1.contentItems[0].text).content.text);
+			const answer2 = JSON.parse(JSON.parse(res2.contentItems[0].text).content.text);
+			expect(answer2.commandId).toBe(answer1.commandId);
+
+			await writeFile(join(f.workspace, "shot.png"), makeSolidPng(12, 10));
+			const res3 = await f.boundary.invoke("call-auth-fresh", "qorpera", "coding_run_command", {
+				operationKey: "inspect-auth-2",
+				inspectImage: "shot.png",
+			});
+			expect(res3.success).toBe(true);
+			expect(f.gateway.start).toHaveBeenCalledTimes(2);
+			const answer3 = JSON.parse(JSON.parse(res3.contentItems[0].text).content.text);
+			expect(answer3.commandId).not.toBe(answer1.commandId);
+			expect(answer3.width).toBe(12);
+			expect(answer3.height).toBe(10);
 
 			const conflict = await f.boundary.invoke("call-auth-3", "qorpera", "coding_run_command", {
 				operationKey: "inspect-auth",

@@ -1362,9 +1362,6 @@ export class CloudNativeToolBoundary {
 				response.contentItems.push({ type: "inputImage", imageUrl });
 			}
 			if (content.image) {
-				// Only a tool that shows images, after an answer that names it: company_read's cites the read it showed, and a
-				// runtime tool's (machine_screen, 20260930708000) names the image's hash in its JSON. The image is released
-				// with that answer, and the context fence checks the same pairing on every later request.
 				const { png, sha256 } = content.image;
 				const named =
 					tool.source === "company_file"
