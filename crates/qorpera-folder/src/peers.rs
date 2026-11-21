@@ -11,9 +11,10 @@
 use crate::local::LOCAL;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::ffi::CString;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::os::fd::FromRawFd;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -262,6 +263,78 @@ fn random() -> io::Result<u32> {
 	fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
 	Ok(u32::from_ne_bytes(bytes))
 }
+struct ProgramCache {
+	watch: Option<OwnedFd>,
+	cached: Option<Vec<String>>,
+}
+
+enum WatchState {
+	Clean,
+	Dirty,
+	Broken,
+}
+
+fn open_watch(dir: &Path) -> Option<OwnedFd> {
+	let path = CString::new(dir.as_os_str().as_bytes()).ok()?;
+	// SAFETY: inotify_init1 has no preconditions and returns a new fd or -1.
+	let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+	if fd < 0 {
+		return None;
+	}
+	// SAFETY: `fd` is a new inotify descriptor owned here.
+	let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+	let mask = libc::IN_CREATE
+		| libc::IN_DELETE
+		| libc::IN_MOVED_TO
+		| libc::IN_MOVED_FROM
+		| libc::IN_DELETE_SELF
+		| libc::IN_MOVE_SELF;
+	// SAFETY: `fd` is an open inotify descriptor and `path` is NUL-terminated.
+	let wd = unsafe { libc::inotify_add_watch(fd.as_raw_fd(), path.as_ptr(), mask) };
+	if wd < 0 {
+		return None;
+	}
+	Some(fd)
+}
+
+fn drain_watch(fd: &OwnedFd) -> WatchState {
+	let mut buf = [0u64; 64];
+	let ptr = buf.as_mut_ptr().cast::<u8>();
+	let cap = std::mem::size_of_val(&buf);
+	let mut saw_event = false;
+	loop {
+		// SAFETY: `fd` is open and `buf` holds `cap` writable bytes.
+		let n = unsafe { libc::read(fd.as_raw_fd(), ptr.cast(), cap) };
+		if n > 0 {
+			saw_event = true;
+			let mut off = 0usize;
+			let end = n as usize;
+			while off + std::mem::size_of::<libc::inotify_event>() <= end {
+				// SAFETY: `off + size_of::<inotify_event>() <= end <= cap`; read_unaligned handles any alignment.
+				let ev = unsafe { std::ptr::read_unaligned(ptr.add(off).cast::<libc::inotify_event>()) };
+				if ev.mask & (libc::IN_IGNORED | libc::IN_DELETE_SELF | libc::IN_MOVE_SELF) != 0 {
+					return WatchState::Broken;
+				}
+				let step = std::mem::size_of::<libc::inotify_event>().saturating_add(ev.len as usize);
+				if step == 0 {
+					return WatchState::Broken;
+				}
+				off = off.saturating_add(step);
+			}
+			continue;
+		}
+		if n == 0 {
+			return WatchState::Broken;
+		}
+		let err = io::Error::last_os_error();
+		match err.kind() {
+			io::ErrorKind::WouldBlock => return if saw_event { WatchState::Dirty } else { WatchState::Clean },
+			io::ErrorKind::Interrupted => continue,
+			_ => return WatchState::Broken,
+		}
+	}
+}
+
 /// Tells the other programs listening in the programs folder. Its connections stay open for the next change, one per
 /// request at a time, and a change told `later` goes from a thread of its own.
 pub struct Teller {
@@ -270,6 +343,7 @@ pub struct Teller {
 	wait: Duration,
 	seq: AtomicU64,
 	idle: Mutex<HashMap<String, Vec<BufReader<UnixStream>>>>,
+	programs: Mutex<ProgramCache>,
 	later: Mutex<mpsc::Sender<Vec<Change>>>,
 }
 
@@ -293,6 +367,7 @@ impl Teller {
 			wait,
 			seq: AtomicU64::new(1),
 			idle: Mutex::new(HashMap::new()),
+			programs: Mutex::new(ProgramCache { watch: open_watch(dir), cached: None }),
 			later: Mutex::new(later),
 		});
 		let told = teller.clone();
@@ -313,6 +388,13 @@ impl Teller {
 			return Ok(());
 		}
 		let mut programs = self.programs()?;
+		if programs.is_empty() {
+			let mut idle = self.idle.lock().unwrap();
+			if !idle.is_empty() {
+				idle.clear();
+			}
+			return Ok(());
+		}
 		// A program that removed its socket and ended is never listed again: its kept connections go now.
 		self.idle.lock().unwrap().retain(|name, _| programs.contains(name));
 		let mut failed = None;
@@ -365,12 +447,31 @@ impl Teller {
 
 	/// The listening programs other than this one. A dot-name is not listening yet.
 	fn programs(&self) -> io::Result<Vec<String>> {
+		let mut cache = self.programs.lock().unwrap();
+		if let Some(fd) = &cache.watch {
+			match drain_watch(fd) {
+				WatchState::Clean => {
+					if let Some(cached) = &cache.cached {
+						return Ok(cached.clone());
+					}
+				}
+				WatchState::Dirty => {}
+				WatchState::Broken => {
+					cache.watch = None;
+					cache.cached = None;
+				}
+			}
+		}
+		cache.cached = None;
 		let mut names = Vec::new();
 		for entry in fs::read_dir(&self.dir)? {
 			let name = entry?.file_name().to_string_lossy().into_owned();
 			if !name.starts_with('.') && name != self.own {
 				names.push(name);
 			}
+		}
+		if cache.watch.is_some() {
+			cache.cached = Some(names.clone());
 		}
 		Ok(names)
 	}
@@ -620,5 +721,20 @@ mod tests {
 		assert_eq!(heard[0], Heard::Late(Change::ino(A)));
 		assert_eq!(heard.len(), 10);
 		assert!(heard[1..].iter().all(|h| matches!(h, Heard::Malformed(_))), "{heard:?}");
+	}
+
+	#[test]
+	fn empty_teller_skips_serialization_and_sees_new_listeners_immediately() {
+		let dir = programs();
+		fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+		let a = Teller::new(&dir, "a").unwrap();
+		a.tell(&[Change::ino(A)]).unwrap();
+		assert_eq!(a.seq.load(Ordering::Relaxed), 1);
+		let (b, heard_b) = listening(&dir);
+		a.tell(&[Change::ino(B)]).unwrap();
+		assert_eq!(*heard_b.lock().unwrap(), vec![Heard::Change(Change::ino(B))]);
+		b.remove();
+		a.tell(&[Change::ino(A)]).unwrap();
+		assert!(a.idle.lock().unwrap().is_empty());
 	}
 }

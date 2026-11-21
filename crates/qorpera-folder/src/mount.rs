@@ -41,12 +41,12 @@ use fuser::{
 	ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, Request, SessionACL,
 	TimeOrNow, WriteFlags,
 };
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// A raced name is dropped again at 1, 2, 4 … ms after its change, CHASE_STEPS times (the last about 16 s after it);
@@ -219,6 +219,148 @@ impl Unpublished {
 	}
 }
 
+const RETRY_BASE: Duration = Duration::from_millis(100);
+const RETRY_MAX: Duration = Duration::from_secs(10);
+
+enum RetryJob {
+	Close { ino: u64, open: Arc<Mutex<Open>> },
+	Discard { handle: u32 },
+}
+
+struct RetryEntry<J> {
+	due: Instant,
+	seq: u64,
+	wait: Duration,
+	job: J,
+}
+
+impl<J> PartialEq for RetryEntry<J> {
+	fn eq(&self, other: &Self) -> bool {
+		self.due == other.due && self.seq == other.seq
+	}
+}
+impl<J> Eq for RetryEntry<J> {}
+impl<J> PartialOrd for RetryEntry<J> {
+	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+		Some(self.cmp(other))
+	}
+}
+impl<J> Ord for RetryEntry<J> {
+	fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+		other.due.cmp(&self.due).then_with(|| other.seq.cmp(&self.seq))
+	}
+}
+
+struct RetryState<J> {
+	heap: BinaryHeap<RetryEntry<J>>,
+	next_seq: u64,
+	started: bool,
+	stopped: bool,
+}
+
+struct RetryQueue<J> {
+	state: Arc<(Mutex<RetryState<J>>, Condvar)>,
+	initial_wait: Duration,
+	max_wait: Duration,
+}
+
+impl<J: Send + 'static> RetryQueue<J> {
+	fn new() -> Self {
+		Self::with_backoff(RETRY_BASE, RETRY_MAX)
+	}
+
+	fn with_backoff(initial_wait: Duration, max_wait: Duration) -> Self {
+		Self {
+			state: Arc::new((
+				Mutex::new(RetryState { heap: BinaryHeap::new(), next_seq: 0, started: false, stopped: false }),
+				Condvar::new(),
+			)),
+			initial_wait,
+			max_wait,
+		}
+	}
+
+	fn push<F>(&self, job: J, make_runner: impl FnOnce() -> F)
+	where
+		F: Fn(&J) -> bool + Send + 'static,
+	{
+		let (lock, wake) = &*self.state;
+		let mut state = lock.lock().unwrap();
+		if state.stopped {
+			return;
+		}
+		let seq = state.next_seq;
+		state.next_seq += 1;
+		state.heap.push(RetryEntry { due: Instant::now() + self.initial_wait, seq, wait: self.initial_wait, job });
+		let spawn = !state.started;
+		if spawn {
+			state.started = true;
+		}
+		wake.notify_all();
+		drop(state);
+		if spawn {
+			let run = make_runner();
+			let max_wait = self.max_wait;
+			let shared = self.state.clone();
+			if let Err(e) = std::thread::Builder::new().name("close-retry".into()).spawn(move || {
+				let (lock, wake) = &*shared;
+				loop {
+					let entry = {
+						let mut state = lock.lock().unwrap();
+						loop {
+							if state.stopped {
+								return;
+							}
+							match state.heap.peek() {
+								None => {
+									state = wake.wait(state).unwrap();
+								}
+								Some(top) => {
+									let now = Instant::now();
+									if top.due <= now {
+										break state.heap.pop().unwrap();
+									}
+									let wait = top.due.saturating_duration_since(now);
+									let (next, _) = wake.wait_timeout(state, wait).unwrap();
+									state = next;
+								}
+							}
+						}
+					};
+					if !run(&entry.job) {
+						let mut state = lock.lock().unwrap();
+						if !state.stopped {
+							let next_wait = (entry.wait * 2).min(max_wait);
+							let seq = state.next_seq;
+							state.next_seq += 1;
+							state.heap.push(RetryEntry {
+								due: Instant::now() + next_wait,
+								seq,
+								wait: next_wait,
+								job: entry.job,
+							});
+						}
+					}
+				}
+			}) {
+				eprintln!("qorpera-folder: could not start close retry worker: {e}");
+				let mut state = lock.lock().unwrap();
+				state.started = false;
+			}
+		}
+	}
+}
+
+impl<J> Drop for RetryQueue<J> {
+	fn drop(&mut self) {
+		let (lock, wake) = &*self.state;
+		let mut state = lock.lock().unwrap();
+		state.stopped = true;
+		state.heap.clear();
+		wake.notify_all();
+	}
+}
+
 struct Shared {
 	tree: Mutex<Tree>,
 	link: Link,
@@ -248,6 +390,7 @@ struct Shared {
 	unpublished: Mutex<Unpublished>,
 	/// The kernel's cache of the caches, and the other programs sharing them (`mount/kernel.rs`).
 	kernel: kernel::Kernel,
+	retries: RetryQueue<RetryJob>,
 }
 
 impl Shared {
@@ -515,6 +658,19 @@ impl Shared {
 		Ok(())
 	}
 
+	fn enqueue_retry(self: &Arc<Self>, job: RetryJob) {
+		self.retries.push(job, || {
+			let weak: Weak<Self> = Arc::downgrade(self);
+			move |job: &RetryJob| {
+				let Some(s) = weak.upgrade() else { return true };
+				match job {
+					RetryJob::Close { ino, open } => s.try_close(*ino, open).is_ok(),
+					RetryJob::Discard { handle } => !matches!(s.link.discard_write(*handle), Err(ref f) if again(f)),
+				}
+			}
+		});
+	}
+
 	/// A handle writing `ino` let go. The last one closes the file at the node, and the file is no longer written here.
 	/// A close the node does not take now (BUSY while a boundary settles, the link down, the company paused) is tried
 	/// again until it does, so the node's handle is never left open; a handle opened on the file meanwhile takes it
@@ -529,17 +685,8 @@ impl Shared {
 		}
 		let Err(f) = self.try_close(ino, &open) else { return };
 		eprintln!("qorpera-folder: the node did not take a file's close now ({f}); trying again");
-		let s = self.clone();
-		std::thread::spawn(move || {
-			let mut wait = Duration::from_millis(100);
-			loop {
-				std::thread::sleep(wait);
-				if s.try_close(ino, &open).is_ok() {
-					return;
-				}
-				wait = (wait * 2).min(Duration::from_secs(10));
-			}
-		});
+		// WHY: Reuse a single retry worker instead of spawning a thread per failed close under node hiccups.
+		self.enqueue_retry(RetryJob::Close { ino, open });
 	}
 
 	/// One try at closing a file no handle writes at the node. Ok once nothing more is to be done: it closed, a new
@@ -592,17 +739,7 @@ impl Shared {
 			return;
 		}
 		eprintln!("qorpera-folder: the node did not take a draft's discard now ({f}); trying again");
-		let s = self.clone();
-		std::thread::spawn(move || {
-			let mut wait = Duration::from_millis(100);
-			loop {
-				std::thread::sleep(wait);
-				match s.link.discard_write(handle) {
-					Err(f) if again(&f) => wait = (wait * 2).min(Duration::from_secs(10)),
-					_ => return,
-				}
-			}
-		});
+		self.enqueue_retry(RetryJob::Discard { handle });
 	}
 }
 
@@ -1717,6 +1854,7 @@ pub fn run(mut link: Link, mut options: Options) -> Result<Stop, Failed> {
 		chased: chased.clone(),
 		unpublished: Mutex::new(Unpublished::default()),
 		kernel,
+		retries: RetryQueue::new(),
 	});
 	// Other programs on a shared cache folder can tell this one about their changes before it serves anything.
 	kernel::Kernel::start(&shared)
@@ -1906,5 +2044,44 @@ mod tests {
 		] {
 			assert!(!git_objects(path), "{path}");
 		}
+	}
+
+	#[test]
+	fn retry_queue_runs_many_jobs_on_a_single_worker_thread_and_stops_on_drop() {
+		use std::sync::atomic::AtomicUsize;
+		let queue = RetryQueue::with_backoff(Duration::from_millis(5), Duration::from_millis(20));
+		let attempts = Arc::new(AtomicUsize::new(0));
+		let completed = Arc::new(AtomicUsize::new(0));
+		let threads = Arc::new(Mutex::new(HashSet::new()));
+		let done_tx = Arc::new(Mutex::new(None::<mpsc::Sender<()>>));
+		let (tx, rx) = mpsc::channel();
+		*done_tx.lock().unwrap() = Some(tx);
+		for id in 0..64usize {
+			let attempts = attempts.clone();
+			let completed = completed.clone();
+			let threads = threads.clone();
+			let done_tx = done_tx.clone();
+			let seen = Arc::new(AtomicUsize::new(0));
+			queue.push((id, seen), move || {
+				move |(_, seen): &(usize, Arc<AtomicUsize>)| {
+					threads.lock().unwrap().insert(std::thread::current().id());
+					attempts.fetch_add(1, Ordering::SeqCst);
+					if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+						return false;
+					}
+					if completed.fetch_add(1, Ordering::SeqCst) + 1 == 64 {
+						if let Some(tx) = done_tx.lock().unwrap().take() {
+							let _ = tx.send(());
+						}
+					}
+					true
+				}
+			});
+		}
+		rx.recv_timeout(Duration::from_secs(5)).expect("all 64 retry jobs finish");
+		assert_eq!(completed.load(Ordering::SeqCst), 64);
+		assert_eq!(attempts.load(Ordering::SeqCst), 128);
+		assert_eq!(threads.lock().unwrap().len(), 1);
+		drop(queue);
 	}
 }
