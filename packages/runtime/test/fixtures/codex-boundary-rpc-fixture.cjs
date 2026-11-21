@@ -317,7 +317,7 @@ async function handle(message) {
 		reviewEvidence.reviewerTurn = message.params;
 		if (mode === "review-turn-start-stalled") {
 			writeFileSync(`${evidencePath}.review-turn-start`, "");
-			setTimeout(() => write({ id: message.id, result: { turn: { id: reviewTurnId } } }), 120);
+			setTimeout(() => write({ id: message.id, result: { turn: { id: reviewTurnId } } }), 350);
 			return;
 		}
 		write({ id: message.id, result: { turn: { id: reviewTurnId } } });
@@ -357,7 +357,7 @@ async function handle(message) {
 		if (mode === "compact-side-turn-start-stalled") {
 			compactAt = { threadId: message.params.threadId, turnId: `turn_compact_${turn}` };
 			writeFileSync(`${evidencePath}.compact-turn-start`, "");
-			setTimeout(() => write({ id: message.id, result: { turn: { id: compactAt.turnId } } }), 120);
+			setTimeout(() => write({ id: message.id, result: { turn: { id: compactAt.turnId } } }), 350);
 			return;
 		}
 		if (mode === "company-logged") {

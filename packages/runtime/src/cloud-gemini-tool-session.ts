@@ -304,6 +304,7 @@ async function withScopedSignal<T>(
 	parents: readonly AbortSignal[],
 	timeoutMs: number | undefined,
 	use: (signal: AbortSignal) => Promise<T>,
+	timeoutMessage = "Operation timed out",
 ): Promise<T> {
 	const controller = new AbortController();
 	const listeners: Array<readonly [AbortSignal, () => void]> = [];
@@ -318,7 +319,7 @@ async function withScopedSignal<T>(
 		listeners.push([parent, onAbort]);
 	}
 	if (!controller.signal.aborted && timeoutMs !== undefined) {
-		timer = setTimeout(() => controller.abort(new Error("Gemini API request timed out")), timeoutMs);
+		timer = setTimeout(() => controller.abort(new DOMException(timeoutMessage, "TimeoutError")), timeoutMs);
 		timer.unref?.();
 	}
 	try {
@@ -346,7 +347,7 @@ async function generateGeminiContent(options: {
 		const onCallerAbort = (): void => scoped.abort(options.signal.reason);
 		options.signal.addEventListener("abort", onCallerAbort, { once: true });
 		const requestTimer = setTimeout(
-			() => scoped.abort(new Error("Gemini API request timed out")),
+			() => scoped.abort(new DOMException("Gemini API request timed out", "TimeoutError")),
 			MAX_GEMINI_REQUEST_MS,
 		);
 		requestTimer.unref?.();
@@ -582,8 +583,11 @@ export async function runCloudGeminiToolSession(options: {
 				outputTokens: totalOutputTokens,
 			};
 			try {
-				const receipt = await withScopedSignal(flushSignal ? [flushSignal] : [], 10_000, (signal) =>
-					onUsage(snapshot, signal),
+				const receipt = await withScopedSignal(
+					flushSignal ? [flushSignal] : [],
+					10_000,
+					(signal) => onUsage(snapshot, signal),
+					"Gemini usage flush timed out",
 				);
 				if (!receipt) return false;
 				monthSpendMicrodollars = receipt.monthSpendMicrodollars;
@@ -915,6 +919,6 @@ export async function runCloudGeminiToolSession(options: {
 		}
 	};
 	return options.timeoutMs !== undefined
-		? withScopedSignal([options.signal], options.timeoutMs, runWithSession)
+		? withScopedSignal([options.signal], options.timeoutMs, runWithSession, "Gemini session timed out")
 		: runWithSession(options.signal);
 }

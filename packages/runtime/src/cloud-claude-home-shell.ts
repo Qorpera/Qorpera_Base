@@ -422,14 +422,20 @@ export class CloudClaudeHomeShell {
 		let onDrop: (() => void) | undefined;
 		try {
 			const line = await firstLine(socket, this.#signal);
-			if (line === undefined && (socket.destroyed || this.#signal.aborted)) return;
+			if (line === undefined && (socket.destroyed || this.#signal.aborted)) {
+				if (!socket.destroyed) socket.destroy();
+				return;
+			}
 			const request = line === undefined ? undefined : parseCloudClaudeShellRequest(line);
 			if (!request) {
 				this.counts.refused += 1;
 				fail("HOME_REQUEST_INVALID: the command could not be read, so it did not run.", 126);
 				return;
 			}
-			if (this.#signal.aborted || socket.destroyed) return;
+			if (this.#signal.aborted || socket.destroyed) {
+				if (!socket.destroyed) socket.destroy();
+				return;
+			}
 			this.#signal.addEventListener("abort", onRunAbort, { once: true });
 			socket.once("close", onSocketClose);
 			socket.resume();

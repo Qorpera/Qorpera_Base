@@ -801,4 +801,27 @@ describe("runCloudGeminiToolSession", () => {
 		expect(attempts).toBe(1);
 		expect(nativeRuntimeFailureMetadata(error)).toMatchObject({ category: "provider_failed" });
 	});
+
+	it("aborts with TimeoutError DOMException when timeoutMs expires so downstream classifiers report timeout", async () => {
+		const customFetch: typeof fetch = (_url, init) =>
+			new Promise<Response>((_resolve, reject) => {
+				init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+			});
+		const error = await runCloudGeminiToolSession({
+			boundary: makeBoundary([]),
+			model: "gemini-4-neon",
+			effort: "low",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: "http://127.0.0.1:1",
+			allowLoopback: true,
+			fetch: customFetch,
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			prompt: "Slow session",
+			timeoutMs: 40,
+			signal: new AbortController().signal,
+		}).catch((failure: unknown) => failure);
+		expect(error).toBeInstanceOf(DOMException);
+		expect((error as DOMException).name).toBe("TimeoutError");
+	});
 });

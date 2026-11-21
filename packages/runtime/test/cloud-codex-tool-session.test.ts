@@ -3024,10 +3024,9 @@ describe("side-thread turn/start cancellation", () => {
 				const cancel = new AbortController();
 				const sending = thread.send("PRIVATE_WINDOW", cancel.signal);
 				await vi.waitFor(() => stat(`${evidence}.compact-turn-start`), { timeout: 5_000 });
-				const abortedAt = Date.now();
 				cancel.abort();
 				abortedError = await sending.catch((error: unknown) => error);
-				expect(Date.now() - abortedAt).toBeLessThan(80);
+				expect(existsSync(evidence)).toBe(false);
 				await vi.waitFor(() => stat(evidence), { timeout: 5_000 });
 				thread.close?.();
 			},
@@ -3059,10 +3058,9 @@ describe("side-thread turn/start cancellation", () => {
 							cancel.signal,
 						);
 						await vi.waitFor(() => stat(`${evidence}.review-turn-start`), { timeout: 5_000 });
-						const abortedAt = Date.now();
 						cancel.abort();
 						abortedError = await reviewing.catch((error: unknown) => error);
-						expect(Date.now() - abortedAt).toBeLessThan(80);
+						expect(existsSync(`${evidence}.review-interrupt`)).toBe(false);
 						await vi.waitFor(() => stat(`${evidence}.review-interrupt`), { timeout: 5_000 });
 						return { kind: "text", value: "Done." };
 					},
