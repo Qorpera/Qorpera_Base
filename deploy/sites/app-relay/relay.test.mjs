@@ -2079,7 +2079,21 @@ describe("app relay: concurrency hardening and backpressure", () => {
 	it("queues concurrent uploads under tight maxQueuedBytes, survives delayed-read uploads and early responses, allows steadily draining slow visitors, and times out mid-body stalls", async (t) => {
 		const siteId = randomUUID();
 		const token = "u".repeat(32);
+		let releaseHold = null;
 		const app = createServer((req, res) => {
+			if (req.url === "/hold") {
+				res.writeHead(200, { "content-type": "text/plain" });
+				res.write("hold");
+				const beat = setInterval(() => {
+					if (!res.destroyed && !res.writableEnded) res.write(".");
+				}, 150);
+				res.on("close", () => clearInterval(beat));
+				releaseHold = () => {
+					clearInterval(beat);
+					if (!res.destroyed && !res.writableEnded) res.end("ok");
+				};
+				return;
+			}
 			if (req.url === "/stall-body") {
 				res.writeHead(200, { "content-type": "text/plain" });
 				res.write("partial");
@@ -2237,6 +2251,28 @@ describe("app relay: concurrency hardening and backpressure", () => {
 		assert.equal(early.status, 200);
 		assert.equal(early.text, "early-ok");
 		const beforePauses = relay.pauseCount("shop");
+		const heldReq = new Promise((resolve, reject) => {
+			const req = request(
+				{
+					host: "127.0.0.1",
+					port: relayPort,
+					path: "/hold",
+					method: "GET",
+					headers: { "x-forwarded-host": HOST, cookie: `${GATE_COOKIE}=${token}` },
+				},
+				(res) => {
+					let text = "";
+					res.setEncoding("utf8");
+					res.on("data", (c) => {
+						text += c;
+					});
+					res.on("end", () => resolve({ status: res.statusCode, text }));
+				},
+			);
+			req.on("error", reject);
+			req.end();
+		});
+		await until(() => releaseHold !== null, "the concurrent hold request to reach the app", 3_000);
 		let slowSock;
 		const slowSteady = new Promise((resolve, reject) => {
 			slowSock = connect(relayPort, "127.0.0.1", () => {
@@ -2258,10 +2294,13 @@ describe("app relay: concurrency hardening and backpressure", () => {
 		});
 		await until(() => relay.pauseCount("shop") > beforePauses, "the slow download to pause the link", 3_000);
 		slowSock.resume();
-		const besideSlow = await Promise.all([slowSteady, post("/early", Buffer.alloc(16, 0x45))]);
+		const slowBytes = await slowSteady;
+		releaseHold();
+		const heldRes = await heldReq;
 		assert.ok(relay.pauseCount("shop") > beforePauses);
-		assert.ok(besideSlow[0] > 12 * 1024 * 1024, `expected full steady download, got ${besideSlow[0]}`);
-		assert.equal(besideSlow[1].status, 200);
+		assert.ok(slowBytes > 12 * 1024 * 1024, `expected full steady download, got ${slowBytes}`);
+		assert.equal(heldRes.status, 200);
+		assert.ok(heldRes.text.startsWith("hold") && heldRes.text.endsWith("ok"));
 		const stalledEnded = await new Promise((resolve) => {
 			const req = request(
 				{
@@ -2281,5 +2320,120 @@ describe("app relay: concurrency hardening and backpressure", () => {
 		});
 		assert.equal(stalledEnded, true);
 		assert.equal(relay.isConnected("shop"), true);
+	});
+
+	it("keeps a shared slow stream alive on byte-level writeQueueSize progress while writableLength is static, then cuts off once stalled", async (t) => {
+		const siteId = randomUUID();
+		const token = "q".repeat(32);
+		const key = `k${"q".repeat(31)}`;
+		const programId = "p".repeat(43);
+		const fetcher = async (url, init) => {
+			const body = JSON.parse(init.body);
+			if (url.endsWith("/qorpera_site_app_connect")) return Response.json({ state: "ok", siteId, port: 3000, key: null });
+			if (url.endsWith("/qorpera_site_app_session"))
+				return Response.json(body.p_token === token ? { state: "open", siteId } : { state: "locked" });
+			return Response.json({ state: "locked" });
+		};
+		const relay = createRelay({
+			api: "http://database.invalid",
+			...RELAY,
+			hostSuffix: SUFFIX,
+			fetch: fetcher,
+			responseTimeoutMs: 500,
+			pausedMs: 2_000,
+			sharedPausedMs: 60,
+			log: () => {},
+		});
+		const relayPort = await listen(relay);
+		let progSocket = null;
+		t.after(async () => {
+			progSocket?.destroy();
+			relay.closeAllConnections();
+			await new Promise((r) => relay.close(r));
+		});
+		const prog = await rawUpgrade(
+			relayPort,
+			HOST,
+			"/.qorpera/connect",
+			`Authorization: Bearer ${key}\r\nX-Qorpera-Program: ${programId}\r\n`,
+		);
+		progSocket = prog.socket;
+		assert.equal(prog.status, 101);
+		const frames = frameReader(prog.socket, prog.rest);
+		const hello = decodeMessage((await frames.message()).payload);
+		assert.equal(hello.type, TYPE.hello);
+
+		const makeReq = (path) => {
+			const req = new EventEmitter();
+			req.method = "GET";
+			req.url = path;
+			req.headers = { "x-forwarded-host": HOST, cookie: `${GATE_COOKIE}=${token}` };
+			req.rawHeaders = ["x-forwarded-host", HOST, "cookie", `${GATE_COOKIE}=${token}`];
+			req.resume = () => {};
+			req.pause = () => {};
+			return req;
+		};
+		const slowRes = new EventEmitter();
+		slowRes.writableLength = 512 * 1024;
+		slowRes.socket = { _handle: { writeQueueSize: 512 * 1024 } };
+		slowRes.destroyed = false;
+		slowRes.writeHead = () => {};
+		slowRes.flushHeaders = () => {};
+		slowRes.write = () => false;
+		slowRes.end = () => {};
+		slowRes.destroy = () => {
+			slowRes.destroyed = true;
+		};
+
+		const req1 = makeReq("/mobile-download");
+		relay.emit("request", req1, slowRes);
+		const head1 = decodeMessage((await frames.message()).payload);
+		assert.equal(head1.type, TYPE.head);
+		prog.socket.write(
+			encodeFrame(
+				0x2,
+				encodeMessage(
+					TYPE.response,
+					head1.stream,
+					Buffer.from(JSON.stringify({ status: 200, headers: [["content-type", "application/octet-stream"]] })),
+				),
+				{ mask: mask() },
+			),
+		);
+		prog.socket.write(
+			encodeFrame(0x2, encodeMessage(TYPE.body, head1.stream, Buffer.alloc(64 * 1024, 0x41)), { mask: mask() }),
+		);
+		await until(() => relay.pauseCount("shop") === 1, "slow stream to pause the link", 2_000);
+
+		const fastRes = new EventEmitter();
+		fastRes.writableLength = 0;
+		fastRes.socket = { _handle: { writeQueueSize: 0 } };
+		fastRes.destroyed = false;
+		fastRes.status = 0;
+		fastRes.ended = false;
+		fastRes.writeHead = (s) => {
+			fastRes.status = s;
+		};
+		fastRes.flushHeaders = () => {};
+		fastRes.write = () => true;
+		fastRes.end = () => {
+			fastRes.ended = true;
+		};
+		fastRes.destroy = () => {
+			fastRes.destroyed = true;
+		};
+		relay.emit("request", makeReq("/second"), fastRes);
+
+		for (let i = 0; i < 6; i++) {
+			await sleep(25);
+			slowRes.socket._handle.writeQueueSize -= 8192;
+		}
+		assert.equal(slowRes.destroyed, false);
+		assert.ok(
+			relay.sharedProgressChecks("shop") >= 2,
+			`expected >= 2 tightened progress checks, got ${relay.sharedProgressChecks("shop")}`,
+		);
+		await until(() => slowRes.destroyed, "stalled shared stream to be destroyed once writeQueueSize stops moving", 1_000);
+		assert.equal(fastRes.destroyed, false);
 	});
 });

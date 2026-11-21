@@ -1008,6 +1008,7 @@ class Program {
 		this.blocking = new Set();
 		this.buffered = 0;
 		this.pauseCount = 0;
+		this.sharedProgressChecks = 0;
 		this.uploadQueue = [];
 		this.keptAliveAt = Date.now();
 		this.nextCheckAt = nextCheckAt;
@@ -1503,6 +1504,7 @@ export function createRelay({
 					currentWritable < lastBlockedWritable ||
 					(currentWritable === lastBlockedWritable && currentQueue < lastBlockedQueue)
 				) {
+					program.sharedProgressChecks++;
 					lastBlockedWritable = currentWritable;
 					lastBlockedQueue = currentQueue;
 					if (
@@ -1606,7 +1608,7 @@ export function createRelay({
 			},
 			body(payload) {
 				if (!answered) return broken();
-				armTimer();
+				if (!blocked) armTimer();
 				let room;
 				try {
 					room = res.write(payload);
@@ -1914,6 +1916,7 @@ export function createRelay({
 	server.isConnected = (slug) => programs.has(slug);
 	server.dropProgram = (slug) => programs.get(slug)?.ws.terminate();
 	server.pauseCount = (slug) => programs.get(slug)?.pauseCount ?? 0;
+	server.sharedProgressChecks = (slug) => programs.get(slug)?.sharedProgressChecks ?? 0;
 	return server;
 }
 
