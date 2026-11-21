@@ -23,7 +23,7 @@ import {
 	parseCloudMachineCommandFolder,
 	parseCloudMachineCommandReceipt,
 } from "@qorpera/contracts";
-import { withAbortScope } from "./abort-scope.ts";
+import { withAbortScope, withTimeoutScope } from "./abort-scope.ts";
 import type { AgentPlug } from "./agent-plug.ts";
 import { CodingControlBusy, CodingControlRefused } from "./coding-executor.ts";
 import { type CodingMachineIntent, reconcileCodingMachine } from "./coding-machine.ts";
@@ -1617,7 +1617,10 @@ export class LxdCompanyMachineHost {
 	/** Per placement and command: a window close on its way, answered with the machine's boundary (or none). */
 	readonly #closing = new Map<string, Promise<MachineBoundary | undefined>>();
 	/** Per placement: the boot whose Codex was hashed, and its sha-256 (#homeCodex). */
-	readonly #homeCodexes = new Map<string, { bootId: string; sha: Promise<string> }>();
+	readonly #homeCodexes = new Map<
+		string,
+		{ bootId: string; sha: Promise<string>; waiters: number; controller: AbortController; settled: boolean }
+	>();
 	/** The boot of each placement whose machine was found to have sftp-server (#homeSftp); a missing one is asked again,
 	 * since the agent, root on its home, may install it. */
 	readonly #homeSftps = new Map<string, string>();
@@ -2635,6 +2638,9 @@ export class LxdCompanyMachineHost {
 		this.#moverFailed.delete(e.placementId);
 		this.#pointerUsers.delete(e.placementId);
 		this.#generations.delete(e.placementId);
+		this.#screenBusy.delete(e.placementId);
+		this.#homeCodexes.delete(e.placementId);
+		this.#homeSftps.delete(e.placementId);
 		// Its instance deleted and the placement released, no boot of it runs or is read again: its ends go with it. Only
 		// here: after a power-off, or the next boot's mark, a read let in for the boot before may still come.
 		for (const key of this.#endings.keys()) if (key.startsWith(`${e.placementId}/`)) this.#endings.delete(key);
@@ -2705,17 +2711,18 @@ export class LxdCompanyMachineHost {
 		}
 		const report = (async () => {
 			try {
-				const checked = AbortSignal.any([lasting, AbortSignal.timeout(DISK_REPORT_MS)]);
-				const reading = await reader.read(placements, checked);
-				await this.#call(
-					"qorpera_report_executor_disk",
-					{
-						p_owner: this.#options.owner,
-						p_machine_id_sha256: this.#options.machineIdSha256,
-						p_report: reading.report,
-					},
-					checked,
-				);
+				await withTimeoutScope(lasting, DISK_REPORT_MS, async (checked) => {
+					const reading = await reader.read(placements, checked);
+					await this.#call(
+						"qorpera_report_executor_disk",
+						{
+							p_owner: this.#options.owner,
+							p_machine_id_sha256: this.#options.machineIdSha256,
+							p_report: reading.report,
+						},
+						checked,
+					);
+				});
 			} catch {
 				// Left for the next report: the kernel's paper budget stands in once the last report is old.
 			}
@@ -2789,6 +2796,10 @@ export class LxdCompanyMachineHost {
 			]);
 		}
 		over = true;
+		const listedIds = new Set(entries.map((item) => item.placementId));
+		for (const placementId of this.#endedAt.keys()) {
+			if (!listedIds.has(placementId) && !this.#stepping.has(placementId)) this.#endedAt.delete(placementId);
+		}
 		return [
 			...this.#late.splice(0),
 			...admission,
@@ -4396,39 +4407,55 @@ export class LxdCompanyMachineHost {
 		)
 			throw new Error("HOME_CODEX_NOT_PINNED");
 		const home = this.#options.folder ? await this.#homeFolder(answer.session, signal) : undefined;
+		if (signal.aborted) {
+			await home?.close();
+			throw signal.reason;
+		}
 		const toMachine = new LinePipe();
 		const fromMachine = new LinePipe();
 		const run = new AbortController();
 		const stop = (): void => run.abort();
-		signal.addEventListener("abort", stop, { once: true });
-		const gate = home?.gate(
-			(chunk) => fromMachine.push(chunk),
-			() => {
-				run.abort();
-				fromMachine.end();
-			},
-			kind === "sftp"
-				? { spacingMs: HOME_SFTP_RELEASE_SPACING_MS, burst: 1 }
-				: { spacingMs: HOME_RELEASE_SPACING_MS, burst: HOME_RELEASE_BURST },
-		);
-		const pipe = exec(
-			this.#policy.project,
-			lxdCompanyMachineName(input.placementId),
-			{
-				// Root only to hand the program to systemd; the unit runs it as the agent's account.
-				command: companyMachineHomeCommand(input.bootId, input.sessionId, randomBytes(8).toString("hex"), kind),
-				environment: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" },
-				cwd: "/",
-				stdin: toMachine.read(),
-				stdout: (chunk) => (gate ? gate.push(chunk) : fromMachine.push(chunk)),
-				// Streamed, so nothing is kept here and this bounds only each of LXD's messages: fromMachine ends the
-				// channel when more than its own bound (the same 16 MiB) waits unread, and the gate when more than its own
-				// waits for a release.
-				maxStdoutBytes: LINE_PIPE_BYTES,
-				stderrTailBytes: 4096,
-			},
-			run.signal,
-		)
+		let gate: ReturnType<NonNullable<typeof home>["gate"]> | undefined;
+		let execPipe: ReturnType<NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>>;
+		try {
+			signal.addEventListener("abort", stop, { once: true });
+			gate = home?.gate(
+				(chunk) => fromMachine.push(chunk),
+				() => {
+					run.abort();
+					fromMachine.end();
+				},
+				kind === "sftp"
+					? { spacingMs: HOME_SFTP_RELEASE_SPACING_MS, burst: 1 }
+					: { spacingMs: HOME_RELEASE_SPACING_MS, burst: HOME_RELEASE_BURST },
+			);
+			execPipe = exec(
+				this.#policy.project,
+				lxdCompanyMachineName(input.placementId),
+				{
+					// Root only to hand the program to systemd; the unit runs it as the agent's account.
+					command: companyMachineHomeCommand(input.bootId, input.sessionId, randomBytes(8).toString("hex"), kind),
+					environment: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" },
+					cwd: "/",
+					stdin: toMachine.read(),
+					stdout: (chunk) => (gate ? gate.push(chunk) : fromMachine.push(chunk)),
+					// Streamed, so nothing is kept here and this bounds only each of LXD's messages: fromMachine ends the
+					// channel when more than its own bound (the same 16 MiB) waits unread, and the gate when more than its own
+					// waits for a release.
+					maxStdoutBytes: LINE_PIPE_BYTES,
+					stderrTailBytes: 4096,
+				},
+				run.signal,
+			);
+		} catch (error) {
+			signal.removeEventListener("abort", stop);
+			gate?.close();
+			fromMachine.end();
+			toMachine.end();
+			await home?.close();
+			throw error;
+		}
+		const pipe = execPipe
 			.catch(() => undefined)
 			.then(async () => {
 				signal.removeEventListener("abort", stop);
@@ -4469,33 +4496,66 @@ export class LxdCompanyMachineHost {
 		exec: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
 		signal: AbortSignal,
 	): Promise<string> {
-		const kept = this.#homeCodexes.get(placementId);
-		if (kept?.bootId === bootId) return await kept.sha;
-		const sha = (async () => {
-			const result = await exec(
-				this.#policy.project,
-				lxdCompanyMachineName(placementId),
-				{
-					command: ["/bin/sh", "-c", HOME_CODEX_ON_BOOT, bootId, CLOUD_MACHINE_HOME.codex],
-					environment: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" },
-					cwd: "/",
-					maxStdoutBytes: 1024,
-					stderrTailBytes: 512,
+		signal.throwIfAborted();
+		let entry = this.#homeCodexes.get(placementId);
+		if (!entry || entry.bootId !== bootId) {
+			const controller = new AbortController();
+			const created = {
+				bootId,
+				sha: undefined as unknown as Promise<string>,
+				waiters: 0,
+				controller,
+				settled: false,
+			};
+			created.sha = withTimeoutScope(controller.signal, HOME_CODEX_HASH_MS, async (checked) => {
+				const result = await exec(
+					this.#policy.project,
+					lxdCompanyMachineName(placementId),
+					{
+						command: ["/bin/sh", "-c", HOME_CODEX_ON_BOOT, bootId, CLOUD_MACHINE_HOME.codex],
+						environment: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" },
+						cwd: "/",
+						maxStdoutBytes: 1024,
+						stderrTailBytes: 512,
+					},
+					checked,
+				);
+				if (result.exitCode === 97) throw new Error("HOME_SESSION_ENDED");
+				if (result.exitCode === 98) return "missing";
+				const read = /^([0-9a-f]{64}) /.exec(result.stdout.toString("utf8"));
+				if (result.exitCode !== 0 || !read) throw new Error("HOME_CODEX_UNREADABLE");
+				return read[1] as string;
+			}).then(
+				(value) => {
+					created.settled = true;
+					return value;
 				},
-				AbortSignal.any([signal, AbortSignal.timeout(HOME_CODEX_HASH_MS)]),
+				(error) => {
+					created.settled = true;
+					if (this.#homeCodexes.get(placementId) === created) this.#homeCodexes.delete(placementId);
+					throw error;
+				},
 			);
-			if (result.exitCode === 97) throw new Error("HOME_SESSION_ENDED");
-			if (result.exitCode === 98) return "missing";
-			const read = /^([0-9a-f]{64}) /.exec(result.stdout.toString("utf8"));
-			if (result.exitCode !== 0 || !read) throw new Error("HOME_CODEX_UNREADABLE");
-			return read[1] as string;
-		})();
-		this.#homeCodexes.set(placementId, { bootId, sha });
+			created.sha.catch(() => undefined);
+			this.#homeCodexes.set(placementId, created);
+			entry = created;
+		}
+		if (entry.settled) return await entry.sha;
+		entry.waiters += 1;
+		let onAbort: (() => void) | undefined;
 		try {
-			return await sha;
-		} catch (error) {
-			if (this.#homeCodexes.get(placementId)?.sha === sha) this.#homeCodexes.delete(placementId);
-			throw error;
+			return await Promise.race([
+				entry.sha,
+				new Promise<never>((_, reject) => {
+					onAbort = () => reject(signal.reason);
+					if (signal.aborted) onAbort();
+					else signal.addEventListener("abort", onAbort, { once: true });
+				}),
+			]);
+		} finally {
+			if (onAbort) signal.removeEventListener("abort", onAbort);
+			entry.waiters -= 1;
+			if (!entry.settled && entry.waiters === 0) entry.controller.abort(signal.reason);
 		}
 	}
 	/** Whether the machine has sftp-server on this boot (the file channel, slice C1), asked as root on the boot SQL named.

@@ -16,3 +16,27 @@ export async function withAbortScope<T>(parent: AbortSignal, use: (signal: Abort
 		parent.removeEventListener("abort", forward);
 	}
 }
+
+export async function withTimeoutScope<T>(
+	parent: AbortSignal | undefined,
+	timeoutMs: number,
+	use: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+	const scope = new AbortController();
+	const forward = (): void => scope.abort(parent?.reason);
+	if (parent?.aborted) forward();
+	else parent?.addEventListener("abort", forward, { once: true });
+	const timer = scope.signal.aborted
+		? undefined
+		: setTimeout(
+				() => scope.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+				timeoutMs,
+			);
+	timer?.unref();
+	try {
+		return await use(scope.signal);
+	} finally {
+		if (timer) clearTimeout(timer);
+		parent?.removeEventListener("abort", forward);
+	}
+}

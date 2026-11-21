@@ -171,4 +171,15 @@ describe("jitless Node HTTP transport", () => {
 		});
 		await expect(nodeHttpFetch(`${baseUrl}/slow`, { signal: AbortSignal.timeout(10) })).rejects.toBeDefined();
 	});
+
+	it("rejects malformed redirect Location headers without uncaught exceptions", async () => {
+		const baseUrl = await listen((_request, response) => {
+			response.writeHead(302, { location: "http://[::1:bad" });
+			response.end();
+		});
+		const controller = new AbortController();
+		await expect(
+			nodeHttpFetch(`${baseUrl}/bad-redirect`, { redirect: "follow", signal: controller.signal }),
+		).rejects.toBeInstanceOf(TypeError);
+	});
 });

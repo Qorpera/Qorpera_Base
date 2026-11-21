@@ -1,6 +1,7 @@
 import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { withAbortScope } from "./abort-scope.ts";
 import type { LxdOfficePreparationClient } from "./lxd-client.ts";
 import { LxdOfficeControlJournal } from "./lxd-office-control-journal.ts";
 import { checkDirectory, code } from "./lxd-office-journal-files.ts";
@@ -62,7 +63,7 @@ export async function runLxdOfficeControlObserver(
 ) {
 	while (!signal.aborted) {
 		try {
-			await observe(signal);
+			await withAbortScope(signal, (scoped) => observe(scoped));
 		} catch {
 			if (!signal.aborted) {
 				try {

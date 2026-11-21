@@ -1,4 +1,5 @@
 import { createConnection, createServer, isIP, type Socket } from "node:net";
+import { withTimeoutScope } from "./abort-scope.ts";
 import type { LxdHostInventoryClient, LxdInstanceStateRecord } from "./lxd-client.ts";
 import { lxdGuestIpv4 } from "./lxd-guest-network.ts";
 import { officeRecord } from "./lxd-office-image-provenance.ts";
@@ -117,7 +118,9 @@ export function createLxdOfficeGuestResolver(
 	now: () => number = () => Date.now(),
 ): LxdOfficeGuestResolver {
 	let cached: { at: number; address: string | undefined } | undefined;
-	let inFlight: Promise<string | undefined> | undefined;
+	let inFlight:
+		| { promise: Promise<string | undefined>; controller: AbortController; waiters: number; settled: boolean }
+		| undefined;
 	const resolve = async (signal: AbortSignal): Promise<string | undefined> => {
 		const inventory = await client.inspectHostInventory(signal);
 		const candidates = inventory.instances.filter(
@@ -137,16 +140,42 @@ export function createLxdOfficeGuestResolver(
 		signal.throwIfAborted();
 		if (cached && now() - cached.at < cacheMs) return cached.address;
 		if (!inFlight) {
-			inFlight = resolve(signal)
+			const controller = new AbortController();
+			const entry = {
+				promise: undefined as unknown as Promise<string | undefined>,
+				controller,
+				waiters: 0,
+				settled: false,
+			};
+			entry.promise = resolve(controller.signal)
 				.then((address) => {
 					cached = { at: now(), address };
 					return address;
 				})
 				.finally(() => {
-					inFlight = undefined;
+					entry.settled = true;
+					if (inFlight === entry) inFlight = undefined;
 				});
+			entry.promise.catch(() => undefined);
+			inFlight = entry;
 		}
-		return inFlight;
+		const current = inFlight;
+		current.waiters += 1;
+		let onAbort: (() => void) | undefined;
+		try {
+			return await Promise.race([
+				current.promise,
+				new Promise<never>((_, reject) => {
+					onAbort = () => reject(signal.reason);
+					if (signal.aborted) onAbort();
+					else signal.addEventListener("abort", onAbort, { once: true });
+				}),
+			]);
+		} finally {
+			if (onAbort) signal.removeEventListener("abort", onAbort);
+			current.waiters -= 1;
+			if (!current.settled && current.waiters === 0) current.controller.abort(signal.reason);
+		}
 	};
 }
 
@@ -247,7 +276,10 @@ export class LxdOfficePassthrough {
 		this.#counts.set(key, count + 1);
 		this.#sockets.add(client);
 		let upstream: Socket | undefined;
+		let finished = false;
 		const finish = () => {
+			if (finished) return;
+			finished = true;
 			this.#sockets.delete(client);
 			if (upstream) this.#sockets.delete(upstream);
 			this.#counts.set(key, Math.max(0, (this.#counts.get(key) ?? 1) - 1));
@@ -258,7 +290,9 @@ export class LxdOfficePassthrough {
 		client.on("close", () => finish());
 		let address: string | undefined;
 		try {
-			address = await this.#resolve(AbortSignal.timeout(this.#options.connectTimeoutMs));
+			address = await withTimeoutScope(undefined, this.#options.connectTimeoutMs, (checked) =>
+				this.#resolve(checked),
+			);
 		} catch (error) {
 			this.#report(error);
 		}

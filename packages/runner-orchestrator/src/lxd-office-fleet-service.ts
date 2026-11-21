@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { withAbortScope } from "./abort-scope.ts";
 import { LxdUnixClient } from "./lxd-client.ts";
 import { assertOfficeAdoptionKernelLock } from "./lxd-office-adoption-files.ts";
 import { openLxdOfficeCreationIdentity } from "./lxd-office-creation-journal.ts";
@@ -86,32 +87,34 @@ export async function runOfficeFleetService(configPath: string, signal: AbortSig
 	}
 	const client = new LxdUnixClient(policy.host.socketPath);
 	while (!signal.aborted) {
-		const result = await reconcileOfficeFleet(
-			{
-				policy,
-				nodeId: config.nodeId,
-				serviceConfigSha256: config.serviceConfigSha256,
-				registry,
-				stageOnly,
-				inspect: async (checked) => {
-					await gate.inspect(checked);
+		const result = await withAbortScope(signal, (scoped) =>
+			reconcileOfficeFleet(
+				{
+					policy,
+					nodeId: config.nodeId,
+					serviceConfigSha256: config.serviceConfigSha256,
+					registry,
+					stageOnly,
+					inspect: async (checked) => {
+						await gate.inspect(checked);
+					},
+					identity: async (intentId, existing, checked) => {
+						await assertOfficeAdoptionKernelLock(policy.journal.path);
+						await LxdOfficeLifecycleJournal.open(
+							policy.journal.path,
+							intentId,
+							officeDigest({
+								providerPolicySha256: lxdOfficePhysicalPolicySha256(policy),
+								inventoryLimits: service.inventoryLimits,
+								planPath: service.planPath,
+							}),
+							existing,
+						);
+						return openLxdOfficeCreationIdentity(policy, intentId, existing, client, checked);
+					},
 				},
-				identity: async (intentId, existing, checked) => {
-					await assertOfficeAdoptionKernelLock(policy.journal.path);
-					await LxdOfficeLifecycleJournal.open(
-						policy.journal.path,
-						intentId,
-						officeDigest({
-							providerPolicySha256: lxdOfficePhysicalPolicySha256(policy),
-							inventoryLimits: service.inventoryLimits,
-							planPath: service.planPath,
-						}),
-						existing,
-					);
-					return openLxdOfficeCreationIdentity(policy, intentId, existing, client, checked);
-				},
-			},
-			signal,
+				scoped,
+			),
 		);
 		if (result === "selected") {
 			// Do not let a config replacement between selection and launch redirect

@@ -213,12 +213,24 @@ export class LxdOfficeProviderHttpRegistry implements LxdOfficeLifecycleRegistry
 		} catch {
 			throw new Error("INVALID_OFFICE_PROVIDER_RPC");
 		}
-		const signal = AbortSignal.any([caller, AbortSignal.timeout(5000)]);
+		const bound = new AbortController();
+		const forward = (): void => bound.abort(caller.reason);
+		if (caller.aborted) forward();
+		else caller.addEventListener("abort", forward, { once: true });
+		const timer = bound.signal.aborted
+			? undefined
+			: setTimeout(
+					() => bound.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+					5000,
+				);
+		timer?.unref();
+		const signal = bound.signal;
 		this.#pending = true;
 		let abort = () => {};
 		const stopped = new Promise<never>((_, reject) => {
 			abort = () => reject(new Error("OFFICE_PROVIDER_RPC_UNCONFIRMED"));
-			signal.addEventListener("abort", abort, { once: true });
+			if (signal.aborted) abort();
+			else signal.addEventListener("abort", abort, { once: true });
 		});
 		const operation = (async () => {
 			signal.throwIfAborted();
@@ -268,6 +280,8 @@ export class LxdOfficeProviderHttpRegistry implements LxdOfficeLifecycleRegistry
 				throw new Error("OFFICE_PROVIDER_RPC_UNCONFIRMED");
 			})
 			.finally(() => {
+				if (timer) clearTimeout(timer);
+				caller.removeEventListener("abort", forward);
 				this.#pending = false;
 			});
 		try {
