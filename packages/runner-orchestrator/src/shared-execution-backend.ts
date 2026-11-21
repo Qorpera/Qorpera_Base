@@ -927,16 +927,13 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	async #reserveMachine(current: SharedExecutionJournal, signal: AbortSignal): Promise<void> {
 		if (current.capacityReleased) throw new Error("Released sandbox capacity cannot be reserved again");
 		if (!current.capacityRequested) {
-			let alreadyAdvanced = false;
-			await this.#exclusive(async () => {
+			const alreadyAdvanced = await this.#exclusive(async () => {
 				const latest = await this.#readJournal(current.acquisitionId);
 				if (!latest || latest.physicalState === "stopping" || terminal(latest.physicalState))
 					throw new Error("Shared execution sandbox stopped before start");
-				if (latest.physicalState !== "reserving") {
-					alreadyAdvanced = true;
-					return;
-				}
+				if (latest.physicalState !== "reserving") return true;
 				await this.#writeJournal({ ...latest, capacityRequested: true });
+				return false;
 			});
 			if (alreadyAdvanced) return;
 		}
@@ -978,18 +975,12 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			result.instanceSha256 !== current.instanceSha256
 		)
 			throw new Error("Sandbox start was not admitted by the company ceiling");
-		let outcome: "reserving" | "advanced" | "retired" = "reserving";
-		await this.#exclusive(async () => {
+		const outcome = await this.#exclusive(async (): Promise<"reserving" | "advanced" | "retired"> => {
 			const latest = await this.#readJournal(current.acquisitionId);
-			if (!latest || latest.physicalState === "stopping" || terminal(latest.physicalState)) {
-				outcome = "retired";
-				return;
-			}
-			if (latest.physicalState !== "reserving") {
-				outcome = "advanced";
-				return;
-			}
+			if (!latest || latest.physicalState === "stopping" || terminal(latest.physicalState)) return "retired";
+			if (latest.physicalState !== "reserving") return "advanced";
 			await this.#writeJournal({ ...latest, capacityRegistered: true });
+			return "reserving";
 		});
 		if (outcome === "advanced") return;
 		if (outcome === "retired") {
