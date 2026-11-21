@@ -1,3 +1,4 @@
+import { companyStatePath } from "@qorpera/cloud-client/company-state-files";
 import { folderKey } from "@qorpera/contracts";
 import { gitObjectPath, gitPlace, gitSharedPath } from "./git.ts";
 import { formChanged } from "./git-objects.ts";
@@ -92,6 +93,16 @@ export const CHECK_RUNNING = "its check for secret values has not ended yet";
 /** Why the rest of a code area's git directory waits while a file's check there has not ended: the check may yet refuse
  * the file, and then nothing else of its git change may be in the folder. */
 export const WAITS_FOR_CHECK = "it waits for a change whose check for secret values has not ended yet";
+export const MAX_COMMIT_UNITS = 1000;
+export const MAX_NEW_FOLDER_ENTRIES = 10_000;
+export const MAX_COMMIT_STRUCTURED_FILES = 64;
+export const MAX_COMMIT_STRUCTURED_BYTES = 1024 * 1024;
+
+export interface CommitBatchLimits {
+	readonly maxUnits?: number;
+	readonly maxStructuredFiles?: number;
+	readonly maxStructuredBytes?: number;
+}
 
 type Item =
 	| { kind: "write"; path: string; file: FileRef; expected: string; paths: string[] }
@@ -382,8 +393,10 @@ export function planBoundary(
 	for (const create of sortedCreates) {
 		const createKey = keyOf(create.path);
 		if (absorbed.has(create) || !candidateCreateKeys.has(createKey) || ineligibleCreateKeys.has(createKey)) continue;
+		const under = itemsUnderCreate.get(createKey) ?? [];
+		if (!fitsNewFolder(under)) continue;
 		const contents: NewFolderEntry[] = [];
-		for (const item of itemsUnderCreate.get(createKey) ?? []) {
+		for (const item of under) {
 			absorbed.add(item);
 			create.paths.push(...item.paths);
 			const rel = item.path.slice(create.path.length + 1);
@@ -636,4 +649,63 @@ function schedule(
 		}
 	}
 	return order;
+}
+
+function fitsNewFolder(under: readonly (Item & { kind: "create" | "new" | "link" })[]): boolean {
+	if (under.length > MAX_NEW_FOLDER_ENTRIES) return false;
+	let structuredFiles = 0;
+	let structuredBytes = 0;
+	for (const item of under) {
+		if (item.kind !== "new" || !companyStatePath(item.path)) continue;
+		structuredFiles++;
+		structuredBytes += item.file.bytes;
+		if (structuredFiles > MAX_COMMIT_STRUCTURED_FILES || structuredBytes > MAX_COMMIT_STRUCTURED_BYTES) return false;
+	}
+	return true;
+}
+
+function structuredCost(unit: CommitUnit): { readonly files: number; readonly bytes: number } {
+	if (unit.op === "write")
+		return companyStatePath(unit.path) ? { files: 1, bytes: unit.file.bytes } : { files: 0, bytes: 0 };
+	if (unit.op !== "new_folder") return { files: 0, bytes: 0 };
+	let files = 0;
+	let bytes = 0;
+	for (const entry of unit.contents) {
+		if (!entry.file || !companyStatePath(`${unit.path}/${entry.path}`)) continue;
+		files++;
+		bytes += entry.file.bytes;
+	}
+	return { files, bytes };
+}
+
+export function planCommitBatches(
+	units: readonly PlannedUnit[],
+	limits?: CommitBatchLimits,
+): readonly (readonly PlannedUnit[])[] {
+	if (units.length === 0) return [];
+	const maxUnits = Math.max(1, limits?.maxUnits ?? MAX_COMMIT_UNITS);
+	const maxStructuredFiles = Math.max(1, limits?.maxStructuredFiles ?? MAX_COMMIT_STRUCTURED_FILES);
+	const maxStructuredBytes = Math.max(1, limits?.maxStructuredBytes ?? MAX_COMMIT_STRUCTURED_BYTES);
+	const batches: PlannedUnit[][] = [];
+	let current: PlannedUnit[] = [];
+	let structuredFiles = 0;
+	let structuredBytes = 0;
+	for (const planned of units) {
+		const cost = structuredCost(planned.unit);
+		const exceeds =
+			current.length >= maxUnits ||
+			structuredFiles + cost.files > maxStructuredFiles ||
+			structuredBytes + cost.bytes > maxStructuredBytes;
+		if (current.length > 0 && exceeds) {
+			batches.push(current);
+			current = [];
+			structuredFiles = 0;
+			structuredBytes = 0;
+		}
+		current.push(planned);
+		structuredFiles += cost.files;
+		structuredBytes += cost.bytes;
+	}
+	if (current.length > 0) batches.push(current);
+	return batches.length === 1 ? [units] : batches;
 }

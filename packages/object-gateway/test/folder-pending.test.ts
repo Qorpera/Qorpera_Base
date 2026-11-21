@@ -12,7 +12,13 @@ import {
 import {
 	CHECK_RUNNING,
 	type CommitUnit,
+	MAX_COMMIT_STRUCTURED_BYTES,
+	MAX_COMMIT_STRUCTURED_FILES,
+	MAX_COMMIT_UNITS,
+	MAX_NEW_FOLDER_ENTRIES,
+	type PlannedUnit,
 	planBoundary,
+	planCommitBatches,
 	type SecretCheck,
 	WAITS_FOR_CHECK,
 	WAITS_FOR_REFUSED,
@@ -1461,5 +1467,75 @@ describe("a view's links (protocol 4)", () => {
 		]);
 		const afterLast = f.view.children("dir", "zzz", 5);
 		expect(typeof afterLast !== "string" && afterLast).toEqual({ entries: [], next: null });
+	});
+
+	it("partitions planned units into dependency-safe batches within unit and structured limits", () => {
+		const makeFile = (path: string, bytes = 10): PlannedUnit => ({
+			unit: {
+				op: "write",
+				path,
+				file: {
+					manifestSha256: hash(`m:${path}`),
+					fileSha256: hash(`f:${path}`),
+					bytes,
+					mediaType: "text/plain",
+					executable: false,
+				},
+			},
+			paths: [path],
+			bytes: true,
+		});
+
+		expect(planCommitBatches([])).toEqual([]);
+
+		const small = Array.from({ length: MAX_COMMIT_UNITS }, (_, i) => makeFile(`src/f${i}.txt`));
+		const smallBatches = planCommitBatches(small);
+		expect(smallBatches).toHaveLength(1);
+		expect(smallBatches[0]).toBe(small);
+
+		const large = Array.from({ length: 2500 }, (_, i) => makeFile(`src/f${i}.txt`));
+		const largeBatches = planCommitBatches(large);
+		expect(largeBatches.map((b) => b.length)).toEqual([1000, 1000, 500]);
+		expect(largeBatches.flat().map((u) => u.paths[0])).toEqual(large.map((u) => u.paths[0]));
+
+		const manyStructured = Array.from({ length: MAX_COMMIT_STRUCTURED_FILES + 6 }, (_, i) =>
+			makeFile(`QorperaOS/rules/r${i}.md`, 64),
+		);
+		expect(planCommitBatches(manyStructured).map((b) => b.length)).toEqual([MAX_COMMIT_STRUCTURED_FILES, 6]);
+
+		const heavyStructured = Array.from({ length: 20 }, (_, i) => makeFile(`QorperaOS/rules/h${i}.md`, 60 * 1024));
+		const heavyBatches = planCommitBatches(heavyStructured);
+		expect(heavyBatches).toHaveLength(2);
+		for (const batch of heavyBatches) {
+			const totalBytes = batch.reduce((sum, u) => sum + (u.unit.op === "write" ? u.unit.file.bytes : 0), 0);
+			expect(totalBytes).toBeLessThanOrEqual(MAX_COMMIT_STRUCTURED_BYTES);
+		}
+
+		const oversized = [makeFile("QorperaOS/rules/huge.md", MAX_COMMIT_STRUCTURED_BYTES + 1), makeFile("src/ok.txt")];
+		expect(planCommitBatches(oversized).map((b) => b.map((u) => u.paths[0]))).toEqual([
+			["QorperaOS/rules/huge.md"],
+			["src/ok.txt"],
+		]);
+	});
+
+	it("avoids absorbing oversized new folders so mkdir runs before batched children", () => {
+		const fRules = setup({ QorperaOS: null });
+		fRules.view.mkdir("QorperaOS/rules");
+		for (let i = 0; i < MAX_COMMIT_STRUCTURED_FILES + 6; i++)
+			write(fRules.view, `QorperaOS/rules/r${String(i).padStart(3, "0")}.md`, `rule-${i}`);
+		const rulesPlan = fRules.plan();
+		expect(rulesPlan.units[0]?.unit).toEqual({ op: "mkdir", path: "QorperaOS/rules" });
+		expect(rulesPlan.units).toHaveLength(MAX_COMMIT_STRUCTURED_FILES + 7);
+		expect(planCommitBatches(rulesPlan.units).map((b) => b.length)).toEqual([MAX_COMMIT_STRUCTURED_FILES + 1, 6]);
+
+		const fHuge = setup({});
+		fHuge.view.mkdir("huge");
+		for (let i = 0; i <= MAX_NEW_FOLDER_ENTRIES; i++) write(fHuge.view, `huge/f${i}.txt`, "x");
+		const hugePlan = fHuge.plan();
+		expect(hugePlan.units[0]?.unit).toEqual({ op: "mkdir", path: "huge" });
+		expect(hugePlan.units).toHaveLength(MAX_NEW_FOLDER_ENTRIES + 2);
+		expect(planCommitBatches(hugePlan.units).map((b) => b.length)).toEqual([
+			1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 2,
+		]);
 	});
 });

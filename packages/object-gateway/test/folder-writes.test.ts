@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { NasObjects } from "../src/folder-service/objects.ts";
 import {
+	type BridgeInfo,
 	encodeFrame,
 	encodeJson,
 	type Frame,
@@ -23,7 +24,9 @@ import { createFolderServer } from "../src/folder-service/server.ts";
 import { FolderService, LISTING_ONLY, type ViewHandle } from "../src/folder-service/service.ts";
 import { FolderStaging, type FolderUploads, GatewayUploads, manifestText } from "../src/folder-service/staging.ts";
 import {
+	ALLOCATION,
 	BRIDGE,
+	companyGrants,
 	ENV,
 	FakeCore,
 	FakeUploads,
@@ -31,6 +34,7 @@ import {
 	grants,
 	hashOf,
 	MEMBER,
+	OFFICE,
 	PASS,
 	PROFILE,
 	secretsOf,
@@ -2309,5 +2313,271 @@ describe("write-through ByteCache and sliding-window staging", () => {
 		const report = await publishing;
 		expect(report.paths).toHaveLength(count);
 		expect(report.paths.every((p) => p.outcome === "saved")).toBe(true);
+	});
+});
+
+describe("multi-batch boundary commits", () => {
+	it("publishes up to 1,000 units in a single commit RPC without batch splitting", async () => {
+		const { core, open } = await fixture();
+		core.seed([folder("bulk")]);
+		const view = await open();
+		for (let i = 0; i < 1000; i++) await write(view, `bulk/f${String(i).padStart(4, "0")}.txt`, `v-${i % 8}`);
+		const report = await view.publish();
+		expect(core.commits).toHaveLength(1);
+		expect(core.commits[0]?.units).toHaveLength(1000);
+		expect(core.commits[0]?.key).not.toMatch(/:b\d+$/);
+		expect(report.refused).toBeUndefined();
+		expect(report.commitId).toBeTruthy();
+		expect(report.seq).toBe(core.seq);
+		expect(report.paths).toHaveLength(1000);
+		expect(report.paths.every((p) => p.outcome === "saved")).toBe(true);
+		for (let i = 0; i < 1000; i++) expect(core.entries.has(`bulk/f${String(i).padStart(4, "0")}.txt`)).toBe(true);
+		expect(await view.publish()).toEqual({ commitId: null, seq: null, paths: [] });
+		expect(core.commits).toHaveLength(1);
+	});
+
+	it("splits a 2,500-file boundary into 1,000 + 1,000 + 500 sequential commits and clears pending state", async () => {
+		const { core, open } = await fixture();
+		core.seed([folder("bulk")]);
+		const view = await open();
+		for (let i = 0; i < 2500; i++) await write(view, `bulk/f${String(i).padStart(4, "0")}.txt`, `body-${i % 16}`);
+		const report = await view.publish();
+		expect(core.commits.map((c) => c.units.length)).toEqual([1000, 1000, 500]);
+		const baseKey = core.commits[0]!.key;
+		expect(baseKey).not.toMatch(/:b\d+$/);
+		expect(core.commits[1]?.key).toBe(`${baseKey}:b1`);
+		expect(core.commits[2]?.key).toBe(`${baseKey}:b2`);
+		expect(report.refused).toBeUndefined();
+		expect(report.commitId).toBeTruthy();
+		expect(report.seq).toBe(core.seq);
+		expect(report.paths).toHaveLength(2500);
+		expect(report.paths.every((p) => p.outcome === "saved")).toBe(true);
+		for (let i = 0; i < 2500; i++) expect(core.entries.has(`bulk/f${String(i).padStart(4, "0")}.txt`)).toBe(true);
+		expect(await view.publish()).toEqual({ commitId: null, seq: null, paths: [] });
+		expect(core.commits).toHaveLength(3);
+	});
+
+	it("preserves parent-before-child, free-before-fill, and kept denied bytes across multi-batch boundaries", async () => {
+		const { root, core, open } = await fixture();
+		const seeded = [
+			folder("work"),
+			await storeFile(root, "work/old.txt", "old", 1),
+			await storeFile(root, "work/move-src.txt", "moved", 2),
+			await storeFile(root, "work/outside.txt", "outside", 3),
+			await storeFile(root, "work/del-me.txt", "gone", 4),
+			await storeFile(root, "work/keep-deny.txt", "orig", 5),
+		];
+		for (let i = 0; i < 1050; i++)
+			seeded.push(await storeFile(root, `work/u${String(i).padStart(4, "0")}.txt`, "v1", 10 + i));
+		core.seed(seeded);
+		core.refuse = (path) => path === "work/keep-deny.txt";
+
+		const view = await open();
+		const keepEntry = core.entries.get("work/keep-deny.txt")!;
+		await write(view, "work/keep-deny.txt", "updated-secret", keepEntry.version);
+		for (let i = 0; i < 1050; i++) {
+			const path = `work/u${String(i).padStart(4, "0")}.txt`;
+			await write(view, path, "v2", core.entries.get(path)!.version);
+		}
+		await view.unlink("work/del-me.txt", undefined);
+		await view.rename({ from: "work/move-src.txt", to: "work/old.txt", noReplace: false });
+		await view.mkdir("work/sub");
+		await view.rename({ from: "work/outside.txt", to: "work/sub/moved.txt", noReplace: false });
+		for (let i = 0; i < 100; i++) await write(view, `work/sub/n${String(i).padStart(3, "0")}.txt`, `n-${i % 8}`);
+
+		const report = await view.publish();
+		expect(core.commits.length).toBeGreaterThan(1);
+		expect(core.commits.every((c) => c.units.length <= 1000)).toBe(true);
+		const flatUnits = core.commits.flatMap((c) => c.units);
+		const mkdirIdx = flatUnits.findIndex((u) => u.op === "mkdir" && u.path === "work/sub");
+		const firstChildIdx = flatUnits.findIndex(
+			(u) =>
+				(u.op === "write" && u.path.startsWith("work/sub/")) || (u.op === "move" && u.to.startsWith("work/sub/")),
+		);
+		expect(mkdirIdx).toBeGreaterThanOrEqual(0);
+		expect(firstChildIdx).toBeGreaterThan(mkdirIdx);
+		const deleteOldIdx = flatUnits.findIndex((u) => u.op === "delete" && u.path === "work/old.txt");
+		const moveIntoOldIdx = flatUnits.findIndex((u) => u.op === "move" && u.to === "work/old.txt");
+		expect(deleteOldIdx).toBeGreaterThanOrEqual(0);
+		expect(moveIntoOldIdx).toBeGreaterThan(deleteOldIdx);
+
+		const deniedEntry = report.paths.find((p) => p.path === "work/keep-deny.txt");
+		expect(deniedEntry).toEqual({ path: "work/keep-deny.txt", outcome: "denied", reason: "denied", kept: true });
+		expect(report.paths.filter((p) => p.path !== "work/keep-deny.txt").every((p) => p.outcome === "saved")).toBe(
+			true,
+		);
+		expect(core.entries.has("work/del-me.txt")).toBe(false);
+		expect(core.entries.has("work/move-src.txt")).toBe(false);
+		expect(core.entries.has("work/old.txt")).toBe(true);
+		expect(core.entries.has("work/sub/moved.txt")).toBe(true);
+		expect(core.entries.has("work/sub/n099.txt")).toBe(true);
+
+		core.refuse = () => false;
+		const commitsBeforeRetry = core.commits.length;
+		const retry = await view.publish();
+		expect(core.commits).toHaveLength(commitsBeforeRetry + 1);
+		expect(core.commits.at(-1)?.units).toHaveLength(1);
+		expect(retry.paths).toEqual([{ path: "work/keep-deny.txt", outcome: "saved" }]);
+		expect(await read(view, "work/keep-deny.txt")).toBe("updated-secret");
+		expect(await view.publish()).toEqual({ commitId: null, seq: null, paths: [] });
+	});
+
+	it("passes final only on the last batch of a multi-batch command final boundary", async () => {
+		const root = await mkdtemp(join(tmpdir(), "qorpera-folder-writes-final-"));
+		const core = new FakeCore();
+		core.seed([folder("out")]);
+		const viewId = "5e6f7081-92a3-4b4c-8d5e-6f708192a3b4";
+		const cmdPass = "cmdpass_0123456789-abcdefghijklmnopqrstuvwx";
+		core.openView(viewId, cmdPass, { kind: "computer_shell_command", machineId: ALLOCATION });
+		const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
+		const service = new FolderService({
+			core,
+			objects,
+			grants: companyGrants(),
+			staging: new FolderStaging(core, new FakeUploads(root, core), objects),
+			log: () => undefined,
+		});
+		const atOffice: BridgeInfo = { cid: 90, lookup: "found", machine: OFFICE };
+		const view = await service.open({ protocol: 2, environmentId: ENV, viewId, pass: cmdPass, role: "io" }, atOffice);
+		cleanups.push(async () => {
+			view.release();
+			service.stop();
+			await rm(root, { recursive: true, force: true });
+		});
+
+		for (let i = 0; i < 2500; i++) await write(view, `out/f${String(i).padStart(4, "0")}.txt`, `out-${i % 8}`);
+		const report = await view.publish(true);
+		expect(core.commits.map((c) => ({ count: c.units.length, final: c.final }))).toEqual([
+			{ count: 1000, final: false },
+			{ count: 1000, final: false },
+			{ count: 500, final: true },
+		]);
+		expect(report.closed).toBe(true);
+		expect(report.refused).toBeUndefined();
+		expect(report.paths).toHaveLength(2500);
+		expect(report.paths.every((p) => p.outcome === "saved")).toBe(true);
+		expect(core.views.get(viewId)?.state).toBe("closed");
+		for (let i = 0; i < 2500; i++) expect(core.entries.has(`out/f${String(i).padStart(4, "0")}.txt`)).toBe(true);
+	});
+
+	it("stops on mid-batch refusal, clears batch 1, keeps batches 2 and 3 pending, and retries cleanly", async () => {
+		const { core, open } = await fixture();
+		core.seed([folder("bulk")]);
+		const view = await open();
+		for (let i = 0; i < 2500; i++) await write(view, `bulk/f${String(i).padStart(4, "0")}.txt`, `v-${i % 8}`);
+
+		core.commitHook = (callIndex) => {
+			if (callIndex === 1) core.commitRefusal = "stopped";
+			return undefined;
+		};
+		const first = await view.publish();
+		expect(core.commits.map((c) => c.units.length)).toEqual([1000, 1000]);
+		expect(first.refused).toBe("stopped");
+		expect(first.commitId).toBeTruthy();
+		expect(first.paths.filter((p) => p.outcome === "saved")).toHaveLength(1000);
+		expect(first.paths.filter((p) => p.outcome === "refused" && p.kept)).toHaveLength(1500);
+		expect([...core.entries.keys()].filter((p) => p.startsWith("bulk/"))).toHaveLength(1000);
+
+		core.commitHook = undefined;
+		core.commitRefusal = undefined;
+		const second = await view.publish();
+		expect(core.commits.map((c) => c.units.length)).toEqual([1000, 1000, 1000, 500]);
+		expect(second.refused).toBeUndefined();
+		expect(second.paths).toHaveLength(1500);
+		expect(second.paths.every((p) => p.outcome === "saved")).toBe(true);
+		expect([...core.entries.keys()].filter((p) => p.startsWith("bulk/"))).toHaveLength(2500);
+		expect(await view.publish()).toEqual({ commitId: null, seq: null, paths: [] });
+	});
+
+	it("handles non-liftable mid-batch denied refusal without corrupting pending state", async () => {
+		const { root, core, open } = await fixture();
+		const seeded = [folder("bulk"), await storeFile(root, "bulk/del.txt", "d", 1)];
+		for (let i = 0; i < 1000; i++)
+			seeded.push(await storeFile(root, `bulk/e${String(i).padStart(4, "0")}.txt`, "v1", 10 + i));
+		core.seed(seeded);
+		const view = await open();
+		for (let i = 0; i < 1000; i++) {
+			const path = `bulk/e${String(i).padStart(4, "0")}.txt`;
+			await write(view, path, "v2", core.entries.get(path)!.version);
+		}
+		await view.unlink("bulk/del.txt", undefined);
+		for (let i = 0; i < 200; i++) await write(view, `bulk/n${String(i).padStart(4, "0")}.txt`, `n-${i % 8}`);
+
+		core.commitHook = (callIndex) => {
+			if (callIndex === 1) core.commitRefusal = "denied";
+			return undefined;
+		};
+		const first = await view.publish();
+		expect(core.commits.map((c) => c.units.length)).toEqual([1000, 201]);
+		expect(first.refused).toBe("denied");
+		expect(first.commitId).toBeTruthy();
+		expect(first.paths.filter((p) => p.outcome === "saved")).toHaveLength(1000);
+		expect(first.paths.filter((p) => p.outcome === "refused" && p.kept)).toHaveLength(200);
+		expect(first.paths.find((p) => p.path === "bulk/del.txt")).toEqual({
+			path: "bulk/del.txt",
+			outcome: "refused",
+			reason: "denied",
+		});
+
+		core.commitHook = undefined;
+		core.commitRefusal = undefined;
+		const second = await view.publish();
+		expect(second.refused).toBeUndefined();
+		expect(second.paths).toHaveLength(200);
+		expect(second.paths.every((p) => p.outcome === "saved")).toBe(true);
+		expect(core.entries.has("bulk/del.txt")).toBe(true);
+		expect(await view.publish()).toEqual({ commitId: null, seq: null, paths: [] });
+	});
+
+	it("replays an unanswered mid-batch commit under its deterministic key and finishes remaining batches", async () => {
+		const { core, open } = await fixture();
+		core.seed([folder("bulk")]);
+		const view = await open();
+		for (let i = 0; i < 2500; i++) await write(view, `bulk/f${String(i).padStart(4, "0")}.txt`, `v-${i % 8}`);
+
+		core.commitHook = (callIndex) => {
+			if (callIndex === 1) core.commitFailures = { count: 3, mode: "down" };
+			return undefined;
+		};
+		const first = await view.publish();
+		const baseKey = core.commits[0]!.key;
+		expect(core.commits.map((c) => ({ key: c.key, count: c.units.length }))).toEqual([
+			{ key: baseKey, count: 1000 },
+			{ key: `${baseKey}:b1`, count: 1000 },
+			{ key: `${baseKey}:b1`, count: 1000 },
+			{ key: `${baseKey}:b1`, count: 1000 },
+		]);
+		expect(first.commitId).toBeTruthy();
+		expect(first.paths.filter((p) => p.outcome === "saved")).toHaveLength(1000);
+		expect(first.paths.filter((p) => p.outcome === "not_applied" && p.kept)).toHaveLength(1500);
+		expect([...core.entries.keys()].filter((p) => p.startsWith("bulk/"))).toHaveLength(1000);
+
+		core.commitHook = undefined;
+		const second = await view.publish();
+		expect(core.commits.slice(4).map((c) => ({ key: c.key, count: c.units.length }))).toEqual([
+			{ key: `${baseKey}:b1`, count: 1000 },
+			{ key: expect.stringMatching(/^folder-view:/), count: 500 },
+		]);
+		expect(second.paths).toHaveLength(1500);
+		expect(second.paths.every((p) => p.outcome === "saved")).toBe(true);
+		expect([...core.entries.keys()].filter((p) => p.startsWith("bulk/"))).toHaveLength(2500);
+		expect(await view.publish()).toEqual({ commitId: null, seq: null, paths: [] });
+	});
+
+	it("splits boundaries exceeding 64 structured files into compliant batches", async () => {
+		const { core, open } = await fixture();
+		core.seed([folder("QorperaOS")]);
+		const view = await open();
+		await view.mkdir("QorperaOS/rules");
+		for (let i = 0; i < 70; i++)
+			await write(view, `QorperaOS/rules/r${String(i).padStart(2, "0")}.md`, `# Rule ${i}\n`);
+		const report = await view.publish();
+		expect(core.commits.map((c) => c.units.length)).toEqual([65, 6]);
+		expect(core.commits[0]?.units[0]).toEqual({ op: "mkdir", path: "QorperaOS/rules" });
+		expect(report.refused).toBeUndefined();
+		expect(report.paths).toHaveLength(71);
+		expect(report.paths.every((p) => p.outcome === "saved")).toBe(true);
+		expect(core.entries.has("QorperaOS/rules/r69.md")).toBe(true);
+		expect(await view.publish()).toEqual({ commitId: null, seq: null, paths: [] });
 	});
 });
