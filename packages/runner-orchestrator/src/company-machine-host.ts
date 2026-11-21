@@ -4555,7 +4555,10 @@ export class LxdCompanyMachineHost {
 		} finally {
 			if (onAbort) signal.removeEventListener("abort", onAbort);
 			entry.waiters -= 1;
-			if (!entry.settled && entry.waiters === 0) entry.controller.abort(signal.reason);
+			if (!entry.settled && entry.waiters === 0) {
+				if (this.#homeCodexes.get(placementId) === entry) this.#homeCodexes.delete(placementId);
+				entry.controller.abort(signal.reason);
+			}
 		}
 	}
 	/** Whether the machine has sftp-server on this boot (the file channel, slice C1), asked as root on the boot SQL named.

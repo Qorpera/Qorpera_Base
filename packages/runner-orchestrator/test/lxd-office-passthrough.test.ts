@@ -373,5 +373,37 @@ describe("LxdOfficePassthrough", () => {
 		releaseInventory();
 		expect(await p2).toBe("10.99.0.5");
 		expect(inventoryCalls).toBe(1);
+
+		let releaseStuck = (): void => {};
+		let freshCalls = 0;
+		const resolveFresh = createLxdOfficeGuestResolver(
+			{
+				inspectHostInventory: async (signal) => {
+					freshCalls += 1;
+					if (freshCalls === 1) {
+						await new Promise<void>((done) => {
+							releaseStuck = done;
+						});
+						signal.throwIfAborted();
+					}
+					return {
+						server: {} as LxdHostInventory["server"],
+						instances: [instance("qorpera-office-abc")],
+					};
+				},
+				getInstanceState: async () => running("10.99.0.6"),
+			},
+			identity,
+			0,
+		);
+		const sole = new AbortController();
+		const stale = resolveFresh(sole.signal);
+		await vi.waitFor(() => expect(freshCalls).toBe(1));
+		sole.abort(new Error("SOLE_TIMEOUT"));
+		await expect(stale).rejects.toThrow("SOLE_TIMEOUT");
+		const next = resolveFresh(new AbortController().signal);
+		expect(await next).toBe("10.99.0.6");
+		expect(freshCalls).toBe(2);
+		releaseStuck();
 	});
 });

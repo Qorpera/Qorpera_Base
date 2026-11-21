@@ -174,7 +174,10 @@ export function createLxdOfficeGuestResolver(
 		} finally {
 			if (onAbort) signal.removeEventListener("abort", onAbort);
 			current.waiters -= 1;
-			if (!current.settled && current.waiters === 0) current.controller.abort(signal.reason);
+			if (!current.settled && current.waiters === 0) {
+				if (inFlight === current) inFlight = undefined;
+				current.controller.abort(signal.reason);
+			}
 		}
 	};
 }
