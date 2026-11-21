@@ -221,6 +221,7 @@ impl Unpublished {
 
 const RETRY_BASE: Duration = Duration::from_millis(100);
 const RETRY_MAX: Duration = Duration::from_secs(10);
+const RETRY_WORKERS: usize = 4;
 
 enum RetryJob {
 	Close { ino: u64, open: Arc<Mutex<Open>> },
@@ -251,10 +252,14 @@ impl<J> Ord for RetryEntry<J> {
 	}
 }
 
+type RetryRunner<J> = Arc<dyn Fn(&J) -> bool + Send + Sync>;
+
 struct RetryState<J> {
 	heap: BinaryHeap<RetryEntry<J>>,
 	next_seq: u64,
-	started: bool,
+	workers: usize,
+	idle: usize,
+	runner: Option<RetryRunner<J>>,
 	stopped: bool,
 }
 
@@ -262,44 +267,57 @@ struct RetryQueue<J> {
 	state: Arc<(Mutex<RetryState<J>>, Condvar)>,
 	initial_wait: Duration,
 	max_wait: Duration,
+	max_workers: usize,
 }
 
 impl<J: Send + 'static> RetryQueue<J> {
 	fn new() -> Self {
-		Self::with_backoff(RETRY_BASE, RETRY_MAX)
+		Self::with_config(RETRY_BASE, RETRY_MAX, RETRY_WORKERS)
 	}
 
-	fn with_backoff(initial_wait: Duration, max_wait: Duration) -> Self {
+	fn with_config(initial_wait: Duration, max_wait: Duration, max_workers: usize) -> Self {
 		Self {
 			state: Arc::new((
-				Mutex::new(RetryState { heap: BinaryHeap::new(), next_seq: 0, started: false, stopped: false }),
+				Mutex::new(RetryState {
+					heap: BinaryHeap::new(),
+					next_seq: 0,
+					workers: 0,
+					idle: 0,
+					runner: None,
+					stopped: false,
+				}),
 				Condvar::new(),
 			)),
 			initial_wait,
 			max_wait,
+			max_workers: max_workers.max(1),
 		}
 	}
 
 	fn push<F>(&self, job: J, make_runner: impl FnOnce() -> F)
 	where
-		F: Fn(&J) -> bool + Send + 'static,
+		F: Fn(&J) -> bool + Send + Sync + 'static,
 	{
 		let (lock, wake) = &*self.state;
 		let mut state = lock.lock().unwrap();
 		if state.stopped {
 			return;
 		}
+		if state.runner.is_none() {
+			state.runner = Some(Arc::new(make_runner()));
+		}
 		let seq = state.next_seq;
 		state.next_seq += 1;
 		state.heap.push(RetryEntry { due: Instant::now() + self.initial_wait, seq, wait: self.initial_wait, job });
-		let spawn = !state.started;
-		if spawn {
-			state.started = true;
-		}
-		wake.notify_all();
+		let spawn_runner = if state.workers < self.max_workers && state.heap.len() > state.idle {
+			state.workers += 1;
+			state.runner.clone()
+		} else {
+			None
+		};
+		wake.notify_one();
 		drop(state);
-		if spawn {
-			let run = make_runner();
+		if let Some(run) = spawn_runner {
 			let max_wait = self.max_wait;
 			let shared = self.state.clone();
 			if let Err(e) = std::thread::Builder::new().name("close-retry".into()).spawn(move || {
@@ -307,8 +325,11 @@ impl<J: Send + 'static> RetryQueue<J> {
 				loop {
 					let entry = {
 						let mut state = lock.lock().unwrap();
-						loop {
+						state.idle += 1;
+						let picked = loop {
 							if state.stopped {
+								state.idle -= 1;
+								state.workers -= 1;
 								return;
 							}
 							match state.heap.peek() {
@@ -325,7 +346,12 @@ impl<J: Send + 'static> RetryQueue<J> {
 									state = next;
 								}
 							}
+						};
+						state.idle -= 1;
+						if !state.heap.is_empty() {
+							wake.notify_one();
 						}
+						picked
 					};
 					if !run(&entry.job) {
 						let mut state = lock.lock().unwrap();
@@ -339,13 +365,14 @@ impl<J: Send + 'static> RetryQueue<J> {
 								wait: next_wait,
 								job: entry.job,
 							});
+							wake.notify_one();
 						}
 					}
 				}
 			}) {
 				eprintln!("qorpera-folder: could not start close retry worker: {e}");
 				let mut state = lock.lock().unwrap();
-				state.started = false;
+				state.workers -= 1;
 			}
 		}
 	}
@@ -357,6 +384,7 @@ impl<J> Drop for RetryQueue<J> {
 		let mut state = lock.lock().unwrap();
 		state.stopped = true;
 		state.heap.clear();
+		state.runner = None;
 		wake.notify_all();
 	}
 }
@@ -685,7 +713,6 @@ impl Shared {
 		}
 		let Err(f) = self.try_close(ino, &open) else { return };
 		eprintln!("qorpera-folder: the node did not take a file's close now ({f}); trying again");
-		// WHY: Reuse a single retry worker instead of spawning a thread per failed close under node hiccups.
 		self.enqueue_retry(RetryJob::Close { ino, open });
 	}
 
@@ -2047,9 +2074,9 @@ mod tests {
 	}
 
 	#[test]
-	fn retry_queue_runs_many_jobs_on_a_single_worker_thread_and_stops_on_drop() {
+	fn retry_queue_runs_many_jobs_on_a_bounded_worker_pool_without_head_of_line_blocking() {
 		use std::sync::atomic::AtomicUsize;
-		let queue = RetryQueue::with_backoff(Duration::from_millis(5), Duration::from_millis(20));
+		let queue = RetryQueue::with_config(Duration::from_millis(5), Duration::from_millis(20), RETRY_WORKERS);
 		let attempts = Arc::new(AtomicUsize::new(0));
 		let completed = Arc::new(AtomicUsize::new(0));
 		let threads = Arc::new(Mutex::new(HashSet::new()));
@@ -2081,7 +2108,36 @@ mod tests {
 		rx.recv_timeout(Duration::from_secs(5)).expect("all 64 retry jobs finish");
 		assert_eq!(completed.load(Ordering::SeqCst), 64);
 		assert_eq!(attempts.load(Ordering::SeqCst), 128);
-		assert_eq!(threads.lock().unwrap().len(), 1);
+		assert!(!threads.lock().unwrap().is_empty() && threads.lock().unwrap().len() <= RETRY_WORKERS);
 		drop(queue);
+
+		let concurrent = RetryQueue::with_config(Duration::from_millis(5), Duration::from_millis(20), 2);
+		let (entered_tx, entered_rx) = mpsc::channel();
+		let (release_tx, release_rx) = mpsc::channel();
+		let release_rx = Arc::new(Mutex::new(release_rx));
+		let (fast_tx, fast_rx) = mpsc::channel();
+		let entered_tx = Arc::new(Mutex::new(Some(entered_tx)));
+		let fast_tx = Arc::new(Mutex::new(Some(fast_tx)));
+		concurrent.push(true, move || {
+			let release_rx = release_rx.clone();
+			let entered_tx = entered_tx.clone();
+			let fast_tx = fast_tx.clone();
+			move |slow: &bool| {
+				if *slow {
+					if let Some(tx) = entered_tx.lock().unwrap().take() {
+						let _ = tx.send(());
+					}
+					let _ = release_rx.lock().unwrap().recv_timeout(Duration::from_secs(5));
+				} else if let Some(tx) = fast_tx.lock().unwrap().take() {
+					let _ = tx.send(());
+				}
+				true
+			}
+		});
+		entered_rx.recv_timeout(Duration::from_secs(5)).expect("slow job entered");
+		concurrent.push(false, || |_: &bool| unreachable!());
+		fast_rx.recv_timeout(Duration::from_secs(2)).expect("fast job finishes while slow job blocks");
+		let _ = release_tx.send(());
+		drop(concurrent);
 	}
 }
