@@ -1,22 +1,46 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
-export function dollarQuote(value) {
+const WATCH_KINDS = new Set(["home-watch", "claude-watch", "smoke-watch"]);
+
+export function dollarQuote(value, tagBase = null) {
 	const text = String(value);
-	const digest = createHash("sha256").update(text).digest("hex").slice(0, 12);
-	let tag = `$q_${digest}$`;
+	if (text.includes("\0")) {
+		throw new Error("dollarQuote cannot encode NUL bytes for PostgreSQL text");
+	}
+	const base =
+		tagBase === null
+			? `q_${createHash("sha256").update(text).digest("hex").slice(0, 12)}`
+			: tagBase;
+	if (typeof base !== "string" || !/^[A-Za-z_][A-Za-z0-9_]{0,47}$/.test(base)) {
+		throw new Error(`Invalid dollarQuote tagBase: ${base}`);
+	}
+	let tag = `$${base}$`;
 	let salt = 0;
-	while (text.includes(tag)) {
+	while (text.includes(tag.slice(0, -1))) {
 		salt += 1;
-		tag = `$q_${digest}_${salt}$`;
+		tag = `$${base}_${salt}$`;
 	}
 	return `${tag}${text}${tag}`;
 }
 
 export function buildAnchorCheckSql(anchors) {
+	if (!Array.isArray(anchors)) {
+		throw new Error("anchors must be an array");
+	}
 	if (!anchors.length) {
 		return "select '[]'::jsonb as anchors;";
 	}
 	const rows = anchors.map((anchor, index) => {
+		if (typeof anchor?.functionSignature !== "string" || anchor.functionSignature.length === 0) {
+			throw new Error(`anchor[${index}].functionSignature must be a non-empty string`);
+		}
+		if (typeof anchor?.snippet !== "string" || anchor.snippet.length === 0) {
+			throw new Error(`anchor[${index}].snippet must be a non-empty string`);
+		}
+		if (!Number.isSafeInteger(anchor?.expectedCount) || anchor.expectedCount < 0) {
+			throw new Error(`anchor[${index}].expectedCount must be a non-negative integer`);
+		}
 		const fnQuoted = dollarQuote(anchor.functionSignature);
 		const snippetQuoted = dollarQuote(anchor.snippet);
 		return `(${index}, ${fnQuoted}, ${snippetQuoted}, ${anchor.expectedCount})`;
@@ -64,7 +88,7 @@ export function evaluatePostChecks(checks, actualByName) {
 	for (const check of checks) {
 		const present = actualByName !== null && actualByName !== undefined && Object.hasOwn(actualByName, check.name);
 		const actual = present ? actualByName[check.name] : undefined;
-		if (!present || JSON.stringify(actual) !== JSON.stringify(check.expected)) {
+		if (!present || !isDeepStrictEqual(actual, check.expected)) {
 			failures.push({
 				name: check.name,
 				expected: check.expected,
@@ -79,16 +103,15 @@ export function evaluatePostChecks(checks, actualByName) {
 	};
 }
 
-export function evaluateWatchTick({ kind, windowMinutes, earlyExitOnCompletedRuns }, stats) {
-	if (kind === "home-watch" && (stats.codexHomeFailures ?? 0) > 0) {
+export function evaluateWatchTick({ kind, windowMinutes, earlyExitOnCompletedRuns }, stats = {}) {
+	if (typeof kind !== "string" || !WATCH_KINDS.has(kind)) {
+		throw new Error(`Invalid watch kind: ${kind}`);
+	}
+	if ((stats.codexHomeFailures ?? 0) > 0) {
 		return { done: true, ok: false, exitCode: 83, reason: "codex-home-failure" };
 	}
-	if (kind === "claude-watch" && (stats.claudeWorkerFailures ?? 0) > 0) {
+	if ((stats.claudeWorkerFailures ?? 0) > 0) {
 		return { done: true, ok: false, exitCode: 85, reason: "claude-worker-failure" };
-	}
-	if (kind === "smoke-watch" && ((stats.codexHomeFailures ?? 0) > 0 || (stats.claudeWorkerFailures ?? 0) > 0)) {
-		const exitCode = (stats.codexHomeFailures ?? 0) > 0 ? 83 : 85;
-		return { done: true, ok: false, exitCode, reason: "smoke-failure" };
 	}
 	if (windowMinutes <= 0) {
 		return { done: true, ok: true, exitCode: 0, reason: "skipped-zero-window" };

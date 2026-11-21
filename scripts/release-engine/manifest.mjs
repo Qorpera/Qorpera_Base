@@ -8,7 +8,9 @@ const HEX_40 = /^[0-9a-f]{40}$/;
 const HEX_64 = /^[0-9a-f]{64}$/;
 const MIGRATION_ID = /^\d{14}$/;
 const MIGRATION_FILE = /^supabase\/migrations\/\d{14}_[a-z0-9_]+\.sql$/;
+const SQL_TEST_ID = /^\d{3,6}$/;
 const NODE_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+const POST_CHECK_NAME = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const FN_SIG = /^[a-z0-9_.]+\([a-z0-9_., \[\]]*\)$/i;
 
 const TOP_KEYS = [
@@ -23,6 +25,7 @@ const TOP_KEYS = [
 	"armed",
 	"nodeRelease",
 	"migrations",
+	"sqlTests",
 	"watchPolicy",
 	"image",
 	"nodes",
@@ -31,6 +34,10 @@ const TOP_KEYS = [
 
 function assertCondition(ok, message) {
 	if (!ok) throw new Error(message);
+}
+
+function assertStringMatch(value, pattern, message) {
+	assertCondition(typeof value === "string" && pattern.test(value), message);
 }
 
 function assertExactKeys(obj, expected, label) {
@@ -47,6 +54,7 @@ export function validateReleaseManifest(manifest) {
 	assertExactKeys(manifest, TOP_KEYS, "manifest");
 	assertCondition(manifest.schema === RELEASE_MANIFEST_SCHEMA, `schema must be ${RELEASE_MANIFEST_SCHEMA}`);
 	assertCondition(RELEASE_MODES.includes(manifest.mode), `mode must be one of ${RELEASE_MODES.join(", ")}`);
+	assertCondition(typeof manifest.armed === "boolean", "armed must be a boolean");
 	assertCondition(Number.isSafeInteger(manifest.version) && manifest.version >= 1, "version must be a positive integer");
 	assertCondition(
 		Number.isSafeInteger(manifest.previousVersion) && manifest.previousVersion >= 0,
@@ -60,10 +68,10 @@ export function validateReleaseManifest(manifest) {
 	} else {
 		assertCondition(manifest.version === manifest.previousVersion + 1, "version must equal previousVersion + 1");
 	}
-	assertCondition(HEX_64.test(manifest.previousBundleSha256), "previousBundleSha256 must be 64 hex chars");
-	assertCondition(HEX_40.test(manifest.baseCommit), "baseCommit must be 40 hex chars");
+	assertStringMatch(manifest.previousBundleSha256, HEX_64, "previousBundleSha256 must be 64 hex chars");
+	assertStringMatch(manifest.baseCommit, HEX_40, "baseCommit must be 40 hex chars");
 	assertCondition(
-		manifest.releaseCommit === null || HEX_40.test(manifest.releaseCommit),
+		manifest.releaseCommit === null || (typeof manifest.releaseCommit === "string" && HEX_40.test(manifest.releaseCommit)),
 		"releaseCommit must be 40 hex chars or null",
 	);
 	assertCondition(
@@ -71,11 +79,13 @@ export function validateReleaseManifest(manifest) {
 			(Number.isSafeInteger(manifest.releasePrNumber) && manifest.releasePrNumber >= 1),
 		"releasePrNumber must be a positive integer or null",
 	);
-	if (manifest.mode !== "sql-only" && manifest.armed) {
+	if (manifest.mode === "sql-only") {
+		assertCondition(manifest.releaseCommit === null, "sql-only mode must have releaseCommit = null");
+		assertCondition(manifest.releasePrNumber === null, "sql-only mode must have releasePrNumber = null");
+	} else if (manifest.armed) {
 		assertCondition(manifest.releaseCommit !== null, `${manifest.mode} requires releaseCommit when armed`);
 		assertCondition(manifest.releasePrNumber !== null, `${manifest.mode} requires releasePrNumber when armed`);
 	}
-	assertCondition(typeof manifest.armed === "boolean", "armed must be a boolean");
 
 	assertExactKeys(manifest.nodeRelease, ["revision", "previousRevision", "required"], "nodeRelease");
 	assertCondition(typeof manifest.nodeRelease.required === "boolean", "nodeRelease.required must be boolean");
@@ -89,10 +99,15 @@ export function validateReleaseManifest(manifest) {
 	);
 	if (manifest.mode === "sql-only") {
 		assertCondition(!manifest.nodeRelease.required, "sql-only mode cannot require a node release");
-	} else if (manifest.nodeRelease.required) {
+		assertCondition(
+			manifest.nodeRelease.revision === manifest.nodeRelease.previousRevision,
+			"sql-only mode must keep nodeRelease.revision equal to previousRevision",
+		);
+	} else {
+		assertCondition(manifest.nodeRelease.required, `${manifest.mode} must require a node release`);
 		assertCondition(
 			manifest.nodeRelease.revision === manifest.nodeRelease.previousRevision + 1,
-			"nodeRelease.revision must equal previousRevision + 1 when required",
+			"nodeRelease.revision must equal previousRevision + 1",
 		);
 	}
 
@@ -102,22 +117,19 @@ export function validateReleaseManifest(manifest) {
 	}
 	const seenIds = new Set();
 	for (const migration of manifest.migrations) {
-		assertExactKeys(migration, ["id", "file", "sqlTest", "anchors", "postChecks"], "migration");
-		assertCondition(MIGRATION_ID.test(migration.id), `invalid migration id: ${migration.id}`);
+		assertExactKeys(migration, ["id", "file", "anchors", "postChecks"], "migration");
+		assertStringMatch(migration.id, MIGRATION_ID, `invalid migration id: ${migration.id}`);
 		assertCondition(!seenIds.has(migration.id), `duplicate migration id: ${migration.id}`);
 		seenIds.add(migration.id);
-		assertCondition(MIGRATION_FILE.test(migration.file), `invalid migration file: ${migration.file}`);
+		assertStringMatch(migration.file, MIGRATION_FILE, `invalid migration file: ${migration.file}`);
 		assertCondition(
-			migration.sqlTest === null || /^\d{3,6}$/.test(migration.sqlTest),
-			`invalid sqlTest: ${migration.sqlTest}`,
+			migration.file.startsWith(`supabase/migrations/${migration.id}_`),
+			`migration file '${migration.file}' does not match migration id '${migration.id}'`,
 		);
 		assertCondition(Array.isArray(migration.anchors), "migration.anchors must be an array");
 		for (const anchor of migration.anchors) {
 			assertExactKeys(anchor, ["functionSignature", "snippet", "expectedCount"], "anchor");
-			assertCondition(
-				typeof anchor.functionSignature === "string" && FN_SIG.test(anchor.functionSignature),
-				`invalid functionSignature: ${anchor.functionSignature}`,
-			);
+			assertStringMatch(anchor.functionSignature, FN_SIG, `invalid functionSignature: ${anchor.functionSignature}`);
 			assertCondition(typeof anchor.snippet === "string" && anchor.snippet.length > 0, "anchor.snippet must be non-empty");
 			assertCondition(
 				Number.isSafeInteger(anchor.expectedCount) && anchor.expectedCount >= 0 && anchor.expectedCount <= 20,
@@ -125,11 +137,22 @@ export function validateReleaseManifest(manifest) {
 			);
 		}
 		assertCondition(Array.isArray(migration.postChecks), "migration.postChecks must be an array");
+		const seenChecks = new Set();
 		for (const check of migration.postChecks) {
 			assertExactKeys(check, ["name", "sql", "expected"], "postCheck");
-			assertCondition(/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(check.name), `invalid postCheck name: ${check.name}`);
+			assertStringMatch(check.name, POST_CHECK_NAME, `invalid postCheck name: ${check.name}`);
+			assertCondition(!seenChecks.has(check.name), `duplicate postCheck name: ${check.name}`);
+			seenChecks.add(check.name);
 			assertCondition(typeof check.sql === "string" && check.sql.trim().length > 0, "postCheck.sql must be non-empty");
 		}
+	}
+
+	assertCondition(Array.isArray(manifest.sqlTests), "sqlTests must be an array");
+	const seenSqlTests = new Set();
+	for (const sqlTest of manifest.sqlTests) {
+		assertStringMatch(sqlTest, SQL_TEST_ID, `invalid sqlTest: ${sqlTest}`);
+		assertCondition(!seenSqlTests.has(sqlTest), `duplicate sqlTest: ${sqlTest}`);
+		seenSqlTests.add(sqlTest);
 	}
 
 	assertExactKeys(
@@ -157,13 +180,15 @@ export function validateReleaseManifest(manifest) {
 	assertExactKeys(manifest.image, ["compression", "rebuildRequired"], "image");
 	assertCondition(IMAGE_COMPRESSIONS.includes(manifest.image.compression), "image.compression must be zstd, gzip, or none");
 	assertCondition(typeof manifest.image.rebuildRequired === "boolean", "image.rebuildRequired must be boolean");
-	if (manifest.mode === "sql-only" || manifest.mode === "thin-runtime") {
+	if (manifest.mode === "full-image") {
+		assertCondition(manifest.image.rebuildRequired, "full-image must have image.rebuildRequired = true");
+	} else {
 		assertCondition(!manifest.image.rebuildRequired, `${manifest.mode} must have image.rebuildRequired = false`);
 	}
 
 	assertExactKeys(manifest.nodes, ["nodeA", "nodeB", "slotsLive", "slotsNew", "wakeLive", "wakeOn"], "nodes");
-	assertCondition(NODE_NAME.test(manifest.nodes.nodeA), "invalid nodes.nodeA");
-	assertCondition(NODE_NAME.test(manifest.nodes.nodeB), "invalid nodes.nodeB");
+	assertStringMatch(manifest.nodes.nodeA, NODE_NAME, "invalid nodes.nodeA");
+	assertStringMatch(manifest.nodes.nodeB, NODE_NAME, "invalid nodes.nodeB");
 	assertCondition(manifest.nodes.nodeA !== manifest.nodes.nodeB, "nodes.nodeA and nodes.nodeB must differ");
 	assertCondition(
 		Number.isSafeInteger(manifest.nodes.slotsLive) && manifest.nodes.slotsLive >= 1 && manifest.nodes.slotsLive <= 64,
@@ -204,12 +229,11 @@ export function createReleaseManifest({
 	const plan = buildReleasePrepPlan(classification, { thinRuntimeEnabled });
 	const version = plan.needsBundleBump ? previousVersion + 1 : previousVersion;
 	const nodeRevision = plan.needsNodeRelease ? previousNodeReleaseRevision + 1 : previousNodeReleaseRevision;
-	const migrations = plan.migrations.map((file, index) => {
+	const migrations = plan.migrations.map((file) => {
 		const id = /^supabase\/migrations\/(\d{14})_/.exec(file)?.[1] ?? "";
 		return {
 			id,
 			file,
-			sqlTest: plan.sqlTests[index] ?? null,
 			anchors: [],
 			postChecks: [],
 		};
@@ -230,6 +254,7 @@ export function createReleaseManifest({
 			required: plan.needsNodeRelease,
 		},
 		migrations,
+		sqlTests: [...plan.sqlTests],
 		watchPolicy: plan.watchPolicy,
 		image: {
 			compression: plan.imageCompression,

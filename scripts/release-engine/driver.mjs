@@ -6,6 +6,20 @@ export const NON_RETRYABLE_CODES = new Set([77, 78, 79, 81, 82, 83, 84, 85, 87, 
 export const WRITE_PHASES = new Set(["migrate", "a-apply", "switch", "web"]);
 export const ONCE_PHASES = new Set(["web"]);
 
+function sanitizeHoldSegment(value) {
+	return String(value ?? "")
+		.replace(/[\r\n]+/g, " ")
+		.trim();
+}
+
+export function releaseHoldLabel(manifest) {
+	if (manifest.releasePrNumber !== null) {
+		return `release PR #${manifest.releasePrNumber}`;
+	}
+	const migrationIds = manifest.migrations.map((migration) => migration.id).join(",");
+	return `sql-only ${manifest.baseCommit.slice(0, 12)} [${migrationIds}]`;
+}
+
 export function stepsForManifest(manifest) {
 	validateReleaseManifest(manifest);
 	if (manifest.mode === "sql-only") {
@@ -45,15 +59,15 @@ export function stepsForManifest(manifest) {
 
 export function atomicWriteFile(filePath, content) {
 	mkdirSync(dirname(filePath), { recursive: true });
-	const temporary = `${filePath}.tmp.${process.pid}.${Date.now()}`;
+	const temporary = `${filePath}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
 	writeFileSync(temporary, content, "utf8");
 	renameSync(temporary, filePath);
 }
 
 export function keptHoldText({ manifest, stoppedAt, atIso, firstWritePhase, stopWhy, prStateSummary }) {
-	const prLabel = manifest.releasePrNumber ? `release PR #${manifest.releasePrNumber}` : "sql-only release";
-	const line1 = `MERGE-HOLD KEPT by the v${manifest.version} roll (release-engine, ${prLabel}): the roll STOPPED with part of the release on production.`;
-	const line2 = `Stopped at: ${stoppedAt} (${stopWhy}), ${atIso}; the first phase that wrote the release: ${firstWritePhase}. ${prStateSummary}`;
+	const label = releaseHoldLabel(manifest);
+	const line1 = `MERGE-HOLD KEPT by the v${manifest.version} roll (release-engine, ${label}): the roll STOPPED with part of the release on production.`;
+	const line2 = `Stopped at: ${sanitizeHoldSegment(stoppedAt)} (${sanitizeHoldSegment(stopWhy)}), ${sanitizeHoldSegment(atIso)}; the first phase that wrote the release: ${sanitizeHoldSegment(firstWritePhase)}. ${sanitizeHoldSegment(prStateSummary)}`;
 	const line3 =
 		manifest.releasePrNumber !== null
 			? `No merges into master until release PR #${manifest.releasePrNumber} merges and Pages serves it, or the release is rolled back.`
@@ -65,10 +79,10 @@ export function keptHoldText({ manifest, stoppedAt, atIso, firstWritePhase, stop
 function isMatchingKeptHold(text, manifest) {
 	const lines = text.trimEnd().split("\n");
 	if (lines.length !== 4) return false;
-	const prLabel = manifest.releasePrNumber ? `release PR #${manifest.releasePrNumber}` : "sql-only release";
+	const label = releaseHoldLabel(manifest);
 	return (
 		lines[0] ===
-			`MERGE-HOLD KEPT by the v${manifest.version} roll (release-engine, ${prLabel}): the roll STOPPED with part of the release on production.` &&
+			`MERGE-HOLD KEPT by the v${manifest.version} roll (release-engine, ${label}): the roll STOPPED with part of the release on production.` &&
 		lines[3] === "The lead removes this file by its exact path, or resumes this manifest with --from <step>."
 	);
 }
@@ -82,12 +96,22 @@ export async function runReleaseDriver(manifest, options = {}, ports = {}) {
 	const prepHoldFile = options.prepHoldFile ?? null;
 	const fromStep = options.from ?? null;
 	const maxTries = options.maxTries ?? 3;
+	const retryDelayMs = options.retryDelayMs ?? 90_000;
 	const nowIso = ports.nowIso ?? (() => new Date().toISOString());
 	const sleep = ports.sleep ?? (async () => {});
 	const runPhase = ports.runPhase;
-	const readPrState = ports.readPrState ?? (async () => ({ state: "OPEN", mergeable: "MERGEABLE" }));
+	const readPrState = ports.readPrState;
 	const log = [];
 
+	if (typeof runPhase !== "function") {
+		return { ok: false, exitCode: 2, reason: "REFUSED: ports.runPhase must be a function", log };
+	}
+	if (!Number.isSafeInteger(maxTries) || maxTries < 1) {
+		return { ok: false, exitCode: 2, reason: `REFUSED: maxTries must be a positive integer (got ${maxTries})`, log };
+	}
+	if (typeof retryDelayMs !== "number" || !Number.isFinite(retryDelayMs) || retryDelayMs < 0) {
+		return { ok: false, exitCode: 2, reason: `REFUSED: retryDelayMs must be a non-negative finite number`, log };
+	}
 	if (env.QORPERA_ROLL_TEST && !dryRun) {
 		return { ok: false, exitCode: 2, reason: "REFUSED: QORPERA_ROLL_TEST requires --dry-run", log };
 	}
@@ -117,12 +141,37 @@ export async function runReleaseDriver(manifest, options = {}, ports = {}) {
 	}
 
 	if (!dryRun && manifest.releasePrNumber !== null) {
-		const pr = await readPrState(manifest.releasePrNumber);
-		const tag = `${pr?.state ?? ""} ${pr?.mergeable ?? ""}`.trim();
-		if (pr?.state === "MERGED" || tag === "OPEN MERGEABLE") {
+		if (typeof readPrState !== "function") {
+			return {
+				ok: false,
+				exitCode: 2,
+				reason: `REFUSED: ports.readPrState is required for live release PR #${manifest.releasePrNumber}`,
+				log,
+			};
+		}
+		let pr;
+		try {
+			pr = await readPrState(manifest.releasePrNumber);
+		} catch (error) {
+			return {
+				ok: false,
+				exitCode: 77,
+				reason: `COULD NOT READ release PR #${manifest.releasePrNumber}: ${error?.message || "read failed"}`,
+				log,
+			};
+		}
+		const state = typeof pr?.state === "string" ? pr.state.trim() : "";
+		const mergeable = typeof pr?.mergeable === "string" ? pr.mergeable.trim() : "";
+		const tag = `${state} ${mergeable}`.trim();
+		if (state === "MERGED" || (state === "OPEN" && mergeable === "MERGEABLE")) {
 			log.push(`pr-check ok: ${tag}`);
-		} else if (tag === "OPEN UNKNOWN" || !pr?.state) {
-			return { ok: false, exitCode: 77, reason: `COULD NOT READ release PR #${manifest.releasePrNumber}: ${tag || "empty"}`, log };
+		} else if (!state || (state === "OPEN" && (!mergeable || mergeable === "UNKNOWN"))) {
+			return {
+				ok: false,
+				exitCode: 77,
+				reason: `COULD NOT READ release PR #${manifest.releasePrNumber}: ${tag || "empty"}`,
+				log,
+			};
 		} else {
 			return { ok: false, exitCode: 4, reason: `REFUSED: release PR #${manifest.releasePrNumber} is ${tag}`, log };
 		}
@@ -134,14 +183,14 @@ export async function runReleaseDriver(manifest, options = {}, ports = {}) {
 		if (earlierWrite) onProd = `resumed-from-${fromStep}`;
 	}
 
-	const prLabel = manifest.releasePrNumber ? `release PR #${manifest.releasePrNumber}` : "sql-only release";
-	const driverHoldText = `v${manifest.version} roll (release-engine, ${prLabel}, started ${nowIso()}): no merges until complete.\n`;
+	const label = releaseHoldLabel(manifest);
+	const driverHoldText = `v${manifest.version} roll (release-engine, ${label}, started ${sanitizeHoldSegment(nowIso())}): no merges until complete.\n`;
 	let holdOwned = false;
 	let holdOrigin = null;
 	const holdReleaseStep = manifest.mode === "sql-only" ? "after-read" : "web";
 	const holdNeeded = startIndex <= steps.indexOf(holdReleaseStep);
 
-	if (holdFile && holdNeeded) {
+	if (!dryRun && holdFile && holdNeeded) {
 		const prepText = prepHoldFile && existsSync(prepHoldFile) ? readFileSync(prepHoldFile, "utf8") : null;
 		if (existsSync(holdFile)) {
 			const existing = readFileSync(holdFile, "utf8");
@@ -165,9 +214,10 @@ export async function runReleaseDriver(manifest, options = {}, ports = {}) {
 	}
 
 	const finalizeHold = async ({ completed, failedStep, stopWhy }) => {
-		if (!holdFile || !holdOwned) return;
+		if (dryRun || !holdFile || !holdOwned) return;
+		const stillOwnedByDriver = existsSync(holdFile) && readFileSync(holdFile, "utf8") === driverHoldText;
 		if (completed) {
-			if (existsSync(holdFile) && readFileSync(holdFile, "utf8") === driverHoldText) {
+			if (stillOwnedByDriver) {
 				rmSync(holdFile, { force: true });
 			}
 			holdOwned = false;
@@ -175,71 +225,100 @@ export async function runReleaseDriver(manifest, options = {}, ports = {}) {
 		}
 		if (onProd) {
 			let prSummary = "SQL-only release (no release PR).";
-			if (!dryRun && manifest.releasePrNumber !== null) {
+			if (manifest.releasePrNumber !== null && typeof readPrState === "function") {
 				const pr = await readPrState(manifest.releasePrNumber).catch(() => null);
-				prSummary = pr?.state ? `Release PR #${manifest.releasePrNumber} state: ${pr.state}.` : `Release PR #${manifest.releasePrNumber} state unreadable.`;
+				prSummary = pr?.state
+					? `Release PR #${manifest.releasePrNumber} state: ${pr.state}.`
+					: `Release PR #${manifest.releasePrNumber} state unreadable.`;
 			}
-			atomicWriteFile(
-				holdFile,
-				keptHoldText({
-					manifest,
-					stoppedAt: failedStep,
-					atIso: nowIso(),
-					firstWritePhase: onProd,
-					stopWhy,
-					prStateSummary: prSummary,
-				}),
-			);
+			if (stillOwnedByDriver || !existsSync(holdFile)) {
+				atomicWriteFile(
+					holdFile,
+					keptHoldText({
+						manifest,
+						stoppedAt: failedStep,
+						atIso: nowIso(),
+						firstWritePhase: onProd,
+						stopWhy,
+						prStateSummary: prSummary,
+					}),
+				);
+			}
 			holdOwned = false;
 			return;
 		}
-		if (holdOrigin === "prep" && prepHoldFile && existsSync(prepHoldFile)) {
-			atomicWriteFile(holdFile, readFileSync(prepHoldFile, "utf8"));
-		} else if (existsSync(holdFile) && readFileSync(holdFile, "utf8") === driverHoldText) {
-			rmSync(holdFile, { force: true });
+		if (stillOwnedByDriver) {
+			if (holdOrigin === "prep" && prepHoldFile && existsSync(prepHoldFile)) {
+				atomicWriteFile(holdFile, readFileSync(prepHoldFile, "utf8"));
+			} else {
+				rmSync(holdFile, { force: true });
+			}
 		}
 		holdOwned = false;
 	};
 
 	const executed = [];
-	for (let idx = startIndex; idx < steps.length; idx++) {
-		const step = steps[idx];
-		if (!onProd && WRITE_PHASES.has(step)) {
-			onProd = step;
-		}
-		const attemptsAllowed = ONCE_PHASES.has(step) ? 1 : maxTries;
-		let lastCode = 0;
-		let lastReason = "";
-		for (let attempt = 1; attempt <= attemptsAllowed; attempt++) {
-			const result = await runPhase(step, { manifest, dryRun, attempt });
-			lastCode = result?.exitCode ?? 0;
-			lastReason = result?.reason ?? "";
-			log.push(`${step} try ${attempt} rc=${lastCode}`);
-			if (lastCode === 0) break;
-			if (NON_RETRYABLE_CODES.has(lastCode)) {
-				log.push(`${step} non-retryable rc=${lastCode}`);
-				break;
+	let currentStep = steps[startIndex];
+	try {
+		for (let idx = startIndex; idx < steps.length; idx++) {
+			const step = steps[idx];
+			currentStep = step;
+			if (!onProd && WRITE_PHASES.has(step)) {
+				onProd = step;
 			}
-			if (attempt < attemptsAllowed) {
-				await sleep(dryRun ? 0 : (options.retryDelayMs ?? 90_000));
+			const attemptsAllowed = ONCE_PHASES.has(step) ? 1 : maxTries;
+			let lastCode = 1;
+			let lastReason = "";
+			for (let attempt = 1; attempt <= attemptsAllowed; attempt++) {
+				const result = await runPhase(step, { manifest, dryRun, attempt });
+				if (!result || !Number.isInteger(result.exitCode)) {
+					lastCode = 1;
+					lastReason = "runPhase returned invalid exitCode";
+					log.push(`${step} try ${attempt} invalid-result`);
+					break;
+				}
+				lastCode = result.exitCode;
+				lastReason = typeof result.reason === "string" ? result.reason : "";
+				log.push(`${step} try ${attempt} rc=${lastCode}`);
+				if (lastCode === 0) break;
+				if (NON_RETRYABLE_CODES.has(lastCode)) {
+					log.push(`${step} non-retryable rc=${lastCode}`);
+					break;
+				}
+				if (attempt < attemptsAllowed) {
+					await sleep(dryRun ? 0 : retryDelayMs);
+				}
+			}
+			if (lastCode !== 0) {
+				await finalizeHold({ completed: false, failedStep: step, stopWhy: lastReason || `exit ${lastCode}` });
+				return {
+					ok: false,
+					exitCode: lastCode,
+					failedStep: step,
+					onProd,
+					executed,
+					reason: lastReason || `${step} failed with exit ${lastCode}`,
+					log,
+				};
+			}
+			executed.push(step);
+			if (step === holdReleaseStep) {
+				await finalizeHold({ completed: true, failedStep: null, stopWhy: null });
 			}
 		}
-		if (lastCode !== 0) {
-			await finalizeHold({ completed: false, failedStep: step, stopWhy: lastReason || `exit ${lastCode}` });
-			return {
-				ok: false,
-				exitCode: lastCode,
-				failedStep: step,
-				onProd,
-				executed,
-				reason: lastReason || `${step} failed with exit ${lastCode}`,
-				log,
-			};
-		}
-		executed.push(step);
-		if (step === holdReleaseStep) {
-			await finalizeHold({ completed: true, failedStep: null, stopWhy: null });
-		}
+	} catch (error) {
+		const message = error?.message || "unexpected driver error";
+		log.push(`${currentStep} threw: ${message}`);
+		await finalizeHold({ completed: false, failedStep: currentStep, stopWhy: message });
+		return {
+			ok: false,
+			exitCode: 1,
+			failedStep: currentStep,
+			onProd,
+			executed,
+			reason: `${currentStep} threw: ${message}`,
+			log,
+		};
 	}
 
 	return {
