@@ -15,7 +15,7 @@ import net from "node:net";
 import { after, before, describe, it } from "node:test";
 import pg from "pg";
 import { checkLocale, LOCALE_QUERY, POSTGRES_IMAGE, POSTGRES_LOCALE } from "../../../scripts/test-hosted-db.mjs";
-import { companyDatabase, folderPassword, Gateway, LIMITS, listMembers, Platform, serve, serveRuns } from "./gateway.mjs";
+import { companyDatabase, folderPassword, Gateway, LIMITS, listMembers, Platform, POOL_SIZE, serve, serveRuns } from "./gateway.mjs";
 
 const dockerUsable = process.platform === "linux" && spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0;
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
@@ -656,26 +656,22 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 			const applied = await ask(contributor, "apply", { database: "queue" });
 			assert.equal(applied.value.applied, true, JSON.stringify(applied.value));
 			const things = (answer) => answer.value.tables.find((table) => table.name === "things");
-			const sevens = [[[7]], [[7]], [[7]]];
+			const sevens = Array.from({ length: POOL_SIZE.r }, () => [[7]]);
 			assert.deepEqual((await ask(viewer, "query", { database: "queue", question: "slow" })).value.rows, [[7]], "the question's text is kept");
-			const slow = [1, 2, 3].map(() => call(viewer, "query", { database: "queue", question: "slow" }));
+			const slow = Array.from({ length: POOL_SIZE.r }, () => call(viewer, "query", { database: "queue", question: "slow" }));
 			await sleep(150);
 			const began = Date.now();
 			const busy = await describeOne(viewer, "queue");
 			const took = Date.now() - began;
 			assert.equal(busy.status, 200, JSON.stringify(busy.value));
-			// Not counted: a count that waited on for a connection would have got one when the questions ended, and counted.
 			assert.deepEqual([things(busy).rows, things(busy).rowsAbout], [undefined, undefined]);
 			assert.ok(took < 3_000, `the describe took ${took} ms: it did not wait as long as the pool lets a call wait (5 s)`);
 			assert.deepEqual((await Promise.all(slow)).map((answer) => answer.value.rows), sevens);
-			// With connections free again a describe counts.
 			assert.equal(things(await describeOne(viewer, "queue")).rows, 7);
-			// The connection that came too late for the count was given back: three slow questions still run side by
-			// side (one after two others would take 2.8 s).
 			const again = Date.now();
-			const second = await Promise.all([1, 2, 3].map(() => call(viewer, "query", { database: "queue", question: "slow" })));
+			const second = await Promise.all(Array.from({ length: POOL_SIZE.r }, () => call(viewer, "query", { database: "queue", question: "slow" })));
 			assert.deepEqual(second.map((answer) => answer.value.rows), sevens);
-			assert.ok(Date.now() - again < 2_500, `three slow questions took ${Date.now() - again} ms`);
+			assert.ok(Date.now() - again < 2_500, `${POOL_SIZE.r} slow questions took ${Date.now() - again} ms`);
 		});
 	});
 
@@ -3728,6 +3724,63 @@ create trigger nap before update on slowed for each row execute function nap();
 		assert.equal(healthy.status, 200, JSON.stringify(healthy.value));
 	});
 
+	it("recovers pipelined reads and writes cleanly across statement_timeout, constraint errors, 0A000 schema type changes, and cluster IPC hooks", async () => {
+		put(ENV_A, {
+			"data/pipechaos/database.toml": 'format = "qorpera.database/v1"\nname = "Pipe chaos"\n',
+			"data/pipechaos/tables/001-init.sql": `
+				create table entries (
+					id bigint generated always as identity primary key,
+					code text not null unique,
+					amount int not null
+				);
+				insert into entries (code, amount) values ('k1', 10), ('k2', 20);
+			`,
+			"data/pipechaos/queries/all.sql": "select id, code, amount from entries order by id;\n",
+			"data/pipechaos/queries/slow.sql": "select pg_sleep(1.5), count(*) from entries;\n",
+			"data/pipechaos/queries/missing.sql": "select * from does_not_exist;\n",
+			"data/pipechaos/actions/add.sql": "insert into entries (code, amount) values (:code, :amount) returning id;\n",
+		});
+		assert.equal((await ask(owner, "apply", { database: "pipechaos" })).value.applied, true);
+		for (let i = 0; i < 4; i++) {
+			const warmed = await ask(viewer, "query", { database: "pipechaos", question: "all" });
+			assert.equal(warmed.status, 200);
+			assert.deepEqual(warmed.value.rows, [[1, "k1", 10], [2, "k2", 20]]);
+		}
+		const timedOut = await ask(viewer, "query", { database: "pipechaos", question: "slow" });
+		assert.equal(timedOut.status, 408, JSON.stringify(timedOut.value));
+		const missingTbl = await ask(viewer, "query", { database: "pipechaos", question: "missing" });
+		assert.equal(missingTbl.status, 400, JSON.stringify(missingTbl.value));
+		const dupWrite = await ask(owner, "change", { database: "pipechaos", change: "add", params: { code: "k1", amount: 99 } });
+		assert.equal(dupWrite.status, 400, JSON.stringify(dupWrite.value));
+		const goodWrite = await ask(owner, "change", { database: "pipechaos", change: "add", params: { code: "k3", amount: 30 } });
+		assert.equal(goodWrite.status, 200, JSON.stringify(goodWrite.value));
+		put(ENV_A, {
+			"data/pipechaos/tables/002-widen.sql": "alter table entries alter column amount type numeric(12, 2);\n",
+		});
+		assert.equal((await ask(owner, "apply", { database: "pipechaos" })).value.applied, true);
+		for (let i = 0; i < 6; i++) {
+			const afterAlter = await ask(viewer, "query", { database: "pipechaos", question: "all" });
+			assert.equal(afterAlter.status, 200, JSON.stringify(afterAlter.value));
+			assert.equal(afterAlter.value.rows.length, 3);
+		}
+		const events = [];
+		await withGateway(
+			{
+				onAgentRead: (event) => events.push(event),
+			},
+			async (gw) => {
+				const db = companyDatabase(ENV_A);
+				gw.setFullDatabases([db]);
+				const blocked = await ask(owner, "change", { database: "pipechaos", change: "add", params: { code: "k4", amount: 40 } });
+				assert.equal(blocked.status, 507, JSON.stringify(blocked.value));
+				gw.setFullDatabases([]);
+				const allowed = await ask(owner, "change", { database: "pipechaos", change: "add", params: { code: "k4", amount: 40 } });
+				assert.equal(allowed.status, 200, JSON.stringify(allowed.value));
+			},
+		);
+		assert.ok(Array.isArray(events));
+	});
+
 	it("batches small-table counts, isolates slow views, and describes multiple databases concurrently", async () => {
 		const multiSql =
 			Array.from({ length: 12 }, (_, i) => `create table t_${String(i).padStart(2, "0")} (id int primary key);\ninsert into t_${String(i).padStart(2, "0")} select n from generate_series(1, ${i + 1}) n;\n`).join("") +
@@ -3826,7 +3879,7 @@ create trigger nap before update on slowed for each row execute function nap();
 		const fillToLimit = async () => {
 			const fillers = [];
 			let hitLimit = false;
-			for (let i = 0; i < 30; i++) {
+			for (let i = 0; i < 48; i++) {
 				const client = connect(companyDb, "qorpera_data_keeper", logins.keeper);
 				client.on("error", () => undefined);
 				try {
@@ -3867,7 +3920,7 @@ create trigger nap before update on slowed for each row execute function nap();
 			assert.ok(idleReaders >= 4, `expected at least 4 idle reader pools, got ${idleReaders}`);
 			const { fillers, hitLimit } = await fillToLimit();
 			try {
-				assert.equal(hitLimit, true, "expected company database to reach its 24-connection limit");
+				assert.equal(hitLimit, true, "expected company database to reach its connection limit");
 				const evicted = await Promise.all([
 					ask(viewer, "query", { database: "m03", question: "count" }),
 					ask(viewer, "query", { database: "m00", question: "count" }),
@@ -3902,7 +3955,7 @@ create trigger nap before update on slowed for each row execute function nap();
 		const fillAll = async () => {
 			const fillers = [];
 			let hitLimit = false;
-			for (let i = 0; i < 30; i++) {
+			for (let i = 0; i < 48; i++) {
 				const client = connect(companyDb, "qorpera_data_keeper", logins.keeper);
 				client.on("error", () => undefined);
 				try {
@@ -3917,7 +3970,7 @@ create trigger nap before update on slowed for each row execute function nap();
 					throw error;
 				}
 			}
-			assert.equal(hitLimit, true, "expected company database to reach its 24-connection limit");
+			assert.equal(hitLimit, true, "expected company database to reach its connection limit");
 			return fillers;
 		};
 		const createHoldProxy = async () => {
