@@ -798,11 +798,23 @@ export async function exportDatabaseSnapshot({
 			if (movedPrev) {
 				try {
 					renameSync(backupDir, resolvedOut);
-				} catch {}
+				} catch (restoreError) {
+					const detail = restoreError instanceof Error ? restoreError.message : String(restoreError);
+					const wrapped = new Error(
+						`snapshot swap failed and previous snapshot remains at ${backupDir} (restore error: ${detail})`,
+						{ cause: swapError },
+					);
+					wrapped.previousSnapshotDir = backupDir;
+					throw wrapped;
+				}
 			}
 			throw swapError;
 		}
-		if (movedPrev) rmSync(backupDir, { recursive: true, force: true });
+		if (movedPrev) {
+			try {
+				rmSync(backupDir, { recursive: true, force: true });
+			} catch {}
+		}
 		return {
 			manifest,
 			ms: Date.now() - startedAt,

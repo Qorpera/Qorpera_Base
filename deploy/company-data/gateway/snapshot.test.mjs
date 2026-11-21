@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -358,7 +358,7 @@ describe("company-data snapshots and lifecycle cleanup", { skip: !dockerUsable }
 		}
 	});
 
-	it("restores wide multi-megabyte rows in byte-bounded batches, retries stale cuts cleanly, and preserves existing outDir on export failure", async () => {
+	it("restores wide multi-megabyte rows in byte-bounded batches, retries stale cuts without leaking CSV FDs, and swaps existing outDir cleanly", async () => {
 		const database = companyDatabase(envId);
 		const wideDir = join(workDir, "wide-snap");
 		const restoreDb = `qorpera_snap_wide_${randomBytes(4).toString("hex")}`;
@@ -368,6 +368,17 @@ describe("company-data snapshots and lifecycle cleanup", { skip: !dockerUsable }
 		for (let id = 1; id <= 6; id += 1) {
 			await asSuperuser(database, "insert into wide.blobs (id, payload) values ($1, $2)", [id, `${id}:${oneMiB}`]);
 		}
+		const workDirFds = () => {
+			if (!existsSync("/proc/self/fd")) return [];
+			const open = [];
+			for (const entry of readdirSync("/proc/self/fd")) {
+				try {
+					const target = readlinkSync(`/proc/self/fd/${entry}`);
+					if (target.includes(workDir)) open.push(target);
+				} catch {}
+			}
+			return open;
+		};
 		const exported = await exportDatabaseSnapshot({
 			store: { host: "127.0.0.1", port, logins: { admin: "test-password" } },
 			user: "postgres",
@@ -380,6 +391,7 @@ describe("company-data snapshots and lifecycle cleanup", { skip: !dockerUsable }
 				"CREATE SCHEMA wide;\nCREATE TABLE wide.blobs (id integer NOT NULL, payload text NOT NULL);\nALTER TABLE ONLY wide.blobs ADD CONSTRAINT blobs_pkey PRIMARY KEY (id);\n",
 		});
 		assert.equal(exported.manifest.tables[0].rows, 6);
+		assert.deepEqual(workDirFds(), []);
 
 		const sentinelPath = join(wideDir, "sentinel.txt");
 		writeFileSync(sentinelPath, "keep-me", "utf8");
@@ -399,6 +411,23 @@ describe("company-data snapshots and lifecycle cleanup", { skip: !dockerUsable }
 			/simulated pg_dump outage/,
 		);
 		assert.equal(readFileSync(sentinelPath, "utf8"), "keep-me");
+
+		const replaced = await exportDatabaseSnapshot({
+			store: { host: "127.0.0.1", port, logins: { admin: "test-password" } },
+			user: "postgres",
+			password: "test-password",
+			database,
+			schema: "wide",
+			outDir: wideDir,
+			dumpSchema: async () =>
+				"CREATE SCHEMA wide;\nCREATE TABLE wide.blobs (id integer NOT NULL, payload text NOT NULL);\nALTER TABLE ONLY wide.blobs ADD CONSTRAINT blobs_pkey PRIMARY KEY (id);\n",
+		});
+		assert.equal(existsSync(sentinelPath), false);
+		assert.equal(JSON.parse(readFileSync(join(wideDir, "snapshot.json"), "utf8")).takenAt, replaced.manifest.takenAt);
+		assert.deepEqual(
+			readdirSync(workDir).filter((name) => name.startsWith("wide-snap.prev-") || name.startsWith("wide-snap.stage-")),
+			[],
+		);
 
 		await asSuperuser("postgres", `create database ${restoreDb}`);
 		try {
