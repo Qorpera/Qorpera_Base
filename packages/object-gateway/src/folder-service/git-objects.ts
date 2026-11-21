@@ -127,8 +127,7 @@ class PlainCheck implements ContentCheck {
 	}
 
 	push(chunk: Buffer): Promise<void> {
-		this.#scan.push(chunk);
-		return Promise.resolve();
+		return this.#scan.pushAsync(chunk);
 	}
 
 	end(): Promise<void> {
@@ -177,7 +176,9 @@ class LooseCheck implements ContentCheck {
 	}
 
 	async push(chunk: Buffer): Promise<void> {
-		this.#stored.push(chunk);
+		this.#throwIfFailed();
+		await this.#stored.pushAsync(chunk);
+		this.#throwIfFailed();
 		this.#fed += chunk.length;
 		await this.#write(chunk);
 		this.#throwIfFailed();
@@ -303,7 +304,7 @@ class PackCheck implements ContentCheck {
 	}
 
 	async push(chunk: Buffer): Promise<void> {
-		this.#stored.push(chunk);
+		await this.#stored.pushAsync(chunk);
 		this.#fed += chunk.length;
 		await (await this.#started()).feed(chunk);
 	}

@@ -640,8 +640,9 @@ removed however the check ends. At most 8 checks wait for a turn on a node, with
 pack past either is refused as "could not be checked" for now, and checked again at the next boundary (one session's
 boundary checks at most 8 files at once, so this is several sessions at once). A pack over 512 MiB, or one whose objects rebuild more than 64 times its size (at
 least 256 MiB, at most 4 GiB), is "could not be checked" too. Packs of code rebuild 14 to 26 times their size (express
-16, Qorpera_Base 14, git/git 26), and the scan runs at about 6 MiB a second on the node, so a pack the size of
-Qorpera_Base's (183 MiB, 2.6 GiB rebuilt) takes about 7.5 minutes and its boundary waits for it. A machine with no
+16, Qorpera_Base 14, git/git 26), and the scan runs at about 10.7 MiB a second under `--jitless` on the test node
+(up from about 6 MiB a second before inlining `foundRange`), so a pack the size of Qorpera_Base's (183 MiB, 2.6 GiB
+rebuilt) takes about 4.2 minutes (down from about 7.5 minutes) and its boundary waits for it. A machine with no
 values inflates and reads nothing. `install-folder-service.sh` refuses a node without `/usr/bin/git` and
 `/usr/bin/prlimit`.
 
