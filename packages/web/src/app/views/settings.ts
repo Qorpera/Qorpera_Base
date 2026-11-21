@@ -4,7 +4,7 @@ import { WebCompanyFiles } from "../../cloud/company-files.ts";
 import { createWebGeminiKey } from "../../cloud/gemini-key.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
 import { createWebReviewRules } from "../../cloud/review-rules.ts";
-import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
+import type { HostedCompanyFile, HostedProfile, HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { companyLogos } from "../../ui/company-logos.ts";
 import { showCompanyName } from "../../ui/company-name.ts";
@@ -143,12 +143,29 @@ export class SettingsView {
 	/** A folder link's path, shown once Storage has its browser (openFolderPath). */
 	#folderPath: string | undefined;
 	#folderStop = new AbortController();
+	#unlinkFolderStop: (() => void) | undefined;
 	#folderAuthority: string | undefined;
 	#account: AccountViewState = {};
 	#company: CompanyController | undefined;
 	#ownsCompany = false;
 	#unsubscribe: (() => void) | undefined;
 	#companyLifetime = new AbortController();
+	#unlinkCompanyLifetime: (() => void) | undefined;
+	#staffRef: readonly HostedStaffAgent[] | undefined;
+	#staffSnap: string | undefined;
+	#teamSnap:
+		| {
+				profileId: string;
+				profileName: string;
+				team: unknown;
+				error: string | undefined;
+				accessLost: boolean | undefined;
+				loading: boolean;
+				feedback: TeamFeedback;
+				friends: unknown;
+				hash: string;
+		  }
+		| undefined;
 	#connections: ConnectionsView | undefined;
 	#geminiKey: GeminiKeyView | undefined;
 	/** AI subscriptions with no company open: the member's account logins. */
@@ -364,7 +381,7 @@ export class SettingsView {
 		this.updateProfiles(profiles);
 		// The friends list feeds the Company tab's invitation picker.
 		this.#friends.store.subscribe(() => {
-			if (this.#tab === "company") this.#drawCompany();
+			if (this.#mode === "settings" && this.#tab === "company") this.#drawCompany();
 		});
 		void this.#friends.refresh();
 		this.#switchMode(this.#mode);
@@ -437,8 +454,12 @@ export class SettingsView {
 	}
 
 	dispose(): void {
+		this.#unlinkFolderStop?.();
+		this.#unlinkFolderStop = undefined;
 		this.#folderStop.abort();
 		this.#folder?.dispose();
+		this.#unlinkCompanyLifetime?.();
+		this.#unlinkCompanyLifetime = undefined;
 		this.#lifetime.abort();
 		this.#companyLifetime.abort();
 		this.#unsubscribe?.();
@@ -562,11 +583,20 @@ export class SettingsView {
 				? JSON.stringify([company.profile.profileId, team.role, team.capabilities.read, team.capabilities.write])
 				: undefined;
 		if (authority !== this.#folderAuthority || !authority) {
+			this.#unlinkFolderStop?.();
+			this.#unlinkFolderStop = undefined;
 			this.#folderStop.abort();
 			this.#folder?.dispose();
 			this.#folder = undefined;
 			this.#folderAuthority = undefined;
-			this.#folderStop = new AbortController();
+			const folderStop = new AbortController();
+			this.#folderStop = folderStop;
+			const stopFolder = () => folderStop.abort();
+			if (this.#companyLifetime.signal.aborted) folderStop.abort();
+			else {
+				this.#companyLifetime.signal.addEventListener("abort", stopFolder, { once: true });
+				this.#unlinkFolderStop = () => this.#companyLifetime.signal.removeEventListener("abort", stopFolder);
+			}
 			replace(this.#storageContent);
 		}
 		if (this.#mode !== "storage") return;
@@ -605,12 +635,7 @@ export class SettingsView {
 			this.#revealFolderPath(this.#folder);
 			return;
 		}
-		const signal = AbortSignal.any([
-			this.#lifetime.signal,
-			this.#companyLifetime.signal,
-			this.#folderStop.signal,
-			company.signal,
-		]);
+		const signal = this.#folderStop.signal;
 		const source = new WebCompanyFiles(
 			this.#api.cloud,
 			company.profile,
@@ -722,7 +747,7 @@ export class SettingsView {
 			const company = this.#company;
 			const memberId = this.#auth.userId!;
 			if (tab === "ai-subscriptions" && !this.#connections) {
-				const lifetime = AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]);
+				const lifetime = this.#companyLifetime.signal;
 				const signIns = memberProviderSignIns(memberId, company.profile.profileId);
 				// A sign-in belongs to the member, not to this page: it continues while
 				// the page is rebuilt or closed, and stops only if the account changes.
@@ -786,7 +811,7 @@ export class SettingsView {
 		const memberId = this.#auth.userId!;
 		const auth = this.#auth;
 		const cloud = this.#api.cloud;
-		const lifetime = AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal]);
+		const lifetime = this.#companyLifetime.signal;
 		this.#accountSubscriptions = new AccountSubscriptionsView(
 			this.#profiles,
 			(profile) => {
@@ -831,10 +856,7 @@ export class SettingsView {
 		const company = this.#company;
 		// With no company open, the good will of the member's companies, read once General shows.
 		if (!company && !this.#myGoodWill && this.#tab === "general")
-			this.#myGoodWill = new MyGoodWillView(
-				() => this.#api.getMyGoodWill(),
-				AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal]),
-			);
+			this.#myGoodWill = new MyGoodWillView(() => this.#api.getMyGoodWill(), this.#companyLifetime.signal);
 		const mine = company ? undefined : this.#myGoodWill?.el;
 		if (this.#myGoodWillSlot.firstChild !== (mine ?? null)) replace(this.#myGoodWillSlot, mine);
 	}
@@ -850,13 +872,29 @@ export class SettingsView {
 	#setCompany(company: CompanyController | undefined, owned: boolean): void {
 		// A folder link names a path in the company Settings showed when it was followed.
 		if (company !== this.#company) this.#folderPath = undefined;
+		this.#unlinkFolderStop?.();
+		this.#unlinkFolderStop = undefined;
 		this.#folderStop.abort();
 		this.#folder?.dispose();
 		this.#folder = undefined;
 		this.#folderAuthority = undefined;
 		this.#storageSearch.value = "";
+		this.#unlinkCompanyLifetime?.();
+		this.#unlinkCompanyLifetime = undefined;
 		this.#companyLifetime.abort();
-		this.#companyLifetime = new AbortController();
+		const companyLifetime = new AbortController();
+		this.#companyLifetime = companyLifetime;
+		const stopCompany = () => companyLifetime.abort();
+		if (this.#lifetime.signal.aborted || company?.signal.aborted) {
+			companyLifetime.abort();
+		} else {
+			this.#lifetime.signal.addEventListener("abort", stopCompany, { once: true });
+			company?.signal.addEventListener("abort", stopCompany, { once: true });
+			this.#unlinkCompanyLifetime = () => {
+				this.#lifetime.signal.removeEventListener("abort", stopCompany);
+				company?.signal.removeEventListener("abort", stopCompany);
+			};
+		}
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
 		this.#connections = undefined;
@@ -875,6 +913,9 @@ export class SettingsView {
 		this.#company = company;
 		this.#ownsCompany = owned;
 		this.#feedback = {};
+		this.#staffRef = undefined;
+		this.#staffSnap = undefined;
+		this.#teamSnap = undefined;
 		this.#file = undefined;
 		this.#fileLoading = false;
 		this.#fileError = undefined;
@@ -886,7 +927,7 @@ export class SettingsView {
 					return;
 				}
 				this.#rules?.update();
-				this.#drawCompany();
+				if (this.#mode === "settings" && this.#tab === "company") this.#drawCompany();
 				if (this.#folder || this.#mode === "storage") this.#drawStorage();
 			});
 			if (owned) void company.start();
@@ -924,7 +965,7 @@ export class SettingsView {
 		// The name and the logo, built once the Company tab shows; opening it also brings the logo everyone sees in step
 		// with the company folder's logo.svg (the Branding & Identity agent may have drawn a new one).
 		if (this.#tab === "company" && !this.#brand) {
-			const lifetime = AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]);
+			const lifetime = this.#companyLifetime.signal;
 			const folder = () => {
 				const team = company.store.get().team;
 				if (!team || company.store.get().accessLost) throw new Error(t("Company access changed."));
@@ -967,7 +1008,7 @@ export class SettingsView {
 					cardPage: () => this.#api.startGoodWillCard(profileId),
 					open: (url) => window.location.assign(url),
 				},
-				AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]),
+				this.#companyLifetime.signal,
 				() => company.profile.profileName,
 			);
 		}
@@ -977,56 +1018,99 @@ export class SettingsView {
 		if (this.#tab === "company" && !this.#rules)
 			this.#rules = new RulesView(
 				createWebReviewRules(this.#api.cloud, company.profile.profileId),
-				AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]),
+				this.#companyLifetime.signal,
 				() => company.store.get().team?.role,
 			);
 		const rulesSlot = panel.querySelector<HTMLElement>(".settings-rules-slot")!;
 		if (this.#rules && rulesSlot.firstChild !== this.#rules.el) replace(rulesSlot, this.#rules.el);
-		const staffList = panel.querySelector<HTMLElement>(".settings-staff")!;
-		const staffFocus = staffList.contains(document.activeElement)
-			? document.activeElement?.closest("a")?.getAttribute("data-href")
-			: undefined;
-		replace(
-			staffList,
-			...company.store
-				.get()
-				.staff.filter((agent) => agent.employmentStatus === "active")
-				.map((agent) =>
-					h(
-						"a",
-						{ href: `#/c/${company.profile.profileId}/staff/${agent.id}` },
-						agentFigure(agent, agent.displayName, { size: 46 }),
-						h("small", null, agent.displayName),
+		const state = company.store.get();
+		if (state.staff !== this.#staffRef || this.#staffSnap === undefined) {
+			const activeStaff = state.staff.filter((agent) => agent.employmentStatus === "active");
+			const staffSnap = JSON.stringify([
+				company.profile.profileId,
+				activeStaff.map((agent) => [
+					agent.id,
+					agent.displayName,
+					agent.templateId,
+					agent.appearance?.color ?? "",
+					agent.appearance?.shape ?? "",
+					agent.appearance?.creature ?? "",
+				]),
+			]);
+			this.#staffRef = state.staff;
+			if (staffSnap !== this.#staffSnap) {
+				this.#staffSnap = staffSnap;
+				const staffList = panel.querySelector<HTMLElement>(".settings-staff")!;
+				const staffFocus = staffList.contains(document.activeElement)
+					? document.activeElement?.closest("a")?.getAttribute("data-href")
+					: undefined;
+				replace(
+					staffList,
+					...activeStaff.map((agent) =>
+						h(
+							"a",
+							{ href: `#/c/${company.profile.profileId}/staff/${agent.id}` },
+							agentFigure(agent, agent.displayName, { size: 46 }),
+							h("small", null, agent.displayName),
+						),
 					),
-				),
-		);
-		if (staffFocus)
-			[...staffList.querySelectorAll("a")]
-				.find((link) => link.getAttribute("data-href") === staffFocus)
-				?.focus({ preventScroll: true });
-		renderTeam(
-			this.#api,
-			company,
-			team,
-			this.#feedback,
-			(next) => {
-				if (this.#lifetime.signal.aborted || this.#company !== company) return;
-				this.#feedback = next;
-				this.#drawCompany();
-			},
-			{
-				friends: this.#friends.store.get().loaded ? this.#friends.store.get().friends : undefined,
-				signal: this.#companyLifetime.signal,
-				embedded: true,
-				exit: panel.querySelector<HTMLElement>(".settings-company-exit")!,
-				// Friends are a window of their own: it opens over Settings, on its search field.
-				addFriend: () => this.#openFriends(),
-				onCompanyRemoved: (profileId) => {
-					if (!this.#lifetime.signal.aborted && this.#company === company) this.#close();
-					this.#companyRemoved(profileId);
+				);
+				if (staffFocus)
+					[...staffList.querySelectorAll("a")]
+						.find((link) => link.getAttribute("data-href") === staffFocus)
+						?.focus({ preventScroll: true });
+			}
+		}
+		const friendsState = this.#friends.store.get();
+		const friends = friendsState.loaded ? friendsState.friends : undefined;
+		const teamSnap = {
+			profileId: company.profile.profileId,
+			profileName: company.profile.profileName,
+			team: state.team,
+			error: state.error,
+			accessLost: state.accessLost,
+			loading: state.loading,
+			feedback: this.#feedback,
+			friends,
+			hash: location.hash,
+		};
+		const sameTeam =
+			this.#teamSnap !== undefined &&
+			this.#teamSnap.profileId === teamSnap.profileId &&
+			this.#teamSnap.profileName === teamSnap.profileName &&
+			this.#teamSnap.team === teamSnap.team &&
+			this.#teamSnap.error === teamSnap.error &&
+			this.#teamSnap.accessLost === teamSnap.accessLost &&
+			this.#teamSnap.loading === teamSnap.loading &&
+			this.#teamSnap.feedback === teamSnap.feedback &&
+			this.#teamSnap.friends === teamSnap.friends &&
+			this.#teamSnap.hash === teamSnap.hash;
+		if (!sameTeam) {
+			this.#teamSnap = teamSnap;
+			renderTeam(
+				this.#api,
+				company,
+				team,
+				this.#feedback,
+				(next) => {
+					if (this.#lifetime.signal.aborted || this.#company !== company) return;
+					this.#feedback = next;
+					this.#drawCompany();
 				},
-			},
-		);
+				{
+					friends,
+					signal: this.#companyLifetime.signal,
+					embedded: true,
+					exit: panel.querySelector<HTMLElement>(".settings-company-exit")!,
+					// Friends are a window of their own: it opens over Settings, on its search field.
+					addFriend: () => this.#openFriends(),
+					onCompanyRemoved: (profileId) => {
+						if (!this.#lifetime.signal.aborted && this.#company === company) this.#close();
+						this.#companyRemoved(profileId);
+					},
+				},
+			);
+		}
 	}
 
 	/** The company's file, for the storage it uses under Storage's navigation. */

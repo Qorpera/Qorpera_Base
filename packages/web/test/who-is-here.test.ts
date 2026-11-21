@@ -296,4 +296,42 @@ describe("who is where in the company (the rail's markers)", () => {
 		expect(entry.getAttribute("aria-description")).toBe("Sofie Lund is here");
 		expect(rail.querySelector(".rail-apps")?.getAttribute("aria-description")).toBe("Sofie Lund is here");
 	});
+
+	it("skips rail layout measurements and empty presence DOM scans on steady-state redraws", async () => {
+		const s = await setup();
+		const rail = document.createElement("aside");
+		document.body.append(rail);
+		const auth = new AuthController(fixture().cloud);
+		const makeContext = (
+			route:
+				| { name: "company"; profileId: string; section: "home" }
+				| { name: "company"; profileId: string; section: "staff"; id: string },
+		) => ({
+			profiles: [profileA],
+			user: userA,
+			auth,
+			invitations: 0,
+			openSettings: () => {},
+			openFeedback: () => {},
+			openFriends: () => {},
+			route,
+		});
+		s.view.dispose();
+		renderRail(rail, s.company, makeContext({ name: "company", profileId: profileA.profileId, section: "home" }));
+
+		const list = rail.querySelector<HTMLElement>(".rail-scroll")!;
+		list.animate = vi.fn(() => ({ finished: Promise.resolve(), cancel() {} }) as unknown as Animation);
+		const rectSpy = vi.spyOn(list, "getBoundingClientRect");
+		const querySpy = vi.spyOn(rail, "querySelectorAll");
+		renderRail(rail, s.company, makeContext({ name: "company", profileId: profileA.profileId, section: "home" }));
+		expect(rectSpy).not.toHaveBeenCalled();
+		expect(querySpy).not.toHaveBeenCalled();
+
+		renderRail(
+			rail,
+			s.company,
+			makeContext({ name: "company", profileId: profileA.profileId, section: "staff", id: staff.id }),
+		);
+		expect(rectSpy).toHaveBeenCalled();
+	});
 });
