@@ -4,9 +4,11 @@ import { type AddressInfo, connect, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { ObjectLockConflict, ObjectStatementTimeout } from "../src/dependency.ts";
 import {
 	CORE_PAGE,
 	type CoreEntry,
+	CoreRefusal,
 	parseCommitAnswer,
 	parseFeedPage,
 	parseListPage,
@@ -1477,5 +1479,145 @@ describe("SupabaseFolderCore paging and oversized fallback", () => {
 				new AbortController().signal,
 			),
 		).rejects.toBeInstanceOf(ResponseTooLargeError);
+	});
+
+	it("decodes fragmented and multi-frame streams in FrameReader without retaining large slabs for tiny tails", () => {
+		const reader = new FrameReader();
+		const bigPayload = Buffer.alloc(512 * 1024, 0x37);
+		const bigFrame = encodeFrame(Kind.data, bigPayload);
+		const decoded: Frame[] = [];
+		for (let at = 0; at < bigFrame.byteLength; at += 513) {
+			decoded.push(...reader.push(bigFrame.subarray(at, Math.min(bigFrame.byteLength, at + 513))));
+		}
+		expect(decoded).toHaveLength(1);
+		expect(decoded[0]!.kind).toBe(Kind.data);
+		expect(decoded[0]!.payload.equals(bigPayload)).toBe(true);
+
+		const batch = Buffer.concat(Array.from({ length: 100 }, (_, i) => encodeJson(Kind.list, { path: `d/${i}` })));
+		const tailFrame = encodeFrame(Kind.data, Buffer.from("tail-ok"));
+		const combined = Buffer.concat([batch, tailFrame.subarray(0, 6)]);
+		const fromBatch = reader.push(combined);
+		expect(fromBatch).toHaveLength(100);
+		expect(reader.push(Buffer.alloc(0))).toEqual([]);
+		const finishedTail = reader.push(tailFrame.subarray(6));
+		expect(finishedTail).toHaveLength(1);
+		expect(finishedTail[0]!.payload.toString("utf8")).toBe("tail-ok");
+
+		const zeroLen = new FrameReader();
+		expect(zeroLen.push(Buffer.from([0, 0]))).toEqual([]);
+		expect(() => zeroLen.push(Buffer.from([0, 0]))).toThrow(ProtocolError);
+	});
+
+	it("batches large clocks requests and isolates per-company PG lock conflicts and statement timeouts from the global circuit", async () => {
+		const clockBatches: number[] = [];
+		let mode: "40001" | "40P01" | "55P03" | "57014" | "ok" = "40001";
+		let holdTimeout: (() => void) | undefined;
+		const timeoutStarted = new Promise<void>((resolve) => {
+			holdTimeout = resolve;
+		});
+		let releaseTimeout: (() => void) | undefined;
+		const timeoutGate = new Promise<void>((resolve) => {
+			releaseTimeout = resolve;
+		});
+		const core = new SupabaseFolderCore({
+			projectUrl: "https://core.example",
+			secretKey: "sb_secret_test",
+			transport: async (url) => {
+				if (url.pathname.endsWith("/qorpera_folder_clocks")) {
+					const raw = url.searchParams.get("environment_id") ?? "";
+					const ids = raw.slice("in.(".length, -1).split(",");
+					clockBatches.push(ids.length);
+					return {
+						status: 200,
+						body: Buffer.from(JSON.stringify(ids.map((id, i) => ({ environment_id: id, last_seq: i + 1 })))),
+					};
+				}
+				if (mode === "57014") {
+					holdTimeout?.();
+					await timeoutGate;
+					return { status: 500, body: Buffer.from(JSON.stringify({ code: "57014", message: "statement timeout" })) };
+				}
+				if (mode !== "ok") {
+					return { status: 500, body: Buffer.from(JSON.stringify({ code: mode, message: "lock conflict" })) };
+				}
+				return {
+					status: 200,
+					body: Buffer.from(JSON.stringify({ schema: "qorpera.folder-list/v1", asOfSeq: 7, entries: [], next: null })),
+				};
+			},
+		});
+		const envs = Array.from({ length: 250 }, (_, i) => `10000000-0000-4000-8000-${String(i).padStart(12, "0")}`);
+		const clocks = await core.clocks(envs);
+		expect(clockBatches).toEqual([100, 100, 50]);
+		expect(clocks.size).toBe(250);
+
+		const actor = { kind: "platform" as const };
+		for (const code of ["40001", "40P01", "55P03"] as const) {
+			mode = code;
+			await expect(core.list(envs[0]!, actor, null)).rejects.toBeInstanceOf(ObjectLockConflict);
+			mode = "ok";
+			expect((await core.list(envs[1]!, actor, null)).asOfSeq).toBe(7);
+		}
+
+		mode = "57014";
+		const slow = core.list(envs[0]!, actor, null);
+		await timeoutStarted;
+		mode = "ok";
+		expect((await core.list(envs[1]!, actor, null)).asOfSeq).toBe(7);
+		releaseTimeout?.();
+		await expect(slow).rejects.toBeInstanceOf(ObjectStatementTimeout);
+		expect((await core.list(envs[2]!, actor, null)).asOfSeq).toBe(7);
+	});
+
+	it("isolates in-flight profile lookups by actor and loads small NAS objects into unpooled buffers", async () => {
+		const root = await tempdir();
+		const content = Buffer.from("hello-unpooled-profile-test");
+		const file = await storeFile(root, "note.txt", content, 1, content.byteLength);
+		const reader = new NasObjects({ root, cacheBytes: 1024 * 1024 });
+		const direct = await reader.readChunks(PROFILE, [{ sha256: file.fileSha256!, bytes: content.byteLength }], 0, content.byteLength);
+		expect(direct.equals(content)).toBe(true);
+		expect(direct.buffer.byteLength).toBe(content.byteLength);
+
+		const core = new FakeCore();
+		const viewA = "20000000-0000-4000-8000-000000000001";
+		const viewB = "20000000-0000-4000-8000-000000000002";
+		const passA = "pass-a-".padEnd(43, "a");
+		const passB = "pass-b-".padEnd(43, "b");
+		core.openView(viewA, passA);
+		core.openView(viewB, passB);
+		core.seed([file]);
+		let releaseA: (() => void) | undefined;
+		const aWaiting = new Promise<void>((resolve) => {
+			releaseA = resolve;
+		});
+		let aStartedResolve: (() => void) | undefined;
+		const aStarted = new Promise<void>((resolve) => {
+			aStartedResolve = resolve;
+		});
+		core.objectProfile = async (_env, actor) => {
+			if (actor.kind === "view" && actor.viewId === viewA) {
+				aStartedResolve?.();
+				await aWaiting;
+				throw new CoreRefusal("denied", "Folder view has ended");
+			}
+			return PROFILE;
+		};
+		const execBridge: BridgeInfo = { cid: 77, lookup: "found", machine: EXEC_HOST };
+		const { path } = await serve(core, root);
+		const clientA = await Client.open(path);
+		const clientB = await Client.open(path);
+		cleanup.push(
+			() => clientA.close(),
+			() => clientB.close(),
+		);
+		expect((await clientA.hello("io", passA, execBridge, viewA)).kind).toBe(Kind.helloOk);
+		expect((await clientB.hello("io", passB, execBridge, viewB)).kind).toBe(Kind.helloOk);
+		const readA = clientA.read("note.txt", 1, 0, content.byteLength);
+		await aStarted;
+		const readB = await clientB.read("note.txt", 1, 0, content.byteLength);
+		expect(Buffer.isBuffer(readB) && readB.equals(content)).toBe(true);
+		releaseA?.();
+		const resA = await readA;
+		expect(typeof resA).toBe("string");
 	});
 });

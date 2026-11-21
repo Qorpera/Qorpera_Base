@@ -126,7 +126,9 @@ export function encodeJson(kind: number, value: unknown): Buffer {
 
 /** Splits a byte stream into frames. A bad length is a protocol error: the connection is then closed. */
 export class FrameReader {
-	#buffer: Buffer = Buffer.alloc(0);
+	#chunks: Buffer[] = [];
+	#headOffset = 0;
+	#buffered = 0;
 	/** The largest payload accepted now. */
 	limit: number;
 
@@ -134,18 +136,74 @@ export class FrameReader {
 		this.limit = limit;
 	}
 
+	#peekLength(): number {
+		const first = this.#chunks[0]!;
+		if (first.byteLength - this.#headOffset >= 4) return first.readUInt32BE(this.#headOffset);
+		let value = 0;
+		let remaining = 4;
+		let offset = this.#headOffset;
+		for (const chunk of this.#chunks) {
+			const take = Math.min(chunk.byteLength - offset, remaining);
+			for (let i = 0; i < take; i++) value = (value * 256 + chunk[offset + i]!) >>> 0;
+			remaining -= take;
+			offset = 0;
+			if (remaining === 0) break;
+		}
+		return value;
+	}
+
+	#coalesce(): Buffer {
+		const first = this.#chunks[0]!;
+		if (this.#chunks.length === 1) {
+			if (this.#headOffset === 0) return first;
+			const view = first.subarray(this.#headOffset);
+			this.#chunks = [view];
+			this.#headOffset = 0;
+			return view;
+		}
+		if (this.#headOffset > 0) this.#chunks[0] = first.subarray(this.#headOffset);
+		const joined = Buffer.concat(this.#chunks, this.#buffered);
+		this.#chunks = [joined];
+		this.#headOffset = 0;
+		return joined;
+	}
+
 	push(data: Buffer): Frame[] {
-		this.#buffer = this.#buffer.byteLength === 0 ? data : Buffer.concat([this.#buffer, data]);
+		if (data.byteLength > 0) {
+			this.#chunks.push(data);
+			this.#buffered += data.byteLength;
+		}
 		const frames: Frame[] = [];
 		for (;;) {
-			if (this.#buffer.byteLength < 5) break;
-			const length = this.#buffer.readUInt32BE(0);
+			if (this.#buffered < 4) break;
+			const length = this.#peekLength();
 			if (length === 0 || length - 1 > this.limit) throw new ProtocolError(ErrorCode.badRequest, "Bad frame length");
-			if (this.#buffer.byteLength < 4 + length) break;
-			frames.push({ kind: this.#buffer[4]!, payload: this.#buffer.subarray(5, 4 + length) });
-			this.#buffer = this.#buffer.subarray(4 + length);
+			const frameBytes = 4 + length;
+			if (this.#buffered < frameBytes) break;
+			let first = this.#chunks[0]!;
+			if (first.byteLength - this.#headOffset < frameBytes) first = this.#coalesce();
+			const start = this.#headOffset;
+			frames.push({ kind: first[start + 4]!, payload: first.subarray(start + 5, start + frameBytes) });
+			this.#headOffset = start + frameBytes;
+			this.#buffered -= frameBytes;
+			if (this.#headOffset === first.byteLength) {
+				this.#chunks.shift();
+				this.#headOffset = 0;
+			}
 		}
-		if (this.#buffer.byteLength === 0) this.#buffer = Buffer.alloc(0);
+		if (this.#buffered === 0) {
+			this.#chunks = [];
+			this.#headOffset = 0;
+		} else if (
+			this.#chunks.length === 1 &&
+			this.#headOffset > 0 &&
+			this.#buffered <= 4096 &&
+			this.#chunks[0]!.byteLength > 8192
+		) {
+			// WHY: copy a tiny partial-frame tail off a large socket slab so idle streams do not pin megabytes.
+			this.#chunks[0] = Buffer.from(this.#chunks[0]!.subarray(this.#headOffset));
+			this.#headOffset = 0;
+		}
 		return frames;
 	}
 }
