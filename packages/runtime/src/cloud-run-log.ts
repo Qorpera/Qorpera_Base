@@ -1128,7 +1128,6 @@ export class CloudRunLog {
 		return `${this.#place!.path}/log/${blockName(first)}`;
 	}
 
-	// WHY: classify and hash an entire commit batch in two RPC rounds instead of 2N serial round-trips while keeping ascending step.j narrow propagation atomic on failure.
 	async #prepareLines(
 		candidates: readonly { readonly step: Step; readonly snapshot: Step; readonly pending: boolean }[],
 		signal: AbortSignal,
@@ -1178,6 +1177,7 @@ export class CloudRunLog {
 			const classification = classifications[index];
 			if (!classification || typeof classification.log !== "boolean" || typeof classification.narrow !== "boolean")
 				throw new CloudRunLogUnavailable("protection_invalid");
+			// WHY: a committed later pending line raises SQL's log flag; keep the known start as the boundary instead of redacting an earlier public fill, and fail closed if the start is unknown.
 			if (classification.log && narrowFrom === Number.POSITIVE_INFINITY)
 				throw new CloudRunLogUnavailable("protection_narrow_start_unknown");
 			const { step, snapshot, pending } = candidates[index]!;
@@ -1191,6 +1191,7 @@ export class CloudRunLog {
 			const narrow = step.j >= narrowFrom;
 			const argsDigestIndex =
 				step.argsHash === undefined && step.argsDigest !== null ? internDigest(step.argsDigest) : -1;
+			// WHY: result_hash keys SHA-256 of the exact delivered envelope's UTF-8 bytes, never the larger raw result (§4.5).
 			const resultDigestIndex =
 				narrow && !pending ? internDigest(createHash("sha256").update(snapshot.result!).digest("hex")) : -1;
 			planned.push({ step, snapshot, pending, paths, narrow, argsDigestIndex, resultDigestIndex });

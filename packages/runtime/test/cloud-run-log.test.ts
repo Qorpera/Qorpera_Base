@@ -2199,5 +2199,37 @@ describe("the tool boundary with a work log", () => {
 			await expect(bad.log.flush(bad.signal)).rejects.toMatchObject({ reason: "protection_invalid" });
 			expect(bad.folder.commits).toEqual([]);
 		}
+
+		let narrowAttempt = 0;
+		let hashAttempt = 0;
+		const retryRunId = randomUUID();
+		const retryHashes: string[] = [];
+		const atomic = runLog({
+			runId: retryRunId,
+			protection: {
+				narrow: protection.narrow,
+				narrowBatch: async (_run, inputs) => {
+					narrowAttempt++;
+					return inputs.map((_input, idx) => ({ log: false, narrow: narrowAttempt === 1 && idx === 0 }));
+				},
+				hashes: async (_run, digests) => {
+					hashAttempt++;
+					if (hashAttempt === 1) throw new CloudRunLogUnavailable("protection_unavailable");
+					const out = digests.map((_, idx) => `${hashAttempt}`.repeat(63) + `${idx}`);
+					retryHashes.push(...out);
+					return out;
+				},
+			},
+		});
+		atomic.log.finish(step(atomic.log, "company_read", { path: "public/a.md" }), envelope("first"), []);
+		atomic.log.finish(step(atomic.log, "company_read", { path: "public/b.md" }), envelope("second"), []);
+		await expect(atomic.log.flush(atomic.signal)).rejects.toMatchObject({ reason: "protection_unavailable" });
+		expect(atomic.folder.commits).toEqual([]);
+		await atomic.log.flush(atomic.signal);
+		const committed = atomic.folder.all();
+		expect(committed).toHaveLength(2);
+		expect(committed[0]?.narrow).toBeUndefined();
+		expect(committed[1]?.narrow).toBeUndefined();
+		expect(committed.map((line) => line.args_hash)).toEqual(retryHashes);
 	});
 });

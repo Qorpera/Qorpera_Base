@@ -99,6 +99,7 @@ export class CloudRunLogRpcProtection implements CloudRunLogProtection {
 		let log = false;
 		let machine = false;
 		const restricted = new Set<string>();
+		// WHY: even a batch with no paths must call SQL once to re-read current log and machine flags; each RPC takes at most 1,024 paths.
 		for (let offset = 0; offset < Math.max(uniquePaths.length, 1); offset += 1024) {
 			const batch = uniquePaths.slice(offset, offset + 1024);
 			const value = await this.#request("qorpera_memory_step_narrow", { p_paths: batch }, signal);
@@ -114,6 +115,7 @@ export class CloudRunLogRpcProtection implements CloudRunLogProtection {
 				!Array.isArray(answer.restricted)
 			)
 				throw new CloudRunLogUnavailable("protection_response_invalid");
+			// WHY: SQL echoes a subset in input order; reject foreign, duplicate, reordered, or sparse entries rather than trusting malformed output.
 			let previous = -1;
 			for (let index = 0; index < answer.restricted.length; index++) {
 				const path: unknown = answer.restricted[index];
