@@ -103,6 +103,8 @@ const MAX_STREAMS = 256;
 const MAX_SESSIONS_KEPT = 10_000;
 const MAX_REFUSALS_KEPT = 10_000;
 const STREAM_PAUSE_BYTES = 256 * 1024;
+const PROGRAM_PAUSE_BYTES = 2 * 1024 * 1024;
+const RELAY_PAUSE_BYTES = 32 * 1024 * 1024;
 const SHARED_PAUSED_MS = 1_000;
 const MAX_RPC_ANSWER_BYTES = 64 * 1024;
 const RPC_TIMEOUT_MS = 20_000;
@@ -1036,6 +1038,12 @@ class Program {
 		for (const blocker of this.blocking) blocker.tighten();
 	}
 
+	bufferedBytes() {
+		let total = 0;
+		for (const stream of this.streams.values()) total += stream.bufferedBytes();
+		return total;
+	}
+
 	pumpUploads(highWater) {
 		while (this.uploadQueue.length > 0 && !this.ws.closed) {
 			const entry = this.uploadQueue[0];
@@ -1076,6 +1084,8 @@ export function createRelay({
 	pausedMs = PAUSED_MS,
 	recheckMs = RECHECK_MS,
 	connectLimit = CONNECT_LIMIT,
+	maxSessionsKept = MAX_SESSIONS_KEPT,
+	maxRefusalsKept = MAX_REFUSALS_KEPT,
 	trustedAddresses = [],
 	clientSource,
 	log = (line) => console.log(`app-relay: ${line}`),
@@ -1111,6 +1121,12 @@ export function createRelay({
 	const uploadHighWater = Math.max(1024, Math.min(Math.floor(maxQueuedBytes / 2), 4 * 1024 * 1024));
 	let pendingTotal = 0;
 	let pendingUntrusted = 0;
+
+	function relayBufferedBytes() {
+		let total = 0;
+		for (const program of programs.values()) total += program.bufferedBytes();
+		return total;
+	}
 
 	function scheduleCheck(now = Date.now()) {
 		if (recheckMs <= 0) return Number.POSITIVE_INFINITY;
@@ -1175,10 +1191,10 @@ export function createRelay({
 			const until = Date.now() + (siteId ? sessionCacheMs : lockedCacheMs);
 			if (siteId) {
 				lockedSessions.delete(id);
-				keep(sessions, id, { until, siteId }, MAX_SESSIONS_KEPT);
+				keep(sessions, id, { until, siteId }, maxSessionsKept);
 			} else {
 				sessions.delete(id);
-				keep(lockedSessions, id, { until }, MAX_SESSIONS_KEPT);
+				keep(lockedSessions, id, { until }, maxSessionsKept);
 			}
 			return siteId;
 		})();
@@ -1207,7 +1223,7 @@ export function createRelay({
 		let entry = map.get(id);
 		if (!entry || now - entry.start >= 60_000) {
 			entry = { start: now, count: 0 };
-			keep(map, id, entry, MAX_REFUSALS_KEPT);
+			keep(map, id, entry, maxRefusalsKept);
 		}
 		entry.count++;
 	}
@@ -1436,6 +1452,7 @@ export function createRelay({
 		let over = false;
 		let blocked = null;
 		let blockedAt = 0;
+		let lastBlockedWritable = 0;
 		let tightened = false;
 		let received = 0;
 		let reqPaused = false;
@@ -1446,22 +1463,47 @@ export function createRelay({
 			if (timer) clearTimeout(timer);
 			timer = setTimeout(() => fail(504, text.slow, text.again), responseTimeoutMs);
 		};
+		const armBlockedTimer = (ms) => {
+			if (blocked) clearTimeout(blocked);
+			blocked = setTimeout(() => {
+				if (over) return;
+				const elapsed = Date.now() - blockedAt;
+				if (!tightened || elapsed >= pausedMs) return fail(502, text.notAnswering, text.notAnsweringLead);
+				const currentWritable = res.writableLength;
+				// WHY: Allow steadily draining slow visitors to finish while cutting truly stalled shared streams after 1 s.
+				if (currentWritable < lastBlockedWritable) {
+					lastBlockedWritable = currentWritable;
+					if (
+						currentWritable <= STREAM_PAUSE_BYTES / 2 &&
+						program.bufferedBytes() < PROGRAM_PAUSE_BYTES &&
+						relayBufferedBytes() < RELAY_PAUSE_BYTES
+					) {
+						unblock();
+						return;
+					}
+					armBlockedTimer(Math.min(SHARED_PAUSED_MS, Math.max(1, pausedMs - elapsed)));
+					return;
+				}
+				fail(502, text.notAnswering, text.notAnsweringLead);
+			}, ms);
+		};
 		const blocker = {
 			tighten: () => {
 				if (!blocked || tightened) return;
 				tightened = true;
+				lastBlockedWritable = res.writableLength;
 				const limit = Math.min(pausedMs, SHARED_PAUSED_MS);
-				const left = Math.max(0, limit - (Date.now() - blockedAt));
-				clearTimeout(blocked);
-				blocked = setTimeout(() => fail(502, text.notAnswering, text.notAnsweringLead), left);
+				const left = Math.max(0, Math.min(limit, pausedMs - (Date.now() - blockedAt)));
+				armBlockedTimer(left);
 			},
 		};
 		const block = () => {
 			if (blocked || over) return;
 			blockedAt = Date.now();
+			lastBlockedWritable = res.writableLength;
 			tightened = program.streams.size > 1;
 			const limit = tightened ? Math.min(pausedMs, SHARED_PAUSED_MS) : pausedMs;
-			blocked = setTimeout(() => fail(502, text.notAnswering, text.notAnsweringLead), limit);
+			armBlockedTimer(limit);
 			program.block(blocker);
 		};
 		const unblock = () => {
@@ -1530,7 +1572,16 @@ export function createRelay({
 				} catch {
 					return broken();
 				}
-				if (!room && res.writableLength >= STREAM_PAUSE_BYTES) block();
+				if (
+					!room &&
+					(res.writableLength >= STREAM_PAUSE_BYTES ||
+						program.bufferedBytes() >= PROGRAM_PAUSE_BYTES ||
+						relayBufferedBytes() >= RELAY_PAUSE_BYTES)
+				)
+					block();
+			},
+			bufferedBytes() {
+				return res.writableLength;
 			},
 			end() {
 				if (!answered) return broken();

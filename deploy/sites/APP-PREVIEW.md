@@ -160,9 +160,12 @@ to start with any other role), `QORPERA_APP_HOST_SUFFIX` (`-preview.qorpera.com`
   program connected for the very site the session opens (`siteId`). On a mismatch the session is asked again, past the
   kept answer: locked → the password page; the program's site after all → forwarded; another site still → the program
   is checked with its key, dropped (4001) only when the database no longer takes it, and the visitor gets 503. The request line, headers and body as frames; the response streamed
-  back. No program: 503 "This app is not running right now". No response head (or 60 s of body silence) in 60 s: 504. Request bodies ≤ 10 MiB, queued across the link socket with per-stream backpressure so concurrent upload bursts do not trip the 8 MiB send cap.
-  A visitor who reads nothing for 30 s while the program waits on them (tightened to 1 s when other visitors share the
-  program) is cut off, so the program serves everyone else again. Hop-by-hop headers dropped both ways. To the app: the gate cookie taken out of `Cookie`, `X-Forwarded-Proto:
+  back. No program: 503 "This app is not running right now". No response head in 60 s: 504; 60 s without a body chunk
+  after the head: the connection ends. Request bodies ≤ 10 MiB, queued across the link socket with per-stream
+  backpressure so concurrent upload bursts do not trip the 8 MiB send cap.
+  A visitor who stops reading while the program waits on them (after 256 KiB per stream, 2 MiB per link, or 32 MiB
+  across the relay) is cut off after 30 s — or after 1 s without forward progress when other visitors share the program
+  — so the program serves everyone else again. Hop-by-hop headers dropped both ways. To the app: the gate cookie taken out of `Cookie`, `X-Forwarded-Proto:
   https`, `X-Forwarded-Host`, `X-Forwarded-For` = the visitor's CF-Connecting-IP only, and `Transfer-Encoding: chunked`
   when the visitor's body came chunked (so the app never reads a body as a request of its own). From the app: the
   app's cache headers (`Cache-Control`, `Expires`, `CDN-Cache-Control`, `Cloudflare-CDN-Cache-Control`,

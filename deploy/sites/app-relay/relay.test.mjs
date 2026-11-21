@@ -1938,7 +1938,7 @@ describe("app relay: the pure parts", () => {
 });
 
 describe("app relay: concurrency hardening and backpressure", () => {
-	it("coalesces concurrent session lookups and isolates locked answers from open sessions", async (t) => {
+	it("coalesces concurrent session lookups and isolates locked answers from open sessions past cache capacity", async (t) => {
 		const siteId = randomUUID();
 		const goodToken = "v".repeat(32);
 		let sessionCalls = 0;
@@ -1952,7 +1952,14 @@ describe("app relay: concurrency hardening and backpressure", () => {
 			}
 			return Response.json({ state: "refused" });
 		};
-		const relay = createRelay({ api: "http://database.invalid", ...RELAY, hostSuffix: SUFFIX, fetch: fetcher, log: () => {} });
+		const relay = createRelay({
+			api: "http://database.invalid",
+			...RELAY,
+			hostSuffix: SUFFIX,
+			fetch: fetcher,
+			maxSessionsKept: 20,
+			log: () => {},
+		});
 		const port = await listen(relay);
 		t.after(() => new Promise((resolve) => relay.close(resolve)));
 		const get = (cookie) =>
@@ -1971,7 +1978,7 @@ describe("app relay: concurrency hardening and backpressure", () => {
 		assert.deepEqual([...new Set(burst)], [503]);
 		assert.equal(sessionCalls, 1);
 		const afterWarm = sessionCalls;
-		for (let i = 0; i < 60; i++) {
+		for (let i = 0; i < 40; i++) {
 			const bad = `x${String(i).padStart(31, "0")}`;
 			assert.equal(await get(`${GATE_COOKIE}=${bad}`), 401);
 		}
@@ -1981,7 +1988,7 @@ describe("app relay: concurrency hardening and backpressure", () => {
 		assert.ok(sessionCalls > afterWarm);
 	});
 
-	it("reserves connect capacity for trusted exit addresses under an untrusted slug-cycling flood", async (t) => {
+	it("reserves connect capacity for trusted exit addresses under a multi-IP untrusted flood and caps refusal tracking", async (t) => {
 		let releaseGate;
 		const gate = new Promise((resolve) => {
 			releaseGate = resolve;
@@ -1998,6 +2005,7 @@ describe("app relay: concurrency hardening and backpressure", () => {
 			hostSuffix: SUFFIX,
 			fetch: fetcher,
 			connectLimit: { refusedPerMinute: 4, total: 40 },
+			maxRefusalsKept: 8,
 			trustedAddresses: ["192.0.2.50"],
 			log: () => {},
 		});
@@ -2019,12 +2027,13 @@ describe("app relay: concurrency hardening and backpressure", () => {
 			sockets.push(socket);
 			return answerHead(socket).then((h) => h.status);
 		};
-		const attacker = Array.from({ length: 40 }, (_, i) => dial(`atk${i}`, "203.0.113.99"));
-		await sleep(40);
+		const attackers = Array.from({ length: 50 }, (_, i) => dial(`atk${i}`, `203.0.113.${(i % 5) + 1}`));
+		await sleep(60);
 		assert.equal(await dial("shop", "192.0.2.50"), 101);
 		releaseGate();
-		const statuses = await Promise.all(attacker);
-		assert.ok(statuses.filter((s) => s === 429).length >= 20, `expected per-address flood limit, got ${JSON.stringify(statuses)}`);
+		const statuses = await Promise.all(attackers);
+		assert.equal(statuses.filter((s) => s === 101).length, 30);
+		assert.equal(statuses.filter((s) => s === 429).length, 20);
 	});
 
 	it("delivers pipelined head frames after handlers attach and decodes fragmented masked frames cleanly", async () => {
@@ -2067,13 +2076,52 @@ describe("app relay: concurrency hardening and backpressure", () => {
 		assert.ok(gotFrag && gotFrag.equals(payload));
 	});
 
-	it("queues concurrent uploads under tight maxQueuedBytes without terminating the link and times out mid-body stalls", async (t) => {
+	it("queues concurrent uploads under tight maxQueuedBytes, survives delayed-read uploads and early responses, allows steadily draining slow visitors, and times out mid-body stalls", async (t) => {
 		const siteId = randomUUID();
 		const token = "u".repeat(32);
 		const app = createServer((req, res) => {
 			if (req.url === "/stall-body") {
 				res.writeHead(200, { "content-type": "text/plain" });
 				res.write("partial");
+				return;
+			}
+			if (req.url === "/early") {
+				res.writeHead(200, { "content-type": "text/plain" });
+				res.end("early-ok");
+				req.resume();
+				return;
+			}
+			if (req.url === "/delayed-upload") {
+				req.pause();
+				setTimeout(() => {
+					let bytes = 0;
+					req.on("data", (chunk) => {
+						bytes += chunk.length;
+					});
+					req.on("end", () => {
+						res.writeHead(200, { "content-type": "application/json" });
+						res.end(JSON.stringify({ bytes }));
+					});
+					req.resume();
+				}, 150);
+				return;
+			}
+			if (req.url === "/steady-big") {
+				const total = 4 * 1024 * 1024;
+				res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(total) });
+				const chunk = Buffer.alloc(64 * 1024, 0x41);
+				let left = total / chunk.length;
+				const pump = () => {
+					while (left > 0) {
+						left--;
+						if (!res.write(chunk)) {
+							res.once("drain", pump);
+							return;
+						}
+					}
+					res.end();
+				};
+				pump();
 				return;
 			}
 			let bytes = 0;
@@ -2107,6 +2155,7 @@ describe("app relay: concurrency hardening and backpressure", () => {
 			fetch: fetcher,
 			maxQueuedBytes: 512 * 1024,
 			responseTimeoutMs: 400,
+			pausedMs: 5_000,
 			log: () => {},
 		});
 		const relayPort = await listen(relay);
@@ -2147,18 +2196,18 @@ describe("app relay: concurrency hardening and backpressure", () => {
 		});
 		await until(() => relay.isConnected("shop"), "link program to connect", 5_000);
 		const payload = Buffer.alloc(128 * 1024, 0x5a);
-		const post = () =>
+		const post = (path = "/upload", body = payload) =>
 			new Promise((resolve, reject) => {
 				const req = request(
 					{
 						host: "127.0.0.1",
 						port: relayPort,
-						path: "/upload",
+						path,
 						method: "POST",
 						headers: {
 							"x-forwarded-host": HOST,
 							cookie: `${GATE_COOKIE}=${token}`,
-							"content-length": String(payload.length),
+							"content-length": String(body.length),
 						},
 					},
 					(res) => {
@@ -2171,14 +2220,45 @@ describe("app relay: concurrency hardening and backpressure", () => {
 					},
 				);
 				req.on("error", reject);
-				req.end(payload);
+				req.end(body);
 			});
-		const uploads = await Promise.all(Array.from({ length: 24 }, post));
+		const uploads = await Promise.all(Array.from({ length: 24 }, () => post()));
 		for (const u of uploads) {
 			assert.equal(u.status, 200, u.text);
 			assert.equal(JSON.parse(u.text).bytes, payload.length);
 		}
 		assert.equal(logs.includes("Lost the connection"), false);
+		const bigUpload = Buffer.alloc(3 * 1024 * 1024, 0x43);
+		const delayed = await post("/delayed-upload", bigUpload);
+		assert.equal(delayed.status, 200, delayed.text);
+		assert.equal(JSON.parse(delayed.text).bytes, bigUpload.length);
+		const early = await post("/early", Buffer.alloc(768 * 1024, 0x44));
+		assert.equal(early.status, 200);
+		assert.equal(early.text, "early-ok");
+		const slowSteady = new Promise((resolve, reject) => {
+			const sock = connect(relayPort, "127.0.0.1", () => {
+				sock.write(
+					`GET /steady-big HTTP/1.1\r\nHost: ${HOST}\r\nX-Forwarded-Host: ${HOST}\r\nCookie: ${GATE_COOKIE}=${token}\r\nConnection: close\r\n\r\n`,
+				);
+			});
+			let bytes = 0;
+			sock.on("data", (c) => {
+				bytes += c.length;
+				sock.pause();
+				setTimeout(() => sock.resume(), 15);
+			});
+			sock.on("end", () => resolve(bytes));
+			sock.on("error", reject);
+		});
+		const besideSlow = await Promise.all([
+			slowSteady,
+			(async () => {
+				await sleep(80);
+				return post("/early", Buffer.alloc(16, 0x45));
+			})(),
+		]);
+		assert.ok(besideSlow[0] > 4 * 1024 * 1024, `expected full steady download, got ${besideSlow[0]}`);
+		assert.equal(besideSlow[1].status, 200);
 		const stalledEnded = await new Promise((resolve) => {
 			const req = request(
 				{

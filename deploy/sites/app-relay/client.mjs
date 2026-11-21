@@ -127,8 +127,10 @@ function connect() {
 		else if (type === BODY) {
 			const app = streams.get(id);
 			if (!app) return;
-			// WHY: Reset a stream whose local app stops reading so concurrent uploads cannot exhaust memory.
-			if (app.writableLength + payload.length > 2 * 1024 * 1024) {
+			let totalBuffered = 0;
+			for (const stream of streams.values()) totalBuffered += stream.writableLength;
+			// WHY: Bound aggregate local upload buffering (64 MiB) while still allowing any single valid 10 MiB delayed-read upload.
+			if (totalBuffered + payload.length > 64 * 1024 * 1024) {
 				streams.delete(id);
 				app.destroy();
 				send(RESET, id);
