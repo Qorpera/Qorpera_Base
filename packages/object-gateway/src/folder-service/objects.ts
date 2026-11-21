@@ -46,13 +46,18 @@ interface Manifest {
 	readonly chunks: readonly Chunk[];
 }
 
+interface ParsedManifest {
+	readonly v2: boolean;
+	readonly mediaType: unknown;
+	readonly executable: unknown;
+	readonly manifest: Manifest;
+}
+
 function digest(bytes: Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex");
 }
 
-/** Checks a manifest's text against the entry the core named it for, and works out where each chunk starts. Both
- * schemas are read: v2 (every folder-v2 writer) and v1 (fixtures, and files carried over from the old core). */
-export function parseManifest(text: Uint8Array, entry: TreeEntry): Manifest {
+function parseManifestRecord(text: Uint8Array, entry: TreeEntry): ParsedManifest {
 	let value: unknown;
 	try {
 		value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(text));
@@ -101,7 +106,18 @@ export function parseManifest(text: Uint8Array, entry: TreeEntry): Manifest {
 		return chunk;
 	});
 	if (start !== entry.bytes) throw new ObjectIntegrityError("Manifest chunks do not add up to the file");
-	return { fileSha256: m.fileSha256 as string, bytes: entry.bytes, chunks };
+	return {
+		v2,
+		mediaType: m.mediaType,
+		executable: m.executable,
+		manifest: { fileSha256: m.fileSha256 as string, bytes: entry.bytes, chunks },
+	};
+}
+
+/** Checks a manifest's text against the entry the core named it for, and works out where each chunk starts. Both
+ * schemas are read: v2 (every folder-v2 writer) and v1 (fixtures, and files carried over from the old core). */
+export function parseManifest(text: Uint8Array, entry: TreeEntry): Manifest {
+	return parseManifestRecord(text, entry).manifest;
 }
 
 /** Bytes kept in memory, least recently used dropped first. */
@@ -161,6 +177,8 @@ export interface NasObjectsOptions {
 export class NasObjects {
 	readonly #root: string;
 	readonly #cache: ByteCache;
+	// WHY: cache parsed immutable manifests tied to ByteCache Buffers so repeated reads skip UTF-8 decode, JSON.parse and chunk regexes under --jitless.
+	readonly #manifests = new WeakMap<Buffer, ParsedManifest>();
 	readonly #parallel: number;
 	readonly #timeoutMs: number;
 	readonly #pending = new Map<string, Promise<Buffer>>();
@@ -185,8 +203,13 @@ export class NasObjects {
 		if (entry.kind !== "file" || entry.manifestSha256 === undefined) throw new Error("Only files have bytes");
 		const end = Math.min(entry.bytes, offset + length);
 		if (offset >= end) return Buffer.alloc(0);
-		const manifest = parseManifest(await this.#object(profileId, entry.manifestSha256, MAX_MANIFEST_BYTES), entry);
+		const manifest = await this.#manifest(profileId, entry);
 		const needed = manifest.chunks.filter((c) => c.start < end && c.start + c.bytes > offset);
+		if (needed.length === 1) {
+			const c = needed[0]!;
+			const bytes = await this.#object(profileId, c.sha256, c.bytes, c.bytes);
+			return bytes.subarray(Math.max(0, offset - c.start), Math.min(c.bytes, end - c.start));
+		}
 		const parts = await Promise.all(needed.map((c) => this.#object(profileId, c.sha256, c.bytes, c.bytes)));
 		return Buffer.concat(
 			parts.map((bytes, i) => {
@@ -217,6 +240,11 @@ export class NasObjects {
 			}
 			start += c.bytes;
 		}
+		if (reads.length === 0) return Buffer.alloc(0);
+		if (reads.length === 1) {
+			const bytes = await reads[0]!;
+			return bytes.subarray(cuts[0]![0], cuts[0]![1]);
+		}
 		const got = await Promise.all(reads);
 		for (const [i, bytes] of got.entries()) parts.push(bytes.subarray(cuts[i]![0], cuts[i]![1]));
 		return Buffer.concat(parts);
@@ -231,8 +259,25 @@ export class NasObjects {
 	/** The chunks of a live file's manifest, checked against its entry. */
 	async manifestChunks(profileId: string, entry: TreeEntry): Promise<{ sha256: string; bytes: number }[]> {
 		if (entry.kind !== "file" || entry.manifestSha256 === undefined) throw new Error("Only files have bytes");
-		const manifest = parseManifest(await this.#object(profileId, entry.manifestSha256, MAX_MANIFEST_BYTES), entry);
+		const manifest = await this.#manifest(profileId, entry);
 		return manifest.chunks.map((c) => ({ sha256: c.sha256, bytes: c.bytes }));
+	}
+
+	async #manifest(profileId: string, entry: TreeEntry): Promise<Manifest> {
+		const raw = await this.#object(profileId, entry.manifestSha256!, MAX_MANIFEST_BYTES);
+		const cached = this.#manifests.get(raw);
+		if (cached) {
+			if (
+				cached.manifest.fileSha256 !== entry.fileSha256 ||
+				cached.manifest.bytes !== entry.bytes ||
+				(cached.v2 && (cached.mediaType !== entry.mediaType || cached.executable !== entry.executable))
+			)
+				throw new ObjectIntegrityError("Manifest does not match its entry");
+			return cached.manifest;
+		}
+		const parsed = parseManifestRecord(raw, entry);
+		this.#manifests.set(raw, parsed);
+		return parsed.manifest;
 	}
 
 	/** One object, from memory or the share, checked against its hash (and its size when known). */
@@ -242,10 +287,13 @@ export class NasObjects {
 		if (cached) return Promise.resolve(cached);
 		let pending = this.#pending.get(key);
 		if (!pending) {
-			pending = this.#turn(() => this.#load(profileId, hash, maximum, exact)).finally(() =>
-				this.#pending.delete(key),
-			);
-			this.#pending.set(key, pending);
+			const created = this.#turn(() => this.#load(profileId, hash, maximum, exact));
+			const clear = () => {
+				if (this.#pending.get(key) === created) this.#pending.delete(key);
+			};
+			created.then(clear, clear);
+			this.#pending.set(key, created);
+			pending = created;
 		}
 		return pending;
 	}
