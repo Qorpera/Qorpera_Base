@@ -595,7 +595,10 @@ async function readRequest(request: IncomingMessage): Promise<unknown> {
 
 function response(reply: ServerResponse, status: number, value: JsonValue, headers: Record<string, string> = {}): void {
 	const body = JSON.stringify(value);
-	const closeUnread = !reply.req.complete;
+	const contentLength = reply.req.headers["content-length"];
+	const hasBody =
+		(contentLength !== undefined && contentLength !== "0") || reply.req.headers["transfer-encoding"] !== undefined;
+	const closeUnread = hasBody && !reply.req.complete;
 	reply.writeHead(status, {
 		"content-type": "application/json",
 		"content-length": Buffer.byteLength(body),
