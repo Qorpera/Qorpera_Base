@@ -66,8 +66,32 @@ export interface QuarantinedObject {
 	kind: "file" | "replica";
 }
 
+const VERIFIED_BYTES = Symbol("verified-object-bytes");
+
+export interface VerifiedObjectBytes {
+	readonly [VERIFIED_BYTES]: { readonly sha256: string; readonly bytes: Uint8Array };
+	readonly sha256: string;
+	readonly bytes: Uint8Array;
+}
+
 function digest(bytes: Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex");
+}
+
+export function verifyObjectBytes(sha256: string, bytes: Uint8Array): VerifiedObjectBytes {
+	if (!SHA256_PATTERN.test(sha256) || digest(bytes) !== sha256)
+		throw new Error("Object bytes do not match their SHA-256 address");
+	return Object.freeze({ [VERIFIED_BYTES]: Object.freeze({ sha256, bytes }), sha256, bytes });
+}
+
+export function isVerifiedObjectBytes(
+	value: VerifiedObjectBytes | undefined,
+	sha256: string,
+	bytes: Uint8Array,
+): boolean {
+	if (!value) return false;
+	const proven = value[VERIFIED_BYTES];
+	return proven !== undefined && proven.sha256 === sha256 && proven.bytes === bytes;
 }
 
 export class FileSystemObjectStore {
@@ -95,8 +119,13 @@ export class FileSystemObjectStore {
 		this.#lanes = lanes;
 	}
 
-	async put(profileId: string, sha256: string, bytes: Uint8Array): Promise<ObjectWriteResult> {
-		return this.#io(this.#objectPath(profileId, sha256), () => this.#put(profileId, sha256, bytes));
+	async put(
+		profileId: string,
+		sha256: string,
+		bytes: Uint8Array,
+		verified?: VerifiedObjectBytes,
+	): Promise<ObjectWriteResult> {
+		return this.#io(this.#objectPath(profileId, sha256), () => this.#put(profileId, sha256, bytes, verified));
 	}
 
 	dependencyHealth(): ObjectDependencyHealth {
@@ -122,8 +151,14 @@ export class FileSystemObjectStore {
 		}
 	}
 
-	async #put(profileId: string, sha256: string, bytes: Uint8Array): Promise<ObjectWriteResult> {
-		if (digest(bytes) !== sha256) throw new Error("Object bytes do not match their SHA-256 address");
+	async #put(
+		profileId: string,
+		sha256: string,
+		bytes: Uint8Array,
+		verified?: VerifiedObjectBytes,
+	): Promise<ObjectWriteResult> {
+		if (!isVerifiedObjectBytes(verified, sha256, bytes) && digest(bytes) !== sha256)
+			throw new Error("Object bytes do not match their SHA-256 address");
 		const path = this.#objectPath(profileId, sha256);
 		const parent = resolve(path, "..");
 		try {
@@ -191,7 +226,8 @@ export class FileSystemObjectStore {
 				throw new Error("Stored object failed integrity verification");
 			}
 			const bytes = await readFile(path);
-			if (digest(bytes) !== sha256) throw new Error("Stored object failed integrity verification");
+			if (bytes.byteLength !== expectedBytes || digest(bytes) !== sha256)
+				throw new Error("Stored object failed integrity verification");
 			return bytes;
 		} catch (error) {
 			if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
