@@ -13,6 +13,7 @@
  *
  * Release candidates still run the full `test` suite before a cut. */
 
+import { classifyReleaseDiff, isReleaseDerivedOnly } from "./release-prep-plan.mjs";
 import { HOSTED_DB_SCRIPTS } from "./test-hosted-db.mjs";
 
 const FUNCTION_TESTS = [
@@ -401,6 +402,72 @@ export function planChanged(files) {
 		files: steps.get(step.name),
 	}));
 	return { full: false, reason: null, steps: chosen, build: STEPS.some((step) => step.build && steps.has(step.name)) };
+}
+
+export function planReleaseCheck(changedFromMaster, releaseDiffFiles = null) {
+	const unique = [...new Set(changedFromMaster)].filter(Boolean).sort();
+	if (!unique.length) return { full: false, derivedOnly: true, reason: null, steps: [], build: false };
+	if (!isReleaseDerivedOnly(unique)) {
+		return { ...planChanged(unique), derivedOnly: false };
+	}
+	const classification = releaseDiffFiles ? classifyReleaseDiff(releaseDiffFiles) : null;
+	const byName = (name) => STEPS.find((step) => step.name === name);
+	const baseChecks = byName("checks");
+	const enforcedChecks = {
+		...planned(baseChecks),
+		alone: baseChecks.alone.map((command) =>
+			command === "npm run check:runtime-bundle:release-train"
+				? "QORPERA_ENFORCE_RUNTIME_BUNDLE=1 npm run check:runtime-bundle:release-train"
+				: command,
+		),
+		files: unique,
+	};
+	const baseScripts = byName("scripts");
+	const enforcedScripts = {
+		...planned(baseScripts),
+		commands: baseScripts.commands.map((command) => `QORPERA_ENFORCE_RUNTIME_BUNDLE=1 ${command}`),
+		files: unique,
+	};
+	const dbTests = [...new Set(["001", "838", ...(classification?.sqlTests ?? [])])];
+	const steps = [
+		{ ...planned(byName("lint")), files: unique },
+		{ ...planned(byName("typecheck")), files: unique },
+		enforcedChecks,
+		enforcedScripts,
+		{
+			name: "hosted-db-release",
+			why: "replay every migration including the activation and run core plus release SQL tests",
+			commands: [`node scripts/test-hosted-db.mjs --only ${dbTests.join(",")}`],
+			alone: [],
+			cores: 2,
+			seconds: 35,
+			workers: null,
+			width: 2,
+			build: false,
+			files: unique,
+		},
+	];
+	if (!classification?.sqlOnly) {
+		steps.push({
+			name: "release-provers",
+			why: "the two runtime provers not already covered by changed",
+			commands: ["node scripts/prove-home-channel.mjs", "node scripts/prove-hire-team.mjs"],
+			alone: [],
+			cores: 1,
+			seconds: 30,
+			workers: null,
+			width: 1,
+			build: true,
+			files: unique,
+		});
+	}
+	return {
+		full: false,
+		derivedOnly: true,
+		reason: null,
+		steps,
+		build: true,
+	};
 }
 
 /** What planScript and splitPlan need of a step. */

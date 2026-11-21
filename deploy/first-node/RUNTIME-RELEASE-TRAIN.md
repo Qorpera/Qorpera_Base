@@ -178,3 +178,32 @@ Pages does not set `QORPERA_ENFORCE_RUNTIME_BUNDLE`, so a Pages build of master
 between cuts deploys and does not fail on a stale bundle. `web-deployment.json`
 then records the committed bundle identity. That is the last release, which is
 what the nodes run.
+
+## Fast release-branch verification and prep planning
+
+Because `pr-loop` already runs `changed` on every PR merged to `master`, a
+`release/runtime-vNNN` branch whose diff from `origin/master` touches only
+release-derived files does not need to re-run the entire 12-step `changed` suite
+plus the overlapping `home-path` subset or unconditional `C4c` nested-VM proof:
+
+- Classify the release diff against the previous live release commit:
+  ```sh
+  node scripts/release-prep-plan.mjs --from <prev-release-sha> --to HEAD --json
+  ```
+  This outputs the release `mode` (`sql-only`, `thin-runtime`, or `full-image`),
+  whether `C4c` (`deploy/claude-box/test/prove-worker.sh`) is required (gated on
+  `claude-box` or base-image diffs), the targeted provers
+  (`scripts/prove-home-channel.mjs`, `scripts/prove-hire-team.mjs`), the
+  recommended `zstd` image compression, and the scoped watch policy (gating
+  15-minute `codex-home` / `claude-worker` watches to releases that changed
+  those subsystems).
+- Verify the release branch on the node test machines with:
+  ```sh
+  node scripts/run-on-node.mjs release-check --from-release <prev-release-sha>
+  ```
+  When only release-derived files differ from `origin/master`, `release-check`
+  runs `lint`, `typecheck`, `checks` and `scripts` with
+  `QORPERA_ENFORCE_RUNTIME_BUNDLE=1`, `hosted-db --only 001,838,<new-sql-tests>`
+  (replaying all migrations including the new activation), and the two provers
+  not covered by `changed`. If any non-derived file differs from
+  `origin/master`, `release-check` automatically falls back to full `changed`.

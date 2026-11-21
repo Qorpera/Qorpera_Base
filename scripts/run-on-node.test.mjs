@@ -2314,3 +2314,12 @@ test("a machine short of disk ranks after every machine with room, in every lane
 	assert.equal(describeProbes([{ ...idle("node02"), diskMiB: 5600 }]), "node02 0/5 slots busy, 0 waiting, quick 0/2, only 5.5 GiB disk free");
 	assert.equal(describeProbes([{ ...idle("node02"), diskMiB: 70_000 }]), "node02 0/5 slots busy, 0 waiting, quick 0/2");
 });
+
+test("release-check parses --from-release and rejects invalid combinations", () => {
+	const parsed = parseArgs(["--from-release", "bd48f5e9e", "release-check"]);
+	assert.equal(parsed.suite, "release-check");
+	assert.equal(parsed.fromRelease, "bd48f5e9e");
+	assert.equal(parsed.base, "origin/master");
+	assert.throws(() => parseArgs(["--from-release", "bd48f5e9e", "changed"]), /--from-release is for release-check/);
+	assert.throws(() => parseArgs(["--quick", "release-check"]), /--quick is for one short command, not for changed/);
+});
