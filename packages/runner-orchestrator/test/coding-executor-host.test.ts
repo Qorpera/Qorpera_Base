@@ -8656,6 +8656,117 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			expect(f.ran().some((ran) => ran.command === CODE_SITE_COLLECT)).toBe(false);
 		});
 
+		it("reports the first failing check with its tail when two checks fail in the same poll", async () => {
+			const f = await checksFixture();
+			const dag: CodeCheck[] = [
+				{ name: "lint", run: "npm run lint", timeoutSeconds: 60, cwd: ".", needs: [] },
+				{ name: "test", run: "npm test", timeoutSeconds: 60, cwd: ".", needs: [] },
+			];
+			let lintId: string | undefined;
+			let testId: string | undefined;
+			let releasePollStart: (() => void) | undefined;
+			const bothPollsStarted = new Promise<void>((resolve) => {
+				releasePollStart = resolve;
+			});
+			let releasePollEnd: (() => void) | undefined;
+			const bothPollsDone = new Promise<void>((resolve) => {
+				releasePollEnd = resolve;
+			});
+			let releaseTestPoll: (() => void) | undefined;
+			const testPollAfterLint = new Promise<void>((resolve) => {
+				releaseTestPoll = resolve;
+			});
+			let markTestFinished: (() => void) | undefined;
+			const testFinished = new Promise<void>((resolve) => {
+				markTestFinished = resolve;
+			});
+			const pollsEntered = new Set<string>();
+			const pollsCompleted = new Set<string>();
+			let tailReadWaitedForTest = false;
+			f.ending((run) => (checkOf(run) ? { state: "running" } : {}));
+			const baseRun = mocked.guestRun.getMockImplementation()!;
+			const { LxdCodingFolderCommandTransport: RealTransport } = await vi.importActual<{
+				LxdCodingFolderCommandTransport: typeof LxdCodingFolderCommandTransport;
+			}>("../src/coding-folder-command-transport.ts");
+			const baseRead = RealTransport.prototype.read;
+			const baseHidden = RealTransport.prototype.hidden;
+			const readSpy = vi.spyOn(RealTransport.prototype, "read").mockImplementation(async function (
+				this: LxdCodingFolderCommandTransport,
+				scope,
+				input,
+				signal,
+			) {
+				if (input.commandId === lintId && input.limit === 16384) {
+					releaseTestPoll?.();
+					await testFinished;
+					tailReadWaitedForTest = true;
+				}
+				if (input.limit === 4096 && (input.commandId === lintId || input.commandId === testId)) {
+					pollsEntered.add(input.commandId);
+					if (pollsEntered.size === 2 && lintId && testId) {
+						const lintEntry = f.commands.get(lintId)!;
+						const testEntry = f.commands.get(testId)!;
+						lintEntry.printed = Buffer.from("lint failed line\n");
+						lintEntry.ending = { code: 1 };
+						lintEntry.until = Date.now();
+						testEntry.printed = Buffer.from("test failed line\n");
+						testEntry.ending = { code: 2 };
+						testEntry.until = Date.now();
+						releasePollStart?.();
+					}
+					await bothPollsStarted;
+					const receipt = await baseRead.call(this, scope, input, signal);
+					pollsCompleted.add(input.commandId);
+					if (pollsCompleted.size === 2) releasePollEnd?.();
+					await bothPollsDone;
+					if (input.commandId === testId) await testPollAfterLint;
+					return receipt;
+				}
+				return baseRead.call(this, scope, input, signal);
+			});
+			const hiddenSpy = vi.spyOn(RealTransport.prototype, "hidden").mockImplementation(async function (
+				this: LxdCodingFolderCommandTransport,
+				commandId,
+				signal,
+			) {
+				const hidden = await baseHidden.call(this, commandId, signal);
+				if (commandId === testId) setImmediate(() => markTestFinished?.());
+				return hidden;
+			});
+			mocked.guestRun.mockImplementation(async (request: unknown) => {
+				const result = await baseRun(request);
+				const parsed = parseCodingGuestRequest("run", request);
+				const cmd = checkOf(parsed);
+				if (cmd === "npm run lint") lintId = parsed.commandId;
+				if (cmd === "npm test") testId = parsed.commandId;
+				return result;
+			});
+
+			let run: Awaited<ReturnType<typeof f.run>>;
+			try {
+				run = await f.run(dag);
+			} finally {
+				readSpy.mockRestore();
+				hiddenSpy.mockRestore();
+			}
+			expect(tailReadWaitedForTest).toBe(true);
+			expect(run).toEqual({
+				state: "failed",
+				ms: expect.any(Number),
+				passed: [],
+				failed: {
+					name: "lint",
+					run: "npm run lint",
+					ms: expect.any(Number),
+					exitCode: 1,
+					atLimit: false,
+					tail: "tail of: lint failed line\n",
+					log: "~/.qorpera-checks/0000000001-0001/out/1-lint.log",
+				},
+				notRun: ["test"],
+			});
+		});
+
 		it("tracks every sibling whose cancellation could not be confirmed before allowing a later run", async () => {
 			const f = await checksFixture({ stopMs: 60 });
 			const dag: CodeCheck[] = [

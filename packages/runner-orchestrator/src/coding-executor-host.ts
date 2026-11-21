@@ -2174,11 +2174,18 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					readonly why: Extract<CodeChecksRun, { state: "not_run" }>["why"];
 					readonly code: string;
 			  };
+		let claimant: number | undefined;
 		let terminal: TerminalOutcome | undefined;
 		let abortedError: unknown;
 		let hasAbortedError = false;
 		const inFlight = new Set<Promise<void>>();
-		const stopRun = (outcome: TerminalOutcome) => {
+		const claimStop = (checkIndex: number) => {
+			claimant ??= checkIndex;
+			runAbort.abort();
+		};
+		const stopRun = (checkIndex: number, outcome: TerminalOutcome) => {
+			if (claimant !== undefined && claimant !== checkIndex) return;
+			claimant ??= checkIndex;
 			if (terminal === undefined) {
 				terminal = outcome;
 				runAbort.abort();
@@ -2205,7 +2212,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 						});
 					} catch (error) {
 						this.#checksReport({ event: "code-checks-error", step: "run", ...said, error });
-						stopRun({ kind: "not_run", why: "transport", code: errorCodeOf(error) });
+						stopRun(checkIndex, { kind: "not_run", why: "transport", code: errorCodeOf(error) });
 						return;
 					}
 					const command = {
@@ -2232,7 +2239,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 						signal,
 						folder,
 						runAbort.signal,
-						() => runAbort.abort(),
+						() => claimStop(checkIndex),
 					);
 					const ms = elapsed(started);
 					if ("cancelled" in ended) {
@@ -2257,7 +2264,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 						});
 						if (ended.error !== undefined)
 							this.#checksReport({ event: "code-checks-error", step: "command", ...step, error: ended.error });
-						stopRun({ kind: "not_run", why: ended.why, code: ended.code });
+						stopRun(checkIndex, { kind: "not_run", why: ended.why, code: ended.code });
 						return;
 					}
 					const { receipt } = ended;
@@ -2281,10 +2288,14 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 						return;
 					}
 					if (receipt.state !== "failed") {
-						stopRun({ kind: "not_run", why: "machine", code: `CODE_CHECKS_${receipt.state.toUpperCase()}` });
+						stopRun(checkIndex, {
+							kind: "not_run",
+							why: "machine",
+							code: `CODE_CHECKS_${receipt.state.toUpperCase()}`,
+						});
 						return;
 					}
-					stopRun({
+					stopRun(checkIndex, {
 						kind: "failed",
 						checkIndex,
 						failed: {
