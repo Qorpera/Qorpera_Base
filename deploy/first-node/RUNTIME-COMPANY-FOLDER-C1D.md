@@ -295,19 +295,26 @@ runtime adapter, with no migration.
   read. The native route's token and binding checks are shared, not copied. PostgREST answers SQLSTATE classes 40
   and 55 with 500, which would open the gateway's database circuit for every company, so the folder calls map the
   stop (55000) to 423 and lock conflicts (40001, 40P01, 55P03) to 409; any other 500 stays a dependency failure.
-- Runtime: `packages/runtime/src/cloud-company-folder-bytes.ts`, `HttpCloudCompanyFolderBytes`. A put builds the
-  canonical manifest, opens the intent, puts the missing objects, renews the intent when ten minutes have passed, and
-  seals; an object the catalog lost is put once more, then the put fails as `contended`. Renew's answer is checked.
-  A file over 256 MiB is `invalid_arguments` before anything is hashed or sent. A get checks the manifest against the
-  reference, that its chunk sizes add up to the file's before it fetches any, each chunk against its hash, and the
-  whole file against the reference's hash (the manifest's `fileSha256` is only its writer's word); it reads into one
-  buffer of the file's size. A refusal of the folder core's checks (403) is `CloudCompanyFolderError('unavailable')`,
-  a stop (423) `stopped`, a lock conflict (409) `contended`, a full storage allowance (413, the gateway's answer to
-  23514) `full`; a busy gateway (503) is asked twice more after a short
-  random wait (an object is content-addressed, so a put asked again is the same put). That is for the NAS lanes: a
-  database 500 opens the gateway's circuit for 5 s, so those tries fail fast without reaching the database. The folder
-  route answers a busy NAS lane with no Storage copy yet (replication pending, right after staging) as the lane's
-  503, not Storage's miss, so a read-back right after staging is asked again.
+- Runtime: `packages/runtime/src/cloud-company-folder-bytes.ts`, `HttpCloudCompanyFolderBytes`, and
+  `CloudCompanyFolderClient.stage` in `cloud-company-folder-client.ts`. A put builds the canonical manifest, opens the
+  intent, puts the missing objects sequentially for that file, renews the intent when ten minutes have passed, and
+  seals; an object the catalog lost is put once more, then the put fails as `contended`. `stage` runs up to 4 distinct
+  file puts concurrently, grouping identical-byte files with different metadata onto the same worker so those variants
+  are staged serially rather than racing on the same objects (distinct multi-chunk files that happen to share a 4 MiB
+  chunk may still overlap and queue behind the gateway's per-object lock). Renew's answer is checked. A file over 256 MiB is `invalid_arguments`
+  before anything is hashed or sent. A get checks the manifest against the reference, that its chunk sizes add up to the
+  file's before it fetches any, each chunk against its hash, and the whole file against the reference's hash (the
+  manifest's `fileSha256` is only its writer's word); single-chunk gets return the verified chunk directly, and
+  multi-chunk gets and ranges fetch up to 4 distinct chunks concurrently and copy each chunk directly into the single
+  output buffer as it arrives. Concurrency is capped at 4 against the gateway's 2 NAS lanes to overlap RPC,
+  authorization, and network round-trip latency rather than NAS throughput; any burst beyond 2 NAS operations waits
+  behind the gateway's 2 s `#io` queue and falls back to the 2 busy-gateway retries below. A refusal of the folder
+  core's checks (403) is `CloudCompanyFolderError('unavailable')`, a stop (423) `stopped`, a lock conflict (409)
+  `contended`, a full storage allowance (413, the gateway's answer to 23514) `full`; a busy gateway (503) is asked twice
+  more after a short random wait (an object is content-addressed, so a put asked again is the same put). That is for the
+  NAS lanes: a database 500 opens the gateway's circuit for 5 s, so those tries fail fast without reaching the database.
+  The folder route answers a busy NAS lane with no Storage copy yet (replication pending, right after staging) as the
+  lane's 503, not Storage's miss, so a read-back right after staging is asked again.
 
 **Follow-ups from C1d-1b's review** (for C1d-2 and the thin writers):
 - **Quota before the NAS write: done** (20260928309710). `_authorize_object_upload` checks the soft quota for an
@@ -330,8 +337,9 @@ runtime adapter, with no migration.
   The 409 mapping depends on this budget. It bounds each lock wait, not their sum (762 G shows waits end at it; 761
   §8b pins the setting). A later `create or replace` of any of the seven must repeat `set lock_timeout = '2s'`, and
   changes `pg_get_functiondef`, so a digest guard must be taken after this migration.
-- **The gateway's NAS lanes.** It allows two operations in flight; core §7 raises that with content storage. The
-  native route's read still answers Storage's miss when its NAS lane is busy; give it the folder route's 503.
+- **The gateway's NAS lanes.** It allows two operations in flight (with a 2 s `#io` wait queue that absorbs bounded
+  4-way runtime concurrency overlapping RPC/auth latency); core §7 raises that with content storage. The native route's
+  read still answers Storage's miss when its NAS lane is busy; give it the folder route's 503.
 - **Labels.** On the byte path a size clash (23505) reads as `contended` and a refused run kind (0A000) as
   `transport_unavailable`; the control path reads deadlocks at open, seal and renew as raw errors. The writers align
   them.
