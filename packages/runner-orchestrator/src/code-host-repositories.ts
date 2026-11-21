@@ -119,6 +119,7 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 	readonly #report: (event: Record<string, unknown>) => void;
 	readonly #recordMs: number;
 	readonly #sites: { wake(): void } | undefined;
+	readonly #landingQueues = new Map<string, (() => boolean)[]>();
 
 	constructor(jobs: Pick<CodeHostJobs, "run">, options: CodeHostRepositoriesOptions = {}) {
 		const recordMs = options.recordMs ?? CODE_CHANGE_RECORD_MS;
@@ -245,8 +246,26 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 		signal: AbortSignal,
 		options: { picture?: string } = {},
 	): Promise<CodingLanded> {
-		const { repository } = session.claim;
+		const { profileId, environmentId, repository } = session.claim;
 		if (repository.host !== "qorpera") throw new Error("CODE_HOST_REPOSITORY_NOT_HERE");
+		const release = await this.#acquireLandingTurn(
+			`${profileId}:${environmentId}:${repository.owner.toLowerCase()}/${repository.name.toLowerCase()}`,
+			signal,
+		);
+		try {
+			signal.throwIfAborted();
+			return await this.#landSerialized(session, headSha, signal, options);
+		} finally {
+			release();
+		}
+	}
+
+	async #landSerialized(
+		session: CodingFolderRepositorySession,
+		headSha: string,
+		signal: AbortSignal,
+		options: { picture?: string },
+	): Promise<CodingLanded> {
 		const { checksSwitch, runChecks } = session;
 		// The switch's answer lost is read as on: a landing never goes in unchecked for want of an answer.
 		const switched: CodeChecksSwitched =
@@ -505,7 +524,17 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 		if (!records) return;
 		try {
 			record.confirm = await answeredBefore(
-				() => records.inJob({ shell: job.shell, layout: job.layout, signal: bounded }, targetOf(session), bounded),
+				() =>
+					records.inJob(
+						{
+							shell: job.shell,
+							layout: job.layout,
+							signal: bounded,
+							preparedKeptArea: codeAreaPath(session.claim.repository),
+						},
+						targetOf(session),
+						bounded,
+					),
 				bounded,
 			);
 		} catch (error) {
@@ -591,6 +620,55 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 
 	#failed(session: CodingFolderRepositorySession, step: string, error: unknown): void {
 		this.#report({ event: "code-change-error", step, ...named(session), error });
+	}
+
+	#acquireLandingTurn(key: string, signal: AbortSignal): Promise<() => void> {
+		if (signal.aborted) return Promise.reject(signal.reason);
+		const existing = this.#landingQueues.get(key);
+		const makeRelease = (waiters: (() => boolean)[]) => {
+			let released = false;
+			return () => {
+				if (released) return;
+				released = true;
+				this.#releaseLandingTurn(key, waiters);
+			};
+		};
+		if (!existing) {
+			const waiters: (() => boolean)[] = [];
+			this.#landingQueues.set(key, waiters);
+			return Promise.resolve(makeRelease(waiters));
+		}
+		return new Promise<() => void>((resolve, reject) => {
+			let settled = false;
+			const release = makeRelease(existing);
+			const onAbort = () => {
+				if (settled) return;
+				settled = true;
+				const index = existing.indexOf(wake);
+				if (index >= 0) existing.splice(index, 1);
+				reject(signal.reason);
+			};
+			const wake = (): boolean => {
+				if (settled) return false;
+				settled = true;
+				signal.removeEventListener("abort", onAbort);
+				if (signal.aborted) {
+					reject(signal.reason);
+					return false;
+				}
+				resolve(release);
+				return true;
+			};
+			existing.push(wake);
+			signal.addEventListener("abort", onAbort, { once: true });
+		});
+	}
+
+	#releaseLandingTurn(key: string, waiters: (() => boolean)[]): void {
+		while (waiters.length > 0) {
+			if (waiters.shift()?.()) return;
+		}
+		if (this.#landingQueues.get(key) === waiters) this.#landingQueues.delete(key);
 	}
 
 	/** One job on the code host of the session's company, in that company's line. The session's run authority is asked
