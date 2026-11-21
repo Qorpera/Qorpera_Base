@@ -1511,7 +1511,6 @@ describe("warm conversations", () => {
 				providerAdapter: "native26-test",
 				status: "provisioned",
 				computeIdentityId,
-				logicalComputerId: null,
 				workerClass: "managed_sandbox",
 				templateKey: "qorpera-member-linux",
 				templateVersion: "v1",
