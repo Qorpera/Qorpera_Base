@@ -1,12 +1,12 @@
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { folderServiceActor } from "../src/folder-service-objects.ts";
 import { ObjectGatewayJournal } from "../src/journal.ts";
-import { FileSystemObjectStore } from "../src/object-store.ts";
+import { FileSystemObjectStore, isVerifiedObjectBytes, verifyObjectBytes } from "../src/object-store.ts";
 import { ObjectGatewayReplication } from "../src/replication.ts";
 import { createObjectGatewayHandler } from "../src/service.ts";
 import { SupabaseObjectAuthority } from "../src/supabase-authority.ts";
@@ -102,7 +102,7 @@ async function fixture() {
 				"content-type": "application/octet-stream",
 			},
 		});
-	return { sql, store, put, origin, token, nativeToken, authority, replication };
+	return { root, sql, store, put, origin, token, nativeToken, authority, replication };
 }
 
 describe("the folder service's byte route", () => {
@@ -186,6 +186,58 @@ describe("the folder service's byte route", () => {
 		sql.refuse = true;
 		expect((await put("mine")).status).toBe(403);
 		await expect(store.get(companyId, sha("mine"), 4)).rejects.toThrow();
+	});
+
+	it("deduplicates SHA-256 verification via VerifiedObjectBytes while still rejecting tampered bytes", async () => {
+		const { root, sql, store, put, replication } = await fixture();
+		const valid = Buffer.from("authentic-payload");
+		const validSha = sha(valid);
+		const tampered = Buffer.from("tampered!-payload");
+		const other = Buffer.from("other-object-body");
+		const otherSha = sha(other);
+
+		const proof = verifyObjectBytes(validSha, valid);
+		expect(isVerifiedObjectBytes(proof, validSha, valid)).toBe(true);
+		expect(isVerifiedObjectBytes(proof, validSha, tampered)).toBe(false);
+		expect(isVerifiedObjectBytes(proof, otherSha, valid)).toBe(false);
+		expect(() => verifyObjectBytes(validSha, tampered)).toThrow("Object bytes do not match their SHA-256 address");
+
+		await expect(store.put(companyId, validSha, tampered, proof)).rejects.toThrow(
+			"Object bytes do not match their SHA-256 address",
+		);
+		await expect(store.put(companyId, otherSha, valid, proof)).rejects.toThrow(
+			"Object bytes do not match their SHA-256 address",
+		);
+		await expect(
+			replication.uploadWithAuthority(
+				companyId,
+				validSha,
+				tampered,
+				{ authorize: async () => undefined, confirm: async () => undefined },
+				proof,
+			),
+		).rejects.toThrow("Replica failed integrity verification");
+
+		expect(
+			await replication.uploadWithAuthority(
+				companyId,
+				validSha,
+				valid,
+				{ authorize: async () => undefined, confirm: async () => undefined },
+				proof,
+			),
+		).toBe("stored");
+		expect(Buffer.from(await store.get(companyId, validSha, valid.byteLength))).toEqual(valid);
+
+		await writeFile(join(root, "objects", companyId, validSha), tampered);
+		await expect(store.get(companyId, validSha, valid.byteLength)).rejects.toThrow(
+			"Stored object failed integrity verification",
+		);
+
+		sql.listed.set(otherSha, other.byteLength);
+		const badPut = await put("wrong-body-length".slice(0, other.byteLength), { hash: otherSha });
+		expect(badPut.status).toBe(400);
+		await expect(store.get(companyId, otherSha, other.byteLength)).rejects.toThrow("Object not found");
 	});
 });
 

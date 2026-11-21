@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,6 +30,7 @@ async function fixture(options: { onNas?: boolean } = {}) {
 		storage: 0,
 		storagePaths: [] as string[],
 		storageStatus: 200,
+		storageBytes: bytes,
 	};
 	const observations = new MemberCompanyObservations();
 	const authority = new SupabaseObjectAuthority({
@@ -45,7 +46,7 @@ async function fixture(options: { onNas?: boolean } = {}) {
 				state.storagePaths.push(url.pathname);
 				expect(request.headers.get("authorization")).not.toBe(`Bearer ${memberToken}`);
 				if (state.storageStatus !== 200) return new Response(null, { status: state.storageStatus });
-				return new Response(Uint8Array.from(bytes));
+				return new Response(Uint8Array.from(state.storageBytes));
 			}
 			state.calls.push({
 				path: url.pathname,
@@ -79,6 +80,7 @@ async function fixture(options: { onNas?: boolean } = {}) {
 	});
 	const origin = `http://127.0.0.1:${address.port}`;
 	return {
+		root,
 		state,
 		observations,
 		origin,
@@ -177,6 +179,19 @@ describe("a member's folder-v2 bytes", () => {
 		const gateway = await fixture();
 		gateway.state.answers.push({ status: 200, body: { ...allowed, bytes: bytes.length + 1 } });
 		expect((await gateway.get()).status).toBe(503);
+
+		const tampered = Buffer.from(bytes);
+		tampered[0] ^= 0xff;
+		await writeFile(join(gateway.root, companyId, sha256), tampered);
+		const nasTampered = await gateway.get();
+		expect(nasTampered.status).toBe(503);
+		expect(Buffer.from(await nasTampered.arrayBuffer()).equals(tampered)).toBe(false);
+
+		const legacyGateway = await fixture({ onNas: false });
+		legacyGateway.state.storageBytes = tampered;
+		const legacyTampered = await legacyGateway.get();
+		expect(legacyTampered.status).toBe(503);
+		expect(Buffer.from(await legacyTampered.arrayBuffer()).equals(tampered)).toBe(false);
 	});
 
 	it("takes only its own route, a GET and a member's bearer token", async () => {
