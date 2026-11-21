@@ -1723,7 +1723,7 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 						wakes.length === 0 && now.getTime() >= this.#advancePausedUntil
 							? routineFirstSlot(head, trigger, now)
 							: undefined;
-					if (firstSlot) {
+					if (firstSlot && now.getTime() >= this.#advancePausedUntil) {
 						const input: AdvanceCloudRoutineNextDueInput = {
 							routineId: head.routineId,
 							expectedVersion: head.version,
@@ -1737,12 +1737,15 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 						} catch (error) {
 							if (signal?.aborted) throw error;
 							if (error instanceof CloudRunnerOrchestratorRequestError && error.status === 400) {
+								const alreadyPaused = now.getTime() < this.#advancePausedUntil;
 								this.#advancePausedUntil = Math.max(
 									this.#advancePausedUntil,
 									now.getTime() + ROUTINE_ADVANCE_RETRY_MS,
 								);
+								if (!alreadyPaused) headErrors.push(error);
+							} else {
+								headErrors.push(error);
 							}
-							headErrors.push(error);
 						}
 					}
 					for (const occurrence of wakes) {

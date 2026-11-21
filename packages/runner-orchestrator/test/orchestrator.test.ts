@@ -3329,4 +3329,164 @@ describe("cloud runner orchestrator", () => {
 			"Routine schedule concurrency is outside the supported range",
 		);
 	});
+
+	it("reports only one 400 error when concurrent heads hit a pre-advance control plane", async () => {
+		const unknown = new CloudRunnerOrchestratorRequestError(400);
+		const ids = Array.from({ length: 4 }, (_, i) => `30000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`);
+		const items = ids.map((id) => ({
+			...scheduleHead(id),
+			triggers: [
+				{
+					id: "office-hours",
+					kind: "schedule",
+					intervalMinutes: 30,
+					windowStart: "09:00",
+					windowEnd: "10:00",
+					timeZone: "UTC",
+				},
+			],
+			scheduleCursors: [{ triggerId: "office-hours" }],
+			effectiveAt: "2026-08-25T09:10:00.000Z",
+		}));
+		const control = controlPlane(undefined);
+		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({ items, hasMore: false });
+		vi.mocked(control.advanceRoutineNextDue).mockImplementation(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			throw unknown;
+		});
+		const reconciler = new CloudRoutineScheduleReconciler({
+			now: () => new Date("2026-08-25T08:58:00.000Z"),
+			concurrency: 4,
+		});
+		await expect(reconciler.reconcile(control)).rejects.toMatchObject({ errors: [unknown] });
+	});
+
+	it("matches exhaustive day-enumeration across every day of 2026-2027 in northern, southern, and sub-hour time zones", async () => {
+		const zones: readonly [string, number][] = [
+			["Europe/Copenhagen", 1],
+			["America/New_York", 7],
+			["Australia/Sydney", 16],
+			["Asia/Kathmandu", 20],
+			["Pacific/Chatham", 13],
+			["Australia/Lord_Howe", 15],
+		];
+		const formatters = new Map(
+			zones.map(([timeZone]) => [
+				timeZone,
+				new Intl.DateTimeFormat("en-CA", {
+					timeZone,
+					hourCycle: "h23",
+					year: "numeric",
+					month: "2-digit",
+					day: "2-digit",
+					hour: "2-digit",
+					minute: "2-digit",
+				}),
+			]),
+		);
+		const partsOf = (instant: Date, timeZone: string) => {
+			const parts = formatters.get(timeZone)!.formatToParts(instant);
+			const get = (type: string) => Number(parts.find((p) => p.type === type)?.value);
+			return { year: get("year"), month: get("month"), day: get("day"), hour: get("hour"), minute: get("minute") };
+		};
+		const refZoned = (year: number, month: number, day: number, hour: number, minute: number, timeZone: string) => {
+			const target = Date.UTC(year, month - 1, day, hour, minute);
+			let candidate = target;
+			for (let i = 0; i < 4; i++) {
+				const actual = partsOf(new Date(candidate), timeZone);
+				const delta = target - Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute);
+				if (delta === 0) break;
+				candidate += delta;
+			}
+			const actual = partsOf(new Date(candidate), timeZone);
+			return actual.year === year &&
+				actual.month === month &&
+				actual.day === day &&
+				actual.hour === hour &&
+				actual.minute === minute
+				? new Date(candidate)
+				: undefined;
+		};
+		const refDaySlots = (year: number, month: number, day: number, timeZone: string) => {
+			const out: Date[] = [];
+			for (let m = 30; m <= 225; m += 45) {
+				const slot = refZoned(year, month, day, Math.floor(m / 60), m % 60, timeZone);
+				if (slot) out.push(slot);
+			}
+			return out;
+		};
+		const refNearest = (instant: Date, timeZone: string, direction: "before-or-at" | "after") => {
+			const local = partsOf(instant, timeZone);
+			for (let d = 0; d <= 3; d++) {
+				const shifted = new Date(
+					Date.UTC(local.year, local.month - 1, local.day + (direction === "before-or-at" ? -d : d)),
+				);
+				const slots = refDaySlots(
+					shifted.getUTCFullYear(),
+					shifted.getUTCMonth() + 1,
+					shifted.getUTCDate(),
+					timeZone,
+				);
+				if (direction === "before-or-at") {
+					for (let i = slots.length - 1; i >= 0; i--) {
+						if (slots[i]!.getTime() <= instant.getTime()) return slots[i]!;
+					}
+				} else {
+					for (const slot of slots) {
+						if (slot.getTime() > instant.getTime()) return slot;
+					}
+				}
+			}
+			throw new Error(`No slot found for ${timeZone} at ${instant.toISOString()}`);
+		};
+
+		const baseDay = Date.UTC(2026, 0, 1, 0, 15);
+		const totalDays = 730;
+		for (const [timeZone, probeUtcHour] of zones) {
+			const startDay = baseDay + probeUtcHour * 3_600_000;
+			let currentNow = new Date(startDay);
+			const observed: { scheduledFor: string; nextDueAt: string }[] = [];
+			const head = {
+				routineId: "40000000-0000-4000-8000-000000000001",
+				profileId: "88888888-8888-4888-8888-888888888888",
+				environmentId: "99999999-9999-4999-8999-999999999999",
+				version: 1,
+				staffAgentId: "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
+				triggers: [
+					{
+						id: "sweep",
+						kind: "schedule",
+						intervalMinutes: 45,
+						windowStart: "00:30",
+						windowEnd: "03:45",
+						timeZone,
+					},
+				],
+				scheduleCursors: [{ triggerId: "sweep" }],
+				contentSha256: "d".repeat(64),
+				effectiveAt: "2025-12-01T00:00:00.000Z",
+				updatedAt: "2025-12-01T00:00:00.000Z",
+			};
+			const control = controlPlane(undefined);
+			vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({ items: [head], hasMore: false });
+			vi.mocked(control.enqueueRoutineWake).mockImplementation(async (input) => {
+				observed.push({ scheduledFor: input.scheduledFor, nextDueAt: input.nextDueAt });
+				return { occurrenceId: input.occurrenceId, status: "queued" as const, scheduledFor: input.scheduledFor };
+			});
+			const reconciler = new CloudRoutineScheduleReconciler({ now: () => currentNow });
+			for (let day = 0; day < totalDays; day++) {
+				currentNow = new Date(startDay + day * 86_400_000);
+				observed.length = 0;
+				await reconciler.reconcile(control);
+				const expectedScheduled = refNearest(currentNow, timeZone, "before-or-at");
+				const expectedNext = refNearest(expectedScheduled, timeZone, "after");
+				expect(observed).toEqual([
+					{
+						scheduledFor: expectedScheduled.toISOString(),
+						nextDueAt: expectedNext.toISOString(),
+					},
+				]);
+			}
+		}
+	});
 });
