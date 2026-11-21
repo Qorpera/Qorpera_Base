@@ -1,6 +1,6 @@
 do $$ begin
 	if to_regclass('public.qorpera_gemini_keys') is not null then
-		raise exception '20260930822000 is already applied'; end if;
+		raise exception '20260930823000 is already applied'; end if;
 	if to_regprocedure('public.qorpera_pin_execution_claude_choice()') is null
 		or to_regprocedure('public.qorpera_model_policy_thread_efforts(jsonb)') is null
 		or to_regprocedure('public.qorpera_company_account_vault(uuid)') is null
@@ -8,7 +8,7 @@ do $$ begin
 		or to_regprocedure('public.qorpera_model_login_run_binding(jsonb)') is null
 		or to_regprocedure('public.qorpera_native_tool_locked_run(jsonb)') is null
 		or to_regclass('public.qorpera_member_notifications') is null then
-		raise exception '20260930822000 needs conversation models (20260930784000, 20260930788000, 20260930816000) and the shared vault';
+		raise exception '20260930823000 needs conversation models (20260930784000, 20260930788000, 20260930816000) and the shared vault';
 	end if;
 end $$;
 
@@ -19,7 +19,7 @@ returns void language plpgsql as $$
 declare v_definition text := pg_get_functiondef(p_function);
 begin
 	if p_old = '' or (length(v_definition) - length(replace(v_definition, p_old, ''))) / length(p_old) <> 1 then
-		raise exception '20260930822000 anchor differs in %: %', p_function, left(p_old, 80); end if;
+		raise exception '20260930823000 anchor differs in %: %', p_function, left(p_old, 80); end if;
 	execute replace(v_definition, p_old, p_new);
 end $$;
 
@@ -96,7 +96,7 @@ begin
 			|| array['gemini_cap_reached']) k order by k)
 	into v_kinds;
 	if cardinality(v_kinds) < 8 then
-		raise exception '20260930822000 could not read the notification kinds'; end if;
+		raise exception '20260930823000 could not read the notification kinds'; end if;
 	execute format('alter table public.qorpera_member_notifications drop constraint qorpera_member_notifications_kind, '
 		'add constraint qorpera_member_notifications_kind check (kind = any (%L::text[]))', v_kinds);
 end $kinds$;
