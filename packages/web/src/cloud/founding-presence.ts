@@ -419,6 +419,7 @@ export function joinFoundingPresence(
 		const active = channel;
 		if (stopped || !active) return;
 		register().catch((error: unknown) => {
+			// WHY: Belt-and-braces guard so a late heartbeat failure cannot tear down a replaced channel if registration coalescing ever changes.
 			if (stopped || active !== channel) return;
 			if (finalRefusal(error)) end("unavailable");
 			else retry(active);
