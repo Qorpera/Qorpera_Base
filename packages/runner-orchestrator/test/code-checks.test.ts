@@ -11,8 +11,10 @@ import {
 	codeChecksGate,
 	codeChecksNotRunSummary,
 	codeChecksPassed,
+	codeChecksPlan,
 	codeChecksRefusedSummary,
 	codeChecksTail,
+	MAX_PARALLEL_CHECKS,
 	readCodeChecks,
 } from "../src/code-checks.ts";
 import { CODE_CHECKS_DRILL, CODE_DRILL_WORDS } from "../src/code-site.ts";
@@ -278,6 +280,202 @@ describe("the checks file's rules", () => {
 			"MISSING_KEY /checks/1",
 			"UNKNOWN_KEY /extra",
 		]);
+	});
+});
+
+describe("parallel check dependencies (needs)", () => {
+	it("parses valid DAG dependencies, including empty needs and out-of-order references", () => {
+		const diamond = withChecks([
+			{ name: "install", run: "npm ci" },
+			{ name: "lint", run: "npm run lint", needs: ["install"] },
+			{ name: "typecheck", run: "npm run typecheck", needs: ["install"] },
+			{ name: "test", run: "npm test", needs: ["install"] },
+			{ name: "build", run: "npm run build", needs: ["lint", "typecheck", "test"] },
+		]);
+		expect(checksOf(diamond)).toEqual([
+			check("install", "npm ci"),
+			{ ...check("lint", "npm run lint"), needs: ["install"] },
+			{ ...check("typecheck", "npm run typecheck"), needs: ["install"] },
+			{ ...check("test", "npm test"), needs: ["install"] },
+			{ ...check("build", "npm run build"), needs: ["lint", "typecheck", "test"] },
+		]);
+		expect(codeChecksPlan(checksOf(diamond))).toEqual([[], [0], [0], [0], [1, 2, 3]]);
+
+		const independent = withChecks([
+			{ name: "lint", run: "npm run lint", needs: [] },
+			{ name: "test", run: "npm test", needs: [] },
+		]);
+		expect(checksOf(independent)).toEqual([
+			{ ...check("lint", "npm run lint"), needs: [] },
+			{ ...check("test", "npm test"), needs: [] },
+		]);
+		expect(codeChecksPlan(checksOf(independent))).toEqual([[], []]);
+
+		const forward = withChecks([
+			{ name: "build", run: "npm run build", needs: ["test"] },
+			{ name: "test", run: "npm test", needs: ["install"] },
+			{ name: "install", run: "npm ci" },
+		]);
+		expect(codeChecksPlan(checksOf(forward))).toEqual([[1], [2], []]);
+		expect(MAX_PARALLEL_CHECKS).toBe(4);
+	});
+
+	it("plans legacy checks without needs strictly sequentially", () => {
+		const legacy = checksOf(
+			withChecks([
+				{ name: "install", run: "npm ci" },
+				{ name: "test", run: "npm test" },
+				{ name: "build", run: "npm run build" },
+			]),
+		);
+		expect(legacy.every((entry) => entry.needs === undefined)).toBe(true);
+		expect(codeChecksPlan(legacy)).toEqual([[], [0], [1]]);
+		expect(codeChecksPlan([])).toEqual([]);
+	});
+
+	it("rejects non-array needs, non-string entries, invalid names, and duplicates inside needs", () => {
+		for (const needs of ["install", 1, null, true, {}])
+			expect(problems(withChecks([{ name: "t", run: "x", needs }]))).toEqual(["WRONG_TYPE /checks/0/needs"]);
+		for (const bad of [1, null, true, ["a"], {}])
+			expect(problems(withChecks([{ name: "t", run: "x", needs: [bad] }]))).toEqual([
+				"WRONG_TYPE /checks/0/needs/0",
+			]);
+		for (const bad of ["", "Bad", "-x", "a b", "a".repeat(41)])
+			expect(problems(withChecks([{ name: "t", run: "x", needs: [bad] }]))).toEqual([
+				"INVALID_VALUE /checks/0/needs/0",
+			]);
+		const dup = withChecks([
+			{ name: "install", run: "npm ci" },
+			{ name: "test", run: "npm test", needs: ["install", "install"] },
+		]);
+		expect(dup.state === "refused" && dup.problems).toEqual([
+			{
+				at: "/checks/1/needs/1",
+				code: "DUPLICATE",
+				message: 'The check "install" is listed twice in needs.',
+			},
+		]);
+	});
+
+	it("rejects unknown needs, self-dependencies, cycles, and duplicate check names with needs", () => {
+		const unknown = withChecks([{ name: "test", run: "npm test", needs: ["install"] }]);
+		expect(unknown.state === "refused" && unknown.problems).toEqual([
+			{ at: "/checks/0/needs/0", code: "INVALID_VALUE", message: 'No check is named "install".' },
+		]);
+
+		const selfDep = withChecks([{ name: "test", run: "npm test", needs: ["test"] }]);
+		expect(selfDep.state === "refused" && selfDep.problems).toEqual([
+			{ at: "/checks/0/needs/0", code: "INVALID_VALUE", message: 'The check "test" cannot depend on itself.' },
+		]);
+
+		const twoCycle = withChecks([
+			{ name: "a", run: "x", needs: ["b"] },
+			{ name: "b", run: "y", needs: ["a"] },
+		]);
+		expect(twoCycle.state === "refused" && twoCycle.problems).toEqual([
+			{ at: "/checks", code: "CYCLE", message: "The checks form a dependency cycle: a -> b -> a." },
+		]);
+
+		const threeCycleWithTail = withChecks([
+			{ name: "tail", run: "t", needs: ["a"] },
+			{ name: "a", run: "x", needs: ["b"] },
+			{ name: "b", run: "y", needs: ["c"] },
+			{ name: "c", run: "z", needs: ["a"] },
+		]);
+		expect(threeCycleWithTail.state === "refused" && threeCycleWithTail.problems).toEqual([
+			{ at: "/checks", code: "CYCLE", message: "The checks form a dependency cycle: a -> b -> c -> a." },
+		]);
+
+		const duplicateName = withChecks([
+			{ name: "install", run: "npm ci" },
+			{ name: "install", run: "npm ci --prefer-offline" },
+			{ name: "test", run: "npm test", needs: ["install"] },
+		]);
+		expect(problems(duplicateName)).toEqual(["DUPLICATE /checks/1/name"]);
+	});
+
+	it("tracks effective dependency changes in the gate diff, including sequential-to-DAG mode flips", () => {
+		const seq = withChecks([
+			{ name: "install", run: "npm ci" },
+			{ name: "lint", run: "npm run lint" },
+			{ name: "test", run: "npm test" },
+			{ name: "build", run: "npm run build" },
+		]);
+		const dag = withChecks([
+			{ name: "install", run: "npm ci" },
+			{ name: "lint", run: "npm run lint", needs: ["install"] },
+			{ name: "test", run: "npm test", needs: ["install"] },
+			{ name: "build", run: "npm run build", needs: ["lint", "test"] },
+		]);
+		const reordered = withChecks([
+			{ name: "install", run: "npm ci" },
+			{ name: "lint", run: "npm run lint", needs: ["install"] },
+			{ name: "test", run: "npm test", needs: ["install"] },
+			{ name: "build", run: "npm run build", needs: ["test", "lint"] },
+		]);
+		const gateAdded = codeChecksGate(seq, dag);
+		expect(gateAdded.gate === "run" && gateAdded.changed).toEqual({
+			added: [],
+			removed: [],
+			run: ["test", "build"],
+		});
+		const gateReordered = codeChecksGate(dag, reordered);
+		expect(gateReordered.gate === "run" && gateReordered.changed).toBeNull();
+		const emptyNeeds = withChecks([
+			{ name: "install", run: "npm ci", needs: [] },
+			{ name: "lint", run: "npm run lint", needs: ["install"] },
+			{ name: "test", run: "npm test", needs: ["install"] },
+			{ name: "build", run: "npm run build", needs: ["lint", "test"] },
+		]);
+		const gateEmpty = codeChecksGate(dag, emptyNeeds);
+		expect(gateEmpty.gate === "run" && gateEmpty.changed).toBeNull();
+
+		const sequentialOrder = withChecks([
+			{ name: "install", run: "npm ci" },
+			{ name: "build", run: "npm run build" },
+			{ name: "scan", run: "npm run scan" },
+		]);
+		const flippedToDag = withChecks([
+			{ name: "install", run: "npm ci", needs: [] },
+			{ name: "build", run: "npm run build" },
+			{ name: "scan", run: "npm run scan" },
+		]);
+		const gateFlipped = codeChecksGate(sequentialOrder, flippedToDag);
+		expect(gateFlipped.gate === "run" && gateFlipped.changed).toEqual({
+			added: [],
+			removed: [],
+			run: ["build", "scan"],
+		});
+	});
+
+	it("orders a trailing CODE_CHECKS_DRILL after every repository check in DAG mode and rejects invalid direct plans", () => {
+		const dag: CodeCheck[] = [
+			check("install", "npm ci"),
+			{ ...check("lint", "npm run lint"), needs: ["install"] },
+			{ ...check("test", "npm test"), needs: ["install"] },
+		];
+		expect(codeChecksPlan([...dag, CODE_CHECKS_DRILL])).toEqual([[], [0], [0], [0, 1, 2]]);
+
+		const repoNamedDrill: CodeCheck[] = [
+			check("install", "npm ci"),
+			{ ...check("qorpera-drill", "npm test"), needs: ["install"] },
+		];
+		expect(codeChecksPlan([...repoNamedDrill, CODE_CHECKS_DRILL])).toEqual([[], [0], [0, 1]]);
+
+		expect(codeChecksPlan([{ ...check("a", "x"), needs: ["missing"] }])).toBeNull();
+		expect(codeChecksPlan([{ ...check("a", "x"), needs: ["a"] }])).toBeNull();
+		expect(
+			codeChecksPlan([
+				{ ...check("a", "x"), needs: ["b"] },
+				{ ...check("b", "y"), needs: ["a"] },
+			]),
+		).toBeNull();
+		expect(
+			codeChecksPlan([
+				{ ...check("a", "x"), needs: [] },
+				{ ...check("a", "y"), needs: [] },
+			]),
+		).toBeNull();
 	});
 });
 
@@ -648,7 +846,7 @@ describe("the failed check's words", () => {
 				"",
 				"      expected 2, got 3",
 				"",
-				`${LOG} Checks that passed before it: install.${FIX}`,
+				`${LOG} Checks that passed: install.${FIX}`,
 			].join("\n"),
 		);
 	});
@@ -676,7 +874,7 @@ describe("the failed check's words", () => {
 				"",
 				"    Timed out",
 				"",
-				`Its whole output is in ~/.qorpera-checks/out/4-e2e.log on the session's machine. Checks that passed before it: install, test, build.${FIX}`,
+				`Its whole output is in ~/.qorpera-checks/out/4-e2e.log on the session's machine. Checks that passed: install, test, build.${FIX}`,
 			].join("\n"),
 		);
 	});
@@ -720,7 +918,7 @@ describe("the failed check's words", () => {
 	it("shows the names on one line too", () => {
 		const words = codeChecksFailedSummary(failedRun({ name: "a\nb" }, [{ name: "c\nd", ms: 1 }]), "fast-forward");
 		expect(words).toContain(`the check "a${FFFD}b" failed`);
-		expect(words).toContain(`Checks that passed before it: c${FFFD}d.`);
+		expect(words).toContain(`Checks that passed: c${FFFD}d.`);
 	});
 
 	it("keeps hostile output inside the indented block, one character for each it cannot show", () => {
@@ -828,7 +1026,7 @@ describe("the failed check's words", () => {
 				"",
 				"    A drill by Qorpera's operator: this check fails on purpose, once.",
 				"",
-				`Its whole output is in ~/.qorpera-checks/0000000007-0001/out/3-qorpera-drill.log on the session's machine. Checks that passed before it: install, test.${FIX}`,
+				`Its whole output is in ~/.qorpera-checks/0000000007-0001/out/3-qorpera-drill.log on the session's machine. Checks that passed: install, test.${FIX}`,
 			].join("\n"),
 		);
 		// Without it, as before, byte for byte.

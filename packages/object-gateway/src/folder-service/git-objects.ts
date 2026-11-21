@@ -1,11 +1,12 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, type StdioOptions, spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Writable } from "node:stream";
 import { finished } from "node:stream/promises";
 import { createInflate } from "node:zlib";
-import { SecretRefusal, type SecretScan, type SecretSet, UNCHECKED } from "./secret-scan.ts";
+import { CARRIES, SecretRefusal, type SecretScan, type SecretSet, UNCHECKED } from "./secret-scan.ts";
 
 /**
  * The save check of what git stores (5j-5 (a); RUNTIME-FOLDER-CODING-MACHINES.md, "Masking"). Git keeps what it is
@@ -61,6 +62,7 @@ export interface PackReading {
 	readonly git?: string;
 	/** util-linux's prlimit, which runs git under the memory limit. */
 	readonly prlimit?: string;
+	readonly folderProgram?: string | undefined;
 	/** Where each check's scratch repository is made: the unit's own /tmp, a tmpfs counted in its memory. */
 	readonly scratch?: string;
 	/** One check's whole time, git's and the scan's, from when it holds its turn. */
@@ -69,6 +71,7 @@ export interface PackReading {
 	readonly memoryBytes?: number;
 	/** Checks of packs at once on the node; the others wait their turn. */
 	readonly atOnce?: number;
+	readonly runningBytes?: number;
 	/** Checks of packs that may wait for a turn at once, and the bytes of their packs together. A check past either is
 	 * refused as not checked now (`SecretRefusal.again`), and its file is checked again at the next boundary. */
 	readonly waitingMax?: number;
@@ -84,13 +87,22 @@ export interface PackReading {
 	readonly rebuiltMax?: number;
 }
 
-const READING: Required<PackReading> = {
+type ResolvedPackReading = Omit<Required<PackReading>, "folderProgram"> & {
+	readonly folderProgram: string | undefined;
+};
+
+const NATIVE_AT_ONCE = 2;
+const SCAN_RESULT_MAX = 4096;
+
+const READING: ResolvedPackReading = {
 	git: "/usr/bin/git",
 	prlimit: "/usr/bin/prlimit",
+	folderProgram: undefined,
 	scratch: tmpdir(),
 	timeoutMs: 30 * 60 * 1000,
 	memoryBytes: 1024 ** 3,
 	atOnce: 1,
+	runningBytes: 512 * 1024 ** 2,
 	waitingMax: 8,
 	waitingBytes: 2 * 1024 ** 3,
 	packMax: 512 * 1024 ** 2,
@@ -101,12 +113,23 @@ const READING: Required<PackReading> = {
 
 /** The save check for each form: one per node, so its pack checks take turns. */
 export class SaveChecks {
-	readonly #reading: Required<PackReading>;
+	readonly #reading: ResolvedPackReading;
 	readonly #turns: Turns;
 
 	constructor(reading: PackReading = {}) {
-		this.#reading = { ...READING, ...reading };
-		this.#turns = new Turns(this.#reading.atOnce, this.#reading.waitingMax, this.#reading.waitingBytes);
+		const folderProgram = reading.folderProgram;
+		this.#reading = {
+			...READING,
+			...reading,
+			atOnce: reading.atOnce ?? (folderProgram ? NATIVE_AT_ONCE : READING.atOnce),
+			folderProgram,
+		};
+		this.#turns = new Turns(
+			this.#reading.atOnce,
+			this.#reading.runningBytes,
+			this.#reading.waitingMax,
+			this.#reading.waitingBytes,
+		);
 	}
 
 	/** The check of a file of `size` bytes stored in `form`, for `secrets`. With no values there is nothing to look for,
@@ -247,22 +270,32 @@ class LooseCheck implements ContentCheck {
 /** Turns for the node's pack checks: at most `atOnce` at a time, the rest in order, at most `waitingMax` of them with
  * at most `waitingBytes` of packs together; one past either is refused as not checked now. */
 class Turns {
-	#free: number;
+	readonly #atOnce: number;
+	readonly #runningBytes: number;
 	readonly #waitingMax: number;
 	readonly #waitingBytes: number;
 	readonly #waiting: { readonly bytes: number; readonly go: () => void }[] = [];
+	#running = 0;
+	#runningFor = 0;
 	#waitingFor = 0;
 
-	constructor(atOnce: number, waitingMax: number, waitingBytes: number) {
-		this.#free = atOnce;
+	constructor(atOnce: number, runningBytes: number, waitingMax: number, waitingBytes: number) {
+		this.#atOnce = atOnce;
+		this.#runningBytes = runningBytes;
 		this.#waitingMax = waitingMax;
 		this.#waitingBytes = waitingBytes;
 	}
 
+	#canRun(bytes: number): boolean {
+		return this.#running < this.#atOnce && (this.#running === 0 || this.#runningFor + bytes <= this.#runningBytes);
+	}
+
 	/** A turn for the check of a pack of `bytes`. */
 	async take(bytes: number): Promise<() => void> {
-		if (this.#free > 0) this.#free--;
-		else if (this.#waiting.length >= this.#waitingMax || this.#waitingFor + bytes > this.#waitingBytes)
+		if (this.#waiting.length === 0 && this.#canRun(bytes)) {
+			this.#running++;
+			this.#runningFor += bytes;
+		} else if (this.#waiting.length >= this.#waitingMax || this.#waitingFor + bytes > this.#waitingBytes)
 			throw new SecretRefusal(UNCHECKED, true);
 		else {
 			this.#waitingFor += bytes;
@@ -272,11 +305,15 @@ class Turns {
 		return () => {
 			if (given) return;
 			given = true;
-			const next = this.#waiting.shift();
-			if (next) {
+			this.#running--;
+			this.#runningFor -= bytes;
+			while (this.#waiting.length > 0 && this.#canRun((this.#waiting[0] as { readonly bytes: number }).bytes)) {
+				const next = this.#waiting.shift() as { readonly bytes: number; readonly go: () => void };
 				this.#waitingFor -= next.bytes;
+				this.#running++;
+				this.#runningFor += next.bytes;
 				next.go();
-			} else this.#free++;
+			}
 		};
 	}
 }
@@ -285,7 +322,7 @@ class Turns {
  * A pack git cannot read whole, a thin one included, one larger than the bound, or one whose objects rebuild to more
  * than the bound, is refused as not checked. */
 class PackCheck implements ContentCheck {
-	readonly #reading: Required<PackReading>;
+	readonly #reading: ResolvedPackReading;
 	readonly #turns: Turns;
 	readonly #secrets: SecretSet;
 	readonly #stored: SecretScan;
@@ -294,7 +331,7 @@ class PackCheck implements ContentCheck {
 	#run: Promise<PackRun> | undefined;
 	#fed = 0;
 
-	constructor(reading: Required<PackReading>, turns: Turns, secrets: SecretSet, size: number, sha256: boolean) {
+	constructor(reading: ResolvedPackReading, turns: Turns, secrets: SecretSet, size: number, sha256: boolean) {
 		this.#reading = reading;
 		this.#turns = turns;
 		this.#secrets = secrets;
@@ -328,13 +365,7 @@ class PackCheck implements ContentCheck {
 		if (this.#size > this.#reading.packMax) return Promise.reject(new SecretRefusal(UNCHECKED));
 		const { rebuiltFactor, rebuiltFloor, rebuiltMax } = this.#reading;
 		const rebuilt = Math.min(rebuiltMax, Math.max(rebuiltFloor, rebuiltFactor * this.#size));
-		this.#run ??= PackRun.start(
-			this.#reading,
-			this.#turns.take(this.#size),
-			this.#sha256,
-			this.#secrets.scan(rebuilt),
-			rebuilt,
-		);
+		this.#run ??= PackRun.start(this.#reading, this.#turns.take(this.#size), this.#sha256, this.#secrets, rebuilt);
 		return this.#run;
 	}
 }
@@ -363,29 +394,30 @@ interface Git {
 /** One pack's check in its turn: a scratch repository the pack is indexed into and read back from, object by object,
  * removed however the check ends. Past the time bound the run ends itself, so a check left waiting gives its turn back. */
 class PackRun {
-	readonly #reading: Required<PackReading>;
+	readonly #reading: ResolvedPackReading;
 	readonly #dir: string;
 	readonly #release: () => void;
-	readonly #scan: SecretScan;
+	readonly #secrets: SecretSet;
 	readonly #rebuilt: number;
 	readonly #timer: NodeJS.Timeout;
+	readonly #running = new Set<Git>();
 	#index: Git | undefined;
-	#running: Git | undefined;
 	/** Why the run stopped: a `SecretRefusal` if the pack could not be checked, any other error if git could not run. */
 	#failure: Error | undefined;
+	#closing = false;
 	#closed: Promise<void> | undefined;
 
 	private constructor(
-		reading: Required<PackReading>,
+		reading: ResolvedPackReading,
 		dir: string,
 		release: () => void,
-		scan: SecretScan,
+		secrets: SecretSet,
 		rebuilt: number,
 	) {
 		this.#reading = reading;
 		this.#dir = dir;
 		this.#release = release;
-		this.#scan = scan;
+		this.#secrets = secrets;
 		this.#rebuilt = rebuilt;
 		this.#timer = setTimeout(() => {
 			this.#fail(new SecretRefusal(UNCHECKED));
@@ -396,10 +428,10 @@ class PackRun {
 	/** Waits for its turn and makes the scratch repository. A failure to make it is not the pack's: it rejects with a
 	 * plain error, and the file waits. No turn while too many wait rejects as not checked now. */
 	static async start(
-		reading: Required<PackReading>,
+		reading: ResolvedPackReading,
 		turn: Promise<() => void>,
 		sha256: boolean,
-		scan: SecretScan,
+		secrets: SecretSet,
 		rebuilt: number,
 	): Promise<PackRun> {
 		const release = await turn;
@@ -407,6 +439,11 @@ class PackRun {
 		try {
 			await access(reading.git, constants.X_OK);
 			await access(reading.prlimit, constants.X_OK);
+			if (reading.folderProgram) {
+				await access(reading.folderProgram, constants.X_OK);
+				if (!(await stat(reading.folderProgram)).isFile())
+					throw new Error("folder program could not be started for the save check");
+			}
 			dir = await mkdtemp(join(reading.scratch, "qorpera-save-check-"));
 			for (const sub of ["objects/pack", "objects/info", "refs"]) await mkdir(join(dir, sub), { recursive: true });
 			await writeFile(join(dir, "HEAD"), "ref: refs/heads/main\n");
@@ -428,7 +465,7 @@ class PackRun {
 					"",
 				].join("\n"),
 			);
-			return new PackRun(reading, dir, release, scan, rebuilt);
+			return new PackRun(reading, dir, release, secrets, rebuilt);
 		} catch (error) {
 			if (dir) await rm(dir, { recursive: true, force: true });
 			release();
@@ -445,7 +482,7 @@ class PackRun {
 
 	/** The run's index-pack, started at the pack's first bytes (or at its end, for a pack of none). */
 	#indexPack(): Git {
-		this.#index ??= this.#spawn(["index-pack", "--stdin", "--threads=1"]);
+		this.#index ??= this.#spawnGit(["index-pack", "--stdin", "--threads=1"], ["pipe", "pipe", "pipe"], true);
 		return this.#index;
 	}
 
@@ -471,8 +508,20 @@ class PackRun {
 		const copy = packs.length === 1 ? await stat(join(this.#dir, "objects/pack", packs[0] as string)) : undefined;
 		if (copy?.size !== fed) throw new SecretRefusal(UNCHECKED);
 		this.#throwIfFailed();
-		const batch = new Batch(this.#scan, this.#rebuilt);
-		const cat = this.#spawn(["cat-file", "--batch-all-objects", "--batch", "--unordered"]);
+		if (this.#reading.folderProgram) {
+			await this.#scanNative(this.#reading.folderProgram);
+			return;
+		}
+		await this.#scanJs();
+	}
+
+	async #scanJs(): Promise<void> {
+		const batch = new Batch(this.#secrets.scan(this.#rebuilt), this.#rebuilt);
+		const cat = this.#spawnGit(
+			["cat-file", "--batch-all-objects", "--batch", "--unordered"],
+			["pipe", "pipe", "pipe"],
+			true,
+		);
 		cat.child.stdin?.end();
 		cat.child.stdout?.on("data", (chunk: Buffer) => {
 			if (this.#failure) return;
@@ -487,16 +536,96 @@ class PackRun {
 		if (read !== 0 || !batch.whole) throw new SecretRefusal(UNCHECKED);
 	}
 
+	async #scanNative(folderProgram: string): Promise<void> {
+		const cat = this.#spawnGit(
+			["cat-file", "--batch-all-objects", "--batch", "--unordered"],
+			["ignore", "pipe", "pipe"],
+			false,
+		);
+		const catStdout = cat.child.stdout;
+		if (!catStdout) {
+			kill(cat);
+			await cat.closed;
+			throw new Error("git stdout pipe was unavailable for the save check");
+		}
+		catStdout.on("error", () => undefined);
+		let scanner: Git;
+		try {
+			scanner = this.#spawnProgram(
+				folderProgram,
+				["scan-pack", "--spec-fd", "3"],
+				{ PATH: "/usr/local/bin:/usr/bin:/bin", LC_ALL: "C" },
+				[catStdout, "pipe", "pipe", "pipe"],
+				"folder program could not be started for the save check",
+				false,
+			);
+		} catch (error) {
+			catStdout.destroy();
+			kill(cat);
+			await cat.closed;
+			throw error;
+		}
+		catStdout.destroy();
+		const chunks: Buffer[] = [];
+		let stdoutBytes = 0;
+		let overflow = false;
+		scanner.child.stdout?.on("data", (chunk: Buffer) => {
+			stdoutBytes += chunk.length;
+			if (stdoutBytes > SCAN_RESULT_MAX) {
+				overflow = true;
+				this.#fail(new SecretRefusal(UNCHECKED));
+				return;
+			}
+			chunks.push(chunk);
+		});
+		const specStream = scanner.child.stdio[3] as Writable | null;
+		if (!specStream) {
+			this.#fail(new Error("folder program spec pipe was unavailable for the save check"));
+		} else {
+			specStream.on("error", () => undefined);
+			specStream.end(JSON.stringify({ ...this.#secrets.toSpec(), rebuiltMax: this.#rebuilt }));
+		}
+		const scanned = await scanner.closed;
+		if (this.#failure) {
+			kill(cat);
+			await cat.closed;
+			throw this.#failure;
+		}
+		if (scanned === 1 || scanned === 2 || scanned === 126 || scanned === 127) {
+			kill(cat);
+			await cat.closed;
+			throw new Error("folder program could not run scan-pack for the save check");
+		}
+		if (scanned !== 0 || overflow) {
+			kill(cat);
+			await cat.closed;
+			throw new SecretRefusal(UNCHECKED);
+		}
+		const result = parseScanResult(Buffer.concat(chunks).toString("utf8"));
+		if (result === "secret") {
+			kill(cat);
+			await cat.closed;
+			throw new SecretRefusal(CARRIES);
+		}
+		if (result !== "clean") {
+			kill(cat);
+			await cat.closed;
+			throw new SecretRefusal(UNCHECKED);
+		}
+		const read = await cat.closed;
+		this.#throwIfFailed();
+		if (read !== 0) throw new SecretRefusal(UNCHECKED);
+	}
+
 	/** Stops what still runs, removes the scratch repository and gives the turn back; once, whatever came before. */
 	close(): Promise<void> {
 		this.#closed ??= (async () => {
+			this.#closing = true;
 			clearTimeout(this.#timer);
 			try {
-				const running = this.#running;
-				if (running) {
-					kill(running);
-					await running.closed;
-				}
+				const running = [...this.#running];
+				for (const proc of running) kill(proc);
+				await Promise.all(running.map((proc) => proc.closed));
 				await rm(this.#dir, { recursive: true, force: true });
 			} finally {
 				this.#release();
@@ -505,46 +634,80 @@ class PackRun {
 		return this.#closed;
 	}
 
-	#spawn(args: readonly string[]): Git {
-		// Its own process group, so a kill takes all of it.
-		const child = spawn(
-			this.#reading.prlimit,
-			[`--as=${this.#reading.memoryBytes}`, "--", this.#reading.git, ...args],
-			{
-				cwd: this.#dir,
-				env: gitEnv(this.#dir),
-				stdio: ["pipe", "pipe", "pipe"],
-				detached: true,
-			},
+	#spawnGit(args: readonly string[], stdio: StdioOptions, resumeStdout: boolean): Git {
+		return this.#spawnProgram(
+			this.#reading.git,
+			args,
+			gitEnv(this.#dir),
+			stdio,
+			"git could not be started for the save check",
+			resumeStdout,
 		);
+	}
+
+	#spawnProgram(
+		program: string,
+		args: readonly string[],
+		env: NodeJS.ProcessEnv,
+		stdio: StdioOptions,
+		startError: string,
+		resumeStdout: boolean,
+	): Git {
+		// Its own process group, so a kill takes all of it.
+		const child = spawn(this.#reading.prlimit, [`--as=${this.#reading.memoryBytes}`, "--", program, ...args], {
+			cwd: this.#dir,
+			env,
+			stdio,
+			detached: true,
+		});
 		// What git says is never logged: it may name what the pack holds.
 		child.stderr?.resume();
-		child.stdout?.resume();
+		if (resumeStdout) child.stdout?.resume();
 		// A pipe that breaks under a running git is the pack's (git stopped reading it); one that never ran is not.
 		child.stdin?.on("error", () => {
 			if (child.pid !== undefined) this.#fail(new SecretRefusal(UNCHECKED));
 		});
 		const closed = new Promise<number | null>((resolve) => {
 			child.once("error", () => {
-				this.#fail(new Error("git could not be started for the save check"));
+				this.#fail(new Error(startError));
 				resolve(null);
 			});
 			child.once("close", (code) => resolve(code));
 		});
-		const git = { child, closed };
-		this.#running = git;
-		if (this.#failure) kill(git);
-		return git;
+		const proc: Git = { child, closed };
+		this.#running.add(proc);
+		void closed.finally(() => this.#running.delete(proc));
+		if (this.#failure || this.#closing) kill(proc);
+		return proc;
 	}
 
 	#fail(failure: Error): void {
 		this.#failure ??= failure;
-		if (this.#running) kill(this.#running);
+		for (const proc of this.#running) kill(proc);
 	}
 
 	#throwIfFailed(): void {
 		if (this.#failure) throw this.#failure;
 	}
+}
+
+function parseScanResult(text: string): "clean" | "secret" | "unchecked" {
+	const trimmed = text.trim();
+	if (!trimmed || trimmed.includes("\n")) return "unchecked";
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(trimmed);
+	} catch {
+		return "unchecked";
+	}
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return "unchecked";
+	const status = (parsed as Record<string, unknown>).status;
+	if (status === "secret") return "secret";
+	if (status === "clean") {
+		const rebuilt = (parsed as Record<string, unknown>).rebuilt;
+		if (typeof rebuilt === "number" && Number.isSafeInteger(rebuilt) && rebuilt >= 0) return "clean";
+	}
+	return "unchecked";
 }
 
 /** Kills a git process's group while git itself has not exited (its group id is free for reuse after). */

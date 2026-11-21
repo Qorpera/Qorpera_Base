@@ -23,6 +23,8 @@ import { createFolderServer } from "../src/folder-service/server.ts";
 import { type DataHandle, FolderService, type ViewHandle } from "../src/folder-service/service.ts";
 import { FolderStaging } from "../src/folder-service/staging.ts";
 import {
+	ALLOCATION,
+	CODE_HOST,
 	CODING,
 	CODING_MACHINE_ID,
 	codingGrants,
@@ -245,8 +247,14 @@ describe("the data role", () => {
 		cleanups.push(() => rm(root, { recursive: true, force: true }));
 		const core = new FakeCore();
 		core.seed([folder("data")]);
-		const codingView = "c0de0000-0001-4a00-8b00-000000000001";
-		core.openView(codingView, PASS, { kind: "coding_session", codingMachineId: CODING_MACHINE_ID });
+		const codeHostView = "c0de0000-0001-4a00-8b00-000000000001";
+		const runBoxView = "c0de0000-0002-4a00-8b00-000000000002";
+		const desktopView = "c0de0000-0003-4a00-8b00-000000000003";
+		const commandView = "c0de0000-0004-4a00-8b00-000000000004";
+		core.openView(codeHostView, PASS, { kind: "code_host" });
+		core.openView(runBoxView, PASS, { kind: "run_box" });
+		core.openView(desktopView, PASS, { kind: "computer_desktop", machineId: ALLOCATION });
+		core.openView(commandView, PASS, { kind: "computer_shell_command", machineId: ALLOCATION });
 		const service = new FolderService({
 			core,
 			objects: new NasObjects({ root, cacheBytes: 1024 * 1024 }),
@@ -255,15 +263,151 @@ describe("the data role", () => {
 			dataDoor: new FakeDoor(),
 		});
 		cleanups.push(() => service.stop());
-		const bridge: BridgeInfo = { cid: 91, lookup: "found", machine: CODING };
-		const hello: Hello = { ...HELLO, viewId: codingView };
-		const handle = await service.open({ ...hello, protocol: 4, role: "io" }, bridge);
-		cleanups.push(() => handle.release());
-		expect(() => service.data(hello, bridge)).toThrow(/did not match/);
+		const cases: [string, BridgeInfo][] = [
+			[codeHostView, { cid: 92, lookup: "found", machine: CODE_HOST }],
+			[runBoxView, { cid: 77, lookup: "found", machine: EXEC_HOST }],
+			[desktopView, { cid: 90, lookup: "found", machine: OFFICE }],
+			[commandView, { cid: 90, lookup: "found", machine: OFFICE }],
+		];
+		for (const [viewId, bridge] of cases) {
+			const hello: Hello = { ...HELLO, viewId };
+			const handle = await service.open({ ...hello, protocol: 4, role: "io" }, bridge);
+			cleanups.push(() => handle.release());
+			expect(() => service.data(hello, bridge)).toThrow(/did not match/);
+		}
 
 		const without = await company({ door: false });
 		expect(() => without.service.data(HELLO, AT_TEST)).toThrow(/does not reach the company's databases/);
 		expect(() => without.service.data({ ...HELLO, pass: OTHER_PASS }, AT_TEST)).toThrow(/did not match/);
+	});
+
+	it("serves coding_session views from their CID-authenticated coding machine, records provenance, and enforces per-machine limits", async () => {
+		let now = 1_700_000_000_000;
+		const root = await mkdtemp(join(tmpdir(), "qorpera-folder-data-coding-"));
+		cleanups.push(() => rm(root, { recursive: true, force: true }));
+		const core = new FakeCore();
+		core.now = () => now;
+		core.receipts = receiptOf;
+		core.seed([
+			folder("data"),
+			folder("data/shop"),
+			await storeFile(root, "data/shop/database.toml", 'format = "qorpera.database/v1"\n', 2),
+			folder("data/shop/tables"),
+			await storeFile(root, "data/shop/tables/001-orders.sql", "create table orders (id int);\n", 3),
+			folder("data/shop/queries"),
+			await storeFile(root, "data/shop/queries/count.sql", "select count(*) from orders;\n", 4),
+			folder("data/shop/actions"),
+			await storeFile(root, "data/shop/actions/add.sql", "insert into orders values (:id);\n", 7),
+		]);
+		const viewOne = "c0de0000-1001-4a00-8b00-000000000001";
+		const viewTwo = "c0de0000-1002-4a00-8b00-000000000002";
+		core.openView(viewOne, PASS, { kind: "coding_session", codingMachineId: CODING_MACHINE_ID });
+		core.openView(viewTwo, OTHER_PASS, { kind: "coding_session", codingMachineId: CODING_MACHINE_ID });
+		const door = new FakeDoor();
+		const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
+		const service = new FolderService({
+			core,
+			objects,
+			grants: codingGrants(),
+			staging: new FolderStaging(core, new FakeUploads(root, core), objects),
+			log: () => undefined,
+			now: () => now,
+			dataDoor: door,
+		});
+		cleanups.push(() => service.stop());
+		const at = (machine: BridgeInfo["machine"], cid: number): BridgeInfo => ({ cid, lookup: "found", machine });
+		const atCoding = at(CODING, 91);
+		const otherCoding = at({ ...CODING, name: `qorpera-coding-machine-${"f".repeat(32)}` }, 98);
+		const helloOne: Hello = { ...HELLO, viewId: viewOne, pass: PASS };
+		const helloTwo: Hello = { ...HELLO, viewId: viewTwo, pass: OTHER_PASS };
+
+		expect(() => service.data(helloOne, atCoding)).toThrow(/did not match/);
+		const h1 = await service.open({ ...helloOne, protocol: 4, role: "io" }, atCoding);
+		const h2 = await service.open({ ...helloTwo, protocol: 4, role: "io" }, atCoding);
+		cleanups.push(
+			() => h1.release(),
+			() => h2.release(),
+		);
+		for (const bridge of [otherCoding, at(TEST_MACHINE, 95), at(OFFICE, 90), at(CODE_HOST, 92), at(EXEC_HOST, 77)])
+			expect(() => service.data(helloOne, bridge)).toThrow(/did not match/);
+		expect(() => service.data({ ...helloOne, pass: OTHER_PASS }, atCoding)).toThrow(/did not match/);
+		expect(() => service.data({ ...helloOne, environmentId: v(9) }, atCoding)).toThrow(/did not match/);
+
+		const dataOne = service.data(helloOne, atCoding);
+		const dataTwo = service.data(helloTwo, atCoding);
+		door.answer = () => json(200, { columns: ["count"], rows: [[4]], more: false });
+		expect(await dataOne.call({ verb: "query", body: { database: "shop", question: "count" } }, never)).toEqual({
+			status: 200,
+			value: { columns: ["count"], rows: [[4]], more: false },
+		});
+		expect(
+			await dataTwo.call({ verb: "change", body: { database: "shop", change: "add", params: { id: 1 } } }, never),
+		).toMatchObject({
+			status: 200,
+		});
+		expect(await dataOne.call({ verb: "apply", body: { database: "shop" } }, never)).toMatchObject({ status: 200 });
+		expect(core.releases).toEqual([]);
+		expect(await service.boundary(CODING_MACHINE_ID)).toMatchObject({ reads: "released" });
+		const machineReads = Object.fromEntries(
+			[...(core.readSets.get(`machine:${CODING_MACHINE_ID}`) ?? new Map())].map(([path, read]) => [
+				path,
+				{ version: read.version, authority: read.authority },
+			]),
+		);
+		expect(machineReads).toEqual({
+			[SHOP_TOML]: readOf(SHOP_TOML, 2),
+			"data/shop/tables/001-orders.sql": readOf("data/shop/tables/001-orders.sql", 3),
+			"data/shop/queries/count.sql": readOf("data/shop/queries/count.sql", 4),
+			"data/shop/actions/add.sql": readOf("data/shop/actions/add.sql", 7),
+		});
+
+		const gates = [held(), held(), held(), held()];
+		let gateIndex = 0;
+		door.answer = (verb, body, signal) => gates[gateIndex++]!.answer(verb, body, signal);
+		const inFlight = [
+			dataOne.call({ verb: "describe", body: { database: "shop" } }, never),
+			dataOne.call({ verb: "describe", body: { database: "shop" } }, never),
+			dataTwo.call({ verb: "describe", body: { database: "shop" } }, never),
+			dataTwo.call({ verb: "describe", body: { database: "shop" } }, never),
+		];
+		await Promise.all(gates.map((g) => g.reached));
+		expect(await dataTwo.call({ verb: "describe", body: { database: "shop" } }, never)).toMatchObject({
+			status: 429,
+		});
+		for (const g of gates) g.release();
+		await Promise.all(inFlight);
+
+		door.answer = () => json(200, { ok: true });
+		for (let i = 0; i < 113; i++)
+			expect(await dataOne.call({ verb: "describe", body: { database: "shop" } }, never)).toMatchObject({
+				status: 200,
+			});
+		expect(await dataTwo.call({ verb: "describe", body: { database: "shop" } }, never)).toMatchObject({
+			status: 429,
+		});
+		now += 60_000;
+		expect(await dataTwo.call({ verb: "describe", body: { database: "shop" } }, never)).toMatchObject({
+			status: 200,
+		});
+
+		core.views.get(viewOne)!.state = "closed";
+		await service.renewLeases();
+		expect(() => service.data(helloOne, atCoding)).toThrow(/did not match/);
+		await expect(dataOne.call({ verb: "describe", body: {} }, never)).rejects.toMatchObject({ code: "VIEW_REFUSED" });
+
+		const viewThree = "c0de0000-1003-4a00-8b00-000000000003";
+		core.openView(viewThree, PASS, { kind: "coding_session", codingMachineId: CODING_MACHINE_ID });
+		const helloThree: Hello = { ...HELLO, viewId: viewThree, pass: PASS };
+		const withoutDoor = new FolderService({
+			core,
+			objects,
+			grants: codingGrants(),
+			log: () => undefined,
+		});
+		cleanups.push(() => withoutDoor.stop());
+		const h3 = await withoutDoor.open({ ...helloThree, protocol: 4, role: "io" }, atCoding);
+		cleanups.push(() => h3.release());
+		expect(() => withoutDoor.data(helloThree, atCoding)).toThrow(/does not reach the company's databases/);
 	});
 
 	it("asks a pass as the view, sends the call with it, and gives the gateway's answer", async () => {
