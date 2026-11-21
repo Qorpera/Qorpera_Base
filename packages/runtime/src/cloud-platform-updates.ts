@@ -251,6 +251,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Repository status and pre-flight checks",
 		text: "Before dispatching parallel coding sessions on a Qorpera repository, call manage_code with action status to inspect its live state in one step: active or blocked coding sessions across the team, active worktrees, recent landed changes, and its checks setup. Inside coding sessions, agents can also run the repository checks pre-flight before handing in, receiving structured pass or fail results per check without landing unfinished work.",
 	},
+	{
+		id: "search-regex",
+		kind: "capability",
+		date: "2026-11-21",
+		title: "Regular expressions in company search",
+		text: "company_search now supports regular expression patterns (set regex to true) across text files and file names, backed by a linear-time search engine and content-addressed trigram index on each node. Use patterns for alternation, character classes, line anchors and word boundaries instead of repeating literal searches, and keep combining them with glob filters, surrounding context lines and file-count summaries.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;
