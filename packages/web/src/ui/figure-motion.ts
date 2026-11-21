@@ -122,6 +122,7 @@ interface Clock {
 }
 const clocks = new Map<string, Clock>();
 const live = new Set<LiveMotion>();
+const byHost = new Map<Element, LiveMotion>();
 let frame = 0;
 let last = 0;
 let due = 0;
@@ -984,10 +985,14 @@ function moving(entry: LiveMotion, now = performance.now()): boolean {
 function schedule(): void {
 	if (frame || document.hidden) return;
 	const now = performance.now();
-	if ([...live].some((entry) => entry.ready && entry.visible && moving(entry, now))) {
-		last = due = now;
-		frame = requestAnimationFrame(tick);
-	} else rest();
+	for (const entry of live) {
+		if (entry.ready && entry.visible && entry.host.isConnected && moving(entry, now)) {
+			last = due = now;
+			frame = requestAnimationFrame(tick);
+			return;
+		}
+	}
+	rest();
 }
 /** Nothing moves: wake for the next idle figure's move. */
 function rest(): void {
@@ -996,7 +1001,14 @@ function rest(): void {
 	if (document.hidden || media?.matches) return;
 	let soonest = Number.POSITIVE_INFINITY;
 	for (const entry of live)
-		if (entry.ready && entry.visible && !entry.still && entry.clock.next && !entry.clock.idle)
+		if (
+			entry.ready &&
+			entry.visible &&
+			entry.host.isConnected &&
+			!entry.still &&
+			entry.clock.next &&
+			!entry.clock.idle
+		)
 			soonest = Math.min(soonest, entry.clock.next.at);
 	if (soonest === Number.POSITIVE_INFINITY) return;
 	wake = window.setTimeout(
@@ -1064,8 +1076,14 @@ function tick(now: number): void {
 		}
 		paint(entry);
 	}
-	if ([...live].some((entry) => entry.ready && entry.visible && moving(entry, now)))
-		frame = requestAnimationFrame(tick);
+	let more = false;
+	for (const entry of live) {
+		if (shown(entry) && moving(entry, now)) {
+			more = true;
+			break;
+		}
+	}
+	if (more) frame = requestAnimationFrame(tick);
 	else rest();
 }
 
@@ -1126,6 +1144,7 @@ export function mountFigureMotion(
 		posed: "",
 	};
 	live.add(entry);
+	byHost.set(host, entry);
 	if (!lifetime) {
 		lifetime = new AbortController();
 		media = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -1173,26 +1192,26 @@ export function mountFigureMotion(
 			{ signal: lifetime.signal },
 		);
 		visibility = new IntersectionObserver((records) => {
-			for (const record of records)
-				for (const item of live)
-					if (item.host === record.target) {
-						// Back in view: what went off around the agent's other views while it was away stays missed.
-						if (record.isIntersecting && !item.visible) item.cued = item.clock.elapsed;
-						item.visible = record.isIntersecting;
-						item.observed = true;
-						if (item.ready && item.visible) paint(item);
-					}
+			for (const record of records) {
+				const item = byHost.get(record.target);
+				if (!item) continue;
+				// Back in view: what went off around the agent's other views while it was away stays missed.
+				if (record.isIntersecting && !item.visible) item.cued = item.clock.elapsed;
+				item.visible = record.isIntersecting;
+				item.observed = true;
+				if (item.ready && item.visible) paint(item);
+			}
 			schedule();
 		});
 		sizes = new ResizeObserver((records) => {
-			for (const record of records)
-				for (const item of live)
-					if (item.host === record.target) {
-						item.side = record.contentRect.width * 1.12;
-						// Also before the first visibility report: a figure drawn at once is redrawn at its own size
-						// before the browser shows it (this observer reports before the paint, that one after).
-						if (item.ready && (item.visible || !item.observed)) paint(item);
-					}
+			for (const record of records) {
+				const item = byHost.get(record.target);
+				if (!item) continue;
+				item.side = record.contentRect.width * 1.12;
+				// Also before the first visibility report: a figure drawn at once is redrawn at its own size
+				// before the browser shows it (this observer reports before the paint, that one after).
+				if (item.ready && (item.visible || !item.observed)) paint(item);
+			}
 		});
 	}
 	visibility!.observe(host);
@@ -1255,6 +1274,7 @@ export function mountFigureMotion(
 	return {
 		dispose() {
 			if (!live.delete(entry)) return;
+			byHost.delete(host);
 			visibility?.unobserve(host);
 			sizes?.unobserve(host);
 			if (--clock.users === 0) clocks.delete(clockKey);

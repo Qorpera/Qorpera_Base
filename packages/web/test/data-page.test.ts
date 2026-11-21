@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { getEventListeners } from "node:events";
 import type {
 	CloudMemberDataDescription,
 	CloudMemberDataEdit,
@@ -11,7 +12,7 @@ import { CompanyController } from "../src/app/company.ts";
 import { CompanyDatabases, type CompanyDataCalls } from "../src/app/company-data.ts";
 import type { InterfacePagesState } from "../src/app/interface-pages.ts";
 import { companyInterfaces, hiddenInterfaces } from "../src/app/interfaces.ts";
-import { columnKind, humanName, refusalWords, renderData, shownValue } from "../src/app/views/data.ts";
+import { columnKind, disposeData, humanName, refusalWords, renderData, shownValue } from "../src/app/views/data.ts";
 import { renderInterface } from "../src/app/views/interface.ts";
 import { fileKey, parseMemberAppLayout } from "../src/cloud/app-groups.ts";
 import { parseInterfacePages } from "../src/cloud/interface-pages.ts";
@@ -354,6 +355,16 @@ describe("the list (app/views/data.ts)", () => {
 		expect(hidden.container.querySelector(".data-empty p")?.textContent).toBe(
 			"Only those who may change this database see its tables.",
 		);
+	});
+
+	it("aborts active table watches and detaches abort listeners when disposed", async () => {
+		const { container, calls, controller } = await open(describedWith());
+		const watchSignal = calls.watchTables.mock.calls[0]?.[1] as AbortSignal;
+		expect(watchSignal.aborted).toBe(false);
+		const listenersBefore = getEventListeners(controller.signal, "abort").length;
+		disposeData(container);
+		expect(watchSignal.aborted).toBe(true);
+		expect(getEventListeners(controller.signal, "abort").length).toBeLessThan(listenersBefore);
 	});
 });
 

@@ -101,4 +101,22 @@ describe("the browser's bar takes the page's top-left colour", () => {
 		layer("rgb(2, 2, 2)").style.opacity = "0";
 		expect(topLeftColor()).toBe("rgb(255, 255, 255)");
 	});
+
+	it("ignores class and hidden mutations inside main so chat scrolling does not re-measure layout", async () => {
+		const rail = layer("rgb(233, 231, 230)");
+		const main = document.createElement("main");
+		const message = document.createElement("div");
+		main.append(message);
+		document.body.append(main);
+		stop = watchBrowserBar(document.body);
+		const rafSpy = vi.spyOn(globalThis, "requestAnimationFrame");
+		message.classList.add("is-hovered");
+		message.hidden = true;
+		await settle();
+		expect(rafSpy).not.toHaveBeenCalled();
+		rail.hidden = true;
+		await settle();
+		expect(rafSpy).toHaveBeenCalled();
+		expect(bar()).toBe("rgb(250, 250, 250)");
+	});
 });

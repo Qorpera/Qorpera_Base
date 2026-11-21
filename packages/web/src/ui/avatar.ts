@@ -190,18 +190,28 @@ interface LiveFigure {
 	rig: FigureMotion;
 }
 const live = new Set<LiveFigure>();
+const liveByHost = new Map<Element, LiveFigure>();
 let observer: MutationObserver | undefined;
+let sweepQueued = false;
 
 function sweep(): void {
+	sweepQueued = false;
 	for (const entry of live) {
 		if (entry.host.isConnected) continue;
 		entry.rig.dispose();
 		live.delete(entry);
+		liveByHost.delete(entry.host);
 	}
 	if (!live.size) {
 		observer?.disconnect();
 		observer = undefined;
 	}
+}
+
+function scheduleSweep(): void {
+	if (sweepQueued) return;
+	sweepQueued = true;
+	queueMicrotask(sweep);
 }
 
 export interface FigureOptions {
@@ -224,7 +234,7 @@ export interface FigureOptions {
  * any other element, or for a member who wants no motion. */
 export function playFigure(host: Element | null | undefined, kind: Moment): void {
 	if (!host) return;
-	for (const entry of live) if (entry.host === host) entry.rig.play(kind);
+	liveByHost.get(host)?.rig.play(kind);
 }
 
 /** One built figure, ready to place. Returns an empty span when the vendored
@@ -250,14 +260,16 @@ export function figureElement(figure: FigureId, color?: string, options: FigureO
 		},
 		options,
 	);
-	live.add({ host, rig });
+	const entry: LiveFigure = { host, rig };
+	live.add(entry);
+	liveByHost.set(host, entry);
 	// Views insert their newly built figures synchronously. Sweep after the
 	// DOM commit, never halfway through constructing another view.
 	if (!observer) {
-		observer = new MutationObserver(sweep);
+		observer = new MutationObserver(scheduleSweep);
 		observer.observe(document.documentElement, { childList: true, subtree: true });
 	}
-	queueMicrotask(sweep);
+	scheduleSweep();
 	return host;
 }
 
