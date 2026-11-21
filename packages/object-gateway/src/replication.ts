@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { ObjectDependencyError } from "./dependency.ts";
 import type { ObjectGatewayJournal } from "./journal.ts";
+import { createSerialGate, type MaintenanceGate } from "./maintenance.ts";
 import type { LegacyObjectMigrationItem } from "./migration.ts";
 import type { FileSystemObjectStore, ObjectWriteResult } from "./object-store.ts";
 import type { ObjectGatewayAuthority } from "./supabase-authority.ts";
@@ -88,17 +89,22 @@ export class ObjectGatewayReplication {
 	readonly #pendingAudit: AuditWaiter[] = [];
 	#auditInFlight = false;
 	readonly #deletedKeys = new Set<string>();
+	readonly #keyVersions = new Map<string, number>();
+	#mutationEpoch = 0;
+	readonly #nasGate: MaintenanceGate;
 
 	constructor(
 		journal: ObjectGatewayJournal,
 		store: FileSystemObjectStore,
 		authority: ObjectReplicationAuthority,
 		maxStoredLines = MAX_STORED_LINES,
+		nasGate: MaintenanceGate = createSerialGate(),
 	) {
 		this.#journal = journal;
 		this.#store = store;
 		this.#authority = authority;
 		this.#maxStoredLines = maxStoredLines;
+		this.#nasGate = nasGate;
 	}
 
 	/** Callbacks belong to the trusted gateway, never to a request body. */
@@ -122,7 +128,7 @@ export class ObjectGatewayReplication {
 			const prior = await this.#journal.read(key(object));
 			if (prior !== undefined && pendingObject(prior, key(object)).state === "delete")
 				throw new ObjectDependencyError(409);
-			this.#deletedKeys.delete(key(object));
+			this.#invalidateDeleted(key(object));
 			await this.#journal.write(key(object), { ...object, state: "unconfirmed" });
 			const result = await this.#store.put(profileId, sha256, bytes);
 			await authority.confirm();
@@ -197,7 +203,7 @@ export class ObjectGatewayReplication {
 		const name = key(object);
 		const prior = await this.#journal.read(name);
 		if (prior !== undefined && ["delete", "deleted"].includes(pendingObject(prior, name).state)) return;
-		this.#deletedKeys.delete(name);
+		this.#invalidateDeleted(name);
 		await this.#journal.write(name, { ...object, state: "replicate" });
 	}
 
@@ -207,7 +213,7 @@ export class ObjectGatewayReplication {
 		const name = key({ profileId, sha256, bytes: 0 });
 		const prior = await this.#journal.read(name);
 		if (prior === undefined || ["delete", "deleted"].includes(pendingObject(prior, name).state)) return;
-		this.#deletedKeys.delete(name);
+		this.#invalidateDeleted(name);
 		await this.#journal.remove(name);
 	}
 
@@ -256,7 +262,7 @@ export class ObjectGatewayReplication {
 	 * with no time, forgets it. */
 	async markMissingLocked(object: LegacyObjectMigrationItem, since?: string): Promise<void> {
 		const name = key(object);
-		this.#deletedKeys.delete(name);
+		this.#invalidateDeleted(name);
 		await this.#journal.write(name, {
 			profileId: object.profileId,
 			sha256: object.sha256,
@@ -274,17 +280,30 @@ export class ObjectGatewayReplication {
 		const object: PendingObject = { profileId, sha256, bytes, state: "delete", authorizationId };
 		const name = key(object);
 		await this.#journal.exclusive(name, async () => {
-			this.#deletedKeys.delete(name);
+			this.#invalidateDeleted(name);
 			await this.#journal.write(name, object);
 			await this.#delete(object);
 		});
 	}
 
+	#invalidateDeleted(name: string): void {
+		this.#deletedKeys.delete(name);
+		this.#keyVersions.set(name, ++this.#mutationEpoch);
+	}
+
+	#rememberDeletedIfUnchanged(name: string, versionBeforeRead: number | undefined): void {
+		// WHY: Reject stale unlocked reads that raced with an upload or revive invalidating the same key.
+		if (this.#keyVersions.get(name) === versionBeforeRead) this.#deletedKeys.add(name);
+	}
+
 	#pruneDeletedCache(names: readonly string[]): void {
-		if (this.#deletedKeys.size === 0) return;
+		if (this.#deletedKeys.size === 0 && this.#keyVersions.size === 0) return;
 		const present = new Set(names);
 		for (const cached of this.#deletedKeys) {
 			if (!present.has(cached)) this.#deletedKeys.delete(cached);
+		}
+		for (const key of this.#keyVersions.keys()) {
+			if (!present.has(key)) this.#keyVersions.delete(key);
 		}
 	}
 
@@ -298,10 +317,11 @@ export class ObjectGatewayReplication {
 		const worker = async (): Promise<void> => {
 			while (cursor < toRead.length) {
 				const name = toRead[cursor++]!;
+				const version = this.#keyVersions.get(name);
 				const stored = await this.#journal.read(name);
 				if (stored === undefined) continue;
 				const entry = pendingObject(stored, name);
-				if (entry.state === "deleted") this.#deletedKeys.add(name);
+				if (entry.state === "deleted") this.#rememberDeletedIfUnchanged(name, version);
 				else if (entry.state === "blocked") blocked++;
 				else pending++;
 			}
@@ -337,6 +357,7 @@ export class ObjectGatewayReplication {
 			const selected: string[] = [];
 			for (let offset = 0; offset < candidates.length && selected.length < limit; offset += STATUS_CONCURRENCY) {
 				const slice = candidates.slice(offset, offset + STATUS_CONCURRENCY);
+				const versions = slice.map((name) => this.#keyVersions.get(name));
 				const records = await Promise.all(slice.map((name) => this.#journal.read(name)));
 				for (let i = 0; i < slice.length && selected.length < limit; i++) {
 					const name = slice[i]!;
@@ -344,7 +365,7 @@ export class ObjectGatewayReplication {
 					if (stored === undefined) continue;
 					const initial = pendingObject(stored, name);
 					if (initial.state === "deleted") {
-						this.#deletedKeys.add(name);
+						this.#rememberDeletedIfUnchanged(name, versions[i]);
 						continue;
 					}
 					if (initial.state === "blocked") continue;
@@ -353,64 +374,78 @@ export class ObjectGatewayReplication {
 			}
 			this.#pendingCursor = selected.length >= limit ? selected.at(-1) : undefined;
 			let pendingIndex = 0;
+			let pendingAborted = false;
 			const pendingWorker = async (): Promise<void> => {
-				while (pendingIndex < selected.length) {
+				while (!pendingAborted && pendingIndex < selected.length) {
 					const name = selected[pendingIndex++]!;
-					await this.#journal.exclusive(name, async () => {
-						const stored = await this.#journal.read(name);
-						if (stored === undefined) return;
-						const object = pendingObject(stored, name);
-						try {
-							if (object.state === "delete") await this.#delete(object);
-							else if (object.state !== "blocked" && object.state !== "deleted") await this.#replicate(object);
-						} catch (error) {
-							this.#lastError = true;
-							if (error instanceof ObjectDependencyError && !error.unavailable && object.state !== "delete") {
-								this.#deletedKeys.delete(name);
-								await this.#journal.write(name, { ...object, state: "blocked" });
-								await this.audit({
-									event: "replication_blocked",
-									at: new Date().toISOString(),
-									profileId: object.profileId,
-									sha256: object.sha256,
-								});
+					try {
+						await this.#journal.exclusive(name, async () => {
+							const stored = await this.#journal.read(name);
+							if (stored === undefined) return;
+							const object = pendingObject(stored, name);
+							try {
+								if (object.state === "delete") await this.#delete(object);
+								else if (object.state !== "blocked" && object.state !== "deleted")
+									await this.#replicate(object);
+							} catch (error) {
+								this.#lastError = true;
+								if (error instanceof ObjectDependencyError && !error.unavailable && object.state !== "delete") {
+									this.#invalidateDeleted(name);
+									await this.#journal.write(name, { ...object, state: "blocked" });
+									await this.audit({
+										event: "replication_blocked",
+										at: new Date().toISOString(),
+										profileId: object.profileId,
+										sha256: object.sha256,
+									});
+								}
 							}
-						}
-					});
+						});
+					} catch {
+						pendingAborted = true;
+						this.#lastError = true;
+					}
 				}
 			};
-			await Promise.all(
+			await Promise.allSettled(
 				Array.from({ length: Math.min(RECONCILE_CONCURRENCY, selected.length) }, () => pendingWorker()),
 			);
+			if (pendingAborted) return;
 			// The durable catalog discovers Supabase-first writes even if a client died before mirroring.
 			const discovered = await this.#authority.listLegacyObjects(this.#scanCursor, limit);
 			let discoveredIndex = 0;
+			let discoveredAborted = false;
 			const discoveredWorker = async (): Promise<void> => {
-				while (discoveredIndex < discovered.length) {
+				while (!discoveredAborted && discoveredIndex < discovered.length) {
 					const object = discovered[discoveredIndex++]!;
 					const name = key(object);
-					await this.#journal.exclusive(name, async () => {
-						const prior = await this.#journal.read(name);
-						if (prior !== undefined) {
-							if (!["deleted", "blocked"].includes(pendingObject(prior, name).state)) return;
-							// A new, currently authorized upload of the same immutable hash
-							// must not be stranded behind an older cleanup tombstone.
-							await this.#authority.authorizeReplication(object.profileId, object.sha256, object.bytes);
-						}
-						this.#deletedKeys.delete(name);
-						await this.#journal.write(name, { ...object, state: "unconfirmed" });
-						try {
-							await this.#replicate({ ...object, state: "unconfirmed" });
-						} catch {
-							this.#lastError = true;
-						}
-					});
+					try {
+						await this.#journal.exclusive(name, async () => {
+							const prior = await this.#journal.read(name);
+							if (prior !== undefined) {
+								if (!["deleted", "blocked"].includes(pendingObject(prior, name).state)) return;
+								// A new, currently authorized upload of the same immutable hash
+								// must not be stranded behind an older cleanup tombstone.
+								await this.#authority.authorizeReplication(object.profileId, object.sha256, object.bytes);
+							}
+							this.#invalidateDeleted(name);
+							await this.#journal.write(name, { ...object, state: "unconfirmed" });
+							try {
+								await this.#replicate({ ...object, state: "unconfirmed" });
+							} catch {
+								this.#lastError = true;
+							}
+						});
+					} catch {
+						discoveredAborted = true;
+						this.#lastError = true;
+					}
 				}
 			};
-			await Promise.all(
+			await Promise.allSettled(
 				Array.from({ length: Math.min(RECONCILE_CONCURRENCY, discovered.length) }, () => discoveredWorker()),
 			);
-			this.#scanCursor = discovered.length < limit ? undefined : discovered.at(-1);
+			if (!discoveredAborted) this.#scanCursor = discovered.length < limit ? undefined : discovered.at(-1);
 		} catch {
 			this.#lastError = true;
 		} finally {
@@ -423,13 +458,13 @@ export class ObjectGatewayReplication {
 		await this.#authority.authorizeReplication(object.profileId, object.sha256, object.bytes);
 		let bytes: Uint8Array;
 		try {
-			bytes = await this.#store.get(object.profileId, object.sha256, object.bytes);
+			bytes = await this.#nasGate.run(() => this.#store.get(object.profileId, object.sha256, object.bytes));
 			if (bytes.byteLength !== object.bytes) throw new Error("Replica failed integrity verification");
 		} catch (error) {
 			if (!(error instanceof Error) || error.message !== "Object not found") throw error;
 			bytes = await this.#authority.readLegacyObject(object.profileId, object.sha256);
 			verify(bytes, object);
-			await this.#store.put(object.profileId, object.sha256, bytes);
+			await this.#nasGate.run(() => this.#store.put(object.profileId, object.sha256, bytes));
 		}
 		await this.#authority.confirmReplica(object.profileId, object.sha256, object.bytes);
 		// WHY: reconcile treats `unconfirmed` identically to `replicate`, avoiding an extra NFS temp+fsync+rename here.
@@ -456,7 +491,7 @@ export class ObjectGatewayReplication {
 		if (authority.state !== "completed") {
 			// The SQL replication guard holds the existing GC fence at Storage insertion time.
 			await this.#authority.removeReplica(object.profileId, object.sha256);
-			await this.#store.remove(object.profileId, object.sha256);
+			await this.#nasGate.run(() => this.#store.remove(object.profileId, object.sha256));
 			await this.#authority.finalizeDelete(object.authorizationId, object.profileId, object.sha256, object.bytes);
 		}
 		const name = key(object);

@@ -10,6 +10,7 @@ import { DigitalPostLetterWriter } from "./digital-post-files.ts";
 import { ObjectGatewayFolderGc } from "./folder-gc.ts";
 import { stopGateway } from "./gateway-stop.ts";
 import { ObjectGatewayJournal } from "./journal.ts";
+import { createSerialGate, startGatewayMaintenance } from "./maintenance.ts";
 import { SupabaseMemberCompanyAuthority } from "./member-company-authority.ts";
 import { MemberCompanyObservations } from "./member-observability.ts";
 import { MemoryMessageEraser } from "./memory-message-eraser.ts";
@@ -45,7 +46,8 @@ const store = new FileSystemObjectStore(
 	resolveObjectStoreLanes(process.env),
 );
 const journal = new ObjectGatewayJournal(required(process.env, "QORPERA_OBJECT_GATEWAY_STATE_ROOT"));
-const replication = new ObjectGatewayReplication(journal, store, authority);
+const maintenanceNasGate = createSerialGate();
+const replication = new ObjectGatewayReplication(journal, store, authority, undefined, maintenanceNasGate);
 const folderGc = new ObjectGatewayFolderGc(store, replication, authority);
 const memberAuthority = new SupabaseMemberCompanyAuthority({
 	projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
@@ -194,38 +196,19 @@ if (process.argv[2] === "migrate") {
 } else {
 	const host = process.env.QORPERA_OBJECT_GATEWAY_HOST?.trim() || "127.0.0.1";
 	const server = createServer({ requestTimeout: 15_000, headersTimeout: 10_000 }, handler);
-	// WHY: Keep readiness health probes independent of slow reconciliation so /readyz never ages out during bursts.
-	let probing = false;
-	const probe = async (): Promise<void> => {
-		if (probing) return;
-		probing = true;
-		try {
-			await Promise.all([authority.probeHealth(), store.probe()]);
-		} catch {
+	const maintenance = startGatewayMaintenance({
+		probeAuthority: () => authority.probeHealth(),
+		probeStore: () => store.probe(),
+		recoverGc: () => folderGc.recover(),
+		reconcile: () => replication.reconcile(),
+		nasGate: maintenanceNasGate,
+		onProbeError: () => {
 			process.stderr.write("Object gateway health probe requires operator attention\n");
-		} finally {
-			probing = false;
-		}
-	};
-	const probes = setInterval(() => {
-		void probe();
-	}, 15_000);
-	let maintaining = false;
-	const maintain = async (): Promise<void> => {
-		if (maintaining) return;
-		maintaining = true;
-		try {
-			await folderGc.recover().then(() => replication.reconcile());
-		} catch {
+		},
+		onMaintainError: () => {
 			process.stderr.write("Object gateway maintenance requires operator attention\n");
-		} finally {
-			maintaining = false;
-		}
-	};
-	const maintenance = setInterval(() => {
-		void maintain();
-	}, 15_000);
-	void probe().then(() => maintain());
+		},
+	});
 	// Stored objects' audit lines are in memory at most this long, however long a maintenance pass takes.
 	let writingLines = false;
 	const storedLineWrites = setInterval(() => {
@@ -345,8 +328,7 @@ if (process.argv[2] === "migrate") {
 
 	for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		process.on(signal, () => {
-			clearInterval(probes);
-			clearInterval(maintenance);
+			maintenance.stop();
 			clearInterval(storedLineWrites);
 			clearInterval(connectionFileWrites);
 			clearInterval(codingResultsWrites);
