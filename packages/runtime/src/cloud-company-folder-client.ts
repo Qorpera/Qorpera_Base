@@ -2729,7 +2729,7 @@ export class CloudCompanyFolderClient {
 			fileKeys.set(file, key);
 			if (!seen.has(key)) {
 				seen.add(key);
-				// WHY: Group same-byte files onto one worker so distinct media types/modes never race on the same object key.
+				// WHY: Serialize identical-byte files onto one worker so metadata variants do not race on the same file objects.
 				let group = byHash.get(hash);
 				if (!group) {
 					group = [];

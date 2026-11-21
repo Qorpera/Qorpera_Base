@@ -299,8 +299,9 @@ runtime adapter, with no migration.
   `CloudCompanyFolderClient.stage` in `cloud-company-folder-client.ts`. A put builds the canonical manifest, opens the
   intent, puts the missing objects sequentially for that file, renews the intent when ten minutes have passed, and
   seals; an object the catalog lost is put once more, then the put fails as `contended`. `stage` runs up to 4 distinct
-  file puts concurrently, grouping same-byte files with different metadata onto the same worker so one stage never
-  contends on the same content-addressed object. Renew's answer is checked. A file over 256 MiB is `invalid_arguments`
+  file puts concurrently, grouping identical-byte files with different metadata onto the same worker so those variants
+  are staged serially rather than racing on the same objects (distinct multi-chunk files that happen to share a 4 MiB
+  chunk may still overlap and queue behind the gateway's per-object lock). Renew's answer is checked. A file over 256 MiB is `invalid_arguments`
   before anything is hashed or sent. A get checks the manifest against the reference, that its chunk sizes add up to the
   file's before it fetches any, each chunk against its hash, and the whole file against the reference's hash (the
   manifest's `fileSha256` is only its writer's word); single-chunk gets return the verified chunk directly, and
