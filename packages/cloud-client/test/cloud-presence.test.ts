@@ -2,7 +2,7 @@ import { createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto"
 import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type PresenceDevices, SupabaseCloudPresenceTransport } from "../src/cloud-presence.ts";
-import type { HostedPresenceIdentity, HostedPrimaryDatabase } from "../src/hosted-primary.ts";
+import type { HostedPresenceIdentity } from "../src/hosted-primary.ts";
 import { PresenceSignatures } from "../src/presence-signatures.ts";
 
 const profileId = "10000000-0000-4000-8000-000000000001";
@@ -89,7 +89,7 @@ function fixture() {
 		listPresenceDevices: list,
 		unregisterPresenceDevice: unregister,
 	} as unknown as PresenceDevices;
-	const client = { channel, removeChannel: remove } as unknown as SupabaseClient<HostedPrimaryDatabase>;
+	const client = { channel, removeChannel: remove } as unknown as SupabaseClient;
 	const join = () => new SupabaseCloudPresenceTransport(client, primary).join(profileId, members, typing, () => {});
 	return { channels, channel, remove, register, list, unregister, members, typing, join };
 }

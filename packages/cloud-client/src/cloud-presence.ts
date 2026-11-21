@@ -1,5 +1,5 @@
 import { REALTIME_SUBSCRIBE_STATES, type RealtimeChannel, type SupabaseClient } from "@supabase/supabase-js";
-import type { HostedPresenceIdentity, HostedPrimaryDatabase } from "./hosted-primary.ts";
+import type { HostedPresenceIdentity } from "./hosted-primary.ts";
 import { PresenceSignatures } from "./presence-signatures.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -75,13 +75,10 @@ export interface PresenceDevices {
 }
 
 export class SupabaseCloudPresenceTransport {
-	readonly #client: Pick<SupabaseClient<HostedPrimaryDatabase>, "channel" | "removeChannel">;
+	readonly #client: Pick<SupabaseClient, "channel" | "removeChannel">;
 	readonly #primary: PresenceDevices;
 
-	constructor(
-		client: Pick<SupabaseClient<HostedPrimaryDatabase>, "channel" | "removeChannel">,
-		primary: PresenceDevices,
-	) {
+	constructor(client: Pick<SupabaseClient, "channel" | "removeChannel">, primary: PresenceDevices) {
 		this.#client = client;
 		this.#primary = primary;
 	}

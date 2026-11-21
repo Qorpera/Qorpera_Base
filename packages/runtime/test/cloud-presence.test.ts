@@ -1,5 +1,4 @@
 import { type PresenceDevices, SupabaseCloudPresenceTransport } from "@qorpera/cloud-client/cloud-presence";
-import type { HostedPrimaryDatabase } from "@qorpera/cloud-client/hosted-primary";
 import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -70,7 +69,7 @@ describe("cloud presence", () => {
 				removed.push(channel as unknown as FakeChannel);
 				return Promise.resolve("ok");
 			},
-		} as unknown as SupabaseClient<HostedPrimaryDatabase>;
+		} as unknown as SupabaseClient;
 		const members: Array<Array<{ clientId: string; userId: string }>> = [];
 		const activities: string[] = [];
 		const health: string[] = [];
