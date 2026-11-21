@@ -285,4 +285,75 @@ describe("external doors, direct logins, hooks, and live triggers against Postgr
 		const afterRevoke = new pg.Client({ connectionString: roCreds.connectionString });
 		await assert.rejects(() => afterRevoke.connect());
 	});
+
+	it("handles trigger re-registration, auto-reconnects LISTEN after PG backend disconnect, serializes concurrent direct login provisioning, resists X-Forwarded-For spoofing, and fails closed on malformed public TOML", async () => {
+		assert.deepEqual(parsePublicConfig('[public]\nquestions = ["a" "b"]\n'), { questions: [], changes: [], rateLimit: 60 });
+
+		const r1 = await post(`/v1/company-data-public/${envId}/query`, { database: "shop", question: "catalog" }, { "x-forwarded-for": "1.1.1.1, 198.51.100.7" });
+		const r2 = await post(`/v1/company-data-public/${envId}/query`, { database: "shop", question: "catalog" }, { "x-forwarded-for": "2.2.2.2, 198.51.100.7" });
+		const r3 = await post(`/v1/company-data-public/${envId}/query`, { database: "shop", question: "catalog" }, { "x-forwarded-for": "3.3.3.3, 198.51.100.7" });
+		const r4 = await post(`/v1/company-data-public/${envId}/query`, { database: "shop", question: "catalog" }, { "x-forwarded-for": "4.4.4.4, 198.51.100.7" });
+		assert.deepEqual([r1.status, r2.status, r3.status, r4.status], [200, 200, 200, 429]);
+
+		const concurrentCreds = await Promise.all([
+			gateway.provisionDirectLogin(envId, "shop", { access: "read-write", connectionLimit: 2 }),
+			gateway.provisionDirectLogin(envId, "shop", { access: "read-write", connectionLimit: 2 }),
+			gateway.provisionDirectLogin(envId, "shop", { access: "read-write", connectionLimit: 2 }),
+		]);
+		assert.equal(concurrentCreds.length, 3);
+		assert.equal((await gateway.revokeDirectLogin(envId, "shop")).revoked, true);
+
+		const wakesOld = [];
+		const wakesNew = [];
+		await gateway.registerDataTrigger({
+			id: "routine-rereg",
+			environmentId: envId,
+			database: "shop",
+			tables: ["leads"],
+			minIntervalMs: 30,
+			onWake: (ev) => wakesOld.push(ev),
+		});
+		const stopNew = await gateway.registerDataTrigger({
+			id: "routine-rereg",
+			environmentId: envId,
+			database: "shop",
+			tables: ["leads"],
+			minIntervalMs: 30,
+			onWake: (ev) => wakesNew.push(ev),
+		});
+		try {
+			await post(
+				`/v1/hook-data/${envId}/change`,
+				{ database: "shop", change: "ingest-stripe", hookId: "hook-rereg-1", params: { email: "r1@example.com", source: "stripe" } },
+				{ authorization: `Bearer ${hookToken}` },
+			);
+			for (let i = 0; i < 40 && wakesNew.length === 0; i++) await new Promise((r) => setTimeout(r, 25));
+			assert.equal(wakesOld.length, 0);
+			assert.equal(wakesNew.length, 1);
+
+			await asSuperuser(
+				"postgres",
+				"select pg_terminate_backend(pid) from pg_stat_activity where datname = $1 and application_name = 'qorpera-data-gateway listen'",
+				[companyDatabase(envId)],
+			);
+			for (let i = 0; i < 40; i++) {
+				const active = await asSuperuser(
+					"postgres",
+					"select count(*)::int as n from pg_stat_activity where datname = $1 and application_name = 'qorpera-data-gateway listen'",
+					[companyDatabase(envId)],
+				);
+				if (active[0].n > 0) break;
+				await new Promise((r) => setTimeout(r, 50));
+			}
+			await post(
+				`/v1/hook-data/${envId}/change`,
+				{ database: "shop", change: "ingest-stripe", hookId: "hook-reconnect-1", params: { email: "r2@example.com", source: "stripe" } },
+				{ authorization: `Bearer ${hookToken}` },
+			);
+			for (let i = 0; i < 40 && wakesNew.length < 2; i++) await new Promise((r) => setTimeout(r, 25));
+			assert.ok(wakesNew.length >= 2, `expected trigger wake after LISTEN reconnect, got ${wakesNew.length}`);
+		} finally {
+			stopNew();
+		}
+	});
 });

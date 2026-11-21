@@ -148,6 +148,7 @@ export interface MemberCompanyGatewayOptions {
 interface RoutePolicy {
 	method: string;
 	headers: string[];
+	proxyHeaders?: string[];
 	maxBody?: number;
 	timeoutMs?: number;
 	unavailable: string;
@@ -239,7 +240,8 @@ function route(path: string): RoutePolicy | undefined {
 	if (publicVerb)
 		return {
 			method: "POST",
-			headers: ["content-type", "x-forwarded-for"],
+			headers: ["content-type"],
+			proxyHeaders: ["x-forwarded-for"],
 			maxBody: MAX_DATA_BYTES,
 			publicRoute: true,
 			unavailable: DATA_WRITES[publicVerb] ?? "Company data is unavailable just now.",
@@ -527,7 +529,7 @@ export async function forwardMemberCompanyGateway(
 	const watch = policy.passesBodyThrough ? watchUpstream(request.signal, timeout) : undefined;
 	try {
 		const forwarded = new Headers();
-		for (const name of policy.headers) {
+		for (const name of [...policy.headers, ...(policy.proxyHeaders ?? [])]) {
 			const value = request.headers.get(name);
 			if (value !== null) forwarded.set(name, value);
 		}

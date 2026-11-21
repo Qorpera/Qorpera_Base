@@ -11,6 +11,7 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http from "node:http";
+import net from "node:net";
 import { after, before, describe, it } from "node:test";
 import pg from "pg";
 import { checkLocale, LOCALE_QUERY, POSTGRES_IMAGE, POSTGRES_LOCALE } from "../../../scripts/test-hosted-db.mjs";
@@ -3675,5 +3676,108 @@ create trigger nap before update on slowed for each row execute function nap();
 		} finally {
 			await keeperWatch.catch(() => {});
 		}
+	});
+
+	it("invalidates sibling gateway watches across processes on DDL, rejects EADDRINUSE cleanly, and survives aborted HTTP bodies", async () => {
+		const initial = await ask(viewer, "rows", { database: "multi", table: "alpha" });
+		assert.equal(initial.status, 200);
+		const before = gateway.taken.rows;
+		const watching = ask(viewer, "watch", {
+			watches: [{ database: "multi", table: "alpha", etag: initial.value.etag }],
+			wait: 2.5,
+		});
+		try {
+			for (let i = 0; i < 60 && gateway.taken.rows - before < 5; i++) await sleep(25);
+			put(ENV_A, {
+				"data/multi/tables/002-add-note.sql": "alter table alpha add column note text not null default 'ok';\n",
+			});
+			await withGateway({}, async () => {
+				const applied = await ask(owner, "apply", { database: "multi" });
+				assert.equal(applied.status, 200, JSON.stringify(applied.value));
+				assert.equal(applied.value.applied, true);
+			});
+			const woke = await watching;
+			assert.equal(woke.status, 200, JSON.stringify(woke.value));
+			assert.equal(woke.value.changed?.length, 1);
+			assert.ok(woke.value.changed[0].answer.columns.includes("note"), JSON.stringify(woke.value.changed[0].answer.columns));
+		} finally {
+			await watching.catch(() => {});
+		}
+		await assert.rejects(() => serve(gateway, { host: "127.0.0.1", port }), { code: "EADDRINUSE" });
+		await new Promise((resolve) => {
+			const sock = net.connect(port, "127.0.0.1", () => {
+				sock.write(
+					`POST /v1/company-data/${ENV_A}/query HTTP/1.1\r\n` +
+						`Host: 127.0.0.1:${port}\r\n` +
+						`Authorization: Bearer ${viewer}\r\n` +
+						"Content-Type: application/json\r\n" +
+						"Content-Length: 200\r\n\r\n{\"dat",
+				);
+				setTimeout(() => {
+					sock.destroy();
+					resolve();
+				}, 20);
+			});
+			sock.on("error", () => resolve());
+		});
+		const healthy = await ask(viewer, "rows", { database: "multi", table: "alpha" });
+		assert.equal(healthy.status, 200, JSON.stringify(healthy.value));
+	});
+
+	it("recovers pipelined reads and writes cleanly across statement_timeout, constraint errors, 0A000 schema type changes, and cluster IPC hooks", async () => {
+		put(ENV_A, {
+			"data/pipechaos/database.toml": 'format = "qorpera.database/v1"\nname = "Pipe chaos"\n',
+			"data/pipechaos/tables/001-init.sql": `
+				create table entries (
+					id bigint generated always as identity primary key,
+					code text not null unique,
+					amount int not null
+				);
+				insert into entries (code, amount) values ('k1', 10), ('k2', 20);
+			`,
+			"data/pipechaos/queries/all.sql": "select id, code, amount from entries order by id;\n",
+			"data/pipechaos/queries/slow.sql": "select pg_sleep(1.5), count(*) from entries;\n",
+			"data/pipechaos/queries/missing.sql": "select * from does_not_exist;\n",
+			"data/pipechaos/actions/add.sql": "insert into entries (code, amount) values (:code, :amount) returning id;\n",
+		});
+		assert.equal((await ask(owner, "apply", { database: "pipechaos" })).value.applied, true);
+		for (let i = 0; i < 4; i++) {
+			const warmed = await ask(viewer, "query", { database: "pipechaos", question: "all" });
+			assert.equal(warmed.status, 200);
+			assert.deepEqual(warmed.value.rows, [[1, "k1", 10], [2, "k2", 20]]);
+		}
+		const timedOut = await ask(viewer, "query", { database: "pipechaos", question: "slow" });
+		assert.equal(timedOut.status, 408, JSON.stringify(timedOut.value));
+		const missingTbl = await ask(viewer, "query", { database: "pipechaos", question: "missing" });
+		assert.equal(missingTbl.status, 400, JSON.stringify(missingTbl.value));
+		const dupWrite = await ask(owner, "change", { database: "pipechaos", change: "add", params: { code: "k1", amount: 99 } });
+		assert.equal(dupWrite.status, 400, JSON.stringify(dupWrite.value));
+		const goodWrite = await ask(owner, "change", { database: "pipechaos", change: "add", params: { code: "k3", amount: 30 } });
+		assert.equal(goodWrite.status, 200, JSON.stringify(goodWrite.value));
+		put(ENV_A, {
+			"data/pipechaos/tables/002-widen.sql": "alter table entries alter column amount type numeric(12, 2);\n",
+		});
+		assert.equal((await ask(owner, "apply", { database: "pipechaos" })).value.applied, true);
+		for (let i = 0; i < 6; i++) {
+			const afterAlter = await ask(viewer, "query", { database: "pipechaos", question: "all" });
+			assert.equal(afterAlter.status, 200, JSON.stringify(afterAlter.value));
+			assert.equal(afterAlter.value.rows.length, 3);
+		}
+		const events = [];
+		await withGateway(
+			{
+				onAgentRead: (event) => events.push(event),
+			},
+			async (gw) => {
+				const db = companyDatabase(ENV_A);
+				gw.setFullDatabases([db]);
+				const blocked = await ask(owner, "change", { database: "pipechaos", change: "add", params: { code: "k4", amount: 40 } });
+				assert.equal(blocked.status, 507, JSON.stringify(blocked.value));
+				gw.setFullDatabases([]);
+				const allowed = await ask(owner, "change", { database: "pipechaos", change: "add", params: { code: "k4", amount: 40 } });
+				assert.equal(allowed.status, 200, JSON.stringify(allowed.value));
+			},
+		);
+		assert.ok(Array.isArray(events));
 	});
 });

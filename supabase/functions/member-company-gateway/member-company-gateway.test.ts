@@ -1521,6 +1521,18 @@ describe("public member Company File gateway", () => {
 			assert.equal(preflight.status, 204, verb);
 			assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
 			assert.equal(preflight.headers.get("access-control-allow-methods"), "POST");
+			const forgedPreflight = await forwardMemberCompanyGateway(
+				new Request(base + path, {
+					method: "OPTIONS",
+					headers: {
+						origin: "https://shop.customer.example",
+						"access-control-request-method": "POST",
+						"access-control-request-headers": "x-forwarded-for",
+					},
+				}),
+				{ upstreamUrl, fetchImplementation },
+			);
+			assert.equal(forgedPreflight.status, 403, verb);
 		}
 		assert.equal(seen.length, 2);
 		for (const call of seen) {
