@@ -3503,7 +3503,15 @@ create trigger nap before update on slowed for each row execute function nap();
 				assert.equal(unlockedQuery.status, 200, JSON.stringify(unlockedQuery.value));
 				assert.deepEqual(unlockedQuery.value.rows, [[1]]);
 				assert.ok(qElapsed < 600, `unlocked query waited ${qElapsed} ms behind describe counts`);
-				for (const res of await Promise.all(describes)) assert.equal(res.status, 200, JSON.stringify(res.value));
+				for (const res of await Promise.all(describes)) {
+					assert.equal(res.status, 200, JSON.stringify(res.value));
+					const db = res.value.databases.find((entry) => entry.database === "alpha");
+					const rows = Object.fromEntries(db.tables.map((t) => [t.name, t.rows]));
+					for (let i = 0; i < 12; i++) {
+						if (i === 6) assert.equal(rows.t_06, undefined);
+						else assert.equal(rows[`t_${String(i).padStart(2, "0")}`], i + 1);
+					}
+				}
 			} finally {
 				await locker.query("rollback").catch(() => undefined);
 				await locker.end().catch(() => undefined);
@@ -3526,7 +3534,28 @@ create trigger nap before update on slowed for each row execute function nap();
 		});
 	});
 
-	it("avoids 503 pool-eviction races and connection starvation across many databases under concurrent traffic", async () => {
+	it("evicts idle pools on 53300 without stale-pool 503s and handles multi-database bursts", async () => {
+		const companyDb = companyDatabase(ENV_A);
+		const fillToLimit = async () => {
+			const fillers = [];
+			let hitLimit = false;
+			for (let i = 0; i < 30; i++) {
+				const client = connect(companyDb, "qorpera_data_keeper", logins.keeper);
+				client.on("error", () => undefined);
+				try {
+					await client.connect();
+					fillers.push(client);
+				} catch (error) {
+					await client.end().catch(() => undefined);
+					if (error?.code === "53300") {
+						hitLimit = true;
+						break;
+					}
+					throw error;
+				}
+			}
+			return { fillers, hitLimit };
+		};
 		const manyNames = Array.from({ length: 14 }, (_, i) => `m${String(i).padStart(2, "0")}`);
 		const manyFiles = {};
 		for (const dbName of manyNames) {
@@ -3540,9 +3569,29 @@ create trigger nap before update on slowed for each row execute function nap();
 			assert.equal(applied.value.applied, true, JSON.stringify(applied.value));
 		}
 		await withGateway({ limits: { ...LIMITS_HERE, questionMs: 2_000, countMs: 1_500, watchMs: 1_500 } }, async () => {
-			assert.equal((await ask(viewer, "describe", {})).status, 200);
 			const seed = await ask(viewer, "query", { database: "m00", question: "count" });
 			assert.equal(seed.status, 200);
+			for (const dbName of ["m01", "m02", "m04"]) {
+				assert.equal((await ask(viewer, "query", { database: dbName, question: "count" })).status, 200);
+			}
+			const idleReaders = (
+				await asAdmin("postgres", "select count(*)::int as n from pg_stat_activity where datname = $1 and application_name = 'qorpera-data-gateway r'", [companyDb])
+			)[0].n;
+			assert.ok(idleReaders >= 4, `expected at least 4 idle reader pools, got ${idleReaders}`);
+			const { fillers, hitLimit } = await fillToLimit();
+			try {
+				assert.equal(hitLimit, true, "expected company database to reach its 24-connection limit");
+				const evicted = await Promise.all([
+					ask(viewer, "query", { database: "m03", question: "count" }),
+					ask(viewer, "query", { database: "m00", question: "count" }),
+					ask(viewer, "watch", { watches: [{ database: "m00", question: "count", etag: seed.value.etag }], wait: 0.1 }),
+				]);
+				for (const res of evicted) assert.equal(res.status, 200, JSON.stringify(res.value));
+			} finally {
+				await Promise.all(fillers.map((client) => client.end().catch(() => undefined)));
+			}
+			assert.equal(await until(listening, 0), 0);
+			assert.equal((await ask(viewer, "describe", {})).status, 200);
 			const results = await Promise.all([
 				...Array.from({ length: 12 }, () => ask(viewer, "describe", {})),
 				...Array.from({ length: 28 }, (_, i) => ask(viewer, "query", { database: manyNames[i % manyNames.length], question: "count" })),
@@ -3553,5 +3602,80 @@ create trigger nap before update on slowed for each row execute function nap();
 			]);
 			for (const res of results) assert.equal(res.status, 200, JSON.stringify(res.value));
 		});
+	});
+
+	it("ends listen clients when watch stops or gateway closes mid-connect", async () => {
+		const companyDb = companyDatabase(ENV_A);
+		const gatewayBackends = async () =>
+			(await asAdmin("postgres", "select count(*)::int as n from pg_stat_activity where datname = $1 and application_name like 'qorpera-data-gateway %'", [companyDb]))[0].n;
+		const dropGatewayBackends = async () => {
+			await asAdmin("postgres", "select pg_terminate_backend(pid) from pg_stat_activity where datname = $1 and application_name like 'qorpera-data-gateway %'", [companyDb]);
+			assert.equal(await until(gatewayBackends, 0, 3_000), 0);
+		};
+		const fillAll = async () => {
+			const fillers = [];
+			let hitLimit = false;
+			for (let i = 0; i < 30; i++) {
+				const client = connect(companyDb, "qorpera_data_keeper", logins.keeper);
+				client.on("error", () => undefined);
+				try {
+					await client.connect();
+					fillers.push(client);
+				} catch (error) {
+					await client.end().catch(() => undefined);
+					if (error?.code === "53300") {
+						hitLimit = true;
+						break;
+					}
+					throw error;
+				}
+			}
+			assert.equal(hitLimit, true, "expected company database to reach its 24-connection limit");
+			return fillers;
+		};
+		const startRawWatch = (etag) => {
+			const text = JSON.stringify({ watches: [{ database: "m00", question: "count", etag }], wait: 2 });
+			const req = http.request({
+				host: "127.0.0.1",
+				port,
+				path: `/v1/company-data/${ENV_A}/watch`,
+				method: "POST",
+				headers: { authorization: `Bearer ${viewer}`, "content-type": "application/json", "content-length": Buffer.byteLength(text) },
+			});
+			req.on("error", () => undefined);
+			req.end(text);
+			return req;
+		};
+		await withGateway({ limits: { ...LIMITS_HERE, watchMs: 2_000 } }, async () => {
+			const seed = await ask(viewer, "query", { database: "m00", question: "count" });
+			assert.equal(seed.status, 200);
+			await dropGatewayBackends();
+			const fillers = await fillAll();
+			try {
+				const req = startRawWatch(seed.value.etag);
+				await sleep(150);
+				req.destroy();
+				await sleep(50);
+			} finally {
+				await Promise.all(fillers.map((client) => client.end().catch(() => undefined)));
+			}
+			await sleep(350);
+			assert.equal(await listening(), 0);
+		});
+		let closeFillers = [];
+		try {
+			await withGateway({ limits: { ...LIMITS_HERE, watchMs: 2_000 } }, async () => {
+				const seed = await ask(viewer, "query", { database: "m00", question: "count" });
+				assert.equal(seed.status, 200);
+				await dropGatewayBackends();
+				closeFillers = await fillAll();
+				startRawWatch(seed.value.etag);
+				await sleep(150);
+			});
+		} finally {
+			await Promise.all(closeFillers.map((client) => client.end().catch(() => undefined)));
+		}
+		await sleep(350);
+		assert.equal(await listening(), 0);
 	});
 });

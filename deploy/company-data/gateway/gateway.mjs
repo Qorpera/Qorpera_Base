@@ -624,7 +624,7 @@ export class Gateway {
 	#exists = new Set();
 	#unsettled = new Map();
 	#swept = new Map();
-	#folderCountGates = new Map();
+	#inFlightCounts = new Map();
 	#companyCountGates = new Map();
 	/** What questions have taken from the store so far: rows, and the characters of their values. */
 	taken = { rows: 0, bytes: 0 };
@@ -1762,16 +1762,34 @@ export class Gateway {
 			return { changed: changed.sort((a, b) => a.index - b.index), partial: missed !== undefined };
 		};
 		const database = companyDatabase(environmentId);
+		if (stop.aborted) return { same: true, partial: true };
 		let wake = () => undefined;
 		let dirty = false;
 		const listening = this.#listen(database, () => {
 			dirty = true;
 			wake();
 		});
+		const onStop = () => listening.stop();
+		stop.addEventListener("abort", onStop, { once: true });
 		try {
-			await listening.ready.catch((error) => {
+			const ready = listening.ready.catch((error) => {
+				if (stop.aborted) return;
 				throw storeProblem(error);
 			});
+			let wakeReady;
+			try {
+				await Promise.race([
+					ready,
+					new Promise((resolve) => {
+						wakeReady = resolve;
+						if (stop.aborted) resolve();
+						else stop.addEventListener("abort", resolve, { once: true });
+					}),
+				]);
+			} finally {
+				stop.removeEventListener("abort", wakeReady);
+			}
+			if (stop.aborted) return { same: true, partial: true };
 			// Asked after the listening began, so no change between the two is missed.
 			let scan = await differing();
 			while (scan.changed.length === 0 && !scan.partial && Date.now() < holdUntil && !stop.aborted && !this.#closed) {
@@ -1796,6 +1814,7 @@ export class Gateway {
 			const partial = scan.partial ? { partial: true } : {};
 			return scan.changed.length > 0 ? { changed: scan.changed, ...partial } : { same: true, ...partial };
 		} finally {
+			stop.removeEventListener("abort", onStop);
 			listening.stop();
 		}
 	}
@@ -2178,22 +2197,68 @@ export class Gateway {
 	}
 
 	async #count(database, name, n, tables, until) {
-		if (tables.length === 0 || until - Date.now() < 1) return;
-		// WHY: Cap best-effort counts per schema and per company so describe bursts never starve live query/rows pools.
-		const releaseFolder = await acquirePermit(this.#folderCountGates, `${database}:${name}`, 1, until);
-		if (!releaseFolder) return;
-		let releaseCompany = null;
+		if (tables.length === 0 || until - Date.now() < 1 || this.#closed) return;
+		const folderKey = `${database}:${name}:${n}`;
+		let pending = tables;
+		while (pending.length > 0 && until - Date.now() >= 1 && !this.#closed) {
+			const existing = this.#inFlightCounts.get(folderKey);
+			if (existing) {
+				const left = until - Date.now();
+				if (left < 1) return;
+				let timer;
+				await Promise.race([
+					existing.done,
+					new Promise((resolve) => {
+						timer = setTimeout(resolve, left);
+						timer.unref?.();
+					}),
+				]);
+				clearTimeout(timer);
+				for (const table of pending) {
+					const rows = existing.counts.get(table.name);
+					if (rows !== undefined) table.counted = rows;
+				}
+				if (until - Date.now() < 1 || this.#closed) return;
+				pending = pending.filter((table) => !existing.attempted.has(table.name));
+				if (pending.length === 0) return;
+				const allCovered = pending.every((table) => existing.requested.has(table.name));
+				if (allCovered && (existing.failed || existing.until >= until)) return;
+				continue;
+			}
+			// WHY: Coalesce concurrent counts per schema and cap company-wide counts so describe bursts never starve live pools.
+			const run = {
+				until,
+				requested: new Set(pending.map((table) => table.name)),
+				attempted: new Set(),
+				counts: new Map(),
+				failed: false,
+				done: null,
+			};
+			const work = this.#countOnce(database, name, n, pending, until, run).finally(() => {
+				if (this.#inFlightCounts.get(folderKey) === run) this.#inFlightCounts.delete(folderKey);
+			});
+			run.done = work.catch(() => undefined);
+			this.#inFlightCounts.set(folderKey, run);
+			await work;
+			return;
+		}
+	}
+
+	async #countOnce(database, name, n, tables, until, run) {
+		const releaseCompany = await acquirePermit(this.#companyCountGates, database, COUNT_COMPANY_CONCURRENCY, until);
+		if (!releaseCompany) return;
 		let client;
 		let lost;
 		try {
-			releaseCompany = await acquirePermit(this.#companyCountGates, database, COUNT_COMPANY_CONCURRENCY, until);
-			if (!releaseCompany) return;
 			const rank = (table) => (table.kind === "v" ? 2 : table.kind === "p" ? 1 : 0);
 			const order = [...tables].sort((a, b) => rank(a) - rank(b) || a.pages - b.pages || (a.name < b.name ? -1 : 1));
 			try {
 				client = await inTime(this.#pool(database, `${database}_r${n}`).connect(until), until);
 			} catch (error) {
-				if (storeProblem(error) instanceof Refusal) return;
+				if (storeProblem(error) instanceof Refusal) {
+					if (Date.now() < until) run.failed = true;
+					return;
+				}
 				throw error;
 			}
 			if (until - Date.now() < 1) return;
@@ -2216,14 +2281,20 @@ export class Gateway {
 						types: TEXT_TYPES,
 					});
 					await client.query("release savepoint qorpera_count");
+					run.attempted.add(table.name);
 					const rows = Number(answer.rows[0]?.[0]);
-					if (Number.isSafeInteger(rows) && rows >= 0) table.counted = rows;
+					if (Number.isSafeInteger(rows) && rows >= 0) {
+						table.counted = rows;
+						run.counts.set(table.name, rows);
+					}
 					return true;
 				} catch (error) {
 					if (isFatal(error)) {
 						lost = error;
+						run.failed = true;
 						return false;
 					}
+					if (error?.code !== "57014" || limit >= this.#limits.questionMs) run.attempted.add(table.name);
 					await client.query("rollback to savepoint qorpera_count; release savepoint qorpera_count");
 					return true;
 				}
@@ -2259,12 +2330,17 @@ export class Gateway {
 						await client.query("release savepoint qorpera_count");
 						const row = answer.rows[0];
 						for (let i = 0; i < batch.length; i++) {
+							run.attempted.add(batch[i].name);
 							const rows = Number(row?.[i]);
-							if (Number.isSafeInteger(rows) && rows >= 0) batch[i].counted = rows;
+							if (Number.isSafeInteger(rows) && rows >= 0) {
+								batch[i].counted = rows;
+								run.counts.set(batch[i].name, rows);
+							}
 						}
 					} catch (error) {
 						if (isFatal(error)) {
 							lost = error;
+							run.failed = true;
 							break;
 						}
 						await client.query("rollback to savepoint qorpera_count; release savepoint qorpera_count");
@@ -2283,6 +2359,7 @@ export class Gateway {
 			}
 			if (!lost) await client.query("rollback").catch(() => undefined);
 		} catch (error) {
+			run.failed = true;
 			if (client) {
 				if (error?.code && !/^(57P0[123]|08...)$/.test(error.code)) await client.query("rollback").catch(() => undefined);
 				else lost = error;
@@ -2291,8 +2368,7 @@ export class Gateway {
 			}
 		} finally {
 			if (client) this.#release(client, lost);
-			releaseCompany?.();
-			releaseFolder();
+			releaseCompany();
 		}
 	}
 
