@@ -27,11 +27,12 @@ const CLAUDE_BOX_PATTERNS = [
 	/^deploy\/claude-box\//,
 	/^deploy\/first-node\/native-claude\//,
 	/^deploy\/lxd-runner-guest\//,
-	/^packages\/runtime\/src\/cloud-claude-(?:box|home|login)/,
+	/^packages\/runtime\/src\/cloud-claude-/,
 ];
 
 const CODEX_HOME_PATTERNS = [
 	/^packages\/runtime\/src\/cloud-(?:codex-home|home-channel)/,
+	/^deploy\/coding-worker\/home-session-authority\.ts$/,
 	/^deploy\/first-node\/native-codex\/(?:source\.json|0001-cloud-result-fence\.patch|linux-x64-artifact\.json)$/,
 ];
 
@@ -58,8 +59,9 @@ export function isReleaseDerivedOnly(files) {
 	return unique.length > 0 && unique.every((file) => isReleaseDerivedPath(file));
 }
 
-export function classifyReleaseDiff(files) {
+export function classifyReleaseDiff(files, options = {}) {
 	const unique = [...new Set(files)].filter(Boolean).sort();
+	const existingSet = options.existingFiles ? new Set(options.existingFiles) : null;
 	const migrations = [];
 	const activationMigrations = [];
 	const sqlTests = [];
@@ -86,7 +88,9 @@ export function classifyReleaseDiff(files) {
 		}
 		const sqlTestMatch = SQL_TEST.exec(file);
 		if (sqlTestMatch) {
-			sqlTests.push(sqlTestMatch[1]);
+			if (!existingSet || existingSet.has(file)) {
+				sqlTests.push(sqlTestMatch[1]);
+			}
 			continue;
 		}
 		if (QUIET_PATH.test(file) || WEB_DEPLOY_PATH.test(file)) {
@@ -133,19 +137,21 @@ export function classifyReleaseDiff(files) {
 		}
 	}
 
-	const sqlOnly =
-		migrations.length > 0 &&
-		!nonSqlOperationalChanged &&
-		!runtimeJsChanged &&
-		!baseImageChanged &&
-		!claudeBoxChanged &&
-		!codexHomeChanged &&
-		!sharedExecutionChanged &&
-		!vaultChanged &&
-		!executorChanged &&
-		!orchestratorChanged &&
-		!folderServiceChanged &&
-		!gatewayChanged;
+	const anyRuntimeOperational =
+		nonSqlOperationalChanged ||
+		runtimeJsChanged ||
+		baseImageChanged ||
+		claudeBoxChanged ||
+		codexHomeChanged ||
+		sharedExecutionChanged ||
+		vaultChanged ||
+		executorChanged ||
+		orchestratorChanged ||
+		folderServiceChanged ||
+		gatewayChanged;
+
+	const sqlOnly = migrations.length > 0 && !anyRuntimeOperational;
+	const noRelease = migrations.length === 0 && !anyRuntimeOperational;
 
 	return {
 		files: unique,
@@ -153,6 +159,7 @@ export function classifyReleaseDiff(files) {
 		activationMigrations,
 		sqlTests: [...new Set(sqlTests)].sort(),
 		sqlOnly,
+		noRelease,
 		runtimeJsChanged,
 		baseImageChanged,
 		claudeBoxChanged,
@@ -168,20 +175,23 @@ export function classifyReleaseDiff(files) {
 
 export function buildReleasePrepPlan(classification, options = {}) {
 	const thinRuntimeEnabled = Boolean(options.thinRuntimeEnabled);
-	const mode = classification.sqlOnly
-		? "sql-only"
-		: thinRuntimeEnabled && !classification.baseImageChanged
-			? "thin-runtime"
-			: "full-image";
-	const needsBundleBump = !classification.sqlOnly;
+	const mode = classification.noRelease
+		? "no-release"
+		: classification.sqlOnly
+			? "sql-only"
+			: thinRuntimeEnabled && !classification.baseImageChanged
+				? "thin-runtime"
+				: "full-image";
+	const needsRuntimeRelease = mode === "thin-runtime" || mode === "full-image";
+	const needsBundleBump = needsRuntimeRelease;
 	const needsBaseImageRebuild = mode === "full-image";
-	const needsNodeRelease = !classification.sqlOnly;
+	const needsNodeRelease = needsRuntimeRelease;
 	const runC4c = classification.claudeBoxChanged || classification.baseImageChanged;
-	const provers = classification.sqlOnly ? [] : ["scripts/prove-home-channel.mjs", "scripts/prove-hire-team.mjs"];
+	const provers = needsRuntimeRelease ? ["scripts/prove-home-channel.mjs", "scripts/prove-hire-team.mjs"] : [];
 	const watchPolicy = {
 		homeWatchMinutes: classification.codexHomeChanged ? 15 : 0,
 		claudeWatchMinutes: classification.claudeBoxChanged ? 15 : 0,
-		smokeMinutes: classification.sqlOnly ? 0 : 2,
+		smokeMinutes: needsRuntimeRelease ? 2 : 0,
 		pollSeconds: 30,
 		earlyExitOnCompletedRuns: 1,
 	};
@@ -213,15 +223,31 @@ export function buildReleasePrepPlan(classification, options = {}) {
 	};
 }
 
-function parseCliArgs(argv) {
+function readFlagValue(argv, index, flagName) {
+	const value = argv[index + 1];
+	if (typeof value !== "string" || value.length === 0 || value.startsWith("-")) {
+		throw new Error(`Flag ${flagName} requires a non-flag value`);
+	}
+	return value;
+}
+
+export function parseCliArgs(argv) {
 	const parsed = { from: null, to: "HEAD", thinRuntimeEnabled: false, json: false };
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
-		if (arg === "--from" && argv[i + 1]) parsed.from = argv[++i];
-		else if (arg === "--to" && argv[i + 1]) parsed.to = argv[++i];
-		else if (arg === "--thin-runtime") parsed.thinRuntimeEnabled = true;
-		else if (arg === "--json") parsed.json = true;
-		else throw new Error(`Usage: node scripts/release-prep-plan.mjs --from <ref> [--to <ref>] [--thin-runtime] [--json]`);
+		if (arg === "--from") {
+			parsed.from = readFlagValue(argv, i, "--from");
+			i += 1;
+		} else if (arg === "--to") {
+			parsed.to = readFlagValue(argv, i, "--to");
+			i += 1;
+		} else if (arg === "--thin-runtime") {
+			parsed.thinRuntimeEnabled = true;
+		} else if (arg === "--json") {
+			parsed.json = true;
+		} else {
+			throw new Error("Usage: node scripts/release-prep-plan.mjs --from <ref> [--to <ref>] [--thin-runtime] [--json]");
+		}
 	}
 	if (!parsed.from) {
 		throw new Error("Missing --from <ref>");
@@ -229,14 +255,41 @@ function parseCliArgs(argv) {
 	return parsed;
 }
 
-function main(argv) {
-	const args = parseCliArgs(argv);
-	const raw = execFileSync("git", ["diff", "--name-only", "--no-renames", `${args.from}..${args.to}`], {
+function resolveCommit(ref, flagName) {
+	if (/[\s\0]/.test(ref) || ref.includes("..")) {
+		throw new Error(`Invalid git ref for ${flagName}: ${ref}`);
+	}
+	return execFileSync("git", ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], {
+		encoding: "utf8",
+	}).trim();
+}
+
+function gitDiffNullSeparated(args) {
+	return execFileSync("git", args, {
 		encoding: "utf8",
 		maxBuffer: 32 * 1024 * 1024,
-	});
-	const files = raw.split("\n").filter(Boolean);
-	const classification = classifyReleaseDiff(files);
+	})
+		.split("\0")
+		.filter(Boolean);
+}
+
+function main(argv) {
+	const args = parseCliArgs(argv);
+	const fromCommit = resolveCommit(args.from, "--from");
+	const toCommit = resolveCommit(args.to, "--to");
+	const files = gitDiffNullSeparated(["diff", "--name-only", "--no-renames", "-z", "--end-of-options", fromCommit, toCommit, "--"]);
+	const existingFiles = gitDiffNullSeparated([
+		"diff",
+		"--name-only",
+		"--no-renames",
+		"--diff-filter=d",
+		"-z",
+		"--end-of-options",
+		fromCommit,
+		toCommit,
+		"--",
+	]);
+	const classification = classifyReleaseDiff(files, { existingFiles });
 	const plan = buildReleasePrepPlan(classification, { thinRuntimeEnabled: args.thinRuntimeEnabled });
 	if (args.json) {
 		process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`);
