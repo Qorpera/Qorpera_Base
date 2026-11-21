@@ -8,6 +8,7 @@ import {
 	CODE_SITE_LIST_FILES,
 	CODE_SITE_MISSING_PATHS,
 	CODE_SITE_PART_BYTES,
+	CODE_SITE_PUT_CONCURRENCY,
 	CODE_SITE_PUT_PARTS,
 	CODE_SITE_REQUEST_BYTES,
 	CODE_SITE_RPCS,
@@ -122,7 +123,9 @@ function setup(trees: Record<string, CodeSiteUploadFile[]>, options: Partial<Cod
 		/** Bytes another version of the site holds, by path: copied in when the listing ends. */
 		copies: new Map<string, Uint8Array>(),
 		/** A test's own answer for a call, by its method; undefined leaves the usual one. */
-		answer: undefined as ((method: string, args: Record<string, unknown>) => unknown) | undefined,
+		answer: undefined as
+			| ((method: string, args: Record<string, unknown>, signal: AbortSignal) => unknown)
+			| undefined,
 		usual(method: string, args: Record<string, unknown>): unknown {
 			if (method === "qorpera_code_sites_due")
 				return { schema: "qorpera.code-sites-due/v1", sites: kernel.due.slice(0, args.p_limit as number) };
@@ -217,7 +220,7 @@ function setup(trees: Record<string, CodeSiteUploadFile[]>, options: Partial<Cod
 			signal.throwIfAborted();
 			expect(CODE_SITE_RPCS).toContain(method);
 			calls.push({ method, args: structuredClone(args), bytes: size(args) });
-			const forced = await kernel.answer?.(method, args);
+			const forced = await kernel.answer?.(method, args, signal);
 			const answer = forced !== undefined ? forced : kernel.usual(method, args);
 			answers.push(size(answer));
 			return answer;
@@ -326,9 +329,14 @@ describe("CodeSiteUploads", () => {
 			{ limit: 0 },
 			{ limit: 21 },
 			{ limit: 1.5 },
+			{ putConcurrency: 0 },
+			{ putConcurrency: 17 },
+			{ putConcurrency: 1.5 },
+			{ putConcurrency: -1 },
 		])
 			expect(make(extra)).toThrow("INVALID_CODE_SITE_UPLOADS");
-		expect(make({ limit: 20 })).not.toThrow();
+		expect(make({ limit: 20, putConcurrency: 1 })).not.toThrow();
+		expect(make({ putConcurrency: 16 })).not.toThrow();
 	});
 
 	it("uploads a site of 400 files: read in a job that yields, listed in three pages, asked in four, put in parts", async () => {
@@ -1061,6 +1069,231 @@ describe("CodeSiteUploads", () => {
 		} finally {
 			watch.restore();
 		}
+	});
+
+	it("uploads missing chunks concurrently with a bounded sliding window and runs finish only after all puts succeed", async () => {
+		const files = [
+			file("index.html", 500),
+			file("bundle.js", 10 * CODE_SITE_PART_BYTES),
+			file("media-a.png", 5 * CODE_SITE_PART_BYTES),
+			file("media-b.png", 5 * CODE_SITE_PART_BYTES),
+		];
+		const expectedPuts = 21;
+		const t = setup({ shop: files });
+		let inFlight = 0;
+		let maxInFlight = 0;
+		let completedPuts = 0;
+		let finishSeenInFlight = -1;
+		let finishSeenCompleted = -1;
+		const waiters: (() => void)[] = [];
+		const pending: (() => void)[] = [];
+		const waitForInFlight = (target: number) =>
+			new Promise<void>((resolve) => {
+				const check = () => {
+					if (inFlight >= target) resolve();
+					else waiters.push(check);
+				};
+				check();
+			});
+		t.kernel.answer = async (method, args) => {
+			if (method === "qorpera_code_site_finish") {
+				finishSeenInFlight = inFlight;
+				finishSeenCompleted = completedPuts;
+				return undefined;
+			}
+			if (method !== "qorpera_code_site_put") return undefined;
+			inFlight += 1;
+			maxInFlight = Math.max(maxInFlight, inFlight);
+			for (const notify of waiters.splice(0)) notify();
+			await new Promise<void>((resolve) => pending.push(resolve));
+			inFlight -= 1;
+			completedPuts += 1;
+			return t.kernel.usual(method, args);
+		};
+		const running = t.pass();
+		await waitForInFlight(CODE_SITE_PUT_CONCURRENCY);
+		expect(inFlight).toBe(CODE_SITE_PUT_CONCURRENCY);
+		expect(t.of("qorpera_code_site_finish")).toEqual([]);
+		while (completedPuts < expectedPuts) {
+			const release = pending.splice(Math.floor(pending.length / 2), 1)[0];
+			if (release) release();
+			await new Promise((resolve) => setImmediate(resolve));
+			if (completedPuts + CODE_SITE_PUT_CONCURRENCY <= expectedPuts) {
+				await waitForInFlight(CODE_SITE_PUT_CONCURRENCY);
+			}
+		}
+		await expect(running).resolves.toEqual({ uploaded: 1, failed: 0 });
+		expect(maxInFlight).toBe(CODE_SITE_PUT_CONCURRENCY);
+		expect(finishSeenInFlight).toBe(0);
+		expect(finishSeenCompleted).toBe(expectedPuts);
+		expect(t.of("qorpera_code_site_put")).toHaveLength(expectedPuts);
+		expect(t.of("qorpera_code_site_finish")).toHaveLength(1);
+		const stored = t.stored("shop");
+		expect(stored.size).toBe(files.length);
+		for (const entry of files) expect(stored.get(entry.path)?.equals(entry.content)).toBe(true);
+		expect(t.kernel.versions.get(VERSIONS.shop as string)?.state).toBe("ready");
+		expect(t.events.at(-1)).toMatchObject({
+			step: "uploaded",
+			sent: total(files),
+			calls: 1 + 1 + 1 + expectedPuts + 1,
+		});
+
+		const customFiles = [file("index.html", 200), file("app.js", 9 * CODE_SITE_PART_BYTES)];
+		const custom = setup({ shop: customFiles }, { putConcurrency: 3 });
+		let customInFlight = 0;
+		let customMaxInFlight = 0;
+		const customPending: (() => void)[] = [];
+		const customWaiters: (() => void)[] = [];
+		const waitCustom = (target: number) =>
+			new Promise<void>((resolve) => {
+				const check = () => {
+					if (customInFlight >= target) resolve();
+					else customWaiters.push(check);
+				};
+				check();
+			});
+		let customCompleted = 0;
+		custom.kernel.answer = async (method, args) => {
+			if (method !== "qorpera_code_site_put") return undefined;
+			customInFlight += 1;
+			customMaxInFlight = Math.max(customMaxInFlight, customInFlight);
+			for (const notify of customWaiters.splice(0)) notify();
+			await new Promise<void>((resolve) => customPending.push(resolve));
+			customInFlight -= 1;
+			customCompleted += 1;
+			return custom.kernel.usual(method, args);
+		};
+		const customRunning = custom.pass();
+		await waitCustom(3);
+		expect(customInFlight).toBe(3);
+		while (customCompleted < 10) {
+			customPending.pop()?.();
+			await new Promise((resolve) => setImmediate(resolve));
+		}
+		await expect(customRunning).resolves.toEqual({ uploaded: 1, failed: 0 });
+		expect(customMaxInFlight).toBe(3);
+		for (const entry of customFiles) expect(custom.stored("shop").get(entry.path)?.equals(entry.content)).toBe(true);
+	});
+
+	it("aborts sibling in-flight puts and stops scheduling remaining chunks on first error", async () => {
+		const files = [file("index.html", 200), file("big.js", 19 * CODE_SITE_PART_BYTES)];
+		const runCase = async (trigger: () => unknown, expectedResult: { uploaded: number; failed: number }) => {
+			const t = setup({ shop: files, site: small(2) }, { putConcurrency: 4 });
+			let shopPuts = 0;
+			let abortedSiblings = 0;
+			let triggerFail: (() => void) | undefined;
+			const ready = new Promise<void>((resolve) => {
+				t.kernel.answer = async (method, args, signal) => {
+					if (method !== "qorpera_code_site_put" || args.p_version_id !== VERSIONS.shop) return undefined;
+					const callNumber = shopPuts++;
+					if (shopPuts === 4) resolve();
+					if (callNumber === 1) {
+						await new Promise<void>((done) => {
+							triggerFail = done;
+						});
+						return trigger();
+					}
+					return await new Promise((_resolve, reject) => {
+						const onAbort = () => {
+							abortedSiblings += 1;
+							reject(signal.reason);
+						};
+						if (signal.aborted) onAbort();
+						else signal.addEventListener("abort", onAbort, { once: true });
+					});
+				};
+			});
+			const running = t.pass();
+			await ready;
+			triggerFail?.();
+			await expect(running).resolves.toEqual(expectedResult);
+			return { t, shopPuts, abortedSiblings };
+		};
+
+		const refused = await runCase(
+			() => ({ schema: "qorpera.code-site-put/v1", state: "refused", code: "SITE_FILE_DIFFERS", path: "big.js" }),
+			{ uploaded: 1, failed: 1 },
+		);
+		expect(refused.shopPuts).toBe(4);
+		expect(refused.abortedSiblings).toBe(3);
+		expect(refused.t.of("qorpera_code_site_finish").map((call) => call.args.p_version_id)).toEqual([VERSIONS.site]);
+		expect(refused.t.of("qorpera_code_site_failed").map((call) => call.args)).toEqual([
+			{ ...WHICH, p_change: 14, p_code: "SITE_FILE_DIFFERS" },
+		]);
+		expect(refused.t.errors()).toEqual(["put:SITE_FILE_DIFFERS:big.js"]);
+		expect(refused.t.kernel.versions.get(VERSIONS.site as string)?.state).toBe("ready");
+
+		const takenDown = await runCase(
+			() => ({ schema: "qorpera.code-site-put/v1", state: "refused", code: "SITE_TAKEN_DOWN" }),
+			{ uploaded: 1, failed: 0 },
+		);
+		expect(takenDown.shopPuts).toBe(4);
+		expect(takenDown.abortedSiblings).toBe(3);
+		expect(takenDown.t.of("qorpera_code_site_failed")).toEqual([]);
+		expect(takenDown.t.events.filter((event) => event.step === "taken-down")).toEqual([
+			{ event: "code-site", step: "taken-down", ...NAMED, at: "put" },
+		]);
+
+		const busy = await runCase(
+			() => {
+				throw new CodingControlBusy();
+			},
+			{ uploaded: 1, failed: 0 },
+		);
+		expect(busy.shopPuts).toBe(4);
+		expect(busy.abortedSiblings).toBe(3);
+		expect(busy.t.of("qorpera_code_site_failed")).toEqual([]);
+		expect(busy.t.events.filter((event) => event.step === "busy")).toEqual([
+			{ event: "code-site", step: "busy", ...NAMED, at: "put", passes: 1 },
+		]);
+	});
+
+	it("aborts all in-flight parallel puts cleanly when the pass signal aborts", async () => {
+		const files = [file("index.html", 200), file("big.js", 19 * CODE_SITE_PART_BYTES)];
+		const t = setup({ shop: files, site: small(2) }, { putConcurrency: 4 });
+		const controller = new AbortController();
+		const watch = watchAbortSignalAny();
+		let started = 0;
+		let aborted = 0;
+		const allInFlight = new Promise<void>((resolve) => {
+			t.kernel.answer = async (method, _args, signal) => {
+				if (method !== "qorpera_code_site_put") return undefined;
+				started += 1;
+				if (started === 4) resolve();
+				return await new Promise((_resolve, reject) => {
+					const onAbort = () => {
+						aborted += 1;
+						reject(signal.reason);
+					};
+					if (signal.aborted) onAbort();
+					else signal.addEventListener("abort", onAbort, { once: true });
+				});
+			};
+		});
+		try {
+			const running = t.uploads.pass(controller.signal);
+			await allInFlight;
+			controller.abort(new Error("CODING_EXECUTOR_SHUTDOWN"));
+			await expect(running).resolves.toEqual({ uploaded: 0, failed: 0 });
+			expect(started).toBe(4);
+			expect(aborted).toBe(4);
+			expect(t.of("qorpera_code_site_finish")).toEqual([]);
+			expect(t.of("qorpera_code_site_failed")).toEqual([]);
+			expect(t.errors()).toEqual([]);
+			expect(watch.on(controller.signal)).toBe(0);
+		} finally {
+			watch.restore();
+		}
+	});
+
+	it("rejects an oversized part before sending any put RPC regardless of path order", async () => {
+		const oversizedPath = `${"z".repeat(3000)}.js`;
+		const t = setup({
+			shop: [file("a.html", 10), file("index.html", 10), file(oversizedPath, CODE_SITE_PART_BYTES)],
+		});
+		await expect(t.pass()).resolves.toEqual({ uploaded: 0, failed: 1 });
+		expect(t.of("qorpera_code_site_put")).toEqual([]);
+		expect(t.errors()).toEqual([`put:SITE_UPLOAD_FAILED:${oversizedPath}:CODE_SITE_PART_TOO_LARGE`]);
 	});
 
 	describe("wait", () => {

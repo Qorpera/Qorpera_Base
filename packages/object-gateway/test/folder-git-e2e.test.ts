@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
 	link,
 	mkdir,
@@ -19,10 +19,11 @@ import { connect, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { SaveChecks, type StoredForm } from "../src/folder-service/git-objects.ts";
 import { NasObjects } from "../src/folder-service/objects.ts";
 import { WAITS_FOR_REFUSED } from "../src/folder-service/plan.ts";
 import { encodeJson, Kind } from "../src/folder-service/protocol.ts";
-import { CARRIES } from "../src/folder-service/secret-scan.ts";
+import { CARRIES, SecretRefusal, type SecretSet, UNCHECKED } from "../src/folder-service/secret-scan.ts";
 import { createFolderServer } from "../src/folder-service/server.ts";
 import { FolderService, type MachineBoundary } from "../src/folder-service/service.ts";
 import { FolderStaging } from "../src/folder-service/staging.ts";
@@ -272,7 +273,12 @@ async function area(files: Readonly<Record<string, string>> = {}, coding = false
 		core,
 		objects,
 		grants: coding ? codingGrants() : codeHostGrants(),
-		staging: new FolderStaging(core, new FakeUploads(root, core), objects),
+		staging: new FolderStaging(
+			core,
+			new FakeUploads(root, core),
+			objects,
+			new SaveChecks({ ...(gitBin ? { git: gitBin } : {}), ...(program ? { folderProgram: program } : {}) }),
+		),
 		log: (line) => {
 			logged += `${line}\n`;
 		},
@@ -1584,6 +1590,137 @@ describe.skipIf(!program || !gitBin)("the machine's caches, out of the code area
 			expect(await readFile(join(notes, "index.js"), "utf8")).toBe("cached\n");
 			expect(await readFile(join(pkg, "readme.md"), "utf8")).toBe("read me\n");
 			expect((await readdir(pkg)).sort()).toEqual(["out.js", "readme.md", "same.js"]);
+		},
+		TIMEOUT,
+	);
+});
+
+describe.skipIf(!program || !gitBin)("native Rust pack secret scanner (qorpera-folder scan-pack)", () => {
+	async function checkPack(
+		checks: SaveChecks,
+		bytes: Buffer,
+		form: StoredForm,
+		secrets: SecretSet = secretsOf(VALUE),
+		chunk = 64 * 1024,
+	): Promise<string> {
+		const check = checks.start(secrets, bytes.length, form);
+		try {
+			for (let at = 0; at < bytes.length; at += chunk) await check.push(bytes.subarray(at, at + chunk));
+			await check.end();
+			return "checked";
+		} catch (error) {
+			await check.abort();
+			if (error instanceof SecretRefusal) return error.message;
+			throw error;
+		}
+	}
+
+	function gitSync(dir: string, args: readonly string[], input?: string | Buffer): Buffer {
+		const res = spawnSync(gitBin!, ["-c", "user.name=Test", "-c", "user.email=test@example.com", ...args], {
+			cwd: dir,
+			input,
+			env: {
+				PATH: "/usr/bin:/bin",
+				HOME: dir,
+				GIT_CONFIG_NOSYSTEM: "1",
+				GIT_CONFIG_GLOBAL: "/dev/null",
+				LC_ALL: "C",
+			},
+			maxBuffer: 256 * 1024 ** 2,
+		});
+		if (res.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${res.stderr.toString()}`);
+		return res.stdout;
+	}
+
+	async function makeRepo(root: string, name: string, commits: readonly Record<string, string>[], sha256 = false) {
+		const dir = join(root, name);
+		await mkdir(dir);
+		gitSync(dir, ["init", "-q", `--object-format=${sha256 ? "sha256" : "sha1"}`]);
+		for (const [n, files] of commits.entries()) {
+			for (const [path, text] of Object.entries(files)) await writeFile(join(dir, path), text);
+			gitSync(dir, ["add", "-A"]);
+			gitSync(dir, ["commit", "-q", "-m", `commit ${n + 1}`]);
+		}
+		return dir;
+	}
+
+	function makePack(dir: string, revs = "HEAD\n", thin = false): Buffer {
+		return gitSync(dir, ["pack-objects", "--revs", "--stdout", "-q", ...(thin ? ["--thin"] : [])], revs);
+	}
+
+	it(
+		"scans clean, delta-secret, sha256, corrupt, over-limit, over-budget, and concurrent packs with qorpera-folder scan-pack",
+		async () => {
+			const root = await mkdtemp(join(tmpdir(), "qorpera-native-scan-e2e-"));
+			cleanup.push(() => rm(root, { recursive: true, force: true }));
+			const scratch = join(root, "scratch");
+			await mkdir(scratch);
+			const reading = { git: gitBin!, folderProgram: program!, scratch };
+			const checks = new SaveChecks(reading);
+
+			const lines = Array.from({ length: 300 }, (_, i) => `setting_${i} = value ${i}\n`);
+			const v1 = [...lines.slice(0, 150), `key = ${VALUE}\n`, ...lines.slice(150)].join("");
+			const v2 = [
+				...lines.slice(0, 150),
+				`key = ${VALUE.slice(0, 8)}X${VALUE.slice(9)}\n`,
+				...lines.slice(150),
+				...lines.slice(0, 20).map((line) => `more_${line}`),
+			].join("");
+
+			const deltaRepo = await makeRepo(root, "delta", [{ "s.conf": v1 }, { "s.conf": v2 }]);
+			const deltaPack = makePack(deltaRepo);
+			expect(deltaPack.includes(VALUE)).toBe(false);
+			expect(await checkPack(checks, deltaPack, "pack")).toBe(CARRIES);
+			expect(await checkPack(checks, makePack(deltaRepo, "HEAD\n^HEAD~1\n"), "pack")).toBe("checked");
+
+			const sha256SecretRepo = await makeRepo(root, "sha256-secret", [{ "s.conf": v1 }, { "s.conf": v2 }], true);
+			const sha256CleanRepo = await makeRepo(root, "sha256-clean", [{ "a.txt": "clean content\n" }], true);
+			expect(await checkPack(checks, makePack(sha256SecretRepo), "sha256-pack")).toBe(CARRIES);
+			expect(await checkPack(checks, makePack(sha256CleanRepo), "sha256-pack")).toBe("checked");
+
+			const honestRepo = await makeRepo(root, "honest", [
+				{ "a.md": "clean text\n", "b.md": "more clean text\n".repeat(500) },
+			]);
+			const honestPack = makePack(honestRepo);
+			const thinPack = makePack(deltaRepo, "HEAD\n^HEAD~1\n", true);
+			expect(await checkPack(checks, honestPack, "pack")).toBe("checked");
+			expect(await checkPack(checks, thinPack, "pack")).toBe(UNCHECKED);
+			expect(await checkPack(checks, honestPack.subarray(0, honestPack.length - 8), "pack")).toBe(UNCHECKED);
+			expect(await checkPack(checks, Buffer.concat([honestPack, Buffer.from("extra")]), "pack")).toBe(UNCHECKED);
+
+			const bigRepo = await makeRepo(root, "big", [
+				{ "big.txt": "repeated line for rebuilt limit\n".repeat(40_000) },
+			]);
+			const bigPack = makePack(bigRepo);
+			expect(
+				await checkPack(
+					new SaveChecks({ ...reading, rebuiltFactor: 1, rebuiltFloor: 0, rebuiltMax: 100_000 }),
+					bigPack,
+					"pack",
+				),
+			).toBe(UNCHECKED);
+			expect(await checkPack(checks, bigPack, "pack")).toBe("checked");
+
+			const longSecret = `test-val${"x".repeat(32 * 1024 - 8)}`;
+			const budgetRepo = await makeRepo(root, "budget", [{ "trap.txt": "test-val".repeat(8 * 1024) }]);
+			const budgetPack = makePack(budgetRepo);
+			expect(
+				await checkPack(
+					new SaveChecks({ ...reading, rebuiltFactor: 1, rebuiltFloor: 0, rebuiltMax: 1024 * 1024 }),
+					budgetPack,
+					"pack",
+					secretsOf(longSecret),
+				),
+			).toBe(UNCHECKED);
+
+			const results = await Promise.all([
+				checkPack(checks, honestPack, "pack"),
+				checkPack(checks, deltaPack, "pack"),
+				checkPack(checks, bigPack, "pack"),
+				checkPack(checks, honestPack, "pack"),
+			]);
+			expect(results).toEqual(["checked", CARRIES, "checked", "checked"]);
+			expect(await readdir(scratch)).toEqual([]);
 		},
 		TIMEOUT,
 	);
