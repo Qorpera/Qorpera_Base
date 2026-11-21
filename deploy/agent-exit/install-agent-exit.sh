@@ -145,12 +145,14 @@ pin qorpera-agent-exit-sni.service "$EXPECTED_SNI_UNIT_SHA256"
 python3 -c '
 import hashlib, json, os, sys
 package = sys.argv[1]
-files = ["qorpera-agent-exit-rules.mjs", "qorpera-agent-exit-rules.service", "supabase-prod-ca-2021.crt"]
+base_files = ["qorpera-agent-exit-rules.mjs", "qorpera-agent-exit-rules.service", "supabase-prod-ca-2021.crt"]
+own_ca_files = ["database-own-ca.crt", "database-own-ca.sha256", "database-own-ca.conf"]
 with open(os.path.join(package, "manifest.json"), encoding="utf-8") as f:
     manifest = json.load(f)
 assert sorted(manifest) == ["artifacts", "schema"] and manifest["schema"] == "qorpera.agent-exit-rules-package/v1"
-assert [artifact["file"] for artifact in manifest["artifacts"]] == files
-assert sorted(os.listdir(package)) == sorted(files + ["manifest.json"])
+names = [artifact["file"] for artifact in manifest["artifacts"]]
+assert names in (base_files, base_files + own_ca_files)
+assert sorted(os.listdir(package)) == sorted(names + ["manifest.json"])
 for artifact in manifest["artifacts"]:
     path = os.path.join(package, artifact["file"])
     assert not os.path.islink(path) and os.path.isfile(path)

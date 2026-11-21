@@ -54,6 +54,23 @@ function loginBase(value: unknown): string {
 	return url.href;
 }
 
+function isPublishableKey(key: unknown): key is string {
+	if (typeof key !== "string" || key.length > 8192) return false;
+	if (/^sb_publishable_[A-Za-z0-9_-]{8,}$/.test(key)) return true;
+	const parts = key.split(".");
+	const payloadPart = parts[1];
+	if (parts.length !== 3 || !payloadPart || parts.some((part) => !part || !/^[A-Za-z0-9_-]+$/.test(part)))
+		return false;
+	try {
+		const normalized = payloadPart.replaceAll("-", "+").replaceAll("_", "/");
+		const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+		const payload = JSON.parse(atob(padded)) as { role?: unknown; sub?: unknown };
+		return payload.role === "anon" && !payload.sub;
+	} catch {
+		return false;
+	}
+}
+
 export function parseCloudConfig(value: unknown, requireViewer = false): CloudConfig {
 	if (!value || typeof value !== "object" || Array.isArray(value))
 		throw new Error("Invalid public cloud configuration");
@@ -73,8 +90,7 @@ export function parseCloudConfig(value: unknown, requireViewer = false): CloudCo
 		)
 	)
 		throw new Error("Unknown public cloud configuration field");
-	if (typeof input.publishableKey !== "string" || !/^sb_publishable_[A-Za-z0-9_-]{8,}$/.test(input.publishableKey))
-		throw new Error("Expected a publishable key");
+	if (!isPublishableKey(input.publishableKey)) throw new Error("Expected a publishable key");
 	const projectUrl = origin(input.projectUrl, "https:");
 	const objectGatewayUrl = origin(input.objectGatewayUrl, "https:");
 	const officeViewerOrigin =

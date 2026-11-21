@@ -50,6 +50,11 @@ test("preview retains default origins without inventing a viewer", () => {
 test("config rejects credential fields, nonpublic keys and oversized documents", t => {
 	assert.throws(() => prepareDeployment(fixture(t, { ...config, secretKey: "do-not-emit" })), /Unknown/);
 	assert.throws(() => prepareDeployment(fixture(t, { ...config, publishableKey: "sb_secret_do-not-emit" })), /publishable key/);
+	const jwt = (payload) => `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.sig`;
+	const selfHostedAnon = jwt({ iss: "supabase", role: "anon", iat: 1700000000 });
+	assert.equal(parseCloudConfig({ ...config, publishableKey: selfHostedAnon }).publishableKey, selfHostedAnon);
+	assert.throws(() => parseCloudConfig({ ...config, publishableKey: jwt({ iss: "supabase", role: "service_role" }) }), /publishable key/);
+	assert.throws(() => parseCloudConfig({ ...config, publishableKey: jwt({ role: "anon", sub: "user-1" }) }), /publishable key/);
 	const input = fixture(t);
 	writeFileSync(input.configPath, " ".repeat(8193));
 	assert.throws(() => prepareDeployment(input), /8192/);

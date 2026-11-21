@@ -380,14 +380,15 @@ def check_node(node, ca_sha256=None):
         installed = False
     if not installed:
         raise node_failed(node, "its root helper does not answer", err)
-    paths = [path for path, _ in INSTALLED] + [PROGRAM] + ([OWN_CA] if ca_sha256 is not None else [])
+    checked = [item for item in INSTALLED if ca_sha256 is None or not item[0].endswith("/supabase-prod-ca-2021.crt")]
+    paths = [path for path, _ in checked] + [PROGRAM] + ([OWN_CA] if ca_sha256 is not None else [])
     code, out, err = run(node, ["/usr/bin/sha256sum", "--"] + paths)
     found = {}
     for line in out.splitlines():
         match = re.fullmatch(r"([0-9a-f]{64})  (/\S+)", line)
         if match:
             found[match.group(2)] = match.group(1)
-    for path, local in INSTALLED:
+    for path, local in checked:
         if found.get(path) != sha256_file(local):
             raise node_failed(node, f"{path} is not this checkout's: install the exit from it first", err)
     if ca_sha256 is not None and found.get(OWN_CA) != ca_sha256:
