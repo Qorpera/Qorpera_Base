@@ -50,7 +50,10 @@ import {
 	LxdCodingExecutorHost,
 	type LxdCodingExecutorHostOptions,
 } from "../src/coding-executor-host.ts";
-import type { LxdCodingFolderCommandTransportOptions } from "../src/coding-folder-command-transport.ts";
+import type {
+	LxdCodingFolderCommandTransport,
+	LxdCodingFolderCommandTransportOptions,
+} from "../src/coding-folder-command-transport.ts";
 import type {
 	CodingFolderBoundary,
 	CodingFolderBoundaryView,
@@ -8571,12 +8574,34 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			];
 			let lintId: string | undefined;
 			let testId: string | undefined;
+			let markSiblingCancelled: (() => void) | undefined;
+			const siblingCancelled = new Promise<void>((resolve) => {
+				markSiblingCancelled = resolve;
+			});
+			let cancelledBeforeTailReadFinished = false;
 			f.ending((run) => {
 				const cmd = checkOf(run);
 				if (cmd === "npm run lint" || cmd === "npm test") return { state: "running" };
 				return {};
 			});
 			const baseRun = mocked.guestRun.getMockImplementation()!;
+			const baseCancel = mocked.guestCancel.getMockImplementation()!;
+			const { LxdCodingFolderCommandTransport: RealTransport } = await vi.importActual<{
+				LxdCodingFolderCommandTransport: typeof LxdCodingFolderCommandTransport;
+			}>("../src/coding-folder-command-transport.ts");
+			const baseRead = RealTransport.prototype.read;
+			const readSpy = vi.spyOn(RealTransport.prototype, "read").mockImplementation(async function (
+				this: LxdCodingFolderCommandTransport,
+				scope,
+				input,
+				signal,
+			) {
+				if (input.commandId === lintId && input.limit === 16384) {
+					await siblingCancelled;
+					cancelledBeforeTailReadFinished = true;
+				}
+				return baseRead.call(this, scope, input, signal);
+			});
 			mocked.guestRun.mockImplementation(async (request: unknown) => {
 				const result = await baseRun(request);
 				const parsed = parseCodingGuestRequest("run", request);
@@ -8593,8 +8618,20 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				}
 				return result;
 			});
+			mocked.guestCancel.mockImplementation(async (request: unknown) => {
+				const parsed = parseCodingGuestRequest("cancel", request);
+				const result = await baseCancel(request);
+				if (parsed.commandId === testId) markSiblingCancelled?.();
+				return result;
+			});
 
-			const run = await f.run(dag, 1, f.signal, RECIPE);
+			let run: Awaited<ReturnType<typeof f.run>>;
+			try {
+				run = await f.run(dag, 1, f.signal, RECIPE);
+			} finally {
+				readSpy.mockRestore();
+			}
+			expect(cancelledBeforeTailReadFinished).toBe(true);
 			expect(run).toEqual({
 				state: "failed",
 				ms: expect.any(Number),

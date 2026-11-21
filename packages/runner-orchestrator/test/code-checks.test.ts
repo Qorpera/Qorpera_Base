@@ -394,7 +394,7 @@ describe("parallel check dependencies (needs)", () => {
 		expect(problems(duplicateName)).toEqual(["DUPLICATE /checks/1/name"]);
 	});
 
-	it("tracks needs changes in the gate diff while ignoring dependency list reordering", () => {
+	it("tracks effective dependency changes in the gate diff, including sequential-to-DAG mode flips", () => {
 		const seq = withChecks([
 			{ name: "install", run: "npm ci" },
 			{ name: "lint", run: "npm run lint" },
@@ -417,7 +417,7 @@ describe("parallel check dependencies (needs)", () => {
 		expect(gateAdded.gate === "run" && gateAdded.changed).toEqual({
 			added: [],
 			removed: [],
-			run: ["lint", "test", "build"],
+			run: ["test", "build"],
 		});
 		const gateReordered = codeChecksGate(dag, reordered);
 		expect(gateReordered.gate === "run" && gateReordered.changed).toBeNull();
@@ -428,10 +428,23 @@ describe("parallel check dependencies (needs)", () => {
 			{ name: "build", run: "npm run build", needs: ["lint", "test"] },
 		]);
 		const gateEmpty = codeChecksGate(dag, emptyNeeds);
-		expect(gateEmpty.gate === "run" && gateEmpty.changed).toEqual({
+		expect(gateEmpty.gate === "run" && gateEmpty.changed).toBeNull();
+
+		const sequentialOrder = withChecks([
+			{ name: "install", run: "npm ci" },
+			{ name: "build", run: "npm run build" },
+			{ name: "scan", run: "npm run scan" },
+		]);
+		const flippedToDag = withChecks([
+			{ name: "install", run: "npm ci", needs: [] },
+			{ name: "build", run: "npm run build" },
+			{ name: "scan", run: "npm run scan" },
+		]);
+		const gateFlipped = codeChecksGate(sequentialOrder, flippedToDag);
+		expect(gateFlipped.gate === "run" && gateFlipped.changed).toEqual({
 			added: [],
 			removed: [],
-			run: ["install"],
+			run: ["build", "scan"],
 		});
 	});
 
@@ -833,7 +846,7 @@ describe("the failed check's words", () => {
 				"",
 				"      expected 2, got 3",
 				"",
-				`${LOG} Checks that passed before it: install.${FIX}`,
+				`${LOG} Checks that passed: install.${FIX}`,
 			].join("\n"),
 		);
 	});
@@ -861,7 +874,7 @@ describe("the failed check's words", () => {
 				"",
 				"    Timed out",
 				"",
-				`Its whole output is in ~/.qorpera-checks/out/4-e2e.log on the session's machine. Checks that passed before it: install, test, build.${FIX}`,
+				`Its whole output is in ~/.qorpera-checks/out/4-e2e.log on the session's machine. Checks that passed: install, test, build.${FIX}`,
 			].join("\n"),
 		);
 	});
@@ -905,7 +918,7 @@ describe("the failed check's words", () => {
 	it("shows the names on one line too", () => {
 		const words = codeChecksFailedSummary(failedRun({ name: "a\nb" }, [{ name: "c\nd", ms: 1 }]), "fast-forward");
 		expect(words).toContain(`the check "a${FFFD}b" failed`);
-		expect(words).toContain(`Checks that passed before it: c${FFFD}d.`);
+		expect(words).toContain(`Checks that passed: c${FFFD}d.`);
 	});
 
 	it("keeps hostile output inside the indented block, one character for each it cannot show", () => {
@@ -1013,7 +1026,7 @@ describe("the failed check's words", () => {
 				"",
 				"    A drill by Qorpera's operator: this check fails on purpose, once.",
 				"",
-				`Its whole output is in ~/.qorpera-checks/0000000007-0001/out/3-qorpera-drill.log on the session's machine. Checks that passed before it: install, test.${FIX}`,
+				`Its whole output is in ~/.qorpera-checks/0000000007-0001/out/3-qorpera-drill.log on the session's machine. Checks that passed: install, test.${FIX}`,
 			].join("\n"),
 		);
 		// Without it, as before, byte for byte.

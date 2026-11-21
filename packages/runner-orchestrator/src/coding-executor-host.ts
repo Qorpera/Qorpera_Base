@@ -587,16 +587,13 @@ function siteBoundaryJudged(boundary: CodingFolderBoundary): string {
 const CODE_CHECKS_COPY_MS = 300_000;
 /** What the wall budget gives each check beyond its own limit. */
 const CODE_CHECKS_SLACK_MS = 60_000;
-/** How often a running check is read. */
-const CODE_CHECKS_POLL_MS = 3_000;
 const CODE_CHECKS_POLL_STEPS_MS: readonly number[] = [250, 500, 1_000, 2_000];
+const CODE_CHECKS_UNANSWERED_READS = 20;
+const CODE_CHECKS_UNANSWERED_WINDOW_MS = 60_000;
 function codeChecksPollDelayMs(attempt: number, configuredPollMs: number | undefined): number {
 	if (configuredPollMs !== undefined) return configuredPollMs;
 	return CODE_CHECKS_POLL_STEPS_MS[Math.min(attempt, CODE_CHECKS_POLL_STEPS_MS.length - 1)] as number;
 }
-/** How many reads in a row a check's calls may go unanswered (the transport, the guest, the run authority) before the
- * run ends as not run: a call that fails is asked again at the next read until then (a minute at the default pace). */
-const CODE_CHECKS_UNANSWERED_READS = 20;
 /** How long a running check is cancelled and read for, once the turn gave up, the budget passed or its calls went
  * unanswered, until its end is confirmed; and how long an earlier run's command left unconfirmed is cancelled and read
  * again before a new run. Within the executor's stop (TimeoutStopSec 75 s, its cleanup 45 s). */
@@ -787,8 +784,6 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	// run's fence stands, before that run's first check. For certain: its start was answered, and a later receipt showed
 	// it ended (succeeded, failed, cancelled, machine_stopped). They live in this process: an executor that restarts
 	// forgets them, and then only the scripts' own rules and the copy's end of earlier runs' processes hold.
-	/** Per session, the command whose stop could not be confirmed: it may still run. No run of the session's checks
-	 * starts, nor touches a folder, until a cancel and a read before it confirm that it ended. It is uncertain too. */
 	readonly #checksMayRun = new Map<string, Set<string>>();
 	/** Per session, every command not seen to end for certain: a start never answered (its `cancelled` may be
 	 * provisional, and the start may land at any time), a stop not confirmed, a receipt or a `hidden` that says
@@ -2237,6 +2232,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 						signal,
 						folder,
 						runAbort.signal,
+						() => runAbort.abort(),
 					);
 					const ms = elapsed(started);
 					if ("cancelled" in ended) {
@@ -2718,19 +2714,6 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const commands = this.#checksMayRun.get(workerId) ?? new Set<string>();
 		this.#checksMayRun.set(workerId, commands.add(commandId));
 	}
-	/** One command of a run of the checks, to its end: started, then read every CODE_CHECKS_POLL_MS until it ends. A
-	 * call that fails is asked again at the next read (a start again is the same command) until the time of
-	 * CODE_CHECKS_UNANSWERED_READS reads passed without an answer. A command that ended is shown only as a model's
-	 * command would be (`hidden`). A failed check's tail is read once more, the last 16 KiB of its masked output, and
-	 * cut by the words' own rule (`codeChecksTail`, 6.4); when that read fails, the failure stands without a tail
-	 * (`error`). The turn's abort, the run's budget passing, or calls unanswered stop it first (#stopChecksCommand), and
-	 * the answer says whether its end was confirmed (`stopped`). Every way the host stops watching it without seeing it
-	 * end for certain leaves it in the session's memories (#checksMayRun, #checksUncertain): a start never answered, a
-	 * stop not confirmed, a receipt or a `hidden` that says `unconfirmed` (review round 6, F1). An answer that is not a
-	 * receipt says whether the command has ended all the same (`ended`, the site's drop asks it): the guest's own word,
-	 * a receipt in any state but `running` (`unconfirmed` too: the guest's unit is no longer live), so also when
-	 * `hidden` then shows nothing of it (it is asked only after such a receipt), or a stop that confirmed the end of a
-	 * start that was answered. Not ended: a start never answered, a stop not confirmed. */
 	async #checksCommand(
 		transport: LxdCodingFolderCommandTransport,
 		scope: CloudCodingCommandScope,
@@ -2740,6 +2723,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		signal: AbortSignal,
 		folder: FolderOptions,
 		cancel?: AbortSignal,
+		onNonSuccess?: () => void,
 	): Promise<
 		| { receipt: CloudCodingCommandReceipt; tail: string; error?: unknown }
 		| { cancelled: true; stopped: boolean; ended: boolean }
@@ -2753,7 +2737,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	> {
 		const live = AbortSignal.any([signal, budget]);
 		const pollLive = cancel ? AbortSignal.any([signal, budget, cancel]) : live;
-		const unansweredLimitMs = CODE_CHECKS_UNANSWERED_READS * (folder.checksPollMs ?? CODE_CHECKS_POLL_MS);
+		const unansweredLimitMs =
+			folder.checksPollMs === undefined
+				? CODE_CHECKS_UNANSWERED_WINDOW_MS
+				: CODE_CHECKS_UNANSWERED_READS * folder.checksPollMs;
 		const { commandId } = command;
 		// The command's last receipt: none while its start was never answered.
 		let receipt: CloudCodingCommandReceipt | undefined;
@@ -2798,7 +2785,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				if (signal.aborted || budget.aborted) return await stopped(overBudget);
 				if (cancel?.aborted) return await stopped(siblingCancelled);
 				unanswered ??= performance.now();
-				if (performance.now() - unanswered >= unansweredLimitMs) return await stopped(failed(error));
+				if (performance.now() - unanswered >= unansweredLimitMs) {
+					onNonSuccess?.();
+					return await stopped(failed(error));
+				}
 			}
 			try {
 				await setTimeout(codeChecksPollDelayMs(pollAttempt++, folder.checksPollMs), undefined, {
@@ -2810,12 +2800,14 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				return await stopped(overBudget);
 			}
 		}
+		const alreadyCancelled = cancel?.aborted ?? false;
+		if (receipt.state !== "succeeded" && !alreadyCancelled) onNonSuccess?.();
 		// Ended without a word of how (the guest lost it: its unit is no longer live). The host did not see how, so it is
 		// not an end for certain: looked at again after the next run's fence.
 		if (receipt.state === "unconfirmed") uncertain();
 		let tail = "",
 			unread: unknown;
-		if (receipt.state === "failed" && !copy && !cancel?.aborted)
+		if (receipt.state === "failed" && !copy && !alreadyCancelled)
 			try {
 				const end = await transport.read(scope, { commandId, tail: true, limit: 16384 }, live);
 				// A read that starts inside the output may start inside a line: from its first whole line, unless it is all

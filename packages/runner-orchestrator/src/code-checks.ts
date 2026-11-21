@@ -66,8 +66,6 @@ export type CodeChecksRead =
 	/** `blob` is null when the path holds no regular file (a folder, a link or a submodule). */
 	| { readonly state: "refused"; readonly blob: string | null; readonly problems: readonly CodeChecksProblem[] };
 
-/** What a change changed in the checks, by name: only in the candidate, only in main, and in both with another `run`,
- * `cwd` or `timeoutSeconds`. */
 export interface CodeChecksChanged {
 	readonly added: string[];
 	readonly removed: string[];
@@ -470,6 +468,20 @@ export function codeChecksGate(main: CodeChecksRead, candidate: CodeChecksRead):
 	return { gate: "refused", summary: codeChecksRefusedSummary(candidate, main.state !== "missing") };
 }
 
+function effectiveNeedsOf(checks: readonly CodeCheck[]): ReadonlyMap<string, readonly string[]> {
+	const plan = codeChecksPlan(checks);
+	const depsByName = new Map<string, readonly string[]>();
+	if (plan === null) return depsByName;
+	for (let index = 0; index < checks.length; index++) {
+		const check = checks[index] as CodeCheck;
+		depsByName.set(
+			check.name,
+			(plan[index] as readonly number[]).map((dep) => (checks[dep] as CodeCheck).name),
+		);
+	}
+	return depsByName;
+}
+
 function sameNeeds(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
 	if (a === undefined || b === undefined) return a === b;
 	if (a.length !== b.length) return false;
@@ -481,6 +493,8 @@ function sameNeeds(a: readonly string[] | undefined, b: readonly string[] | unde
 /** Against main's valid file (else every check counts as added). Null when nothing changed. */
 function changedOf(main: readonly CodeCheck[], candidate: readonly CodeCheck[]): CodeChecksChanged | null {
 	const before = new Map(main.map((check) => [check.name, check]));
+	const beforeNeeds = effectiveNeedsOf(main);
+	const afterNeeds = effectiveNeedsOf(candidate);
 	const after = new Set(candidate.map((check) => check.name));
 	const added: string[] = [];
 	const run: string[] = [];
@@ -491,7 +505,7 @@ function changedOf(main: readonly CodeCheck[], candidate: readonly CodeCheck[]):
 			was.run !== check.run ||
 			was.cwd !== check.cwd ||
 			was.timeoutSeconds !== check.timeoutSeconds ||
-			!sameNeeds(was.needs, check.needs)
+			!sameNeeds(beforeNeeds.get(check.name), afterNeeds.get(check.name))
 		)
 			run.push(check.name);
 	}
@@ -643,7 +657,7 @@ export function codeChecksFailedSummary(
 		`${opening}Nothing went into main: the check "${shown(failed.name, 40)}" failed on this change` +
 		`${how === "merged" ? " merged with main as it is now" : ""}. It ran ${code(failed.run, MAX_PASSED_RUN_BYTES)} ` +
 		`and ${exit} after ${Math.round(millis(failed.ms) / 1000)} s${limit}${killed}.`;
-	const passed = run.passed.length > 0 ? ` Checks that passed before it: ${namesOf(run.passed)}.` : "";
+	const passed = run.passed.length > 0 ? ` Checks that passed: ${namesOf(run.passed)}.` : "";
 	const foot =
 		`Its whole output is in ${shown(failed.log, 200)} on the session's machine.${passed} Fix the cause in the code, ` +
 		"never by removing or weakening the check or its tests; run the checks yourself from a clean copy, commit and " +
