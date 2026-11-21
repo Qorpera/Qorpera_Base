@@ -1,3 +1,28 @@
+const MAX_CACHED_PUBLIC_KEYS = 512;
+type ImportedPublicKey = Awaited<ReturnType<typeof crypto.subtle.importKey>>;
+const importedPublicKeys = new Map<string, Promise<ImportedPublicKey>>();
+
+function importPublicKey(publicKey: string): Promise<ImportedPublicKey> {
+	const cached = importedPublicKeys.get(publicKey);
+	if (cached) {
+		importedPublicKeys.delete(publicKey);
+		importedPublicKeys.set(publicKey, cached);
+		return cached;
+	}
+	const pending = Promise.resolve()
+		.then(() => crypto.subtle.importKey("spki", decode(publicKey), "Ed25519", false, ["verify"]))
+		.catch((error) => {
+			if (importedPublicKeys.get(publicKey) === pending) importedPublicKeys.delete(publicKey);
+			throw error;
+		});
+	if (importedPublicKeys.size >= MAX_CACHED_PUBLIC_KEYS) {
+		const oldest = importedPublicKeys.keys().next().value;
+		if (oldest !== undefined) importedPublicKeys.delete(oldest);
+	}
+	importedPublicKeys.set(publicKey, pending);
+	return pending;
+}
+
 /** Browser and Node share the existing Ed25519/SPKI presence wire format.
  * The private key stays in memory and is never exported or sent to the cloud.
  */
@@ -18,7 +43,7 @@ export class PresenceSignatures {
 	static async verify(publicKey: string, bytes: Uint8Array<ArrayBuffer>, signature: string): Promise<boolean> {
 		try {
 			if (!/^[A-Za-z0-9+/]{40,240}={0,2}$/.test(publicKey) || !/^[A-Za-z0-9+/]{86}==$/.test(signature)) return false;
-			const key = await crypto.subtle.importKey("spki", decode(publicKey), "Ed25519", false, ["verify"]);
+			const key = await importPublicKey(publicKey);
 			return await crypto.subtle.verify("Ed25519", key, decode(signature), bytes);
 		} catch {
 			return false;

@@ -10,6 +10,17 @@ const IDENTITY_TTL_MS = 60_000;
 /** A sync whose identity lookup failed is tried again after this long, doubling up to the cap. */
 const SYNC_RETRY_MS = 3_000;
 const SYNC_RETRY_MAX_MS = 30_000;
+const MAX_TRACKED_CLIENTS = 4_096;
+const TEXT_ENCODER = new TextEncoder();
+
+function recordSequence(map: Map<string, number>, key: string, sequence: number): void {
+	map.delete(key);
+	if (map.size >= MAX_TRACKED_CLIENTS) {
+		const oldest = map.keys().next().value;
+		if (oldest !== undefined) map.delete(oldest);
+	}
+	map.set(key, sequence);
+}
 
 function broadcastBytes(
 	profileId: string,
@@ -19,9 +30,7 @@ function broadcastBytes(
 	staffAgentId: string,
 	activity?: PresenceAgentActivityEvent["activity"],
 ): Uint8Array<ArrayBuffer> {
-	return new TextEncoder().encode(
-		JSON.stringify([profileId, clientId, sequence, event, staffAgentId, activity ?? null]),
-	);
+	return TEXT_ENCODER.encode(JSON.stringify([profileId, clientId, sequence, event, staffAgentId, activity ?? null]));
 }
 
 /** Presence rides the lossy lane (SESSIONS.md): fire-and-forget pub/sub over
@@ -166,20 +175,50 @@ export class SupabaseCloudPresenceTransport {
 		const track = () => {
 			publish("open_thread", openThread ?? "");
 		};
+		const identitiesInFlight = new Map<string, Promise<HostedPresenceIdentity | undefined>>();
 		const resolveIdentities = async (clientIds: string[]): Promise<Map<string, HostedPresenceIdentity>> => {
 			const requested = [...new Set(clientIds)].filter((id) => UUID_PATTERN.test(id));
 			const resolved = new Map<string, HostedPresenceIdentity>();
 			const now = Date.now();
 			for (const [id, known] of identities) if (now - known.at >= IDENTITY_TTL_MS) identities.delete(id);
-			const unknown = requested.filter((id) => {
+			const waiting: Array<Promise<readonly [string, HostedPresenceIdentity | undefined]>> = [];
+			const missing: string[] = [];
+			for (const id of requested) {
 				const known = identities.get(id);
-				if (known && now - known.at < IDENTITY_TTL_MS) resolved.set(id, known.identity);
-				return !resolved.has(id);
-			});
-			if (unknown.length) {
-				for (const identity of await this.#primary.listPresenceDevices(profileId, unknown)) {
-					identities.set(identity.clientId, { identity, at: now });
-					resolved.set(identity.clientId, identity);
+				if (known && now - known.at < IDENTITY_TTL_MS) {
+					resolved.set(id, known.identity);
+					continue;
+				}
+				const pending = identitiesInFlight.get(id);
+				if (pending) {
+					waiting.push(pending.then((identity) => [id, identity] as const));
+					continue;
+				}
+				missing.push(id);
+			}
+			if (missing.length > 0) {
+				const batch = this.#primary.listPresenceDevices(profileId, missing).then((list) => {
+					const byId = new Map<string, HostedPresenceIdentity>();
+					for (const identity of list) {
+						identities.set(identity.clientId, { identity, at: now });
+						byId.set(identity.clientId, identity);
+					}
+					return byId;
+				});
+				for (const id of missing) {
+					const entry = batch.then((byId) => byId.get(id));
+					identitiesInFlight.set(id, entry);
+					void entry
+						.finally(() => {
+							if (identitiesInFlight.get(id) === entry) identitiesInFlight.delete(id);
+						})
+						.catch(() => undefined);
+					waiting.push(entry.then((identity) => [id, identity] as const));
+				}
+			}
+			if (waiting.length > 0) {
+				for (const [id, identity] of await Promise.all(waiting)) {
+					if (identity) resolved.set(id, identity);
 				}
 			}
 			return resolved;
@@ -235,7 +274,7 @@ export class SupabaseCloudPresenceTransport {
 						return;
 					if (stopped || source !== channel || sequence <= (lastBroadcastSequence.get(identity.clientId) ?? 0))
 						return;
-					lastBroadcastSequence.set(identity.clientId, sequence);
+					recordSequence(lastBroadcastSequence, identity.clientId, sequence);
 					accept(data, identity);
 				})
 				.catch(() => undefined);
@@ -315,41 +354,56 @@ export class SupabaseCloudPresenceTransport {
 						void resolveIdentities(visible.map((member) => member.clientId))
 							.then(async (resolved) => {
 								if (next !== channel || stopped || generation !== presenceGeneration) return;
-								const newest = new Map<string, PresenceMember & { sequence: number }>();
+								const byClient = new Map<string, typeof visible>();
 								for (const member of visible) {
 									const identity = resolved.get(member.clientId);
 									if (!identity || member.sequence < (lastPresenceSequence.get(member.clientId) ?? 0))
 										continue;
-									if (
-										!(await PresenceSignatures.verify(
-											identity.publicKey,
-											broadcastBytes(
-												profileId,
-												member.clientId,
-												member.sequence,
-												"open_thread",
-												member.staffAgentId ?? "",
-											),
-											member.signature,
-										))
-									)
-										continue;
-									const prior = newest.get(member.clientId);
-									if (prior && prior.sequence >= member.sequence) continue;
-									newest.set(member.clientId, {
-										clientId: member.clientId,
-										staffAgentId: member.staffAgentId,
-										userId: identity.userId,
-										name: identity.name,
-										sequence: member.sequence,
-									});
+									const list = byClient.get(member.clientId);
+									if (list) list.push(member);
+									else byClient.set(member.clientId, [member]);
 								}
+								const verified = await Promise.all(
+									[...byClient.entries()].map(async ([remoteClientId, candidates]) => {
+										const identity = resolved.get(remoteClientId);
+										if (!identity) return undefined;
+										if (candidates.length > 1) candidates.sort((a, b) => b.sequence - a.sequence);
+										for (const member of candidates) {
+											if (
+												await PresenceSignatures.verify(
+													identity.publicKey,
+													broadcastBytes(
+														profileId,
+														member.clientId,
+														member.sequence,
+														"open_thread",
+														member.staffAgentId ?? "",
+													),
+													member.signature,
+												)
+											) {
+												return {
+													clientId: member.clientId,
+													staffAgentId: member.staffAgentId,
+													userId: identity.userId,
+													name: identity.name,
+													sequence: member.sequence,
+												};
+											}
+										}
+										return undefined;
+									}),
+								);
 								if (next !== channel || stopped || generation !== presenceGeneration) return;
-								for (const member of newest.values()) {
-									lastPresenceSequence.set(member.clientId, member.sequence);
+								const members: PresenceMember[] = [];
+								for (const member of verified) {
+									if (!member) continue;
+									recordSequence(lastPresenceSequence, member.clientId, member.sequence);
+									const { sequence: _sequence, ...publicMember } = member;
+									members.push(publicMember);
 								}
 								syncFailures = 0;
-								report([...newest.values()].map(({ sequence: _sequence, ...member }) => member));
+								report(members);
 							})
 							.catch(() => {
 								// The lookup failed: try this sync again unless a newer one came.
@@ -446,6 +500,10 @@ export class SupabaseCloudPresenceTransport {
 				heartbeatTimer = undefined;
 				const active = channel;
 				channel = undefined;
+				identities.clear();
+				identitiesInFlight.clear();
+				lastBroadcastSequence.clear();
+				lastPresenceSequence.clear();
 				// Leave first: others stop seeing this tab at once, and the topic is free again.
 				if (active) await this.#client.removeChannel(active).catch(() => undefined);
 				await registration?.catch(() => undefined);

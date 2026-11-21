@@ -329,4 +329,45 @@ describe("shared browser presence", () => {
 			await handle.stop();
 		}
 	});
+	it("caches imported Ed25519 SPKI verification keys across repeated checks and skips caching invalid keys", async () => {
+		const fresh = generateKeyPairSync("ed25519");
+		const freshPublicKey = fresh.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+		const payload = new TextEncoder().encode("cached key check");
+		const sig = sign(null, payload, fresh.privateKey).toString("base64");
+		const importSpy = vi.spyOn(crypto.subtle, "importKey");
+		for (let i = 0; i < 6; i++) {
+			expect(await PresenceSignatures.verify(freshPublicKey, payload, sig)).toBe(true);
+		}
+		expect(importSpy).toHaveBeenCalledTimes(1);
+		expect(await PresenceSignatures.verify("A".repeat(60), payload, sig)).toBe(false);
+		expect(await PresenceSignatures.verify("A".repeat(60), payload, sig)).toBe(false);
+		expect(importSpy).toHaveBeenCalledTimes(3);
+	});
+	it("coalesces concurrent identity lookups and verifies duplicate presence metas newest-first", async () => {
+		const f = fixture();
+		const gate = deferred<HostedPresenceIdentity[]>();
+		f.list.mockReturnValueOnce(gate.promise);
+		const verifySpy = vi.spyOn(PresenceSignatures, "verify");
+		const handle = f.join();
+		try {
+			await vi.waitFor(() => expect(f.channels).toHaveLength(1));
+			const c = f.channels[0];
+			c.status("SUBSCRIBED");
+			c.state = { [remoteId]: [signed("open_thread", 1, "old-agent"), signed("open_thread", 2, "new-agent")] };
+			c.sync();
+			c.broadcast(signed("typing", 1, "new-agent"));
+			await vi.waitFor(() => expect(f.list).toHaveBeenCalledOnce());
+			gate.resolve([identity]);
+			await vi.waitFor(() => expect(f.members).toHaveBeenCalledOnce());
+			await vi.waitFor(() => expect(f.typing).toHaveBeenCalledOnce());
+			expect(f.list).toHaveBeenCalledOnce();
+			expect(f.members.mock.calls[0]?.[0]).toEqual([
+				{ clientId: remoteId, userId: identity.userId, name: identity.name, staffAgentId: "new-agent" },
+			]);
+			expect(verifySpy).toHaveBeenCalledTimes(2);
+		} finally {
+			gate.resolve([]);
+			await handle.stop();
+		}
+	});
 });
