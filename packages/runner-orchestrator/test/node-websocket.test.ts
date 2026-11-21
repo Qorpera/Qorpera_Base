@@ -182,6 +182,7 @@ describe("NodeWebSocket framing and close cleanup", () => {
 		}) as typeof clearTimeout);
 		try {
 			const url = await startWsServer((socket) => {
+				socket.resume();
 				socket.on("end", () => socket.end());
 			});
 			let closed = false;
@@ -198,6 +199,40 @@ describe("NodeWebSocket framing and close cleanup", () => {
 		} finally {
 			setSpy.mockRestore();
 			clearSpy.mockRestore();
+		}
+	});
+
+	it("destroys the socket after the close grace window if a server sends a close frame without FIN", async () => {
+		let serverSocket: Socket | undefined;
+		let serverSawClose = false;
+		let probe: ReturnType<typeof setInterval> | undefined;
+		const url = await startWsServer((socket) => {
+			serverSocket = socket;
+			socket.resume();
+			socket.on("error", () => undefined);
+			socket.on("close", () => {
+				serverSawClose = true;
+				if (probe) clearInterval(probe);
+			});
+			socket.write(encodeServerFrame(0x8, Buffer.from([0x03, 0xe8])));
+			socket.write(encodeServerFrame(0x2, Buffer.alloc(64 * 1024, 0xaa)));
+			probe = setInterval(() => {
+				if (!socket.destroyed) socket.write(encodeServerFrame(0x2, Buffer.from("x")));
+			}, 100);
+		});
+		let closedReason = "";
+		try {
+			await NodeWebSocket.connect(url, {
+				message: () => undefined,
+				close: (reason) => {
+					closedReason = reason;
+				},
+			});
+			await vi.waitFor(() => expect(closedReason).toBe("WebSocket closed by the server"), { timeout: 3000 });
+			expect(serverSocket?.destroyed).toBe(false);
+			await vi.waitFor(() => expect(serverSawClose).toBe(true), { timeout: 3000 });
+		} finally {
+			if (probe) clearInterval(probe);
 		}
 	});
 });

@@ -175,7 +175,13 @@ export class NodeWebSocket {
 		socket.setNoDelay(true);
 		socket.on("data", (chunk: Buffer) => this.#receive(chunk));
 		socket.on("error", (error: Error) => this.#end(`WebSocket connection failed: ${error.message}`));
-		socket.once("close", () => this.#end("WebSocket connection closed"));
+		socket.once("close", () => {
+			if (this.#closeTimer !== undefined) {
+				clearTimeout(this.#closeTimer);
+				this.#closeTimer = undefined;
+			}
+			this.#end("WebSocket connection closed");
+		});
 	}
 
 	/** Opens `ws:` or `wss:` `url`. Rejects when the handshake is refused, fails, takes longer than `timeoutMs` or is
@@ -290,8 +296,13 @@ export class NodeWebSocket {
 			// The socket is already gone; ending it below is enough.
 		}
 		this.#socket.end();
-		this.#closeTimer = setTimeout(() => this.#socket.destroy(), CLOSE_GRACE_MS);
-		this.#closeTimer.unref();
+		if (!this.#socket.destroyed && this.#closeTimer === undefined) {
+			this.#closeTimer = setTimeout(() => {
+				this.#closeTimer = undefined;
+				this.#socket.destroy();
+			}, CLOSE_GRACE_MS);
+			this.#closeTimer.unref();
+		}
 	}
 
 	/** Writes one masked frame; false when the socket's write buffer is past its high-water mark. */
@@ -344,6 +355,7 @@ export class NodeWebSocket {
 	}
 
 	#receive(chunk: Buffer): void {
+		if (this.#closed) return;
 		this.#queue.push(chunk);
 		while (!this.#closed && this.#queue.byteLength >= 2) {
 			const first = this.#queue.peekByte(0);
@@ -443,10 +455,6 @@ export class NodeWebSocket {
 	#end(reason: string): void {
 		if (this.#closed) return;
 		this.#closed = true;
-		if (this.#closeTimer !== undefined) {
-			clearTimeout(this.#closeTimer);
-			this.#closeTimer = undefined;
-		}
 		this.#queue.clear();
 		this.#fragments = [];
 		this.#fragmentBytes = 0;
