@@ -58,6 +58,13 @@ create extension if not exists ltree schema qorpera_ext;
 create extension if not exists "uuid-ossp" schema qorpera_ext;
 create extension if not exists tablefunc schema qorpera_ext;
 
+do $$
+begin
+	if exists (select 1 from pg_catalog.pg_available_extensions where name = 'vector') then
+		create extension if not exists vector schema qorpera_ext;
+	end if;
+end $$;
+
 create table if not exists qorpera_data.row_changes (
 	txid bigint not null default txid_current(),
 	seq bigint generated always as identity primary key,
@@ -77,10 +84,12 @@ create index if not exists row_changes_schema_seq_idx on qorpera_data.row_change
 create table if not exists qorpera_data.change_log (
 	txid bigint primary key,
 	at timestamptz not null default now(),
-	by_kind text not null check (by_kind in ('member', 'agent', 'machine', 'step')),
+	by_kind text not null check (by_kind in ('member', 'agent', 'machine', 'step', 'public', 'hook')),
 	by_id text,
 	via text
 );
+alter table qorpera_data.change_log drop constraint if exists change_log_by_kind_check;
+alter table qorpera_data.change_log add constraint change_log_by_kind_check check (by_kind in ('member', 'agent', 'machine', 'step', 'public', 'hook'));
 create index if not exists change_log_at_idx on qorpera_data.change_log (at);
 
 create table if not exists qorpera_data.record_limit (

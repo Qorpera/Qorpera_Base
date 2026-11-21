@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Qorpera Company Data Base Backup
+
+[Timer]
+OnCalendar=*-*-* 03:15:00 UTC
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
