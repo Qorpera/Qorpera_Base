@@ -259,9 +259,10 @@ export class ObjectGatewayJournal {
 			if (!create) {
 				create = this.#createDirectory(path);
 				this.#creating.set(path, create);
-				void create.finally(() => {
+				const clear = () => {
 					if (this.#creating.get(path) === create) this.#creating.delete(path);
-				});
+				};
+				create.then(clear, clear);
 			}
 			await create;
 			metadata = await lstat(path);
