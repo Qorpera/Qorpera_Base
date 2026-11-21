@@ -398,4 +398,76 @@ describe("home channel framing bounds and keep-alive teardown", () => {
 			clearSpy.mockRestore();
 		}
 	});
+
+	it("aborts in-flight home authorization when the client socket closes and flushes 403 refusals cleanly", async () => {
+		const token = randomBytes(32).toString("base64url");
+		const binding = {
+			leaseId: randomUUID(),
+			runId: randomUUID(),
+			jobId: randomUUID(),
+			runnerId: randomUUID(),
+			assignmentId: randomUUID(),
+			credentialCapsuleId: randomUUID(),
+			computeIdentityId: randomUUID(),
+			provider: "openai" as const,
+			nativeHarness: "codex-cli" as const,
+			model: "gpt-test",
+		};
+		let authorizeSignal: AbortSignal | undefined;
+		const service = new HttpCloudCodingCommandService({
+			token,
+			port: 0,
+			proveBinding: async () => undefined,
+			authorize: async () => {
+				throw new Error("not here");
+			},
+			execute: async () => {
+				throw new Error("not here");
+			},
+			home: {
+				authorize: async (_request, signal) => {
+					authorizeSignal = signal;
+					return await new Promise((_resolve, reject) => {
+						signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+					});
+				},
+				open: async () => {
+					throw new Error("should not open");
+				},
+			},
+		});
+		const port = await service.start();
+		cleanups.push(async () => await service.close());
+
+		const badSocket = connect({ host: "127.0.0.1", port });
+		await new Promise<void>((resolve, reject) => {
+			badSocket.once("connect", resolve);
+			badSocket.once("error", reject);
+		});
+		const refusedReply = new Promise<string>((resolve) => {
+			const chunks: Buffer[] = [];
+			badSocket.on("data", (chunk: Buffer) => chunks.push(chunk));
+			badSocket.once("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+		});
+		badSocket.write(
+			`GET /v1/home-session HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: Upgrade\r\nupgrade: qorpera-home-session/1\r\nauthorization: Bearer wrong\r\n\r\n`,
+		);
+		expect(await refusedReply).toContain("HTTP/1.1 403 Forbidden");
+		badSocket.destroy();
+
+		const holder = `job.${binding.jobId}.${randomBytes(32).toString("base64url")}`;
+		const socket = connect({ host: "127.0.0.1", port });
+		await new Promise<void>((resolve, reject) => {
+			socket.once("connect", resolve);
+			socket.once("error", reject);
+		});
+		socket.write(
+			`GET /v1/home-session HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: Upgrade\r\nupgrade: qorpera-home-session/1\r\nauthorization: Bearer ${token}\r\nx-qorpera-identity: ${holder}\r\n\r\n` +
+				`${JSON.stringify({ schema: "qorpera-home-session/1", binding, machineId: randomUUID(), sessionId: randomUUID() })}\n`,
+		);
+		await vi.waitFor(() => expect(authorizeSignal).toBeDefined());
+		expect(authorizeSignal!.aborted).toBe(false);
+		socket.destroy();
+		await vi.waitFor(() => expect(authorizeSignal!.aborted).toBe(true));
+	});
 });
