@@ -106,7 +106,8 @@ function connect() {
 			process.exit(0);
 		}
 		console.log("Lost the connection, trying again");
-		setTimeout(connect, delay);
+		const jittered = Math.round(delay * (0.75 + Math.random() * 0.5));
+		setTimeout(connect, jittered);
 		delay = Math.min(delay * 2, 30_000);
 	}
 
@@ -123,8 +124,18 @@ function connect() {
 		if (type === HELLO) hello(payload);
 		else if (type === KEEPALIVE) send(KEEPALIVE, 0);
 		else if (type === HEAD) start(id, payload);
-		else if (type === BODY) streams.get(id)?.write(payload);
-		else if (type === END) streams.get(id)?.end();
+		else if (type === BODY) {
+			const app = streams.get(id);
+			if (!app) return;
+			// WHY: Reset a stream whose local app stops reading so concurrent uploads cannot exhaust memory.
+			if (app.writableLength + payload.length > 2 * 1024 * 1024) {
+				streams.delete(id);
+				app.destroy();
+				send(RESET, id);
+				return;
+			}
+			app.write(payload);
+		} else if (type === END) streams.get(id)?.end();
 		else if (type === RESET) {
 			const app = streams.get(id);
 			streams.delete(id);

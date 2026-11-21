@@ -1936,3 +1936,267 @@ describe("app relay: the pure parts", () => {
 		assert.throws(() => createRelay({ api: "http://x", ...RELAY, hostSuffix: "preview.qorpera.com" }));
 	});
 });
+
+describe("app relay: concurrency hardening and backpressure", () => {
+	it("coalesces concurrent session lookups and isolates locked answers from open sessions", async (t) => {
+		const siteId = randomUUID();
+		const goodToken = "v".repeat(32);
+		let sessionCalls = 0;
+		const fetcher = async (url, init) => {
+			if (url.endsWith("/qorpera_site_app_session")) {
+				sessionCalls++;
+				await sleep(25);
+				const body = JSON.parse(init.body);
+				if (body.p_token === goodToken) return Response.json({ state: "open", siteId });
+				return Response.json({ state: "locked" });
+			}
+			return Response.json({ state: "refused" });
+		};
+		const relay = createRelay({ api: "http://database.invalid", ...RELAY, hostSuffix: SUFFIX, fetch: fetcher, log: () => {} });
+		const port = await listen(relay);
+		t.after(() => new Promise((resolve) => relay.close(resolve)));
+		const get = (cookie) =>
+			new Promise((resolve, reject) => {
+				const req = request(
+					{ host: "127.0.0.1", port, path: "/", headers: { "x-forwarded-host": HOST, cookie } },
+					(res) => {
+						res.resume();
+						res.on("end", () => resolve(res.statusCode));
+					},
+				);
+				req.on("error", reject);
+				req.end();
+			});
+		const burst = await Promise.all(Array.from({ length: 24 }, () => get(`${GATE_COOKIE}=${goodToken}`)));
+		assert.deepEqual([...new Set(burst)], [503]);
+		assert.equal(sessionCalls, 1);
+		const afterWarm = sessionCalls;
+		for (let i = 0; i < 60; i++) {
+			const bad = `x${String(i).padStart(31, "0")}`;
+			assert.equal(await get(`${GATE_COOKIE}=${bad}`), 401);
+		}
+		const beforeRecheck = sessionCalls;
+		assert.equal(await get(`${GATE_COOKIE}=${goodToken}`), 503);
+		assert.equal(sessionCalls, beforeRecheck);
+		assert.ok(sessionCalls > afterWarm);
+	});
+
+	it("reserves connect capacity for trusted exit addresses under an untrusted slug-cycling flood", async (t) => {
+		let releaseGate;
+		const gate = new Promise((resolve) => {
+			releaseGate = resolve;
+		});
+		const fetcher = async (_url, init) => {
+			const body = JSON.parse(init.body);
+			if (body.p_slug === "shop") return Response.json({ state: "ok", key: null, port: 3000, siteId: randomUUID() });
+			await gate;
+			return Response.json({ state: "refused" });
+		};
+		const relay = createRelay({
+			api: "http://database.invalid",
+			...RELAY,
+			hostSuffix: SUFFIX,
+			fetch: fetcher,
+			connectLimit: { refusedPerMinute: 4, total: 40 },
+			trustedAddresses: ["192.0.2.50"],
+			log: () => {},
+		});
+		const port = await listen(relay);
+		const sockets = [];
+		t.after(async () => {
+			releaseGate();
+			for (const socket of sockets) socket.destroy();
+			await new Promise((resolve) => relay.close(resolve));
+		});
+		const dial = (slug, ip) => {
+			const { socket } = handshake(
+				port,
+				`${slug}${SUFFIX}`,
+				"/.qorpera/connect",
+				`${bearer("k".repeat(43))}CF-Connecting-IP: ${ip}\r\n`,
+			);
+			socket.on("error", () => {});
+			sockets.push(socket);
+			return answerHead(socket).then((h) => h.status);
+		};
+		const attacker = Array.from({ length: 40 }, (_, i) => dial(`atk${i}`, "203.0.113.99"));
+		await sleep(40);
+		assert.equal(await dial("shop", "192.0.2.50"), 101);
+		releaseGate();
+		const statuses = await Promise.all(attacker);
+		assert.ok(statuses.filter((s) => s === 429).length >= 20, `expected per-address flood limit, got ${JSON.stringify(statuses)}`);
+	});
+
+	it("delivers pipelined head frames after handlers attach and decodes fragmented masked frames cleanly", async () => {
+		class FakeSocket extends EventEmitter {
+			writableLength = 0;
+			destroyed = false;
+			setNoDelay() {}
+			setTimeout() {}
+			setKeepAlive() {}
+			resume() {}
+			pause() {}
+			write() {
+				return true;
+			}
+			end() {
+				this.emit("close");
+			}
+			destroy() {
+				this.destroyed = true;
+				this.emit("close");
+			}
+		}
+		const payload = randomBytes(128 * 1024 + 7);
+		const framed = encodeFrame(0x2, payload, { mask: randomBytes(4) });
+		const sock1 = new FakeSocket();
+		let gotHead = null;
+		const ws1 = new WebSocketConnection(sock1, framed);
+		ws1.onMessage = (msg) => {
+			gotHead = msg;
+		};
+		await sleep(10);
+		assert.ok(gotHead && gotHead.equals(payload));
+		const sock2 = new FakeSocket();
+		let gotFrag = null;
+		const ws2 = new WebSocketConnection(sock2, null);
+		ws2.onMessage = (msg) => {
+			gotFrag = msg;
+		};
+		for (let at = 0; at < framed.length; at += 513) sock2.emit("data", framed.subarray(at, at + 513));
+		assert.ok(gotFrag && gotFrag.equals(payload));
+	});
+
+	it("queues concurrent uploads under tight maxQueuedBytes without terminating the link and times out mid-body stalls", async (t) => {
+		const siteId = randomUUID();
+		const token = "u".repeat(32);
+		const app = createServer((req, res) => {
+			if (req.url === "/stall-body") {
+				res.writeHead(200, { "content-type": "text/plain" });
+				res.write("partial");
+				return;
+			}
+			let bytes = 0;
+			req.on("data", (chunk) => {
+				bytes += chunk.length;
+			});
+			req.on("end", () => {
+				setTimeout(() => {
+					res.writeHead(200, { "content-type": "application/json" });
+					res.end(JSON.stringify({ bytes }));
+				}, 40);
+			});
+		});
+		const appPort = await listen(app);
+		const claim = `c${"a".repeat(31)}`;
+		const key = `k${"b".repeat(31)}`;
+		const fetcher = async (url, init) => {
+			const body = JSON.parse(init.body);
+			if (url.endsWith("/qorpera_site_app_connect")) {
+				return Response.json({ state: "ok", siteId, port: appPort, key: body.p_secret === claim ? key : null });
+			}
+			if (url.endsWith("/qorpera_site_app_session")) {
+				return Response.json(body.p_token === token ? { state: "open", siteId } : { state: "locked" });
+			}
+			return Response.json({ state: "locked" });
+		};
+		const relay = createRelay({
+			api: "http://database.invalid",
+			...RELAY,
+			hostSuffix: SUFFIX,
+			fetch: fetcher,
+			maxQueuedBytes: 512 * 1024,
+			responseTimeoutMs: 400,
+			log: () => {},
+		});
+		const relayPort = await listen(relay);
+		const front = createServer((_req, res) => {
+			res.writeHead(404);
+			res.end();
+		});
+		front.on("upgrade", (req, sock, head) => {
+			const up = connect(relayPort, "127.0.0.1", () => {
+				const lines = [`GET ${req.url} HTTP/1.1`];
+				for (let i = 0; i < req.rawHeaders.length; i += 2) lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
+				lines.push(`x-forwarded-host: ${HOST}`);
+				up.write(`${lines.join("\r\n")}\r\n\r\n`);
+				if (head.length) up.write(head);
+				sock.pipe(up);
+				up.pipe(sock);
+			});
+			up.on("error", () => sock.destroy());
+			sock.on("error", () => up.destroy());
+		});
+		const frontPort = await listen(front);
+		const child = spawn(process.execPath, [CLIENT, "shop", String(appPort), claim, SUFFIX], {
+			env: { ...process.env, QORPERA_APP_RELAY_ORIGIN: `ws://127.0.0.1:${frontPort}` },
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		let logs = "";
+		child.stdout.on("data", (d) => {
+			logs += d.toString();
+		});
+		t.after(async () => {
+			child.kill("SIGKILL");
+			front.closeAllConnections();
+			await new Promise((r) => front.close(r));
+			relay.closeAllConnections();
+			await new Promise((r) => relay.close(r));
+			app.closeAllConnections();
+			await new Promise((r) => app.close(r));
+		});
+		await until(() => relay.isConnected("shop"), "link program to connect", 5_000);
+		const payload = Buffer.alloc(128 * 1024, 0x5a);
+		const post = () =>
+			new Promise((resolve, reject) => {
+				const req = request(
+					{
+						host: "127.0.0.1",
+						port: relayPort,
+						path: "/upload",
+						method: "POST",
+						headers: {
+							"x-forwarded-host": HOST,
+							cookie: `${GATE_COOKIE}=${token}`,
+							"content-length": String(payload.length),
+						},
+					},
+					(res) => {
+						let text = "";
+						res.setEncoding("utf8");
+						res.on("data", (c) => {
+							text += c;
+						});
+						res.on("end", () => resolve({ status: res.statusCode, text }));
+					},
+				);
+				req.on("error", reject);
+				req.end(payload);
+			});
+		const uploads = await Promise.all(Array.from({ length: 24 }, post));
+		for (const u of uploads) {
+			assert.equal(u.status, 200, u.text);
+			assert.equal(JSON.parse(u.text).bytes, payload.length);
+		}
+		assert.equal(logs.includes("Lost the connection"), false);
+		const stalledEnded = await new Promise((resolve) => {
+			const req = request(
+				{
+					host: "127.0.0.1",
+					port: relayPort,
+					path: "/stall-body",
+					headers: { "x-forwarded-host": HOST, cookie: `${GATE_COOKIE}=${token}` },
+				},
+				(res) => {
+					res.on("data", () => {});
+					res.on("end", () => resolve(false));
+					res.on("close", () => resolve(!res.complete));
+				},
+			);
+			req.on("error", () => resolve(true));
+			req.end();
+		});
+		assert.equal(stalledEnded, true);
+		assert.equal(relay.isConnected("shop"), true);
+	});
+});
