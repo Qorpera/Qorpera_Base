@@ -126,7 +126,10 @@ const NEAR_SHARE = 0.8;
 const COUNT_SMALL_PAGES = 64;
 const COUNT_BATCH_SIZE = 32;
 const COUNT_BATCH_MAX_MS = 250;
+const COUNT_LOCK_MAX_MS = 250;
+const COUNT_COMPANY_CONCURRENCY = 8;
 const DESCRIBE_CONCURRENCY = 4;
+const ROOMY_RETRY_MS = 1_500;
 const ROW_TEXT =
 	"; set local intervalstyle = 'postgres'; set local extra_float_digits = 1; set local bytea_output = 'hex'; set local lc_monetary = 'C'";
 const SEEN = (row) => `pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(${row}::text, 'UTF8')), 'hex')`;
@@ -310,6 +313,48 @@ async function mapBounded(items, concurrency, work) {
 	};
 	await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
 	return results;
+}
+
+function acquirePermit(gates, key, limit, until) {
+	const left = until - Date.now();
+	if (left < 1) return Promise.resolve(null);
+	let gate = gates.get(key);
+	if (!gate) {
+		gate = { active: 0, waiters: [] };
+		gates.set(key, gate);
+	}
+	const makeRelease = () => {
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			const next = gate.waiters.shift();
+			if (next) {
+				clearTimeout(next.timer);
+				next.resolve(makeRelease());
+				return;
+			}
+			gate.active--;
+			if (gate.active === 0 && gate.waiters.length === 0 && gates.get(key) === gate) gates.delete(key);
+		};
+	};
+	if (gate.active < limit) {
+		gate.active++;
+		return Promise.resolve(makeRelease());
+	}
+	return new Promise((resolve) => {
+		const waiter = {
+			resolve,
+			timer: setTimeout(() => {
+				const idx = gate.waiters.indexOf(waiter);
+				if (idx >= 0) gate.waiters.splice(idx, 1);
+				if (gate.active === 0 && gate.waiters.length === 0 && gates.get(key) === gate) gates.delete(key);
+				resolve(null);
+			}, left),
+		};
+		waiter.timer.unref?.();
+		gate.waiters.push(waiter);
+	});
 }
 const amount = (bytes) =>
 	bytes % 1024 ** 3 === 0 ? `${bytes / 1024 ** 3} GiB` : bytes % 1024 ** 2 === 0 ? `${bytes / 1024 ** 2} MiB` : `${bytes} bytes`;
@@ -579,6 +624,8 @@ export class Gateway {
 	#exists = new Set();
 	#unsettled = new Map();
 	#swept = new Map();
+	#folderCountGates = new Map();
+	#companyCountGates = new Map();
 	/** What questions have taken from the store so far: rows, and the characters of their values. */
 	taken = { rows: 0, bytes: 0 };
 
@@ -606,45 +653,61 @@ export class Gateway {
 	 * the idle ones of its other logins are given back and the call tries again. */
 	#pool(database, user, door = user) {
 		const key = `${door}@${database}`;
-		let opened = this.#pools.get(key);
-		if (!opened) {
-			const kind = FOLDER_LOGIN.exec(user)?.[1];
-			const pool = new pg.Pool({
-				host: this.#store.host,
-				port: this.#store.port,
-				user,
-				password: this.#password(user),
-				database,
-				max: POOL_SIZE[kind ?? door],
-				// A step's login holds one connection, and steps are rare: it is given back soon.
-				idleTimeoutMillis: kind === "o" ? 1_000 : 5_000,
-				connectionTimeoutMillis: CONNECT_MS,
-				application_name: `qorpera-data-gateway ${kind ?? user.slice("qorpera_data_".length)}`,
-			});
-			pool.on("error", () => undefined);
-			const roomy = async (work) => {
-				for (let attempt = 0; ; attempt++) {
-					try {
-						return await work();
-					} catch (error) {
-						if (error?.code !== "53300" || attempt === 3) throw error;
-						await this.#makeRoom(database, key);
-						await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
-					}
+		const currentPool = () => {
+			if (this.#closed) throw new Refusal(503, "The data store did not answer");
+			let entry = this.#pools.get(key);
+			if (!entry) {
+				const kind = FOLDER_LOGIN.exec(user)?.[1];
+				const pool = new pg.Pool({
+					host: this.#store.host,
+					port: this.#store.port,
+					user,
+					password: this.#password(user),
+					database,
+					max: POOL_SIZE[kind ?? door],
+					// A step's login holds one connection, and steps are rare: it is given back soon.
+					idleTimeoutMillis: kind === "o" ? 1_000 : 5_000,
+					connectionTimeoutMillis: CONNECT_MS,
+					application_name: `qorpera-data-gateway ${kind ?? user.slice("qorpera_data_".length)}`,
+				});
+				pool.on("error", () => undefined);
+				entry = { pool, active: 0 };
+				this.#pools.set(key, entry);
+			}
+			return entry;
+		};
+		const roomy = async (work, deadline) => {
+			const retryUntil =
+				deadline === undefined ? Date.now() + ROOMY_RETRY_MS : Math.min(deadline, Date.now() + ROOMY_RETRY_MS);
+			for (let attempt = 0; ; attempt++) {
+				// WHY: Look up a live pool per attempt and guard with entry.active so #makeRoom never ends a pool mid-call.
+				const entry = currentPool();
+				entry.active++;
+				let error;
+				try {
+					return await work(entry.pool);
+				} catch (caught) {
+					error = caught;
+				} finally {
+					entry.active--;
 				}
-			};
-			// A connection whose backend was sent a cancel is let go, never handed out.
-			const connect = async () => {
-				for (;;) {
-					const client = await roomy(() => pool.connect());
-					if (!this.#signalled.has(client.processID)) return client;
-					this.#letGo(client);
-				}
-			};
-			opened = { pool, query: (...args) => roomy(() => pool.query(...args)), connect };
-			this.#pools.set(key, opened);
-		}
-		return opened;
+				const remaining = retryUntil - Date.now();
+				if (this.#closed || error?.code !== "53300" || remaining <= 0) throw error;
+				await this.#makeRoom(database, key);
+				const delay = Math.min(remaining, Math.min(200, 50 * (attempt + 1)));
+				await new Promise((resolve) => setTimeout(resolve, delay));
+				if (this.#closed) throw error;
+			}
+		};
+		// A connection whose backend was sent a cancel is let go, never handed out.
+		const connect = async (deadline) => {
+			for (;;) {
+				const client = await roomy((pool) => pool.connect(), deadline);
+				if (!this.#signalled.has(client.processID)) return client;
+				this.#letGo(client);
+			}
+		};
+		return { query: (...args) => roomy((pool) => pool.query(...args)), connect };
 	}
 
 	/** Marks a backend as sent a cancel. `sending`: the cancel on its way, if the gateway sends it. */
@@ -671,8 +734,16 @@ export class Gateway {
 	/** Gives back every connection of a database that only waits, but the asking login's own. */
 	async #makeRoom(database, asking) {
 		const ending = [];
-		for (const [key, { pool }] of this.#pools) {
-			if (key === asking || !key.endsWith(`@${database}`) || pool.totalCount === 0 || pool.idleCount < pool.totalCount || pool.waitingCount > 0)
+		for (const [key, entry] of this.#pools) {
+			const { pool } = entry;
+			if (
+				key === asking ||
+				!key.endsWith(`@${database}`) ||
+				entry.active > 0 ||
+				pool.totalCount === 0 ||
+				pool.idleCount < pool.totalCount ||
+				pool.waitingCount > 0
+			)
 				continue;
 			this.#pools.delete(key);
 			ending.push(pool.end().catch(() => undefined));
@@ -879,7 +950,7 @@ export class Gateway {
 		const cap = agent ? this.#limits.agentMs : this.#limits.questionMs;
 		const maxRows = agent ? this.#limits.agentRows : this.#limits.questionRows;
 		const maxBytes = agent ? this.#limits.agentBytes : this.#limits.questionBytes;
-		const connecting = this.#pool(ready.database, `${ready.database}_r${ready.n}`).connect();
+		const connecting = this.#pool(ready.database, `${ready.database}_r${ready.n}`).connect(until ?? undefined);
 		const client = await (until === null ? connecting : inTime(connecting, until)).catch((error) => {
 			throw storeProblem(error);
 		});
@@ -1164,7 +1235,8 @@ export class Gateway {
 	}
 
 	async #record(database, name, after, zone) {
-		const client = await inTime(this.#pool(database, "qorpera_data_keeper", "record").connect(), Date.now() + CONNECT_MS - 1_000).catch((error) => {
+		const connectUntil = Date.now() + CONNECT_MS - 1_000;
+		const client = await inTime(this.#pool(database, "qorpera_data_keeper", "record").connect(connectUntil), connectUntil).catch((error) => {
 			throw storeProblem(error);
 		});
 		let lost;
@@ -1276,10 +1348,8 @@ export class Gateway {
 
 	async #writing(ready, actor, { gone = null, settings = "", room }, work) {
 		const ms = this.#limits.changeMs;
-		const client = await inTime(
-			this.#pool(ready.database, `${ready.database}_w${ready.n}`).connect(),
-			Date.now() + Math.min(ms, CONNECT_MS - 1_000),
-		).catch((error) => {
+		const connectUntil = Date.now() + Math.min(ms, CONNECT_MS - 1_000);
+		const client = await inTime(this.#pool(ready.database, `${ready.database}_w${ready.n}`).connect(connectUntil), connectUntil).catch((error) => {
 			throw storeProblem(error);
 		});
 		const held = { cut: false };
@@ -1519,28 +1589,59 @@ export class Gateway {
 	#listen(database, heard) {
 		let listener = this.#listeners.get(database);
 		if (!listener) {
-			const client = new pg.Client({
-				host: this.#store.host,
-				port: this.#store.port,
-				user: "qorpera_data_keeper",
-				password: this.#store.logins.keeper,
-				database,
-				connectionTimeoutMillis: 5_000,
-				application_name: "qorpera-data-gateway listen",
-			});
-			listener = { client, heard: new Set(), ready: null, failed: false };
-			client.on("notification", () => {
-				for (const tell of [...listener.heard]) tell();
-			});
+			listener = { client: null, heard: new Set(), ready: null, failed: false, stopped: false };
 			const lost = () => {
 				listener.failed = true;
 				if (this.#listeners.get(database) === listener) this.#listeners.delete(database);
 				// A lost connection may have missed a notice: everyone asks again.
 				for (const tell of [...listener.heard]) tell();
 			};
-			client.on("error", lost);
-			client.on("end", lost);
-			listener.ready = client.connect().then(() => client.query("listen qorpera_data"));
+			const connectListen = async () => {
+				const retryUntil = Date.now() + ROOMY_RETRY_MS;
+				for (let attempt = 0; ; attempt++) {
+					if (this.#closed) throw new Refusal(503, "The data store did not answer");
+					if (listener.stopped) return;
+					const client = new pg.Client({
+						host: this.#store.host,
+						port: this.#store.port,
+						user: "qorpera_data_keeper",
+						password: this.#store.logins.keeper,
+						database,
+						connectionTimeoutMillis: 5_000,
+						application_name: "qorpera-data-gateway listen",
+					});
+					client.on("error", () => undefined);
+					try {
+						await client.connect();
+					} catch (error) {
+						await client.end().catch(() => undefined);
+						const remaining = retryUntil - Date.now();
+						if (this.#closed || listener.stopped || error?.code !== "53300" || remaining <= 0) throw error;
+						await this.#makeRoom(database, "");
+						await new Promise((resolve) => setTimeout(resolve, Math.min(remaining, Math.min(200, 50 * (attempt + 1)))));
+						continue;
+					}
+					if (this.#closed || listener.stopped) {
+						await client.end().catch(() => undefined);
+						if (this.#closed) throw new Refusal(503, "The data store did not answer");
+						return;
+					}
+					listener.client = client;
+					client.on("notification", () => {
+						for (const tell of [...listener.heard]) tell();
+					});
+					client.on("error", lost);
+					client.on("end", lost);
+					try {
+						await client.query("listen qorpera_data");
+					} catch (error) {
+						await client.end().catch(() => undefined);
+						throw error;
+					}
+					return;
+				}
+			};
+			listener.ready = connectListen();
 			listener.ready.catch(lost);
 			this.#listeners.set(database, listener);
 		}
@@ -1550,8 +1651,9 @@ export class Gateway {
 			stop: () => {
 				listener.heard.delete(heard);
 				if (listener.heard.size === 0 && this.#listeners.get(database) === listener) {
+					listener.stopped = true;
 					this.#listeners.delete(database);
-					listener.client.end().catch(() => undefined);
+					listener.client?.end().catch(() => undefined);
 				}
 			},
 		};
@@ -2077,17 +2179,23 @@ export class Gateway {
 
 	async #count(database, name, n, tables, until) {
 		if (tables.length === 0 || until - Date.now() < 1) return;
-		const rank = (table) => (table.kind === "v" ? 2 : table.kind === "p" ? 1 : 0);
-		const order = [...tables].sort((a, b) => rank(a) - rank(b) || a.pages - b.pages || (a.name < b.name ? -1 : 1));
+		// WHY: Cap best-effort counts per schema and per company so describe bursts never starve live query/rows pools.
+		const releaseFolder = await acquirePermit(this.#folderCountGates, `${database}:${name}`, 1, until);
+		if (!releaseFolder) return;
+		let releaseCompany = null;
 		let client;
-		try {
-			client = await inTime(this.#pool(database, `${database}_r${n}`).connect(), until);
-		} catch (error) {
-			if (storeProblem(error) instanceof Refusal) return;
-			throw error;
-		}
 		let lost;
 		try {
+			releaseCompany = await acquirePermit(this.#companyCountGates, database, COUNT_COMPANY_CONCURRENCY, until);
+			if (!releaseCompany) return;
+			const rank = (table) => (table.kind === "v" ? 2 : table.kind === "p" ? 1 : 0);
+			const order = [...tables].sort((a, b) => rank(a) - rank(b) || a.pages - b.pages || (a.name < b.name ? -1 : 1));
+			try {
+				client = await inTime(this.#pool(database, `${database}_r${n}`).connect(until), until);
+			} catch (error) {
+				if (storeProblem(error) instanceof Refusal) return;
+				throw error;
+			}
 			if (until - Date.now() < 1) return;
 			await client.query(
 				`begin transaction read only; set local timezone = 'UTC'; set local datestyle = 'ISO'; set local search_path = ${quoted(name)}`,
@@ -2097,7 +2205,10 @@ export class Gateway {
 				const left = until - Date.now();
 				if (left < 1) return false;
 				const limit = Math.max(1, Math.floor(Math.min(this.#limits.questionMs, left)));
-				await client.query(`savepoint qorpera_count; set local statement_timeout = ${limit}; set local lock_timeout = 0`);
+				const lockLimit = Math.min(limit, COUNT_LOCK_MAX_MS);
+				await client.query(
+					`savepoint qorpera_count; set local statement_timeout = ${limit}; set local lock_timeout = ${lockLimit}`,
+				);
 				try {
 					const answer = await client.query({
 						text: `select count(*) from ${quoted(name)}.${quoted(table.name)}`,
@@ -2172,10 +2283,16 @@ export class Gateway {
 			}
 			if (!lost) await client.query("rollback").catch(() => undefined);
 		} catch (error) {
-			if (error?.code && !/^(57P0[123]|08...)$/.test(error.code)) await client.query("rollback").catch(() => undefined);
-			else lost = error;
+			if (client) {
+				if (error?.code && !/^(57P0[123]|08...)$/.test(error.code)) await client.query("rollback").catch(() => undefined);
+				else lost = error;
+			} else if (!(storeProblem(error) instanceof Refusal)) {
+				throw error;
+			}
 		} finally {
-			this.#release(client, lost);
+			if (client) this.#release(client, lost);
+			releaseCompany?.();
+			releaseFolder();
 		}
 	}
 
@@ -2488,8 +2605,9 @@ export class Gateway {
 	async close() {
 		this.#closed = true;
 		for (const listener of this.#listeners.values()) {
+			listener.stopped = true;
 			for (const tell of [...listener.heard]) tell();
-			await listener.client.end().catch(() => undefined);
+			await listener.client?.end().catch(() => undefined);
 		}
 		this.#listeners.clear();
 		await Promise.all([...this.#pools.values()].map(({ pool }) => pool.end().catch(() => undefined)));

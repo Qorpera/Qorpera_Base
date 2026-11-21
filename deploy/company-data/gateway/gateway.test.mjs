@@ -3486,15 +3486,24 @@ create trigger nap before update on slowed for each row execute function nap();
 				assert.equal(described.status, 200, JSON.stringify(described.value));
 				const alpha = described.value.databases.find((entry) => entry.database === "alpha");
 				const alphaRows = Object.fromEntries(alpha.tables.map((t) => [t.name, t.rows]));
-				for (let i = 0; i < 6; i++) {
-					assert.equal(alphaRows[`t_${String(i).padStart(2, "0")}`], i + 1);
+				for (let i = 0; i < 12; i++) {
+					if (i === 6) assert.equal(alphaRows.t_06, undefined);
+					else assert.equal(alphaRows[`t_${String(i).padStart(2, "0")}`], i + 1);
 				}
-				assert.equal(alphaRows.t_06, undefined);
 				for (const dbName of ["beta", "gamma"]) {
 					const db = described.value.databases.find((entry) => entry.database === dbName);
 					const byName = Object.fromEntries(db.tables.map((t) => [t.name, t.rows]));
 					for (let i = 0; i < 12; i++) assert.equal(byName[`t_${String(i).padStart(2, "0")}`], i + 1);
 				}
+				const describes = Array.from({ length: 4 }, () => ask(viewer, "describe", { database: "alpha" }));
+				await sleep(100);
+				const qStart = Date.now();
+				const unlockedQuery = await ask(viewer, "query", { database: "alpha", question: "q-0" });
+				const qElapsed = Date.now() - qStart;
+				assert.equal(unlockedQuery.status, 200, JSON.stringify(unlockedQuery.value));
+				assert.deepEqual(unlockedQuery.value.rows, [[1]]);
+				assert.ok(qElapsed < 600, `unlocked query waited ${qElapsed} ms behind describe counts`);
+				for (const res of await Promise.all(describes)) assert.equal(res.status, 200, JSON.stringify(res.value));
 			} finally {
 				await locker.query("rollback").catch(() => undefined);
 				await locker.end().catch(() => undefined);
@@ -3514,6 +3523,35 @@ create trigger nap before update on slowed for each row execute function nap();
 			} finally {
 				await asAdmin(companyDb, `grant select on alpha.t_00 to ${reader}`);
 			}
+		});
+	});
+
+	it("avoids 503 pool-eviction races and connection starvation across many databases under concurrent traffic", async () => {
+		const manyNames = Array.from({ length: 14 }, (_, i) => `m${String(i).padStart(2, "0")}`);
+		const manyFiles = {};
+		for (const dbName of manyNames) {
+			manyFiles[`data/${dbName}/database.toml`] = `format = "qorpera.database/v1"\nname = "${dbName}"\nabout = "Pool ${dbName}"\n[list]\nmembers = "readers"\n`;
+			manyFiles[`data/${dbName}/tables/001-init.sql`] = "create table items (id int primary key);\ninsert into items select n from generate_series(1, 5) n;\n";
+			manyFiles[`data/${dbName}/queries/count.sql`] = "-- Count items.\nselect count(*) as n from items;\n";
+		}
+		put(ENV_A, manyFiles);
+		for (const dbName of manyNames) {
+			const applied = await ask(contributor, "apply", { database: dbName });
+			assert.equal(applied.value.applied, true, JSON.stringify(applied.value));
+		}
+		await withGateway({ limits: { ...LIMITS_HERE, questionMs: 2_000, countMs: 1_500, watchMs: 1_500 } }, async () => {
+			assert.equal((await ask(viewer, "describe", {})).status, 200);
+			const seed = await ask(viewer, "query", { database: "m00", question: "count" });
+			assert.equal(seed.status, 200);
+			const results = await Promise.all([
+				...Array.from({ length: 12 }, () => ask(viewer, "describe", {})),
+				...Array.from({ length: 28 }, (_, i) => ask(viewer, "query", { database: manyNames[i % manyNames.length], question: "count" })),
+				...Array.from({ length: 14 }, (_, i) => ask(viewer, "rows", { database: manyNames[i], table: "items", limit: 5 })),
+				...Array.from({ length: 3 }, () =>
+					ask(viewer, "watch", { watches: [{ database: "m00", question: "count", etag: seed.value.etag }], wait: 1 }),
+				),
+			]);
+			for (const res of results) assert.equal(res.status, 200, JSON.stringify(res.value));
 		});
 	});
 });
