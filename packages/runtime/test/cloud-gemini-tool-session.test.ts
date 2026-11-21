@@ -9,6 +9,7 @@ import {
 	geminiFunctionDeclarations,
 	runCloudGeminiToolSession,
 } from "@qorpera/runtime/cloud-gemini-tool-session";
+import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
 import { type CloudNativeTool, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { cloudRunWorkComposer } from "@qorpera/runtime/memory-tree/run-work";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -722,5 +723,82 @@ describe("runCloudGeminiToolSession", () => {
 			{ role: "model", parts: [{ text: "Let me check..." }] },
 			{ role: "user", parts: [{ text: workEnvelope }] },
 		]);
+	});
+
+	it("retries mid-stream body failures on 200 OK responses without calling AbortSignal.any", async () => {
+		const boundary = makeBoundary([]);
+		const anySpy = vi.spyOn(AbortSignal, "any");
+		let attempts = 0;
+		const customFetch: typeof fetch = async () => {
+			attempts += 1;
+			if (attempts === 1) {
+				const broken = new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(new TextEncoder().encode('{"candidates":'));
+						controller.error(new Error("socket reset mid-body"));
+					},
+				});
+				return new Response(broken, { status: 200, headers: { "content-type": "application/json" } });
+			}
+			return new Response(
+				JSON.stringify({
+					candidates: [{ content: { role: "model", parts: [{ text: "Recovered." }] } }],
+					usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 10 },
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		};
+		const result = await runCloudGeminiToolSession({
+			boundary,
+			model: "gemini-4-neon",
+			effort: "low",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: "http://127.0.0.1:1",
+			allowLoopback: true,
+			fetch: customFetch,
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			prompt: "Retry stream error",
+			timeoutMs: 10_000,
+			signal: new AbortController().signal,
+		});
+		expect(attempts).toBe(2);
+		expect(result.fencedRequests).toBe(1);
+		expect(anySpy).not.toHaveBeenCalled();
+	});
+
+	it("fails closed with provider_failed without retrying when a 200 OK body exceeds the byte limit", async () => {
+		let attempts = 0;
+		const customFetch: typeof fetch = async () => {
+			attempts += 1;
+			let sent = 0;
+			const huge = new ReadableStream<Uint8Array>({
+				pull(controller) {
+					if (sent >= 17 * 1024 * 1024) {
+						controller.close();
+						return;
+					}
+					const chunk = new Uint8Array(1024 * 1024);
+					sent += chunk.byteLength;
+					controller.enqueue(chunk);
+				},
+			});
+			return new Response(huge, { status: 200, headers: { "content-type": "application/json" } });
+		};
+		const error = await runCloudGeminiToolSession({
+			boundary: makeBoundary([]),
+			model: "gemini-4-neon",
+			effort: "low",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: "http://127.0.0.1:1",
+			allowLoopback: true,
+			fetch: customFetch,
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			prompt: "Too large",
+			signal: AbortSignal.timeout(10_000),
+		}).catch((failure: unknown) => failure);
+		expect(attempts).toBe(1);
+		expect(nativeRuntimeFailureMetadata(error)).toMatchObject({ category: "provider_failed" });
 	});
 });

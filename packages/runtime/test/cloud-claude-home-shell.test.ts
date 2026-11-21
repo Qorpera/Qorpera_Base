@@ -475,3 +475,46 @@ it("hashes only a readable file of a picture's size at the place, and answers an
 	expect(made).toBe(0);
 	await shell.close();
 });
+
+it("releases socket slots after abrupt client disconnects before newline and rejects oversized single-chunk requests", async () => {
+	const home = fakeHome(exited);
+	const { shell } = await shellWith(home.channel);
+	for (let i = 0; i < 40; i += 1) {
+		await new Promise<void>((resolve) => {
+			const sock = createConnection(shell.socketPath);
+			sock.on("error", () => undefined);
+			sock.on("connect", () => {
+				sock.write('{"cmd":"partial"');
+				sock.destroy();
+			});
+			sock.on("close", () => resolve());
+		});
+	}
+	await new Promise((resolve) => setTimeout(resolve, 40));
+	const ok = await command(shell.socketPath, { cmd: "true", cwd: "/company", env: {} });
+	expect(ok.code).toBe(0);
+
+	const oversized = await new Promise<{ out: string; err: string; code?: number }>((resolve) => {
+		const sock = createConnection(shell.socketPath);
+		let rest = "";
+		const result: { out: string; err: string; code?: number } = { out: "", err: "" };
+		sock.on("connect", () => {
+			sock.write(`${JSON.stringify({ cmd: "a".repeat(4 * 1024 * 1024 + 64), cwd: "/company", env: {} })}\n`);
+		});
+		sock.setEncoding("utf8");
+		sock.on("data", (chunk: string) => {
+			rest += chunk;
+			for (let end = rest.indexOf("\n"); end >= 0; end = rest.indexOf("\n")) {
+				const line = JSON.parse(rest.slice(0, end)) as { o?: string; e?: string; x?: number };
+				rest = rest.slice(end + 1);
+				if (line.o) result.out += Buffer.from(line.o, "base64").toString();
+				if (line.e) result.err += Buffer.from(line.e, "base64").toString();
+				if (line.x !== undefined) result.code = line.x;
+			}
+		});
+		sock.on("close", () => resolve(result));
+	});
+	expect(oversized.code).toBe(126);
+	expect(oversized.err).toContain("HOME_REQUEST_INVALID");
+	await shell.close();
+});

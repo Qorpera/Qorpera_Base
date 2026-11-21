@@ -300,6 +300,35 @@ function pauseAbortable(ms: number, signal: AbortSignal): Promise<void> {
 	});
 }
 
+async function withScopedSignal<T>(
+	parents: readonly AbortSignal[],
+	timeoutMs: number | undefined,
+	use: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+	const controller = new AbortController();
+	const listeners: Array<readonly [AbortSignal, () => void]> = [];
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	for (const parent of parents) {
+		if (parent.aborted) {
+			controller.abort(parent.reason);
+			break;
+		}
+		const onAbort = (): void => controller.abort(parent.reason);
+		parent.addEventListener("abort", onAbort, { once: true });
+		listeners.push([parent, onAbort]);
+	}
+	if (!controller.signal.aborted && timeoutMs !== undefined) {
+		timer = setTimeout(() => controller.abort(new Error("Gemini API request timed out")), timeoutMs);
+		timer.unref?.();
+	}
+	try {
+		return await use(controller.signal);
+	} finally {
+		if (timer !== undefined) clearTimeout(timer);
+		for (const [parent, onAbort] of listeners) parent.removeEventListener("abort", onAbort);
+	}
+}
+
 async function generateGeminiContent(options: {
 	baseUrl: string;
 	model: string;
@@ -313,60 +342,100 @@ async function generateGeminiContent(options: {
 	const payload = JSON.stringify(options.body);
 	for (let attempt = 0; ; attempt++) {
 		options.signal.throwIfAborted();
-		const requestSignal = AbortSignal.any([options.signal, AbortSignal.timeout(MAX_GEMINI_REQUEST_MS)]);
-		let reply: Response;
+		const scoped = new AbortController();
+		const onCallerAbort = (): void => scoped.abort(options.signal.reason);
+		options.signal.addEventListener("abort", onCallerAbort, { once: true });
+		const requestTimer = setTimeout(
+			() => scoped.abort(new Error("Gemini API request timed out")),
+			MAX_GEMINI_REQUEST_MS,
+		);
+		requestTimer.unref?.();
+		const requestSignal = scoped.signal;
+		let bytes: Uint8Array | undefined;
+		let retryWait: number | undefined;
 		try {
-			reply = await options.fetcher(url, {
-				method: "POST",
-				redirect: "error",
-				headers: {
-					"content-type": "application/json",
-					"x-goog-api-key": options.apiKey,
-				},
-				body: payload,
-				signal: requestSignal,
-			});
-		} catch (error) {
-			if (options.signal.aborted) throw error;
-			const wait = options.retryOnBusy ? RETRY_DELAYS_MS[attempt] : undefined;
-			if (wait !== undefined) {
-				await pauseAbortable(wait, options.signal);
-				continue;
+			let reply: Response;
+			try {
+				reply = await options.fetcher(url, {
+					method: "POST",
+					redirect: "error",
+					headers: {
+						"content-type": "application/json",
+						"x-goog-api-key": options.apiKey,
+					},
+					body: payload,
+					signal: requestSignal,
+				});
+			} catch (error) {
+				if (options.signal.aborted) throw error;
+				const wait = options.retryOnBusy ? RETRY_DELAYS_MS[attempt] : undefined;
+				if (wait !== undefined) {
+					retryWait = wait;
+				} else {
+					throw tagNativeRuntimeFailure(
+						new Error("Could not reach the Gemini API", { cause: error }),
+						"native-tools",
+						"transport_unavailable",
+					);
+				}
+				reply = undefined as never;
 			}
-			throw tagNativeRuntimeFailure(
-				new Error("Could not reach the Gemini API", { cause: error }),
-				"native-tools",
-				"transport_unavailable",
-			);
-		}
-		if (reply.status === 401 || reply.status === 403) {
-			void reply.body?.cancel().catch(() => undefined);
-			throw tagNativeRuntimeFailure(
-				new GeminiKeyRevokedError("Google rejected your Gemini API key."),
-				"native-tools",
-				"authority_unavailable",
-			);
-		}
-		if (reply.status === 429 || (reply.status >= 500 && reply.status <= 599)) {
-			void reply.body?.cancel().catch(() => undefined);
-			const wait = options.retryOnBusy ? RETRY_DELAYS_MS[attempt] : undefined;
-			if (wait !== undefined) {
-				await pauseAbortable(wait, options.signal);
-				continue;
+			if (retryWait === undefined) {
+				if (reply.status === 401 || reply.status === 403) {
+					void reply.body?.cancel().catch(() => undefined);
+					throw tagNativeRuntimeFailure(
+						new GeminiKeyRevokedError("Google rejected your Gemini API key."),
+						"native-tools",
+						"authority_unavailable",
+					);
+				}
+				if (reply.status === 429 || (reply.status >= 500 && reply.status <= 599)) {
+					void reply.body?.cancel().catch(() => undefined);
+					const wait = options.retryOnBusy ? RETRY_DELAYS_MS[attempt] : undefined;
+					if (wait !== undefined) {
+						retryWait = wait;
+					} else {
+						const busyError = new Error(`Gemini API is temporarily busy (${reply.status})`);
+						if (!options.retryOnBusy) throw new CloudActionReviewBusy();
+						throw tagNativeRuntimeFailure(busyError, "native-tools", "provider_failed");
+					}
+				} else if (!reply.ok) {
+					void reply.body?.cancel().catch(() => undefined);
+					throw tagNativeRuntimeFailure(
+						new Error(`Gemini API rejected the request (${reply.status})`),
+						"native-tools",
+						"provider_failed",
+					);
+				} else {
+					try {
+						bytes = await readBoundedCloudResponse(reply, MAX_GEMINI_RESPONSE_BYTES, requestSignal);
+					} catch (error) {
+						if (options.signal.aborted) throw error;
+						if (error instanceof Error && error.message === "Cloud response exceeds its byte limit") {
+							throw tagNativeRuntimeFailure(error, "native-tools", "provider_failed");
+						}
+						const wait = options.retryOnBusy ? RETRY_DELAYS_MS[attempt] : undefined;
+						if (wait !== undefined) {
+							retryWait = wait;
+						} else {
+							throw tagNativeRuntimeFailure(
+								new Error("Could not reach the Gemini API", { cause: error }),
+								"native-tools",
+								"transport_unavailable",
+							);
+						}
+					}
+				}
 			}
-			const busyError = new Error(`Gemini API is temporarily busy (${reply.status})`);
-			if (!options.retryOnBusy) throw new CloudActionReviewBusy();
-			throw tagNativeRuntimeFailure(busyError, "native-tools", "provider_failed");
+		} finally {
+			clearTimeout(requestTimer);
+			options.signal.removeEventListener("abort", onCallerAbort);
 		}
-		if (!reply.ok) {
-			void reply.body?.cancel().catch(() => undefined);
-			throw tagNativeRuntimeFailure(
-				new Error(`Gemini API rejected the request (${reply.status})`),
-				"native-tools",
-				"provider_failed",
-			);
+		if (retryWait !== undefined) {
+			await pauseAbortable(retryWait, options.signal);
+			continue;
 		}
-		const bytes = await readBoundedCloudResponse(reply, MAX_GEMINI_RESPONSE_BYTES, requestSignal);
+		if (!bytes) throw new Error("Gemini API returned an empty response");
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
@@ -400,7 +469,7 @@ function appendMergedContent(
 ): void {
 	const previous = target.at(-1);
 	if (previous && previous.role === content.role) {
-		previous.parts = [...previous.parts, ...content.parts];
+		previous.parts.push(...content.parts);
 		return;
 	}
 	target.push({ role: content.role, parts: [...content.parts] });
@@ -482,365 +551,370 @@ export async function runCloudGeminiToolSession(options: {
 }): Promise<CloudCodexToolSessionResult> {
 	const baseUrl = validateGeminiBaseUrl(options.apiBaseUrl ?? GEMINI_DEFAULT_API_BASE, options.allowLoopback === true);
 	const fetcher = options.fetch ?? fetch;
-	const sessionSignal =
-		options.timeoutMs !== undefined
-			? AbortSignal.any([options.signal, AbortSignal.timeout(options.timeoutMs)])
-			: options.signal;
-	const threadId = `gemini-${randomUUID()}`;
-	let monthSpendMicrodollars = options.initialSpendMicrodollars;
-	let monthlyCapCents = options.monthlyCapCents;
-	let totalInputTokens = 0;
-	let totalCachedTokens = 0;
-	let totalOutputTokens = 0;
-	let localRunSpendMicrodollars = 0;
-	let usageDirty = false;
-	let toolCalls = 0;
-	let fencedRequests = 0;
+	const runWithSession = async (sessionSignal: AbortSignal): Promise<CloudCodexToolSessionResult> => {
+		const threadId = `gemini-${randomUUID()}`;
+		let monthSpendMicrodollars = options.initialSpendMicrodollars;
+		let monthlyCapCents = options.monthlyCapCents;
+		let totalInputTokens = 0;
+		let totalCachedTokens = 0;
+		let totalOutputTokens = 0;
+		let localRunSpendMicrodollars = 0;
+		let usageDirty = false;
+		let toolCalls = 0;
+		let fencedRequests = 0;
 
-	const assertWithinCap = (): void => {
-		if (monthlyCapCents !== null && monthSpendMicrodollars >= monthlyCapCents * 10_000) {
-			throw tagNativeRuntimeFailure(
-				new GeminiCapReachedError(monthlyCapCents, monthSpendMicrodollars),
-				"native-tools",
-				"budget_exhausted",
-			);
-		}
-	};
-
-	const flushUsage = async (flushSignal: AbortSignal): Promise<boolean> => {
-		if (!options.onUsage || !usageDirty) return true;
-		const snapshot: GeminiToolSessionUsage = {
-			inputTokens: totalInputTokens,
-			cachedTokens: totalCachedTokens,
-			outputTokens: totalOutputTokens,
-		};
-		try {
-			const receipt = await options.onUsage(snapshot, AbortSignal.any([flushSignal, AbortSignal.timeout(10_000)]));
-			if (!receipt) return false;
-			monthSpendMicrodollars = receipt.monthSpendMicrodollars;
-			monthlyCapCents = receipt.monthlyCapCents;
-			if (
-				totalInputTokens === snapshot.inputTokens &&
-				totalCachedTokens === snapshot.cachedTokens &&
-				totalOutputTokens === snapshot.outputTokens
-			) {
-				usageDirty = false;
+		const assertWithinCap = (): void => {
+			if (monthlyCapCents !== null && monthSpendMicrodollars >= monthlyCapCents * 10_000) {
+				throw tagNativeRuntimeFailure(
+					new GeminiCapReachedError(monthlyCapCents, monthSpendMicrodollars),
+					"native-tools",
+					"budget_exhausted",
+				);
 			}
-			return true;
-		} catch {
-			return false;
-		}
-	};
+		};
 
-	const recordUsage = async (usage: GeminiToolSessionUsage): Promise<void> => {
-		if (usage.inputTokens === 0 && usage.cachedTokens === 0 && usage.outputTokens === 0) return;
-		totalInputTokens += usage.inputTokens;
-		totalCachedTokens += usage.cachedTokens;
-		totalOutputTokens += usage.outputTokens;
-		const nextRunSpend = geminiNeonSpendMicrodollars({
-			inputTokens: totalInputTokens,
-			cachedTokens: totalCachedTokens,
-			outputTokens: totalOutputTokens,
-		});
-		const delta = Math.max(0, nextRunSpend - localRunSpendMicrodollars);
-		localRunSpendMicrodollars = Math.max(localRunSpendMicrodollars, nextRunSpend);
-		monthSpendMicrodollars += delta;
-		usageDirty = true;
-		await flushUsage(sessionSignal);
-	};
-
-	assertWithinCap();
-	await options.beforeModelStart?.(sessionSignal);
-	const opened: CloudCodexOpening = options.opening
-		? await options.opening(sessionSignal)
-		: {
-				prompt: options.prompt ?? "",
-				runtimeInstructions: options.runtimeInstructions,
+		const flushUsage = async (flushSignal?: AbortSignal): Promise<boolean> => {
+			if (!options.onUsage || !usageDirty) return true;
+			const onUsage = options.onUsage;
+			const snapshot: GeminiToolSessionUsage = {
+				inputTokens: totalInputTokens,
+				cachedTokens: totalCachedTokens,
+				outputTokens: totalOutputTokens,
 			};
-	const composer = opened.composeContext ?? options.composeContext;
-	const rawInstructions = opened.runtimeInstructions ?? "";
-	const systemText = redactCloudWebhookSecrets(
-		opened.resultRulesInside
-			? rawInstructions
-			: [CLOUD_TOOL_RESULT_INSTRUCTIONS, rawInstructions].filter(Boolean).join("\n\n"),
-	);
-	const initialPrompt = redactCloudWebhookSecrets(opened.prompt);
-	const declarations = geminiFunctionDeclarations(options.boundary.specification);
-	const tools: Record<string, unknown>[] = [
-		...(declarations.length > 0 ? [{ functionDeclarations: declarations }] : []),
-		{ google_search: {} },
-	];
-	const reviewDeclarations = geminiFunctionDeclarations(CLOUD_ACTION_REVIEW_SPECIFICATION);
+			try {
+				const receipt = await withScopedSignal(flushSignal ? [flushSignal] : [], 10_000, (signal) =>
+					onUsage(snapshot, signal),
+				);
+				if (!receipt) return false;
+				monthSpendMicrodollars = receipt.monthSpendMicrodollars;
+				monthlyCapCents = receipt.monthlyCapCents;
+				if (
+					totalInputTokens === snapshot.inputTokens &&
+					totalCachedTokens === snapshot.cachedTokens &&
+					totalOutputTokens === snapshot.outputTokens
+				) {
+					usageDirty = false;
+				}
+				return true;
+			} catch {
+				return false;
+			}
+		};
 
-	if (options.reviewer) {
-		options.reviewer.attach({
-			review: async (input, reviewSignal) => {
+		const recordUsage = async (usage: GeminiToolSessionUsage): Promise<void> => {
+			if (usage.inputTokens === 0 && usage.cachedTokens === 0 && usage.outputTokens === 0) return;
+			totalInputTokens += usage.inputTokens;
+			totalCachedTokens += usage.cachedTokens;
+			totalOutputTokens += usage.outputTokens;
+			const nextRunSpend = geminiNeonSpendMicrodollars({
+				inputTokens: totalInputTokens,
+				cachedTokens: totalCachedTokens,
+				outputTokens: totalOutputTokens,
+			});
+			const delta = Math.max(0, nextRunSpend - localRunSpendMicrodollars);
+			localRunSpendMicrodollars = Math.max(localRunSpendMicrodollars, nextRunSpend);
+			monthSpendMicrodollars += delta;
+			usageDirty = true;
+			await flushUsage(sessionSignal);
+		};
+
+		assertWithinCap();
+		await options.beforeModelStart?.(sessionSignal);
+		const opened: CloudCodexOpening = options.opening
+			? await options.opening(sessionSignal)
+			: {
+					prompt: options.prompt ?? "",
+					runtimeInstructions: options.runtimeInstructions,
+				};
+		const composer = opened.composeContext ?? options.composeContext;
+		const rawInstructions = opened.runtimeInstructions ?? "";
+		const systemText = redactCloudWebhookSecrets(
+			opened.resultRulesInside
+				? rawInstructions
+				: [CLOUD_TOOL_RESULT_INSTRUCTIONS, rawInstructions].filter(Boolean).join("\n\n"),
+		);
+		const initialPrompt = redactCloudWebhookSecrets(opened.prompt);
+		const declarations = geminiFunctionDeclarations(options.boundary.specification);
+		const tools: Record<string, unknown>[] = [
+			...(declarations.length > 0 ? [{ functionDeclarations: declarations }] : []),
+			{ google_search: {} },
+		];
+		const reviewDeclarations = geminiFunctionDeclarations(CLOUD_ACTION_REVIEW_SPECIFICATION);
+
+		if (options.reviewer) {
+			options.reviewer.attach({
+				review: async (input, reviewSignal) => {
+					assertWithinCap();
+					const response = await withScopedSignal([sessionSignal, reviewSignal], undefined, (combinedSignal) =>
+						generateGeminiContent({
+							baseUrl,
+							model: options.model,
+							apiKey: options.apiKey,
+							fetcher,
+							signal: combinedSignal,
+							retryOnBusy: false,
+							body: {
+								systemInstruction: { parts: [{ text: input.instructions }] },
+								contents: [{ role: "user", parts: [{ text: input.prompt }] }],
+								tools: [{ functionDeclarations: reviewDeclarations }],
+								toolConfig: {
+									functionCallingConfig: {
+										mode: "ANY",
+										allowedFunctionNames: [CLOUD_ACTION_REVIEW_TOOL],
+									},
+								},
+								generationConfig: {
+									thinkingConfig: { thinkingLevel: "low" },
+								},
+							},
+						}),
+					);
+					await recordUsage(response.usage);
+					const verdictCall = extractFunctionCalls(response.parts).find(
+						(call) => call.name === CLOUD_ACTION_REVIEW_TOOL,
+					);
+					if (!verdictCall) throw new Error("Gemini action reviewer did not call review_verdict");
+					return verdictCall.args;
+				},
+			});
+		}
+
+		try {
+			const history: GeminiHistoryItem[] = [
+				{
+					role: "user",
+					parts: [{ text: initialPrompt }],
+					item: {
+						kind: "message",
+						role: "user",
+						callId: null,
+						id: null,
+						bytes: Buffer.byteLength(initialPrompt),
+						media: 0,
+					},
+				},
+			];
+			let pendingFenceInputs: CloudNativeResultInput[] = [];
+			let correctionSent = false;
+			let turnIndex = 0;
+
+			while (true) {
+				sessionSignal.throwIfAborted();
 				assertWithinCap();
-				const combinedSignal = AbortSignal.any([sessionSignal, reviewSignal]);
+				turnIndex += 1;
+				const turnId = `gemini-turn-${turnIndex}`;
+				const fenced = await options.boundary.fenceNativeResults(pendingFenceInputs, {
+					authority: options.recordChecksAuthority ? "with-record" : "here",
+				});
+				const frame: CloudNativeFenceRequest = {
+					schema: CLOUD_NATIVE_RESULT_FENCE_SCHEMA,
+					requestId: randomUUID(),
+					threadId,
+					turnId,
+					purpose: "turn",
+					outputs: pendingFenceInputs,
+				};
+				if (options.recordContextView) await options.recordContextView(frame, fenced, sessionSignal);
+				fencedRequests += 1;
+				pendingFenceInputs = [];
+
+				const requestContents = await composeGeminiContents(
+					history,
+					composer,
+					{ requestId: frame.requestId, threadId, turnId, model: options.model },
+					sessionSignal,
+				);
 				const response = await generateGeminiContent({
 					baseUrl,
 					model: options.model,
 					apiKey: options.apiKey,
 					fetcher,
-					signal: combinedSignal,
-					retryOnBusy: false,
+					signal: sessionSignal,
+					retryOnBusy: true,
 					body: {
-						systemInstruction: { parts: [{ text: input.instructions }] },
-						contents: [{ role: "user", parts: [{ text: input.prompt }] }],
-						tools: [{ functionDeclarations: reviewDeclarations }],
-						toolConfig: {
-							functionCallingConfig: {
-								mode: "ANY",
-								allowedFunctionNames: [CLOUD_ACTION_REVIEW_TOOL],
-							},
-						},
+						...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}),
+						contents: requestContents,
+						tools,
 						generationConfig: {
-							thinkingConfig: { thinkingLevel: "low" },
+							thinkingConfig: { thinkingLevel: options.effort },
 						},
 					},
 				});
 				await recordUsage(response.usage);
-				const verdictCall = extractFunctionCalls(response.parts).find(
-					(call) => call.name === CLOUD_ACTION_REVIEW_TOOL,
+
+				const visibleText = extractVisibleText(response.parts);
+				if (visibleText) options.boundary.runLog?.agentText(visibleText);
+
+				const functionCalls = extractFunctionCalls(response.parts);
+				const assignedCallIds = functionCalls.map((call, index) =>
+					call.id !== undefined && CALL_ID.test(call.id) ? call.id : `gemini-${fencedRequests}-${index + 1}`,
 				);
-				if (!verdictCall) throw new Error("Gemini action reviewer did not call review_verdict");
-				return verdictCall.args;
-			},
-		});
-	}
-
-	try {
-		const history: GeminiHistoryItem[] = [
-			{
-				role: "user",
-				parts: [{ text: initialPrompt }],
-				item: {
-					kind: "message",
-					role: "user",
-					callId: null,
-					id: null,
-					bytes: Buffer.byteLength(initialPrompt),
-					media: 0,
-				},
-			},
-		];
-		let pendingFenceInputs: CloudNativeResultInput[] = [];
-		let correctionSent = false;
-		let turnIndex = 0;
-
-		while (true) {
-			sessionSignal.throwIfAborted();
-			assertWithinCap();
-			turnIndex += 1;
-			const turnId = `gemini-turn-${turnIndex}`;
-			const fenced = await options.boundary.fenceNativeResults(pendingFenceInputs, {
-				authority: options.recordChecksAuthority ? "with-record" : "here",
-			});
-			const frame: CloudNativeFenceRequest = {
-				schema: CLOUD_NATIVE_RESULT_FENCE_SCHEMA,
-				requestId: randomUUID(),
-				threadId,
-				turnId,
-				purpose: "turn",
-				outputs: pendingFenceInputs,
-			};
-			if (options.recordContextView) await options.recordContextView(frame, fenced, sessionSignal);
-			fencedRequests += 1;
-			pendingFenceInputs = [];
-
-			const requestContents = await composeGeminiContents(
-				history,
-				composer,
-				{ requestId: frame.requestId, threadId, turnId, model: options.model },
-				sessionSignal,
-			);
-			const response = await generateGeminiContent({
-				baseUrl,
-				model: options.model,
-				apiKey: options.apiKey,
-				fetcher,
-				signal: sessionSignal,
-				retryOnBusy: true,
-				body: {
-					...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}),
-					contents: requestContents,
-					tools,
-					generationConfig: {
-						thinkingConfig: { thinkingLevel: options.effort },
-					},
-				},
-			});
-			await recordUsage(response.usage);
-
-			const visibleText = extractVisibleText(response.parts);
-			if (visibleText) options.boundary.runLog?.agentText(visibleText);
-
-			const functionCalls = extractFunctionCalls(response.parts);
-			const assignedCallIds = functionCalls.map((call, index) =>
-				call.id !== undefined && CALL_ID.test(call.id) ? call.id : `gemini-${fencedRequests}-${index + 1}`,
-			);
-			let callCursor = 0;
-			for (const part of response.parts) {
-				if (isPlainObject(part.functionCall) && typeof part.functionCall.name === "string") {
-					const callId = assignedCallIds[callCursor] ?? `gemini-${fencedRequests}-${callCursor + 1}`;
-					callCursor += 1;
-					const args = part.functionCall.args !== undefined ? part.functionCall.args : {};
-					history.push({
-						role: "model",
-						parts: [part],
-						item: {
-							kind: "function_call",
-							role: null,
-							callId,
-							id: null,
-							bytes: Buffer.byteLength(JSON.stringify(args)),
-							media: 0,
-						},
-					});
-				} else if (part.thought === true) {
-					history.push({
-						role: "model",
-						parts: [part],
-						item: {
-							kind: "reasoning",
-							role: null,
-							callId: null,
-							id: null,
-							bytes: Buffer.byteLength(JSON.stringify(part)),
-							media: 0,
-						},
-					});
-				} else {
-					const text = typeof part.text === "string" ? part.text : JSON.stringify(part);
-					history.push({
-						role: "model",
-						parts: [part],
-						item: {
-							kind: "message",
-							role: "assistant",
-							callId: null,
-							id: null,
-							bytes: Buffer.byteLength(text),
-							media: 0,
-						},
-					});
-				}
-			}
-
-			if (functionCalls.length > 0) {
-				let stopAfterBatch = false;
-				for (const [index, call] of functionCalls.entries()) {
-					sessionSignal.throwIfAborted();
-					const callId = assignedCallIds[index];
-					const result = await options.boundary.invoke(callId, "qorpera", call.name, call.args);
-					toolCalls += 1;
-					const envelopeText = result.contentItems[0].text;
-					const imageItem = result.contentItems.find(
-						(item): item is { type: "inputImage"; imageUrl: string } =>
-							item.type === "inputImage" && item.imageUrl.startsWith(PNG_DATA_URL_PREFIX),
-					);
-					const callParts: GeminiPart[] = [];
-					if (imageItem) {
-						const base64 = imageItem.imageUrl.slice(PNG_DATA_URL_PREFIX.length);
-						const imageSha256 = createHash("sha256").update(Buffer.from(base64, "base64")).digest("hex");
-						pendingFenceInputs.push({
-							kind: "function_call_output",
-							callId,
-							output: [
-								{ type: "input_text", text: envelopeText },
-								{ type: "input_image", sha256: imageSha256 },
-							],
-						});
-						callParts.push({
-							functionResponse: {
-								...(call.id ? { id: call.id } : {}),
-								name: call.name,
-								response: { output: envelopeText },
-							},
-						});
-						callParts.push({
-							inlineData: { mimeType: "image/png", data: base64 },
-						});
-					} else {
-						pendingFenceInputs.push({
-							kind: "function_call_output",
-							callId,
-							output: envelopeText,
-						});
-						callParts.push({
-							functionResponse: {
-								...(call.id ? { id: call.id } : {}),
-								name: call.name,
-								response: { output: envelopeText },
-							},
-						});
-					}
-					history.push({
-						role: "user",
-						parts: callParts,
-						item: {
-							kind: "function_call_output",
-							role: null,
-							callId,
-							id: null,
-							bytes: Buffer.byteLength(envelopeText),
-							media: imageItem ? 1 : 0,
-						},
-					});
-					if (result.completesTurn === true || (result.completesTurn === "alone" && functionCalls.length === 1))
-						stopAfterBatch = true;
-				}
-				if (stopAfterBatch) break;
-				continue;
-			}
-
-			if (!correctionSent && options.turnCorrection) {
-				const correction = await options.turnCorrection(sessionSignal);
-				if (correction) {
-					correctionSent = true;
-					if (response.parts.length === 0) {
+				let callCursor = 0;
+				for (const part of response.parts) {
+					if (isPlainObject(part.functionCall) && typeof part.functionCall.name === "string") {
+						const callId = assignedCallIds[callCursor] ?? `gemini-${fencedRequests}-${callCursor + 1}`;
+						callCursor += 1;
+						const args = part.functionCall.args !== undefined ? part.functionCall.args : {};
 						history.push({
 							role: "model",
-							parts: [{ text: "" }],
-							item: { kind: "message", role: "assistant", callId: null, id: null, bytes: 0, media: 0 },
+							parts: [part],
+							item: {
+								kind: "function_call",
+								role: null,
+								callId,
+								id: null,
+								bytes: Buffer.byteLength(JSON.stringify(args)),
+								media: 0,
+							},
+						});
+					} else if (part.thought === true) {
+						history.push({
+							role: "model",
+							parts: [part],
+							item: {
+								kind: "reasoning",
+								role: null,
+								callId: null,
+								id: null,
+								bytes: Buffer.byteLength(JSON.stringify(part)),
+								media: 0,
+							},
+						});
+					} else {
+						const text = typeof part.text === "string" ? part.text : JSON.stringify(part);
+						history.push({
+							role: "model",
+							parts: [part],
+							item: {
+								kind: "message",
+								role: "assistant",
+								callId: null,
+								id: null,
+								bytes: Buffer.byteLength(text),
+								media: 0,
+							},
 						});
 					}
-					const redactedCorrection = redactCloudWebhookSecrets(correction);
-					history.push({
-						role: "user",
-						parts: [{ text: redactedCorrection }],
-						item: {
-							kind: "message",
+				}
+
+				if (functionCalls.length > 0) {
+					let stopAfterBatch = false;
+					for (const [index, call] of functionCalls.entries()) {
+						sessionSignal.throwIfAborted();
+						const callId = assignedCallIds[index];
+						const result = await options.boundary.invoke(callId, "qorpera", call.name, call.args);
+						toolCalls += 1;
+						const envelopeText = result.contentItems[0].text;
+						const imageItem = result.contentItems.find(
+							(item): item is { type: "inputImage"; imageUrl: string } =>
+								item.type === "inputImage" && item.imageUrl.startsWith(PNG_DATA_URL_PREFIX),
+						);
+						const callParts: GeminiPart[] = [];
+						if (imageItem) {
+							const base64 = imageItem.imageUrl.slice(PNG_DATA_URL_PREFIX.length);
+							const imageSha256 = createHash("sha256").update(Buffer.from(base64, "base64")).digest("hex");
+							pendingFenceInputs.push({
+								kind: "function_call_output",
+								callId,
+								output: [
+									{ type: "input_text", text: envelopeText },
+									{ type: "input_image", sha256: imageSha256 },
+								],
+							});
+							callParts.push({
+								functionResponse: {
+									...(call.id ? { id: call.id } : {}),
+									name: call.name,
+									response: { output: envelopeText },
+								},
+							});
+							callParts.push({
+								inlineData: { mimeType: "image/png", data: base64 },
+							});
+						} else {
+							pendingFenceInputs.push({
+								kind: "function_call_output",
+								callId,
+								output: envelopeText,
+							});
+							callParts.push({
+								functionResponse: {
+									...(call.id ? { id: call.id } : {}),
+									name: call.name,
+									response: { output: envelopeText },
+								},
+							});
+						}
+						history.push({
 							role: "user",
-							callId: null,
-							id: null,
-							bytes: Buffer.byteLength(redactedCorrection),
-							media: 0,
-						},
-					});
+							parts: callParts,
+							item: {
+								kind: "function_call_output",
+								role: null,
+								callId,
+								id: null,
+								bytes: Buffer.byteLength(envelopeText),
+								media: imageItem ? 1 : 0,
+							},
+						});
+						if (result.completesTurn === true || (result.completesTurn === "alone" && functionCalls.length === 1))
+							stopAfterBatch = true;
+					}
+					if (stopAfterBatch) break;
 					continue;
 				}
-			}
-			break;
-		}
 
-		await options.closing?.(sessionSignal);
-		return {
-			providerSessionId: `gemini:${options.model}:${threadId}`,
-			toolCalls,
-			codexVersion: options.model,
-			fencedRequests,
-		};
-	} finally {
-		options.reviewer?.attach(undefined);
-		// WHY: qorpera_record_gemini_run_usage requires an active lease, so if this attempt was cut off and superseded
-		// before its final response flushed, this retry is refused and logged rather than blocking teardown.
-		if (options.onUsage && usageDirty) {
-			const flushed = await flushUsage(AbortSignal.timeout(10_000));
-			if (!flushed) {
-				const retried = await flushUsage(AbortSignal.timeout(10_000));
-				if (!retried) console.error("Gemini run usage was not recorded");
+				if (!correctionSent && options.turnCorrection) {
+					const correction = await options.turnCorrection(sessionSignal);
+					if (correction) {
+						correctionSent = true;
+						if (response.parts.length === 0) {
+							history.push({
+								role: "model",
+								parts: [{ text: "" }],
+								item: { kind: "message", role: "assistant", callId: null, id: null, bytes: 0, media: 0 },
+							});
+						}
+						const redactedCorrection = redactCloudWebhookSecrets(correction);
+						history.push({
+							role: "user",
+							parts: [{ text: redactedCorrection }],
+							item: {
+								kind: "message",
+								role: "user",
+								callId: null,
+								id: null,
+								bytes: Buffer.byteLength(redactedCorrection),
+								media: 0,
+							},
+						});
+						continue;
+					}
+				}
+				break;
+			}
+
+			await options.closing?.(sessionSignal);
+			return {
+				providerSessionId: `gemini:${options.model}:${threadId}`,
+				toolCalls,
+				codexVersion: options.model,
+				fencedRequests,
+			};
+		} finally {
+			options.reviewer?.attach(undefined);
+			// WHY: qorpera_record_gemini_run_usage requires an active lease, so if this attempt was cut off and superseded
+			// before its final response flushed, this retry is refused and logged rather than blocking teardown.
+			if (options.onUsage && usageDirty) {
+				const flushed = await flushUsage();
+				if (!flushed) {
+					const retried = await flushUsage();
+					if (!retried) console.error("Gemini run usage was not recorded");
+				}
 			}
 		}
-	}
+	};
+	return options.timeoutMs !== undefined
+		? withScopedSignal([options.signal], options.timeoutMs, runWithSession)
+		: runWithSession(options.signal);
 }

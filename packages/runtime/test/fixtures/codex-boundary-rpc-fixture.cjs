@@ -315,6 +315,11 @@ async function handle(message) {
 		write({ id: message.id, result: { thread: { id: reviewThreadId } } });
 	} else if (message.method === "turn/start" && mode.startsWith("review") && message.params.threadId === reviewThreadId) {
 		reviewEvidence.reviewerTurn = message.params;
+		if (mode === "review-turn-start-stalled") {
+			writeFileSync(`${evidencePath}.review-turn-start`, "");
+			setTimeout(() => write({ id: message.id, result: { turn: { id: reviewTurnId } } }), 120);
+			return;
+		}
 		write({ id: message.id, result: { turn: { id: reviewTurnId } } });
 		write({ method: "turn/started", params: { threadId: reviewThreadId, turn: { id: reviewTurnId } } });
 		if (mode === "review-context") contextEvidence.reviewer = await compose({ threadId: reviewThreadId, turnId: reviewTurnId });
@@ -349,6 +354,12 @@ async function handle(message) {
 		} });
 	} else if (message.method === "turn/start" && compacting && compactThreadIds.includes(message.params.threadId)) {
 		const turn = compactEvidence.compactTurns.push(message.params);
+		if (mode === "compact-side-turn-start-stalled") {
+			compactAt = { threadId: message.params.threadId, turnId: `turn_compact_${turn}` };
+			writeFileSync(`${evidencePath}.compact-turn-start`, "");
+			setTimeout(() => write({ id: message.id, result: { turn: { id: compactAt.turnId } } }), 120);
+			return;
+		}
 		if (mode === "company-logged") {
 			// Each of a work log's turns answers one line, while the agent's turn goes on or at its closing.
 			const at = { threadId: message.params.threadId, turnId: `turn_compact_${turn}` };
@@ -904,6 +915,7 @@ async function handle(message) {
 		}
 	} else if (message.method === "turn/interrupt" && mode.startsWith("review") && message.params.threadId === reviewThreadId) {
 		reviewEvidence.interrupt = message.params;
+		if (mode === "review-turn-start-stalled") writeFileSync(`${evidencePath}.review-interrupt`, JSON.stringify(message.params));
 		write({ id: message.id, result: {} });
 		write({ method: "turn/completed", params: { threadId: reviewThreadId, turn: { id: reviewTurnId, status: "interrupted", error: null } } });
 	} else if (message.id === "reviewer_wrong_tool") {
