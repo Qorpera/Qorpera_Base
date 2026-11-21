@@ -221,7 +221,7 @@ export class SiteView {
 	constructor(host: SiteViewHost, slug: string, signal: AbortSignal) {
 		this.#host = host;
 		this.#slug = slug;
-		signal.addEventListener("abort", () => this.dispose(), { once: true });
+		signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		const name = `qorpera-site-${++frames}`;
 		this.#frame = h("iframe", {
 			class: "site-frame",

@@ -588,10 +588,19 @@ export class Platform {
 		} catch {
 			refuse(503, "The company folder did not answer");
 		}
-		if (response.status === 401) refuse(401, "Sign in again");
-		if (refusedAs !== undefined && (response.status === 403 || response.status === 404)) return refusedAs;
-		if (!response.ok) refuse(response.status === 403 || response.status === 404 ? 403 : 503, "The company folder refused the read");
-		return response.json();
+		if (response.status === 401) {
+			void response.body?.cancel().catch(() => undefined);
+			refuse(401, "Sign in again");
+		}
+		if (refusedAs !== undefined && (response.status === 403 || response.status === 404)) {
+			void response.body?.cancel().catch(() => undefined);
+			return refusedAs;
+		}
+		if (!response.ok) {
+			void response.body?.cancel().catch(() => undefined);
+			refuse(response.status === 403 || response.status === 404 ? 403 : 503, "The company folder refused the read");
+		}
+		return response.json().catch(() => refuse(503, "The company folder returned an unreadable answer"));
 	}
 	async memberFolders(token, environmentId, parent, limit) {
 		const answer = await this.#rpc(token, "qorpera_member_folder_list", {
@@ -655,7 +664,10 @@ export class Platform {
 		} catch {
 			refuse(503, "The platform did not answer");
 		}
-		if (!response.ok) refuse(503, "The platform refused the pass");
+		if (!response.ok) {
+			void response.body?.cancel().catch(() => undefined);
+			refuse(503, "The platform refused the pass");
+		}
 		const answer = await response.json().catch(() => refuse(503, "The platform's answer is not a pass"));
 		if (answer === null) return null;
 		const files = Array.isArray(answer?.files) ? answer.files : null;
@@ -823,6 +835,7 @@ export class Gateway {
 	#beforeCancel;
 	#onAgentRead;
 	#onDrop;
+	#onUnsettledTx;
 	/** Backends that were sent a cancel, by pid, with when: such a backend's connection is never used again, since a
 	 * cancel that arrives late would stop whatever runs on it then. */
 	#signalled = new Map();
@@ -842,6 +855,7 @@ export class Gateway {
 	/** Company databases this gateway has seen exist. */
 	#exists = new Set();
 	#unsettled = new Map();
+	#unsettledOverflow = new Set();
 	#swept = new Map();
 	#inFlightCounts = new Map();
 	#companyCountGates = new Map();
@@ -864,6 +878,7 @@ export class Gateway {
 		beforeCancel = async () => undefined,
 		onAgentRead = () => undefined,
 		onDrop = () => undefined,
+		onUnsettledTx = null,
 	}) {
 		this.#store = store;
 		this.#platform = platform;
@@ -886,6 +901,21 @@ export class Gateway {
 		this.#beforeCancel = beforeCancel;
 		this.#onAgentRead = onAgentRead;
 		this.#onDrop = onDrop;
+		this.#onUnsettledTx = typeof onUnsettledTx === "function" ? onUnsettledTx : null;
+	}
+
+	noteUnsettledTx(database, txid) {
+		if (typeof database !== "string" || typeof txid !== "string" || this.#unsettledOverflow.has(database)) return;
+		let set = this.#unsettled.get(database);
+		if (!set) {
+			set = new Set();
+			this.#unsettled.set(database, set);
+		}
+		set.add(txid);
+		if (set.size > 10_000) {
+			this.#unsettled.delete(database);
+			this.#unsettledOverflow.add(database);
+		}
 	}
 
 	setAgentRead(pid, delta) {
@@ -1032,17 +1062,16 @@ export class Gateway {
 		const epoch = this.#schemaEpoch.get(`${database}/${schema}`) ?? 0;
 		let state = this.#prepared.get(client);
 		if (!state) {
-			state = { epoch, names: new Set() };
+			state = { epoch, names: new Set(), pendingDeallocate: false };
 			this.#prepared.set(client, state);
 			return { state, needsDeallocate: false };
 		}
 		if (state.epoch !== epoch) {
-			const hadAny = state.names.size > 0;
+			if (state.names.size > 0) state.pendingDeallocate = true;
 			state.epoch = epoch;
 			state.names.clear();
-			return { state, needsDeallocate: hadAny };
 		}
-		return { state, needsDeallocate: false };
+		return { state, needsDeallocate: state.pendingDeallocate };
 	}
 
 	#preparedName(client, database, schema, key) {
@@ -1431,10 +1460,13 @@ export class Gateway {
 			const limit = Math.max(1, Math.floor(Math.min(cap, ms)));
 			const viewerSetting =
 				ready.viewer && ENVIRONMENT.test(ready.viewer) ? `; set local "qorpera.viewer" = '${ready.viewer}'` : `; set local "qorpera.viewer" = ''`;
+			const { state: prepState, needsDeallocate } = this.#preparedState(client, ready.database, ready.name);
+			const deallocatePrefix = needsDeallocate ? "deallocate all; " : "";
 			await client.query(
-				`begin transaction read only; set local statement_timeout = ${limit}; set local timezone = 'UTC'; ` +
+				`${deallocatePrefix}begin transaction read only; set local statement_timeout = ${limit}; set local timezone = 'UTC'; ` +
 					`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}, qorpera_ext${viewerSetting}${settings}`,
 			);
+			if (needsDeallocate) prepState.pendingDeallocate = false;
 			const answer = await work(client, { maxRows, maxBytes });
 			await client.query("rollback");
 			return answer;
@@ -1460,7 +1492,7 @@ export class Gateway {
 		const cap = agent ? this.#limits.agentMs : this.#limits.questionMs;
 		const maxRows = agent ? this.#limits.agentRows : this.#limits.questionRows;
 		const maxBytes = agent ? this.#limits.agentBytes : this.#limits.questionBytes;
-		const connecting = this.#pool(ready.database, `${ready.database}_r${ready.n}`).connect();
+		const connecting = this.#pool(ready.database, `${ready.database}_r${ready.n}`).connect(until ?? undefined);
 		const client = await (until === null ? connecting : inTime(connecting, until)).catch((error) => {
 			throw storeProblem(error);
 		});
@@ -1525,6 +1557,7 @@ export class Gateway {
 					lost = beginRes.reason;
 				throw beginRes.reason;
 			}
+			if (needsDeallocate) prepState.pendingDeallocate = false;
 			if (queryRes.status === "rejected") {
 				const error = queryRes.reason;
 				if (spec.name && (!existedBefore.has(spec.name) || error?.code === "0A000" || error?.code === "42P01" || error?.code === "42703"))
@@ -1997,8 +2030,8 @@ export class Gateway {
 			.catch((error) => {
 				throw storeProblem(error);
 			});
-		if (!this.#unsettled.has(database)) this.#unsettled.set(database, new Set());
-		this.#unsettled.get(database).add(txid);
+		if (this.#onUnsettledTx) this.#onUnsettledTx(database, String(txid));
+		else this.noteUnsettledTx(database, String(txid));
 	}
 
 	async #writing(ready, actor, { gone = null, settings = "", room }, work) {
@@ -2096,9 +2129,10 @@ export class Gateway {
 
 	async #writingPipelined(ready, actor, { gone = null, room }) {
 		const ms = this.#limits.changeMs;
+		const connectUntil = Date.now() + Math.min(ms, CONNECT_MS - 1_000);
 		const client = await inTime(
-			this.#pool(ready.database, `${ready.database}_w${ready.n}`).connect(),
-			Date.now() + Math.min(ms, CONNECT_MS - 1_000),
+			this.#pool(ready.database, `${ready.database}_w${ready.n}`).connect(connectUntil),
+			connectUntil,
 		).catch((error) => {
 			throw storeProblem(error);
 		});
@@ -2413,6 +2447,7 @@ export class Gateway {
 				ready: null,
 				failed: false,
 				stopped: false,
+				dropped: false,
 				epoch: ++this.#listenEpoch,
 				gen: 0,
 				wildcardGen: 0,
@@ -2422,10 +2457,9 @@ export class Gateway {
 				cache: new Map(),
 				viewerScoped: new Map(),
 			};
-			let dropped = false;
 			const lost = () => {
-				if (dropped) return;
-				dropped = true;
+				if (listener.dropped) return;
+				listener.dropped = true;
 				if (this.#listeners.get(database) === listener) this.#listeners.delete(database);
 				listener.cache.clear();
 				listener.viewerScoped.clear();
@@ -2541,12 +2575,15 @@ export class Gateway {
 					names.size > 0
 						? new RegExp(`(?<![A-Za-z0-9_])(?:${[...names].map(escapeRegExp).join("|")})(?![A-Za-z0-9_])`, "i")
 						: null;
-				return { all: false, names, regex };
+				return { all: false, names, regex, failed: false };
 			})
-			.catch(() => ({ all: true, names: new Set(), regex: null }));
+			.catch(() => ({ all: true, names: new Set(), regex: null, failed: true }));
 		listener.viewerScoped.set(schema, pending);
 		const found = await pending;
-		if (listener.viewerScoped.get(schema) === pending) listener.viewerScoped.set(schema, found);
+		if (listener.viewerScoped.get(schema) === pending) {
+			if (found.failed) listener.viewerScoped.delete(schema);
+			else listener.viewerScoped.set(schema, found);
+		}
 		return found;
 	}
 
@@ -2812,7 +2849,7 @@ export class Gateway {
 				};
 			};
 			let scan = await settleDirty(await differing());
-			while (scan.changed.length === 0 && !scan.partial && Date.now() < holdUntil && !stop.aborted && !this.#closed && !listener.stopped) {
+			while (scan.changed.length === 0 && !scan.partial && Date.now() < holdUntil && !stop.aborted && !this.#closed && !listener.stopped && !listener.dropped) {
 				if (dirty.size === 0)
 					await new Promise((resolve) => {
 						const timer = setTimeout(resolve, holdUntil - Date.now());
@@ -2829,7 +2866,13 @@ export class Gateway {
 				const batch = [...dirty].sort((a, b) => a - b);
 				dirty.clear();
 				scan = await settleDirty(await differing(batch));
+				if (listener.dropped) break;
 				if (scan.changed.length === 0 && !scan.partial) await new Promise((resolve) => setTimeout(resolve, this.#limits.watchAgainMs));
+			}
+			if (listener.dropped && scan.changed.length === 0 && !scan.partial && dirty.size > 0 && !stop.aborted && !this.#closed && Date.now() < deadline) {
+				const batch = [...dirty].sort((a, b) => a - b);
+				dirty.clear();
+				scan = await settleDirty(await differing(batch));
 			}
 			const partial = scan.partial ? { partial: true } : {};
 			return scan.changed.length > 0 ? { changed: scan.changed, ...partial } : { same: true, ...partial };
@@ -2847,6 +2890,11 @@ export class Gateway {
 		const admin = await this.#pool("postgres", "qorpera_data_admin").connect().catch((error) => {
 			throw storeProblem(error);
 		});
+		let lost;
+		const onClientError = (error) => {
+			lost ??= error;
+		};
+		admin.on("error", onClientError);
 		try {
 			await admin.query("select pg_advisory_lock(hashtext('qorpera_data.company'), hashtext($1))", [database]);
 			try {
@@ -2877,12 +2925,16 @@ export class Gateway {
 				if (ready.rowCount !== 1) refuse(503, "The company's database is not ready");
 				this.#provisioned.add(database);
 			} finally {
-				await admin.query("select pg_advisory_unlock(hashtext('qorpera_data.company'), hashtext($1))", [database]).catch(() => undefined);
+				await admin.query("select pg_advisory_unlock(hashtext('qorpera_data.company'), hashtext($1))", [database]).catch((unlockError) => {
+					lost ??= unlockError;
+				});
 			}
 		} catch (error) {
+			if (!(error instanceof Refusal) && (!error?.code || /^(57P0[123]|08...)$/.test(error.code))) lost ??= error;
 			throw storeProblem(error);
 		} finally {
-			admin.release();
+			admin.removeListener("error", onClientError);
+			this.#release(admin, lost);
 		}
 	}
 
@@ -2890,7 +2942,14 @@ export class Gateway {
 	async #ensureFolder(database, name) {
 		const known = await this.#folder(database, name).catch(() => null);
 		if (known !== null) return known;
-		const client = await this.#pool(database, "qorpera_data_admin").connect();
+		const client = await this.#pool(database, "qorpera_data_admin").connect().catch((error) => {
+			throw storeProblem(error);
+		});
+		let lost;
+		const onClientError = (error) => {
+			lost ??= error;
+		};
+		client.on("error", onClientError);
 		try {
 			await client.query("begin");
 			await client.query("select pg_advisory_xact_lock(hashtext('qorpera_data.databases'))");
@@ -2918,10 +2977,15 @@ export class Gateway {
 			this.#folders.set(`${database}/${name}`, n);
 			return n;
 		} catch (error) {
-			await client.query("rollback").catch(() => undefined);
+			if (error instanceof Refusal || (error?.code && !/^(57P0[123]|08...)$/.test(error.code)))
+				await client.query("rollback").catch((rbError) => {
+					lost ??= rbError;
+				});
+			else lost ??= error;
 			throw storeProblem(error);
 		} finally {
-			client.release();
+			client.removeListener("error", onClientError);
+			this.#release(client, lost);
 		}
 	}
 
@@ -3279,6 +3343,9 @@ export class Gateway {
 		if (!releaseCompany) return;
 		let client;
 		let lost;
+		const onClientError = (error) => {
+			lost ??= error;
+		};
 		try {
 			const rank = (table) => (table.kind === "v" ? 2 : table.kind === "p" ? 1 : 0);
 			const order = [...tables].sort((a, b) => rank(a) - rank(b) || a.pages - b.pages || (a.name < b.name ? -1 : 1));
@@ -3291,6 +3358,7 @@ export class Gateway {
 				}
 				throw error;
 			}
+			client.on("error", onClientError);
 			if (until - Date.now() < 1) return;
 			await client.query(
 				`begin transaction read only; set local timezone = 'UTC'; set local datestyle = 'ISO'; set local search_path = ${quoted(name)}`,
@@ -3387,17 +3455,26 @@ export class Gateway {
 					if (!(await countOne(order[idx++]))) break;
 				}
 			}
-			if (!lost) await client.query("rollback").catch(() => undefined);
+			if (!lost)
+				await client.query("rollback").catch((rbError) => {
+					lost ??= rbError;
+				});
 		} catch (error) {
 			run.failed = true;
 			if (client) {
-				if (error?.code && !/^(57P0[123]|08...)$/.test(error.code)) await client.query("rollback").catch(() => undefined);
-				else lost = error;
+				if (error?.code && !/^(57P0[123]|08...)$/.test(error.code))
+					await client.query("rollback").catch((rbError) => {
+						lost ??= rbError;
+					});
+				else lost ??= error;
 			} else if (!(storeProblem(error) instanceof Refusal)) {
 				throw error;
 			}
 		} finally {
-			if (client) this.#release(client, lost);
+			if (client) {
+				client.removeListener("error", onClientError);
+				this.#release(client, lost);
+			}
 			releaseCompany();
 		}
 	}
@@ -3577,13 +3654,17 @@ export class Gateway {
 		const now = Date.now();
 		const unforgotten = [];
 		const active = databases
-			.map((database) => ({
-				database,
-				sweep: now - (this.#swept.get(database) ?? Number.NEGATIVE_INFINITY) >= this.#limits.sweepMs,
-				waiting: [...(this.#unsettled.get(database) ?? [])],
-			}))
+			.map((database) => {
+				const overflow = this.#unsettledOverflow.delete(database);
+				return {
+					database,
+					overflow,
+					sweep: overflow || now - (this.#swept.get(database) ?? Number.NEGATIVE_INFINITY) >= this.#limits.sweepMs,
+					waiting: [...(this.#unsettled.get(database) ?? [])],
+				};
+			})
 			.filter((entry) => entry.sweep || entry.waiting.length > 0);
-		const results = await mapBounded(active, DESCRIBE_CONCURRENCY, async ({ database, sweep, waiting }) => {
+		const results = await mapBounded(active, DESCRIBE_CONCURRENCY, async ({ database, overflow, sweep, waiting }) => {
 			const keeper = this.#pool(database, "qorpera_data_keeper");
 			let forgotFailed = false;
 			const looked = await keeper
@@ -3598,11 +3679,14 @@ export class Gateway {
 					return answer;
 				})
 				.catch(() => null);
-			return { database, sweep, waiting, looked, forgotFailed };
+			return { database, overflow, sweep, waiting, looked, forgotFailed };
 		});
-		for (const { database, sweep, waiting, looked, forgotFailed } of results) {
+		for (const { database, overflow, sweep, waiting, looked, forgotFailed } of results) {
 			if (forgotFailed) unforgotten.push(database);
-			if (looked === null) continue;
+			if (looked === null) {
+				if (overflow) this.#unsettledOverflow.add(database);
+				continue;
+			}
 			if (sweep) this.#swept.set(database, now);
 			const running = new Set(looked.rows.map((line) => line.txid));
 			const unsettled = this.#unsettled.get(database) ?? new Set();
@@ -3613,6 +3697,7 @@ export class Gateway {
 		}
 		const live = new Set(databases);
 		for (const known of [this.#unsettled, this.#swept]) for (const database of known.keys()) if (!live.has(database)) known.delete(database);
+		for (const database of this.#unsettledOverflow) if (!live.has(database)) this.#unsettledOverflow.delete(database);
 		return unforgotten;
 	}
 
@@ -3897,14 +3982,18 @@ export class Gateway {
 		return { ...(await this.#act(ready, { kind: "hook", id: hookId, via: file }, { gone })), asOf: isoNow() };
 	}
 
-	async #closePools(match) {
+	#beginClosePools(match) {
 		const ending = [];
 		for (const [key, { pool }] of this.#pools) {
 			if (!match(key)) continue;
 			this.#pools.delete(key);
 			ending.push(pool.end().catch(() => undefined));
 		}
-		await Promise.all(ending);
+		return Promise.all(ending);
+	}
+
+	async #closePools(match) {
+		await this.#beginClosePools(match);
 	}
 
 	async evictDatabase(database, name, n = null) {
@@ -3923,7 +4012,7 @@ export class Gateway {
 		}
 	}
 
-	async evictCompany(database) {
+	async evictCompany(database, { beforeWaitPools = null } = {}) {
 		for (const entry of [...this.#triggerStops.values()]) {
 			if (entry.database === database) entry.stop();
 		}
@@ -3944,11 +4033,14 @@ export class Gateway {
 				this.#watchInFlight.delete(key);
 			}
 		}
-		await this.#closePools((key) => key.endsWith(`@${database}`));
+		const closing = this.#beginClosePools((key) => key.endsWith(`@${database}`));
+		if (beforeWaitPools) await beforeWaitPools();
+		await closing;
 		this.#provisioned.delete(database);
 		this.#exists.delete(database);
 		this.#full.delete(database);
 		this.#unsettled.delete(database);
+		this.#unsettledOverflow.delete(database);
 		this.#swept.delete(database);
 		for (const map of [this.#folders, this.#folderInFlight, this.#relations, this.#schemaEpoch]) {
 			for (const key of map.keys()) if (key.startsWith(`${database}/`)) map.delete(key);
@@ -3999,13 +4091,15 @@ export class Gateway {
 				for (const role of existing) await client.query(`alter role ${quoted(role)} nologin`);
 				await client.query(`revoke all on database ${quoted(database)} from ${roleList}`);
 			}
-			await this.#closePools((key) => roles.some((role) => key === `${role}@${database}`));
+			// WHY: Terminate active backends before awaiting pool.end() so checked-out queries do not deadlock the admin pool.
+			const closingPools = this.#beginClosePools((key) => roles.some((role) => key === `${role}@${database}`));
 			await watch
 				.query("select pg_catalog.pg_terminate_backend(pid) from pg_catalog.pg_stat_activity where datname = $1 and usename = any($2::text[])", [
 					database,
 					roles,
 				])
 				.catch(() => undefined);
+			await closingPools;
 			await client.query(`drop schema if exists ${quoted(name)} cascade`);
 			await client.query("delete from qorpera_data.databases where name = $1", [name]);
 			if (existing.length > 0) {
@@ -4050,7 +4144,18 @@ export class Gateway {
 				if (exists) {
 					await admin.query(`alter database ${quoted(database)} allow_connections false`).catch(() => undefined);
 				}
-				await this.evictCompany(database);
+				await this.evictCompany(database, {
+					beforeWaitPools: exists
+						? async () => {
+								await watch
+									.query(
+										"select pg_catalog.pg_terminate_backend(pid) from pg_catalog.pg_stat_activity where datname = $1 and pid <> pg_catalog.pg_backend_pid()",
+										[database],
+									)
+									.catch(() => undefined);
+							}
+						: null,
+				});
 				this.#onDrop({ kind: "company", database });
 				if (exists) {
 					for (let attempt = 0; attempt < 5; attempt++) {

@@ -4,10 +4,12 @@ import {
 	CHAIN_STOPPED_SCHEMA,
 	decisionRound,
 	LEGACY_PART_SCHEMA,
+	latestReworkingReplyAfter,
 	projectTranscript,
 	RUNNER_ENTRY_SCHEMA,
 	reworkingNote,
 	runAcknowledgements,
+	type TranscriptInteraction,
 	type TranscriptItem,
 } from "../src/cloud/transcript.ts";
 import type { HostedSessionEvent, PendingSessionInput } from "../src/cloud/types.ts";
@@ -447,6 +449,31 @@ describe("interaction cards in the transcript", () => {
 		expect(reworkingNote([open, said, again] as TranscriptItem[], 0, noted, true)).toBe(false);
 		const member = { kind: "member" as const, id: "m", sequence: 3, text: "And?", createdAt: "2026-09-02T10:06:00Z" };
 		expect(reworkingNote([open, said, member] as TranscriptItem[], 0, noted, true)).toBe(true);
+
+		const withReply = [open, said, reply] as TranscriptItem[];
+		const withReplyAfter = latestReworkingReplyAfter(withReply);
+		expect(reworkingNote(withReply, 0, noted, true, undefined, withReplyAfter[0])).toBe(false);
+		const withMember = [open, said, member] as TranscriptItem[];
+		const withMemberAfter = latestReworkingReplyAfter(withMember);
+		expect(reworkingNote(withMember, 0, noted, true, undefined, withMemberAfter[0])).toBe(true);
+		const pendingNoDate = { outcome: "answered" as const, answer: { values: ["Warmer"] }, pending: true };
+		expect(reworkingNote(withReply, 0, pendingNoDate, false, undefined, withReplyAfter[0])).toBe(true);
+
+		const round2: TranscriptInteraction = {
+			...open,
+			id: "round-2",
+			sequence: 4,
+			request: {
+				...open.request,
+				payload: { ...open.request.payload, previousInteractionId: open.id },
+			},
+		};
+		const roundItems = [{ ...open, answer: { ...noted, answeredBy: USER } }, round2] as TranscriptItem[];
+		const byId = new Map<string, TranscriptInteraction>([
+			[open.id.toLowerCase(), roundItems[0] as TranscriptInteraction],
+			[round2.id.toLowerCase(), round2],
+		]);
+		expect(decisionRound(roundItems, round2, byId)).toEqual(decisionRound(roundItems, round2));
 	});
 
 	it("finds each run's first short words and whether the run said more", () => {

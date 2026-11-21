@@ -1,7 +1,7 @@
 //! qorpera-folder: the company folder inside a Qorpera machine, and the node's vsock bridge to the
 //! folder service. See README.md and deploy/first-node/RUNTIME-FOLDER-SERVICE.md.
 
-use qorpera_folder::{bridge, cache, command, data, link, lxd, mount, proto, reads::ReadLog, relay, scan, viewfile::{self, DaemonLock, ViewFile}};
+use qorpera_folder::{bridge, cache, command, data, link, lxd, mount, proto, reads::ReadLog, relay, scan, search, viewfile::{self, DaemonLock, ViewFile}};
 use std::ffi::CString;
 use std::io::Write;
 use std::os::fd::RawFd;
@@ -18,6 +18,7 @@ const USAGE: &str = "Usage:
   qorpera-folder command --shell-pid <pid> --tree <dir> --network yes|no -- <program> [args]
   qorpera-folder data [--view-file /run/qorpera-folder/view.json] [--root /company] [--connect vsock:2:5250] describe [<database>] | apply <database> | query <database> <question> [name=value ...] | query <database> --sql '<one select>' [name=value ...] | change <database> <change> [name=value ...]
   qorpera-folder scan-pack --spec-fd <fd>
+  qorpera-folder search-worker --storage-root <dir> [--index-mib <N>] [--threads <N>]
   qorpera-folder version
 
 mount: shows the view named in <file> (JSON {\"environmentId\", \"viewId\", \"pass\"}; a regular file owned by this
@@ -71,7 +72,13 @@ before running it again).
 scan-pack: reads a git cat-file --batch-all-objects --batch --unordered stream on standard input, scans each object
 against the keyed secret-hash specification JSON read from --spec-fd <fd> (>= 3), and prints one JSON result line on
 standard output ({\"status\":\"clean\",\"rebuilt\":...}, {\"status\":\"secret\"}, or {\"status\":\"unchecked\",\"reason\":...}).
-Exit codes: 0 result printed, 1 invalid specification or I/O failure, 2 usage.";
+Exit codes: 0 result printed, 1 invalid specification or I/O failure, 2 usage.
+
+search-worker: persistent off-event-loop content-addressed trigram + linear-time regex search worker for folder-service.
+Reads 4-byte big-endian length-prefixed JSON requests on stdin, verifies objects under --storage-root with O_NOFOLLOW
+and SHA-256, maintains a bounded LRU trigram/object/tree cache (--index-mib, default 512, 1..2048), executes queries across
+--threads worker threads (default 4, 1..32), and writes matching length-prefixed JSON responses on stdout until stdin EOF.
+Exit codes: 0 clean shutdown on stdin EOF, 1 I/O or protocol failure, 2 usage.";
 
 /// The node closed or refused the view: a supervisor must not simply start the mount again.
 const EXIT_VIEW_CLOSED: u8 = 3;
@@ -86,6 +93,7 @@ fn main() -> ExitCode {
 		Some("command") => command(&args[1..]),
 		Some("data") => data(&args[1..]),
 		Some("scan-pack") => scan_pack(&args[1..]),
+		Some("search-worker") => search_worker(&args[1..]),
 		Some("version" | "--version") => {
 			println!("qorpera-folder {} (protocol {})", env!("CARGO_PKG_VERSION"), proto::PROTOCOL);
 			Ok(ExitCode::SUCCESS)
@@ -446,6 +454,31 @@ fn scan_pack(args: &[String]) -> Result<ExitCode, Usage> {
 	}
 }
 
+fn search_worker_options(args: &[String]) -> Result<(PathBuf, usize, usize), Usage> {
+	let o = options(args, &["storage-root", "index-mib", "threads"])?;
+	let root = o.get("storage-root").filter(|p| !p.is_empty()).ok_or_else(|| Usage("--storage-root is required".into()))?;
+	let index_mib: usize = number(&o, "index-mib", 512)?;
+	if !(1..=2048).contains(&index_mib) {
+		return Err(Usage("--index-mib must be 1 to 2048".into()));
+	}
+	let threads: usize = number(&o, "threads", 4)?;
+	if !(1..=32).contains(&threads) {
+		return Err(Usage("--threads must be 1 to 32".into()));
+	}
+	Ok((PathBuf::from(root), index_mib, threads))
+}
+
+fn search_worker(args: &[String]) -> Result<ExitCode, Usage> {
+	let (root, index_mib, threads) = search_worker_options(args)?;
+	match search::run_worker(&root, index_mib, threads) {
+		Ok(()) => Ok(ExitCode::SUCCESS),
+		Err(msg) => {
+			eprintln!("qorpera-folder search-worker: {msg}");
+			Ok(ExitCode::FAILURE)
+		}
+	}
+}
+
 /// `command`'s options, then `--` and the program with its arguments.
 fn command_request(args: &[String]) -> Result<command::Request, Usage> {
 	let split = args.iter().position(|a| a == "--").ok_or_else(|| Usage("command needs -- <program> [args]".into()))?;
@@ -562,6 +595,28 @@ mod tests {
 			vec!["--spec-fd", "-1"],
 			vec!["--spec-fd", "abc"],
 			vec!["--spec-fd", "3", "--other", "1"],
+		] {
+			assert!(parse(&bad).is_err(), "{bad:?}");
+		}
+	}
+
+	#[test]
+	fn search_worker_validates_storage_root_index_mib_and_threads() {
+		let parse = |args: &[&str]| search_worker_options(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+		assert_eq!(parse(&["--storage-root", "/srv/objects"]).ok(), Some((PathBuf::from("/srv/objects"), 512, 4)));
+		assert_eq!(
+			parse(&["--storage-root", "/srv/objects", "--index-mib", "384", "--threads", "8"]).ok(),
+			Some((PathBuf::from("/srv/objects"), 384, 8))
+		);
+		for bad in [
+			vec![],
+			vec!["--storage-root"],
+			vec!["--storage-root", ""],
+			vec!["--storage-root", "/srv", "--index-mib", "0"],
+			vec!["--storage-root", "/srv", "--index-mib", "2049"],
+			vec!["--storage-root", "/srv", "--threads", "0"],
+			vec!["--storage-root", "/srv", "--threads", "33"],
+			vec!["--storage-root", "/srv", "--unknown", "1"],
 		] {
 			assert!(parse(&bad).is_err(), "{bad:?}");
 		}

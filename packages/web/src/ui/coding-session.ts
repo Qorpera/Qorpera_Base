@@ -217,7 +217,7 @@ export function codingSessionStatus(
 }
 
 export interface CodingSessionApi {
-	read(workerId: string, afterEvent: number): Promise<CodingSessionRead>;
+	read(workerId: string, afterEvent: number, signal?: AbortSignal): Promise<CodingSessionRead>;
 	answer(workerId: string, text: string, clientRequestId: string): Promise<void>;
 	delegate(workerId: string, clientRequestId: string): Promise<void>;
 	archive(workerId: string, clientRequestId: string): Promise<void>;
@@ -403,12 +403,25 @@ export class CodingSessionElement {
 	/** Per action, the request id kept for a retry after a refusal. */
 	readonly #requestIds = new Map<"answer" | "delegate" | "archive" | "login", string>();
 	/** The owner's logins while the card offers them, for the session's state they were read for. */
-	#logins: { key: string; value?: CodingSessionLogins } | undefined;
+	#logins: { key: string; value?: CodingSessionLogins; retryAfter?: number } | undefined;
 	#poll: ReturnType<typeof setTimeout> | undefined;
 	#request: AbortController | undefined;
 	#refreshing: Promise<void> | undefined;
 	#transcriptKey = "";
+	#introKey = "";
 	#footerKey = "";
+	readonly #markdownCache = new Map<number, { readonly key: string; readonly nodes: HTMLElement[] }>();
+	#tail:
+		| {
+				readonly baseKey: string;
+				readonly shownCount: number;
+				readonly lastEventId: number;
+				readonly turn: { side: CodingSide; author: string; body: HTMLElement } | undefined;
+				readonly steps: HTMLElement | undefined;
+				readonly previous: Date | undefined;
+				readonly lastSaid: string;
+		  }
+		| undefined;
 	/** Whether new steps keep the latest in view: until the reader scrolls up to read older ones. */
 	#stickToBottom = true;
 	/** Where the last pin put the scroller, so its own scroll event is not read as the reader's. */
@@ -549,7 +562,7 @@ export class CodingSessionElement {
 		this.#refreshing = (async () => {
 			let more = false;
 			try {
-				const read = await this.#options.api.read(this.#session.workerId, this.#cursor);
+				const read = await this.#options.api.read(this.#session.workerId, this.#cursor, request.signal);
 				if (request.signal.aborted || this.disposed) return;
 				more = read.events.length >= READ_PAGE;
 				this.#caughtUp = !more;
@@ -592,6 +605,8 @@ export class CodingSessionElement {
 		this.#request?.abort();
 		this.#sizes?.disconnect();
 		clearTimeout(this.#poll);
+		this.#markdownCache.clear();
+		this.#tail = undefined;
 	}
 
 	#schedule(): void {
@@ -674,7 +689,9 @@ export class CodingSessionElement {
 		const key = this.#loginOfferKey(owns);
 		if (!key) return null;
 		const logins = this.#options.api.logins;
-		if (this.#logins?.key !== key && logins) {
+		const needsFetch =
+			this.#logins?.key !== key || (this.#logins.retryAfter !== undefined && Date.now() >= this.#logins.retryAfter);
+		if (needsFetch && logins) {
 			const asked = { key };
 			this.#logins = asked;
 			void logins(this.#session.workerId).then(
@@ -684,7 +701,9 @@ export class CodingSessionElement {
 					this.#footerKey = "";
 					this.#render();
 				},
-				() => undefined,
+				() => {
+					if (this.#logins === asked) this.#logins = { key, retryAfter: Date.now() + 5_000 };
+				},
 			);
 		}
 		const value = this.#logins?.value;
@@ -820,12 +839,64 @@ export class CodingSessionElement {
 		// away (or never read) leaves the card at the top of what is shown.
 		const cardAt = session.pullRequest ? lastOf(events, "published")?.id : undefined;
 		const cardFirst = Boolean(session.pullRequest) && !shown.some((event) => event.id === cardAt);
+		const introKey = JSON.stringify([
+			session.title,
+			session.harness,
+			session.repository.host,
+			session.repository.name,
+			session.branch,
+			session.model,
+		]);
+		const syncIntro = () => {
+			if (introKey === this.#introKey) return;
+			this.#introKey = introKey;
+			const intro = this.#log.firstElementChild === this.#body ? undefined : this.#log.firstElementChild;
+			const next = this.#renderIntro();
+			if (intro) intro.replaceWith(next);
+			else this.#log.prepend(next);
+		};
+		const baseKey = JSON.stringify([
+			folded,
+			this.#readError,
+			names,
+			Boolean(this.#options.askAgent),
+			this.#options.agent?.id,
+			this.#options.agent?.appearance,
+			session.harness,
+			session.phase === "queued",
+			live?.id,
+			cardAt,
+			cardFirst,
+			cardAt !== undefined || cardFirst
+				? [
+						session.repository,
+						session.branch,
+						session.pullRequest,
+						session.checks,
+						session.artifacts.length,
+						session.filesChanged,
+					]
+				: null,
+			this.#options.viewerOwns(session),
+		]);
+		const incremental =
+			this.#tail !== undefined &&
+			this.#tail.baseKey === baseKey &&
+			this.#tail.shownCount > 0 &&
+			shown.length >= this.#tail.shownCount &&
+			shown[this.#tail.shownCount - 1]?.id === this.#tail.lastEventId;
+		if (incremental && shown.length === this.#tail!.shownCount) {
+			syncIntro();
+			return;
+		}
 		// The harness's closing summary often repeats what it just said in the same turn; it is said once.
-		let lastSaid = "";
+		let lastSaid = incremental ? this.#tail!.lastSaid : "";
 		const nodes: HTMLElement[] = [];
-		let turn: { side: CodingSide; author: string; body: HTMLElement } | undefined;
-		let steps: HTMLElement | undefined;
-		let previous: Date | undefined;
+		let turn: { side: CodingSide; author: string; body: HTMLElement } | undefined = incremental
+			? this.#tail!.turn
+			: undefined;
+		let steps: HTMLElement | undefined = incremental ? this.#tail!.steps : undefined;
+		let previous: Date | undefined = incremental ? this.#tail!.previous : undefined;
 		/** The current event's time, until it draws something: a skipped event leaves no day or time break. */
 		let pending: Date | undefined;
 		const drawn = () => {
@@ -895,8 +966,10 @@ export class CodingSessionElement {
 			steps = undefined;
 		};
 		// The card goes under the first shown step's time break, not above it.
-		let cardDue = cardFirst;
-		for (const event of shown) {
+		let cardDue = incremental ? false : cardFirst;
+		const startIndex = incremental ? this.#tail!.shownCount : 0;
+		for (let index = startIndex; index < shown.length; index += 1) {
+			const event = shown[index]!;
 			pending = parseConversationTimestamp(event.at);
 			if (cardDue) {
 				cardDue = false;
@@ -935,14 +1008,18 @@ export class CodingSessionElement {
 					const body = text(event.body, "text", "summary") ?? "";
 					if (!body) break;
 					lastSaid = body.trim();
-					say(
-						"harness",
-						harness,
-						false,
-						...markdownBubbles(body).map((prose) =>
-							h("div", { class: "bubble coding-bubble", title: `${harness} · ${when}` }, prose),
-						),
-					);
+					const cacheKey = `${body}\0${harness}\0${when}`;
+					let cached = this.#markdownCache.get(event.id);
+					if (!cached || cached.key !== cacheKey) {
+						cached = {
+							key: cacheKey,
+							nodes: markdownBubbles(body).map((prose) =>
+								h("div", { class: "bubble coding-bubble", title: `${harness} · ${when}` }, prose),
+							),
+						};
+						this.#markdownCache.set(event.id, cached);
+					}
+					say("harness", harness, false, ...cached.nodes);
 					break;
 				}
 				case "needs_input": {
@@ -1055,6 +1132,20 @@ export class CodingSessionElement {
 			}
 		}
 		if (cardDue) say("harness", harness, false, this.#renderPullRequest(names));
+		if (incremental) {
+			if (nodes.length > 0) this.#body.append(...nodes);
+			this.#tail = {
+				baseKey,
+				shownCount: shown.length,
+				lastEventId: shown[shown.length - 1]!.id,
+				turn,
+				steps,
+				previous,
+				lastSaid,
+			};
+			syncIntro();
+			return;
+		}
 		const quiet = !nodes.length && !this.#readError;
 		replace(
 			this.#body,
@@ -1090,10 +1181,19 @@ export class CodingSessionElement {
 				? h("div", { class: "coding-row coding-row-error", role: "alert" }, this.#readError)
 				: null,
 		);
-		const intro = this.#log.firstElementChild === this.#body ? undefined : this.#log.firstElementChild;
-		const next = this.#renderIntro();
-		if (intro) intro.replaceWith(next);
-		else this.#log.prepend(next);
+		this.#tail =
+			shown.length > 0 && !quiet && !this.#readError && !cardFirst
+				? {
+						baseKey,
+						shownCount: shown.length,
+						lastEventId: shown[shown.length - 1]!.id,
+						turn,
+						steps,
+						previous,
+						lastSaid,
+					}
+				: undefined;
+		syncIntro();
 	}
 
 	/** A step that says where the session is: archived (by whom), reopened, or taken off its machine and what that

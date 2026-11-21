@@ -27,6 +27,7 @@ function stackAt(x: number, y: number): Element[] {
 	const found: Element[] = [document.body];
 	const visit = (parent: Element) => {
 		for (const child of parent.children) {
+			if (child instanceof HTMLElement && child.hidden) continue;
 			const box = child.getBoundingClientRect();
 			if (box.left <= x && x < box.right && box.top <= y && y < box.bottom) {
 				found.push(child);
@@ -76,7 +77,19 @@ export function watchBrowserBar(root: Element): () => void {
 	const system = window.matchMedia("(prefers-color-scheme: dark)");
 	// The sidebar shows, hides or moves through `hidden` and classes; its colour follows the
 	// theme and, in Safari, the window going behind (ui/appearance.ts applyBrowserChrome).
-	const observer = new MutationObserver(schedule);
+	const observer = new MutationObserver((records) => {
+		for (const record of records) {
+			const target = record.target;
+			if (target === document.documentElement) {
+				schedule();
+				return;
+			}
+			if (target instanceof Element && target.parentElement?.closest("main") === null) {
+				schedule();
+				return;
+			}
+		}
+	});
 	observer.observe(document.documentElement, {
 		subtree: true,
 		attributes: true,

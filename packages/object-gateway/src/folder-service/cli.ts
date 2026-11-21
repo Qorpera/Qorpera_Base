@@ -102,17 +102,19 @@ const core = new SupabaseFolderCore({
 	secretKey: credential("qorpera-supabase-service-key"),
 });
 const FOLDER_PROGRAM = "/opt/qorpera-folder-service/qorpera-folder";
+const folderProgram = existsSync(FOLDER_PROGRAM) ? FOLDER_PROGRAM : undefined;
 const objects = new NasObjects({ root: settings.storageRoot, cacheBytes: (settings.cacheMiB ?? 1024) * 1024 * 1024 });
 const service = new FolderService({
 	core,
 	objects,
+	...(folderProgram ? { folderProgram } : {}),
 	...(settings.gatewayUrl
 		? {
 				staging: new FolderStaging(
 					core,
 					new GatewayUploads({ url: settings.gatewayUrl, token: credential("qorpera-folder-gateway-token") }),
 					objects,
-					new SaveChecks(existsSync(FOLDER_PROGRAM) ? { folderProgram: FOLDER_PROGRAM } : {}),
+					new SaveChecks(folderProgram ? { folderProgram } : {}),
 				),
 			}
 		: {}),

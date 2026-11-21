@@ -1340,13 +1340,15 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 	const naps = (n) => Array.from({ length: n }, (_, index) => ({ database: "shop", question: "nap", params: { k: index + 1 }, etag: "old" }));
 
 	it("asks a watch's 24 questions a few at a time, inside its deadline", async () => {
-		const began = Date.now();
-		const answer = await call(viewer, "watch", { watches: naps(24), wait: 3, texts: { [sha256(FOLDERS[ENV_A].get("data/shop/queries/nap.sql"))]: FOLDERS[ENV_A].get("data/shop/queries/nap.sql") } });
-		const took = Date.now() - began;
-		assert.equal(answer.status, 200, JSON.stringify(answer.value).slice(0, 300));
-		assert.deepEqual(answer.value.changed.map((one) => one.answer.rows[0][1]), Array.from({ length: 24 }, (_, index) => index + 1));
-		// One after another they take 4.8 s; three at a time 1.6 s.
-		assert.ok(took < 3_000, `${took} ms`);
+		await withGateway({ limits: { ...LIMITS_HERE, questionMs: 1_000 } }, async () => {
+			const began = Date.now();
+			const answer = await call(viewer, "watch", { watches: naps(24), wait: 3, texts: { [sha256(FOLDERS[ENV_A].get("data/shop/queries/nap.sql"))]: FOLDERS[ENV_A].get("data/shop/queries/nap.sql") } });
+			const took = Date.now() - began;
+			assert.equal(answer.status, 200, JSON.stringify(answer.value).slice(0, 300));
+			assert.deepEqual(answer.value.changed.map((one) => one.answer.rows[0][1]), Array.from({ length: 24 }, (_, index) => index + 1));
+			// One after another they take 4.8 s; three at a time 1.6 s.
+			assert.ok(took < 3_000, `${took} ms`);
+		});
 	});
 
 	it("answers a watch at its deadline with what it has, and starts no question after it", async () => {
@@ -1355,7 +1357,7 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 		const held = async () =>
 			(await asAdmin("postgres", "select count(*)::int as n from pg_stat_activity where usename = $1", [`${companyDatabase(ENV_A)}_r${shop}`]))[0].n;
 		assert.equal(await until(held, 0, 7_000), 0);
-		await withGateway({ limits: { ...LIMITS_HERE, watchMs: 1_000 } }, async () => {
+		await withGateway({ limits: { ...LIMITS_HERE, questionMs: 1_000, watchMs: 1_000 } }, async () => {
 			const began = Date.now();
 			const answer = await call(viewer, "watch", { watches: naps(24), wait: 20 });
 			const took = Date.now() - began;
@@ -4116,5 +4118,130 @@ create trigger nap before update on slowed for each row execute function nap();
 		} finally {
 			await proxy.close();
 		}
+	});
+
+	it("cancels Platform error bodies and refuses unreadable JSON answers", async () => {
+		let canceled = 0;
+		const makeResponse = (status, body) => ({
+			status,
+			ok: status >= 200 && status < 300,
+			body: {
+				cancel: async () => {
+					canceled += 1;
+				},
+			},
+			json: async () => {
+				if (body instanceof Error) throw body;
+				return body;
+			},
+		});
+		const responses = [
+			makeResponse(401, { message: "bad jwt" }),
+			makeResponse(403, { message: "denied" }),
+			makeResponse(500, { message: "boom" }),
+			makeResponse(200, new SyntaxError("unexpected token")),
+			makeResponse(503, { message: "down" }),
+		];
+		const platform = new Platform({
+			url: "http://platform/",
+			publishableKey: "publishable",
+			fetch: async () => responses.shift(),
+		});
+		await assert.rejects(platform.memberFolders(viewer, ENV_A, "data", 10), (err) => err?.status === 401);
+		assert.equal(await platform.memberMayWrite(viewer, ENV_A, "data/desk"), false);
+		await assert.rejects(platform.memberFolders(viewer, ENV_A, "data", 10), (err) => err?.status === 503);
+		await assert.rejects(
+			platform.memberFolders(viewer, ENV_A, "data", 10),
+			(err) => err?.status === 503 && /unreadable answer/.test(err?.message ?? ""),
+		);
+		await assert.rejects(platform.redeemPass("pass-1"), (err) => err?.status === 503);
+		assert.equal(canceled, 4);
+	});
+
+	it("breaks watch out promptly when the LISTEN backend is terminated", async () => {
+		const companyDb = companyDatabase(ENV_A);
+		await withGateway({ limits: { ...LIMITS_HERE, watchMs: 10_000 } }, async () => {
+			const seed = await ask(viewer, "query", { database: "m00", question: "count" });
+			assert.equal(seed.status, 200);
+			const began = Date.now();
+			const waiting = ask(viewer, "watch", {
+				watches: [{ database: "m00", question: "count", etag: seed.value.etag }],
+				wait: 10,
+			});
+			assert.equal(await until(listening, 1, 3_000), 1);
+			await asAdmin(
+				"postgres",
+				"select pg_terminate_backend(pid) from pg_stat_activity where datname = $1 and application_name = 'qorpera-data-gateway listen'",
+				[companyDb],
+			);
+			const answer = await waiting;
+			const elapsed = Date.now() - began;
+			assert.equal(answer.status, 200, JSON.stringify(answer.value));
+			assert.ok(elapsed < 3_000, `expected watch to return promptly after LISTEN drop, took ${elapsed} ms`);
+			assert.equal(await until(listening, 0, 3_000), 0);
+		});
+	});
+
+	it("drops a database promptly while a slow query holds a reader connection", async () => {
+		const companyDb = companyDatabase(ENV_A);
+		put(ENV_A, {
+			"data/dropbusy/database.toml": 'title = "Drop Busy"\n',
+			"data/dropbusy/tables/001-t.sql": "create table t (id int primary key);\n",
+			"data/dropbusy/queries/slow.sql": "select pg_sleep(5)::text as waited;\n",
+		});
+		try {
+			await withGateway({ limits: { ...LIMITS_HERE, questionMs: 8_000 } }, async (other) => {
+				const applied = await ask(owner, "apply", { database: "dropbusy" });
+				assert.equal(applied.status, 200, JSON.stringify(applied.value));
+				const slow = ask(viewer, "query", { database: "dropbusy", question: "slow" });
+				const activeSlow = async () =>
+					(
+						await asAdmin(
+							"postgres",
+							"select count(*)::int as n from pg_stat_activity where datname = $1 and state = 'active' and query ilike '%pg_sleep(5)%'",
+							[companyDb],
+						)
+					)[0].n;
+				assert.equal(await until(activeSlow, 1, 3_000), 1);
+				const began = Date.now();
+				const dropped = await other.dropDatabase(ENV_A, "dropbusy");
+				const elapsed = Date.now() - began;
+				assert.equal(dropped.dropped, true);
+				assert.ok(elapsed < 2_500, `expected dropDatabase to terminate active query promptly, took ${elapsed} ms`);
+				const slowRes = await slow;
+				assert.ok(slowRes.status >= 400, JSON.stringify(slowRes.value));
+			});
+		} finally {
+			remove(ENV_A, "data/dropbusy/database.toml");
+			remove(ENV_A, "data/dropbusy/tables/001-t.sql");
+			remove(ENV_A, "data/dropbusy/queries/slow.sql");
+		}
+	});
+
+	it("forwards unsettled transactions via onUnsettledTx and sweeps cleanly after overflow", async () => {
+		const companyDb = companyDatabase(ENV_A);
+		const forwarded = [];
+		await withGateway(
+			{
+				limits: { ...LIMITS_HERE, changeMs: 250 },
+				onUnsettledTx: (db, txid) => forwarded.push([db, txid]),
+			},
+			async (other) => {
+				await other.watchOnce();
+				const slow = await change(owner, "slow");
+				assert.equal(slow.status, 408, JSON.stringify(slow.value));
+				assert.ok(forwarded.length >= 1, "expected slow change timeout to forward an unsettled txid");
+				assert.equal(forwarded[0][0], companyDb);
+				const abortedTxid = forwarded[0][1];
+				const countTx = async () =>
+					(await asAdmin(companyDb, "select count(*)::int as n from qorpera_data.change_log where txid = $1::bigint", [abortedTxid]))[0].n;
+				assert.equal(await countTx(), 1);
+				await other.watchOnce();
+				assert.equal(await countTx(), 1);
+				for (let i = 0; i < 10_005; i += 1) other.noteUnsettledTx(companyDb, String(9_000_000 + i));
+				await other.watchOnce();
+				assert.equal(await countTx(), 0);
+			},
+		);
 	});
 });

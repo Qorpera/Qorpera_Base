@@ -1,3 +1,4 @@
+import { request as httpRequest } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NODE_OBSERVATIONS_PATH, ProviderNodeObservability } from "../src/node-observability.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "../src/orchestrator.ts";
@@ -743,5 +744,54 @@ describe("runner provider HTTP service", () => {
 		} finally {
 			log.mockRestore();
 		}
+	});
+
+	it("decodes multi-byte UTF-8 JSON bodies split across TCP chunks without corruption", async () => {
+		const provider = backend();
+		const service = new HttpCloudRunnerProviderService(provider, token);
+		services.push(service);
+		const port = await service.start();
+		const payload = Buffer.from(
+			JSON.stringify({
+				schema: "qorpera.runner-provider/v1",
+				adapter_id: "managed",
+				action: "acquire",
+				acquisition_id: work.runId,
+				work: {
+					...work,
+					payload: { input_ids: ["dddddddd-dddd-4ddd-8ddd-dddddddddddd"], note: "på maskinen æøå" },
+				},
+			}),
+			"utf8",
+		);
+		const split = payload.indexOf(Buffer.from("å", "utf8")) + 1;
+		const status = await new Promise<number>((resolve, reject) => {
+			const req = httpRequest(
+				{
+					hostname: "127.0.0.1",
+					port,
+					path: "/v1/qorpera-runner-provider",
+					method: "POST",
+					headers: {
+						authorization: `Bearer ${token}`,
+						"content-type": "application/json",
+						"content-length": String(payload.byteLength),
+					},
+				},
+				(res) => {
+					res.resume();
+					res.on("end", () => resolve(res.statusCode ?? 0));
+				},
+			);
+			req.on("error", reject);
+			req.write(payload.subarray(0, split));
+			setImmediate(() => {
+				req.write(payload.subarray(split));
+				req.end();
+			});
+		});
+		expect(status).toBe(200);
+		expect(provider.acquire).toHaveBeenCalledOnce();
+		expect(provider.acquire.mock.calls[0]?.[1]?.payload).toMatchObject({ note: "på maskinen æøå" });
 	});
 });
