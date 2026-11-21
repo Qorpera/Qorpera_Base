@@ -3,6 +3,7 @@ import { chmod, link, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { runCodingHostWatchdogWithRetry } from "../../../deploy/coding-worker/host-watchdog.ts";
 import {
 	CODING_HOST_LEASE_TTL_MS,
 	type CodingHostClock,
@@ -424,5 +425,94 @@ describe("the host watchdog", () => {
 				clock: f.clock,
 			}),
 		).rejects.toThrow("CODING_HOST_LEASE_INVALID");
+	});
+	it("watchdog retry wrapper recovers from fast transient LXD_HOST_INVENTORY_UNCONFIRMED without retrying hangs or other errors", async () => {
+		const f = await fixture();
+		const a = f.machine();
+		const { client } = lxd(f, [instance({ name: a.name })]);
+		await f.leases.renew(a);
+
+		client.inspectHostInventory.mockRejectedValueOnce(new Error("LXD_HOST_INVENTORY_UNCONFIRMED"));
+		expect(
+			await runCodingHostWatchdogWithRetry({
+				client,
+				project: "coding",
+				signal: new AbortController().signal,
+				root: f.root,
+				clock: f.clock,
+				retries: 2,
+				retryDelayMs: 5,
+			}),
+		).toEqual([]);
+		expect(client.inspectHostInventory).toHaveBeenCalledTimes(2);
+
+		client.inspectHostInventory.mockClear();
+		client.inspectHostInventory.mockRejectedValue(new Error("LXD_HOST_INVENTORY_UNCONFIRMED"));
+		await expect(
+			runCodingHostWatchdogWithRetry({
+				client,
+				project: "coding",
+				signal: new AbortController().signal,
+				root: f.root,
+				clock: f.clock,
+				retries: 2,
+				retryDelayMs: 5,
+			}),
+		).rejects.toThrow("LXD_HOST_INVENTORY_UNCONFIRMED");
+		expect(client.inspectHostInventory).toHaveBeenCalledTimes(3);
+
+		client.inspectHostInventory.mockClear();
+		client.inspectHostInventory.mockRejectedValue(new Error("LXD_OPERATION_FAILED"));
+		await expect(
+			runCodingHostWatchdogWithRetry({
+				client,
+				project: "coding",
+				signal: new AbortController().signal,
+				root: f.root,
+				clock: f.clock,
+				retries: 2,
+				retryDelayMs: 5,
+			}),
+		).rejects.toThrow("LXD_OPERATION_FAILED");
+		expect(client.inspectHostInventory).toHaveBeenCalledTimes(1);
+
+		client.inspectHostInventory.mockClear();
+		let clockMs = 0;
+		client.inspectHostInventory.mockImplementation(async () => {
+			clockMs += 5_000;
+			throw new Error("LXD_HOST_INVENTORY_UNCONFIRMED");
+		});
+		await expect(
+			runCodingHostWatchdogWithRetry({
+				client,
+				project: "coding",
+				signal: new AbortController().signal,
+				root: f.root,
+				clock: f.clock,
+				retries: 2,
+				retryDelayMs: 5,
+				now: () => clockMs,
+			}),
+		).rejects.toThrow("LXD_HOST_INVENTORY_UNCONFIRMED");
+		expect(client.inspectHostInventory).toHaveBeenCalledTimes(1);
+
+		client.inspectHostInventory.mockClear();
+		const controller = new AbortController();
+		client.inspectHostInventory.mockImplementationOnce(async () => {
+			setTimeout(() => controller.abort(), 15);
+			throw new Error("LXD_HOST_INVENTORY_UNCONFIRMED");
+		});
+		await expect(
+			runCodingHostWatchdogWithRetry({
+				client,
+				project: "coding",
+				signal: controller.signal,
+				root: f.root,
+				clock: f.clock,
+				retries: 2,
+				retryDelayMs: 2_000,
+			}),
+		).rejects.toThrow();
+		expect(client.inspectHostInventory).toHaveBeenCalledTimes(1);
 	});
 });
