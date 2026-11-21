@@ -544,32 +544,35 @@ export class CloudNativeToolRun {
 				this.#apply(value, started, combined);
 			}),
 		);
+		const wait =
+			signal === this.signal
+				? check
+				: new Promise<void>((resolve, reject) => {
+						const onAbort = () => {
+							// WHY: a caller signal derived from this.signal aborts when check closes the run; let check's cause win.
+							if (!this.signal.aborted) reject(signal.reason);
+						};
+						if (signal.aborted && !this.signal.aborted) {
+							onAbort();
+							return;
+						}
+						signal.addEventListener("abort", onAbort, { once: true });
+						check.then(
+							() => {
+								signal.removeEventListener("abort", onAbort);
+								resolve();
+							},
+							(error) => {
+								signal.removeEventListener("abort", onAbort);
+								reject(error);
+							},
+						);
+					});
 		this.#checking = check.catch((error) => {
 			if (!this.#isCallerOnlyAbort(signal, error)) this.close();
 		});
 		try {
-			if (signal === this.signal) {
-				await check;
-			} else {
-				await new Promise<void>((resolve, reject) => {
-					const onAbort = () => reject(signal.reason);
-					if (signal.aborted) {
-						onAbort();
-						return;
-					}
-					signal.addEventListener("abort", onAbort, { once: true });
-					check.then(
-						() => {
-							signal.removeEventListener("abort", onAbort);
-							resolve();
-						},
-						(error) => {
-							signal.removeEventListener("abort", onAbort);
-							reject(error);
-						},
-					);
-				});
-			}
+			await wait;
 		} catch (error) {
 			if (!this.#isCallerOnlyAbort(signal, error)) this.close();
 			// The cause only tells a timed-out check apart in observations.

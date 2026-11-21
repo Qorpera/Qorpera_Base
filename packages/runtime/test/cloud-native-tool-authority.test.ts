@@ -892,3 +892,30 @@ it("isolates per-call signal aborts in assertActive and assertActiveWith without
 	expect(getEventListeners(run.signal, "abort")).toHaveLength(0);
 	expect(getEventListeners(abort.signal, "abort")).toHaveLength(0);
 });
+
+it("preserves timeout cause when assertActive uses a signal derived from run.signal", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	let now = performance.now();
+	const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+	try {
+		const { run, reader } = await admit();
+		reader.describeToolAuthority.mockRejectedValue(new CloudRuntimeDiagnosticError("timeout"));
+		const derived = AbortSignal.any([new AbortController().signal, run.signal]);
+		let caught: unknown;
+		const check = run.assertActive(derived).catch((error) => {
+			caught = error;
+		});
+		for (let step = 0; step < 140; step += 1) {
+			now += 250;
+			await vi.advanceTimersByTimeAsync(250);
+		}
+		await check;
+		expect(caught).toBeInstanceOf(Error);
+		expect((caught as Error).cause).toBeInstanceOf(CloudRuntimeDiagnosticError);
+		expect(((caught as Error).cause as CloudRuntimeDiagnosticError).category).toBe("timeout");
+		expect(run.signal.aborted).toBe(true);
+	} finally {
+		clock.mockRestore();
+		vi.useRealTimers();
+	}
+});
