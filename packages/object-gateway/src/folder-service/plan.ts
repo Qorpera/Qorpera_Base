@@ -106,11 +106,6 @@ type Item =
 	| { kind: "new"; path: string; file: FileRef; expected?: string; paths: string[] }
 	| { kind: "link"; path: string; target: string; expected?: string; paths: string[] };
 
-/** `path` is strictly below `folder`, by folded keys. */
-function below(path: string, folder: string): boolean {
-	return folderKey(path).startsWith(`${folderKey(folder)}/`);
-}
-
 /** The folder above the first name in `path` that carries a secret value, or nothing if none does. */
 function carrierOf(path: string, check: SecretCheck): string | undefined {
 	if (!check.carries(path)) return undefined;
@@ -285,16 +280,45 @@ export function planBoundary(
 	}
 
 	// Removals: one per removed folder, with what was removed inside it.
+	const keyCache = new Map<string, string>();
+	const keyOf = (path: string): string => {
+		let key = keyCache.get(path);
+		if (key === undefined) {
+			key = folderKey(path);
+			keyCache.set(path, key);
+		}
+		return key;
+	};
 	const removed = view.removed();
 	const removedFolder = (path: string): boolean => {
 		for (let p = parentOf(path); p !== ""; p = parentOf(p)) if (removed.get(p)?.kind === "folder") return true;
 		return false;
 	};
-	const deletes: (Item & { kind: "delete" })[] = [];
+	const topRemoved: [string, LiveRef][] = [];
+	const topRemovedKeys = new Set<string>();
 	for (const [path, ref] of removed) {
 		// A git directory's shared file goes only with its lease (git.ts): a removal without one is dropped.
 		if (removedFolder(path) || gitSharedPath(path, view.codeHost)) continue;
-		const inside = [...removed].filter(([p]) => below(p, path));
+		topRemoved.push([path, ref]);
+		topRemovedKeys.add(keyOf(path));
+	}
+	const removedInside = new Map<string, [string, LiveRef][]>();
+	if (topRemovedKeys.size > 0) {
+		for (const entry of removed) {
+			for (let anc = parentOf(keyOf(entry[0])); anc !== ""; anc = parentOf(anc)) {
+				if (!topRemovedKeys.has(anc)) continue;
+				let list = removedInside.get(anc);
+				if (!list) {
+					list = [];
+					removedInside.set(anc, list);
+				}
+				list.push(entry);
+			}
+		}
+	}
+	const deletes: (Item & { kind: "delete" })[] = [];
+	for (const [path, ref] of topRemoved) {
+		const inside = removedInside.get(keyOf(path)) ?? [];
 		// A folder's removal takes everything in it as of its position: a file in it whose live version is not the one
 		// its own removal named (it changed before that removal, from a base the machine had not seen) would go
 		// unseen, so the folder stays, and so does what was removed in it.
@@ -318,23 +342,48 @@ export function planBoundary(
 
 	// A new folder whose whole content is new and published here is one unit with its content (§2 "Units").
 	const absorbed = new Set<Item>();
+	const sortedCreates = [...creates].sort((a, b) => a.path.length - b.path.length);
+	const candidateCreateKeys = new Set<string>();
 	// Not, in a session's view, a folder in a git directory: 5b refuses a session's `new_folder` there (it checks each
 	// key in it as moved), so each folder there is a `mkdir` and each file its own write, and each meets its key's own
 	// rule (a worktree's first commit makes `logs` and `logs/HEAD`). Nor, in any view, a git directory's objects folder:
 	// another session may make the same one first, which a `mkdir` of it is saved over (5b), a `new_folder` not.
-	for (const create of [...creates].sort((a, b) => a.path.length - b.path.length)) {
-		if (absorbed.has(create) || gitObjectPath(create.path)) continue;
+	for (const create of sortedCreates) {
+		if (gitObjectPath(create.path)) continue;
 		if (!view.codeHost && gitPlace(create.path).kind === "git") continue;
-		const inside = [...nodes].filter(([p]) => below(p, create.path));
-		const eligible = inside.every(([p, n]) => {
-			if (unpublished(p, view.codeHost)) return true;
-			if (n.kind === "gone" || n.origin) return false;
-			return n.kind === "folder" || [...news, ...links].some((i) => i.path === p && i.expected === undefined);
-		});
-		if (!eligible) continue;
-		const contents: NewFolderEntry[] = [];
+		candidateCreateKeys.add(keyOf(create.path));
+	}
+	const ineligibleCreateKeys = new Set<string>();
+	const itemsUnderCreate = new Map<string, (Item & { kind: "create" | "new" | "link" })[]>();
+	if (candidateCreateKeys.size > 0) {
+		const freeNewOrLink = new Set<string>();
+		for (const item of news) if (item.expected === undefined) freeNewOrLink.add(item.path);
+		for (const item of links) if (item.expected === undefined) freeNewOrLink.add(item.path);
+		for (const [p, n] of nodes) {
+			if (unpublished(p, view.codeHost)) continue;
+			const ok = n.kind !== "gone" && !n.origin && (n.kind === "folder" || freeNewOrLink.has(p));
+			if (ok) continue;
+			for (let anc = parentOf(keyOf(p)); anc !== ""; anc = parentOf(anc)) {
+				if (candidateCreateKeys.has(anc)) ineligibleCreateKeys.add(anc);
+			}
+		}
 		for (const item of [...creates, ...news, ...links]) {
-			if (!below(item.path, create.path)) continue;
+			for (let anc = parentOf(keyOf(item.path)); anc !== ""; anc = parentOf(anc)) {
+				if (!candidateCreateKeys.has(anc) || ineligibleCreateKeys.has(anc)) continue;
+				let list = itemsUnderCreate.get(anc);
+				if (!list) {
+					list = [];
+					itemsUnderCreate.set(anc, list);
+				}
+				list.push(item);
+			}
+		}
+	}
+	for (const create of sortedCreates) {
+		const createKey = keyOf(create.path);
+		if (absorbed.has(create) || !candidateCreateKeys.has(createKey) || ineligibleCreateKeys.has(createKey)) continue;
+		const contents: NewFolderEntry[] = [];
+		for (const item of itemsUnderCreate.get(createKey) ?? []) {
 			absorbed.add(item);
 			create.paths.push(...item.paths);
 			const rel = item.path.slice(create.path.length + 1);
@@ -359,17 +408,44 @@ export function planBoundary(
 	];
 	// What needs a refused change waits with it, and so on: a move it holds back keeps its source too.
 	const blocked = new Set<Item>(refusedItems);
-	for (let grew = blocked.size > 0; grew; ) {
-		grew = false;
-		const sources = [...blocked].flatMap((b) => (b.kind === "move" ? [b.from] : []));
-		for (const item of items) {
-			if (blocked.has(item)) continue;
-			const from = item.kind === "delete" ? item.path : item.kind === "move" ? item.from : undefined;
-			const holds = from !== undefined && sources.some((s) => folderKey(s) === folderKey(from) || below(s, from));
-			if (holds || [...blocked].some((b) => needs(item, b))) {
-				blocked.add(item);
-				grew = true;
+	if (blocked.size > 0) {
+		const byFrom = new Map<string, Item[]>();
+		const needingFrees = new Map<string, Item[]>();
+		const needingCreate = new Map<string, Item[]>();
+		const pushItem = (map: Map<string, Item[]>, key: string, item: Item): void => {
+			let list = map.get(key);
+			if (!list) {
+				list = [];
+				map.set(key, list);
 			}
+			list.push(item);
+		};
+		for (const item of items) {
+			const from = item.kind === "delete" ? item.path : item.kind === "move" ? item.from : undefined;
+			if (from !== undefined) pushItem(byFrom, keyOf(from), item);
+			const target = fills(item, keyOf);
+			if (target !== undefined) {
+				pushItem(needingFrees, target, item);
+				pushItem(needingCreate, keyOf(parentOf(target)), item);
+			}
+		}
+		const queue: Item[] = [...blocked];
+		for (let head = 0; head < queue.length; head++) {
+			const b = queue[head]!;
+			const enqueue = (list: Item[] | undefined, skipSelf: boolean): void => {
+				if (!list) return;
+				for (const item of list) {
+					if ((skipSelf && item === b) || blocked.has(item)) continue;
+					blocked.add(item);
+					queue.push(item);
+				}
+			};
+			if (b.kind === "move") {
+				for (let anc = keyOf(b.from); anc !== ""; anc = parentOf(anc)) enqueue(byFrom.get(anc), false);
+			}
+			const freed = frees(b, keyOf);
+			if (freed !== undefined) enqueue(needingFrees.get(freed), true);
+			if (b.kind === "create") enqueue(needingCreate.get(keyOf(b.path)), true);
 		}
 	}
 	// A git directory with a refused change publishes nothing else until the refusal's way out: no object, ref, log or
@@ -401,6 +477,7 @@ export function planBoundary(
 		items.filter((i) => !held.has(i)),
 		waiting,
 		keep,
+		keyOf,
 	);
 	const units = order.map(unitOf);
 	// A removal not published here stays the view's, for a later boundary to publish.
@@ -470,48 +547,93 @@ function unitOf(item: Item): PlannedUnit {
 }
 
 /** The path an item fills, and the one it frees, by folded key. */
-function fills(item: Item): string | undefined {
+function fills(item: Item, keyOf: (path: string) => string): string | undefined {
 	const path =
 		item.kind === "create" || item.kind === "new" || item.kind === "link"
 			? item.path
 			: item.kind === "move"
 				? item.to
 				: undefined;
-	return path === undefined ? undefined : folderKey(path);
+	return path === undefined ? undefined : keyOf(path);
 }
 
-function frees(item: Item): string | undefined {
+function frees(item: Item, keyOf: (path: string) => string): string | undefined {
 	const path = item.kind === "delete" ? item.path : item.kind === "move" ? item.from : undefined;
-	return path === undefined ? undefined : folderKey(path);
-}
-
-/** `item` runs after `other`: it fills the path `other` frees, or goes in the new folder `other` makes. */
-function needs(item: Item, other: Item): boolean {
-	if (item === other) return false;
-	const target = fills(item);
-	if (target === undefined) return false;
-	if (frees(other) === target) return true;
-	return other.kind === "create" && folderKey(other.path) === folderKey(parentOf(target));
+	return path === undefined ? undefined : keyOf(path);
 }
 
 /** Orders the items so each runs after what it needs (Kahn's algorithm, in the given order where free): a path freed
  * before it is filled, a new folder before what goes in it. PendingView never lets two wait on each other; if they
  * ever did, they would wait for the next boundary rather than be published out of order. */
-function schedule(items: Item[], waiting: { path: string; reason: string }[], keep: Set<string>): Item[] {
-	const order: Item[] = [];
-	let left = [...items];
-	while (left.length > 0) {
-		const ready = left.filter((item) => !left.some((other) => needs(item, other)));
-		if (ready.length === 0) {
-			for (const item of left)
-				for (const path of item.paths) {
-					keep.add(path);
-					waiting.push({ path, reason: "its changes wait on each other; they are published one at a time" });
-				}
-			break;
+function schedule(
+	items: Item[],
+	waiting: { path: string; reason: string }[],
+	keep: Set<string>,
+	keyOf: (path: string) => string,
+): Item[] {
+	const count = items.length;
+	if (count === 0) return [];
+	const byFrees = new Map<string, number[]>();
+	const byCreate = new Map<string, number[]>();
+	const pushIndex = (map: Map<string, number[]>, key: string, index: number): void => {
+		let list = map.get(key);
+		if (!list) {
+			list = [];
+			map.set(key, list);
 		}
-		order.push(...ready);
-		left = left.filter((item) => !ready.includes(item));
+		list.push(index);
+	};
+	for (let i = 0; i < count; i++) {
+		const item = items[i]!;
+		const freed = frees(item, keyOf);
+		if (freed !== undefined) pushIndex(byFrees, freed, i);
+		if (item.kind === "create") pushIndex(byCreate, keyOf(item.path), i);
+	}
+	const dependents: number[][] = Array.from({ length: count }, () => []);
+	const inDegree = new Int32Array(count);
+	for (let i = 0; i < count; i++) {
+		const target = fills(items[i]!, keyOf);
+		if (target === undefined) continue;
+		const fromFrees = byFrees.get(target);
+		const fromCreate = byCreate.get(keyOf(parentOf(target)));
+		if (!fromFrees && !fromCreate) continue;
+		let seen: Set<number> | undefined;
+		const link = (other: number): void => {
+			if (other === i) return;
+			if (fromFrees && fromCreate) {
+				if (!seen) seen = new Set();
+				if (seen.has(other)) return;
+				seen.add(other);
+			}
+			dependents[other]!.push(i);
+			inDegree[i]!++;
+		};
+		if (fromFrees) for (const other of fromFrees) link(other);
+		if (fromCreate) for (const other of fromCreate) link(other);
+	}
+	const order: Item[] = [];
+	let wave: number[] = [];
+	for (let i = 0; i < count; i++) if (inDegree[i] === 0) wave.push(i);
+	while (wave.length > 0) {
+		const nextWave: number[] = [];
+		for (const i of wave) {
+			order.push(items[i]!);
+			for (const dep of dependents[i]!) {
+				const remaining = --inDegree[dep]!;
+				if (remaining === 0) nextWave.push(dep);
+			}
+		}
+		if (nextWave.length > 1) nextWave.sort((a, b) => a - b);
+		wave = nextWave;
+	}
+	if (order.length < count) {
+		for (let i = 0; i < count; i++) {
+			if (inDegree[i]! === 0) continue;
+			for (const path of items[i]!.paths) {
+				keep.add(path);
+				waiting.push({ path, reason: "its changes wait on each other; they are published one at a time" });
+			}
+		}
 	}
 	return order;
 }

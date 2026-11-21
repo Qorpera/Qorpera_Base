@@ -3475,8 +3475,7 @@ export class FolderService {
 
 	/** The path a node is shown at now. */
 	#pathOfNode(view: View, node: PendingFile): string | undefined {
-		for (const [path, n] of view.pending?.nodes() ?? []) if (n === node) return path;
-		return undefined;
+		return view.pending?.pathOf(node);
 	}
 
 	/** One boundary, after any running one (RUNTIME-FOLDER-WRITES.md, "A boundary"). `final`: a command's last. `quiet`:
