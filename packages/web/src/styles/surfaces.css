@@ -843,13 +843,6 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .surface-drawer-resizer {
 	position: absolute; z-index: 8; top: 0; bottom: 0; left: 0; width: 8px; cursor: col-resize; touch-action: none;
 }
-.surface-drawer-resizer::after {
-	content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 2px; background: transparent;
-	transition: background-color var(--motion-fast) ease;
-}
-.surface-drawer-resizer:hover::after,
-.surface-drawer-resizer:focus-visible::after { background: color-mix(in srgb, var(--text) 20%, transparent); }
-.surface-drawer.is-resizing .surface-drawer-resizer::after { background: var(--sidebar-selection); }
 .surface-drawer-resizer:focus-visible { outline: none; }
 .surface-drawer-inner { display: flex; flex-direction: column; width: var(--drawer-width, 296px); max-width: 100%; height: 100%; min-height: 0; }
 @media (max-width: 780px) {
@@ -860,11 +853,6 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 	border-bottom: 1px solid color-mix(in srgb, var(--text) 7%, transparent);
 }
 .surface-drawer-head.is-overview { padding-left: 16px; }
-.surface-drawer-head-acts { display: inline-flex; align-items: center; gap: 2px; flex: none; }
-.surface-drawer-expand { width: 28px; height: 28px; border-radius: 8px; color: var(--text-muted); }
-.surface-drawer-expand:hover { background: var(--hover); color: var(--text); }
-.surface-drawer-expand.is-on { background: color-mix(in srgb, var(--sidebar-selection) 12%, transparent); color: var(--sidebar-selection); }
-.surface-drawer-expand .icon { width: 14px; height: 14px; }
 .surface-drawer-back { width: 28px; height: 28px; margin-left: -4px; border-radius: 8px; flex: none; color: var(--text-muted); }
 .surface-drawer-back:hover { background: var(--hover); color: var(--text); }
 .surface-drawer-back .icon { width: 16px; height: 16px; }
@@ -1699,45 +1687,84 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 }
 .surface-exploration-trigger { cursor: pointer; }
 
-/* Co-Founder company lead orchestrator bar above the Co-Founder thread. */
-.cofounder-orchestrator {
-	flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 14px;
-	padding: 10px 20px; border-bottom: 1px solid var(--border);
-	background: color-mix(in srgb, var(--bg) 88%, var(--text) 2%);
+/* Framed thread pages matching the rounded surface canvas with a subtle warm-grey tint and the same floating glass composer. */
+.frame:has(.rail.has-surface-rail) .main { background: var(--bg); }
+.frame:has(.rail.has-surface-rail) .main > :is(.thread, .new-conversation) {
+	height: calc(100% - 16px); margin: 8px 8px 8px 2px; border-radius: 16px;
+	border: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
+	background: color-mix(in srgb, var(--text) 2.5%, var(--bg));
+	box-shadow: 0 1px 3px rgb(18 18 17 / 4%);
+	overflow: hidden;
 }
-.cofounder-orchestrator[hidden] { display: none; }
-.cofounder-orch-lead { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.cofounder-orch-role {
-	font-size: 12px; font-weight: 650; color: var(--text); letter-spacing: -0.005em; white-space: nowrap;
+.frame.rail-hidden-desktop:has(.rail.has-surface-rail) .main > :is(.thread, .new-conversation) { margin-left: 8px; }
+@media (min-width: 761px) {
+	.frame:has(.rail.has-surface-rail) .thread-header { display: none; }
 }
-.cofounder-orch-meta {
-	font-size: 12px; font-weight: 500; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap;
+.frame:has(.rail.has-surface-rail) .thread .thread-foot {
+	--glass-bg: color-mix(in srgb, var(--bg) 38%, transparent);
+	--glass-edge: color-mix(in srgb, var(--text) 10%, transparent);
+	--glass-blur: blur(5px) saturate(1.4);
+	--glass-shadow: 0 1px 2px rgb(18 18 17 / 5%), 0 6px 22px rgb(18 18 17 / 9%);
+	padding: 0 20px 18px;
 }
-.cofounder-orch-pills { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.cofounder-orch-pill {
-	display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 9px 0 4px; border-radius: 999px;
-	border: 1px solid color-mix(in srgb, var(--text) 10%, transparent); background: var(--bg); color: var(--text);
-	font-size: 12.5px; font-weight: 580; text-decoration: none;
-	transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease;
+.frame:has(.rail.has-surface-rail) .thread .thread-foot .composer {
+	width: min(640px, 100%); margin: 0 auto; padding: 0;
 }
-.cofounder-orch-pill:hover {
-	background: var(--rail-hover); border-color: color-mix(in srgb, var(--text) 20%, transparent); text-decoration: none;
+.frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-shell {
+	min-height: 48px; padding: 6px 46px 6px 16px; border-radius: 24px;
+	transition: border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
 }
-.cofounder-orch-count {
-	min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px;
-	background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text-muted);
-	font-size: 10.5px; font-weight: 650; line-height: 16px; text-align: center; font-variant-numeric: tabular-nums;
+.frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-shell:has(> .composer-more) {
+	margin-left: 0; padding-left: 46px;
 }
-.cofounder-orch-btn {
-	display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 10px; border-radius: 999px;
-	border: 1px solid color-mix(in srgb, var(--text) 14%, transparent); background: transparent; color: var(--text-muted);
-	font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
-	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
+.frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-shell:not(.is-expanded):has(> .composer-mic:not([hidden])) {
+	padding-right: 82px;
 }
-.cofounder-orch-btn:hover { background: var(--rail-hover); color: var(--text); }
-.cofounder-orch-btn.is-primary { border-color: transparent; background: var(--primary); color: var(--on-primary); }
-.cofounder-orch-btn.is-primary:hover { filter: brightness(1.06); color: var(--on-primary); }
-.cofounder-orch-btn .icon { width: 12px; height: 12px; }
+.frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-shell.is-expanded {
+	border-radius: 24px; padding: 10px 16px 46px;
+}
+.frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-shell::before {
+	transition: background-color var(--motion-fast) ease, backdrop-filter var(--motion-fast) ease;
+}
+.frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-shell:hover::before,
+.frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-shell:focus-within::before {
+	background: color-mix(in srgb, var(--bg) 80%, transparent);
+	backdrop-filter: blur(10px) saturate(1.5);
+}
+.frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-shell:focus-within {
+	border-color: color-mix(in srgb, var(--text) 24%, transparent);
+	box-shadow: 0 1px 2px rgb(18 18 17 / 6%), 0 8px 26px rgb(18 18 17 / 13%);
+}
+.frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-shell :is(.composer-input, .composer-highlight) {
+	min-height: 34px; padding: 7px 0; font-size: 13.5px; line-height: 20px;
+}
+.frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-shell.is-expanded :is(.composer-input, .composer-highlight) {
+	padding: 0;
+}
+.frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-more {
+	left: 6px; bottom: 6px; width: 34px; height: 34px; min-height: 34px;
+	border: 0; background: color-mix(in srgb, var(--text) 5%, transparent); box-shadow: none; backdrop-filter: none;
+}
+.frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-more:hover:not(:disabled) {
+	background: color-mix(in srgb, var(--text) 9%, transparent); color: var(--text);
+}
+.frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-more .icon { width: 16px; height: 16px; }
+.frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-menu { left: 0; }
+.frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-send {
+	right: 6px; bottom: 6px; width: 34px; height: 34px; min-height: 34px;
+	background: var(--primary); color: var(--on-primary);
+}
+.frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-send:disabled {
+	background: var(--send-idle); color: #fff;
+}
+.frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-mic {
+	right: 44px; bottom: 6px; width: 34px; height: 34px; min-height: 34px;
+}
+@media (max-width: 760px) {
+	.frame:has(.rail.has-surface-rail) .main > :is(.thread, .new-conversation) {
+		height: 100%; margin: 0; border: 0; border-radius: 0; box-shadow: none;
+	}
+}
 
 /* Scheduled agent creation / edit sheet. */
 .surface-schedule-presets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }

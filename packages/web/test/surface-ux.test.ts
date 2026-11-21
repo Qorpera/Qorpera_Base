@@ -583,18 +583,14 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		await flush();
 		view.update();
 		expect(drawer.querySelectorAll(".surface-drawer-change")).toHaveLength(1);
-
-		const expandBtn = drawer.querySelector<HTMLButtonElement>('[data-act="toggle-expand"]')!;
-		expect(drawer.classList.contains("is-expanded")).toBe(false);
-		expandBtn.click();
-		expect(drawer.classList.contains("is-expanded")).toBe(true);
-		drawer.querySelector<HTMLButtonElement>('[data-act="toggle-expand"]')!.click();
-		expect(drawer.classList.contains("is-expanded")).toBe(false);
+		expect(drawer.querySelector('[data-act="toggle-expand"]')).toBeNull();
 
 		drawer.querySelector<HTMLButtonElement>('[data-act="back-overview"]')!.click();
 		view.update();
 		expect(drawer.classList.contains("is-open")).toBe(true);
 		expect(drawer.classList.contains("is-overview")).toBe(true);
+		expect(drawer.querySelector(".surface-drawer-title h2")?.textContent).toBe("Changes");
+		expect(drawer.querySelector(".surface-drawer-title p")).toBeNull();
 
 		view.el.querySelector<HTMLButtonElement>('[data-act="toggle-panel"]')!.click();
 		view.update();

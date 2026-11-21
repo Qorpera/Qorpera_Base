@@ -27,7 +27,6 @@ import { isActionChange } from "./surface-rail.ts";
 
 const DRAWER_WIDTH_KEY = "qorpera.web.surface-drawer-width.v1";
 const DRAWER_DEFAULT = 296;
-const DRAWER_EXPANDED = 440;
 const DRAWER_MIN = 260;
 const DRAWER_MAX = 560;
 const DRAWER_MAX_SHARE = 0.56;
@@ -343,7 +342,6 @@ export class SurfaceSessionDrawer {
 		this.#resizer.addEventListener("pointerup", finish, { signal });
 		this.#resizer.addEventListener("pointercancel", finish, { signal });
 		this.#resizer.addEventListener("lostpointercapture", finish, { signal });
-		this.#resizer.addEventListener("dblclick", () => this.#toggleExpand(), { signal });
 		this.#resizer.addEventListener(
 			"keydown",
 			(event) => {
@@ -353,18 +351,11 @@ export class SurfaceSessionDrawer {
 				} else if (event.key === "ArrowRight") {
 					event.preventDefault();
 					this.#setWidth(this.#width - 16, true);
-				} else if (event.key === "Enter" || event.key === " ") {
-					event.preventDefault();
-					this.#toggleExpand();
 				}
 			},
 			{ signal },
 		);
 		window.addEventListener("resize", () => this.#applyWidth(), { signal });
-	}
-
-	#isExpanded(): boolean {
-		return this.#width >= 370;
 	}
 
 	#setWidth(width: number, persist: boolean): void {
@@ -373,14 +364,6 @@ export class SurfaceSessionDrawer {
 		this.#preferredWidth = clamped;
 		this.#applyWidth();
 		if (persist) this.#persistWidth();
-	}
-
-	#toggleExpand(): void {
-		const expanded = this.#isExpanded();
-		this.#preferredWidth = expanded ? undefined : Math.min(DRAWER_EXPANDED, drawerCap());
-		this.#applyWidth();
-		this.#persistWidth();
-		this.#redraw();
 	}
 
 	#persistWidth(): void {
@@ -398,7 +381,6 @@ export class SurfaceSessionDrawer {
 		this.#width = width;
 		const scale = uiScale();
 		this.el.style.setProperty("--drawer-width", `${Math.round(width * scale)}px`);
-		this.el.classList.toggle("is-expanded", this.#isExpanded());
 		this.#resizer.setAttribute("aria-valuemax", String(max));
 		this.#resizer.setAttribute("aria-valuenow", String(width));
 	}
@@ -446,23 +428,6 @@ export class SurfaceSessionDrawer {
 		}
 		this.#arm(key);
 		return false;
-	}
-
-	#expandButton(): HTMLElement {
-		const expanded = this.#isExpanded();
-		const label = expanded ? t("Restore panel width") : t("Expand panel");
-		return h(
-			"button",
-			{
-				type: "button",
-				class: `icon-button surface-drawer-expand${expanded ? " is-on" : ""}`,
-				"aria-pressed": String(expanded),
-				"aria-label": label,
-				title: label,
-				"data-act": "toggle-expand",
-			},
-			icon("expand"),
-		);
 	}
 
 	#noteButtons(reports: readonly SurfaceReportSummary[]): HTMLElement[] {
@@ -550,8 +515,6 @@ export class SurfaceSessionDrawer {
 		const look = store.lookOf(surface);
 		const explorations = openExplorations(workspace);
 		const plainSessions = rankSessions((workspace?.activeSessions ?? []).filter((session) => !session.explorationId));
-		const openChangeTotal = plainSessions.reduce((sum, s) => sum + s.changes.filter(isOpenChange).length, 0);
-		const totalAgents = explorations.length + plainSessions.length;
 		const key = JSON.stringify([
 			"overview",
 			surface.id,
@@ -563,7 +526,6 @@ export class SurfaceSessionDrawer {
 			state.variantPick,
 			state.busy,
 			this.#armedApprove,
-			this.#isExpanded(),
 			state.localStudioBase[surface.id],
 			explorations,
 			plainSessions,
@@ -573,22 +535,8 @@ export class SurfaceSessionDrawer {
 		this.#sessionId = "";
 		this.#messages = 0;
 
-		const summaryParts: string[] = [];
-		if (totalAgents === 1) summaryParts.push(t("1 agent"));
-		else if (totalAgents > 1) summaryParts.push(t("{count} agents", { count: totalAgents }));
-		if (openChangeTotal === 1) summaryParts.push(t("1 change ready"));
-		else if (openChangeTotal > 1) summaryParts.push(t("{count} changes ready", { count: openChangeTotal }));
-
 		this.#head.className = "surface-drawer-head is-overview";
-		this.#head.replaceChildren(
-			h(
-				"div",
-				{ class: "surface-drawer-title" },
-				h("h2", null, surface.archetype === "ops" ? t("Agents") : t("Preview")),
-				summaryParts.length > 0 ? h("p", null, summaryParts.join(" · ")) : null,
-			),
-			h("div", { class: "surface-drawer-head-acts" }, this.#expandButton()),
-		);
+		this.#head.replaceChildren(h("div", { class: "surface-drawer-title" }, h("h2", null, t("Changes"))));
 
 		const parts: HTMLElement[] = [];
 		if (workspace) {
@@ -888,7 +836,6 @@ export class SurfaceSessionDrawer {
 			state.activeReportSlug,
 			state.busy,
 			this.#armedApprove,
-			this.#isExpanded(),
 			ownedNotes,
 		]);
 		if (key === this.#shown) return;
@@ -916,7 +863,6 @@ export class SurfaceSessionDrawer {
 			),
 			this.#crew.takeExploration(exploration, variants, 36, "is-large"),
 			h("div", { class: "surface-drawer-title" }, h("h2", null, exploration.title), h("p", null, subtitle)),
-			h("div", { class: "surface-drawer-head-acts" }, this.#expandButton()),
 		);
 		this.#crew.settle();
 
@@ -1041,7 +987,6 @@ export class SurfaceSessionDrawer {
 			state.busy,
 			look,
 			this.#armedApprove,
-			this.#isExpanded(),
 			ownedNotes,
 		]);
 		if (key === this.#shown) return;
@@ -1075,7 +1020,6 @@ export class SurfaceSessionDrawer {
 						.join(" · "),
 				),
 			),
-			h("div", { class: "surface-drawer-head-acts" }, this.#expandButton()),
 		);
 		this.#crew.settle();
 		this.#body.replaceChildren(...this.#content(session, notes, resolvedSurface, look, ownedNotes));
@@ -1383,9 +1327,6 @@ export class SurfaceSessionDrawer {
 			case "close":
 			case "close-panel":
 				store.closePanel();
-				return;
-			case "toggle-expand":
-				this.#toggleExpand();
 				return;
 			case "back-overview":
 				store.openPreviewPanel();

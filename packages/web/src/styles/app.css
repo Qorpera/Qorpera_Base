@@ -353,7 +353,7 @@ label > input, label > select { font-weight: 400; }
 .rail-add svg { width: 18px; height: 18px; }
 .rail-mobile-close { display: none; grid-area: 1 / 1; margin-right: 6px; }
 .rail-resizer { position: absolute; z-index: 8; left: calc(var(--rail-width) - 4px); top: 0; bottom: 0; width: 8px; cursor: col-resize; touch-action: none; }
-.rail-resizer:hover, .rail-resizer:focus-visible { background: rgb(0 122 255 / 12%); outline: none; }
+.rail-resizer:hover, .rail-resizer:focus-visible { background: transparent; outline: none; }
 .rail[hidden] + .rail-resizer { display: none; }
 .rail-resizing { cursor: col-resize; user-select: none; }
 .rail-add:hover { text-decoration: none; background: var(--rail-hover); }
