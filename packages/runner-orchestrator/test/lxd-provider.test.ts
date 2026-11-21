@@ -17,7 +17,6 @@ import {
 import { lxdNativeNodePolicy, lxdResourceBytes } from "../src/lxd-native-node-policy.ts";
 import {
 	HttpLxdGuestTransport,
-	LXD_RUNTIME_BUNDLE_GUEST_PATH,
 	LxdCloudRunnerProviderBackend,
 	type LxdCloudRunnerProviderConfig,
 	type LxdGuestTransport,
@@ -3409,52 +3408,5 @@ describe("LXD cloud runner provider", () => {
 			"destination or token is invalid",
 		);
 		expect(fetcher).toHaveBeenCalledTimes(2);
-	});
-
-	it("mounts a read-only runtime bundle layer device and enforces drift checks on reconcile", async () => {
-		const directory = await root();
-		const bundleDir = "/opt/qorpera-node/releases/158/runtime-bundle";
-		const bundleSha = "d".repeat(64);
-		const overlayConfig: LxdCloudRunnerProviderConfig = {
-			...config(join(directory, "overlay-state")),
-			runtimeBundleDirectory: bundleDir,
-			runtimeBundleSha256: bundleSha,
-		};
-		const lxd = new FakeLxd();
-		const backend = new LxdCloudRunnerProviderBackend(overlayConfig, lxd, new FakeGuest(), fetchProvisioner([]));
-
-		await backend.acquire(runId, work(), new AbortController().signal);
-
-		expect(lxd.createCalls[0]?.devices["runtime-bundle"]).toEqual({
-			type: "disk",
-			source: bundleDir,
-			path: LXD_RUNTIME_BUNDLE_GUEST_PATH,
-			readonly: "true",
-		});
-		expect(lxd.createCalls[0]?.config["user.qorpera.runtime_bundle_sha256"]).toBe(bundleSha);
-
-		if (!lxd.instance) throw new Error("expected fake instance");
-		lxd.instance = {
-			...lxd.instance,
-			devices: {
-				...lxd.instance.devices,
-				"runtime-bundle": {
-					type: "disk",
-					source: bundleDir,
-					path: LXD_RUNTIME_BUNDLE_GUEST_PATH,
-				},
-			},
-		};
-		await expect(backend.reconcile()).rejects.toThrow("drifted from immutable provider authority");
-
-		expect(
-			() =>
-				new LxdCloudRunnerProviderBackend(
-					{ ...config(join(directory, "bad-overlay")), runtimeBundleDirectory: bundleDir },
-					new FakeLxd(),
-					new FakeGuest(),
-					fetchProvisioner([]),
-				),
-		).toThrow("Runtime bundle overlay directory and sha256 must be configured together");
 	});
 });

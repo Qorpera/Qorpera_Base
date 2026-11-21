@@ -103,13 +103,10 @@ export interface LxdCloudRunnerProviderConfig {
 	liveCompanyProfileId?: string;
 	/** Separate, explicitly enrolled path-authorized runtime. Never mounts the company tree. */
 	nativeCompanyRuntime?: LxdNativeCompanyRuntimeConfig;
-	runtimeBundleDirectory?: string;
-	runtimeBundleSha256?: string;
 }
 
 /** Where the live company tree appears inside a runner VM. */
 export const LXD_LIVE_COMPANY_GUEST_PATH = "/qorpera/company-live";
-export const LXD_RUNTIME_BUNDLE_GUEST_PATH = "/opt/qorpera-runtime-bundle";
 
 export interface LxdGuestTransport {
 	waitReady(
@@ -656,16 +653,6 @@ function validateConfig(config: LxdCloudRunnerProviderConfig): void {
 		(config.liveCompanyProfileId !== undefined && !UUID_PATTERN.test(config.liveCompanyProfileId))
 	) {
 		throw new Error("Live Company File root and profile must be configured together");
-	}
-	if (
-		(config.runtimeBundleDirectory === undefined) !== (config.runtimeBundleSha256 === undefined) ||
-		(config.runtimeBundleDirectory !== undefined &&
-			(!isAbsolute(config.runtimeBundleDirectory) ||
-				/[\0\r\n]/.test(config.runtimeBundleDirectory) ||
-				config.runtimeBundleDirectory.split("/").includes(".."))) ||
-		(config.runtimeBundleSha256 !== undefined && !SHA256_PATTERN.test(config.runtimeBundleSha256))
-	) {
-		throw new Error("Runtime bundle overlay directory and sha256 must be configured together");
 	}
 	if (config.nativeCompanyRuntime) {
 		validateLxdNativeCompanyRuntime(config.nativeCompanyRuntime);
@@ -1730,9 +1717,6 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				...(current.runner.logicalComputerId
 					? { "user.qorpera.logical_computer_id": current.runner.logicalComputerId }
 					: {}),
-				...(this.#config.runtimeBundleSha256
-					? { "user.qorpera.runtime_bundle_sha256": this.#config.runtimeBundleSha256 }
-					: {}),
 			},
 			devices: {
 				root: {
@@ -1782,16 +1766,6 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 								type: "disk",
 								source: liveCompany.root,
 								path: LXD_LIVE_COMPANY_GUEST_PATH,
-							},
-						}
-					: {}),
-				...(this.#config.runtimeBundleDirectory
-					? {
-							"runtime-bundle": {
-								type: "disk",
-								source: this.#config.runtimeBundleDirectory,
-								path: LXD_RUNTIME_BUNDLE_GUEST_PATH,
-								readonly: "true",
 							},
 						}
 					: {}),
@@ -2051,15 +2025,6 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		const expectedLiveCompanyDevice = liveCompany
 			? { type: "disk", source: liveCompany.root, path: LXD_LIVE_COMPANY_GUEST_PATH }
 			: undefined;
-		const runtimeBundleDevice = instance.devices["runtime-bundle"];
-		const expectedRuntimeBundleDevice = this.#config.runtimeBundleDirectory
-			? {
-					type: "disk",
-					source: this.#config.runtimeBundleDirectory,
-					path: LXD_RUNTIME_BUNDLE_GUEST_PATH,
-					readonly: "true",
-				}
-			: undefined;
 		if (
 			instance.name !== journal.instanceName ||
 			instance.type !== "virtual-machine" ||
@@ -2075,7 +2040,6 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			instance.config["user.qorpera.compute_policy_sha256"] !== journal.lxd.policySha256 ||
 			instance.config["user.qorpera.runner_id"] !== journal.runner.runnerId ||
 			instance.config["user.qorpera.logical_computer_id"] !== journal.runner.logicalComputerId ||
-			instance.config["user.qorpera.runtime_bundle_sha256"] !== this.#config.runtimeBundleSha256 ||
 			root?.type !== "disk" ||
 			root.path !== "/" ||
 			root.pool !== journal.lxd.storagePool ||
@@ -2086,8 +2050,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 					identity.path !== "/var/lib/qorpera/identity" ||
 					identity.pool !== journal.lxd.storagePool ||
 					identity.source !== journal.lxd.identityVolume) ||
-			JSON.stringify(canonical(liveCompanyDevice)) !== JSON.stringify(canonical(expectedLiveCompanyDevice)) ||
-			JSON.stringify(canonical(runtimeBundleDevice)) !== JSON.stringify(canonical(expectedRuntimeBundleDevice))
+			JSON.stringify(canonical(liveCompanyDevice)) !== JSON.stringify(canonical(expectedLiveCompanyDevice))
 		) {
 			throw new Error("LXD guest drifted from immutable provider authority");
 		}

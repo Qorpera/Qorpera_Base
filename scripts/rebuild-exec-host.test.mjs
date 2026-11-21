@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -28,6 +28,9 @@ case "$1" in
 		if [[ \${args[$#-1]} == */qorpera-execution-host ]]; then
 			cp "\${args[$#-2]}" "$S/pushed-host-credential"
 			echo "\${args[$#-2]}" > "$S/pushed-host-credential-source"
+		elif [[ \${args[$#-1]} == */opt/qorpera-runner/* ]]; then
+			mkdir -p "$S/pushed-runner"
+			cp "\${args[$#-2]}" "$S/pushed-runner/\$(basename "\${args[$#-1]}")"
 		fi
 		exit 0;;
 	exec)
@@ -45,6 +48,10 @@ case "$1" in
 			"systemctl stop qorpera-shared-run-host@"*) : > "$S/hosts"; exit 0;;
 			"sh -c ls /var/lib/qorpera-shared-execution/journals/*.json 2>/dev/null || true") cat "$S/journals"; exit 0;;
 			"sha256sum /opt/qorpera-harnesses/native-company/codex") echo "${"e".repeat(64)}  codex"; exit 0;;
+			"sha256sum /opt/qorpera-runner/"*)
+				target="\${cmd#sha256sum /opt/qorpera-runner/}"
+				sha256sum "$S/pushed-runner/$target"
+				exit 0;;
 			curl*) echo 200; exit 0;;
 			env*) echo installed; exit 0;;
 			*) exit 0;;
@@ -289,64 +296,152 @@ test("every rebuild mints the host's own credential, binds only its hash, and pu
 	}
 });
 
-test("EXEC_RUNTIME_BUNDLE_DIR verifies manifest digests before stopping anything and pushes 0555 artifacts", () => {
-	const layerFiles = [
-		"qorpera-ephemeral-runner.mjs",
-		"qorpera-native-provider-host.mjs",
-		"qorpera-identity-recovery-restore.mjs",
-		"qorpera-native-isolation-child.mjs",
-		"qorpera-sandbox-probe.mjs",
-		"qorpera-lxd-runner-bootstrap.mjs",
-		"qorpera-lxd-native-login-bootstrap.mjs",
-		"qorpera-claude-home-shell.mjs",
-		"run-job",
-	];
-	const bundleSha = "b".repeat(64);
-	const fixture = setup();
-	const mismatchFixture = setup();
-	const tamperedFixture = setup();
-	const layerDir = join(fixture.dir, "runtime-layer");
-	mkdirSync(layerDir, { recursive: true });
-	try {
-		const artifacts = layerFiles.map((file) => {
-			const content = Buffer.from(`export const file = ${JSON.stringify(file)};\n`);
-			writeFileSync(join(layerDir, file), content);
-			return { file, bytes: content.byteLength, sha256: createHash("sha256").update(content).digest("hex") };
-		});
-		writeFileSync(
-			join(layerDir, "manifest.json"),
-			`${JSON.stringify({ schema: "qorpera.runtime-bundle-layer/v1", runtimeBundleSha256: bundleSha, artifacts }, null, 2)}\n`,
-		);
-		const ok = rebuild(fixture, {
-			EXEC_RUNTIME_BUNDLE_SHA256: bundleSha,
-			EXEC_RUNTIME_BUNDLE_DIR: layerDir,
-		});
-		assert.equal(ok.status, 0, ok.stderr);
-		assert.match(ok.log, /\/opt\/qorpera-runner\/qorpera-native-provider-host\.mjs/);
-		assert.match(ok.log, /node --check \/opt\/qorpera-runner\/qorpera-native-provider-host\.mjs/);
+test(
+	"EXEC_RUNTIME_BUNDLE_DIR requires manifest pin, verifies exact 7 host files before stopping anything, and pushes verified 0555 artifacts",
+	{ skip: linux === true ? false : linux },
+	() => {
+		const layerFiles = [
+			"qorpera-ephemeral-runner.mjs",
+			"qorpera-native-provider-host.mjs",
+			"qorpera-identity-recovery-restore.mjs",
+			"qorpera-native-isolation-child.mjs",
+			"qorpera-lxd-runner-bootstrap.mjs",
+			"qorpera-lxd-native-login-bootstrap.mjs",
+			"qorpera-claude-home-shell.mjs",
+		];
+		const bundleSha = "b".repeat(64);
+		const buildLayer = (dir, { omitPin = false } = {}) => {
+			mkdirSync(dir, { recursive: true, mode: 0o755 });
+			chmodSync(dir, 0o755);
+			const artifacts = layerFiles.map((file) => {
+				const content = Buffer.from(
+					omitPin
+						? `export const file = ${JSON.stringify(file)};\n`
+						: `export const bundle = ${JSON.stringify(bundleSha)};\nexport const file = ${JSON.stringify(file)};\n`,
+				);
+				const filePath = join(dir, file);
+				writeFileSync(filePath, content, { mode: 0o555 });
+				chmodSync(filePath, 0o555);
+				return { file, bytes: content.byteLength, sha256: createHash("sha256").update(content).digest("hex") };
+			});
+			const manifestText = `${JSON.stringify({ schema: "qorpera.runtime-bundle-layer/v1", runtimeBundleSha256: bundleSha, artifacts }, null, 2)}\n`;
+			const manifestPath = join(dir, "manifest.json");
+			writeFileSync(manifestPath, manifestText, { mode: 0o444 });
+			chmodSync(manifestPath, 0o444);
+			return createHash("sha256").update(manifestText).digest("hex");
+		};
 
-		const mismatch = rebuild(mismatchFixture, {
-			EXEC_RUNTIME_BUNDLE_SHA256: "a".repeat(64),
-			EXEC_RUNTIME_BUNDLE_DIR: layerDir,
-		});
-		assert.equal(mismatch.status, 1);
-		assert.match(mismatch.stderr, /bundle sha256 does not match/);
-		assert.doesNotMatch(mismatch.log, /systemctl disable/);
+		const fixtures = Array.from({ length: 10 }, () => setup());
+		const layerRoot = realpathSync(mkdtempSync(join(tmpdir(), "rebuild-layer-")));
+		try {
+			const layerDir = join(layerRoot, "good");
+			const manifestSha = buildLayer(layerDir);
 
-		writeFileSync(join(layerDir, "qorpera-native-provider-host.mjs"), "tampered\n");
-		const tampered = rebuild(tamperedFixture, {
-			EXEC_RUNTIME_BUNDLE_SHA256: bundleSha,
-			EXEC_RUNTIME_BUNDLE_DIR: layerDir,
-		});
-		assert.equal(tampered.status, 1);
-		assert.match(tampered.stderr, /digest mismatch/);
-		assert.doesNotMatch(tampered.log, /systemctl disable/);
-	} finally {
-		for (const item of [fixture, mismatchFixture, tamperedFixture]) {
-			rmSync(item.dir, { recursive: true, force: true });
+			const preflight = rebuild(fixtures[0], {
+				EXEC_PREFLIGHT_ONLY: "1",
+				EXEC_RUNTIME_BUNDLE_DIR: layerDir,
+				EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256: manifestSha,
+			});
+			assert.equal(preflight.status, 0, preflight.stderr);
+			assert.match(preflight.stdout, /Inputs checked; nothing changed/);
+			assert.doesNotMatch(preflight.log, /systemctl disable/);
+
+			const preActivation = rebuild(fixtures[1], {
+				EXEC_RUNTIME_BUNDLE_DIR: layerDir,
+				EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256: manifestSha,
+			});
+			assert.equal(preActivation.status, 0, preActivation.stderr);
+			for (const file of layerFiles) {
+				assert.match(preActivation.log, new RegExp(`--mode 0555 --uid 0 --gid 0 -p .* /opt/qorpera-runner/${file}`.replace("/opt", "qorpera-exec-node02/opt")));
+				assert.match(preActivation.log, new RegExp(`sha256sum /opt/qorpera-runner/${file}`));
+				assert.match(preActivation.log, new RegExp(`node --check /opt/qorpera-runner/${file}`));
+			}
+			assert.doesNotMatch(preActivation.log, /qorpera-sandbox-probe\.mjs/);
+			assert.doesNotMatch(preActivation.log, /\/opt\/qorpera-runner\/run-job/);
+
+			const pinned = rebuild(fixtures[2], {
+				EXEC_RUNTIME_BUNDLE_SHA256: bundleSha,
+				EXEC_RUNTIME_BUNDLE_DIR: layerDir,
+				EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256: manifestSha,
+			});
+			assert.equal(pinned.status, 0, pinned.stderr);
+
+			const missingManifestPin = rebuild(fixtures[3], {
+				EXEC_RUNTIME_BUNDLE_DIR: layerDir,
+			});
+			assert.equal(missingManifestPin.status, 1);
+			assert.match(missingManifestPin.stderr, /EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256/);
+			assert.doesNotMatch(missingManifestPin.log, /systemctl disable/);
+
+			const wrongManifestPin = rebuild(fixtures[4], {
+				EXEC_RUNTIME_BUNDLE_DIR: layerDir,
+				EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256: "a".repeat(64),
+			});
+			assert.equal(wrongManifestPin.status, 1);
+			assert.match(wrongManifestPin.stderr, /does not match EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256/);
+			assert.doesNotMatch(wrongManifestPin.log, /systemctl disable/);
+
+			const mismatchBundle = rebuild(fixtures[5], {
+				EXEC_RUNTIME_BUNDLE_SHA256: "a".repeat(64),
+				EXEC_RUNTIME_BUNDLE_DIR: layerDir,
+				EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256: manifestSha,
+			});
+			assert.equal(mismatchBundle.status, 1);
+			assert.match(mismatchBundle.stderr, /bundle sha256 does not match/);
+			assert.doesNotMatch(mismatchBundle.log, /systemctl disable/);
+
+			const symDir = join(layerRoot, "sym-link");
+			symlinkSync(layerDir, symDir);
+			const symResult = rebuild(fixtures[6], {
+				EXEC_RUNTIME_BUNDLE_DIR: symDir,
+				EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256: manifestSha,
+			});
+			assert.equal(symResult.status, 1);
+			assert.match(symResult.stderr, /non-symlink directory/);
+			assert.doesNotMatch(symResult.log, /systemctl disable/);
+
+			const extraDir = join(layerRoot, "extra");
+			const extraManifestSha = buildLayer(extraDir);
+			writeFileSync(join(extraDir, "rogue.mjs"), "export {};\n");
+			const extraResult = rebuild(fixtures[7], {
+				EXEC_RUNTIME_BUNDLE_DIR: extraDir,
+				EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256: extraManifestSha,
+			});
+			assert.equal(extraResult.status, 1);
+			assert.match(extraResult.stderr, /exact expected files/);
+			assert.doesNotMatch(extraResult.log, /systemctl disable/);
+
+			const unpinnedDir = join(layerRoot, "unpinned");
+			const unpinnedManifestSha = buildLayer(unpinnedDir, { omitPin: true });
+			const unpinnedResult = rebuild(fixtures[8], {
+				EXEC_RUNTIME_BUNDLE_DIR: unpinnedDir,
+				EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256: unpinnedManifestSha,
+			});
+			assert.equal(unpinnedResult.status, 1);
+			assert.match(unpinnedResult.stderr, /does not embed runtimeBundleSha256/);
+			assert.doesNotMatch(unpinnedResult.log, /systemctl disable/);
+
+			chmodSync(join(layerDir, "qorpera-native-provider-host.mjs"), 0o644);
+			writeFileSync(join(layerDir, "qorpera-native-provider-host.mjs"), "tampered\n");
+			const tampered = rebuild(fixtures[9], {
+				EXEC_RUNTIME_BUNDLE_SHA256: bundleSha,
+				EXEC_RUNTIME_BUNDLE_DIR: layerDir,
+				EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256: manifestSha,
+			});
+			assert.equal(tampered.status, 1);
+			assert.match(tampered.stderr, /digest mismatch/);
+			assert.doesNotMatch(tampered.log, /systemctl disable/);
+
+			const createScript = readFileSync(join(root, "deploy/shared-execution/create-exec-host.sh"), "utf8");
+			assert.match(createScript, /unset .*EXEC_RUNTIME_BUNDLE_DIR.*EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256/);
+		} finally {
+			rmSync(layerRoot, { recursive: true, force: true });
+			for (const item of fixtures) {
+				rmSync(item.dir, { recursive: true, force: true });
+			}
 		}
-	}
-});
+	},
+);
 
 test("the script still parses", () => {
 	assert.equal(spawnSync("bash", ["-n", script]).status, 0);

@@ -1,46 +1,70 @@
-# Thin Signed Runtime Bundle Layer
+# Thin Runtime Bundle Layer for Shared Execution Hosts
 
-Decouples the ~6.5 MB runtime JavaScript bundle (`qorpera-native-provider-host.mjs`
-and the 7 companion entrypoints + `run-job`) from the 1.82 GB LXD base runner OS
-image (Ubuntu 26.04, Node.js, patched Codex, Claude Code 365 MB binary, bubblewrap,
-fuse3/sshfs, and the AppArmor-pinned `/opt/qorpera-runner/qorpera-claude-box-ns`).
+Decouples the ~6.5 MB runtime JavaScript bundle from the 1.82 GB LXD base OS
+image on shared execution hosts (`qorpera-exec-node01`, `qorpera-exec-node02`)
+so runtime-JS-only releases (prompt updates, tool wiring, orchestrator /
+company-runtime logic) no longer spend ~13 minutes rebuilding, compressing,
+uploading, importing, and deleting a full 1.82 GB LXD image.
 
-## Why
+## Architecture (Phase 1: Shared Execution Hosts)
 
-On prompt, tool-wording, or TypeScript runtime releases (`v269`, `#2006`, etc.),
-the 1.82 GB base OS image does not change — only `/opt/qorpera-runner/*.mjs`
-changes. Rebuilding, gzip-publishing, verifying, exporting, and transferring
-1.82 GB across nodes added 7-10 minutes to every cut.
+1. **Base OS image (~1.82 GB, changes rarely):** Contains Ubuntu, Node.js,
+   patched Codex binary (`/opt/qorpera-harnesses/native-company/codex`), Claude
+   Code binary, AppArmor profiles (`/etc/apparmor.d/qorpera-claude-box-ns`),
+   and `/opt/qorpera-runner/qorpera-claude-box-ns` + `qorpera-claude-box-stage.sh`.
+2. **Thin host runtime bundle layer (`scripts/package-runtime-bundle-layer.mjs`):**
+   Produces a verified directory (`qorpera.runtime-bundle-layer/v1`) holding
+   `manifest.json` (`0444`) and the exact 7 `/opt/qorpera-runner/*.mjs` host and
+   bootstrap artifacts (`0555`) installed by
+   `deploy/lxd-runner-guest/install-image-contract.sh`, plus `manifestSha256`.
+   (`qorpera-sandbox-probe.mjs` and `run-job` live inside the OCI container
+   image, not `/opt/qorpera-runner/`.)
+3. **Fail-closed shared execution host rebuild (`deploy/shared-execution/rebuild-exec-host.sh`):**
+   - Continues to run `lxc rebuild` from the immutable base OS image (fresh root
+     disk, never relabelling an existing host; `QORPERA-RUNTIME-CONTRACT.md` §19).
+   - Accepts `EXEC_RUNTIME_BUNDLE_DIR` ONLY together with a mandatory external
+     64-hex cryptographic pin `EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256` (independent
+     of `EXEC_RUNTIME_BUNDLE_SHA256`, so pre-activation rolling-update rebuilds
+     where `EXEC_RUNTIME_BUNDLE_SHA256` is intentionally unset remain
+     cryptographically pinned). When `EXEC_RUNTIME_BUNDLE_SHA256` is also set,
+     `manifest.runtimeBundleSha256` must match it as well.
+   - Preflight verifies physical path parity (no symlinked directory or parent
+     components), ownership, non-group/world-writable modes, exact directory
+     contents (`manifest.json` + the 7 `.mjs` files, rejecting extra files),
+     `manifest.json` SHA-256 against `EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256`,
+     every artifact's byte length and SHA-256 via `O_NOFOLLOW`, and that both
+     `qorpera-native-provider-host.mjs` and `qorpera-ephemeral-runner.mjs`
+     embed `manifest.runtimeBundleSha256`.
+   - Preflight snapshots the verified bytes into a root-only `0700` temporary
+     directory (cleaned up on `EXIT`), then after `lxc rebuild` pushes only from
+     that snapshot with `--mode 0555 --uid 0 --gid 0`, re-verifies every
+     artifact's SHA-256 inside the guest (`sha256sum`), and runs `node --check`.
+   - Never touches `/opt/qorpera-runner/qorpera-claude-box-ns`,
+     `/opt/qorpera-runner/qorpera-claude-box-stage.sh`, or AppArmor profiles.
+   - `deploy/shared-execution/create-exec-host.sh` explicitly unsets both
+     `EXEC_RUNTIME_BUNDLE_DIR` and `EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256` so
+     caller environment variables never leak into new host creation.
 
-## Architecture & Security Invariants
+Note: `deploy/node-agent/make-release.mjs` currently signs flat files only;
+staging the verified directory on the node host and pinning it externally via
+`EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256` works today without changing the node
+agent wire format.
 
-1. **Packaging (`scripts/package-runtime-bundle-layer.mjs`)**:
-   - Builds the exact 9 files (`RUNTIME_LAYER_FILES`) plus `manifest.json`
-     (`schema: "qorpera.runtime-bundle-layer/v1"`, `runtimeBundleSha256`,
-     per-file byte length and SHA-256) in ~3 seconds.
-   - Distributed to nodes inside the existing Ed25519-signed node release
-     (`deploy/node-agent/make-release.mjs`, `release.json` + `release.sig`).
-2. **Shared execution host (`deploy/shared-execution/rebuild-exec-host.sh`)**:
-   - Still executes `lxc rebuild` from the immutable base image (fresh root disk,
-     never relabelled, preserving `QORPERA-RUNTIME-CONTRACT.md` §19).
-   - When `EXEC_RUNTIME_BUNDLE_DIR` is set, preflight verifies `manifest.json`,
-     rejects symlinks or missing/extra files, checks every artifact's SHA-256
-     and byte size, and confirms `manifest.runtimeBundleSha256 === EXEC_RUNTIME_BUNDLE_SHA256`
-     before stopping any unit.
-   - After `install-shared-execution-guest.sh`, pushes the verified artifacts
-     with mode `0555` (root:root) to `/opt/qorpera-runner/` and runs `node --check`
-     on every `.mjs` file before starting `qorpera-shared-execution.service`.
-   - Never touches `/opt/qorpera-runner/qorpera-claude-box-ns` or its AppArmor profile.
-3. **Ephemeral LXD runner VMs (`packages/runner-orchestrator/src/lxd-provider.ts`)**:
-   - Opt-in `QORPERA_LXD_RUNTIME_BUNDLE_DIR` + `QORPERA_LXD_RUNTIME_BUNDLE_SHA256`
-     (required together, validated fail-closed).
-   - Attaches a read-only (`readonly: "true"`) LXD disk device `"runtime-bundle"`
-     mounted at `/opt/qorpera-runtime-bundle` and records
-     `user.qorpera.runtime_bundle_sha256` in instance config.
-   - `#assertInstanceAuthority` enforces exact device and config parity on every
-     reconcile pass, refusing any drift.
-   - Every run still verifies `identity.runtimeBundleSha256 === CLOUD_RUNTIME_BUNDLE_SHA256`
-     inside `assertCloudRuntimeBundle` before starting provider work.
-4. **Base image rebuilds**:
-   - Required only when OS packages, harnesses (Codex/Claude), AppArmor, or
-     systemd units change (`baseImageChanged: true` in `scripts/release-prep-plan.mjs`).
+## Deferred Phase 2: Ephemeral LXD VMs
+
+Ephemeral per-run LXD VMs (`packages/runner-orchestrator/src/lxd-provider.ts`)
+are intentionally NOT changed in this PR. Mounting a host directory into
+governed LXD VMs requires a coordinated base-image and guest-bootstrap update
+(allowlisting the read-only mount in `verifyCompanyGuest`, updating guest
+systemd units and digest verification to execute from the overlay, recording
+overlay authority in `LxdProviderJournal.lxd` for rolling upgrades, and
+re-pinning `deploy/first-node/install-lxd-provider-host.sh`).
+
+## When a Full Base OS Image Rebuild Is Still Required
+
+Any diff touching `deploy/lxd-runner-guest/`, `deploy/claude-box/` (including
+`qorpera-claude-box-stage.sh` and `qorpera-claude-box-ns`),
+`deploy/first-node/native-codex/` (Codex binary / patch),
+`deploy/first-node/native-claude/`, `deploy/ephemeral-runner/`, or
+`package-lock.json` requires a full base OS image rebuild (`lxc publish
+--compression zstd`).
