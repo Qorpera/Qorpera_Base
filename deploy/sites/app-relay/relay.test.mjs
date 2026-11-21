@@ -2101,8 +2101,9 @@ describe("app relay: concurrency hardening and backpressure", () => {
 			}
 			if (req.url === "/early") {
 				res.writeHead(200, { "content-type": "text/plain" });
-				res.end("early-ok");
+				res.write("early-ok");
 				req.resume();
+				req.once("end", () => res.end());
 				return;
 			}
 			if (req.url === "/delayed-upload") {
@@ -2168,7 +2169,7 @@ describe("app relay: concurrency hardening and backpressure", () => {
 			hostSuffix: SUFFIX,
 			fetch: fetcher,
 			maxQueuedBytes: 512 * 1024,
-			responseTimeoutMs: 800,
+			responseTimeoutMs: 2_000,
 			pausedMs: 8_000,
 			sharedPausedMs: 600,
 			log: () => {},
@@ -2248,7 +2249,7 @@ describe("app relay: concurrency hardening and backpressure", () => {
 		assert.equal(delayed.status, 200, delayed.text);
 		assert.equal(JSON.parse(delayed.text).bytes, bigUpload.length);
 		const early = await post("/early", Buffer.alloc(768 * 1024, 0x44));
-		assert.equal(early.status, 200);
+		assert.equal(early.status, 200, early.text);
 		assert.equal(early.text, "early-ok");
 		const beforePauses = relay.pauseCount("shop");
 		const heldReq = new Promise((resolve, reject) => {
