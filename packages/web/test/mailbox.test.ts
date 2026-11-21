@@ -3248,8 +3248,8 @@ describe("Digital Post", () => {
 		}
 	});
 
-	it("restores focus to Send after reopening an evicted thread on failed send", async () => {
-		const { main, fake, controller } = await mailbox((mail) => {
+	it("restores focus to Send after reopening an evicted thread on failed send, even from a shared control, unless focus moves while loading", async () => {
+		const { main, fake, f, controller } = await mailbox((mail) => {
 			mail.threads = [summary(1)];
 		});
 		await openFirst(main);
@@ -3263,6 +3263,8 @@ describe("Digital Post", () => {
 		reply(main).requestSubmit();
 		button(main, "Back to Inbox")!.click();
 		await vi.waitFor(() => expect(controller.store.get().mail?.threads[thread(1)]).toBeUndefined());
+		main.querySelector<HTMLInputElement>(".mailbox-search input")!.focus();
+		expect(document.activeElement).toBe(main.querySelector(".mailbox-search input"));
 		release();
 		await vi.waitFor(() =>
 			expect(main.querySelector(".mailbox-write-error")?.textContent).toBe(
@@ -3270,5 +3272,37 @@ describe("Digital Post", () => {
 			),
 		);
 		expect(document.activeElement).toBe(button(reply(main), "Send"));
+
+		let releaseThread: (() => void) | undefined;
+		const rpcMock = vi.mocked(f.cloud.rpc);
+		const origRpc = rpcMock.getMockImplementation()!;
+		rpcMock.mockImplementation(async (name: string, args?: Record<string, unknown>, signal?: AbortSignal) => {
+			if (name === "qorpera_member_mail_thread") {
+				await new Promise<void>((resolve) => {
+					releaseThread = resolve;
+				});
+			}
+			return origRpc(name, args, signal);
+		});
+		let releaseSecond = () => {};
+		fake.sendHold = new Promise((resolve) => {
+			releaseSecond = resolve;
+		});
+		reply(main).requestSubmit();
+		button(main, "Back to Inbox")!.click();
+		await vi.waitFor(() => expect(controller.store.get().mail?.threads[thread(1)]).toBeUndefined());
+		(document.activeElement as HTMLElement | null)?.blur?.();
+		releaseSecond();
+		await vi.waitFor(() => expect(releaseThread).toBeDefined());
+		const searchDuringLoad = main.querySelector<HTMLInputElement>(".mailbox-search input")!;
+		searchDuringLoad.focus();
+		expect(document.activeElement).toBe(searchDuringLoad);
+		releaseThread!();
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-write-error")?.textContent).toBe(
+				"The mailbox is paused; resume it to send from it",
+			),
+		);
+		expect(document.activeElement).toBe(main.querySelector(".mailbox-search input"));
 	});
 });

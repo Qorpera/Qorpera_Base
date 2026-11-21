@@ -138,7 +138,7 @@ interface MailboxUi {
 	busy: boolean;
 	error: string | null;
 	toast: { readonly text: string; readonly agent: string | null; readonly id: number } | null;
-	pendingFocus: string | null;
+	pendingFocus: { readonly target: string; readonly carried: Element | null } | null;
 }
 
 /** Who an email being written goes to, on one of its lines. */
@@ -538,21 +538,17 @@ export function renderMailbox(
 			: null,
 	]);
 	const page: Page = { company, ui, name, profileId, redraw, options };
-	if (moveFocus !== undefined) {
-		ui.pendingFocus = moveFocus;
-	} else if (ui.pendingFocus !== null) {
-		const active = document.activeElement;
-		if (active instanceof HTMLElement && container.contains(active) && active.dataset.focusKey !== undefined)
-			ui.pendingFocus = null;
+	if (moveFocus === undefined && ui.pendingFocus !== null && document.activeElement !== ui.pendingFocus.carried) {
+		ui.pendingFocus = null;
 	}
-	const targetFocus = moveFocus ?? ui.pendingFocus ?? undefined;
+	const targetFocus = moveFocus ?? ui.pendingFocus?.target;
 	show(container, key, () => settle(container.firstElementChild, drawPage(page)), targetFocus);
-	if (ui.pendingFocus !== null) {
+	if (targetFocus !== undefined) {
 		const waitingForThread = ui.open !== null && mail?.threads[ui.open] === undefined;
 		const drawn = [...container.querySelectorAll<HTMLElement>("[data-focus-key]")].some(
-			(element) => element.dataset.focusKey === ui.pendingFocus,
+			(element) => element.dataset.focusKey === targetFocus,
 		);
-		if (!waitingForThread || drawn) ui.pendingFocus = null;
+		ui.pendingFocus = waitingForThread && !drawn ? { target: targetFocus, carried: document.activeElement } : null;
 	}
 	CompanyMail.of(company)?.watch(lists, threads, stillShown, letters);
 }
