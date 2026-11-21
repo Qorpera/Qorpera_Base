@@ -637,9 +637,10 @@ is a loose object that does not inflate, has bytes after it, has no header or mo
 1 GiB inflated. Git and the scanner run under `prlimit --as` (1 GiB), with the system's and the user's config ignored
 (`GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL=/dev/null`, `HOME` the scratch directory), no hooks and no remotes, for at
 most 30 minutes, up to 2 packs at a time on a node when using the native Rust scanner (1 on the JS fallback) and at most
-512 MiB of running pack copies in scratch tmpfs together (`runningBytes`, so large packs serialize and stay within the
-unit's 3 GiB `MemoryMax` beside the cache), so a burst of packs waits its turn and starves nothing else; the scratch
-directory is removed however the check ends. At most 8
+512 MiB of running pack copies in scratch tmpfs together (`runningBytes`, bounding only the scratch pack copies while
+`prlimit --as` bounds each check's `git` and scanner process individually rather than in total), so large packs
+serialize and a burst of packs waits its turn without starving other work; the scratch directory is removed however the
+check ends. At most 8
 checks wait for a turn on a node, with at most 2 GiB of packs together; a pack past either is refused as "could not be
 checked" for now, and checked again at the next boundary (one session's boundary checks at most 8 files at once, so this
 is several sessions at once). A pack over 512 MiB, or one whose objects rebuild more than 64 times its size (at least
