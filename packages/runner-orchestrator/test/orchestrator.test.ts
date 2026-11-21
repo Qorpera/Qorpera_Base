@@ -2963,12 +2963,13 @@ describe("cloud runner orchestrator", () => {
 		});
 		const abortControl = controlPlane();
 		abortControl.listFolderDrainDue = vi.fn(async () => ({ items: ids, hasMore: false }));
+		const workerAbortError = new Error("worker aborted");
 		abortControl.runFolderDrain = vi.fn(async () => {
 			startedOnAbort++;
 			if (startedOnAbort === 2) twoStarted();
 			await abortGate;
 			settledOnAbort++;
-			throw new Error("aborted");
+			throw workerAbortError;
 		});
 		const abortDrains = new CloudFolderDrains({
 			drains: [{ name: "listen", companyLimit: 8 }],
@@ -2978,9 +2979,39 @@ describe("cloud runner orchestrator", () => {
 		await twoEntered;
 		ac.abort();
 		releaseAborted();
-		await expect(abortRun).rejects.toThrow("aborted");
+		await expect(abortRun).rejects.toBe(workerAbortError);
 		expect(startedOnAbort).toBe(2);
 		expect(settledOnAbort).toBe(2);
+
+		const matAbortAc = new AbortController();
+		let matAbortStarted = 0;
+		let matAbortSettled = 0;
+		let releaseMatAbort!: () => void;
+		const matAbortGate = new Promise<void>((resolve) => {
+			releaseMatAbort = resolve;
+		});
+		let matTwoStarted!: () => void;
+		const matTwoEntered = new Promise<void>((resolve) => {
+			matTwoStarted = resolve;
+		});
+		const matAbortError = new Error("materializer worker aborted");
+		const matAbortControl = controlPlane();
+		matAbortControl.listFolderMaterializationDue = vi.fn(async () => ({ items: ids, hasMore: false }));
+		matAbortControl.materializeFolderCompany = vi.fn(async () => {
+			matAbortStarted++;
+			if (matAbortStarted === 2) matTwoStarted();
+			await matAbortGate;
+			matAbortSettled++;
+			throw matAbortError;
+		});
+		const abortMaterializer = new CloudFolderRunMaterializer({ concurrency: 2 });
+		const matAbortRun = abortMaterializer.reconcile(matAbortControl, matAbortAc.signal);
+		await matTwoEntered;
+		matAbortAc.abort();
+		releaseMatAbort();
+		await expect(matAbortRun).rejects.toBe(matAbortError);
+		expect(matAbortStarted).toBe(2);
+		expect(matAbortSettled).toBe(2);
 
 		const cleanAc = new AbortController();
 		let cleanStarted = 0;

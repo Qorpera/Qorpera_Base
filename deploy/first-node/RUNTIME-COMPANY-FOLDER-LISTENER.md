@@ -383,7 +383,10 @@ tables and touching nothing else here.
   ran, every later list is asked. A drain it does not name is asked. The call reads every list, so one bad list fails it:
   it then backs off like a drain (1 s, doubling to at most 5 minutes; a 400 pauses it for 10 minutes), and while it waits
   a pass asks every list itself;
-- each drain pages through its due list, 100 at a time, and asks for each company in its own request;
+- each drain pages through its due list, 100 at a time, and asks for each company in its own request with bounded
+  per-page concurrency (default 4, at most 16; `CloudFolderRunMaterializer` uses the same per-page concurrency).
+  Drains still run in order and the materializer runs only after all drains; every per-company RPC must remain
+  company-scoped (or return `busy` on `NOWAIT`/deadlock) so concurrent companies within a page never contend;
 - **pause and backoff, per drain:** a 400 (an edge function without the drain) pauses that drain for 10 minutes; any
   other failure of its list, or a page whose cursor is lost or does not move forward, backs that drain off for 1 s,
   doubling to at most 5 minutes; a full listing clears it, and so does an answer from the one call that its list is empty;
