@@ -110,8 +110,7 @@ export interface CodingGuestAgentPorts {
 	stateRoot?: string;
 	runtimeRoot?: string;
 	folderRoot?: string;
-	/** The folder programs' cache folder on the machine's disk, which every session's program shares. */
-	folderCache?: string;
+	folderCacheRoot?: string;
 	/** Where the user managers' drop-ins go. */
 	systemdRoot?: string;
 	/** The machine's package caches (CODING_PACKAGE_CACHES): their folder, the tmpfiles file that makes them, and the most
@@ -149,7 +148,7 @@ function settle(ports: CodingGuestAgentPorts): Agent {
 		stateRoot: ports.stateRoot ?? CODING_GUEST.state,
 		runtimeRoot: ports.runtimeRoot ?? CODING_GUEST.runtime,
 		folderRoot: ports.folderRoot ?? CODING_GUEST.folder,
-		folderCache: ports.folderCache ?? FOLDER_CACHE.machine,
+		folderCacheRoot: ports.folderCacheRoot ?? FOLDER_CACHE.root,
 		systemdRoot: ports.systemdRoot ?? "/run/systemd/system",
 		packageCaches: ports.packageCaches ?? {
 			root: CODING_PACKAGE_CACHES.root,
@@ -325,9 +324,7 @@ function places(at: Agent, workerId: string) {
 		/** The program's local folder, on the machine's disk: the session's own git files. It outlives a new view (the
 		 * program keeps what is still the session's) and goes with the session. */
 		folderLocal: join(session, "folder-local"),
-		/** The machine's cache folder: every session's program keeps its caches there, and it outlives them all. Root
-		 * already joins one member's sessions on one machine, so walls between their caches would protect nothing. */
-		folderCache: at.folderCache,
+		folderCache: join(at.folderCacheRoot, `s-${worker}`),
 		mountpoint: join(at.folderRoot, "mounts", worker),
 		folderUnit: `qorpera-folder-${worker}.service`,
 		slice: `qorpera-coding-${worker}.slice`,
@@ -1515,6 +1512,7 @@ export async function stopCodingGuestSession(
 			if (name.startsWith(`${session.worker}-`)) await rm(join(inputs, name), { force: true });
 		// Nothing of the session runs any more, so nothing moves in its output folders while they go.
 		await rm(session.session, { recursive: true, force: true });
+		await rm(session.folderCache, { recursive: true, force: true });
 	});
 	return Object.freeze({ schema: "qorpera.coding-guest-session-stopped/v1", workerId: request.workerId });
 }

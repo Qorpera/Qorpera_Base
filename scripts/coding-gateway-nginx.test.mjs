@@ -28,13 +28,19 @@ function at(directives, block, name) {
 	return directives.filter((d) => d.block === block && d.name === name).map((d) => d.value);
 }
 
-test("each front with the home's location taken out is the node's own file, byte for byte", () => {
+test("each front with the home's location taken out and worker_connections restored is the node's own file, byte for byte", () => {
 	assert.deepEqual(Object.keys(CODING_GATEWAY_FRONTS), FRONTS);
 	for (const front of FRONTS) {
 		const rendered = renderCodingGatewayNginx(front);
 		const nodeFile = readFileSync(NODE_FILES[front]);
 		assert.notEqual(rendered, nodeFile.toString("utf8"));
-		assert.ok(Buffer.from(withoutHome(rendered), "utf8").equals(nodeFile), front);
+		const withoutHomeRoute = withoutHome(rendered);
+		assert.equal(withoutHomeRoute.match(/^events \{ worker_connections 2048; \}$/gm)?.length, 1, front);
+		const normalized = withoutHomeRoute.replace(
+			"events { worker_connections 2048; }",
+			"events { worker_connections 256; }",
+		);
+		assert.ok(Buffer.from(normalized, "utf8").equals(nodeFile), front);
 	}
 });
 
@@ -119,6 +125,7 @@ test("both files have balanced blocks and each directive in the block the node h
 			["", "events", "http", SERVER, `${HOME} > limit_except GET`, HOME, `${REST} > limit_except POST`, REST],
 		);
 		assert.deepEqual(at(directives, "", "pid"), [`/run/${CODING_GATEWAY_FRONTS[front]}/nginx.pid`]);
+		assert.deepEqual(at(directives, "events", "worker_connections"), ["2048"]);
 		assert.deepEqual(at(directives, SERVER, "ssl_protocols"), ["TLSv1.3"]);
 		assert.deepEqual(at(directives, SERVER, "ssl_session_cache"), ["off"]);
 		assert.deepEqual(at(directives, SERVER, "ssl_certificate"), [
