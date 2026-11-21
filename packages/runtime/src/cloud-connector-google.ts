@@ -385,22 +385,26 @@ export function createGmailConnectorAdapters(options: {
 				}
 				const fetched = new Array<JsonValue>(ids.length);
 				if (ids.length > 0) {
-					const scope = new AbortController();
-					const onAbort = () => scope.abort(context.signal.reason);
-					if (context.signal.aborted) onAbort();
-					else context.signal.addEventListener("abort", onAbort, { once: true });
-					const scopedContext: ConnectorOperationContext = { ...context, signal: scope.signal };
+					const itemScopes = new Map<number, AbortController>();
+					const onAbort = () => {
+						for (const itemScope of itemScopes.values()) itemScope.abort(context.signal.reason);
+					};
+					if (context.signal.aborted) context.signal.throwIfAborted();
+					context.signal.addEventListener("abort", onAbort, { once: true });
 					let nextIndex = 0;
+					let failedIndex = Number.POSITIVE_INFINITY;
 					let firstError: unknown;
-					let failed = false;
 					try {
 						const workers = Math.min(GMAIL_METADATA_CONCURRENCY, ids.length);
 						await Promise.all(
 							Array.from({ length: workers }, async () => {
-								while (!failed && !scope.signal.aborted) {
+								while (!context.signal.aborted) {
 									const index = nextIndex;
 									nextIndex += 1;
-									if (index >= ids.length) return;
+									if (index >= ids.length || index >= failedIndex) return;
+									const itemScope = new AbortController();
+									itemScopes.set(index, itemScope);
+									const scopedContext: ConnectorOperationContext = { ...context, signal: itemScope.signal };
 									try {
 										const message = jsonRecord(
 											(
@@ -414,12 +418,16 @@ export function createGmailConnectorAdapters(options: {
 										);
 										fetched[index] = messageSummary(message);
 									} catch (error) {
-										if (!failed) {
-											failed = true;
+										if (index < failedIndex && !itemScope.signal.aborted) {
+											failedIndex = index;
 											firstError = error;
-											scope.abort();
+											for (const [otherIndex, otherScope] of itemScopes) {
+												if (otherIndex > index) otherScope.abort();
+											}
 										}
 										return;
+									} finally {
+										itemScopes.delete(index);
 									}
 								}
 							}),
@@ -427,8 +435,8 @@ export function createGmailConnectorAdapters(options: {
 					} finally {
 						context.signal.removeEventListener("abort", onAbort);
 					}
-					if (failed) throw firstError;
 					context.signal.throwIfAborted();
+					if (failedIndex < Number.POSITIVE_INFINITY) throw firstError;
 				}
 				const fitted = fitItems(fetched, LIST_BYTES);
 				const results = fitted.items;

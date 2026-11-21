@@ -571,12 +571,28 @@ it("clips by JSON bytes at a code point boundary and turns an oversized result i
 	});
 });
 
-it("clips control characters, escapes, lone surrogates, and multi-byte UTF-8 matching jsonTextBytes", () => {
+it("clips control characters, escapes, lone surrogates, and multi-byte UTF-8 identically to the reference algorithm", () => {
+	const referenceClip = (value: string, maximumCharacters: number, maximumBytes: number) => {
+		const jsonTextBytes = (text: string) => Buffer.byteLength(JSON.stringify(text)) - 2;
+		const characters = [...value];
+		if (characters.length <= maximumCharacters && jsonTextBytes(value) <= maximumBytes) {
+			return { text: value, truncated: false };
+		}
+		const budget = maximumBytes - jsonTextBytes("…");
+		let text = "";
+		for (const character of characters.slice(0, maximumCharacters)) {
+			const next = text + character;
+			if (jsonTextBytes(next) > budget) break;
+			text = next;
+		}
+		return { text: `${text}…`, truncated: true };
+	};
 	const samples = [
 		"",
 		"plain ascii",
 		'quote"slash\\back\bform\fnew\nret\rtab\t',
 		"\x00\x01\x07\x0b\x0e\x1f",
+		"\x7f\u2028\u2029",
 		"café naïve æøå",
 		"中文日本語한국어",
 		"😀🚀🧪🎉",
@@ -585,24 +601,14 @@ it("clips control characters, escapes, lone surrogates, and multi-byte UTF-8 mat
 	];
 	for (const sample of samples) {
 		for (const maxChars of [0, 1, 2, 5, 10, 50]) {
-			for (const maxBytes of [Number.POSITIVE_INFINITY, 3, 4, 6, 8, 12, 20, 64]) {
-				const out = clipText(sample, maxChars, maxBytes);
-				const jsonBytes = Buffer.byteLength(JSON.stringify(out.text)) - 2;
-				if (!out.truncated) {
-					expect(out.text).toBe(sample);
-					expect(jsonBytes).toBeLessThanOrEqual(maxBytes);
-					expect([...out.text].length).toBeLessThanOrEqual(maxChars);
-				} else {
-					expect(out.text.endsWith("…")).toBe(true);
-					if (maxBytes >= 3) expect(jsonBytes).toBeLessThanOrEqual(maxBytes);
-					expect([...out.text].length).toBeLessThanOrEqual(maxChars + 1);
-				}
+			for (const maxBytes of [Number.POSITIVE_INFINITY, 0, 1, 2, 3, 4, 6, 8, 12, 20, 64]) {
+				expect(clipText(sample, maxChars, maxBytes)).toEqual(referenceClip(sample, maxChars, maxBytes));
 			}
 		}
 	}
 });
 
-it("fetches Gmail search_messages metadata with bounded concurrency in order and aborts siblings on error", async () => {
+it("fetches Gmail search_messages metadata with bounded concurrency in order, preserves earliest error by index, and aborts higher-index siblings", async () => {
 	let inFlight = 0;
 	let peak = 0;
 	const ids = Array.from({ length: 8 }, (_, index) => `m${index + 1}`);
@@ -628,31 +634,39 @@ it("fetches Gmail search_messages metadata with bounded concurrency in order and
 	expect(peak).toBeGreaterThan(1);
 	expect(peak).toBeLessThanOrEqual(5);
 
-	const siblingAborted: boolean[] = [];
+	const siblingAborted: string[] = [];
 	const failRoutes: Record<string, (url: URL, init?: RequestInit) => Response | Promise<Response>> = {
 		[`GET ${GMAIL}/gmail/v1/users/me/messages`]: () =>
-			Response.json({ messages: [{ id: "m1" }, { id: "m2" }, { id: "m3" }], resultSizeEstimate: 3 }),
-		[`GET ${GMAIL}/gmail/v1/users/me/messages/m1`]: () =>
-			Response.json({ error: { message: "gone" } }, { status: 404 }),
+			Response.json({
+				messages: [{ id: "m1" }, { id: "m2" }, { id: "m3" }, { id: "m4" }],
+				resultSizeEstimate: 4,
+			}),
+		[`GET ${GMAIL}/gmail/v1/users/me/messages/m1`]: async () => {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+			return Response.json({ error: { message: "unauthorized" } }, { status: 401 });
+		},
 		[`GET ${GMAIL}/gmail/v1/users/me/messages/m2`]: (_url, init) =>
 			new Promise((_resolve, reject) => {
 				init?.signal?.addEventListener("abort", () => {
-					siblingAborted.push(true);
+					siblingAborted.push("m2");
 					reject(init.signal?.reason ?? new Error("aborted"));
 				});
 			}),
-		[`GET ${GMAIL}/gmail/v1/users/me/messages/m3`]: (_url, init) =>
+		[`GET ${GMAIL}/gmail/v1/users/me/messages/m3`]: () =>
+			Response.json({ error: { message: "gone" } }, { status: 404 }),
+		[`GET ${GMAIL}/gmail/v1/users/me/messages/m4`]: (_url, init) =>
 			new Promise((_resolve, reject) => {
 				init?.signal?.addEventListener("abort", () => {
-					siblingAborted.push(true);
+					siblingAborted.push("m4");
 					reject(init.signal?.reason ?? new Error("aborted"));
 				});
 			}),
 	};
 	const failing = google(failRoutes);
 	const failed = await gmail("search_messages", failing.fetchImplementation).execute(
-		input({ query: "test", limit: 3 }, GMAIL),
+		input({ query: "test", limit: 4 }, GMAIL),
 	);
-	expect(failed).toMatchObject({ status: "failed", reason: "not_found" });
-	expect(siblingAborted.length).toBeGreaterThanOrEqual(1);
+	expect(failed).toMatchObject({ status: "failed", reason: "authorization_required" });
+	expect(siblingAborted).toContain("m4");
+	expect(siblingAborted).toContain("m2");
 });
