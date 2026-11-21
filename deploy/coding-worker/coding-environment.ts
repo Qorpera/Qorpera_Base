@@ -1,4 +1,5 @@
 import { readBoundedCloudResponse } from "../../packages/cloud-client/src/cloud-request.ts";
+import { withTimeoutSignal } from "./timeout-signal.ts";
 import { CODING_GUEST } from "../../packages/contracts/src/cloud-coding-guest.ts";
 import type {
 	CodingEnvironmentAnswer,
@@ -116,48 +117,48 @@ export class BrokerCodingEnvironment implements CodingEnvironmentSource {
 	}
 
 	async #request(scope: CodingEnvironmentScope, signal: AbortSignal): Promise<CodingEnvironmentAnswer> {
-		const checked = AbortSignal.any([signal, AbortSignal.timeout(15000)]);
 		let bytes: Uint8Array | undefined;
 		try {
-			const response = await this.#fetch(
-				`${this.#origin}/v1/coding-environment?company=${scope.companyId.toLowerCase()}`,
-				{
-					method: "POST",
-					redirect: "error",
-					signal: checked,
-					headers: { authorization: `Bearer ${this.#executorToken}`, "content-type": "application/json" },
-					body: JSON.stringify({
-						schema: "qorpera.coding-environment-request/v1",
-						workerId: scope.workerId.toLowerCase(),
-						leaseToken: scope.leaseToken.toLowerCase(),
-						executorOwner: this.#owner,
-					}),
-				},
-			);
-			if (response.status !== 200) {
-				await response.body?.cancel().catch(() => undefined);
-				throw new Error("refused");
-			}
-			bytes = await readBoundedCloudResponse(response, MAX_RESPONSE_BYTES, checked);
-			const value = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(bytes)) as unknown;
-			// A broker before 5j-4 answers no mask: then there is none.
-			if (
-				!value ||
-				typeof value !== "object" ||
-				Array.isArray(value) ||
-				!["environment,schema", "environment,mask,schema"].includes(Object.keys(value).sort().join())
-			)
-				throw new Error("invalid");
-			const answer = value as { schema: unknown; environment: unknown; mask?: unknown };
-			const environment = answer.environment;
-			const mask = Object.hasOwn(answer, "mask") ? answer.mask : [];
-			if (
-				answer.schema !== "qorpera.coding-environment/v1" ||
-				!environment ||
-				typeof environment !== "object" ||
-				Array.isArray(environment) ||
-				Buffer.byteLength(JSON.stringify(environment)) > MAX_ENVIRONMENT_BYTES ||
-				!Object.entries(environment).every(
+			return await withTimeoutSignal(signal, 15000, async (checked) => {
+				const response = await this.#fetch(
+					`${this.#origin}/v1/coding-environment?company=${scope.companyId.toLowerCase()}`,
+					{
+						method: "POST",
+						redirect: "error",
+						signal: checked,
+						headers: { authorization: `Bearer ${this.#executorToken}`, "content-type": "application/json" },
+						body: JSON.stringify({
+							schema: "qorpera.coding-environment-request/v1",
+							workerId: scope.workerId.toLowerCase(),
+							leaseToken: scope.leaseToken.toLowerCase(),
+							executorOwner: this.#owner,
+						}),
+					},
+				);
+				if (response.status !== 200) {
+					await response.body?.cancel().catch(() => undefined);
+					throw new Error("refused");
+				}
+				bytes = await readBoundedCloudResponse(response, MAX_RESPONSE_BYTES, checked);
+				const value = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(bytes)) as unknown;
+				// A broker before 5j-4 answers no mask: then there is none.
+				if (
+					!value ||
+					typeof value !== "object" ||
+					Array.isArray(value) ||
+					!["environment,schema", "environment,mask,schema"].includes(Object.keys(value).sort().join())
+				)
+					throw new Error("invalid");
+				const answer = value as { schema: unknown; environment: unknown; mask?: unknown };
+				const environment = answer.environment;
+				const mask = Object.hasOwn(answer, "mask") ? answer.mask : [];
+				if (
+					answer.schema !== "qorpera.coding-environment/v1" ||
+					!environment ||
+					typeof environment !== "object" ||
+					Array.isArray(environment) ||
+					Buffer.byteLength(JSON.stringify(environment)) > MAX_ENVIRONMENT_BYTES ||
+					!Object.entries(environment).every(
 					([name, setting]) =>
 						ENVIRONMENT_NAME.test(name) &&
 						!RESERVED_PREFIX.test(name) &&
@@ -169,9 +170,10 @@ export class BrokerCodingEnvironment implements CodingEnvironmentSource {
 				!mask.every(vaultValue)
 			)
 				throw new Error("invalid");
-			return Object.freeze({
-				environment: Object.freeze({ ...(environment as Record<string, string>) }),
-				mask: Object.freeze([...(mask as string[])]),
+				return Object.freeze({
+					environment: Object.freeze({ ...(environment as Record<string, string>) }),
+					mask: Object.freeze([...(mask as string[])]),
+				});
 			});
 		} catch {
 			throw new Error("CODING_ENVIRONMENT_UNAVAILABLE");

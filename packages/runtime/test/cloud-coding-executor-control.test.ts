@@ -1,3 +1,4 @@
+import { getEventListeners } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { CodingExecutorHttpControl } from "../../../deploy/coding-worker/control.ts";
 import { CodingControlBusy, CodingControlRefused } from "../../runner-orchestrator/src/coding-executor.ts";
@@ -466,5 +467,24 @@ describe("dedicated coding executor control", () => {
 					serviceRoleKey: "private",
 				}),
 		).toThrow("CONFIG_INVALID");
+	});
+
+	it("detaches parent AbortSignal listeners after repeated RPCs and error reads", async () => {
+		let count = 0;
+		const control = new CodingExecutorHttpControl({
+			supabaseUrl: "https://project.supabase.co",
+			serviceRoleKey: "private",
+			fetch: async () =>
+				++count % 2 === 0
+					? new Response(JSON.stringify({ code: "55P03", details: null, hint: null, message: "busy" }), {
+							status: 500,
+						})
+					: new Response("null", { status: 200 }),
+		});
+		const parent = new AbortController();
+		for (let i = 0; i < 200; i++) {
+			await control.call("qorpera_claim_coding_session", { p_owner: "node" }, parent.signal).catch(() => undefined);
+		}
+		expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
 	});
 });
