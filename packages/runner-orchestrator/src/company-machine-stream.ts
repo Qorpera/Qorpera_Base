@@ -1,7 +1,4 @@
-import { promisify } from "node:util";
-import { crc32, deflate } from "node:zlib";
-
-const deflateAsync = promisify(deflate);
+import { crc32, deflateSync } from "node:zlib";
 
 /**
  * A desktop's live picture (20260930745000; POINTER-PROGRESS.md 05:15Z, step 2): the machine's own VNC server (Xvnc,
@@ -671,7 +668,7 @@ const PNG_IEND_CHUNK = (() => {
 	buf.writeUInt32BE(crc32(buf.subarray(4, 8)), 8);
 	return buf;
 })();
-// WHY: level 3 async deflate on libuv avoids blocking the stream event loop across 28-band Xvnc frames.
+// WHY: stay single-threaded under CPUQuota=100% (avoiding libuv CFS throttling) while yielding before level-3 deflateSync (~0.1-1.9 ms up to MAX_AREA_PIXELS).
 const PNG_DEFLATE_LEVEL = 3;
 
 function writeChunk(target: Buffer, offset: number, type: string, data: Buffer): number {
@@ -753,7 +750,8 @@ export async function encodePng(
 	ihdr.writeUInt32BE(width, 0);
 	ihdr.writeUInt32BE(height, 4);
 	ihdr.set([8, alpha ? 6 : 2, 0, 0, 0], 8);
-	const compressed = await deflateAsync(raw, { level: PNG_DEFLATE_LEVEL });
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	const compressed = deflateSync(raw, { level: PNG_DEFLATE_LEVEL });
 	const out = Buffer.allocUnsafe(
 		PNG_SIGNATURE.byteLength +
 			PNG_CHUNK_OVERHEAD +

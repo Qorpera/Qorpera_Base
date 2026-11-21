@@ -332,7 +332,7 @@ Code no production path called, deleted with the tests that alone kept it alive 
 - The coding executor's `coding-folder-mount` log line says whether the machine's package caches were ready at that mount (`packageCaches`, true or false), so a live proof reads it from the executor's log instead of looking inside a machine (own code storage, step 6, part W; no migration). The folder model's `onMount` takes `packageCaches`, what the guest agent said in its mount answer; `deploy/coding-worker/executor.ts` logs the mount whole, so its line has it.
 
 ### Changed
-- Desktop stream PNG encoding (`encodePng` in `company-machine-stream.ts`) fuses BGRA channel reordering and PNG Sub row filtering into one pass, assembles IHDR/IDAT/IEND directly into a single buffer, and runs level-3 `zlib.deflate` asynchronously on libuv so sub-turn `1600x36` Xvnc bands yield the stream event loop instead of stalling it.
+- Desktop stream PNG encoding (`encodePng` in `company-machine-stream.ts`) fuses BGRA channel reordering and PNG Sub row filtering into one pass, yields the event loop via `setImmediate` before single-threaded level-3 `zlib.deflateSync` (staying strictly single-threaded under `CPUQuota=100%` without libuv CFS throttling while preventing sub-turn `1600x36` Xvnc bands from chaining in one turn), and assembles IHDR/IDAT/IEND directly into a single buffer.
 - A site's name follows the name rule D20 (own code storage, step 5, release 5.1, part X1): no two hyphens in a row,
   not ending `-preview`, not holding `qorpera`, and none of 118 reserved names, `CODE_SITE_RESERVED_NAMES`, which is
   `qorpera_site_reserved_names()`'s text byte for byte (a test pins its SHA-256 and compares it with the migration). A

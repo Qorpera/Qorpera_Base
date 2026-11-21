@@ -1236,22 +1236,20 @@ describe("a desktop's live picture (20260930745000)", () => {
 		expect([...decoded.data.subarray(-3)]).toEqual([10, 20, 30]);
 	});
 
-	it("deflates Xvnc bands asynchronously so a sub-turn 1600x36 band yields to the event loop", async () => {
+	it("yields the event loop before deflating a sub-turn 1600x36 Xvnc band so 28-band frames cannot chain in one turn", async () => {
 		const band = Buffer.alloc(1600 * 36 * 4);
 		for (let i = 0; i < band.byteLength; i++) band[i] = (i * 73 + (i >> 3)) & 0xff;
-		const order: string[] = [];
+		let settled = false;
 		const pending = encodePng(1600, 36, band).then((png) => {
-			order.push("png");
+			settled = true;
 			return png;
 		});
-		await new Promise<void>((resolve) => {
-			setImmediate(() => {
-				order.push("tick");
-				resolve();
-			});
-		});
+		for (let i = 0; i < 3; i++) {
+			await new Promise<void>((resolve) => process.nextTick(resolve));
+		}
+		expect(settled).toBe(false);
 		const encoded = await pending;
-		expect(order).toEqual(["tick", "png"]);
+		expect(settled).toBe(true);
 		const sample = decodePng(encoded);
 		expect([sample.width, sample.height, sample.channels]).toEqual([1600, 36, 3]);
 		expect([...sample.data.subarray(0, 3)]).toEqual([band[2], band[1], band[0]]);
