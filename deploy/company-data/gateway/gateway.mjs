@@ -125,6 +125,7 @@ export const LIMITS = Object.freeze({
 const NEAR_SHARE = 0.8;
 const COUNT_SMALL_PAGES = 64;
 const COUNT_BATCH_SIZE = 32;
+const COUNT_BATCH_MAX_MS = 250;
 const DESCRIBE_CONCURRENCY = 4;
 const ROW_TEXT =
 	"; set local intervalstyle = 'postgres'; set local extra_float_digits = 1; set local bytea_output = 'hex'; set local lc_monetary = 'C'";
@@ -2029,13 +2030,6 @@ export class Gateway {
 		return Number(size.rows[0].bytes);
 	}
 
-	/** A database folder's applied steps (with their hashes), tables and columns, and the company database's size.
-	 * A table's `rows` are counted now, as the folder's read role `n`, while the time until `until` lasts (`#count`):
-	 * `rows` is never a guess. One that was not counted carries PostgreSQL's own estimate as `rowsAbout` when it has
-	 * one, under a name of its own so that nothing that passes `rows` on can pass a guess for a count (an agent's
-	 * shorter describe keeps a table's name, `rows` and columns). It carries neither when PostgreSQL has none: the
-	 * estimate is unset until a table is first analysed, and autovacuum leaves a table of a few rows alone, so on its
-	 * own it said 0 for a small table that held rows. */
 	async #stored(database, name, n, until) {
 		const pool = this.#pool(database, "qorpera_data_keeper");
 		const [steps, columns] = await Promise.all([
@@ -2081,13 +2075,6 @@ export class Gateway {
 		};
 	}
 
-	/** Counts the rows of a database folder's `tables` (`counted`), each as a question of its own: the folder's read
-	 * role, a read-only transaction, a question's time at most. Tables and materialized views go first, the ones
-	 * PostgreSQL holds as smallest before the others, then partitioned tables, then views, whose count runs their own
-	 * statement. Every count is over by `until`, its wait for one of the read role's connections included, and
-	 * nothing is started after it. A count that ran out of time, found no connection free or was refused leaves its
-	 * table uncounted: a describe is never refused over a count. The table is named with its schema: a name alone
-	 * would find a catalog relation of the same name first (`pg_tables`), whatever the search path. */
 	async #count(database, name, n, tables, until) {
 		if (tables.length === 0 || until - Date.now() < 1) return;
 		const rank = (table) => (table.kind === "v" ? 2 : table.kind === "p" ? 1 : 0);
@@ -2110,7 +2097,7 @@ export class Gateway {
 				const left = until - Date.now();
 				if (left < 1) return false;
 				const limit = Math.max(1, Math.floor(Math.min(this.#limits.questionMs, left)));
-				await client.query(`savepoint qorpera_count; set local statement_timeout = ${limit}`);
+				await client.query(`savepoint qorpera_count; set local statement_timeout = ${limit}; set local lock_timeout = 0`);
 				try {
 					const answer = await client.query({
 						text: `select count(*) from ${quoted(name)}.${quoted(table.name)}`,
@@ -2148,9 +2135,10 @@ export class Gateway {
 					}
 					const left = until - Date.now();
 					if (left < 1) break;
-					const limit = Math.max(1, Math.floor(Math.min(this.#limits.questionMs, left)));
-					// WHY: Batch small base tables in one savepoint-guarded query, falling back per table on any refusal or timeout.
-					await client.query(`savepoint qorpera_count; set local statement_timeout = ${limit}`);
+					const batchLimit = Math.max(1, Math.floor(Math.min(this.#limits.questionMs, left / 2, COUNT_BATCH_MAX_MS)));
+					await client.query(
+						`savepoint qorpera_count; set local statement_timeout = ${batchLimit}; set local lock_timeout = ${batchLimit}`,
+					);
 					try {
 						const answer = await client.query({
 							text: `select ${batch.map((table) => `(select count(*) from ${quoted(name)}.${quoted(table.name)})`).join(", ")}`,

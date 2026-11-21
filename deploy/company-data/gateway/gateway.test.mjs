@@ -3474,5 +3474,46 @@ create trigger nap before update on slowed for each row execute function nap();
 				assert.deepEqual(byName.v_slow, [undefined, undefined]);
 			}
 		});
+		const companyDb = companyDatabase(ENV_A);
+		await asAdmin(companyDb, Array.from({ length: 12 }, (_, i) => `analyze alpha.t_${String(i).padStart(2, "0")}`).join("; "));
+		await withGateway({ limits: { ...LIMITS_HERE, questionMs: 2_000, countMs: 1_500 } }, async () => {
+			const locker = connect(companyDb);
+			await locker.connect();
+			try {
+				await locker.query("begin");
+				await locker.query("lock table alpha.t_06 in access exclusive mode");
+				const described = await ask(viewer, "describe", {});
+				assert.equal(described.status, 200, JSON.stringify(described.value));
+				const alpha = described.value.databases.find((entry) => entry.database === "alpha");
+				const alphaRows = Object.fromEntries(alpha.tables.map((t) => [t.name, t.rows]));
+				for (let i = 0; i < 6; i++) {
+					assert.equal(alphaRows[`t_${String(i).padStart(2, "0")}`], i + 1);
+				}
+				assert.equal(alphaRows.t_06, undefined);
+				for (const dbName of ["beta", "gamma"]) {
+					const db = described.value.databases.find((entry) => entry.database === dbName);
+					const byName = Object.fromEntries(db.tables.map((t) => [t.name, t.rows]));
+					for (let i = 0; i < 12; i++) assert.equal(byName[`t_${String(i).padStart(2, "0")}`], i + 1);
+				}
+			} finally {
+				await locker.query("rollback").catch(() => undefined);
+				await locker.end().catch(() => undefined);
+			}
+			const [{ n }] = await asAdmin(companyDb, "select n from qorpera_data.databases where name = 'alpha'");
+			const reader = `${companyDb}_r${n}`;
+			await asAdmin(companyDb, `revoke select on alpha.t_00 from ${reader}`);
+			try {
+				const described = await ask(viewer, "describe", {});
+				assert.equal(described.status, 200, JSON.stringify(described.value));
+				const alpha = described.value.databases.find((entry) => entry.database === "alpha");
+				const alphaRows = Object.fromEntries(alpha.tables.map((t) => [t.name, t.rows]));
+				assert.equal(alphaRows.t_00, undefined);
+				for (let i = 1; i < 12; i++) {
+					assert.equal(alphaRows[`t_${String(i).padStart(2, "0")}`], i + 1);
+				}
+			} finally {
+				await asAdmin(companyDb, `grant select on alpha.t_00 to ${reader}`);
+			}
+		});
 	});
 });
