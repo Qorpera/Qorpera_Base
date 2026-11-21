@@ -246,7 +246,8 @@ export interface LxdOperationReference {
 export type LxdOperationState = "pending" | "succeeded" | "failed";
 
 export interface LxdExecStreamRequest {
-	/** Run as root in `/`, with LXD's default environment. */
+	/** WHY: Defaults to root (0:0) in `/` with LXD's default environment; optional user/group (0-65535)
+	 * allow unprivileged stream exec. */
 	readonly command: readonly string[];
 	readonly user?: number;
 	readonly group?: number;
