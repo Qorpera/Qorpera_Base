@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { getEventListeners } from "node:events";
 import { MODEL_LOGIN_FIELD } from "@qorpera/runtime/cloud-model-login-vault";
 import { CloudModelLoginUsage, type ModelLoginUsageAuthority } from "@qorpera/runtime/cloud-model-login-vault-usage";
 import { CloudSecretBroker, type CloudSecretBrokerAuthority } from "@qorpera/runtime/cloud-secret-broker";
@@ -325,4 +326,16 @@ it("runs the daily usage check's refresh under a capability of its own, and does
 		fetch: w.usageFetch as typeof fetch,
 	});
 	expect(await without.recheck(signal())).toBe("none");
+});
+
+it("detaches caller AbortSignal listeners after refresh completes", async () => {
+	const w = world();
+	const usage = new CloudModelLoginUsage({
+		authority: w.authority,
+		keyring: w.keyring,
+		fetch: w.usageFetch as typeof fetch,
+	});
+	const caller = new AbortController();
+	await expect(usage.refresh(w.request, caller.signal)).resolves.toMatchObject({ status: "completed" });
+	expect(getEventListeners(caller.signal, "abort")).toHaveLength(0);
 });
