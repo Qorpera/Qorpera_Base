@@ -1557,14 +1557,19 @@ describe("SupabaseFolderCore paging and oversized fallback", () => {
 				if (mode === "57014") {
 					holdTimeout?.();
 					await timeoutGate;
-					return { status: 500, body: Buffer.from(JSON.stringify({ code: "57014", message: "statement timeout" })) };
+					return {
+						status: 500,
+						body: Buffer.from(JSON.stringify({ code: "57014", message: "statement timeout" })),
+					};
 				}
 				if (mode !== "ok") {
 					return { status: 500, body: Buffer.from(JSON.stringify({ code: mode, message: "lock conflict" })) };
 				}
 				return {
 					status: 200,
-					body: Buffer.from(JSON.stringify({ schema: "qorpera.folder-list/v1", asOfSeq: 7, entries: [], next: null })),
+					body: Buffer.from(
+						JSON.stringify({ schema: "qorpera.folder-list/v1", asOfSeq: 7, entries: [], next: null }),
+					),
 				};
 			},
 		});
@@ -1596,7 +1601,12 @@ describe("SupabaseFolderCore paging and oversized fallback", () => {
 		const content = Buffer.from("hello-unpooled-profile-test");
 		const file = await storeFile(root, "note.txt", content, 1, content.byteLength);
 		const reader = new NasObjects({ root, cacheBytes: 1024 * 1024 });
-		const direct = await reader.readChunks(PROFILE, [{ sha256: file.fileSha256!, bytes: content.byteLength }], 0, content.byteLength);
+		const direct = await reader.readChunks(
+			PROFILE,
+			[{ sha256: file.fileSha256!, bytes: content.byteLength }],
+			0,
+			content.byteLength,
+		);
 		expect(direct.equals(content)).toBe(true);
 		expect(direct.buffer.byteLength).toBe(content.byteLength);
 

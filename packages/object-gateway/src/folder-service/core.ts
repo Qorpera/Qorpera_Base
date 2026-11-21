@@ -1,10 +1,5 @@
 import { isUuid, parseRecord, SHA256_HEX_PATTERN } from "@qorpera/contracts";
-import {
-	ObjectDependency,
-	ObjectDependencyError,
-	ObjectLockConflict,
-	ObjectStatementTimeout,
-} from "../dependency.ts";
+import { ObjectDependency, ObjectDependencyError, ObjectLockConflict, ObjectStatementTimeout } from "../dependency.ts";
 import { supabaseRequestHeaders } from "../supabase-headers.ts";
 import { type BufferedResponse, nodeRequest, ResponseTooLargeError, type Transport } from "./https-request.ts";
 import { validTarget } from "./protocol.ts";
@@ -1144,7 +1139,8 @@ export class SupabaseFolderCore implements FolderCore {
 				)
 					throw new CoreRefusal("invalid", said);
 				// WHY: One company's lock conflict or statement timeout must not trip the node-wide dependency breaker.
-				if (error.code === "40001" || error.code === "40P01" || error.code === "55P03") throw new ObjectLockConflict();
+				if (error.code === "40001" || error.code === "40P01" || error.code === "55P03")
+					throw new ObjectLockConflict();
 				if (error.code === "57014") throw new ObjectStatementTimeout();
 				throw new ObjectDependencyError(response.status >= 500 || response.status === 0 ? 503 : response.status);
 			}
