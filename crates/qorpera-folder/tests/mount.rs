@@ -1173,6 +1173,35 @@ fn a_changed_gitignore_decides_only_new_names_and_nothing_published_renames_into
 }
 
 #[test]
+fn a_changed_info_exclude_decides_new_names_even_on_same_length_rewrite() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	let at = "code/o/n/worktrees/w";
+	node.put(&format!("{at}/README"), "readme", false);
+	node.put("code/o/n/repo.git/info/exclude", "*.sec\n", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	let w = company.join(at);
+	let exclude = company.join("code/o/n/repo.git/info/exclude");
+	std::fs::write(w.join("a.sec"), "cached").unwrap();
+	std::fs::write(w.join("a.alt"), "published").unwrap();
+	assert!(!node.exists(&format!("{at}/a.sec")) && node.exists(&format!("{at}/a.alt")));
+	std::fs::write(&exclude, "*.alt\n").unwrap();
+	std::fs::write(w.join("b.alt"), "cached").unwrap();
+	std::fs::write(w.join("b.sec"), "published").unwrap();
+	assert!(!node.exists(&format!("{at}/b.alt")) && node.exists(&format!("{at}/b.sec")));
+	std::fs::write(&exclude, "*.longext\n").unwrap();
+	std::fs::write(w.join("c.longext"), "cached").unwrap();
+	std::fs::write(w.join("c.alt"), "published").unwrap();
+	assert!(!node.exists(&format!("{at}/c.longext")) && node.exists(&format!("{at}/c.alt")));
+	assert!(!node.exists(&format!("{at}/a.sec")) && node.content(&format!("{at}/a.alt")).unwrap() == b"published");
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
 fn what_git_comes_to_track_in_the_caches_moves_into_the_folder_and_the_rest_stays() {
 	if !wanted() {
 		return;
