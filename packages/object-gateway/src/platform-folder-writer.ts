@@ -189,7 +189,7 @@ export class PlatformFolderWriter {
 		bytes: Uint8Array,
 		kind: { readonly mediaType: string; readonly executable: boolean },
 		signal: AbortSignal,
-		options?: { readonly profileId?: string },
+		options?: { readonly profileId?: string; readonly objectConcurrency?: number },
 	): Promise<PlatformFileReference> {
 		if (bytes.byteLength > MAX_CHUNKS * CHUNK_BYTES) platformFolderProblem("file_too_large");
 		const objects = new Map<string, Uint8Array>();
@@ -243,9 +243,13 @@ export class PlatformFolderWriter {
 				knownProfileId = await this.#uploadProfile(environmentId, intentId, first, firstObject.byteLength, signal);
 			}
 			const profileId = knownProfileId;
+			const objectConcurrency =
+				options?.objectConcurrency !== undefined && Number.isSafeInteger(options.objectConcurrency)
+					? Math.max(1, Math.min(PLATFORM_STAGE_CONCURRENCY, options.objectConcurrency))
+					: PLATFORM_STAGE_CONCURRENCY;
 			await mapBounded(
 				list,
-				PLATFORM_STAGE_CONCURRENCY,
+				objectConcurrency,
 				async (hash) => {
 					const object = objects.get(hash) as Uint8Array;
 					const authorize = () => this.#uploadProfile(environmentId, intentId, hash, object.byteLength, signal);

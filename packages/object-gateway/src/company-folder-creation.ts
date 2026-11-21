@@ -270,6 +270,7 @@ export class CompanyFolderCreator {
 			return "seed_invalid";
 		}
 		const fileEntries = tree.filter((entry) => entry.kind === "file");
+		const objectConcurrency = fileEntries.length > 1 ? 1 : PLATFORM_STAGE_CONCURRENCY;
 		const staged = await mapBounded(
 			fileEntries,
 			PLATFORM_STAGE_CONCURRENCY,
@@ -279,7 +280,7 @@ export class CompanyFolderCreator {
 					new TextEncoder().encode(entry.text ?? ""),
 					{ mediaType: mediaType(entry.path), executable: false },
 					signal,
-					{ profileId: claim.profileId },
+					{ profileId: claim.profileId, objectConcurrency },
 				),
 			signal,
 		);

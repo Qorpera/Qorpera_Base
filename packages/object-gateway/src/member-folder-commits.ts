@@ -424,13 +424,13 @@ export async function serveMemberFolderCommit(
 			actor: member.actor,
 			...(options.readFallback ? { readFallback: options.readFallback } : {}),
 		});
-		const stage = (filePath: string, fileText: string): Promise<PlatformFileReference> =>
+		const stage = (filePath: string, fileText: string, objectConcurrency: number): Promise<PlatformFileReference> =>
 			folder.stage(
 				environmentId,
 				new TextEncoder().encode(fileText),
 				{ mediaType: mediaType(filePath), executable: false },
 				signal,
-				{ profileId: member.profileId },
+				{ profileId: member.profileId, objectConcurrency },
 			);
 		// A state file named by its reference is read back for its parse before any byte is staged, as the member may
 		// read it: bytes it may not read, or that are not the reference's, refuse the change set.
@@ -464,10 +464,11 @@ export async function serveMemberFolderCommit(
 				if (entries.length) structuredByUnit.set(item, entries);
 			}
 		}
+		const objectConcurrency = toStage.length > 1 ? 1 : PLATFORM_STAGE_CONCURRENCY;
 		const stagedFiles = await mapBounded(
 			toStage,
 			PLATFORM_STAGE_CONCURRENCY,
-			(task) => stage(task.path, task.text),
+			(task) => stage(task.path, task.text, objectConcurrency),
 			signal,
 		);
 		let stageCursor = 0;
