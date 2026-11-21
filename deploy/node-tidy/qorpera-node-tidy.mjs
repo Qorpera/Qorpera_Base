@@ -67,14 +67,17 @@ export function planImages({ images, instances, referenced, pins, held = [], now
 	};
 }
 
+/** Image transfer files older than the configured age, excluding any basename held by holdDir. */
 export function planStaging(files, now, maxAgeHours, heldStaging = new Set()) {
 	return files.filter((file) => !heldStaging.has(basename(file.path)) && now - file.mtimeMs >= maxAgeHours * HOUR_MS);
 }
 
-export async function readHoldDir(holdDir) {
+export async function readHoldDir(holdDir, options = {}) {
 	const held = [];
 	const stagingFiles = new Set();
 	if (!holdDir) return { held, stagingFiles, refusal: null };
+	const expectedUid = options.expectedUid ?? process.getuid?.() ?? 0;
+	const listDir = options.readdir ?? readdir;
 	let dirInfo;
 	try {
 		dirInfo = await lstat(holdDir);
@@ -83,9 +86,11 @@ export async function readHoldDir(holdDir) {
 		return { held: [], stagingFiles: new Set(), refusal: `holdDir could not be read: ${error.code ?? error.message}` };
 	}
 	if (!dirInfo.isDirectory()) return { held: [], stagingFiles: new Set(), refusal: "holdDir is not a directory" };
+	if (dirInfo.uid !== expectedUid || (dirInfo.mode & 0o022) !== 0)
+		return { held: [], stagingFiles: new Set(), refusal: "holdDir ownership or permissions are unsafe" };
 	let entries;
 	try {
-		entries = (await readdir(holdDir)).sort();
+		entries = (await listDir(holdDir)).sort();
 	} catch (error) {
 		return { held: [], stagingFiles: new Set(), refusal: `holdDir could not be read: ${error.code ?? error.message}` };
 	}
@@ -96,6 +101,7 @@ export async function readHoldDir(holdDir) {
 		try {
 			handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 		} catch (error) {
+			if (error.code === "ENOENT") continue;
 			if (error.code === "ELOOP" || error.code === "EISDIR")
 				return { held: [], stagingFiles: new Set(), refusal: `hold file ${name} is unsafe or oversized` };
 			return {
@@ -107,7 +113,7 @@ export async function readHoldDir(holdDir) {
 		let text;
 		try {
 			const info = await handle.stat();
-			if (!info.isFile() || info.size > MAX_HOLD_FILE_BYTES)
+			if (!info.isFile() || info.uid !== expectedUid || (info.mode & 0o022) !== 0 || info.size > MAX_HOLD_FILE_BYTES)
 				return { held: [], stagingFiles: new Set(), refusal: `hold file ${name} is unsafe or oversized` };
 			const buffer = Buffer.allocUnsafe(MAX_HOLD_FILE_BYTES + 1);
 			let total = 0;
@@ -173,12 +179,21 @@ export function parseConfig(value) {
 		"staging",
 		"stagingMaxAgeHours",
 	];
+	// agentRoot is optional: a node that runs the node agent names its folder (/opt/qorpera-node).
+	// holdDir is optional: a root-owned folder under /etc or /opt holding release-cut image and staging holds.
 	const given = Object.keys(value ?? {}).filter((key) => key !== "agentRoot" && key !== "holdDir");
 	if (!value || typeof value !== "object" || given.sort().join() !== [...keys].sort().join())
 		throw new Error("Node tidy configuration has unexpected fields");
 	if ("agentRoot" in value && !(typeof value.agentRoot === "string" && value.agentRoot.startsWith("/")))
 		throw new Error("Node tidy configuration is invalid");
-	if ("holdDir" in value && !(typeof value.holdDir === "string" && value.holdDir.startsWith("/")))
+	if (
+		"holdDir" in value &&
+		!(
+			typeof value.holdDir === "string" &&
+			/^\/(?:etc|opt)\/.+/.test(value.holdDir) &&
+			!value.holdDir.split("/").some((segment) => segment === "." || segment === "..")
+		)
+	)
 		throw new Error("Node tidy configuration is invalid");
 	const strings = (list) => Array.isArray(list) && list.every((item) => typeof item === "string" && item.startsWith("/"));
 	if (

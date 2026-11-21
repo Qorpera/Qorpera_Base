@@ -24,7 +24,7 @@ An image stays when any of these holds:
   `extraRoots`. Overridden drop-ins are not followed, so the pins of earlier cuts do not count as live.
 - It is an Ubuntu base image.
 - It was uploaded in the last `recentHours` (48). That covers an image a cut is importing.
-- A JSON hold file in optional `holdDir` (schema `qorpera.node-tidy-hold/v1`: `{ schema, fingerprint, reason, stagingFiles? }`) pins its 64-hex `fingerprint` across all projects and keeps any listed `stagingFiles` basenames even past `recentHours` / `stagingMaxAgeHours`. Temporary `.tmp-*` entries in `holdDir` are ignored while being atomically written.
+- A JSON hold file in optional `holdDir` (recommended: `/etc/qorpera-node-tidy.holds.d`, must live under `/etc` or `/opt`, root-owned, not group- or world-writable, e.g. `0755`/`0700` dir and `0644`/`0600` files; schema `qorpera.node-tidy-hold/v1`: `{ schema, fingerprint, reason, stagingFiles? }`) pins its 64-hex `fingerprint` across all projects and keeps any listed `stagingFiles` basenames even past `recentHours` / `stagingMaxAgeHours`. Release lanes or operators write hold files (atomically via `.tmp-*`, which tidy ignores) and must remove them once the cut lands or is abandoned: **holds never expire on their own**, so a forgotten hold keeps a ~1.8 GB image and its transfer tarball until removed.
 
 Image transfer files matching `staging` are removed once they are older than `stagingMaxAgeHours` (6), unless held by `holdDir`.
 
@@ -35,7 +35,7 @@ The tool deletes nothing, not even transfer files, and exits 2 when:
 - no live runtime pin is found;
 - the live pin names no local image;
 - more than `maxDelete` (20) images would go;
-- `holdDir` is configured and exists, but is not a real directory, cannot be read, or contains any non-`.tmp-*` entry that is not a regular file (`O_NOFOLLOW`), exceeds 64 KiB, is not valid JSON, or fails the `qorpera.node-tidy-hold/v1` schema.
+- `holdDir` is configured and exists, but is not a real directory, is not owned by the service user (root) or is group-/world-writable, cannot be read, or contains any non-`.tmp-*` entry that is not a regular file (`O_NOFOLLOW`), is not owned by the service user (root) or is group-/world-writable, exceeds 64 KiB, is not valid JSON, or fails the `qorpera.node-tidy-hold/v1` schema. (A hold file removed between directory listing and open is skipped cleanly.)
 
 A refusal means the node looks unlike what these rules expect, so a person should look.
 
