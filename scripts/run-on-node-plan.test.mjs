@@ -10,6 +10,7 @@ import {
 	beside,
 	describePlan,
 	planChanged,
+	planReleaseCheck,
 	planScript,
 	RUNNER_ORCHESTRATOR_WAITING,
 	RUNTIME_WAITING,
@@ -839,4 +840,87 @@ test("deploy-node runs every Node test file under deploy/ once, then Python's te
 	const step = planChanged(["deploy/node-agent/qorpera-node-launch.py"]).steps.find((candidate) => candidate.name === "deploy-node");
 	assert.ok(step.cores < 1, String(step.cores));
 	assert.match(planScript([step], { cores: 6 }), /\nrest_0\(\) \( export GOMAXPROCS=2; node\(\) .* command node --test --test-concurrency=2 "\$@"/);
+});
+
+test("planReleaseCheck runs the fast enforced release subset when only derived files differ from master and falls back otherwise", () => {
+	const derived = [
+		"scripts/generate-cloud-runtime-bundle.mjs",
+		"packages/runtime/src/cloud-runtime-bundle.generated.ts",
+		"deploy/first-node/native-codex/runtime-bundle-manifest.json",
+		"deploy/first-node/native-codex/guest-package-manifest.json",
+		"supabase/migrations/20260929027099_runtime_bundle_activation_v270.sql",
+		"packages/runtime/CHANGELOG.md",
+	];
+	const fast = planReleaseCheck(
+		derived,
+		[
+			"packages/runtime/src/cloud-native-company-context.ts",
+			"supabase/migrations/20260930822000_thread_run_wakes.sql",
+			"supabase/tests/1311_thread_run_wakes.test.sql",
+			"supabase/tests/1248_deleted.test.sql",
+		],
+		{
+			existingFiles: [
+				"packages/runtime/src/cloud-native-company-context.ts",
+				"supabase/migrations/20260930822000_thread_run_wakes.sql",
+				"supabase/tests/1311_thread_run_wakes.test.sql",
+			],
+		},
+	);
+	assert.equal(fast.derivedOnly, true);
+	assert.deepEqual(
+		fast.steps.map((step) => step.name),
+		["lint", "typecheck", "checks", "scripts", "hosted-db-release", "release-provers"],
+	);
+	assert.ok(
+		fast.steps
+			.find((step) => step.name === "checks")
+			.alone.includes("QORPERA_ENFORCE_RUNTIME_BUNDLE=1 npm run check:runtime-bundle:release-train"),
+	);
+	assert.match(fast.steps.find((step) => step.name === "scripts").commands[0], /^QORPERA_ENFORCE_RUNTIME_BUNDLE=1 /);
+	assert.deepEqual(fast.steps.find((step) => step.name === "hosted-db-release").commands, [
+		"node scripts/test-hosted-db.mjs --only 001_,838_,1311_",
+	]);
+	assert.deepEqual(fast.steps.find((step) => step.name === "release-provers").commands, [
+		'QORPERA_CODEX_FENCE_BINARY="${QORPERA_CODEX_FENCE_BINARY:-/opt/qorpera-codex-fence/codex}" node scripts/prove-home-channel.mjs',
+		'QORPERA_CODEX_FENCE_BINARY="${QORPERA_CODEX_FENCE_BINARY:-/opt/qorpera-codex-fence/codex}" node scripts/prove-hire-team.mjs',
+	]);
+
+	const withActivationScript = planReleaseCheck(
+		[...derived, "scripts/test-runtime-bundle-activation.mjs"],
+		["supabase/migrations/20260930822000_thread_run_wakes.sql"],
+	);
+	assert.deepEqual(withActivationScript.steps.find((step) => step.name === "hosted-db-release").commands, [
+		"node scripts/test-hosted-db.mjs --only 001_,838_",
+		"node scripts/test-runtime-bundle-activation.mjs",
+	]);
+
+	const sqlOnly = planReleaseCheck(derived, [
+		"supabase/migrations/20260930822000_thread_run_wakes.sql",
+		"supabase/tests/1311_thread_run_wakes.test.sql",
+	]);
+	assert.deepEqual(
+		sqlOnly.steps.map((step) => step.name),
+		["lint", "typecheck", "checks", "scripts", "hosted-db-release"],
+	);
+
+	const fallback = planReleaseCheck([
+		...derived,
+		"packages/runtime/src/cloud-native-company-context.ts",
+		"packages/web/src/app/views/thread.ts",
+	]);
+	assert.equal(fallback.derivedOnly, false);
+	assert.ok(fallback.steps.some((step) => step.name === "runtime"));
+	assert.ok(fallback.steps.some((step) => step.name === "runner-orchestrator-1"));
+	assert.ok(
+		fallback.steps
+			.find((step) => step.name === "checks")
+			.alone.includes("QORPERA_ENFORCE_RUNTIME_BUNDLE=1 npm run check:runtime-bundle:release-train"),
+	);
+	assert.match(fallback.steps.find((step) => step.name === "scripts").commands[0], /^QORPERA_ENFORCE_RUNTIME_BUNDLE=1 /);
+	assert.ok(
+		fallback.steps
+			.find((step) => step.name === "web")
+			.alone.some((command) => command.includes("QORPERA_ENFORCE_RUNTIME_BUNDLE=1 npm run build:release --workspace packages/web")),
+	);
 });

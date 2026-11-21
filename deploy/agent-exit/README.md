@@ -112,6 +112,12 @@ Everything after that is the reconciler's (`qorpera-agent-plug.service`, root), 
 - every entry is checked against its machine (the card above, the identity keys), a running machine's card must be
   a port of `qagent0`, and every machine on `qagent0` must have an entry. A problem goes to
   `/run/qorpera-agent-exit/plug.json`, and `verify` fails while there is one;
+- when one or more running machines fail the `qagent0` port check (for example, LXD detached `tap*` slightly before
+  marking a stopping machine `Stopped`), the reconciler waits once per pass (`--port-recheck-seconds` /
+  `QORPERA_AGENT_PLUG_PORT_RECHECK_SECONDS`, default `0.75` s against LXD, `0.0` s on `--lxd-fixture`, finite `0`–`10`)
+  and re-reads only those machines via `GET /1.0/instances/<name>?project=<project>`. Each fresh record replaces that
+  machine's snapshot for both entry checks and the bridge `ports` set; a 404 removes it from the snapshot (counting as
+  one miss toward "two reads in a row"), and a failed re-read records a problem and fails closed on the stale snapshot;
 - it keeps the bridge rules (the `ports` set of each running machine's port and MAC, the `clients` set of MAC and
   address pairs, and the `dhcp` chain's rule per machine) equal to the entries LXD backs, read back every pass, so a
   restart or a crash (and the plain hand edits) are set right within a pass. Until a machine is in them, nothing from

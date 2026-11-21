@@ -2,6 +2,7 @@
 	"schema": "qorpera.node-tidy/v1",
 	"lxdSocket": "/var/snap/lxd/common/lxd/unix.socket",
 	"agentRoot": "/opt/qorpera-node",
+	"holdDir": "/etc/qorpera-node-tidy.holds.d",
 	"unitPattern": "qorpera*",
 	"extraRoots": [
 		"/etc/qorpera-phql-office-a1/*.json",

@@ -17,10 +17,12 @@ test("the repository comes from any GitHub remote form", () => {
 
 test("named suites get a context; ad-hoc commands, dirty trees and --no-status post nothing", () => {
 	assert.equal(statusContext("changed"), "qorpera-ci/changed");
+	assert.equal(statusContext("release-check"), "qorpera-ci/release-check");
 	assert.equal(statusContext("scripts/test-office-preparation-linux.mjs"), "qorpera-ci/scripts/test-office-preparation-linux.mjs");
 	assert.equal(statusContext(null), null);
 	const slug = "Qorpera/Qorpera_Base";
 	assert.deepEqual(statusDecision({ suite: "changed", dirty: false, disabled: false, slug }), { post: true, reason: null });
+	assert.deepEqual(statusDecision({ suite: "release-check", dirty: false, disabled: false, slug }), { post: true, reason: null });
 	assert.match(statusDecision({ suite: "changed", dirty: true, disabled: false, slug }).reason, /uncommitted/);
 	assert.match(statusDecision({ suite: null, dirty: false, disabled: false, slug }).reason, /ad-hoc/);
 	assert.match(statusDecision({ suite: "test", dirty: false, disabled: true, slug }).reason, /--no-status/);
@@ -28,11 +30,14 @@ test("named suites get a context; ad-hoc commands, dirty trees and --no-status p
 	// A narrowed run cannot speak for the suite; changed only against origin/master (an empty plan is no proof).
 	assert.match(statusDecision({ suite: "test", dirty: false, disabled: false, slug, plain: false }).reason, /narrow/);
 	assert.match(statusDecision({ suite: "changed", dirty: false, disabled: false, slug, base: "HEAD" }).reason, /only a run against origin\/master/);
+	assert.match(statusDecision({ suite: "release-check", dirty: false, disabled: false, slug, base: "HEAD" }).reason, /only a run against origin\/master/);
 	assert.equal(statusDecision({ suite: "hosted-db", dirty: false, disabled: false, slug, base: "HEAD" }).post, true);
 });
 
 test("only the plain invocation of a suite is plain", () => {
 	assert.equal(parseArgs(["changed"]).plain, true);
+	assert.equal(parseArgs(["release-check"]).plain, true);
+	assert.equal(parseArgs(["--from-release", "abc1234", "release-check"]).plain, true);
 	assert.equal(parseArgs(["test"]).plain, true);
 	assert.equal(parseArgs(["hosted-db"]).plain, true);
 	for (const argv of [

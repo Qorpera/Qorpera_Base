@@ -13,6 +13,7 @@
  *
  * Release candidates still run the full `test` suite before a cut. */
 
+import { classifyReleaseDiff, isReleaseDerivedOnly } from "./release-prep-plan.mjs";
 import { HOSTED_DB_SCRIPTS } from "./test-hosted-db.mjs";
 
 const FUNCTION_TESTS = [
@@ -401,6 +402,107 @@ export function planChanged(files) {
 		files: steps.get(step.name),
 	}));
 	return { full: false, reason: null, steps: chosen, build: STEPS.some((step) => step.build && steps.has(step.name)) };
+}
+
+function enforceRuntimeBundleOnStep(step) {
+	if (step.name === "checks") {
+		return {
+			...step,
+			alone: step.alone.map((command) =>
+				command === "npm run check:runtime-bundle:release-train"
+					? "QORPERA_ENFORCE_RUNTIME_BUNDLE=1 npm run check:runtime-bundle:release-train"
+					: command,
+			),
+		};
+	}
+	if (step.name === "scripts") {
+		return {
+			...step,
+			commands: step.commands.map((command) =>
+				command.startsWith("QORPERA_ENFORCE_RUNTIME_BUNDLE=1 ") ? command : `QORPERA_ENFORCE_RUNTIME_BUNDLE=1 ${command}`,
+			),
+		};
+	}
+	if (step.name === "web") {
+		return {
+			...step,
+			alone: step.alone.map((command) =>
+				command.includes("npm run build:release --workspace packages/web") && !command.includes("QORPERA_ENFORCE_RUNTIME_BUNDLE=1")
+					? command.replace(
+							"npm run build:release --workspace packages/web",
+							"QORPERA_ENFORCE_RUNTIME_BUNDLE=1 npm run build:release --workspace packages/web",
+						)
+					: command,
+			),
+		};
+	}
+	return step;
+}
+
+export function planReleaseCheck(changedFromMaster, releaseDiffFiles = null, options = {}) {
+	const unique = [...new Set(changedFromMaster)].filter(Boolean).sort();
+	if (!unique.length) return { full: false, derivedOnly: true, reason: null, steps: [], build: false };
+	if (!isReleaseDerivedOnly(unique)) {
+		const fallback = planChanged(unique);
+		return {
+			...fallback,
+			steps: fallback.steps.map(enforceRuntimeBundleOnStep),
+			derivedOnly: false,
+		};
+	}
+	const classification = releaseDiffFiles
+		? classifyReleaseDiff(releaseDiffFiles, { existingFiles: options.existingFiles })
+		: null;
+	const byName = (name) => STEPS.find((step) => step.name === name);
+	const enforcedChecks = enforceRuntimeBundleOnStep({ ...planned(byName("checks")), files: unique });
+	const enforcedScripts = enforceRuntimeBundleOnStep({ ...planned(byName("scripts")), files: unique });
+	const dbTestPrefixes = [...new Set(["001", "838", ...(classification?.sqlTests ?? [])])].map((num) => `${num}_`);
+	const dbCommands = [`node scripts/test-hosted-db.mjs --only ${dbTestPrefixes.join(",")}`];
+	if (unique.includes("scripts/test-runtime-bundle-activation.mjs")) {
+		dbCommands.push("node scripts/test-runtime-bundle-activation.mjs");
+	}
+	const steps = [
+		{ ...planned(byName("lint")), files: unique },
+		{ ...planned(byName("typecheck")), files: unique },
+		enforcedChecks,
+		enforcedScripts,
+		{
+			name: "hosted-db-release",
+			why: "replay every migration including the activation and run core plus release SQL tests",
+			commands: dbCommands,
+			alone: [],
+			cores: 2,
+			seconds: 35,
+			workers: null,
+			width: 2,
+			build: false,
+			files: unique,
+		},
+	];
+	if (!classification?.sqlOnly && !classification?.noRelease) {
+		steps.push({
+			name: "release-provers",
+			why: "the two runtime provers not already covered by changed",
+			commands: [
+				'QORPERA_CODEX_FENCE_BINARY="${QORPERA_CODEX_FENCE_BINARY:-/opt/qorpera-codex-fence/codex}" node scripts/prove-home-channel.mjs',
+				'QORPERA_CODEX_FENCE_BINARY="${QORPERA_CODEX_FENCE_BINARY:-/opt/qorpera-codex-fence/codex}" node scripts/prove-hire-team.mjs',
+			],
+			alone: [],
+			cores: 1,
+			seconds: 30,
+			workers: null,
+			width: 1,
+			build: true,
+			files: unique,
+		});
+	}
+	return {
+		full: false,
+		derivedOnly: true,
+		reason: null,
+		steps,
+		build: true,
+	};
 }
 
 /** What planScript and splitPlan need of a step. */

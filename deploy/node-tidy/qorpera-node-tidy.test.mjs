@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { agentPins, planImages, planStaging, tidy } from "./qorpera-node-tidy.mjs";
+import { agentPins, parseConfig, planImages, planStaging, readHoldDir, tidy } from "./qorpera-node-tidy.mjs";
 
 const HOUR = 60 * 60_000;
 const now = Date.parse("2026-09-23T18:00:00.000Z");
@@ -327,6 +327,199 @@ test("the live release is the one the provider role runs, and the one before it 
 			],
 		);
 		assert.equal(await agentPins(join(root, "missing")), null);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("holdDir keeps an unstaged release image and its transfer tarball past recentHours (Oct 18 v181 guard)", async () => {
+	const node = await nodeFixture();
+	const holdDir = join(node.root, "holds.d");
+	await mkdir(holdDir, { mode: 0o700 });
+	try {
+		const unstaged = image("a", 24, "Qorpera native181 unstaged candidate");
+		const stale = image("b", 100, "Qorpera native170 old");
+		const lxd = {
+			...node.lxd,
+			images: async () => [...(await node.lxd.images()), unstaged, stale],
+		};
+		await writeFile(
+			join(holdDir, "cut-v181.json"),
+			JSON.stringify({
+				schema: "qorpera.node-tidy-hold/v1",
+				fingerprint: unstaged.fingerprint,
+				reason: "cut-v181 awaiting staging",
+				stagingFiles: ["qorpera-native80-image-a1.tar.gz"],
+			}),
+			{ mode: 0o600 },
+		);
+		await writeFile(join(holdDir, ".tmp-writing"), "{", { mode: 0o600 });
+		const cfg = { ...node.config, recentHours: 12, holdDir };
+		const report = await tidy({ config: cfg, apply: true, lxd, systemd: node.systemd, now });
+		assert.equal(report.refusal, null);
+		assert.ok(report.keep.some((k) => k.fingerprint === unstaged.fingerprint && k.reason.includes("cut-v181.json")));
+		assert.deepEqual(
+			report.remove.map((r) => r.fingerprint[0]).sort(),
+			["9", "b"],
+		);
+		assert.deepEqual(report.staging, [], "held transfer tarball stays untouched");
+		assert.ok((await readdir(node.tmp)).includes("qorpera-native80-image-a1.tar.gz"));
+	} finally {
+		await rm(node.root, { recursive: true, force: true });
+	}
+});
+
+test("holdDir fails closed and deletes nothing when a hold file is corrupt or a symlink", async () => {
+	const node = await nodeFixture();
+	const holdDir = join(node.root, "holds.d");
+	await mkdir(holdDir, { mode: 0o700 });
+	try {
+		await writeFile(join(holdDir, "broken.json"), "{not-json", { mode: 0o600 });
+		const badJson = await tidy({ config: { ...node.config, holdDir }, apply: true, lxd: node.lxd, systemd: node.systemd, now });
+		assert.match(badJson.refusal ?? "", /not valid JSON/);
+		assert.deepEqual(node.deleted, []);
+		assert.equal((await readdir(node.tmp)).length, 2);
+
+		await rm(join(holdDir, "broken.json"));
+		const target = join(node.root, "outside.json");
+		await writeFile(target, JSON.stringify({ schema: "qorpera.node-tidy-hold/v1", fingerprint: fp("9"), reason: "x" }), {
+			mode: 0o600,
+		});
+		await symlink(target, join(holdDir, "link.json"));
+		const linkRefused = await tidy({ config: { ...node.config, holdDir }, apply: true, lxd: node.lxd, systemd: node.systemd, now });
+		assert.match(linkRefused.refusal ?? "", /unsafe or oversized/);
+		assert.deepEqual(node.deleted, []);
+	} finally {
+		await rm(node.root, { recursive: true, force: true });
+	}
+});
+
+test("parseConfig validates optional holdDir under /etc or /opt and rejects unsafe paths", () => {
+	assert.equal(parseConfig(config({ holdDir: "/etc/qorpera-node-tidy.holds.d" })).holdDir, "/etc/qorpera-node-tidy.holds.d");
+	assert.equal(parseConfig(config({ holdDir: "/opt/qorpera-node-tidy/holds.d" })).holdDir, "/opt/qorpera-node-tidy/holds.d");
+	for (const bad of ["relative/holds.d", "/var/tmp/holds.d", "/etc/../var/tmp/holds.d", "/etc/.", 42]) {
+		assert.throws(() => parseConfig(config({ holdDir: bad })), /invalid/);
+	}
+});
+
+test("readHoldDir fails closed on unsafe ownership/mode, unreadable dir, non-directory, oversized files, subdirs, and invalid schemas; skips vanished holds", async () => {
+	const root = await mkdtemp(join(tmpdir(), "qorpera-node-tidy-hold-"));
+	try {
+		const missing = await readHoldDir(join(root, "does-not-exist"));
+		assert.equal(missing.refusal, null);
+		assert.deepEqual(missing.held, []);
+
+		const regularFile = join(root, "not-a-dir");
+		await writeFile(regularFile, "{}", { mode: 0o600 });
+		assert.match((await readHoldDir(regularFile)).refusal ?? "", /not a directory/);
+
+		const realDir = join(root, "real-dir");
+		await mkdir(realDir, { mode: 0o700 });
+		const dirLink = join(root, "dir-link");
+		await symlink(realDir, dirLink);
+		assert.match((await readHoldDir(dirLink)).refusal ?? "", /not a directory/);
+
+		const writableDir = join(root, "group-writable");
+		await mkdir(writableDir, { mode: 0o700 });
+		await chmod(writableDir, 0o775);
+		assert.match((await readHoldDir(writableDir)).refusal ?? "", /ownership or permissions/);
+		await chmod(writableDir, 0o700);
+		assert.match(
+			(await readHoldDir(writableDir, { expectedUid: (process.getuid?.() ?? 0) + 1 })).refusal ?? "",
+			/ownership or permissions/,
+		);
+
+		const writableFileDir = join(root, "group-writable-file");
+		await mkdir(writableFileDir, { mode: 0o700 });
+		const wf = join(writableFileDir, "cut.json");
+		await writeFile(wf, JSON.stringify({ schema: "qorpera.node-tidy-hold/v1", fingerprint: fp("a"), reason: "ok" }), {
+			mode: 0o600,
+		});
+		await chmod(wf, 0o664);
+		assert.match((await readHoldDir(writableFileDir)).refusal ?? "", /unsafe or oversized/);
+
+		const vanishDir = join(root, "vanish-dir");
+		await mkdir(vanishDir, { mode: 0o700 });
+		await writeFile(
+			join(vanishDir, "a-vanished.json"),
+			JSON.stringify({ schema: "qorpera.node-tidy-hold/v1", fingerprint: fp("a"), reason: "gone" }),
+			{ mode: 0o600 },
+		);
+		await writeFile(
+			join(vanishDir, "b-kept.json"),
+			JSON.stringify({ schema: "qorpera.node-tidy-hold/v1", fingerprint: fp("b"), reason: "kept" }),
+			{ mode: 0o600 },
+		);
+		const vanished = await readHoldDir(vanishDir, {
+			readdir: async (dir) => {
+				const list = await readdir(dir);
+				await rm(join(dir, "a-vanished.json"));
+				return list;
+			},
+		});
+		assert.equal(vanished.refusal, null);
+		assert.deepEqual(
+			vanished.held.map((h) => h.fingerprint),
+			[fp("b")],
+		);
+
+		if (process.getuid?.() !== 0) {
+			const lockedDir = join(root, "locked");
+			await mkdir(lockedDir, { mode: 0o700 });
+			await chmod(lockedDir, 0o000);
+			try {
+				assert.match((await readHoldDir(lockedDir)).refusal ?? "", /holdDir could not be read: EACCES/);
+			} finally {
+				await chmod(lockedDir, 0o700);
+			}
+		}
+
+		const subHoldDir = join(root, "with-subdir");
+		await mkdir(join(subHoldDir, "nested"), { recursive: true, mode: 0o700 });
+		await chmod(subHoldDir, 0o700);
+		assert.match((await readHoldDir(subHoldDir)).refusal ?? "", /unsafe or oversized/);
+
+		const bigDir = join(root, "with-big");
+		await mkdir(bigDir, { mode: 0o700 });
+		await writeFile(join(bigDir, "huge.json"), " ".repeat(65_537), { mode: 0o600 });
+		assert.match((await readHoldDir(bigDir)).refusal ?? "", /unsafe or oversized/);
+
+		const invalidPayloads = [
+			"null",
+			"[]",
+			JSON.stringify({ schema: "qorpera.node-tidy-hold/v1", fingerprint: fp("a"), reason: "ok", extra: 1 }),
+			JSON.stringify({ schema: "wrong/v1", fingerprint: fp("a"), reason: "ok" }),
+			JSON.stringify({ schema: "qorpera.node-tidy-hold/v1", fingerprint: "not-hex", reason: "ok" }),
+			JSON.stringify({ schema: "qorpera.node-tidy-hold/v1", fingerprint: fp("a"), reason: "   " }),
+			JSON.stringify({ schema: "qorpera.node-tidy-hold/v1", fingerprint: fp("a"), reason: "ok", stagingFiles: ["../x"] }),
+			JSON.stringify({ schema: "qorpera.node-tidy-hold/v1", fingerprint: fp("a"), reason: "ok", stagingFiles: ["a/b"] }),
+			JSON.stringify({ schema: "qorpera.node-tidy-hold/v1", fingerprint: fp("a"), reason: "ok", stagingFiles: ["."] }),
+			JSON.stringify({ schema: "qorpera.node-tidy-hold/v1", fingerprint: fp("a"), reason: "ok", stagingFiles: [".."] }),
+		];
+		for (let i = 0; i < invalidPayloads.length; i++) {
+			const dir = join(root, `schema-${i}`);
+			await mkdir(dir, { mode: 0o700 });
+			await writeFile(join(dir, "bad.json"), invalidPayloads[i], { mode: 0o600 });
+			assert.match((await readHoldDir(dir)).refusal ?? "", /is invalid/, `payload #${i} must be refused`);
+		}
+
+		const node = await nodeFixture();
+		try {
+			const badHold = join(node.root, "bad-holds");
+			await mkdir(badHold, { mode: 0o700 });
+			await writeFile(join(badHold, "corrupt.json"), "{", { mode: 0o600 });
+			const both = await tidy({
+				config: { ...node.config, holdDir: badHold },
+				apply: false,
+				lxd: node.lxd,
+				systemd: { ...node.systemd, startPaths: async () => [] },
+				now,
+			});
+			assert.match(both.refusal ?? "", /no live runtime pin was found/);
+			assert.match(both.refusal ?? "", /not valid JSON/);
+		} finally {
+			await rm(node.root, { recursive: true, force: true });
+		}
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

@@ -1612,4 +1612,96 @@ describe("trusted node inventory publisher composition", () => {
 		await assertion;
 		expect((await f.observer.observe(signal())).state).toBe("ready");
 	});
+	it("retries transient LXD_HOST_INVENTORY_UNCONFIRMED during VM transitions instead of flipping unavailable", async () => {
+		const f = observer();
+		f.ports.lxd.inspectHostInventory
+			.mockRejectedValueOnce(new Error("LXD_HOST_INVENTORY_UNCONFIRMED"))
+			.mockResolvedValueOnce(structuredClone(f.inventory));
+		const retryObserver = new RuntimeNodeInventoryObserver(f.policy, f.registry, {
+			...f.ports,
+			inventoryRetries: 2,
+			inventoryRetryDelayMs: 5,
+		});
+		const result = await retryObserver.observe(signal());
+		expect(result).toMatchObject({ state: "ready", reason: null });
+		expect(f.ports.lxd.inspectHostInventory).toHaveBeenCalledTimes(2);
+		expect(f.calls.at(-1)?.method).toBe("qorpera_observe_runtime_node_inventory");
+	});
+	it("still fails closed to unavailable if LXD_HOST_INVENTORY_UNCONFIRMED persists across retries", async () => {
+		const f = observer();
+		f.ports.lxd.inspectHostInventory.mockRejectedValue(new Error("LXD_HOST_INVENTORY_UNCONFIRMED"));
+		const retryObserver = new RuntimeNodeInventoryObserver(f.policy, f.registry, {
+			...f.ports,
+			inventoryRetries: 2,
+			inventoryRetryDelayMs: 5,
+		});
+		const result = await retryObserver.observe(signal());
+		expect(result).toMatchObject({
+			state: "unavailable",
+			reason: { check: "inventory", code: "LXD_HOST_INVENTORY_UNCONFIRMED" },
+		});
+		expect(f.ports.lxd.inspectHostInventory).toHaveBeenCalledTimes(3);
+		expect(f.calls.at(-1)?.method).toBe("qorpera_observe_runtime_node");
+	});
+	it("rejects invalid inventory retry configuration", () => {
+		const f = observer();
+		for (const bad of [
+			{ inventoryRetries: Number.NaN },
+			{ inventoryRetries: -1 },
+			{ inventoryRetries: 11 },
+			{ inventoryRetryDelayMs: Number.POSITIVE_INFINITY },
+			{ inventoryRetryDelayMs: -1 },
+			{ inventoryRetryDelayMs: 5_001 },
+		]) {
+			expect(() => new RuntimeNodeInventoryObserver(f.policy, f.registry, { ...f.ports, ...bad })).toThrow(
+				"NODE_OBSERVER_RETRY_CONFIG_INVALID",
+			);
+		}
+	});
+	it("does not retry non-unconfirmed errors, aborts immediately during backoff, and preserves publish budget after slow LXD hangs", async () => {
+		const nonTransient = observer();
+		nonTransient.ports.lxd.inspectHostInventory.mockRejectedValue(new Error("LXD_SOCKET_MISSING"));
+		const nonTransientObserver = new RuntimeNodeInventoryObserver(nonTransient.policy, nonTransient.registry, {
+			...nonTransient.ports,
+			inventoryRetries: 2,
+			inventoryRetryDelayMs: 5,
+		});
+		const nonTransientResult = await nonTransientObserver.observe(signal());
+		expect(nonTransientResult).toMatchObject({ state: "unavailable", reason: { check: "inventory" } });
+		expect(nonTransient.ports.lxd.inspectHostInventory).toHaveBeenCalledTimes(1);
+
+		const aborted = observer();
+		const controller = new AbortController();
+		aborted.ports.lxd.inspectHostInventory.mockImplementationOnce(async () => {
+			setTimeout(() => controller.abort(), 15);
+			throw new Error("LXD_HOST_INVENTORY_UNCONFIRMED");
+		});
+		const abortObserver = new RuntimeNodeInventoryObserver(aborted.policy, aborted.registry, {
+			...aborted.ports,
+			inventoryRetries: 2,
+			inventoryRetryDelayMs: 2_000,
+		});
+		await expect(abortObserver.observe(controller.signal)).rejects.toThrow("NODE_OBSERVER_UNCONFIRMED");
+		expect(aborted.ports.lxd.inspectHostInventory).toHaveBeenCalledTimes(1);
+
+		const slow = observer();
+		let clock = 0;
+		slow.ports.lxd.inspectHostInventory.mockImplementation(async () => {
+			clock += 5_000;
+			throw new Error("LXD_HOST_INVENTORY_UNCONFIRMED");
+		});
+		const slowObserver = new RuntimeNodeInventoryObserver(slow.policy, slow.registry, {
+			...slow.ports,
+			inventoryRetries: 2,
+			inventoryRetryDelayMs: 250,
+			now: () => clock,
+		});
+		const slowResult = await slowObserver.observe(signal());
+		expect(slowResult).toMatchObject({
+			state: "unavailable",
+			reason: { check: "inventory", code: "LXD_HOST_INVENTORY_UNCONFIRMED" },
+		});
+		expect(slow.ports.lxd.inspectHostInventory).toHaveBeenCalledTimes(1);
+		expect(slow.calls.at(-1)?.method).toBe("qorpera_observe_runtime_node");
+	});
 });

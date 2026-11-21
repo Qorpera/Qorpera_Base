@@ -5,7 +5,17 @@ import { constants, homedir, hostname, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { check as checkComments, describeFindings } from "./check-comments.mjs";
-import { ALL_STARTED, describePlan, planChanged, planScript, SIDE_BY_SIDE, STOP, splitPlan, USING } from "./run-on-node-plan.mjs";
+import {
+	ALL_STARTED,
+	describePlan,
+	planChanged,
+	planReleaseCheck,
+	planScript,
+	SIDE_BY_SIDE,
+	STOP,
+	splitPlan,
+	USING,
+} from "./run-on-node-plan.mjs";
 import {
 	commitPushed,
 	machineLabel,
@@ -28,6 +38,7 @@ const USAGE = `Usage: node scripts/run-on-node.mjs [options] <suite> [-- args]
        node scripts/run-on-node.mjs [options] -- <command...>
 
 Suites: changed              what the files changed against --base need (scripts/run-on-node-plan.mjs)
+        release-check        fast enforced release-branch verification when only release-derived files differ from --base
         test                 npm test, the whole repository (builds the shared packages first)
         hosted-db            npm run test:hosted-db (no npm ci needed)
         npm:<script>         npm run <script>
@@ -40,7 +51,8 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
          --keep                     keep the run directory on the test machine
          --record FILE              also write the run record as JSON to FILE
          --allow-secrets            copy untracked files that look like secrets (.env*, *.pem, keys)
-         --base REF                 compare against REF for changed (default: origin/master)
+         --base REF                 compare against REF for changed / release-check (default: origin/master)
+         --from-release REF         previous live release commit for release-check (includes its SQL tests and skips provers on SQL-only cuts)
          --machine NAME             run on this machine only (node02, node01)
          --quick                    this run takes under 3 minutes (one test file, a lint of a few files): it takes the
                                     quick lane, so it never waits behind long runs, and it is stopped at 3 minutes
@@ -49,7 +61,7 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
          --front                    wait at the front of the CPU lane's queue, ahead of every run without it, and
                                     take the slot kept for such runs when it is free (pr-loop's batch runs,
                                     which test every approved head at once)
-         --cores N                  changed: run the steps side by side within N cores, their tree-wide parts
+         --cores N                  changed / release-check: run the steps side by side within N cores, their tree-wide parts
                                     first and alone (default: 6; with --front, 2, what one slot gives). The run starts
                                     in one slot and takes up to 3 as they free (one such run per machine), each only
                                     while the machine has 2 GiB available. A --front run takes them ahead of the queue,
@@ -57,12 +69,12 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
                                     run side by side, only while no other run waits for a slot or is being copied there,
                                     and only while another of them stays free for the next run; while a run waits, it
                                     gives them back as its running steps fit in fewer. --cores 2 keeps to one slot
-         --parts N                  changed: split the steps into N parts by their CPU work, each a run of its own, all
+         --parts N                  changed / release-check: split the steps into N parts by their CPU work, each a run of its own, all
                                     at once (N at most the machines' count). Each waits on every machine and runs on the
                                     first with a slot for it, the part with the most work queued first. One exit code,
                                     status and record: the run passes only if every part passed. With one machine open,
                                     or --machine, one part
-         --fail-fast                changed: stop at the first failed step: no step starts after it, the steps running
+         --fail-fast                changed / release-check: stop at the first failed step: no step starts after it, the steps running
                                     side by side end, and so do the other parts' (pr-loop's batch runs, which are
                                     bisected when they fail). Without --cores, the shortest steps first
          --tree NAME               copy against the machine's shared base copy NAME, not this checkout's own,
@@ -235,6 +247,7 @@ export function parseArgs(argv) {
 		noStatus: false,
 		dryRun: false,
 		base: "origin/master",
+		fromRelease: null,
 		machine: null,
 		tree: null,
 		front: false,
@@ -258,7 +271,7 @@ export function parseArgs(argv) {
 		else if (flag === "--front") options.front = true;
 		else if (flag === "--quick") options.quick = true;
 		else if (flag === "--fail-fast") options.failFast = true;
-		else if (["--env", "--record", "--base", "--machine", "--tree", "--cores", "--parts"].includes(flag)) {
+		else if (["--env", "--record", "--base", "--from-release", "--machine", "--tree", "--cores", "--parts"].includes(flag)) {
 			const value = argv[++i];
 			if (value === undefined) throw new Error(`${flag} needs a value`);
 			if (flag === "--record") options.record = value;
@@ -283,6 +296,9 @@ export function parseArgs(argv) {
 			} else if (flag === "--base") {
 				if (!/^[A-Za-z0-9._/@^~][A-Za-z0-9._/@^~-]*$/.test(value)) throw new Error(`Invalid --base ${value}`);
 				options.base = value;
+			} else if (flag === "--from-release") {
+				if (!/^[A-Za-z0-9._/@^~][A-Za-z0-9._/@^~-]*$/.test(value)) throw new Error(`Invalid --from-release ${value}`);
+				options.fromRelease = value;
 			}
 			else {
 				const equals = value.indexOf("=");
@@ -295,10 +311,12 @@ export function parseArgs(argv) {
 	let suite = null;
 	let command;
 	let extra = [];
-	if (options.cores && rest[0] !== "changed") throw new Error("--cores is for changed");
-	if (options.parts && rest[0] !== "changed") throw new Error("--parts is for changed");
-	if (options.failFast && rest[0] !== "changed") throw new Error("--fail-fast is for changed");
-	if (options.quick && rest[0] === "changed") throw new Error("--quick is for one short command, not for changed");
+	const isPlanned = rest[0] === "changed" || rest[0] === "release-check";
+	if (options.cores && !isPlanned) throw new Error("--cores is for changed or release-check");
+	if (options.parts && !isPlanned) throw new Error("--parts is for changed or release-check");
+	if (options.failFast && !isPlanned) throw new Error("--fail-fast is for changed or release-check");
+	if (options.fromRelease && rest[0] !== "release-check") throw new Error("--from-release is for release-check");
+	if (options.quick && isPlanned) throw new Error("--quick is for one short command, not for changed or release-check");
 	if (rest[0] === "--") {
 		command = rest.slice(1);
 		if (command.length === 0) throw new Error(USAGE);
@@ -307,8 +325,8 @@ export function parseArgs(argv) {
 		if (!suite) throw new Error(USAGE);
 		if (rest[1] !== undefined && rest[1] !== "--") throw new Error(`Put suite arguments after --\n\n${USAGE}`);
 		extra = rest.slice(2);
-		if (suite === "changed") {
-			if (extra.length) throw new Error("changed takes no suite arguments");
+		if (suite === "changed" || suite === "release-check") {
+			if (extra.length) throw new Error(`${suite} takes no suite arguments`);
 			// The plan, and with it the command and the build, is made from git in main().
 			return {
 				...options,
@@ -1379,9 +1397,13 @@ async function main() {
 	// --build or --no-build, which holds for every part of a --parts run too.
 	const build = options.build;
 	const stepWorkers = !options.env.some(([name]) => name === "VITEST_MAX_WORKERS");
-	if (options.suite === "changed") {
+	if (options.suite === "changed" || options.suite === "release-check") {
 		const { mergeBase, files: changed } = changedFiles(root, options.base, untracked);
-		plan = planChanged(changed);
+		const releaseFiles = options.fromRelease ? changedFiles(root, options.fromRelease, untracked).files : null;
+		plan =
+			options.suite === "release-check"
+				? planReleaseCheck(changed, releaseFiles, { existingFiles: files })
+				: planChanged(changed);
 		for (const line of describePlan(plan, `${options.base} ${mergeBase.slice(0, 9)}, ${changed.length} files`)) console.log(line);
 		changedPlan = { base: options.base, mergeBase, files: changed.length, full: plan.full, steps: plan.steps.map((step) => step.name) };
 		const comments = checkComments({ base: options.base, cwd: root }).findings;
@@ -1912,7 +1934,8 @@ function githubStatus(root, options, source) {
 		},
 		post(state, description) {
 			if (!decision.post || options.dryRun || abandoned) return { ...plan, ...(abandoned ? { posted: false, reason: abandoned } : {}) };
-			const text = options.suite === "changed" ? `${description} vs master` : description;
+			const text =
+				options.suite === "changed" || options.suite === "release-check" ? `${description} vs master` : description;
 			const ok = send(state, text.length > 140 ? `${text.slice(0, 139)}…` : text);
 			if (state === "pending" && ok && !pending) {
 				pending = true;

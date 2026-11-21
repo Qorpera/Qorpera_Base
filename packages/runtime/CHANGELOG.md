@@ -24,6 +24,7 @@
   was. Way back: bundle 269 by the release lane's emergency path; the migration stays (bundle 269 never reads
   `run_wake`, and the web draws an event without it as before).
 - System prompt overhaul (`qorpera.hire-overlay/v21`): reordered staff instructions so conversational warmth and plain-language guidance open immediately after company identity and `# Trust and authority` + `# Tool results` sit right before untrusted context and head data; rewrote constitution, role overlays, wake protocols, and communication tool descriptions (`send_message`, `ask_member`, `send_coworker_message`) for clearer, more natural prose with less duplication; listed all 12 `save_app` kits in `# Apps`; gated `# Registration and bank` to Co-Founder and finance/money/bank roles; upgraded `CLAUDE_WORKER_SYSTEM_NOTE` with full-ambition, visual-inspection, WebP, plain-language, and security guidance; added platform update `clearer-agent-voice`.
+- `hashArtifact()` in `cloud-codex-tool-session.ts` raises its `createReadStream` `highWaterMark` from 64 KiB to 1 MiB (`ARTIFACT_HASH_HIGH_WATER_MARK`) to reduce syscall overhead when hashing the ~319 MB Codex binary while keeping exact full-file SHA-256 verification unchanged.
 - The thread read says what woke each run (thread decisions step 5, the fold; Jonas, 20 Nov 2026: "Fold them").
   Migration `20260930822000_thread_run_wakes`: one text patch of `qorpera_read_session_events` (anchor required exactly
   once; the tail read goes through it): each event a run wrote gets `run_wake`, the wake's kind, by the unique index

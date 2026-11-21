@@ -339,13 +339,13 @@ export class ObjectGatewayReplication {
 		let bytes: Uint8Array;
 		try {
 			bytes = await this.#store.get(object.profileId, object.sha256, object.bytes);
+			if (bytes.byteLength !== object.bytes) throw new Error("Replica failed integrity verification");
 		} catch (error) {
 			if (!(error instanceof Error) || error.message !== "Object not found") throw error;
 			bytes = await this.#authority.readLegacyObject(object.profileId, object.sha256);
 			verify(bytes, object);
 			await this.#store.put(object.profileId, object.sha256, bytes);
 		}
-		verify(bytes, object);
 		await this.#authority.confirmReplica(object.profileId, object.sha256, object.bytes);
 		await this.#journal.write(key(object), { ...object, state: "replicate" });
 		await this.#authority.writeReplica(object.profileId, object.sha256, bytes);

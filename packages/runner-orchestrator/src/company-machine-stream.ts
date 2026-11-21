@@ -660,27 +660,28 @@ export class RfbReader {
 	}
 }
 
-// PNG, as small as is cheap: RGB (or RGBA for the pointer), each row filtered by its byte to the left, deflated in this
-// process, which is a desktop's own instance (company-machine-stream-process.ts), on its loop: a band of noise is about
-// 11 ms to deflate, and holds only that instance.
-
-function chunk(type: string, data: Buffer): Buffer {
-	const head = Buffer.alloc(8);
-	head.writeUInt32BE(data.byteLength, 0);
-	head.write(type, 4, "latin1");
-	const crc = Buffer.alloc(4);
-	crc.writeUInt32BE(crc32(data, crc32(head.subarray(4))), 0);
-	return Buffer.concat([head, data, crc]);
-}
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const PNG_CHUNK_OVERHEAD = 12;
+const PNG_IEND_CHUNK = (() => {
+	const buf = Buffer.alloc(PNG_CHUNK_OVERHEAD);
+	buf.write("IEND", 4, "latin1");
+	buf.writeUInt32BE(crc32(buf.subarray(4, 8)), 8);
+	return buf;
+})();
+// WHY: stay single-threaded under CPUQuota=100% (avoiding libuv CFS throttling) while yielding before level-3 deflateSync (~0.1-1.9 ms up to MAX_AREA_PIXELS).
+const PNG_DEFLATE_LEVEL = 3;
+
+function writeChunk(target: Buffer, offset: number, type: string, data: Buffer): number {
+	target.writeUInt32BE(data.byteLength, offset);
+	target.write(type, offset + 4, "latin1");
+	data.copy(target, offset + 8);
+	target.writeUInt32BE(crc32(data, crc32(target.subarray(offset + 4, offset + 8))), offset + 8 + data.byteLength);
+	return offset + PNG_CHUNK_OVERHEAD + data.byteLength;
+}
 /** At most this many pixels are filtered in one turn of the event loop (about a millisecond on node 2): a whole screen of
  * the largest desktop held it for 64 ms in one stretch before (the v245 release review). An area is at most four such
  * slices now (MAX_AREA_PIXELS), the pointer at most one. */
 export const PNG_PIXELS_PER_TURN = 65_536;
-/** A PNG of `width` x `height` pixels given as blue, green, red, unused; `alpha` (a function of the pixel's index) makes
- * it RGBA. Each row is filtered by the byte one pixel to its left (PNG's Sub), which suits a screen's flat areas. The
- * rows are filtered a slice at a time, each followed by a turn of everything else, and deflated in one call (an area is
- * at most MAX_AREA_PIXELS). */
 export async function encodePng(
 	width: number,
 	height: number,
@@ -690,33 +691,81 @@ export async function encodePng(
 	const channels = alpha ? 4 : 3;
 	const stride = width * channels;
 	const raw = Buffer.allocUnsafe((stride + 1) * height);
-	const line = Buffer.allocUnsafe(stride);
 	const rowsPerTurn = Math.max(1, Math.floor(PNG_PIXELS_PER_TURN / Math.max(width, 1)));
-	for (let y = 0; y < height; y++) {
-		if (y > 0 && y % rowsPerTurn === 0) await new Promise<void>((resolve) => setImmediate(resolve));
-		for (let x = 0; x < width; x++) {
-			const from = (y * width + x) * 4;
-			const to = x * channels;
-			line[to] = pixels[from + 2] as number;
-			line[to + 1] = pixels[from + 1] as number;
-			line[to + 2] = pixels[from] as number;
-			if (alpha) line[to + 3] = alpha(y * width + x);
+	if (!alpha) {
+		for (let y = 0; y < height; y++) {
+			if (y > 0 && y % rowsPerTurn === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+			const rowOut = y * (stride + 1);
+			raw[rowOut] = 1;
+			let inOff = y * width * 4;
+			let outOff = rowOut + 1;
+			let prevR = 0;
+			let prevG = 0;
+			let prevB = 0;
+			for (let x = 0; x < width; x++) {
+				const b = pixels[inOff] as number;
+				const g = pixels[inOff + 1] as number;
+				const r = pixels[inOff + 2] as number;
+				raw[outOff] = (r - prevR) & 0xff;
+				raw[outOff + 1] = (g - prevG) & 0xff;
+				raw[outOff + 2] = (b - prevB) & 0xff;
+				prevR = r;
+				prevG = g;
+				prevB = b;
+				inOff += 4;
+				outOff += 3;
+			}
 		}
-		const row = y * (stride + 1);
-		raw[row] = 1;
-		for (let i = 0; i < stride; i++)
-			raw[row + 1 + i] = ((line[i] as number) - (i >= channels ? (line[i - channels] as number) : 0)) & 0xff;
+	} else {
+		for (let y = 0; y < height; y++) {
+			if (y > 0 && y % rowsPerTurn === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+			const rowOut = y * (stride + 1);
+			raw[rowOut] = 1;
+			let inOff = y * width * 4;
+			let outOff = rowOut + 1;
+			let prevR = 0;
+			let prevG = 0;
+			let prevB = 0;
+			let prevA = 0;
+			const rowPixelStart = y * width;
+			for (let x = 0; x < width; x++) {
+				const b = pixels[inOff] as number;
+				const g = pixels[inOff + 1] as number;
+				const r = pixels[inOff + 2] as number;
+				const a = alpha(rowPixelStart + x);
+				raw[outOff] = (r - prevR) & 0xff;
+				raw[outOff + 1] = (g - prevG) & 0xff;
+				raw[outOff + 2] = (b - prevB) & 0xff;
+				raw[outOff + 3] = (a - prevA) & 0xff;
+				prevR = r;
+				prevG = g;
+				prevB = b;
+				prevA = a;
+				inOff += 4;
+				outOff += 4;
+			}
+		}
 	}
 	const ihdr = Buffer.alloc(13);
 	ihdr.writeUInt32BE(width, 0);
 	ihdr.writeUInt32BE(height, 4);
 	ihdr.set([8, alpha ? 6 : 2, 0, 0, 0], 8);
-	return Buffer.concat([
-		PNG_SIGNATURE,
-		chunk("IHDR", ihdr),
-		chunk("IDAT", deflateSync(raw, { level: 6 })),
-		chunk("IEND", Buffer.alloc(0)),
-	]);
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	const compressed = deflateSync(raw, { level: PNG_DEFLATE_LEVEL });
+	const out = Buffer.allocUnsafe(
+		PNG_SIGNATURE.byteLength +
+			PNG_CHUNK_OVERHEAD +
+			ihdr.byteLength +
+			PNG_CHUNK_OVERHEAD +
+			compressed.byteLength +
+			PNG_IEND_CHUNK.byteLength,
+	);
+	PNG_SIGNATURE.copy(out, 0);
+	let at = PNG_SIGNATURE.byteLength;
+	at = writeChunk(out, at, "IHDR", ihdr);
+	at = writeChunk(out, at, "IDAT", compressed);
+	PNG_IEND_CHUNK.copy(out, at);
+	return out;
 }
 
 // What a member's stream is sent: binary messages the browser draws (packages/web/src/cloud/machine-stream.ts).
