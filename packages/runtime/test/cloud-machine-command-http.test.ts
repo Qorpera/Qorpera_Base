@@ -3736,5 +3736,25 @@ describe("a member's live picture of a desktop (20260930745000)", () => {
 				allowLoopback: true,
 			}).memberStream({ passId: a.passId, epoch: null }, sinkOf(), new AbortController().signal),
 		).toBe("STREAM_UNAVAILABLE");
+
+		let fetchAborted = false;
+		const stalledPeer = createHttpMemberMachineScreenPeer({
+			url: "https://node-stalled.example",
+			token,
+			streamConnectTimeoutMs: 50,
+			fetch: (_input, init) =>
+				new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener("abort", () => {
+						fetchAborted = true;
+						reject(init.signal?.reason ?? new Error("aborted"));
+					});
+				}),
+		});
+		const startedAt = performance.now();
+		expect(await stalledPeer.memberStream({ passId: a.passId, epoch: null }, sinkOf(), new AbortController().signal)).toBe(
+			"STREAM_UNAVAILABLE",
+		);
+		expect(fetchAborted).toBe(true);
+		expect(performance.now() - startedAt).toBeLessThan(2_000);
 	});
 });

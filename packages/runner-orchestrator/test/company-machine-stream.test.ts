@@ -821,6 +821,48 @@ describe("a desktop's live picture (20260930745000)", () => {
 		await watching;
 	}, 30_000);
 
+	it("coalesces concurrent join whole-screen requests and avoids perpetual full-screen eviction amplification for a lagging watcher", async () => {
+		const desktop = fakeDesktop();
+		const stream = new DesktopStream({ run: desktop.run, cycleEveryMs: 0, ringBytes: 64 * 40 * 4 * 2 });
+		const firstSink = sinkOf();
+		const stop = new AbortController();
+		const first = stream.watch(async () => "ok", firstSink, stop.signal);
+		await settle();
+		desktop.send(update(rawRect(0, 0, 64, 40, [1, 2, 3])));
+		await vi.waitFor(() => expect(firstSink.areas()).toHaveLength(1));
+
+		const wholesBeforeJoin = desktop.requests().filter((r) => r === "update whole").length;
+		const joiners = Array.from({ length: 6 }, () => stream.watch(async () => "ok", sinkOf(), stop.signal));
+		await settle();
+		expect(desktop.requests().filter((r) => r === "update whole").length).toBe(wholesBeforeJoin + 1);
+		desktop.send(update(rawRect(0, 0, 64, 40, [4, 5, 6])));
+		await settle();
+
+		const slowGate = gate();
+		const slowSink = sinkOf();
+		const slow = stream.watch(slowGate.release, slowSink, stop.signal);
+		await settle();
+		desktop.send(update(rawRect(0, 0, 64, 40, [7, 8, 9])));
+		await vi.waitFor(() => expect(slowGate.asked).toHaveLength(1));
+		const wholesBeforeEvict = desktop.requests().filter((r) => r === "update whole").length;
+		for (let i = 0; i < 20; i++) {
+			desktop.send(update(rawRect(0, 0, 64, 40, [i, i, i])));
+			await settle();
+		}
+		expect(desktop.requests().filter((r) => r === "update whole").length).toBe(wholesBeforeEvict + 1);
+
+		const wholesBeforeRecover = desktop.requests().filter((r) => r === "update whole").length;
+		slowGate.asked[0]!.resolve("ok");
+		await vi.waitFor(() => expect(slowGate.asked).toHaveLength(2));
+		expect(slowSink.messages).toHaveLength(0);
+		expect(desktop.requests().filter((r) => r === "update whole").length).toBe(wholesBeforeRecover + 1);
+		slowGate.asked[1]!.resolve("ok");
+		await vi.waitFor(() => expect(slowSink.messages.some((m) => m.type === STREAM_RECTS)).toBe(true));
+
+		stop.abort();
+		await Promise.all([first, slow, ...joiners]);
+	});
+
 	/** The most any one drain() may do (review r10 of #1746): its budget, plus the one unit that may start just under it
 	 * (the largest is the server's init with a 4 KiB name). */
 	const MAX_CHARGE_A_TURN = RFB_TAKE_PER_TURN + RFB_UNIT_COST + 24 + 4096;

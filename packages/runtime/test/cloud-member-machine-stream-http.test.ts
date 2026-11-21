@@ -614,4 +614,57 @@ describe("the live-picture listener (20260930745000)", () => {
 				}),
 		).toThrow("Member machine stream listener is invalid");
 	});
+
+	it("accepts a coalesced control frame in the upgrade head and rejects oversized upgrade heads with 404", async () => {
+		const signals: AbortSignal[] = [];
+		const { port } = await listener((ticket) => (ticket === TICKET ? waiting(signals) : null));
+
+		const rawCoalesced = async (extra: Buffer) => {
+			const socket = connect({ port, host: "127.0.0.1" });
+			await new Promise<void>((resolve) => socket.once("connect", () => resolve()));
+			const key = randomBytes(16).toString("base64");
+			socket.write(
+				Buffer.concat([
+					Buffer.from(
+						`GET /v1/member-machine-streams/${TICKET} HTTP/1.1\r\nHost: screens.qorpera.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: ${CLOUD_MEMBER_MACHINE_STREAM_PROTOCOL}\r\nOrigin: ${ORIGIN}\r\n\r\n`,
+					),
+					extra,
+				]),
+			);
+			let buf = Buffer.alloc(0);
+			let head = "";
+			const frames: { opcode: number; payload: Buffer }[] = [];
+			const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+			await new Promise<void>((resolve) => {
+				socket.on("data", (chunk: Buffer) => {
+					buf = Buffer.concat([buf, chunk]);
+					if (!head) {
+						const end = buf.indexOf("\r\n\r\n");
+						if (end < 0) return;
+						head = buf.subarray(0, end).toString("latin1");
+						buf = buf.subarray(end + 4);
+						resolve();
+					}
+					while (buf.byteLength >= 2) {
+						const len = (buf[1] as number) & 0x7f;
+						if (buf.byteLength < 2 + len) break;
+						frames.push({ opcode: (buf[0] as number) & 0x0f, payload: Buffer.from(buf.subarray(2, 2 + len)) });
+						buf = buf.subarray(2 + len);
+					}
+				});
+				socket.once("close", () => resolve());
+			});
+			return { socket, status: head.split("\r\n")[0] ?? "", frames, closed };
+		};
+
+		const ok = await rawCoalesced(masked(0x9, Buffer.from("coal")));
+		expect(ok.status).toBe("HTTP/1.1 101 Switching Protocols");
+		await vi.waitFor(() => expect(ok.frames.some((f) => f.opcode === 0xa && f.payload.toString() === "coal")).toBe(true));
+		ok.socket.destroy();
+		await vi.waitFor(() => expect(signals[0]?.aborted).toBe(true));
+
+		const oversized = await rawCoalesced(Buffer.alloc(200, 0x41));
+		expect(oversized.status).toBe("HTTP/1.1 404 Not Found");
+		await oversized.closed;
+	});
 });

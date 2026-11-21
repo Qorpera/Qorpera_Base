@@ -175,8 +175,11 @@ function closeFrame(code: number, reason: string): Buffer {
 }
 const now = (): number => performance.now();
 function refuse(socket: Socket): void {
-	socket.end("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-	socket.destroy();
+	// WHY: Let the 404 flush before destroying so proxies do not turn refusals into connection resets.
+	const late = globalThis.setTimeout(() => socket.destroy(), 1000);
+	late.unref();
+	socket.once("close", () => globalThis.clearTimeout(late));
+	socket.end("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", () => socket.destroy());
 }
 
 /** The executor's live-picture listener (see the top of this file). */
@@ -234,6 +237,9 @@ export class CloudMemberMachineStreamListener {
 	}
 
 	#upgrade(request: IncomingMessage, socket: Socket, head: Buffer): void {
+		// WHY: Guard upgraded sockets before refuse() or 101 write so an immediate peer reset cannot raise an uncaught error.
+		const preUpgradeError = () => socket.destroy();
+		socket.on("error", preUpgradeError);
 		const route = ROUTE.exec(request.url ?? "");
 		const key = request.headers["sec-websocket-key"];
 		const origin = request.headers.origin;
@@ -249,7 +255,7 @@ export class CloudMemberMachineStreamListener {
 			!/^[A-Za-z0-9+/]{22}==$/.test(key) ||
 			typeof origin !== "string" ||
 			!protocols.includes(CLOUD_MEMBER_MACHINE_STREAM_PROTOCOL) ||
-			head.byteLength > 0 ||
+			head.byteLength > CLIENT_FRAME_BYTES ||
 			this.#open.size >= (this.#options.maxStreams ?? 64)
 		) {
 			refuse(socket);
@@ -279,10 +285,11 @@ export class CloudMemberMachineStreamListener {
 		);
 		socket.setNoDelay(true);
 		socket.setTimeout(0);
-		this.#stream(socket, run);
+		socket.off("error", preUpgradeError);
+		this.#stream(socket, run, head);
 	}
 
-	#stream(socket: Socket, run: CloudMemberMachineStreamRun): void {
+	#stream(socket: Socket, run: CloudMemberMachineStreamRun, head: Buffer): void {
 		const stop = new AbortController();
 		const open = { stop, socket };
 		this.#open.add(open);
@@ -425,6 +432,9 @@ export class CloudMemberMachineStreamListener {
 			}
 			carry = null;
 		});
+		// WHY: Process any control frame coalesced with the HTTP upgrade packet after handlers are attached.
+		if (head.byteLength > 0) onData(head);
+		if (ended) return;
 		const way: MemberStreamWay = { unflushed: 0 };
 		const sink: CloudMemberMachineStreamSink = {
 			send: async (message) => {
