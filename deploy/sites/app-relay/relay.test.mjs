@@ -1936,3 +1936,504 @@ describe("app relay: the pure parts", () => {
 		assert.throws(() => createRelay({ api: "http://x", ...RELAY, hostSuffix: "preview.qorpera.com" }));
 	});
 });
+
+describe("app relay: concurrency hardening and backpressure", () => {
+	it("coalesces concurrent session lookups and isolates locked answers from open sessions past cache capacity", async (t) => {
+		const siteId = randomUUID();
+		const goodToken = "v".repeat(32);
+		let sessionCalls = 0;
+		const fetcher = async (url, init) => {
+			if (url.endsWith("/qorpera_site_app_session")) {
+				sessionCalls++;
+				await sleep(25);
+				const body = JSON.parse(init.body);
+				if (body.p_token === goodToken) return Response.json({ state: "open", siteId });
+				return Response.json({ state: "locked" });
+			}
+			return Response.json({ state: "refused" });
+		};
+		const relay = createRelay({
+			api: "http://database.invalid",
+			...RELAY,
+			hostSuffix: SUFFIX,
+			fetch: fetcher,
+			maxSessionsKept: 20,
+			log: () => {},
+		});
+		const port = await listen(relay);
+		t.after(() => new Promise((resolve) => relay.close(resolve)));
+		const get = (cookie) =>
+			new Promise((resolve, reject) => {
+				const req = request(
+					{ host: "127.0.0.1", port, path: "/", headers: { "x-forwarded-host": HOST, cookie } },
+					(res) => {
+						res.resume();
+						res.on("end", () => resolve(res.statusCode));
+					},
+				);
+				req.on("error", reject);
+				req.end();
+			});
+		const burst = await Promise.all(Array.from({ length: 24 }, () => get(`${GATE_COOKIE}=${goodToken}`)));
+		assert.deepEqual([...new Set(burst)], [503]);
+		assert.equal(sessionCalls, 1);
+		const afterWarm = sessionCalls;
+		for (let i = 0; i < 40; i++) {
+			const bad = `x${String(i).padStart(31, "0")}`;
+			assert.equal(await get(`${GATE_COOKIE}=${bad}`), 401);
+		}
+		const beforeRecheck = sessionCalls;
+		assert.equal(await get(`${GATE_COOKIE}=${goodToken}`), 503);
+		assert.equal(sessionCalls, beforeRecheck);
+		assert.ok(sessionCalls > afterWarm);
+	});
+
+	it("reserves connect capacity for trusted exit addresses under a multi-IP untrusted flood and caps refusal tracking", async (t) => {
+		let releaseGate;
+		const gate = new Promise((resolve) => {
+			releaseGate = resolve;
+		});
+		const fetcher = async (_url, init) => {
+			const body = JSON.parse(init.body);
+			if (body.p_slug === "shop") return Response.json({ state: "ok", key: null, port: 3000, siteId: randomUUID() });
+			await gate;
+			return Response.json({ state: "refused" });
+		};
+		const relay = createRelay({
+			api: "http://database.invalid",
+			...RELAY,
+			hostSuffix: SUFFIX,
+			fetch: fetcher,
+			connectLimit: { refusedPerMinute: 4, total: 40 },
+			maxRefusalsKept: 8,
+			trustedAddresses: ["192.0.2.50"],
+			log: () => {},
+		});
+		const port = await listen(relay);
+		const sockets = [];
+		t.after(async () => {
+			releaseGate();
+			for (const socket of sockets) socket.destroy();
+			await new Promise((resolve) => relay.close(resolve));
+		});
+		const dial = (slug, ip) => {
+			const { socket } = handshake(
+				port,
+				`${slug}${SUFFIX}`,
+				"/.qorpera/connect",
+				`${bearer("k".repeat(43))}CF-Connecting-IP: ${ip}\r\n`,
+			);
+			socket.on("error", () => {});
+			sockets.push(socket);
+			return answerHead(socket).then((h) => h.status);
+		};
+		const attackers = Array.from({ length: 50 }, (_, i) => dial(`atk${i}`, `203.0.113.${(i % 5) + 1}`));
+		await sleep(60);
+		assert.equal(await dial("shop", "192.0.2.50"), 101);
+		releaseGate();
+		const statuses = await Promise.all(attackers);
+		assert.equal(statuses.filter((s) => s === 101).length, 30);
+		assert.equal(statuses.filter((s) => s === 429).length, 20);
+	});
+
+	it("delivers pipelined head frames after handlers attach and decodes fragmented masked frames cleanly", async () => {
+		class FakeSocket extends EventEmitter {
+			writableLength = 0;
+			destroyed = false;
+			setNoDelay() {}
+			setTimeout() {}
+			setKeepAlive() {}
+			resume() {}
+			pause() {}
+			write() {
+				return true;
+			}
+			end() {
+				this.emit("close");
+			}
+			destroy() {
+				this.destroyed = true;
+				this.emit("close");
+			}
+		}
+		const payload = randomBytes(128 * 1024 + 7);
+		const framed = encodeFrame(0x2, payload, { mask: randomBytes(4) });
+		const sock1 = new FakeSocket();
+		let gotHead = null;
+		const ws1 = new WebSocketConnection(sock1, framed);
+		ws1.onMessage = (msg) => {
+			gotHead = msg;
+		};
+		await sleep(10);
+		assert.ok(gotHead && gotHead.equals(payload));
+		const sock2 = new FakeSocket();
+		let gotFrag = null;
+		const ws2 = new WebSocketConnection(sock2, null);
+		ws2.onMessage = (msg) => {
+			gotFrag = msg;
+		};
+		for (let at = 0; at < framed.length; at += 513) sock2.emit("data", framed.subarray(at, at + 513));
+		assert.ok(gotFrag && gotFrag.equals(payload));
+	});
+
+	it("queues concurrent uploads under tight maxQueuedBytes, survives delayed-read uploads and early responses, allows steadily draining slow visitors, and times out mid-body stalls", async (t) => {
+		const siteId = randomUUID();
+		const token = "u".repeat(32);
+		let releaseHold = null;
+		const app = createServer((req, res) => {
+			if (req.url === "/hold") {
+				res.writeHead(200, { "content-type": "text/plain" });
+				res.write("hold");
+				const beat = setInterval(() => {
+					if (!res.destroyed && !res.writableEnded) res.write(".");
+				}, 150);
+				res.on("close", () => clearInterval(beat));
+				releaseHold = () => {
+					clearInterval(beat);
+					if (!res.destroyed && !res.writableEnded) res.end("ok");
+				};
+				return;
+			}
+			if (req.url === "/stall-body") {
+				res.writeHead(200, { "content-type": "text/plain" });
+				res.write("partial");
+				return;
+			}
+			if (req.url === "/early") {
+				res.writeHead(200, { "content-type": "text/plain" });
+				res.end("early-ok");
+				req.resume();
+				return;
+			}
+			if (req.url === "/delayed-upload") {
+				req.pause();
+				setTimeout(() => {
+					let bytes = 0;
+					req.on("data", (chunk) => {
+						bytes += chunk.length;
+					});
+					req.on("end", () => {
+						res.writeHead(200, { "content-type": "application/json" });
+						res.end(JSON.stringify({ bytes }));
+					});
+					req.resume();
+				}, 150);
+				return;
+			}
+			if (req.url === "/steady-big") {
+				const total = 12 * 1024 * 1024;
+				res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(total) });
+				const chunk = Buffer.alloc(64 * 1024, 0x41);
+				let left = total / chunk.length;
+				const pump = () => {
+					while (left > 0) {
+						left--;
+						if (!res.write(chunk)) {
+							res.once("drain", pump);
+							return;
+						}
+					}
+					res.end();
+				};
+				pump();
+				return;
+			}
+			let bytes = 0;
+			req.on("data", (chunk) => {
+				bytes += chunk.length;
+			});
+			req.on("end", () => {
+				setTimeout(() => {
+					res.writeHead(200, { "content-type": "application/json" });
+					res.end(JSON.stringify({ bytes }));
+				}, 40);
+			});
+		});
+		const appPort = await listen(app);
+		const claim = `c${"a".repeat(31)}`;
+		const key = `k${"b".repeat(31)}`;
+		const fetcher = async (url, init) => {
+			const body = JSON.parse(init.body);
+			if (url.endsWith("/qorpera_site_app_connect")) {
+				return Response.json({ state: "ok", siteId, port: appPort, key: body.p_secret === claim ? key : null });
+			}
+			if (url.endsWith("/qorpera_site_app_session")) {
+				return Response.json(body.p_token === token ? { state: "open", siteId } : { state: "locked" });
+			}
+			return Response.json({ state: "locked" });
+		};
+		const relay = createRelay({
+			api: "http://database.invalid",
+			...RELAY,
+			hostSuffix: SUFFIX,
+			fetch: fetcher,
+			maxQueuedBytes: 512 * 1024,
+			responseTimeoutMs: 800,
+			pausedMs: 8_000,
+			sharedPausedMs: 600,
+			log: () => {},
+		});
+		const relayPort = await listen(relay);
+		const front = createServer((_req, res) => {
+			res.writeHead(404);
+			res.end();
+		});
+		front.on("upgrade", (req, sock, head) => {
+			const up = connect(relayPort, "127.0.0.1", () => {
+				const lines = [`GET ${req.url} HTTP/1.1`];
+				for (let i = 0; i < req.rawHeaders.length; i += 2) lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
+				lines.push(`x-forwarded-host: ${HOST}`);
+				up.write(`${lines.join("\r\n")}\r\n\r\n`);
+				if (head.length) up.write(head);
+				sock.pipe(up);
+				up.pipe(sock);
+			});
+			up.on("error", () => sock.destroy());
+			sock.on("error", () => up.destroy());
+		});
+		const frontPort = await listen(front);
+		const child = spawn(process.execPath, [CLIENT, "shop", String(appPort), claim, SUFFIX], {
+			env: { ...process.env, QORPERA_APP_RELAY_ORIGIN: `ws://127.0.0.1:${frontPort}` },
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		let logs = "";
+		child.stdout.on("data", (d) => {
+			logs += d.toString();
+		});
+		t.after(async () => {
+			child.kill("SIGKILL");
+			front.closeAllConnections();
+			await new Promise((r) => front.close(r));
+			relay.closeAllConnections();
+			await new Promise((r) => relay.close(r));
+			app.closeAllConnections();
+			await new Promise((r) => app.close(r));
+		});
+		await until(() => relay.isConnected("shop"), "link program to connect", 5_000);
+		const payload = Buffer.alloc(128 * 1024, 0x5a);
+		const post = (path = "/upload", body = payload) =>
+			new Promise((resolve, reject) => {
+				const req = request(
+					{
+						host: "127.0.0.1",
+						port: relayPort,
+						path,
+						method: "POST",
+						headers: {
+							"x-forwarded-host": HOST,
+							cookie: `${GATE_COOKIE}=${token}`,
+							"content-length": String(body.length),
+						},
+					},
+					(res) => {
+						let text = "";
+						res.setEncoding("utf8");
+						res.on("data", (c) => {
+							text += c;
+						});
+						res.on("end", () => resolve({ status: res.statusCode, text }));
+					},
+				);
+				req.on("error", reject);
+				req.end(body);
+			});
+		const uploads = await Promise.all(Array.from({ length: 24 }, () => post()));
+		for (const u of uploads) {
+			assert.equal(u.status, 200, u.text);
+			assert.equal(JSON.parse(u.text).bytes, payload.length);
+		}
+		assert.equal(logs.includes("Lost the connection"), false);
+		const bigUpload = Buffer.alloc(3 * 1024 * 1024, 0x43);
+		const delayed = await post("/delayed-upload", bigUpload);
+		assert.equal(delayed.status, 200, delayed.text);
+		assert.equal(JSON.parse(delayed.text).bytes, bigUpload.length);
+		const early = await post("/early", Buffer.alloc(768 * 1024, 0x44));
+		assert.equal(early.status, 200);
+		assert.equal(early.text, "early-ok");
+		const beforePauses = relay.pauseCount("shop");
+		const heldReq = new Promise((resolve, reject) => {
+			const req = request(
+				{
+					host: "127.0.0.1",
+					port: relayPort,
+					path: "/hold",
+					method: "GET",
+					headers: { "x-forwarded-host": HOST, cookie: `${GATE_COOKIE}=${token}` },
+				},
+				(res) => {
+					let text = "";
+					res.setEncoding("utf8");
+					res.on("data", (c) => {
+						text += c;
+					});
+					res.on("end", () => resolve({ status: res.statusCode, text }));
+				},
+			);
+			req.on("error", reject);
+			req.end();
+		});
+		await until(() => releaseHold !== null, "the concurrent hold request to reach the app", 3_000);
+		let slowSock;
+		const slowSteady = new Promise((resolve, reject) => {
+			slowSock = connect(relayPort, "127.0.0.1", () => {
+				slowSock.pause();
+				slowSock.write(
+					`GET /steady-big HTTP/1.1\r\nHost: ${HOST}\r\nX-Forwarded-Host: ${HOST}\r\nCookie: ${GATE_COOKIE}=${token}\r\nConnection: close\r\n\r\n`,
+				);
+			});
+			let bytes = 0;
+			slowSock.on("data", (c) => {
+				bytes += c.length;
+				slowSock.pause();
+				setTimeout(() => {
+					if (!slowSock.destroyed) slowSock.resume();
+				}, 3);
+			});
+			slowSock.on("end", () => resolve(bytes));
+			slowSock.on("error", reject);
+		});
+		await until(() => relay.pauseCount("shop") > beforePauses, "the slow download to pause the link", 3_000);
+		slowSock.resume();
+		const slowBytes = await slowSteady;
+		releaseHold();
+		const heldRes = await heldReq;
+		assert.ok(relay.pauseCount("shop") > beforePauses);
+		assert.ok(slowBytes > 12 * 1024 * 1024, `expected full steady download, got ${slowBytes}`);
+		assert.equal(heldRes.status, 200);
+		assert.ok(heldRes.text.startsWith("hold") && heldRes.text.endsWith("ok"));
+		const stalledEnded = await new Promise((resolve) => {
+			const req = request(
+				{
+					host: "127.0.0.1",
+					port: relayPort,
+					path: "/stall-body",
+					headers: { "x-forwarded-host": HOST, cookie: `${GATE_COOKIE}=${token}` },
+				},
+				(res) => {
+					res.on("data", () => {});
+					res.on("end", () => resolve(false));
+					res.on("close", () => resolve(!res.complete));
+				},
+			);
+			req.on("error", () => resolve(true));
+			req.end();
+		});
+		assert.equal(stalledEnded, true);
+		assert.equal(relay.isConnected("shop"), true);
+	});
+
+	it("keeps a shared slow stream alive on byte-level writeQueueSize progress while writableLength is static, then cuts off once stalled", async (t) => {
+		const siteId = randomUUID();
+		const token = "q".repeat(32);
+		const key = `k${"q".repeat(31)}`;
+		const programId = "p".repeat(43);
+		const fetcher = async (url, init) => {
+			const body = JSON.parse(init.body);
+			if (url.endsWith("/qorpera_site_app_connect")) return Response.json({ state: "ok", siteId, port: 3000, key: null });
+			if (url.endsWith("/qorpera_site_app_session"))
+				return Response.json(body.p_token === token ? { state: "open", siteId } : { state: "locked" });
+			return Response.json({ state: "locked" });
+		};
+		const relay = createRelay({
+			api: "http://database.invalid",
+			...RELAY,
+			hostSuffix: SUFFIX,
+			fetch: fetcher,
+			responseTimeoutMs: 500,
+			pausedMs: 2_000,
+			sharedPausedMs: 60,
+			log: () => {},
+		});
+		const relayPort = await listen(relay);
+		let progSocket = null;
+		t.after(async () => {
+			progSocket?.destroy();
+			relay.closeAllConnections();
+			await new Promise((r) => relay.close(r));
+		});
+		const prog = await rawUpgrade(
+			relayPort,
+			HOST,
+			"/.qorpera/connect",
+			`Authorization: Bearer ${key}\r\nX-Qorpera-Program: ${programId}\r\n`,
+		);
+		progSocket = prog.socket;
+		assert.equal(prog.status, 101);
+		const frames = frameReader(prog.socket, prog.rest);
+		const hello = decodeMessage((await frames.message()).payload);
+		assert.equal(hello.type, TYPE.hello);
+
+		const makeReq = (path) => {
+			const req = new EventEmitter();
+			req.method = "GET";
+			req.url = path;
+			req.headers = { "x-forwarded-host": HOST, cookie: `${GATE_COOKIE}=${token}` };
+			req.rawHeaders = ["x-forwarded-host", HOST, "cookie", `${GATE_COOKIE}=${token}`];
+			req.resume = () => {};
+			req.pause = () => {};
+			return req;
+		};
+		const slowRes = new EventEmitter();
+		slowRes.writableLength = 512 * 1024;
+		slowRes.socket = { _handle: { writeQueueSize: 512 * 1024 } };
+		slowRes.destroyed = false;
+		slowRes.writeHead = () => {};
+		slowRes.flushHeaders = () => {};
+		slowRes.write = () => false;
+		slowRes.end = () => {};
+		slowRes.destroy = () => {
+			slowRes.destroyed = true;
+		};
+
+		const req1 = makeReq("/mobile-download");
+		relay.emit("request", req1, slowRes);
+		const head1 = decodeMessage((await frames.message()).payload);
+		assert.equal(head1.type, TYPE.head);
+		prog.socket.write(
+			encodeFrame(
+				0x2,
+				encodeMessage(
+					TYPE.response,
+					head1.stream,
+					Buffer.from(JSON.stringify({ status: 200, headers: [["content-type", "application/octet-stream"]] })),
+				),
+				{ mask: mask() },
+			),
+		);
+		prog.socket.write(
+			encodeFrame(0x2, encodeMessage(TYPE.body, head1.stream, Buffer.alloc(64 * 1024, 0x41)), { mask: mask() }),
+		);
+		await until(() => relay.pauseCount("shop") === 1, "slow stream to pause the link", 2_000);
+
+		const fastRes = new EventEmitter();
+		fastRes.writableLength = 0;
+		fastRes.socket = { _handle: { writeQueueSize: 0 } };
+		fastRes.destroyed = false;
+		fastRes.status = 0;
+		fastRes.ended = false;
+		fastRes.writeHead = (s) => {
+			fastRes.status = s;
+		};
+		fastRes.flushHeaders = () => {};
+		fastRes.write = () => true;
+		fastRes.end = () => {
+			fastRes.ended = true;
+		};
+		fastRes.destroy = () => {
+			fastRes.destroyed = true;
+		};
+		relay.emit("request", makeReq("/second"), fastRes);
+
+		for (let i = 0; i < 6; i++) {
+			await sleep(25);
+			slowRes.socket._handle.writeQueueSize -= 8192;
+		}
+		assert.equal(slowRes.destroyed, false);
+		assert.ok(
+			relay.sharedProgressChecks("shop") >= 2,
+			`expected >= 2 tightened progress checks, got ${relay.sharedProgressChecks("shop")}`,
+		);
+		await until(() => slowRes.destroyed, "stalled shared stream to be destroyed once writeQueueSize stops moving", 1_000);
+		assert.equal(fastRes.destroyed, false);
+	});
+});

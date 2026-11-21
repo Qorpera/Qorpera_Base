@@ -141,11 +141,13 @@ to start with any other role), `QORPERA_APP_HOST_SUFFIX` (`-preview.qorpera.com`
   completes; a refusal still completes it and closes with 4001, the only answer a WebSocket client can read; a secret
   or id that is not of the platform's form is refused without asking; the answer's key, the link's URL and its port go
   to the program in the first message), `client.mjs`, `unlock` (POST form `password`, `next`), anything else 404.
-  Connects in flight are capped in all (512). Refused connects are counted per address (an IPv6 address by its /64)
-  and link, 10 a minute, then 429 for that address and link; never for the agent exits' public addresses
-  (`QORPERA_APP_RELAY_TRUSTED_ADDRESSES`, which every company's machines share).
+  Connects in flight are capped in all (512), with untrusted connects additionally capped per address and reserving
+  capacity for trusted exit addresses so one cycling address cannot starve other links. Refused connects are counted per
+  address (an IPv6 address by its /64) and link, 10 a minute (and per address across links), then 429; never for the
+  agent exits' public addresses (`QORPERA_APP_RELAY_TRUSTED_ADDRESSES`, which every company's machines share).
 - The gate: cookie `__Host-qorpera_app` (HttpOnly, Secure, SameSite=Lax, Path=/, the session's max age), checked with
-  `qorpera_site_app_session` (an open answer kept 30 s in memory, a locked one 5 s). No valid cookie: the password page
+  `qorpera_site_app_session` (open answers kept 30 s LRU and locked answers 5 s in a separate cache so invalid cookies
+  never evict active sessions, with concurrent cold lookups coalesced). No valid cookie: the password page
   (401, English or Danish as site-serve's, same look); `unlock` → `qorpera_site_app_unlock(slug, password,
   CF-Connecting-IP)` → cookie → 303 to `next` (a same-host path only). 429 when limited.
 - A change from another site (step 5, release 5.1; SITE-HOSTS.md): before the gate, any method but GET, HEAD and
@@ -158,9 +160,12 @@ to start with any other role), `QORPERA_APP_HOST_SUFFIX` (`-preview.qorpera.com`
   program connected for the very site the session opens (`siteId`). On a mismatch the session is asked again, past the
   kept answer: locked → the password page; the program's site after all → forwarded; another site still → the program
   is checked with its key, dropped (4001) only when the database no longer takes it, and the visitor gets 503. The request line, headers and body as frames; the response streamed
-  back. No program: 503 "This app is not running right now". No response head in 60 s: 504. Request bodies ≤ 10 MiB.
-  A visitor who reads nothing for 30 s while the program waits on them is cut off, so the program serves everyone else
-  again. Hop-by-hop headers dropped both ways. To the app: the gate cookie taken out of `Cookie`, `X-Forwarded-Proto:
+  back. No program: 503 "This app is not running right now". No response head in 60 s: 504; 60 s without a body chunk
+  after the head: the connection ends. Request bodies ≤ 10 MiB, queued across the link socket with per-stream
+  backpressure so concurrent upload bursts do not trip the 8 MiB send cap.
+  A visitor who stops reading while the program waits on them (after 256 KiB per stream, 2 MiB per link, or 32 MiB
+  across the relay for links above their share) is cut off after 30 s — or after 4 s without forward progress when other
+  visitors share the program — so the program serves everyone else again. Hop-by-hop headers dropped both ways. To the app: the gate cookie taken out of `Cookie`, `X-Forwarded-Proto:
   https`, `X-Forwarded-Host`, `X-Forwarded-For` = the visitor's CF-Connecting-IP only, and `Transfer-Encoding: chunked`
   when the visitor's body came chunked (so the app never reads a body as a request of its own). From the app: the
   app's cache headers (`Cache-Control`, `Expires`, `CDN-Cache-Control`, `Cloudflare-CDN-Cache-Control`,
