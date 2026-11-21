@@ -4,6 +4,7 @@ import type {
 	CodingRepositoryCredentialScope,
 	CodingRepositoryCredentials,
 } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
+import { withTimeoutSignal } from "./timeout-signal.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const OWNER = /^[A-Za-z0-9_.:-]{1,120}$/;
@@ -68,46 +69,47 @@ export class BrokerRepositoryCredentials implements CodingRepositoryCredentials 
 		repository: CloudCodingRepository,
 		signal: AbortSignal,
 	): Promise<string> {
-		const checked = AbortSignal.any([signal, AbortSignal.timeout(15000)]);
 		let bytes: Uint8Array | undefined;
 		try {
-			const response = await this.#fetch(
-				`${this.#origin}/v1/repository-credentials?company=${scope.companyId.toLowerCase()}`,
-				{
-					method: "POST",
-					redirect: "error",
-					signal: checked,
-					headers: { authorization: `Bearer ${this.#executorToken}`, "content-type": "application/json" },
-					body: JSON.stringify({
-						schema: "qorpera.coding-repository-credential-request/v1",
-						workerId: scope.workerId.toLowerCase(),
-						leaseToken: scope.leaseToken.toLowerCase(),
-						executorOwner: this.#owner,
-						repository,
-					}),
-				},
-			);
-			if (response.status !== 200) {
-				await response.body?.cancel().catch(() => undefined);
-				throw new Error("refused");
-			}
-			bytes = await readBoundedCloudResponse(response, MAX_RESPONSE_BYTES, checked);
-			const value = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(bytes)) as unknown;
-			if (
-				!value ||
-				typeof value !== "object" ||
-				Array.isArray(value) ||
-				Object.keys(value).sort().join() !== "schema,token"
-			)
-				throw new Error("invalid");
-			const answer = value as { schema: unknown; token: unknown };
-			if (
-				answer.schema !== "qorpera.coding-repository-credential/v1" ||
-				typeof answer.token !== "string" ||
-				!REPOSITORY_TOKEN.test(answer.token)
-			)
-				throw new Error("invalid");
-			return answer.token;
+			return await withTimeoutSignal(signal, 15000, async (checked) => {
+				const response = await this.#fetch(
+					`${this.#origin}/v1/repository-credentials?company=${scope.companyId.toLowerCase()}`,
+					{
+						method: "POST",
+						redirect: "error",
+						signal: checked,
+						headers: { authorization: `Bearer ${this.#executorToken}`, "content-type": "application/json" },
+						body: JSON.stringify({
+							schema: "qorpera.coding-repository-credential-request/v1",
+							workerId: scope.workerId.toLowerCase(),
+							leaseToken: scope.leaseToken.toLowerCase(),
+							executorOwner: this.#owner,
+							repository,
+						}),
+					},
+				);
+				if (response.status !== 200) {
+					await response.body?.cancel().catch(() => undefined);
+					throw new Error("refused");
+				}
+				bytes = await readBoundedCloudResponse(response, MAX_RESPONSE_BYTES, checked);
+				const value = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(bytes)) as unknown;
+				if (
+					!value ||
+					typeof value !== "object" ||
+					Array.isArray(value) ||
+					Object.keys(value).sort().join() !== "schema,token"
+				)
+					throw new Error("invalid");
+				const answer = value as { schema: unknown; token: unknown };
+				if (
+					answer.schema !== "qorpera.coding-repository-credential/v1" ||
+					typeof answer.token !== "string" ||
+					!REPOSITORY_TOKEN.test(answer.token)
+				)
+					throw new Error("invalid");
+				return answer.token;
+			});
 		} catch {
 			throw new Error("CODING_REPOSITORY_CREDENTIAL_UNAVAILABLE");
 		} finally {
