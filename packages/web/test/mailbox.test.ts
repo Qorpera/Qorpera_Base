@@ -3155,4 +3155,64 @@ describe("Digital Post", () => {
 		expect(main.querySelector(".mailbox-address.is-digital-post")).not.toBeNull();
 		expect(button(main, "Choose who reads it")).toBeUndefined();
 	});
+
+	it("keeps the latest watched letter across same-tick watch switches and aborts folder reads on dispose", async () => {
+		const f = fixture();
+		const controller = new CompanyController(f.api, profileA, userA.id);
+		cleanup.push(() => controller.stop());
+		const fake = mailFake(f);
+		fake.addresses = [ADDRESS];
+		fake.digitalPost = digitalPostConnected({ letters: 2 });
+		const folder = postFolder([3, 7]);
+		const mail = new CompanyMail(
+			controller,
+			f.cloud,
+			accountsFake(),
+			(state) => controller.store.set({ mail: state }),
+			() => folder.folder,
+		);
+		cleanup.push(() => mail.dispose());
+		await mail.open();
+		await vi.waitFor(() => expect(controller.store.get().mail?.digitalPost?.letters).toHaveLength(2));
+		mail.watch([{}], [], () => true, [letterFolder(3)]);
+		mail.watch([{}], [], () => true, [letterFolder(7)]);
+		await vi.waitFor(() =>
+			expect(controller.store.get().mail?.digitalPost?.open[letterFolder(7)]?.status).toBe("ready"),
+		);
+		expect(controller.store.get().mail?.digitalPost?.open[letterFolder(3)]).toBeUndefined();
+
+		let receivedSignal: AbortSignal | undefined;
+		folder.folder.read.mockImplementationOnce(
+			(_path: string, signal?: AbortSignal) =>
+				new Promise(() => {
+					receivedSignal = signal;
+				}),
+		);
+		mail.watch([{}], [], () => true, [letterFolder(3)]);
+		await vi.waitFor(() => expect(receivedSignal).toBeDefined());
+		expect(receivedSignal!.aborted).toBe(false);
+		mail.dispose();
+		expect(receivedSignal!.aborted).toBe(true);
+	});
+
+	it("reuses cached date formatters across many mailbox rows and redraws", async () => {
+		setTimeZonePreference("UTC");
+		try {
+			const { main } = await mailbox((fake) => {
+				fake.threads = Array.from({ length: 20 }, (_, index) =>
+					summary(index + 1, { state: "handled", lastAt: at(index + 1) }),
+				);
+			});
+			await vi.waitFor(() => expect(lines(main)).toHaveLength(20));
+			const spy = vi.spyOn(Intl, "DateTimeFormat");
+			const search = main.querySelector<HTMLInputElement>(".mailbox-search input")!;
+			type(search, "Subject");
+			expect(lines(main)).toHaveLength(20);
+			type(search, "");
+			expect(lines(main)).toHaveLength(20);
+			expect(spy).not.toHaveBeenCalled();
+		} finally {
+			setTimeZonePreference("system");
+		}
+	});
 });

@@ -191,6 +191,7 @@ export class CompanyMail {
 	readonly #accounts: MailAccounts;
 	readonly #publish: (state: MailState) => void;
 	readonly #folder: MailFolder | undefined;
+	readonly #stop = new AbortController();
 	#state: MailState | undefined;
 	/** The version of the letters index last read: it is read again only when it changed. */
 	#indexVersion: string | undefined;
@@ -269,11 +270,37 @@ export class CompanyMail {
 
 	dispose(): void {
 		this.#disposed = true;
+		this.#stop.abort();
 		clearInterval(this.#companyTimer);
 		clearInterval(this.#pageTimer);
 		window.removeEventListener("focus", this.#onFront);
 		document.removeEventListener("visibilitychange", this.#onFront);
 		if (readers.get(this.#company) === this) readers.delete(this.#company);
+	}
+
+	async #withFolderDeadline<T>(use: (signal: AbortSignal) => Promise<T>): Promise<T> {
+		const scope = new AbortController();
+		const companySignal = this.#company.signal;
+		const stopSignal = this.#stop.signal;
+		const onCompanyAbort = () => scope.abort(companySignal.reason);
+		const onStopAbort = () => scope.abort(stopSignal.reason);
+		if (companySignal.aborted) onCompanyAbort();
+		else companySignal.addEventListener("abort", onCompanyAbort, { once: true });
+		if (stopSignal.aborted) onStopAbort();
+		else stopSignal.addEventListener("abort", onStopAbort, { once: true });
+		const timer = scope.signal.aborted
+			? undefined
+			: setTimeout(
+					() => scope.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+					30_000,
+				);
+		try {
+			return await use(scope.signal);
+		} finally {
+			clearTimeout(timer);
+			companySignal.removeEventListener("abort", onCompanyAbort);
+			stopSignal.removeEventListener("abort", onStopAbort);
+		}
 	}
 
 	#set(change: (state: MailState) => MailState): void {
@@ -351,20 +378,21 @@ export class CompanyMail {
 	async #readIndex(): Promise<void> {
 		if (!this.#folder || this.#closed) return;
 		try {
-			const signal = AbortSignal.any([this.#company.signal, AbortSignal.timeout(30_000)]);
-			const folder = this.#folder(signal);
-			const read = await folder.read(DIGITAL_POST_INDEX_PATH, signal);
-			const file = read.entry?.kind === "file" ? read.entry.file : null;
-			if (!read.entry || !file || file.bytes > DIGITAL_POST_INDEX_MAX_BYTES) {
-				this.#indexVersion = undefined;
-				this.#set((state) => ({ ...state, digitalPost: { ...digitalPostOf(state), letters: [] } }));
-				return;
-			}
-			if (read.entry.version === this.#indexVersion) return;
-			const bytes = await folder.readFile(file, signal, DIGITAL_POST_INDEX_MAX_BYTES);
-			const letters = parseDigitalPostLetters(new TextDecoder().decode(bytes));
-			this.#indexVersion = read.entry.version;
-			this.#set((state) => ({ ...state, digitalPost: { ...digitalPostOf(state), letters } }));
+			await this.#withFolderDeadline(async (signal) => {
+				const folder = this.#folder!(signal);
+				const read = await folder.read(DIGITAL_POST_INDEX_PATH, signal);
+				const file = read.entry?.kind === "file" ? read.entry.file : null;
+				if (!read.entry || !file || file.bytes > DIGITAL_POST_INDEX_MAX_BYTES) {
+					this.#indexVersion = undefined;
+					this.#set((state) => ({ ...state, digitalPost: { ...digitalPostOf(state), letters: [] } }));
+					return;
+				}
+				if (read.entry.version === this.#indexVersion) return;
+				const bytes = await folder.readFile(file, signal, DIGITAL_POST_INDEX_MAX_BYTES);
+				const letters = parseDigitalPostLetters(new TextDecoder().decode(bytes));
+				this.#indexVersion = read.entry.version;
+				this.#set((state) => ({ ...state, digitalPost: { ...digitalPostOf(state), letters } }));
+			});
 		} catch {
 			// The list keeps what was read before.
 		}
@@ -387,20 +415,21 @@ export class CompanyMail {
 						: state,
 				);
 			try {
-				const signal = AbortSignal.any([this.#company.signal, AbortSignal.timeout(30_000)]);
-				const folder = this.#folder(signal);
-				const read = await folder.read(`${folderPath}/letter.md`, signal);
-				const file = read.entry?.kind === "file" ? read.entry.file : null;
-				if (!file) {
-					put({ status: "gone" });
-					return;
-				}
-				if (file.bytes > DIGITAL_POST_LETTER_MAX_BYTES) {
-					put({ status: "large" });
-					return;
-				}
-				const bytes = await folder.readFile(file, signal, DIGITAL_POST_LETTER_MAX_BYTES);
-				put({ status: "ready", letter: parseDigitalPostLetterText(new TextDecoder().decode(bytes)) });
+				await this.#withFolderDeadline(async (signal) => {
+					const folder = this.#folder!(signal);
+					const read = await folder.read(`${folderPath}/letter.md`, signal);
+					const file = read.entry?.kind === "file" ? read.entry.file : null;
+					if (!file) {
+						put({ status: "gone" });
+						return;
+					}
+					if (file.bytes > DIGITAL_POST_LETTER_MAX_BYTES) {
+						put({ status: "large" });
+						return;
+					}
+					const bytes = await folder.readFile(file, signal, DIGITAL_POST_LETTER_MAX_BYTES);
+					put({ status: "ready", letter: parseDigitalPostLetterText(new TextDecoder().decode(bytes)) });
+				});
 			} catch (error) {
 				// A letter already shown stays as it was; one never read says why.
 				const was = this.#state?.digitalPost?.open[folderPath];
@@ -440,25 +469,29 @@ export class CompanyMail {
 				if (document.visibilityState === "visible") void this.#refreshPage();
 			}, PAGE_POLL_MS);
 		queueMicrotask(() => {
+			if (this.#closed) return;
 			const state = this.#state ?? EMPTY;
-			for (const [key, request] of lists)
+			const current = this.#watched;
+			for (const [key, request] of current.lists)
 				if (freshLists.has(key) || !state.lists[key]) void this.#readFirst(key, request);
-			for (const thread of opened) if (fresh.has(thread) || !state.threads[thread]) void this.#readThread(thread);
-			for (const letter of openLetters)
+			for (const thread of current.threads)
+				if (fresh.has(thread) || !state.threads[thread]) void this.#readThread(thread);
+			for (const letter of current.letters)
 				if (freshLetters.includes(letter) || !digitalPostOf(state).open[letter]) void this.#readLetter(letter);
 			// A closed letter's read is let go too.
-			if (Object.keys(digitalPostOf(state).open).some((letter) => !openLetters.has(letter)))
+			const currentLetters = current.letters;
+			if (Object.keys(digitalPostOf(state).open).some((letter) => !currentLetters.has(letter)))
 				this.#set((now) => ({
 					...now,
 					digitalPost: {
 						...digitalPostOf(now),
 						open: Object.fromEntries(
-							Object.entries(digitalPostOf(now).open).filter(([letter]) => openLetters.has(letter)),
+							Object.entries(digitalPostOf(now).open).filter(([letter]) => currentLetters.has(letter)),
 						),
 					},
 				}));
 			// A closed thread's read is let go: opening it again reads it again anyway.
-			const open = this.#watched.threads;
+			const open = current.threads;
 			if (Object.keys(state.threads).some((thread) => !open.has(thread)))
 				this.#set((now) => ({
 					...now,
@@ -469,13 +502,16 @@ export class CompanyMail {
 
 	async #refreshPage(): Promise<void> {
 		const { lists, threads, letters } = this.#watched;
-		await Promise.all([...lists].map(([key, request]) => this.#readFirst(key, request)));
-		await Promise.all([...threads].map((thread) => this.#readThread(thread)));
 		// The letters list follows the page too: a letter written into the folder shows within the page's read.
 		const connection = this.#state?.digitalPost?.connection;
-		if (connection?.connected || (connection?.letters ?? 0) > 0)
-			await this.#once("digital-post-index", () => this.#readIndex());
-		await Promise.all([...letters].map((letter) => this.#readLetter(letter)));
+		await Promise.all([
+			...[...lists].map(([key, request]) => this.#readFirst(key, request)),
+			...[...threads].map((thread) => this.#readThread(thread)),
+			...(connection?.connected || (connection?.letters ?? 0) > 0
+				? [this.#once("digital-post-index", () => this.#readIndex())]
+				: []),
+			...[...letters].map((letter) => this.#readLetter(letter)),
+		]);
 	}
 
 	/** Reads a list's first page, and as many pages after it as the list shows, each from where the one before ends: a
@@ -489,6 +525,7 @@ export class CompanyMail {
 				const read = [...page.threads];
 				let pages = 1;
 				while (pages < shown && page.nextBefore) {
+					if (this.#closed || !this.#watched.lists.has(key)) return;
 					page = await readMailThreads(this.#cloud, this.#environmentId, {
 						...request,
 						before: page.nextBefore,
@@ -659,6 +696,7 @@ export class CompanyMail {
 				const reaches = (messages: readonly MailMessage[]) =>
 					upTo === undefined || messages.some((message) => messageKey(message) === messageKey(upTo));
 				while (read.thread !== undefined && read.nextBefore && !reaches(read.messages)) {
+					if (this.#closed || !this.#watched.threads.has(thread)) return;
 					const page = await readMailThread(this.#cloud, this.#environmentId, thread, read.nextBefore);
 					if (page.thread === undefined) {
 						read = page;
