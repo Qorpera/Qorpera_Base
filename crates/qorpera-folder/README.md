@@ -52,6 +52,13 @@ The company folder inside a Qorpera machine, and the node side of its link.
   (`>= 3`, never argv or environment), and prints one JSON result line on standard output
   (`{"status":"clean","rebuilt":...}`, `{"status":"secret"}`, or `{"status":"unchecked","reason":...}`). Exit 0 means
   a result was printed, 1 means invalid specification or I/O failure, and 2 means usage.
+- `qorpera-folder search-worker --storage-root <dir> [--index-mib <N>] [--threads <N>]`: on a node host, persistent
+  off-event-loop content-addressed trigram + linear-time Thompson NFA regex search worker spawned lazily by
+  `folder-service` (`src/search.rs`, `src/re.rs`). Reads 4-byte big-endian length-prefixed JSON requests on stdin,
+  verifies objects under `--storage-root` with `O_NOFOLLOW` and SHA-256, maintains a bounded LRU trigram and object
+  cache keyed by `(profile_id, manifest_sha256)` (`--index-mib`, default 256, range 1..2048), executes concurrent
+  searches across `--threads` worker threads (default 4, range 1..32), preserves exact `reads` provenance on warm
+  trigram skips, and exits 0 cleanly on stdin EOF.
 
 Design, protocol and rollout: `deploy/first-node/RUNTIME-FOLDER-SERVICE.md`. The node side of the protocol is
 `packages/object-gateway/src/folder-service/`.

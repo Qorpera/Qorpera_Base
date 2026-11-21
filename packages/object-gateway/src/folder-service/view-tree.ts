@@ -131,9 +131,14 @@ export class ViewTree {
 	readonly #children = new Map<string, Set<string>>();
 	readonly #sorted = new Map<string, string[]>();
 	readonly #namesByKey = new Map<string, Map<string, string[]>>();
+	#revision = 0;
 
 	get size(): number {
 		return this.#entries.size;
+	}
+
+	get revision(): number {
+		return this.#revision;
 	}
 
 	get(path: string): TreeEntry | undefined {
@@ -340,6 +345,7 @@ export class ViewTree {
 	}
 
 	#link(entry: TreeEntry): void {
+		this.#revision++;
 		const parent = parentOf(entry.path);
 		this.#entries.set(entry.path, entry);
 		let names = this.#children.get(parent);
@@ -355,6 +361,7 @@ export class ViewTree {
 	}
 
 	#unlink(path: string): void {
+		this.#revision++;
 		const parent = parentOf(path);
 		this.#entries.delete(path);
 		this.#children.delete(path);

@@ -230,6 +230,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Gemini 4 Neon in conversations",
 		text: "A member who adds a Gemini API key in Settings, AI subscriptions can pick Gemini 4 Neon in a conversation's Model menu (with Low, Medium, High and Extra high effort) or set it as their default for chats. Your attended conversation turns run directly on Gemini 4 Neon with your company files, machines, workers, apps, routines and search, while background workers, routines and coding sessions stay on Codex or Claude Code. Members can set a monthly USD spend cap; reaching it pauses Gemini turns and notifies them rather than switching logins.",
 	},
+	{
+		id: "search-regex",
+		kind: "capability",
+		date: "2026-11-21",
+		title: "Regular expressions in company search",
+		text: "company_search now supports regular expression patterns (set regex to true) across text files and file names, backed by a linear-time search engine and content-addressed trigram index on each node. Use patterns for alternation, character classes, line anchors and word boundaries instead of repeating literal searches, and keep combining them with glob filters, surrounding context lines and file-count summaries.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

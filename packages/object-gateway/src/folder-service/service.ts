@@ -79,6 +79,7 @@ import {
 } from "./protocol.ts";
 import { linearRegexAvailable, SearchPatternError } from "./regex.ts";
 import { type SearchAnswer, searchView } from "./search.ts";
+import { NativeSearchWorker, searchViewNative } from "./search-native.ts";
 import { CARRIES, SecretRefusal, type SecretSet, UNCHECKED } from "./secret-scan.ts";
 import { type FolderStaging, mediaTypeOf, type Upload } from "./staging.ts";
 import { nameOf, type TreeEntry, ViewTree } from "./view-tree.ts";
@@ -130,6 +131,9 @@ export interface FolderServiceOptions {
 	 * them small). */
 	readonly searchRunning?: number;
 	readonly searchPaths?: number;
+	readonly folderProgram?: string;
+	readonly searchIndexMiB?: number;
+	readonly searchThreads?: number;
 	readonly dataDoor?: DataDoor;
 	readonly dataCallMs?: number;
 	readonly dataApplyMs?: number;
@@ -197,6 +201,7 @@ const STOPPING = "The folder service is stopping; try again";
  * giving it a turn every 10 ms, so every other machine's request waits at most about 40 ms between them; at most
  * SEARCH_WAITING more wait their turn, each for at most SEARCH_WAIT_MS, in the order they came. */
 export const SEARCH_RUNNING = 4;
+export const SEARCH_RUNNING_NATIVE = 16;
 const SEARCH_WAITING = 32;
 const SEARCH_WAIT_MS = 20_000;
 /** Paths the trees of the node's run views (each searching run's) may hold in all: about 670 bytes a path, so about
@@ -766,6 +771,7 @@ export class FolderService {
 	readonly #running = new WeakMap<PendingFile, Running>();
 	readonly #searchRunning: number;
 	readonly #searchPaths: number;
+	readonly #searchWorker: NativeSearchWorker | undefined;
 	/** Search pages running now, and the turns of those waiting (SEARCH_RUNNING). */
 	#searching = 0;
 	/** Paths of the trees being listed for run views (a first listing, or a listing again while the old tree serves),
@@ -790,7 +796,16 @@ export class FolderService {
 		this.#log = options.log ?? ((line) => process.stderr.write(`${line}\n`));
 		this.#vouching = options.vouched !== undefined;
 		this.#vouched = new Set(options.vouched);
-		this.#searchRunning = options.searchRunning ?? SEARCH_RUNNING;
+		this.#searchWorker = options.folderProgram
+			? new NativeSearchWorker({
+					folderProgram: options.folderProgram,
+					storageRoot: options.objects.root,
+					...(options.searchIndexMiB === undefined ? {} : { indexMiB: options.searchIndexMiB }),
+					...(options.searchThreads === undefined ? {} : { threads: options.searchThreads }),
+					log: this.#log,
+				})
+			: undefined;
+		this.#searchRunning = options.searchRunning ?? (this.#searchWorker ? SEARCH_RUNNING_NATIVE : SEARCH_RUNNING);
 		this.#searchPaths = options.searchPaths ?? SEARCH_PATHS;
 		this.#dataDoor = options.dataDoor;
 		this.#dataCallMs = options.dataCallMs ?? DATA_CALL_MS;
@@ -813,6 +828,7 @@ export class FolderService {
 		this.#timer = undefined;
 		this.#heartbeat = undefined;
 		this.#renewals = undefined;
+		this.#searchWorker?.close();
 	}
 
 	/** A boundary of a coding machine, which the executor asks over the control socket (F3 5c, the plan's "Boundaries"):
@@ -1429,7 +1445,12 @@ export class FolderService {
 			read: async (request) => this.#read(view, request, links),
 			search: async (request) => this.#search(view, request, links),
 			...(view.identity?.kind === "run_box"
-				? { searchSupport: { version: SEARCH_VERSION, regex: linearRegexAvailable() } }
+				? {
+						searchSupport: {
+							version: SEARCH_VERSION,
+							regex: this.#searchWorker !== undefined || linearRegexAvailable(),
+						},
+					}
 				: {}),
 			subscribe: (sink) => {
 				if (released || view.closed || view.moving)
@@ -2421,19 +2442,32 @@ export class FolderService {
 		const start = tree.get(request.path);
 		if (!start || (!links && start.kind === "symlink")) throw new ProtocolError(ErrorCode.notFound, "No such path");
 		try {
-			const answer = await searchView(
-				{
-					tree,
-					links,
-					read: async (entry, offset, length) =>
-						this.#objects.read(await this.#profile(view, entry), entry, offset, length),
-					now: this.#now,
-					// The view closed or its lease lapsed while the page ran: the page stops (never one slice past it).
-					serving: () => void this.#tree(view),
-					log: this.#log,
-				},
-				request,
-			);
+			const answer = this.#searchWorker
+				? await searchViewNative(
+						this.#searchWorker,
+						{
+							tree,
+							links,
+							cachedProfile: () => this.#profiles.get(view.environmentId),
+							resolveProfile: (entry) => this.#profile(view, entry),
+							now: this.#now,
+							serving: () => void this.#tree(view),
+							log: this.#log,
+						},
+						request,
+					)
+				: await searchView(
+						{
+							tree,
+							links,
+							read: async (entry, offset, length) =>
+								this.#objects.read(await this.#profile(view, entry), entry, offset, length),
+							now: this.#now,
+							serving: () => void this.#tree(view),
+							log: this.#log,
+						},
+						request,
+					);
 			for (const read of answer.reads)
 				this.#served(view, {
 					path: read.path,
