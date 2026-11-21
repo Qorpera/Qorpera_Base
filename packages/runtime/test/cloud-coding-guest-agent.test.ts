@@ -115,6 +115,7 @@ async function machine() {
 	const subuid = join(root, "subuid");
 	const subgid = join(root, "subgid");
 	const resolv = join(root, "resolv.conf");
+	const dataCommand = join(root, "bin", "data");
 	const work = join(root, "work");
 	await mkdir(work);
 	await mkdir(join(root, "proc"));
@@ -212,6 +213,7 @@ async function machine() {
 		packageCaches: { root: packages, config: tmpfiles, limitBytes: 64 * 1024 * 1024 },
 		subidFiles: { uid: subuid, gid: subgid },
 		resolvConf: resolv,
+		dataCommand,
 		system: async (executable, args) => {
 			const tool = basename(executable);
 			calls.push([tool, ...args]);
@@ -289,6 +291,7 @@ async function machine() {
 		subuid,
 		subgid,
 		resolv,
+		dataCommand,
 		work,
 		calls,
 		chowns,
@@ -650,12 +653,23 @@ describe("mounting a session", () => {
 			[
 				"[Service]",
 				`BindPaths=${s.mountpoint}:/company`,
+				`BindReadOnlyPaths=${s.view}:/run/qorpera-folder/view.json`,
 				`NetworkNamespacePath=/run/netns/${ns}`,
 				`BindReadOnlyPaths=${m.resolv}:/etc/resolv.conf`,
 				"",
 			].join("\n"),
 		);
 		expect(await mode(dropIn)).toBe(0o644);
+		expect(await readFile(m.dataCommand, "utf8")).toBe(
+			[
+				"#!/bin/sh",
+				`[ "$(id -u)" = 0 ] || exec sudo -n ${CODING_GUEST.folderProgram} data "$@"`,
+				`exec ${CODING_GUEST.folderProgram} data "$@"`,
+				"",
+			].join("\n"),
+		);
+		expect(await mode(m.dataCommand)).toBe(0o555);
+		expect(await mode(join(m.folderRoot, "view.json"))).toBe(0o600);
 	});
 	it("mounts the same view again without restarting anything", async () => {
 		const m = await machine();
@@ -1289,6 +1303,7 @@ describe("running a command", () => {
 				"PrivateIPC=yes",
 				`NetworkNamespacePath=/run/netns/${s.namespace}`,
 				`BindPaths=${s.mountpoint}:/company`,
+				`BindReadOnlyPaths=${s.view}:/run/qorpera-folder/view.json`,
 				`BindReadOnlyPaths=${m.resolv}:/etc/resolv.conf`,
 				`StandardInput=file:${x.input}`,
 				"StandardOutput=null",
@@ -1399,17 +1414,49 @@ describe("running a command", () => {
 		const workerId = await mounted(m);
 		const s = sessionAt(m, workerId);
 		expect(await readFile(join(m.systemdRoot, "user@200001.service.d", "qorpera-company.conf"), "utf8")).toBe(
-			["[Service]", `BindPaths=${s.mountpoint}:/company`, `NetworkNamespacePath=/run/netns/${s.namespace}`, ""].join(
-				"\n",
-			),
+			[
+				"[Service]",
+				`BindPaths=${s.mountpoint}:/company`,
+				`BindReadOnlyPaths=${s.view}:/run/qorpera-folder/view.json`,
+				`NetworkNamespacePath=/run/netns/${s.namespace}`,
+				"",
+			].join("\n"),
 		);
 		m.state.command = "hold";
 		await call(m, "run", { ...runRequest(m, workerId, randomUUID(), "true"), timeoutMs: null });
 		const args = m.calls.find(([tool]) => tool === "systemd-run") ?? [];
-		expect(args.filter((arg) => arg.startsWith("BindReadOnlyPaths=") || arg.startsWith("RuntimeMaxSec="))).toEqual(
-			[],
-		);
+		expect(args.filter((arg) => arg.startsWith("BindReadOnlyPaths=") || arg.startsWith("RuntimeMaxSec="))).toEqual([
+			`BindReadOnlyPaths=${s.view}:/run/qorpera-folder/view.json`,
+		]);
 		expect(args).toContain(`BindPaths=${s.mountpoint}:/company`);
+	});
+	it("binds each session's own view file at /run/qorpera-folder/view.json and repairs a drifted data wrapper", async () => {
+		const m = await machine();
+		await mkdir(dirname(m.dataCommand), { recursive: true });
+		await symlink("/bin/false", m.dataCommand);
+		const first = await mounted(m);
+		const second = randomUUID();
+		expect((await call(m, "mount", mountRequest(second, { ...VIEW, viewId: "view-2" }, 200002))).line.mount).toBe(
+			"mounted",
+		);
+		expect((await lstat(m.dataCommand)).isFile()).toBe(true);
+		expect(await mode(m.dataCommand)).toBe(0o555);
+		const s1 = sessionAt(m, first);
+		const s2 = sessionAt(m, second);
+		m.state.command = "hold";
+		m.calls.length = 0;
+		await call(m, "run", runRequest(m, first, randomUUID(), "true"));
+		await call(m, "run", { ...runRequest(m, second, randomUUID(), "true"), uid: 200002, gid: 200002 });
+		const runs = m.calls.filter(([tool]) => tool === "systemd-run");
+		expect(runs).toHaveLength(2);
+		expect(runs[0]).toContain(`BindReadOnlyPaths=${s1.view}:/run/qorpera-folder/view.json`);
+		expect(runs[0]).not.toContain(`BindReadOnlyPaths=${s2.view}:/run/qorpera-folder/view.json`);
+		expect(runs[1]).toContain(`BindReadOnlyPaths=${s2.view}:/run/qorpera-folder/view.json`);
+		expect(runs[1]).not.toContain(`BindReadOnlyPaths=${s1.view}:/run/qorpera-folder/view.json`);
+		expect((await call(m, "stop-session", sessionRequest(first))).line).toMatchObject({ workerId: first });
+		await gone(s1.view);
+		expect((await lstat(join(m.folderRoot, "view.json"))).isFile()).toBe(true);
+		expect((await lstat(s2.view)).isFile()).toBe(true);
 	});
 	it("drops an ended command's output after an hour, keeping its intent and outcome, and the session's old inputs", async () => {
 		const m = await machine();

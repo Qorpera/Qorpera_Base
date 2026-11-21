@@ -145,6 +145,7 @@ describe("which calls are reviewed", () => {
 			{ action: "describe", operationKey: "k", owner: "acme", name: "shop", change: 12, notice: "n" },
 			"internal",
 		],
+		["manage_code", { action: "status", owner: "acme", name: "shop" }, "read"],
 		["computer_browser", { action: { kind: "browser", action: "snapshot" } }, "read"],
 		["computer_browser", { action: { kind: "browser", action: "click", role: "button", name: "Send" } }, "external"],
 		[

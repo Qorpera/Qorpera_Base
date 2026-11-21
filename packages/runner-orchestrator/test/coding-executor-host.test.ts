@@ -21,6 +21,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type CodeCheck, type CodeSiteRecipe, codeChecksTail } from "../src/code-checks.ts";
 import {
+	CODE_CHECKS_DRILL,
 	CODE_CHECKS_NEWER_RUN,
 	CODE_SITE_COLLECT,
 	CODE_SITE_DROP,
@@ -49,7 +50,10 @@ import {
 	LxdCodingExecutorHost,
 	type LxdCodingExecutorHostOptions,
 } from "../src/coding-executor-host.ts";
-import type { LxdCodingFolderCommandTransportOptions } from "../src/coding-folder-command-transport.ts";
+import type {
+	LxdCodingFolderCommandTransport,
+	LxdCodingFolderCommandTransportOptions,
+} from "../src/coding-folder-command-transport.ts";
 import type {
 	CodingFolderBoundary,
 	CodingFolderBoundaryView,
@@ -5413,6 +5417,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			budgetMs?: number;
 			stopMs?: number;
 			boundaryMs?: number;
+			pollMs?: number | null;
 			/** What the machine's agent says of its package caches at the mount (true: a new agent that made them). */
 			packageCaches?: boolean;
 		} = {},
@@ -5439,7 +5444,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			folder: {
 				...f.folder,
 				report,
-				checksPollMs: 5,
+				...(options.pollMs === null ? {} : { checksPollMs: options.pollMs ?? 5 }),
 				checksStopMs: options.stopMs ?? 300,
 				...(options.budgetMs === undefined ? {} : { checksBudgetMs: options.budgetMs }),
 				...(options.boundaryMs === undefined ? {} : { checksBoundaryMs: options.boundaryMs }),
@@ -8398,6 +8403,522 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			} finally {
 				await chmod(locked, 0o755);
 			}
+		});
+	});
+
+	describe("parallel check execution (needs)", () => {
+		const checkEventOrder = (logged: readonly Record<string, unknown>[], step: string, name: string) =>
+			logged.findIndex((event) => event.event === "code-checks" && event.step === step && event.check === name);
+
+		it("keeps legacy checks without needs strictly sequential", async () => {
+			const f = await checksFixture();
+			let active = 0;
+			let peak = 0;
+			const baseRun = mocked.guestRun.getMockImplementation()!;
+			const baseOutput = mocked.guestOutput.getMockImplementation()!;
+			const activeIds = new Set<string>();
+			f.ending((run) => (checkOf(run) ? { after: 30 } : {}));
+			mocked.guestRun.mockImplementation(async (request: unknown) => {
+				const parsed = parseCodingGuestRequest("run", request);
+				if (checkOf(parsed) && !activeIds.has(parsed.commandId)) {
+					activeIds.add(parsed.commandId);
+					active++;
+					peak = Math.max(peak, active);
+				}
+				return baseRun(request);
+			});
+			mocked.guestOutput.mockImplementation(async (request: unknown) => {
+				const page = await baseOutput(request);
+				if (page.answer.state !== "running" && activeIds.delete(page.answer.commandId)) active--;
+				return page;
+			});
+			const run = await f.run(CHECKS);
+			expect(run).toMatchObject({ state: "passed" });
+			expect(peak).toBe(1);
+		});
+
+		it("runs ready DAG checks concurrently, enforces dependencies, preserves file order, and collects site only after all pass", async () => {
+			const f = await checksFixture();
+			const TREE = "d".repeat(40);
+			const RECIPE: CodeSiteRecipe = { folder: "dist", name: "shop", title: "The shop" };
+			const dag: CodeCheck[] = [
+				{ name: "install", run: "npm ci", timeoutSeconds: 600, cwd: "." },
+				{ name: "lint", run: "npm run lint", timeoutSeconds: 300, cwd: ".", needs: ["install"] },
+				{ name: "typecheck", run: "npm run typecheck", timeoutSeconds: 300, cwd: ".", needs: ["install"] },
+				{ name: "test", run: "npm test", timeoutSeconds: 300, cwd: ".", needs: ["install"] },
+				{
+					name: "build",
+					run: "npm run build",
+					timeoutSeconds: 300,
+					cwd: ".",
+					needs: ["lint", "typecheck", "test"],
+				},
+			];
+			const parallelCommands = new Set(["npm run lint", "npm run typecheck", "npm test"]);
+			const runningParallel = new Map<string, string>();
+			let peakParallel = 0;
+			let barrierReleased = false;
+			f.ending((run) => {
+				if (run.command === CODE_SITE_COLLECT) return { printed: `tree ${TREE}\nfiles 2\nbytes 1024\n` };
+				const cmd = checkOf(run);
+				if (cmd && parallelCommands.has(cmd)) return { state: "running" };
+				return {};
+			});
+			const baseRun = mocked.guestRun.getMockImplementation()!;
+			mocked.guestRun.mockImplementation(async (request: unknown) => {
+				const result = await baseRun(request);
+				const parsed = parseCodingGuestRequest("run", request);
+				const cmd = checkOf(parsed);
+				if (cmd && parallelCommands.has(cmd)) {
+					runningParallel.set(cmd, parsed.commandId);
+					peakParallel = Math.max(peakParallel, runningParallel.size);
+					if (runningParallel.size === 3 && !barrierReleased) {
+						barrierReleased = true;
+						const releaseOrder = ["npm test", "npm run typecheck", "npm run lint"];
+						for (const [offset, name] of releaseOrder.entries()) {
+							const entry = f.commands.get(runningParallel.get(name) as string);
+							if (entry) {
+								entry.ending = { code: 0 };
+								entry.until = Date.now() + offset * 20;
+							}
+						}
+					}
+				}
+				return result;
+			});
+
+			const run = await f.run(dag, 1, f.signal, RECIPE);
+			expect(barrierReleased).toBe(true);
+			expect(peakParallel).toBe(3);
+			expect(run).toEqual({
+				state: "passed",
+				ms: expect.any(Number),
+				copyMs: expect.any(Number),
+				checks: dag.map(({ name, run: command }) => ({ name, run: command, ms: expect.any(Number) })),
+				site: { state: "made", tree: TREE, files: 2, bytes: 1024, folder: "dist", name: "shop", title: "The shop" },
+			});
+			const installEnded = checkEventOrder(f.logged, "ended", "install");
+			const buildStarted = checkEventOrder(f.logged, "started", "build");
+			const buildEnded = checkEventOrder(f.logged, "ended", "build");
+			const collectStarted = f.logged.findIndex((event) => event.step === "started" && event.site === "collect");
+			for (const name of ["lint", "typecheck", "test"]) {
+				expect(checkEventOrder(f.logged, "started", name)).toBeGreaterThan(installEnded);
+				expect(checkEventOrder(f.logged, "ended", name)).toBeLessThan(buildStarted);
+			}
+			expect(collectStarted).toBeGreaterThan(buildEnded);
+		});
+
+		it("caps concurrent checks at four when more checks are ready at once", async () => {
+			const f = await checksFixture();
+			const checks: CodeCheck[] = Array.from({ length: 6 }, (_, index) => ({
+				name: `job${index}`,
+				run: `run-${index}`,
+				timeoutSeconds: 60,
+				cwd: ".",
+				needs: [],
+			}));
+			const active = new Set<string>();
+			let peak = 0;
+			let reachedCap = false;
+			f.ending((run) => (checkOf(run) ? { state: "running" } : {}));
+			const baseRun = mocked.guestRun.getMockImplementation()!;
+			const baseOutput = mocked.guestOutput.getMockImplementation()!;
+			mocked.guestRun.mockImplementation(async (request: unknown) => {
+				const result = await baseRun(request);
+				const parsed = parseCodingGuestRequest("run", request);
+				if (checkOf(parsed)) {
+					active.add(parsed.commandId);
+					peak = Math.max(peak, active.size);
+					if (active.size === 4) {
+						reachedCap = true;
+						for (const id of active) {
+							const entry = f.commands.get(id);
+							if (entry && entry.ending.state === "running") {
+								entry.ending = { code: 0 };
+								entry.until = Date.now();
+							}
+						}
+					} else if (reachedCap) {
+						const entry = f.commands.get(parsed.commandId);
+						if (entry) {
+							entry.ending = { code: 0 };
+							entry.until = Date.now() + 15;
+						}
+					}
+				}
+				return result;
+			});
+			mocked.guestOutput.mockImplementation(async (request: unknown) => {
+				const page = await baseOutput(request);
+				if (page.answer.state !== "running") active.delete(page.answer.commandId);
+				return page;
+			});
+
+			const run = await f.run(checks);
+			expect(reachedCap).toBe(true);
+			expect(peak).toBe(4);
+			expect(run).toMatchObject({
+				state: "passed",
+				checks: checks.map(({ name, run: command }) => ({ name, run: command, ms: expect.any(Number) })),
+			});
+		});
+
+		it("cancels in-flight siblings immediately on first failure, skips dependents and site, and reports accurate passed/notRun", async () => {
+			const f = await checksFixture();
+			const RECIPE: CodeSiteRecipe = { folder: "dist", name: "shop", title: "The shop" };
+			const dag: CodeCheck[] = [
+				{ name: "install", run: "npm ci", timeoutSeconds: 600, cwd: "." },
+				{ name: "lint", run: "npm run lint", timeoutSeconds: 300, cwd: ".", needs: ["install"] },
+				{ name: "test", run: "npm test", timeoutSeconds: 300, cwd: ".", needs: ["install"] },
+				{ name: "build", run: "npm run build", timeoutSeconds: 300, cwd: ".", needs: ["lint", "test"] },
+			];
+			let lintId: string | undefined;
+			let testId: string | undefined;
+			let markSiblingCancelled: (() => void) | undefined;
+			const siblingCancelled = new Promise<void>((resolve) => {
+				markSiblingCancelled = resolve;
+			});
+			let cancelledBeforeTailReadFinished = false;
+			f.ending((run) => {
+				const cmd = checkOf(run);
+				if (cmd === "npm run lint" || cmd === "npm test") return { state: "running" };
+				return {};
+			});
+			const baseRun = mocked.guestRun.getMockImplementation()!;
+			const baseCancel = mocked.guestCancel.getMockImplementation()!;
+			const { LxdCodingFolderCommandTransport: RealTransport } = await vi.importActual<{
+				LxdCodingFolderCommandTransport: typeof LxdCodingFolderCommandTransport;
+			}>("../src/coding-folder-command-transport.ts");
+			const baseRead = RealTransport.prototype.read;
+			const readSpy = vi.spyOn(RealTransport.prototype, "read").mockImplementation(async function (
+				this: LxdCodingFolderCommandTransport,
+				scope,
+				input,
+				signal,
+			) {
+				if (input.commandId === lintId && input.limit === 16384) {
+					await siblingCancelled;
+					cancelledBeforeTailReadFinished = true;
+				}
+				return baseRead.call(this, scope, input, signal);
+			});
+			mocked.guestRun.mockImplementation(async (request: unknown) => {
+				const result = await baseRun(request);
+				const parsed = parseCodingGuestRequest("run", request);
+				const cmd = checkOf(parsed);
+				if (cmd === "npm run lint") lintId = parsed.commandId;
+				if (cmd === "npm test") testId = parsed.commandId;
+				if (lintId && testId) {
+					const lintEntry = f.commands.get(lintId);
+					if (lintEntry && lintEntry.ending.state === "running") {
+						lintEntry.printed = Buffer.from("src/a.ts:1 error\n");
+						lintEntry.ending = { code: 1 };
+						lintEntry.until = Date.now();
+					}
+				}
+				return result;
+			});
+			mocked.guestCancel.mockImplementation(async (request: unknown) => {
+				const parsed = parseCodingGuestRequest("cancel", request);
+				const result = await baseCancel(request);
+				if (parsed.commandId === testId) markSiblingCancelled?.();
+				return result;
+			});
+
+			let run: Awaited<ReturnType<typeof f.run>>;
+			try {
+				run = await f.run(dag, 1, f.signal, RECIPE);
+			} finally {
+				readSpy.mockRestore();
+			}
+			expect(cancelledBeforeTailReadFinished).toBe(true);
+			expect(run).toEqual({
+				state: "failed",
+				ms: expect.any(Number),
+				passed: [{ name: "install", ms: expect.any(Number) }],
+				failed: {
+					name: "lint",
+					run: "npm run lint",
+					ms: expect.any(Number),
+					exitCode: 1,
+					atLimit: false,
+					tail: "tail of: src/a.ts:1 error\n",
+					log: "~/.qorpera-checks/0000000001-0001/out/2-lint.log",
+				},
+				notRun: ["test", "build"],
+			});
+			expect(testId).toBeDefined();
+			expect(f.commands.get(testId as string)?.state).toBe("cancelled");
+			expect(mocked.guestCancel.mock.calls.map(([request]) => (request as { commandId: string }).commandId)).toEqual(
+				[testId],
+			);
+			expect(f.ran().map(checkOf)).not.toContain("npm run build");
+			expect(f.ran().some((ran) => ran.command === CODE_SITE_COLLECT)).toBe(false);
+		});
+
+		it("reports the first failing check with its tail when two checks fail in the same poll", async () => {
+			const f = await checksFixture();
+			const dag: CodeCheck[] = [
+				{ name: "lint", run: "npm run lint", timeoutSeconds: 60, cwd: ".", needs: [] },
+				{ name: "test", run: "npm test", timeoutSeconds: 60, cwd: ".", needs: [] },
+			];
+			let lintId: string | undefined;
+			let testId: string | undefined;
+			let releasePollStart: (() => void) | undefined;
+			const bothPollsStarted = new Promise<void>((resolve) => {
+				releasePollStart = resolve;
+			});
+			let releasePollEnd: (() => void) | undefined;
+			const bothPollsDone = new Promise<void>((resolve) => {
+				releasePollEnd = resolve;
+			});
+			let releaseTestPoll: (() => void) | undefined;
+			const testPollAfterLint = new Promise<void>((resolve) => {
+				releaseTestPoll = resolve;
+			});
+			let markTestFinished: (() => void) | undefined;
+			const testFinished = new Promise<void>((resolve) => {
+				markTestFinished = resolve;
+			});
+			const pollsEntered = new Set<string>();
+			const pollsCompleted = new Set<string>();
+			let tailReadWaitedForTest = false;
+			f.ending((run) => (checkOf(run) ? { state: "running" } : {}));
+			const baseRun = mocked.guestRun.getMockImplementation()!;
+			const { LxdCodingFolderCommandTransport: RealTransport } = await vi.importActual<{
+				LxdCodingFolderCommandTransport: typeof LxdCodingFolderCommandTransport;
+			}>("../src/coding-folder-command-transport.ts");
+			const baseRead = RealTransport.prototype.read;
+			const baseHidden = RealTransport.prototype.hidden;
+			const readSpy = vi.spyOn(RealTransport.prototype, "read").mockImplementation(async function (
+				this: LxdCodingFolderCommandTransport,
+				scope,
+				input,
+				signal,
+			) {
+				if (input.commandId === lintId && input.limit === 16384) {
+					releaseTestPoll?.();
+					await testFinished;
+					tailReadWaitedForTest = true;
+				}
+				if (input.limit === 4096 && (input.commandId === lintId || input.commandId === testId)) {
+					pollsEntered.add(input.commandId);
+					if (pollsEntered.size === 2 && lintId && testId) {
+						const lintEntry = f.commands.get(lintId)!;
+						const testEntry = f.commands.get(testId)!;
+						lintEntry.printed = Buffer.from("lint failed line\n");
+						lintEntry.ending = { code: 1 };
+						lintEntry.until = Date.now();
+						testEntry.printed = Buffer.from("test failed line\n");
+						testEntry.ending = { code: 2 };
+						testEntry.until = Date.now();
+						releasePollStart?.();
+					}
+					await bothPollsStarted;
+					const receipt = await baseRead.call(this, scope, input, signal);
+					pollsCompleted.add(input.commandId);
+					if (pollsCompleted.size === 2) releasePollEnd?.();
+					await bothPollsDone;
+					if (input.commandId === testId) await testPollAfterLint;
+					return receipt;
+				}
+				return baseRead.call(this, scope, input, signal);
+			});
+			const hiddenSpy = vi.spyOn(RealTransport.prototype, "hidden").mockImplementation(async function (
+				this: LxdCodingFolderCommandTransport,
+				commandId,
+				signal,
+			) {
+				const hidden = await baseHidden.call(this, commandId, signal);
+				if (commandId === testId) setImmediate(() => markTestFinished?.());
+				return hidden;
+			});
+			mocked.guestRun.mockImplementation(async (request: unknown) => {
+				const result = await baseRun(request);
+				const parsed = parseCodingGuestRequest("run", request);
+				const cmd = checkOf(parsed);
+				if (cmd === "npm run lint") lintId = parsed.commandId;
+				if (cmd === "npm test") testId = parsed.commandId;
+				return result;
+			});
+
+			let run: Awaited<ReturnType<typeof f.run>>;
+			try {
+				run = await f.run(dag);
+			} finally {
+				readSpy.mockRestore();
+				hiddenSpy.mockRestore();
+			}
+			expect(tailReadWaitedForTest).toBe(true);
+			expect(run).toEqual({
+				state: "failed",
+				ms: expect.any(Number),
+				passed: [],
+				failed: {
+					name: "lint",
+					run: "npm run lint",
+					ms: expect.any(Number),
+					exitCode: 1,
+					atLimit: false,
+					tail: "tail of: lint failed line\n",
+					log: "~/.qorpera-checks/0000000001-0001/out/1-lint.log",
+				},
+				notRun: ["test"],
+			});
+		});
+
+		it("tracks every sibling whose cancellation could not be confirmed before allowing a later run", async () => {
+			const f = await checksFixture({ stopMs: 60 });
+			const dag: CodeCheck[] = [
+				{ name: "lint", run: "npm run lint", timeoutSeconds: 60, cwd: ".", needs: [] },
+				{ name: "typecheck", run: "npm run typecheck", timeoutSeconds: 60, cwd: ".", needs: [] },
+				{ name: "test", run: "npm test", timeoutSeconds: 60, cwd: ".", needs: [] },
+			];
+			const ids = new Map<string, string>();
+			f.ending((run) => (checkOf(run) ? { state: "running" } : {}));
+			const baseRun = mocked.guestRun.getMockImplementation()!;
+			mocked.guestRun.mockImplementation(async (request: unknown) => {
+				const result = await baseRun(request);
+				const parsed = parseCodingGuestRequest("run", request);
+				const cmd = checkOf(parsed);
+				if (cmd) {
+					ids.set(cmd, parsed.commandId);
+					if (ids.size === 3) {
+						const lint = f.commands.get(ids.get("npm run lint") as string);
+						if (lint) {
+							lint.ending = { code: 1 };
+							lint.until = Date.now();
+						}
+					}
+				}
+				return result;
+			});
+			const baseCancel = mocked.guestCancel.getMockImplementation()!;
+			const stuckIds = new Set<string>();
+			mocked.guestCancel.mockImplementation(async (request: unknown) => {
+				const asked = parseCodingGuestRequest("cancel", request);
+				if (stuckIds.has(asked.commandId)) {
+					return {
+						schema: "qorpera.coding-guest-command/v1",
+						workerId: f.claim.workerId,
+						commandId: asked.commandId,
+						state: "running",
+						exit: null,
+						end: 0,
+					};
+				}
+				return baseCancel(request);
+			});
+			const typecheckId = codingHostId("checks", `${f.claim.workerId}:${f.claim.sequence}:1:2`);
+			const testId = codingHostId("checks", `${f.claim.workerId}:${f.claim.sequence}:1:3`);
+			stuckIds.add(typecheckId);
+			stuckIds.add(testId);
+
+			expect(await f.run(dag, 1)).toMatchObject({ state: "failed", failed: { name: "lint" } });
+			expect(await f.run(dag.slice(0, 1), 2)).toEqual({
+				state: "not_run",
+				why: "machine",
+				code: "CODE_CHECKS_EARLIER_RUN_NOT_STOPPED",
+			});
+
+			stuckIds.delete(typecheckId);
+			expect(await f.run(dag.slice(0, 1), 3)).toEqual({
+				state: "not_run",
+				why: "machine",
+				code: "CODE_CHECKS_EARLIER_RUN_NOT_STOPPED",
+			});
+
+			stuckIds.delete(testId);
+			f.ending(() => ({}));
+			expect(await f.run(dag.slice(0, 1), 4)).toMatchObject({ state: "passed" });
+		});
+
+		it("cancels all in-flight parallel checks when the turn aborts and throws the turn reason", async () => {
+			const f = await checksFixture();
+			const dag: CodeCheck[] = [
+				{ name: "lint", run: "npm run lint", timeoutSeconds: 60, cwd: ".", needs: [] },
+				{ name: "test", run: "npm test", timeoutSeconds: 60, cwd: ".", needs: [] },
+			];
+			f.ending((run) => (checkOf(run) ? { state: "running" } : {}));
+			const stop = new AbortController();
+			const reason = new Error("CODING_EXECUTOR_LEASE_LOST");
+			const running = f.run(dag, 1, stop.signal);
+			await vi.waitFor(() => expect(f.ran()).toHaveLength(3));
+			stop.abort(reason);
+			await expect(running).rejects.toBe(reason);
+			const [, lint, test] = f.ran();
+			expect(f.commands.get(lint?.commandId as string)?.state).toBe("cancelled");
+			expect(f.commands.get(test?.commandId as string)?.state).toBe("cancelled");
+			expect(f.logged.filter((event) => event.step === "run")).toEqual([]);
+		});
+
+		it("runs a trailing CODE_CHECKS_DRILL strictly after all parallel checks pass, and skips it on earlier failure", async () => {
+			const f = await checksFixture();
+			const dag: CodeCheck[] = [
+				{ name: "install", run: "npm ci", timeoutSeconds: 600, cwd: "." },
+				{ name: "lint", run: "npm run lint", timeoutSeconds: 300, cwd: ".", needs: ["install"] },
+				{ name: "test", run: "npm test", timeoutSeconds: 300, cwd: ".", needs: ["install"] },
+				CODE_CHECKS_DRILL,
+			];
+			const seenParallel = new Set<string>();
+			f.ending((run) => {
+				const cmd = checkOf(run);
+				if (cmd === CODE_CHECKS_DRILL.run)
+					return { code: 1, printed: "A drill by Qorpera's operator: this check fails on purpose, once.\n" };
+				if (cmd === "npm run lint" || cmd === "npm test") return { state: "running" };
+				return {};
+			});
+			const baseRun = mocked.guestRun.getMockImplementation()!;
+			mocked.guestRun.mockImplementation(async (request: unknown) => {
+				const result = await baseRun(request);
+				const parsed = parseCodingGuestRequest("run", request);
+				const cmd = checkOf(parsed);
+				if (cmd === "npm run lint" || cmd === "npm test") {
+					seenParallel.add(parsed.commandId);
+					if (seenParallel.size === 2) {
+						for (const id of seenParallel) {
+							const entry = f.commands.get(id);
+							if (entry) {
+								entry.ending = { code: 0 };
+								entry.until = Date.now();
+							}
+						}
+					}
+				}
+				return result;
+			});
+
+			const drilled = await f.run(dag, 1);
+			expect(drilled).toMatchObject({
+				state: "failed",
+				passed: [
+					{ name: "install", ms: expect.any(Number) },
+					{ name: "lint", ms: expect.any(Number) },
+					{ name: "test", ms: expect.any(Number) },
+				],
+				failed: { name: CODE_CHECKS_DRILL.name, exitCode: 1 },
+				notRun: [],
+			});
+			const drillStarted = checkEventOrder(f.logged, "started", CODE_CHECKS_DRILL.name);
+			expect(drillStarted).toBeGreaterThan(checkEventOrder(f.logged, "ended", "lint"));
+			expect(drillStarted).toBeGreaterThan(checkEventOrder(f.logged, "ended", "test"));
+
+			mocked.guestRun.mockImplementation(baseRun);
+			f.ending((run) => (checkOf(run) === "npm run lint" ? { code: 1, printed: "lint failed\n" } : {}));
+			const ownFailed = await f.run(dag, 2);
+			expect(ownFailed).toMatchObject({
+				state: "failed",
+				failed: { name: "lint", exitCode: 1 },
+			});
+			expect(ownFailed.state === "failed" && ownFailed.notRun).toContain(CODE_CHECKS_DRILL.name);
+		});
+
+		it("polls fast checks with short initial backoff instead of waiting 3 s per check", async () => {
+			const f = await checksFixture({ pollMs: null });
+			f.ending((run) => (checkOf(run) ? { after: 80 } : {}));
+			const started = performance.now();
+			expect(await f.run(CHECKS.slice(0, 1))).toMatchObject({ state: "passed" });
+			expect(performance.now() - started).toBeLessThan(1_500);
 		});
 	});
 });
