@@ -25,6 +25,9 @@ const VALUE_LABEL = "qorpera-secret-value/v1";
  * 8 bytes over and over would cost one HMAC over the value's length for every 8 bytes. */
 const CONFIRM_FLOOR = 64 * 1024 * 1024;
 const CONFIRM_FACTOR = 4;
+const ASYNC_SLICE_BYTES = 256 * 1024;
+const TAG_SHIFT = 32 - SECRET_TAG_BITS;
+const imul = Math.imul;
 
 /** Why the check refuses a file: what a report says, and nothing of the value or where it is. */
 export const CARRIES = "it carries a secret value";
@@ -71,35 +74,36 @@ interface Budget {
 	left: number;
 }
 
-/** The tag of the 8 bytes `hi` (the first four, big-endian) and `lo` (the last four). */
-function tagOf(m: Matcher, hi: number, lo: number): number {
-	let h = Math.imul(hi ^ m.c0, m.c1 | 1);
-	h ^= h >>> 15;
-	h = Math.imul(h ^ lo ^ m.c2, m.c3 | 1);
-	h ^= h >>> 13;
-	h = Math.imul(h ^ m.c4, m.c5 | 1);
-	h ^= h >>> 16;
-	h = Math.imul(h ^ m.c6, m.c7 | 1);
-	return h >>> (32 - SECRET_TAG_BITS);
-}
-
-/** Whether a value starts at one of `bytes`' offsets up to `last` and ends within `bytes`. Throws past the budget. */
-function found(m: Matcher, bytes: Buffer, last: number, budget: Budget): boolean {
+function foundRange(m: Matcher, bytes: Buffer, firstStart: number, last: number, budget: Budget): boolean {
+	const first = firstStart < 0 ? 0 : firstStart;
 	const end = Math.min(last + 8, bytes.length);
-	let hi = 0;
-	let lo = 0;
-	for (let i = 0; i < end; i++) {
-		hi = ((hi << 8) | (lo >>> 24)) >>> 0;
-		lo = ((lo << 8) | (bytes[i] as number)) >>> 0;
-		if (i < 7) continue;
-		const tag = tagOf(m, hi, lo);
-		if (((m.bitmap[tag >>> 5] as number) & (1 << (tag & 31))) === 0) continue;
+	if (end - first < 8) return false;
+	const { c0, c1, c2, c3, c4, c5, c6, c7, bitmap, tags, kv } = m;
+	// WHY: preloading 7 bytes and inlining tagOf with signed int32 avoids per-byte calls and HeapNumber boxing under --jitless.
+	let hi = ((bytes[first] as number) << 16) | ((bytes[first + 1] as number) << 8) | (bytes[first + 2] as number);
+	let lo =
+		((bytes[first + 3] as number) << 24) |
+		((bytes[first + 4] as number) << 16) |
+		((bytes[first + 5] as number) << 8) |
+		(bytes[first + 6] as number);
+	for (let i = first + 7; i < end; i++) {
+		hi = (hi << 8) | (lo >>> 24);
+		lo = (lo << 8) | (bytes[i] as number);
+		let h = imul(hi ^ c0, c1);
+		h ^= h >>> 15;
+		h = imul(h ^ lo ^ c2, c3);
+		h ^= h >>> 13;
+		h = imul(h ^ c4, c5);
+		h ^= h >>> 16;
+		h = imul(h ^ c6, c7);
+		const tag = h >>> TAG_SHIFT;
+		if (((bitmap[tag >>> 5] as number) & (1 << (tag & 31))) === 0) continue;
 		const start = i - 7;
-		for (const [length, wholes] of m.tags.get(tag) ?? []) {
+		for (const [length, wholes] of tags.get(tag) ?? []) {
 			if (start + length > bytes.length) continue;
 			budget.left -= length;
 			if (budget.left < 0) throw new SecretRefusal(UNCHECKED);
-			const whole = createHmac("sha256", m.kv)
+			const whole = createHmac("sha256", kv)
 				.update(bytes.subarray(start, start + length))
 				.digest()
 				.toString("base64url", 0, 16);
@@ -150,7 +154,7 @@ export class SecretSet {
 		const m = this.#matching();
 		if (!m) return false;
 		const bytes = Buffer.from(text);
-		return found(m, bytes, bytes.length - 8, { left: Number.POSITIVE_INFINITY });
+		return foundRange(m, bytes, 0, bytes.length - 8, { left: Number.POSITIVE_INFINITY });
 	}
 
 	/** A scan of a file of `size` bytes, given its bytes in order. */
@@ -175,14 +179,14 @@ export class SecretSet {
 			longest = Math.max(longest, v.length);
 		}
 		this.#matcher = {
-			c0: kw.readUInt32BE(0),
-			c1: kw.readUInt32BE(4),
-			c2: kw.readUInt32BE(8),
-			c3: kw.readUInt32BE(12),
-			c4: kw.readUInt32BE(16),
-			c5: kw.readUInt32BE(20),
-			c6: kw.readUInt32BE(24),
-			c7: kw.readUInt32BE(28),
+			c0: kw.readInt32BE(0),
+			c1: kw.readInt32BE(4) | 1,
+			c2: kw.readInt32BE(8),
+			c3: kw.readInt32BE(12) | 1,
+			c4: kw.readInt32BE(16),
+			c5: kw.readInt32BE(20) | 1,
+			c6: kw.readInt32BE(24),
+			c7: kw.readInt32BE(28) | 1,
 			kv: createHmac("sha256", this.#key).update(VALUE_LABEL).digest(),
 			bitmap,
 			tags,
@@ -211,13 +215,30 @@ export class SecretScan {
 		const bytes = this.#tail.length === 0 ? chunk : Buffer.concat([this.#tail, chunk]);
 		// Every offset up to `last` has the longest value's bytes here.
 		const last = bytes.length - m.longest;
-		if (last >= 0 && found(m, bytes, last, this.#budget)) throw new SecretRefusal(CARRIES);
+		if (last >= 0 && foundRange(m, bytes, 0, last, this.#budget)) throw new SecretRefusal(CARRIES);
+		this.#tail = Buffer.from(bytes.subarray(Math.max(0, last + 1)));
+	}
+
+	async pushAsync(chunk: Buffer, sliceBytes = ASYNC_SLICE_BYTES): Promise<void> {
+		if (!Number.isSafeInteger(sliceBytes) || sliceBytes < 1)
+			throw new RangeError("Secret scan slice size is invalid");
+		const m = this.#m;
+		if (!m) return;
+		const bytes = this.#tail.length === 0 ? chunk : Buffer.concat([this.#tail, chunk]);
+		const last = bytes.length - m.longest;
+		if (last >= 0) {
+			for (let pos = 0; pos <= last; pos += sliceBytes) {
+				if (pos > 0) await new Promise<void>((resolve) => setImmediate(resolve));
+				const sliceLast = Math.min(last, pos + sliceBytes - 1);
+				if (foundRange(m, bytes, pos, sliceLast, this.#budget)) throw new SecretRefusal(CARRIES);
+			}
+		}
 		this.#tail = Buffer.from(bytes.subarray(Math.max(0, last + 1)));
 	}
 
 	end(): void {
 		const m = this.#m;
-		if (m && found(m, this.#tail, this.#tail.length - 8, this.#budget)) throw new SecretRefusal(CARRIES);
+		if (m && foundRange(m, this.#tail, 0, this.#tail.length - 8, this.#budget)) throw new SecretRefusal(CARRIES);
 		this.#tail = Buffer.alloc(0);
 	}
 }

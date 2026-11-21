@@ -113,4 +113,57 @@ describe("a file's scan", () => {
 		expect(`${stack}`).not.toMatch(/test-val|xxxx/);
 		expect(`${stack}`).not.toContain(hashesOf(KEY, long).whole);
 	});
+
+	it("matches identically with pushAsync across arbitrary slice sizes and yields between slices", async () => {
+		const scannedAsync = async (
+			secretSet: SecretSet,
+			parts: readonly Buffer[],
+			sliceBytes?: number,
+		): Promise<string | undefined> => {
+			const scan = secretSet.scan(parts.reduce((sum, part) => sum + part.byteLength, 0));
+			try {
+				for (const part of parts) await scan.pushAsync(part, sliceBytes);
+				scan.end();
+				return undefined;
+			} catch (error) {
+				if (!(error instanceof SecretRefusal)) throw error;
+				return error.message;
+			}
+		};
+
+		for (const sliceBytes of [1, 7, 8, 16, 64, 1024]) {
+			for (const value of ["test-value-0001", "test-value-0001-and-longer", "12345678"]) {
+				const prefix = Buffer.alloc(128, 65);
+				const suffix = Buffer.alloc(128, 66);
+				const file = Buffer.concat([prefix, Buffer.from(value), suffix]);
+				expect(await scannedAsync(set, [file], sliceBytes)).toBe(CARRIES);
+				expect(await scannedAsync(set, [file.subarray(0, 132), file.subarray(132)], sliceBytes)).toBe(CARRIES);
+			}
+			expect(await scannedAsync(set, [Buffer.alloc(512, 67)], sliceBytes)).toBeUndefined();
+		}
+
+		const long = `test-val${"x".repeat(32 * 1024 - 8)}`;
+		const bound = setOf(long);
+		const repetitive = Buffer.from("test-val".repeat(8 * 1024));
+		expect(await scannedAsync(bound, [repetitive], 1024)).toBe(UNCHECKED);
+		expect(await scannedAsync(new SecretSet(KEY, []), [Buffer.from("test-value-0001")], 4)).toBeUndefined();
+
+		const large = Buffer.alloc(1024 * 1024, 90);
+		let turns = 0;
+		let scanning = true;
+		const tick = (): void => {
+			if (!scanning) return;
+			turns++;
+			setImmediate(tick);
+		};
+		setImmediate(tick);
+		const scan = set.scan(large.byteLength);
+		await scan.pushAsync(large, 128 * 1024);
+		scan.end();
+		scanning = false;
+		expect(turns).toBeGreaterThanOrEqual(4);
+
+		await expect(set.scan(16).pushAsync(Buffer.alloc(16), 0)).rejects.toThrow("Secret scan slice size is invalid");
+		await expect(set.scan(16).pushAsync(Buffer.alloc(16), 1.5)).rejects.toThrow("Secret scan slice size is invalid");
+	});
 });
