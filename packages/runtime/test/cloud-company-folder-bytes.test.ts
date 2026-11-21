@@ -326,6 +326,7 @@ async function fixture(options: { upperCaseBinding?: boolean; productionCircuit?
 		replication,
 		gatewayCalls,
 		environmentId,
+		identity: { ...f.authority.identity, runId: binding.runId, jobId: binding.jobId },
 		actor: JSON.parse(actor) as Record<string, string>,
 		slowRequests(minutes: number) {
 			requestMinutes = minutes;
@@ -783,4 +784,132 @@ it("reads a body cut off after its headers as a lost answer, and a cancel while 
 	await new Promise((resolve) => setTimeout(resolve, 20));
 	abort.abort();
 	await expect(pending).rejects.toMatchObject({ category: "cancelled" });
+});
+
+it("fetches multi-chunk files and ranges concurrently up to the cap and deduplicates identical chunks", async () => {
+	const { bytes, sql, origin, token, binding, holder, control, identity } = await fixture();
+	const repeated = randomBytes(4 * 1024 * 1024);
+	const tail = randomBytes(1024 * 1024);
+	const content = Buffer.concat([
+		repeated,
+		repeated,
+		randomBytes(4 * 1024 * 1024),
+		randomBytes(4 * 1024 * 1024),
+		tail,
+	]);
+	const sig = new AbortController().signal;
+	const ref = await bytes.put(content, "application/octet-stream", false, sig);
+	sql.readable.add(ref.manifestSha256);
+	let inFlight = 0;
+	let peak = 0;
+	let chunkGets = 0;
+	const tracked = new HttpCloudCompanyFolderBytes({
+		baseUrl: origin,
+		token,
+		binding,
+		holder: () => holder,
+		identity,
+		control,
+		fetch: async (input, init) => {
+			const url = String(input);
+			const isChunk = !url.endsWith(`/${ref.manifestSha256}`);
+			if (isChunk) {
+				chunkGets++;
+				inFlight++;
+				peak = Math.max(peak, inFlight);
+				await new Promise((resolve) => setTimeout(resolve, 20));
+			}
+			try {
+				return await fetch(input, init);
+			} finally {
+				if (isChunk) inFlight--;
+			}
+		},
+	});
+	const file = { ...ref, executable: false };
+	const full = await tracked.get(file, sig);
+	expect(Buffer.from(full).equals(content)).toBe(true);
+	expect(chunkGets).toBe(4);
+	expect(peak).toBe(4);
+	peak = 0;
+	chunkGets = 0;
+	const slice = await tracked.range(file, 4 * 1024 * 1024 - 8, 12 * 1024 * 1024 + 16, sig);
+	expect(Buffer.from(slice).equals(content.subarray(4 * 1024 * 1024 - 8, 16 * 1024 * 1024 + 8))).toBe(true);
+	expect(chunkGets).toBe(4);
+	expect(peak).toBe(4);
+});
+
+it("aborts in-flight sibling chunk fetches and propagates the first typed error on failure", async () => {
+	const { bytes, sql, origin, token, binding, holder, control, identity } = await fixture();
+	const content = Buffer.concat([
+		randomBytes(4 * 1024 * 1024),
+		randomBytes(4 * 1024 * 1024),
+		randomBytes(4 * 1024 * 1024),
+		randomBytes(1024),
+	]);
+	const sig = new AbortController().signal;
+	const ref = await bytes.put(content, "application/octet-stream", false, sig);
+	sql.readable.add(ref.manifestSha256);
+	const file = { ...ref, executable: false };
+
+	const runAbortCase = async (mode: "contended" | "corrupt"): Promise<{ aborted: number; error: unknown }> => {
+		let chunkCall = 0;
+		let aborted = 0;
+		const client = new HttpCloudCompanyFolderBytes({
+			baseUrl: origin,
+			token,
+			binding,
+			holder: () => holder,
+			identity,
+			control,
+			fetch: async (input, init) => {
+				const url = String(input);
+				if (url.endsWith(`/${ref.manifestSha256}`)) return await fetch(input, init);
+				const index = ++chunkCall;
+				if (index === 2) {
+					await new Promise((resolve) => setTimeout(resolve, 25));
+					if (mode === "contended") {
+						return new Response(JSON.stringify({ error: "locked" }), {
+							status: 409,
+							headers: { "content-type": "application/json" },
+						});
+					}
+					return new Response(Buffer.alloc(4 * 1024 * 1024, 0xaa), {
+						status: 200,
+						headers: { "content-type": "application/octet-stream" },
+					});
+				}
+				return await new Promise<Response>((resolve, reject) => {
+					const timer = setTimeout(() => {
+						void fetch(input, init).then(resolve, reject);
+					}, 2_000);
+					init?.signal?.addEventListener(
+						"abort",
+						() => {
+							clearTimeout(timer);
+							aborted++;
+							reject(init.signal?.reason ?? new DOMException("Aborted", "AbortError"));
+						},
+						{ once: true },
+					);
+				});
+			},
+		});
+		let caught: unknown;
+		try {
+			await client.get(file, sig);
+		} catch (error) {
+			caught = error;
+		}
+		return { aborted, error: caught };
+	};
+
+	const contended = await runAbortCase("contended");
+	expect(contended.error).toBeInstanceOf(CloudCompanyFolderError);
+	expect(contended.error).toMatchObject({ failure: "contended", category: "stale_version" });
+	expect(contended.aborted).toBeGreaterThanOrEqual(2);
+
+	const corrupt = await runAbortCase("corrupt");
+	expect(corrupt.error).toMatchObject({ category: "invalid_response" });
+	expect(corrupt.aborted).toBeGreaterThanOrEqual(2);
 });
