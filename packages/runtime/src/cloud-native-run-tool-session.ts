@@ -362,6 +362,7 @@ export async function runCloudNativeRunToolSession(options: {
 				...(options.gemini.onUsage ? { onUsage: options.gemini.onUsage } : {}),
 				prompt: options.prompt,
 				runtimeInstructions: options.runtimeInstructions,
+				...(options.composeContext ? { composeContext: options.composeContext } : {}),
 				...(options.opening ? { opening: options.opening } : {}),
 				...(options.turnCorrection ? { turnCorrection: options.turnCorrection } : {}),
 				...(closing ? { closing } : {}),

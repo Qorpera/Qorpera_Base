@@ -7,8 +7,16 @@ import {
 	CloudActionReviewBusy,
 	type CloudActionReviewChannel,
 } from "./cloud-action-review.ts";
-import type { CloudCodexOpening, CloudCodexToolSessionResult } from "./cloud-codex-tool-session.ts";
+import type {
+	CloudCodexContextComposer,
+	CloudCodexOpening,
+	CloudCodexToolSessionResult,
+} from "./cloud-codex-tool-session.ts";
 import { geminiNeonSpendMicrodollars } from "./cloud-gemini-key-vault.ts";
+import {
+	CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
+	type CloudNativeContextItem,
+} from "./cloud-native-context-composition.ts";
 import { tagNativeRuntimeFailure } from "./cloud-native-failure.ts";
 import { CLOUD_NATIVE_RESULT_FENCE_SCHEMA, type CloudNativeFenceRequest } from "./cloud-native-result-fence.ts";
 import {
@@ -380,6 +388,70 @@ async function generateGeminiContent(options: {
 	}
 }
 
+interface GeminiHistoryEntry {
+	readonly content: GeminiContent;
+	readonly items: readonly CloudNativeContextItem[];
+}
+
+function appendMergedContent(target: GeminiContent[], content: GeminiContent): void {
+	const previous = target.at(-1);
+	if (previous && previous.role === content.role) {
+		previous.parts = [...previous.parts, ...content.parts];
+		return;
+	}
+	target.push({ role: content.role, parts: [...content.parts] });
+}
+
+async function composeGeminiContents(
+	history: readonly GeminiHistoryEntry[],
+	composer: CloudCodexContextComposer | undefined,
+	context: {
+		readonly requestId: string;
+		readonly threadId: string;
+		readonly turnId: string;
+		readonly model: string;
+	},
+	signal: AbortSignal,
+): Promise<GeminiContent[]> {
+	if (!composer) return history.map((entry) => entry.content);
+	const items: CloudNativeContextItem[] = [];
+	const itemOwner: number[] = [];
+	for (const [historyIndex, entry] of history.entries()) {
+		for (const item of entry.items) {
+			items.push(item);
+			itemOwner.push(historyIndex);
+		}
+	}
+	const composed = await composer(
+		{
+			schema: CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
+			requestId: context.requestId,
+			threadId: context.threadId,
+			turnId: context.turnId,
+			purpose: "turn",
+			model: context.model,
+			items,
+		},
+		signal,
+	);
+	const result: GeminiContent[] = [];
+	const emitted = new Set<number>();
+	for (const entry of composed.input) {
+		if ("work" in entry) {
+			appendMergedContent(result, {
+				role: "user",
+				parts: [{ text: redactCloudWebhookSecrets(entry.work) }],
+			});
+			continue;
+		}
+		const owner = itemOwner[entry.keep];
+		if (owner === undefined || emitted.has(owner)) continue;
+		emitted.add(owner);
+		appendMergedContent(result, history[owner].content);
+	}
+	return result.length > 0 ? result : history.map((entry) => entry.content);
+}
+
 export async function runCloudGeminiToolSession(options: {
 	boundary: CloudNativeToolBoundary;
 	model: CloudRuntimeGeminiModel;
@@ -393,6 +465,7 @@ export async function runCloudGeminiToolSession(options: {
 	onUsage?: (usage: GeminiToolSessionUsage, signal: AbortSignal) => Promise<GeminiUsageReceipt | undefined>;
 	beforeModelStart?: (signal: AbortSignal) => Promise<void>;
 	opening?: (signal: AbortSignal) => Promise<CloudCodexOpening>;
+	composeContext?: CloudCodexContextComposer;
 	prompt?: string;
 	runtimeInstructions?: string;
 	reviewer?: CloudActionReviewChannel;
@@ -421,6 +494,7 @@ export async function runCloudGeminiToolSession(options: {
 	let totalCachedTokens = 0;
 	let totalOutputTokens = 0;
 	let localRunSpendMicrodollars = 0;
+	let usageDirty = false;
 	let toolCalls = 0;
 	let fencedRequests = 0;
 
@@ -431,6 +505,31 @@ export async function runCloudGeminiToolSession(options: {
 				"native-tools",
 				"budget_exhausted",
 			);
+		}
+	};
+
+	const flushUsage = async (flushSignal: AbortSignal): Promise<boolean> => {
+		if (!options.onUsage || !usageDirty) return true;
+		const snapshot: GeminiToolSessionUsage = {
+			inputTokens: totalInputTokens,
+			cachedTokens: totalCachedTokens,
+			outputTokens: totalOutputTokens,
+		};
+		try {
+			const receipt = await options.onUsage(snapshot, AbortSignal.any([flushSignal, AbortSignal.timeout(10_000)]));
+			if (!receipt) return false;
+			monthSpendMicrodollars = receipt.monthSpendMicrodollars;
+			monthlyCapCents = receipt.monthlyCapCents;
+			if (
+				totalInputTokens === snapshot.inputTokens &&
+				totalCachedTokens === snapshot.cachedTokens &&
+				totalOutputTokens === snapshot.outputTokens
+			) {
+				usageDirty = false;
+			}
+			return true;
+		} catch {
+			return false;
 		}
 	};
 
@@ -447,32 +546,19 @@ export async function runCloudGeminiToolSession(options: {
 		const delta = Math.max(0, nextRunSpend - localRunSpendMicrodollars);
 		localRunSpendMicrodollars = Math.max(localRunSpendMicrodollars, nextRunSpend);
 		monthSpendMicrodollars += delta;
-		if (options.onUsage) {
-			const receipt = await options
-				.onUsage(
-					{
-						inputTokens: totalInputTokens,
-						cachedTokens: totalCachedTokens,
-						outputTokens: totalOutputTokens,
-					},
-					AbortSignal.any([sessionSignal, AbortSignal.timeout(10_000)]),
-				)
-				.catch(() => undefined);
-			if (receipt) {
-				monthSpendMicrodollars = receipt.monthSpendMicrodollars;
-				monthlyCapCents = receipt.monthlyCapCents;
-			}
-		}
+		usageDirty = true;
+		await flushUsage(sessionSignal);
 	};
 
 	assertWithinCap();
 	await options.beforeModelStart?.(sessionSignal);
-	const opened = options.opening
+	const opened: CloudCodexOpening = options.opening
 		? await options.opening(sessionSignal)
 		: {
 				prompt: options.prompt ?? "",
 				runtimeInstructions: options.runtimeInstructions,
 			};
+	const composer = opened.composeContext ?? options.composeContext;
 	const rawInstructions = opened.runtimeInstructions ?? "";
 	const systemText = redactCloudWebhookSecrets(
 		opened.resultRulesInside
@@ -525,7 +611,21 @@ export async function runCloudGeminiToolSession(options: {
 	}
 
 	try {
-		const contents: GeminiContent[] = [{ role: "user", parts: [{ text: initialPrompt }] }];
+		const history: GeminiHistoryEntry[] = [
+			{
+				content: { role: "user", parts: [{ text: initialPrompt }] },
+				items: [
+					{
+						kind: "message",
+						role: "user",
+						callId: null,
+						id: null,
+						bytes: Buffer.byteLength(initialPrompt),
+						media: 0,
+					},
+				],
+			},
+		];
 		let pendingFenceInputs: CloudNativeResultInput[] = [];
 		let correctionSent = false;
 		let turnIndex = 0;
@@ -550,6 +650,12 @@ export async function runCloudGeminiToolSession(options: {
 			fencedRequests += 1;
 			pendingFenceInputs = [];
 
+			const requestContents = await composeGeminiContents(
+				history,
+				composer,
+				{ requestId: frame.requestId, threadId, turnId, model: options.model },
+				sessionSignal,
+			);
 			const response = await generateGeminiContent({
 				baseUrl,
 				model: options.model,
@@ -559,7 +665,7 @@ export async function runCloudGeminiToolSession(options: {
 				retryOnBusy: true,
 				body: {
 					...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}),
-					contents,
+					contents: requestContents,
 					tools,
 					generationConfig: {
 						thinkingConfig: { thinkingLevel: options.effort },
@@ -568,18 +674,45 @@ export async function runCloudGeminiToolSession(options: {
 			});
 			await recordUsage(response.usage);
 
-			if (response.parts.length > 0) contents.push({ role: "model", parts: response.parts });
 			const visibleText = extractVisibleText(response.parts);
 			if (visibleText) options.boundary.runLog?.agentText(visibleText);
 
 			const functionCalls = extractFunctionCalls(response.parts);
+			const assignedCallIds = functionCalls.map((call, index) =>
+				call.id !== undefined && CALL_ID.test(call.id) ? call.id : `gemini-${fencedRequests}-${index + 1}`,
+			);
+			if (response.parts.length > 0) {
+				const modelItems: CloudNativeContextItem[] = [];
+				if (visibleText || functionCalls.length === 0) {
+					modelItems.push({
+						kind: "agent_message",
+						role: "assistant",
+						callId: null,
+						id: null,
+						bytes: Buffer.byteLength(visibleText),
+						media: 0,
+					});
+				}
+				for (const [index, call] of functionCalls.entries()) {
+					modelItems.push({
+						kind: "function_call",
+						role: null,
+						callId: assignedCallIds[index],
+						id: null,
+						bytes: Buffer.byteLength(JSON.stringify(call.args)),
+						media: 0,
+					});
+				}
+				history.push({ content: { role: "model", parts: response.parts }, items: modelItems });
+			}
+
 			if (functionCalls.length > 0) {
 				const responseParts: GeminiPart[] = [];
+				const responseItems: CloudNativeContextItem[] = [];
 				let stopAfterBatch = false;
 				for (const [index, call] of functionCalls.entries()) {
 					sessionSignal.throwIfAborted();
-					const callId =
-						call.id !== undefined && CALL_ID.test(call.id) ? call.id : `gemini-${fencedRequests}-${index + 1}`;
+					const callId = assignedCallIds[index];
 					const result = await options.boundary.invoke(callId, "qorpera", call.name, call.args);
 					toolCalls += 1;
 					const envelopeText = result.contentItems[0].text;
@@ -587,6 +720,14 @@ export async function runCloudGeminiToolSession(options: {
 						(item): item is { type: "inputImage"; imageUrl: string } =>
 							item.type === "inputImage" && item.imageUrl.startsWith(PNG_DATA_URL_PREFIX),
 					);
+					responseItems.push({
+						kind: "function_call_output",
+						role: null,
+						callId,
+						id: null,
+						bytes: Buffer.byteLength(envelopeText),
+						media: imageItem ? 1 : 0,
+					});
 					if (imageItem) {
 						const base64 = imageItem.imageUrl.slice(PNG_DATA_URL_PREFIX.length);
 						const imageSha256 = createHash("sha256").update(Buffer.from(base64, "base64")).digest("hex");
@@ -625,7 +766,7 @@ export async function runCloudGeminiToolSession(options: {
 					if (result.completesTurn === true || (result.completesTurn === "alone" && functionCalls.length === 1))
 						stopAfterBatch = true;
 				}
-				contents.push({ role: "user", parts: responseParts });
+				history.push({ content: { role: "user", parts: responseParts }, items: responseItems });
 				if (stopAfterBatch) break;
 				continue;
 			}
@@ -634,8 +775,26 @@ export async function runCloudGeminiToolSession(options: {
 				const correction = await options.turnCorrection(sessionSignal);
 				if (correction) {
 					correctionSent = true;
-					if (response.parts.length === 0) contents.push({ role: "model", parts: [{ text: "" }] });
-					contents.push({ role: "user", parts: [{ text: redactCloudWebhookSecrets(correction) }] });
+					if (response.parts.length === 0) {
+						history.push({
+							content: { role: "model", parts: [{ text: "" }] },
+							items: [{ kind: "agent_message", role: "assistant", callId: null, id: null, bytes: 0, media: 0 }],
+						});
+					}
+					const redactedCorrection = redactCloudWebhookSecrets(correction);
+					history.push({
+						content: { role: "user", parts: [{ text: redactedCorrection }] },
+						items: [
+							{
+								kind: "message",
+								role: "user",
+								callId: null,
+								id: null,
+								bytes: Buffer.byteLength(redactedCorrection),
+								media: 0,
+							},
+						],
+					});
 					continue;
 				}
 			}
@@ -651,5 +810,12 @@ export async function runCloudGeminiToolSession(options: {
 		};
 	} finally {
 		options.reviewer?.attach(undefined);
+		if (options.onUsage && usageDirty) {
+			const flushed = await flushUsage(AbortSignal.timeout(10_000));
+			if (!flushed) {
+				const retried = await flushUsage(AbortSignal.timeout(10_000));
+				if (!retried) console.error("Gemini run usage was not recorded");
+			}
+		}
 	}
 }

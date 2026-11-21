@@ -211,7 +211,7 @@ describe("runCloudGeminiToolSession", () => {
 			recordContextView: recordedViews,
 			onUsage: async (usage) => {
 				usageCalls.push(usage);
-				return undefined;
+				return { monthSpendMicrodollars: 0, monthlyCapCents: 10_000, capReached: false };
 			},
 			signal: AbortSignal.timeout(10_000),
 		});
@@ -435,5 +435,101 @@ describe("runCloudGeminiToolSession", () => {
 				signal: AbortSignal.timeout(10_000),
 			}),
 		).rejects.toBeInstanceOf(GeminiKeyRevokedError);
+	});
+
+	it("flushes final usage in finally after a transient onUsage failure and logs if all flushes fail", async () => {
+		const boundary = makeBoundary([]);
+		const { baseUrl } = await startMockGemini(() => ({
+			body: {
+				candidates: [{ content: { role: "model", parts: [{ text: "Done." }] } }],
+				usageMetadata: { promptTokenCount: 2000, candidatesTokenCount: 100 },
+			},
+		}));
+
+		let attempts = 0;
+		const received: GeminiToolSessionUsage[] = [];
+		await runCloudGeminiToolSession({
+			boundary,
+			model: "gemini-4-neon",
+			effort: "low",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: baseUrl,
+			allowLoopback: true,
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			prompt: "Summarize",
+			onUsage: async (usage) => {
+				attempts += 1;
+				received.push(usage);
+				if (attempts === 1) throw new Error("transient db blip");
+				return { monthSpendMicrodollars: 7500, monthlyCapCents: null, capReached: false };
+			},
+			signal: AbortSignal.timeout(10_000),
+		});
+		expect(attempts).toBe(2);
+		expect(received).toEqual([
+			{ inputTokens: 2000, cachedTokens: 0, outputTokens: 100 },
+			{ inputTokens: 2000, cachedTokens: 0, outputTokens: 100 },
+		]);
+
+		const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		let failingAttempts = 0;
+		await runCloudGeminiToolSession({
+			boundary,
+			model: "gemini-4-neon",
+			effort: "low",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: baseUrl,
+			allowLoopback: true,
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			prompt: "Summarize again",
+			onUsage: async () => {
+				failingAttempts += 1;
+				throw new Error("db unreachable");
+			},
+			signal: AbortSignal.timeout(10_000),
+		});
+		expect(failingAttempts).toBe(3);
+		expect(logged).toHaveBeenCalledWith("Gemini run usage was not recorded");
+	});
+
+	it("applies opened.composeContext so a resumed Gemini attempt receives its earlier run work envelope", async () => {
+		const boundary = makeBoundary([]);
+		const { baseUrl, requests } = await startMockGemini(() => ({
+			body: {
+				candidates: [{ content: { role: "model", parts: [{ text: "Continued." }] } }],
+				usageMetadata: { promptTokenCount: 500, candidatesTokenCount: 20 },
+			},
+		}));
+		const workEnvelope = JSON.stringify({
+			schema: "qorpera.run-work/v1",
+			note: "Earlier attempt already checked the invoice.",
+		});
+
+		await runCloudGeminiToolSession({
+			boundary,
+			model: "gemini-4-neon",
+			effort: "high",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: baseUrl,
+			allowLoopback: true,
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			opening: async () => ({
+				prompt: "Finish the task",
+				runtimeInstructions: "Follow instructions.",
+				composeContext: async (request) => ({
+					input: [...request.items.map((_, keep) => ({ keep })), { work: workEnvelope }],
+				}),
+			}),
+			signal: AbortSignal.timeout(10_000),
+		});
+
+		expect(requests).toHaveLength(1);
+		const contents = requests[0]?.body.contents as Array<{ role: string; parts: Array<{ text?: string }> }>;
+		expect(contents).toHaveLength(1);
+		expect(contents[0]?.role).toBe("user");
+		expect(contents[0]?.parts).toEqual([{ text: "Finish the task" }, { text: workEnvelope }]);
 	});
 });

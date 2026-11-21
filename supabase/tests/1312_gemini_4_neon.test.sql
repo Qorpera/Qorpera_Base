@@ -104,6 +104,8 @@ declare
 	v_run public.qorpera_execution_runs;
 	v_binding jsonb;
 	v_model_binding jsonb;
+	v_binding_2 jsonb;
+	v_model_binding_2 jsonb;
 	v_context jsonb;
 	v_opened jsonb;
 	v_usage jsonb;
@@ -192,23 +194,41 @@ begin
 		'6: vault opens Gemini key for pinned run: ' || v_opened::text);
 
 	v_usage := public.qorpera_record_gemini_run_usage(v_binding,
-		jsonb_build_object('inputTokens', 1000000, 'cachedTokens', 0, 'outputTokens', 200000));
-	perform pg_temp.base_assert((v_usage ->> 'monthSpendMicrodollars')::bigint = 6000000
-		and (v_usage ->> 'capReached')::boolean = true,
-		'7: spend recorded and $5 cap reached ($6.00 spent): ' || v_usage::text);
+		jsonb_build_object('inputTokens', 500000, 'cachedTokens', 0, 'outputTokens', 100000));
+	perform pg_temp.base_assert((v_usage ->> 'monthSpendMicrodollars')::bigint = 3000000
+		and (v_usage ->> 'capReached')::boolean = false,
+		'7: attempt 1 spend recorded ($3.00 < $5 cap): ' || v_usage::text);
 
 	v_usage := public.qorpera_record_gemini_run_usage(v_binding,
+		jsonb_build_object('inputTokens', 250000, 'cachedTokens', 0, 'outputTokens', 50000));
+	perform pg_temp.base_assert((v_usage ->> 'monthSpendMicrodollars')::bigint = 3000000,
+		'7: usage recording is monotonic and idempotent within one lease');
+
+	perform public.qorpera_fail_runner_job(
+		(v_binding ->> 'runnerId')::uuid, repeat('2', 64), (v_binding ->> 'jobId')::uuid, repeat('3', 64),
+		'Gemini attempt cut off', true);
+	update public.qorpera_runner_jobs
+	set queued_at = statement_timestamp() - interval '1 minute',
+		dispatch_deferred_until = statement_timestamp() - interval '1 minute'
+	where id = (v_binding ->> 'jobId')::uuid;
+	v_binding_2 := pg_temp.base_start(v_run.id);
+	v_model_binding_2 := v_binding_2 - array['provider', 'nativeHarness', 'model'];
+	perform pg_temp.base_assert((v_binding_2 ->> 'leaseId') is distinct from (v_binding ->> 'leaseId'),
+		'7: retried attempt on same run receives a fresh lease');
+
+	v_usage := public.qorpera_record_gemini_run_usage(v_binding_2,
 		jsonb_build_object('inputTokens', 500000, 'cachedTokens', 0, 'outputTokens', 100000));
-	perform pg_temp.base_assert((v_usage ->> 'monthSpendMicrodollars')::bigint = 6000000,
-		'7: usage recording is monotonic and idempotent');
+	perform pg_temp.base_assert((v_usage ->> 'monthSpendMicrodollars')::bigint = 6000000
+		and (v_usage ->> 'capReached')::boolean = true,
+		'7: attempt 2 on same run adds to attempt 1 spend ($6.00 >= $5 cap): ' || v_usage::text);
 
 	set local session authorization qorpera_secret_broker;
-	v_opened := public.qorpera_open_gemini_key_for_run(v_authority.id, v_authority.capability_sha256, v_model_binding);
+	v_opened := public.qorpera_open_gemini_key_for_run(v_authority.id, v_authority.capability_sha256, v_model_binding_2);
 	reset session authorization;
 	perform pg_temp.base_assert(v_opened ->> 'state' = 'refused' and v_opened ->> 'reason' = 'CAP_REACHED',
 		'8: vault refuses with CAP_REACHED once cap hit: ' || v_opened::text);
 
-	v_notice := public.qorpera_record_gemini_cap_reached(v_binding);
+	v_notice := public.qorpera_record_gemini_cap_reached(v_binding_2);
 	perform pg_temp.base_assert((v_notice ->> 'recorded')::boolean = true, '8: cap notification recorded');
 	perform pg_temp.base_assert(exists (select 1 from public.qorpera_member_notifications
 		where user_id = pg_temp.gm_owner() and kind = 'gemini_cap_reached' and acknowledged_at is null),
@@ -231,7 +251,7 @@ begin
 	perform pg_temp.base_assert(v_state -> 'key' = 'null'::jsonb, '10: revoked key is cleared');
 
 	set local session authorization qorpera_secret_broker;
-	v_opened := public.qorpera_open_gemini_key_for_run(v_authority.id, v_authority.capability_sha256, v_model_binding);
+	v_opened := public.qorpera_open_gemini_key_for_run(v_authority.id, v_authority.capability_sha256, v_model_binding_2);
 	reset session authorization;
 	perform pg_temp.base_assert(v_opened ->> 'state' = 'refused' and v_opened ->> 'reason' = 'REVOKED',
 		'10: vault refuses revoked key: ' || v_opened::text);

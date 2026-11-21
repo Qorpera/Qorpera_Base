@@ -73,14 +73,16 @@ alter table public.qorpera_gemini_key_tickets enable row level security;
 revoke all on public.qorpera_gemini_key_tickets from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 create table public.qorpera_gemini_run_usage (
-	run_id uuid primary key references public.qorpera_execution_runs(id) on delete cascade,
+	run_id uuid not null references public.qorpera_execution_runs(id) on delete cascade,
+	lease_id uuid not null,
 	gemini_key_id uuid not null references public.qorpera_gemini_keys(id) on delete restrict,
 	spend_month text not null check (spend_month ~ '^\d{4}-(0[1-9]|1[0-2])$'),
 	input_tokens bigint not null default 0 check (input_tokens >= 0),
 	cached_tokens bigint not null default 0 check (cached_tokens >= 0),
 	output_tokens bigint not null default 0 check (output_tokens >= 0),
 	spend_microdollars bigint not null default 0 check (spend_microdollars >= 0),
-	updated_at timestamptz not null default statement_timestamp()
+	updated_at timestamptz not null default statement_timestamp(),
+	primary key (run_id, lease_id)
 );
 alter table public.qorpera_gemini_run_usage enable row level security;
 revoke all on public.qorpera_gemini_run_usage from public, anon, authenticated, service_role, qorpera_secret_broker;
@@ -539,6 +541,7 @@ create function public.qorpera_record_gemini_run_usage(p_binding jsonb, p_usage 
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
 	v_run public.qorpera_execution_runs%rowtype;
+	v_lease_id uuid;
 	v_key public.qorpera_gemini_keys%rowtype;
 	v_prev public.qorpera_gemini_run_usage%rowtype;
 	v_month text := public.qorpera_gemini_current_month();
@@ -558,6 +561,7 @@ begin
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Gemini run usage is the runtime''s' using errcode = '42501'; end if;
 	v_run := public.qorpera_native_tool_locked_run(p_binding);
+	v_lease_id := (p_binding ->> 'leaseId')::uuid;
 	if v_run.gemini_model is null or v_run.gemini_key_id is null then
 		raise exception 'The run is not a Gemini run' using errcode = '42501'; end if;
 	if jsonb_typeof(p_usage) <> 'object'
@@ -587,7 +591,7 @@ begin
 		v_key.month_output_tokens := 0;
 	end if;
 	select usage.* into v_prev from public.qorpera_gemini_run_usage as usage
-	where usage.run_id = v_run.id for update;
+	where usage.run_id = v_run.id and usage.lease_id = v_lease_id for update;
 	v_spend := public.qorpera_gemini_neon_microdollars(v_input, v_cached, v_output);
 	v_next_input := greatest(v_input, coalesce(v_prev.input_tokens, 0));
 	v_next_cached := greatest(v_cached, coalesce(v_prev.cached_tokens, 0));
@@ -598,11 +602,11 @@ begin
 	v_delta_output := v_next_output - coalesce(v_prev.output_tokens, 0);
 	v_delta_spend := v_next_spend - coalesce(v_prev.spend_microdollars, 0);
 	insert into public.qorpera_gemini_run_usage (
-		run_id, gemini_key_id, spend_month, input_tokens, cached_tokens, output_tokens, spend_microdollars, updated_at
+		run_id, lease_id, gemini_key_id, spend_month, input_tokens, cached_tokens, output_tokens, spend_microdollars, updated_at
 	) values (
-		v_run.id, v_key.id, v_month, v_next_input, v_next_cached, v_next_output, v_next_spend, clock_timestamp()
+		v_run.id, v_lease_id, v_key.id, v_month, v_next_input, v_next_cached, v_next_output, v_next_spend, clock_timestamp()
 	)
-	on conflict (run_id) do update set
+	on conflict (run_id, lease_id) do update set
 		input_tokens = excluded.input_tokens,
 		cached_tokens = excluded.cached_tokens,
 		output_tokens = excluded.output_tokens,
@@ -855,7 +859,7 @@ begin
 			'details', null, 'hint', null)::text,
 			detail = '{"status":403,"headers":{}}'; end if;
 	if v_effort in ('xhigh','max') and coalesce(v_model not in ('claude-fable-5-2','claude-opus-5-5'), true)
-		and not (v_effort = 'xhigh' and v_model = 'gemini-4-neon')
+		and not (v_effort = 'xhigh' and coalesce(v_model = 'gemini-4-neon', false))
 		and not (v_effort = 'xhigh' and v_model is not null and public.qorpera_active_bundle_thread_efforts() ? 'xhigh') then
 		raise exception 'Conversation effort % is not open for this model', v_effort using errcode = '22023'; end if;
 	insert into public.qorpera_session_models(session_id, model_id, reasoning_effort, version, updated_by_user_id)
