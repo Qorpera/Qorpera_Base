@@ -745,13 +745,20 @@ command has the other three verbs.
   without `/company` has no databases to reach, and `data` says so.
 - Inside a coding VM, the guest agent installs `/usr/local/bin/data` (also baked into `deploy/coding-machine/build-coding-image.sh`)
   and bind-mounts each session's `/run/qorpera-folder/views/<worker32>.json` read-only at `/run/qorpera-folder/view.json`
-  in every session command unit and `user@<uid>.service`, keeping per-session view isolation with no environment variable
-  and zero database credentials on disk.
+  in every session command unit and `user@<uid>.service`, giving each session its own default view with no environment
+  variable and zero database credentials on disk. Sessions on one coding machine share root (`%qorpera-coding` has
+  `NOPASSWD: ALL`), and a coding machine holds one member's sessions for one coding agent, repository, and setup digest
+  (`RUNTIME-FOLDER-CODING-MACHINES.md`), so the security boundary is the CID-authenticated machine rather than the
+  session.
 - So a program on a company machine or in a coding session reaches the company's databases as it reaches the company's
-  files, and no further. Root on the machine is the agent's (or member's on a coding VM), every command started there
-  runs under its session's review/authority, and the files of every readable database folder are already in `/company`.
-  A database in a folder the view does not show (such as a member's private folder, or a folder either the coding agent
-  or member may not read) is not reached.
+  files, and no further. Root on a company machine is the agent's, where every command started there is reviewed as an
+  outside effect (`machine_run`); root on a coding VM is the member's, where shell commands are not reviewed one by one
+  and allowing `data` matches a run's `data_change` / `data_apply` tools and the session's own `/company` writes (with
+  destructive schema steps still held for a member's yes through `data_apply`, and every read recorded in the coding
+  machine's provenance set). The files of every readable database folder are already in `/company`. What is new: a
+  program there can read rows and run changes, where before it could only read and write the files that define them. A
+  database in a folder the view does not show (such as a member's private folder, or a folder either the coding agent or
+  member may not read) is not reached.
 - `:viewer` is the member the view names (the starter's, or the coding session's member), unless the call names one, as
   for a run.
 
@@ -834,8 +841,9 @@ folder service calls the provider hosts' origin and needs no forward of its own.
   `security.devlxd` stays off.
 - The Company Computer's desktop (`computer_shell`), `run_box`, and `code_host` views get no `data`: only
   `test_machine` and `coding_session` views are taken.
-- No call is reviewed by itself. Starting a command on a machine is; what the command then writes, to the folder or
-  to rows, is the command's.
+- No call is reviewed by itself. On a company machine, starting a command (`machine_run`) is reviewed; on a coding
+  machine, shell commands are not reviewed one by one, and `data` matches a run's `data_change` / `data_apply` tools
+  and the session's own folder writes. What a command writes, to the folder or to rows, is the command's.
 
 ### Parts and rollout
 

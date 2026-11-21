@@ -826,8 +826,6 @@ function folderArgs(session: Places, uid: number, gid: number): string[] {
 		String(gid),
 	];
 }
-/** Shows the request's view. Another view stops the program first and, once it ended, starts it on fresh state; a
- * stopped or failed program starts again. Then waits until it mounted, the node closed the view, or the wait ran out. */
 async function ensureDataCommand(at: Agent): Promise<void> {
 	const stat = await missing(() => lstat(at.dataCommand));
 	if (stat?.isFile() && (stat.mode & 0o777) === 0o555 && (!at.requireRoot || (stat.uid === 0 && stat.gid === 0))) {
@@ -866,6 +864,8 @@ async function ensureViewTarget(at: Agent): Promise<void> {
 	if (!stat.isFile()) throw new Error("CODING_GUEST_FILE_INVALID");
 }
 
+/** Shows the request's view. Another view stops the program first and, once it ended, starts it on fresh state; a
+ * stopped or failed program starts again. Then waits until it mounted, the node closed the view, or the wait ran out. */
 async function showView(
 	at: Agent,
 	session: Places,
