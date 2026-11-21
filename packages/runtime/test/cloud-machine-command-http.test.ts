@@ -632,6 +632,17 @@ describe("a machine wake's route", () => {
 		expect(await router({ fails: true }).wake(request(), signal)).toBe(false);
 		expect(await router({}).wake(request(), signal, true)).toBe(false);
 	});
+
+	it("catches local wake failures without unhandled rejections and still honors peer answers", async () => {
+		const failingLocal = async () => {
+			throw new Error("local wake boom");
+		};
+		expect(await router({ wakeLocal: failingLocal, told: true }).wake(request(), signal)).toBe(true);
+		expect(await router({ wakeLocal: failingLocal, told: false }).wake(request(), signal)).toBe(false);
+		expect(
+			await router({ wakeLocal: failingLocal, told: false }).wake({ ...request(), input: { wait: false } }, signal),
+		).toBe(false);
+	});
 });
 
 describe("machine command authority", () => {

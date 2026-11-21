@@ -305,6 +305,17 @@ describe("Resend sender", () => {
 			"Idempotency-Key": "company-mail/1",
 		});
 		assert.deepEqual(JSON.parse(String(request?.init.body)), email);
+
+		const withAttachments: ProviderEmail = {
+			...email,
+			attachments: [
+				{ filename: 'report "Q4".pdf', content: Buffer.from("hello-pdf").toString("base64") },
+				{ filename: "notes.txt", content: Buffer.from("abc").toString("base64") },
+			],
+		};
+		assert.equal(await sender.send(withAttachments, "company-mail/2"), "resend-1");
+		assert.ok(request?.init.body instanceof Blob);
+		assert.deepEqual(JSON.parse(await request.init.body.text()), withAttachments);
 	});
 
 	it("says which refusals are worth another try", async () => {
