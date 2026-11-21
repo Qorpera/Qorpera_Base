@@ -188,6 +188,12 @@ last week, parked warm hosts included. The fresh-VM path stays on every node as 
     the operator declares the orchestrator after the activation while the node is still switched
     off (`deploy/first-node/RUNTIME-ROLLING-UPDATE.md`). A refused declaration leaves the host set
     up and undeclared, and the script exits 1.
+  - Optional thin runtime bundle layer (`deploy/first-node/RUNTIME-THIN-BUNDLE.md`): pass either
+    `EXEC_RUNTIME_BUNDLE_ARCHIVE` with mandatory 64-hex pin `EXEC_RUNTIME_BUNDLE_ARCHIVE_SHA256`
+    (the flat `qorpera-runtime-bundle-layer.tar.gz` staged by the Ed25519-signed node release), or
+    `EXEC_RUNTIME_BUNDLE_DIR` with mandatory 64-hex pin `EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256`. The
+    two modes are mutually exclusive; both pin independently of `EXEC_RUNTIME_BUNDLE_SHA256` so
+    pre-activation rebuilds stay pinned. `create-exec-host.sh` unsets all four variables.
   - `EXEC_PREFLIGHT_ONLY=1` checks the inputs and changes nothing.
 - **`create-exec-host.sh <fingerprint>`** makes a new host on any node:
   - it takes the same variables plus `EXEC_PROFILE`, `EXEC_POOL`, `EXEC_NETWORK` and the
