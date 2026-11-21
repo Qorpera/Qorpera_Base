@@ -492,7 +492,10 @@ export class SupabaseObjectAuthority
 							JSON.stringify({ qorpera_nas_replica: true, qorpera_nas_replica_bytes: bytes.byteLength }),
 						).toString("base64"),
 					},
-					body: Uint8Array.from(bytes),
+					body:
+						bytes.buffer instanceof ArrayBuffer
+							? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+							: Uint8Array.from(bytes),
 					signal,
 				},
 			);

@@ -847,11 +847,15 @@ describe("commits", () => {
 			{},
 			signal(),
 		);
-		expect(vi.mocked(bytes.put).mock.calls.map(([, mediaType, executable]) => [mediaType, executable])).toEqual([
-			["text/plain", false],
-			["text/markdown", false],
-			["application/octet-stream", true],
-		]);
+		const stagedPairs = vi.mocked(bytes.put).mock.calls.map(([, mediaType, executable]) => [mediaType, executable]);
+		expect(stagedPairs).toHaveLength(3);
+		expect(stagedPairs).toEqual(
+			expect.arrayContaining([
+				["text/plain", false],
+				["text/markdown", false],
+				["application/octet-stream", true],
+			]),
+		);
 		const files = (calls[0]!.args.p_units as { file: CloudCompanyFolderFile }[]).map((unit) => unit.file);
 		expect(files.map((file) => [file.mediaType, file.executable])).toEqual([
 			["text/plain", false],
@@ -2929,5 +2933,97 @@ describe("the company's code: an import and how it stands (20260930736000)", () 
 			else expect(Object.hasOwn(read.look ?? {}, "lines")).toBe(false);
 			expect(read.look?.branches).toEqual(sent.branches);
 		}
+	});
+
+	it("stages distinct files concurrently up to the cap, serializes same-hash variants, and aborts siblings with typed errors", async () => {
+		const { client, bytes } = fixture(() => ({}));
+		let inFlight = 0;
+		let peak = 0;
+		const hashInFlight = new Map<string, number>();
+		let sameHashPeak = 0;
+		vi.mocked(bytes.put).mockImplementation(async (data, mediaType) => {
+			const digest = sha(data);
+			const nextHash = (hashInFlight.get(digest) ?? 0) + 1;
+			hashInFlight.set(digest, nextHash);
+			sameHashPeak = Math.max(sameHashPeak, nextHash);
+			inFlight++;
+			peak = Math.max(peak, inFlight);
+			await new Promise((resolve) => setTimeout(resolve, 15));
+			inFlight--;
+			hashInFlight.set(digest, (hashInFlight.get(digest) ?? 1) - 1);
+			return {
+				manifestSha256: sha(`manifest:${digest}:${mediaType}`),
+				fileSha256: digest,
+				bytes: data.byteLength,
+				mediaType,
+			};
+		});
+		const units = [
+			...Array.from({ length: 10 }, (_, i) => ({
+				op: "write" as const,
+				path: `batch/file-${i}.txt`,
+				content: { text: `content-${i}` },
+			})),
+			{
+				op: "new_folder" as const,
+				path: "batch/sub",
+				contents: [
+					{ path: "dup.txt", kind: "file" as const, content: { text: "content-0" } },
+					{
+						path: "same-bytes-exec.sh",
+						kind: "file" as const,
+						content: {
+							bytes: new TextEncoder().encode("content-0"),
+							mediaType: "text/x-shellscript",
+							executable: true,
+						},
+					},
+					{ path: "extra.txt", kind: "file" as const, content: { text: "extra-content" } },
+				],
+			},
+		];
+		const staged = await client.stage(units, signal());
+		expect(staged.unitCount).toBe(11);
+		expect(bytes.put).toHaveBeenCalledTimes(12);
+		expect(peak).toBe(4);
+		expect(sameHashPeak).toBe(1);
+		let abortedSiblings = 0;
+		vi.mocked(bytes.put).mockImplementation(async (data, mediaType, _exec, putSignal) => {
+			const text = new TextDecoder().decode(data);
+			if (text === "fail-me") {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+				throw new CloudCompanyFolderError("full");
+			}
+			return await new Promise<CloudFileReference>((resolve, reject) => {
+				const timer = setTimeout(() => {
+					resolve({
+						manifestSha256: sha(`manifest:${sha(data)}`),
+						fileSha256: sha(data),
+						bytes: data.byteLength,
+						mediaType,
+					});
+				}, 500);
+				putSignal.addEventListener(
+					"abort",
+					() => {
+						clearTimeout(timer);
+						abortedSiblings++;
+						reject(putSignal.reason ?? new Error("aborted"));
+					},
+					{ once: true },
+				);
+			});
+		});
+		await expect(
+			client.stage(
+				[
+					{ op: "write", path: "a.txt", content: { text: "slow-1" } },
+					{ op: "write", path: "b.txt", content: { text: "fail-me" } },
+					{ op: "write", path: "c.txt", content: { text: "slow-2" } },
+				],
+				signal(),
+			),
+		).rejects.toMatchObject({ failure: "full", category: "budget_exhausted" });
+		expect(abortedSiblings).toBe(2);
 	});
 });
