@@ -2439,7 +2439,7 @@ describe("app relay: concurrency hardening and backpressure", () => {
 		assert.equal(fastRes.destroyed, false);
 	});
 
-	it("delivers a complete early response under WebSocket backpressure even after the app resets the upload socket", async (t) => {
+	it("delivers a complete early 413 response with connection: close under WebSocket backpressure while upload BODY frames keep arriving", async (t) => {
 		let earlySent = false;
 		const app = createServer((req, res) => {
 			req.on("error", () => {});
@@ -2473,6 +2473,18 @@ describe("app relay: concurrency hardening and backpressure", () => {
 					res.end(body, () => {
 						earlySent = true;
 					});
+				});
+				return;
+			}
+			if (req.url === "/stream-422") {
+				res.writeHead(422, { "content-type": "text/plain" });
+				res.write("err:");
+				let readBytes = 0;
+				req.on("data", (chunk) => {
+					readBytes += chunk.length;
+				});
+				req.on("end", () => {
+					res.end(String(readBytes));
 				});
 				return;
 			}
@@ -2592,5 +2604,40 @@ describe("app relay: concurrency hardening and backpressure", () => {
 			else if (msg.type === TYPE.reset) result.sawReset = true;
 		}
 		assert.deepEqual(result, { status: 413, bodyBytes: 512 * 1024, ended: true, sawReset: false });
+
+		sendMsg(
+			TYPE.head,
+			3,
+			Buffer.from(
+				JSON.stringify({
+					method: "POST",
+					path: "/stream-422",
+					headers: [
+						["host", HOST],
+						["content-length", "10"],
+					],
+				}),
+			),
+		);
+		sendMsg(TYPE.body, 3, Buffer.from("hello"));
+		const head422 = await (async () => {
+			for (;;) {
+				const msg = decodeMessage((await frames.message()).payload);
+				if (msg.stream === 3 && msg.type === TYPE.response) return JSON.parse(msg.payload.toString()).status;
+			}
+		})();
+		assert.equal(head422, 422);
+		sendMsg(TYPE.body, 3, Buffer.from("world"));
+		sendMsg(TYPE.end, 3);
+		let body422 = "";
+		let ended422 = false;
+		while (!ended422) {
+			const msg = decodeMessage((await frames.message()).payload);
+			if (msg.stream !== 3) continue;
+			if (msg.type === TYPE.body) body422 += msg.payload.toString();
+			else if (msg.type === TYPE.end) ended422 = true;
+			else if (msg.type === TYPE.reset) assert.fail("unexpected reset on streaming 422");
+		}
+		assert.equal(body422, "err:10");
 	});
 });

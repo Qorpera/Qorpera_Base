@@ -197,8 +197,8 @@ function connect() {
 		};
 		app.on("response", (response) => {
 			answered = true;
-			// WHY: Once the app rejects a request with 4xx/5xx, stop writing upload chunks so a closed app socket does not TCP-RST unread response bytes.
-			if ((response.statusCode ?? 0) >= 400) uploadClosed.add(app);
+			// WHY: A fixed-length 4xx/5xx error response is complete without more upload bytes; stop writing so a closed app socket does not TCP-RST unread response bytes while chunked streaming errors still receive the upload.
+			if ((response.statusCode ?? 0) >= 400 && response.headers["content-length"] !== undefined) uploadClosed.add(app);
 			if (!appAnswers) console.log(`The app on port ${port} answers again`);
 			appAnswers = true;
 			const headers = [];
