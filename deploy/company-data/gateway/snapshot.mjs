@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import {
 	closeSync,
 	cpSync,
+	existsSync,
 	mkdirSync,
 	openSync,
 	readdirSync,
@@ -25,6 +26,8 @@ const DEFAULT_LOCK_WAIT_MS = 2_000;
 const DEFAULT_MAX_TRIES = 8;
 const CURSOR_BATCH = 2_000;
 const CSV_READ_CHUNK = 256 * 1024;
+const MAX_RESTORE_BATCH_BYTES = 4 * 1024 * 1024;
+const CLIENT_CONNECT_TIMEOUT_MS = 15_000;
 
 const quoted = (name) => `"${String(name).replace(/"/g, '""')}"`;
 const literal = (value) => `'${String(value).replace(/'/g, "''")}'`;
@@ -514,8 +517,8 @@ function buildPartQueries(schema, table, cuts, partBytes) {
 
 async function writeQueryToCsvFile(client, sql, fullPath) {
 	const cursorName = `qsnap_${randomBytes(6).toString("hex")}`;
-	mkdirSync(dirname(fullPath), { recursive: true });
-	const fd = openSync(fullPath, "w");
+	await client.query(`declare ${cursorName} no scroll cursor for ${sql}`);
+	let fd = null;
 	const whole = createHash("sha256");
 	const pieces = [];
 	let pieceHash = createHash("sha256");
@@ -541,8 +544,9 @@ async function writeQueryToCsvFile(client, sql, fullPath) {
 		}
 	};
 
-	await client.query(`declare ${cursorName} no scroll cursor for ${sql}`);
 	try {
+		mkdirSync(dirname(fullPath), { recursive: true });
+		fd = openSync(fullPath, "w");
 		let headerWritten = false;
 		for (;;) {
 			const batch = await client.query({ text: `fetch ${CURSOR_BATCH} from ${cursorName}`, rowMode: "array", types: TEXT_TYPES });
@@ -560,7 +564,7 @@ async function writeQueryToCsvFile(client, sql, fullPath) {
 		if (pieceFill > 0) pieces.push(pieceHash.digest("hex"));
 		return { bytes: totalBytes, sha256: whole.digest("hex"), pieces };
 	} finally {
-		closeSync(fd);
+		if (fd !== null) closeSync(fd);
 		await client.query(`close ${cursorName}`).catch(() => undefined);
 	}
 }
@@ -610,8 +614,10 @@ export async function exportDatabaseSnapshot({
 		user,
 		password,
 		database,
+		connectionTimeoutMillis: CLIENT_CONNECT_TIMEOUT_MS,
 		application_name: "qorpera-data-snapshot",
 	});
+	client.on("error", () => undefined);
 	await client.connect();
 	const startedAt = Date.now();
 	const restarts = [];
@@ -774,13 +780,29 @@ export async function exportDatabaseSnapshot({
 		writeFileSync(join(stageDir, "snapshot.json"), manifestJson, "utf8");
 
 		mkdirSync(dirname(resolvedOut), { recursive: true });
-		rmSync(resolvedOut, { recursive: true, force: true });
-		try {
-			renameSync(stageDir, resolvedOut);
-		} catch {
-			cpSync(stageDir, resolvedOut, { recursive: true });
-			rmSync(stageDir, { recursive: true, force: true });
+		const backupDir = `${resolvedOut}.prev-${randomBytes(6).toString("hex")}`;
+		let movedPrev = false;
+		if (existsSync(resolvedOut)) {
+			renameSync(resolvedOut, backupDir);
+			movedPrev = true;
 		}
+		try {
+			try {
+				renameSync(stageDir, resolvedOut);
+			} catch {
+				cpSync(stageDir, resolvedOut, { recursive: true });
+				rmSync(stageDir, { recursive: true, force: true });
+			}
+		} catch (swapError) {
+			rmSync(resolvedOut, { recursive: true, force: true });
+			if (movedPrev) {
+				try {
+					renameSync(backupDir, resolvedOut);
+				} catch {}
+			}
+			throw swapError;
+		}
+		if (movedPrev) rmSync(backupDir, { recursive: true, force: true });
 		return {
 			manifest,
 			ms: Date.now() - startedAt,
@@ -826,8 +848,10 @@ export async function restoreDatabaseSnapshot({
 		user,
 		password,
 		database,
+		connectionTimeoutMillis: CLIENT_CONNECT_TIMEOUT_MS,
 		application_name: "qorpera-data-restore",
 	});
+	client.on("error", () => undefined);
 	await client.connect();
 	try {
 		await client.query("begin");
@@ -881,12 +905,14 @@ export async function restoreDatabaseSnapshot({
 				let keepIndexes = null;
 				let keepCols = null;
 				let pendingRows = [];
+				let pendingBytes = 0;
 				let maxBatch = 2_000;
 
 				const flushBatch = async () => {
 					if (pendingRows.length === 0) return;
 					const slice = pendingRows;
 					pendingRows = [];
+					pendingBytes = 0;
 					if (keepCols.length === 0) {
 						for (let i = 0; i < slice.length; i++) {
 							await client.query(`insert into ${rel} default values`);
@@ -927,8 +953,17 @@ export async function restoreDatabaseSnapshot({
 						maxBatch = Math.max(1, Math.min(2_000, Math.floor(60_000 / Math.max(1, keepCols.length))));
 						return;
 					}
+					let rowBytes = 32;
+					for (let k = 0; k < keepIndexes.length; k++) {
+						const cell = row[keepIndexes[k]];
+						if (cell !== null && cell !== undefined) rowBytes += Buffer.byteLength(cell, "utf8");
+					}
+					if (pendingRows.length > 0 && pendingBytes + rowBytes > MAX_RESTORE_BATCH_BYTES) {
+						await flushBatch();
+					}
 					pendingRows.push(row);
-					if (pendingRows.length >= maxBatch) await flushBatch();
+					pendingBytes += rowBytes;
+					if (pendingRows.length >= maxBatch || pendingBytes >= MAX_RESTORE_BATCH_BYTES) await flushBatch();
 				});
 				await flushBatch();
 			}
