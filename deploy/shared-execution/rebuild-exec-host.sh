@@ -71,6 +71,7 @@ PACKAGE="${EXEC_PACKAGE}"
 STAGING="${EXEC_STAGING}"
 SLOTS="${EXEC_SLOTS}"
 BUNDLE="${EXEC_RUNTIME_BUNDLE_SHA256:-}"
+BUNDLE_DIR="${EXEC_RUNTIME_BUNDLE_DIR:-}"
 for name in VM PROJECT; do
 	[[ ${!name} =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$ ]] || { echo "EXEC_${name} is not an LXD name." >&2; exit 1; }
 done
@@ -89,6 +90,59 @@ fi
 if [[ -n ${BUNDLE} && ! ${BUNDLE} =~ ^[0-9a-f]{64}$ ]]; then
 	echo "EXEC_RUNTIME_BUNDLE_SHA256 must be a sha256." >&2
 	exit 1
+fi
+if [[ -n ${BUNDLE_DIR} ]]; then
+	if [[ ${BUNDLE_DIR} != /* || ${BUNDLE_DIR} == *".."* || ! -d ${BUNDLE_DIR} || -L ${BUNDLE_DIR} ]]; then
+		echo "EXEC_RUNTIME_BUNDLE_DIR must be an absolute non-symlink directory." >&2
+		exit 1
+	fi
+	python3 - "${BUNDLE_DIR}" "${BUNDLE}" <<'PY'
+import hashlib, json, os, sys
+directory, expected_bundle = sys.argv[1], sys.argv[2]
+expected_files = [
+    "qorpera-ephemeral-runner.mjs",
+    "qorpera-native-provider-host.mjs",
+    "qorpera-identity-recovery-restore.mjs",
+    "qorpera-native-isolation-child.mjs",
+    "qorpera-sandbox-probe.mjs",
+    "qorpera-lxd-runner-bootstrap.mjs",
+    "qorpera-lxd-native-login-bootstrap.mjs",
+    "qorpera-claude-home-shell.mjs",
+    "run-job",
+]
+manifest_path = os.path.join(directory, "manifest.json")
+if os.path.islink(manifest_path) or not os.path.isfile(manifest_path):
+    sys.exit("EXEC_RUNTIME_BUNDLE_DIR manifest.json is missing or unsafe.")
+with open(manifest_path, "r", encoding="utf-8") as handle:
+    manifest = json.load(handle)
+if manifest.get("schema") != "qorpera.runtime-bundle-layer/v1":
+    sys.exit("EXEC_RUNTIME_BUNDLE_DIR has an invalid manifest schema.")
+bundle_sha = manifest.get("runtimeBundleSha256", "")
+if len(bundle_sha) != 64 or any(c not in "0123456789abcdef" for c in bundle_sha):
+    sys.exit("EXEC_RUNTIME_BUNDLE_DIR has an invalid runtimeBundleSha256.")
+if expected_bundle and bundle_sha != expected_bundle:
+    sys.exit("EXEC_RUNTIME_BUNDLE_DIR bundle sha256 does not match EXEC_RUNTIME_BUNDLE_SHA256.")
+artifacts = manifest.get("artifacts")
+if not isinstance(artifacts, list):
+    sys.exit("EXEC_RUNTIME_BUNDLE_DIR artifacts list is invalid.")
+by_name = {}
+for item in artifacts:
+    name = item.get("file") if isinstance(item, dict) else None
+    if name not in expected_files or name in by_name:
+        sys.exit(f"EXEC_RUNTIME_BUNDLE_DIR unexpected or duplicate artifact: {name}")
+    by_name[name] = item
+for name in expected_files:
+    item = by_name.get(name)
+    if not item:
+        sys.exit(f"EXEC_RUNTIME_BUNDLE_DIR missing artifact: {name}")
+    path = os.path.join(directory, name)
+    if os.path.islink(path) or not os.path.isfile(path):
+        sys.exit(f"EXEC_RUNTIME_BUNDLE_DIR unsafe artifact file: {name}")
+    with open(path, "rb") as handle:
+        data = handle.read()
+    if len(data) != item.get("bytes") or hashlib.sha256(data).hexdigest() != item.get("sha256"):
+        sys.exit(f"EXEC_RUNTIME_BUNDLE_DIR digest mismatch for {name}")
+PY
 fi
 for file in qorpera-shared-execution-service.mjs install-shared-execution-guest.sh manifest.json qorpera-folder qorpera-folder-mount@.service \
 	qorpera-folder-relay@.socket qorpera-folder-relay@.service; do
@@ -199,6 +253,24 @@ lxc file push --project "${PROJECT}" -r -p "${PACKAGE}" "${VM}/var/lib/qorpera-b
 exec_in mv "/var/lib/qorpera-bootstrap/$(basename "${PACKAGE}")" /var/lib/qorpera-bootstrap/shared-execution
 exec_in env "QORPERA_SHARED_EXECUTION_SLOTS=${SLOTS}" bash /var/lib/qorpera-bootstrap/shared-execution/install-shared-execution-guest.sh \
 	| grep -v 'CPUAccounting\|strict user' | tail -1
+if [[ -n ${BUNDLE_DIR} ]]; then
+	echo "Installing thin runtime bundle layer."
+	for artifact in \
+		qorpera-ephemeral-runner.mjs \
+		qorpera-native-provider-host.mjs \
+		qorpera-identity-recovery-restore.mjs \
+		qorpera-native-isolation-child.mjs \
+		qorpera-sandbox-probe.mjs \
+		qorpera-lxd-runner-bootstrap.mjs \
+		qorpera-lxd-native-login-bootstrap.mjs \
+		qorpera-claude-home-shell.mjs \
+		run-job; do
+		push "${BUNDLE_DIR}/${artifact}" "/opt/qorpera-runner/${artifact}" 0555
+		if [[ ${artifact} == *.mjs ]]; then
+			exec_in node --check "/opt/qorpera-runner/${artifact}"
+		fi
+	done
+fi
 
 echo "Configuring: the fence digest is taken from the image, never from the previous host."
 fence=$(exec_in sha256sum /opt/qorpera-harnesses/native-company/codex | cut -d' ' -f1)

@@ -289,6 +289,65 @@ test("every rebuild mints the host's own credential, binds only its hash, and pu
 	}
 });
 
+test("EXEC_RUNTIME_BUNDLE_DIR verifies manifest digests before stopping anything and pushes 0555 artifacts", () => {
+	const layerFiles = [
+		"qorpera-ephemeral-runner.mjs",
+		"qorpera-native-provider-host.mjs",
+		"qorpera-identity-recovery-restore.mjs",
+		"qorpera-native-isolation-child.mjs",
+		"qorpera-sandbox-probe.mjs",
+		"qorpera-lxd-runner-bootstrap.mjs",
+		"qorpera-lxd-native-login-bootstrap.mjs",
+		"qorpera-claude-home-shell.mjs",
+		"run-job",
+	];
+	const bundleSha = "b".repeat(64);
+	const fixture = setup();
+	const mismatchFixture = setup();
+	const tamperedFixture = setup();
+	const layerDir = join(fixture.dir, "runtime-layer");
+	mkdirSync(layerDir, { recursive: true });
+	try {
+		const artifacts = layerFiles.map((file) => {
+			const content = Buffer.from(`export const file = ${JSON.stringify(file)};\n`);
+			writeFileSync(join(layerDir, file), content);
+			return { file, bytes: content.byteLength, sha256: createHash("sha256").update(content).digest("hex") };
+		});
+		writeFileSync(
+			join(layerDir, "manifest.json"),
+			`${JSON.stringify({ schema: "qorpera.runtime-bundle-layer/v1", runtimeBundleSha256: bundleSha, artifacts }, null, 2)}\n`,
+		);
+		const ok = rebuild(fixture, {
+			EXEC_RUNTIME_BUNDLE_SHA256: bundleSha,
+			EXEC_RUNTIME_BUNDLE_DIR: layerDir,
+		});
+		assert.equal(ok.status, 0, ok.stderr);
+		assert.match(ok.log, /\/opt\/qorpera-runner\/qorpera-native-provider-host\.mjs/);
+		assert.match(ok.log, /node --check \/opt\/qorpera-runner\/qorpera-native-provider-host\.mjs/);
+
+		const mismatch = rebuild(mismatchFixture, {
+			EXEC_RUNTIME_BUNDLE_SHA256: "a".repeat(64),
+			EXEC_RUNTIME_BUNDLE_DIR: layerDir,
+		});
+		assert.equal(mismatch.status, 1);
+		assert.match(mismatch.stderr, /bundle sha256 does not match/);
+		assert.doesNotMatch(mismatch.log, /systemctl disable/);
+
+		writeFileSync(join(layerDir, "qorpera-native-provider-host.mjs"), "tampered\n");
+		const tampered = rebuild(tamperedFixture, {
+			EXEC_RUNTIME_BUNDLE_SHA256: bundleSha,
+			EXEC_RUNTIME_BUNDLE_DIR: layerDir,
+		});
+		assert.equal(tampered.status, 1);
+		assert.match(tampered.stderr, /digest mismatch/);
+		assert.doesNotMatch(tampered.log, /systemctl disable/);
+	} finally {
+		for (const item of [fixture, mismatchFixture, tamperedFixture]) {
+			rmSync(item.dir, { recursive: true, force: true });
+		}
+	}
+});
+
 test("the script still parses", () => {
 	assert.equal(spawnSync("bash", ["-n", script]).status, 0);
 	assert.ok(existsSync(script));

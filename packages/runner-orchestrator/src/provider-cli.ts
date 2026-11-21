@@ -142,8 +142,19 @@ function lxdConfig(): LxdCloudRunnerProviderConfig {
 		claudePath: process.env.QORPERA_CLAUDE_PATH ?? "/usr/local/bin/claude",
 		guestBootstrapService: process.env.QORPERA_LXD_GUEST_BOOTSTRAP_SERVICE ?? "qorpera-lxd-runner-bootstrap.service",
 		...liveCompanyConfig(),
+		...runtimeBundleOverlayConfig(),
 		...(nativeCompanyRuntime ? { nativeCompanyRuntime } : {}),
 	};
+}
+
+function runtimeBundleOverlayConfig(): { runtimeBundleDirectory?: string; runtimeBundleSha256?: string } {
+	const dir = process.env.QORPERA_LXD_RUNTIME_BUNDLE_DIR;
+	const sha = process.env.QORPERA_LXD_RUNTIME_BUNDLE_SHA256;
+	if (!dir && !sha) return {};
+	if (!dir || !sha) {
+		throw new Error("QORPERA_LXD_RUNTIME_BUNDLE_DIR and QORPERA_LXD_RUNTIME_BUNDLE_SHA256 are required together");
+	}
+	return { runtimeBundleDirectory: resolve(dir), runtimeBundleSha256: sha };
 }
 
 /** The live company tree is opt-in and all-or-nothing: a host mount path and
