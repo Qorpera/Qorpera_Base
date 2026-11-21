@@ -24,6 +24,26 @@ pub struct WakeRequest {
     pub site_id: String,
     pub oci_image_ref: Option<String>,
     pub health_path: String,
+    #[serde(default = "default_wake_idle")]
+    pub idle_timeout_sec: u64,
+    #[serde(default = "default_wake_memory")]
+    pub memory_mb: u32,
+    #[serde(default = "default_wake_vcpu")]
+    pub vcpu_limit: f32,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+}
+
+fn default_wake_idle() -> u64 {
+    900
+}
+
+fn default_wake_memory() -> u32 {
+    512
+}
+
+fn default_wake_vcpu() -> f32 {
+    1.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

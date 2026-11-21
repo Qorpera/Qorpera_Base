@@ -3,8 +3,13 @@ import { withAbortScope } from "./abort-scope.ts";
 import { type CodeChangeRecordsOptions, codeChangeErrorCode } from "./code-change-records.ts";
 import { type CodeHostJob, CodeHostJobFailure } from "./code-host-jobs.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
-import { CODE_SITE_MAX_BYTES, CODE_SITE_MAX_FILES } from "./code-site.ts";
 import { CodingControlBusy } from "./coding-executor.ts";
+import {
+	deployCodeSiteToNativeEdge,
+	type NativeCodeSiteSpec,
+	type NativeEdgeHostingConfig,
+	parseNativeCodeSiteSpec,
+} from "./native-webapp-deploy.ts";
 
 /** The upload of a repository's site (own code storage, step 4, part U; STEP4-RELEASES-PLAN.md 8.5 as STEP4-BUILD.md
  * section 1 replaced it). A landing whose checks passed keeps the site its checks built as a git tree in the
@@ -56,7 +61,6 @@ export const CODE_SITE_LIST_BYTES = 100 * 1024;
 export const CODE_SITE_MISSING_PATHS = 100;
 
 const CALL_MS = 30_000;
-const SHA = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 /** A code the kernel keeps as the repository's site problem. */
 const PROBLEM = /^[A-Z0-9_:]{1,120}$/;
@@ -99,28 +103,28 @@ export interface CodeSiteTarget {
 	name: string;
 }
 
+export type CodeSiteSourceExport = (
+	job: CodeHostJob,
+	value: { repository: CloudCodingRepository; tree: string },
+) => Promise<{ sourceDir: string; cleanup?: () => Promise<void> }>;
+
 export interface CodeSiteUploadsOptions {
 	control: CodeChangeRecordsOptions["control"];
-	/** The executor's code host jobs, with the `yields` option. */
 	hosts: Pick<CodeHostJobs, "run">;
-	/** `readCodeSiteTree` of `code-host-sites.ts`, as it is. */
 	read: CodeSiteTreeRead;
 	owner: string;
 	machineIdSha256: string;
-	/** The log lines `code-site` and `code-site-error` (whose `error` is the error itself, for the log to redact; the
-	 * code the kernel is told is `problem`). */
 	report?: (event: Record<string, unknown>) => void;
-	/** How many due sites one pass takes, 1 to 20. Default 10. */
 	limit?: number;
 	putConcurrency?: number;
+	nativeEdge?: NativeEdgeHostingConfig;
+	exportSource?: CodeSiteSourceExport;
 }
 
-/** A site the kernel named: the change whose tree is due, and the tree as its row has it (null when the row's `site`
- * could not be read). */
 interface Due {
 	target: CodeSiteTarget;
 	change: number;
-	site: { tree: string; files: number; bytes: number } | null;
+	site: NativeCodeSiteSpec | null;
 }
 
 /** What stopped a site: the step, the code the kernel is told, and what the log shows of why. */
@@ -161,7 +165,8 @@ export class CodeSiteUploads {
 	readonly #report: (event: Record<string, unknown>) => void;
 	readonly #limit: number;
 	readonly #putConcurrency: number;
-	/** How many passes in a row each site's upload met a busy kernel, by its repository and change. */
+	readonly #nativeEdge: NativeEdgeHostingConfig | undefined;
+	readonly #exportSource: CodeSiteSourceExport | undefined;
 	readonly #busy = new Map<string, number>();
 	/** A wake that came while nothing waited: the next wait ends at once. */
 	#woken = false;
@@ -198,6 +203,8 @@ export class CodeSiteUploads {
 		};
 		this.#limit = limit;
 		this.#putConcurrency = putConcurrency;
+		this.#nativeEdge = options.nativeEdge;
+		this.#exportSource = options.exportSource;
 	}
 
 	/** A landing kept a site: the wait between passes ends now, or the next one does not begin. */
@@ -273,18 +280,7 @@ export class CodeSiteUploads {
 				this.#report({ event: "code-site-error", step: "due", error: new Error("CODE_SITE_DUE_UNCONFIRMED") });
 				continue;
 			}
-			// The row's site, as the collect left it: only its tree and its two counts matter here.
-			const read =
-				isRecord(site) &&
-				site.schema === "qorpera.code-site/v1" &&
-				typeof site.tree === "string" &&
-				SHA.test(site.tree) &&
-				whole(site.files, 1) &&
-				site.files <= CODE_SITE_MAX_FILES &&
-				whole(site.bytes) &&
-				site.bytes <= CODE_SITE_MAX_BYTES
-					? { tree: site.tree, files: site.files, bytes: site.bytes }
-					: null;
+			const read = parseNativeCodeSiteSpec(site);
 			due.push({ target, change, site: read });
 		}
 		return due;
@@ -303,6 +299,9 @@ export class CodeSiteUploads {
 			name: due.target.name,
 			baseBranch: "main",
 		});
+		if (this.#nativeEdge || site.schema === "qorpera.code-site/v2") {
+			return await this.#siteNative(due, site, repository, started, signal);
+		}
 		let tree: { files: CodeSiteUploadFile[]; bytes: number; manifestSha256: string };
 		try {
 			tree = treeOf(
@@ -368,6 +367,123 @@ export class CodeSiteUploads {
 			}
 			this.#busy.delete(key);
 			return await this.#failed(due, stopped.step, stopped.code, stopped.cause, signal, stopped.path);
+		}
+	}
+
+	async #siteNative(
+		due: Due,
+		site: NativeCodeSiteSpec,
+		repository: CloudCodingRepository,
+		started: number,
+		signal: AbortSignal,
+	): Promise<"uploaded" | "failed" | undefined> {
+		const edge = this.#nativeEdge;
+		if (!edge) {
+			return await this.#failed(
+				due,
+				"upload",
+				"NATIVE_WEB_HOSTING_UNCONFIGURED",
+				new Error("NATIVE_WEB_HOSTING_UNCONFIGURED"),
+				signal,
+			);
+		}
+		let files: CodeSiteUploadFile[] = [];
+		let totalBytes = 0;
+		if (site.kind === "static" || (site.kind === "hybrid" && site.files > 0)) {
+			try {
+				const read = treeOf(
+					await this.#hosts.run(
+						due.target.companyId,
+						due.target.environmentId,
+						signal,
+						(job) => this.#read(job, { repository, tree: site.tree }),
+						{ yields: true },
+					),
+				);
+				files = read.files;
+				totalBytes = read.bytes;
+			} catch (error) {
+				if (signal.aborted || (error instanceof CodeHostJobFailure && error.code === YIELDED)) return undefined;
+				const code = codeChangeErrorCode(error);
+				return await this.#failed(due, "read", code === "UNCLASSIFIED" ? READ_FAILED : code, error, signal);
+			}
+		}
+		let exportedSource: { sourceDir: string; cleanup?: () => Promise<void> } | undefined;
+		if ((site.kind === "server" || site.kind === "hybrid") && this.#exportSource) {
+			const exportFn = this.#exportSource;
+			try {
+				exportedSource = await this.#hosts.run(
+					due.target.companyId,
+					due.target.environmentId,
+					signal,
+					(job) => exportFn(job, { repository, tree: site.tree }),
+					{ yields: true },
+				);
+			} catch (error) {
+				if (signal.aborted || (error instanceof CodeHostJobFailure && error.code === YIELDED)) return undefined;
+				const code = codeChangeErrorCode(error);
+				return await this.#failed(due, "export", code === "UNCLASSIFIED" ? READ_FAILED : code, error, signal);
+			}
+		}
+		const key = `${due.target.environmentId}/${due.target.owner}/${due.target.name}/${due.change}`;
+		try {
+			const registered = await deployCodeSiteToNativeEdge({
+				control: this.#control,
+				owner: this.#owner,
+				machineIdSha256: this.#machineIdSha256,
+				target: due.target,
+				change: due.change,
+				spec: site,
+				files,
+				...(exportedSource ? { sourceDir: exportedSource.sourceDir } : {}),
+				edge,
+				signal,
+			});
+			this.#busy.delete(key);
+			this.#report({
+				event: "code-site",
+				step: "uploaded",
+				...named(due),
+				state: registered.state,
+				versionId: registered.versionId,
+				deploymentId: registered.deploymentId,
+				slug: registered.slug,
+				kind: registered.kind,
+				files: files.length,
+				bytes: totalBytes,
+				uploadedBlobs: registered.uploadedBlobs,
+				deduplicatedBlobs: registered.deduplicatedBlobs,
+				ms: Math.round(performance.now() - started),
+			});
+			return "uploaded";
+		} catch (error) {
+			if (signal.aborted) return undefined;
+			const msg = error instanceof Error ? error.message : "";
+			if (msg === "CODE_SITE_LOST") {
+				this.#report({ event: "code-site-error", step: "upload", ...named(due), error });
+				return "failed";
+			}
+			if (msg === TAKEN_DOWN) {
+				this.#busy.delete(key);
+				this.#report({ event: "code-site", step: "taken-down", ...named(due), at: "native-register" });
+				return undefined;
+			}
+			if (error instanceof CodingControlBusy) {
+				const passes = (this.#busy.get(key) ?? 0) + 1;
+				if (passes < BUSY_PASSES) {
+					if (this.#busy.size >= 200) this.#busy.clear();
+					this.#busy.set(key, passes);
+					this.#report({ event: "code-site", step: "busy", ...named(due), at: "native-register", passes });
+					return undefined;
+				}
+			}
+			this.#busy.delete(key);
+			const problemCode = PROBLEM.test(msg) ? msg : UPLOAD_FAILED;
+			return await this.#failed(due, "upload", problemCode, error, signal);
+		} finally {
+			if (exportedSource?.cleanup) {
+				await exportedSource.cleanup().catch(() => undefined);
+			}
 		}
 	}
 

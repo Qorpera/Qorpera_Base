@@ -5,12 +5,13 @@ use hyper_util::rt::TokioIo;
 use qorpera_app_host::driver::LocalProcessDriver;
 use qorpera_app_host::lifecycle::{AppLifecycleManager, DeployRequest, InstanceState};
 use qorpera_app_host::logs::LogRingBuffer;
+use qorpera_app_host::reaper::reap_once_with_router;
 use qorpera_app_host::server::AppHostServer;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
 
 async fn http_call(addr: SocketAddr, req: Request<Full<Bytes>>) -> (StatusCode, Bytes) {
     let stream = TcpStream::connect(addr).await.unwrap();
@@ -227,4 +228,126 @@ async fn blue_green_deploy_rollback_on_unhealthy_hibernate_wake_and_logs() {
 
     let _ = manager.stop_deployment("dep-v2").await;
     let _ = manager.stop_deployment("dep-always").await;
+}
+
+#[tokio::test]
+async fn cold_start_wake_from_payload_and_router_idle_reaper_loop() {
+    let driver = Arc::new(LocalProcessDriver::new());
+    let logs = Arc::new(LogRingBuffer::new(200, 64 * 1024));
+    let manager = Arc::new(AppLifecycleManager::new(
+        driver,
+        logs,
+        Duration::from_secs(4),
+        Duration::from_millis(20),
+    ));
+    let server = AppHostServer::bind(
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+        Arc::clone(&manager),
+        "reaper-secret".to_string(),
+    )
+    .await
+    .unwrap();
+    let app_host_addr = server.addr;
+    let _handle = server.spawn();
+
+    let cleared: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let router_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let router_addr = router_listener.local_addr().unwrap();
+    let cleared_ref = Arc::clone(&cleared);
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = router_listener.accept().await else {
+                break;
+            };
+            let cleared_inner = Arc::clone(&cleared_ref);
+            tokio::spawn(async move {
+                let io = TokioIo::new(stream);
+                let svc = hyper::service::service_fn(move |req: Request<hyper::body::Incoming>| {
+                    let c = Arc::clone(&cleared_inner);
+                    async move {
+                        let path = req.uri().path().to_string();
+                        if path == "/_internal/metrics/activity" {
+                            let body = serde_json::json!({ "deployments": { "dep-cold": 1000u64 } }).to_string();
+                            return Ok::<_, hyper::Error>(
+                                http::Response::builder()
+                                    .status(StatusCode::OK)
+                                    .header("content-type", "application/json")
+                                    .body(Full::new(Bytes::from(body)))
+                                    .unwrap(),
+                            );
+                        }
+                        if let Some(rest) = path.strip_prefix("/_internal/deployments/") {
+                            if let Some(dep_id) = rest.strip_suffix("/upstream") {
+                                c.lock().unwrap().push(dep_id.to_string());
+                                return Ok::<_, hyper::Error>(
+                                    http::Response::builder()
+                                        .status(StatusCode::OK)
+                                        .body(Full::new(Bytes::from_static(b"{\"ok\":true}")))
+                                        .unwrap(),
+                                );
+                            }
+                        }
+                        Ok::<_, hyper::Error>(
+                            http::Response::builder()
+                                .status(StatusCode::NOT_FOUND)
+                                .body(Full::new(Bytes::new()))
+                                .unwrap(),
+                        )
+                    }
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, svc)
+                    .await;
+            });
+        }
+    });
+
+    let mut env = HashMap::new();
+    env.insert("APP_GREETING".to_string(), "cold-ok".to_string());
+    let cold_spec = DeployRequest {
+        deployment_id: "dep-cold".to_string(),
+        site_id: "site-cold".to_string(),
+        oci_image_ref: None,
+        command: Some(node_http_script("cold", 200)),
+        health_path: "/health".to_string(),
+        idle_timeout_sec: 1,
+        memory_mb: 256,
+        vcpu_limit: 1.0,
+        pids_limit: 128,
+        env,
+    };
+
+    let (st, body) = http_call(
+        app_host_addr,
+        Request::builder()
+            .method("POST")
+            .uri("/_internal/apps/dep-cold/wake")
+            .header("authorization", "Bearer reaper-secret")
+            .body(Full::new(Bytes::from(serde_json::to_vec(&cold_spec).unwrap())))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let upstream: SocketAddr = json["upstream_addr"].as_str().unwrap().parse().unwrap();
+
+    let (app_st, app_body) = http_call(
+        upstream,
+        Request::builder()
+            .method("GET")
+            .uri("/")
+            .header("host", upstream.to_string())
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(app_st, StatusCode::OK);
+    assert_eq!(app_body, Bytes::from_static(b"cold:cold-ok"));
+
+    let reaped = reap_once_with_router(&manager, &format!("http://{router_addr}"), "reaper-secret")
+        .await
+        .unwrap();
+    assert_eq!(reaped, vec!["dep-cold".to_string()]);
+    assert_eq!(manager.status("dep-cold").unwrap().state, InstanceState::Hibernated);
+    assert_eq!(*cleared.lock().unwrap(), vec!["dep-cold".to_string()]);
 }

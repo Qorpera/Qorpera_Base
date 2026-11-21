@@ -1,4 +1,5 @@
 use qorpera_web_router::blob_store::{BlobStore, DEFAULT_MAX_BLOB_BYTES, DEFAULT_MAX_CACHE_BYTES};
+use qorpera_web_router::dns_verify::{default_dns_servers, spawn_dns_verifier};
 use qorpera_web_router::postgres_sync::spawn_postgres_sync;
 use qorpera_web_router::routes::EdgeSnapshot;
 use qorpera_web_router::server::{BoundServers, RouterConfig, RouterState};
@@ -7,6 +8,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::mpsc;
 use tracing::info;
 
 #[tokio::main]
@@ -53,7 +55,19 @@ async fn main() {
         .filter_map(|s| s.trim().parse::<IpAddr>().ok())
         .collect();
 
+    let dns_servers: Vec<SocketAddr> = env::var("QORPERA_WEB_DNS_SERVERS")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|s| s.trim().parse::<SocketAddr>().ok())
+        .collect();
+    let dns_servers = if dns_servers.is_empty() {
+        default_dns_servers()
+    } else {
+        dns_servers
+    };
+
     let app_host_url = env::var("QORPERA_WEB_APP_HOST_URL").ok().filter(|v| !v.trim().is_empty());
+    let database_url = read_secret("QORPERA_WEB_ROUTER_DATABASE_URL", "QORPERA_WEB_ROUTER_DATABASE_URL_FILE").ok();
 
     let cfg = RouterConfig {
         public_bind,
@@ -73,13 +87,34 @@ async fn main() {
         unlock_limit_burst: 5.0,
         app_host_url,
         wake_timeout: Duration::from_secs(15),
+        dns_servers: dns_servers.clone(),
+        database_url: database_url.clone(),
+        auth_backend: None,
     };
 
     let blobs = Arc::new(BlobStore::new(blob_root, max_cache_bytes, max_blob_bytes));
     let state = Arc::new(RouterState::new(blobs, EdgeSnapshot::default(), &cfg));
 
-    if let Ok(db_url) = read_secret("QORPERA_WEB_ROUTER_DATABASE_URL", "QORPERA_WEB_ROUTER_DATABASE_URL_FILE") {
-        spawn_postgres_sync(db_url, Arc::clone(&state.routes), Duration::from_secs(60));
+    let (dns_tx, dns_rx) = mpsc::channel::<()>(8);
+    let dns_interval_sec: u64 = env::var("QORPERA_WEB_DNS_POLL_SEC")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+    spawn_dns_verifier(
+        Arc::clone(&state.routes),
+        dns_servers,
+        database_url.clone(),
+        Duration::from_secs(dns_interval_sec.max(5)),
+        dns_rx,
+    );
+
+    if let Some(db_url) = database_url {
+        spawn_postgres_sync(
+            db_url,
+            Arc::clone(&state.routes),
+            Duration::from_secs(60),
+            Some(dns_tx),
+        );
     }
 
     let bound = BoundServers::bind(&cfg, Arc::clone(&state))

@@ -71,10 +71,18 @@ pub struct DeploymentRecord {
     pub upstream_addr: Option<String>,
     #[serde(default)]
     pub oci_image_ref: Option<String>,
+    #[serde(default)]
+    pub app_port: Option<u16>,
     #[serde(default = "default_health_path")]
     pub health_path: String,
     #[serde(default = "default_idle_timeout")]
     pub idle_timeout_sec: u64,
+    #[serde(default = "default_memory_mb")]
+    pub memory_mb: u32,
+    #[serde(default = "default_vcpu_limit")]
+    pub vcpu_limit: f32,
+    #[serde(default)]
+    pub env_spec: HashMap<String, String>,
 }
 
 fn default_health_path() -> String {
@@ -83,6 +91,14 @@ fn default_health_path() -> String {
 
 fn default_idle_timeout() -> u64 {
     900
+}
+
+fn default_memory_mb() -> u32 {
+    512
+}
+
+fn default_vcpu_limit() -> f32 {
+    1.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +110,10 @@ pub struct CustomDomainRecord {
     pub is_primary: bool,
     pub status: DomainStatus,
     pub verification_token: String,
+    #[serde(default)]
+    pub last_checked_at: Option<String>,
+    #[serde(default)]
+    pub consecutive_misses: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,6 +252,20 @@ impl RouteTable {
                 self.upstream_overrides.remove(&deployment_id);
             }
         }
+    }
+
+    pub fn custom_domains(&self) -> Vec<CustomDomainRecord> {
+        self.domains_by_host.values().cloned().collect()
+    }
+
+    pub fn update_domain_status(&mut self, domain_id: &str, status: DomainStatus) -> bool {
+        for domain in self.domains_by_host.values_mut() {
+            if domain.id == domain_id {
+                domain.status = status;
+                return true;
+            }
+        }
+        false
     }
 
     pub fn upstream_for(&self, deployment: &DeploymentRecord) -> Option<String> {
@@ -641,8 +675,12 @@ mod tests {
                     },
                     upstream_addr: None,
                     oci_image_ref: None,
+                    app_port: None,
                     health_path: "/".to_string(),
                     idle_timeout_sec: 900,
+                    memory_mb: 512,
+                    vcpu_limit: 1.0,
+                    env_spec: HashMap::new(),
                 }),
                 preview_deployments: HashMap::new(),
                 primary_custom_domain: Some("nordicbakery.dk".to_string()),
@@ -656,6 +694,8 @@ mod tests {
                     is_primary: true,
                     status: DomainStatus::TlsActive,
                     verification_token: "tok".to_string(),
+                    last_checked_at: None,
+                    consecutive_misses: 0,
                 },
                 CustomDomainRecord {
                     id: "dom-2".to_string(),
@@ -665,6 +705,8 @@ mod tests {
                     is_primary: false,
                     status: DomainStatus::DnsVerified,
                     verification_token: "tok2".to_string(),
+                    last_checked_at: None,
+                    consecutive_misses: 0,
                 },
                 CustomDomainRecord {
                     id: "dom-3".to_string(),
@@ -674,6 +716,8 @@ mod tests {
                     is_primary: false,
                     status: DomainStatus::PendingDns,
                     verification_token: "tok3".to_string(),
+                    last_checked_at: None,
+                    consecutive_misses: 0,
                 },
             ],
             ..Default::default()

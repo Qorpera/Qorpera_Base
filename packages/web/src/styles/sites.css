@@ -204,10 +204,13 @@
 	45% { opacity: 0; transform: translateX(24px); }
 	100% { max-height: 0; opacity: 0; transform: translateX(24px); padding-top: 0; padding-bottom: 0; border-bottom-width: 0; }
 }
-.site-public-badge {
+.site-public-badge,
+.site-kind-badge {
 	display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-pill);
 	background: var(--hover); color: var(--text); font-size: 12px; font-weight: 500;
 }
+.site-domain-link { color: var(--text); text-decoration: none; }
+.site-domain-link:hover { text-decoration: underline; }
 .site-domains {
 	grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px;
 }

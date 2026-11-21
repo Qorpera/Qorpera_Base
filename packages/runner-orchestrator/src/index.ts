@@ -33,6 +33,7 @@ export * from "./lxd-office-service-start-journal.ts";
 export * from "./lxd-office-service-stop-worker.ts";
 export * from "./lxd-office-start-control.ts";
 export * from "./lxd-provider.ts";
+export * from "./native-webapp-deploy.ts";
 export * from "./orchestrator.ts";
 export * from "./process-provider.ts";
 export * from "./provider-http.ts";

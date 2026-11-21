@@ -1,4 +1,5 @@
 use crate::blob_store::{BlobError, BlobStore, PutOutcome};
+use crate::dns_verify::{default_dns_servers, verify_domains_once};
 use crate::proxy::{
     full_body, proxy_http_or_ws, ActivityTracker, BoxBody, WakeCoordinator, WakeRequest,
 };
@@ -10,8 +11,8 @@ use crate::routes::{
 use crate::security::{
     check_cross_site_write, constant_time_eq, extract_client_ip, inject_preview_banner,
     parse_cookie, render_app_unavailable_page, render_not_found_page, render_password_page,
-    render_takedown_page, sanitize_next_path, sign_session_cookie, verify_session_cookie,
-    HSTS_HEADER, SITE_SESSION_COOKIE,
+    render_takedown_page, sanitize_next_path, sign_preview_cookie, sign_session_cookie,
+    verify_preview_cookie, verify_session_cookie, HSTS_HEADER, SITE_SESSION_COOKIE,
 };
 use bytes::Bytes;
 use http::{HeaderName, HeaderValue, Method, Request, Response, StatusCode};
@@ -19,12 +20,166 @@ use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, RwLock};
+use std::pin::Pin;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
+use tokio_postgres::NoTls;
+
+#[derive(Debug, Clone)]
+pub struct RedeemedTicket {
+    pub site_id: String,
+    pub version_id: String,
+    pub password_version: i32,
+    pub max_age: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct RedeemedMemberPass {
+    pub site_id: String,
+    pub password_version: i32,
+    pub max_age: u64,
+}
+
+pub trait EdgeAuthBackend: Send + Sync {
+    fn redeem_preview_ticket(
+        &self,
+        host: String,
+        ticket: String,
+    ) -> Pin<Box<dyn Future<Output = Option<RedeemedTicket>> + Send>>;
+
+    fn redeem_member_pass(
+        &self,
+        host: String,
+        pass: String,
+    ) -> Pin<Box<dyn Future<Output = Option<RedeemedMemberPass>> + Send>>;
+}
+
+pub struct PostgresAuthBackend {
+    database_url: String,
+}
+
+impl PostgresAuthBackend {
+    pub fn new(database_url: String) -> Self {
+        Self { database_url }
+    }
+}
+
+impl EdgeAuthBackend for PostgresAuthBackend {
+    fn redeem_preview_ticket(
+        &self,
+        host: String,
+        ticket: String,
+    ) -> Pin<Box<dyn Future<Output = Option<RedeemedTicket>> + Send>> {
+        let db_url = self.database_url.clone();
+        Box::pin(async move {
+            let (client, conn) = tokio_postgres::connect(&db_url, NoTls).await.ok()?;
+            tokio::spawn(async move {
+                let _ = conn.await;
+            });
+            let row = client
+                .query_one(
+                    "SELECT public.qorpera_web_edge_redeem_ticket($1::text, $2::text)",
+                    &[&host, &ticket],
+                )
+                .await
+                .ok()?;
+            let val: serde_json::Value = row.get(0);
+            if val.get("state")?.as_str()? != "open" {
+                return None;
+            }
+            Some(RedeemedTicket {
+                site_id: val.get("site_id")?.as_str()?.to_string(),
+                version_id: val.get("version_id")?.as_str()?.to_string(),
+                password_version: val.get("password_version")?.as_i64()? as i32,
+                max_age: val.get("max_age")?.as_u64().unwrap_or(43200),
+            })
+        })
+    }
+
+    fn redeem_member_pass(
+        &self,
+        host: String,
+        pass: String,
+    ) -> Pin<Box<dyn Future<Output = Option<RedeemedMemberPass>> + Send>> {
+        let db_url = self.database_url.clone();
+        Box::pin(async move {
+            let (client, conn) = tokio_postgres::connect(&db_url, NoTls).await.ok()?;
+            tokio::spawn(async move {
+                let _ = conn.await;
+            });
+            let row = client
+                .query_one(
+                    "SELECT public.qorpera_web_edge_redeem_member_pass($1::text, $2::text)",
+                    &[&host, &pass],
+                )
+                .await
+                .ok()?;
+            let val: serde_json::Value = row.get(0);
+            if val.get("state")?.as_str()? != "open" {
+                return None;
+            }
+            Some(RedeemedMemberPass {
+                site_id: val.get("site_id")?.as_str()?.to_string(),
+                password_version: val.get("password_version")?.as_i64()? as i32,
+                max_age: val.get("max_age")?.as_u64().unwrap_or(43200),
+            })
+        })
+    }
+}
+
+#[derive(Default)]
+pub struct MemoryAuthBackend {
+    tickets: Mutex<HashMap<(String, String), RedeemedTicket>>,
+    passes: Mutex<HashMap<(String, String), RedeemedMemberPass>>,
+}
+
+impl MemoryAuthBackend {
+    pub fn insert_ticket(&self, host: &str, ticket: &str, value: RedeemedTicket) {
+        if let Ok(mut map) = self.tickets.lock() {
+            map.insert((host.to_ascii_lowercase(), ticket.to_string()), value);
+        }
+    }
+
+    pub fn insert_member_pass(&self, host: &str, pass: &str, value: RedeemedMemberPass) {
+        if let Ok(mut map) = self.passes.lock() {
+            map.insert((host.to_ascii_lowercase(), pass.to_string()), value);
+        }
+    }
+}
+
+impl EdgeAuthBackend for MemoryAuthBackend {
+    fn redeem_preview_ticket(
+        &self,
+        host: String,
+        ticket: String,
+    ) -> Pin<Box<dyn Future<Output = Option<RedeemedTicket>> + Send>> {
+        let result = self
+            .tickets
+            .lock()
+            .ok()
+            .and_then(|mut map| map.remove(&(host.to_ascii_lowercase(), ticket)));
+        Box::pin(async move { result })
+    }
+
+    fn redeem_member_pass(
+        &self,
+        host: String,
+        pass: String,
+    ) -> Pin<Box<dyn Future<Output = Option<RedeemedMemberPass>> + Send>> {
+        let result = self
+            .passes
+            .lock()
+            .ok()
+            .and_then(|mut map| map.remove(&(host.to_ascii_lowercase(), pass)));
+        Box::pin(async move { result })
+    }
+}
 
 pub struct RouterConfig {
     pub public_bind: SocketAddr,
@@ -38,6 +193,9 @@ pub struct RouterConfig {
     pub unlock_limit_burst: f64,
     pub app_host_url: Option<String>,
     pub wake_timeout: Duration,
+    pub dns_servers: Vec<SocketAddr>,
+    pub database_url: Option<String>,
+    pub auth_backend: Option<Arc<dyn EdgeAuthBackend>>,
 }
 
 pub struct RouterState {
@@ -50,10 +208,23 @@ pub struct RouterState {
     pub control_token: String,
     pub cookie_secret: Vec<u8>,
     pub trusted_proxies: Vec<IpAddr>,
+    pub dns_servers: Vec<SocketAddr>,
+    pub database_url: Option<String>,
+    pub auth_backend: Option<Arc<dyn EdgeAuthBackend>>,
 }
 
 impl RouterState {
     pub fn new(blobs: Arc<BlobStore>, initial: EdgeSnapshot, cfg: &RouterConfig) -> Self {
+        let dns_servers = if cfg.dns_servers.is_empty() {
+            default_dns_servers()
+        } else {
+            cfg.dns_servers.clone()
+        };
+        let auth_backend = cfg.auth_backend.clone().or_else(|| {
+            cfg.database_url
+                .clone()
+                .map(|url| Arc::new(PostgresAuthBackend::new(url)) as Arc<dyn EdgeAuthBackend>)
+        });
         Self {
             blobs,
             routes: Arc::new(RwLock::new(RouteTable::from_snapshot(initial))),
@@ -72,6 +243,9 @@ impl RouterState {
             control_token: cfg.control_token.clone(),
             cookie_secret: cfg.cookie_secret.clone(),
             trusted_proxies: cfg.trusted_proxies.clone(),
+            dns_servers,
+            database_url: cfg.database_url.clone(),
+            auth_backend,
         }
     }
 }
@@ -152,6 +326,11 @@ struct HealthBody {
     ok: bool,
 }
 
+#[derive(Deserialize)]
+struct UpstreamUpdateBody {
+    upstream_addr: Option<String>,
+}
+
 fn json_response(status: StatusCode, body: impl Serialize) -> Response<BoxBody> {
     let payload = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
     Response::builder()
@@ -228,6 +407,17 @@ async fn handle_internal(state: Arc<RouterState>, req: Request<Incoming>) -> Res
         return json_response(StatusCode::OK, state.activity.snapshot());
     }
 
+    if method == Method::POST && path == "/_internal/domains/verify" {
+        let outcomes = verify_domains_once(
+            &state.routes,
+            &state.dns_servers,
+            state.database_url.as_deref(),
+            Duration::from_secs(3),
+        )
+        .await;
+        return json_response(StatusCode::OK, serde_json::json!({ "checked": outcomes }));
+    }
+
     if method == Method::POST && path == "/_internal/routes/snapshot" {
         let Ok(collected) = req.into_body().collect().await else {
             return text_response(StatusCode::BAD_REQUEST, "invalid body");
@@ -243,6 +433,41 @@ async fn handle_internal(state: Arc<RouterState>, req: Request<Incoming>) -> Res
             return json_response(StatusCode::OK, HealthBody { ok: true });
         }
         return text_response(StatusCode::INTERNAL_SERVER_ERROR, "route lock poisoned");
+    }
+
+    if method == Method::POST {
+        if let Some(rest) = path.strip_prefix("/_internal/deployments/") {
+            if let Some(dep_id) = rest.strip_suffix("/upstream") {
+                if !dep_id.is_empty() && !dep_id.contains('/') {
+                    let Ok(collected) = req.into_body().collect().await else {
+                        return text_response(StatusCode::BAD_REQUEST, "invalid body");
+                    };
+                    let parsed: UpstreamUpdateBody = match serde_json::from_slice(&collected.to_bytes()) {
+                        Ok(v) => v,
+                        Err(_) => return text_response(StatusCode::BAD_REQUEST, "invalid json"),
+                    };
+                    if let Ok(mut guard) = state.routes.write() {
+                        guard.set_upstream_override(dep_id.to_string(), parsed.upstream_addr.clone());
+                    } else {
+                        return text_response(StatusCode::INTERNAL_SERVER_ERROR, "route lock poisoned");
+                    }
+                    if let Some(ref db_url) = state.database_url {
+                        if let Ok((client, conn)) = tokio_postgres::connect(db_url, NoTls).await {
+                            tokio::spawn(async move {
+                                let _ = conn.await;
+                            });
+                            let _ = client
+                                .execute(
+                                    "SELECT public.qorpera_web_deployment_set_upstream($1::uuid, $2::text)",
+                                    &[&dep_id, &parsed.upstream_addr],
+                                )
+                                .await;
+                        }
+                    }
+                    return json_response(StatusCode::OK, HealthBody { ok: true });
+                }
+            }
+        }
     }
 
     if let Some(sha) = path.strip_prefix("/_internal/blobs/") {
@@ -318,7 +543,9 @@ async fn handle_public(
             .unwrap();
     }
 
-    if !check_cross_site_write(req.method(), req.headers(), &host) {
+    let path = req.uri().path().to_string();
+    let is_member_pass_post = req.method() == Method::POST && path == "/__qorpera/member";
+    if !is_member_pass_post && !check_cross_site_write(req.method(), req.headers(), &host) {
         return text_response(StatusCode::FORBIDDEN, "cross-site write refused");
     }
 
@@ -336,7 +563,7 @@ async fn handle_public(
 
     let (site, scope, canonical_redirect) = match resolved_host {
         ResolvedHost::UnknownOwnHost { scope } => {
-            if req.uri().path() == "/robots.txt" {
+            if path == "/robots.txt" {
                 return Response::builder()
                     .status(StatusCode::OK)
                     .header("content-type", "text/plain; charset=utf-8")
@@ -347,7 +574,7 @@ async fn handle_public(
             let body = if scope == HostScope::NextHost {
                 render_password_page("/", false)
             } else {
-                render_password_page(req.uri().path(), false)
+                render_password_page(&path, false)
             };
             return html_response(StatusCode::UNAUTHORIZED, body, true);
         }
@@ -360,6 +587,14 @@ async fn handle_public(
 
     if site.taken_down {
         return html_response(StatusCode::GONE, render_takedown_page(), true);
+    }
+
+    if scope == HostScope::NextHost && req.method() == Method::GET && path == "/.qorpera/enter" {
+        return handle_preview_enter(state, &site, &host, req).await;
+    }
+
+    if scope == HostScope::OwnHost && is_member_pass_post {
+        return handle_member_pass(state, &site, &host, req).await;
     }
 
     if let Some(primary) = canonical_redirect {
@@ -378,7 +613,6 @@ async fn handle_public(
     }
 
     let is_public = global_public_enabled && site.is_public && scope != HostScope::NextHost;
-    let path = req.uri().path().to_string();
 
     if !is_public && path == "/robots.txt" && req.method() == Method::GET {
         return Response::builder()
@@ -389,28 +623,50 @@ async fn handle_public(
             .unwrap();
     }
 
-    if !is_public && path == "/.qorpera/unlock" && req.method() == Method::POST {
+    if !is_public && scope != HostScope::NextHost && path == "/.qorpera/unlock" && req.method() == Method::POST {
         return handle_unlock(state, &site, &host, &client_ip, req).await;
     }
 
+    let mut preview_version_id: Option<String> = None;
     if !is_public {
-        let scope_key = match scope {
-            HostScope::NextHost => "next",
-            HostScope::OwnHost | HostScope::CustomDomain => "site",
-        };
         let now_unix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        let authorized = parse_cookie(req.headers(), SITE_SESSION_COOKIE).map_or(false, |cookie| {
-            verify_session_cookie(
-                &cookie,
-                &state.cookie_secret,
-                &site.id,
-                scope_key,
-                site.password_version,
-                now_unix,
-            )
-        });
+        let authorized = match scope {
+            HostScope::NextHost => parse_cookie(req.headers(), SITE_SESSION_COOKIE).map_or(false, |cookie| {
+                if let Some(ver_id) = verify_preview_cookie(
+                    &cookie,
+                    &state.cookie_secret,
+                    &site.id,
+                    site.password_version,
+                    now_unix,
+                ) {
+                    preview_version_id = Some(ver_id);
+                    true
+                } else {
+                    verify_session_cookie(
+                        &cookie,
+                        &state.cookie_secret,
+                        &site.id,
+                        "next",
+                        site.password_version,
+                        now_unix,
+                    )
+                }
+            }),
+            HostScope::OwnHost | HostScope::CustomDomain => {
+                parse_cookie(req.headers(), SITE_SESSION_COOKIE).map_or(false, |cookie| {
+                    verify_session_cookie(
+                        &cookie,
+                        &state.cookie_secret,
+                        &site.id,
+                        "site",
+                        site.password_version,
+                        now_unix,
+                    )
+                })
+            }
+        };
         if !authorized {
             return html_response(
                 StatusCode::UNAUTHORIZED,
@@ -421,10 +677,10 @@ async fn handle_public(
     }
 
     let deployment = match scope {
-        HostScope::NextHost => site
-            .preview_deployments
-            .values()
-            .next()
+        HostScope::NextHost => preview_version_id
+            .as_deref()
+            .and_then(|ver_id| site.preview_deployments.get(ver_id))
+            .or_else(|| site.preview_deployments.values().next())
             .or(site.live_deployment.as_ref()),
         HostScope::OwnHost | HostScope::CustomDomain => site.live_deployment.as_ref(),
     };
@@ -493,6 +749,10 @@ async fn handle_public(
                 site_id: site.id.clone(),
                 oci_image_ref: deployment.oci_image_ref.clone(),
                 health_path: deployment.health_path.clone(),
+                idle_timeout_sec: deployment.idle_timeout_sec,
+                memory_mb: deployment.memory_mb,
+                vcpu_limit: deployment.vcpu_limit,
+                env: deployment.env_spec.clone(),
             };
             match state.waker.wake(wake_req).await {
                 Ok(addr) => {
@@ -514,12 +774,112 @@ async fn handle_public(
 
     match proxy_http_or_ws(&upstream, req, &host, &client_ip, !is_public).await {
         Ok(res) => res,
-        Err(_) => html_response(
-            StatusCode::BAD_GATEWAY,
-            render_app_unavailable_page(),
-            true,
-        ),
+        Err(_) => {
+            if let Ok(mut guard) = state.routes.write() {
+                guard.set_upstream_override(deployment.id.clone(), None);
+            }
+            html_response(
+                StatusCode::BAD_GATEWAY,
+                render_app_unavailable_page(),
+                true,
+            )
+        }
     }
+}
+
+async fn handle_preview_enter(
+    state: Arc<RouterState>,
+    site: &crate::routes::SiteRecord,
+    host: &str,
+    req: Request<Incoming>,
+) -> Response<BoxBody> {
+    let Some(backend) = state.auth_backend.as_ref() else {
+        return html_response(StatusCode::UNAUTHORIZED, render_password_page("/", false), true);
+    };
+    let ticket = req
+        .uri()
+        .query()
+        .and_then(|q| query_param(q, "t"))
+        .unwrap_or_default();
+    if ticket.is_empty() {
+        return html_response(StatusCode::UNAUTHORIZED, render_password_page("/", false), true);
+    }
+    let Some(redeemed) = backend.redeem_preview_ticket(host.to_string(), ticket).await else {
+        return html_response(StatusCode::UNAUTHORIZED, render_password_page("/", false), true);
+    };
+    if redeemed.site_id != site.id {
+        return html_response(StatusCode::UNAUTHORIZED, render_password_page("/", false), true);
+    }
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let token = sign_preview_cookie(
+        &state.cookie_secret,
+        &redeemed.site_id,
+        &redeemed.version_id,
+        redeemed.password_version,
+        now_unix + redeemed.max_age,
+    );
+    let set_cookie = format!(
+        "{SITE_SESSION_COOKIE}={token}; Path=/; Max-Age={}; HttpOnly; Secure; SameSite=Lax",
+        redeemed.max_age
+    );
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header("location", "/")
+        .header("set-cookie", set_cookie)
+        .header("cache-control", "no-store, no-transform")
+        .header("strict-transport-security", HSTS_HEADER)
+        .body(full_body(Bytes::new()))
+        .unwrap()
+}
+
+async fn handle_member_pass(
+    state: Arc<RouterState>,
+    site: &crate::routes::SiteRecord,
+    host: &str,
+    req: Request<Incoming>,
+) -> Response<BoxBody> {
+    let Some(backend) = state.auth_backend.as_ref() else {
+        return html_response(StatusCode::UNAUTHORIZED, render_password_page("/", true), true);
+    };
+    let Ok(collected) = req.into_body().collect().await else {
+        return html_response(StatusCode::BAD_REQUEST, render_password_page("/", true), true);
+    };
+    let form = String::from_utf8_lossy(&collected.to_bytes()).into_owned();
+    let pass = query_param(&form, "pass").unwrap_or_default();
+    let next_path = sanitize_next_path(&query_param(&form, "path").unwrap_or_else(|| "/".to_string()));
+    if pass.is_empty() {
+        return html_response(StatusCode::UNAUTHORIZED, render_password_page(&next_path, true), true);
+    }
+    let Some(redeemed) = backend.redeem_member_pass(host.to_string(), pass).await else {
+        return html_response(StatusCode::UNAUTHORIZED, render_password_page(&next_path, true), true);
+    };
+    if redeemed.site_id != site.id {
+        return html_response(StatusCode::UNAUTHORIZED, render_password_page(&next_path, true), true);
+    }
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let token = sign_session_cookie(
+        &state.cookie_secret,
+        &redeemed.site_id,
+        "site",
+        redeemed.password_version,
+        now_unix + redeemed.max_age,
+    );
+    let set_cookie = format!(
+        "{SITE_SESSION_COOKIE}={token}; Path=/; Max-Age={}; HttpOnly; Secure; SameSite=None; Partitioned",
+        redeemed.max_age
+    );
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header("location", next_path)
+        .header("set-cookie", set_cookie)
+        .header("cache-control", "no-store, no-transform")
+        .header("strict-transport-security", HSTS_HEADER)
+        .body(full_body(Bytes::new()))
+        .unwrap()
 }
 
 async fn handle_unlock(

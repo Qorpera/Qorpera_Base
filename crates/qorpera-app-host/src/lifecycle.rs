@@ -187,7 +187,7 @@ impl AppLifecycleManager {
         Ok(status)
     }
 
-    pub async fn wake(&self, deployment_id: &str) -> Result<String, String> {
+    pub async fn wake(&self, deployment_id: &str, fallback_spec: Option<DeployRequest>) -> Result<String, String> {
         let already_running = {
             let map = self.deployments.lock().map_err(|_| "lock_poisoned".to_string())?;
             map.get(deployment_id)
@@ -198,6 +198,16 @@ impl AppLifecycleManager {
             if self.driver.is_running(deployment_id).await {
                 return Ok(addr);
             }
+        }
+
+        if let Some(spec) = fallback_spec {
+            let mut map = self.deployments.lock().map_err(|_| "lock_poisoned".to_string())?;
+            map.entry(deployment_id.to_string()).or_insert(ManagedDeployment {
+                spec,
+                handle: None,
+                state: InstanceState::Hibernated,
+                started_at_ms: None,
+            });
         }
 
         let existing_rx = {

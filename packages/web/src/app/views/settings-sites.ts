@@ -617,14 +617,38 @@ export class SitesView {
 			"div",
 			{ class: "site-domains", dataset: { siteDomains: site.id } },
 			...domains.map((dom) => {
-				const canPromote =
-					manage && !dom.isPrimary && (dom.status === "dns_verified" || dom.status === "tls_active");
+				const isVerified = dom.status === "dns_verified" || dom.status === "tls_active";
+				const canPromote = manage && !dom.isPrimary && isVerified;
+				const canRecheck = manage && !isVerified;
 				return h(
 					"span",
 					{ class: "site-domain-chip", dataset: { domain: dom.hostname } },
-					h("span", null, dom.hostname),
+					isVerified
+						? h(
+								"a",
+								{
+									class: "site-domain-link",
+									href: `https://${dom.hostname}/`,
+									target: "_blank",
+									rel: "noopener noreferrer",
+								},
+								dom.hostname,
+							)
+						: h("span", null, dom.hostname),
 					dom.isPrimary ? h("span", { class: "site-domain-status" }, t("Primary")) : null,
 					h("span", { class: "site-domain-status" }, this.#domainStatusLabel(dom.status)),
+					canRecheck
+						? h(
+								"button",
+								{
+									type: "button",
+									class: "site-domain-action",
+									disabled: busy,
+									onclick: () => void this.#recheckDomain(site, dom),
+								},
+								t("Check DNS"),
+							)
+						: null,
 					canPromote
 						? h(
 								"button",
@@ -677,6 +701,27 @@ export class SitesView {
 				: changeError(failure, phrase("Site visibility could not be changed. Try again.")),
 		);
 		await this.#refresh(`site-more:${site.id}`);
+	}
+
+	async #recheckDomain(site: CompanySite, dom: SiteCustomDomain): Promise<void> {
+		if (!this.#hosting || this.#working || this.#lifetime.signal.aborted || !this.#access.canManage()) return;
+		const working = { site: site.id, action: "hosting" } as const;
+		this.#working = working;
+		this.#draw();
+		let ok = false;
+		let failure: unknown;
+		try {
+			await this.#hosting.recheckDomain(dom.id, this.#lifetime.signal);
+			ok = true;
+		} catch (error) {
+			failure = error;
+		}
+		if (this.#working === working) this.#working = undefined;
+		if (this.#lifetime.signal.aborted) return;
+		this.#say(
+			ok ? t("DNS check queued.") : changeError(failure, phrase("DNS check could not be started. Try again.")),
+		);
+		await this.#refresh();
 	}
 
 	async #setPrimaryDomain(site: CompanySite, dom: SiteCustomDomain): Promise<void> {
@@ -1262,6 +1307,14 @@ export class SitesView {
 		const publicBadge = hostingEntry?.isPublic
 			? h("span", { class: "site-public-badge", dataset: { sitePublic: site.id } }, t("Public"))
 			: null;
+		const kindBadge =
+			hostingEntry && (hostingEntry.deploymentKind === "server" || hostingEntry.deploymentKind === "hybrid")
+				? h(
+						"span",
+						{ class: "site-kind-badge", dataset: { siteKind: hostingEntry.deploymentKind } },
+						hostingEntry.deploymentKind === "server" ? t("Webapp") : t("Hybrid"),
+					)
+				: null;
 		const domainsBlock =
 			!down && hostingEntry && hostingEntry.domains.length > 0
 				? this.#domainsList(site, hostingEntry.domains, manage, busy)
@@ -1287,6 +1340,7 @@ export class SitesView {
 				h("strong", { class: "site-name" }, name),
 				stateOf(site, Boolean(down)),
 				publicBadge,
+				kindBadge,
 				from,
 			),
 			more,

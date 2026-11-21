@@ -85,6 +85,46 @@ pub fn parse_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     None
 }
 
+pub fn sign_preview_cookie(
+    secret: &[u8],
+    site_id: &str,
+    version_id: &str,
+    password_version: i32,
+    expires_unix: u64,
+) -> String {
+    let payload = format!("v2.{expires_unix}.{version_id}");
+    let mac = compute_mac(secret, site_id, "next", password_version, &payload);
+    format!("{payload}.{mac}")
+}
+
+pub fn verify_preview_cookie(
+    cookie: &str,
+    secret: &[u8],
+    site_id: &str,
+    password_version: i32,
+    now_unix: u64,
+) -> Option<String> {
+    let parts: Vec<&str> = cookie.split('.').collect();
+    if parts.len() != 4 || parts[0] != "v2" {
+        return None;
+    }
+    let expires_unix = parts[1].parse::<u64>().ok()?;
+    if expires_unix <= now_unix {
+        return None;
+    }
+    let version_id = parts[2];
+    if version_id.is_empty() || version_id.len() > 64 {
+        return None;
+    }
+    let payload = format!("v2.{expires_unix}.{version_id}");
+    let expected = compute_mac(secret, site_id, "next", password_version, &payload);
+    if constant_time_eq(parts[3].as_bytes(), expected.as_bytes()) {
+        Some(version_id.to_string())
+    } else {
+        None
+    }
+}
+
 pub fn sign_session_cookie(
     secret: &[u8],
     site_id: &str,

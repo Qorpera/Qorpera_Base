@@ -780,4 +780,9 @@ export const SETTINGS: Record<string, string> = {
 	"Primary domain could not be updated. Try again.": "Primært domæne kunne ikke opdateres. Prøv igen.",
 	"example.dk": "eksempel.dk",
 	"Record {type} · {host} · {value}": "Post {type} · {host} · {value}",
+	"Check DNS": "Tjek DNS",
+	"DNS check queued.": "DNS-tjek sat i kø.",
+	"DNS check could not be started. Try again.": "DNS-tjek kunne ikke startes. Prøv igen.",
+	Webapp: "Webapp",
+	Hybrid: "Hybrid",
 };

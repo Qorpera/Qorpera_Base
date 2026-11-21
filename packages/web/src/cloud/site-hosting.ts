@@ -66,6 +66,7 @@ export interface WebSiteHosting {
 	addDomain(siteId: string, hostname: string, isApex: boolean, signal?: AbortSignal): Promise<AddedSiteDomain>;
 	removeDomain(domainId: string, signal?: AbortSignal): Promise<boolean>;
 	setPrimaryDomain(domainId: string, signal?: AbortSignal): Promise<string>;
+	recheckDomain(domainId: string, signal?: AbortSignal): Promise<CustomDomainStatus>;
 }
 
 const HOSTING_TIMEOUT_MS = 10_000;
@@ -302,6 +303,25 @@ export function createWebSiteHosting(cloud: Cloud, company: { profileId: string 
 				throw new Error("Invalid primary domain response.");
 			}
 			return raw.hostname;
+		},
+		async recheckDomain(domainId, signal) {
+			signal?.throwIfAborted();
+			if (!UUID_PATTERN.test(domainId)) throw new Error("Invalid domain.");
+			const raw = asRecord(
+				await withCloudDeadline(
+					() => cloud.rpc("qorpera_recheck_company_site_domain", { p_domain_id: domainId }),
+					HOSTING_TIMEOUT_MS,
+					signal,
+				),
+			);
+			if (
+				raw?.schema !== "qorpera.company-site-domain-recheck/v1" ||
+				typeof raw.status !== "string" ||
+				!DOMAIN_STATUSES.has(raw.status as CustomDomainStatus)
+			) {
+				throw new Error("Invalid domain recheck response.");
+			}
+			return raw.status as CustomDomainStatus;
 		},
 	};
 }

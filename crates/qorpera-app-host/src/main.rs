@@ -1,6 +1,7 @@
 use qorpera_app_host::driver::{AppRuntimeDriver, LocalProcessDriver, LxdAppDriver};
 use qorpera_app_host::lifecycle::AppLifecycleManager;
 use qorpera_app_host::logs::LogRingBuffer;
+use qorpera_app_host::reaper::spawn_idle_reaper;
 use qorpera_app_host::server::AppHostServer;
 use std::env;
 use std::net::SocketAddr;
@@ -44,6 +45,23 @@ async fn main() {
         Duration::from_secs(30),
         Duration::from_secs(2),
     ));
+
+    if let Ok(router_url) = env::var("QORPERA_APP_HOST_ROUTER_URL") {
+        let trimmed = router_url.trim().to_string();
+        if !trimmed.is_empty() {
+            let reap_sec: u64 = env::var("QORPERA_APP_HOST_REAP_INTERVAL_SEC")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30)
+                .max(5);
+            let _reaper = spawn_idle_reaper(
+                Arc::clone(&manager),
+                trimmed,
+                control_token.clone(),
+                Duration::from_secs(reap_sec),
+            );
+        }
+    }
 
     let server = AppHostServer::bind(bind_addr, manager, control_token)
         .await

@@ -124,7 +124,18 @@ async fn handle_request(
     if let Some(rest) = path.strip_prefix("/_internal/apps/") {
         if let Some(dep_id) = rest.strip_suffix("/wake") {
             if method == Method::POST {
-                return match manager.wake(dep_id).await {
+                let fallback = match req.into_body().collect().await {
+                    Ok(collected) => {
+                        let bytes = collected.to_bytes();
+                        if bytes.is_empty() {
+                            None
+                        } else {
+                            serde_json::from_slice::<DeployRequest>(&bytes).ok()
+                        }
+                    }
+                    Err(_) => None,
+                };
+                return match manager.wake(dep_id, fallback).await {
                     Ok(upstream_addr) => {
                         json_res(StatusCode::OK, serde_json::json!({ "upstream_addr": upstream_addr }))
                     }

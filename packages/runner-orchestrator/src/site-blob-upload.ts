@@ -229,20 +229,87 @@ const defaultFetch: BlobUploadFetch = async (url, init) => {
 	return { status: res.status };
 };
 
+export function parseRedirectsFile(text: string): SiteRedirectEntry[] {
+	const rules: SiteRedirectEntry[] = [];
+	for (const rawLine of text.split(/\r?\n/)) {
+		const line = rawLine.trim();
+		if (!line || line.startsWith("#")) continue;
+		const parts = line.split(/\s+/);
+		if (parts.length < 2) continue;
+		const from = parts[0] as string;
+		const to = parts[1] as string;
+		if (!from.startsWith("/") || (!to.startsWith("/") && !to.startsWith("https://"))) continue;
+		const parsedStatus = parts[2] ? Number.parseInt(parts[2].replace(/!$/, ""), 10) : 301;
+		const status = [200, 301, 302, 303, 307, 308].includes(parsedStatus) ? parsedStatus : 301;
+		rules.push({ from, to, status });
+		if (rules.length >= 200) break;
+	}
+	return rules;
+}
+
+export function parseHeadersFile(text: string): SiteHeaderEntry[] {
+	const entries: SiteHeaderEntry[] = [];
+	let currentPrefix: string | null = null;
+	let currentHeaders: Record<string, string> = {};
+	const flush = () => {
+		if (currentPrefix !== null && Object.keys(currentHeaders).length > 0) {
+			entries.push({ path_prefix: currentPrefix, headers: currentHeaders });
+		}
+		currentPrefix = null;
+		currentHeaders = {};
+	};
+	for (const rawLine of text.split(/\r?\n/)) {
+		const trimmed = rawLine.trim();
+		if (!trimmed || trimmed.startsWith("#")) continue;
+		if (!rawLine.startsWith(" ") && !rawLine.startsWith("\t") && (trimmed.startsWith("/") || trimmed === "*")) {
+			flush();
+			currentPrefix = trimmed.endsWith("/*") ? trimmed.slice(0, -1) : trimmed;
+			continue;
+		}
+		if (currentPrefix !== null) {
+			const colon = trimmed.indexOf(":");
+			if (colon > 0) {
+				const name = trimmed.slice(0, colon).trim().toLowerCase();
+				const value = trimmed.slice(colon + 1).trim();
+				if (name && value && /^[a-z0-9-]+$/.test(name)) {
+					currentHeaders[name] = value;
+				}
+			}
+		}
+	}
+	flush();
+	return entries.slice(0, 100);
+}
+
 export async function uploadSiteBlobsToEdge(options: UploadSiteBlobsOptions): Promise<SiteBlobUploadResult> {
 	const base = options.routerInternalUrl.replace(/\/+$/, "");
 	const fetchImpl = options.fetchImpl ?? defaultFetch;
 	const concurrency = Math.max(1, Math.min(16, options.concurrency ?? DEFAULT_BLOB_UPLOAD_CONCURRENCY));
-	const { manifestSha256, manifest, totalBytes } = buildCanonicalSiteManifest(options.files, {
-		redirects: options.redirects,
-		headers: options.headers,
+	const decoder = new TextDecoder("utf-8", { fatal: false });
+	let inferredRedirects: readonly SiteRedirectEntry[] | undefined = options.redirects;
+	let inferredHeaders: readonly SiteHeaderEntry[] | undefined = options.headers;
+	const servableFiles: CodeSiteUploadFile[] = [];
+	for (const file of options.files) {
+		if (file.path === "_redirects") {
+			if (inferredRedirects === undefined) inferredRedirects = parseRedirectsFile(decoder.decode(file.content));
+			continue;
+		}
+		if (file.path === "_headers") {
+			if (inferredHeaders === undefined) inferredHeaders = parseHeadersFile(decoder.decode(file.content));
+			continue;
+		}
+		servableFiles.push(file);
+	}
+	const { manifestSha256, manifest, totalBytes } = buildCanonicalSiteManifest(servableFiles, {
+		redirects: inferredRedirects,
+		headers: inferredHeaders,
 		spaFallback: options.spaFallback,
 		notFoundPage: options.notFoundPage,
 	});
-	const credentialInputPaths = scanSiteCredentialInputs(options.files);
+	const credentialInputPaths = scanSiteCredentialInputs(servableFiles);
 
 	const uniqueBlobs = new Map<string, Uint8Array>();
-	for (const file of options.files) {
+	for (const file of servableFiles) {
 		if (!uniqueBlobs.has(file.sha256)) uniqueBlobs.set(file.sha256, file.content);
 	}
 	const queue = [...uniqueBlobs.entries()];
@@ -291,7 +358,7 @@ export async function uploadSiteBlobsToEdge(options: UploadSiteBlobsOptions): Pr
 	return {
 		manifestSha256,
 		manifest,
-		fileCount: options.files.length,
+		fileCount: servableFiles.length,
 		totalBytes,
 		uploadedBlobs,
 		deduplicatedBlobs,

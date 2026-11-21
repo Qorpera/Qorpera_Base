@@ -12,6 +12,31 @@ Self-hosted static sites, full-stack/SSR apps, and custom domains (both apex `ex
 | **Kernel Shield** | `nftables-edge.nft` | `SYNPROXY` on ports `80`/`443` plus `qorpera_web_apps_egress` blocking customer app containers from RFC1918 LAN, node hosts, LXD sockets, and sibling tenants. |
 | **HA Failover** | `keepalived-ha.conf` | VRRP failover between `company41-node-01` (`MASTER`, `192.168.1.27`) and `company41-node-02` (`BACKUP`, `192.168.1.42`) on floating IP `192.168.1.250`. |
 
+## Build & Install on `company41-node-01` / `company41-node-02`
+
+1. Build Linux x86_64 release binaries deterministically inside the pinned Rust container:
+   ```bash
+   node scripts/build-web-hosting-programs.mjs --out-dir /tmp/qorpera-web-bin
+   ```
+2. Run the idempotent node installer on both nodes (with shared NAS mounts at `/var/lib/qorpera-web-blobs` and `/var/lib/qorpera-web-certs`):
+   ```bash
+   sudo bash deploy/web-hosting/install-web-hosting.sh /tmp/qorpera-web-bin
+   ```
+3. Provision encrypted credentials with `systemd-creds encrypt`:
+   - `/etc/credstore.encrypted/qorpera-web-control-token` (shared between `qorpera-web-router`, `qorpera-app-host`, and `coding-worker`'s `webHosting.controlToken`)
+   - `/etc/credstore.encrypted/qorpera-web-cookie-secret` (32+ random bytes for visitor/preview/member HMAC cookies)
+   - `/etc/credstore.encrypted/qorpera-web-database-url` (Postgres connection string with `service_role` access for `qorpera_web_edge_*` RPCs and `LISTEN qorpera_web_route_changes`)
+4. Configure `webHosting` in the `coding-worker` executor config JSON so self-hosted codebase landings publish directly to the native edge:
+   ```json
+   "webHosting": {
+     "routerInternalUrl": "http://127.0.0.1:8094",
+     "controlToken": "<shared-control-token>",
+     "appHostInternalUrl": "http://127.0.0.1:8096",
+     "builderScriptPath": "/usr/local/libexec/qorpera-web-hosting/builder-railpack.sh",
+     "registryPrefix": "127.0.0.1:5000/qorpera-apps"
+   }
+   ```
+
 ## Network Cutover Order
 
 ### Stage A — Immediate Dev / Beta on Existing Nodes (`93.164.62.162`)

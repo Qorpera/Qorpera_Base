@@ -1355,7 +1355,7 @@ describe("What's new: Look first's link and a refused write (step 5.1)", () => {
 			`https://WRISTBAND-SHOP--next.qorpera.com${enter}`,
 			`https://wristband-shop--next.qorpera.com.${enter}`,
 			`https://x.wristband-shop--next.qorpera.com${enter}`,
-			`https://wristband-shop--next.qorpera.site${enter}`,
+			`https://wristband-shop--next.qorpera.org${enter}`,
 			`https://wristband-shop--next.qorpera.com.example.org${enter}`,
 			`https://wristband-shop--nextxqorpera.com${enter}`,
 			// Only the enter path, and only one well-made ticket.

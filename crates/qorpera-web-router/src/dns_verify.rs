@@ -1,4 +1,17 @@
+use crate::routes::{DomainStatus, RouteTable};
 use serde::{Deserialize, Serialize};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
+use tokio::net::UdpSocket;
+use tokio::sync::mpsc;
+use tokio_postgres::NoTls;
+use tracing::{info, warn};
+
+pub const DNS_TYPE_A: u16 = 1;
+pub const DNS_TYPE_CNAME: u16 = 5;
+pub const DNS_TYPE_TXT: u16 = 16;
+pub const DNS_TYPE_AAAA: u16 = 28;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DnsExpectation {
@@ -27,6 +40,15 @@ pub struct DnsVerificationResult {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DomainCheckOutcome {
+    pub id: String,
+    pub hostname: String,
+    pub previous_status: DomainStatus,
+    pub next_status: DomainStatus,
+    pub reason: String,
+}
+
 pub fn evaluate_dns(expectation: &DnsExpectation, answers: &DnsAnswers) -> DnsVerificationResult {
     let expected_txt = format!("qorpera-verify={}", expectation.verification_token);
     let txt_ok = !expectation.require_txt
@@ -43,7 +65,12 @@ pub fn evaluate_dns(expectation: &DnsExpectation, answers: &DnsAnswers) -> DnsVe
         let v6_match = expectation
             .expected_ipv6
             .as_deref()
-            .map_or(false, |exp| answers.aaaa_records.iter().any(|a| a.trim().eq_ignore_ascii_case(exp)));
+            .map_or(false, |exp| {
+                answers
+                    .aaaa_records
+                    .iter()
+                    .any(|a| a.trim().eq_ignore_ascii_case(exp))
+            });
         let cname_flatten_match = expectation.expected_cname_target.as_deref().map_or(false, |exp| {
             let norm = exp.trim_end_matches('.').to_ascii_lowercase();
             answers
@@ -112,6 +139,387 @@ pub fn parse_doh_answers(json_body: &[u8]) -> Result<Vec<(u16, String)>, serde_j
         .collect())
 }
 
+pub fn default_dns_servers() -> Vec<SocketAddr> {
+    vec![
+        SocketAddr::from(([1, 1, 1, 1], 53)),
+        SocketAddr::from(([8, 8, 8, 8], 53)),
+        SocketAddr::from(([9, 9, 9, 9], 53)),
+    ]
+}
+
+pub fn build_dns_query(tx_id: u16, qname: &str, qtype: u16) -> Result<Vec<u8>, String> {
+    let mut pkt = Vec::with_capacity(64);
+    pkt.extend_from_slice(&tx_id.to_be_bytes());
+    pkt.extend_from_slice(&0x0100u16.to_be_bytes());
+    pkt.extend_from_slice(&1u16.to_be_bytes());
+    pkt.extend_from_slice(&0u16.to_be_bytes());
+    pkt.extend_from_slice(&0u16.to_be_bytes());
+    pkt.extend_from_slice(&0u16.to_be_bytes());
+    for label in qname.trim_end_matches('.').split('.') {
+        if label.is_empty() || label.len() > 63 {
+            return Err("invalid_dns_label".to_string());
+        }
+        pkt.push(label.len() as u8);
+        pkt.extend_from_slice(label.as_bytes());
+    }
+    pkt.push(0);
+    pkt.extend_from_slice(&qtype.to_be_bytes());
+    pkt.extend_from_slice(&1u16.to_be_bytes());
+    Ok(pkt)
+}
+
+fn read_dns_name(packet: &[u8], mut offset: usize) -> Result<(String, usize), String> {
+    let mut labels = Vec::new();
+    let mut jumped = false;
+    let mut end_offset = offset;
+    let mut hops = 0;
+
+    loop {
+        if offset >= packet.len() {
+            return Err("dns_name_oob".to_string());
+        }
+        let len = packet[offset];
+        if len == 0 {
+            if !jumped {
+                end_offset = offset + 1;
+            }
+            break;
+        }
+        if (len & 0xC0) == 0xC0 {
+            if offset + 1 >= packet.len() {
+                return Err("dns_ptr_oob".to_string());
+            }
+            let ptr = (((len & 0x3F) as usize) << 8) | (packet[offset + 1] as usize);
+            if !jumped {
+                end_offset = offset + 2;
+                jumped = true;
+            }
+            offset = ptr;
+            hops += 1;
+            if hops > 16 {
+                return Err("dns_ptr_loop".to_string());
+            }
+            continue;
+        }
+        let label_len = len as usize;
+        offset += 1;
+        if offset + label_len > packet.len() {
+            return Err("dns_label_oob".to_string());
+        }
+        let label = String::from_utf8_lossy(&packet[offset..offset + label_len]).into_owned();
+        labels.push(label);
+        offset += label_len;
+        if !jumped {
+            end_offset = offset;
+        }
+    }
+
+    Ok((labels.join("."), end_offset))
+}
+
+pub fn parse_dns_response(packet: &[u8], expected_tx_id: u16) -> Result<Vec<(u16, String)>, String> {
+    if packet.len() < 12 {
+        return Err("dns_short_header".to_string());
+    }
+    let tx_id = u16::from_be_bytes([packet[0], packet[1]]);
+    if tx_id != expected_tx_id {
+        return Err("dns_tx_mismatch".to_string());
+    }
+    let qdcount = u16::from_be_bytes([packet[4], packet[5]]) as usize;
+    let ancount = u16::from_be_bytes([packet[6], packet[7]]) as usize;
+    let mut offset = 12usize;
+
+    for _ in 0..qdcount {
+        let (_, next) = read_dns_name(packet, offset)?;
+        if next + 4 > packet.len() {
+            return Err("dns_question_oob".to_string());
+        }
+        offset = next + 4;
+    }
+
+    let mut out = Vec::with_capacity(ancount);
+    for _ in 0..ancount {
+        let (_, next) = read_dns_name(packet, offset)?;
+        if next + 10 > packet.len() {
+            return Err("dns_rr_header_oob".to_string());
+        }
+        let rtype = u16::from_be_bytes([packet[next], packet[next + 1]]);
+        let rdlen = u16::from_be_bytes([packet[next + 8], packet[next + 9]]) as usize;
+        let rdata_start = next + 10;
+        let rdata_end = rdata_start + rdlen;
+        if rdata_end > packet.len() {
+            return Err("dns_rdata_oob".to_string());
+        }
+        match rtype {
+            DNS_TYPE_A if rdlen == 4 => {
+                let ip = Ipv4Addr::new(
+                    packet[rdata_start],
+                    packet[rdata_start + 1],
+                    packet[rdata_start + 2],
+                    packet[rdata_start + 3],
+                );
+                out.push((rtype, ip.to_string()));
+            }
+            DNS_TYPE_AAAA if rdlen == 16 => {
+                let mut octets = [0u8; 16];
+                octets.copy_from_slice(&packet[rdata_start..rdata_end]);
+                let ip = Ipv6Addr::from(octets);
+                out.push((rtype, ip.to_string()));
+            }
+            DNS_TYPE_CNAME => {
+                if let Ok((target, _)) = read_dns_name(packet, rdata_start) {
+                    out.push((rtype, target));
+                }
+            }
+            DNS_TYPE_TXT => {
+                let mut pos = rdata_start;
+                let mut combined = String::new();
+                while pos < rdata_end {
+                    let seg_len = packet[pos] as usize;
+                    pos += 1;
+                    if pos + seg_len > rdata_end {
+                        break;
+                    }
+                    combined.push_str(&String::from_utf8_lossy(&packet[pos..pos + seg_len]));
+                    pos += seg_len;
+                }
+                if !combined.is_empty() {
+                    out.push((rtype, combined));
+                }
+            }
+            _ => {}
+        }
+        offset = rdata_end;
+    }
+
+    Ok(out)
+}
+
+pub async fn query_dns_udp(
+    server: SocketAddr,
+    qname: &str,
+    qtype: u16,
+    timeout: Duration,
+) -> Result<Vec<(u16, String)>, String> {
+    let bind_addr: SocketAddr = if server.is_ipv6() {
+        "[::]:0".parse().unwrap()
+    } else {
+        "0.0.0.0:0".parse().unwrap()
+    };
+    let sock = UdpSocket::bind(bind_addr)
+        .await
+        .map_err(|e| format!("dns_bind: {e}"))?;
+    let tx_id = ((std::process::id() as u16) ^ qtype.wrapping_mul(31))
+        .wrapping_add(qname.len() as u16);
+    let query = build_dns_query(tx_id, qname, qtype)?;
+    sock.send_to(&query, server)
+        .await
+        .map_err(|e| format!("dns_send: {e}"))?;
+    let mut buf = [0u8; 2048];
+    let (n, _) = tokio::time::timeout(timeout, sock.recv_from(&mut buf))
+        .await
+        .map_err(|_| "dns_timeout".to_string())?
+        .map_err(|e| format!("dns_recv: {e}"))?;
+    parse_dns_response(&buf[..n], tx_id)
+}
+
+async fn query_with_fallback(
+    servers: &[SocketAddr],
+    qname: &str,
+    qtype: u16,
+    timeout: Duration,
+) -> Vec<(u16, String)> {
+    for server in servers {
+        if let Ok(records) = query_dns_udp(*server, qname, qtype, timeout).await {
+            return records;
+        }
+    }
+    Vec::new()
+}
+
+pub async fn resolve_domain_dns(
+    servers: &[SocketAddr],
+    hostname: &str,
+    timeout: Duration,
+) -> DnsAnswers {
+    let txt_host = format!("_qorpera.{hostname}");
+    let (a_res, aaaa_res, cname_res, txt_res) = tokio::join!(
+        query_with_fallback(servers, hostname, DNS_TYPE_A, timeout),
+        query_with_fallback(servers, hostname, DNS_TYPE_AAAA, timeout),
+        query_with_fallback(servers, hostname, DNS_TYPE_CNAME, timeout),
+        query_with_fallback(servers, &txt_host, DNS_TYPE_TXT, timeout),
+    );
+    let mut answers = DnsAnswers::default();
+    for (rt, val) in a_res
+        .into_iter()
+        .chain(aaaa_res)
+        .chain(cname_res)
+        .chain(txt_res)
+    {
+        match rt {
+            DNS_TYPE_A => answers.a_records.push(val),
+            DNS_TYPE_AAAA => answers.aaaa_records.push(val),
+            DNS_TYPE_CNAME => answers.cname_records.push(val),
+            DNS_TYPE_TXT => answers.txt_records.push(val),
+            _ => {}
+        }
+    }
+    answers
+}
+
+fn status_sql_str(status: DomainStatus) -> &'static str {
+    match status {
+        DomainStatus::PendingDns => "pending_dns",
+        DomainStatus::DnsVerified => "dns_verified",
+        DomainStatus::TlsActive => "tls_active",
+        DomainStatus::Moved => "moved",
+        DomainStatus::Failed => "failed",
+    }
+}
+
+pub async fn verify_domains_once(
+    routes: &Arc<RwLock<RouteTable>>,
+    dns_servers: &[SocketAddr],
+    database_url: Option<&str>,
+    query_timeout: Duration,
+) -> Vec<DomainCheckOutcome> {
+    let (domains, expected_ipv4, expected_ipv6, expected_cname_target, domains_enabled) = {
+        let Ok(guard) = routes.read() else {
+            return Vec::new();
+        };
+        (
+            guard.custom_domains(),
+            guard.edge_ipv4.clone(),
+            guard.edge_ipv6.clone(),
+            guard.edge_cname_target.clone(),
+            guard.domains_enabled,
+        )
+    };
+    if !domains_enabled || domains.is_empty() {
+        return Vec::new();
+    }
+
+    let db_client = if let Some(url) = database_url {
+        match tokio_postgres::connect(url, NoTls).await {
+            Ok((client, conn)) => {
+                tokio::spawn(async move {
+                    let _ = conn.await;
+                });
+                Some(client)
+            }
+            Err(err) => {
+                warn!(error = %err, "dns verifier postgres connect failed");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let mut outcomes = Vec::new();
+    for domain in domains {
+        let answers = resolve_domain_dns(dns_servers, &domain.hostname, query_timeout).await;
+        let require_txt = domain.is_apex
+            && matches!(
+                domain.status,
+                DomainStatus::PendingDns | DomainStatus::Failed | DomainStatus::Moved
+            );
+        let expectation = DnsExpectation {
+            hostname: domain.hostname.clone(),
+            is_apex: domain.is_apex,
+            expected_ipv4: expected_ipv4.clone(),
+            expected_ipv6: expected_ipv6.clone(),
+            expected_cname_target: expected_cname_target.clone(),
+            verification_token: domain.verification_token.clone(),
+            require_txt,
+        };
+        let eval = evaluate_dns(&expectation, &answers);
+        let next_status = if eval.verified {
+            if domain.status == DomainStatus::TlsActive {
+                DomainStatus::TlsActive
+            } else {
+                DomainStatus::DnsVerified
+            }
+        } else if matches!(domain.status, DomainStatus::DnsVerified | DomainStatus::TlsActive) {
+            if domain.consecutive_misses + 1 >= 3 {
+                DomainStatus::Moved
+            } else {
+                domain.status
+            }
+        } else {
+            domain.status
+        };
+        let err_text = if eval.verified {
+            None
+        } else {
+            Some(eval.reason.as_str())
+        };
+
+        if let Ok(mut guard) = routes.write() {
+            guard.update_domain_status(&domain.id, next_status);
+        }
+
+        if let Some(ref client) = db_client {
+            let res = client
+                .execute(
+                    "SELECT public.qorpera_web_domain_mark_checked($1::uuid, $2::text, $3::text)",
+                    &[&domain.id, &status_sql_str(next_status), &err_text],
+                )
+                .await;
+            if let Err(err) = res {
+                warn!(domain = %domain.hostname, error = %err, "failed persisting domain check");
+            }
+        }
+
+        if next_status != domain.status {
+            info!(
+                domain = %domain.hostname,
+                from = status_sql_str(domain.status),
+                to = status_sql_str(next_status),
+                "custom domain status transitioned"
+            );
+        }
+
+        outcomes.push(DomainCheckOutcome {
+            id: domain.id,
+            hostname: domain.hostname,
+            previous_status: domain.status,
+            next_status,
+            reason: eval.reason,
+        });
+    }
+
+    outcomes
+}
+
+pub fn spawn_dns_verifier(
+    routes: Arc<RwLock<RouteTable>>,
+    dns_servers: Vec<SocketAddr>,
+    database_url: Option<String>,
+    interval: Duration,
+    mut trigger_rx: mpsc::Receiver<()>,
+) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ticker.tick().await;
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    let _ = verify_domains_once(&routes, &dns_servers, database_url.as_deref(), Duration::from_secs(3)).await;
+                }
+                msg = trigger_rx.recv() => {
+                    if msg.is_none() {
+                        break;
+                    }
+                    while trigger_rx.try_recv().is_ok() {}
+                    let _ = verify_domains_once(&routes, &dns_servers, database_url.as_deref(), Duration::from_secs(3)).await;
+                }
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,5 +573,71 @@ mod tests {
             },
         );
         assert!(sub_ok.verified);
+    }
+
+    fn encode_dns_name(name: &str) -> Vec<u8> {
+        let mut out = Vec::new();
+        for label in name.trim_end_matches('.').split('.') {
+            out.push(label.len() as u8);
+            out.extend_from_slice(label.as_bytes());
+        }
+        out.push(0);
+        out
+    }
+
+    #[tokio::test]
+    async fn resolves_live_udp_a_cname_and_txt_records() {
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = server.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            for _ in 0..8 {
+                let Ok((n, peer)) = server.recv_from(&mut buf).await else {
+                    break;
+                };
+                if n < 12 {
+                    continue;
+                }
+                let (qname, after_name) = read_dns_name(&buf[..n], 12).unwrap();
+                let qtype = u16::from_be_bytes([buf[after_name], buf[after_name + 1]]);
+                let mut resp = Vec::new();
+                resp.extend_from_slice(&buf[0..2]);
+                resp.extend_from_slice(&0x8180u16.to_be_bytes());
+                resp.extend_from_slice(&1u16.to_be_bytes());
+                let rdata: Option<(u16, Vec<u8>)> = match (qname.as_str(), qtype) {
+                    ("minbutik.dk", DNS_TYPE_A) => Some((DNS_TYPE_A, vec![93, 164, 62, 162])),
+                    ("_qorpera.minbutik.dk", DNS_TYPE_TXT) => {
+                        let txt = b"qorpera-verify=deadbeef";
+                        let mut v = vec![txt.len() as u8];
+                        v.extend_from_slice(txt);
+                        Some((DNS_TYPE_TXT, v))
+                    }
+                    ("www.minbutik.dk", DNS_TYPE_CNAME) => {
+                        Some((DNS_TYPE_CNAME, encode_dns_name("sites.qorpera.site")))
+                    }
+                    _ => None,
+                };
+                resp.extend_from_slice(&(if rdata.is_some() { 1u16 } else { 0u16 }).to_be_bytes());
+                resp.extend_from_slice(&0u16.to_be_bytes());
+                resp.extend_from_slice(&0u16.to_be_bytes());
+                resp.extend_from_slice(&buf[12..after_name + 4]);
+                if let Some((rt, data)) = rdata {
+                    resp.extend_from_slice(&[0xC0, 0x0C]);
+                    resp.extend_from_slice(&rt.to_be_bytes());
+                    resp.extend_from_slice(&1u16.to_be_bytes());
+                    resp.extend_from_slice(&60u32.to_be_bytes());
+                    resp.extend_from_slice(&(data.len() as u16).to_be_bytes());
+                    resp.extend_from_slice(&data);
+                }
+                let _ = server.send_to(&resp, peer).await;
+            }
+        });
+
+        let apex = resolve_domain_dns(&[addr], "minbutik.dk", Duration::from_secs(2)).await;
+        assert_eq!(apex.a_records, vec!["93.164.62.162".to_string()]);
+        assert_eq!(apex.txt_records, vec!["qorpera-verify=deadbeef".to_string()]);
+
+        let sub = resolve_domain_dns(&[addr], "www.minbutik.dk", Duration::from_secs(2)).await;
+        assert_eq!(sub.cname_records, vec!["sites.qorpera.site".to_string()]);
     }
 }

@@ -251,6 +251,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Repository status and pre-flight checks",
 		text: "Before dispatching parallel coding sessions on a Qorpera repository, call manage_code with action status to inspect its live state in one step: active or blocked coding sessions across the team, active worktrees, recent landed changes, and its checks setup. Inside coding sessions, agents can also run the repository checks pre-flight before handing in, receiving structured pass or fail results per check without landing unfinished work.",
 	},
+	{
+		id: "native-web-hosting",
+		kind: "capability",
+		date: "2026-11-21",
+		title: "Native hosting for websites, webapps and custom domains",
+		text: "Repositories kept in Qorpera can now deploy both static websites and full-stack dynamic webapps natively on Qorpera servers, without external hosting providers. Static sites support clean URLs, single-page app fallbacks, redirects and custom headers; dynamic or hybrid apps declare kind server or hybrid with their port, health path and optional Dockerfile in the repository checks. Every change that passes waits in What's new to preview and put live on a Qorpera domain first, and founders or admins can then make a site public and attach their own custom domain with automatic HTTPS in Sites.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

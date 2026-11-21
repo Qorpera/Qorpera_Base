@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { SitesView } from "../src/app/views/settings-sites.ts";
 import type { Cloud } from "../src/cloud/client.ts";
+import { parseSitePreviewAnswer } from "../src/cloud/releases.ts";
 import {
 	createWebSiteHosting,
 	isApexHostname,
@@ -11,7 +12,7 @@ import {
 	validateCustomDomainInput,
 	type WebSiteHosting,
 } from "../src/cloud/site-hosting.ts";
-import type { CompanySite } from "../src/cloud/sites.ts";
+import { type CompanySite, parseCompanySite, parseSiteMemberPass, siteOfLink } from "../src/cloud/sites.ts";
 import { settle } from "./fixtures.ts";
 
 const COMPANY_ID = "11111111-1111-4111-8111-111111111111";
@@ -25,6 +26,56 @@ describe("site-hosting", () => {
 		expect(NATIVE_SITE_HOST.exec("nordic-shop--next.qorpera.site")?.[2]).toBe("--next");
 		expect(NATIVE_SITE_HOST.exec("nordic-shop.qorpera.com")?.[1]).toBe("nordic-shop");
 		expect(NATIVE_SITE_HOST.exec("nordic-shop.example.dk")).toBeNull();
+
+		const parsed = parseCompanySite({
+			schema: "qorpera.company-site/v1",
+			id: SITE_ID,
+			slug: "nordic-shop",
+			title: "Nordic Shop",
+			kind: "files",
+			machine: null,
+			port: null,
+			url: "https://nordic-shop.qorpera.site/",
+			state: "live",
+			source: "code/company/nordic-shop",
+			files: 10,
+			bytes: 2048,
+			publishedAt: "2026-11-21T19:00:00Z",
+			publishedBy: null,
+			createdAt: "2026-11-21T18:00:00Z",
+			passwordChangedAt: "2026-11-21T18:00:00Z",
+		});
+		expect(parsed.url).toBe("https://nordic-shop.qorpera.site/");
+		expect(siteOfLink([parsed], "https://nordic-shop.qorpera.site/pricing")).toEqual(parsed);
+
+		const ticket = "A".repeat(43);
+		expect(
+			parseSitePreviewAnswer(
+				{
+					schema: "qorpera.site-preview/v1",
+					state: "open",
+					url: `https://nordic-shop--next.qorpera.site/.qorpera/enter?t=${ticket}`,
+				},
+				"nordic-shop",
+			),
+		).toEqual({
+			state: "open",
+			url: `https://nordic-shop--next.qorpera.site/.qorpera/enter?t=${ticket}`,
+		});
+
+		expect(
+			parseSiteMemberPass(
+				{
+					schema: "qorpera.site-member-pass/v1",
+					state: "open",
+					host: "nordic-shop.qorpera.site",
+					pass: ticket,
+					expiresAt: "2026-11-21T21:00:00Z",
+					action: "https://nordic-shop.qorpera.site/__qorpera/member",
+				},
+				"nordic-shop",
+			),
+		).toMatchObject({ state: "open", host: "nordic-shop.qorpera.site" });
 	});
 
 	it("validates custom domain inputs and detects apex vs subdomain", () => {
@@ -106,6 +157,14 @@ describe("site-hosting", () => {
 					hostname: "minbutik.dk",
 				};
 			}
+			if (name === "qorpera_recheck_company_site_domain") {
+				return {
+					schema: "qorpera.company-site-domain-recheck/v1",
+					id: DOMAIN_ID,
+					hostname: "minbutik.dk",
+					status: "pending_dns",
+				};
+			}
 			return { schema: "qorpera.company-site-domain-remove/v1", id: DOMAIN_ID, removed: true };
 		});
 
@@ -120,6 +179,7 @@ describe("site-hosting", () => {
 		expect(added.hostname).toBe("minbutik.dk");
 		expect(added.dns.recordType).toBe("A");
 		expect(added.dns.ipv4).toBe("93.164.62.162");
+		expect(await client.recheckDomain(DOMAIN_ID)).toBe("pending_dns");
 		expect(await client.setPrimaryDomain(DOMAIN_ID)).toBe("minbutik.dk");
 		expect(await client.removeDomain(DOMAIN_ID)).toBe(true);
 
@@ -165,6 +225,8 @@ describe("site-hosting", () => {
 		}));
 		const setPrimaryDomain = vi.fn(async () => "www.minbutik.dk");
 		const removeDomain = vi.fn(async () => true);
+		const recheckDomain = vi.fn(async () => "pending_dns" as const);
+		const PENDING_DOMAIN_ID = "55555555-5555-4555-8555-555555555555";
 		const hosting: WebSiteHosting = {
 			read: vi.fn(async () => ({
 				hostsDomain: "qorpera.site",
@@ -197,6 +259,18 @@ describe("site-hosting", () => {
 									tlsActiveAt: null,
 									lastError: null,
 								},
+								{
+									id: PENDING_DOMAIN_ID,
+									hostname: "ny.minbutik.dk",
+									isApex: false,
+									isPrimary: false,
+									status: "pending_dns" as const,
+									verificationToken: "d".repeat(32),
+									lastCheckedAt: null,
+									verifiedAt: null,
+									tlsActiveAt: null,
+									lastError: null,
+								},
 							],
 						},
 					],
@@ -206,6 +280,7 @@ describe("site-hosting", () => {
 			addDomain,
 			removeDomain,
 			setPrimaryDomain,
+			recheckDomain,
 		};
 
 		const ac = new AbortController();
@@ -223,10 +298,18 @@ describe("site-hosting", () => {
 		await settle();
 
 		expect(view.el.querySelector(`[data-site-public="${SITE_ID}"]`)?.textContent).toBe("Public");
+		expect(view.el.querySelector('[data-site-kind="hybrid"]')?.textContent).toBe("Hybrid");
 		const chip = view.el.querySelector('[data-domain="www.minbutik.dk"]');
 		expect(chip?.textContent).toContain("DNS verified");
+		expect(chip?.querySelector<HTMLAnchorElement>("a.site-domain-link")?.href).toBe("https://www.minbutik.dk/");
 
-		const buttons = [...(chip?.querySelectorAll("button") ?? [])];
+		const pendingChip = view.el.querySelector('[data-domain="ny.minbutik.dk"]');
+		const pendingButtons = [...(pendingChip?.querySelectorAll("button") ?? [])];
+		pendingButtons.find((b) => b.textContent === "Check DNS")?.click();
+		await settle();
+		expect(recheckDomain).toHaveBeenCalledWith(PENDING_DOMAIN_ID, expect.any(AbortSignal));
+
+		const buttons = [...(view.el.querySelector('[data-domain="www.minbutik.dk"]')?.querySelectorAll("button") ?? [])];
 		buttons.find((b) => b.textContent === "Set as primary")?.click();
 		await settle();
 		expect(setPrimaryDomain).toHaveBeenCalledWith(DOMAIN_ID, expect.any(AbortSignal));

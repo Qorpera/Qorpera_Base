@@ -5,6 +5,7 @@ import { CODE_CARE_RPCS } from "../../packages/runner-orchestrator/src/code-host
 import { CODE_REQUEST_RPCS } from "../../packages/runner-orchestrator/src/code-host-requests.ts";
 import { CODE_HOST_RPCS } from "../../packages/runner-orchestrator/src/code-host-views.ts";
 import { CODE_SITE_RPCS } from "../../packages/runner-orchestrator/src/code-site-uploads.ts";
+import { NATIVE_WEB_HOSTING_RPCS } from "../../packages/runner-orchestrator/src/native-webapp-deploy.ts";
 import { CODING_EXECUTOR_RPCS, CodingControlBusy, CodingControlRefused } from "../../packages/runner-orchestrator/src/coding-executor.ts";
 import { CODING_HOST_RPCS } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
 import { CODING_SNAPSHOT_RPCS } from "../../packages/runner-orchestrator/src/coding-snapshots.ts";
@@ -13,6 +14,7 @@ import { COMPANY_MACHINE_HOST_RPCS } from "../../packages/runner-orchestrator/sr
 /** The executor's closed RPC set (exported for the tests, which run the routes and the host against it: F33 of #1661). */
 export const CODING_CONTROL_METHODS: ReadonlySet<string> = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, ...CODING_SNAPSHOT_RPCS, ...COMPANY_MACHINE_HOST_RPCS, ...CODE_HOST_RPCS,
 	...CODE_HOST_DELETION_RPCS, ...CODE_CARE_RPCS, ...CODE_CHANGE_RPCS, ...CODE_REQUEST_RPCS, ...CODE_SITE_RPCS,
+	...NATIVE_WEB_HOSTING_RPCS,
 	"qorpera_authorize_coding_command", "qorpera_route_coding_command",
 	"qorpera_authorize_machine_command", "qorpera_authorize_machine_coding_value", "qorpera_authorize_machine_account_fill",
 	"qorpera_authorize_machine_screen",
@@ -106,7 +108,8 @@ export class CodingExecutorHttpControl {
 	async call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
 		if (!CODING_CONTROL_METHODS.has(method)) throw new Error("CODING_CONTROL_METHOD_INVALID");
 		const body = JSON.stringify(args);
-		if (Buffer.byteLength(body) > 128 * 1024) throw new Error("CODING_CONTROL_REQUEST_TOO_LARGE");
+		const maxRequestBytes = method === "qorpera_web_code_deployment_register" ? 4 * 1024 * 1024 : 128 * 1024;
+		if (Buffer.byteLength(body) > maxRequestBytes) throw new Error("CODING_CONTROL_REQUEST_TOO_LARGE");
 		const checked = AbortSignal.any([signal, AbortSignal.timeout(30000)]);
 		const refusals = VIEW_REFUSALS.get(method);
 		let failure: Error = unconfirmed(method, "no answer");

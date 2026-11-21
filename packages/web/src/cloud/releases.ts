@@ -11,6 +11,7 @@ import {
 	timestamp,
 	uuid,
 } from "./parse.ts";
+import { NATIVE_SITE_HOST } from "./site-hosting.ts";
 import { SITE_HOST } from "./sites.ts";
 
 /* A member's calls for What's new (migration 20260930729000_code_releases, own code storage step 4): for each project
@@ -253,7 +254,7 @@ export function parseSitePreviewAnswer(value: unknown, slug: string): SitePrevie
 	} catch {
 		throw new CloudShapeError("look first link");
 	}
-	const host = SITE_HOST.exec(url.hostname);
+	const host = SITE_HOST.exec(url.hostname) ?? NATIVE_SITE_HOST.exec(url.hostname);
 	// The whole link, written out as it must be: no port, sign-in, other path or fragment (not even an empty one).
 	if (
 		host?.[1] !== slug ||

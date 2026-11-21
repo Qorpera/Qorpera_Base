@@ -5,11 +5,15 @@ use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use qorpera_web_router::blob_store::{sha256_hex, BlobStore};
+use qorpera_web_router::dns_verify::{DNS_TYPE_A, DNS_TYPE_TXT};
 use qorpera_web_router::routes::{
     CustomDomainRecord, DeploymentKind, DeploymentRecord, DomainStatus, EdgeSnapshot, HeaderRule,
     ManifestFile, RedirectRule, SiteManifest, SiteRecord,
 };
-use qorpera_web_router::server::{BoundServers, RouterConfig, RouterState};
+use qorpera_web_router::server::{
+    BoundServers, EdgeAuthBackend, MemoryAuthBackend, RedeemedMemberPass, RedeemedTicket,
+    RouterConfig, RouterState,
+};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -17,7 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::tempdir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
 async fn http_call(
     addr: SocketAddr,
@@ -49,6 +53,9 @@ fn test_config(app_host_url: Option<String>) -> RouterConfig {
         unlock_limit_burst: 10.0,
         app_host_url,
         wake_timeout: Duration::from_secs(5),
+        dns_servers: vec![],
+        database_url: None,
+        auth_backend: None,
     }
 }
 
@@ -188,8 +195,12 @@ async fn static_sites_custom_domains_tls_ask_privacy_and_takedown() {
                     },
                     upstream_addr: None,
                     oci_image_ref: None,
+                    app_port: None,
                     health_path: "/".to_string(),
                     idle_timeout_sec: 900,
+                    memory_mb: 512,
+                    vcpu_limit: 1.0,
+                    env_spec: HashMap::new(),
                 }),
                 preview_deployments: HashMap::new(),
                 primary_custom_domain: Some("minbutik.dk".to_string()),
@@ -210,8 +221,12 @@ async fn static_sites_custom_domains_tls_ask_privacy_and_takedown() {
                     },
                     upstream_addr: None,
                     oci_image_ref: None,
+                    app_port: None,
                     health_path: "/".to_string(),
                     idle_timeout_sec: 900,
+                    memory_mb: 512,
+                    vcpu_limit: 1.0,
+                    env_spec: HashMap::new(),
                 }),
                 preview_deployments: HashMap::new(),
                 primary_custom_domain: None,
@@ -226,6 +241,8 @@ async fn static_sites_custom_domains_tls_ask_privacy_and_takedown() {
                 is_primary: true,
                 status: DomainStatus::TlsActive,
                 verification_token: "v1".to_string(),
+                last_checked_at: None,
+                consecutive_misses: 0,
             },
             CustomDomainRecord {
                 id: "dom-www".to_string(),
@@ -235,6 +252,8 @@ async fn static_sites_custom_domains_tls_ask_privacy_and_takedown() {
                 is_primary: false,
                 status: DomainStatus::DnsVerified,
                 verification_token: "v2".to_string(),
+                last_checked_at: None,
+                consecutive_misses: 0,
             },
             CustomDomainRecord {
                 id: "dom-pending".to_string(),
@@ -244,6 +263,8 @@ async fn static_sites_custom_domains_tls_ask_privacy_and_takedown() {
                 is_primary: false,
                 status: DomainStatus::PendingDns,
                 verification_token: "v3".to_string(),
+                last_checked_at: None,
+                consecutive_misses: 0,
             },
         ],
         ..Default::default()
@@ -591,8 +612,12 @@ async fn hybrid_static_fast_path_singleflight_wake_and_websocket_upgrade() {
                 },
                 upstream_addr: None,
                 oci_image_ref: Some("registry.qorpera.internal/sites/fullstack@sha256:1234".to_string()),
+                app_port: Some(3000),
                 health_path: "/".to_string(),
                 idle_timeout_sec: 900,
+                memory_mb: 512,
+                vcpu_limit: 1.0,
+                env_spec: HashMap::new(),
             }),
             preview_deployments: HashMap::new(),
             primary_custom_domain: None,
@@ -672,4 +697,317 @@ async fn hybrid_static_fast_path_singleflight_wake_and_websocket_upgrade() {
     let mut echoed = [0u8; 17];
     ws_io.read_exact(&mut echoed).await.unwrap();
     assert_eq!(&echoed, b"ping-through-edge");
+}
+
+#[tokio::test]
+async fn preview_ticket_member_pass_and_live_dns_domain_verification() {
+    let dns_server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let dns_addr = dns_server.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut buf = [0u8; 512];
+        for _ in 0..16 {
+            let Ok((n, peer)) = dns_server.recv_from(&mut buf).await else {
+                break;
+            };
+            if n < 12 {
+                continue;
+            }
+            let mut offset = 12usize;
+            let mut labels = Vec::new();
+            while offset < n && buf[offset] != 0 {
+                let len = buf[offset] as usize;
+                offset += 1;
+                labels.push(String::from_utf8_lossy(&buf[offset..offset + len]).into_owned());
+                offset += len;
+            }
+            let qname = labels.join(".");
+            let after_name = offset + 1;
+            let qtype = u16::from_be_bytes([buf[after_name], buf[after_name + 1]]);
+            let rdata: Option<(u16, Vec<u8>)> = match (qname.as_str(), qtype) {
+                ("newshop.dk", DNS_TYPE_A) => Some((DNS_TYPE_A, vec![93, 164, 62, 162])),
+                ("_qorpera.newshop.dk", DNS_TYPE_TXT) => {
+                    let txt = b"qorpera-verify=tok-new";
+                    let mut v = vec![txt.len() as u8];
+                    v.extend_from_slice(txt);
+                    Some((DNS_TYPE_TXT, v))
+                }
+                _ => None,
+            };
+            let mut resp = Vec::new();
+            resp.extend_from_slice(&buf[0..2]);
+            resp.extend_from_slice(&0x8180u16.to_be_bytes());
+            resp.extend_from_slice(&1u16.to_be_bytes());
+            resp.extend_from_slice(&(if rdata.is_some() { 1u16 } else { 0u16 }).to_be_bytes());
+            resp.extend_from_slice(&0u16.to_be_bytes());
+            resp.extend_from_slice(&0u16.to_be_bytes());
+            resp.extend_from_slice(&buf[12..after_name + 4]);
+            if let Some((rt, data)) = rdata {
+                resp.extend_from_slice(&[0xC0, 0x0C]);
+                resp.extend_from_slice(&rt.to_be_bytes());
+                resp.extend_from_slice(&1u16.to_be_bytes());
+                resp.extend_from_slice(&60u32.to_be_bytes());
+                resp.extend_from_slice(&(data.len() as u16).to_be_bytes());
+                resp.extend_from_slice(&data);
+            }
+            let _ = dns_server.send_to(&resp, peer).await;
+        }
+    });
+
+    let dir = tempdir().unwrap();
+    let blobs = Arc::new(BlobStore::new(dir.path().to_path_buf(), 8 * 1024 * 1024, 8 * 1024 * 1024));
+    let live_html = Bytes::from("<html><body>live-v1</body></html>");
+    let preview_html = Bytes::from("<html><body>preview-v2</body></html>");
+    let live_sha = sha256_hex(&live_html);
+    let preview_sha = sha256_hex(&preview_html);
+    blobs.put(&live_sha, live_html.clone(), false).await.unwrap();
+    blobs.put(&preview_sha, preview_html.clone(), false).await.unwrap();
+
+    let mut live_files = HashMap::new();
+    live_files.insert(
+        "index.html".to_string(),
+        ManifestFile {
+            sha256: live_sha,
+            bytes: live_html.len(),
+            content_type: "text/html; charset=utf-8".to_string(),
+            immutable: false,
+        },
+    );
+    let mut preview_files = HashMap::new();
+    preview_files.insert(
+        "index.html".to_string(),
+        ManifestFile {
+            sha256: preview_sha,
+            bytes: preview_html.len(),
+            content_type: "text/html; charset=utf-8".to_string(),
+            immutable: false,
+        },
+    );
+
+    let mut previews = HashMap::new();
+    previews.insert(
+        "ver-2".to_string(),
+        DeploymentRecord {
+            id: "dep-2".to_string(),
+            kind: DeploymentKind::Static,
+            manifest: SiteManifest {
+                files: preview_files,
+                ..Default::default()
+            },
+            upstream_addr: None,
+            oci_image_ref: None,
+            app_port: None,
+            health_path: "/".to_string(),
+            idle_timeout_sec: 900,
+            memory_mb: 512,
+            vcpu_limit: 1.0,
+            env_spec: HashMap::new(),
+        },
+    );
+
+    let snapshot = EdgeSnapshot {
+        hosts_domain: "qorpera.site".to_string(),
+        legacy_hosts_domains: vec!["qorpera.com".to_string()],
+        hosts_enabled: true,
+        public_enabled: true,
+        domains_enabled: true,
+        edge_ipv4: Some("93.164.62.162".to_string()),
+        edge_ipv6: None,
+        edge_cname_target: Some("sites.qorpera.site".to_string()),
+        sites: vec![SiteRecord {
+            id: "site-1".to_string(),
+            slug: "kaffe-shop".to_string(),
+            is_public: false,
+            taken_down: false,
+            password_sha256: Some(sha256_hex(b"pass")),
+            password_version: 3,
+            live_deployment: Some(DeploymentRecord {
+                id: "dep-1".to_string(),
+                kind: DeploymentKind::Static,
+                manifest: SiteManifest {
+                    files: live_files,
+                    ..Default::default()
+                },
+                upstream_addr: None,
+                oci_image_ref: None,
+                app_port: None,
+                health_path: "/".to_string(),
+                idle_timeout_sec: 900,
+                memory_mb: 512,
+                vcpu_limit: 1.0,
+                env_spec: HashMap::new(),
+            }),
+            preview_deployments: previews,
+            primary_custom_domain: None,
+        }],
+        custom_domains: vec![CustomDomainRecord {
+            id: "dom-new".to_string(),
+            site_id: "site-1".to_string(),
+            hostname: "newshop.dk".to_string(),
+            is_apex: true,
+            is_primary: false,
+            status: DomainStatus::PendingDns,
+            verification_token: "tok-new".to_string(),
+            last_checked_at: None,
+            consecutive_misses: 0,
+        }],
+    };
+
+    let auth = Arc::new(MemoryAuthBackend::default());
+    auth.insert_ticket(
+        "kaffe-shop--next.qorpera.site",
+        "ticket-123",
+        RedeemedTicket {
+            site_id: "site-1".to_string(),
+            version_id: "ver-2".to_string(),
+            password_version: 3,
+            max_age: 43200,
+        },
+    );
+    auth.insert_member_pass(
+        "kaffe-shop.qorpera.site",
+        "member-pass-123",
+        RedeemedMemberPass {
+            site_id: "site-1".to_string(),
+            password_version: 3,
+            max_age: 43200,
+        },
+    );
+
+    let mut cfg = test_config(None);
+    cfg.dns_servers = vec![dns_addr];
+    cfg.auth_backend = Some(auth as Arc<dyn EdgeAuthBackend>);
+
+    let state = Arc::new(RouterState::new(blobs, snapshot, &cfg));
+    let bound = BoundServers::bind(&cfg, state).await.unwrap();
+    let pub_addr = bound.public_addr;
+    let int_addr = bound.internal_addr;
+    let (_p, _i) = bound.spawn();
+
+    let (st, hdrs, _) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("GET")
+            .uri("/.qorpera/enter?t=ticket-123")
+            .header("host", "kaffe-shop--next.qorpera.site")
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::SEE_OTHER);
+    let preview_cookie = hdrs
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+
+    let (st, _, _) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("GET")
+            .uri("/.qorpera/enter?t=ticket-123")
+            .header("host", "kaffe-shop--next.qorpera.site")
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+
+    let (st, _, body) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("GET")
+            .uri("/")
+            .header("host", "kaffe-shop--next.qorpera.site")
+            .header("cookie", preview_cookie)
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let html = String::from_utf8(body.to_vec()).unwrap();
+    assert!(html.contains("preview-v2"));
+    assert!(html.contains("data-qorpera-preview=\"1\""));
+
+    let (st, hdrs, _) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("POST")
+            .uri("/__qorpera/member")
+            .header("host", "kaffe-shop.qorpera.site")
+            .header("origin", "https://app.qorpera.com")
+            .header("sec-fetch-site", "cross-site")
+            .body(Full::new(Bytes::from("pass=member-pass-123&path=/")))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::SEE_OTHER);
+    let set_cookie_raw = hdrs.get("set-cookie").unwrap().to_str().unwrap();
+    assert!(set_cookie_raw.contains("SameSite=None"));
+    let member_cookie = set_cookie_raw.split(';').next().unwrap().to_string();
+
+    let (st, _, body) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("GET")
+            .uri("/")
+            .header("host", "kaffe-shop.qorpera.site")
+            .header("cookie", member_cookie.clone())
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body, live_html);
+
+    let (st, _, _) = http_call(
+        int_addr,
+        Request::builder()
+            .method("GET")
+            .uri("/_internal/tls/allow?domain=newshop.dk")
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+
+    let (st, _, _) = http_call(
+        int_addr,
+        Request::builder()
+            .method("POST")
+            .uri("/_internal/domains/verify")
+            .header("authorization", "Bearer secret-control-token")
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+
+    let (st, _, _) = http_call(
+        int_addr,
+        Request::builder()
+            .method("GET")
+            .uri("/_internal/tls/allow?domain=newshop.dk")
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+
+    let (st, _, body) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("GET")
+            .uri("/")
+            .header("host", "newshop.dk")
+            .header("cookie", member_cookie)
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body, live_html);
 }
