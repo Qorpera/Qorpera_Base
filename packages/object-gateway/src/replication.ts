@@ -282,7 +282,7 @@ export class ObjectGatewayReplication {
 		await this.#journal.exclusive(name, async () => {
 			this.#invalidateDeleted(name);
 			await this.#journal.write(name, object);
-			await this.#delete(object);
+			await this.#delete(object, false);
 		});
 	}
 
@@ -384,7 +384,7 @@ export class ObjectGatewayReplication {
 							if (stored === undefined) return;
 							const object = pendingObject(stored, name);
 							try {
-								if (object.state === "delete") await this.#delete(object);
+								if (object.state === "delete") await this.#delete(object, true);
 								else if (object.state !== "blocked" && object.state !== "deleted")
 									await this.#replicate(object);
 							} catch (error) {
@@ -480,7 +480,7 @@ export class ObjectGatewayReplication {
 		await this.#journal.remove(key(object));
 	}
 
-	async #delete(object: PendingObject): Promise<void> {
+	async #delete(object: PendingObject, gated: boolean): Promise<void> {
 		if (!object.authorizationId) throw new Error("Deletion intent lacks authority");
 		const authority = await this.#authority.resumeDelete(
 			object.authorizationId,
@@ -491,7 +491,8 @@ export class ObjectGatewayReplication {
 		if (authority.state !== "completed") {
 			// The SQL replication guard holds the existing GC fence at Storage insertion time.
 			await this.#authority.removeReplica(object.profileId, object.sha256);
-			await this.#nasGate.run(() => this.#store.remove(object.profileId, object.sha256));
+			const removeLocal = () => this.#store.remove(object.profileId, object.sha256);
+			await (gated ? this.#nasGate.run(removeLocal) : removeLocal());
 			await this.#authority.finalizeDelete(object.authorizationId, object.profileId, object.sha256, object.bytes);
 		}
 		const name = key(object);

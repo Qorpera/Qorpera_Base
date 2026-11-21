@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ObjectDependencyError } from "../src/dependency.ts";
+import { ObjectGatewayFolderGc } from "../src/folder-gc.ts";
 import { ObjectGatewayJournal } from "../src/journal.ts";
 import { createSerialGate, startGatewayMaintenance } from "../src/maintenance.ts";
 import { FileSystemObjectStore } from "../src/object-store.ts";
@@ -777,7 +778,7 @@ describe("cloud object outage continuity", () => {
 				storeProbes++;
 			},
 			recoverGc: async () => {
-				await trackNas(10);
+				await nasGate.run(() => trackNas(10));
 			},
 			reconcile: async () => {
 				await nasGate.run(() => trackNas(10));
@@ -792,6 +793,109 @@ describe("cloud object outage continuity", () => {
 			expect(nasPeak).toBe(1);
 		} finally {
 			releaseReconcile();
+			loops.stop();
+		}
+	});
+
+	it("does not deadlock when remove waits in authority while maintain runs folderGc recover on the same key", async () => {
+		const fixture = await gateway();
+		const nasGate = createSerialGate();
+		const replication = new ObjectGatewayReplication(
+			fixture.journal,
+			fixture.objects,
+			fixture.authority,
+			undefined,
+			nasGate,
+		);
+		const folderGc = new ObjectGatewayFolderGc(fixture.objects, replication, fixture.authority, Date.now, nasGate);
+		const leaseId = "7ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
+		fixture.cloud.catalog.set(objectKey, { backend: "nas-object-gateway", bytes: bytes.byteLength });
+		fixture.cloud.deletion = true;
+		await fixture.objects.put(profileId, sha256, bytes);
+		expect(await fixture.objects.quarantine(profileId, sha256, leaseId)).toBe("moved");
+		let enteredResumeDelete = () => {};
+		const resumeDeleteReached = new Promise<void>((resolve) => {
+			enteredResumeDelete = resolve;
+		});
+		let releaseResumeDelete = () => {};
+		const resumeDeleteGate = new Promise<void>((resolve) => {
+			releaseResumeDelete = resolve;
+		});
+		const origResumeDelete = fixture.authority.resumeDelete.bind(fixture.authority);
+		vi.spyOn(fixture.authority, "resumeDelete").mockImplementationOnce(async (authId, profile, hash, length) => {
+			enteredResumeDelete();
+			await resumeDeleteGate;
+			return await origResumeDelete(authId, profile, hash, length);
+		});
+		vi.spyOn(fixture.authority, "folderQuarantineState").mockResolvedValue("remove");
+		let gcReachedExclusive = () => {};
+		const gcWaitingOnKey = new Promise<void>((resolve) => {
+			gcReachedExclusive = resolve;
+		});
+		const origExclusive = replication.exclusive.bind(replication);
+		vi.spyOn(replication, "exclusive").mockImplementation((profile, hash, operation) => {
+			gcReachedExclusive();
+			return origExclusive(profile, hash, operation);
+		});
+		const removePromise = replication.remove(profileId, sha256, bytes.byteLength, authorizationId);
+		await resumeDeleteReached;
+		let storeProbes = 0;
+		let maintainDone = () => {};
+		const maintainFinished = new Promise<void>((resolve) => {
+			maintainDone = resolve;
+		});
+		const loops = startGatewayMaintenance({
+			intervalMs: 60_000,
+			nasGate,
+			probeAuthority: async () => {},
+			probeStore: async () => {
+				await fixture.objects.probe();
+				storeProbes++;
+			},
+			recoverGc: () => folderGc.recover(),
+			reconcile: async () => {
+				await replication.reconcile();
+				maintainDone();
+			},
+		});
+		try {
+			await gcWaitingOnKey;
+			await loops.probe();
+			expect(storeProbes).toBeGreaterThanOrEqual(2);
+			releaseResumeDelete();
+			await Promise.all([removePromise, maintainFinished]);
+			expect(await fixture.objects.listQuarantine(10)).toEqual([]);
+			const secondBytes = Buffer.from("second-delete-off-gate");
+			const secondHash = createHash("sha256").update(secondBytes).digest("hex");
+			fixture.cloud.catalog.set(`${profileId}/${secondHash}`, {
+				backend: "nas-object-gateway",
+				bytes: secondBytes.byteLength,
+			});
+			await fixture.objects.put(profileId, secondHash, secondBytes);
+			let gateHeld = () => {};
+			const gateEntered = new Promise<void>((resolve) => {
+				gateHeld = resolve;
+			});
+			let releaseGate = () => {};
+			const holdGate = new Promise<void>((resolve) => {
+				releaseGate = resolve;
+			});
+			const blockedProbe = nasGate.run(async () => {
+				gateHeld();
+				await holdGate;
+			});
+			await gateEntered;
+			try {
+				await replication.remove(profileId, secondHash, secondBytes.byteLength, authorizationId);
+				await expect(fixture.objects.get(profileId, secondHash, secondBytes.byteLength)).rejects.toThrow(
+					"not found",
+				);
+			} finally {
+				releaseGate();
+				await blockedProbe;
+			}
+		} finally {
+			releaseResumeDelete();
 			loops.stop();
 		}
 	});

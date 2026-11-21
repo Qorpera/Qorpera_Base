@@ -48,7 +48,7 @@ const store = new FileSystemObjectStore(
 const journal = new ObjectGatewayJournal(required(process.env, "QORPERA_OBJECT_GATEWAY_STATE_ROOT"));
 const maintenanceNasGate = createSerialGate();
 const replication = new ObjectGatewayReplication(journal, store, authority, undefined, maintenanceNasGate);
-const folderGc = new ObjectGatewayFolderGc(store, replication, authority);
+const folderGc = new ObjectGatewayFolderGc(store, replication, authority, Date.now, maintenanceNasGate);
 const memberAuthority = new SupabaseMemberCompanyAuthority({
 	projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
 	publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),

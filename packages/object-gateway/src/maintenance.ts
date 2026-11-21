@@ -67,7 +67,8 @@ export function startGatewayMaintenance(options: GatewayMaintenanceOptions): {
 		if (maintaining) return;
 		maintaining = true;
 		try {
-			await options.nasGate.run(() => options.recoverGc());
+			// WHY: recoverGc and reconcile gate only leaf NAS calls under per-key locks so they never invert with request-path locks.
+			await options.recoverGc();
 			await options.reconcile();
 		} catch {
 			options.onMaintainError?.();
