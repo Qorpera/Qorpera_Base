@@ -92,7 +92,7 @@ export class GeminiKeyView {
 		if (this.#working || this.#lifetime.signal.aborted) return;
 		const apiKey = this.#keyDraft.trim();
 		if (!geminiKeyLooksValid(apiKey)) {
-			this.#error = t("Enter a valid Gemini API key starting with AIza.");
+			this.#error = t("Enter a valid Gemini API key from Google AI Studio (starting with AQ. or AIza).");
 			this.#status = undefined;
 			this.#draw();
 			return;

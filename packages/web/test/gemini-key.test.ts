@@ -14,6 +14,7 @@ import {
 import { fixture, id, profileA, settle, timestamp, userA } from "./fixtures.ts";
 
 const CANARY_KEY = "AIzaSyWebGeminiTestKey0123456789abcdef";
+const CANARY_AQ_KEY = "AQ.Ab8RN6WebGeminiTestKey0123456789abcdef_ghij-aXtw";
 
 afterEach(() => {
 	document.body.replaceChildren();
@@ -46,6 +47,8 @@ function sampleState(patch: Partial<NonNullable<GeminiKeyState["key"]>> = {}): G
 describe("Gemini key helpers and transport", () => {
 	it("formats USD amounts and validates key syntax", () => {
 		expect(geminiKeyLooksValid(CANARY_KEY)).toBe(true);
+		expect(geminiKeyLooksValid(CANARY_AQ_KEY)).toBe(true);
+		expect(geminiKeyLooksValid("AQ.short")).toBe(false);
 		expect(geminiKeyLooksValid("sk-not-google")).toBe(false);
 		expect(formatUsdMicrodollars(12_340_000)).toBe("$12.34");
 		expect(formatUsdCents(10_000)).toBe("$100");

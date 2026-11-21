@@ -16,6 +16,7 @@ import { CloudSecretKeyring } from "@qorpera/runtime/cloud-secret-crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const CANARY_KEY = "AIzaSyCanaryGeminiKeyTest0123456789abcdef";
+const CANARY_AQ_KEY = "AQ.Ab8RN6CanaryGeminiKeyTest0123456789abcdef_ghij-aXtw";
 
 function binding(): ModelLoginRunBinding {
 	return {
@@ -159,9 +160,13 @@ describe("Gemini Neon pricing and key formatting", () => {
 
 	it("validates Gemini API key format and masks hints", () => {
 		expect(isGeminiApiKeyFormat(CANARY_KEY)).toBe(true);
+		expect(isGeminiApiKeyFormat(CANARY_AQ_KEY)).toBe(true);
 		expect(isGeminiApiKeyFormat("sk-openai-12345678901234567890")).toBe(false);
 		expect(isGeminiApiKeyFormat("AIzaShort")).toBe(false);
+		expect(isGeminiApiKeyFormat("AQ.Short")).toBe(false);
+		expect(isGeminiApiKeyFormat("AQ.has space 01234567890123456789")).toBe(false);
 		expect(geminiKeyHint(CANARY_KEY)).toBe("AIza...cdef");
+		expect(geminiKeyHint(CANARY_AQ_KEY)).toBe("AQ...aXtw");
 	});
 
 	it("verifies a Gemini API key against Google using the header, never a query parameter", async () => {
@@ -359,6 +364,43 @@ describe("HttpCloudSecretBrokerService Gemini key routes", () => {
 				monthlyCapCents: 10_000,
 			});
 			expect(proveBinding).toHaveBeenCalledWith(run, holder);
+
+			const aqSaveResponse = await fetch(
+				`http://127.0.0.1:${port}/v1/gemini-keys/${f.state.ticketId}?company=${companyId}`,
+				{
+					method: "POST",
+					headers: {
+						origin: "https://app.qorpera.example",
+						"content-type": "application/json",
+					},
+					body: JSON.stringify({
+						schema: "qorpera.gemini-key-save-request/v1",
+						capability: f.state.capability,
+						apiKey: CANARY_AQ_KEY,
+					}),
+				},
+			);
+			expect(aqSaveResponse.status).toBe(200);
+			expect(await aqSaveResponse.json()).toMatchObject({
+				schema: "qorpera.gemini-key-saved/v1",
+				keyHint: "AQ...aXtw",
+			});
+			const openedAq = await openGeminiKeyForRun(
+				{
+					origin: `http://127.0.0.1:${port}`,
+					runtimeToken,
+					companyId,
+					holder: () => holder,
+					allowLoopback: true,
+				},
+				run,
+				AbortSignal.timeout(5_000),
+			);
+			expect(openedAq).toMatchObject({
+				schema: "qorpera.gemini-key-for-run/v1",
+				state: "open",
+				apiKey: CANARY_AQ_KEY,
+			});
 		} finally {
 			await service.close();
 		}
