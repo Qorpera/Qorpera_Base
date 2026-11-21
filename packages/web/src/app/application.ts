@@ -2123,7 +2123,11 @@ export function mountApplication(
 					? "mailbox"
 					: surface.slug === "money" || surface.icon === "coin" || surface.icon === "bank"
 						? "bank"
-						: undefined;
+						: surface.slug === "members" || surface.icon === "members"
+							? "members"
+							: surface.slug === "data" || surface.icon === "database"
+								? "data"
+								: undefined;
 			if (page) {
 				const el = h("div", { class: "surface-ops" });
 				const update = () => renderInterface(el, controller, page, interfaceWrites());

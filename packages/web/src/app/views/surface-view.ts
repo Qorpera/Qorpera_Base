@@ -8,8 +8,8 @@ import {
 } from "@qorpera/contracts";
 import { openContextMenu } from "../../ui/context-menu.ts";
 import { growToText, h, icon } from "../../ui/dom.ts";
-import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { t } from "../../ui/preferences.ts";
+import { opsComposerPlaceholder } from "../surface-kinds.ts";
 import { renderLocalSitePreviewHtml } from "../surface-local-sandbox.ts";
 import {
 	formatConflictPaths,
@@ -24,7 +24,7 @@ import {
 	surfaceBySlug,
 } from "../surfaces-store.ts";
 import { SurfaceDoorStage } from "./surface-door.ts";
-import { surfaceEmblem } from "./surface-rail.ts";
+import { surfaceTile } from "./surface-rail.ts";
 import { SurfaceSessionDrawer } from "./surface-session-drawer.ts";
 import { SurfaceStudioView } from "./surface-studio-view.ts";
 
@@ -138,6 +138,7 @@ export class SurfaceView {
 	#framesShown = "";
 	#chromeShown = "";
 	#toastShown: number | undefined;
+	#deviceDefaulted = false;
 
 	constructor(host: SurfaceViewHost, slug: string) {
 		this.#host = host;
@@ -266,6 +267,11 @@ export class SurfaceView {
 			return;
 		}
 		this.#composer.hidden = false;
+		if (!this.#deviceDefaulted && surface.archetype === "live_build") {
+			this.#deviceDefaulted = true;
+			const wanted = store.lookOf(surface).kind === "mobile_app" ? "mobile" : "desktop";
+			if (state.device !== wanted) queueMicrotask(() => store.setDevice(wanted));
+		}
 		this.#drawBar(surface);
 		this.#drawMount(surface);
 		this.#drawFrames(surface);
@@ -290,8 +296,10 @@ export class SurfaceView {
 		const handoffTargets =
 			surface.archetype === "studio" || surface.archetype === "ops" ? productBuildSurfaces(state, surface.id) : [];
 		const busyHandoff = handoffTargets.some((target) => Boolean(state.busy[`handoff:${surface.id}:${target.slug}`]));
+		const look = this.#host.store.lookOf(surface);
 		const key = JSON.stringify([
 			surface,
+			look,
 			state.mode,
 			state.device,
 			explorations.length,
@@ -331,7 +339,7 @@ export class SurfaceView {
 			h(
 				"div",
 				{ class: "surface-bar-lead" },
-				interfaceEmblem(surfaceEmblem(surface), 18),
+				surfaceTile(surface, look, 16, "is-bar"),
 				h("h1", { class: "surface-title" }, surface.title),
 				surface.liveUrl
 					? h(
@@ -490,7 +498,7 @@ export class SurfaceView {
 						h(
 							"div",
 							{ class: "surface-empty" },
-							interfaceEmblem(surfaceEmblem(surface), 44),
+							surfaceTile(surface, store.lookOf(surface), 30, "is-hero"),
 							h("h2", null, surface.title),
 							h(
 								"p",
@@ -514,6 +522,7 @@ export class SurfaceView {
 		const state = store.state;
 		const workspace = state.workspaces[surface.id];
 		const mode = state.mode === "live" ? "live" : "preview";
+		const look = store.lookOf(surface);
 		const appliedChanges =
 			mode === "live"
 				? []
@@ -525,11 +534,21 @@ export class SurfaceView {
 			surface.title,
 			store.companyName,
 			mode,
+			look,
+			workspace?.briefSummary,
 			appliedChanges.map((change) => [change.id, change.title, change.summary]),
 		]);
 		if (key === this.#localSiteShown) return;
 		this.#localSiteShown = key;
-		frame.srcdoc = renderLocalSitePreviewHtml(store.companyName, surface, appliedChanges, mode);
+		frame.srcdoc = renderLocalSitePreviewHtml(
+			store.companyName,
+			surface,
+			appliedChanges,
+			mode,
+			look.kind === "custom" ? "website" : look.kind,
+			workspace?.briefSummary ?? undefined,
+			look.accent,
+		);
 	}
 
 	#clearCompare(): void {
@@ -672,10 +691,12 @@ export class SurfaceView {
 		if (key === this.#chromeShown) return;
 		this.#chromeShown = key;
 		this.#input.disabled = !canStart;
-		this.#input.placeholder = canStart
-			? t("Describe a change — it runs as its own session")
-			: t("Sessions start once Surfaces are enabled for this company");
-		this.#input.setAttribute("aria-label", t("Describe a change"));
+		this.#input.placeholder = !canStart
+			? t("Sessions start once Surfaces are enabled for this company")
+			: surface.archetype === "ops"
+				? opsComposerPlaceholder(store.lookOf(surface).kind)
+				: t("Describe a change — it runs as its own session");
+		this.#input.setAttribute("aria-label", surface.archetype === "ops" ? t("Ask an agent") : t("Describe a change"));
 		this.#send.setAttribute("aria-label", t("Start session"));
 		this.#send.disabled = !canStart;
 		this.#point.hidden = !pointVisible;
@@ -929,7 +950,15 @@ export class SurfaceView {
 						"div",
 						{ class: "surface-toast" },
 						icon("check"),
-						h("span", null, t("Merged “{title}” into Base", { title: undo.label })),
+						h(
+							"span",
+							null,
+							undo.verb === "sent"
+								? t("Sent “{title}”", { title: undo.label })
+								: undo.verb === "done"
+									? t("Done: “{title}”", { title: undo.label })
+									: t("Merged “{title}” into Base", { title: undo.label }),
+						),
 						h(
 							"button",
 							{ type: "button", "data-act": "undo" },

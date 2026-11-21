@@ -23,6 +23,7 @@ import {
 } from "@qorpera/contracts";
 import { phrase, t } from "../ui/preferences.ts";
 import { Store } from "./state.ts";
+import { isOpsKind, type SurfaceKind, type SurfaceLook, surfaceLookOf } from "./surface-kinds.ts";
 import { slugifySurfaceTitle, starterStudioFiles, synthesizeLocalChanges } from "./surface-local-sandbox.ts";
 
 export type SurfacesClient = Pick<
@@ -58,10 +59,13 @@ export type ApprovalOutcome = "open" | "hold" | "history";
 export const SURFACE_UNDO_MS = 5_000;
 const POLL_MS = 4_000;
 
+export type SurfaceUndoVerb = "merged" | "sent" | "done";
+
 export interface SurfaceUndo {
 	readonly id: number;
 	readonly label: string;
 	readonly changeIds: readonly string[];
+	readonly verb: SurfaceUndoVerb;
 }
 
 export interface SurfaceNote {
@@ -79,6 +83,9 @@ export interface CreateSurfaceInput {
 	readonly icon?: string;
 	readonly folderRoot?: string;
 	readonly initialPrompt?: string;
+	readonly kind?: SurfaceKind;
+	readonly accent?: string;
+	readonly description?: string;
 }
 
 export interface SurfacesState {
@@ -90,6 +97,7 @@ export interface SurfacesState {
 	readonly migrationDismissed: boolean;
 	readonly foldedAgentIds: Readonly<Record<string, true>>;
 	readonly localStudioBase: Readonly<Record<string, Readonly<Record<string, string>>>>;
+	readonly surfaceLooks: Readonly<Record<string, SurfaceLook>>;
 	readonly drawer?: { readonly surfaceId: string; readonly sessionId: string };
 	readonly highlight?: { readonly surfaceId: string; readonly sessionId: string };
 	readonly mode: SurfacePreviewMode;
@@ -172,6 +180,8 @@ function localSurface(
 const OPS_SURFACES = [
 	{ slug: "inbox", title: phrase("Inbox"), icon: "mail", page: "mailbox" },
 	{ slug: "money", title: phrase("Money"), icon: "coin", page: "bank" },
+	{ slug: "members", title: phrase("Members"), icon: "members", page: "members" },
+	{ slug: "data", title: phrase("Databases"), icon: "database", page: "data" },
 	{ slug: "files", title: phrase("Files"), icon: "drawers", page: null },
 ] as const;
 
@@ -370,6 +380,7 @@ interface LocalSandboxCacheEntry {
 	readonly migrationDismissed: boolean;
 	readonly foldedAgentIds: Readonly<Record<string, true>>;
 	readonly localStudioBase: Readonly<Record<string, Readonly<Record<string, string>>>>;
+	readonly surfaceLooks: Readonly<Record<string, SurfaceLook>>;
 	readonly studioPatches: Readonly<Record<string, readonly StudioPatchOp[]>>;
 	readonly hiddenChanges: Readonly<Record<string, true>>;
 	readonly localCreatedIds: readonly string[];
@@ -405,6 +416,7 @@ export class SurfacesStore {
 			migrationDismissed: false,
 			foldedAgentIds: {},
 			localStudioBase: {},
+			surfaceLooks: {},
 			mode: "preview",
 			device: "desktop",
 			hiddenChanges: {},
@@ -433,6 +445,7 @@ export class SurfacesStore {
 			migrationDismissed: state.migrationDismissed,
 			foldedAgentIds: state.foldedAgentIds,
 			localStudioBase: state.localStudioBase,
+			surfaceLooks: state.surfaceLooks,
 			studioPatches: state.studioPatches,
 			hiddenChanges: state.hiddenChanges,
 			localCreatedIds: [...this.#localCreatedIds],
@@ -450,6 +463,10 @@ export class SurfacesStore {
 
 	get companyName(): string {
 		return this.#options.companyName?.trim() || "";
+	}
+
+	lookOf(surface: Pick<SurfaceSummary, "id" | "slug" | "icon" | "archetype">): SurfaceLook {
+		return surfaceLookOf(surface, this.state.surfaceLooks);
 	}
 
 	dispose(): void {
@@ -524,6 +541,7 @@ export class SurfacesStore {
 				migrationDismissed: cached.migrationDismissed,
 				foldedAgentIds: cached.foldedAgentIds,
 				localStudioBase: cached.localStudioBase,
+				surfaceLooks: cached.surfaceLooks,
 				studioPatches: cached.studioPatches,
 				hiddenChanges: cached.hiddenChanges,
 				...(error ? { error } : {}),
@@ -671,6 +689,7 @@ export class SurfacesStore {
 		const taken = new Set(this.state.surfaces.map((surface) => surface.slug));
 		const slug = slugifySurfaceTitle(input.slug?.trim() || title, taken);
 		const icon = input.icon ?? (input.archetype === "studio" ? "spark" : "globe");
+		const description = input.description?.trim() || null;
 		const folderRoot =
 			input.archetype === "studio" ? (input.folderRoot?.trim() || slug).replace(/^\/+|\/+$/g, "") : null;
 		const sortOrder = this.state.surfaces.filter((surface) => surface.group === "products").length;
@@ -680,11 +699,20 @@ export class SurfacesStore {
 			previewMode: input.archetype === "studio" ? "studio_overlay" : "static_site",
 		});
 		this.#localCreatedIds.add(created.id);
-		const starterFiles = input.archetype === "studio" ? starterStudioFiles(created, this.companyName) : undefined;
+		const look: SurfaceLook = {
+			kind: input.kind ?? surfaceLookOf(created).kind,
+			...(input.accent ? { accent: input.accent } : {}),
+		};
+		const starterFiles =
+			input.archetype === "studio"
+				? starterStudioFiles(created, this.companyName, look.kind, description ?? undefined)
+				: undefined;
 		this.store.set((state) => ({
 			surfaces: sortSurfaces([...state.surfaces, created]),
-			workspaces: { ...state.workspaces, [created.id]: localWorkspace(created) },
+			workspaces: { ...state.workspaces, [created.id]: { ...localWorkspace(created), briefSummary: description } },
+			surfaceLooks: { ...state.surfaceLooks, [created.id]: look },
 			...(starterFiles ? { localStudioBase: { ...state.localStudioBase, [created.id]: starterFiles } } : {}),
+			...(look.kind === "mobile_app" ? { device: "mobile" as const } : {}),
 			error: undefined,
 		}));
 		this.#options.onNavigateSurface?.(created.slug);
@@ -780,6 +808,7 @@ export class SurfacesStore {
 				prompt,
 				() => `local-change-${++this.#localSeq}`,
 				this.companyName,
+				this.lookOf(workspace.surface).kind,
 			);
 			const now = new Date().toISOString();
 			const ready: SurfaceSession = {
@@ -1146,10 +1175,27 @@ export class SurfacesStore {
 		return restored;
 	}
 
-	#offerUndo(label: string, changeIds: readonly string[]): void {
+	#undoVerb(surface: SurfaceSummary): SurfaceUndoVerb {
+		const kind = this.lookOf(surface).kind;
+		if (kind === "inbox") return "sent";
+		return isOpsKind(kind) || surface.archetype === "ops" ? "done" : "merged";
+	}
+
+	#undoVerbFor(surfaceId: string): SurfaceUndoVerb {
+		const surface = this.state.surfaces.find((item) => item.id === surfaceId);
+		return surface ? this.#undoVerb(surface) : "merged";
+	}
+
+	#doneLine(verb: SurfaceUndoVerb, title: string): string {
+		if (verb === "sent") return t("Sent “{title}”", { title });
+		if (verb === "done") return t("Done: “{title}”", { title });
+		return t("Merged “{title}” into Base", { title });
+	}
+
+	#offerUndo(label: string, changeIds: readonly string[], verb: SurfaceUndoVerb = "merged"): void {
 		if (this.#undoTimer) clearTimeout(this.#undoTimer);
 		const id = ++this.#undoSeq;
-		this.store.set({ undo: { id, label, changeIds } });
+		this.store.set({ undo: { id, label, changeIds, verb } });
 		this.#undoTimer = setTimeout(() => {
 			if (this.state.undo?.id === id) this.store.set({ undo: undefined });
 		}, SURFACE_UNDO_MS);
@@ -1181,7 +1227,7 @@ export class SurfacesStore {
 						id: `local-message-${++this.#localSeq}`,
 						sessionId,
 						authorKind: "system",
-						text: t("Merged “{title}” into Base", { title: target?.title ?? found.session.title }),
+						text: this.#doneLine(this.#undoVerb(found.workspace.surface), target?.title ?? found.session.title),
 						changeId,
 						createdAt: now,
 					},
@@ -1192,7 +1238,7 @@ export class SurfacesStore {
 			this.#commitLocalChangesToBase(found.workspace.surface.id, [changeId]);
 			const outcome = approvalOutcome(updated, drawerOpen);
 			this.#applySession(updated, outcome);
-			this.#offerUndo(target?.title ?? updated.title, [changeId]);
+			this.#offerUndo(target?.title ?? updated.title, [changeId], this.#undoVerb(found.workspace.surface));
 			return outcome;
 		}
 		const updated = await this.#run(`change:${changeId}`, (client) => client.approveSurfaceChange(changeId));
@@ -1200,7 +1246,7 @@ export class SurfacesStore {
 		const outcome = approvalOutcome(updated, drawerOpen);
 		this.#applySession(updated, outcome);
 		const change = updated.changes.find((item) => item.id === changeId);
-		this.#offerUndo(change?.title ?? updated.title, [changeId]);
+		this.#offerUndo(change?.title ?? updated.title, [changeId], this.#undoVerbFor(updated.surfaceId));
 		void this.refreshSurfaces();
 		return outcome;
 	}
@@ -1226,7 +1272,7 @@ export class SurfacesStore {
 			this.#commitLocalChangesToBase(found.workspace.surface.id, openIds);
 			if (this.drawerOpenOn(sessionId)) this.store.set({ drawer: undefined });
 			this.#applySession(updated, "history");
-			if (openIds.length > 0) this.#offerUndo(updated.title, openIds);
+			if (openIds.length > 0) this.#offerUndo(updated.title, openIds, this.#undoVerb(found.workspace.surface));
 			return true;
 		}
 		const updated = await this.#run(`session:${sessionId}`, (client) => client.approveSessionAll(sessionId));
@@ -1242,7 +1288,7 @@ export class SurfacesStore {
 			void this.#options.client?.setSessionChatOpen(sessionId, false).catch(() => undefined);
 		}
 		this.#applySession(updated, "history");
-		this.#offerUndo(updated.title, merged);
+		this.#offerUndo(updated.title, merged, this.#undoVerbFor(updated.surfaceId));
 		void this.refreshSurfaces();
 		return true;
 	}

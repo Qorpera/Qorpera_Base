@@ -15,10 +15,27 @@ type Part = readonly [tag: string, attrs: Readonly<Record<string, string>>];
 
 /** An emblem a file may name, or the Bank page's, the Sites page's or What's new's, which only the web draws
  * (app/bank-page.ts, views/settings-sites.ts, views/whats-new.ts). */
-export type Emblem = InterfaceEmblem | "bank" | "globe" | "spark" | "drawers";
+export type Emblem = InterfaceEmblem | "bank" | "globe" | "spark" | "drawers" | "phone" | "window" | "database";
 
 /** Each emblem on a 48×48 grid: the solid parts take the ink, the cuts the page colour. */
 const EMBLEMS: Readonly<Record<Emblem, readonly Part[]>> = {
+	phone: [
+		["rect", { x: "11.5", y: "3", width: "25", height: "42", rx: "6.5", fill: "solid" }],
+		["path", { d: "M21 9h6", stroke: "cut-thin" }],
+		["circle", { cx: "24", cy: "38", r: "2.4", fill: "cut" }],
+	],
+	window: [
+		["rect", { x: "3", y: "7", width: "42", height: "34", rx: "6", fill: "solid" }],
+		["path", { d: "M3 17h42", stroke: "cut-thin" }],
+		["circle", { cx: "9.5", cy: "12", r: "1.9", fill: "cut" }],
+		["circle", { cx: "15", cy: "12", r: "1.9", fill: "cut" }],
+		["circle", { cx: "20.5", cy: "12", r: "1.9", fill: "cut" }],
+	],
+	database: [
+		["path", { d: "M6 11c0-3.9 8-7 18-7s18 3.1 18 7v26c0 3.9-8 7-18 7S6 40.9 6 37z", fill: "solid" }],
+		["path", { d: "M6.5 12.5c1.6 3.2 9 5.5 17.5 5.5s15.9-2.3 17.5-5.5", stroke: "cut-thin" }],
+		["path", { d: "M6.5 25c1.6 3.2 9 5.5 17.5 5.5s15.9-2.3 17.5-5.5", stroke: "cut-thin" }],
+	],
 	bank: [
 		["path", { d: "M24 3.5 44.5 14.6a1.6 1.6 0 0 1-.8 3H4.3a1.6 1.6 0 0 1-.8-3z", fill: "solid" }],
 		["circle", { cx: "24", cy: "11.6", r: "2.7", fill: "cut" }],

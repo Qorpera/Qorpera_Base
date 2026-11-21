@@ -4,6 +4,7 @@ import { SurfaceDialog } from "../../ui/dialog.ts";
 import { fmtTime, h, icon } from "../../ui/dom.ts";
 import { type Emblem, interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { phrase, t } from "../../ui/preferences.ts";
+import { SURFACE_ACCENTS, SURFACE_CUSTOM_EMBLEMS, type SurfaceKind, surfaceKindTint } from "../surface-kinds.ts";
 import { migrationPending, type SurfacesStore } from "../surfaces-store.ts";
 
 type AgentAction = ApplySurfaceMigrationInput["agentDecisions"][number]["action"];
@@ -255,6 +256,8 @@ export function openAutomationsSheet(store: SurfacesStore): void {
 
 interface SurfacePreset {
 	readonly id: string;
+	readonly slug: string | null;
+	readonly kind: SurfaceKind;
 	readonly title: string;
 	readonly description: string;
 	readonly archetype: "live_build" | "studio";
@@ -265,21 +268,64 @@ interface SurfacePreset {
 const SURFACE_PRESETS: readonly SurfacePreset[] = [
 	{
 		id: "website",
+		slug: "website",
+		kind: "website",
 		title: phrase("Website"),
 		description: phrase("Marketing site or storefront with live preview and publish."),
 		archetype: "live_build",
 		icon: "globe",
 	},
 	{
-		id: "app",
+		id: "web_app",
+		slug: "app",
+		kind: "web_app",
 		title: phrase("Web App"),
 		description: phrase("Interactive product or customer portal built in parallel sessions."),
 		archetype: "live_build",
 		icon: "spark",
 	},
 	{
+		id: "mobile_app",
+		slug: "mobile",
+		kind: "mobile_app",
+		title: phrase("Mobile App"),
+		description: phrase("iOS and Android app, previewed in a real phone frame."),
+		archetype: "live_build",
+		icon: "phone",
+	},
+	{
+		id: "desktop_app",
+		slug: "desktop",
+		kind: "desktop_app",
+		title: phrase("Desktop App"),
+		description: phrase("macOS and Windows app in a native window."),
+		archetype: "live_build",
+		icon: "window",
+	},
+	{
+		id: "database",
+		slug: "database",
+		kind: "database",
+		title: phrase("Database"),
+		description: phrase("Tables, schemas, records, and queries."),
+		archetype: "studio",
+		icon: "database",
+		folderRoot: "database",
+	},
+	{
+		id: "dashboard",
+		slug: "dashboard",
+		kind: "dashboard",
+		title: phrase("Financial Dashboard"),
+		description: phrase("MRR, runway, cashflow, P&L, and KPIs at a glance."),
+		archetype: "live_build",
+		icon: "chart",
+	},
+	{
 		id: "brand",
-		title: phrase("Brand"),
+		slug: "brand",
+		kind: "brand",
+		title: phrase("Brand Studio"),
 		description: phrase("Color palette, typography, and voice guidelines synced to code."),
 		archetype: "studio",
 		icon: "spark",
@@ -287,16 +333,36 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 	},
 	{
 		id: "product",
-		title: phrase("Product"),
+		slug: "product",
+		kind: "product",
+		title: phrase("Product Studio"),
 		description: phrase("Product specs, colorways, BOM, and design briefs in one place."),
 		archetype: "studio",
-		icon: "board",
+		icon: "box",
 		folderRoot: "product",
+	},
+	{
+		id: "custom",
+		slug: null,
+		kind: "custom",
+		title: phrase("Custom Surface"),
+		description: phrase("Anything else: an inventory tracker, investor room, support desk…"),
+		archetype: "live_build",
+		icon: "star",
 	},
 ];
 
+function presetTile(emblem: Emblem, tint: string, size = 20): HTMLElement {
+	const tile = h("span", { class: "surface-tile is-sheet", "aria-hidden": "true" }, interfaceEmblem(emblem, size));
+	tile.style.setProperty("--surface-tint", tint);
+	return tile;
+}
+
 export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string): void {
 	let selected: SurfacePreset = SURFACE_PRESETS[0]!;
+	let customArchetype: "live_build" | "studio" = "live_build";
+	let customAccent = SURFACE_ACCENTS[0]!.hex;
+	let customEmblem: Emblem = SURFACE_CUSTOM_EMBLEMS[0]!;
 	const dialog = new SurfaceDialog(t("New surface"), "surface-sheet surface-create-sheet", () => undefined);
 	const nameInput = h("input", {
 		type: "text",
@@ -314,7 +380,101 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 		rows: 2,
 		placeholder: t("Optional: describe the first change to start right away…"),
 	});
+	const descriptionInput = h("textarea", {
+		class: "surface-create-prompt",
+		rows: 2,
+		placeholder: t("What is this surface for? An agent shapes it from this brief."),
+	});
 	const status = h("p", { class: "surface-sheet-status", role: "status" });
+	const customTile = h("span", { class: "surface-create-custom-tile" });
+	const drawCustomTile = () => customTile.replaceChildren(presetTile(customEmblem, customAccent, 24));
+	const segment = (value: "live_build" | "studio", label: string, hint: string) => {
+		const button = h(
+			"button",
+			{
+				type: "button",
+				class: value === customArchetype ? "is-on" : "",
+				"aria-pressed": String(value === customArchetype),
+				title: hint,
+			},
+			label,
+		);
+		button.addEventListener("click", () => {
+			customArchetype = value;
+			for (const other of archetypeRow.querySelectorAll("button")) {
+				const on = other === button;
+				other.classList.toggle("is-on", on);
+				other.setAttribute("aria-pressed", String(on));
+			}
+		});
+		return button;
+	};
+	const archetypeRow: HTMLElement = h("div", { class: "surface-seg surface-create-seg", role: "group" });
+	archetypeRow.append(
+		segment("live_build", t("Live preview"), t("Built and previewed live, like a website or app.")),
+		segment("studio", t("Studio files"), t("Documents, tables, and specs that sessions edit.")),
+	);
+	archetypeRow.setAttribute("aria-label", t("How it is built"));
+	const swatches = h(
+		"div",
+		{ class: "surface-create-swatches", role: "radiogroup", "aria-label": t("Colour") },
+		SURFACE_ACCENTS.map((accent) => {
+			const swatch = h("button", {
+				type: "button",
+				class: "surface-create-swatch",
+				role: "radio",
+				"aria-checked": String(accent.hex === customAccent),
+				"aria-label": t(accent.name),
+				title: t(accent.name),
+			});
+			swatch.style.setProperty("--swatch", accent.hex);
+			swatch.addEventListener("click", () => {
+				customAccent = accent.hex;
+				for (const other of swatches.querySelectorAll("button"))
+					other.setAttribute("aria-checked", String(other === swatch));
+				drawCustomTile();
+			});
+			return swatch;
+		}),
+	);
+	const emblems = h(
+		"div",
+		{ class: "surface-create-emblems", role: "radiogroup", "aria-label": t("Icon") },
+		SURFACE_CUSTOM_EMBLEMS.map((emblem) => {
+			const choice = h(
+				"button",
+				{
+					type: "button",
+					class: "surface-create-emblem-choice",
+					role: "radio",
+					"aria-checked": String(emblem === customEmblem),
+					"data-emblem": emblem,
+				},
+				interfaceEmblem(emblem, 18),
+			);
+			choice.setAttribute("aria-label", t("Icon"));
+			choice.addEventListener("click", () => {
+				customEmblem = emblem;
+				for (const other of emblems.querySelectorAll("button"))
+					other.setAttribute("aria-checked", String(other === choice));
+				drawCustomTile();
+			});
+			return choice;
+		}),
+	);
+	drawCustomTile();
+	const customPanel = h(
+		"div",
+		{ class: "surface-create-custom", hidden: true },
+		h(
+			"div",
+			{ class: "surface-create-custom-row" },
+			customTile,
+			h("div", { class: "surface-create-custom-picks" }, swatches, emblems),
+		),
+		h("div", { class: "surface-create-field" }, h("span", null, t("How it is built")), archetypeRow),
+		h("label", { class: "surface-create-field" }, h("span", null, t("Brief")), descriptionInput),
+	);
 	const cards = SURFACE_PRESETS.map((preset) => {
 		const card = h(
 			"button",
@@ -324,9 +484,13 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 				"aria-pressed": String(preset.id === selected.id),
 				"data-preset": preset.id,
 			},
-			h("span", { class: "surface-create-emblem" }, interfaceEmblem(preset.icon, 22)),
-			h("strong", null, t(preset.title)),
-			h("small", null, t(preset.description)),
+			presetTile(preset.icon, surfaceKindTint(preset.kind)),
+			h(
+				"span",
+				{ class: "surface-create-card-copy" },
+				h("strong", null, t(preset.title)),
+				h("small", null, t(preset.description)),
+			),
 		);
 		card.addEventListener("click", () => {
 			selected = preset;
@@ -335,7 +499,9 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 				other.classList.toggle("is-selected", on);
 				other.setAttribute("aria-pressed", String(on));
 			}
-			if (!customName) nameInput.value = t(preset.title);
+			customPanel.hidden = preset.kind !== "custom";
+			if (!customName) nameInput.value = preset.kind === "custom" ? "" : t(preset.title);
+			if (preset.kind === "custom") nameInput.focus({ preventScroll: true });
 		});
 		return card;
 	});
@@ -350,6 +516,7 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 			t("Each surface is a shared place your sessions build and update together."),
 		),
 		h("div", { class: "surface-create-grid", role: "group", "aria-label": t("Surface type") }, cards),
+		customPanel,
 		h("label", { class: "surface-create-field" }, h("span", null, t("Name")), nameInput),
 		h("label", { class: "surface-create-field" }, h("span", null, t("First session (optional)")), promptInput),
 		store.isLocalInteractive
@@ -383,12 +550,17 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 			return;
 		}
 		submit.disabled = true;
+		const custom = selected.kind === "custom";
+		const archetype = custom ? customArchetype : selected.archetype;
 		const created = await store.createSurface({
 			title,
-			slug: selected.id,
-			archetype: selected.archetype,
-			icon: selected.icon,
-			folderRoot: selected.folderRoot,
+			...(selected.slug ? { slug: selected.slug } : {}),
+			archetype,
+			icon: custom ? customEmblem : selected.icon,
+			kind: selected.kind,
+			...(custom ? { accent: customAccent } : {}),
+			folderRoot: custom && archetype === "studio" ? undefined : selected.folderRoot,
+			description: custom ? descriptionInput.value.trim() || undefined : undefined,
 			initialPrompt: promptInput.value.trim() || undefined,
 		});
 		if (created) dialog.close(false);

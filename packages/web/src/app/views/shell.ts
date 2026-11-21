@@ -1284,6 +1284,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	parts.appsDrawer.classList.toggle("is-open", appsOpen);
 	// Closed, its icons can't be reached.
 	parts.appsDrawer.inert = !appsOpen;
+	// WHY: Surfaces lists Inbox, Money, Members and Databases in the rail itself; the old icon drawer above the
+	// Co-Founder duplicated them, so a surface-first rail folds it (and its grid button) away visually.
+	container.classList.toggle("has-surface-rail", surfacesOf(company) !== undefined);
 	showCompanyName(parts.companyName, company.profile.profileName);
 	// Text in the field keeps it open, so a query never filters from a folded field.
 	if (parts.input.value) parts.searchOpen = true;
@@ -1931,7 +1934,8 @@ function syncLegacyAgentsFold(
 	fold.migrate.textContent = t("Move");
 	fold.migrate.title = t("Move to Surfaces");
 	fold.body.hidden = !expanded;
-	reconcile(fold.body, expanded ? nodes : []);
+	fold.body.inert = !expanded;
+	reconcile(fold.body, nodes);
 	return fold.el;
 }
 

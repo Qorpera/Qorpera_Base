@@ -1,6 +1,7 @@
-import type { SurfaceChangeUnit, SurfaceSession, SurfaceSessionMessage } from "@qorpera/contracts";
+import type { SurfaceChangeUnit, SurfaceSession, SurfaceSessionMessage, SurfaceSummary } from "@qorpera/contracts";
 import { fmtTime, h, icon } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
+import type { SurfaceLook } from "../surface-kinds.ts";
 import {
 	formatConflictPaths,
 	isOpenChange,
@@ -8,7 +9,76 @@ import {
 	type SurfacesStore,
 	sessionHeld,
 } from "../surfaces-store.ts";
-import { sessionStatus } from "./surface-rail.ts";
+import { CrewFigures } from "./surface-crew.ts";
+import { isActionChange } from "./surface-rail.ts";
+
+function recipientOf(change: SurfaceChangeUnit): string | null {
+	const address = change.affectedPaths.find((path) => path.startsWith("mailto:"))?.slice("mailto:".length);
+	if (!address) return null;
+	const name = address.split("@")[0] ?? address;
+	return name ? name.charAt(0).toLocaleUpperCase() + name.slice(1) : address;
+}
+
+function actionCard(
+	change: SurfaceChangeUnit,
+	look: SurfaceLook,
+	single: boolean,
+	busy: boolean,
+	running: boolean,
+): HTMLElement {
+	const inbox = look.kind === "inbox";
+	const open = isOpenChange(change);
+	const recipient = inbox ? recipientOf(change) : null;
+	const done = change.status === "merged";
+	return h(
+		"article",
+		{
+			class: ["surface-action-card", inbox && "is-email", done && "is-done"].filter(Boolean).join(" "),
+			"data-change": change.id,
+		},
+		h(
+			"div",
+			{ class: "surface-action-head" },
+			h("span", { class: "surface-action-kind" }, inbox ? t("Email draft") : t("Ready for your approval")),
+			done
+				? h("span", { class: "surface-tag is-merged" }, icon("check"), inbox ? t("Sent") : t("Done"))
+				: change.status === "discarded"
+					? h("span", { class: "surface-tag" }, t("Discarded"))
+					: null,
+		),
+		inbox
+			? h(
+					"dl",
+					{ class: "surface-email-meta" },
+					recipient ? [h("dt", null, t("To")), h("dd", null, recipient)] : null,
+					h("dt", null, t("Subject")),
+					h("dd", null, change.title),
+				)
+			: h("strong", { class: "surface-action-title" }, change.title),
+		change.summary ? h("p", { class: "surface-action-body" }, change.summary) : null,
+		open && !running
+			? h(
+					"div",
+					{ class: "surface-action-buttons" },
+					h(
+						"button",
+						{
+							type: "button",
+							class: "btn btn-primary btn-small",
+							"data-act": "approve",
+							"data-change": change.id,
+							disabled: busy,
+						},
+						inbox ? icon("send") : null,
+						inbox ? t("Send") : t("Approve"),
+					),
+					single
+						? h("button", { type: "button", class: "btn btn-small", "data-act": "discard" }, t("Discard"))
+						: null,
+				)
+			: null,
+	);
+}
 
 function messageRow(message: SurfaceSessionMessage): HTMLElement {
 	if (message.authorKind === "system")
@@ -58,6 +128,7 @@ export class SurfaceSessionDrawer {
 	readonly #send = h("button", { type: "submit", class: "surface-send is-ready" }, icon("send"));
 	readonly #form = h("form", { class: "surface-drawer-foot" }, this.#input, this.#send);
 	readonly #store: SurfacesStore;
+	readonly #crew = new CrewFigures();
 	#shown = "";
 	#sessionId = "";
 	#messages = 0;
@@ -95,14 +166,16 @@ export class SurfaceSessionDrawer {
 			return;
 		}
 		const notes = state.notes.filter((note) => note.sessionId === session.id);
-		const key = JSON.stringify([session, notes, state.hiddenChanges, state.busy]);
+		const surface = state.surfaces.find((item) => item.id === session.surfaceId);
+		const look = surface ? this.#store.lookOf(surface) : undefined;
+		const key = JSON.stringify([session, notes, state.hiddenChanges, state.busy, look]);
 		if (key === this.#shown) return;
 		this.#shown = key;
 		this.#input.placeholder = t("Steer this session…");
 		this.#input.setAttribute("aria-label", t("Steer this session…"));
 		this.#send.setAttribute("aria-label", t("Send"));
 		this.#head.replaceChildren(
-			sessionStatus(session),
+			this.#crew.take(session, 40, "is-large"),
 			h(
 				"div",
 				{ class: "surface-drawer-title" },
@@ -121,7 +194,8 @@ export class SurfaceSessionDrawer {
 				icon("close"),
 			),
 		);
-		this.#body.replaceChildren(...this.#content(session, notes));
+		this.#crew.settle();
+		this.#body.replaceChildren(...this.#content(session, notes, surface, look));
 		const count = (session.messages.length || (session.prompt ? 1 : 0)) + notes.length;
 		if (session.id !== this.#sessionId || count !== this.#messages) {
 			this.#sessionId = session.id;
@@ -130,16 +204,28 @@ export class SurfaceSessionDrawer {
 		}
 	}
 
-	#content(session: SurfaceSession, notes: readonly { text: string }[]): HTMLElement[] {
+	#content(
+		session: SurfaceSession,
+		notes: readonly { text: string }[],
+		surface: SurfaceSummary | undefined,
+		look: SurfaceLook | undefined,
+	): HTMLElement[] {
 		const store = this.#store;
 		const parts: HTMLElement[] = [];
+		const listed = session.changes.filter((change) => change.status !== "discarded");
+		const actionSession = Boolean(
+			surface &&
+				(surface.archetype === "ops" ||
+					(listed.length > 0 && listed.every((change) => isActionChange(change, surface)))),
+		);
 		if (isRunningSession(session) && session.state !== "needs_input")
 			parts.push(
 				h(
 					"p",
 					{ class: "surface-drawer-working" },
-					h("span", { class: "surface-state is-running" }),
-					t("Working — changes appear in Preview when they are ready."),
+					actionSession
+						? t("On it — you'll review everything here before anything goes out.")
+						: t("Working — changes appear in Preview when they are ready."),
 				),
 			);
 		if (sessionHeld(session))
@@ -148,8 +234,14 @@ export class SurfaceSessionDrawer {
 					"div",
 					{ class: "surface-done" },
 					h("span", { class: "surface-done-mark" }, icon("check")),
-					h("strong", null, t("All changes merged")),
-					h("p", null, t("They are in Base. Publish when you're ready.")),
+					h("strong", null, actionSession ? t("All done") : t("All changes merged")),
+					h(
+						"p",
+						null,
+						actionSession
+							? t("Nothing else waits on you here.")
+							: t("They are in Base. Publish when you're ready."),
+					),
 					h("button", { type: "button", class: "btn btn-primary btn-small", "data-act": "close" }, t("Close")),
 				),
 			);
@@ -172,8 +264,34 @@ export class SurfaceSessionDrawer {
 					),
 				),
 			);
-		const listed = session.changes.filter((change) => change.status !== "discarded");
-		if (listed.length && !sessionHeld(session)) {
+		if (actionSession && look && listed.length && !sessionHeld(session)) {
+			const openActions = listed.filter(isOpenChange);
+			for (const change of listed)
+				parts.push(
+					actionCard(
+						change,
+						look,
+						openActions.length <= 1,
+						Boolean(store.state.busy[`change:${change.id}`]),
+						isRunningSession(session),
+					),
+				);
+			if (openActions.length > 1 && !isRunningSession(session))
+				parts.push(
+					h(
+						"div",
+						{ class: "surface-drawer-actions" },
+						h(
+							"button",
+							{ type: "button", class: "btn btn-primary btn-small", "data-act": "approve-all" },
+							look.kind === "inbox"
+								? t("Send all {count}", { count: openActions.length })
+								: t("Approve all {count}", { count: openActions.length }),
+						),
+						h("button", { type: "button", class: "btn btn-small", "data-act": "discard" }, t("Discard")),
+					),
+				);
+		} else if (listed.length && !sessionHeld(session)) {
 			parts.push(
 				h(
 					"p",

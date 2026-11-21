@@ -1,9 +1,16 @@
 import { INTERFACE_EMBLEMS } from "@qorpera/cloud-client/interfaces";
-import type { SurfaceExplorationSet, SurfaceSession, SurfaceSummary } from "@qorpera/contracts";
+import type { SurfaceChangeUnit, SurfaceExplorationSet, SurfaceSession, SurfaceSummary } from "@qorpera/contracts";
 import { h, icon } from "../../ui/dom.ts";
 import { type Emblem, interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { t } from "../../ui/preferences.ts";
 import { surfaceHash } from "../router.ts";
+import {
+	type SurfaceLook,
+	surfaceKindSubtitle,
+	surfaceLookOf,
+	surfaceTileEmblem,
+	surfaceTint,
+} from "../surface-kinds.ts";
 import {
 	formatConflictPaths,
 	hasConflictedChange,
@@ -14,12 +21,66 @@ import {
 	type SurfacesStore,
 	sessionHeld,
 } from "../surfaces-store.ts";
+import { CrewFigures, crewWave } from "./surface-crew.ts";
 
-const EMBLEMS: ReadonlySet<string> = new Set<string>([...INTERFACE_EMBLEMS, "bank", "globe", "spark", "drawers"]);
+const EMBLEMS: ReadonlySet<string> = new Set<string>([
+	...INTERFACE_EMBLEMS,
+	"bank",
+	"globe",
+	"spark",
+	"drawers",
+	"phone",
+	"window",
+	"database",
+]);
 
 export function surfaceEmblem(surface: Pick<SurfaceSummary, "icon" | "archetype">): Emblem {
 	if (EMBLEMS.has(surface.icon)) return surface.icon as Emblem;
 	return surface.archetype === "live_build" ? "globe" : surface.archetype === "ops" ? "board" : "page";
+}
+
+export function surfaceTile(
+	surface: Pick<SurfaceSummary, "icon">,
+	look: SurfaceLook,
+	emblemSize = 22,
+	className = "",
+): HTMLElement {
+	const tile = h(
+		"span",
+		{ class: ["surface-tile", className].filter(Boolean).join(" "), "aria-hidden": "true" },
+		interfaceEmblem(surfaceTileEmblem(surface, look), emblemSize),
+	);
+	tile.style.setProperty("--surface-tint", surfaceTint(look));
+	return tile;
+}
+
+export function isActionChange(
+	change: Pick<SurfaceChangeUnit, "kind">,
+	surface: Pick<SurfaceSummary, "archetype">,
+): boolean {
+	return change.kind === "ops_action" || surface.archetype === "ops";
+}
+
+function actionReadyLine(look: SurfaceLook, count: number): string {
+	if (count > 1) return t("{count} actions ready", { count });
+	return look.kind === "inbox" ? t("Draft ready") : t("Action ready");
+}
+
+function sessionLine(session: SurfaceSession, surface: SurfaceSummary, look: SurfaceLook): HTMLElement | string {
+	if (session.state === "needs_input") return t("Needs you");
+	if (isRunningSession(session)) return crewWave();
+	if (session.state === "failed") return t("Failed");
+	if (hasConflictedChange(session)) return t("Conflict");
+	const live = session.changes.filter((change) => change.status !== "discarded");
+	const actions = live.length > 0 && live.every((change) => isActionChange(change, surface));
+	if (sessionHeld(session)) return actions ? t("All done") : t("All merged");
+	const open = live.filter(isOpenChange).length;
+	if (actions) return open ? actionReadyLine(look, open) : t("Ready");
+	const merged = live.filter((change) => change.status === "merged").length;
+	if (merged > 0) return t("{merged} of {total} merged", { merged, total: live.length });
+	if (open === 1) return t("1 change ready");
+	if (open > 1) return t("{count} changes ready", { count: open });
+	return t("Ready");
 }
 
 export function sessionStatus(session: SurfaceSession): HTMLElement {
@@ -81,14 +142,40 @@ function reconcileButton(surfaceId: string, changeId: string, title: string, bus
 	);
 }
 
-function sessionRow(store: SurfacesStore, state: SurfacesState, session: SurfaceSession): HTMLElement {
+function sendButton(sessionId: string, change: SurfaceChangeUnit, look: SurfaceLook): HTMLElement {
+	const inbox = look.kind === "inbox";
+	return h(
+		"button",
+		{
+			type: "button",
+			class: "surface-approve is-action",
+			"aria-label": inbox
+				? t("Send {title}", { title: change.title })
+				: t("Approve {title}", { title: change.title }),
+			title: inbox ? t("Send") : t("Approve"),
+			"data-act": "approve",
+			"data-session": sessionId,
+			"data-change": change.id,
+		},
+		icon(inbox ? "send" : "check"),
+	);
+}
+
+function sessionRow(
+	store: SurfacesStore,
+	state: SurfacesState,
+	session: SurfaceSession,
+	surface: SurfaceSummary,
+	look: SurfaceLook,
+	crew: CrewFigures,
+): HTMLElement {
 	const running = isRunningSession(session);
 	const open = !state.collapsed[session.id];
-	const held = sessionHeld(session);
 	const conflicted = !running && hasConflictedChange(session);
 	const busyReconcile = Boolean(state.busy[`reconcile:${session.surfaceId}`]);
 	const openChanges = session.changes.filter(isOpenChange);
-	const merged = session.changes.filter((change) => change.status === "merged").length;
+	const live = session.changes.filter((change) => change.status !== "discarded");
+	const actions = live.length > 0 && live.every((change) => isActionChange(change, surface));
 	const main = h(
 		"button",
 		{
@@ -98,12 +185,19 @@ function sessionRow(store: SurfacesStore, state: SurfacesState, session: Surface
 			"data-surface": session.surfaceId,
 			"data-session": session.id,
 		},
-		sessionStatus(session),
-		h("span", { class: "surface-session-title" }, session.title),
+		crew.take(session, 32),
+		h(
+			"span",
+			{ class: "surface-session-text" },
+			h("span", { class: "surface-session-title" }, session.title),
+			h("span", { class: "surface-session-status" }, sessionLine(session, surface, look)),
+		),
 	);
 	const head = h("div", { class: "surface-session-head" }, main);
-	const single = session.changes.length === 1 && openChanges.length === 1 && !running;
-	if (single) {
+	const single = live.length === 1 && openChanges.length === 1 && !running;
+	if (single && actions) {
+		head.append(sendButton(session.id, openChanges[0]!, look));
+	} else if (single) {
 		const change = openChanges[0]!;
 		head.append(
 			change.status === "conflicted"
@@ -112,16 +206,6 @@ function sessionRow(store: SurfacesStore, state: SurfacesState, session: Surface
 			changeSwitch(session.surfaceId, change.id, store.isChangeShown(change.id), change.title),
 		);
 	} else {
-		const meta = running
-			? t("Working")
-			: conflicted
-				? t("Conflict")
-				: held
-					? t("All merged")
-					: session.changes.length
-						? `${merged}/${session.changes.length}`
-						: "";
-		if (meta) main.append(h("span", { class: "surface-session-meta" }, meta));
 		if (!running && !conflicted && openChanges.length > 1)
 			head.append(
 				h(
@@ -137,7 +221,7 @@ function sessionRow(store: SurfacesStore, state: SurfacesState, session: Surface
 					icon("check"),
 				),
 			);
-		if (session.changes.length > 1)
+		if (live.length > 1)
 			head.append(
 				h(
 					"button",
@@ -162,6 +246,7 @@ function sessionRow(store: SurfacesStore, state: SurfacesState, session: Surface
 				"surface-session",
 				running && "is-running",
 				conflicted && "is-conflicted",
+				actions && "is-action",
 				open && "is-open",
 				state.drawer?.sessionId === session.id && "is-selected",
 				state.highlight?.sessionId === session.id && "is-highlighted",
@@ -175,59 +260,65 @@ function sessionRow(store: SurfacesStore, state: SurfacesState, session: Surface
 		const paths = openChanges[0].conflictPaths;
 		row.append(h("p", { class: "surface-conflict-paths", title: paths.join(", ") }, formatConflictPaths(paths)));
 	}
-	if (!single && open && session.changes.length > 1)
+	if (!single && open && live.length > 1)
 		row.append(
 			h(
 				"div",
 				{ class: "surface-changes" },
-				session.changes
-					.filter((change) => change.status !== "discarded")
-					.map((change) => {
-						if (change.status === "merged")
-							return h(
-								"div",
-								{ class: "surface-change is-merged" },
-								h("span", { class: "surface-change-mark" }, icon("check")),
-								h("span", { class: "surface-change-title" }, change.title),
-								h("span", { class: "surface-change-merged" }, t("Merged")),
-							);
-						const shown = store.isChangeShown(change.id);
-						if (change.status === "conflicted") {
-							const paths = change.conflictPaths?.length ? formatConflictPaths(change.conflictPaths) : "";
-							return h(
-								"div",
-								{ class: `surface-change is-conflicted${shown ? "" : " is-hidden"}` },
-								changeSwitch(session.surfaceId, change.id, shown, change.title),
-								h(
-									"div",
-									{ class: "surface-change-copy" },
-									h(
-										"span",
-										{
-											class: "surface-change-title",
-											title: change.conflictPaths?.join(", ") || change.summary,
-										},
-										change.title,
-									),
-									paths
-										? h(
-												"small",
-												{ class: "surface-change-paths", title: change.conflictPaths?.join(", ") },
-												paths,
-											)
-										: null,
-								),
-								running ? null : reconcileButton(session.surfaceId, change.id, change.title, busyReconcile),
-							);
-						}
+				live.map((change) => {
+					if (change.status === "merged")
 						return h(
 							"div",
-							{ class: `surface-change${shown ? "" : " is-hidden"}` },
-							changeSwitch(session.surfaceId, change.id, shown, change.title),
-							h("span", { class: "surface-change-title", title: change.summary }, change.title),
-							running ? null : approveButton(session.id, change.id, change.title),
+							{ class: "surface-change is-merged" },
+							h("span", { class: "surface-change-mark" }, icon("check")),
+							h("span", { class: "surface-change-title" }, change.title),
+							h("span", { class: "surface-change-merged" }, actions ? t("Done") : t("Merged")),
 						);
-					}),
+					if (isActionChange(change, surface))
+						return h(
+							"div",
+							{ class: "surface-change is-action" },
+							h("span", { class: "surface-change-bullet", "aria-hidden": "true" }),
+							h("span", { class: "surface-change-title", title: change.summary }, change.title),
+							running ? null : sendButton(session.id, change, look),
+						);
+					const shown = store.isChangeShown(change.id);
+					if (change.status === "conflicted") {
+						const paths = change.conflictPaths?.length ? formatConflictPaths(change.conflictPaths) : "";
+						return h(
+							"div",
+							{ class: `surface-change is-conflicted${shown ? "" : " is-hidden"}` },
+							changeSwitch(session.surfaceId, change.id, shown, change.title),
+							h(
+								"div",
+								{ class: "surface-change-copy" },
+								h(
+									"span",
+									{
+										class: "surface-change-title",
+										title: change.conflictPaths?.join(", ") || change.summary,
+									},
+									change.title,
+								),
+								paths
+									? h(
+											"small",
+											{ class: "surface-change-paths", title: change.conflictPaths?.join(", ") },
+											paths,
+										)
+									: null,
+							),
+							running ? null : reconcileButton(session.surfaceId, change.id, change.title, busyReconcile),
+						);
+					}
+					return h(
+						"div",
+						{ class: `surface-change${shown ? "" : " is-hidden"}` },
+						changeSwitch(session.surfaceId, change.id, shown, change.title),
+						h("span", { class: "surface-change-title", title: change.summary }, change.title),
+						running ? null : approveButton(session.id, change.id, change.title),
+					);
+				}),
 			),
 		);
 	return row;
@@ -345,13 +436,14 @@ function historyRows(state: SurfacesState, sessions: readonly SurfaceSession[]):
 	];
 }
 
-function treeFor(store: SurfacesStore, state: SurfacesState, surface: SurfaceSummary): HTMLElement {
+function treeFor(store: SurfacesStore, state: SurfacesState, surface: SurfaceSummary, crew: CrewFigures): HTMLElement {
 	const workspace = state.workspaces[surface.id];
 	const explorations = openExplorations(workspace);
 	const sessions = workspace?.activeSessions ?? [];
 	const plain = sessions.filter((session) => !session.explorationId);
+	const look = store.lookOf(surface);
 	const children: HTMLElement[] = [
-		...plain.map((session) => sessionRow(store, state, session)),
+		...plain.map((session) => sessionRow(store, state, session, surface, look, crew)),
 		...explorations.map((exploration) =>
 			explorationRow(
 				store,
@@ -366,41 +458,69 @@ function treeFor(store: SurfacesStore, state: SurfacesState, surface: SurfaceSum
 				"p",
 				{ class: "surface-tree-empty" },
 				store.canStartSessions(surface)
-					? t("No open sessions. Describe a change below.")
+					? surface.archetype === "ops"
+						? t("Nothing waiting. Ask an agent below.")
+						: t("No open sessions. Describe a change below.")
 					: t("Nothing in progress."),
 			),
 		);
 	children.push(...historyRows(state, workspace?.recentHistory ?? []));
-	return h("div", { class: "surface-tree" }, children);
+	const tree = h("div", { class: "surface-tree" }, children);
+	tree.style.setProperty("--surface-tint", surfaceTint(look));
+	return tree;
 }
 
-function surfaceRow(surface: SurfaceSummary, profileId: string, active: boolean): HTMLElement {
+function hostOf(url: string): string {
+	try {
+		return new URL(url).host;
+	} catch {
+		return url;
+	}
+}
+
+function surfaceSubtitle(surface: SurfaceSummary, look: SurfaceLook): string {
+	if (surface.needsAttentionCount > 0) return t("Needs you");
+	if (surface.activeSessionCount === 1) return t("1 session active");
+	if (surface.activeSessionCount > 1) return t("{count} sessions active", { count: surface.activeSessionCount });
+	if (surface.archetype === "live_build" && surface.liveUrl)
+		return t("Live · {host}", { host: hostOf(surface.liveUrl) });
+	return surfaceKindSubtitle(look.kind);
+}
+
+function surfaceRow(surface: SurfaceSummary, look: SurfaceLook, profileId: string, active: boolean): HTMLElement {
 	const meta: HTMLElement[] = [];
 	if (surface.runningSessionCount > 0)
-		meta.push(h("span", { class: "surface-state is-running", "aria-label": t("Working") }));
-	if (surface.activeSessionCount > 0) meta.push(h("span", null, String(surface.activeSessionCount)));
+		meta.push(h("span", { class: "rail-surface-working", "aria-label": t("Working") }));
 	if (surface.needsAttentionCount > 0)
 		meta.push(h("span", { class: "surface-attention", "aria-label": t("Needs your attention") }));
-	return h(
+	const row = h(
 		"a",
 		{
 			class: `rail-surface${active ? " active" : ""}`,
 			href: surfaceHash(profileId, surface.slug),
 			draggable: "false",
 			"data-surface-slug": surface.slug,
+			"data-surface-kind": look.kind,
 			...(active ? { "aria-current": "page" } : {}),
 		},
-		interfaceEmblem(surfaceEmblem(surface), 19),
-		h("span", { class: "rail-surface-name" }, surface.title),
+		surfaceTile(surface, look),
+		h(
+			"span",
+			{ class: "rail-surface-text" },
+			h("span", { class: "rail-surface-name" }, surface.title),
+			h("span", { class: "rail-surface-sub" }, surfaceSubtitle(surface, look)),
+		),
 		meta.length ? h("span", { class: "rail-surface-meta" }, meta) : null,
 	);
+	row.style.setProperty("--surface-tint", surfaceTint(look));
+	return row;
 }
 
-function proposedSurfaceRow(surface: SurfaceSummary, busy: boolean): HTMLElement {
+function proposedSurfaceRow(surface: SurfaceSummary, look: SurfaceLook, busy: boolean): HTMLElement {
 	return h(
 		"div",
 		{ class: "rail-surface-proposed", "data-proposed-surface": surface.slug },
-		interfaceEmblem(surfaceEmblem(surface), 18),
+		surfaceTile(surface, look, 18, "is-small"),
 		h("span", { class: "rail-surface-name" }, surface.title),
 		h("span", { class: "rail-proposed-tag" }, t("Proposed")),
 		h(
@@ -441,6 +561,7 @@ export class SurfaceRail {
 	readonly #store: SurfacesStore;
 	readonly #profileId: string;
 	readonly #onAddSurface: (() => void) | undefined;
+	readonly #crew = new CrewFigures();
 	#shown = "";
 	#active: string | undefined;
 
@@ -467,6 +588,7 @@ export class SurfaceRail {
 			state.drawer,
 			state.highlight,
 			state.busy,
+			state.surfaceLooks,
 		]);
 		if (key === this.#shown) return;
 		this.#shown = key;
@@ -519,11 +641,15 @@ export class SurfaceRail {
 					),
 					activeSurfaces.flatMap((surface) => {
 						const active = surface.slug === activeSlug;
-						const row = surfaceRow(surface, this.#profileId, active);
-						return active ? [row, treeFor(this.#store, state, surface)] : [row];
+						const row = surfaceRow(surface, surfaceLookOf(surface, state.surfaceLooks), this.#profileId, active);
+						return active ? [row, treeFor(this.#store, state, surface, this.#crew)] : [row];
 					}),
 					proposedSurfaces.map((surface) =>
-						proposedSurfaceRow(surface, Boolean(state.busy[`surface:${surface.id}`])),
+						proposedSurfaceRow(
+							surface,
+							surfaceLookOf(surface, state.surfaceLooks),
+							Boolean(state.busy[`surface:${surface.id}`]),
+						),
 					),
 					group === "products" &&
 						!activeSurfaces.length &&
@@ -546,6 +672,7 @@ export class SurfaceRail {
 		}
 		this.el.replaceChildren(...groups);
 		this.el.hidden = groups.length === 0;
+		this.#crew.settle();
 	}
 
 	#click(event: MouseEvent): void {
