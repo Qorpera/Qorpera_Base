@@ -585,6 +585,7 @@ export class EphemeralCloudRunnerWorker {
 								Math.max(1, Math.min(30_000, leaseDeadline - this.#now())),
 							);
 						} catch (error) {
+							// WHY: Preserve a primary execution failure over release failure; an unreleased native lease expires on its own.
 							releaseError = error;
 							hasReleaseError = true;
 						}

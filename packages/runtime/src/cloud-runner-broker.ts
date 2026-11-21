@@ -984,13 +984,14 @@ export class CloudRunnerJobBroker {
 
 	#releaseAuthority(signal?: AbortSignal): CloudRunnerBrokerAuthority {
 		const credentials = this.#options.credentials();
+		const effectiveSignal = signal ?? this.#options.signal;
 		const authority = {
 			runnerId: this.#options.runnerId,
 			jobId: this.#options.job.jobId,
 			sessionToken: credentials.sessionToken,
 			leaseToken: credentials.leaseToken,
-			// WHY: Execution revocation aborts #options.signal before finally runs; use the release signal instead.
-			...(signal ? { signal } : {}),
+			// WHY: Execution revocation aborts #options.signal before finally runs; prefer the caller's fresh release signal.
+			...(effectiveSignal ? { signal: effectiveSignal } : {}),
 		};
 		requiredAuthority(authority);
 		return authority;
