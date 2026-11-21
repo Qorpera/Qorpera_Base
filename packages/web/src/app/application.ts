@@ -28,7 +28,7 @@ import { agentFigure, nativeColorOf } from "../ui/avatar.ts";
 import { watchBrowserBar } from "../ui/browser-bar.ts";
 import { companyLogos, setCompanyLogos } from "../ui/company-logos.ts";
 import { companyInSentence, companyNameText } from "../ui/company-name.ts";
-import { button, h, notice, replace } from "../ui/dom.ts";
+import { button, h, icon, notice, replace } from "../ui/dom.ts";
 import { type InteractionCardApp, refreshAppPreviews } from "../ui/interaction-card.ts";
 import { interfaceEmblem } from "../ui/interface-emblem.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
@@ -177,10 +177,34 @@ export function mountApplication(
 		"aria-label": t("Close company navigation"),
 		onclick: () => setNavigationOpen(false),
 	});
+	const reopenRailBtn = h(
+		"button",
+		{
+			type: "button",
+			class: "icon-button rail-reopen-btn",
+			"aria-label": t("Show sidebar"),
+			title: t("Show sidebar"),
+			"aria-controls": "company-navigation",
+			"aria-expanded": "false",
+			hidden: true,
+			onclick: () => {
+				railLayout.setHidden(false);
+				syncRailReopen();
+				render();
+			},
+		},
+		icon("navigation"),
+	);
 	// A deploy since this tab loaded: one quiet line offers the new build (app/new-version.ts).
 	const versionLine = h("div", { class: "app-version-notice", hidden: true });
 	const versionWatch = new AbortController();
-	const frame = h("div", { class: "frame" }, topbar, h("div", { class: "body" }, backdrop, rail, main), versionLine);
+	const frame = h(
+		"div",
+		{ class: "frame" },
+		topbar,
+		h("div", { class: "body" }, backdrop, rail, reopenRailBtn, main),
+		versionLine,
+	);
 	watchNewVersion(
 		runningBuildFiles(),
 		() => {
@@ -195,6 +219,13 @@ export function mountApplication(
 	);
 	const railLayout = new RailLayout(frame, rail);
 	rail.after(railLayout.el);
+	function syncRailReopen(): void {
+		const show = !rail.hidden && railLayout.hidden && !isPhoneLayout();
+		reopenRailBtn.hidden = !show;
+		reopenRailBtn.setAttribute("aria-expanded", String(!railLayout.hidden));
+	}
+	window.addEventListener("qorpera-rail-resize", syncRailReopen, { signal: versionWatch.signal });
+	syncRailReopen();
 	applyLanguage();
 	// Interface text and times are read when they are drawn: a new language or
 	// time zone redraws the screens in place (see redrawScreens).
@@ -649,7 +680,17 @@ export function mountApplication(
 			openFriends,
 			invitations: hub.store.get().invitations.length,
 			...(route.name === "company" && route.section !== "meet" && company && !company.store.get().accessLost
-				? { navigation: { open: navigationOpen, toggle: () => setNavigationOpen(!navigationOpen) } }
+				? {
+						navigation: { open: navigationOpen, toggle: () => setNavigationOpen(!navigationOpen) },
+						sidebar: {
+							hidden: railLayout.hidden,
+							toggle: () => {
+								railLayout.toggleHidden();
+								syncRailReopen();
+								render();
+							},
+						},
+					}
 				: {}),
 		};
 	}
@@ -663,6 +704,8 @@ export function mountApplication(
 		shownLocale = presentationLocale();
 		rail.setAttribute("aria-label", t("Company navigation"));
 		backdrop.setAttribute("aria-label", t("Close company navigation"));
+		reopenRailBtn.setAttribute("aria-label", t("Show sidebar"));
+		reopenRailBtn.title = t("Show sidebar");
 		railLayout.relabel();
 		const tab = settings?.tab;
 		closeSettings(false);
@@ -1101,6 +1144,7 @@ export function mountApplication(
 		if (route.name !== "company") {
 			teardownCompany();
 			rail.hidden = true;
+			syncRailReopen();
 			renderTopbar(topbar, shellContext(authState.user, route), undefined);
 			if (route.name !== "found") teardownFounding();
 			const viewer: Viewer | undefined =
@@ -1182,6 +1226,7 @@ export function mountApplication(
 			topbar.classList.add("topbar-company");
 			replace(topbar);
 			rail.hidden = route.section === "meet" || route.section === "concepts";
+			syncRailReopen();
 			if (!rail.hidden) replace(rail, ...railSkeleton());
 			if (
 				route.section === "home" ||
@@ -1202,6 +1247,7 @@ export function mountApplication(
 			syncNavigation();
 			frame.classList.remove("navigation-open");
 			rail.hidden = true;
+			syncRailReopen();
 			renderTopbar(topbar, shellContext(authState.user, route), undefined);
 			replace(
 				main,
@@ -1511,6 +1557,7 @@ export function mountApplication(
 		// The Concepts viewer is full screen: its own side panel leads back.
 		rail.hidden =
 			route.section === "meet" || route.section === "concepts" || controller.store.get().accessLost === true;
+		syncRailReopen();
 		const context = shellContext(authState.user, route);
 		renderTopbar(topbar, context, rail.hidden ? undefined : controller);
 		// The card's Computer opens in the agent's own chat: here when it is on screen, else once it opens.

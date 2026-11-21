@@ -4,7 +4,7 @@ import { h, icon } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { t } from "../../ui/preferences.ts";
-import { formatConflictPaths, isOpenChange, type SurfacesStore } from "../surfaces-store.ts";
+import { formatConflictPaths, isOpenChange, isPreviewComparing, type SurfacesStore } from "../surfaces-store.ts";
 import { surfaceEmblem } from "./surface-rail.ts";
 
 export interface SurfaceReportOptions {
@@ -592,6 +592,7 @@ export class SurfaceReportView {
 		const key = JSON.stringify([
 			this.#loading,
 			state.mode,
+			state.previewCompare,
 			this.#activeSlug,
 			this.#lens,
 			baseFiles,
@@ -734,7 +735,7 @@ export class SurfaceReportView {
 			);
 		}
 
-		if (state.mode === "compare") {
+		if (isPreviewComparing(state)) {
 			children.push(this.#renderCompare(reports));
 			this.el.classList.toggle("is-public-lens", this.#lens === "public");
 			this.el.replaceChildren(...children);

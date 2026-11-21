@@ -99,6 +99,7 @@ export interface ShellContext {
 	/** Friends, a window of its own beside the account (friends-window.ts). */
 	openFriends: () => void;
 	navigation?: { open: boolean; toggle: () => void };
+	sidebar?: { hidden: boolean; toggle: () => void };
 	/** What the rail's agent and group chat menus can do beyond the sidebar itself. */
 	agentActions?: Pick<WorkspaceActions, "updateAgent" | "deleteAgent" | "updateGroup" | "deleteGroup">;
 	/** A right-click on an agent opens its card beside the row; the rail adds Hide and Delete. */
@@ -412,6 +413,7 @@ interface RailParts {
 	readonly appsDrag: AppGridDrag;
 	readonly toolbar: HTMLElement;
 	readonly close: HTMLButtonElement;
+	readonly sidebarToggle: HTMLButtonElement;
 	readonly add: HTMLAnchorElement;
 	/** The search folds out of its button over the name, and folds back on Esc or its close button. */
 	readonly search: HTMLElement;
@@ -642,6 +644,17 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		const searchClose = h("button", { type: "button", class: "rail-search-close" }, icon("close"));
 		const search = h("div", { class: "rail-search" }, searchToggle, input, searchClose);
 		const close = h("button", { type: "button", class: "icon-button rail-mobile-close" }, icon("close"));
+		const sidebarToggle = h(
+			"button",
+			{
+				type: "button",
+				class: "icon-button rail-sidebar-toggle",
+				"aria-controls": "company-navigation",
+				"aria-expanded": "true",
+				hidden: true,
+			},
+			icon("navigation"),
+		);
 		const add = h("a", { class: "rail-add icon-button", href: `#/c/${company.profile.profileId}/new` }, icon("plus"));
 		const connection = h("div", { class: "rail-connection", role: "status", hidden: true });
 		const list = h("div", { class: "rail-scroll", id: "rail-list-agents" });
@@ -692,8 +705,9 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			appKeysShown: undefined,
 			appFolding: undefined,
 			appsDrag: undefined as unknown as AppGridDrag,
-			toolbar: h("div", { class: "rail-toolbar" }, close, companyButton, apps, search, add),
+			toolbar: h("div", { class: "rail-toolbar" }, close, companyButton, apps, search, add, sidebarToggle),
 			close,
+			sidebarToggle,
 			add,
 			search,
 			searchToggle,
@@ -997,6 +1011,8 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		parts.searchClose.setAttribute("aria-label", t("Close search"));
 		parts.searchClose.title = t("Close search");
 		parts.close.setAttribute("aria-label", t("Close company navigation"));
+		parts.sidebarToggle.setAttribute("aria-label", t("Hide sidebar"));
+		parts.sidebarToggle.title = t("Hide sidebar");
 		parts.add.setAttribute("aria-label", t("New conversation or agent"));
 		parts.add.title = t("New conversation or agent");
 		parts.loading = undefined;
@@ -1374,6 +1390,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const matches = (text: string) => !railQuery || text.toLowerCase().includes(railQuery);
 	parts.close.hidden = !context.navigation;
 	parts.close.onclick = context.navigation?.toggle ?? null;
+	parts.sidebarToggle.hidden = !context.sidebar;
+	parts.sidebarToggle.setAttribute("aria-expanded", String(!context.sidebar?.hidden));
+	parts.sidebarToggle.onclick = context.sidebar?.toggle ?? null;
 	parts.add.hidden = state.team?.capabilities.write === false;
 	if (section === "new") parts.add.setAttribute("aria-current", "page");
 	else parts.add.removeAttribute("aria-current");

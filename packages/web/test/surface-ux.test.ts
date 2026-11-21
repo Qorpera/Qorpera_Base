@@ -7,6 +7,7 @@ import { CrewFigures, crewLook, sessionCrew } from "../src/app/views/surface-cre
 import { openCreateSurfaceSheet, openScheduleAgentSheet } from "../src/app/views/surface-migration-sheet.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { SurfaceView } from "../src/app/views/surface-view.ts";
+import { RailLayout } from "../src/ui/rail-layout.ts";
 import {
 	COMPANY,
 	change,
@@ -388,7 +389,32 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		store.dispose();
 	});
 
-	it("orchestrates Website, Phone App, Product, and Financials with header agent crew, pushed panel, and All-3 Compare", async () => {
+	it("lets the left sidepanel close completely and reopen without disturbing stored width", () => {
+		vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+		const aside = document.createElement("aside");
+		aside.className = "rail";
+		const frame = document.createElement("div");
+		frame.className = "frame";
+		frame.append(aside);
+		document.body.append(frame);
+		const layout = new RailLayout(frame, aside);
+		expect(layout.hidden).toBe(false);
+		expect(frame.classList.contains("rail-hidden-desktop")).toBe(false);
+		layout.toggleHidden();
+		expect(layout.hidden).toBe(true);
+		expect(frame.classList.contains("rail-hidden-desktop")).toBe(true);
+		expect(aside.inert).toBe(true);
+		expect(layout.el.hidden).toBe(true);
+		layout.toggleHidden();
+		expect(layout.hidden).toBe(false);
+		expect(frame.classList.contains("rail-hidden-desktop")).toBe(false);
+		expect(aside.inert).toBe(false);
+		expect(layout.el.hidden).toBe(false);
+		layout.dispose();
+		vi.unstubAllGlobals();
+	});
+
+	it("centralizes the pill header with agents, defaults the Preview panel to all agents, and folds Compare into Preview", async () => {
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
 			localInteractive: true,
@@ -411,17 +437,37 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		await flush();
 		view.update();
 
-		const headerAgent = view.el.querySelector<HTMLButtonElement>(".surface-bar-crew .surface-bar-agent")!;
+		expect(view.el.querySelector(".surface-bar-lead")).toBeNull();
+		const modeLabels = [...view.el.querySelectorAll(".surface-pill-modes button")].map((btn) => btn.textContent);
+		expect(modeLabels).toEqual(["Live", "Preview", "Notes"]);
+		const headerAgent = view.el.querySelector<HTMLButtonElement>(".surface-pill .surface-bar-agent")!;
 		expect(headerAgent.querySelector(".surface-crew .figure")).not.toBeNull();
 		expect(headerAgent.querySelector(".surface-bar-agent-count")?.textContent).toBe("2");
-		headerAgent.click();
-		view.update();
+
 		const stage = view.el.querySelector(".surface-stage")!;
 		expect(stage.children[0]?.classList.contains("surface-canvas")).toBe(true);
 		expect(stage.children[1]?.classList.contains("surface-drawer")).toBe(true);
-		expect(stage.children[1]?.classList.contains("is-open")).toBe(true);
+		const drawer = view.el.querySelector<HTMLElement>(".surface-drawer")!;
+		expect(drawer.classList.contains("is-open")).toBe(true);
+		expect(drawer.classList.contains("is-overview")).toBe(true);
+		expect(drawer.querySelectorAll(".surface-overview-option")).toHaveLength(3);
+		expect(drawer.querySelectorAll(".surface-overview-change .surface-switch")).toHaveLength(2);
 
-		view.el.querySelector<HTMLButtonElement>(".surface-bar-explore")!.click();
+		const localFrame = view.el.querySelector<HTMLIFrameElement>(".surface-mount iframe.surface-local-frame")!;
+		expect(localFrame.srcdoc).toContain("Følg din meditationspraksis.");
+
+		drawer.querySelector<HTMLButtonElement>('[data-act="toggle-compare-live"]')!.click();
+		view.update();
+		expect(view.el.querySelector(".surface-mount iframe.surface-local-frame")).toBeNull();
+		expect(view.el.querySelector("select[data-compare-slot]")).toBeNull();
+		expect(view.el.querySelectorAll(".surface-compare-column")).toHaveLength(2);
+		expect(
+			[...view.el.querySelectorAll(".surface-compare-column .surface-compare-open strong")].map(
+				(n) => n.textContent,
+			),
+		).toEqual(["Live", "Preview"]);
+
+		drawer.querySelector<HTMLButtonElement>('[data-act="toggle-compare-exploration"]')!.click();
 		view.update();
 		const columns = [...view.el.querySelectorAll(".surface-compare-column")];
 		expect(columns).toHaveLength(3);
@@ -430,72 +476,39 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 			"Portræt og telefon",
 			"Fire trin",
 		]);
-		const frames = [...view.el.querySelectorAll<HTMLIFrameElement>(".surface-compare-column iframe")];
-		expect(frames).toHaveLength(3);
-		expect(frames[0]!.srcdoc).toContain("Følg din meditationspraksis.");
 		columns[1]!.querySelector<HTMLButtonElement>('[data-act="choose"]')!.click();
 		await flush();
 		view.update();
 		expect(store.state.mode).toBe("preview");
+		expect(store.state.previewCompare).toBeUndefined();
 		expect(store.workspace(website.id)?.explorations[0]?.status).toBe("chosen");
 		expect(store.state.surfaces.find((surface) => surface.id === website.id)?.unpublishedChangeCount).toBe(1);
-		view.dispose();
-		store.dispose();
-	});
-
-	it("provides scalable A vs B Compare with slot selectors, Swap, Layers mix tray, and clean Preview return", async () => {
-		const store = storeWith(undefined, {
-			companyName: "Thetaband",
-			localInteractive: true,
-			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox", "bank", "members"] }),
-		});
-		await store.load();
-		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
-		document.body.append(view.el);
-		await flush();
-		view.update();
-		const localFrame = view.el.querySelector<HTMLIFrameElement>(".surface-mount iframe.surface-local-frame")!;
-		expect(localFrame.srcdoc).toContain("Følg din meditationspraksis.");
-
-		store.setMode("compare");
-		view.update();
-		expect(view.el.querySelector(".surface-mount iframe.surface-local-frame")).toBeNull();
-		expect(view.el.querySelectorAll(".surface-compare-column")).toHaveLength(2);
-		const slotA = view.el.querySelector<HTMLSelectElement>('select[data-compare-slot="a"]')!;
-		const slotB = view.el.querySelector<HTMLSelectElement>('select[data-compare-slot="b"]')!;
-		expect(slotA.value).toBe("__live__");
-		expect(slotB.value).toBe("__preview__");
-
-		view.el.querySelector<HTMLButtonElement>('[data-act="compare-layers-toggle"]')!.click();
-		const layerChips = [...view.el.querySelectorAll<HTMLButtonElement>('[data-act="compare-layer-change"]')];
-		expect(layerChips).toHaveLength(2);
-		expect(layerChips[0]!.getAttribute("aria-pressed")).toBe("true");
-		layerChips[0]!.click();
-		expect(
-			view.el
-				.querySelectorAll<HTMLButtonElement>('[data-act="compare-layer-change"]')[0]
-				?.getAttribute("aria-pressed"),
-		).toBe("false");
-
-		view.el.querySelector<HTMLButtonElement>('[data-act="compare-swap"]')!.click();
-		expect(view.el.querySelector<HTMLSelectElement>('select[data-compare-slot="a"]')?.value).toBe("__preview__");
-		expect(view.el.querySelector<HTMLSelectElement>('select[data-compare-slot="b"]')?.value).toBe("__live__");
-
-		view.el.querySelector<HTMLButtonElement>('[data-act="compare-grid-mode"][data-grid="all"]')!.click();
-		const openBtn = view.el.querySelectorAll<HTMLButtonElement>(".surface-compare-open")[1]!;
-		openBtn.click();
-		await flush();
-		view.update();
-		expect(store.state.mode).toBe("preview");
-		expect(view.el.querySelector<HTMLElement>(".surface-mount")?.hidden).toBe(false);
 		const freshFrame = view.el.querySelector<HTMLIFrameElement>(".surface-mount iframe.surface-local-frame")!;
 		expect(freshFrame).not.toBe(localFrame);
-		expect(freshFrame.srcdoc).toContain("Portræt og telefon");
+		expect(freshFrame.srcdoc).toContain("Følg din meditationspraksis.");
+
+		drawer.querySelector<HTMLButtonElement>('[data-act="focus-session"]')!.click();
+		view.update();
+		expect(drawer.classList.contains("is-overview")).toBe(false);
+		expect(drawer.querySelector(".surface-message.is-session")).not.toBeNull();
+		expect(drawer.querySelector<HTMLFormElement>(".surface-drawer-foot")?.hidden).toBe(false);
+
+		drawer.querySelector<HTMLButtonElement>('[data-act="back-overview"]')!.click();
+		view.update();
+		expect(drawer.classList.contains("is-open")).toBe(true);
+		expect(drawer.classList.contains("is-overview")).toBe(true);
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="toggle-panel"]')!.click();
+		view.update();
+		expect(drawer.classList.contains("is-open")).toBe(false);
+		view.el.querySelector<HTMLButtonElement>('[data-act="toggle-panel"]')!.click();
+		view.update();
+		expect(drawer.classList.contains("is-open")).toBe(true);
 		view.dispose();
 		store.dispose();
 	});
 
-	it("renders Phone App Compare as two side-by-side phones with a Single phone A/B flipper and folded Design Notes", async () => {
+	it("renders Phone App vs Live as two side-by-side phones with a Single phone flipper and folded Design Notes", async () => {
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
 			localInteractive: true,
@@ -506,9 +519,10 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "phone-app");
 		document.body.append(view.el);
 		await flush();
-		store.setMode("compare");
 		view.update();
 
+		view.el.querySelector<HTMLButtonElement>('[data-act="toggle-compare-live"]')!.click();
+		view.update();
 		expect(view.el.querySelector(".surface-viewport")?.classList.contains("is-compare-mobile")).toBe(true);
 		expect(view.el.querySelector(".surface-frames")?.classList.contains("is-mobile-side")).toBe(true);
 		expect(view.el.querySelectorAll(".surface-compare-column")).toHaveLength(2);
@@ -520,9 +534,9 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		expect(view.el.querySelector(".surface-frames")?.classList.contains("is-mobile-single")).toBe(true);
 		expect(view.el.querySelectorAll(".surface-compare-column")).toHaveLength(1);
 		const flipButtons = [...view.el.querySelectorAll<HTMLButtonElement>('[data-act="mobile-compare-pane"]')];
-		expect(flipButtons).toHaveLength(2);
+		expect(flipButtons.map((btn) => btn.textContent)).toEqual(["Live", "Preview"]);
 		flipButtons[0]!.click();
-		expect(view.el.querySelector<HTMLSelectElement>('select[data-compare-slot="a"]')?.value).toBe("__live__");
+		expect(view.el.querySelector(".surface-compare-column strong")?.textContent).toBe("Live");
 
 		view.el.querySelector<HTMLButtonElement>('[data-act="mode"][data-mode="report"]')!.click();
 		view.update();
@@ -538,7 +552,7 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		store.dispose();
 	});
 
-	it("organizes Product Studio with folded Vendor Analysis tab, charts, tables, Public post lens, and Compare diffs", async () => {
+	it("organizes Product Studio with folded Vendor Analysis tab, charts, tables, Public post lens, and vs Base diffs", async () => {
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
 			localInteractive: true,
@@ -583,7 +597,7 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		);
 		expect(view.el.querySelector(".report-callout.is-decision")).toBeNull();
 
-		store.setMode("compare");
+		view.el.querySelector<HTMLButtonElement>('[data-act="toggle-compare-live"]')!.click();
 		view.update();
 		expect(view.el.querySelectorAll(".studio-compare-card").length).toBeGreaterThanOrEqual(2);
 		expect(view.el.textContent).toContain("48 g");
