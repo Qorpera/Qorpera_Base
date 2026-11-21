@@ -47,6 +47,11 @@ The company folder inside a Qorpera machine, and the node side of its link.
   to the call. It holds no lock, mounts
   nothing and writes nothing on the machine. `--view-file`, `--root` and `--connect` before the verb name another
   view file, folder and node address (tests).
+- `qorpera-folder scan-pack --spec-fd <fd>`: on a node host, reads a `git cat-file --batch-all-objects --batch --unordered`
+  stream on standard input, scans each object against the keyed secret-hash specification JSON read from `--spec-fd`
+  (`>= 3`, never argv or environment), and prints one JSON result line on standard output
+  (`{"status":"clean","rebuilt":...}`, `{"status":"secret"}`, or `{"status":"unchecked","reason":...}`). Exit 0 means
+  a result was printed, 1 means invalid specification or I/O failure, and 2 means usage.
 
 Design, protocol and rollout: `deploy/first-node/RUNTIME-FOLDER-SERVICE.md`. The node side of the protocol is
 `packages/object-gateway/src/folder-service/`.

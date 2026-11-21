@@ -1168,7 +1168,8 @@ export class FolderService {
 				view.closed ||
 				view.moving ||
 				view.movedTo ||
-				!view.access?.testMachine ||
+				!(view.identity?.kind === "test_machine" || view.identity?.kind === "coding_session") ||
+				view.access?.machine === undefined ||
 				!view.access.admits(bridge) ||
 				view.environmentId !== grant.environmentId ||
 				!timingSafeEqual(view.passSha256, grant.passSha256)

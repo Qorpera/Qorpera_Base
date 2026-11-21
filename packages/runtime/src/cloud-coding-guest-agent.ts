@@ -2,6 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, openSync, unlinkSync, writeSync } from "node:fs";
 import {
+	chmod,
 	chown,
 	type FileHandle,
 	link,
@@ -82,6 +83,13 @@ const INPUT_GRACE_MS = 60000;
 const OUTCOME_KEEP_MS = 3600000;
 const RING_ENTRIES = 64;
 const RELAY_REFUSED = 125;
+const SESSION_VIEW_FILE = `${CODING_GUEST.folder}/view.json`;
+const DATA_COMMAND = [
+	"#!/bin/sh",
+	`[ "$(id -u)" = 0 ] || exec sudo -n ${CODING_GUEST.folderProgram} data "$@"`,
+	`exec ${CODING_GUEST.folderProgram} data "$@"`,
+	"",
+].join("\n");
 const TOOLS = Object.freeze({
 	systemctl: "/usr/bin/systemctl",
 	systemdRun: "/usr/bin/systemd-run",
@@ -112,6 +120,7 @@ export interface CodingGuestAgentPorts {
 	subidFiles?: { uid: string; gid: string };
 	/** systemd-resolved's upstream list, bound over a session's /etc/resolv.conf (the stub is not in its netns). */
 	resolvConf?: string;
+	dataCommand?: string;
 	agent?: string;
 	/** Runs a tool; throws CODING_GUEST_SYSTEM_UNCONFIRMED with the exit status (null when it did not exit). */
 	system?: (executable: string, args: readonly string[]) => Promise<string>;
@@ -149,6 +158,7 @@ function settle(ports: CodingGuestAgentPorts): Agent {
 		},
 		subidFiles: ports.subidFiles ?? { uid: "/etc/subuid", gid: "/etc/subgid" },
 		resolvConf: ports.resolvConf ?? "/run/systemd/resolve/resolv.conf",
+		dataCommand: ports.dataCommand ?? "/usr/local/bin/data",
 		agent: ports.agent ?? CODING_GUEST.agent,
 		system: ports.system ?? system,
 		bootId: ports.bootId ?? currentBoot,
@@ -816,6 +826,44 @@ function folderArgs(session: Places, uid: number, gid: number): string[] {
 		String(gid),
 	];
 }
+async function ensureDataCommand(at: Agent): Promise<void> {
+	const stat = await missing(() => lstat(at.dataCommand));
+	if (stat?.isFile() && (stat.mode & 0o777) === 0o555 && (!at.requireRoot || (stat.uid === 0 && stat.gid === 0))) {
+		const held = await readFile(at.dataCommand, "utf8").catch(() => undefined);
+		if (held === DATA_COMMAND) return;
+	}
+	await mkdir(dirname(at.dataCommand), { recursive: true, mode: 0o755 });
+	const temporary = await writtenAside(at.dataCommand, DATA_COMMAND, 0o555);
+	try {
+		await chmod(temporary, 0o555);
+		await rename(temporary, at.dataCommand);
+	} catch (error) {
+		await rm(temporary, { force: true });
+		throw error;
+	}
+	await syncDirectory(dirname(at.dataCommand));
+}
+
+async function ensureViewTarget(at: Agent): Promise<void> {
+	const target = join(at.folderRoot, "view.json");
+	try {
+		const handle = await open(
+			target,
+			constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+			0o600,
+		);
+		try {
+			await handle.chmod(0o600);
+		} finally {
+			await handle.close();
+		}
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+	}
+	const stat = await lstat(target);
+	if (!stat.isFile()) throw new Error("CODING_GUEST_FILE_INVALID");
+}
+
 /** Shows the request's view. Another view stops the program first and, once it ended, starts it on fresh state; a
  * stopped or failed program starts again. Then waits until it mounted, the node closed the view, or the wait ran out. */
 async function showView(
@@ -828,6 +876,7 @@ async function showView(
 	await mkdir(join(at.folderRoot, "views"), { recursive: true, mode: 0o700 });
 	await mkdir(join(at.folderRoot, "state"), { recursive: true, mode: 0o700 });
 	await mkdir(join(at.folderRoot, "mounts"), { recursive: true, mode: 0o755 });
+	await ensureViewTarget(at);
 	const wanted = JSON.stringify(view);
 	const held = await readJson(session.view, 4096).catch(() => undefined);
 	if (held === undefined || JSON.stringify(held) !== wanted) {
@@ -881,6 +930,7 @@ async function ensureUserManager(
 	const text = [
 		"[Service]",
 		`BindPaths=${session.mountpoint}:/company`,
+		`BindReadOnlyPaths=${session.view}:${SESSION_VIEW_FILE}`,
 		`NetworkNamespacePath=/run/netns/${session.namespace}`,
 		...(resolv ? [`BindReadOnlyPaths=${at.resolvConf}:/etc/resolv.conf`] : []),
 		"",
@@ -923,7 +973,9 @@ export async function mountCodingGuestSession(
 		let caches = false;
 		const name = await locked(at, machineLock(at), "CODING_GUEST_MACHINE_BUSY", async () => {
 			caches = await ensurePackageCaches(at);
-			return ensureUser(at, request.uid, request.gid);
+			const user = await ensureUser(at, request.uid, request.gid);
+			await ensureDataCommand(at);
+			return user;
 		});
 		await mkdir(session.session, { recursive: true, mode: 0o755 });
 		if (!held) await writeJson(session.user, { schema: USER_SCHEMA, uid: request.uid, gid: request.gid });
@@ -1140,6 +1192,7 @@ function runArgs(at: Agent, session: Places, command: CommandPlaces, request: Co
 		"PrivateIPC=yes",
 		`NetworkNamespacePath=/run/netns/${session.namespace}`,
 		`BindPaths=${session.mountpoint}:/company`,
+		`BindReadOnlyPaths=${session.view}:${SESSION_VIEW_FILE}`,
 		...(resolv ? [`BindReadOnlyPaths=${at.resolvConf}:/etc/resolv.conf`] : []),
 		// systemd opens the input as root and hands it over as stdin; the relay never sees its path.
 		`StandardInput=file:${command.input}`,
