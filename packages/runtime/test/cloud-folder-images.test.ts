@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { inflateSync } from "node:zlib";
 import {
 	exifOrientation,
 	FolderImageRefusal,
@@ -541,4 +542,136 @@ it("reads and converts one image at a time, and a call that stops waiting never 
 		"refused: stopped before",
 	);
 	expect(order).not.toContain("e starts");
+});
+
+it("preserves exact pixel output across 1:1 transparent zeroing, all five first-row and subsequent PNG filters (RGB, RGBA, interlaced), and pins golden encoder SHA-256", () => {
+	const encodeFiltered = (
+		width: number,
+		height: number,
+		colorType: 2 | 6,
+		pixel: (x: number, y: number) => Rgba,
+		filterOf: (passIndex: number, rowIndex: number) => number,
+		interlaced = false,
+	): Buffer => {
+		const channels = colorType === 2 ? 3 : 4;
+		const passes = interlaced
+			? [
+					[0, 0, 8, 8],
+					[4, 0, 8, 8],
+					[0, 4, 4, 8],
+					[2, 0, 4, 4],
+					[0, 2, 2, 4],
+					[1, 0, 2, 2],
+					[0, 1, 1, 2],
+				]
+			: [[0, 0, 1, 1]];
+		const encodedRows: Buffer[] = [];
+		for (let passIndex = 0; passIndex < passes.length; passIndex++) {
+			const [x0, y0, dx, dy] = passes[passIndex]!;
+			const passWidth = Math.ceil((width - x0) / dx);
+			if (passWidth <= 0) continue;
+			const stride = passWidth * channels;
+			const prev = new Uint8Array(stride);
+			let rowIndex = 0;
+			for (let y = y0; y < height; y += dy, rowIndex++) {
+				const row = new Uint8Array(stride);
+				let col = 0;
+				for (let x = x0; x < width; x += dx) {
+					const [r, g, b, a] = pixel(x, y);
+					row[col++] = r;
+					row[col++] = g;
+					row[col++] = b;
+					if (channels === 4) row[col++] = a;
+				}
+				const filter = filterOf(passIndex, rowIndex);
+				const out = Buffer.alloc(1 + stride);
+				out[0] = filter;
+				for (let i = 0; i < stride; i++) {
+					const left = i >= channels ? row[i - channels]! : 0;
+					const up = prev[i]!;
+					const upLeft = i >= channels ? prev[i - channels]! : 0;
+					let pred = 0;
+					if (filter === 1) pred = left;
+					else if (filter === 2) pred = up;
+					else if (filter === 3) pred = (left + up) >>> 1;
+					else if (filter === 4) {
+						const p = left + up - upLeft;
+						const pa = Math.abs(p - left);
+						const pb = Math.abs(p - up);
+						const pc = Math.abs(p - upLeft);
+						pred = pa <= pb && pa <= pc ? left : pb <= pc ? up : upLeft;
+					}
+					out[1 + i] = (row[i]! - pred) & 0xff;
+				}
+				encodedRows.push(out);
+				prev.set(row);
+			}
+		}
+		return pngFile(pngHeader(width, height, 8, colorType, interlaced ? 1 : 0), Buffer.concat(encodedRows));
+	};
+
+	const idatFilteredSha256 = (png: Buffer): string => {
+		const parts: Buffer[] = [];
+		let offset = 8;
+		while (offset < png.length) {
+			const length = png.readUInt32BE(offset);
+			const type = png.toString("latin1", offset + 4, offset + 8);
+			if (type === "IDAT") parts.push(png.subarray(offset + 8, offset + 8 + length));
+			offset += 12 + length;
+		}
+		return createHash("sha256")
+			.update(inflateSync(Buffer.concat(parts)))
+			.digest("hex");
+	};
+
+	const rgbPixel = (x: number, y: number): Rgba => [
+		((y * 53 + x * 17) ^ (y * x)) & 255,
+		((y * 29 + x * 41) ^ (x + y)) & 255,
+		((y * 13 + x * 67) ^ (x * 7)) & 255,
+		255,
+	];
+	const rgbaPixel = (x: number, y: number): Rgba =>
+		x === 0 && y === 0
+			? [200, 150, 100, 0]
+			: [(x * 29 + y * 7) & 255, (y * 37 + x * 3) & 255, ((x + y) * 13) & 255, 255 - ((x + y) % 5) * 40];
+
+	const expectedRgbFilteredSha = "24297564504d2a306c26e2461639c3fe1885a44b31dfb4bfb3eaee4a9d1abf3f";
+	const expectedRgbaFilteredSha = "490f84e3c3dbb29eb11bece332a1c575b591aa97bcd860f3941153c86b22eb25";
+	let rgbSha: string | undefined;
+	let rgbaSha: string | undefined;
+	for (let firstFilter = 0; firstFilter < 5; firstFilter++) {
+		const rgbView = folderImageView(encodeFiltered(11, 6, 2, rgbPixel, (_p, row) => (firstFilter + row) % 5));
+		const decodedRgb = shown(rgbView);
+		for (let y = 0; y < 6; y++) {
+			for (let x = 0; x < 11; x++) expect(decodedRgb.at(x, y)).toEqual(rgbPixel(x, y));
+		}
+		expect(idatFilteredSha256(rgbView.png)).toBe(expectedRgbFilteredSha);
+		rgbSha ??= rgbView.sha256;
+		expect(rgbView.sha256).toBe(rgbSha);
+
+		const rgbaView = folderImageView(encodeFiltered(9, 7, 6, rgbaPixel, (_p, row) => (firstFilter + row) % 5));
+		const decodedRgba = shown(rgbaView);
+		for (let y = 0; y < 7; y++) {
+			for (let x = 0; x < 9; x++) {
+				const expected = rgbaPixel(x, y);
+				expect(decodedRgba.at(x, y)).toEqual(expected[3] === 0 ? [0, 0, 0, 0] : expected);
+			}
+		}
+		expect(idatFilteredSha256(rgbaView.png)).toBe(expectedRgbaFilteredSha);
+		rgbaSha ??= rgbaView.sha256;
+		expect(rgbaView.sha256).toBe(rgbaSha);
+	}
+
+	const interlacedView = folderImageView(
+		encodeFiltered(9, 7, 6, rgbaPixel, (pass, row) => ((pass + row) % 4) + 1, true),
+	);
+	const decodedInterlaced = shown(interlacedView);
+	for (let y = 0; y < 7; y++) {
+		for (let x = 0; x < 9; x++) {
+			const expected = rgbaPixel(x, y);
+			expect(decodedInterlaced.at(x, y)).toEqual(expected[3] === 0 ? [0, 0, 0, 0] : expected);
+		}
+	}
+	expect(idatFilteredSha256(interlacedView.png)).toBe(expectedRgbaFilteredSha);
+	expect(interlacedView.sha256).toBe(rgbaSha);
 });
