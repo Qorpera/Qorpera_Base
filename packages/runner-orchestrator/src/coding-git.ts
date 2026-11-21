@@ -272,22 +272,22 @@ async function checkPush(
 					object = { type: match[2] as CheckedType, left: Number(match[3]), stream: mask.stream() };
 				} else {
 					const take = Math.min(object.left, chunk.length - at);
-					object.stream.push(chunk.subarray(at, at + take));
+					object.stream.scan(chunk.subarray(at, at + take));
 					object.left -= take;
 					at += take;
+					if (object.stream.matched) {
+						const { type } = object,
+							path = paths[index];
+						carrier =
+							type === "commit"
+								? { kind: type, sha: shown(mask, Buffer.from(names[index].slice(0, 12))) }
+								: { kind: type === "blob" ? "file" : "folder", path: path === null ? null : shown(mask, path) };
+						// No more bytes are needed: Git stops here.
+						throw new Error("CODING_PUSH_CARRIES_SECRET");
+					}
 				}
 				if (object.left > 0) continue;
 				object.stream.end();
-				if (object.stream.matched) {
-					const { type } = object,
-						path = paths[index];
-					carrier =
-						type === "commit"
-							? { kind: type, sha: shown(mask, Buffer.from(names[index].slice(0, 12))) }
-							: { kind: type === "blob" ? "file" : "folder", path: path === null ? null : shown(mask, path) };
-					// No more bytes are needed: Git stops here.
-					throw new Error("CODING_PUSH_CARRIES_SECRET");
-				}
 				object = null;
 				closing = true;
 			}

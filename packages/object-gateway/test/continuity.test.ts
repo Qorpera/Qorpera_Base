@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ObjectDependencyError } from "../src/dependency.ts";
+import { ObjectGatewayFolderGc } from "../src/folder-gc.ts";
 import { ObjectGatewayJournal } from "../src/journal.ts";
+import { createSerialGate, startGatewayMaintenance } from "../src/maintenance.ts";
 import { FileSystemObjectStore } from "../src/object-store.ts";
 import { ObjectGatewayReplication } from "../src/replication.ts";
 import { createObjectGatewayHandler } from "../src/service.ts";
@@ -602,5 +604,299 @@ describe("cloud object outage continuity", () => {
 		fixture.cloud.storage = "healthy";
 		await fixture.authority.probeHealth();
 		expect((await fixture.request("/healthz")).status).toBe(200);
+	});
+
+	it("reconciles pending objects concurrently up to the cap, coalesces audit syncs, and skips cached deleted tombstones", async () => {
+		const fixture = await gateway();
+		const items = Array.from({ length: 12 }, (_, index) => {
+			const body = Buffer.from(`concurrent-replication-object-${index}`);
+			return { body, hash: createHash("sha256").update(body).digest("hex") };
+		});
+		for (const item of items) {
+			expect(await fixture.upload(item.hash, item.body)).toBe("stored");
+		}
+		let inFlight = 0;
+		let peak = 0;
+		const writeReplica = fixture.authority.writeReplica.bind(fixture.authority);
+		vi.spyOn(fixture.authority, "writeReplica").mockImplementation(async (profile, hash, data) => {
+			inFlight++;
+			peak = Math.max(peak, inFlight);
+			await new Promise((resolve) => setTimeout(resolve, 15));
+			try {
+				await writeReplica(profile, hash, data);
+			} finally {
+				inFlight--;
+			}
+		});
+		const origAudit = fixture.journal.audit.bind(fixture.journal);
+		let auditHoldCount = 0;
+		let releaseAudit = () => {};
+		const auditHold = new Promise<void>((resolve) => {
+			releaseAudit = resolve;
+		});
+		const auditSpy = vi.spyOn(fixture.journal, "audit").mockImplementation(async (...events) => {
+			if (events.some((event) => event.event === "object_replicated") && auditHoldCount === 0) {
+				auditHoldCount++;
+				setTimeout(releaseAudit, 25);
+				await auditHold;
+			}
+			return origAudit(...events);
+		});
+		const writeSpy = vi.spyOn(fixture.journal, "write");
+		await fixture.replication.reconcile();
+		expect(peak).toBe(4);
+		expect(writeSpy).not.toHaveBeenCalled();
+		expect(fixture.cloud.replicas.size).toBe(12);
+		expect(await fixture.replication.status()).toEqual({ pending: 0, blocked: 0, degraded: false });
+		expect(auditSpy.mock.calls.length).toBeLessThan(12);
+		expect(
+			auditSpy.mock.calls.some(
+				(call) => call.length >= 2 && call.every((event) => event.event === "object_replicated"),
+			),
+		).toBe(true);
+		auditSpy.mockRestore();
+
+		const deletedBody = Buffer.from("tombstone-object");
+		const deletedHash = createHash("sha256").update(deletedBody).digest("hex");
+		expect(await fixture.upload(deletedHash, deletedBody)).toBe("stored");
+		fixture.cloud.deletion = true;
+		await fixture.replication.remove(profileId, deletedHash, deletedBody.length, authorizationId);
+		fixture.cloud.deletion = false;
+		const readSpy = vi.spyOn(fixture.journal, "read");
+		expect(await fixture.replication.status()).toEqual({ pending: 0, blocked: 0, degraded: false });
+		expect(readSpy).not.toHaveBeenCalled();
+
+		fixture.cloud.catalog.set(`${profileId}/${deletedHash}`, {
+			backend: "supabase-storage",
+			bytes: deletedBody.length,
+		});
+		fixture.cloud.replicas.set(`${profileId}/${deletedHash}`, Uint8Array.from(deletedBody));
+		await fixture.replication.reconcile();
+		expect(Buffer.from(await fixture.objects.get(profileId, deletedHash, deletedBody.length))).toEqual(deletedBody);
+		expect(await fixture.replication.status()).toEqual({ pending: 0, blocked: 0, degraded: false });
+	});
+
+	it("does not poison the deleted tombstone cache when status() races with a concurrent revive", async () => {
+		const fixture = await gateway();
+		const body = Buffer.from("revive-race-object");
+		const hash = createHash("sha256").update(body).digest("hex");
+		const entryName = `pending/${profileId}-${hash}`;
+		expect(await fixture.upload(hash, body)).toBe("stored");
+		fixture.cloud.deletion = true;
+		await fixture.replication.remove(profileId, hash, body.length, authorizationId);
+		fixture.cloud.deletion = false;
+
+		await fixture.restart();
+		const origRead = fixture.journal.read.bind(fixture.journal);
+		let releaseStaleRead = () => {};
+		const staleReadHeld = new Promise<void>((resolve) => {
+			releaseStaleRead = resolve;
+		});
+		let readStarted = () => {};
+		const hasStarted = new Promise<void>((resolve) => {
+			readStarted = resolve;
+		});
+		let intercepted = false;
+		const readSpy = vi.spyOn(fixture.journal, "read").mockImplementation(async (name) => {
+			if (!intercepted && name === entryName) {
+				intercepted = true;
+				const oldValue = await origRead(name);
+				readStarted();
+				await staleReadHeld;
+				return oldValue;
+			}
+			return origRead(name);
+		});
+
+		const statusCall = fixture.replication.status();
+		await hasStarted;
+		expect(await fixture.upload(hash, body)).toBe("stored");
+		releaseStaleRead();
+		await statusCall;
+		readSpy.mockRestore();
+
+		expect(await fixture.replication.status()).toEqual({ pending: 1, blocked: 0, degraded: true });
+		await fixture.replication.reconcile();
+		expect(fixture.cloud.replicas.has(`${profileId}/${hash}`)).toBe(true);
+		expect(await fixture.replication.status()).toEqual({ pending: 0, blocked: 0, degraded: false });
+	});
+
+	it("settles all discovered-lane workers before reconcile() exits when one fails", async () => {
+		const fixture = await gateway();
+		const first = Buffer.from("discovered-fail-object");
+		const firstHash = createHash("sha256").update(first).digest("hex");
+		const second = Buffer.from("discovered-slow-object");
+		const secondHash = createHash("sha256").update(second).digest("hex");
+		fixture.cloud.catalog.set(`${profileId}/${firstHash}`, { backend: "supabase-storage", bytes: first.length });
+		fixture.cloud.replicas.set(`${profileId}/${firstHash}`, Uint8Array.from(first));
+		fixture.cloud.catalog.set(`${profileId}/${secondHash}`, { backend: "supabase-storage", bytes: second.length });
+		fixture.cloud.replicas.set(`${profileId}/${secondHash}`, Uint8Array.from(second));
+		await fixture.journal.write(`pending/${profileId}-${firstHash}`, {
+			profileId,
+			sha256: firstHash,
+			bytes: first.length,
+			state: "deleted",
+			authorizationId,
+		});
+		const origAuthorize = fixture.authority.authorizeReplication.bind(fixture.authority);
+		let slowFinished = false;
+		vi.spyOn(fixture.authority, "authorizeReplication").mockImplementation(async (profile, hash, length) => {
+			if (hash === firstHash) throw new ObjectDependencyError(503);
+			await new Promise((resolve) => setTimeout(resolve, 40));
+			await origAuthorize(profile, hash, length);
+			slowFinished = true;
+		});
+		await fixture.replication.reconcile();
+		expect(slowFinished).toBe(true);
+		expect((await fixture.replication.status()).degraded).toBe(true);
+	});
+
+	it("keeps health probes fresh while reconcile is slow without taking more than one maintenance NAS lane", async () => {
+		const nasGate = createSerialGate();
+		let nasInFlight = 0;
+		let nasPeak = 0;
+		let authorityProbes = 0;
+		let storeProbes = 0;
+		let releaseReconcile = () => {};
+		const reconcileHeld = new Promise<void>((resolve) => {
+			releaseReconcile = resolve;
+		});
+		const trackNas = async (ms: number): Promise<void> => {
+			nasInFlight++;
+			nasPeak = Math.max(nasPeak, nasInFlight);
+			await new Promise((resolve) => setTimeout(resolve, ms));
+			nasInFlight--;
+		};
+		const loops = startGatewayMaintenance({
+			intervalMs: 25,
+			nasGate,
+			probeAuthority: async () => {
+				authorityProbes++;
+			},
+			probeStore: async () => {
+				await trackNas(5);
+				storeProbes++;
+			},
+			recoverGc: async () => {
+				await nasGate.run(() => trackNas(10));
+			},
+			reconcile: async () => {
+				await nasGate.run(() => trackNas(10));
+				await reconcileHeld;
+			},
+		});
+		try {
+			await vi.waitFor(() => {
+				expect(authorityProbes).toBeGreaterThanOrEqual(3);
+				expect(storeProbes).toBeGreaterThanOrEqual(3);
+			});
+			expect(nasPeak).toBe(1);
+		} finally {
+			releaseReconcile();
+			loops.stop();
+		}
+	});
+
+	it("does not deadlock when remove waits in authority while maintain runs folderGc recover on the same key", async () => {
+		const fixture = await gateway();
+		const nasGate = createSerialGate();
+		const replication = new ObjectGatewayReplication(
+			fixture.journal,
+			fixture.objects,
+			fixture.authority,
+			undefined,
+			nasGate,
+		);
+		const folderGc = new ObjectGatewayFolderGc(fixture.objects, replication, fixture.authority, Date.now, nasGate);
+		const leaseId = "7ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
+		fixture.cloud.catalog.set(objectKey, { backend: "nas-object-gateway", bytes: bytes.byteLength });
+		fixture.cloud.deletion = true;
+		await fixture.objects.put(profileId, sha256, bytes);
+		expect(await fixture.objects.quarantine(profileId, sha256, leaseId)).toBe("moved");
+		let enteredResumeDelete = () => {};
+		const resumeDeleteReached = new Promise<void>((resolve) => {
+			enteredResumeDelete = resolve;
+		});
+		let releaseResumeDelete = () => {};
+		const resumeDeleteGate = new Promise<void>((resolve) => {
+			releaseResumeDelete = resolve;
+		});
+		const origResumeDelete = fixture.authority.resumeDelete.bind(fixture.authority);
+		vi.spyOn(fixture.authority, "resumeDelete").mockImplementationOnce(async (authId, profile, hash, length) => {
+			enteredResumeDelete();
+			await resumeDeleteGate;
+			return await origResumeDelete(authId, profile, hash, length);
+		});
+		vi.spyOn(fixture.authority, "folderQuarantineState").mockResolvedValue("remove");
+		let gcReachedExclusive = () => {};
+		const gcWaitingOnKey = new Promise<void>((resolve) => {
+			gcReachedExclusive = resolve;
+		});
+		const origExclusive = replication.exclusive.bind(replication);
+		vi.spyOn(replication, "exclusive").mockImplementation((profile, hash, operation) => {
+			gcReachedExclusive();
+			return origExclusive(profile, hash, operation);
+		});
+		const removePromise = replication.remove(profileId, sha256, bytes.byteLength, authorizationId);
+		await resumeDeleteReached;
+		let storeProbes = 0;
+		let maintainDone = () => {};
+		const maintainFinished = new Promise<void>((resolve) => {
+			maintainDone = resolve;
+		});
+		const loops = startGatewayMaintenance({
+			intervalMs: 60_000,
+			nasGate,
+			probeAuthority: async () => {},
+			probeStore: async () => {
+				await fixture.objects.probe();
+				storeProbes++;
+			},
+			recoverGc: () => folderGc.recover(),
+			reconcile: async () => {
+				await replication.reconcile();
+				maintainDone();
+			},
+		});
+		try {
+			await gcWaitingOnKey;
+			await loops.probe();
+			expect(storeProbes).toBeGreaterThanOrEqual(2);
+			releaseResumeDelete();
+			await Promise.all([removePromise, maintainFinished]);
+			expect(await fixture.objects.listQuarantine(10)).toEqual([]);
+			const secondBytes = Buffer.from("second-delete-off-gate");
+			const secondHash = createHash("sha256").update(secondBytes).digest("hex");
+			fixture.cloud.catalog.set(`${profileId}/${secondHash}`, {
+				backend: "nas-object-gateway",
+				bytes: secondBytes.byteLength,
+			});
+			await fixture.objects.put(profileId, secondHash, secondBytes);
+			let gateHeld = () => {};
+			const gateEntered = new Promise<void>((resolve) => {
+				gateHeld = resolve;
+			});
+			let releaseGate = () => {};
+			const holdGate = new Promise<void>((resolve) => {
+				releaseGate = resolve;
+			});
+			const blockedProbe = nasGate.run(async () => {
+				gateHeld();
+				await holdGate;
+			});
+			await gateEntered;
+			try {
+				await replication.remove(profileId, secondHash, secondBytes.byteLength, authorizationId);
+				await expect(fixture.objects.get(profileId, secondHash, secondBytes.byteLength)).rejects.toThrow(
+					"not found",
+				);
+			} finally {
+				releaseGate();
+				await blockedProbe;
+			}
+		} finally {
+			releaseResumeDelete();
+			loops.stop();
+		}
 	});
 });

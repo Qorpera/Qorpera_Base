@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { CodingSecretMask } from "./coding-secret-mask.ts";
+import { CODING_SECRET_MASK_MINIMUM_BYTES, CodingSecretMask } from "./coding-secret-mask.ts";
 
 // The hook a member coding machine's commands take their secrets through (F3 5g-3c; the broker's side is 5j-4).
 // The executor asks once for each command it starts, and for its output's mask each time it keeps more of it.
@@ -91,6 +91,7 @@ interface Machine {
 	/** The values of the vault's answers no command takes: the machine's older values, and a session's environment asked
 	 * at its attach (5j-5 (a)). Masked, never put in an environment. */
 	readonly history: Set<string>;
+	readonly mask: CodingSecretMask;
 }
 
 /** The secrets of the sessions attached to this executor's machines (5j-4). A command's start asks the source, and
@@ -141,9 +142,17 @@ export class CodingMachineCommandSecrets {
 		signal.throwIfAborted();
 		const answer = await this.#source.environment(asked, signal);
 		signal.throwIfAborted();
-		const mask = this.#mask(machineId, asked, session, Object.freeze({ ...answer.environment }), answer.mask);
-		// The older values stay in the machine's masks, as a start's do.
-		for (const value of answer.mask) this.#machines.get(machineId)?.history.add(value);
+		const machine = this.#activeMachine(machineId, asked, session);
+		const envValues = Object.values(answer.environment);
+		checkMaskValues(envValues);
+		checkMaskValues(answer.mask);
+		// WHY: Publication's own environment values are not kept on the machine, so they are added only to a clone.
+		for (const value of answer.mask) {
+			machine.history.add(value);
+			machine.mask.add(value);
+		}
+		const mask = machine.mask.clone();
+		for (const value of envValues) mask.add(value);
 		return mask;
 	}
 
@@ -175,10 +184,14 @@ export class CodingMachineCommandSecrets {
 		signal.throwIfAborted();
 		const answer = await this.#source.environment(asked, signal);
 		signal.throwIfAborted();
+		const machine = this.#activeMachine(machineId, asked, session);
 		const kept = [...Object.values(answer.environment), ...answer.mask];
 		// A value the mask refuses fails the call before the answer is kept, as does a release while it asked.
-		this.#mask(machineId, asked, session, Object.freeze({}), kept);
-		for (const value of kept) this.#machines.get(machineId)?.history.add(value);
+		checkMaskValues(kept);
+		for (const value of kept) {
+			machine.history.add(value);
+			machine.mask.add(value);
+		}
 		this.#answered.add(machineId);
 	}
 
@@ -203,16 +216,26 @@ export class CodingMachineCommandSecrets {
 		signal.throwIfAborted();
 		let answer = session.commands.get(request.commandId);
 		let history: readonly string[] = [];
+		const fresh = !answer;
 		if (!answer) {
 			const asked = await this.#source.environment(scope, signal);
 			answer = Object.freeze({ ...asked.environment });
 			history = [...asked.mask];
 		}
 		signal.throwIfAborted();
+		const machine = this.#activeMachine(machineId, scope, session);
 		// A value the mask refuses fails the call before the answer is kept.
-		const mask = this.#mask(machineId, scope, session, answer, history);
-		// The older values stay in the machine's masks, never in an environment.
-		for (const value of history) this.#machines.get(machineId)?.history.add(value);
+		if (fresh) {
+			const envValues = Object.values(answer);
+			checkMaskValues(envValues);
+			checkMaskValues(history);
+			// The older values stay in the machine's masks, never in an environment.
+			for (const value of history) {
+				machine.history.add(value);
+				machine.mask.add(value);
+			}
+			for (const value of envValues) machine.mask.add(value);
+		}
 		let environment = session.commands.get(request.commandId);
 		if (!environment) {
 			// The same answer as an earlier command's is kept once.
@@ -221,6 +244,7 @@ export class CodingMachineCommandSecrets {
 			session.commands.set(request.commandId, environment);
 		}
 		this.#answered.add(machineId);
+		const mask = machine.mask;
 		return { environment, mask: () => mask.stream() };
 	}
 
@@ -235,7 +259,8 @@ export class CodingMachineCommandSecrets {
 		signal.throwIfAborted();
 		const environment = session.commands.get(request.commandId);
 		if (!environment || !session.accepted.has(request.commandId)) return null;
-		const mask = this.#mask(machineId, scope, session, environment);
+		const machine = this.#activeMachine(machineId, scope, session);
+		const mask = machine.mask;
 		return () => mask.stream();
 	}
 
@@ -244,6 +269,7 @@ export class CodingMachineCommandSecrets {
 			sessions: new Map<string, Session>(),
 			released: new Set<string>(),
 			history: new Set<string>(),
+			mask: new CodingSecretMask(),
 		};
 		this.#machines.set(machineId, machine);
 		const session: Session = machine.sessions.get(workerId) ?? {
@@ -263,25 +289,20 @@ export class CodingMachineCommandSecrets {
 			throw new Error("CODING_COMMAND_SECRETS_SCOPE_DIFFERS");
 	}
 
-	/** A mask for `environment`'s values, the answer's older values and every value kept for the machine. */
-	#mask(
-		machineId: string,
-		scope: CodingEnvironmentScope,
-		session: Session,
-		environment: Environment,
-		history: readonly string[] = [],
-	): CodingSecretMask {
+	#activeMachine(machineId: string, scope: CodingEnvironmentScope, session: Session): Machine {
 		const machine = this.#machines.get(machineId);
 		// Released (while it asked, or before): nothing is kept or handed out for a session that is gone.
 		if (!machine || machine.sessions.get(scope.workerId) !== session)
 			throw new Error("CODING_COMMAND_SECRETS_RELEASED");
-		const kept = [...machine.sessions.values()].flatMap((other) => [...other.commands.values()]);
-		return new CodingSecretMask([
-			...values([environment, ...kept]),
-			...machine.released,
-			...machine.history,
-			...history,
-		]);
+		return machine;
+	}
+}
+
+function checkMaskValues(candidates: Iterable<string>): void {
+	for (const value of candidates) {
+		if (Buffer.byteLength(value, "utf8") < CODING_SECRET_MASK_MINIMUM_BYTES) {
+			throw new RangeError(`a coding secret shorter than ${CODING_SECRET_MASK_MINIMUM_BYTES} bytes can't be masked`);
+		}
 	}
 }
 
