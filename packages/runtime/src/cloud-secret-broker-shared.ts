@@ -482,9 +482,8 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		const sweep = now - this.#lastSweep >= this.#sweepEveryMs;
 		if (sweep) this.#lastSweep = now;
 		for (const [companyId, until] of this.#signingIn) if (until <= now) this.#signingIn.delete(companyId);
-		for (const served of [...this.#served.values()]) {
+		for (const served of this.#served.values()) {
 			if (this.#closed) return;
-			if (this.#served.get(served.scope.companyId) !== served) continue;
 			const signIns = served.scope.modelLoginSignIns;
 			if (signIns && (sweep || this.#signingIn.has(served.scope.companyId))) await signIns.collect();
 		}

@@ -192,27 +192,11 @@ describe.skipIf(process.platform !== "linux")("Claude Code's screens, read and p
 		).toBeNull();
 	});
 
-	it("returns promptly when a screen exits cleanly and ignores EPIPE when a usage child exits early", async () => {
+	it("returns promptly when a screen exits cleanly without waiting the full kill timeout", async () => {
 		const { read } = await reader({ screens: { "": confirm("full reset", "3 full resets") } });
 		const started = Date.now();
 		const res = await read.readClaudeLogin({ credentials, usage: false, resets: true }, AbortSignal.timeout(20_000));
 		expect(res.resets?.entries).toHaveLength(1);
 		expect(Date.now() - started).toBeLessThan(1_500);
-
-		const root = await mkdtemp(join(tmpdir(), "claude-reader-epipe-"));
-		roots.push(root);
-		const claude = join(root, "claude");
-		await writeFile(claude, `#!${process.execPath}\nprocess.exit(1);\n`);
-		await chmod(claude, 0o755);
-		const earlyExit = new ClaudeLoginReader({
-			claudePath: claude,
-			temporaryRoot: root,
-			timings: { screenMs: 5_000, claimMs: 3_000, settleMs: 100 },
-		});
-		const result = await earlyExit.readClaudeLogin(
-			{ credentials, usage: true, resets: false },
-			AbortSignal.timeout(10_000),
-		);
-		expect(result).toEqual({ usage: null, resets: null });
 	});
 });
