@@ -7,15 +7,15 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929027099_runtime_bundle_activation_v270.sql";
-const activationVersion = 270;
-const previousActivationVersion = 269;
-const previousActivationSha256 = "b49b2dc0e0059bd6817850ffbb416a6b9ac5d691c592c0782d14e5f463241c25";
+const activation = "supabase/migrations/20260929027199_runtime_bundle_activation_v271.sql";
+const activationVersion = 271;
+const previousActivationVersion = 270;
+const previousActivationSha256 = "91df0bffb97a021554a0520013daeb21930ca38242a93cf8acc8e2c6829db72c";
 const activationRequires = Object.freeze([
 	[
-		"20260930822000_thread_run_wakes",
-		"#2005 (the fold): bundle 270's manifest hashes every migration into its authorization component, so it names 822000; the bundle is never active on a database where the thread read does not carry run_wake",
-		"position('run_wake' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_read_session_events(uuid,bigint,integer)')), '')) > 0 and position('qorpera_wake_occurrences' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_read_session_events(uuid,bigint,integer)')), '')) > 0",
+		"20260930823000_gemini_4_neon",
+		"#2019 (Gemini 4 Neon conversations): bundle 271's modelPolicy sets geminiChoice to thread and the runtime calls the Gemini vault/usage RPCs, so the bundle is never active on a database without 823000",
+		"to_regclass('public.qorpera_gemini_keys') is not null and to_regclass('public.qorpera_gemini_key_tickets') is not null and to_regclass('public.qorpera_gemini_run_usage') is not null and to_regprocedure('public.qorpera_get_gemini_key(uuid)') is not null and to_regprocedure('public.qorpera_open_gemini_key_for_run(uuid,text,jsonb)') is not null and to_regprocedure('public.qorpera_record_gemini_run_usage(jsonb,jsonb)') is not null and to_regprocedure('public.qorpera_record_gemini_cap_reached(jsonb)') is not null and position('geminiChoice' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_get_session_model(uuid)')), '')) > 0 and position('gemini-4-neon' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_set_session_model(uuid,text,bigint,text)')), '')) > 0",
 	],
 ]);
 const activationRequiresSql = activationRequires
