@@ -31,7 +31,7 @@ export async function mapBounded<T, R>(
 	if (items.length === 0) return [];
 	if (signal?.aborted) throw signal.reason;
 	const results = new Array<R>(items.length);
-	const siblingAbort = new Error("Sibling worker failed");
+	const siblingAbort = new ObjectDependencyError(503);
 	const child = new AbortController();
 	const onParentAbort = () => child.abort(signal?.reason);
 	if (signal) signal.addEventListener("abort", onParentAbort, { once: true });
@@ -51,7 +51,9 @@ export async function mapBounded<T, R>(
 					stop &&
 					!signal?.aborted &&
 					child.signal.aborted &&
-					(error === siblingAbort || (error instanceof Error && error.name === "AbortError"));
+					(error === siblingAbort ||
+						(error instanceof ObjectDependencyError && error.status === 503) ||
+						(error instanceof Error && error.name === "AbortError"));
 				if (!causedBySibling && index < firstErrorIndex) {
 					firstErrorIndex = index;
 					firstError = error;
