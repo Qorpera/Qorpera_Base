@@ -181,11 +181,31 @@ describe("bounded NAS filesystem operations", () => {
 
 	it("scales lanes when configured and still isolates a full stuck-NAS outage at the configured lane cap", async () => {
 		expect(resolveObjectStoreLanes({})).toBe(2);
+		expect(resolveObjectStoreLanes({ UV_THREADPOOL_SIZE: "3", QORPERA_OBJECT_GATEWAY_NAS_LANES: "1" })).toBe(1);
 		expect(resolveObjectStoreLanes({ UV_THREADPOOL_SIZE: "16", QORPERA_OBJECT_GATEWAY_NAS_LANES: "8" })).toBe(8);
 		expect(() => resolveObjectStoreLanes({ QORPERA_OBJECT_GATEWAY_NAS_LANES: "4" })).toThrow("UV_THREADPOOL_SIZE>=6");
 		expect(() => resolveObjectStoreLanes({ UV_THREADPOOL_SIZE: "8", QORPERA_OBJECT_GATEWAY_NAS_LANES: "7" })).toThrow(
 			"UV_THREADPOOL_SIZE>=9",
 		);
+		expect(() => resolveObjectStoreLanes({ UV_THREADPOOL_SIZE: "2" })).toThrow("UV_THREADPOOL_SIZE>=4");
+		expect(() => resolveObjectStoreLanes({ UV_THREADPOOL_SIZE: "1", QORPERA_OBJECT_GATEWAY_NAS_LANES: "2" })).toThrow(
+			"UV_THREADPOOL_SIZE>=4",
+		);
+		for (const badLanes of ["", "0", "-1", "17", "2abc", "1.5"]) {
+			expect(() =>
+				resolveObjectStoreLanes({ UV_THREADPOOL_SIZE: "32", QORPERA_OBJECT_GATEWAY_NAS_LANES: badLanes }),
+			).toThrow("QORPERA_OBJECT_GATEWAY_NAS_LANES is invalid");
+		}
+		for (const badPool of ["", "0", "-1", "abc", "4294967296"]) {
+			expect(() =>
+				resolveObjectStoreLanes({ UV_THREADPOOL_SIZE: badPool, QORPERA_OBJECT_GATEWAY_NAS_LANES: "2" }),
+			).toThrow("UV_THREADPOOL_SIZE is invalid");
+		}
+		for (const badCtor of [0, -1, 17, 1.5]) {
+			expect(() => new FileSystemObjectStore("/synthetic-objects", 15, 10_000, badCtor)).toThrow(
+				"Object operation lanes are invalid",
+			);
+		}
 
 		filesystem.stat.mockImplementation(() => new Promise(() => {}));
 		const store = new FileSystemObjectStore("/synthetic-objects", 15, 10_000, 4);
@@ -199,5 +219,45 @@ describe("bounded NAS filesystem operations", () => {
 		);
 		expect(results).toEqual([503, 503, 503, 503, 503, 503]);
 		expect(filesystem.stat).toHaveBeenCalledTimes(4);
+	});
+
+	it("caches known directories, recreates on ENOENT, skips temp unlink after rename, and cleans up on failure", async () => {
+		const secondBytes = Buffer.from("second immutable payload");
+		const secondHash = createHash("sha256").update(secondBytes).digest("hex");
+		const thirdBytes = Buffer.from("third immutable payload");
+		const thirdHash = createHash("sha256").update(thirdBytes).digest("hex");
+		const sync = vi.fn(async () => {});
+		const okHandle = { writeFile: async () => {}, sync, close: async () => {} };
+		filesystem.stat.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
+		filesystem.mkdir.mockResolvedValue(`/synthetic-objects/${profileId}`);
+		filesystem.open.mockResolvedValue(okHandle);
+		const store = new FileSystemObjectStore("/synthetic-objects", 1000);
+
+		expect(await store.put(profileId, hash, bytes)).toBe("stored");
+		expect(filesystem.mkdir).toHaveBeenCalledTimes(1);
+		expect(filesystem.rm).not.toHaveBeenCalled();
+
+		expect(await store.put(profileId, secondHash, secondBytes)).toBe("stored");
+		expect(filesystem.mkdir).toHaveBeenCalledTimes(1);
+		expect(filesystem.rm).not.toHaveBeenCalled();
+
+		filesystem.open
+			.mockRejectedValueOnce(Object.assign(new Error("gone"), { code: "ENOENT" }))
+			.mockResolvedValue(okHandle);
+		expect(await store.put(profileId, thirdHash, thirdBytes)).toBe("stored");
+		expect(filesystem.mkdir).toHaveBeenCalledTimes(2);
+		expect(filesystem.rm).not.toHaveBeenCalled();
+
+		const fourthBytes = Buffer.from("fourth failing payload");
+		const fourthHash = createHash("sha256").update(fourthBytes).digest("hex");
+		filesystem.open.mockResolvedValueOnce({
+			writeFile: async () => {
+				throw new Error("ENOSPC");
+			},
+			sync,
+			close: async () => {},
+		});
+		await expect(store.put(profileId, fourthHash, fourthBytes)).rejects.toThrow("ENOSPC");
+		expect(filesystem.rm).toHaveBeenCalledTimes(1);
 	});
 });
