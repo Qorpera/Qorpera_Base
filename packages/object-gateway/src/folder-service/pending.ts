@@ -176,6 +176,20 @@ function join(parent: string, name: string): string {
 	return parent === "" ? name : `${parent}/${name}`;
 }
 
+function addIndex(map: Map<string, Set<string>>, key: string, value: string): void {
+	let bucket = map.get(key);
+	if (!bucket) {
+		bucket = new Set();
+		map.set(key, bucket);
+	}
+	bucket.add(value);
+}
+
+function removeIndex(map: Map<string, Set<string>>, key: string, value: string): void {
+	const bucket = map.get(key);
+	if (bucket?.delete(value) && bucket.size === 0) map.delete(key);
+}
+
 /** `path` is `folder` or below it. */
 function within(path: string, folder: string): boolean {
 	return folder === "" || path === folder || path.startsWith(`${folder}/`);
@@ -237,8 +251,18 @@ export class PendingView {
 	readonly #nodes = new Map<string, Node>();
 	/** The names of nodes under each folder path. */
 	readonly #children = new Map<string, Set<string>>();
+	readonly #childrenByKey = new Map<string, Map<string, Set<string>>>();
+	readonly #publishedByKey = new Map<string, Set<string>>();
+	readonly #goneByKey = new Map<string, Set<string>>();
+	readonly #movedByOrigin = new Map<string, Set<string>>();
+	readonly #movedByOriginKey = new Map<string, Set<string>>();
+	readonly #filePaths = new Map<PendingFile, string>();
+	readonly #treeCounts = new Map<string, number>();
+	readonly #treeChildren = new Map<string, Set<string>>();
 	/** Live entries the view removed, by their live path. */
 	readonly #removed = new Map<string, LiveRef>();
+	readonly #removedFoldersByKey = new Map<string, Set<string>>();
+	readonly #removedFilesByKey = new Map<string, Set<string>>();
 	/** Open handles, and the file each writes; a draft's is in the view only once its close lands it (`openWrite`). */
 	readonly #handles = new Map<number, { readonly node: PendingFile; readonly draft?: Draft }>();
 	/** Files with chunks written, through any handle, since their state was last fixed. */
@@ -434,14 +458,11 @@ export class PendingView {
 
 	/** A path a live folder the view moved or removed left, at or above `path` (by folded key). */
 	#freedFolder(path: string): boolean {
-		const key = folderKey(path);
-		const hit = (p: string): boolean => {
-			const k = folderKey(p);
-			return key === k || key.startsWith(`${k}/`);
-		};
-		for (const [p, ref] of this.#removed) if (ref.kind === "folder" && hit(p)) return true;
-		for (const [p, node] of this.#nodes)
-			if (node.kind === "gone" && hit(p) && this.#live().get(p)?.kind === "folder") return true;
+		for (let anc = folderKey(path); anc !== ""; anc = parentOf(anc)) {
+			if (this.#removedFoldersByKey.has(anc)) return true;
+			const gone = this.#goneByKey.get(anc);
+			if (gone) for (const p of gone) if (this.#live().get(p)?.kind === "folder") return true;
+		}
 		return false;
 	}
 
@@ -452,10 +473,10 @@ export class PendingView {
 		let at = folderKey(target);
 		const seen = new Set<string>();
 		for (;;) {
+			const moved = this.#movedByOriginKey.get(at);
+			if (!moved) return false;
 			let next: string | undefined;
-			for (const [p, node] of this.#nodes)
-				if (node.kind !== "gone" && node.origin && folderKey(node.origin.path) === at && folderKey(p) !== at)
-					next = p;
+			for (const p of moved) next = p;
 			if (next === undefined) return false;
 			const key = folderKey(next);
 			if (key === home) return true;
@@ -955,7 +976,7 @@ export class PendingView {
 		// A new folder's pending nodes move with it, each to a name the folder takes there (a name only code/ holds stays
 		// in code/): all checked before anything moves.
 		const moved: [string, Node][] = [];
-		for (const [path, n] of this.#nodes) if (path !== from && within(path, from)) moved.push([path, n]);
+		this.#collectUnder(from, moved);
 		for (const [path, n] of moved) if (n.kind !== "gone") checkNewPath(to + path.slice(from.length), this.#codeHost);
 		// The moving node: a pending one as it is, or one made from the live entry, at the writer's base.
 		let node: PendingFile | PendingFolder | PendingLink;
@@ -1058,17 +1079,16 @@ export class PendingView {
 		if ((parent.kind === "live" ? parent.entry.kind : parent.node.kind) !== "folder")
 			fail(ErrorCode.notAFolder, "Not a folder");
 		checkNewPath(path, this.#codeHost);
-		const key = folderKey(nameOf(path));
-		const names = new Set<string>(this.#children.get(parentOf(path)) ?? []);
-		if (parent.source !== null) for (const name of this.#live().names(parent.source)) names.add(name);
-		for (const name of names)
-			if (
-				name !== nameOf(path) &&
-				folderKey(name) === key &&
-				join(parentOf(path), name) !== except &&
-				this.resolve(join(parentOf(path), name))
-			)
+		const parentPath = parentOf(path);
+		const baseName = nameOf(path);
+		const key = folderKey(baseName);
+		const checkSibling = (name: string): void => {
+			if (name !== baseName && join(parentPath, name) !== except && this.resolve(join(parentPath, name)))
 				fail(ErrorCode.exists, "A path differing only in case exists");
+		};
+		const pendingSiblings = this.#childrenByKey.get(parentPath)?.get(key);
+		if (pendingSiblings) for (const name of pendingSiblings) checkSibling(name);
+		if (parent.source !== null) for (const name of this.#live().namesForKey(parent.source, key)) checkSibling(name);
 		if (!back && this.#freedFolder(path))
 			throw new PublishFirst("reusing a path a folder this view moved or removed left");
 		// Under a parent spelled otherwise (another machine made or renamed one only in case), a pending file, link or
@@ -1079,16 +1099,11 @@ export class PendingView {
 		let at = "";
 		for (const name of path.split("/")) {
 			at = join(at, name);
-			const key = folderKey(at);
-			for (const [p, node] of this.#nodes)
-				if (
-					p !== at &&
-					p !== except &&
-					node.kind !== "gone" &&
-					!unpublished(p, this.#codeHost) &&
-					folderKey(p) === key
-				)
-					throw new PublishFirst("a new name at a path a pending one spells otherwise");
+			const matches = this.#publishedByKey.get(folderKey(at));
+			if (matches)
+				for (const p of matches)
+					if (p !== at && p !== except)
+						throw new PublishFirst("a new name at a path a pending one spells otherwise");
 		}
 	}
 
@@ -1155,7 +1170,7 @@ export class PendingView {
 			// A file replaced by a save keeps the save's base, so the save conflicts instead.
 			if (!save && r.entry.kind !== "folder" && base !== undefined && base !== r.entry.version)
 				fail(ErrorCode.stale, "The file changed since the machine saw it");
-			this.#removed.set(r.source, {
+			this.#addRemoved(r.source, {
 				path: r.source,
 				kind: r.entry.kind,
 				version: base ?? r.entry.version,
@@ -1177,7 +1192,7 @@ export class PendingView {
 			// What the view had at the path goes: a draft open there lands over that, as a new file.
 			this.#forget(r.path);
 			if (origin) {
-				this.#removed.set(origin.path, origin.kind === "folder" ? { ...origin, asOfSeq: this.#seq() } : origin);
+				this.#addRemoved(origin.path, origin.kind === "folder" ? { ...origin, asOfSeq: this.#seq() } : origin);
 				this.#forget(origin.path, origin);
 			}
 			// A new file or link lets the live one it replaced go: removed at its base, or shown again if newer.
@@ -1216,13 +1231,14 @@ export class PendingView {
 	 * the removals, and the live one stays hidden. A name never published replaces nothing: it is no unit. */
 	#takeRemoved(path: string): LiveRef | undefined {
 		if (unpublished(path, this.#codeHost)) return undefined;
-		const key = folderKey(path);
-		for (const [p, ref] of this.#removed)
-			if (ref.kind !== "folder" && folderKey(p) === key) {
-				this.#removed.delete(p);
-				if (p !== path) this.#hide(p);
-				return ref;
-			}
+		const matches = this.#removedFilesByKey.get(folderKey(path));
+		if (!matches) return undefined;
+		for (const p of matches) {
+			const ref = this.#removed.get(p)!;
+			this.#deleteRemoved(p);
+			if (p !== path) this.#hide(p);
+			return ref;
+		}
 		return undefined;
 	}
 
@@ -1232,7 +1248,7 @@ export class PendingView {
 		const base = node.replaces;
 		if (!base) return;
 		node.replaces = undefined;
-		if (this.#live().get(base.path)?.version === base.version) this.#removed.set(base.path, base);
+		if (this.#live().get(base.path)?.version === base.version) this.#addRemoved(base.path, base);
 		else if (this.#nodes.get(base.path)?.kind === "gone") this.#unset(base.path);
 	}
 
@@ -1241,7 +1257,7 @@ export class PendingView {
 		const removed = this.#removed.get(path);
 		if (!removed || removed.kind === "folder") return false;
 		if (this.#live().get(path)?.version === removed.version) return false;
-		this.#removed.delete(path);
+		this.#deleteRemoved(path);
 		if (this.#nodes.get(path)?.kind === "gone") this.#unset(path);
 		return true;
 	}
@@ -1264,9 +1280,23 @@ export class PendingView {
 		return this.#live().get(path)?.version;
 	}
 
+	#collectUnder(path: string, out: [string, Node][]): void {
+		const children = this.#treeChildren.get(path);
+		if (!children) return;
+		for (const child of children) {
+			const node = this.#nodes.get(child);
+			if (node) out.push([child, node]);
+			this.#collectUnder(child, out);
+		}
+	}
+
 	/** Nodes left under a path that now holds something else hide nothing there. */
 	#dropUnder(path: string): void {
-		for (const key of [...this.#nodes.keys()]) if (key !== path && within(key, path)) this.#unset(key);
+		const children = this.#treeChildren.get(path);
+		if (!children) return;
+		const under: [string, Node][] = [];
+		this.#collectUnder(path, under);
+		for (const [key] of under) this.#unset(key);
 	}
 
 	/** A path the live folder would still show something at gets a gone node. */
@@ -1291,32 +1321,95 @@ export class PendingView {
 	#hideMoved(path: string): void {
 		const r = this.resolve(path);
 		if (r?.kind !== "live") return;
-		for (const [p, node] of this.#nodes)
-			if (node.kind !== "gone" && p !== r.source && node.origin?.path === r.source) {
-				this.#set(path, { kind: "gone" });
-				return;
-			}
+		if (this.#movedByOrigin.has(r.source)) this.#set(path, { kind: "gone" });
+	}
+
+	#addRemoved(path: string, ref: LiveRef): void {
+		if (this.#removed.has(path)) this.#deleteRemoved(path);
+		this.#removed.set(path, ref);
+		addIndex(ref.kind === "folder" ? this.#removedFoldersByKey : this.#removedFilesByKey, folderKey(path), path);
+	}
+
+	#deleteRemoved(path: string): void {
+		const ref = this.#removed.get(path);
+		if (!ref) return;
+		this.#removed.delete(path);
+		removeIndex(ref.kind === "folder" ? this.#removedFoldersByKey : this.#removedFilesByKey, folderKey(path), path);
 	}
 
 	#set(path: string, node: Node): void {
+		if (this.#nodes.has(path)) this.#unset(path);
 		this.#nodes.set(path, node);
 		const parent = parentOf(path);
+		const name = nameOf(path);
 		let names = this.#children.get(parent);
 		if (!names) {
 			names = new Set();
 			this.#children.set(parent, names);
 		}
-		names.add(nameOf(path));
+		names.add(name);
+		let byKey = this.#childrenByKey.get(parent);
+		if (!byKey) {
+			byKey = new Map();
+			this.#childrenByKey.set(parent, byKey);
+		}
+		addIndex(byKey, folderKey(name), name);
+		for (let cur = path; cur !== ""; cur = parentOf(cur)) {
+			const count = (this.#treeCounts.get(cur) ?? 0) + 1;
+			this.#treeCounts.set(cur, count);
+			if (count === 1) addIndex(this.#treeChildren, parentOf(cur), cur);
+		}
+		const key = folderKey(path);
+		if (node.kind === "gone") addIndex(this.#goneByKey, key, path);
+		else {
+			if (!unpublished(path, this.#codeHost)) addIndex(this.#publishedByKey, key, path);
+			if (node.kind === "file") this.#filePaths.set(node, path);
+			if (node.origin) {
+				if (node.origin.path !== path) addIndex(this.#movedByOrigin, node.origin.path, path);
+				const originKey = folderKey(node.origin.path);
+				if (originKey !== key) addIndex(this.#movedByOriginKey, originKey, path);
+			}
+		}
 	}
 
 	#unset(path: string): void {
-		if (!this.#nodes.delete(path)) return;
+		const node = this.#nodes.get(path);
+		if (!node) return;
+		this.#nodes.delete(path);
 		const parent = parentOf(path);
+		const name = nameOf(path);
 		const names = this.#children.get(parent);
-		if (names?.delete(nameOf(path)) && names.size === 0) this.#children.delete(parent);
+		if (names?.delete(name) && names.size === 0) this.#children.delete(parent);
+		const byKey = this.#childrenByKey.get(parent);
+		if (byKey) {
+			removeIndex(byKey, folderKey(name), name);
+			if (byKey.size === 0) this.#childrenByKey.delete(parent);
+		}
+		for (let cur = path; cur !== ""; cur = parentOf(cur)) {
+			const count = (this.#treeCounts.get(cur) ?? 0) - 1;
+			if (count <= 0) {
+				this.#treeCounts.delete(cur);
+				removeIndex(this.#treeChildren, parentOf(cur), cur);
+			} else this.#treeCounts.set(cur, count);
+		}
+		const key = folderKey(path);
+		if (node.kind === "gone") removeIndex(this.#goneByKey, key, path);
+		else {
+			if (!unpublished(path, this.#codeHost)) removeIndex(this.#publishedByKey, key, path);
+			if (node.kind === "file" && this.#filePaths.get(node) === path) this.#filePaths.delete(node);
+			if (node.origin) {
+				if (node.origin.path !== path) removeIndex(this.#movedByOrigin, node.origin.path, path);
+				const originKey = folderKey(node.origin.path);
+				if (originKey !== key) removeIndex(this.#movedByOriginKey, originKey, path);
+			}
+		}
 	}
 
 	// ---- What a boundary publishes ------------------------------------------------------------------------------
+
+	pathOf(node: PendingFile): string | undefined {
+		return this.#filePaths.get(node);
+	}
 
 	/** Every pending node, by path. */
 	nodes(): ReadonlyMap<string, PendingFile | PendingFolder | PendingLink | { readonly kind: "gone" }> {
@@ -1358,7 +1451,7 @@ export class PendingView {
 	 * is spelled otherwise. */
 	settle(keep: ReadonlySet<string>, removals: ReadonlySet<string>): void {
 		for (const path of [...this.#nodes.keys()]) if (!keep.has(path)) this.#unset(path);
-		for (const path of [...this.#removed.keys()]) if (!removals.has(path)) this.#removed.delete(path);
+		for (const path of [...this.#removed.keys()]) if (!removals.has(path)) this.#deleteRemoved(path);
 		for (const [path, node] of [...this.#nodes]) {
 			if (node.kind === "gone") continue;
 			if (node.origin && node.origin.path !== path) {
@@ -1416,7 +1509,7 @@ export class PendingView {
 				const replaced = node.kind === "file" ? node.replaces?.path : undefined;
 				if (replaced && replaced !== path && this.#nodes.get(replaced)?.kind === "gone") this.#unset(replaced);
 			}
-			if (node?.kind !== "file" || node.open === 0) this.#removed.delete(path);
+			if (node?.kind !== "file" || node.open === 0) this.#deleteRemoved(path);
 		}
 	}
 
@@ -1424,6 +1517,16 @@ export class PendingView {
 	clear(): void {
 		this.#nodes.clear();
 		this.#children.clear();
+		this.#childrenByKey.clear();
+		this.#publishedByKey.clear();
+		this.#goneByKey.clear();
+		this.#movedByOrigin.clear();
+		this.#movedByOriginKey.clear();
+		this.#filePaths.clear();
+		this.#treeCounts.clear();
+		this.#treeChildren.clear();
 		this.#removed.clear();
+		this.#removedFoldersByKey.clear();
+		this.#removedFilesByKey.clear();
 	}
 }

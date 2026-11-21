@@ -1,3 +1,4 @@
+import { folderKey } from "@qorpera/contracts";
 import type { CoreEntry, CoreReceipt, FeedChange } from "./core.ts";
 import type { WireEntry } from "./protocol.ts";
 
@@ -129,6 +130,7 @@ export class ViewTree {
 	readonly #entries = new Map<string, TreeEntry>();
 	readonly #children = new Map<string, Set<string>>();
 	readonly #sorted = new Map<string, string[]>();
+	readonly #namesByKey = new Map<string, Map<string, string[]>>();
 
 	get size(): number {
 		return this.#entries.size;
@@ -226,6 +228,25 @@ export class ViewTree {
 	/** A folder's names in byte order; none for a path that is not a folder here. */
 	names(path: string): readonly string[] {
 		return this.get(path)?.kind === "folder" ? this.#names(path) : [];
+	}
+
+	namesForKey(path: string, key: string): readonly string[] {
+		if (this.get(path)?.kind !== "folder") return [];
+		let index = this.#namesByKey.get(path);
+		if (!index) {
+			index = new Map();
+			for (const name of this.#names(path)) {
+				const k = folderKey(name);
+				let bucket = index.get(k);
+				if (!bucket) {
+					bucket = [];
+					index.set(k, bucket);
+				}
+				bucket.push(name);
+			}
+			this.#namesByKey.set(path, index);
+		}
+		return index.get(key) ?? [];
 	}
 
 	/** A folder's names in byte order (cached until the folder changes). */
@@ -329,6 +350,7 @@ export class ViewTree {
 		if (!names.has(nameOf(entry.path))) {
 			names.add(nameOf(entry.path));
 			this.#sorted.delete(parent);
+			this.#namesByKey.delete(parent);
 		}
 	}
 
@@ -337,8 +359,12 @@ export class ViewTree {
 		this.#entries.delete(path);
 		this.#children.delete(path);
 		this.#sorted.delete(path);
+		this.#namesByKey.delete(path);
 		const names = this.#children.get(parent);
-		if (names?.delete(nameOf(path))) this.#sorted.delete(parent);
+		if (names?.delete(nameOf(path))) {
+			this.#sorted.delete(parent);
+			this.#namesByKey.delete(parent);
+		}
 	}
 
 	#removeBelow(path: string, replaced?: (old: TreeEntry) => void): string[] {

@@ -1365,4 +1365,55 @@ describe("a view's links (protocol 4)", () => {
 		expect(f.publish()).toEqual([]);
 		expect(f.view.get(".#notes.md")).toMatchObject({ kind: "symlink" });
 	});
+
+	it("keeps PendingView indexes and planBoundary waves exact across deep live subtrees, renames, deletes, and bulk writes", () => {
+		const f = setup({
+			"live/sub/existing.md": "old",
+			"rm/a/one.md": "1",
+			"rm/a/two.md": "2",
+			"rm/b.md": "3",
+			"mv/from.md": "m",
+		});
+		const h = f.view.openWrite("live/sub/added.md", { create: true, exclusive: true, truncate: true });
+		const node = f.view.close(h.handle, 0);
+		expect(f.view.pathOf(node)).toBe("live/sub/added.md");
+		f.view.rename("live/sub/added.md", "live/sub/renamed.md");
+		expect(f.view.pathOf(node)).toBe("live/sub/renamed.md");
+		refused(
+			() => f.view.openWrite("live/sub/EXISTING.MD", { create: true, exclusive: true, truncate: true }),
+			"EXISTS",
+		);
+		refused(
+			() => f.view.openWrite("live/sub/RENAMED.MD", { create: true, exclusive: true, truncate: true }),
+			"EXISTS",
+		);
+		f.view.unlink("live/sub/renamed.md");
+		expect(f.view.pathOf(node)).toBeUndefined();
+
+		f.view.unlink("rm/a/one.md");
+		f.view.unlink("rm/a/two.md");
+		f.view.rmdir("rm/a");
+		f.view.unlink("rm/b.md");
+		f.view.rmdir("rm");
+		f.view.mkdir("bulk");
+		for (let i = 0; i < 60; i++) {
+			const dir = `bulk/d${i % 6}`;
+			if (i < 6) f.view.mkdir(dir);
+			write(f.view, `${dir}/f${i}.txt`, `body-${i}`);
+		}
+		f.view.rename("mv/from.md", "mv/to.md");
+		write(f.view, "mv/from.md", "replacement");
+		const plan = f.plan();
+		const ops = plan.units.map((u) => u.unit.op);
+		expect(ops).toContain("delete");
+		expect(ops).toContain("new_folder");
+		const moveIdx = plan.units.findIndex((u) => u.unit.op === "move");
+		const writeIdx = plan.units.findIndex((u) => u.unit.op === "write" && u.unit.path === "mv/from.md");
+		expect(moveIdx).toBeGreaterThanOrEqual(0);
+		expect(writeIdx).toBeGreaterThan(moveIdx);
+		const bulkUnit = plan.units.find((u) => u.unit.op === "new_folder" && u.unit.path === "bulk");
+		expect(bulkUnit?.unit.op === "new_folder" && bulkUnit.unit.contents.length).toBe(66);
+		f.view.clear();
+		expect(f.view.empty).toBe(true);
+	});
 });
