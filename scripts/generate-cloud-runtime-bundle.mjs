@@ -7,17 +7,11 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929027199_runtime_bundle_activation_v271.sql";
-const activationVersion = 271;
-const previousActivationVersion = 270;
-const previousActivationSha256 = "91df0bffb97a021554a0520013daeb21930ca38242a93cf8acc8e2c6829db72c";
-const activationRequires = Object.freeze([
-	[
-		"20260930823000_gemini_4_neon",
-		"#2019 (Gemini 4 Neon conversations): bundle 271's modelPolicy sets geminiChoice to thread and the runtime calls the Gemini vault/usage RPCs, so the bundle is never active on a database without 823000",
-		"to_regclass('public.qorpera_gemini_keys') is not null and to_regclass('public.qorpera_gemini_key_tickets') is not null and to_regclass('public.qorpera_gemini_run_usage') is not null and to_regprocedure('public.qorpera_get_gemini_key(uuid)') is not null and to_regprocedure('public.qorpera_open_gemini_key_for_run(uuid,text,jsonb)') is not null and to_regprocedure('public.qorpera_record_gemini_run_usage(jsonb,jsonb)') is not null and to_regprocedure('public.qorpera_record_gemini_cap_reached(jsonb)') is not null and position('geminiChoice' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_get_session_model(uuid)')), '')) > 0 and position('gemini-4-neon' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_set_session_model(uuid,text,bigint,text)')), '')) > 0",
-	],
-]);
+const activation = "supabase/migrations/20260929027299_runtime_bundle_activation_v272.sql";
+const activationVersion = 272;
+const previousActivationVersion = 271;
+const previousActivationSha256 = "65fdee24c81b0a24a84aaf0359a68decf04e840d7668c3b35d26cf3ed0a6ee47";
+const activationRequires = Object.freeze([]);
 const activationRequiresSql = activationRequires
 	.map(([migration, why, present]) => {
 		const always = `${migration}.sql` < activation.slice(activation.lastIndexOf("/") + 1);
