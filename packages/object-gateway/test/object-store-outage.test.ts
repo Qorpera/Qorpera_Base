@@ -5,9 +5,11 @@ import { FileSystemObjectStore, resolveObjectStoreLanes } from "../src/object-st
 const filesystem = vi.hoisted(() => ({
 	mkdir: vi.fn(),
 	open: vi.fn(),
+	readdir: vi.fn(),
 	readFile: vi.fn(),
 	rename: vi.fn(),
 	rm: vi.fn(),
+	rmdir: vi.fn(),
 	stat: vi.fn(),
 }));
 vi.mock("node:fs/promises", () => filesystem);
@@ -259,5 +261,31 @@ describe("bounded NAS filesystem operations", () => {
 		});
 		await expect(store.put(profileId, fourthHash, fourthBytes)).rejects.toThrow("ENOSPC");
 		expect(filesystem.rm).toHaveBeenCalledTimes(1);
+	});
+
+	it("aborts overdue listQuarantine scans between entries and frees the NAS lane immediately", async () => {
+		const leaseId = "7ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
+		const files = Array.from({ length: 50 }, (_, i) => `${i.toString(16).padStart(64, "0")}.${leaseId}`);
+		filesystem.readdir.mockImplementation(async (dir: string) => (dir.endsWith(profileId) ? files : [profileId]));
+		let releaseFirstStat!: () => void;
+		const firstStatGate = new Promise<void>((resolve) => {
+			releaseFirstStat = resolve;
+		});
+		let statCalls = 0;
+		filesystem.stat.mockImplementation(async () => {
+			statCalls++;
+			if (statCalls === 1) await firstStatGate;
+			return { isFile: () => true, size: bytes.length };
+		});
+		filesystem.readFile.mockResolvedValue(bytes);
+
+		const store = new FileSystemObjectStore("/synthetic-objects", 15, 0, 1);
+		await expect(store.listQuarantine(50)).rejects.toMatchObject({ status: 503 });
+		releaseFirstStat();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		expect(statCalls).toBe(1);
+
+		const read = await store.get(profileId, hash, bytes.length);
+		expect(Buffer.from(read)).toEqual(bytes);
 	});
 });

@@ -105,4 +105,35 @@ describe("Supabase object authority", () => {
 		expect(header(calls[0]!.request, calls[0]!.init, "apikey")).toBe("sb_secret_private");
 		expect(header(calls[0]!.request, calls[0]!.init, "authorization")).toBeNull();
 	});
+
+	it("coalesces concurrent readLegacyObject requests for the same object into one storage fetch", async () => {
+		let fetchCount = 0;
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const payload = Uint8Array.from([9, 8, 7, 6]);
+		const authority = new SupabaseObjectAuthority({
+			projectUrl: "https://project.supabase.co",
+			publishableKey: "sb_publishable_public",
+			secretKey: "sb_secret_private",
+			fetch: async () => {
+				fetchCount++;
+				if (fetchCount === 1) await gate;
+				return new Response(payload);
+			},
+		});
+
+		const readers = Array.from({ length: 50 }, () => authority.readLegacyObject(profileId, sha256));
+		await Promise.resolve();
+		expect(fetchCount).toBe(1);
+		release();
+		const results = await Promise.all(readers);
+		expect(fetchCount).toBe(1);
+		for (const result of results) expect(Buffer.from(result)).toEqual(Buffer.from(payload));
+
+		const again = await authority.readLegacyObject(profileId, sha256);
+		expect(fetchCount).toBe(2);
+		expect(Buffer.from(again)).toEqual(Buffer.from(payload));
+	});
 });

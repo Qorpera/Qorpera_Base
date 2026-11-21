@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ObjectDependencyError } from "../src/dependency.ts";
 import { ObjectGatewayJournal } from "../src/journal.ts";
 import type { MemberCompanyAuthority } from "../src/member-company-authority.ts";
+import { serveMemberSessionAttachment } from "../src/member-session-attachments.ts";
 import { FileSystemObjectStore } from "../src/object-store.ts";
 import { ObjectGatewayReplication } from "../src/replication.ts";
 import { createObjectGatewayHandler } from "../src/service.ts";
@@ -314,5 +315,101 @@ describe("a member's chat images on folder-v2", () => {
 		service.state.posted = true;
 		expect((await service.request("input", null, token, otherInputId)).status).toBe(403);
 		expect((await service.request("input", null, token, clientInputId)).status).toBe(403);
+	});
+
+	it("destroys a stalled slowloris upload body on timeout and aborts authority on client disconnect", async () => {
+		const publisher = vi.fn<MemberCompanyAuthority["publisher"]>();
+		let stallBegin = false;
+		let beginSignal: AbortSignal | undefined;
+		let beginEntered = () => {};
+		const sawBegin = new Promise<void>((resolve) => {
+			beginEntered = resolve;
+		});
+		const member = vi.fn<MemberCompanyAuthority["member"]>(async (method, _bearer, args, signal) => {
+			if (method === "qorpera_room_image_begin") {
+				if (stallBegin) {
+					beginSignal = signal;
+					beginEntered();
+					return await new Promise<never>((_resolve, reject) => {
+						signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+					});
+				}
+				return {
+					schema: "qorpera.room-image-begin/v1",
+					environmentId,
+					sessionId: args.p_session_id,
+					clientInputId: args.p_client_input_id,
+					sha256: args.p_sha256,
+					bytes: args.p_bytes,
+					mediaType: args.p_media_type,
+					path: imagePath(args.p_client_input_id as string),
+				};
+			}
+			if (method === "qorpera_member_folder_writer") {
+				return { schema: "qorpera.member-folder-writer/v1", actor: { kind: "member", userId }, profileId };
+			}
+			throw new Error(`Unexpected ${method}`);
+		});
+		const server = createServer((req, res) => {
+			serveMemberSessionAttachment(req, res, {
+				authority: { member, publisher },
+				store: { get: async () => new Uint8Array() },
+				replication: { uploadWithAuthority: async () => "stored" },
+				bodyTimeoutMs: 50,
+			}).catch((error: unknown) => {
+				if (!res.writableEnded && !res.destroyed) {
+					res.writeHead(error instanceof ObjectDependencyError ? error.status : 500);
+					res.end();
+				}
+			});
+		});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const { port } = server.address() as { port: number };
+		cleanups.push(async () => {
+			server.closeAllConnections();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		});
+
+		const startedAt = performance.now();
+		await new Promise<void>((resolve) => {
+			const req = httpRequest(
+				`http://127.0.0.1:${port}/v1/member-session-attachments/upload/${sessionId}/${clientInputId}/${sha256}`,
+				{
+					method: "PUT",
+					headers: {
+						authorization: `Bearer ${token}`,
+						"content-type": "image/png",
+						"content-length": String(bytes.length),
+					},
+				},
+				(res) => {
+					res.resume();
+					res.once("end", () => resolve());
+				},
+			);
+			req.once("error", () => resolve());
+			req.once("close", () => resolve());
+			req.write("P");
+		});
+		expect(performance.now() - startedAt).toBeLessThan(2_000);
+		expect(publisher).not.toHaveBeenCalled();
+
+		stallBegin = true;
+		const req = httpRequest(
+			`http://127.0.0.1:${port}/v1/member-session-attachments/upload/${sessionId}/${clientInputId}/${sha256}`,
+			{
+				method: "PUT",
+				headers: {
+					authorization: `Bearer ${token}`,
+					"content-type": "image/png",
+					"content-length": String(bytes.length),
+				},
+			},
+		);
+		req.on("error", () => {});
+		req.end(bytes);
+		await sawBegin;
+		req.destroy();
+		await vi.waitFor(() => expect(beginSignal?.aborted).toBe(true));
 	});
 });

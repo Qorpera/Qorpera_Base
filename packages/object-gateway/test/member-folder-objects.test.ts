@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { type MemberFolderObjectAuthority, serveMemberFolderObject } from "../src/member-folder-objects.ts";
 import { MEMBER_OBSERVATIONS_PATH, MemberCompanyObservations } from "../src/member-observability.ts";
 import { FileSystemObjectStore } from "../src/object-store.ts";
 import { createObjectGatewayHandler } from "../src/service.ts";
@@ -268,6 +269,53 @@ describe("a member's folder-v2 bytes", () => {
 		expect(response.status).toBe(200);
 		expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
 		expect(gateway.state.calls).toHaveLength(2);
+	});
+
+	it("aborts authorization and skips NAS read when the client disconnects mid-request", async () => {
+		let capturedSignal: AbortSignal | undefined;
+		let enteredAuth = () => {};
+		const authEntered = new Promise<void>((resolve) => {
+			enteredAuth = resolve;
+		});
+		const storeGet = vi.fn(async () => bytes);
+		const authCalls: number[] = [];
+		const authority: MemberFolderObjectAuthority = {
+			authorizeMemberFolderObject: async (_token, _env, _hash, signal) => {
+				authCalls.push(1);
+				capturedSignal = signal;
+				enteredAuth();
+				return await new Promise((_resolve, reject) => {
+					signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+				});
+			},
+			readLegacyObject: async () => bytes,
+		};
+		const server = createServer((req, res) => {
+			serveMemberFolderObject(req, res, authority, { get: storeGet } as never).catch(() => {
+				if (!res.writableEnded && !res.destroyed) {
+					res.writeHead(503);
+					res.end();
+				}
+			});
+		});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const { port } = server.address() as { port: number };
+		cleanups.push(async () => {
+			server.closeAllConnections();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		});
+
+		const req = httpRequest(`http://127.0.0.1:${port}/v1/member-folder-objects/${environmentId}/${sha256}`, {
+			method: "GET",
+			headers: { authorization: `Bearer ${memberToken}` },
+		});
+		req.on("error", () => {});
+		req.end();
+		await authEntered;
+		req.destroy();
+		await vi.waitFor(() => expect(capturedSignal?.aborted).toBe(true));
+		expect(storeGet).not.toHaveBeenCalled();
+		expect(authCalls).toHaveLength(1);
 	});
 });
 

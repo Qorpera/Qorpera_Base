@@ -3,7 +3,8 @@ import { companyStateSeedTree } from "@qorpera/cloud-client/company-state-files"
 import { describe, expect, it } from "vitest";
 import { CompanyFolderCreator, creationUnits, parseCompanyCreationClaim } from "../src/company-folder-creation.ts";
 import { ObjectDependencyError } from "../src/dependency.ts";
-import { type PlatformFileReference, PlatformFolderProblem } from "../src/platform-folder-writer.ts";
+import { SupabaseMemberCompanyAuthority } from "../src/member-company-authority.ts";
+import { mapBounded, type PlatformFileReference, PlatformFolderProblem } from "../src/platform-folder-writer.ts";
 
 const workerId = "34000000-0000-4000-8000-00000000000a";
 const creationId = "34000000-0000-4000-8000-0000000000c1";
@@ -446,5 +447,73 @@ describe("CompanyFolderCreator", () => {
 		};
 		expect(() => new CompanyFolderCreator({ ...base, workerId: "worker" })).toThrow();
 		expect(() => new CompanyFolderCreator({ ...base, workerId, leaseSeconds: 10 })).toThrow();
+	});
+
+	it("aborts in-flight sibling workers via mapBounded child signal without replacing the triggering failure", async () => {
+		const triggerError = new Error("item-1-failed");
+		let siblingAborted = false;
+		let entered0 = () => {};
+		const saw0 = new Promise<void>((resolve) => {
+			entered0 = resolve;
+		});
+		await expect(
+			mapBounded([0, 1, 2], 2, async (item, _index, stepSignal) => {
+				if (item === 0) {
+					entered0();
+					return await new Promise<number>((_resolve, reject) => {
+						stepSignal.addEventListener(
+							"abort",
+							() => {
+								siblingAborted = true;
+								reject(stepSignal.reason);
+							},
+							{ once: true },
+						);
+					});
+				}
+				await saw0;
+				throw triggerError;
+			}),
+		).rejects.toBe(triggerError);
+		expect(siblingAborted).toBe(true);
+
+		let fetchAborted = false;
+		let fetchEntered = () => {};
+		const sawFetch = new Promise<void>((resolve) => {
+			fetchEntered = resolve;
+		});
+		const authority = new SupabaseMemberCompanyAuthority({
+			projectUrl: "https://cloud.test",
+			publishableKey: "sb_publishable_test",
+			secretKey: "sb_secret_test",
+			fetch: async (_input, init) => {
+				fetchEntered();
+				return await new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener(
+						"abort",
+						() => {
+							fetchAborted = true;
+							reject(new DOMException("The operation was aborted", "AbortError"));
+						},
+						{ once: true },
+					);
+				});
+			},
+		});
+		const fileProblem = new PlatformFolderProblem("file_unreadable");
+		await expect(
+			mapBounded([0, 1], 2, async (item, _index, stepSignal) => {
+				if (item === 0) {
+					return await authority.publisher(
+						"qorpera_folder_authorize_object_download",
+						{ p_environment_id: environmentId, p_actor: { kind: "platform" }, p_sha256: "a".repeat(64) },
+						stepSignal,
+					);
+				}
+				await sawFetch;
+				throw fileProblem;
+			}),
+		).rejects.toBe(fileProblem);
+		expect(fetchAborted).toBe(true);
 	});
 });
