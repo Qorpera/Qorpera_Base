@@ -428,11 +428,20 @@ export class HttpCloudRunnerProviderService {
 		response.once("close", responseClosed);
 		let action: ProviderRequest["action"] | "validation" = "validation";
 		try {
-			let encoded = "";
+			const chunks: Buffer[] = [];
+			let totalBytes = 0;
 			for await (const chunk of request) {
-				encoded += Buffer.isBuffer(chunk) ? chunk.toString("utf-8") : String(chunk);
-				if (Buffer.byteLength(encoded) > MAX_REQUEST_BYTES) throw new Error("Provider request is too large");
+				const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf-8");
+				totalBytes += buf.byteLength;
+				if (totalBytes > MAX_REQUEST_BYTES) throw new Error("Provider request is too large");
+				chunks.push(buf);
 			}
+			const encoded =
+				chunks.length === 0
+					? ""
+					: chunks.length === 1
+						? chunks[0]!.toString("utf-8")
+						: Buffer.concat(chunks, totalBytes).toString("utf-8");
 			const parsed = parseRequest(JSON.parse(encoded) as unknown, this.#backend.adapterId);
 			action = parsed.action;
 			const value = await executeParsedRequest(this.#backend, parsed, controller.signal);

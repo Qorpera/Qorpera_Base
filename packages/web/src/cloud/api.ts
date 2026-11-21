@@ -778,14 +778,18 @@ export class CloudApi {
 			.then((value) => parseCodingSessions(value, asked));
 	}
 
-	readCodingSession(workerId: string, afterEvent = 0, limit = 200): Promise<CodingSessionRead> {
+	readCodingSession(workerId: string, afterEvent = 0, limit = 200, signal?: AbortSignal): Promise<CodingSessionRead> {
 		const asked = performance.now();
 		return this.cloud
-			.rpc("qorpera_read_coding_session", {
-				p_worker_id: requiredUuid(workerId, "Coding session id"),
-				p_after_event: afterEvent,
-				p_limit: limit,
-			})
+			.rpc(
+				"qorpera_read_coding_session",
+				{
+					p_worker_id: requiredUuid(workerId, "Coding session id"),
+					p_after_event: afterEvent,
+					p_limit: limit,
+				},
+				signal,
+			)
 			.then((value) => parseCodingSessionRead(value, asked));
 	}
 

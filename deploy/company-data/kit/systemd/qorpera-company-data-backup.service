@@ -1,0 +1,12 @@
+[Unit]
+Description=Qorpera Company Data Base Backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/qorpera-company-data/kit
+ExecStart=/bin/bash /opt/qorpera-company-data/kit/backup.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6

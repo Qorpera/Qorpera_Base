@@ -137,4 +137,22 @@ describe("retained coding command log pages", () => {
 		expect(parseCloudCodingCommandReceipt(receipt).output).toBe("ok");
 		expect(() => parseCloudCodingCommandReceipt({ ...receipt, log: { ...receipt.log, nextOffset: 3 } })).toThrow();
 	});
+
+	it("matches per-byte UTF-8 and JSON escaping across all ASCII bytes, BOM, multi-byte UTF-8, and invalid subparts", async () => {
+		const ascii = Buffer.from(Array.from({ length: 128 }, (_, i) => i));
+		const mixed = Buffer.concat([
+			ascii,
+			Buffer.from("\ufeffé€😀"),
+			Buffer.from([0xe2, 0x82, 0x20, 0xff, 0xc2, 0x41]),
+		]);
+		const f = await fixture(mixed);
+		const page = await readCodingCommandLog({ ...f, read: { ...f.read, offset: 0, limit: 4096 } });
+		const expectedAscii = ascii.toString("utf8");
+		expect(page.output).toBe(`${expectedAscii}\ufeffé€😀\uFFFD\uFFFD \uFFFD\uFFFDA`);
+		expect(page.log.nextOffset).toBe(mixed.length);
+
+		const tail = await readCodingCommandLog({ ...f, read: { ...f.read, tail: true, limit: 16 } });
+		expect(tail.output).toBe("\uFFFD\uFFFD \uFFFD\uFFFDA");
+		expect(tail.log.nextOffset).toBe(mixed.length);
+	});
 });

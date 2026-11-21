@@ -196,6 +196,24 @@ describe("an HTML page's frame", () => {
 		expect(left).toBe(2);
 	});
 
+	it("handles a rejected page promise cleanly via left without unhandled rejections", async () => {
+		let left = 0;
+		const failing = new AppFrame(
+			Promise.reject(new Error("failed to assemble")),
+			"App: broken",
+			"side-panel-frame",
+			async () => ({ ok: true, value: null }),
+			() => {
+				left++;
+			},
+		);
+		document.body.append(failing.frame);
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(left).toBe(1);
+		expect(failing.signal.aborted).toBe(true);
+	});
+
 	it("hands a page over without the link hints the browser would act on whatever the policy says", () => {
 		// A page without them goes exactly as written.
 		const plain = '<!doctype html><title>Plan</title><link rel="stylesheet" href="data:text/css,p{}"><p>Hi';

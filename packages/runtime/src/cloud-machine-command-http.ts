@@ -1449,6 +1449,7 @@ export function createHttpMemberMachineScreenPeer(options: {
 	token: string;
 	allowLoopback?: boolean;
 	fetch?: typeof fetch;
+	streamConnectTimeoutMs?: number;
 }): {
 	memberScreen(
 		request: { useId: string; etag: string | null },
@@ -1650,33 +1651,49 @@ export function createHttpMemberMachineScreenPeer(options: {
 				passId: input.passId,
 				epoch: input.epoch,
 			});
-			let response: Response;
+			// WHY: Bound peer connect/header wait without AbortSignal.any so a blackholed node cannot pin a stream slot for hours.
+			const connectTimeoutMs = options.streamConnectTimeoutMs ?? 15_000;
+			const requestController = new AbortController();
+			const abortRequest = () => requestController.abort(signal.reason);
+			if (signal.aborted) requestController.abort(signal.reason);
+			else signal.addEventListener("abort", abortRequest, { once: true });
+			let connectTimer: ReturnType<typeof setTimeout> | undefined;
+			let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 			try {
-				response = await transport(`${base}/v1/machine-commands/member-stream`, {
-					method: "POST",
-					redirect: "error",
-					signal,
-					headers: { authorization: `Bearer ${options.token}`, "content-type": "application/json" },
-					body: JSON.stringify(admitted),
-				});
-			} catch {
-				return signal.aborted ? "closed" : "STREAM_UNAVAILABLE";
-			}
-			if (response.status === 409) {
-				const { code } = JSON.parse(
-					new TextDecoder("utf8", { fatal: true }).decode(await readBoundedCloudResponse(response, 4096, signal)),
-				) as { code?: unknown };
-				return isCloudMemberMachinePointerRefusal(code) ? code : "STREAM_UNAVAILABLE";
-			}
-			if (response.status !== 200 || !response.body) {
-				void response.body?.cancel().catch(() => undefined);
-				return "STREAM_UNAVAILABLE";
-			}
-			const reader = response.body.getReader();
-			// The pieces of the frame being read, joined once it is whole: never a growing buffer copied again for every
-			// piece (the v245 release review: 8 MiB in small pieces was quadratic copying on node 1's event loop).
-			const pieces = new PeerFramePieces();
-			try {
+				connectTimer = setTimeout(() => {
+					requestController.abort(new Error("STREAM_CONNECT_TIMEOUT"));
+				}, connectTimeoutMs);
+				let response: Response;
+				try {
+					response = await transport(`${base}/v1/machine-commands/member-stream`, {
+						method: "POST",
+						redirect: "error",
+						signal: requestController.signal,
+						headers: { authorization: `Bearer ${options.token}`, "content-type": "application/json" },
+						body: JSON.stringify(admitted),
+					});
+				} catch {
+					return signal.aborted ? "closed" : "STREAM_UNAVAILABLE";
+				} finally {
+					clearTimeout(connectTimer);
+					connectTimer = undefined;
+				}
+				if (response.status === 409) {
+					const { code } = JSON.parse(
+						new TextDecoder("utf8", { fatal: true }).decode(
+							await readBoundedCloudResponse(response, 4096, signal),
+						),
+					) as { code?: unknown };
+					return isCloudMemberMachinePointerRefusal(code) ? code : "STREAM_UNAVAILABLE";
+				}
+				if (response.status !== 200 || !response.body) {
+					void response.body?.cancel().catch(() => undefined);
+					return "STREAM_UNAVAILABLE";
+				}
+				reader = response.body.getReader();
+				// The pieces of the frame being read, joined once it is whole: never a growing buffer copied again for every
+				// piece (the v245 release review: 8 MiB in small pieces was quadratic copying on node 1's event loop).
+				const pieces = new PeerFramePieces();
 				for (;;) {
 					const next = await reader.read();
 					if (next.done) return signal.aborted ? "closed" : "STREAM_UNAVAILABLE";
@@ -1702,7 +1719,9 @@ export function createHttpMemberMachineScreenPeer(options: {
 			} catch {
 				return signal.aborted ? "closed" : "STREAM_UNAVAILABLE";
 			} finally {
-				void reader.cancel().catch(() => undefined);
+				if (connectTimer !== undefined) clearTimeout(connectTimer);
+				signal.removeEventListener("abort", abortRequest);
+				void reader?.cancel().catch(() => undefined);
 			}
 		},
 		memberPointer: async (input: { passId: string; x: number; y: number }, signal: AbortSignal) => {

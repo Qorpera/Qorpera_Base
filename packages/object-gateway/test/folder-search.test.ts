@@ -882,5 +882,26 @@ describe("folder search, version 2 (keyholes S4)", () => {
 			request2("a\uFFFDb", { caseSensitive: true }),
 		);
 		expect(badSearch.hits.map((h) => [h.path, h.line])).toEqual([["bad.txt", 1]]);
+
+		const longAscii = `${"a".repeat(300)}\x07NEEDLE\x00${"b".repeat(300)}\n`;
+		const longUnicode = `${"\u0130\uD83D\uDE80".repeat(140)}TARGET_MATCH${"z".repeat(260)}\n`;
+		const longStage = stage({
+			"long-ascii.txt": longAscii,
+			"long-unicode.txt": longUnicode,
+		});
+		const asciiHit = await searchView(longStage.source, request2("needle", { caseSensitive: false }));
+		expect(asciiHit.hits).toHaveLength(1);
+		expect(asciiHit.hits[0]!.text).toContain(" NEEDLE ");
+		expect(asciiHit.hits[0]!.text.startsWith("…")).toBe(true);
+		expect(asciiHit.hits[0]!.text.endsWith("…")).toBe(true);
+		expect(Array.from(asciiHit.hits[0]!.text).length).toBe(202);
+
+		const uniHit = await searchView(longStage.source, request2("target_match", { caseSensitive: false }));
+		expect(uniHit.hits).toHaveLength(1);
+		expect(uniHit.hits[0]!.text).toContain("TARGET_MATCH");
+		expect(uniHit.hits[0]!.text.startsWith("…")).toBe(true);
+		expect(uniHit.hits[0]!.text.endsWith("…")).toBe(true);
+		expect(Array.from(uniHit.hits[0]!.text).length).toBe(202);
+		expect(uniHit.hits[0]!.text.includes("\uFFFD")).toBe(false);
 	});
 });

@@ -672,5 +672,56 @@ describe("a member's questions to the company's databases", () => {
 				"an answer this page does not know",
 			);
 		});
+
+		it("previews and runs named changes with rich JSON parameters and need-text exchange", async () => {
+			const sql =
+				"-- Mark orders :ids as :meta.\nupdate orders set meta = :meta::jsonb where id = any(:ids::bigint[]) returning id;\n";
+			const hash = sha(sql);
+			const preview = {
+				words: [
+					"Mark orders ",
+					{ name: "ids", value: "[1,2]" },
+					" as ",
+					{ name: "meta", value: '{"done":true}' },
+					".",
+				],
+				values: [
+					{ name: "ids", value: "[1,2]" },
+					{ name: "meta", value: '{"done":true}' },
+				],
+				sha256: hash,
+			};
+			const changed = {
+				changed: 2,
+				columns: ["id"],
+				rows: [[1], [2]],
+				more: false,
+				asOf: "2026-11-21T00:00:00.000Z",
+			};
+			const { fetch, sent } = fakeFetch([
+				[200, { need: [{ path: "data/shop/actions/mark-many.sql", sha256: hash }] }],
+				[200, preview],
+				[200, changed],
+			]);
+			const { data } = client(fetch, { "data/shop/actions/mark-many.sql": sql });
+			const params = { ids: [1, 2], meta: { done: true } };
+			const shown = await data.previewChange({ database: "shop", change: "mark-many", params }, signal());
+			expect(shown).toEqual(preview);
+			expect(sent[0]?.url).toContain("/v1/company-data/");
+			expect(sent[0]?.body).toEqual({ database: "shop", change: "mark-many", params, preview: true });
+			expect(sent[1]?.body).toEqual({
+				database: "shop",
+				change: "mark-many",
+				params,
+				preview: true,
+				texts: { [hash]: sql },
+			});
+			const done = await data.change(
+				{ database: "shop", change: "mark-many", params, sha256: shown.sha256 },
+				signal(),
+			);
+			expect(done).toEqual(changed);
+			expect(sent[2]?.body).toEqual({ database: "shop", change: "mark-many", params, sha256: hash });
+		});
 	});
 });

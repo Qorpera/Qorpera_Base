@@ -16,6 +16,7 @@ import {
 	Request as NodeHttpRequest,
 	Response as NodeHttpResponse,
 } from "@whatwg-node/node-fetch";
+import { withAbortScope, withTimeoutScope } from "./abort-scope.ts";
 import type { ServiceHttpFetch, ServiceHttpRequest, ServiceHttpResponse } from "./http-transport.ts";
 import type {
 	LxdClient,
@@ -709,7 +710,7 @@ export class LxdNativeLoginGateway {
 	readonly #routes = new Map<string, Promise<NativeLoginResult>>();
 	#startRoute(login: NativeLoginRequest, authority: NativeLoginDescription): Promise<NativeLoginResult> {
 		const work = this.#exclusive(login.computeIdentityId, () =>
-			this.#route(login, authority, this.#lifetime.signal),
+			withAbortScope(this.#lifetime.signal, (scoped) => this.#route(login, authority, scoped)),
 		).finally(() => {
 			if (this.#routes.get(login.loginId) === work) this.#routes.delete(login.loginId);
 		});
@@ -719,15 +720,17 @@ export class LxdNativeLoginGateway {
 
 	async #describe(login: NativeLoginRequest, signal?: AbortSignal): Promise<NativeLoginDescription> {
 		if (login.purpose === "account_refresh") {
-			const value = parseNativeAccountRefreshDescription(
-				await this.#rpc(
+			const call = (checked: AbortSignal) =>
+				this.#rpc(
 					"qorpera_describe_native_account_refresh_route",
 					{
 						p_request_id: login.loginId,
 						p_capability_sha256: sha256(login.capability),
 					},
-					signal ?? this.#lifetime.signal,
-				),
+					checked,
+				);
+			const value = parseNativeAccountRefreshDescription(
+				await (signal ? call(signal) : withAbortScope(this.#lifetime.signal, call)),
 			);
 			return {
 				purpose: "account_refresh",
@@ -879,22 +882,23 @@ export class LxdNativeLoginGateway {
 		};
 	}
 	async #rpc(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
-		const checked = AbortSignal.any([signal, AbortSignal.timeout(30000)]);
-		const response = await this.#fetch(new URL(`/rest/v1/rpc/${method}`, this.#config.supabaseUrl), {
-			method: "POST",
-			redirect: "error",
-			headers: { ...supabaseHeaders(this.#config.supabaseServiceKey), "content-type": "application/json" },
-			body: JSON.stringify(args),
-			signal: checked,
+		return withTimeoutScope(signal, 30000, async (checked) => {
+			const response = await this.#fetch(new URL(`/rest/v1/rpc/${method}`, this.#config.supabaseUrl), {
+				method: "POST",
+				redirect: "error",
+				headers: { ...supabaseHeaders(this.#config.supabaseServiceKey), "content-type": "application/json" },
+				body: JSON.stringify(args),
+				signal: checked,
+			});
+			if (!response.ok) {
+				await response.body?.cancel().catch(() => undefined);
+				throw new Error("LOGIN_REGISTRY_UNCONFIRMED");
+			}
+			const value = await response.text();
+			checked.throwIfAborted();
+			if (Buffer.byteLength(value) > MAX_RESPONSE_BYTES) throw new Error("LOGIN_REGISTRY_UNCONFIRMED");
+			return JSON.parse(value) as unknown;
 		});
-		if (!response.ok) {
-			await response.body?.cancel();
-			throw new Error("LOGIN_REGISTRY_UNCONFIRMED");
-		}
-		const value = await response.text();
-		checked.throwIfAborted();
-		if (Buffer.byteLength(value) > MAX_RESPONSE_BYTES) throw new Error("LOGIN_REGISTRY_UNCONFIRMED");
-		return JSON.parse(value) as unknown;
 	}
 	async #admit(journal: LxdLoginJournal, signal: AbortSignal): Promise<AbortSignal> {
 		const binding = journal.binding,
@@ -1813,11 +1817,15 @@ export class LxdNativeLoginGateway {
 				const state = await this.#lxd.getInstanceState(this.#config.project, instance.name, signal);
 				const address = lxdGuestIpv4(instance, state, this.#config.networkInterface);
 				if (state.status === "Running" && address) {
-					const response = await this.#fetch(`http://${address}:${this.#config.nativeBridgePort}/healthz`, {
-						redirect: "error",
-						signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(1_000)]) : AbortSignal.timeout(1_000),
+					const ready = await withTimeoutScope(signal, 1_000, async (checked) => {
+						const response = await this.#fetch(`http://${address}:${this.#config.nativeBridgePort}/healthz`, {
+							redirect: "error",
+							signal: checked,
+						});
+						await response.body?.cancel().catch(() => undefined);
+						return response.ok;
 					});
-					if (response.ok) return address;
+					if (ready) return address;
 				}
 			} catch (error) {
 				if (signal?.aborted) throw signal.reason;
@@ -1829,29 +1837,32 @@ export class LxdNativeLoginGateway {
 	}
 
 	async #forward(address: string, login: NativeLoginRequest, signal?: AbortSignal): Promise<NativeLoginResult> {
-		const response = await this.#fetch(
-			`http://${address}:${this.#config.nativeBridgePort}/${login.purpose === "account_refresh" ? "account-refresh" : "login"}`,
-			{
-				method: "POST",
-				redirect: "error",
-				headers: { authorization: `Bearer ${login.capability}`, "content-type": "application/json" },
-				body: login.encoded,
-				signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000),
-			},
-		);
-		const declared = Number(response.headers.get("content-length") ?? "0");
-		if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
-			throw new Error("Native login response is too large");
-		}
-		const encoded = await response.text();
-		if (Buffer.byteLength(encoded) > MAX_RESPONSE_BYTES) throw new Error("Native login response is too large");
-		if (!response.ok) throw new Error(`Native login guest rejected the request (${response.status})`);
-		if (login.purpose === "account_refresh") {
-			if (parseNativeAccountRefreshResult(JSON.parse(encoded), login.loginId) !== "completed")
-				throw new Error("Account refresh did not complete");
-			return this.#completed(login.loginId);
-		}
-		return parseResult(JSON.parse(encoded) as unknown, login.loginId);
+		return withTimeoutScope(signal, 60_000, async (checked) => {
+			const response = await this.#fetch(
+				`http://${address}:${this.#config.nativeBridgePort}/${login.purpose === "account_refresh" ? "account-refresh" : "login"}`,
+				{
+					method: "POST",
+					redirect: "error",
+					headers: { authorization: `Bearer ${login.capability}`, "content-type": "application/json" },
+					body: login.encoded,
+					signal: checked,
+				},
+			);
+			const declared = Number(response.headers.get("content-length") ?? "0");
+			if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+				await response.body?.cancel().catch(() => undefined);
+				throw new Error("Native login response is too large");
+			}
+			const encoded = await response.text();
+			if (Buffer.byteLength(encoded) > MAX_RESPONSE_BYTES) throw new Error("Native login response is too large");
+			if (!response.ok) throw new Error(`Native login guest rejected the request (${response.status})`);
+			if (login.purpose === "account_refresh") {
+				if (parseNativeAccountRefreshResult(JSON.parse(encoded), login.loginId) !== "completed")
+					throw new Error("Account refresh did not complete");
+				return this.#completed(login.loginId);
+			}
+			return parseResult(JSON.parse(encoded) as unknown, login.loginId);
+		});
 	}
 
 	/** Refreshes share the fenced VM journal and capacity class, but never login authority. */
@@ -1951,11 +1962,11 @@ export class LxdNativeLoginGateway {
 	#recoveryFor(journal: LxdLoginJournal, binding: LxdLoginBinding, instanceName: string): Promise<void> {
 		const running = this.#recoveries.get(binding.loginId);
 		if (running) return running;
-		const work = this.#recoverEstablishedIdentity(journal, binding, instanceName, this.#lifetime.signal).finally(
-			() => {
-				if (this.#recoveries.get(binding.loginId) === work) this.#recoveries.delete(binding.loginId);
-			},
-		);
+		const work = withAbortScope(this.#lifetime.signal, (scoped) =>
+			this.#recoverEstablishedIdentity(journal, binding, instanceName, scoped),
+		).finally(() => {
+			if (this.#recoveries.get(binding.loginId) === work) this.#recoveries.delete(binding.loginId);
+		});
 		this.#recoveries.set(binding.loginId, work);
 		return work;
 	}
@@ -2016,7 +2027,7 @@ export class HttpLxdNativeLoginGateway {
 	async #reconcileLoop(signal: AbortSignal): Promise<void> {
 		while (!signal.aborted) {
 			try {
-				const result = await this.#gateway.reconcile(AbortSignal.any([signal, AbortSignal.timeout(30000)]));
+				const result = await withTimeoutScope(signal, 30000, (checked) => this.#gateway.reconcile(checked));
 				if (result.unconfirmed)
 					console.error(`Native login cleanup has ${result.unconfirmed} unconfirmed allocations`);
 			} catch {
@@ -2059,11 +2070,15 @@ export class HttpLxdNativeLoginGateway {
 		request.once("aborted", abort);
 		response.once("close", abort);
 		try {
-			let encoded = "";
+			const chunks: Buffer[] = [];
+			let bytes = 0;
 			for await (const chunk of request) {
-				encoded += Buffer.isBuffer(chunk) ? chunk.toString("utf-8") : String(chunk);
-				if (Buffer.byteLength(encoded) > MAX_REQUEST_BYTES) break;
+				const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf-8");
+				chunks.push(buf);
+				bytes += buf.byteLength;
+				if (bytes > MAX_REQUEST_BYTES) break;
 			}
+			const encoded = chunks.length > 0 ? Buffer.concat(chunks, bytes).toString("utf-8") : "";
 			const headers = new NodeHttpHeaders();
 			for (const [name, rawValue] of Object.entries(request.headers)) {
 				if (typeof rawValue === "string") headers.set(name, rawValue);

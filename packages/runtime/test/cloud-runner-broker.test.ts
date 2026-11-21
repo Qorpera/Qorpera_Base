@@ -645,4 +645,31 @@ describe("a folder-v2 run in the runner broker (folder core C3, P23)", () => {
 		await expect(current.broker.describe()).rejects.toThrow(message);
 		expect(current.transport.actions).toEqual(["describe"]);
 	});
+
+	it("cancels non-ok response bodies and aborts retry backoff sleep immediately when authority signal aborts", async () => {
+		let cancelled = 0;
+		const controller = new AbortController();
+		const transport = new SupabaseCloudRunnerBrokerTransport(
+			"https://example.supabase.co",
+			"publishable-key",
+			async () => {
+				const stream = new ReadableStream({
+					start(ctrl) {
+						ctrl.enqueue(new TextEncoder().encode("temporary overload"));
+					},
+					cancel() {
+						cancelled++;
+					},
+				});
+				return new Response(stream, { status: 503 });
+			},
+		);
+		const startedAt = performance.now();
+		setTimeout(() => controller.abort(new Error("cancelled")), 40);
+		await expect(
+			transport.describe({ runnerId, jobId, sessionToken, leaseToken, signal: controller.signal }),
+		).rejects.toThrow(CloudRunnerBrokerRequestError);
+		expect(cancelled).toBeGreaterThanOrEqual(1);
+		expect(performance.now() - startedAt).toBeLessThan(800);
+	});
 });

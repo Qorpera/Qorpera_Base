@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { connect } from "node:net";
 import type { JsonValue } from "@qorpera/contracts";
 import {
 	CloudSecretBroker,
@@ -520,6 +521,36 @@ it("answers a browser's capture from a listed member origin, and only that origi
 	expect(
 		() => new HttpCloudSecretBrokerService(f.broker, f.runtimeToken, "127.0.0.1", 0, ["http://app.qorpera.test"]),
 	).toThrow("member origin is invalid");
+	f.wrappingKey.fill(0);
+	f.keyring.close();
+});
+
+it("closes sockets promptly on early rejections with unread bodies while keeping bodiless GET keep-alive", async () => {
+	const f = fixture();
+	const port = await f.service.start();
+	const early = await new Promise<{ response: string; elapsedMs: number }>((resolve, reject) => {
+		const startedAt = performance.now();
+		const socket = connect({ host: "127.0.0.1", port });
+		let data = "";
+		socket.setEncoding("utf8");
+		socket.on("data", (chunk) => {
+			data += chunk;
+		});
+		socket.once("error", reject);
+		socket.once("close", () => resolve({ response: data, elapsedMs: performance.now() - startedAt }));
+		socket.once("connect", () => {
+			socket.write(
+				`POST /v1/repository-credentials?company=${randomUUID()} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nAuthorization: Bearer wrong-token\r\nContent-Type: application/json\r\nContent-Length: 10000\r\n\r\n{"partial":`,
+			);
+		});
+	});
+	expect(early.response).toMatch(/^HTTP\/1\.1 404 /);
+	expect(early.response.toLowerCase()).toContain("\r\nconnection: close\r\n");
+	expect(early.elapsedMs).toBeLessThan(2_000);
+
+	const bodiless = await fetch(`http://127.0.0.1:${port}/v1/unknown`);
+	expect(bodiless.status).toBe(404);
+	expect(bodiless.headers.get("connection")?.toLowerCase()).not.toBe("close");
 	f.wrappingKey.fill(0);
 	f.keyring.close();
 });

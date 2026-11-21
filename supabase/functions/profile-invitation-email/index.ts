@@ -114,6 +114,7 @@ class ResendInvitationEmailProvider implements InvitationEmailProvider {
 					text: email.text,
 					html: email.html,
 				}),
+				signal: AbortSignal.timeout(15_000),
 			});
 		} catch (error) {
 			throw new InvitationEmailSendError(

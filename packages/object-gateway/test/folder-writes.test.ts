@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { NasObjects } from "../src/folder-service/objects.ts";
 import {
+	type BridgeInfo,
 	encodeFrame,
 	encodeJson,
 	type Frame,
@@ -23,7 +24,12 @@ import { createFolderServer } from "../src/folder-service/server.ts";
 import { FolderService, LISTING_ONLY, type ViewHandle } from "../src/folder-service/service.ts";
 import { FolderStaging, type FolderUploads, GatewayUploads, manifestText } from "../src/folder-service/staging.ts";
 import {
+	ALLOCATION,
 	BRIDGE,
+	CODING,
+	CODING_MACHINE_ID,
+	codingGrants,
+	companyGrants,
 	ENV,
 	FakeCore,
 	FakeUploads,
@@ -31,6 +37,8 @@ import {
 	grants,
 	hashOf,
 	MEMBER,
+	noSecrets,
+	OFFICE,
 	PASS,
 	PROFILE,
 	secretsOf,
@@ -57,6 +65,7 @@ async function fixture(
 		now?: () => number;
 		platform?: boolean;
 		cacheBytes?: number;
+		maxBoundaryBatches?: number;
 		wrapUploads?: (inner: FakeUploads) => FolderUploads;
 	} = {},
 ) {
@@ -73,6 +82,7 @@ async function fixture(
 			staging: new FolderStaging(core, folderUploads, objects),
 			log: () => undefined,
 			...(options.now ? { now: options.now } : {}),
+			...(options.maxBoundaryBatches !== undefined ? { maxBoundaryBatches: options.maxBoundaryBatches } : {}),
 		});
 	let service = start();
 	const handles: ViewHandle[] = [];
@@ -2309,5 +2319,590 @@ describe("write-through ByteCache and sliding-window staging", () => {
 		const report = await publishing;
 		expect(report.paths).toHaveLength(count);
 		expect(report.paths.every((p) => p.outcome === "saved")).toBe(true);
+	});
+});
+
+describe("multi-batch boundary commits", () => {
+	it("publishes up to 1,000 units in a single commit RPC without batch splitting", async () => {
+		const { core, open } = await fixture();
+		core.seed([folder("bulk")]);
+		const view = await open();
+		for (let i = 0; i < 1000; i++) await write(view, `bulk/f${String(i).padStart(4, "0")}.txt`, `v-${i % 8}`);
+		const report = await view.publish();
+		expect(core.commits).toHaveLength(1);
+		expect(core.commits[0]?.units).toHaveLength(1000);
+		expect(core.commits[0]?.key).not.toMatch(/:b\d+$/);
+		expect(report.refused).toBeUndefined();
+		expect(report.commitId).toBeTruthy();
+		expect(report.seq).toBe(core.seq);
+		expect(report.paths).toHaveLength(1000);
+		expect(report.paths.every((p) => p.outcome === "saved")).toBe(true);
+		for (let i = 0; i < 1000; i++) expect(core.entries.has(`bulk/f${String(i).padStart(4, "0")}.txt`)).toBe(true);
+		expect(await view.publish()).toEqual({ commitId: null, seq: null, paths: [] });
+		expect(core.commits).toHaveLength(1);
+	});
+
+	it("splits a 2,500-file boundary into 1,000 + 1,000 + 500 sequential commits and clears pending state", async () => {
+		const { core, open } = await fixture();
+		core.seed([folder("bulk")]);
+		const view = await open();
+		for (let i = 0; i < 2500; i++) await write(view, `bulk/f${String(i).padStart(4, "0")}.txt`, `body-${i % 16}`);
+		const report = await view.publish();
+		expect(core.commits.map((c) => c.units.length)).toEqual([1000, 1000, 500]);
+		const baseKey = core.commits[0]!.key;
+		expect(baseKey).not.toMatch(/:b\d+$/);
+		expect(core.commits[1]?.key).toBe(`${baseKey}:b1`);
+		expect(core.commits[2]?.key).toBe(`${baseKey}:b2`);
+		expect(report.refused).toBeUndefined();
+		expect(report.commitId).toBeTruthy();
+		expect(report.seq).toBe(core.seq);
+		expect(report.paths).toHaveLength(2500);
+		expect(report.paths.every((p) => p.outcome === "saved")).toBe(true);
+		for (let i = 0; i < 2500; i++) expect(core.entries.has(`bulk/f${String(i).padStart(4, "0")}.txt`)).toBe(true);
+		expect(await view.publish()).toEqual({ commitId: null, seq: null, paths: [] });
+		expect(core.commits).toHaveLength(3);
+	});
+
+	it("preserves parent-before-child, free-before-fill, and kept denied bytes across multi-batch boundaries", async () => {
+		const { root, core, open } = await fixture();
+		const seeded = [
+			folder("work"),
+			await storeFile(root, "work/old.txt", "old", 1),
+			await storeFile(root, "work/move-src.txt", "moved", 2),
+			await storeFile(root, "work/outside.txt", "outside", 3),
+			await storeFile(root, "work/del-me.txt", "gone", 4),
+			await storeFile(root, "work/keep-deny.txt", "orig", 5),
+		];
+		for (let i = 0; i < 1050; i++)
+			seeded.push(await storeFile(root, `work/u${String(i).padStart(4, "0")}.txt`, "v1", 10 + i));
+		core.seed(seeded);
+		core.refuse = (path) => path === "work/keep-deny.txt";
+
+		const view = await open();
+		const keepEntry = core.entries.get("work/keep-deny.txt")!;
+		await write(view, "work/keep-deny.txt", "updated-secret", keepEntry.version);
+		for (let i = 0; i < 1050; i++) {
+			const path = `work/u${String(i).padStart(4, "0")}.txt`;
+			await write(view, path, "v2", core.entries.get(path)!.version);
+		}
+		await view.unlink("work/del-me.txt", undefined);
+		await view.rename({ from: "work/move-src.txt", to: "work/old.txt", noReplace: false });
+		await view.mkdir("work/sub");
+		await view.rename({ from: "work/outside.txt", to: "work/sub/moved.txt", noReplace: false });
+		for (let i = 0; i < 100; i++) await write(view, `work/sub/n${String(i).padStart(3, "0")}.txt`, `n-${i % 8}`);
+
+		const report = await view.publish();
+		expect(core.commits.length).toBeGreaterThan(1);
+		expect(core.commits.every((c) => c.units.length <= 1000)).toBe(true);
+		const flatUnits = core.commits.flatMap((c) => c.units);
+		const mkdirIdx = flatUnits.findIndex((u) => u.op === "mkdir" && u.path === "work/sub");
+		const firstChildIdx = flatUnits.findIndex(
+			(u) =>
+				(u.op === "write" && u.path.startsWith("work/sub/")) || (u.op === "move" && u.to.startsWith("work/sub/")),
+		);
+		expect(mkdirIdx).toBeGreaterThanOrEqual(0);
+		expect(firstChildIdx).toBeGreaterThan(mkdirIdx);
+		const deleteOldIdx = flatUnits.findIndex((u) => u.op === "delete" && u.path === "work/old.txt");
+		const moveIntoOldIdx = flatUnits.findIndex((u) => u.op === "move" && u.to === "work/old.txt");
+		expect(deleteOldIdx).toBeGreaterThanOrEqual(0);
+		expect(moveIntoOldIdx).toBeGreaterThan(deleteOldIdx);
+
+		const deniedEntry = report.paths.find((p) => p.path === "work/keep-deny.txt");
+		expect(deniedEntry).toEqual({ path: "work/keep-deny.txt", outcome: "denied", reason: "denied", kept: true });
+		expect(report.paths.filter((p) => p.path !== "work/keep-deny.txt").every((p) => p.outcome === "saved")).toBe(
+			true,
+		);
+		expect(core.entries.has("work/del-me.txt")).toBe(false);
+		expect(core.entries.has("work/move-src.txt")).toBe(false);
+		expect(core.entries.has("work/old.txt")).toBe(true);
+		expect(core.entries.has("work/sub/moved.txt")).toBe(true);
+		expect(core.entries.has("work/sub/n099.txt")).toBe(true);
+
+		core.refuse = () => false;
+		const commitsBeforeRetry = core.commits.length;
+		const retry = await view.publish();
+		expect(core.commits).toHaveLength(commitsBeforeRetry + 1);
+		expect(core.commits.at(-1)?.units).toHaveLength(1);
+		expect(retry.paths).toEqual([{ path: "work/keep-deny.txt", outcome: "saved" }]);
+		expect(await read(view, "work/keep-deny.txt")).toBe("updated-secret");
+		expect(await view.publish()).toEqual({ commitId: null, seq: null, paths: [] });
+	});
+
+	it("keeps command finals on the single-commit path after endCommand while auto-splitting non-final publishes", async () => {
+		const root = await mkdtemp(join(tmpdir(), "qorpera-folder-writes-final-"));
+		const core = new FakeCore();
+		core.seed([folder("out"), folder("pre")]);
+		const viewId = "5e6f7081-92a3-4b4c-8d5e-6f708192a3b4";
+		const cmdPass = "cmdpass_0123456789-abcdefghijklmnopqrstuvwx";
+		core.openView(viewId, cmdPass, { kind: "computer_shell_command", machineId: ALLOCATION });
+		const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
+		const service = new FolderService({
+			core,
+			objects,
+			grants: companyGrants(),
+			staging: new FolderStaging(core, new FakeUploads(root, core), objects),
+			log: () => undefined,
+		});
+		const atOffice: BridgeInfo = { cid: 90, lookup: "found", machine: OFFICE };
+		const view = await service.open({ protocol: 3, environmentId: ENV, viewId, pass: cmdPass, role: "io" }, atOffice);
+		cleanups.push(async () => {
+			view.release();
+			service.stop();
+			await rm(root, { recursive: true, force: true });
+		});
+
+		for (let i = 0; i < 1050; i++) await write(view, `pre/f${String(i).padStart(4, "0")}.txt`, `p-${i % 8}`);
+		const runningReport = await view.publish(false);
+		expect(core.commits.map((c) => ({ count: c.units.length, final: c.final }))).toEqual([
+			{ count: 1000, final: false },
+			{ count: 50, final: false },
+		]);
+		expect(runningReport.refused).toBeUndefined();
+		expect(runningReport.paths).toHaveLength(1050);
+		expect(runningReport.paths.every((p) => p.outcome === "saved")).toBe(true);
+
+		for (let i = 0; i < 1050; i++) await write(view, `out/f${String(i).padStart(4, "0")}.txt`, `o-${i % 8}`);
+		core.endCommand(viewId);
+		const finalReport = await view.publish(true);
+		expect(core.commits.slice(2).map((c) => ({ count: c.units.length, final: c.final }))).toEqual([
+			{ count: 1050, final: true },
+		]);
+		expect(finalReport.refused).toBe("invalid");
+		expect(finalReport.commitId).toBeNull();
+		expect(finalReport.seq).toBeNull();
+		expect(finalReport.closed).toBeUndefined();
+		expect([...core.entries.keys()].filter((p) => p.startsWith("out/"))).toHaveLength(0);
+	});
+
+	it("stops on mid-batch refusal, clears batch 1, keeps batches 2 and 3 pending, and retries cleanly", async () => {
+		const { core, open } = await fixture();
+		core.seed([folder("bulk")]);
+		const view = await open();
+		for (let i = 0; i < 2500; i++) await write(view, `bulk/f${String(i).padStart(4, "0")}.txt`, `v-${i % 8}`);
+
+		core.commitHook = (callIndex) => {
+			if (callIndex === 1) core.commitRefusal = "stopped";
+			return undefined;
+		};
+		const first = await view.publish();
+		expect(core.commits.map((c) => c.units.length)).toEqual([1000, 1000]);
+		expect(first.refused).toBe("stopped");
+		expect(first.commitId).toBeNull();
+		expect(first.seq).toBeNull();
+		expect(first.paths.filter((p) => p.outcome === "saved")).toHaveLength(1000);
+		expect(first.paths.filter((p) => p.outcome === "refused" && p.kept)).toHaveLength(1500);
+		expect([...core.entries.keys()].filter((p) => p.startsWith("bulk/"))).toHaveLength(1000);
+
+		core.commitHook = undefined;
+		core.commitRefusal = undefined;
+		const second = await view.publish();
+		expect(core.commits.map((c) => c.units.length)).toEqual([1000, 1000, 1000, 500]);
+		expect(second.refused).toBeUndefined();
+		expect(second.commitId).toBeTruthy();
+		expect(second.seq).toBe(core.seq);
+		expect(second.paths).toHaveLength(1500);
+		expect(second.paths.every((p) => p.outcome === "saved")).toBe(true);
+		expect([...core.entries.keys()].filter((p) => p.startsWith("bulk/"))).toHaveLength(2500);
+		expect(await view.publish()).toEqual({ commitId: null, seq: null, paths: [] });
+	});
+
+	it("handles non-liftable mid-batch denied refusal without corrupting pending state", async () => {
+		const { root, core, open } = await fixture();
+		const seeded = [folder("bulk"), await storeFile(root, "bulk/del.txt", "d", 1)];
+		for (let i = 0; i < 1000; i++)
+			seeded.push(await storeFile(root, `bulk/e${String(i).padStart(4, "0")}.txt`, "v1", 10 + i));
+		core.seed(seeded);
+		const view = await open();
+		for (let i = 0; i < 1000; i++) {
+			const path = `bulk/e${String(i).padStart(4, "0")}.txt`;
+			await write(view, path, "v2", core.entries.get(path)!.version);
+		}
+		await view.unlink("bulk/del.txt", undefined);
+		for (let i = 0; i < 200; i++) await write(view, `bulk/n${String(i).padStart(4, "0")}.txt`, `n-${i % 8}`);
+
+		core.commitHook = (callIndex) => {
+			if (callIndex === 1) core.commitRefusal = "denied";
+			return undefined;
+		};
+		const first = await view.publish();
+		expect(core.commits.map((c) => c.units.length)).toEqual([1000, 201]);
+		expect(first.refused).toBe("denied");
+		expect(first.commitId).toBeNull();
+		expect(first.seq).toBeNull();
+		expect(first.paths.filter((p) => p.outcome === "saved")).toHaveLength(1000);
+		expect(first.paths.filter((p) => p.outcome === "refused" && p.kept)).toHaveLength(200);
+		expect(first.paths.find((p) => p.path === "bulk/del.txt")).toEqual({
+			path: "bulk/del.txt",
+			outcome: "refused",
+			reason: "denied",
+		});
+
+		core.commitHook = undefined;
+		core.commitRefusal = undefined;
+		const second = await view.publish();
+		expect(second.refused).toBeUndefined();
+		expect(second.paths).toHaveLength(200);
+		expect(second.paths.every((p) => p.outcome === "saved")).toBe(true);
+		expect(core.entries.has("bulk/del.txt")).toBe(true);
+		expect(await view.publish()).toEqual({ commitId: null, seq: null, paths: [] });
+	});
+
+	it("replays an unanswered mid-batch commit under its deterministic key and finishes remaining batches", async () => {
+		const { core, open } = await fixture();
+		core.seed([folder("bulk")]);
+		const view = await open();
+		for (let i = 0; i < 2500; i++) await write(view, `bulk/f${String(i).padStart(4, "0")}.txt`, `v-${i % 8}`);
+
+		core.commitHook = (callIndex) => {
+			if (callIndex === 1) core.commitFailures = { count: 3, mode: "down" };
+			return undefined;
+		};
+		const first = await view.publish();
+		const baseKey = core.commits[0]!.key;
+		expect(core.commits.map((c) => ({ key: c.key, count: c.units.length }))).toEqual([
+			{ key: baseKey, count: 1000 },
+			{ key: `${baseKey}:b1`, count: 1000 },
+			{ key: `${baseKey}:b1`, count: 1000 },
+			{ key: `${baseKey}:b1`, count: 1000 },
+		]);
+		expect(first.commitId).toBeNull();
+		expect(first.seq).toBeNull();
+		expect(first.paths.filter((p) => p.outcome === "saved")).toHaveLength(1000);
+		expect(first.paths.filter((p) => p.outcome === "not_applied" && p.kept)).toHaveLength(1500);
+		expect([...core.entries.keys()].filter((p) => p.startsWith("bulk/"))).toHaveLength(1000);
+
+		core.commitHook = undefined;
+		const second = await view.publish();
+		expect(core.commits.slice(4).map((c) => ({ key: c.key, count: c.units.length }))).toEqual([
+			{ key: `${baseKey}:b1`, count: 1000 },
+			{ key: expect.stringMatching(/^folder-view:/), count: 500 },
+		]);
+		expect(second.commitId).toBeTruthy();
+		expect(second.paths).toHaveLength(1500);
+		expect(second.paths.every((p) => p.outcome === "saved")).toBe(true);
+		expect([...core.entries.keys()].filter((p) => p.startsWith("bulk/"))).toHaveLength(2500);
+		expect(await view.publish()).toEqual({ commitId: null, seq: null, paths: [] });
+	});
+
+	it("splits boundaries exceeding 64 structured files into compliant batches", async () => {
+		const { core, open } = await fixture();
+		core.seed([folder("QorperaOS")]);
+		const view = await open();
+		await view.mkdir("QorperaOS/rules");
+		for (let i = 0; i < 70; i++)
+			await write(view, `QorperaOS/rules/r${String(i).padStart(2, "0")}.md`, `# Rule ${i}\n`);
+		const report = await view.publish();
+		expect(core.commits.map((c) => c.units.length)).toEqual([65, 6]);
+		expect(core.commits[0]?.units[0]).toEqual({ op: "mkdir", path: "QorperaOS/rules" });
+		expect(report.refused).toBeUndefined();
+		expect(report.paths).toHaveLength(71);
+		expect(report.paths.every((p) => p.outcome === "saved")).toBe(true);
+		expect(core.entries.has("QorperaOS/rules/r69.md")).toBe(true);
+		expect(await view.publish()).toEqual({ commitId: null, seq: null, paths: [] });
+	});
+
+	it("orders git objects before index and logs across batches and keeps repo metadata intact on mid-batch refusal", async () => {
+		const { root, core, open } = await fixture();
+		const indexEntry = await storeFile(root, "code/acme/app/repo.git/worktrees/w1/index", "idx-v1", 1);
+		const logEntry = await storeFile(root, "code/acme/app/repo.git/worktrees/w1/logs/HEAD", "log-v1", 2);
+		core.seed([
+			folder("code"),
+			folder("code/acme"),
+			folder("code/acme/app"),
+			folder("code/acme/app/repo.git"),
+			folder("code/acme/app/repo.git/objects"),
+			folder("code/acme/app/repo.git/objects/00"),
+			folder("code/acme/app/repo.git/worktrees"),
+			folder("code/acme/app/repo.git/worktrees/w1"),
+			indexEntry,
+			folder("code/acme/app/repo.git/worktrees/w1/logs"),
+			logEntry,
+		]);
+		const view = await open();
+		await write(view, "code/acme/app/repo.git/worktrees/w1/index", "idx-v2", indexEntry.version);
+		await write(view, "code/acme/app/repo.git/worktrees/w1/logs/HEAD", "log-v2", logEntry.version);
+		for (let i = 0; i < 1050; i++)
+			await write(view, `code/acme/app/repo.git/objects/00/${String(i).padStart(38, "a")}`, `obj-${i % 8}`);
+
+		core.commitHook = (callIndex) => {
+			if (callIndex === 1) core.commitRefusal = "stopped";
+			return undefined;
+		};
+		const partial = await view.publish();
+		expect(partial.refused).toBe("stopped");
+		expect(partial.commitId).toBeNull();
+		expect(core.commits).toHaveLength(2);
+		expect(
+			core.commits[0]?.units.every((u) => u.op === "write" && u.path.startsWith("code/acme/app/repo.git/objects/")),
+		).toBe(true);
+		expect(core.entries.get("code/acme/app/repo.git/worktrees/w1/index")?.version).toBe(indexEntry.version);
+		expect(core.entries.get("code/acme/app/repo.git/worktrees/w1/logs/HEAD")?.version).toBe(logEntry.version);
+
+		core.commitHook = undefined;
+		core.commitRefusal = undefined;
+		const done = await view.publish();
+		expect(done.refused).toBeUndefined();
+		expect(done.paths.every((p) => p.outcome === "saved")).toBe(true);
+		const lastCommitPaths = core.commits.at(-1)?.units.map((u) => (u.op === "move" ? u.to : u.path)) ?? [];
+		expect(lastCommitPaths).toContain("code/acme/app/repo.git/worktrees/w1/index");
+		expect(lastCommitPaths).toContain("code/acme/app/repo.git/worktrees/w1/logs/HEAD");
+		expect(core.entries.get("code/acme/app/repo.git/worktrees/w1/index")?.version).not.toBe(indexEntry.version);
+		expect(core.entries.get("code/acme/app/repo.git/worktrees/w1/logs/HEAD")?.version).not.toBe(logEntry.version);
+	});
+
+	it("stops at maxBoundaryBatches and completes remaining batches on the next publish", async () => {
+		const { core, open } = await fixture({ maxBoundaryBatches: 2 });
+		core.seed([folder("bulk")]);
+		const view = await open();
+		for (let i = 0; i < 2500; i++) await write(view, `bulk/f${String(i).padStart(4, "0")}.txt`, `v-${i % 8}`);
+
+		const first = await view.publish();
+		expect(core.commits.map((c) => c.units.length)).toEqual([1000, 1000]);
+		expect(first.refused).toBeUndefined();
+		expect(first.commitId).toBeNull();
+		expect(first.seq).toBeNull();
+		expect(first.paths.filter((p) => p.outcome === "saved")).toHaveLength(2000);
+		expect(first.paths.filter((p) => p.outcome === "not_applied" && p.kept)).toHaveLength(500);
+
+		const second = await view.publish();
+		expect(core.commits.map((c) => c.units.length)).toEqual([1000, 1000, 500]);
+		expect(second.commitId).toBeTruthy();
+		expect(second.paths).toHaveLength(500);
+		expect(second.paths.every((p) => p.outcome === "saved")).toBe(true);
+		expect(await view.publish()).toEqual({ commitId: null, seq: null, paths: [] });
+	});
+
+	it("records one notice per committed or refused batch for unasked desktop boundaries", async () => {
+		const root = await mkdtemp(join(tmpdir(), "qorpera-folder-writes-notices-"));
+		const core = new FakeCore();
+		core.seed([folder("docs")]);
+		const viewId = "4d5e6f70-8192-4a3b-8c4d-5e6f708192a3";
+		const deskPass = "deskpass_0123456789-abcdefghijklmnopqrstuvw";
+		core.openView(viewId, deskPass, { kind: "computer_desktop", machineId: ALLOCATION });
+		const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
+		const service = new FolderService({
+			core,
+			objects,
+			grants: companyGrants(),
+			staging: new FolderStaging(core, new FakeUploads(root, core), objects),
+			log: () => undefined,
+		});
+		const atOffice: BridgeInfo = { cid: 90, lookup: "found", machine: OFFICE };
+		const view = await service.open(
+			{ protocol: 3, environmentId: ENV, viewId, pass: deskPass, role: "io" },
+			atOffice,
+		);
+		const asks = service.notices(
+			{ protocol: 4, environmentId: ENV, viewId, pass: deskPass, role: "notices" },
+			atOffice,
+		);
+		cleanups.push(async () => {
+			service.stop();
+			await rm(root, { recursive: true, force: true });
+		});
+
+		for (let i = 0; i < 2500; i++) await write(view, `docs/f${String(i).padStart(4, "0")}.txt`, `d-${i % 8}`);
+		core.commitHook = (callIndex) => {
+			if (callIndex === 1) core.commitRefusal = "stopped";
+			return undefined;
+		};
+		view.release();
+		for (
+			const end = Date.now() + 5_000;
+			asks.page({ after: 0, nonce: null }).notices.length < 2 && Date.now() < end;
+		)
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		const page = asks.page({ after: 0, nonce: null });
+		expect(page.notices).toHaveLength(2);
+		expect(page.notices[0]).toMatchObject({ n: 1, commitId: expect.any(String), seq: 1 });
+		expect(page.notices[1]).toMatchObject({ n: 2, refused: "stopped", pathCount: 1500 });
+	});
+
+	it("stops mid-batch when a view becomes unproven or closes during an earlier batch", async () => {
+		const root = await mkdtemp(join(tmpdir(), "qorpera-folder-writes-midstop-"));
+		const core = new FakeCore();
+		core.seed([folder("u"), folder("c")]);
+		const unprovenViewId = "7a8b9c0d-1e2f-4a3b-8c4d-5e6f708192a3";
+		const closedViewId = "8a8b9c0d-1e2f-4a3b-8c4d-5e6f708192a3";
+		const passA = "deskpass_a123456789-abcdefghijklmnopqrstuvw";
+		const passB = "deskpass_b123456789-abcdefghijklmnopqrstuvw";
+		core.openView(unprovenViewId, passA, { kind: "computer_desktop", machineId: ALLOCATION });
+		core.openView(closedViewId, passB, { kind: "computer_desktop", machineId: ALLOCATION });
+		const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
+		const service = new FolderService({
+			core,
+			objects,
+			grants: companyGrants(),
+			staging: new FolderStaging(core, new FakeUploads(root, core), objects),
+			log: () => undefined,
+		});
+		const atOffice: BridgeInfo = { cid: 90, lookup: "found", machine: OFFICE };
+		const viewA = await service.open(
+			{ protocol: 3, environmentId: ENV, viewId: unprovenViewId, pass: passA, role: "io" },
+			atOffice,
+		);
+		const viewB = await service.open(
+			{ protocol: 3, environmentId: ENV, viewId: closedViewId, pass: passB, role: "io" },
+			atOffice,
+		);
+		cleanups.push(async () => {
+			viewA.release();
+			viewB.release();
+			service.stop();
+			await rm(root, { recursive: true, force: true });
+		});
+
+		for (let i = 0; i < 1200; i++) await write(viewA, `u/f${String(i).padStart(4, "0")}.txt`, `u-${i % 8}`);
+		core.commitHook = async (callIndex) => {
+			if (callIndex === 0) await viewA.reads({ log: "log-a", reads: [], lost: true });
+		};
+		const unprovenReport = await viewA.publish();
+		expect(core.commits).toHaveLength(1);
+		expect(unprovenReport.refused).toBe("unproven");
+		expect(unprovenReport.commitId).toBeNull();
+		expect(unprovenReport.seq).toBeNull();
+		expect(unprovenReport.paths.filter((p) => p.outcome === "saved")).toHaveLength(1000);
+		expect(unprovenReport.paths.filter((p) => p.outcome === "refused" && p.kept)).toHaveLength(200);
+
+		core.commitHook = undefined;
+		const commitsBeforeClosed = core.commits.length;
+		for (let i = 0; i < 1200; i++) await write(viewB, `c/f${String(i).padStart(4, "0")}.txt`, `c-${i % 8}`);
+		const origFeed = core.feed.bind(core);
+		let closedTriggered = false;
+		core.feed = async (...args) => {
+			const page = await origFeed(...args);
+			if (!closedTriggered && core.commits.length === commitsBeforeClosed + 1) {
+				closedTriggered = true;
+				core.views.get(closedViewId)!.state = "closed";
+				await service.renewLeases();
+			}
+			return page;
+		};
+		await expect(viewB.publish()).rejects.toMatchObject({ code: "VIEW_CLOSED" });
+		expect(core.commits).toHaveLength(commitsBeforeClosed + 1);
+		expect([...core.entries.keys()].filter((p) => p.startsWith("c/"))).toHaveLength(1000);
+	});
+
+	it("holds all uncommitted batches on a command view mid-batch refusal", async () => {
+		const root = await mkdtemp(join(tmpdir(), "qorpera-folder-writes-cmdhold-"));
+		const core = new FakeCore();
+		const seeded = [folder("cmd"), await storeFile(root, "cmd/del.txt", "d", 1)];
+		for (let i = 0; i < 1000; i++)
+			seeded.push(await storeFile(root, `cmd/e${String(i).padStart(4, "0")}.txt`, "v1", 10 + i));
+		core.seed(seeded);
+		const viewId = "6e6f7081-92a3-4b4c-8d5e-6f708192a3b4";
+		const cmdPass = "cmdpass_1123456789-abcdefghijklmnopqrstuvwx";
+		core.openView(viewId, cmdPass, { kind: "computer_shell_command", machineId: ALLOCATION });
+		const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
+		const service = new FolderService({
+			core,
+			objects,
+			grants: companyGrants(),
+			staging: new FolderStaging(core, new FakeUploads(root, core), objects),
+			log: () => undefined,
+		});
+		const atOffice: BridgeInfo = { cid: 90, lookup: "found", machine: OFFICE };
+		const view = await service.open({ protocol: 3, environmentId: ENV, viewId, pass: cmdPass, role: "io" }, atOffice);
+		cleanups.push(async () => {
+			view.release();
+			service.stop();
+			await rm(root, { recursive: true, force: true });
+		});
+
+		for (let i = 0; i < 1000; i++) {
+			const path = `cmd/e${String(i).padStart(4, "0")}.txt`;
+			await write(view, path, "v2", core.entries.get(path)!.version);
+		}
+		await view.unlink("cmd/del.txt", undefined);
+		for (let i = 0; i < 100; i++) await write(view, `cmd/n${String(i).padStart(3, "0")}.txt`, `n-${i % 8}`);
+
+		core.commitHook = (callIndex) => {
+			if (callIndex === 1) core.commitRefusal = "denied";
+			return undefined;
+		};
+		const first = await view.publish(false);
+		expect(first.refused).toBe("denied");
+		expect(first.commitId).toBeNull();
+		expect(first.paths.filter((p) => p.outcome === "saved")).toHaveLength(1000);
+		expect(first.paths.filter((p) => p.outcome === "refused" && p.kept)).toHaveLength(101);
+		expect(first.paths.find((p) => p.path === "cmd/del.txt")).toEqual({
+			path: "cmd/del.txt",
+			outcome: "refused",
+			reason: "denied",
+			kept: true,
+		});
+
+		core.commitHook = undefined;
+		core.commitRefusal = undefined;
+		const second = await view.publish(false);
+		expect(second.refused).toBeUndefined();
+		expect(second.paths).toHaveLength(101);
+		expect(second.paths.every((p) => p.outcome === "saved")).toBe(true);
+		expect(core.entries.has("cmd/del.txt")).toBe(false);
+	});
+
+	it("settles uncommitted batches on a coding view last-boundary mid-batch refusal", async () => {
+		const root = await mkdtemp(join(tmpdir(), "qorpera-folder-writes-codinglast-"));
+		const core = new FakeCore();
+		const seeded = [folder("src"), await storeFile(root, "src/del.txt", "d", 1)];
+		for (let i = 0; i < 1000; i++)
+			seeded.push(await storeFile(root, `src/e${String(i).padStart(4, "0")}.txt`, "v1", 10 + i));
+		core.seed(seeded);
+		const viewId = "9e6f7081-92a3-4b4c-8d5e-6f708192a3b4";
+		const codingPass = "codepass_123456789-abcdefghijklmnopqrstuvwx";
+		core.openView(viewId, codingPass, { kind: "coding_session", codingMachineId: CODING_MACHINE_ID });
+		const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
+		const service = new FolderService({
+			core,
+			objects,
+			grants: codingGrants(),
+			staging: new FolderStaging(core, new FakeUploads(root, core), objects),
+			log: () => undefined,
+		});
+		service.secrets(CODING_MACHINE_ID, noSecrets());
+		const atCoding: BridgeInfo = { cid: 91, lookup: "found", machine: CODING };
+		const view = await service.open(
+			{ protocol: 3, environmentId: ENV, viewId, pass: codingPass, role: "io" },
+			atCoding,
+		);
+		cleanups.push(async () => {
+			view.release();
+			service.stop();
+			await rm(root, { recursive: true, force: true });
+		});
+
+		for (let i = 0; i < 1000; i++) {
+			const path = `src/e${String(i).padStart(4, "0")}.txt`;
+			await write(view, path, "v2", core.entries.get(path)!.version);
+		}
+		await view.unlink("src/del.txt", undefined);
+		for (let i = 0; i < 100; i++) await write(view, `src/n${String(i).padStart(3, "0")}.txt`, `n-${i % 8}`);
+
+		core.commitHook = (callIndex) => {
+			if (callIndex === 1) core.commitRefusal = "denied";
+			return undefined;
+		};
+		const boundary = await service.boundary(CODING_MACHINE_ID, [viewId]);
+		expect(boundary.reads).toBe("released");
+		const report = boundary.views.find((entry) => entry.viewId === viewId)?.report;
+		expect(report?.refused).toBe("denied");
+		expect(report?.commitId).toBeNull();
+		expect(report?.seq).toBeNull();
+		expect(report?.paths.filter((p) => p.outcome === "saved")).toHaveLength(1000);
+		expect(report?.paths.filter((p) => p.outcome === "refused" && p.kept)).toHaveLength(100);
+		expect(report?.paths.find((p) => p.path === "src/del.txt")).toEqual({
+			path: "src/del.txt",
+			outcome: "refused",
+			reason: "denied",
+		});
+
+		core.commitHook = undefined;
+		core.commitRefusal = undefined;
+		const retry = await service.boundary(CODING_MACHINE_ID, []);
+		const retryReport = retry.views.find((entry) => entry.viewId === viewId)?.report;
+		expect(retryReport?.refused).toBeUndefined();
+		expect(retryReport?.paths).toHaveLength(100);
+		expect(retryReport?.paths.every((p) => p.outcome === "saved")).toBe(true);
+		expect(core.entries.has("src/del.txt")).toBe(true);
 	});
 });

@@ -163,6 +163,24 @@ interface SharedExecutionWarmSlot {
 	warmUntil: string;
 }
 
+function timedSignal(ms: number, parent?: AbortSignal): { signal: AbortSignal; clear: () => void } {
+	const controller = new AbortController();
+	const onAbort = () => controller.abort(parent?.reason);
+	if (parent?.aborted) controller.abort(parent.reason);
+	else parent?.addEventListener("abort", onAbort, { once: true });
+	// WHY: Clear attempt timers on completion instead of leaving AbortSignal.timeout/any timers pending.
+	const timer = setTimeout(() => {
+		controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+	}, ms);
+	return {
+		signal: controller.signal,
+		clear: () => {
+			clearTimeout(timer);
+			parent?.removeEventListener("abort", onAbort);
+		},
+	};
+}
+
 /**
  * The runs one warm native host may serve in turn: the same member login, company,
  * agent version, conversation, sponsor connection, model and compute template.
@@ -664,15 +682,72 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			this.#identityWaits.delete(acquisitionId);
 			const warmKey = this.#config.warmIdleMs === undefined ? undefined : warmConversationKey(work);
 			const claimed = await this.#exclusive(async () => {
-				const warm = warmKey ? await this.#claimWarmSlot(warmKey, work, signal) : undefined;
-				const slot = warm?.slot ?? (await this.#freeSlot()) ?? (await this.#evictWarmSlot(signal));
-				if (slot === undefined)
-					throw new ProviderAdmissionRefused("deferred", REFUSAL_CAPACITY, "Every sandbox slot is busy");
-				this.#claimingSlots.add(slot);
-				return { slot, warm };
+				// WHY: Reserve candidate slots under #exclusive and run slow systemctl/rm/RPC eviction and validation outside it.
+				const parked = await this.#parkedSlots();
+				const stale: SharedExecutionWarmSlot[] = [];
+				let warmCandidate: SharedExecutionWarmSlot | undefined;
+				if (warmKey) {
+					for (const candidate of parked) {
+						if (
+							candidate.key !== warmKey &&
+							candidate.sessionId === work.sessionId &&
+							candidate.staffAgentId === work.staffAgentId &&
+							candidate.computeIdentityId === work.computeIdentityId
+						) {
+							stale.push(candidate);
+						} else if (candidate.key === warmKey && !warmCandidate) {
+							warmCandidate = candidate;
+						}
+					}
+				}
+				if (warmCandidate) {
+					for (const s of stale) this.#claimingSlots.add(s.slot);
+					this.#claimingSlots.add(warmCandidate.slot);
+					return { slot: warmCandidate.slot, warmCandidate, stale, evictSelected: false };
+				}
+				const free = await this.#freeSlot();
+				const lowestStale = stale.length > 0 ? Math.min(...stale.map((s) => s.slot)) : undefined;
+				if (free !== undefined && (lowestStale === undefined || free < lowestStale)) {
+					for (const s of stale) this.#claimingSlots.add(s.slot);
+					this.#claimingSlots.add(free);
+					return { slot: free, warmCandidate: undefined, stale, evictSelected: false };
+				}
+				if (lowestStale !== undefined) {
+					for (const s of stale) this.#claimingSlots.add(s.slot);
+					return { slot: lowestStale, warmCandidate: undefined, stale, evictSelected: false };
+				}
+				const [oldest] = [...parked].sort((a, b) => Date.parse(a.warmUntil) - Date.parse(b.warmUntil));
+				if (!oldest) throw new ProviderAdmissionRefused("deferred", REFUSAL_CAPACITY, "Every sandbox slot is busy");
+				for (const s of stale) this.#claimingSlots.add(s.slot);
+				this.#claimingSlots.add(oldest.slot);
+				return { slot: oldest.slot, warmCandidate: undefined, stale, evictSelected: true };
 			});
-			const { slot, warm } = claimed;
+			const { slot } = claimed;
+			const owned = new Set<number>([slot, ...claimed.stale.map((s) => s.slot)]);
+			let warm: SharedExecutionWarmSlot | undefined;
 			try {
+				if (claimed.stale.length > 0) {
+					// WHY: Wait for every stale eviction to finish before releasing #claimingSlots even if one fails.
+					const outcomes = await Promise.allSettled(
+						claimed.stale.map(async (staleSlot) => {
+							try {
+								await this.#evict(staleSlot.slot, signal);
+							} finally {
+								if (staleSlot.slot !== slot) {
+									this.#claimingSlots.delete(staleSlot.slot);
+									owned.delete(staleSlot.slot);
+								}
+							}
+						}),
+					);
+					const failed = outcomes.find((o): o is PromiseRejectedResult => o.status === "rejected");
+					if (failed) throw failed.reason;
+				}
+				if (claimed.warmCandidate) {
+					warm = await this.#validateWarmSlot(claimed.warmCandidate, work, signal);
+				} else if (claimed.evictSelected) {
+					await this.#evict(slot, signal);
+				}
 				// A warm slot keeps the native bridge its running host was started with.
 				const credentials = await this.#slotCredentials(slot, true, warm !== undefined);
 				if (warm && sha256(credentials.nativeBridgeToken) !== warm.nativeBridgeSha256) {
@@ -760,7 +835,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				});
 				return created;
 			} finally {
-				this.#claimingSlots.delete(slot);
+				for (const ownedSlot of owned) this.#claimingSlots.delete(ownedSlot);
 			}
 		});
 		return this.#ensureReady(journal, work, signal);
@@ -790,19 +865,28 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		const credentials = await this.#slotCredentials(current.slot, false);
 		if (sha256(credentials.assignmentToken) !== current.credentials.assignmentSha256)
 			throw new Error("Shared execution slot credentials differ from the sandbox journal");
-		const response = await this.#fetch(`http://127.0.0.1:${current.inboxPort}/v1/assignment`, {
-			method: "POST",
-			headers: { authorization: `Bearer ${credentials.assignmentToken}`, "content-type": "application/json" },
-			body: JSON.stringify({
-				schema: "qorpera.runner-assignment-delivery/v1",
-				assignment_id: delivery.assignment.assignmentId,
-				job_id: delivery.assignment.jobId,
-				capability: delivery.capability,
-			}),
-			signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
-		});
-		if (response.status !== 200 && response.status !== 202)
-			throw new Error(`Shared execution sandbox rejected assignment delivery (${response.status})`);
+		const deliverTimeout = timedSignal(10_000, signal);
+		let status: number;
+		try {
+			const response = await this.#fetch(`http://127.0.0.1:${current.inboxPort}/v1/assignment`, {
+				method: "POST",
+				headers: { authorization: `Bearer ${credentials.assignmentToken}`, "content-type": "application/json" },
+				body: JSON.stringify({
+					schema: "qorpera.runner-assignment-delivery/v1",
+					assignment_id: delivery.assignment.assignmentId,
+					job_id: delivery.assignment.jobId,
+					capability: delivery.capability,
+				}),
+				signal: deliverTimeout.signal,
+			});
+			status = response.status;
+			// WHY: Always cancel the inbox delivery response body so Undici does not leak pooled sockets on every run.
+			void response.body?.cancel().catch(() => undefined);
+		} finally {
+			deliverTimeout.clear();
+		}
+		if (status !== 200 && status !== 202)
+			throw new Error(`Shared execution sandbox rejected assignment delivery (${status})`);
 		await this.#exclusive(async () => {
 			const journal = await this.#readJournal(acquisitionId);
 			if (journal && (journal.physicalState === "registered" || journal.physicalState === "assigned"))
@@ -830,7 +914,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		signal: AbortSignal,
 	): Promise<CloudRunnerInstance> {
 		if (journal.physicalState === "registered" || journal.physicalState === "assigned") return journal.runner;
-		const timeout = AbortSignal.any([signal, AbortSignal.timeout(this.#config.startTimeoutMs ?? 30_000)]);
+		const readyTimeout = timedSignal(this.#config.startTimeoutMs ?? 30_000, signal);
+		const timeout = readyTimeout.signal;
 		try {
 			let current = journal;
 			if (current.physicalState === "reserving") await this.#reserveMachine(current, timeout);
@@ -900,20 +985,25 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		} catch (error) {
 			await this.#retire(journal.acquisitionId, "delivery_failed").catch(() => undefined);
 			throw error;
+		} finally {
+			readyTimeout.clear();
 		}
 	}
 
 	async #waitHealthy(port: number, signal: AbortSignal, label: string): Promise<void> {
 		for (;;) {
 			signal.throwIfAborted();
+			const probe = timedSignal(500, signal);
 			try {
 				const response = await this.#fetch(`http://127.0.0.1:${port}/healthz`, {
-					signal: AbortSignal.any([signal, AbortSignal.timeout(500)]),
+					signal: probe.signal,
 				});
 				void response.body?.cancel().catch(() => undefined);
 				if (response.ok) return;
 			} catch (error) {
 				if (signal.aborted) throw new Error(`Shared execution ${label} did not become ready`, { cause: error });
+			} finally {
+				probe.clear();
 			}
 			// Loopback polls are cheap; a sandbox answers within a second.
 			await delay(25, signal).catch(() => {
@@ -1587,30 +1677,11 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		return (await this.#warmSlots()).filter((warm) => !held.has(warm.slot));
 	}
 
-	/**
-	 * Called under the lock by acquire: the warm slot of this conversation, if its host still
-	 * runs with the identity the control plane holds now (same recovery epoch and key). Any
-	 * other state ends the warm slot, and the run starts a fresh sandbox. A warm slot of the
-	 * same conversation, agent and login with another key (new agent version, model or
-	 * sponsor) ends too; another agent's warm slot in the same room is left alone. The record
-	 * stays until the run's journal holds the slot.
-	 */
-	async #claimWarmSlot(
-		key: string,
+	async #validateWarmSlot(
+		warm: SharedExecutionWarmSlot,
 		work: CloudRunnerWork & { computeIdentityId: string },
 		signal: AbortSignal,
 	): Promise<SharedExecutionWarmSlot | undefined> {
-		const parked = await this.#parkedSlots();
-		for (const stale of parked)
-			if (
-				stale.key !== key &&
-				stale.sessionId === work.sessionId &&
-				stale.staffAgentId === work.staffAgentId &&
-				stale.computeIdentityId === work.computeIdentityId
-			)
-				await this.#evict(stale.slot, signal);
-		const warm = parked.find((candidate) => candidate.key === key);
-		if (!warm) return undefined;
 		try {
 			if (
 				warm.computeIdentityId !== work.computeIdentityId ||
@@ -1649,14 +1720,6 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		return warm;
 	}
 
-	/** Under capacity pressure (called under the lock): the warm slot waiting longest gives way. */
-	async #evictWarmSlot(signal: AbortSignal): Promise<number | undefined> {
-		const [oldest] = (await this.#parkedSlots()).sort((a, b) => Date.parse(a.warmUntil) - Date.parse(b.warmUntil));
-		if (!oldest) return undefined;
-		await this.#evict(oldest.slot, signal);
-		return oldest.slot;
-	}
-
 	/**
 	 * Reconcile: a warm slot ends when its window passes or its host stopped. A host with
 	 * neither a live journal nor a warm record is an orphan (a crash between the two) and
@@ -1678,39 +1741,56 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		const active = await this.#units.activeSet(hosts, signal);
 		for (let slot = 0; slot < this.#config.slotCount; slot++) {
 			if (tracked.has(slot) || (this.#swept && !active.has(this.#unit("host", slot)))) continue;
-			await this.#exclusive(async () => {
+			const claimedOrphan = await this.#exclusive(async () => {
 				const held =
 					this.#claimingSlots.has(slot) ||
 					(await this.#journals()).some((journal) => !terminal(journal.physicalState) && journal.slot === slot) ||
 					(await this.#warmSlots()).some((warm) => warm.slot === slot);
-				if (!held) await this.#evict(slot, signal);
+				if (held) return false;
+				this.#claimingSlots.add(slot);
+				return true;
 			});
+			if (claimedOrphan) {
+				try {
+					await this.#evict(slot, signal);
+				} finally {
+					this.#claimingSlots.delete(slot);
+				}
+			}
 		}
 		this.#swept = true;
 		for (const warm of warmSlots) {
 			if (claiming.has(warm.slot)) continue;
 			const taken = live.some((journal) => journal.slot === warm.slot);
 			if (!taken && Date.parse(warm.warmUntil) > this.#now() && active.has(this.#unit("host", warm.slot))) continue;
-			await this.#exclusive(async () => {
-				if (this.#claimingSlots.has(warm.slot)) return;
-				const current = (await this.#warmSlots()).find((candidate) => candidate.slot === warm.slot);
+			const candidate = await this.#exclusive(async () => {
+				if (this.#claimingSlots.has(warm.slot)) return undefined;
+				const current = (await this.#warmSlots()).find((entry) => entry.slot === warm.slot);
 				// Another pass may have replaced the record meanwhile: act on this exact one only.
-				if (!current || JSON.stringify(current) !== JSON.stringify(warm)) return;
+				if (!current || JSON.stringify(current) !== JSON.stringify(warm)) return undefined;
 				const liveNow = (await this.#journals()).some(
 					(journal) => !terminal(journal.physicalState) && journal.slot === warm.slot,
 				);
 				// A slot a live run holds keeps its host; only the stale record goes.
 				if (liveNow) {
 					await rm(this.#warmPath(warm.slot), { force: true });
-					return;
+					return undefined;
 				}
-				if (
-					Date.parse(current.warmUntil) > this.#now() &&
-					(await this.#units.active(this.#unit("host", warm.slot), signal))
-				)
-					return;
-				await this.#evict(warm.slot, signal);
+				this.#claimingSlots.add(warm.slot);
+				return current;
 			});
+			if (candidate) {
+				try {
+					if (
+						Date.parse(candidate.warmUntil) > this.#now() &&
+						(await this.#units.active(this.#unit("host", candidate.slot), signal))
+					)
+						continue;
+					await this.#evict(candidate.slot, signal);
+				} finally {
+					this.#claimingSlots.delete(candidate.slot);
+				}
+			}
 		}
 	}
 
@@ -1828,25 +1908,31 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		this.#endedRunnersCheckedAt = this.#now();
 		if (waiting.length === 0) return;
 		const runnerIds = waiting.map((journal) => journal.runner.runnerId);
-		const response = await this.#fetch(
-			new URL("/rest/v1/rpc/qorpera_runtime_ended_runners", this.#config.supabaseUrl),
-			{
-				method: "POST",
-				redirect: "error",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ p_runner_ids: runnerIds }),
-				signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
-			},
-		);
-		if (response.status === 404) {
-			void response.body?.cancel().catch(() => undefined);
-			return;
+		const endedTimeout = timedSignal(30_000, signal);
+		let answer: unknown;
+		try {
+			const response = await this.#fetch(
+				new URL("/rest/v1/rpc/qorpera_runtime_ended_runners", this.#config.supabaseUrl),
+				{
+					method: "POST",
+					redirect: "error",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ p_runner_ids: runnerIds }),
+					signal: endedTimeout.signal,
+				},
+			);
+			if (response.status === 404) {
+				void response.body?.cancel().catch(() => undefined);
+				return;
+			}
+			if (!response.ok) {
+				void response.body?.cancel().catch(() => undefined);
+				throw new Error(`Ended runners are unavailable (${response.status})`);
+			}
+			answer = await response.json();
+		} finally {
+			endedTimeout.clear();
 		}
-		if (!response.ok) {
-			void response.body?.cancel().catch(() => undefined);
-			throw new Error(`Ended runners are unavailable (${response.status})`);
-		}
-		const answer: unknown = await response.json();
 		if (!Array.isArray(answer) || answer.some((id) => typeof id !== "string" || !runnerIds.includes(id)))
 			throw new Error("Ended runners answer is invalid");
 		const failures: unknown[] = [];
@@ -1864,21 +1950,26 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	}
 
 	async #rpc(name: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
-		const response = await this.#fetch(new URL(`/rest/v1/rpc/${name}`, this.#config.supabaseUrl), {
-			method: "POST",
-			redirect: "error",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify(body),
-			signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
-		});
-		if (!response.ok)
-			throw new ProviderRpcFailed(
-				`Runner provisioning failed (${response.status})`,
-				name,
-				response.status,
-				await providerRpcErrorCode(response),
-			);
-		return response.json() as Promise<unknown>;
+		const rpcTimeout = timedSignal(30_000, signal);
+		try {
+			const response = await this.#fetch(new URL(`/rest/v1/rpc/${name}`, this.#config.supabaseUrl), {
+				method: "POST",
+				redirect: "error",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(body),
+				signal: rpcTimeout.signal,
+			});
+			if (!response.ok)
+				throw new ProviderRpcFailed(
+					`Runner provisioning failed (${response.status})`,
+					name,
+					response.status,
+					await providerRpcErrorCode(response),
+				);
+			return (await response.json()) as unknown;
+		} finally {
+			rpcTimeout.clear();
+		}
 	}
 
 	async #withRunLock<T>(runId: string, action: () => Promise<T>): Promise<T> {

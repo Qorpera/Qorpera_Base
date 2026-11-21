@@ -3237,4 +3237,90 @@ describe("the composer's microphone", () => {
 		expect(f.company.conversation(session.sessionId).get().draft).toBe("Book a meeting");
 		expect(button(shell, "Stop dictation")).toBe(mic);
 	});
+
+	it("skips full message serialization when typing draft keystrokes and preserves message DOM nodes", async () => {
+		const f = fixture();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
+		const reply: TranscriptMessage = {
+			kind: "agent",
+			id: id(91),
+			sequence: 1,
+			text: "Hello from the thread",
+			attachmentCount: 0,
+			phase: "final",
+			createdAt: timestamp,
+			authorUserId: userA.id,
+		};
+		company
+			.conversation(session.sessionId, false)
+			.set({ loading: false, complete: true, projection: { items: [reply], hiddenCount: 0, lastSequence: 1 } });
+		const view = new ConversationView(company, session.sessionId);
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			company.stop();
+		};
+		const firstMessage = view.el.querySelector("article.message");
+		expect(firstMessage).not.toBeNull();
+		const field = view.el.querySelector<HTMLTextAreaElement>(".composer-input")!;
+		const stringifySpy = vi.spyOn(JSON, "stringify");
+		try {
+			field.value = "Drafting a reply";
+			field.dispatchEvent(new Event("input"));
+			field.value = "Drafting a reply with more words";
+			field.dispatchEvent(new Event("input"));
+			const serializedProjection = stringifySpy.mock.calls.some(([arg]) => Array.isArray(arg) && arg.length > 20);
+			expect(serializedProjection).toBe(false);
+			expect(view.el.querySelector("article.message")).toBe(firstMessage);
+		} finally {
+			stringifySpy.mockRestore();
+		}
+	});
+
+	it("redraws message mention highlights when mentionsReady becomes true without a new projection", async () => {
+		const f = fixture();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({
+			team: {
+				...team,
+				members: [
+					{
+						userId: userB.id,
+						email: "ada@example.test",
+						displayName: "Ada Lovelace",
+						role: "contributor",
+						joinedAt: timestamp,
+					},
+				],
+			},
+			staff: [staff],
+			sessions: [{ ...session, staffAgentId: staff.id, executionScope: { roomId: id(77), agentThread: true } }],
+			mentionsReady: false,
+			loading: false,
+		});
+		const msg: TranscriptMessage = {
+			kind: "member",
+			id: id(92),
+			sequence: 1,
+			text: "Ask @Ada Lovelace about this",
+			attachmentCount: 0,
+			phase: "final",
+			createdAt: timestamp,
+			authorUserId: userA.id,
+		};
+		company
+			.conversation(session.sessionId, false)
+			.set({ loading: false, complete: true, projection: { items: [msg], hiddenCount: 0, lastSequence: 1 } });
+		const view = new ConversationView(company, session.sessionId);
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			company.stop();
+		};
+		expect(view.el.querySelector(".mention")).toBeNull();
+		company.store.set({ mentionsReady: true });
+		await settle();
+		expect(view.el.querySelector(".mention")?.textContent).toBe("@Ada Lovelace");
+	});
 });

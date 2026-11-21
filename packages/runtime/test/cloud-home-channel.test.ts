@@ -1,10 +1,11 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { connect } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CLOUD_HOME_OUTDATED, CLOUD_HOME_UNAVAILABLE, cloudHomeRefusalWords } from "../src/cloud-codex-home.ts";
 import { HttpCloudCodingCommandService } from "../src/cloud-coding-command-http.ts";
 import {
 	CLOUD_HOME_CHANNEL_KEEPALIVE,
+	CLOUD_HOME_CHANNEL_LINE_BYTES,
 	CLOUD_HOME_SFTP_PIECE_BYTES,
 	type CloudHomeChannelKind,
 	CloudHomeChannelRefused,
@@ -12,6 +13,7 @@ import {
 	type CloudHomeChannelSide,
 	cloudHomeChannelHandshake,
 	cloudHomeChannelKeepAlive,
+	cloudHomeChannelLines,
 	cloudHomeSftpBytes,
 	cloudHomeSftpLines,
 	parseCloudHomeChannelHandshake,
@@ -333,5 +335,67 @@ describe("the file channel's kind (Claude Code on the home, slice C1)", () => {
 		const refused = await f.open("sftp").catch((error: unknown) => error);
 		expect((refused as CloudHomeChannelRefused).reason).toBe("HOME_SFTP_MISSING");
 		expect(cloudHomeRefusalWords("HOME_SFTP_MISSING")).toBe(CLOUD_HOME_OUTDATED);
+	});
+});
+
+describe("home channel framing bounds and keep-alive teardown", () => {
+	it("enforces CLOUD_HOME_CHANNEL_LINE_BYTES per line rather than per coalesced chunk", async () => {
+		const threeMiB = "a".repeat(3 * 1024 * 1024);
+		const burst = Buffer.from(`${threeMiB}\n${threeMiB}\n${threeMiB}\n`, "utf8");
+		expect(burst.byteLength).toBeGreaterThan(CLOUD_HOME_CHANNEL_LINE_BYTES);
+		const lines: string[] = [];
+		for await (const line of cloudHomeChannelLines(
+			(async function* () {
+				yield burst;
+			})(),
+		)) {
+			lines.push(line);
+		}
+		expect(lines).toHaveLength(3);
+		expect(lines.every((line) => line.length === threeMiB.length)).toBe(true);
+
+		const tooLarge = Buffer.concat([Buffer.alloc(CLOUD_HOME_CHANNEL_LINE_BYTES + 1, 0x61), Buffer.from("\n")]);
+		await expect(async () => {
+			for await (const _line of cloudHomeChannelLines(
+				(async function* () {
+					yield tooLarge;
+				})(),
+			)) {
+				expect(_line).toBeDefined();
+			}
+		}).rejects.toThrow("Home line too large");
+	});
+
+	it("stops the client keep-alive interval when the line iterator ends on remote close", async () => {
+		const activeTimers = new Set<ReturnType<typeof setInterval>>();
+		const realSetInterval = globalThis.setInterval;
+		const realClearInterval = globalThis.clearInterval;
+		const setSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((
+			...args: Parameters<typeof setInterval>
+		) => {
+			const timer = realSetInterval(...args);
+			activeTimers.add(timer);
+			return timer;
+		}) as typeof setInterval);
+		const clearSpy = vi.spyOn(globalThis, "clearInterval").mockImplementation(((
+			timer: ReturnType<typeof setInterval>,
+		) => {
+			activeTimers.delete(timer);
+			return realClearInterval(timer);
+		}) as typeof clearInterval);
+		try {
+			const m = machine();
+			const f = await fixture(async () => m.side);
+			const stream = await f.open();
+			m.push('{"id":1,"result":{}}');
+			await m.side.close();
+			const received: string[] = [];
+			for await (const line of stream.lines) received.push(line);
+			expect(received).toEqual(['{"id":1,"result":{}}']);
+			expect(activeTimers.size).toBe(0);
+		} finally {
+			setSpy.mockRestore();
+			clearSpy.mockRestore();
+		}
 	});
 });

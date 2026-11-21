@@ -1,4 +1,4 @@
-import { createClient } from "npm:@supabase/supabase-js@2.112.3";
+import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2.112.3";
 import {
 	parseRunnerBearer,
 	readRunnerControlRequest,
@@ -8,6 +8,50 @@ import {
 	runnerStartRpcStatus,
 	type RunnerControlRequest,
 } from "./runner-control.ts";
+
+const RPC_TIMEOUT_MS = 25_000;
+const UTF8_ENCODER = new TextEncoder();
+let cachedClient: { readonly key: string; readonly client: SupabaseClient } | undefined;
+
+async function timedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+	const controller = new AbortController();
+	const parent = init?.signal;
+	const onAbort = (): void => controller.abort(parent?.reason);
+	if (parent?.aborted) onAbort();
+	else parent?.addEventListener("abort", onAbort, { once: true });
+	const timer = setTimeout(
+		() => controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+		RPC_TIMEOUT_MS,
+	);
+	try {
+		const response = await fetch(input, { ...init, signal: controller.signal });
+		const noBody =
+			response.status === 204 ||
+			response.status === 205 ||
+			response.status === 304 ||
+			init?.method?.toUpperCase() === "HEAD";
+		const body = noBody ? null : await response.arrayBuffer();
+		return new Response(body, {
+			status: response.status,
+			statusText: response.statusText,
+			headers: response.headers,
+		});
+	} finally {
+		clearTimeout(timer);
+		parent?.removeEventListener("abort", onAbort);
+	}
+}
+
+function getClient(supabaseUrl: string, serviceKey: string): SupabaseClient {
+	const key = `${supabaseUrl}\0${serviceKey}`;
+	if (cachedClient?.key === key) return cachedClient.client;
+	const client = createClient(supabaseUrl, serviceKey, {
+		auth: { autoRefreshToken: false, persistSession: false },
+		global: { fetch: timedFetch },
+	});
+	cachedClient = { key, client };
+	return client;
+}
 
 function jsonResponse(value: unknown, status = 200): Response {
 	return Response.json(value, { status, headers: { "cache-control": "no-store" } });
@@ -34,7 +78,7 @@ function configuredServiceKey(): string | undefined {
 }
 
 async function sha256(value: string): Promise<string> {
-	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+	const digest = await crypto.subtle.digest("SHA-256", UTF8_ENCODER.encode(value));
 	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
@@ -52,9 +96,7 @@ Deno.serve(async (request) => {
 		return jsonResponse({ error: "Invalid runner request" }, 400);
 	}
 	const currentTokenSha256 = await sha256(currentToken);
-	const client = createClient(supabaseUrl, serviceKey, {
-		auth: { autoRefreshToken: false, persistSession: false },
-	});
+	const client = getClient(supabaseUrl, serviceKey);
 	let args: Record<string, unknown>;
 	switch (action.action) {
 		case "activate":

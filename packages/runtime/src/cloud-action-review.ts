@@ -2002,7 +2002,7 @@ export class CloudActionReviewGate {
 			name(recorded.approverName, "an owner or admin"),
 			signal,
 			recorded.cardElsewhere === true,
-			undefined,
+			call.repeat,
 			call.repeatElsewhere,
 		);
 	}

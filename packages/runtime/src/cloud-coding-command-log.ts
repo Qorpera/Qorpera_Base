@@ -7,6 +7,23 @@ import {
 	parseCloudCodingCommandRead,
 } from "@qorpera/contracts";
 
+const UTF8_DECODER = new TextDecoder("utf8", { ignoreBOM: true });
+
+function asciiEscapedSize(byte: number): number {
+	if (byte >= 0x20 && byte !== 0x22 && byte !== 0x5c) return 1;
+	if (
+		byte === 0x22 ||
+		byte === 0x5c ||
+		byte === 0x08 ||
+		byte === 0x09 ||
+		byte === 0x0a ||
+		byte === 0x0c ||
+		byte === 0x0d
+	)
+		return 2;
+	return 6;
+}
+
 /** At most one buffered chunk per pipe awaits a durable serialized write.
  * Excess output is drained after retaining a single overflow marker. */
 export async function collectCodingCommandOutput(
@@ -19,8 +36,10 @@ export async function collectCodingCommandOutput(
 	await Promise.all(
 		streams.map(async (stream) => {
 			for await (const value of stream) {
-				const chunk = Buffer.from(value),
-					part = Buffer.from(chunk.subarray(0, Math.max(0, maxBytes + 1 - bytes)));
+				const remaining = maxBytes + 1 - bytes;
+				if (remaining <= 0) continue;
+				const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+				const part = chunk.length <= remaining ? chunk : chunk.subarray(0, remaining);
 				bytes += part.length;
 				if (part.length) {
 					pending = pending.then(async () => {
@@ -103,44 +122,85 @@ export async function readCodingCommandLog(options: {
 				break;
 			}
 		}
-		let cursor = offset - base,
+		let startCursor = offset - base,
+			cursor = startCursor,
 			bytes = 0,
 			escapedBytes = 0,
-			output = "";
-		const tailParts: { rawBytes: number; text: string; bytes: number; escapedBytes: number }[] = [];
+			hasInvalid = false;
+		const tailParts: { rawBytes: number; bytes: number; escapedBytes: number }[] = [];
 		while (cursor < buffer.length && base + cursor < totalBytes) {
-			const lead = buffer[cursor],
-				expected =
-					lead >= 194 && lead <= 223 ? 2 : lead >= 224 && lead <= 239 ? 3 : lead >= 240 && lead <= 244 ? 4 : 1;
-			if (
-				!options.terminal &&
-				stat.size <= options.maxBytes &&
-				base + cursor + expected > totalBytes &&
-				buffer.subarray(cursor + 1).every((b) => (b & 192) === 128)
-			)
-				break;
-			const n = width(cursor),
-				part = new TextDecoder("utf8", { ignoreBOM: true }).decode(buffer.subarray(cursor, cursor + n)),
-				size = Buffer.byteLength(part),
-				escapedSize = Buffer.byteLength(JSON.stringify(part)) - 2;
+			const lead = buffer[cursor]!;
+			const expected =
+				lead >= 194 && lead <= 223 ? 2 : lead >= 224 && lead <= 239 ? 3 : lead >= 240 && lead <= 244 ? 4 : 1;
+			if (!options.terminal && stat.size <= options.maxBytes && base + cursor + expected > totalBytes) {
+				let allCont = true;
+				for (let j = cursor + 1; j < buffer.length; j++) {
+					if ((buffer[j]! & 192) !== 128) {
+						allCont = false;
+						break;
+					}
+				}
+				if (allCont) break;
+			}
+			let n: number;
+			let size: number;
+			let escapedSize: number;
+			if (lead < 128) {
+				n = 1;
+				size = 1;
+				escapedSize = asciiEscapedSize(lead);
+			} else {
+				n = width(cursor);
+				if (n === 1) {
+					hasInvalid = true;
+					size = 3;
+					escapedSize = 3;
+				} else {
+					size = n;
+					escapedSize = n;
+				}
+			}
 			// Leave room for the protected query wrapper and receipt metadata inside
 			// the LXD file API's fixed 64 KiB response ceiling.
 			if ((bytes + size > limit || escapedBytes + escapedSize > 60000) && !query.tail) break;
-			output += part;
 			bytes += size;
 			escapedBytes += escapedSize;
 			cursor += n;
-			if (query.tail) tailParts.push({ rawBytes: n, text: part, bytes: size, escapedBytes: escapedSize });
+			if (query.tail) tailParts.push({ rawBytes: n, bytes: size, escapedBytes: escapedSize });
 		}
-		let removedCharacters = 0;
 		for (const part of tailParts) {
 			if (bytes <= limit && escapedBytes <= 60000) break;
 			bytes -= part.bytes;
 			escapedBytes -= part.escapedBytes;
 			offset += part.rawBytes;
-			removedCharacters += part.text.length;
+			startCursor += part.rawBytes;
 		}
-		if (removedCharacters) output = output.slice(removedCharacters);
+		let output: string;
+		if (!hasInvalid) {
+			output = UTF8_DECODER.decode(buffer.subarray(startCursor, cursor));
+		} else {
+			const segments: string[] = [];
+			let runStart = startCursor;
+			let pos = startCursor;
+			while (pos < cursor) {
+				const b = buffer[pos]!;
+				if (b < 128) {
+					pos += 1;
+					continue;
+				}
+				const n = width(pos);
+				if (n === 1) {
+					if (pos > runStart) segments.push(UTF8_DECODER.decode(buffer.subarray(runStart, pos)));
+					segments.push("\uFFFD");
+					pos += 1;
+					runStart = pos;
+				} else {
+					pos += n;
+				}
+			}
+			if (cursor > runStart) segments.push(UTF8_DECODER.decode(buffer.subarray(runStart, cursor)));
+			output = segments.join("");
+		}
 		const nextOffset = base + cursor,
 			limitReached = stat.size > options.maxBytes;
 		return {

@@ -283,6 +283,20 @@ describe("LXD provider concurrency", () => {
 		expect(runner.runnerId).toBe(f.lxd.runnerFor(third));
 		expect(f.lxd.unexpected).toEqual([]);
 	});
+
+	it("skips settled journals during acquire inventory checks and finds active runners without full settled scans", async () => {
+		const f = await fixture();
+		const [first, second] = runIds as [string, string];
+		const runner1 = await f.backend.acquire(first, fakeWork(first), new AbortController().signal);
+		await f.backend.stop(runner1, "idle");
+		await f.backend.reconcile();
+		const settledPath = join(f.stateRoot, first, "journal.json");
+		await writeFile(settledPath, "{not-json", { mode: 0o600 });
+		const runner2 = await f.backend.acquire(second, fakeWork(second), new AbortController().signal);
+		expect(runner2.runnerId).toBe(f.lxd.runnerFor(second));
+		await f.backend.stop(runner2, "idle");
+		expect(f.lxd.unexpected).toEqual([]);
+	});
 });
 
 describe("orchestrator over the LXD provider", () => {

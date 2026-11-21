@@ -65,10 +65,16 @@ export class AppFrame {
 	) {
 		this.#again = options.again === true;
 		if (page instanceof Promise)
-			void page.then((made) => {
-				this.#page = made;
-				if (this.#asked) this.#handOver();
-			});
+			void page.then(
+				(made) => {
+					if (this.#lifetime.signal.aborted) return;
+					this.#page = made;
+					if (this.#asked) this.#handOver();
+				},
+				() => {
+					this.#leave();
+				},
+			);
 		else this.#page = page;
 		this.#handle = handle;
 		this.#left = left;
@@ -110,6 +116,7 @@ export class AppFrame {
 
 	dispose(): void {
 		this.#lifetime.abort();
+		this.#page = undefined;
 		this.#port?.close();
 		this.#port = undefined;
 	}
@@ -170,6 +177,7 @@ export class AppFrame {
 			"*",
 			[channel.port2],
 		);
+		if (!this.#again) this.#page = undefined;
 	}
 
 	async #call(data: unknown): Promise<void> {

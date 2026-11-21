@@ -203,6 +203,8 @@ export class ReleaseDesk {
 	#started = 0;
 	/** Pictures read, by path: read once while the desk is open. */
 	readonly #pictures = new Map<string, Promise<string | null>>();
+	#imageObserver: IntersectionObserver | undefined;
+	readonly #imageCallbacks = new WeakMap<Element, () => void>();
 	#refreshing: Promise<void> | undefined;
 	#again: Promise<void> | undefined;
 
@@ -235,6 +237,8 @@ export class ReleaseDesk {
 
 	dispose(): void {
 		this.#lifetime.abort();
+		this.#imageObserver?.disconnect();
+		this.#imageObserver = undefined;
 		for (const shown of this.#pictures.values()) void shown.then((url) => url && forgetPictureUrl(url));
 		this.#pictures.clear();
 	}
@@ -740,16 +744,22 @@ export class ReleaseDesk {
 		};
 		if (typeof IntersectionObserver !== "function") show();
 		else {
-			const seen = new IntersectionObserver(
-				(entries) => {
-					if (!entries.some((entry) => entry.isIntersecting)) return;
-					seen.disconnect();
-					show();
-				},
-				{ rootMargin: "200px" },
-			);
-			seen.observe(box);
-			this.#lifetime.signal.addEventListener("abort", () => seen.disconnect(), { once: true });
+			if (!this.#imageObserver) {
+				this.#imageObserver = new IntersectionObserver(
+					(entries) => {
+						for (const entry of entries) {
+							if (!entry.isIntersecting) continue;
+							const run = this.#imageCallbacks.get(entry.target);
+							this.#imageCallbacks.delete(entry.target);
+							this.#imageObserver?.unobserve(entry.target);
+							run?.();
+						}
+					},
+					{ rootMargin: "200px" },
+				);
+			}
+			this.#imageCallbacks.set(box, show);
+			this.#imageObserver.observe(box);
 		}
 		return card;
 	}

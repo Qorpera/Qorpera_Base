@@ -1284,17 +1284,28 @@ describe("the company's databases on an app's page", () => {
 		});
 		expect(await one.answer(query("shop/sales", [1]))).toMatchObject({ ok: false });
 		expect(await one.answer(query("shop/sales", { "a-b": 1 }))).toMatchObject({ ok: false });
-		for (const value of [{}, [1], Number.NaN, Number.POSITIVE_INFINITY, "x".repeat(1025)])
+		expect(await one.answer(query("shop/sales", { Upper: 1 }))).toMatchObject({ ok: false });
+		for (const value of [Number.NaN, Number.POSITIVE_INFINITY])
 			expect(await one.answer(query("shop/sales", { since: value })), String(value)).toEqual({
 				ok: false,
-				error: ":since is short text, a number, true, false or null",
+				error: ":since must be a JSON value",
 			});
-		const many = Object.fromEntries(Array.from({ length: 17 }, (_, index) => [`p${index}`, index]));
+		expect(await one.answer(query("shop/sales", { since: "x".repeat(65 * 1024) }))).toEqual({
+			ok: false,
+			error: "A question's parameters take at most 64 KiB together",
+		});
+		const many = Object.fromEntries(Array.from({ length: 65 }, (_, index) => [`p${index}`, index]));
 		expect(await one.answer(query("shop/sales", many))).toEqual({
 			ok: false,
-			error: "A question takes at most 16 parameters",
+			error: "A question takes at most 64 parameters",
 		});
 		expect(asked).toEqual([]);
+		expect((await one.answer(query("shop/sales", { ids: [1, 2], meta: { tier: "pro" } }))).ok).toBe(true);
+		expect(asked.pop()).toEqual({
+			database: "shop",
+			question: "sales",
+			params: { ids: [1, 2], meta: { tier: "pro" } },
+		});
 		// A question is one call of the app's 120 a minute.
 		const key = crypto.randomUUID();
 		let refused = 0;
@@ -2208,5 +2219,331 @@ describe("following the company's apps from a hidden tab", () => {
 		tell(false);
 		expect(first).toEqual([false, true, false]);
 		expect(second).toEqual([true, false]);
+	});
+});
+
+describe("AppBridge database actions (qorpera.act)", () => {
+	const sha = "a".repeat(64);
+	const makeApp = (
+		writes: readonly string[],
+	): CompanyApp & { readonly manifest: NonNullable<CompanyApp["manifest"]> } => {
+		const parsed = parseAppManifest(
+			`name = "Shop"\nreads = ["data"]\nwrites = [${writes.map((w) => JSON.stringify(w)).join(", ")}]\n`,
+		);
+		if (!parsed.ok) throw new Error(JSON.stringify(parsed.problems));
+		return { name: "shop", path: "apps/shop", manifest: parsed.manifest, problems: [], version: "1" };
+	};
+
+	it("previews, gates on member approval with the previewed sha256, and shapes returned rows", async () => {
+		const previewCalls: unknown[] = [];
+		const changeCalls: unknown[] = [];
+		const company = new AbortController();
+		const client: CompanyDataClient = {
+			query: async () => {
+				throw new Error("not used");
+			},
+			watch: async () => ({ same: true }),
+			previewChange: async (asked) => {
+				previewCalls.push(asked);
+				return {
+					words: ["Add item ", { name: "sku", value: "SKU-1" }],
+					values: [{ name: "sku", value: "SKU-1" }],
+					sha256: sha,
+				};
+			},
+			change: async (asked) => {
+				changeCalls.push(asked);
+				return {
+					changed: 1,
+					columns: ["id", "sku"],
+					rows: [[42, "SKU-1"]],
+					more: false,
+					asOf: "2026-11-21T12:00:00.000Z",
+				};
+			},
+		};
+		const data = new CompanyData(() => client, company.signal);
+		let seenAsk: unknown = null;
+		const bridge = new AppBridge(
+			{ folder: () => fakeFolder({}), agents: () => [], data },
+			makeApp(["data:shop/add-item"]),
+			crypto.randomUUID(),
+			company.signal,
+			{
+				closed: () => null,
+				ask: async () => ({ outcome: "declined" }),
+				askData: async (ask, perform) => {
+					seenAsk = ask;
+					const result = await perform();
+					return { outcome: "saved", result };
+				},
+			},
+		);
+
+		const ok = await bridge.answer({
+			method: "act",
+			params: { name: "shop/add-item", params: { sku: "SKU-1", tags: ["new"], meta: { priority: 1 } } },
+		});
+		expect(ok).toEqual({
+			ok: true,
+			value: {
+				changed: 1,
+				columns: ["id", "sku"],
+				rows: [{ id: 42, sku: "SKU-1" }],
+				more: false,
+				asOf: "2026-11-21T12:00:00.000Z",
+			},
+		});
+		expect(previewCalls).toEqual([
+			{ database: "shop", change: "add-item", params: { sku: "SKU-1", tags: ["new"], meta: { priority: 1 } } },
+		]);
+		expect(changeCalls).toEqual([
+			{
+				database: "shop",
+				change: "add-item",
+				params: { sku: "SKU-1", tags: ["new"], meta: { priority: 1 } },
+				sha256: sha,
+			},
+		]);
+		expect(seenAsk).toEqual({
+			kind: "data",
+			database: "shop",
+			change: "add-item",
+			words: ["Add item ", { name: "sku", value: "SKU-1" }],
+			values: [{ name: "sku", value: "SKU-1" }],
+			sha256: sha,
+		});
+		company.abort();
+	});
+
+	it("enforces writes allowlist, rejects :viewer and reserved qorpera db, and handles gate decline", async () => {
+		const company = new AbortController();
+		const client: CompanyDataClient = {
+			query: async () => {
+				throw new Error("not used");
+			},
+			watch: async () => ({ same: true }),
+			previewChange: async () => ({ words: ["Delete"], values: [], sha256: sha }),
+			change: async () => {
+				throw new Error("must not run on decline");
+			},
+		};
+		const data = new CompanyData(() => client, company.signal);
+		const bridge = new AppBridge(
+			{ folder: () => fakeFolder({}), agents: () => [], data },
+			makeApp(["data:shop/add-item"]),
+			crypto.randomUUID(),
+			company.signal,
+			{
+				closed: () => null,
+				ask: async () => ({ outcome: "declined" }),
+				askData: async () => ({ outcome: "declined" }),
+			},
+		);
+
+		expect(await bridge.answer({ method: "act", params: { name: "shop/other-change", params: {} } })).toEqual({
+			ok: false,
+			error: 'Add "data:shop/other-change" to writes in app.toml to run shop/other-change',
+		});
+		expect(await bridge.answer({ method: "act", params: { name: "qorpera/money-now", params: {} } })).toEqual({
+			ok: false,
+			error: "Name a change as <database>/<change>",
+		});
+		expect(
+			await bridge.answer({ method: "act", params: { name: "shop/add-item", params: { viewer: "x" } } }),
+		).toEqual({
+			ok: false,
+			error: ":viewer is filled by Qorpera with the member acting",
+		});
+		expect(
+			await bridge.answer({ method: "act", params: { name: "shop/add-item", params: { sku: "SKU-2" } } }),
+		).toEqual({
+			ok: false,
+			error: "The member said not now",
+		});
+		company.abort();
+	});
+
+	it("prevents inFlight leaks across minute rollovers, blocks DAG/circular/BigInt DoS, serializes concurrent acts, and truncates oversized post-commit rows", async () => {
+		const company = new AbortController();
+		const sha = "c".repeat(64);
+		let previewCount = 0;
+		let releasePreview: (() => void) | undefined;
+		let changeMode: "huge" | "drop" = "huge";
+		const client: CompanyDataClient = {
+			query: async () => ({ columns: [], rows: [], more: false, etag: "e", asOf: "2026-11-21T12:00:00.000Z" }),
+			watch: async () => ({ same: true }),
+			previewChange: async () => {
+				previewCount++;
+				if (releasePreview === undefined && previewCount === 1) {
+					await new Promise<void>((resolve) => {
+						releasePreview = resolve;
+					});
+				}
+				return {
+					words: ["Run change"],
+					values: [],
+					sha256: sha,
+				};
+			},
+			change: async () => {
+				if (changeMode === "drop") throw new TypeError("fetch failed");
+				return {
+					changed: 400,
+					columns: ["id", "payload"],
+					rows: Array.from({ length: 400 }, (_, i) => [i + 1, "x".repeat(4_000)]),
+					more: false,
+					asOf: "2026-11-21T12:00:00.000Z",
+				};
+			},
+		};
+		const data = new CompanyData(() => client, company.signal);
+		const key = crypto.randomUUID();
+		const bridge = new AppBridge(
+			{ folder: () => fakeFolder({}), agents: () => [], data },
+			makeApp(["data:shop/add-item"]),
+			key,
+			company.signal,
+			{
+				closed: () => null,
+				ask: async () => ({ outcome: "declined" }),
+				askData: async (_ask, perform) => {
+					try {
+						return { outcome: "saved", result: await perform() };
+					} catch (error) {
+						return { outcome: "failed", message: error instanceof Error ? error.message : "failed" };
+					}
+				},
+			},
+		);
+
+		let dag: unknown = { a: "0123456789" };
+		for (let i = 0; i < 16; i++) dag = [dag, dag, dag, dag];
+		expect(await bridge.answer({ method: "act", params: { name: "shop/add-item", params: { dag } } })).toEqual({
+			ok: false,
+			error: "Not a call the app answers",
+		});
+		const cyclic: Record<string, unknown> = {};
+		cyclic.self = cyclic;
+		expect(await bridge.answer({ method: "act", params: { name: "shop/add-item", params: cyclic } })).toEqual({
+			ok: false,
+			error: "Not a call the app answers",
+		});
+		expect(await bridge.answer({ method: "act", params: { name: "shop/add-item", params: { n: 1n } } })).toEqual({
+			ok: false,
+			error: "Not a call the app answers",
+		});
+
+		const first = bridge.answer({ method: "act", params: { name: "shop/add-item", params: { sku: "1" } } });
+		const second = await bridge.answer({ method: "act", params: { name: "shop/add-item", params: { sku: "2" } } });
+		expect(second).toEqual({ ok: false, error: "Another request is waiting for the member's answer" });
+		expect(previewCount).toBe(1);
+		releasePreview?.();
+		const firstRes = await first;
+		expect(firstRes.ok).toBe(true);
+		if (firstRes.ok) {
+			const value = firstRes.value as { changed: number; more: boolean; rows: unknown[] };
+			expect(value.changed).toBe(400);
+			expect(value.more).toBe(true);
+			expect(value.rows.length).toBeGreaterThan(0);
+			expect(value.rows.length).toBeLessThan(400);
+		}
+
+		changeMode = "drop";
+		const dropped = await bridge.answer({ method: "act", params: { name: "shop/add-item", params: { sku: "3" } } });
+		expect(dropped.ok).toBe(false);
+		if (!dropped.ok) expect(dropped.error).toContain("Check before trying again");
+
+		const nowSpy = vi.spyOn(Date, "now");
+		try {
+			let clock = 60_000 * 100;
+			nowSpy.mockImplementation(() => clock);
+			for (let round = 0; round < 10; round++) {
+				let finishSlow: (() => void) | undefined;
+				const slowClient: CompanyDataClient = {
+					query: async () => {
+						await new Promise<void>((resolve) => {
+							finishSlow = resolve;
+						});
+						return { columns: [], rows: [], more: false, etag: "e", asOf: "2026-11-21T12:00:00.000Z" };
+					},
+					watch: async () => ({ same: true }),
+				};
+				const slowBridge = new AppBridge(
+					{
+						folder: () => fakeFolder({}),
+						agents: () => [],
+						data: new CompanyData(() => slowClient, company.signal),
+					},
+					makeApp([]),
+					key,
+					company.signal,
+				);
+				const pending = slowBridge.answer({ method: "query", params: { name: "shop/q", params: {} } });
+				clock += 60_000;
+				const probe = slowBridge.answer({ method: "agents", params: {} });
+				finishSlow?.();
+				await Promise.all([pending, probe]);
+			}
+			const afterRollovers = await bridge.answer({ method: "agents", params: {} });
+			expect(afterRollovers.ok).toBe(false);
+			if (!afterRollovers.ok) expect(afterRollovers.error).not.toContain("Too many calls");
+		} finally {
+			nowSpy.mockRestore();
+		}
+		company.abort();
+	});
+
+	it("coalesces concurrent CompanyApps.read() calls so a slow earlier read cannot overwrite newer apps", async () => {
+		const company = new AbortController();
+		let calls = 0;
+		let releaseFirst: (() => void) | undefined;
+		const firstFolder = fakeFolder({
+			"apps/alpha/app.json": JSON.stringify({ name: "Alpha", entry: "index.html", posted: true }),
+			"apps/alpha/index.html": "<p>Alpha</p>",
+		});
+		const secondFolder = fakeFolder({
+			"apps/alpha/app.json": JSON.stringify({ name: "Alpha", entry: "index.html", posted: true }),
+			"apps/alpha/index.html": "<p>Alpha</p>",
+			"apps/beta/app.json": JSON.stringify({ name: "Beta", entry: "index.html", posted: true }),
+			"apps/beta/index.html": "<p>Beta</p>",
+		});
+		const delayedFirst = {
+			...firstFolder,
+			list: async (...args: Parameters<typeof firstFolder.list>) => {
+				if (args[0] === "apps") {
+					await new Promise<void>((resolve) => {
+						releaseFirst = resolve;
+					});
+				}
+				return firstFolder.list(...args);
+			},
+		};
+		const published: string[][] = [];
+		const apps = new CompanyApps(
+			{
+				signal: company.signal,
+				folder: () => {
+					calls += 1;
+					return (calls === 1 ? delayedFirst : secondFolder) as never;
+				},
+				folderHints: () => ({ close: async () => {} }),
+			},
+			(list) => published.push(list.map((item) => item.name)),
+		);
+		const p1 = apps.read();
+		const p2 = apps.read();
+		const p3 = apps.read();
+		await vi.waitFor(() => expect(releaseFirst).toBeDefined());
+		expect(calls).toBe(1);
+		releaseFirst!();
+		const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
+		expect(calls).toBe(2);
+		expect(r1.map((item) => item.name)).toEqual(["alpha", "beta"]);
+		expect(r2.map((item) => item.name)).toEqual(["alpha", "beta"]);
+		expect(r3.map((item) => item.name)).toEqual(["alpha", "beta"]);
+		expect(published.at(-1)).toEqual(["alpha", "beta"]);
+		apps.dispose();
+		company.abort();
 	});
 });

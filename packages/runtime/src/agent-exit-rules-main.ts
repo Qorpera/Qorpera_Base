@@ -120,7 +120,7 @@ export async function runAgentExitRulesMain(): Promise<void> {
 	const database = exitDatabase(await readCredential(credentials, "qorpera-agent-exit-rules-database-url"));
 	const ssl = databaseTls(
 		{
-			supabaseCa: await readCredential(credentials, "qorpera-agent-exit-rules-database-ca"),
+			supabaseCa: await readOptionalCredential(credentials, "qorpera-agent-exit-rules-database-ca", readCredential),
 			ownCa: await readOptionalCredential(
 				credentials,
 				"qorpera-agent-exit-rules-database-own-ca",

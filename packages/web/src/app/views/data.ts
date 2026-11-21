@@ -233,15 +233,20 @@ const sleep = (ms: number, signal: AbortSignal) =>
 		signal.addEventListener("abort", done, { once: true });
 	});
 
-const shown = () =>
+const shown = (signal: AbortSignal) =>
 	new Promise<void>((resolve) => {
-		if (document.visibilityState !== "hidden") return resolve();
-		const seen = () => {
-			if (document.visibilityState === "hidden") return;
+		if (signal.aborted || document.visibilityState !== "hidden") return resolve();
+		const done = () => {
 			document.removeEventListener("visibilitychange", seen);
+			signal.removeEventListener("abort", done);
 			resolve();
 		};
+		const seen = () => {
+			if (document.visibilityState === "hidden") return;
+			done();
+		};
 		document.addEventListener("visibilitychange", seen);
+		signal.addEventListener("abort", done, { once: true });
 	});
 
 class DataListView {
@@ -278,8 +283,8 @@ class DataListView {
 			(database, table, key) => this.#listedTitle(database, table, key),
 		);
 		replace(this.el, this.#bar, this.#top, this.#params.el, this.#body, this.#ask.el);
-		company.signal.addEventListener("abort", () => this.dispose(), { once: true });
-		databases.signal.addEventListener("abort", () => this.dispose(), { once: true });
+		company.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
+		databases.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.el.addEventListener("keydown", (event) => {
 			if (event.key === "Escape" && this.#open?.asking) {
 				event.preventDefault();
@@ -543,9 +548,9 @@ class DataListView {
 
 	async #watch(read: ListRead, signal: AbortSignal): Promise<void> {
 		let failures = 0;
-		while (!signal.aborted) {
-			await shown();
-			if (signal.aborted) return;
+		while (!signal.aborted && this.el.isConnected) {
+			await shown(signal);
+			if (signal.aborted || !this.el.isConnected) return;
 			const watched: CloudMemberDataWatched =
 				read.tab.kind === "question"
 					? { database: read.database, question: read.tab.name, params: read.params, etag: read.etag ?? "" }
@@ -1629,6 +1634,13 @@ function hasValues(row: CloudMemberDataRow): row is CloudMemberDataRow & { value
 }
 
 const views = new WeakMap<HTMLElement, DataListView>();
+
+export function disposeData(container: HTMLElement): void {
+	const view = views.get(container);
+	if (!view) return;
+	views.delete(container);
+	view.dispose();
+}
 
 export function renderData(
 	container: HTMLElement,

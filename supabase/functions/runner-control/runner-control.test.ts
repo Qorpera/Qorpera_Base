@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
 	parseRunnerBearer,
 	parseRunnerControlRequest,
+	readRunnerControlRequest,
 	runnerControlRejectionLog,
 	runnerControlRpcName,
 	runnerControlRpcStatus,
@@ -189,5 +190,31 @@ describe("runner control boundary", () => {
 			runnerControlRejectionLog("renew", {}),
 			"runner-control rejected rpc=qorpera_renew_runner_job sqlstate=none",
 		);
+	});
+
+	it("rejects oversized chunked bodies without Content-Length and cancels the stream early", async () => {
+		let pulled = 0;
+		let cancelled = false;
+		const oversized = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				pulled += 1;
+				if (pulled > 32) {
+					controller.close();
+					return;
+				}
+				controller.enqueue(new Uint8Array(64 * 1024));
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const request = new Request("https://example.test/functions/v1/runner-control", {
+			method: "POST",
+			body: oversized,
+			duplex: "half",
+		} as RequestInit);
+		await assert.rejects(readRunnerControlRequest(request), /request size/);
+		assert.equal(cancelled, true);
+		assert.ok(pulled <= 10, `expected early stream cancellation, saw ${pulled} chunks`);
 	});
 });

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import { mkdir, open, readdir, readFile, rename, rm, rmdir, stat } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 import { ObjectDependencyError, type ObjectDependencyHealth } from "./dependency.ts";
@@ -125,7 +126,9 @@ export class FileSystemObjectStore {
 		bytes: Uint8Array,
 		verified?: VerifiedObjectBytes,
 	): Promise<ObjectWriteResult> {
-		return this.#io(this.#objectPath(profileId, sha256), () => this.#put(profileId, sha256, bytes, verified));
+		return this.#io(this.#objectPath(profileId, sha256), (signal) =>
+			this.#put(profileId, sha256, bytes, verified, signal),
+		);
 	}
 
 	dependencyHealth(): ObjectDependencyHealth {
@@ -134,11 +137,14 @@ export class FileSystemObjectStore {
 
 	async probe(): Promise<void> {
 		try {
-			await this.#io("probe", async () => {
+			await this.#io("probe", async (signal) => {
+				signal.throwIfAborted();
 				const path = resolve(this.#root, `.gateway-health-${randomUUID()}`);
 				const handle = await open(path, "wx", 0o600);
 				try {
+					signal.throwIfAborted();
 					await handle.writeFile("health");
+					signal.throwIfAborted();
 					await handle.sync();
 				} finally {
 					await handle.close();
@@ -156,22 +162,26 @@ export class FileSystemObjectStore {
 		sha256: string,
 		bytes: Uint8Array,
 		verified?: VerifiedObjectBytes,
+		signal?: AbortSignal,
 	): Promise<ObjectWriteResult> {
+		signal?.throwIfAborted();
 		if (!isVerifiedObjectBytes(verified, sha256, bytes) && digest(bytes) !== sha256)
 			throw new Error("Object bytes do not match their SHA-256 address");
 		const path = this.#objectPath(profileId, sha256);
 		const parent = resolve(path, "..");
 		try {
-			await this.#get(profileId, sha256, bytes.byteLength);
+			await this.#get(profileId, sha256, bytes.byteLength, signal);
 			return "exists";
 		} catch (error) {
 			if (!(error instanceof Error) || error.message !== "Object not found") throw error;
 		}
+		signal?.throwIfAborted();
 		const temporary = `${path}.${randomUUID()}.tmp`;
 		if (!this.#knownDirs.has(parent)) {
 			await this.#directories(parent);
 			this.#rememberDir(parent);
 		}
+		signal?.throwIfAborted();
 		let renamed = false;
 		try {
 			let handle: Awaited<ReturnType<typeof open>>;
@@ -179,9 +189,11 @@ export class FileSystemObjectStore {
 				handle = await open(temporary, "wx", 0o600);
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+				signal?.throwIfAborted();
 				this.#knownDirs.delete(parent);
 				await this.#directories(parent);
 				this.#rememberDir(parent);
+				signal?.throwIfAborted();
 				handle = await open(temporary, "wx", 0o600);
 			}
 			try {
@@ -209,7 +221,7 @@ export class FileSystemObjectStore {
 		const shared = `${path}:${expectedBytes}`;
 		const underWay = this.#reading.get(shared);
 		if (underWay) return underWay;
-		const reading = this.#io(path, () => this.#get(profileId, sha256, expectedBytes));
+		const reading = this.#io(path, (signal) => this.#get(profileId, sha256, expectedBytes, signal));
 		this.#reading.set(shared, reading);
 		const settled = () => {
 			if (this.#reading.get(shared) === reading) this.#reading.delete(shared);
@@ -218,14 +230,37 @@ export class FileSystemObjectStore {
 		return reading;
 	}
 
-	async #get(profileId: string, sha256: string, expectedBytes: number): Promise<Uint8Array> {
+	getVerified(profileId: string, sha256: string, maxBytes = MAX_QUARANTINED_BYTES): Promise<Uint8Array> {
+		if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > MAX_QUARANTINED_BYTES)
+			return Promise.reject(new Error("Object size limit is invalid"));
+		let path: string;
+		try {
+			path = this.#objectPath(profileId, sha256);
+		} catch (error) {
+			return Promise.reject(error);
+		}
+		const shared = `${path}:verified:${maxBytes}`;
+		const underWay = this.#reading.get(shared);
+		if (underWay) return underWay;
+		const reading = this.#io(path, (signal) => this.#getVerified(profileId, sha256, maxBytes, signal));
+		this.#reading.set(shared, reading);
+		const settled = () => {
+			if (this.#reading.get(shared) === reading) this.#reading.delete(shared);
+		};
+		reading.then(settled, settled);
+		return reading;
+	}
+
+	async #get(profileId: string, sha256: string, expectedBytes: number, signal?: AbortSignal): Promise<Uint8Array> {
+		signal?.throwIfAborted();
 		const path = this.#objectPath(profileId, sha256);
 		try {
 			const info = await stat(path);
+			signal?.throwIfAborted();
 			if (!info.isFile() || info.size !== expectedBytes) {
 				throw new Error("Stored object failed integrity verification");
 			}
-			const bytes = await readFile(path);
+			const bytes = await readFile(path, signal ? { signal } : undefined);
 			if (bytes.byteLength !== expectedBytes || digest(bytes) !== sha256)
 				throw new Error("Stored object failed integrity verification");
 			return bytes;
@@ -234,6 +269,42 @@ export class FileSystemObjectStore {
 				throw new Error("Object not found");
 			}
 			throw error;
+		}
+	}
+
+	async #getVerified(profileId: string, sha256: string, maxBytes: number, signal?: AbortSignal): Promise<Uint8Array> {
+		signal?.throwIfAborted();
+		const path = this.#objectPath(profileId, sha256);
+		let handle: Awaited<ReturnType<typeof open>> | undefined;
+		try {
+			handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+			signal?.throwIfAborted();
+			const info = await handle.stat();
+			if (!info.isFile() || info.size > maxBytes) {
+				throw new Error("Stored object failed integrity verification");
+			}
+			const buffer = Buffer.allocUnsafe(info.size);
+			let offset = 0;
+			while (offset < info.size) {
+				signal?.throwIfAborted();
+				const { bytesRead } = await handle.read(buffer, offset, info.size - offset, offset);
+				if (bytesRead === 0) throw new Error("Stored object failed integrity verification");
+				offset += bytesRead;
+			}
+			signal?.throwIfAborted();
+			const extra = Buffer.allocUnsafe(1);
+			const trailing = await handle.read(extra, 0, 1, offset);
+			if (trailing.bytesRead > 0 || digest(buffer) !== sha256)
+				throw new Error("Stored object failed integrity verification");
+			return buffer;
+		} catch (error) {
+			if (error && typeof error === "object" && "code" in error) {
+				if (error.code === "ENOENT") throw new Error("Object not found");
+				if (error.code === "ELOOP") throw new Error("Stored object failed integrity verification");
+			}
+			throw error;
+		} finally {
+			await handle?.close().catch(() => undefined);
 		}
 	}
 
@@ -255,16 +326,19 @@ export class FileSystemObjectStore {
 	async quarantine(profileId: string, sha256: string, leaseId: string): Promise<"moved" | "absent"> {
 		const source = this.#objectPath(profileId, sha256);
 		const target = this.#quarantinePath(profileId, sha256, leaseId);
-		return this.#io(source, async () => {
+		return this.#io(source, async (signal) => {
 			// The scan may remove an empty company folder between its mkdir (or the mkdir's sync) and the rename: then
 			// both are asked once more, so a NAS file that is still there is never taken for an absent one.
 			for (let attempt = 1; ; attempt++) {
+				signal.throwIfAborted();
 				try {
 					await this.#directories(dirname(target));
+					signal.throwIfAborted();
 					await rename(source, target);
 					break;
 				} catch (error) {
 					if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+					signal.throwIfAborted();
 					if (!(await this.#exists(source))) {
 						if (!(await this.#exists(target))) return "absent";
 						// This lease moved it before; that lane may have stopped before its syncs.
@@ -286,10 +360,12 @@ export class FileSystemObjectStore {
 		if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > MAX_QUARANTINED_BYTES)
 			throw new Error("Object size is invalid");
 		const marker = `${this.#quarantinePath(profileId, sha256, leaseId)}.${bytes}.replica`;
-		await this.#io(marker, async () => {
+		await this.#io(marker, async (signal) => {
 			for (let attempt = 1; ; attempt++) {
+				signal.throwIfAborted();
 				try {
 					await this.#directories(dirname(marker));
+					signal.throwIfAborted();
 					const handle = await open(marker, "w", 0o600);
 					try {
 						await handle.sync();
@@ -310,8 +386,10 @@ export class FileSystemObjectStore {
 	async restoreQuarantined(profileId: string, sha256: string, leaseId: string, bytes: number): Promise<void> {
 		const source = this.#quarantinePath(profileId, sha256, leaseId);
 		const target = this.#objectPath(profileId, sha256);
-		await this.#io(target, async () => {
+		await this.#io(target, async (signal) => {
+			signal.throwIfAborted();
 			await this.#directories(dirname(target));
+			signal.throwIfAborted();
 			let moved = true;
 			try {
 				await rename(source, target);
@@ -353,7 +431,8 @@ export class FileSystemObjectStore {
 		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500)
 			throw new Error("Quarantine batch limit is invalid");
 		const root = resolve(this.#root, QUARANTINE);
-		return this.#io(root, async () => {
+		return this.#io(root, async (signal) => {
+			signal.throwIfAborted();
 			let companies: string[];
 			try {
 				companies = await readdir(root);
@@ -366,6 +445,7 @@ export class FileSystemObjectStore {
 			for (const profileId of companies
 				.filter((name) => UUID_PATTERN.test(name) && (afterCompany === undefined || name >= afterCompany))
 				.sort()) {
+				signal.throwIfAborted();
 				const folder = resolve(root, profileId);
 				let names: string[];
 				try {
@@ -375,10 +455,12 @@ export class FileSystemObjectStore {
 					throw error;
 				}
 				if (names.length === 0) {
+					signal.throwIfAborted();
 					await rmdir(folder).catch(() => undefined);
 					continue;
 				}
 				for (const name of names.sort()) {
+					signal.throwIfAborted();
 					if (profileId === afterCompany && afterName !== undefined && name <= afterName) continue;
 					// `<sha256>.<leaseId>`, or a marker `<sha256>.<leaseId>.<bytes>.replica`.
 					const [sha256, leaseId, markerBytes, suffix, ...rest] = name.split(".");
@@ -417,14 +499,17 @@ export class FileSystemObjectStore {
 		});
 	}
 
-	#io<T>(key: string, operation: () => Promise<T>): Promise<T> {
+	#io<T>(key: string, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
 		return new Promise<T>((resolve, reject) => {
 			const start = () => {
 				const lane: Lane = { overdue: false };
+				const controller = new AbortController();
 				this.#inFlight.set(key, lane);
 				const deadline = setTimeout(() => {
 					lane.overdue = true;
-					reject(new ObjectDependencyError(503));
+					const error = new ObjectDependencyError(503);
+					controller.abort(error);
+					reject(error);
 					this.#refuseStranded();
 				}, this.#timeoutMs);
 				const settled = () => {
@@ -432,7 +517,10 @@ export class FileSystemObjectStore {
 					this.#inFlight.delete(key);
 					this.#admit();
 				};
-				Promise.resolve().then(operation).then(resolve, reject).then(settled, settled);
+				Promise.resolve()
+					.then(() => operation(controller.signal))
+					.then(resolve, reject)
+					.then(settled, settled);
 			};
 			if (this.#stranded(key)) {
 				reject(new ObjectDependencyError(503));

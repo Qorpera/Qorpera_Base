@@ -214,7 +214,9 @@ Deno.serve(async (request) => {
 				"x-qorpera-deletion-authorization-id": input.authorizationId,
 				"x-qorpera-object-bytes": String(input.bytes),
 			},
+			signal: AbortSignal.timeout(15_000),
 		});
+		void response.body?.cancel().catch(() => undefined);
 		if (!response.ok) throw new Error("NAS object removal failed");
 	};
 	const { data: pendingDeletions, error: pendingDeletionError } = await client.rpc(
@@ -267,7 +269,9 @@ Deno.serve(async (request) => {
 					"x-qorpera-gc-lease-id": gcLeaseId,
 					"x-qorpera-object-bytes": String(object.bytes),
 				},
+				signal: AbortSignal.timeout(15_000),
 			});
+			void response.body?.cancel().catch(() => undefined);
 			if (!response.ok) throw new Error("NAS object removal failed");
 		},
 	});

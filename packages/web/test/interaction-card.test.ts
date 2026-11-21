@@ -5,7 +5,12 @@ import { answersInteraction } from "../src/app/company.ts";
 import { type InteractionRequest, questionInput } from "../src/cloud/interactions.ts";
 import type { HostedSession } from "../src/cloud/types.ts";
 import { fmtTime } from "../src/ui/dom.ts";
-import { type InteractionCardApp, refreshAppPreviews, renderInteractionCard } from "../src/ui/interaction-card.ts";
+import {
+	disposeCardPictures,
+	type InteractionCardApp,
+	refreshAppPreviews,
+	renderInteractionCard,
+} from "../src/ui/interaction-card.ts";
 import type { MailAddressCalls } from "../src/ui/mail-address.ts";
 import { session, userA, userB } from "./fixtures.ts";
 
@@ -876,6 +881,30 @@ describe("a visual choice", () => {
 		const boxes = [...card.querySelectorAll<HTMLButtonElement>(".choice-box")];
 		expect(boxes.every((box) => box.disabled)).toBe(true);
 		expect(boxes.map((box) => box.classList.contains("is-chosen"))).toEqual([true, false, false]);
+	});
+
+	it("revokes cached object URLs and aborts in-flight image reads on disposal", async () => {
+		let pendingSignal: AbortSignal | undefined;
+		const image = vi.fn((path: string, signal: AbortSignal) => {
+			if (path === "sketches/duo.svg") return Promise.resolve(new Blob([path], { type: "image/png" }));
+			pendingSignal = signal;
+			return new Promise<Blob | null>(() => {});
+		});
+		const created = vi.spyOn(URL, "createObjectURL").mockImplementation(() => "blob:card-1");
+		const revoked = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+		try {
+			const card = renderInteractionCard(item(visual), context({ image, app }));
+			await vi.waitFor(() => expect(card.querySelectorAll(".choice-picture img")).toHaveLength(1));
+			expect(pendingSignal?.aborted).toBe(false);
+			disposeCardPictures(image);
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(pendingSignal?.aborted).toBe(true);
+			expect(revoked).toHaveBeenCalledWith("blob:card-1");
+		} finally {
+			created.mockRestore();
+			revoked.mockRestore();
+		}
 	});
 });
 

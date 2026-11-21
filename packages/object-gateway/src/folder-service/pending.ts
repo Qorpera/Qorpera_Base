@@ -416,6 +416,7 @@ export class PendingView {
 
 	/** One page of a folder's names, as `ViewTree.children` gives them; links only when `links` (protocol 4). */
 	children(path: string, after: string | undefined, limit: number, links = true) {
+		if (this.empty) return this.#live().children(path, after, limit, links);
 		const r = this.resolve(path);
 		if (!r) return "not_found" as const;
 		const folder = r.kind === "live" ? r.entry.kind === "folder" : r.node.kind === "folder";
@@ -425,7 +426,16 @@ export class PendingView {
 		for (const name of this.#children.get(path) ?? []) names.add(name);
 		const sorted = sortByteOrder([...names].filter((n) => Buffer.byteLength(n) <= 255));
 		let start = 0;
-		if (after !== undefined) while (start < sorted.length && byteOrder(sorted[start]!, after) <= 0) start++;
+		if (after !== undefined) {
+			let lo = 0;
+			let hi = sorted.length;
+			while (lo < hi) {
+				const mid = (lo + hi) >>> 1;
+				if (byteOrder(sorted[mid]!, after) <= 0) lo = mid + 1;
+				else hi = mid;
+			}
+			start = lo;
+		}
 		const entries: WireEntry[] = [];
 		let i = start;
 		for (; i < sorted.length && entries.length < limit; i++) {

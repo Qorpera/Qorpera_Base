@@ -18,7 +18,7 @@ EXPECTED_TOOL_SHA256="b09af43610de3359b694b9b0a1c8fd0dfe0081c7f3b41ec62b99a940b3
 EXPECTED_EXIT_RULES_SHA256="06db392f3791a44a14a9a24105e141ff0b94c99f58dc2156310871572b68d111"
 EXPECTED_HOST_RULES_SHA256="f916b1e859cf4e07707d0f5d5369356c4d57df0417b192b366c001bf36130ef4"
 EXPECTED_BRIDGE_RULES_SHA256="271f3f7ba20b794c54bf5676740f55452026a39d7af8b3af20574091bd1e3ac8"
-EXPECTED_LOGGER_SHA256="c3f9103f32418444609ea824ba72e64deab0559ef786c57180ac58858ed8f40d"
+EXPECTED_LOGGER_SHA256="2e26a3b069a7a1d37d00a1589297f879dc35e6acc8e1f5939936496cb8a59832"
 EXPECTED_UNIT_SHA256="027b179a9229c10b2e99b8c8418d35945986734ecd85443c3300367519b57139"
 EXPECTED_DNS_UNIT_SHA256="fdbee4fdd95fb66eefc4c062aa814202374377225320441f3b13191abeeb6d8a"
 EXPECTED_LOG_UNIT_SHA256="53f75dfda39d62df68f2c48c1ebe17a6f2cd6bf90094e57670b00458a9ce7b63"
@@ -26,7 +26,7 @@ EXPECTED_PLUG_SHA256="c6ad7c0979cc87ae9848688432783a23dc8ad835d27be84706398e5cce
 EXPECTED_PLUG_UNIT_SHA256="4abfe51bb6ec5723815dbd3384f16abe849ed404d6be0b1858b202f51accbf89"
 EXPECTED_HEALTH_UNIT_SHA256="a048a3a71baa7afbc477df027e7109926ddcb33fea5f391ea3164aa1659a4f09"
 EXPECTED_HEALTH_TIMER_SHA256="6abd734ac5e7bcc9f0370bdf1bcdf722fc3123ffdd6fc8bd4f808c9001ab27b3"
-EXPECTED_LOGS_SHA256="e35c9825190e1b5be722ad0f7993e2528257cd470a15eedf7e8bdc9550b2af78"
+EXPECTED_LOGS_SHA256="e1ddc92a8f4bd382fb2635b1ddc9636c959969b127459e54231a09974863bce8"
 EXPECTED_LOGS_UNIT_SHA256="038999e576ce720b55b54a75e9620ec55729815b0b1b3355eda0d186783b92db"
 EXPECTED_LOGS_TIMER_SHA256="64f27bbab37ae889b6a4be8be94816ba30e635ba090a51be84c5c7c6b0f8cb78"
 EXPECTED_SHIP_UNIT_SHA256="a122ffe3c84559b89c37cca3390972d9fc46507218d77d4701000876825959de"
@@ -35,7 +35,7 @@ EXPECTED_RULES_UNIT_SHA256="5669346ed525d77def7f3366e89e842cd753248b3c1f771029d1
 EXPECTED_NAMES_SHA256="41dcb7a3125eff018eeb3ce041567d74128a5ee33c36851845836914e8d6bc07"
 EXPECTED_NAMES_UNIT_SHA256="4b1146e98a366712012bbba5210ffcca4606f5231a2de627062b5902d795d252"
 EXPECTED_RESOLVER_UNIT_SHA256="124b74f25fa4b9f26bc7b13b15148c8e104b8236d68a82cf7e0582c15bc0309c"
-EXPECTED_SNI_SHA256="6cf110f02d0cb320086efb968133486a34503935e611f0ac4f372e40b3f24216"
+EXPECTED_SNI_SHA256="e275b5d44cd956ee7294efe0aef47efc429e73326562a59f9bb078573967e200"
 EXPECTED_SNI_RULES_SHA256="d0872aec7635ead37c01354a03f23aa2778fbd02aa4d67526c43b655d49a0c6e"
 EXPECTED_SNI_UNIT_SHA256="72d18b520f2ef8c43dcce15ace4bf606db0e8659eed642a51ab9cc73c6e6679a"
 EXPECTED_RULES_CA_SHA256="700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7"
@@ -96,7 +96,7 @@ import re, sys
 with open(sys.argv[1], "rb") as f:
     data = f.read()
 pem = rb"-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----\r?\n?"
-sys.exit(0 if re.fullmatch(pem, data) else 1)
+sys.exit(0 if len(data) <= 65536 and re.fullmatch(pem, data) else 1)
 ' "$OWN_CA_COPY" || {
 		echo "$OWN_CA: not one PEM certificate; refusing to install" >&2
 		exit 65
@@ -145,12 +145,14 @@ pin qorpera-agent-exit-sni.service "$EXPECTED_SNI_UNIT_SHA256"
 python3 -c '
 import hashlib, json, os, sys
 package = sys.argv[1]
-files = ["qorpera-agent-exit-rules.mjs", "qorpera-agent-exit-rules.service", "supabase-prod-ca-2021.crt"]
+base_files = ["qorpera-agent-exit-rules.mjs", "qorpera-agent-exit-rules.service", "supabase-prod-ca-2021.crt"]
+own_ca_files = ["database-own-ca.crt", "database-own-ca.sha256", "database-own-ca.conf"]
 with open(os.path.join(package, "manifest.json"), encoding="utf-8") as f:
     manifest = json.load(f)
 assert sorted(manifest) == ["artifacts", "schema"] and manifest["schema"] == "qorpera.agent-exit-rules-package/v1"
-assert [artifact["file"] for artifact in manifest["artifacts"]] == files
-assert sorted(os.listdir(package)) == sorted(files + ["manifest.json"])
+names = [artifact["file"] for artifact in manifest["artifacts"]]
+assert names in (base_files, base_files + own_ca_files)
+assert sorted(os.listdir(package)) == sorted(names + ["manifest.json"])
 for artifact in manifest["artifacts"]:
     path = os.path.join(package, artifact["file"])
     assert not os.path.islink(path) and os.path.isfile(path)
@@ -171,6 +173,44 @@ package_pin() {
 }
 package_pin qorpera-agent-exit-rules.service "$EXPECTED_RULES_UNIT_SHA256"
 package_pin supabase-prod-ca-2021.crt "$EXPECTED_RULES_CA_SHA256"
+if [[ -f "$PACKAGE/database-own-ca.crt" ]]; then
+	PKG_OWN_CA_SHA256=$(python3 -c '
+import hashlib, re, sys
+pkg = sys.argv[1]
+with open(pkg + "/database-own-ca.crt", "rb") as f:
+    crt = f.read()
+with open(pkg + "/database-own-ca.sha256", encoding="utf-8") as f:
+    sha_txt = f.read().strip()
+with open(pkg + "/database-own-ca.conf", encoding="utf-8") as f:
+    conf_txt = f.read()
+expected_conf = (
+    "[Service]\n"
+    "LoadCredential=qorpera-agent-exit-rules-database-own-ca:/usr/local/libexec/qorpera-agent-exit/database-own-ca.crt\n"
+    "LoadCredential=qorpera-agent-exit-rules-database-own-ca-sha256:/usr/local/libexec/qorpera-agent-exit/database-own-ca.sha256\n"
+)
+pem = rb"-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----\r?\n?"
+actual = hashlib.sha256(crt).hexdigest()
+assert len(crt) <= 65536 and re.fullmatch(pem, crt)
+assert re.fullmatch(r"[0-9a-f]{64}", sha_txt) and sha_txt == actual
+assert conf_txt == expected_conf
+print(actual)
+' "$PACKAGE") || {
+		echo "$PACKAGE: packaged database-own-ca artifacts are invalid; refusing to install" >&2
+		exit 65
+	}
+	if [[ -n $OWN_CA_COPY ]]; then
+		[[ $OWN_CA_SHA256 == "$PKG_OWN_CA_SHA256" ]] || {
+			echo "--database-ca-sha256 ($OWN_CA_SHA256) does not match packaged CA ($PKG_OWN_CA_SHA256); refusing to install" >&2
+			exit 65
+		}
+	else
+		OWN_CA="$PACKAGE/database-own-ca.crt"
+		OWN_CA_SHA256="$PKG_OWN_CA_SHA256"
+		OWN_CA_COPY=$(mktemp)
+		trap 'rm -f "$OWN_CA_COPY"' EXIT
+		cat -- "$OWN_CA" >"$OWN_CA_COPY"
+	fi
+fi
 # The unit runs /usr/bin/node; the package is built for Node 22.19 or later.
 /usr/bin/node -e 'const [major, minor] = process.versions.node.split(".").map(Number);
 process.exit(major > 22 || (major === 22 && minor >= 19) ? 0 : 1)' 2>/dev/null || {

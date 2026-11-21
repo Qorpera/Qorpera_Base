@@ -202,6 +202,10 @@ export class NasObjects {
 			throw new Error("Object read parallelism is invalid");
 	}
 
+	get root(): string {
+		return this.#root;
+	}
+
 	get cachedBytes(): number {
 		return this.#cache.bytes;
 	}
@@ -358,7 +362,8 @@ export class NasObjects {
 			if (!info.isFile()) throw new ObjectIntegrityError("Object is not a regular file");
 			if (info.size > maximum || (exact !== undefined && info.size !== exact))
 				throw new ObjectIntegrityError("Object has the wrong size");
-			const bytes = Buffer.allocUnsafe(info.size);
+			// WHY: unpooled Buffer avoids pinning 8 KiB Node pool slabs inside ByteCache when small objects churn.
+			const bytes = Buffer.allocUnsafeSlow(info.size);
 			let read = 0;
 			while (read < bytes.byteLength) {
 				const { bytesRead } = await handle.read(bytes, read, bytes.byteLength - read, read);

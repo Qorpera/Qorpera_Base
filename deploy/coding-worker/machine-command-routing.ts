@@ -190,8 +190,14 @@ export const MEMBER_TOUCHED_TOLD_MS = 3000;
 /** True as soon as one is true, false once all said no. */
 function anyTold(asked: readonly Promise<boolean>[]): Promise<boolean> {
 	return new Promise((settle) => {
-		for (const one of asked) void one.then((told) => { if (told) settle(true); });
-		void Promise.all(asked).then(() => settle(false));
+		for (const one of asked)
+			void one.then(
+				(told) => {
+					if (told) settle(true);
+				},
+				() => undefined,
+			);
+		void Promise.allSettled(asked).then(() => settle(false));
 	});
 }
 
@@ -215,18 +221,43 @@ export class MachineCommandRouter {
 	 * may admit it. It asks nothing of SQL: each step of that pass does. The answer comes from this node's machines when it
 	 * has them, otherwise from the first peer that was told. */
 	async wake(request: CloudMachineWakeHttpRequest, signal: AbortSignal, localOnly = false): Promise<boolean> {
-		const bounded = AbortSignal.any([signal, AbortSignal.timeout(CLOUD_MACHINE_WAKE_WAIT_MS)]);
+		const controller = new AbortController();
+		const onAbort = (): void => controller.abort(signal.reason);
+		if (signal.aborted) onAbort();
+		else signal.addEventListener("abort", onAbort, { once: true });
+		const timer = setTimeout(
+			() => controller.abort(new DOMException("Machine wake timed out", "TimeoutError")),
+			CLOUD_MACHINE_WAKE_WAIT_MS,
+		);
+		timer.unref?.();
+		const bounded = controller.signal;
 		const { wait } = request.input;
-		const local = this.#options.wakeLocal?.(request.scope.machineId, wait, bounded);
-		const peers = localOnly ? [] : this.#options.peers.map(async (peer) => {
-			const gateway = createHttpCloudMachineCommandGateway({
-				url: peer.origin, token: await this.#options.credential(peer.tokenCredential), binding: request.binding,
-				holder: null, fetch: this.#options.fetch,
-			});
-			return (await gateway.wake?.(request.scope, wait, bounded)) === true;
-		}).map((asked) => asked.catch(() => false));
+		const wakeLocal = this.#options.wakeLocal;
+		const local = wakeLocal
+			? Promise.resolve()
+					.then(() => wakeLocal(request.scope.machineId, wait, bounded))
+					.catch(() => false)
+			: undefined;
+		const peers = localOnly
+			? []
+			: this.#options.peers
+					.map(async (peer) => {
+						const gateway = createHttpCloudMachineCommandGateway({
+							url: peer.origin,
+							token: await this.#options.credential(peer.tokenCredential),
+							binding: request.binding,
+							holder: null,
+							fetch: this.#options.fetch,
+						});
+						return (await gateway.wake?.(request.scope, wait, bounded)) === true;
+					})
+					.map((asked) => asked.catch(() => false));
 		const asked = local ? [local, ...peers] : peers;
-		return wait ? anyTold(asked) : Promise.all(asked).then(() => false);
+		const settled = Promise.allSettled(asked).finally(() => {
+			clearTimeout(timer);
+			signal.removeEventListener("abort", onAbort);
+		});
+		return wait ? anyTold(asked) : settled.then(() => false);
 	}
 	/**
 	 * One run's channel to its home (slice 1). The ingress proved the run's holder and SQL authorized the session on
@@ -616,6 +647,7 @@ export class MachineCommandRouter {
 				if (!this.#streamPass(asked)) lapsed.abort();
 			}, MEMBER_STREAM_PASS_CHECK_MS);
 			try {
+				if (signal.aborted) return "closed";
 				const pass = this.#streamPass(asked);
 				if (!pass) return "POINTER_PASS_ENDED";
 				let reason: string;
@@ -652,6 +684,8 @@ export class MachineCommandRouter {
 		// v242 release review r1 F2).
 		if (authority.milliseconds <= 0 || askedAt + authority.milliseconds <= performance.now())
 			throw new CloudMemberMachinePointerRefusal("POINTER_PASS_ENDED");
+		// WHY: Flush HTTP 200 headers as soon as the pass is authorized so peer connect timeouts do not trip on slow desktop startup or pending cycles.
+		sink.ready?.();
 		return this.#options.memberStreamLocal({ placementId: authority.placementId, bootId: authority.bootId,
 			userId: authority.userId, generation: authority.generation, epoch: request.epoch }, sink, signal);
 	}

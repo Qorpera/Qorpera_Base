@@ -724,7 +724,8 @@ function fileAnswer(
 		return new Response(null, { status: 200, headers: { ...headers, "content-length": String(file.bytes) } });
 	if (range === "unsatisfiable")
 		return new Response(null, { status: 416, headers: { ...headers, "content-range": `bytes */${file.bytes}` } });
-	const bytes = new Uint8Array(Buffer.from(file.content ?? "", "base64"));
+	const decoded = Buffer.from(file.content ?? "", "base64");
+	const bytes = new Uint8Array(decoded.buffer, decoded.byteOffset, decoded.byteLength);
 	if (range) {
 		// Exactly the range's bytes, from its start.
 		if (file.offset !== range.start || bytes.byteLength !== range.end - range.start + 1) invalid();
@@ -1235,7 +1236,8 @@ function hostFileAnswer(
 		return new Response(null, { status: file.status, headers: { ...headers, "content-length": String(length) } });
 	if (range === "unsatisfiable")
 		return new Response(null, { status: 416, headers: { ...headers, "content-range": `bytes */${file.bytes}` } });
-	const bytes = new Uint8Array(Buffer.from(file.content ?? "", "base64"));
+	const decoded = Buffer.from(file.content ?? "", "base64");
+	const bytes = new Uint8Array(decoded.buffer, decoded.byteOffset, decoded.byteLength);
 	if (range) {
 		// Exactly the range's bytes, from its start.
 		if (file.offset !== range.start || bytes.byteLength !== range.end - range.start + 1) invalid();
@@ -1255,7 +1257,8 @@ function hostFileAnswer(
 		createHash("sha256").update(bytes).digest("hex") !== file.sha256
 	)
 		invalid();
-	const body = bar ? new Uint8Array(Buffer.concat([bytes, bar])) : bytes;
+	const combined = bar ? Buffer.concat([bytes, bar], bytes.byteLength + bar.byteLength) : null;
+	const body = combined ? new Uint8Array(combined.buffer, combined.byteOffset, combined.byteLength) : bytes;
 	return new Response(body, {
 		status: file.status,
 		headers: { ...headers, "content-length": String(body.byteLength) },
@@ -1727,6 +1730,8 @@ export class PostgrestSiteStore implements SiteStore {
 		} finally {
 			void reader.cancel().catch(() => undefined);
 		}
-		return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
+		const merged = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, total);
+		chunks.length = 0;
+		return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(merged));
 	}
 }
