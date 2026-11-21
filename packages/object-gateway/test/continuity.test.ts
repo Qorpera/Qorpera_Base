@@ -222,6 +222,42 @@ describe("cloud object outage continuity", () => {
 		await expect(journal.write("pending/c", { recovered: true })).resolves.toBeUndefined();
 	});
 
+	it("admits parallel distinct journal writes up to capacity while strictly rejecting excess concurrent writers", async () => {
+		const fixture = await gateway();
+		const journal = new ObjectGatewayJournal(join(fixture.root, "parallel-state"), 4);
+		const attempts = await Promise.allSettled(
+			Array.from({ length: 8 }, (_, index) => journal.write(`pending/item-${index}`, { index })),
+		);
+		expect(attempts.filter((attempt) => attempt.status === "fulfilled")).toHaveLength(4);
+		const rejected = attempts.filter((attempt): attempt is PromiseRejectedResult => attempt.status === "rejected");
+		expect(rejected).toHaveLength(4);
+		for (const item of rejected) {
+			expect(String(item.reason)).toContain("Gateway journal capacity requires operator attention");
+		}
+		const listed = await journal.list("pending");
+		expect(listed).toHaveLength(4);
+		await expect(journal.write(listed[0]!, { updated: true })).resolves.toBeUndefined();
+		await journal.remove(listed[0]!);
+		await expect(journal.write("pending/recovered", { recovered: true })).resolves.toBeUndefined();
+		expect(await journal.list("pending")).toHaveLength(4);
+
+		const churn = new ObjectGatewayJournal(join(fixture.root, "churn-state"), 2);
+		for (let round = 0; round < 10; round++) {
+			const ops = [
+				churn.write(`pending/a-${round}`, { round }),
+				churn.write(`pending/b-${round}`, { round }),
+				churn.write(`pending/c-${round}`, { round }),
+				round > 0 ? churn.remove(`pending/a-${round - 1}`) : Promise.resolve(),
+				round > 0 ? churn.remove(`pending/b-${round - 1}`) : Promise.resolve(),
+			];
+			await Promise.allSettled(ops);
+			const current = await churn.list("pending");
+			expect(current.length).toBeLessThanOrEqual(2);
+			for (const key of current) await churn.remove(key);
+		}
+		expect(await churn.list("pending")).toEqual([]);
+	});
+
 	it("stores immutable uploads during Storage-only outage and reconciles after restart without duplicate writes", async () => {
 		const fixture = await gateway();
 		fixture.cloud.storage = "unavailable";

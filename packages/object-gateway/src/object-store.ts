@@ -8,9 +8,38 @@ const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const QUARANTINE = ".quarantine";
 const MAX_QUARANTINED_BYTES = 8 * 1024 * 1024;
 // WHY: a timed-out hard-NFS syscall keeps its libuv worker until the OS lets go. Two lanes leave at least two of
-// the four default workers to the journal, so more lanes need a larger pool first.
-const LANES = 2;
+// the four default workers to the journal, so more lanes require a larger UV_THREADPOOL_SIZE first.
+const DEFAULT_LANES = 2;
+const MAX_LANES = 16;
+const MIN_RESERVED_WORKERS = 2;
+const MAX_UV_THREADPOOL_SIZE = 1024;
+const MAX_INT32 = 2_147_483_647;
+const MAX_KNOWN_DIRS = 4_096;
 const MAX_WAITING = 512;
+
+export function resolveObjectStoreLanes(environment: NodeJS.ProcessEnv): number {
+	let lanes = DEFAULT_LANES;
+	if (environment.QORPERA_OBJECT_GATEWAY_NAS_LANES !== undefined) {
+		const rawLanes = environment.QORPERA_OBJECT_GATEWAY_NAS_LANES.trim();
+		if (!/^[1-9][0-9]*$/.test(rawLanes)) throw new Error("QORPERA_OBJECT_GATEWAY_NAS_LANES is invalid");
+		lanes = Number(rawLanes);
+		if (!Number.isSafeInteger(lanes) || lanes < 1 || lanes > MAX_LANES)
+			throw new Error("QORPERA_OBJECT_GATEWAY_NAS_LANES is invalid");
+	}
+	let poolSize = 4;
+	if (environment.UV_THREADPOOL_SIZE !== undefined) {
+		const rawPool = environment.UV_THREADPOOL_SIZE.trim();
+		if (!/^[1-9][0-9]*$/.test(rawPool)) throw new Error("UV_THREADPOOL_SIZE is invalid");
+		const parsedPool = Number(rawPool);
+		if (!Number.isSafeInteger(parsedPool) || parsedPool > MAX_INT32) throw new Error("UV_THREADPOOL_SIZE is invalid");
+		poolSize = Math.min(MAX_UV_THREADPOOL_SIZE, parsedPool);
+	}
+	if (poolSize - lanes < MIN_RESERVED_WORKERS)
+		throw new Error(
+			`QORPERA_OBJECT_GATEWAY_NAS_LANES=${lanes} requires UV_THREADPOOL_SIZE>=${lanes + MIN_RESERVED_WORKERS} to reserve workers for the journal`,
+		);
+	return lanes;
+}
 
 interface Lane {
 	overdue: boolean;
@@ -45,19 +74,25 @@ export class FileSystemObjectStore {
 	readonly #root: string;
 	readonly #timeoutMs: number;
 	readonly #waitMs: number;
+	readonly #lanes: number;
 	readonly #inFlight = new Map<string, Lane>();
 	readonly #waiting = new Set<Waiting>();
 	readonly #reading = new Map<string, Promise<Uint8Array>>();
+	readonly #knownDirs = new Set<string>();
+	readonly #creatingDirs = new Map<string, Promise<void>>();
 	#health: ObjectDependencyHealth = { status: "unknown" };
 
-	constructor(root: string, timeoutMs = 5_000, waitMs = 2_000) {
+	constructor(root: string, timeoutMs = 5_000, waitMs = 2_000, lanes = DEFAULT_LANES) {
 		if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000)
 			throw new Error("Object operation deadline is invalid");
 		if (!Number.isSafeInteger(waitMs) || waitMs < 0 || waitMs > 30_000)
 			throw new Error("Object operation wait is invalid");
+		if (!Number.isSafeInteger(lanes) || lanes < 1 || lanes > MAX_LANES)
+			throw new Error("Object operation lanes are invalid");
 		this.#root = resolve(root);
 		this.#timeoutMs = timeoutMs;
 		this.#waitMs = waitMs;
+		this.#lanes = lanes;
 	}
 
 	async put(profileId: string, sha256: string, bytes: Uint8Array): Promise<ObjectWriteResult> {
@@ -92,16 +127,28 @@ export class FileSystemObjectStore {
 		const path = this.#objectPath(profileId, sha256);
 		const parent = resolve(path, "..");
 		try {
-			const existing = await this.#get(profileId, sha256, bytes.byteLength);
-			if (digest(existing) !== sha256) throw new Error("Stored object failed integrity verification");
+			await this.#get(profileId, sha256, bytes.byteLength);
 			return "exists";
 		} catch (error) {
 			if (!(error instanceof Error) || error.message !== "Object not found") throw error;
 		}
 		const temporary = `${path}.${randomUUID()}.tmp`;
-		await this.#directories(parent);
+		if (!this.#knownDirs.has(parent)) {
+			await this.#directories(parent);
+			this.#rememberDir(parent);
+		}
+		let renamed = false;
 		try {
-			const handle = await open(temporary, "wx", 0o600);
+			let handle: Awaited<ReturnType<typeof open>>;
+			try {
+				handle = await open(temporary, "wx", 0o600);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+				this.#knownDirs.delete(parent);
+				await this.#directories(parent);
+				this.#rememberDir(parent);
+				handle = await open(temporary, "wx", 0o600);
+			}
 			try {
 				await handle.writeFile(bytes);
 				await handle.sync();
@@ -109,9 +156,10 @@ export class FileSystemObjectStore {
 				await handle.close();
 			}
 			await rename(temporary, path);
+			renamed = true;
 			await this.#sync(parent);
 		} finally {
-			await rm(temporary, { force: true });
+			if (!renamed) await rm(temporary, { force: true });
 		}
 		return "stored";
 	}
@@ -382,7 +430,7 @@ export class FileSystemObjectStore {
 	}
 
 	#open(key: string): boolean {
-		return !this.#inFlight.has(key) && this.#inFlight.size < LANES;
+		return !this.#inFlight.has(key) && this.#inFlight.size < this.#lanes;
 	}
 
 	#queued(key: string): boolean {
@@ -392,7 +440,7 @@ export class FileSystemObjectStore {
 
 	#stranded(key: string): boolean {
 		if (this.#inFlight.get(key)?.overdue) return true;
-		if (this.#inFlight.size < LANES) return false;
+		if (this.#inFlight.size < this.#lanes) return false;
 		for (const lane of this.#inFlight.values()) if (!lane.overdue) return false;
 		return true;
 	}
@@ -408,7 +456,7 @@ export class FileSystemObjectStore {
 	#admit(): void {
 		const behind = new Set<string>();
 		for (const waiting of [...this.#waiting]) {
-			if (this.#inFlight.size >= LANES) return;
+			if (this.#inFlight.size >= this.#lanes) return;
 			if (behind.has(waiting.key) || this.#inFlight.has(waiting.key)) {
 				behind.add(waiting.key);
 				continue;
@@ -418,13 +466,32 @@ export class FileSystemObjectStore {
 		}
 	}
 
+	#rememberDir(directory: string): void {
+		this.#knownDirs.delete(directory);
+		if (this.#knownDirs.size >= MAX_KNOWN_DIRS) {
+			const oldest = this.#knownDirs.values().next().value;
+			if (oldest !== undefined) this.#knownDirs.delete(oldest);
+		}
+		this.#knownDirs.add(directory);
+	}
+
 	/** Creates a directory and its missing parents, syncing each new name into its parent. */
 	async #directories(path: string): Promise<void> {
-		const created = await mkdir(path, { recursive: true, mode: 0o700 });
-		if (!created) return;
-		for (let directory = path; ; directory = dirname(directory)) {
-			await this.#sync(directory);
-			if (directory === dirname(created)) break;
+		const existing = this.#creatingDirs.get(path);
+		if (existing) return existing;
+		const pending = (async () => {
+			const created = await mkdir(path, { recursive: true, mode: 0o700 });
+			if (!created) return;
+			for (let directory = path; ; directory = dirname(directory)) {
+				await this.#sync(directory);
+				if (directory === dirname(created)) break;
+			}
+		})();
+		this.#creatingDirs.set(path, pending);
+		try {
+			await pending;
+		} finally {
+			if (this.#creatingDirs.get(path) === pending) this.#creatingDirs.delete(path);
 		}
 	}
 
