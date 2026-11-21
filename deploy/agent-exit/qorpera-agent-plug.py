@@ -846,9 +846,7 @@ class Reconciler:
         self.problems = []
         at = time.time()
         # LXD first, then the map: a plug always comes before its machine, so every machine in this view of LXD
-        # already has its entry, and an entry's machine missing from it was really gone when LXD was read. Any
-        # later per-instance port re-read only refreshes or drops an entry already read from the map, so a 404
-        # still means the machine was gone at that point.
+        # already has its entry, and an entry's machine missing from it was really gone when LXD was read.
         try:
             instances = lxd_instances(self.args.lxd_socket, self.args.lxd_fixture)
         except Exception as error:  # noqa: BLE001 - LXD unreadable: change nothing, report it
@@ -879,7 +877,7 @@ class Reconciler:
                 seen_recheck.add(key)
                 recheck_keys.append(key)
         if recheck_keys:
-            # WHY: sleep once per pass before re-reading detached instances so tap-teardown bursts stay O(1) and sync_bridge sees fresh state.
+            # WHY: sleep once per pass before re-reading detached entries (narrowing only the map already read, so 404 still means gone) and feed fresh state to sync_bridge.
             if self.port_recheck_seconds > 0:
                 time.sleep(self.port_recheck_seconds)
             for project, name in recheck_keys:
