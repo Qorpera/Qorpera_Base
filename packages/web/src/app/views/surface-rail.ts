@@ -219,9 +219,8 @@ function explorationRow(
 				{
 					type: "button",
 					class: "surface-session-main surface-exploration-trigger",
-					"data-act": "compare",
+					"data-act": "open-exploration",
 					"data-exploration": exploration.id,
-					title: t("Compare"),
 				},
 				h("span", { class: "surface-state is-exploring", "aria-hidden": "true" }),
 				h("span", { class: "surface-session-title" }, exploration.title),
@@ -609,9 +608,9 @@ export class SurfaceRail {
 			case "variant":
 				if (surface && exploration && session) void store.inspectVariant(surface, exploration, session, false);
 				return;
-			case "compare":
-				if (exploration) store.compareExploration(exploration);
-				else store.setMode("compare");
+			case "open-exploration":
+				store.setMode("preview");
+				store.openPreviewPanel();
 				return;
 			case "choose": {
 				const workspace = activeSurface ? state.workspaces[activeSurface.id] : undefined;

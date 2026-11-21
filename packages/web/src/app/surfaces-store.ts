@@ -122,7 +122,6 @@ export interface SurfacesState {
 	readonly drawer?: { readonly surfaceId: string; readonly sessionId: string };
 	readonly highlight?: { readonly surfaceId: string; readonly sessionId: string };
 	readonly mode: SurfacePreviewMode;
-	readonly previewCompare?: "live" | string;
 	readonly previewPanel: SurfacePreviewPanelState;
 	readonly compareTargetId?: string;
 	readonly compareFocusSessionId?: string;
@@ -361,10 +360,6 @@ export function surfaceHasReports(state: Pick<SurfacesState, "localStudioBase">,
 	const files = state.localStudioBase[surfaceId];
 	if (!files) return false;
 	return Object.keys(files).some((path) => /\.report\.json$/i.test(path));
-}
-
-export function isPreviewComparing(state: Pick<SurfacesState, "mode" | "previewCompare">): boolean {
-	return state.mode === "compare" || (state.mode === "preview" && Boolean(state.previewCompare));
 }
 
 function replaceSession(
@@ -967,14 +962,8 @@ export class SurfacesStore {
 		await this.load();
 		const surface = surfaceBySlug(this.state, slug);
 		if (!surface) return undefined;
-		const existingWs = this.workspace(surface.id);
-		const staleCompare =
-			this.state.previewCompare &&
-			this.state.previewCompare !== "live" &&
-			!(existingWs?.explorations ?? []).some((item) => item.id === this.state.previewCompare);
-		if (staleCompare) this.store.set({ previewCompare: undefined });
 		if (isLocalSurfaceId(surface.id) || !this.#options.client) {
-			const existing = existingWs ?? localWorkspace(surface);
+			const existing = this.workspace(surface.id) ?? localWorkspace(surface);
 			this.#putWorkspace({ ...existing, surface });
 			return this.workspace(surface.id);
 		}
@@ -1069,25 +1058,7 @@ export class SurfacesStore {
 	}
 
 	setMode(mode: SurfacePreviewMode): void {
-		this.store.set({
-			mode,
-			...(mode !== "compare" ? { compareFocusSessionId: undefined, previewCompare: undefined } : {}),
-		});
-	}
-
-	setPreviewCompare(target: "live" | string | undefined): void {
-		this.store.set({
-			mode: "preview",
-			previewCompare: target,
-			compareTargetId: target && target !== "live" ? target : undefined,
-			compareFocusSessionId: undefined,
-		});
-	}
-
-	togglePreviewCompare(target: "live" | string): void {
-		const active =
-			(this.state.mode === "preview" || this.state.mode === "compare") && this.state.previewCompare === target;
-		this.setPreviewCompare(active ? undefined : target);
+		this.store.set({ mode, ...(mode !== "compare" ? { compareFocusSessionId: undefined } : {}) });
 	}
 
 	openPreviewPanel(): void {
@@ -1123,26 +1094,15 @@ export class SurfacesStore {
 	}
 
 	compareExploration(explorationId: string): void {
-		this.store.set((state) => ({
-			mode: "preview",
-			previewCompare: explorationId,
-			compareTargetId: explorationId,
-			compareFocusSessionId: undefined,
-			previewPanel: state.previewPanel === "closed" ? "open" : state.previewPanel,
-		}));
+		this.store.set({ mode: "compare", compareTargetId: explorationId, compareFocusSessionId: undefined });
 	}
 
 	compareSession(sessionId: string): void {
-		this.store.set({
-			mode: "preview",
-			previewCompare: "live",
-			compareTargetId: "sessions",
-			compareFocusSessionId: sessionId,
-		});
+		this.store.set({ mode: "compare", compareTargetId: "sessions", compareFocusSessionId: sessionId });
 	}
 
 	setCompareTarget(targetId: string): void {
-		this.store.set({ mode: "preview", previewCompare: targetId, compareTargetId: targetId });
+		this.store.set({ mode: "compare", compareTargetId: targetId });
 	}
 
 	toggleCompareOverlay(sessionId: string): void {
@@ -1161,7 +1121,7 @@ export class SurfacesStore {
 		openDrawer = false,
 	): Promise<void> {
 		if (explorationId) await this.pickVariant(surfaceId, explorationId, sessionId);
-		this.store.set({ mode: "preview", previewCompare: undefined });
+		this.store.set({ mode: "preview" });
 		if (openDrawer) this.openDrawer(surfaceId, sessionId);
 	}
 
@@ -1863,10 +1823,7 @@ export class SurfacesStore {
 				explorations: nextExplorations,
 			};
 			this.#putWorkspace({ ...nextWorkspace, surface: this.#syncLocalSurfaceCounts(nextWorkspace) });
-			this.store.set({
-				mode: this.state.mode === "compare" ? "preview" : this.state.mode,
-				previewCompare: undefined,
-			});
+			this.store.set({ mode: this.state.mode === "compare" ? "preview" : this.state.mode });
 			if (mergedIds.length > 0) this.#offerUndo(chosen.explorationVariantLabel ?? chosen.title, mergedIds);
 			return true;
 		}
@@ -1874,10 +1831,7 @@ export class SurfacesStore {
 			client.chooseExploration(exploration.id, sessionId),
 		);
 		if (!chosen) return false;
-		this.store.set({
-			mode: this.state.mode === "compare" ? "preview" : this.state.mode,
-			previewCompare: undefined,
-		});
+		this.store.set({ mode: this.state.mode === "compare" ? "preview" : this.state.mode });
 		await this.refreshWorkspace(exploration.surfaceId);
 		this.#offerUndo(
 			chosen.explorationVariantLabel ?? chosen.title,

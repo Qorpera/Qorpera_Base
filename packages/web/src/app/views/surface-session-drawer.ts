@@ -117,18 +117,6 @@ function changeTag(change: SurfaceChangeUnit): HTMLElement | null {
 	return null;
 }
 
-function diffLine(change: SurfaceChangeUnit): string {
-	const stats = change.diffStats;
-	if (!stats) return "";
-	return stats.filesChanged === 1
-		? t("1 file · +{added} −{removed}", { added: stats.additions, removed: stats.deletions })
-		: t("{files} files · +{added} −{removed}", {
-				files: stats.filesChanged,
-				added: stats.additions,
-				removed: stats.deletions,
-			});
-}
-
 function agentStatusSummary(session: SurfaceSession, surface: SurfaceSummary, look: SurfaceLook): string {
 	if (session.state === "needs_input") return t("Needs you");
 	if (isRunningSession(session)) return t("Working");
@@ -234,16 +222,12 @@ export class SurfaceSessionDrawer {
 		const explorations = openExplorations(workspace);
 		const plainSessions = rankSessions((workspace?.activeSessions ?? []).filter((session) => !session.explorationId));
 		const openChangeTotal = plainSessions.reduce((sum, s) => sum + s.changes.filter(isOpenChange).length, 0);
-		const isComparingLive =
-			(state.mode === "preview" && state.previewCompare === "live") ||
-			(state.mode === "compare" && (!state.previewCompare || state.previewCompare === "live"));
 		const key = JSON.stringify([
 			"overview",
 			surface.id,
 			surface.archetype,
 			look,
 			state.mode,
-			state.previewCompare,
 			state.hiddenChanges,
 			state.variantPick,
 			state.busy,
@@ -255,7 +239,6 @@ export class SurfaceSessionDrawer {
 		this.#sessionId = "";
 		this.#messages = 0;
 
-		const hasCompareWork = surface.archetype !== "ops" && (explorations.length > 0 || openChangeTotal > 0);
 		const summaryParts: string[] = [];
 		if (plainSessions.length === 1) summaryParts.push(t("1 agent"));
 		else if (plainSessions.length > 1) summaryParts.push(t("{count} agents", { count: plainSessions.length }));
@@ -270,20 +253,6 @@ export class SurfaceSessionDrawer {
 				h("h2", null, surface.archetype === "ops" ? t("Agents") : t("Preview")),
 				summaryParts.length > 0 ? h("p", null, summaryParts.join(" · ")) : null,
 			),
-			...(hasCompareWork
-				? [
-						h(
-							"button",
-							{
-								type: "button",
-								class: `surface-overview-compare${isComparingLive ? " is-on" : ""}`,
-								"aria-pressed": String(isComparingLive),
-								"data-act": "toggle-compare-live",
-							},
-							surface.archetype === "studio" ? t("vs Base") : t("vs Live"),
-						),
-					]
-				: []),
 			h(
 				"button",
 				{ type: "button", class: "icon-button", "aria-label": t("Close panel"), "data-act": "close-panel" },
@@ -321,8 +290,6 @@ export class SurfaceSessionDrawer {
 			.filter((session): session is SurfaceSession => Boolean(session));
 		const pickedId = store.pickedVariant(exploration);
 		const picked = variants.find((item) => item.id === pickedId) ?? variants[0];
-		const comparingThis =
-			(state.mode === "preview" || state.mode === "compare") && state.previewCompare === exploration.id;
 		const busy = Boolean(state.busy[`exploration:${exploration.id}`]);
 		return h(
 			"section",
@@ -332,17 +299,6 @@ export class SurfaceSessionDrawer {
 				{ class: "surface-overview-card-head" },
 				h("span", { class: "surface-state is-exploring", "aria-hidden": "true" }),
 				h("strong", { class: "surface-overview-card-title" }, exploration.title),
-				h(
-					"button",
-					{
-						type: "button",
-						class: `surface-overview-compare${comparingThis ? " is-on" : ""}`,
-						"aria-pressed": String(comparingThis),
-						"data-act": "toggle-compare-exploration",
-						"data-exploration": exploration.id,
-					},
-					t("Compare"),
-				),
 			),
 			h(
 				"div",
@@ -721,7 +677,6 @@ export class SurfaceSessionDrawer {
 										changeTag(change),
 									)
 								: h("strong", null, change.title),
-							change.summary ? h("span", null, change.summary) : null,
 							conflicted && conflictPaths
 								? h(
 										"small",
@@ -729,7 +684,6 @@ export class SurfaceSessionDrawer {
 										t("Conflicts in {paths}", { paths: conflictPaths }),
 									)
 								: null,
-							diffLine(change) ? h("small", null, diffLine(change)) : null,
 						),
 						conflicted && !isRunningSession(session)
 							? h(
@@ -821,12 +775,6 @@ export class SurfaceSessionDrawer {
 				return;
 			case "focus-session":
 				if (session) store.openDrawer(surfaceId, session);
-				return;
-			case "toggle-compare-live":
-				store.togglePreviewCompare("live");
-				return;
-			case "toggle-compare-exploration":
-				if (exploration) store.togglePreviewCompare(exploration);
 				return;
 			case "pick-variant":
 				if (exploration && session) void store.pickVariant(surfaceId, exploration, session);

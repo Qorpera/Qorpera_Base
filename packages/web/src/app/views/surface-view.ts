@@ -5,7 +5,6 @@ import {
 	SURFACE_INSPECTOR_MODE_MESSAGE,
 	SURFACE_INSPECTOR_PICK_MESSAGE,
 	type SurfaceSummary,
-	type SurfaceWorkspace,
 } from "@qorpera/contracts";
 import { openContextMenu } from "../../ui/context-menu.ts";
 import { growToText, h, icon } from "../../ui/dom.ts";
@@ -51,9 +50,7 @@ export interface SurfaceViewHost {
 }
 
 interface CompareColumn {
-	readonly stage?: SurfaceDoorStage;
-	localFrame?: HTMLIFrameElement;
-	localDoc?: string;
+	readonly stage: SurfaceDoorStage;
 	readonly column: HTMLElement;
 	readonly head: HTMLElement;
 	readonly abort: AbortController;
@@ -97,7 +94,6 @@ export class SurfaceView {
 	readonly #viewport = h("div", { class: "surface-viewport" });
 	readonly #mountSlot = h("div", { class: "surface-mount" });
 	readonly #reportSlot = h("div", { class: "surface-report-slot", hidden: true });
-	readonly #compareBar = h("div", { class: "surface-compare-bar", hidden: true });
 	readonly #compareColumns = h("div", { class: "surface-compare-columns" });
 	readonly #frames = h("div", { class: "surface-frames", hidden: true });
 	readonly #banner = h("div", { class: "surface-banners" });
@@ -147,8 +143,6 @@ export class SurfaceView {
 	#localHost: HTMLElement | undefined;
 	#localFrame: HTMLIFrameElement | undefined;
 	#localSiteShown = "";
-	#mobileCompareLayout: "side" | "single" = "side";
-	#mobileSingleKey = "";
 	#mountedFor = "";
 	#barShown = "";
 	#framesShown = "";
@@ -300,8 +294,7 @@ export class SurfaceView {
 		if (reportMode) {
 			this.#clearCompare();
 			this.#primaryDoor.clear();
-			this.#frames.classList.remove("is-compare", "is-mobile-side", "is-mobile-single");
-			this.#viewport.classList.remove("is-compare-mobile");
+			this.#frames.classList.remove("is-compare");
 			this.#frames.replaceChildren();
 			this.#framesMode = "none";
 			this.#framesShown = "";
@@ -383,7 +376,6 @@ export class SurfaceView {
 			surface.liveUrl,
 			surface.unpublishedChangeCount,
 			state.mode,
-			state.previewCompare,
 			state.device,
 			hasReports,
 			studioHasChanges,
@@ -593,14 +585,9 @@ export class SurfaceView {
 		const showPanelToggle = surface.archetype !== "ops" || rankedSessions.length > 0 || explorations.length > 0;
 		const pillParts: HTMLElement[] = [];
 		if (modeNav) pillParts.push(modeNav);
-		if (headerCrew) {
-			if (pillParts.length > 0) pillParts.push(h("span", { class: "surface-pill-sep", "aria-hidden": "true" }));
-			pillParts.push(headerCrew);
-		}
-		if (rightTools.length > 0) {
-			if (pillParts.length > 0) pillParts.push(h("span", { class: "surface-pill-sep", "aria-hidden": "true" }));
-			pillParts.push(h("div", { class: "surface-pill-right" }, ...rightTools));
-		}
+		if (headerCrew) pillParts.push(headerCrew);
+		if (rightTools.length > 0) pillParts.push(h("div", { class: "surface-pill-right" }, ...rightTools));
+		const spacious = Boolean(modeNav && rightTools.length > 0);
 
 		const hasAnything = pillParts.length > 0 || showPanelToggle;
 		this.#bar.hidden = !hasAnything;
@@ -608,7 +595,13 @@ export class SurfaceView {
 		this.#bar.replaceChildren(
 			h("h1", { class: "visually-hidden surface-title" }, surface.title),
 			...(pillParts.length > 0
-				? [h("nav", { class: "surface-pill", "aria-label": surface.title }, ...pillParts)]
+				? [
+						h(
+							"nav",
+							{ class: `surface-pill${spacious ? " is-spacious" : ""}`, "aria-label": surface.title },
+							...pillParts,
+						),
+					]
 				: []),
 			...(showPanelToggle
 				? [
@@ -771,258 +764,36 @@ export class SurfaceView {
 		const preview = workspace?.previewState;
 		const liveBuild = surface.archetype === "live_build";
 		const explorations = openExplorations(workspace);
-		const plainSessions = (workspace?.activeSessions ?? []).filter((session) => !session.explorationId);
 		const localLive = store.isLocalInteractive && isLocalSurfaceId(surface.id);
-
-		const compareTarget = !liveBuild
-			? undefined
-			: state.mode === "compare"
-				? (state.previewCompare ??
-					(explorations.length > 0 && (!localLive || state.compareTargetId)
-						? (state.compareTargetId ?? explorations[0]!.id)
-						: "live"))
-				: state.mode === "preview"
-					? state.previewCompare
-					: undefined;
-
 		const targetExploration =
-			compareTarget && compareTarget !== "live"
-				? (explorations.find((item) => item.id === compareTarget) ?? explorations[0])
+			liveBuild && !localLive && state.mode === "compare"
+				? (explorations.find((item) => item.id === state.compareTargetId) ?? explorations[0])
 				: undefined;
-		const compare =
-			Boolean(compareTarget) &&
-			(Boolean(targetExploration) || (localLive && (explorations.length > 0 || plainSessions.length > 0)));
-		const localCompare = compare && localLive;
+		const remoteCompare = Boolean(targetExploration && preview && workspace);
 		const showPrimary =
 			liveBuild &&
-			!compare &&
+			!remoteCompare &&
 			state.mode === "preview" &&
 			preview !== undefined &&
 			preview.primary.status !== "live_baseline";
-		const mobileCompare = compare && state.device === "mobile";
 
-		const key = JSON.stringify([
-			state.mode,
-			compareTarget,
-			compare,
-			localCompare,
-			mobileCompare,
-			this.#mobileCompareLayout,
-			this.#mobileSingleKey,
-			state.variantPick,
-			showPrimary,
-			preview,
-			surface.id,
-			surface.title,
-			localCompare
-				? workspace?.activeSessions.map((session) => [
-						session.id,
-						session.title,
-						session.explorationVariantLabel,
-						session.changes.map((c) => [c.id, c.title, c.status]),
-					])
-				: null,
-			localCompare ? state.hiddenChanges : null,
-		]);
+		const key = JSON.stringify([state.mode, remoteCompare, targetExploration?.id, showPrimary, preview, surface.id]);
 		if (key === this.#framesShown) return;
 		this.#framesShown = key;
-		this.#viewport.classList.toggle("is-compare-mobile", mobileCompare);
-		this.#frames.classList.toggle("is-compare", compare);
-		this.#frames.classList.toggle("is-mobile-side", mobileCompare && this.#mobileCompareLayout === "side");
-		this.#frames.classList.toggle("is-mobile-single", mobileCompare && this.#mobileCompareLayout === "single");
+		this.#frames.classList.toggle("is-compare", remoteCompare);
 
-		if (compare && (preview || localCompare)) {
+		if (remoteCompare && preview && targetExploration && workspace) {
 			if (this.#pointing) this.#setPointing(false);
 			this.#primaryDoor.clear();
-
 			if (this.#framesMode !== "compare") {
 				this.#primaryDoor.el.remove();
-				this.#frames.replaceChildren(this.#compareBar, this.#compareColumns);
+				this.#frames.replaceChildren(this.#compareColumns);
 				this.#framesMode = "compare";
 			}
-
-			const look = store.lookOf(surface);
-			interface RenderColumnSpec {
-				readonly key: string;
-				readonly label: string;
-				readonly explorationId?: string;
-				readonly sessionId?: string;
-				readonly isBase?: boolean;
-				readonly html?: string;
-				readonly frameState?: SurfaceWorkspace["previewState"]["primary"];
-			}
-
-			const allSpecs: RenderColumnSpec[] = [];
-			if (localCompare && workspace) {
-				const surfaceKind = look.kind === "custom" ? "website" : look.kind;
-				const plainActiveChanges = plainSessions.flatMap((session) =>
-					session.changes.filter((change) => isOpenChange(change) && store.isChangeShown(change.id)),
-				);
-
-				if (targetExploration) {
-					const variants = workspace.activeSessions.filter(
-						(session) => session.explorationId === targetExploration.id,
-					);
-					for (const session of variants) {
-						const combined = [...session.changes.filter(isOpenChange), ...plainActiveChanges];
-						allSpecs.push({
-							key: `variant:${session.id}`,
-							label: session.explorationVariantLabel ?? session.title,
-							explorationId: targetExploration.id,
-							sessionId: session.id,
-							html: renderLocalSitePreviewHtml(
-								store.companyName,
-								surface,
-								combined,
-								"preview",
-								surfaceKind,
-								workspace.briefSummary ?? undefined,
-								look.accent,
-							),
-						});
-					}
-				} else {
-					const pickedExp = explorations[0];
-					const pickedId = pickedExp ? store.pickedVariant(pickedExp) : undefined;
-					const previewChanges = workspace.activeSessions.flatMap((session) => {
-						if (session.explorationId && session.id !== pickedId) return [];
-						return session.changes.filter((change) => isOpenChange(change) && store.isChangeShown(change.id));
-					});
-					allSpecs.push(
-						{
-							key: "live",
-							label: t("Live"),
-							isBase: true,
-							html: renderLocalSitePreviewHtml(
-								store.companyName,
-								surface,
-								[],
-								"live",
-								surfaceKind,
-								workspace.briefSummary ?? undefined,
-								look.accent,
-							),
-						},
-						{
-							key: "preview",
-							label: t("Preview"),
-							html: renderLocalSitePreviewHtml(
-								store.companyName,
-								surface,
-								previewChanges,
-								"preview",
-								surfaceKind,
-								workspace.briefSummary ?? undefined,
-								look.accent,
-							),
-						},
-					);
-				}
-
-				if (!allSpecs.some((spec) => spec.key === this.#mobileSingleKey)) {
-					this.#mobileSingleKey = allSpecs[allSpecs.length - 1]?.key ?? allSpecs[0]?.key ?? "";
-				}
-
-				const caption = targetExploration
-					? t("Comparing {title}", { title: targetExploration.title })
-					: t("Comparing Live vs Preview");
-				const barLeft: HTMLElement[] = [h("span", { class: "surface-compare-caption" }, caption)];
-				if (mobileCompare && this.#mobileCompareLayout === "single") {
-					barLeft.push(
-						h(
-							"div",
-							{ class: "surface-compare-tabs", role: "tablist", "aria-label": t("Phone screen") },
-							...allSpecs.map((spec) =>
-								h(
-									"button",
-									{
-										type: "button",
-										role: "tab",
-										class: `surface-compare-tab${spec.key === this.#mobileSingleKey ? " is-on" : ""}`,
-										"aria-selected": String(spec.key === this.#mobileSingleKey),
-										"data-act": "mobile-compare-pane",
-										"data-pane": spec.key,
-									},
-									spec.label,
-								),
-							),
-						),
-					);
-				}
-
-				const barRight: HTMLElement[] = [];
-				if (mobileCompare) {
-					barRight.push(
-						h(
-							"div",
-							{
-								class: "surface-seg surface-mobile-compare-seg",
-								role: "group",
-								"aria-label": t("Phone compare layout"),
-							},
-							h(
-								"button",
-								{
-									type: "button",
-									class: this.#mobileCompareLayout === "side" ? "is-on" : "",
-									"aria-pressed": String(this.#mobileCompareLayout === "side"),
-									"data-act": "mobile-compare-layout",
-									"data-layout": "side",
-								},
-								t("Side by side"),
-							),
-							h(
-								"button",
-								{
-									type: "button",
-									class: this.#mobileCompareLayout === "single" ? "is-on" : "",
-									"aria-pressed": String(this.#mobileCompareLayout === "single"),
-									"data-act": "mobile-compare-layout",
-									"data-layout": "single",
-								},
-								t("Single phone"),
-							),
-						),
-					);
-				}
-				barRight.push(
-					h(
-						"button",
-						{ type: "button", class: "surface-compare-pill", "data-act": "exit-compare" },
-						t("Done comparing"),
-					),
-				);
-				this.#compareBar.hidden = false;
-				this.#compareBar.replaceChildren(
-					h("div", { class: "surface-compare-bar-group" }, ...barLeft),
-					h("div", { class: "surface-compare-bar-group" }, ...barRight),
-				);
-			} else if (preview && targetExploration && workspace) {
-				this.#compareBar.hidden = true;
-				this.#compareBar.replaceChildren();
-				const variantSessions = workspace.activeSessions.filter(
-					(session) => session.explorationId === targetExploration.id,
-				);
-				for (const session of variantSessions) {
-					const compared = preview.compareFrames.find((item) => item.sessionId === session.id);
-					allSpecs.push({
-						key: session.id,
-						label: compared?.label ?? session.explorationVariantLabel ?? session.title,
-						explorationId: targetExploration.id,
-						sessionId: session.id,
-						frameState: compared
-							? compared.frame
-							: { ...preview.primary, status: "building" as const, doorActionUrl: null, memberPass: null },
-					});
-				}
-			}
-
-			const renderSpecs =
-				mobileCompare && this.#mobileCompareLayout === "single"
-					? allSpecs.filter((spec) => spec.key === this.#mobileSingleKey)
-					: allSpecs;
-
-			const keep = new Set(renderSpecs.map((item) => item.key));
+			const variantSessions = workspace.activeSessions.filter(
+				(session) => session.explorationId === targetExploration.id,
+			);
+			const keep = new Set(variantSessions.map((session) => session.id));
 			for (const [id, entry] of this.#compareDoors) {
 				if (keep.has(id)) continue;
 				entry.abort.abort();
@@ -1030,85 +801,45 @@ export class SurfaceView {
 				entry.column.remove();
 				this.#compareDoors.delete(id);
 			}
-
-			for (const item of renderSpecs) {
-				let entry = this.#compareDoors.get(item.key);
+			for (const session of variantSessions) {
+				const compared = preview.compareFrames.find((item) => item.sessionId === session.id);
+				const label = compared?.label ?? session.explorationVariantLabel ?? session.title;
+				const frameState = compared
+					? compared.frame
+					: { ...preview.primary, status: "building" as const, doorActionUrl: null, memberPass: null };
+				let entry = this.#compareDoors.get(session.id);
 				const buildHead = (): HTMLElement =>
 					h(
 						"div",
 						{ class: "surface-compare-head" },
+						h("strong", null, label),
 						h(
 							"button",
 							{
 								type: "button",
-								class: "surface-compare-open",
-								title: item.isBase ? t("Open Live") : t("Open in Preview"),
-								"data-act": item.isBase ? "inspect-base" : "inspect-variant",
-								...(item.explorationId ? { "data-exploration": item.explorationId } : {}),
-								...(item.sessionId ? { "data-session": item.sessionId } : {}),
+								class: "btn btn-small",
+								"data-act": "choose",
+								"data-exploration": targetExploration.id,
+								"data-session": session.id,
 							},
-							h("strong", null, item.label),
-							h("span", { class: "surface-compare-open-hint", "aria-hidden": "true" }, "↗"),
+							t("Approve"),
 						),
-						item.sessionId && item.explorationId
-							? h(
-									"div",
-									{ class: "surface-compare-actions" },
-									h(
-										"button",
-										{
-											type: "button",
-											class: "btn btn-small",
-											"data-act": "choose",
-											"data-exploration": item.explorationId,
-											"data-session": item.sessionId,
-										},
-										t("Approve"),
-									),
-								)
-							: null,
 					);
-
 				if (!entry) {
 					const abort = new AbortController();
 					const head = buildHead();
-					if (item.html !== undefined) {
-						const localFrame = this.#createLocalFrame(item.label, item.html, false);
-						const column = h(
-							"div",
-							{ class: "surface-compare-column", "data-compare-key": item.key },
-							head,
-							h("div", { class: "surface-door-stage surface-local-site" }, localFrame),
-						);
-						entry = { localFrame, localDoc: item.html, column, head, abort };
-					} else {
-						const stage = new SurfaceDoorStage(abort.signal);
-						const column = h(
-							"div",
-							{ class: "surface-compare-column", "data-compare-key": item.key },
-							head,
-							stage.el,
-						);
-						entry = { stage, column, head, abort };
-					}
-					this.#compareDoors.set(item.key, entry);
+					const stage = new SurfaceDoorStage(abort.signal);
+					const column = h("div", { class: "surface-compare-column" }, head, stage.el);
+					entry = { stage, column, head, abort };
+					this.#compareDoors.set(session.id, entry);
 					this.#compareColumns.append(entry.column);
 				} else {
 					const nextHead = buildHead();
 					entry.head.replaceWith(nextHead);
 					entry = { ...entry, head: nextHead };
-					this.#compareDoors.set(item.key, entry);
+					this.#compareDoors.set(session.id, entry);
 				}
-				if (entry.localFrame && item.html !== undefined) {
-					if (entry.localDoc !== item.html) {
-						const fresh = this.#createLocalFrame(item.label, item.html, false);
-						entry.localFrame.replaceWith(fresh);
-						entry.localFrame = fresh;
-						entry.localDoc = item.html;
-					}
-				} else if (entry.stage && item.frameState) {
-					entry.stage.sync(item.frameState, item.label);
-				}
+				entry.stage?.sync(frameState, label);
 			}
 			this.#frames.hidden = false;
 			this.#mountSlot.hidden = true;
@@ -1305,7 +1036,7 @@ export class SurfaceView {
 		const surface = this.surface;
 		if (active) {
 			if (!surface || surface.archetype !== "live_build" || !this.#host.store.canStartSessions(surface)) return;
-			if (this.#host.store.state.mode !== "preview" || this.#host.store.state.previewCompare) {
+			if (this.#host.store.state.mode !== "preview") {
 				this.#host.store.setMode("preview");
 				this.#drawBar(surface);
 				this.#drawMount(surface);
@@ -1593,31 +1324,12 @@ export class SurfaceView {
 				});
 				return;
 			}
-			case "exit-compare":
-				store.setPreviewCompare(undefined);
-				return;
 			case "choose": {
 				const workspace = store.workspace(surface.id);
 				const exploration = workspace?.explorations.find((item) => item.id === target.dataset.exploration);
 				if (exploration && target.dataset.session) void store.chooseVariant(exploration, target.dataset.session);
 				return;
 			}
-			case "mobile-compare-layout":
-				this.#mobileCompareLayout = target.dataset.layout === "single" ? "single" : "side";
-				this.#drawFrames(surface);
-				return;
-			case "mobile-compare-pane":
-				if (target.dataset.pane) this.#mobileSingleKey = target.dataset.pane;
-				this.#drawFrames(surface);
-				return;
-			case "inspect-base":
-				store.setMode("live");
-				return;
-			case "inspect-variant":
-				if (target.dataset.session)
-					void store.inspectVariant(surface.id, target.dataset.exploration, target.dataset.session, false);
-				else store.setPreviewCompare(undefined);
-				return;
 			case "undo":
 				void store.undo();
 				return;
