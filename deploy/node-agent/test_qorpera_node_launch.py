@@ -214,16 +214,32 @@ class LauncherTest(unittest.TestCase):
         argv, env = self.node.launcher().plan('provider')
         self.assertEqual(env['QORPERA_SUPABASE_SERVICE_KEY'], self_hosted_jwt)
         self.assertEqual(argv[:2], ['/usr/bin/node', '--jitless'])
-        bad_body = base64.urlsafe_b64encode(json.dumps({'iss': 'supabase', 'role': 'anon'}).encode()).decode().rstrip('=')
         self.node.write(self.node.env_file, {
             'schema': 'qorpera.native36-provider-env/v1',
+            'projectRef': None,
             'env': {
                 'QORPERA_RUNNER_PROVIDER_PORT': '18450',
                 'QORPERA_RUNNER_PROVIDER_TOKEN': 't' * 43,
-                'QORPERA_SUPABASE_SERVICE_KEY': f'eyJhbGciOiJIUzI1NiJ9.{bad_body}.signature',
+                'QORPERA_SUPABASE_SERVICE_KEY': self_hosted_jwt,
             },
         }, 0o440)
-        self.refused()
+        argv_null_ref, _ = self.node.launcher().plan('provider')
+        self.assertEqual(argv_null_ref[:2], ['/usr/bin/node', '--jitless'])
+        for bad_claims in [
+            {'iss': 'supabase', 'role': 'anon'},
+            {'iss': 'supabase', 'role': 'service_role', 'ref': 'foreignref'},
+            {'iss': 'supabase', 'role': 'service_role', 'sub': 'user-1'},
+        ]:
+            bad_body = base64.urlsafe_b64encode(json.dumps(bad_claims).encode()).decode().rstrip('=')
+            self.node.write(self.node.env_file, {
+                'schema': 'qorpera.native36-provider-env/v1',
+                'env': {
+                    'QORPERA_RUNNER_PROVIDER_PORT': '18450',
+                    'QORPERA_RUNNER_PROVIDER_TOKEN': 't' * 43,
+                    'QORPERA_SUPABASE_SERVICE_KEY': f'eyJhbGciOiJIUzI1NiJ9.{bad_body}.signature',
+                },
+            }, 0o440)
+            self.refused()
 
 
 if __name__ == '__main__':

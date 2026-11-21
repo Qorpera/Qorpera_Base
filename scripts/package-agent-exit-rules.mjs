@@ -79,6 +79,7 @@ async function databaseOwnCa(file, sha256) {
 	if (!/^[0-9a-f]{64}$/.test(sha256)) throw new Error("--database-ca-sha256 is not a sha256 (64 lowercase hex digits)");
 	if (!(await lstat(file)).isFile()) throw new Error("--database-ca is not a regular file");
 	const bytes = await readFile(file);
+	if (bytes.byteLength > 64 * 1024) throw new Error("--database-ca exceeds 64 KiB limit");
 	if (createHash("sha256").update(bytes).digest("hex") !== sha256) {
 		throw new Error("--database-ca does not match --database-ca-sha256");
 	}

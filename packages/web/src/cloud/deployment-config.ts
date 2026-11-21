@@ -54,18 +54,88 @@ function loginBase(value: unknown): string {
 	return url.href;
 }
 
+const BASE64URL_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+function decodeBase64UrlUtf8(input: string): string | null {
+	if (input.length === 0 || input.length % 4 === 1) return null;
+	const bytes: number[] = [];
+	let buffer = 0;
+	let bits = 0;
+	for (let i = 0; i < input.length; i++) {
+		const code = BASE64URL_ALPHABET.indexOf(input.charAt(i));
+		if (code === -1) return null;
+		buffer = (buffer << 6) | code;
+		bits += 6;
+		if (bits >= 8) {
+			bits -= 8;
+			bytes.push((buffer >> bits) & 0xff);
+		}
+	}
+	if (bits > 0 && (buffer & ((1 << bits) - 1)) !== 0) return null;
+	let out = "";
+	for (let i = 0; i < bytes.length; ) {
+		const b0 = bytes[i++]!;
+		if (b0 < 0x80) {
+			out += String.fromCharCode(b0);
+		} else if (b0 >= 0xc2 && b0 <= 0xdf && i < bytes.length) {
+			const b1 = bytes[i++]!;
+			if ((b1 & 0xc0) !== 0x80) return null;
+			out += String.fromCharCode(((b0 & 0x1f) << 6) | (b1 & 0x3f));
+		} else if (b0 >= 0xe0 && b0 <= 0xef && i + 1 < bytes.length) {
+			const b1 = bytes[i++]!;
+			const b2 = bytes[i++]!;
+			if ((b1 & 0xc0) !== 0x80 || (b2 & 0xc0) !== 0x80) return null;
+			const cp = ((b0 & 0x0f) << 12) | ((b1 & 0x3f) << 6) | (b2 & 0x3f);
+			if (cp < 0x800 || (cp >= 0xd800 && cp <= 0xdfff)) return null;
+			out += String.fromCharCode(cp);
+		} else if (b0 >= 0xf0 && b0 <= 0xf4 && i + 2 < bytes.length) {
+			const b1 = bytes[i++]!;
+			const b2 = bytes[i++]!;
+			const b3 = bytes[i++]!;
+			if ((b1 & 0xc0) !== 0x80 || (b2 & 0xc0) !== 0x80 || (b3 & 0xc0) !== 0x80) return null;
+			const cp = ((b0 & 0x07) << 18) | ((b1 & 0x3f) << 12) | ((b2 & 0x3f) << 6) | (b3 & 0x3f);
+			if (cp < 0x10000 || cp > 0x10ffff) return null;
+			out += String.fromCodePoint(cp);
+		} else {
+			return null;
+		}
+	}
+	return out;
+}
+
 function isPublishableKey(key: unknown): key is string {
 	if (typeof key !== "string" || key.length > 8192) return false;
 	if (/^sb_publishable_[A-Za-z0-9_-]{8,}$/.test(key)) return true;
 	const parts = key.split(".");
+	const headerPart = parts[0];
 	const payloadPart = parts[1];
-	if (parts.length !== 3 || !payloadPart || parts.some((part) => !part || !/^[A-Za-z0-9_-]+$/.test(part)))
+	const sigPart = parts[2];
+	if (
+		parts.length !== 3 ||
+		!headerPart ||
+		!payloadPart ||
+		!sigPart ||
+		sigPart.length < 16 ||
+		parts.some((part) => !/^[A-Za-z0-9_-]+$/.test(part))
+	)
 		return false;
+	const headerText = decodeBase64UrlUtf8(headerPart);
+	const payloadText = decodeBase64UrlUtf8(payloadPart);
+	if (headerText === null || payloadText === null) return false;
 	try {
-		const normalized = payloadPart.replaceAll("-", "+").replaceAll("_", "/");
-		const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
-		const payload = JSON.parse(atob(padded)) as { role?: unknown; sub?: unknown };
-		return payload.role === "anon" && !payload.sub;
+		const header = JSON.parse(headerText) as Record<string, unknown>;
+		const payload = JSON.parse(payloadText) as Record<string, unknown>;
+		if (
+			!header ||
+			typeof header !== "object" ||
+			Array.isArray(header) ||
+			typeof header.alg !== "string" ||
+			header.alg.length === 0 ||
+			header.alg.toLowerCase() === "none"
+		)
+			return false;
+		if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+		return payload.role === "anon" && payload.sub === undefined;
 	} catch {
 		return false;
 	}

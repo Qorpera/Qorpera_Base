@@ -91,10 +91,13 @@ class Launcher:
         document = json.loads(self.read(Path(settings['envFile']), 0o440, 32768))
         project_ref = settings['projectRef']
         need(project_ref is None or (isinstance(project_ref, str) and len(project_ref) > 0))
-        expected = ({'projectRef'} if project_ref is not None else set()) | {'env'} | ({'schema'} if settings['envSchema'] else set())
-        need(set(document) == expected)
+        base_expected = {'env'} | ({'schema'} if settings['envSchema'] else set())
         if project_ref is not None:
+            need(set(document) == base_expected | {'projectRef'})
             need(document['projectRef'] == project_ref)
+        else:
+            need(set(document) in (base_expected, base_expected | {'projectRef'}))
+            need(document.get('projectRef') is None)
         if settings['envSchema']:
             need(document['schema'] == settings['envSchema'])
         release_env = {key: value.replace('${release}', str(folder)) for key, value in role_release['env'].items()}
@@ -114,9 +117,11 @@ class Launcher:
             parts = env[key].split('.')
             need(len(parts) == 3)
             claims = json.loads(base64.urlsafe_b64decode(parts[1] + '=' * ((4 - len(parts[1]) % 4) % 4)))
-            need(claims.get('role') == claim_role)
+            need(claims.get('role') == claim_role and 'sub' not in claims)
             if project_ref is not None:
                 need(claims.get('ref') == project_ref)
+            else:
+                need(claims.get('ref') is None)
         for key, denied in settings['deniedValues'].items():
             need(env[key] not in denied)
 
