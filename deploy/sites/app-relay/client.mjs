@@ -10,10 +10,6 @@
 // key at once, bound to the random id this program makes when it starts (sent on every connect). The key and the id
 // stay in this program's memory only; after a dropped connection the program connects again with them. Stop the
 // program (Ctrl-C) and the link says "This app is not running right now".
-//
-// Messages with the relay (binary WebSocket frames): 1 byte type, 4-byte stream id, payload. 1 request head (JSON
-// {method, path, headers}), 2 body chunk, 3 body end, 4 response head (JSON {status, headers}), 5 reset, 6 hello
-// (JSON {key, url, port}), 7 keepalive. Headers travel as [name, value] pairs.
 
 import { createHash, randomBytes } from "node:crypto";
 import { request } from "node:http";

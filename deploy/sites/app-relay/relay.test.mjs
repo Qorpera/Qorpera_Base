@@ -3307,4 +3307,47 @@ describe("app relay: visitor WebSockets", () => {
 		wsShutdown.socket.destroy();
 		await closedRelay;
 	});
+
+	it("closes open visitor WebSockets with 1008 within the session cache window when a session is revoked", async (t) => {
+		const { db, app, relay, token, visitorUpgrade } = await startStack(t, {
+			sessionCacheMs: 150,
+			lockedCacheMs: 150,
+			recheckMs: 0,
+		});
+		const ws1 = await visitorUpgrade("/ws/echo");
+		const ws2 = await visitorUpgrade("/ws/echo");
+		t.after(() => {
+			ws1.socket.destroy();
+			ws2.socket.destroy();
+		});
+		assert.equal(ws1.status, 101);
+		assert.equal(ws2.status, 101);
+		assert.equal(relay.wsCount("shop"), 2);
+
+		const r1 = frameReader(ws1.socket, ws1.rest);
+		const r2 = frameReader(ws2.socket, ws2.rest);
+		ws1.socket.write(encodeFrame(0x1, Buffer.from("before-revoke"), { mask: mask() }));
+		assert.equal((await r1.next()).payload.toString("utf8"), "before-revoke");
+
+		const callsBeforeRevoke = db.sessionCalls().length;
+		db.sites.get("shop").sessions.delete(token);
+
+		const [close1, close2] = await Promise.all([r1.next(1500), r2.next(1500)]);
+		assert.equal(close1.opcode, 0x8);
+		assert.equal(close1.payload.readUInt16BE(0), 1008);
+		assert.equal(close1.payload.subarray(2).toString("utf8"), "session ended");
+		assert.equal(close2.opcode, 0x8);
+		assert.equal(close2.payload.readUInt16BE(0), 1008);
+		assert.equal(close2.payload.subarray(2).toString("utf8"), "session ended");
+		assert.equal(db.sessionCalls().length - callsBeforeRevoke, 1);
+
+		ws1.socket.destroy();
+		ws2.socket.destroy();
+		await until(() => relay.wsCount("shop") === 0, "revoked visitor sockets to clear");
+		await until(
+			() => app.closed.filter((c) => c.code === 1008).length >= 2,
+			"upstream to receive 1008 close frames for revoked sockets",
+		);
+		assert.equal(relay.isConnected("shop"), true);
+	});
 });

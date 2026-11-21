@@ -1,57 +1,4 @@
 #!/usr/bin/env node
-/* Private app links: the relay (deploy/sites/APP-PREVIEW.md, section 3). Node 24, no dependencies.
- *
- * An agent shares one port of a company's always-on machine as https://<slug>-preview.qorpera.com/, behind the site's
- * password. The machine runs the link program (client.mjs), which dials out to this relay over a WebSocket and serves
- * each request the relay hands it from 127.0.0.1:<port>, the port the database holds for the link. Visitors reach the
- * relay through Cloudflare, the dbhome tunnel and api-front's `apps` virtual host (envoy-front-sites.yaml), which sets
- * x-forwarded-host to the request's own name. The relay never reaches a node or a VM; it holds no company data. The
- * database decides every answer through three RPCs, called as the relay's own role (qorpera_site_relay, which may run
- * only those): qorpera_site_app_connect, qorpera_site_app_session and qorpera_site_app_unlock.
- *
- * On an app host:
- *  - /.qorpera/connect   the link program's WebSocket (Authorization: Bearer <claim or key>, x-qorpera-program: the
- *                        program's own random id, which the database binds a claim to). The database is asked before the
- *                        handshake completes; a refusal still completes it and closes with 4001, because a WebSocket
- *                        client sees no HTTP status. A newer program for the same link closes the older one with 4002.
- *                        A connect without a well-formed secret and id is refused without asking. Refused connects
- *                        are limited per address (an IPv6 /64) and link, never for the agent exits' own addresses
- *                        (QORPERA_APP_RELAY_TRUSTED_ADDRESSES), which every company's machines share (429).
- *  - /.qorpera/client.mjs the link program itself, no password.
- *  - /.qorpera/unlock    the password form (POST password, next).
- *  - /.qorpera/health    (on any host, none needed) the container's healthcheck.
- *  - a change from another site: any method but GET, HEAD and OPTIONS whose Sec-Fetch-Site is same-site or
- *                        cross-site, or whose Origin is there and is not https://<this app host> (Origin "null" passes
- *                        only with Sec-Fetch-Site same-origin: a page under Referrer-Policy no-referrer sends it to its
- *                        own origin), is refused with 403 (no-store) before the gate, the database or the app see it,
- *                        the unlock form's POST too. Every other company's site and app is a same-site neighbour that
- *                        makes the visitor's browser send the Lax gate cookie (deploy/sites/SITE-HOSTS.md). A request
- *                        with neither header passes, as before.
- *  - anything else       the gate (cookie __Host-qorpera_app, checked with the database: an open answer kept 30 s, a
- *                        locked one 5 s), then the app through its link program, when the program serves the very site
- *                        the session is for (a kept answer that disagrees is asked again, and the program is dropped
- *                        only when the database refuses it): 503 when none does, 504 when no response head comes in
- *                        60 s, 502 when the app does not answer (or names its length twice, or not in digits), 413 over
- *                        10 MiB, 501 for a visitor's WebSocket. Every forwarded answer is `cache-control: private,
- *                        no-cache` (`private, no-store` when the app said no-store) and `cdn-cache-control: no-store`
- *                        (the app's own cache headers are dropped), so Cloudflare never keeps a copy in front of the
- *                        password; and it is held to its Content-Length, so a program can never write into the next
- *                        answer on a connection.
- *
- * Messages on the program's WebSocket (binary frames): one byte type, a 4-byte stream id (big endian), the payload.
- *   1 request head  relay -> program  JSON {method, path, headers: [[name, value], ...]}
- *   2 body chunk    either way        bytes (at most 64 KiB)
- *   3 body end      either way        empty
- *   4 response head program -> relay  JSON {status, headers: [[name, value], ...]}
- *   5 reset         either way        empty: the stream is over, nothing more of it is sent
- *   6 hello         relay -> program  JSON {key, url, port} on stream 0, once connected: key null when the program
- *                                     used it; port the one the link is shared for, the only one the program serves
- *   7 keepalive     either way        empty, stream 0: the relay sends one every 25 s and the program answers; either
- *                                     side drops a connection silent for 60 s
- * Close codes the relay sends: 4001 refused (the program stops), 4002 replaced (stops), 1012 the link's port changed,
- * 1001 the relay stops, 1008 too many pings (all three: connect again).
- *
- * Never logged: a claim, a key, a session token, a password, a cookie or the relay's JWT. */
 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -1973,7 +1920,19 @@ export function createRelay({
 		});
 	}
 
-	function forwardVisitorWs(req, socket, headBytes, lang, site, program, accept, offeredProtocols, releaseUpgrading) {
+	function forwardVisitorWs(
+		req,
+		socket,
+		headBytes,
+		lang,
+		site,
+		program,
+		accept,
+		offeredProtocols,
+		releaseUpgrading,
+		sessionToken,
+		sessionSiteId,
+	) {
 		const text = TEXT[lang];
 		if (program.ws.closed || socket.destroyed) {
 			releaseUpgrading();
@@ -2141,8 +2100,13 @@ export function createRelay({
 				});
 				wsTracker = {
 					ws: visitorWs,
+					token: sessionToken,
+					siteId: sessionSiteId,
 					pingedAt: Date.now(),
+					checkedAt: Date.now(),
+					rechecking: false,
 					idleClose: () => closeBoth(1001, "idle timeout"),
+					sessionEnded: () => closeBoth(1008, "session ended"),
 				};
 				program.wsStreams.add(wsTracker);
 				visitorWs.onMessage = (message, opcode) => {
@@ -2298,6 +2262,7 @@ export function createRelay({
 				return;
 			}
 			let program = programs.get(site.slug);
+			let activeSiteId = siteId;
 			if (program && program.siteId !== siteId) {
 				const fresh = await sessionSite(site.slug, matchedToken, true);
 				if (socket.destroyed) return;
@@ -2305,6 +2270,7 @@ export function createRelay({
 					rawAnswer(socket, 401, passwordPage(lang, safeNext(url)), { "set-cookie": CLEAR_GATE_COOKIE });
 					return;
 				}
+				activeSiteId = fresh;
 				program = programs.get(site.slug);
 				if (program && program.siteId !== fresh) {
 					if (!(await stillHolds(program)) && programs.get(site.slug) === program) drop(program, "its site is gone");
@@ -2318,7 +2284,19 @@ export function createRelay({
 				return;
 			}
 			handedOff = true;
-			forwardVisitorWs(req, socket, head, lang, site, program, accept, parsedProtocols.protocols, releaseUpgrading);
+			forwardVisitorWs(
+				req,
+				socket,
+				head,
+				lang,
+				site,
+				program,
+				accept,
+				parsedProtocols.protocols,
+				releaseUpgrading,
+				matchedToken,
+				activeSiteId,
+			);
 		} catch (error) {
 			failure(error);
 			rawAnswer(socket, 503, messagePage(lang, text.unavailable, text.unavailableLead), { "retry-after": "30" });
@@ -2447,6 +2425,8 @@ export function createRelay({
 		}
 	}
 
+	const wsSessionCheckMs = sessionCacheMs > 0 ? sessionCacheMs : SESSION_CACHE_MS;
+
 	/** Keepalives out, silent programs dropped (a paused one too), every key, site and port checked again now and then. */
 	function sweep() {
 		const now = Date.now();
@@ -2468,6 +2448,20 @@ export function createRelay({
 				if (now - visitor.pingedAt >= wsPingMs) {
 					visitor.pingedAt = now;
 					visitor.ws.ping();
+				}
+				if (!visitor.rechecking && now - visitor.checkedAt >= wsSessionCheckMs) {
+					visitor.rechecking = true;
+					visitor.checkedAt = now;
+					sessionSite(program.slug, visitor.token)
+						.then((found) => {
+							visitor.rechecking = false;
+							if (!program.wsStreams.has(visitor)) return;
+							if (!found || found !== visitor.siteId) visitor.sessionEnded();
+						})
+						.catch((error) => {
+							visitor.rechecking = false;
+							failure(error);
+						});
 				}
 			}
 			if (recheckMs > 0 && now >= program.nextCheckAt) {
@@ -2503,7 +2497,7 @@ export function createRelay({
 	});
 	const timer = setInterval(
 		sweep,
-		Math.max(50, Math.min(keepaliveMs, silentMs, wsPingMs, wsIdleMs, recheckMs || 5000, 5000) / 2),
+		Math.max(50, Math.min(keepaliveMs, silentMs, wsPingMs, wsIdleMs, wsSessionCheckMs, recheckMs || 5000, 5000) / 2),
 	);
 	timer.unref();
 	const close = server.close.bind(server);

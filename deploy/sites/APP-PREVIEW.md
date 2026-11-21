@@ -188,7 +188,10 @@ to start with any other role), `QORPERA_APP_HOST_SUFFIX` (`-preview.qorpera.com`
   headers and sanitize `Set-Cookie` host-only without `__Host-qorpera_app`. Resource bounds: at most 32 concurrent
   visitor WebSockets per link (`MAX_WS_PER_SITE`, 503 when full), 1 MiB max message size (`MAX_WS_MESSAGE_BYTES`,
   closed with 1009), 2 MiB per-visitor send queue cap (`MAX_WS_QUEUED_BYTES`, slow consumers dropped cleanly without
-  stalling other streams), and 25 s ping / 60 s idle timeout keepalive. Close codes are sanitized per RFC 6455 so
+  stalling other streams), and 25 s ping / 60 s idle timeout keepalive. Open visitor WebSockets re-verify their gate
+  session every `sessionCacheMs` (30 s, cached and coalesced across sockets sharing a token) and close with 1008
+  ("session ended") when the session is revoked (e.g., password change or expiry) or no longer matches the link's site.
+  Close codes are sanitized per RFC 6455 so
   non-wire codes (such as 1005, 1006, 1015) are never sent on the wire. All open visitor WebSockets close cleanly with
   1001 when the tunnel drops, a newer link program replaces it, the site is unpublished/retaken, or the relay stops.
 - Every connected program is checked again every 5 minutes: a key that no longer holds or another site under the slug
