@@ -71,7 +71,7 @@ function responseBody(
 					return { done: true, value: undefined };
 				}
 			}
-			let next: ReadableStreamReadResult<Uint8Array>;
+			let next: Awaited<ReturnType<typeof reader.read>>;
 			try {
 				next = await reader.read();
 			} catch {
@@ -136,21 +136,6 @@ function messageBody(answer: IncomingMessage): AsyncIterableIterator<Uint8Array>
 	};
 }
 
-/**
- * An import's fetch through the company's GitHub connection (own code storage, step 6): the secret broker's relay
- * (5j-6b), `GET <origin>/v1/coding-repository-fetch/refs?company=<id>` and `POST …/upload-pack?company=<id>`, with the
- * executor's own broker token and the import named in the headers as a session's turn is (`x-qorpera-coding-worker`
- * the request's id, `-lease` its lease token, `-executor` this executor's owner, `-repository` the GitHub
- * `Owner/Name`). The broker asks the kernel (`qorpera_authorize_code_import_fetch` for a request id), adds GitHub's
- * header and streams GitHub's answer back: the token never reaches the executor. Redirects are errors, never followed.
- *
- * The answers: GitHub's own (its status and type, the body streamed), or the relay's own refusal, the small JSON of
- * `qorpera.cloud-secret-error/v1` (403 refused or not now, 503 busy, 404 not routed), read and closed here. What they
- * end in is part C1's (`codeImportAnswerStop`, `codeImportRelayRefusals`). A request that fails, or whose answer's
- * headers do not come within a minute, rejects with a fixed code and nothing of the request or the answer: never the
- * executor's token, never a body. `public` fetches a public project straight from github.com
- * (`publicGitHubTransport`), with no credential.
- */
 export class BrokerRepositoryFetch implements CodeImportTransports {
 	readonly #origin: string;
 	readonly #executorToken: string;
@@ -165,7 +150,6 @@ export class BrokerRepositoryFetch implements CodeImportTransports {
 		fetch?: typeof fetch;
 		/** For `public` only (tests): the relay's connection to github.com. */
 		relay?: CloudSecretRelayTransport;
-		/** How long the broker may take to an answer's headers (tests); a minute by default, at most that. */
 		answerMs?: number;
 	}) {
 		const url = new URL(options.origin);
@@ -233,7 +217,7 @@ export class BrokerRepositoryFetch implements CodeImportTransports {
 		body: Uint8Array | undefined,
 		signal: AbortSignal,
 	): Promise<CodeImportAnswer> {
-		// The request's own end: the caller's signal, or no headers within the broker's time (that bound ends with them).
+		// WHY: For non-200 JSON refusals this timer stays active through readBoundedCloudResponse so stalled refusal bodies cannot hang.
 		const call = new AbortController();
 		const end = () => call.abort();
 		const detach = () => signal.removeEventListener("abort", end);

@@ -1,6 +1,12 @@
+import { randomBytes, randomUUID } from "node:crypto";
 import { getEventListeners } from "node:events";
 import { describe, expect, it, vi } from "vitest";
+import { BrokerCodingEnvironment } from "../../../deploy/coding-worker/coding-environment.ts";
 import { CodingExecutorHttpControl } from "../../../deploy/coding-worker/control.ts";
+import { BrokerMachineAccountFill } from "../../../deploy/coding-worker/machine-account-fill-broker.ts";
+import { MemberMachineScreenControl } from "../../../deploy/coding-worker/member-control.ts";
+import { BrokerRepositoryCredentials } from "../../../deploy/coding-worker/repository-credentials.ts";
+import { withTimeoutSignal } from "../../../deploy/coding-worker/timeout-signal.ts";
 import { CodingControlBusy, CodingControlRefused } from "../../runner-orchestrator/src/coding-executor.ts";
 
 describe("dedicated coding executor control", () => {
@@ -485,6 +491,118 @@ describe("dedicated coding executor control", () => {
 		for (let i = 0; i < 200; i++) {
 			await control.call("qorpera_claim_coding_session", { p_owner: "node" }, parent.signal).catch(() => undefined);
 		}
+		expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
+	});
+
+	it("enforces withTimeoutSignal deadline, forwards parent abort reasons, and detaches listeners across all broker clients", async () => {
+		const parent = new AbortController();
+		expect(await withTimeoutSignal(parent.signal, 500, async () => "ok")).toBe("ok");
+		expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
+
+		await expect(
+			withTimeoutSignal(parent.signal, 500, async () => {
+				throw new Error("boom");
+			}),
+		).rejects.toThrow("boom");
+		expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
+
+		const startedAt = performance.now();
+		let timedOutSignal: AbortSignal | undefined;
+		await expect(
+			withTimeoutSignal(parent.signal, 40, async (signal) => {
+				timedOutSignal = signal;
+				return await new Promise<never>((_resolve, reject) => {
+					signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+				});
+			}),
+		).rejects.toThrow("Operation timed out");
+		expect(timedOutSignal?.aborted).toBe(true);
+		expect(performance.now() - startedAt).toBeLessThan(2_000);
+		expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
+
+		const cancelParent = new AbortController();
+		const cancelReason = new Error("caller-cancelled");
+		await expect(
+			withTimeoutSignal(cancelParent.signal, 5_000, async (signal) => {
+				queueMicrotask(() => cancelParent.abort(cancelReason));
+				return await new Promise<never>((_resolve, reject) => {
+					signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+				});
+			}),
+		).rejects.toBe(cancelReason);
+		expect(getEventListeners(cancelParent.signal, "abort")).toHaveLength(0);
+
+		const executorToken = randomBytes(32).toString("base64url");
+		const scope = { companyId: randomUUID(), workerId: randomUUID(), leaseToken: randomUUID() };
+		const failFetch: typeof fetch = async () => new Response(null, { status: 503 });
+
+		const memberControl = new MemberMachineScreenControl({
+			supabaseUrl: "https://project.supabase.co",
+			publishableKey: "sb_publishable_test_key",
+			fetch: failFetch,
+		});
+		await memberControl
+			.begin("member-token", { companyId: scope.companyId, machineId: randomUUID(), confirmed: true }, parent.signal)
+			.catch(() => undefined);
+		expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
+
+		const envClient = new BrokerCodingEnvironment({
+			origin: "https://broker.example",
+			executorToken,
+			executorOwner: "coding-node-01",
+			fetch: failFetch,
+		});
+		await envClient.environment(scope, parent.signal).catch(() => undefined);
+		expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
+
+		const fillClient = new BrokerMachineAccountFill({
+			origin: "https://broker.example",
+			executorToken,
+			executorOwner: "coding-node-01",
+			fetch: failFetch,
+		});
+		await fillClient
+			.seal(
+				{
+					companyId: scope.companyId,
+					binding: {
+						leaseId: randomUUID(),
+						runId: randomUUID(),
+						jobId: randomUUID(),
+						runnerId: randomUUID(),
+						assignmentId: randomUUID(),
+						credentialCapsuleId: randomUUID(),
+						computeIdentityId: randomUUID(),
+						provider: "openai",
+						nativeHarness: "codex-cli",
+						model: "gpt-5",
+					},
+					receiptId: randomUUID(),
+					idempotencyKey: "k1",
+					envelope: "env",
+					placementId: randomUUID(),
+					bootId: randomUUID(),
+					fillPublicKey: "pub",
+				},
+				parent.signal,
+			)
+			.catch(() => undefined);
+		expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
+
+		const repoCreds = new BrokerRepositoryCredentials({
+			origin: "https://broker.example",
+			executorToken,
+			executorOwner: "coding-node-01",
+			fetch: failFetch,
+		});
+		await repoCreds
+			.withRepositoryToken(
+				scope,
+				{ host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" },
+				async () => undefined,
+				parent.signal,
+			)
+			.catch(() => undefined);
 		expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
 	});
 });
