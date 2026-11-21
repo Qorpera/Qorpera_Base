@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
-import { inflateSync } from "node:zlib";
+import { crc32, inflateSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	COMPANY_MACHINE_DESKTOP_VIEW,
@@ -43,19 +43,31 @@ function decodePng(png: Buffer): { width: number; height: number; channels: numb
 	let width = 0;
 	let height = 0;
 	let channels = 3;
+	let sawIend = false;
 	const idat: Buffer[] = [];
 	while (at < png.byteLength) {
+		expect(sawIend).toBe(false);
+		expect(at + 12).toBeLessThanOrEqual(png.byteLength);
 		const length = png.readUInt32BE(at);
+		expect(at + 12 + length).toBeLessThanOrEqual(png.byteLength);
 		const type = png.subarray(at + 4, at + 8).toString("latin1");
 		const data = png.subarray(at + 8, at + 8 + length);
+		const expectedCrc = crc32(png.subarray(at + 4, at + 8 + length));
+		expect(png.readUInt32BE(at + 8 + length)).toBe(expectedCrc);
 		if (type === "IHDR") {
 			width = data.readUInt32BE(0);
 			height = data.readUInt32BE(4);
 			channels = data[9] === 6 ? 4 : 3;
 		}
 		if (type === "IDAT") idat.push(data);
+		if (type === "IEND") {
+			expect(length).toBe(0);
+			sawIend = true;
+		}
 		at += 12 + length;
 	}
+	expect(sawIend).toBe(true);
+	expect(at).toBe(png.byteLength);
 	const raw = inflateSync(Buffer.concat(idat));
 	const stride = width * channels;
 	const out = Buffer.alloc(stride * height);
@@ -284,12 +296,52 @@ describe("a desktop's live picture (20260930745000)", () => {
 
 	it("encodes an area as a PNG of its own pixels, and the pointer as RGBA with its mask", async () => {
 		const pixels = Buffer.alloc(5 * 3 * 4);
-		for (let i = 0; i < 15; i++) pixels.set([i * 3, i * 5, i * 7, 0], i * 4);
+		for (let i = 0; i < 15; i++) pixels.set([(255 - i * 17) & 0xff, (i * 53) & 0xff, (200 - i * 31) & 0xff, 0], i * 4);
 		const png = decodePng(await encodePng(5, 3, pixels));
 		expect(png).toMatchObject({ width: 5, height: 3, channels: 3 });
-		for (let i = 0; i < 15; i++) expect([...png.data.subarray(i * 3, i * 3 + 3)]).toEqual([i * 7, i * 5, i * 3]);
+		for (let i = 0; i < 15; i++) {
+			expect([...png.data.subarray(i * 3, i * 3 + 3)]).toEqual([
+				(200 - i * 31) & 0xff,
+				(i * 53) & 0xff,
+				(255 - i * 17) & 0xff,
+			]);
+		}
+		const singleRgb = decodePng(await encodePng(1, 1, Buffer.from([10, 20, 250, 0])));
+		expect(singleRgb).toMatchObject({ width: 1, height: 1, channels: 3 });
+		expect([...singleRgb.data]).toEqual([250, 20, 10]);
+
 		const cursor = decodePng(await encodePng(2, 1, fill(2, 1, [9, 8, 7]), (index) => (index === 0 ? 255 : 0)));
 		expect([...cursor.data]).toEqual([9, 8, 7, 255, 9, 8, 7, 0]);
+		const singleRgba = decodePng(await encodePng(1, 1, Buffer.from([1, 2, 3, 0]), () => 128));
+		expect(singleRgba).toMatchObject({ width: 1, height: 1, channels: 4 });
+		expect([...singleRgba.data]).toEqual([3, 2, 1, 128]);
+		const multiRgba = decodePng(await encodePng(5, 3, pixels, (index) => (255 - index * 19) & 0xff));
+		expect(multiRgba).toMatchObject({ width: 5, height: 3, channels: 4 });
+		for (let i = 0; i < 15; i++) {
+			expect([...multiRgba.data.subarray(i * 4, i * 4 + 4)]).toEqual([
+				(200 - i * 31) & 0xff,
+				(i * 53) & 0xff,
+				(255 - i * 17) & 0xff,
+				(255 - i * 19) & 0xff,
+			]);
+		}
+		const tallAlphaPixels = Buffer.alloc(1024 * 130 * 4);
+		for (let i = 0; i < 1024 * 130; i++) tallAlphaPixels.set([i & 0xff, (i * 3) & 0xff, (255 - i) & 0xff, 0], i * 4);
+		const turns = vi.spyOn(globalThis, "setImmediate");
+		const before = turns.mock.calls.length;
+		const tallAlpha = decodePng(await encodePng(1024, 130, tallAlphaPixels, (index) => (255 - index) & 0xff));
+		const yielded = turns.mock.calls.length - before;
+		turns.mockRestore();
+		expect(yielded).toBeGreaterThanOrEqual(2);
+		expect(tallAlpha).toMatchObject({ width: 1024, height: 130, channels: 4 });
+		expect([...tallAlpha.data.subarray(0, 4)]).toEqual([255, 0, 0, 255]);
+		const last = 1024 * 130 - 1;
+		expect([...tallAlpha.data.subarray(last * 4, last * 4 + 4)]).toEqual([
+			(255 - last) & 0xff,
+			(last * 3) & 0xff,
+			last & 0xff,
+			(255 - last) & 0xff,
+		]);
 	});
 
 	/** A desktop whose VNC server the test drives: what the client sent, and `send` for what the server says. */
@@ -1183,28 +1235,30 @@ describe("a desktop's live picture (20260930745000)", () => {
 		expect([...decoded.data.subarray(-3)]).toEqual([10, 20, 30]);
 	});
 
-	it("deflates Xvnc bands asynchronously so a 28-band 1600x1000 frame yields to the event loop between bands", async () => {
-		const bands = Array.from({ length: 28 }, (_, n) =>
-			fill(1600, n === 27 ? 1000 - 27 * 36 : 36, [n * 5, 100, 200 - n * 3]),
-		);
-		let ticks = 0;
-		const timer = setInterval(() => {
-			ticks++;
-		}, 1);
-		try {
-			const encoded = [];
-			for (let n = 0; n < bands.length; n++) {
-				encoded.push(await encodePng(1600, n === 27 ? 1000 - 27 * 36 : 36, bands[n]!));
-			}
-			expect(encoded).toHaveLength(28);
-			expect(ticks).toBeGreaterThan(0);
-			const sample = decodePng(encoded[13]!);
-			expect([sample.width, sample.height, sample.channels]).toEqual([1600, 36, 3]);
-			expect([...sample.data.subarray(0, 3)]).toEqual([65, 100, 161]);
-			expect([...sample.data.subarray(-3)]).toEqual([65, 100, 161]);
-		} finally {
-			clearInterval(timer);
-		}
+	it("deflates Xvnc bands asynchronously so a sub-turn 1600x36 band yields to the event loop", async () => {
+		const band = Buffer.alloc(1600 * 36 * 4);
+		for (let i = 0; i < band.byteLength; i++) band[i] = (i * 73 + (i >> 3)) & 0xff;
+		const order: string[] = [];
+		const pending = encodePng(1600, 36, band).then((png) => {
+			order.push("png");
+			return png;
+		});
+		await new Promise<void>((resolve) => {
+			setImmediate(() => {
+				order.push("tick");
+				resolve();
+			});
+		});
+		const encoded = await pending;
+		expect(order).toEqual(["tick", "png"]);
+		const sample = decodePng(encoded);
+		expect([sample.width, sample.height, sample.channels]).toEqual([1600, 36, 3]);
+		expect([...sample.data.subarray(0, 3)]).toEqual([band[2], band[1], band[0]]);
+		expect([...sample.data.subarray(-3)]).toEqual([
+			band[band.byteLength - 2],
+			band[band.byteLength - 3],
+			band[band.byteLength - 4],
+		]);
 	});
 
 	it("ends every member's stream when the relay ends (the X server or the boot) with why", async () => {

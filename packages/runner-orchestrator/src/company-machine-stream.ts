@@ -663,15 +663,15 @@ export class RfbReader {
 	}
 }
 
-// WHY: level 3 async deflate on libuv avoids blocking the stream event loop across 28-band Xvnc frames.
-
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const PNG_CHUNK_OVERHEAD = 12;
 const PNG_IEND_CHUNK = (() => {
-	const buf = Buffer.alloc(12);
+	const buf = Buffer.alloc(PNG_CHUNK_OVERHEAD);
 	buf.write("IEND", 4, "latin1");
 	buf.writeUInt32BE(crc32(buf.subarray(4, 8)), 8);
 	return buf;
 })();
+// WHY: level 3 async deflate on libuv avoids blocking the stream event loop across 28-band Xvnc frames.
 const PNG_DEFLATE_LEVEL = 3;
 
 function writeChunk(target: Buffer, offset: number, type: string, data: Buffer): number {
@@ -679,7 +679,7 @@ function writeChunk(target: Buffer, offset: number, type: string, data: Buffer):
 	target.write(type, offset + 4, "latin1");
 	data.copy(target, offset + 8);
 	target.writeUInt32BE(crc32(data, crc32(target.subarray(offset + 4, offset + 8))), offset + 8 + data.byteLength);
-	return offset + 12 + data.byteLength;
+	return offset + PNG_CHUNK_OVERHEAD + data.byteLength;
 }
 /** At most this many pixels are filtered in one turn of the event loop (about a millisecond on node 2): a whole screen of
  * the largest desktop held it for 64 ms in one stretch before (the v245 release review). An area is at most four such
@@ -755,7 +755,12 @@ export async function encodePng(
 	ihdr.set([8, alpha ? 6 : 2, 0, 0, 0], 8);
 	const compressed = await deflateAsync(raw, { level: PNG_DEFLATE_LEVEL });
 	const out = Buffer.allocUnsafe(
-		PNG_SIGNATURE.byteLength + 25 + 12 + compressed.byteLength + PNG_IEND_CHUNK.byteLength,
+		PNG_SIGNATURE.byteLength +
+			PNG_CHUNK_OVERHEAD +
+			ihdr.byteLength +
+			PNG_CHUNK_OVERHEAD +
+			compressed.byteLength +
+			PNG_IEND_CHUNK.byteLength,
 	);
 	PNG_SIGNATURE.copy(out, 0);
 	let at = PNG_SIGNATURE.byteLength;
