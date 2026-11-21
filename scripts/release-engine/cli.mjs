@@ -6,6 +6,7 @@ import { classifyReleaseDiff } from "../release-prep-plan.mjs";
 import { runReleaseDriver, stepsForManifest } from "./driver.mjs";
 import { createReleaseManifest, validateReleaseManifest } from "./manifest.mjs";
 import { buildAnchorCheckSql } from "./sql-checks.mjs";
+import { writeSqlOnlyPackets } from "./sql-only-packets.mjs";
 
 const SUBCOMMAND_FLAGS = {
 	init: {
@@ -34,6 +35,10 @@ const SUBCOMMAND_FLAGS = {
 		value: new Set(["manifest"]),
 		boolean: new Set(),
 	},
+	packets: {
+		value: new Set(["manifest", "out", "repo"]),
+		boolean: new Set(),
+	},
 	"dry-run": {
 		value: new Set(["manifest", "from"]),
 		boolean: new Set(),
@@ -42,7 +47,7 @@ const SUBCOMMAND_FLAGS = {
 
 export function parseSubcommandFlags(action, argv) {
 	if (typeof action !== "string" || !Object.hasOwn(SUBCOMMAND_FLAGS, action)) {
-		throw new Error("Usage: node scripts/release-engine/cli.mjs <init|validate|plan|anchor-sql|dry-run> [flags]");
+		throw new Error("Usage: node scripts/release-engine/cli.mjs <init|validate|plan|anchor-sql|packets|dry-run> [flags]");
 	}
 	const schema = SUBCOMMAND_FLAGS[action];
 	const flags = {};
@@ -166,6 +171,28 @@ export async function runCli(argv, io = {}) {
 		stdout.write(`${buildAnchorCheckSql(anchors)}\n`);
 		return 0;
 	}
+	if (action === "packets") {
+		const manifest = readManifest(flags.manifest);
+		if (!flags.out) {
+			throw new Error("Usage: packets --manifest <file> --out <new-dir> [--repo <dir>]");
+		}
+		if (manifest.mode !== "sql-only") {
+			throw new Error("packets subcommand writes sql-only packets; use scripts/runtime-roll.mjs packets for runtime cuts");
+		}
+		const repoDir = flags.repo ? resolve(cwd, flags.repo) : cwd;
+		const migrationsByFile = new Map();
+		for (const migration of manifest.migrations) {
+			const sql = execFileSync("git", ["-C", repoDir, "show", "--end-of-options", `${manifest.baseCommit}:${migration.file}`], {
+				encoding: "utf8",
+				maxBuffer: 64 * 1024 * 1024,
+			});
+			migrationsByFile.set(migration.file, sql);
+		}
+		const outDir = resolve(cwd, flags.out);
+		const packetManifest = writeSqlOnlyPackets(outDir, manifest, migrationsByFile);
+		stdout.write(`${JSON.stringify({ out: outDir, order: packetManifest.order, dryRunOnly: packetManifest.dryRunOnly }, null, 2)}\n`);
+		return 0;
+	}
 	if (action === "dry-run") {
 		const manifest = readManifest(flags.manifest);
 		const result = await runReleaseDriver(
@@ -176,7 +203,7 @@ export async function runCli(argv, io = {}) {
 		stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 		return result.ok ? 0 : result.exitCode;
 	}
-	throw new Error("Usage: node scripts/release-engine/cli.mjs <init|validate|plan|anchor-sql|dry-run> [flags]");
+	throw new Error("Usage: node scripts/release-engine/cli.mjs <init|validate|plan|anchor-sql|packets|dry-run> [flags]");
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
