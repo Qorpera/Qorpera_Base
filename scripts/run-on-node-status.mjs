@@ -26,8 +26,8 @@ export function statusDecision({ suite, dirty, disabled, slug, plain = true, bas
 	if (!slug) return { post: false, reason: "origin is not a GitHub repository" };
 	if (dirty) return { post: false, reason: "uncommitted or untracked changes: the result is not a commit's" };
 	if (!plain) return { post: false, reason: "suite arguments, --env, --sudo or an install/build override narrow the run" };
-	if (suite === "changed" && base !== "origin/master")
-		return { post: false, reason: `--base ${base}: only a run against origin/master posts qorpera-ci/changed` };
+	if ((suite === "changed" || suite === "release-check") && base !== "origin/master")
+		return { post: false, reason: `--base ${base}: only a run against origin/master posts qorpera-ci/${suite}` };
 	return { post: true, reason: null };
 }
 
