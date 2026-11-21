@@ -1354,7 +1354,7 @@ describe("the agent plug", { skip: pythonUsable ? false : "needs Python 3.11 or 
 						status_code: 200,
 						metadata: [
 							{ ...machine(eStop, { status: "Running" }), config: { "volatile.agent.host_name": "tap-old-stop" } },
-							{ ...machine(eBroken, { status: "Running" }), config: { "volatile.agent.host_name": "tap-still-broken" } },
+							{ ...machine(eBroken, { status: "Running" }), config: { "volatile.agent.host_name": "tap-broken" } },
 							{ ...machine(eDeleted, { status: "Running" }), config: { "volatile.agent.host_name": "tap-old-gone" } },
 							machine(eErr, { status: "Running" }),
 						],
@@ -1373,7 +1373,7 @@ describe("the agent plug", { skip: pythonUsable ? false : "needs Python 3.11 or 
 					JSON.stringify({
 						type: "sync",
 						status_code: 200,
-						metadata: { ...machine(eBroken, { status: "Running" }), config: { "volatile.agent.host_name": "tap-still-broken" } },
+						metadata: { ...machine(eBroken, { status: "Running" }), config: { "volatile.agent.host_name": "tap-broken" } },
 					}),
 				);
 				return;
@@ -1453,11 +1453,12 @@ describe("the agent plug", { skip: pythonUsable ? false : "needs Python 3.11 or 
 			assert.equal(raceFlushes.includes(deleted.address), false, "404 VM takes missing path, not stale flush");
 			assert.ok(calls.includes(`/1.0/instances/${eStop.instance}?project=${eStop.project}`));
 
-			const bridgeCheck = spawnSync(
-				"python3",
-				[
-					"-c",
-					`
+			const bridgeCheck = await new Promise((resolve) => {
+				const child = spawn(
+					"python3",
+					[
+						"-c",
+						`
 import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("plug", sys.argv[1])
 plug = importlib.util.module_from_spec(spec)
@@ -1482,24 +1483,33 @@ r.sync_bridge = spy
 r.pass_once()
 print(json.dumps(captured))
 `,
-					plugTool,
-					state,
-					run,
-					log,
-					sock,
-					flushRaceLog,
-				],
-				{ encoding: "utf8" },
-			);
+						plugTool,
+						state,
+						run,
+						log,
+						sock,
+						flushRaceLog,
+					],
+				);
+				let stdout = "";
+				let stderr = "";
+				child.stdout.on("data", (c) => {
+					stdout += c;
+				});
+				child.stderr.on("data", (c) => {
+					stderr += c;
+				});
+				child.on("close", (status) => resolve({ status, stdout, stderr }));
+			});
 			assert.equal(bridgeCheck.status, 0, bridgeCheck.stderr);
-			const captured = JSON.parse(bridgeCheck.stdout);
+			const captured = JSON.parse(bridgeCheck.stdout.trim().split("\n").at(-1));
 			assert.equal(
 				captured.ports.some(([p]) => p === "tap-old-stop" || p === "tap-old-gone"),
 				false,
 				`backed() must use re-queried by_name so stale stopped/404 taps are dropped: ${JSON.stringify(captured.ports)}`,
 			);
 			assert.equal(
-				captured.ports.some(([p, mac]) => p === "tap-still-broken" && mac === eBroken.hwaddr),
+				captured.ports.some(([p, mac]) => p === "tap-broken" && mac === eBroken.hwaddr),
 				true,
 				`backed() must retain running VM tap ports from updated by_name: ${JSON.stringify(captured.ports)}`,
 			);
