@@ -67,6 +67,288 @@ function isSpecSurface(surface: Pick<SurfaceSummary, "slug">, kind: SurfaceKind 
 	return surface.slug.includes("product") || surface.slug.includes("hardware") || surface.slug.includes("spec");
 }
 
+function thetabandAppPhilosophyReport(): string {
+	return JSON.stringify(
+		{
+			slug: "designing-thetaband-app",
+			category: "Design Philosophy",
+			headline: "Designing the Thetaband App for Quiet Evenings",
+			subtitle:
+				"Why we stripped away streaks, popups, and brainwave clutter — and built an evening meditation ritual around a 20-second EEG contact check.",
+			author: "Co-Founder & Appdesign",
+			date: "November 2026",
+			readingTime: "4 min read",
+			publicUrl: "thetaband.dk/journal/designing-the-app",
+			keyMetrics: [
+				{ label: "Target setup", value: "< 20 sek.", delta: "fra pandebånd til lyd" },
+				{ label: "Aften-gennemførelse", value: "89%", delta: "+34% ved hurtig kontakt" },
+				{ label: "Push-notifikationer", value: "0", delta: "kun valgt aftenrytme" },
+				{ label: "Lyd-først forløb", value: "100%", delta: "skærmen slukker automatisk" },
+			],
+			sections: [
+				{
+					id: "beyond-streaks",
+					kicker: "01 · PRINCIPLE",
+					heading: "Moving beyond gamified streaks",
+					paragraphs: [
+						"Most wellness apps borrow their interaction model from habit trackers: loud streak counters, glowing rings, and anxious reminders. At 21:30 — when someone actually reaches for **Thetaband** — every extra badge works against the very state they are trying to enter.",
+						"Instead of treating meditation like a daily quota, we designed the phone interface around a single calm threshold: put on the knitted headband, confirm quiet BrainBit contact, and let the screen step out of the way.",
+					],
+					blocks: [
+						{
+							kind: "figure",
+							heading: "Shift in interaction posture",
+							caption: "How Thetaband trades engagement metrics for evening calm.",
+							panels: [
+								{
+									label: "Conventional wellness app",
+									heading: "Loud engagement loop",
+									body: "Streak warnings, 6-card home feed, bright white telemetry dashboards, and manual Bluetooth troubleshooting.",
+								},
+								{
+									label: "Thetaband companion",
+									heading: "One quiet threshold",
+									body: "Dimmed evening palette, instant 4-electrode status pill, one primary session card, and gentle audio feedback that adapts as theta settles.",
+									accent: "#7c6fd6",
+								},
+							],
+						},
+					],
+				},
+				{
+					id: "twenty-seconds",
+					kicker: "02 · EVIDENCE",
+					heading: "Twenty seconds to trust the signal",
+					paragraphs: [
+						"Early prototype tests revealed a sharp behavioral cliff: when dry-electrode pairing took longer than 25 seconds, testers began fiddling with the strap and half abandoned the session before audio even started.",
+						"That single insight drove the 4-channel **T3 / O1 / O2 / T4** signal bar at the top of the home screen. Users should never wonder whether the headband is working — green confirmation arrives before their breathing even slows.",
+					],
+					blocks: [
+						{
+							kind: "line_chart",
+							heading: "Session completion vs. time to stable EEG contact",
+							subtitle: "Prototype cohort (n = 42 evening sessions) · % completing full 15-minute meditation",
+							xLabels: ["10s", "20s", "30s", "45s", "60s", "90s"],
+							series: [{ name: "Completion rate (%)", color: "#7c6fd6", values: [92, 89, 76, 61, 48, 31] }],
+						},
+						{
+							kind: "quote",
+							text: "If a user has to debug hardware at 21:30, the meditation is already over.",
+							attribution: "Thetaband App Design Principle #1",
+						},
+					],
+				},
+				{
+					id: "external-lens",
+					kicker: "03 · EXTERNAL PERCEPTION",
+					heading: "How this reads to the outside world",
+					paragraphs: [
+						"Publishing our design philosophy forces honesty. Outside readers immediately spot wellness hype or vague neuroscience claims — writing plainly about what dry 4-channel EEG can and cannot measure builds real trust before Batch 1 ships.",
+					],
+					blocks: [
+						{
+							kind: "callout",
+							tone: "public_lens",
+							heading: "Public narrative check",
+							body: "Framing Thetaband as calm Danish industrial craft + honest biofeedback differentiates us cleanly from US consumer neuro-gadgets. Avoid clinical sleep claims; emphasize consistency, comfort, and felt quiet.",
+							bullets: [
+								"Lead with the 44 g washable knit and 20-second setup rather than raw brainwave jargon.",
+								"Publish the exact BrainBit OEM partnership openly as a pragmatic engineering choice.",
+							],
+						},
+					],
+				},
+			],
+		},
+		null,
+		2,
+	);
+}
+
+function thetabandVendorAnalysisReport(): string {
+	return JSON.stringify(
+		{
+			slug: "vendor-selection-brainbit",
+			category: "Vendor Analysis",
+			headline: "Why BrainBit OEM for Batch 1",
+			subtitle:
+				"Comparing three EEG hardware paths for our first 500 headbands across unit economics, CE certification risk, and months to customer hands.",
+			author: "Co-Founder & Produkt",
+			date: "November 2026",
+			readingTime: "5 min read",
+			publicUrl: "thetaband.dk/journal/batch-1-hardware",
+			keyMetrics: [
+				{ label: "Anbefalet platform", value: "BrainBit OEM", delta: "92 / 100 readiness" },
+				{ label: "Landed COGS (500 stk.)", value: "410 kr.", delta: "70,0% dækningsgrad" },
+				{ label: "Tid til Batch 1", value: "6–8 uger", delta: "CE/RoHS pre-certified" },
+				{ label: "Custom PCB break-even", value: "~3.500 stk.", delta: "Gen 2 beslutningspunkt" },
+			],
+			sections: [
+				{
+					id: "constraint",
+					kicker: "01 · THESIS",
+					heading: "Shipping Batch 1 before over-engineering silicon",
+					paragraphs: [
+						"For a 500-unit first batch priced at **1.995 kr. inkl. moms**, our biggest existential risk is not saving 95 kr. on a PCB — it is burning 9 months and 380.000 kr. in NRE and CE/EMC lab re-testing before a single Danish customer sleeps better.",
+						"We scored all three hardware architectures against four weighted Batch 1 criteria: **CE/RoHS readiness (35%)**, **lead time to 500 units (30%)**, **dry-electrode signal reliability (20%)**, and **Batch 1 unit cost (15%)**.",
+					],
+					blocks: [
+						{
+							kind: "bar_chart",
+							heading: "Weighted Batch 1 Readiness Score (0–100)",
+							subtitle: "Higher is faster, lower-risk path to 500 certified units",
+							max: 100,
+							items: [
+								{
+									label: "BrainBit OEM 4-ch module",
+									value: 92,
+									display: "92 / 100",
+									note: "Pre-certified CE/RoHS · 6–8 uger · 267 kr.",
+									highlight: true,
+								},
+								{
+									label: "OpenBCI Cyton OEM",
+									value: 64,
+									display: "64 / 100",
+									note: "Bulky form factor · higher BOM · 10–12 uger",
+								},
+								{
+									label: "Custom EEG PCB + dry sensor",
+									value: 41,
+									display: "41 / 100",
+									note: "380k kr. NRE · 7–10 mdr. CE/EMC-risiko",
+								},
+							],
+						},
+					],
+				},
+				{
+					id: "economics",
+					kicker: "02 · COMPARISON",
+					heading: "Unit cost, tooling, and certification trade-offs",
+					paragraphs: [
+						"Combining **BrainBit LLC** (electronics + dry gold electrodes) with **Nordic Knit ApS** in Ikast gives us Danish textile craft wrapped around proven EEG sensing, while preserving a **1.118 kr.** contribution margin per headband.",
+					],
+					blocks: [
+						{
+							kind: "table",
+							heading: "Hardware architecture comparison (Batch 1 · 500 units)",
+							caption: "All prices in DKK excluding VAT; landed estimates include freight and duty.",
+							columns: ["Platform", "Module cost", "Upfront NRE", "CE / RoHS", "Lead time", "Total weight"],
+							highlightRow: 0,
+							rows: [
+								["BrainBit OEM (Recommended)", "267 kr.", "18.000 kr.", "Pre-certified", "6–8 uger", "44–48 g"],
+								["OpenBCI OEM", "485 kr.", "45.000 kr.", "Partial", "10–12 uger", "78 g"],
+								["Custom EEG PCB (Gen 2)", "135 kr.", "380.000 kr.", "Full lab (6 mdr.)", "28–36 uger", "39 g"],
+							],
+						},
+					],
+				},
+				{
+					id: "crossover",
+					kicker: "03 · SCALE CURVE",
+					heading: "When custom silicon actually pays back",
+					paragraphs: [
+						"Amortizing 380.000 kr. in engineering and certification across volume shows a clean strategic boundary: **BrainBit OEM wins decisively through ~3.000 units**. Once we cross ~3.500 cumulative headbands with validated retention data from the app, Gen 2 custom hardware lowers landed unit cost by ~130 kr. without betting the company early.",
+					],
+					blocks: [
+						{
+							kind: "line_chart",
+							heading: "Effective electronics cost per unit (incl. amortized NRE, DKK)",
+							subtitle: "BrainBit OEM stays cheaper until ~3.500 cumulative units",
+							xLabels: ["500", "1.000", "2.000", "3.500", "5.000"],
+							series: [
+								{ name: "BrainBit OEM", color: "#2d6a57", values: [303, 285, 276, 272, 269] },
+								{ name: "Custom EEG PCB", color: "#c65d3b", values: [895, 515, 325, 244, 211] },
+							],
+						},
+						{
+							kind: "callout",
+							tone: "decision",
+							heading: "Founder alignment & next actions",
+							body: "Lock BrainBit OEM for Batch 1 (500 units) while keeping our BLE signal abstraction decoupled in the Phone App so Gen 2 hardware swaps cleanly later.",
+							bullets: [
+								"Confirm 500-unit reservation & 6-week delivery slot with BrainBit LLC this week.",
+								"Complete 14-day wash & electrode durability test on Nordic Knit ApS sample.",
+							],
+						},
+					],
+				},
+			],
+		},
+		null,
+		2,
+	);
+}
+
+function thetabandWebsitePositioningReport(): string {
+	return JSON.stringify(
+		{
+			slug: "launch-positioning",
+			category: "Homepage Strategy",
+			headline: "How Thetaband Presents Itself at First Visit",
+			subtitle:
+				"Comparing three hero directions for Denmark's Batch 1 pre-order launch — balancing immediate price clarity with quiet editorial credibility.",
+			author: "Co-Founder & Webdesign",
+			date: "November 2026",
+			readingTime: "3 min read",
+			publicUrl: "thetaband.dk/journal/launch-direction",
+			keyMetrics: [
+				{ label: "Batch 1 pris", value: "1.995 kr.", delta: "inkl. moms & DK fragt" },
+				{ label: "Tryghedsgaranti", value: "30 dage", delta: "fuld returret" },
+				{ label: "Aktiv retning", value: "3 udkast", delta: "klar i Compare" },
+			],
+			sections: [
+				{
+					id: "direction-thesis",
+					kicker: "01 · THESIS",
+					heading: "Clarity beats mystery on a 1.995 kr. hardware pre-order",
+					paragraphs: [
+						"Danish buyers evaluating a new consumer hardware brand look for three signals within five seconds: **what it physically looks like**, **exact all-in price**, and **what happens if it doesn't fit**. Putting 1.995 kr. inkl. moms and the 30-day calm guarantee directly beside the hero CTA removes friction before scrolling.",
+					],
+					blocks: [
+						{
+							kind: "bar_chart",
+							heading: "Directional fit across launch goals (0–100)",
+							subtitle: "Editorial evaluation of the three active Forsidens udtryk variants",
+							max: 100,
+							items: [
+								{
+									label: "Portræt og telefon (warm evening)",
+									value: 91,
+									display: "91 / 100",
+									note: "Strongest emotional match for evening meditation ritual",
+									highlight: true,
+								},
+								{
+									label: "Lyse flader (Nordic lavender)",
+									value: 84,
+									display: "84 / 100",
+									note: "Airy & approachable; pairs cleanly with app mockup",
+								},
+								{
+									label: "Fire trin (step-by-step clarity)",
+									value: 79,
+									display: "79 / 100",
+									note: "Best for skeptical first-time EEG buyers",
+								},
+							],
+						},
+						{
+							kind: "callout",
+							tone: "public_lens",
+							heading: "External perception check",
+							body: "Make sure the homepage feels like calm Nordic hardware (Bang & Olufsen / Muji restraint), never like an aggressive biohacking landing page.",
+						},
+					],
+				},
+			],
+		},
+		null,
+		2,
+	);
+}
+
 export function starterStudioFiles(
 	surface: Pick<SurfaceSummary, "slug" | "title" | "folderRoot">,
 	companyName: string,
@@ -78,238 +360,8 @@ export function starterStudioFiles(
 	if (kind === "report") {
 		if (isThetabandCompany(name)) {
 			return {
-				[`${root}/01-designing-thetaband-app.report.json`]: JSON.stringify(
-					{
-						slug: "designing-thetaband-app",
-						category: "Design Philosophy",
-						headline: "Designing the Thetaband App for Quiet Evenings",
-						subtitle:
-							"Why a meditation companion should feel nothing like a fitness tracker — and how a 20-second EEG contact check shapes every screen.",
-						author: "Co-Founder & Appdesign",
-						date: "November 2026",
-						readingTime: "4 min read",
-						publicUrl: "thetaband.dk/journal/designing-the-app",
-						keyMetrics: [
-							{ label: "Target setup", value: "< 20 sek.", delta: "fra pandebånd til lyd" },
-							{ label: "Aften-gennemførelse", value: "89%", delta: "+34% ved hurtig kontakt" },
-							{ label: "Push-notifikationer", value: "0", delta: "kun valgt aftenrytme" },
-							{ label: "Lyd-først forløb", value: "100%", delta: "skærmen slukker automatisk" },
-						],
-						sections: [
-							{
-								id: "beyond-streaks",
-								kicker: "01 · PRINCIPLE",
-								heading: "Moving beyond gamified streaks",
-								paragraphs: [
-									"Most wellness apps borrow their interaction model from habit trackers: loud streak counters, glowing rings, and anxious reminders. At 21:30 — when someone actually reaches for **Thetaband** — every extra badge works against the very state they are trying to enter.",
-									"Instead of treating meditation like a daily quota, we designed the phone interface around a single calm threshold: put on the knitted headband, confirm quiet BrainBit contact, and let the screen step out of the way.",
-								],
-								blocks: [
-									{
-										kind: "figure",
-										heading: "Shift in interaction posture",
-										caption: "How Thetaband trades engagement metrics for evening calm.",
-										panels: [
-											{
-												label: "Conventional wellness app",
-												heading: "Loud engagement loop",
-												body: "Streak warnings, 6-card home feed, bright white telemetry dashboards, and manual Bluetooth troubleshooting.",
-											},
-											{
-												label: "Thetaband companion",
-												heading: "One quiet threshold",
-												body: "Dimmed evening palette, instant 4-electrode status pill, one primary session card, and gentle audio feedback that adapts as theta settles.",
-												accent: "#7c6fd6",
-											},
-										],
-									},
-								],
-							},
-							{
-								id: "twenty-seconds",
-								kicker: "02 · EVIDENCE",
-								heading: "Twenty seconds to trust the signal",
-								paragraphs: [
-									"Early prototype tests revealed a sharp behavioral cliff: when dry-electrode pairing took longer than 25 seconds, testers began fiddling with the strap and half abandoned the session before audio even started.",
-									"That single insight drove the 4-channel **T3 / O1 / O2 / T4** signal bar at the top of the home screen. Users should never wonder whether the headband is working — green confirmation arrives before their breathing even slows.",
-								],
-								blocks: [
-									{
-										kind: "line_chart",
-										heading: "Session completion vs. time to stable EEG contact",
-										subtitle:
-											"Prototype cohort (n = 42 evening sessions) · % completing full 15-minute meditation",
-										xLabels: ["10s", "20s", "30s", "45s", "60s", "90s"],
-										series: [
-											{ name: "Completion rate (%)", color: "#7c6fd6", values: [92, 89, 76, 61, 48, 31] },
-										],
-									},
-									{
-										kind: "quote",
-										text: "If a user has to debug hardware at 21:30, the meditation is already over.",
-										attribution: "Thetaband App Design Principle #1",
-									},
-								],
-							},
-							{
-								id: "external-lens",
-								kicker: "03 · EXTERNAL PERCEPTION",
-								heading: "How this reads to the outside world",
-								paragraphs: [
-									"Publishing our design philosophy forces honesty. Outside readers immediately spot wellness hype or vague neuroscience claims — writing plainly about what dry 4-channel EEG can and cannot measure builds real trust before Batch 1 ships.",
-								],
-								blocks: [
-									{
-										kind: "callout",
-										tone: "public_lens",
-										heading: "Public narrative check",
-										body: "Framing Thetaband as calm Danish industrial craft + honest biofeedback differentiates us cleanly from US consumer neuro-gadgets. Avoid clinical sleep claims; emphasize consistency, comfort, and felt quiet.",
-										bullets: [
-											"Lead with the 44 g washable knit and 20-second setup rather than raw brainwave jargon.",
-											"Publish the exact BrainBit OEM partnership openly as a pragmatic engineering choice.",
-										],
-									},
-								],
-							},
-						],
-					},
-					null,
-					2,
-				),
-				[`${root}/02-vendor-selection-brainbit.report.json`]: JSON.stringify(
-					{
-						slug: "vendor-selection-brainbit",
-						category: "Vendor Analysis",
-						headline: "Why BrainBit OEM for Batch 1",
-						subtitle:
-							"Comparing three EEG hardware paths for our first 500 headbands across unit economics, CE certification risk, and months to customer hands.",
-						author: "Co-Founder & Produkt",
-						date: "November 2026",
-						readingTime: "5 min read",
-						publicUrl: "thetaband.dk/journal/batch-1-hardware",
-						keyMetrics: [
-							{ label: "Anbefalet platform", value: "BrainBit OEM", delta: "92 / 100 readiness" },
-							{ label: "Landed COGS (500 stk.)", value: "410 kr.", delta: "70,0% dækningsgrad" },
-							{ label: "Tid til Batch 1", value: "6–8 uger", delta: "CE/RoHS pre-certified" },
-							{ label: "Custom PCB break-even", value: "~3.500 stk.", delta: "Gen 2 beslutningspunkt" },
-						],
-						sections: [
-							{
-								id: "constraint",
-								kicker: "01 · THESIS",
-								heading: "Shipping Batch 1 before over-engineering silicon",
-								paragraphs: [
-									"For a 500-unit first batch priced at **1.995 kr. inkl. moms**, our biggest existential risk is not saving 95 kr. on a PCB — it is burning 9 months and 380.000 kr. in NRE and CE/EMC lab re-testing before a single Danish customer sleeps better.",
-									"We scored all three hardware architectures against four weighted Batch 1 criteria: **CE/RoHS readiness (35%)**, **lead time to 500 units (30%)**, **dry-electrode signal reliability (20%)**, and **Batch 1 unit cost (15%)**.",
-								],
-								blocks: [
-									{
-										kind: "bar_chart",
-										heading: "Weighted Batch 1 Readiness Score (0–100)",
-										subtitle: "Higher is faster, lower-risk path to 500 certified units",
-										max: 100,
-										items: [
-											{
-												label: "BrainBit OEM 4-ch module",
-												value: 92,
-												display: "92 / 100",
-												note: "Pre-certified CE/RoHS · 6–8 uger · 267 kr.",
-												highlight: true,
-											},
-											{
-												label: "OpenBCI Cyton OEM",
-												value: 64,
-												display: "64 / 100",
-												note: "Bulky form factor · higher BOM · 10–12 uger",
-											},
-											{
-												label: "Custom EEG PCB + dry sensor",
-												value: 41,
-												display: "41 / 100",
-												note: "380k kr. NRE · 7–10 mdr. CE/EMC-risiko",
-											},
-										],
-									},
-								],
-							},
-							{
-								id: "economics",
-								kicker: "02 · COMPARISON",
-								heading: "Unit cost, tooling, and certification trade-offs",
-								paragraphs: [
-									"Combining **BrainBit LLC** (electronics + dry gold electrodes) with **Nordic Knit ApS** in Ikast gives us Danish textile craft wrapped around proven EEG sensing, while preserving a **1.118 kr.** contribution margin per headband.",
-								],
-								blocks: [
-									{
-										kind: "table",
-										heading: "Hardware architecture comparison (Batch 1 · 500 units)",
-										caption: "All prices in DKK excluding VAT; landed estimates include freight and duty.",
-										columns: [
-											"Platform",
-											"Module cost",
-											"Upfront NRE",
-											"CE / RoHS",
-											"Lead time",
-											"Total weight",
-										],
-										highlightRow: 0,
-										rows: [
-											[
-												"BrainBit OEM (Recommended)",
-												"267 kr.",
-												"18.000 kr.",
-												"Pre-certified",
-												"6–8 uger",
-												"44–48 g",
-											],
-											["OpenBCI OEM", "485 kr.", "45.000 kr.", "Partial", "10–12 uger", "78 g"],
-											[
-												"Custom EEG PCB (Gen 2)",
-												"135 kr.",
-												"380.000 kr.",
-												"Full lab (6 mdr.)",
-												"28–36 uger",
-												"39 g",
-											],
-										],
-									},
-								],
-							},
-							{
-								id: "crossover",
-								kicker: "03 · SCALE CURVE",
-								heading: "When custom silicon actually pays back",
-								paragraphs: [
-									"Amortizing 380.000 kr. in engineering and certification across volume shows a clean strategic boundary: **BrainBit OEM wins decisively through ~3.000 units**. Once we cross ~3.500 cumulative headbands with validated retention data from the app, Gen 2 custom hardware lowers landed unit cost by ~130 kr. without betting the company early.",
-								],
-								blocks: [
-									{
-										kind: "line_chart",
-										heading: "Effective electronics cost per unit (incl. amortized NRE, DKK)",
-										subtitle: "BrainBit OEM stays cheaper until ~3.500 cumulative units",
-										xLabels: ["500", "1.000", "2.000", "3.500", "5.000"],
-										series: [
-											{ name: "BrainBit OEM", color: "#2d6a57", values: [303, 285, 276, 272, 269] },
-											{ name: "Custom EEG PCB", color: "#c65d3b", values: [895, 515, 325, 244, 211] },
-										],
-									},
-									{
-										kind: "callout",
-										tone: "decision",
-										heading: "Founder alignment & next actions",
-										body: "Lock BrainBit OEM for Batch 1 (500 units) while keeping our BLE signal abstraction decoupled in the Phone App so Gen 2 hardware swaps cleanly later.",
-										bullets: [
-											"Confirm 500-unit reservation & 6-week delivery slot with BrainBit LLC this week.",
-											"Complete 14-day wash & electrode durability test on Nordic Knit ApS sample.",
-										],
-									},
-								],
-							},
-						],
-					},
-					null,
-					2,
-				),
+				[`${root}/01-designing-thetaband-app.report.json`]: thetabandAppPhilosophyReport(),
+				[`${root}/02-vendor-selection-brainbit.report.json`]: thetabandVendorAnalysisReport(),
 			};
 		}
 		return {
@@ -477,6 +529,7 @@ export function starterStudioFiles(
 					2,
 				),
 				[`${root}/brief.md`]: `# Thetaband Pandebånd\n\n${description?.trim() || "Blødt EEG-pandebånd til daglig meditation, bygget omkring **BrainBit**-elektronik for hurtig vej til første produktionsbatch uden at gå på kompromis med kontakt og komfort."}\n\n- **Pris:** 1.995 kr. inkl. moms og standardfragt i Danmark\n- **Landed COGS (Batch 1, 500 stk.):** 410 kr. pr. enhed\n- **Komfortmål:** Under 45 g, vaskbart ydertøj, stabil kontakt på 20 sek.\n`,
+				[`${root}/vendor-selection-brainbit.report.json`]: thetabandVendorAnalysisReport(),
 			};
 		}
 		return {
@@ -1615,6 +1668,7 @@ export interface StarterSurfaceBundle {
 		readonly folderRoot?: string;
 		readonly brief: string;
 		readonly liveUrl?: string;
+		readonly attachedReports?: Readonly<Record<string, string>>;
 		readonly exploration?: {
 			readonly heading: string;
 			readonly variants: readonly {
@@ -1652,6 +1706,9 @@ export function starterOrchestrationPlan(companyName: string): StarterSurfaceBun
 					icon: "globe",
 					liveUrl: "https://thetaband.dk",
 					brief: "Følg din meditationspraksis med et let EEG-pandebånd og guidet lydfeedback. 1.995 kr. inkl. moms og standardfragt i Danmark.",
+					attachedReports: {
+						"website/launch-positioning.report.json": thetabandWebsitePositioningReport(),
+					},
 					exploration: {
 						heading: "Forsidens udtryk",
 						variants: [
@@ -1700,6 +1757,9 @@ export function starterOrchestrationPlan(companyName: string): StarterSurfaceBun
 					archetype: "live_build",
 					icon: "phone",
 					brief: "Thetaband iOS & Android-app: BrainBit-parring, live 4-kanals kontakt-tjek, aftenmeditationer og ugentlig ro-kurve.",
+					attachedReports: {
+						"phone-app/designing-thetaband-app.report.json": thetabandAppPhilosophyReport(),
+					},
 					session: {
 						heading: "BrainBit-parring & 4-trins guide",
 						prompt: "Vis live 4-kanals BrainBit kontaktprocent og 4-trins parringsguide på startskærmen.",
@@ -1760,6 +1820,22 @@ export function starterOrchestrationPlan(companyName: string): StarterSurfaceBun
 											},
 										},
 									},
+									{
+										op: "merge_json",
+										path: "product/vendor-selection-brainbit.report.json",
+										patch: {
+											keyMetrics: [
+												{ label: "Anbefalet platform", value: "BrainBit OEM", delta: "94 / 100 readiness" },
+												{ label: "Landed COGS (500 stk.)", value: "398 kr.", delta: "71,2% dækningsgrad" },
+												{ label: "Tid til Batch 1", value: "6 uger", delta: "CE/RoHS pre-certified" },
+												{
+													label: "Custom PCB break-even",
+													value: "~3.800 stk.",
+													delta: "Gen 2 beslutningspunkt",
+												},
+											],
+										},
+									},
 								],
 							},
 							{
@@ -1803,66 +1879,6 @@ export function starterOrchestrationPlan(companyName: string): StarterSurfaceBun
 								summary: "Opdeler 1.995 kr. i moms, 410 kr. COGS, 68 kr. fragt og 1.118 kr. dækningsbidrag.",
 								kind: "git_range",
 								paths: ["src/views/UnitEconomics.tsx"],
-							},
-						],
-					},
-				},
-				{
-					slug: "reports",
-					name: "Journal & Reports",
-					kind: "report",
-					archetype: "studio",
-					icon: "book",
-					folderRoot: "reports",
-					liveUrl: "https://thetaband.dk/journal",
-					brief: "Designfilosofi, leverandøranalyser og strategiske essays — skrevet så både stifter, agenter og omverdenen kan læse og vurdere retningen.",
-					session: {
-						heading: "Skærp ekstern vinkel & Gen 2-overgang",
-						prompt:
-							"Opdatér BrainBit-analysen med den forhandlede 398 kr. COGS og stram undertitlen i designfilosofien, så den rammer skarpere som ekstern artikel.",
-						reply: "Har opdateret både designfilosofien og BrainBit-analysen i reports/. Skift mellem Internal brief og Public post, eller sammenlign Base og Preview i toppen.",
-						changes: [
-							{
-								heading: "Skærp public-vinkel på Designing the Thetaband App",
-								summary:
-									"Strammer undertitlen i reports/01-designing-thetaband-app.report.json, så artiklen står tydeligere over for eksterne læsere.",
-								kind: "folder_patch",
-								paths: ["reports/01-designing-thetaband-app.report.json"],
-								studioPatch: [
-									{
-										op: "merge_json",
-										path: "reports/01-designing-thetaband-app.report.json",
-										patch: {
-											subtitle:
-												"Why we stripped away streaks, popups, and brainwave clutter — and built an evening meditation ritual around a 20-second EEG contact check.",
-										},
-									},
-								],
-							},
-							{
-								heading: "Opdatér BrainBit-analysen til 398 kr. forhandlet COGS",
-								summary:
-									"Indarbejder ny volumenrabat i nøgletal og leverandøranalysen i reports/02-vendor-selection-brainbit.report.json.",
-								kind: "folder_patch",
-								paths: ["reports/02-vendor-selection-brainbit.report.json"],
-								studioPatch: [
-									{
-										op: "merge_json",
-										path: "reports/02-vendor-selection-brainbit.report.json",
-										patch: {
-											keyMetrics: [
-												{ label: "Anbefalet platform", value: "BrainBit OEM", delta: "94 / 100 readiness" },
-												{ label: "Landed COGS (500 stk.)", value: "398 kr.", delta: "71,2% dækningsgrad" },
-												{ label: "Tid til Batch 1", value: "6 uger", delta: "CE/RoHS pre-certified" },
-												{
-													label: "Custom PCB break-even",
-													value: "~3.800 stk.",
-													delta: "Gen 2 beslutningspunkt",
-												},
-											],
-										},
-									},
-								],
 							},
 						],
 					},

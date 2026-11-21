@@ -7,6 +7,7 @@ import { markdown } from "../../ui/markdown.ts";
 import { t } from "../../ui/preferences.ts";
 import { formatConflictPaths, isOpenChange, productBuildSurfaces, type SurfacesStore } from "../surfaces-store.ts";
 import { surfaceEmblem } from "./surface-rail.ts";
+import { SurfaceReportView } from "./surface-report-view.ts";
 import { type Studio3DConfig, Studio3DViewer } from "./surface-studio-3d.ts";
 
 export interface SurfaceStudioOptions {
@@ -75,7 +76,7 @@ interface StudioDoc {
 	readonly changed: boolean;
 }
 
-type StudioTab = "overview" | "specs" | "vendors" | "files";
+type StudioTab = "overview" | "specs" | "vendors" | "analysis" | "files";
 
 const COLOR_VALUE = /^(?:#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})|(?:rgb|hsl)a?\([^)]+\)|oklch\([^)]+\))$/i;
 const COLOR_GROUPS = new Set(["colors", "color", "palette", "swatches", "colorways"]);
@@ -301,6 +302,7 @@ export class SurfaceStudioView {
 	#loading = false;
 	#lastConflict: SurfacePreviewConflict | null = null;
 	#viewer3d: Studio3DViewer | undefined;
+	#reportView: SurfaceReportView | undefined;
 	#tab: StudioTab = "overview";
 	#shown = "";
 
@@ -314,6 +316,7 @@ export class SurfaceStudioView {
 	}
 
 	dispose(): void {
+		this.#reportView?.dispose();
 		this.#lifetime.abort();
 	}
 
@@ -394,6 +397,7 @@ export class SurfaceStudioView {
 		const specs: SpecSection[] = [];
 		const vendors: VendorCard[] = [];
 		const docs: StudioDoc[] = [];
+		const reportPaths: string[] = [];
 		let rawModel:
 			| { readonly value: unknown; readonly base: Record<string, unknown> | undefined; readonly key: string }
 			| undefined;
@@ -402,6 +406,10 @@ export class SurfaceStudioView {
 			const content = files[path] ?? "";
 			const baseContent = baseFiles[path];
 			const changed = baseContent !== content;
+			if (/\.report\.json$/i.test(path)) {
+				reportPaths.push(path);
+				continue;
+			}
 			if (path.toLowerCase().endsWith(".json")) {
 				const parsed = parseJsonObject(content);
 				if (parsed) {
@@ -622,7 +630,7 @@ export class SurfaceStudioView {
 		const primarySpec = specs.find((spec) => !isVendorSpec(spec));
 		const vendorSpecs = specs.filter(isVendorSpec);
 		const detailSpecs = specs.filter((spec) => !isVendorSpec(spec));
-		const tabbed = Boolean(modelConfig || vendors.length);
+		const tabbed = Boolean(modelConfig || vendors.length || reportPaths.length);
 		const availableTabs: { readonly id: StudioTab; readonly label: string }[] = [];
 		if (tabbed) {
 			availableTabs.push({ id: "overview", label: t("Overview") });
@@ -630,6 +638,7 @@ export class SurfaceStudioView {
 				availableTabs.push({ id: "specs", label: t("Specs & BOM") });
 			if (vendors.length || vendorSpecs.length)
 				availableTabs.push({ id: "vendors", label: t("Production & Vendors") });
+			if (reportPaths.length > 0) availableTabs.push({ id: "analysis", label: t("Analysis") });
 			if (docs.length) availableTabs.push({ id: "files", label: t("Brief & Files") });
 			if (!availableTabs.some((tab) => tab.id === this.#tab)) this.#tab = availableTabs[0]!.id;
 			children.push(
@@ -708,6 +717,7 @@ export class SurfaceStudioView {
 		const showOverview = !tabbed || this.#tab === "overview";
 		const showSpecs = !tabbed || this.#tab === "specs";
 		const showVendors = !tabbed || this.#tab === "vendors";
+		const showAnalysis = tabbed && this.#tab === "analysis";
 		const showFiles = !tabbed || this.#tab === "files";
 
 		if (modelConfig && showOverview) {
@@ -852,10 +862,7 @@ export class SurfaceStudioView {
 					),
 				);
 			}
-			const reportSurface = state.surfaces.find(
-				(item) => item.status === "active" && store.lookOf(item).kind === "report",
-			);
-			if (reportSurface) {
+			if (reportPaths.length > 0) {
 				sections.push(
 					h(
 						"div",
@@ -867,8 +874,8 @@ export class SurfaceStudioView {
 							h(
 								"p",
 								null,
-								t("Read the full rationale, score comparison, and cost curves in {surface}.", {
-									surface: reportSurface.title,
+								t("Read the full rationale, score comparison, and cost curves right here in {surface}.", {
+									surface: surface.title,
 								}),
 							),
 						),
@@ -877,14 +884,29 @@ export class SurfaceStudioView {
 							{
 								type: "button",
 								class: "btn btn-small",
-								"data-act": "studio-open-surface",
-								"data-slug": reportSurface.slug,
+								"data-act": "studio-tab",
+								"data-tab": "analysis",
 							},
-							t("Open report"),
+							t("Read analysis"),
 						),
 					),
 				);
 			}
+		}
+
+		if (showAnalysis && reportPaths.length > 0) {
+			if (!this.#reportView) {
+				this.#reportView = new SurfaceReportView({
+					store,
+					surface,
+					signal: this.#lifetime.signal,
+					baseFiles: this.#options.baseFiles,
+					patches: this.#options.patches,
+					embedded: true,
+				});
+			}
+			this.#reportView.update();
+			sections.push(this.#reportView.el);
 		}
 
 		if (showSpecs) {

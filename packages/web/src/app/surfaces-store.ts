@@ -58,7 +58,7 @@ export type SurfacesClient = Pick<
 >;
 
 export type SurfacesSource = "loading" | "cloud" | "local";
-export type SurfacePreviewMode = "live" | "preview" | "compare";
+export type SurfacePreviewMode = "live" | "preview" | "compare" | "report";
 export type SurfaceDevice = "desktop" | "mobile";
 export type ApprovalOutcome = "open" | "hold" | "history";
 
@@ -122,6 +122,7 @@ export interface SurfacesState {
 	readonly highlight?: { readonly surfaceId: string; readonly sessionId: string };
 	readonly mode: SurfacePreviewMode;
 	readonly compareTargetId?: string;
+	readonly compareFocusSessionId?: string;
 	readonly compareExcludedSessions: Readonly<Record<string, true>>;
 	readonly device: SurfaceDevice;
 	readonly hiddenChanges: Readonly<Record<string, true>>;
@@ -351,6 +352,12 @@ export function productBuildSurfaces(state: Pick<SurfacesState, "surfaces">, exc
 	return state.surfaces.filter(
 		(surface) => surface.status === "active" && surface.archetype === "live_build" && surface.id !== excludeId,
 	);
+}
+
+export function surfaceHasReports(state: Pick<SurfacesState, "localStudioBase">, surfaceId: string): boolean {
+	const files = state.localStudioBase[surfaceId];
+	if (!files) return false;
+	return Object.keys(files).some((path) => /\.report\.json$/i.test(path));
 }
 
 function replaceSession(
@@ -630,7 +637,12 @@ export class SurfacesStore {
 			const look: SurfaceLook = { kind: spec.kind };
 			nextLooks[surface.id] = look;
 			if (spec.archetype === "studio") {
-				nextStudioBase[surface.id] = starterStudioFiles(surface, this.companyName, spec.kind, spec.brief);
+				nextStudioBase[surface.id] = {
+					...starterStudioFiles(surface, this.companyName, spec.kind, spec.brief),
+					...(spec.attachedReports ?? {}),
+				};
+			} else if (spec.attachedReports && Object.keys(spec.attachedReports).length > 0) {
+				nextStudioBase[surface.id] = { ...spec.attachedReports };
 			}
 			const sessions: SurfaceSession[] = [];
 			const explorations: SurfaceExplorationSet[] = [];
@@ -1043,7 +1055,7 @@ export class SurfacesStore {
 	}
 
 	setMode(mode: SurfacePreviewMode): void {
-		this.store.set({ mode });
+		this.store.set({ mode, ...(mode !== "compare" ? { compareFocusSessionId: undefined } : {}) });
 	}
 
 	navigateSurface(slug: string): void {
@@ -1051,7 +1063,11 @@ export class SurfacesStore {
 	}
 
 	compareExploration(explorationId: string): void {
-		this.store.set({ mode: "compare", compareTargetId: explorationId });
+		this.store.set({ mode: "compare", compareTargetId: explorationId, compareFocusSessionId: undefined });
+	}
+
+	compareSession(sessionId: string): void {
+		this.store.set({ mode: "compare", compareTargetId: "sessions", compareFocusSessionId: sessionId });
 	}
 
 	setCompareTarget(targetId: string): void {

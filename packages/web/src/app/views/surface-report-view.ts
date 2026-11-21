@@ -14,6 +14,7 @@ export interface SurfaceReportOptions {
 	readonly baseFiles?: Readonly<Record<string, string>>;
 	readonly patches?: Readonly<Record<string, readonly StudioPatchOp[]>>;
 	readonly loadFiles?: (surface: SurfaceSummary, signal: AbortSignal) => Promise<Readonly<Record<string, string>>>;
+	readonly embedded?: boolean;
 }
 
 interface ReportMetric {
@@ -527,6 +528,7 @@ export class SurfaceReportView {
 
 	constructor(options: SurfaceReportOptions) {
 		this.#options = options;
+		if (options.embedded) this.el.classList.add("is-embedded");
 		this.#baseFiles = options.baseFiles ? { ...options.baseFiles } : {};
 		options.signal.addEventListener("abort", () => this.dispose(), { once: true });
 		this.el.addEventListener("click", (event) => this.#click(event), { signal: this.#lifetime.signal });
@@ -650,29 +652,31 @@ export class SurfaceReportView {
 		const chrome = h(
 			"div",
 			{ class: "report-chrome" },
-			h(
-				"div",
-				{ class: "report-switcher", role: "tablist", "aria-label": t("Articles & reports") },
-				reports.map((report) =>
-					h(
-						"button",
-						{
-							type: "button",
-							role: "tab",
-							class: `report-switch-pill${report.slug === activeReport?.slug ? " is-on" : ""}`,
-							"aria-selected": String(report.slug === activeReport?.slug),
-							"data-act": "report-select",
-							"data-slug": report.slug,
-						},
-						report.changed ? h("span", { class: "report-changed-dot", "aria-hidden": "true" }) : null,
-						report.headline,
-					),
-				),
-			),
+			reports.length > 1
+				? h(
+						"div",
+						{ class: "report-switcher", role: "tablist", "aria-label": t("Articles & reports") },
+						reports.map((report) =>
+							h(
+								"button",
+								{
+									type: "button",
+									role: "tab",
+									class: `report-switch-pill${report.slug === activeReport?.slug ? " is-on" : ""}`,
+									"aria-selected": String(report.slug === activeReport?.slug),
+									"data-act": "report-select",
+									"data-slug": report.slug,
+								},
+								report.changed ? h("span", { class: "report-changed-dot", "aria-hidden": "true" }) : null,
+								report.headline,
+							),
+						),
+					)
+				: h("span", { class: "report-chrome-spacer" }),
 			h(
 				"div",
 				{ class: "report-chrome-tools" },
-				this.#lens === "internal" ? h("span", { class: badgeClass }, badgeText) : null,
+				this.#lens === "internal" && !this.#options.embedded ? h("span", { class: badgeClass }, badgeText) : null,
 				h(
 					"div",
 					{ class: "surface-seg report-lens-seg", role: "group", "aria-label": t("Reading perspective") },

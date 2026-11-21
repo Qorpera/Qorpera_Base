@@ -434,12 +434,62 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 	font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums;
 }
 
-.surface-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; }
-.surface-viewport { position: absolute; inset: 0; display: flex; }
+/* Animated agents living right in the interface header to navigate and take attention. */
+.surface-bar-crew {
+	display: inline-flex; align-items: center; gap: 6px; padding-left: 8px;
+	border-left: 1px solid var(--border);
+}
+.surface-bar-agent, .surface-bar-explore, .surface-bar-agent-more {
+	position: relative; display: inline-flex; align-items: center; gap: 5px; height: 32px; padding: 0 7px 0 4px;
+	border: 1px solid color-mix(in srgb, var(--text) 10%, transparent); border-radius: 999px;
+	background: color-mix(in srgb, var(--text) 2.5%, var(--bg)); color: var(--text); font: inherit;
+	font-size: 11.5px; font-weight: 650; cursor: pointer;
+	transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease, transform var(--motion-fast) ease;
+}
+.surface-bar-agent:hover, .surface-bar-explore:hover, .surface-bar-agent-more:hover {
+	background: color-mix(in srgb, var(--text) 6%, var(--bg)); border-color: color-mix(in srgb, var(--text) 22%, transparent);
+	transform: translateY(-1px);
+}
+.surface-bar-agent.is-active, .surface-bar-explore.is-active {
+	border-color: var(--primary); background: color-mix(in srgb, var(--primary) 8%, var(--bg));
+	box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 26%, transparent);
+}
+.surface-bar-agent.is-attention {
+	border-color: color-mix(in srgb, var(--warning) 55%, transparent);
+	background: color-mix(in srgb, var(--warning) 10%, var(--bg));
+	animation: surface-agent-nudge 2.2s ease-in-out infinite;
+}
+.surface-bar-agent.is-ready {
+	border-color: color-mix(in srgb, var(--accent) 36%, transparent);
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.surface-bar-agent .surface-crew { --crew-size: 26px; width: 26px; height: 26px; }
+.surface-bar-agent-count {
+	min-width: 17px; height: 17px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: #fff;
+	font-size: 10.5px; font-weight: 700; line-height: 17px; text-align: center; font-variant-numeric: tabular-nums;
+}
+.surface-bar-agent-badge {
+	padding: 2px 6px; border-radius: 999px; font-size: 10.5px; font-weight: 700; white-space: nowrap;
+}
+.surface-bar-agent-badge.is-attention { background: var(--warning); color: #1b1507; }
+.surface-bar-agent-badge.is-danger { background: var(--danger); color: #fff; }
+.surface-bar-agent-badge.is-working {
+	background: color-mix(in srgb, var(--sidebar-selection) 14%, transparent); color: var(--sidebar-selection);
+}
+.surface-bar-explore { padding: 0 8px; gap: 6px; }
+.surface-bar-agent-more { padding: 0 9px; color: var(--text-muted); }
+@keyframes surface-agent-nudge {
+	0%, 100% { transform: translateY(0); box-shadow: 0 0 0 0 color-mix(in srgb, var(--warning) 30%, transparent); }
+	50% { transform: translateY(-1.5px); box-shadow: 0 0 0 4px color-mix(in srgb, var(--warning) 0%, transparent); }
+}
+
+.surface-stage { position: relative; flex: 1; min-height: 0; display: flex; overflow: hidden; }
+.surface-canvas { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.surface-viewport { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; }
 .surface-viewport[data-device="mobile"] { align-items: center; justify-content: center; padding: 8px 0 96px; background: color-mix(in srgb, var(--text) 3%, var(--bg)); }
 .surface-viewport[data-device="mobile"].is-compare-mobile { align-items: stretch; justify-content: stretch; padding: 0; }
-.surface-mount, .surface-frames { position: relative; flex: 1; min-width: 0; min-height: 0; overflow: auto; }
-.surface-mount[hidden], .surface-frames[hidden] { display: none; }
+.surface-mount, .surface-frames, .surface-report-slot { position: relative; flex: 1; min-width: 0; min-height: 0; overflow: auto; }
+.surface-mount[hidden], .surface-frames[hidden], .surface-report-slot[hidden] { display: none; }
 .surface-viewport[data-device="mobile"]:not(.is-compare-mobile) :is(.surface-mount, .surface-frames) {
 	flex: none; width: 390px; height: min(820px, 100%); border-radius: 44px; background: var(--bg);
 	box-shadow: 0 0 0 9px #0f0f0f, 0 30px 70px -20px rgb(18 18 17 / 45%);
@@ -480,11 +530,61 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 	display: flex; flex-direction: column; gap: 10px; padding: 10px 14px 96px;
 	background: color-mix(in srgb, var(--text) 3%, var(--bg)); overflow: hidden;
 }
+.surface-frames.is-compare[hidden] { display: none; }
 .surface-compare-bar {
-	flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;
-	padding: 2px 2px 6px; border-bottom: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
+	flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px;
+	padding: 2px 2px 8px; border-bottom: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
 }
 .surface-compare-bar[hidden] { display: none; }
+.surface-compare-bar-group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.surface-compare-pill {
+	display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 11px;
+	border: 1px solid color-mix(in srgb, var(--text) 12%, transparent); border-radius: 999px;
+	background: var(--bg); color: var(--text-muted); font: inherit; font-size: 12px; font-weight: 620; cursor: pointer;
+	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease, border-color var(--motion-fast) ease;
+}
+.surface-compare-pill:hover { color: var(--text); border-color: color-mix(in srgb, var(--text) 24%, transparent); }
+.surface-compare-pill.is-on {
+	border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+	background: color-mix(in srgb, var(--accent) 10%, var(--bg)); color: var(--accent);
+}
+.surface-compare-layers {
+	flex: none; display: grid; gap: 10px; max-height: 220px; overflow-y: auto; padding: 12px 14px;
+	border: 1px solid var(--border); border-radius: 14px; background: var(--bg);
+	box-shadow: 0 6px 20px -12px rgb(18 18 17 / 22%);
+}
+.surface-compare-layers[hidden] { display: none; }
+.surface-layer-groups { display: grid; gap: 10px; }
+.surface-layer-group { display: grid; gap: 6px; }
+.surface-layer-heading { font-size: 11.5px; font-weight: 680; color: var(--text-soft); text-transform: uppercase; letter-spacing: 0.04em; }
+.surface-layer-pills, .surface-layer-checks { display: flex; flex-wrap: wrap; gap: 6px; }
+.surface-layer-chip {
+	display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px;
+	border: 1px solid color-mix(in srgb, var(--text) 14%, transparent); border-radius: 999px;
+	background: color-mix(in srgb, var(--text) 2%, var(--bg)); color: var(--text-muted); font: inherit;
+	font-size: 12px; font-weight: 580; cursor: pointer;
+}
+.surface-layer-chip.is-on {
+	border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+	background: color-mix(in srgb, var(--accent) 11%, var(--bg)); color: var(--text); font-weight: 630;
+}
+.surface-layer-chip .icon { width: 11px; height: 11px; color: var(--accent); stroke-width: 2.6; }
+.surface-layer-foot {
+	display: flex; align-items: center; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border);
+}
+.surface-compare-slot-pick { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0; }
+.surface-compare-badge {
+	display: inline-grid; place-items: center; width: 20px; height: 20px; flex: none; border-radius: 6px;
+	font-size: 11px; font-weight: 750; background: color-mix(in srgb, var(--text) 9%, transparent); color: var(--text-muted);
+}
+.surface-compare-badge.is-b { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+.surface-compare-select {
+	flex: 1; min-width: 0; max-width: 280px; height: 28px; padding: 0 24px 0 9px;
+	border: 1px solid color-mix(in srgb, var(--text) 12%, transparent); border-radius: 8px;
+	background: var(--bg); color: var(--text); font: inherit; font-size: 12.5px; font-weight: 620;
+	overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+}
+.surface-compare-icon-btn { width: 26px; height: 26px; font-size: 12px; font-weight: 700; color: var(--text-muted); }
 .surface-compare-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .surface-compare-tab {
 	height: 28px; padding: 0 12px; border: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
@@ -494,18 +594,6 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 }
 .surface-compare-tab:hover { color: var(--text); border-color: color-mix(in srgb, var(--text) 20%, transparent); }
 .surface-compare-tab.is-on { background: var(--primary); border-color: transparent; color: var(--on-primary); }
-.surface-compare-overlays { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.surface-compare-overlay-label { font-size: 11.5px; font-weight: 600; color: var(--text-muted); }
-.surface-compare-overlay {
-	display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px;
-	border: 1px solid color-mix(in srgb, var(--text) 14%, transparent); border-radius: 999px;
-	background: var(--bg); color: var(--text-muted); font: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer;
-}
-.surface-compare-overlay.is-on {
-	border-color: color-mix(in srgb, var(--accent) 36%, transparent);
-	background: color-mix(in srgb, var(--accent) 10%, var(--bg)); color: var(--text);
-}
-.surface-compare-overlay .icon { width: 11px; height: 11px; color: var(--accent); stroke-width: 2.6; }
 .surface-compare-columns {
 	flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 14px;
 }
@@ -576,13 +664,11 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .surface-banner.is-conflict { border-color: color-mix(in srgb, var(--danger) 28%, var(--border)); background: color-mix(in srgb, var(--danger) 5%, var(--bg)); }
 .surface-banner.is-conflict > .surface-state { flex: none; }
 
-/* WHY: The composer is conversation.css's .thread-foot glass, so a session starts from the same object a chat does. */
+/* WHY: The composer lives inside .surface-canvas so it stays centered automatically when the side panel pushes the interface. */
 .surface-composer {
 	position: absolute; z-index: 7; left: 50%; bottom: 18px; width: min(640px, calc(100% - 40px)); transform: translateX(-50%);
-	transition: left var(--motion-slow) var(--ease-out), width var(--motion-slow) var(--ease-out);
 }
 .surface-composer[hidden] { display: none; }
-.surface-page.has-drawer .surface-composer { left: calc((100% - 404px) / 2); width: min(560px, calc(100% - 444px)); }
 .surface-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-bottom: 8px; }
 .surface-chips:empty { display: none; }
 .surface-chip {
@@ -657,15 +743,17 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .surface-send:disabled { cursor: default; }
 .surface-send .icon { width: 16px; height: 16px; stroke-width: 2.2; }
 
-/* ---- the session drawer -------------------------------------------------------- */
+/* ---- the pushed session side panel -------------------------------------------- */
 .surface-drawer {
-	position: absolute; z-index: 9; top: 6px; right: 12px; bottom: 12px; display: flex; flex-direction: column; width: 380px;
-	border: 1px solid var(--surface-glass-edge); border-radius: 20px; background: var(--surface-glass-strong);
-	box-shadow: 0 1px 2px rgb(18 18 17 / 6%), 0 18px 50px rgb(18 18 17 / 16%); backdrop-filter: blur(24px) saturate(1.8);
-	transform: translateX(calc(100% + 24px)); opacity: 0; pointer-events: none;
-	transition: transform var(--motion-slow) var(--ease-out), opacity var(--motion-base) ease;
+	position: relative; z-index: 6; flex: none; width: 0; min-width: 0; height: 100%;
+	border-left: 0 solid var(--border); background: var(--bg); opacity: 0; overflow: hidden; pointer-events: none;
+	transition: width var(--motion-slow) var(--ease-out), opacity var(--motion-base) ease;
 }
-.surface-drawer.is-open { transform: none; opacity: 1; pointer-events: auto; }
+.surface-drawer.is-open { width: 316px; border-left-width: 1px; opacity: 1; pointer-events: auto; }
+.surface-drawer-inner { display: flex; flex-direction: column; width: 316px; height: 100%; min-height: 0; }
+@media (max-width: 780px) {
+	.surface-drawer { position: absolute; top: 0; right: 0; bottom: 0; box-shadow: -12px 0 36px rgb(18 18 17 / 18%); }
+}
 .surface-drawer-head { display: flex; align-items: center; gap: 12px; padding: 14px 12px 12px 16px; }
 .surface-drawer-head .surface-state { margin-top: 4px; }
 .surface-drawer-head .surface-crew { align-self: flex-start; }
@@ -1043,6 +1131,11 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 	min-height: 100%; padding: 0 24px 140px;
 	background: color-mix(in srgb, var(--bg) 96%, var(--text) 1%);
 }
+.surface-report.is-embedded { padding: 0 0 60px; background: transparent; }
+.surface-report.is-embedded .report-chrome {
+	position: static; padding-top: 0; background: transparent; backdrop-filter: none;
+}
+.surface-report.is-embedded .report-layout { padding-top: 22px; }
 .surface-report.is-public-lens { background: var(--bg); }
 .report-chrome {
 	position: sticky; top: 0; z-index: 4; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
@@ -1308,6 +1401,6 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .surface-schedule-select { width: 100%; height: 38px; padding: 0 10px; }
 
 @media (prefers-reduced-motion: reduce) {
-	.surface-state.is-running, .surface-ring, .surface-toast, .rail-surface-working { animation: none; }
-	.rail-surface:hover .surface-tile { transform: none; }
+	.surface-state.is-running, .surface-ring, .surface-toast, .rail-surface-working, .surface-bar-agent.is-attention { animation: none; }
+	.rail-surface:hover .surface-tile, .surface-bar-agent:hover, .surface-bar-explore:hover { transform: none; }
 }

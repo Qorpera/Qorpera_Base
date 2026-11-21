@@ -135,7 +135,7 @@ export class SurfaceSessionDrawer {
 
 	constructor(store: SurfacesStore, signal: AbortSignal) {
 		this.#store = store;
-		this.el.append(this.#head, this.#body, this.#form);
+		this.el.append(h("div", { class: "surface-drawer-inner" }, this.#head, this.#body, this.#form));
 		this.#form.addEventListener(
 			"submit",
 			(event) => {
@@ -398,6 +398,13 @@ export class SurfaceSessionDrawer {
 										t("Approve all {count}", { count: open }),
 									)
 								: null,
+						open > 0 && surface && surface.archetype !== "ops"
+							? h(
+									"button",
+									{ type: "button", class: "btn btn-small", "data-act": "compare-session" },
+									t("Compare"),
+								)
+							: null,
 						open > 0
 							? h("button", { type: "button", class: "btn btn-small", "data-act": "discard" }, t("Discard"))
 							: null,
@@ -443,6 +450,9 @@ export class SurfaceSessionDrawer {
 				if (ids.length) void store.reconcileChanges(drawer.surfaceId, ids);
 				return;
 			}
+			case "compare-session":
+				store.compareSession(drawer.sessionId);
+				return;
 			case "discard":
 				void store.discardSession(drawer.sessionId);
 				return;

@@ -388,7 +388,7 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		store.dispose();
 	});
 
-	it("orchestrates Website, Phone App, Product, and Financials for Thetaband with working local Compare 3", async () => {
+	it("orchestrates Website, Phone App, Product, and Financials with header agent crew, pushed panel, and All-3 Compare", async () => {
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
 			localInteractive: true,
@@ -398,8 +398,8 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		const productSlugs = store.state.surfaces
 			.filter((surface) => surface.group === "products")
 			.map((surface) => surface.slug);
-		expect(productSlugs).toEqual(["website", "phone-app", "product", "financials", "reports"]);
-		expect(activeTaskSessions(store.state)).toHaveLength(5);
+		expect(productSlugs).toEqual(["website", "phone-app", "product", "financials"]);
+		expect(activeTaskSessions(store.state)).toHaveLength(4);
 		expect(store.state.automations.length).toBeGreaterThanOrEqual(2);
 
 		const productSurface = store.state.surfaces.find((surface) => surface.slug === "product")!;
@@ -409,7 +409,19 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
 		document.body.append(view.el);
 		await flush();
-		store.setMode("compare");
+		view.update();
+
+		const headerAgent = view.el.querySelector<HTMLButtonElement>(".surface-bar-crew .surface-bar-agent")!;
+		expect(headerAgent.querySelector(".surface-crew .figure")).not.toBeNull();
+		expect(headerAgent.querySelector(".surface-bar-agent-count")?.textContent).toBe("2");
+		headerAgent.click();
+		view.update();
+		const stage = view.el.querySelector(".surface-stage")!;
+		expect(stage.children[0]?.classList.contains("surface-canvas")).toBe(true);
+		expect(stage.children[1]?.classList.contains("surface-drawer")).toBe(true);
+		expect(stage.children[1]?.classList.contains("is-open")).toBe(true);
+
+		view.el.querySelector<HTMLButtonElement>(".surface-bar-explore")!.click();
 		view.update();
 		const columns = [...view.el.querySelectorAll(".surface-compare-column")];
 		expect(columns).toHaveLength(3);
@@ -431,7 +443,7 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		store.dispose();
 	});
 
-	it("re-renders Preview cleanly after Compare, supports clicking into variants, and compares Base vs sessions", async () => {
+	it("provides scalable A vs B Compare with slot selectors, Swap, Layers mix tray, and clean Preview return", async () => {
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
 			localInteractive: true,
@@ -447,27 +459,30 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 
 		store.setMode("compare");
 		view.update();
-		const compareTabs = [...view.el.querySelectorAll<HTMLButtonElement>(".surface-compare-tab")];
-		expect(compareTabs.map((tab) => tab.textContent)).toEqual(["Forsidens udtryk (3)", "Base & sessions"]);
-		const overlay = view.el.querySelector<HTMLButtonElement>(".surface-compare-overlay")!;
-		expect(overlay.getAttribute("aria-pressed")).toBe("true");
-		overlay.click();
-		view.update();
-		expect(view.el.querySelector<HTMLButtonElement>(".surface-compare-overlay")?.getAttribute("aria-pressed")).toBe(
-			"false",
-		);
-
-		view.el.querySelectorAll<HTMLButtonElement>(".surface-compare-tab")[1]!.click();
-		view.update();
-		expect([...view.el.querySelectorAll(".surface-compare-column strong")].map((node) => node.textContent)).toEqual([
-			"Live baseline",
-			"Forudbestilling & levering",
-		]);
-
-		view.el.querySelectorAll<HTMLButtonElement>(".surface-compare-tab")[0]!.click();
-		view.update();
-		const openBtn = view.el.querySelectorAll<HTMLButtonElement>(".surface-compare-open")[1]!;
 		expect(view.el.querySelector(".surface-mount iframe.surface-local-frame")).toBeNull();
+		expect(view.el.querySelectorAll(".surface-compare-column")).toHaveLength(2);
+		const slotA = view.el.querySelector<HTMLSelectElement>('select[data-compare-slot="a"]')!;
+		const slotB = view.el.querySelector<HTMLSelectElement>('select[data-compare-slot="b"]')!;
+		expect(slotA.value).toBe("__live__");
+		expect(slotB.value).toBe("__preview__");
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="compare-layers-toggle"]')!.click();
+		const layerChips = [...view.el.querySelectorAll<HTMLButtonElement>('[data-act="compare-layer-change"]')];
+		expect(layerChips).toHaveLength(2);
+		expect(layerChips[0]!.getAttribute("aria-pressed")).toBe("true");
+		layerChips[0]!.click();
+		expect(
+			view.el
+				.querySelectorAll<HTMLButtonElement>('[data-act="compare-layer-change"]')[0]
+				?.getAttribute("aria-pressed"),
+		).toBe("false");
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="compare-swap"]')!.click();
+		expect(view.el.querySelector<HTMLSelectElement>('select[data-compare-slot="a"]')?.value).toBe("__preview__");
+		expect(view.el.querySelector<HTMLSelectElement>('select[data-compare-slot="b"]')?.value).toBe("__live__");
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="compare-grid-mode"][data-grid="all"]')!.click();
+		const openBtn = view.el.querySelectorAll<HTMLButtonElement>(".surface-compare-open")[1]!;
 		openBtn.click();
 		await flush();
 		view.update();
@@ -480,7 +495,7 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		store.dispose();
 	});
 
-	it("renders Phone App Compare as two side-by-side phones with a Single phone A/B flipper", async () => {
+	it("renders Phone App Compare as two side-by-side phones with a Single phone A/B flipper and folded Design Notes", async () => {
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
 			localInteractive: true,
@@ -504,21 +519,30 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		singleBtn.click();
 		expect(view.el.querySelector(".surface-frames")?.classList.contains("is-mobile-single")).toBe(true);
 		expect(view.el.querySelectorAll(".surface-compare-column")).toHaveLength(1);
-		const flipButtons = [...view.el.querySelectorAll<HTMLButtonElement>('[data-act="mobile-compare-pick"]')];
+		const flipButtons = [...view.el.querySelectorAll<HTMLButtonElement>('[data-act="mobile-compare-pane"]')];
 		expect(flipButtons).toHaveLength(2);
 		flipButtons[0]!.click();
-		expect(view.el.querySelector(".surface-compare-column strong")?.textContent).toBe("Live baseline");
+		expect(view.el.querySelector<HTMLSelectElement>('select[data-compare-slot="a"]')?.value).toBe("__live__");
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="mode"][data-mode="report"]')!.click();
+		view.update();
+		expect(view.el.querySelector<HTMLElement>(".surface-report-slot")?.hidden).toBe(false);
+		expect(view.el.querySelector(".report-headline")?.textContent).toBe(
+			"Designing the Thetaband App for Quiet Evenings",
+		);
+		expect(view.el.querySelector(".report-line-svg")).not.toBeNull();
+		expect(view.el.querySelector(".report-quote")).not.toBeNull();
+		expect(view.el.querySelector(".report-figure-panels")).not.toBeNull();
+		expect(view.el.querySelector<HTMLElement>(".surface-viewport")?.dataset.device).toBe("desktop");
 		view.dispose();
 		store.dispose();
 	});
 
-	it("organizes Product Studio into focused tabs without dumping everything on Overview and links to Reports", async () => {
-		const navigated: string[] = [];
+	it("organizes Product Studio with folded Vendor Analysis tab, charts, tables, Public post lens, and Compare diffs", async () => {
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
 			localInteractive: true,
 			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
-			onNavigateSurface: (slug) => navigated.push(slug),
 		});
 		await store.load();
 		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "product");
@@ -540,45 +564,13 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 			"Overview",
 			"Specs & BOM",
 			"Production & Vendors",
+			"Analysis",
 			"Brief & Files",
 		]);
 
 		tabs[2]!.click();
 		expect(view.el.querySelectorAll(".studio-vendor-card")).toHaveLength(4);
-		view.el.querySelector<HTMLButtonElement>('[data-act="studio-open-surface"]')!.click();
-		expect(navigated).toEqual(["reports"]);
-
-		store.setMode("compare");
-		view.update();
-		expect(view.el.querySelectorAll(".studio-compare-card").length).toBeGreaterThanOrEqual(2);
-		expect(view.el.textContent).toContain("48 g");
-		expect(view.el.textContent).toContain("44 g");
-		view.dispose();
-		store.dispose();
-	});
-
-	it("renders Editorial Reports & Analysis kit with charts, tables, quotes, Public post lens, and Compare diffs", async () => {
-		const store = storeWith(undefined, {
-			companyName: "Thetaband",
-			localInteractive: true,
-			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
-		});
-		await store.load();
-		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "reports");
-		document.body.append(view.el);
-		await flush();
-		view.update();
-
-		expect(view.el.querySelector(".report-headline")?.textContent).toBe(
-			"Designing the Thetaband App for Quiet Evenings",
-		);
-		expect(view.el.querySelector(".report-line-svg")).not.toBeNull();
-		expect(view.el.querySelector(".report-quote")).not.toBeNull();
-		expect(view.el.querySelector(".report-figure-panels")).not.toBeNull();
-
-		const pills = [...view.el.querySelectorAll<HTMLButtonElement>('[data-act="report-select"]')];
-		expect(pills).toHaveLength(2);
-		pills[1]!.click();
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="analysis"]')!.click();
 		expect(view.el.querySelector(".report-headline")?.textContent).toBe("Why BrainBit OEM for Batch 1");
 		expect(view.el.querySelectorAll(".report-bar-row")).toHaveLength(3);
 		expect(view.el.querySelector(".report-table")).not.toBeNull();
@@ -593,9 +585,9 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 
 		store.setMode("compare");
 		view.update();
-		expect(view.el.querySelectorAll(".studio-compare-card")).toHaveLength(2);
-		expect(view.el.textContent).toContain("398 kr.");
-		expect(view.el.textContent).toContain("410 kr.");
+		expect(view.el.querySelectorAll(".studio-compare-card").length).toBeGreaterThanOrEqual(2);
+		expect(view.el.textContent).toContain("48 g");
+		expect(view.el.textContent).toContain("44 g");
 		view.dispose();
 		store.dispose();
 	});
