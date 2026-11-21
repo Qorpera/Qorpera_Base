@@ -300,4 +300,21 @@ export const SURFACES: Record<string, string> = {
 	"External reader preview": "Forhåndsvisning som ekstern læser",
 	"In this report": "I denne rapport",
 	Subtitle: "Undertitel",
+	Confirm: "Bekræft",
+	"Review & publish": "Gennemgå & udgiv",
+	"Collapse bar": "Skjul bjælke",
+	"Expand bar": "Vis bjælke",
+	"Drag along top or click to expand": "Træk langs toppen eller klik for at folde ud",
+	"Patch notes": "Ændringslog",
+	Rollback: "Rul tilbage",
+	"1 change": "1 ændring",
+	"{count} changes": "{count} ændringer",
+	"1 approved change in Base is ready to publish.": "1 godkendt ændring i Base er klar til udgivelse.",
+	"{count} approved changes in Base are ready to publish.":
+		"{count} godkendte ændringer i Base er klar til udgivelse.",
+	"No unpublished changes in Base right now.": "Ingen uudgivne ændringer i Base lige nu.",
+	"Publish 1 change": "Udgiv 1 ændring",
+	"Publish {count} changes": "Udgiv {count} ændringer",
+	"Review everything approved into Base. Roll back any change before going live.":
+		"Gennemgå alt der er godkendt til Base. Rul enhver ændring tilbage, før du udgiver.",
 };

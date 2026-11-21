@@ -22,6 +22,7 @@ import {
 	sessionHeld,
 } from "../surfaces-store.ts";
 import { CrewFigures } from "./surface-crew.ts";
+import { openPublishPatchnotesSheet } from "./surface-publish-sheet.ts";
 import { isActionChange } from "./surface-rail.ts";
 
 const DRAWER_WIDTH_KEY = "qorpera.web.surface-drawer-width.v1";
@@ -30,6 +31,7 @@ const DRAWER_EXPANDED = 440;
 const DRAWER_MIN = 260;
 const DRAWER_MAX = 560;
 const DRAWER_MAX_SHARE = 0.56;
+const APPROVE_ARM_MS = 4_500;
 
 interface QuotedChangeRef {
 	readonly sessionId: string;
@@ -56,6 +58,7 @@ function actionCard(
 	single: boolean,
 	busy: boolean,
 	running: boolean,
+	armed: boolean,
 ): HTMLElement {
 	const inbox = look.kind === "inbox";
 	const open = isOpenChange(change);
@@ -95,13 +98,14 @@ function actionCard(
 						"button",
 						{
 							type: "button",
-							class: "btn btn-primary btn-small",
+							class: `btn btn-small surface-approve-btn${armed ? " is-confirming" : ""}`,
 							"data-act": "approve",
 							"data-change": change.id,
+							...(armed ? { "data-armed": "true" } : {}),
 							disabled: busy,
 						},
-						inbox ? icon("send") : null,
-						inbox ? t("Send") : t("Approve"),
+						armed ? icon("check") : inbox ? icon("send") : null,
+						armed ? t("Confirm") : inbox ? t("Send") : t("Approve"),
 					),
 					single
 						? h("button", { type: "button", class: "btn btn-small", "data-act": "discard" }, t("Discard"))
@@ -240,6 +244,8 @@ export class SurfaceSessionDrawer {
 	#sessionId = "";
 	#messages = 0;
 	#quotedChange: QuotedChangeRef | undefined;
+	#armedApprove: string | undefined;
+	#armTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(store: SurfacesStore, signal: AbortSignal) {
 		this.#store = store;
@@ -252,6 +258,23 @@ export class SurfaceSessionDrawer {
 		this.el.append(this.#resizer, h("div", { class: "surface-drawer-inner" }, this.#head, this.#body, this.#form));
 		this.#wireResizer(signal);
 		this.#applyWidth();
+		signal.addEventListener("abort", () => this.#disarm(false), { once: true });
+		document.addEventListener(
+			"pointerdown",
+			(event) => {
+				if (!this.#armedApprove) return;
+				const target = event.target instanceof Element ? event.target.closest("[data-armed='true']") : null;
+				if (!target) this.#disarm(true);
+			},
+			{ signal },
+		);
+		window.addEventListener(
+			"keydown",
+			(event) => {
+				if (event.key === "Escape" && this.#armedApprove) this.#disarm(true);
+			},
+			{ signal },
+		);
 		this.#form.addEventListener(
 			"submit",
 			(event) => {
@@ -357,8 +380,7 @@ export class SurfaceSessionDrawer {
 		this.#preferredWidth = expanded ? undefined : Math.min(DRAWER_EXPANDED, drawerCap());
 		this.#applyWidth();
 		this.#persistWidth();
-		this.#shown = "";
-		this.update();
+		this.#redraw();
 	}
 
 	#persistWidth(): void {
@@ -390,6 +412,40 @@ export class SurfaceSessionDrawer {
 		}
 		this.#replyTitle.textContent = ref.title;
 		this.#replyStrip.hidden = false;
+	}
+
+	#redraw(): void {
+		this.#shown = "";
+		const current = this.#store.state.surfaces.find(
+			(item) => item.id === (this.#store.state.drawer?.surfaceId ?? this.#surfaceId),
+		);
+		this.update(current);
+	}
+
+	#arm(key: string): void {
+		if (this.#armTimer) clearTimeout(this.#armTimer);
+		this.#armedApprove = key;
+		this.#armTimer = setTimeout(() => this.#disarm(true), APPROVE_ARM_MS);
+		this.#redraw();
+	}
+
+	#disarm(redraw: boolean): void {
+		if (this.#armTimer) {
+			clearTimeout(this.#armTimer);
+			this.#armTimer = undefined;
+		}
+		if (!this.#armedApprove) return;
+		this.#armedApprove = undefined;
+		if (redraw) this.#redraw();
+	}
+
+	#confirmOrArm(key: string): boolean {
+		if (this.#armedApprove === key) {
+			this.#disarm(false);
+			return true;
+		}
+		this.#arm(key);
+		return false;
 	}
 
 	#expandButton(): HTMLElement {
@@ -463,6 +519,7 @@ export class SurfaceSessionDrawer {
 			this.#shown = "";
 			this.#sessionId = "";
 			this.#messages = 0;
+			this.#disarm(false);
 			this.#setQuotedChange(undefined);
 			return;
 		}
@@ -505,6 +562,7 @@ export class SurfaceSessionDrawer {
 			state.hiddenChanges,
 			state.variantPick,
 			state.busy,
+			this.#armedApprove,
 			this.#isExpanded(),
 			state.localStudioBase[surface.id],
 			explorations,
@@ -630,22 +688,29 @@ export class SurfaceSessionDrawer {
 				}),
 			),
 			picked
-				? h(
-						"div",
-						{ class: "surface-overview-card-foot" },
-						h(
-							"button",
-							{
-								type: "button",
-								class: "surface-overview-act",
-								disabled: busy,
-								"data-act": "choose-variant",
-								"data-exploration": exploration.id,
-								"data-session": picked.id,
-							},
-							t("Approve {label}", { label: picked.explorationVariantLabel ?? picked.title }),
-						),
-					)
+				? (() => {
+						const armKey = `choose:${exploration.id}:${picked.id}`;
+						const armed = this.#armedApprove === armKey;
+						return h(
+							"div",
+							{ class: "surface-overview-card-foot" },
+							h(
+								"button",
+								{
+									type: "button",
+									class: `surface-overview-act surface-approve-btn${armed ? " is-confirming" : ""}`,
+									disabled: busy,
+									"data-act": "choose-variant",
+									"data-exploration": exploration.id,
+									"data-session": picked.id,
+									...(armed ? { "data-armed": "true" } : {}),
+								},
+								armed
+									? t("Confirm")
+									: t("Approve {label}", { label: picked.explorationVariantLabel ?? picked.title }),
+							),
+						);
+					})()
 				: null,
 		);
 	}
@@ -716,8 +781,9 @@ export class SurfaceSessionDrawer {
 				h(
 					"div",
 					{ class: "surface-overview-changes" },
-					...openChanges.map((change) =>
-						h(
+					...openChanges.map((change) => {
+						const armed = this.#armedApprove === `approve:${session.id}:${change.id}`;
+						return h(
 							"div",
 							{ class: "surface-overview-change" },
 							h("span", { class: "surface-overview-change-title" }, change.title),
@@ -726,17 +792,18 @@ export class SurfaceSessionDrawer {
 										"button",
 										{
 											type: "button",
-											class: "surface-overview-act",
+											class: `surface-overview-act surface-approve-btn${armed ? " is-confirming" : ""}`,
 											disabled: Boolean(state.busy[`change:${change.id}`]),
 											"data-act": "approve",
 											"data-session": session.id,
 											"data-change": change.id,
+											...(armed ? { "data-armed": "true" } : {}),
 										},
-										inbox ? t("Send") : t("Approve"),
+										armed ? t("Confirm") : inbox ? t("Send") : t("Approve"),
 									)
 								: null,
-						),
-					),
+						);
+					}),
 				),
 			);
 		} else if (!actionSession && openChanges.length > 0) {
@@ -747,6 +814,7 @@ export class SurfaceSessionDrawer {
 					...openChanges.map((change) => {
 						const conflicted = change.status === "conflicted";
 						const shown = store.isChangeShown(change.id);
+						const armed = this.#armedApprove === `approve:${session.id}:${change.id}`;
 						return h(
 							"div",
 							{ class: `surface-overview-change${conflicted ? " is-conflicted" : ""}` },
@@ -777,13 +845,14 @@ export class SurfaceSessionDrawer {
 											"button",
 											{
 												type: "button",
-												class: "surface-overview-act",
+												class: `surface-overview-act surface-approve-btn${armed ? " is-confirming" : ""}`,
 												disabled: Boolean(state.busy[`change:${change.id}`]),
 												"data-act": "approve",
 												"data-session": session.id,
 												"data-change": change.id,
+												...(armed ? { "data-armed": "true" } : {}),
 											},
-											t("Approve"),
+											armed ? t("Confirm") : t("Approve"),
 										)
 									: null,
 						);
@@ -827,6 +896,7 @@ export class SurfaceSessionDrawer {
 			state.mode,
 			state.activeReportSlug,
 			state.busy,
+			this.#armedApprove,
 			this.#isExpanded(),
 			ownedNotes,
 		]);
@@ -903,45 +973,49 @@ export class SurfaceSessionDrawer {
 							h("span", { class: "surface-drawer-change-title" }, label),
 						),
 						checked
-							? h(
-									"div",
-									{ class: "surface-drawer-change-acts" },
-									h(
-										"button",
-										{
-											type: "button",
-											class: "surface-change-btn is-approve",
-											disabled: busy,
-											"data-act": "choose-variant",
-											"data-exploration": exploration.id,
-											"data-session": variant.id,
-										},
-										t("Approve"),
-									),
-									h(
-										"button",
-										{
-											type: "button",
-											class: "surface-change-btn",
-											"data-act": "quote-change",
-											"data-session": variant.id,
-											"data-change": primaryChange?.id ?? variant.id,
-											"data-change-title": label,
-										},
-										t("Change"),
-									),
-									h(
-										"button",
-										{
-											type: "button",
-											class: "surface-change-btn is-muted",
-											disabled: busy,
-											"data-act": "discard-exploration",
-											"data-exploration": exploration.id,
-										},
-										t("Discard"),
-									),
-								)
+							? (() => {
+									const armed = this.#armedApprove === `choose:${exploration.id}:${variant.id}`;
+									return h(
+										"div",
+										{ class: "surface-drawer-change-acts" },
+										h(
+											"button",
+											{
+												type: "button",
+												class: `surface-change-btn is-approve surface-approve-btn${armed ? " is-confirming" : ""}`,
+												disabled: busy,
+												"data-act": "choose-variant",
+												"data-exploration": exploration.id,
+												"data-session": variant.id,
+												...(armed ? { "data-armed": "true" } : {}),
+											},
+											armed ? t("Confirm") : t("Approve"),
+										),
+										h(
+											"button",
+											{
+												type: "button",
+												class: "surface-change-btn",
+												"data-act": "quote-change",
+												"data-session": variant.id,
+												"data-change": primaryChange?.id ?? variant.id,
+												"data-change-title": label,
+											},
+											t("Change"),
+										),
+										h(
+											"button",
+											{
+												type: "button",
+												class: "surface-change-btn is-muted",
+												disabled: busy,
+												"data-act": "discard-exploration",
+												"data-exploration": exploration.id,
+											},
+											t("Discard"),
+										),
+									);
+								})()
 							: null,
 					);
 				}),
@@ -984,6 +1058,7 @@ export class SurfaceSessionDrawer {
 			state.hiddenChanges,
 			state.busy,
 			look,
+			this.#armedApprove,
 			this.#isExpanded(),
 			ownedNotes,
 		]);
@@ -1079,7 +1154,26 @@ export class SurfaceSessionDrawer {
 							? t("Nothing else waits on you here.")
 							: t("They are in Base. Publish when you're ready."),
 					),
-					h("button", { type: "button", class: "btn btn-primary btn-small", "data-act": "close" }, t("Close")),
+					h(
+						"div",
+						{ class: "surface-done-acts" },
+						!actionSession && surface && surface.archetype !== "ops" && surface.unpublishedChangeCount > 0
+							? h(
+									"button",
+									{ type: "button", class: "btn btn-primary btn-small", "data-act": "open-publish" },
+									t("Review & publish"),
+								)
+							: null,
+						h(
+							"button",
+							{
+								type: "button",
+								class: `btn btn-small${actionSession || !surface || surface.unpublishedChangeCount === 0 ? " btn-primary" : ""}`,
+								"data-act": "close",
+							},
+							t("Close"),
+						),
+					),
 				),
 			);
 		if (session.question)
@@ -1103,6 +1197,7 @@ export class SurfaceSessionDrawer {
 			);
 		if (actionSession && look && listed.length && !sessionHeld(session)) {
 			const openActions = listed.filter(isOpenChange);
+			const armedAll = this.#armedApprove === `approve-all:${session.id}`;
 			for (const change of listed)
 				parts.push(
 					actionCard(
@@ -1111,6 +1206,7 @@ export class SurfaceSessionDrawer {
 						openActions.length <= 1,
 						Boolean(store.state.busy[`change:${change.id}`]),
 						isRunningSession(session),
+						this.#armedApprove === `approve:${session.id}:${change.id}`,
 					),
 				);
 			if (openActions.length > 1 && !isRunningSession(session))
@@ -1120,10 +1216,17 @@ export class SurfaceSessionDrawer {
 						{ class: "surface-drawer-actions" },
 						h(
 							"button",
-							{ type: "button", class: "btn btn-primary btn-small", "data-act": "approve-all" },
-							look.kind === "inbox"
-								? t("Send all {count}", { count: openActions.length })
-								: t("Approve all {count}", { count: openActions.length }),
+							{
+								type: "button",
+								class: `btn btn-small surface-approve-btn${armedAll ? " is-confirming" : ""}`,
+								"data-act": "approve-all",
+								...(armedAll ? { "data-armed": "true" } : {}),
+							},
+							armedAll
+								? t("Confirm")
+								: look.kind === "inbox"
+									? t("Send all {count}", { count: openActions.length })
+									: t("Approve all {count}", { count: openActions.length }),
 						),
 						h("button", { type: "button", class: "btn btn-small", "data-act": "discard" }, t("Discard")),
 					),
@@ -1146,6 +1249,7 @@ export class SurfaceSessionDrawer {
 				const conflicted = change.status === "conflicted";
 				const shown = store.isChangeShown(change.id);
 				const busyChange = Boolean(store.state.busy[`change:${change.id}`]);
+				const armed = this.#armedApprove === `approve:${session.id}:${change.id}`;
 				const conflictPaths = change.conflictPaths?.length ? formatConflictPaths(change.conflictPaths) : "";
 				changeRows.push(
 					h(
@@ -1209,12 +1313,13 @@ export class SurfaceSessionDrawer {
 												"button",
 												{
 													type: "button",
-													class: "surface-change-btn is-approve",
+													class: `surface-change-btn is-approve surface-approve-btn${armed ? " is-confirming" : ""}`,
 													"data-act": "approve",
 													"data-change": change.id,
+													...(armed ? { "data-armed": "true" } : {}),
 													disabled: busyChange,
 												},
-												t("Approve"),
+												armed ? t("Confirm") : t("Approve"),
 											),
 									h(
 										"button",
@@ -1247,6 +1352,7 @@ export class SurfaceSessionDrawer {
 			parts.push(h("div", { class: "surface-drawer-changes" }, ...changeRows));
 			const open = session.changes.filter(isOpenChange).length;
 			const conflictedCount = session.changes.filter((change) => change.status === "conflicted").length;
+			const armedAll = this.#armedApprove === `approve-all:${session.id}`;
 			if (!running && (conflictedCount > 1 || open > 1))
 				parts.push(
 					h(
@@ -1266,8 +1372,13 @@ export class SurfaceSessionDrawer {
 							: open > 1 && conflictedCount === 0
 								? h(
 										"button",
-										{ type: "button", class: "btn btn-primary btn-small", "data-act": "approve-all" },
-										t("Approve all {count}", { count: open }),
+										{
+											type: "button",
+											class: `btn btn-small surface-approve-btn${armedAll ? " is-confirming" : ""}`,
+											"data-act": "approve-all",
+											...(armedAll ? { "data-armed": "true" } : {}),
+										},
+										armedAll ? t("Confirm") : t("Approve all {count}", { count: open }),
 									)
 								: null,
 						open > 1
@@ -1321,7 +1432,8 @@ export class SurfaceSessionDrawer {
 			case "choose-variant": {
 				const workspace = store.workspace(surfaceId);
 				const set = workspace?.explorations.find((item) => item.id === exploration);
-				if (set && session) void store.chooseVariant(set, session);
+				if (set && session && this.#confirmOrArm(`choose:${set.id}:${session}`))
+					void store.chooseVariant(set, session);
 				return;
 			}
 			case "discard-exploration": {
@@ -1334,11 +1446,17 @@ export class SurfaceSessionDrawer {
 				if (change) void store.toggleChange(surfaceId, change);
 				return;
 			case "approve":
-				if (sessionId && change) void store.approveChange(sessionId, change);
+				if (sessionId && change && this.#confirmOrArm(`approve:${sessionId}:${change}`))
+					void store.approveChange(sessionId, change);
 				return;
 			case "approve-all":
-				if (sessionId) void store.approveAll(sessionId);
+				if (sessionId && this.#confirmOrArm(`approve-all:${sessionId}`)) void store.approveAll(sessionId);
 				return;
+			case "open-publish": {
+				const targetSurface = store.state.surfaces.find((item) => item.id === surfaceId);
+				if (targetSurface) openPublishPatchnotesSheet(store, targetSurface);
+				return;
+			}
 			case "reconcile":
 				if (change) void store.reconcileChanges(surfaceId, [change]);
 				return;

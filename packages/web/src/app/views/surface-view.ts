@@ -30,6 +30,7 @@ import {
 } from "../surfaces-store.ts";
 import { CrewFigures } from "./surface-crew.ts";
 import { SurfaceDoorStage } from "./surface-door.ts";
+import { openPublishPatchnotesSheet } from "./surface-publish-sheet.ts";
 import { surfaceTile } from "./surface-rail.ts";
 import { SurfaceReportView } from "./surface-report-view.ts";
 import { SurfaceSessionDrawer } from "./surface-session-drawer.ts";
@@ -57,6 +58,8 @@ interface CompareColumn {
 	readonly head: HTMLElement;
 	readonly abort: AbortController;
 }
+
+const NOTCH_POS_KEY = "qorpera.web.surface-notch-x.v1";
 
 function hostOf(url: string | null): string {
 	if (!url) return "";
@@ -150,10 +153,19 @@ export class SurfaceView {
 	#framesShown = "";
 	#chromeShown = "";
 	#toastShown: number | undefined;
+	#pillCollapsed = false;
+	#notchRatio = 0.5;
+	#suppressNotchClick = false;
 
 	constructor(host: SurfaceViewHost, slug: string) {
 		this.#host = host;
 		this.slug = slug;
+		try {
+			const stored = Number(localStorage.getItem(NOTCH_POS_KEY));
+			if (Number.isFinite(stored) && stored >= 0.08 && stored <= 0.92) this.#notchRatio = stored;
+		} catch {
+			/* WHY: Local browser storage is optional in private/sandboxed contexts. */
+		}
 		const signal = this.#lifetime.signal;
 		this.#drawer = new SurfaceSessionDrawer(host.store, signal);
 		this.#primaryDoor = new SurfaceDoorStage(signal, {
@@ -168,6 +180,8 @@ export class SurfaceView {
 		this.#canvas.append(this.#bar, this.#topSlot, this.#viewport, this.#composer, this.#toast);
 		this.#stage.append(this.#canvas, this.#drawer.el);
 		this.el.append(this.#stage);
+		this.#wireNotchDrag(signal);
+		window.addEventListener("resize", () => this.#applyNotchPosition(), { signal });
 		window.addEventListener(
 			"message",
 			(event: MessageEvent) => {
@@ -231,6 +245,90 @@ export class SurfaceView {
 
 	get surface(): SurfaceSummary | undefined {
 		return surfaceBySlug(this.#host.store.state, this.slug);
+	}
+
+	#applyNotchPosition(pixelX?: number): void {
+		const notch = this.#bar.querySelector<HTMLElement>(".surface-notch");
+		if (!notch) return;
+		const barRect = this.#bar.getBoundingClientRect();
+		if (barRect.width <= 0) {
+			notch.style.setProperty("--notch-x", `${Math.round(this.#notchRatio * 100)}%`);
+			return;
+		}
+		const half = Math.max(48, notch.getBoundingClientRect().width / 2);
+		const pad = Math.max(half + 58, 72);
+		const minX = Math.min(pad, barRect.width / 2);
+		const maxX = Math.max(barRect.width - pad, barRect.width / 2);
+		const raw = pixelX ?? this.#notchRatio * barRect.width;
+		const clamped = Math.max(minX, Math.min(maxX, raw));
+		this.#notchRatio = clamped / barRect.width;
+		notch.style.setProperty("--notch-x", `${Math.round(clamped)}px`);
+	}
+
+	#wireNotchDrag(signal: AbortSignal): void {
+		let draggingEl: HTMLElement | undefined;
+		let pointerId = -1;
+		let startX = 0;
+		let startCenter = 0;
+		let moved = false;
+
+		this.#bar.addEventListener(
+			"pointerdown",
+			(event) => {
+				if (event.button !== 0) return;
+				const notch = (event.target as Element).closest<HTMLElement>(".surface-notch");
+				if (!notch) return;
+				const barRect = this.#bar.getBoundingClientRect();
+				const notchRect = notch.getBoundingClientRect();
+				draggingEl = notch;
+				pointerId = event.pointerId;
+				startX = event.clientX;
+				startCenter = notchRect.left + notchRect.width / 2 - barRect.left;
+				moved = false;
+				notch.setPointerCapture?.(event.pointerId);
+			},
+			{ signal },
+		);
+
+		this.#bar.addEventListener(
+			"pointermove",
+			(event) => {
+				if (!draggingEl || event.pointerId !== pointerId) return;
+				const dx = event.clientX - startX;
+				if (!moved && Math.abs(dx) <= 4) return;
+				if (!moved) {
+					moved = true;
+					draggingEl.classList.add("is-dragging");
+					this.#canvas.classList.add("is-dragging-notch");
+				}
+				this.#applyNotchPosition(startCenter + dx);
+			},
+			{ signal },
+		);
+
+		const finish = (event: PointerEvent) => {
+			if (!draggingEl || event.pointerId !== pointerId) return;
+			const wasMoved = moved;
+			draggingEl.classList.remove("is-dragging");
+			this.#canvas.classList.remove("is-dragging-notch");
+			draggingEl = undefined;
+			pointerId = -1;
+			moved = false;
+			if (wasMoved) {
+				this.#suppressNotchClick = true;
+				setTimeout(() => {
+					this.#suppressNotchClick = false;
+				}, 0);
+				try {
+					localStorage.setItem(NOTCH_POS_KEY, String(Number(this.#notchRatio.toFixed(4))));
+				} catch {
+					/* WHY: Local browser storage is optional in private/sandboxed contexts. */
+				}
+			}
+		};
+
+		this.#bar.addEventListener("pointerup", finish, { signal });
+		this.#bar.addEventListener("pointercancel", finish, { signal });
 	}
 
 	focus(): void {
@@ -444,6 +542,7 @@ export class SurfaceView {
 			handoffTargets.map((target) => [target.slug, target.title]),
 			busyHandoff,
 			this.#handoffOpen,
+			this.#pillCollapsed,
 			Boolean(state.busy[`publish:${surface.id}`]),
 		]);
 		if (key === this.#barShown) return;
@@ -642,21 +741,62 @@ export class SurfaceView {
 		if (headerCrew) pillParts.push(headerCrew);
 		if (rightTools.length > 0) pillParts.push(h("div", { class: "surface-pill-right" }, ...rightTools));
 		const spacious = Boolean(modeNav && rightTools.length > 0);
+		if (pillParts.length > 0) {
+			pillParts.push(
+				h(
+					"button",
+					{
+						type: "button",
+						class: "surface-pill-collapse",
+						"aria-label": t("Collapse bar"),
+						title: t("Collapse bar"),
+						"data-act": "collapse-pill",
+					},
+					icon("chevron-down"),
+				),
+			);
+		}
 
 		const hasAnything = pillParts.length > 0 || showPanelToggle;
 		this.#bar.hidden = !hasAnything;
+		this.#bar.classList.toggle("is-collapsed", this.#pillCollapsed && pillParts.length > 0);
 		const panelLabel = panelOpen ? t("Close panel") : t("Preview panel");
-		this.#bar.replaceChildren(
-			h("h1", { class: "visually-hidden surface-title" }, surface.title),
-			...(pillParts.length > 0
-				? [
-						h(
+		const notchLabel =
+			effectiveMode === "live"
+				? live
+					? t("Live")
+					: t("Base")
+				: effectiveMode === "report"
+					? t("Notes")
+					: t("Preview");
+		const notchCount = count > 0 ? count : openWorkCount;
+		const centerControl =
+			pillParts.length > 0
+				? this.#pillCollapsed
+					? h(
+							"button",
+							{
+								type: "button",
+								class: "surface-notch",
+								"aria-label": t("Expand bar"),
+								title: t("Drag along top or click to expand"),
+								"data-act": "expand-pill",
+							},
+							h("span", { class: "surface-notch-grip", "aria-hidden": "true" }),
+							h("span", { class: "surface-notch-label" }, notchLabel),
+							notchCount > 0 ? h("span", { class: "surface-notch-count" }, String(notchCount)) : null,
+							icon("chevron-down"),
+						)
+					: h(
 							"nav",
 							{ class: `surface-pill${spacious ? " is-spacious" : ""}`, "aria-label": surface.title },
 							...pillParts,
-						),
-					]
-				: []),
+						)
+				: null;
+
+		this.#bar.replaceChildren(
+			h("h1", { class: "visually-hidden surface-title" }, surface.title),
+			...(centerControl ? [centerControl] : []),
 			...(showPanelToggle
 				? [
 						h(
@@ -677,6 +817,7 @@ export class SurfaceView {
 					]
 				: []),
 		);
+		if (this.#pillCollapsed) this.#applyNotchPosition();
 		this.#headerCrew.settle();
 	}
 
@@ -1229,6 +1370,13 @@ export class SurfaceView {
 									? t("Done: “{title}”", { title: undo.label })
 									: t("Merged “{title}” into Base", { title: undo.label }),
 						),
+						undo.verb === "merged"
+							? h(
+									"button",
+									{ type: "button", class: "surface-toast-review", "data-act": "open-publish" },
+									t("Patch notes"),
+								)
+							: null,
 						h(
 							"button",
 							{ type: "button", "data-act": "undo" },
@@ -1281,6 +1429,15 @@ export class SurfaceView {
 			case "device":
 				store.setDevice(target.dataset.device === "mobile" ? "mobile" : "desktop");
 				return;
+			case "collapse-pill":
+				this.#pillCollapsed = true;
+				this.#drawBar(surface);
+				return;
+			case "expand-pill":
+				if (this.#suppressNotchClick) return;
+				this.#pillCollapsed = false;
+				this.#drawBar(surface);
+				return;
 			case "toggle-panel":
 				store.togglePreviewPanel(surface.id);
 				return;
@@ -1325,11 +1482,17 @@ export class SurfaceView {
 				this.#closeHandoff();
 				return;
 			case "publish":
-				void store.publish(surface.id);
+			case "open-publish":
+				openPublishPatchnotesSheet(store, surface);
 				return;
 			case "publish-menu": {
 				const box = target.getBoundingClientRect();
 				const items = [];
+				items.push({
+					label: t("Patch notes"),
+					icon: "file",
+					select: () => openPublishPatchnotesSheet(store, surface),
+				});
 				if (surface.liveUrl) {
 					const url = surface.liveUrl;
 					items.push({

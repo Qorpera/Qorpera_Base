@@ -177,7 +177,12 @@ describe("the surface page", () => {
 		view.update();
 		const drawer = view.el.querySelector(".surface-drawer")!;
 		expect(drawer.classList.contains("is-open")).toBe(true);
-		drawer.querySelector<HTMLElement>(`[data-act="approve"][data-change="${CHANGES[2]}"]`)!.click();
+		const approveBtn = drawer.querySelector<HTMLElement>(`[data-act="approve"][data-change="${CHANGES[2]}"]`)!;
+		approveBtn.click();
+		const confirmBtn = drawer.querySelector<HTMLElement>(`[data-act="approve"][data-change="${CHANGES[2]}"]`)!;
+		expect(confirmBtn.classList.contains("is-confirming")).toBe(true);
+		expect(confirmBtn.textContent).toBe("Confirm");
+		confirmBtn.click();
 		await flush();
 		await flush();
 		view.update();

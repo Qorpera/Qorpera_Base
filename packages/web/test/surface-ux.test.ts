@@ -204,6 +204,10 @@ describe("operational surfaces", () => {
 		expect(drawer.textContent).not.toContain("toggle to preview");
 		expect(drawer.textContent).not.toContain("+38");
 		card.querySelector<HTMLButtonElement>('[data-act="approve"]')!.click();
+		const confirmSend = drawer.querySelector<HTMLButtonElement>('.surface-action-card [data-act="approve"]')!;
+		expect(confirmSend.classList.contains("is-confirming")).toBe(true);
+		expect(confirmSend.textContent).toBe("Confirm");
+		confirmSend.click();
 		await flush();
 		await flush();
 		view.update();
@@ -489,10 +493,31 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		expect(drawer.querySelectorAll(".surface-drawer-option-row")).toHaveLength(3);
 
 		drawer.querySelector<HTMLButtonElement>('[data-act="choose-variant"]')!.click();
+		const confirmVariant = drawer.querySelector<HTMLButtonElement>('[data-act="choose-variant"]')!;
+		expect(confirmVariant.classList.contains("is-confirming")).toBe(true);
+		expect(confirmVariant.textContent).toBe("Confirm");
+		expect(store.workspace(website.id)?.explorations[0]?.status).toBe("open");
+		confirmVariant.click();
 		await flush();
 		view.update();
 		expect(store.workspace(website.id)?.explorations[0]?.status).toBe("chosen");
 		expect(store.state.surfaces.find((surface) => surface.id === website.id)?.unpublishedChangeCount).toBe(1);
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="collapse-pill"]')!.click();
+		expect(view.el.querySelector(".surface-pill")).toBeNull();
+		const notch = view.el.querySelector<HTMLButtonElement>(".surface-notch")!;
+		expect(notch).not.toBeNull();
+		notch.click();
+		expect(view.el.querySelector(".surface-pill")).not.toBeNull();
+		expect(view.el.querySelector(".surface-notch")).toBeNull();
+
+		const dialog = HTMLDialogElement.prototype;
+		dialog.showModal ??= function (this: HTMLDialogElement) {
+			this.open = true;
+		};
+		dialog.close ??= function (this: HTMLDialogElement) {
+			this.open = false;
+		};
 
 		drawer.querySelector<HTMLButtonElement>('[data-act="focus-session"]')!.click();
 		view.update();
@@ -508,10 +533,30 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		);
 		expect(rowActions).toEqual(["Approve", "Change", "Discard"]);
 
-		firstChange.querySelector<HTMLButtonElement>('[data-act="quote-change"]')!.click();
+		firstChange.querySelector<HTMLButtonElement>('[data-act="approve"]')!.click();
+		const confirmFirst = drawer.querySelector<HTMLButtonElement>('.surface-drawer-change [data-act="approve"]')!;
+		expect(confirmFirst.classList.contains("is-confirming")).toBe(true);
+		confirmFirst.click();
+		await flush();
+		view.update();
+		expect(store.state.surfaces.find((surface) => surface.id === website.id)?.unpublishedChangeCount).toBe(2);
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="publish"]')!.click();
+		const patchSheet = document.querySelector(".surface-publish-sheet")!;
+		expect(patchSheet).not.toBeNull();
+		expect(patchSheet.querySelectorAll(".surface-patchnote-item")).toHaveLength(2);
+		patchSheet.querySelector<HTMLButtonElement>('[data-act="rollback"]')!.click();
+		await flush();
+		expect(patchSheet.querySelectorAll(".surface-patchnote-item")).toHaveLength(1);
+		patchSheet.querySelector<HTMLButtonElement>('[data-act="confirm-publish"]')!.click();
+		await flush();
+		expect(document.querySelector(".surface-publish-sheet")).toBeNull();
+		expect(store.state.surfaces.find((surface) => surface.id === website.id)?.unpublishedChangeCount).toBe(0);
+
+		const remainingChange = drawer.querySelector<HTMLElement>(".surface-drawer-change:not(.is-closed)")!;
+		remainingChange.querySelector<HTMLButtonElement>('[data-act="quote-change"]')!.click();
 		const replyStrip = drawer.querySelector<HTMLElement>(".surface-drawer-reply")!;
 		expect(replyStrip.hidden).toBe(false);
-		expect(replyStrip.textContent).toContain("Tydelig pris: 1.995 kr. inkl. fragt");
 		const drawerInput = drawer.querySelector<HTMLInputElement>(".surface-drawer-input")!;
 		expect(document.activeElement).toBe(drawerInput);
 		drawerInput.value = "Gør prisen endnu mere rolig";
@@ -521,9 +566,7 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		await flush();
 		view.update();
 		expect(replyStrip.hidden).toBe(true);
-		expect(drawer.querySelector(".surface-message-ref")?.textContent).toContain(
-			"Tydelig pris: 1.995 kr. inkl. fragt",
-		);
+		expect(drawer.querySelector(".surface-message-ref")).not.toBeNull();
 
 		drawer.querySelector<HTMLButtonElement>('[data-act="discard-change"]')!.click();
 		await flush();
