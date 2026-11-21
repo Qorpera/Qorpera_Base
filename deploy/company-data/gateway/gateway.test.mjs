@@ -11,10 +11,11 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http from "node:http";
+import net from "node:net";
 import { after, before, describe, it } from "node:test";
 import pg from "pg";
 import { checkLocale, LOCALE_QUERY, POSTGRES_IMAGE, POSTGRES_LOCALE } from "../../../scripts/test-hosted-db.mjs";
-import { companyDatabase, folderPassword, Gateway, LIMITS, listMembers, Platform, serve, serveRuns } from "./gateway.mjs";
+import { companyDatabase, folderPassword, Gateway, LIMITS, listMembers, Platform, POOL_SIZE, serve, serveRuns } from "./gateway.mjs";
 
 const dockerUsable = process.platform === "linux" && spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0;
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
@@ -655,26 +656,22 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 			const applied = await ask(contributor, "apply", { database: "queue" });
 			assert.equal(applied.value.applied, true, JSON.stringify(applied.value));
 			const things = (answer) => answer.value.tables.find((table) => table.name === "things");
-			const sevens = [[[7]], [[7]], [[7]]];
+			const sevens = Array.from({ length: POOL_SIZE.r }, () => [[7]]);
 			assert.deepEqual((await ask(viewer, "query", { database: "queue", question: "slow" })).value.rows, [[7]], "the question's text is kept");
-			const slow = [1, 2, 3].map(() => call(viewer, "query", { database: "queue", question: "slow" }));
+			const slow = Array.from({ length: POOL_SIZE.r }, () => call(viewer, "query", { database: "queue", question: "slow" }));
 			await sleep(150);
 			const began = Date.now();
 			const busy = await describeOne(viewer, "queue");
 			const took = Date.now() - began;
 			assert.equal(busy.status, 200, JSON.stringify(busy.value));
-			// Not counted: a count that waited on for a connection would have got one when the questions ended, and counted.
 			assert.deepEqual([things(busy).rows, things(busy).rowsAbout], [undefined, undefined]);
 			assert.ok(took < 3_000, `the describe took ${took} ms: it did not wait as long as the pool lets a call wait (5 s)`);
 			assert.deepEqual((await Promise.all(slow)).map((answer) => answer.value.rows), sevens);
-			// With connections free again a describe counts.
 			assert.equal(things(await describeOne(viewer, "queue")).rows, 7);
-			// The connection that came too late for the count was given back: three slow questions still run side by
-			// side (one after two others would take 2.8 s).
 			const again = Date.now();
-			const second = await Promise.all([1, 2, 3].map(() => call(viewer, "query", { database: "queue", question: "slow" })));
+			const second = await Promise.all(Array.from({ length: POOL_SIZE.r }, () => call(viewer, "query", { database: "queue", question: "slow" })));
 			assert.deepEqual(second.map((answer) => answer.value.rows), sevens);
-			assert.ok(Date.now() - again < 2_500, `three slow questions took ${Date.now() - again} ms`);
+			assert.ok(Date.now() - again < 2_500, `${POOL_SIZE.r} slow questions took ${Date.now() - again} ms`);
 		});
 	});
 
@@ -1580,7 +1577,9 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 		assert.deepEqual([lacking.status, lacking.value.error], [400, "The change takes :title"]);
 		const extra = await change(owner, "open-ticket", { title: "x", other: 1 });
 		assert.deepEqual([extra.status, extra.value.error], [400, "The change takes no :other"]);
-		assert.equal((await change(owner, "open-ticket", { title: ["x"] })).status, 400);
+		let deep = { a: 1 };
+		for (let i = 0; i < 18; i++) deep = { a: deep };
+		assert.equal((await change(owner, "open-ticket", { title: deep })).status, 400);
 		assert.equal((await desk("select count(*)::int as n from desk.tickets where title = 'x'")).n, 0);
 	});
 
@@ -2673,6 +2672,8 @@ create view slow as select id, pg_sleep(0.05) is null as napped from people;
 						union all select 'index ' || pg_get_indexdef(indexrelid) from pg_index where indrelid in (select oid from pg_class where relnamespace = 'qorpera_data'::regnamespace)
 						union all select 'trigger ' || pg_get_triggerdef(oid) || ' ' || tgenabled::text from pg_trigger where not tgisinternal
 						union all select 'event trigger ' || evtname || ' ' || evtevent || ' ' || evtfoid::regproc || ' ' || coalesce(array_to_string(evttags, ','), '') || ' ' || evtenabled::text from pg_event_trigger
+						union all select 'extension ' || e.extname || ' ' || n.nspname from pg_extension e join pg_namespace n on n.oid = e.extnamespace where n.nspname = 'qorpera_ext'
+						union all select 'schema ' || nspname || ' ' || coalesce(nspacl::text, '') from pg_namespace where nspname = 'qorpera_ext'
 						union all select 'record limit ' || bytes from qorpera_data.record_limit
 						order by 1`,
 					)
@@ -3441,6 +3442,345 @@ create trigger nap before update on slowed for each row execute function nap();
 		}
 	});
 
+	it("provides standard PostgreSQL 17 extensions in qorpera_ext and blocks folder writes to qorpera_ext", async () => {
+		put(ENV_A, {
+			"data/extdemo/database.toml": 'format = "qorpera.database/v1"\nname = "Extensions"\n',
+			"data/extdemo/tables/001-base.sql": `
+				create table contacts (
+					id uuid primary key default uuid_generate_v4(),
+					email citext not null unique,
+					name text not null,
+					path ltree not null,
+					tags text[] not null default '{}'
+				);
+				create index contacts_name_trgm on contacts using gin (name gin_trgm_ops);
+				create table bookings (
+					id bigint generated always as identity primary key,
+					room text not null,
+					during tstzrange not null,
+					exclude using gist (room with =, during with &&)
+				);
+				insert into contacts (email, name, path, tags) values
+					('Ada@Example.com', 'Søren Kierkegaard', 'org.eng.backend', array['vip', 'dk']),
+					('bo@example.com', 'Ada Lovelace', 'org.eng.data', array['eng']);
+				insert into bookings (room, during) values
+					('A', '[2026-11-21 09:00+00, 2026-11-21 10:00+00)');
+			`,
+			"data/extdemo/queries/features.sql": `
+				select
+					(select email::text from contacts where email = 'ada@example.com') as ci_email,
+					(select name from contacts where unaccent(lower(name)) like 'soren%') as unaccented,
+					(select count(*)::int from contacts where path <@ 'org.eng'::ltree) as in_eng,
+					similarity('Kierkegaard', 'Kierkegard') > 0.5 as fuzzy_ok,
+					levenshtein('qorpera', 'qorera') as edit_dist,
+					encode(digest('hello', 'sha256'), 'hex') as hash,
+					encode(hmac('msg', 'key', 'sha256'), 'hex') is not null as hmac_ok;
+			`,
+			"data/extdemo/actions/book.sql": "insert into bookings (room, during) values (:room, tstzrange(:from::timestamptz, :to::timestamptz)) returning id;\n",
+			"data/extdemo/tables/002-escape-ext.sql": "create table qorpera_ext.sneak (id int);\n",
+		});
+		const applied = await ask(owner, "apply", { database: "extdemo" });
+		assert.equal(applied.status, 200, JSON.stringify(applied.value));
+		assert.deepEqual(states(applied), ["001-base applied", "002-escape-ext failed"]);
+		remove(ENV_A, "data/extdemo/tables/002-escape-ext.sql");
+		const features = await ask(viewer, "query", { database: "extdemo", question: "features" });
+		assert.equal(features.status, 200, JSON.stringify(features.value));
+		assert.deepEqual(features.value.rows[0], [
+			"Ada@Example.com",
+			"Søren Kierkegaard",
+			2,
+			true,
+			1,
+			sha256("hello"),
+			true,
+		]);
+		const overlap = await ask(owner, "change", {
+			database: "extdemo",
+			change: "book",
+			params: { room: "A", from: "2026-11-21T09:30:00Z", to: "2026-11-21T10:30:00Z" },
+		});
+		assert.equal(overlap.status, 400, JSON.stringify(overlap.value));
+		const okBook = await ask(owner, "change", {
+			database: "extdemo",
+			change: "book",
+			params: { room: "A", from: "2026-11-21T10:00:00Z", to: "2026-11-21T11:00:00Z" },
+		});
+		assert.equal(okBook.status, 200, JSON.stringify(okBook.value));
+		const added = await ask(contributor, "edit", {
+			database: "extdemo",
+			table: "contacts",
+			op: "add",
+			values: { email: "cy@example.com", name: "Cy", path: "org.ops", tags: ["ops", "on-call"] },
+		});
+		assert.equal(added.status, 200, JSON.stringify(added.value));
+		assert.equal(added.value.row.values[4], "{ops,on-call}");
+	});
+
+	it("supports row-level security via qorpera_data.viewer() across query, rows, edit, change and watch", async () => {
+		put(ENV_A, {
+			"data/rlsdemo/database.toml": 'format = "qorpera.database/v1"\nname = "Private notes"\n[list]\nmembers = "readers"\n',
+			"data/rlsdemo/tables/001-notes.sql": `
+				create table notes (
+					id bigint generated always as identity primary key,
+					owner_id uuid not null default qorpera_data.viewer(),
+					body text not null
+				);
+				alter table notes enable row level security;
+				create policy own_rows on notes
+					using (owner_id = qorpera_data.viewer())
+					with check (owner_id = qorpera_data.viewer());
+				insert into notes (owner_id, body) values
+					('${OWNER}', 'owner secret'),
+					('${VIEWER}', 'viewer secret');
+			`,
+			"data/rlsdemo/queries/all-notes.sql": "select body from notes order by id;\n",
+			"data/rlsdemo/actions/add-note.sql": "insert into notes (body) values (:body) returning owner_id, body;\n",
+		});
+		assert.equal((await ask(owner, "apply", { database: "rlsdemo" })).value.applied, true);
+		const ownerQuery = await ask(owner, "query", { database: "rlsdemo", question: "all-notes" });
+		const viewerQuery = await ask(viewer, "query", { database: "rlsdemo", question: "all-notes" });
+		assert.deepEqual(ownerQuery.value.rows, [["owner secret"]]);
+		assert.deepEqual(viewerQuery.value.rows, [["viewer secret"]]);
+		const ownerRows = await ask(owner, "rows", { database: "rlsdemo", table: "notes" });
+		const viewerRows = await ask(viewer, "rows", { database: "rlsdemo", table: "notes" });
+		assert.deepEqual(ownerRows.value.rows.map((r) => r.values[2]), ["owner secret"]);
+		assert.deepEqual(viewerRows.value.rows.map((r) => r.values[2]), ["viewer secret"]);
+		const [watchOwner, watchViewer] = await Promise.all([
+			ask(owner, "watch", { watches: [{ database: "rlsdemo", question: "all-notes", params: {}, etag: "stale" }], wait: 1 }),
+			ask(viewer, "watch", { watches: [{ database: "rlsdemo", question: "all-notes", params: {}, etag: "stale" }], wait: 1 }),
+		]);
+		assert.deepEqual(watchOwner.value.changed[0].answer.rows, [["owner secret"]]);
+		assert.deepEqual(watchViewer.value.changed[0].answer.rows, [["viewer secret"]]);
+		const added = await ask(viewer, "change", { database: "rlsdemo", change: "add-note", params: { body: "new viewer note" } });
+		assert.equal(added.status, 200, JSON.stringify(added.value));
+		assert.deepEqual(added.value.rows, [[VIEWER, "new viewer note"]]);
+		assert.deepEqual((await ask(owner, "query", { database: "rlsdemo", question: "all-notes" })).value.rows, [["owner secret"]]);
+		const forgedEdit = await ask(contributor, "edit", {
+			database: "rlsdemo",
+			table: "notes",
+			op: "add",
+			values: { owner_id: OWNER, body: "spoofed" },
+		});
+		assert.equal(forgedEdit.status, 400, JSON.stringify(forgedEdit.value));
+	});
+
+	it("supports array parameters, JSONB object/array parameters, preview formatting and more than 16 parameters", async () => {
+		const twentyCols = Array.from({ length: 20 }, (_, i) => `:p${i}::int`).join(" + ");
+		put(ENV_A, {
+			"data/richparams/database.toml": 'format = "qorpera.database/v1"\nname = "Rich params"\n',
+			"data/richparams/tables/001-items.sql": `
+				create table items (
+					id bigint generated always as identity primary key,
+					tag text not null,
+					meta jsonb not null default '{}'::jsonb
+				);
+				insert into items (tag, meta) values
+					('alpha', '{"tier": 1}'::jsonb),
+					('beta', '{"tier": 2}'::jsonb),
+					('gamma', '{"tier": 3}'::jsonb);
+			`,
+			"data/richparams/queries/by-tags.sql": "select id, tag from items where tag = any(:tags::text[]) order by id;\n",
+			"data/richparams/queries/sum-twenty.sql": `select (${twentyCols}) as total;\n`,
+			"data/richparams/actions/bulk-add.sql": `
+				-- Add :meta and items :items.
+				insert into items (tag, meta)
+				select x.tag, :meta::jsonb || coalesce(x.meta, '{}'::jsonb)
+				from jsonb_to_recordset(:items::jsonb) as x(tag text, meta jsonb)
+				returning tag, meta;
+			`,
+		});
+		assert.equal((await ask(owner, "apply", { database: "richparams" })).value.applied, true);
+		const filtered = await ask(viewer, "query", { database: "richparams", question: "by-tags", params: { tags: ["alpha", "gamma"] } });
+		assert.equal(filtered.status, 200, JSON.stringify(filtered.value));
+		assert.deepEqual(filtered.value.rows, [[1, "alpha"], [3, "gamma"]]);
+		const twenty = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`p${i}`, i + 1]));
+		const summed = await ask(viewer, "query", { database: "richparams", question: "sum-twenty", params: twenty });
+		assert.equal(summed.status, 200, JSON.stringify(summed.value));
+		assert.deepEqual(summed.value.rows, [[210]]);
+		const preview = await ask(viewer, "change", {
+			database: "richparams",
+			change: "bulk-add",
+			preview: true,
+			params: { meta: { source: "api" }, items: [{ tag: "delta", meta: { n: 4 } }, { tag: "eps" }] },
+		});
+		assert.equal(preview.status, 200, JSON.stringify(preview.value));
+		assert.equal(preview.value.values.length, 2);
+		const inserted = await ask(viewer, "change", {
+			database: "richparams",
+			change: "bulk-add",
+			sha256: preview.value.sha256,
+			params: { meta: { source: "api" }, items: [{ tag: "delta", meta: { n: 4 } }, { tag: "eps" }] },
+		});
+		assert.equal(inserted.status, 200, JSON.stringify(inserted.value));
+		assert.deepEqual(inserted.value.rows, [
+			["delta", { source: "api", n: 4 }],
+			["eps", { source: "api" }],
+		]);
+	});
+
+	it("filters watch notifications by schema and table, coalesces concurrent multiplayer watches, and reuses cached base-table pages while listening", async () => {
+		put(ENV_A, {
+			"data/multi/database.toml": 'format = "qorpera.database/v1"\nname = "Multi"\n',
+			"data/multi/tables/001-base.sql": `
+				create table alpha (id bigint generated always as identity primary key, label text not null);
+				create table beta (id bigint generated always as identity primary key, label text not null);
+				insert into alpha (label) select 'a' || g from generate_series(1, 5) g;
+				insert into beta (label) select 'b' || g from generate_series(1, 5) g;
+			`,
+			"data/multi/queries/slow-alpha.sql": "select pg_sleep(0.15) is not null as ok, count(*)::int as n from alpha;\n",
+			"data/multi/actions/add-beta.sql": "insert into beta (label) values (:label) returning id;\n",
+		});
+		assert.equal((await ask(owner, "apply", { database: "multi" })).value.applied, true);
+		const firstAlpha = await ask(viewer, "rows", { database: "multi", table: "alpha" });
+		assert.equal(firstAlpha.status, 200);
+		const beforeUnrelated = gateway.taken.rows;
+		const held = ask(viewer, "watch", {
+			watches: [{ database: "multi", table: "alpha", etag: firstAlpha.value.etag }],
+			wait: 0.8,
+		});
+		try {
+			for (let i = 0; i < 60 && gateway.taken.rows - beforeUnrelated < 5; i++) await sleep(25);
+			assert.equal((await ask(owner, "change", { database: "multi", change: "add-beta", params: { label: "b6" } })).status, 200);
+			const watched = await held;
+			assert.deepEqual(watched, { status: 200, value: { same: true } });
+		} finally {
+			await held.catch(() => {});
+		}
+		assert.equal(gateway.taken.rows - beforeUnrelated, 5, "initial scan read 5 rows and unrelated beta write caused zero re-queries");
+		const beforeCoalesce = gateway.taken.rows;
+		const [w1, w2, w3, w4] = await Promise.all([
+			ask(owner, "watch", { watches: [{ database: "multi", question: "slow-alpha", params: {}, etag: "old" }], wait: 1 }),
+			ask(contributor, "watch", { watches: [{ database: "multi", question: "slow-alpha", params: {}, etag: "old" }], wait: 1 }),
+			ask(viewer, "watch", { watches: [{ database: "multi", question: "slow-alpha", params: {}, etag: "old" }], wait: 1 }),
+			ask(owner, "watch", { watches: [{ database: "multi", question: "slow-alpha", params: {}, etag: "old" }], wait: 1 }),
+		]);
+		for (const res of [w1, w2, w3, w4]) {
+			assert.equal(res.status, 200);
+			assert.deepEqual(res.value.changed[0].answer.rows, [[true, 5]]);
+		}
+		assert.equal(gateway.taken.rows - beforeCoalesce, 1, "four concurrent watchers coalesced into one Postgres execution");
+		const beforeKeeper = gateway.taken.rows;
+		const keeperWatch = ask(owner, "watch", {
+			watches: [{ database: "multi", table: "alpha", etag: firstAlpha.value.etag }],
+			wait: 1.5,
+		});
+		try {
+			for (let i = 0; i < 60 && gateway.taken.rows - beforeKeeper < 5; i++) await sleep(25);
+			const beforeCached = gateway.taken.rows;
+			const cachedReconnect = await ask(viewer, "watch", {
+				watches: [{ database: "multi", table: "alpha", etag: firstAlpha.value.etag }],
+				wait: 0.1,
+			});
+			assert.deepEqual(cachedReconnect, { status: 200, value: { same: true } });
+			assert.equal(gateway.taken.rows - beforeCached, 0, "staggered reconnect reused cached base-table page while listener stayed open");
+		} finally {
+			await keeperWatch.catch(() => {});
+		}
+	});
+
+	it("invalidates sibling gateway watches across processes on DDL, rejects EADDRINUSE cleanly, and survives aborted HTTP bodies", async () => {
+		const initial = await ask(viewer, "rows", { database: "multi", table: "alpha" });
+		assert.equal(initial.status, 200);
+		const before = gateway.taken.rows;
+		const watching = ask(viewer, "watch", {
+			watches: [{ database: "multi", table: "alpha", etag: initial.value.etag }],
+			wait: 2.5,
+		});
+		try {
+			for (let i = 0; i < 60 && gateway.taken.rows - before < 5; i++) await sleep(25);
+			put(ENV_A, {
+				"data/multi/tables/002-add-note.sql": "alter table alpha add column note text not null default 'ok';\n",
+			});
+			await withGateway({}, async () => {
+				const applied = await ask(owner, "apply", { database: "multi" });
+				assert.equal(applied.status, 200, JSON.stringify(applied.value));
+				assert.equal(applied.value.applied, true);
+			});
+			const woke = await watching;
+			assert.equal(woke.status, 200, JSON.stringify(woke.value));
+			assert.equal(woke.value.changed?.length, 1);
+			assert.ok(woke.value.changed[0].answer.columns.includes("note"), JSON.stringify(woke.value.changed[0].answer.columns));
+		} finally {
+			await watching.catch(() => {});
+		}
+		await assert.rejects(() => serve(gateway, { host: "127.0.0.1", port }), { code: "EADDRINUSE" });
+		await new Promise((resolve) => {
+			const sock = net.connect(port, "127.0.0.1", () => {
+				sock.write(
+					`POST /v1/company-data/${ENV_A}/query HTTP/1.1\r\n` +
+						`Host: 127.0.0.1:${port}\r\n` +
+						`Authorization: Bearer ${viewer}\r\n` +
+						"Content-Type: application/json\r\n" +
+						"Content-Length: 200\r\n\r\n{\"dat",
+				);
+				setTimeout(() => {
+					sock.destroy();
+					resolve();
+				}, 20);
+			});
+			sock.on("error", () => resolve());
+		});
+		const healthy = await ask(viewer, "rows", { database: "multi", table: "alpha" });
+		assert.equal(healthy.status, 200, JSON.stringify(healthy.value));
+	});
+
+	it("recovers pipelined reads and writes cleanly across statement_timeout, constraint errors, 0A000 schema type changes, and cluster IPC hooks", async () => {
+		put(ENV_A, {
+			"data/pipechaos/database.toml": 'format = "qorpera.database/v1"\nname = "Pipe chaos"\n',
+			"data/pipechaos/tables/001-init.sql": `
+				create table entries (
+					id bigint generated always as identity primary key,
+					code text not null unique,
+					amount int not null
+				);
+				insert into entries (code, amount) values ('k1', 10), ('k2', 20);
+			`,
+			"data/pipechaos/queries/all.sql": "select id, code, amount from entries order by id;\n",
+			"data/pipechaos/queries/slow.sql": "select pg_sleep(1.5), count(*) from entries;\n",
+			"data/pipechaos/queries/missing.sql": "select * from does_not_exist;\n",
+			"data/pipechaos/actions/add.sql": "insert into entries (code, amount) values (:code, :amount) returning id;\n",
+		});
+		assert.equal((await ask(owner, "apply", { database: "pipechaos" })).value.applied, true);
+		for (let i = 0; i < 4; i++) {
+			const warmed = await ask(viewer, "query", { database: "pipechaos", question: "all" });
+			assert.equal(warmed.status, 200);
+			assert.deepEqual(warmed.value.rows, [[1, "k1", 10], [2, "k2", 20]]);
+		}
+		const timedOut = await ask(viewer, "query", { database: "pipechaos", question: "slow" });
+		assert.equal(timedOut.status, 408, JSON.stringify(timedOut.value));
+		const missingTbl = await ask(viewer, "query", { database: "pipechaos", question: "missing" });
+		assert.equal(missingTbl.status, 400, JSON.stringify(missingTbl.value));
+		const dupWrite = await ask(owner, "change", { database: "pipechaos", change: "add", params: { code: "k1", amount: 99 } });
+		assert.equal(dupWrite.status, 400, JSON.stringify(dupWrite.value));
+		const goodWrite = await ask(owner, "change", { database: "pipechaos", change: "add", params: { code: "k3", amount: 30 } });
+		assert.equal(goodWrite.status, 200, JSON.stringify(goodWrite.value));
+		put(ENV_A, {
+			"data/pipechaos/tables/002-widen.sql": "alter table entries alter column amount type numeric(12, 2);\n",
+		});
+		assert.equal((await ask(owner, "apply", { database: "pipechaos" })).value.applied, true);
+		for (let i = 0; i < 6; i++) {
+			const afterAlter = await ask(viewer, "query", { database: "pipechaos", question: "all" });
+			assert.equal(afterAlter.status, 200, JSON.stringify(afterAlter.value));
+			assert.equal(afterAlter.value.rows.length, 3);
+		}
+		const events = [];
+		await withGateway(
+			{
+				onAgentRead: (event) => events.push(event),
+			},
+			async (gw) => {
+				const db = companyDatabase(ENV_A);
+				gw.setFullDatabases([db]);
+				const blocked = await ask(owner, "change", { database: "pipechaos", change: "add", params: { code: "k4", amount: 40 } });
+				assert.equal(blocked.status, 507, JSON.stringify(blocked.value));
+				gw.setFullDatabases([]);
+				const allowed = await ask(owner, "change", { database: "pipechaos", change: "add", params: { code: "k4", amount: 40 } });
+				assert.equal(allowed.status, 200, JSON.stringify(allowed.value));
+			},
+		);
+		assert.ok(Array.isArray(events));
+	});
+
 	it("batches small-table counts, isolates slow views, and describes multiple databases concurrently", async () => {
 		const multiSql =
 			Array.from({ length: 12 }, (_, i) => `create table t_${String(i).padStart(2, "0")} (id int primary key);\ninsert into t_${String(i).padStart(2, "0")} select n from generate_series(1, ${i + 1}) n;\n`).join("") +
@@ -3486,14 +3826,31 @@ create trigger nap before update on slowed for each row execute function nap();
 				assert.equal(described.status, 200, JSON.stringify(described.value));
 				const alpha = described.value.databases.find((entry) => entry.database === "alpha");
 				const alphaRows = Object.fromEntries(alpha.tables.map((t) => [t.name, t.rows]));
-				for (let i = 0; i < 6; i++) {
-					assert.equal(alphaRows[`t_${String(i).padStart(2, "0")}`], i + 1);
+				for (let i = 0; i < 12; i++) {
+					if (i === 6) assert.equal(alphaRows.t_06, undefined);
+					else assert.equal(alphaRows[`t_${String(i).padStart(2, "0")}`], i + 1);
 				}
-				assert.equal(alphaRows.t_06, undefined);
 				for (const dbName of ["beta", "gamma"]) {
 					const db = described.value.databases.find((entry) => entry.database === dbName);
 					const byName = Object.fromEntries(db.tables.map((t) => [t.name, t.rows]));
 					for (let i = 0; i < 12; i++) assert.equal(byName[`t_${String(i).padStart(2, "0")}`], i + 1);
+				}
+				const describes = Array.from({ length: 4 }, () => ask(viewer, "describe", { database: "alpha" }));
+				await sleep(100);
+				const qStart = Date.now();
+				const unlockedQuery = await ask(viewer, "query", { database: "alpha", question: "q-0" });
+				const qElapsed = Date.now() - qStart;
+				assert.equal(unlockedQuery.status, 200, JSON.stringify(unlockedQuery.value));
+				assert.deepEqual(unlockedQuery.value.rows, [[1]]);
+				assert.ok(qElapsed < 600, `unlocked query waited ${qElapsed} ms behind describe counts`);
+				for (const res of await Promise.all(describes)) {
+					assert.equal(res.status, 200, JSON.stringify(res.value));
+					const db = res.value.databases.find((entry) => entry.database === "alpha");
+					const rows = Object.fromEntries(db.tables.map((t) => [t.name, t.rows]));
+					for (let i = 0; i < 12; i++) {
+						if (i === 6) assert.equal(rows.t_06, undefined);
+						else assert.equal(rows[`t_${String(i).padStart(2, "0")}`], i + 1);
+					}
 				}
 			} finally {
 				await locker.query("rollback").catch(() => undefined);
@@ -3515,5 +3872,249 @@ create trigger nap before update on slowed for each row execute function nap();
 				await asAdmin(companyDb, `grant select on alpha.t_00 to ${reader}`);
 			}
 		});
+	});
+
+	it("evicts idle pools on 53300 without stale-pool 503s and handles multi-database bursts", async () => {
+		const companyDb = companyDatabase(ENV_A);
+		const fillToLimit = async () => {
+			const fillers = [];
+			let hitLimit = false;
+			for (let i = 0; i < 48; i++) {
+				const client = connect(companyDb, "qorpera_data_keeper", logins.keeper);
+				client.on("error", () => undefined);
+				try {
+					await client.connect();
+					fillers.push(client);
+				} catch (error) {
+					await client.end().catch(() => undefined);
+					if (error?.code === "53300") {
+						hitLimit = true;
+						break;
+					}
+					throw error;
+				}
+			}
+			return { fillers, hitLimit };
+		};
+		const manyNames = Array.from({ length: 14 }, (_, i) => `m${String(i).padStart(2, "0")}`);
+		const manyFiles = {};
+		for (const dbName of manyNames) {
+			manyFiles[`data/${dbName}/database.toml`] = `format = "qorpera.database/v1"\nname = "${dbName}"\nabout = "Pool ${dbName}"\n[list]\nmembers = "readers"\n`;
+			manyFiles[`data/${dbName}/tables/001-init.sql`] = "create table items (id int primary key);\ninsert into items select n from generate_series(1, 5) n;\n";
+			manyFiles[`data/${dbName}/queries/count.sql`] = "-- Count items.\nselect count(*) as n from items;\n";
+		}
+		put(ENV_A, manyFiles);
+		for (const dbName of manyNames) {
+			const applied = await ask(contributor, "apply", { database: dbName });
+			assert.equal(applied.value.applied, true, JSON.stringify(applied.value));
+		}
+		await withGateway({ limits: { ...LIMITS_HERE, questionMs: 2_000, countMs: 1_500, watchMs: 1_500 } }, async () => {
+			const seed = await ask(viewer, "query", { database: "m00", question: "count" });
+			assert.equal(seed.status, 200);
+			for (const dbName of ["m01", "m02", "m04"]) {
+				assert.equal((await ask(viewer, "query", { database: dbName, question: "count" })).status, 200);
+			}
+			const idleReaders = (
+				await asAdmin("postgres", "select count(*)::int as n from pg_stat_activity where datname = $1 and application_name = 'qorpera-data-gateway r'", [companyDb])
+			)[0].n;
+			assert.ok(idleReaders >= 4, `expected at least 4 idle reader pools, got ${idleReaders}`);
+			const { fillers, hitLimit } = await fillToLimit();
+			try {
+				assert.equal(hitLimit, true, "expected company database to reach its connection limit");
+				const evicted = await Promise.all([
+					ask(viewer, "query", { database: "m03", question: "count" }),
+					ask(viewer, "query", { database: "m00", question: "count" }),
+					ask(viewer, "watch", { watches: [{ database: "m00", question: "count", etag: seed.value.etag }], wait: 0.1 }),
+				]);
+				for (const res of evicted) assert.equal(res.status, 200, JSON.stringify(res.value));
+			} finally {
+				await Promise.all(fillers.map((client) => client.end().catch(() => undefined)));
+			}
+			assert.equal(await until(listening, 0), 0);
+			assert.equal((await ask(viewer, "describe", {})).status, 200);
+			const results = await Promise.all([
+				...Array.from({ length: 12 }, () => ask(viewer, "describe", {})),
+				...Array.from({ length: 28 }, (_, i) => ask(viewer, "query", { database: manyNames[i % manyNames.length], question: "count" })),
+				...Array.from({ length: 14 }, (_, i) => ask(viewer, "rows", { database: manyNames[i], table: "items", limit: 5 })),
+				...Array.from({ length: 3 }, () =>
+					ask(viewer, "watch", { watches: [{ database: "m00", question: "count", etag: seed.value.etag }], wait: 1 }),
+				),
+			]);
+			for (const res of results) assert.equal(res.status, 200, JSON.stringify(res.value));
+		});
+	});
+
+	it("retries listen on 53300 and ends listen clients that finish connecting after stop or close", async () => {
+		const companyDb = companyDatabase(ENV_A);
+		const gatewayBackends = async () =>
+			(await asAdmin("postgres", "select count(*)::int as n from pg_stat_activity where datname = $1 and application_name like 'qorpera-data-gateway %'", [companyDb]))[0].n;
+		const dropGatewayBackends = async () => {
+			await asAdmin("postgres", "select pg_terminate_backend(pid) from pg_stat_activity where datname = $1 and application_name like 'qorpera-data-gateway %'", [companyDb]);
+			assert.equal(await until(gatewayBackends, 0, 3_000), 0);
+		};
+		const fillAll = async () => {
+			const fillers = [];
+			let hitLimit = false;
+			for (let i = 0; i < 48; i++) {
+				const client = connect(companyDb, "qorpera_data_keeper", logins.keeper);
+				client.on("error", () => undefined);
+				try {
+					await client.connect();
+					fillers.push(client);
+				} catch (error) {
+					await client.end().catch(() => undefined);
+					if (error?.code === "53300") {
+						hitLimit = true;
+						break;
+					}
+					throw error;
+				}
+			}
+			assert.equal(hitLimit, true, "expected company database to reach its connection limit");
+			return fillers;
+		};
+		const createHoldProxy = async () => {
+			let holdNext = false;
+			let held = null;
+			const sockets = new Set();
+			const proxy = net.createServer((clientSocket) => {
+				sockets.add(clientSocket);
+				clientSocket.on("error", () => undefined);
+				clientSocket.once("close", () => sockets.delete(clientSocket));
+				const closed = new Promise((resolve) => clientSocket.once("close", resolve));
+				const connectUpstream = () => {
+					if (clientSocket.destroyed) return;
+					const upstream = net.connect(storePort, "127.0.0.1");
+					sockets.add(upstream);
+					upstream.on("error", () => clientSocket.destroy());
+					clientSocket.on("error", () => upstream.destroy());
+					upstream.once("close", () => {
+						sockets.delete(upstream);
+						clientSocket.destroy();
+					});
+					clientSocket.once("close", () => upstream.destroy());
+					clientSocket.pipe(upstream);
+					upstream.pipe(clientSocket);
+				};
+				if (holdNext) {
+					holdNext = false;
+					clientSocket.pause();
+					held?.resolve({
+						release: () => {
+							connectUpstream();
+							clientSocket.resume();
+						},
+						closed,
+					});
+					return;
+				}
+				connectUpstream();
+			});
+			await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+			return {
+				port: proxy.address().port,
+				armHold: () =>
+					new Promise((resolve) => {
+						holdNext = true;
+						held = { resolve };
+					}),
+				close: async () => {
+					for (const sock of sockets) sock.destroy();
+					await new Promise((resolve) => proxy.close(resolve));
+				},
+			};
+		};
+		const startRawWatch = (etag) => {
+			const text = JSON.stringify({ watches: [{ database: "m00", question: "count", etag }], wait: 2 });
+			let responded = false;
+			const req = http.request(
+				{
+					host: "127.0.0.1",
+					port,
+					path: `/v1/company-data/${ENV_A}/watch`,
+					method: "POST",
+					headers: { authorization: `Bearer ${viewer}`, "content-type": "application/json", "content-length": Buffer.byteLength(text) },
+				},
+				(res) => {
+					responded = true;
+					res.resume();
+				},
+			);
+			req.on("error", () => undefined);
+			req.end(text);
+			return { req, hasResponded: () => responded };
+		};
+		await withGateway({ limits: { ...LIMITS_HERE, watchMs: 2_000 } }, async () => {
+			const seed = await ask(viewer, "query", { database: "m00", question: "count" });
+			assert.equal(seed.status, 200);
+			await dropGatewayBackends();
+			const fillers = await fillAll();
+			try {
+				let settled = false;
+				const watchDone = ask(viewer, "watch", {
+					watches: [{ database: "m00", question: "count", etag: seed.value.etag }],
+					wait: 0.1,
+				}).finally(() => {
+					settled = true;
+				});
+				await sleep(150);
+				assert.equal(settled, false, "watch returned early instead of retrying 53300 while connecting");
+				await Promise.all(fillers.splice(0, 2).map((client) => client.end().catch(() => undefined)));
+				const res = await watchDone;
+				assert.equal(res.status, 200, JSON.stringify(res.value));
+			} finally {
+				await Promise.all(fillers.map((client) => client.end().catch(() => undefined)));
+			}
+			assert.equal(await until(listening, 0), 0);
+		});
+		const waitClosed = async (closed) => {
+			let timer;
+			try {
+				return await Promise.race([
+					closed.then(() => true),
+					new Promise((resolve) => {
+						timer = setTimeout(resolve, 2_000, false);
+					}),
+				]);
+			} finally {
+				clearTimeout(timer);
+			}
+		};
+		const proxy = await createHoldProxy();
+		try {
+			await withGateway(
+				{ store: { host: "127.0.0.1", port: proxy.port, logins }, limits: { ...LIMITS_HERE, watchMs: 2_000 } },
+				async () => {
+					const seed = await ask(viewer, "query", { database: "m00", question: "count" });
+					assert.equal(seed.status, 200);
+					const held = proxy.armHold();
+					const watchReq = startRawWatch(seed.value.etag);
+					const conn = await held;
+					assert.equal(watchReq.hasResponded(), false);
+					watchReq.req.destroy();
+					await sleep(50);
+					conn.release();
+					assert.equal(await waitClosed(conn.closed), true, "listen client that connected after stop() was not ended");
+					assert.equal(await until(listening, 0), 0);
+				},
+			);
+			let closeConn = null;
+			await withGateway(
+				{ store: { host: "127.0.0.1", port: proxy.port, logins }, limits: { ...LIMITS_HERE, watchMs: 2_000 } },
+				async () => {
+					const seed = await ask(viewer, "query", { database: "m00", question: "count" });
+					assert.equal(seed.status, 200);
+					const held = proxy.armHold();
+					const watchReq = startRawWatch(seed.value.etag);
+					closeConn = await held;
+					assert.equal(watchReq.hasResponded(), false);
+				},
+			);
+			closeConn.release();
+			assert.equal(await waitClosed(closeConn.closed), true, "listen client that connected after gateway.close() was not ended");
+			assert.equal(await until(listening, 0), 0);
+		} finally {
+			await proxy.close();
+		}
 	});
 });

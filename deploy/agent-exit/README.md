@@ -218,7 +218,8 @@ about 340 bytes of connection log; a machine opening 100 connections a second wo
 far more. So `X logs` (the logs' timer, every 5 minutes) tends them:
 - **Seals.** Each open file is sealed into a compressed part (`flows-YYYY-MM-DD.pNNN.jsonl.gz`, mode 0640) once its day
   is closed (two hours after it ends, UTC: the plug's `plugged` lines carry the entry's time, normally less than an
-  hour back), or sooner once it holds 64 MiB. The writers open the file for each line, so a renamed file takes no new
+  hour back), or sooner once it holds 64 MiB. The plug opens the file for each line and the logger checks the path's
+  inode before each write (reopening on rename or unlink and closing while paused), so a renamed file takes no new
   lines. It is renamed to its part's name first (`….pNNN.sealing`), so a pass cut short finishes that part and never
   seals a line twice.
 - **Cuts the DNS record.** `dns.log` is copied into `dns-YYYY-MM-DDTHHMMSSZ.log` (then compressed) and truncated once a

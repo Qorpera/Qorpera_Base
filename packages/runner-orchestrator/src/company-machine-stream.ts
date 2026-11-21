@@ -895,6 +895,7 @@ interface Watcher {
 	 * member who joined is served, and how one whose updates were evicted is served again, since the eviction may have
 	 * thrown away the very update that carried a new size (review r3 F2 of #1746). */
 	sizeSent: { width: number; height: number };
+	evictionRefresh: "clean" | "requested" | "stale";
 }
 
 /**
@@ -1096,6 +1097,7 @@ export class DesktopStream {
 	 * eviction made a request of its own and every request an update: full-screen noise on the real machine piled up
 	 * updates past the reader's bound within seconds, review r11 of #1746). */
 	#wantWhole = false;
+	#wholeInFlight = false;
 	#ended: string | null = null;
 	#relay: Promise<void> = Promise.resolve();
 	constructor(options: DesktopStreamOptions) {
@@ -1112,12 +1114,24 @@ export class DesktopStream {
 		return { ring: this.#ring.length, rects: this.#ring.rects, outbox: this.#outbox.waiting };
 	}
 
+	#requestWhole(): void {
+		// WHY: Coalesce concurrent whole-screen requests so join storms cannot stack full frames past RFB_UPDATE_TOO_LARGE.
+		if (this.#width <= 0 || this.#wholeInFlight) return;
+		this.#wholeInFlight = true;
+		this.#outbox.push(rfbUpdateRequest(false, this.#width, this.#height));
+	}
+
 	/** Streams the desktop to `sink`, released by `release`, until `signal` aborts, a cycle ends it, or the relay ends:
 	 * answers why it ended (`closed` when the signal aborted). */
 	async watch(release: DesktopStreamRelease, sink: DesktopStreamSink, signal: AbortSignal): Promise<string> {
 		if (this.#ended) return this.#ended;
 		const now = this.#options.now ?? Date.now;
-		const watcher: Watcher = { sentSeq: this.#seq, wake: () => {}, sizeSent: { width: 0, height: 0 } };
+		const watcher: Watcher = {
+			sentSeq: this.#seq,
+			wake: () => {},
+			sizeSent: { width: 0, height: 0 },
+			evictionRefresh: "clean",
+		};
 		this.#watchers.add(watcher);
 		const done = AbortSignal.any([signal, this.#stop.signal]);
 		const wakeOnEnd = () => watcher.wake();
@@ -1127,7 +1141,7 @@ export class DesktopStream {
 		try {
 			this.#start();
 			// The whole screen for this member: asked anew, so it is a change after the member came, and passes a cycle.
-			if (this.#width > 0) this.#outbox.push(rfbUpdateRequest(false, this.#width, this.#height));
+			this.#requestWhole();
 			for (;;) {
 				if (this.#ended) return this.#ended;
 				if (signal.aborted) return "closed";
@@ -1159,8 +1173,14 @@ export class DesktopStream {
 					continue;
 				}
 				if (done.aborted) continue;
-				await this.#send(watcher, upTo, sink, done);
+				const sent = await this.#send(watcher, upTo, sink, done);
 				watcher.sentSeq = Math.max(watcher.sentSeq, upTo);
+				if (watcher.evictionRefresh === "stale") {
+					watcher.evictionRefresh = "requested";
+					this.#requestWhole();
+				} else if (sent && watcher.evictionRefresh === "requested") {
+					watcher.evictionRefresh = "clean";
+				}
 				this.#trim();
 				await pause(cycleBegan + (this.#options.cycleEveryMs ?? STREAM_CYCLE_EVERY_MS) - now(), done);
 			}
@@ -1185,6 +1205,7 @@ export class DesktopStream {
 			if (event.kind === "init") {
 				this.#width = event.width;
 				this.#height = event.height;
+				this.#wholeInFlight = true;
 				// The members already here get the size from their first update; the screen is asked whole by the reader.
 				this.#push({ rects: [], cursor: null, size: { width: event.width, height: event.height } });
 				return;
@@ -1199,8 +1220,14 @@ export class DesktopStream {
 			if (event.rects.length > 0 || event.cursor || event.size) this.#push(event);
 			// Keep the changes coming: ONE request for this update, at once — the whole screen when members need it anew,
 			// what changed otherwise (it replaces any of its kind still waiting: O(1)).
-			this.#outbox.push(rfbUpdateRequest(!this.#wantWhole, this.#width, this.#height));
-			this.#wantWhole = false;
+			if (this.#wantWhole) {
+				this.#wantWhole = false;
+				this.#wholeInFlight = true;
+				this.#outbox.push(rfbUpdateRequest(false, this.#width, this.#height));
+			} else {
+				this.#wholeInFlight = false;
+				this.#outbox.push(rfbUpdateRequest(true, this.#width, this.#height));
+			}
 		});
 		// What the server sends is taken in as it comes (bounded at once), and read in turns of at most about
 		// RFB_TAKE_PER_TURN bytes of charged work — every message, header and piece counted (review r10 of #1746) — each
@@ -1280,7 +1307,13 @@ export class DesktopStream {
 					// The size is told again from the first entry this member is sent, whatever the eviction left: the
 					// entry carries its own size, so the two can never disagree.
 					watcher.sizeSent = { width: 0, height: 0 };
-					refresh = true;
+					// WHY: Request one whole screen on first eviction, then defer further refreshes until the lagging watcher catches up.
+					if (watcher.evictionRefresh === "clean") {
+						watcher.evictionRefresh = "requested";
+						refresh = true;
+					} else {
+						watcher.evictionRefresh = "stale";
+					}
 				}
 			// The whole screen is asked with the next request, never beside it.
 			if (refresh) this.#wantWhole = true;
@@ -1302,9 +1335,11 @@ export class DesktopStream {
 	 * eviction leaves behind can be paired with another size: the first entry of the window decides the size told, and a
 	 * later entry of another size clears what came before it (review r4 F2 of #1746).
 	 */
-	async #send(watcher: Watcher, upTo: number, sink: DesktopStreamSink, signal: AbortSignal): Promise<void> {
+	async #send(watcher: Watcher, upTo: number, sink: DesktopStreamSink, signal: AbortSignal): Promise<boolean> {
 		const sizeSent = watcher.sizeSent;
 		const updates = this.#ring.window(watcher.sentSeq, upTo);
+		// WHY: Skip sending a blank post-upTo STREAM_SIZE when eviction emptied the pre-cycle window during release().
+		if (updates.length === 0) return false;
 		// The size these pixels are of: the first entry's own, which is what a member who joined, or one whose updates
 		// were evicted, is told before any of them.
 		let size = sizeSent.width === 0 ? (updates[0]?.at ?? { width: this.#width, height: this.#height }) : sizeSent;
@@ -1381,6 +1416,7 @@ export class DesktopStream {
 			head.writeUInt32BE(png.byteLength, 9);
 			await sendOrStop(sink, Buffer.concat([head, png]), signal);
 		}
+		return true;
 	}
 
 	/** One PNG per area or shape, however many members it goes to. */

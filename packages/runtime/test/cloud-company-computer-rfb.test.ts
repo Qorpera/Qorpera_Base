@@ -2,6 +2,7 @@ import {
 	COMPANY_COMPUTER_RFB_EXTENDED_CLIPBOARD,
 	CompanyComputerRfbClientParser,
 	CompanyComputerWebSocketDecoder,
+	companyComputerWebSocketFrame,
 } from "@qorpera/cloud-client/node/cloud-company-computer-rfb";
 import { describe, expect, it } from "vitest";
 import { computerRfbServerHello } from "./fixtures/company-computer.ts";
@@ -126,5 +127,47 @@ describe("bounded loopback WebSocket decoding", () => {
 		decoder.push(maskedFrame(Buffer.alloc(65_535), 2, false));
 		decoder.push(maskedFrame(Buffer.alloc(65_535), 0, false));
 		expect(() => decoder.push(maskedFrame(Buffer.alloc(3), 0, false))).toThrow("INVALID_WEBSOCKET_FRAGMENT");
+	});
+
+	it("decodes unaligned, 64-bit extended, and fragmented masked frames without aliasing caller buffers", () => {
+		const mask = Buffer.from([0x5a, 0xa5, 0x3c, 0xc3]);
+		const buildMasked = (payload: Buffer): Buffer => {
+			const len = payload.length;
+			const headerLen = len < 126 ? 2 : len < 65_536 ? 4 : 10;
+			const header = Buffer.alloc(headerLen);
+			header[0] = 0x82;
+			if (len < 126) header[1] = 0x80 | len;
+			else if (len < 65_536) {
+				header[1] = 0x80 | 126;
+				header.writeUInt16BE(len, 2);
+			} else {
+				header[1] = 0x80 | 127;
+				header.writeBigUInt64BE(BigInt(len), 2);
+			}
+			const masked = Buffer.allocUnsafe(len);
+			for (let i = 0; i < len; i++) masked[i] = payload[i]! ^ mask[i & 3]!;
+			return Buffer.concat([header, mask, masked]);
+		};
+
+		for (const size of [0, 1, 63, 64, 65, 66, 67, 68, 70_000]) {
+			const expected = Buffer.allocUnsafe(size);
+			for (let i = 0; i < size; i++) expected[i] = (i * 131 + 17) & 0xff;
+			const wire = buildMasked(expected);
+			const decoder = new CompanyComputerWebSocketDecoder();
+			const out: Buffer[] = [];
+			const step = size > 1024 ? 1021 : 3;
+			for (let pos = 0; pos < wire.length; pos += step) {
+				const chunk = Buffer.from(wire.subarray(pos, Math.min(wire.length, pos + step)));
+				for (const msg of decoder.push(chunk)) out.push(msg.payload);
+				chunk.fill(0xff);
+			}
+			expect(out).toHaveLength(1);
+			expect(out[0]).toEqual(expected);
+
+			const framed = companyComputerWebSocketFrame(expected, 2);
+			const headerLen = size < 126 ? 2 : size < 65_536 ? 4 : 10;
+			expect(framed.length).toBe(headerLen + size);
+			expect(framed.subarray(headerLen)).toEqual(expected);
+		}
 	});
 });

@@ -19,13 +19,19 @@ import { PresenceSignatures } from "@qorpera/cloud-client/presence-signatures";
 import { ObjectDependencyError } from "./dependency.ts";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
+
 function record(value: unknown, keys: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== keys)
 		throw new ObjectDependencyError(400);
 	return value as Record<string, unknown>;
 }
-function current(statement: CompanyPathPresenceWire, companyId: string, environmentId: string): boolean {
-	const now = Date.now();
+function current(
+	statement: CompanyPathPresenceWire,
+	companyId: string,
+	environmentId: string,
+	now = Date.now(),
+): boolean {
 	return (
 		statement.companyId === companyId &&
 		statement.environmentId === environmentId &&
@@ -116,7 +122,9 @@ export async function observeMemberCompanyPresence(options: {
 						identity.expiresAt > Date.now() + COMPANY_PATH_PRESENCE_TTL_MS + 2000
 					)
 						throw new ObjectDependencyError(503);
-					for (const statement of statements) {
+					const ordered = [...statements].sort((a, b) => b.sequence - a.sequence);
+					for (const statement of ordered) {
+						signal.throwIfAborted();
 						if (
 							identity.expiresAt < statement.expiresAt ||
 							!current(statement, companyId, environmentId) ||
@@ -127,10 +135,11 @@ export async function observeMemberCompanyPresence(options: {
 							))
 						)
 							continue;
-						if (!newest.has(clientId) || newest.get(clientId)!.statement.sequence < statement.sequence)
-							newest.set(clientId, { statement, identity, allowed });
+						newest.set(clientId, { statement, identity, allowed });
+						break;
 					}
 				} catch {
+					if (signal.aborted) throw signal.reason;
 					partial = true;
 				}
 			}),
@@ -150,33 +159,59 @@ export async function observeMemberCompanyPresence(options: {
 			},
 			confirmed: [],
 		};
+	const scopedByToken = scoped.map((entry) => {
+		const map = new Map<string, string[]>();
+		for (const route of entry.routes) {
+			const list = map.get(route.token);
+			if (list) list.push(route.path);
+			else map.set(route.token, [route.path]);
+		}
+		return map;
+	});
+	const seenParticipants = paths.map(() => new Set<string>());
 	for (const { statement, identity, allowed } of newest.values()) {
-		if (!current(statement, companyId, environmentId)) continue;
+		if (!current(statement, companyId, environmentId, observedAt)) continue;
 		result.confirmed.push({ clientId: statement.clientId, sequence: statement.sequence });
-		for (let index = 0; index < paths.length; index++)
-			for (const claim of statement.routes) {
-				const route = scoped[index].routes.find(
-					(route) =>
-						route.token === claim.token &&
-						allowed[index].routes.some((item) => item.path === route.path && item.token === route.token),
-				);
-				const overlap = route && companyPresenceOverlap(claim, route.path, paths[index]);
-				const participants = result.view.paths[index].participants;
-				if (
-					overlap &&
-					!participants.some(
-						(item) =>
-							item.runId === identity.runId && item.activity === claim.activity && item.overlap === overlap,
-					)
-				)
-					participants.push({
-						staffAgentId: identity.staffAgentId,
-						runId: identity.runId,
-						activity: claim.activity,
-						overlap,
-						expiresAt: statement.expiresAt,
-					});
+		for (let index = 0; index < paths.length; index++) {
+			const scopedMap = scopedByToken[index]!;
+			const allowedByToken = new Map<string, Set<string>>();
+			for (const item of allowed[index]!.routes) {
+				let set = allowedByToken.get(item.token);
+				if (!set) {
+					set = new Set();
+					allowedByToken.set(item.token, set);
+				}
+				set.add(item.path);
 			}
+			const participants = result.view.paths[index]!.participants;
+			const seen = seenParticipants[index]!;
+			for (const claim of statement.routes) {
+				const candidatePaths = scopedMap.get(claim.token);
+				if (!candidatePaths) continue;
+				const allowedPaths = allowedByToken.get(claim.token);
+				if (!allowedPaths) continue;
+				let matchedPath: string | undefined;
+				for (const candidatePath of candidatePaths) {
+					if (allowedPaths.has(candidatePath)) {
+						matchedPath = candidatePath;
+						break;
+					}
+				}
+				if (matchedPath === undefined) continue;
+				const overlap = companyPresenceOverlap(claim, matchedPath, paths[index]!);
+				if (!overlap) continue;
+				const dedupeKey = `${identity.runId}\0${claim.activity}\0${overlap}`;
+				if (seen.has(dedupeKey)) continue;
+				seen.add(dedupeKey);
+				participants.push({
+					staffAgentId: identity.staffAgentId,
+					runId: identity.runId,
+					activity: claim.activity,
+					overlap,
+					expiresAt: statement.expiresAt,
+				});
+			}
+		}
 	}
 	return result;
 }
@@ -223,9 +258,10 @@ export async function serveMemberCompanyPresence(
 					signal.throwIfAborted();
 					for await (const chunk of request) {
 						signal.throwIfAborted();
-						count += chunk.length;
+						const part = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+						count += part.length;
 						if (count > Number(length)) throw new ObjectDependencyError(413);
-						chunks.push(Buffer.from(chunk));
+						chunks.push(part);
 					}
 				} finally {
 					signal.removeEventListener("abort", abortBody);
@@ -233,7 +269,8 @@ export async function serveMemberCompanyPresence(
 				if (count !== Number(length)) throw new ObjectDependencyError(400);
 				let input: unknown;
 				try {
-					input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
+					const raw = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, count);
+					input = JSON.parse(UTF8_DECODER.decode(raw));
 				} catch {
 					throw new ObjectDependencyError(400);
 				}

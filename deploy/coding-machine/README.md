@@ -20,7 +20,7 @@ installs the guest agent, makes the machines and runs the sessions.
 | Delegated controllers | `qorpera-delegate.conf` gives every `user@.service` the cpu, cpuset, io, memory and pids controllers, so a rootless container's `--memory` and `--cpus` hold. |
 | NOPASSWD sudo | `qorpera-coding.sudoers`: the system group `qorpera-coding` may run anything as root without a password. 5g makes each session's user a member. |
 | `qorpera-coding.slice` | From `../coding-worker/`: every session's slice (`qorpera-coding-<worker32>.slice`) sits under it, below 90% of memory and tasks. |
-| Places for 5g | `/opt/qorpera-guest` (the guest agent), `/company` (empty; each unit binds the session's mount there), `/run/qorpera-folder/mounts` (the folder programs' mounts, made at boot by `qorpera-coding.tmpfiles`). |
+| Places for 5g | `/opt/qorpera-guest` (the guest agent), `/company` (empty; each unit binds the session's mount there), `/run/qorpera-folder/mounts` (the folder programs' mounts, made at boot by `qorpera-coding.tmpfiles`), and `/usr/local/bin/data` (root:root `0555`, runs `/opt/qorpera-folder/qorpera-folder data` as root through `sudo -n` against the session's bound `/run/qorpera-folder/view.json`). |
 | What is gone | apt's five self-update units are masked (the guest refuses an image where one is not). snapd, openssh-server, the cloud image's own git, the `ubuntu` account and cloud-init's sudoers file are removed, and so are the cloud image's LXD metadata templates, which would write `/etc/hostname`, `/etc/hosts` and cloud-init's seed into every machine made from the image, naming each after its instance. The build's logs, caches, apt lists, machine id and SSH host keys are cleared before the image is published. |
 
 `coding-image.json` pins Node.js, git, Chromium, uv and mise by version, URL and sha-256, and TypeScript and tsx by
@@ -48,14 +48,16 @@ The image expects this per session; `test/prove-in-coding-machine.sh` does exact
    session uid (`usermod --add-subuids <start>-<end> --add-subgids <start>-<end>`). Rootless Docker maps its
    containers' users there. No two users share a range. The image has none, and the `-K` options above keep useradd
    from handing out its own, which start at 100000, among the session uids.
-3. **`/company` for the user manager.** A drop-in `/run/systemd/system/user@<uid>.service.d/qorpera-company.conf` with
-   `[Service]` and `BindPaths=/run/qorpera-folder/mounts/<worker32>:/company`, written after the folder program's mount
+3. **`/company` and the data view for the user manager.** A drop-in `/run/systemd/system/user@<uid>.service.d/qorpera-company.conf` with
+   `[Service]`, `BindPaths=/run/qorpera-folder/mounts/<worker32>:/company`, and
+   `BindReadOnlyPaths=/run/qorpera-folder/views/<worker32>.json:/run/qorpera-folder/view.json`, written after the folder program's mount
    is up (an earlier bind holds the empty folder under it). Then the session's rootless containers bind the session's
-   `/company`.
+   `/company`, and `/usr/local/bin/data` (also ensured by the guest agent on existing machines) reaches the company's
+   databases under the session's own view.
 4. **The user manager.** `loginctl enable-linger qorpera-<uid>` starts `user@<uid>.service` and
    `/run/user/<uid>`; `disable-linger` stops them when the session leaves.
 5. **Each command.** As the plan's units: the uid and gid, the session's slice, `ProtectProc=invisible`,
-   `PrivateIPC=yes`, `BindPaths=<mount>:/company`, and in its environment `HOME`, `XDG_RUNTIME_DIR=/run/user/<uid>`,
+   `PrivateIPC=yes`, `BindPaths=<mount>:/company`, `BindReadOnlyPaths=<view>:/run/qorpera-folder/view.json`, and in its environment `HOME`, `XDG_RUNTIME_DIR=/run/user/<uid>`,
    `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/<uid>/bus` and `DOCKER_HOST=unix:///run/user/<uid>/docker.sock`.
 6. **The session's network namespace.** Rootless Docker publishes a container's ports in its user manager's network
    namespace (rootlesskit's parent). For a published port to be on the session's own localhost, `user@<uid>.service`

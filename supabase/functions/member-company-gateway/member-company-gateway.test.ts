@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
 import { after, before, describe, it } from "node:test";
 import {
 	forwardMemberCompanyGateway,
@@ -1444,12 +1445,20 @@ describe("public member Company File gateway", () => {
 		assert.equal(drop.status, 404);
 	});
 	it("gives a held watch 30 s, past the data gateway's 20 s hold and the sign-in check, and the others 25 s", async () => {
-		const original = AbortSignal.timeout;
+		const originalSetTimeout = globalThis.setTimeout;
+		const originalClearTimeout = globalThis.clearTimeout;
 		const deadlines: number[] = [];
-		AbortSignal.timeout = (ms: number) => {
-			deadlines.push(ms);
-			return original.call(AbortSignal, ms);
-		};
+		const active = new Set<unknown>();
+		globalThis.setTimeout = ((fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+			if (typeof ms === "number") deadlines.push(ms);
+			const handle = originalSetTimeout(fn, ms, ...args);
+			active.add(handle);
+			return handle;
+		}) as typeof setTimeout;
+		globalThis.clearTimeout = ((handle?: unknown) => {
+			active.delete(handle);
+			return originalClearTimeout(handle as ReturnType<typeof setTimeout>);
+		}) as typeof clearTimeout;
 		try {
 			for (const verb of ["watch", "query", "apply", "describe", "rows", "edit", "change", "changes"]) {
 				const response = await forward(
@@ -1459,9 +1468,11 @@ describe("public member Company File gateway", () => {
 				assert.equal(response.status, 200, verb);
 			}
 		} finally {
-			AbortSignal.timeout = original;
+			globalThis.setTimeout = originalSetTimeout;
+			globalThis.clearTimeout = originalClearTimeout;
 		}
 		assert.deepEqual(deadlines, [30_000, 25_000, 25_000, 25_000, 25_000, 25_000, 25_000, 25_000]);
+		assert.equal(active.size, 0);
 	});
 	it("supports the governed folder object read route", async () => {
 		const path = `/v1/member-folder-objects/${id}/${"b".repeat(64)}`;
@@ -1474,6 +1485,92 @@ describe("public member Company File gateway", () => {
 			).status,
 			200,
 		);
+	});
+	it("forwards public company data queries and changes without member sign-in and strips credentials", async () => {
+		const seen: Array<{ method?: string; path: string; headers: Record<string, string>; body: string }> = [];
+		const fetchImplementation: typeof fetch = async (url, init) => {
+			seen.push({
+				method: init?.method,
+				path: new URL(String(url)).pathname,
+				headers: Object.fromEntries(new Headers(init?.headers)),
+				body: new TextDecoder().decode(init?.body as Uint8Array),
+			});
+			return Response.json({ rows: [], columns: [] });
+		};
+		for (const verb of ["query", "change"] as const) {
+			const path = `/v1/company-data-public/${id}/${verb}`;
+			const body = JSON.stringify({ database: "shop", question: "open-catalog" });
+			const req = new Request(base + path, {
+				method: "POST",
+				headers: {
+					origin: "https://shop.customer.example",
+					authorization: "Bearer should-not-forward",
+					cookie: "secret=1",
+					"content-type": "application/json",
+					"content-length": String(body.length),
+					"x-forwarded-for": "203.0.113.9",
+				},
+				body,
+			});
+			const response = await forwardMemberCompanyGateway(req, {
+				upstreamUrl,
+				fetchImplementation,
+			});
+			assert.equal(response.status, 200, verb);
+			assert.equal(response.headers.get("access-control-allow-origin"), "*");
+			const preflight = await forwardMemberCompanyGateway(
+				new Request(base + path, {
+					method: "OPTIONS",
+					headers: {
+						origin: "https://shop.customer.example",
+						"access-control-request-method": "POST",
+						"access-control-request-headers": "content-type",
+					},
+				}),
+				{ upstreamUrl, fetchImplementation },
+			);
+			assert.equal(preflight.status, 204, verb);
+			assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
+			assert.equal(preflight.headers.get("access-control-allow-methods"), "POST");
+			const forgedPreflight = await forwardMemberCompanyGateway(
+				new Request(base + path, {
+					method: "OPTIONS",
+					headers: {
+						origin: "https://shop.customer.example",
+						"access-control-request-method": "POST",
+						"access-control-request-headers": "x-forwarded-for",
+					},
+				}),
+				{ upstreamUrl, fetchImplementation },
+			);
+			assert.equal(forgedPreflight.status, 403, verb);
+		}
+		assert.equal(seen.length, 2);
+		for (const call of seen) {
+			assert.equal(call.method, "POST");
+			assert.equal(call.headers.authorization, undefined);
+			assert.equal(call.headers.cookie, undefined);
+			assert.equal(call.headers["content-type"], "application/json");
+			assert.equal(call.headers["x-forwarded-for"], "203.0.113.9");
+		}
+		const nonPublic = await forwardMemberCompanyGateway(
+			new Request(`${base}/v1/company-data-public/${id}/apply`, {
+				method: "POST",
+				headers: { origin: "https://app.qorpera.com", "content-length": "2" },
+				body: "{}",
+			}),
+			{ upstreamUrl, fetchImplementation: async () => assert.fail("must not forward") },
+		);
+		assert.equal(nonPublic.status, 404);
+		const memberRoute = await forwardMemberCompanyGateway(
+			new Request(`${base}/v1/company-data/${id}/query`, {
+				method: "POST",
+				headers: { origin: "https://shop.customer.example", "content-length": "2" },
+				body: "{}",
+			}),
+			{ upstreamUrl, fetchImplementation: async () => assert.fail("must not forward") },
+		);
+		assert.equal(memberRoute.status, 403);
 	});
 });
 
@@ -1565,5 +1662,50 @@ describe("the bridge's own entrypoint (index.ts)", () => {
 			deployment({ QORPERA_MEMBER_TOKEN_ISSUER: value });
 			await assert.rejects(async () => await pointer(live()), /exact https issuer/, value);
 		}
+	});
+
+	it("detaches all caller abort listeners across buffered, pass-through, empty, oversized, and failed requests", async () => {
+		const req1 = request(object);
+		const streamed = await forward(req1, {
+			upstreamUrl,
+			fetchImplementation: async () => new Response(new Uint8Array([1, 2, 3])),
+		});
+		assert.deepEqual(new Uint8Array(await streamed.arrayBuffer()), new Uint8Array([1, 2, 3]));
+		assert.equal(getEventListeners(req1.signal, "abort").length, 0);
+
+		const req2 = request(object);
+		const notModified = await forward(req2, {
+			upstreamUrl,
+			fetchImplementation: async () => new Response(null, { status: 304 }),
+		});
+		assert.equal(notModified.status, 304);
+		assert.equal(getEventListeners(req2.signal, "abort").length, 0);
+
+		const req3 = request(object);
+		const oversized = await forward(req3, {
+			upstreamUrl,
+			fetchImplementation: async () =>
+				new Response(new Uint8Array([1]), { headers: { "content-length": String(8 * 1024 * 1024 + 1) } }),
+		});
+		assert.equal(oversized.status, 502);
+		assert.equal(getEventListeners(req3.signal, "abort").length, 0);
+
+		const req4 = request(screen);
+		const buffered = await forward(req4, {
+			upstreamUrl,
+			fetchImplementation: async () => new Response(new Uint8Array([9, 8, 7])),
+		});
+		assert.deepEqual(new Uint8Array(await buffered.arrayBuffer()), new Uint8Array([9, 8, 7]));
+		assert.equal(getEventListeners(req4.signal, "abort").length, 0);
+
+		const req5 = request(object);
+		const failed = await forward(req5, {
+			upstreamUrl,
+			fetchImplementation: async () => {
+				throw new TypeError("down");
+			},
+		});
+		assert.equal(failed.status, 503);
+		assert.equal(getEventListeners(req5.signal, "abort").length, 0);
 	});
 });

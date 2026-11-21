@@ -21,6 +21,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type CodeCheck, type CodeSiteRecipe, codeChecksTail } from "../src/code-checks.ts";
 import {
+	CODE_CHECKS_DRILL,
 	CODE_CHECKS_NEWER_RUN,
 	CODE_SITE_COLLECT,
 	CODE_SITE_DROP,
@@ -49,7 +50,10 @@ import {
 	LxdCodingExecutorHost,
 	type LxdCodingExecutorHostOptions,
 } from "../src/coding-executor-host.ts";
-import type { LxdCodingFolderCommandTransportOptions } from "../src/coding-folder-command-transport.ts";
+import type {
+	LxdCodingFolderCommandTransport,
+	LxdCodingFolderCommandTransportOptions,
+} from "../src/coding-folder-command-transport.ts";
 import type {
 	CodingFolderBoundary,
 	CodingFolderBoundaryView,
@@ -508,6 +512,16 @@ async function fixture() {
 					),
 				};
 			}
+			case "qorpera_record_coding_machine_load": {
+				if (args.p_owner !== "coding-host" || args.p_binding_text !== plan.text)
+					throw new Error("Coding machine custody differs");
+				const sessions = (args.p_load as { sessions?: unknown[] } | undefined)?.sessions;
+				return {
+					schema: "qorpera.coding-machine-load-recorded/v1",
+					machineId: args.p_machine_id,
+					sessions: Array.isArray(sessions) ? sessions.length : 0,
+				};
+			}
 			case "qorpera_record_coding_session_detached":
 				if (attachments.get(String(args.p_worker_id)) === args.p_attachment_token)
 					attachments.delete(String(args.p_worker_id));
@@ -624,6 +638,17 @@ async function fixture() {
 			const file = files.get(path);
 			if (!file) throw new Error("Missing file");
 			return file;
+		}),
+		readCodingMachineMemory: vi.fn(async (_project, _name, groups) => {
+			const meminfo =
+				files.get("/proc/meminfo")?.content.toString("utf8") ??
+				"MemTotal:        8388608 kB\nMemAvailable:    6291456 kB\n";
+			const stats = new Map<string, string>();
+			for (const path of groups) {
+				const content = files.get(path)?.content.toString("utf8").trim();
+				if (content) stats.set(path, content);
+			}
+			return { meminfo, stats };
 		}),
 		pushInstanceFile: vi.fn(async (_project, _name, path, content, mode) => {
 			files.set(path, { uid: 0, gid: 0, mode, content: Buffer.from(content) });
@@ -5413,6 +5438,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			budgetMs?: number;
 			stopMs?: number;
 			boundaryMs?: number;
+			pollMs?: number | null;
 			/** What the machine's agent says of its package caches at the mount (true: a new agent that made them). */
 			packageCaches?: boolean;
 		} = {},
@@ -5439,7 +5465,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			folder: {
 				...f.folder,
 				report,
-				checksPollMs: 5,
+				...(options.pollMs === null ? {} : { checksPollMs: options.pollMs ?? 5 }),
 				checksStopMs: options.stopMs ?? 300,
 				...(options.budgetMs === undefined ? {} : { checksBudgetMs: options.budgetMs }),
 				...(options.boundaryMs === undefined ? {} : { checksBoundaryMs: options.boundaryMs }),
@@ -8399,5 +8425,956 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				await chmod(locked, 0o755);
 			}
 		});
+	});
+
+	describe("parallel check execution (needs)", () => {
+		const checkEventOrder = (logged: readonly Record<string, unknown>[], step: string, name: string) =>
+			logged.findIndex((event) => event.event === "code-checks" && event.step === step && event.check === name);
+
+		it("keeps legacy checks without needs strictly sequential", async () => {
+			const f = await checksFixture();
+			let active = 0;
+			let peak = 0;
+			const baseRun = mocked.guestRun.getMockImplementation()!;
+			const baseOutput = mocked.guestOutput.getMockImplementation()!;
+			const activeIds = new Set<string>();
+			f.ending((run) => (checkOf(run) ? { after: 30 } : {}));
+			mocked.guestRun.mockImplementation(async (request: unknown) => {
+				const parsed = parseCodingGuestRequest("run", request);
+				if (checkOf(parsed) && !activeIds.has(parsed.commandId)) {
+					activeIds.add(parsed.commandId);
+					active++;
+					peak = Math.max(peak, active);
+				}
+				return baseRun(request);
+			});
+			mocked.guestOutput.mockImplementation(async (request: unknown) => {
+				const page = await baseOutput(request);
+				if (page.answer.state !== "running" && activeIds.delete(page.answer.commandId)) active--;
+				return page;
+			});
+			const run = await f.run(CHECKS);
+			expect(run).toMatchObject({ state: "passed" });
+			expect(peak).toBe(1);
+		});
+
+		it("runs ready DAG checks concurrently, enforces dependencies, preserves file order, and collects site only after all pass", async () => {
+			const f = await checksFixture();
+			const TREE = "d".repeat(40);
+			const RECIPE: CodeSiteRecipe = { folder: "dist", name: "shop", title: "The shop" };
+			const dag: CodeCheck[] = [
+				{ name: "install", run: "npm ci", timeoutSeconds: 600, cwd: "." },
+				{ name: "lint", run: "npm run lint", timeoutSeconds: 300, cwd: ".", needs: ["install"] },
+				{ name: "typecheck", run: "npm run typecheck", timeoutSeconds: 300, cwd: ".", needs: ["install"] },
+				{ name: "test", run: "npm test", timeoutSeconds: 300, cwd: ".", needs: ["install"] },
+				{
+					name: "build",
+					run: "npm run build",
+					timeoutSeconds: 300,
+					cwd: ".",
+					needs: ["lint", "typecheck", "test"],
+				},
+			];
+			const parallelCommands = new Set(["npm run lint", "npm run typecheck", "npm test"]);
+			const runningParallel = new Map<string, string>();
+			let peakParallel = 0;
+			let barrierReleased = false;
+			f.ending((run) => {
+				if (run.command === CODE_SITE_COLLECT) return { printed: `tree ${TREE}\nfiles 2\nbytes 1024\n` };
+				const cmd = checkOf(run);
+				if (cmd && parallelCommands.has(cmd)) return { state: "running" };
+				return {};
+			});
+			const baseRun = mocked.guestRun.getMockImplementation()!;
+			mocked.guestRun.mockImplementation(async (request: unknown) => {
+				const result = await baseRun(request);
+				const parsed = parseCodingGuestRequest("run", request);
+				const cmd = checkOf(parsed);
+				if (cmd && parallelCommands.has(cmd)) {
+					runningParallel.set(cmd, parsed.commandId);
+					peakParallel = Math.max(peakParallel, runningParallel.size);
+					if (runningParallel.size === 3 && !barrierReleased) {
+						barrierReleased = true;
+						const releaseOrder = ["npm test", "npm run typecheck", "npm run lint"];
+						for (const [offset, name] of releaseOrder.entries()) {
+							const entry = f.commands.get(runningParallel.get(name) as string);
+							if (entry) {
+								entry.ending = { code: 0 };
+								entry.until = Date.now() + offset * 20;
+							}
+						}
+					}
+				}
+				return result;
+			});
+
+			const run = await f.run(dag, 1, f.signal, RECIPE);
+			expect(barrierReleased).toBe(true);
+			expect(peakParallel).toBe(3);
+			expect(run).toEqual({
+				state: "passed",
+				ms: expect.any(Number),
+				copyMs: expect.any(Number),
+				checks: dag.map(({ name, run: command }) => ({ name, run: command, ms: expect.any(Number) })),
+				site: { state: "made", tree: TREE, files: 2, bytes: 1024, folder: "dist", name: "shop", title: "The shop" },
+			});
+			const installEnded = checkEventOrder(f.logged, "ended", "install");
+			const buildStarted = checkEventOrder(f.logged, "started", "build");
+			const buildEnded = checkEventOrder(f.logged, "ended", "build");
+			const collectStarted = f.logged.findIndex((event) => event.step === "started" && event.site === "collect");
+			for (const name of ["lint", "typecheck", "test"]) {
+				expect(checkEventOrder(f.logged, "started", name)).toBeGreaterThan(installEnded);
+				expect(checkEventOrder(f.logged, "ended", name)).toBeLessThan(buildStarted);
+			}
+			expect(collectStarted).toBeGreaterThan(buildEnded);
+		});
+
+		it("caps concurrent checks at four when more checks are ready at once", async () => {
+			const f = await checksFixture();
+			const checks: CodeCheck[] = Array.from({ length: 6 }, (_, index) => ({
+				name: `job${index}`,
+				run: `run-${index}`,
+				timeoutSeconds: 60,
+				cwd: ".",
+				needs: [],
+			}));
+			const active = new Set<string>();
+			let peak = 0;
+			let reachedCap = false;
+			f.ending((run) => (checkOf(run) ? { state: "running" } : {}));
+			const baseRun = mocked.guestRun.getMockImplementation()!;
+			const baseOutput = mocked.guestOutput.getMockImplementation()!;
+			mocked.guestRun.mockImplementation(async (request: unknown) => {
+				const result = await baseRun(request);
+				const parsed = parseCodingGuestRequest("run", request);
+				if (checkOf(parsed)) {
+					active.add(parsed.commandId);
+					peak = Math.max(peak, active.size);
+					if (active.size === 4) {
+						reachedCap = true;
+						for (const id of active) {
+							const entry = f.commands.get(id);
+							if (entry && entry.ending.state === "running") {
+								entry.ending = { code: 0 };
+								entry.until = Date.now();
+							}
+						}
+					} else if (reachedCap) {
+						const entry = f.commands.get(parsed.commandId);
+						if (entry) {
+							entry.ending = { code: 0 };
+							entry.until = Date.now() + 15;
+						}
+					}
+				}
+				return result;
+			});
+			mocked.guestOutput.mockImplementation(async (request: unknown) => {
+				const page = await baseOutput(request);
+				if (page.answer.state !== "running") active.delete(page.answer.commandId);
+				return page;
+			});
+
+			const run = await f.run(checks);
+			expect(reachedCap).toBe(true);
+			expect(peak).toBe(4);
+			expect(run).toMatchObject({
+				state: "passed",
+				checks: checks.map(({ name, run: command }) => ({ name, run: command, ms: expect.any(Number) })),
+			});
+		});
+
+		it("cancels in-flight siblings immediately on first failure, skips dependents and site, and reports accurate passed/notRun", async () => {
+			const f = await checksFixture();
+			const RECIPE: CodeSiteRecipe = { folder: "dist", name: "shop", title: "The shop" };
+			const dag: CodeCheck[] = [
+				{ name: "install", run: "npm ci", timeoutSeconds: 600, cwd: "." },
+				{ name: "lint", run: "npm run lint", timeoutSeconds: 300, cwd: ".", needs: ["install"] },
+				{ name: "test", run: "npm test", timeoutSeconds: 300, cwd: ".", needs: ["install"] },
+				{ name: "build", run: "npm run build", timeoutSeconds: 300, cwd: ".", needs: ["lint", "test"] },
+			];
+			let lintId: string | undefined;
+			let testId: string | undefined;
+			let markSiblingCancelled: (() => void) | undefined;
+			const siblingCancelled = new Promise<void>((resolve) => {
+				markSiblingCancelled = resolve;
+			});
+			let cancelledBeforeTailReadFinished = false;
+			f.ending((run) => {
+				const cmd = checkOf(run);
+				if (cmd === "npm run lint" || cmd === "npm test") return { state: "running" };
+				return {};
+			});
+			const baseRun = mocked.guestRun.getMockImplementation()!;
+			const baseCancel = mocked.guestCancel.getMockImplementation()!;
+			const { LxdCodingFolderCommandTransport: RealTransport } = await vi.importActual<{
+				LxdCodingFolderCommandTransport: typeof LxdCodingFolderCommandTransport;
+			}>("../src/coding-folder-command-transport.ts");
+			const baseRead = RealTransport.prototype.read;
+			const readSpy = vi.spyOn(RealTransport.prototype, "read").mockImplementation(async function (
+				this: LxdCodingFolderCommandTransport,
+				scope,
+				input,
+				signal,
+			) {
+				if (input.commandId === lintId && input.limit === 16384) {
+					await siblingCancelled;
+					cancelledBeforeTailReadFinished = true;
+				}
+				return baseRead.call(this, scope, input, signal);
+			});
+			mocked.guestRun.mockImplementation(async (request: unknown) => {
+				const result = await baseRun(request);
+				const parsed = parseCodingGuestRequest("run", request);
+				const cmd = checkOf(parsed);
+				if (cmd === "npm run lint") lintId = parsed.commandId;
+				if (cmd === "npm test") testId = parsed.commandId;
+				if (lintId && testId) {
+					const lintEntry = f.commands.get(lintId);
+					if (lintEntry && lintEntry.ending.state === "running") {
+						lintEntry.printed = Buffer.from("src/a.ts:1 error\n");
+						lintEntry.ending = { code: 1 };
+						lintEntry.until = Date.now();
+					}
+				}
+				return result;
+			});
+			mocked.guestCancel.mockImplementation(async (request: unknown) => {
+				const parsed = parseCodingGuestRequest("cancel", request);
+				const result = await baseCancel(request);
+				if (parsed.commandId === testId) markSiblingCancelled?.();
+				return result;
+			});
+
+			let run: Awaited<ReturnType<typeof f.run>>;
+			try {
+				run = await f.run(dag, 1, f.signal, RECIPE);
+			} finally {
+				readSpy.mockRestore();
+			}
+			expect(cancelledBeforeTailReadFinished).toBe(true);
+			expect(run).toEqual({
+				state: "failed",
+				ms: expect.any(Number),
+				passed: [{ name: "install", ms: expect.any(Number) }],
+				failed: {
+					name: "lint",
+					run: "npm run lint",
+					ms: expect.any(Number),
+					exitCode: 1,
+					atLimit: false,
+					tail: "tail of: src/a.ts:1 error\n",
+					log: "~/.qorpera-checks/0000000001-0001/out/2-lint.log",
+				},
+				notRun: ["test", "build"],
+			});
+			expect(testId).toBeDefined();
+			expect(f.commands.get(testId as string)?.state).toBe("cancelled");
+			expect(mocked.guestCancel.mock.calls.map(([request]) => (request as { commandId: string }).commandId)).toEqual(
+				[testId],
+			);
+			expect(f.ran().map(checkOf)).not.toContain("npm run build");
+			expect(f.ran().some((ran) => ran.command === CODE_SITE_COLLECT)).toBe(false);
+		});
+
+		it("reports the first failing check with its tail when two checks fail in the same poll", async () => {
+			const f = await checksFixture();
+			const dag: CodeCheck[] = [
+				{ name: "lint", run: "npm run lint", timeoutSeconds: 60, cwd: ".", needs: [] },
+				{ name: "test", run: "npm test", timeoutSeconds: 60, cwd: ".", needs: [] },
+			];
+			let lintId: string | undefined;
+			let testId: string | undefined;
+			let releasePollStart: (() => void) | undefined;
+			const bothPollsStarted = new Promise<void>((resolve) => {
+				releasePollStart = resolve;
+			});
+			let releasePollEnd: (() => void) | undefined;
+			const bothPollsDone = new Promise<void>((resolve) => {
+				releasePollEnd = resolve;
+			});
+			let releaseTestPoll: (() => void) | undefined;
+			const testPollAfterLint = new Promise<void>((resolve) => {
+				releaseTestPoll = resolve;
+			});
+			let markTestFinished: (() => void) | undefined;
+			const testFinished = new Promise<void>((resolve) => {
+				markTestFinished = resolve;
+			});
+			const pollsEntered = new Set<string>();
+			const pollsCompleted = new Set<string>();
+			let tailReadWaitedForTest = false;
+			f.ending((run) => (checkOf(run) ? { state: "running" } : {}));
+			const baseRun = mocked.guestRun.getMockImplementation()!;
+			const { LxdCodingFolderCommandTransport: RealTransport } = await vi.importActual<{
+				LxdCodingFolderCommandTransport: typeof LxdCodingFolderCommandTransport;
+			}>("../src/coding-folder-command-transport.ts");
+			const baseRead = RealTransport.prototype.read;
+			const baseHidden = RealTransport.prototype.hidden;
+			const readSpy = vi.spyOn(RealTransport.prototype, "read").mockImplementation(async function (
+				this: LxdCodingFolderCommandTransport,
+				scope,
+				input,
+				signal,
+			) {
+				if (input.commandId === lintId && input.limit === 16384) {
+					releaseTestPoll?.();
+					await testFinished;
+					tailReadWaitedForTest = true;
+				}
+				if (input.limit === 4096 && (input.commandId === lintId || input.commandId === testId)) {
+					pollsEntered.add(input.commandId);
+					if (pollsEntered.size === 2 && lintId && testId) {
+						const lintEntry = f.commands.get(lintId)!;
+						const testEntry = f.commands.get(testId)!;
+						lintEntry.printed = Buffer.from("lint failed line\n");
+						lintEntry.ending = { code: 1 };
+						lintEntry.until = Date.now();
+						testEntry.printed = Buffer.from("test failed line\n");
+						testEntry.ending = { code: 2 };
+						testEntry.until = Date.now();
+						releasePollStart?.();
+					}
+					await bothPollsStarted;
+					const receipt = await baseRead.call(this, scope, input, signal);
+					pollsCompleted.add(input.commandId);
+					if (pollsCompleted.size === 2) releasePollEnd?.();
+					await bothPollsDone;
+					if (input.commandId === testId) await testPollAfterLint;
+					return receipt;
+				}
+				return baseRead.call(this, scope, input, signal);
+			});
+			const hiddenSpy = vi.spyOn(RealTransport.prototype, "hidden").mockImplementation(async function (
+				this: LxdCodingFolderCommandTransport,
+				commandId,
+				signal,
+			) {
+				const hidden = await baseHidden.call(this, commandId, signal);
+				if (commandId === testId) setImmediate(() => markTestFinished?.());
+				return hidden;
+			});
+			mocked.guestRun.mockImplementation(async (request: unknown) => {
+				const result = await baseRun(request);
+				const parsed = parseCodingGuestRequest("run", request);
+				const cmd = checkOf(parsed);
+				if (cmd === "npm run lint") lintId = parsed.commandId;
+				if (cmd === "npm test") testId = parsed.commandId;
+				return result;
+			});
+
+			let run: Awaited<ReturnType<typeof f.run>>;
+			try {
+				run = await f.run(dag);
+			} finally {
+				readSpy.mockRestore();
+				hiddenSpy.mockRestore();
+			}
+			expect(tailReadWaitedForTest).toBe(true);
+			expect(run).toEqual({
+				state: "failed",
+				ms: expect.any(Number),
+				passed: [],
+				failed: {
+					name: "lint",
+					run: "npm run lint",
+					ms: expect.any(Number),
+					exitCode: 1,
+					atLimit: false,
+					tail: "tail of: lint failed line\n",
+					log: "~/.qorpera-checks/0000000001-0001/out/1-lint.log",
+				},
+				notRun: ["test"],
+			});
+		});
+
+		it("tracks every sibling whose cancellation could not be confirmed before allowing a later run", async () => {
+			const f = await checksFixture({ stopMs: 60 });
+			const dag: CodeCheck[] = [
+				{ name: "lint", run: "npm run lint", timeoutSeconds: 60, cwd: ".", needs: [] },
+				{ name: "typecheck", run: "npm run typecheck", timeoutSeconds: 60, cwd: ".", needs: [] },
+				{ name: "test", run: "npm test", timeoutSeconds: 60, cwd: ".", needs: [] },
+			];
+			const ids = new Map<string, string>();
+			f.ending((run) => (checkOf(run) ? { state: "running" } : {}));
+			const baseRun = mocked.guestRun.getMockImplementation()!;
+			mocked.guestRun.mockImplementation(async (request: unknown) => {
+				const result = await baseRun(request);
+				const parsed = parseCodingGuestRequest("run", request);
+				const cmd = checkOf(parsed);
+				if (cmd) {
+					ids.set(cmd, parsed.commandId);
+					if (ids.size === 3) {
+						const lint = f.commands.get(ids.get("npm run lint") as string);
+						if (lint) {
+							lint.ending = { code: 1 };
+							lint.until = Date.now();
+						}
+					}
+				}
+				return result;
+			});
+			const baseCancel = mocked.guestCancel.getMockImplementation()!;
+			const stuckIds = new Set<string>();
+			mocked.guestCancel.mockImplementation(async (request: unknown) => {
+				const asked = parseCodingGuestRequest("cancel", request);
+				if (stuckIds.has(asked.commandId)) {
+					return {
+						schema: "qorpera.coding-guest-command/v1",
+						workerId: f.claim.workerId,
+						commandId: asked.commandId,
+						state: "running",
+						exit: null,
+						end: 0,
+					};
+				}
+				return baseCancel(request);
+			});
+			const typecheckId = codingHostId("checks", `${f.claim.workerId}:${f.claim.sequence}:1:2`);
+			const testId = codingHostId("checks", `${f.claim.workerId}:${f.claim.sequence}:1:3`);
+			stuckIds.add(typecheckId);
+			stuckIds.add(testId);
+
+			expect(await f.run(dag, 1)).toMatchObject({ state: "failed", failed: { name: "lint" } });
+			expect(await f.run(dag.slice(0, 1), 2)).toEqual({
+				state: "not_run",
+				why: "machine",
+				code: "CODE_CHECKS_EARLIER_RUN_NOT_STOPPED",
+			});
+
+			stuckIds.delete(typecheckId);
+			expect(await f.run(dag.slice(0, 1), 3)).toEqual({
+				state: "not_run",
+				why: "machine",
+				code: "CODE_CHECKS_EARLIER_RUN_NOT_STOPPED",
+			});
+
+			stuckIds.delete(testId);
+			f.ending(() => ({}));
+			expect(await f.run(dag.slice(0, 1), 4)).toMatchObject({ state: "passed" });
+		});
+
+		it("cancels all in-flight parallel checks when the turn aborts and throws the turn reason", async () => {
+			const f = await checksFixture();
+			const dag: CodeCheck[] = [
+				{ name: "lint", run: "npm run lint", timeoutSeconds: 60, cwd: ".", needs: [] },
+				{ name: "test", run: "npm test", timeoutSeconds: 60, cwd: ".", needs: [] },
+			];
+			f.ending((run) => (checkOf(run) ? { state: "running" } : {}));
+			const stop = new AbortController();
+			const reason = new Error("CODING_EXECUTOR_LEASE_LOST");
+			const running = f.run(dag, 1, stop.signal);
+			await vi.waitFor(() => expect(f.ran()).toHaveLength(3));
+			stop.abort(reason);
+			await expect(running).rejects.toBe(reason);
+			const [, lint, test] = f.ran();
+			expect(f.commands.get(lint?.commandId as string)?.state).toBe("cancelled");
+			expect(f.commands.get(test?.commandId as string)?.state).toBe("cancelled");
+			expect(f.logged.filter((event) => event.step === "run")).toEqual([]);
+		});
+
+		it("runs a trailing CODE_CHECKS_DRILL strictly after all parallel checks pass, and skips it on earlier failure", async () => {
+			const f = await checksFixture();
+			const dag: CodeCheck[] = [
+				{ name: "install", run: "npm ci", timeoutSeconds: 600, cwd: "." },
+				{ name: "lint", run: "npm run lint", timeoutSeconds: 300, cwd: ".", needs: ["install"] },
+				{ name: "test", run: "npm test", timeoutSeconds: 300, cwd: ".", needs: ["install"] },
+				CODE_CHECKS_DRILL,
+			];
+			const seenParallel = new Set<string>();
+			f.ending((run) => {
+				const cmd = checkOf(run);
+				if (cmd === CODE_CHECKS_DRILL.run)
+					return { code: 1, printed: "A drill by Qorpera's operator: this check fails on purpose, once.\n" };
+				if (cmd === "npm run lint" || cmd === "npm test") return { state: "running" };
+				return {};
+			});
+			const baseRun = mocked.guestRun.getMockImplementation()!;
+			mocked.guestRun.mockImplementation(async (request: unknown) => {
+				const result = await baseRun(request);
+				const parsed = parseCodingGuestRequest("run", request);
+				const cmd = checkOf(parsed);
+				if (cmd === "npm run lint" || cmd === "npm test") {
+					seenParallel.add(parsed.commandId);
+					if (seenParallel.size === 2) {
+						for (const id of seenParallel) {
+							const entry = f.commands.get(id);
+							if (entry) {
+								entry.ending = { code: 0 };
+								entry.until = Date.now();
+							}
+						}
+					}
+				}
+				return result;
+			});
+
+			const drilled = await f.run(dag, 1);
+			expect(drilled).toMatchObject({
+				state: "failed",
+				passed: [
+					{ name: "install", ms: expect.any(Number) },
+					{ name: "lint", ms: expect.any(Number) },
+					{ name: "test", ms: expect.any(Number) },
+				],
+				failed: { name: CODE_CHECKS_DRILL.name, exitCode: 1 },
+				notRun: [],
+			});
+			const drillStarted = checkEventOrder(f.logged, "started", CODE_CHECKS_DRILL.name);
+			expect(drillStarted).toBeGreaterThan(checkEventOrder(f.logged, "ended", "lint"));
+			expect(drillStarted).toBeGreaterThan(checkEventOrder(f.logged, "ended", "test"));
+
+			mocked.guestRun.mockImplementation(baseRun);
+			f.ending((run) => (checkOf(run) === "npm run lint" ? { code: 1, printed: "lint failed\n" } : {}));
+			const ownFailed = await f.run(dag, 2);
+			expect(ownFailed).toMatchObject({
+				state: "failed",
+				failed: { name: "lint", exitCode: 1 },
+			});
+			expect(ownFailed.state === "failed" && ownFailed.notRun).toContain(CODE_CHECKS_DRILL.name);
+		});
+
+		it("polls fast checks with short initial backoff instead of waiting 3 s per check", async () => {
+			const f = await checksFixture({ pollMs: null });
+			f.ending((run) => (checkOf(run) ? { after: 80 } : {}));
+			const started = performance.now();
+			expect(await f.run(CHECKS.slice(0, 1))).toMatchObject({ state: "passed" });
+			expect(performance.now() - started).toBeLessThan(1_500);
+		});
+	});
+});
+
+describe("coding machine load reporting and horizontal overflow (step 5k)", () => {
+	it("includes qorpera_record_coding_machine_load in CODING_HOST_RPCS, excludes reclaimable file cache via memory.stat, and reports fullness hints on the folder model", async () => {
+		expect(CODING_HOST_RPCS).toContain("qorpera_record_coding_machine_load");
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		f.state.listed = [f.entry()];
+		const slicePath = `/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-${f.claim.workerId.replaceAll("-", "")}.slice/memory.stat`;
+		const userPath = "/sys/fs/cgroup/user.slice/user-200000.slice/memory.stat";
+		const setFile = (path: string, text: string) =>
+			f.files.set(path, { uid: 0, gid: 0, mode: 0o444, content: Buffer.from(text) });
+		setFile(
+			slicePath,
+			[
+				"anon 536870912",
+				"file 6442450944",
+				"kernel 8388608",
+				"shmem 16777216",
+				"inactive_file 6000000000",
+				"active_file 442450944",
+				"",
+			].join("\n"),
+		);
+		setFile(
+			userPath,
+			["anon 134217728", "file 2147483648", "kernel 4194304", "shmem 0", "inactive_file 2147483648", ""].join("\n"),
+		);
+		setFile("/proc/meminfo", "MemTotal:       8388608 kB\nMemAvailable:   4194304 kB\n");
+		const expectedWorkingSet = 536_870_912 + 8_388_608 + 16_777_216 + 134_217_728 + 4_194_304;
+		vi.mocked(f.client.readInstanceFile).mockClear();
+		vi.mocked(f.client.readCodingMachineMemory).mockClear();
+		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 600_000, cpuUsageUsec: 1_000_000 }));
+		expect(await f.host.keep(f.signal)).toEqual([
+			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+		]);
+		expect(f.client.readCodingMachineMemory).toHaveBeenCalledTimes(1);
+		expect(f.client.readCodingMachineMemory).toHaveBeenCalledWith(
+			f.machine.project,
+			f.plan.request.name,
+			[slicePath, userPath],
+			expect.any(AbortSignal),
+		);
+		expect(
+			vi
+				.mocked(f.client.readInstanceFile)
+				.mock.calls.some(([, , path]) => path === "/proc/meminfo" || path.startsWith("/sys/fs/cgroup/")),
+		).toBe(false);
+		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toEqual({
+			p_machine_id: f.machine.machineId,
+			p_owner: "coding-host",
+			p_binding_text: f.plan.text,
+			p_machine_id_sha256: "f".repeat(64),
+			p_load: {
+				schema: "qorpera.coding-machine-load/v1",
+				full: false,
+				sessions: [{ workerId: f.claim.workerId, cpuMillis: 0, memoryBytes: expectedWorkingSet }],
+			},
+		});
+		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 610_000, cpuUsageUsec: 1_000_000 + 35_000_000 }));
+		expect(await f.host.keep(f.signal)).toEqual([
+			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+		]);
+		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
+			p_load: {
+				schema: "qorpera.coding-machine-load/v1",
+				full: true,
+				sessions: [{ workerId: f.claim.workerId, cpuMillis: 3500, memoryBytes: expectedWorkingSet }],
+			},
+		});
+		setFile("/proc/meminfo", "MemTotal:       8388608 kB\nMemAvailable:   800000 kB\n");
+		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 620_000, cpuUsageUsec: 36_000_000 }));
+		expect(await f.host.keep(f.signal)).toEqual([
+			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+		]);
+		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
+			p_load: {
+				full: true,
+				sessions: [{ workerId: f.claim.workerId, cpuMillis: 0, memoryBytes: expectedWorkingSet }],
+			},
+		});
+		setFile("/proc/meminfo", "MemTotal:       8388608 kB\nMemAvailable:   6000000 kB\n");
+		setFile(slicePath, "anon 7516192768\nfile 1048576\nkernel 0\nshmem 0\n");
+		setFile(userPath, "anon 0\nfile 4294967296\n");
+		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 630_000, cpuUsageUsec: 36_000_000 }));
+		await f.host.keep(f.signal);
+		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
+			p_load: {
+				full: true,
+				sessions: [{ workerId: f.claim.workerId, cpuMillis: 0, memoryBytes: 7_516_192_768 }],
+			},
+		});
+		setFile(slicePath, "anon 1048576\nfile 6442450944\n");
+		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 640_000, cpuUsageUsec: 36_000_000 }));
+		await f.host.keep(f.signal);
+		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
+			p_load: {
+				full: false,
+				sessions: [{ workerId: f.claim.workerId, cpuMillis: 0, memoryBytes: 1_048_576 }],
+			},
+		});
+	});
+
+	it("excludes released sessions from load reports and keeps renewing when memory read or load RPC fails", async () => {
+		const f = await folderFixture();
+		const second = f.another();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		await f.host.prepareWorkspace(second, f.turnOf(second), f.signal);
+		f.host.endTurn(f.claim);
+		f.host.endTurn(second);
+		f.state.release.set(second.workerId, "ARCHIVED");
+		f.state.listed = [f.entry()];
+		const releasingSlice = `/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-${second.workerId.replaceAll("-", "")}.slice/memory.stat`;
+		f.files.set(releasingSlice, { uid: 0, gid: 0, mode: 0o444, content: Buffer.from("anon 8000000000\n") });
+		expect(await pass(f)).toEqual(
+			expect.arrayContaining([
+				{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+				{
+					machineId: f.machine.machineId,
+					workerId: second.workerId,
+					step: "detach",
+					state: "done",
+					code: "ARCHIVED",
+				},
+			]),
+		);
+		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
+			p_load: {
+				full: false,
+				sessions: [{ workerId: f.claim.workerId, cpuMillis: 0, memoryBytes: 0 }],
+			},
+		});
+		f.state.listed = [f.entry()];
+		const loadCallsBefore = f.calls("qorpera_record_coding_machine_load").length;
+		vi.mocked(f.client.readCodingMachineMemory).mockRejectedValueOnce(new Error("LXD_CODING_MEMORY_READ_FAILED"));
+		expect(await f.host.keep(f.signal)).toEqual([
+			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+			{
+				machineId: f.machine.machineId,
+				workerId: null,
+				step: "load",
+				state: "failed",
+				code: "LXD_CODING_MEMORY_READ_FAILED",
+			},
+		]);
+		expect(f.calls("qorpera_record_coding_machine_load")).toHaveLength(loadCallsBefore);
+		const control = f.call.getMockImplementation()!;
+		f.call.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_record_coding_machine_load") throw new Error("CODING_CONTROL_UNCONFIRMED");
+			return control(method, args, signal);
+		});
+		expect(await f.host.keep(f.signal)).toEqual([
+			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+			{
+				machineId: f.machine.machineId,
+				workerId: null,
+				step: "load",
+				state: "failed",
+				code: "CODING_CONTROL_UNCONFIRMED",
+			},
+		]);
+		f.call.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_record_coding_machine_load")
+				return { schema: "wrong", machineId: f.machine.machineId, sessions: 1 };
+			return control(method, args, signal);
+		});
+		expect(await f.host.keep(f.signal)).toEqual([
+			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+			{
+				machineId: f.machine.machineId,
+				workerId: null,
+				step: "load",
+				state: "failed",
+				code: "CODING_HOST_MACHINE_LOAD_INVALID",
+			},
+		]);
+	});
+
+	it("reports load on the NAS model and runs overflow sessions on a second machine for the same member", async () => {
+		const f = await fixture();
+		const overflow = f.another();
+		const secondMachine: LxdCodingMachineBinding = { ...f.machine, machineId: randomUUID() };
+		const secondPlan = lxdCodingMachinePlan(secondMachine);
+		const secondNodeId = randomUUID();
+		const secondBootId = randomUUID();
+		const secondFiles = new Map(f.files);
+		secondFiles.set("/proc/sys/kernel/random/boot_id", {
+			uid: 0,
+			gid: 0,
+			mode: 0o444,
+			content: Buffer.from(`${secondBootId}\n`),
+		});
+		const firstSlice = `/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-${f.claim.workerId.replaceAll("-", "")}.slice/memory.stat`;
+		const secondSlice = `/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-${overflow.workerId.replaceAll("-", "")}.slice/memory.stat`;
+		f.files.set(firstSlice, {
+			uid: 0,
+			gid: 0,
+			mode: 0o444,
+			content: Buffer.from("anon 268435456\nfile 3221225472\nkernel 4194304\n"),
+		});
+		secondFiles.set(secondSlice, {
+			uid: 0,
+			gid: 0,
+			mode: 0o444,
+			content: Buffer.from("anon 134217728\nfile 2147483648\nshmem 8388608\n"),
+		});
+		const control = f.call.getMockImplementation()!;
+		const attachedByMachine = new Map<string, Map<string, string>>([
+			[f.machine.machineId, new Map()],
+			[secondMachine.machineId, new Map()],
+		]);
+		f.call.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_plan_coding_machine" && args.p_worker_id === overflow.workerId)
+				return {
+					schema: "qorpera.coding-machine-plan/v1",
+					state: "planned",
+					machineId: secondMachine.machineId,
+					binding: secondMachine,
+				};
+			if (method === "qorpera_authorize_coding_machine_run" && args.p_binding_text === secondPlan.text)
+				return {
+					schema: "qorpera.coding-machine-admission/v1",
+					machineId: secondMachine.machineId,
+					workerId: args.p_worker_id,
+					instanceSha256: secondPlan.instanceSha256,
+					intent: "run",
+					guestUid: 200001,
+					validForMs: 5000,
+					nodeId: secondNodeId,
+					nodeVersion: 1,
+				};
+			if (method === "qorpera_attach_coding_session" && args.p_binding_text === secondPlan.text) {
+				const workerId = String(args.p_worker_id);
+				const token = randomUUID();
+				attachedByMachine.get(secondMachine.machineId)!.set(workerId, token);
+				return {
+					schema: "qorpera.coding-attachment/v1",
+					state: "attached",
+					workerId,
+					machineId: secondMachine.machineId,
+					attachmentToken: token,
+					validForMs: 59000,
+					turn: { sequence: 1, turnId: codingHostId("turn", `${workerId}:1`), open: true },
+				};
+			}
+			if (method === "qorpera_keep_coding_attachments" && args.p_machine_id === secondMachine.machineId) {
+				const map = attachedByMachine.get(secondMachine.machineId)!;
+				return {
+					schema: "qorpera.coding-attachments/v1",
+					machineId: secondMachine.machineId,
+					sessions: [...map].map(([workerId, attachmentToken]) => ({
+						workerId,
+						state: "kept",
+						attachmentToken,
+						validForMs: 59000,
+						turn: { sequence: 1, turnId: codingHostId("turn", `${workerId}:1`), open: false },
+					})),
+				};
+			}
+			if (method === "qorpera_record_coding_machine_load" && args.p_machine_id === secondMachine.machineId) {
+				if (args.p_binding_text !== secondPlan.text) throw new Error("Coding machine custody differs");
+				const sessions = (args.p_load as { sessions?: unknown[] } | undefined)?.sessions;
+				return {
+					schema: "qorpera.coding-machine-load-recorded/v1",
+					machineId: secondMachine.machineId,
+					sessions: Array.isArray(sessions) ? sessions.length : 0,
+				};
+			}
+			return control(method, args, signal);
+		});
+		const devicesByName = new Map<string, Record<string, Record<string, string>>>([
+			[f.plan.request.name, structuredClone(f.base)],
+			[secondPlan.request.name, structuredClone(f.base)],
+		]);
+		const getInstance = vi.mocked(f.client.getInstance).getMockImplementation()!;
+		vi.mocked(f.client.getInstance).mockImplementation(async (project, name, signal) => {
+			if (name !== secondPlan.request.name) return getInstance(project, name, signal);
+			return {
+				name: secondPlan.request.name,
+				type: "virtual-machine",
+				status: "Running",
+				statusCode: 103,
+				profiles: [],
+				config: { ...secondPlan.request.config, "volatile.base_image": secondMachine.imageFingerprint },
+				expandedConfig: { ...secondPlan.request.config, "volatile.base_image": secondMachine.imageFingerprint },
+				devices: structuredClone(devicesByName.get(name)!),
+				expandedDevices: structuredClone(devicesByName.get(name)!),
+			};
+		});
+		const replaceDevices = vi.mocked(f.client.replaceInstanceDevices).getMockImplementation()!;
+		vi.mocked(f.client.replaceInstanceDevices).mockImplementation(async (project, name, devices, signal) => {
+			devicesByName.set(name, structuredClone(devices) as Record<string, Record<string, string>>);
+			if (name === f.plan.request.name) await replaceDevices(project, name, devices, signal);
+		});
+		const readInstanceFile = vi.mocked(f.client.readInstanceFile).getMockImplementation()!;
+		vi.mocked(f.client.readInstanceFile).mockImplementation(async (project, name, path, limit, signal) => {
+			if (name !== secondPlan.request.name) return readInstanceFile(project, name, path, limit, signal);
+			const file = secondFiles.get(path);
+			if (!file) throw new Error("Missing file");
+			return file;
+		});
+		const readCodingMachineMemory = vi.mocked(f.client.readCodingMachineMemory).getMockImplementation()!;
+		vi.mocked(f.client.readCodingMachineMemory).mockImplementation(async (project, name, groups, signal) => {
+			if (name !== secondPlan.request.name) return readCodingMachineMemory(project, name, groups, signal);
+			const meminfo =
+				secondFiles.get("/proc/meminfo")?.content.toString("utf8") ??
+				"MemTotal:        8388608 kB\nMemAvailable:    6291456 kB\n";
+			const stats = new Map<string, string>();
+			for (const path of groups) {
+				const content = secondFiles.get(path)?.content.toString("utf8").trim();
+				if (content) stats.set(path, content);
+			}
+			return { meminfo, stats };
+		});
+		const pushInstanceFile = vi.mocked(f.client.pushInstanceFile).getMockImplementation()!;
+		vi.mocked(f.client.pushInstanceFile).mockImplementation(async (project, name, path, content, mode, signal) => {
+			if (name !== secondPlan.request.name) return pushInstanceFile(project, name, path, content, mode, signal);
+			secondFiles.set(path, { uid: 0, gid: 0, mode, content: Buffer.from(content) });
+		});
+		const execInstance = vi.mocked(f.client.execInstance).getMockImplementation()!;
+		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
+			if (name !== secondPlan.request.name) return execInstance(project, name, command, signal);
+			if (command[0] === "/usr/bin/mountpoint") return;
+			if (command[1] === "is-failed") throw new Error("LXD instance command failed");
+			if (command[1] !== "/opt/qorpera-coding/cloud-coding-storage-guest.mjs") return;
+			if (command[2] === "install") {
+				const workerId = command[3]!;
+				const inbox = secondFiles.get(f.configuration(workerId, "configuration-inbox.json"));
+				if (!inbox) throw new Error("Missing configuration inbox");
+				const packet = JSON.parse(inbox.content.toString());
+				secondFiles.set(f.configuration(workerId, "storage.json"), {
+					uid: 0,
+					gid: 0,
+					mode: 0o444,
+					content: Buffer.from(JSON.stringify(packet.storage)),
+				});
+				secondFiles.set(f.configuration(workerId, "guest.json"), {
+					uid: 0,
+					gid: 0,
+					mode: 0o444,
+					content: Buffer.from(JSON.stringify(packet.guest)),
+				});
+			}
+			if (command[2] === "observe") {
+				const seen = f.state.observed.get(overflow.workerId) ?? { cpuUsageUsec: 0, running: [] };
+				const lease = f.state.guestLeases.get(overflow.workerId);
+				secondFiles.set("/run/qorpera-coding/observation.json", {
+					uid: 0,
+					gid: 0,
+					mode: 0o444,
+					content: Buffer.from(
+						JSON.stringify({
+							schema: "qorpera.coding-guest-observation/v3",
+							bootId: secondBootId,
+							uptimeMs: f.state.uptimeMs,
+							sessions: [
+								{
+									workerId: overflow.workerId,
+									cpuUsageUsec: seen.cpuUsageUsec,
+									ioBytes: seen.ioBytes ?? 0,
+									running: seen.running.length,
+									lease: lease
+										? {
+												tokenSha256: lease.tokenSha256,
+												expiresInMs: Math.max(0, lease.expiresAtMs - f.state.uptimeMs),
+											}
+										: null,
+								},
+							],
+						}),
+					),
+				});
+			}
+		});
+		const w1 = await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		const w2 = await f.host.prepareWorkspace(overflow, f.turnOf(overflow), f.signal);
+		expect(w1.vmId).toBe(f.machine.machineId);
+		expect(w2.vmId).toBe(secondMachine.machineId);
+		expect(await f.hostLease(f.machine.machineId)).toBe("live");
+		expect(await f.hostLease(secondMachine.machineId)).toBe("live");
+		f.host.endTurn(f.claim);
+		f.host.endTurn(overflow);
+		const secondAttached = [...attachedByMachine.get(secondMachine.machineId)!].map(
+			([workerId, attachmentToken]) => ({
+				workerId,
+				attachmentToken,
+			}),
+		);
+		f.state.listed = [
+			f.entry(),
+			f.entry({
+				machineId: secondMachine.machineId,
+				binding: secondMachine,
+				instanceSha256: secondPlan.instanceSha256,
+				attached: secondAttached,
+			}),
+		];
+		f.state.observed.set(f.claim.workerId, { cpuUsageUsec: 1_000_000, running: [] });
+		f.state.observed.set(overflow.workerId, { cpuUsageUsec: 2_000_000, running: [] });
+		const firstPass = await f.host.keep(f.signal);
+		expect(firstPass).toEqual(
+			expect.arrayContaining([
+				{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+				{ machineId: secondMachine.machineId, workerId: overflow.workerId, step: "keep", state: "done" },
+			]),
+		);
+		f.state.uptimeMs += 10_000;
+		f.state.observed.set(f.claim.workerId, { cpuUsageUsec: 1_000_000 + 2_000_000, running: [] });
+		f.state.observed.set(overflow.workerId, { cpuUsageUsec: 2_000_000 + 5_000_000, running: [] });
+		await f.host.keep(f.signal);
+		const loads = f.calls("qorpera_record_coding_machine_load").slice(-2);
+		expect(loads).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					p_machine_id: f.machine.machineId,
+					p_binding_text: f.plan.text,
+					p_load: {
+						schema: "qorpera.coding-machine-load/v1",
+						full: false,
+						sessions: [{ workerId: f.claim.workerId, cpuMillis: 200, memoryBytes: 268_435_456 + 4_194_304 }],
+					},
+				}),
+				expect.objectContaining({
+					p_machine_id: secondMachine.machineId,
+					p_binding_text: secondPlan.text,
+					p_load: {
+						schema: "qorpera.coding-machine-load/v1",
+						full: false,
+						sessions: [{ workerId: overflow.workerId, cpuMillis: 500, memoryBytes: 134_217_728 + 8_388_608 }],
+					},
+				}),
+			]),
+		);
 	});
 });

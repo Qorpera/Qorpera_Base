@@ -263,30 +263,35 @@ export function cloudToolRequest<T>(
 ): Promise<T> {
 	if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > CLOUD_TOOL_REQUEST_MAX_MS)
 		throw new Error("Invalid cloud tool request deadline");
-	const timeout = new AbortController();
-	const requestSignal = AbortSignal.any([signal, timeout.signal]);
-	const timer = setTimeout(() => timeout.abort(), timeoutMs);
+	if (signal.aborted)
+		return Promise.reject(new CloudRuntimeDiagnosticError("cancelled", "Cloud tool authority unavailable"));
+	const request = new AbortController();
+	let timedOut = false;
+	const onParentAbort = (): void => request.abort(signal.reason);
+	signal.addEventListener("abort", onParentAbort, { once: true });
+	const timer = setTimeout(() => {
+		timedOut = true;
+		request.abort();
+	}, timeoutMs);
 	let abort: () => void = () => undefined;
 	return new Promise<T>((resolve, reject) => {
 		abort = (): void =>
 			reject(
-				new CloudRuntimeDiagnosticError(
-					timeout.signal.aborted ? "timeout" : "cancelled",
-					"Cloud tool authority unavailable",
-				),
+				new CloudRuntimeDiagnosticError(timedOut ? "timeout" : "cancelled", "Cloud tool authority unavailable"),
 			);
-		requestSignal.addEventListener("abort", abort, { once: true });
-		if (requestSignal.aborted) abort();
+		request.signal.addEventListener("abort", abort, { once: true });
+		if (request.signal.aborted) abort();
 		else
 			Promise.resolve()
 				.then(() => {
-					requestSignal.throwIfAborted();
-					return operation(requestSignal);
+					request.signal.throwIfAborted();
+					return operation(request.signal);
 				})
 				.then(resolve, reject);
 	}).finally(() => {
 		clearTimeout(timer);
-		requestSignal.removeEventListener("abort", abort);
+		signal.removeEventListener("abort", onParentAbort);
+		request.signal.removeEventListener("abort", abort);
 	});
 }
 

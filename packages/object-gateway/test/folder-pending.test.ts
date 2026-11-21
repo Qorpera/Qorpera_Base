@@ -1416,4 +1416,50 @@ describe("a view's links (protocol 4)", () => {
 		f.view.clear();
 		expect(f.view.empty).toBe(true);
 	});
+
+	it("paginates children identically when pending is empty and with binary-searched cursors when non-empty", () => {
+		const files: Record<string, Content> = {
+			"dir/link": { link: "target" },
+			"dir/z.txt": "z",
+		};
+		for (let i = 0; i < 12; i++) files[`dir/f_${String(i).padStart(2, "0")}.txt`] = `v${i}`;
+		const f = setup(files);
+		expect(f.view.empty).toBe(true);
+		expect(f.view.children("missing", undefined, 5)).toBe("not_found");
+		expect(f.view.children("dir/z.txt", undefined, 5)).toBe("not_a_folder");
+		for (const links of [true, false]) {
+			const viaPending: string[] = [];
+			let after: string | undefined;
+			for (;;) {
+				const page = f.view.children("dir", after, 4, links);
+				expect(typeof page).toBe("object");
+				if (typeof page === "string") break;
+				viaPending.push(...page.entries.map((e) => e.name));
+				if (!page.next) break;
+				after = page.next;
+			}
+			const viaTree: string[] = [];
+			let treeAfter: string | undefined;
+			for (;;) {
+				const page = f.tree().children("dir", treeAfter, 4, links);
+				expect(typeof page).toBe("object");
+				if (typeof page === "string") break;
+				viaTree.push(...page.entries.map((e) => e.name));
+				if (!page.next) break;
+				treeAfter = page.next;
+			}
+			expect(viaPending).toEqual(viaTree);
+		}
+		write(f.view, "dir/f_05b.txt", "inserted");
+		f.view.unlink("dir/f_03.txt");
+		expect(f.view.empty).toBe(false);
+		const afterMissing = f.view.children("dir", "f_03.txt", 3);
+		expect(typeof afterMissing !== "string" && afterMissing.entries.map((e) => e.name)).toEqual([
+			"f_04.txt",
+			"f_05.txt",
+			"f_05b.txt",
+		]);
+		const afterLast = f.view.children("dir", "zzz", 5);
+		expect(typeof afterLast !== "string" && afterLast).toEqual({ entries: [], next: null });
+	});
 });

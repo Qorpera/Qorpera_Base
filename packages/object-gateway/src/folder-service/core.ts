@@ -1,5 +1,5 @@
 import { isUuid, parseRecord, SHA256_HEX_PATTERN } from "@qorpera/contracts";
-import { ObjectDependency, ObjectDependencyError } from "../dependency.ts";
+import { ObjectDependency, ObjectDependencyError, ObjectLockConflict, ObjectStatementTimeout } from "../dependency.ts";
 import { supabaseRequestHeaders } from "../supabase-headers.ts";
 import { type BufferedResponse, nodeRequest, ResponseTooLargeError, type Transport } from "./https-request.ts";
 import { validTarget } from "./protocol.ts";
@@ -749,6 +749,8 @@ interface SupabaseFolderCoreOptions {
 	readonly requestTimeoutMs?: number;
 }
 
+const CLOCKS_BATCH = 100;
+
 /** The folder core over PostgREST, with the service credential: list, feed, the clock, the download check for the
  * storage profile, view renewals, and (step 3) staging and the commit. */
 export class SupabaseFolderCore implements FolderCore {
@@ -810,13 +812,16 @@ export class SupabaseFolderCore implements FolderCore {
 		const out = new Map<string, number>();
 		if (environmentIds.length === 0) return out;
 		if (environmentIds.some((id) => !isUuid(id))) throw new Error("Folder clock request is invalid");
-		const query = `select=environment_id,last_seq&environment_id=in.(${environmentIds.join(",")})`;
-		const rows = await this.#request(`/rest/v1/qorpera_folder_clocks?${query}`, { method: "GET" }, signal);
-		if (!Array.isArray(rows)) invalidAnswer("clocks");
-		for (const row of rows) {
-			const r = answerRecord(row, "clock");
-			if (typeof r.environment_id !== "string" || !isUuid(r.environment_id)) invalidAnswer("clock id");
-			out.set(r.environment_id, seqOf(r.last_seq, "clock seq"));
+		for (let offset = 0; offset < environmentIds.length; offset += CLOCKS_BATCH) {
+			const batch = environmentIds.slice(offset, offset + CLOCKS_BATCH);
+			const query = `select=environment_id,last_seq&environment_id=in.(${batch.join(",")})`;
+			const rows = await this.#request(`/rest/v1/qorpera_folder_clocks?${query}`, { method: "GET" }, signal);
+			if (!Array.isArray(rows)) invalidAnswer("clocks");
+			for (const row of rows) {
+				const r = answerRecord(row, "clock");
+				if (typeof r.environment_id !== "string" || !isUuid(r.environment_id)) invalidAnswer("clock id");
+				out.set(r.environment_id, seqOf(r.last_seq, "clock seq"));
+			}
 		}
 		return out;
 	}
@@ -1133,6 +1138,10 @@ export class SupabaseFolderCore implements FolderCore {
 					(typeof error.code === "string" && invalid.includes(error.code))
 				)
 					throw new CoreRefusal("invalid", said);
+				// WHY: One company's lock conflict or statement timeout must not trip the node-wide dependency breaker.
+				if (error.code === "40001" || error.code === "40P01" || error.code === "55P03")
+					throw new ObjectLockConflict();
+				if (error.code === "57014") throw new ObjectStatementTimeout();
 				throw new ObjectDependencyError(response.status >= 500 || response.status === 0 ? 503 : response.status);
 			}
 			if (value === undefined) invalidAnswer("JSON");

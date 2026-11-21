@@ -248,14 +248,51 @@ class Writer:
         self.unwritten = 0
         self.unwritten_since = None
         self.unwritten_error = None
+        self._day = None
+        self._path = None
+        self._ino = None
+        self._file = None
+
+    def close(self):
+        file = self._file
+        self._day = self._path = self._ino = self._file = None
+        if file is not None:
+            try:
+                file.close()
+            except OSError:
+                pass
+
+    def _open_for(self, day):
+        path = os.path.join(self.log_dir, f"flows-{day}.jsonl")
+        if self._file is not None and self._day == day:
+            try:
+                if os.stat(path).st_ino == self._ino:
+                    return self._file
+            except OSError:
+                pass
+            self.close()
+        elif self._file is not None:
+            self.close()
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o640)
+        try:
+            ino = os.fstat(fd).st_ino
+            file = os.fdopen(fd, "a", encoding="utf-8")
+        except BaseException:
+            os.close(fd)
+            raise
+        self._day, self._path, self._ino, self._file = day, path, ino, file
+        return file
 
     def append(self, record):
         day = time.strftime("%Y-%m-%d", time.gmtime(record["ts"]))
         line = json.dumps(record, separators=(",", ":"), sort_keys=True)
-        path = os.path.join(self.log_dir, f"flows-{day}.jsonl")
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o640)
-        with os.fdopen(fd, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        try:
+            file = self._open_for(day)
+            file.write(line + "\n")
+            file.flush()
+        except OSError:
+            self.close()
+            raise
 
     def recover(self):
         """Lines that could not be written: the first line that can be says how many, and since when. Under the lock."""
@@ -272,6 +309,8 @@ class Writer:
         with self.lock:
             try:
                 self.recover()
+                if self.paused:
+                    self.close()
             except OSError:
                 pass
 
@@ -285,6 +324,8 @@ class Writer:
             try:
                 self.recover()
                 self.append(record)
+                if self.paused:
+                    self.close()
             except OSError as error:
                 if not self.unwritten:
                     self.unwritten_since = record.get("ts", time.time())
@@ -302,6 +343,8 @@ class Writer:
             self.paused = paused
             since, held = self.paused_at, self.held
             self.paused_at, self.held = (time.time(), 0) if paused else (None, 0)
+            if paused:
+                self.close()
         if paused:
             self.gap(f"paused: {reason}")
             mark(pause_file, reason)

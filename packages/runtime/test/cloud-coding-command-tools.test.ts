@@ -435,4 +435,27 @@ describe("isolated coding command tools", () => {
 			f.boundary.close();
 		}
 	});
+	it.each([
+		{ operationKey: "pf-1", runChecks: false },
+		{ operationKey: "pf-1", runChecks: true, command: "npm test" },
+		{ operationKey: "pf-1", runChecks: true, timeoutMs: 5000 },
+		{ operationKey: "pf-1", checkNames: ["test"], command: "npm test" },
+		{ operationKey: "pf-1", failFast: false, command: "npm test" },
+		{ operationKey: "pf-1", runChecks: true, failFast: "no" },
+		{ operationKey: "pf-1", runChecks: true, checkNames: [] },
+		{ operationKey: "pf-1", runChecks: true, checkNames: ["test", "test"] },
+		{ operationKey: "pf-1", runChecks: true, checkNames: ["BadName"] },
+		{ operationKey: "pf-1", runChecks: true, checkNames: Array.from({ length: 21 }, (_, i) => `c${i}`) },
+		{ operationKey: "bad key", runChecks: true },
+		{ runChecks: true },
+	])("rejects invalid runChecks arguments %j", async (args) => {
+		const f = fixture();
+		try {
+			const result = await f.boundary.invoke("bad-pf", "qorpera", "coding_run_command", args);
+			expect(result.success).toBe(false);
+			expect(f.gateway.start).not.toHaveBeenCalled();
+		} finally {
+			f.boundary.close();
+		}
+	});
 });

@@ -443,6 +443,8 @@ export const CONVERSATION: Record<string, string> = {
 	"Leave the app out": "Udelad appen",
 	"Leave the page out": "Udelad siden",
 	"Your note could not be sent. Try again.": "Din besked kunne ikke sendes. Prøv igen.",
+	"The database connection was interrupted; the change may have completed. Check before trying again.":
+		"Forbindelsen til databasen blev afbrudt; ændringen er måske allerede gemt. Tjek før du prøver igen.",
 	"{name}'s thread has a message started. Send or clear it there, then send this note.":
 		"Der er en besked i gang i tråden med {name}. Send eller ryd den dér, og send så denne besked.",
 	App: "App",

@@ -1185,7 +1185,8 @@ export class FolderService {
 				view.closed ||
 				view.moving ||
 				view.movedTo ||
-				!view.access?.testMachine ||
+				!(view.identity?.kind === "test_machine" || view.identity?.kind === "coding_session") ||
+				view.access?.machine === undefined ||
 				!view.access.admits(bridge) ||
 				view.environmentId !== grant.environmentId ||
 				!timingSafeEqual(view.passSha256, grant.passSha256)
@@ -4520,8 +4521,15 @@ export class FolderService {
 	async #profile(view: View, entry: TreeEntry): Promise<string> {
 		const known = this.#profiles.get(view.environmentId);
 		if (known) return known;
-		// One lookup at a time per company: a search's reads ahead all wait for the same one.
-		let pending = this.#profileLookups.get(view.environmentId);
+		const actorKey =
+			view.actor.kind === "view"
+				? `view:${view.actor.viewId}`
+				: view.actor.kind === "member"
+					? `member:${view.actor.userId}`
+					: "platform";
+		// WHY: Key in-flight lookup by environment + actor so one revoked view cannot poison healthy views of the same company.
+		const lookupKey = `${view.environmentId}:${actorKey}`;
+		let pending = this.#profileLookups.get(lookupKey);
 		if (!pending) {
 			pending = this.#core
 				.objectProfile(view.environmentId, view.actor, entry.manifestSha256!)
@@ -4529,8 +4537,10 @@ export class FolderService {
 					this.#profiles.set(view.environmentId, profileId);
 					return profileId;
 				})
-				.finally(() => this.#profileLookups.delete(view.environmentId));
-			this.#profileLookups.set(view.environmentId, pending);
+				.finally(() => {
+					if (this.#profileLookups.get(lookupKey) === pending) this.#profileLookups.delete(lookupKey);
+				});
+			this.#profileLookups.set(lookupKey, pending);
 		}
 		return pending;
 	}

@@ -1,15 +1,6 @@
 import { REALTIME_SUBSCRIBE_STATES, type RealtimeChannel } from "@supabase/supabase-js";
 import type { Cloud } from "./client.ts";
 
-/* Durable-lane invalidation hints (CLIENT-CONTRACT.md §3, SESSIONS.md). The
- * channel carries no bodies; every hint makes the client re-read through RPCs.
- * Polling remains the recovery path when Realtime is degraded.
- *
- * A company's hints come by push (migration 20260930653000): the database sends each change on the member's own private
- * topic, at commit, only to the members who may read the changed row. Before that migration, and for a member the
- * database refuses the topic, they come by postgres_changes, which keeps Realtime polling the database while any tab
- * listens that way. */
-
 export type RealtimeResource =
 	| "sessions"
 	| "staff"
@@ -31,23 +22,10 @@ export interface RealtimeSubscription {
  * also when the failure was never reported (it came while the page was hidden, and the grace covered it). */
 export type RealtimeHealth = (phase: RealtimePhase, error?: string, recovered?: boolean) => void;
 
-const FILTERS: { resource: RealtimeResource; table: string }[] = [
-	{ resource: "sessions", table: "qorpera_shared_sessions" },
-	{ resource: "staff", table: "qorpera_profile_staff" },
-	{ resource: "access", table: "qorpera_profile_access_state" },
-	{ resource: "company-file", table: "qorpera_company_files" },
-];
-
-/** The private topic of one member's hints for one company (CLIENT-CONTRACT.md §3): the database names it the same way,
- * with lower-case ids. */
 export function liveHintTopic(profileId: string, userId: string): string {
 	return `qorpera-live-${profileId.toLowerCase()}-${userId.toLowerCase()}`;
 }
 
-/** The resource each hint event names. `member-chats` (20260930715000) comes by push only, to the two members of the
- * changed chat: where the push is refused, the member chats are read on the slow poll. `machines` (20260930712000),
- * by push only too, to every member: a company's machine changed, and an open computer window reads its agent's again
- * (it also reads them every 15 s while it is shown). */
 const HINT_EVENTS: readonly RealtimeResource[] = [
 	"sessions",
 	"staff",
@@ -58,26 +36,16 @@ const HINT_EVENTS: readonly RealtimeResource[] = [
 	"machines",
 ];
 
-/** Realtime's answer to a private join the database does not allow: one before 20260930653000 has no such topic. A
- * join without the member's token gets the same answer, so a private join waits for Realtime to hold the token. */
 function refusedJoin(error: string | undefined): boolean {
 	return error !== undefined && /permissions? to read from this channel topic/i.test(error);
 }
 
-/** How long a channel still held for a fixed topic may take to leave before the next try. */
 const LEAVE_WAIT_MS = 2_000;
 
-/** How keepSubscribed makes each channel. */
 interface ChannelSource {
-	/** A new channel. */
 	open(): RealtimeChannel;
-	/** The topic the next channel takes when it is fixed (a private topic names what it may receive), else undefined
-	 * (each channel has its own topic). The client hands back a channel it still holds for a topic (a failed one, or one
-	 * still leaving after its company closed), and that one never joins again: it goes first. */
-	topic(): string | undefined;
-	/** Whether a failure changes how to listen: then the next channel is made at once and the failure is not shown. */
+	topic(): string;
 	refused?(error: string | undefined): boolean;
-	/** The channel subscribed. */
 	joined?(): void;
 }
 
@@ -184,7 +152,10 @@ function keepSubscribed(cloud: Cloud, source: ChannelSource, onHealth: RealtimeH
 				failed = true;
 				subscribed = false;
 				missed = true;
-				if (source.refused?.(error instanceof Error ? error.message : undefined)) {
+				if (
+					cloud.supabase.realtime?.isConnected() !== false &&
+					source.refused?.(error instanceof Error ? error.message : undefined)
+				) {
 					tryNow();
 					return;
 				}
@@ -224,22 +195,17 @@ function keepSubscribed(cloud: Cloud, source: ChannelSource, onHealth: RealtimeH
 		const old = channel;
 		channel = undefined;
 		const topic = source.topic();
-		if (topic !== undefined && !(await free(topic, old))) {
-			// Still held: the next wait tries again.
+		if (!(await free(topic, old))) {
 			renewing = false;
+			report("Realtime channel cleanup timed out");
 			schedule();
 			return;
 		}
 		try {
-			// No argument: Realtime asks Auth for the session's current token (refreshed if it expired).
 			await cloud.supabase.realtime?.setAuth();
-		} catch {
-			// The join itself says whether the token still works.
-		}
+		} catch {}
 		renewing = false;
 		if (!stopped) subscribe();
-		// Removed once the new channel exists, so the client never goes without a channel.
-		if (old && topic === undefined) void cloud.supabase.removeChannel(old).catch(() => {});
 	};
 
 	/** The channels the client holds for `topic`. */
@@ -277,13 +243,8 @@ function keepSubscribed(cloud: Cloud, source: ChannelSource, onHealth: RealtimeH
 	}
 
 	onHealth("connecting");
-	if (source.topic() !== undefined) {
-		// A private join goes out with the member's token or is refused (Realtime answers a refusal after 5 s), and the
-		// client sets that token by itself only after a first answer (3 Nov 2026, the folder hints). A channel of a company
-		// closed just now may still hold the topic: it goes first.
-		failed = true;
-		void renew();
-	} else subscribe();
+	failed = true;
+	void renew();
 	return {
 		live: () => subscribed && !stopped,
 		stop() {
@@ -294,60 +255,17 @@ function keepSubscribed(cloud: Cloud, source: ChannelSource, onHealth: RealtimeH
 			clearTimeout(grace);
 			grace = undefined;
 			listening.abort();
-			if (channel) void cloud.supabase.removeChannel(channel);
+			if (channel) void cloud.supabase.removeChannel(channel).catch(() => undefined);
 			channel = undefined;
 			onHealth("stopped");
 		},
 	};
 }
 
-/** A company's hints by postgres_changes, on a channel of its own topic. */
-function profileChangesChannel(
-	cloud: Cloud,
-	profileId: string,
-	onChange: (resource: RealtimeResource) => void,
-): RealtimeChannel {
-	// Supabase reuses channels by topic, including ones still unsubscribing.
-	// Each channel gets its own topic so removing one cannot close another.
-	let channel: RealtimeChannel = cloud.supabase.channel(`qorpera-profile-${profileId}-${crypto.randomUUID()}`);
-	for (const { resource, table } of FILTERS) {
-		channel = channel.on(
-			"postgres_changes",
-			{ event: "*", schema: "public", table, filter: `profile_id=eq.${profileId}` },
-			() => onChange(resource),
-		);
-	}
-	return channel;
-}
-
-/** A company's hints by postgres_changes only: what the web did before the push, and does where the database refuses it. */
-export function subscribeProfileRealtime(
-	cloud: Cloud,
-	profileId: string,
-	onChange: (resource: RealtimeResource) => void,
-	onHealth: RealtimeHealth,
-): RealtimeSubscription {
-	return keepSubscribed(
-		cloud,
-		{ open: () => profileChangesChannel(cloud, profileId, onChange), topic: () => undefined },
-		onHealth,
-	);
-}
-
 export interface CompanyRealtimeSubscription extends RealtimeSubscription {
-	/** The sidebar's hints, from when the sidebar read answered: on the company's topic while hints come by push, else on
-	 * the sidebar revision's own postgres_changes channel, as before. */
 	followSidebar(onChange: () => void): RealtimeSubscription;
 }
 
-/**
- * A company's hints for one member: by push on the member's own private topic, `liveHintTopic(profileId, userId)`.
- * A join the database refuses is tried once more at once, with the token set again; refused twice running (a database
- * before 20260930653000) it listens by postgres_changes instead, for as long as it lives. A refusal is not shown as
- * degraded. A tab opened before the database has the topic so keeps working, and so does a tab from before this
- * change, which knows only postgres_changes. One stray refusal (a token Realtime did not hold yet) costs one more join,
- * not the push.
- */
 export function subscribeCompanyRealtime(
 	cloud: Cloud,
 	profileId: string,
@@ -356,23 +274,13 @@ export function subscribeCompanyRealtime(
 	onHealth: RealtimeHealth,
 ): CompanyRealtimeSubscription {
 	const topic = liveHintTopic(profileId, userId);
-	let push = true;
-	/** Push joins refused since the last subscription. */
 	let refusals = 0;
 	let onSidebar: (() => void) | undefined;
-	let sidebarChanges: RealtimeSubscription | undefined;
-	const followSidebarChanges = (): void => {
-		if (!push && onSidebar && !sidebarChanges) {
-			const listener = onSidebar;
-			sidebarChanges = subscribeSidebarRealtime(cloud, profileId, () => listener());
-		}
-	};
 	const subscription = keepSubscribed(
 		cloud,
 		{
-			topic: () => (push ? topic : undefined),
+			topic: () => topic,
 			open: () => {
-				if (!push) return profileChangesChannel(cloud, profileId, onChange);
 				let channel: RealtimeChannel = cloud.supabase.channel(topic, { config: { private: true } });
 				for (const resource of HINT_EVENTS)
 					channel = channel.on("broadcast", { event: resource }, () => {
@@ -382,12 +290,8 @@ export function subscribeCompanyRealtime(
 				return channel;
 			},
 			refused: (error) => {
-				if (!push || !refusedJoin(error)) return false;
+				if (!refusedJoin(error) || refusals >= 1) return false;
 				refusals++;
-				if (refusals >= 2) {
-					push = false;
-					followSidebarChanges();
-				}
 				return true;
 			},
 			joined: () => {
@@ -400,46 +304,16 @@ export function subscribeCompanyRealtime(
 		live: () => subscription.live(),
 		stop() {
 			subscription.stop();
-			sidebarChanges?.stop();
-			sidebarChanges = undefined;
 			onSidebar = undefined;
 		},
 		followSidebar(listener) {
 			onSidebar = listener;
-			followSidebarChanges();
 			return {
-				live: () => (push ? subscription.live() : (sidebarChanges?.live() ?? false)),
+				live: () => subscription.live(),
 				stop() {
-					onSidebar = undefined;
-					sidebarChanges?.stop();
-					sidebarChanges = undefined;
+					if (onSidebar === listener) onSidebar = undefined;
 				},
 			};
 		},
 	};
-}
-
-/** The company sidebar's revision row: one hint per change, however many rows it
- * moved. A separate channel: a cloud that has no sidebar tables yet fails only this
- * one, and the rail's poll still reads the sidebar. Its health is not the company's
- * live-updates badge, but it resubscribes the same way. */
-export function subscribeSidebarRealtime(cloud: Cloud, profileId: string, onChange: () => void): RealtimeSubscription {
-	return keepSubscribed(
-		cloud,
-		{
-			open: () =>
-				cloud.supabase.channel(`qorpera-sidebar-${profileId}-${crypto.randomUUID()}`).on(
-					"postgres_changes",
-					{
-						event: "*",
-						schema: "public",
-						table: "qorpera_company_sidebar_revisions",
-						filter: `profile_id=eq.${profileId}`,
-					},
-					onChange,
-				),
-			topic: () => undefined,
-		},
-		() => {},
-	);
 }

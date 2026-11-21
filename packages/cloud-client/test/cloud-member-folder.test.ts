@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import { getEventListeners } from "node:events";
 import { describe, expect, it, vi } from "vitest";
+import { cloudFileBytesSha256 } from "../src/cloud-file-bytes.ts";
 import {
 	CLOUD_MEMBER_FOLDER_PAGE,
 	CLOUD_MEMBER_FOLDER_READ_MANY,
@@ -1353,8 +1355,24 @@ describe("the folder hint", () => {
 			const before = channels.length;
 			new CloudMemberFolderHints({ environmentId: env, client, signal: aborted.signal, onHint() {} });
 			expect(channels).toHaveLength(before);
+			expect(getEventListeners(aborted.signal, "abort")).toHaveLength(0);
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	it("detaches its abort listener on close() before signal abort and hashes subarray slices accurately", async () => {
+		const { client } = realtime();
+		const parent = new AbortController();
+		for (let i = 0; i < 8; i++) {
+			const hints = new CloudMemberFolderHints({ environmentId: env, client, signal: parent.signal, onHint() {} });
+			await hints.close();
+		}
+		expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
+
+		const backing = new Uint8Array(64);
+		for (let i = 0; i < backing.length; i++) backing[i] = (i * 37) & 0xff;
+		const slice = backing.subarray(7, 51);
+		expect(await cloudFileBytesSha256(slice)).toBe(sha(slice));
 	});
 });

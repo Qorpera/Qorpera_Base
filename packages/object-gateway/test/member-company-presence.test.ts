@@ -251,4 +251,43 @@ describe("member-visible native activity", () => {
 		expect(f.member.mock.calls[0][3]?.aborted).toBe(true);
 		expect(f.publisher).not.toHaveBeenCalled();
 	}, 5000);
+
+	it("verifies statements highest-sequence first, stops on first valid signature, and propagates aborts", async () => {
+		const f = await fixture();
+		const statements = await Promise.all(
+			[3, 1, 12, 5, 9, 2, 11, 4, 8, 6, 10, 7].map((sequence) => f.sign({ sequence })),
+		);
+		const verifySpy = vi.spyOn(PresenceSignatures, "verify");
+		const reply = await f.observe({ ...f.input, candidates: statements });
+		expect(reply.confirmed).toEqual([{ clientId, sequence: 12 }]);
+		expect(verifySpy).toHaveBeenCalledTimes(1);
+
+		verifySpy.mockClear();
+		const withForgedHighest = statements.map((statement) =>
+			statement.sequence === 12 ? { ...statement, signature: `${"A".repeat(86)}==` } : statement,
+		);
+		const fallbackReply = await f.observe({ ...f.input, candidates: withForgedHighest });
+		expect(fallbackReply.confirmed).toEqual([{ clientId, sequence: 11 }]);
+		expect(verifySpy).toHaveBeenCalledTimes(2);
+
+		const stop = new AbortController();
+		const reason = new Error("caller-aborted");
+		f.publisher.mockImplementationOnce(
+			async (_method, _args, signal) =>
+				await new Promise<never>((_resolve, reject) => {
+					signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+					stop.abort(reason);
+				}),
+		);
+		await expect(
+			observeMemberCompanyPresence({
+				authority: { member: f.member, publisher: f.publisher },
+				token: "member-token",
+				companyId,
+				environmentId,
+				input: f.input,
+				signal: stop.signal,
+			}),
+		).rejects.toBe(reason);
+	});
 });

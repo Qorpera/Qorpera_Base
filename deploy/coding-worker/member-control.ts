@@ -16,6 +16,7 @@ import {
 	CloudMemberMachineScreenSignIn,
 	cloudMemberMachineOpenPathValid,
 } from "../../packages/runtime/src/cloud-member-machine-screen-http.ts";
+import { withTimeoutSignal } from "./timeout-signal.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TOKEN = /^[A-Za-z0-9._~-]{1,8192}$/;
@@ -288,38 +289,39 @@ export class MemberMachineScreenControl {
 		word: string,
 		signal: AbortSignal,
 	): Promise<Record<string, unknown>> {
-		const checked = AbortSignal.any([signal, AbortSignal.timeout(10000)]);
-		let response: Response;
-		try {
-			response = await this.#fetch(`${this.#origin}/rest/v1/rpc/${method}`, {
-				method: "POST",
-				redirect: "error",
-				signal: checked,
-				headers: {
-					apikey: this.#publishableKey,
-					authorization: `Bearer ${token}`,
-					"content-type": "application/json",
-				},
-				body: JSON.stringify(args),
-			});
-		} catch {
-			throw new Error(`${word}_UNCONFIRMED`);
-		}
-		if (response.status !== 200) {
-			void response.body?.cancel().catch(() => undefined);
-			// PostgREST answers a token it does not take with 401, and the function's own refusal (42501) with 403.
-			if (response.status === 401) throw new CloudMemberMachineScreenSignIn();
-			if (response.status === 403) throw new CloudMemberMachineScreenForbidden();
-			throw new Error(`${word}_UNCONFIRMED`);
-		}
-		try {
-			const value = JSON.parse(
-				new TextDecoder("utf8", { fatal: true }).decode(await readBoundedCloudResponse(response, 4096, checked)),
-			) as unknown;
-			if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("not an object");
-			return value as Record<string, unknown>;
-		} catch {
-			throw new Error(`${word}_UNCONFIRMED`);
-		}
+		return withTimeoutSignal(signal, 10000, async (checked) => {
+			let response: Response;
+			try {
+				response = await this.#fetch(`${this.#origin}/rest/v1/rpc/${method}`, {
+					method: "POST",
+					redirect: "error",
+					signal: checked,
+					headers: {
+						apikey: this.#publishableKey,
+						authorization: `Bearer ${token}`,
+						"content-type": "application/json",
+					},
+					body: JSON.stringify(args),
+				});
+			} catch {
+				throw new Error(`${word}_UNCONFIRMED`);
+			}
+			if (response.status !== 200) {
+				void response.body?.cancel().catch(() => undefined);
+				// PostgREST answers a token it does not take with 401, and the function's own refusal (42501) with 403.
+				if (response.status === 401) throw new CloudMemberMachineScreenSignIn();
+				if (response.status === 403) throw new CloudMemberMachineScreenForbidden();
+				throw new Error(`${word}_UNCONFIRMED`);
+			}
+			try {
+				const value = JSON.parse(
+					new TextDecoder("utf8", { fatal: true }).decode(await readBoundedCloudResponse(response, 4096, checked)),
+				) as unknown;
+				if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("not an object");
+				return value as Record<string, unknown>;
+			} catch {
+				throw new Error(`${word}_UNCONFIRMED`);
+			}
+		});
 	}
 }

@@ -773,17 +773,19 @@ export class NodeAgent {
 			.filter((name) => /^(0|[1-9][0-9]*)$/.test(name))
 			.map(Number)
 			.sort((a, b) => a - b);
-		const roles = {};
-		for (const [role, settings] of Object.entries(config.roles)) {
-			const pid = await this.ports.mainPid(settings.unit);
-			roles[role] = {
-				release: await this.roleRevision(role),
-				unit: settings.unit,
-				pid,
-				command: pid > 0 ? await this.ports.cmdline(pid) : [],
-				healthy: await Promise.all(settings.health.map((url) => this.ports.healthy(url))),
-			};
-		}
+		const roles = Object.fromEntries(
+			await Promise.all(
+				Object.entries(config.roles).map(async ([role, settings]) => {
+					const pid = await this.ports.mainPid(settings.unit);
+					const [release, command, healthy] = await Promise.all([
+						this.roleRevision(role),
+						pid > 0 ? this.ports.cmdline(pid) : Promise.resolve([]),
+						Promise.all(settings.health.map((url) => this.ports.healthy(url))),
+					]);
+					return [role, { release, unit: settings.unit, pid, command, healthy }];
+				}),
+			),
+		);
 		return { current: await this.revisionOf("current"), previous: await this.revisionOf("previous"), staged, roles };
 	}
 
@@ -859,10 +861,32 @@ const run = promisify(execFile);
 export function nodePorts(lxdSocket = "/var/snap/lxd/common/lxd/unix.socket") {
 	const lxdGet = (path) =>
 		new Promise((resolve, reject) => {
+			let settled = false;
+			const fail = (error) => {
+				if (settled) return;
+				settled = true;
+				reject(error);
+			};
 			const req = request({ socketPath: lxdSocket, path, headers: { host: "lxd" }, timeout: 30_000 }, (response) => {
 				const chunks = [];
-				response.on("data", (chunk) => chunks.push(chunk));
+				let bytes = 0;
+				response.on("data", (chunk) => {
+					bytes += chunk.byteLength;
+					if (bytes > 32 * 1024 * 1024) {
+						req.destroy(new Error("LXD response exceeded 32 MiB"));
+						return;
+					}
+					chunks.push(chunk);
+				});
+				response.on("aborted", () => fail(new Error("LXD response aborted")));
+				response.on("error", fail);
 				response.on("end", () => {
+					if (settled) return;
+					if (!response.complete) {
+						fail(new Error("LXD response truncated"));
+						return;
+					}
+					settled = true;
 					try {
 						resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
 					} catch (error) {
@@ -871,7 +895,7 @@ export function nodePorts(lxdSocket = "/var/snap/lxd/common/lxd/unix.socket") {
 				});
 			});
 			req.on("timeout", () => req.destroy(new Error("LXD request timed out")));
-			req.on("error", reject);
+			req.on("error", fail);
 			req.end();
 		});
 	return {
@@ -918,7 +942,10 @@ export function nodePorts(lxdSocket = "/var/snap/lxd/common/lxd/unix.socket") {
 		async healthy(url) {
 			for (let attempt = 0; attempt < 60; attempt++) {
 				const ok = await fetch(url, { signal: AbortSignal.timeout(3000) }).then(
-					(response) => response.ok,
+					async (response) => {
+						await response.body?.cancel().catch(() => undefined);
+						return response.ok;
+					},
 					() => false,
 				);
 				if (ok) return true;
@@ -927,15 +954,11 @@ export function nodePorts(lxdSocket = "/var/snap/lxd/common/lxd/unix.socket") {
 			return false;
 		},
 		async journalSince(unit, since) {
-			const { stdout } = await run("/usr/bin/journalctl", [
-				"-u",
-				unit,
-				"--since",
-				`@${Math.floor(since.getTime() / 1000)}`,
-				"--no-pager",
-				"-o",
-				"cat",
-			]);
+			const { stdout } = await run(
+				"/usr/bin/journalctl",
+				["-u", unit, "--since", `@${Math.floor(since.getTime() / 1000)}`, "--no-pager", "-o", "cat"],
+				{ maxBuffer: 32 * 1024 * 1024, timeout: 30_000 },
+			);
 			return stdout;
 		},
 		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),

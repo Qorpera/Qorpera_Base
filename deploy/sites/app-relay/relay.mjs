@@ -101,6 +101,11 @@ const HEADER_VALUE = /^[\t\x20-\x7e\x80-\xff]*$/;
 const WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const MAX_STREAMS = 256;
 const MAX_SESSIONS_KEPT = 10_000;
+const MAX_REFUSALS_KEPT = 10_000;
+const STREAM_PAUSE_BYTES = 256 * 1024;
+const PROGRAM_PAUSE_BYTES = 2 * 1024 * 1024;
+const RELAY_PAUSE_BYTES = 32 * 1024 * 1024;
+const SHARED_PAUSED_MS = 4_000;
 const MAX_RPC_ANSWER_BYTES = 64 * 1024;
 const RPC_TIMEOUT_MS = 20_000;
 const MAX_PASSWORD = 1024;
@@ -407,6 +412,21 @@ export function encodeFrame(opcode, payload = EMPTY, { mask = null, fin = true }
 	return Buffer.concat([head, body]);
 }
 
+function unmaskInto(source, offset, length, maskAt, target) {
+	source.copy(target, 0, offset, offset + length);
+	const m0 = source[maskAt];
+	const m1 = source[maskAt + 1];
+	const m2 = source[maskAt + 2];
+	const m3 = source[maskAt + 3];
+	const mask32 = (m0 | (m1 << 8) | (m2 << 16) | (m3 << 24)) >>> 0;
+	let index = 0;
+	const end4 = length & ~3;
+	for (; index < end4; index += 4) {
+		target.writeUInt32LE((target.readUInt32LE(index) ^ mask32) >>> 0, index);
+	}
+	for (; index < length; index++) target[index] ^= source[maskAt + (index & 3)];
+}
+
 /** The frame at the start of `buffer`: {fin, opcode, payload (unmasked), size (bytes it took)}, or null until all of
  * it has arrived. Throws a WebSocketError (with the close code) for a frame RFC 6455 refuses, a frame that is not
  * masked as `masked` says, or a payload over `maxPayload`. */
@@ -436,8 +456,9 @@ export function decodeFrame(buffer, { maxPayload = MAX_FRAME_BYTES, masked = tru
 	const maskAt = offset;
 	if (masked) offset += 4;
 	if (buffer.length < offset + length) return null;
-	const payload = Buffer.from(buffer.subarray(offset, offset + length));
-	if (masked) for (let index = 0; index < payload.length; index++) payload[index] ^= buffer[maskAt + (index & 3)];
+	const payload = Buffer.allocUnsafe(length);
+	if (masked) unmaskInto(buffer, offset, length, maskAt, payload);
+	else buffer.copy(payload, 0, offset, offset + length);
 	return { fin, opcode, payload, size: offset + length };
 }
 
@@ -458,7 +479,8 @@ export function decodeMessage(message) {
  * handshake. A peer that lets more than `maxQueued` bytes pile up unread is cut off. */
 export class WebSocketConnection {
 	#socket;
-	#buffer = EMPTY;
+	#chunks = [];
+	#buffered = 0;
 	#fragments = null;
 	#fragmentBytes = 0;
 	#maxPayload;
@@ -466,6 +488,7 @@ export class WebSocketConnection {
 	#pingsPerSecond;
 	#pings = 0;
 	#pingSecond = 0;
+	#closeTimer = null;
 	closing = false;
 	closed = false;
 	lastSeen = Date.now();
@@ -491,12 +514,34 @@ export class WebSocketConnection {
 		socket.on("end", () => socket.end());
 		socket.on("error", () => socket.destroy());
 		socket.on("close", () => {
+			if (this.#closeTimer) {
+				clearTimeout(this.#closeTimer);
+				this.#closeTimer = null;
+			}
 			if (this.closed) return;
 			this.closed = true;
 			this.onClose();
 		});
-		if (head?.length) this.#read(head);
-		socket.resume();
+		if (head?.length) {
+			// WHY: Defer pipelined head frames one microtask so register() binds onMessage/onClose before dispatch.
+			this.#chunks.push(head);
+			this.#buffered = head.length;
+			queueMicrotask(() => {
+				if (this.closed) return;
+				this.#drain();
+				if (!this.closed) socket.resume();
+			});
+		} else {
+			socket.resume();
+		}
+	}
+
+	get queuedBytes() {
+		return this.#socket.writableLength;
+	}
+
+	get needsDrain() {
+		return Boolean(this.#socket.writableNeedDrain);
 	}
 
 	/** Writes a frame unless the peer has let too much pile up: then the connection ends at once. */
@@ -508,19 +553,71 @@ export class WebSocketConnection {
 		return this.#socket.write(frame);
 	}
 
+	#peekHeaderBytes(count) {
+		if (this.#chunks.length === 1) return this.#chunks[0];
+		const out = Buffer.allocUnsafe(Math.min(count, this.#buffered));
+		let copied = 0;
+		for (const chunk of this.#chunks) {
+			const take = Math.min(chunk.length, out.length - copied);
+			chunk.copy(out, copied, 0, take);
+			copied += take;
+			if (copied >= out.length) break;
+		}
+		return out;
+	}
+
+	#nextFrameLength() {
+		if (this.#buffered < 2) return null;
+		const head = this.#peekHeaderBytes(14);
+		const fin = (head[0] & 0x80) !== 0;
+		const opcode = head[0] & 0x0f;
+		if (head[0] & 0x70) throw new WebSocketError(1002, "reserved bits set");
+		if (![0x0, 0x1, 0x2, 0x8, 0x9, 0xa].includes(opcode)) throw new WebSocketError(1002, "unknown opcode");
+		if ((head[1] & 0x80) === 0) throw new WebSocketError(1002, "unmasked frame");
+		let length = head[1] & 0x7f;
+		let offset = 2;
+		if (opcode >= 0x8 && (length > 125 || !fin)) throw new WebSocketError(1002, "invalid control frame");
+		if (length === 126) {
+			if (head.length < 4) return null;
+			length = head.readUInt16BE(2);
+			offset = 4;
+		} else if (length === 127) {
+			if (head.length < 10) return null;
+			const declared = head.readBigUInt64BE(2);
+			if (declared > BigInt(this.#maxPayload)) throw new WebSocketError(1009, "frame too large");
+			length = Number(declared);
+			offset = 10;
+		}
+		if (length > this.#maxPayload) throw new WebSocketError(1009, "frame too large");
+		return offset + 4 + length;
+	}
+
 	#read(chunk) {
 		this.lastSeen = Date.now();
-		this.#buffer = this.#buffer.length ? Buffer.concat([this.#buffer, chunk]) : chunk;
+		if (chunk.length > 0) {
+			this.#chunks.push(chunk);
+			this.#buffered += chunk.length;
+		}
+		this.#drain();
+	}
+
+	#drain() {
 		try {
 			for (;;) {
 				if (this.closed) return;
-				const frame = decodeFrame(this.#buffer, { maxPayload: this.#maxPayload });
+				const needed = this.#nextFrameLength();
+				if (needed === null || this.#buffered < needed) return;
+				const buffer = this.#chunks.length === 1 ? this.#chunks[0] : Buffer.concat(this.#chunks, this.#buffered);
+				const frame = decodeFrame(buffer, { maxPayload: this.#maxPayload });
 				if (!frame) return;
-				this.#buffer = this.#buffer.subarray(frame.size);
+				const rest = buffer.subarray(frame.size);
+				this.#chunks = rest.length > 0 ? [rest] : [];
+				this.#buffered = rest.length;
 				this.#frame(frame);
 			}
 		} catch (error) {
-			this.#buffer = EMPTY;
+			this.#chunks = [];
+			this.#buffered = 0;
 			this.close(error instanceof WebSocketError ? error.code : 1011, "protocol error");
 		}
 	}
@@ -580,7 +677,8 @@ export class WebSocketConnection {
 		text.copy(payload, 2);
 		this.#write(encodeFrame(0x8, payload));
 		// The peer answers with its close; a peer that does not is cut off.
-		setTimeout(() => this.#socket.destroy(), 3000).unref();
+		this.#closeTimer = setTimeout(() => this.#socket.destroy(), 3000);
+		this.#closeTimer.unref();
 	}
 
 	terminate() {
@@ -897,7 +995,7 @@ async function readLimited(response, limit) {
 /** One connected link program: its WebSocket, its id, the site and port it serves, its key (in memory only) and its
  * open streams. */
 class Program {
-	constructor(slug, ws, { id, key, siteId, port }) {
+	constructor(slug, ws, { id, key, siteId, port, nextCheckAt }) {
 		this.slug = slug;
 		this.ws = ws;
 		this.id = id;
@@ -907,9 +1005,13 @@ class Program {
 		this.streams = new Map();
 		this.next = 1;
 		this.blocked = 0;
-		this.waiting = new Set();
+		this.blocking = new Set();
+		this.buffered = 0;
+		this.pauseCount = 0;
+		this.sharedProgressChecks = 0;
+		this.uploadQueue = [];
 		this.keptAliveAt = Date.now();
-		this.checkedAt = Date.now();
+		this.nextCheckAt = nextCheckAt;
 	}
 
 	send(type, stream, payload = EMPTY) {
@@ -924,14 +1026,43 @@ class Program {
 		return id;
 	}
 
-	/** A visitor reads slower than the app writes: the program's socket is not read until every such visitor drains
-	 * (at most PAUSED_MS each). */
-	block() {
-		if (this.blocked++ === 0) this.ws.pause();
+	block(blocker) {
+		if (this.blocking.has(blocker)) return;
+		this.blocking.add(blocker);
+		if (this.blocked++ === 0) {
+			this.pauseCount++;
+			this.ws.pause();
+		}
 	}
 
-	unblock() {
+	unblock(blocker) {
+		if (!this.blocking.delete(blocker)) return;
 		if (--this.blocked === 0) this.ws.resume();
+	}
+
+	tightenBlocked() {
+		for (const blocker of this.blocking) blocker.tighten();
+	}
+
+	pumpUploads(highWater) {
+		while (this.uploadQueue.length > 0 && !this.ws.closed) {
+			const entry = this.uploadQueue[0];
+			if (entry.isOver()) {
+				this.uploadQueue.shift();
+				continue;
+			}
+			while (entry.offset < entry.slices.length) {
+				const slice = entry.slices[entry.offset];
+				if (this.ws.needsDrain && this.ws.queuedBytes + slice.length > highWater) return;
+				entry.offset++;
+				const room = this.send(TYPE.body, entry.id, slice);
+				if (this.ws.closed) return;
+				if (!room || (this.ws.needsDrain && this.ws.queuedBytes >= highWater)) return;
+			}
+			this.uploadQueue.shift();
+			entry.onDrained();
+			if (this.ws.needsDrain && this.ws.queuedBytes >= highWater) return;
+		}
 	}
 }
 
@@ -951,8 +1082,11 @@ export function createRelay({
 	keepaliveMs = KEEPALIVE_MS,
 	silentMs = SILENT_MS,
 	pausedMs = PAUSED_MS,
+	sharedPausedMs = SHARED_PAUSED_MS,
 	recheckMs = RECHECK_MS,
 	connectLimit = CONNECT_LIMIT,
+	maxSessionsKept = MAX_SESSIONS_KEPT,
+	maxRefusalsKept = MAX_REFUSALS_KEPT,
 	trustedAddresses = [],
 	clientSource,
 	log = (line) => console.log(`app-relay: ${line}`),
@@ -976,13 +1110,42 @@ export function createRelay({
 	);
 	/** slug -> Program: the one connected link program of each link. */
 	const programs = new Map();
-	/** "slug token" -> {until, siteId}: an open answer (siteId) or a locked one (null), and when it stops counting. */
 	const sessions = new Map();
+	const lockedSessions = new Map();
+	const sessionInFlight = new Map();
 	/** Upgrade sockets whose connect the database is answering. */
 	const upgrading = new Set();
 	/** "address group, slug" -> {start, count}: refused connects in the current minute, outside the trusted addresses. */
 	const refusals = new Map();
+	const addressRefusals = new Map();
+	const pendingByAddress = new Map();
+	const uploadHighWater = Math.max(1024, Math.min(Math.floor(maxQueuedBytes / 2), 4 * 1024 * 1024));
 	let pendingTotal = 0;
+	let pendingUntrusted = 0;
+	let relayBuffered = 0;
+	let bufferedPrograms = 0;
+
+	function adjustBuffered(program, delta) {
+		if (delta === 0) return;
+		const was = program.buffered;
+		const next = Math.max(0, was + delta);
+		const actual = next - was;
+		program.buffered = next;
+		relayBuffered = Math.max(0, relayBuffered + actual);
+		if (was === 0 && next > 0) bufferedPrograms++;
+		else if (was > 0 && next === 0) bufferedPrograms = Math.max(0, bufferedPrograms - 1);
+	}
+
+	function socketWriteQueue(res) {
+		const size = res.socket?._handle?.writeQueueSize;
+		return typeof size === "number" && size >= 0 ? size : 0;
+	}
+
+	function scheduleCheck(now = Date.now()) {
+		if (recheckMs <= 0) return Number.POSITIVE_INFINITY;
+		if (recheckMs < 10_000) return now + recheckMs;
+		return now + Math.round(recheckMs * (0.9 + Math.random() * 0.2));
+	}
 
 	function failure(error) {
 		// The error's kind only: never a secret.
@@ -1004,51 +1167,118 @@ export function createRelay({
 		return JSON.parse(await readLimited(response, MAX_RPC_ANSWER_BYTES));
 	}
 
+	function keep(map, id, entry, cap) {
+		if (map.has(id)) map.delete(id);
+		else if (map.size >= cap) map.delete(map.keys().next().value);
+		map.set(id, entry);
+	}
+
 	/** The site a session token opens on this slug, or null; `fresh` asks the database whatever is kept. */
 	async function sessionSite(slug, token, fresh = false) {
 		const id = `${slug} ${token}`;
-		const kept = sessions.get(id);
-		if (!fresh && kept && kept.until > Date.now()) return kept.siteId;
-		sessions.delete(id);
-		const result = parseSessionAnswer(await rpc("qorpera_site_app_session", { p_slug: slug, p_token: token }));
-		const siteId = result.state === "open" ? result.siteId : null;
-		keep(id, siteId, siteId ? sessionCacheMs : lockedCacheMs);
-		return siteId;
-	}
-
-	function keep(id, siteId, ms) {
-		if (sessions.size >= MAX_SESSIONS_KEPT) {
-			const now = Date.now();
-			for (const [key, kept] of sessions) if (kept.until <= now) sessions.delete(key);
-			// Still full: the oldest go first.
-			for (const key of sessions.keys()) {
-				if (sessions.size < MAX_SESSIONS_KEPT) break;
-				sessions.delete(key);
+		const now = Date.now();
+		if (!fresh) {
+			const open = sessions.get(id);
+			if (open) {
+				if (open.until > now) {
+					sessions.delete(id);
+					sessions.set(id, open);
+					return open.siteId;
+				}
+				sessions.delete(id);
+			}
+			const locked = lockedSessions.get(id);
+			if (locked) {
+				if (locked.until > now) return null;
+				lockedSessions.delete(id);
+			}
+			const running = sessionInFlight.get(id);
+			if (running) return running;
+		} else {
+			sessions.delete(id);
+			lockedSessions.delete(id);
+		}
+		const lookup = (async () => {
+			const result = parseSessionAnswer(await rpc("qorpera_site_app_session", { p_slug: slug, p_token: token }));
+			const siteId = result.state === "open" ? result.siteId : null;
+			const until = Date.now() + (siteId ? sessionCacheMs : lockedCacheMs);
+			if (siteId) {
+				lockedSessions.delete(id);
+				keep(sessions, id, { until, siteId }, maxSessionsKept);
+			} else {
+				sessions.delete(id);
+				keep(lockedSessions, id, { until }, maxSessionsKept);
+			}
+			return siteId;
+		})();
+		if (!fresh) {
+			sessionInFlight.set(id, lookup);
+			try {
+				return await lookup;
+			} finally {
+				if (sessionInFlight.get(id) === lookup) sessionInFlight.delete(id);
 			}
 		}
-		sessions.set(id, { until: Date.now() + ms, siteId });
+		return lookup;
 	}
 
-	/** This minute's refused connects for an address and a link (none kept for a trusted address). */
-	function refusalsOf(address, slug) {
-		if (trusted.has(address)) return null;
-		const id = `${addressGroup(address)} ${slug}`;
-		const now = Date.now();
-		let entry = refusals.get(id);
+	function activeRefusalCount(map, id, now) {
+		const entry = map.get(id);
+		if (!entry) return 0;
+		if (now - entry.start >= 60_000) {
+			map.delete(id);
+			return 0;
+		}
+		return entry.count;
+	}
+
+	function bumpRefusal(map, id, now) {
+		let entry = map.get(id);
 		if (!entry || now - entry.start >= 60_000) {
 			entry = { start: now, count: 0 };
-			refusals.set(id, entry);
+			keep(map, id, entry, maxRefusalsKept);
 		}
-		return entry;
+		entry.count++;
 	}
 
-	/** One more connect for the database to answer: while the in-flight total allows it, and, outside the trusted
-	 * addresses, while this address has not been refused too often for this link this minute. */
+	function recordRefusal(address, slug) {
+		if (trusted.has(address)) return;
+		const group = addressGroup(address);
+		const now = Date.now();
+		bumpRefusal(refusals, `${group} ${slug}`, now);
+		bumpRefusal(addressRefusals, group, now);
+	}
+
 	function admit(address, slug) {
-		if (pendingTotal >= connectLimit.total) return false;
-		if ((refusalsOf(address, slug)?.count ?? 0) >= connectLimit.refusedPerMinute) return false;
+		if (pendingTotal >= connectLimit.total) return null;
+		const isTrusted = trusted.has(address);
+		const group = isTrusted ? null : addressGroup(address);
+		if (!isTrusted) {
+			const untrustedCap = trusted.size > 0 ? Math.max(1, Math.floor(connectLimit.total * 0.75)) : connectLimit.total;
+			if (pendingUntrusted >= untrustedCap) return null;
+			const perAddressCap = Math.min(untrustedCap, Math.max(connectLimit.refusedPerMinute, 16));
+			const inFlightForAddress = pendingByAddress.get(group) ?? 0;
+			if (inFlightForAddress >= perAddressCap) return null;
+			const now = Date.now();
+			if (activeRefusalCount(refusals, `${group} ${slug}`, now) >= connectLimit.refusedPerMinute) return null;
+			const perAddressRefusedCap = Math.max(connectLimit.refusedPerMinute * 5, 50);
+			if (activeRefusalCount(addressRefusals, group, now) >= perAddressRefusedCap) return null;
+			pendingUntrusted++;
+			pendingByAddress.set(group, inFlightForAddress + 1);
+		}
 		pendingTotal++;
-		return true;
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			pendingTotal--;
+			if (!isTrusted) {
+				pendingUntrusted--;
+				const left = (pendingByAddress.get(group) ?? 1) - 1;
+				if (left <= 0) pendingByAddress.delete(group);
+				else pendingByAddress.set(group, left);
+			}
+		};
 	}
 
 	/** Whether the database still takes a program: its key, its site. */
@@ -1234,25 +1464,111 @@ export function createRelay({
 		let answered = false;
 		let over = false;
 		let blocked = null;
+		let blockedAt = 0;
+		let lastBlockedWritable = 0;
+		let lastBlockedQueue = 0;
+		let streamBuffered = 0;
+		let tightened = false;
 		let received = 0;
-		/** The visitor reads slower than the app writes: the program waits, at most `pausedMs`. */
+		let reqPaused = false;
+		let reqEnded = false;
+		let uploadEntry = null;
+		let timer = null;
+		const syncBuffered = (next = res.writableLength) => {
+			const bounded = Math.max(0, next);
+			const delta = bounded - streamBuffered;
+			if (delta !== 0) {
+				streamBuffered = bounded;
+				adjustBuffered(program, delta);
+			}
+			return bounded;
+		};
+		const overRelayCap = () =>
+			relayBuffered >= RELAY_PAUSE_BYTES &&
+			bufferedPrograms > 0 &&
+			program.buffered >= Math.floor(RELAY_PAUSE_BYTES / bufferedPrograms);
+		const armTimer = () => {
+			if (timer) clearTimeout(timer);
+			timer = setTimeout(() => fail(504, text.slow, text.again), responseTimeoutMs);
+		};
+		const armBlockedTimer = (ms) => {
+			if (blocked) clearTimeout(blocked);
+			blocked = setTimeout(() => {
+				if (over) return;
+				const elapsed = Date.now() - blockedAt;
+				if (!tightened || elapsed >= pausedMs) return fail(502, text.notAnswering, text.notAnsweringLead);
+				const currentWritable = syncBuffered();
+				const currentQueue = socketWriteQueue(res);
+				// WHY: Check writableLength and libuv writeQueueSize so slow mobile links draining mid-chunk count as progressing.
+				if (
+					currentWritable < lastBlockedWritable ||
+					(currentWritable === lastBlockedWritable && currentQueue < lastBlockedQueue)
+				) {
+					program.sharedProgressChecks++;
+					lastBlockedWritable = currentWritable;
+					lastBlockedQueue = currentQueue;
+					if (
+						currentWritable <= STREAM_PAUSE_BYTES / 2 &&
+						program.buffered < PROGRAM_PAUSE_BYTES &&
+						!overRelayCap()
+					) {
+						unblock();
+						return;
+					}
+					armBlockedTimer(Math.min(sharedPausedMs, Math.max(1, pausedMs - elapsed)));
+					return;
+				}
+				fail(502, text.notAnswering, text.notAnsweringLead);
+			}, ms);
+		};
+		const blocker = {
+			tighten: () => {
+				if (!blocked || tightened) return;
+				tightened = true;
+				lastBlockedWritable = syncBuffered();
+				lastBlockedQueue = socketWriteQueue(res);
+				const limit = Math.min(pausedMs, sharedPausedMs);
+				const left = Math.max(0, Math.min(limit, pausedMs - (Date.now() - blockedAt)));
+				armBlockedTimer(left);
+			},
+		};
 		const block = () => {
-			if (blocked) return;
-			blocked = setTimeout(() => fail(502, text.notAnswering, text.notAnsweringLead), pausedMs);
-			program.block();
+			if (blocked || over) return;
+			// WHY: Pause the app-response timer while the relay itself has paused reading from the program for a slow visitor.
+			if (timer) {
+				clearTimeout(timer);
+				timer = null;
+			}
+			blockedAt = Date.now();
+			lastBlockedWritable = syncBuffered();
+			lastBlockedQueue = socketWriteQueue(res);
+			tightened = program.streams.size > 1;
+			const limit = tightened ? Math.min(pausedMs, sharedPausedMs) : pausedMs;
+			armBlockedTimer(limit);
+			program.block(blocker);
 		};
 		const unblock = () => {
 			if (!blocked) return;
 			clearTimeout(blocked);
 			blocked = null;
-			program.unblock();
+			tightened = false;
+			program.unblock(blocker);
+			if (!over) armTimer();
 		};
 		const done = () => {
 			over = true;
-			clearTimeout(timer);
+			if (timer) {
+				clearTimeout(timer);
+				timer = null;
+			}
+			syncBuffered(0);
 			program.streams.delete(id);
-			program.waiting.delete(req);
+			uploadEntry = null;
 			unblock();
+			if (reqPaused && !reqEnded) {
+				reqPaused = false;
+				req.resume();
+			}
 		};
 		/** The stream ends early: the program is told (unless it ended it), the visitor gets a page (or the connection
 		 * ends, once a response has begun), and the rest of the request body is dropped. */
@@ -1264,7 +1580,7 @@ export function createRelay({
 			if (answered) res.destroy();
 			else answer(req, res, status, messagePage(lang, title, lead), { connection: "close" });
 		};
-		const timer = setTimeout(() => fail(504, text.slow, text.again), responseTimeoutMs);
+		armTimer();
 		const broken = () => fail(502, text.notAnswering, text.notAnsweringLead);
 		program.streams.set(id, {
 			response(payload) {
@@ -1287,18 +1603,29 @@ export function createRelay({
 					return broken();
 				}
 				answered = true;
-				clearTimeout(timer);
+				armTimer();
 				res.flushHeaders();
 			},
 			body(payload) {
 				if (!answered) return broken();
+				if (!blocked) armTimer();
 				let room;
 				try {
 					room = res.write(payload);
 				} catch {
 					return broken();
 				}
-				if (!room) block();
+				const currentBuffered = syncBuffered();
+				if (blocked) {
+					lastBlockedWritable = currentBuffered;
+					lastBlockedQueue = socketWriteQueue(res);
+				} else if (
+					!room &&
+					(currentBuffered >= STREAM_PAUSE_BYTES ||
+						program.buffered >= PROGRAM_PAUSE_BYTES ||
+						overRelayCap())
+				)
+					block();
 			},
 			end() {
 				if (!answered) return broken();
@@ -1316,7 +1643,11 @@ export function createRelay({
 				fail(502, text.notAnswering, text.notAnsweringLead, { tellProgram: false });
 			},
 		});
-		res.on("drain", unblock);
+		program.tightenBlocked();
+		res.on("drain", () => {
+			syncBuffered();
+			unblock();
+		});
 		// The visitor left: the program stops too.
 		res.on("close", () => {
 			if (over) return;
@@ -1338,20 +1669,79 @@ export function createRelay({
 				}),
 			),
 		);
+		const queueSlices = (slices) => {
+			if (!reqPaused) {
+				reqPaused = true;
+				req.pause();
+			}
+			if (uploadEntry) {
+				uploadEntry.slices.push(...slices);
+				return;
+			}
+			uploadEntry = {
+				id,
+				slices,
+				offset: 0,
+				isOver: () => over,
+				onDrained: () => {
+					uploadEntry = null;
+					if (over) return;
+					if (reqEnded) {
+						if (!program.ws.closed) program.send(TYPE.end, id);
+					} else if (reqPaused) {
+						reqPaused = false;
+						req.resume();
+					}
+				},
+			};
+			program.uploadQueue.push(uploadEntry);
+		};
 		req.on("data", (chunk) => {
 			if (over) return;
 			received += chunk.length;
 			if (received > maxBodyBytes) return fail(413, text.tooLarge, text.tooLargeLead);
-			let room = true;
-			for (let at = 0; at < chunk.length; at += CHUNK_BYTES)
-				room = program.send(TYPE.body, id, chunk.subarray(at, at + CHUNK_BYTES));
-			if (!room) {
-				req.pause();
-				program.waiting.add(req);
+			const slices = [];
+			for (let at = 0; at < chunk.length; at += CHUNK_BYTES) slices.push(chunk.subarray(at, at + CHUNK_BYTES));
+			if (uploadEntry || program.uploadQueue.length > 0) return queueSlices(slices);
+			for (let i = 0; i < slices.length; i++) {
+				const slice = slices[i];
+				// WHY: Pause and queue before approaching maxQueuedBytes so concurrent upload bursts never terminate the WS.
+				if (program.ws.needsDrain && program.ws.queuedBytes + slice.length > uploadHighWater) {
+					return queueSlices(slices.slice(i));
+				}
+				const room = program.send(TYPE.body, id, slice);
+				if (over || program.ws.closed) return;
+				if (!room || (program.ws.needsDrain && program.ws.queuedBytes >= uploadHighWater)) {
+					const rest = slices.slice(i + 1);
+					if (rest.length > 0) return queueSlices(rest);
+					if (!reqPaused) {
+						reqPaused = true;
+						req.pause();
+						uploadEntry = {
+							id,
+							slices: [],
+							offset: 0,
+							isOver: () => over,
+							onDrained: () => {
+								uploadEntry = null;
+								if (over) return;
+								if (reqEnded) {
+									if (!program.ws.closed) program.send(TYPE.end, id);
+								} else if (reqPaused) {
+									reqPaused = false;
+									req.resume();
+								}
+							},
+						};
+						program.uploadQueue.push(uploadEntry);
+					}
+					return;
+				}
 			}
 		});
 		req.on("end", () => {
-			if (!over) program.send(TYPE.end, id);
+			reqEnded = true;
+			if (!over && !uploadEntry && !program.ws.closed) program.send(TYPE.end, id);
 		});
 	}
 
@@ -1385,24 +1775,26 @@ export function createRelay({
 			key: result.key ?? secret,
 			siteId: result.siteId,
 			port: result.port,
+			nextCheckAt: scheduleCheck(),
 		});
 		programs.set(site.slug, program);
 		ws.onMessage = (message) => programMessage(program, message);
-		ws.onDrain = () => {
-			for (const req of program.waiting) req.resume();
-			program.waiting.clear();
-		};
+		ws.onDrain = () => program.pumpUploads(uploadHighWater);
 		ws.onClose = () => {
 			if (programs.get(site.slug) === program) {
 				programs.delete(site.slug);
 				log(`${site.slug}: the link program is gone`);
 			}
+			program.uploadQueue.length = 0;
 			for (const stream of [...program.streams.values()]) stream.gone();
+			adjustBuffered(program, -program.buffered);
 		};
 		if (old) {
 			// Only the newest program serves a link; the older one's open requests end with it.
 			old.ws.close(CLOSE.replaced, "replaced");
+			old.uploadQueue.length = 0;
 			for (const stream of [...old.streams.values()]) stream.gone();
+			adjustBuffered(old, -old.buffered);
 		}
 		program.send(
 			TYPE.hello,
@@ -1435,7 +1827,8 @@ export function createRelay({
 		if (!secret || !SECRET.test(secret) || typeof id !== "string" || !PROGRAM_ID.test(id))
 			return opened().close(CLOSE.refused, "refused");
 		const address = clientAddress(req.headers["cf-connecting-ip"]);
-		if (!admit(address, site.slug))
+		const releaseAdmit = admit(address, site.slug);
+		if (!releaseAdmit)
 			return rawAnswer(socket, 429, messagePage(lang, text.unavailable, text.again), { "retry-after": "30" });
 		// Nothing is read from the socket until the database has answered.
 		socket.pause();
@@ -1452,8 +1845,7 @@ export function createRelay({
 			}
 			if (result.state !== "ok") {
 				log(`${site.slug}: a link program was refused`);
-				const refused = refusalsOf(address, site.slug);
-				if (refused) refused.count++;
+				recordRefusal(address, site.slug);
 			}
 			if (socket.destroyed) return;
 			const ws = opened();
@@ -1461,7 +1853,7 @@ export function createRelay({
 			register(site, ws, secret, id, result);
 		} finally {
 			upgrading.delete(socket);
-			pendingTotal--;
+			releaseAdmit();
 		}
 	}
 
@@ -1478,8 +1870,8 @@ export function createRelay({
 				program.keptAliveAt = now;
 				program.send(TYPE.keepalive, 0);
 			}
-			if (recheckMs > 0 && now - program.checkedAt >= recheckMs) {
-				program.checkedAt = now;
+			if (recheckMs > 0 && now >= program.nextCheckAt) {
+				program.nextCheckAt = scheduleCheck(now);
 				rpc("qorpera_site_app_connect", { p_slug: program.slug, p_secret: program.key, p_program: program.id })
 					.then((value) => {
 						const result = parseConnectAnswer(value);
@@ -1493,7 +1885,9 @@ export function createRelay({
 			}
 		}
 		for (const [id, kept] of sessions) if (kept.until <= now) sessions.delete(id);
+		for (const [id, kept] of lockedSessions) if (kept.until <= now) lockedSessions.delete(id);
 		for (const [id, entry] of refusals) if (now - entry.start >= 60_000) refusals.delete(id);
+		for (const [id, entry] of addressRefusals) if (now - entry.start >= 60_000) addressRefusals.delete(id);
 	}
 
 	const server = createServer(handle);
@@ -1521,6 +1915,8 @@ export function createRelay({
 	/** Whether a link's program is connected, and dropping it (its socket closed at once): for operators and tests. */
 	server.isConnected = (slug) => programs.has(slug);
 	server.dropProgram = (slug) => programs.get(slug)?.ws.terminate();
+	server.pauseCount = (slug) => programs.get(slug)?.pauseCount ?? 0;
+	server.sharedProgressChecks = (slug) => programs.get(slug)?.sharedProgressChecks ?? 0;
 	return server;
 }
 

@@ -128,7 +128,7 @@ const INDEX_LINES: Readonly<Record<string, string>> = {
 	hire_team: "hire two or more coworkers at once, each knowing the others",
 	create_group_chat: "open a group chat with coworkers",
 	end_role: "end an agent's role when its work is over",
-	manage_code: "the company's code kept in Qorpera: its changes and records",
+	manage_code: "the company's code kept in Qorpera: status, changes and records",
 	machine_screen: "see and drive a running machine's desktop",
 	machine_cancel: "stop a running machine command",
 	machine_stop: "stop a machine; its disk is kept",

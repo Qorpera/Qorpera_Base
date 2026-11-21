@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { getEventListeners } from "node:events";
 import { performance } from "node:perf_hooks";
 import { CloudControlRpcEnded, CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
 import {
@@ -835,4 +836,13 @@ it("asks a run's repeatable write again while its answer is lost, and never once
 	});
 	await expect(cloudRunRowWrite(undefined, once, new AbortController().signal)).rejects.toThrow();
 	expect(once).toHaveBeenCalledOnce();
+});
+
+it("detaches parent AbortSignal listeners after each cloudToolRequest settles", async () => {
+	const parent = new AbortController();
+	for (let i = 0; i < 500; i++) {
+		const value = await cloudToolRequest(async () => i, parent.signal, 5_000);
+		expect(value).toBe(i);
+	}
+	expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
 });

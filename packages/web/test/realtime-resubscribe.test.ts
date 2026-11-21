@@ -8,8 +8,6 @@ import {
 	type RealtimePhase,
 	type RealtimeResource,
 	subscribeCompanyRealtime,
-	subscribeProfileRealtime,
-	subscribeSidebarRealtime,
 } from "../src/cloud/realtime.ts";
 import { deferred, fixture, profileA, userA } from "./fixtures.ts";
 
@@ -30,12 +28,14 @@ interface FakeChannel {
 
 function fakeCloud() {
 	const channels: FakeChannel[] = [];
+	let held: FakeChannel[] = [];
 	const order: string[] = [];
 	const setAuth = vi.fn(async () => {
 		order.push("setAuth");
 	});
 	const removeChannel = vi.fn(async (channel: FakeChannel) => {
 		order.push(`remove ${channels.indexOf(channel)}`);
+		held = held.filter((each) => each !== channel);
 		return "ok";
 	});
 	const socket = { connected: true };
@@ -45,8 +45,10 @@ function fakeCloud() {
 	const cloud = {
 		supabase: {
 			channel: vi.fn((topic: string) => {
+				const existing = held.find((each) => each.topic === `realtime:${topic}`);
+				if (existing) return existing;
 				const channel: FakeChannel = {
-					topic,
+					topic: `realtime:${topic}`,
 					state: "errored",
 					on: vi.fn(() => channel),
 					subscribe: vi.fn((status: Status) => {
@@ -56,8 +58,10 @@ function fakeCloud() {
 					}),
 				};
 				channels.push(channel);
+				held.push(channel);
 				return channel;
 			}),
+			getChannels: () => held,
 			removeChannel,
 			realtime: { setAuth, connect, isConnected: () => socket.connected },
 		},
@@ -79,12 +83,14 @@ describe("a failed live-updates channel subscribes again by itself", () => {
 	it("waits 1 s, 2 s, 5 s, 10 s, then 30 s, and starts over after a subscription", async () => {
 		const { cloud, channels, setAuth } = fakeCloud();
 		const health: [RealtimePhase, string | undefined][] = [];
-		const subscription = subscribeProfileRealtime(
+		const subscription = subscribeCompanyRealtime(
 			cloud,
 			profileA.profileId,
+			userA.id,
 			() => {},
 			(phase, error) => health.push([phase, error]),
 		);
+		await vi.advanceTimersByTimeAsync(0);
 		expect(channels).toHaveLength(1);
 		channels[0]!.status!("SUBSCRIBED");
 		channels[0]!.status!("CHANNEL_ERROR", transport());
@@ -100,15 +106,12 @@ describe("a failed live-updates channel subscribes again by itself", () => {
 			expect(channels).toHaveLength(index + 1);
 			await vi.advanceTimersByTimeAsync(1);
 			expect(channels).toHaveLength(index + 2);
-			expect(setAuth).toHaveBeenCalledTimes(index + 1);
-			// Every channel has its own topic: the SDK reuses a channel by topic, even one being removed.
-			expect(new Set(channels.map((channel) => channel.topic)).size).toBe(channels.length);
+			expect(setAuth).toHaveBeenCalledTimes(index + 2);
 			if (index < waits.length - 1) channels.at(-1)!.status!(failures[index + 1]!);
 		}
 		expect(health.at(-1)?.[0]).toBe("degraded");
 		channels.at(-1)!.status!("SUBSCRIBED");
 		expect(health.at(-1)).toEqual(["connected", undefined]);
-		// A new failure starts again at 1 s.
 		const before = channels.length;
 		channels.at(-1)!.status!("CHANNEL_ERROR", transport());
 		await vi.advanceTimersByTimeAsync(1_000);
@@ -116,42 +119,45 @@ describe("a failed live-updates channel subscribes again by itself", () => {
 		subscription.stop();
 	});
 
-	it("refreshes Realtime's token before the new channel joins and removes the failed one after", async () => {
+	it("refreshes Realtime's token before the new channel joins after removing the failed one", async () => {
 		const { cloud, channels, order, setAuth } = fakeCloud();
+		subscribeCompanyRealtime(
+			cloud,
+			profileA.profileId,
+			userA.id,
+			() => {},
+			() => {},
+		);
+		await vi.advanceTimersByTimeAsync(0);
 		const token = deferred<void>();
 		setAuth.mockImplementationOnce(async () => {
 			order.push("setAuth");
 			await token.promise;
 		});
-		subscribeProfileRealtime(
-			cloud,
-			profileA.profileId,
-			() => {},
-			() => {},
-		);
 		channels[0]!.status!("CHANNEL_ERROR", transport());
 		await vi.advanceTimersByTimeAsync(1_000);
-		expect(order).toEqual(["subscribe 0", "setAuth"]);
+		expect(order).toEqual(["setAuth", "subscribe 0", "remove 0", "setAuth"]);
 		expect(channels).toHaveLength(1);
 		token.resolve();
 		await vi.advanceTimersByTimeAsync(0);
-		expect(order).toEqual(["subscribe 0", "setAuth", "subscribe 1", "remove 0"]);
+		expect(order).toEqual(["setAuth", "subscribe 0", "remove 0", "setAuth", "subscribe 1"]);
 		expect(setAuth).toHaveBeenCalledWith();
 	});
 
 	it("ignores late answers from a channel it replaced", async () => {
 		const { cloud, channels } = fakeCloud();
 		const health: RealtimePhase[] = [];
-		subscribeProfileRealtime(
+		subscribeCompanyRealtime(
 			cloud,
 			profileA.profileId,
+			userA.id,
 			() => {},
 			(phase) => health.push(phase),
 		);
+		await vi.advanceTimersByTimeAsync(0);
 		channels[0]!.status!("CHANNEL_ERROR", transport());
 		await vi.advanceTimersByTimeAsync(1_000);
 		channels[1]!.status!("TIMED_OUT");
-		// The removed channel closes and its old join answers late: neither counts.
 		channels[0]!.status!("CLOSED");
 		channels[0]!.status!("SUBSCRIBED");
 		expect(health).toEqual(["connecting", "degraded", "degraded"]);
@@ -161,13 +167,14 @@ describe("a failed live-updates channel subscribes again by itself", () => {
 
 	it("tries at once when the window regains focus or the browser comes back online", async () => {
 		const { cloud, channels } = fakeCloud();
-		const subscription = subscribeProfileRealtime(
+		const subscription = subscribeCompanyRealtime(
 			cloud,
 			profileA.profileId,
+			userA.id,
 			() => {},
 			() => {},
 		);
-		// Healthy or still joining: focus changes nothing.
+		await vi.advanceTimersByTimeAsync(0);
 		window.dispatchEvent(new Event("focus"));
 		await vi.advanceTimersByTimeAsync(0);
 		expect(channels).toHaveLength(1);
@@ -179,7 +186,6 @@ describe("a failed live-updates channel subscribes again by itself", () => {
 		window.dispatchEvent(new Event("focus"));
 		await vi.advanceTimersByTimeAsync(0);
 		expect(channels).toHaveLength(2);
-		// The waiting retry was cancelled, and the new channel is still joining.
 		await vi.advanceTimersByTimeAsync(1_000);
 		expect(channels).toHaveLength(2);
 		window.dispatchEvent(new Event("online"));
@@ -195,12 +201,14 @@ describe("a failed live-updates channel subscribes again by itself", () => {
 	it("stops for good: no retry, no focus retry, and a retry under way opens nothing", async () => {
 		const { cloud, channels, setAuth, removeChannel } = fakeCloud();
 		const health: RealtimePhase[] = [];
-		const first = subscribeProfileRealtime(
+		const first = subscribeCompanyRealtime(
 			cloud,
 			profileA.profileId,
+			userA.id,
 			() => {},
 			(phase) => health.push(phase),
 		);
+		await vi.advanceTimersByTimeAsync(0);
 		channels[0]!.status!("CHANNEL_ERROR", transport());
 		first.stop();
 		expect(removeChannel).toHaveBeenCalledWith(channels[0]);
@@ -211,14 +219,16 @@ describe("a failed live-updates channel subscribes again by itself", () => {
 		expect(channels).toHaveLength(1);
 		expect(health.at(-1)).toBe("stopped");
 
-		const token = deferred<void>();
-		setAuth.mockImplementationOnce(() => token.promise);
-		const second = subscribeProfileRealtime(
+		const second = subscribeCompanyRealtime(
 			cloud,
 			profileA.profileId,
+			userA.id,
 			() => {},
 			() => {},
 		);
+		await vi.advanceTimersByTimeAsync(0);
+		const token = deferred<void>();
+		setAuth.mockImplementationOnce(() => token.promise);
 		channels[1]!.status!("CHANNEL_ERROR", transport());
 		await vi.advanceTimersByTimeAsync(1_000);
 		second.stop();
@@ -230,54 +240,36 @@ describe("a failed live-updates channel subscribes again by itself", () => {
 
 	it("reopens a socket that is down instead of queueing joins, and replaces the channel once it is up", async () => {
 		const { cloud, channels, socket, connect, setAuth } = fakeCloud();
-		subscribeProfileRealtime(
+		subscribeCompanyRealtime(
 			cloud,
 			profileA.profileId,
+			userA.id,
 			() => {},
 			() => {},
 		);
+		await vi.advanceTimersByTimeAsync(0);
 		socket.connected = false;
 		channels[0]!.status!("CHANNEL_ERROR", transport());
-		// Each wait while the socket is down only asks it to reconnect: no join or leave piles up.
 		for (const wait of [1_000, 2_000, 5_000, 10_000, 30_000, 30_000]) await vi.advanceTimersByTimeAsync(wait);
 		expect(connect).toHaveBeenCalledTimes(6);
 		expect(channels).toHaveLength(1);
-		expect(setAuth).not.toHaveBeenCalled();
+		expect(setAuth).toHaveBeenCalledTimes(1);
 		window.dispatchEvent(new Event("online"));
 		await vi.advanceTimersByTimeAsync(0);
 		expect(connect).toHaveBeenCalledTimes(7);
 		expect(channels).toHaveLength(1);
-		// The SDK rejoins the failed channel once the socket opens: that ends the waits.
 		socket.connected = true;
 		channels[0]!.status!("SUBSCRIBED");
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(channels).toHaveLength(1);
-		// Up again but the channel stays failed: it is replaced at the next wait.
 		channels[0]!.status!("CHANNEL_ERROR", transport());
 		await vi.advanceTimersByTimeAsync(1_000);
 		expect(channels).toHaveLength(2);
-		// A channel the server closed has no rejoin: replaced even while the socket is down.
 		socket.connected = false;
 		channels[1]!.state = "closed";
 		channels[1]!.status!("CLOSED");
-		// (the second failure since the last subscription: a 2 s wait)
 		await vi.advanceTimersByTimeAsync(2_000);
 		expect(channels).toHaveLength(3);
-	});
-
-	it("keeps the sidebar's channel subscribed the same way", async () => {
-		const { cloud, channels } = fakeCloud();
-		const changes = vi.fn();
-		const subscription = subscribeSidebarRealtime(cloud, profileA.profileId, changes);
-		channels[0]!.status!("CHANNEL_ERROR", transport());
-		await vi.advanceTimersByTimeAsync(1_000);
-		expect(channels).toHaveLength(2);
-		expect(channels[1]!.on).toHaveBeenCalledWith(
-			"postgres_changes",
-			expect.objectContaining({ table: "qorpera_company_sidebar_revisions" }),
-			changes,
-		);
-		subscription.stop();
 	});
 });
 
@@ -287,15 +279,15 @@ describe("the company's live badge recovers without a new tab", () => {
 		const health: [RealtimePhase, string | undefined][] = [];
 		let visibility: DocumentVisibilityState = "visible";
 		vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
-		const subscription = subscribeProfileRealtime(
+		const subscription = subscribeCompanyRealtime(
 			cloud,
 			profileA.profileId,
+			userA.id,
 			() => {},
 			(phase, error) => health.push([phase, error]),
 		);
+		await vi.advanceTimersByTimeAsync(0);
 		channels[0]!.status!("SUBSCRIBED");
-		// 3 Nov 2026: Chrome froze the hidden tab, Realtime closed its socket, and on return the badge flashed
-		// "channel error: transport failure" for the second the channel took to come back.
 		visibility = "hidden";
 		document.dispatchEvent(new Event("visibilitychange"));
 		channels[0]!.status!("CHANNEL_ERROR", transport());
@@ -304,14 +296,11 @@ describe("the company's live badge recovers without a new tab", () => {
 		visibility = "visible";
 		document.dispatchEvent(new Event("visibilitychange"));
 		await vi.advanceTimersByTimeAsync(0);
-		// Back: it tries at once, and says nothing while the new channel joins.
 		expect(channels).toHaveLength(2);
 		await vi.advanceTimersByTimeAsync(RESUME_GRACE_MS - 1);
 		channels[1]!.status!("SUBSCRIBED");
 		await vi.advanceTimersByTimeAsync(RESUME_GRACE_MS);
 		expect(health.map(([phase]) => phase)).toEqual(["connecting", "connected", "connected"]);
-		// Hidden for long, its retries failing too: still nothing, and once back the grace starts then. Hidden again
-		// before it ends, it stays held until the page is back.
 		visibility = "hidden";
 		channels[1]!.status!("CHANNEL_ERROR", transport());
 		await vi.advanceTimersByTimeAsync(60_000);
@@ -335,14 +324,15 @@ describe("the company's live badge recovers without a new tab", () => {
 	it("holds a failure that arrives just after the page came back for the grace, then says so if it lasts", async () => {
 		const { cloud, channels } = fakeCloud();
 		const health: [RealtimePhase, string | undefined][] = [];
-		const subscription = subscribeProfileRealtime(
+		const subscription = subscribeCompanyRealtime(
 			cloud,
 			profileA.profileId,
+			userA.id,
 			() => {},
 			(phase, error) => health.push([phase, error]),
 		);
+		await vi.advanceTimersByTimeAsync(0);
 		channels[0]!.status!("SUBSCRIBED");
-		// A frozen tab hears of its closed socket only once it runs again.
 		document.dispatchEvent(new Event("resume"));
 		channels[0]!.status!("CHANNEL_ERROR", transport());
 		await vi.advanceTimersByTimeAsync(1_000);
@@ -355,7 +345,6 @@ describe("the company's live badge recovers without a new tab", () => {
 			["connected", undefined],
 			["degraded", "channel error: transport failure"],
 		]);
-		// Outside the grace a failure shows at once, as before.
 		await vi.advanceTimersByTimeAsync(10_000);
 		channels.at(-1)!.status!("SUBSCRIBED");
 		channels.at(-1)!.status!("CHANNEL_ERROR", transport());
@@ -555,60 +544,31 @@ describe("a company's hints by push", () => {
 		expect(cloud.supabase.removeChannel).toHaveBeenCalledWith(made[0]);
 	});
 
-	it("listens by postgres_changes, as before, where the database refuses the topic twice running", async () => {
+	it("retries once immediately on a refused join and then backs off on push without falling back to postgres_changes", async () => {
 		const { cloud, made, order } = pushCloud();
 		const health: RealtimePhase[] = [];
-		const changes: RealtimeResource[] = [];
 		const subscription = subscribeCompanyRealtime(
 			cloud,
 			profileA.profileId,
 			userA.id,
-			(resource) => changes.push(resource),
+			() => {},
 			(phase) => health.push(phase),
 		);
-		const sidebar = vi.fn();
-		subscription.followSidebar(sidebar);
 		await vi.advanceTimersByTimeAsync(0);
-		// One refusal may be a stray (a join Realtime got before it held the token): once more at once, the refused
-		// channel gone first and the token set again.
 		made[0]!.status!("CHANNEL_ERROR", refusal(topic));
 		await vi.advanceTimersByTimeAsync(0);
 		expect(order).toEqual(["setAuth", "subscribe 0", "remove 0", "setAuth", "subscribe 1"]);
 		expect(made[1]!.topic).toBe(`realtime:${topic}`);
+		expect(health).toEqual(["connecting"]);
 		made[1]!.status!("CHANNEL_ERROR", refusal(topic));
-		await vi.advanceTimersByTimeAsync(0);
-		// Then at once the company's and the sidebar's postgres_changes channels, each on a topic of its own.
-		expect(made).toHaveLength(4);
-		const company = made.find((each) => each.topic.startsWith(`realtime:qorpera-profile-${profileA.profileId}-`))!;
-		const ownSidebar = made.find((each) => each.topic.startsWith(`realtime:qorpera-sidebar-${profileA.profileId}-`))!;
-		expect(company.bindings.map(([kind, filter]) => [kind, filter.table, filter.filter])).toEqual(
-			[
-				"qorpera_shared_sessions",
-				"qorpera_profile_staff",
-				"qorpera_profile_access_state",
-				"qorpera_company_files",
-			].map((table) => ["postgres_changes", table, `profile_id=eq.${profileA.profileId}`]),
-		);
-		expect(ownSidebar.bindings[0]![1].table).toBe("qorpera_company_sidebar_revisions");
-		// The refused channels are removed, and nothing joins the topic again.
-		expect(cloud.supabase.removeChannel).toHaveBeenCalledWith(made[0]);
-		expect(cloud.supabase.removeChannel).toHaveBeenCalledWith(made[1]);
-		expect(made.filter((each) => each.topic === `realtime:${topic}`)).toHaveLength(2);
-		company.status!("SUBSCRIBED");
-		// A refusal is no outage: the badge never said degraded.
-		expect(health).toEqual(["connecting", "connected"]);
-		company.bindings[0]![2]({});
-		ownSidebar.bindings[0]![2]({});
-		expect(changes).toEqual(["sessions"]);
-		expect(sidebar).toHaveBeenCalledTimes(1);
-		// It stays on postgres_changes: a later failure replaces that channel the old way.
-		company.status!("CHANNEL_ERROR", transport());
-		expect(health.at(-1)).toBe("degraded");
+		expect(health).toEqual(["connecting", "degraded"]);
 		await vi.advanceTimersByTimeAsync(1_000);
-		expect(made).toHaveLength(5);
-		expect(made.at(-1)!.topic.startsWith(`realtime:qorpera-profile-${profileA.profileId}-`)).toBe(true);
+		expect(made).toHaveLength(3);
+		expect(made.every((each) => each.topic === `realtime:${topic}`)).toBe(true);
+		expect(made.flatMap((each) => each.bindings).every(([kind]) => kind === "broadcast")).toBe(true);
+		made[2]!.status!("SUBSCRIBED");
+		expect(health).toEqual(["connecting", "degraded", "connected"]);
 		subscription.stop();
-		expect(cloud.supabase.removeChannel).toHaveBeenCalledWith(ownSidebar);
 	});
 
 	it("stays on push after one refusal, and counts refusals again from each subscription", async () => {
@@ -624,39 +584,12 @@ describe("a company's hints by push", () => {
 		made[0]!.status!("CHANNEL_ERROR", refusal(topic));
 		await vi.advanceTimersByTimeAsync(0);
 		made[1]!.status!("SUBSCRIBED");
-		// Closed later (a Realtime restart): the next join is refused once, then tried again on push.
 		made[1]!.status!("CLOSED");
 		await vi.advanceTimersByTimeAsync(1_000);
 		made[2]!.status!("CHANNEL_ERROR", refusal(topic));
 		await vi.advanceTimersByTimeAsync(0);
 		expect(made).toHaveLength(4);
 		expect(made.every((each) => each.topic === `realtime:${topic}`)).toBe(true);
-	});
-
-	it("opens the sidebar's own channel when it falls back after the sidebar was read", async () => {
-		const { cloud, made } = pushCloud();
-		const subscription = subscribeCompanyRealtime(
-			cloud,
-			profileA.profileId,
-			userA.id,
-			() => {},
-			() => {},
-		);
-		await vi.advanceTimersByTimeAsync(0);
-		made[0]!.status!("CHANNEL_ERROR", refusal(topic));
-		await vi.advanceTimersByTimeAsync(0);
-		made[1]!.status!("CHANNEL_ERROR", refusal(topic));
-		await vi.advanceTimersByTimeAsync(0);
-		expect(made).toHaveLength(3);
-		const sidebar = vi.fn();
-		const following = subscription.followSidebar(sidebar);
-		expect(made).toHaveLength(4);
-		expect(made[3]!.topic.startsWith(`realtime:qorpera-sidebar-${profileA.profileId}-`)).toBe(true);
-		expect(following.live()).toBe(false);
-		made[3]!.status!("SUBSCRIBED");
-		expect(following.live()).toBe(true);
-		following.stop();
-		expect(cloud.supabase.removeChannel).toHaveBeenCalledWith(made[3]);
 	});
 
 	it("waits for a channel still leaving the same topic, as a company closed just before leaves one", async () => {

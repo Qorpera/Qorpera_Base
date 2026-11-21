@@ -1040,9 +1040,9 @@ class FakeExecStream {
 	readonly #connected = new Map<string, Socket>();
 	#ended?: number;
 	readonly #waiters: Array<(exitCode: number) => void> = [];
-	readonly #command: (stdin: Buffer) => ExecStreamCommand;
+	readonly #command: (stdin: Buffer, post: Record<string, unknown>) => ExecStreamCommand;
 
-	constructor(command: (stdin: Buffer) => ExecStreamCommand) {
+	constructor(command: (stdin: Buffer, post: Record<string, unknown>) => ExecStreamCommand) {
 		this.#command = command;
 	}
 
@@ -1058,6 +1058,10 @@ class FakeExecStream {
 					response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
 				if (request.method === "POST" && request.url?.startsWith("/1.0/instances/coding-vm/exec?project=coding")) {
 					this.posts.push(JSON.parse(Buffer.concat(chunks).toString("utf-8")));
+					this.#ended = undefined;
+					this.#connected.clear();
+					this.stdin = Buffer.alloc(0);
+					this.stdinEnded = false;
 					reply(202, {
 						type: "async",
 						status: "Operation created",
@@ -1139,7 +1143,7 @@ class FakeExecStream {
 				buffer = buffer.subarray(offset + 4 + length);
 				if (opcode === 0x8) {
 					socket.end(serverFrame(0x8, payload));
-					this.#closedEarly(fd);
+					this.#closedEarly(fd, socket);
 					return;
 				}
 				if (fd !== "0" || this.stdinEnded) continue;
@@ -1150,18 +1154,18 @@ class FakeExecStream {
 				}
 			}
 		});
-		socket.on("close", () => this.#closedEarly(fd));
+		socket.on("close", () => this.#closedEarly(fd, socket));
 	}
 
-	#closedEarly(fd: string): void {
-		if (fd !== "1" || this.#ended !== undefined) return;
+	#closedEarly(fd: string, socket: Socket): void {
+		if (fd !== "1" || this.#connected.get(fd) !== socket || this.#ended !== undefined) return;
 		this.killed = true;
 		this.#end(137);
 	}
 
 	#run(): void {
 		if (!["0", "1", "2"].every((fd) => this.#connected.has(fd))) throw new Error("the command started early");
-		const command = this.#command(this.stdin);
+		const command = this.#command(this.stdin, (this.posts.at(-1) ?? {}) as Record<string, unknown>);
 		const stdout = this.#connected.get("1")!;
 		const stderr = this.#connected.get("2")!;
 		for (const chunk of command.stdout ?? []) stdout.write(serverFrame(0x2, chunk));
@@ -1189,7 +1193,9 @@ describe("LXD exec stream", () => {
 	afterEach(() => {
 		for (const fake of fakes.splice(0)) fake.close();
 	});
-	async function fake(command: (stdin: Buffer) => ExecStreamCommand): Promise<FakeExecStream> {
+	async function fake(
+		command: (stdin: Buffer, post: Record<string, unknown>) => ExecStreamCommand,
+	): Promise<FakeExecStream> {
 		const exec = new FakeExecStream(command);
 		fakes.push(exec);
 		await exec.start();
@@ -1318,6 +1324,9 @@ describe("LXD exec stream", () => {
 		for (const invalid of [
 			{ ...request, command: [] },
 			{ ...request, command: ["/usr/bin/node", "a\nb"] },
+			{ ...request, user: -1 },
+			{ ...request, user: 65536 },
+			{ ...request, group: 1.5 },
 			{ ...request, stdin: Buffer.alloc(64 * 1024 + 1) },
 			{ ...request, maxStdoutBytes: 8 * 1024 * 1024 + 1 },
 			{ ...request, maxStderrBytes: -1 },
@@ -1328,5 +1337,131 @@ describe("LXD exec stream", () => {
 				"LXD instance command is invalid",
 			);
 		expect(exec.posts).toEqual([]);
+	});
+
+	it("batch-reads /proc/meminfo and cgroup memory.stat unprivileged over websocket exec", async () => {
+		const codingA =
+			"/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.slice/memory.stat";
+		const codingMissing =
+			"/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.slice/memory.stat";
+		const userA = "/sys/fs/cgroup/user.slice/user-200000.slice/memory.stat";
+		const files = new Map<string, string>([
+			["/proc/meminfo", "MemTotal:        8388608 kB\nMemAvailable:    4194304 kB\n"],
+			[codingA, "anon 134217728\nfile 4294967296\nshmem 16777216\nkernel 8388608\n"],
+			[userA, "anon 67108864\nfile 1073741824\nkernel 4194304\n"],
+		]);
+		const exec = await fake((_stdin, post) => {
+			const paths = (post.command as string[]).slice(4);
+			const out = paths.map((path) => `=== ${path} ===\n${files.get(path) ?? ""}\n`).join("");
+			return { stdout: [Buffer.from(out)], exitCode: 0 };
+		});
+		const client = new LxdUnixClient(exec.socket, 30);
+		const result = await client.readCodingMachineMemory("coding", "coding-vm", [
+			codingA,
+			codingMissing,
+			userA,
+			codingA,
+		]);
+		expect(result.meminfo).toBe("MemTotal:        8388608 kB\nMemAvailable:    4194304 kB");
+		expect(result.stats.get(codingA)).toBe("anon 134217728\nfile 4294967296\nshmem 16777216\nkernel 8388608");
+		expect(result.stats.get(userA)).toBe("anon 67108864\nfile 1073741824\nkernel 4194304");
+		expect(result.stats.has(codingMissing)).toBe(false);
+		expect(exec.posts).toHaveLength(1);
+		expect(exec.posts[0]).toMatchObject({
+			user: 65534,
+			group: 65534,
+			interactive: false,
+			"wait-for-websocket": true,
+			"record-output": false,
+			cwd: "/",
+			environment: {},
+		});
+		const command = (exec.posts[0] as { command: string[] }).command;
+		expect(command.slice(0, 4)).toEqual([
+			"/bin/sh",
+			"-c",
+			expect.stringContaining("/usr/bin/cat --"),
+			"qorpera-memory",
+		]);
+		expect(command.slice(4)).toEqual(["/proc/meminfo", codingA, codingMissing, userA]);
+
+		const onlyMeminfo = await client.readCodingMachineMemory("coding", "coding-vm", []);
+		expect(onlyMeminfo.meminfo).toContain("MemTotal:");
+		expect(onlyMeminfo.stats.size).toBe(0);
+	});
+
+	it("chunks readCodingMachineMemory across batches within LXD's 64-argument limit", async () => {
+		const groups = Array.from(
+			{ length: 60 },
+			(_, index) =>
+				`/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-${index.toString(16).padStart(32, "0")}.slice/memory.stat`,
+		);
+		const exec = await fake((_stdin, post) => {
+			const paths = (post.command as string[]).slice(4);
+			const out = paths
+				.map((path, index) =>
+					path === "/proc/meminfo"
+						? `=== ${path} ===\nMemTotal: 4194304 kB\nMemAvailable: 3145728 kB\n\n`
+						: `=== ${path} ===\nanon ${(index + 1) * 4096}\n\n`,
+				)
+				.join("");
+			return { stdout: [Buffer.from(out)], exitCode: 0 };
+		});
+		const result = await new LxdUnixClient(exec.socket, 30).readCodingMachineMemory("coding", "coding-vm", groups);
+		expect(exec.posts).toHaveLength(2);
+		for (const post of exec.posts as Array<{ command: string[]; user: number; group: number }>) {
+			expect(post.command.length).toBeLessThanOrEqual(64);
+			expect(post.user).toBe(65534);
+			expect(post.group).toBe(65534);
+		}
+		expect(result.meminfo).toContain("MemAvailable: 3145728 kB");
+		expect(result.stats.size).toBe(60);
+		for (const group of groups) expect(result.stats.get(group)).toMatch(/^anon [0-9]+$/);
+	});
+
+	it("rejects invalid paths, scopes, exit codes, and malformed output in readCodingMachineMemory", async () => {
+		const validSlice =
+			"/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.slice/memory.stat";
+		let mode: "nonzero" | "empty-meminfo" | "missing-header" | "duplicate-header" = "nonzero";
+		const exec = await fake(() => {
+			if (mode === "nonzero") return { stdout: [], exitCode: 1 };
+			if (mode === "empty-meminfo")
+				return { stdout: [Buffer.from(`=== /proc/meminfo ===\n\n=== ${validSlice} ===\nanon 1\n`)], exitCode: 0 };
+			if (mode === "missing-header")
+				return { stdout: [Buffer.from("=== /proc/meminfo ===\nMemTotal: 1 kB\n")], exitCode: 0 };
+			return {
+				stdout: [
+					Buffer.from(
+						`=== /proc/meminfo ===\nMemTotal: 1 kB\n=== /proc/meminfo ===\nMemTotal: 2 kB\n=== ${validSlice} ===\nanon 1\n`,
+					),
+				],
+				exitCode: 0,
+			};
+		});
+		const client = new LxdUnixClient(exec.socket, 30);
+		for (const bad of [
+			"/proc/meminfo",
+			"/etc/shadow",
+			"/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.slice/memory.current",
+			"/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.slice/memory.stat",
+			"/sys/fs/cgroup/user.slice/user-1000.slice/memory.stat",
+			"/sys/fs/cgroup/user.slice/user-199999.slice/memory.stat",
+			"/sys/fs/cgroup/user.slice/user-524288.slice/memory.stat",
+			"/sys/fs/cgroup/user.slice/user-200000.slice/../memory.stat",
+		])
+			await expect(client.readCodingMachineMemory("coding", "coding-vm", [bad])).rejects.toThrow(
+				"LXD_CODING_MEMORY_PATH_INVALID",
+			);
+		await expect(client.readCodingMachineMemory("coding", "../other", [validSlice])).rejects.toThrow(
+			"LXD instance scope is invalid",
+		);
+		expect(exec.posts).toEqual([]);
+
+		for (const failure of ["nonzero", "empty-meminfo", "missing-header", "duplicate-header"] as const) {
+			mode = failure;
+			await expect(client.readCodingMachineMemory("coding", "coding-vm", [validSlice])).rejects.toThrow(
+				"LXD_CODING_MEMORY_READ_FAILED",
+			);
+		}
 	});
 });
