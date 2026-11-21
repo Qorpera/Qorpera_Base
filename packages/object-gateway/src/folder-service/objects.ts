@@ -202,6 +202,10 @@ export class NasObjects {
 			throw new Error("Object read parallelism is invalid");
 	}
 
+	get root(): string {
+		return this.#root;
+	}
+
 	get cachedBytes(): number {
 		return this.#cache.bytes;
 	}

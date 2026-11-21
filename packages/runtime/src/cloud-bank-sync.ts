@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { UUID_PATTERN } from "@qorpera/contracts";
+import { withAbortScope } from "./abort-scope.ts";
 import {
 	type BankDay,
 	type BankSummaryFile,
@@ -538,7 +539,7 @@ export class CloudBankSyncUpkeep {
 	}
 
 	async pass(): Promise<void> {
-		await logBankSyncPass(this.#syncs, this.#closing.signal);
+		await withAbortScope(this.#closing.signal, (signal) => logBankSyncPass(this.#syncs, signal));
 	}
 }
 

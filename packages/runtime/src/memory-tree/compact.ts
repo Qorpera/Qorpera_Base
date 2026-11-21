@@ -122,16 +122,25 @@ const TAGS = {
 	run: { window: "steps", one: "step" },
 } as const;
 
+function leafPromptFromCut(kind: MemoryTreeKind, cutWindow: readonly string[], event: string): string {
+	const { window: block, one } = TAGS[kind];
+	const events = cutWindow.map((text) => `<${one}>${text}</${one}>`);
+	return `${[`<${block}>`, ...events, `</${block}>`].join("\n")}\n\nCompress this ${one} into one line of at most ${NODE} bytes.\n<${one}>\n${escapeCloudNativeContextJson(event)}\n</${one}>`;
+}
+
 /**
  * A level-0 call's message: block 1, the window's raw events cut (`[w(i), i)`, no ids, never a line), then block 2,
  * the event whole (§7.3, §7.5). Each window event is one element, cut so the element fits COMPACT_EVENT. A later event
  * of the same group adds to block 1 without changing what came before.
  */
 export function memoryCompactLeafPrompt(kind: MemoryTreeKind, window: readonly string[], event: string): string {
-	const { window: block, one } = TAGS[kind];
+	const { one } = TAGS[kind];
 	const room = COMPACT_EVENT - Buffer.byteLength(`<${one}></${one}>`);
-	const events = window.map((text) => `<${one}>${memoryCompactCut(text, room)}</${one}>`);
-	return `${[`<${block}>`, ...events, `</${block}>`].join("\n")}\n\nCompress this ${one} into one line of at most ${NODE} bytes.\n<${one}>\n${escapeCloudNativeContextJson(event)}\n</${one}>`;
+	return leafPromptFromCut(
+		kind,
+		window.map((text) => memoryCompactCut(text, room)),
+		event,
+	);
 }
 
 /** A merge's message: its two children, the older first (§7.3). */
@@ -206,6 +215,8 @@ export class MemoryCompactChannel {
 interface Waiting {
 	readonly order: readonly number[];
 	readonly start: () => void;
+	readonly cancel: () => void;
+	cancelled: boolean;
 }
 
 function before(a: readonly number[], b: readonly number[]): boolean {
@@ -220,7 +231,7 @@ function before(a: readonly number[], b: readonly number[]): boolean {
  */
 export class MemoryCompactLane {
 	readonly #controller = new AbortController();
-	readonly #waiting: Waiting[] = [];
+	readonly #heap: Waiting[] = [];
 	#free: number;
 	#arrived = 0;
 	#stopped: MemoryCompactStopReason | null = null;
@@ -238,6 +249,10 @@ export class MemoryCompactLane {
 		if (this.#stopped) return;
 		this.#stopped = reason;
 		this.#controller.abort(new MemoryCompactStop(reason));
+		const queued = this.#heap.splice(0);
+		for (const waiter of queued) {
+			if (!waiter.cancelled) waiter.cancel();
+		}
 	}
 
 	/**
@@ -249,13 +264,63 @@ export class MemoryCompactLane {
 		signal: AbortSignal,
 		work: (signal: AbortSignal) => Promise<T>,
 	): Promise<T | null> {
-		const both = AbortSignal.any([signal, this.#controller.signal]);
-		if (both.aborted || !(await this.#take([...order, this.#arrived++], both))) return null;
+		if (this.#stopped || signal.aborted || this.#controller.signal.aborted) return null;
+		if (!(await this.#take([...order, this.#arrived++], signal))) return null;
+		const slot = new AbortController();
+		const onCallerAbort = (): void => slot.abort(signal.reason);
+		const onLaneAbort = (): void => slot.abort(this.#controller.signal.reason);
+		if (signal.aborted) onCallerAbort();
+		else if (this.#controller.signal.aborted) onLaneAbort();
+		else {
+			signal.addEventListener("abort", onCallerAbort, { once: true });
+			this.#controller.signal.addEventListener("abort", onLaneAbort, { once: true });
+		}
 		try {
-			return await work(both);
+			if (slot.signal.aborted) return null;
+			return await work(slot.signal);
 		} finally {
+			signal.removeEventListener("abort", onCallerAbort);
+			this.#controller.signal.removeEventListener("abort", onLaneAbort);
 			this.#give();
 		}
+	}
+
+	#pushHeap(item: Waiting): void {
+		const heap = this.#heap;
+		let index = heap.length;
+		heap.push(item);
+		while (index > 0) {
+			const parent = (index - 1) >>> 1;
+			if (!before(item.order, heap[parent]!.order)) break;
+			heap[index] = heap[parent]!;
+			heap[parent] = item;
+			index = parent;
+		}
+	}
+
+	#popHeap(): Waiting | undefined {
+		const heap = this.#heap;
+		if (heap.length === 0) return undefined;
+		const top = heap[0]!;
+		const last = heap.pop()!;
+		if (heap.length > 0) {
+			heap[0] = last;
+			let index = 0;
+			const length = heap.length;
+			for (;;) {
+				const left = (index << 1) + 1;
+				const right = left + 1;
+				let smallest = index;
+				if (left < length && before(heap[left]!.order, heap[smallest]!.order)) smallest = left;
+				if (right < length && before(heap[right]!.order, heap[smallest]!.order)) smallest = right;
+				if (smallest === index) break;
+				const swap = heap[index]!;
+				heap[index] = heap[smallest]!;
+				heap[smallest] = swap;
+				index = smallest;
+			}
+		}
+		return top;
 	}
 
 	#take(order: readonly number[], signal: AbortSignal): Promise<boolean> {
@@ -264,27 +329,38 @@ export class MemoryCompactLane {
 			return Promise.resolve(true);
 		}
 		return new Promise((resolve) => {
-			const waiting: Waiting = {
-				order,
-				start: () => {
-					signal.removeEventListener("abort", abort);
-					resolve(true);
-				},
-			};
-			const abort = () => {
-				this.#waiting.splice(this.#waiting.indexOf(waiting), 1);
+			let settled = false;
+			const cancel = (): void => {
+				if (settled) return;
+				settled = true;
+				waiting.cancelled = true;
+				signal.removeEventListener("abort", cancel);
 				resolve(false);
 			};
-			const at = this.#waiting.findIndex((other) => before(order, other.order));
-			this.#waiting.splice(at < 0 ? this.#waiting.length : at, 0, waiting);
-			signal.addEventListener("abort", abort, { once: true });
+			const waiting: Waiting = {
+				order,
+				cancelled: false,
+				start: () => {
+					if (settled) return;
+					settled = true;
+					signal.removeEventListener("abort", cancel);
+					resolve(true);
+				},
+				cancel,
+			};
+			this.#pushHeap(waiting);
+			signal.addEventListener("abort", cancel, { once: true });
 		});
 	}
 
 	#give(): void {
-		const next = this.#waiting.shift();
-		if (next) next.start();
-		else this.#free += 1;
+		while (this.#heap.length > 0) {
+			const next = this.#popHeap()!;
+			if (next.cancelled) continue;
+			next.start();
+			return;
+		}
+		this.#free += 1;
 	}
 }
 
@@ -338,19 +414,16 @@ export interface MemoryCompactLineOptions {
 	readonly stats: MemoryCompactStats;
 }
 
-/**
- * One compactor line (§7.3): `prompt` in a fresh thread, sent back with its size while the reply is over NODE, up to
- * TRIES attempts. The shortest reply is kept, as a line stores it, with the attempts it took; null when there is none
- * within LINE_BYTES. An abort or a stop keeps what was replied before it.
- */
-export async function memoryCompactLine(
+async function compactSlotLine(
 	call: MemoryCompactCall,
 	system: string,
-	prompt: string,
+	preparePrompt: () => string | null | Promise<string | null>,
 	options: MemoryCompactLineOptions,
 ): Promise<{ readonly text: string; readonly tries: number } | null> {
 	const { lane, stats } = options;
 	const kept = await lane.run(options.order, options.signal, async (signal) => {
+		const prompt = await preparePrompt();
+		if (prompt === null || signal.aborted) return null;
 		let best: string | null = null;
 		let tries = 0;
 		let opening: Promise<MemoryCompactThread> | undefined;
@@ -393,6 +466,20 @@ export async function memoryCompactLine(
 	});
 	stats.stopped = lane.stopped;
 	return kept;
+}
+
+/**
+ * One compactor line (§7.3): `prompt` in a fresh thread, sent back with its size while the reply is over NODE, up to
+ * TRIES attempts. The shortest reply is kept, as a line stores it, with the attempts it took; null when there is none
+ * within LINE_BYTES. An abort or a stop keeps what was replied before it.
+ */
+export async function memoryCompactLine(
+	call: MemoryCompactCall,
+	system: string,
+	prompt: string,
+	options: MemoryCompactLineOptions,
+): Promise<{ readonly text: string; readonly tries: number } | null> {
+	return compactSlotLine(call, system, () => prompt, options);
 }
 
 /** An event of the tree's log, rendered (`memoryRenderEvent`, `memoryRenderStep`). */
@@ -484,18 +571,40 @@ export async function memoryCompact(
 		return line.text;
 	};
 
+	const cutCache = new Map<number, string>();
+	const cutRoom = COMPACT_EVENT - Buffer.byteLength(`<${TAGS[kind].one}></${TAGS[kind].one}>`);
+	const cutWindowEvent = (index: number, text: string): string => {
+		let cut = cutCache.get(index);
+		if (cut === undefined) {
+			cut = memoryCompactCut(text, cutRoom);
+			cutCache.set(index, cut);
+		}
+		return cut;
+	};
+
 	const leaf = async (i: number): Promise<string | undefined> => {
 		const read = await event(i);
 		if (!read) return undefined;
 		const named = kind === "conversation" ? { seq: read.seq, hash: read.hash } : {};
 		const free = memoryFreeLeaf(read.text);
 		if (free !== null) return keep({ l: 0, k: i, ...named, free: true, text: free });
-		const start = memoryWindowStart(i);
-		const window = await Promise.all(Array.from({ length: i - start }, (_, n) => event(start + n)));
-		const texts = window.flatMap((other) => (other ? [other.text] : []));
-		if (texts.length < window.length) return undefined;
-		const prompt = memoryCompactLeafPrompt(kind, texts, read.text);
-		const made = await memoryCompactLine(call, system, prompt, { lane, order: [i, 0], signal, stats });
+		if (lane.stopped || signal.aborted) return undefined;
+		const made = await compactSlotLine(
+			call,
+			system,
+			async () => {
+				const start = memoryWindowStart(i);
+				const window = await Promise.all(Array.from({ length: i - start }, (_, n) => event(start + n)));
+				const cut: string[] = [];
+				for (let n = 0; n < window.length; n += 1) {
+					const other = window[n];
+					if (!other) return null;
+					cut.push(cutWindowEvent(start + n, other.text));
+				}
+				return leafPromptFromCut(kind, cut, read.text);
+			},
+			{ lane, order: [i, 0], signal, stats },
+		);
 		return made ? keep({ l: 0, k: i, ...named, free: false, tries: made.tries, text: made.text }) : undefined;
 	};
 

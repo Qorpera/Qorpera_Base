@@ -241,7 +241,7 @@ comes with its own part.
 | An edit | a change's 5 s; the row it answers within a question's 256 KiB |
 | The watcher's look at every actor's line | once an hour (`sweepMs`), and at its first look on a company's database |
 | A member's folder read | kept 10 s |
-| A body | 1 MiB |
+| A body | 1 MiB, received within 15 s; early refusals with unread bodies send `connection: close` |
 | A company's database | 1 GiB of its own data (without the record): the watcher closes its steps and its changes that write, questions still answer; `watchOnce` names a company past 80 % in `near` |
 | The record of row changes | 100 MiB by its lines' bytes, the oldest go first (`qorpera_data.record_limit`) |
 | A describe call's row counts | over within 1.5 s together (`countMs`), waits for a count slot or connection included; 1 in-flight count per folder (shared by concurrent describes), 8 per company, 250 ms lock wait per table; a table not counted shows `rowsAbout` or nothing |

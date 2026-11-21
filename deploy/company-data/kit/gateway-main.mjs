@@ -95,6 +95,9 @@ const gateway = new Gateway({
 				onDrop: (event) => {
 					if (process.connected) process.send?.({ type: "drop", ...event });
 				},
+				onUnsettledTx: (database, txid) => {
+					if (process.connected) process.send?.({ type: "unsettledTx", database, txid });
+				},
 			}
 		: {}),
 });
@@ -125,6 +128,10 @@ if (workerCount > 1 && cluster.isPrimary) {
 			if (lastFull.length > 0 && worker.isConnected()) worker.send({ type: "full", databases: lastFull });
 		});
 		worker.on("message", (message) => {
+			if (message?.type === "unsettledTx" && typeof message.database === "string" && typeof message.txid === "string") {
+				gateway.noteUnsettledTx(message.database, message.txid);
+				return;
+			}
 			if (message?.type === "drop") {
 				if (message.kind === "company" && typeof message.database === "string") void gateway.evictCompany(message.database);
 				else if (message.kind === "database" && typeof message.database === "string" && typeof message.schema === "string")

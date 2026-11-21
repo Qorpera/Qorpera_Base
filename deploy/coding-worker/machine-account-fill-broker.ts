@@ -1,5 +1,6 @@
 import { readBoundedCloudResponse } from "../../packages/cloud-client/src/cloud-request.ts";
 import type { CloudNativeToolBinding } from "../../packages/runtime/src/cloud-native-tool-authority.ts";
+import { withTimeoutSignal } from "./timeout-signal.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const OWNER = /^[A-Za-z0-9_.:-]{1,120}$/;
@@ -48,45 +49,60 @@ export class BrokerMachineAccountFill {
 	): Promise<{ box: Readonly<Record<string, string>> } | { refused: { code: string; message: string } }> {
 		if (![request.companyId, request.receiptId, request.placementId, request.bootId].every((id) => UUID.test(id)))
 			throw new Error("MACHINE_ACCOUNT_FILL_BROKER_UNAVAILABLE");
-		const checked = AbortSignal.any([signal, AbortSignal.timeout(15000)]);
 		try {
-			const response = await this.#fetch(`${this.#origin}/v1/machine-account-fills?company=${request.companyId}`, {
-				method: "POST",
-				redirect: "error",
-				signal: checked,
-				headers: { authorization: `Bearer ${this.#executorToken}`, "content-type": "application/json" },
-				body: JSON.stringify({
-					schema: "qorpera.company-account-machine-fill-request/v1",
-					binding: request.binding,
-					receiptId: request.receiptId,
-					idempotencyKey: request.idempotencyKey,
-					envelope: request.envelope,
-					executorOwner: this.#owner,
-					placementId: request.placementId,
-					bootId: request.bootId,
-					fillPublicKey: request.fillPublicKey,
-				}),
+			return await withTimeoutSignal(signal, 15000, async (checked) => {
+				const response = await this.#fetch(`${this.#origin}/v1/machine-account-fills?company=${request.companyId}`, {
+					method: "POST",
+					redirect: "error",
+					signal: checked,
+					headers: { authorization: `Bearer ${this.#executorToken}`, "content-type": "application/json" },
+					body: JSON.stringify({
+						schema: "qorpera.company-account-machine-fill-request/v1",
+						binding: request.binding,
+						receiptId: request.receiptId,
+						idempotencyKey: request.idempotencyKey,
+						envelope: request.envelope,
+						executorOwner: this.#owner,
+						placementId: request.placementId,
+						bootId: request.bootId,
+						fillPublicKey: request.fillPublicKey,
+					}),
+				});
+				if (response.status !== 200) {
+					await response.body?.cancel().catch(() => undefined);
+					throw new Error("refused");
+				}
+				const value = JSON.parse(
+					new TextDecoder("utf8", { fatal: true }).decode(await readBoundedCloudResponse(response, 32768, checked)),
+				) as unknown;
+				if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid");
+				const answer = value as Record<string, unknown>;
+				const keys = Object.keys(answer).sort().join();
+				if (answer.schema === "qorpera.company-account-refusal/v1" && keys === "code,message,schema") {
+					if (
+						typeof answer.code !== "string" ||
+						!REFUSALS.has(answer.code) ||
+						typeof answer.message !== "string" ||
+						!answer.message ||
+						answer.message.length > 512 ||
+						/[\0-\x1f\x7f]/.test(answer.message)
+					)
+						throw new Error("invalid");
+					return { refused: { code: answer.code, message: answer.message } };
+				}
+				const box = answer.box;
+				if (
+					answer.schema !== "qorpera.company-account-fill-answer/v1" ||
+					keys !== "box,schema" ||
+					!box ||
+					typeof box !== "object" ||
+					Array.isArray(box) ||
+					Object.keys(box).sort().join() !== "ciphertext,ephemeralPublicKey,iv,schema,tag" ||
+					Object.values(box).some((part) => typeof part !== "string" || !/^[A-Za-z0-9_./-]{1,8192}$/.test(part))
+				)
+					throw new Error("invalid");
+				return { box: Object.freeze({ ...(box as Record<string, string>) }) };
 			});
-			if (response.status !== 200) {
-				await response.body?.cancel().catch(() => undefined);
-				throw new Error("refused");
-			}
-			const value = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(
-				await readBoundedCloudResponse(response, 32768, checked))) as unknown;
-			if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid");
-			const answer = value as Record<string, unknown>;
-			const keys = Object.keys(answer).sort().join();
-			if (answer.schema === "qorpera.company-account-refusal/v1" && keys === "code,message,schema") {
-				if (typeof answer.code !== "string" || !REFUSALS.has(answer.code) || typeof answer.message !== "string" ||
-					!answer.message || answer.message.length > 512 || /[\0-\x1f\x7f]/.test(answer.message)) throw new Error("invalid");
-				return { refused: { code: answer.code, message: answer.message } };
-			}
-			const box = answer.box;
-			if (answer.schema !== "qorpera.company-account-fill-answer/v1" || keys !== "box,schema" || !box || typeof box !== "object" ||
-				Array.isArray(box) || Object.keys(box).sort().join() !== "ciphertext,ephemeralPublicKey,iv,schema,tag" ||
-				Object.values(box).some((part) => typeof part !== "string" || !/^[A-Za-z0-9_./-]{1,8192}$/.test(part)))
-				throw new Error("invalid");
-			return { box: Object.freeze({ ...(box as Record<string, string>) }) };
 		} catch {
 			throw new Error("MACHINE_ACCOUNT_FILL_BROKER_UNAVAILABLE");
 		}

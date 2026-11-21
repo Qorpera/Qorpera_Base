@@ -13,6 +13,7 @@ import {
 	parseCompanyComputerPrivacyChallenge,
 } from "@qorpera/cloud-client/cloud-company-computer-privacy";
 import { parseCompanyComputerViewerGrant } from "@qorpera/cloud-client/cloud-company-computer-viewer";
+import { withAbortScopes } from "./abort-scope.ts";
 import type { CompanyComputerFillKey } from "./cloud-company-account-fill-box.ts";
 import { CompanyComputerFilledValues } from "./cloud-company-computer-account-fill.ts";
 import {
@@ -99,6 +100,8 @@ interface NativeSession {
  * entitled is present (see `#ensureBrowser`). */
 interface ScreenBrowser {
 	manager: PersistentCompanyComputerBrowser;
+	lifetime: AbortController;
+	detachLifetime: () => void;
 	opening?: Promise<CompanyComputerBrowserSession>;
 	detachLogins?: () => Promise<void>;
 	closing?: Promise<void>;
@@ -452,7 +455,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				company: folders !== undefined,
 				boundary: {
 					assertReady: async (exact, signal) => {
-						await this.#assertShared(exact, AbortSignal.any([signal, screen.stop.signal]));
+						await withAbortScopes([signal, screen.stop.signal], (combined) =>
+							this.#assertShared(exact, combined),
+						);
 					},
 				},
 			}),
@@ -478,13 +483,14 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	async #assertShared(binding: CompanyComputerScreenBinding, signal: AbortSignal) {
 		this.#binding(binding);
 		if (this.#private || this.#privacy?.state === "entering") throw new Error("OFFICE_PRIVACY_FENCED");
-		const combined = AbortSignal.any([signal, this.#stop.signal]);
-		await this.#options.boundary.assertReady(binding, combined);
-		const state = await this.#sharedControl.check(binding, combined);
-		combined.throwIfAborted();
-		if (this.#private || state.privacyVersion !== Math.max(this.#privacy?.version ?? 0, this.#sharedVersion))
-			throw new Error("OFFICE_PRIVACY_FENCED");
-		return state;
+		return withAbortScopes([signal, this.#stop.signal], async (combined) => {
+			await this.#options.boundary.assertReady(binding, combined);
+			const state = await this.#sharedControl.check(binding, combined);
+			combined.throwIfAborted();
+			if (this.#private || state.privacyVersion !== Math.max(this.#privacy?.version ?? 0, this.#sharedVersion))
+				throw new Error("OFFICE_PRIVACY_FENCED");
+			return state;
+		});
 	}
 	/**
 	 * Reuse or start the screen's desktop. With a holder, the screen's mount of the company folder takes the holder's
@@ -508,13 +514,13 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				if (!this.#screens.has(binding.screenOrdinal))
 					folders.releaseLater(binding.screenId, () => !this.#screens.has(binding.screenOrdinal));
 			};
-			const held = await folders
-				.hold(binding, holder, AbortSignal.any([signal, this.#stop.signal]), replyBy ?? performance.now() + 5000)
-				.catch((error: unknown) => {
-					// Cancelled while the helper works on.
-					unused();
-					throw error;
-				});
+			const held = await withAbortScopes([signal, this.#stop.signal], (combined) =>
+				folders.hold(binding, holder, combined, replyBy ?? performance.now() + 5000),
+			).catch((error: unknown) => {
+				// Cancelled while the helper works on.
+				unused();
+				throw error;
+			});
 			if (!("code" in held)) company = held;
 			else if (holder.kind === "run") {
 				unused();
@@ -538,8 +544,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			// A desktop start belongs to the office, not to whoever asked first: a
 			// viewer that gives up, or whose gateway deadline passes, must not cancel
 			// a start the next caller would simply have to repeat.
-			const startup = AbortSignal.any([this.#stop.signal, current.stop.signal]);
-			current.opening = (async () => {
+			current.opening = withAbortScopes([this.#stop.signal, current.stop.signal], async (startup) => {
 				await current.lifecycle?.requested(startup);
 				// The backdrop is the agent's own avatar. An office whose database has
 				// not yet learned this read keeps the id-derived figure; a missing
@@ -572,18 +577,20 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				const renew = (): void => {
 					if (current.closing || this.#closing) return;
 					current.timer = setTimeout(() => {
-						void cloudToolRequest(
-							async (checked) => {
-								await this.#assertShared(binding, checked);
-							},
-							AbortSignal.any([this.#stop.signal, current.stop.signal]),
-							3000,
+						void withAbortScopes([this.#stop.signal, current.stop.signal], (pulseSignal) =>
+							cloudToolRequest(
+								async (checked) => {
+									await this.#assertShared(binding, checked);
+								},
+								pulseSignal,
+								3000,
+							),
 						).then(
 							async () => {
 								confirmedAt = performance.now();
-								await current.lifecycle
-									?.heartbeat(AbortSignal.any([this.#stop.signal, current.stop.signal]))
-									.catch(() => undefined);
+								await withAbortScopes([this.#stop.signal, current.stop.signal], (hbSignal) =>
+									current.lifecycle ? current.lifecycle.heartbeat(hbSignal) : Promise.resolve(),
+								).catch(() => undefined);
 								renew();
 							},
 							(pulseError) => {
@@ -614,7 +621,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				};
 				renew();
 				this.#watchBrowserRequests(current);
-			})().catch(async (error) => {
+			}).catch(async (error) => {
 				current.stop.abort();
 				await current.lifecycle
 					?.failed("DESKTOP_START_FAILED", new AbortController().signal)
@@ -682,16 +689,17 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	 * reaches a desktop that runs on the old one (Q3, #1007). A start that fails drains the screen.
 	 */
 	async #relaunch(screen: SharedScreen, company: CompanyComputerDesktopCompany | undefined): Promise<void> {
-		const startup = AbortSignal.any([this.#stop.signal, screen.stop.signal]);
 		try {
-			await this.#stopDesktop(screen);
-			startup.throwIfAborted();
-			const handle = await this.#desktop.launch(screen.binding, startup, { company });
-			screen.handle = handle;
-			await handle.ready;
-			startup.throwIfAborted();
-			screen.companyEpoch = company?.epoch;
-			this.#watchDesktop(screen, handle);
+			await withAbortScopes([this.#stop.signal, screen.stop.signal], async (startup) => {
+				await this.#stopDesktop(screen);
+				startup.throwIfAborted();
+				const handle = await this.#desktop.launch(screen.binding, startup, { company });
+				screen.handle = handle;
+				await handle.ready;
+				startup.throwIfAborted();
+				screen.companyEpoch = company?.epoch;
+				this.#watchDesktop(screen, handle);
+			});
 		} catch (error) {
 			void this.stopResources(screen.binding, new AbortController().signal, { reason: "AUTHORITY_LOST" }).catch(
 				(drainError) =>
@@ -765,10 +773,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					.then(() => this.#desktop.takeBrowserRequest(screen.binding))
 					.then(async (requested) => {
 						if (!requested || screen.closing || screen.stop.signal.aborted) return;
-						await this.#ensureBrowser(
-							screen.binding,
-							"desktop",
-							AbortSignal.any([this.#stop.signal, screen.stop.signal]),
+						await withAbortScopes([this.#stop.signal, screen.stop.signal], (checked) =>
+							this.#ensureBrowser(screen.binding, "desktop", checked),
 						);
 					})
 					.catch(() => undefined)
@@ -831,26 +837,45 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		const screen = this.#screens.get(binding.screenOrdinal);
 		if (!screen || screen.closing || screen.stop.signal.aborted) throw new Error("OFFICE_SCREEN_DRAINING");
 		assertCompanyComputerScreenBinding(binding, screen.binding);
-		const lifetime = AbortSignal.any([this.#stop.signal, screen.stop.signal]);
 		const boundary = {
 			assertReady: async (exact: CompanyComputerScreenBinding, checked: AbortSignal): Promise<void> => {
-				await this.#assertShared(exact, AbortSignal.any([lifetime, checked]));
+				await withAbortScopes([this.#stop.signal, screen.stop.signal, checked], (combined) =>
+					this.#assertShared(exact, combined),
+				);
 			},
 		};
-		screen.browser ??= {
-			manager: new PersistentCompanyComputerBrowser({
-				layout: this.#options.layout,
-				boundary,
-				access: this.#screenBrowserControl,
-				launch: createCompanyComputerLinuxBrowserLaunch({
-					...this.#options,
-					runtimeRoot: this.#options.browserRuntimeRoot,
+		if (!screen.browser) {
+			const lifetime = new AbortController();
+			const onStop = (): void => {
+				lifetime.abort();
+				detachLifetime();
+			};
+			const detachLifetime = (): void => {
+				this.#stop.signal.removeEventListener("abort", onStop);
+				screen.stop.signal.removeEventListener("abort", onStop);
+			};
+			if (this.#stop.signal.aborted || screen.stop.signal.aborted) lifetime.abort();
+			else {
+				this.#stop.signal.addEventListener("abort", onStop, { once: true });
+				screen.stop.signal.addEventListener("abort", onStop, { once: true });
+			}
+			screen.browser = {
+				manager: new PersistentCompanyComputerBrowser({
+					layout: this.#options.layout,
 					boundary,
 					access: this.#screenBrowserControl,
-					xSocket: (exact) => this.#desktop.xSocket(exact),
+					launch: createCompanyComputerLinuxBrowserLaunch({
+						...this.#options,
+						runtimeRoot: this.#options.browserRuntimeRoot,
+						boundary,
+						access: this.#screenBrowserControl,
+						xSocket: (exact) => this.#desktop.xSocket(exact),
+					}),
 				}),
-			}),
-		};
+				lifetime,
+				detachLifetime,
+			};
+		}
 		const owned = screen.browser;
 		if (owned.closing) throw new Error("OFFICE_SCREEN_DRAINING");
 		const current = await owned.opening?.catch(() => undefined);
@@ -870,6 +895,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			if (owned.opening && (await owned.opening.catch(() => undefined)) === current) owned.opening = undefined;
 		}
 		owned.opening ??= (async () => {
+			const lifetime = owned.lifetime.signal;
 			// SQL resolves the screen agent's grant and records who was present.
 			const grant = await this.#screenBrowserControl.open(binding, opener, lifetime);
 			const session = await owned.manager.open(binding, grant, lifetime);
@@ -891,11 +917,15 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		const owned = screen.browser;
 		if (!owned) return Promise.resolve();
 		owned.closing ??= (async () => {
-			await owned.opening?.catch(() => undefined);
-			// A last look at this browser's sign-ins before it closes.
-			await owned.detachLogins?.().catch(() => undefined);
-			owned.detachLogins = undefined;
-			await owned.manager.close();
+			try {
+				await owned.opening?.catch(() => undefined);
+				// A last look at this browser's sign-ins before it closes.
+				await owned.detachLogins?.().catch(() => undefined);
+				owned.detachLogins = undefined;
+				await owned.manager.close();
+			} finally {
+				owned.detachLifetime();
+			}
 		})();
 		return owned.closing;
 	}
@@ -936,7 +966,24 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		const screenshots = this.#options.screenshots(input.run);
 		// So are the boxes its captures sealed (a hook's secret, E3c-3; a coding value), each kept for its perform answer only.
 		const captures = new CompanyComputerHookCaptureBoxes();
-		const signal = AbortSignal.any([stop.signal, this.#stop.signal, input.run.signal]);
+		const sessionStop = new AbortController();
+		const sessionParents: Array<readonly [AbortSignal, () => void]> = [];
+		const detachSessionParents = (): void => {
+			for (const [parent, forward] of sessionParents) parent.removeEventListener("abort", forward);
+			sessionParents.length = 0;
+		};
+		for (const parent of [stop.signal, this.#stop.signal, input.run.signal]) {
+			if (parent.aborted) {
+				sessionStop.abort(parent.reason);
+				break;
+			}
+			const forward = (): void => sessionStop.abort(parent.reason);
+			parent.addEventListener("abort", forward, { once: true });
+			sessionParents.push([parent, forward]);
+		}
+		if (sessionStop.signal.aborted) detachSessionParents();
+		else sessionStop.signal.addEventListener("abort", detachSessionParents, { once: true });
+		const signal = sessionStop.signal;
 		// The run's folder report (F3 4f-2b) is kept while the run lives, not the session: a drain ends the session
 		// before its own report can be read, and the next session of the same run reads it.
 		const folders = this.#options.folders;
@@ -944,7 +991,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		const admitted = async (exact: CompanyComputerScreenBinding, checked: AbortSignal): Promise<void> => {
 			assertCompanyComputerScreenBinding(exact, binding);
 			signal.throwIfAborted();
-			const state = await this.#assertShared(exact, AbortSignal.any([signal, checked]));
+			const state = await withAbortScopes([signal, checked], (combined) => this.#assertShared(exact, combined));
 			if (state.privacyVersion !== descriptor.resources.officePrivacyVersion)
 				throw new Error("OFFICE_PRIVACY_CHANGED");
 		};
@@ -999,18 +1046,21 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				context: shared.context,
 				isEnded: () => shared.isEnded?.() ?? false,
 				assertActive: async (requestSignal) => {
-					const current = AbortSignal.any([signal, requestSignal]);
-					try {
-						await boundary.assertReady(binding, current);
-						await access.assertGranted(grant, binding, current);
-					} catch (cause) {
-						throw new Error(
-							companyComputerAuthorityUnanswered(cause) ? "BROWSER_ACCESS_UNCONFIRMED" : "BROWSER_ACCESS_ENDED",
-							{ cause },
-						);
-					}
-					// Screen authority and physical liveness; a lost grant closes the browser.
-					await shared.assertActive(current);
+					await withAbortScopes([signal, requestSignal], async (current) => {
+						try {
+							await boundary.assertReady(binding, current);
+							await access.assertGranted(grant, binding, current);
+						} catch (cause) {
+							throw new Error(
+								companyComputerAuthorityUnanswered(cause)
+									? "BROWSER_ACCESS_UNCONFIRMED"
+									: "BROWSER_ACCESS_ENDED",
+								{ cause },
+							);
+						}
+						// Screen authority and physical liveness; a lost grant closes the browser.
+						await shared.assertActive(current);
+					});
 				},
 				close: async () => undefined,
 			};
@@ -1029,7 +1079,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			binding,
 			stop,
 			close: () => {
+				detachSessionParents();
 				stop.abort();
+				sessionStop.abort();
 				closing ??= cloudToolRequest(
 					async () => {
 						await Promise.allSettled([...active]);
@@ -1076,11 +1128,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			assertScreenAdmitted: admitted,
 			prepareScreen: async (exact, checked, replyBy) => {
 				// The mount takes this run's view first; the rest of the reply budget is for the way back.
-				const refusal = await this.#ensureScreen(
-					exact,
-					AbortSignal.any([signal, checked]),
-					{ kind: "run", runId: input.run.identity.runId },
-					replyBy - 2000,
+				const refusal = await withAbortScopes([signal, checked], (combined) =>
+					this.#ensureScreen(exact, combined, { kind: "run", runId: input.run.identity.runId }, replyBy - 2000),
 				);
 				if (refusal) return refusal;
 				signal.throwIfAborted();
@@ -1134,68 +1183,64 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					await current?.close();
 					if (owned.opening && (await owned.opening.catch(() => undefined)) === current) owned.opening = undefined;
 				},
-				perform: async (action, currentLease, context, operation, replyBy) => {
-					const checked = AbortSignal.any([signal, context.signal]);
-					checked.throwIfAborted();
-					if (action.kind === "browser" || (action.kind === "screenshot" && action.surface === "browser")) {
-						// A member may have closed the window since the last action.
-						if (browser?.isEnded?.()) {
-							browser = undefined;
-							driving = undefined;
+				perform: async (action, currentLease, context, operation, replyBy) =>
+					withAbortScopes([signal, context.signal], async (checked) => {
+						checked.throwIfAborted();
+						if (action.kind === "browser" || (action.kind === "screenshot" && action.surface === "browser")) {
+							// A member may have closed the window since the last action.
+							if (browser?.isEnded?.()) {
+								browser = undefined;
+								driving = undefined;
+							}
+							if (!browser) {
+								browser = await attach(checked);
+								automation = undefined;
+							}
 						}
-						if (!browser) {
-							browser = await attach(checked);
-							automation = undefined;
-						}
-					}
-					automation ??= new CompanyComputerGuestAutomation({
-						binding,
-						layout: this.#options.layout,
-						boundary,
-						browser,
-						screenBrowser: async (checked) => {
-							const owned = this.#screens.get(binding.screenOrdinal)?.browser;
-							const current = await cloudToolRequest(
-								() => owned?.opening?.catch(() => undefined) ?? Promise.resolve(undefined),
-								checked,
-								30000,
-							);
-							return current && !current.isEnded?.() ? current.context : undefined;
-						},
-						commands: commands!,
-						shell,
-						screenshots,
-						fillKey: this.#options.fillKey,
-						filled: this.#filledOn(binding.screenOrdinal),
-						siteStops: this.#siteStops,
-						// Asked with the mount the desktop runs on now. Rule 4's way out stops that desktop, never this
-						// session: the action holds the capture back until the way out ends, and no longer.
-						capture: (captured, until) => {
-							const folders = this.#options.folders;
-							const screen = this.#screens.get(binding.screenOrdinal);
-							if (!folders) return Promise.resolve(undefined);
-							// The desktop stopped or started again since the action began: what it shows may come from a
-							// mount that went.
-							if (!screen || screen.desktop !== seen) return Promise.resolve(COMPANY_COMPUTER_CAPTURE_RESTARTED);
-							return folders.capture(binding.screenId, screen.companyEpoch, captured, until, () =>
-								this.#stopForRefusal(screen),
-							);
-						},
-						captureTarget: (target, checked) => input.effects.hookCaptureTarget(target, checked),
-						codingValueTarget: (target, checked) => input.effects.codingValueCaptureTarget(target, checked),
-						captures,
-					});
-					return automation.perform(action, currentLease, { ...context, signal: checked }, operation, replyBy);
-				},
+						automation ??= new CompanyComputerGuestAutomation({
+							binding,
+							layout: this.#options.layout,
+							boundary,
+							browser,
+							screenBrowser: async (checked) => {
+								const owned = this.#screens.get(binding.screenOrdinal)?.browser;
+								const current = await cloudToolRequest(
+									() => owned?.opening?.catch(() => undefined) ?? Promise.resolve(undefined),
+									checked,
+									30000,
+								);
+								return current && !current.isEnded?.() ? current.context : undefined;
+							},
+							commands: commands!,
+							shell,
+							screenshots,
+							fillKey: this.#options.fillKey,
+							filled: this.#filledOn(binding.screenOrdinal),
+							siteStops: this.#siteStops,
+							// Asked with the mount the desktop runs on now. Rule 4's way out stops that desktop, never this
+							// session: the action holds the capture back until the way out ends, and no longer.
+							capture: (captured, until) => {
+								const folders = this.#options.folders;
+								const screen = this.#screens.get(binding.screenOrdinal);
+								if (!folders) return Promise.resolve(undefined);
+								// The desktop stopped or started again since the action began: what it shows may come from a
+								// mount that went.
+								if (!screen || screen.desktop !== seen)
+									return Promise.resolve(COMPANY_COMPUTER_CAPTURE_RESTARTED);
+								return folders.capture(binding.screenId, screen.companyEpoch, captured, until, () =>
+									this.#stopForRefusal(screen),
+								);
+							},
+							captureTarget: (target, checked) => input.effects.hookCaptureTarget(target, checked),
+							codingValueTarget: (target, checked) => input.effects.codingValueCaptureTarget(target, checked),
+							captures,
+						});
+						return automation.perform(action, currentLease, { ...context, signal: checked }, operation, replyBy);
+					}),
 				settle: (action, content, requestSignal, replyBy, runId, receiptId) =>
 					automation
-						? automation.settle(
-								action,
-								content,
-								AbortSignal.any([signal, requestSignal]),
-								replyBy,
-								runId,
-								receiptId,
+						? withAbortScopes([signal, requestSignal], (combined) =>
+								automation!.settle(action, content, combined, replyBy, runId, receiptId),
 							)
 						: Promise.resolve(content),
 			},
@@ -1257,6 +1302,12 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		if (!this.#private) {
 			const stop = new AbortController();
 			const cancelStartup = (): void => stop.abort();
+			const onGuestStop = (): void => stop.abort(this.#stop.signal.reason);
+			if (this.#stop.signal.aborted) onGuestStop();
+			else this.#stop.signal.addEventListener("abort", onGuestStop, { once: true });
+			stop.signal.addEventListener("abort", () => this.#stop.signal.removeEventListener("abort", onGuestStop), {
+				once: true,
+			});
 			signal.addEventListener("abort", cancelStartup, { once: true });
 			if (signal.aborted) cancelStartup();
 			const current: PrivateSurface = {
@@ -1267,7 +1318,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					challenge,
 				),
 				opening: Promise.resolve()
-					.then(() => current.lifecycle?.requested(AbortSignal.any([this.#stop.signal, stop.signal])))
+					.then(() => current.lifecycle?.requested(stop.signal))
 					.then(() =>
 						startCompanyComputerLinuxPrivateSurface({
 							...this.#options,
@@ -1281,7 +1332,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 									await this.#privateControl.assertActive(exact, checked);
 								},
 							},
-							signal: AbortSignal.any([this.#stop.signal, stop.signal]),
+							signal: stop.signal,
 							assertDrained: async () => {
 								if (this.#screens.size || this.#sessions.size)
 									throw new Error("OFFICE_PHYSICAL_DRAIN_REQUIRED");
@@ -1328,13 +1379,13 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					)
 					.then(async (surface) => {
 						try {
-							await current.lifecycle?.ready(AbortSignal.any([this.#stop.signal, stop.signal]));
+							await current.lifecycle?.ready(stop.signal);
 							const pulse = (): void => {
 								if (current.closing || stop.signal.aborted || this.#stop.signal.aborted) return;
 								current.timer = setTimeout(() => {
-									void current.lifecycle
-										?.heartbeat(AbortSignal.any([this.#stop.signal, stop.signal]))
-										.then(pulse, pulse);
+									void withAbortScopes([stop.signal], (hbSignal) =>
+										current.lifecycle ? current.lifecycle.heartbeat(hbSignal) : Promise.resolve(),
+									).then(pulse, pulse);
 								}, 5000);
 							};
 							if (current.lifecycle) pulse();

@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http from "node:http";
+import net from "node:net";
 import { after, before, describe, it } from "node:test";
 import pg from "pg";
 import { POSTGRES_IMAGE, POSTGRES_LOCALE } from "../../../scripts/test-hosted-db.mjs";
@@ -49,6 +50,123 @@ describe("parsePublicConfig and DataChangeNotifier", () => {
 		assert.equal(wakes.length, 2);
 		assert.deepEqual(wakes[1].tables, ["orders"]);
 		notifier.close();
+	});
+
+	it("routes notifications per environment without cross-talk and enforces body read timeout and unread-body connection close", async () => {
+		const notifier = new DataChangeNotifier();
+		const env1Wakes = [];
+		const env2Wakes = [];
+		notifier.register({ id: "a", environmentId: "env-1", database: "shop", minIntervalMs: 10, onWake: (ev) => env1Wakes.push(ev) });
+		notifier.register({ id: "b", environmentId: "env-2", database: "shop", minIntervalMs: 10, onWake: (ev) => env2Wakes.push(ev) });
+		notifier.notify("env-1", { schema: "shop", table: "orders" });
+		assert.equal(env1Wakes.length, 1);
+		assert.equal(env2Wakes.length, 0);
+		notifier.unregister("a");
+		notifier.notify("env-1", { schema: "shop", table: "orders" });
+		assert.equal(env1Wakes.length, 1);
+
+		const selfUnregWakes = [];
+		const siblingWakes = [];
+		notifier.register({
+			id: "first",
+			environmentId: "env-3",
+			database: "shop",
+			minIntervalMs: 50,
+			onWake: (ev) => {
+				selfUnregWakes.push(ev);
+				notifier.unregister("second");
+			},
+		});
+		notifier.register({
+			id: "second",
+			environmentId: "env-3",
+			database: "shop",
+			minIntervalMs: 50,
+			onWake: (ev) => siblingWakes.push(ev),
+		});
+		notifier.notify("env-3", { schema: "shop", table: "orders" });
+		assert.equal(selfUnregWakes.length, 1);
+		assert.equal(siblingWakes.length, 0);
+		notifier.notify("env-3", { schema: "shop", table: "orders" });
+		assert.equal(selfUnregWakes.length, 1);
+		await new Promise((r) => setTimeout(r, 70));
+		assert.equal(selfUnregWakes.length, 2);
+		notifier.close();
+
+		const rateEnv = randomUUID();
+		const rateGateway = new Gateway({
+			store: { host: "127.0.0.1", port: 1, logins: { admin: "a", keeper: "k", watch: "w", folderKey: "0".repeat(64) } },
+			platform: {},
+			publicReader: async () => new Map([["data/shop/database.toml", '[public]\nquestions = ["q"]\nrate_limit = 2\n']]),
+		});
+		const askHot = (clientKey) =>
+			rateGateway
+				.publicQuery(rateEnv, { database: "shop", question: "q" }, clientKey)
+				.then(() => 200, (error) => error.status);
+		try {
+			assert.equal(await askHot("hot"), 404);
+			assert.equal(await askHot("hot"), 404);
+			assert.equal(await askHot("hot"), 429);
+			for (let i = 0; i < 3_500; i++) assert.equal(await askHot(`other-${i}`), 404);
+			assert.equal(await askHot("hot"), 429);
+			for (let i = 3_500; i < 7_000; i++) assert.equal(await askHot(`other-${i}`), 404);
+			assert.equal(await askHot("hot"), 429);
+		} finally {
+			await rateGateway.close();
+		}
+
+		const fakeGateway = {
+			async handle(_method, _path, _headers, read) {
+				await read(1024);
+				return { ok: true };
+			},
+		};
+		const srv = await serve(fakeGateway, { host: "127.0.0.1", port: 0, bodyTimeoutMs: 120 });
+		const srvPort = srv.address().port;
+		try {
+			const slowReply = await new Promise((resolve, reject) => {
+				const socket = net.connect(srvPort, "127.0.0.1", () => {
+					socket.write(
+						"POST /v1/company-data-public/11111111-1111-4111-8111-111111111111/query HTTP/1.1\r\n" +
+							"Host: 127.0.0.1\r\n" +
+							"Content-Length: 100\r\n\r\n" +
+							"{",
+					);
+				});
+				let raw = "";
+				socket.setEncoding("utf8");
+				socket.on("data", (chunk) => {
+					raw += chunk;
+				});
+				socket.on("close", () => resolve(raw));
+				socket.on("error", reject);
+			});
+			assert.match(slowReply, /^HTTP\/1\.1 408 /);
+			assert.match(slowReply.toLowerCase(), /\r\nconnection: close\r\n/);
+
+			const oversizedReply = await new Promise((resolve, reject) => {
+				const socket = net.connect(srvPort, "127.0.0.1", () => {
+					socket.write(
+						"POST /v1/company-data-public/11111111-1111-4111-8111-111111111111/query HTTP/1.1\r\n" +
+							"Host: 127.0.0.1\r\n" +
+							"Content-Length: 5000\r\n\r\n" +
+							"x".repeat(50),
+					);
+				});
+				let raw = "";
+				socket.setEncoding("utf8");
+				socket.on("data", (chunk) => {
+					raw += chunk;
+				});
+				socket.on("close", () => resolve(raw));
+				socket.on("error", reject);
+			});
+			assert.match(oversizedReply, /^HTTP\/1\.1 413 /);
+			assert.match(oversizedReply.toLowerCase(), /\r\nconnection: close\r\n/);
+		} finally {
+			srv.close();
+			srv.closeAllConnections?.();
+		}
 	});
 });
 
@@ -352,8 +470,57 @@ describe("external doors, direct logins, hooks, and live triggers against Postgr
 			);
 			for (let i = 0; i < 40 && wakesNew.length < 2; i++) await new Promise((r) => setTimeout(r, 25));
 			assert.ok(wakesNew.length >= 2, `expected trigger wake after LISTEN reconnect, got ${wakesNew.length}`);
+
+			const wakesBeforeEvict = wakesNew.length;
+			await gateway.evictDatabase(companyDatabase(envId), "shop");
+			await post(
+				`/v1/hook-data/${envId}/change`,
+				{ database: "shop", change: "ingest-stripe", hookId: "hook-after-evict", params: { email: "r3@example.com", source: "stripe" } },
+				{ authorization: `Bearer ${hookToken}` },
+			);
+			await new Promise((r) => setTimeout(r, 80));
+			assert.equal(wakesNew.length, wakesBeforeEvict);
 		} finally {
 			stopNew();
+		}
+
+		const companyWakes = [];
+		const stopCompanyTrigger = await gateway.registerDataTrigger({
+			id: "routine-company-evict",
+			environmentId: envId,
+			database: "shop",
+			tables: ["leads"],
+			minIntervalMs: 30,
+			onWake: (ev) => companyWakes.push(ev),
+		});
+		try {
+			const baseline = await post(
+				`/v1/company-data/${envId}/query`,
+				{ database: "shop", question: "catalog", texts: textsOf() },
+				{ authorization: `Bearer ${token}` },
+			);
+			assert.equal(baseline.status, 200, JSON.stringify(baseline.value));
+			const startedAt = performance.now();
+			const watchPromise = post(
+				`/v1/company-data/${envId}/watch`,
+				{ watches: [{ database: "shop", question: "catalog", etag: baseline.value.etag }], texts: textsOf() },
+				{ authorization: `Bearer ${token}` },
+			);
+			await new Promise((r) => setTimeout(r, 100));
+			await gateway.evictCompany(companyDatabase(envId));
+			const watchRes = await watchPromise;
+			assert.equal(watchRes.status, 200, JSON.stringify(watchRes.value));
+			assert.ok(performance.now() - startedAt < 2_000, "watch should wake well before 20 s on evictCompany");
+
+			await post(
+				`/v1/hook-data/${envId}/change`,
+				{ database: "shop", change: "ingest-stripe", hookId: "hook-after-company-evict", params: { email: "r4@example.com", source: "stripe" } },
+				{ authorization: `Bearer ${hookToken}` },
+			);
+			await new Promise((r) => setTimeout(r, 80));
+			assert.equal(companyWakes.length, 0);
+		} finally {
+			stopCompanyTrigger();
 		}
 	});
 });

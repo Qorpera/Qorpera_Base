@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { isAbsolute, join, resolve } from "node:path";
+import { withTimeoutScope } from "./abort-scope.ts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "./orchestrator.ts";
 import { validateCloudRunnerWork } from "./orchestrator.ts";
@@ -270,10 +271,14 @@ export class ProcessCloudRunnerProviderBackend implements CloudRunnerProviderSer
 					throw new Error(`Native provider sidecar exited during startup: ${output.trim().slice(0, 1000)}`);
 				}
 				try {
-					const response = await this.#fetch(`http://127.0.0.1:${nativePort}/healthz`, {
-						signal: AbortSignal.any([signal, AbortSignal.timeout(500)]),
+					const ready = await withTimeoutScope(signal, 500, async (checked) => {
+						const response = await this.#fetch(`http://127.0.0.1:${nativePort}/healthz`, {
+							signal: checked,
+						});
+						await response.body?.cancel().catch(() => undefined);
+						return response.ok;
 					});
-					if (response.ok) break;
+					if (ready) break;
 				} catch {
 					// The native sidecar is still starting.
 				}
@@ -348,10 +353,14 @@ export class ProcessCloudRunnerProviderBackend implements CloudRunnerProviderSer
 					throw new Error(`Ephemeral runner exited during startup: ${output.trim().slice(0, 1000)}`);
 				}
 				try {
-					const response = await this.#fetch(`http://127.0.0.1:${port}/healthz`, {
-						signal: AbortSignal.any([signal, AbortSignal.timeout(500)]),
+					const ready = await withTimeoutScope(signal, 500, async (checked) => {
+						const response = await this.#fetch(`http://127.0.0.1:${port}/healthz`, {
+							signal: checked,
+						});
+						await response.body?.cancel().catch(() => undefined);
+						return response.ok;
 					});
-					if (response.ok) return runner;
+					if (ready) return runner;
 				} catch {
 					// The runner activates before opening its loopback assignment inbox.
 				}
@@ -378,23 +387,26 @@ export class ProcessCloudRunnerProviderBackend implements CloudRunnerProviderSer
 		) {
 			throw new Error("Ephemeral runner is unavailable for this assignment");
 		}
-		const response = await this.#fetch(`http://127.0.0.1:${runtime.port}/v1/assignment`, {
-			method: "POST",
-			headers: {
-				authorization: `Bearer ${runtime.assignmentToken}`,
-				"content-type": "application/json",
-			},
-			body: JSON.stringify({
-				schema: "qorpera.runner-assignment-delivery/v1",
-				assignment_id: delivery.assignment.assignmentId,
-				job_id: delivery.assignment.jobId,
-				capability: delivery.capability,
-			}),
-			signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
+		await withTimeoutScope(signal, 10_000, async (checked) => {
+			const response = await this.#fetch(`http://127.0.0.1:${runtime.port}/v1/assignment`, {
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${runtime.assignmentToken}`,
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({
+					schema: "qorpera.runner-assignment-delivery/v1",
+					assignment_id: delivery.assignment.assignmentId,
+					job_id: delivery.assignment.jobId,
+					capability: delivery.capability,
+				}),
+				signal: checked,
+			});
+			await response.body?.cancel().catch(() => undefined);
+			if (response.status !== 200 && response.status !== 202) {
+				throw new Error(`Ephemeral runner rejected assignment delivery (${response.status})`);
+			}
 		});
-		if (response.status !== 200 && response.status !== 202) {
-			throw new Error(`Ephemeral runner rejected assignment delivery (${response.status})`);
-		}
 	}
 
 	async stop(
@@ -409,16 +421,21 @@ export class ProcessCloudRunnerProviderBackend implements CloudRunnerProviderSer
 	}
 
 	async #rpc(name: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
-		const response = await this.#fetch(new URL(`/rest/v1/rpc/${name}`, this.#config.supabaseUrl), {
-			method: "POST",
-			headers: {
-				...supabaseServiceHeaders(this.#config.supabaseServiceKey),
-				"content-type": "application/json",
-			},
-			body: JSON.stringify(body),
-			signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+		return withTimeoutScope(signal, 30_000, async (checked) => {
+			const response = await this.#fetch(new URL(`/rest/v1/rpc/${name}`, this.#config.supabaseUrl), {
+				method: "POST",
+				headers: {
+					...supabaseServiceHeaders(this.#config.supabaseServiceKey),
+					"content-type": "application/json",
+				},
+				body: JSON.stringify(body),
+				signal: checked,
+			});
+			if (!response.ok) {
+				await response.body?.cancel().catch(() => undefined);
+				throw new Error(`Runner provisioning failed (${response.status})`);
+			}
+			return response.json() as Promise<unknown>;
 		});
-		if (!response.ok) throw new Error(`Runner provisioning failed (${response.status})`);
-		return response.json() as Promise<unknown>;
 	}
 }

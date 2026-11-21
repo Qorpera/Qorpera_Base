@@ -13,6 +13,7 @@ import {
 	type CompanyComputerScope,
 	type CompanyComputerScreenLease,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
+import { withAbortScopes } from "./abort-scope.ts";
 import type { CompanyComputerDesktopFolderReport } from "./cloud-company-computer-desktop-folder.ts";
 import { CloudCompanyComputerEffectControl } from "./cloud-company-computer-effect-control.ts";
 import type { CompanyComputerGuestEndpoint } from "./cloud-company-computer-endpoint.ts";
@@ -361,7 +362,9 @@ export class CompanyComputerNativeGateway {
 			const reported =
 				session.closed || !session.guest.folderReport
 					? undefined
-					: await session.guest.folderReport(body.shown, AbortSignal.any([signal, session.run.signal]));
+					: await withAbortScopes([signal, session.run.signal], (combined) =>
+							session.guest.folderReport!(body.shown as string, combined),
+						);
 			return reported
 				? { schema: COMPANY_COMPUTER_NATIVE_SCHEMA, mark: reported.mark, report: reported.report }
 				: { schema: COMPANY_COMPUTER_NATIVE_SCHEMA };
@@ -422,8 +425,7 @@ export class CompanyComputerNativeGateway {
 		const session = await cloudToolRequest(() => pending!, signal);
 		this.#checkLease(lease, session.run);
 		if (session.closed || !sameLease(lease, session.lease)) throw new Error("OFFICE_NATIVE_CLOSED");
-		const result = (async () => {
-			const combined = AbortSignal.any([signal, session.run.signal]);
+		const result = withAbortScopes([signal, session.run.signal], async (combined) => {
 			await session.run.assertActive(combined);
 			if (session.guest.ended?.()) {
 				if ((session.reopenAfter ?? 0) > performance.now()) throw new Error("OFFICE_SESSION_CLOSED");
@@ -466,7 +468,7 @@ export class CompanyComputerNativeGateway {
 				...(image ? { image: Buffer.from(image).toString("base64") } : {}),
 				...(box ? { box } : {}),
 			};
-		})();
+		});
 		session.active.add(result);
 		try {
 			return await result;
@@ -499,27 +501,31 @@ export class CompanyComputerNativeGateway {
 		request.once("aborted", aborted);
 		response.once("close", aborted);
 		try {
-			const result = await cloudToolRequest(
-				async (signal) => {
-					this.#admit();
-					const chunks: Buffer[] = [];
-					let length = 0;
-					const body = await cloudToolRequest(async (s) => {
-						for await (const chunk of request) {
-							s.throwIfAborted();
-							const bytes = Buffer.from(chunk);
-							length += bytes.length;
-							if (length > COMPANY_COMPUTER_NATIVE_MAX_REQUEST)
-								throw new Error("OFFICE_NATIVE_REQUEST_TOO_LARGE");
-							chunks.push(bytes);
-						}
-						return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))) as unknown;
-					}, signal);
-					this.#admit();
-					return this.#dispatch(body, request.headers["x-qorpera-identity"], signal);
-				},
-				AbortSignal.any([stop.signal, this.#stop.signal]),
-				25000,
+			const result = await withAbortScopes([stop.signal, this.#stop.signal], (reqSignal) =>
+				cloudToolRequest(
+					async (signal) => {
+						this.#admit();
+						const chunks: Buffer[] = [];
+						let length = 0;
+						const body = await cloudToolRequest(async (s) => {
+							for await (const chunk of request) {
+								s.throwIfAborted();
+								const bytes = Buffer.from(chunk);
+								length += bytes.length;
+								if (length > COMPANY_COMPUTER_NATIVE_MAX_REQUEST)
+									throw new Error("OFFICE_NATIVE_REQUEST_TOO_LARGE");
+								chunks.push(bytes);
+							}
+							return JSON.parse(
+								new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)),
+							) as unknown;
+						}, signal);
+						this.#admit();
+						return this.#dispatch(body, request.headers["x-qorpera-identity"], signal);
+					},
+					reqSignal,
+					25000,
+				),
 			);
 			const bytes = Buffer.from(JSON.stringify(result));
 			if (

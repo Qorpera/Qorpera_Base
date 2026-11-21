@@ -10,6 +10,11 @@ import {
 export { type CloudCodingCommandScope, parseCloudCodingCommandReceipt } from "@qorpera/contracts";
 
 import { CODE_CHECK_NAME_PATTERN, runCodingPreflightChecks } from "./cloud-code-checks.ts";
+import {
+	inspectCodingWorkspaceImage,
+	MAX_CODING_INSPECT_PATH_BYTES,
+	parseCodingInspectImagePath,
+} from "./cloud-coding-image-inspect.ts";
 import { CLOUD_COMMAND_PAGE_ASK, cloudCommandFits, fitCloudCommandPage } from "./cloud-command-page-fit.ts";
 import { type CloudNativeToolIdentity, cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import {
@@ -171,6 +176,16 @@ export function cloudCodingCommandTools(options: {
 			}
 			return { ...value };
 		}
+		if (action === "start" && value.inspectImage !== undefined) {
+			if (
+				!Object.hasOwn(value, "operationKey") ||
+				Object.keys(value).some((key) => key !== "operationKey" && key !== "inspectImage")
+			)
+				throw new Error("Invalid coding command");
+			if (typeof value.operationKey !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(value.operationKey))
+				throw new Error("Invalid coding operation key");
+			return { operationKey: value.operationKey, inspectImage: parseCodingInspectImagePath(value.inspectImage) };
+		}
 		const keys = Object.keys(value).sort().join();
 		if (
 			action === "start"
@@ -208,8 +223,9 @@ export function cloudCodingCommandTools(options: {
 		{
 			name: "coding_run_command",
 			source: "worker",
+			images: true,
 			description:
-				"Start a shell command in this session's isolated repository VM. Use it to inspect, edit, build, test and run servers. It returns a durable command handle; running is not success. A command that already ended shows its exit status and as much of its output as one result holds; read the handle for the rest, or for a command still running. A command has no time limit unless you set timeoutMs; it keeps running after your turn ends, until it exits, you cancel it, the session is archived, or the machine sleeps (only after 10 minutes with no turn and no command using the processor). If the machine stops under it, its state is machine_stopped: it may have done part of its work. Later turns can read or cancel it by its handle. Keep operationKey stable after an uncertain response. The command's environment holds the secret values this session was given, when it was given any, and no credentials for the repository, the model provider or the cloud. Handing the work in is coding_finish's, never a push or a publish from the shell. Or pass runChecks:true (without command or timeoutMs, with optional checkNames and failFast) to read .qorpera/checks.json in this worktree and run its checks pre-flight sequentially or in parallel needs DAG waves (up to 4 at once) with CI=true QORPERA_CHECKS=1, returning structured pass/fail results and output tails without landing on main.",
+				"Start a shell command in this session's isolated repository VM. Use it to inspect, edit, build, test and run servers. It returns a durable command handle; running is not success. A command that already ended shows its exit status and as much of its output as one result holds; read the handle for the rest, or for a command still running. A command has no time limit unless you set timeoutMs; it keeps running after your turn ends, until it exits, you cancel it, the session is archived, or the machine sleeps (only after 10 minutes with no turn and no command using the processor). If the machine stops under it, its state is machine_stopped: it may have done part of its work. Later turns can read or cancel it by its handle. Keep operationKey stable after an uncertain response. The command's environment holds the secret values this session was given, when it was given any, and no credentials for the repository, the model provider or the cloud. Handing the work in is coding_finish's, never a push or a publish from the shell. Or pass runChecks:true (without command or timeoutMs, with optional checkNames and failFast) to read .qorpera/checks.json in this worktree and run its checks pre-flight sequentially or in parallel needs DAG waves (up to 4 at once) with CI=true QORPERA_CHECKS=1, returning structured pass/fail results and output tails without landing on main. Or pass inspectImage (without command, timeoutMs, runChecks, checkNames or failFast) with a relative workspace path to a .png, .jpg, .jpeg or .webp file (up to 8 MiB, such as docs/changes/home.png or .tmp/check.png) to visually inspect that screenshot directly in your context; always use a fresh operationKey for each new or updated screenshot inspection (reusing an operationKey replays the earlier read's commandId and image).",
 			inputSchema: {
 				...schema({
 					operationKey,
@@ -232,6 +248,13 @@ export function cloudCodingCommandTools(options: {
 						type: "boolean",
 						description: "With runChecks true: stop on first failing check (default true).",
 					},
+					inspectImage: {
+						type: "string",
+						minLength: 1,
+						maxLength: MAX_CODING_INSPECT_PATH_BYTES,
+						description:
+							"Relative workspace path to a .png, .jpg, .jpeg or .webp screenshot (without command, timeoutMs, runChecks, checkNames or failFast) to inspect visually in your context (max 8 MiB raw, sanitized to <= 1920x1200 PNG). Use a fresh operationKey for every new or updated screenshot inspection.",
+					},
 				}),
 				required: ["operationKey"],
 			},
@@ -250,6 +273,22 @@ export function cloudCodingCommandTools(options: {
 							operationKey: String(input.operationKey),
 							...(Array.isArray(input.checkNames) ? { checkNames: input.checkNames as string[] } : {}),
 							failFast: input.failFast !== false,
+						},
+						context,
+						pollMs: options.pollMs,
+						timeoutGraceMs: options.timeoutGraceMs,
+					});
+				}
+				if (typeof input.inspectImage === "string") {
+					return inspectCodingWorkspaceImage({
+						scope,
+						identity,
+						operations: options.operations,
+						gateway: options.gateway,
+						checkAuthority: check,
+						request: {
+							operationKey: String(input.operationKey),
+							inspectImage: input.inspectImage,
 						},
 						context,
 						pollMs: options.pollMs,

@@ -188,6 +188,8 @@ export class WebCompanyFiles {
 		const client = this.#realtime();
 		let hints: CloudMemberFolderHints | undefined;
 		let closed = false;
+		let closing: Promise<void> | undefined;
+		const hintsStop = new AbortController();
 		const joined = withCloudDeadline(() => client.realtime.setAuth(), 5000, this.signal)
 			// Without a token the join is refused as before, and the hints' own retry joins again.
 			.catch(() => undefined)
@@ -196,18 +198,29 @@ export class WebCompanyFiles {
 				hints = new CloudMemberFolderHints({
 					environmentId: this.#options.environmentId,
 					client,
-					signal: this.signal,
+					signal: hintsStop.signal,
 					onHint,
 					...(onState ? { onState } : {}),
 				});
 			});
-		return {
-			close: async () => {
-				closed = true;
+		const teardown = (): Promise<void> => {
+			closed = true;
+			this.signal.removeEventListener("abort", onAbort);
+			closing ??= (async () => {
 				await joined;
-				await hints?.close();
-			},
+				await hints?.close().catch(() => undefined);
+				hintsStop.abort();
+				await client.removeAllChannels?.().catch(() => undefined);
+				await Promise.resolve(client.realtime.disconnect?.()).catch(() => undefined);
+			})();
+			return closing;
 		};
+		const onAbort = () => {
+			void teardown();
+		};
+		if (this.signal.aborted) void teardown();
+		else this.signal.addEventListener("abort", onAbort, { once: true });
+		return { close: teardown };
 	}
 	#realtime() {
 		return createClient(this.#options.supabaseUrl, this.#options.publishableKey, {

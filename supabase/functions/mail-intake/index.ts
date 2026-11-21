@@ -48,8 +48,14 @@ const provider: MailProvider = {
 			headers: { authorization: `Bearer ${resendApiKey}` },
 			signal: AbortSignal.timeout(8_000),
 		});
-		if (response.status === 404) return null;
-		if (!response.ok) throw new Error(`Resend returned HTTP ${response.status}`);
+		if (response.status === 404) {
+			void response.body?.cancel().catch(() => undefined);
+			return null;
+		}
+		if (!response.ok) {
+			void response.body?.cancel().catch(() => undefined);
+			throw new Error(`Resend returned HTTP ${response.status}`);
+		}
 		const body: unknown = await response.json();
 		if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("Resend answered without an object");
 		return body as Record<string, unknown>;

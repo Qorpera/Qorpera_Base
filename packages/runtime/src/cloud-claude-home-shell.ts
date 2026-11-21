@@ -269,12 +269,28 @@ export class CloudClaudeHomeShell {
 			channel.pending.clear();
 			for (const wake of channel.processes.values()) wake({ method: "process/closed", lost: true });
 		})();
-		const answer = await Promise.race([
-			call(channel, "initialize", { clientName: "qorpera-claude-home-shell" }),
-			new Promise<Record<string, unknown>>((resolve) =>
-				setTimeout(() => resolve({ error: { message: "no answer" } }), INITIALIZE_MS).unref(),
-			),
-		]);
+		let initTimer: ReturnType<typeof setTimeout> | undefined;
+		let onInitAbort: (() => void) | undefined;
+		const answer = await (async () => {
+			try {
+				return await Promise.race([
+					call(channel, "initialize", { clientName: "qorpera-claude-home-shell" }),
+					new Promise<Record<string, unknown>>((resolve) => {
+						onInitAbort = () => resolve({ error: { message: "stopped" } });
+						if (this.#signal.aborted) {
+							onInitAbort();
+							return;
+						}
+						this.#signal.addEventListener("abort", onInitAbort, { once: true });
+						initTimer = setTimeout(() => resolve({ error: { message: "no answer" } }), INITIALIZE_MS);
+						initTimer.unref();
+					}),
+				]);
+			} finally {
+				clearTimeout(initTimer);
+				if (onInitAbort) this.#signal.removeEventListener("abort", onInitAbort);
+			}
+		})();
 		if ("error" in answer) {
 			await stream.close();
 			throw new Error(`cloud_claude_shell_initialize: ${String((answer.error as { message?: string })?.message)}`);
@@ -373,10 +389,11 @@ export class CloudClaudeHomeShell {
 				} catch {
 					return false;
 				}
-				const answer = await Promise.race([
+				const answer = await raceWithDeadline(
 					call(channel, "fs/writeFile", { path: pathToFileURL(path).href, dataBase64: png.toString("base64") }),
-					aborted(AbortSignal.any([signal, AbortSignal.timeout(PICTURE_WRITE_MS)])),
-				]);
+					signal,
+					PICTURE_WRITE_MS,
+				);
 				return answer !== undefined && !("error" in answer);
 			},
 		};
@@ -399,18 +416,30 @@ export class CloudClaudeHomeShell {
 		};
 		let processId: string | undefined;
 		let channel: Channel | undefined;
+		const askedController = new AbortController();
+		const onRunAbort = (): void => askedController.abort(this.#signal.reason);
+		const onSocketClose = (): void => askedController.abort();
+		let onDrop: (() => void) | undefined;
 		try {
-			const line = await firstLine(socket);
+			const line = await firstLine(socket, this.#signal);
+			if (line === undefined && (socket.destroyed || this.#signal.aborted)) {
+				if (!socket.destroyed) socket.destroy();
+				return;
+			}
 			const request = line === undefined ? undefined : parseCloudClaudeShellRequest(line);
 			if (!request) {
 				this.counts.refused += 1;
 				fail("HOME_REQUEST_INVALID: the command could not be read, so it did not run.", 126);
 				return;
 			}
-			const gone = new AbortController();
-			socket.once("close", () => gone.abort());
+			if (this.#signal.aborted || socket.destroyed) {
+				if (!socket.destroyed) socket.destroy();
+				return;
+			}
+			this.#signal.addEventListener("abort", onRunAbort, { once: true });
+			socket.once("close", onSocketClose);
 			socket.resume();
-			const asked = AbortSignal.any([this.#signal, gone.signal]);
+			const asked = askedController.signal;
 			if (request.cmd === CLAUDE_REVIEW_HOOK_PATH || request.cmd === "--hook") {
 				this.counts.hooks += 1;
 				const refusal =
@@ -488,11 +517,12 @@ export class CloudClaudeHomeShell {
 				);
 				return;
 			}
-			let dropped = socket.destroyed || gone.signal.aborted;
-			socket.once("close", () => {
+			let dropped: boolean = socket.destroyed || asked.aborted;
+			onDrop = () => {
 				dropped = true;
 				wake?.();
-			});
+			};
+			asked.addEventListener("abort", onDrop, { once: true });
 			let exitCode: number | undefined;
 			for (;;) {
 				const message = events.shift();
@@ -529,6 +559,9 @@ export class CloudClaudeHomeShell {
 		} catch {
 			socket.destroy();
 		} finally {
+			this.#signal.removeEventListener("abort", onRunAbort);
+			socket.removeListener("close", onSocketClose);
+			if (onDrop) askedController.signal.removeEventListener("abort", onDrop);
 			if (processId) channel?.processes.delete(processId);
 			this.#sockets.delete(socket);
 		}
@@ -545,11 +578,22 @@ function call(channel: Channel, method: string, params: Record<string, unknown>)
 	});
 }
 
-function aborted(signal: AbortSignal): Promise<undefined> {
-	return new Promise((resolve) => {
-		if (signal.aborted) resolve(undefined);
-		else signal.addEventListener("abort", () => resolve(undefined), { once: true });
+async function raceWithDeadline<T>(work: Promise<T>, signal: AbortSignal, timeoutMs: number): Promise<T | undefined> {
+	if (signal.aborted) return undefined;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let onAbort: (() => void) | undefined;
+	const stop = new Promise<undefined>((resolve) => {
+		onAbort = () => resolve(undefined);
+		signal.addEventListener("abort", onAbort, { once: true });
+		timer = setTimeout(() => resolve(undefined), timeoutMs);
+		timer.unref();
 	});
+	try {
+		return await Promise.race([work, stop]);
+	} finally {
+		clearTimeout(timer);
+		if (onAbort) signal.removeEventListener("abort", onAbort);
+	}
 }
 
 async function quiet(
@@ -575,21 +619,34 @@ async function quiet(
 			closed();
 		}
 	});
-	const until = AbortSignal.any([signal, AbortSignal.timeout(PICTURE_PLACE_MS)]);
+	const deadlineAt = performance.now() + PICTURE_PLACE_MS;
+	const remainingMs = () => Math.max(0, Math.ceil(deadlineAt - performance.now()));
 	try {
-		const started = await call(channel, "process/start", {
-			processId,
-			argv,
-			cwd: "file:///",
-			env: { ...CLOUD_CLAUDE_SHELL_ENVIRONMENT },
-			tty: false,
-			pipeStdin: false,
-			arg0: null,
-		});
+		const started = await raceWithDeadline(
+			call(channel, "process/start", {
+				processId,
+				argv,
+				cwd: "file:///",
+				env: { ...CLOUD_CLAUDE_SHELL_ENVIRONMENT },
+				tty: false,
+				pipeStdin: false,
+				arg0: null,
+			}),
+			signal,
+			remainingMs(),
+		);
+		if (started === undefined) {
+			if (!channel.closed) void call(channel, "process/terminate", { processId });
+			return undefined;
+		}
 		if ("error" in started) return undefined;
-		const stopped = await Promise.race([done.then(() => false), aborted(until).then(() => true)]);
-		if (stopped) {
-			if (!channel.closed) await call(channel, "process/terminate", { processId });
+		const finished = await raceWithDeadline(
+			done.then(() => true),
+			signal,
+			remainingMs(),
+		);
+		if (finished !== true) {
+			if (!channel.closed) void call(channel, "process/terminate", { processId });
 			return undefined;
 		}
 		return lost ? undefined : { code: exitCode, out: Buffer.concat(out).toString("utf8") };
@@ -599,29 +656,46 @@ async function quiet(
 }
 
 /** The request line, read without taking more of the socket than that line; undefined past REQUEST_BYTES. */
-function firstLine(socket: Socket): Promise<string | undefined> {
+function firstLine(socket: Socket, signal: AbortSignal): Promise<string | undefined> {
+	if (socket.destroyed || signal.aborted) return Promise.resolve(undefined);
 	return new Promise((resolve) => {
 		const chunks: Buffer[] = [];
 		let bytes = 0;
+		let settled = false;
 		const done = (value: string | undefined): void => {
+			if (settled) return;
+			settled = true;
 			socket.removeListener("data", data);
 			socket.removeListener("end", end);
+			socket.removeListener("close", end);
+			socket.removeListener("error", end);
+			signal.removeEventListener("abort", end);
 			socket.pause();
 			resolve(value);
 		};
 		const data = (chunk: Buffer): void => {
-			const end = chunk.indexOf(10);
-			if (end >= 0) {
-				chunks.push(chunk.subarray(0, end));
-				done(Buffer.concat(chunks).toString("utf8"));
+			const endOfLine = chunk.indexOf(10);
+			if (endOfLine >= 0) {
+				if (bytes + endOfLine > REQUEST_BYTES) {
+					done(undefined);
+					return;
+				}
+				chunks.push(chunk.subarray(0, endOfLine));
+				done(Buffer.concat(chunks, bytes + endOfLine).toString("utf8"));
+				return;
+			}
+			bytes += chunk.length;
+			if (bytes > REQUEST_BYTES) {
+				done(undefined);
 				return;
 			}
 			chunks.push(chunk);
-			bytes += chunk.length;
-			if (bytes > REQUEST_BYTES) done(undefined);
 		};
 		const end = (): void => done(undefined);
 		socket.on("data", data);
 		socket.once("end", end);
+		socket.once("close", end);
+		socket.once("error", end);
+		signal.addEventListener("abort", end, { once: true });
 	});
 }

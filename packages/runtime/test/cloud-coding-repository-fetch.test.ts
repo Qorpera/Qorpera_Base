@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { getEventListeners } from "node:events";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import {
 	createServer,
@@ -825,5 +826,78 @@ describe("a public project straight from github.com (publicGitHubTransport)", { 
 			expect(() => publicGitHubTransport({ owner: "Acme", name: "Shop" }, { relay, idleMs })).toThrow(
 				"CODE_IMPORT_FETCH_IDLE_INVALID",
 			);
+	});
+
+	it("cleans up unstarted body iterators on return(), bounds stalled JSON refusal bodies, and detaches signal listeners", async () => {
+		const scope = { companyId: randomUUID(), requestId: randomUUID(), leaseToken: randomUUID() };
+		const executorToken = randomBytes(32).toString("base64url");
+		const parent = new AbortController();
+
+		let bodyCancelled = false;
+		let fetchSignal: AbortSignal | undefined;
+		const unstartedTransport = new BrokerRepositoryFetch({
+			origin: ORIGIN,
+			executorToken,
+			executorOwner: "coding-node-02",
+			fetch: async (_input, init) => {
+				fetchSignal = init?.signal ?? undefined;
+				return new Response(
+					new ReadableStream<Uint8Array>({
+						start() {},
+						cancel() {
+							bodyCancelled = true;
+						},
+					}),
+					{ status: 404, headers: { "content-type": "text/plain" } },
+				);
+			},
+		}).connection(scope, { owner: "Acme", name: "Shop" });
+		const refused = await unstartedTransport.refs(parent.signal);
+		expect(refused.by).toBe("source");
+		if (refused.by === "source") {
+			await refused.body[Symbol.asyncIterator]().return?.();
+		}
+		expect(bodyCancelled).toBe(true);
+		expect(fetchSignal?.aborted).toBe(true);
+		expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
+
+		let stalledSignal: AbortSignal | undefined;
+		const stalledTransport = new BrokerRepositoryFetch({
+			origin: ORIGIN,
+			executorToken,
+			executorOwner: "coding-node-02",
+			answerMs: 80,
+			fetch: async (_input, init) => {
+				stalledSignal = init?.signal ?? undefined;
+				return new Response(new ReadableStream<Uint8Array>({ start() {} }), {
+					status: 503,
+					headers: { "content-type": "application/json" },
+				});
+			},
+		}).connection(scope, { owner: "Acme", name: "Shop" });
+		const startedAt = performance.now();
+		const stalled = await stalledTransport.refs(parent.signal);
+		expect(stalled).toMatchObject({ by: "source", status: 503, contentType: "application/json" });
+		expect(performance.now() - startedAt).toBeLessThan(2_000);
+		expect(stalledSignal?.aborted).toBe(true);
+		expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
+
+		const source = await upstream();
+		let serverClosed = false;
+		source.handler.answer = (_incoming, _body, reply) => {
+			reply.writeHead(404, { "content-type": "text/plain" });
+			reply.flushHeaders();
+			reply.once("close", () => {
+				serverClosed = true;
+			});
+		};
+		const { relay } = relayTo(source.port);
+		const pub = publicGitHubTransport({ owner: "Acme", name: "Shop" }, { relay });
+		const pubAnswer = await pub.refs(parent.signal);
+		expect(pubAnswer.by).toBe("source");
+		if (pubAnswer.by === "source") {
+			await pubAnswer.body[Symbol.asyncIterator]().return?.();
+		}
+		await vi.waitFor(() => expect(serverClosed).toBe(true));
 	});
 });

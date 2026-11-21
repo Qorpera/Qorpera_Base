@@ -48,22 +48,22 @@ export class SessionRunView {
 		clearTimeout(this.#poll);
 		const request = new AbortController();
 		this.#request = request;
-		const signal = AbortSignal.any([request.signal, this.#lifetime.signal]);
+		const signal = request.signal;
 		this.#busy = true;
 		this.#render();
 		try {
 			const state = await this.#control.read(this.#sessionId, this.#staffAgentId, signal);
-			if (signal.aborted) return;
+			if (signal.aborted || this.#lifetime.signal.aborted) return;
 			this.#state = state;
 			this.#uncertain = false;
 			if (reads > 1) this.#poll = setTimeout(() => void this.refresh(reads - 1), 1_000);
 		} catch {
-			if (signal.aborted) return;
+			if (signal.aborted || this.#lifetime.signal.aborted) return;
 		} finally {
 			if (this.#request === request) {
 				this.#request = undefined;
 				this.#busy = false;
-				if (!signal.aborted) this.#render();
+				if (!signal.aborted && !this.#lifetime.signal.aborted) this.#render();
 			}
 		}
 	}
@@ -107,7 +107,7 @@ export class SessionRunView {
 		clearTimeout(this.#poll);
 		const request = new AbortController();
 		this.#request = request;
-		const signal = AbortSignal.any([request.signal, this.#lifetime.signal]);
+		const signal = request.signal;
 		this.#busy = true;
 		this.#uncertain = true;
 		this.#state = undefined;
@@ -115,15 +115,15 @@ export class SessionRunView {
 		let confirmed = false;
 		try {
 			await this.#control.cancel(this.#sessionId, runId, signal);
-			if (signal.aborted) return;
+			if (signal.aborted || this.#lifetime.signal.aborted) return;
 			confirmed = true;
 		} catch {
-			if (signal.aborted) return;
+			if (signal.aborted || this.#lifetime.signal.aborted) return;
 		} finally {
 			if (this.#request === request) {
 				this.#request = undefined;
 				this.#busy = false;
-				if (!signal.aborted) this.#render();
+				if (!signal.aborted && !this.#lifetime.signal.aborted) this.#render();
 			}
 		}
 		if (confirmed) await this.refresh();

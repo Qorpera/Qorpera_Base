@@ -41,70 +41,101 @@ function typeOf(value: string | string[] | null | undefined): string | null {
 
 /** A fetch answer's body, read as it is taken: a read that fails is a cut, with no word of the answer's. When its reader
  * stops before the end, the request ends. */
-async function* responseBody(response: Response, call: AbortController): AsyncGenerator<Uint8Array, void, undefined> {
-	const reader = response.body?.getReader();
-	if (!reader) return;
-	let ended = false;
-	try {
-		for (;;) {
+function responseBody(
+	response: Response,
+	call: AbortController,
+	onClose: () => void,
+): AsyncIterableIterator<Uint8Array> {
+	let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+	let closed = false;
+	const cleanup = (aborted: boolean) => {
+		if (closed) return;
+		closed = true;
+		onClose();
+		if (aborted) {
+			call.abort();
+			if (reader) void reader.cancel().catch(() => undefined);
+			else void response.body?.cancel().catch(() => undefined);
+		}
+	};
+	return {
+		[Symbol.asyncIterator]() {
+			return this;
+		},
+		async next(): Promise<IteratorResult<Uint8Array, void>> {
+			if (closed) return { done: true, value: undefined };
+			if (!reader) {
+				reader = response.body?.getReader();
+				if (!reader) {
+					cleanup(false);
+					return { done: true, value: undefined };
+				}
+			}
 			let next: Awaited<ReturnType<typeof reader.read>>;
 			try {
 				next = await reader.read();
 			} catch {
+				cleanup(true);
 				throw new Error("CODE_IMPORT_TRANSFER_CUT");
 			}
 			if (next.done) {
-				ended = true;
-				return;
+				cleanup(false);
+				return { done: true, value: undefined };
 			}
-			yield next.value;
-		}
-	} finally {
-		if (!ended) {
-			call.abort();
-			void reader.cancel().catch(() => undefined);
-		}
-	}
+			return { done: false, value: next.value };
+		},
+		async return(): Promise<IteratorResult<Uint8Array, void>> {
+			// WHY: Explicit iterator ensures cleanup runs even if return() is called before the first next().
+			cleanup(true);
+			return { done: true, value: undefined };
+		},
+		async throw(error?: unknown): Promise<IteratorResult<Uint8Array, void>> {
+			cleanup(true);
+			throw error;
+		},
+	};
 }
 
 /** The same for an answer the relay's connection gave. */
-async function* messageBody(answer: IncomingMessage): AsyncGenerator<Uint8Array, void, undefined> {
-	const pieces = answer[Symbol.asyncIterator]();
-	let ended = false;
-	try {
-		for (;;) {
+function messageBody(answer: IncomingMessage): AsyncIterableIterator<Uint8Array> {
+	let pieces: AsyncIterator<Buffer> | undefined;
+	let closed = false;
+	const cleanup = (aborted: boolean) => {
+		if (closed) return;
+		closed = true;
+		if (aborted) answer.destroy();
+	};
+	return {
+		[Symbol.asyncIterator]() {
+			return this;
+		},
+		async next(): Promise<IteratorResult<Uint8Array, void>> {
+			if (closed) return { done: true, value: undefined };
+			if (!pieces) pieces = answer[Symbol.asyncIterator]();
 			let next: IteratorResult<Buffer>;
 			try {
 				next = await pieces.next();
 			} catch {
+				cleanup(true);
 				throw new Error("CODE_IMPORT_TRANSFER_CUT");
 			}
 			if (next.done) {
-				ended = true;
-				return;
+				cleanup(false);
+				return { done: true, value: undefined };
 			}
-			yield next.value;
-		}
-	} finally {
-		if (!ended) answer.destroy();
-	}
+			return { done: false, value: next.value };
+		},
+		async return(): Promise<IteratorResult<Uint8Array, void>> {
+			cleanup(true);
+			return { done: true, value: undefined };
+		},
+		async throw(error?: unknown): Promise<IteratorResult<Uint8Array, void>> {
+			cleanup(true);
+			throw error;
+		},
+	};
 }
 
-/**
- * An import's fetch through the company's GitHub connection (own code storage, step 6): the secret broker's relay
- * (5j-6b), `GET <origin>/v1/coding-repository-fetch/refs?company=<id>` and `POST …/upload-pack?company=<id>`, with the
- * executor's own broker token and the import named in the headers as a session's turn is (`x-qorpera-coding-worker`
- * the request's id, `-lease` its lease token, `-executor` this executor's owner, `-repository` the GitHub
- * `Owner/Name`). The broker asks the kernel (`qorpera_authorize_code_import_fetch` for a request id), adds GitHub's
- * header and streams GitHub's answer back: the token never reaches the executor. Redirects are errors, never followed.
- *
- * The answers: GitHub's own (its status and type, the body streamed), or the relay's own refusal, the small JSON of
- * `qorpera.cloud-secret-error/v1` (403 refused or not now, 503 busy, 404 not routed), read and closed here. What they
- * end in is part C1's (`codeImportAnswerStop`, `codeImportRelayRefusals`). A request that fails, or whose answer's
- * headers do not come within a minute, rejects with a fixed code and nothing of the request or the answer: never the
- * executor's token, never a body. `public` fetches a public project straight from github.com
- * (`publicGitHubTransport`), with no credential.
- */
 export class BrokerRepositoryFetch implements CodeImportTransports {
 	readonly #origin: string;
 	readonly #executorToken: string;
@@ -119,7 +150,6 @@ export class BrokerRepositoryFetch implements CodeImportTransports {
 		fetch?: typeof fetch;
 		/** For `public` only (tests): the relay's connection to github.com. */
 		relay?: CloudSecretRelayTransport;
-		/** How long the broker may take to an answer's headers (tests); a minute by default, at most that. */
 		answerMs?: number;
 	}) {
 		const url = new URL(options.origin);
@@ -187,9 +217,10 @@ export class BrokerRepositoryFetch implements CodeImportTransports {
 		body: Uint8Array | undefined,
 		signal: AbortSignal,
 	): Promise<CodeImportAnswer> {
-		// The request's own end: the caller's signal, or no headers within the broker's time (that bound ends with them).
+		// WHY: For non-200 JSON refusals this timer stays active through readBoundedCloudResponse so stalled refusal bodies cannot hang.
 		const call = new AbortController();
 		const end = () => call.abort();
+		const detach = () => signal.removeEventListener("abort", end);
 		signal.addEventListener("abort", end, { once: true });
 		if (signal.aborted) end();
 		const timer = setTimeout(end, this.#answerMs);
@@ -203,14 +234,16 @@ export class BrokerRepositoryFetch implements CodeImportTransports {
 				signal: call.signal,
 			});
 		} catch {
-			throw new Error("CODE_IMPORT_RELAY_UNREACHED");
-		} finally {
 			clearTimeout(timer);
+			detach();
+			throw new Error("CODE_IMPORT_RELAY_UNREACHED");
 		}
 		const status = response.status;
 		const contentType = typeOf(response.headers.get("content-type"));
-		if (status === 200 || contentType !== "application/json")
-			return { by: "source", status, contentType, body: responseBody(response, call) };
+		if (status === 200 || contentType !== "application/json") {
+			clearTimeout(timer);
+			return { by: "source", status, contentType, body: responseBody(response, call, detach) };
+		}
 		// A JSON refusal: the relay's own, when it is exactly one; GitHub's never comes so, and is passed on unread.
 		let error: string | null | undefined;
 		try {
@@ -231,8 +264,11 @@ export class BrokerRepositoryFetch implements CodeImportTransports {
 			}
 		} catch {
 			// Not the relay's.
+		} finally {
+			clearTimeout(timer);
+			detach();
+			call.abort();
 		}
-		call.abort();
 		if (error !== undefined) return { by: "relay", status, error };
 		return { by: "source", status, contentType, body: (async function* () {})() };
 	}

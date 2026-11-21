@@ -137,17 +137,36 @@ export type TranscriptItem =
 	| TranscriptInterfaceChange
 	| TranscriptInteraction;
 
+export function latestReworkingReplyAfter(
+	items: readonly TranscriptItem[],
+	acknowledgements?: ReadonlyMap<string, RunAcknowledgement>,
+): Float64Array {
+	const after = new Float64Array(items.length);
+	let latest = Number.NEGATIVE_INFINITY;
+	for (let index = items.length - 1; index >= 0; index -= 1) {
+		after[index] = latest;
+		const item = items[index]!;
+		if ((item.kind === "agent" || item.kind === "interaction") && !acknowledgements?.has(item.id)) {
+			const parsed = Date.parse(item.createdAt);
+			if (parsed > latest) latest = parsed;
+		}
+	}
+	return after;
+}
+
 export function reworkingNote(
 	items: readonly TranscriptItem[],
 	index: number,
 	answer: InteractionAnswer | undefined,
 	agentAtWork: boolean,
 	acknowledgements?: ReadonlyMap<string, RunAcknowledgement>,
+	latestLaterAt?: number,
 ): boolean {
 	const card = items[index];
 	if (card?.kind !== "interaction" || typedNote(card.request, answer) === undefined) return false;
 	if (answer?.pending !== true && !agentAtWork) return false;
 	const notedAt = answer?.answeredAt ? Date.parse(answer.answeredAt) : Number.NaN;
+	if (latestLaterAt !== undefined) return !(latestLaterAt > notedAt);
 	return !items
 		.slice(index + 1)
 		.some(
@@ -163,11 +182,16 @@ const ROUNDS_FOLLOWED = 20;
 export function decisionRound(
 	items: readonly TranscriptItem[],
 	card: TranscriptInteraction,
+	cardsById?: ReadonlyMap<string, TranscriptInteraction>,
 ): DecisionRound | undefined {
 	let previous = asksAgain(card.request);
 	if (!previous) return undefined;
-	const cards = new Map<string, TranscriptInteraction>();
-	for (const item of items) if (item.kind === "interaction") cards.set(item.id.toLowerCase(), item);
+	let cards = cardsById;
+	if (!cards) {
+		const map = new Map<string, TranscriptInteraction>();
+		for (const item of items) if (item.kind === "interaction") map.set(item.id.toLowerCase(), item);
+		cards = map;
+	}
 	const first = cards.get(previous);
 	const note = roundNote(first?.answer?.answer.values);
 	let number = 2;

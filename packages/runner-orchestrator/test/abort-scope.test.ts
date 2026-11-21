@@ -1,6 +1,6 @@
 import { getEventListeners } from "node:events";
 import { describe, expect, it, vi } from "vitest";
-import { withAbortScope } from "../src/abort-scope.ts";
+import { withAbortScope, withTimeoutScope } from "../src/abort-scope.ts";
 import { CloudCodingExecutor } from "../src/coding-executor.ts";
 import { watchAbortSignalAny } from "./helpers/abort-any.ts";
 
@@ -74,6 +74,48 @@ describe("the coding executor over the signal that lasts as long as its process"
 			expect(watch.made()).toBeGreaterThanOrEqual(5);
 			expect(watch.on(lasting.signal)).toBe(0);
 			expect(getEventListeners(lasting.signal, "abort")).toHaveLength(0);
+		} finally {
+			watch.restore();
+		}
+	});
+});
+
+describe("withTimeoutScope", () => {
+	it("forwards parent abort, fires TimeoutError on expiry, and avoids AbortSignal.any on parent", async () => {
+		const parent = new AbortController();
+		const watch = watchAbortSignalAny();
+		try {
+			await withTimeoutScope(parent.signal, 60_000, async (scoped) => {
+				expect(scoped.aborted).toBe(false);
+				expect(getEventListeners(parent.signal, "abort")).toHaveLength(1);
+			});
+			expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
+			expect(watch.on(parent.signal)).toBe(0);
+
+			let timedReason: unknown;
+			await withTimeoutScope(parent.signal, 15, async (scoped) => {
+				await new Promise<void>((resolve) => {
+					scoped.addEventListener(
+						"abort",
+						() => {
+							timedReason = scoped.reason;
+							resolve();
+						},
+						{ once: true },
+					);
+				});
+			});
+			expect(timedReason).toBeInstanceOf(DOMException);
+			expect((timedReason as DOMException).name).toBe("TimeoutError");
+			expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
+
+			const reason = new Error("PARENT_STOP");
+			await withTimeoutScope(parent.signal, 60_000, async (scoped) => {
+				parent.abort(reason);
+				expect(scoped.aborted).toBe(true);
+				expect(scoped.reason).toBe(reason);
+			});
+			expect(watch.on(parent.signal)).toBe(0);
 		} finally {
 			watch.restore();
 		}

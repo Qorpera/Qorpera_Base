@@ -1,13 +1,6 @@
 import { chmod, lstat, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
-/** Where the folder program keeps the files it holds outside the company folder (`node_modules`, build output, MC3,
- * deploy/first-node/RUNTIME-FOLDER-MACHINE-CACHES.md "Where the cache lives"): on the machine's disk, never under
- * /run, which empties at every start. The trusted side that starts the program names one with `--cache-dir`:
- * - coding and test machines: one for the machine, `machine`;
- * - company machines: one for the machine's desktops, `desktop` (every desktop view has one authority, whoever holds
- *   it), and one per owner for its commands, `agent-<uuid>` or `member-<uuid>`.
- * The program takes the folder only as a real one of its own user closed to every other user, and makes none of it. */
 export const FOLDER_CACHE = Object.freeze({
 	root: "/var/lib/qorpera-folder/cache",
 	machine: "/var/lib/qorpera-folder/cache/machine",

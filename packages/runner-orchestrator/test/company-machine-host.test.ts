@@ -8021,6 +8021,79 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 		expect(shell(boot, "/nothing/here").status).toBe(98);
 	});
 
+	it("isolates coalesced Codex hash aborts, detaches on last-waiter abort, and closes home when aborted before exec", async () => {
+		const { f, exec, pipe, session } = await home();
+		f.homeSessions.push(session(id(30)), session(id(40)), session(id(41)));
+		let releaseHash = (): void => {};
+		const hashHeld = new Promise<void>((done) => {
+			releaseHash = done;
+		});
+		let hashStarted = 0;
+		const basePipe = pipe.getMockImplementation()!;
+		pipe.mockImplementation(async (project, name, request, signal) => {
+			if (request.command.includes("/opt/qorpera-machine/codex") && !request.command.includes("exec-server")) {
+				hashStarted += 1;
+				if (hashStarted === 1) await hashHeld;
+			}
+			return basePipe(project, name, request, signal);
+		});
+		const c1Abort = new AbortController();
+		const first = f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, c1Abort.signal);
+		const second = f.host.execServer({ placementId: id(6), sessionId: id(40), bootId: f.boot }, f.signal);
+		await vi.waitFor(() => expect(hashStarted).toBe(1));
+		c1Abort.abort(new Error("CALLER_1_ABORT"));
+		await expect(first).rejects.toThrow("CALLER_1_ABORT");
+		releaseHash();
+		const channel = await second;
+		expect(exec.hashes).toBe(1);
+		await channel.close();
+
+		const abortAfterFolder = new AbortController();
+		const origOrderPush = f.order.push.bind(f.order);
+		f.order.push = ((...items: string[]) => {
+			const count = origOrderPush(...items);
+			if (items.includes("folder:boundary")) abortAfterFolder.abort(new Error("ABORT_AFTER_OPEN"));
+			return count;
+		}) as typeof f.order.push;
+		await expect(
+			f.host.execServer({ placementId: id(6), sessionId: id(41), bootId: f.boot }, abortAfterFolder.signal),
+		).rejects.toThrow("ABORT_AFTER_OPEN");
+		expect(f.service.requests.some((request) => request.op === "close" && request.commandId === id(41))).toBe(true);
+
+		const fresh = await home();
+		fresh.f.homeSessions.push(fresh.session(id(50)), fresh.session(id(51)));
+		let releaseStuck = (): void => {};
+		let stuckCalls = 0;
+		const freshBase = fresh.pipe.getMockImplementation()!;
+		fresh.pipe.mockImplementation(async (project, name, request, signal) => {
+			if (request.command.includes("/opt/qorpera-machine/codex") && !request.command.includes("exec-server")) {
+				stuckCalls += 1;
+				if (stuckCalls === 1) {
+					await new Promise<void>((done) => {
+						releaseStuck = done;
+					});
+					signal.throwIfAborted();
+				}
+			}
+			return freshBase(project, name, request, signal);
+		});
+		const soleAbort = new AbortController();
+		const stuck = fresh.f.host.execServer(
+			{ placementId: id(6), sessionId: id(50), bootId: fresh.f.boot },
+			soleAbort.signal,
+		);
+		await vi.waitFor(() => expect(stuckCalls).toBe(1));
+		soleAbort.abort(new Error("SOLE_HASH_ABORT"));
+		await expect(stuck).rejects.toThrow("SOLE_HASH_ABORT");
+		const recovered = await fresh.f.host.execServer(
+			{ placementId: id(6), sessionId: id(51), bootId: fresh.f.boot },
+			fresh.f.signal,
+		);
+		expect(stuckCalls).toBe(2);
+		await recovered.close();
+		releaseStuck();
+	});
+
 	it("runs a file channel's sftp-server as a unit of its own, as the agent's account, its bytes as base64 lines (slice C1)", async () => {
 		const { f, exec, session, opens } = await home();
 		f.homeSessions.push(session());
