@@ -11,7 +11,7 @@ const RPC_TIMEOUT_MS = 25_000;
 const UTF8_ENCODER = new TextEncoder();
 let cachedClient: { readonly key: string; readonly client: SupabaseClient } | undefined;
 
-function timedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+async function timedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
 	const controller = new AbortController();
 	const parent = init?.signal;
 	const onAbort = (): void => controller.abort(parent?.reason);
@@ -21,10 +21,23 @@ function timedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Respo
 		() => controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
 		RPC_TIMEOUT_MS,
 	);
-	return fetch(input, { ...init, signal: controller.signal }).finally(() => {
+	try {
+		const response = await fetch(input, { ...init, signal: controller.signal });
+		const noBody =
+			response.status === 204 ||
+			response.status === 205 ||
+			response.status === 304 ||
+			init?.method?.toUpperCase() === "HEAD";
+		const body = noBody ? null : await response.arrayBuffer();
+		return new Response(body, {
+			status: response.status,
+			statusText: response.statusText,
+			headers: response.headers,
+		});
+	} finally {
 		clearTimeout(timer);
 		parent?.removeEventListener("abort", onAbort);
-	});
+	}
 }
 
 function getClient(supabaseUrl: string, serviceKey: string): SupabaseClient {
@@ -93,7 +106,7 @@ Deno.serve(async (request) => {
 	};
 	if (action.action === "native_authority") {
 		const outcome = await acquireNativeAuthorityWithRollback(
-			(fn, rpcArgs) => client.rpc(fn, rpcArgs),
+			async (fn, rpcArgs) => await client.rpc(fn, rpcArgs),
 			action,
 			{ sessionTokenSha256, leaseTokenSha256 },
 		);

@@ -122,5 +122,33 @@ describe("runner broker request validation", () => {
 		);
 		assert.equal(calls[2]?.args.p_lease_id, leaseId);
 		assert.equal(calls[2]?.args.p_status, "released");
+
+		const thenableCalls: string[] = [];
+		const thenOnlyOutcome = await acquireNativeAuthorityWithRollback(
+			(fn) => ({
+				then(onFulfilled, onRejected) {
+					thenableCalls.push(fn);
+					if (fn === "qorpera_acquire_native_provider_connection_lease") {
+						return Promise.resolve({ data: { lease_id: leaseId }, error: null }).then(onFulfilled, onRejected);
+					}
+					if (fn === "qorpera_native_run_model_authority") {
+						return Promise.resolve({ data: null, error: { code: "42501" } }).then(onFulfilled, onRejected);
+					}
+					return Promise.reject(new Error("release failed")).then(onFulfilled, onRejected);
+				},
+			}),
+			{ action: "native_authority", runnerId, jobId, runId, assignmentId, leaseSeconds: 300 },
+			{ sessionTokenSha256: "1".repeat(64), leaseTokenSha256: "2".repeat(64) },
+		);
+		assert.deepEqual(thenOnlyOutcome, {
+			ok: false,
+			status: 401,
+			error: "Native provider model authority was rejected",
+		});
+		assert.deepEqual(thenableCalls, [
+			"qorpera_acquire_native_provider_connection_lease",
+			"qorpera_native_run_model_authority",
+			"qorpera_release_native_provider_connection_lease",
+		]);
 	});
 });

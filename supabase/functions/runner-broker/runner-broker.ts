@@ -168,7 +168,7 @@ export async function readRunnerBrokerRequest(request: Request): Promise<RunnerB
 export type RunnerBrokerRpc = (
 	fn: string,
 	args: Record<string, unknown>,
-) => Promise<{ readonly data: unknown; readonly error: { readonly code?: string } | null }>;
+) => PromiseLike<{ readonly data: unknown; readonly error: { readonly code?: string } | null }>;
 
 export function runnerBrokerRpcStatus(error: { readonly code?: string }): number {
 	if (error.code === "42501") return 401;
@@ -208,14 +208,16 @@ export async function acquireNativeAuthorityWithRollback(
 	});
 	if (modelError) {
 		if (leaseId) {
-			await rpc("qorpera_release_native_provider_connection_lease", {
-				p_lease_id: leaseId,
-				p_runner_id: action.runnerId,
-				p_session_token_sha256: hashes.sessionTokenSha256,
-				p_job_id: action.jobId,
-				p_lease_token_sha256: hashes.leaseTokenSha256,
-				p_status: "released",
-			}).catch(() => undefined);
+			try {
+				await rpc("qorpera_release_native_provider_connection_lease", {
+					p_lease_id: leaseId,
+					p_runner_id: action.runnerId,
+					p_session_token_sha256: hashes.sessionTokenSha256,
+					p_job_id: action.jobId,
+					p_lease_token_sha256: hashes.leaseTokenSha256,
+					p_status: "released",
+				});
+			} catch {}
 		}
 		return {
 			ok: false,

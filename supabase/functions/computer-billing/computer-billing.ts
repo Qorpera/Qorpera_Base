@@ -30,20 +30,25 @@ const STRIPE_TIMEOUT_MS = 20_000;
 const CREDIT_CHECKOUT_SECONDS = 3600;
 const MAX_WEBHOOK_BODY_BYTES = 512 * 1024;
 const MAX_MEMBER_BODY_BYTES = 16 * 1024;
-const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
+const UTF8_FATAL_DECODER = new TextDecoder("utf-8", { fatal: true });
+const UTF8_LENIENT_DECODER = new TextDecoder("utf-8");
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-async function readBoundedText(request: Request, maxBytes: number): Promise<string | null> {
+async function readBoundedText(
+	request: Request,
+	maxBytes: number,
+	fatal = true,
+): Promise<{ readonly ok: true; readonly text: string } | { readonly ok: false; readonly status: 400 | 413 }> {
 	const rawLength = request.headers.get("content-length");
 	if (rawLength !== null) {
 		const declared = Number(rawLength);
 		if (!Number.isFinite(declared) || declared < 0 || declared > maxBytes) {
 			void request.body?.cancel().catch(() => undefined);
-			return null;
+			return { ok: false, status: 413 };
 		}
 	}
 	const reader = request.body?.getReader();
-	if (!reader) return "";
+	if (!reader) return { ok: true, text: "" };
 	const chunks: Uint8Array[] = [];
 	let total = 0;
 	let overflow = false;
@@ -54,22 +59,30 @@ async function readBoundedText(request: Request, maxBytes: number): Promise<stri
 			total += value.byteLength;
 			if (total > maxBytes) {
 				overflow = true;
-				return null;
+				return { ok: false, status: 413 };
 			}
 			chunks.push(value);
 		}
 	} finally {
 		if (overflow) void reader.cancel().catch(() => undefined);
 	}
-	if (chunks.length === 0) return "";
-	if (chunks.length === 1) return UTF8_DECODER.decode(chunks[0]!);
-	const merged = new Uint8Array(total);
-	let offset = 0;
-	for (const chunk of chunks) {
-		merged.set(chunk, offset);
-		offset += chunk.byteLength;
+	if (chunks.length === 0) return { ok: true, text: "" };
+	let bytes: Uint8Array;
+	if (chunks.length === 1) {
+		bytes = chunks[0]!;
+	} else {
+		bytes = new Uint8Array(total);
+		let offset = 0;
+		for (const chunk of chunks) {
+			bytes.set(chunk, offset);
+			offset += chunk.byteLength;
+		}
 	}
-	return UTF8_DECODER.decode(merged);
+	try {
+		return { ok: true, text: (fatal ? UTF8_FATAL_DECODER : UTF8_LENIENT_DECODER).decode(bytes) };
+	} catch {
+		return { ok: false, status: 400 };
+	}
 }
 
 type Json = Record<string, unknown>;
@@ -292,11 +305,13 @@ async function startCheckout(
 	const token = bearer(request);
 	const member = token ? await deps.auth.member(token) : null;
 	if (!member) return json({ error: "Sign in to buy computer hours" }, 401, cors);
-	const rawBody = await readBoundedText(request, MAX_MEMBER_BODY_BYTES);
-	if (rawBody === null) return json({ error: "Request body too large" }, 413, cors);
+	const rawBody = await readBoundedText(request, MAX_MEMBER_BODY_BYTES, true);
+	if (!rawBody.ok) {
+		return json({ error: rawBody.status === 413 ? "Request body too large" : "Invalid request body" }, rawBody.status, cors);
+	}
 	let body: Json | undefined;
 	try {
-		body = object(JSON.parse(rawBody));
+		body = object(JSON.parse(rawBody.text));
 	} catch {
 		body = undefined;
 	}
@@ -705,12 +720,12 @@ async function applyEvent(event: Json, deps: BillingDependencies): Promise<Outco
 }
 
 async function receiveWebhook(request: Request, deps: BillingDependencies): Promise<Response> {
-	const rawBody = await readBoundedText(request, MAX_WEBHOOK_BODY_BYTES);
-	if (rawBody === null) return json({ error: "Request body too large" }, 413);
+	const rawBody = await readBoundedText(request, MAX_WEBHOOK_BODY_BYTES, false);
+	if (!rawBody.ok) return json({ error: rawBody.status === 413 ? "Request body too large" : "Invalid request body" }, rawBody.status);
 	const nowSeconds = deps.options.nowSeconds?.() ?? Math.floor(Date.now() / 1000);
 	if (
 		!(await verifyStripeSignature(
-			rawBody,
+			rawBody.text,
 			request.headers.get("stripe-signature"),
 			deps.options.webhookSecret,
 			nowSeconds,
@@ -719,7 +734,7 @@ async function receiveWebhook(request: Request, deps: BillingDependencies): Prom
 		return json({ error: "Invalid signature" }, 400);
 	let event: Json | undefined;
 	try {
-		event = object(JSON.parse(rawBody));
+		event = object(JSON.parse(rawBody.text));
 	} catch {
 		event = undefined;
 	}
@@ -734,7 +749,7 @@ async function receiveWebhook(request: Request, deps: BillingDependencies): Prom
 		eventId,
 		type,
 		livemode,
-		bodySha256: await sha256Hex(rawBody),
+		bodySha256: await sha256Hex(rawBody.text),
 	});
 	if (begun.state === "finished") return json({ received: true, duplicate: true }, 200);
 	let outcome: Outcome;
@@ -763,11 +778,13 @@ async function goodWillCard(request: Request, deps: BillingDependencies, cors: R
 	const token = bearer(request);
 	const member = token ? await deps.auth.member(token) : null;
 	if (!member) return json({ error: "Sign in to add a card" }, 401, cors);
-	const rawBody = await readBoundedText(request, MAX_MEMBER_BODY_BYTES);
-	if (rawBody === null) return json({ error: "Request body too large" }, 413, cors);
+	const rawBody = await readBoundedText(request, MAX_MEMBER_BODY_BYTES, true);
+	if (!rawBody.ok) {
+		return json({ error: rawBody.status === 413 ? "Request body too large" : "Invalid request body" }, rawBody.status, cors);
+	}
 	let body: Json | undefined;
 	try {
-		body = object(JSON.parse(rawBody));
+		body = object(JSON.parse(rawBody.text));
 	} catch {
 		body = undefined;
 	}

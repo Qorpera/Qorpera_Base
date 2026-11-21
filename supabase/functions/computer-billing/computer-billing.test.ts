@@ -971,5 +971,25 @@ describe("Good will", () => {
 		const checkoutRes = await handleComputerBilling(checkoutReq, f.deps);
 		assert.equal(checkoutRes.status, 413);
 		assert.equal(checkoutRes.headers.get("access-control-allow-origin"), "https://app.qorpera.com");
+
+		const badUtf8Webhook = new Request("https://example.test/functions/v1/computer-billing/webhook", {
+			method: "POST",
+			headers: { "stripe-signature": "t=1700000000,v1=deadbeef" },
+			body: new Uint8Array([0xff, 0xfe, 0xfd]),
+		});
+		const badUtf8WebhookRes = await handleComputerBilling(badUtf8Webhook, f.deps);
+		assert.equal(badUtf8WebhookRes.status, 400);
+
+		const badUtf8Checkout = new Request("https://example.test/functions/v1/computer-billing/checkout", {
+			method: "POST",
+			headers: {
+				authorization: "Bearer member-token",
+				origin: "https://app.qorpera.com",
+			},
+			body: new Uint8Array([0xff, 0xfe, 0xfd]),
+		});
+		const badUtf8CheckoutRes = await handleComputerBilling(badUtf8Checkout, f.deps);
+		assert.equal(badUtf8CheckoutRes.status, 400);
+		assert.equal(badUtf8CheckoutRes.headers.get("access-control-allow-origin"), "https://app.qorpera.com");
 	});
 });
