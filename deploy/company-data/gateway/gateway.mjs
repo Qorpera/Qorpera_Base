@@ -2869,6 +2869,11 @@ export class Gateway {
 				if (listener.dropped) break;
 				if (scan.changed.length === 0 && !scan.partial) await new Promise((resolve) => setTimeout(resolve, this.#limits.watchAgainMs));
 			}
+			if (listener.dropped && scan.changed.length === 0 && !scan.partial && dirty.size > 0 && !stop.aborted && !this.#closed && Date.now() < deadline) {
+				const batch = [...dirty].sort((a, b) => a - b);
+				dirty.clear();
+				scan = await settleDirty(await differing(batch));
+			}
 			const partial = scan.partial ? { partial: true } : {};
 			return scan.changed.length > 0 ? { changed: scan.changed, ...partial } : { same: true, ...partial };
 		} finally {
@@ -3649,13 +3654,17 @@ export class Gateway {
 		const now = Date.now();
 		const unforgotten = [];
 		const active = databases
-			.map((database) => ({
-				database,
-				sweep: this.#unsettledOverflow.has(database) || now - (this.#swept.get(database) ?? Number.NEGATIVE_INFINITY) >= this.#limits.sweepMs,
-				waiting: [...(this.#unsettled.get(database) ?? [])],
-			}))
+			.map((database) => {
+				const overflow = this.#unsettledOverflow.delete(database);
+				return {
+					database,
+					overflow,
+					sweep: overflow || now - (this.#swept.get(database) ?? Number.NEGATIVE_INFINITY) >= this.#limits.sweepMs,
+					waiting: [...(this.#unsettled.get(database) ?? [])],
+				};
+			})
 			.filter((entry) => entry.sweep || entry.waiting.length > 0);
-		const results = await mapBounded(active, DESCRIBE_CONCURRENCY, async ({ database, sweep, waiting }) => {
+		const results = await mapBounded(active, DESCRIBE_CONCURRENCY, async ({ database, overflow, sweep, waiting }) => {
 			const keeper = this.#pool(database, "qorpera_data_keeper");
 			let forgotFailed = false;
 			const looked = await keeper
@@ -3670,15 +3679,15 @@ export class Gateway {
 					return answer;
 				})
 				.catch(() => null);
-			return { database, sweep, waiting, looked, forgotFailed };
+			return { database, overflow, sweep, waiting, looked, forgotFailed };
 		});
-		for (const { database, sweep, waiting, looked, forgotFailed } of results) {
+		for (const { database, overflow, sweep, waiting, looked, forgotFailed } of results) {
 			if (forgotFailed) unforgotten.push(database);
-			if (looked === null) continue;
-			if (sweep) {
-				this.#swept.set(database, now);
-				this.#unsettledOverflow.delete(database);
+			if (looked === null) {
+				if (overflow) this.#unsettledOverflow.add(database);
+				continue;
 			}
+			if (sweep) this.#swept.set(database, now);
 			const running = new Set(looked.rows.map((line) => line.txid));
 			const unsettled = this.#unsettled.get(database) ?? new Set();
 			for (const txid of waiting) if (!running.has(txid)) unsettled.delete(txid);

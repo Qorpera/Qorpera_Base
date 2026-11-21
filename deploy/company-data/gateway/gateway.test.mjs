@@ -4227,13 +4227,20 @@ create trigger nap before update on slowed for each row execute function nap();
 				onUnsettledTx: (db, txid) => forwarded.push([db, txid]),
 			},
 			async (other) => {
+				await other.watchOnce();
 				const slow = await change(owner, "slow");
 				assert.equal(slow.status, 408, JSON.stringify(slow.value));
 				assert.ok(forwarded.length >= 1, "expected slow change timeout to forward an unsettled txid");
 				assert.equal(forwarded[0][0], companyDb);
+				const abortedTxid = forwarded[0][1];
+				const countTx = async () =>
+					(await asAdmin(companyDb, "select count(*)::int as n from qorpera_data.change_log where txid = $1::bigint", [abortedTxid]))[0].n;
+				assert.equal(await countTx(), 1);
+				await other.watchOnce();
+				assert.equal(await countTx(), 1);
 				for (let i = 0; i < 10_005; i += 1) other.noteUnsettledTx(companyDb, String(9_000_000 + i));
-				const swept = await other.watchOnce();
-				assert.ok(Array.isArray(swept.ended));
+				await other.watchOnce();
+				assert.equal(await countTx(), 0);
 			},
 		);
 	});
