@@ -3058,4 +3058,435 @@ describe("cloud runner orchestrator", () => {
 			"Folder materialization concurrency is outside the supported range",
 		);
 	});
+
+	it("evaluates windowed schedules identically across DST transitions and sub-hour time zones", async () => {
+		const springControl = controlPlane(undefined);
+		vi.mocked(springControl.listRoutineScheduleHeads).mockResolvedValue({
+			items: [
+				{
+					routineId: "12121212-1212-4212-8212-121212121212",
+					profileId: "88888888-8888-4888-8888-888888888888",
+					environmentId: "99999999-9999-4999-8999-999999999999",
+					version: 1,
+					staffAgentId: "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
+					triggers: [
+						{
+							id: "cph-spring",
+							kind: "schedule",
+							intervalMinutes: 30,
+							windowStart: "01:30",
+							windowEnd: "03:30",
+							timeZone: "Europe/Copenhagen",
+						},
+					],
+					scheduleCursors: [
+						{
+							triggerId: "cph-spring",
+							lastScheduledFor: "2026-03-28T02:30:00.000Z",
+							nextDueAt: "2026-03-29T00:30:00.000Z",
+						},
+					],
+					contentSha256: "a".repeat(64),
+					effectiveAt: "2026-03-28T00:00:00.000Z",
+					updatedAt: "2026-03-28T02:30:00.000Z",
+				},
+			],
+			hasMore: false,
+		});
+		const springReconciler = new CloudRoutineScheduleReconciler({
+			now: () => new Date("2026-03-29T01:45:00.000Z"),
+		});
+		await springReconciler.reconcile(springControl);
+		expect(
+			vi.mocked(springControl.enqueueRoutineWake).mock.calls.map(([input]) => ({
+				scheduledFor: input.scheduledFor,
+				nextDueAt: input.nextDueAt,
+			})),
+		).toEqual([
+			{ scheduledFor: "2026-03-29T00:30:00.000Z", nextDueAt: "2026-03-29T01:00:00.000Z" },
+			{ scheduledFor: "2026-03-29T01:00:00.000Z", nextDueAt: "2026-03-29T01:30:00.000Z" },
+			{ scheduledFor: "2026-03-29T01:30:00.000Z", nextDueAt: "2026-03-29T23:30:00.000Z" },
+		]);
+
+		const fallControl = controlPlane(undefined);
+		vi.mocked(fallControl.listRoutineScheduleHeads).mockResolvedValue({
+			items: [
+				{
+					routineId: "13131313-1313-4313-8313-131313131313",
+					profileId: "88888888-8888-4888-8888-888888888888",
+					environmentId: "99999999-9999-4999-8999-999999999999",
+					version: 1,
+					staffAgentId: "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
+					triggers: [
+						{
+							id: "ny-fall",
+							kind: "schedule",
+							intervalMinutes: 30,
+							windowStart: "00:30",
+							windowEnd: "02:30",
+							timeZone: "America/New_York",
+						},
+					],
+					scheduleCursors: [
+						{
+							triggerId: "ny-fall",
+							lastScheduledFor: "2026-10-31T06:30:00.000Z",
+							nextDueAt: "2026-11-01T04:30:00.000Z",
+						},
+					],
+					contentSha256: "b".repeat(64),
+					effectiveAt: "2026-10-31T00:00:00.000Z",
+					updatedAt: "2026-10-31T06:30:00.000Z",
+				},
+			],
+			hasMore: false,
+		});
+		const fallReconciler = new CloudRoutineScheduleReconciler({
+			now: () => new Date("2026-11-01T07:45:00.000Z"),
+		});
+		await fallReconciler.reconcile(fallControl);
+		const fallWakes = vi.mocked(fallControl.enqueueRoutineWake).mock.calls.map(([input]) => ({
+			scheduledFor: input.scheduledFor,
+			nextDueAt: input.nextDueAt,
+		}));
+		expect(fallWakes[0]).toEqual({
+			scheduledFor: "2026-11-01T04:30:00.000Z",
+			nextDueAt: "2026-11-01T05:00:00.000Z",
+		});
+		expect(fallWakes[fallWakes.length - 1]).toEqual({
+			scheduledFor: "2026-11-01T07:30:00.000Z",
+			nextDueAt: "2026-11-02T05:30:00.000Z",
+		});
+
+		const ktmControl = controlPlane(undefined);
+		vi.mocked(ktmControl.listRoutineScheduleHeads).mockResolvedValue({
+			items: [
+				{
+					routineId: "14141414-1414-4414-8414-141414141414",
+					profileId: "88888888-8888-4888-8888-888888888888",
+					environmentId: "99999999-9999-4999-8999-999999999999",
+					version: 1,
+					staffAgentId: "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
+					triggers: [
+						{
+							id: "ktm-window",
+							kind: "schedule",
+							intervalMinutes: 15,
+							windowStart: "09:00",
+							windowEnd: "09:30",
+							timeZone: "Asia/Kathmandu",
+						},
+					],
+					scheduleCursors: [
+						{
+							triggerId: "ktm-window",
+							lastScheduledFor: "2026-08-19T03:45:00.000Z",
+							nextDueAt: "2026-08-20T03:15:00.000Z",
+						},
+					],
+					contentSha256: "c".repeat(64),
+					effectiveAt: "2026-08-19T00:00:00.000Z",
+					updatedAt: "2026-08-19T03:45:00.000Z",
+				},
+			],
+			hasMore: false,
+		});
+		const ktmReconciler = new CloudRoutineScheduleReconciler({
+			now: () => new Date("2026-08-20T03:35:00.000Z"),
+		});
+		await ktmReconciler.reconcile(ktmControl);
+		expect(
+			vi.mocked(ktmControl.enqueueRoutineWake).mock.calls.map(([input]) => ({
+				scheduledFor: input.scheduledFor,
+				nextDueAt: input.nextDueAt,
+			})),
+		).toEqual([
+			{ scheduledFor: "2026-08-20T03:15:00.000Z", nextDueAt: "2026-08-20T03:30:00.000Z" },
+			{ scheduledFor: "2026-08-20T03:30:00.000Z", nextDueAt: "2026-08-20T03:45:00.000Z" },
+		]);
+	});
+
+	it("reconciles distinct routine heads and dynamic restores with bounded concurrency, per-trigger serial wakes, and page-ordered failures", async () => {
+		const routineIds = Array.from(
+			{ length: 6 },
+			(_, i) => `20000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`,
+		);
+		const heads = routineIds.map((id) => {
+			const head = scheduleHead(id);
+			head.scheduleCursors = [
+				{
+					triggerId: "schedule-main",
+					lastScheduledFor: "2026-08-20T09:00:00.000Z",
+					nextDueAt: "2026-08-20T10:00:00.000Z",
+				},
+			];
+			return head;
+		});
+		let inFlight = 0;
+		let maxInFlight = 0;
+		const perHeadActive = new Set<string>();
+		const perHeadOrder = new Map<string, string[]>();
+		let reachedThree!: () => void;
+		const threeEntered = new Promise<void>((resolve) => {
+			reachedThree = resolve;
+		});
+		let openGate!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			openGate = resolve;
+		});
+		const control = controlPlane();
+		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({ items: heads, hasMore: false });
+		vi.mocked(control.enqueueRoutineWake).mockImplementation(async (input) => {
+			expect(perHeadActive.has(input.routineId)).toBe(false);
+			perHeadActive.add(input.routineId);
+			const seen = perHeadOrder.get(input.routineId) ?? [];
+			seen.push(input.scheduledFor);
+			perHeadOrder.set(input.routineId, seen);
+			inFlight++;
+			maxInFlight = Math.max(maxInFlight, inFlight);
+			if (maxInFlight === 3) reachedThree();
+			await gate;
+			inFlight--;
+			perHeadActive.delete(input.routineId);
+			return { occurrenceId: input.occurrenceId, status: "queued" as const, scheduledFor: input.scheduledFor };
+		});
+
+		const reconciler = new CloudRoutineScheduleReconciler({
+			now: () => new Date("2026-08-20T11:30:00.000Z"),
+			concurrency: 3,
+		});
+		const running = reconciler.reconcile(control);
+		await threeEntered;
+		expect(maxInFlight).toBe(3);
+		openGate();
+		await expect(running).resolves.toBeUndefined();
+		for (const id of routineIds) {
+			expect(perHeadOrder.get(id)).toEqual(["2026-08-20T10:00:00.000Z", "2026-08-20T11:00:00.000Z"]);
+		}
+
+		const err0 = new CloudRunnerOrchestratorRequestError(500);
+		const err3 = new CloudRunnerOrchestratorRequestError(503);
+		const orderControl = controlPlane();
+		vi.mocked(orderControl.listRoutineScheduleHeads).mockResolvedValue({
+			items: routineIds.slice(0, 4).map((id) => scheduleHead(id)),
+			hasMore: false,
+		});
+		vi.mocked(orderControl.enqueueRoutineWake).mockImplementation(async (input) => {
+			if (input.routineId === routineIds[0]) {
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				throw err0;
+			}
+			if (input.routineId === routineIds[3]) throw err3;
+			return { occurrenceId: input.occurrenceId, status: "queued" as const, scheduledFor: input.scheduledFor };
+		});
+		const orderReconciler = new CloudRoutineScheduleReconciler({
+			now: () => new Date("2026-08-20T12:30:00.000Z"),
+			concurrency: 4,
+		});
+		await expect(orderReconciler.reconcile(orderControl)).rejects.toMatchObject({ errors: [err0, err3] });
+
+		const dynErr0 = new Error("dyn-0");
+		const dynErr2 = new Error("dyn-2");
+		let dynInFlight = 0;
+		let dynMaxInFlight = 0;
+		const dynControl = controlPlane();
+		dynControl.listFolderDynamicRoutines = vi.fn(async () => ({
+			items: [
+				{ routineId: routineIds[0]!, version: 1 },
+				{ routineId: routineIds[1]!, version: 1 },
+				{ routineId: routineIds[2]!, version: 1 },
+			],
+			hasMore: false,
+		}));
+		dynControl.restoreFolderDynamicRoutineRun = vi.fn(async (routine) => {
+			dynInFlight++;
+			dynMaxInFlight = Math.max(dynMaxInFlight, dynInFlight);
+			if (routine.routineId === routineIds[0]) {
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				dynInFlight--;
+				throw dynErr0;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			dynInFlight--;
+			if (routine.routineId === routineIds[2]) throw dynErr2;
+			return { status: "inserted" as const, occurrenceId: "17171717-1717-4717-8717-171717171717" };
+		});
+		const dynReconciler = new CloudRoutineScheduleReconciler({
+			now: () => new Date("2026-08-20T12:30:00.000Z"),
+			concurrency: 3,
+			folderDynamicIntervalMs: 0,
+		});
+		await expect(dynReconciler.reconcile(dynControl)).rejects.toMatchObject({ errors: [dynErr0, dynErr2] });
+		expect(dynMaxInFlight).toBe(3);
+
+		expect(() => new CloudRoutineScheduleReconciler({ concurrency: 0 })).toThrow(
+			"Routine schedule concurrency is outside the supported range",
+		);
+		expect(() => new CloudRoutineScheduleReconciler({ concurrency: 17 })).toThrow(
+			"Routine schedule concurrency is outside the supported range",
+		);
+		expect(() => new CloudRoutineScheduleReconciler({ concurrency: 1.5 })).toThrow(
+			"Routine schedule concurrency is outside the supported range",
+		);
+	});
+
+	it("reports only one 400 error when concurrent heads hit a pre-advance control plane", async () => {
+		const unknown = new CloudRunnerOrchestratorRequestError(400);
+		const ids = Array.from({ length: 4 }, (_, i) => `30000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`);
+		const items = ids.map((id) => ({
+			...scheduleHead(id),
+			triggers: [
+				{
+					id: "office-hours",
+					kind: "schedule",
+					intervalMinutes: 30,
+					windowStart: "09:00",
+					windowEnd: "10:00",
+					timeZone: "UTC",
+				},
+			],
+			scheduleCursors: [{ triggerId: "office-hours" }],
+			effectiveAt: "2026-08-25T09:10:00.000Z",
+		}));
+		const control = controlPlane(undefined);
+		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({ items, hasMore: false });
+		vi.mocked(control.advanceRoutineNextDue).mockImplementation(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			throw unknown;
+		});
+		const reconciler = new CloudRoutineScheduleReconciler({
+			now: () => new Date("2026-08-25T08:58:00.000Z"),
+			concurrency: 4,
+		});
+		await expect(reconciler.reconcile(control)).rejects.toMatchObject({ errors: [unknown] });
+	});
+
+	it("matches exhaustive day-enumeration across every day of 2026-2027 in northern, southern, and sub-hour time zones", async () => {
+		const zones: readonly [string, number][] = [
+			["Europe/Copenhagen", 1],
+			["America/New_York", 7],
+			["Australia/Sydney", 16],
+			["Asia/Kathmandu", 20],
+			["Pacific/Chatham", 13],
+			["Australia/Lord_Howe", 15],
+		];
+		const formatters = new Map(
+			zones.map(([timeZone]) => [
+				timeZone,
+				new Intl.DateTimeFormat("en-CA", {
+					timeZone,
+					hourCycle: "h23",
+					year: "numeric",
+					month: "2-digit",
+					day: "2-digit",
+					hour: "2-digit",
+					minute: "2-digit",
+				}),
+			]),
+		);
+		const partsOf = (instant: Date, timeZone: string) => {
+			const parts = formatters.get(timeZone)!.formatToParts(instant);
+			const get = (type: string) => Number(parts.find((p) => p.type === type)?.value);
+			return { year: get("year"), month: get("month"), day: get("day"), hour: get("hour"), minute: get("minute") };
+		};
+		const refZoned = (year: number, month: number, day: number, hour: number, minute: number, timeZone: string) => {
+			const target = Date.UTC(year, month - 1, day, hour, minute);
+			let candidate = target;
+			for (let i = 0; i < 4; i++) {
+				const actual = partsOf(new Date(candidate), timeZone);
+				const delta = target - Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute);
+				if (delta === 0) break;
+				candidate += delta;
+			}
+			const actual = partsOf(new Date(candidate), timeZone);
+			return actual.year === year &&
+				actual.month === month &&
+				actual.day === day &&
+				actual.hour === hour &&
+				actual.minute === minute
+				? new Date(candidate)
+				: undefined;
+		};
+		const refDaySlots = (year: number, month: number, day: number, timeZone: string) => {
+			const out: Date[] = [];
+			for (let m = 30; m <= 225; m += 45) {
+				const slot = refZoned(year, month, day, Math.floor(m / 60), m % 60, timeZone);
+				if (slot) out.push(slot);
+			}
+			return out;
+		};
+		const refNearest = (instant: Date, timeZone: string, direction: "before-or-at" | "after") => {
+			const local = partsOf(instant, timeZone);
+			for (let d = 0; d <= 3; d++) {
+				const shifted = new Date(
+					Date.UTC(local.year, local.month - 1, local.day + (direction === "before-or-at" ? -d : d)),
+				);
+				const slots = refDaySlots(
+					shifted.getUTCFullYear(),
+					shifted.getUTCMonth() + 1,
+					shifted.getUTCDate(),
+					timeZone,
+				);
+				if (direction === "before-or-at") {
+					for (let i = slots.length - 1; i >= 0; i--) {
+						if (slots[i]!.getTime() <= instant.getTime()) return slots[i]!;
+					}
+				} else {
+					for (const slot of slots) {
+						if (slot.getTime() > instant.getTime()) return slot;
+					}
+				}
+			}
+			throw new Error(`No slot found for ${timeZone} at ${instant.toISOString()}`);
+		};
+
+		const baseDay = Date.UTC(2026, 0, 1, 0, 15);
+		const totalDays = 730;
+		for (const [timeZone, probeUtcHour] of zones) {
+			const startDay = baseDay + probeUtcHour * 3_600_000;
+			let currentNow = new Date(startDay);
+			const observed: { scheduledFor: string; nextDueAt: string }[] = [];
+			const head = {
+				routineId: "40000000-0000-4000-8000-000000000001",
+				profileId: "88888888-8888-4888-8888-888888888888",
+				environmentId: "99999999-9999-4999-8999-999999999999",
+				version: 1,
+				staffAgentId: "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
+				triggers: [
+					{
+						id: "sweep",
+						kind: "schedule",
+						intervalMinutes: 45,
+						windowStart: "00:30",
+						windowEnd: "03:45",
+						timeZone,
+					},
+				],
+				scheduleCursors: [{ triggerId: "sweep" }],
+				contentSha256: "d".repeat(64),
+				effectiveAt: "2025-12-01T00:00:00.000Z",
+				updatedAt: "2025-12-01T00:00:00.000Z",
+			};
+			const control = controlPlane(undefined);
+			vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({ items: [head], hasMore: false });
+			vi.mocked(control.enqueueRoutineWake).mockImplementation(async (input) => {
+				observed.push({ scheduledFor: input.scheduledFor, nextDueAt: input.nextDueAt });
+				return { occurrenceId: input.occurrenceId, status: "queued" as const, scheduledFor: input.scheduledFor };
+			});
+			const reconciler = new CloudRoutineScheduleReconciler({ now: () => currentNow });
+			for (let day = 0; day < totalDays; day++) {
+				currentNow = new Date(startDay + day * 86_400_000);
+				observed.length = 0;
+				await reconciler.reconcile(control);
+				const expectedScheduled = refNearest(currentNow, timeZone, "before-or-at");
+				const expectedNext = refNearest(expectedScheduled, timeZone, "after");
+				expect(observed).toEqual([
+					{
+						scheduledFor: expectedScheduled.toISOString(),
+						nextDueAt: expectedNext.toISOString(),
+					},
+				]);
+			}
+		}
+	});
 });

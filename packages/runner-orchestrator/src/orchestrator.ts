@@ -374,6 +374,7 @@ export interface CloudRoutineScheduleReconcilerOptions {
 	catchUpLimit?: number;
 	/** How often the folder-v2 dynamic routines are listed (folder core C1c-3e); default 30 s. */
 	folderDynamicIntervalMs?: number;
+	concurrency?: number;
 }
 
 export interface CloudFolderDrainsOptions {
@@ -1186,7 +1187,7 @@ function parseScheduleTrigger(value: unknown): RoutineScheduleTrigger | undefine
 		const end = Number(input.windowEnd.slice(0, 2)) * 60 + Number(input.windowEnd.slice(3));
 		if (start > end) return undefined;
 		try {
-			new Intl.DateTimeFormat("en-US", { timeZone: input.timeZone }).format(0);
+			calendarFormatter(input.timeZone);
 		} catch {
 			return undefined;
 		}
@@ -1244,7 +1245,7 @@ function parseScheduleTrigger(value: unknown): RoutineScheduleTrigger | undefine
 		return undefined;
 	}
 	try {
-		new Intl.DateTimeFormat("en-US", { timeZone: input.timeZone }).format(0);
+		calendarFormatter(input.timeZone);
 	} catch {
 		return undefined;
 	}
@@ -1259,30 +1260,61 @@ function parseScheduleTrigger(value: unknown): RoutineScheduleTrigger | undefine
 	};
 }
 
+const MAX_TIMEZONE_FORMATTERS = 512;
+const calendarFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function calendarFormatter(timeZone: string): Intl.DateTimeFormat {
+	let formatter = calendarFormatters.get(timeZone);
+	if (formatter) return formatter;
+	formatter = new Intl.DateTimeFormat("en-CA", {
+		timeZone,
+		hourCycle: "h23",
+		year: "numeric",
+		month: "2-digit",
+		day: "2-digit",
+		hour: "2-digit",
+		minute: "2-digit",
+	});
+	if (calendarFormatters.size >= MAX_TIMEZONE_FORMATTERS) {
+		const oldest = calendarFormatters.keys().next().value;
+		if (oldest !== undefined) calendarFormatters.delete(oldest);
+	}
+	calendarFormatters.set(timeZone, formatter);
+	return formatter;
+}
+
 function calendarParts(
 	instant: Date,
 	timeZone: string,
 ): { year: number; month: number; day: number; hour: number; minute: number } {
-	const values = new Map(
-		new Intl.DateTimeFormat("en-CA", {
-			timeZone,
-			hourCycle: "h23",
-			year: "numeric",
-			month: "2-digit",
-			day: "2-digit",
-			hour: "2-digit",
-			minute: "2-digit",
-		})
-			.formatToParts(instant)
-			.map((part) => [part.type, part.value]),
-	);
-	return {
-		year: Number(values.get("year")),
-		month: Number(values.get("month")),
-		day: Number(values.get("day")),
-		hour: Number(values.get("hour")),
-		minute: Number(values.get("minute")),
-	};
+	let year = Number.NaN;
+	let month = Number.NaN;
+	let day = Number.NaN;
+	let hour = Number.NaN;
+	let minute = Number.NaN;
+	for (const part of calendarFormatter(timeZone).formatToParts(instant)) {
+		if (part.type === "year") year = Number(part.value);
+		else if (part.type === "month") month = Number(part.value);
+		else if (part.type === "day") day = Number(part.value);
+		else if (part.type === "hour") hour = Number(part.value);
+		else if (part.type === "minute") minute = Number(part.value);
+	}
+	return { year, month, day, hour, minute };
+}
+
+function utcOffsetMs(epochMs: number, timeZone: string): number {
+	const actual = calendarParts(new Date(epochMs), timeZone);
+	return Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute) - epochMs;
+}
+
+function constantDayOffsetMs(year: number, month: number, day: number, timeZone: string): number | undefined {
+	const dayStartUtc = Date.UTC(year, month - 1, day, 0, 0);
+	const dayEndUtc = Date.UTC(year, month - 1, day, 23, 59);
+	const before = utcOffsetMs(dayStartUtc - 15 * 3_600_000, timeZone);
+	const mid = utcOffsetMs(dayStartUtc + 12 * 3_600_000, timeZone);
+	if (mid !== before) return undefined;
+	const after = utcOffsetMs(dayEndUtc + 15 * 3_600_000, timeZone);
+	return after === before ? before : undefined;
 }
 
 function zonedInstant(
@@ -1346,24 +1378,56 @@ function nearestAdvancedRoutineOccurrence(
 	direction: "before-or-at" | "after",
 ): Date | undefined {
 	const local = calendarParts(instant, trigger.timeZone);
+	const start = Number(trigger.windowStart.slice(0, 2)) * 60 + Number(trigger.windowStart.slice(3));
+	const end = Number(trigger.windowEnd.slice(0, 2)) * 60 + Number(trigger.windowEnd.slice(3));
+	const step = trigger.intervalMinutes;
+	const instantMs = instant.getTime();
 	for (let distance = 0; distance <= 370; distance += 1) {
 		const shifted = new Date(
 			Date.UTC(local.year, local.month - 1, local.day + (direction === "before-or-at" ? -distance : distance)),
 		);
-		const occurrences = advancedCalendarOccurrences(
-			trigger,
-			shifted.getUTCFullYear(),
-			shifted.getUTCMonth() + 1,
-			shifted.getUTCDate(),
-		);
+		const year = shifted.getUTCFullYear();
+		const month = shifted.getUTCMonth() + 1;
+		const day = shifted.getUTCDate();
+		if (!advancedCalendarDateMatches(trigger, year, month, day)) continue;
+		const offset = constantDayOffsetMs(year, month, day, trigger.timeZone);
+		if (offset !== undefined) {
+			const dayStartUtc = Date.UTC(year, month - 1, day, 0, 0);
+			const diffMs = instantMs + offset - dayStartUtc;
+			let slotMin = -1;
+			if (direction === "before-or-at") {
+				const maxMin = Math.min(end, Math.floor(diffMs / 60_000));
+				if (maxMin >= start) slotMin = start + Math.floor((maxMin - start) / step) * step;
+			} else {
+				const minMin = Math.max(start, Math.floor(diffMs / 60_000) + 1);
+				if (minMin <= end) {
+					const candidateMin = start + Math.ceil((minMin - start) / step) * step;
+					if (candidateMin <= end) slotMin = candidateMin;
+				}
+			}
+			if (slotMin < 0) continue;
+			const candidate = new Date(dayStartUtc + slotMin * 60_000 - offset);
+			const actual = calendarParts(candidate, trigger.timeZone);
+			if (
+				actual.year === year &&
+				actual.month === month &&
+				actual.day === day &&
+				actual.hour === Math.floor(slotMin / 60) &&
+				actual.minute === slotMin % 60 &&
+				(direction === "before-or-at" ? candidate.getTime() <= instantMs : candidate.getTime() > instantMs)
+			) {
+				return candidate;
+			}
+		}
+		const occurrences = advancedCalendarOccurrences(trigger, year, month, day);
 		if (direction === "before-or-at") {
 			for (let index = occurrences.length - 1; index >= 0; index -= 1) {
 				const occurrence = occurrences[index];
-				if (occurrence && occurrence.getTime() <= instant.getTime()) return occurrence;
+				if (occurrence && occurrence.getTime() <= instantMs) return occurrence;
 			}
 		} else {
 			for (const occurrence of occurrences) {
-				if (occurrence.getTime() > instant.getTime()) return occurrence;
+				if (occurrence.getTime() > instantMs) return occurrence;
 			}
 		}
 	}
@@ -1557,7 +1621,7 @@ function dueRoutineWakes(
 		];
 	}
 	return due.map((scheduledFor, index) => {
-		const nextDueAt = nextRoutineOccurrence(trigger, scheduledFor);
+		const nextDueAt = due[index + 1] ?? candidate;
 		if (!nextDueAt) throw new Error(`Routine schedule has no future occurrence for ${trigger.id}`);
 		return {
 			...routineOccurrence(head, trigger, scheduledFor),
@@ -1585,6 +1649,7 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 	readonly #now: () => Date;
 	readonly #pageSize: number;
 	readonly #catchUpLimit: number;
+	readonly #concurrency: number;
 	/** A control plane that answers the first-slot advance with 400 does not know
 	 * it yet (its edge function predates this orchestrator): report that and keep
 	 * scheduling as before for a while, instead of failing every poll, then ask
@@ -1601,6 +1666,7 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 		this.#pageSize = options.pageSize ?? 250;
 		this.#catchUpLimit = options.catchUpLimit ?? 32;
 		this.#folderDynamicIntervalMs = options.folderDynamicIntervalMs ?? 30_000;
+		this.#concurrency = options.concurrency ?? DEFAULT_COMPANY_CONCURRENCY;
 		if (!Number.isSafeInteger(this.#pageSize) || this.#pageSize < 1 || this.#pageSize > 500) {
 			throw new Error("Routine schedule page size is outside the supported range");
 		}
@@ -1613,6 +1679,13 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 			this.#folderDynamicIntervalMs > 3_600_000
 		) {
 			throw new Error("Folder dynamic routine interval is outside the supported range");
+		}
+		if (
+			!Number.isSafeInteger(this.#concurrency) ||
+			this.#concurrency < 1 ||
+			this.#concurrency > MAX_COMPANY_CONCURRENCY
+		) {
+			throw new Error("Routine schedule concurrency is outside the supported range");
 		}
 	}
 
@@ -1637,8 +1710,10 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 			const page = signal
 				? await controlPlane.listRoutineScheduleHeads(afterRoutineId, this.#pageSize, signal)
 				: await controlPlane.listRoutineScheduleHeads(afterRoutineId, this.#pageSize);
-			for (const head of page.items) {
-				if (!Array.isArray(head.triggers)) continue;
+			const pageFailures: unknown[][] = page.items.map(() => []);
+			await runBounded(page.items, this.#concurrency, signal, async (head, headIndex) => {
+				if (!Array.isArray(head.triggers)) return;
+				const headErrors = pageFailures[headIndex]!;
 				for (const value of head.triggers) {
 					const trigger = parseScheduleTrigger(value);
 					if (!trigger) continue;
@@ -1648,7 +1723,7 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 						wakes.length === 0 && now.getTime() >= this.#advancePausedUntil
 							? routineFirstSlot(head, trigger, now)
 							: undefined;
-					if (firstSlot) {
+					if (firstSlot && now.getTime() >= this.#advancePausedUntil) {
 						const input: AdvanceCloudRoutineNextDueInput = {
 							routineId: head.routineId,
 							expectedVersion: head.version,
@@ -1662,9 +1737,15 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 						} catch (error) {
 							if (signal?.aborted) throw error;
 							if (error instanceof CloudRunnerOrchestratorRequestError && error.status === 400) {
-								this.#advancePausedUntil = now.getTime() + ROUTINE_ADVANCE_RETRY_MS;
+								const alreadyPaused = now.getTime() < this.#advancePausedUntil;
+								this.#advancePausedUntil = Math.max(
+									this.#advancePausedUntil,
+									now.getTime() + ROUTINE_ADVANCE_RETRY_MS,
+								);
+								if (!alreadyPaused) headErrors.push(error);
+							} else {
+								headErrors.push(error);
 							}
-							failures.push(error);
 						}
 					}
 					for (const occurrence of wakes) {
@@ -1682,14 +1763,15 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 							else await controlPlane.enqueueRoutineWake(input);
 						} catch (error) {
 							if (signal?.aborted) throw error;
-							failures.push(error);
+							headErrors.push(error);
 							// Later slots depend on this trigger's successful cursor advance.
 							// Other triggers and heads have independent durable cursors.
 							break;
 						}
 					}
 				}
-			}
+			});
+			for (const headErrors of pageFailures) failures.push(...headErrors);
 			afterRoutineId = page.hasMore ? page.nextAfterRoutineId : undefined;
 			if (page.hasMore && !afterRoutineId) throw new Error("Routine schedule pagination lost its cursor");
 		} while (afterRoutineId);
@@ -1721,14 +1803,20 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 				failures.push(error);
 				return;
 			}
-			for (const routine of page.items) {
+			const pageFailures: unknown[] = new Array(page.items.length);
+			const hasFailure = new Uint8Array(page.items.length);
+			await runBounded(page.items, this.#concurrency, signal, async (routine, routineIndex) => {
 				try {
-					if (signal) await controlPlane.restoreFolderDynamicRoutineRun(routine, signal);
-					else await controlPlane.restoreFolderDynamicRoutineRun(routine);
+					if (signal) await controlPlane.restoreFolderDynamicRoutineRun!(routine, signal);
+					else await controlPlane.restoreFolderDynamicRoutineRun!(routine);
 				} catch (error) {
 					if (signal?.aborted) throw error;
-					failures.push(error);
+					pageFailures[routineIndex] = error;
+					hasFailure[routineIndex] = 1;
 				}
+			});
+			for (let i = 0; i < page.items.length; i++) {
+				if (hasFailure[i] === 1) failures.push(pageFailures[i]);
 			}
 			afterRoutineId = page.hasMore ? page.nextAfterRoutineId : undefined;
 			if (page.hasMore && !afterRoutineId) throw new Error("Folder dynamic routine pagination lost its cursor");
