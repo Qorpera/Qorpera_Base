@@ -187,7 +187,11 @@ begin
 	set local role authenticated;
 	v_list := public.qorpera_bootstrap_company_surfaces(v_profile);
 	reset role;
-	perform pg_temp.sf_assert(jsonb_array_length(v_list) >= 6, 'bootstrap creates identity + 5 ops surfaces');
+	perform pg_temp.sf_assert(jsonb_array_length(v_list) = 5, 'bootstrap without databases creates identity + 4 ops surfaces');
+	perform pg_temp.sf_assert(
+		not exists (select 1 from public.qorpera_surfaces where profile_id = v_profile and slug = 'data'),
+		'bootstrap without databases skips data ops surface'
+	);
 	perform pg_temp.sf_assert(
 		exists (select 1 from public.qorpera_surfaces where profile_id = v_profile and slug = 'identity' and is_global),
 		'bootstrap creates global identity surface'
@@ -948,7 +952,7 @@ begin
 	set local role service_role;
 	v_senses := public.qorpera_surface_describe_company_senses(v_profile);
 	reset role;
-	perform pg_temp.sf_assert(jsonb_array_length(v_senses -> 'surfaces') >= 7, 'describe_company_senses lists seeded and created surfaces');
+	perform pg_temp.sf_assert(jsonb_array_length(v_senses -> 'surfaces') >= 6, 'describe_company_senses lists seeded and created surfaces');
 
 	select coalesce(unpublished_change_count, 0) into v_batch_unpub_before
 	from public.qorpera_surfaces where id = v_folder_surface_id;

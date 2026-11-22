@@ -14,7 +14,18 @@ import {
 	surfaceFigureFromIcon,
 	surfaceFigureIcon,
 } from "../src/ui/surface-figure.ts";
-import { COMPANY, fakeClient, SESSION, SURFACE, session, storeWith, summary, workspace } from "./surface-fixtures.ts";
+import {
+	COMPANY,
+	fakeClient,
+	PREVIEW_IDS,
+	previewFrame,
+	SESSION,
+	SURFACE,
+	session,
+	storeWith,
+	summary,
+	workspace,
+} from "./surface-fixtures.ts";
 
 describe("surface figures", () => {
 	it("ships one picture per figure and nothing else", () => {
@@ -45,28 +56,30 @@ describe("surface figures", () => {
 		expect(surfaceFigureOf({ icon: "page" }, { kind: "money" })).toBe("money");
 	});
 
-	it("draws the picture with two eyes and becomes a ! when it needs you", () => {
+	it("draws the picture with two eyes in rest and working states, with no ask symbol", () => {
 		const resting = surfaceFigure("money");
 		expect(resting.classList.contains("is-rest")).toBe(true);
 		expect(resting.querySelector("img")?.getAttribute("src")).toMatch(/\/assets\/surfaces\/figures-v1\/money\.png$/);
 		expect(resting.querySelectorAll(".surface-figure-eye")).toHaveLength(2);
 		expect(resting.querySelector(".surface-figure-ask")).toBeNull();
-		const asking = surfaceFigure("money", "attention");
-		expect(asking.querySelector(".surface-figure-ask")?.textContent).toBe("!");
-		expect(surfaceFigure("money", "working").classList.contains("is-working")).toBe(true);
+		const working = surfaceFigure("money", "working");
+		expect(working.classList.contains("is-working")).toBe(true);
+		expect(working.querySelector(".surface-figure-ask")).toBeNull();
 	});
 });
 
 describe("a surface's figure in the rail", () => {
 	afterEach(() => {
 		document.body.replaceChildren();
+		vi.useRealTimers();
 	});
 
-	it("rests, works while sessions run, and asks when it needs you, with words for screen readers", async () => {
+	it("rests or works without error or question animations even when attention is needed, keeping screen-reader words", async () => {
 		const surfaces = [
 			summary(),
 			summary({ id: "s-busy", slug: "shop", title: "Shop", runningSessionCount: 2 }),
 			summary({ id: "s-asks", slug: "mail", title: "Mail", runningSessionCount: 1, needsAttentionCount: 1 }),
+			summary({ id: "s-idle-asks", slug: "inbox", title: "Inbox", runningSessionCount: 0, needsAttentionCount: 1 }),
 		];
 		const store = storeWith(fakeClient({ listSurfaces: vi.fn(async () => surfaces) }));
 		await store.load();
@@ -81,9 +94,14 @@ describe("a surface's figure in the rail", () => {
 		expect(said("website")).toBeNull();
 		expect(state("shop")).toContain("is-working");
 		expect(said("shop")).toBe("Working");
-		expect(state("mail")).toContain("is-attention");
-		expect(row("mail").querySelector(".surface-figure-ask")?.textContent).toBe("!");
+		expect(state("mail")).toContain("is-working");
+		expect(state("mail")).not.toContain("is-attention");
+		expect(row("mail").querySelector(".surface-figure-ask")).toBeNull();
 		expect(said("mail")).toBe("Needs your attention");
+		expect(state("inbox")).toContain("is-rest");
+		expect(state("inbox")).not.toContain("is-attention");
+		expect(row("inbox").querySelector(".surface-figure-ask")).toBeNull();
+		expect(said("inbox")).toBe("Needs your attention");
 		store.dispose();
 	});
 
@@ -191,25 +209,148 @@ describe("a surface's figure in the rail", () => {
 		store.dispose();
 	});
 
-	it("shows the row only on the open surface, and a surface left behind gets its words back", async () => {
-		const surfaces = [summary({ activeSessionCount: 1 }), summary({ id: "s-mail", slug: "mail", title: "Mail" })];
+	it("keeps the agent row as the default subtitle whether the surface is open, left behind, or never visited", async () => {
+		const mail = summary({ id: "s-mail", slug: "mail", title: "Mail", activeSessionCount: 0, liveUrl: null });
+		const site = summary({ activeSessionCount: 1 });
+		const mintPreviewPass = vi.fn();
+		const setPreviewSelection = vi.fn();
+		const loadCloudFiles = vi.fn(async () => ({}));
+		const getSurfaceWorkspace = vi.fn(async (id: string) =>
+			id === site.id
+				? workspace([session(["staged"])], {
+						surface: site,
+						previewState: {
+							surfaceId: site.id,
+							mode: "single",
+							primary: previewFrame({ previewId: PREVIEW_IDS[0], doorActionUrl: null, memberPass: null }),
+							compareFrames: [],
+						},
+					})
+				: workspace([], { surface: mail }),
+		);
 		const store = storeWith(
 			fakeClient({
-				listSurfaces: vi.fn(async () => surfaces),
-				getSurfaceWorkspace: vi.fn(async () => workspace([session([])])),
+				listSurfaces: vi.fn(async () => [site, mail]),
+				getSurfaceWorkspace,
+				mintPreviewPass,
+				setPreviewSelection,
 			}),
+			{ loadCloudFiles },
 		);
 		await store.load();
-		await store.openSurface("website");
 		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
 		document.body.append(rail.el);
-		rail.update("website");
+		rail.update(undefined);
+		await Promise.resolve();
+		await Promise.resolve();
+		rail.update(undefined);
+
 		const website = () => rail.el.querySelector<HTMLElement>('.rail-surface[data-surface-slug="website"]')!;
+		expect(getSurfaceWorkspace).toHaveBeenCalledTimes(1);
+		expect(getSurfaceWorkspace).toHaveBeenCalledWith(site.id);
+		expect(mintPreviewPass).not.toHaveBeenCalled();
+		expect(setPreviewSelection).not.toHaveBeenCalled();
+		expect(loadCloudFiles).not.toHaveBeenCalled();
 		expect(website().querySelector(".rail-surface-crew")).not.toBeNull();
+		expect(website().querySelectorAll(".rail-surface-crew .surface-crew.is-mini")).toHaveLength(1);
 
 		rail.update("mail");
+		expect(website().querySelector(".rail-surface-crew")).not.toBeNull();
+
+		rail.update("website");
+		expect(website().querySelector(".rail-surface-crew")).not.toBeNull();
+		store.dispose();
+	});
+
+	it("keeps a non-open surface's agent row fresh on realtime hints and falls back once sessions finish", async () => {
+		vi.useFakeTimers();
+		const mail = summary({ id: "s-mail", slug: "mail", title: "Mail", activeSessionCount: 0, liveUrl: null });
+		let siteSummary = summary({ activeSessionCount: 1, runningSessionCount: 1 });
+		let siteSessions = [session(["staged"], { state: "running" })];
+		const getSurfaceWorkspace = vi.fn(async (id: string) =>
+			id === SURFACE ? workspace(siteSessions, { surface: siteSummary }) : workspace([], { surface: mail }),
+		);
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [siteSummary, mail]),
+				getSurfaceWorkspace,
+			}),
+			{ realtimeLive: () => true },
+		);
+		await store.load();
+		await store.openSurface("mail");
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+		document.body.append(rail.el);
+		rail.update("mail");
+		await vi.advanceTimersByTimeAsync(0);
+		rail.update("mail");
+
+		const website = () => rail.el.querySelector<HTMLElement>('.rail-surface[data-surface-slug="website"]')!;
+		expect(website().querySelector(".rail-surface-crew .surface-crew")?.classList.contains("is-working")).toBe(true);
+
+		siteSummary = summary({ activeSessionCount: 1, runningSessionCount: 0, needsAttentionCount: 1 });
+		siteSessions = [session(["staged"], { state: "needs_input" })];
+		store.onRealtimeHint("surfaces");
+		await vi.advanceTimersByTimeAsync(100);
+		rail.update("mail");
+		expect(website().querySelector(".rail-surface-crew .surface-crew")?.classList.contains("is-waiting")).toBe(true);
+		expect(website().querySelector(".surface-figure")?.className).toContain("is-rest");
+
+		siteSummary = summary({ activeSessionCount: 0, runningSessionCount: 0, needsAttentionCount: 0 });
+		siteSessions = [];
+		store.onRealtimeHint("surfaces");
+		await vi.advanceTimersByTimeAsync(100);
+		rail.update("mail");
 		expect(website().querySelector(".rail-surface-crew")).toBeNull();
-		expect(website().querySelector(".rail-surface-sub")?.textContent).toBe("1 session active");
+		expect(website().querySelector(".rail-surface-sub")?.textContent).toBe("Live · thetaband.dk");
+
+		siteSummary = summary({ activeSessionCount: 1, runningSessionCount: 1, needsAttentionCount: 0 });
+		siteSessions = [
+			session(["staged"], {
+				id: "44444444-4444-4444-8444-444444444499",
+				state: "running",
+			}),
+		];
+		store.onRealtimeHint("surfaces");
+		await vi.advanceTimersByTimeAsync(100);
+		rail.update("mail");
+		expect(website().querySelector(".rail-surface-crew .surface-crew")?.classList.contains("is-working")).toBe(true);
+		store.dispose();
+	});
+
+	it("fails quietly on background crew hydration and retries on the next realtime hint", async () => {
+		vi.useFakeTimers();
+		const site = summary({ activeSessionCount: 1 });
+		const getSurfaceWorkspace = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("offline"))
+			.mockResolvedValueOnce(workspace([session(["staged"])], { surface: site }));
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [site]),
+				getSurfaceWorkspace,
+			}),
+			{ realtimeLive: () => true },
+		);
+		await store.load();
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+		document.body.append(rail.el);
+		rail.update(undefined);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(store.state.error).toBeUndefined();
+		expect(getSurfaceWorkspace).toHaveBeenCalledTimes(1);
+
+		rail.update("other");
+		await vi.advanceTimersByTimeAsync(0);
+		expect(getSurfaceWorkspace).toHaveBeenCalledTimes(1);
+
+		store.onRealtimeHint("surfaces");
+		await vi.advanceTimersByTimeAsync(100);
+		rail.update(undefined);
+		await vi.advanceTimersByTimeAsync(0);
+		rail.update(undefined);
+		expect(getSurfaceWorkspace).toHaveBeenCalledTimes(2);
+		expect(rail.el.querySelector('.rail-surface[data-surface-slug="website"] .rail-surface-crew')).not.toBeNull();
 		store.dispose();
 	});
 
