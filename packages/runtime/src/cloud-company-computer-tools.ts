@@ -12,6 +12,7 @@ import {
 	type CompanyComputerToolContent,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { type JsonValue, normalizeUuid } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import { CODING_VALUE_REPOSITORY, codingValueNameAllowed } from "./cloud-coding-value-names.ts";
 import {
 	CompanyComputerScreenAdmissionRefusedError,
@@ -713,78 +714,81 @@ export function createCompanyComputerTools(options: {
 					) {
 						throw new Error("COMPUTER_RUN_MISMATCH");
 					}
-					const signal = AbortSignal.any([context.signal, options.run.signal]);
-					signal.throwIfAborted();
-					await options.run.assertActive(signal);
-					signal.throwIfAborted();
-					if (closed) throw new Error("COMPUTER_SESSION_CLOSED");
-					// Only an explicit open may retry a registry-confirmed refusal before admission.
-					// Unknown outcomes and failed/revoked established leases remain terminal.
-					if (admissionRefused && parsed.action.kind === "screen" && parsed.action.action === "open") {
-						admissionRefused = false;
-						opening = undefined;
-					}
-					// Acquisition is an authenticated resource-lease transaction, not an alternative work executor.
-					opening ??= CompanyComputerScreenLeaseHandle.acquire(options.run, scope, options.screens).catch(
-						(error) => {
-							admissionRefused = error instanceof CompanyComputerScreenAdmissionRefusedError;
-							throw error;
-						},
-					);
-					handle = await opening;
-					if (closed) {
-						await handle.close();
-						throw new Error("COMPUTER_SESSION_CLOSED");
-					}
-					await handle.assertActive(signal);
-					const active = handle;
-					const operation: CompanyComputerOperation = {
-						tool: name,
-						toolVersion: COMPANY_COMPUTER_TOOL_VERSION,
-						logicalOperationKey: parsed.operationKey,
-						arguments: parsed.action as unknown as JsonValue,
-						target: {
-							realm: "company_computer",
-							binding: { ...active.lease.binding },
-							resources: resourceTarget,
-						},
-						requiresCompanyRevision: false,
-					};
-					const content = await options.operations.execute({
-						operation,
-						signal: AbortSignal.any([signal, active.signal]),
-						authorize: async (exact, identity, requestSignal) => {
-							await active.assertActive(requestSignal);
-							await options.endpoint.authorize(exact, identity, active.lease, requestSignal);
-						},
-						perform: async (exact, effect) => {
-							await active.assertActive(effect.signal);
-							return { content: await options.endpoint.perform(exact, active.lease, effect) };
-						},
+					return withAbortScopes([context.signal, options.run.signal], async (signal) => {
+						signal.throwIfAborted();
+						await options.run.assertActive(signal);
+						signal.throwIfAborted();
+						if (closed) throw new Error("COMPUTER_SESSION_CLOSED");
+						// Only an explicit open may retry a registry-confirmed refusal before admission.
+						// Unknown outcomes and failed/revoked established leases remain terminal.
+						if (admissionRefused && parsed.action.kind === "screen" && parsed.action.action === "open") {
+							admissionRefused = false;
+							opening = undefined;
+						}
+						// Acquisition is an authenticated resource-lease transaction, not an alternative work executor.
+						opening ??= CompanyComputerScreenLeaseHandle.acquire(options.run, scope, options.screens).catch(
+							(error) => {
+								admissionRefused = error instanceof CompanyComputerScreenAdmissionRefusedError;
+								throw error;
+							},
+						);
+						handle = await opening;
+						if (closed) {
+							await handle.close();
+							throw new Error("COMPUTER_SESSION_CLOSED");
+						}
+						await handle.assertActive(signal);
+						const active = handle;
+						const operation: CompanyComputerOperation = {
+							tool: name,
+							toolVersion: COMPANY_COMPUTER_TOOL_VERSION,
+							logicalOperationKey: parsed.operationKey,
+							arguments: parsed.action as unknown as JsonValue,
+							target: {
+								realm: "company_computer",
+								binding: { ...active.lease.binding },
+								resources: resourceTarget,
+							},
+							requiresCompanyRevision: false,
+						};
+						const content = await withAbortScopes([signal, active.signal], (executeSignal) =>
+							options.operations.execute({
+								operation,
+								signal: executeSignal,
+								authorize: async (exact, identity, requestSignal) => {
+									await active.assertActive(requestSignal);
+									await options.endpoint.authorize(exact, identity, active.lease, requestSignal);
+								},
+								perform: async (exact, effect) => {
+									await active.assertActive(effect.signal);
+									return { content: await options.endpoint.perform(exact, active.lease, effect) };
+								},
+							}),
+						);
+						const started = content.kind === "json" ? (content.value as { sessionId?: unknown } | null) : null;
+						if (
+							parsed.action.kind === "shell" &&
+							parsed.action.action === "start" &&
+							parsed.action.network === false &&
+							typeof started?.sessionId === "string" &&
+							COMPANY_COMPUTER_UUID.test(started.sessionId)
+						)
+							options.offlineShells?.add(started.sessionId);
+						if (parsed.action.kind === "screen" && parsed.action.action === "release") {
+							closed = true;
+							await active.close();
+						} else if (isCompanyComputerFolderGiveBack(content)) {
+							// The office gave the screen back for the folder (F3 4d): the lease goes after the result's final
+							// check, as on release. Like an admission refusal, only an explicit open asks for it again. The
+							// answer is read here, not in perform, so a completed receipt's replay gives the screen back too.
+							admissionRefused = true;
+							const refused = Promise.reject(new Error("COMPUTER_SCREEN_GIVEN_BACK"));
+							refused.catch(() => undefined);
+							opening = refused;
+							await active.close().catch(() => undefined);
+						}
+						return content;
 					});
-					const started = content.kind === "json" ? (content.value as { sessionId?: unknown } | null) : null;
-					if (
-						parsed.action.kind === "shell" &&
-						parsed.action.action === "start" &&
-						parsed.action.network === false &&
-						typeof started?.sessionId === "string" &&
-						COMPANY_COMPUTER_UUID.test(started.sessionId)
-					)
-						options.offlineShells?.add(started.sessionId);
-					if (parsed.action.kind === "screen" && parsed.action.action === "release") {
-						closed = true;
-						await active.close();
-					} else if (isCompanyComputerFolderGiveBack(content)) {
-						// The office gave the screen back for the folder (F3 4d): the lease goes after the result's final
-						// check, as on release. Like an admission refusal, only an explicit open asks for it again. The
-						// answer is read here, not in perform, so a completed receipt's replay gives the screen back too.
-						admissionRefused = true;
-						const refused = Promise.reject(new Error("COMPUTER_SCREEN_GIVEN_BACK"));
-						refused.catch(() => undefined);
-						opening = refused;
-						await active.close().catch(() => undefined);
-					}
-					return content;
 				},
 			};
 		});

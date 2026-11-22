@@ -8,6 +8,7 @@ import {
 } from "@qorpera/cloud-client/company-state-files";
 import type { CloudFileReference } from "@qorpera/cloud-client/node/cloud-object-store";
 import type { CloudCodingRepository } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import {
 	type CloudCompanyPathControl,
 	CloudCompanyPathNotText,
@@ -2544,31 +2545,32 @@ export class CloudCompanyFolderClient {
 			cursor = 1;
 		}
 		const abort = new AbortController();
-		const stageSignal = AbortSignal.any([signal, abort.signal]);
 		let firstError: unknown;
 		let failed = false;
-		const worker = async (): Promise<void> => {
-			while (!failed) {
-				const index = cursor++;
-				if (index >= groups.length) return;
-				for (const item of groups[index]!) {
-					if (failed) return;
-					try {
-						staged.set(item.key, await this.#stageUnique(item.file, item.hash, stageSignal));
-					} catch (error) {
-						if (!failed) {
-							failed = true;
-							firstError = error;
-							abort.abort();
+		await withAbortScopes([signal, abort.signal], async (stageSignal) => {
+			const worker = async (): Promise<void> => {
+				while (!failed) {
+					const index = cursor++;
+					if (index >= groups.length) return;
+					for (const item of groups[index]!) {
+						if (failed) return;
+						try {
+							staged.set(item.key, await this.#stageUnique(item.file, item.hash, stageSignal));
+						} catch (error) {
+							if (!failed) {
+								failed = true;
+								firstError = error;
+								abort.abort();
+							}
+							return;
 						}
-						return;
 					}
 				}
-			}
-		};
-		await Promise.allSettled(
-			Array.from({ length: Math.min(STAGE_CONCURRENCY, groups.length - cursor) }, () => worker()),
-		);
+			};
+			await Promise.allSettled(
+				Array.from({ length: Math.min(STAGE_CONCURRENCY, groups.length - cursor) }, () => worker()),
+			);
+		});
 		if (failed) throw firstError;
 		return staged;
 	}
