@@ -36,6 +36,7 @@ const TRIGGER_MAX_TOTAL = 1_000;
 const TRIGGER_MAX_PER_COMPANY = 256;
 const TRIGGER_METADATA_MAX_BYTES = 4_096;
 const TEST_SCHEMA_COMMENT_PREFIX = "qorpera_test_v1:";
+const TEST_SCHEMA_MAC_PREFIX = "qorpera_test_v1\0";
 const WATCH_WORKERS = 3;
 /** Connections a company's database takes, all logins together. */
 const COMPANY_CONNECTIONS = 36;
@@ -1193,6 +1194,12 @@ export class Gateway {
 	#notifier = new DataChangeNotifier();
 	#testSchemas = new Map();
 	#testSchemaDrops = new Map();
+	#testSchemaDbs = new Set();
+	#testSchemaOrphanSwept = new Map();
+	#testSchemaCommentWrites = new Map();
+	#testSchemaReserveChain = Promise.resolve();
+	#testSchemaReaperEnabled = true;
+	#testSchemaRpc = null;
 	#testReaper = null;
 	#onTestSchemaDrop;
 	/** Backends running an agent's read now, by pid, with how many: the watcher gives them an agent's limit. */
@@ -1219,6 +1226,7 @@ export class Gateway {
 		admin = null,
 		directLogin = null,
 		triggers = null,
+		testSchemas = null,
 		publicReader = null,
 		workers = 1,
 		onProvision = () => undefined,
@@ -1260,6 +1268,16 @@ export class Gateway {
 			typeof triggers.rpc.list === "function" &&
 			typeof triggers.rpc.unregister === "function"
 				? triggers.rpc
+				: null;
+		this.#testSchemaReaperEnabled = testSchemas?.reaper !== false;
+		this.#testSchemaRpc =
+			testSchemas?.rpc &&
+			typeof testSchemas.rpc.reserve === "function" &&
+			typeof testSchemas.rpc.release === "function" &&
+			typeof testSchemas.rpc.touch === "function" &&
+			typeof testSchemas.rpc.check === "function" &&
+			typeof testSchemas.rpc.expiries === "function"
+				? testSchemas.rpc
 				: null;
 		const secretTokens = [
 			["run door", this.#runToken],
@@ -3645,10 +3663,12 @@ export class Gateway {
 	/** One step in one transaction, as the database folder's owner role: kept only if it destroyed nothing, or if what
 	 * it destroyed is exactly what `allow` says a member said yes to (the step, its text's hash, and the hash of what it
 	 * destroys). `dry`: nothing is kept; the answer says what the step would destroy, with the `allow` for it. */
-	async #step(database, name, n, step, text, { allow = null, dry = false, actor = null, testSchema = null } = {}) {
+	async #step(database, name, n, step, text, { allow = null, dry = false, actor = null, testSchema = null, stepMs = this.#limits.stepMs } = {}) {
 		const isTest = testSchema !== null;
 		const schema = isTest ? testSchema.testSchema : name;
 		const ownerRole = isTest ? testSchema.ownerRole : `${database}_o${n}`;
+		const effectiveStepMs = Math.max(1, Math.floor(stepMs));
+		const effectiveLockMs = Math.min(this.#limits.stepLockMs, effectiveStepMs);
 		const client = await this.#pool(database, ownerRole)
 			.connect()
 			.catch((error) => {
@@ -3665,7 +3685,7 @@ export class Gateway {
 			});
 		try {
 			await client.query(
-				`begin; set local lock_timeout = ${this.#limits.stepLockMs}; set local statement_timeout = ${this.#limits.stepMs}; ` +
+				`begin; set local lock_timeout = ${effectiveLockMs}; set local statement_timeout = ${effectiveStepMs}; ` +
 					`set local search_path = ${quoted(schema)}, qorpera_ext`,
 			);
 			if (!dry && !isTest) await this.#actorLine(database, (await client.query("select pg_catalog.txid_current()::text as txid")).rows[0].txid, actor);
@@ -4365,7 +4385,14 @@ export class Gateway {
 			this.#full = full;
 			const companyDbs = sizes.rows.map((row) => row.database);
 			const unforgotten = await this.#settle(companyDbs);
-			await this.reapExpiredTestSchemas({ databases: companyDbs }).catch(() => undefined);
+			const now = Date.now();
+			const dueTestDbs = companyDbs.filter(
+				(db) => this.#testSchemaDbs.has(db) || now - (this.#testSchemaOrphanSwept.get(db) ?? Number.NEGATIVE_INFINITY) >= this.#limits.sweepMs,
+			);
+			await this.reapExpiredTestSchemas({ databases: dueTestDbs, trackSwept: true }).catch(() => undefined);
+			const liveDbs = new Set(companyDbs);
+			for (const db of this.#testSchemaOrphanSwept.keys()) if (!liveDbs.has(db)) this.#testSchemaOrphanSwept.delete(db);
+			for (const db of this.#testSchemaDbs) if (!liveDbs.has(db)) this.#testSchemaDbs.delete(db);
 			return {
 				ended: ended.rows
 					.filter((row) => row.ended)
@@ -4788,13 +4815,17 @@ export class Gateway {
 		return { ...(await this.#act(ready, { kind: "hook", id: hookId, via: file }, { gone })), asOf: isoNow() };
 	}
 
-	#signTestSchemaMeta(meta) {
+	#signTestSchemaMeta(testSchema, meta) {
 		const payload = Buffer.from(JSON.stringify(meta), "utf8").toString("base64url");
-		const mac = createHmac("sha256", Buffer.from(this.#store.logins.folderKey, "hex")).update(payload).digest("hex");
+		const mac = createHmac("sha256", Buffer.from(this.#store.logins.folderKey, "hex"))
+			.update(`${TEST_SCHEMA_MAC_PREFIX}${testSchema}\0`)
+			.update(payload)
+			.digest("hex");
 		return `${TEST_SCHEMA_COMMENT_PREFIX}${payload}.${mac}`;
 	}
 
-	#verifyTestSchemaMeta(comment) {
+	#verifyTestSchemaMeta(testSchema, comment) {
+		if (typeof testSchema !== "string" || !TEST_SCHEMA_NAME.test(testSchema)) return null;
 		if (typeof comment !== "string" || !comment.startsWith(TEST_SCHEMA_COMMENT_PREFIX)) return null;
 		const rest = comment.slice(TEST_SCHEMA_COMMENT_PREFIX.length);
 		const dot = rest.indexOf(".");
@@ -4802,7 +4833,10 @@ export class Gateway {
 		const payload = rest.slice(0, dot);
 		const givenMac = rest.slice(dot + 1);
 		if (!SHA.test(givenMac)) return null;
-		const expectedMac = createHmac("sha256", Buffer.from(this.#store.logins.folderKey, "hex")).update(payload).digest("hex");
+		const expectedMac = createHmac("sha256", Buffer.from(this.#store.logins.folderKey, "hex"))
+			.update(`${TEST_SCHEMA_MAC_PREFIX}${testSchema}\0`)
+			.update(payload)
+			.digest("hex");
 		if (!timingSafeEqual(Buffer.from(givenMac, "hex"), Buffer.from(expectedMac, "hex"))) return null;
 		try {
 			const meta = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
@@ -4836,13 +4870,39 @@ export class Gateway {
 		};
 	}
 
+	#testSchemaEntryFromMeta(database, testSchemaName, meta) {
+		const roles = this.#testSchemaRoles(database, testSchemaName);
+		const appliedSteps = new Map();
+		for (const pair of meta.applied) {
+			if (Array.isArray(pair) && pair.length === 2 && typeof pair[0] === "string" && SHA.test(pair[1] ?? "")) {
+				appliedSteps.set(pair[0], pair[1]);
+			}
+		}
+		return {
+			...roles,
+			environmentId: meta.env,
+			database,
+			sourceDatabase: meta.source,
+			testSchema: testSchemaName,
+			createdAt: meta.createdAt,
+			lastUsedAt: Date.now(),
+			expiresAt: meta.expiresAt,
+			persistedExpiresAt: meta.expiresAt,
+			ttlMs: meta.ttlMs,
+			readLive: meta.readLive,
+			appliedSteps,
+			pending: false,
+		};
+	}
+
 	async #persistTestSchemaComment(entry, client = null) {
-		const signed = this.#signTestSchemaMeta({
+		const expiresAt = entry.expiresAt;
+		const signed = this.#signTestSchemaMeta(entry.testSchema, {
 			v: 1,
 			env: entry.environmentId,
 			source: entry.sourceDatabase,
 			createdAt: entry.createdAt,
-			expiresAt: entry.expiresAt,
+			expiresAt,
 			ttlMs: entry.ttlMs,
 			readLive: entry.readLive,
 			applied: [...entry.appliedSteps.entries()].sort(([a], [b]) => (a < b ? -1 : 1)),
@@ -4851,6 +4911,7 @@ export class Gateway {
 		const sql = `comment on schema ${quoted(entry.testSchema)} is '${signed}'`;
 		if (client) {
 			await client.query(sql);
+			entry.persistedExpiresAt = Math.max(entry.persistedExpiresAt ?? 0, expiresAt);
 			return;
 		}
 		await this.#pool(entry.database, "qorpera_data_admin")
@@ -4858,6 +4919,7 @@ export class Gateway {
 			.catch((error) => {
 				throw storeProblem(error);
 			});
+		entry.persistedExpiresAt = Math.max(entry.persistedExpiresAt ?? 0, expiresAt);
 	}
 
 	#scheduleTestReaper() {
@@ -4865,7 +4927,7 @@ export class Gateway {
 			clearTimeout(this.#testReaper);
 			this.#testReaper = null;
 		}
-		if (this.#closed || this.#testSchemas.size === 0) return;
+		if (!this.#testSchemaReaperEnabled || this.#closed || this.#testSchemas.size === 0) return;
 		let earliest = Number.POSITIVE_INFINITY;
 		for (const entry of this.#testSchemas.values()) {
 			if (entry.expiresAt < earliest) earliest = entry.expiresAt;
@@ -4878,6 +4940,28 @@ export class Gateway {
 			});
 		}, delay);
 		this.#testReaper.unref?.();
+	}
+
+	async #listStoreTestSchemas(database) {
+		if (!(await this.#companyExists(database))) return [];
+		let rows;
+		try {
+			rows = (
+				await this.#pool(database, "qorpera_data_keeper").query(
+					"select nspname::text as name, pg_catalog.obj_description(oid, 'pg_namespace') as comment from pg_catalog.pg_namespace where nspname ~ '^qorpera_test_[0-9a-f]{16}$'",
+				)
+			).rows;
+		} catch (error) {
+			if (error?.code === "3D000") return [];
+			throw storeProblem(error);
+		}
+		const out = [];
+		for (const row of rows) {
+			const meta = this.#verifyTestSchemaMeta(row.name, row.comment);
+			if (!meta) continue;
+			out.push(this.#testSchemaEntryFromMeta(database, row.name, meta));
+		}
+		return out;
 	}
 
 	async #loadTestSchemaFromStore(database, testSchemaName) {
@@ -4895,28 +4979,178 @@ export class Gateway {
 			throw storeProblem(error);
 		}
 		if (rows.length === 0) return null;
-		const meta = this.#verifyTestSchemaMeta(rows[0].comment);
+		const meta = this.#verifyTestSchemaMeta(testSchemaName, rows[0].comment);
 		if (!meta) return null;
-		const roles = this.#testSchemaRoles(database, testSchemaName);
-		const appliedSteps = new Map();
-		for (const pair of meta.applied) {
-			if (Array.isArray(pair) && pair.length === 2 && typeof pair[0] === "string" && SHA.test(pair[1] ?? "")) {
-				appliedSteps.set(pair[0], pair[1]);
+		return this.#testSchemaEntryFromMeta(database, testSchemaName, meta);
+	}
+
+	reserveTestSchema(args) {
+		const next = this.#testSchemaReserveChain.then(
+			() => this.#reserveTestSchemaLocked(args),
+			() => this.#reserveTestSchemaLocked(args),
+		);
+		this.#testSchemaReserveChain = next.catch(() => undefined);
+		return next;
+	}
+
+	async #reserveTestSchemaLocked({ database, schema, environmentId, sourceDatabase, ttlMs, createdAt, expiresAt, readLive }) {
+		if (typeof database !== "string" || typeof schema !== "string" || !TEST_SCHEMA_NAME.test(schema)) {
+			refuse(400, "Invalid test schema reservation");
+		}
+		await this.reapExpiredTestSchemas();
+		const now = Date.now();
+		const storeEntries = await this.#listStoreTestSchemas(database).catch(() => []);
+		for (const loaded of storeEntries) {
+			const loadedKey = `${database}/${loaded.testSchema}`;
+			const existing = this.#testSchemas.get(loadedKey);
+			if (existing) {
+				existing.expiresAt = Math.max(existing.expiresAt, loaded.expiresAt);
+				existing.persistedExpiresAt = Math.max(existing.persistedExpiresAt ?? 0, loaded.expiresAt);
+			} else if (loaded.expiresAt > now) {
+				this.#testSchemas.set(loadedKey, loaded);
+				this.#testSchemaDbs.add(database);
+			} else if (this.#testSchemaReaperEnabled) {
+				await this.#dropTestSchemaInternal(loaded, { broadcast: true }).catch(() => undefined);
 			}
 		}
-		return {
+		let companyActive = 0;
+		for (const item of this.#testSchemas.values()) {
+			if (item.database === database && item.expiresAt > now) companyActive++;
+		}
+		if (companyActive >= this.#limits.testSchemasPerCompany) {
+			refuse(429, `At most ${this.#limits.testSchemasPerCompany} active test schemas per company`);
+		}
+		if (this.#testSchemas.size >= this.#limits.testSchemasTotal) {
+			refuse(429, "Too many active test schemas on the gateway");
+		}
+		const roles = this.#testSchemaRoles(database, schema);
+		const reserveUntil = Math.max(expiresAt, now + this.#limits.applyMs + 10_000);
+		this.#testSchemas.set(`${database}/${schema}`, {
 			...roles,
-			environmentId: meta.env,
+			environmentId,
 			database,
-			sourceDatabase: meta.source,
-			testSchema: testSchemaName,
-			createdAt: meta.createdAt,
-			lastUsedAt: Date.now(),
-			expiresAt: meta.expiresAt,
-			ttlMs: meta.ttlMs,
-			readLive: meta.readLive,
-			appliedSteps,
-		};
+			sourceDatabase,
+			testSchema: schema,
+			createdAt,
+			lastUsedAt: now,
+			expiresAt: reserveUntil,
+			persistedExpiresAt: expiresAt,
+			ttlMs,
+			readLive: Boolean(readLive),
+			appliedSteps: new Map(),
+			pending: true,
+		});
+		this.#testSchemaDbs.add(database);
+		this.#scheduleTestReaper();
+		return { reserved: true };
+	}
+
+	releaseTestSchema(database, schema) {
+		if (typeof database !== "string" || typeof schema !== "string" || !TEST_SCHEMA_NAME.test(schema)) return { released: false };
+		const deleted = this.#testSchemas.delete(`${database}/${schema}`);
+		this.#scheduleTestReaper();
+		return { released: deleted };
+	}
+
+	touchTestSchema({
+		database,
+		schema,
+		environmentId = null,
+		sourceDatabase = null,
+		createdAt = null,
+		expiresAt,
+		ttlMs = null,
+		readLive = false,
+		activate = false,
+	}) {
+		if (typeof database !== "string" || typeof schema !== "string" || !TEST_SCHEMA_NAME.test(schema)) return { ok: false };
+		if (!Number.isSafeInteger(expiresAt)) return { ok: false };
+		const key = `${database}/${schema}`;
+		const now = Date.now();
+		const existing = this.#testSchemas.get(key);
+		if (existing) {
+			existing.lastUsedAt = now;
+			existing.expiresAt = activate ? expiresAt : Math.max(existing.expiresAt, expiresAt);
+			if (activate) existing.pending = false;
+			this.#testSchemaDbs.add(database);
+			this.#scheduleTestReaper();
+			return { ok: true, expiresAt: existing.expiresAt };
+		}
+		if (!activate && (this.#testSchemaDrops.has(key) || expiresAt <= now)) return { ok: false, expiresAt: null };
+		const roles = this.#testSchemaRoles(database, schema);
+		this.#testSchemas.set(key, {
+			...roles,
+			environmentId,
+			database,
+			sourceDatabase,
+			testSchema: schema,
+			createdAt: Number.isSafeInteger(createdAt) ? createdAt : now,
+			lastUsedAt: now,
+			expiresAt,
+			persistedExpiresAt: expiresAt,
+			ttlMs: Number.isSafeInteger(ttlMs) ? ttlMs : this.#limits.testSchemaTtlMs,
+			readLive: Boolean(readLive),
+			appliedSteps: new Map(),
+			pending: false,
+		});
+		this.#testSchemaDbs.add(database);
+		this.#scheduleTestReaper();
+		return { ok: true, expiresAt };
+	}
+
+	checkTestSchema(database, schema) {
+		if (typeof database !== "string" || typeof schema !== "string" || !TEST_SCHEMA_NAME.test(schema)) return { expiresAt: null };
+		const entry = this.#testSchemas.get(`${database}/${schema}`);
+		return { expiresAt: entry && entry.expiresAt > Date.now() ? entry.expiresAt : null };
+	}
+
+	testSchemaExpiries(database) {
+		const out = {};
+		if (typeof database !== "string") return out;
+		const now = Date.now();
+		for (const entry of this.#testSchemas.values()) {
+			if (entry.database === database && !entry.pending && entry.expiresAt > now) {
+				out[entry.testSchema] = entry.expiresAt;
+			}
+		}
+		return out;
+	}
+
+	async #touchTestSchema(entry, now) {
+		entry.lastUsedAt = now;
+		entry.expiresAt = now + entry.ttlMs;
+		this.#testSchemaDbs.add(entry.database);
+		if (this.#testSchemaRpc) {
+			await this.#testSchemaRpc
+				.touch({
+					database: entry.database,
+					schema: entry.testSchema,
+					environmentId: entry.environmentId,
+					sourceDatabase: entry.sourceDatabase,
+					createdAt: entry.createdAt,
+					expiresAt: entry.expiresAt,
+					ttlMs: entry.ttlMs,
+					readLive: entry.readLive,
+				})
+				.catch(() => undefined);
+		} else {
+			this.#scheduleTestReaper();
+		}
+		const persistInterval = Math.max(50, Math.min(10_000, Math.floor(entry.ttlMs / 4)));
+		if (entry.expiresAt - (entry.persistedExpiresAt ?? 0) >= persistInterval && !this.#closed) {
+			const key = `${entry.database}/${entry.testSchema}`;
+			const persistSoon = (entry.persistedExpiresAt ?? 0) <= now + Math.max(250, Math.floor(entry.ttlMs / 2));
+			let writing = this.#testSchemaCommentWrites.get(key);
+			if (!writing) {
+				writing = this.#persistTestSchemaComment(entry)
+					.catch(() => undefined)
+					.finally(() => {
+						if (this.#testSchemaCommentWrites.get(key) === writing) this.#testSchemaCommentWrites.delete(key);
+					});
+				this.#testSchemaCommentWrites.set(key, writing);
+			}
+			if (persistSoon) await writing;
+		}
 	}
 
 	async #resolveTestSchema(environmentId, sourceDatabase, testSchemaName) {
@@ -4928,26 +5162,29 @@ export class Gateway {
 		let entry = this.#testSchemas.get(key);
 		if (!entry) {
 			const loaded = await this.#loadTestSchemaFromStore(database, testSchemaName);
-			if (loaded) {
-				if (loaded.expiresAt <= Date.now()) {
-					await this.#dropTestSchemaInternal(loaded, { broadcast: true }).catch(() => undefined);
-					refuse(404, `No active test schema ${testSchemaName} for ${sourceDatabase}`);
-				}
-				this.#testSchemas.set(key, loaded);
-				entry = loaded;
-			}
+			if (loaded) entry = loaded;
 		}
 		if (!entry || entry.environmentId !== environmentId || entry.sourceDatabase !== sourceDatabase) {
 			refuse(404, `No active test schema ${testSchemaName} for ${sourceDatabase}`);
 		}
 		const now = Date.now();
 		if (entry.expiresAt <= now) {
-			await this.#dropTestSchemaInternal(entry, { broadcast: true }).catch(() => undefined);
-			refuse(404, `Test schema ${testSchemaName} has expired`);
+			let aliveUntil = null;
+			if (this.#testSchemaRpc) {
+				const checked = await this.#testSchemaRpc.check({ database, schema: testSchemaName }).catch(() => null);
+				if (checked && Number.isSafeInteger(checked.expiresAt) && checked.expiresAt > now) {
+					aliveUntil = checked.expiresAt;
+				}
+			}
+			if (aliveUntil !== null) {
+				entry.expiresAt = aliveUntil;
+			} else {
+				await this.#dropTestSchemaInternal(entry, { broadcast: true }).catch(() => undefined);
+				refuse(404, `Test schema ${testSchemaName} has expired`);
+			}
 		}
-		entry.lastUsedAt = now;
-		entry.expiresAt = now + entry.ttlMs;
-		this.#scheduleTestReaper();
+		this.#testSchemas.set(key, entry);
+		await this.#touchTestSchema(entry, now);
 		return entry;
 	}
 
@@ -4980,17 +5217,6 @@ export class Gateway {
 		const database = companyDatabase(environmentId);
 		if (this.#full.has(database)) {
 			refuse(507, `This company's database is at its size limit of ${amount(this.#limits.companyBytes)}: delete rows or ask for more room`);
-		}
-		await this.reapExpiredTestSchemas();
-		let companyActive = 0;
-		for (const item of this.#testSchemas.values()) {
-			if (item.database === database) companyActive++;
-		}
-		if (companyActive >= this.#limits.testSchemasPerCompany) {
-			refuse(429, `At most ${this.#limits.testSchemasPerCompany} active test schemas per company`);
-		}
-		if (this.#testSchemas.size >= this.#limits.testSchemasTotal) {
-			refuse(429, "Too many active test schemas on the gateway");
 		}
 		await this.#ensureCompany(database);
 		const keeper = this.#pool(database, "qorpera_data_keeper");
@@ -5034,70 +5260,125 @@ export class Gateway {
 			createdAt: now,
 			lastUsedAt: now,
 			expiresAt: now + ttlMs,
+			persistedExpiresAt: now + ttlMs,
 			ttlMs,
 			readLive,
 			appliedSteps: new Map(),
+			pending: false,
 		};
-		const admin = await this.#pool(database, "qorpera_data_admin").connect().catch((error) => {
-			throw storeProblem(error);
-		});
-		let lost;
-		const onClientError = (error) => {
-			lost ??= error;
+		const reservePayload = {
+			database,
+			schema: testSchema,
+			environmentId,
+			sourceDatabase: name,
+			ttlMs,
+			createdAt: now,
+			expiresAt: entry.expiresAt,
+			readLive,
 		};
-		admin.on("error", onClientError);
-		try {
-			await admin.query("begin; set local lock_timeout = 5000");
-			for (const [roleName, limit] of [
-				[ownerRole, POOL_SIZE.to],
-				[writeRole, POOL_SIZE.tw],
-				[readRole, POOL_SIZE.tr],
-			]) {
-				const options = `login noinherit connection limit ${limit} password '${this.#password(roleName)}'`;
-				await admin.query(`create role ${quoted(roleName)} ${options}`);
-			}
-			const [ownerQ, writeQ, readQ, schemaQ] = [ownerRole, writeRole, readRole, testSchema].map(quoted);
-			await admin.query(`grant connect on database ${quoted(database)} to ${ownerQ}, ${writeQ}, ${readQ}`);
-			await admin.query(`create schema ${schemaQ} authorization ${ownerQ}`);
-			await admin.query(`grant usage on schema ${schemaQ} to ${writeQ}, ${readQ}`);
-			await admin.query(
-				`alter default privileges for role ${ownerQ} in schema ${schemaQ} grant select on tables to ${writeQ}, ${readQ}; ` +
-					`alter default privileges for role ${ownerQ} in schema ${schemaQ} grant insert, update, delete on tables to ${writeQ}; ` +
-					`alter default privileges for role ${ownerQ} in schema ${schemaQ} grant usage, select on sequences to ${writeQ}`,
-			);
-			if (readLive && liveN !== null) {
-				const liveQ = quoted(name);
-				await admin.query(`grant usage on schema ${liveQ} to ${writeQ}, ${readQ}`);
-				await admin.query(`grant select on all tables in schema ${liveQ} to ${writeQ}, ${readQ}`);
-			}
-			await this.#persistTestSchemaComment(entry, admin);
-			await admin.query("commit");
-		} catch (error) {
-			if (error instanceof Refusal || (error?.code && !/^(57P0[123]|08...)$/.test(error.code)))
-				await admin.query("rollback").catch((rbError) => {
-					lost ??= rbError;
-				});
-			else lost ??= error;
-			throw storeProblem(error);
-		} finally {
-			admin.removeListener("error", onClientError);
-			this.#release(admin, lost);
+		if (this.#testSchemaRpc) {
+			await this.#runTriggerRpc(() => this.#testSchemaRpc.reserve(reservePayload));
+		} else {
+			await this.reserveTestSchema(reservePayload);
 		}
+		let schemaCreated = false;
 		try {
+			const admin = await this.#pool(database, "qorpera_data_admin").connect().catch((error) => {
+				throw storeProblem(error);
+			});
+			let lost;
+			const onClientError = (error) => {
+				lost ??= error;
+			};
+			admin.on("error", onClientError);
+			try {
+				await admin.query("begin; set local lock_timeout = 5000");
+				for (const [roleName, limit] of [
+					[ownerRole, POOL_SIZE.to],
+					[writeRole, POOL_SIZE.tw],
+					[readRole, POOL_SIZE.tr],
+				]) {
+					const options = `login noinherit connection limit ${limit} password '${this.#password(roleName)}'`;
+					await admin.query(`create role ${quoted(roleName)} ${options}`);
+				}
+				const [ownerQ, writeQ, readQ, schemaQ] = [ownerRole, writeRole, readRole, testSchema].map(quoted);
+				await admin.query(`grant connect on database ${quoted(database)} to ${ownerQ}, ${writeQ}, ${readQ}`);
+				await admin.query(`create schema ${schemaQ} authorization ${ownerQ}`);
+				await admin.query(`grant usage on schema ${schemaQ} to ${writeQ}, ${readQ}`);
+				await admin.query(
+					`alter default privileges for role ${ownerQ} in schema ${schemaQ} grant select on tables to ${writeQ}, ${readQ}; ` +
+						`alter default privileges for role ${ownerQ} in schema ${schemaQ} grant insert, update, delete on tables to ${writeQ}; ` +
+						`alter default privileges for role ${ownerQ} in schema ${schemaQ} grant usage, select on sequences to ${writeQ}`,
+				);
+				if (readLive && liveN !== null) {
+					const liveQ = quoted(name);
+					await admin.query(`grant usage on schema ${liveQ} to ${writeQ}, ${readQ}`);
+					await admin.query(`grant select on all tables in schema ${liveQ} to ${writeQ}, ${readQ}`);
+				}
+				await this.#persistTestSchemaComment(entry, admin);
+				await admin.query("commit");
+				schemaCreated = true;
+			} catch (error) {
+				if (error instanceof Refusal || (error?.code && !/^(57P0[123]|08...)$/.test(error.code)))
+					await admin.query("rollback").catch((rbError) => {
+						lost ??= rbError;
+					});
+				else lost ??= error;
+				throw storeProblem(error);
+			} finally {
+				admin.removeListener("error", onClientError);
+				this.#release(admin, lost);
+			}
+			const cloneBegan = Date.now();
 			for (const row of appliedRows) {
-				const outcome = await this.#step(database, name, null, row, stepTexts.get(row.name), { testSchema: entry });
+				const leftMs = this.#limits.applyMs - (Date.now() - cloneBegan);
+				if (leftMs <= 0) refuse(408, "Creating the test schema ran past its time limit");
+				const stepLimitMs = Math.min(this.#limits.stepMs, Math.max(1, leftMs));
+				const outcome = await this.#step(database, name, null, row, stepTexts.get(row.name), {
+					testSchema: entry,
+					stepMs: stepLimitMs,
+				});
 				if (outcome.state !== "applied") {
+					if (/time limit/i.test(outcome.detail ?? "") && (stepLimitMs < this.#limits.stepMs || Date.now() - cloneBegan >= this.#limits.applyMs)) {
+						refuse(408, "Creating the test schema ran past its time limit");
+					}
 					refuse(400, `Cloning step ${row.name} into test schema failed: ${outcome.detail ?? outcome.state}`);
 				}
 				entry.appliedSteps.set(row.name, row.sha256);
 			}
-			if (entry.appliedSteps.size > 0) await this.#persistTestSchemaComment(entry);
+			const readyAt = Date.now();
+			entry.lastUsedAt = readyAt;
+			entry.expiresAt = readyAt + ttlMs;
+			await this.#persistTestSchemaComment(entry);
 		} catch (error) {
-			await this.#dropTestSchemaInternal(entry).catch(() => undefined);
+			if (schemaCreated) {
+				await this.#dropTestSchemaInternal(entry, { broadcast: true }).catch(() => undefined);
+			} else if (this.#testSchemaRpc) {
+				await this.#testSchemaRpc.release({ database, schema: testSchema }).catch(() => undefined);
+			} else {
+				this.releaseTestSchema(database, testSchema);
+			}
 			throw error;
 		}
 		this.#testSchemas.set(`${database}/${testSchema}`, entry);
-		this.#scheduleTestReaper();
+		this.#testSchemaDbs.add(database);
+		if (this.#testSchemaRpc) {
+			await this.#testSchemaRpc
+				.touch({
+					database,
+					schema: testSchema,
+					environmentId,
+					sourceDatabase: name,
+					createdAt: entry.createdAt,
+					expiresAt: entry.expiresAt,
+					ttlMs,
+					readLive,
+					activate: true,
+				})
+				.catch(() => undefined);
+		} else {
+			this.#scheduleTestReaper();
+		}
 		return {
 			schema: testSchema,
 			database: name,
@@ -5114,12 +5395,25 @@ export class Gateway {
 		if (filterDb !== null && (typeof filterDb !== "string" || !DATABASE_NAME.test(filterDb))) {
 			refuse(400, "Name a database");
 		}
-		await this.reapExpiredTestSchemas();
+		if (this.#testSchemaReaperEnabled) await this.reapExpiredTestSchemas();
+		const [storeEntries, remoteExpiries] = await Promise.all([
+			this.#listStoreTestSchemas(database),
+			this.#testSchemaRpc ? this.#testSchemaRpc.expiries({ database }).catch(() => ({})) : Promise.resolve({}),
+		]);
+		const now = Date.now();
 		const candidates = [];
-		for (const entry of this.#testSchemas.values()) {
-			if (entry.database !== database || entry.environmentId !== environmentId) continue;
-			if (filterDb !== null && entry.sourceDatabase !== filterDb) continue;
-			candidates.push(entry);
+		for (const loaded of storeEntries) {
+			if (loaded.environmentId !== environmentId) continue;
+			if (filterDb !== null && loaded.sourceDatabase !== filterDb) continue;
+			const local = this.#testSchemas.get(`${database}/${loaded.testSchema}`);
+			const remoteExpiry = Number.isSafeInteger(remoteExpiries?.[loaded.testSchema]) ? remoteExpiries[loaded.testSchema] : 0;
+			const expiresAt = Math.max(loaded.expiresAt, local?.expiresAt ?? 0, remoteExpiry);
+			if (expiresAt <= now) continue;
+			candidates.push({
+				...loaded,
+				expiresAt,
+				appliedSteps: local && local.appliedSteps.size >= loaded.appliedSteps.size ? local.appliedSteps : loaded.appliedSteps,
+			});
 		}
 		if (candidates.length === 0) return { schemas: [] };
 		const sourcePaths = [...new Set(candidates.map((entry) => `data/${entry.sourceDatabase}/database.toml`))];
@@ -5169,6 +5463,7 @@ export class Gateway {
 		if (inFlight) return inFlight;
 		const work = (async () => {
 			this.#testSchemas.delete(key);
+			this.#testSchemaCommentWrites.delete(key);
 			this.#scheduleTestReaper();
 			this.#bumpSchemaEpoch(entry.database, entry.testSchema);
 			const roles = [entry.ownerRole, entry.writeRole, entry.readRole];
@@ -5236,6 +5531,7 @@ export class Gateway {
 		if (typeof database !== "string" || typeof testSchema !== "string" || !TEST_SCHEMA_NAME.test(testSchema)) return;
 		const key = `${database}/${testSchema}`;
 		this.#testSchemas.delete(key);
+		this.#testSchemaCommentWrites.delete(key);
 		this.#scheduleTestReaper();
 		this.#bumpSchemaEpoch(database, testSchema);
 		const { ownerRole, writeRole, readRole } = this.#testSchemaRoles(database, testSchema);
@@ -5243,7 +5539,7 @@ export class Gateway {
 		await this.#closePools((poolKey) => roles.some((role) => poolKey === `${role}@${database}`));
 	}
 
-	async reapExpiredTestSchemas({ databases = null } = {}) {
+	async reapExpiredTestSchemas({ databases = null, trackSwept = false } = {}) {
 		const now = Date.now();
 		const reaped = [];
 		const expiredEntries = [];
@@ -5266,12 +5562,23 @@ export class Gateway {
 				} catch {
 					return;
 				}
+				let remaining = 0;
 				for (const row of rows) {
 					const key = `${database}/${row.name}`;
 					const active = this.#testSchemas.get(key);
-					if (active && active.expiresAt > now) continue;
-					const meta = this.#verifyTestSchemaMeta(row.comment);
-					if (meta && meta.expiresAt > now) continue;
+					if (active && active.expiresAt > now) {
+						remaining++;
+						continue;
+					}
+					const meta = this.#verifyTestSchemaMeta(row.name, row.comment);
+					if (meta && meta.expiresAt > now) {
+						if (!active) {
+							this.#testSchemas.set(key, this.#testSchemaEntryFromMeta(database, row.name, meta));
+							this.#scheduleTestReaper();
+						}
+						remaining++;
+						continue;
+					}
 					const roles = this.#testSchemaRoles(database, row.name);
 					await this.#dropTestSchemaInternal(
 						{
@@ -5284,6 +5591,11 @@ export class Gateway {
 						{ broadcast: true },
 					).catch(() => undefined);
 					reaped.push({ database, schema: row.name });
+				}
+				if (trackSwept) {
+					this.#testSchemaOrphanSwept.set(database, now);
+					if (remaining === 0) this.#testSchemaDbs.delete(database);
+					else this.#testSchemaDbs.add(database);
 				}
 			});
 		}
@@ -5331,6 +5643,8 @@ export class Gateway {
 		for (const [key, entry] of [...this.#testSchemas.entries()]) {
 			if (entry.database === database) this.#testSchemas.delete(key);
 		}
+		this.#testSchemaDbs.delete(database);
+		this.#testSchemaOrphanSwept.delete(database);
 		this.#scheduleTestReaper();
 		const listener = this.#listeners.get(database);
 		if (listener) {
@@ -5876,7 +6190,7 @@ export class Gateway {
 			clearTimeout(this.#testReaper);
 			this.#testReaper = null;
 		}
-		const activeTests = [...this.#testSchemas.values()];
+		const activeTests = this.#testSchemaReaperEnabled ? [...this.#testSchemas.values()] : [];
 		if (activeTests.length > 0 && !this.#closed) {
 			// WHY: Drop active ephemeral test schemas before marking closed so admin pools can still execute DROP SCHEMA cleanly.
 			await Promise.race([
@@ -5885,6 +6199,9 @@ export class Gateway {
 			]);
 		}
 		this.#testSchemas.clear();
+		this.#testSchemaDbs.clear();
+		this.#testSchemaOrphanSwept.clear();
+		this.#testSchemaCommentWrites.clear();
 		this.#closed = true;
 		for (const entry of [...this.#triggerStops.values()]) entry.stop();
 		this.#triggerStops.clear();

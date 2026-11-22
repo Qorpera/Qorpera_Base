@@ -184,6 +184,10 @@ test("systemd backup service points to base-backup.sh and nginx gives /apply a 1
 	assert.ok(applyBlock, "nginx config defines a dedicated /apply location");
 	assert.match(applyBlock, /proxy_read_timeout 120s;/);
 	assert.match(applyBlock, /proxy_buffering off;/);
+	const testSchemasBlock = /location ~ \^\/v1\/company-data\/\[\^\/\]\+\/test-schemas\$ \{[\s\S]*?\}/.exec(nginx)?.[0];
+	assert.ok(testSchemasBlock, "nginx config defines a dedicated /test-schemas location");
+	assert.match(testSchemasBlock, /proxy_read_timeout 120s;/);
+	assert.match(testSchemasBlock, /proxy_buffering off;/);
 	const defaultBlock = /location \/v1\/company-data\/ \{[\s\S]*?\}/.exec(nginx)?.[0];
 	assert.ok(defaultBlock, "nginx config keeps default /v1/company-data/ location");
 	assert.match(defaultBlock, /proxy_read_timeout 35s;/);

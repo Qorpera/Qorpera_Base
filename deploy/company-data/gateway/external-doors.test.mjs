@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
@@ -7,6 +7,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { POSTGRES_IMAGE, POSTGRES_LOCALE } from "../../../scripts/test-hosted-db.mjs";
 import {
@@ -1396,6 +1397,40 @@ describe("external doors, direct logins, hooks, and live triggers against Postgr
 				await new Promise((r) => setTimeout(r, 60));
 				assert.equal(liveWakes.length, 0);
 
+				const testRecordRows = await asSuperuser(
+					companyDatabase(testEnv),
+					"select count(*)::int as n from qorpera_data.row_changes where schema like 'qorpera_test_%'",
+				);
+				assert.equal(testRecordRows[0].n, 0, "test-schema writes must not pollute qorpera_data.row_changes");
+				const liveRecordRows = await asSuperuser(
+					companyDatabase(testEnv),
+					"select count(*)::int as n from qorpera_data.row_changes where schema = 'shop'",
+				);
+				assert.ok(liveRecordRows[0].n > 0, "live writes must still record in qorpera_data.row_changes");
+
+				const commentA = (
+					await asSuperuser(
+						companyDatabase(testEnv),
+						"select pg_catalog.obj_description(oid, 'pg_namespace') as comment from pg_catalog.pg_namespace where nspname = $1",
+						[schemaA],
+					)
+				)[0]?.comment;
+				assert.ok(typeof commentA === "string" && commentA.startsWith("qorpera_test_v1:"));
+				const fakeSchema = `qorpera_test_${"f".repeat(16)}`;
+				await asSuperuser(companyDatabase(testEnv), `create schema ${fakeSchema}; comment on schema ${fakeSchema} is '${commentA}'`);
+				try {
+					const spoofed = await sendTo(
+						testSrv.address().port,
+						"POST",
+						`/v1/company-data/${testEnv}/query?schema=${fakeSchema}`,
+						{ database: "shop", question: "all-items", texts: allTexts() },
+						authHdr,
+					);
+					assert.equal(spoofed.status, 404, "copying another test schema's signed comment must be rejected");
+				} finally {
+					await asSuperuser(companyDatabase(testEnv), `drop schema if exists ${fakeSchema} cascade`);
+				}
+
 				const tamperA = await sendTo(
 					testSrv.address().port,
 					"POST",
@@ -1546,12 +1581,403 @@ describe("external doors, direct logins, hooks, and live triggers against Postgr
 			assert.deepEqual(shutdownLeft, []);
 			const shutdownRoles = await asSuperuser("postgres", "select rolname from pg_roles where rolname like $1", [`%_${shutdownHex}`]);
 			assert.deepEqual(shutdownRoles, []);
+
+			const slowEnv = randomUUID();
+			const slowFiles = new Map([
+				["data/slowdb/database.toml", 'format = "qorpera.database/v1"\nname = "Slow"\n'],
+				["data/slowdb/tables/001-slow.sql", "create table t (id int primary key); select pg_sleep(0.35);\n"],
+			]);
+			const slowTexts = Object.fromEntries([...slowFiles.values()].map((t) => [sha256(t), t]));
+			const slowPlatform = {
+				async memberReads(_tok, _env, paths) {
+					return paths.map((p) => (slowFiles.has(p) ? { sha256: sha256(slowFiles.get(p)), bytes: Buffer.byteLength(slowFiles.get(p)) } : null));
+				},
+				async memberListPage(_tok, _env, parent, limit) {
+					const prefix = `${parent}/`;
+					const files = [...slowFiles.entries()]
+						.filter(([p]) => p.startsWith(prefix) && !p.slice(prefix.length).includes("/"))
+						.map(([p, text]) => ({ name: p.slice(prefix.length), sha256: sha256(text), bytes: Buffer.byteLength(text) }));
+					return { files: files.slice(0, limit), more: files.length > limit };
+				},
+				async memberMayWrite() {
+					return true;
+				},
+				async memberFolders() {
+					return ["slowdb"];
+				},
+			};
+			const slowSetupGw = new Gateway({ store: { host: "127.0.0.1", port, logins }, platform: slowPlatform });
+			try {
+				const appliedSlow = await slowSetupGw.apply({ token, userId, key: "k" }, slowEnv, { database: "slowdb", texts: slowTexts });
+				assert.equal(appliedSlow.applied, true);
+			} finally {
+				await slowSetupGw.close();
+			}
+			const slowBoundGw = new Gateway({
+				store: { host: "127.0.0.1", port, logins },
+				platform: slowPlatform,
+				limits: { applyMs: 120, stepMs: 2_000, testSchemasPerCompany: 1 },
+			});
+			try {
+				await assert.rejects(
+					() => slowBoundGw.createTestSchema({ token, userId, key: "k" }, slowEnv, { database: "slowdb", texts: slowTexts }),
+					(err) => err?.status === 408 && /time limit/i.test(err?.message ?? ""),
+				);
+				const leakedSchemas = await asSuperuser(
+					companyDatabase(slowEnv),
+					"select nspname from pg_namespace where nspname ~ '^qorpera_test_[0-9a-f]{16}$'",
+				);
+				assert.deepEqual(leakedSchemas, [], "timed-out test schema clone must drop its partial schema");
+				const leakedRoles = await asSuperuser(
+					"postgres",
+					"select rolname from pg_roles where rolname ~ $1",
+					[`^${companyDatabase(slowEnv)}_t[owr]_[0-9a-f]{16}$`],
+				);
+				assert.deepEqual(leakedRoles, [], "timed-out test schema clone must drop its roles");
+				const idleWatchGw = new Gateway({
+					store: { host: "127.0.0.1", port, logins },
+					platform: slowPlatform,
+					limits: { sweepMs: 60_000 },
+				});
+				try {
+					const orphan1 = `qorpera_test_${"a".repeat(16)}`;
+					await asSuperuser(companyDatabase(slowEnv), `create schema ${orphan1}`);
+					await idleWatchGw.watchOnce();
+					const afterFirst = await asSuperuser(
+						companyDatabase(slowEnv),
+						"select nspname from pg_namespace where nspname = $1",
+						[orphan1],
+					);
+					assert.deepEqual(afterFirst, [], "first watchOnce sweeps pre-existing orphan");
+					const orphan2 = `qorpera_test_${"b".repeat(16)}`;
+					await asSuperuser(companyDatabase(slowEnv), `create schema ${orphan2}`);
+					try {
+						await idleWatchGw.watchOnce();
+						const afterSecond = await asSuperuser(
+							companyDatabase(slowEnv),
+							"select nspname from pg_namespace where nspname = $1",
+							[orphan2],
+						);
+						assert.equal(afterSecond.length, 1, "subsequent watchOnce skips idle company DBs until sweepMs");
+					} finally {
+						await asSuperuser(companyDatabase(slowEnv), `drop schema if exists ${orphan2} cascade`);
+					}
+				} finally {
+					await idleWatchGw.close();
+				}
+			} finally {
+				await slowBoundGw.close();
+			}
 		} finally {
 			testSrv.close();
 			testSrv.closeAllConnections?.();
 			testRunSrv.close();
 			testRunSrv.closeAllConnections?.();
 			await testGw.close();
+		}
+	});
+
+	it("coordinates triggers, shared test-schema idle TTL, caps, and drop broadcasts across DATA_WORKERS=2", async () => {
+		const clusterEnv = randomUUID();
+		const adminTok = randomBytes(32).toString("base64url");
+		const wakeTok = randomBytes(24).toString("base64url");
+		const clusterFiles = new Map([
+			["data/clusterdb/database.toml", 'format = "qorpera.database/v1"\nname = "ClusterDb"\n'],
+			[
+				"data/clusterdb/tables/001-init.sql",
+				"create table items (id serial primary key, title text not null);\ninsert into items (title) values ('live-row');\n",
+			],
+			["data/clusterdb/queries/all-items.sql", "select id, title from items order by id;\n"],
+			["data/clusterdb/actions/add-item.sql", "insert into items (title) values (:title) returning id, title;\n"],
+		]);
+		const allTexts = () => Object.fromEntries([...clusterFiles.values()].map((t) => [sha256(t), t]));
+		const wakes = [];
+		const wakeSrv = http.createServer((req, res) => {
+			const chunks = [];
+			req.on("data", (c) => chunks.push(c));
+			req.on("end", () => {
+				if (req.headers.authorization === `Bearer ${wakeTok}`) {
+					wakes.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+				}
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end('{"ok":true}');
+			});
+		});
+		const platformSrv = http.createServer((req, res) => {
+			const chunks = [];
+			req.on("data", (c) => chunks.push(c));
+			req.on("end", () => {
+				const args = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+				res.writeHead(200, { "content-type": "application/json" });
+				if (req.url === "/rest/v1/rpc/qorpera_member_folder_may_write") {
+					res.end(JSON.stringify({ write: true }));
+					return;
+				}
+				if (req.url === "/rest/v1/rpc/qorpera_member_folder_read_many") {
+					const paths = Array.isArray(args.p_paths) ? args.p_paths : [];
+					res.end(
+						JSON.stringify({
+							reads: paths.map((p) =>
+								clusterFiles.has(p)
+									? { found: true, entry: { kind: "file", fileSha256: sha256(clusterFiles.get(p)), bytes: Buffer.byteLength(clusterFiles.get(p)) } }
+									: { found: false },
+							),
+						}),
+					);
+					return;
+				}
+				if (req.url === "/rest/v1/rpc/qorpera_member_folder_list") {
+					if (args.p_parent === "data") {
+						res.end(JSON.stringify({ entries: [{ kind: "folder", path: "data/clusterdb" }] }));
+						return;
+					}
+					const prefix = `${args.p_parent}/`;
+					const entries = [...clusterFiles.entries()]
+						.filter(([p]) => p.startsWith(prefix) && !p.slice(prefix.length).includes("/"))
+						.map(([p, text]) => ({ kind: "file", path: p, fileSha256: sha256(text), bytes: Buffer.byteLength(text) }));
+					res.end(JSON.stringify({ entries }));
+					return;
+				}
+				res.end("{}");
+			});
+		});
+		const freePort = () =>
+			new Promise((resolve, reject) => {
+				const s = net.createServer();
+				s.listen(0, "127.0.0.1", () => {
+					const p = s.address().port;
+					s.close(() => resolve(p));
+				});
+				s.on("error", reject);
+			});
+		const sendCluster = (targetPort, method, path, body, headers = {}) =>
+			new Promise((resolve, reject) => {
+				const encoded = body === null ? "" : JSON.stringify(body);
+				const req = http.request(
+					{
+						host: "127.0.0.1",
+						port: targetPort,
+						method,
+						path,
+						headers: {
+							...(body === null ? {} : { "content-type": "application/json", "content-length": Buffer.byteLength(encoded) }),
+							connection: "close",
+							...headers,
+						},
+					},
+					(res) => {
+						const chunks = [];
+						res.on("data", (c) => chunks.push(c));
+						res.on("end", () => {
+							const text = Buffer.concat(chunks).toString("utf8");
+							resolve({ status: res.statusCode, value: text ? JSON.parse(text) : null });
+						});
+					},
+				);
+				req.on("error", reject);
+				req.end(encoded);
+			});
+		await Promise.all([
+			new Promise((resolve) => wakeSrv.listen(0, "127.0.0.1", resolve)),
+			new Promise((resolve) => platformSrv.listen(0, "127.0.0.1", resolve)),
+		]);
+		const tmpDir = mkdtempSync(join(tmpdir(), "qorpera-cluster-doors-"));
+		const loginsDir = join(tmpDir, "logins");
+		mkdirSync(loginsDir, { recursive: true });
+		writeFileSync(join(loginsDir, "admin"), `${logins.admin}\n`);
+		writeFileSync(join(loginsDir, "keeper"), `${logins.keeper}\n`);
+		writeFileSync(join(loginsDir, "watch"), `${logins.watch}\n`);
+		writeFileSync(join(loginsDir, "folder-key"), `${logins.folderKey}\n`);
+		const listenPort = await freePort();
+		const mainPath = fileURLToPath(new URL("../kit/gateway-main.mjs", import.meta.url));
+		let child = null;
+		let logs = "";
+		try {
+			child = spawn(process.execPath, [mainPath], {
+				env: {
+					...process.env,
+					DATA_STORE_HOST: "127.0.0.1",
+					DATA_STORE_PORT: String(port),
+					DATA_LOGINS: loginsDir,
+					DATA_PLATFORM_URL: `http://127.0.0.1:${platformSrv.address().port}`,
+					DATA_PLATFORM_KEY: "pk-test",
+					DATA_LISTEN: `127.0.0.1:${listenPort}`,
+					DATA_WORKERS: "2",
+					DATA_ADMIN_TOKEN: adminTok,
+					DATA_TRIGGER_WAKE_URL: `http://127.0.0.1:${wakeSrv.address().port}/wake`,
+					DATA_TRIGGER_WAKE_TOKEN: wakeTok,
+				},
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+			child.stdout.on("data", (chunk) => {
+				logs += chunk.toString("utf8");
+			});
+			child.stderr.on("data", (chunk) => {
+				logs += chunk.toString("utf8");
+			});
+			let ready = false;
+			for (let i = 0; i < 100; i++) {
+				try {
+					const h = await sendCluster(listenPort, "GET", "/health", null);
+					if (h.status === 200) {
+						ready = true;
+						break;
+					}
+				} catch {}
+				await new Promise((r) => setTimeout(r, 100));
+			}
+			assert.equal(ready, true, `DATA_WORKERS=2 gateway did not become ready:\n${logs}`);
+
+			const authHdr = { authorization: `Bearer ${token}` };
+			const adminHdr = { authorization: `Bearer ${adminTok}` };
+			const applied = await sendCluster(
+				listenPort,
+				"POST",
+				`/v1/company-data/${clusterEnv}/apply`,
+				{ database: "clusterdb", texts: allTexts() },
+				authHdr,
+			);
+			assert.equal(applied.status, 200, JSON.stringify(applied.value));
+			assert.equal(applied.value.applied, true);
+
+			const trigReg = await sendCluster(
+				listenPort,
+				"POST",
+				`/v1/admin/company-data/${clusterEnv}/triggers`,
+				{ id: "cluster-trig", database: "clusterdb", tables: ["items"], minIntervalMs: 25 },
+				adminHdr,
+			);
+			assert.equal(trigReg.status, 200, JSON.stringify(trigReg.value));
+			for (let i = 0; i < 4; i++) {
+				const listed = await sendCluster(listenPort, "GET", `/v1/admin/company-data/${clusterEnv}/triggers`, null, adminHdr);
+				assert.equal(listed.status, 200);
+				assert.equal(listed.value.triggers.length, 1);
+				assert.equal(listed.value.triggers[0].id, "cluster-trig");
+			}
+			const liveWrite = await sendCluster(
+				listenPort,
+				"POST",
+				`/v1/company-data/${clusterEnv}/change`,
+				{ database: "clusterdb", change: "add-item", params: { title: "from-cluster" }, texts: allTexts() },
+				authHdr,
+			);
+			assert.equal(liveWrite.status, 200, JSON.stringify(liveWrite.value));
+			for (let i = 0; i < 40 && wakes.length === 0; i++) await new Promise((r) => setTimeout(r, 50));
+			assert.equal(wakes.length, 1, "primary-owned trigger must fire HTTP wake across workers");
+			assert.equal(wakes[0].triggerId, "cluster-trig");
+			const trigDel = await sendCluster(
+				listenPort,
+				"DELETE",
+				`/v1/admin/company-data/${clusterEnv}/triggers/cluster-trig`,
+				null,
+				adminHdr,
+			);
+			assert.equal(trigDel.status, 200);
+			assert.equal(trigDel.value.unregistered, true);
+
+			const capSchemas = [];
+			for (let i = 0; i < 10; i++) {
+				const c = await sendCluster(
+					listenPort,
+					"POST",
+					`/v1/company-data/${clusterEnv}/test-schemas`,
+					{ database: "clusterdb", ttlSeconds: 30, texts: allTexts() },
+					authHdr,
+				);
+				assert.equal(c.status, 200, JSON.stringify(c.value));
+				capSchemas.push(c.value.schema);
+			}
+			const overCap = await sendCluster(
+				listenPort,
+				"POST",
+				`/v1/company-data/${clusterEnv}/test-schemas`,
+				{ database: "clusterdb", ttlSeconds: 30, texts: allTexts() },
+				authHdr,
+			);
+			assert.equal(overCap.status, 429, "per-company cap must be enforced centrally across workers");
+			for (const s of capSchemas) {
+				const d = await sendCluster(listenPort, "DELETE", `/v1/company-data/${clusterEnv}/test-schemas/${s}`, null, authHdr);
+				assert.equal(d.status, 200);
+			}
+
+			const created = await sendCluster(
+				listenPort,
+				"POST",
+				`/v1/company-data/${clusterEnv}/test-schemas`,
+				{ database: "clusterdb", ttlSeconds: 1, texts: allTexts() },
+				authHdr,
+			);
+			assert.equal(created.status, 200, JSON.stringify(created.value));
+			const schemaName = created.value.schema;
+			const initialExpiry = Date.parse(created.value.expiresAt);
+			const keepUntil = Date.now() + 1_650;
+			while (Date.now() < keepUntil) {
+				const results = await Promise.all(
+					Array.from({ length: 4 }, () =>
+						sendCluster(
+							listenPort,
+							"POST",
+							`/v1/company-data/${clusterEnv}/query?schema=${schemaName}`,
+							{ database: "clusterdb", question: "all-items", texts: allTexts() },
+							authHdr,
+						),
+					),
+				);
+				for (const r of results) {
+					assert.equal(r.status, 200, `steady queries across workers must keep schema alive: ${JSON.stringify(r.value)}`);
+					assert.deepEqual(r.value.rows, [[1, "live-row"]]);
+				}
+				await new Promise((r) => setTimeout(r, 200));
+			}
+			for (let i = 0; i < 4; i++) {
+				const listed = await sendCluster(listenPort, "GET", `/v1/company-data/${clusterEnv}/test-schemas`, null, authHdr);
+				assert.equal(listed.status, 200);
+				const found = listed.value.schemas.find((s) => s.schema === schemaName);
+				assert.ok(found, "GET test-schemas must report the schema consistently across workers");
+				assert.ok(Date.parse(found.expiresAt) > initialExpiry, "idle TTL must have advanced past initial expiry");
+			}
+
+			let reaped = false;
+			for (let i = 0; i < 40; i++) {
+				const left = await asSuperuser(
+					companyDatabase(clusterEnv),
+					"select nspname from pg_namespace where nspname = $1",
+					[schemaName],
+				);
+				if (left.length === 0) {
+					reaped = true;
+					break;
+				}
+				await new Promise((r) => setTimeout(r, 100));
+			}
+			assert.equal(reaped, true, "primary reaper must drop idle test schema once TTL elapses");
+			await new Promise((r) => setTimeout(r, 100));
+			const afterReap = await Promise.all(
+				Array.from({ length: 8 }, () =>
+					sendCluster(
+						listenPort,
+						"POST",
+						`/v1/company-data/${clusterEnv}/query?schema=${schemaName}`,
+						{ database: "clusterdb", question: "all-items", texts: allTexts() },
+						authHdr,
+					),
+				),
+			);
+			for (const r of afterReap) {
+				assert.equal(r.status, 404, `workers must return 404 after primary drop broadcast, got ${r.status}: ${JSON.stringify(r.value)}`);
+			}
+		} finally {
+			if (child && child.exitCode === null) {
+				const exited = new Promise((resolve) => child.once("exit", resolve));
+				child.kill("SIGTERM");
+				await Promise.race([exited, new Promise((r) => setTimeout(r, 5_000))]);
+				if (child.exitCode === null) child.kill("SIGKILL");
+			}
+			wakeSrv.close();
+			wakeSrv.closeAllConnections?.();
+			platformSrv.close();
+			platformSrv.closeAllConnections?.();
+			rmSync(tmpDir, { recursive: true, force: true });
 		}
 	});
 });

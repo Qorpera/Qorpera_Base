@@ -175,6 +175,12 @@ const safeSend = (target, message) => {
 	} catch {}
 };
 
+const broadcastToWorkers = (message) => {
+	for (const worker of Object.values(cluster.workers ?? {})) {
+		if (worker?.isConnected()) safeSend(worker, message);
+	}
+};
+
 const pendingTriggerRpc = new Map();
 let triggerRpcSeq = 0;
 const callPrimaryTriggerRpc = (op, payload) =>
@@ -192,6 +198,37 @@ const callPrimaryTriggerRpc = (op, payload) =>
 		pendingTriggerRpc.set(reqId, { resolve, reject, timer });
 		safeSend(process, { type: "triggerRpc", reqId, op, payload });
 	});
+
+const pendingTestSchemaRpc = new Map();
+let testSchemaRpcSeq = 0;
+const callPrimaryTestSchemaRpc = (op, payload) =>
+	new Promise((resolve, reject) => {
+		if (!process.connected) {
+			reject(Object.assign(new Error("The data gateway primary is unavailable"), { status: 503 }));
+			return;
+		}
+		const reqId = `${process.pid}:${++testSchemaRpcSeq}`;
+		const timer = setTimeout(() => {
+			pendingTestSchemaRpc.delete(reqId);
+			reject(Object.assign(new Error("Test schema operation timed out"), { status: 503 }));
+		}, 10_000);
+		timer.unref?.();
+		pendingTestSchemaRpc.set(reqId, { resolve, reject, timer });
+		safeSend(process, { type: "testSchemaRpc", reqId, op, payload });
+	});
+
+const testSchemaConfig = cluster.isWorker
+	? {
+			reaper: false,
+			rpc: {
+				reserve: (payload) => callPrimaryTestSchemaRpc("reserve", payload),
+				release: (payload) => callPrimaryTestSchemaRpc("release", payload),
+				touch: (payload) => callPrimaryTestSchemaRpc("touch", payload),
+				check: (payload) => callPrimaryTestSchemaRpc("check", payload),
+				expiries: (payload) => callPrimaryTestSchemaRpc("expiries", payload),
+			},
+		}
+	: null;
 
 const directLoginConfig =
 	directLoginToken || directHost || directPort !== null
@@ -239,6 +276,14 @@ try {
 		...(hookToken ? { hooks: { token: hookToken, ...(hookReader ? { reader: hookReader } : {}) } } : {}),
 		...(publicReader ? { publicReader } : {}),
 		...(triggerConfig ? { triggers: triggerConfig } : {}),
+		...(testSchemaConfig ? { testSchemas: testSchemaConfig } : {}),
+		...(workerCount > 1 && cluster.isPrimary
+			? {
+					onTestSchemaDrop: (event) => {
+						broadcastToWorkers({ type: "testSchemaDrop", ...event });
+					},
+				}
+			: {}),
 		...(cluster.isWorker
 			? {
 					onAgentRead: ({ pid, delta }) => {
@@ -263,19 +308,14 @@ try {
 if (workerCount > 1 && cluster.isPrimary) {
 	let lastFull = [];
 	const workerReads = new Map();
-	const broadcast = (message) => {
-		for (const worker of Object.values(cluster.workers ?? {})) {
-			if (worker?.isConnected()) safeSend(worker, message);
-		}
-	};
 	const stopWatcher = startWatcher(gateway, {
 		failed: (error) =>
 			console.error(`data gateway: the watcher's look failed: ${error?.code ?? ""} ${String(error?.message ?? error).slice(0, 200)}`),
 		onLook: (looked) => {
 			lastFull = looked.full;
-			broadcast({ type: "full", databases: lastFull });
+			broadcastToWorkers({ type: "full", databases: lastFull });
 			if (Array.isArray(looked.ended) && looked.ended.length > 0) {
-				broadcast({ type: "signalled", pids: looked.ended.map((row) => row.pid) });
+				broadcastToWorkers({ type: "signalled", pids: looked.ended.map((row) => row.pid) });
 			}
 		},
 	});
@@ -318,6 +358,38 @@ if (workerCount > 1 && cluster.isPrimary) {
 						if (worker.isConnected()) {
 							safeSend(worker, {
 								type: "triggerRpcReply",
+								reqId: message.reqId,
+								ok: false,
+								status: Number.isInteger(error?.status) ? error.status : 500,
+								message: typeof error?.message === "string" ? error.message : "The data gateway failed",
+							});
+						}
+					}
+				})();
+				return;
+			}
+			if (message?.type === "testSchemaRpc" && typeof message.reqId === "string") {
+				void (async () => {
+					try {
+						let result;
+						if (message.op === "reserve") {
+							result = await gateway.reserveTestSchema(message.payload);
+						} else if (message.op === "release") {
+							result = gateway.releaseTestSchema(message.payload.database, message.payload.schema);
+						} else if (message.op === "touch") {
+							result = gateway.touchTestSchema(message.payload);
+						} else if (message.op === "check") {
+							result = gateway.checkTestSchema(message.payload.database, message.payload.schema);
+						} else if (message.op === "expiries") {
+							result = gateway.testSchemaExpiries(message.payload.database);
+						} else {
+							throw Object.assign(new Error("Unknown test schema operation"), { status: 400 });
+						}
+						if (worker.isConnected()) safeSend(worker, { type: "testSchemaRpcReply", reqId: message.reqId, ok: true, result });
+					} catch (error) {
+						if (worker.isConnected()) {
+							safeSend(worker, {
+								type: "testSchemaRpcReply",
 								reqId: message.reqId,
 								ok: false,
 								status: Number.isInteger(error?.status) ? error.status : 500,
@@ -421,6 +493,13 @@ if (workerCount > 1 && cluster.isPrimary) {
 				clearTimeout(pending.timer);
 				if (message.ok) pending.resolve(message.result);
 				else pending.reject(Object.assign(new Error(message.message ?? "The data gateway failed"), { status: message.status ?? 500 }));
+			} else if (message?.type === "testSchemaRpcReply" && typeof message.reqId === "string") {
+				const pending = pendingTestSchemaRpc.get(message.reqId);
+				if (!pending) return;
+				pendingTestSchemaRpc.delete(message.reqId);
+				clearTimeout(pending.timer);
+				if (message.ok) pending.resolve(message.result);
+				else pending.reject(Object.assign(new Error(message.message ?? "The data gateway failed"), { status: message.status ?? 500 }));
 			} else if (message?.type === "drop") {
 				if (message.kind === "company" && typeof message.database === "string") void gateway.evictCompany(message.database);
 				else if (message.kind === "database" && typeof message.database === "string" && typeof message.schema === "string")
@@ -467,6 +546,11 @@ if (workerCount > 1 && cluster.isPrimary) {
 			pending.reject(Object.assign(new Error("The data gateway is stopping"), { status: 503 }));
 		}
 		pendingTriggerRpc.clear();
+		for (const pending of pendingTestSchemaRpc.values()) {
+			clearTimeout(pending.timer);
+			pending.reject(Object.assign(new Error("The data gateway is stopping"), { status: 503 }));
+		}
+		pendingTestSchemaRpc.clear();
 		const closings = [server, runServer].filter(Boolean).map((one) => {
 			one.closeIdleConnections?.();
 			return new Promise((resolve) => {
