@@ -1468,7 +1468,13 @@ spec = importlib.util.spec_from_file_location("plug", sys.argv[1])
 plug = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(plug)
 sleeps = []
-plug.time.sleep = lambda seconds: sleeps.append(seconds)
+orig_time = plug.time
+class _PlugTime:
+    def __getattr__(self, name):
+        return getattr(orig_time, name)
+    def sleep(self, seconds):
+        sleeps.append(seconds)
+plug.time = _PlugTime()
 paths = plug.Paths(sys.argv[2], sys.argv[3], sys.argv[4])
 class Args:
     lxd_socket = sys.argv[5]
