@@ -139,7 +139,13 @@ function routineWhen(parse: Readonly<Record<string, unknown>>): string {
 									: `When “${cloudActionFileName(trigger.watch)}” changes`
 								: trigger.when === "event"
 									? cloudActionEventWhen(trigger.only)
-									: "";
+									: trigger.when === "code-change" && typeof trigger.repo === "string"
+										? `When ${trigger.repo} changes`
+										: trigger.when === "app-unhealthy" && typeof trigger.site === "string"
+											? `When hosted app ${trigger.site} is unhealthy`
+											: trigger.when === "data-change" && typeof trigger.database === "string"
+												? `When database ${trigger.database} changes`
+												: "";
 	return words && typeof parse.timezone === "string" ? `${words} (${parse.timezone})` : words;
 }
 
