@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+	buildClearCaretakerCloseSshArgs,
+	buildCloseForSleepSshArgs,
 	buildJumpClearMarkerSshArgs,
 	buildJumpQuerySshArgs,
 	buildJumpStopScript,
@@ -133,6 +135,8 @@ test("SSH command builders properly shell-quote remote bash -c scripts so login 
 	const builders = [
 		buildTelemetrySshArgs(sampleMachine, "/tmp/test-key"),
 		buildTidySshArgs(sampleMachine, "/tmp/test-key"),
+		buildCloseForSleepSshArgs(sampleMachine, "/tmp/test-key"),
+		buildClearCaretakerCloseSshArgs(sampleMachine, "/tmp/test-key"),
 		buildJumpQuerySshArgs(sampleMachine),
 		buildJumpClearMarkerSshArgs(sampleMachine),
 		buildJumpStopSshArgs(sampleMachine),
@@ -146,8 +150,14 @@ test("SSH command builders properly shell-quote remote bash -c scripts so login 
 		assert.equal(check.status, 0, `remote login shell failed to parse: ${remoteCmd}\n${check.stderr}`);
 	}
 	assert.equal(spawnSync("bash", ["-n", "-c", buildTidyScript()]).status, 0);
-	assert.equal(spawnSync("bash", ["-n", "-c", buildJumpStopScript("qorpera-testvm-node02")]).status, 0);
-	assert.doesNotMatch(buildJumpStopScript("qorpera-testvm-node02"), /lxc config set/);
+	const stopScript = buildJumpStopScript("qorpera-testvm-node02");
+	assert.equal(spawnSync("bash", ["-n", "-c", stopScript]).status, 0);
+	assert.doesNotMatch(stopScript, /lxc config set/);
+	assert.ok(
+		stopScript.indexOf('printf \'%s\\n\' "$last_used" > "$marker"') < stopScript.indexOf("lxc stop"),
+		"sleep marker must be written before lxc stop and removed on stop failure",
+	);
+	assert.match(stopScript, /if ! lxc stop .* then rm -f -- "\$marker"; exit 1; fi/);
 });
 
 test("telemetryScript runs locally under bash -c without self-matching sshd or using gawk-only syntax", () => {

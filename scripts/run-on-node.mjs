@@ -1154,6 +1154,17 @@ export function sshArgs(machine, key) {
 }
 
 export const SLEEP_MARKER_DIR = "$HOME/.cache/qorpera-test-machine-sleep";
+export const CARETAKER_CLOSE_REASON = "caretaker-sleep";
+
+export function buildCloseForSleepScript(closed = CLOSED) {
+	const qClosed = shellQuote(closed);
+	return `sudo -n bash -c ${shellQuote(`set -o noclobber; printf '%s\\n' ${shellQuote(CARETAKER_CLOSE_REASON)} > ${qClosed}`)}`;
+}
+
+export function buildClearCaretakerCloseScript(closed = CLOSED) {
+	const qClosed = shellQuote(closed);
+	return `if [ -f ${qClosed} ] && [ "$(cat ${qClosed} 2>/dev/null)" = ${shellQuote(CARETAKER_CLOSE_REASON)} ]; then sudo -n rm -f -- ${qClosed}; fi`;
+}
 
 export function vmNameForMachine(machine) {
 	if (!machine?.name || !/^[a-z0-9-]+$/.test(machine.name)) return null;
@@ -1253,7 +1264,21 @@ async function wakeStoppedMachine(machine, key) {
 		const timer = setTimeout(() => controller.abort(new Error("wake probe timed out")), PROBE_TIMEOUT_MS);
 		const probe = await probeOverSsh(machine, key, controller.signal);
 		clearTimeout(timer);
-		if (!probe.unreachable) return probe;
+		if (!probe.unreachable) {
+			if (probe.closed) {
+				spawnSync(
+					"ssh",
+					["-o", "ConnectTimeout=8", ...sshArgs(machine, key), machine.host, "bash", "-c", shellQuote(buildClearCaretakerCloseScript())],
+					{ encoding: "utf8", timeout: 12_000 },
+				);
+				const reopenController = new AbortController();
+				const reopenTimer = setTimeout(() => reopenController.abort(new Error("wake reopen probe timed out")), PROBE_TIMEOUT_MS);
+				const reopened = await probeOverSsh(machine, key, reopenController.signal);
+				clearTimeout(reopenTimer);
+				return reopened.unreachable ? probe : reopened;
+			}
+			return probe;
+		}
 	}
 	return null;
 }

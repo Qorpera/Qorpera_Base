@@ -5,6 +5,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+	buildClearCaretakerCloseScript,
+	buildCloseForSleepScript,
 	buildWakeQueryScript,
 	MACHINES,
 	parseWakeQueryOutput,
@@ -240,10 +242,19 @@ export function buildJumpStopScript(vmName) {
 		`json=$(lxc query "/1.0/instances/\${vm}?project=${WAKE_PROJECT}")`,
 		`last_used=$(printf '%s' "$json" | python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("last_used_at") or ""))')`,
 		'[ -n "$last_used" ] || exit 2',
-		`lxc stop "$vm" --project ${WAKE_PROJECT} --timeout 60`,
 		`mkdir -p "${SLEEP_MARKER_DIR}"`,
-		`printf '%s\\n' "$last_used" > "${SLEEP_MARKER_DIR}/\${vm}"`,
+		`marker="${SLEEP_MARKER_DIR}/\${vm}"`,
+		'printf \'%s\\n\' "$last_used" > "$marker"',
+		`if ! lxc stop "$vm" --project ${WAKE_PROJECT} --timeout 60; then rm -f -- "$marker"; exit 1; fi`,
 	].join("\n");
+}
+
+export function buildCloseForSleepSshArgs(machine, key) {
+	return ["-o", "ConnectTimeout=8", ...sshArgs(machine, key), machine.host, "bash", "-c", shellQuote(buildCloseForSleepScript())];
+}
+
+export function buildClearCaretakerCloseSshArgs(machine, key) {
+	return ["-o", "ConnectTimeout=8", ...sshArgs(machine, key), machine.host, "bash", "-c", shellQuote(buildClearCaretakerCloseScript())];
 }
 
 export function buildTelemetrySshArgs(machine, key, scriptOpts) {
@@ -310,7 +321,7 @@ export function parseTelemetryOutput(stdout, machine, lxd = { vmName: null, wake
 	};
 }
 
-function queryLxdMachine(machine) {
+function queryLxdMachine(machine, key) {
 	const vmName = vmNameForMachine(machine);
 	if (!vmName || !machine.jump) return { vmName, lxdStatus: null, lastUsedAt: null, sleepMarker: null, wakeable: false };
 	const res = spawnSync("ssh", buildJumpQuerySshArgs(machine), { encoding: "utf8", timeout: 12_000 });
@@ -319,6 +330,9 @@ function queryLxdMachine(machine) {
 	if (!parsed.status) return { vmName, lxdStatus: null, lastUsedAt: null, sleepMarker: null, wakeable: false };
 	if (parsed.status === "RUNNING" && parsed.sleepMarker) {
 		spawnSync("ssh", buildJumpClearMarkerSshArgs(machine), { encoding: "utf8", timeout: 10_000 });
+		if (key) {
+			spawnSync("ssh", buildClearCaretakerCloseSshArgs(machine, key), { encoding: "utf8", timeout: 10_000 });
+		}
 	}
 	return {
 		vmName,
@@ -330,7 +344,7 @@ function queryLxdMachine(machine) {
 }
 
 function probeTelemetry(machine, key) {
-	const lxd = queryLxdMachine(machine);
+	const lxd = queryLxdMachine(machine, key);
 	if (lxd.lxdStatus === "STOPPED") {
 		return {
 			name: machine.name,
@@ -429,12 +443,21 @@ function runRemoteTidy(machine, key) {
 	return { ok: res.status === 0, out: (res.stdout || res.stderr || "").trim().slice(0, 300) };
 }
 
-function stopRemoteVm(machine, key) {
+async function stopRemoteVm(machine, key) {
+	const closeRes = spawnSync("ssh", buildCloseForSleepSshArgs(machine, key), { encoding: "utf8", timeout: 12_000 });
+	if (closeRes.status !== 0) {
+		return { ok: false, skipped: "machine is already closed or unreachable before sleep" };
+	}
+	await new Promise((resolvePromise) => setTimeout(resolvePromise, 2_000));
 	const recheck = probeTelemetry(machine, key);
 	if (recheck.status !== "RUNNING" || isMachineBusy(recheck)) {
+		spawnSync("ssh", buildClearCaretakerCloseSshArgs(machine, key), { encoding: "utf8", timeout: 12_000 });
 		return { ok: false, skipped: "activity appeared during final safety recheck" };
 	}
 	const res = spawnSync("ssh", buildJumpStopSshArgs(machine), { encoding: "utf8", timeout: 75_000 });
+	if (res.status !== 0) {
+		spawnSync("ssh", buildClearCaretakerCloseSshArgs(machine, key), { encoding: "utf8", timeout: 12_000 });
+	}
 	return { ok: res.status === 0, out: (res.stdout || res.stderr || "").trim().slice(0, 200) };
 }
 
@@ -523,7 +546,7 @@ async function main() {
 					execResult = { tidy: runRemoteTidy(machine, key) };
 				}
 				if (safe.action === "sleep_vm" || safe.action === "tidy_and_sleep") {
-					execResult = { ...(execResult ?? {}), sleep: stopRemoteVm(machine, key) };
+					execResult = { ...(execResult ?? {}), sleep: await stopRemoteVm(machine, key) };
 				}
 			}
 			summary.push({

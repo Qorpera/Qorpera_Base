@@ -21,8 +21,11 @@ import test from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
 	baseCopyCompare,
+	buildClearCaretakerCloseScript,
+	buildCloseForSleepScript,
 	buildWakeQueryScript,
 	buildWakeStartScript,
+	CARETAKER_CLOSE_REASON,
 	CHANGED_CORES,
 	CLOSED,
 	CPU_SLOTS,
@@ -2387,4 +2390,11 @@ test("auto-wake only wakes caretaker-slept VMs with matching jump-host marker an
 
 	const running = parseWakeQueryOutput("status=Running\nlast_used_at=2026-11-22T18:00:00Z\nsleep_marker=2026-11-22T18:00:00Z\n");
 	assert.equal(isCaretakerSleeping(running), false);
+
+	const closeScript = buildCloseForSleepScript();
+	const clearScript = buildClearCaretakerCloseScript();
+	assert.equal(spawnSync("bash", ["-n", "-c", closeScript]).status, 0);
+	assert.equal(spawnSync("bash", ["-n", "-c", clearScript]).status, 0);
+	assert.match(closeScript, /noclobber/);
+	assert.match(clearScript, new RegExp(CARETAKER_CLOSE_REASON));
 });

@@ -277,12 +277,15 @@ to sleep any VM with active slots, queued/arriving runs, `ciNN` processes, other
 missing non-interactive `lxc` access on its jump host, and force `tidy_disk` under critical free space (`< 15` GiB root
 or `< 1.5` GiB `/tmp`).
 
-Before stopping a VM, the caretaker records the VM's read-only LXD `last_used_at` timestamp under
-`~/.cache/qorpera-test-machine-sleep/<vm>` on the jump host (never mutating LXD config or the enrolled configuration
-digest). When all open reachable machines are busy or none answered, `scripts/run-on-node.mjs` auto-wakes a stopped VM
-only if its jump-host marker matches its current `last_used_at`, then removes the marker. A VM stopped manually by an
-operator (`lxc stop`) or stopped after a node reboot (`boot.autostart=false`) has no matching marker and is never
-auto-woken.
+Before stopping a VM, the caretaker creates `/etc/qorpera-test-machine-closed` with `caretaker-sleep` (failing closed
+without modifying any existing operator close reason), re-probes after a short drain window to confirm zero activity,
+and records the VM's read-only LXD `last_used_at` timestamp under `~/.cache/qorpera-test-machine-sleep/<vm>` on the jump
+host before calling `lxc stop` (removing the marker and close gate if `lxc stop` fails; never mutating LXD config or
+the enrolled configuration digest). When all open reachable machines are busy or none answered, `scripts/run-on-node.mjs`
+auto-wakes a stopped VM only if its jump-host marker matches its current `last_used_at`, then removes both the jump-host
+marker and the `caretaker-sleep` close file. A VM stopped manually by an operator while running (`lxc stop`) or stopped
+after a node reboot (`boot.autostart=false`) has no matching marker and is never auto-woken; to keep an already
+caretaker-slept VM out of rotation permanently, run `rm -f ~/.cache/qorpera-test-machine-sleep/<vm>` on the jump host.
 
 To install the LaunchAgent on macOS, point `__SCRIPT_PATH__` at `scripts/test-machine-caretaker.mjs` inside a dedicated
 clean `master` worktree or clone (not a mutable feature checkout, since the script imports sibling helpers from
