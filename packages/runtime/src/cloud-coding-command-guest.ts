@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { appendFile, lstat, mkdir, open, readFile, rename } from "node:fs/promises";
+import { appendFile, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -172,23 +172,30 @@ async function protectedRead(
 		await handle.close();
 	}
 }
-async function retain(path: string, value: unknown, mode = 0o400): Promise<void> {
+async function retain(path: string, value: unknown, mode = 0o400, syncDir = true): Promise<void> {
 	const handle = await open(
 		path,
 		constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
 		mode,
 	);
 	try {
-		await handle.writeFile(JSON.stringify(value));
-		await handle.sync();
-	} finally {
-		await handle.close();
-	}
-	const parent = await open(dirname(path), constants.O_RDONLY);
-	try {
-		await parent.sync();
-	} finally {
-		await parent.close();
+		try {
+			await handle.writeFile(JSON.stringify(value));
+			await handle.sync();
+		} finally {
+			await handle.close();
+		}
+		if (syncDir) {
+			const parent = await open(dirname(path), constants.O_RDONLY);
+			try {
+				await parent.sync();
+			} finally {
+				await parent.close();
+			}
+		}
+	} catch (error) {
+		await rm(path, { force: true }).catch(() => undefined);
+		throw error;
 	}
 }
 async function publishStatus(
@@ -197,15 +204,25 @@ async function publishStatus(
 	read?: CloudCodingCommandRead,
 ): Promise<void> {
 	const temporary = join(directory, `status-${randomUUID()}.json`);
-	await retain(temporary, receipt);
-	await rename(temporary, join(directory, "status.json"));
+	await retain(temporary, receipt, 0o400, false);
+	try {
+		await rename(temporary, join(directory, "status.json"));
+	} catch (error) {
+		await rm(temporary, { force: true }).catch(() => undefined);
+		throw error;
+	}
 	if (read) {
 		const query = parseCloudCodingCommandRead(read);
 		const slot =
 			Number.parseInt(createHash("sha256").update(JSON.stringify(query)).digest("hex").slice(0, 2), 16) % 32;
 		const page = join(directory, `page-${randomUUID()}.json`);
-		await retain(page, { schema: "qorpera.coding-command-page/v1", query, receipt });
-		await rename(page, join(directory, `read-page-${slot}.json`));
+		await retain(page, { schema: "qorpera.coding-command-page/v1", query, receipt }, 0o400, false);
+		try {
+			await rename(page, join(directory, `read-page-${slot}.json`));
+		} catch (error) {
+			await rm(page, { force: true }).catch(() => undefined);
+			throw error;
+		}
 	}
 	const journalDirectory = await open(directory, constants.O_RDONLY);
 	try {
@@ -281,7 +298,7 @@ export async function runCodingGuestCommand(
 	if (action === "start")
 		await requireCodingGuestLease(request, guest, {
 			...ports,
-			inspectBoot: ports.inspectMachine ?? inspectMachine,
+			inspectBoot: async () => bootId,
 		});
 	const directory = join(root, "commands", commandId);
 	const intentPath = join(directory, "intent.json");
@@ -552,7 +569,8 @@ async function prepareExecution(workerId: string, commandId: string, ports: Codi
 		writablePaths: codingCommandWritablePaths(guest, commandId),
 	});
 	const inspect = ports.inspectMachine ?? inspectMachine;
-	if (process.getuid?.() !== guest.uid || process.getgid?.() !== guest.gid || (await inspect()) !== guest.bootId)
+	const bootId = await inspect();
+	if (process.getuid?.() !== guest.uid || process.getgid?.() !== guest.gid || bootId !== guest.bootId)
 		throw new Error("CODING_GUEST_EXECUTION_IDENTITY_CHANGED");
 	const retained = closed(
 		JSON.parse(
@@ -585,7 +603,7 @@ async function prepareExecution(workerId: string, commandId: string, ports: Codi
 		throw new Error("CODING_GUEST_INTENT_CHANGED");
 	if (request.workerId !== guest.workerId || request.vmId !== guest.vmId || request.commandId !== commandId)
 		throw new Error("CODING_GUEST_COMMAND_SCOPE_CHANGED");
-	await requireCodingGuestLease(request, guest, { ...ports, inspectBoot: inspect });
+	await requireCodingGuestLease(request, guest, { ...ports, inspectBoot: async () => bootId });
 	await mkdir(join(guest.cachePath, "tmp"), { recursive: true, mode: 0o700 });
 	const handle = await open(
 		join(guest.outputRoot, commandId, "output.log"),
@@ -671,6 +689,7 @@ export async function executeCodingGuestCommand(
 		await ensureCodingGitIdentity(guest.homePath);
 		const child = spawn("/bin/bash", ["--noprofile", "--norc", "-c", request.command], {
 			cwd: guest.workspacePath,
+			detached: true,
 			env: {
 				...ENV,
 				PATH: `${join(guest.homePath, ".local/bin")}:${join(guest.homePath, ".cargo/bin")}:${ENV.PATH}`,
@@ -700,11 +719,14 @@ export async function executeCodingGuestCommand(
 		);
 		// Collector failure cannot be reported as a successful build.
 		collected.catch(() => {
-			child.kill("SIGKILL");
+			try {
+				if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
+			} catch {
+				child.kill("SIGKILL");
+			}
 		});
 		const exitCode = await exited;
 		await collected;
-		await handle.sync();
 		return exitCode;
 	} finally {
 		await handle.close();

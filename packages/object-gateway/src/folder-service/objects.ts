@@ -190,7 +190,7 @@ export class NasObjects {
 	readonly #parallel: number;
 	readonly #timeoutMs: number;
 	readonly #pending = new Map<string, Promise<Buffer>>();
-	readonly #waiting: (() => void)[] = [];
+	readonly #waiting = new Set<() => void>();
 	#running = 0;
 
 	constructor(options: NasObjectsOptions) {
@@ -334,7 +334,11 @@ export class NasObjects {
 			this.#pending.set(key, created);
 			pending = created;
 		}
-		return pending;
+		return pending.then((bytes) => {
+			if (bytes.byteLength > maximum || (exact !== undefined && bytes.byteLength !== exact))
+				throw new ObjectIntegrityError("Object has the wrong size");
+			return bytes;
+		});
 	}
 
 	async #load(profileId: string, hash: string, maximum: number, exact: number | undefined): Promise<Buffer> {
@@ -393,21 +397,40 @@ export class NasObjects {
 	async #turn<T>(operation: () => Promise<T>): Promise<T> {
 		let expired = false;
 		let timer: ReturnType<typeof setTimeout> | undefined;
+		let waitEntry: (() => void) | undefined;
+		let cancelWait: (() => void) | undefined;
 		const deadline = new Promise<never>((_, reject) => {
 			timer = setTimeout(() => {
 				expired = true;
+				if (waitEntry && this.#waiting.delete(waitEntry)) cancelWait?.();
 				reject(new ObjectUnavailableError("The storage server did not answer"));
 			}, this.#timeoutMs);
 		});
 		const work = (async (): Promise<T> => {
+			let acquired = false;
 			// A finished read hands its slot straight to the next waiting one.
-			if (this.#running >= this.#parallel) await new Promise<void>((go) => this.#waiting.push(go));
-			else this.#running++;
+			if (this.#running >= this.#parallel) {
+				let handed = false;
+				await new Promise<void>((go) => {
+					cancelWait = go;
+					waitEntry = () => {
+						handed = true;
+						go();
+					};
+					this.#waiting.add(waitEntry);
+				});
+				waitEntry = undefined;
+				cancelWait = undefined;
+				acquired = handed;
+			} else {
+				this.#running++;
+				acquired = true;
+			}
 			try {
 				if (expired) throw new ObjectUnavailableError("The storage server did not answer");
 				return await operation();
 			} finally {
-				this.#done();
+				if (acquired) this.#done();
 			}
 		})();
 		try {
@@ -421,8 +444,10 @@ export class NasObjects {
 	}
 
 	#done(): void {
-		const next = this.#waiting.shift();
-		if (next) next();
-		else this.#running--;
+		const first = this.#waiting.values().next();
+		if (!first.done) {
+			this.#waiting.delete(first.value);
+			first.value();
+		} else this.#running--;
 	}
 }

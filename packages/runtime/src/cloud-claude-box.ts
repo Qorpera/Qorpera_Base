@@ -29,6 +29,7 @@ import { createReadStream } from "node:fs";
 import { lstat, mkdir, mkdtemp, rm, rmdir, writeFile } from "node:fs/promises";
 import { extname, isAbsolute, join } from "node:path";
 import type { Readable, Writable } from "node:stream";
+import { withAbortScopes } from "./abort-scope.ts";
 import { CLOUD_ACTION_REVIEW_SPECIFICATION, type CloudActionReviewer } from "./cloud-action-review.ts";
 import {
 	CLAUDE_FILE_UNACCOUNTED,
@@ -47,6 +48,7 @@ import {
 } from "./cloud-claude-home-shell.ts";
 import type { CloudClaudePictures } from "./cloud-claude-picture-command.ts";
 import type { CloudCodexHomeMachine, CloudCodexHomeReview } from "./cloud-codex-home.ts";
+import { cloudHomeSftpBytes } from "./cloud-home-channel.ts";
 import {
 	assertNativeSocketPath,
 	NATIVE_CLAUDE_CODE_EGRESS_HOSTS,
@@ -476,23 +478,23 @@ export function claudeBoxInvocation(options: {
 	};
 }
 
+const MAX_PIN_CHECKED = 32;
 const pinChecked = new Map<string, Promise<void>>();
 
 /** The binary is the pinned build: size and sha-256, once per file this process sees (366 MB). */
 export function checkClaudeCodePin(path: string): Promise<void> {
-	const check = async (): Promise<void> => {
-		const metadata = await lstat(path);
-		if (metadata.size !== CLAUDE_CODE_PIN.bytes) throw new Error("Claude Code is not the pinned build");
-		const hash = createHash("sha256");
-		for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer);
-		if (hash.digest("hex") !== CLAUDE_CODE_PIN.sha256) throw new Error("Claude Code is not the pinned build");
-	};
 	return lstat(path).then((metadata) => {
 		const key = `${path}:${metadata.dev}:${metadata.ino}:${metadata.size}:${metadata.mtimeMs}`;
 		let known = pinChecked.get(key);
 		if (!known) {
-			known = check();
+			known = (async (): Promise<void> => {
+				if (metadata.size !== CLAUDE_CODE_PIN.bytes) throw new Error("Claude Code is not the pinned build");
+				const hash = createHash("sha256");
+				for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer);
+				if (hash.digest("hex") !== CLAUDE_CODE_PIN.sha256) throw new Error("Claude Code is not the pinned build");
+			})();
 			pinChecked.set(key, known);
+			while (pinChecked.size > MAX_PIN_CHECKED) pinChecked.delete(pinChecked.keys().next().value as string);
 			known.catch(() => pinChecked.delete(key));
 		}
 		return known;
@@ -618,14 +620,36 @@ export class ClaudeCodeReviewer implements CloudActionReviewer {
 	}
 
 	review(input: ReviewInput, signal: AbortSignal): Promise<unknown> {
-		const both = AbortSignal.any([signal, this.#closing.signal]);
-		const next = this.#queue.then(() => {
+		return withAbortScopes([signal, this.#closing.signal], async (both) => {
 			both.throwIfAborted();
-			this.reviews += 1;
-			return this.#run(input, both);
+			const wait = this.#queue;
+			let release!: () => void;
+			const mine = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			this.#queue = wait.then(() => mine);
+			try {
+				await new Promise<void>((resolve, reject) => {
+					const onAbort = () => reject(both.reason);
+					both.addEventListener("abort", onAbort, { once: true });
+					wait.then(
+						() => {
+							both.removeEventListener("abort", onAbort);
+							resolve();
+						},
+						() => {
+							both.removeEventListener("abort", onAbort);
+							resolve();
+						},
+					);
+				});
+				both.throwIfAborted();
+				this.reviews += 1;
+				return await this.#run(input, both);
+			} finally {
+				release();
+			}
 		});
-		this.#queue = next.catch(() => undefined);
-		return next;
 	}
 
 	close(): void {
@@ -650,6 +674,7 @@ async function runClaudeReviewer(
 	const root = await mkdtemp(join(options.scratchRoot, "r"));
 	let relay: Awaited<ReturnType<typeof startNativeCodexEgress>> | undefined;
 	let child: ChildProcess | undefined;
+	let exited: Promise<void> | undefined;
 	const kill = (): void => {
 		if (child?.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
 		try {
@@ -704,7 +729,7 @@ async function runClaudeReviewer(
 			},
 		);
 		child = launched;
-		const exited = new Promise<void>((resolve) => {
+		exited = new Promise<void>((resolve) => {
 			launched.once("error", () => resolve());
 			launched.once("close", () => resolve());
 		});
@@ -742,6 +767,17 @@ async function runClaudeReviewer(
 	} finally {
 		signal.removeEventListener("abort", kill);
 		kill();
+		if (exited) {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			await Promise.race([
+				exited,
+				new Promise<void>((resolve) => {
+					timer = setTimeout(resolve, 5_000);
+					timer.unref();
+				}),
+			]);
+			clearTimeout(timer);
+		}
 		await relay?.close().catch(() => undefined);
 		await rm(root, { recursive: true, force: true }).catch(() => undefined);
 	}
@@ -749,10 +785,49 @@ async function runClaudeReviewer(
 
 /** How long closing the box waits for the session's close in SQL (as CLOUD_HOME_CLOSE_MS). */
 const CLAUDE_BOX_CLOSE_MS = 5_000;
+export const CLAUDE_BOX_MAX_STDOUT_LINE_CHARS = 16 * 1024 * 1024;
+
+export async function* claudeBoxStdoutLines(
+	stdout: AsyncIterable<string>,
+	onLine?: (line: string) => void,
+	onOverflow?: () => void,
+	maxLineChars = CLAUDE_BOX_MAX_STDOUT_LINE_CHARS,
+): AsyncGenerator<string> {
+	let rest = "";
+	for await (const chunk of stdout) {
+		const scanFrom = rest.length;
+		rest += chunk;
+		let start = 0;
+		let end = rest.indexOf("\n", scanFrom);
+		while (end >= 0) {
+			const line = rest.slice(start, end);
+			if (line.length > maxLineChars) {
+				onOverflow?.();
+				return;
+			}
+			onLine?.(line);
+			yield line;
+			start = end + 1;
+			end = rest.indexOf("\n", start);
+		}
+		if (start > 0) rest = rest.slice(start);
+		if (rest.length > maxLineChars) {
+			onOverflow?.();
+			return;
+		}
+	}
+	if (rest) {
+		if (rest.length > maxLineChars) {
+			onOverflow?.();
+			return;
+		}
+		onLine?.(rest);
+		yield rest;
+	}
+}
 
 /** One piece of the SFTP stream as a channel line (C1's contract: standard base64, at most 768 KiB a piece). */
 const SFTP_PIECE = 768 * 1024;
-const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 /** A started box. */
 export interface ClaudeCodeBox {
@@ -762,6 +837,7 @@ export interface ClaudeCodeBox {
 	readonly exited: Promise<number>;
 	/** Claude Code's stderr and the stage's, bounded, for the host's journal. */
 	readonly stderr: () => string;
+	readonly overflowed?: () => boolean;
 	readonly shell: CloudClaudeHomeShell;
 	readonly files?: CloudClaudeFilesGate;
 	readonly reviewer?: ClaudeCodeReviewer;
@@ -927,7 +1003,10 @@ async function startBox(
 		);
 
 	const controller = new AbortController();
-	const signal = AbortSignal.any([options.signal, controller.signal]);
+	const onParentAbort = (): void => controller.abort(options.signal.reason);
+	if (options.signal.aborted) onParentAbort();
+	else options.signal.addEventListener("abort", onParentAbort, { once: true });
+	const signal = controller.signal;
 	const cleanups: (() => Promise<void>)[] = [];
 	let closing: Promise<void> | undefined;
 	// Whether a channel of the session ever opened: only then is there a session for SQL to close. A launch that failed
@@ -938,16 +1017,23 @@ async function startBox(
 	let reviewer: ClaudeCodeReviewer | undefined;
 	const close = (): Promise<void> => {
 		closing ??= (async () => {
+			options.signal.removeEventListener("abort", onParentAbort);
 			controller.abort();
 			for (const cleanup of cleanups.reverse()) await cleanup().catch(() => undefined);
 			// Both channels are closed now; then the one session that authorized them, if one ever opened.
-			if (options.endSession && (filesOpened || (shellOf?.counts.channels ?? 0) > 0))
+			if (options.endSession && (filesOpened || (shellOf?.counts.channels ?? 0) > 0)) {
+				let endTimer: ReturnType<typeof setTimeout> | undefined;
 				await Promise.race([
 					options
 						.endSession(options.sessionId, options.signal.aborted ? "stopped" : "ended")
 						.catch(() => undefined),
-					new Promise((resolve) => setTimeout(resolve, CLAUDE_BOX_CLOSE_MS).unref()),
+					new Promise<void>((resolve) => {
+						endTimer = setTimeout(resolve, CLAUDE_BOX_CLOSE_MS);
+						endTimer.unref();
+					}),
 				]);
+				clearTimeout(endTimer);
+			}
 			// The box's own folders: transcripts, Claude Code's state, its big outputs. Never the caller's login folder.
 			for (const path of [
 				s.config,
@@ -1063,7 +1149,15 @@ async function startBox(
 					child.kill("SIGKILL");
 				}
 			}
-			await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5000).unref())]);
+			let exitTimer: ReturnType<typeof setTimeout> | undefined;
+			await Promise.race([
+				exited,
+				new Promise<void>((resolve) => {
+					exitTimer = setTimeout(resolve, 5000);
+					exitTimer.unref();
+				}),
+			]);
+			clearTimeout(exitTimer);
 		});
 		// The run's stop ends the box at once, as close() does: the process group first, then the relay, both channels
 		// (so no write of the turn reaches the home after it, and the home ends the commands running there) and the
@@ -1107,12 +1201,14 @@ async function startBox(
 					else {
 						filesGate.fromMount(chunk as Buffer);
 						if (filesGate.broken) break;
+						await filesGate.waitForSpace();
+						if (filesGate.broken || signal.aborted) break;
 					}
 				}
 			} catch {
 				// The mount ended; the box's close ends the channel.
 			}
-			if (filesGate?.broken) void files.close();
+			if (filesGate?.broken) void files.close().catch(() => undefined);
 		})();
 		void (async () => {
 			const waitForDrain = (): Promise<boolean> => {
@@ -1135,8 +1231,7 @@ async function startBox(
 			};
 			try {
 				for await (const line of files.lines) {
-					if (!line || !BASE64.test(line)) break;
-					const bytes = Buffer.from(line, "base64");
+					const bytes = cloudHomeSftpBytes(line);
 					if (filesGate) filesGate.fromHome(bytes);
 					if (filesGate ? toMount.writableNeedDrain : !toMount.write(bytes)) {
 						if (!(await waitForDrain())) break;
@@ -1158,27 +1253,20 @@ async function startBox(
 		stdin.end(options.prompt);
 		child.stdout?.setEncoding("utf8");
 		const stdout = child.stdout as Readable;
-		async function* lines(): AsyncGenerator<string> {
-			let rest = "";
-			for await (const chunk of stdout) {
-				rest += chunk as string;
-				let start = 0;
-				let end = rest.indexOf("\n", start);
-				while (end >= 0) {
-					const line = rest.slice(start, end);
-					filesGate?.notice(line);
-					yield line;
-					start = end + 1;
-					end = rest.indexOf("\n", start);
-				}
-				if (start > 0) rest = rest.slice(start);
-			}
-			if (rest) yield rest;
-		}
+		let stdoutOverflowed = false;
+		const lines = claudeBoxStdoutLines(
+			stdout as AsyncIterable<string>,
+			(line) => filesGate?.notice(line),
+			() => {
+				stdoutOverflowed = true;
+				void close();
+			},
+		);
 		return {
-			lines: lines(),
+			lines,
 			exited,
 			stderr: () => stderr,
+			overflowed: () => stdoutOverflowed,
 			shell,
 			...(filesGate ? { files: filesGate } : {}),
 			...(reviewer ? { reviewer } : {}),

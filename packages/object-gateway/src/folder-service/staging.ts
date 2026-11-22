@@ -56,26 +56,52 @@ export class GatewayUploads implements FolderUploads {
 			},
 			timeout: 60_000,
 		});
+		let settled = false;
+		let earlyError: ProtocolError | undefined;
+		let responseSeen = false;
 		const answer = new Promise<void>((resolve, reject) => {
+			const fail = (error: ProtocolError): void => {
+				if (settled) return;
+				settled = true;
+				earlyError ??= error;
+				reject(error);
+			};
+			const ok = (): void => {
+				if (settled) return;
+				settled = true;
+				resolve();
+			};
 			request.once("response", (response) => {
+				responseSeen = true;
+				const status = response.statusCode ?? 0;
+				if (status !== 200 && status !== 201) earlyError = uploadError(status);
 				response.resume();
 				response.once("end", () =>
-					response.statusCode === 200 || response.statusCode === 201
-						? resolve()
-						: reject(uploadError(response.statusCode ?? 0)),
+					status === 200 || status === 201 ? ok() : fail(earlyError ?? uploadError(status)),
 				);
-				response.once("error", () => reject(uploadError(0)));
+				response.once("error", () => fail(earlyError ?? uploadError(0)));
+				response.once("close", () => {
+					if (!response.complete) fail(earlyError ?? uploadError(0));
+				});
 			});
-			request.once("error", () => reject(uploadError(0)));
+			request.once("error", () => fail(earlyError ?? uploadError(0)));
+			request.once("close", () => {
+				if (!responseSeen) fail(earlyError ?? uploadError(0));
+			});
 			request.once("timeout", () => request.destroy(new Error("The upload took too long")));
 		});
 		void answer.catch(() => undefined);
+		const failWrite = (): Promise<never> =>
+			earlyError !== undefined ? Promise.reject(earlyError) : answer.then(() => Promise.reject(uploadError(0)));
 		return {
 			// A part the socket cannot take yet waits for it to drain; a request that fails, times out or is aborted
 			// meanwhile fails the wait too (every such end closes it), so nothing hangs on a put that ended.
 			write: (part) =>
 				new Promise<void>((resolve, reject) => {
-					if (request.destroyed) return reject(uploadError(0));
+					if (earlyError !== undefined || request.destroyed) {
+						void failWrite().then(resolve, reject);
+						return;
+					}
 					if (request.write(part)) return resolve();
 					const drained = (): void => {
 						request.off("close", closed);
@@ -83,7 +109,7 @@ export class GatewayUploads implements FolderUploads {
 					};
 					const closed = (): void => {
 						request.off("drain", drained);
-						reject(uploadError(0));
+						void failWrite().then(resolve, reject);
 					};
 					request.once("drain", drained);
 					request.once("close", closed);
@@ -308,12 +334,10 @@ export class FolderStaging {
 	): Promise<{ readonly file: FileRef; readonly intentId: string }> {
 		const singleChunk = content.chunks.length === 1 && content.chunks[0]!.bytes === content.size;
 		const hash = singleChunk ? undefined : createHash("sha256");
-		await this.#read(
-			profileId,
-			content,
-			secrets && this.#checks.start(secrets, content.size, form),
-			hash ? (bytes) => hash.update(bytes) : undefined,
-		);
+		const check = secrets && secrets.size > 0 ? this.#checks.start(secrets, content.size, form) : undefined;
+		if (check || hash) {
+			await this.#read(profileId, content, check, hash ? (bytes) => hash.update(bytes) : undefined);
+		}
 		const text = manifestText({
 			fileSha256: singleChunk ? content.chunks[0]!.sha256 : hash!.digest("hex"),
 			bytes: content.size,

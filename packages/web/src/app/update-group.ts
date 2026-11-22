@@ -1,4 +1,5 @@
 import { type CompanyStateSetting, setCompanyStateSettings } from "@qorpera/cloud-client/company-state-files";
+import { createAbortScope } from "../cloud/abort-scope.ts";
 import { describeError } from "../cloud/client.ts";
 import {
 	deleteStateFolder,
@@ -93,8 +94,9 @@ export function createGroupUpdater(options: {
 		if (busy) throw new GroupUpdateNotWrittenError(t("Wait for this group chat to finish saving."));
 		busy = true;
 		let writeStarted = false;
+		const scope = createAbortScope([company.signal, viewSignal]);
 		try {
-			const signal = AbortSignal.any([company.signal, viewSignal]);
+			const signal = scope.signal;
 			const changes: GroupChatDraft = {
 				name: draft.name.trim(),
 				...(draft.subtitle !== undefined ? { subtitle: draft.subtitle.trim() } : {}),
@@ -164,6 +166,7 @@ export function createGroupUpdater(options: {
 			if (!writeStarted) throw new GroupUpdateNotWrittenError(describeError(error), { cause: error });
 			throw error;
 		} finally {
+			scope.dispose();
 			busy = false;
 		}
 	};

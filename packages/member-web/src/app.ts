@@ -30,9 +30,11 @@ export function mountMemberWeb(
 	message.setAttribute("aria-live", "polite");
 	const header = element("header", undefined, element("h1", "Qorpera"), accountLabel, navigation);
 	root.replaceChildren(header, message, panel);
+	const mountStop = new AbortController();
 	let epoch = 0,
 		eventRevision = 0,
 		busy: symbol | undefined,
+		panelStop: AbortController | undefined,
 		dispose: (() => void) | undefined;
 	let closed = false,
 		signingOut = false,
@@ -45,6 +47,8 @@ export function mountMemberWeb(
 	};
 	const clearPanel = () => {
 		++epoch;
+		panelStop?.abort();
+		panelStop = undefined;
 		dispose?.();
 		dispose = undefined;
 		busy = undefined;
@@ -101,6 +105,8 @@ export function mountMemberWeb(
 	};
 	function openComputer(company: WebCompanySession) {
 		clearPanel();
+		const stop = new AbortController();
+		panelStop = stop;
 		const expected = epoch,
 			work = workFor(expected);
 		setNavigation(company);
@@ -112,6 +118,7 @@ export function mountMemberWeb(
 				showOfficePanel({
 					root: content,
 					company,
+					signal: stop.signal,
 					work,
 					status: (text: string) => {
 						current(expected);
@@ -124,6 +131,8 @@ export function mountMemberWeb(
 	}
 	function home() {
 		clearPanel();
+		const stop = new AbortController();
+		panelStop = stop;
 		account.leaveCompany();
 		setNavigation();
 		const expected = epoch,
@@ -133,7 +142,7 @@ export function mountMemberWeb(
 			refresh = button(
 				"Refresh companies",
 				async () => {
-					const companies = await account.companies();
+					const companies = await account.companies(stop.signal);
 					current(expected);
 					list.replaceChildren();
 					for (const company of companies) {
@@ -153,13 +162,22 @@ export function mountMemberWeb(
 	}
 	function recovery() {
 		clearPanel();
+		const stop = new AbortController();
+		panelStop = stop;
 		account.leaveCompany();
 		setNavigation();
 		const expected = epoch,
 			work = workFor(expected);
 		void work(() =>
 			install(expected, () =>
-				showRecoveryPanel({ root: panel, account, work, current: () => current(expected), status }),
+				showRecoveryPanel({
+					root: panel,
+					account,
+					signal: stop.signal,
+					work,
+					current: () => current(expected),
+					status,
+				}),
 			),
 		);
 	}
@@ -176,7 +194,7 @@ export function mountMemberWeb(
 					await client.auth.signOut({ scope: "local" });
 				},
 				10000,
-				new AbortController().signal,
+				mountStop.signal,
 			);
 		} catch {
 			/* Local credentials are cleared even when Auth is unreachable. */
@@ -184,7 +202,7 @@ export function mountMemberWeb(
 			try {
 				options.clearAuth();
 			} finally {
-				(options.reload ?? (() => window.location.replace(`${window.location.origin}/`)))();
+				if (!closed) (options.reload ?? (() => window.location.replace(`${window.location.origin}/`)))();
 			}
 		}
 	}
@@ -215,23 +233,22 @@ export function mountMemberWeb(
 		email.input.type = "email";
 		email.input.autocomplete = "email";
 		email.input.required = true;
-		panel.append(
-			email.label,
-			button(
-				"Email a sign-in link",
-				async () => {
-					if (!email.input.reportValidity()) return;
-					const { error } = await client.auth.signInWithOtp({
-						email: email.input.value.trim(),
-						options: { emailRedirectTo: redirectTo, shouldCreateUser: false },
-					});
-					current(expected);
-					if (error) throw new Error("Sign-in unavailable");
-					status("Check your email for a sign-in link. Open it in this browser.");
-				},
-				work,
-			),
-		);
+		const sendEmail = element("button", "Email a sign-in link");
+		sendEmail.type = "button";
+		sendEmail.onclick = () => {
+			if (closed || epoch !== expected || busy) return;
+			if (!email.input.reportValidity()) return;
+			void work(async () => {
+				const { error } = await client.auth.signInWithOtp({
+					email: email.input.value.trim(),
+					options: { emailRedirectTo: redirectTo, shouldCreateUser: false },
+				});
+				current(expected);
+				if (error) throw new Error("Sign-in unavailable");
+				status("Check your email for a sign-in link. Open it in this browser.");
+			});
+		};
+		panel.append(email.label, sendEmail);
 	}
 	function sessionChanged(session: Session | null) {
 		if (closed || signingOut) return;
@@ -264,7 +281,7 @@ export function mountMemberWeb(
 			}
 		},
 		10000,
-		new AbortController().signal,
+		mountStop.signal,
 	).catch(() => {
 		if (!initialized && !closed && !signingOut) {
 			login();
@@ -274,6 +291,7 @@ export function mountMemberWeb(
 	return {
 		close() {
 			closed = true;
+			mountStop.abort();
 			subscription.unsubscribe();
 			account.close();
 			clearPanel();

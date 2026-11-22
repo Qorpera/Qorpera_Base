@@ -11,37 +11,34 @@ export function webAuthStorage(storage: Storage) {
 		setItem: (key: string, value: string) => storage.setItem(key, value),
 		removeItem: (key: string) => storage.removeItem(key),
 		clear() {
-			for (const key of Object.keys(storage)) {
-				if (key === storageKey || key.startsWith(`${storageKey}-`)) storage.removeItem(key);
+			const matching: string[] = [];
+			for (let index = 0; index < storage.length; index++) {
+				const key = storage.key(index);
+				if (key && (key === storageKey || key.startsWith(`${storageKey}-`))) matching.push(key);
 			}
+			for (const key of matching) storage.removeItem(key);
 		},
 	};
 }
 export async function loadMemberWebConfig(pageUrl: string, request: typeof fetch = fetch): Promise<MemberWebConfig> {
 	const url = new URL("/config.json", pageUrl);
-	return withCloudDeadline(
-		async (signal) => {
-			const response = await request(url, {
-				signal,
-				redirect: "error",
-				cache: "no-store",
-				credentials: "same-origin",
-			});
-			if (response.status !== 200) {
-				void response.body?.cancel().catch(() => undefined);
-				throw new Error("Web configuration is unavailable");
-			}
-			return parseMemberWebConfig(
-				JSON.parse(
-					new TextDecoder("utf-8", { fatal: true }).decode(
-						await readBoundedCloudResponse(response, 16384, signal),
-					),
-				),
-			);
-		},
-		8000,
-		new AbortController().signal,
-	);
+	return withCloudDeadline(async (signal) => {
+		const response = await request(url, {
+			signal,
+			redirect: "error",
+			cache: "no-store",
+			credentials: "same-origin",
+		});
+		if (response.status !== 200) {
+			void response.body?.cancel().catch(() => undefined);
+			throw new Error("Web configuration is unavailable");
+		}
+		return parseMemberWebConfig(
+			JSON.parse(
+				new TextDecoder("utf-8", { fatal: true }).decode(await readBoundedCloudResponse(response, 16384, signal)),
+			),
+		);
+	}, 8000);
 }
 
 export function createWebAuth(config: MemberWebConfig, storage: Storage, request: typeof fetch = fetch) {
@@ -61,14 +58,14 @@ export function createWebAuth(config: MemberWebConfig, storage: Storage, request
 					credentials: "omit",
 				});
 				const bytes = await readBoundedCloudResponse(response, 1024 * 1024, signal);
-				return new Response([204, 205, 304].includes(response.status) ? null : Uint8Array.from(bytes), {
+				return new Response([204, 205, 304].includes(response.status) ? null : bytes.slice(), {
 					status: response.status,
 					statusText: response.statusText,
 					headers: response.headers,
 				});
 			},
 			10000,
-			init?.signal ?? new AbortController().signal,
+			init?.signal ?? undefined,
 		);
 	};
 	const client = createClient(settings.supabaseUrl, settings.publishableKey, {

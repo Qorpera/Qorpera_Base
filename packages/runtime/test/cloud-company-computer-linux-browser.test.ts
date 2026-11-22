@@ -1,4 +1,103 @@
+import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
+import { PassThrough } from "node:stream";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { computerBinding, computerId, computerScope } from "./fixtures/company-computer.ts";
+
+const launchMocks = vi.hoisted(() => ({
+	lstat: undefined as ((path: string) => Promise<unknown>) | undefined,
+	mkdtemp: undefined as ((prefix: string) => Promise<string>) | undefined,
+	open: undefined as ((path: string, flags?: number) => Promise<FileHandle>) | undefined,
+	realpath: undefined as ((path: string) => Promise<string>) | undefined,
+	rm: undefined as ((path: string, options?: { recursive?: boolean; force?: boolean }) => Promise<void>) | undefined,
+	assertHost: undefined as (() => Promise<void>) | undefined,
+	assertArtifact: undefined as (() => Promise<void>) | undefined,
+	readMetadata: undefined as (() => Promise<string>) | undefined,
+	openDirectory: undefined as ((path: string, writable: boolean) => Promise<FileHandle>) | undefined,
+	assertMount: undefined as (() => Promise<void>) | undefined,
+	appArmorRequired: undefined as (() => Promise<boolean>) | undefined,
+	startEgress: undefined as
+		| ((options: { signal: AbortSignal }) => Promise<{ path: string; close: () => Promise<void> }>)
+		| undefined,
+	spawnProcess: undefined as
+		| (() => {
+				child: EventEmitter & { stdout: PassThrough; stderr: PassThrough; stdio: unknown[] };
+				started: Promise<void>;
+				stop: () => void;
+		  })
+		| undefined,
+	connectOverCDP: undefined as (() => Promise<unknown>) | undefined,
+}));
+
+vi.mock("node:fs/promises", async (original) => {
+	const actual = await original<Record<string, (...args: unknown[]) => unknown>>();
+	return {
+		...actual,
+		lstat: (...args: [string]) => (launchMocks.lstat ? launchMocks.lstat(...args) : actual.lstat(...args)),
+		mkdtemp: (...args: [string]) => (launchMocks.mkdtemp ? launchMocks.mkdtemp(...args) : actual.mkdtemp(...args)),
+		open: (...args: [string, number?]) => (launchMocks.open ? launchMocks.open(...args) : actual.open(...args)),
+		realpath: (...args: [string]) =>
+			launchMocks.realpath ? launchMocks.realpath(...args) : actual.realpath(...args),
+		rm: (...args: [string, { recursive?: boolean; force?: boolean }?]) =>
+			launchMocks.rm ? launchMocks.rm(...args) : actual.rm(...args),
+	};
+});
+
+vi.mock("../src/cloud-company-computer-linux-host.ts", async (original) => {
+	const actual = await original<Record<string, (...args: unknown[]) => unknown>>();
+	return {
+		...actual,
+		assertCompanyComputerLinuxHost: (...args: unknown[]) =>
+			launchMocks.assertHost ? launchMocks.assertHost() : actual.assertCompanyComputerLinuxHost(...args),
+		assertCompanyComputerImageArtifact: (...args: unknown[]) =>
+			launchMocks.assertArtifact ? launchMocks.assertArtifact() : actual.assertCompanyComputerImageArtifact(...args),
+		readCompanyComputerLinuxMetadata: (...args: unknown[]) =>
+			launchMocks.readMetadata ? launchMocks.readMetadata() : actual.readCompanyComputerLinuxMetadata(...args),
+		openCompanyComputerLinuxDirectory: (...args: [string, boolean]) =>
+			launchMocks.openDirectory
+				? launchMocks.openDirectory(...args)
+				: actual.openCompanyComputerLinuxDirectory(...args),
+		assertCompanyComputerWorkbenchMount: (...args: unknown[]) =>
+			launchMocks.assertMount ? launchMocks.assertMount() : actual.assertCompanyComputerWorkbenchMount(...args),
+		companyComputerBrowserAppArmorRequired: (...args: unknown[]) =>
+			launchMocks.appArmorRequired
+				? launchMocks.appArmorRequired()
+				: actual.companyComputerBrowserAppArmorRequired(...args),
+	};
+});
+
+vi.mock("../src/cloud-company-computer-browser-egress.ts", async (original) => {
+	const actual = await original<Record<string, (...args: unknown[]) => unknown>>();
+	return {
+		...actual,
+		startCompanyComputerBrowserEgress: (...args: [{ signal: AbortSignal }]) =>
+			launchMocks.startEgress ? launchMocks.startEgress(...args) : actual.startCompanyComputerBrowserEgress(...args),
+	};
+});
+
+vi.mock("../src/cloud-company-computer-linux-process.ts", async (original) => {
+	const actual = await original<Record<string, (...args: unknown[]) => unknown>>();
+	return {
+		...actual,
+		spawnCompanyComputerLinuxProcess: (...args: unknown[]) =>
+			launchMocks.spawnProcess ? launchMocks.spawnProcess() : actual.spawnCompanyComputerLinuxProcess(...args),
+	};
+});
+
+vi.mock("playwright-core", async (original) => {
+	const actual = await original<Record<string, unknown>>();
+	const realChromium = actual.chromium as Record<string, (...args: unknown[]) => unknown>;
+	return {
+		...actual,
+		chromium: {
+			...realChromium,
+			connectOverCDP: (...args: unknown[]) =>
+				launchMocks.connectOverCDP ? launchMocks.connectOverCDP() : realChromium.connectOverCDP(...args),
+		},
+	};
+});
+
 import {
 	COMPANY_COMPUTER_BROWSER_ARGUMENTS,
 	companyComputerBrowserSandboxArgs,
@@ -6,8 +105,11 @@ import {
 	tidyCompanyComputerBrowserTabs,
 } from "@qorpera/runtime/cloud-company-computer-linux-browser";
 import { companyComputerLinuxSandboxArgs } from "@qorpera/runtime/cloud-company-computer-linux-host";
-import { describe, expect, it, vi } from "vitest";
-import { computerBinding, computerId, computerScope } from "./fixtures/company-computer.ts";
+
+afterEach(() => {
+	for (const key of Object.keys(launchMocks) as (keyof typeof launchMocks)[]) launchMocks[key] = undefined;
+	vi.useRealTimers();
+});
 
 function fixture() {
 	const options = {
@@ -252,5 +354,147 @@ describe("what a member sees when the company browser opens", () => {
 		const late = chromium(["https://example.com/", "about:blank"]);
 		await expect(tidyCompanyComputerBrowserTabs(late.browser, startupUrl, ended.signal)).resolves.toBeUndefined();
 		expect(late.closed()).toEqual([]);
+	});
+});
+
+describe("browser launch flood guard and close teardown", () => {
+	function setupLaunch() {
+		const f = fixture();
+		const policyJson = readFileSync(
+			new URL("../../../deploy/lxd-company-computer-guest/qorpera-browser-policy.json", import.meta.url),
+			"utf8",
+		);
+		const workbenchHandle = { fd: 10, close: vi.fn(async () => undefined) } as unknown as FileHandle;
+		const profileHandle = {
+			fd: 11,
+			stat: vi.fn(async () => ({ isDirectory: () => true, uid: process.getuid?.(), mode: 0o700 })),
+			close: vi.fn(async () => undefined),
+		} as unknown as FileHandle;
+		const rootHandle = { fd: 12, close: vi.fn(async () => undefined) } as unknown as FileHandle;
+		const runtimeHandle = { fd: 13, close: vi.fn(async () => undefined) } as unknown as FileHandle;
+		const temporaryDir = "/run/office-browser/browser-test-1";
+		const xSocketPath = f.options.xSocket();
+		const stdout = new PassThrough();
+		const stderr = new PassThrough();
+		const child = Object.assign(new EventEmitter(), {
+			stdout,
+			stderr,
+			stdio: [null, stdout, stderr, new PassThrough(), new PassThrough()],
+		});
+		let closed = false;
+		const emitClose = () => {
+			if (closed) return;
+			closed = true;
+			child.emit("close", 0);
+		};
+		const stop = vi.fn(() => emitClose());
+		const egressClose = vi.fn(async () => undefined);
+		let egressSignal: AbortSignal | undefined;
+		const rmMock = vi.fn(async () => undefined);
+		const cdpSend = vi.fn(async (method: string) => {
+			if (method === "Target.getTargets") return { targetInfos: [] };
+			if (method === "Browser.close") emitClose();
+			return { success: true };
+		});
+		const browser = {
+			newBrowserCDPSession: vi.fn(async () => ({ send: cdpSend, detach: vi.fn(async () => undefined) })),
+			contexts: () => [{ pages: () => [] }],
+		};
+
+		launchMocks.assertHost = vi.fn(async () => undefined);
+		launchMocks.assertArtifact = vi.fn(async () => undefined);
+		launchMocks.readMetadata = vi.fn(async () => policyJson);
+		launchMocks.openDirectory = vi.fn(async (path: string) => {
+			if (path === f.options.layout.workbenchRoot) return workbenchHandle;
+			if (path === f.options.layout.browserProfilesRoot) return rootHandle;
+			return runtimeHandle;
+		});
+		launchMocks.open = vi.fn(async () => profileHandle);
+		launchMocks.assertMount = vi.fn(async () => undefined);
+		launchMocks.lstat = vi.fn(async (path: string) =>
+			path === xSocketPath
+				? { isSocket: () => true, isDirectory: () => false, uid: process.getuid?.(), mode: 0o600 }
+				: { isSocket: () => false, isDirectory: () => true, uid: process.getuid?.(), mode: 0o700 },
+		);
+		launchMocks.realpath = vi.fn(async (path: string) => path);
+		launchMocks.mkdtemp = vi.fn(async () => temporaryDir);
+		launchMocks.rm = rmMock;
+		launchMocks.appArmorRequired = vi.fn(async () => false);
+		launchMocks.startEgress = vi.fn(async ({ signal }: { signal: AbortSignal }) => {
+			egressSignal = signal;
+			return { path: `${temporaryDir}/egress.sock`, close: egressClose };
+		});
+		launchMocks.spawnProcess = vi.fn(() => ({ child, started: Promise.resolve(), stop }));
+		launchMocks.connectOverCDP = vi.fn(async () => browser);
+
+		return {
+			f,
+			temporaryDir,
+			stdout,
+			stderr,
+			stop,
+			egressClose,
+			egressSignal: () => egressSignal!,
+			workbenchHandle,
+			profileHandle,
+			rmMock,
+			launch: createCompanyComputerLinuxBrowserLaunch(f.options),
+		};
+	}
+
+	it("aborts the browser when stdout and stderr exceed 1 MiB inside one 5 s window", async () => {
+		vi.useFakeTimers();
+		const h = setupLaunch();
+		await h.launch(h.f.directory, h.f.input);
+		h.stdout.emit("data", Buffer.alloc(600 * 1024));
+		await vi.advanceTimersByTimeAsync(2000);
+		expect(h.egressSignal().aborted).toBe(false);
+		h.stderr.emit("data", Buffer.alloc(500 * 1024));
+		expect(h.egressSignal().aborted).toBe(true);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(h.egressClose).toHaveBeenCalledOnce();
+		expect(h.workbenchHandle.close).toHaveBeenCalledOnce();
+		expect(h.profileHandle.close).toHaveBeenCalledOnce();
+		expect(h.rmMock).toHaveBeenCalledWith(h.temporaryDir, { recursive: true, force: true });
+	});
+
+	it("does not abort when bursts stay below 1 MiB per 5 s window", async () => {
+		vi.useFakeTimers();
+		const h = setupLaunch();
+		const session = await h.launch(h.f.directory, h.f.input);
+		h.stdout.emit("data", Buffer.alloc(600 * 1024));
+		await vi.advanceTimersByTimeAsync(5001);
+		h.stderr.emit("data", Buffer.alloc(600 * 1024));
+		await vi.advanceTimersByTimeAsync(5001);
+		h.stdout.emit("data", Buffer.alloc(600 * 1024));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(h.egressSignal().aborted).toBe(false);
+		expect(h.egressClose).not.toHaveBeenCalled();
+		expect(h.stop).not.toHaveBeenCalled();
+		expect(h.rmMock).not.toHaveBeenCalled();
+		await expect(session.close()).resolves.toBeUndefined();
+		expect(h.rmMock).toHaveBeenCalledWith(h.temporaryDir, { recursive: true, force: true });
+	});
+
+	it("stops the process, closes open descriptors, and removes the temp directory when egress close rejects", async () => {
+		const h = setupLaunch();
+		h.egressClose.mockRejectedValueOnce(new Error("egress stuck"));
+		const session = await h.launch(h.f.directory, h.f.input);
+		await expect(session.close()).rejects.toThrow("BROWSER_DRAIN_FAILED");
+		expect(h.egressSignal().aborted).toBe(true);
+		expect(h.stop).toHaveBeenCalled();
+		expect(h.workbenchHandle.close).toHaveBeenCalledOnce();
+		expect(h.profileHandle.close).toHaveBeenCalledOnce();
+		expect(h.rmMock).toHaveBeenCalledWith(h.temporaryDir, { recursive: true, force: true });
+	});
+
+	it("rejects with BROWSER_DRAIN_FAILED when temp directory removal fails after a clean drain", async () => {
+		const h = setupLaunch();
+		h.rmMock.mockRejectedValueOnce(Object.assign(new Error("EBUSY"), { code: "EBUSY" }));
+		const session = await h.launch(h.f.directory, h.f.input);
+		await expect(session.close()).rejects.toThrow("BROWSER_DRAIN_FAILED");
+		expect(h.workbenchHandle.close).toHaveBeenCalledOnce();
+		expect(h.profileHandle.close).toHaveBeenCalledOnce();
+		expect(h.rmMock).toHaveBeenCalledWith(h.temporaryDir, { recursive: true, force: true });
 	});
 });

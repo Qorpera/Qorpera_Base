@@ -1,6 +1,6 @@
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
 	CompanyComputerBrowserLogins,
 	type CompanyComputerLoginContext,
@@ -143,5 +143,28 @@ describe("the company's one set of browser sign-ins", () => {
 		await logins.close();
 		await chmod(f.path, 0o644);
 		await expect(f.logins().attach("agent-c", browser().context)).rejects.toThrow("UNSAFE_BROWSER_LOGIN_STORE");
+	});
+	it("retries failed saves without leaking temp files and avoids same-millisecond temp collisions", async () => {
+		const f = await store(() => 1_000_000);
+		const logins = f.logins();
+		const a = browser();
+		await logins.attach("agent-a", a.context);
+		a.set(cookie("first", "v1"));
+		await logins.sync();
+		a.set(cookie("second", "v2"));
+		await logins.sync();
+
+		await rm(f.path, { force: true });
+		await mkdir(f.path);
+		a.set(cookie("retried", "v3"));
+		await expect(logins.sync()).rejects.toThrow();
+		const leftovers = (await readdir(dirname(f.path))).filter((name) => name.includes(".tmp"));
+		expect(leftovers).toEqual([]);
+
+		await rm(f.path, { recursive: true, force: true });
+		await logins.sync();
+		const stored = JSON.parse(await readFile(f.path, "utf8")) as { cookies: CompanyComputerLoginCookie[] };
+		expect(stored.cookies.some((c) => c.name === "retried" && c.value === "v3")).toBe(true);
+		await logins.close();
 	});
 });

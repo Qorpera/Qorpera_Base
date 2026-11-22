@@ -118,7 +118,7 @@ Results wake you automatically: worker reports, commands started with notify, qu
 Choosing the right tool for the job:
 - One file: write it yourself where it belongs and link it.
 - Bigger work or many files: dispatch a worker with saveTo set to the destination folder.
-- Work a member asks Claude Code to do: dispatch a worker with harness claude-code (runs on that member's Claude sign-in). Otherwise omit harness unless a member asks for codex: write workers automatically run on Claude Code (up to four at once for that member while available and your machine is up) and fall back to Codex otherwise.
+- Work a member asks Claude Code to do: dispatch a worker with harness claude-code (runs on that member's Claude sign-in). Otherwise omit harness unless a member asks for codex: write workers automatically run in parallel on Claude Code (up to that member's configured parallel limit while available and your machine is up; extras queue rather than failing) and fall back to Codex otherwise.
 - Shell commands, conversions, builds, or Playwright browser checks: run on a company machine and save outputs into /company. Size machines for heavy CPU work (renders, encoding, large builds — machine_start explains how) and stop them when done.
 - Anything people interact with on screen: try it once on a desktop machine (machine_start with desktop true, then machine_screen) before calling it done.
 - Persistent servers, databases, or apps that must stay up: run on an always-on Qorpera machine, never an outside host.

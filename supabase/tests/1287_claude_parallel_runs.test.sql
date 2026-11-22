@@ -311,9 +311,9 @@ begin
 		'5: with slot 1 free, the two live runs still fill a cap of two');
 	update public.qorpera_claude_parallel_runs set cap = 1;
 	perform pg_temp.base_assert(public.qorpera_claude_worker_run_cap() = 1, '5: the way back is one statement');
-	perform pg_temp.base_assert(pg_temp.p_state('update public.qorpera_claude_parallel_runs set cap = 17') = '23514'
+	perform pg_temp.base_assert(pg_temp.p_state('update public.qorpera_claude_parallel_runs set cap = 65') = '23514'
 		and pg_temp.p_state('insert into public.qorpera_claude_parallel_runs(only_row, cap) values (false, 2)') = '23514',
-		'5: one row, a cap of 1 to 16');
+		'5: one row, a cap of 1 to 64');
 end $$;
 
 insert into public.qorpera_claude_logins(id, owner_user_id, principal_id, client_connection_id, key_id, encrypted_envelope,

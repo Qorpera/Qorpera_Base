@@ -456,4 +456,13 @@ describe("coding VM command supervisor", () => {
 		const f = await fixture();
 		expect(() => parseCodingGuestCommandRequest({ ...f.request, ...change })).toThrow();
 	});
+	it("inspects machine boot identity only once per start command", async () => {
+		const f = await fixture();
+		const inspectMachine = vi.fn(f.ports.inspectMachine!);
+		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, {
+			...f.ports,
+			inspectMachine,
+		});
+		expect(inspectMachine).toHaveBeenCalledTimes(1);
+	});
 });

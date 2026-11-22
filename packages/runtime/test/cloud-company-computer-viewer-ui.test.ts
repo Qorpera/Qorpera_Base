@@ -897,4 +897,26 @@ describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)"
 		expect(fixture.instances).toHaveLength(1);
 		await viewer.close();
 	});
+
+	it("times out a stalled RFB handshake, releases the connection, and re-enables Reconnect", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const fixture = viewerFixture();
+			const viewer = fixture.api.open(fixture.options);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(fixture.instances).toHaveLength(1);
+			expect(fixture.button("Reconnect").disabled).toBe(true);
+			await vi.advanceTimersByTimeAsync(29_999);
+			expect(fixture.releaseConnection).not.toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(1);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(fixture.releaseConnection).toHaveBeenCalledOnce();
+			expect(fixture.instances[0].disconnect).toHaveBeenCalledOnce();
+			expect(fixture.button("Reconnect").hidden).toBe(false);
+			expect(fixture.button("Reconnect").disabled).toBe(false);
+			await viewer.close();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });

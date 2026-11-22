@@ -206,9 +206,11 @@ function rhythmOf(days: readonly number[], now: number): { rhythm: BankRhythm; n
 		gaps.filter((gap) => Math.abs(gap - median) <= Math.max(3, median * 0.25)).length >= gaps.length * 0.6;
 	const last = days[days.length - 1] ?? now;
 	const ahead = (step: number) => {
-		let next = last + step * DAY;
-		while (next < now) next += step * DAY;
-		return iso(next);
+		const span = Math.max(1, step) * DAY;
+		const first = last + span;
+		if (first >= now) return iso(first);
+		const steps = Math.ceil((now - first) / span);
+		return iso(first + steps * span);
 	};
 	if (!steady) return { rhythm: "now-and-then", next: null, perMonth: 0 };
 	if (median <= 1.5) return { rhythm: "daily", next: ahead(1), perMonth: 365 / 12 };
@@ -255,10 +257,10 @@ function disponibelToday(account: BankSummaryAccount, today: string): number | n
 }
 
 /** An account's booked kroner transactions up to today. */
-const bookedOf = (account: BankSummaryAccount, today: number) =>
+const bookedOf = (account: BankSummaryAccount, today: number, timeOf: (date: string) => number) =>
 	account.transactions.filter(
 		(transaction) =>
-			transaction.status === "BOOK" && transaction.currency === "DKK" && dayTime(transaction.date) <= today,
+			transaction.status === "BOOK" && transaction.currency === "DKK" && timeOf(transaction.date) <= today,
 	);
 
 type Party = {
@@ -283,13 +285,14 @@ function partiesOf(
 	incoming: boolean,
 	today: number,
 	thisMonth: string,
+	timeOf: (date: string) => number,
 ): PartyReading[] {
 	const found = new Map<string, Party>();
 	for (const transaction of booked) {
 		if (transaction.amount >= 0 !== incoming) continue;
 		const { key, name } = partyOf(transaction);
 		const entry = found.get(key) ?? { key, name, days: [], amounts: [], thisMonth: 0, last: 0 };
-		entry.days.push(dayTime(transaction.date));
+		entry.days.push(timeOf(transaction.date));
 		entry.amounts.push(Math.abs(transaction.amount));
 		entry.last = Math.abs(transaction.amount);
 		if (transaction.date.slice(0, 7) === thisMonth) entry.thisMonth += Math.abs(transaction.amount);
@@ -309,28 +312,65 @@ function partiesOf(
 	});
 }
 
-export function reduceBankSummary(input: BankSummaryInput): BankSummaryFile {
-	const today = dayTime(companyDay(input.now, input.timeZone));
+interface ReductionContext {
+	readonly to: string;
+	readonly today: number;
+	readonly thisMonth: string;
+	readonly timeOf: (date: string) => number;
+	readonly accountBooked: readonly (readonly EnableBankingTransaction[])[];
+	readonly booked: readonly EnableBankingTransaction[];
+	readonly outgoing: readonly PartyReading[];
+}
+
+function buildReductionContext(input: BankSummaryInput): ReductionContext {
+	const parsedDates = new Map<string, number>();
+	const timeOf = (date: string): number => {
+		let parsed = parsedDates.get(date);
+		if (parsed === undefined) {
+			parsed = dayTime(date);
+			parsedDates.set(date, parsed);
+		}
+		return parsed;
+	};
+	const to = companyDay(input.now, input.timeZone);
+	const today = timeOf(to);
+	const thisMonth = to.slice(0, 7);
+	const accountBooked: EnableBankingTransaction[][] = [];
+	const booked: EnableBankingTransaction[] = [];
+	for (const account of input.accounts) {
+		const list = bookedOf(account, today, timeOf);
+		accountBooked.push(list);
+		for (const tx of list) booked.push(tx);
+	}
+	const outgoing = partiesOf(booked, false, today, thisMonth, timeOf);
+	return { to, today, thisMonth, timeOf, accountBooked, booked, outgoing };
+}
+
+function reduceBankSummaryFromContext(input: BankSummaryInput, ctx: ReductionContext): BankSummaryFile {
+	const { to, today, thisMonth, timeOf, accountBooked, booked, outgoing } = ctx;
 	// Each account on its own: its saldo today, and what is disponibel (its saldo when the bank gives no available
 	// balance); then the accounts together.
 	let saldoTotal = 0;
 	let disponibelTotal = 0;
-	for (const account of input.accounts) {
-		const accountBooked = bookedOf(account, today);
-		const accountSaldo = saldoToday(account, accountBooked, iso(today)) ?? 0;
+	for (let i = 0; i < input.accounts.length; i++) {
+		const account = input.accounts[i] as BankSummaryAccount;
+		const accountSaldo = saldoToday(account, accountBooked[i] as readonly EnableBankingTransaction[], to) ?? 0;
 		saldoTotal += accountSaldo;
-		disponibelTotal += disponibelToday(account, iso(today)) ?? accountSaldo;
+		disponibelTotal += disponibelToday(account, to) ?? accountSaldo;
 	}
 	const saldo = kr(saldoTotal);
 	const disponibel = kr(disponibelTotal);
-	const booked = input.accounts.flatMap((account) => bookedOf(account, today));
 
 	// The saldo each day, back from today's: a day's saldo is today's less what moved after it.
 	const moved = new Map<number, number>();
-	for (const transaction of booked)
-		moved.set(dayTime(transaction.date), (moved.get(dayTime(transaction.date)) ?? 0) + transaction.amount);
+	for (const transaction of booked) {
+		const t = timeOf(transaction.date);
+		moved.set(t, (moved.get(t) ?? 0) + transaction.amount);
+	}
 	// From the day before the first transaction, whose saldo is known too.
-	const earliest = Math.max(today - (HISTORY_DAYS - 1) * DAY, Math.min(today, ...moved.keys()) - DAY);
+	let minMoved = today;
+	for (const t of moved.keys()) if (t < minMoved) minMoved = t;
+	const earliest = Math.max(today - (HISTORY_DAYS - 1) * DAY, minMoved - DAY);
 	const history: { date: string; saldo: number }[] = [];
 	let running = saldo;
 	for (let time = today; time >= earliest; time -= DAY) {
@@ -341,13 +381,13 @@ export function reduceBankSummary(input: BankSummaryInput): BankSummaryFile {
 
 	// Money in and out per month, the last twelve with any movement.
 	const monthOf = (date: string) => date.slice(0, 7);
-	const thisMonth = monthOf(iso(today));
 	const byMonth = new Map<string, { in: number; out: number }>();
 	for (const transaction of booked) {
-		const month = byMonth.get(monthOf(transaction.date)) ?? { in: 0, out: 0 };
+		const monthKey = monthOf(transaction.date);
+		const month = byMonth.get(monthKey) ?? { in: 0, out: 0 };
 		if (transaction.amount >= 0) month.in += transaction.amount;
 		else month.out -= transaction.amount;
-		byMonth.set(monthOf(transaction.date), month);
+		byMonth.set(monthKey, month);
 	}
 	const months = [...byMonth.entries()]
 		.sort(([a], [b]) => (a < b ? -1 : 1))
@@ -388,8 +428,7 @@ export function reduceBankSummary(input: BankSummaryInput): BankSummaryFile {
 		];
 	};
 
-	const incoming = partiesOf(booked, true, today, thisMonth);
-	const outgoing = partiesOf(booked, false, today, thisMonth);
+	const incoming = partiesOf(booked, true, today, thisMonth, timeOf);
 	const moneyIn = group(incoming, (entry) => entry.name);
 	const moneyOutCategories = group(outgoing, (entry) => outCategory(entry.name, entry.rhythm, entry.typical));
 	const repeatingEntries = outgoing.filter((entry) => entry.perMonth > 0 && entry.next !== null);
@@ -398,7 +437,7 @@ export function reduceBankSummary(input: BankSummaryInput): BankSummaryFile {
 		: null;
 	const later = outgoing
 		.filter((entry) => (entry.rhythm === "quarterly" || entry.rhythm === "yearly") && entry.next !== null)
-		.filter((entry) => dayTime(entry.next ?? "") <= today + 120 * DAY)
+		.filter((entry) => timeOf(entry.next ?? "") <= today + 120 * DAY)
 		.sort((a, b) => (a.next ?? "").localeCompare(b.next ?? ""))
 		.slice(0, 20)
 		.map((entry) => ({ name: entry.name, date: entry.next ?? "", amount: kr(entry.typical) }));
@@ -425,7 +464,7 @@ export function reduceBankSummary(input: BankSummaryInput): BankSummaryFile {
 	let ahead = saldo;
 	for (let week = 1; week <= 6 && history.length > 1; week++) {
 		const from = today + (week - 1) * 7 * DAY;
-		const to = today + week * 7 * DAY;
+		const toWeek = today + week * 7 * DAY;
 		ahead += weeklyIn;
 		// The first week takes what falls due today too; each later week what falls due after the week before it.
 		const after = week === 1 ? today - DAY : from;
@@ -440,10 +479,10 @@ export function reduceBankSummary(input: BankSummaryInput): BankSummaryFile {
 							: entry.rhythm === "quarterly"
 								? 91
 								: 365;
-			for (let due = dayTime(entry.next ?? ""); due <= to; due += step * DAY)
+			for (let due = timeOf(entry.next ?? ""); due <= toWeek; due += step * DAY)
 				if (due > after) ahead -= entry.typical;
 		}
-		expected.push({ date: iso(to), saldo: kr(ahead) });
+		expected.push({ date: iso(toWeek), saldo: kr(ahead) });
 	}
 
 	return {
@@ -461,6 +500,10 @@ export function reduceBankSummary(input: BankSummaryInput): BankSummaryFile {
 		moneyIn: { month: thisMonth, categories: moneyIn },
 		moneyOut: { month: thisMonth, repeating, categories: moneyOutCategories, later },
 	};
+}
+
+export function reduceBankSummary(input: BankSummaryInput): BankSummaryFile {
+	return reduceBankSummaryFromContext(input, buildReductionContext(input));
 }
 
 export const BANK_DAYS_SCHEMA = "qorpera.bank-days/v1";
@@ -481,25 +524,19 @@ export interface BankDays {
 	days: BankDay[];
 }
 
-/** The company's money in and out each day, by kind, from the same accounts and transactions as the summary: from
- * the first booked day it has (at most `BANK_DAYS_MAX` days back) to the company's today. Money out's kind is the
- * summary's category of its receiver (read over the whole history, so this month's days add up to the summary's
- * categories); money in's is a word for what paid it. */
-export function reduceBankDays(input: BankSummaryInput): BankDays {
-	const to = companyDay(input.now, input.timeZone);
-	const today = dayTime(to);
-	const booked = input.accounts.flatMap((account) => bookedOf(account, today));
-	const first = booked.reduce((earliest, transaction) => Math.min(earliest, dayTime(transaction.date)), today);
+function reduceBankDaysFromContext(ctx: ReductionContext): BankDays {
+	const { to, today, timeOf, booked, outgoing } = ctx;
+	const first = booked.reduce((earliest, transaction) => Math.min(earliest, timeOf(transaction.date)), today);
 	const start = Math.max(first, today - (BANK_DAYS_MAX - 1) * DAY);
 	const outKinds = new Map(
-		partiesOf(booked, false, today, to.slice(0, 7)).map((entry): [string, BankKindOut] => [
+		outgoing.map((entry): [string, BankKindOut] => [
 			entry.key,
 			OUT_KINDS[outCategory(entry.name, entry.rhythm, entry.typical)] ?? "other",
 		]),
 	);
 	const totals = new Map<string, BankDay>();
 	for (const transaction of booked) {
-		if (dayTime(transaction.date) < start) continue;
+		if (timeOf(transaction.date) < start) continue;
 		const day = transaction.date;
 		const row: BankDay =
 			transaction.amount >= 0
@@ -519,6 +556,22 @@ export function reduceBankDays(input: BankSummaryInput): BankDays {
 		.map((row) => ({ ...row, amount: kr(row.amount) }))
 		.sort((a, b) => a.day.localeCompare(b.day) || order(a) - order(b));
 	return { schema: BANK_DAYS_SCHEMA, from: iso(start), to, days };
+}
+
+/** The company's money in and out each day, by kind, from the same accounts and transactions as the summary: from
+ * the first booked day it has (at most `BANK_DAYS_MAX` days back) to the company's today. Money out's kind is the
+ * summary's category of its receiver (read over the whole history, so this month's days add up to the summary's
+ * categories); money in's is a word for what paid it. */
+export function reduceBankDays(input: BankSummaryInput): BankDays {
+	return reduceBankDaysFromContext(buildReductionContext(input));
+}
+
+export function reduceBankSummaryAndDays(input: BankSummaryInput): { summary: BankSummaryFile; days: BankDays } {
+	const ctx = buildReductionContext(input);
+	return {
+		summary: reduceBankSummaryFromContext(input, ctx),
+		days: reduceBankDaysFromContext(ctx),
+	};
 }
 
 /** The registration and account number a Danish IBAN carries (DKkk rrrr aaaaaaaaaa), or null for any other. */
