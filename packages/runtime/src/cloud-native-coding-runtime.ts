@@ -10,6 +10,7 @@ import {
 } from "@qorpera/contracts";
 import type { CloudChatGptPlanAuth } from "./cloud-codex-tool-session.ts";
 import { type CloudCodingCommandGateway, cloudCodingCommandTools } from "./cloud-coding-command-tools.ts";
+import { CODING_INSPECT_IMAGE_SCHEMA } from "./cloud-coding-image-inspect.ts";
 import {
 	cloudControlBackoffMs,
 	cloudControlEnded,
@@ -104,6 +105,7 @@ const INSTRUCTIONS =
 	// repository's secret values to work with.
 	"Handing your commit in is the platform's work, through coding_finish: never push or publish with credentials in the shell. The secret values this session was given, when it was given any, are environment variables of every command, under the names the company saved them with: use them for what the work needs, such as installing private packages or calling a service, and look for no others. Keep operation keys stable after unknown outcomes. " +
 	"Keep the session's secret values out of the files and commits you make in /company: the company folder refuses to save them. " +
+	"Commands in this VM can reach the company's databases under /company/data/ with the data CLI (no database credentials on disk; scoped to what both this session's coding agent and member may read, never a member's private folder, with :viewer defaulting to that member unless viewer=<member id> is passed): data describe [<database>], data apply <database>, data query <database> <question> [name=value ...] (or --sql '<one select>'), and data change <database> <change> [name=value ...] print JSON (use name:=<JSON> for numbers, booleans, or null; destructive schema steps stay held for a member's yes through data_apply; never store secrets in steps, queries, actions, or rows). " +
 	"When only the member who owns this session can decide something, call coding_ask with the exact question (and short choices when there are natural ones) and stop; the session pauses until they answer, and your next turn continues from their answer. " +
 	"When the work and its checks are complete, commit on the current branch and call coding_finish with the commit SHA and a factual summary including failures; that records a submission for trusted publication: a repository kept in Qorpera gets the commit landed on its default branch, one on GitHub gets it pushed as a draft pull request. You have no messaging tool. " +
 	// Own code storage, step 3 (11 Nov 2026): a landing has no draft state, so Qorpera runs the repository's checks
@@ -114,13 +116,14 @@ const INSTRUCTIONS =
 	// Step 5.1 (v247, 15 Nov 2026): a site is served at the top of its own address, https://<name>.qorpera.com/, so links
 	// from / work and the collect no longer refuses them (QORPERA_SITE_ROOT_LINKS allowed while hosts are on); "name"
 	// follows the kernel's name rule, in its own words.
-	'In a repository kept in Qorpera, Qorpera runs the repository\'s checks before your commit goes into its default branch: the commands in .qorpera/checks.json, each from the top of a clean copy of what would go in (your commit, or your commit merged with the default branch when it moved), on this machine, with CI=true and stdin closed. Only work whose every check passes goes in; otherwise nothing goes in and the turn fails with the check that failed and the end of its output. When the repository has no checks file, add one in this change: {"checks":[{"name":"install","run":"npm ci"},{"name":"test","run":"npm test"},{"name":"build","run":"npm run build"}]} for a Node project, or the commands that install, test and build yours; each check has a name (lower case, digits, . _ -), a run command, and may have timeoutSeconds (10 to 1800, 600 when left out; at most 3600 in all) and cwd (a folder of the repository). When the project is a website, add "site": {"folder": "dist"} to the checks file, with the folder your build writes: once every check passed, Qorpera takes the web files in that folder (index.html at its top, at most 500 files and 25 MB in at most 100 folders, none hidden) as the site of this change, and nothing goes in when they are missing or hold one of this session\'s secret values. It may also give "name", the name in the site\'s address https://<name>.qorpera.com/, used once, when the site is first made, and "title", the name members see for the site (1 to 120 characters on one line, no space at either end). ' +
+	'In a repository kept in Qorpera, Qorpera runs the repository\'s checks before your commit goes into its default branch: the commands in .qorpera/checks.json, each from the top of a clean copy of what would go in (your commit, or your commit merged with the default branch when it moved), on this machine, with CI=true and stdin closed. Only work whose every check passes goes in; otherwise nothing goes in and the turn fails with the check that failed and the end of its output. When the repository has no checks file, add one in this change: {"checks":[{"name":"install","run":"npm ci"},{"name":"test","run":"npm test"},{"name":"build","run":"npm run build"}]} for a Node project, or the commands that install, test and build yours; each check has a name (lower case, digits, . _ -), a run command, and may have timeoutSeconds (10 to 1800, 600 when left out; at most 3600 in all) and cwd (a folder of the repository). Checks run sequentially unless any check lists "needs" (an array of check names that must pass first), in which case ready checks run in parallel up to 4 at once (e.g. install first, then lint, typecheck and test with "needs":["install"], then build with "needs":["lint","typecheck","test"]); parallel checks share one copy, so do not let two of them write the same files. When the project is a website, add "site": {"folder": "dist"} to the checks file, with the folder your build writes: once every check passed, Qorpera takes the web files in that folder (index.html at its top, at most 500 files and 25 MB in at most 100 folders, none hidden) as the site of this change, and nothing goes in when they are missing or hold one of this session\'s secret values. It may also give "name", the name in the site\'s address https://<name>.qorpera.com/, used once, when the site is first made, and "title", the name members see for the site (1 to 120 characters on one line, no space at either end). ' +
 	`${SITE_NAME_RULE} ` +
-	'The site is served at the top of an address of its own, so its pages, styles and scripts may link its files from / (/src/app.js) or relatively (src/app.js): both work. Never build a key into the site. Make checks fast and honest: they must not need servers or ports your own commands hold, or files git does not track. Before coding_finish, run them yourself the same way: rm -rf ~/qorpera-check && git clone --quiet --shared --no-checkout "$(git rev-parse --path-format=absolute --git-common-dir)" ~/qorpera-check && git -C ~/qorpera-check checkout --quiet --detach <commit>, then each command in ~/qorpera-check with CI=true. Never remove or weaken a check or a test to make it pass: the record of your change shows every change to the checks. Never commit test output or logs as proof; the record says which checks passed. Write tests with a change that can be tested. ' +
+	'The site is served at the top of an address of its own, so its pages, styles and scripts may link its files from / (/src/app.js) or relatively (src/app.js): both work. Never build a key into the site. Make checks fast and honest: they must not need servers or ports your own commands hold, or files git does not track. Before coding_finish, run them yourself the same way: rm -rf ~/qorpera-check && git clone --quiet --shared --no-checkout "$(git rev-parse --path-format=absolute --git-common-dir)" ~/qorpera-check && git -C ~/qorpera-check checkout --quiet --detach <commit>, then each command in ~/qorpera-check with CI=true. To iterate faster mid-session before committing, you can also call coding_run_command with runChecks true (and optional checkNames or failFast) to validate and run .qorpera/checks.json pre-flight in this worktree with CI=true QORPERA_CHECKS=1 without landing on main. Never remove or weaken a check or a test to make it pass: the record of your change shows every change to the checks. Never commit test output or logs as proof; the record says which checks passed. Write tests with a change that can be tested. ' +
 	"Keep a README that says how to install, test, build and start the project. Say in the summary what a person will notice and which checks you ran. " +
 	// Own code storage, step 2b (10 Nov 2026): every landing is a numbered change with a record a founder reads. The
 	// sentence and the picture are the session's to give; a hand-in without them lands the same.
 	"With coding_finish, also give notice: one plain sentence, in the language of the brief, on what a customer of the company will notice, written for a founder who reads no code, so with no file, branch, commit or test name in it. Leave it out when a customer will notice nothing. When the change shows on a screen, give picture too: take a screenshot of the new screen with the machine's headless Chromium (chromium --headless --screenshot=<file> --window-size=1280,800 <address>), keep it small (a few hundred KB; one over 4 MB is not used), commit it under docs/changes/ with a name of its own, and give its path in the repository. Neither is required: never hold work back for them. " +
+	"For UI or web changes, verify what you built visually before coding_finish: start a local dev or preview server, capture PNG, JPEG, or WebP screenshots with the machine's headless Chromium or Playwright (for example at desktop 1280x800 and mobile 390x844 widths into a temporary file or docs/changes/), and call coding_run_command with inspectImage set to that relative workspace path (using a fresh operationKey for each new or re-captured screenshot) to view each screenshot directly in your context, fix layout, styling, or responsive issues, and stop any temporary server and remove temporary screenshots before committing. " +
 	// Own code storage, slice 1 (8 Nov 2026): a repository kept in Qorpera starts empty, and its landing merges.
 	// Step 6 (12 Nov 2026): code brought in keeps its other branches under refs/qorpera/imported/heads/, for reading; the
 	// import's follow-ups (13 Nov 2026): one is brought into the default branch by merging it into the session's branch.
@@ -137,6 +140,24 @@ const INSTRUCTIONS =
  * attached when the disk was replaced, so no command of it ended as MACHINE_NEW_DISK to say so. */
 const NEW_DISK =
 	"machine.newDisk is true: your machine got a new disk since your previous turn started. Only /company was kept, which holds the repository, so home and cache folders, Docker images and anything installed outside /company start fresh.";
+
+function codingShownImageSha256(text: unknown): string | undefined {
+	if (typeof text !== "string") return undefined;
+	let answer: unknown;
+	try {
+		answer = JSON.parse(text);
+	} catch {
+		return undefined;
+	}
+	if (!answer || typeof answer !== "object" || Array.isArray(answer)) return undefined;
+	const { schema, kind, imageSha256 } = answer as { schema?: unknown; kind?: unknown; imageSha256?: unknown };
+	return schema === CODING_INSPECT_IMAGE_SCHEMA &&
+		kind === "image" &&
+		typeof imageSha256 === "string" &&
+		SHA.test(imageSha256)
+		? imageSha256
+		: undefined;
+}
 
 function record(value: unknown, label = "Invalid coding turn authority"): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(label);
@@ -844,10 +865,25 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 							purpose: frame.purpose,
 							outputs: outputs.map((output) => {
 								const envelope = record(JSON.parse(output.output), "Invalid coding context output");
+								const provenance = record(envelope.provenance, "Invalid coding context output");
+								const content =
+									envelope.content && typeof envelope.content === "object" && !Array.isArray(envelope.content)
+										? (envelope.content as Record<string, unknown>)
+										: undefined;
+								const shownImage =
+									!output.capture &&
+									output.imageSha256 !== undefined &&
+									envelope.status === "ok" &&
+									provenance.tool === "coding_run_command" &&
+									provenance.source === "worker" &&
+									provenance.companyReadId === undefined &&
+									provenance.companyId === initial.identity.companyId &&
+									provenance.runId === initial.identity.runId &&
+									codingShownImageSha256(content?.text) === output.imageSha256;
 								if (
 									output.capture ||
-									output.imageSha256 ||
-									record(envelope.provenance, "Invalid coding context output").companyReadId !== undefined
+									(output.imageSha256 !== undefined && !shownImage) ||
+									provenance.companyReadId !== undefined
 								)
 									throw new Error("CODING_CONTEXT_RESOURCES_REFUSED");
 								return {

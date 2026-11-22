@@ -13,7 +13,8 @@
 //! - `changes` counts invalidations. A listing fetched while one happened is passed on but not kept.
 
 use crate::proto::{join, split, Authority, Entry, EntryKind};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 pub const ROOT: u64 = 1;
 
@@ -83,11 +84,15 @@ pub enum Inval {
 	Entry(u64, String),
 }
 
+pub fn find_child<'a>(children: &'a [Child], name: &str) -> Option<&'a Child> {
+	children.binary_search_by(|c| c.name.as_str().cmp(name)).ok().map(|i| &children[i])
+}
+
 #[derive(Debug)]
 pub struct Tree {
 	nodes: HashMap<u64, Node>,
-	by_path: HashMap<String, u64>,
-	dirs: HashMap<u64, Vec<Child>>,
+	by_path: BTreeMap<String, u64>,
+	dirs: HashMap<u64, Arc<Vec<Child>>>,
 	next_ino: u64,
 	changes: u64,
 }
@@ -115,7 +120,7 @@ impl Tree {
 				cached: false,
 			},
 		);
-		let mut by_path = HashMap::new();
+		let mut by_path = BTreeMap::new();
 		by_path.insert(String::new(), ROOT);
 		Tree { nodes, by_path, dirs: HashMap::new(), next_ino: ROOT + 1, changes: 0 }
 	}
@@ -173,8 +178,8 @@ impl Tree {
 	}
 
 	/// The cached listing of a folder.
-	pub fn listing(&self, dir: u64) -> Option<&[Child]> {
-		self.dirs.get(&dir).map(|l| l.as_slice())
+	pub fn listing(&self, dir: u64) -> Option<Arc<Vec<Child>>> {
+		self.dirs.get(&dir).cloned()
 	}
 
 	/// How many inodes are remembered (for statfs).
@@ -193,9 +198,9 @@ impl Tree {
 		started: u64,
 		keep: bool,
 		hold: Option<&str>,
-	) -> (Vec<Child>, bool) {
+	) -> (Arc<Vec<Child>>, bool) {
 		let Some(dir_path) = self.nodes.get(&dir).filter(|n| !n.detached).map(|n| n.path.clone()) else {
-			return (Vec::new(), false);
+			return (Arc::new(Vec::new()), false);
 		};
 		let current = started == self.changes;
 		let keep = keep && current;
@@ -244,16 +249,17 @@ impl Tree {
 		}
 		children.sort_by(|a, b| a.name.cmp(&b.name));
 		children.dedup_by(|a, b| a.name == b.name);
+		let children = Arc::new(children);
 		if keep {
-			for c in &children {
+			for c in children.iter() {
 				if let Some(n) = self.nodes.get_mut(&c.ino) {
 					n.listed = true;
 				}
 			}
 			// The old listing's names that are gone now are no longer held by it.
-			if let Some(old) = self.dirs.insert(dir, children.clone()) {
+			if let Some(old) = self.dirs.insert(dir, Arc::clone(&children)) {
 				let kept: HashSet<u64> = children.iter().map(|c| c.ino).collect();
-				for c in old.into_iter().filter(|c| !kept.contains(&c.ino)) {
+				for c in old.iter().filter(|c| !kept.contains(&c.ino)) {
 					if let Some(n) = self.nodes.get_mut(&c.ino) {
 						n.listed = false;
 					}
@@ -267,7 +273,7 @@ impl Tree {
 				self.drop_listing(dir);
 			}
 			// Nodes made for this answer alone go when nothing holds them.
-			for c in &children {
+			for c in children.iter() {
 				self.prune(c.ino);
 			}
 		}
@@ -328,19 +334,29 @@ impl Tree {
 		out
 	}
 
+	fn paths_under(&self, path: &str) -> Vec<(String, u64)> {
+		let mut out = Vec::new();
+		if let Some(&ino) = self.by_path.get(path) {
+			out.push((path.to_string(), ino));
+		}
+		let prefix = format!("{path}/");
+		for (p, &ino) in self.by_path.range(prefix.clone()..) {
+			if !p.starts_with(&prefix) {
+				break;
+			}
+			out.push((p.clone(), ino));
+		}
+		out
+	}
+
 	/// Forget the listing of the folder `path` and of each folder below it: the next lookup or listing in one asks the
 	/// node. Nodes the kernel holds keep their inodes and attributes; one only a dropped listing named goes. A listing
 	/// fetched across this is passed on but not kept. The kernel is told nothing: the caller's folders are ones it keeps
 	/// no names in (`fresh`).
 	pub fn drop_listings(&mut self, path: &str) {
 		self.changes += 1;
-		let below = format!("{path}/");
-		let dirs: Vec<u64> = self
-			.by_path
-			.iter()
-			.filter(|&(p, ino)| (p.as_str() == path || p.starts_with(&below)) && self.dirs.contains_key(ino))
-			.map(|(_, &ino)| ino)
-			.collect();
+		let dirs: Vec<u64> =
+			self.paths_under(path).into_iter().filter_map(|(_, ino)| self.dirs.contains_key(&ino).then_some(ino)).collect();
 		for dir in dirs {
 			self.drop_listing(dir);
 		}
@@ -416,8 +432,13 @@ impl Tree {
 		n.seen = attr.clone();
 		// A lookup answers from the folder's cached listing: it names the inode with what it is now.
 		let parent = n.parent;
-		if let Some(child) = self.dirs.get_mut(&parent).and_then(|l| l.iter_mut().find(|c| c.ino == ino)) {
-			child.attr = attr;
+		let name = split(&n.path).1;
+		if let Some(list) = self.dirs.get_mut(&parent) {
+			if let Ok(idx) = list.binary_search_by(|c| c.name.as_str().cmp(name)) {
+				if list[idx].ino == ino {
+					Arc::make_mut(list)[idx].attr = attr;
+				}
+			}
 		}
 	}
 
@@ -425,10 +446,7 @@ impl Tree {
 	/// name. A file still open keeps reading the version it had.
 	pub fn removed_local(&mut self, path: &str) {
 		self.invalidate([path]);
-		let prefix = format!("{path}/");
-		let gone: Vec<u64> =
-			self.by_path.iter().filter(|(p, _)| p.as_str() == path || p.starts_with(&prefix)).map(|(_, i)| *i).collect();
-		for ino in gone {
+		for (_, ino) in self.paths_under(path) {
 			self.remove_here(ino);
 		}
 	}
@@ -448,13 +466,7 @@ impl Tree {
 			}
 		}
 		let Some(moved) = self.by_path.get(from).copied() else { return };
-		let prefix = format!("{from}/");
-		let under: Vec<(String, u64)> = self
-			.by_path
-			.iter()
-			.filter(|(p, _)| p.as_str() == from || p.starts_with(&prefix))
-			.map(|(p, i)| (p.clone(), *i))
-			.collect();
+		let under = self.paths_under(from);
 		for (path, ino) in under {
 			let next = format!("{to}{}", &path[from.len()..]);
 			self.by_path.remove(&path);
@@ -499,7 +511,7 @@ impl Tree {
 
 	fn drop_listing(&mut self, dir: u64) {
 		let Some(children) = self.dirs.remove(&dir) else { return };
-		for c in children {
+		for c in children.iter() {
 			if let Some(n) = self.nodes.get_mut(&c.ino) {
 				n.listed = false;
 			}
@@ -600,7 +612,7 @@ mod tests {
 		let (kids, kept) = t.install(ROOT, vec![file("a", 1, "v1"), file("b", 2, "v2"), file("c", 1, "v1")], t.changes(), true, None);
 		assert!(kept);
 		assert_eq!((ino_of(&kids, "a"), ino_of(&kids, "c")), (a, c));
-		for c in t.listing(ROOT).unwrap() {
+		for c in t.listing(ROOT).unwrap().iter() {
 			assert!(t.attr(c.ino).is_some(), "{} is listed but unknown", c.name);
 		}
 		// Not kept (the feed was down): the cached listing that named the old b goes; siblings in the answer stay
@@ -779,7 +791,8 @@ mod tests {
 		assert_eq!(ino_of(&kids, "new.md"), n);
 		// A save of a file its folder's cached listing names: a lookup from that listing gives what the save made.
 		t.set_local(n, Attr { size: 9, version: "p2".into(), ..t.attr(n).unwrap() });
-		let listed = t.listing(d).unwrap().iter().find(|c| c.ino == n).unwrap();
+		let list = t.listing(d).unwrap();
+		let listed = list.iter().find(|c| c.ino == n).unwrap();
 		assert_eq!((listed.attr.size, listed.attr.version.as_str()), (9, "p2"));
 		// A rename keeps the inode at its new path; the file it replaced keeps its version for whoever holds it.
 		t.renamed_local("d/new.md", "f", ROOT);
@@ -811,5 +824,29 @@ mod tests {
 		let mut t = Tree::new();
 		let (kids, _) = t.install(ROOT, vec![file("x", 1, "1"), file("x", 1, "1")], t.changes(), true, None);
 		assert_eq!(kids.len(), 1);
+	}
+
+	#[test]
+	fn arc_listing_find_child_and_btree_prefix_ops() {
+		let mut t = Tree::new();
+		let entries: Vec<Entry> = (0..64).map(|i| file(&format!("f{i:03}.txt"), i, &format!("v{i}"))).collect();
+		let (kids, kept) = t.install(ROOT, entries, t.changes(), true, Some("f032.txt"));
+		assert!(kept);
+		let cached = t.listing(ROOT).unwrap();
+		assert!(Arc::ptr_eq(&kids, &cached));
+		let target = find_child(&cached, "f032.txt").unwrap();
+		assert_eq!(target.attr.size, 32);
+		assert!(find_child(&cached, "missing.txt").is_none());
+		t.set_local(target.ino, Attr { size: 99, version: "v99".into(), ..target.attr.clone() });
+		assert_eq!(find_child(&cached, "f032.txt").unwrap().attr.size, 32);
+		assert_eq!(find_child(&t.listing(ROOT).unwrap(), "f032.txt").unwrap().attr.size, 99);
+		let (dirs, _) = t.install(ROOT, vec![folder("a"), folder("a-other")], t.changes(), true, None);
+		let a = find_child(&dirs, "a").unwrap().ino;
+		let a_other = find_child(&dirs, "a-other").unwrap().ino;
+		t.install(a, vec![file("x", 1, "1")], t.changes(), true, None);
+		t.install(a_other, vec![file("y", 1, "1")], t.changes(), true, None);
+		t.drop_listings("a");
+		assert!(t.listing(a).is_none());
+		assert!(t.listing(a_other).is_some());
 	}
 }

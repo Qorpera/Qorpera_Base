@@ -20,6 +20,7 @@ import {
 	profileB,
 	session,
 	settle,
+	staff,
 	team,
 	timestamp,
 	userA,
@@ -644,6 +645,7 @@ describe("settings session lifecycle", () => {
 		const role = f.root.querySelector<HTMLSelectElement>('[data-draft="invite-role"]')!;
 		role.value = "viewer";
 		role.focus();
+		vi.mocked(f.api.getTeam).mockResolvedValueOnce({ ...team });
 		f.hints.get("qorpera_profile_access_state")!();
 		await draw();
 		expect(f.root.querySelector<HTMLDetailsElement>(".company-invite")!.open).toBe(true);
@@ -659,6 +661,7 @@ describe("settings session lifecycle", () => {
 		).toEqual(["settings-tab-company"]);
 		const exit = f.root.querySelector<HTMLButtonElement>(".company-exit")!;
 		exit.focus();
+		vi.mocked(f.api.getTeam).mockResolvedValueOnce({ ...team });
 		f.hints.get("qorpera_profile_access_state")!();
 		await draw();
 		expect(f.root.querySelector(".company-exit")).not.toBe(exit);
@@ -2235,5 +2238,55 @@ describe("settings session lifecycle", () => {
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(sdkRpcs(f)).toEqual([]);
 		expect(memberReads()).toEqual([[connectionsUrl, expect.objectContaining({ method: "POST" })]]);
+	});
+
+	it("preserves Company tab staff and team DOM across unrelated store updates and skips drawing while hidden", async () => {
+		const f = fixture(),
+			auth = new AuthController(f.cloud);
+		await auth.start();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({
+			team,
+			staff: [staff],
+			loading: false,
+		});
+		const hub = new HubController(f.api);
+		const view = new SettingsView(
+			f.api,
+			auth,
+			hub,
+			[profileA],
+			company,
+			() => {},
+			() => {},
+			"general",
+		);
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			hub.dispose();
+			company.stop();
+			auth.dispose();
+		};
+		company.store.set({ openDecisions: 3 });
+		await settle();
+		expect(view.el.querySelector(".settings-company")).toBeNull();
+
+		click(view.el, "#settings-tab-company");
+		await settle();
+		const staffLink = view.el.querySelector(".settings-staff a");
+		const teamSection = view.el.querySelector(".settings-team section");
+		expect(staffLink).not.toBeNull();
+		expect(teamSection).not.toBeNull();
+
+		company.store.set({ openDecisions: 4 });
+		await settle();
+		expect(view.el.querySelector(".settings-staff a")).toBe(staffLink);
+		expect(view.el.querySelector(".settings-team section")).toBe(teamSection);
+
+		company.store.set({ staff: [{ ...staff, displayName: "Renamed Agent" }] });
+		await settle();
+		expect(view.el.querySelector(".settings-staff a")).not.toBe(staffLink);
+		expect(view.el.querySelector(".settings-staff small")?.textContent).toBe("Renamed Agent");
 	});
 });

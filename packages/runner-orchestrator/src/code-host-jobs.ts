@@ -44,6 +44,7 @@ export interface CodeHostJob {
 	shell: CodeHostShell;
 	layout: CodeHostLayout;
 	signal: AbortSignal;
+	preparedKeptArea?: string;
 }
 
 /** A job refused by rule, naming what broke it (the first 100 paths and how many more). */
@@ -337,6 +338,38 @@ export class Run {
 		return result.stdout;
 	}
 
+	async readMany(paths: readonly string[]): Promise<(Buffer | null)[]> {
+		const out: (Buffer | null)[] = [];
+		for (let start = 0; start < paths.length; start += 60) {
+			const part = paths.slice(start, start + 60);
+			const result = await this.sh(
+				'for p do if [ -f "$p" ]; then s=$(wc -c <"$p") || exit 1; printf "F %d\\n" "$s"; cat -- "$p" || exit 1; else printf "M\\n"; fi; done',
+				part,
+			);
+			if (result.status !== 0) throw new CodeHostJobFailure("CODE_HOST_READ_FAILED", tail(result.stderr));
+			let offset = 0;
+			for (let i = 0; i < part.length; i++) {
+				const nl = result.stdout.indexOf(0x0a, offset);
+				if (nl < 0) throw new CodeHostJobFailure("CODE_HOST_READ_FAILED", "truncated batch read");
+				const header = result.stdout.subarray(offset, nl).toString("latin1");
+				offset = nl + 1;
+				if (header === "M") {
+					out.push(null);
+				} else {
+					const match = /^F (\d+)$/.exec(header);
+					const size = match ? Number(match[1]) : Number.NaN;
+					if (!Number.isSafeInteger(size) || offset + size > result.stdout.length)
+						throw new CodeHostJobFailure("CODE_HOST_READ_FAILED", "malformed batch read");
+					out.push(result.stdout.subarray(offset, offset + size));
+					offset += size;
+				}
+			}
+			if (offset !== result.stdout.length)
+				throw new CodeHostJobFailure("CODE_HOST_READ_FAILED", "malformed batch read");
+		}
+		return out;
+	}
+
 	/** Git's own lock protocol, which the folder serves: exclusive create of `X.lock`, then the rename over X (never into
 	 * X when X is a directory). */
 	async write(path: string, content: string): Promise<void> {
@@ -353,6 +386,25 @@ export class Run {
 		if (current?.equals(Buffer.from(content))) return;
 		await this.write(path, content);
 		this.restored.push(this.relative(path));
+	}
+
+	async #repairFiles(
+		before: readonly (readonly [string, string])[],
+		stray: readonly string[],
+		after: readonly (readonly [string, string])[],
+	): Promise<void> {
+		const args: string[] = [String(before.length)];
+		for (const [p, c] of before) args.push(p, c);
+		args.push(String(stray.length), ...stray);
+		for (const [p, c] of after) args.push(p, c);
+		const result = await this.sh(
+			'n=$1; shift; i=0; while [ "$i" -lt "$n" ]; do p=$1; c=$2; shift 2; i=$((i + 1)); if [ -f "$p" ] && printf %s "$c" | cmp -s - "$p"; then continue; fi; (set -C; umask 022; printf %s "$c" >"$p.lock") && mv -fT -- "$p.lock" "$p" || exit 11; printf "%s\\n" "$p"; done; m=$1; shift; i=0; while [ "$i" -lt "$m" ]; do p=$1; shift; i=$((i + 1)); if [ -e "$p" ] || [ -L "$p" ]; then rm -f -- "$p" || exit 12; printf "%s\\n" "$p"; fi; done; while [ "$#" -ge 2 ]; do p=$1; c=$2; shift 2; if [ -f "$p" ] && printf %s "$c" | cmp -s - "$p"; then continue; fi; (set -C; umask 022; printf %s "$c" >"$p.lock") && mv -fT -- "$p.lock" "$p" || exit 11; printf "%s\\n" "$p"; done',
+			args,
+		);
+		if (result.status === 11) throw new CodeHostJobFailure("CODE_HOST_WRITE_FAILED", tail(result.stderr));
+		if (result.status !== 0) throw new CodeHostJobFailure("CODE_HOST_PREPARE_FAILED", tail(result.stderr));
+		for (const path of result.stdout.toString("utf8").split("\n").filter(Boolean))
+			this.restored.push(this.relative(path));
 	}
 
 	/** Before every job: no link on the way to or inside the code area's parts, the platform's config, no file that
@@ -385,8 +437,9 @@ export class Run {
 			`${this.main}/.git`,
 			mark,
 		];
-		const types = await this.types([...directories, ...files]);
-		const type = new Map([...directories, ...files].map((path, index) => [path, types[index]]));
+		const extra = admin ? [`${admin}/locked`] : [];
+		const types = await this.types([...directories, ...files, ...extra]);
+		const type = new Map([...directories, ...files, ...extra].map((path, index) => [path, types[index]]));
 		const links = [...type].filter(([, t]) => t === "link").map(([path]) => this.relative(path));
 		if (links.length) throw new CodeHostRefusal("CODE_HOST_LINK", links);
 		// Whatever has the mark's name closes the place to every job but a restore's own.
@@ -405,9 +458,10 @@ export class Run {
 		// ref's lease) and before its HEAD was (at the job's end) leaves one so: the next seed makes it again.
 		const made = type.get(this.repo) === "directory",
 			seeded = made && type.get(`${this.repo}/HEAD`) === "file";
+		const mainAdmin = type.get(`${this.repo}/worktrees/main`) === "directory",
+			mainTree = type.get(this.main) === "directory";
 		if (made) {
-			await this.keep(`${this.repo}/config`, CODE_AREA_CONFIG);
-			// A commondir makes repo.git another repository's worktree; alternates borrow objects from elsewhere.
+			const before: (readonly [string, string])[] = [[`${this.repo}/config`, CODE_AREA_CONFIG]];
 			const stray = [
 				`${this.repo}/commondir`,
 				`${this.repo}/config.worktree`,
@@ -415,22 +469,17 @@ export class Run {
 				`${this.repo}/objects/info/http-alternates`,
 				`${this.repo}/worktrees/main/config.worktree`,
 			];
-			const removed = await this.sh(
-				'for p do if [ -e "$p" ] || [ -L "$p" ]; then rm -f -- "$p" || exit 1; printf "%s\\n" "$p"; fi; done',
-				stray,
-			);
-			if (removed.status !== 0) throw new CodeHostJobFailure("CODE_HOST_PREPARE_FAILED", tail(removed.stderr));
-			for (const path of removed.stdout.toString("utf8").split("\n").filter(Boolean))
-				this.restored.push(this.relative(path));
-		}
-		const mainAdmin = type.get(`${this.repo}/worktrees/main`) === "directory",
-			mainTree = type.get(this.main) === "directory";
-		if (seeded && mainAdmin && mainTree) {
-			await this.keep(`${this.repo}/worktrees/main/commondir`, "../..\n");
-			await this.keep(`${this.repo}/worktrees/main/gitdir`, `${this.main}/.git\n`);
-			await this.keep(`${this.main}/.git`, `gitdir: ${this.repo}/worktrees/main\n`);
-			if (type.get(`${this.repo}/worktrees/main/locked`) === "none")
-				await this.keep(`${this.repo}/worktrees/main/locked`, MAIN_LOCK);
+			const after: (readonly [string, string])[] = [];
+			if (seeded && mainAdmin && mainTree) {
+				after.push(
+					[`${this.repo}/worktrees/main/commondir`, "../..\n"],
+					[`${this.repo}/worktrees/main/gitdir`, `${this.main}/.git\n`],
+					[`${this.main}/.git`, `gitdir: ${this.repo}/worktrees/main\n`],
+				);
+				if (type.get(`${this.repo}/worktrees/main/locked`) === "none")
+					after.push([`${this.repo}/worktrees/main/locked`, MAIN_LOCK]);
+			}
+			await this.#repairFiles(before, stray, after);
 		}
 		return {
 			made,
@@ -444,27 +493,46 @@ export class Run {
 						: ("none" as const),
 			worktree:
 				worktree && admin
-					? { tree: type.get(worktree) as PathType, admin: type.get(admin) as PathType }
+					? {
+							tree: type.get(worktree) as PathType,
+							admin: type.get(admin) as PathType,
+							locked: type.get(`${admin}/locked`) as PathType,
+						}
 					: undefined,
+		};
+	}
+
+	async refsNamed(refs: readonly string[]): Promise<(ref: string) => string | null> {
+		const byName = new Map<string, readonly [string, string, string]>();
+		if (refs.length > 0) {
+			const unique = [...new Set(refs)];
+			const out = (
+				await this.gitOk(
+					this.repo,
+					["for-each-ref", "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)", ...unique],
+					"CODE_HOST_REF_UNREADABLE",
+				)
+			).toString("utf8");
+			for (const line of out.split("\n")) {
+				if (!line) continue;
+				const [name, objectName = "", objectType = "", symref = ""] = line.split("\0");
+				if (name) byName.set(name, [objectName, objectType, symref]);
+			}
+		}
+		return (ref: string): string | null => {
+			const entry = byName.get(ref);
+			if (!entry) return null;
+			const [objectName, objectType, symref] = entry;
+			if (symref) throw new CodeHostRefusal("CODE_HOST_REF_IS_SYMBOLIC", [ref]);
+			if (objectType !== "commit" || !SHA.test(objectName))
+				throw new CodeHostRefusal("CODE_HOST_REF_NOT_A_COMMIT", [ref]);
+			return objectName;
 		};
 	}
 
 	/** A ref of the code area, read without following it: its commit, or null when there is none. */
 	async ref(ref: string): Promise<string | null> {
-		const out = (
-			await this.gitOk(
-				this.repo,
-				["for-each-ref", "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)", ref],
-				"CODE_HOST_REF_UNREADABLE",
-			)
-		).toString("utf8");
-		const line = out.split("\n").find((l) => l.split("\0")[0] === ref);
-		if (!line) return null;
-		const [, objectName, objectType, symref] = line.split("\0");
-		if (symref) throw new CodeHostRefusal("CODE_HOST_REF_IS_SYMBOLIC", [ref]);
-		if (objectType !== "commit" || !SHA.test(objectName))
-			throw new CodeHostRefusal("CODE_HOST_REF_NOT_A_COMMIT", [ref]);
-		return objectName;
+		return (await this.refsNamed([ref]))(ref);
 	}
 
 	/** Every ref of a git directory in one read, in git's order (by name), each with the object it names: for a
@@ -504,6 +572,17 @@ export class Run {
 	async isCommit(gitDir: string, commit: string): Promise<boolean> {
 		const result = await this.git(gitDir, ["cat-file", "-t", commit]);
 		return result.status === 0 && result.stdout.toString("utf8") === "commit\n";
+	}
+
+	async areCommits(gitDir: string, commits: readonly string[]): Promise<boolean[]> {
+		if (commits.length === 0) return [];
+		const result = await this.git(gitDir, ["cat-file", "--batch-check=%(objecttype)"], {
+			stdin: Buffer.from(`${commits.join("\n")}\n`),
+		});
+		if (result.status !== 0) return commits.map(() => false);
+		const lines = result.stdout.toString("utf8").split("\n");
+		if (lines.pop() !== "" || lines.length !== commits.length) return commits.map(() => false);
+		return lines.map((line) => line === "commit");
 	}
 
 	/** §6 "Names": every name in the commit's tree in NFC, no two names in one folder that differ only by case, and no
@@ -807,12 +886,13 @@ export async function inspectCodeArea(
 	return withJob(job, repository, async (run) => {
 		const area = await run.prepare();
 		if (!area.seeded) return { base: null, ready: false, holds: false, restored: run.restored };
-		const base = await run.ref(`refs/heads/${repository.baseBranch}`);
-		const ready =
-			area.main === "present" &&
-			base !== null &&
-			(await run.read(`${run.repo}/worktrees/main/HEAD`))?.equals(Buffer.from(`${base}\n`)) === true;
-		return { base, ready, holds: await run.isCommit(run.repo, commit), restored: run.restored };
+		const [base, headBytes, holds] = await Promise.all([
+			run.ref(`refs/heads/${repository.baseBranch}`),
+			area.main === "present" ? run.read(`${run.repo}/worktrees/main/HEAD`) : Promise.resolve(null),
+			run.isCommit(run.repo, commit),
+		]);
+		const ready = area.main === "present" && base !== null && headBytes?.equals(Buffer.from(`${base}\n`)) === true;
+		return { base, ready, holds, restored: run.restored };
 	});
 }
 
@@ -847,14 +927,21 @@ export async function addCodeWorktree(job: CodeHostJob, value: CodeWorktree): Pr
 		if (!area.seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
 		const tree = `${run.code}/worktrees/${workerId}`,
 			admin = `${run.repo}/worktrees/${workerId}`;
-		const { tree: treeType, admin: adminType } = area.worktree as { tree: PathType; admin: PathType };
+		const {
+			tree: treeType,
+			admin: adminType,
+			locked: lockedType,
+		} = area.worktree as {
+			tree: PathType;
+			admin: PathType;
+			locked: PathType;
+		};
 		const head = await run.ref(`refs/heads/${branch}`);
 		if (treeType === "directory" && adminType === "directory") {
-			const link = await run.read(`${tree}/.git`),
-				back = await run.read(`${admin}/gitdir`);
+			const [link, back] = await run.readMany([`${tree}/.git`, `${admin}/gitdir`]);
 			if (!link?.equals(Buffer.from(`gitdir: ${admin}\n`)) || !back?.equals(Buffer.from(`${tree}/.git\n`)))
 				throw new CodeHostRefusal("CODE_HOST_WORKTREE_CHANGED", [run.relative(tree)]);
-			if ((await run.types([`${admin}/locked`]))[0] === "none") await run.keep(`${admin}/locked`, WORKTREE_LOCK);
+			if (lockedType === "none") await run.keep(`${admin}/locked`, WORKTREE_LOCK);
 			return { state: "present", headSha: head, restored: run.restored };
 		}
 		const adminLeft = treeType === "none" && adminType === "directory";
@@ -924,9 +1011,10 @@ export async function exportCodeBranch(
 		if (!(await run.prepare()).seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
 		const branch = await run.ref(ref);
 		if (!branch) throw new CodeHostRefusal("CODE_HOST_EXPORT_NO_BRANCH", [ref]);
-		if (!(await run.isCommit(run.repo, baseSha))) throw new CodeHostRefusal("CODE_HOST_BASE_UNKNOWN", [baseSha]);
+		const [hasBase, hasHead] = await run.areCommits(run.repo, [baseSha, headSha]);
+		if (!hasBase) throw new CodeHostRefusal("CODE_HOST_BASE_UNKNOWN", [baseSha]);
 		// The branch may have moved on since the session submitted; it must still hold what was submitted.
-		if (!(await run.isCommit(run.repo, headSha))) throw new CodeHostRefusal("CODE_HOST_EXPORT_MOVED", [ref]);
+		if (!hasHead) throw new CodeHostRefusal("CODE_HOST_EXPORT_MOVED", [ref]);
 		const held = await run.git(run.repo, ["merge-base", "--is-ancestor", headSha, branch]);
 		if (held.status === 1) throw new CodeHostRefusal("CODE_HOST_EXPORT_MOVED", [ref]);
 		if (held.status !== 0) throw new CodeHostJobFailure("CODE_HOST_EXPORT_FAILED", tail(held.stderr));
@@ -1010,8 +1098,9 @@ export async function startCodeArea(
 			await run.write(`${run.repo}/config`, CODE_AREA_CONFIG);
 			if (area.made) run.restored.push(run.relative(`${run.repo}/HEAD`));
 		}
-		let kept = await run.ref(CODE_AREA_IN_QORPERA_REF);
-		const head = await run.ref(base);
+		const named = await run.refsNamed([CODE_AREA_IN_QORPERA_REF, base]);
+		let kept = named(CODE_AREA_IN_QORPERA_REF);
+		const head = named(base);
 		if (kept === null && head !== null) throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
 		if (kept === null) {
 			const tree = (await run.gitOk(run.repo, ["mktree"], "CODE_HOST_START_FAILED", { stdin: new Uint8Array() }))
@@ -1296,8 +1385,8 @@ export async function landCodeBranch(
 	return withJob(job, repository, async (run): Promise<CodeBranchLanded | CodeBranchToCheck> => {
 		const area = await run.prepare();
 		if (!area.seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
-		if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null)
-			throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+		const named = await run.refsNamed([CODE_AREA_IN_QORPERA_REF, ref, base]);
+		if (named(CODE_AREA_IN_QORPERA_REF) === null) throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
 		const ancestor = async (older: string, newer: string): Promise<boolean> => {
 			const result = await run.git(run.repo, ["merge-base", "--is-ancestor", older, newer]);
 			if (result.status !== 0 && result.status !== 1)
@@ -1305,18 +1394,26 @@ export async function landCodeBranch(
 			return result.status === 0;
 		};
 		// The branch may have moved on since the session submitted; it must still hold what was submitted.
-		const branch = await run.ref(ref);
-		if (!branch || !(await run.isCommit(run.repo, headSha)) || !(await ancestor(headSha, branch))) {
+		const branch = named(ref);
+		if (
+			!branch ||
+			(branch !== headSha && (!(await run.isCommit(run.repo, headSha)) || !(await ancestor(headSha, branch))))
+		) {
 			if (expected) throw stale("the session's branch no longer holds the commit");
 			throw new CodeHostRefusal(branch ? "CODE_HOST_EXPORT_MOVED" : "CODE_HOST_EXPORT_NO_BRANCH", [ref]);
 		}
-		const current = await run.ref(base);
+		const current = named(base);
 		if (!current) throw new CodeHostRefusal("CODE_HOST_AREA_NO_BASE", [base]);
-		if (await ancestor(headSha, current)) {
-			const at =
-				area.main === "present" &&
-				(await run.read(`${run.repo}/worktrees/main/HEAD`))?.equals(Buffer.from(`${current}\n`)) === true;
-			const containedAt = await firstHeldAt(run, headSha, current);
+		const [alreadyInMain, fastForward] =
+			headSha === current
+				? [true, true]
+				: await Promise.all([ancestor(headSha, current), ancestor(current, headSha)]);
+		if (alreadyInMain) {
+			const [headBytes, containedAt] = await Promise.all([
+				area.main === "present" ? run.read(`${run.repo}/worktrees/main/HEAD`) : Promise.resolve(null),
+				firstHeldAt(run, headSha, current),
+			]);
+			const at = area.main === "present" && headBytes?.equals(Buffer.from(`${current}\n`)) === true;
 			if (!at) await moveBase(run, area.main, base, current, current);
 			return {
 				state: "unchanged",
@@ -1329,7 +1426,7 @@ export async function landCodeBranch(
 			};
 		}
 		if (expected && current !== expected.mainBefore) throw stale("the default branch moved");
-		const state = (await ancestor(current, headSha)) ? ("fast-forward" as const) : ("merged" as const);
+		const state = fastForward ? ("fast-forward" as const) : ("merged" as const);
 		let next = headSha;
 		if (expected) {
 			// Exactly the candidate that was checked: the session's commit, or the merge of the two in that order.
@@ -1394,8 +1491,21 @@ export async function landCodeBranch(
 		const refused = codeFolderRefuses(run.area, records, CODE_FOLDER_ANY_SESSION);
 		if (refused.length) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
 		if (checks) {
-			const found = await commitFile(run, next, CODE_CHECKS_FILE, CODE_CHECKS_READ_BYTES),
-				mainFound = await commitFile(run, current, CODE_CHECKS_FILE, CODE_CHECKS_READ_BYTES);
+			const wantedPath = Buffer.from(CODE_CHECKS_FILE, "utf8");
+			const nextEntry = records.find((record) => record.path.equals(wantedPath));
+			const [found, mainEntry] = await Promise.all([
+				commitFileFromEntry(run, nextEntry, CODE_CHECKS_READ_BYTES),
+				commitTreeEntry(run, current, CODE_CHECKS_FILE),
+			]);
+			const mainFound =
+				found.entry.kind === "file" &&
+				mainEntry &&
+				mainEntry.type === "blob" &&
+				(mainEntry.mode === "100644" || mainEntry.mode === "100755") &&
+				mainEntry.name === found.blob &&
+				Number.isSafeInteger(Number(mainEntry.size))
+					? { entry: { kind: "file" as const, bytes: new Uint8Array(found.entry.bytes) }, blob: found.blob }
+					: await commitFileFromEntry(run, mainEntry, CODE_CHECKS_READ_BYTES);
 			if (found.entry.kind !== "missing" || mainFound.entry.kind !== "missing")
 				return {
 					state: "to-check",
@@ -1407,8 +1517,10 @@ export async function landCodeBranch(
 					restored: run.restored,
 				};
 		}
-		const diff = await changeDiff(run, current, next, "CODE_HOST_LAND_FAILED"),
-			checked = picture === undefined ? null : await checkPicture(run, records, picture);
+		const [diff, checked] = await Promise.all([
+			changeDiff(run, current, next, "CODE_HOST_LAND_FAILED"),
+			picture === undefined ? Promise.resolve(null) : checkPicture(run, records, picture),
+		]);
 		await moveBase(run, area.main, base, next, current);
 		return {
 			state,
@@ -1670,13 +1782,19 @@ export async function checkCodeArea(
 				repaired = "files";
 			}
 		}
-		const listed = await run.sh(
-			'[ -d "$1" ] || exit 0; exec find "$1" -mindepth 1 -maxdepth 1 -type d -printf "%f\\0"',
-			[`${run.code}/worktrees`],
-			{ maximumOutputBytes: MAX_READ },
-		);
+		const [listed, countedBytes, shallowTypes] = await Promise.all([
+			run.sh(
+				'[ -d "$1" ] || exit 0; exec find "$1" -mindepth 1 -maxdepth 1 -type d -printf "%f\\0"',
+				[`${run.code}/worktrees`],
+				{
+					maximumOutputBytes: MAX_READ,
+				},
+			),
+			run.gitOk(run.repo, ["count-objects", "-v"], "CODE_HOST_INSPECT_FAILED"),
+			run.types([`${run.repo}/shallow`]),
+		]);
 		if (listed.status !== 0) throw new CodeHostJobFailure("CODE_HOST_INSPECT_FAILED", tail(listed.stderr));
-		const counted = (await run.gitOk(run.repo, ["count-objects", "-v"], "CODE_HOST_INSPECT_FAILED")).toString("utf8");
+		const counted = countedBytes.toString("utf8");
 		const count = (key: string): number => {
 			const number = Number(new RegExp(`^${key}: (\\d+)$`, "m").exec(counted)?.[1]);
 			if (!Number.isSafeInteger(number)) throw new CodeHostJobFailure("CODE_HOST_INSPECT_FAILED", "count-objects");
@@ -1687,7 +1805,7 @@ export async function checkCodeArea(
 			mainSha,
 			refs,
 			refsSha256: codeRefsSha256(refs),
-			shallow: (await run.types([`${run.repo}/shallow`]))[0] !== "none",
+			shallow: shallowTypes[0] !== "none",
 			worktrees: listed.stdout.toString("utf8").split("\0").filter(isUuid).sort(),
 			objects: { loose: count("count"), packs: count("packs"), sizeKiB: count("size") + count("size-pack") },
 			repaired,
@@ -1882,17 +2000,19 @@ async function retireFiles(run: Run, workerId: string): Promise<string | null> {
 	if (treeType !== "directory" || adminType !== "directory") return "NOT_THERE";
 	// The two link files as `addCodeWorktree` reads them, and commondir, which says whose objects, refs and config git
 	// takes for this worktree: every git command below runs on this folder.
+	if (linkType !== "file" || backType !== "file" || commonType !== "file") return "LINKS_DIFFER";
+	const [linkBytes, backBytes, commonBytes, headBytes] = await run.readMany(
+		headType === "file"
+			? [`${tree}/.git`, `${admin}/gitdir`, `${admin}/commondir`, `${admin}/HEAD`]
+			: [`${tree}/.git`, `${admin}/gitdir`, `${admin}/commondir`],
+	);
 	if (
-		linkType !== "file" ||
-		backType !== "file" ||
-		commonType !== "file" ||
-		!(await run.read(`${tree}/.git`))?.equals(Buffer.from(`gitdir: ${admin}\n`)) ||
-		!(await run.read(`${admin}/gitdir`))?.equals(Buffer.from(`${tree}/.git\n`)) ||
-		!(await run.read(`${admin}/commondir`))?.equals(Buffer.from("../..\n"))
+		!linkBytes?.equals(Buffer.from(`gitdir: ${admin}\n`)) ||
+		!backBytes?.equals(Buffer.from(`${tree}/.git\n`)) ||
+		!commonBytes?.equals(Buffer.from("../..\n"))
 	)
 		return "LINKS_DIFFER";
-	if (headType !== "file" || !(await run.read(`${admin}/HEAD`))?.equals(Buffer.from(`ref: ${ref}\n`)))
-		return "HEAD_NOT_ITS_BRANCH";
+	if (headType !== "file" || !headBytes?.equals(Buffer.from(`ref: ${ref}\n`))) return "HEAD_NOT_ITS_BRANCH";
 	const head = await run.ref(ref).catch((error: unknown) => {
 		if (error instanceof CodeHostRefusal) return null;
 		throw error;
@@ -2028,10 +2148,10 @@ export async function retireCodeWorktrees(
 async function keptArea(run: Run) {
 	const area = await run.prepare();
 	if (!area.seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
-	if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null)
-		throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
-	const base = `refs/heads/${run.repository.baseBranch}`,
-		mainSha = await run.ref(base);
+	const base = `refs/heads/${run.repository.baseBranch}`;
+	const named = await run.refsNamed([CODE_AREA_IN_QORPERA_REF, base]);
+	if (named(CODE_AREA_IN_QORPERA_REF) === null) throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+	const mainSha = named(base);
 	if (!mainSha) throw new CodeHostRefusal("CODE_HOST_AREA_NO_BASE", [base]);
 	return { area, base, mainSha };
 }
@@ -2142,20 +2262,20 @@ export async function writeCodeChangeRecords(
 	});
 	if (new Set(records.map((record) => record.n)).size !== records.length) throw new Error("INVALID_CODE_HOST_JOB");
 	return withJob(job, repository, async (run) => {
-		await keptArea(run);
+		if (job.preparedKeptArea !== run.area) await keptArea(run);
 		const folder = `${run.code}/changes`,
 			diffs: ({ n: number } & CodeChangeDiff)[] = [],
 			texts: { n: number | null; path: string; bytes: Buffer }[] = [],
-			pictures: { blob: string; path: string }[] = [],
-			here = new Map<string, boolean>();
-		const held = async (commit: string): Promise<boolean> => {
-			if (!here.has(commit)) here.set(commit, await run.isCommit(run.repo, commit));
-			return here.get(commit) === true;
-		};
+			pictures: { blob: string; path: string }[] = [];
+		const diffCommits = [
+			...new Set(records.flatMap((record) => (record.diff ? [record.diff.before, record.diff.after] : []))),
+		];
+		const diffHere = diffCommits.length ? await run.areCommits(run.repo, diffCommits) : [];
+		const here = new Map(diffCommits.map((commit, index) => [commit, diffHere[index] === true]));
 		for (const { n, text, diff, picture } of records) {
 			let found: CodeChangeDiff | undefined;
 			if (diff) {
-				if (!(await held(diff.before)) || !(await held(diff.after))) continue;
+				if (!here.get(diff.before) || !here.get(diff.after)) continue;
 				found = await changeDiff(run, diff.before, diff.after, "CODE_HOST_RECORD_FAILED");
 				diffs.push({ n, ...found });
 			}
@@ -2201,18 +2321,20 @@ export async function writeCodeChangeRecords(
 			return found;
 		};
 		const there = (file: { path: string }) => type.get(file.path) === "file";
-		const textHashes = await hashes(
+		const [textHashes, pictureHashes] = await Promise.all([
+			hashes(
 				'for p do sha256sum <"$p" || exit 1; done',
 				[],
 				texts.filter(there).map((file) => file.path),
 				/^([0-9a-f]{64}) [ *]-$/,
 			),
-			pictureHashes = await hashes(
+			hashes(
 				'exec "$@"',
 				[run.layout.git, "--no-replace-objects", `--git-dir=${run.repo}`, "hash-object", "--no-filters", "--"],
 				pictures.filter(there).map((file) => file.path),
 				/^([0-9a-f]{40})$/,
-			);
+			),
+		]);
 		const newTexts = texts.filter(
 				(file) => textHashes.get(file.path) !== createHash("sha256").update(file.bytes).digest("hex"),
 			),
@@ -2299,8 +2421,9 @@ export async function undoCodeChange(
 	const line = `Qorpera-Request: ${requestId}`;
 	return withJob(job, repository, async (run) => {
 		const { area, base, mainSha } = await keptArea(run);
-		const unknown: string[] = [];
-		for (const commit of new Set([after, before])) if (!(await run.isCommit(run.repo, commit))) unknown.push(commit);
+		const wanted = [...new Set([after, before])];
+		const exists = await run.areCommits(run.repo, wanted);
+		const unknown = wanted.filter((_, index) => !exists[index]);
 		if (unknown.length) throw new CodeHostRefusal("CODE_HOST_UNDO_UNKNOWN_COMMIT", unknown);
 		const held = await run.git(run.repo, ["merge-base", "--is-ancestor", after, mainSha]);
 		if (held.status === 1) throw new CodeHostRefusal("CODE_HOST_UNDO_NOT_IN_MAIN", [after]);
@@ -2520,7 +2643,11 @@ export interface CodeCommitFile {
 }
 /** One path of a commit of the code area, read by git (`ls-tree`, then `cat-file`) and never from a worktree. `path`
  * and `maxBytes` are the caller's to check. */
-async function commitFile(run: Run, commit: string, path: string, maxBytes: number): Promise<CodeCommitFile> {
+async function commitTreeEntry(
+	run: Run,
+	commit: string,
+	path: string,
+): Promise<ReturnType<typeof treeRecords>[number] | undefined> {
 	// Without -r, ls-tree walks down to the path and shows its own entry.
 	const listing = await run.gitOk(
 		run.repo,
@@ -2528,7 +2655,14 @@ async function commitFile(run: Run, commit: string, path: string, maxBytes: numb
 		"CODE_HOST_TREE_UNREADABLE",
 	);
 	const wantedPath = Buffer.from(path, "utf8");
-	const entry = treeRecords(listing).find((record) => record.path.equals(wantedPath));
+	return treeRecords(listing).find((record) => record.path.equals(wantedPath));
+}
+
+async function commitFileFromEntry(
+	run: Run,
+	entry: ReturnType<typeof treeRecords>[number] | undefined,
+	maxBytes: number,
+): Promise<CodeCommitFile> {
 	if (!entry) return { entry: { kind: "missing" }, blob: null };
 	const { mode, type, name, size } = entry;
 	if (type !== "blob" || (mode !== "100644" && mode !== "100755")) return { entry: { kind: "other" }, blob: null };

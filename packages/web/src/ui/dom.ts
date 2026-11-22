@@ -5,7 +5,7 @@ import { figureElement } from "./avatar.ts";
 import { attachCompanyLogo } from "./company-logos.ts";
 import { leave } from "./motion.ts";
 import { attachPersonPicture } from "./person-pictures.ts";
-import { presentationDay, presentationLocale, t, timeZoneOption } from "./preferences.ts";
+import { presentationDay, presentationLocale, systemTimeZone, t, timeZoneOption } from "./preferences.ts";
 
 export type Child = Node | string | number | boolean | null | undefined | Child[];
 type Attrs = Record<string, unknown>;
@@ -126,35 +126,63 @@ export function replace(parent: Element, ...children: Child[]): void {
 	append(parent, children);
 }
 
+const MAX_DATE_FORMATS = 32;
+const dateFormats = new Map<string, Intl.DateTimeFormat>();
+let taskSystemZone: string | undefined;
+
+function resolvedSystemZone(): string {
+	if (taskSystemZone === undefined) {
+		taskSystemZone = systemTimeZone();
+		queueMicrotask(() => {
+			taskSystemZone = undefined;
+		});
+	}
+	return taskSystemZone;
+}
+
+export function formatPresentationDate(
+	date: Date,
+	kind: "time" | "short-date" | "full-date",
+	locale = presentationLocale(),
+	timeZone = timeZoneOption().timeZone,
+): string {
+	const zoneKey = timeZone ? `z:${timeZone}` : `s:${resolvedSystemZone()}`;
+	const key = `${kind}\0${locale}\0${zoneKey}`;
+	let format = dateFormats.get(key);
+	if (!format) {
+		if (dateFormats.size >= MAX_DATE_FORMATS) dateFormats.clear();
+		const zone = timeZone ? { timeZone } : {};
+		format = new Intl.DateTimeFormat(
+			locale,
+			kind === "time"
+				? { hour: "2-digit", minute: "2-digit", ...zone }
+				: kind === "short-date"
+					? { month: "short", day: "numeric", ...zone }
+					: { year: "numeric", month: "short", day: "numeric", ...zone },
+		);
+		dateFormats.set(key, format);
+	}
+	return format.format(date);
+}
+
 /** Times and days are the chosen zone's (Settings → General → Time zone). */
 export function fmtTime(iso: string): string {
 	const date = new Date(iso);
 	if (Number.isNaN(date.getTime())) return "";
-	const zone = timeZoneOption();
-	const day = presentationDay(date, zone.timeZone),
-		today = presentationDay(new Date(), zone.timeZone);
-	const time = date.toLocaleTimeString(presentationLocale(), { hour: "2-digit", minute: "2-digit", ...zone });
+	const locale = presentationLocale();
+	const timeZone = timeZoneOption().timeZone;
+	const day = presentationDay(date, timeZone),
+		today = presentationDay(new Date(), timeZone);
+	const time = formatPresentationDate(date, "time", locale, timeZone);
 	if (day === today) return time;
 	const sameYear = day.slice(0, 4) === today.slice(0, 4);
-	const shown = date.toLocaleDateString(
-		presentationLocale(),
-		sameYear
-			? { month: "short", day: "numeric", ...zone }
-			: { year: "numeric", month: "short", day: "numeric", ...zone },
-	);
+	const shown = formatPresentationDate(date, sameYear ? "short-date" : "full-date", locale, timeZone);
 	return `${shown}, ${time}`;
 }
 
 export function fmtDate(iso: string): string {
 	const date = new Date(iso);
-	return Number.isNaN(date.getTime())
-		? ""
-		: date.toLocaleDateString(presentationLocale(), {
-				year: "numeric",
-				month: "short",
-				day: "numeric",
-				...timeZoneOption(),
-			});
+	return Number.isNaN(date.getTime()) ? "" : formatPresentationDate(date, "full-date");
 }
 
 export function fmtBytes(bytes: number): string {

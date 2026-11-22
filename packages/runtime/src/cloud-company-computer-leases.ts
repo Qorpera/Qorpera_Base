@@ -50,6 +50,7 @@ export interface CompanyComputerScreenLeaseControl {
 export class CompanyComputerScreenLeaseHandle {
 	readonly signal: AbortSignal;
 	readonly #run: CompanyComputerRun;
+	readonly #onRunAbort: () => void;
 	readonly #control: CompanyComputerScreenLeaseControl;
 	readonly #stop = new AbortController();
 	readonly #driver: CompanyComputerDriver;
@@ -71,12 +72,16 @@ export class CompanyComputerScreenLeaseHandle {
 		this.#control = control;
 		this.#lease = structuredClone(lease);
 		this.#driver = { kind: "agent", runId: run.identity.runId, staffAgentId: run.identity.staffAgentId };
-		this.signal = AbortSignal.any([run.signal, this.#stop.signal]);
+		this.#onRunAbort = () => this.#stop.abort(run.signal.reason);
+		if (run.signal.aborted) this.#stop.abort(run.signal.reason);
+		else run.signal.addEventListener("abort", this.#onRunAbort, { once: true });
+		this.signal = this.#stop.signal;
 		this.signal.addEventListener(
 			"abort",
 			() => {
 				clearTimeout(this.#expiry);
 				clearTimeout(this.#renewal);
+				this.#run.signal.removeEventListener("abort", this.#onRunAbort);
 			},
 			{ once: true },
 		);
@@ -152,11 +157,38 @@ export class CompanyComputerScreenLeaseHandle {
 	}
 
 	async #refresh(renew: boolean, signal: AbortSignal): Promise<void> {
-		const combined = AbortSignal.any([signal, this.signal]);
+		if (this.signal.aborted) {
+			throw new Error("SCREEN_LEASE_UNAVAILABLE");
+		}
+		if (signal !== this.signal && signal.aborted) {
+			throw new Error("SCREEN_LEASE_UNAVAILABLE", { cause: signal.reason });
+		}
+		this.#assertDeadline();
+		const waitForCaller = <T>(promise: Promise<T>): Promise<T> => {
+			if (signal === this.signal) return promise;
+			return new Promise<T>((resolve, reject) => {
+				const onAbort = () => reject(new Error("SCREEN_LEASE_UNAVAILABLE", { cause: signal.reason }));
+				if (signal.aborted) {
+					onAbort();
+					return;
+				}
+				signal.addEventListener("abort", onAbort, { once: true });
+				promise.then(
+					(value) => {
+						signal.removeEventListener("abort", onAbort);
+						resolve(value);
+					},
+					(error) => {
+						signal.removeEventListener("abort", onAbort);
+						reject(error);
+					},
+				);
+			});
+		};
 		if (this.#refreshing) {
 			const refreshing = this.#refreshing;
 			const renewing = this.#renewing;
-			await companyComputerRequest(() => refreshing, combined);
+			await waitForCaller(refreshing);
 			this.#assertDeadline();
 			// Joining a check proves current validity; it does not perform the
 			// renewal that became due while the check was in flight.
@@ -164,27 +196,35 @@ export class CompanyComputerScreenLeaseHandle {
 			return;
 		}
 		this.#renewing = renew;
-		this.#refreshing = (async () => {
-			this.#assertDeadline();
-			await this.#run.assertActive(combined);
-			this.#assertDeadline();
-			const started = performance.now();
-			const lease = await companyComputerRequest(
-				(requestSignal) =>
-					renew ? this.#control.renew(this.lease, requestSignal) : this.#control.check(this.lease, requestSignal),
-				combined,
-			);
-			this.#assertDeadline();
-			this.#accept(lease, started, renew);
+		let settled = false;
+		let running: Promise<void> | undefined;
+		running = (async () => {
+			try {
+				this.#assertDeadline();
+				await this.#run.assertActive(this.signal);
+				this.#assertDeadline();
+				const started = performance.now();
+				const lease = await companyComputerRequest(
+					(requestSignal) =>
+						renew
+							? this.#control.renew(this.lease, requestSignal)
+							: this.#control.check(this.lease, requestSignal),
+					this.signal,
+				);
+				this.#assertDeadline();
+				this.#accept(lease, started, renew);
+			} catch {
+				this.#stop.abort();
+				throw new Error("SCREEN_LEASE_UNAVAILABLE");
+			} finally {
+				settled = true;
+				if (this.#refreshing === running) this.#refreshing = undefined;
+			}
 		})();
-		try {
-			await this.#refreshing;
-		} catch {
-			this.#stop.abort();
-			throw new Error("SCREEN_LEASE_UNAVAILABLE");
-		} finally {
-			this.#refreshing = undefined;
-		}
+		// WHY: Suppress unhandled rejections when a caller aborts early before the shared lease refresh settles.
+		running.catch(() => undefined);
+		if (!settled) this.#refreshing = running;
+		await waitForCaller(running);
 	}
 
 	assertActive(signal: AbortSignal): Promise<void> {

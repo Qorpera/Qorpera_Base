@@ -660,27 +660,28 @@ export class RfbReader {
 	}
 }
 
-// PNG, as small as is cheap: RGB (or RGBA for the pointer), each row filtered by its byte to the left, deflated in this
-// process, which is a desktop's own instance (company-machine-stream-process.ts), on its loop: a band of noise is about
-// 11 ms to deflate, and holds only that instance.
-
-function chunk(type: string, data: Buffer): Buffer {
-	const head = Buffer.alloc(8);
-	head.writeUInt32BE(data.byteLength, 0);
-	head.write(type, 4, "latin1");
-	const crc = Buffer.alloc(4);
-	crc.writeUInt32BE(crc32(data, crc32(head.subarray(4))), 0);
-	return Buffer.concat([head, data, crc]);
-}
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const PNG_CHUNK_OVERHEAD = 12;
+const PNG_IEND_CHUNK = (() => {
+	const buf = Buffer.alloc(PNG_CHUNK_OVERHEAD);
+	buf.write("IEND", 4, "latin1");
+	buf.writeUInt32BE(crc32(buf.subarray(4, 8)), 8);
+	return buf;
+})();
+// WHY: stay single-threaded under CPUQuota=100% (avoiding libuv CFS throttling) while yielding before level-3 deflateSync (~0.1-1.9 ms up to MAX_AREA_PIXELS).
+const PNG_DEFLATE_LEVEL = 3;
+
+function writeChunk(target: Buffer, offset: number, type: string, data: Buffer): number {
+	target.writeUInt32BE(data.byteLength, offset);
+	target.write(type, offset + 4, "latin1");
+	data.copy(target, offset + 8);
+	target.writeUInt32BE(crc32(data, crc32(target.subarray(offset + 4, offset + 8))), offset + 8 + data.byteLength);
+	return offset + PNG_CHUNK_OVERHEAD + data.byteLength;
+}
 /** At most this many pixels are filtered in one turn of the event loop (about a millisecond on node 2): a whole screen of
  * the largest desktop held it for 64 ms in one stretch before (the v245 release review). An area is at most four such
  * slices now (MAX_AREA_PIXELS), the pointer at most one. */
 export const PNG_PIXELS_PER_TURN = 65_536;
-/** A PNG of `width` x `height` pixels given as blue, green, red, unused; `alpha` (a function of the pixel's index) makes
- * it RGBA. Each row is filtered by the byte one pixel to its left (PNG's Sub), which suits a screen's flat areas. The
- * rows are filtered a slice at a time, each followed by a turn of everything else, and deflated in one call (an area is
- * at most MAX_AREA_PIXELS). */
 export async function encodePng(
 	width: number,
 	height: number,
@@ -690,33 +691,81 @@ export async function encodePng(
 	const channels = alpha ? 4 : 3;
 	const stride = width * channels;
 	const raw = Buffer.allocUnsafe((stride + 1) * height);
-	const line = Buffer.allocUnsafe(stride);
 	const rowsPerTurn = Math.max(1, Math.floor(PNG_PIXELS_PER_TURN / Math.max(width, 1)));
-	for (let y = 0; y < height; y++) {
-		if (y > 0 && y % rowsPerTurn === 0) await new Promise<void>((resolve) => setImmediate(resolve));
-		for (let x = 0; x < width; x++) {
-			const from = (y * width + x) * 4;
-			const to = x * channels;
-			line[to] = pixels[from + 2] as number;
-			line[to + 1] = pixels[from + 1] as number;
-			line[to + 2] = pixels[from] as number;
-			if (alpha) line[to + 3] = alpha(y * width + x);
+	if (!alpha) {
+		for (let y = 0; y < height; y++) {
+			if (y > 0 && y % rowsPerTurn === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+			const rowOut = y * (stride + 1);
+			raw[rowOut] = 1;
+			let inOff = y * width * 4;
+			let outOff = rowOut + 1;
+			let prevR = 0;
+			let prevG = 0;
+			let prevB = 0;
+			for (let x = 0; x < width; x++) {
+				const b = pixels[inOff] as number;
+				const g = pixels[inOff + 1] as number;
+				const r = pixels[inOff + 2] as number;
+				raw[outOff] = (r - prevR) & 0xff;
+				raw[outOff + 1] = (g - prevG) & 0xff;
+				raw[outOff + 2] = (b - prevB) & 0xff;
+				prevR = r;
+				prevG = g;
+				prevB = b;
+				inOff += 4;
+				outOff += 3;
+			}
 		}
-		const row = y * (stride + 1);
-		raw[row] = 1;
-		for (let i = 0; i < stride; i++)
-			raw[row + 1 + i] = ((line[i] as number) - (i >= channels ? (line[i - channels] as number) : 0)) & 0xff;
+	} else {
+		for (let y = 0; y < height; y++) {
+			if (y > 0 && y % rowsPerTurn === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+			const rowOut = y * (stride + 1);
+			raw[rowOut] = 1;
+			let inOff = y * width * 4;
+			let outOff = rowOut + 1;
+			let prevR = 0;
+			let prevG = 0;
+			let prevB = 0;
+			let prevA = 0;
+			const rowPixelStart = y * width;
+			for (let x = 0; x < width; x++) {
+				const b = pixels[inOff] as number;
+				const g = pixels[inOff + 1] as number;
+				const r = pixels[inOff + 2] as number;
+				const a = alpha(rowPixelStart + x);
+				raw[outOff] = (r - prevR) & 0xff;
+				raw[outOff + 1] = (g - prevG) & 0xff;
+				raw[outOff + 2] = (b - prevB) & 0xff;
+				raw[outOff + 3] = (a - prevA) & 0xff;
+				prevR = r;
+				prevG = g;
+				prevB = b;
+				prevA = a;
+				inOff += 4;
+				outOff += 4;
+			}
+		}
 	}
 	const ihdr = Buffer.alloc(13);
 	ihdr.writeUInt32BE(width, 0);
 	ihdr.writeUInt32BE(height, 4);
 	ihdr.set([8, alpha ? 6 : 2, 0, 0, 0], 8);
-	return Buffer.concat([
-		PNG_SIGNATURE,
-		chunk("IHDR", ihdr),
-		chunk("IDAT", deflateSync(raw, { level: 6 })),
-		chunk("IEND", Buffer.alloc(0)),
-	]);
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	const compressed = deflateSync(raw, { level: PNG_DEFLATE_LEVEL });
+	const out = Buffer.allocUnsafe(
+		PNG_SIGNATURE.byteLength +
+			PNG_CHUNK_OVERHEAD +
+			ihdr.byteLength +
+			PNG_CHUNK_OVERHEAD +
+			compressed.byteLength +
+			PNG_IEND_CHUNK.byteLength,
+	);
+	PNG_SIGNATURE.copy(out, 0);
+	let at = PNG_SIGNATURE.byteLength;
+	at = writeChunk(out, at, "IHDR", ihdr);
+	at = writeChunk(out, at, "IDAT", compressed);
+	PNG_IEND_CHUNK.copy(out, at);
+	return out;
 }
 
 // What a member's stream is sent: binary messages the browser draws (packages/web/src/cloud/machine-stream.ts).
@@ -846,6 +895,7 @@ interface Watcher {
 	 * member who joined is served, and how one whose updates were evicted is served again, since the eviction may have
 	 * thrown away the very update that carried a new size (review r3 F2 of #1746). */
 	sizeSent: { width: number; height: number };
+	evictionRefresh: "clean" | "requested" | "stale";
 }
 
 /**
@@ -1047,6 +1097,7 @@ export class DesktopStream {
 	 * eviction made a request of its own and every request an update: full-screen noise on the real machine piled up
 	 * updates past the reader's bound within seconds, review r11 of #1746). */
 	#wantWhole = false;
+	#wholeInFlight = false;
 	#ended: string | null = null;
 	#relay: Promise<void> = Promise.resolve();
 	constructor(options: DesktopStreamOptions) {
@@ -1063,12 +1114,24 @@ export class DesktopStream {
 		return { ring: this.#ring.length, rects: this.#ring.rects, outbox: this.#outbox.waiting };
 	}
 
+	#requestWhole(): void {
+		// WHY: Coalesce concurrent whole-screen requests so join storms cannot stack full frames past RFB_UPDATE_TOO_LARGE.
+		if (this.#width <= 0 || this.#wholeInFlight) return;
+		this.#wholeInFlight = true;
+		this.#outbox.push(rfbUpdateRequest(false, this.#width, this.#height));
+	}
+
 	/** Streams the desktop to `sink`, released by `release`, until `signal` aborts, a cycle ends it, or the relay ends:
 	 * answers why it ended (`closed` when the signal aborted). */
 	async watch(release: DesktopStreamRelease, sink: DesktopStreamSink, signal: AbortSignal): Promise<string> {
 		if (this.#ended) return this.#ended;
 		const now = this.#options.now ?? Date.now;
-		const watcher: Watcher = { sentSeq: this.#seq, wake: () => {}, sizeSent: { width: 0, height: 0 } };
+		const watcher: Watcher = {
+			sentSeq: this.#seq,
+			wake: () => {},
+			sizeSent: { width: 0, height: 0 },
+			evictionRefresh: "clean",
+		};
 		this.#watchers.add(watcher);
 		const done = AbortSignal.any([signal, this.#stop.signal]);
 		const wakeOnEnd = () => watcher.wake();
@@ -1078,7 +1141,7 @@ export class DesktopStream {
 		try {
 			this.#start();
 			// The whole screen for this member: asked anew, so it is a change after the member came, and passes a cycle.
-			if (this.#width > 0) this.#outbox.push(rfbUpdateRequest(false, this.#width, this.#height));
+			this.#requestWhole();
 			for (;;) {
 				if (this.#ended) return this.#ended;
 				if (signal.aborted) return "closed";
@@ -1110,8 +1173,14 @@ export class DesktopStream {
 					continue;
 				}
 				if (done.aborted) continue;
-				await this.#send(watcher, upTo, sink, done);
+				const sent = await this.#send(watcher, upTo, sink, done);
 				watcher.sentSeq = Math.max(watcher.sentSeq, upTo);
+				if (watcher.evictionRefresh === "stale") {
+					watcher.evictionRefresh = "requested";
+					this.#requestWhole();
+				} else if (sent && watcher.evictionRefresh === "requested") {
+					watcher.evictionRefresh = "clean";
+				}
 				this.#trim();
 				await pause(cycleBegan + (this.#options.cycleEveryMs ?? STREAM_CYCLE_EVERY_MS) - now(), done);
 			}
@@ -1136,6 +1205,7 @@ export class DesktopStream {
 			if (event.kind === "init") {
 				this.#width = event.width;
 				this.#height = event.height;
+				this.#wholeInFlight = true;
 				// The members already here get the size from their first update; the screen is asked whole by the reader.
 				this.#push({ rects: [], cursor: null, size: { width: event.width, height: event.height } });
 				return;
@@ -1150,8 +1220,14 @@ export class DesktopStream {
 			if (event.rects.length > 0 || event.cursor || event.size) this.#push(event);
 			// Keep the changes coming: ONE request for this update, at once — the whole screen when members need it anew,
 			// what changed otherwise (it replaces any of its kind still waiting: O(1)).
-			this.#outbox.push(rfbUpdateRequest(!this.#wantWhole, this.#width, this.#height));
-			this.#wantWhole = false;
+			if (this.#wantWhole) {
+				this.#wantWhole = false;
+				this.#wholeInFlight = true;
+				this.#outbox.push(rfbUpdateRequest(false, this.#width, this.#height));
+			} else {
+				this.#wholeInFlight = false;
+				this.#outbox.push(rfbUpdateRequest(true, this.#width, this.#height));
+			}
 		});
 		// What the server sends is taken in as it comes (bounded at once), and read in turns of at most about
 		// RFB_TAKE_PER_TURN bytes of charged work — every message, header and piece counted (review r10 of #1746) — each
@@ -1231,7 +1307,13 @@ export class DesktopStream {
 					// The size is told again from the first entry this member is sent, whatever the eviction left: the
 					// entry carries its own size, so the two can never disagree.
 					watcher.sizeSent = { width: 0, height: 0 };
-					refresh = true;
+					// WHY: Request one whole screen on first eviction, then defer further refreshes until the lagging watcher catches up.
+					if (watcher.evictionRefresh === "clean") {
+						watcher.evictionRefresh = "requested";
+						refresh = true;
+					} else {
+						watcher.evictionRefresh = "stale";
+					}
 				}
 			// The whole screen is asked with the next request, never beside it.
 			if (refresh) this.#wantWhole = true;
@@ -1253,9 +1335,11 @@ export class DesktopStream {
 	 * eviction leaves behind can be paired with another size: the first entry of the window decides the size told, and a
 	 * later entry of another size clears what came before it (review r4 F2 of #1746).
 	 */
-	async #send(watcher: Watcher, upTo: number, sink: DesktopStreamSink, signal: AbortSignal): Promise<void> {
+	async #send(watcher: Watcher, upTo: number, sink: DesktopStreamSink, signal: AbortSignal): Promise<boolean> {
 		const sizeSent = watcher.sizeSent;
 		const updates = this.#ring.window(watcher.sentSeq, upTo);
+		// WHY: Skip sending a blank post-upTo STREAM_SIZE when eviction emptied the pre-cycle window during release().
+		if (updates.length === 0) return false;
 		// The size these pixels are of: the first entry's own, which is what a member who joined, or one whose updates
 		// were evicted, is told before any of them.
 		let size = sizeSent.width === 0 ? (updates[0]?.at ?? { width: this.#width, height: this.#height }) : sizeSent;
@@ -1332,6 +1416,7 @@ export class DesktopStream {
 			head.writeUInt32BE(png.byteLength, 9);
 			await sendOrStop(sink, Buffer.concat([head, png]), signal);
 		}
+		return true;
 	}
 
 	/** One PNG per area or shape, however many members it goes to. */

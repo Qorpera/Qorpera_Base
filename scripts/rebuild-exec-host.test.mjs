@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { buildDeterministicTarGz } from "./package-runtime-bundle-layer.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const script = join(root, "deploy/shared-execution/rebuild-exec-host.sh");
@@ -434,9 +435,175 @@ test(
 			assert.doesNotMatch(tampered.log, /systemctl disable/);
 
 			const createScript = readFileSync(join(root, "deploy/shared-execution/create-exec-host.sh"), "utf8");
-			assert.match(createScript, /unset .*EXEC_RUNTIME_BUNDLE_DIR.*EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256/);
+			assert.match(
+				createScript,
+				/unset .*EXEC_RUNTIME_BUNDLE_DIR.*EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256.*EXEC_RUNTIME_BUNDLE_ARCHIVE.*EXEC_RUNTIME_BUNDLE_ARCHIVE_SHA256/,
+			);
 		} finally {
 			rmSync(layerRoot, { recursive: true, force: true });
+			for (const item of fixtures) {
+				rmSync(item.dir, { recursive: true, force: true });
+			}
+		}
+	},
+);
+
+test(
+	"EXEC_RUNTIME_BUNDLE_ARCHIVE verifies signed flat tar.gz archive in preflight, refuses unsafe archives, and pushes verified 0555 artifacts",
+	{ skip: linux === true ? false : linux },
+	() => {
+		const layerFiles = [
+			"qorpera-ephemeral-runner.mjs",
+			"qorpera-native-provider-host.mjs",
+			"qorpera-identity-recovery-restore.mjs",
+			"qorpera-native-isolation-child.mjs",
+			"qorpera-lxd-runner-bootstrap.mjs",
+			"qorpera-lxd-native-login-bootstrap.mjs",
+			"qorpera-claude-home-shell.mjs",
+		];
+		const bundleSha = "b".repeat(64);
+		const makeArchiveBytes = ({ omitPin = false, extra = false } = {}) => {
+			const artifacts = [];
+			const entries = [];
+			for (const file of layerFiles) {
+				const includePin = !omitPin && file === "qorpera-native-provider-host.mjs";
+				const content = Buffer.from(
+					includePin
+						? `export const bundle = ${JSON.stringify(bundleSha)};\nexport const file = ${JSON.stringify(file)};\n`
+						: `export const file = ${JSON.stringify(file)};\n`,
+				);
+				artifacts.push({ file, bytes: content.byteLength, sha256: createHash("sha256").update(content).digest("hex") });
+				entries.push({ name: file, mode: 0o555, content });
+			}
+			const manifestText = `${JSON.stringify({ schema: "qorpera.runtime-bundle-layer/v1", runtimeBundleSha256: bundleSha, artifacts }, null, 2)}\n`;
+			entries.push({ name: "manifest.json", mode: 0o444, content: Buffer.from(manifestText, "utf8") });
+			if (extra) {
+				entries.push({ name: "rogue.mjs", mode: 0o555, content: Buffer.from("export {};\n") });
+			}
+			return buildDeterministicTarGz(entries);
+		};
+
+		const fixtures = Array.from({ length: 10 }, () => setup());
+		const workRoot = realpathSync(mkdtempSync(join(tmpdir(), "rebuild-archive-")));
+		try {
+			const goodBytes = makeArchiveBytes();
+			const goodSha = createHash("sha256").update(goodBytes).digest("hex");
+			const goodPath = join(workRoot, "qorpera-runtime-bundle-layer.tar.gz");
+			writeFileSync(goodPath, goodBytes, { mode: 0o444 });
+			chmodSync(goodPath, 0o444);
+
+			const preflight = rebuild(fixtures[0], {
+				EXEC_PREFLIGHT_ONLY: "1",
+				EXEC_RUNTIME_BUNDLE_ARCHIVE: goodPath,
+				EXEC_RUNTIME_BUNDLE_ARCHIVE_SHA256: goodSha,
+			});
+			assert.equal(preflight.status, 0, preflight.stderr);
+			assert.match(preflight.stdout, /Inputs checked; nothing changed/);
+			assert.doesNotMatch(preflight.log, /systemctl disable/);
+
+			const preActivation = rebuild(fixtures[1], {
+				EXEC_RUNTIME_BUNDLE_ARCHIVE: goodPath,
+				EXEC_RUNTIME_BUNDLE_ARCHIVE_SHA256: goodSha,
+			});
+			assert.equal(preActivation.status, 0, preActivation.stderr);
+			for (const file of layerFiles) {
+				assert.match(preActivation.log, new RegExp(`--mode 0555 --uid 0 --gid 0 -p .* qorpera-exec-node02/opt/qorpera-runner/${file}`));
+				assert.match(preActivation.log, new RegExp(`sha256sum /opt/qorpera-runner/${file}`));
+				assert.match(preActivation.log, new RegExp(`node --check /opt/qorpera-runner/${file}`));
+			}
+
+			const bothModes = rebuild(fixtures[2], {
+				EXEC_RUNTIME_BUNDLE_DIR: workRoot,
+				EXEC_RUNTIME_BUNDLE_MANIFEST_SHA256: "a".repeat(64),
+				EXEC_RUNTIME_BUNDLE_ARCHIVE: goodPath,
+				EXEC_RUNTIME_BUNDLE_ARCHIVE_SHA256: goodSha,
+			});
+			assert.equal(bothModes.status, 1);
+			assert.match(bothModes.stderr, /Cannot set both/);
+			assert.doesNotMatch(bothModes.log, /systemctl disable/);
+
+			const missingPin = rebuild(fixtures[3], {
+				EXEC_RUNTIME_BUNDLE_ARCHIVE: goodPath,
+			});
+			assert.equal(missingPin.status, 1);
+			assert.match(missingPin.stderr, /EXEC_RUNTIME_BUNDLE_ARCHIVE_SHA256/);
+			assert.doesNotMatch(missingPin.log, /systemctl disable/);
+
+			const wrongPin = rebuild(fixtures[4], {
+				EXEC_RUNTIME_BUNDLE_ARCHIVE: goodPath,
+				EXEC_RUNTIME_BUNDLE_ARCHIVE_SHA256: "a".repeat(64),
+			});
+			assert.equal(wrongPin.status, 1);
+			assert.match(wrongPin.stderr, /does not match EXEC_RUNTIME_BUNDLE_ARCHIVE_SHA256/);
+			assert.doesNotMatch(wrongPin.log, /systemctl disable/);
+
+			const linkPath = join(workRoot, "link.tar.gz");
+			symlinkSync(goodPath, linkPath);
+			const symResult = rebuild(fixtures[5], {
+				EXEC_RUNTIME_BUNDLE_ARCHIVE: linkPath,
+				EXEC_RUNTIME_BUNDLE_ARCHIVE_SHA256: goodSha,
+			});
+			assert.equal(symResult.status, 1);
+			assert.match(symResult.stderr, /non-symlink file/);
+			assert.doesNotMatch(symResult.log, /systemctl disable/);
+
+			const extraBytes = makeArchiveBytes({ extra: true });
+			const extraSha = createHash("sha256").update(extraBytes).digest("hex");
+			const extraPath = join(workRoot, "extra.tar.gz");
+			writeFileSync(extraPath, extraBytes, { mode: 0o444 });
+			chmodSync(extraPath, 0o444);
+			const extraResult = rebuild(fixtures[6], {
+				EXEC_RUNTIME_BUNDLE_ARCHIVE: extraPath,
+				EXEC_RUNTIME_BUNDLE_ARCHIVE_SHA256: extraSha,
+			});
+			assert.equal(extraResult.status, 1);
+			assert.match(extraResult.stderr, /unexpected or duplicate member/);
+			assert.doesNotMatch(extraResult.log, /systemctl disable/);
+
+			const unpinnedBytes = makeArchiveBytes({ omitPin: true });
+			const unpinnedSha = createHash("sha256").update(unpinnedBytes).digest("hex");
+			const unpinnedPath = join(workRoot, "unpinned.tar.gz");
+			writeFileSync(unpinnedPath, unpinnedBytes, { mode: 0o444 });
+			chmodSync(unpinnedPath, 0o444);
+			const unpinnedResult = rebuild(fixtures[7], {
+				EXEC_RUNTIME_BUNDLE_ARCHIVE: unpinnedPath,
+				EXEC_RUNTIME_BUNDLE_ARCHIVE_SHA256: unpinnedSha,
+			});
+			assert.equal(unpinnedResult.status, 1);
+			assert.match(unpinnedResult.stderr, /does not embed runtimeBundleSha256/);
+			assert.doesNotMatch(unpinnedResult.log, /systemctl disable/);
+
+			const symlinkTarPath = join(workRoot, "symlink-member.tar.gz");
+			const pyMakeSym = spawnSync(
+				"python3",
+				[
+					"-c",
+					'import io,sys,tarfile\nwith tarfile.open(sys.argv[1],"w:gz") as tf:\n ti=tarfile.TarInfo("manifest.json"); ti.type=tarfile.SYMTYPE; ti.linkname="/etc/passwd"; tf.addfile(ti)\n',
+					symlinkTarPath,
+				],
+				{ encoding: "utf8" },
+			);
+			assert.equal(pyMakeSym.status, 0, pyMakeSym.stderr);
+			chmodSync(symlinkTarPath, 0o444);
+			const symTarSha = createHash("sha256").update(readFileSync(symlinkTarPath)).digest("hex");
+			const symTarResult = rebuild(fixtures[8], {
+				EXEC_RUNTIME_BUNDLE_ARCHIVE: symlinkTarPath,
+				EXEC_RUNTIME_BUNDLE_ARCHIVE_SHA256: symTarSha,
+			});
+			assert.equal(symTarResult.status, 1);
+			assert.match(symTarResult.stderr, /non-regular member/);
+			assert.doesNotMatch(symTarResult.log, /systemctl disable/);
+
+			const bundleMismatch = rebuild(fixtures[9], {
+				EXEC_RUNTIME_BUNDLE_SHA256: "a".repeat(64),
+				EXEC_RUNTIME_BUNDLE_ARCHIVE: goodPath,
+				EXEC_RUNTIME_BUNDLE_ARCHIVE_SHA256: goodSha,
+			});
+			assert.equal(bundleMismatch.status, 1);
+			assert.match(bundleMismatch.stderr, /bundle sha256 does not match/);
+			assert.doesNotMatch(bundleMismatch.log, /systemctl disable/);
+		} finally {
+			rmSync(workRoot, { recursive: true, force: true });
 			for (const item of fixtures) {
 				rmSync(item.dir, { recursive: true, force: true });
 			}

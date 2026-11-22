@@ -38,6 +38,7 @@ const POINTER_TIMEOUT_MS = 5_000;
  * functions answers every preflight itself, so this is for a bridge without one; nothing depends on a preflight. */
 const POINTER_PREFLIGHT_SECONDS = 600;
 const COMPANY_DATA = new RegExp(`^/v1/company-data/${UUID}/(query|watch|apply|describe|rows|edit|change|changes)$`);
+const COMPANY_DATA_PUBLIC = new RegExp(`^/v1/company-data-public/${UUID}/(query|change)$`);
 const LARGE_DATA_CALLS: ReadonlySet<string> = new Set(["apply", "rows", "edit", "changes"]);
 const DATA_WRITES: Record<string, string> = {
 	apply: "Company data is unavailable just now. Steps sent may still apply.",
@@ -61,6 +62,8 @@ function same(claimed: unknown, issuer: string): boolean {
 	return typeof claimed === "string" && claimed.replace(/\/$/, "") === issuer.replace(/\/$/, "");
 }
 
+const UTF8_FATAL_DECODER = new TextDecoder("utf-8", { fatal: true });
+
 /** One part of a token: base64url of a JSON object, or undefined. */
 function tokenPart(segment: string): Record<string, unknown> | undefined {
 	if (!/^[A-Za-z0-9_-]{2,4096}$/.test(segment)) return undefined;
@@ -69,7 +72,7 @@ function tokenPart(segment: string): Record<string, unknown> | undefined {
 			segment.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (segment.length % 4)) % 4),
 		);
 		const value: unknown = JSON.parse(
-			new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(binary, (char) => char.charCodeAt(0))),
+			UTF8_FATAL_DECODER.decode(Uint8Array.from(binary, (char) => char.charCodeAt(0))),
 		);
 		return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 	} catch {
@@ -147,6 +150,7 @@ export interface MemberCompanyGatewayOptions {
 interface RoutePolicy {
 	method: string;
 	headers: string[];
+	proxyHeaders?: string[];
 	maxBody?: number;
 	timeoutMs?: number;
 	unavailable: string;
@@ -159,6 +163,7 @@ interface RoutePolicy {
 	forwardsOrigin?: boolean;
 	/** Only a member's own unexpired token of this project goes on (memberTokenShaped): the route asks no auth service. */
 	memberToken?: boolean;
+	publicRoute?: boolean;
 	passesBodyThrough?: boolean;
 }
 
@@ -233,6 +238,16 @@ function route(path: string): RoutePolicy | undefined {
 			...(verb === "watch" ? { timeoutMs: WATCH_TIMEOUT_MS } : {}),
 			unavailable: DATA_WRITES[verb] ?? "Company data is unavailable just now.",
 		};
+	const publicVerb = COMPANY_DATA_PUBLIC.exec(path)?.[1];
+	if (publicVerb)
+		return {
+			method: "POST",
+			headers: ["content-type"],
+			proxyHeaders: ["x-forwarded-for"],
+			maxBody: MAX_DATA_BYTES,
+			publicRoute: true,
+			unavailable: DATA_WRITES[publicVerb] ?? "Company data is unavailable just now.",
+		};
 	const upload = PROGRAM_UPLOAD.exec(path);
 	if (upload)
 		return upload[3] && upload[3] !== "stop"
@@ -296,6 +311,10 @@ async function bytes(
 			if (length !== exact.byteLength) throw new BodyInvalid();
 			return exact;
 		}
+		if (chunks.length === 1) {
+			const single = chunks[0]!;
+			if (single.buffer instanceof ArrayBuffer) return single as Uint8Array<ArrayBuffer>;
+		}
 		const result = new Uint8Array(length);
 		let offset = 0;
 		for (const chunk of chunks) {
@@ -316,24 +335,40 @@ interface UpstreamWatch {
 	readonly signal: AbortSignal;
 	wait(): void;
 	rest(): void;
+	dispose(): void;
 }
 
 function watchUpstream(caller: AbortSignal, quietMs: number): UpstreamWatch {
 	const upstream = new AbortController();
-	const leave = () => upstream.abort();
+	const leave = () => upstream.abort(caller.aborted ? caller.reason : new Error("Upstream request timed out"));
 	let quiet: ReturnType<typeof setTimeout> | undefined;
-	if (caller.aborted) leave();
-	else caller.addEventListener("abort", leave, { once: true });
-	upstream.signal.addEventListener("abort", () => caller.removeEventListener("abort", leave), { once: true });
+	let disposed = false;
+	const cleanup = () => {
+		if (disposed) return;
+		disposed = true;
+		clearTimeout(quiet);
+		quiet = undefined;
+		caller.removeEventListener("abort", leave);
+	};
+	if (caller.aborted) {
+		disposed = true;
+		upstream.abort(caller.reason);
+	} else {
+		caller.addEventListener("abort", leave, { once: true });
+		upstream.signal.addEventListener("abort", cleanup, { once: true });
+	}
 	return {
 		signal: upstream.signal,
 		wait() {
+			if (disposed) return;
 			clearTimeout(quiet);
 			quiet = setTimeout(leave, quietMs);
 		},
 		rest() {
 			clearTimeout(quiet);
+			quiet = undefined;
 		},
+		dispose: cleanup,
 	};
 }
 
@@ -345,16 +380,25 @@ function passedThrough(
 	const reader = body.getReader();
 	let passed = 0;
 	let over = false;
+	let onAbort: (() => void) | undefined;
+	const finish = () => {
+		if (onAbort) {
+			watch.signal.removeEventListener("abort", onAbort);
+			onAbort = undefined;
+		}
+		watch.dispose();
+	};
 	return new ReadableStream<Uint8Array>({
 		start(controller) {
 			const stop = (error: unknown) => {
 				if (over) return;
 				over = true;
-				watch.rest();
+				finish();
 				void reader.cancel().catch(() => {});
 				controller.error(error);
 			};
-			watch.signal.addEventListener("abort", () => stop(watch.signal.reason), { once: true });
+			onAbort = () => stop(watch.signal.reason);
+			watch.signal.addEventListener("abort", onAbort, { once: true });
 			if (watch.signal.aborted) stop(watch.signal.reason);
 		},
 		async pull(controller) {
@@ -367,6 +411,7 @@ function passedThrough(
 				watch.rest();
 				if (chunk.done) {
 					over = true;
+					finish();
 					controller.close();
 					return;
 				}
@@ -381,13 +426,13 @@ function passedThrough(
 			}
 			if (over) return;
 			over = true;
-			watch.rest();
+			finish();
 			void reader.cancel().catch(() => {});
 			controller.error(failure);
 		},
 		cancel(reason) {
 			over = true;
-			watch.rest();
+			finish();
 			return reader.cancel(reason).catch(() => {});
 		},
 	});
@@ -408,8 +453,17 @@ export async function forwardMemberCompanyGateway(
 		vary: "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
 	});
 	const fail = (status: number, error: string) => Response.json({ error }, { status, headers });
+	const url = new URL(request.url);
+	const prefix = "/member-company-gateway";
+	const path = url.pathname.startsWith(`/functions/v1${prefix}/`)
+		? url.pathname.slice(`/functions/v1${prefix}`.length)
+		: url.pathname.startsWith(`${prefix}/`)
+			? url.pathname.slice(prefix.length)
+			: "";
+	const policy = !url.search && route(path);
 	if (
 		origin &&
+		!policy?.publicRoute &&
 		!allowed.some((value) => {
 			try {
 				const parsed = new URL(value);
@@ -420,15 +474,7 @@ export async function forwardMemberCompanyGateway(
 		})
 	)
 		return fail(403, "Browser origin is not allowed");
-	if (origin) headers.set("access-control-allow-origin", origin);
-	const url = new URL(request.url);
-	const prefix = "/member-company-gateway";
-	const path = url.pathname.startsWith(`/functions/v1${prefix}/`)
-		? url.pathname.slice(`/functions/v1${prefix}`.length)
-		: url.pathname.startsWith(`${prefix}/`)
-			? url.pathname.slice(prefix.length)
-			: "";
-	const policy = !url.search && route(path);
+	if (origin) headers.set("access-control-allow-origin", policy?.publicRoute ? "*" : origin);
 	if (!policy) return fail(404, "Member route is not available");
 	if (request.method === "OPTIONS") {
 		const requested = (request.headers.get("access-control-request-headers") ?? "")
@@ -448,7 +494,7 @@ export async function forwardMemberCompanyGateway(
 		return new Response(null, { status: 204, headers });
 	}
 	if (request.method !== policy.method) return fail(405, "Method not allowed");
-	if (!/^Bearer [A-Za-z0-9._~-]{1,8192}$/.test(request.headers.get("authorization") ?? ""))
+	if (!policy.publicRoute && !/^Bearer [A-Za-z0-9._~-]{1,8192}$/.test(request.headers.get("authorization") ?? ""))
 		return fail(401, "Member sign-in is required");
 	let upstream: URL;
 	try {
@@ -468,90 +514,104 @@ export async function forwardMemberCompanyGateway(
 	const timeout = options.timeoutMs ?? policy.timeoutMs ?? TIMEOUT_MS;
 	if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > UPLOAD_TIMEOUT_MS)
 		return fail(503, "Member gateway is not configured");
-	const signal = AbortSignal.any([request.signal, AbortSignal.timeout(timeout)]);
-	// A write states its length, within the gateway's bound for its route: a folder commit, a presence report, a chat
-	// image or a call to the company's data. A chunked body of unknown length is refused unread.
-	const length = request.headers.get("content-length");
-	const refuse = (status: number, error: string) => {
-		void request.body?.cancel().catch(() => {});
-		return fail(status, error);
-	};
-	if (request.headers.has("transfer-encoding") || (request.body && length === null))
-		return refuse(411, "Member gateway request needs its length");
-	if (length !== null && !/^(0|[1-9][0-9]{0,8})$/.test(length))
-		return refuse(400, "Member gateway request could not be read");
-	const size = Number(length ?? "0");
-	if (size > (policy.maxBody ?? MAX_WRITE_BYTES)) return refuse(413, "Member gateway request could not be read");
-	// A route that asks no auth service takes only a member's own token that has not run out, and of the issuer the
-	// deployment names when it names one: nobody's request goes further than here (20260930745000).
-	if (
-		policy.memberToken &&
-		!memberTokenShaped(
-			request.headers.get("authorization") ?? "",
-			options.memberTokenIssuer,
-			Math.floor((options.now ?? Date.now)() / 1000),
+	const scoped = new AbortController();
+	const onCallerAbort = () => scoped.abort(request.signal.reason);
+	if (request.signal.aborted) scoped.abort(request.signal.reason);
+	else request.signal.addEventListener("abort", onCallerAbort, { once: true });
+	const deadline = setTimeout(() => scoped.abort(new Error("Member gateway timed out")), timeout);
+	const signal = scoped.signal;
+	let watch: UpstreamWatch | undefined;
+	let handedOffWatch = false;
+	try {
+		// A write states its length, within the gateway's bound for its route: a folder commit, a presence report, a chat
+		// image or a call to the company's data. A chunked body of unknown length is refused unread.
+		const length = request.headers.get("content-length");
+		const refuse = (status: number, error: string) => {
+			void request.body?.cancel().catch(() => {});
+			return fail(status, error);
+		};
+		if (request.headers.has("transfer-encoding") || (request.body && length === null))
+			return refuse(411, "Member gateway request needs its length");
+		if (length !== null && !/^(0|[1-9][0-9]{0,8})$/.test(length))
+			return refuse(400, "Member gateway request could not be read");
+		const size = Number(length ?? "0");
+		if (size > (policy.maxBody ?? MAX_WRITE_BYTES)) return refuse(413, "Member gateway request could not be read");
+		// A route that asks no auth service takes only a member's own token that has not run out, and of the issuer the
+		// deployment names when it names one: nobody's request goes further than here (20260930745000).
+		if (
+			policy.memberToken &&
+			!memberTokenShaped(
+				request.headers.get("authorization") ?? "",
+				options.memberTokenIssuer,
+				Math.floor((options.now ?? Date.now)() / 1000),
+			)
 		)
-	)
-		return refuse(401, "Member sign-in is required");
-	if (size > 0 && !(policy.readsSmallBodyFirst && size <= (policy.maxBody ?? 0))) {
-		let signedIn: boolean;
-		try {
-			if (!options.memberSignedIn) throw new Error("Member sign-in check is not configured");
-			signedIn = await options.memberSignedIn(request.headers.get("authorization") ?? "", signal);
-		} catch {
-			return refuse(503, "Member sign-in could not be checked");
-		}
-		if (!signedIn) return refuse(401, "Member sign-in is required");
-	}
-	let body: Uint8Array<ArrayBuffer> | undefined;
-	try {
-		if (request.method !== "GET") body = await bytes(request, size, signal, size);
-	} catch (error) {
-		return fail(
-			error instanceof BodyTooLarge ? 413 : error instanceof BodyInvalid ? 400 : 408,
-			"Member gateway request could not be read",
-		);
-	}
-	const watch = policy.passesBodyThrough ? watchUpstream(request.signal, timeout) : undefined;
-	try {
-		const forwarded = new Headers();
-		for (const name of policy.headers) {
-			const value = request.headers.get(name);
-			if (value !== null) forwarded.set(name, value);
-		}
-		if (body) forwarded.set("content-length", String(body.byteLength));
-		if (policy.forwardsOrigin && origin) forwarded.set("origin", origin);
-		watch?.wait();
-		const response = await (options.fetchImplementation ?? fetch)(new URL(path, upstream), {
-			method: request.method,
-			headers: forwarded,
-			body,
-			signal: watch?.signal ?? signal,
-			redirect: "error",
-			credentials: "omit",
-		});
-		watch?.rest();
-		const empty = [204, 205, 304].includes(response.status);
-		const answered = new Headers(headers);
-		for (const name of ["content-type", "x-qorpera-access-mode", "etag"]) {
-			const value = response.headers.get(name);
-			if (value !== null) answered.set(name, value);
-		}
-		answered.set("access-control-expose-headers", "x-qorpera-access-mode, etag");
-		if (watch && response.body && !empty) {
-			if (Number(response.headers.get("content-length") ?? "0") > MAX_BYTES) {
-				void response.body.cancel().catch(() => {});
-				return fail(502, policy.unavailable);
+			return refuse(401, "Member sign-in is required");
+		if (!policy.publicRoute && size > 0 && !(policy.readsSmallBodyFirst && size <= (policy.maxBody ?? 0))) {
+			let signedIn: boolean;
+			try {
+				if (!options.memberSignedIn) throw new Error("Member sign-in check is not configured");
+				signedIn = await options.memberSignedIn(request.headers.get("authorization") ?? "", signal);
+			} catch {
+				return refuse(503, "Member sign-in could not be checked");
 			}
-			return new Response(passedThrough(response.body, MAX_BYTES, watch), {
-				status: response.status,
-				headers: answered,
-			});
+			if (!signedIn) return refuse(401, "Member sign-in is required");
 		}
-		const content = await bytes(response, MAX_BYTES, signal);
-		return new Response(empty ? null : content, { status: response.status, headers: answered });
-	} catch (error) {
-		watch?.rest();
-		return fail(error instanceof BodyTooLarge ? 502 : 503, policy.unavailable);
+		let body: Uint8Array<ArrayBuffer> | undefined;
+		try {
+			if (request.method !== "GET") body = await bytes(request, size, signal, size);
+		} catch (error) {
+			return fail(
+				error instanceof BodyTooLarge ? 413 : error instanceof BodyInvalid ? 400 : 408,
+				"Member gateway request could not be read",
+			);
+		}
+		watch = policy.passesBodyThrough ? watchUpstream(request.signal, timeout) : undefined;
+		try {
+			const forwarded = new Headers();
+			for (const name of [...policy.headers, ...(policy.proxyHeaders ?? [])]) {
+				const value = request.headers.get(name);
+				if (value !== null) forwarded.set(name, value);
+			}
+			if (body) forwarded.set("content-length", String(body.byteLength));
+			if (policy.forwardsOrigin && origin) forwarded.set("origin", origin);
+			watch?.wait();
+			const response = await (options.fetchImplementation ?? fetch)(new URL(path, upstream), {
+				method: request.method,
+				headers: forwarded,
+				body,
+				signal: watch?.signal ?? signal,
+				redirect: "error",
+				credentials: "omit",
+			});
+			watch?.rest();
+			const empty = [204, 205, 304].includes(response.status);
+			const answered = new Headers(headers);
+			for (const name of ["content-type", "x-qorpera-access-mode", "etag"]) {
+				const value = response.headers.get(name);
+				if (value !== null) answered.set(name, value);
+			}
+			answered.set("access-control-expose-headers", "x-qorpera-access-mode, etag");
+			if (watch && response.body && !empty) {
+				if (Number(response.headers.get("content-length") ?? "0") > MAX_BYTES) {
+					void response.body.cancel().catch(() => {});
+					return fail(502, policy.unavailable);
+				}
+				handedOffWatch = true;
+				return new Response(passedThrough(response.body, MAX_BYTES, watch), {
+					status: response.status,
+					headers: answered,
+				});
+			}
+			const content = await bytes(response, MAX_BYTES, signal);
+			return new Response(empty ? null : content, { status: response.status, headers: answered });
+		} catch (error) {
+			watch?.rest();
+			return fail(error instanceof BodyTooLarge ? 502 : 503, policy.unavailable);
+		}
+	} finally {
+		clearTimeout(deadline);
+		request.signal.removeEventListener("abort", onCallerAbort);
+		if (!handedOffWatch) watch?.dispose();
 	}
 }

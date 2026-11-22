@@ -96,6 +96,7 @@ export class SupabaseObjectAuthority
 	readonly #storage: ObjectDependency;
 	readonly #auth: ObjectDependency;
 	readonly #failedProbes = new Set<"api" | "storage" | "auth">();
+	readonly #readingLegacy = new Map<string, Promise<Uint8Array>>();
 
 	constructor(options: SupabaseObjectAuthorityOptions) {
 		let url: URL;
@@ -268,6 +269,7 @@ export class SupabaseObjectAuthority
 		userToken: string,
 		environmentId: string,
 		sha256: string,
+		signal?: AbortSignal,
 	): Promise<{ profileId: string; bytes: number }> {
 		const value = (await this.#rpc(
 			"qorpera_member_folder_object",
@@ -275,6 +277,7 @@ export class SupabaseObjectAuthority
 			userToken,
 			this.#publishableKey,
 			"folder",
+			signal,
 		)) as Record<string, unknown> | null;
 		if (
 			!value ||
@@ -443,7 +446,9 @@ export class SupabaseObjectAuthority
 
 	async readLegacyObject(profileId: string, sha256: string): Promise<Uint8Array> {
 		const path = `${profileId}/${sha256}`;
-		return this.#storage.run(async (signal) => {
+		const inFlight = this.#readingLegacy.get(path);
+		if (inFlight) return inFlight;
+		const reading = this.#storage.run(async (signal) => {
 			const response = await this.#fetch(
 				`${this.#projectUrl}/storage/v1/object/authenticated/${OBJECT_BUCKET}/${path}`,
 				{ headers: supabaseRequestHeaders(this.#secretKey), signal },
@@ -454,6 +459,12 @@ export class SupabaseObjectAuthority
 			}
 			return readBoundedObjectResponse(response, 8 * 1024 * 1024, signal);
 		});
+		this.#readingLegacy.set(path, reading);
+		try {
+			return await reading;
+		} finally {
+			if (this.#readingLegacy.get(path) === reading) this.#readingLegacy.delete(path);
+		}
 	}
 
 	async authorizeReplication(profileId: string, sha256: string, bytes: number): Promise<void> {
@@ -492,7 +503,10 @@ export class SupabaseObjectAuthority
 							JSON.stringify({ qorpera_nas_replica: true, qorpera_nas_replica_bytes: bytes.byteLength }),
 						).toString("base64"),
 					},
-					body: Uint8Array.from(bytes),
+					body:
+						bytes.buffer instanceof ArrayBuffer
+							? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+							: Uint8Array.from(bytes),
 					signal,
 				},
 			);
@@ -577,42 +591,62 @@ export class SupabaseObjectAuthority
 		bearer: string | undefined,
 		apiKey: string,
 		companyState: boolean | "folder" | "replication" = false,
+		caller?: AbortSignal,
 	): Promise<unknown> {
 		const headers: Record<string, string> = {
 			...supabaseRequestHeaders(apiKey, bearer),
 			"content-type": "application/json",
 		};
-		return this.#api.run(async (signal) => {
-			const response = await this.#fetch(`${this.#projectUrl}/rest/v1/rpc/${name}`, {
-				method: "POST",
-				headers,
-				body: JSON.stringify(body),
-				signal,
-			});
-			if (!response.ok) {
-				if (companyState === "folder" && (response.status === 500 || response.status === 400))
-					throw folderStateFailure(await postgrestErrorCode(response, signal), response.status);
-				if (response.status === 500)
-					throw (companyState === true ? companyStateFailure : unavailableStateFailure)(
-						await postgrestErrorCode(response, signal),
-					);
-				// Replication meeting an object folder GC holds (C1D §9.7): the folder core's conflict envelope with its
-				// own message. To the reconciler it is a lock conflict, so the folder entry stays pending, not blocked.
-				// snapshot-v1's cleanup fence answers QRC01 too, with another message, and keeps its 409 (core §8 G3).
-				if (response.status === 409 && companyState === "replication") {
-					const error = await postgrestError(response, signal);
-					throw error.code === "QRC01" && error.message === FOLDER_OBJECT_COLLECTING
-						? new ObjectLockConflict()
-						: new ObjectDependencyError(409);
-				}
-				void response.body?.cancel().catch(() => undefined);
-				throw new ObjectDependencyError(response.status);
+		return this.#api.run(async (timeoutSignal) => {
+			let merged: AbortController | undefined;
+			let onTimeout: (() => void) | undefined;
+			let onCaller: (() => void) | undefined;
+			let signal = timeoutSignal;
+			if (caller) {
+				merged = new AbortController();
+				onTimeout = () => merged?.abort(timeoutSignal.reason);
+				onCaller = () => merged?.abort(caller.reason);
+				if (timeoutSignal.aborted) onTimeout();
+				else timeoutSignal.addEventListener("abort", onTimeout, { once: true });
+				if (caller.aborted) onCaller();
+				else caller.addEventListener("abort", onCaller, { once: true });
+				signal = merged.signal;
 			}
-			if (response.status === 204) return null;
-			const text = new TextDecoder("utf-8", { fatal: true }).decode(
-				await readBoundedObjectResponse(response, 1024 * 1024, signal),
-			);
-			return text ? (JSON.parse(text) as unknown) : null;
-		});
+			try {
+				const response = await this.#fetch(`${this.#projectUrl}/rest/v1/rpc/${name}`, {
+					method: "POST",
+					headers,
+					body: JSON.stringify(body),
+					signal,
+				});
+				if (!response.ok) {
+					if (companyState === "folder" && (response.status === 500 || response.status === 400))
+						throw folderStateFailure(await postgrestErrorCode(response, signal), response.status);
+					if (response.status === 500)
+						throw (companyState === true ? companyStateFailure : unavailableStateFailure)(
+							await postgrestErrorCode(response, signal),
+						);
+					// Replication meeting an object folder GC holds (C1D §9.7): the folder core's conflict envelope with its
+					// own message. To the reconciler it is a lock conflict, so the folder entry stays pending, not blocked.
+					// snapshot-v1's cleanup fence answers QRC01 too, with another message, and keeps its 409 (core §8 G3).
+					if (response.status === 409 && companyState === "replication") {
+						const error = await postgrestError(response, signal);
+						throw error.code === "QRC01" && error.message === FOLDER_OBJECT_COLLECTING
+							? new ObjectLockConflict()
+							: new ObjectDependencyError(409);
+					}
+					void response.body?.cancel().catch(() => undefined);
+					throw new ObjectDependencyError(response.status);
+				}
+				if (response.status === 204) return null;
+				const text = new TextDecoder("utf-8", { fatal: true }).decode(
+					await readBoundedObjectResponse(response, 1024 * 1024, signal),
+				);
+				return text ? (JSON.parse(text) as unknown) : null;
+			} finally {
+				if (onTimeout) timeoutSignal.removeEventListener("abort", onTimeout);
+				if (caller && onCaller) caller.removeEventListener("abort", onCaller);
+			}
+		}, caller);
 	}
 }

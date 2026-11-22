@@ -766,8 +766,6 @@ export class CloudNativeToolBoundary {
 			)
 				throw new Error("Invalid native result identity");
 			seen.add(input.callId);
-			const wire = cloudToolJsonText(input.output, MAX_SOURCE_BYTES);
-			const digest = createHash("sha256").update(wire).digest("hex");
 			const key = `${input.kind}:${input.callId}`;
 			let text = typeof input.output === "string" ? input.output : undefined;
 			let imageSha256: string | undefined;
@@ -817,12 +815,17 @@ export class CloudNativeToolBoundary {
 				shown !== undefined ? { imageSha256: shown } : capture ? { imageSha256: capture.sha256, capture } : {};
 			const previous = this.#nativeResults.get(key);
 			if (previous) {
-				// Compaction may retain the already-fenced body. Only our exact prior
-				// output is equivalent to the original; a claimed envelope is not enough.
-				if ((previous.digest !== digest && text !== previous.output) || previous.imageSha256 !== imageSha256)
-					throw new Error("Native result changed after release");
+				if (previous.imageSha256 !== imageSha256) throw new Error("Native result changed after release");
+				// WHY: Skip O(N) JSON serialization and SHA-256 hashing when a prior fenced string output is replayed unchanged.
+				if (text !== undefined && text === previous.output)
+					return release({ kind: input.kind, callId: input.callId, output: previous.output, ...image });
+				const wire = cloudToolJsonText(input.output, MAX_SOURCE_BYTES);
+				const digest = createHash("sha256").update(wire).digest("hex");
+				if (previous.digest !== digest) throw new Error("Native result changed after release");
 				return release({ kind: input.kind, callId: input.callId, output: previous.output, ...image });
 			}
+			const wire = cloudToolJsonText(input.output, MAX_SOURCE_BYTES);
+			const digest = createHash("sha256").update(wire).digest("hex");
 			// Never trust a schema, role or provenance claimed inside native output.
 			// Pass through only the exact bytes previously issued by this host for this call.
 			const issued =
@@ -1160,18 +1163,26 @@ export class CloudNativeToolBoundary {
 	async #folderReport(): Promise<{ mark: string; report: CloudCompanyFolderReport } | undefined> {
 		const reports = this.#folderReports;
 		if (!reports || this.#signal.aborted) return undefined;
-		// The wait ends at the second even when the reports do not heed their signal.
-		const wait = AbortSignal.any([this.#signal, AbortSignal.timeout(FOLDER_REPORT_WAIT_MS)]);
-		// The last report counts as shown once the release check let the model have the answer it was in: until then,
-		// within the same second, nothing is asked, and a check still going then leaves the report for a later result.
-		const awaiting = this.#folderAwaiting;
-		if (awaiting) await untilStopped(() => awaiting.checked, wait).catch(() => undefined);
-		if (this.#folderAwaiting) return undefined;
-		const shown = this.#folderShown;
-		const answer = await untilStopped(() => reports.next(shown, wait), wait).catch(() => undefined);
-		if (!answer || typeof answer.mark !== "string" || !FOLDER_REPORT_MARK.test(answer.mark)) return undefined;
-		const report = cloudCompanyFolderReport(answer.report);
-		return report ? { mark: answer.mark, report } : undefined;
+		const controller = new AbortController();
+		const onStop = (): void => controller.abort(this.#signal.reason);
+		this.#signal.addEventListener("abort", onStop, { once: true });
+		const timer = setTimeout(() => controller.abort(), FOLDER_REPORT_WAIT_MS);
+		const wait = controller.signal;
+		try {
+			// The last report counts as shown once the release check let the model have the answer it was in: until then,
+			// within the same second, nothing is asked, and a check still going then leaves the report for a later result.
+			const awaiting = this.#folderAwaiting;
+			if (awaiting) await untilStopped(() => awaiting.checked, wait).catch(() => undefined);
+			if (this.#folderAwaiting) return undefined;
+			const shown = this.#folderShown;
+			const answer = await untilStopped(() => reports.next(shown, wait), wait).catch(() => undefined);
+			if (!answer || typeof answer.mark !== "string" || !FOLDER_REPORT_MARK.test(answer.mark)) return undefined;
+			const report = cloudCompanyFolderReport(answer.report);
+			return report ? { mark: answer.mark, report } : undefined;
+		} finally {
+			clearTimeout(timer);
+			this.#signal.removeEventListener("abort", onStop);
+		}
 	}
 
 	async #act(
@@ -1351,14 +1362,11 @@ export class CloudNativeToolBoundary {
 				response.contentItems.push({ type: "inputImage", imageUrl });
 			}
 			if (content.image) {
-				// Only a tool that shows images, after an answer that names it: company_read's cites the read it showed, and a
-				// runtime tool's (machine_screen, 20260930708000) names the image's hash in its JSON. The image is released
-				// with that answer, and the context fence checks the same pairing on every later request.
 				const { png, sha256 } = content.image;
 				const named =
 					tool.source === "company_file"
 						? content.companyReadId !== undefined
-						: tool.source === "runtime" &&
+						: (tool.source === "runtime" || tool.source === "worker") &&
 							content.kind === "json" &&
 							content.value !== null &&
 							typeof content.value === "object" &&
@@ -1512,14 +1520,25 @@ export class CloudNativeToolBoundary {
 		// The folder report goes before the content: the content is cut to what is left. A report that leaves no room
 		// stays for a later result, and so does one that would cut an answer that fits without it (a page's nextOffset
 		// sits at its end).
-		const fits = (): boolean => Buffer.byteLength(encode(end)) <= MAX_CLOUD_TOOL_RESULT_BYTES;
-		const whole = fits();
-		if (folder) {
-			result.companyFolder = folder.report;
-			if (Buffer.byteLength(encode(0)) > MAX_CLOUD_TOOL_RESULT_BYTES || (whole && !fits()))
-				delete result.companyFolder;
-		}
 		let serialized = encode(end);
+		const whole = Buffer.byteLength(serialized) <= MAX_CLOUD_TOOL_RESULT_BYTES;
+		if (folder) {
+			const baseSerialized = serialized;
+			result.companyFolder = folder.report;
+			const emptyFits = Buffer.byteLength(encode(0)) <= MAX_CLOUD_TOOL_RESULT_BYTES;
+			if (!emptyFits) {
+				delete result.companyFolder;
+				serialized = baseSerialized;
+			} else {
+				const withFolder = encode(end);
+				if (whole && Buffer.byteLength(withFolder) > MAX_CLOUD_TOOL_RESULT_BYTES) {
+					delete result.companyFolder;
+					serialized = baseSerialized;
+				} else {
+					serialized = withFolder;
+				}
+			}
+		}
 		if (Buffer.byteLength(serialized) > MAX_CLOUD_TOOL_RESULT_BYTES) {
 			let low = 0;
 			let high = end;

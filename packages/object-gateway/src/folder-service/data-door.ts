@@ -1,4 +1,4 @@
-import { request as httpsRequest } from "node:https";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { DATA_MAX_PAYLOAD, type DataVerb } from "./protocol.ts";
 
 export type DoorAnswer = { readonly status: number; readonly body: Buffer } | "too_large";
@@ -23,6 +23,14 @@ export function httpsDataDoor(options: { url: string; ca: string; token: string 
 		throw new Error("The company data door's URL, token or CA is not one");
 	const host = url.hostname.replace(/^\[|\]$/g, "");
 	const port = url.port ? Number(url.port) : 443;
+	const agent = new HttpsAgent({
+		keepAlive: true,
+		keepAliveMsecs: 30_000,
+		maxSockets: 8,
+		maxFreeSockets: 4,
+		ca: options.ca,
+		minVersion: "TLSv1.2",
+	});
 	return {
 		call: (verb, body, signal) =>
 			new Promise((resolve, reject) => {
@@ -41,7 +49,7 @@ export function httpsDataDoor(options: { url: string; ca: string; token: string 
 							"content-type": "application/json",
 							"content-length": String(body.byteLength),
 						},
-						agent: false,
+						agent,
 					},
 					(response) => {
 						const chunks: Buffer[] = [];

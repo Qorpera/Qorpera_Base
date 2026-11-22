@@ -2,7 +2,7 @@ import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-clie
 import { type Cloud, CloudRpcError } from "./client.ts";
 import { UUID_PATTERN } from "./parse.ts";
 
-export const SESSION_PROVIDERS = ["openai", "anthropic"] as const;
+export const SESSION_PROVIDERS = ["openai", "anthropic", "google"] as const;
 export type SessionProvider = (typeof SESSION_PROVIDERS)[number];
 
 export const SESSION_MODELS = [
@@ -12,6 +12,7 @@ export const SESSION_MODELS = [
 	{ id: "gpt-6.1-sol", name: "GPT-6.1 Sol", provider: "openai" },
 	{ id: "claude-fable-5-2", name: "Fable 5.2", provider: "anthropic" },
 	{ id: "claude-opus-5-5", name: "Opus 5.5", provider: "anthropic" },
+	{ id: "gemini-4-neon", name: "Gemini 4 Neon", provider: "google" },
 ] as const satisfies ReadonlyArray<{ id: string; name: string; provider: SessionProvider }>;
 
 export const EARLIER_MODEL_NAMES: Readonly<Record<string, string>> = {
@@ -35,11 +36,13 @@ export type SessionEffort = (typeof SESSION_EFFORTS)[number];
 export const PROVIDER_EFFORTS: Record<SessionProvider, readonly SessionEffort[]> = {
 	openai: ["low", "medium", "high", "xhigh"],
 	anthropic: ["low", "medium", "high", "xhigh", "max"],
+	google: ["low", "medium", "high", "xhigh"],
 };
 
 export const EFFORTS_BEFORE_LIST: Record<SessionProvider, readonly SessionEffort[]> = {
 	openai: ["low", "medium", "high"],
 	anthropic: ["low", "medium", "high", "xhigh", "max"],
+	google: ["low", "medium", "high", "xhigh"],
 };
 
 export function modelProvider(modelId: string | undefined): SessionProvider {
@@ -69,6 +72,7 @@ export interface SessionModel {
 	serviceTier?: string;
 	models?: readonly string[];
 	efforts?: Readonly<Record<string, readonly string[]>>;
+	geminiCapReached?: boolean;
 	version: number;
 }
 
@@ -204,6 +208,7 @@ export function createWebSessionModel(
 					const tier = result.service_tier;
 					const models = result.models;
 					const efforts = result.efforts;
+					const geminiCapReached = result.gemini_cap_reached;
 					if (response.status !== 200)
 						throw new CloudRpcError(
 							method,
@@ -257,6 +262,7 @@ export function createWebSessionModel(
 												typeof item !== "string" || !item || new TextEncoder().encode(item).length > 64,
 										),
 								))) ||
+						(geminiCapReached !== undefined && typeof geminiCapReached !== "boolean") ||
 						typeof result.version !== "number" ||
 						!Number.isSafeInteger(result.version) ||
 						result.version < 0 ||
@@ -283,6 +289,7 @@ export function createWebSessionModel(
 									),
 								}
 							: {}),
+						...(geminiCapReached === true ? { geminiCapReached: true } : {}),
 						version: result.version,
 					};
 				} finally {

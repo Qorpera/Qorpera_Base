@@ -112,6 +112,12 @@ Everything after that is the reconciler's (`qorpera-agent-plug.service`, root), 
 - every entry is checked against its machine (the card above, the identity keys), a running machine's card must be
   a port of `qagent0`, and every machine on `qagent0` must have an entry. A problem goes to
   `/run/qorpera-agent-exit/plug.json`, and `verify` fails while there is one;
+- when one or more running machines fail the `qagent0` port check (for example, LXD detached `tap*` slightly before
+  marking a stopping machine `Stopped`), the reconciler waits once per pass (`--port-recheck-seconds` /
+  `QORPERA_AGENT_PLUG_PORT_RECHECK_SECONDS`, default `0.75` s against LXD, `0.0` s on `--lxd-fixture`, finite `0`–`10`)
+  and re-reads only those machines via `GET /1.0/instances/<name>?project=<project>`. Each fresh record replaces that
+  machine's snapshot for both entry checks and the bridge `ports` set; a 404 removes it from the snapshot (counting as
+  one miss toward "two reads in a row"), and a failed re-read records a problem and fails closed on the stale snapshot;
 - it keeps the bridge rules (the `ports` set of each running machine's port and MAC, the `clients` set of MAC and
   address pairs, and the `dhcp` chain's rule per machine) equal to the entries LXD backs, read back every pass, so a
   restart or a crash (and the plain hand edits) are set right within a pass. Until a machine is in them, nothing from
@@ -212,7 +218,8 @@ about 340 bytes of connection log; a machine opening 100 connections a second wo
 far more. So `X logs` (the logs' timer, every 5 minutes) tends them:
 - **Seals.** Each open file is sealed into a compressed part (`flows-YYYY-MM-DD.pNNN.jsonl.gz`, mode 0640) once its day
   is closed (two hours after it ends, UTC: the plug's `plugged` lines carry the entry's time, normally less than an
-  hour back), or sooner once it holds 64 MiB. The writers open the file for each line, so a renamed file takes no new
+  hour back), or sooner once it holds 64 MiB. The plug opens the file for each line and the logger checks the path's
+  inode before each write (reopening on rename or unlink and closing while paused), so a renamed file takes no new
   lines. It is renamed to its part's name first (`….pNNN.sealing`), so a pass cut short finishes that part and never
   seals a line twice.
 - **Cuts the DNS record.** `dns.log` is copied into `dns-YYYY-MM-DDTHHMMSSZ.log` (then compressed) and truncated once a

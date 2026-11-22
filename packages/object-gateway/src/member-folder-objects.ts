@@ -13,6 +13,7 @@ export interface MemberFolderObjectAuthority {
 		userToken: string,
 		environmentId: string,
 		sha256: string,
+		signal?: AbortSignal,
 	): Promise<{ profileId: string; bytes: number }>;
 	readLegacyObject(companyId: string, sha256: string): Promise<Uint8Array>;
 }
@@ -38,44 +39,58 @@ export async function serveMemberFolderObject(
 	const token = header.slice(7);
 	const environmentId = match[1]!;
 	const sha256 = match[2]!;
-	const admitted = await authority.authorizeMemberFolderObject(token, environmentId, sha256);
-	observation?.update({ companyId: admitted.profileId, environmentId });
-	let bytes: Uint8Array;
+	const stop = new AbortController();
+	const disconnected = () => {
+		if (!response.writableFinished) stop.abort();
+	};
+	response.once("close", disconnected);
 	try {
-		bytes = await store.get(admitted.profileId, sha256, admitted.bytes);
-	} catch (error) {
-		if (
-			!(error instanceof Error) ||
-			(error.message !== "Object not found" && !(error instanceof ObjectDependencyError && error.unavailable))
-		)
-			throw error;
+		const admitted = await authority.authorizeMemberFolderObject(token, environmentId, sha256, stop.signal);
+		if (stop.signal.aborted) return;
+		observation?.update({ companyId: admitted.profileId, environmentId });
+		let bytes: Uint8Array;
 		try {
-			bytes = await authority.readLegacyObject(admitted.profileId, sha256);
-		} catch (fallback) {
-			// A busy NAS lane and no Storage copy yet (replication pending) is the lane's 503, not Storage's miss.
+			bytes = await store.get(admitted.profileId, sha256, admitted.bytes);
+		} catch (error) {
+			if (stop.signal.aborted) return;
 			if (
-				error instanceof ObjectDependencyError &&
-				fallback instanceof ObjectDependencyError &&
-				!fallback.unavailable
+				!(error instanceof Error) ||
+				(error.message !== "Object not found" && !(error instanceof ObjectDependencyError && error.unavailable))
 			)
 				throw error;
-			throw fallback;
+			try {
+				bytes = await authority.readLegacyObject(admitted.profileId, sha256);
+			} catch (fallback) {
+				if (stop.signal.aborted) return;
+				// A busy NAS lane and no Storage copy yet (replication pending) is the lane's 503, not Storage's miss.
+				if (
+					error instanceof ObjectDependencyError &&
+					fallback instanceof ObjectDependencyError &&
+					!fallback.unavailable
+				)
+					throw error;
+				throw fallback;
+			}
+			if (bytes.byteLength !== admitted.bytes || createHash("sha256").update(bytes).digest("hex") !== sha256)
+				throw new ObjectDependencyError(503);
 		}
+		if (stop.signal.aborted) return;
+		observation?.update({ logicalObjectReadBytes: bytes.byteLength });
+		const current = await authority.authorizeMemberFolderObject(token, environmentId, sha256, stop.signal);
+		if (stop.signal.aborted) return;
+		if (current.profileId !== admitted.profileId || current.bytes !== admitted.bytes)
+			throw new ObjectDependencyError(503);
+		observation?.update({ responseBodyBytes: bytes.byteLength });
+		response.writeHead(200, {
+			"cache-control": "private, no-store",
+			"content-type": "application/octet-stream",
+			"content-length": String(bytes.byteLength),
+			"x-content-type-options": "nosniff",
+			"x-qorpera-access-mode": "live-path-authority",
+			etag: `"sha256-${sha256}"`,
+		});
+		response.end(bytes);
+	} finally {
+		response.removeListener("close", disconnected);
 	}
-	if (bytes.byteLength !== admitted.bytes || createHash("sha256").update(bytes).digest("hex") !== sha256)
-		throw new ObjectDependencyError(503);
-	observation?.update({ logicalObjectReadBytes: bytes.byteLength });
-	const current = await authority.authorizeMemberFolderObject(token, environmentId, sha256);
-	if (current.profileId !== admitted.profileId || current.bytes !== admitted.bytes)
-		throw new ObjectDependencyError(503);
-	observation?.update({ responseBodyBytes: bytes.byteLength });
-	response.writeHead(200, {
-		"cache-control": "private, no-store",
-		"content-type": "application/octet-stream",
-		"content-length": String(bytes.byteLength),
-		"x-content-type-options": "nosniff",
-		"x-qorpera-access-mode": "live-path-authority",
-		etag: `"sha256-${sha256}"`,
-	});
-	response.end(bytes);
 }

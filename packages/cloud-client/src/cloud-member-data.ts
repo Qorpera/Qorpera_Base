@@ -66,7 +66,7 @@ const FOLDER_BODY_BYTES: Readonly<Record<string, number>> = {
 	changes: 900 * 1024,
 };
 const CHANGE_OPS: ReadonlySet<unknown> = new Set(["add", "change", "remove"]);
-const ACTORS: ReadonlySet<unknown> = new Set(["member", "agent", "machine", "step"]);
+const ACTORS: ReadonlySet<unknown> = new Set(["member", "agent", "machine", "step", "public", "hook"]);
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const AFTER = /^[1-9][0-9]{0,18}$/;
 export const CLOUD_MEMBER_DATA_ZONE = /^[A-Za-z][A-Za-z0-9_+-]{0,30}(?:\/[A-Za-z0-9_+-]{1,30}){0,2}$/;
@@ -171,7 +171,7 @@ export interface CloudMemberDataEdited {
 }
 
 export type CloudMemberDataChangeOp = "add" | "change" | "remove";
-export type CloudMemberDataActor = "member" | "agent" | "machine" | "step";
+export type CloudMemberDataActor = "member" | "agent" | "machine" | "step" | "public" | "hook";
 export type CloudMemberDataRecordValues = Readonly<Record<string, unknown>>;
 
 export interface CloudMemberDataChangedTable {
@@ -219,11 +219,41 @@ export interface CloudMemberDataChangesAsked {
 	readonly zone?: string;
 }
 
-/** One question with its parameters. */
+export type CloudMemberDataParamValue =
+	| string
+	| number
+	| boolean
+	| null
+	| readonly CloudMemberDataParamValue[]
+	| { readonly [key: string]: CloudMemberDataParamValue };
+
 export interface CloudMemberDataQuestion {
 	readonly database: string;
 	readonly question: string;
-	readonly params: Readonly<Record<string, string | number | boolean | null>>;
+	readonly params: Readonly<Record<string, CloudMemberDataParamValue>>;
+}
+
+export interface CloudMemberDataChangeRequest {
+	readonly database: string;
+	readonly change: string;
+	readonly params: Readonly<Record<string, CloudMemberDataParamValue>>;
+	readonly sha256?: string;
+}
+
+export type CloudMemberDataPreviewPart = string | { readonly name: string; readonly value: string | null };
+
+export interface CloudMemberDataChangePreview {
+	readonly words: readonly CloudMemberDataPreviewPart[];
+	readonly values: readonly { readonly name: string; readonly value: string | null }[];
+	readonly sha256: string;
+}
+
+export interface CloudMemberDataChanged {
+	readonly changed?: number;
+	readonly columns?: readonly string[];
+	readonly rows?: readonly (readonly unknown[])[];
+	readonly more?: boolean;
+	readonly asOf: string;
 }
 
 /** A question with the answer's etag the caller holds. */
@@ -549,6 +579,51 @@ export function parseCloudMemberDataChanges(value: unknown): CloudMemberDataChan
 	};
 }
 
+function parseChangePreview(value: unknown): CloudMemberDataChangePreview {
+	const preview = closed(value, ["words", "values", "sha256"]);
+	if (typeof preview.sha256 !== "string" || !SHA.test(preview.sha256)) invalid();
+	if (!Array.isArray(preview.words) || !Array.isArray(preview.values)) invalid();
+	const words = preview.words.map((part): CloudMemberDataPreviewPart => {
+		if (typeof part === "string") return part;
+		const item = closed(part, ["name", "value"]);
+		if (!isText(item.name, 200) || (item.value !== null && typeof item.value !== "string")) invalid();
+		return { name: item.name, value: item.value };
+	});
+	const values = preview.values.map((item) => {
+		const one = closed(item, ["name", "value"]);
+		if (!isText(one.name, 200) || (one.value !== null && typeof one.value !== "string")) invalid();
+		return { name: one.name, value: one.value };
+	});
+	return { words, values, sha256: preview.sha256 };
+}
+
+function parseChanged(value: unknown): CloudMemberDataChanged {
+	const done = shapedKeys(value, ["asOf"], ["changed", "columns", "rows", "more"]);
+	if (typeof done.asOf !== "string" || !Number.isFinite(Date.parse(done.asOf))) invalid();
+	if (done.changed !== undefined && !isCount(done.changed)) invalid();
+	const hasRows = done.rows !== undefined || done.columns !== undefined || done.more !== undefined;
+	if (hasRows) {
+		const columns = texts(done.columns);
+		if (
+			!Array.isArray(done.rows) ||
+			done.rows.some((row) => !Array.isArray(row) || row.length !== columns.length) ||
+			typeof done.more !== "boolean"
+		)
+			invalid();
+		return {
+			...(done.changed === undefined ? {} : { changed: done.changed as number }),
+			columns,
+			rows: done.rows as unknown[][],
+			more: done.more,
+			asOf: done.asOf,
+		};
+	}
+	return {
+		...(done.changed === undefined ? {} : { changed: done.changed as number }),
+		asOf: done.asOf,
+	};
+}
+
 function parseEdited(value: unknown): CloudMemberDataEdited {
 	const edited = closed(value, ["columns", "key", "row", "asOf"]);
 	const columns = texts(edited.columns);
@@ -636,7 +711,23 @@ function checkQuestion(asked: CloudMemberDataQuestion): void {
 		throw new CloudMemberDataError("Name a question as <database>/<question>");
 }
 
+function checkChange(asked: CloudMemberDataChangeRequest): void {
+	if (
+		!asked ||
+		typeof asked.database !== "string" ||
+		!CLOUD_MEMBER_DATA_DATABASE.test(asked.database) ||
+		typeof asked.change !== "string" ||
+		!CLOUD_MEMBER_DATA_QUESTION.test(asked.change) ||
+		!asked.params ||
+		typeof asked.params !== "object" ||
+		Array.isArray(asked.params) ||
+		(asked.sha256 !== undefined && (typeof asked.sha256 !== "string" || !SHA.test(asked.sha256)))
+	)
+		throw new CloudMemberDataError("Name a change as <database>/<change>");
+}
+
 const pathOf = (asked: CloudMemberDataQuestion) => `data/${asked.database}/queries/${asked.question}.sql`;
+const changePathOf = (asked: CloudMemberDataChangeRequest) => `data/${asked.database}/actions/${asked.change}.sql`;
 
 const isName = (value: unknown): value is string =>
 	typeof value === "string" && value !== "" && UTF8.encode(value).byteLength <= 63 && !value.includes("\0");
@@ -735,15 +826,32 @@ export class CloudMemberData {
 		this.#fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
 	}
 
-	/** One question's answer, with the member's own rights. */
 	async query(asked: CloudMemberDataQuestion, signal: AbortSignal): Promise<CloudMemberDataAnswer> {
 		checkQuestion(asked);
 		const body = { database: asked.database, question: asked.question, params: asked.params };
-		return parseCloudMemberDataAnswer(await this.#ask("query", body, [asked], QUERY_DEADLINE_MS, signal));
+		return parseCloudMemberDataAnswer(await this.#ask("query", body, [pathOf(asked)], QUERY_DEADLINE_MS, signal));
 	}
 
-	/** Held by the gateway until one of the answers differs from the etag the caller holds for it (`changed`, by its
-	 * place in `watches`), or for 20 s (`same`). */
+	async previewChange(
+		asked: Omit<CloudMemberDataChangeRequest, "sha256">,
+		signal: AbortSignal,
+	): Promise<CloudMemberDataChangePreview> {
+		checkChange(asked);
+		const body = { database: asked.database, change: asked.change, params: asked.params, preview: true };
+		return parseChangePreview(await this.#ask("change", body, [changePathOf(asked)], QUERY_DEADLINE_MS, signal));
+	}
+
+	async change(asked: CloudMemberDataChangeRequest, signal: AbortSignal): Promise<CloudMemberDataChanged> {
+		checkChange(asked);
+		const body = {
+			database: asked.database,
+			change: asked.change,
+			params: asked.params,
+			...(asked.sha256 === undefined ? {} : { sha256: asked.sha256 }),
+		};
+		return parseChanged(await this.#ask("change", body, [changePathOf(asked)], EDIT_DEADLINE_MS, signal));
+	}
+
 	async watch(watches: readonly CloudMemberDataWatch[], signal: AbortSignal): Promise<CloudMemberDataWatchAnswer> {
 		if (!Array.isArray(watches) || watches.length < 1 || watches.length > CLOUD_MEMBER_DATA_WATCHES)
 			throw new CloudMemberDataError(`A watch holds 1 to ${CLOUD_MEMBER_DATA_WATCHES} questions`);
@@ -761,7 +869,10 @@ export class CloudMemberData {
 			})),
 			wait: WATCH_WAIT_S,
 		};
-		return parseWatchAnswer(await this.#ask("watch", body, watches, WATCH_DEADLINE_MS, signal), watches.length);
+		return parseWatchAnswer(
+			await this.#ask("watch", body, watches.map(pathOf), WATCH_DEADLINE_MS, signal),
+			watches.length,
+		);
 	}
 
 	async describe(database: string | null, signal: AbortSignal): Promise<CloudMemberDataDescription> {
@@ -876,6 +987,7 @@ export class CloudMemberData {
 		signal: AbortSignal,
 	): Promise<unknown> {
 		const given = new Set<string>();
+		const cached = new Map<string, string>();
 		const room = (FOLDER_BODY_BYTES[verb] ?? 0) - UTF8.encode(JSON.stringify(body)).byteLength;
 		let texts: Record<string, string> | undefined;
 		for (let round = 0; ; round++) {
@@ -886,28 +998,48 @@ export class CloudMemberData {
 				throw new CloudMemberDataError("The company's databases could not take the files' texts");
 			texts = {};
 			let left = room;
+			const unique: { path: string; sha256: string }[] = [];
+			const seenHash = new Set<string>();
 			for (const one of wanted) {
-				if (Object.hasOwn(texts, one.sha256)) continue;
-				const text = await this.#text(one, signal);
-				const size = UTF8.encode(JSON.stringify(text)).byteLength + 72;
-				if (size > left && Object.keys(texts).length > 0) break;
-				if (size > left) throw new CloudMemberDataError(`${one.path} is too large to send`);
-				texts[one.sha256] = text;
-				given.add(one.sha256);
-				left -= size;
+				if (seenHash.has(one.sha256)) continue;
+				seenHash.add(one.sha256);
+				unique.push(one);
+			}
+			let full = false;
+			for (let offset = 0; offset < unique.length && !full; offset += 8) {
+				const slice = unique.slice(offset, offset + 8);
+				const loaded = await Promise.all(
+					slice.map(async (one) => {
+						const existing = cached.get(one.sha256);
+						if (existing !== undefined) return { one, text: existing };
+						const text = await this.#text(one, signal);
+						cached.set(one.sha256, text);
+						return { one, text };
+					}),
+				);
+				for (const { one, text } of loaded) {
+					const size = UTF8.encode(JSON.stringify(text)).byteLength + 72;
+					if (size > left && Object.keys(texts).length > 0) {
+						full = true;
+						break;
+					}
+					if (size > left) throw new CloudMemberDataError(`${one.path} is too large to send`);
+					texts[one.sha256] = text;
+					given.add(one.sha256);
+					left -= size;
+				}
 			}
 		}
 	}
 
-	/** A call, sent again with the texts the gateway asked for, at most NEED_ROUNDS times. */
 	async #ask(
-		verb: "query" | "watch",
+		verb: "query" | "watch" | "change",
 		body: Record<string, unknown>,
-		questions: readonly CloudMemberDataQuestion[],
+		allowedPaths: readonly string[],
 		deadlineMs: number,
 		signal: AbortSignal,
 	): Promise<unknown> {
-		const paths = new Set(questions.map(pathOf));
+		const paths = new Set(allowedPaths);
 		const texts: Record<string, string> = {};
 		for (let round = 0; ; round++) {
 			const answer = await this.#post(
@@ -920,7 +1052,11 @@ export class CloudMemberData {
 			if (!isNeed(answer)) return answer;
 			if (round === NEED_ROUNDS)
 				throw new CloudMemberDataError("The company's databases could not take the question's text");
-			for (const wanted of parseNeed(answer, paths)) texts[wanted.sha256] = await this.#text(wanted, signal);
+			const needed = parseNeed(answer, paths);
+			const loaded = await Promise.all(
+				needed.map(async (wanted) => [wanted.sha256, await this.#text(wanted, signal)] as const),
+			);
+			for (const [hash, text] of loaded) texts[hash] = text;
 		}
 	}
 

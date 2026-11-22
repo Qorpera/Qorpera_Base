@@ -18,7 +18,7 @@ import type { InterfaceWrites } from "../interface-claims.ts";
 import { companyInterface, interfaceViews, QUOTE_RECORD_COLUMNS, viewBlocks } from "../interfaces.ts";
 import type { QuotedText } from "../quotes.ts";
 import { renderBank } from "./bank.ts";
-import { renderData } from "./data.ts";
+import { disposeData, renderData } from "./data.ts";
 import { renderMailbox } from "./mailbox.ts";
 import { renderMembers } from "./members.ts";
 
@@ -94,6 +94,10 @@ function domId(...parts: string[]): string {
 	return `iface-${parts.join("-").replace(/[^A-Za-z0-9_-]/g, "_")}`;
 }
 
+export function disposeInterface(container: HTMLElement): void {
+	disposeData(container);
+}
+
 export function renderInterface(
 	container: HTMLElement,
 	company: CompanyController,
@@ -131,6 +135,7 @@ export function renderInterface(
 	}
 	const entry = companyInterface(company, name);
 	if (!entry) {
+		disposeData(container);
 		show(container, JSON.stringify(["missing", profileId, locale, name]), () =>
 			h(
 				"section",
@@ -141,6 +146,7 @@ export function renderInterface(
 		);
 		return;
 	}
+	if (entry.name !== DATA_PAGE) disposeData(container);
 	// The Mailbox draws itself from the company's mail as a mail app does (views/mailbox.ts).
 	if (entry.name === "mailbox") {
 		renderMailbox(container, company, name, writes?.mailManage ? { manage: writes.mailManage } : {});
@@ -161,6 +167,7 @@ export function renderInterface(
 		renderData(container, company, databases, writes?.dataAsk);
 		return;
 	}
+	disposeData(container);
 	renderInterfaceFile(container, company, name, entry.file);
 }
 

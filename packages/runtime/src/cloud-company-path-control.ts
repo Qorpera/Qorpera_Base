@@ -53,6 +53,109 @@ const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_run_data_pass_approved",
 ]);
 
+const UTF8_FATAL = new TextDecoder("utf-8", { fatal: true });
+
+const PERMITTED_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
+	"qorpera_describe_agent_open_work",
+	"qorpera_record_runtime_observation_batch",
+	"qorpera_record_provider_usage_signal",
+	"qorpera_begin_native_company_execution_v2",
+	"qorpera_begin_native_company_execution_v3",
+	"qorpera_bind_native_company_context",
+	"qorpera_claude_worker_run_facts",
+	"qorpera_claude_worker_fall_back",
+	"qorpera_record_claude_run_usage",
+	"qorpera_record_gemini_run_usage",
+	"qorpera_record_gemini_cap_reached",
+	"qorpera_describe_company_run_context",
+	"qorpera_list_native_connector_tools",
+	"qorpera_assert_native_connector_operation",
+	"qorpera_read_company_run_context",
+	"qorpera_read_company_run_card",
+	"qorpera_record_native_context_view",
+	"qorpera_fence_native_context",
+	"qorpera_assert_company_path_reads",
+	"qorpera_check_native_run",
+	"qorpera_native_presence_register",
+	"qorpera_company_presence_scope",
+	"qorpera_native_presence_subject",
+	"qorpera_native_presence_forget",
+	"qorpera_read_native_wake",
+	"qorpera_send_coworker_message",
+	"qorpera_runtime_wake_policy",
+	"qorpera_assert_wake_work_allowed",
+	"qorpera_assert_wake_completion",
+	"qorpera_begin_action_review",
+	"qorpera_record_action_review",
+	"qorpera_await_action_review",
+	"qorpera_add_agent_review_rule",
+	"qorpera_good_will_agent_list",
+	"qorpera_good_will_agent_mark",
+	"qorpera_cofounder_crew",
+	"qorpera_offer_agents_to_member",
+	"qorpera_describe_company_senses",
+	"qorpera_folder_run_receipt_exists",
+	"qorpera_native_machine_start",
+	"qorpera_native_machine_manage",
+	"qorpera_company_machines_available",
+	"qorpera_company_home_available",
+	"qorpera_close_home_session",
+	"qorpera_folder_read",
+	"qorpera_folder_list",
+	"qorpera_folder_commit",
+	"qorpera_folder_memory_commit",
+	"qorpera_memory_run_log_place",
+	"qorpera_memory_run_resume",
+	"qorpera_memory_run_resume_receipts",
+	"qorpera_memory_run_resume_record",
+	"qorpera_memory_step_narrow",
+	"qorpera_memory_step_hashes",
+	"qorpera_folder_record_release",
+	"qorpera_folder_run_view_open",
+	"qorpera_folder_open_upload",
+	"qorpera_folder_seal_upload",
+	"qorpera_folder_renew_upload",
+	"qorpera_folder_agent_todos",
+	"qorpera_folder_record_review",
+	"qorpera_folder_agent_routines",
+	"qorpera_prepare_routine_login",
+	"qorpera_folder_worker_commit",
+	"qorpera_folder_agent_workers",
+	"qorpera_folder_cancel_agent_worker",
+	"qorpera_folder_agent_proposals",
+	"qorpera_folder_apply_proposal",
+	"qorpera_folder_close_proposal",
+	"qorpera_folder_archive_coding_worker",
+	"qorpera_folder_request_code_undo",
+	"qorpera_folder_code_request",
+	"qorpera_folder_describe_code_change",
+	"qorpera_folder_request_code_import",
+	"qorpera_folder_code_import",
+	"qorpera_run_data_pass",
+	"qorpera_run_data_pass_approved",
+	"qorpera_folder_note_interface_changes",
+	"qorpera_list_agent_event_hooks",
+	"qorpera_read_agent_event",
+	"qorpera_folder_manage_hook",
+	"qorpera_send_agent_mail",
+	"qorpera_find_agent_mail",
+	"qorpera_find_company_accounts",
+	"qorpera_memory_zoom",
+	"qorpera_memory_release",
+	"qorpera_memory_view",
+	"qorpera_memory_view_record",
+	"qorpera_memory_branches",
+	"qorpera_memory_events_run",
+	"qorpera_memory_compaction_record",
+	"qorpera_site_publish_check",
+	"qorpera_site_publish_begin",
+	"qorpera_site_publish_put",
+	"qorpera_site_publish_finish",
+	"qorpera_site_unpublish",
+	"qorpera_site_share_check",
+	"qorpera_site_share_app",
+]);
+
 /** No end-user token, arbitrary URL, redirect, provider credential or retry. */
 export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 	readonly #url: string;
@@ -83,136 +186,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 		signal: AbortSignal,
 		timeoutMs?: number,
 	): Promise<unknown> {
-		const permitted: readonly CloudCompanyPathRpc[] = [
-			"qorpera_describe_agent_open_work",
-			"qorpera_record_runtime_observation_batch",
-			"qorpera_record_provider_usage_signal",
-			"qorpera_begin_native_company_execution_v2",
-			// The admission split (M1b-4b-3): admit before any provider work, bind the composed context once.
-			"qorpera_begin_native_company_execution_v3",
-			"qorpera_bind_native_company_context",
-			// A Claude Code worker's run: its member's name and what its home changed (20260930772000).
-			"qorpera_claude_worker_run_facts",
-			"qorpera_claude_worker_fall_back",
-			"qorpera_record_claude_run_usage",
-			"qorpera_describe_company_run_context",
-			"qorpera_list_native_connector_tools",
-			"qorpera_assert_native_connector_operation",
-			"qorpera_read_company_run_context",
-			"qorpera_read_company_run_card",
-			"qorpera_record_native_context_view",
-			"qorpera_fence_native_context",
-			"qorpera_assert_company_path_reads",
-			"qorpera_check_native_run",
-			"qorpera_native_presence_register",
-			"qorpera_company_presence_scope",
-			"qorpera_native_presence_subject",
-			"qorpera_native_presence_forget",
-			"qorpera_read_native_wake",
-			"qorpera_send_coworker_message",
-			"qorpera_runtime_wake_policy",
-			"qorpera_assert_wake_work_allowed",
-			"qorpera_assert_wake_completion",
-			// Auto-review (v130).
-			"qorpera_begin_action_review",
-			"qorpera_record_action_review",
-			"qorpera_await_action_review",
-			"qorpera_add_agent_review_rule",
-			// Good will (20260930566000).
-			"qorpera_good_will_agent_list",
-			"qorpera_good_will_agent_mark",
-			"qorpera_cofounder_crew",
-			"qorpera_offer_agents_to_member",
-			// The Co-Founder's senses (20260930765000).
-			"qorpera_describe_company_senses",
-			// Whether the run has a receipt under a key (20260930766000).
-			"qorpera_folder_run_receipt_exists",
-			// Machines agents start (2026-09-28).
-			"qorpera_native_machine_start",
-			"qorpera_native_machine_manage",
-			"qorpera_company_machines_available",
-			// The agent's home (20260930752000): whether this run has one, and its session's close when the run ends.
-			"qorpera_company_home_available",
-			"qorpera_close_home_session",
-			// The folder core (core C3).
-			"qorpera_folder_read",
-			"qorpera_folder_list",
-			"qorpera_folder_commit",
-			// Dormant run-log persistence and trusted per-step protection (memory W1c-3).
-			"qorpera_folder_memory_commit",
-			"qorpera_memory_run_log_place",
-			"qorpera_memory_run_resume",
-			"qorpera_memory_run_resume_receipts",
-			"qorpera_memory_run_resume_record",
-			"qorpera_memory_step_narrow",
-			"qorpera_memory_step_hashes",
-			"qorpera_folder_record_release",
-			// The run's own view, for the node's folder search (F3, 20260929999970).
-			"qorpera_folder_run_view_open",
-			// Staging a folder-v2 file's bytes (core C1d).
-			"qorpera_folder_open_upload",
-			"qorpera_folder_seal_upload",
-			"qorpera_folder_renew_upload",
-			// A folder-v2 run's own todos from the todo index (thin writers W1).
-			"qorpera_folder_agent_todos",
-			// An approved call's review of the change set it commits (C2 R1).
-			"qorpera_folder_record_review",
-			// A folder-v2 run's own routines, and the login a routine save pins (thin writers W4c).
-			"qorpera_folder_agent_routines",
-			"qorpera_prepare_routine_login",
-			// A folder-v2 run's workers: their files under the worker tool's request, a todo's workers, and a cancel (F2-5b).
-			"qorpera_folder_worker_commit",
-			"qorpera_folder_agent_workers",
-			"qorpera_folder_cancel_agent_worker",
-			// Changes a view saved that wait for review (P40): a run's list, its apply and its close.
-			"qorpera_folder_agent_proposals",
-			"qorpera_folder_apply_proposal",
-			"qorpera_folder_close_proposal",
-			// A coding session's archive (C3b).
-			"qorpera_folder_archive_coding_worker",
-			// The company's code kept in Qorpera (20260930720000): an undo, how its request stands, and a change's description.
-			"qorpera_folder_request_code_undo",
-			"qorpera_folder_code_request",
-			"qorpera_folder_describe_code_change",
-			// Existing code brought in as a repository kept in Qorpera (20260930736000): an agent's ask, and how it stands.
-			"qorpera_folder_request_code_import",
-			"qorpera_folder_code_import",
-			// A run's data pass for the company data gateway (company databases, slice 5, 20260930750000), and one that
-			// carries a member's yes to a step that destroys data (slice 7, 20260930764000).
-			"qorpera_run_data_pass",
-			"qorpera_run_data_pass_approved",
-			// An agent's page and table changes in its conversation, with Undo (I10).
-			"qorpera_folder_note_interface_changes",
-			// Event wakes (W2), and a folder-v2 agent's own hooks and mailboxes (E3a).
-			"qorpera_list_agent_event_hooks",
-			"qorpera_read_agent_event",
-			"qorpera_folder_manage_hook",
-			// Company mail (M2b), and finding received mail.
-			"qorpera_send_agent_mail",
-			"qorpera_find_agent_mail",
-			// Company accounts (A1-4): the company's accounts and mailboxes, and the id of the agent's todo by key.
-			"qorpera_find_company_accounts",
-			// Summary trees (M1b-3): zoom, and the platform read of the tree blocks a zoom result or a view showed. The
-			// primary view, its record and the branches (M1b-4a, M4).
-			"qorpera_memory_zoom",
-			"qorpera_memory_release",
-			"qorpera_memory_view",
-			"qorpera_memory_view_record",
-			"qorpera_memory_branches",
-			// The conversation tree writer (M1b-4b-2, M1b-4b-3): the raw events and a batch's compaction record.
-			"qorpera_memory_events_run",
-			"qorpera_memory_compaction_record",
-			// Company sites (20260930550000): the check before the review, a publish's three steps, and unpublishing.
-			"qorpera_site_publish_check",
-			"qorpera_site_publish_begin",
-			"qorpera_site_publish_put",
-			"qorpera_site_publish_finish",
-			"qorpera_site_unpublish",
-			// Private app links (v195): the check before the review, and the share with its one-time claim.
-			"qorpera_site_share_check",
-			"qorpera_site_share_app",
-		];
-		if (!permitted.includes(method)) throw new Error("Unknown Company File control operation");
+		if (!PERMITTED_RPCS.has(method)) throw new Error("Unknown Company File control operation");
 		const body = JSON.stringify(argumentsValue);
 		if (Buffer.byteLength(body) > 16 * 1024 * 1024) throw new Error("Company File control request too large");
 		return cloudToolRequest(
@@ -231,7 +205,10 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 					if (error instanceof NativeHostCallUnknown) throw error;
 					throw new CloudRuntimeDiagnosticError("transport_unavailable", "Company File authority unavailable");
 				});
-				requestSignal.throwIfAborted();
+				if (requestSignal.aborted) {
+					void response.body?.cancel().catch(() => undefined);
+					requestSignal.throwIfAborted();
+				}
 				// PostgREST returns no body for these void RPCs. A missing value
 				// must still fail closed for admission, reads, receipts and commits.
 				if (
@@ -239,8 +216,10 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 					(method === "qorpera_assert_company_path_reads" ||
 						method === "qorpera_native_presence_forget" ||
 						method === "qorpera_assert_native_connector_operation")
-				)
+				) {
+					void response.body?.cancel().catch(() => undefined);
 					return null;
+				}
 				const maximum =
 					response.ok && method === "qorpera_describe_company_run_context"
 						? 1024 * 1024
@@ -314,7 +293,8 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 				requestSignal.throwIfAborted();
 				let value: unknown;
 				try {
-					value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
+					const payload = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks);
+					value = JSON.parse(UTF8_FATAL.decode(payload));
 				} catch {
 					throw unreadable("Company File authority unavailable");
 				}

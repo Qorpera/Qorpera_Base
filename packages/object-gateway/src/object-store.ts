@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import { mkdir, open, readdir, readFile, rename, rm, rmdir, stat } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 import { ObjectDependencyError, type ObjectDependencyHealth } from "./dependency.ts";
@@ -8,9 +9,38 @@ const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const QUARANTINE = ".quarantine";
 const MAX_QUARANTINED_BYTES = 8 * 1024 * 1024;
 // WHY: a timed-out hard-NFS syscall keeps its libuv worker until the OS lets go. Two lanes leave at least two of
-// the four default workers to the journal, so more lanes need a larger pool first.
-const LANES = 2;
+// the four default workers to the journal, so more lanes require a larger UV_THREADPOOL_SIZE first.
+const DEFAULT_LANES = 2;
+const MAX_LANES = 16;
+const MIN_RESERVED_WORKERS = 2;
+const MAX_UV_THREADPOOL_SIZE = 1024;
+const MAX_INT32 = 2_147_483_647;
+const MAX_KNOWN_DIRS = 4_096;
 const MAX_WAITING = 512;
+
+export function resolveObjectStoreLanes(environment: NodeJS.ProcessEnv): number {
+	let lanes = DEFAULT_LANES;
+	if (environment.QORPERA_OBJECT_GATEWAY_NAS_LANES !== undefined) {
+		const rawLanes = environment.QORPERA_OBJECT_GATEWAY_NAS_LANES.trim();
+		if (!/^[1-9][0-9]*$/.test(rawLanes)) throw new Error("QORPERA_OBJECT_GATEWAY_NAS_LANES is invalid");
+		lanes = Number(rawLanes);
+		if (!Number.isSafeInteger(lanes) || lanes < 1 || lanes > MAX_LANES)
+			throw new Error("QORPERA_OBJECT_GATEWAY_NAS_LANES is invalid");
+	}
+	let poolSize = 4;
+	if (environment.UV_THREADPOOL_SIZE !== undefined) {
+		const rawPool = environment.UV_THREADPOOL_SIZE.trim();
+		if (!/^[1-9][0-9]*$/.test(rawPool)) throw new Error("UV_THREADPOOL_SIZE is invalid");
+		const parsedPool = Number(rawPool);
+		if (!Number.isSafeInteger(parsedPool) || parsedPool > MAX_INT32) throw new Error("UV_THREADPOOL_SIZE is invalid");
+		poolSize = Math.min(MAX_UV_THREADPOOL_SIZE, parsedPool);
+	}
+	if (poolSize - lanes < MIN_RESERVED_WORKERS)
+		throw new Error(
+			`QORPERA_OBJECT_GATEWAY_NAS_LANES=${lanes} requires UV_THREADPOOL_SIZE>=${lanes + MIN_RESERVED_WORKERS} to reserve workers for the journal`,
+		);
+	return lanes;
+}
 
 interface Lane {
 	overdue: boolean;
@@ -37,31 +67,68 @@ export interface QuarantinedObject {
 	kind: "file" | "replica";
 }
 
+const VERIFIED_BYTES = Symbol("verified-object-bytes");
+
+export interface VerifiedObjectBytes {
+	readonly [VERIFIED_BYTES]: { readonly sha256: string; readonly bytes: Uint8Array };
+	readonly sha256: string;
+	readonly bytes: Uint8Array;
+}
+
 function digest(bytes: Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex");
+}
+
+export function verifyObjectBytes(sha256: string, bytes: Uint8Array): VerifiedObjectBytes {
+	if (!SHA256_PATTERN.test(sha256) || digest(bytes) !== sha256)
+		throw new Error("Object bytes do not match their SHA-256 address");
+	return Object.freeze({ [VERIFIED_BYTES]: Object.freeze({ sha256, bytes }), sha256, bytes });
+}
+
+export function isVerifiedObjectBytes(
+	value: VerifiedObjectBytes | undefined,
+	sha256: string,
+	bytes: Uint8Array,
+): boolean {
+	if (!value) return false;
+	const proven = value[VERIFIED_BYTES];
+	return proven !== undefined && proven.sha256 === sha256 && proven.bytes === bytes;
 }
 
 export class FileSystemObjectStore {
 	readonly #root: string;
 	readonly #timeoutMs: number;
 	readonly #waitMs: number;
+	readonly #lanes: number;
 	readonly #inFlight = new Map<string, Lane>();
 	readonly #waiting = new Set<Waiting>();
 	readonly #reading = new Map<string, Promise<Uint8Array>>();
+	readonly #knownDirs = new Set<string>();
+	readonly #creatingDirs = new Map<string, Promise<void>>();
 	#health: ObjectDependencyHealth = { status: "unknown" };
 
-	constructor(root: string, timeoutMs = 5_000, waitMs = 2_000) {
+	constructor(root: string, timeoutMs = 5_000, waitMs = 2_000, lanes = DEFAULT_LANES) {
 		if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000)
 			throw new Error("Object operation deadline is invalid");
 		if (!Number.isSafeInteger(waitMs) || waitMs < 0 || waitMs > 30_000)
 			throw new Error("Object operation wait is invalid");
+		if (!Number.isSafeInteger(lanes) || lanes < 1 || lanes > MAX_LANES)
+			throw new Error("Object operation lanes are invalid");
 		this.#root = resolve(root);
 		this.#timeoutMs = timeoutMs;
 		this.#waitMs = waitMs;
+		this.#lanes = lanes;
 	}
 
-	async put(profileId: string, sha256: string, bytes: Uint8Array): Promise<ObjectWriteResult> {
-		return this.#io(this.#objectPath(profileId, sha256), () => this.#put(profileId, sha256, bytes));
+	async put(
+		profileId: string,
+		sha256: string,
+		bytes: Uint8Array,
+		verified?: VerifiedObjectBytes,
+	): Promise<ObjectWriteResult> {
+		return this.#io(this.#objectPath(profileId, sha256), (signal) =>
+			this.#put(profileId, sha256, bytes, verified, signal),
+		);
 	}
 
 	dependencyHealth(): ObjectDependencyHealth {
@@ -70,11 +137,14 @@ export class FileSystemObjectStore {
 
 	async probe(): Promise<void> {
 		try {
-			await this.#io("probe", async () => {
+			await this.#io("probe", async (signal) => {
+				signal.throwIfAborted();
 				const path = resolve(this.#root, `.gateway-health-${randomUUID()}`);
 				const handle = await open(path, "wx", 0o600);
 				try {
+					signal.throwIfAborted();
 					await handle.writeFile("health");
+					signal.throwIfAborted();
 					await handle.sync();
 				} finally {
 					await handle.close();
@@ -87,21 +157,45 @@ export class FileSystemObjectStore {
 		}
 	}
 
-	async #put(profileId: string, sha256: string, bytes: Uint8Array): Promise<ObjectWriteResult> {
-		if (digest(bytes) !== sha256) throw new Error("Object bytes do not match their SHA-256 address");
+	async #put(
+		profileId: string,
+		sha256: string,
+		bytes: Uint8Array,
+		verified?: VerifiedObjectBytes,
+		signal?: AbortSignal,
+	): Promise<ObjectWriteResult> {
+		signal?.throwIfAborted();
+		if (!isVerifiedObjectBytes(verified, sha256, bytes) && digest(bytes) !== sha256)
+			throw new Error("Object bytes do not match their SHA-256 address");
 		const path = this.#objectPath(profileId, sha256);
 		const parent = resolve(path, "..");
 		try {
-			const existing = await this.#get(profileId, sha256, bytes.byteLength);
-			if (digest(existing) !== sha256) throw new Error("Stored object failed integrity verification");
+			await this.#get(profileId, sha256, bytes.byteLength, signal);
 			return "exists";
 		} catch (error) {
 			if (!(error instanceof Error) || error.message !== "Object not found") throw error;
 		}
+		signal?.throwIfAborted();
 		const temporary = `${path}.${randomUUID()}.tmp`;
-		await this.#directories(parent);
+		if (!this.#knownDirs.has(parent)) {
+			await this.#directories(parent);
+			this.#rememberDir(parent);
+		}
+		signal?.throwIfAborted();
+		let renamed = false;
 		try {
-			const handle = await open(temporary, "wx", 0o600);
+			let handle: Awaited<ReturnType<typeof open>>;
+			try {
+				handle = await open(temporary, "wx", 0o600);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+				signal?.throwIfAborted();
+				this.#knownDirs.delete(parent);
+				await this.#directories(parent);
+				this.#rememberDir(parent);
+				signal?.throwIfAborted();
+				handle = await open(temporary, "wx", 0o600);
+			}
 			try {
 				await handle.writeFile(bytes);
 				await handle.sync();
@@ -109,9 +203,10 @@ export class FileSystemObjectStore {
 				await handle.close();
 			}
 			await rename(temporary, path);
+			renamed = true;
 			await this.#sync(parent);
 		} finally {
-			await rm(temporary, { force: true });
+			if (!renamed) await rm(temporary, { force: true });
 		}
 		return "stored";
 	}
@@ -126,7 +221,7 @@ export class FileSystemObjectStore {
 		const shared = `${path}:${expectedBytes}`;
 		const underWay = this.#reading.get(shared);
 		if (underWay) return underWay;
-		const reading = this.#io(path, () => this.#get(profileId, sha256, expectedBytes));
+		const reading = this.#io(path, (signal) => this.#get(profileId, sha256, expectedBytes, signal));
 		this.#reading.set(shared, reading);
 		const settled = () => {
 			if (this.#reading.get(shared) === reading) this.#reading.delete(shared);
@@ -135,21 +230,81 @@ export class FileSystemObjectStore {
 		return reading;
 	}
 
-	async #get(profileId: string, sha256: string, expectedBytes: number): Promise<Uint8Array> {
+	getVerified(profileId: string, sha256: string, maxBytes = MAX_QUARANTINED_BYTES): Promise<Uint8Array> {
+		if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > MAX_QUARANTINED_BYTES)
+			return Promise.reject(new Error("Object size limit is invalid"));
+		let path: string;
+		try {
+			path = this.#objectPath(profileId, sha256);
+		} catch (error) {
+			return Promise.reject(error);
+		}
+		const shared = `${path}:verified:${maxBytes}`;
+		const underWay = this.#reading.get(shared);
+		if (underWay) return underWay;
+		const reading = this.#io(path, (signal) => this.#getVerified(profileId, sha256, maxBytes, signal));
+		this.#reading.set(shared, reading);
+		const settled = () => {
+			if (this.#reading.get(shared) === reading) this.#reading.delete(shared);
+		};
+		reading.then(settled, settled);
+		return reading;
+	}
+
+	async #get(profileId: string, sha256: string, expectedBytes: number, signal?: AbortSignal): Promise<Uint8Array> {
+		signal?.throwIfAborted();
 		const path = this.#objectPath(profileId, sha256);
 		try {
 			const info = await stat(path);
+			signal?.throwIfAborted();
 			if (!info.isFile() || info.size !== expectedBytes) {
 				throw new Error("Stored object failed integrity verification");
 			}
-			const bytes = await readFile(path);
-			if (digest(bytes) !== sha256) throw new Error("Stored object failed integrity verification");
+			const bytes = await readFile(path, signal ? { signal } : undefined);
+			if (bytes.byteLength !== expectedBytes || digest(bytes) !== sha256)
+				throw new Error("Stored object failed integrity verification");
 			return bytes;
 		} catch (error) {
 			if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
 				throw new Error("Object not found");
 			}
 			throw error;
+		}
+	}
+
+	async #getVerified(profileId: string, sha256: string, maxBytes: number, signal?: AbortSignal): Promise<Uint8Array> {
+		signal?.throwIfAborted();
+		const path = this.#objectPath(profileId, sha256);
+		let handle: Awaited<ReturnType<typeof open>> | undefined;
+		try {
+			handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+			signal?.throwIfAborted();
+			const info = await handle.stat();
+			if (!info.isFile() || info.size > maxBytes) {
+				throw new Error("Stored object failed integrity verification");
+			}
+			const buffer = Buffer.allocUnsafe(info.size);
+			let offset = 0;
+			while (offset < info.size) {
+				signal?.throwIfAborted();
+				const { bytesRead } = await handle.read(buffer, offset, info.size - offset, offset);
+				if (bytesRead === 0) throw new Error("Stored object failed integrity verification");
+				offset += bytesRead;
+			}
+			signal?.throwIfAborted();
+			const extra = Buffer.allocUnsafe(1);
+			const trailing = await handle.read(extra, 0, 1, offset);
+			if (trailing.bytesRead > 0 || digest(buffer) !== sha256)
+				throw new Error("Stored object failed integrity verification");
+			return buffer;
+		} catch (error) {
+			if (error && typeof error === "object" && "code" in error) {
+				if (error.code === "ENOENT") throw new Error("Object not found");
+				if (error.code === "ELOOP") throw new Error("Stored object failed integrity verification");
+			}
+			throw error;
+		} finally {
+			await handle?.close().catch(() => undefined);
 		}
 	}
 
@@ -171,16 +326,19 @@ export class FileSystemObjectStore {
 	async quarantine(profileId: string, sha256: string, leaseId: string): Promise<"moved" | "absent"> {
 		const source = this.#objectPath(profileId, sha256);
 		const target = this.#quarantinePath(profileId, sha256, leaseId);
-		return this.#io(source, async () => {
+		return this.#io(source, async (signal) => {
 			// The scan may remove an empty company folder between its mkdir (or the mkdir's sync) and the rename: then
 			// both are asked once more, so a NAS file that is still there is never taken for an absent one.
 			for (let attempt = 1; ; attempt++) {
+				signal.throwIfAborted();
 				try {
 					await this.#directories(dirname(target));
+					signal.throwIfAborted();
 					await rename(source, target);
 					break;
 				} catch (error) {
 					if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+					signal.throwIfAborted();
 					if (!(await this.#exists(source))) {
 						if (!(await this.#exists(target))) return "absent";
 						// This lease moved it before; that lane may have stopped before its syncs.
@@ -202,10 +360,12 @@ export class FileSystemObjectStore {
 		if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > MAX_QUARANTINED_BYTES)
 			throw new Error("Object size is invalid");
 		const marker = `${this.#quarantinePath(profileId, sha256, leaseId)}.${bytes}.replica`;
-		await this.#io(marker, async () => {
+		await this.#io(marker, async (signal) => {
 			for (let attempt = 1; ; attempt++) {
+				signal.throwIfAborted();
 				try {
 					await this.#directories(dirname(marker));
+					signal.throwIfAborted();
 					const handle = await open(marker, "w", 0o600);
 					try {
 						await handle.sync();
@@ -226,8 +386,10 @@ export class FileSystemObjectStore {
 	async restoreQuarantined(profileId: string, sha256: string, leaseId: string, bytes: number): Promise<void> {
 		const source = this.#quarantinePath(profileId, sha256, leaseId);
 		const target = this.#objectPath(profileId, sha256);
-		await this.#io(target, async () => {
+		await this.#io(target, async (signal) => {
+			signal.throwIfAborted();
 			await this.#directories(dirname(target));
+			signal.throwIfAborted();
 			let moved = true;
 			try {
 				await rename(source, target);
@@ -269,7 +431,8 @@ export class FileSystemObjectStore {
 		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500)
 			throw new Error("Quarantine batch limit is invalid");
 		const root = resolve(this.#root, QUARANTINE);
-		return this.#io(root, async () => {
+		return this.#io(root, async (signal) => {
+			signal.throwIfAborted();
 			let companies: string[];
 			try {
 				companies = await readdir(root);
@@ -282,6 +445,7 @@ export class FileSystemObjectStore {
 			for (const profileId of companies
 				.filter((name) => UUID_PATTERN.test(name) && (afterCompany === undefined || name >= afterCompany))
 				.sort()) {
+				signal.throwIfAborted();
 				const folder = resolve(root, profileId);
 				let names: string[];
 				try {
@@ -291,10 +455,12 @@ export class FileSystemObjectStore {
 					throw error;
 				}
 				if (names.length === 0) {
+					signal.throwIfAborted();
 					await rmdir(folder).catch(() => undefined);
 					continue;
 				}
 				for (const name of names.sort()) {
+					signal.throwIfAborted();
 					if (profileId === afterCompany && afterName !== undefined && name <= afterName) continue;
 					// `<sha256>.<leaseId>`, or a marker `<sha256>.<leaseId>.<bytes>.replica`.
 					const [sha256, leaseId, markerBytes, suffix, ...rest] = name.split(".");
@@ -333,14 +499,17 @@ export class FileSystemObjectStore {
 		});
 	}
 
-	#io<T>(key: string, operation: () => Promise<T>): Promise<T> {
+	#io<T>(key: string, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
 		return new Promise<T>((resolve, reject) => {
 			const start = () => {
 				const lane: Lane = { overdue: false };
+				const controller = new AbortController();
 				this.#inFlight.set(key, lane);
 				const deadline = setTimeout(() => {
 					lane.overdue = true;
-					reject(new ObjectDependencyError(503));
+					const error = new ObjectDependencyError(503);
+					controller.abort(error);
+					reject(error);
 					this.#refuseStranded();
 				}, this.#timeoutMs);
 				const settled = () => {
@@ -348,7 +517,10 @@ export class FileSystemObjectStore {
 					this.#inFlight.delete(key);
 					this.#admit();
 				};
-				Promise.resolve().then(operation).then(resolve, reject).then(settled, settled);
+				Promise.resolve()
+					.then(() => operation(controller.signal))
+					.then(resolve, reject)
+					.then(settled, settled);
 			};
 			if (this.#stranded(key)) {
 				reject(new ObjectDependencyError(503));
@@ -382,7 +554,7 @@ export class FileSystemObjectStore {
 	}
 
 	#open(key: string): boolean {
-		return !this.#inFlight.has(key) && this.#inFlight.size < LANES;
+		return !this.#inFlight.has(key) && this.#inFlight.size < this.#lanes;
 	}
 
 	#queued(key: string): boolean {
@@ -392,7 +564,7 @@ export class FileSystemObjectStore {
 
 	#stranded(key: string): boolean {
 		if (this.#inFlight.get(key)?.overdue) return true;
-		if (this.#inFlight.size < LANES) return false;
+		if (this.#inFlight.size < this.#lanes) return false;
 		for (const lane of this.#inFlight.values()) if (!lane.overdue) return false;
 		return true;
 	}
@@ -408,7 +580,7 @@ export class FileSystemObjectStore {
 	#admit(): void {
 		const behind = new Set<string>();
 		for (const waiting of [...this.#waiting]) {
-			if (this.#inFlight.size >= LANES) return;
+			if (this.#inFlight.size >= this.#lanes) return;
 			if (behind.has(waiting.key) || this.#inFlight.has(waiting.key)) {
 				behind.add(waiting.key);
 				continue;
@@ -418,13 +590,32 @@ export class FileSystemObjectStore {
 		}
 	}
 
+	#rememberDir(directory: string): void {
+		this.#knownDirs.delete(directory);
+		if (this.#knownDirs.size >= MAX_KNOWN_DIRS) {
+			const oldest = this.#knownDirs.values().next().value;
+			if (oldest !== undefined) this.#knownDirs.delete(oldest);
+		}
+		this.#knownDirs.add(directory);
+	}
+
 	/** Creates a directory and its missing parents, syncing each new name into its parent. */
 	async #directories(path: string): Promise<void> {
-		const created = await mkdir(path, { recursive: true, mode: 0o700 });
-		if (!created) return;
-		for (let directory = path; ; directory = dirname(directory)) {
-			await this.#sync(directory);
-			if (directory === dirname(created)) break;
+		const existing = this.#creatingDirs.get(path);
+		if (existing) return existing;
+		const pending = (async () => {
+			const created = await mkdir(path, { recursive: true, mode: 0o700 });
+			if (!created) return;
+			for (let directory = path; ; directory = dirname(directory)) {
+				await this.#sync(directory);
+				if (directory === dirname(created)) break;
+			}
+		})();
+		this.#creatingDirs.set(path, pending);
+		try {
+			await pending;
+		} finally {
+			if (this.#creatingDirs.get(path) === pending) this.#creatingDirs.delete(path);
 		}
 	}
 

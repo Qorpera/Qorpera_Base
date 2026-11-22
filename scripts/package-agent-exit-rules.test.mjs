@@ -77,6 +77,38 @@ test("packages the agent exit's rules reader with its unit and the database's CA
 		});
 		assert.notEqual(repeated.status, 0);
 		assert.equal(await readFile(join(destination, "manifest.json"), "utf8"), encoded);
+
+		const caSource = join(repositoryRoot, "deploy/cloud-secret-broker/supabase-prod-ca-2021.crt");
+		const caBytes = await readFile(caSource);
+		const caSha = createHash("sha256").update(caBytes).digest("hex");
+		const ownOut = join(temporary, "own-ca-package");
+		const ownPackaged = spawnSync(
+			process.execPath,
+			["scripts/package-agent-exit-rules.mjs", "--out", ownOut, "--database-ca", caSource, "--database-ca-sha256", caSha],
+			{ cwd: repositoryRoot, encoding: "utf8", timeout: 30_000 },
+		);
+		assert.equal(ownPackaged.status, 0, ownPackaged.stderr);
+		const ownManifest = JSON.parse(await readFile(join(ownOut, "manifest.json"), "utf8"));
+		assert.deepEqual(
+			ownManifest.artifacts.map((artifact) => artifact.file),
+			[
+				"qorpera-agent-exit-rules.mjs",
+				"qorpera-agent-exit-rules.service",
+				"supabase-prod-ca-2021.crt",
+				"database-own-ca.crt",
+				"database-own-ca.sha256",
+				"database-own-ca.conf",
+			],
+		);
+		const dropIn = await readFile(join(ownOut, "database-own-ca.conf"), "utf8");
+		assert.match(dropIn, /LoadCredential=qorpera-agent-exit-rules-database-own-ca:/);
+		assert.match(dropIn, /LoadCredential=qorpera-agent-exit-rules-database-own-ca-sha256:/);
+		const badPin = spawnSync(
+			process.execPath,
+			["scripts/package-agent-exit-rules.mjs", "--out", join(temporary, "bad"), "--database-ca", caSource, "--database-ca-sha256", "0".repeat(64)],
+			{ cwd: repositoryRoot, encoding: "utf8" },
+		);
+		assert.notEqual(badPin.status, 0);
 	} finally {
 		await rm(temporary, { recursive: true, force: true });
 	}

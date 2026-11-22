@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isDeepStrictEqual } from "node:util";
-import { boundedObjectOperation, ObjectDependencyError } from "./dependency.ts";
+import { ObjectDependencyError } from "./dependency.ts";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import { memberFolderWriter } from "./member-folder-commits.ts";
 import { UUID } from "./native-objects.ts";
@@ -34,6 +34,7 @@ export interface MemberSessionAttachmentOptions {
 	readonly store: Pick<FileSystemObjectStore, "get">;
 	readonly replication: Pick<ObjectGatewayReplication, "uploadWithAuthority">;
 	readonly readFallback?: (profileId: string, sha256: string) => Promise<Uint8Array>;
+	readonly bodyTimeoutMs?: number;
 }
 
 /** The database's answer: exactly `keys`, with the values the route asked for in `expected`; 503 otherwise. */
@@ -105,6 +106,10 @@ export async function serveMemberSessionAttachment(
 	const token = header.slice(7);
 	const [, kind, sessionId, inputId, sha256] = match;
 	const controller = new AbortController();
+	const disconnected = () => {
+		if (!response.writableFinished) controller.abort(new ObjectDependencyError(503));
+	};
+	response.once("close", disconnected);
 	const timer = setTimeout(() => controller.abort(new ObjectDependencyError(503)), 30_000);
 	const signal = controller.signal;
 	const folder = new PlatformFolderWriter({
@@ -166,18 +171,44 @@ export async function serveMemberSessionAttachment(
 					signal,
 				),
 			);
-			const bytes = await boundedObjectOperation(async () => {
+			const bodyController = new AbortController();
+			const abortBody = () => {
+				if (!request.complete) request.destroy();
+			};
+			const onParentAbort = () => bodyController.abort(signal.reason);
+			const bodyTimer = setTimeout(
+				() => bodyController.abort(new ObjectDependencyError(503)),
+				options.bodyTimeoutMs ?? 5_000,
+			);
+			bodyController.signal.addEventListener("abort", abortBody, { once: true });
+			if (signal.aborted) onParentAbort();
+			else signal.addEventListener("abort", onParentAbort, { once: true });
+			let bytes: Buffer;
+			try {
+				bodyController.signal.throwIfAborted();
 				const chunks: Buffer[] = [];
 				let count = 0;
 				for await (const part of request) {
-					const chunk = Buffer.from(part);
+					bodyController.signal.throwIfAborted();
+					const chunk = Buffer.isBuffer(part) ? part : Buffer.from(part);
 					count += chunk.length;
 					if (count > size) throw new ObjectDependencyError(413);
 					chunks.push(chunk);
 				}
+				bodyController.signal.throwIfAborted();
 				if (count !== size) throw new ObjectDependencyError(400);
-				return Buffer.concat(chunks);
-			});
+				bytes = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, count);
+			} catch (error) {
+				if (bodyController.signal.aborted) {
+					const reason = bodyController.signal.reason;
+					throw reason instanceof ObjectDependencyError ? reason : new ObjectDependencyError(503);
+				}
+				throw error;
+			} finally {
+				clearTimeout(bodyTimer);
+				signal.removeEventListener("abort", onParentAbort);
+				bodyController.signal.removeEventListener("abort", abortBody);
+			}
 			if (createHash("sha256").update(bytes).digest("hex") !== sha256) throw new ObjectDependencyError(400);
 			const file = await folder.stage(environmentId, bytes, { mediaType, executable: false }, signal);
 			answer(
@@ -226,5 +257,6 @@ export async function serveMemberSessionAttachment(
 		response.end(bytes);
 	} finally {
 		clearTimeout(timer);
+		response.removeListener("close", disconnected);
 	}
 }

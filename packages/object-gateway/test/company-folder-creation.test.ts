@@ -3,7 +3,8 @@ import { companyStateSeedTree } from "@qorpera/cloud-client/company-state-files"
 import { describe, expect, it } from "vitest";
 import { CompanyFolderCreator, creationUnits, parseCompanyCreationClaim } from "../src/company-folder-creation.ts";
 import { ObjectDependencyError } from "../src/dependency.ts";
-import { type PlatformFileReference, PlatformFolderProblem } from "../src/platform-folder-writer.ts";
+import { SupabaseMemberCompanyAuthority } from "../src/member-company-authority.ts";
+import { mapBounded, type PlatformFileReference, PlatformFolderProblem } from "../src/platform-folder-writer.ts";
 
 const workerId = "34000000-0000-4000-8000-00000000000a";
 const creationId = "34000000-0000-4000-8000-0000000000c1";
@@ -59,7 +60,8 @@ function database(
 	const calls: { method: string; args: Record<string, unknown> }[] = [];
 	const claims = [...(options.claims ?? [])];
 	const objects = new Map<string, Uint8Array>();
-	let manifest = "";
+	const manifests = new Map<string, string>();
+	let intentSeq = 0;
 	const authority = {
 		async publisher(method: string, args: Record<string, unknown>) {
 			calls.push({ method, args });
@@ -76,28 +78,33 @@ function database(
 				case "qorpera_folder_follow_up_now":
 					if (options.followUpThrows) throw options.followUpThrows;
 					return { schema: "qorpera.folder-follow-up/v1", result: "done" };
-				case "qorpera_folder_open_upload":
+				case "qorpera_folder_open_upload": {
 					if (options.openInvalid) return { schema: "qorpera.folder-upload/v0" };
-					manifest = args.p_manifest as string;
+					const openedId = `34000000-0000-4000-8000-${String(++intentSeq).padStart(12, "0")}`;
+					const manifest = args.p_manifest as string;
+					manifests.set(openedId, manifest);
 					return {
 						schema: "qorpera.folder-upload/v1",
-						intentId,
+						intentId: openedId,
 						manifestSha256: digest(manifest),
 						expiresAt: "x",
 						present: [],
 					};
+				}
 				case "qorpera_folder_authorize_object_upload":
 					return { schema: "qorpera.folder-object-upload/v1", profileId };
 				case "qorpera_folder_confirm_object":
 					return { schema: "qorpera.folder-object/v1", sha256: args.p_sha256, bytes: args.p_bytes };
 				case "qorpera_folder_seal_upload": {
+					const sealedId = (args.p_intent as string) ?? intentId;
 					if (options.sealIncomplete)
-						return { schema: "qorpera.folder-seal/v1", state: "incomplete", intentId, missing: [] };
+						return { schema: "qorpera.folder-seal/v1", state: "incomplete", intentId: sealedId, missing: [] };
+					const manifest = manifests.get(sealedId) ?? "";
 					const parsed = JSON.parse(manifest);
 					return {
 						schema: "qorpera.folder-seal/v1",
 						state: "sealed",
-						intentId,
+						intentId: sealedId,
 						file: {
 							manifestSha256: digest(manifest),
 							fileSha256: parsed.fileSha256,
@@ -150,6 +157,7 @@ describe("parseCompanyCreationClaim", () => {
 		const parsed = parseCompanyCreationClaim(claim());
 		expect(parsed).toMatchObject({
 			creationId,
+			profileId,
 			environmentId,
 			generation: 2,
 			cofounderId,
@@ -461,5 +469,73 @@ describe("CompanyFolderCreator", () => {
 			"application/json",
 		);
 		expect(units.find((u) => u.op === "write" && u.path === "identity/tokens.css")?.file?.mediaType).toBe("text/css");
+	});
+
+	it("aborts in-flight sibling workers via mapBounded child signal without replacing the triggering failure", async () => {
+		const triggerError = new Error("item-1-failed");
+		let siblingAborted = false;
+		let entered0 = () => {};
+		const saw0 = new Promise<void>((resolve) => {
+			entered0 = resolve;
+		});
+		await expect(
+			mapBounded([0, 1, 2], 2, async (item, _index, stepSignal) => {
+				if (item === 0) {
+					entered0();
+					return await new Promise<number>((_resolve, reject) => {
+						stepSignal.addEventListener(
+							"abort",
+							() => {
+								siblingAborted = true;
+								reject(stepSignal.reason);
+							},
+							{ once: true },
+						);
+					});
+				}
+				await saw0;
+				throw triggerError;
+			}),
+		).rejects.toBe(triggerError);
+		expect(siblingAborted).toBe(true);
+
+		let fetchAborted = false;
+		let fetchEntered = () => {};
+		const sawFetch = new Promise<void>((resolve) => {
+			fetchEntered = resolve;
+		});
+		const authority = new SupabaseMemberCompanyAuthority({
+			projectUrl: "https://cloud.test",
+			publishableKey: "sb_publishable_test",
+			secretKey: "sb_secret_test",
+			fetch: async (_input, init) => {
+				fetchEntered();
+				return await new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener(
+						"abort",
+						() => {
+							fetchAborted = true;
+							reject(new DOMException("The operation was aborted", "AbortError"));
+						},
+						{ once: true },
+					);
+				});
+			},
+		});
+		const fileProblem = new PlatformFolderProblem("file_unreadable");
+		await expect(
+			mapBounded([0, 1], 2, async (item, _index, stepSignal) => {
+				if (item === 0) {
+					return await authority.publisher(
+						"qorpera_folder_authorize_object_download",
+						{ p_environment_id: environmentId, p_actor: { kind: "platform" }, p_sha256: "a".repeat(64) },
+						stepSignal,
+					);
+				}
+				await sawFetch;
+				throw fileProblem;
+			}),
+		).rejects.toBe(fileProblem);
+		expect(fetchAborted).toBe(true);
 	});
 });

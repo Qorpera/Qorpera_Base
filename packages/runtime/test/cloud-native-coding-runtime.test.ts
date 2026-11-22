@@ -15,6 +15,7 @@ import type { NativeCompanyExecutionRequest } from "../src/cloud-native-provider
 import { runCloudNativeRunToolSession } from "../src/cloud-native-run-tool-session.ts";
 import { CLOUD_RUN_ROW_READ_MS, CloudNativeToolRun } from "../src/cloud-native-tool-authority.ts";
 import {
+	CloudNativeToolBoundary,
 	CloudToolArgumentRefusal,
 	type CloudToolContext,
 	cloudToolJsonText,
@@ -29,6 +30,7 @@ import {
 import { SITE_NAME_RULE } from "../src/cloud-site-tools.ts";
 import type { CloudWakeEnvelope } from "../src/cloud-wake-bus.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
+import { pngFile, pngHeader, pngRows } from "./fixtures/png-fixture.ts";
 
 vi.mock("../src/cloud-native-run-tool-session.ts", () => ({ runCloudNativeRunToolSession: vi.fn() }));
 afterEach(() => {
@@ -282,6 +284,7 @@ describe("the coding composition of a native turn", () => {
 					"Only work whose every check passes goes in; otherwise nothing goes in and the turn fails with the check that failed and the end of its output.",
 					'When the repository has no checks file, add one in this change: {"checks":[{"name":"install","run":"npm ci"},{"name":"test","run":"npm test"},{"name":"build","run":"npm run build"}]} for a Node project, or the commands that install, test and build yours;',
 					"each check has a name (lower case, digits, . _ -), a run command, and may have timeoutSeconds (10 to 1800, 600 when left out; at most 3600 in all) and cwd (a folder of the repository).",
+					'Checks run sequentially unless any check lists "needs" (an array of check names that must pass first), in which case ready checks run in parallel up to 4 at once (e.g. install first, then lint, typecheck and test with "needs":["install"], then build with "needs":["lint","typecheck","test"]); parallel checks share one copy, so do not let two of them write the same files.',
 					// Own code storage, step 4 (20260930729000): a website's built folder, named in the checks file, is the
 					// change's site for What's new, within a site's limits and with none of the session's secret values.
 					'When the project is a website, add "site": {"folder": "dist"} to the checks file, with the folder your build writes:',
@@ -303,6 +306,8 @@ describe("the coding composition of a native turn", () => {
 					"Never commit test output or logs as proof; the record says which checks passed. Write tests with a change that can be tested. Keep a README that says how to install, test, build and start the project.",
 					"the landing merges your commit with it, and the checks run on that merge; if the two conflict, the turn fails and says so",
 					"The secret values this session was given, when it was given any, are environment variables of every command, under the names the company saved them with: use them for what the work needs",
+					"Commands in this VM can reach the company's databases under /company/data/ with the data CLI",
+					"data describe [<database>], data apply <database>, data query <database> <question> [name=value ...] (or --sql '<one select>'), and data change <database> <change> [name=value ...] print JSON",
 					// 3 November 2026: Codex's read-only sandbox notice made a session ask for "a writable coding environment"
 					// before it tried one edit. The notice is about the harness's own tools; the repository VM is writable.
 					"The read-only sandbox your harness describes covers only its own built-in tools, which this session does not use; it says nothing about the repository VM.",
@@ -315,6 +320,8 @@ describe("the coding composition of a native turn", () => {
 					"When the change shows on a screen, give picture too: take a screenshot of the new screen with the machine's headless Chromium",
 					"keep it small (a few hundred KB; one over 4 MB is not used), commit it under docs/changes/ with a name of its own, and give its path in the repository.",
 					"Neither is required: never hold work back for them.",
+					"For UI or web changes, verify what you built visually before coding_finish: start a local dev or preview server, capture PNG, JPEG, or WebP screenshots with the machine's headless Chromium or Playwright",
+					"call coding_run_command with inspectImage set to that relative workspace path (using a fresh operationKey for each new or re-captured screenshot) to view each screenshot directly in your context",
 				])
 					expect(options.runtimeInstructions).toContain(rule);
 				await options.beginExecution(
@@ -1119,6 +1126,180 @@ describe("the coding composition of a native turn", () => {
 		expect(context.earlierTurns.map((turn) => [turn.sequence, turn.shortened])).toEqual([[2, true]]);
 		expect(context.earlierTurns[0].submitted.question.startsWith("Keep the raw log?")).toBe(true);
 		expect(context.omittedEarlierTurns).toBe(1);
+	});
+	it("forwards verified coding screenshot images through the tool boundary and context view, and refuses forged image provenance", async () => {
+		const f = fixture();
+		const png = pngFile(pngHeader(2, 1, 8, 2), pngRows([[255, 0, 0, 0, 0, 255]]));
+		const rawSha = createHash("sha256").update(png).digest("hex");
+		const payload = `QORPERA_IMG:${png.byteLength}:${rawSha}:\n${png.toString("base64")}`;
+		vi.mocked(f.gateway.start).mockImplementation(async (_scope, input) => ({
+			schema: "qorpera.coding-command-result/v2",
+			workerId: f.scope.workerId,
+			commandId: input.commandId,
+			inputSha256: input.inputSha256,
+			state: "succeeded",
+			exitCode: 0,
+			output: payload,
+			truncated: false,
+			log: {
+				offset: 0,
+				nextOffset: payload.length,
+				totalBytes: payload.length,
+				limitBytes: 67108864,
+				limitReached: false,
+			},
+		}));
+		const ledger = new Map<string, { receiptId: string; result: unknown }>();
+		f.control.beginToolOperation.mockImplementation(async (b, input) => {
+			let row = ledger.get(input.logicalOperationKey);
+			if (!row) {
+				row = { receiptId: input.receiptId, result: null };
+				ledger.set(input.logicalOperationKey, row);
+			}
+			return {
+				run_id: b.runId,
+				receipt_id: row.receiptId,
+				state: row.result === null ? "executing" : "completed",
+				result: row.result,
+				output_snapshot_id: null,
+				proposal_id: null,
+				folder_commit_id: null,
+			};
+		});
+		f.control.completeToolOperation.mockImplementation(async (b, input) => {
+			const row = [...ledger.values()].find((r) => r.receiptId === input.receiptId);
+			if (row) row.result = structuredClone(input.result);
+			return { run_id: b.runId, receipt_id: input.receiptId, state: "completed", result: input.result };
+		});
+		const original = f.call.getMockImplementation()!;
+		const recordedViews: unknown[] = [];
+		f.call.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_record_coding_context_view") {
+				recordedViews.push(args.p_view);
+				return {
+					schema: "qorpera.native-context-view-receipt/v1",
+					viewId: randomUUID(),
+					requestId: (args.p_view as { requestId: string }).requestId,
+					sha256: "d".repeat(64),
+					ordinal: recordedViews.length,
+				};
+			}
+			return original(method, args, signal);
+		});
+		vi.mocked(runCloudNativeRunToolSession).mockImplementation(async (options) => {
+			const run = await CloudNativeToolRun.open(f.binding, f.control, options.signal);
+			try {
+				const adapters = await options.tools(
+					f.authority.identity,
+					new CloudNativeToolOperations(run, f.control),
+					run,
+				);
+				expect(adapters.tools[0]?.images).toBe(true);
+				const boundary = new CloudNativeToolBoundary({
+					companyId: f.authority.identity.companyId,
+					runId: f.authority.identity.runId,
+					identity: f.authority.identity,
+					tools: adapters.tools,
+					assertActive: async () => undefined,
+					signal: options.signal,
+				});
+				try {
+					expect(boundary.captureImagesEnabled).toBe(true);
+					const invoked = await boundary.invoke("shot-1", "qorpera", "coding_run_command", {
+						operationKey: "view-home",
+						inspectImage: "docs/changes/home.png",
+					});
+					expect(invoked.success).toBe(true);
+					expect(invoked.contentItems).toHaveLength(2);
+					const envelopeText = invoked.contentItems[0].text;
+					const answer = JSON.parse(JSON.parse(envelopeText).content.text);
+					const fenced = await boundary.fenceNativeResults([
+						{
+							kind: "function_call_output",
+							callId: "shot-1",
+							output: [
+								{ type: "input_text", text: envelopeText },
+								{ type: "input_image", sha256: answer.imageSha256 },
+							],
+						},
+					]);
+					expect(fenced).toEqual([
+						{
+							kind: "function_call_output",
+							callId: "shot-1",
+							output: envelopeText,
+							imageSha256: answer.imageSha256,
+						},
+					]);
+					const frame = {
+						schema: "qorpera.native-result-fence/v1" as const,
+						requestId: "req-img-1",
+						threadId: "thread",
+						turnId: "turn",
+						purpose: "turn" as const,
+						outputs: [],
+					};
+					await adapters.recordContextView(frame, fenced, options.signal);
+					expect(recordedViews).toHaveLength(1);
+					expect(recordedViews[0]).toMatchObject({
+						requestId: "req-img-1",
+						outputs: [{ callId: "shot-1", readId: null }],
+					});
+					await expect(
+						adapters.recordContextView(
+							{ ...frame, requestId: "req-img-bad-hash" },
+							[{ ...fenced[0]!, imageSha256: "f".repeat(64) }],
+							options.signal,
+						),
+					).rejects.toThrow("CODING_CONTEXT_RESOURCES_REFUSED");
+					const forgedToolEnvelope = JSON.stringify({
+						...JSON.parse(envelopeText),
+						provenance: { ...JSON.parse(envelopeText).provenance, tool: "coding_read_command" },
+					});
+					await expect(
+						adapters.recordContextView(
+							{ ...frame, requestId: "req-img-bad-tool" },
+							[{ ...fenced[0]!, output: forgedToolEnvelope }],
+							options.signal,
+						),
+					).rejects.toThrow("CODING_CONTEXT_RESOURCES_REFUSED");
+					const withReadIdEnvelope = JSON.stringify({
+						...JSON.parse(envelopeText),
+						provenance: { ...JSON.parse(envelopeText).provenance, companyReadId: randomUUID() },
+					});
+					await expect(
+						adapters.recordContextView(
+							{ ...frame, requestId: "req-img-read-id" },
+							[{ ...fenced[0]!, output: withReadIdEnvelope }],
+							options.signal,
+						),
+					).rejects.toThrow("CODING_CONTEXT_RESOURCES_REFUSED");
+					await expect(
+						adapters.recordContextView(
+							{ ...frame, requestId: "req-img-capture" },
+							[{ ...fenced[0]!, capture: {} as never }],
+							options.signal,
+						),
+					).rejects.toThrow("CODING_CONTEXT_RESOURCES_REFUSED");
+					const finish = adapters.tools[3]!;
+					await finish.execute(
+						finish.parseArguments({
+							operationKey: "done",
+							summary: "Inspected screenshot and finished.",
+							headSha: "b".repeat(40),
+						}),
+						f.context,
+					);
+				} finally {
+					boundary.close();
+				}
+				return { providerSessionId: "native-thread", toolCalls: 2, codexVersion: "pinned", fencedRequests: 2 };
+			} finally {
+				run.close();
+			}
+		});
+		await f.runtime.execute(f.request, "/private", f.context.signal, f.turn);
+		expect(recordedViews).toHaveLength(1);
 	});
 	it("does not claim completion when the harness ends without a submission", async () => {
 		const f = fixture();

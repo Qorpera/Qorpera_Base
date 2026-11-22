@@ -1109,4 +1109,31 @@ describe("a ChatGPT plan's first-routine card (shown only to a member with a pla
 		ack.resolve({ ...waitingNotice(), acknowledgedAt: timestamp });
 		await settle();
 	});
+	it("shows a Gemini monthly spend cap notice and lets the member dismiss it", async () => {
+		const noticeItem: MemberNotification = {
+			notificationId: id(95),
+			profileId: profileA.profileId,
+			kind: "gemini_cap_reached",
+			createdAt: timestamp,
+			acknowledgedAt: null,
+			subject: {
+				schema: "qorpera.member-notification.gemini-cap-reached/v1",
+				month: "2026-11",
+				spendMicrodollars: 100_250_000,
+				monthlyCapCents: 10_000,
+				runId: id(96),
+				sessionId: id(97),
+			},
+		};
+		const f = setup([noticeItem]);
+		await settle();
+		expect(f.view.el.hidden).toBe(false);
+		expect(f.view.el.querySelector(".company-notice p")?.textContent).toBe(
+			"Your monthly Gemini API spend cap of $100 was reached ($100.25 used in November 2026). Raise the cap in Settings or switch models to continue.",
+		);
+		action("dismiss-notification").click();
+		await settle();
+		expect(f.client.acknowledgeNotification).toHaveBeenCalledExactlyOnceWith(id(95), expect.any(AbortSignal));
+		expect(f.view.el.hidden).toBe(true);
+	});
 });

@@ -7,17 +7,11 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929027099_runtime_bundle_activation_v270.sql";
-const activationVersion = 270;
-const previousActivationVersion = 269;
-const previousActivationSha256 = "b49b2dc0e0059bd6817850ffbb416a6b9ac5d691c592c0782d14e5f463241c25";
-const activationRequires = Object.freeze([
-	[
-		"20260930822000_thread_run_wakes",
-		"#2005 (the fold): bundle 270's manifest hashes every migration into its authorization component, so it names 822000; the bundle is never active on a database where the thread read does not carry run_wake",
-		"position('run_wake' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_read_session_events(uuid,bigint,integer)')), '')) > 0 and position('qorpera_wake_occurrences' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_read_session_events(uuid,bigint,integer)')), '')) > 0",
-	],
-]);
+const activation = "supabase/migrations/20260929027299_runtime_bundle_activation_v272.sql";
+const activationVersion = 272;
+const previousActivationVersion = 271;
+const previousActivationSha256 = "65fdee24c81b0a24a84aaf0359a68decf04e840d7668c3b35d26cf3ed0a6ee47";
+const activationRequires = Object.freeze([]);
 const activationRequiresSql = activationRequires
 	.map(([migration, why, present]) => {
 		const always = `${migration}.sql` < activation.slice(activation.lastIndexOf("/") + 1);

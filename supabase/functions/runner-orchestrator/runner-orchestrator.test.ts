@@ -5,8 +5,10 @@ import { registerHooks } from "node:module";
 import { before, describe, it } from "node:test";
 import {
 	FOLDER_DRAINS,
+	orchestratorAuthFailure,
 	parseRunnerOrchestratorBearer,
 	parseRunnerOrchestratorRequest,
+	readRunnerOrchestratorRequest,
 	runnerOrchestratorRpcStatus,
 } from "./runner-orchestrator.ts";
 
@@ -832,5 +834,43 @@ describe("the edge function's route for the one call", () => {
 				p_error_detail: null,
 			},
 		]);
+	});
+
+	it("returns 503 on transient control-token validation DB errors instead of 401 and cancels oversized chunked bodies", async () => {
+		assert.equal(orchestratorAuthFailure({ code: "08006" }, null)?.status, 503);
+		assert.equal(orchestratorAuthFailure({ code: "42501" }, null)?.status, 401);
+		assert.equal(orchestratorAuthFailure(null, false)?.status, 401);
+		assert.equal(orchestratorAuthFailure(null, true), null);
+
+		calls.length = 0;
+		answer = (name) =>
+			name === "qorpera_runner_orchestrator_control_valid" ? { error: { code: "08006" } } : { data: {} };
+		const outage = await post({ action: "due_summary", orchestratorId });
+		assert.equal(outage.status, 503);
+
+		let pulled = 0;
+		let cancelled = false;
+		const oversized = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				pulled += 1;
+				if (pulled > 32) {
+					controller.close();
+					return;
+				}
+				controller.enqueue(new Uint8Array(64 * 1024));
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const chunkedReq = new Request("https://project.invalid/functions/v1/runner-orchestrator", {
+			method: "POST",
+			headers: { authorization: `Bearer ${token}` },
+			body: oversized,
+			duplex: "half",
+		} as RequestInit);
+		await assert.rejects(readRunnerOrchestratorRequest(chunkedReq), /request size/);
+		assert.equal(cancelled, true);
+		assert.ok(pulled <= 10, `expected early stream cancellation, saw ${pulled} chunks`);
 	});
 });

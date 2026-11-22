@@ -69,9 +69,23 @@ export function renderTeam(
 	const openDetails = [...container.querySelectorAll("details[open]")].map(
 		(details) => details.querySelector("summary")?.textContent,
 	);
-	const signal = options.signal ? AbortSignal.any([company.signal, options.signal]) : company.signal;
 	const route = location.hash;
-	const current = () => !signal.aborted && location.hash === route;
+	const current = () => !company.signal.aborted && !options.signal?.aborted && location.hash === route;
+	const confirm = async (message: string, label: string, danger?: boolean, typeName?: string): Promise<boolean> => {
+		const dialog = new AbortController();
+		const stop = () => dialog.abort();
+		if (company.signal.aborted || options.signal?.aborted) dialog.abort();
+		else {
+			company.signal.addEventListener("abort", stop, { once: true });
+			options.signal?.addEventListener("abort", stop, { once: true });
+		}
+		try {
+			return await confirmDialog(message, label, danger, typeName, dialog.signal);
+		} finally {
+			company.signal.removeEventListener("abort", stop);
+			options.signal?.removeEventListener("abort", stop);
+		}
+	};
 	const run = async (action: () => Promise<unknown>, message?: string) => {
 		if (!current()) return;
 		try {
@@ -132,14 +146,13 @@ export function renderTeam(
 					// A founder cannot be removed or changed by anyone else afterwards.
 					if (
 						role === "owner" &&
-						!(await confirmDialog(
+						!(await confirm(
 							t("Make {name} a founder? Founders can only step down or leave on their own.", {
 								name: member.displayName,
 							}),
 							t("Make founder"),
 							false,
 							undefined,
-							signal,
 						))
 					) {
 						select.value = member.role;
@@ -176,14 +189,13 @@ export function renderTeam(
 									() =>
 										void (async () => {
 											if (
-												await confirmDialog(
+												await confirm(
 													t("Step down as founder of {company}? You stay as an admin.", {
 														company: companyInSentence(profile.profileName),
 													}),
 													t("Step down"),
 													true,
 													undefined,
-													signal,
 												)
 											)
 												await run(
@@ -205,7 +217,7 @@ export function renderTeam(
 									() =>
 										void (async () => {
 											if (
-												await confirmDialog(
+												await confirm(
 													t("Remove {name} from {company}?", {
 														name: member.displayName,
 														company: companyInSentence(profile.profileName),
@@ -213,7 +225,6 @@ export function renderTeam(
 													t("Remove"),
 													true,
 													undefined,
-													signal,
 												)
 											)
 												await run(
@@ -419,7 +430,7 @@ export function renderTeam(
 						confirming.delete(company);
 					}
 					if (!current()) return;
-					const confirmed = await confirmDialog(
+					const confirmed = await confirm(
 						deleting
 							? t("Delete {company}? Type the company name to confirm.", {
 									company: companyInSentence(profile.profileName),
@@ -435,7 +446,6 @@ export function renderTeam(
 						deleting ? t("Delete company") : t("Leave"),
 						true,
 						deleting ? companyDisplayName(profile.profileName) : undefined,
-						signal,
 					);
 					if (!confirmed || !current()) return;
 					try {

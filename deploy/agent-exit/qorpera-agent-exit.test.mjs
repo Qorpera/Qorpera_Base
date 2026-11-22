@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import {
 	chmodSync,
 	existsSync,
@@ -251,6 +252,8 @@ def rollout(argv=(), fail=None):
             lines = [login.sha256_file(local) + "  " + path for path, local in login.INSTALLED]
             if is_direct and how != "no-own-ca":
                 lines.append(pin + "  " + login.OWN_CA)
+                lines.append(hashlib.sha256((pin + "\n").encode("ascii")).hexdigest() + "  " + login.OWN_CA_SHA)
+                lines.append(hashlib.sha256(login.OWN_CA_DROP_IN_CONTENT).hexdigest() + "  " + login.OWN_CA_DROP_IN)
             if how == "stale":
                 lines[0] = "0" * 64 + "  " + login.TOOL
             return 0, "\n".join(lines + ["1" * 64 + "  " + login.PROGRAM]) + "\n", []
@@ -1329,6 +1332,220 @@ describe("the agent plug", { skip: pythonUsable ? false : "needs Python 3.11 or 
 			`add element bridge qorpera_agent_exit_bridge clients { ${fresh.hwaddr} . ${fresh.address} }`,
 			`insert rule bridge qorpera_agent_exit_bridge dhcp ether saddr ${fresh.hwaddr} ip saddr { 0.0.0.0, ${fresh.address} } @th,256,32 0 @th,288,48 0x${hex} accept comment "${fresh.address}"`,
 		]);
+	});
+
+	test("a stopping machine whose tap detached before LXD reports Stopped does not flap unhealthy; 404, errors, batched sleeps and bridge ports behave cleanly", async () => {
+		const stopping = plugged("--kind", "machine", "--company", "c6", "--machine", "m6", "--project", "qp", "--instance", "vm-stop-race");
+		const broken = plugged("--kind", "machine", "--company", "c7", "--machine", "m7", "--project", "qp", "--instance", "vm-detached");
+		const deleted = plugged("--kind", "machine", "--company", "c8", "--machine", "m8", "--project", "qp", "--instance", "vm-gone-race");
+		const errVm = plugged("--kind", "machine", "--company", "c9", "--machine", "m9", "--project", "qp", "--instance", "vm-recheck-500");
+		const eStop = entry(stopping.address);
+		const eBroken = entry(broken.address);
+		const eDeleted = entry(deleted.address);
+		const eErr = entry(errVm.address);
+		const sock = join(run, "mock-lxd.sock");
+		const flushRaceLog = join(run, "flushes-race.log");
+		const calls = [];
+		const server = createServer((req, res) => {
+			calls.push(req.url);
+			if (req.url === "/1.0/instances?recursion=1&all-projects=true") {
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end(
+					JSON.stringify({
+						type: "sync",
+						status_code: 200,
+						metadata: [
+							{ ...machine(eStop, { status: "Running" }), config: { "volatile.agent.host_name": "tap-old-stop" } },
+							{ ...machine(eBroken, { status: "Running" }), config: { "volatile.agent.host_name": "tap-broken" } },
+							{ ...machine(eDeleted, { status: "Running" }), config: { "volatile.agent.host_name": "tap-old-gone" } },
+							machine(eErr, { status: "Running" }),
+						],
+					}),
+				);
+				return;
+			}
+			if (req.url === `/1.0/instances/${eStop.instance}?project=${eStop.project}`) {
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end(JSON.stringify({ type: "sync", status_code: 200, metadata: machine(eStop, { status: "Stopped" }) }));
+				return;
+			}
+			if (req.url === `/1.0/instances/${eBroken.instance}?project=${eBroken.project}`) {
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end(
+					JSON.stringify({
+						type: "sync",
+						status_code: 200,
+						metadata: { ...machine(eBroken, { status: "Running" }), config: { "volatile.agent.host_name": "tap-broken" } },
+					}),
+				);
+				return;
+			}
+			if (req.url === `/1.0/instances/${eDeleted.instance}?project=${eDeleted.project}`) {
+				res.writeHead(404, { "content-type": "text/plain" });
+				res.end("not found");
+				return;
+			}
+			if (req.url === `/1.0/instances/${eErr.instance}?project=${eErr.project}`) {
+				res.writeHead(500, { "content-type": "application/json" });
+				res.end(JSON.stringify({ type: "error", error: "lxd busy" }));
+				return;
+			}
+			res.writeHead(404, { "content-type": "application/json" });
+			res.end(JSON.stringify({ type: "error", error: "not found" }));
+		});
+		await new Promise((resolve) => server.listen(sock, resolve));
+		try {
+			const res = await new Promise((resolve) => {
+				const child = spawn(
+					"python3",
+					[
+						plugTool,
+						"reconcile",
+						"--once",
+						...dirs(),
+						"--lxd-socket",
+						sock,
+						"--port-recheck-seconds",
+						"0.05",
+						"--reload-dns",
+						"true",
+						"--flush-log",
+						flushRaceLog,
+					],
+					{ env: { ...process.env, QORPERA_AGENT_PLUG_NFT: "0" } },
+				);
+				let stderr = "";
+				child.stderr.on("data", (c) => {
+					stderr += c;
+				});
+				child.on("close", (code) => resolve({ code, stderr }));
+			});
+			assert.equal(res.code, 0, res.stderr);
+			const status = JSON.parse(readFileSync(join(run, "plug.json"), "utf8"));
+			assert.equal(
+				status.problems.some((p) => p.includes("vm-stop-race")),
+				false,
+				`stop-race VM must not flag unhealthy: ${JSON.stringify(status.problems)}`,
+			);
+			assert.equal(
+				status.problems.some((p) => p.includes("vm-gone-race")),
+				false,
+				`deleted-during-recheck VM must not flag unhealthy: ${JSON.stringify(status.problems)}`,
+			);
+			assert.equal(
+				existsSync(join(state, "verified", deleted.address)),
+				false,
+				"deleted-during-recheck VM must not be marked verified from stale snapshot",
+			);
+			assert.equal(
+				status.problems.some((p) => p.includes("vm-detached") && p.includes("is not a port of qagent0")),
+				true,
+				`truly detached running VM must still flag unhealthy: ${JSON.stringify(status.problems)}`,
+			);
+			assert.equal(
+				status.problems.some((p) => p.includes("vm-recheck-500") && p.includes("is not a port of qagent0")),
+				true,
+				`LXD 500 during recheck must fail closed as unhealthy: ${JSON.stringify(status.problems)}`,
+			);
+			assert.equal(
+				status.problems.some((p) => p.includes("cannot re-read qp/vm-recheck-500")),
+				true,
+				`LXD 500 during recheck must preserve diagnostic reason: ${JSON.stringify(status.problems)}`,
+			);
+			const raceFlushes = readFileSync(flushRaceLog, "utf8").trim().split("\n").filter(Boolean);
+			assert.ok(raceFlushes.includes(stopping.address), "re-confirmed Stopped VM is flushed on the same pass");
+			assert.equal(raceFlushes.includes(deleted.address), false, "404 VM takes missing path, not stale flush");
+			assert.ok(calls.includes(`/1.0/instances/${eStop.instance}?project=${eStop.project}`));
+
+			const bridgeCheck = await new Promise((resolve) => {
+				const child = spawn(
+					"python3",
+					[
+						"-c",
+						`
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("plug", sys.argv[1])
+plug = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(plug)
+sleeps = []
+plug.time.sleep = lambda seconds: sleeps.append(seconds)
+paths = plug.Paths(sys.argv[2], sys.argv[3], sys.argv[4])
+class Args:
+    lxd_socket = sys.argv[5]
+    lxd_fixture = None
+    port_recheck_seconds = 0.25
+    reload_dns = "true"
+    flush_log = sys.argv[6]
+    netns = "qexit"
+r = plug.Reconciler(paths, Args())
+r.nft = False
+captured = {}
+orig = r.sync_bridge
+def spy(ok, ports):
+    captured["ports"] = sorted(ports)
+    captured["ok"] = sorted(ok.keys())
+    captured["sleeps"] = list(sleeps)
+    return orig(ok, ports)
+r.sync_bridge = spy
+r.pass_once()
+print(json.dumps(captured))
+`,
+						plugTool,
+						state,
+						run,
+						log,
+						sock,
+						flushRaceLog,
+					],
+				);
+				let stdout = "";
+				let stderr = "";
+				child.stdout.on("data", (c) => {
+					stdout += c;
+				});
+				child.stderr.on("data", (c) => {
+					stderr += c;
+				});
+				child.on("close", (status) => resolve({ status, stdout, stderr }));
+			});
+			assert.equal(bridgeCheck.status, 0, bridgeCheck.stderr);
+			const captured = JSON.parse(bridgeCheck.stdout.trim().split("\n").at(-1));
+			assert.deepEqual(captured.sleeps, [0.25], "4 detached VMs must share exactly one batched sleep per pass");
+			assert.equal(
+				captured.ports.some(([p]) => p === "tap-old-stop" || p === "tap-old-gone"),
+				false,
+				`backed() must use re-queried by_name so stale stopped/404 taps are dropped: ${JSON.stringify(captured.ports)}`,
+			);
+			assert.equal(
+				captured.ports.some(([p, mac]) => p === "tap-broken" && mac === eBroken.hwaddr),
+				true,
+				`backed() must retain running VM tap ports from updated by_name: ${JSON.stringify(captured.ports)}`,
+			);
+
+			const emptyEnv = spawnSync("python3", [plugTool, "list", ...dirs()], {
+				encoding: "utf8",
+				env: { ...process.env, QORPERA_AGENT_PLUG_PORT_RECHECK_SECONDS: "" },
+			});
+			assert.equal(emptyEnv.status, 0, emptyEnv.stderr);
+			for (const bad of ["-1", "inf", "nan", "11"]) {
+				const badFlag = spawnSync("python3", [plugTool, "list", ...dirs(), "--port-recheck-seconds", bad], {
+					encoding: "utf8",
+				});
+				assert.notEqual(badFlag.status, 0, `--port-recheck-seconds ${bad} must be rejected`);
+			}
+		} finally {
+			await new Promise((resolve) => server.close(resolve));
+			rmSync(sock, { force: true });
+			rmSync(flushRaceLog, { force: true });
+			for (const addr of [stopping.address, broken.address, deleted.address, errVm.address]) {
+				rmSync(join(state, "clients", `${addr}.json`), { force: true });
+				rmSync(join(state, "dhcp-hosts", addr), { force: true });
+				rmSync(join(state, "seen", addr), { force: true });
+				rmSync(join(state, "verified", addr), { force: true });
+				rmSync(join(run, "plug-stopped", addr), { force: true });
+				rmSync(join(run, "plug-missing", addr), { force: true });
+			}
+		}
 	});
 
 	test("ports: a machine's own while LXD has its card (not stopped), never the exit's links; a missed read keeps it once", () => {
@@ -3107,5 +3324,90 @@ print(json.dumps({"found": sorted([list(key), answers] for key, answers in found
 			[result.unknown.map((u) => [u.node, u.from, u.to, u.what, u.why]), result.complete],
 			[[["node-a", iso(t0 + DAY - 100), iso(t0 + DAY), "connections", silent]], false],
 		);
+	});
+});
+
+describe("agent-exit memory and descriptor hygiene", () => {
+	test("SNI checker clears flow.hello on both done and refuse transitions", () => {
+		const sniTool = join(here, "qorpera-agent-exit-sni.py");
+		const script = String.raw`
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("sni", sys.argv[1])
+sni = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sni)
+checker = sni.Judge(lambda m, n: None, lambda msg: None)
+key1 = (("10.0.0.2", 50000), ("93.184.215.14", 443))
+flow1 = sni.Flow(100, 1.0)
+flow1.state = "passed"
+flow1.passed = 1.0
+flow1.hello = b"x" * 1024
+checker.flows[key1] = flow1
+verdicts1 = checker.inbound(key1, flow1, 1, 100 + 1024, sni.ACK, 1.5)
+key2 = (("10.0.0.2", 50001), ("93.184.215.14", 443))
+flow2 = sni.Flow(200, 1.0)
+flow2.state = "passed"
+flow2.passed = 1.0
+flow2.hello = b"y" * 1024
+checker.flows[key2] = flow2
+checker.refuse(key2, flow2, 2, "test refusal")
+print(json.dumps({"state1": flow1.state, "hello1": len(flow1.hello), "state2": flow2.state, "hello2": len(flow2.hello), "v1": len(verdicts1)}))
+`;
+		const run = spawnSync("python3", ["-c", script, sniTool], { encoding: "utf8" });
+		assert.equal(run.status, 0, run.stderr);
+		assert.deepEqual(JSON.parse(run.stdout), { state1: "done", hello1: 0, state2: "refused", hello2: 0, v1: 1 });
+	});
+
+	test("logger Writer reuses its open file descriptor, closes while paused, and reopens on unlink or UTC day change", () => {
+		const dir = mkdtempSync(join(tmpdir(), "qorpera-agent-exit-writer-"));
+		const script = String.raw`
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("logmod", sys.argv[1])
+logmod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(logmod)
+w = logmod.Writer(sys.argv[2])
+pause_file = os.path.join(sys.argv[2], "paused")
+try:
+    w.write({"ts": 1700000000.0, "event": "a"})
+    fd1 = w._file.fileno()
+    ino1 = w._ino
+    w.write({"ts": 1700000001.0, "event": "b"})
+    same_fd = (w._file.fileno() == fd1 and w._ino == ino1)
+    p1 = w._path
+    os.unlink(p1)
+    w.write({"ts": 1700000002.0, "event": "c"})
+    reopened_after_unlink = (os.path.exists(p1) and w._ino == os.stat(p1).st_ino)
+    w.write({"ts": 1700000000.0 + 86400.0, "event": "d"})
+    rolled_day = (w._path != p1)
+    w.pause(True, "disk low", pause_file)
+    closed_on_pause = (w._file is None)
+    w.gap("while paused")
+    closed_after_paused_gap = (w._file is None)
+    w.pause(False, "", pause_file)
+    reopened_on_resume = (w._file is not None)
+    print(json.dumps({
+        "same_fd": same_fd,
+        "reopened_after_unlink": reopened_after_unlink,
+        "rolled_day": rolled_day,
+        "closed_on_pause": closed_on_pause,
+        "closed_after_paused_gap": closed_after_paused_gap,
+        "reopened_on_resume": reopened_on_resume,
+    }))
+finally:
+    w.close()
+`;
+		try {
+			const run = spawnSync("python3", ["-c", script, logger, dir], { encoding: "utf8" });
+			assert.equal(run.status, 0, run.stderr);
+			assert.deepEqual(JSON.parse(run.stdout), {
+				same_fd: true,
+				reopened_after_unlink: true,
+				rolled_day: true,
+				closed_on_pause: true,
+				closed_after_paused_gap: true,
+				reopened_on_resume: true,
+			});
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

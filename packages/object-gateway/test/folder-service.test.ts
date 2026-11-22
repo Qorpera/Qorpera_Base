@@ -1,11 +1,22 @@
 import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
-import { connect, type Server, type Socket } from "node:net";
+import { createServer as createHttpServer } from "node:http";
+import { type AddressInfo, connect, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { type CoreEntry, parseCommitAnswer, parseFeedPage, parseListPage } from "../src/folder-service/core.ts";
+import { ObjectLockConflict, ObjectStatementTimeout } from "../src/dependency.ts";
+import {
+	CORE_PAGE,
+	type CoreEntry,
+	CoreRefusal,
+	parseCommitAnswer,
+	parseFeedPage,
+	parseListPage,
+	SupabaseFolderCore,
+} from "../src/folder-service/core.ts";
+import { nodeRequest, ResponseTooLargeError } from "../src/folder-service/https-request.ts";
 import { MountGrants, parseOperatorMounts } from "../src/folder-service/mounts.ts";
-import { NasObjects, ObjectIntegrityError, parseManifest } from "../src/folder-service/objects.ts";
+import { CHUNK_BYTES, NasObjects, ObjectIntegrityError, parseManifest } from "../src/folder-service/objects.ts";
 import {
 	type BridgeInfo,
 	encodeFrame,
@@ -528,6 +539,28 @@ describe("objects on the storage server", () => {
 		});
 		expect(() => parseManifest(Buffer.from(manifest), wrong)).toThrow("does not match");
 		expect(() => parseManifest(Buffer.from(manifest), { ...wrong, executable: false, bytes: 9 })).toThrow();
+	});
+
+	it("caches parsed manifests while re-validating entry metadata and zero-copy single-chunk slices", async () => {
+		const root = await tempdir();
+		const entry = await storeFile(root, "f.txt", "abcdefgh", 1);
+		const tree = new ViewTree();
+		tree.put(entry);
+		const e = tree.get("f.txt")!;
+		const objects = new NasObjects({ root, cacheBytes: 4096 });
+		expect((await objects.read(PROFILE, e, 0, 4)).toString()).toBe("abcd");
+		expect((await objects.read(PROFILE, e, 2, 4)).toString()).toBe("cdef");
+		await expect(objects.read(PROFILE, { ...e, executable: true }, 0, 4)).rejects.toThrow("does not match");
+		await expect(objects.read(PROFILE, { ...e, mediaType: "application/json" }, 0, 4)).rejects.toThrow(
+			"does not match",
+		);
+		await expect(objects.read(PROFILE, { ...e, bytes: 9 }, 0, 4)).rejects.toThrow("does not match");
+		const chunks = [
+			{ sha256: hashOf("abcd"), bytes: 4 },
+			{ sha256: hashOf("efgh"), bytes: 4 },
+		];
+		expect((await objects.readChunks(PROFILE, chunks, 1, 2)).toString()).toBe("bc");
+		expect((await objects.readChunks(PROFILE, chunks, 2, 4)).toString()).toBe("cdef");
 	});
 });
 
@@ -1332,5 +1365,291 @@ describe("run box views", () => {
 				{ id: VIEW, environmentId: ENV, actor: { kind: "platform" }, machine: MACHINE, passSha256: hashOf("p") },
 			]),
 		).toThrow("not uuids");
+	});
+});
+
+describe("NasObjects write-through put", () => {
+	it("seeds hash-verified chunks into ByteCache, isolates caller buffers, and enforces bounds", async () => {
+		const root = await tempdir();
+		const objects = new NasObjects({ root, cacheBytes: 16 });
+		const source = Buffer.from("hello world");
+		const sha = hashOf(source);
+		objects.put(PROFILE, sha, source);
+		source.fill(0);
+		expect(objects.has(PROFILE, sha)).toBe(true);
+		expect(objects.cachedBytes).toBe(11);
+		expect((await objects.chunk(PROFILE, sha, 11)).toString()).toBe("hello world");
+		await expect(objects.chunk(PROFILE, sha, 10)).rejects.toThrow(ObjectIntegrityError);
+
+		expect(() => objects.put("not-a-uuid", sha, Buffer.from("hello world"))).toThrow(ObjectIntegrityError);
+		expect(() => objects.put(PROFILE, "bad-hash", Buffer.from("hello world"))).toThrow(ObjectIntegrityError);
+		expect(() => objects.put(PROFILE, hashOf(""), Buffer.alloc(0))).toThrow(ObjectIntegrityError);
+		expect(() => objects.put(PROFILE, hashOf("x"), Buffer.alloc(CHUNK_BYTES + 1))).toThrow(ObjectIntegrityError);
+		expect(() => objects.put(PROFILE, hashOf("expected"), Buffer.from("tampered"))).toThrow(ObjectIntegrityError);
+		expect(objects.has(PROFILE, hashOf("expected"))).toBe(false);
+
+		const overCap = Buffer.alloc(20, 0x41);
+		const overSha = hashOf(overCap);
+		objects.put(PROFILE, overSha, overCap);
+		expect(objects.has(PROFILE, overSha)).toBe(false);
+		expect(objects.cachedBytes).toBe(11);
+	});
+});
+
+describe("SupabaseFolderCore paging and oversized fallback", () => {
+	it("requests CORE_PAGE = 1000 and falls back to 200 on ResponseTooLargeError without opening the circuit", async () => {
+		expect(CORE_PAGE).toBe(1000);
+		const seen: Array<{ path: string; limit: number }> = [];
+		const core = new SupabaseFolderCore({
+			projectUrl: "https://core.example",
+			secretKey: "sb_secret_test",
+			transport: async (url, req) => {
+				const body = JSON.parse(req.body ?? "{}") as { p_limit: number };
+				seen.push({ path: url.pathname, limit: body.p_limit });
+				if (body.p_limit === CORE_PAGE && seen.length <= 3) throw new ResponseTooLargeError();
+				if (url.pathname.endsWith("/qorpera_folder_list")) {
+					return {
+						status: 200,
+						body: Buffer.from(
+							JSON.stringify({
+								schema: "qorpera.folder-list/v1",
+								asOfSeq: 5,
+								entries: [],
+								nextAfter: null,
+							}),
+						),
+					};
+				}
+				return {
+					status: 200,
+					body: Buffer.from(
+						JSON.stringify({
+							schema: "qorpera.folder-feed/v1",
+							asOfSeq: 5,
+							resync: false,
+							more: false,
+							events: [],
+							next: { afterSeq: 5, cursor: null },
+						}),
+					),
+				};
+			},
+		});
+		const actor = { kind: "platform" as const };
+		const listed = await core.list(ENV, actor, null);
+		expect(listed.asOfSeq).toBe(5);
+		const fed = await core.feed(ENV, actor, 5, null);
+		expect(fed.more).toBe(false);
+		const listedAgain = await core.list(ENV, actor, null);
+		expect(listedAgain.asOfSeq).toBe(5);
+		expect(seen).toEqual([
+			{ path: "/rest/v1/rpc/qorpera_folder_list", limit: 1000 },
+			{ path: "/rest/v1/rpc/qorpera_folder_list", limit: 200 },
+			{ path: "/rest/v1/rpc/qorpera_folder_feed", limit: 1000 },
+			{ path: "/rest/v1/rpc/qorpera_folder_feed", limit: 200 },
+			{ path: "/rest/v1/rpc/qorpera_folder_list", limit: 1000 },
+		]);
+
+		const alwaysLarge = new SupabaseFolderCore({
+			projectUrl: "https://core.example",
+			secretKey: "sb_secret_test",
+			transport: async () => {
+				throw new ResponseTooLargeError();
+			},
+		});
+		await expect(alwaysLarge.list(ENV, actor, null)).rejects.toThrow("Object dependency is unavailable");
+	});
+
+	it("rejects with ResponseTooLargeError from nodeRequest when response exceeds maxBytes", async () => {
+		const server = createHttpServer((_req, res) => {
+			res.writeHead(200);
+			res.end("x".repeat(256));
+		});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		cleanup.push(async () => {
+			server.closeAllConnections();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		});
+		const { port } = server.address() as AddressInfo;
+		await expect(
+			nodeRequest(
+				new URL(`http://127.0.0.1:${port}/`),
+				{ method: "GET", headers: {} },
+				64,
+				new AbortController().signal,
+			),
+		).rejects.toBeInstanceOf(ResponseTooLargeError);
+	});
+
+	it("decodes fragmented and multi-frame streams in FrameReader without retaining large slabs or unbounded chunk wrappers", () => {
+		const reader = new FrameReader();
+		const bigPayload = Buffer.alloc(512 * 1024, 0x37);
+		const bigFrame = encodeFrame(Kind.data, bigPayload);
+		const decoded: Frame[] = [];
+		for (let at = 0; at < bigFrame.byteLength; at += 513) {
+			decoded.push(...reader.push(bigFrame.subarray(at, Math.min(bigFrame.byteLength, at + 513))));
+		}
+		expect(decoded).toHaveLength(1);
+		expect(decoded[0]!.kind).toBe(Kind.data);
+		expect(decoded[0]!.payload.equals(bigPayload)).toBe(true);
+		expect(reader.allocatedBytes).toBe(0);
+
+		const slabReader = new FrameReader();
+		const filler = encodeFrame(Kind.data, Buffer.alloc(10_000, 0x22));
+		const tailFrame = encodeFrame(Kind.data, Buffer.from("tail-ok"));
+		const slab = Buffer.concat([filler, tailFrame.subarray(0, 6)]);
+		expect(slab.byteLength).toBeGreaterThan(8192);
+		const fromSlab = slabReader.push(slab);
+		expect(fromSlab).toHaveLength(1);
+		expect(slabReader.push(Buffer.alloc(0))).toEqual([]);
+		const finishedTail = slabReader.push(tailFrame.subarray(6));
+		expect(finishedTail).toHaveLength(1);
+		expect(finishedTail[0]!.payload.toString("utf8")).toBe("tail-ok");
+		expect(finishedTail[0]!.payload.buffer).not.toBe(slab.buffer);
+
+		const dripReader = new FrameReader();
+		const maxPayload = Buffer.alloc(MAX_PAYLOAD, 0x5c);
+		const maxFrame = encodeFrame(Kind.data, maxPayload);
+		expect(dripReader.push(maxFrame.subarray(0, 4))).toEqual([]);
+		expect(dripReader.allocatedBytes).toBeLessThanOrEqual(256);
+		let maxAllocated = dripReader.allocatedBytes;
+		const dripOut: Frame[] = [];
+		for (let i = 4; i < maxFrame.byteLength; i++) {
+			dripOut.push(...dripReader.push(maxFrame.subarray(i, i + 1)));
+			if (dripReader.allocatedBytes > maxAllocated) maxAllocated = dripReader.allocatedBytes;
+		}
+		expect(dripOut).toHaveLength(1);
+		expect(dripOut[0]!.payload.byteLength).toBe(MAX_PAYLOAD);
+		expect(dripOut[0]!.payload[0]).toBe(0x5c);
+		expect(dripOut[0]!.payload[MAX_PAYLOAD - 1]).toBe(0x5c);
+		expect(maxAllocated).toBeLessThanOrEqual(MAX_PAYLOAD + 1);
+		expect(dripReader.allocatedBytes).toBe(0);
+
+		const zeroLen = new FrameReader();
+		expect(zeroLen.push(Buffer.from([0, 0]))).toEqual([]);
+		expect(() => zeroLen.push(Buffer.from([0, 0]))).toThrow(ProtocolError);
+	});
+
+	it("batches large clocks requests and isolates per-company PG lock conflicts and statement timeouts from the global circuit", async () => {
+		const clockBatches: number[] = [];
+		let mode: "40001" | "40P01" | "55P03" | "57014" | "ok" = "40001";
+		let holdTimeout: (() => void) | undefined;
+		const timeoutStarted = new Promise<void>((resolve) => {
+			holdTimeout = resolve;
+		});
+		let releaseTimeout: (() => void) | undefined;
+		const timeoutGate = new Promise<void>((resolve) => {
+			releaseTimeout = resolve;
+		});
+		const core = new SupabaseFolderCore({
+			projectUrl: "https://core.example",
+			secretKey: "sb_secret_test",
+			transport: async (url) => {
+				if (url.pathname.endsWith("/qorpera_folder_clocks")) {
+					const raw = url.searchParams.get("environment_id") ?? "";
+					const ids = raw.slice("in.(".length, -1).split(",");
+					clockBatches.push(ids.length);
+					return {
+						status: 200,
+						body: Buffer.from(JSON.stringify(ids.map((id, i) => ({ environment_id: id, last_seq: i + 1 })))),
+					};
+				}
+				if (mode === "57014") {
+					holdTimeout?.();
+					await timeoutGate;
+					return {
+						status: 500,
+						body: Buffer.from(JSON.stringify({ code: "57014", message: "statement timeout" })),
+					};
+				}
+				if (mode !== "ok") {
+					return { status: 500, body: Buffer.from(JSON.stringify({ code: mode, message: "lock conflict" })) };
+				}
+				return {
+					status: 200,
+					body: Buffer.from(
+						JSON.stringify({ schema: "qorpera.folder-list/v1", asOfSeq: 7, entries: [], next: null }),
+					),
+				};
+			},
+		});
+		const envs = Array.from({ length: 250 }, (_, i) => `10000000-0000-4000-8000-${String(i).padStart(12, "0")}`);
+		const clocks = await core.clocks(envs);
+		expect(clockBatches).toEqual([100, 100, 50]);
+		expect(clocks.size).toBe(250);
+
+		const actor = { kind: "platform" as const };
+		for (const code of ["40001", "40P01", "55P03"] as const) {
+			mode = code;
+			await expect(core.list(envs[0]!, actor, null)).rejects.toBeInstanceOf(ObjectLockConflict);
+			mode = "ok";
+			expect((await core.list(envs[1]!, actor, null)).asOfSeq).toBe(7);
+		}
+
+		mode = "57014";
+		const slow = core.list(envs[0]!, actor, null);
+		await timeoutStarted;
+		mode = "ok";
+		expect((await core.list(envs[1]!, actor, null)).asOfSeq).toBe(7);
+		releaseTimeout?.();
+		await expect(slow).rejects.toBeInstanceOf(ObjectStatementTimeout);
+		expect((await core.list(envs[2]!, actor, null)).asOfSeq).toBe(7);
+	});
+
+	it("isolates in-flight profile lookups by actor and loads small NAS objects into unpooled buffers", async () => {
+		const root = await tempdir();
+		const content = Buffer.from("hello-unpooled-profile-test");
+		const file = await storeFile(root, "note.txt", content, 1, content.byteLength);
+		const reader = new NasObjects({ root, cacheBytes: 1024 * 1024 });
+		const direct = await reader.readChunks(
+			PROFILE,
+			[{ sha256: file.fileSha256!, bytes: content.byteLength }],
+			0,
+			content.byteLength,
+		);
+		expect(direct.equals(content)).toBe(true);
+		expect(direct.buffer.byteLength).toBe(content.byteLength);
+
+		const core = new FakeCore();
+		const viewA = "20000000-0000-4000-8000-000000000001";
+		const viewB = "20000000-0000-4000-8000-000000000002";
+		const passA = "pass-a-".padEnd(43, "a");
+		const passB = "pass-b-".padEnd(43, "b");
+		core.openView(viewA, passA);
+		core.openView(viewB, passB);
+		core.seed([file]);
+		let releaseA: (() => void) | undefined;
+		const aWaiting = new Promise<void>((resolve) => {
+			releaseA = resolve;
+		});
+		let aStartedResolve: (() => void) | undefined;
+		const aStarted = new Promise<void>((resolve) => {
+			aStartedResolve = resolve;
+		});
+		core.objectProfile = async (_env, actor) => {
+			if (actor.kind === "view" && actor.viewId === viewA) {
+				aStartedResolve?.();
+				await aWaiting;
+				throw new CoreRefusal("denied", "Folder view has ended");
+			}
+			return PROFILE;
+		};
+		const execBridge: BridgeInfo = { cid: 77, lookup: "found", machine: EXEC_HOST };
+		const { path } = await serve(core, root);
+		const clientA = await Client.open(path);
+		const clientB = await Client.open(path);
+		cleanup.push(
+			() => clientA.close(),
+			() => clientB.close(),
+		);
+		expect((await clientA.hello("io", passA, execBridge, viewA)).kind).toBe(Kind.helloOk);
+		expect((await clientB.hello("io", passB, execBridge, viewB)).kind).toBe(Kind.helloOk);
+		const readA = clientA.read("note.txt", 1, 0, content.byteLength);
+		await aStarted;
+		const readB = await clientB.read("note.txt", 1, 0, content.byteLength);
+		expect(Buffer.isBuffer(readB) && readB.equals(content)).toBe(true);
+		releaseA?.();
+		const resA = await readA;
+		expect(typeof resA).toBe("string");
 	});
 });

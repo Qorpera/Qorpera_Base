@@ -126,15 +126,24 @@ export interface SearchSource {
 	readonly longestLine?: number;
 }
 
+const SURROGATE = /[\uD800-\uDFFF]/;
+
 /** Depth-first order of two paths: name by name, a folder before what it holds. */
 export function treeOrder(a: string, b: string): number {
-	const x = a.split("/");
-	const y = b.split("/");
-	for (let i = 0; i < Math.min(x.length, y.length); i++) {
-		const order = byteOrder(x[i]!, y[i]!);
+	if (a === b) return 0;
+	let ai = 0;
+	let bi = 0;
+	for (;;) {
+		const aSlash = a.indexOf("/", ai);
+		const bSlash = b.indexOf("/", bi);
+		const aEnd = aSlash < 0 ? a.length : aSlash;
+		const bEnd = bSlash < 0 ? b.length : bSlash;
+		const order = byteOrder(a.slice(ai, aEnd), b.slice(bi, bEnd));
 		if (order !== 0) return order;
+		if (aSlash < 0 || bSlash < 0) return aSlash < 0 ? (bSlash < 0 ? 0 : -1) : 1;
+		ai = aSlash + 1;
+		bi = bSlash + 1;
 	}
-	return x.length - y.length;
 }
 
 /** A compiled glob: its '/'-separated parts, each a name pattern (code points) or `**` (any number of folders). A
@@ -142,12 +151,30 @@ export function treeOrder(a: string, b: string): number {
 export interface Glob {
 	readonly parts: readonly (readonly string[] | "**")[];
 	readonly nameOnly: boolean;
+	readonly simpleName?:
+		| { readonly kind: "exact"; readonly value: string }
+		| { readonly kind: "affix"; readonly prefix: string; readonly suffix: string };
 }
 
 export function compileGlob(glob: string): Glob {
+	const nameOnly = !glob.includes("/");
+	let simpleName: Glob["simpleName"];
+	if (nameOnly && !glob.includes("?") && !SURROGATE.test(glob)) {
+		const firstStar = glob.indexOf("*");
+		if (firstStar < 0) {
+			simpleName = { kind: "exact", value: glob };
+		} else {
+			let starEnd = firstStar;
+			while (starEnd < glob.length && glob[starEnd] === "*") starEnd++;
+			if (glob.indexOf("*", starEnd) < 0) {
+				simpleName = { kind: "affix", prefix: glob.slice(0, firstStar), suffix: glob.slice(starEnd) };
+			}
+		}
+	}
 	return {
 		parts: glob.split("/").map((part) => (part === "**" ? "**" : Array.from(part))),
-		nameOnly: !glob.includes("/"),
+		nameOnly,
+		...(simpleName === undefined ? {} : { simpleName }),
 	};
 }
 
@@ -177,8 +204,17 @@ function nameMatches(pattern: readonly string[], name: readonly string[]): boole
 /** A path (relative to the search) against a glob: the same walk over the path's names, `**` standing for any run of
  * them. */
 export function globMatches(glob: Glob, path: string): boolean {
+	if (glob.nameOnly) {
+		const slash = path.lastIndexOf("/");
+		const name = slash < 0 ? path : path.slice(slash + 1);
+		if (glob.simpleName) {
+			if (glob.simpleName.kind === "exact") return name === glob.simpleName.value;
+			const { prefix, suffix } = glob.simpleName;
+			return name.length >= prefix.length + suffix.length && name.startsWith(prefix) && name.endsWith(suffix);
+		}
+		return nameMatches(glob.parts[0] as readonly string[], Array.from(name));
+	}
 	const names = path.split("/");
-	if (glob.nameOnly) return nameMatches(glob.parts[0] as readonly string[], Array.from(names[names.length - 1]!));
 	let p = 0;
 	let n = 0;
 	let star = -1;
@@ -266,6 +302,20 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 		const folded = fold(query);
 		find = (text) => text.indexOf(folded);
 	}
+	// WHY: skip decoding non-matching 4 MiB chunks under --jitless via native Boyer-Moore Buffer.indexOf for exact literal queries.
+	const queryBytes =
+		!regex &&
+		request.caseSensitive &&
+		query !== null &&
+		query.length > 0 &&
+		!query.includes("\uFFFD") &&
+		!SURROGATE.test(query)
+			? Buffer.from(query, "utf8")
+			: undefined;
+	const chunkHasMatch = (chunk: Buffer): boolean => {
+		if (queryBytes !== undefined) return chunk.indexOf(queryBytes) >= 0;
+		return find(fold(chunk.toString("utf8"))) >= 0;
+	};
 	/** Bytes of a long line's end kept for a match across two stretches: the query's longest UTF-8 form (a regular
 	 * expression searches no long line). */
 	const overlap = Buffer.byteLength(query ?? "") * 3 + 4;
@@ -313,8 +363,8 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 			offset: 0,
 			...(entry.kind === "symlink" ? { target: entry.target } : {}),
 		});
-	const nameFound = (entry: TreeEntry): boolean =>
-		matchesGlob(entry) && find(fold(entry.path.slice(entry.path.lastIndexOf("/") + 1))) >= 0;
+	const nameFound = (entry: TreeEntry, globMatched: boolean): boolean =>
+		globMatched && find(fold(entry.path.slice(entry.path.lastIndexOf("/") + 1))) >= 0;
 	/** A page, only while the view may still be served: a view that closed, or whose lease lapsed, while the page's last
 	 * read was awaited gets no hits. */
 	const answer = (next: SearchCursor | null): SearchAnswer => {
@@ -334,11 +384,9 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 	// first pieces asked for ahead.
 	const after = request.after;
 	const walk = source.tree.walk(request.path, after?.path);
-	const ahead: TreeEntry[] = [];
+	const ahead: { readonly entry: TreeEntry; readonly globMatched: boolean; readonly isText: boolean }[] = [];
 	let exhausted = false;
-	const text = (entry: TreeEntry): boolean =>
-		!request.namesOnly && entry.kind === "file" && entry.bytes > 0 && matchesGlob(entry);
-	const pull = (): TreeEntry | undefined => {
+	const pull = () => {
 		while (!exhausted && ahead.length <= AHEAD) {
 			const next = walk.next();
 			if (next.done) {
@@ -346,15 +394,18 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 				break;
 			}
 			const entry = next.value;
-			ahead.push(entry);
+			const globMatched = matchesGlob(entry);
+			const isText = !request.namesOnly && entry.kind === "file" && entry.bytes > 0 && globMatched;
+			ahead.push({ entry, globMatched, isText });
 			// Only to warm the node's memory: what this read brings is read again, checked, when its turn comes.
-			if (text(entry) && !(after && entry.path === after.path))
+			if (isText && !(after && entry.path === after.path))
 				void source.read(entry, 0, pieceBytes).catch(() => undefined);
 		}
 		return ahead.shift();
 	};
 
-	for (let entry = pull(); entry; entry = pull()) {
+	for (let item = pull(); item; item = pull()) {
+		const { entry, globMatched, isText } = item;
 		await turn();
 		// A link below protocol 4 is not there: never drawn on, nor where a page goes on from.
 		if (entry.kind === "symlink" && !source.links) continue;
@@ -365,7 +416,7 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 			(reads.length >= READS_PER_ANSWER ||
 				readBytes >= READS_BYTES ||
 				source.now() >= deadline ||
-				(filesOnly && text(entry) && hitBytes + shownLine(entry.path, 0, "") + 8 > budget))
+				(filesOnly && isText && hitBytes + shownLine(entry.path, 0, "") + 8 > budget))
 		)
 			return answer(at(entry));
 		examined++;
@@ -373,19 +424,19 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 			// Its names are looked through (to walk it, and for name hits beneath it).
 			read(entry);
 			// A folder with a version of its own is a name hit (its read is the one above).
-			if (request.namesOnly && entry.path !== request.path && entry.version !== "" && nameFound(entry))
+			if (request.namesOnly && entry.path !== request.path && entry.version !== "" && nameFound(entry, globMatched))
 				if (!nameHit(entry)) return answer(at(entry));
 			continue;
 		}
 		if (request.namesOnly) {
-			if (nameFound(entry)) {
+			if (nameFound(entry, globMatched)) {
 				if (!nameHit(entry)) return answer(at(entry));
 				// The name is shown: the entry is read.
 				read(entry);
 			}
 			continue;
 		}
-		if (!text(entry)) continue;
+		if (!isText) continue;
 		const resume = after && entry.path === after.path && entry.version === after.version ? after : undefined;
 		/** The next byte to read; the number of whole lines before the line in hand, and where that line starts. */
 		let offset = resume?.offset ?? 0;
@@ -508,13 +559,14 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 			const cutAt = bytes.lastIndexOf(0x0a) + 1;
 			// Most stretches hold no match: those only count their lines (and keep their last lines as context).
 			const whole = bytes.subarray(0, cutAt);
-			if (cutAt > 0 && !lineHit && !long && wanted === 0 && find(fold(whole.toString("utf8"))) < 0) {
+			if (cutAt > 0 && !lineHit && !long && wanted === 0 && !chunkHasMatch(whole)) {
 				// A pattern's line too long to search is counted here too, though nothing in it matched.
 				let from = 0;
 				for (let newline = whole.indexOf(0x0a); newline >= 0; newline = whole.indexOf(0x0a, from)) {
 					if (regex && newline - from > longestLine) longLines++;
 					line++;
 					from = newline + 1;
+					if ((line & 0x1fff) === 0 && performance.now() - turnAt >= TURN_MS) await turn();
 				}
 				if (context > 0) {
 					const tail: ContextLine[] = [];
@@ -598,14 +650,55 @@ function wholeUtf8(bytes: Buffer): number {
 	return bytes.byteLength - (start - 1) >= size ? bytes.byteLength : start - 1;
 }
 
+const CONTROL_CHARS = /[\u0000-\u0008\u000a-\u001f\u007f]/g;
+const NON_ASCII = /[^\x00-\x7f]/;
+
 /** A line as a hit shows it: around its first match, at most HIT_CHARS long, control characters as spaces. `found` is
  * the match's index in the folded line, placed back on the line's own characters. */
 function around(line: string, found: number, caseSensitive: boolean): string {
-	const chars = Array.from(line.replace(/[\u0000-\u0008\u000a-\u001f\u007f]/g, " "));
-	if (chars.length <= HIT_CHARS) return chars.join("");
+	if (line.length <= HIT_CHARS) return line.replace(CONTROL_CHARS, " ");
+	// WHY: avoid 1M-element Array.from() allocations on long minified lines under --jitless while matching codepoint slicing.
+	if (!NON_ASCII.test(line)) {
+		const at = Math.min(Math.max(0, found), line.length);
+		const start = Math.max(0, Math.min(at - HIT_CHARS / 4, line.length - HIT_CHARS));
+		const slice = line.slice(start, start + HIT_CHARS).replace(CONTROL_CHARS, " ");
+		return `${start > 0 ? "…" : ""}${slice}${start + HIT_CHARS < line.length ? "…" : ""}`;
+	}
+	let total = 0;
 	let at = 0;
-	for (let folded = 0; at < chars.length && folded < found; at++)
-		folded += caseSensitive ? chars[at]!.length : chars[at]!.toLowerCase().length;
-	const start = Math.max(0, Math.min(at - HIT_CHARS / 4, chars.length - HIT_CHARS));
-	return `${start > 0 ? "…" : ""}${chars.slice(start, start + HIT_CHARS).join("")}${start + HIT_CHARS < chars.length ? "…" : ""}`;
+	let folded = 0;
+	let matched = false;
+	for (let i = 0; i < line.length; ) {
+		const cp = line.codePointAt(i)!;
+		const units = cp > 0xffff ? 2 : 1;
+		if (!matched) {
+			if (folded >= found) {
+				at = total;
+				matched = true;
+			} else {
+				folded += caseSensitive || cp < 0x80 ? units : line.slice(i, i + units).toLowerCase().length;
+			}
+		}
+		total++;
+		i += units;
+	}
+	if (!matched) at = total;
+	if (total <= HIT_CHARS) return line.replace(CONTROL_CHARS, " ");
+	const start = Math.max(0, Math.min(at - HIT_CHARS / 4, total - HIT_CHARS));
+	const end = start + HIT_CHARS;
+	let startIdx = 0;
+	let endIdx = line.length;
+	let count = 0;
+	for (let i = 0; i < line.length; ) {
+		if (count === start) startIdx = i;
+		const cp = line.codePointAt(i)!;
+		i += cp > 0xffff ? 2 : 1;
+		count++;
+		if (count === end) {
+			endIdx = i;
+			break;
+		}
+	}
+	const slice = line.slice(startIdx, endIdx).replace(CONTROL_CHARS, " ");
+	return `${start > 0 ? "…" : ""}${slice}${end < total ? "…" : ""}`;
 }

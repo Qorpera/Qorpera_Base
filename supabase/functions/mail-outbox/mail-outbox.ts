@@ -67,7 +67,7 @@ export interface ProviderEmail {
 	text: string;
 	headers?: Record<string, string>;
 	/** Each file's name and its bytes in base64. */
-	attachments?: { filename: string; content: string }[];
+	attachments?: { filename: string; content: string | readonly string[] }[];
 }
 
 export class MailSendError extends Error {
@@ -206,9 +206,14 @@ export function parseMailClaim(value: unknown): {
 	return { jobs, rejected };
 }
 
-/** One attached file's bytes from the company's objects: its manifest, then its chunks, each checked against its
- * digest, and the whole against the file's. Not in Storage yet is worth another try; anything else is not. */
-export async function attachmentBytes(companyId: string, file: MailAttachment, objects: ObjectReader): Promise<Uint8Array> {
+async function verifiedManifestChunks(
+	companyId: string,
+	file: MailAttachment,
+	objects: ObjectReader,
+): Promise<{
+	readonly object: (sha256: string) => Promise<Uint8Array>;
+	readonly chunks: readonly { readonly sha256: string; readonly bytes: number }[];
+}> {
 	const object = async (sha256: string): Promise<Uint8Array> => {
 		const bytes = await objects.get(companyId, sha256);
 		if (!bytes) throw new MailSendError(`The attachment ${file.filename} is not in storage yet`, true);
@@ -246,17 +251,45 @@ export async function attachmentBytes(companyId: string, file: MailAttachment, o
 		chunks.reduce((sum, chunk) => sum + ((chunk as Record<string, unknown>).bytes as number), 0) !== file.bytes
 	)
 		throw new MailSendError(`The attachment ${file.filename} has an invalid manifest`, false);
-	const output = new Uint8Array(file.bytes);
-	let offset = 0;
-	for (const chunk of chunks as { sha256: string; bytes: number }[]) {
+	return { object, chunks: chunks as { sha256: string; bytes: number }[] };
+}
+
+export async function attachmentBase64(companyId: string, file: MailAttachment, objects: ObjectReader): Promise<string[]> {
+	const { object, chunks } = await verifiedManifestChunks(companyId, file, objects);
+	const hash = createHash("sha256");
+	const parts: string[] = [];
+	const carry = new Uint8Array(3);
+	let carryLen = 0;
+	for (const chunk of chunks) {
 		const bytes = await object(chunk.sha256);
 		if (bytes.length !== chunk.bytes) throw new MailSendError(`The attachment ${file.filename} failed its integrity check`, false);
-		output.set(bytes, offset);
-		offset += bytes.length;
+		hash.update(bytes);
+		let start = 0;
+		if (carryLen > 0) {
+			const need = 3 - carryLen;
+			if (bytes.length < need) {
+				carry.set(bytes, carryLen);
+				carryLen += bytes.length;
+				continue;
+			}
+			carry.set(bytes.subarray(0, need), carryLen);
+			parts.push(Buffer.from(carry.buffer, 0, 3).toString("base64"));
+			carryLen = 0;
+			start = need;
+		}
+		const remaining = bytes.length - start;
+		const aligned = remaining - (remaining % 3);
+		if (aligned > 0) {
+			parts.push(Buffer.from(bytes.buffer, bytes.byteOffset + start, aligned).toString("base64"));
+		}
+		const tailStart = start + aligned;
+		carryLen = bytes.length - tailStart;
+		if (carryLen > 0) carry.set(bytes.subarray(tailStart), 0);
 	}
-	if (createHash("sha256").update(output).digest("hex") !== file.fileSha256)
+	if (carryLen > 0) parts.push(Buffer.from(carry.buffer, 0, carryLen).toString("base64"));
+	if (hash.digest("hex") !== file.fileSha256)
 		throw new MailSendError(`The attachment ${file.filename} failed its integrity check`, false);
-	return output;
+	return parts;
 }
 
 /** Supabase Storage's headers for a secret key: a legacy JWT key goes as the bearer too. */
@@ -310,6 +343,130 @@ export class StorageObjectReader implements ObjectReader {
 	}
 }
 
+const MAX_GATEWAY_OBJECT_BYTES = 8 * 1024 * 1024;
+const INTERNAL_GATEWAY_TOKEN = /^[A-Za-z0-9_-]{43}$/;
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+
+async function readBoundedBytes(response: Response, maxBytes: number): Promise<Uint8Array> {
+	const declared = response.headers.get("content-length");
+	if (declared !== null) {
+		const length = Number(declared);
+		if (!Number.isSafeInteger(length) || length < 0 || length > maxBytes) {
+			void response.body?.cancel().catch(() => undefined);
+			throw new MailSendError("Object gateway response exceeded size limit", true);
+		}
+	}
+	if (!response.body) {
+		const buffer = new Uint8Array(await response.arrayBuffer());
+		if (buffer.byteLength > maxBytes) throw new MailSendError("Object gateway response exceeded size limit", true);
+		return buffer;
+	}
+	const reader = response.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (!value || value.byteLength === 0) continue;
+			total += value.byteLength;
+			if (total > maxBytes) {
+				await reader.cancel().catch(() => undefined);
+				throw new MailSendError("Object gateway response exceeded size limit", true);
+			}
+			chunks.push(value);
+		}
+	} catch (error) {
+		await reader.cancel().catch(() => undefined);
+		if (error instanceof MailSendError) throw error;
+		throw new MailSendError(error instanceof Error ? error.message : "Object gateway body read failed", true);
+	}
+	if (chunks.length === 0) return new Uint8Array(0);
+	if (chunks.length === 1) return chunks[0]!;
+	const out = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		out.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return out;
+}
+
+export class ObjectGatewayReader implements ObjectReader {
+	readonly #gatewayUrl: string;
+	readonly #internalToken: string;
+	readonly #fetch: typeof fetch;
+
+	constructor(gatewayUrl: string, internalToken: string, fetcher: typeof fetch = fetch) {
+		const parsed = new URL(gatewayUrl);
+		const isLoopback = LOOPBACK_HOSTS.has(parsed.hostname.toLowerCase());
+		if (
+			(parsed.protocol !== "https:" && !(parsed.protocol === "http:" && isLoopback)) ||
+			parsed.username ||
+			parsed.password ||
+			(parsed.pathname !== "" && parsed.pathname !== "/") ||
+			parsed.search ||
+			parsed.hash
+		) {
+			throw new Error("QORPERA_OBJECT_GATEWAY_URL must be a clean https origin (or loopback http)");
+		}
+		const trimmedToken = internalToken.trim();
+		if (!INTERNAL_GATEWAY_TOKEN.test(trimmedToken)) {
+			throw new Error("QORPERA_OBJECT_GATEWAY_INTERNAL_TOKEN must be a 43-character base64url token");
+		}
+		this.#gatewayUrl = parsed.origin;
+		this.#internalToken = trimmedToken;
+		this.#fetch = fetcher;
+	}
+
+	async get(companyId: string, sha256: string): Promise<Uint8Array | null> {
+		if (!UUID.test(companyId) || !SHA.test(sha256)) return null;
+		let response: Response;
+		try {
+			response = await this.#fetch(`${this.#gatewayUrl}/v1/internal-objects/${companyId}/${sha256}`, {
+				headers: { authorization: `Bearer ${this.#internalToken}` },
+				redirect: "error",
+				signal: AbortSignal.timeout(10_000),
+			});
+		} catch (error) {
+			throw new MailSendError(error instanceof Error ? error.message : "Object gateway request failed", true);
+		}
+		if (response.status === 404) {
+			void response.body?.cancel().catch(() => undefined);
+			return null;
+		}
+		if (response.status !== 200) {
+			void response.body?.cancel().catch(() => undefined);
+			throw new MailSendError(`Object gateway returned HTTP ${response.status}`, true);
+		}
+		const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+		const etag = response.headers.get("etag");
+		if (!contentType.startsWith("application/octet-stream") || etag !== `"sha256-${sha256}"`) {
+			void response.body?.cancel().catch(() => undefined);
+			throw new MailSendError("Object gateway returned an unexpected object response", true);
+		}
+		return readBoundedBytes(response, MAX_GATEWAY_OBJECT_BYTES);
+	}
+}
+
+export function createMailObjectReader(options: {
+	objectGatewayUrl?: string;
+	objectGatewayInternalToken?: string;
+	supabaseUrl: string;
+	secretKey: string;
+	fetcher?: typeof fetch;
+}): ObjectReader {
+	const gatewayUrl = options.objectGatewayUrl?.trim();
+	const internalToken = options.objectGatewayInternalToken?.trim();
+	if (Boolean(gatewayUrl) !== Boolean(internalToken)) {
+		throw new Error("QORPERA_OBJECT_GATEWAY_URL and QORPERA_OBJECT_GATEWAY_INTERNAL_TOKEN must be set together");
+	}
+	if (gatewayUrl && internalToken) {
+		return new ObjectGatewayReader(gatewayUrl, internalToken, options.fetcher);
+	}
+	return new StorageObjectReader(options.supabaseUrl, options.secretKey, options.fetcher);
+}
+
 /** The sent emails due for their Message-ID; an answer that cannot be read is none. */
 export function parseMessageIdsDue(value: unknown): { mailId: string; providerMessageId: string }[] {
 	if (!Array.isArray(value) || value.length > 10) return [];
@@ -326,7 +483,7 @@ export function parseMessageIdsDue(value: unknown): { mailId: string; providerMe
 }
 
 /** What the provider is asked to send: no empty cc, no empty headers, each file's bytes in base64. */
-export function providerEmail(job: MailJob, contents: readonly string[] = []): ProviderEmail {
+export function providerEmail(job: MailJob, contents: readonly (string | readonly string[])[] = []): ProviderEmail {
 	if (contents.length !== job.attachments.length) throw new Error("The email's attachments are not all read");
 	return {
 		from: job.from,
@@ -361,6 +518,31 @@ export async function providerFailure(response: Response): Promise<MailSendError
 	return new MailSendError(`${message} (${response.status}${code ? `/${code}` : ""})`.slice(0, 1000), retryable);
 }
 
+const SAFE_BASE64 = /^[A-Za-z0-9+/=]*$/;
+
+function encodeResendPayload(email: ProviderEmail): { readonly body: string | Blob; readonly byteLength: number } {
+	if (!email.attachments?.length) {
+		const request = JSON.stringify(email);
+		return { body: request, byteLength: Buffer.byteLength(request, "utf8") };
+	}
+	const { attachments, ...head } = email;
+	const prefix = JSON.stringify(head);
+	const parts: BlobPart[] = [prefix.slice(0, -1), ',"attachments":['];
+	for (let index = 0; index < attachments.length; index += 1) {
+		const item = attachments[index]!;
+		if (index > 0) parts.push(",");
+		const segments = typeof item.content === "string" ? [item.content] : item.content;
+		if (segments.every((segment) => SAFE_BASE64.test(segment))) {
+			parts.push('{"filename":', JSON.stringify(item.filename), ',"content":"', ...segments, '"}');
+		} else {
+			parts.push('{"filename":', JSON.stringify(item.filename), ',"content":', JSON.stringify(segments.join("")), "}");
+		}
+	}
+	parts.push("]}");
+	const body = new Blob(parts, { type: "application/json" });
+	return { body, byteLength: body.size };
+}
+
 /** Resend's send API with the platform's key. */
 export class ResendSender implements MailSender {
 	readonly #apiKey: string;
@@ -371,7 +553,7 @@ export class ResendSender implements MailSender {
 	}
 
 	async send(email: ProviderEmail, idempotencyKey: string): Promise<string> {
-		const request = JSON.stringify(email);
+		const { body: payload, byteLength } = encodeResendPayload(email);
 		let response: Response;
 		try {
 			response = await this.#fetch("https://api.resend.com/emails", {
@@ -381,9 +563,9 @@ export class ResendSender implements MailSender {
 					"Content-Type": "application/json",
 					"Idempotency-Key": idempotencyKey,
 				},
-				body: request,
+				body: payload,
 				// A second more for each MiB an email with attachments carries.
-				signal: AbortSignal.timeout(SEND_TIMEOUT_MS + Math.floor(request.length / (1024 * 1024)) * 1000),
+				signal: AbortSignal.timeout(SEND_TIMEOUT_MS + Math.floor(byteLength / (1024 * 1024)) * 1000),
 			});
 		} catch (error) {
 			throw new MailSendError(error instanceof Error ? error.message : "Resend request failed", true);
@@ -453,17 +635,19 @@ export async function handleMailOutbox(request: Request, outbox: MailOutbox): Pr
 		rejected,
 		messageIds: 0,
 	};
-	const objects = outbox.objects?.(presented);
+	let objects: ObjectReader | undefined;
 	for (const [index, job] of claim.jobs.entries()) {
 		if (index > 0 && pace > 0) await sleep(pace);
 		let providerMessageId: string;
 		try {
 			// Each file in base64 as soon as it is read, without a copy: its bytes are dropped before the next one.
-			const contents: string[] = [];
-			for (const file of job.attachments) {
-				if (!objects || !job.companyId) throw new MailSendError("Attachments cannot be read here", true);
-				const bytes = await attachmentBytes(job.companyId, file, objects);
-				contents.push(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64"));
+			const contents: string[][] = [];
+			if (job.attachments.length > 0) {
+				objects ??= outbox.objects?.(presented);
+				for (const file of job.attachments) {
+					if (!objects || !job.companyId) throw new MailSendError("Attachments cannot be read here", true);
+					contents.push(await attachmentBase64(job.companyId, file, objects));
+				}
 			}
 			providerMessageId = await outbox.sender.send(providerEmail(job, contents), `company-mail/${job.mailId}`);
 		} catch (error) {

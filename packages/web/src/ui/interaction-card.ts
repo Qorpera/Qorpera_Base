@@ -1,6 +1,6 @@
 import type { InterfaceEmblem } from "@qorpera/cloud-client/interfaces";
 import { isInterfaceName } from "@qorpera/cloud-client/interfaces";
-import { pictureUrl } from "../app/folder-images.ts";
+import { forgetPictureUrl, pictureUrl } from "../app/folder-images.ts";
 import type { EmailDraftContent, EmailDraftEditor, EmailDraftState } from "../cloud/email-drafts.ts";
 import { MAIL_HANDLE } from "../cloud/event-hooks.ts";
 import {
@@ -140,26 +140,54 @@ export interface InteractionCardContext {
 	now?: number;
 }
 
-/** Pictures read for options, per reader (one per company, app/application.ts) and path: read once, kept while the
- * page is open. */
-const PICTURES = new WeakMap<NonNullable<InteractionCardContext["image"]>, Map<string, Promise<string | null>>>();
+interface PictureCache {
+	readonly entries: Map<string, Promise<string | null>>;
+	readonly controller: AbortController;
+	disposed: boolean;
+}
+
+const PICTURES = new WeakMap<NonNullable<InteractionCardContext["image"]>, PictureCache>();
+
+export function disposeCardPictures(read: NonNullable<InteractionCardContext["image"]> | undefined): void {
+	if (!read) return;
+	const cache = PICTURES.get(read);
+	if (!cache) return;
+	PICTURES.delete(read);
+	cache.disposed = true;
+	cache.controller.abort();
+	for (const pending of cache.entries.values()) {
+		void pending.then((url) => {
+			if (url) forgetPictureUrl(url);
+		});
+	}
+	cache.entries.clear();
+}
 
 function picture(read: NonNullable<InteractionCardContext["image"]>, path: string): Promise<string | null> {
-	let kept = PICTURES.get(read);
-	if (!kept) {
-		kept = new Map();
-		PICTURES.set(read, kept);
+	let cache = PICTURES.get(read);
+	if (!cache) {
+		cache = { entries: new Map(), controller: new AbortController(), disposed: false };
+		PICTURES.set(read, cache);
 	}
-	let shown = kept.get(path);
+	let shown = cache.entries.get(path);
 	if (!shown) {
-		shown = read(path, new AbortController().signal)
-			.then((blob) => (blob ? pictureUrl(blob) : null))
+		const active = cache;
+		shown = read(path, active.controller.signal)
+			.then(async (blob) => {
+				if (!blob || active.disposed) return null;
+				const url = await pictureUrl(blob);
+				if (active.disposed) {
+					forgetPictureUrl(url);
+					return null;
+				}
+				return url;
+			})
 			.catch(() => null);
-		kept.set(path, shown);
+		cache.entries.set(path, shown);
 		// A picture that could not be read is read again by the next card that shows it.
 		const reading = shown;
 		void reading.then((url) => {
-			if (!url && kept.get(path) === reading) kept.delete(path);
+			if (!url && active.entries.get(path) === reading) active.entries.delete(path);
 		});
 	}
 	return shown;

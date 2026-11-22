@@ -2,7 +2,7 @@ import { createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto"
 import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type PresenceDevices, SupabaseCloudPresenceTransport } from "../src/cloud-presence.ts";
-import type { HostedPresenceIdentity, HostedPrimaryDatabase } from "../src/hosted-primary.ts";
+import type { HostedPresenceIdentity } from "../src/hosted-primary.ts";
 import { PresenceSignatures } from "../src/presence-signatures.ts";
 
 const profileId = "10000000-0000-4000-8000-000000000001";
@@ -80,7 +80,7 @@ function fixture() {
 			publicKey,
 		}),
 	);
-	const list = vi.fn(async () => [identity]);
+	const list = vi.fn(async (_profile: string, _ids: string[]) => [identity]);
 	const unregister = vi.fn(async () => {});
 	const members = vi.fn();
 	const typing = vi.fn();
@@ -89,7 +89,7 @@ function fixture() {
 		listPresenceDevices: list,
 		unregisterPresenceDevice: unregister,
 	} as unknown as PresenceDevices;
-	const client = { channel, removeChannel: remove } as unknown as SupabaseClient<HostedPrimaryDatabase>;
+	const client = { channel, removeChannel: remove } as unknown as SupabaseClient;
 	const join = () => new SupabaseCloudPresenceTransport(client, primary).join(profileId, members, typing, () => {});
 	return { channels, channel, remove, register, list, unregister, members, typing, join };
 }
@@ -326,6 +326,103 @@ describe("shared browser presence", () => {
 			expect(f.members.mock.calls).toEqual([[[]]]);
 		} finally {
 			gate.resolve(false);
+			await handle.stop();
+		}
+	});
+	it("caches imported Ed25519 SPKI verification keys across repeated checks and skips caching invalid keys", async () => {
+		const fresh = generateKeyPairSync("ed25519");
+		const freshPublicKey = fresh.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+		const payload = new TextEncoder().encode("cached key check");
+		const sig = sign(null, payload, fresh.privateKey).toString("base64");
+		const importSpy = vi.spyOn(crypto.subtle, "importKey");
+		for (let i = 0; i < 6; i++) {
+			expect(await PresenceSignatures.verify(freshPublicKey, payload, sig)).toBe(true);
+		}
+		expect(importSpy).toHaveBeenCalledTimes(1);
+		expect(await PresenceSignatures.verify("A".repeat(60), payload, sig)).toBe(false);
+		expect(await PresenceSignatures.verify("A".repeat(60), payload, sig)).toBe(false);
+		expect(importSpy).toHaveBeenCalledTimes(3);
+	});
+	it("coalesces concurrent identity lookups and verifies duplicate presence metas newest-first", async () => {
+		const f = fixture();
+		const gate = deferred<HostedPresenceIdentity[]>();
+		f.list.mockReturnValueOnce(gate.promise);
+		const verifySpy = vi.spyOn(PresenceSignatures, "verify");
+		const handle = f.join();
+		try {
+			await vi.waitFor(() => expect(f.channels).toHaveLength(1));
+			const c = f.channels[0];
+			c.status("SUBSCRIBED");
+			c.state = { [remoteId]: [signed("open_thread", 1, "old-agent"), signed("open_thread", 2, "new-agent")] };
+			c.sync();
+			c.broadcast(signed("typing", 1, "new-agent"));
+			await vi.waitFor(() => expect(f.list).toHaveBeenCalledOnce());
+			gate.resolve([identity]);
+			await vi.waitFor(() => expect(f.members).toHaveBeenCalledOnce());
+			await vi.waitFor(() => expect(f.typing).toHaveBeenCalledOnce());
+			expect(f.list).toHaveBeenCalledOnce();
+			expect(f.members.mock.calls[0]?.[0]).toEqual([
+				{ clientId: remoteId, userId: identity.userId, name: identity.name, staffAgentId: "new-agent" },
+			]);
+			expect(verifySpy).toHaveBeenCalledTimes(2);
+		} finally {
+			gate.resolve([]);
+			await handle.stop();
+		}
+	});
+	it("never evicts replay floors for active or recently seen clients even past MAX_TRACKED_CLIENTS", async () => {
+		const f = fixture();
+		const fakeSignature = `${"A".repeat(86)}==`;
+		let now = 1_700_000_000_000;
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+		vi.spyOn(PresenceSignatures, "verify").mockResolvedValue(true);
+		f.list.mockImplementation(async (_profile: string, ids: string[]) =>
+			ids.map((clientId) => ({
+				clientId,
+				userId: identity.userId,
+				name: "Member",
+				publicKey: identity.publicKey,
+			})),
+		);
+		const handle = f.join();
+		try {
+			await vi.waitFor(() => expect(f.channels).toHaveLength(1));
+			const c = f.channels[0];
+			c.status("SUBSCRIBED");
+			c.state = { [remoteId]: [signed("open_thread", 10, "legal-agent")] };
+			c.broadcast({ client_id: remoteId, staff_agent_id: "legal-agent", sequence: 10, signature: fakeSignature });
+			await vi.waitFor(() => expect(f.typing).toHaveBeenCalledTimes(1));
+
+			for (let i = 1; i <= 4_120; i++) {
+				const attackerId = `20000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
+				c.broadcast({
+					client_id: attackerId,
+					staff_agent_id: "legal-agent",
+					sequence: 1,
+					signature: fakeSignature,
+				});
+			}
+			await vi.waitFor(() => expect(f.typing).toHaveBeenCalledTimes(4_121));
+
+			c.broadcast({ client_id: remoteId, staff_agent_id: "replayed-1", sequence: 5, signature: fakeSignature });
+			c.broadcast({ client_id: remoteId, staff_agent_id: "sentinel-1", sequence: 11, signature: fakeSignature });
+			await vi.waitFor(() => expect(f.typing).toHaveBeenCalledTimes(4_122));
+			expect(f.typing.mock.calls.at(-1)?.[0]).toMatchObject({ clientId: remoteId, staffAgentId: "sentinel-1" });
+
+			now += 7 * 60_000;
+			const lateAttacker = "30000000-0000-4000-8000-000000000001";
+			c.broadcast({ client_id: lateAttacker, staff_agent_id: "legal-agent", sequence: 1, signature: fakeSignature });
+			await vi.waitFor(() => expect(f.typing).toHaveBeenCalledTimes(4_123));
+
+			const listCallsBeforeReplay = f.list.mock.calls.length;
+			c.broadcast({ client_id: remoteId, staff_agent_id: "replayed-2", sequence: 9, signature: fakeSignature });
+			await vi.waitFor(() => expect(f.list.mock.calls.length).toBeGreaterThan(listCallsBeforeReplay));
+			expect(f.list.mock.calls.at(-1)?.[1]).toEqual([remoteId]);
+			c.broadcast({ client_id: remoteId, staff_agent_id: "sentinel-2", sequence: 12, signature: fakeSignature });
+			await vi.waitFor(() => expect(f.typing).toHaveBeenCalledTimes(4_124));
+			expect(f.typing.mock.calls.at(-1)?.[0]).toMatchObject({ clientId: remoteId, staffAgentId: "sentinel-2" });
+			expect(f.typing.mock.calls.some((call) => String(call[0]?.staffAgentId).startsWith("replayed-"))).toBe(false);
+		} finally {
 			await handle.stop();
 		}
 	});

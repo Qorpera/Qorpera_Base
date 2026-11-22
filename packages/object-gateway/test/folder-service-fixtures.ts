@@ -4,6 +4,7 @@ import { createHash, createHmac } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
+import { companyStatePath } from "@qorpera/cloud-client/company-state-files";
 import {
 	COMMAND_ENDED,
 	type CommitActor,
@@ -37,7 +38,14 @@ import {
 } from "../src/folder-service/git.ts";
 import type { MachineRef } from "../src/folder-service/machines.ts";
 import { MountGrants, parseOperatorMounts } from "../src/folder-service/mounts.ts";
-import type { CommitUnit, NewFolderEntry } from "../src/folder-service/plan.ts";
+import {
+	type CommitUnit,
+	MAX_COMMIT_STRUCTURED_BYTES,
+	MAX_COMMIT_STRUCTURED_FILES,
+	MAX_COMMIT_UNITS,
+	MAX_NEW_FOLDER_ENTRIES,
+	type NewFolderEntry,
+} from "../src/folder-service/plan.ts";
 import type { BridgeInfo } from "../src/folder-service/protocol.ts";
 import { SecretSet, type SecretValue } from "../src/folder-service/secret-scan.ts";
 import type { FolderUploads, Upload } from "../src/folder-service/staging.ts";
@@ -441,7 +449,23 @@ export class FakeCore implements FolderCore {
 		if (final && view?.kind !== "computer_shell_command" && view?.kind !== "test_machine")
 			throw new CoreRefusal("invalid");
 		if (units.length === 0 && !final) throw new CoreRefusal("invalid");
-		if (units.length > 1000) throw new CoreRefusal("invalid", "Change set is invalid");
+		if (units.length > MAX_COMMIT_UNITS) throw new CoreRefusal("invalid", "Change set is invalid");
+		let structuredFiles = 0;
+		let structuredBytes = 0;
+		for (const u of units as CommitUnit[]) {
+			if (u.op === "new_folder" && u.contents.length > MAX_NEW_FOLDER_ENTRIES)
+				throw new CoreRefusal("invalid", "Change set is invalid");
+			if (u.op === "write" && u.structured?.length) {
+				structuredFiles += u.structured.length;
+				structuredBytes += u.file.bytes;
+			} else if (u.op === "new_folder" && u.structured?.length) {
+				structuredFiles += u.structured.length;
+				for (const c of u.contents)
+					if (c.file && companyStatePath(`${u.path}/${c.path}`)) structuredBytes += c.file.bytes;
+			}
+		}
+		if (structuredFiles > MAX_COMMIT_STRUCTURED_FILES || structuredBytes > MAX_COMMIT_STRUCTURED_BYTES)
+			throw new CoreRefusal("invalid", "Change set is invalid");
 		if (view?.kind === "computer_shell_command" && view.ended && !final)
 			throw new CoreRefusal("denied", COMMAND_ENDED);
 		// The view's read set is checked again before its save (20260928469330): a read it no longer sees refuses it. A
@@ -905,7 +929,7 @@ export class FakeCore implements FolderCore {
 		await this.dataPassGate;
 		const view = this.#check(actor, environmentId);
 		if (this.dataPassFailure) throw this.dataPassFailure;
-		if (view?.kind !== "test_machine")
+		if (view?.kind !== "test_machine" && view?.kind !== "coding_session")
 			throw new CoreRefusal("invalid", "A machine's data pass is for a company machine's view");
 		const files = this.#visible(actor).filter((e) => e.kind === "file");
 		const names = files.flatMap((e) => /^data\/([a-z][a-z0-9_]{0,39})\/database\.toml$/.exec(e.path)?.[1] ?? []);

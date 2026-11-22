@@ -5,6 +5,7 @@ import { CompanyController } from "../src/app/company.ts";
 import { parsePresenceValue, presenceValue } from "../src/app/presence-place.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { renderRail } from "../src/app/views/shell.ts";
+import { EMPTY_APP_LAYOUT, parseAppGroups } from "../src/cloud/app-groups.ts";
 import type { PresenceMember } from "../src/cloud/presence.ts";
 import type { HostedProfileMember } from "../src/cloud/types.ts";
 import { fixture, id, profileA, session, settle, staff, team, timestamp, userA, userB } from "./fixtures.ts";
@@ -295,5 +296,140 @@ describe("who is where in the company (the rail's markers)", () => {
 		const entry = rail.querySelector<HTMLElement>('.rail-app[data-app-key="whats-new"]')!;
 		expect(entry.getAttribute("aria-description")).toBe("Sofie Lund is here");
 		expect(rail.querySelector(".rail-apps")?.getAttribute("aria-description")).toBe("Sofie Lund is here");
+	});
+
+	it("skips rail layout measurements and empty presence DOM scans on steady-state redraws", async () => {
+		const s = await setup();
+		const rail = document.createElement("aside");
+		document.body.append(rail);
+		const auth = new AuthController(fixture().cloud);
+		const makeContext = (
+			route:
+				| { name: "company"; profileId: string; section: "home" }
+				| { name: "company"; profileId: string; section: "staff"; id: string },
+		) => ({
+			profiles: [profileA],
+			user: userA,
+			auth,
+			invitations: 0,
+			openSettings: () => {},
+			openFeedback: () => {},
+			openFriends: () => {},
+			route,
+		});
+		s.view.dispose();
+		renderRail(rail, s.company, makeContext({ name: "company", profileId: profileA.profileId, section: "home" }));
+
+		const list = rail.querySelector<HTMLElement>(".rail-scroll")!;
+		list.animate = vi.fn(() => ({ finished: Promise.resolve(), cancel() {} }) as unknown as Animation);
+		const rectSpy = vi.spyOn(list, "getBoundingClientRect");
+		const querySpy = vi.spyOn(rail, "querySelectorAll");
+		renderRail(rail, s.company, makeContext({ name: "company", profileId: profileA.profileId, section: "home" }));
+		expect(rectSpy).not.toHaveBeenCalled();
+		expect(querySpy).not.toHaveBeenCalled();
+
+		renderRail(
+			rail,
+			s.company,
+			makeContext({ name: "company", profileId: profileA.profileId, section: "staff", id: staff.id }),
+		);
+		expect(rectSpy).toHaveBeenCalled();
+	});
+
+	it("clears presence markers on cached app tiles that leave and rejoin when a group folds", async () => {
+		localStorage.clear();
+		const s = await setup();
+		s.view.dispose();
+		s.company.store.set({
+			apps: [
+				{
+					name: "brand",
+					path: "apps/brand",
+					manifest: {
+						name: "Brand",
+						about: null,
+						emblem: "page",
+						colour: null,
+						entry: "index.html",
+						owner: staff.id,
+						posted: true,
+						reads: [],
+						writes: [],
+						concept: false,
+						cover: null,
+						kit: null,
+					},
+					problems: [],
+					version: null,
+				},
+				{
+					name: "plan",
+					path: "apps/plan",
+					manifest: {
+						name: "Plan",
+						about: null,
+						emblem: "page",
+						colour: null,
+						entry: "index.html",
+						owner: staff.id,
+						posted: true,
+						reads: [],
+						writes: [],
+						concept: false,
+						cover: null,
+						kit: null,
+					},
+					problems: [],
+					version: null,
+				},
+			],
+			appGroups: parseAppGroups("- group market: Market\n  - app:brand Brand\n  - app:plan Plan\n"),
+			appLayout: { layout: EMPTY_APP_LAYOUT, updatedAt: null },
+		});
+		const rail = document.createElement("aside");
+		document.body.append(rail);
+		const auth = new AuthController(fixture().cloud);
+		const context = {
+			profiles: [profileA],
+			user: userA,
+			auth,
+			invitations: 0,
+			openSettings: () => {},
+			openFeedback: () => {},
+			openFriends: () => {},
+			route: { name: "company", profileId: profileA.profileId, section: "home" } as const,
+		};
+		const draw = () => renderRail(rail, s.company, context);
+		draw();
+		rail.querySelector<HTMLButtonElement>(".rail-apps")!.click();
+		rail.querySelector<HTMLButtonElement>(".rail-app-group")!.click();
+		await s.publish([tab(userB.id, "@app:brand")]);
+		draw();
+		const brandBefore = rail.querySelector<HTMLElement>("[data-app-key='app:brand']")!;
+		expect(brandBefore.querySelector(".rail-here")).not.toBeNull();
+		expect(brandBefore.getAttribute("aria-description")).toBe("Sofie Lund is here");
+
+		rail.querySelector<HTMLButtonElement>(".rail-app-group")!.click();
+		expect(rail.querySelector("[data-app-key='app:brand']")).toBeNull();
+
+		await s.publish([]);
+		draw();
+		rail.querySelector<HTMLButtonElement>(".rail-app-group")!.click();
+		const brandAfterEmpty = rail.querySelector<HTMLElement>("[data-app-key='app:brand']")!;
+		expect(brandAfterEmpty).toBe(brandBefore);
+		expect(brandAfterEmpty.querySelector(".rail-here")).toBeNull();
+		expect(brandAfterEmpty.hasAttribute("aria-description")).toBe(false);
+
+		await s.publish([tab(userB.id, "@app:brand")]);
+		draw();
+		expect(brandAfterEmpty.querySelector(".rail-here")).not.toBeNull();
+		rail.querySelector<HTMLButtonElement>(".rail-app-group")!.click();
+		await s.publish([tab(userC, `@agent:${staff.id}`)]);
+		draw();
+		rail.querySelector<HTMLButtonElement>(".rail-app-group")!.click();
+		const brandAfterMove = rail.querySelector<HTMLElement>("[data-app-key='app:brand']")!;
+		expect(brandAfterMove.querySelector(".rail-here")).toBeNull();
+		expect(brandAfterMove.hasAttribute("aria-description")).toBe(false);
+		localStorage.clear();
 	});
 });

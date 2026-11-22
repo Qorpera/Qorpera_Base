@@ -1,5 +1,6 @@
+import { companyStatePath } from "@qorpera/cloud-client/company-state-files";
 import { folderKey } from "@qorpera/contracts";
-import { gitObjectPath, gitPlace, gitSharedPath } from "./git.ts";
+import { gitObject, gitObjectPath, gitPlace, gitSharedPath } from "./git.ts";
 import { formChanged } from "./git-objects.ts";
 import { type FileRef, type LiveRef, type PendingFile, type PendingView, unpublished } from "./pending.ts";
 import { UNCHECKED } from "./secret-scan.ts";
@@ -92,6 +93,16 @@ export const CHECK_RUNNING = "its check for secret values has not ended yet";
 /** Why the rest of a code area's git directory waits while a file's check there has not ended: the check may yet refuse
  * the file, and then nothing else of its git change may be in the folder. */
 export const WAITS_FOR_CHECK = "it waits for a change whose check for secret values has not ended yet";
+export const MAX_COMMIT_UNITS = 1000;
+export const MAX_NEW_FOLDER_ENTRIES = 10_000;
+export const MAX_COMMIT_STRUCTURED_FILES = 64;
+export const MAX_COMMIT_STRUCTURED_BYTES = 1024 * 1024;
+
+export interface CommitBatchLimits {
+	readonly maxUnits?: number;
+	readonly maxStructuredFiles?: number;
+	readonly maxStructuredBytes?: number;
+}
 
 type Item =
 	| { kind: "write"; path: string; file: FileRef; expected: string; paths: string[] }
@@ -105,11 +116,6 @@ type Item =
 	| { kind: "move"; from: string; to: string; ref: LiveRef; paths: string[] }
 	| { kind: "new"; path: string; file: FileRef; expected?: string; paths: string[] }
 	| { kind: "link"; path: string; target: string; expected?: string; paths: string[] };
-
-/** `path` is strictly below `folder`, by folded keys. */
-function below(path: string, folder: string): boolean {
-	return folderKey(path).startsWith(`${folderKey(folder)}/`);
-}
 
 /** The folder above the first name in `path` that carries a secret value, or nothing if none does. */
 function carrierOf(path: string, check: SecretCheck): string | undefined {
@@ -136,28 +142,6 @@ function formBelow(view: PendingView, from: string, to: string): boolean {
 	return false;
 }
 
-/**
- * The units of one boundary (RUNTIME-FOLDER-WRITES.md, "A boundary"): everything pending but files still open for
- * writing, bytes not staged yet, and names never published, as one change set. `PendingView` keeps every pending
- * change publishable that way: each unit names a live path as it is, no unit needs a version another unit makes, and
- * no unit's failure can lose another's work. A removed folder is one subtree removal; a new folder whose whole content
- * is new is one `new_folder`; a new file or link that replaces a live one names the version it replaces, which its
- * node holds (`PendingView`). Units are ordered so a path is freed before it is filled, and a new folder made before
- * what goes in it.
- *
- * With `check` (a coding machine's view, 5j-5), a name new in the view that carries one of the machine's secret
- * values, a new link's target that does, and a file whose bytes do are not published but refused, and kept pending:
- * the names before anything else, so no list holds one. A folder's move gives what it holds new names too, and each is
- * checked. A file moved to a name that stores its bytes in a git form its old name did not has them checked as that
- * form (`SecretCheck.moved`); a folder moved so is refused as not checked. A refused move keeps its source where it is
- * (`PendingView.settle`), so what needs a
- * refused change waits with it: a change into the path it would free or into the folder it would make, and the removal
- * or move of a folder that holds a source it keeps. A refusal in a code area's git directory holds the whole directory
- * back: everything else changed in it waits, so a git change is never published in part (its commit without its
- * file's object, its log or index naming it), and the way out (git's own prune) leaves nothing of it. So does a check
- * there that has not ended (`SecretCheck.checking`), as waiting: a later boundary publishes the directory, or holds it
- * for what the check refused.
- */
 export function planBoundary(
 	view: PendingView,
 	staged: (node: PendingFile, path: string) => FileRef | undefined,
@@ -285,16 +269,45 @@ export function planBoundary(
 	}
 
 	// Removals: one per removed folder, with what was removed inside it.
+	const keyCache = new Map<string, string>();
+	const keyOf = (path: string): string => {
+		let key = keyCache.get(path);
+		if (key === undefined) {
+			key = folderKey(path);
+			keyCache.set(path, key);
+		}
+		return key;
+	};
 	const removed = view.removed();
 	const removedFolder = (path: string): boolean => {
 		for (let p = parentOf(path); p !== ""; p = parentOf(p)) if (removed.get(p)?.kind === "folder") return true;
 		return false;
 	};
-	const deletes: (Item & { kind: "delete" })[] = [];
+	const topRemoved: [string, LiveRef][] = [];
+	const topRemovedKeys = new Set<string>();
 	for (const [path, ref] of removed) {
 		// A git directory's shared file goes only with its lease (git.ts): a removal without one is dropped.
 		if (removedFolder(path) || gitSharedPath(path, view.codeHost)) continue;
-		const inside = [...removed].filter(([p]) => below(p, path));
+		topRemoved.push([path, ref]);
+		topRemovedKeys.add(keyOf(path));
+	}
+	const removedInside = new Map<string, [string, LiveRef][]>();
+	if (topRemovedKeys.size > 0) {
+		for (const entry of removed) {
+			for (let anc = parentOf(keyOf(entry[0])); anc !== ""; anc = parentOf(anc)) {
+				if (!topRemovedKeys.has(anc)) continue;
+				let list = removedInside.get(anc);
+				if (!list) {
+					list = [];
+					removedInside.set(anc, list);
+				}
+				list.push(entry);
+			}
+		}
+	}
+	const deletes: (Item & { kind: "delete" })[] = [];
+	for (const [path, ref] of topRemoved) {
+		const inside = removedInside.get(keyOf(path)) ?? [];
 		// A folder's removal takes everything in it as of its position: a file in it whose live version is not the one
 		// its own removal named (it changed before that removal, from a base the machine had not seen) would go
 		// unseen, so the folder stays, and so does what was removed in it.
@@ -318,23 +331,50 @@ export function planBoundary(
 
 	// A new folder whose whole content is new and published here is one unit with its content (§2 "Units").
 	const absorbed = new Set<Item>();
+	const sortedCreates = [...creates].sort((a, b) => a.path.length - b.path.length);
+	const candidateCreateKeys = new Set<string>();
 	// Not, in a session's view, a folder in a git directory: 5b refuses a session's `new_folder` there (it checks each
 	// key in it as moved), so each folder there is a `mkdir` and each file its own write, and each meets its key's own
 	// rule (a worktree's first commit makes `logs` and `logs/HEAD`). Nor, in any view, a git directory's objects folder:
 	// another session may make the same one first, which a `mkdir` of it is saved over (5b), a `new_folder` not.
-	for (const create of [...creates].sort((a, b) => a.path.length - b.path.length)) {
-		if (absorbed.has(create) || gitObjectPath(create.path)) continue;
+	for (const create of sortedCreates) {
+		if (gitObjectPath(create.path)) continue;
 		if (!view.codeHost && gitPlace(create.path).kind === "git") continue;
-		const inside = [...nodes].filter(([p]) => below(p, create.path));
-		const eligible = inside.every(([p, n]) => {
-			if (unpublished(p, view.codeHost)) return true;
-			if (n.kind === "gone" || n.origin) return false;
-			return n.kind === "folder" || [...news, ...links].some((i) => i.path === p && i.expected === undefined);
-		});
-		if (!eligible) continue;
-		const contents: NewFolderEntry[] = [];
+		candidateCreateKeys.add(keyOf(create.path));
+	}
+	const ineligibleCreateKeys = new Set<string>();
+	const itemsUnderCreate = new Map<string, (Item & { kind: "create" | "new" | "link" })[]>();
+	if (candidateCreateKeys.size > 0) {
+		const freeNewOrLink = new Set<string>();
+		for (const item of news) if (item.expected === undefined) freeNewOrLink.add(item.path);
+		for (const item of links) if (item.expected === undefined) freeNewOrLink.add(item.path);
+		for (const [p, n] of nodes) {
+			if (unpublished(p, view.codeHost)) continue;
+			const ok = n.kind !== "gone" && !n.origin && (n.kind === "folder" || freeNewOrLink.has(p));
+			if (ok) continue;
+			for (let anc = parentOf(keyOf(p)); anc !== ""; anc = parentOf(anc)) {
+				if (candidateCreateKeys.has(anc)) ineligibleCreateKeys.add(anc);
+			}
+		}
 		for (const item of [...creates, ...news, ...links]) {
-			if (!below(item.path, create.path)) continue;
+			for (let anc = parentOf(keyOf(item.path)); anc !== ""; anc = parentOf(anc)) {
+				if (!candidateCreateKeys.has(anc) || ineligibleCreateKeys.has(anc)) continue;
+				let list = itemsUnderCreate.get(anc);
+				if (!list) {
+					list = [];
+					itemsUnderCreate.set(anc, list);
+				}
+				list.push(item);
+			}
+		}
+	}
+	for (const create of sortedCreates) {
+		const createKey = keyOf(create.path);
+		if (absorbed.has(create) || !candidateCreateKeys.has(createKey) || ineligibleCreateKeys.has(createKey)) continue;
+		const under = itemsUnderCreate.get(createKey) ?? [];
+		if (!fitsNewFolder(under)) continue;
+		const contents: NewFolderEntry[] = [];
+		for (const item of under) {
 			absorbed.add(item);
 			create.paths.push(...item.paths);
 			const rel = item.path.slice(create.path.length + 1);
@@ -359,17 +399,44 @@ export function planBoundary(
 	];
 	// What needs a refused change waits with it, and so on: a move it holds back keeps its source too.
 	const blocked = new Set<Item>(refusedItems);
-	for (let grew = blocked.size > 0; grew; ) {
-		grew = false;
-		const sources = [...blocked].flatMap((b) => (b.kind === "move" ? [b.from] : []));
-		for (const item of items) {
-			if (blocked.has(item)) continue;
-			const from = item.kind === "delete" ? item.path : item.kind === "move" ? item.from : undefined;
-			const holds = from !== undefined && sources.some((s) => folderKey(s) === folderKey(from) || below(s, from));
-			if (holds || [...blocked].some((b) => needs(item, b))) {
-				blocked.add(item);
-				grew = true;
+	if (blocked.size > 0) {
+		const byFrom = new Map<string, Item[]>();
+		const needingFrees = new Map<string, Item[]>();
+		const needingCreate = new Map<string, Item[]>();
+		const pushItem = (map: Map<string, Item[]>, key: string, item: Item): void => {
+			let list = map.get(key);
+			if (!list) {
+				list = [];
+				map.set(key, list);
 			}
+			list.push(item);
+		};
+		for (const item of items) {
+			const from = item.kind === "delete" ? item.path : item.kind === "move" ? item.from : undefined;
+			if (from !== undefined) pushItem(byFrom, keyOf(from), item);
+			const target = fills(item, keyOf);
+			if (target !== undefined) {
+				pushItem(needingFrees, target, item);
+				pushItem(needingCreate, keyOf(parentOf(target)), item);
+			}
+		}
+		const queue: Item[] = [...blocked];
+		for (let head = 0; head < queue.length; head++) {
+			const b = queue[head]!;
+			const enqueue = (list: Item[] | undefined, skipSelf: boolean): void => {
+				if (!list) return;
+				for (const item of list) {
+					if ((skipSelf && item === b) || blocked.has(item)) continue;
+					blocked.add(item);
+					queue.push(item);
+				}
+			};
+			if (b.kind === "move") {
+				for (let anc = keyOf(b.from); anc !== ""; anc = parentOf(anc)) enqueue(byFrom.get(anc), false);
+			}
+			const freed = frees(b, keyOf);
+			if (freed !== undefined) enqueue(needingFrees.get(freed), true);
+			if (b.kind === "create") enqueue(needingCreate.get(keyOf(b.path)), true);
 		}
 	}
 	// A git directory with a refused change publishes nothing else until the refusal's way out: no object, ref, log or
@@ -401,6 +468,7 @@ export function planBoundary(
 		items.filter((i) => !held.has(i)),
 		waiting,
 		keep,
+		keyOf,
 	);
 	const units = order.map(unitOf);
 	// A removal not published here stays the view's, for a later boundary to publish.
@@ -470,48 +538,292 @@ function unitOf(item: Item): PlannedUnit {
 }
 
 /** The path an item fills, and the one it frees, by folded key. */
-function fills(item: Item): string | undefined {
+function fills(item: Item, keyOf: (path: string) => string): string | undefined {
 	const path =
 		item.kind === "create" || item.kind === "new" || item.kind === "link"
 			? item.path
 			: item.kind === "move"
 				? item.to
 				: undefined;
-	return path === undefined ? undefined : folderKey(path);
+	return path === undefined ? undefined : keyOf(path);
 }
 
-function frees(item: Item): string | undefined {
+function frees(item: Item, keyOf: (path: string) => string): string | undefined {
 	const path = item.kind === "delete" ? item.path : item.kind === "move" ? item.from : undefined;
-	return path === undefined ? undefined : folderKey(path);
+	return path === undefined ? undefined : keyOf(path);
 }
 
-/** `item` runs after `other`: it fills the path `other` frees, or goes in the new folder `other` makes. */
-function needs(item: Item, other: Item): boolean {
-	if (item === other) return false;
-	const target = fills(item);
-	if (target === undefined) return false;
-	if (frees(other) === target) return true;
-	return other.kind === "create" && folderKey(other.path) === folderKey(parentOf(target));
+function gitDirOf(path: string): { readonly dir: string; readonly rest: string } | undefined {
+	const place = gitPlace(path);
+	if (place.kind === "git") return place.rest === "" ? undefined : { dir: `${place.area}/repo.git`, rest: place.rest };
+	if (path.startsWith(".git/")) return { dir: ".git", rest: path.slice(5) };
+	const idx = path.indexOf("/.git/");
+	if (idx !== -1) return { dir: path.slice(0, idx + 5), rest: path.slice(idx + 6) };
+	return undefined;
+}
+
+function gitPhaseOf(
+	item: Item,
+	filledKeys: ReadonlySet<string>,
+	keyOf: (path: string) => string,
+): { readonly dir: string; readonly phase: 1 | 2 | 3 } | undefined {
+	const targetPath = item.kind === "move" ? item.to : item.path;
+	const info = gitDirOf(targetPath);
+	if (!info) return undefined;
+	const dir = keyOf(info.dir);
+	if (gitObject(info.rest)) {
+		if (item.kind === "delete") return filledKeys.has(keyOf(item.path)) ? undefined : { dir, phase: 3 };
+		return { dir, phase: 1 };
+	}
+	if (item.kind === "move") {
+		const fromInfo = gitDirOf(item.from);
+		if (fromInfo && gitObject(fromInfo.rest)) return undefined;
+	}
+	return { dir, phase: 2 };
+}
+
+function gitMetaDir(unit: CommitUnit): string | undefined {
+	const targetPath = unit.op === "move" ? unit.to : unit.path;
+	const info = gitDirOf(targetPath);
+	if (!info || gitObject(info.rest)) return undefined;
+	if (unit.op === "move") {
+		const fromInfo = gitDirOf(unit.from);
+		if (fromInfo && gitObject(fromInfo.rest)) return undefined;
+	}
+	return folderKey(info.dir);
 }
 
 /** Orders the items so each runs after what it needs (Kahn's algorithm, in the given order where free): a path freed
  * before it is filled, a new folder before what goes in it. PendingView never lets two wait on each other; if they
  * ever did, they would wait for the next boundary rather than be published out of order. */
-function schedule(items: Item[], waiting: { path: string; reason: string }[], keep: Set<string>): Item[] {
-	const order: Item[] = [];
-	let left = [...items];
-	while (left.length > 0) {
-		const ready = left.filter((item) => !left.some((other) => needs(item, other)));
-		if (ready.length === 0) {
-			for (const item of left)
-				for (const path of item.paths) {
-					keep.add(path);
-					waiting.push({ path, reason: "its changes wait on each other; they are published one at a time" });
-				}
-			break;
+function schedule(
+	items: Item[],
+	waiting: { path: string; reason: string }[],
+	keep: Set<string>,
+	keyOf: (path: string) => string,
+): Item[] {
+	const count = items.length;
+	if (count === 0) return [];
+	const byFrees = new Map<string, number[]>();
+	const byCreate = new Map<string, number[]>();
+	const filledKeys = new Set<string>();
+	const pushIndex = (map: Map<string, number[]>, key: string, index: number): void => {
+		let list = map.get(key);
+		if (!list) {
+			list = [];
+			map.set(key, list);
 		}
-		order.push(...ready);
-		left = left.filter((item) => !ready.includes(item));
+		list.push(index);
+	};
+	for (let i = 0; i < count; i++) {
+		const item = items[i]!;
+		const freed = frees(item, keyOf);
+		if (freed !== undefined) pushIndex(byFrees, freed, i);
+		if (item.kind === "create") pushIndex(byCreate, keyOf(item.path), i);
+		const target = fills(item, keyOf);
+		if (target !== undefined) filledKeys.add(target);
+	}
+	const gitBuckets = new Map<string, { objects: number[]; meta: number[]; deletes: number[] }>();
+	const metaDirByIndex = new Map<number, string>();
+	for (let i = 0; i < count; i++) {
+		const phased = gitPhaseOf(items[i]!, filledKeys, keyOf);
+		if (!phased) continue;
+		let bucket = gitBuckets.get(phased.dir);
+		if (!bucket) {
+			bucket = { objects: [], meta: [], deletes: [] };
+			gitBuckets.set(phased.dir, bucket);
+		}
+		if (phased.phase === 1) bucket.objects.push(i);
+		else if (phased.phase === 2) {
+			bucket.meta.push(i);
+			metaDirByIndex.set(i, phased.dir);
+		} else bucket.deletes.push(i);
+	}
+	let barrierCount = 0;
+	for (const bucket of gitBuckets.values()) {
+		if (bucket.objects.length > 0 && (bucket.meta.length > 0 || bucket.deletes.length > 0)) barrierCount++;
+		if (bucket.meta.length > 0 && bucket.deletes.length > 0) barrierCount++;
+	}
+	const total = count + barrierCount;
+	const dependents: number[][] = Array.from({ length: total }, () => []);
+	const inDegree = new Int32Array(total);
+	for (let i = 0; i < count; i++) {
+		const target = fills(items[i]!, keyOf);
+		if (target === undefined) continue;
+		const fromFrees = byFrees.get(target);
+		const fromCreate = byCreate.get(keyOf(parentOf(target)));
+		if (!fromFrees && !fromCreate) continue;
+		let seen: Set<number> | undefined;
+		const link = (other: number): void => {
+			if (other === i) return;
+			if (fromFrees && fromCreate) {
+				if (!seen) seen = new Set();
+				if (seen.has(other)) return;
+				seen.add(other);
+			}
+			dependents[other]!.push(i);
+			inDegree[i]!++;
+		};
+		if (fromFrees) for (const other of fromFrees) link(other);
+		if (fromCreate) for (const other of fromCreate) link(other);
+	}
+	let nextBarrier = count;
+	for (const bucket of gitBuckets.values()) {
+		if (bucket.objects.length > 0 && (bucket.meta.length > 0 || bucket.deletes.length > 0)) {
+			const barrier = nextBarrier++;
+			for (const i of bucket.objects) {
+				dependents[i]!.push(barrier);
+				inDegree[barrier]!++;
+			}
+			const targets = bucket.meta.length > 0 ? bucket.meta : bucket.deletes;
+			for (const j of targets) {
+				dependents[barrier]!.push(j);
+				inDegree[j]!++;
+			}
+		}
+		if (bucket.meta.length > 0 && bucket.deletes.length > 0) {
+			const barrier = nextBarrier++;
+			for (const j of bucket.meta) {
+				dependents[j]!.push(barrier);
+				inDegree[barrier]!++;
+			}
+			for (const k of bucket.deletes) {
+				dependents[barrier]!.push(k);
+				inDegree[k]!++;
+			}
+		}
+	}
+	const order: Item[] = [];
+	let wave: number[] = [];
+	for (let i = 0; i < count; i++) if (inDegree[i] === 0) wave.push(i);
+	const sortWave = (indices: number[]): void => {
+		if (indices.length <= 1) return;
+		if (metaDirByIndex.size === 0) indices.sort((a, b) => a - b);
+		else
+			indices.sort((a, b) => {
+				const da = metaDirByIndex.get(a) ?? "";
+				const db = metaDirByIndex.get(b) ?? "";
+				return da < db ? -1 : da > db ? 1 : a - b;
+			});
+	};
+	sortWave(wave);
+	while (wave.length > 0) {
+		const nextWave: number[] = [];
+		const unlock = (node: number): void => {
+			for (const dep of dependents[node]!) {
+				const remaining = --inDegree[dep]!;
+				if (remaining !== 0) continue;
+				if (dep >= count) unlock(dep);
+				else nextWave.push(dep);
+			}
+		};
+		for (const i of wave) {
+			order.push(items[i]!);
+			unlock(i);
+		}
+		sortWave(nextWave);
+		wave = nextWave;
+	}
+	if (order.length < count) {
+		for (let i = 0; i < count; i++) {
+			if (inDegree[i]! === 0) continue;
+			for (const path of items[i]!.paths) {
+				keep.add(path);
+				waiting.push({ path, reason: "its changes wait on each other; they are published one at a time" });
+			}
+		}
 	}
 	return order;
+}
+
+function fitsNewFolder(under: readonly (Item & { kind: "create" | "new" | "link" })[]): boolean {
+	if (under.length > MAX_NEW_FOLDER_ENTRIES) return false;
+	let structuredFiles = 0;
+	let structuredBytes = 0;
+	for (const item of under) {
+		if (item.kind !== "new" || !companyStatePath(item.path)) continue;
+		structuredFiles++;
+		structuredBytes += item.file.bytes;
+		if (structuredFiles > MAX_COMMIT_STRUCTURED_FILES || structuredBytes > MAX_COMMIT_STRUCTURED_BYTES) return false;
+	}
+	return true;
+}
+
+function structuredCost(unit: CommitUnit): { readonly files: number; readonly bytes: number } {
+	if (unit.op === "write")
+		return companyStatePath(unit.path) ? { files: 1, bytes: unit.file.bytes } : { files: 0, bytes: 0 };
+	if (unit.op !== "new_folder") return { files: 0, bytes: 0 };
+	let files = 0;
+	let bytes = 0;
+	for (const entry of unit.contents) {
+		if (!entry.file || !companyStatePath(`${unit.path}/${entry.path}`)) continue;
+		files++;
+		bytes += entry.file.bytes;
+	}
+	return { files, bytes };
+}
+
+export function planCommitBatches(
+	units: readonly PlannedUnit[],
+	limits?: CommitBatchLimits,
+): readonly (readonly PlannedUnit[])[] {
+	if (units.length === 0) return [];
+	const maxUnits = Math.max(1, limits?.maxUnits ?? MAX_COMMIT_UNITS);
+	const maxStructuredFiles = Math.max(1, limits?.maxStructuredFiles ?? MAX_COMMIT_STRUCTURED_FILES);
+	const maxStructuredBytes = Math.max(1, limits?.maxStructuredBytes ?? MAX_COMMIT_STRUCTURED_BYTES);
+	const costs = units.map((planned) => structuredCost(planned.unit));
+	const metaSpan = new Map<string, { first: number; last: number }>();
+	for (let i = 0; i < units.length; i++) {
+		const dir = gitMetaDir(units[i]!.unit);
+		if (dir === undefined) continue;
+		const existing = metaSpan.get(dir);
+		if (existing) existing.last = i;
+		else metaSpan.set(dir, { first: i, last: i });
+	}
+	const spanEndAt = new Map<number, number>();
+	for (const { first, last } of metaSpan.values()) {
+		if (last <= first) continue;
+		const prev = spanEndAt.get(first);
+		if (prev === undefined || last > prev) spanEndAt.set(first, last);
+	}
+	const batches: PlannedUnit[][] = [];
+	let current: PlannedUnit[] = [];
+	let structuredFiles = 0;
+	let structuredBytes = 0;
+	const flush = (): void => {
+		batches.push(current);
+		current = [];
+		structuredFiles = 0;
+		structuredBytes = 0;
+	};
+	for (let i = 0; i < units.length; i++) {
+		const planned = units[i]!;
+		const spanEnd = spanEndAt.get(i);
+		if (current.length > 0 && spanEnd !== undefined) {
+			const spanUnits = spanEnd - i + 1;
+			let spanFiles = 0;
+			let spanBytes = 0;
+			for (let j = i; j <= spanEnd; j++) {
+				spanFiles += costs[j]!.files;
+				spanBytes += costs[j]!.bytes;
+			}
+			const spanFits = spanUnits <= maxUnits && spanFiles <= maxStructuredFiles && spanBytes <= maxStructuredBytes;
+			const spanOverflows =
+				current.length + spanUnits > maxUnits ||
+				structuredFiles + spanFiles > maxStructuredFiles ||
+				structuredBytes + spanBytes > maxStructuredBytes;
+			if (spanFits && spanOverflows) flush();
+		}
+		const cost = costs[i]!;
+		const exceeds =
+			current.length >= maxUnits ||
+			structuredFiles + cost.files > maxStructuredFiles ||
+			structuredBytes + cost.bytes > maxStructuredBytes;
+		if (current.length > 0 && exceeds) flush();
+		current.push(planned);
+		structuredFiles += cost.files;
+		structuredBytes += cost.bytes;
+	}
+	if (current.length > 0) batches.push(current);
+	return batches.length === 1 ? [units] : batches;
 }

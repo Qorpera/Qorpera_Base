@@ -316,4 +316,94 @@ describe("LxdOfficePassthrough", () => {
 		expect(await exchange(viewer, "down").catch(() => "closed")).toBe("closed");
 		expect(errors).toEqual([]);
 	});
+
+	it("keeps accurate per-lane connection counts across closures and isolates coalesced resolver aborts", async () => {
+		const stand = await guest();
+		const [viewer, native] = [await freePort(), await freePort()];
+		const limited = await LxdOfficePassthrough.listen(
+			parseLxdOfficePassthroughConfig(document(viewer, stand.port, native, stand.port)),
+			async () => "127.0.0.1",
+			{ maxConnections: 2 },
+		);
+		closers.push(() => limited.close());
+		const hold = async () => {
+			const sock = createConnection({ host: "127.0.0.1", port: viewer });
+			sock.on("error", () => {});
+			await new Promise<void>((done) => sock.once("connect", () => done()));
+			return sock;
+		};
+		const c1 = await hold();
+		const c2 = await hold();
+		await vi.waitFor(() => expect(stand.connections()).toBe(2));
+		c1.destroy();
+		await vi.waitFor(() => expect(limited.openConnections).toBe(2));
+		const c3 = await hold();
+		await vi.waitFor(() => expect(stand.connections()).toBe(3));
+		expect(await exchange(viewer, "overflow")).toBe("closed");
+		c2.destroy();
+		c3.destroy();
+		await vi.waitFor(() => expect(limited.openConnections).toBe(0));
+
+		let releaseInventory = (): void => {};
+		const inventoryHeld = new Promise<void>((done) => {
+			releaseInventory = done;
+		});
+		let inventoryCalls = 0;
+		const resolveGuest = createLxdOfficeGuestResolver(
+			{
+				inspectHostInventory: async (signal) => {
+					inventoryCalls += 1;
+					await inventoryHeld;
+					signal.throwIfAborted();
+					return {
+						server: {} as LxdHostInventory["server"],
+						instances: [instance("qorpera-office-abc")],
+					};
+				},
+				getInstanceState: async () => running("10.99.0.5"),
+			},
+			identity,
+		);
+		const caller1 = new AbortController();
+		const caller2 = new AbortController();
+		const p1 = resolveGuest(caller1.signal);
+		const p2 = resolveGuest(caller2.signal);
+		caller1.abort(new Error("CALLER_1_TIMEOUT"));
+		await expect(p1).rejects.toThrow("CALLER_1_TIMEOUT");
+		releaseInventory();
+		expect(await p2).toBe("10.99.0.5");
+		expect(inventoryCalls).toBe(1);
+
+		let releaseStuck = (): void => {};
+		let freshCalls = 0;
+		const resolveFresh = createLxdOfficeGuestResolver(
+			{
+				inspectHostInventory: async (signal) => {
+					freshCalls += 1;
+					if (freshCalls === 1) {
+						await new Promise<void>((done) => {
+							releaseStuck = done;
+						});
+						signal.throwIfAborted();
+					}
+					return {
+						server: {} as LxdHostInventory["server"],
+						instances: [instance("qorpera-office-abc")],
+					};
+				},
+				getInstanceState: async () => running("10.99.0.6"),
+			},
+			identity,
+			0,
+		);
+		const sole = new AbortController();
+		const stale = resolveFresh(sole.signal);
+		await vi.waitFor(() => expect(freshCalls).toBe(1));
+		sole.abort(new Error("SOLE_TIMEOUT"));
+		await expect(stale).rejects.toThrow("SOLE_TIMEOUT");
+		const next = resolveFresh(new AbortController().signal);
+		expect(await next).toBe("10.99.0.6");
+		expect(freshCalls).toBe(2);
+		releaseStuck();
+	});
 });

@@ -228,7 +228,7 @@ impl Shared {
 		}
 		let exclude = self.exclude(local, area);
 		let gitignore = |dir: &str| self.gitignore(local, *dirs.get(dir)?, &below(worktree, dir));
-		ignore::ignored(path, folder, gitignore, exclude.as_ref())
+		ignore::ignored(path, folder, gitignore, exclude.as_deref())
 	}
 
 	/// The `.gitignore` in the node's folder `dir` (at `path`), parsed once per version: the node's, or where the node
@@ -277,21 +277,50 @@ impl Shared {
 
 	/// The repository's `info/exclude` (`area`'s): a session-local git file (`local.rs`), seeded first. A link in its
 	/// place counts as none.
-	fn exclude(&self, local: &Local, area: &str) -> Option<Patterns> {
+	fn exclude(&self, local: &Local, area: &str) -> Option<Arc<Patterns>> {
 		let seed = format!("{area}/repo.git");
 		self.seed(local, &seed).ok()?;
-		let disk = local.disk(Area::Git, &format!("{seed}/info/exclude"));
-		let meta = fs::symlink_metadata(&disk).ok().filter(|m| m.is_file())?;
+		// WHY: load git_gen before open_in so an in-place same-length rewrite within one coarse fs timestamp tick misses cache.
+		let git_gen = local.git_gen.load(Ordering::Acquire);
+		let rel = format!("{seed}/info/exclude");
+		let disk = local.open_in(Area::Git, &rel).ok()?;
+		let meta = disk.metadata().ok().filter(|m| m.is_file())?;
 		if meta.len() >= ignore::MAX_FILE as u64 {
 			return None;
 		}
-		fs::read(&disk).ok().map(|text| Patterns::parse(&text))
+		let version = format!(
+			"disk:{git_gen}:{}:{}:{}:{}.{}:{}.{}",
+			meta.dev(),
+			meta.ino(),
+			meta.len(),
+			meta.mtime(),
+			meta.mtime_nsec(),
+			meta.ctime(),
+			meta.ctime_nsec()
+		);
+		let key = format!("\0exclude:{seed}");
+		if let Some((known, patterns)) = local.ignores.lock().unwrap().get(&key) {
+			if *known == version {
+				return Some(patterns.clone());
+			}
+		}
+		let mut text = Vec::new();
+		disk.take(ignore::MAX_FILE as u64 + 1).read_to_end(&mut text).ok()?;
+		if text.len() >= ignore::MAX_FILE {
+			return None;
+		}
+		let patterns = Arc::new(Patterns::parse(&text));
+		local.ignores.lock().unwrap().insert(key, (version, patterns.clone()));
+		Some(patterns)
 	}
 
 	/// Whether the node's folder `dir` holds a project file (rule 3).
 	fn project(&self, dir: u64) -> bool {
-		let project = |c: &Child| c.attr.kind != EntryKind::Folder && cache::PROJECT_FILES.contains(&c.name.as_str());
-		self.children(dir, None).is_ok_and(|(children, _)| children.iter().any(project))
+		self.children(dir, None).is_ok_and(|(children, _)| {
+			cache::PROJECT_FILES
+				.iter()
+				.any(|name| find_child(&children, name).is_some_and(|c| c.attr.kind != EntryKind::Folder))
+		})
 	}
 
 	/// The session-local git files `seed` holds, copied from the node's once per view (`local.rs`).
@@ -864,6 +893,9 @@ impl FolderFs {
 	/// (`mount/kernel.rs`): EIO if one does not answer. Git's session-local files are this mount's alone.
 	fn tell(&self, area: Area, changes: impl FnOnce() -> Vec<Change>) -> Result<(), i32> {
 		if area != Area::Cache {
+			if let Some(local) = &self.s.local {
+				local.git_gen.fetch_add(1, Ordering::Release);
+			}
 			return Ok(());
 		}
 		self.s.kernel.tell(&changes())
@@ -1119,6 +1151,9 @@ impl FolderFs {
 		}
 		let written = self.local().and_then(|l| {
 			let n = l.write(fh, offset, data)?;
+			if l.opened(fh).is_some_and(|ino| l.name(ino).is_none_or(|(_, _, area)| area == Area::Git)) {
+				l.git_gen.fetch_add(1, Ordering::Release);
+			}
 			let cache = |ino: &u64| l.name(*ino).is_some_and(|(_, _, area)| area == Area::Cache);
 			match l.opened(fh).filter(|ino| l.shared() && cache(ino)) {
 				Some(ino) if writeback => self.s.kernel.later(vec![Change::ino(ino)]),

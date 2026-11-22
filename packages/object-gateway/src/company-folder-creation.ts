@@ -12,6 +12,8 @@ import { UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
 import {
 	drainPlatformClaims,
+	mapBounded,
+	PLATFORM_STAGE_CONCURRENCY,
 	type PlatformFileReference,
 	PlatformFolderProblem,
 	PlatformFolderWriter,
@@ -66,6 +68,7 @@ const FINAL = new Set(["seed_invalid", "stage_invalid"]);
 
 export interface CompanyCreationClaim {
 	readonly creationId: string;
+	readonly profileId: string;
 	readonly environmentId: string;
 	readonly generation: number;
 	readonly cofounderId: string;
@@ -109,6 +112,7 @@ export function parseCompanyCreationClaim(value: unknown): CompanyCreationClaim 
 		platformFolderProblem("claim_invalid");
 	return {
 		creationId: claim.creationId as string,
+		profileId: claim.profileId as string,
 		environmentId: claim.environmentId as string,
 		generation: claim.generation as number,
 		cofounderId: claim.cofounderId as string,
@@ -270,19 +274,23 @@ export class CompanyFolderCreator {
 			// The parser refused a seeded file, or a writer refused a value: no retry builds another tree.
 			return "seed_invalid";
 		}
-		const files = new Map<string, PlatformFileReference>();
-		for (const entry of tree) {
-			if (entry.kind !== "file") continue;
-			files.set(
-				entry.path,
-				await this.#folder.stage(
+		const fileEntries = tree.filter((entry) => entry.kind === "file");
+		const objectConcurrency = fileEntries.length > 1 ? 1 : PLATFORM_STAGE_CONCURRENCY;
+		const staged = await mapBounded(
+			fileEntries,
+			PLATFORM_STAGE_CONCURRENCY,
+			(entry) =>
+				this.#folder.stage(
 					claim.environmentId,
 					new TextEncoder().encode(entry.text ?? ""),
 					{ mediaType: mediaType(entry.path), executable: false },
 					signal,
+					{ profileId: claim.profileId, objectConcurrency },
 				),
-			);
-		}
+			signal,
+		);
+		const files = new Map<string, PlatformFileReference>();
+		for (let i = 0; i < fileEntries.length; i++) files.set(fileEntries[i]!.path, staged[i]!);
 		const units = creationUnits(tree, files);
 		const answer = (await this.#options.authority.publisher(
 			"qorpera_folder_company_create",

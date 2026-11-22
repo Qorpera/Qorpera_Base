@@ -2674,8 +2674,8 @@ export class CompanyController {
 	// Coding sessions: the thread element follows one session's stream itself; the
 	// owner's answer and delegation go through here so the listing stays current.
 
-	readCodingSession(workerId: string, afterEvent = 0): Promise<CodingSessionRead> {
-		return this.#api.readCodingSession(workerId, afterEvent);
+	readCodingSession(workerId: string, afterEvent = 0, signal?: AbortSignal): Promise<CodingSessionRead> {
+		return this.#api.readCodingSession(workerId, afterEvent, 200, signal);
 	}
 
 	/** The thread's sessions read again, for the header's figures while one is still going. */
@@ -3466,6 +3466,7 @@ export class CompanyController {
 		void this.#sessionsChanged();
 		void this.refreshActivity();
 		void this.refreshMentions();
+		void this.refreshSidebar();
 		this.memberChats.hinted();
 		this.#atComputers.read();
 		if (this.#openSessionId) void this.loadConversation(this.#openSessionId);

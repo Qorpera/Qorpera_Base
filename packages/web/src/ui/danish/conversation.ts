@@ -266,9 +266,14 @@ export const CONVERSATION: Record<string, string> = {
 	"Choose model": "Vælg model",
 	"Choose model ({name})": "Vælg model ({name})",
 	"Switch to Claude": "Skift til Claude",
+	"Switch to Gemini": "Skift til Gemini",
 	"Switch to GPT": "Skift til GPT",
 	"GPT answers light messages. Claude Code does the work, on your Claude plan.":
 		"GPT svarer på lette beskeder. Claude Code gør arbejdet, på dit Claude-abonnement.",
+	"Gemini 4 Neon answers this conversation using your Gemini API key.":
+		"Gemini 4 Neon svarer i denne samtale med din Gemini-API-nøgle.",
+	"Your monthly Gemini spend cap was reached. Raise it in Settings or switch models.":
+		"Din månedlige forbrugsgrænse for Gemini er nået. Hæv den i Indstillinger, eller skift model.",
 	Fast: "Hurtig",
 	"{model}, Fast": "{model}, hurtig",
 	"{speed} speed": "{speed} hastighed",
@@ -438,6 +443,8 @@ export const CONVERSATION: Record<string, string> = {
 	"Leave the app out": "Udelad appen",
 	"Leave the page out": "Udelad siden",
 	"Your note could not be sent. Try again.": "Din besked kunne ikke sendes. Prøv igen.",
+	"The database connection was interrupted; the change may have completed. Check before trying again.":
+		"Forbindelsen til databasen blev afbrudt; ændringen er måske allerede gemt. Tjek før du prøver igen.",
 	"{name}'s thread has a message started. Send or clear it there, then send this note.":
 		"Der er en besked i gang i tråden med {name}. Send eller ryd den dér, og send så denne besked.",
 	App: "App",
@@ -546,6 +553,8 @@ export const CONVERSATION: Record<string, string> = {
 		"“Arbejd, mens du er væk” kunne ikke slås til. Prøv igen.",
 	"All {count} company computers are in use. Close one to open another.":
 		"Alle {count} virksomhedscomputere er i brug. Luk én for at åbne en ny.",
+	"Your monthly Gemini API spend cap of {cap} was reached ({spent} used in {month}). Raise the cap in Settings or switch models to continue.":
+		"Din månedlige forbrugsgrænse for Gemini-API'et på {cap} er nået ({spent} brugt i {month}). Hæv grænsen i Indstillinger, eller skift model for at fortsætte.",
 
 	// Attachments (ui/received-attachments.ts, ui/attachments.ts)
 	"Message attachments": "Vedhæftede filer i beskeden",

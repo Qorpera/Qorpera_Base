@@ -645,4 +645,66 @@ describe("a folder-v2 run in the runner broker (folder core C3, P23)", () => {
 		await expect(current.broker.describe()).rejects.toThrow(message);
 		expect(current.transport.actions).toEqual(["describe"]);
 	});
+
+	it("cancels non-ok response bodies and aborts retry backoff sleep immediately when authority signal aborts", async () => {
+		let cancelled = 0;
+		const controller = new AbortController();
+		const transport = new SupabaseCloudRunnerBrokerTransport(
+			"https://example.supabase.co",
+			"publishable-key",
+			async () => {
+				const stream = new ReadableStream({
+					start(ctrl) {
+						ctrl.enqueue(new TextEncoder().encode("temporary overload"));
+					},
+					cancel() {
+						cancelled++;
+					},
+				});
+				return new Response(stream, { status: 503 });
+			},
+		);
+		const startedAt = performance.now();
+		setTimeout(() => controller.abort(new Error("cancelled")), 40);
+		await expect(
+			transport.describe({ runnerId, jobId, sessionToken, leaseToken, signal: controller.signal }),
+		).rejects.toThrow(CloudRunnerBrokerRequestError);
+		expect(cancelled).toBeGreaterThanOrEqual(1);
+		expect(performance.now() - startedAt).toBeLessThan(800);
+	});
+
+	it("releases native authority with a fresh deadline signal even after the execution signal aborts", async () => {
+		const execution = new AbortController();
+		const requests: Array<{ action: string; status?: string; aborted: boolean }> = [];
+		const fetchImplementation = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+			const payload = JSON.parse(String(init?.body)) as { action: string; status?: string };
+			requests.push({ action: payload.action, status: payload.status, aborted: Boolean(init?.signal?.aborted) });
+			if (payload.action === "describe") return Response.json({ value: descriptionRecord() });
+			if (payload.action === "native_authority") {
+				return Response.json({ value: nativeAuthorityRecord() });
+			}
+			if (payload.action === "release_native_authority") {
+				return Response.json({ value: { lease_id: leaseId, status: payload.status } });
+			}
+			throw new Error(`Unexpected action ${payload.action}`);
+		}) as typeof fetch;
+		const transport = new SupabaseCloudRunnerBrokerTransport(
+			"https://example.supabase.co",
+			"publishable-key",
+			fetchImplementation,
+		);
+		const current = new CloudRunnerJobBroker({
+			job: parseCloudRunnerJob(jobRecord()),
+			runnerId,
+			credentials: () => ({ sessionToken, leaseToken }),
+			transport,
+			signal: execution.signal,
+		});
+		await current.acquireNativeAuthority();
+		execution.abort(new Error("execution cancelled"));
+
+		const releaseDeadline = new AbortController();
+		await current.releaseNativeAuthority("revoked", releaseDeadline.signal);
+		expect(requests.at(-1)).toEqual({ action: "release_native_authority", status: "revoked", aborted: false });
+	});
 });

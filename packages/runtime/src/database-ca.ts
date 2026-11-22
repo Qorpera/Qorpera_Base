@@ -19,11 +19,8 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const ONE_PEM_CERTIFICATE = /^-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----\r?\n?$/;
 
 export interface DatabaseCaCredentials {
-	/** Supabase's CA, as its unit always loads it. */
-	supabaseCa: string;
-	/** Our own CA: the file's exact bytes. Only with `ownCaSha256`. */
+	supabaseCa?: string;
 	ownCa?: Uint8Array;
-	/** The own CA file's sha256 (lowercase hex, as sha256sum prints it). Only with `ownCa`. */
 	ownCaSha256?: string;
 }
 
@@ -32,16 +29,19 @@ export interface DatabaseTls {
 	rejectUnauthorized: true;
 }
 
-/** The connection's TLS options from the CA credentials; throws `<label> database CA is invalid` on anything else. */
 export function databaseTls(credentials: DatabaseCaCredentials, label: string): DatabaseTls {
 	const invalid = new Error(`${label} database CA is invalid`);
-	// Supabase's CA stays pinned in either mode: the unit loads it, and a wrong file is a wrong deploy.
-	if (!isPinnedCa(credentials.supabaseCa, (certificate) => certificate.fingerprint256 === SUPABASE_CA_FINGERPRINT)) {
+	if (
+		credentials.supabaseCa !== undefined &&
+		!isPinnedCa(credentials.supabaseCa, (certificate) => certificate.fingerprint256 === SUPABASE_CA_FINGERPRINT)
+	) {
 		throw invalid;
 	}
 	const { ownCa, ownCaSha256 } = credentials;
-	if (ownCa === undefined && ownCaSha256 === undefined)
+	if (ownCa === undefined && ownCaSha256 === undefined) {
+		if (credentials.supabaseCa === undefined) throw invalid;
 		return { ca: credentials.supabaseCa, rejectUnauthorized: true };
+	}
 	if (ownCa === undefined || ownCaSha256 === undefined || !SHA256.test(ownCaSha256)) throw invalid;
 	if (createHash("sha256").update(ownCa).digest("hex") !== ownCaSha256) throw invalid;
 	let text: string;
@@ -50,7 +50,6 @@ export function databaseTls(credentials: DatabaseCaCredentials, label: string): 
 	} catch {
 		throw invalid;
 	}
-	// One certificate and nothing else, so the pin covers exactly the CA that is trusted.
 	if (!ONE_PEM_CERTIFICATE.test(text) || !isPinnedCa(text, () => true)) throw invalid;
 	return { ca: text, rejectUnauthorized: true };
 }

@@ -1,4 +1,4 @@
-import { request as httpsRequest } from "node:https";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { type JsonValue, parseRecord } from "@qorpera/contracts";
 import type { CloudCompanyDataPass, CloudCompanyFolderClient } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
@@ -59,9 +59,8 @@ const ALLOW = /^([0-9]{3}-[a-z0-9]+(?:-[a-z0-9]+)*)\.[0-9a-f]{64}\.[0-9a-f]{64}$
 const PARAMETER = /^[a-z_][a-z0-9_]{0,39}$/;
 /** A read of the agent's own, at most a question file's size. */
 const SQL_BYTES = 16 * 1024;
-/** Parameters, as a question file takes them: 16 at most, 4 KiB together. */
-const PARAMETERS = 16;
-const PARAMETER_BYTES = 4096;
+const PARAMETERS = 64;
+const PARAMETER_BYTES = 64 * 1024;
 /** Rounds of `need` a call answers before it gives up, and the most one round's whole body may hold as JSON (escaping
  * counted): the gateway takes 1 MiB a body. */
 const ROUNDS = 8;
@@ -110,7 +109,7 @@ interface ApplyRequest {
 	step?: string;
 	destroys?: Destroyed[];
 }
-type Params = Record<string, string | number | boolean | null>;
+type Params = Record<string, JsonValue>;
 interface QueryRequest {
 	database: string;
 	question?: string;
@@ -155,7 +154,15 @@ function parseApply(value: JsonValue): ApplyRequest {
 	return request;
 }
 
-/** A call's named values, as a question's or a change's file takes them, or none. */
+function isJsonParam(value: unknown, depth = 0): value is JsonValue {
+	if (depth > 16) return false;
+	if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+	if (typeof value === "number") return Number.isFinite(value);
+	if (Array.isArray(value)) return value.every((item) => isJsonParam(item, depth + 1));
+	if (typeof value === "object") return Object.values(value).every((item) => isJsonParam(item, depth + 1));
+	return false;
+}
+
 function parameters(value: JsonValue | undefined): Params | undefined {
 	if (value === undefined || value === null) return undefined;
 	if (typeof value !== "object" || Array.isArray(value)) throw new CloudToolArgumentRefusal("params are named values");
@@ -163,14 +170,10 @@ function parameters(value: JsonValue | undefined): Params | undefined {
 	if (entries.length > PARAMETERS) throw new CloudToolArgumentRefusal(`At most ${PARAMETERS} params`);
 	for (const [name, given] of entries) {
 		if (!PARAMETER.test(name)) throw new CloudToolArgumentRefusal("A param's name is a-z, 0-9 and _");
-		if (
-			!(given === null || typeof given === "string" || typeof given === "boolean") &&
-			!(typeof given === "number" && Number.isFinite(given))
-		)
-			throw new CloudToolArgumentRefusal("A param is text, a number, true, false or null");
+		if (!isJsonParam(given)) throw new CloudToolArgumentRefusal("A param must be a JSON value");
 	}
 	if (Buffer.byteLength(JSON.stringify(value)) > PARAMETER_BYTES)
-		throw new CloudToolArgumentRefusal("params take at most 4 KiB together");
+		throw new CloudToolArgumentRefusal("params take at most 64 KiB together");
 	return value as unknown as Params;
 }
 
@@ -492,7 +495,7 @@ export function cloudDataTools(options: {
 				sql: { type: "string", maxLength: SQL_BYTES },
 				params: {
 					type: "object",
-					additionalProperties: { type: ["string", "number", "boolean", "null"] },
+					additionalProperties: true,
 				},
 			},
 		},
@@ -534,7 +537,7 @@ export function cloudDataTools(options: {
 				change: { type: "string", maxLength: 60 },
 				params: {
 					type: "object",
-					additionalProperties: { type: ["string", "number", "boolean", "null"] },
+					additionalProperties: true,
 				},
 			},
 		},
@@ -597,6 +600,14 @@ export function httpsCompanyDataDoor(options: { url: string; ca: string; token: 
 		throw new Error("Invalid company data door configuration");
 	const host = url.hostname.replace(/^\[|\]$/g, "");
 	const port = url.port ? Number(url.port) : 443;
+	const agent = new HttpsAgent({
+		keepAlive: true,
+		keepAliveMsecs: 30_000,
+		maxSockets: 8,
+		maxFreeSockets: 4,
+		ca: options.ca,
+		minVersion: "TLSv1.2",
+	});
 	return {
 		call: (verb, body, signal) =>
 			new Promise((resolve, reject) => {
@@ -604,7 +615,6 @@ export function httpsCompanyDataDoor(options: { url: string; ca: string; token: 
 				if (stop.aborted)
 					return reject(new CloudRuntimeDiagnosticError("cancelled", "Company data door call ended"));
 				const text = Buffer.from(JSON.stringify(body));
-				/** Why the answer was cut off, when the tool cut it: the request then ends with this, not a transport error. */
 				let failure: CloudRuntimeDiagnosticError | undefined;
 				const outgoing = httpsRequest(
 					{
@@ -619,7 +629,7 @@ export function httpsCompanyDataDoor(options: { url: string; ca: string; token: 
 							"content-type": "application/json",
 							"content-length": String(text.byteLength),
 						},
-						agent: false,
+						agent,
 					},
 					(response) => {
 						const chunks: Buffer[] = [];

@@ -695,7 +695,7 @@ describe("the company data tools", () => {
 			{ database: "shop", question: "Count" },
 			{ database: "shop", sql: "x".repeat(16 * 1024 + 1) },
 			{ database: "shop", sql: "select 1", params: { "a-b": 1 } },
-			{ database: "shop", sql: "select 1", params: { a: [1] } },
+			{ database: "shop", sql: "select 1", params: { a: Number.NaN } },
 			{ database: "shop", sql: "select 1", extra: true },
 		])
 			expect((await f.invoke("data_query", args)).success, JSON.stringify(args).slice(0, 80)).toBe(false);
@@ -720,11 +720,33 @@ describe("the company data tools", () => {
 			{ database: "shop", change: "add-order", sql: "delete from orders" },
 			{ database: "shop", change: "add-order", params: [1] },
 			{ database: "shop", change: "add-order", params: { "a-b": 1 } },
-			{ database: "shop", change: "add-order", params: { a: { b: 1 } } },
-			{ database: "shop", change: "add-order", params: { a: "x".repeat(5000) } },
+			{ database: "shop", change: "add-order", params: { a: Number.POSITIVE_INFINITY } },
+			{ database: "shop", change: "add-order", params: { a: "x".repeat(65 * 1024) } },
 		])
 			expect((await f.invoke("data_change", args)).success, JSON.stringify(args).slice(0, 80)).toBe(false);
 		expect(f.platformCalls).toEqual([]);
+		const richQuery = await fixture(() =>
+			ok({ columns: ["ok"], rows: [[1]], more: false, asOf: "2026-11-21T00:00:00.000Z" }),
+		);
+		expect(
+			(
+				await richQuery.invoke("data_query", {
+					database: "shop",
+					sql: "select 1",
+					params: { ids: [1, 2], meta: { ok: true } },
+				})
+			).success,
+		).toBe(true);
+		const richChange = await fixture(() => ok({ changed: 1, asOf: "2026-11-21T00:00:00.000Z" }));
+		expect(
+			(
+				await richChange.invoke("data_change", {
+					database: "shop",
+					change: "add-order",
+					params: { tags: ["vip", "dk"], meta: { source: "agent" } },
+				})
+			).success,
+		).toBe(true);
 	});
 });
 

@@ -94,7 +94,13 @@ async function executeRequest(
 							finish(() => reject(new TypeError("Node HTTP transport exceeded its redirect limit")));
 							return;
 						}
-						const nextUrl = new URL(location, url);
+						let nextUrl: URL;
+						try {
+							nextUrl = new URL(location, url);
+						} catch (error) {
+							finish(() => reject(error));
+							return;
+						}
 						const nextHeaders = new NodeHttpHeaders(Array.from(headers.entries()));
 						if (nextUrl.origin !== url.origin) {
 							nextHeaders.delete("authorization");
@@ -106,6 +112,7 @@ async function executeRequest(
 							nextHeaders.delete("content-length");
 							nextHeaders.delete("content-type");
 						}
+						signal?.removeEventListener("abort", abort);
 						void executeRequest(
 							nextUrl,
 							switchToGet ? "GET" : method,

@@ -22,9 +22,11 @@ export async function withCloudDeadline<T>(
 	if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) {
 		throw new Error("Cloud request deadline is invalid");
 	}
+	signal?.throwIfAborted();
 	const controller = new AbortController();
-	const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
-	combined.throwIfAborted();
+	const onParentAbort = (): void => controller.abort(signal?.reason);
+	if (signal) signal.addEventListener("abort", onParentAbort, { once: true });
+	const combined = controller.signal;
 	let rejectAbort: () => void = () => {};
 	const cancelled = new Promise<never>((_resolve, reject) => {
 		rejectAbort = () => reject(combined.reason);
@@ -44,6 +46,7 @@ export async function withCloudDeadline<T>(
 		throw error;
 	} finally {
 		clearTimeout(timer);
+		if (signal) signal.removeEventListener("abort", onParentAbort);
 		combined.removeEventListener("abort", rejectAbort);
 	}
 }
@@ -96,54 +99,4 @@ export async function readBoundedCloudResponse(
 		cancel();
 		reader.releaseLock();
 	}
-}
-
-export type CloudDependency = "auth" | "api" | "storage";
-export type CloudDependencyStatus = "unknown" | "healthy" | "unavailable";
-export type CloudAvailabilitySnapshot = Record<CloudDependency, CloudDependencyStatus>;
-
-/** Supabase HTTP endpoints used here are finite JSON/blob responses, not SSE. */
-export function boundedCloudFetch(
-	fetchImplementation: typeof fetch,
-	timeoutMs: number,
-	observe: (dependency: CloudDependency, status: CloudDependencyStatus) => void = () => {},
-): typeof fetch {
-	return async (input, init) => {
-		const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
-		const dependency = url.pathname.startsWith("/auth/v1/")
-			? "auth"
-			: url.pathname.startsWith("/storage/v1/")
-				? "storage"
-				: "api";
-		const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
-		try {
-			const response = await withCloudDeadline(
-				async (requestSignal) => {
-					const result = await fetchImplementation(input, { ...init, signal: requestSignal });
-					// A denied response must not become an outage/fallback merely because
-					// its error body or cancellation stalls. Preserve the authoritative status.
-					if (result.status === 401 || result.status === 403) {
-						void result.body?.cancel().catch(() => undefined);
-						return Response.json(
-							{ message: "Cloud authority rejected the operation", statusCode: String(result.status) },
-							{ status: result.status },
-						);
-					}
-					const bytes = await result.arrayBuffer();
-					return new Response(result.body === null ? null : bytes, {
-						status: result.status,
-						statusText: result.statusText,
-						headers: result.headers,
-					});
-				},
-				timeoutMs,
-				signal ?? undefined,
-			);
-			observe(dependency, response.status >= 500 || response.status === 429 ? "unavailable" : "healthy");
-			return response;
-		} catch (error) {
-			if (!signal?.aborted) observe(dependency, "unavailable");
-			throw error;
-		}
-	};
 }

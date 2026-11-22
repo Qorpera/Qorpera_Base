@@ -116,7 +116,10 @@ describe("tools on demand", () => {
 			expect(sent.filter((name) => name !== CLOUD_MORE_TOOLS).sort()).toEqual(
 				tools
 					.map((tool) => tool.name)
-					.filter((name) => CLOUD_DIRECT_TOOLS[kind].has(name) || name === "decide_routine")
+					.filter(
+						(name) =>
+							CLOUD_DIRECT_TOOLS[kind].has(name) || name === "decide_routine" || name === "company_search",
+					)
 					.sort(),
 			);
 			// Each line says what its tool is for, and the description keeps room under the boundary's 4,096 bytes.

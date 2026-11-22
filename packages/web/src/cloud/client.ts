@@ -49,7 +49,7 @@ export interface SessionRejection {
 export interface Cloud {
 	readonly config: CloudConfig;
 	readonly supabase: SupabaseClient;
-	rpc(name: string, args?: Record<string, unknown>): Promise<unknown>;
+	rpc(name: string, args?: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
 	/** Tells the listener each time the cloud refuses the session token it was sent. */
 	onSessionRejected?(listener: (rejection: SessionRejection) => void): () => void;
 	/** The web's own requests outside the SDK (direct PostgREST and function calls) report their answer here, with the
@@ -151,13 +151,17 @@ function requestUrl(input: string | URL | Request): string {
 }
 
 async function answeredWithin(ms: number, input: string | URL | Request, init?: RequestInit): Promise<Response> {
-	const unanswered = new AbortController();
-	const timer = setTimeout(() => unanswered.abort(new DOMException(NO_ANSWER, "TimeoutError")), ms);
-	const signal = init?.signal ? AbortSignal.any([init.signal, unanswered.signal]) : unanswered.signal;
+	const controller = new AbortController();
+	const parent = init?.signal;
+	const onAbort = () => controller.abort(parent?.reason);
+	if (parent?.aborted) onAbort();
+	else parent?.addEventListener("abort", onAbort, { once: true });
+	const timer = setTimeout(() => controller.abort(new DOMException(NO_ANSWER, "TimeoutError")), ms);
 	try {
-		return await globalThis.fetch(input, { ...init, signal });
+		return await globalThis.fetch(input, { ...init, signal: controller.signal });
 	} finally {
 		clearTimeout(timer);
+		parent?.removeEventListener("abort", onAbort);
 	}
 }
 
@@ -205,8 +209,9 @@ export function createCloud(config: CloudConfig): Cloud {
 	return {
 		config,
 		supabase,
-		async rpc(name, args = {}) {
-			const { data, error, status } = await supabase.rpc(name, args);
+		async rpc(name, args = {}, signal) {
+			const call = supabase.rpc(name, args);
+			const { data, error, status } = await (signal ? call.abortSignal(signal) : call);
 			if (error) throw new CloudRpcError(name, error, status);
 			return data;
 		},

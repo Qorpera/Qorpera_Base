@@ -432,7 +432,7 @@ export function cloudActionEffect(
 		// recorded change that can itself be undone, and a card would cost the minutes a wrong change must not stay in;
 		// a description changes only the record's words. Neither is reviewed.
 		case "manage_code":
-			return "internal";
+			return args.action === "status" ? "read" : "internal";
 		case "narrate_app":
 			return "internal";
 		case "propose_surface":
@@ -2014,7 +2014,7 @@ export class CloudActionReviewGate {
 			name(recorded.approverName, "an owner or admin"),
 			signal,
 			recorded.cardElsewhere === true,
-			undefined,
+			call.repeat,
 			call.repeatElsewhere,
 		);
 	}

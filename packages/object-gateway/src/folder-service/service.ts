@@ -50,7 +50,15 @@ import {
 	PendingView,
 	PublishFirst,
 } from "./pending.ts";
-import { type BoundaryPlan, type CommitUnit, planBoundary, type SecretCheck, WAITS_FOR_UNCHECKED } from "./plan.ts";
+import {
+	type BoundaryPlan,
+	type CommitUnit,
+	type PlannedUnit,
+	planBoundary,
+	planCommitBatches,
+	type SecretCheck,
+	WAITS_FOR_UNCHECKED,
+} from "./plan.ts";
 import {
 	type BridgeInfo,
 	type ChunkPart,
@@ -79,6 +87,7 @@ import {
 } from "./protocol.ts";
 import { linearRegexAvailable, SearchPatternError } from "./regex.ts";
 import { type SearchAnswer, searchView } from "./search.ts";
+import { NativeSearchWorker, searchViewNative } from "./search-native.ts";
 import { CARRIES, SecretRefusal, type SecretSet, UNCHECKED } from "./secret-scan.ts";
 import { type FolderStaging, mediaTypeOf, type Upload } from "./staging.ts";
 import { nameOf, type TreeEntry, ViewTree } from "./view-tree.ts";
@@ -130,9 +139,13 @@ export interface FolderServiceOptions {
 	 * them small). */
 	readonly searchRunning?: number;
 	readonly searchPaths?: number;
+	readonly folderProgram?: string;
+	readonly searchIndexMiB?: number;
+	readonly searchThreads?: number;
 	readonly dataDoor?: DataDoor;
 	readonly dataCallMs?: number;
 	readonly dataApplyMs?: number;
+	readonly maxBoundaryBatches?: number;
 }
 
 /** More changed paths than this in one push, or a message too large for one frame: the machine is told to drop
@@ -164,6 +177,7 @@ const STAGING_PARALLEL = 8;
 const CHECK_WAIT_MS = 10_000;
 /** Reads in one release: the core's bound (core §6). */
 const RELEASE_READS = 10_000;
+const MAX_BOUNDARY_BATCHES = 100;
 /** The receipt of a read logged with none: it names no resource, so the core checks the path again and files the
  * receipt it reads now (`qorpera_folder_release_pairs`). */
 const NO_RECEIPT = {
@@ -197,6 +211,7 @@ const STOPPING = "The folder service is stopping; try again";
  * giving it a turn every 10 ms, so every other machine's request waits at most about 40 ms between them; at most
  * SEARCH_WAITING more wait their turn, each for at most SEARCH_WAIT_MS, in the order they came. */
 export const SEARCH_RUNNING = 4;
+export const SEARCH_RUNNING_NATIVE = 16;
 const SEARCH_WAITING = 32;
 const SEARCH_WAIT_MS = 20_000;
 /** Paths the trees of the node's run views (each searching run's) may hold in all: about 670 bytes a path, so about
@@ -258,7 +273,7 @@ interface ChunkUpload {
 	readonly sha256: string;
 	readonly bytes: number;
 	next: number;
-	readonly upload: Upload | undefined;
+	upload: Upload | undefined;
 }
 
 /** An intent that roots bytes of a file the view holds pending (C1D §3.5): a chunk's own, or the file's sealed one. It
@@ -766,6 +781,7 @@ export class FolderService {
 	readonly #running = new WeakMap<PendingFile, Running>();
 	readonly #searchRunning: number;
 	readonly #searchPaths: number;
+	readonly #searchWorker: NativeSearchWorker | undefined;
 	/** Search pages running now, and the turns of those waiting (SEARCH_RUNNING). */
 	#searching = 0;
 	/** Paths of the trees being listed for run views (a first listing, or a listing again while the old tree serves),
@@ -775,6 +791,7 @@ export class FolderService {
 	readonly #dataDoor: DataDoor | undefined;
 	readonly #dataCallMs: number;
 	readonly #dataApplyMs: number;
+	readonly #maxBoundaryBatches: number;
 	readonly #dataCalls = new Map<string, { running: number; began: number[] }>();
 
 	constructor(options: FolderServiceOptions) {
@@ -790,11 +807,22 @@ export class FolderService {
 		this.#log = options.log ?? ((line) => process.stderr.write(`${line}\n`));
 		this.#vouching = options.vouched !== undefined;
 		this.#vouched = new Set(options.vouched);
-		this.#searchRunning = options.searchRunning ?? SEARCH_RUNNING;
+		this.#searchWorker = options.folderProgram
+			? new NativeSearchWorker({
+					folderProgram: options.folderProgram,
+					storageRoot: options.objects.root,
+					...(options.searchIndexMiB === undefined ? {} : { indexMiB: options.searchIndexMiB }),
+					...(options.searchThreads === undefined ? {} : { threads: options.searchThreads }),
+					budgetWaitMs: SEARCH_WAIT_MS,
+					log: this.#log,
+				})
+			: undefined;
+		this.#searchRunning = options.searchRunning ?? (this.#searchWorker ? SEARCH_RUNNING_NATIVE : SEARCH_RUNNING);
 		this.#searchPaths = options.searchPaths ?? SEARCH_PATHS;
 		this.#dataDoor = options.dataDoor;
 		this.#dataCallMs = options.dataCallMs ?? DATA_CALL_MS;
 		this.#dataApplyMs = options.dataApplyMs ?? DATA_APPLY_MS;
+		this.#maxBoundaryBatches = Math.max(1, options.maxBoundaryBatches ?? MAX_BOUNDARY_BATCHES);
 	}
 
 	start(): void {
@@ -813,6 +841,7 @@ export class FolderService {
 		this.#timer = undefined;
 		this.#heartbeat = undefined;
 		this.#renewals = undefined;
+		this.#searchWorker?.close();
 	}
 
 	/** A boundary of a coding machine, which the executor asks over the control socket (F3 5c, the plan's "Boundaries"):
@@ -1168,7 +1197,8 @@ export class FolderService {
 				view.closed ||
 				view.moving ||
 				view.movedTo ||
-				!view.access?.testMachine ||
+				!(view.identity?.kind === "test_machine" || view.identity?.kind === "coding_session") ||
+				view.access?.machine === undefined ||
 				!view.access.admits(bridge) ||
 				view.environmentId !== grant.environmentId ||
 				!timingSafeEqual(view.passSha256, grant.passSha256)
@@ -1429,7 +1459,12 @@ export class FolderService {
 			read: async (request) => this.#read(view, request, links),
 			search: async (request) => this.#search(view, request, links),
 			...(view.identity?.kind === "run_box"
-				? { searchSupport: { version: SEARCH_VERSION, regex: linearRegexAvailable() } }
+				? {
+						searchSupport: {
+							version: SEARCH_VERSION,
+							regex: this.#searchWorker !== undefined || linearRegexAvailable(),
+						},
+					}
 				: {}),
 			subscribe: (sink) => {
 				if (released || view.closed || view.moving)
@@ -1533,7 +1568,11 @@ export class FolderService {
 					throw error;
 				});
 				view.handles.delete(handle);
-				for (const key of [...view.uploads.keys()]) if (key.startsWith(`${handle}:`)) view.uploads.delete(key);
+				for (const [key, upload] of view.uploads)
+					if (key.startsWith(`${handle}:`)) {
+						upload.upload?.abort();
+						view.uploads.delete(key);
+					}
 				const path = node.open === 0 ? this.#pathOfNode(view, node) : undefined;
 				// Staged as a boundary stages it, so a boundary meanwhile joins it rather than checking the bytes again. A
 				// coding view's close waits for its check as long as a boundary does at most: a large pack's goes on.
@@ -2417,19 +2456,32 @@ export class FolderService {
 		const start = tree.get(request.path);
 		if (!start || (!links && start.kind === "symlink")) throw new ProtocolError(ErrorCode.notFound, "No such path");
 		try {
-			const answer = await searchView(
-				{
-					tree,
-					links,
-					read: async (entry, offset, length) =>
-						this.#objects.read(await this.#profile(view, entry), entry, offset, length),
-					now: this.#now,
-					// The view closed or its lease lapsed while the page ran: the page stops (never one slice past it).
-					serving: () => void this.#tree(view),
-					log: this.#log,
-				},
-				request,
-			);
+			const answer = this.#searchWorker
+				? await searchViewNative(
+						this.#searchWorker,
+						{
+							tree,
+							links,
+							cachedProfile: () => this.#profiles.get(view.environmentId),
+							resolveProfile: (entry) => this.#profile(view, entry),
+							now: this.#now,
+							serving: () => void this.#tree(view),
+							log: this.#log,
+						},
+						request,
+					)
+				: await searchView(
+						{
+							tree,
+							links,
+							read: async (entry, offset, length) =>
+								this.#objects.read(await this.#profile(view, entry), entry, offset, length),
+							now: this.#now,
+							serving: () => void this.#tree(view),
+							log: this.#log,
+						},
+						request,
+					);
 			for (const read of answer.reads)
 				this.#served(view, {
 					path: read.path,
@@ -3055,21 +3107,30 @@ export class FolderService {
 					sha256: part.sha256,
 					bytes: part.bytes,
 					next: 0,
-					upload: intent.present
-						? undefined
-						: staging.upload(view.environmentId, view.actor, intent.intentId, part.sha256, part.bytes),
+					upload: undefined,
 				};
 				view.uploads.set(key, started);
-				if (!this.#profiles.has(view.environmentId))
-					this.#profiles.set(
+				let profileId = this.#profiles.get(view.environmentId);
+				if (!profileId) {
+					profileId = await this.#core.uploadProfile(
 						view.environmentId,
-						await this.#core.uploadProfile(
-							view.environmentId,
-							view.actor,
-							intent.intentId,
-							part.sha256,
-							part.bytes,
-						),
+						view.actor,
+						intent.intentId,
+						part.sha256,
+						part.bytes,
+					);
+					this.#profiles.set(view.environmentId, profileId);
+				}
+				if (view.uploads.get(key) !== started)
+					throw new ProtocolError(ErrorCode.badRequest, "Chunk parts out of order");
+				if (!intent.present)
+					started.upload = staging.upload(
+						view.environmentId,
+						view.actor,
+						intent.intentId,
+						part.sha256,
+						part.bytes,
+						profileId,
 					);
 			} catch (error) {
 				// A chunk that could not be started is no longer on its way: the request fails, the connection stays.
@@ -3475,8 +3536,7 @@ export class FolderService {
 
 	/** The path a node is shown at now. */
 	#pathOfNode(view: View, node: PendingFile): string | undefined {
-		for (const [path, n] of view.pending?.nodes() ?? []) if (n === node) return path;
-		return undefined;
+		return view.pending?.pathOf(node);
 	}
 
 	/** One boundary, after any running one (RUNTIME-FOLDER-WRITES.md, "A boundary"). `final`: a command's last. `quiet`:
@@ -3625,7 +3685,7 @@ export class FolderService {
 				this.#notice(view, unasked, { ...committed(answer), paths: settled });
 			}
 		}
-		const report = this.#notice(view, unasked, await this.#planned(view, pending, final, last, deadline));
+		const report = await this.#planned(view, pending, final, last, unasked, deadline);
 		return settled.length === 0 ? report : { ...report, paths: [...settled, ...report.paths] };
 	}
 
@@ -3635,6 +3695,7 @@ export class FolderService {
 		pending: PendingView,
 		final: boolean,
 		last: boolean,
+		unasked: boolean,
 		deadline = this.#checkDeadline(),
 	): Promise<Report> {
 		const entries: ReportEntry[] = [];
@@ -3672,24 +3733,28 @@ export class FolderService {
 		const machine = view.access?.machine;
 		const release = machine === undefined ? await this.#releaseReads(view) : await this.#releaseMachine(machine);
 		// Another view of the machine went while the release ran, with reads it never released.
-		if (view.unproven) return this.#unprovenReport(view, pending);
+		if (view.unproven) return this.#notice(view, unasked, this.#unprovenReport(view, pending));
 		if (release !== "released") {
 			view.heard = release === "unanswered" || mayLift(release) ? "open" : "refused";
-			return release === "unanswered"
-				? {
-						commitId: null,
-						seq: null,
-						paths: [
-							...entries,
-							...held(plan, () => ({ outcome: "not_applied", reason: "the save did not get through yet" })),
-						],
-					}
-				: {
-						commitId: null,
-						seq: null,
-						refused: release,
-						paths: [...entries, ...held(plan, () => ({ outcome: "refused", reason: release }))],
-					};
+			return this.#notice(
+				view,
+				unasked,
+				release === "unanswered"
+					? {
+							commitId: null,
+							seq: null,
+							paths: [
+								...entries,
+								...held(plan, () => ({ outcome: "not_applied", reason: "the save did not get through yet" })),
+							],
+						}
+					: {
+							commitId: null,
+							seq: null,
+							refused: release,
+							paths: [...entries, ...held(plan, () => ({ outcome: "refused", reason: release }))],
+						},
+			);
 		}
 		const dropped = plan.dropped.map(
 			(d): ReportEntry => ({ path: d.path, outcome: "not_applied", reason: d.reason }),
@@ -3705,6 +3770,9 @@ export class FolderService {
 			view.heard = "answered";
 			return { commitId: null, seq: null, paths: [...entries, ...dropped] };
 		}
+		const batches = final ? [] : planCommitBatches(plan.units);
+		if (batches.length > 1)
+			return await this.#commitBatches(view, pending, plan, batches, credited, entries, dropped, last, unasked);
 		const structured = await this.#structured(
 			view,
 			plan.units.map((u) => u.unit),
@@ -3738,7 +3806,8 @@ export class FolderService {
 			view.unanswered = { key, actor, units, plan, made, final };
 			return { commitId: null, seq: null, paths: [...entries, ...dropped, ...notYet(plan)] };
 		}
-		if (final && answer.commitId) return await this.#closedBy(view, plan, answer, [...entries, ...dropped]);
+		if (final && answer.commitId)
+			return this.#notice(view, unasked, await this.#closedBy(view, plan, answer, [...entries, ...dropped]));
 		// A final refused once a renewal had closed the view meanwhile did not close it.
 		if (final && view.closed) throw this.#closedOtherwise(view);
 		// A change set refused whole that holds is not settled: what it carried stays pending, and the report says why. A
@@ -3746,12 +3815,195 @@ export class FolderService {
 		// it; a desktop's refused by the pause or the run check, for a later boundary (F3 4c). Any other is let go.
 		if (answer.said === VIEW_ENDED) this.#close(view, VIEW_ENDED);
 		if (holds(view, answer, last))
-			return {
+			return this.#notice(view, unasked, {
 				...committed(answer),
 				paths: [...entries, ...held(plan, (i) => ({ outcome: "refused", reason: answer.units[i]?.reason }))],
-			};
+			});
 		entries.push(...dropped, ...(await this.#settle(view, plan, made, answer)));
-		return { ...committed(answer), paths: entries };
+		return this.#notice(view, unasked, { ...committed(answer), paths: entries });
+	}
+
+	async #commitBatches(
+		view: View,
+		pending: PendingView,
+		plan: BoundaryPlan,
+		batches: readonly (readonly PlannedUnit[])[],
+		credited: readonly (readonly string[] | undefined)[],
+		entries: ReportEntry[],
+		dropped: readonly ReportEntry[],
+		last: boolean,
+		unasked: boolean,
+	): Promise<Report> {
+		const baseKey = `folder-view:${view.key}:${randomUUID()}`;
+		const actor = view.actor;
+		const keptNodes = new Set<string>(plan.keep);
+		const runCount = Math.min(batches.length, this.#maxBoundaryBatches);
+		let lastCommitId: string | null = null;
+		let lastSeq: number | null = null;
+		let unitOffset = 0;
+
+		const remainingEntries = (fromIndex: number, outcome: ReportEntry["outcome"], reason: string): ReportEntry[] => {
+			const out: ReportEntry[] = [];
+			for (let j = fromIndex; j < batches.length; j++)
+				for (const planned of batches[j]!)
+					for (const path of planned.paths) out.push({ path, outcome, reason, kept: true });
+			return out;
+		};
+
+		for (let i = 0; i < runCount; i++) {
+			if (i > 0) {
+				if (view.closed) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
+				if (view.unproven) {
+					view.heard = "refused";
+					const laterRefused = remainingEntries(i, "refused", "unproven");
+					this.#notice(view, unasked, { commitId: null, seq: null, refused: "unproven", paths: laterRefused });
+					return {
+						commitId: null,
+						seq: null,
+						refused: "unproven",
+						paths: [...entries, ...laterRefused],
+					};
+				}
+			}
+
+			const batch = batches[i]!;
+			const offset = unitOffset;
+			unitOffset += batch.length;
+			const batchKey = i === 0 ? baseKey : `${baseKey}:b${i}`;
+
+			const batchKeep = new Set<string>(keptNodes);
+			const batchRemovals = new Set<string>(plan.removals);
+			for (let j = i + 1; j < batches.length; j++)
+				for (const planned of batches[j]!) {
+					const target = planned.unit.op === "delete" ? batchRemovals : batchKeep;
+					for (const path of planned.paths) target.add(path);
+				}
+			const batchPlan: BoundaryPlan = {
+				units: batch,
+				waiting: [],
+				dropped: i === 0 ? plan.dropped : [],
+				keep: batchKeep,
+				removals: batchRemovals,
+				refused: [],
+				gitHeld: plan.gitHeld,
+			};
+
+			const structured = await this.#structured(
+				view,
+				batch.map((u) => u.unit),
+			);
+			const units = structured.map((unit, j): CreditedUnit => {
+				const credits = credited[offset + j];
+				return credits ? { ...unit, credits } : unit;
+			});
+			const batchMade = new Map<string, string>();
+			for (const u of batch)
+				if (u.bytes)
+					for (const path of u.paths) {
+						const node = pending.nodes().get(path);
+						if (node?.kind === "file" || node?.kind === "symlink") batchMade.set(path, node.version);
+					}
+
+			const answer = await this.#commit(view, actor, batchKey, units, false);
+			view.heard = heardOf(answer);
+
+			if (!answer) {
+				view.unanswered = { key: batchKey, actor, units, plan: batchPlan, made: batchMade, final: false };
+				return {
+					commitId: null,
+					seq: null,
+					paths: [
+						...entries,
+						...(i === 0 ? dropped : []),
+						...notYet(batchPlan),
+						...remainingEntries(i + 1, "not_applied", "the save did not get through yet"),
+					],
+				};
+			}
+
+			if (answer.refused) {
+				if (answer.said === VIEW_ENDED) this.#close(view, VIEW_ENDED);
+				if (holds(view, answer, last)) {
+					const batchHeld = held(batchPlan, (idx) => ({ outcome: "refused", reason: answer.units[idx]?.reason }));
+					const laterRefused = remainingEntries(i + 1, "refused", answer.refused);
+					this.#notice(view, unasked, {
+						commitId: null,
+						seq: null,
+						refused: answer.refused,
+						paths: [...batchHeld, ...laterRefused],
+					});
+					return {
+						commitId: null,
+						seq: null,
+						refused: answer.refused,
+						paths: [...entries, ...batchHeld, ...laterRefused],
+					};
+				}
+				const remainingUnits = batches.slice(i).flat();
+				const remainingPlan: BoundaryPlan = {
+					units: remainingUnits,
+					waiting: [],
+					dropped: i === 0 ? plan.dropped : [],
+					keep: keptNodes,
+					removals: plan.removals,
+					refused: [],
+					gitHeld: plan.gitHeld,
+				};
+				const remainingAnswer: CommitAnswer = {
+					commitId: "",
+					seq: null,
+					units: remainingUnits.map((_, idx) => ({
+						unit: idx + 1,
+						outcome: "refused",
+						reason: answer.refused!,
+						version: null,
+					})),
+				};
+				const settledRefusal = await this.#settle(view, remainingPlan, new Map(), remainingAnswer);
+				const batchPaths = [...(i === 0 ? dropped : []), ...settledRefusal];
+				this.#notice(view, unasked, {
+					commitId: null,
+					seq: null,
+					refused: answer.refused,
+					paths: batchPaths,
+				});
+				entries.push(...batchPaths);
+				return { commitId: null, seq: null, refused: answer.refused, paths: entries };
+			}
+
+			const batchSettled = await this.#settle(view, batchPlan, batchMade, answer);
+			const batchPaths = [...(i === 0 ? dropped : []), ...batchSettled];
+			this.#notice(view, unasked, { ...committed(answer), paths: batchPaths });
+			entries.push(...batchPaths);
+			lastCommitId = answer.commitId || lastCommitId;
+			if (answer.seq !== null) lastSeq = answer.seq;
+			if (view.unsettled) {
+				const moreRemain = i + 1 < batches.length;
+				if (moreRemain) view.heard = "open";
+				return {
+					commitId: moreRemain ? null : lastCommitId,
+					seq: moreRemain ? null : lastSeq,
+					paths: [
+						...entries,
+						...remainingEntries(i + 1, "not_applied", "the last save has not come back through the feed yet"),
+					],
+				};
+			}
+			for (const entry of batchSettled) if (entry.kept) keptNodes.add(entry.path);
+		}
+
+		if (runCount < batches.length) {
+			view.heard = "open";
+			entries.push(
+				...remainingEntries(
+					runCount,
+					"not_applied",
+					"the boundary split reached its batch limit; remaining changes stay pending",
+				),
+			);
+			return { commitId: null, seq: null, paths: entries };
+		}
+		return { commitId: lastCommitId, seq: lastSeq, paths: entries };
 	}
 
 	// ---- The read log (protocol 3, F3 4c; RUNTIME-FOLDER-COMPANY-MACHINES.md, "Reads") ----------------------------------
@@ -3984,27 +4236,30 @@ export class FolderService {
 					this.#log(`folder-service: ${view.key}: a file could not be staged: ${(error as Error).message}`);
 				},
 			);
-		// A few files at a time, each few after the last: each file's entry is there from now until its steps end.
-		let before: Promise<unknown> = Promise.resolve();
-		for (let i = 0; i < jobs.length; i += STAGING_PARALLEL) {
-			const start = before;
-			const these = jobs.slice(i, i + STAGING_PARALLEL).map((job) => {
-				const running: Running = {
-					version: job.node.version,
-					path: job.path,
-					secrets,
-					done: start
-						.then(() => Promise.all(job.steps.map(logged)))
-						.then(() => {
-							if (this.#running.get(job.node) === running) this.#running.delete(job.node);
-						}),
-				};
-				this.#running.set(job.node, running);
-				return running.done;
+		// WHY: register every job in #running synchronously before workers start so overlapping boundaries see CHECK_RUNNING.
+		const queued = jobs.map((job) => {
+			let finish!: () => void;
+			const done = new Promise<void>((resolve) => {
+				finish = resolve;
 			});
-			ends.push(...these);
-			before = Promise.all(these);
-		}
+			const running: Running = { version: job.node.version, path: job.path, secrets, done };
+			this.#running.set(job.node, running);
+			ends.push(done);
+			return { job, running, finish };
+		});
+		let next = 0;
+		const worker = async (): Promise<void> => {
+			while (next < queued.length) {
+				const item = queued[next++]!;
+				try {
+					await Promise.all(item.job.steps.map(logged));
+				} finally {
+					if (this.#running.get(item.job.node) === item.running) this.#running.delete(item.job.node);
+					item.finish();
+				}
+			}
+		};
+		for (let i = 0; i < Math.min(STAGING_PARALLEL, queued.length); i++) void worker();
 		const all = Promise.all(ends);
 		if (only.waitMs === undefined) {
 			await all;
@@ -4470,8 +4725,15 @@ export class FolderService {
 	async #profile(view: View, entry: TreeEntry): Promise<string> {
 		const known = this.#profiles.get(view.environmentId);
 		if (known) return known;
-		// One lookup at a time per company: a search's reads ahead all wait for the same one.
-		let pending = this.#profileLookups.get(view.environmentId);
+		const actorKey =
+			view.actor.kind === "view"
+				? `view:${view.actor.viewId}`
+				: view.actor.kind === "member"
+					? `member:${view.actor.userId}`
+					: "platform";
+		// WHY: Key in-flight lookup by environment + actor so one revoked view cannot poison healthy views of the same company.
+		const lookupKey = `${view.environmentId}:${actorKey}`;
+		let pending = this.#profileLookups.get(lookupKey);
 		if (!pending) {
 			pending = this.#core
 				.objectProfile(view.environmentId, view.actor, entry.manifestSha256!)
@@ -4479,8 +4741,10 @@ export class FolderService {
 					this.#profiles.set(view.environmentId, profileId);
 					return profileId;
 				})
-				.finally(() => this.#profileLookups.delete(view.environmentId));
-			this.#profileLookups.set(view.environmentId, pending);
+				.finally(() => {
+					if (this.#profileLookups.get(lookupKey) === pending) this.#profileLookups.delete(lookupKey);
+				});
+			this.#profileLookups.set(lookupKey, pending);
 		}
 		return pending;
 	}

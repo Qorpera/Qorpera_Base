@@ -82,6 +82,14 @@ export type MemberNotificationSubject =
 			invoiceUrl: string | null;
 			/** The card is this member's. */
 			mine: boolean;
+	  }
+	| {
+			schema: "qorpera.member-notification.gemini-cap-reached/v1";
+			month: string;
+			spendMicrodollars: number;
+			monthlyCapCents: number;
+			runId: string;
+			sessionId: string | null;
 	  };
 export interface MemberNotification {
 	notificationId: string;
@@ -93,7 +101,8 @@ export interface MemberNotification {
 		| "run_no_progress"
 		| "routine_payer_changed"
 		| "interface_supervision_ended"
-		| "good_will_card_failed";
+		| "good_will_card_failed"
+		| "gemini_cap_reached";
 	createdAt: string;
 	acknowledgedAt: string | null;
 	subject: MemberNotificationSubject;
@@ -280,6 +289,16 @@ function notification(value: unknown, profileId: string): MemberNotification {
 			dueOre: integer(s.dueOre),
 			invoiceUrl,
 			mine: s.mine,
+		};
+	} else if (kind === "gemini_cap_reached" && s.schema === "qorpera.member-notification.gemini-cap-reached/v1") {
+		if (typeof s.month !== "string" || !/^\d{4}-(0[1-9]|1[0-2])$/.test(s.month)) throw invalid();
+		subject = {
+			schema: s.schema,
+			month: s.month,
+			spendMicrodollars: integer(s.spendMicrodollars),
+			monthlyCapCents: integer(s.monthlyCapCents, 100),
+			runId: uuid(s.runId),
+			sessionId: s.sessionId === null ? null : uuid(s.sessionId),
 		};
 	} else throw invalid();
 	return {

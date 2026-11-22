@@ -223,6 +223,48 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Warmer, clearer conversations and sharper workers",
 		text: "Your team's platform instructions have been updated for warmer, more natural conversations with founders: match the moment (talk like a colleague when exploring, lead with outcomes for updates and decisions), avoid internal jargon, and use all twelve app kits accurately. Write workers running on Claude Code also now receive the company's quality, visual-check, and plain-language standards directly. Review your team's job descriptions and routines only if any carry old robotic reporting templates or outdated kit lists.",
 	},
+	{
+		id: "gemini-4-neon-conversations",
+		kind: "model",
+		date: "2026-11-21",
+		title: "Gemini 4 Neon in conversations",
+		text: "A member who adds a Gemini API key in Settings, AI subscriptions can pick Gemini 4 Neon in a conversation's Model menu (with Low, Medium, High and Extra high effort) or set it as their default for chats. Your attended conversation turns run directly on Gemini 4 Neon with your company files, machines, workers, apps, routines and search, while background workers, routines and coding sessions stay on Codex or Claude Code. Members can set a monthly USD spend cap; reaching it pauses Gemini turns and notifies them rather than switching logins.",
+	},
+	{
+		id: "data-in-coding-sessions",
+		kind: "capability",
+		date: "2026-11-21",
+		title: "Company databases in coding sessions",
+		text: "A coding session can now reach the company's databases with the command data: data describe, data query (a named question, or --sql with one select), data change (a named change) and data apply, each printing JSON with no database credentials on disk. It acts as the session's own company folder (what both the coding agent and the member may read under /company/data/), with :viewer set to that member unless a call gives viewer=<member id>, and records every read into the session's provenance. A held destructive step still waits for a member's yes through data_apply.",
+	},
+	{
+		id: "parallel-code-checks",
+		kind: "capability",
+		date: "2026-11-21",
+		title: "Repository checks can run side by side",
+		text: "A repository's checks can now run in parallel instead of one after another: when any check lists needs (the names of checks that must pass before it starts), Qorpera runs up to four ready checks at once and stops siblings right away if one fails. For example, install can run first, then lint, typecheck and tests side by side, and build once they pass. Existing check lists without needs stay sequential as before. Ask coding sessions to declare needs on repositories with slow check suites so changes land faster.",
+	},
+	{
+		id: "code-status-and-preflight-checks",
+		kind: "capability",
+		date: "2026-11-21",
+		title: "Repository status and pre-flight checks",
+		text: "Before dispatching parallel coding sessions on a Qorpera repository, call manage_code with action status to inspect its live state in one step: active or blocked coding sessions across the team, active worktrees, recent landed changes, and its checks setup. Inside coding sessions, agents can also run the repository checks pre-flight before handing in, receiving structured pass or fail results per check without landing unfinished work.",
+	},
+	{
+		id: "search-regex",
+		kind: "capability",
+		date: "2026-11-21",
+		title: "Regular expressions in company search",
+		text: "company_search now supports regular expression patterns (set regex to true) across text files and file names, backed by a linear-time search engine and content-addressed trigram index on each node. Use patterns for alternation, character classes, line anchors and word boundaries instead of repeating literal searches, and keep combining them with glob filters, surrounding context lines and file-count summaries.",
+	},
+	{
+		id: "coding-visual-screenshot-inspection",
+		kind: "capability",
+		date: "2026-11-21",
+		title: "Visual screenshot inspection in coding sessions",
+		text: "Coding sessions can now visually inspect screenshots of web interfaces they build before handing work in. Inside a coding session, the agent can start a local dev or preview server, capture PNG, JPEG, or WebP screenshots with headless Chromium or Playwright across desktop and mobile viewports, and view the rendered images directly in its context to catch layout, styling, and responsive bugs before committing. Ask for visual verification when dispatching coding work on websites or UI changes.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

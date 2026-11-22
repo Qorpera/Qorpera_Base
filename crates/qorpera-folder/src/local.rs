@@ -628,6 +628,7 @@ pub struct Local {
 	/// The `.gitignore` files read for the caches in worktrees (`ignore.rs`), by their paths: the version each was read
 	/// at, and its patterns.
 	pub ignores: Mutex<HashMap<String, (String, Arc<Patterns>)>>,
+	pub git_gen: AtomicU64,
 	owner: (u32, u32),
 	/// The folders of the git files and of the caches, held open as places to find what is in them (`folder`).
 	areas: (File, File),
@@ -809,6 +810,7 @@ impl Local {
 			moving: Mutex::new(HashMap::new()),
 			folders: Mutex::new(0),
 			ignores: Mutex::new(HashMap::new()),
+			git_gen: AtomicU64::new(0),
 			owner,
 			areas: (git, cache),
 			devs,

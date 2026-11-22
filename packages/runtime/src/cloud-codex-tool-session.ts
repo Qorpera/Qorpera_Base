@@ -363,9 +363,15 @@ function abortableDigest(value: Promise<string>, signal: AbortSignal): Promise<s
 	return Promise.race([value, aborted]).finally(() => signal.removeEventListener("abort", onAbort));
 }
 
+const ARTIFACT_HASH_HIGH_WATER_MARK = 1024 * 1024;
+
 async function hashArtifact(path: string, signal?: AbortSignal): Promise<string> {
 	const hash = createHash("sha256");
-	for await (const chunk of createReadStream(path, signal ? { signal } : {})) hash.update(chunk);
+	for await (const chunk of createReadStream(path, {
+		highWaterMark: ARTIFACT_HASH_HIGH_WATER_MARK,
+		...(signal ? { signal } : {}),
+	}))
+		hash.update(chunk);
 	return hash.digest("hex");
 }
 
@@ -1329,20 +1335,34 @@ class CodexBoundaryRpc {
 		};
 		signal.addEventListener("abort", abort, { once: true });
 		try {
-			const turn = object(
-				await this.request(
-					"turn/start",
-					{
-						threadId,
-						input: [{ type: "text", text: input.prompt, text_elements: [] }],
-						effort: input.effort,
-						environments: [],
-						runtimeWorkspaceRoots: [],
-						sandboxPolicy: { type: "readOnly", networkAccess: false },
-					},
-					`side-turn:${threadId}`,
-				),
+			if (signal.aborted) {
+				abort();
+				throw new Error("Native review cancelled");
+			}
+			const starting = this.request(
+				"turn/start",
+				{
+					threadId,
+					input: [{ type: "text", text: input.prompt, text_elements: [] }],
+					effort: input.effort,
+					environments: [],
+					runtimeWorkspaceRoots: [],
+					sandboxPolicy: { type: "readOnly", networkAccess: false },
+				},
+				`side-turn:${threadId}`,
 			);
+			void starting.then(
+				(value) => {
+					const tid = (value as { turn?: { id?: unknown } } | null)?.turn?.id;
+					if (review.turnId === undefined && typeof tid === "string" && /^[A-Za-z0-9_:.-]{1,160}$/.test(tid)) {
+						review.turnId = tid;
+						if (this.#reviews.get(threadId) !== review)
+							void this.request("turn/interrupt", { threadId, turnId: tid }).catch(() => undefined);
+					}
+				},
+				() => undefined,
+			);
+			const turn = object(await untilAborted(starting, signal, "Native review cancelled"));
 			const turnId = identifier(object(turn.turn).id);
 			if (review.turnId !== undefined && review.turnId !== turnId) throw new Error("Native review binding failed");
 			review.turnId = turnId;
@@ -1533,20 +1553,36 @@ class CodexBoundaryRpc {
 		};
 		signal.addEventListener("abort", abort, { once: true });
 		try {
-			const started = object(
-				await this.request(
-					"turn/start",
-					{
-						threadId: thread.threadId,
-						input: [{ type: "text", text, text_elements: [] }],
-						effort,
-						environments: [],
-						runtimeWorkspaceRoots: [],
-						sandboxPolicy: { type: "readOnly", networkAccess: false },
-					},
-					`side-turn:${thread.threadId}`,
-				),
+			if (signal.aborted) {
+				abort();
+				throw new Error("Native compaction cancelled");
+			}
+			const starting = this.request(
+				"turn/start",
+				{
+					threadId: thread.threadId,
+					input: [{ type: "text", text, text_elements: [] }],
+					effort,
+					environments: [],
+					runtimeWorkspaceRoots: [],
+					sandboxPolicy: { type: "readOnly", networkAccess: false },
+				},
+				`side-turn:${thread.threadId}`,
 			);
+			void starting.then(
+				(value) => {
+					const tid = (value as { turn?: { id?: unknown } } | null)?.turn?.id;
+					if (turn.id === undefined && typeof tid === "string" && /^[A-Za-z0-9_:.-]{1,160}$/.test(tid)) {
+						turn.id = tid;
+						if (thread.turn !== turn)
+							void this.request("turn/interrupt", { threadId: thread.threadId, turnId: tid }).catch(
+								() => undefined,
+							);
+					}
+				},
+				() => undefined,
+			);
+			const started = object(await untilAborted(starting, signal, "Native compaction cancelled"));
 			const turnId = identifier(object(started.turn).id);
 			if (thread.turn !== turn) {
 				// Ended before its id was known: interrupt it now.

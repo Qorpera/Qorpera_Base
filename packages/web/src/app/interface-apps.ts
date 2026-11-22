@@ -11,7 +11,11 @@ import {
 	CLOUD_MEMBER_DATA_QUESTION,
 	CLOUD_MEMBER_DATA_WATCHES,
 	type CloudMemberDataAnswer,
+	type CloudMemberDataChanged,
+	type CloudMemberDataChangePreview,
+	type CloudMemberDataChangeRequest,
 	CloudMemberDataError,
+	type CloudMemberDataParamValue,
 	type CloudMemberDataQuestion,
 	type CloudMemberDataWatch,
 	type CloudMemberDataWatchAnswer,
@@ -30,6 +34,7 @@ import {
 	APP_MANIFEST_MAX_BYTES,
 	APP_NUMBERS_DATABASE,
 	APP_WRITE_ANSWERS,
+	APP_WRITE_DATA,
 	APPS_FOLDER,
 	type AppManifest,
 	type AppProblem,
@@ -57,7 +62,9 @@ import {
 	appQuestions,
 	noteKept,
 	type PreparedAsk,
+	type PreparedDataAsk,
 	prepareAnswer,
+	prepareDataChange,
 	prepareRow,
 	prepareTell,
 	restoreTell,
@@ -891,12 +898,13 @@ const CALL_COST: Readonly<Record<string, number>> = {
 	answer: REQUEST_COST,
 	setRow: REQUEST_COST,
 	addRow: REQUEST_COST,
+	act: REQUEST_COST,
 	tell: REQUEST_COST,
 };
-/** A question's parameters: at most this many, each value at most this long. */
-const MAX_DATA_PARAMS = 16;
-const MAX_DATA_VALUE_CHARS = 1024;
-const DATA_PARAM = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+const MAX_DATA_PARAMS = 64;
+const MAX_DATA_PARAM_BYTES = 64 * 1024;
+const MAX_DATA_CALL_PARAMS_CHARS = MAX_DATA_PARAM_BYTES + 4096;
+const DATA_PARAM = /^[a-z_][a-z0-9_]{0,39}$/;
 const NO_DATA_READ = 'Add "data" to reads in app.toml to ask the company\'s databases';
 /** A question of the platform's numbers that is not one, in the cloud's own words for it. */
 const noNumbersQuestion = (question: string) => `No question ${APP_NUMBERS_DATABASE}/${question} that you may read`;
@@ -921,11 +929,61 @@ const told = new Map<string, number>();
 function budget(key: string): { inFlight: number; minute: number; calls: number } {
 	const now = Math.floor(Date.now() / 60_000);
 	let entry = budgets.get(key);
-	if (!entry || entry.minute !== now) {
-		entry = { inFlight: entry?.inFlight ?? 0, minute: now, calls: 0 };
+	if (!entry) {
+		entry = { inFlight: 0, minute: now, calls: 0 };
 		budgets.set(key, entry);
+	} else if (entry.minute !== now) {
+		entry.minute = now;
+		entry.calls = 0;
 	}
 	return entry;
+}
+
+function withinParamBudget(
+	value: unknown,
+	maxChars: number,
+	state: { nodes: number; chars: number; seen: Set<object> },
+	depth = 0,
+): boolean {
+	if (depth > 16 || ++state.nodes > 4_096) return false;
+	if (value === null || value === undefined) {
+		state.chars += 4;
+		return state.chars <= maxChars;
+	}
+	const kind = typeof value;
+	if (kind === "boolean") {
+		state.chars += 5;
+		return state.chars <= maxChars;
+	}
+	if (kind === "number") {
+		state.chars += Number.isFinite(value) ? String(value).length : 4;
+		return state.chars <= maxChars;
+	}
+	if (kind === "string") {
+		state.chars += (value as string).length + 2;
+		return state.chars <= maxChars;
+	}
+	if (kind !== "object") return false;
+	const obj = value as object;
+	if (state.seen.has(obj)) return false;
+	state.seen.add(obj);
+	if (Array.isArray(obj)) {
+		state.chars += 2;
+		for (let i = 0; i < obj.length; i++) {
+			if (!withinParamBudget(obj[i], maxChars, state, depth + 1)) return false;
+			state.chars += 1;
+		}
+		return state.chars <= maxChars;
+	}
+	const proto = Object.getPrototypeOf(obj);
+	if (proto !== Object.prototype && proto !== null) return false;
+	state.chars += 2;
+	for (const [k, v] of Object.entries(obj)) {
+		state.chars += k.length + 4;
+		if (state.chars > maxChars) return false;
+		if (!withinParamBudget(v, maxChars, state, depth + 1)) return false;
+	}
+	return state.chars <= maxChars;
 }
 
 const refuse = (error: string): AppAnswer => ({ ok: false, error });
@@ -976,6 +1034,7 @@ export class AppBridge {
 	readonly #follow: ((link: AppLink) => void) | undefined;
 	readonly #page: (() => AppDataPage | undefined) | undefined;
 	#files: PageFiles | undefined;
+	#preparing = false;
 
 	/** `gate`: where a request for a change is put to the member; without one the app only reads. `follow` opens a
 	 * link the member clicked in the page, once it is checked; without it no link opens. `page`: the page the calls come
@@ -1005,12 +1064,24 @@ export class AppBridge {
 	async answer(call: AppCall): Promise<AppAnswer> {
 		// A call is a method and a few short values (a row's cells may be longer): anything larger is no call this bridge
 		// takes.
-		const row = call.method === "setRow" || call.method === "addRow";
+		const maxParams =
+			call.method === "query" || call.method === "watch" || call.method === "act"
+				? MAX_DATA_CALL_PARAMS_CHARS
+				: call.method === "setRow" || call.method === "addRow"
+					? MAX_ROW_PARAMS_CHARS
+					: MAX_PARAMS_CHARS;
 		if (
 			call.method.length > 32 ||
-			JSON.stringify(call.params).length > (row ? MAX_ROW_PARAMS_CHARS : MAX_PARAMS_CHARS)
+			!withinParamBudget(call.params, maxParams, { nodes: 0, chars: 0, seen: new Set() })
 		)
 			return refuse("Not a call the app answers");
+		let serializedParams: string;
+		try {
+			serializedParams = JSON.stringify(call.params);
+		} catch {
+			return refuse("Not a call the app answers");
+		}
+		if (serializedParams.length > maxParams) return refuse("Not a call the app answers");
 		// Ending a watch goes first, outside the budget and the calls in flight: it only takes work away, and a refused
 		// one would keep the watch's place taken until the page reloads, since the page's stop runs once.
 		if (call.method === "unwatch") return this.#unwatch(call);
@@ -1123,6 +1194,8 @@ export class AppBridge {
 			case "addRow":
 			case "tell":
 				return this.#change(call);
+			case "act":
+				return this.#act(call);
 			case "query":
 			case "watch":
 				return this.#data(call);
@@ -1179,26 +1252,63 @@ export class AppBridge {
 			prepare = () => prepareRow(writer(), call.method === "addRow", call.params, this.#signal, current);
 		}
 		// One request at a time: while one waits for the member, another is refused before anything is read.
+		if (this.#preparing) return refuse(GATE_SAYS.busy);
 		const closed = gate.closed();
 		if (closed) return refuse(GATE_SAYS[closed]);
-		let prepared: PreparedAsk;
+		this.#preparing = true;
 		try {
-			prepared = await prepare();
-		} catch (error) {
-			if (error instanceof AppActionRefused) return refuse(error.message);
-			throw error;
+			let prepared: PreparedAsk;
+			try {
+				prepared = await prepare();
+			} catch (error) {
+				if (error instanceof AppActionRefused) return refuse(error.message);
+				throw error;
+			}
+			const result = await gate.ask(
+				prepared.ask,
+				call.method === "tell" ? this.#told(prepared.perform) : prepared.perform,
+				prepared.keep,
+			);
+			if ("message" in result) return refuse(result.message);
+			if (result.outcome === "told")
+				return { ok: true, value: result.sent ? { sent: true } : { sent: false, waiting: true } };
+			if (result.outcome === "saved") return { ok: true, value: { saved: true } };
+			// Only a web page's request is opened; a change never is.
+			return refuse(result.outcome === "opened" ? "Not a change" : GATE_SAYS[result.outcome]);
+		} finally {
+			this.#preparing = false;
 		}
-		const result = await gate.ask(
-			prepared.ask,
-			call.method === "tell" ? this.#told(prepared.perform) : prepared.perform,
-			prepared.keep,
-		);
-		if ("message" in result) return refuse(result.message);
-		if (result.outcome === "told")
-			return { ok: true, value: result.sent ? { sent: true } : { sent: false, waiting: true } };
-		if (result.outcome === "saved") return { ok: true, value: { saved: true } };
-		// Only a web page's request is opened; a change never is.
-		return refuse(result.outcome === "opened" ? "Not a change" : GATE_SAYS[result.outcome]);
+	}
+
+	async #act(call: AppCall): Promise<AppAnswer> {
+		const asked = appDataChange(call.params);
+		if (typeof asked === "string") return refuse(asked);
+		const required = `${APP_WRITE_DATA}${asked.database}/${asked.change}`;
+		if (!this.#app.manifest.writes.includes(required as AppManifest["writes"][number]))
+			return refuse(`Add "${required}" to writes in app.toml to run ${asked.database}/${asked.change}`);
+		const gate = this.#gate;
+		const data = this.#host.data;
+		if (!gate?.askData || !data) return refuse("Database changes can't be run from this page");
+		if (this.#preparing) return refuse(GATE_SAYS.busy);
+		const closed = gate.closed();
+		if (closed) return refuse(GATE_SAYS[closed]);
+		this.#preparing = true;
+		try {
+			let prepared: PreparedDataAsk;
+			try {
+				prepared = await prepareDataChange(data, asked, this.#signal);
+			} catch (error) {
+				if (error instanceof AppActionRefused || error instanceof CloudMemberDataError)
+					return refuse(error.message);
+				return refuse(error instanceof Error ? error.message : "Database change preview failed");
+			}
+			const result = await gate.askData(prepared.ask, prepared.perform);
+			if ("message" in result) return refuse(result.message);
+			if (result.outcome !== "saved") return refuse(GATE_SAYS[result.outcome]);
+			return { ok: true, value: fittedChangeResult(result.result) };
+		} finally {
+			this.#preparing = false;
+		}
 	}
 
 	/** A web page the member clicked a link to (Jonas, 13 November 2026: "Show the address first"): put on the bar, its
@@ -1344,6 +1454,25 @@ export class AppDataRefused extends Error {}
 /** A page's question, checked: `name` is `<database>/<question>`, `params` at most 16 named short values (text, a
  * finite number, true, false or null), never `viewer`, which the gateway fills with the member looking. Otherwise the
  * words of the refusal. */
+function isDataParamValue(
+	value: unknown,
+	state: { nodes: number; seen: Set<object> } = { nodes: 0, seen: new Set() },
+	depth = 0,
+): value is CloudMemberDataParamValue {
+	if (depth > 16 || ++state.nodes > 4_096) return false;
+	if (value === null || typeof value === "boolean" || typeof value === "string") return true;
+	if (typeof value === "number") return Number.isFinite(value);
+	if (typeof value === "object") {
+		if (state.seen.has(value)) return false;
+		state.seen.add(value);
+		if (Array.isArray(value)) return value.every((item) => isDataParamValue(item, state, depth + 1));
+		const proto = Object.getPrototypeOf(value);
+		if (proto !== Object.prototype && proto !== null) return false;
+		return Object.values(value).every((item) => isDataParamValue(item, state, depth + 1));
+	}
+	return false;
+}
+
 export function appDataQuestion(params: Record<string, unknown>): CloudMemberDataQuestion | string {
 	const name = params.name;
 	const parts = typeof name === "string" ? name.split("/") : [];
@@ -1353,25 +1482,79 @@ export function appDataQuestion(params: Record<string, unknown>): CloudMemberDat
 	const given = params.params ?? {};
 	if (typeof given !== "object" || given === null || Array.isArray(given))
 		return "A question's parameters are named values";
-	const values: [string, string | number | boolean | null][] = [];
+	const values: [string, CloudMemberDataParamValue][] = [];
 	const entries = Object.entries(given);
 	if (entries.length > MAX_DATA_PARAMS) return `A question takes at most ${MAX_DATA_PARAMS} parameters`;
 	for (const [key, value] of entries) {
 		if (key === "viewer") return ":viewer is filled by Qorpera with the member looking";
-		if (!DATA_PARAM.test(key)) return "A parameter's name is a letter, then letters, digits and _";
-		if (
-			!(
-				value === null ||
-				typeof value === "boolean" ||
-				(typeof value === "number" && Number.isFinite(value)) ||
-				(typeof value === "string" && value.length <= MAX_DATA_VALUE_CHARS)
-			)
-		)
-			return `:${key} is short text, a number, true, false or null`;
+		if (!DATA_PARAM.test(key)) return "A parameter's name is a-z, 0-9 and _";
+		if (!isDataParamValue(value)) return `:${key} must be a JSON value`;
 		values.push([key, value]);
 	}
-	// Own properties, each made as given: a parameter named `__proto__` or `constructor` stays a parameter.
-	return { database, question, params: Object.fromEntries(values) };
+	const built = Object.fromEntries(values);
+	if (UTF8.encode(JSON.stringify(built)).byteLength > MAX_DATA_PARAM_BYTES)
+		return "A question's parameters take at most 64 KiB together";
+	return { database, question, params: built };
+}
+
+export function appDataChange(params: Record<string, unknown>): CloudMemberDataChangeRequest | string {
+	const name = params.name;
+	const parts = typeof name === "string" ? name.split("/") : [];
+	const [database = "", change = ""] = parts;
+	if (
+		parts.length !== 2 ||
+		database === APP_NUMBERS_DATABASE ||
+		!CLOUD_MEMBER_DATA_DATABASE.test(database) ||
+		!CLOUD_MEMBER_DATA_QUESTION.test(change)
+	)
+		return "Name a change as <database>/<change>";
+	const given = params.params ?? {};
+	if (typeof given !== "object" || given === null || Array.isArray(given))
+		return "A change's parameters are named values";
+	const values: [string, CloudMemberDataParamValue][] = [];
+	const entries = Object.entries(given);
+	if (entries.length > MAX_DATA_PARAMS) return `A change takes at most ${MAX_DATA_PARAMS} parameters`;
+	for (const [key, value] of entries) {
+		if (key === "viewer") return ":viewer is filled by Qorpera with the member acting";
+		if (!DATA_PARAM.test(key)) return "A parameter's name is a-z, 0-9 and _";
+		if (!isDataParamValue(value)) return `:${key} must be a JSON value`;
+		values.push([key, value]);
+	}
+	const built = Object.fromEntries(values);
+	if (UTF8.encode(JSON.stringify(built)).byteLength > MAX_DATA_PARAM_BYTES)
+		return "A change's parameters take at most 64 KiB together";
+	return { database, change, params: built };
+}
+
+export interface PageDataChangeResult {
+	readonly changed?: number;
+	readonly columns?: string[];
+	readonly rows?: Record<string, unknown>[];
+	readonly more?: boolean;
+	readonly asOf: string;
+}
+
+export function fittedChangeResult(changed: CloudMemberDataChanged): PageDataChangeResult {
+	const base: PageDataChangeResult = {
+		...(changed.changed === undefined ? {} : { changed: changed.changed }),
+		asOf: changed.asOf,
+	};
+	if (changed.columns === undefined || changed.rows === undefined) return base;
+	const columns = [...changed.columns];
+	const rows = changed.rows.map((row) => Object.fromEntries(columns.map((column, index) => [column, row[index]])));
+	const full: PageDataChangeResult = { ...base, columns, rows, more: changed.more ?? false };
+	if (UTF8.encode(JSON.stringify(full)).byteLength <= DATA_ANSWER_BYTES) return full;
+	const kept: Record<string, unknown>[] = [];
+	const shellBytes = UTF8.encode(JSON.stringify({ ...base, columns, rows: [], more: true })).byteLength;
+	if (shellBytes > DATA_ANSWER_BYTES) return { ...base, more: true };
+	let bytes = shellBytes;
+	for (const row of rows) {
+		const rowBytes = UTF8.encode(JSON.stringify(row)).byteLength + (kept.length > 0 ? 1 : 0);
+		if (bytes + rowBytes > DATA_ANSWER_BYTES) break;
+		kept.push(row);
+		bytes += rowBytes;
+	}
+	return { ...base, columns, rows: kept, more: true };
 }
 
 /** An answer as a page gets it, rows as objects by column name as `table` gives them: `{ columns, rows, more, asOf }`.
@@ -1428,6 +1611,8 @@ export interface CompanyLiveSource {
 export interface CompanyDataClient {
 	query(asked: CloudMemberDataQuestion, signal: AbortSignal): Promise<CloudMemberDataAnswer>;
 	watch(watches: readonly CloudMemberDataWatch[], signal: AbortSignal): Promise<CloudMemberDataWatchAnswer>;
+	previewChange?(asked: CloudMemberDataChangeRequest, signal: AbortSignal): Promise<CloudMemberDataChangePreview>;
+	change?(asked: CloudMemberDataChangeRequest, signal: AbortSignal): Promise<CloudMemberDataChanged>;
 }
 
 /** Watches one page holds, at most. */
@@ -1513,6 +1698,27 @@ export class CompanyData implements CompanyLiveSource {
 		const answer = await this.#client().query(asked, AbortSignal.any([signal, this.#signal]));
 		this.#current();
 		return answer;
+	}
+
+	async previewChange(
+		asked: CloudMemberDataChangeRequest,
+		signal: AbortSignal,
+	): Promise<CloudMemberDataChangePreview> {
+		this.#current();
+		const client = this.#client();
+		if (!client.previewChange) throw new CloudMemberDataError("Database changes are not available here");
+		const preview = await client.previewChange(asked, AbortSignal.any([signal, this.#signal]));
+		this.#current();
+		return preview;
+	}
+
+	async change(asked: CloudMemberDataChangeRequest, signal: AbortSignal): Promise<CloudMemberDataChanged> {
+		this.#current();
+		const client = this.#client();
+		if (!client.change) throw new CloudMemberDataError("Database changes are not available here");
+		const result = await client.change(asked, AbortSignal.any([signal, this.#signal]));
+		this.#current();
+		return result;
 	}
 
 	/** Starts a watch for the page whose lifetime `page` is: its first answer and its id. Later answers that differ go
@@ -2092,37 +2298,58 @@ export class CompanyApps {
 		return () => this.#listeners.delete(listener);
 	}
 
+	#reading: Promise<readonly CompanyApp[]> | undefined;
+	#readAgain = false;
+
 	/** Reads the apps now, and publishes them when they changed. */
 	async read(): Promise<readonly CompanyApp[]> {
 		if (this.#stop.signal.aborted) return this.#last;
-		try {
-			const folder = this.#source.folder();
-			const [apps, groups] = await Promise.all([
-				readApps(folder, this.#stop.signal),
-				this.#publishGroups ? readAppGroups(folder, this.#stop.signal).catch(() => null) : null,
-			]);
-			// A failed read of the groups keeps what was read before.
-			if (groups !== null) {
-				const shownGroups = JSON.stringify(groups ?? null);
-				if (shownGroups !== this.#shownGroups && !this.#stop.signal.aborted) {
-					this.#shownGroups = shownGroups;
-					this.#publishGroups?.(groups);
-				}
-			}
-			const shown = JSON.stringify(apps);
-			this.#last = apps;
-			if (shown !== this.#shown && !this.#stop.signal.aborted) {
-				this.#shown = shown;
-				this.#publish(apps);
-				this.#warm();
-			}
-			// After every read that worked, whatever woke it (a hint, the minute's clock, the tab coming back): what reads
-			// beside the apps (their icons) reads again too, as a change of those changes no manifest.
-			if (!this.#stop.signal.aborted) for (const reader of [...this.#readers]) reader();
-		} catch {
-			/* What was read before stands. */
+		if (this.#reading) {
+			this.#readAgain = true;
+			return this.#reading;
 		}
-		return this.#last;
+		let settled = false;
+		let run: Promise<readonly CompanyApp[]> | undefined;
+		run = (async (): Promise<readonly CompanyApp[]> => {
+			try {
+				do {
+					this.#readAgain = false;
+					try {
+						const folder = this.#source.folder();
+						const [apps, groups] = await Promise.all([
+							readApps(folder, this.#stop.signal),
+							this.#publishGroups ? readAppGroups(folder, this.#stop.signal).catch(() => null) : null,
+						]);
+						// A failed read of the groups keeps what was read before.
+						if (groups !== null) {
+							const shownGroups = JSON.stringify(groups ?? null);
+							if (shownGroups !== this.#shownGroups && !this.#stop.signal.aborted) {
+								this.#shownGroups = shownGroups;
+								this.#publishGroups?.(groups);
+							}
+						}
+						const shown = JSON.stringify(apps);
+						this.#last = apps;
+						if (shown !== this.#shown && !this.#stop.signal.aborted) {
+							this.#shown = shown;
+							this.#publish(apps);
+							this.#warm();
+						}
+						// After every read that worked, whatever woke it (a hint, the minute's clock, the tab coming back): what reads
+						// beside the apps (their icons) reads again too, as a change of those changes no manifest.
+						if (!this.#stop.signal.aborted) for (const reader of [...this.#readers]) reader();
+					} catch {
+						/* What was read before stands. */
+					}
+				} while (this.#readAgain && !this.#stop.signal.aborted);
+				return this.#last;
+			} finally {
+				settled = true;
+				if (this.#reading === run) this.#reading = undefined;
+			}
+		})();
+		if (!settled) this.#reading = run;
+		return run;
 	}
 
 	/** Reads the apps' pages ahead (`warmApps`), a moment after they changed, so the company's own first reads go

@@ -17,6 +17,7 @@ const MAX_PIECES = 64;
 export const MEMBER_PROGRAM_MAX_BYTES = PIECE_BYTES * MAX_PIECES;
 const MAX_REQUEST_BYTES = 16 * 1024;
 const HELD_AHEAD = 4;
+const MAX_ACTIVE_UPLOADS = 64;
 const IDLE_MS = 60_000;
 const RENEW_MS = 10 * 60_000;
 const ALIVE_MS = 13 * 60_000;
@@ -77,6 +78,12 @@ function drop(userId: string): void {
 
 function sweep(now: number): void {
 	for (const [user, upload] of uploads) if (now - upload.touched > IDLE_MS) drop(user);
+}
+
+function activeUploads(): number {
+	let count = 0;
+	for (const upload of uploads.values()) if (!upload.finished) count++;
+	return count;
 }
 
 export function forgetMemberProgramUploads(): void {
@@ -256,6 +263,10 @@ async function open(
 		send(response, 429, { error: "Another file of this member is going up" });
 		return;
 	}
+	if (activeUploads() >= MAX_ACTIVE_UPLOADS) {
+		send(response, 429, { error: "Too many uploads are going up" });
+		return;
+	}
 	const opened = schema(await publish("qorpera_folder_open_upload", { p_manifest: text }), "qorpera.folder-upload/v1");
 	if (
 		typeof opened.intentId !== "string" ||
@@ -288,6 +299,10 @@ async function open(
 		await put(upload, manifestSha256, new TextEncoder().encode(text), publish, options);
 	if (uploads.has(userId)) {
 		send(response, 429, { error: "Another file of this member is going up" });
+		return;
+	}
+	if (activeUploads() >= MAX_ACTIVE_UPLOADS) {
+		send(response, 429, { error: "Too many uploads are going up" });
 		return;
 	}
 	uploads.set(userId, upload);
@@ -440,6 +455,10 @@ export async function serveMemberProgramUpload(
 	const operationKey = kind === "finish" ? finishKey(await json(request, observation)) : undefined;
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(new ObjectDependencyError(503)), REQUEST_MS);
+	const onClose = () => {
+		if (!response.writableEnded) controller.abort(new ObjectDependencyError(503));
+	};
+	response.once("close", onClose);
 	const signal = controller.signal;
 	try {
 		const member = memberFolderWriter(
@@ -513,5 +532,6 @@ export async function serveMemberProgramUpload(
 			});
 	} finally {
 		clearTimeout(timer);
+		response.off("close", onClose);
 	}
 }

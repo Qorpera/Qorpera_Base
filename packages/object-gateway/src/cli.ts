@@ -10,11 +10,12 @@ import { DigitalPostLetterWriter } from "./digital-post-files.ts";
 import { ObjectGatewayFolderGc } from "./folder-gc.ts";
 import { stopGateway } from "./gateway-stop.ts";
 import { ObjectGatewayJournal } from "./journal.ts";
+import { createSerialGate, startGatewayMaintenance } from "./maintenance.ts";
 import { SupabaseMemberCompanyAuthority } from "./member-company-authority.ts";
 import { MemberCompanyObservations } from "./member-observability.ts";
 import { MemoryMessageEraser } from "./memory-message-eraser.ts";
 import { migrateLegacyObjects } from "./migration.ts";
-import { FileSystemObjectStore } from "./object-store.ts";
+import { FileSystemObjectStore, resolveObjectStoreLanes } from "./object-store.ts";
 import { ObjectGatewayReplication } from "./replication.ts";
 import { createObjectGatewayHandler } from "./service.ts";
 import { SupabaseObjectAuthority } from "./supabase-authority.ts";
@@ -38,10 +39,16 @@ const authority = new SupabaseObjectAuthority({
 	publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
 	secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
 });
-const store = new FileSystemObjectStore(resolve(required(process.env, "QORPERA_OBJECT_GATEWAY_STORAGE_ROOT")));
+const store = new FileSystemObjectStore(
+	resolve(required(process.env, "QORPERA_OBJECT_GATEWAY_STORAGE_ROOT")),
+	undefined,
+	undefined,
+	resolveObjectStoreLanes(process.env),
+);
 const journal = new ObjectGatewayJournal(required(process.env, "QORPERA_OBJECT_GATEWAY_STATE_ROOT"));
-const replication = new ObjectGatewayReplication(journal, store, authority);
-const folderGc = new ObjectGatewayFolderGc(store, replication, authority);
+const maintenanceNasGate = createSerialGate();
+const replication = new ObjectGatewayReplication(journal, store, authority, undefined, maintenanceNasGate);
+const folderGc = new ObjectGatewayFolderGc(store, replication, authority, Date.now, maintenanceNasGate);
 const memberAuthority = new SupabaseMemberCompanyAuthority({
 	projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
 	publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
@@ -183,6 +190,9 @@ const handler = createObjectGatewayHandler({
 				},
 			}
 		: {}),
+	...(process.env.QORPERA_OBJECT_GATEWAY_INTERNAL_TOKEN
+		? { internalObjectToken: required(process.env, "QORPERA_OBJECT_GATEWAY_INTERNAL_TOKEN") }
+		: {}),
 });
 if (process.argv[2] === "migrate") {
 	const migrated = await migrateLegacyObjects(authority, store);
@@ -190,30 +200,19 @@ if (process.argv[2] === "migrate") {
 } else {
 	const host = process.env.QORPERA_OBJECT_GATEWAY_HOST?.trim() || "127.0.0.1";
 	const server = createServer({ requestTimeout: 15_000, headersTimeout: 10_000 }, handler);
-	let maintaining = false;
-	const maintain = async (): Promise<void> => {
-		if (maintaining) return;
-		maintaining = true;
-		try {
-			await Promise.all([
-				authority.probeHealth(),
-				// One after another, so the probe and the scan never take both NAS slots at once; folder GC's quarantine
-				// before the reconcile, so a replicate entry the scan writes finds its object back in place.
-				store
-					.probe()
-					.then(() => folderGc.recover())
-					.then(() => replication.reconcile()),
-			]);
-		} catch {
+	const maintenance = startGatewayMaintenance({
+		probeAuthority: () => authority.probeHealth(),
+		probeStore: () => store.probe(),
+		recoverGc: () => folderGc.recover(),
+		reconcile: () => replication.reconcile(),
+		nasGate: maintenanceNasGate,
+		onProbeError: () => {
+			process.stderr.write("Object gateway health probe requires operator attention\n");
+		},
+		onMaintainError: () => {
 			process.stderr.write("Object gateway maintenance requires operator attention\n");
-		} finally {
-			maintaining = false;
-		}
-	};
-	const maintenance = setInterval(() => {
-		void maintain();
-	}, 15_000);
-	void maintain();
+		},
+	});
 	// Stored objects' audit lines are in memory at most this long, however long a maintenance pass takes.
 	let writingLines = false;
 	const storedLineWrites = setInterval(() => {
@@ -333,7 +332,7 @@ if (process.argv[2] === "migrate") {
 
 	for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		process.on(signal, () => {
-			clearInterval(maintenance);
+			maintenance.stop();
 			clearInterval(storedLineWrites);
 			clearInterval(connectionFileWrites);
 			clearInterval(codingResultsWrites);

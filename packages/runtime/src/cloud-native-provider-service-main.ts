@@ -629,6 +629,16 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 						return { secretBroker: broker, companyAccounts: broker, eventHooks: broker, codingValues: broker };
 					})()
 				: {}),
+			...(secretBrokerOrigin && secretBrokerToken
+				? {
+						geminiKeys: {
+							origin: secretBrokerOrigin,
+							runtimeToken: secretBrokerToken,
+							companyId: state.companyId,
+							holder,
+						},
+					}
+				: {}),
 		});
 		// A vault login comes from this company's broker, under the same runtime token. A host that
 		// still holds a key serves a run whose login has just moved to the vault the same way.

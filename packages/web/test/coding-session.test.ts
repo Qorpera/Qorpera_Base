@@ -522,7 +522,7 @@ describe("the element in the thread", () => {
 		];
 		const { element, read } = mount(codingSession(), { events });
 		await settle();
-		expect(read).toHaveBeenCalledWith(WORKER, 0);
+		expect(read).toHaveBeenCalledWith(WORKER, 0, expect.any(AbortSignal));
 		expect(element.el.querySelector(".coding-intro .coding-title")?.textContent).toBe("Fix the delay after send");
 		expect(element.el.querySelector(".coding-meta")?.textContent).toBe(
 			`Qorpera_Base·qorpera/coding/1111…·claude-sonnet-5`,
@@ -1449,9 +1449,9 @@ describe("the element in the thread", () => {
 		// The cursor moves past the events it has seen.
 		state.events.push(event(1, "step", { text: "One" }, "executor"));
 		await vi.advanceTimersByTimeAsync(2_500);
-		expect(read).toHaveBeenLastCalledWith(WORKER, 0);
+		expect(read).toHaveBeenLastCalledWith(WORKER, 0, expect.any(AbortSignal));
 		await vi.advanceTimersByTimeAsync(2_500);
-		expect(read).toHaveBeenLastCalledWith(WORKER, 1);
+		expect(read).toHaveBeenLastCalledWith(WORKER, 1, expect.any(AbortSignal));
 		state.session = codingSession({
 			phase: "completed",
 			workerState: "succeeded",
@@ -1487,6 +1487,77 @@ describe("the element in the thread", () => {
 		expect(element.el.querySelector(".coding-status-text")?.textContent).toBe(
 			"Needs you · your answer is recorded in this thread",
 		);
+	});
+
+	it("aborts in-flight read signals on dispose, preserves DOM nodes on incremental appends, and retries login offers after transient failures", async () => {
+		let seenSignal: AbortSignal | undefined;
+		const session = codingSession({
+			phase: "awaiting_input",
+			workerState: "blocked",
+			loginState: "disabled",
+		});
+		const state = {
+			session,
+			events: [
+				event(1, "text", { text: "First analysis paragraph." }, "harness"),
+				event(2, "step", { text: "npm test", status: "passed" }, "executor"),
+			],
+		};
+		const read = vi.fn(
+			async (_workerId: string, afterEvent: number, _signal?: AbortSignal): Promise<CodingSessionRead> => ({
+				session: state.session,
+				isOwner: true,
+				events: state.events.filter((item) => item.id > afterEvent),
+			}),
+		);
+		const logins = vi
+			.fn<(_workerId: string) => Promise<CodingSessionLogins>>()
+			.mockRejectedValueOnce(new Error("transient"))
+			.mockResolvedValue({
+				current: { connectionId: id(31), state: "disabled" },
+				logins: [
+					{ connectionId: id(31), email: "one@example.test", current: true },
+					{ connectionId: id(32), email: "two@example.test", current: false },
+				],
+			});
+		const element = new CodingSessionElement(session, {
+			names: () => owner,
+			viewerOwns: () => true,
+			api: {
+				read,
+				answer: vi.fn(async () => undefined),
+				delegate: vi.fn(async () => undefined),
+				archive: vi.fn(async () => undefined),
+				logins,
+				chooseLogin: vi.fn(async () => undefined),
+			},
+			signal: disposeAll.signal,
+		});
+		document.body.append(element.el);
+		await settle();
+		const firstIntro = element.el.querySelector(".coding-intro");
+		const firstBubble = element.el.querySelector(".coding-bubble");
+		expect(firstIntro).not.toBeNull();
+		expect(firstBubble).not.toBeNull();
+		expect(logins).toHaveBeenCalledTimes(1);
+
+		state.events.push(event(3, "step", { text: "git diff", status: "passed" }, "executor"));
+		await vi.advanceTimersByTimeAsync(10_000);
+		await settle();
+		expect(element.el.querySelector(".coding-intro")).toBe(firstIntro);
+		expect(element.el.querySelector(".coding-bubble")).toBe(firstBubble);
+		expect(element.el.querySelectorAll(".coding-row-step")).toHaveLength(2);
+		expect(logins).toHaveBeenCalledTimes(2);
+		expect(element.el.textContent).toContain("Use two@example.test");
+
+		read.mockImplementationOnce((_workerId, _after, signal) => {
+			seenSignal = signal;
+			return new Promise(() => undefined);
+		});
+		void element.refresh();
+		expect(seenSignal?.aborted).toBe(false);
+		element.dispose();
+		expect(seenSignal?.aborted).toBe(true);
 	});
 });
 

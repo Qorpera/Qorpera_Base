@@ -12,7 +12,13 @@ import {
 import {
 	CHECK_RUNNING,
 	type CommitUnit,
+	MAX_COMMIT_STRUCTURED_BYTES,
+	MAX_COMMIT_STRUCTURED_FILES,
+	MAX_COMMIT_UNITS,
+	MAX_NEW_FOLDER_ENTRIES,
+	type PlannedUnit,
 	planBoundary,
+	planCommitBatches,
 	type SecretCheck,
 	WAITS_FOR_CHECK,
 	WAITS_FOR_REFUSED,
@@ -1364,5 +1370,314 @@ describe("a view's links (protocol 4)", () => {
 		expect(f.plan().keep).toEqual(new Set([".#notes.md"]));
 		expect(f.publish()).toEqual([]);
 		expect(f.view.get(".#notes.md")).toMatchObject({ kind: "symlink" });
+	});
+
+	it("keeps PendingView indexes and planBoundary waves exact across deep live subtrees, renames, deletes, and bulk writes", () => {
+		const f = setup({
+			"live/sub/existing.md": "old",
+			"rm/a/one.md": "1",
+			"rm/a/two.md": "2",
+			"rm/b.md": "3",
+			"mv/from.md": "m",
+		});
+		const h = f.view.openWrite("live/sub/added.md", { create: true, exclusive: true, truncate: true });
+		const node = f.view.close(h.handle, 0);
+		expect(f.view.pathOf(node)).toBe("live/sub/added.md");
+		f.view.rename("live/sub/added.md", "live/sub/renamed.md");
+		expect(f.view.pathOf(node)).toBe("live/sub/renamed.md");
+		refused(
+			() => f.view.openWrite("live/sub/EXISTING.MD", { create: true, exclusive: true, truncate: true }),
+			"EXISTS",
+		);
+		refused(
+			() => f.view.openWrite("live/sub/RENAMED.MD", { create: true, exclusive: true, truncate: true }),
+			"EXISTS",
+		);
+		f.view.unlink("live/sub/renamed.md");
+		expect(f.view.pathOf(node)).toBeUndefined();
+
+		f.view.unlink("rm/a/one.md");
+		f.view.unlink("rm/a/two.md");
+		f.view.rmdir("rm/a");
+		f.view.unlink("rm/b.md");
+		f.view.rmdir("rm");
+		f.view.mkdir("bulk");
+		for (let i = 0; i < 60; i++) {
+			const dir = `bulk/d${i % 6}`;
+			if (i < 6) f.view.mkdir(dir);
+			write(f.view, `${dir}/f${i}.txt`, `body-${i}`);
+		}
+		f.view.rename("mv/from.md", "mv/to.md");
+		write(f.view, "mv/from.md", "replacement");
+		const plan = f.plan();
+		const ops = plan.units.map((u) => u.unit.op);
+		expect(ops).toContain("delete");
+		expect(ops).toContain("new_folder");
+		const moveIdx = plan.units.findIndex((u) => u.unit.op === "move");
+		const writeIdx = plan.units.findIndex((u) => u.unit.op === "write" && u.unit.path === "mv/from.md");
+		expect(moveIdx).toBeGreaterThanOrEqual(0);
+		expect(writeIdx).toBeGreaterThan(moveIdx);
+		const bulkUnit = plan.units.find((u) => u.unit.op === "new_folder" && u.unit.path === "bulk");
+		expect(bulkUnit?.unit.op === "new_folder" && bulkUnit.unit.contents.length).toBe(66);
+		f.view.clear();
+		expect(f.view.empty).toBe(true);
+	});
+
+	it("paginates children identically when pending is empty and with binary-searched cursors when non-empty", () => {
+		const files: Record<string, Content> = {
+			"dir/link": { link: "target" },
+			"dir/z.txt": "z",
+		};
+		for (let i = 0; i < 12; i++) files[`dir/f_${String(i).padStart(2, "0")}.txt`] = `v${i}`;
+		const f = setup(files);
+		expect(f.view.empty).toBe(true);
+		expect(f.view.children("missing", undefined, 5)).toBe("not_found");
+		expect(f.view.children("dir/z.txt", undefined, 5)).toBe("not_a_folder");
+		for (const links of [true, false]) {
+			const viaPending: string[] = [];
+			let after: string | undefined;
+			for (;;) {
+				const page = f.view.children("dir", after, 4, links);
+				expect(typeof page).toBe("object");
+				if (typeof page === "string") break;
+				viaPending.push(...page.entries.map((e) => e.name));
+				if (!page.next) break;
+				after = page.next;
+			}
+			const viaTree: string[] = [];
+			let treeAfter: string | undefined;
+			for (;;) {
+				const page = f.tree().children("dir", treeAfter, 4, links);
+				expect(typeof page).toBe("object");
+				if (typeof page === "string") break;
+				viaTree.push(...page.entries.map((e) => e.name));
+				if (!page.next) break;
+				treeAfter = page.next;
+			}
+			expect(viaPending).toEqual(viaTree);
+		}
+		write(f.view, "dir/f_05b.txt", "inserted");
+		f.view.unlink("dir/f_03.txt");
+		expect(f.view.empty).toBe(false);
+		const afterMissing = f.view.children("dir", "f_03.txt", 3);
+		expect(typeof afterMissing !== "string" && afterMissing.entries.map((e) => e.name)).toEqual([
+			"f_04.txt",
+			"f_05.txt",
+			"f_05b.txt",
+		]);
+		const afterLast = f.view.children("dir", "zzz", 5);
+		expect(typeof afterLast !== "string" && afterLast).toEqual({ entries: [], next: null });
+	});
+
+	it("partitions planned units into dependency-safe batches within unit and structured limits", () => {
+		const makeFile = (path: string, bytes = 10): PlannedUnit => ({
+			unit: {
+				op: "write",
+				path,
+				file: {
+					manifestSha256: hash(`m:${path}`),
+					fileSha256: hash(`f:${path}`),
+					bytes,
+					mediaType: "text/plain",
+					executable: false,
+				},
+			},
+			paths: [path],
+			bytes: true,
+		});
+
+		expect(planCommitBatches([])).toEqual([]);
+
+		const small = Array.from({ length: MAX_COMMIT_UNITS }, (_, i) => makeFile(`src/f${i}.txt`));
+		const smallBatches = planCommitBatches(small);
+		expect(smallBatches).toHaveLength(1);
+		expect(smallBatches[0]).toBe(small);
+
+		const large = Array.from({ length: 2500 }, (_, i) => makeFile(`src/f${i}.txt`));
+		const largeBatches = planCommitBatches(large);
+		expect(largeBatches.map((b) => b.length)).toEqual([1000, 1000, 500]);
+		expect(largeBatches.flat().map((u) => u.paths[0])).toEqual(large.map((u) => u.paths[0]));
+
+		const manyStructured = Array.from({ length: MAX_COMMIT_STRUCTURED_FILES + 6 }, (_, i) =>
+			makeFile(`QorperaOS/rules/r${i}.md`, 64),
+		);
+		expect(planCommitBatches(manyStructured).map((b) => b.length)).toEqual([MAX_COMMIT_STRUCTURED_FILES, 6]);
+
+		const heavyStructured = Array.from({ length: 20 }, (_, i) => makeFile(`QorperaOS/rules/h${i}.md`, 60 * 1024));
+		const heavyBatches = planCommitBatches(heavyStructured);
+		expect(heavyBatches).toHaveLength(2);
+		for (const batch of heavyBatches) {
+			const totalBytes = batch.reduce((sum, u) => sum + (u.unit.op === "write" ? u.unit.file.bytes : 0), 0);
+			expect(totalBytes).toBeLessThanOrEqual(MAX_COMMIT_STRUCTURED_BYTES);
+		}
+
+		const oversized = [makeFile("QorperaOS/rules/huge.md", MAX_COMMIT_STRUCTURED_BYTES + 1), makeFile("src/ok.txt")];
+		expect(planCommitBatches(oversized).map((b) => b.map((u) => u.paths[0]))).toEqual([
+			["QorperaOS/rules/huge.md"],
+			["src/ok.txt"],
+		]);
+	});
+
+	it("avoids absorbing oversized new folders so mkdir runs before batched children", () => {
+		const fRules = setup({ QorperaOS: null });
+		fRules.view.mkdir("QorperaOS/rules");
+		for (let i = 0; i < MAX_COMMIT_STRUCTURED_FILES + 6; i++)
+			write(fRules.view, `QorperaOS/rules/r${String(i).padStart(3, "0")}.md`, `rule-${i}`);
+		const rulesPlan = fRules.plan();
+		expect(rulesPlan.units[0]?.unit).toEqual({ op: "mkdir", path: "QorperaOS/rules" });
+		expect(rulesPlan.units).toHaveLength(MAX_COMMIT_STRUCTURED_FILES + 7);
+		expect(planCommitBatches(rulesPlan.units).map((b) => b.length)).toEqual([MAX_COMMIT_STRUCTURED_FILES + 1, 6]);
+
+		const fHuge = setup({});
+		fHuge.view.mkdir("huge");
+		for (let i = 0; i <= MAX_NEW_FOLDER_ENTRIES; i++) write(fHuge.view, `huge/f${i}.txt`, "x");
+		const hugePlan = fHuge.plan();
+		expect(hugePlan.units[0]?.unit).toEqual({ op: "mkdir", path: "huge" });
+		expect(hugePlan.units).toHaveLength(MAX_NEW_FOLDER_ENTRIES + 2);
+		expect(planCommitBatches(hugePlan.units).map((b) => b.length)).toEqual([
+			1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 2,
+		]);
+	});
+
+	it("orders git objects before metadata, keeps git metadata atomic in one batch, and puts object deletes last", () => {
+		const seed: Record<string, Content> = {
+			code: null,
+			"code/acme": null,
+			"code/acme/app": null,
+			"code/acme/app/repo.git": null,
+			"code/acme/app/repo.git/objects": null,
+			"code/acme/app/repo.git/objects/00": null,
+			"code/acme/app/repo.git/objects/ff": null,
+			"code/acme/app/repo.git/worktrees": null,
+			"code/acme/app/repo.git/worktrees/w1": null,
+			"code/acme/app/repo.git/worktrees/w1/index": "idx-v1",
+			"code/acme/app/repo.git/worktrees/w1/logs": null,
+			"code/acme/app/repo.git/worktrees/w1/logs/HEAD": "log-v1",
+		};
+		for (let i = 0; i < 10; i++)
+			seed[`code/acme/app/repo.git/objects/ff/${String(i).padStart(38, "0")}`] = `old-obj-${i}`;
+		const f = setup(seed);
+		write(f.view, "code/acme/app/repo.git/worktrees/w1/index", "idx-v2", {
+			base: f.view.get("code/acme/app/repo.git/worktrees/w1/index")!.version,
+		});
+		write(f.view, "code/acme/app/repo.git/worktrees/w1/logs/HEAD", "log-v2", {
+			base: f.view.get("code/acme/app/repo.git/worktrees/w1/logs/HEAD")!.version,
+		});
+		for (let i = 0; i < 10; i++) f.view.unlink(`code/acme/app/repo.git/objects/ff/${String(i).padStart(38, "0")}`);
+		for (let i = 0; i < 999; i++)
+			write(f.view, `code/acme/app/repo.git/objects/00/${String(i).padStart(38, "a")}`, `obj-${i}`);
+
+		const plan = f.plan();
+		const indexPos = plan.units.findIndex(
+			(u) => u.unit.op === "write" && u.unit.path === "code/acme/app/repo.git/worktrees/w1/index",
+		);
+		const logPos = plan.units.findIndex(
+			(u) => u.unit.op === "write" && u.unit.path === "code/acme/app/repo.git/worktrees/w1/logs/HEAD",
+		);
+		let lastObjectAddPos = -1;
+		for (let i = plan.units.length - 1; i >= 0; i--) {
+			const u = plan.units[i]!.unit;
+			if (u.op === "write" && u.path.startsWith("code/acme/app/repo.git/objects/00/")) {
+				lastObjectAddPos = i;
+				break;
+			}
+		}
+		const firstObjectDeletePos = plan.units.findIndex(
+			(u) => u.unit.op === "delete" && u.unit.path.startsWith("code/acme/app/repo.git/objects/ff/"),
+		);
+		expect(lastObjectAddPos).toBeGreaterThanOrEqual(0);
+		expect(indexPos).toBeGreaterThan(lastObjectAddPos);
+		expect(logPos).toBeGreaterThan(lastObjectAddPos);
+		expect(firstObjectDeletePos).toBeGreaterThan(Math.max(indexPos, logPos));
+
+		const batches = planCommitBatches(plan.units);
+		expect(batches.map((b) => b.length)).toEqual([999, 12]);
+		const indexBatch = batches.findIndex((b) =>
+			b.some((u) => u.unit.op === "write" && u.unit.path === "code/acme/app/repo.git/worktrees/w1/index"),
+		);
+		const logBatch = batches.findIndex((b) =>
+			b.some((u) => u.unit.op === "write" && u.unit.path === "code/acme/app/repo.git/worktrees/w1/logs/HEAD"),
+		);
+		expect(indexBatch).toBe(1);
+		expect(logBatch).toBe(1);
+
+		const dotGit = setup({
+			code: null,
+			"code/acme": null,
+			"code/acme/app": null,
+			"code/acme/app/.git": null,
+			"code/acme/app/.git/objects": null,
+			"code/acme/app/.git/objects/01": null,
+			"code/acme/app/.git/index": "idx1",
+			"code/acme/app/.git/HEAD": "ref: refs/heads/main\n",
+		});
+		write(dotGit.view, "code/acme/app/.git/index", "idx2", {
+			base: dotGit.view.get("code/acme/app/.git/index")!.version,
+		});
+		write(dotGit.view, "code/acme/app/.git/HEAD", "ref: refs/heads/feat\n", {
+			base: dotGit.view.get("code/acme/app/.git/HEAD")!.version,
+		});
+		for (let i = 0; i < 999; i++)
+			write(dotGit.view, `code/acme/app/.git/objects/01/${String(i).padStart(38, "b")}`, `o-${i}`);
+		const dotBatches = planCommitBatches(dotGit.plan().units);
+		expect(dotBatches.map((b) => b.length)).toEqual([999, 2]);
+		expect(dotBatches[1]?.map((u) => u.paths[0]).sort()).toEqual([
+			"code/acme/app/.git/HEAD",
+			"code/acme/app/.git/index",
+		]);
+
+		const rootGitUnits: PlannedUnit[] = [
+			...Array.from(
+				{ length: 999 },
+				(_, i): PlannedUnit => ({
+					unit: {
+						op: "write",
+						path: `.git/objects/02/${String(i).padStart(38, "c")}`,
+						file: {
+							manifestSha256: hash(`rm:${i}`),
+							fileSha256: hash(`rf:${i}`),
+							bytes: 10,
+							mediaType: "application/octet-stream",
+							executable: false,
+						},
+					},
+					paths: [`.git/objects/02/${String(i).padStart(38, "c")}`],
+					bytes: true,
+				}),
+			),
+			{
+				unit: {
+					op: "write",
+					path: ".git/index",
+					file: {
+						manifestSha256: hash("rm:idx"),
+						fileSha256: hash("rf:idx"),
+						bytes: 16,
+						mediaType: "application/octet-stream",
+						executable: false,
+					},
+				},
+				paths: [".git/index"],
+				bytes: true,
+			},
+			{
+				unit: {
+					op: "write",
+					path: ".git/HEAD",
+					file: {
+						manifestSha256: hash("rm:head"),
+						fileSha256: hash("rf:head"),
+						bytes: 20,
+						mediaType: "text/plain",
+						executable: false,
+					},
+				},
+				paths: [".git/HEAD"],
+				bytes: true,
+			},
+		];
+		const rootGitBatches = planCommitBatches(rootGitUnits);
+		expect(rootGitBatches.map((b) => b.length)).toEqual([999, 2]);
+		expect(rootGitBatches[1]?.map((u) => u.paths[0]).sort()).toEqual([".git/HEAD", ".git/index"]);
 	});
 });

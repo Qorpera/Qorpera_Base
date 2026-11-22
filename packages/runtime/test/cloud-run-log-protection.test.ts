@@ -249,4 +249,58 @@ describe("lease-bound run log protection", () => {
 			"Invalid run log protection binding",
 		);
 	});
+
+	it("batches narrowBatch paths across steps, deduplicating into 1024-path RPCs while isolating per-step restrictions", async () => {
+		const { call, protection } = setup(async (_method, args) => ({
+			log: false,
+			machine: false,
+			restricted: (args.p_paths as string[]).filter((path) => path === "restricted/secret.md"),
+		}));
+		const steps = [
+			{ ...step, j: 0, readPaths: ["public/a.md", "public/shared.md"] },
+			{ ...step, j: 1, readPaths: ["public/shared.md", "restricted/secret.md"] },
+			{ ...step, j: 2, readPaths: ["public/b.md"] },
+		];
+		expect(await protection.narrowBatch(binding.runId, steps, signal)).toEqual([
+			{ log: false, narrow: false },
+			{ log: false, narrow: true },
+			{ log: false, narrow: false },
+		]);
+		expect(call).toHaveBeenCalledOnce();
+		expect(call.mock.calls[0]?.[1].p_paths).toEqual([
+			"public/a.md",
+			"public/shared.md",
+			"restricted/secret.md",
+			"public/b.md",
+		]);
+		expect(await protection.narrowBatch(binding.runId, [], signal)).toEqual([]);
+		expect(call).toHaveBeenCalledOnce();
+		await expect(protection.narrowBatch(randomUUID(), [], signal)).rejects.toThrow("protection_run_mismatch");
+	});
+
+	it("chunks narrowBatch union paths at 1024 and propagates log and machine flags across all chunks", async () => {
+		const batchA = Array.from({ length: 600 }, (_, i) => `a/${i}`);
+		const batchB = Array.from({ length: 600 }, (_, i) => `b/${i}`);
+		const { call, protection } = setup(async (_method, args) => {
+			const paths = args.p_paths as string[];
+			return {
+				log: paths.includes("b/599"),
+				machine: false,
+				restricted: paths.filter((p) => p === "b/599"),
+			};
+		});
+		const out = await protection.narrowBatch(
+			binding.runId,
+			[
+				{ ...step, j: 0, readPaths: batchA },
+				{ ...step, j: 1, readPaths: batchB },
+			],
+			signal,
+		);
+		expect(call.mock.calls.map((c) => (c[1].p_paths as string[]).length)).toEqual([1024, 176]);
+		expect(out).toEqual([
+			{ log: true, narrow: false },
+			{ log: true, narrow: true },
+		]);
+	});
 });

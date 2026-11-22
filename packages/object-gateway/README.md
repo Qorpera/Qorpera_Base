@@ -22,7 +22,11 @@ Required configuration:
 - `QORPERA_OBJECT_GATEWAY_CONTROL_TOKEN`
 
 `QORPERA_OBJECT_GATEWAY_HOST` defaults to `127.0.0.1` and
-`QORPERA_OBJECT_GATEWAY_PORT` defaults to `8090`. Production exposure requires
+`QORPERA_OBJECT_GATEWAY_PORT` defaults to `8090`. Optional
+`QORPERA_OBJECT_GATEWAY_NAS_LANES` (integer `1`–`16`, default `2`) sets the
+concurrent NAS I/O lane cap and requires `UV_THREADPOOL_SIZE - lanes >= 2` at
+startup so at least two libuv workers remain reserved for the journal during a
+stuck-NAS outage. Production exposure requires
 an authenticated TLS reverse proxy, a dedicated service account, a private
 storage mount with no client filesystem access, a distinct cleanup control
 token, and verified NAS backup and restore. Do not run this service on an

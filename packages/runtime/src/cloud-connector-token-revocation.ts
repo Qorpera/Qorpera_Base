@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { withAbortScope } from "./abort-scope.ts";
 import { cloudConnector } from "./cloud-connector-catalog.ts";
 import { type EnableBankingClient, EnableBankingSessionEnded } from "./cloud-connector-enable-banking.ts";
 import { GITHUB_API_VERSION } from "./cloud-connector-github.ts";
@@ -343,7 +344,9 @@ export class CloudConnectorTokenRevocationUpkeep {
 
 	/** One pass; its failure is logged by fact only. */
 	async pass(): Promise<void> {
-		await logConnectorTokenRevocationPass(this.#revocations, this.#closing.signal);
+		await withAbortScope(this.#closing.signal, (signal) =>
+			logConnectorTokenRevocationPass(this.#revocations, signal),
+		);
 	}
 }
 

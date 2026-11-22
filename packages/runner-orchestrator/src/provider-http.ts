@@ -1,3 +1,4 @@
+import { withTimeoutScope } from "./abort-scope.ts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import type {
 	CloudRunnerAssignmentDelivery,
@@ -283,40 +284,39 @@ export class HttpCloudRunnerProviderAdapter implements CloudRunnerProviderAdapte
 	}
 
 	async #request(body: CloudRunnerProviderRequest, signal?: AbortSignal): Promise<unknown> {
-		const requestSignal = signal
-			? AbortSignal.any([signal, AbortSignal.timeout(PROVIDER_REQUEST_TIMEOUT_MS)])
-			: AbortSignal.timeout(PROVIDER_REQUEST_TIMEOUT_MS);
-		const response = await this.#fetch(this.#url, {
-			method: "POST",
-			headers: {
-				authorization: `Bearer ${this.#token}`,
-				"content-type": "application/json",
-			},
-			body: JSON.stringify(body),
-			redirect: "error",
-			signal: requestSignal,
+		return withTimeoutScope(signal, PROVIDER_REQUEST_TIMEOUT_MS, async (requestSignal) => {
+			const response = await this.#fetch(this.#url, {
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${this.#token}`,
+					"content-type": "application/json",
+				},
+				body: JSON.stringify(body),
+				redirect: "error",
+				signal: requestSignal,
+			});
+			if (!response.ok)
+				throw new CloudRunnerProviderRequestError(
+					response.status,
+					await providerAdmissionRefusal(response),
+					body.action,
+				);
+			const encoded = await response.text();
+			if (Buffer.byteLength(encoded) > PROVIDER_RESPONSE_LIMIT_BYTES) {
+				throw new Error("Runner provider response exceeds its byte limit");
+			}
+			let value: unknown;
+			try {
+				value = JSON.parse(encoded) as unknown;
+			} catch (error) {
+				throw new Error("Runner provider returned invalid JSON", { cause: error });
+			}
+			const envelope = record(value, "response envelope");
+			if (body.action === "surface_session" && envelope.ok === true && Object.keys(envelope).length === 1) {
+				return undefined;
+			}
+			exactKeys(envelope, ["value"], "response envelope");
+			return envelope.value;
 		});
-		if (!response.ok)
-			throw new CloudRunnerProviderRequestError(
-				response.status,
-				await providerAdmissionRefusal(response),
-				body.action,
-			);
-		const encoded = await response.text();
-		if (Buffer.byteLength(encoded) > PROVIDER_RESPONSE_LIMIT_BYTES) {
-			throw new Error("Runner provider response exceeds its byte limit");
-		}
-		let value: unknown;
-		try {
-			value = JSON.parse(encoded) as unknown;
-		} catch (error) {
-			throw new Error("Runner provider returned invalid JSON", { cause: error });
-		}
-		const envelope = record(value, "response envelope");
-		if (body.action === "surface_session" && envelope.ok === true && Object.keys(envelope).length === 1) {
-			return undefined;
-		}
-		exactKeys(envelope, ["value"], "response envelope");
-		return envelope.value;
 	}
 }

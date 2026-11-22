@@ -6,6 +6,7 @@ import {
 	SESSION_EFFORTS,
 	SESSION_MODEL_BEFORE_EFFORT,
 	SESSION_MODELS,
+	SESSION_PROVIDERS,
 	type SessionEffort,
 	type SessionModel,
 	type SessionModelSelection,
@@ -27,6 +28,7 @@ const EFFORT_NAMES: Record<SessionEffort, string> = {
 const PROVIDER_MARKS: Record<SessionProvider, string> = {
 	openai: "./assets/provider-openai.svg",
 	anthropic: "./assets/provider-claude.svg",
+	google: "./assets/provider-google.svg",
 };
 
 const EFFORT_SETTLE_MS = 450;
@@ -315,9 +317,16 @@ export class ComposerModels {
 		(usable.find((choice) => choice.getAttribute("aria-checked") === "true") ?? usable[0] ?? this.#pick).focus();
 	}
 
+	#nextProvider(from: SessionProvider): SessionProvider | undefined {
+		const offered = SESSION_PROVIDERS.filter((provider) => this.#firstOf(provider) !== undefined);
+		const index = offered.indexOf(from);
+		if (index >= 0) return offered.length > 1 ? offered[(index + 1) % offered.length] : undefined;
+		return offered[0];
+	}
+
 	#switchProvider(): void {
-		const to: SessionProvider = this.#provided() === "openai" ? "anthropic" : "openai";
-		const first = this.#firstOf(to);
+		const to = this.#nextProvider(this.#provided());
+		const first = to ? this.#firstOf(to) : undefined;
 		if (first) void this.#save(this.#selection(first), this.#provider);
 	}
 
@@ -494,16 +503,23 @@ export class ComposerModels {
 		this.#pick.setAttribute("aria-expanded", String(this.#listOpen));
 		this.#pick.setAttribute("aria-label", name ? t("Choose model ({name})", { name }) : t("Choose model"));
 
-		const other: SessionProvider = provided === "openai" ? "anthropic" : "openai";
-		const switchable = this.#firstOf(other) !== undefined;
-		this.#provider.hidden = !switchable && provided !== "anthropic";
+		const other = this.#nextProvider(provided);
+		const switchable = other !== undefined;
+		this.#provider.hidden = !switchable && provided === "openai";
 		this.#provider.disabled = unavailable || this.#provider.hidden || !switchable;
-		const switchTo = other === "anthropic" ? t("Switch to Claude") : t("Switch to GPT");
+		const switchTo =
+			other === "anthropic"
+				? t("Switch to Claude")
+				: other === "google"
+					? t("Switch to Gemini")
+					: t("Switch to GPT");
 		this.#provider.setAttribute("aria-label", switchTo);
 		this.#provider.title =
 			provided === "anthropic"
 				? `${switchTo}. ${t("GPT answers light messages. Claude Code does the work, on your Claude plan.")}`
-				: switchTo;
+				: provided === "google"
+					? `${switchTo}. ${t("Gemini 4 Neon answers this conversation using your Gemini API key.")}`
+					: switchTo;
 		this.#providerMark.className = `composer-provider-mark composer-provider-${provided}`;
 		this.#providerMark.style.setProperty("mask-image", `url("${PROVIDER_MARKS[provided]}")`);
 		this.#providerMark.style.setProperty("-webkit-mask-image", `url("${PROVIDER_MARKS[provided]}")`);
@@ -548,7 +564,13 @@ export class ComposerModels {
 		);
 		this.#slider.tabIndex = this.#slider.hidden ? -1 : 0;
 
-		const scope = this.#group ? t("Every agent in this group chat. Applies from your next message.") : "";
+		const capNote =
+			provided === "google" && this.#observed?.geminiCapReached
+				? t("Your monthly Gemini spend cap was reached. Raise it in Settings or switch models.")
+				: "";
+		const scope = [this.#group ? t("Every agent in this group chat. Applies from your next message.") : "", capNote]
+			.filter(Boolean)
+			.join(" ");
 		if (this.#scope.textContent !== scope) this.#scope.textContent = scope;
 		this.#status.textContent =
 			this.#error || (this.#request ? (this.#pending ? t("Saving model…") : t("Loading model…")) : "");

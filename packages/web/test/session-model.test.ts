@@ -286,6 +286,37 @@ describe("conversation model transport", () => {
 		).toMatchObject({ modelId: "claude-opus-5-5", reasoningEffort: "max" });
 	});
 
+	it("reads and saves Gemini 4 Neon with cap status and rejects max effort", async () => {
+		const f = setup();
+		f.fetch.mockResolvedValueOnce(
+			Response.json({
+				...model,
+				model_id: "gemini-4-neon",
+				reasoning_effort: "xhigh",
+				models: ["gpt-6.2-sol", "gemini-4-neon"],
+				gemini_cap_reached: true,
+				version: 1,
+			}),
+		);
+		expect(await f.control.read(session.sessionId)).toMatchObject({
+			modelId: "gemini-4-neon",
+			reasoningEffort: "xhigh",
+			models: ["gpt-6.2-sol", "gemini-4-neon"],
+			geminiCapReached: true,
+		});
+		f.fetch.mockResolvedValueOnce(
+			Response.json({ ...model, model_id: "gemini-4-neon", reasoning_effort: "high", version: 2 }),
+		);
+		expect(
+			await f.control.set(session.sessionId, { modelId: "gemini-4-neon", reasoningEffort: "high" }, 1),
+		).toMatchObject({ modelId: "gemini-4-neon", reasoningEffort: "high", version: 2 });
+		await expect(
+			f.control.set(session.sessionId, { modelId: "gemini-4-neon", reasoningEffort: "max" }, 2),
+		).rejects.toThrow("Refresh");
+		f.fetch.mockResolvedValueOnce(Response.json({ ...model, gemini_cap_reached: "yes" }));
+		await expect(f.control.read(session.sessionId)).rejects.toThrow("Invalid conversation model response");
+	});
+
 	it("refuses a switched account before dispatch", async () => {
 		const f = setup();
 		f.auth(userB);

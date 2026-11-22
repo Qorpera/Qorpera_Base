@@ -102,17 +102,30 @@ describe("databaseTls", () => {
 		).toThrow("Test service database CA is invalid");
 	});
 
-	it("trusts our own CA alone, only with its input: the CA file and its sha256 pin together", () => {
+	it("trusts our own CA alone, with or without Supabase's CA, and fails closed when neither is provided", () => {
+		const pin = createHash("sha256").update(ownCa.bytes).digest("hex");
 		expect(
 			databaseTls(
 				{
 					supabaseCa: SUPABASE_CA,
 					ownCa: ownCa.bytes,
-					ownCaSha256: createHash("sha256").update(ownCa.bytes).digest("hex"),
+					ownCaSha256: pin,
 				},
 				"Test service",
 			),
 		).toEqual({ ca: ownCa.bytes.toString("utf8"), rejectUnauthorized: true });
+		expect(
+			databaseTls(
+				{
+					ownCa: ownCa.bytes,
+					ownCaSha256: pin,
+				},
+				"Test service",
+			),
+		).toEqual({ ca: ownCa.bytes.toString("utf8"), rejectUnauthorized: true });
+		expect(refused({})).toThrow("Test service database CA is invalid");
+		expect(refused({ ownCa: ownCa.bytes })).toThrow("Test service database CA is invalid");
+		expect(refused({ ownCaSha256: pin })).toThrow("Test service database CA is invalid");
 	});
 
 	it("refuses half an input and a pin the file does not match", () => {

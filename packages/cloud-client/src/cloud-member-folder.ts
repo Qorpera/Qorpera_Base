@@ -1237,16 +1237,27 @@ export class CloudMemberFolderClient {
 					await this.#putPieces(`${base}/${opened.uploadId}`, file, prepared, opened.have, options);
 					signal.throwIfAborted();
 					finishing = true;
-					const answer = await this.#retried(
-						(requestSignal) =>
-							this.#send(
-								`${base}/${opened.uploadId}`,
-								"POST",
-								JSON.stringify({ schema: "qorpera.member-program-finish/v1", operationKey }),
-								requestSignal,
-							),
-						AbortSignal.timeout(FINISH_SETTLE_MS),
+					const settle = new AbortController();
+					const settleTimer = setTimeout(
+						() => settle.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+						FINISH_SETTLE_MS,
 					);
+					settleTimer.unref?.();
+					let answer: unknown;
+					try {
+						answer = await this.#retried(
+							(requestSignal) =>
+								this.#send(
+									`${base}/${opened.uploadId}`,
+									"POST",
+									JSON.stringify({ schema: "qorpera.member-program-finish/v1", operationKey }),
+									requestSignal,
+								),
+							settle.signal,
+						);
+					} finally {
+						clearTimeout(settleTimer);
+					}
 					return parseUploadFinish(answer);
 				} catch (error) {
 					if (!(error instanceof UploadGone) || attempt === 2) throw error;
@@ -1277,7 +1288,10 @@ export class CloudMemberFolderClient {
 			return turn;
 		};
 		const failed = new AbortController();
-		const signal = AbortSignal.any([options.signal, failed.signal]);
+		const onAbort = (): void => failed.abort(options.signal.reason);
+		if (options.signal.aborted) onAbort();
+		else options.signal.addEventListener("abort", onAbort, { once: true });
+		const signal = failed.signal;
 		const worker = async (place: number) => {
 			while (next < waiting.length && place < atOnce) {
 				const index = waiting[next++]!;
@@ -1308,7 +1322,13 @@ export class CloudMemberFolderClient {
 				options.onProgress?.(sent, prepared.bytes);
 			}
 		};
-		await Promise.all(Array.from({ length: Math.min(PIECES_AT_ONCE, waiting.length) }, (_, place) => worker(place)));
+		try {
+			await Promise.all(
+				Array.from({ length: Math.min(PIECES_AT_ONCE, waiting.length) }, (_, place) => worker(place)),
+			);
+		} finally {
+			options.signal.removeEventListener("abort", onAbort);
+		}
 	}
 
 	async #retried(
@@ -1494,6 +1514,9 @@ export class CloudMemberFolderHints {
 	#channel: RealtimeChannel | undefined;
 	#retry: ReturnType<typeof setTimeout> | undefined;
 	#closed = false;
+	readonly #onAbort = (): void => {
+		void this.close();
+	};
 
 	constructor(options: {
 		environmentId: string;
@@ -1507,8 +1530,12 @@ export class CloudMemberFolderHints {
 		this.#signal = options.signal;
 		this.#onHint = options.onHint;
 		this.#onState = options.onState;
-		this.#signal.addEventListener("abort", () => void this.close(), { once: true });
-		if (!this.#signal.aborted) this.#join();
+		if (this.#signal.aborted) {
+			this.#closed = true;
+			return;
+		}
+		this.#signal.addEventListener("abort", this.#onAbort, { once: true });
+		this.#join();
 	}
 
 	#join(): void {
@@ -1537,12 +1564,15 @@ export class CloudMemberFolderHints {
 		const removed = await withCloudDeadline(() => this.#client.removeChannel(old), 2000).catch(() => "error");
 		if (this.#closed) return;
 		this.#retry = setTimeout(() => (removed === "ok" ? this.#join() : void this.#rejoin(old)), 10_000);
+		if (typeof this.#retry === "object") this.#retry.unref?.();
 	}
 
 	async close(): Promise<void> {
 		if (this.#closed) return;
 		this.#closed = true;
+		this.#signal.removeEventListener("abort", this.#onAbort);
 		clearTimeout(this.#retry);
+		this.#retry = undefined;
 		const channel = this.#channel;
 		this.#channel = undefined;
 		if (channel) await withCloudDeadline(() => this.#client.removeChannel(channel), 2000).catch(() => undefined);

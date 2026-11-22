@@ -517,3 +517,83 @@ it("counts what a failed request used, and a thread that cannot say adds nothing
 	});
 	expect(silent.stats).toMatchObject({ calls: 1, failures: 1, input: 0, cached: 0, output: 0 });
 });
+
+it("orders queued lane work by priority heap, handles mid-queue cancellations, and drains on stop", async () => {
+	const lane = new MemoryCompactLane(1);
+	let releaseFirst!: () => void;
+	const started: string[] = [];
+	const first = lane.run([0, 0], deadline(), async () => {
+		started.push("first");
+		await new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+		return "first";
+	});
+	const cancelled = new AbortController();
+	const p3 = lane.run([3, 0], deadline(), async () => {
+		started.push("p3");
+		return "p3";
+	});
+	const p1 = lane.run([1, 0], cancelled.signal, async () => {
+		started.push("p1");
+		return "p1";
+	});
+	const p2 = lane.run([2, 0], deadline(), async () => {
+		started.push("p2");
+		return "p2";
+	});
+	const p0 = lane.run([0, 1], deadline(), async () => {
+		started.push("p0");
+		return "p0";
+	});
+	cancelled.abort();
+	expect(await p1).toBeNull();
+	releaseFirst();
+	expect(await Promise.all([first, p0, p2, p3])).toEqual(["first", "p0", "p2", "p3"]);
+	expect(started).toEqual(["first", "p0", "p2", "p3"]);
+
+	const stoppedLane = new MemoryCompactLane(1);
+	let releaseBlocker!: () => void;
+	let blockerEntered!: () => void;
+	const entered = new Promise<void>((resolve) => {
+		blockerEntered = resolve;
+	});
+	const blocker = stoppedLane.run([0, 0], deadline(), async () => {
+		blockerEntered();
+		await new Promise<void>((resolve) => {
+			releaseBlocker = resolve;
+		});
+		return "blocker";
+	});
+	await entered;
+	const drainedA = stoppedLane.run([1, 0], deadline(), async () => "a");
+	const drainedB = stoppedLane.run([2, 0], deadline(), async () => "b");
+	stoppedLane.stop("usage-limit");
+	expect(await Promise.all([drainedA, drainedB])).toEqual([null, null]);
+	releaseBlocker();
+	await blocker;
+});
+
+it("defers window reads until slot acquisition and leaves stats.failures at 0 when a window event is unreadable", async () => {
+	const texts = ["unreadable", long("E1"), long("E2")];
+	const readIndices: number[] = [];
+	const customSource: MemoryCompactSource = {
+		kind: "conversation",
+		T: texts.length,
+		built: () => undefined,
+		leaves: [1, 2],
+		event: async (i) => {
+			readIndices.push(i);
+			if (texts[i] === "unreadable") throw new Error("unreadable");
+			return { text: texts[i], seq: 100 + i, hash: HASH };
+		},
+	};
+	const model = fake(named);
+	const { lines, stats } = await memoryCompact(customSource, model.call, {
+		lane: new MemoryCompactLane(1),
+		signal: deadline(),
+	});
+	expect(lines).toEqual([]);
+	expect(stats).toMatchObject({ calls: 0, free: 0, failures: 0, stopped: null });
+	expect(readIndices).toContain(0);
+});

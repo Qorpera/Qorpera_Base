@@ -713,15 +713,15 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		const action = String(body.action);
 		const cadenceSensitive =
 			action === "native_authority" || action === "renew_native_authority" || action === "release_native_authority";
-		const response = await this.#transientFetch(
+		const { response, cleanup } = await this.#transientFetch(
 			`Runner broker request (${action})`,
 			authority,
-			() =>
+			(attemptSignal) =>
 				this.#fetch(this.#url, {
 					method: "POST",
 					headers: { ...this.#headers(authority), "content-type": "application/json" },
 					body: JSON.stringify({ ...body, runnerId: authority.runnerId, jobId: authority.jobId }),
-					signal: this.#requestSignal(authority),
+					signal: attemptSignal,
 				}),
 			cadenceSensitive ? TRANSIENT_RETRY_BUDGET_MS : DURABLE_RETRY_BUDGET_MS,
 		);
@@ -731,10 +731,12 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		} catch (error) {
 			/* An answer lost while its body arrived (a reset connection, or the request's own deadline) is as lost as
 			 * no answer (WB-001, 28 Oct 2026). A malformed body, or one this request's caller stopped, is not. */
-			if (error instanceof SyntaxError || this.#signal?.aborted || authority.signal?.aborted) throw error;
+			if (error instanceof SyntaxError || this.#isCallerAborted(authority)) throw error;
 			throw new CloudRunnerBrokerRequestError(`Runner broker request (${action}) failed`, undefined, true, {
 				cause: error,
 			});
+		} finally {
+			cleanup();
 		}
 		return record(value, "response").value;
 	}
@@ -750,39 +752,88 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 	async #transientFetch(
 		label: string,
 		authority: CloudRunnerBrokerAuthority,
-		perform: () => Promise<Response>,
+		perform: (signal: AbortSignal) => Promise<Response>,
 		budgetMs = TRANSIENT_RETRY_BUDGET_MS,
-	): Promise<Response> {
+	): Promise<{ response: Response; cleanup: () => void }> {
 		const deadline = Date.now() + budgetMs;
 		for (let attempt = 1; ; attempt++) {
+			const attemptTimeout = this.#attemptSignal(authority);
 			let response: Response | undefined;
 			let transportError: unknown;
 			try {
-				response = await perform();
+				response = await perform(attemptTimeout.signal);
 			} catch (error) {
 				transportError = error;
 			}
-			if (response?.ok) return response;
+			if (response?.ok) return { response, cleanup: attemptTimeout.cleanup };
+			attemptTimeout.cleanup();
+			// WHY: Drain/cancel non-ok bodies before retry or throw so Undici does not leak keep-alive sockets.
+			void response?.body?.cancel().catch(() => undefined);
 			const status = response?.status;
 			const transient =
 				transportError !== undefined || status === 502 || status === 503 || status === 504 || status === 429;
 			const delayMs = Math.min(attempt * 2_000, 10_000);
-			if (!transient || Date.now() + delayMs >= deadline || this.#requestSignal(authority)?.aborted) {
+			if (!transient || Date.now() + delayMs >= deadline || this.#isCallerAborted(authority)) {
 				if (transportError) {
-					if (this.#requestSignal(authority)?.aborted) throw transportError;
+					if (this.#isCallerAborted(authority)) throw transportError;
 					throw new CloudRunnerBrokerRequestError(`${label} failed`, undefined, true, { cause: transportError });
 				}
 				throw new CloudRunnerBrokerRequestError(`${label} failed (${status})`, status, transient);
 			}
-			await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
+			await this.#sleepAbortable(delayMs, authority);
+			if (this.#isCallerAborted(authority)) {
+				if (transportError) throw transportError;
+				throw new CloudRunnerBrokerRequestError(`${label} failed (${status})`, status, transient);
+			}
 		}
 	}
 
-	#requestSignal(authority: CloudRunnerBrokerAuthority): AbortSignal {
-		const signals = [AbortSignal.timeout(this.#requestTimeoutMs)];
-		if (this.#signal) signals.push(this.#signal);
-		if (authority.signal) signals.push(authority.signal);
-		return signals.length === 1 ? signals[0] : AbortSignal.any(signals);
+	#isCallerAborted(authority: CloudRunnerBrokerAuthority): boolean {
+		return Boolean(this.#signal?.aborted || authority.signal?.aborted);
+	}
+
+	#attemptSignal(authority: CloudRunnerBrokerAuthority): { signal: AbortSignal; cleanup: () => void } {
+		const controller = new AbortController();
+		const onAbort = (source: AbortSignal) => () => controller.abort(source.reason);
+		const onBrokerAbort = this.#signal ? onAbort(this.#signal) : undefined;
+		const onAuthorityAbort = authority.signal ? onAbort(authority.signal) : undefined;
+		if (this.#signal?.aborted) controller.abort(this.#signal.reason);
+		else if (authority.signal?.aborted) controller.abort(authority.signal.reason);
+		else {
+			if (this.#signal && onBrokerAbort) this.#signal.addEventListener("abort", onBrokerAbort, { once: true });
+			if (authority.signal && onAuthorityAbort)
+				authority.signal.addEventListener("abort", onAuthorityAbort, { once: true });
+		}
+		// WHY: Clear attempt timers explicitly on completion instead of leaving AbortSignal.timeout/any timers alive.
+		const timer = setTimeout(() => {
+			controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+		}, this.#requestTimeoutMs);
+		let cleaned = false;
+		return {
+			signal: controller.signal,
+			cleanup: () => {
+				if (cleaned) return;
+				cleaned = true;
+				clearTimeout(timer);
+				if (this.#signal && onBrokerAbort) this.#signal.removeEventListener("abort", onBrokerAbort);
+				if (authority.signal && onAuthorityAbort) authority.signal.removeEventListener("abort", onAuthorityAbort);
+			},
+		};
+	}
+
+	#sleepAbortable(delayMs: number, authority: CloudRunnerBrokerAuthority): Promise<void> {
+		if (this.#isCallerAborted(authority)) return Promise.resolve();
+		return new Promise((resolve) => {
+			const done = () => {
+				clearTimeout(timer);
+				this.#signal?.removeEventListener("abort", done);
+				authority.signal?.removeEventListener("abort", done);
+				resolve();
+			};
+			const timer = setTimeout(done, delayMs);
+			this.#signal?.addEventListener("abort", done, { once: true });
+			authority.signal?.addEventListener("abort", done, { once: true });
+		});
 	}
 }
 
@@ -883,13 +934,16 @@ export class CloudRunnerJobBroker {
 		return authority;
 	}
 
-	async releaseNativeAuthority(status: "released" | "revoked" | "expired" = "released"): Promise<void> {
+	async releaseNativeAuthority(
+		status: "released" | "revoked" | "expired" = "released",
+		signal?: AbortSignal,
+	): Promise<void> {
 		if (!this.#nativeAuthority) return;
 		const release = this.#options.transport.releaseNativeAuthority;
 		if (!release) throw new Error("Runner broker does not support native subscription authority release");
 		const leaseId = this.#nativeAuthority.leaseId;
 		const value = record(
-			await release.call(this.#options.transport, this.#authority(), leaseId, status),
+			await release.call(this.#options.transport, this.#releaseAuthority(signal), leaseId, status),
 			"native provider authority release",
 		);
 		if (value.lease_id !== leaseId || value.status !== status) {
@@ -923,6 +977,21 @@ export class CloudRunnerJobBroker {
 			sessionToken: credentials.sessionToken,
 			leaseToken: credentials.leaseToken,
 			...(this.#options.signal ? { signal: this.#options.signal } : {}),
+		};
+		requiredAuthority(authority);
+		return authority;
+	}
+
+	#releaseAuthority(signal?: AbortSignal): CloudRunnerBrokerAuthority {
+		const credentials = this.#options.credentials();
+		const effectiveSignal = signal ?? this.#options.signal;
+		const authority = {
+			runnerId: this.#options.runnerId,
+			jobId: this.#options.job.jobId,
+			sessionToken: credentials.sessionToken,
+			leaseToken: credentials.leaseToken,
+			// WHY: Execution revocation aborts #options.signal before finally runs; prefer the caller's fresh release signal.
+			...(effectiveSignal ? { signal: effectiveSignal } : {}),
 		};
 		requiredAuthority(authority);
 		return authority;

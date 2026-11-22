@@ -5,16 +5,19 @@
 // lock around image transfer, import and cleanup, so a held lock means "not now".
 
 import { execFile } from "node:child_process";
-import { lstat, readdir, readFile, readlink, unlink } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readdir, readFile, readlink, unlink } from "node:fs/promises";
 import { request } from "node:http";
 import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const CONFIG_SCHEMA = "qorpera.node-tidy/v1";
+const HOLD_SCHEMA = "qorpera.node-tidy-hold/v1";
 const FINGERPRINT = /\b[0-9a-f]{64}\b/g;
 const FILE_PATH = /\/(?:etc|opt|var\/lib|usr\/local)\/[A-Za-z0-9_.@/+-]+/g;
 const MAX_TRACED_FILE_BYTES = 2_000_000;
+const MAX_HOLD_FILE_BYTES = 65_536;
 const HOUR_MS = 60 * 60_000;
 
 /** Decides which LXD images stay. Pure: every input is an observation of the node.
@@ -65,11 +68,105 @@ export function planImages({ images, instances, referenced, pins, held = [], now
 }
 
 /** Image transfer files older than the configured age. */
-export function planStaging(files, now, maxAgeHours) {
-	return files.filter((file) => now - file.mtimeMs >= maxAgeHours * HOUR_MS);
+export function planStaging(files, now, maxAgeHours, heldStaging = new Set()) {
+	return files.filter((file) => !heldStaging.has(basename(file.path)) && now - file.mtimeMs >= maxAgeHours * HOUR_MS);
 }
 
-function parseConfig(value) {
+export async function readHoldDir(holdDir, options = {}) {
+	const held = [];
+	const stagingFiles = new Set();
+	if (!holdDir) return { held, stagingFiles, refusal: null };
+	const expectedUid = options.expectedUid ?? process.getuid?.() ?? 0;
+	const listDir = options.readdir ?? readdir;
+	let dirInfo;
+	try {
+		dirInfo = await lstat(holdDir);
+	} catch (error) {
+		if (error.code === "ENOENT") return { held, stagingFiles, refusal: null };
+		return { held: [], stagingFiles: new Set(), refusal: `holdDir could not be read: ${error.code ?? error.message}` };
+	}
+	if (!dirInfo.isDirectory()) return { held: [], stagingFiles: new Set(), refusal: "holdDir is not a directory" };
+	if (dirInfo.uid !== expectedUid || (dirInfo.mode & 0o022) !== 0)
+		return { held: [], stagingFiles: new Set(), refusal: "holdDir ownership or permissions are unsafe" };
+	let entries;
+	try {
+		entries = (await listDir(holdDir)).sort();
+	} catch (error) {
+		return { held: [], stagingFiles: new Set(), refusal: `holdDir could not be read: ${error.code ?? error.message}` };
+	}
+	for (const name of entries) {
+		if (name.startsWith(".tmp-")) continue;
+		const path = join(holdDir, name);
+		let handle;
+		try {
+			handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+		} catch (error) {
+			if (error.code === "ENOENT") continue;
+			if (error.code === "ELOOP" || error.code === "EISDIR")
+				return { held: [], stagingFiles: new Set(), refusal: `hold file ${name} is unsafe or oversized` };
+			return {
+				held: [],
+				stagingFiles: new Set(),
+				refusal: `hold file ${name} could not be read: ${error.code ?? error.message}`,
+			};
+		}
+		let text;
+		try {
+			const info = await handle.stat();
+			if (!info.isFile() || info.uid !== expectedUid || (info.mode & 0o022) !== 0 || info.size > MAX_HOLD_FILE_BYTES)
+				return { held: [], stagingFiles: new Set(), refusal: `hold file ${name} is unsafe or oversized` };
+			const buffer = Buffer.allocUnsafe(MAX_HOLD_FILE_BYTES + 1);
+			let total = 0;
+			while (total < buffer.byteLength) {
+				const { bytesRead } = await handle.read(buffer, total, buffer.byteLength - total, null);
+				if (bytesRead === 0) break;
+				total += bytesRead;
+			}
+			if (total > MAX_HOLD_FILE_BYTES)
+				return { held: [], stagingFiles: new Set(), refusal: `hold file ${name} is unsafe or oversized` };
+			text = buffer.subarray(0, total).toString("utf8");
+		} catch (error) {
+			return {
+				held: [],
+				stagingFiles: new Set(),
+				refusal: `hold file ${name} could not be read: ${error.code ?? error.message}`,
+			};
+		} finally {
+			await handle.close();
+		}
+		let parsed;
+		try {
+			parsed = JSON.parse(text);
+		} catch {
+			return { held: [], stagingFiles: new Set(), refusal: `hold file ${name} is not valid JSON` };
+		}
+		const allowed = new Set(["schema", "fingerprint", "reason", "stagingFiles"]);
+		const validStaging =
+			parsed?.stagingFiles === undefined ||
+			(Array.isArray(parsed.stagingFiles) &&
+				parsed.stagingFiles.every(
+					(item) => typeof item === "string" && item.length > 0 && !item.includes("/") && item !== "." && item !== "..",
+				));
+		if (
+			!parsed ||
+			typeof parsed !== "object" ||
+			Array.isArray(parsed) ||
+			Object.keys(parsed).some((key) => !allowed.has(key)) ||
+			parsed.schema !== HOLD_SCHEMA ||
+			typeof parsed.fingerprint !== "string" ||
+			!/^[0-9a-f]{64}$/.test(parsed.fingerprint) ||
+			typeof parsed.reason !== "string" ||
+			parsed.reason.trim().length === 0 ||
+			!validStaging
+		)
+			return { held: [], stagingFiles: new Set(), refusal: `hold file ${name} is invalid` };
+		held.push({ fingerprint: parsed.fingerprint, reason: `hold ${name}: ${parsed.reason.trim()}` });
+		for (const file of parsed.stagingFiles ?? []) stagingFiles.add(file);
+	}
+	return { held, stagingFiles, refusal: null };
+}
+
+export function parseConfig(value) {
 	const keys = [
 		"schema",
 		"lxdSocket",
@@ -83,10 +180,19 @@ function parseConfig(value) {
 		"stagingMaxAgeHours",
 	];
 	// agentRoot is optional: a node that runs the node agent names its folder (/opt/qorpera-node).
-	const given = Object.keys(value ?? {}).filter((key) => key !== "agentRoot");
+	const given = Object.keys(value ?? {}).filter((key) => key !== "agentRoot" && key !== "holdDir");
 	if (!value || typeof value !== "object" || given.sort().join() !== [...keys].sort().join())
 		throw new Error("Node tidy configuration has unexpected fields");
 	if ("agentRoot" in value && !(typeof value.agentRoot === "string" && value.agentRoot.startsWith("/")))
+		throw new Error("Node tidy configuration is invalid");
+	if (
+		"holdDir" in value &&
+		!(
+			typeof value.holdDir === "string" &&
+			/^\/(?:etc|opt)\/.+/.test(value.holdDir) &&
+			!value.holdDir.split("/").some((segment) => segment === "." || segment === "..")
+		)
+	)
 		throw new Error("Node tidy configuration is invalid");
 	const strings = (list) => Array.isArray(list) && list.every((item) => typeof item === "string" && item.startsWith("/"));
 	if (
@@ -308,8 +414,12 @@ export async function tidy({ config, apply, lxd, systemd, now = Date.now(), remo
 			.filter((pin) => restingTexts.some((text) => text.includes(basename(pin.path))))
 			.map((pin) => ({ fingerprint: pin.fingerprint, reason: "old lane pin, until archived" }));
 	}
+	const holdState = await readHoldDir(config.holdDir);
+	held = [...held, ...holdState.held];
 	const images = await lxd.images();
-	const plan = planImages({ images, instances: await lxd.instances(), referenced, pins, held, now, config });
+	const rawPlan = planImages({ images, instances: await lxd.instances(), referenced, pins, held, now, config });
+	const refusal = [rawPlan.refusal, holdState.refusal].filter(Boolean).join("; ") || null;
+	const plan = refusal ? { ...rawPlan, remove: [], refusal } : rawPlan;
 	const stagingFiles = [];
 	for (const pattern of config.staging)
 		for (const path of await expand(pattern)) {
@@ -317,7 +427,7 @@ export async function tidy({ config, apply, lxd, systemd, now = Date.now(), remo
 			if (info.isFile()) stagingFiles.push({ path, size: info.size, mtimeMs: info.mtimeMs });
 		}
 	// A refusal means the node looks unlike what the rules expect: delete nothing at all.
-	const staging = plan.refusal ? [] : planStaging(stagingFiles, now, config.stagingMaxAgeHours);
+	const staging = plan.refusal ? [] : planStaging(stagingFiles, now, config.stagingMaxAgeHours, holdState.stagingFiles);
 	const report = {
 		mode: apply ? "apply" : "dry-run",
 		unitsTraced: units.length,

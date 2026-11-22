@@ -1,4 +1,5 @@
 import type { CloudApi } from "../../cloud/api.ts";
+import { formatUsdCents, formatUsdMicrodollars } from "../../cloud/gemini-key.ts";
 import type { MemberNotification, WebMemberNotifications } from "../../cloud/member-notifications.ts";
 import {
 	PlanSwitchBusyError,
@@ -181,6 +182,15 @@ function sentence(
 							amount: kroner(subject.dueOre),
 						},
 					);
+		case "qorpera.member-notification.gemini-cap-reached/v1":
+			return t(
+				"Your monthly Gemini API spend cap of {cap} was reached ({spent} used in {month}). Raise the cap in Settings or switch models to continue.",
+				{
+					cap: formatUsdCents(subject.monthlyCapCents),
+					spent: formatUsdMicrodollars(subject.spendMicrodollars),
+					month: monthName(subject.month),
+				},
+			);
 		case "qorpera.member-notification.machine-capacity/v1":
 			return t("All {count} company computers are in use. Close one to open another.", { count: subject.ceiling });
 		case "routine-needs-model-account":

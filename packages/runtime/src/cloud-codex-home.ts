@@ -561,7 +561,7 @@ interface Connection {
 	initialize?: Record<string, unknown>;
 	initialized?: string;
 	/** A handshake told again, until its answer comes. */
-	again?: { readonly id: string; readonly answered: () => void };
+	again?: { readonly id: string; readonly answered: () => void; readonly failed: (error: Error) => void };
 	/** Codex is done with this connection (or the run is): its channel ending then is no loss. */
 	closing?: boolean;
 	/** The model's processes on the current channel, and those of channels that went away: a request about one of
@@ -824,7 +824,7 @@ export class CloudCodexHome {
 
 	/** One connection of the namespace: its own channel to the machine for as long as it lasts. */
 	#serve(client: Socket): void {
-		if (this.#sockets.size >= MAX_CONNECTIONS) {
+		if (this.#sockets.size >= MAX_CONNECTIONS || this.#signal.aborted) {
 			client.destroy();
 			return;
 		}
@@ -882,6 +882,10 @@ export class CloudCodexHome {
 			client.destroy();
 			void connection.stream?.close();
 		};
+		if (this.#signal.aborted) {
+			stop();
+			return;
+		}
 		this.#signal.addEventListener("abort", stop, { once: true });
 		/** A channel for this connection, or the words to answer with while there is none. */
 		const connect = async (current: Record<string, unknown> | undefined): Promise<string | undefined> => {
@@ -942,14 +946,22 @@ export class CloudCodexHome {
 	async #replay(stream: CloudCodexHomeStream, connection: Connection): Promise<void> {
 		const id = JSON.stringify(`qorpera-home-again-${++this.#again}`);
 		let timer: NodeJS.Timeout | undefined;
+		let onAbort: (() => void) | undefined;
 		try {
 			await new Promise<void>((resolve, reject) => {
-				connection.again = { id, answered: resolve };
+				if (this.#signal.aborted) {
+					reject(new Error("The home channel stopped during handshake"));
+					return;
+				}
+				connection.again = { id, answered: resolve, failed: reject };
+				onAbort = () => reject(new Error("The home channel stopped during handshake"));
+				this.#signal.addEventListener("abort", onAbort, { once: true });
 				timer = setTimeout(() => reject(new Error("The machine did not answer the handshake")), REPLAY_MS);
 				stream.write(JSON.stringify({ ...connection.initialize, id: JSON.parse(id) as JsonValue }));
 			});
 		} finally {
 			clearTimeout(timer);
+			if (onAbort) this.#signal.removeEventListener("abort", onAbort);
 			connection.again = undefined;
 		}
 		// Codex's own `initialized` when it said it; otherwise the same word, as Codex says it after an answer.
@@ -991,6 +1003,7 @@ export class CloudCodexHome {
 			// A channel that broke is a channel that ended.
 		} finally {
 			if (connection.stream === stream) connection.stream = undefined;
+			connection.again?.failed(new Error("The machine closed during handshake"));
 			if (!connection.closing && !connection.client.destroyed) {
 				this.#failure ??= CLOUD_HOME_LOST;
 				// Until a channel opens again, a call the machine never saw is told why: its home was lost under the
@@ -1082,6 +1095,18 @@ export class CloudCodexHome {
 				this.#note(callId, gated.refusal);
 				return JSON.stringify({ id, error: { code: -32600, message: gated.refusal } });
 			}
+		}
+		if (connection.closing) {
+			if (unnamed && callId)
+				this.#steps?.finish(callId, JSON.stringify({ error: { code: -32010, message: CLOUD_HOME_UNAVAILABLE } }));
+			return undefined;
+		}
+		if (connection.stream !== stream) {
+			const words = this.#down ?? CLOUD_HOME_UNAVAILABLE;
+			if (unnamed && callId)
+				this.#steps?.finish(callId, JSON.stringify({ error: { code: -32010, message: words } }));
+			this.#note(callId, words);
+			return request ? JSON.stringify({ id, error: { code: -32010, message: words } }) : undefined;
 		}
 		// Out there until the machine answers it: if the machine goes first, this is what gets the words instead.
 		if (request) {
@@ -1195,10 +1220,12 @@ export class CloudCodexHome {
 				const done = (): void => {
 					clearTimeout(timer);
 					this.#patchNotices.delete(done);
+					this.#signal.removeEventListener("abort", done);
 					resolve();
 				};
 				const timer = setTimeout(done, left);
 				this.#patchNotices.add(done);
+				this.#signal.addEventListener("abort", done, { once: true });
 			});
 		}
 	}

@@ -31,7 +31,7 @@ use crate::local::{self, Local};
 use crate::proto::{
 	code, join, valid_name, valid_path, EntryKind, LinkRequest, OpenRequest, RenameRequest, MAX_READ, MAX_TARGET,
 };
-use crate::tree::{Attr, Child, Inval, Tree, ROOT};
+use crate::tree::{find_child, Attr, Child, Inval, Tree, ROOT};
 use crate::versions::VersionMap;
 use crate::reads::ReadLog;
 use crate::writer::Writer;
@@ -261,7 +261,7 @@ impl Shared {
 
 	/// A folder's entries: from memory, or from the node. One fetch per folder at a time; others wait
 	/// for it. The flag says whether the answer may be cached by the kernel.
-	fn children(&self, dir: u64, hold: Option<&str>) -> Result<(Vec<Child>, bool), i32> {
+	fn children(&self, dir: u64, hold: Option<&str>) -> Result<(Arc<Vec<Child>>, bool), i32> {
 		loop {
 			let (path, started) = {
 				let mut tree = self.tree.lock().unwrap();
@@ -270,8 +270,7 @@ impl Shared {
 					return Err(libc::ENOTDIR);
 				}
 				if let Some(listing) = tree.listing(dir) {
-					let listing = listing.to_vec();
-					if let Some(c) = hold.and_then(|name| listing.iter().find(|c| c.name == name)) {
+					if let Some(c) = hold.and_then(|name| find_child(&listing, name)) {
 						tree.hold(c.ino);
 						// Recorded under the tree's lock, so a change after this read always sees it.
 						self.answer(dir, &c.name, tree.changes());
@@ -295,7 +294,7 @@ impl Shared {
 				let keep = self.feed_up.load(Ordering::SeqCst);
 				let mut tree = self.tree.lock().unwrap();
 				let (children, kept) = tree.install(dir, entries, started, keep, hold);
-				if let Some(name) = hold.filter(|name| kept && children.iter().any(|c| c.name == *name)) {
+				if let Some(name) = hold.filter(|name| kept && find_child(&children, name).is_some()) {
 					self.answer(dir, name, started);
 				}
 				(children, kept)
@@ -323,8 +322,8 @@ impl Shared {
 			(parent, crate::proto::split(path).1.to_string())
 		};
 		let (children, kept) = self.children(parent, None)?;
-		match children.into_iter().find(|c| c.name == name) {
-			Some(c) if c.ino == ino => Ok((c.attr, kept)),
+		match find_child(&children, &name) {
+			Some(c) if c.ino == ino => Ok((c.attr.clone(), kept)),
 			// A newer version got its own inode and this one keeps its version (detached); a path that is gone
 			// is gone.
 			_ => self.tree.lock().unwrap().attr(ino).map(|a| (a, kept)).ok_or(libc::ENOENT),
@@ -396,7 +395,7 @@ impl Shared {
 	/// What a name in a folder shows now (listing the folder if need be).
 	fn child(&self, dir: u64, name: &str) -> Result<Child, i32> {
 		let (children, _) = self.children(dir, None)?;
-		children.into_iter().find(|c| c.name == name).ok_or(libc::ENOENT)
+		find_child(&children, name).cloned().ok_or(libc::ENOENT)
 	}
 
 	/// Remember a version read through its inode, unless a local save or rename changed what that inode stands for.
@@ -766,7 +765,7 @@ impl Filesystem for FolderFs {
 		let Some(reply) = self.local_lookup(parent.0, name, reply) else { return };
 		self.s.may_answer_top(parent.0, name);
 		match self.s.children(parent.0, Some(name)) {
-			Ok((children, kept)) => match children.iter().find(|c| c.name == name) {
+			Ok((children, kept)) => match find_child(&children, name) {
 				Some(c) => {
 					let a = self.s.shown(c.ino, c.attr.clone());
 					let ttl = if self.s.fresh(c.ino) { Duration::ZERO } else { self.s.ttl(kept) };
@@ -819,7 +818,7 @@ impl Filesystem for FolderFs {
 		let mut entries = Vec::with_capacity(children.len() + 2);
 		entries.push((ino.0, FileType::Directory, ".".to_string()));
 		entries.push((parent, FileType::Directory, "..".to_string()));
-		entries.extend(children.into_iter().map(|c| (c.ino, file_type(c.attr.kind), c.name)));
+		entries.extend(children.iter().map(|c| (c.ino, file_type(c.attr.kind), c.name.clone())));
 		if let Err(e) = self.merge_local(ino.0, &path, &mut entries) {
 			return reply.error(Errno::from_i32(e));
 		}
@@ -924,7 +923,7 @@ impl Filesystem for FolderFs {
 		// A new file, where the folder's listing has none: this view's own until a boundary publishes it (`Unpublished`).
 		let fresh = request.exclusive || {
 			let tree = self.s.tree.lock().unwrap();
-			tree.listing(parent.0).is_some_and(|l| !l.iter().any(|c| c.name == name))
+			tree.listing(parent.0).is_some_and(|l| find_child(&l, &name).is_none())
 		};
 		let noted = fresh && self.s.unpublished.lock().unwrap().note(&path);
 		let opened = match self.s.link.open_write(&request) {
@@ -1281,7 +1280,7 @@ impl Filesystem for FolderFs {
 		let index = self.index_before(&from, &to, &source);
 		let fresh = {
 			let tree = self.s.tree.lock().unwrap();
-			tree.listing(newparent.0).is_some_and(|l| !l.iter().any(|c| c.name == to_name))
+			tree.listing(newparent.0).is_some_and(|l| find_child(&l, &to_name).is_none())
 		};
 		let (stays, noted) = self.s.unpublished.lock().unwrap().renaming(&from, &to, folder, fresh);
 		if let Err(f) = self.s.link.rename(&request) {
