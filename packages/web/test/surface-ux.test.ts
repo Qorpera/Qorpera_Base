@@ -932,7 +932,7 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		store.dispose();
 	});
 
-	it("renders affected file chips and projected Company Files source footer in the Changes drawer", async () => {
+	it("renders affected file chips and omits the folder source footer in the Changes drawer", async () => {
 		stubFigureMotion();
 		const navigated: string[] = [];
 		const site = summary({
@@ -999,10 +999,9 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		expect(navigated).toEqual(["files"]);
 		expect(location.hash).toBe(`#/c/${COMPANY}/s/files`);
 
-		const sourcePill = view.el.querySelector<HTMLAnchorElement>(".surface-drawer-source .surface-source-pill");
-		expect(sourcePill).not.toBeNull();
-		expect(sourcePill?.querySelector(".surface-source-path")?.textContent).toBe("code/website");
-		expect(linkHref(sourcePill!)).toBe(`#/c/${COMPANY}/s/files`);
+		expect(view.el.querySelector(".surface-drawer.is-open.is-overview")).not.toBeNull();
+		expect(view.el.querySelector(".surface-drawer-source")).toBeNull();
+		expect(view.el.querySelector(".surface-source-pill")).toBeNull();
 
 		view.dispose();
 
@@ -1014,12 +1013,9 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		document.body.append(identityView.el);
 		await flush();
 		identityView.update();
-		expect(identityView.el.querySelector(".surface-drawer-source .surface-source-path")?.textContent).toBe(
-			"identity/",
-		);
-		expect(linkHref(identityView.el.querySelector(".surface-drawer-source .surface-source-pill")!)).toBe(
-			`#/c/${COMPANY}/s/files`,
-		);
+		expect(identityView.el.querySelector(".surface-drawer.is-open.is-overview")).not.toBeNull();
+		expect(identityView.el.querySelector(".surface-drawer-source")).toBeNull();
+		expect(identityView.el.querySelector(".surface-source-pill")).toBeNull();
 
 		identityView.dispose();
 		store.dispose();
