@@ -318,8 +318,8 @@ pass "sqlite3, zip, unzip, ripgrep, fd and jq work as the session"
 # git objects into the storage, which the drop takes away again. Only the image's bash, git and python3 do the work
 # (its coreutils are uutils).
 install -d -m 0755 /run/qorpera-proof-scripts
-install -m 0644 "$SCRIPTS/copy.sh" "$SCRIPTS/diff.sh" "$SCRIPTS/cache-save.sh" "$SCRIPTS/persist.sh" \
-	"$SCRIPTS/persist-drop.sh" "$SCRIPTS/collect.sh" "$SCRIPTS/drop.sh" /run/qorpera-proof-scripts/
+install -m 0644 "$SCRIPTS/copy.sh" "$SCRIPTS/diff.sh" "$SCRIPTS/cache-tracked.sh" "$SCRIPTS/cache-save.sh" \
+	"$SCRIPTS/persist.sh" "$SCRIPTS/persist-drop.sh" "$SCRIPTS/collect.sh" "$SCRIPTS/drop.sh" /run/qorpera-proof-scripts/
 STORE=$MOUNT/code/proof/site/repo.git
 REPO=/company/code/proof/site/repo.git
 CHECKS=$HOMEDIR/.qorpera-checks
@@ -443,15 +443,34 @@ pass "diff.sh emits NUL-delimited unquoted paths including quotes"
 CHECK_CACHE_PROOF=$(mktemp -d)
 chmod 0755 "$CHECK_CACHE_PROOF"
 REPO_CACHE="$CHECK_CACHE_PROOF/repo1"
-CACHE_SPEC='[{"key":"deps-v1","paths":["node_modules","build.sh"]}]'
-SESSION_CWD=$CHECKS/0000000003-0001/src as_session bash -c 'mkdir -p node_modules && printf "cached\n" >node_modules/pkg.txt && printf "tampered\n" >build.sh'
-env QORPERA_CHECKS_ROOT="$CHECKS" QORPERA_CHECKS_NAME=0000000003-0001 QORPERA_CHECKS_CACHES="$CACHE_SPEC" \
-	QORPERA_CHECKS_CACHE_ROOT="$REPO_CACHE" QORPERA_CHECKS_CACHE_GLOBAL_ROOT="$CHECK_CACHE_PROOF" \
-	QORPERA_CHECKS_CACHE_LIMIT_BYTES=8589934592 bash --noprofile --norc /run/qorpera-proof-scripts/cache-save.sh ||
-	fail "cache-save.sh failed"
+CACHE_SPEC='[{"key":"deps-v1","paths":["node_modules","badparent/qorpera-root-secret"]}]'
+ROOT_SECRET=/root/qorpera-root-secret
+FSMONITOR_SENTINEL=/tmp/qorpera-fsmonitor-pwned
+rm -f "$FSMONITOR_SENTINEL" "$ROOT_SECRET"
+printf 'root-only-secret\n' >"$ROOT_SECRET"
+chmod 0600 "$ROOT_SECRET"
+SESSION_CWD=$CHECKS/0000000003-0001/src as_session bash -c \
+	"mkdir -p node_modules && printf 'cached\n' >node_modules/pkg.txt && printf 'tampered\n' >build.sh && ln -s /root badparent && git config core.fsmonitor 'touch $FSMONITOR_SENTINEL'"
+command_as_session cache-tracked.sh "$HOMEDIR" QORPERA_CHECKS_NAME=0000000003-0001 QORPERA_CHECKS_COMMIT="$COMMIT" \
+	QORPERA_CHECKS_CACHE_PATHS='["node_modules","build.sh","badparent/qorpera-root-secret"]' \
+	QORPERA_CHECKS_TRACKED_NONCE=fedcba9876543210fedcba98
+[[ $CODE == 0 && $OUT == 'QORPERA_CACHE_UNTRACKED:fedcba9876543210fedcba98:["node_modules", "badparent/qorpera-root-secret"]' ]] ||
+	fail "cache-tracked.sh gave $CODE: $OUT"
+if env QORPERA_CHECKS_ROOT="$CHECKS" QORPERA_CHECKS_NAME=0000000003-0001 QORPERA_CHECKS_UID=0 QORPERA_CHECKS_GID=0 \
+	QORPERA_CHECKS_CACHES="$CACHE_SPEC" QORPERA_CHECKS_CACHE_ROOT="$REPO_CACHE" \
+	QORPERA_CHECKS_CACHE_GLOBAL_ROOT="$CHECK_CACHE_PROOF" QORPERA_CHECKS_CACHE_LIMIT_BYTES=8589934592 \
+	bash --noprofile --norc /run/qorpera-proof-scripts/cache-save.sh; then
+	fail "cache-save.sh accepted uid=0"
+fi
+env QORPERA_CHECKS_ROOT="$CHECKS" QORPERA_CHECKS_NAME=0000000003-0001 QORPERA_CHECKS_UID="$SESSION_UID" \
+	QORPERA_CHECKS_GID="$SESSION_UID" QORPERA_CHECKS_CACHES="$CACHE_SPEC" QORPERA_CHECKS_CACHE_ROOT="$REPO_CACHE" \
+	QORPERA_CHECKS_CACHE_GLOBAL_ROOT="$CHECK_CACHE_PROOF" QORPERA_CHECKS_CACHE_LIMIT_BYTES=8589934592 \
+	bash --noprofile --norc /run/qorpera-proof-scripts/cache-save.sh || fail "cache-save.sh failed"
+[[ ! -e "$FSMONITOR_SENTINEL" ]] || fail "hostile core.fsmonitor ran during cache save"
 [[ -f "$REPO_CACHE/deps-v1/.complete" && -f "$REPO_CACHE/deps-v1/data/node_modules/pkg.txt" ]] ||
 	fail "cache-save.sh did not persist untracked cache path"
 [[ ! -e "$REPO_CACHE/deps-v1/data/build.sh" ]] || fail "cache-save.sh persisted tracked build.sh"
+[[ ! -e "$REPO_CACHE/deps-v1/data/badparent" ]] || fail "cache-save.sh followed symlinked parent directory"
 [[ $(stat -c '%u %g %a' "$REPO_CACHE/deps-v1") == "0 0 755" ]] ||
 	fail "cache entry permissions are $(stat -c '%u %g %a' "$REPO_CACHE/deps-v1")"
 if as_session touch "$REPO_CACHE/deps-v1/poison" 2>/dev/null; then
@@ -459,8 +478,9 @@ if as_session touch "$REPO_CACHE/deps-v1/poison" 2>/dev/null; then
 fi
 mkdir -p "$REPO_CACHE/deps-v1/data"
 printf 'poisoned-tracked\n' >"$REPO_CACHE/deps-v1/data/build.sh"
+RESTORE_SPEC='[{"key":"deps-v1","paths":["node_modules","build.sh"]}]'
 command_as_session copy.sh "$HOMEDIR" QORPERA_CHECKS_NAME=0000000004-0001 QORPERA_CHECKS_COMMIT="$COMMIT" \
-	QORPERA_CHECKS_CACHES="$CACHE_SPEC" QORPERA_CHECKS_CACHE_ROOT="$REPO_CACHE"
+	QORPERA_CHECKS_CACHES="$RESTORE_SPEC" QORPERA_CHECKS_CACHE_ROOT="$REPO_CACHE"
 [[ $CODE == 0 ]] || fail "copy.sh with cache restore gave $CODE: $OUT"
 [[ $(as_session cat "$CHECKS/0000000004-0001/src/node_modules/pkg.txt") == "cached" ]] ||
 	fail "copy.sh did not restore untracked cache file"
@@ -469,13 +489,13 @@ command_as_session copy.sh "$HOMEDIR" QORPERA_CHECKS_NAME=0000000004-0001 QORPER
 install -d -m 0755 "$CHECK_CACHE_PROOF/repo-old/old-key/data"
 dd if=/dev/zero of="$CHECK_CACHE_PROOF/repo-old/old-key/data/big.bin" bs=1024 count=64 status=none
 touch -d '2020-01-01' "$CHECK_CACHE_PROOF/repo-old/old-key/.last-used" "$CHECK_CACHE_PROOF/repo-old/old-key/.complete"
-env QORPERA_CHECKS_ROOT="$CHECKS" QORPERA_CHECKS_NAME=0000000004-0001 QORPERA_CHECKS_CACHES="$CACHE_SPEC" \
-	QORPERA_CHECKS_CACHE_ROOT="$REPO_CACHE" QORPERA_CHECKS_CACHE_GLOBAL_ROOT="$CHECK_CACHE_PROOF" \
-	QORPERA_CHECKS_CACHE_LIMIT_BYTES=4096 bash --noprofile --norc /run/qorpera-proof-scripts/cache-save.sh ||
-	fail "cache-save.sh LRU trim failed"
+env QORPERA_CHECKS_ROOT="$CHECKS" QORPERA_CHECKS_NAME=0000000004-0001 QORPERA_CHECKS_UID="$SESSION_UID" \
+	QORPERA_CHECKS_GID="$SESSION_UID" QORPERA_CHECKS_CACHES="$CACHE_SPEC" QORPERA_CHECKS_CACHE_ROOT="$REPO_CACHE" \
+	QORPERA_CHECKS_CACHE_GLOBAL_ROOT="$CHECK_CACHE_PROOF" QORPERA_CHECKS_CACHE_LIMIT_BYTES=4096 \
+	bash --noprofile --norc /run/qorpera-proof-scripts/cache-save.sh || fail "cache-save.sh LRU trim failed"
 [[ ! -e "$CHECK_CACHE_PROOF/repo-old/old-key" ]] || fail "cache-save.sh did not evict oldest cross-repo entry"
-rm -rf "$CHECK_CACHE_PROOF"
-pass "cache-save.sh and copy.sh enforce root-only writes, tracked-file protection, and cross-repo LRU eviction"
+rm -rf "$CHECK_CACHE_PROOF" "$ROOT_SECRET" "$FSMONITOR_SENTINEL"
+pass "cache-tracked.sh, cache-save.sh and copy.sh enforce privilege-dropped streaming, block core.fsmonitor and symlinked parents, protect tracked files, and evict cross-repo LRU"
 
 SESSION_CWD=$CHECKS/0000000004-0001/src as_session bash -c \
 	'printf "log secret=proof-secret-value-0123\n" >../out/1-test.log && printf "<testsuite name=\"s\"><testcase name=\"t\"><failure message=\"bad proof-secret-value-0123\"/></testcase></testsuite>\n" >junit.xml'

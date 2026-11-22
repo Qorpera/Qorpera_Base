@@ -46,6 +46,7 @@ const extract = (name) => {
 };
 const copy = extract("CODE_CHECKS_COPY");
 const diff = extract("CODE_CHECKS_DIFF");
+const cacheTracked = extract("CODE_CHECKS_CACHE_TRACKED");
 const cacheSave = extract("CODE_CHECKS_CACHE_SAVE");
 const persist = extract("CODE_CHECKS_PERSIST");
 const persistDrop = extract("CODE_CHECKS_PERSIST_DROP");
@@ -53,6 +54,7 @@ mkdirSync(out, { recursive: true });
 for (const [name, text] of [
 	["copy.sh", copy],
 	["diff.sh", diff],
+	["cache-tracked.sh", cacheTracked],
 	["cache-save.sh", cacheSave],
 	["persist.sh", persist],
 	["persist-drop.sh", persistDrop],
@@ -60,4 +62,6 @@ for (const [name, text] of [
 	["drop.sh", CODE_SITE_DROP],
 ])
 	writeFileSync(join(out, name), `${text}\n`, { mode: 0o644 });
-console.log(`wrote copy.sh, diff.sh, cache-save.sh, persist.sh, persist-drop.sh, collect.sh and drop.sh to ${out}`);
+console.log(
+	`wrote copy.sh, diff.sh, cache-tracked.sh, cache-save.sh, persist.sh, persist-drop.sh, collect.sh and drop.sh to ${out}`,
+);

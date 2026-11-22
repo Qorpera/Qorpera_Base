@@ -9204,7 +9204,15 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			expect(f.ran().some((r) => Boolean(r.environment.QORPERA_CHECKS_CACHE_GLOBAL_ROOT))).toBe(false);
 			expect(f.folderExecStream).not.toHaveBeenCalled();
 
-			f.ending(() => ({ code: 0 }));
+			f.ending((run) => {
+				if (run.environment.QORPERA_CHECKS_TRACKED_NONCE) {
+					return {
+						code: 0,
+						printed: `QORPERA_CACHE_UNTRACKED:${run.environment.QORPERA_CHECKS_TRACKED_NONCE}:["node_modules"]\n`,
+					};
+				}
+				return { code: 0 };
+			});
 			const passed = await f.session.runChecks!(
 				{ commit: COMMIT, checks: failingChecks, attempt: 2, site: null, caches },
 				f.signal,
@@ -9214,6 +9222,8 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			expect(f.folderExecStream).toHaveBeenCalledTimes(1);
 			const saveCall = f.folderExecStream.mock.calls[0]?.[2];
 			expect(saveCall?.command).toContain("QORPERA_CHECKS_CACHE_GLOBAL_ROOT=/var/cache/qorpera-check-caches");
+			expect(saveCall?.command.some((arg) => /^QORPERA_CHECKS_UID=\d+$/.test(arg))).toBe(true);
+			expect(saveCall?.command.some((arg) => /^QORPERA_CHECKS_GID=\d+$/.test(arg))).toBe(true);
 			expect(saveCall?.stdin.toString("utf8")).toContain("QORPERA_CACHE_SAVE_EOF");
 			const passCopy = f
 				.ran()
@@ -9224,11 +9234,17 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			expect(passCopy?.environment.QORPERA_CHECKS_CACHES).toBe(JSON.stringify(caches));
 		});
 
-		it("executes real diff, cache-save, copy cache-restore, persist, and persist-drop scripts with bash, git, and python3", async () => {
+		it("executes real diff, cache-tracked, cache-save, copy cache-restore, persist, and persist-drop scripts with bash, git, and python3 including hostile fsmonitor and symlink parent attacks", async () => {
 			const m = await onTheMachine();
 			const at = await m.home("v2");
 			const f = await checksFixture({ packageCaches: true });
-			const caches = [{ key: `deps-\${hash('app.js')}`, paths: ["node_modules", "app.js"], restoreKeys: ["deps-"] }];
+			const caches = [
+				{
+					key: `deps-\${hash('app.js')}`,
+					paths: ["node_modules", "app.js", "badparent/secret.txt"],
+					restoreKeys: ["deps-"],
+				},
+			];
 			f.ending((run) => {
 				if (run.environment.QORPERA_CHECKS_BASE_BRANCH) return { code: 0, printed: "QORPERA_DIFF_OK\napp.js\0" };
 				if (checkOf(run) === "fail-cmd") return { code: 1, printed: "fail\n" };
@@ -9279,7 +9295,15 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			expect(diffScript).toContain("QORPERA_DIFF_OK");
 			expect(persistScript).toContain("QORPERA_PERSIST_EOF");
 			expect(persistDropScript).toContain("QORPERA_CHECKS_PERSIST_DIR");
-			f.ending(() => ({ code: 0 }));
+			f.ending((run) => {
+				if (run.environment.QORPERA_CHECKS_TRACKED_NONCE) {
+					return {
+						code: 0,
+						printed: `QORPERA_CACHE_UNTRACKED:${run.environment.QORPERA_CHECKS_TRACKED_NONCE}:["node_modules","badparent/secret.txt"]\n`,
+					};
+				}
+				return { code: 0 };
+			});
 			await f.session.runChecks!(
 				{
 					commit: COMMIT,
@@ -9290,7 +9314,11 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				},
 				f.signal,
 			);
+			const cacheTrackedScript = f.ran().find((r) => Boolean(r.environment.QORPERA_CHECKS_TRACKED_NONCE))
+				?.command as string;
 			const cacheSaveScript = f.folderExecStream.mock.calls[0]?.[2].stdin.toString("utf8") as string;
+			expect(cacheTrackedScript).toContain("QORPERA_CACHE_TRACKED_EOF");
+			expect(cacheSaveScript).toContain("QORPERA_CACHE_SAVE_EOF");
 
 			const source = join(m.top, "source");
 			const repo = join(m.top, "repo.git");
@@ -9318,17 +9346,46 @@ describe("a run of a repository's checks in the session's machine (own code stor
 
 			const globalCache = join(m.top, "check-caches");
 			const repoCache = join(globalCache, "repo-1");
+			const outsideDir = join(m.top, "outside-secret");
+			const fsmonitorSentinel = join(m.top, "fsmonitor-ran");
 			await mkdir(globalCache, { recursive: true, mode: 0o755 });
+			await mkdir(outsideDir, { recursive: true });
+			await writeFile(join(outsideDir, "secret.txt"), "root-secret\n");
 			const src1 = join(at.root, run1, "src");
-			await mkdir(join(src1, "node_modules"), { recursive: true });
+			await mkdir(join(src1, "node_modules", ".bin"), { recursive: true });
 			await writeFile(join(src1, "node_modules", "cached.txt"), "from-cache\n");
+			await symlink("../cached.txt", join(src1, "node_modules", ".bin", "tool"));
+			await symlink(join(outsideDir, "secret.txt"), join(src1, "node_modules", "escape"));
+			await symlink(outsideDir, join(src1, "badparent"));
 			await writeFile(join(src1, "app.js"), "tampered-working-copy\n");
+			await m.git(src1, "config", "core.fsmonitor", `touch ${fsmonitorSentinel}`);
+
+			const trackedNonce = "11223344556677889900aabb";
+			const trackedRes = await m.bash(
+				cacheTrackedScript,
+				{
+					QORPERA_CHECKS_ROOT: at.root,
+					QORPERA_CHECKS_NAME: run1,
+					QORPERA_CHECKS_REPOSITORY: repo,
+					QORPERA_CHECKS_COMMIT: commit2,
+					QORPERA_CHECKS_CACHE_PATHS: JSON.stringify(["node_modules", "app.js", "badparent/secret.txt"]),
+					QORPERA_CHECKS_TRACKED_NONCE: trackedNonce,
+				},
+				at.home,
+			);
+			expect(trackedRes.code).toBe(0);
+			const trackedPrefix = `QORPERA_CACHE_UNTRACKED:${trackedNonce}:`;
+			const untrackedList = JSON.parse(trackedRes.output.trim().slice(trackedPrefix.length)) as string[];
+			expect(untrackedList).toEqual(["node_modules", "badparent/secret.txt"]);
+			expect(await m.exists(fsmonitorSentinel)).toBe(false);
+
+			const filteredCaches = [{ key: `deps-\${hash('app.js')}`, paths: untrackedList, restoreKeys: ["deps-"] }];
 			const saveRes = await m.bash(
 				cacheSaveScript,
 				{
 					QORPERA_CHECKS_ROOT: at.root,
 					QORPERA_CHECKS_NAME: run1,
-					QORPERA_CHECKS_CACHES: JSON.stringify(caches),
+					QORPERA_CHECKS_CACHES: JSON.stringify(filteredCaches),
 					QORPERA_CHECKS_CACHE_ROOT: repoCache,
 					QORPERA_CHECKS_CACHE_GLOBAL_ROOT: globalCache,
 					QORPERA_CHECKS_CACHE_LIMIT_BYTES: String(100 * 1024 * 1024),
@@ -9336,10 +9393,14 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				at.home,
 			);
 			expect(saveRes.code).toBe(0);
+			expect(await m.exists(fsmonitorSentinel)).toBe(false);
 			const savedKeys = await readdir(repoCache);
 			expect(savedKeys).toHaveLength(1);
 			const savedEntry = join(repoCache, savedKeys[0] as string);
 			expect(await readFile(join(savedEntry, "data", "node_modules", "cached.txt"), "utf8")).toBe("from-cache\n");
+			expect((await lstat(join(savedEntry, "data", "node_modules", ".bin", "tool"))).isSymbolicLink()).toBe(true);
+			expect(await m.exists(join(savedEntry, "data", "node_modules", "escape"))).toBe(false);
+			expect(await m.exists(join(savedEntry, "data", "badparent"))).toBe(false);
 			expect(await m.exists(join(savedEntry, "data", "app.js"))).toBe(false);
 			expect((await lstat(savedEntry)).mode & 0o777).toBe(0o755);
 			expect((await lstat(join(savedEntry, "data", "node_modules", "cached.txt"))).mode & 0o777).toBe(0o644);
@@ -9355,6 +9416,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			).toEqual({ code: 0, output: "" });
 			expect(await readFile(join(at.root, run2, "src", "node_modules", "cached.txt"), "utf8")).toBe("from-cache\n");
 			expect(await readFile(join(at.root, run2, "src", "app.js"), "utf8")).toBe("app\n");
+			expect(await m.exists(fsmonitorSentinel)).toBe(false);
 
 			const oldRepoEntry = join(globalCache, "repo-old", "old-key");
 			await mkdir(join(oldRepoEntry, "data"), { recursive: true });
@@ -9368,7 +9430,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				{
 					QORPERA_CHECKS_ROOT: at.root,
 					QORPERA_CHECKS_NAME: run2,
-					QORPERA_CHECKS_CACHES: JSON.stringify(caches),
+					QORPERA_CHECKS_CACHES: JSON.stringify(filteredCaches),
 					QORPERA_CHECKS_CACHE_ROOT: repoCache,
 					QORPERA_CHECKS_CACHE_GLOBAL_ROOT: globalCache,
 					QORPERA_CHECKS_CACHE_LIMIT_BYTES: "4096",
