@@ -25,7 +25,9 @@ Self-hosted static sites, full-stack/SSR apps, and custom domains (both apex `ex
 3. Provision encrypted credentials with `systemd-creds encrypt`:
    - `/etc/credstore.encrypted/qorpera-web-control-token` (shared between `qorpera-web-router`, `qorpera-app-host`, and `coding-worker`'s `webHosting.controlToken`)
    - `/etc/credstore.encrypted/qorpera-web-cookie-secret` (32+ random bytes for visitor/preview/member HMAC cookies)
-   - `/etc/credstore.encrypted/qorpera-web-database-url` (Postgres connection string with `service_role` access for `qorpera_web_edge_*` RPCs and `LISTEN qorpera_web_route_changes`)
+   - `/etc/credstore.encrypted/qorpera-web-database-url` (Postgres connection string with `service_role` access for `qorpera_web_edge_*` RPCs and `LISTEN qorpera_web_route_changes`; if using a custom/Supabase CA bundle, copy it to `/etc/qorpera-web/db-ca.pem` with mode `0644` and set `QORPERA_WEB_ROUTER_DATABASE_CA_FILE=/etc/qorpera-web/db-ca.pem` in `/etc/qorpera-web/router.env`)
+   - Verify `/etc/qorpera-web/edge.env` sets `QORPERA_EDGE_BIND` to the node's LAN IP + floating VIP (`192.168.1.27 192.168.1.250` on `node-01`, `192.168.1.42 192.168.1.250` on `node-02`) so Caddy never collides with `tailscale0:443`.
+   - For Keepalived HA, use `interface enp8s0` on `company41-node-01` and `interface enp7s0` (`state BACKUP`, `priority 90`, `unicast_src_ip 192.168.1.42`, peer `192.168.1.27`) on `company41-node-02`.
 4. Configure `webHosting` in the `coding-worker` executor config JSON so self-hosted codebase landings publish directly to the native edge:
    ```json
    "webHosting": {

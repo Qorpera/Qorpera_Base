@@ -8,6 +8,7 @@ Type=notify
 User=caddy
 Group=caddy
 StateDirectory=qorpera-web-certs
+EnvironmentFile=-/etc/qorpera-web/edge.env
 ExecStart=/usr/bin/caddy run --environ --config /etc/qorpera-web/Caddyfile
 ExecReload=/usr/bin/caddy reload --config /etc/qorpera-web/Caddyfile --force
 TimeoutStopSec=5s
