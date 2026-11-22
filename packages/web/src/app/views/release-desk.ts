@@ -205,6 +205,7 @@ export class ReleaseDesk {
 	readonly #pictures = new Map<string, Promise<string | null>>();
 	#imageObserver: IntersectionObserver | undefined;
 	readonly #imageCallbacks = new WeakMap<Element, () => void>();
+	readonly #tileBoxes = new WeakMap<Element, Element>();
 	#refreshing: Promise<void> | undefined;
 	#again: Promise<void> | undefined;
 
@@ -759,8 +760,18 @@ export class ReleaseDesk {
 				);
 			}
 			this.#imageCallbacks.set(box, show);
+			this.#tileBoxes.set(card, box);
 			this.#imageObserver.observe(box);
 		}
 		return card;
+	}
+
+	// WHY: Unobserve detached tile picture boxes when a view redraws and drops old cards so IntersectionObserver does not retain removed DOM nodes.
+	forgetTile(card: Element): void {
+		const box = this.#tileBoxes.get(card);
+		if (!box) return;
+		this.#tileBoxes.delete(card);
+		this.#imageCallbacks.delete(box);
+		this.#imageObserver?.unobserve(box);
 	}
 }

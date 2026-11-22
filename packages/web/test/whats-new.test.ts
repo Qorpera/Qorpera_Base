@@ -1600,4 +1600,31 @@ describe("What's new: a site Qorpera took down (step 5.1)", () => {
 			vi.unstubAllGlobals();
 		}
 	});
+
+	it("unobserves dropped release tile picture boxes when a refresh replaces ready changes", async () => {
+		const observed: Element[] = [];
+		const unobserved: Element[] = [];
+		class FakeIntersectionObserver {
+			observe(el: Element) {
+				observed.push(el);
+			}
+			unobserve(el: Element) {
+				unobserved.push(el);
+			}
+			disconnect() {}
+		}
+		vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+		try {
+			const { view } = await page([releasesOf([shop()]), releasesOf([shop({ ready: null })])]);
+			expect(observed).toHaveLength(3);
+			expect(unobserved).toHaveLength(0);
+
+			window.dispatchEvent(new Event("focus"));
+			await settle();
+			expect(unobserved).toEqual(observed);
+			view.dispose();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
 });

@@ -1,5 +1,4 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { once } from "node:events";
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
@@ -56,6 +55,33 @@ import type {
 import { checkDirectory, code } from "./lxd-office-journal-files.ts";
 import { LINE_PIPE_BYTES, LinePipe, sftpBytes, sftpLines } from "./machine-exec-server.ts";
 import { type HomeFolderSession, HomeOutputGate, parseHomeFolderAnswer } from "./machine-home-folder.ts";
+
+async function awaitRaceAbort(promise: Promise<unknown>, signal: AbortSignal): Promise<void> {
+	if (signal.aborted) return;
+	let onAbort: (() => void) | undefined;
+	try {
+		await Promise.race([
+			promise,
+			new Promise<void>((resolve) => {
+				onAbort = () => resolve();
+				signal.addEventListener("abort", onAbort, { once: true });
+			}),
+		]);
+	} finally {
+		if (onAbort) signal.removeEventListener("abort", onAbort);
+	}
+}
+
+async function runLimited<T>(items: readonly T[], limit: number, run: (item: T) => Promise<void>): Promise<void> {
+	let next = 0;
+	const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+		while (next < items.length) {
+			const item = items[next++]!;
+			await run(item);
+		}
+	});
+	await Promise.all(workers);
+}
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
@@ -1654,7 +1680,7 @@ export class LxdCompanyMachineHost {
 	}
 
 	async #call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
-		return this.#options.control.call(method, args, AbortSignal.any([signal, AbortSignal.timeout(10000)]));
+		return withTimeoutScope(signal, 10000, (checked) => this.#options.control.call(method, args, checked));
 	}
 	/** Lifecycle steps of one placement never overlap. */
 	async #exclusive<T>(placementId: string, use: () => Promise<T>): Promise<T> {
@@ -1674,7 +1700,6 @@ export class LxdCompanyMachineHost {
 	 * the next. */
 	async #storageTask<T>(use: (signal: AbortSignal) => Promise<T>, signal: AbortSignal): Promise<T> {
 		const bound = new AbortController();
-		const left = AbortSignal.any([signal, bound.signal]);
 		const work = this.#storageWork
 			.catch(() => undefined)
 			.then(() => {
@@ -1689,13 +1714,20 @@ export class LxdCompanyMachineHost {
 			return await Promise.race([
 				work,
 				new Promise<never>((_resolve, reject) => {
-					abort = () => reject(left.reason);
-					left.addEventListener("abort", abort, { once: true });
-					if (left.aborted) abort();
+					abort = () => reject(signal.aborted ? signal.reason : bound.signal.reason);
+					if (signal.aborted || bound.signal.aborted) {
+						abort();
+						return;
+					}
+					signal.addEventListener("abort", abort, { once: true });
+					bound.signal.addEventListener("abort", abort, { once: true });
 				}),
 			]);
 		} finally {
-			if (abort) left.removeEventListener("abort", abort);
+			if (abort) {
+				signal.removeEventListener("abort", abort);
+				bound.signal.removeEventListener("abort", abort);
+			}
 		}
 	}
 	async #journalRoot(signal: AbortSignal): Promise<string> {
@@ -1772,37 +1804,38 @@ export class LxdCompanyMachineHost {
 				throw error;
 			}
 		};
-		const checked = AbortSignal.any([signal, AbortSignal.timeout(desiredState === "running" ? 300000 : 120000)]);
-		for (;;) {
-			checked.throwIfAborted();
-			let result: Awaited<ReturnType<typeof reconcileCodingMachine>>;
-			try {
-				result = await reconcileCodingMachine({
-					plan,
-					journalRoot: await this.#journalRoot(checked),
-					desiredState,
-					client: this.#options.client,
-					authorize,
-					signal: checked,
-					plug: this.#options.agentPlug,
-				});
-			} catch (error) {
-				if (refused) return "not-now";
-				throw error;
+		return withTimeoutScope(signal, desiredState === "running" ? 300000 : 120000, async (checked) => {
+			for (;;) {
+				checked.throwIfAborted();
+				let result: Awaited<ReturnType<typeof reconcileCodingMachine>>;
+				try {
+					result = await reconcileCodingMachine({
+						plan,
+						journalRoot: await this.#journalRoot(checked),
+						desiredState,
+						client: this.#options.client,
+						authorize,
+						signal: checked,
+						plug: this.#options.agentPlug,
+					});
+				} catch (error) {
+					if (refused) return "not-now";
+					throw error;
+				}
+				if (result.state === "pending") {
+					await setTimeout(500, undefined, { signal: checked });
+					continue;
+				}
+				if (result.state === "recovery-required") throw new Error("COMPANY_MACHINE_RECOVERY_REQUIRED");
+				if (desiredState === "running" && result.state !== "running")
+					throw new Error("COMPANY_MACHINE_RECOVERY_REQUIRED");
+				if (desiredState === "stopped" && result.state !== "stopped" && result.state !== "absent")
+					throw new Error("COMPANY_MACHINE_RECOVERY_REQUIRED");
+				if (desiredState === "deleted" && result.state !== "deleted" && result.state !== "absent")
+					throw new Error("COMPANY_MACHINE_RECOVERY_REQUIRED");
+				return result.state;
 			}
-			if (result.state === "pending") {
-				await setTimeout(500, undefined, { signal: checked });
-				continue;
-			}
-			if (result.state === "recovery-required") throw new Error("COMPANY_MACHINE_RECOVERY_REQUIRED");
-			if (desiredState === "running" && result.state !== "running")
-				throw new Error("COMPANY_MACHINE_RECOVERY_REQUIRED");
-			if (desiredState === "stopped" && result.state !== "stopped" && result.state !== "absent")
-				throw new Error("COMPANY_MACHINE_RECOVERY_REQUIRED");
-			if (desiredState === "deleted" && result.state !== "deleted" && result.state !== "absent")
-				throw new Error("COMPANY_MACHINE_RECOVERY_REQUIRED");
-			return result.state;
-		}
+		});
 	}
 
 	/** Runs the helper as root with a fresh reply file and reads its answer. */
@@ -1895,13 +1928,8 @@ export class LxdCompanyMachineHost {
 		const { project, name } = this.#plan(e);
 		let written = false;
 		try {
-			await this.#options.client.pushInstanceFile(
-				project,
-				name,
-				path,
-				`${word}\n`,
-				0o644,
-				AbortSignal.any([signal, AbortSignal.timeout(this.#options.desktopWordTimeoutMs ?? DESKTOP_WORD_MS)]),
+			await withTimeoutScope(signal, this.#options.desktopWordTimeoutMs ?? DESKTOP_WORD_MS, (checked) =>
+				this.#options.client.pushInstanceFile(project, name, path, `${word}\n`, 0o644, checked),
 			);
 			written = true;
 		} catch {
@@ -1996,8 +2024,9 @@ export class LxdCompanyMachineHost {
 				// No boot before that SQL counts as running (a first boot, or one after a stop): the machine is said to have
 				// restarted all the same, before the boot's view opens (F3 5g-5). A folder service run that started since its
 				// boot before does not vouch for it otherwise, and its first boundary would answer unproven.
-				const checked = AbortSignal.any([signal, AbortSignal.timeout(BOUNDARY_MS)]);
-				await folder.restarted(e.placementId, checked).catch(() => undefined);
+				await withTimeoutScope(signal, BOUNDARY_MS, (checked) =>
+					folder.restarted(e.placementId, checked).catch(() => undefined),
+				);
 			}
 			// The desktop's figure and time zone are in the machine before SQL says the boot runs: nobody starts a desktop
 			// earlier.
@@ -2165,8 +2194,9 @@ export class LxdCompanyMachineHost {
 		if (!f.asked) {
 			let held: string[];
 			try {
-				const checked = AbortSignal.any([signal, AbortSignal.timeout(BOUNDARY_MS)]);
-				const boundary = await folder.boundary(e.placementId, [], checked);
+				const boundary = await withTimeoutScope(signal, BOUNDARY_MS, (checked) =>
+					folder.boundary(e.placementId, [], checked),
+				);
 				noted(f, boundary);
 				held = boundary.views.map((view) => view.viewId);
 			} catch (error) {
@@ -2251,8 +2281,9 @@ export class LxdCompanyMachineHost {
 		if (f.known && !f.handed) {
 			let boundary: MachineBoundary;
 			try {
-				const checked = AbortSignal.any([signal, AbortSignal.timeout(BOUNDARY_MS)]);
-				boundary = await (this.#options.folder as FolderControl).boundary(e.placementId, [], checked);
+				boundary = await withTimeoutScope(signal, BOUNDARY_MS, (checked) =>
+					(this.#options.folder as FolderControl).boundary(e.placementId, [], checked),
+				);
 			} catch (error) {
 				return errorCode(error);
 			}
@@ -2333,21 +2364,24 @@ export class LxdCompanyMachineHost {
 	/** Waits until no start is being delivered to the machine, for at most a delivery's 30 s: one let in before its boot
 	 * ended reaches its guest first (and is lost in the restart), and one not yet in is refused (#command). */
 	async #delivered(e: CompanyMachineEntry, signal: AbortSignal): Promise<void> {
-		const waited = AbortSignal.any([signal, AbortSignal.timeout(DELIVERY_MS)]);
-		while (!waited.aborted && [...this.#delivering.keys()].some((key) => key.startsWith(`${e.placementId}/`)))
-			await setTimeout(200, undefined, { signal: waited }).catch(() => undefined);
+		await withTimeoutScope(signal, DELIVERY_MS, async (waited) => {
+			while (!waited.aborted && [...this.#delivering.keys()].some((key) => key.startsWith(`${e.placementId}/`)))
+				await setTimeout(200, undefined, { signal: waited }).catch(() => undefined);
+		});
 	}
 	/** The guest reboots itself, unwaited: a stop from here would wait for its commands to end (SQL refuses a stop while
 	 * one runs). A guest that does not reboot stays held until it does, or stops. */
 	async #reboot(e: CompanyMachineEntry, signal: AbortSignal): Promise<void> {
-		await this.#options.client
-			.execInstance(
-				e.binding.project,
-				this.#plan(e).name,
-				["/bin/sh", "-c", "systemctl --no-block reboot"],
-				AbortSignal.any([signal, AbortSignal.timeout(REBOOT_MS)]),
-			)
-			.catch(() => undefined);
+		await withTimeoutScope(signal, REBOOT_MS, (checked) =>
+			this.#options.client
+				.execInstance(
+					e.binding.project,
+					this.#plan(e).name,
+					["/bin/sh", "-c", "systemctl --no-block reboot"],
+					checked,
+				)
+				.catch(() => undefined),
+		);
 	}
 	/** A boot whose folder ended (6d-2): nothing of it is looked at or recorded any more, by a pass or its stop, and
 	 * nothing its commands printed, nor how they ended, leaves it (#command). Its starts are refused (#settled). */
@@ -2402,21 +2436,23 @@ export class LxdCompanyMachineHost {
 		const kept = this.#folders.get(e.placementId);
 		const f = kept?.bootId === bootId ? kept : undefined;
 		if (f?.state !== "none") {
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(FINAL_BOUNDARY_MS)]);
-			try {
-				const views = new Set([...(f?.views ?? []), ...(f?.view ? [f.view.viewId] : [])]);
-				// Unseen by this process, the boot's views are the ones the service holds for the machine.
-				if (!f?.known)
-					for (const view of (await folder.boundary(e.placementId, [], checked)).views) views.add(view.viewId);
-				if (views.size) await folder.boundary(e.placementId, [...views].slice(0, 256), checked);
-			} catch {
-				// Unanswered: the service applies nothing it held for the final.
-			}
+			await withTimeoutScope(signal, FINAL_BOUNDARY_MS, async (checked) => {
+				try {
+					const views = new Set([...(f?.views ?? []), ...(f?.view ? [f.view.viewId] : [])]);
+					// Unseen by this process, the boot's views are the ones the service holds for the machine.
+					if (!f?.known)
+						for (const view of (await folder.boundary(e.placementId, [], checked)).views) views.add(view.viewId);
+					if (views.size) await folder.boundary(e.placementId, [...views].slice(0, 256), checked);
+				} catch {
+					// Unanswered: the service applies nothing it held for the final.
+				}
+			});
 			if (f?.view) await this.#closeView(f.view, signal);
 		}
 		if (restarted) {
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(BOUNDARY_MS)]);
-			await folder.restarted(e.placementId, checked).catch(() => undefined);
+			await withTimeoutScope(signal, BOUNDARY_MS, (checked) =>
+				folder.restarted(e.placementId, checked).catch(() => undefined),
+			);
 		}
 		this.#folders.delete(e.placementId);
 	}
@@ -2444,26 +2480,27 @@ export class LxdCompanyMachineHost {
 			const f = this.#folders.get(e.placementId);
 			if (f?.bootId === bootId && f.state === "none")
 				return { ended: look.ended.filter((item) => !stale(item)), busy: look.busy };
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(WINDOWS_MS)]);
-			const ended: Record<string, unknown>[] = [];
-			let boundary: MachineBoundary | undefined;
-			for (const item of look.ended) {
-				if (stale(item)) continue;
-				const commandId = item.commandId as string;
-				const key = keyOf(item);
-				// The command ended: its window is not opened again (#reopen), whatever its close answers.
-				if (f?.bootId === bootId) f.windows.delete(commandId);
-				// A start that comes meanwhile opens its window (again) only once this close is answered (#command).
-				const closing = folder.closeWindow(e.placementId, commandId, checked).catch(() => undefined);
-				this.#closing.set(key, closing);
-				const answer = await closing;
-				if (this.#closing.get(key) === closing) this.#closing.delete(key);
-				if (f?.bootId === bootId) noted(f, answer);
-				boundary = answer ?? boundary;
-				if (answer?.reads === "released") ended.push(item);
-			}
-			// A start that came while the windows closed is not ended either: its window opens again after the close.
-			return { ended: ended.filter((item) => !stale(item)), busy: look.busy, ...(boundary ? { boundary } : {}) };
+			return await withTimeoutScope(signal, WINDOWS_MS, async (checked) => {
+				const ended: Record<string, unknown>[] = [];
+				let boundary: MachineBoundary | undefined;
+				for (const item of look.ended) {
+					if (stale(item)) continue;
+					const commandId = item.commandId as string;
+					const key = keyOf(item);
+					// The command ended: its window is not opened again (#reopen), whatever its close answers.
+					if (f?.bootId === bootId) f.windows.delete(commandId);
+					// A start that comes meanwhile opens its window (again) only once this close is answered (#command).
+					const closing = folder.closeWindow(e.placementId, commandId, checked).catch(() => undefined);
+					this.#closing.set(key, closing);
+					const answer = await closing;
+					if (this.#closing.get(key) === closing) this.#closing.delete(key);
+					if (f?.bootId === bootId) noted(f, answer);
+					boundary = answer ?? boundary;
+					if (answer?.reads === "released") ended.push(item);
+				}
+				// A start that came while the windows closed is not ended either: its window opens again after the close.
+				return { ended: ended.filter((item) => !stale(item)), busy: look.busy, ...(boundary ? { boundary } : {}) };
+			});
 		} finally {
 			this.#looks.delete(touched);
 		}
@@ -2473,18 +2510,23 @@ export class LxdCompanyMachineHost {
 	 * delivered opens its own, and a command SQL does not list now is left for its close (#ends). */
 	async #reopen(e: CompanyMachineEntry, f: BootFolder, signal: AbortSignal): Promise<void> {
 		const folder = this.#options.folder as FolderControl;
-		const checked = AbortSignal.any([signal, AbortSignal.timeout(WINDOWS_MS)]);
-		for (const [commandId, window] of f.windows) {
-			if (!e.commands.includes(commandId) || this.#delivering.has(`${e.placementId}/${commandId}`)) continue;
-			await folder.openWindow(e.placementId, window, checked).catch(() => undefined);
-		}
-		// A home's window closes when its channel ends, at any time: one that closed while this open was out (the service
-		// may take the two in either order) is closed again, so no window outlives its session.
-		for (const [sessionId, window] of [...f.homes]) {
-			await folder.openWindow(e.placementId, window, checked).catch(() => undefined);
-			if (!f.homes.has(sessionId))
-				noted(f, await folder.closeWindow(e.placementId, sessionId, checked).catch(() => undefined));
-		}
+		await withTimeoutScope(signal, WINDOWS_MS, async (checked) => {
+			const windows = [...f.windows].filter(
+				([commandId]) => e.commands.includes(commandId) && !this.#delivering.has(`${e.placementId}/${commandId}`),
+			);
+			await runLimited(windows, 4, async ([, window]) => {
+				if (checked.aborted) return;
+				await folder.openWindow(e.placementId, window, checked).catch(() => undefined);
+			});
+			// A home's window closes when its channel ends, at any time: one that closed while this open was out (the service
+			// may take the two in either order) is closed again, so no window outlives its session.
+			await runLimited([...f.homes], 4, async ([sessionId, window]) => {
+				if (checked.aborted) return;
+				await folder.openWindow(e.placementId, window, checked).catch(() => undefined);
+				if (!f.homes.has(sessionId))
+					noted(f, await folder.closeWindow(e.placementId, sessionId, checked).catch(() => undefined));
+			});
+		});
 	}
 	/** A settled boot's folder, watched each pass (6d-2) at the boundary its ends' closes answered, or a plain one.
 	 * Reads the core cannot read retire the placement (#retire): a read being released, or one released before that a
@@ -2502,8 +2544,9 @@ export class LxdCompanyMachineHost {
 		let boundary = given;
 		if (!boundary)
 			try {
-				const checked = AbortSignal.any([signal, AbortSignal.timeout(BOUNDARY_MS)]);
-				boundary = await (this.#options.folder as FolderControl).boundary(e.placementId, [], checked);
+				boundary = await withTimeoutScope(signal, BOUNDARY_MS, (checked) =>
+					(this.#options.folder as FolderControl).boundary(e.placementId, [], checked),
+				);
 				noted(f, boundary);
 			} catch {
 				return undefined;
@@ -2537,9 +2580,10 @@ export class LxdCompanyMachineHost {
 		const bootId = e.bootId;
 		const ended = () => bootId !== null && this.#ended(e.placementId, bootId);
 		if (bootId !== null && kept?.bootId === bootId && !ended()) {
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(30000)]);
-			const looking = () => this.#look(e, bootId, checked).catch(() => ({ ended: [], busy: kept.busy }));
-			const look = await this.#ends(e, bootId, looking, signal);
+			const look = await withTimeoutScope(signal, 30000, (checked) => {
+				const looking = () => this.#look(e, bootId, checked).catch(() => ({ ended: [], busy: kept.busy }));
+				return this.#ends(e, bootId, looking, signal);
+			});
 			if (!ended()) await this.#record(e, bootId, look, signal);
 		}
 		// SQL agrees first: an idle machine someone just used again keeps running, programs and all.
@@ -2556,17 +2600,19 @@ export class LxdCompanyMachineHost {
 		// that is not the listed shape, or of a boot SQL does not know, is left out. Either way what still runs is told
 		// at the power-off. A power-off that then fails ends this stop: the next one takes its own snapshot.
 		if (e.runningAt !== null) {
-			const stopping = AbortSignal.any([signal, AbortSignal.timeout(30000)]);
-			const stopped = await this.#helper(e, ["stop-commands"], stopping).catch(() => undefined);
-			if (!stopped)
-				await this.#options.client
-					.execInstance(
-						e.binding.project,
-						this.#plan(e).name,
-						["/bin/sh", "-c", `systemctl stop ${PATHS.slice} docker.service containerd.service; sync`],
-						stopping,
-					)
-					.catch(() => undefined);
+			const stopped = await withTimeoutScope(signal, 30000, async (stopping) => {
+				const answer = await this.#helper(e, ["stop-commands"], stopping).catch(() => undefined);
+				if (!answer)
+					await this.#options.client
+						.execInstance(
+							e.binding.project,
+							this.#plan(e).name,
+							["/bin/sh", "-c", `systemctl stop ${PATHS.slice} docker.service containerd.service; sync`],
+							stopping,
+						)
+						.catch(() => undefined);
+				return answer;
+			});
 			// A boot whose folder ended lists none of its commands either: which still ran says how the others ended, so
 			// SQL ends them all lost at the power-off (#ended). Its stopped containers are the stop's own.
 			const silent = ended();
@@ -2598,8 +2644,9 @@ export class LxdCompanyMachineHost {
 		this.#starting.delete(e.placementId);
 		if (this.#options.folder && e.bootId !== null) {
 			// Powered off: the machine's command windows end, and what it was served is gone with it.
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(BOUNDARY_MS)]);
-			await this.#options.folder.restarted(e.placementId, checked).catch(() => undefined);
+			await withTimeoutScope(signal, BOUNDARY_MS, (checked) =>
+				this.#options.folder!.restarted(e.placementId, checked).catch(() => undefined),
+			);
 			this.#folders.delete(e.placementId);
 		}
 		const suspended = record(
@@ -2630,7 +2677,10 @@ export class LxdCompanyMachineHost {
 		// Its pointer (20260930744000): the mover ends with the instance anyway; what was known of it goes.
 		this.#movers.get(e.placementId)?.stop.abort();
 		this.#movers.delete(e.placementId);
+		const stream = this.#streams.get(e.placementId);
 		this.#streams.delete(e.placementId);
+		this.#streamStarts.delete(e.placementId);
+		stream?.stream.close?.();
 		this.#moverEnded.delete(e.placementId);
 		this.#fenceCounts.delete(e.placementId);
 		this.#fencePublished.delete(e.placementId);
@@ -2639,7 +2689,9 @@ export class LxdCompanyMachineHost {
 		this.#pointerUsers.delete(e.placementId);
 		this.#generations.delete(e.placementId);
 		this.#screenBusy.delete(e.placementId);
+		const codex = this.#homeCodexes.get(e.placementId);
 		this.#homeCodexes.delete(e.placementId);
+		codex?.controller.abort();
 		this.#homeSftps.delete(e.placementId);
 		// Its instance deleted and the placement released, no boot of it runs or is read again: its ends go with it. Only
 		// here: after a power-off, or the next boot's mark, a read let in for the boot before may still come.
@@ -2895,7 +2947,11 @@ export class LxdCompanyMachineHost {
 					this.#ending = undefined;
 					settle();
 				};
-				const wait = this.#woken ? earliest - now : Math.min(STARTING_LOOK_MS, deadline - now);
+				const wait = this.#woken
+					? earliest - now
+					: this.#starting.size > 0
+						? Math.min(STARTING_LOOK_MS, deadline - now)
+						: deadline - now;
 				const timer = globalThis.setTimeout(end, Math.max(0, wait));
 				signal.addEventListener("abort", end, { once: true });
 				this.#ending = end;
@@ -2929,9 +2985,7 @@ export class LxdCompanyMachineHost {
 			)
 				continue;
 			this.#looking.add(placementId);
-			void withAbortScope(signal, (scoped) =>
-				this.#bootUsable(starting.entry, AbortSignal.any([scoped, AbortSignal.timeout(STARTING_LOOK_LIMIT_MS)])),
-			)
+			void withTimeoutScope(signal, STARTING_LOOK_LIMIT_MS, (checked) => this.#bootUsable(starting.entry, checked))
 				.then((usable) => {
 					if (!usable || this.#starting.get(placementId) !== starting) return;
 					starting.wakes++;
@@ -2962,13 +3016,14 @@ export class LxdCompanyMachineHost {
 	async #usable(e: CompanyMachineEntry, signal: AbortSignal): Promise<boolean> {
 		try {
 			const { project, name } = this.#plan(e);
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(STARTING_LOOK_LIMIT_MS)]);
-			await this.#options.client.execInstance(
-				project,
-				name,
-				BOOT_USABLE,
-				checked,
-				Math.ceil(STARTING_LOOK_LIMIT_MS / 1000),
+			await withTimeoutScope(signal, STARTING_LOOK_LIMIT_MS, (checked) =>
+				this.#options.client.execInstance(
+					project,
+					name,
+					BOOT_USABLE,
+					checked,
+					Math.ceil(STARTING_LOOK_LIMIT_MS / 1000),
+				),
 			);
 			return true;
 		} catch {
@@ -3045,25 +3100,27 @@ export class LxdCompanyMachineHost {
 		run: CompanyMachineCodingValue,
 		signal: AbortSignal,
 	): Promise<CompanyMachineCodingValueOutcome> {
-		const result = await pipe(
-			this.#policy.project,
-			lxdCompanyMachineName(run.placementId),
-			{
-				command: [
-					"/bin/sh",
-					"-c",
-					CODING_VALUE_ON_BOOT,
-					run.bootId,
-					"/usr/bin/node",
-					COMPANY_MACHINE_CODING_VALUE_HELPER,
-				],
-				environment: {},
-				cwd: "/",
-				stdin: Buffer.from(JSON.stringify(run.target), "utf8"),
-				maxStdoutBytes: CODING_VALUE_OUTPUT_BYTES,
-				stderrTailBytes: 0,
-			},
-			AbortSignal.any([signal, AbortSignal.timeout(this.#options.codingValueTimeoutMs ?? CODING_VALUE_MS)]),
+		const result = await withTimeoutScope(signal, this.#options.codingValueTimeoutMs ?? CODING_VALUE_MS, (checked) =>
+			pipe(
+				this.#policy.project,
+				lxdCompanyMachineName(run.placementId),
+				{
+					command: [
+						"/bin/sh",
+						"-c",
+						CODING_VALUE_ON_BOOT,
+						run.bootId,
+						"/usr/bin/node",
+						COMPANY_MACHINE_CODING_VALUE_HELPER,
+					],
+					environment: {},
+					cwd: "/",
+					stdin: Buffer.from(JSON.stringify(run.target), "utf8"),
+					maxStdoutBytes: CODING_VALUE_OUTPUT_BYTES,
+					stderrTailBytes: 0,
+				},
+				checked,
+			),
 		);
 		if (result.exitCode === 97) return { refused: "MACHINE_BOOT_CHANGED" };
 		if (result.exitCode === 98) return { refused: "MACHINE_IMAGE_WITHOUT_CODING_VALUES" };
@@ -3109,25 +3166,30 @@ export class LxdCompanyMachineHost {
 		failed = "COMPANY_MACHINE_CODING_VALUE_CLEAR_FAILED",
 	): Promise<"cleared" | "boot" | "image" | "failed"> {
 		try {
-			const cleared = await pipe(
-				this.#policy.project,
-				lxdCompanyMachineName(run.placementId),
-				{
-					command: [
-						"/bin/sh",
-						"-c",
-						CODING_VALUE_ON_BOOT,
-						run.bootId,
-						"/usr/bin/node",
-						COMPANY_MACHINE_CODING_VALUE_HELPER,
-						"--clear-only",
-					],
-					environment: {},
-					cwd: "/",
-					maxStdoutBytes: 4096,
-					stderrTailBytes: 0,
-				},
-				AbortSignal.timeout(this.#options.codingValueClearTimeoutMs ?? CODING_VALUE_CLEAR_MS),
+			const cleared = await withTimeoutScope(
+				undefined,
+				this.#options.codingValueClearTimeoutMs ?? CODING_VALUE_CLEAR_MS,
+				(checked) =>
+					pipe(
+						this.#policy.project,
+						lxdCompanyMachineName(run.placementId),
+						{
+							command: [
+								"/bin/sh",
+								"-c",
+								CODING_VALUE_ON_BOOT,
+								run.bootId,
+								"/usr/bin/node",
+								COMPANY_MACHINE_CODING_VALUE_HELPER,
+								"--clear-only",
+							],
+							environment: {},
+							cwd: "/",
+							maxStdoutBytes: 4096,
+							stderrTailBytes: 0,
+						},
+						checked,
+					),
 			);
 			if (cleared.exitCode === 97) return "boot";
 			if (
@@ -3230,20 +3292,22 @@ export class LxdCompanyMachineHost {
 		use: ClipboardClearUse,
 	): Promise<"cleared" | "boot" | "image" | "failed"> {
 		try {
-			const result = await pipe(
-				this.#policy.project,
-				lxdCompanyMachineName(run.placementId),
-				{
-					command: ["/bin/sh", "-c", COMPANY_MACHINE_CLIPBOARD_CLEAR, run.bootId, use],
-					environment: {},
-					cwd: "/",
-					maxStdoutBytes: 4096,
-					stderrTailBytes: 0,
-				},
-				AbortSignal.any([
-					limit,
-					AbortSignal.timeout(this.#options.codingValueClearTimeoutMs ?? CODING_VALUE_CLEAR_MS),
-				]),
+			const result = await withTimeoutScope(
+				limit,
+				this.#options.codingValueClearTimeoutMs ?? CODING_VALUE_CLEAR_MS,
+				(checked) =>
+					pipe(
+						this.#policy.project,
+						lxdCompanyMachineName(run.placementId),
+						{
+							command: ["/bin/sh", "-c", COMPANY_MACHINE_CLIPBOARD_CLEAR, run.bootId, use],
+							environment: {},
+							cwd: "/",
+							maxStdoutBytes: 4096,
+							stderrTailBytes: 0,
+						},
+						checked,
+					),
 			);
 			if (result.exitCode === 0) return "cleared";
 			if (result.exitCode === 97) return "boot";
@@ -3267,20 +3331,18 @@ export class LxdCompanyMachineHost {
 	): Promise<"held" | "owed" | "cleared"> {
 		const took = !holding && this.#holdDesktop(run.placementId);
 		if (!holding && !took) return "owed";
-		const limit = AbortSignal.any([
-			signal,
-			AbortSignal.timeout(this.#options.screenClearTimeoutMs ?? SCREEN_CLEAR_MS),
-		]);
 		try {
-			const outcome = await this.#clearAndRecord(
-				pipe,
-				{ placementId: run.placementId, bootId: run.bootId, desktopGeneration: run.desktopGeneration },
-				limit,
-				limit,
-				"screen",
-			);
-			if (outcome === "held") return "held";
-			return typeof outcome === "object" && "cleared" in outcome && outcome.cleared ? "cleared" : "owed";
+			return await withTimeoutScope(signal, this.#options.screenClearTimeoutMs ?? SCREEN_CLEAR_MS, async (limit) => {
+				const outcome = await this.#clearAndRecord(
+					pipe,
+					{ placementId: run.placementId, bootId: run.bootId, desktopGeneration: run.desktopGeneration },
+					limit,
+					limit,
+					"screen",
+				);
+				if (outcome === "held") return "held";
+				return typeof outcome === "object" && "cleared" in outcome && outcome.cleared ? "cleared" : "owed";
+			});
 		} catch {
 			signal.throwIfAborted();
 			console.error("COMPANY_MACHINE_CLIPBOARD_CLEAR_FAILED");
@@ -3400,18 +3462,20 @@ export class LxdCompanyMachineHost {
 		request: Record<string, unknown>,
 		signal: AbortSignal,
 	): ReturnType<NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>> {
-		return pipe(
-			this.#policy.project,
-			lxdCompanyMachineName(placementId),
-			{
-				command: ["/bin/sh", "-c", CODING_VALUE_ON_BOOT, bootId, "/usr/bin/node", COMPANY_MACHINE_SCREEN_HELPER],
-				environment: {},
-				cwd: "/",
-				stdin: Buffer.from(JSON.stringify(request), "utf8"),
-				maxStdoutBytes: SCREEN_OUTPUT_BYTES,
-				stderrTailBytes: 0,
-			},
-			AbortSignal.any([signal, AbortSignal.timeout(this.#options.screenTimeoutMs ?? SCREEN_MS)]),
+		return withTimeoutScope(signal, this.#options.screenTimeoutMs ?? SCREEN_MS, (checked) =>
+			pipe(
+				this.#policy.project,
+				lxdCompanyMachineName(placementId),
+				{
+					command: ["/bin/sh", "-c", CODING_VALUE_ON_BOOT, bootId, "/usr/bin/node", COMPANY_MACHINE_SCREEN_HELPER],
+					environment: {},
+					cwd: "/",
+					stdin: Buffer.from(JSON.stringify(request), "utf8"),
+					maxStdoutBytes: SCREEN_OUTPUT_BYTES,
+					stderrTailBytes: 0,
+				},
+				checked,
+			),
 		);
 	}
 	/** An action takes the placement's desktop, unless one runs there or one that did not end cleanly may still act
@@ -3479,17 +3543,19 @@ export class LxdCompanyMachineHost {
 		let exitCode: number;
 		try {
 			exitCode = (
-				await pipe(
-					this.#policy.project,
-					lxdCompanyMachineName(start.placementId),
-					{
-						command: companyMachineMemberStartCommand(start.bootId),
-						environment: {},
-						cwd: "/",
-						maxStdoutBytes: 4096,
-						stderrTailBytes: 0,
-					},
-					AbortSignal.any([signal, AbortSignal.timeout(this.#options.memberStartTimeoutMs ?? MEMBER_START_MS)]),
+				await withTimeoutScope(signal, this.#options.memberStartTimeoutMs ?? MEMBER_START_MS, (checked) =>
+					pipe(
+						this.#policy.project,
+						lxdCompanyMachineName(start.placementId),
+						{
+							command: companyMachineMemberStartCommand(start.bootId),
+							environment: {},
+							cwd: "/",
+							maxStdoutBytes: 4096,
+							stderrTailBytes: 0,
+						},
+						checked,
+					),
 				)
 			).exitCode;
 		} catch {
@@ -3521,21 +3587,24 @@ export class LxdCompanyMachineHost {
 			this.#releaseDesktop(start.placementId, true);
 			return { refused: checked };
 		}
+		const openPath = start.open;
 		let ended = false;
 		try {
 			exitCode = (
-				await pipe(
-					this.#policy.project,
-					lxdCompanyMachineName(start.placementId),
-					{
-						command: companyMachineMemberOpenCommand(start.bootId),
-						environment: {},
-						cwd: "/",
-						stdin: Buffer.from(start.open, "utf8"),
-						maxStdoutBytes: 4096,
-						stderrTailBytes: 0,
-					},
-					AbortSignal.any([signal, AbortSignal.timeout(this.#options.memberOpenTimeoutMs ?? MEMBER_OPEN_MS)]),
+				await withTimeoutScope(signal, this.#options.memberOpenTimeoutMs ?? MEMBER_OPEN_MS, (checked) =>
+					pipe(
+						this.#policy.project,
+						lxdCompanyMachineName(start.placementId),
+						{
+							command: companyMachineMemberOpenCommand(start.bootId),
+							environment: {},
+							cwd: "/",
+							stdin: Buffer.from(openPath, "utf8"),
+							maxStdoutBytes: 4096,
+							stderrTailBytes: 0,
+						},
+						checked,
+					),
 				)
 			).exitCode;
 			// systemd-run answered: its unit ended (by itself, or at its limit) with everything in it.
@@ -3643,18 +3712,23 @@ export class LxdCompanyMachineHost {
 		try {
 			if (typeof text === "string") {
 				const began = Date.now();
-				const typed = await pipe(
-					this.#policy.project,
-					lxdCompanyMachineName(act.placementId),
-					{
-						command: companyMachineMemberTypeCommand(act.bootId, pasted ? "paste" : "type"),
-						environment: {},
-						cwd: "/",
-						stdin: Buffer.from(text, "utf8"),
-						maxStdoutBytes: 4096,
-						stderrTailBytes: 0,
-					},
-					AbortSignal.any([signal, AbortSignal.timeout(this.#options.memberTypeTimeoutMs ?? MEMBER_TYPE_MS)]),
+				const typed = await withTimeoutScope(
+					signal,
+					this.#options.memberTypeTimeoutMs ?? MEMBER_TYPE_MS,
+					(checked) =>
+						pipe(
+							this.#policy.project,
+							lxdCompanyMachineName(act.placementId),
+							{
+								command: companyMachineMemberTypeCommand(act.bootId, pasted ? "paste" : "type"),
+								environment: {},
+								cwd: "/",
+								stdin: Buffer.from(text, "utf8"),
+								maxStdoutBytes: 4096,
+								stderrTailBytes: 0,
+							},
+							checked,
+						),
 				);
 				// systemd-run answered: it waited for its unit, which ended (by itself, or killed at its limit) with
 				// everything it started. Killed itself (a signal's exit), it says nothing of the unit, which runs on to its
@@ -3767,6 +3841,23 @@ export class LxdCompanyMachineHost {
 					if (this.#streams.get(placementId)?.stream === desktop) this.#streams.delete(placementId);
 				},
 			);
+			const superseded = this.#streams.get(placementId);
+			const currentBoot = this.#guests.get(placementId)?.bootId ?? this.#folders.get(placementId)?.bootId;
+			if (superseded && superseded.stream !== desktop && !superseded.stream.ended) {
+				if (currentBoot !== undefined && superseded.bootId === currentBoot && bootId !== currentBoot) {
+					// WHY: A stale-boot reconnect must not displace or close the live relay for the current boot.
+					try {
+						return await desktop.watch(
+							(cycleSignal) => this.#streamCycle(pipe, stream, cycleSignal),
+							sink,
+							signal,
+						);
+					} finally {
+						desktop.close?.();
+					}
+				}
+				if (currentBoot !== undefined && bootId === currentBoot) superseded.stream.close?.();
+			}
 			kept = { bootId, stream: desktop };
 			this.#streams.set(placementId, kept);
 		}
@@ -3974,17 +4065,19 @@ export class LxdCompanyMachineHost {
 		fence: string,
 		signal: AbortSignal,
 	): Promise<PointerFence | null> {
-		const written = await pipe(
-			this.#policy.project,
-			lxdCompanyMachineName(placementId),
-			{
-				command: ["/bin/sh", "-c", COMPANY_MACHINE_POINTER_FENCE, bootId, fence],
-				environment: {},
-				cwd: "/",
-				maxStdoutBytes: 128,
-				stderrTailBytes: 0,
-			},
-			AbortSignal.any([signal, AbortSignal.timeout(POINTER_FENCE_MS)]),
+		const written = await withTimeoutScope(signal, POINTER_FENCE_MS, (checked) =>
+			pipe(
+				this.#policy.project,
+				lxdCompanyMachineName(placementId),
+				{
+					command: ["/bin/sh", "-c", COMPANY_MACHINE_POINTER_FENCE, bootId, fence],
+					environment: {},
+					cwd: "/",
+					maxStdoutBytes: 128,
+					stderrTailBytes: 0,
+				},
+				checked,
+			),
 		);
 		if (written.exitCode === 97) return null;
 		const held = /^([0-9a-f]{16}:[0-9]{1,15}) ([0-9a-f]{32}|none)$/.exec(
@@ -4027,12 +4120,16 @@ export class LxdCompanyMachineHost {
 					continue;
 				}
 				const idle = await new Promise<boolean>((resolve) => {
-					// The timers' own (this module's setTimeout is the promise one).
-					const timer = globalThis.setTimeout(() => resolve(true), MEMBER_POINTER_IDLE_MS);
 					const stopped = () => {
 						globalThis.clearTimeout(timer);
 						resolve(true);
 					};
+					// The timers' own (this module's setTimeout is the promise one).
+					const timer = globalThis.setTimeout(() => {
+						mover.stop.signal.removeEventListener("abort", stopped);
+						resolve(true);
+					}, MEMBER_POINTER_IDLE_MS);
+					timer.unref?.();
 					mover.stop.signal.addEventListener("abort", stopped, { once: true });
 					mover.wake = () => {
 						globalThis.clearTimeout(timer);
@@ -4130,26 +4227,28 @@ export class LxdCompanyMachineHost {
 		let result: Awaited<ReturnType<typeof pipe>> | undefined;
 		for (let attempt = 0; attempt < 2; attempt++) {
 			const fence = await this.#confirmFence(pipe, look.placementId, look.bootId, signal);
-			result = await pipe(
-				this.#policy.project,
-				lxdCompanyMachineName(look.placementId),
-				{
-					command: [
-						"/bin/sh",
-						"-c",
-						COMPANY_MACHINE_MEMBER_LOOK,
-						look.bootId,
-						look.keepDesktop ? "keep" : "look",
-						// The member whose own pointer moves this desktop sees no drawn one (20260930744000).
-						this.#movesPointer(look.placementId, look.userId) ? "plain" : "drawn",
-						fence ? `${fence.fence} ${fence.incarnation}` : "-",
-					],
-					environment: {},
-					cwd: "/",
-					maxStdoutBytes: SCREEN_PNG_BYTES,
-					stderrTailBytes: 0,
-				},
-				AbortSignal.any([signal, AbortSignal.timeout(this.#options.memberLookTimeoutMs ?? MEMBER_LOOK_MS)]),
+			result = await withTimeoutScope(signal, this.#options.memberLookTimeoutMs ?? MEMBER_LOOK_MS, (checked) =>
+				pipe(
+					this.#policy.project,
+					lxdCompanyMachineName(look.placementId),
+					{
+						command: [
+							"/bin/sh",
+							"-c",
+							COMPANY_MACHINE_MEMBER_LOOK,
+							look.bootId,
+							look.keepDesktop ? "keep" : "look",
+							// The member whose own pointer moves this desktop sees no drawn one (20260930744000).
+							this.#movesPointer(look.placementId, look.userId) ? "plain" : "drawn",
+							fence ? `${fence.fence} ${fence.incarnation}` : "-",
+						],
+						environment: {},
+						cwd: "/",
+						maxStdoutBytes: SCREEN_PNG_BYTES,
+						stderrTailBytes: 0,
+					},
+					checked,
+				),
 			);
 			if (result.exitCode !== 93) break;
 			if (this.#fencePublished.get(look.placementId) === fence) this.#fencePublished.delete(look.placementId);
@@ -4217,137 +4316,146 @@ export class LxdCompanyMachineHost {
 		memberHolds: () => Promise<boolean>,
 		signal: AbortSignal,
 	): Promise<CompanyMachineAccountFillOutcome> {
-		const deadline = AbortSignal.any([
-			signal,
-			AbortSignal.timeout(this.#options.accountFillTimeoutMs ?? ACCOUNT_FILL_MS),
-		]);
-		// The helper's second line on stdin: the box, or nothing (stdin ends).
-		let send: (line: Buffer | null) => void = () => undefined;
-		const second = new Promise<Buffer | null>((resolve) => {
-			send = resolve;
-		});
-		deadline.addEventListener("abort", () => send(null), { once: true });
-		const target = Buffer.from(
-			`${JSON.stringify(run.target)}
+		return withTimeoutScope(signal, this.#options.accountFillTimeoutMs ?? ACCOUNT_FILL_MS, async (deadline) => {
+			// The helper's second line on stdin: the box, or nothing (stdin ends).
+			let send: (line: Buffer | null) => void = () => undefined;
+			const second = new Promise<Buffer | null>((resolve) => {
+				send = resolve;
+			});
+			const sealStop = new AbortController();
+			const onDeadlineAbort = () => {
+				send(null);
+				sealStop.abort(deadline.reason);
+			};
+			if (deadline.aborted) onDeadlineAbort();
+			else deadline.addEventListener("abort", onDeadlineAbort, { once: true });
+			const target = Buffer.from(
+				`${JSON.stringify(run.target)}
 `,
-			"utf8",
-		);
-		async function* stdin(): AsyncGenerator<Uint8Array> {
-			yield target;
-			const line = await second;
-			if (line) yield line;
-		}
-		let held = Buffer.alloc(0);
-		let ready: string | undefined;
-		let code: string | undefined;
-		let vaultRefused: { code: string; message: string } | undefined;
-		let sealFailure: unknown;
-		let memberTookOver = false;
-		let sealing: Promise<void> | undefined;
-		// A line that is not the helper's fails the call, whatever came before it.
-		let invalid = false;
-		const line = (text: string) => {
-			let output: Record<string, unknown>;
-			try {
-				output = record(JSON.parse(text), "COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
-			} catch {
+				"utf8",
+			);
+			async function* stdin(): AsyncGenerator<Uint8Array> {
+				yield target;
+				const line = await second;
+				if (line) yield line;
+			}
+			let held = Buffer.alloc(0);
+			let ready: string | undefined;
+			let code: string | undefined;
+			let vaultRefused: { code: string; message: string } | undefined;
+			let sealFailure: unknown;
+			let sealCancelled = false;
+			let memberTookOver = false;
+			let sealing: Promise<void> | undefined;
+			// A line that is not the helper's fails the call, whatever came before it.
+			let invalid = false;
+			const line = (text: string) => {
+				let output: Record<string, unknown>;
+				try {
+					output = record(JSON.parse(text), "COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+				} catch {
+					invalid = true;
+					throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+				}
+				const keys = Object.keys(output).sort().join();
+				if (
+					ready === undefined &&
+					code === undefined &&
+					output.schema === "qorpera.machine-account-fill-ready/v1" &&
+					keys === "publicKey,schema" &&
+					typeof output.publicKey === "string" &&
+					/^[A-Za-z0-9_-]{43}$/.test(output.publicKey)
+				) {
+					const publicKey = output.publicKey;
+					ready = publicKey;
+					const sealFailed = (error: unknown) => {
+						if (sealCancelled && sealFailure === undefined) return;
+						sealFailure = error ?? new Error("COMPANY_MACHINE_ACCOUNT_FILL_SEAL_FAILED");
+						send(null);
+					};
+					sealing = seal(publicKey, sealStop.signal)
+						.then(async (answer) => {
+							if (!("box" in answer)) {
+								vaultRefused = answer.refused;
+								send(null);
+							} else if (await memberHolds()) {
+								memberTookOver = true;
+								send(null);
+							} else send(Buffer.from(`${JSON.stringify(answer.box)}\n`, "utf8"));
+						})
+						.catch(sealFailed);
+					return;
+				}
+				if (
+					code === undefined &&
+					output.schema === "qorpera.machine-account-fill-result/v1" &&
+					keys === "code,schema" &&
+					typeof output.code === "string" &&
+					/^[A-Z][A-Z0-9_]{2,60}$/.test(output.code)
+				) {
+					code = output.code;
+					send(null);
+					return;
+				}
 				invalid = true;
 				throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
-			}
-			const keys = Object.keys(output).sort().join();
-			if (
-				ready === undefined &&
-				code === undefined &&
-				output.schema === "qorpera.machine-account-fill-ready/v1" &&
-				keys === "publicKey,schema" &&
-				typeof output.publicKey === "string" &&
-				/^[A-Za-z0-9_-]{43}$/.test(output.publicKey)
-			) {
-				const publicKey = output.publicKey;
-				ready = publicKey;
-				const sealFailed = (error: unknown) => {
-					sealFailure = error ?? new Error("COMPANY_MACHINE_ACCOUNT_FILL_SEAL_FAILED");
-					send(null);
-				};
-				sealing = seal(publicKey, deadline)
-					.then(async (answer) => {
-						if (!("box" in answer)) {
-							vaultRefused = answer.refused;
-							send(null);
-						} else if (await memberHolds()) {
-							memberTookOver = true;
-							send(null);
-						} else send(Buffer.from(`${JSON.stringify(answer.box)}\n`, "utf8"));
-					})
-					.catch(sealFailed);
-				return;
-			}
-			if (
-				code === undefined &&
-				output.schema === "qorpera.machine-account-fill-result/v1" &&
-				keys === "code,schema" &&
-				typeof output.code === "string" &&
-				/^[A-Z][A-Z0-9_]{2,60}$/.test(output.code)
-			) {
-				code = output.code;
+			};
+			const onStdout = (chunk: Buffer) => {
+				held = Buffer.concat([held, chunk]);
+				for (let end = held.indexOf(10); end >= 0; end = held.indexOf(10)) {
+					const text = held.subarray(0, end).toString("utf8");
+					held = Buffer.from(held.subarray(end + 1));
+					line(text);
+				}
+			};
+			let exitCode: number | undefined;
+			try {
+				exitCode = (
+					await pipe(
+						this.#policy.project,
+						lxdCompanyMachineName(run.placementId),
+						{
+							command: [
+								"/bin/sh",
+								"-c",
+								CODING_VALUE_ON_BOOT,
+								run.bootId,
+								"/usr/bin/node",
+								COMPANY_MACHINE_ACCOUNT_FILL_HELPER,
+							],
+							environment: {},
+							cwd: "/",
+							stdin: stdin(),
+							maxStdoutBytes: ACCOUNT_FILL_OUTPUT_BYTES,
+							stderrTailBytes: 0,
+							onStdout,
+						},
+						deadline,
+					)
+				).exitCode;
+			} catch (error) {
+				// The helper said how it ended before the exec ended badly (its stdin closed under it after its answer): that
+				// answer stands. Anything else is the call's failure.
+				if (code === undefined || invalid) throw error;
+			} finally {
 				send(null);
-				return;
+				if (!deadline.aborted) sealCancelled = true;
+				sealStop.abort();
+				deadline.removeEventListener("abort", onDeadlineAbort);
 			}
-			invalid = true;
-			throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
-		};
-		const onStdout = (chunk: Buffer) => {
-			held = Buffer.concat([held, chunk]);
-			for (let end = held.indexOf(10); end >= 0; end = held.indexOf(10)) {
-				const text = held.subarray(0, end).toString("utf8");
-				held = Buffer.from(held.subarray(end + 1));
-				line(text);
-			}
-		};
-		let exitCode: number | undefined;
-		try {
-			exitCode = (
-				await pipe(
-					this.#policy.project,
-					lxdCompanyMachineName(run.placementId),
-					{
-						command: [
-							"/bin/sh",
-							"-c",
-							CODING_VALUE_ON_BOOT,
-							run.bootId,
-							"/usr/bin/node",
-							COMPANY_MACHINE_ACCOUNT_FILL_HELPER,
-						],
-						environment: {},
-						cwd: "/",
-						stdin: stdin(),
-						maxStdoutBytes: ACCOUNT_FILL_OUTPUT_BYTES,
-						stderrTailBytes: 0,
-						onStdout,
-					},
-					deadline,
-				)
-			).exitCode;
-		} catch (error) {
-			// The helper said how it ended before the exec ended badly (its stdin closed under it after its answer): that
-			// answer stands. Anything else is the call's failure.
-			if (code === undefined || invalid) throw error;
-		} finally {
-			send(null);
-		}
-		await sealing;
-		if (invalid) throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
-		if (exitCode === 97) return { refused: "MACHINE_BOOT_CHANGED" };
-		if (exitCode === 98) return { refused: "MACHINE_IMAGE_WITHOUT_ACCOUNT_FILLS" };
-		if (exitCode !== undefined && exitCode !== 0) throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_FAILED");
-		if (vaultRefused) return { vaultRefused };
-		if (sealFailure !== undefined) throw sealFailure;
-		if (memberTookOver) return { refused: "DESKTOP_MEMBER_IN_CONTROL" };
-		if (code === "FILLED") return { filled: true };
-		// FILL_NO_BOX only follows the vault's refusal or failure, both answered above.
-		if (code === undefined || code === "FILL_NO_BOX") throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
-		return { refused: code };
+			await sealing;
+			if (invalid) throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+			if (exitCode === 97) return { refused: "MACHINE_BOOT_CHANGED" };
+			if (exitCode === 98) return { refused: "MACHINE_IMAGE_WITHOUT_ACCOUNT_FILLS" };
+			if (exitCode !== undefined && exitCode !== 0) throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_FAILED");
+			if (vaultRefused) return { vaultRefused };
+			if (sealFailure !== undefined) throw sealFailure;
+			if (memberTookOver) return { refused: "DESKTOP_MEMBER_IN_CONTROL" };
+			if (code === "FILLED") return { filled: true };
+			// FILL_NO_BOX only follows the vault's refusal or failure, both answered above.
+			if (code === undefined || code === "FILL_NO_BOX") throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+			return { refused: code };
+		});
 	}
 
 	/**
@@ -4537,8 +4645,16 @@ export class LxdCompanyMachineHost {
 				},
 			);
 			created.sha.catch(() => undefined);
-			this.#homeCodexes.set(placementId, created);
-			entry = created;
+			const currentBoot = this.#guests.get(placementId)?.bootId ?? this.#folders.get(placementId)?.bootId;
+			if (entry && currentBoot !== undefined && entry.bootId === currentBoot && bootId !== currentBoot) {
+				// WHY: A stale-boot request must not abort or overwrite the current boot's in-flight Codex hash.
+				entry = created;
+			} else {
+				if (entry && !entry.settled && currentBoot !== undefined && bootId === currentBoot)
+					entry.controller.abort();
+				this.#homeCodexes.set(placementId, created);
+				entry = created;
+			}
 		}
 		if (entry.settled) return await entry.sha;
 		entry.waiters += 1;
@@ -4571,17 +4687,19 @@ export class LxdCompanyMachineHost {
 		signal: AbortSignal,
 	): Promise<boolean> {
 		if (this.#homeSftps.get(placementId) === bootId) return true;
-		const result = await exec(
-			this.#policy.project,
-			lxdCompanyMachineName(placementId),
-			{
-				command: ["/bin/sh", "-c", HOME_SFTP_ON_BOOT, bootId, CLOUD_MACHINE_HOME.sftpServer],
-				environment: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" },
-				cwd: "/",
-				maxStdoutBytes: 1024,
-				stderrTailBytes: 512,
-			},
-			AbortSignal.any([signal, AbortSignal.timeout(HOME_CODEX_HASH_MS)]),
+		const result = await withTimeoutScope(signal, HOME_CODEX_HASH_MS, (checked) =>
+			exec(
+				this.#policy.project,
+				lxdCompanyMachineName(placementId),
+				{
+					command: ["/bin/sh", "-c", HOME_SFTP_ON_BOOT, bootId, CLOUD_MACHINE_HOME.sftpServer],
+					environment: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" },
+					cwd: "/",
+					maxStdoutBytes: 1024,
+					stderrTailBytes: 512,
+				},
+				checked,
+			),
 		);
 		if (result.exitCode === 97) throw new Error("HOME_SESSION_ENDED");
 		if (result.exitCode === 98) return false;
@@ -4634,16 +4752,16 @@ export class LxdCompanyMachineHost {
 			boot.homeChannels.set(session.sessionId, (boot.homeChannels.get(session.sessionId) ?? 0) + 1);
 			counted = true;
 			try {
-				await folder.openWindow(session.placementId, window, AbortSignal.any([signal, AbortSignal.timeout(5000)]));
+				await withTimeoutScope(signal, 5000, (checked) => folder.openWindow(session.placementId, window, checked));
 			} catch (error) {
 				// The service may have taken the open although it did not answer in time: no channel starts, so the
 				// window is closed again, at best, as a window whose channel ended (review r11 F1), unless another channel
 				// of the session still has it open.
 				if (leave()) {
 					boot.homes.delete(session.sessionId);
-					const answered = await folder
-						.closeWindow(session.placementId, session.sessionId, AbortSignal.timeout(WINDOWS_MS))
-						.catch(() => undefined);
+					const answered = await withTimeoutScope(undefined, WINDOWS_MS, (checked) =>
+						folder.closeWindow(session.placementId, session.sessionId, checked),
+					).catch(() => undefined);
 					noted(boot, answered);
 				}
 				throw error;
@@ -4654,9 +4772,9 @@ export class LxdCompanyMachineHost {
 		const close = (): Promise<void> => {
 			closing ??= (async () => {
 				if (!leave() || !boot.homes.delete(session.sessionId)) return;
-				const answered = await folder
-					.closeWindow(session.placementId, session.sessionId, AbortSignal.timeout(WINDOWS_MS))
-					.catch(() => undefined);
+				const answered = await withTimeoutScope(undefined, WINDOWS_MS, (checked) =>
+					folder.closeWindow(session.placementId, session.sessionId, checked),
+				).catch(() => undefined);
 				noted(boot, answered);
 			})();
 			return closing;
@@ -4754,14 +4872,15 @@ export class LxdCompanyMachineHost {
 					throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
 				const window = { commandId, runId, staffAgentId, requestedByUserId };
 				// The service opens a window in memory: a few seconds are ample, and the start stays in the gateway's 30.
-				const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
-				// A pass that saw the command before its guest had it closes its window: that close is answered first, so
-				// the open comes after it.
-				const closing = this.#closing.get(`${authority.placementId}/${commandId}`);
-				if (closing && !checked.aborted) await Promise.race([closing, once(checked, "abort")]);
-				if (checked.aborted) throw new Error("FOLDER_CONTROL_UNANSWERED");
-				fenced();
-				await folder.openWindow(authority.placementId, window, checked);
+				await withTimeoutScope(signal, 5000, async (checked) => {
+					// A pass that saw the command before its guest had it closes its window: that close is answered first, so
+					// the open comes after it.
+					const closing = this.#closing.get(`${authority.placementId}/${commandId}`);
+					if (closing && !checked.aborted) await awaitRaceAbort(closing, checked);
+					if (checked.aborted) throw new Error("FOLDER_CONTROL_UNANSWERED");
+					fenced();
+					await folder.openWindow(authority.placementId, window, checked);
+				});
 				// Opened again each pass until the command ends (#reopen).
 				boot.windows.set(commandId, window);
 			}
@@ -4877,8 +4996,9 @@ export class LxdCompanyMachineHost {
 	): Promise<string | undefined> {
 		const ended = () => !!at.bootId && this.#ended(at.placementId, at.bootId);
 		if (boot?.state !== "none") {
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(boundaryMs)]);
-			const answer = await folder.boundary(at.placementId, [], checked).catch(() => undefined);
+			const answer = await withTimeoutScope(signal, boundaryMs, (checked) =>
+				folder.boundary(at.placementId, [], checked),
+			).catch(() => undefined);
 			noted(boot, answer);
 			if (ended()) return HELD.ended;
 			if (answer?.reads !== "released") return unreleased(answer);

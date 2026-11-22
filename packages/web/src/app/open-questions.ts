@@ -16,7 +16,7 @@ import type { OpenQuestion } from "../cloud/open-questions.ts";
 import type { ActionReviewAnswer } from "../cloud/review-rules.ts";
 import { selectSessionExecutionSponsor } from "../cloud/session-input.ts";
 import type { JsonValue } from "../cloud/types.ts";
-import type { CompanyController } from "./company.ts";
+import type { CompanyController, ConversationState } from "./company.ts";
 import { Store, throttle } from "./state.ts";
 
 /* An agent's open questions on the interface app they are about (Jonas, 10 November 2026: agents show their work in
@@ -153,13 +153,16 @@ export class OpenQuestions {
 					for (const decision of decisions)
 						if (decision.kind === "draft" && !decision.othersAnswer)
 							this.#drafts.set(decision.interactionId, decision);
-					this.store.set({
-						decisions,
-						questions: decisions.filter(
-							(decision): decision is OpenCard => decision.kind === "question" && !decision.othersAnswer,
-						),
-						read: true,
-					});
+					const current = this.store.get();
+					if (!current.read || JSON.stringify(current.decisions) !== JSON.stringify(decisions)) {
+						this.store.set({
+							decisions,
+							questions: decisions.filter(
+								(decision): decision is OpenCard => decision.kind === "question" && !decision.othersAnswer,
+							),
+							read: true,
+						});
+					}
 					this.#count();
 				},
 				(error: unknown) => {
@@ -168,7 +171,7 @@ export class OpenQuestions {
 						this.#count();
 					}
 					// Otherwise what was shown stands; the next hint or the clock reads again.
-					else this.store.set({ read: true });
+					else if (!this.store.get().read) this.store.set({ read: true });
 				},
 			)
 			.finally(() => {
@@ -401,6 +404,11 @@ export class OpenQuestions {
 			stopTeam();
 			clearInterval(clock);
 		};
+	}
+
+	/** WHY: peeks an already-cached thread without creating or loading a new store so docks do not churn LRU. */
+	conversationState(sessionId: string): ConversationState | undefined {
+		return this.#company.conversations.get(sessionId)?.get();
 	}
 
 	/** Gives the thread the model account the cloud chooses for it now, as the thread does when it opens and as Mailbox

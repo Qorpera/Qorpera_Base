@@ -6,7 +6,10 @@ import { CloudMemberCompanyComputerClient } from "@qorpera/cloud-client/cloud-me
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import { presenceUuid } from "@qorpera/cloud-client/company-path-presence";
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
+import { linkedAbortScope, withAbortScopes } from "./abort-scope.ts";
 import { type MemberWebConfig, parseMemberWebConfig } from "./config.ts";
+
+const UTF8 = new TextDecoder("utf-8", { fatal: true });
 
 export interface WebCompany {
 	companyId: string;
@@ -72,7 +75,7 @@ export class WebMemberAccount {
 	readonly #fetch: typeof fetch;
 	#memberId: string | null = null;
 	#stop = new AbortController();
-	#companyStop?: AbortController;
+	#companyScope?: { signal: AbortSignal; dispose(): void };
 	#companies: WebCompany[] = [];
 	#catalogRevision = 0;
 	constructor(options: { config: MemberWebConfig; client: Pick<SupabaseClient, "auth">; fetch?: typeof fetch }) {
@@ -89,8 +92,8 @@ export class WebMemberAccount {
 		const memberId = session ? presenceUuid(session.user.id) : null;
 		if (memberId === this.#memberId) return false;
 		this.#stop.abort();
-		this.#companyStop?.abort();
-		this.#companyStop = undefined;
+		this.#companyScope?.dispose();
+		this.#companyScope = undefined;
 		this.#stop = new AbortController();
 		this.#companies = [];
 		this.#memberId = memberId;
@@ -98,13 +101,14 @@ export class WebMemberAccount {
 	}
 	close(): void {
 		this.#stop.abort();
-		this.#companyStop?.abort();
+		this.#companyScope?.dispose();
+		this.#companyScope = undefined;
 		this.#memberId = null;
 		this.#companies = [];
 	}
 	leaveCompany(): void {
-		this.#companyStop?.abort();
-		this.#companyStop = undefined;
+		this.#companyScope?.dispose();
+		this.#companyScope = undefined;
 	}
 	#context(): Context {
 		const memberId = this.#memberId,
@@ -129,46 +133,48 @@ export class WebMemberAccount {
 				throw new Error("Sign in to continue");
 			return data.session.access_token;
 		};
-		const rpc: Context["rpc"] = (method, args, caller) =>
-			withCloudDeadline(
-				async (requestSignal) => {
-					const bearer = await token(requestSignal),
-						response = await this.#fetch(`${this.#config.supabaseUrl}/rest/v1/rpc/${method}`, {
-							method: "POST",
-							headers: {
-								authorization: `Bearer ${bearer}`,
-								apikey: this.#config.publishableKey,
-								"content-type": "application/json",
-							},
-							body: JSON.stringify(args),
-							signal: requestSignal,
-							redirect: "error",
-							cache: "no-store",
-						});
-					if (response.status !== 200) {
-						void response.body?.cancel().catch(() => undefined);
-						throw new Error("Cloud access is unavailable. Refresh to check access.");
-					}
-					const value = JSON.parse(
-						new TextDecoder("utf-8", { fatal: true }).decode(
-							await readBoundedCloudResponse(response, 1024 * 1024, requestSignal),
-						),
-					);
-					current();
-					requestSignal.throwIfAborted();
-					return value;
-				},
-				10000,
-				AbortSignal.any([signal, caller]),
-			);
+		const rpc: Context["rpc"] = (method, args, caller) => {
+			const call = (scoped: AbortSignal) =>
+				withCloudDeadline(
+					async (requestSignal) => {
+						const bearer = await token(requestSignal),
+							response = await this.#fetch(`${this.#config.supabaseUrl}/rest/v1/rpc/${method}`, {
+								method: "POST",
+								headers: {
+									authorization: `Bearer ${bearer}`,
+									apikey: this.#config.publishableKey,
+									"content-type": "application/json",
+								},
+								body: JSON.stringify(args),
+								signal: requestSignal,
+								redirect: "error",
+								cache: "no-store",
+							});
+						if (response.status !== 200) {
+							void response.body?.cancel().catch(() => undefined);
+							throw new Error("Cloud access is unavailable. Refresh to check access.");
+						}
+						const value = JSON.parse(
+							UTF8.decode(await readBoundedCloudResponse(response, 1024 * 1024, requestSignal)),
+						);
+						current();
+						requestSignal.throwIfAborted();
+						return value;
+					},
+					10000,
+					scoped,
+				);
+			return caller === signal ? call(signal) : withAbortScopes([signal, caller], call);
+		};
 		return { memberId, signal, current, token, rpc };
 	}
-	async companies(): Promise<WebCompany[]> {
+	async companies(signal?: AbortSignal): Promise<WebCompany[]> {
 		const context = this.#context();
 		const revision = ++this.#catalogRevision;
 		this.#companies = [];
-		const result = companies(await context.rpc("qorpera_list_hosted_profiles", {}, context.signal));
+		const result = companies(await context.rpc("qorpera_list_hosted_profiles", {}, signal ?? context.signal));
 		context.current();
+		signal?.throwIfAborted();
 		if (revision !== this.#catalogRevision) throw new Error("Company list was refreshed");
 		this.#companies = result;
 		return structuredClone(result);
@@ -177,13 +183,13 @@ export class WebMemberAccount {
 		const context = this.#context(),
 			company = this.#companies.find((company) => company.environmentId === environmentId);
 		if (!company) throw new Error("Refresh and select a company");
-		this.#companyStop?.abort();
-		this.#companyStop = new AbortController();
+		this.#companyScope?.dispose();
+		this.#companyScope = linkedAbortScope([context.signal]);
 		return new WebCompanySession({
 			config: this.#config,
 			company,
 			context,
-			signal: AbortSignal.any([context.signal, this.#companyStop.signal]),
+			signal: this.#companyScope.signal,
 			fetch: this.#fetch,
 		});
 	}
@@ -232,16 +238,21 @@ export class WebCompanySession {
 			},
 			fetch: async (input, init) => {
 				this.current();
-				const response = await options.fetch(input, {
-					...init,
-					signal: AbortSignal.any([this.signal, ...(init?.signal ? [init.signal] : [])]),
-				});
-				if (this.signal.aborted) {
-					void response.body?.cancel().catch(() => undefined);
-					this.signal.throwIfAborted();
-				}
-				this.current();
-				return response;
+				return withAbortScopes(
+					[this.signal, init?.signal === this.signal ? undefined : init?.signal],
+					async (requestSignal) => {
+						const response = await options.fetch(input, {
+							...init,
+							signal: requestSignal,
+						});
+						if (this.signal.aborted) {
+							void response.body?.cancel().catch(() => undefined);
+							this.signal.throwIfAborted();
+						}
+						this.current();
+						return response;
+					},
+				);
 			},
 		});
 	}

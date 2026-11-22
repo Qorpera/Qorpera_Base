@@ -1063,4 +1063,45 @@ describe("cloud-owned native tool boundary", () => {
 			boundary.close();
 		}
 	});
+
+	it("skips the post-review authority check only when willReview is false and tool has no prepare", async () => {
+		const { tool } = fixture();
+		const prepareTool: CloudNativeTool = {
+			...tool,
+			name: "prepared_read",
+			prepare: async (parsed) => parsed,
+		};
+		let nextWillReview = false;
+		const assertActive = vi.fn(async () => undefined);
+		const boundary = new CloudNativeToolBoundary({
+			companyId,
+			runId,
+			tools: [tool, prepareTool],
+			assertActive,
+			review: {
+				willReview: () => nextWillReview,
+				check: async () => ({ run: true }),
+			},
+			signal: new AbortController().signal,
+		});
+		try {
+			const unreviewed = await boundary.invoke("call_unreviewed", "qorpera", tool.name, { path: "notes.md" });
+			expect(unreviewed.success).toBe(true);
+			expect(assertActive).toHaveBeenCalledTimes(2);
+
+			assertActive.mockClear();
+			nextWillReview = true;
+			const reviewed = await boundary.invoke("call_reviewed", "qorpera", tool.name, { path: "notes.md" });
+			expect(reviewed.success).toBe(true);
+			expect(assertActive).toHaveBeenCalledTimes(3);
+
+			assertActive.mockClear();
+			nextWillReview = false;
+			const prepared = await boundary.invoke("call_prepared", "qorpera", prepareTool.name, { path: "notes.md" });
+			expect(prepared.success).toBe(true);
+			expect(assertActive).toHaveBeenCalledTimes(3);
+		} finally {
+			boundary.close();
+		}
+	});
 });

@@ -32,7 +32,7 @@ import {
 } from "@qorpera/runtime/cloud-action-review";
 import type { CloudCompanyFolderClient } from "@qorpera/runtime/cloud-company-folder-client";
 import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
-import { CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
+import { CloudControlRpcEnded, CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
 import { CloudFolderGroupChats } from "@qorpera/runtime/cloud-folder-group-chats";
 import { CloudFolderHiring } from "@qorpera/runtime/cloud-folder-hiring";
 import { CloudFolderRoutineDecision } from "@qorpera/runtime/cloud-folder-routine-decision";
@@ -4552,6 +4552,93 @@ describe("the company's own work is not outside instructions (AL?, 18 November 2
 			);
 			expect(text).not.toContain("Its answer never lets you repeat this action.");
 			expect(text.match(/card answer does not count/g)).toHaveLength(1);
+		}
+	});
+
+	it("reports willReview false for read/internal calls and bounds park retries on persistent retryable errors", async () => {
+		const readControl = vi.fn(async () => {
+			throw new Error("should not call review RPC for read tools");
+		});
+		const readGate = new CloudActionReviewGate({
+			binding,
+			control: { call: readControl },
+			reviewer: {
+				review: async () => {
+					throw new Error("should not call reviewer for read tools");
+				},
+			},
+			request: "Read a file",
+			holdMs: 0,
+			pollMs: 1,
+		});
+		const readCall = {
+			tool: { name: "company_read", source: "company_file" as const },
+			parsed: { path: "notes.md" },
+		};
+		expect(readGate.willReview(readCall)).toBe(false);
+		expect(
+			readGate.willReview({
+				tool: { name: "send_external", source: "connector" },
+				parsed: { to: "a@example.com" },
+			}),
+		).toBe(true);
+		const readResult = await readGate.check(
+			{
+				...readCall,
+				argumentsText: '{"path":"notes.md"}',
+				argumentSha256: "a".repeat(64),
+				callId: "call_read",
+			},
+			new AbortController().signal,
+		);
+		expect(readResult).toEqual({ run: true });
+		expect(readControl).not.toHaveBeenCalled();
+
+		vi.useFakeTimers();
+		try {
+			const calls: Array<{ method: string; args: Record<string, unknown> }> = [];
+			const parkGate = new CloudActionReviewGate({
+				binding,
+				control: {
+					call: async (method, args) => {
+						calls.push({ method, args });
+						if (method === "qorpera_begin_action_review") {
+							return { state: "pending", reviewId: randomUUID(), approverName: "Jonas", cardElsewhere: false };
+						}
+						throw new CloudControlRpcEnded("park lost", "57014");
+					},
+				},
+				reviewer: {
+					review: async () => {
+						throw new Error("unexpected reviewer call");
+					},
+				},
+				request: "Send email",
+				holdMs: 0,
+				pollMs: 10,
+			});
+			const checkPromise = parkGate
+				.check(
+					{
+						tool: { name: "send_external", source: "connector" },
+						parsed: { to: "a@example.com" },
+						argumentsText: '{"to":"a@example.com"}',
+						argumentSha256: "b".repeat(64),
+						callId: "call_park",
+					},
+					new AbortController().signal,
+				)
+				.then(
+					() => "resolved",
+					(error: Error) => error.message,
+				);
+			await vi.advanceTimersByTimeAsync(35_000);
+			expect(await checkPromise).toBe("park lost");
+			const awaitCalls = calls.filter((entry) => entry.method === "qorpera_await_action_review");
+			expect(awaitCalls.length).toBeGreaterThanOrEqual(5);
+			expect(awaitCalls.every((entry) => entry.args.p_leaving !== true)).toBe(true);
+		} finally {
+			vi.useRealTimers();
 		}
 	});
 });

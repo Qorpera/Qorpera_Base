@@ -20,6 +20,7 @@ import {
 	type CompanyComputerPreparationCommand,
 	parseCompanyComputerPreparationCommand,
 } from "@qorpera/contracts";
+import { withAbortScopes, withTimeoutScope } from "./abort-scope.ts";
 import { AGENT_BRIDGE } from "./agent-plug.ts";
 import { lxdMacAddress } from "./lxd-guest-network.ts";
 import { OFFICE_CODE_PACKAGE_LOADER, officeCodePackageStage } from "./lxd-office-code-package-loader.ts";
@@ -39,6 +40,8 @@ const MAX_EXEC_STREAM_INPUT_BYTES = 64 * 1024;
 const MAX_EXEC_STREAM_OUTPUT_BYTES = 8 * 1024 * 1024;
 const CODING_MEMORY_CODING_SLICE =
 	/^\/sys\/fs\/cgroup\/qorpera\.slice\/qorpera-coding\.slice\/qorpera-coding-[0-9a-f]{32}\.slice\/memory\.stat$/;
+const CODING_MEMORY_FOLDER_SERVICE =
+	/^\/sys\/fs\/cgroup\/system\.slice\/qorpera-folder-[0-9a-f]{32}\.service\/memory\.stat$/;
 const CODING_MEMORY_USER_SLICE = /^\/sys\/fs\/cgroup\/user\.slice\/user-([2-5][0-9]{5})\.slice\/memory\.stat$/;
 const CODING_MEMORY_HEADER = /^=== (\/[A-Za-z0-9/_.-]+) ===$/;
 const CODING_MEMORY_BATCH_SIZE = 58;
@@ -1565,11 +1568,16 @@ async function pipeInput(
 }
 
 function validCodingMemoryPath(path: string): boolean {
-	if (CODING_MEMORY_CODING_SLICE.test(path)) return true;
+	if (CODING_MEMORY_CODING_SLICE.test(path) || CODING_MEMORY_FOLDER_SERVICE.test(path)) return true;
 	const user = CODING_MEMORY_USER_SLICE.exec(path);
 	if (!user) return false;
 	const uid = Number(user[1]);
 	return Number.isSafeInteger(uid) && uid >= 200_000 && uid <= 524_287;
+}
+
+export function defaultLxdRequestTimeoutMs(path: string, operationTimeoutSeconds: number): number {
+	const waitMatch = /\/wait\?(?:.*&)?timeout=(\d+)(?:&|$)/.exec(path);
+	return waitMatch ? (Number(waitMatch[1]) + 5) * 1000 : operationTimeoutSeconds * 1000;
 }
 
 export class LxdUnixClient
@@ -1679,96 +1687,97 @@ export class LxdUnixClient
 	 * host identity, provider journals and cloud allocations before publication. */
 	async inspectHostInventory(signal: AbortSignal): Promise<LxdHostInventory> {
 		try {
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
-			const server = await this.inspectOfficeServer("default", checked, true);
-			const listing = async (recursive: boolean): Promise<unknown[]> => {
-				checked.throwIfAborted();
-				const result = await this.#requestPayload(
-					"GET",
-					`/1.0/instances?all-projects=true&recursion=${recursive ? 1 : 0}`,
-					undefined,
-					undefined,
-					checked,
-					recursive ? MAX_RESPONSE_BYTES : 1048576,
-				);
-				const envelope = record(result.body, "host inventory");
-				if (
-					result.status !== 200 ||
-					envelope.type !== "sync" ||
-					envelope.status_code !== 200 ||
-					!Array.isArray(envelope.metadata) ||
-					envelope.metadata.length > 4096
-				)
-					throw new Error("invalid host inventory");
-				checked.throwIfAborted();
-				return envelope.metadata;
-			};
-			const namePattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
-			const key = (project: unknown, name: unknown): string => {
-				if (
-					typeof project !== "string" ||
-					typeof name !== "string" ||
-					!namePattern.test(project) ||
-					!namePattern.test(name)
-				)
-					throw new Error("invalid inventory identity");
-				return JSON.stringify([project, name]);
-			};
-			const unique = (values: string[]): string[] => {
-				if (new Set(values).size !== values.length) throw new Error("duplicate inventory identity");
-				return values.sort();
-			};
-			const identities = async (): Promise<string[]> =>
-				unique(
-					(await listing(false)).map((value) => {
-						if (typeof value !== "string" || !value.startsWith("/1.0/instances/"))
-							throw new Error("invalid inventory URL");
-						const url = new URL(value, "http://lxd.invalid"),
-							name = url.pathname.slice("/1.0/instances/".length);
-						if (
-							url.origin !== "http://lxd.invalid" ||
-							url.hash ||
-							[...url.searchParams.keys()].some((name) => name !== "project") ||
-							url.searchParams.getAll("project").length > 1
-						)
-							throw new Error("unscoped inventory URL");
-						return key(url.searchParams.get("project") ?? "default", name);
-					}),
-				);
-			const expanded = async (): Promise<LxdHostInventoryInstance[]> => {
-				const result = (await listing(true)).map((value) => {
-					const raw = record(value, "inventory instance"),
-						parsed = instance(raw);
-					key(raw.project, parsed.name);
+			return await withTimeoutScope(signal, 5000, async (checked) => {
+				const server = await this.inspectOfficeServer("default", checked, true);
+				const listing = async (recursive: boolean): Promise<unknown[]> => {
+					checked.throwIfAborted();
+					const result = await this.#requestPayload(
+						"GET",
+						`/1.0/instances?all-projects=true&recursion=${recursive ? 1 : 0}`,
+						undefined,
+						undefined,
+						checked,
+						recursive ? MAX_RESPONSE_BYTES : 1048576,
+					);
+					const envelope = record(result.body, "host inventory");
 					if (
-						typeof raw.location !== "string" ||
-						!["", "none", server.serverName].includes(raw.location) ||
-						!Number.isSafeInteger(parsed.statusCode) ||
-						parsed.statusCode < 100 ||
-						parsed.statusCode > 599 ||
-						!parsed.status ||
-						parsed.status.length > 64
+						result.status !== 200 ||
+						envelope.type !== "sync" ||
+						envelope.status_code !== 200 ||
+						!Array.isArray(envelope.metadata) ||
+						envelope.metadata.length > 4096
 					)
-						throw new Error("invalid inventory placement/state");
-					return { ...parsed, project: raw.project as string, location: raw.location };
-				});
-				unique(result.map((item) => key(item.project, item.name)));
-				return result.sort((a, b) => key(a.project, a.name).localeCompare(key(b.project, b.name)));
-			};
-			const before = await identities(),
-				first = await expanded(),
-				second = await expanded(),
-				after = await identities();
-			const finalServer = await this.inspectOfficeServer("default", checked, true);
-			if (
-				!isDeepStrictEqual(server, finalServer) ||
-				!isDeepStrictEqual(before, after) ||
-				!isDeepStrictEqual(before, unique(first.map((item) => key(item.project, item.name)))) ||
-				!isDeepStrictEqual(first, second)
-			)
-				throw new Error("host inventory changed or incomplete");
-			checked.throwIfAborted();
-			return { server, instances: second };
+						throw new Error("invalid host inventory");
+					checked.throwIfAborted();
+					return envelope.metadata;
+				};
+				const namePattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
+				const key = (project: unknown, name: unknown): string => {
+					if (
+						typeof project !== "string" ||
+						typeof name !== "string" ||
+						!namePattern.test(project) ||
+						!namePattern.test(name)
+					)
+						throw new Error("invalid inventory identity");
+					return JSON.stringify([project, name]);
+				};
+				const unique = (values: string[]): string[] => {
+					if (new Set(values).size !== values.length) throw new Error("duplicate inventory identity");
+					return values.sort();
+				};
+				const identities = async (): Promise<string[]> =>
+					unique(
+						(await listing(false)).map((value) => {
+							if (typeof value !== "string" || !value.startsWith("/1.0/instances/"))
+								throw new Error("invalid inventory URL");
+							const url = new URL(value, "http://lxd.invalid"),
+								name = url.pathname.slice("/1.0/instances/".length);
+							if (
+								url.origin !== "http://lxd.invalid" ||
+								url.hash ||
+								[...url.searchParams.keys()].some((name) => name !== "project") ||
+								url.searchParams.getAll("project").length > 1
+							)
+								throw new Error("unscoped inventory URL");
+							return key(url.searchParams.get("project") ?? "default", name);
+						}),
+					);
+				const expanded = async (): Promise<LxdHostInventoryInstance[]> => {
+					const result = (await listing(true)).map((value) => {
+						const raw = record(value, "inventory instance"),
+							parsed = instance(raw);
+						key(raw.project, parsed.name);
+						if (
+							typeof raw.location !== "string" ||
+							!["", "none", server.serverName].includes(raw.location) ||
+							!Number.isSafeInteger(parsed.statusCode) ||
+							parsed.statusCode < 100 ||
+							parsed.statusCode > 599 ||
+							!parsed.status ||
+							parsed.status.length > 64
+						)
+							throw new Error("invalid inventory placement/state");
+						return { ...parsed, project: raw.project as string, location: raw.location };
+					});
+					unique(result.map((item) => key(item.project, item.name)));
+					return result.sort((a, b) => key(a.project, a.name).localeCompare(key(b.project, b.name)));
+				};
+				const before = await identities(),
+					first = await expanded(),
+					second = await expanded(),
+					after = await identities();
+				const finalServer = await this.inspectOfficeServer("default", checked, true);
+				if (
+					!isDeepStrictEqual(server, finalServer) ||
+					!isDeepStrictEqual(before, after) ||
+					!isDeepStrictEqual(before, unique(first.map((item) => key(item.project, item.name)))) ||
+					!isDeepStrictEqual(first, second)
+				)
+					throw new Error("host inventory changed or incomplete");
+				checked.throwIfAborted();
+				return { server, instances: second };
+			});
 		} catch {
 			throw new Error("LXD_HOST_INVENTORY_UNCONFIRMED");
 		}
@@ -1801,27 +1810,28 @@ export class LxdUnixClient
 		try {
 			if (!/^[a-z][a-z0-9-]{0,62}$/.test(project) || !/^[0-9a-f]{64}$/.test(fingerprint))
 				throw new Error("invalid image identity");
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
-			checked.throwIfAborted();
-			const result = await this.#requestPayload(
-				"GET",
-				projectPath(`/1.0/images/${fingerprint}`, project),
-				undefined,
-				undefined,
-				checked,
-				65536,
-			);
-			checked.throwIfAborted();
-			const envelope = record(result.body, "image");
-			if (result.status === 404 && envelope.type === "error" && envelope.error_code === 404) return false;
-			if (
-				result.status !== 200 ||
-				envelope.type !== "sync" ||
-				envelope.status_code !== 200 ||
-				record(envelope.metadata, "image").fingerprint !== fingerprint
-			)
-				throw new Error("image not confirmed");
-			return true;
+			return await withTimeoutScope(signal, 5000, async (checked) => {
+				checked.throwIfAborted();
+				const result = await this.#requestPayload(
+					"GET",
+					projectPath(`/1.0/images/${fingerprint}`, project),
+					undefined,
+					undefined,
+					checked,
+					65536,
+				);
+				checked.throwIfAborted();
+				const envelope = record(result.body, "image");
+				if (result.status === 404 && envelope.type === "error" && envelope.error_code === 404) return false;
+				if (
+					result.status !== 200 ||
+					envelope.type !== "sync" ||
+					envelope.status_code !== 200 ||
+					record(envelope.metadata, "image").fingerprint !== fingerprint
+				)
+					throw new Error("image not confirmed");
+				return true;
+			});
 		} catch {
 			throw new Error("LXD_IMAGE_UNCONFIRMED");
 		}
@@ -2032,14 +2042,16 @@ export class LxdUnixClient
 	): Promise<number | undefined> {
 		if (!INSTANCE_NAME.test(pool) || !INSTANCE_NAME.test(project) || !INSTANCE_NAME.test(name))
 			throw new Error("LXD storage scope is invalid");
-		const result = await this.#request(
-			"GET",
-			projectPath(
-				`/1.0/storage-pools/${encodeURIComponent(pool)}/volumes/virtual-machine/${encodeURIComponent(name)}/state`,
-				project,
+		const result = await withTimeoutScope(signal, 5000, (checked) =>
+			this.#request(
+				"GET",
+				projectPath(
+					`/1.0/storage-pools/${encodeURIComponent(pool)}/volumes/virtual-machine/${encodeURIComponent(name)}/state`,
+					project,
+				),
+				undefined,
+				checked,
 			),
-			undefined,
-			AbortSignal.any([signal, AbortSignal.timeout(5000)]),
 		);
 		if (result.status < 200 || result.status >= 300) return undefined;
 		const state = envelopeMetadata(result);
@@ -2114,9 +2126,15 @@ export class LxdUnixClient
 		dispatchSignal?: AbortSignal,
 	): Promise<void> {
 		if (request.type !== "virtual-machine") throw new Error("LXD provider only creates full virtual machines");
-		const dispatch = dispatchSignal ? AbortSignal.any([dispatchSignal, ...(signal ? [signal] : [])]) : signal;
-		dispatch?.throwIfAborted();
-		const result = await this.#request("POST", projectPath("/1.0/instances", project), request, dispatch);
+		const result = dispatchSignal
+			? await withAbortScopes([dispatchSignal, signal], (dispatch) => {
+					dispatch.throwIfAborted();
+					return this.#request("POST", projectPath("/1.0/instances", project), request, dispatch);
+				})
+			: await (async () => {
+					signal?.throwIfAborted();
+					return this.#request("POST", projectPath("/1.0/instances", project), request, signal);
+				})();
 		await this.#waitForOperation(result, signal);
 	}
 
@@ -2129,35 +2147,42 @@ export class LxdUnixClient
 			const name = action.action === "create" ? action.request.name : action.name;
 			if (!INSTANCE_NAME.test(project) || !INSTANCE_NAME.test(name)) throw new Error("invalid scope");
 			if (action.action === "create" && action.request.type !== "virtual-machine") throw new Error("not a VM");
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
-			checked.throwIfAborted();
-			let result: HttpResult;
-			if (action.action === "create") {
-				result = await this.#request("POST", projectPath("/1.0/instances", project), action.request, checked);
-			} else if (action.action === "delete") {
-				result = await this.#request("DELETE", projectPath(`/1.0/instances/${name}`, project), undefined, checked);
-			} else if (action.action === "start" || action.action === "stop") {
-				result = await this.#request(
-					"PUT",
-					projectPath(`/1.0/instances/${name}/state`, project),
-					{
-						action: action.action,
-						timeout: this.#operationTimeoutSeconds,
-						force: action.action === "stop" && action.force === true,
-						stateful: false,
-					},
-					checked,
-				);
-			} else if (action.action === "rebuild") {
-				if (!/^[0-9a-f]{64}$/.test(action.fingerprint)) throw new Error("invalid image");
-				result = await this.#request(
-					"POST",
-					projectPath(`/1.0/instances/${name}/rebuild`, project),
-					{ source: { type: "image", fingerprint: action.fingerprint } },
-					checked,
-				);
-			} else throw new Error("invalid action");
-			checked.throwIfAborted();
+			const result = await withTimeoutScope(signal, 5000, async (checked) => {
+				checked.throwIfAborted();
+				let response: HttpResult;
+				if (action.action === "create") {
+					response = await this.#request("POST", projectPath("/1.0/instances", project), action.request, checked);
+				} else if (action.action === "delete") {
+					response = await this.#request(
+						"DELETE",
+						projectPath(`/1.0/instances/${name}`, project),
+						undefined,
+						checked,
+					);
+				} else if (action.action === "start" || action.action === "stop") {
+					response = await this.#request(
+						"PUT",
+						projectPath(`/1.0/instances/${name}/state`, project),
+						{
+							action: action.action,
+							timeout: this.#operationTimeoutSeconds,
+							force: action.action === "stop" && action.force === true,
+							stateful: false,
+						},
+						checked,
+					);
+				} else if (action.action === "rebuild") {
+					if (!/^[0-9a-f]{64}$/.test(action.fingerprint)) throw new Error("invalid image");
+					response = await this.#request(
+						"POST",
+						projectPath(`/1.0/instances/${name}/rebuild`, project),
+						{ source: { type: "image", fingerprint: action.fingerprint } },
+						checked,
+					);
+				} else throw new Error("invalid action");
+				checked.throwIfAborted();
+				return response;
+			});
 			const envelope = record(result.body, "LXD response");
 			// LXD refused the request itself, with its own error and no operation: what it said is kept.
 			if (result.status >= 400 && result.status <= 599 && envelope.type === "error")
@@ -2527,33 +2552,37 @@ export class LxdUnixClient
 			if (!Buffer.isBuffer(content) || content.length < 1 || content.length > maximum)
 				throw new Error("invalid size");
 			payload = Buffer.from(content);
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
-			checked.throwIfAborted();
-			const result = await this.#requestPayload(
-				"POST",
-				projectPath(`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`, project),
-				payload,
-				{
-					"content-type": "application/octet-stream",
-					"x-lxd-type": "file",
-					"x-lxd-uid": "0",
-					"x-lxd-gid": "0",
-					"x-lxd-mode": "0400",
-					"x-lxd-modify-perm": "uid,gid,mode",
-				},
-				checked,
-			);
-			checked.throwIfAborted();
-			const envelope = record(result.body, "LXD software staging response");
-			if (
-				result.status !== 200 ||
-				envelope.type !== "sync" ||
-				envelope.status_code !== 200 ||
-				(envelope.status !== undefined && envelope.status !== "Success") ||
-				(envelope.error_code !== undefined && envelope.error_code !== 0) ||
-				(envelope.error !== undefined && envelope.error !== "")
-			)
-				throw new Error("staging upload unconfirmed");
+			await withTimeoutScope(signal, 5000, async (checked) => {
+				checked.throwIfAborted();
+				const result = await this.#requestPayload(
+					"POST",
+					projectPath(
+						`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`,
+						project,
+					),
+					payload,
+					{
+						"content-type": "application/octet-stream",
+						"x-lxd-type": "file",
+						"x-lxd-uid": "0",
+						"x-lxd-gid": "0",
+						"x-lxd-mode": "0400",
+						"x-lxd-modify-perm": "uid,gid,mode",
+					},
+					checked,
+				);
+				checked.throwIfAborted();
+				const envelope = record(result.body, "LXD software staging response");
+				if (
+					result.status !== 200 ||
+					envelope.type !== "sync" ||
+					envelope.status_code !== 200 ||
+					(envelope.status !== undefined && envelope.status !== "Success") ||
+					(envelope.error_code !== undefined && envelope.error_code !== 0) ||
+					(envelope.error !== undefined && envelope.error !== "")
+				)
+					throw new Error("staging upload unconfirmed");
+			});
 		} catch {
 			throw officeControlError("software", "UPLOAD");
 		} finally {
@@ -2587,30 +2616,35 @@ export class LxdUnixClient
 		try {
 			officeResetPath(path, true, false);
 			if (![project, name].every((value) => INSTANCE_NAME.test(value))) throw new Error("scope");
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
-			checked.throwIfAborted();
-			const result = await this.#requestPayload(
-				"GET",
-				projectPath(`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`, project),
-				undefined,
-				{ accept: "application/json" },
-				checked,
-				1048576,
-			);
-			checked.throwIfAborted();
-			const envelope = record(result.body, "LXD directory listing");
-			if (
-				result.status !== 200 ||
-				envelope.type !== "sync" ||
-				envelope.status_code !== 200 ||
-				!Array.isArray(envelope.metadata) ||
-				envelope.metadata.length > 8200 ||
-				envelope.metadata.some(
-					(entry) => typeof entry !== "string" || !entry || entry.length > 255 || /[\x00-\x1f\x7f/\\]/.test(entry),
+			return await withTimeoutScope(signal, 5000, async (checked) => {
+				checked.throwIfAborted();
+				const result = await this.#requestPayload(
+					"GET",
+					projectPath(
+						`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`,
+						project,
+					),
+					undefined,
+					{ accept: "application/json" },
+					checked,
+					1048576,
+				);
+				checked.throwIfAborted();
+				const envelope = record(result.body, "LXD directory listing");
+				if (
+					result.status !== 200 ||
+					envelope.type !== "sync" ||
+					envelope.status_code !== 200 ||
+					!Array.isArray(envelope.metadata) ||
+					envelope.metadata.length > 8200 ||
+					envelope.metadata.some(
+						(entry) =>
+							typeof entry !== "string" || !entry || entry.length > 255 || /[\x00-\x1f\x7f/\\]/.test(entry),
+					)
 				)
-			)
-				throw new Error("listing");
-			return [...(envelope.metadata as string[])].sort();
+					throw new Error("listing");
+				return [...(envelope.metadata as string[])].sort();
+			});
 		} catch {
 			throw new Error("LXD_OFFICE_RESET_LISTING_UNCONFIRMED");
 		}
@@ -2682,33 +2716,37 @@ export class LxdUnixClient
 		try {
 			if (![project, name].every((value) => INSTANCE_NAME.test(value))) throw new Error("scope");
 			payload = content === undefined ? Buffer.alloc(0) : Buffer.from(content);
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
-			checked.throwIfAborted();
-			const result = await this.#requestPayload(
-				"POST",
-				projectPath(`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`, project),
-				payload,
-				{
-					"content-type": "application/octet-stream",
-					"x-lxd-type": content === undefined ? "directory" : "file",
-					"x-lxd-uid": "0",
-					"x-lxd-gid": "0",
-					"x-lxd-mode": content === undefined ? "0700" : "0400",
-					"x-lxd-modify-perm": "uid,gid,mode",
-				},
-				checked,
-			);
-			checked.throwIfAborted();
-			const envelope = record(result.body, "LXD code package staging response");
-			if (
-				result.status !== 200 ||
-				envelope.type !== "sync" ||
-				envelope.status_code !== 200 ||
-				(envelope.status !== undefined && envelope.status !== "Success") ||
-				(envelope.error_code !== undefined && envelope.error_code !== 0) ||
-				(envelope.error !== undefined && envelope.error !== "")
-			)
-				throw new Error("upload");
+			await withTimeoutScope(signal, 5000, async (checked) => {
+				checked.throwIfAborted();
+				const result = await this.#requestPayload(
+					"POST",
+					projectPath(
+						`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`,
+						project,
+					),
+					payload,
+					{
+						"content-type": "application/octet-stream",
+						"x-lxd-type": content === undefined ? "directory" : "file",
+						"x-lxd-uid": "0",
+						"x-lxd-gid": "0",
+						"x-lxd-mode": content === undefined ? "0700" : "0400",
+						"x-lxd-modify-perm": "uid,gid,mode",
+					},
+					checked,
+				);
+				checked.throwIfAborted();
+				const envelope = record(result.body, "LXD code package staging response");
+				if (
+					result.status !== 200 ||
+					envelope.type !== "sync" ||
+					envelope.status_code !== 200 ||
+					(envelope.status !== undefined && envelope.status !== "Success") ||
+					(envelope.error_code !== undefined && envelope.error_code !== 0) ||
+					(envelope.error !== undefined && envelope.error !== "")
+				)
+					throw new Error("upload");
+			});
 		} catch {
 			throw officeControlError("code_package", "UPLOAD");
 		} finally {
@@ -2740,39 +2778,40 @@ export class LxdUnixClient
 	async discoverOfficeCodePackage(project: string, name: string, signal: AbortSignal): Promise<string | undefined> {
 		try {
 			if (![project, name].every((v) => INSTANCE_NAME.test(v))) throw new Error("identity");
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
-			const result = await this.#requestPayload(
-				"GET",
-				projectPath(
-					`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent("/etc/qorpera-office/code-packages")}`,
-					project,
-				),
-				undefined,
-				undefined,
-				checked,
-				4096,
-			);
-			checked.throwIfAborted();
-			const envelope = record(result.body, "package directory");
-			if (result.status === 404 && envelope.type === "error" && envelope.error_code === 404) return undefined;
-			if (
-				result.status !== 200 ||
-				envelope.type !== "sync" ||
-				envelope.status_code !== 200 ||
-				result.headers?.["x-lxd-type"] !== "directory" ||
-				result.headers?.["x-lxd-uid"] !== "0" ||
-				result.headers?.["x-lxd-gid"] !== "0" ||
-				!["0700", "448"].includes(String(result.headers?.["x-lxd-mode"]))
-			)
-				throw new Error("custody");
-			if (
-				!Array.isArray(envelope.metadata) ||
-				envelope.metadata.length !== 1 ||
-				typeof envelope.metadata[0] !== "string" ||
-				!OPERATION_UUID.test(envelope.metadata[0])
-			)
-				throw new Error("ambiguous");
-			return envelope.metadata[0];
+			return await withTimeoutScope(signal, 5000, async (checked) => {
+				const result = await this.#requestPayload(
+					"GET",
+					projectPath(
+						`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent("/etc/qorpera-office/code-packages")}`,
+						project,
+					),
+					undefined,
+					undefined,
+					checked,
+					4096,
+				);
+				checked.throwIfAborted();
+				const envelope = record(result.body, "package directory");
+				if (result.status === 404 && envelope.type === "error" && envelope.error_code === 404) return undefined;
+				if (
+					result.status !== 200 ||
+					envelope.type !== "sync" ||
+					envelope.status_code !== 200 ||
+					result.headers?.["x-lxd-type"] !== "directory" ||
+					result.headers?.["x-lxd-uid"] !== "0" ||
+					result.headers?.["x-lxd-gid"] !== "0" ||
+					!["0700", "448"].includes(String(result.headers?.["x-lxd-mode"]))
+				)
+					throw new Error("custody");
+				if (
+					!Array.isArray(envelope.metadata) ||
+					envelope.metadata.length !== 1 ||
+					typeof envelope.metadata[0] !== "string" ||
+					!OPERATION_UUID.test(envelope.metadata[0])
+				)
+					throw new Error("ambiguous");
+				return envelope.metadata[0];
+			});
 		} catch {
 			throw officeControlError("code_package", "READBACK");
 		}
@@ -2860,33 +2899,37 @@ export class LxdUnixClient
 			if (!directory && (!Buffer.isBuffer(content) || content.length < 1 || content.length > maximum))
 				throw new Error("size");
 			payload = directory ? Buffer.alloc(0) : Buffer.from(content);
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
-			checked.throwIfAborted();
-			const result = await this.#requestPayload(
-				"POST",
-				projectPath(`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`, project),
-				payload,
-				{
-					"content-type": "application/octet-stream",
-					"x-lxd-type": directory ? "directory" : "file",
-					"x-lxd-uid": officeResetOwner(uid),
-					"x-lxd-gid": officeResetOwner(gid),
-					"x-lxd-mode": officeResetMode(mode, directory),
-					"x-lxd-modify-perm": "uid,gid,mode",
-				},
-				checked,
-			);
-			checked.throwIfAborted();
-			const envelope = record(result.body, "LXD reset restore response");
-			if (
-				result.status !== 200 ||
-				envelope.type !== "sync" ||
-				envelope.status_code !== 200 ||
-				(envelope.status !== undefined && envelope.status !== "Success") ||
-				(envelope.error_code !== undefined && envelope.error_code !== 0) ||
-				(envelope.error !== undefined && envelope.error !== "")
-			)
-				throw new Error("restore upload unconfirmed");
+			await withTimeoutScope(signal, 5000, async (checked) => {
+				checked.throwIfAborted();
+				const result = await this.#requestPayload(
+					"POST",
+					projectPath(
+						`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`,
+						project,
+					),
+					payload,
+					{
+						"content-type": "application/octet-stream",
+						"x-lxd-type": directory ? "directory" : "file",
+						"x-lxd-uid": officeResetOwner(uid),
+						"x-lxd-gid": officeResetOwner(gid),
+						"x-lxd-mode": officeResetMode(mode, directory),
+						"x-lxd-modify-perm": "uid,gid,mode",
+					},
+					checked,
+				);
+				checked.throwIfAborted();
+				const envelope = record(result.body, "LXD reset restore response");
+				if (
+					result.status !== 200 ||
+					envelope.type !== "sync" ||
+					envelope.status_code !== 200 ||
+					(envelope.status !== undefined && envelope.status !== "Success") ||
+					(envelope.error_code !== undefined && envelope.error_code !== 0) ||
+					(envelope.error !== undefined && envelope.error !== "")
+				)
+					throw new Error("restore upload unconfirmed");
+			});
 		} catch {
 			throw new Error("LXD_OFFICE_RESET_RESTORE_UNCONFIRMED");
 		} finally {
@@ -2964,14 +3007,17 @@ export class LxdUnixClient
 		signal?: AbortSignal,
 		dispatchSignal?: AbortSignal,
 	): Promise<void> {
-		const dispatch = dispatchSignal ? AbortSignal.any([dispatchSignal, ...(signal ? [signal] : [])]) : signal;
-		dispatch?.throwIfAborted();
-		const result = await this.#request(
-			"PUT",
-			projectPath(`/1.0/instances/${encodeURIComponent(name)}/state`, project),
-			{ action, timeout: this.#operationTimeoutSeconds, force: action === "stop", stateful: false },
-			dispatch,
-		);
+		const path = projectPath(`/1.0/instances/${encodeURIComponent(name)}/state`, project);
+		const body = { action, timeout: this.#operationTimeoutSeconds, force: action === "stop", stateful: false };
+		const result = dispatchSignal
+			? await withAbortScopes([dispatchSignal, signal], (dispatch) => {
+					dispatch.throwIfAborted();
+					return this.#request("PUT", path, body, dispatch);
+				})
+			: await (async () => {
+					signal?.throwIfAborted();
+					return this.#request("PUT", path, body, signal);
+				})();
 		await this.#waitForOperation(result, signal);
 	}
 
@@ -3080,92 +3126,93 @@ export class LxdUnixClient
 		signal?: AbortSignal,
 	): Promise<Buffer> {
 		try {
-			const checked = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(10000)]);
-			checked.throwIfAborted();
-			const result = await this.#request(
-				"POST",
-				projectPath(`/1.0/instances/${name}/exec`, project),
-				{
-					command: ["/usr/bin/cat", "--", path],
-					interactive: false,
-					"wait-for-websocket": false,
-					"record-output": true,
-					user: 65534,
-					group: 65534,
-					cwd: "/",
-					environment: {},
-				},
-				checked,
-			);
-			const envelope = record(result.body, "boot read");
-			if (
-				result.status !== 202 ||
-				envelope.type !== "async" ||
-				envelope.status_code !== 100 ||
-				typeof envelope.operation !== "string" ||
-				!envelope.operation.startsWith("/1.0/operations/")
-			)
-				throw new Error("read not accepted");
-			const operationId = envelope.operation.slice("/1.0/operations/".length);
-			if (!OPERATION_UUID.test(operationId)) throw new Error("invalid read operation");
-			const reference = { project, instanceName: name, operationId };
-			trackedOperation(envelope.metadata, reference);
-			const operation = await this.#officeMetadata(
-				projectPath(`${envelope.operation}/wait?timeout=5`, project),
-				checked,
-			);
-			if (trackedOperation(operation, reference) !== "succeeded") throw new Error("read incomplete");
-			const metadata = record(operation.metadata, "boot read result");
-			const output = record(metadata.output, "boot read output");
-			const prefix = `/1.0/instances/${name}/logs/exec-output/exec_${operationId}`;
-			if (
-				metadata.return !== 0 ||
-				Object.keys(output).sort().join() !== "1,2" ||
-				output["1"] !== `${prefix}.stdout` ||
-				output["2"] !== `${prefix}.stderr`
-			)
-				throw new Error("read output identity differs");
-			const stdout = await this.#requestPayload(
-				"GET",
-				projectPath(`${prefix}.stdout`, project),
-				undefined,
-				undefined,
-				checked,
-				Math.min(maximumBytes, path === "/proc/uptime" ? 128 : 64),
-				"text",
-			);
-			const stderr = await this.#requestPayload(
-				"GET",
-				projectPath(`${prefix}.stderr`, project),
-				undefined,
-				undefined,
-				checked,
-				1,
-				"text",
-			);
-			if (
-				stdout.status !== 200 ||
-				stderr.status !== 200 ||
-				stderr.body !== "" ||
-				typeof stdout.body !== "string" ||
-				(path === "/proc/sys/kernel/random/boot_id" &&
-					(!/^[0-9a-f-]{36}\n$/.test(stdout.body) || !OPERATION_UUID.test(stdout.body.slice(0, -1))))
-			)
-				throw new Error("invalid public proc read");
-			if (path === "/proc/uptime") parseLxdProcUptime(Buffer.from(stdout.body));
-			// Delete only the two public output logs belonging to this completed
-			// observation. No guest file or lifecycle command is changed/replayed.
-			for (const suffix of ["stdout", "stderr"]) {
-				const removed = await this.#request(
-					"DELETE",
-					projectPath(`${prefix}.${suffix}`, project),
-					undefined,
+			return await withTimeoutScope(signal, 10000, async (checked) => {
+				checked.throwIfAborted();
+				const result = await this.#request(
+					"POST",
+					projectPath(`/1.0/instances/${name}/exec`, project),
+					{
+						command: ["/usr/bin/cat", "--", path],
+						interactive: false,
+						"wait-for-websocket": false,
+						"record-output": true,
+						user: 65534,
+						group: 65534,
+						cwd: "/",
+						environment: {},
+					},
 					checked,
 				);
-				if (removed.status !== 200) throw new Error("read log cleanup unconfirmed");
-			}
-			checked.throwIfAborted();
-			return Buffer.from(stdout.body);
+				const envelope = record(result.body, "boot read");
+				if (
+					result.status !== 202 ||
+					envelope.type !== "async" ||
+					envelope.status_code !== 100 ||
+					typeof envelope.operation !== "string" ||
+					!envelope.operation.startsWith("/1.0/operations/")
+				)
+					throw new Error("read not accepted");
+				const operationId = envelope.operation.slice("/1.0/operations/".length);
+				if (!OPERATION_UUID.test(operationId)) throw new Error("invalid read operation");
+				const reference = { project, instanceName: name, operationId };
+				trackedOperation(envelope.metadata, reference);
+				const operation = await this.#officeMetadata(
+					projectPath(`${envelope.operation}/wait?timeout=5`, project),
+					checked,
+				);
+				if (trackedOperation(operation, reference) !== "succeeded") throw new Error("read incomplete");
+				const metadata = record(operation.metadata, "boot read result");
+				const output = record(metadata.output, "boot read output");
+				const prefix = `/1.0/instances/${name}/logs/exec-output/exec_${operationId}`;
+				if (
+					metadata.return !== 0 ||
+					Object.keys(output).sort().join() !== "1,2" ||
+					output["1"] !== `${prefix}.stdout` ||
+					output["2"] !== `${prefix}.stderr`
+				)
+					throw new Error("read output identity differs");
+				const stdout = await this.#requestPayload(
+					"GET",
+					projectPath(`${prefix}.stdout`, project),
+					undefined,
+					undefined,
+					checked,
+					Math.min(maximumBytes, path === "/proc/uptime" ? 128 : 64),
+					"text",
+				);
+				const stderr = await this.#requestPayload(
+					"GET",
+					projectPath(`${prefix}.stderr`, project),
+					undefined,
+					undefined,
+					checked,
+					1,
+					"text",
+				);
+				if (
+					stdout.status !== 200 ||
+					stderr.status !== 200 ||
+					stderr.body !== "" ||
+					typeof stdout.body !== "string" ||
+					(path === "/proc/sys/kernel/random/boot_id" &&
+						(!/^[0-9a-f-]{36}\n$/.test(stdout.body) || !OPERATION_UUID.test(stdout.body.slice(0, -1))))
+				)
+					throw new Error("invalid public proc read");
+				if (path === "/proc/uptime") parseLxdProcUptime(Buffer.from(stdout.body));
+				// Delete only the two public output logs belonging to this completed
+				// observation. No guest file or lifecycle command is changed/replayed.
+				for (const suffix of ["stdout", "stderr"]) {
+					const removed = await this.#request(
+						"DELETE",
+						projectPath(`${prefix}.${suffix}`, project),
+						undefined,
+						checked,
+					);
+					if (removed.status !== 200) throw new Error("read log cleanup unconfirmed");
+				}
+				checked.throwIfAborted();
+				return Buffer.from(stdout.body);
+			});
 		} catch {
 			throw new Error("LXD_INSTANCE_FILE_UNCONFIRMED");
 		}
@@ -3287,33 +3334,37 @@ export class LxdUnixClient
 			payload = Buffer.from(content);
 			if (createHash("sha256").update(payload).digest("hex") !== requestSha256)
 				throw new Error("request digest mismatch");
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
-			checked.throwIfAborted();
-			const result = await this.#requestPayload(
-				"POST",
-				projectPath(`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`, project),
-				payload,
-				{
-					"content-type": "application/octet-stream",
-					"x-lxd-type": "file",
-					"x-lxd-uid": "0",
-					"x-lxd-gid": "0",
-					"x-lxd-mode": "0400",
-					"x-lxd-modify-perm": "uid,gid,mode",
-				},
-				checked,
-			);
-			checked.throwIfAborted();
-			const envelope = record(result.body, "LXD preparation staging response");
-			if (
-				result.status !== 200 ||
-				envelope.type !== "sync" ||
-				envelope.status_code !== 200 ||
-				(envelope.status !== undefined && envelope.status !== "Success") ||
-				(envelope.error_code !== undefined && envelope.error_code !== 0) ||
-				(envelope.error !== undefined && envelope.error !== "")
-			)
-				throw new Error("staging upload unconfirmed");
+			await withTimeoutScope(signal, 5000, async (checked) => {
+				checked.throwIfAborted();
+				const result = await this.#requestPayload(
+					"POST",
+					projectPath(
+						`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`,
+						project,
+					),
+					payload,
+					{
+						"content-type": "application/octet-stream",
+						"x-lxd-type": "file",
+						"x-lxd-uid": "0",
+						"x-lxd-gid": "0",
+						"x-lxd-mode": "0400",
+						"x-lxd-modify-perm": "uid,gid,mode",
+					},
+					checked,
+				);
+				checked.throwIfAborted();
+				const envelope = record(result.body, "LXD preparation staging response");
+				if (
+					result.status !== 200 ||
+					envelope.type !== "sync" ||
+					envelope.status_code !== 200 ||
+					(envelope.status !== undefined && envelope.status !== "Success") ||
+					(envelope.error_code !== undefined && envelope.error_code !== 0) ||
+					(envelope.error !== undefined && envelope.error !== "")
+				)
+					throw new Error("staging upload unconfirmed");
+			});
 		} catch {
 			throw officeControlError(purpose, "UPLOAD");
 		} finally {
@@ -3730,147 +3781,148 @@ export class LxdUnixClient
 			timeoutMs > this.#operationTimeoutSeconds * 1000
 		)
 			throw new Error("LXD instance command is invalid");
-		const checked = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(timeoutMs)]);
-		checked.throwIfAborted();
-		const result = await this.#request(
-			"POST",
-			projectPath(`/1.0/instances/${encodeURIComponent(name)}/exec`, project),
-			{
-				command: [...command],
-				interactive: false,
-				"wait-for-websocket": true,
-				"record-output": false,
-				user,
-				group,
-				cwd: "/",
-				environment: {},
-			},
-			checked,
-		);
-		if (result.status < 200 || result.status >= 300) throw lxdError(result, "LXD exec stream was refused");
-		const envelope = record(result.body, "LXD exec stream");
-		if (
-			envelope.type !== "async" ||
-			typeof envelope.operation !== "string" ||
-			!envelope.operation.startsWith("/1.0/operations/") ||
-			!OPERATION_UUID.test(envelope.operation.slice("/1.0/operations/".length))
-		)
-			throw new Error("LXD exec stream operation is invalid");
-		const fds = record(
-			record(record(envelope.metadata, "LXD exec stream operation").metadata, "LXD exec stream metadata").fds,
-			"LXD exec stream fds",
-		);
-		const fdStream = (fd: "0" | "1" | "2", bound: number) => {
-			const secret = fds[fd];
-			if (typeof secret !== "string" || !/^[0-9A-Za-z]{16,256}$/.test(secret))
-				throw new Error("LXD exec stream fds are invalid");
-			return { secret, bound, chunks: [] as Buffer[], bytes: 0, ended: false };
-		};
-		const input = fdStream("0", 0);
-		const stdout = fdStream("1", maxStdoutBytes);
-		const stderr = fdStream("2", maxStderrBytes);
-		const connectAbort = new AbortController();
-		const sockets: [NodeWebSocket | undefined, NodeWebSocket | undefined, NodeWebSocket | undefined] = [
-			undefined,
-			undefined,
-			undefined,
-		];
-		let failure: Error | undefined;
-		let settle: () => void = () => undefined;
-		const drained = new Promise<void>((resolveDrained) => {
-			settle = resolveDrained;
-		});
-		// Ends the call: the stdout websocket closes first, which kills a command still running.
-		const fail = (error: Error): void => {
-			failure ??= error;
-			connectAbort.abort();
-			for (const socket of sockets) socket?.close();
-			settle();
-		};
-		const aborted = (): void => fail(new Error("LXD exec stream was stopped"));
-		checked.addEventListener("abort", aborted, { once: true });
-		const handshake = AbortSignal.any([checked, connectAbort.signal]);
-		let connects: Promise<void>[] = [];
-		try {
-			connects = [stdout, stderr, input].map(async (stream, index) => {
-				try {
-					const socket = await NodeWebSocket.connect(
-						new URL(`ws://lxd${envelope.operation}/websocket?secret=${encodeURIComponent(stream.secret)}`),
-						{
-							// A text message is the stream's end; LXD sends it once the command's side has closed.
-							message: () => {
-								if (stream === input) return;
-								stream.ended = true;
-								if (stdout.ended && stderr.ended) settle();
+		return withTimeoutScope(signal, timeoutMs, async (checked) => {
+			checked.throwIfAborted();
+			const result = await this.#request(
+				"POST",
+				projectPath(`/1.0/instances/${encodeURIComponent(name)}/exec`, project),
+				{
+					command: [...command],
+					interactive: false,
+					"wait-for-websocket": true,
+					"record-output": false,
+					user,
+					group,
+					cwd: "/",
+					environment: {},
+				},
+				checked,
+			);
+			if (result.status < 200 || result.status >= 300) throw lxdError(result, "LXD exec stream was refused");
+			const envelope = record(result.body, "LXD exec stream");
+			if (
+				envelope.type !== "async" ||
+				typeof envelope.operation !== "string" ||
+				!envelope.operation.startsWith("/1.0/operations/") ||
+				!OPERATION_UUID.test(envelope.operation.slice("/1.0/operations/".length))
+			)
+				throw new Error("LXD exec stream operation is invalid");
+			const fds = record(
+				record(record(envelope.metadata, "LXD exec stream operation").metadata, "LXD exec stream metadata").fds,
+				"LXD exec stream fds",
+			);
+			const fdStream = (fd: "0" | "1" | "2", bound: number) => {
+				const secret = fds[fd];
+				if (typeof secret !== "string" || !/^[0-9A-Za-z]{16,256}$/.test(secret))
+					throw new Error("LXD exec stream fds are invalid");
+				return { secret, bound, chunks: [] as Buffer[], bytes: 0, ended: false };
+			};
+			const input = fdStream("0", 0);
+			const stdout = fdStream("1", maxStdoutBytes);
+			const stderr = fdStream("2", maxStderrBytes);
+			const connectAbort = new AbortController();
+			const sockets: [NodeWebSocket | undefined, NodeWebSocket | undefined, NodeWebSocket | undefined] = [
+				undefined,
+				undefined,
+				undefined,
+			];
+			let failure: Error | undefined;
+			let settle: () => void = () => undefined;
+			const drained = new Promise<void>((resolveDrained) => {
+				settle = resolveDrained;
+			});
+			// Ends the call: the stdout websocket closes first, which kills a command still running.
+			const fail = (error: Error): void => {
+				failure ??= error;
+				connectAbort.abort();
+				for (const socket of sockets) socket?.close();
+				settle();
+			};
+			const aborted = (): void => fail(new Error("LXD exec stream was stopped"));
+			if (checked.aborted) aborted();
+			else checked.addEventListener("abort", aborted, { once: true });
+			let connects: Promise<void>[] = [];
+			try {
+				connects = [stdout, stderr, input].map(async (stream, index) => {
+					try {
+						const socket = await NodeWebSocket.connect(
+							new URL(`ws://lxd${envelope.operation}/websocket?secret=${encodeURIComponent(stream.secret)}`),
+							{
+								// A text message is the stream's end; LXD sends it once the command's side has closed.
+								message: () => {
+									if (stream === input) return;
+									stream.ended = true;
+									if (stdout.ended && stderr.ended) settle();
+								},
+								binary: (payload) => {
+									if (stream === input || stream.ended || failure) return;
+									stream.bytes += payload.byteLength;
+									if (stream.bytes > stream.bound) {
+										fail(new Error("LXD exec stream output exceeded its bound"));
+										return;
+									}
+									stream.chunks.push(payload);
+								},
+								close: () => {
+									if (stream !== input && !stream.ended)
+										fail(new Error("LXD exec stream ended before its output"));
+								},
 							},
-							binary: (payload) => {
-								if (stream === input || stream.ended || failure) return;
-								stream.bytes += payload.byteLength;
-								if (stream.bytes > stream.bound) {
-									fail(new Error("LXD exec stream output exceeded its bound"));
-									return;
-								}
-								stream.chunks.push(payload);
-							},
-							close: () => {
-								if (stream !== input && !stream.ended)
-									fail(new Error("LXD exec stream ended before its output"));
-							},
-						},
-						EXEC_STREAM_CONNECT_MS,
-						// The deadline and the signal also stop a handshake LXD has not answered yet.
-						{ socketPath: this.#socketPath, signal: handshake },
-					);
-					if (failure || handshake.aborted) {
-						socket.close();
-						fail(failure ?? new Error("LXD exec stream was stopped"));
+							EXEC_STREAM_CONNECT_MS,
+							// The deadline and the signal also stop a handshake LXD has not answered yet.
+							{ socketPath: this.#socketPath, signal: connectAbort.signal },
+						);
+						if (failure || connectAbort.signal.aborted) {
+							socket.close();
+							fail(failure ?? new Error("LXD exec stream was stopped"));
+							throw failure;
+						}
+						sockets[index] = socket;
+					} catch (error) {
+						fail(
+							checked.aborted
+								? new Error("LXD exec stream was stopped")
+								: error instanceof Error
+									? error
+									: new Error("LXD exec stream failed"),
+						);
 						throw failure;
 					}
-					sockets[index] = socket;
-				} catch (error) {
-					fail(
-						checked.aborted
-							? new Error("LXD exec stream was stopped")
-							: error instanceof Error
-								? error
-								: new Error("LXD exec stream failed"),
-					);
+				});
+				await Promise.all(connects);
+				if (failure || checked.aborted) {
+					fail(failure ?? new Error("LXD exec stream was stopped"));
 					throw failure;
 				}
-			});
-			await Promise.all(connects);
-			if (failure || checked.aborted) {
-				fail(failure ?? new Error("LXD exec stream was stopped"));
+				const stdinSocket = sockets[2]!;
+				if (stdin.byteLength > 0) stdinSocket.sendBinary(stdin);
+				stdinSocket.send("");
+				const operation = await this.#waitForOperation(result, checked);
+				const metadata = record(operation.metadata, "LXD exec stream result");
+				const exitCode = metadata.return;
+				if (typeof exitCode !== "number" || !Number.isSafeInteger(exitCode))
+					throw new Error("LXD exec stream result is invalid");
+				const drainTimer = setTimeout(
+					() => fail(new Error("LXD exec stream output did not end")),
+					EXEC_STREAM_DRAIN_MS,
+				);
+				try {
+					await drained;
+				} finally {
+					clearTimeout(drainTimer);
+				}
+				if (failure) throw failure;
+				return { exitCode, stdout: Buffer.concat(stdout.chunks), stderr: Buffer.concat(stderr.chunks) };
+			} catch (error) {
+				fail(error instanceof Error ? error : new Error("LXD exec stream failed"));
+				await Promise.allSettled(connects);
 				throw failure;
-			}
-			const stdinSocket = sockets[2]!;
-			if (stdin.byteLength > 0) stdinSocket.sendBinary(stdin);
-			stdinSocket.send("");
-			const operation = await this.#waitForOperation(result, checked);
-			const metadata = record(operation.metadata, "LXD exec stream result");
-			const exitCode = metadata.return;
-			if (typeof exitCode !== "number" || !Number.isSafeInteger(exitCode))
-				throw new Error("LXD exec stream result is invalid");
-			const drainTimer = setTimeout(
-				() => fail(new Error("LXD exec stream output did not end")),
-				EXEC_STREAM_DRAIN_MS,
-			);
-			try {
-				await drained;
 			} finally {
-				clearTimeout(drainTimer);
+				connectAbort.abort();
+				checked.removeEventListener("abort", aborted);
+				for (const socket of sockets) socket?.close();
 			}
-			if (failure) throw failure;
-			return { exitCode, stdout: Buffer.concat(stdout.chunks), stderr: Buffer.concat(stderr.chunks) };
-		} catch (error) {
-			fail(error instanceof Error ? error : new Error("LXD exec stream failed"));
-			await Promise.allSettled(connects);
-			throw failure;
-		} finally {
-			connectAbort.abort();
-			checked.removeEventListener("abort", aborted);
-			for (const socket of sockets) socket?.close();
-		}
+		});
 	}
 
 	/** `execInstanceStream`'s exec for the code host's jobs, which run as long as they need and move whole bundles: the
@@ -3929,7 +3981,9 @@ export class LxdUnixClient
 		] as const;
 		const stdout: Buffer[] = [];
 		let stdoutBytes = 0;
-		let stderrTail = Buffer.alloc(0);
+		const stderrChunks: Buffer[] = [];
+		let stderrHead = 0;
+		let stderrBytes = 0;
 		let stdoutEnded = false;
 		let stderrEnded = false;
 		let inputSent = false;
@@ -3954,8 +4008,8 @@ export class LxdUnixClient
 			settle();
 		};
 		const aborted = (): void => fail(new Error("LXD exec pipe was stopped"));
-		signal.addEventListener("abort", aborted, { once: true });
-		const handshake = AbortSignal.any([signal, callEnd.signal]);
+		if (signal.aborted) aborted();
+		else signal.addEventListener("abort", aborted, { once: true });
 		let connects: Promise<void>[] = [];
 		try {
 			connects = streams.map(async (stream, index) => {
@@ -3993,9 +4047,36 @@ export class LxdUnixClient
 											fail(error instanceof Error ? error : new Error("LXD exec pipe output was refused"));
 										}
 									}
-								} else if (stream.name === "stderr" && !stderrEnded) {
-									const kept = Buffer.concat([stderrTail, payload]);
-									stderrTail = Buffer.from(kept.subarray(Math.max(0, kept.byteLength - stderrTailBytes)));
+								} else if (
+									stream.name === "stderr" &&
+									!stderrEnded &&
+									stderrTailBytes > 0 &&
+									payload.byteLength > 0
+								) {
+									if (payload.byteLength >= stderrTailBytes) {
+										stderrChunks.length = 0;
+										stderrHead = 0;
+										stderrChunks.push(Buffer.from(payload.subarray(payload.byteLength - stderrTailBytes)));
+										stderrBytes = stderrTailBytes;
+									} else {
+										stderrChunks.push(payload);
+										stderrBytes += payload.byteLength;
+										while (stderrBytes > stderrTailBytes && stderrHead < stderrChunks.length) {
+											const overflow = stderrBytes - stderrTailBytes;
+											const first = stderrChunks[stderrHead]!;
+											if (first.byteLength <= overflow) {
+												stderrHead += 1;
+												stderrBytes -= first.byteLength;
+											} else {
+												stderrChunks[stderrHead] = first.subarray(overflow);
+												stderrBytes -= overflow;
+											}
+										}
+										if (stderrHead > 64 && stderrHead * 2 >= stderrChunks.length) {
+											stderrChunks.splice(0, stderrHead);
+											stderrHead = 0;
+										}
+									}
 								}
 							},
 							// The stdin websocket may close as soon as the command is done with it.
@@ -4006,9 +4087,9 @@ export class LxdUnixClient
 						},
 						EXEC_STREAM_CONNECT_MS,
 						// The signal and the call's end also stop a handshake LXD has not answered yet.
-						{ socketPath: this.#socketPath, signal: handshake },
+						{ socketPath: this.#socketPath, signal: callEnd.signal },
 					);
-					if (failure || handshake.aborted) {
+					if (failure || callEnd.signal.aborted) {
 						socket.close();
 						fail(failure ?? new Error("LXD exec pipe was stopped"));
 						throw failure;
@@ -4048,6 +4129,10 @@ export class LxdUnixClient
 			if (failure) throw failure;
 			// A command that succeeded without all of its input never saw what the caller gave it.
 			if (exitCode === 0 && !inputSent) throw new Error("LXD exec pipe command ended before its input");
+			const stderrTail =
+				stderrBytes === 0
+					? Buffer.alloc(0)
+					: Buffer.concat(stderrHead === 0 ? stderrChunks : stderrChunks.slice(stderrHead), stderrBytes);
 			return { exitCode, stdout: Buffer.concat(stdout), stderrTail };
 		} catch (error) {
 			fail(error instanceof Error ? error : new Error("LXD exec pipe failed"));
@@ -4107,15 +4192,16 @@ export class LxdUnixClient
 	 * seconds; anything else (still running, gone, unreadable) is no proof. */
 	async #endedInFailure(operationPath: string, signal?: AbortSignal): Promise<boolean> {
 		try {
-			const checked = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(5000)]);
-			const result = await this.#request("GET", operationPath, undefined, checked);
-			const envelope = record(result.body, "LXD response");
-			if (result.status !== 200 || envelope.type !== "sync") return false;
-			const operation = record(envelope.metadata, "LXD operation");
-			return (
-				(operation.status_code === 400 && operation.status === "Failure") ||
-				(operation.status_code === 401 && operation.status === "Cancelled")
-			);
+			return await withTimeoutScope(signal, 5000, async (checked) => {
+				const result = await this.#request("GET", operationPath, undefined, checked);
+				const envelope = record(result.body, "LXD response");
+				if (result.status !== 200 || envelope.type !== "sync") return false;
+				const operation = record(envelope.metadata, "LXD operation");
+				return (
+					(operation.status_code === 400 && operation.status === "Failure") ||
+					(operation.status_code === 401 && operation.status === "Cancelled")
+				);
+			});
 		} catch {
 			return false;
 		}
@@ -4141,6 +4227,12 @@ export class LxdUnixClient
 		maximumResponseBytes = MAX_RESPONSE_BYTES,
 		format: "json" | "text" = "json",
 	): Promise<HttpResult> {
+		if (!signal) {
+			const defaultTimeoutMs = defaultLxdRequestTimeoutMs(path, this.#operationTimeoutSeconds);
+			return withTimeoutScope(undefined, defaultTimeoutMs, (checked) =>
+				this.#requestPayload(method, path, payload, headers, checked, maximumResponseBytes, format),
+			);
+		}
 		return new Promise<HttpResult>((resolve, reject) => {
 			const request = httpRequest(
 				{

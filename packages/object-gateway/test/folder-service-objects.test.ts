@@ -113,9 +113,7 @@ describe("the folder service's byte route", () => {
 		expect(response.status).toBe(201);
 		expect(await response.json()).toMatchObject({ status: "stored", sha256: sha("chunk"), bytes: 5 });
 		expect(Buffer.from(await store.get(companyId, sha("chunk"), 5)).toString()).toBe("chunk");
-		// Authorized before the body is read and again in the write lane, then confirmed, each as the member.
 		expect(sql.calls.map((call) => call.method)).toEqual([
-			"qorpera_folder_authorize_object_upload",
 			"qorpera_folder_authorize_object_upload",
 			"qorpera_folder_confirm_object",
 		]);
@@ -140,8 +138,6 @@ describe("the folder service's byte route", () => {
 		expect(sql.calls.map((call) => call.args.p_actor)).toEqual([
 			view,
 			view,
-			view,
-			{ kind: "platform" },
 			{ kind: "platform" },
 			{ kind: "platform" },
 		]);
@@ -159,9 +155,8 @@ describe("the folder service's byte route", () => {
 	it("refuses a request that is not a put of the object it names, before anything is stored", async () => {
 		const { sql, store, put, origin, token } = await fixture();
 		sql.listed.set(sha("right"), 5);
-		// Five bytes under the five-byte object, but not its bytes: refused before the confirm.
 		expect((await put("wrong", { hash: sha("right") })).status).toBe(400);
-		expect(sql.calls.map((call) => call.method)).toEqual(["qorpera_folder_authorize_object_upload"]);
+		expect(sql.calls).toEqual([]);
 		await expect(store.get(companyId, sha("right"), 5)).rejects.toThrow();
 		expect((await put("right", { intent: null })).status).toBe(400);
 		expect((await put("right", { intent: "not-an-intent" })).status).toBe(400);
@@ -238,6 +233,38 @@ describe("the folder service's byte route", () => {
 		const badPut = await put("wrong-body-length".slice(0, other.byteLength), { hash: otherSha });
 		expect(badPut.status).toBe(400);
 		await expect(store.get(companyId, otherSha, other.byteLength)).rejects.toThrow("Object not found");
+	});
+
+	it("re-authorizes inside the exclusive lane when contended and refuses if the second check fails", async () => {
+		const { sql, store, put, replication } = await fixture();
+		const body = "contended-payload";
+		const hash = sha(body);
+		sql.listed.set(hash, body.length);
+		let releaseLane!: () => void;
+		const holdLane = new Promise<void>((resolve) => {
+			releaseLane = resolve;
+		});
+		let enteredLane!: () => void;
+		const laneEntered = new Promise<void>((resolve) => {
+			enteredLane = resolve;
+		});
+		const holder = replication.exclusive(companyId, hash, async () => {
+			enteredLane();
+			await holdLane;
+		});
+		await laneEntered;
+		const uploading = put(body);
+		while (sql.calls.length === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+		await new Promise((resolve) => setTimeout(resolve, 15));
+		sql.refuse = true;
+		releaseLane();
+		await holder;
+		expect((await uploading).status).toBe(403);
+		expect(sql.calls.map((call) => call.method)).toEqual([
+			"qorpera_folder_authorize_object_upload",
+			"qorpera_folder_authorize_object_upload",
+		]);
+		await expect(store.get(companyId, hash, body.length)).rejects.toThrow();
 	});
 });
 

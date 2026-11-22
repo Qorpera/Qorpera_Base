@@ -1,7 +1,8 @@
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { mkdtemp, open as openFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, open as openFile, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
+import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import { type AddressInfo, connect, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,7 +18,7 @@ import {
 	parseListPage,
 	SupabaseFolderCore,
 } from "../src/folder-service/core.ts";
-import { nodeRequest, ResponseTooLargeError } from "../src/folder-service/https-request.ts";
+import { createNodeTransport, nodeRequest, ResponseTooLargeError } from "../src/folder-service/https-request.ts";
 import { MountGrants, parseOperatorMounts } from "../src/folder-service/mounts.ts";
 import {
 	CHUNK_BYTES,
@@ -32,6 +33,7 @@ import {
 	encodeJson,
 	type Frame,
 	FrameReader,
+	fitReport,
 	Kind,
 	MAX_PAYLOAD,
 	ProtocolError,
@@ -39,9 +41,11 @@ import {
 	parseHello,
 	parseList,
 	parseRead,
+	type Report,
 } from "../src/folder-service/protocol.ts";
 import { createFolderServer } from "../src/folder-service/server.ts";
 import { FolderService, type FolderServiceOptions } from "../src/folder-service/service.ts";
+import { GatewayUploads } from "../src/folder-service/staging.ts";
 import { type TreeEntry, ViewTree } from "../src/folder-service/view-tree.ts";
 import {
 	BRIDGE,
@@ -1663,6 +1667,287 @@ describe("SupabaseFolderCore paging and oversized fallback", () => {
 		releaseA?.();
 		const resA = await readA;
 		expect(typeof resA).toBe("string");
+	});
+
+	it("keeps small objects in a dedicated ByteCache pool immune to large-chunk scans and prioritizes interactive reads", async () => {
+		const root = await tempdir();
+		const reader = new NasObjects({ root, cacheBytes: 512 * 1024, parallel: 1 });
+		const smallPayloads = Array.from({ length: 4 }, (_, i) => Buffer.from(`small-manifest-${i}-${"m".repeat(512)}`));
+		const smallHashes = smallPayloads.map((buf) => hashOf(buf));
+		for (let i = 0; i < smallPayloads.length; i++) reader.put(PROFILE, smallHashes[i]!, smallPayloads[i]!);
+		for (const hash of smallHashes) expect(reader.has(PROFILE, hash)).toBe(true);
+
+		for (let i = 0; i < 12; i++) {
+			const large = Buffer.alloc(128 * 1024, i + 1);
+			reader.put(PROFILE, hashOf(large), large);
+		}
+		for (const hash of smallHashes) expect(reader.has(PROFILE, hash)).toBe(true);
+		expect(reader.cachedBytes).toBeLessThanOrEqual(512 * 1024);
+
+		const files = await Promise.all(
+			[0, 1, 2, 3].map((i) => storeFile(root, `prio-${i}.bin`, Buffer.from(`prio-body-${i}`), i + 1, 11)),
+		);
+		const prioReader = new NasObjects({ root, cacheBytes: 1024 * 1024, parallel: 1 });
+		const order: number[] = [];
+		const c0 = prioReader.chunk(PROFILE, files[0]!.fileSha256!, files[0]!.bytes!, "bulk").then(() => order.push(0));
+		const c1 = prioReader.chunk(PROFILE, files[1]!.fileSha256!, files[1]!.bytes!, "bulk").then(() => order.push(1));
+		const c2 = prioReader.chunk(PROFILE, files[2]!.fileSha256!, files[2]!.bytes!, "bulk").then(() => order.push(2));
+		const interactive = prioReader
+			.chunk(PROFILE, files[3]!.fileSha256!, files[3]!.bytes!, "interactive")
+			.then(() => order.push(3));
+		await Promise.all([c0, c1, c2, interactive]);
+		expect(order[0]).toBe(0);
+		expect(order[1]).toBe(3);
+	});
+
+	it("compacts oversized reports within MAX_PAYLOAD while keeping non-saved entries first and wire keys intact", () => {
+		const paths: Report["paths"] = Array.from({ length: 30_000 }, (_, i) => ({
+			path: `deep/nested/folder/component-${String(i).padStart(5, "0")}/index.ts`,
+			outcome: "saved",
+		}));
+		const problem = {
+			path: "deep/nested/folder/denied-file.ts",
+			outcome: "refused" as const,
+			reason: "denied",
+			kept: true,
+		};
+		const huge: Report = {
+			commitId: "11111111-1111-4111-8111-111111111111",
+			seq: 42,
+			paths: [...paths, problem],
+		};
+		expect(Buffer.byteLength(JSON.stringify(huge))).toBeGreaterThan(MAX_PAYLOAD);
+		const fitted = fitReport(huge);
+		expect(Object.keys(fitted).sort()).toEqual(["commitId", "paths", "seq"]);
+		expect(fitted.paths[0]).toEqual(problem);
+		expect(fitted.paths.length).toBeLessThan(huge.paths.length);
+		expect(fitted.paths.length).toBeGreaterThan(1000);
+		const encoded = encodeJson(Kind.report, fitted);
+		expect(encoded.byteLength - 5).toBeLessThanOrEqual(MAX_PAYLOAD);
+	});
+
+	it("supports private LAN CA certificates and keep-alive connection reuse in SupabaseFolderCore and GatewayUploads", async () => {
+		expect(() => createNodeTransport({ ca: "bad-pem" })).toThrow("CA certificate is invalid");
+		expect(
+			() => new SupabaseFolderCore({ projectUrl: "https://127.0.0.1:8443", secretKey: "k", ca: "bad-pem" }),
+		).toThrow("CA certificate is invalid");
+		expect(() => new GatewayUploads({ url: "https://127.0.0.1:8443", token: "t".repeat(43), ca: "bad-pem" })).toThrow(
+			"CA certificate is invalid",
+		);
+
+		const directory = await tempdir();
+		const make = (name: string): void => {
+			const made = spawnSync(
+				"openssl",
+				[
+					"req",
+					"-x509",
+					"-newkey",
+					"rsa:2048",
+					"-nodes",
+					"-keyout",
+					join(directory, `${name}-key.pem`),
+					"-out",
+					join(directory, `${name}.pem`),
+					"-days",
+					"1",
+					"-subj",
+					"/CN=localhost",
+					"-addext",
+					"subjectAltName=IP:127.0.0.1",
+				],
+				{ encoding: "utf8", timeout: 15_000 },
+			);
+			if (made.status !== 0) throw new Error("Could not create test TLS certificate");
+		};
+		make("lan");
+		make("other");
+		const cert = await readFile(join(directory, "lan.pem"), "utf8");
+		const key = await readFile(join(directory, "lan-key.pem"), "utf8");
+		const otherCa = await readFile(join(directory, "other.pem"), "utf8");
+
+		let connections = 0;
+		const server: HttpsServer = createHttpsServer({ cert, key }, (req, res) => {
+			req.resume();
+			if (req.method === "PUT") {
+				res.writeHead(201, { "content-type": "application/json" });
+				res.end(JSON.stringify({ status: "stored" }));
+				return;
+			}
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify([{ environment_id: ENV, last_seq: 9 }]));
+		});
+		server.on("connection", () => {
+			connections++;
+		});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		cleanup.push(async () => {
+			server.closeAllConnections();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		});
+		const origin = `https://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+		const core = new SupabaseFolderCore({ projectUrl: origin, secretKey: "service-key", ca: cert });
+		const wrongCore = new SupabaseFolderCore({ projectUrl: origin, secretKey: "service-key", ca: otherCa });
+		const uploads = new GatewayUploads({ url: origin, token: "t".repeat(43), ca: cert });
+		cleanup.push(() => {
+			core.close();
+			wrongCore.close();
+			uploads.close();
+		});
+
+		expect((await core.clocks([ENV])).get(ENV)).toBe(9);
+		expect((await core.clocks([ENV])).get(ENV)).toBe(9);
+		expect(connections).toBe(1);
+		await expect(wrongCore.clocks([ENV])).rejects.toThrow();
+
+		const body = Buffer.from("lan-upload");
+		const put1 = uploads.start(
+			ENV,
+			{ kind: "platform" },
+			"11111111-1111-4111-8111-111111111111",
+			hashOf(body),
+			body.length,
+		);
+		await put1.write(body);
+		await put1.end();
+		const put2 = uploads.start(
+			ENV,
+			{ kind: "platform" },
+			"11111111-1111-4111-8111-111111111111",
+			hashOf(body),
+			body.length,
+		);
+		await put2.write(body);
+		await put2.end();
+		expect(connections).toBeLessThanOrEqual(3);
+	});
+
+	it("retries once on stale keep-alive socket resets for GatewayUploads PUT and createNodeTransport GET only", async () => {
+		let mode: "reset-reused" | "reset-fresh" = "reset-reused";
+		let connections = 0;
+		let requestsOnResetFresh = 0;
+		const seenPerSocket = new WeakMap<object, number>();
+		const server = createHttpServer((req, res) => {
+			const count = (seenPerSocket.get(req.socket) ?? 0) + 1;
+			seenPerSocket.set(req.socket, count);
+			if (mode === "reset-fresh") {
+				requestsOnResetFresh++;
+				req.socket.destroy();
+				return;
+			}
+			if (count === 2) {
+				req.socket.destroy();
+				return;
+			}
+			req.resume();
+			req.once("end", () => {
+				res.writeHead(req.method === "PUT" ? 201 : 200, { "content-type": "application/json" });
+				res.end(JSON.stringify({ ok: true }));
+			});
+		});
+		server.on("connection", () => {
+			connections++;
+		});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		cleanup.push(async () => {
+			server.closeAllConnections();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		});
+		const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+		const uploads = new GatewayUploads({ url: origin, token: "t".repeat(43) });
+		const transport = createNodeTransport();
+		cleanup.push(() => {
+			uploads.close();
+			transport.close();
+		});
+
+		const body = Buffer.from("retry-body");
+		const put1 = uploads.start(
+			ENV,
+			{ kind: "platform" },
+			"11111111-1111-4111-8111-111111111111",
+			hashOf(body),
+			body.length,
+		);
+		await put1.write(body);
+		await put1.end();
+		expect(connections).toBe(1);
+
+		const put2 = uploads.start(
+			ENV,
+			{ kind: "platform" },
+			"11111111-1111-4111-8111-111111111111",
+			hashOf(body),
+			body.length,
+		);
+		await put2.write(body);
+		await put2.end();
+		expect(connections).toBe(2);
+
+		const get1 = await transport.request(
+			new URL(`${origin}/clocks`),
+			{ method: "GET", headers: {} },
+			1024,
+			AbortSignal.timeout(5_000),
+		);
+		expect(get1.status).toBe(200);
+		const beforeRetryConnections = connections;
+		const get2 = await transport.request(
+			new URL(`${origin}/clocks`),
+			{ method: "GET", headers: {} },
+			1024,
+			AbortSignal.timeout(5_000),
+		);
+		expect(get2.status).toBe(200);
+		expect(connections).toBe(beforeRetryConnections + 1);
+
+		const get3 = await transport.request(
+			new URL(`${origin}/clocks`),
+			{ method: "GET", headers: {} },
+			1024,
+			AbortSignal.timeout(5_000),
+		);
+		expect(get3.status).toBe(200);
+		const beforePostConnections = connections;
+		await expect(
+			transport.request(
+				new URL(`${origin}/rpc`),
+				{ method: "POST", headers: {}, body: "{}" },
+				1024,
+				AbortSignal.timeout(5_000),
+			),
+		).rejects.toThrow();
+		expect(connections).toBe(beforePostConnections);
+
+		mode = "reset-fresh";
+		const freshUploads = new GatewayUploads({ url: origin, token: "t".repeat(43) });
+		const freshTransport = createNodeTransport();
+		cleanup.push(() => {
+			freshUploads.close();
+			freshTransport.close();
+		});
+		const put3 = freshUploads.start(
+			ENV,
+			{ kind: "platform" },
+			"11111111-1111-4111-8111-111111111111",
+			hashOf(body),
+			body.length,
+		);
+		await put3.write(body);
+		await expect(put3.end()).rejects.toMatchObject({ code: "UNAVAILABLE" });
+		expect(requestsOnResetFresh).toBe(1);
+
+		await expect(
+			freshTransport.request(
+				new URL(`${origin}/clocks`),
+				{ method: "GET", headers: {} },
+				1024,
+				AbortSignal.timeout(5_000),
+			),
+		).rejects.toThrow();
+		expect(requestsOnResetFresh).toBe(2);
 	});
 
 	it("validates per-caller size on joined #pending NasObjects reads and drops expired waiters without leaking slots", async () => {

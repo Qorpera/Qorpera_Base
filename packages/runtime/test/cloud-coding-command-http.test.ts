@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { createServer, type Server } from "node:http";
+import { createServer, request as httpRequest, type Server } from "node:http";
+import type { Socket } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
 	CloudCodingCommandExecution,
@@ -542,5 +543,34 @@ describe("isolated coding command HTTP gateway", () => {
 		const response = await raw(f, f.request);
 		expect(response.status).toBe(200);
 		expect(response.headers.get("keep-alive")).toBe("timeout=65, max=1000");
+	});
+	it("destroys idle upgraded /v1/home-session sockets when service.close() is called", async () => {
+		const f = await fixture({
+			home: {
+				authorize: vi.fn(async () => ({ state: "refused" as const, reason: "unavailable" as const })),
+				open: vi.fn(),
+			},
+		});
+		const upgraded = await new Promise<Socket>((resolve, reject) => {
+			const req = httpRequest({
+				host: "127.0.0.1",
+				port: Number(new URL(f.url).port),
+				path: "/v1/home-session",
+				method: "GET",
+				headers: {
+					connection: "Upgrade",
+					upgrade: "qorpera-home-session/1",
+					authorization: `Bearer ${f.token}`,
+					"x-qorpera-identity": f.holder,
+				},
+			});
+			req.once("upgrade", (_res, socket) => resolve(socket));
+			req.once("error", reject);
+			req.end();
+		});
+		upgraded.on("error", () => undefined);
+		const socketClosed = new Promise<void>((resolve) => upgraded.once("close", () => resolve()));
+		await f.service.close();
+		await socketClosed;
 	});
 });

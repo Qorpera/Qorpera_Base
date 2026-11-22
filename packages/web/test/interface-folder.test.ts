@@ -384,4 +384,22 @@ describe("a read that fails", () => {
 		await hint();
 		await vi.waitFor(() => expect(rows(controller)).toEqual(["Sales", "Ops"]));
 	});
+
+	it("skips 60s folder polls while hidden and syncs on tab return", async () => {
+		vi.useFakeTimers();
+		const fake = seeded();
+		const { controller } = company();
+		await follow(fake, controller);
+		const readCallsBefore = fake.folder.read.mock.calls.length + fake.folder.changes.mock.calls.length;
+		const hiddenSpy = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+		fake.put(AREAS, areas(SALES, `Ops,,${bea},no,,`));
+		await vi.advanceTimersByTimeAsync(180_000);
+		expect(fake.folder.read.mock.calls.length + fake.folder.changes.mock.calls.length).toBe(readCallsBefore);
+		expect(rows(controller)).toEqual(["Sales"]);
+
+		hiddenSpy.mockReturnValue(false);
+		document.dispatchEvent(new Event("visibilitychange"));
+		await vi.advanceTimersByTimeAsync(1_100);
+		await vi.waitFor(() => expect(rows(controller)).toEqual(["Sales", "Ops"]));
+	});
 });

@@ -37,7 +37,7 @@ import {
 } from "../cloud-native-tool-boundary.ts";
 import { recordCloudRunLogRelease } from "../cloud-run-log.ts";
 import type { CloudRuntimeToolOperation } from "../cloud-runtime-observability.ts";
-import type { MemoryTreeBlock } from "./branches.ts";
+import { type MemoryTreeBlock, memoryBlockKey } from "./branches.ts";
 import { fold, type MemoryTreeBuilt, memoryOverflow, memoryPartRow } from "./fold.ts";
 import { memoryNodeAddress, PLACEHOLDER } from "./tree.ts";
 import { type MemoryConversationKind, memoryBranchLines, memoryConversationName } from "./view.ts";
@@ -383,22 +383,45 @@ function zoomed(
 	return { heading: top, rows: childRows(read.lines, start, size) };
 }
 
+function codePointCount(text: string): number {
+	let count = 0;
+	for (let i = 0; i < text.length; ) {
+		const cp = text.codePointAt(i)!;
+		i += cp > 0xffff ? 2 : 1;
+		count += 1;
+	}
+	return count;
+}
+
 /**
  * The result: the heading, then the body from code point `from`, as much as one result shows whole. When text is left
  * it ends with nextOffset and the total. The blocks are those of the rows it shows, even in part, each once, in the
  * order shown.
  */
 function page(top: string, rows: readonly Row[], from: number): { text: string; blocks: MemoryTreeBlock[] } {
-	const body = [...rows.map((row) => row.text).join("\n")];
-	const total = body.length;
+	const bodyText = rows.map((row) => row.text).join("\n");
+	const maxEnd = from + MAX_CLOUD_TOOL_RESULT_BYTES;
+	const windowOffsets: number[] = [];
+	let total = 0;
+	let fromUtf16 = bodyText.length;
+	for (let i = 0; i < bodyText.length; ) {
+		if (total === from) fromUtf16 = i;
+		if (total >= from && total <= maxEnd) windowOffsets.push(i);
+		const cp = bodyText.codePointAt(i)!;
+		i += cp > 0xffff ? 2 : 1;
+		total += 1;
+	}
+	if (total >= from && total <= maxEnd) windowOffsets.push(bodyText.length);
 	if (from >= total)
 		return { text: `${top}\nNothing is left from ${from}: the text has ${total} characters.`, blocks: [] };
-	const shown = (end: number): string =>
-		end < total
-			? `${top}\n${body.slice(from, end).join("")}\n[nextOffset ${end} of ${total} characters: zoom again with the same arguments and from: ${end} to read on]`
-			: `${top}\n${body.slice(from).join("")}`;
+	const shown = (end: number): string => {
+		const slice = bodyText.slice(fromUtf16, end < total ? windowOffsets[end - from] : bodyText.length);
+		return end < total
+			? `${top}\n${slice}\n[nextOffset ${end} of ${total} characters: zoom again with the same arguments and from: ${end} to read on]`
+			: `${top}\n${slice}`;
+	};
 	// A code point takes at least one byte, so no piece holds more of them than a result holds bytes.
-	let end = Math.min(total, from + MAX_CLOUD_TOOL_RESULT_BYTES);
+	let end = Math.min(total, maxEnd);
 	if (!fits(shown(end))) {
 		let low = from + 1;
 		let high = end - 1;
@@ -411,17 +434,18 @@ function page(top: string, rows: readonly Row[], from: number): { text: string; 
 		if (!fits(shown(end))) throw new Error("Zoom heading exceeds its result");
 	}
 	const blocks: MemoryTreeBlock[] = [];
+	const seenBlocks = new Set<string>();
 	let start = 0;
 	for (const row of rows) {
-		const length = [...row.text].length;
+		const length = codePointCount(row.text);
 		const shownBlock = row.block;
-		if (
-			shownBlock &&
-			start < end &&
-			start + length > from &&
-			!blocks.some((item) => item.path === shownBlock.path && item.version === shownBlock.version)
-		)
-			blocks.push(shownBlock);
+		if (shownBlock && start < end && start + length > from) {
+			const key = memoryBlockKey(shownBlock);
+			if (!seenBlocks.has(key)) {
+				seenBlocks.add(key);
+				blocks.push(shownBlock);
+			}
+		}
 		start += length + 1;
 	}
 	return { text: shown(end), blocks };

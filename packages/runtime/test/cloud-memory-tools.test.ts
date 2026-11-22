@@ -599,4 +599,37 @@ describe("composed agent memory", () => {
 			tools: ["update_memory", "recall_memory"],
 		});
 	});
+
+	it("aborts sibling monthly log reads when profile read fails in recall_memory", async () => {
+		const f = await fixture({
+			"QorperaOS/agents/nora/memory/profile.md": "# Profile\n- (2026-07-01) Fact A.\n",
+			"QorperaOS/agents/nora/memory/log/2026-09.md": "# 2026-09\n- (2026-09-10) Fact B.\n",
+			"QorperaOS/agents/nora/memory/log/2026-08.md": "# 2026-08\n- (2026-08-10) Fact C.\n",
+		});
+		let logReadAborted = false;
+		const origRead = f.store.readTrusted.getMockImplementation()!;
+		f.store.readTrusted.mockImplementation(async (path, signal) => {
+			if (path.endsWith("/profile.md")) {
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				throw new Error("profile boom");
+			}
+			return await new Promise((resolve, reject) => {
+				signal.addEventListener(
+					"abort",
+					() => {
+						logReadAborted = true;
+						reject(signal.reason ?? new Error("aborted"));
+					},
+					{ once: true },
+				);
+				void origRead;
+				void resolve;
+			});
+		});
+		const recalled = await f.boundary.invoke("call_fail", "qorpera", "recall_memory", { query: "Fact", limit: 5 });
+		expect(recalled.success).toBe(false);
+		expect(logReadAborted).toBe(true);
+		f.boundary.close();
+		f.run.close();
+	});
 });

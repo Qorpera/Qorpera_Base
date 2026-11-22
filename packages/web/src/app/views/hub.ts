@@ -254,7 +254,7 @@ export class HubController {
 		const revision = this.#membershipRevision;
 		try {
 			const [profiles, invitations, founding] = await Promise.all([
-				this.#api.listProfiles(),
+				this.#api.listProfiles(this.#abort.signal),
 				this.#api.listIncomingInvitations(),
 				this.#readFounding(),
 			]);

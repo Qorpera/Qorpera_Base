@@ -1,13 +1,12 @@
 import { createHash } from "node:crypto";
 import { UUID_PATTERN } from "@qorpera/contracts";
-import { withAbortScope } from "./abort-scope.ts";
+import { withAbortScope, withAbortScopes } from "./abort-scope.ts";
 import {
 	type BankDay,
 	type BankSummaryFile,
 	type BankSummaryInput,
 	danishAccount,
-	reduceBankDays,
-	reduceBankSummary,
+	reduceBankSummaryAndDays,
 } from "./bank-summary-reduce.ts";
 import {
 	type EnableBankingAccount,
@@ -308,7 +307,11 @@ export class CloudBankSyncs {
 	 * finished (the vault stopped) is offered again when its lease ends. */
 	async pass(signal: AbortSignal): Promise<BankSyncOutcome> {
 		const claim = parseClaim(
-			await this.#authority.claimBankSync(AbortSignal.any([signal, AbortSignal.timeout(DATABASE_DEADLINE_MS)])),
+			await withAbortScopes(
+				[signal],
+				(claimSignal) => this.#authority.claimBankSync(claimSignal),
+				DATABASE_DEADLINE_MS,
+			),
 		);
 		if (!claim) return "idle";
 		const finish = (
@@ -318,23 +321,29 @@ export class CloudBankSyncs {
 			error: string | null,
 		) =>
 			// Recorded even when the pass is closing: the bank has been asked.
-			this.#authority.finishBankSync(
-				{
-					secretId: claim.secretId,
-					version: claim.version,
-					lease: claim.lease,
-					outcome,
-					summary,
-					consentUntil,
-					fetch: claim.deep ? "deep" : "since",
-					error,
-				},
-				AbortSignal.timeout(DATABASE_DEADLINE_MS),
+			withAbortScopes(
+				[],
+				(dbSignal) =>
+					this.#authority.finishBankSync(
+						{
+							secretId: claim.secretId,
+							version: claim.version,
+							lease: claim.lease,
+							outcome,
+							summary,
+							consentUntil,
+							fetch: claim.deep ? "deep" : "since",
+							error,
+						},
+						dbSignal,
+					),
+				DATABASE_DEADLINE_MS,
 			);
 		let fetched: Fetched;
 		try {
-			fetched = await this.#fetch(claim, AbortSignal.any([signal, AbortSignal.timeout(FETCH_DEADLINE_MS)]));
+			fetched = await withAbortScopes([signal], (fetchSignal) => this.#fetch(claim, fetchSignal), FETCH_DEADLINE_MS);
 		} catch (error) {
+			if (signal.aborted) throw error;
 			if (error instanceof EnableBankingSessionEnded) {
 				await finish("ended", null, null, null);
 				return "ended";
@@ -360,15 +369,20 @@ export class CloudBankSyncs {
 			// Kept in batches; each answer is everything kept so far, so the last one is the summary's.
 			let answer: unknown;
 			for (let start = 0; start === 0 || start < booked.length; start += RECORD_BATCH) {
-				answer = await this.#authority.recordBankTransactions(
-					{
-						secretId: claim.secretId,
-						version: claim.version,
-						lease: claim.lease,
-						accountKeys: fetched.accounts.map((account) => account.key),
-						transactions: booked.slice(start, start + RECORD_BATCH),
-					},
-					AbortSignal.timeout(DATABASE_DEADLINE_MS),
+				answer = await withAbortScopes(
+					[],
+					(dbSignal) =>
+						this.#authority.recordBankTransactions(
+							{
+								secretId: claim.secretId,
+								version: claim.version,
+								lease: claim.lease,
+								accountKeys: fetched.accounts.map((account) => account.key),
+								transactions: booked.slice(start, start + RECORD_BATCH),
+							},
+							dbSignal,
+						),
+					DATABASE_DEADLINE_MS,
 				);
 			}
 			// What a fetch that did not reach the bank's last page brought is kept, but no summary is made of it: it
@@ -378,6 +392,15 @@ export class CloudBankSyncs {
 				return "failed";
 			}
 			const kept = parseKept(answer);
+			const keptByAccount = new Map<string, Omit<KeptBankTransaction, "key">[]>();
+			for (const transaction of kept.transactions) {
+				let list = keptByAccount.get(transaction.accountKey);
+				if (!list) {
+					list = [];
+					keptByAccount.set(transaction.accountKey, list);
+				}
+				list.push(transaction);
+			}
 			const payTo =
 				fetched.accounts
 					.filter((account) => (account.account.currency ?? "DKK") === "DKK")
@@ -393,37 +416,39 @@ export class CloudBankSyncs {
 					balances: account.balances,
 					// What the database keeps (booked, from every fetch so far) and what is still pending now.
 					transactions: [
-						...kept.transactions
-							.filter((transaction) => transaction.accountKey === account.key)
-							.map((transaction) => ({
-								reference: null,
-								amount: transaction.amount,
-								currency: transaction.currency,
-								status: "BOOK",
-								date: transaction.date,
-								counterparty: transaction.counterparty,
-								text: transaction.text,
-							})),
+						...(keptByAccount.get(account.key) ?? []).map((transaction) => ({
+							reference: null,
+							amount: transaction.amount,
+							currency: transaction.currency,
+							status: "BOOK",
+							date: transaction.date,
+							counterparty: transaction.counterparty,
+							text: transaction.text,
+						})),
 						...account.transactions.filter((transaction) => transaction.status !== "BOOK"),
 					],
 				})),
 			};
-			const summary = reduceBankSummary(reading);
-			const days = reduceBankDays(reading);
+			const { summary, days } = reduceBankSummaryAndDays(reading);
 			// The days are the company's numbers, not the Bank page's: a failure to record them leaves the days as they
 			// were (the next sync writes them again) and never holds the summary back.
 			try {
-				await this.#authority.recordBankDays(
-					{
-						secretId: claim.secretId,
-						version: claim.version,
-						lease: claim.lease,
-						accountKeys: fetched.accounts.map((account) => account.key),
-						from: days.from,
-						to: days.to,
-						days: days.days,
-					},
-					AbortSignal.timeout(DATABASE_DEADLINE_MS),
+				await withAbortScopes(
+					[],
+					(dbSignal) =>
+						this.#authority.recordBankDays(
+							{
+								secretId: claim.secretId,
+								version: claim.version,
+								lease: claim.lease,
+								accountKeys: fetched.accounts.map((account) => account.key),
+								from: days.from,
+								to: days.to,
+								days: days.days,
+							},
+							dbSignal,
+						),
+					DATABASE_DEADLINE_MS,
 				);
 			} catch {
 				console.error("Bank sync: the days by kind could not be recorded; the next sync writes them again.");
@@ -453,27 +478,55 @@ export class CloudBankSyncs {
 					keyId: claim.keyId,
 				},
 				async (fields): Promise<{ fetched: Fetched } | { error: unknown }> => {
+					const batchAbort = new AbortController();
 					try {
 						const session = parseSession(fields);
-						const accounts = [];
+						const results: Array<Fetched["accounts"][number]> = new Array(session.accounts.length);
+						let nextIndex = 0;
 						let complete = true;
-						for (const account of session.accounts) {
-							const balances = await this.#bank.balances(account.uid, signal);
-							const fetchedTransactions = await this.#bank.transactions(
-								account.uid,
-								claim.deep ? null : claim.since,
-								signal,
-								PAGES,
-							);
-							complete &&= fetchedTransactions.complete;
-							accounts.push({
-								key: bankAccountKey(account),
-								account,
-								balances,
-								transactions: fetchedTransactions.transactions,
-							});
-						}
-						return { fetched: { bank: session.bank, validUntil: session.validUntil, complete, accounts } };
+						let firstError: unknown;
+						let hasError = false;
+						await withAbortScopes([signal, batchAbort.signal], async (accountSignal) => {
+							const worker = async (): Promise<void> => {
+								while (!hasError) {
+									const index = nextIndex;
+									if (index >= session.accounts.length) return;
+									nextIndex += 1;
+									const account = session.accounts[index] as EnableBankingAccount;
+									try {
+										const [balances, fetchedTransactions] = await Promise.all([
+											this.#bank.balances(account.uid, accountSignal),
+											this.#bank.transactions(
+												account.uid,
+												claim.deep ? null : claim.since,
+												accountSignal,
+												PAGES,
+											),
+										]);
+										complete &&= fetchedTransactions.complete;
+										results[index] = {
+											key: bankAccountKey(account),
+											account,
+											balances,
+											transactions: fetchedTransactions.transactions,
+										};
+									} catch (error) {
+										if (!hasError) {
+											hasError = true;
+											firstError = error;
+											batchAbort.abort();
+										}
+										return;
+									}
+								}
+							};
+							const workers = Math.min(4, session.accounts.length);
+							await Promise.all(Array.from({ length: workers }, () => worker()));
+						});
+						if (hasError) return { error: firstError };
+						return {
+							fetched: { bank: session.bank, validUntil: session.validUntil, complete, accounts: results },
+						};
 					} catch (error) {
 						return { error };
 					}
@@ -524,12 +577,15 @@ export class CloudBankSyncUpkeep {
 		this.#started = true;
 		const loop = (): void => {
 			if (this.#closing.signal.aborted) return;
-			this.#running = this.pass().finally(() => {
-				this.#running = undefined;
-				if (!this.#closing.signal.aborted) this.#timer = setTimeout(loop, this.#passEveryMs);
+			void this.pass().finally(() => {
+				if (!this.#closing.signal.aborted) {
+					this.#timer = setTimeout(loop, this.#passEveryMs);
+					this.#timer.unref?.();
+				}
 			});
 		};
 		this.#timer = setTimeout(loop, this.#firstPassMs);
+		this.#timer.unref?.();
 	}
 
 	async close(): Promise<void> {
@@ -538,8 +594,13 @@ export class CloudBankSyncUpkeep {
 		await this.#running;
 	}
 
-	async pass(): Promise<void> {
-		await withAbortScope(this.#closing.signal, (signal) => logBankSyncPass(this.#syncs, signal));
+	pass(): Promise<void> {
+		if (this.#running) return this.#running;
+		const run = withAbortScope(this.#closing.signal, (signal) => logBankSyncPass(this.#syncs, signal)).finally(() => {
+			if (this.#running === run) this.#running = undefined;
+		});
+		this.#running = run;
+		return run;
 	}
 }
 

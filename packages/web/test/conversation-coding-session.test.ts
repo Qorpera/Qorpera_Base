@@ -249,7 +249,7 @@ describe("coding sessions in the thread", () => {
 		// It re-reads the sessions on the working clock while one is going.
 		vi.mocked(f.api.listCodingSessions).mockClear();
 		await vi.advanceTimersByTimeAsync(2_500);
-		expect(f.api.listCodingSessions).toHaveBeenCalledWith(session.sessionId);
+		expect(f.api.listCodingSessions).toHaveBeenCalledWith(session.sessionId, f.company.signal);
 		await settle();
 		expect(dock.querySelector(".coding-pill-summary")).toBe(line);
 		expect(line.querySelector(".coding-pill-note")?.textContent).toContain("npm test");

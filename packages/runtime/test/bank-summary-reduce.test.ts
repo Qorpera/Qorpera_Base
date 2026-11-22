@@ -4,6 +4,7 @@ import {
 	danishAccount,
 	reduceBankDays,
 	reduceBankSummary,
+	reduceBankSummaryAndDays,
 } from "@qorpera/runtime/bank-summary-reduce";
 import type { EnableBankingTransaction } from "@qorpera/runtime/cloud-connector-enable-banking";
 import { describe, expect, it } from "vitest";
@@ -532,5 +533,46 @@ describe("today is the company's date, in Copenhagen when it has no zone", () =>
 		const night = at("2026-10-25T00:30:00Z", [on("2026-10-25", 40)]);
 		expect(night.days.to).toBe("2026-10-25");
 		expect(night.days.days).toEqual([{ day: "2026-10-25", direction: "in", kind: "other", amount: 40, count: 1 }]);
+	});
+
+	it("computes ancient repeating rhythm dates in O(1) and matches reduceBankSummaryAndDays output", () => {
+		const sample = {
+			bank: "Test Bank",
+			now,
+			timeZone: "Europe/Copenhagen",
+			pausedSince: null,
+			payTo: null,
+			accounts: [
+				{
+					balances: [{ amount: 5000, currency: "DKK", type: "CLBD", referenceDate: date(0) }],
+					transactions: [
+						{
+							reference: null,
+							amount: -50,
+							currency: "DKK",
+							status: "BOOK",
+							date: "0001-01-01",
+							counterparty: "Ancient Weekly",
+							text: null,
+						},
+						{
+							reference: null,
+							amount: -50,
+							currency: "DKK",
+							status: "BOOK",
+							date: "0001-01-08",
+							counterparty: "Ancient Weekly",
+							text: null,
+						},
+						tx(1, -200, "Husleje ApS"),
+						tx(0, 1000, "Stripe Technology Europe"),
+					],
+				},
+			],
+		};
+		const combined = reduceBankSummaryAndDays(sample);
+		expect(combined.summary).toEqual(reduceBankSummary(sample));
+		expect(combined.days).toEqual(reduceBankDays(sample));
+		expect(combined.summary.moneyOut.repeating).toBeGreaterThan(0);
 	});
 });

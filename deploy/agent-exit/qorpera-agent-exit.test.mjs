@@ -1468,7 +1468,13 @@ spec = importlib.util.spec_from_file_location("plug", sys.argv[1])
 plug = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(plug)
 sleeps = []
-plug.time.sleep = lambda seconds: sleeps.append(seconds)
+orig_time = plug.time
+class _PlugTime:
+    def __getattr__(self, name):
+        return getattr(orig_time, name)
+    def sleep(self, seconds):
+        sleeps.append(seconds)
+plug.time = _PlugTime()
 paths = plug.Paths(sys.argv[2], sys.argv[3], sys.argv[4])
 class Args:
     lxd_socket = sys.argv[5]
@@ -1638,7 +1644,7 @@ names = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(names)
 plug = names.plug
 clock = [1790000000.0]
-names.time = types.SimpleNamespace(time=lambda: clock[0], sleep=lambda _: None)
+names.time = types.SimpleNamespace(time=lambda: clock[0], monotonic=lambda: clock[0], sleep=lambda _: None)
 state, run = os.path.join(root, "state"), os.path.join(root, "run")
 for d in ("seen", "verified", "rules"):
     os.makedirs(os.path.join(state, d), exist_ok=True)
@@ -1653,7 +1659,7 @@ reader = {"ok": True, "problem": None, "lag": 0}
 def answer(code=0, stdout="", stderr=""):
     return types.SimpleNamespace(returncode=code, stdout=stdout, stderr=stderr)
 
-def fake_run(command, input=None, capture_output=True, text=True):
+def fake_run(command, input=None, capture_output=True, text=True, timeout=None):
     if command[0] == "systemctl":
         verb = command[1]
         if verb in world["fail"]:
@@ -3405,6 +3411,316 @@ finally:
 				closed_on_pause: true,
 				closed_after_paused_gap: true,
 				reopened_on_resume: true,
+			});
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("plug handles short reads/writes, cleans leaked temp files, bounds subprocesses, and batches table_set_keys", () => {
+		const dir = mkdtempSync(join(tmpdir(), "qorpera-agent-plug-io-"));
+		const plugTool = join(here, "qorpera-agent-plug.py");
+		const script = String.raw`
+import importlib.util, json, os, subprocess, sys
+spec = importlib.util.spec_from_file_location("plug", sys.argv[1])
+plug = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(plug)
+root = sys.argv[2]
+
+orig_write = os.write
+def short_write(fd, data):
+    return orig_write(fd, bytes(data)[:3])
+os.write = short_write
+try:
+    target = os.path.join(root, "sample.txt")
+    plug.write_replace(target, "hello-world-short-writes")
+finally:
+    os.write = orig_write
+
+orig_read = os.read
+def short_read(fd, n):
+    return orig_read(fd, min(n, 4))
+os.read = short_read
+try:
+    text = plug.read_file(target)
+finally:
+    os.read = orig_read
+
+def fail_write(fd, data):
+    raise OSError("disk full")
+os.write = fail_write
+failed_clean = False
+try:
+    try:
+        plug.write_replace(os.path.join(root, "fail.txt"), "data")
+    except OSError:
+        failed_clean = not any(n.startswith(".tmp-") for n in os.listdir(root))
+finally:
+    os.write = orig_write
+
+timed = plug._run_subprocess([sys.executable, "-c", "import time; time.sleep(5)"], timeout=0.05)
+nft_json = json.dumps({"nftables": [
+    {"set": {"name": "new_by_client", "elem": ["10.210.1.2", "10.210.1.3"]}},
+    {"set": {"name": "dns_allowed", "elem": [{"concat": ["10.210.1.2", 10001]}]}},
+    {"set": {"name": "unrelated", "elem": ["10.210.1.2"]}},
+]})
+keys = plug.table_set_keys(nft_json, "10.210.1.2", plug.EXIT_SETS)
+bad_keys = plug.table_set_keys("not-json", "10.210.1.2", plug.EXIT_SETS)
+print(json.dumps({
+    "text": text,
+    "failed_clean": failed_clean,
+    "timed_rc": timed.returncode,
+    "keys": keys,
+    "bad_keys": bad_keys,
+}))
+`;
+		try {
+			const run = spawnSync("python3", ["-c", script, plugTool, dir], { encoding: "utf8" });
+			assert.equal(run.status, 0, run.stderr);
+			assert.deepEqual(JSON.parse(run.stdout), {
+				text: "hello-world-short-writes",
+				failed_clean: true,
+				timed_rc: 124,
+				keys: [
+					["new_by_client", "10.210.1.2"],
+					["dns_allowed", "10.210.1.2 . 10001"],
+				],
+				bad_keys: [],
+			});
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("names.read_whole skips unchanged files via fstat and sni.Judge expires holding and idle flows via LRU", () => {
+		const dir = mkdtempSync(join(tmpdir(), "qorpera-agent-exit-sni-lru-"));
+		const namesTool = join(here, "qorpera-agent-exit-names.py");
+		const sniTool = join(here, "qorpera-agent-exit-sni.py");
+		const script = String.raw`
+import importlib.util, json, os, sys
+spec_n = importlib.util.spec_from_file_location("names", sys.argv[1])
+names = importlib.util.module_from_spec(spec_n)
+spec_n.loader.exec_module(names)
+spec_s = importlib.util.spec_from_file_location("sni", sys.argv[2])
+sni = importlib.util.module_from_spec(spec_s)
+spec_s.loader.exec_module(sni)
+
+path = os.path.join(sys.argv[3], "rules.json")
+with open(path, "w", encoding="utf-8") as f:
+    f.write('{"schema":"qorpera.agent-exit-rules/v1","companies":{}}\n')
+reads = [0]
+orig_read = os.read
+def counted_read(fd, n):
+    reads[0] += 1
+    return orig_read(fd, n)
+os.read = counted_read
+try:
+    d1, k1 = names.read_whole(path, 1024)
+    reads_after_first = reads[0]
+    d2, k2 = names.read_whole(path, 1024, known_key=k1)
+    reads_after_cached = reads[0]
+finally:
+    os.read = orig_read
+
+judge = sni.Judge(lambda m, n: None, lambda msg: None)
+k_old = (("10.210.1.2", 40001), ("93.184.215.14", 443))
+k_hold = (("10.210.1.2", 40002), ("93.184.215.14", 443))
+k_fresh = (("10.210.1.2", 40003), ("93.184.215.14", 443))
+f_old = sni.Flow(1, 35.0)
+f_old.state = "done"
+judge.flows[k_old] = f_old
+f_hold = sni.Flow(1, 50.0)
+f_hold.held = [77]
+f_hold.since = 50.0
+judge.flows[k_hold] = f_hold
+judge.holding_flows.add(k_hold)
+judge.holding["10.210.1.2"] = 1
+f_fresh = sni.Flow(1, 100.0)
+f_fresh.state = "done"
+judge.flows[k_fresh] = f_fresh
+
+v_hold = judge.expire(56.0)
+old_still_there_at_56 = k_old in judge.flows
+v_idle = judge.expire(75.0)
+print(json.dumps({
+    "first_read": d1 is not None and reads_after_first > 0,
+    "cached_skipped": d2 is None and k2 == k1 and reads_after_cached == reads_after_first,
+    "hold_refused": len(v_hold) == 1 and judge.flows[k_hold].state == "refused" and len(judge.holding_flows) == 0,
+    "old_still_there_at_56": old_still_there_at_56,
+    "old_evicted_at_75": k_old not in judge.flows and k_fresh in judge.flows,
+    "v_idle": len(v_idle),
+}))
+`;
+		try {
+			const run = spawnSync("python3", ["-c", script, namesTool, sniTool, dir], { encoding: "utf8" });
+			assert.equal(run.status, 0, run.stderr);
+			assert.deepEqual(JSON.parse(run.stdout), {
+				first_read: true,
+				cached_skipped: true,
+				hold_refused: true,
+				old_still_there_at_56: true,
+				old_evicted_at_75: true,
+				v_idle: 0,
+			});
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("verify() fails closed on stale, missing, unreadable/recursive, and crashing status checks", () => {
+		const dir = mkdtempSync(join(tmpdir(), "qorpera-agent-exit-verify-"));
+		const exitTool = join(here, "qorpera-agent-exit.sh");
+		try {
+			const runDir = join(dir, "run");
+			mkdirSync(runDir, { recursive: true });
+			const now = Date.now() / 1000;
+			writeFileSync(join(runDir, "logger.heartbeat"), `${Math.floor(now)}\n`);
+			writeFileSync(join(runDir, "logs.json"), JSON.stringify({ problems: [] }));
+			utimesSync(join(runDir, "logs.json"), now - 1200, now - 1200);
+			mkdirSync(join(runDir, "brake.json"));
+			writeFileSync(join(runDir, "plug.json"), "[".repeat(2000) + "]".repeat(2000));
+			writeFileSync(join(runDir, "names.json"), JSON.stringify({ problems: ["sentinel-names-problem"] }));
+
+			const harness = `
+set -euo pipefail
+source <(sed '/^case "\${1:-}" in$/,$d' "$1")
+has_ns() { return 1; }
+has_link() { return 1; }
+nft() { return 0; }
+queue_loaded() { return 1; }
+run_dir="$2"
+verify
+`;
+			const bad = spawnSync("bash", ["-c", harness, "_", exitTool, runDir], { encoding: "utf8" });
+			assert.equal(bad.status, 1);
+			assert.match(bad.stderr, /the logs' tender has not run for \d+s/);
+			assert.match(bad.stderr, /the logs' shipper has not run/);
+			assert.match(bad.stderr, /the brake: cannot read .*brake\.json/);
+			assert.match(bad.stderr, /cannot read .*plug\.json/);
+			assert.match(bad.stderr, /names: sentinel-names-problem/);
+
+			const fakeBin = join(dir, "bin");
+			mkdirSync(fakeBin, { recursive: true });
+			writeFileSync(join(fakeBin, "python3"), "#!/bin/sh\nexit 1\n");
+			chmodSync(join(fakeBin, "python3"), 0o755);
+			const crashed = spawnSync("bash", ["-c", harness, "_", exitTool, runDir], {
+				encoding: "utf8",
+				env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
+			});
+			assert.equal(crashed.status, 1);
+			assert.match(crashed.stderr, /cannot inspect the exit's status files/);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("plug.Reconciler reuses bridge_state, repairs malformed elements, keeps mixed-case ports, batches forget(), and guards main()", () => {
+		const dir = mkdtempSync(join(tmpdir(), "qorpera-agent-exit-plug-bridge-"));
+		const script = String.raw`
+import importlib.util, json, os, subprocess, sys
+spec = importlib.util.spec_from_file_location("plug", sys.argv[1])
+plug = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(plug)
+
+root = sys.argv[2]
+state_dir = os.path.join(root, "state")
+run_dir = os.path.join(root, "run")
+log_dir = os.path.join(root, "log")
+paths = plug.Paths(state_dir, run_dir, log_dir)
+for d in (*paths.root_dirs(), paths.clients, paths.dhcp, log_dir):
+    os.makedirs(d, exist_ok=True)
+
+entry = plug.plug(paths, "coding", "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222",
+                  "33333333-3333-4333-8333-333333333333", "qp", "vm-case")
+plug.write_replace(os.path.join(paths.verified, entry["address"]), plug.now_iso() + "\n")
+plug.write_replace(os.path.join(paths.seen, entry["address"]), json.dumps(entry) + "\n")
+
+fixture = os.path.join(root, "lxd.json")
+with open(fixture, "w", encoding="utf-8") as f:
+    json.dump([], f)
+
+class Args:
+    lxd_socket = "/nonexistent"
+    lxd_fixture = fixture
+    port_recheck_seconds = 0.0
+    reload_dns = "true"
+    flush_log = os.path.join(root, "flush.log")
+    netns = "qexit"
+
+r = plug.Reconciler(paths, Args())
+r.nft = True
+port_list_calls = 0
+repair_batches = []
+forget_list_calls = 0
+forget_batches = []
+
+def fake_run(cmd, *, input=None):
+    global port_list_calls, forget_list_calls
+    if cmd[:5] == ["nft", "-j", "list", "set", "bridge"] and cmd[-1] == "ports":
+        port_list_calls += 1
+        return subprocess.CompletedProcess(cmd, 0, json.dumps({"nftables": [{"set": {"elem": [
+            {"concat": ["Tap-Mix1", entry["hwaddr"]]},
+            {"concat": ["broken-only-one"]},
+        ]}}]}), "")
+    if cmd[:5] == ["nft", "-j", "list", "set", "bridge"] and cmd[-1] == "clients":
+        return subprocess.CompletedProcess(cmd, 0, json.dumps({"nftables": [{"set": {"elem": []}}]}), "")
+    if cmd[:5] == ["nft", "-j", "list", "chain", "bridge"] and cmd[-1] == "dhcp":
+        return subprocess.CompletedProcess(cmd, 0, json.dumps({"nftables": []}), "")
+    if cmd == ["nft", "-f", "-"]:
+        repair_batches.append(input or "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    if cmd[:4] == ["ip", "netns", "exec", "qexit"] and cmd[4:8] == ["nft", "-j", "list", "table"]:
+        forget_list_calls += 1
+        return subprocess.CompletedProcess(cmd, 0, json.dumps({"nftables": [
+            {"set": {"name": "new_by_client", "elem": [entry["address"]]}},
+            {"set": {"name": "refused_flows", "elem": [{"concat": [entry["address"], "1.2.3.4", 443]}]}},
+        ]}), "")
+    if cmd[:4] == ["ip", "netns", "exec", "qexit"] and cmd[4:7] == ["nft", "-f", "-"]:
+        forget_batches.append(input or "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    return subprocess.CompletedProcess(cmd, 0, "", "")
+
+r.run = fake_run
+r.pass_once()
+r.forget(entry["address"])
+
+orig_pass = plug.Reconciler.pass_once
+def boom(self):
+    raise RuntimeError("boom-pass")
+plug.Reconciler.pass_once = boom
+orig_argv = sys.argv
+sys.argv = ["plug", "reconcile", "--once", "--state-dir", state_dir, "--run-dir", run_dir, "--log-dir", log_dir,
+            "--lxd-fixture", fixture]
+try:
+    plug.main()
+finally:
+    plug.Reconciler.pass_once = orig_pass
+    sys.argv = orig_argv
+
+with open(os.path.join(run_dir, "plug.json"), encoding="utf-8") as f:
+    status = json.load(f)
+
+print(json.dumps({
+    "port_list_calls": port_list_calls,
+    "repaired": len(repair_batches) == 1,
+    "kept_mixed_case": f'"Tap-Mix1" . {entry["hwaddr"]}' in (repair_batches[0] if repair_batches else ""),
+    "forget_list_calls": forget_list_calls,
+    "forget_batch_ok": (len(forget_batches) == 1
+                        and f"destroy element inet qorpera_agent_exit new_by_client {{ {entry['address']} }}" in forget_batches[0]
+                        and f"destroy element inet qorpera_agent_exit refused_flows {{ {entry['address']} . 1.2.3.4 . 443 }}" in forget_batches[0]),
+    "main_guarded": any("RuntimeError: boom-pass" in p for p in status.get("problems", [])),
+}))
+`;
+		try {
+			const run = spawnSync("python3", ["-c", script, plugTool, dir], { encoding: "utf8" });
+			assert.equal(run.status, 0, run.stderr);
+			assert.deepEqual(JSON.parse(run.stdout), {
+				port_list_calls: 1,
+				repaired: true,
+				kept_mixed_case: true,
+				forget_list_calls: 1,
+				forget_batch_ok: true,
+				main_guarded: true,
 			});
 		} finally {
 			rmSync(dir, { recursive: true, force: true });

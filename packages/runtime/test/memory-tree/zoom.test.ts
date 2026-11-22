@@ -503,4 +503,30 @@ describe("memory zoom tool", () => {
 			f.run.close();
 		}
 	});
+
+	it("paginates multi-page non-BMP surrogate text on code-point boundaries without splitting surrogates", async () => {
+		const text = `Start ${"\u{1d400}".repeat(25_000)} End`;
+		const f = await fixture((request) => answer(request, 1, { event: event(0, { text }) }));
+		try {
+			let from = 0;
+			const chunks: string[] = [];
+			let pages = 0;
+			for (;;) {
+				pages += 1;
+				const result = await f.zoom(`surrogate_${pages}`, { line: "0+1", from });
+				expect(result.isWellFormed()).toBe(true);
+				const nextMatch = /\[nextOffset (\d+) of (\d+) characters:/.exec(result);
+				const lines = result.split("\n");
+				const body = nextMatch ? lines.slice(1, -1).join("\n") : lines.slice(1).join("\n");
+				chunks.push(body);
+				if (!nextMatch) break;
+				from = Number(nextMatch[1]);
+			}
+			expect(pages).toBeGreaterThanOrEqual(2);
+			const full = chunks.join("");
+			expect(full).toContain(text);
+		} finally {
+			f.run.close();
+		}
+	});
 });

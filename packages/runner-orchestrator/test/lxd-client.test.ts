@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	defaultLxdRequestTimeoutMs,
 	type LxdCreateInstanceRequest,
 	type LxdCreateStorageVolumeRequest,
 	LxdOperationFailed,
@@ -1395,12 +1396,14 @@ describe("LXD exec stream", () => {
 	it("batch-reads /proc/meminfo and cgroup memory.stat unprivileged over websocket exec", async () => {
 		const codingA =
 			"/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.slice/memory.stat";
+		const folderA = "/sys/fs/cgroup/system.slice/qorpera-folder-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.service/memory.stat";
 		const codingMissing =
 			"/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.slice/memory.stat";
 		const userA = "/sys/fs/cgroup/user.slice/user-200000.slice/memory.stat";
 		const files = new Map<string, string>([
 			["/proc/meminfo", "MemTotal:        8388608 kB\nMemAvailable:    4194304 kB\n"],
 			[codingA, "anon 134217728\nfile 4294967296\nshmem 16777216\nkernel 8388608\n"],
+			[folderA, "anon 33554432\nfile 536870912\nshmem 1048576\nkernel 2097152\n"],
 			[userA, "anon 67108864\nfile 1073741824\nkernel 4194304\n"],
 		]);
 		const exec = await fake((_stdin, post) => {
@@ -1411,12 +1414,14 @@ describe("LXD exec stream", () => {
 		const client = new LxdUnixClient(exec.socket, 30);
 		const result = await client.readCodingMachineMemory("coding", "coding-vm", [
 			codingA,
+			folderA,
 			codingMissing,
 			userA,
 			codingA,
 		]);
 		expect(result.meminfo).toBe("MemTotal:        8388608 kB\nMemAvailable:    4194304 kB");
 		expect(result.stats.get(codingA)).toBe("anon 134217728\nfile 4294967296\nshmem 16777216\nkernel 8388608");
+		expect(result.stats.get(folderA)).toBe("anon 33554432\nfile 536870912\nshmem 1048576\nkernel 2097152");
 		expect(result.stats.get(userA)).toBe("anon 67108864\nfile 1073741824\nkernel 4194304");
 		expect(result.stats.has(codingMissing)).toBe(false);
 		expect(exec.posts).toHaveLength(1);
@@ -1436,7 +1441,7 @@ describe("LXD exec stream", () => {
 			expect.stringContaining("/usr/bin/cat --"),
 			"qorpera-memory",
 		]);
-		expect(command.slice(4)).toEqual(["/proc/meminfo", codingA, codingMissing, userA]);
+		expect(command.slice(4)).toEqual(["/proc/meminfo", codingA, folderA, codingMissing, userA]);
 
 		const onlyMeminfo = await client.readCodingMachineMemory("coding", "coding-vm", []);
 		expect(onlyMeminfo.meminfo).toContain("MemTotal:");
@@ -1497,6 +1502,9 @@ describe("LXD exec stream", () => {
 			"/etc/shadow",
 			"/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.slice/memory.current",
 			"/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.slice/memory.stat",
+			"/sys/fs/cgroup/system.slice/qorpera-folder-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.service/memory.current",
+			"/sys/fs/cgroup/system.slice/qorpera-folder-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.service/memory.stat",
+			"/sys/fs/cgroup/system.slice/ssh.service/memory.stat",
 			"/sys/fs/cgroup/user.slice/user-1000.slice/memory.stat",
 			"/sys/fs/cgroup/user.slice/user-199999.slice/memory.stat",
 			"/sys/fs/cgroup/user.slice/user-524288.slice/memory.stat",
@@ -1516,5 +1524,71 @@ describe("LXD exec stream", () => {
 				"LXD_CODING_MEMORY_READ_FAILED",
 			);
 		}
+	});
+
+	it("bounds un-signalled LXD socket requests with operationTimeoutSeconds instead of hanging indefinitely", async () => {
+		const root = await mkdtemp(join(tmpdir(), "qorpera-lxd-stall-"));
+		roots.push(root);
+		const socket = join(root, "lxd.socket");
+		const server = createServer((_req, _res) => {});
+		servers.push(server);
+		await new Promise<void>((resolveListen, reject) => {
+			server.once("error", reject);
+			server.listen(socket, () => resolveListen());
+		});
+		const client = new LxdUnixClient(socket, 1);
+		const started = Date.now();
+		await expect(client.getInstance("qorpera-runners", "stalled")).rejects.toThrow();
+		expect(Date.now() - started).toBeLessThan(3_000);
+	});
+
+	it("honors explicit waitSeconds above operationTimeoutSeconds on un-signalled operation waits", async () => {
+		expect(defaultLxdRequestTimeoutMs("/1.0/operations/op-1/wait?timeout=600", 120)).toBe(605_000);
+		expect(defaultLxdRequestTimeoutMs("/1.0/operations/op-1/wait?timeout=5&project=qorpera-runners", 120)).toBe(
+			10_000,
+		);
+		expect(defaultLxdRequestTimeoutMs("/1.0/operations/op-1/wait?project=qorpera-runners&timeout=600", 30)).toBe(
+			605_000,
+		);
+		expect(defaultLxdRequestTimeoutMs("/1.0/instances/stalled?project=qorpera-runners", 30)).toBe(30_000);
+
+		const root = await mkdtemp(join(tmpdir(), "qorpera-lxd-wait-"));
+		roots.push(root);
+		const socket = join(root, "lxd.socket");
+		let waitedPath = "";
+		const server = createServer((req, res) => {
+			const url = req.url ?? "";
+			if (req.method === "POST" && url.includes("/exec")) {
+				req.resume();
+				res.writeHead(202, { "content-type": "application/json" });
+				res.end(JSON.stringify({ type: "async", status_code: 100, operation: "/1.0/operations/op-wait-1" }));
+				return;
+			}
+			if (req.method === "GET" && url.includes("/1.0/operations/op-wait-1/wait")) {
+				waitedPath = url;
+				setTimeout(() => {
+					res.writeHead(200, { "content-type": "application/json" });
+					res.end(
+						JSON.stringify({
+							type: "sync",
+							status_code: 200,
+							metadata: { status_code: 200, metadata: { return: 0 } },
+						}),
+					);
+				}, 1_250);
+				return;
+			}
+			res.writeHead(404).end();
+		});
+		servers.push(server);
+		await new Promise<void>((resolveListen, reject) => {
+			server.once("error", reject);
+			server.listen(socket, () => resolveListen());
+		});
+		const client = new LxdUnixClient(socket, 1);
+		await expect(
+			client.execInstance("qorpera-runners", "slow-op", ["/bin/true"], undefined, 2),
+		).resolves.toBeUndefined();
+		expect(waitedPath).toContain("/wait?timeout=2");
 	});
 });

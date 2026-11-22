@@ -47,6 +47,7 @@ export async function serveFolderServiceObject(
 		folderServiceActor(request.headers["x-qorpera-folder-actor"]),
 		options.authority,
 		replication,
+		{ singleAuthorize: true },
 	);
 }
 

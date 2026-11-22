@@ -103,7 +103,7 @@ const READING: ResolvedPackReading = {
 	memoryBytes: 1024 ** 3,
 	atOnce: 1,
 	runningBytes: 512 * 1024 ** 2,
-	waitingMax: 8,
+	waitingMax: 32,
 	waitingBytes: 2 * 1024 ** 3,
 	packMax: 512 * 1024 ** 2,
 	rebuiltFactor: 64,
@@ -458,7 +458,7 @@ class PackRun {
 					"\tpackedGitLimit = 256m",
 					"\tdeltaBaseCacheLimit = 96m",
 					"[pack]",
-					"\tthreads = 1",
+					"\tthreads = 2",
 					"[gc]",
 					"\tauto = 0",
 					...(sha256 ? ["[extensions]", "\tobjectFormat = sha256"] : []),
@@ -482,7 +482,7 @@ class PackRun {
 
 	/** The run's index-pack, started at the pack's first bytes (or at its end, for a pack of none). */
 	#indexPack(): Git {
-		this.#index ??= this.#spawnGit(["index-pack", "--stdin", "--threads=1"], ["pipe", "pipe", "pipe"], true);
+		this.#index ??= this.#spawnGit(["index-pack", "--stdin", "--threads=2"], ["pipe", "pipe", "pipe"], true);
 		return this.#index;
 	}
 

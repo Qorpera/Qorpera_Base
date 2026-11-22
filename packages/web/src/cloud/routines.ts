@@ -462,7 +462,7 @@ export function createWebRoutines(
 	};
 	const rpc = async (name: string, args: Record<string, unknown>) => {
 		check();
-		const value = await cloud.rpc(name, args);
+		const value = await cloud.rpc(name, args, signal);
 		check();
 		return value;
 	};

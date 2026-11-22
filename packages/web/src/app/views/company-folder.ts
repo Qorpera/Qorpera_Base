@@ -206,10 +206,71 @@ function extension(path: string): string {
 	const name = baseName(path);
 	return name.includes(".") ? name.slice(name.lastIndexOf(".") + 1).toLowerCase() : "";
 }
+const UTF8 = new TextDecoder("utf-8", { fatal: true });
+const INTL_CACHE_LIMIT = 16;
+const collators = new Map<string, Intl.Collator>();
+const dateTimeFormatters = new Map<string, Intl.DateTimeFormat>();
+const timeFormatters = new Map<string, Intl.DateTimeFormat>();
+const fullDateFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function cachedIntl<T>(cache: Map<string, T>, key: string, make: () => T): T {
+	const existing = cache.get(key);
+	if (existing) return existing;
+	if (cache.size >= INTL_CACHE_LIMIT) {
+		const oldest = cache.keys().next().value;
+		if (oldest !== undefined) cache.delete(oldest);
+	}
+	const created = make();
+	cache.set(key, created);
+	return created;
+}
+
+function collatorFor(locale: string): Intl.Collator {
+	return cachedIntl(collators, locale, () => new Intl.Collator(locale, { numeric: true, sensitivity: "base" }));
+}
+
+function dateTimeFormatFor(locale: string, timeZone: string | undefined): Intl.DateTimeFormat {
+	return cachedIntl(
+		dateTimeFormatters,
+		`${locale}|${timeZone ?? ""}`,
+		() =>
+			new Intl.DateTimeFormat(locale, {
+				dateStyle: "medium",
+				timeStyle: "short",
+				...(timeZone ? { timeZone } : {}),
+			}),
+	);
+}
+
+function timeFormatFor(locale: string, timeZone: string | undefined): Intl.DateTimeFormat {
+	return cachedIntl(
+		timeFormatters,
+		`${locale}|${timeZone ?? ""}`,
+		() =>
+			new Intl.DateTimeFormat(locale, {
+				hour: "2-digit",
+				minute: "2-digit",
+				...(timeZone ? { timeZone } : {}),
+			}),
+	);
+}
+
+function fullDateFormatFor(locale: string, timeZone: string | undefined): Intl.DateTimeFormat {
+	return cachedIntl(
+		fullDateFormatters,
+		`${locale}|${timeZone ?? ""}`,
+		() =>
+			new Intl.DateTimeFormat(locale, {
+				dateStyle: "full",
+				...(timeZone ? { timeZone } : {}),
+			}),
+	);
+}
+
 /** UTF-8 text without NUL, or undefined for anything else. */
 function decodeText(bytes: Uint8Array): string | undefined {
 	try {
-		const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+		const text = UTF8.decode(bytes);
 		return text.includes("\0") ? undefined : text;
 	} catch {
 		return undefined;
@@ -316,6 +377,7 @@ export class CompanyFolderBrowser {
 				spellcheck: "false",
 			});
 		this.#stop = new AbortController();
+		if (source.signal.aborted) this.#stop.abort(source.signal.reason);
 		this.#stop.signal.addEventListener(
 			"abort",
 			() => {
@@ -532,7 +594,19 @@ export class CompanyFolderBrowser {
 		} catch {
 			/* The hint is a nudge; the slow poll keeps the page current without it. */
 		}
-		this.#poll ??= setInterval(() => this.#scheduleSync(), POLL_MS);
+		if (!this.#poll) {
+			this.#poll = setInterval(() => {
+				if (typeof document === "undefined" || !document.hidden) this.#scheduleSync();
+			}, POLL_MS);
+			if (typeof document !== "undefined")
+				document.addEventListener(
+					"visibilitychange",
+					() => {
+						if (!document.hidden && this.#ready && !this.#disposed) this.#scheduleSync();
+					},
+					{ signal: this.#stop.signal },
+				);
+		}
 		this.#ready = true;
 		this.#navigate();
 	}
@@ -639,7 +713,7 @@ export class CompanyFolderBrowser {
 	// ---- lifetime -------------------------------------------------------------
 
 	#signal(): AbortSignal {
-		return AbortSignal.any([this.#stop.signal, this.#source.signal]);
+		return this.#stop.signal;
 	}
 
 	#live(): void {
@@ -648,16 +722,18 @@ export class CompanyFolderBrowser {
 	}
 
 	/** One action at a time; the list and preview stay still while it runs, and focus comes back to where it was. */
-	async #run(action: () => Promise<void>, retry?: () => Promise<void>): Promise<void> {
+	async #run(action: () => Promise<void>, retry?: () => Promise<void>, background = false): Promise<void> {
 		if (this.#busy || this.#disposed) return;
 		this.#busy = true;
-		const focus = document.activeElement;
-		this.#root.inert = true;
-		// A modal window is not made inert by its ancestors, so its content rests on its own. Focus waits on the window
-		// itself, where Escape is the window's: the control that had it may rest or go (a Try again is removed at once).
-		if (this.#viewer?.open) {
-			this.#preview.inert = true;
-			if (document.activeElement !== this.#viewer) this.#viewer.focus({ preventScroll: true });
+		const focus = background ? null : document.activeElement;
+		if (!background) {
+			this.#root.inert = true;
+			// A modal window is not made inert by its ancestors, so its content rests on its own. Focus waits on the window
+			// itself, where Escape is the window's: the control that had it may rest or go (a Try again is removed at once).
+			if (this.#viewer?.open) {
+				this.#preview.inert = true;
+				if (document.activeElement !== this.#viewer) this.#viewer.focus({ preventScroll: true });
+			}
 		}
 		this.#say("");
 		try {
@@ -680,16 +756,18 @@ export class CompanyFolderBrowser {
 				);
 		} finally {
 			this.#busy = false;
-			this.#root.inert = false;
-			this.#preview.inert = false;
-			if (
-				focus instanceof HTMLElement &&
-				focus.isConnected &&
-				(!document.activeElement ||
-					document.activeElement === document.body ||
-					(this.#viewer !== null && document.activeElement === this.#viewer && this.#viewer.contains(focus)))
-			)
-				focus.focus();
+			if (!background) {
+				this.#root.inert = false;
+				this.#preview.inert = false;
+				if (
+					focus instanceof HTMLElement &&
+					focus.isConnected &&
+					(!document.activeElement ||
+						document.activeElement === document.body ||
+						(this.#viewer !== null && document.activeElement === this.#viewer && this.#viewer.contains(focus)))
+				)
+					focus.focus();
+			}
 			// The window was drawn while the root rested, so nothing in it could take focus then.
 			if (!this.#disposed && this.#viewer?.open && !this.#viewer.contains(document.activeElement))
 				this.#viewer.focus({ preventScroll: true });
@@ -771,24 +849,26 @@ export class CompanyFolderBrowser {
 	}
 
 	#sorted(): CloudMemberFolderEntry[] {
-		const collator = new Intl.Collator(this.#locale, { numeric: true, sensitivity: "base" });
+		const collator = collatorFor(this.#locale);
 		const query = this.#search.value.trim().toLocaleLowerCase(this.#locale);
-		return this.#items
-			.filter(
-				(item) =>
-					(!query || baseName(item.path).toLocaleLowerCase(this.#locale).includes(query)) &&
-					(this.#filter.value === "all" || fileCategory(item) === this.#filter.value),
-			)
-			.sort((a, b) => {
-				const folders = Number(a.kind !== "folder") - Number(b.kind !== "folder");
-				if (folders) return folders;
-				let order = 0;
-				if (this.#sort.value === "modified")
-					order = new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
-				else if (this.#sort.value === "size") order = (b.file?.bytes ?? 0) - (a.file?.bytes ?? 0);
-				else if (this.#sort.value === "kind") order = collator.compare(fileKind(a), fileKind(b));
-				return order || collator.compare(baseName(a.path), baseName(b.path));
-			});
+		const filtered = this.#items.filter(
+			(item) =>
+				(!query || baseName(item.path).toLocaleLowerCase(this.#locale).includes(query)) &&
+				(this.#filter.value === "all" || fileCategory(item) === this.#filter.value),
+		);
+		const modifiedAt =
+			this.#sort.value === "modified"
+				? new Map(filtered.map((item) => [item, Date.parse(item.updatedAt)]))
+				: undefined;
+		return filtered.sort((a, b) => {
+			const folders = Number(a.kind !== "folder") - Number(b.kind !== "folder");
+			if (folders) return folders;
+			let order = 0;
+			if (modifiedAt) order = (modifiedAt.get(b) ?? 0) - (modifiedAt.get(a) ?? 0);
+			else if (this.#sort.value === "size") order = (b.file?.bytes ?? 0) - (a.file?.bytes ?? 0);
+			else if (this.#sort.value === "kind") order = collator.compare(fileKind(a), fileKind(b));
+			return order || collator.compare(baseName(a.path), baseName(b.path));
+		});
 	}
 
 	#drawCrumbs(): void {
@@ -829,8 +909,11 @@ export class CompanyFolderBrowser {
 		for (const control of this.#views.querySelectorAll<HTMLButtonElement>("button"))
 			control.setAttribute("aria-pressed", String(control.dataset.view === this.#view));
 		this.#list.classList.toggle("is-fresh", fresh);
+		const timeZone = timeZoneOption().timeZone;
+		const today = presentationDay(new Date(), timeZone);
+		const yesterday = previousDay(today);
 		const rows = items.map((item, index) => {
-			const row = this.#entryRow(item);
+			const row = this.#entryRow(item, timeZone, today, yesterday);
 			row.style.setProperty("--row", String(Math.min(index, 14)));
 			return row;
 		});
@@ -860,7 +943,12 @@ export class CompanyFolderBrowser {
 
 	/** A folder's row opens it in the list; a file's or a link's opens it in the preview. A link names its target and
 	 * is never followed: its row shows where it points. */
-	#entryRow(item: CloudMemberFolderEntry): HTMLElement {
+	#entryRow(
+		item: CloudMemberFolderEntry,
+		timeZone: string | undefined,
+		today: string,
+		yesterday: string,
+	): HTMLElement {
 		const folder = item.kind === "folder";
 		const category = fileCategory(item);
 		const kind = folder
@@ -917,9 +1005,9 @@ export class CompanyFolderBrowser {
 					{
 						class: "storage-modified",
 						datetime: item.updatedAt,
-						title: this.#format(item.updatedAt),
+						title: this.#format(item.updatedAt, timeZone),
 					},
-					this.#modified(item.updatedAt),
+					this.#modified(item.updatedAt, timeZone, today, yesterday),
 				),
 				h("span", { class: "files-size" }, item.file ? fmtBytes(item.file.bytes) : "—"),
 				h("span", { class: "storage-kind-label" }, label),
@@ -937,7 +1025,7 @@ export class CompanyFolderBrowser {
 				this.#scheduleSync();
 				return;
 			}
-			void this.#run(() => this.#sync());
+			void this.#run(() => this.#sync(), undefined, true);
 		}, SYNC_DELAY_MS);
 	}
 
@@ -1082,7 +1170,7 @@ export class CompanyFolderBrowser {
 		) {
 			const bytes = await this.#client!.readFile(opened.file, this.#signal());
 			this.#live();
-			if (type) opened.image = URL.createObjectURL(new Blob([Uint8Array.from(bytes)], { type }));
+			if (type) opened.image = URL.createObjectURL(new Blob([bytes.slice()], { type }));
 			else opened.text = decodeText(bytes);
 		}
 		if (this.#opened?.path !== opened.path) this.#pageView = "page";
@@ -1109,6 +1197,7 @@ export class CompanyFolderBrowser {
 			for (const each of this.#motion.splice(0)) each.cancel();
 			this.#preview.hidden = true;
 			this.#preview.replaceChildren();
+			this.#disposeDisconnectedFrames();
 			// Focus goes back to the file's row, once the list shows again: the window kept it out of reach.
 			if (path !== undefined)
 				[...this.#list.querySelectorAll<HTMLElement>(".files-row-main")]
@@ -1205,6 +1294,7 @@ export class CompanyFolderBrowser {
 			),
 			...children,
 		);
+		this.#disposeDisconnectedFrames();
 		this.#preview.setAttribute("aria-label", title);
 		this.#preview.hidden = false;
 		this.#host.classList.add("has-preview");
@@ -1370,6 +1460,7 @@ export class CompanyFolderBrowser {
 		this.#large?.close(false);
 		const dialog = new SurfaceDialog(name, "file-preview-dialog page-preview-dialog", () => {
 			if (this.#large === dialog) this.#large = undefined;
+			this.#disposeDisconnectedFrames();
 		});
 		this.#large = dialog;
 		dialog.content.append(
@@ -1379,12 +1470,16 @@ export class CompanyFolderBrowser {
 		dialog.open();
 	}
 
-	#frame(path: string, live: string, title: string, className: string): HTMLIFrameElement {
+	#disposeDisconnectedFrames(): void {
 		for (const done of this.#frames)
-			if (!done.frame.isConnected && done.frame.dataset.shown) {
+			if (!done.frame.isConnected) {
 				done.dispose();
 				this.#frames.delete(done);
 			}
+	}
+
+	#frame(path: string, live: string, title: string, className: string): HTMLIFrameElement {
+		this.#disposeDisconnectedFrames();
 		const signal = this.#signal();
 		const root = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
 		const folder = this.#client!;
@@ -1440,24 +1535,24 @@ export class CompanyFolderBrowser {
 	// ---- history ----------------------------------------------------------------
 
 	/** A moment in full, in the time zone chosen now: Settings can change the zone while this browser stays open. */
-	#format(iso: string): string {
-		return new Date(iso).toLocaleString(this.#locale, {
-			dateStyle: "medium",
-			timeStyle: "short",
-			...timeZoneOption(),
-		});
+	#format(iso: string, timeZone: string | undefined = timeZoneOption().timeZone): string {
+		const date = new Date(iso);
+		if (Number.isNaN(date.getTime())) return "Invalid Date";
+		return dateTimeFormatFor(this.#locale, timeZone).format(date);
 	}
 
 	/** A file's modified time, the way a file manager says it: today and yesterday by name, then the date. */
-	#modified(iso: string): string {
+	#modified(
+		iso: string,
+		timeZone: string | undefined = timeZoneOption().timeZone,
+		today: string = presentationDay(new Date(), timeZone),
+		yesterday: string = previousDay(today),
+	): string {
 		const date = new Date(iso);
 		if (Number.isNaN(date.getTime())) return "";
-		const zone = timeZoneOption();
-		const day = presentationDay(date, zone.timeZone);
-		const today = presentationDay(new Date(), zone.timeZone);
-		const time = date.toLocaleTimeString(this.#locale, { hour: "2-digit", minute: "2-digit", ...zone });
-		if (day === today) return t("Today {time}", { time });
-		if (day === previousDay(today)) return t("Yesterday {time}", { time });
+		const day = presentationDay(date, timeZone);
+		if (day === today) return t("Today {time}", { time: timeFormatFor(this.#locale, timeZone).format(date) });
+		if (day === yesterday) return t("Yesterday {time}", { time: timeFormatFor(this.#locale, timeZone).format(date) });
 		return fmtTime(iso);
 	}
 
@@ -1731,7 +1826,7 @@ export class CompanyFolderBrowser {
 							? t("Today")
 							: day === yesterday
 								? t("Yesterday")
-								: at.toLocaleDateString(this.#locale, { dateStyle: "full", ...zone }),
+								: fullDateFormatFor(this.#locale, zone.timeZone).format(at),
 					),
 				);
 			}
@@ -1790,8 +1885,8 @@ export class CompanyFolderBrowser {
 					),
 					h(
 						"small",
-						{ class: "storage-recent-when", title: this.#format(set.at) },
-						`${this.#who(set.by)} · ${at.toLocaleTimeString(this.#locale, { hour: "2-digit", minute: "2-digit", ...zone })}`,
+						{ class: "storage-recent-when", title: this.#format(set.at, zone.timeZone) },
+						`${this.#who(set.by)} · ${timeFormatFor(this.#locale, zone.timeZone).format(at)}`,
 					),
 				),
 			);

@@ -288,6 +288,7 @@ export class WhatsNewView {
 			releases && !releases.sites.length ? h("p", { class: "whats-new-empty" }, t("Nothing new is ready.")) : null,
 			...(releases?.sites.map((site) => this.#site(site, releases.canRelease, look, cards)) ?? []),
 		);
+		for (const [shown, oldCard] of this.#cards) if (!cards.has(shown)) this.#desk.forgetTile(oldCard);
 		this.#cards = cards;
 		if (key) {
 			const target = [...this.el.querySelectorAll<HTMLElement>("[data-focus-key]")].find(
