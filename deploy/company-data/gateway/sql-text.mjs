@@ -3,8 +3,9 @@
 // outside strings, quoted names, dollar quotes and comments. It does not decide what the statement does: PostgreSQL
 // does, where it runs.
 
-const NAME = /^[a-z_][a-z0-9_]*/;
-const DOLLAR_TAG = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/;
+// WHY: Use sticky /y regexes so readStatement matches at offset without O(N^2) text.slice() copies.
+const NAME = /[a-z_][a-z0-9_]*/y;
+const DOLLAR_TAG = /\$([A-Za-z_][A-Za-z0-9_]*)?\$/y;
 // A character a name of PostgreSQL's may hold after its first: a `$` right after one is part of the name (`a$b`), not
 // a dollar quote or a `$1`.
 const NAME_PART = /[A-Za-z0-9_$\u0080-￿]/;
@@ -113,7 +114,8 @@ export function readStatement(text) {
 				keep(char, true);
 				at++;
 			} else if (char === "$") {
-				const tag = DOLLAR_TAG.exec(text.slice(at));
+				DOLLAR_TAG.lastIndex = at;
+				const tag = DOLLAR_TAG.exec(text);
 				if (tag) {
 					const end = text.indexOf(tag[0], at + tag[0].length);
 					if (end < 0) return { ok: false, problem: "A dollar-quoted text is not closed" };
@@ -128,17 +130,24 @@ export function readStatement(text) {
 			} else if (char === ":" && next === ":") {
 				keep("::", true);
 				at += 2;
-			} else if (char === ":" && !NAME_PART.test(text[at - 1] ?? "") && NAME.test(text.slice(at + 1))) {
-				const name = NAME.exec(text.slice(at + 1))[0];
-				if (name.length > 40) return { ok: false, problem: `The parameter :${name.slice(0, 40)}… has too long a name` };
-				let number = parameters.indexOf(name) + 1;
-				if (number === 0) {
-					if (parameters.length === MAX_PARAMETERS) return { ok: false, problem: `A file names at most ${MAX_PARAMETERS} parameters` };
-					parameters.push(name);
-					number = parameters.length;
+			} else if (char === ":" && !NAME_PART.test(text[at - 1] ?? "")) {
+				NAME.lastIndex = at + 1;
+				const match = NAME.exec(text);
+				if (match) {
+					const name = match[0];
+					if (name.length > 40) return { ok: false, problem: `The parameter :${name.slice(0, 40)}… has too long a name` };
+					let number = parameters.indexOf(name) + 1;
+					if (number === 0) {
+						if (parameters.length === MAX_PARAMETERS) return { ok: false, problem: `A file names at most ${MAX_PARAMETERS} parameters` };
+						parameters.push(name);
+						number = parameters.length;
+					}
+					keep(`$${number}`, true);
+					at += 1 + name.length;
+				} else {
+					keep(char, true);
+					at++;
 				}
-				keep(`$${number}`, true);
-				at += 1 + name.length;
 			} else if (char === ";") {
 				if (ended) throw new Error("more");
 				ended = true;
