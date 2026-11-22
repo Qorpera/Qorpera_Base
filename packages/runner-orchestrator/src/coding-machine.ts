@@ -406,7 +406,11 @@ export interface CodingMachineReconcileOptions {
 	signal: AbortSignal;
 	/** The node's agent plug (default: its plug tool), for a plan with an agent card. */
 	plug?: AgentPlug;
-	claimStandby?: (request: LxdCreateInstanceRequest, signal: AbortSignal) => Promise<CodingMachineStandbyClaim | null>;
+	claimStandby?: (
+		project: string,
+		request: LxdCreateInstanceRequest,
+		signal: AbortSignal,
+	) => Promise<CodingMachineStandbyClaim | null>;
 	/** A member's machine that LXD shows stopped after its settled start: called
 	 * once that stop is written down and before anything else is done to the
 	 * machine (a start, a delete, or waiting for an operator), each time it is
@@ -1191,7 +1195,7 @@ export async function reconcileCodingMachine(
 	try {
 		signal.throwIfAborted();
 		if (action === "create" && options.claimStandby && request) {
-			const claimed = await options.claimStandby(request, signal);
+			const claimed = await options.claimStandby(plan.project, request, signal);
 			if (claimed) {
 				if (!UUID.test(claimed.operationId)) throw new Error("CODING_MACHINE_OPERATION_UNBOUND");
 				current = await readEvents(root, plan.binding, plan.disposable === true, plan.selfStops === true);

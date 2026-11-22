@@ -39,6 +39,7 @@ export interface CodingStandbyPoolOptions {
 interface StandbyEntry {
 	readonly name: string;
 	readonly imageFingerprint: string;
+	readonly storagePool: string;
 	readonly cpus: number;
 	readonly memoryBytes: number;
 	readonly rootDiskBytes: number;
@@ -62,13 +63,15 @@ export class CodingStandbyPool {
 	readonly #report: (event: Record<string, unknown>) => void;
 
 	readonly #shutdown = new AbortController();
-	readonly #activeFingerprints = new Set<string>();
+	readonly #activeFingerprints = new Map<string, number>();
 	readonly #ready = new Map<string, StandbyEntry[]>();
 	readonly #provisions = new Set<ProvisionHandle>();
+	readonly #claiming = new Set<string>();
 	readonly #ownedNames = new Set<string>();
 	readonly #retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	readonly #failureCounts = new Map<string, number>();
 	readonly #destroyTasks = new Set<Promise<void>>();
+	#useClock = 0;
 	#closed = false;
 
 	constructor(options: CodingStandbyPoolOptions) {
@@ -93,7 +96,7 @@ export class CodingStandbyPool {
 				undefined;
 			}
 		};
-		this.#activeFingerprints.add(options.vmPolicy.imageFingerprint);
+		this.#activeFingerprints.set(options.vmPolicy.imageFingerprint, 0);
 	}
 
 	get size(): number {
@@ -108,7 +111,7 @@ export class CodingStandbyPool {
 	}
 
 	activeFingerprints(): readonly string[] {
-		return [...this.#activeFingerprints];
+		return [...this.#activeFingerprints.keys()];
 	}
 
 	start(): void {
@@ -118,18 +121,19 @@ export class CodingStandbyPool {
 
 	setActiveFingerprints(fingerprints: readonly string[]): void {
 		const valid = fingerprints.filter((fp) => HEX_64.test(fp));
-		const next = new Set<string>();
-		next.add(this.#vmPolicy.imageFingerprint);
+		const next = new Map<string, number>();
+		next.set(this.#vmPolicy.imageFingerprint, this.#activeFingerprints.get(this.#vmPolicy.imageFingerprint) ?? 0);
 		for (const fp of valid) {
+			if (next.has(fp)) continue;
 			if (next.size >= this.#maxActiveFingerprints) break;
-			next.add(fp);
+			next.set(fp, this.#activeFingerprints.get(fp) ?? ++this.#useClock);
 		}
 		const removed: string[] = [];
-		for (const fp of this.#activeFingerprints) {
+		for (const fp of this.#activeFingerprints.keys()) {
 			if (!next.has(fp)) removed.push(fp);
 		}
 		this.#activeFingerprints.clear();
-		for (const fp of next) this.#activeFingerprints.add(fp);
+		for (const [fp, order] of next) this.#activeFingerprints.set(fp, order);
 		for (const fp of removed) {
 			void this.invalidateFingerprint(fp);
 		}
@@ -149,22 +153,35 @@ export class CodingStandbyPool {
 		}
 		const entries = this.#ready.get(imageFingerprint) ?? [];
 		this.#ready.delete(imageFingerprint);
-		await Promise.all([...matching, ...entries.map((entry) => this.#destroyStandbyVm(entry.name))]);
+		const destroys = entries.map((entry) => this.#trackDestroy(this.#destroyStandbyVm(entry.name)));
+		await Promise.all([...matching, ...destroys]);
 		if (!this.#closed && this.#standbyPoolSize > 0) this.#ensureAllReplenished();
 	}
 
-	async claim(request: LxdCreateInstanceRequest, signal: AbortSignal): Promise<CodingMachineStandbyClaim | null> {
+	async claim(
+		project: string,
+		request: LxdCreateInstanceRequest,
+		signal: AbortSignal,
+	): Promise<CodingMachineStandbyClaim | null> {
 		if (this.#closed || this.#standbyPoolSize === 0) return null;
+		if (project !== this.#vmPolicy.project) return null;
 		const fingerprint = request.source.fingerprint;
 		if (!HEX_64.test(fingerprint)) return null;
 
-		if (!this.#activeFingerprints.has(fingerprint) && this.#activeFingerprints.size < this.#maxActiveFingerprints) {
-			this.#activeFingerprints.add(fingerprint);
-		}
-
+		const requestedPool = request.devices.root?.pool;
 		const requestedCpus = Number.parseInt(request.config["limits.cpu"] ?? "", 10);
 		const requestedMemory = Number.parseInt(request.config["limits.memory"] ?? "", 10);
 		const requestedDisk = Number.parseInt(request.devices.root?.size ?? "", 10);
+		if (
+			requestedPool !== this.#vmPolicy.storagePool ||
+			requestedCpus !== this.#vmPolicy.cpus ||
+			requestedMemory !== this.#vmPolicy.memoryBytes ||
+			requestedDisk !== this.#vmPolicy.rootDiskBytes
+		) {
+			return null;
+		}
+
+		this.#touchActiveFingerprint(fingerprint);
 
 		const list = this.#ready.get(fingerprint);
 		while (list && list.length > 0) {
@@ -172,54 +189,66 @@ export class CodingStandbyPool {
 			if (!entry) break;
 			if (list.length === 0) this.#ready.delete(fingerprint);
 
-			if (
-				entry.cpus !== requestedCpus ||
-				entry.memoryBytes !== requestedMemory ||
-				entry.rootDiskBytes !== requestedDisk
-			) {
-				this.#trackDestroy(this.#destroyStandbyVm(entry.name));
-				continue;
+			this.#claiming.add(entry.name);
+			let claimed = false;
+			try {
+				if (
+					entry.storagePool !== requestedPool ||
+					entry.cpus !== requestedCpus ||
+					entry.memoryBytes !== requestedMemory ||
+					entry.rootDiskBytes !== requestedDisk
+				) {
+					this.#trackDestroy(this.#destroyStandbyVm(entry.name));
+					continue;
+				}
+
+				let existing: Awaited<ReturnType<CodingStandbyLxdClient["getInstance"]>>;
+				try {
+					existing = await this.#lxd.getInstance(this.#vmPolicy.project, entry.name, signal);
+				} catch {
+					this.#trackDestroy(this.#destroyStandbyVm(entry.name));
+					continue;
+				}
+				if (!existing || existing.status !== "Stopped" || existing.statusCode !== 102) {
+					this.#trackDestroy(this.#destroyStandbyVm(entry.name));
+					continue;
+				}
+
+				// WHY: Apply the member config before renaming so runtime-node-inventory matches the managed allocation at every instant with zero unmanaged window.
+				try {
+					await this.#lxd.updateInstanceConfig(
+						this.#vmPolicy.project,
+						entry.name,
+						{ config: request.config, devices: request.devices },
+						signal,
+					);
+				} catch {
+					this.#trackDestroy(this.#destroyStandbyVm(entry.name));
+					continue;
+				}
+
+				try {
+					await this.#lxd.renameInstance(this.#vmPolicy.project, entry.name, request.name, signal);
+				} catch (error) {
+					await this.#trackDestroy(this.#destroyStandbyVm(entry.name));
+					throw error;
+				}
+				this.#ownedNames.delete(entry.name);
+				claimed = true;
+			} finally {
+				this.#claiming.delete(entry.name);
 			}
 
-			let existing: Awaited<ReturnType<CodingStandbyLxdClient["getInstance"]>>;
-			try {
-				existing = await this.#lxd.getInstance(this.#vmPolicy.project, entry.name, signal);
-			} catch {
-				this.#trackDestroy(this.#destroyStandbyVm(entry.name));
-				continue;
+			if (claimed) {
+				this.#ensureReplenished(fingerprint);
+				this.#report({
+					event: "coding-standby-claimed",
+					standbyName: entry.name,
+					instanceName: request.name,
+					imageFingerprint: fingerprint,
+				});
+				return { operationId: randomUUID() };
 			}
-			if (!existing || existing.status !== "Stopped" || existing.statusCode !== 102) {
-				this.#trackDestroy(this.#destroyStandbyVm(entry.name));
-				continue;
-			}
-
-			try {
-				await this.#lxd.renameInstance(this.#vmPolicy.project, entry.name, request.name, signal);
-			} catch {
-				this.#trackDestroy(this.#destroyStandbyVm(entry.name));
-				continue;
-			}
-			this.#ownedNames.delete(entry.name);
-			this.#ensureReplenished(fingerprint);
-
-			try {
-				await this.#lxd.updateInstanceConfig(
-					this.#vmPolicy.project,
-					request.name,
-					{ config: request.config, devices: request.devices },
-					signal,
-				);
-			} catch (error) {
-				await this.#destroyStandbyVm(request.name);
-				throw error;
-			}
-			this.#report({
-				event: "coding-standby-claimed",
-				standbyName: entry.name,
-				instanceName: request.name,
-				imageFingerprint: fingerprint,
-			});
-			return { operationId: randomUUID() };
 		}
 
 		this.#ensureReplenished(fingerprint);
@@ -267,13 +296,37 @@ export class CodingStandbyPool {
 	}
 
 	#totalAllocated(): number {
-		return this.readyCount() + this.#provisions.size;
+		return this.readyCount() + this.#provisions.size + this.#claiming.size + this.#destroyTasks.size;
+	}
+
+	#touchActiveFingerprint(fingerprint: string): void {
+		if (this.#activeFingerprints.has(fingerprint)) {
+			this.#activeFingerprints.set(fingerprint, ++this.#useClock);
+			return;
+		}
+		while (this.#activeFingerprints.size >= this.#maxActiveFingerprints) {
+			let lruFingerprint: string | null = null;
+			let lruOrder = Number.POSITIVE_INFINITY;
+			for (const [fp, order] of this.#activeFingerprints) {
+				if (fp === this.#vmPolicy.imageFingerprint) continue;
+				if (order < lruOrder) {
+					lruOrder = order;
+					lruFingerprint = fp;
+				}
+			}
+			if (!lruFingerprint) return;
+			this.#activeFingerprints.delete(lruFingerprint);
+			void this.invalidateFingerprint(lruFingerprint);
+		}
+		this.#activeFingerprints.set(fingerprint, ++this.#useClock);
 	}
 
 	#ensureAllReplenished(): void {
 		if (this.#closed || this.#standbyPoolSize === 0) return;
 		if (this.#totalAllocated() >= this.#standbyPoolSize) return;
-		const candidates = [...this.#activeFingerprints].sort((a, b) => this.readyCount(a) - this.readyCount(b));
+		const candidates = [...this.#activeFingerprints.entries()]
+			.sort((a, b) => this.readyCount(a[0]) - this.readyCount(b[0]) || b[1] - a[1])
+			.map(([fp]) => fp);
 		for (const fp of candidates) {
 			this.#ensureReplenished(fp);
 			if (this.#provisions.size >= 1 || this.#totalAllocated() >= this.#standbyPoolSize) break;
@@ -308,7 +361,7 @@ export class CodingStandbyPool {
 					entry &&
 					!this.#closed &&
 					this.#activeFingerprints.has(imageFingerprint) &&
-					this.readyCount() < this.#standbyPoolSize
+					this.readyCount() + this.#claiming.size + this.#destroyTasks.size < this.#standbyPoolSize
 				) {
 					this.#failureCounts.delete(imageFingerprint);
 					const list = this.#ready.get(imageFingerprint) ?? [];
@@ -325,6 +378,24 @@ export class CodingStandbyPool {
 			})
 			.catch((error) => {
 				if (!this.#closed && !controller.signal.aborted) {
+					if (
+						error instanceof Error &&
+						error.message === "CODING_STANDBY_IMAGE_MISSING" &&
+						imageFingerprint !== this.#vmPolicy.imageFingerprint
+					) {
+						this.#activeFingerprints.delete(imageFingerprint);
+						this.#clearRetryTimer(imageFingerprint);
+						this.#failureCounts.delete(imageFingerprint);
+						const stale = this.#ready.get(imageFingerprint) ?? [];
+						this.#ready.delete(imageFingerprint);
+						for (const entry of stale) this.#trackDestroy(this.#destroyStandbyVm(entry.name));
+						this.#report({
+							event: "coding-standby-fingerprint-evicted",
+							imageFingerprint,
+							reason: "IMAGE_MISSING",
+						});
+						return;
+					}
 					const failures = (this.#failureCounts.get(imageFingerprint) ?? 0) + 1;
 					this.#failureCounts.set(imageFingerprint, failures);
 					const backoff = Math.min(60_000, this.#replenishBackoffMs * 2 ** Math.min(failures - 1, 4));
@@ -389,6 +460,7 @@ export class CodingStandbyPool {
 			return {
 				name,
 				imageFingerprint,
+				storagePool: this.#vmPolicy.storagePool,
 				cpus: this.#vmPolicy.cpus,
 				memoryBytes: this.#vmPolicy.memoryBytes,
 				rootDiskBytes: this.#vmPolicy.rootDiskBytes,
@@ -421,10 +493,11 @@ export class CodingStandbyPool {
 		}
 	}
 
-	#trackDestroy(promise: Promise<void>): void {
+	#trackDestroy(promise: Promise<void>): Promise<void> {
 		this.#destroyTasks.add(promise);
-		void promise.finally(() => {
+		return promise.finally(() => {
 			this.#destroyTasks.delete(promise);
+			if (!this.#closed) this.#ensureAllReplenished();
 		});
 	}
 

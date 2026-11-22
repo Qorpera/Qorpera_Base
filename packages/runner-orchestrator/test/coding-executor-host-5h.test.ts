@@ -705,10 +705,14 @@ describe("LxdCodingExecutorHost 5h snapshot planning, authority, and setup lifec
 		expect(enqueued).toHaveLength(1);
 		expect(enqueued[0].profileId).toBe(claim.profileId);
 		const runAuthBeforeArchive = calls.filter((c) => c.method === "qorpera_authorize_coding_machine_run").length;
+		const heartbeatBeforeArchive = calls.filter((c) => c.method === "qorpera_heartbeat_coding_session").length;
 		const archive = await enqueued[0].readArchive?.(AbortSignal.timeout(5_000));
 		expect(archive?.toString("utf8")).toBe("tar-bytes");
 		expect(archiveAuthCalled).toBe(true);
-		expect(calls.filter((c) => c.method === "qorpera_authorize_coding_machine_run").length).toBeGreaterThan(
+		expect(calls.filter((c) => c.method === "qorpera_heartbeat_coding_session").length).toBeGreaterThan(
+			heartbeatBeforeArchive,
+		);
+		expect(calls.filter((c) => c.method === "qorpera_authorize_coding_machine_run").length).toBe(
 			runAuthBeforeArchive,
 		);
 

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { AGENT_BRIDGE, type AgentPlugClaim } from "../src/agent-plug.ts";
+import { CodingControlRefused } from "../src/coding-executor.ts";
 import { CODING_MACHINE_BASE_CONFIG } from "../src/coding-machine.ts";
 import { EMPTY_CODING_SETUP, parseCodingSetup } from "../src/coding-setup.ts";
 import {
@@ -815,6 +816,118 @@ describe("coding snapshot records and builder (5h)", () => {
 		const swept = await housekeepPromise;
 		expect(swept.orphanImagesDeleted).toEqual([]);
 		expect(fakeLxd.images.has(SNAP_FP)).toBe(true);
+		await builder.close();
+	});
+
+	it("reads the repository archive before launching a builder VM and abandons cleanly on authority refusal", async () => {
+		const fakeLxd = makeFakeLxd();
+		const rpcCalls: { method: string; args: Record<string, unknown> }[] = [];
+		const control: CodingSnapshotRpcControl = {
+			async rpc(method, args) {
+				rpcCalls.push({ method, args });
+				if (method === "qorpera_claim_coding_snapshot_build") {
+					return {
+						schema: "qorpera.coding-snapshot-claim/v1",
+						state: "claimed",
+						baseImageFingerprint: BASE_FP,
+						snapshot: null,
+						build: {
+							buildId: BUILD_ID,
+							leaseToken: BUILD_LEASE,
+							leaseUntil: new Date(Date.now() + 120_000).toISOString(),
+							profileId: PROFILE_ID,
+							memberUserId: MEMBER_ID,
+							baseImageFingerprint: BASE_FP,
+							repository: "acme/app",
+							setupDigest: "2".repeat(64),
+							commitSha: COMMIT_SHA,
+							ttlSeconds: 3600,
+						},
+					};
+				}
+				return {};
+			},
+		};
+		const builder = new CodingSnapshotBuilder({
+			control,
+			lxd: fakeLxd.client,
+			owner: "node-1",
+			machineIdSha256: MACHINE_SHA,
+			vmPolicy: baseVmPolicy(),
+			agentPlug: async () => PLUG_MAC,
+			readyPollMs: 5,
+		});
+
+		const outcome = await builder.buildNow({
+			workerId: WORKER_ID,
+			leaseToken: LEASE_TOKEN,
+			profileId: PROFILE_ID,
+			environmentId: ENV_ID,
+			memberUserId: MEMBER_ID,
+			repository: "acme/app",
+			setupDigest: "2".repeat(64),
+			commitSha: COMMIT_SHA,
+			setupSpec: EMPTY_CODING_SETUP,
+			readArchive: async () => {
+				throw new CodingControlRefused("qorpera.session_lease_lost", "session ended");
+			},
+		});
+
+		expect(outcome).toEqual({
+			state: "abandoned",
+			code: "SESSION_AUTHORITY_EXPIRED",
+			buildId: BUILD_ID,
+		});
+		expect(fakeLxd.createRequests).toHaveLength(0);
+		const failCall = rpcCalls.find((c) => c.method === "qorpera_fail_coding_snapshot_build");
+		expect(failCall?.args.p_abandoned).toBe(true);
+		expect(failCall?.args.p_failure).toBe("SESSION_AUTHORITY_EXPIRED");
+		await builder.close();
+	});
+
+	it("invokes onImagesPruned when housekeeping removes retired or orphaned snapshot images", async () => {
+		const fakeLxd = makeFakeLxd();
+		fakeLxd.images.set(SNAP_FP, {
+			fingerprint: SNAP_FP,
+			size: 1024,
+			properties: { "qorpera.kind": "coding-snapshot", "qorpera.owner": "node-1" },
+		});
+		fakeLxd.images.set(SNAP_FP_2, {
+			fingerprint: SNAP_FP_2,
+			size: 1024,
+			properties: { "qorpera.kind": "coding-snapshot", "qorpera.owner": "node-1" },
+		});
+		const prunedCallback: string[][] = [];
+		const control: CodingSnapshotRpcControl = {
+			async rpc(method) {
+				if (method === "qorpera_sweep_coding_snapshots") {
+					return {
+						schema: "qorpera.coding-snapshot-sweep/v1",
+						abandonedBuilds: 0,
+						retiredSnapshots: 1,
+						pruneImages: [{ snapshotId: BUILD_ID, imageFingerprint: SNAP_FP }],
+						keepImageFingerprints: [],
+					};
+				}
+				return {};
+			},
+		};
+		const builder = new CodingSnapshotBuilder({
+			control,
+			lxd: fakeLxd.client,
+			owner: "node-1",
+			machineIdSha256: MACHINE_SHA,
+			vmPolicy: baseVmPolicy(),
+			agentPlug: async () => PLUG_MAC,
+			onImagesPruned: (fps) => {
+				prunedCallback.push([...fps]);
+			},
+		});
+
+		const result = await builder.housekeep(AbortSignal.timeout(5_000));
+		expect(result.prunedImages).toEqual([SNAP_FP]);
+		expect(result.orphanImagesDeleted).toEqual([SNAP_FP_2]);
+		expect(prunedCallback).toEqual([[SNAP_FP, SNAP_FP_2]]);
 		await builder.close();
 	});
 });

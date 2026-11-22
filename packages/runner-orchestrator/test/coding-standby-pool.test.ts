@@ -11,12 +11,22 @@ import type { LxdCreateInstanceRequest, LxdInstanceRecord } from "../src/lxd-cli
 
 const BASE_FP = "a".repeat(64);
 const SNAP_FP = "b".repeat(64);
+const SNAP_FP_2 = "c".repeat(64);
+const SNAP_FP_3 = "d".repeat(64);
+const SNAP_FP_4 = "e".repeat(64);
 
-function makeStandbyLxd(options?: { failUpdateConfig?: boolean; missingImages?: ReadonlySet<string> }) {
+function makeStandbyLxd(options?: {
+	failUpdateConfig?: boolean;
+	failRename?: boolean;
+	missingImages?: ReadonlySet<string>;
+	deleteGate?: Promise<void>;
+	onDeleteStart?: (name: string) => void;
+}) {
 	const instances = new Map<string, LxdInstanceRecord>();
 	const powerCalls: { name: string; action: string }[] = [];
 	const renames: { from: string; to: string }[] = [];
 	const configUpdates: { name: string; config: Record<string, string>; devices?: Record<string, unknown> }[] = [];
+	const ops: string[] = [];
 	const deleted: string[] = [];
 
 	const client: CodingStandbyLxdClient = {
@@ -27,6 +37,7 @@ function makeStandbyLxd(options?: { failUpdateConfig?: boolean; missingImages?: 
 			return instances.get(name);
 		},
 		async createInstance(_project, request) {
+			ops.push(`create:${request.name}`);
 			instances.set(request.name, {
 				name: request.name,
 				type: request.type,
@@ -47,10 +58,15 @@ function makeStandbyLxd(options?: { failUpdateConfig?: boolean; missingImages?: 
 			inst.statusCode = action === "start" ? 103 : 102;
 		},
 		async deleteInstance(_project, name) {
+			options?.onDeleteStart?.(name);
+			if (options?.deleteGate) await options.deleteGate;
+			ops.push(`delete:${name}`);
 			deleted.push(name);
 			instances.delete(name);
 		},
 		async renameInstance(_project, oldName, newName) {
+			ops.push(`rename:${oldName}->${newName}`);
+			if (options?.failRename) throw new Error("LXD_RENAME_FAILED");
 			const inst = instances.get(oldName);
 			if (!inst) throw new Error("not found");
 			renames.push({ from: oldName, to: newName });
@@ -58,6 +74,7 @@ function makeStandbyLxd(options?: { failUpdateConfig?: boolean; missingImages?: 
 			instances.set(newName, { ...inst, name: newName });
 		},
 		async updateInstanceConfig(_project, name, update) {
+			ops.push(`update:${name}`);
 			if (options?.failUpdateConfig) throw new Error("LXD_CONFIG_UPDATE_FAILED");
 			const inst = instances.get(name);
 			if (!inst) throw new Error("not found");
@@ -74,10 +91,10 @@ function makeStandbyLxd(options?: { failUpdateConfig?: boolean; missingImages?: 
 		},
 	};
 
-	return { client, instances, powerCalls, renames, configUpdates, deleted };
+	return { client, instances, powerCalls, renames, configUpdates, ops, deleted };
 }
 
-function memberRequest(name: string, fingerprint = BASE_FP): LxdCreateInstanceRequest {
+function memberRequest(name: string, fingerprint = BASE_FP, pool = "coding-disks"): LxdCreateInstanceRequest {
 	const base: LxdCreateInstanceRequest = {
 		name,
 		type: "virtual-machine",
@@ -90,7 +107,7 @@ function memberRequest(name: string, fingerprint = BASE_FP): LxdCreateInstanceRe
 			"user.qorpera.machine_id": "11111111-1111-4111-8111-111111111111",
 		},
 		devices: {
-			root: { type: "disk", path: "/", pool: "coding-disks", size: String(64 * 1024 ** 3) },
+			root: { type: "disk", path: "/", pool, size: String(64 * 1024 ** 3) },
 			network: agentPlugCard("eth0"),
 		},
 	};
@@ -98,7 +115,7 @@ function memberRequest(name: string, fingerprint = BASE_FP): LxdCreateInstanceRe
 }
 
 describe("CodingStandbyPool", () => {
-	it("pre-provisions stopped standby VMs with exact member base config, claims by rename+config, and replenishes", async () => {
+	it("pre-provisions stopped standby VMs with exact member base config, claims by config-then-rename, and replenishes", async () => {
 		const fake = makeStandbyLxd();
 		const pool = new CodingStandbyPool({
 			lxd: fake.client,
@@ -134,10 +151,15 @@ describe("CodingStandbyPool", () => {
 		}
 
 		const request = memberRequest("qorpera-coding-machine-1111");
-		const claimed = await pool.claim(request, AbortSignal.timeout(5_000));
+		const claimed = await pool.claim("coding", request, AbortSignal.timeout(5_000));
 		expect(claimed).not.toBeNull();
 		expect(fake.renames).toHaveLength(1);
+		const standbyName = fake.renames[0].from;
 		expect(fake.renames[0].to).toBe("qorpera-coding-machine-1111");
+		const updateIdx = fake.ops.indexOf(`update:${standbyName}`);
+		const renameIdx = fake.ops.indexOf(`rename:${standbyName}->qorpera-coding-machine-1111`);
+		expect(updateIdx).toBeGreaterThanOrEqual(0);
+		expect(renameIdx).toBeGreaterThan(updateIdx);
 		expect(fake.instances.get("qorpera-coding-machine-1111")?.devices.network?.hwaddr).toBe("0e:51:0a:d2:01:02");
 		expect(fake.instances.get("qorpera-coding-machine-1111")?.config["user.qorpera.machine_id"]).toBe(
 			"11111111-1111-4111-8111-111111111111",
@@ -150,6 +172,36 @@ describe("CodingStandbyPool", () => {
 		expect(pool.readyCount()).toBe(0);
 		expect(fake.instances.has("qorpera-coding-machine-1111")).toBe(true);
 		expect(fake.instances.size).toBe(1);
+	});
+
+	it("returns null without touching standbys when project or storage pool differs", async () => {
+		const fake = makeStandbyLxd();
+		const pool = new CodingStandbyPool({
+			lxd: fake.client,
+			vmPolicy: {
+				project: "coding",
+				imageFingerprint: BASE_FP,
+				storagePool: "coding-disks",
+				cpus: 4,
+				memoryBytes: 8 * 1024 ** 3,
+				rootDiskBytes: 64 * 1024 ** 3,
+			},
+			standbyPoolSize: 1,
+		});
+
+		pool.start();
+		await pool.waitIdle();
+		expect(pool.readyCount(BASE_FP)).toBe(1);
+
+		expect(await pool.claim("other-project", memberRequest("m1"), AbortSignal.timeout(5_000))).toBeNull();
+		expect(
+			await pool.claim("coding", memberRequest("m2", BASE_FP, "other-pool"), AbortSignal.timeout(5_000)),
+		).toBeNull();
+		expect(pool.readyCount(BASE_FP)).toBe(1);
+		expect(fake.renames).toHaveLength(0);
+		expect(fake.configUpdates).toHaveLength(0);
+		expect(fake.deleted).toHaveLength(0);
+		await pool.close();
 	});
 
 	it("keeps total standby VMs bounded by standbyPoolSize across multiple fingerprints and cleans invalidated fingerprints", async () => {
@@ -180,7 +232,7 @@ describe("CodingStandbyPool", () => {
 		await pool.close();
 	});
 
-	it("destroys a renamed standby VM if updateInstanceConfig fails and sweeps orphan standby VMs", async () => {
+	it("falls back cleanly when updateInstanceConfig fails before rename, cleans up on rename failure, and sweeps orphans", async () => {
 		const fake = makeStandbyLxd({ failUpdateConfig: true });
 		fake.instances.set(`${CODING_STANDBY_VM_PREFIX}deadbeef0000000000000000`, {
 			name: `${CODING_STANDBY_VM_PREFIX}deadbeef0000000000000000`,
@@ -211,15 +263,125 @@ describe("CodingStandbyPool", () => {
 
 		pool.start();
 		await pool.waitIdle();
-		await expect(
-			pool.claim(memberRequest("qorpera-coding-machine-2222"), AbortSignal.timeout(5_000)),
-		).rejects.toThrow("LXD_CONFIG_UPDATE_FAILED");
+		const claimed = await pool.claim(
+			"coding",
+			memberRequest("qorpera-coding-machine-2222"),
+			AbortSignal.timeout(5_000),
+		);
+		expect(claimed).toBeNull();
+		expect(fake.renames).toHaveLength(0);
 		expect(fake.instances.has("qorpera-coding-machine-2222")).toBe(false);
-		expect(fake.deleted).toContain("qorpera-coding-machine-2222");
+		await pool.close();
+
+		const renameFailFake = makeStandbyLxd({ failRename: true });
+		const renamePool = new CodingStandbyPool({
+			lxd: renameFailFake.client,
+			vmPolicy: {
+				project: "coding",
+				imageFingerprint: BASE_FP,
+				storagePool: "coding-disks",
+				cpus: 4,
+				memoryBytes: 8 * 1024 ** 3,
+				rootDiskBytes: 64 * 1024 ** 3,
+			},
+			standbyPoolSize: 1,
+		});
+		renamePool.start();
+		await renamePool.waitIdle();
+		await expect(
+			renamePool.claim("coding", memberRequest("qorpera-coding-machine-3333"), AbortSignal.timeout(5_000)),
+		).rejects.toThrow("LXD_RENAME_FAILED");
+		expect(renameFailFake.instances.has("qorpera-coding-machine-3333")).toBe(false);
+		expect(renameFailFake.deleted).toHaveLength(1);
+		await renamePool.close();
+	});
+
+	it("counts pending destroys against standbyPoolSize so replenishment never exceeds maxStandby", async () => {
+		let releaseDelete!: () => void;
+		const deleteGate = new Promise<void>((resolve) => {
+			releaseDelete = resolve;
+		});
+		let deleteStarted!: () => void;
+		const deleteStartedPromise = new Promise<void>((resolve) => {
+			deleteStarted = resolve;
+		});
+		const fake = makeStandbyLxd({
+			deleteGate,
+			onDeleteStart: () => deleteStarted(),
+		});
+		const pool = new CodingStandbyPool({
+			lxd: fake.client,
+			vmPolicy: {
+				project: "coding",
+				imageFingerprint: BASE_FP,
+				storagePool: "coding-disks",
+				cpus: 4,
+				memoryBytes: 8 * 1024 ** 3,
+				rootDiskBytes: 64 * 1024 ** 3,
+			},
+			standbyPoolSize: 1,
+		});
+
+		pool.setActiveFingerprints([BASE_FP, SNAP_FP]);
+		await pool.waitIdle();
+		expect(fake.instances.size).toBe(1);
+		expect(pool.readyCount(SNAP_FP)).toBe(1);
+		const invalidatePromise = pool.invalidateFingerprint(SNAP_FP);
+		await deleteStartedPromise;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(fake.instances.size).toBe(1);
+
+		releaseDelete();
+		await invalidatePromise;
+		await pool.waitIdle();
+		expect(fake.instances.size).toBe(1);
+		expect(pool.readyCount(BASE_FP)).toBe(1);
 		await pool.close();
 	});
 
-	it("backs off cleanly instead of looping when an image is absent from LXD", async () => {
+	it("evicts least-recently-claimed snapshots on turnover and auto-evicts missing non-base snapshot images", async () => {
+		const fake = makeStandbyLxd({ missingImages: new Set([SNAP_FP_4]) });
+		const events: Record<string, unknown>[] = [];
+		const pool = new CodingStandbyPool({
+			lxd: fake.client,
+			vmPolicy: {
+				project: "coding",
+				imageFingerprint: BASE_FP,
+				storagePool: "coding-disks",
+				cpus: 4,
+				memoryBytes: 8 * 1024 ** 3,
+				rootDiskBytes: 64 * 1024 ** 3,
+			},
+			standbyPoolSize: 2,
+			maxActiveFingerprints: 3,
+			replenishBackoffMs: 60_000,
+			report: (e) => events.push(e),
+		});
+
+		await pool.claim("coding", memberRequest("m-snap-1", SNAP_FP), AbortSignal.timeout(5_000));
+		await pool.claim("coding", memberRequest("m-snap-2", SNAP_FP_2), AbortSignal.timeout(5_000));
+		await pool.waitIdle();
+		expect(pool.activeFingerprints()).toEqual([BASE_FP, SNAP_FP, SNAP_FP_2]);
+
+		await pool.claim("coding", memberRequest("m-snap-2b", SNAP_FP_2), AbortSignal.timeout(5_000));
+		await pool.claim("coding", memberRequest("m-snap-3", SNAP_FP_3), AbortSignal.timeout(5_000));
+		await pool.waitIdle();
+		expect(pool.activeFingerprints()).toContain(BASE_FP);
+		expect(pool.activeFingerprints()).toContain(SNAP_FP_2);
+		expect(pool.activeFingerprints()).toContain(SNAP_FP_3);
+		expect(pool.activeFingerprints()).not.toContain(SNAP_FP);
+		expect(pool.readyCount(SNAP_FP)).toBe(0);
+
+		await pool.claim("coding", memberRequest("m-snap-4", SNAP_FP_4), AbortSignal.timeout(5_000));
+		await pool.waitIdle();
+		expect(pool.activeFingerprints()).not.toContain(SNAP_FP_4);
+		expect(
+			events.some((e) => e.event === "coding-standby-fingerprint-evicted" && e.imageFingerprint === SNAP_FP_4),
+		).toBe(true);
+		await pool.close();
+	});
+
+	it("backs off cleanly instead of looping when the base image is absent from LXD", async () => {
 		const fake = makeStandbyLxd({ missingImages: new Set([BASE_FP]) });
 		const events: Record<string, unknown>[] = [];
 		const pool = new CodingStandbyPool({

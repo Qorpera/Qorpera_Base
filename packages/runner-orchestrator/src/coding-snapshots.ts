@@ -1,5 +1,6 @@
 import { isUuid } from "@qorpera/contracts";
 import { type AgentPlug, agentPlugCard, runAgentPlug, withAgentPlug } from "./agent-plug.ts";
+import { CodingControlRefused, CodingMachineUnavailable } from "./coding-executor.ts";
 import { CODING_MACHINE_BASE_CONFIG } from "./coding-machine.ts";
 import type { CodingSetup, CodingSetupStep } from "./coding-setup.ts";
 import { resolveCodingSetupEnvironment } from "./coding-setup-lifecycle.ts";
@@ -127,6 +128,7 @@ export interface CodingSnapshotBuilderOptions {
 	readonly compressionAlgorithm?: string;
 	readonly cleanupTimeoutMs?: number;
 	readonly maxQueueSize?: number;
+	readonly onImagesPruned?: (fingerprints: readonly string[]) => void;
 	readonly redact?: (text: string) => string;
 	readonly report?: (event: Record<string, unknown>) => void;
 }
@@ -217,6 +219,43 @@ class SnapshotStepFailure extends Error {
 	}
 }
 
+class SnapshotBuildAbandoned extends Error {
+	readonly code: string;
+	constructor(code: string, cause?: unknown) {
+		super(
+			cause instanceof Error && cause.message ? cause.message : code,
+			cause !== undefined ? { cause } : undefined,
+		);
+		this.code = code;
+	}
+}
+
+function isSessionAuthorityRefusal(error: unknown): boolean {
+	let current: unknown = error;
+	for (let depth = 0; depth < 5 && current !== undefined && current !== null; depth++) {
+		if (
+			current instanceof SnapshotBuildAbandoned ||
+			current instanceof CodingControlRefused ||
+			current instanceof CodingMachineUnavailable
+		) {
+			return true;
+		}
+		if (current instanceof Error) {
+			if (
+				/^(CODING_CONTROL_REFUSED|CODING_SESSION_LEASE|SESSION_AUTHORITY|LEASE_EXPIRED|SESSION_EXPIRED|SESSION_RELEASED|AUTHORITY_REFUSED)/.test(
+					current.message,
+				)
+			) {
+				return true;
+			}
+			current = current.cause;
+			continue;
+		}
+		break;
+	}
+	return false;
+}
+
 interface QueuedBuild {
 	readonly key: string;
 	readonly request: CodingSnapshotBuildRequest;
@@ -246,6 +285,7 @@ export class CodingSnapshotBuilder {
 	readonly #compressionAlgorithm: string;
 	readonly #cleanupTimeoutMs: number;
 	readonly #maxQueueSize: number;
+	readonly #onImagesPruned: ((fingerprints: readonly string[]) => void) | undefined;
 	readonly #redact: ((text: string) => string) | undefined;
 	readonly #report: (event: Record<string, unknown>) => void;
 
@@ -290,6 +330,7 @@ export class CodingSnapshotBuilder {
 		this.#compressionAlgorithm = options.compressionAlgorithm ?? "zstd";
 		this.#cleanupTimeoutMs = options.cleanupTimeoutMs ?? 30_000;
 		this.#maxQueueSize = options.maxQueueSize ?? CODING_SNAPSHOT_MAX_QUEUE_SIZE;
+		this.#onImagesPruned = options.onImagesPruned;
 		this.#redact = options.redact;
 		const report = options.report;
 		this.#report = (event) => {
@@ -550,17 +591,29 @@ export class CodingSnapshotBuilder {
 		try {
 			const buildSignal = buildController.signal;
 			buildSignal.throwIfAborted();
+
+			// WHY: Read the repository archive under session authority before launching a builder VM, so an expired session abandons cleanly without booting or poisoning the commit.
+			let archive: Buffer | null = null;
+			if (request.readArchive) {
+				try {
+					archive = await request.readArchive(buildSignal);
+				} catch (error) {
+					if (buildSignal.aborted || outerSignal.aborted || leaseLost) throw error;
+					if (isSessionAuthorityRefusal(error)) {
+						throw new SnapshotBuildAbandoned("SESSION_AUTHORITY_EXPIRED", error);
+					}
+					throw error;
+				}
+			}
+
 			vmCreated = true;
 			await this.#launchBuilderVm(vmName, build, buildSignal);
 			await this.#waitForBuilderReady(vmName, buildSignal);
 
 			let workingDir = "/";
-			if (request.readArchive) {
-				const archive = await request.readArchive(buildSignal);
-				if (archive && archive.byteLength > 0) {
-					await this.#extractRepositoryArchive(vmName, archive, buildSignal);
-					workingDir = BUILDER_SRC_DIR;
-				}
+			if (archive && archive.byteLength > 0) {
+				await this.#extractRepositoryArchive(vmName, archive, buildSignal);
+				workingDir = BUILDER_SRC_DIR;
 			}
 
 			const env = filteredSetupEnv(request.setupSpec);
@@ -626,8 +679,15 @@ export class CodingSnapshotBuilder {
 					.deleteImage(this.#vmPolicy.project, publishedFingerprint, cleanupSignal)
 					.catch(() => undefined);
 			}
-			const aborted = outerSignal.aborted || leaseLost;
-			const code = aborted ? (leaseLost ? "LEASE_EXPIRED" : "BUILD_ABORTED") : failureCodeFromError(error);
+			const aborted = outerSignal.aborted || leaseLost || error instanceof SnapshotBuildAbandoned;
+			const code =
+				error instanceof SnapshotBuildAbandoned
+					? error.code
+					: aborted
+						? leaseLost
+							? "LEASE_EXPIRED"
+							: "BUILD_ABORTED"
+						: failureCodeFromError(error);
 			if (error instanceof Error && error.message) appendLog(`\n[${code}] ${error.message}\n`);
 			const logText = logBuffer.length > 0 ? codingSnapshotLog(logBuffer, this.#redact) : null;
 			if (!leaseLost) {
@@ -1056,6 +1116,15 @@ export class CodingSnapshotBuilder {
 				if (inst.name === this.#activeVmName) continue;
 				await this.#destroyBuilderVm(inst.name);
 				orphanVmsDeleted.push(inst.name);
+			}
+		}
+
+		const removedImages = [...new Set([...prunedImages, ...orphanImagesDeleted])];
+		if (removedImages.length > 0 && this.#onImagesPruned) {
+			try {
+				this.#onImagesPruned(removedImages);
+			} catch {
+				undefined;
 			}
 		}
 

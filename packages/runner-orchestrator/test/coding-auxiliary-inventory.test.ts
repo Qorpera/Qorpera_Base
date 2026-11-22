@@ -297,4 +297,67 @@ describe("codingAuxiliary node inventory and observer", () => {
 			"INSTANCE_AUTHORITY_DIFFERS",
 		);
 	});
+
+	it("keeps node inventory ready across every step of the config-then-rename standby claim transition", () => {
+		const policy = makePolicy(makeAuxPolicy());
+		const allocationId = randomUUID();
+		const physicalUuid = randomUUID();
+		const standbyName = `qorpera-coding-standby-${randomUUID().replaceAll("-", "").slice(0, 24)}`;
+		const memberName = `qorpera-coding-machine-${allocationId.replaceAll("-", "")}`;
+		const context = {
+			policy,
+			nodeVersion: 1,
+			contextSha256: SHA_A,
+			headroomCpuMillis: 16000,
+			headroomMemoryBytes: 32 * GIB,
+			allocations: [
+				{
+					allocationId,
+					providerKind: "coding" as const,
+					providerId: "native-node",
+					policySha256: SHA_A,
+					instanceSha256: SHA_B,
+					cpuMillis: 4000,
+					memoryBytes: 8 * GIB,
+					physical: null,
+				},
+			],
+		};
+
+		const beforePut = makeStandbyInstance({ name: standbyName }, { "volatile.uuid": physicalUuid });
+		const r1 = reconcileRuntimeNodeInventory(makeInventory([beforePut]), context);
+		expect(r1.state).toBe("ready");
+		expect(r1.entries[0]).toMatchObject({ category: "coding-standby", reason: null });
+
+		const memberConfig: Record<string, string> = {
+			...CODING_MACHINE_BASE_CONFIG,
+			"limits.cpu": "4",
+			"limits.memory": String(8 * GIB),
+			"user.qorpera.schema": "qorpera.lxd-coding-machine/v1",
+			"user.qorpera.allocation_id": allocationId,
+			"user.qorpera.provider_id": "native-node",
+			"user.qorpera.provider_policy_sha256": SHA_A,
+			"user.qorpera.instance_sha256": SHA_B,
+			"volatile.uuid": physicalUuid,
+		};
+		const memberDevices: Record<string, Record<string, string>> = {
+			root: { type: "disk", path: "/", pool: "coding-disks", size: String(64 * GIB) },
+			network: { ...agentPlugCard("eth0"), hwaddr: "0e:51:0a:d2:01:02" },
+		};
+		const afterPutBeforeRename: LxdHostInventoryInstance = {
+			...beforePut,
+			config: memberConfig,
+			expandedConfig: { ...memberConfig },
+			devices: memberDevices,
+			expandedDevices: { ...memberDevices },
+		};
+		const r2 = reconcileRuntimeNodeInventory(makeInventory([afterPutBeforeRename]), context);
+		expect(r2.state).toBe("ready");
+		expect(r2.entries[0]).toMatchObject({ category: "managed", reason: null });
+
+		const afterRename: LxdHostInventoryInstance = { ...afterPutBeforeRename, name: memberName };
+		const r3 = reconcileRuntimeNodeInventory(makeInventory([afterRename]), context);
+		expect(r3.state).toBe("ready");
+		expect(r3.entries[0]).toMatchObject({ category: "managed", reason: null });
+	});
 });

@@ -1958,7 +1958,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				this.#folderStarts.set(machine.machineId, (this.#folderStarts.get(machine.machineId) ?? 0) + 1);
 			},
 			this.#options.standbyPool
-				? { claimStandby: (request, checked) => this.#options.standbyPool!.claim(request, checked) }
+				? {
+						claimStandby: (project, request, checked) =>
+							this.#options.standbyPool!.claim(project, request, checked),
+					}
 				: undefined,
 		).catch(async (error: unknown) => {
 			// The machine's image is no longer on the node: it stays stopped and marked, with its own error, and each turn
@@ -5298,7 +5301,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 								{
 									claim,
 									assertAuthorized: async (checked) => {
-										await this.#run(claim, ready.machine, ready.storage, checked);
+										await this.#assertSessionAuthorized(claim, checked);
 									},
 								},
 								commitSha,

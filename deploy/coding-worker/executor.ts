@@ -626,18 +626,6 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			repositories: codeHostJobs ? "code-host" : "none" }));
 	}
 	const machineIdSha256 = createHash("sha256").update(machine).digest("hex");
-	const snapshotBuilder = config.snapshots?.enabled
-		? new CodingSnapshotBuilder({
-				control: { rpc: (method, args, signal) => control.call(method, args, signal) },
-				lxd,
-				owner: config.owner,
-				machineIdSha256,
-				vmPolicy: config.vmPolicy,
-				projectAllowsAgentCard: (project, read) => lxd.allowsAgentCard(project, read),
-				...(config.snapshots.ttlSeconds !== undefined ? { ttlSeconds: config.snapshots.ttlSeconds } : {}),
-				report: (event) => console.log(JSON.stringify(event)),
-			})
-		: undefined;
 	const standbyPool =
 		config.standbyPoolSize > 0
 			? new CodingStandbyPool({
@@ -647,6 +635,25 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 					report: (event) => console.log(JSON.stringify(event)),
 				})
 			: undefined;
+	const snapshotBuilder = config.snapshots?.enabled
+		? new CodingSnapshotBuilder({
+				control: { rpc: (method, args, signal) => control.call(method, args, signal) },
+				lxd,
+				owner: config.owner,
+				machineIdSha256,
+				vmPolicy: config.vmPolicy,
+				projectAllowsAgentCard: (project, read) => lxd.allowsAgentCard(project, read),
+				...(standbyPool
+					? {
+							onImagesPruned: (fingerprints: readonly string[]) => {
+								for (const fp of fingerprints) void standbyPool.invalidateFingerprint(fp);
+							},
+						}
+					: {}),
+				...(config.snapshots.ttlSeconds !== undefined ? { ttlSeconds: config.snapshots.ttlSeconds } : {}),
+				report: (event) => console.log(JSON.stringify(event)),
+			})
+		: undefined;
 	const host = new LxdCodingExecutorHost({
 		control, owner: config.owner, machineIdSha256,
 		vmPolicy: config.vmPolicy, storagePolicy: config.storagePolicy, client: lxd, guest: config.guest, journalRoot, ...(folder ? { folder } : {}),
