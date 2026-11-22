@@ -728,18 +728,10 @@ function untilAborted<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
 	});
 }
 
-/** Files' bytes already read and checked, by the version they are of: a version's bytes never change (its manifest
- * names every chunk by its hash), so reading the same version again needs no round trip. It holds only bytes a reader
- * was handed after a live read of the path or its folder: each use still asks the folder for the entry, so what the
- * member may read is decided live every time; only the bytes are not fetched again. In memory only, up to `maxBytes`,
- * the least recently read going first; a file larger than a quarter of that is never kept. A read under way is shared:
- * a second reader of the same version waits for it, and reads by itself if the first stops or fails. Every reader is
- * handed its own copy. A read under way when the cache is cleared keeps nothing. One cache serves one member: give
- * each member their own. */
 export class CloudMemberFolderFileCache {
 	readonly #max: number;
 	readonly #held = new Map<string, Uint8Array>();
-	readonly #reading = new Map<string, Promise<Uint8Array>>();
+	readonly #reading = new Map<string, { readonly promise: Promise<Uint8Array>; readonly ownerSignal: AbortSignal }>();
 	#bytes = 0;
 	/** Counts `clear()`s: a read begun before one keeps nothing when it ends. */
 	#generation = 0;
@@ -770,7 +762,7 @@ export class CloudMemberFolderFileCache {
 		signal.throwIfAborted();
 		// As this reader asked: a read it waits for or makes itself after a clear() keeps nothing.
 		const generation = this.#generation;
-		let lastPending: Promise<Uint8Array> | undefined;
+		let lastPending: { readonly promise: Promise<Uint8Array>; readonly ownerSignal: AbortSignal } | undefined;
 		for (;;) {
 			signal.throwIfAborted();
 			const held = this.#held.get(key);
@@ -784,21 +776,21 @@ export class CloudMemberFolderFileCache {
 			if (pending && pending !== lastPending) {
 				lastPending = pending;
 				try {
-					return (await untilAborted(pending, signal)).slice();
+					return (await untilAborted(pending.promise, signal)).slice();
 				} catch (error) {
-					if (signal.aborted || error instanceof CloudMemberFolderAccessDenied) throw error;
-					// WHY: Re-check #held and #reading so concurrent waiters coalesce onto one replacement load instead of stampeding.
+					if (signal.aborted || !pending.ownerSignal.aborted) throw error;
+					// WHY: Retry only when the leader aborted; propagate real load errors to all waiters so N readers cannot cascade N timeouts.
 					continue;
 				}
 			}
-			const reading = load(signal);
-			this.#reading.set(key, reading);
+			const entry = { promise: load(signal), ownerSignal: signal };
+			this.#reading.set(key, entry);
 			try {
-				const bytes = await reading;
+				const bytes = await entry.promise;
 				if (generation === this.#generation) this.#keep(key, bytes);
 				return bytes.slice();
 			} finally {
-				if (this.#reading.get(key) === reading) this.#reading.delete(key);
+				if (this.#reading.get(key) === entry) this.#reading.delete(key);
 			}
 		}
 	}
@@ -1139,14 +1131,6 @@ export class CloudMemberFolderClient {
 		);
 	}
 
-	/** A file's bytes piece by piece, for a file too large to read under one deadline or to hold twice (a download):
-	 * its manifest, then each piece in order, each checked against the manifest's hash for it and handed to `onPiece`
-	 * with its place among them. The manifest and every piece have the client's deadline to themselves and three
-	 * tries: a lost or late answer, an outage and bytes that fail their hash are asked for again after a pause; a
-	 * refusal (401, 403) and the caller's own stop are not. A file of at most 8 MiB is checked whole against its
-	 * entry's hash before any piece is handed out, as `readFile` checks it. A larger one is not: its entry's manifest
-	 * fixes every byte, and a browser cannot hash it without a second copy. When this rejects, the pieces handed out
-	 * so far are no file. */
 	async readFilePieces(
 		reference: CloudMemberFolderFile,
 		signal: AbortSignal,
@@ -1515,11 +1499,6 @@ export function parseCloudMemberFolderHint(value: unknown): number | null {
 	return (hint.seq as number) >= 1 ? (hint.seq as number) : null;
 }
 
-/**
- * The members' hint for a folder-v2 company (folder core C4, P30): `onHint(seq)` when the folder's clock reached seq.
- * A nudge only: the caller asks the feed what changed, and keeps a slow poll for hints missed while disconnected. A
- * failed or closed join is tried again after 10 s until `close()` or the signal ends it.
- */
 export class CloudMemberFolderHints {
 	readonly #client: Pick<SupabaseClient, "channel" | "removeChannel">;
 	readonly #topic: string;
@@ -1574,8 +1553,7 @@ export class CloudMemberFolderHints {
 		});
 	}
 
-	/** Joins again once the old channel is gone: the client hands back a channel it still holds for the same topic,
-	 * and that one never subscribes again. Until it is removed, removing is tried again every 10 s. */
+	// WHY: Remove the dead channel before rejoining so Supabase does not hand back the same unsubscribed channel instance.
 	async #rejoin(old: RealtimeChannel): Promise<void> {
 		this.#removing.add(old);
 		const removed = await withCloudDeadline(() => this.#client.removeChannel(old), 2000).catch(() => "error");

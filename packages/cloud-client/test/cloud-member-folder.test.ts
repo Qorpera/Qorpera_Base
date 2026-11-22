@@ -1421,10 +1421,54 @@ describe("the folder hint", () => {
 		await expect(d2).rejects.toBeInstanceOf(CloudMemberFolderAccessDenied);
 		expect(deniedLoads).toBe(1);
 
+		let failedLoads = 0;
+		const failedFirst = new Promise<Uint8Array>((_resolve, reject) => {
+			queueMicrotask(() => reject(new Error("transient gateway timeout")));
+		});
+		const f1 = cache.read("k3", waiterSignal, () => {
+			failedLoads += 1;
+			return failedFirst;
+		});
+		const f2 = cache.read("k3", waiterSignal, () => {
+			failedLoads += 1;
+			return failedFirst;
+		});
+		await expect(f1).rejects.toThrow("transient gateway timeout");
+		await expect(f2).rejects.toThrow("transient gateway timeout");
+		expect(failedLoads).toBe(1);
+
 		const { store, file } = stored("missing-object");
-		const failing = client(() => new Response("not found", { status: 404 }));
-		await expect(failing.folder.readFile(file, waiterSignal)).rejects.toThrow();
-		expect(failing.calls).toHaveLength(1);
+		const failing404 = new CloudMemberFolderClient({
+			environmentId: env,
+			supabaseUrl: "https://cloud.test/",
+			objectGatewayUrl: "https://objects.test/",
+			publishableKey: "sb_publishable_fixture",
+			accessToken: async () => "member-token",
+			pieceRetryMs: 5_000,
+			fetch: async () => {
+				calls404 += 1;
+				return new Response("not found", { status: 404 });
+			},
+		});
+		let calls404 = 0;
+		await expect(failing404.readFilePieces(file, waiterSignal, () => {})).rejects.toThrow();
+		expect(calls404).toBe(1);
+
+		let calls429 = 0;
+		const failing429 = new CloudMemberFolderClient({
+			environmentId: env,
+			supabaseUrl: "https://cloud.test/",
+			objectGatewayUrl: "https://objects.test/",
+			publishableKey: "sb_publishable_fixture",
+			accessToken: async () => "member-token",
+			pieceRetryMs: 1,
+			fetch: async () => {
+				calls429 += 1;
+				return new Response("rate limited", { status: 429 });
+			},
+		});
+		await expect(failing429.readFilePieces(file, waiterSignal, () => {})).rejects.toThrow();
+		expect(calls429).toBe(3);
 		expect(store.size).toBeGreaterThan(0);
 
 		vi.useFakeTimers();

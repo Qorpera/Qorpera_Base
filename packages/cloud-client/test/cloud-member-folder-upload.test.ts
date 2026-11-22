@@ -38,6 +38,7 @@ function gateway(
 		open?: (call: number) => Response | undefined;
 		finish?: Record<string, unknown>;
 		finishHold?: Promise<unknown>;
+		pieceRetryMs?: number;
 	} = {},
 ) {
 	const requests: { method: string; path: string; body: Uint8Array | null; type: string | null }[] = [];
@@ -50,7 +51,7 @@ function gateway(
 		objectGatewayUrl: "https://objects.test/",
 		publishableKey: "sb_publishable_fixture",
 		accessToken: async () => "member-token",
-		pieceRetryMs: 0,
+		pieceRetryMs: options.pieceRetryMs ?? 0,
 		fetch: async (input, init) => {
 			const url = new URL(String(input));
 			const body = init?.body;
@@ -319,5 +320,24 @@ describe("a member's program file going up", () => {
 		expect(g.requests.some((request) => request.path === `/v1/member-program-uploads/${env}/${uploadId}`)).toBe(
 			false,
 		);
+	});
+
+	it("aborts immediately on a 409 piece response without pausing for pieceRetryMs", async () => {
+		const { blob } = fileOf(10);
+		const prepared = await prepareCloudMemberFolderUpload(blob, new AbortController().signal);
+		const stop = new AbortController();
+		const g = gateway({
+			pieceRetryMs: 10_000,
+			piece: () => {
+				stop.abort(new Error("cancelled during 409"));
+				return new Response(null, { status: 409 });
+			},
+		});
+		const startedAt = Date.now();
+		await expect(
+			g.folder.uploadFile(path, blob, prepared, { operationKey: "web:k", signal: stop.signal }),
+		).rejects.toThrow("cancelled during 409");
+		expect(Date.now() - startedAt).toBeLessThan(1_000);
+		expect(g.put()).toHaveLength(1);
 	});
 });
