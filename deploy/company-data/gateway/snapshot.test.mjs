@@ -9,7 +9,7 @@ import { after, before, describe, it } from "node:test";
 import pg from "pg";
 import { POSTGRES_IMAGE, POSTGRES_LOCALE } from "../../../scripts/test-hosted-db.mjs";
 import { companyDatabase, Gateway, serve } from "./gateway.mjs";
-import { diffSnapshotFiles, exportDatabaseSnapshot, restoreDatabaseSnapshot } from "./snapshot.mjs";
+import { diffSnapshotFiles, exportDatabaseSnapshot, restoreDatabaseSnapshot, splitSqlStatements } from "./snapshot.mjs";
 
 const dockerUsable = process.platform === "linux" && spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0;
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
@@ -494,5 +494,22 @@ describe("company-data snapshots and lifecycle cleanup", { skip: !dockerUsable }
 		assert.equal(dbs.length, 0);
 		const companyRoles = await asSuperuser("postgres", "select rolname from pg_roles where rolname ~ $1", [`^${database}_`]);
 		assert.equal(companyRoles.length, 0);
+	});
+});
+
+describe("splitSqlStatements", () => {
+	it("handles PostgreSQL E'...' backslash escapes and identifiers containing $", () => {
+		const sql = [
+			"create table a$b$c (id int primary key, note text default E'keep\\'semi;inside');",
+			"create function f() returns text language sql as $tag$ select 'x;y'; $tag$;",
+			"insert into a$b$c values (1, e'another\\\\'); -- trailing",
+			"select 2;",
+		].join("\n");
+		const stmts = splitSqlStatements(sql);
+		assert.equal(stmts.length, 4, JSON.stringify(stmts));
+		assert.equal(stmts[0], "create table a$b$c (id int primary key, note text default E'keep\\'semi;inside');");
+		assert.equal(stmts[1], "create function f() returns text language sql as $tag$ select 'x;y'; $tag$;");
+		assert.equal(stmts[2], "insert into a$b$c values (1, e'another\\\\');");
+		assert.equal(stmts[3], "-- trailing\nselect 2;");
 	});
 });

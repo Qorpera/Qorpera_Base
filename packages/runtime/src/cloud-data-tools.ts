@@ -1,5 +1,6 @@
 import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { type JsonValue, parseRecord } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import type { CloudCompanyDataPass, CloudCompanyFolderClient } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import {
@@ -610,70 +611,80 @@ export function httpsCompanyDataDoor(options: { url: string; ca: string; token: 
 	});
 	return {
 		call: (verb, body, signal) =>
-			new Promise((resolve, reject) => {
-				const stop = AbortSignal.any([signal, AbortSignal.timeout(verb === "apply" ? APPLY_MS : DOOR_MS)]);
-				if (stop.aborted)
-					return reject(new CloudRuntimeDiagnosticError("cancelled", "Company data door call ended"));
-				const text = Buffer.from(JSON.stringify(body));
-				let failure: CloudRuntimeDiagnosticError | undefined;
-				const outgoing = httpsRequest(
-					{
-						host,
-						port,
-						ca: options.ca,
-						minVersion: "TLSv1.2",
-						method: "POST",
-						path: `/v1/run-data/${verb}`,
-						headers: {
-							authorization: `Bearer ${options.token}`,
-							"content-type": "application/json",
-							"content-length": String(text.byteLength),
-						},
-						agent,
-					},
-					(response) => {
-						const chunks: Buffer[] = [];
-						let bytes = 0;
-						response.on("data", (chunk: Buffer) => {
-							bytes += chunk.byteLength;
-							if (bytes > ANSWER_BYTES) {
-								failure ??= new CloudRuntimeDiagnosticError(
-									"invalid_response",
-									"Company data answer is too large",
-								);
-								reject(failure);
-								response.destroy(failure);
-							} else chunks.push(chunk);
-						});
-						response.once("error", (error) => reject(failure ?? error));
-						response.once("end", () => {
-							let value: unknown;
-							try {
-								value = JSON.parse(Buffer.concat(chunks, bytes).toString("utf8"));
-							} catch {
-								reject(new CloudRuntimeDiagnosticError("invalid_response", "Company data answer is not JSON"));
-								return;
-							}
-							resolve({ status: response.statusCode ?? 0, value });
-						});
-					},
-				);
-				const end = (): void => {
-					outgoing.destroy(
-						new CloudRuntimeDiagnosticError("transport_unavailable", "Company data door call ended"),
-					);
-				};
-				stop.addEventListener("abort", end, { once: true });
-				outgoing.once("close", () => stop.removeEventListener("abort", end));
-				outgoing.once("error", () =>
-					reject(
-						failure ??
-							(signal.aborted
-								? new CloudRuntimeDiagnosticError("cancelled", "Company data door call ended")
-								: new CloudRuntimeDiagnosticError("transport_unavailable", "Company data door unavailable")),
-					),
-				);
-				outgoing.end(text);
-			}),
+			withAbortScopes(
+				[signal],
+				(stop) =>
+					new Promise((resolve, reject) => {
+						if (stop.aborted)
+							return reject(new CloudRuntimeDiagnosticError("cancelled", "Company data door call ended"));
+						const text = Buffer.from(JSON.stringify(body));
+						let failure: CloudRuntimeDiagnosticError | undefined;
+						const outgoing = httpsRequest(
+							{
+								host,
+								port,
+								ca: options.ca,
+								minVersion: "TLSv1.2",
+								method: "POST",
+								path: `/v1/run-data/${verb}`,
+								headers: {
+									authorization: `Bearer ${options.token}`,
+									"content-type": "application/json",
+									"content-length": String(text.byteLength),
+								},
+								agent,
+							},
+							(response) => {
+								const chunks: Buffer[] = [];
+								let bytes = 0;
+								response.on("data", (chunk: Buffer) => {
+									bytes += chunk.byteLength;
+									if (bytes > ANSWER_BYTES) {
+										failure ??= new CloudRuntimeDiagnosticError(
+											"invalid_response",
+											"Company data answer is too large",
+										);
+										reject(failure);
+										response.destroy(failure);
+									} else chunks.push(chunk);
+								});
+								response.once("error", (error) => reject(failure ?? error));
+								response.once("end", () => {
+									let value: unknown;
+									try {
+										const joined = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, bytes);
+										value = JSON.parse(joined.toString("utf8"));
+									} catch {
+										reject(
+											new CloudRuntimeDiagnosticError("invalid_response", "Company data answer is not JSON"),
+										);
+										return;
+									}
+									resolve({ status: response.statusCode ?? 0, value });
+								});
+							},
+						);
+						const end = (): void => {
+							outgoing.destroy(
+								new CloudRuntimeDiagnosticError("transport_unavailable", "Company data door call ended"),
+							);
+						};
+						stop.addEventListener("abort", end, { once: true });
+						outgoing.once("close", () => stop.removeEventListener("abort", end));
+						outgoing.once("error", () =>
+							reject(
+								failure ??
+									(signal.aborted
+										? new CloudRuntimeDiagnosticError("cancelled", "Company data door call ended")
+										: new CloudRuntimeDiagnosticError(
+												"transport_unavailable",
+												"Company data door unavailable",
+											)),
+							),
+						);
+						outgoing.end(text);
+					}),
+				verb === "apply" ? APPLY_MS : DOOR_MS,
+			),
 	};
 }

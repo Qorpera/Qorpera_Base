@@ -58,24 +58,32 @@ function json(body: Json, status: number, headers: Record<string, string> = {}):
 	});
 }
 
+const UTF8_ENCODER = new TextEncoder();
+const UTF8_LENIENT_DECODER = new TextDecoder("utf-8", { fatal: false });
+
 /** The body, or null when it is over the limit, declared or not. */
 async function readBody(request: Request, limit: number): Promise<Uint8Array | null> {
 	const declared = request.headers.get("content-length");
-	if (declared !== null && /^\d+$/.test(declared) && Number(declared) > limit) return null;
+	if (declared !== null && /^\d+$/.test(declared) && Number(declared) > limit) {
+		void request.body?.cancel().catch(() => undefined);
+		return null;
+	}
 	if (!request.body) return new Uint8Array(0);
 	const reader = request.body.getReader();
 	const chunks: Uint8Array[] = [];
 	let size = 0;
-	for (;;) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		size += value.byteLength;
-		if (size > limit) {
-			await reader.cancel().catch(() => undefined);
-			return null;
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			size += value.byteLength;
+			if (size > limit) return null;
+			chunks.push(value);
 		}
-		chunks.push(value);
+	} finally {
+		void reader.cancel().catch(() => undefined);
 	}
+	if (chunks.length === 1) return chunks[0]!;
 	const body = new Uint8Array(size);
 	let offset = 0;
 	for (const chunk of chunks) {
@@ -126,7 +134,7 @@ export async function verifySignature(
 	const key = fromBase64(secret.startsWith("whsec_") ? secret.slice("whsec_".length) : secret);
 	if (!key || key.length < 16) return false;
 	const signingKey = await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-	const prefix = new TextEncoder().encode(`${id}.${timestamp}.`);
+	const prefix = UTF8_ENCODER.encode(`${id}.${timestamp}.`);
 	const signed = new Uint8Array(prefix.length + body.length);
 	signed.set(prefix);
 	signed.set(body, prefix.length);
@@ -216,10 +224,10 @@ function htmlBody(value: unknown): string | null {
 		}
 	}
 	const bytes = fromBase64(data[2]);
-	return bytes ? new TextDecoder("utf-8", { fatal: false }).decode(bytes) : null;
+	return bytes ? UTF8_LENIENT_DECODER.decode(bytes) : null;
 }
 
-const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).length;
+const bytes = (value: unknown) => UTF8_ENCODER.encode(JSON.stringify(value)).length;
 
 /** Sent automatically: an Auto-Submitted other than "no" (RFC 3834), a bulk, list, junk or auto-reply Precedence
  * (or X-Precedence), an older responder's X-Autoreply or X-Autorespond, or a mailing list. Agents never answer it:
@@ -302,10 +310,15 @@ export function normalizeMessage(emailId: string, received: Json): Json {
 		message.truncated = true;
 		const room = MAX_MESSAGE_BYTES - bytes({ ...message, [field]: "" }) + 2;
 		let keep = value.length;
-		let size = bytes(value);
-		while (keep > 0 && size > room) {
-			keep = Math.min(keep - 1, Math.floor((keep * room) / size));
-			size = bytes(cut(value, keep));
+		if (bytes(value) > room) {
+			let low = 0;
+			let high = value.length;
+			while (low < high) {
+				const mid = (low + high + 1) >>> 1;
+				if (bytes(cut(value, mid)) <= room) low = mid;
+				else high = mid - 1;
+			}
+			keep = low;
 		}
 		message[field] = keep > 0 ? cut(value, keep) : null;
 	}

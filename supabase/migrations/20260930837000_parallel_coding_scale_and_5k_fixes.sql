@@ -2,10 +2,10 @@ set local lock_timeout = '3s';
 
 do $$ begin
 	if to_regclass('public.qorpera_claude_member_parallel_caps') is not null then
-		raise exception 'Parallel coding scale and 5k fixes (20260930832000) are already applied'; end if;
+		raise exception 'Parallel coding scale and 5k fixes (20260930837000) are already applied'; end if;
 	if to_regclass('public.qorpera_claude_parallel_runs') is null
 		or to_regclass('public.qorpera_coding_session_loads') is null then
-		raise exception 'Parallel coding scale and 5k fixes (20260930832000) need 20260930810000 and 20260930828000 first';
+		raise exception 'Parallel coding scale and 5k fixes (20260930837000) need 20260930810000 and 20260930828000 first';
 	end if;
 end $$;
 
@@ -15,7 +15,7 @@ begin
 	for i in 1..cardinality(p_edits) / 2 loop
 		v_found := (length(v_definition) - length(replace(v_definition, p_edits[2 * i - 1], ''))) / length(p_edits[2 * i - 1]);
 		if v_found <> 1 then
-			raise exception '20260930832000 anchor found % time(s) in %, expected 1: %', v_found, p_target, left(p_edits[2 * i - 1], 80); end if;
+			raise exception '20260930837000 anchor found % time(s) in %, expected 1: %', v_found, p_target, left(p_edits[2 * i - 1], 80); end if;
 		v_definition := replace(v_definition, p_edits[2 * i - 1], p_edits[2 * i]);
 	end loop;
 	execute v_definition;
@@ -166,7 +166,7 @@ $old$	-- WHY: 20260930828000 (step 5k): copy template session sizing onto auto-e
 		v_like.vm_policy, v_like.nas_policy,
 		v_like.nas_machine_id_sha256, v_like.machine_sleep_after_seconds, v_like.machine_remove_after_seconds,
 		v_like.session_archive_after_seconds, v_like.session_cpu_millis, v_like.session_memory_bytes)$old$,
-$new$	-- WHY: 20260930828000 (step 5k) and 20260930832000: copy template session sizing and attachment cap onto auto-enrolled executors.
+$new$	-- WHY: 20260930828000 (step 5k) and 20260930837000: copy template session sizing and attachment cap onto auto-enrolled executors.
 	insert into public.qorpera_coding_executors(environment_id, owner, enabled, harnesses, vm_policy, nas_policy,
 		nas_machine_id_sha256, machine_sleep_after_seconds, machine_remove_after_seconds, session_archive_after_seconds,
 		session_cpu_millis, session_memory_bytes, max_attached_sessions)
@@ -391,7 +391,7 @@ $new$	if v_machine.id is not null then
 		end if;
 	end if;
 	if v_machine.id is null then
-		-- WHY: 20260930828000 (step 5k) and 20260930832000: skip full or retiring remote candidates so overflow allocates
+		-- WHY: 20260930828000 (step 5k) and 20260930837000: skip full or retiring remote candidates so overflow allocates
 		-- locally instead of returning NODE_NOT_PREFERRED, while preferring any non-full reusable remote candidate.
 		v_number := 1;
 		for v_candidate in select * from public.qorpera_coding_machines machine
@@ -504,24 +504,24 @@ $new$		v_entries := v_entries || jsonb_build_array(case when v_refusal is null t
 ]);
 
 comment on table public.qorpera_claude_member_parallel_caps is
-	'20260930832000: per-member parallel Claude Code run cap overrides (1..64), falling back to qorpera_claude_parallel_runs.';
+	'20260930837000: per-member parallel Claude Code run cap overrides (1..64), falling back to qorpera_claude_parallel_runs.';
 comment on function public.qorpera_set_claude_parallel_cap(smallint, uuid) is
-	'20260930832000: operator RPC to set global or per-member Claude Code parallel run cap (1..64, or null to clear member override).';
+	'20260930837000: operator RPC to set global or per-member Claude Code parallel run cap (1..64, or null to clear member override).';
 comment on function public.qorpera_get_claude_parallel_cap(uuid) is
-	'20260930832000: operator RPC returning the effective global or per-member Claude Code parallel run cap.';
+	'20260930837000: operator RPC returning the effective global or per-member Claude Code parallel run cap.';
 comment on function public.qorpera_configure_coding_session_size(uuid, text, bigint, bigint) is
-	'20260930828000 (step 5k) / 20260930832000: backward-compatible 4-arg overload setting CPU and memory sizing while keeping max_attached_sessions unchanged.';
+	'20260930828000 (step 5k) / 20260930837000: backward-compatible 4-arg overload setting CPU and memory sizing while keeping max_attached_sessions unchanged.';
 comment on function public.qorpera_configure_coding_session_size(uuid, text, bigint, bigint, integer) is
-	'20260930832000: configures minimum per-session CPU (millis), memory (bytes), and max_attached_sessions (1..64) on an executor.';
+	'20260930837000: configures minimum per-session CPU (millis), memory (bytes), and max_attached_sessions (1..64) on an executor.';
 comment on function public.qorpera_record_coding_machine_load(uuid, text, text, text, jsonb) is
-	'20260930828000 (step 5k) / 20260930832000: records per-session CPU (or null to preserve prior CPU) and memory load and optional fullness hint without locking qorpera_coding_sessions.';
+	'20260930828000 (step 5k) / 20260930837000: records per-session CPU (or null to preserve prior CPU) and memory load and optional fullness hint without locking qorpera_coding_sessions.';
 comment on function public.qorpera_coding_machine_full(public.qorpera_coding_machines, uuid, bigint, bigint, integer, boolean) is
-	'20260930832000: internal helper checking active-only session load, max_attached_sessions, and optional full_until hint.';
+	'20260930837000: internal helper checking active-only session load, max_attached_sessions, and optional full_until hint.';
 comment on function public.qorpera_coding_machine_full(public.qorpera_coding_machines, uuid, bigint, bigint, integer) is
-	'20260930832000: internal helper checking active-only session load, max_attached_sessions, and full_until hint for arriving sessions.';
+	'20260930837000: internal helper checking active-only session load, max_attached_sessions, and full_until hint for arriving sessions.';
 comment on function public.qorpera_plan_coding_machine(uuid, uuid, text, text) is
-	'20260930828000 (step 5k) / 20260930832000: plans sessions with active-only capacity accounting, cross-node overflow, and detached re-homing off retiring or structurally full machines with MACHINE_NEW_DISK notice.';
+	'20260930828000 (step 5k) / 20260930837000: plans sessions with active-only capacity accounting, cross-node overflow, and detached re-homing off retiring or structurally full machines with MACHINE_NEW_DISK notice.';
 comment on function public.qorpera_coding_executor_enroll(uuid, text) is
-	'20260930828000 (step 5k) / 20260930832000: copies session_cpu_millis, session_memory_bytes, and max_attached_sessions from the template executor row on auto-enrollment.';
+	'20260930828000 (step 5k) / 20260930837000: copies session_cpu_millis, session_memory_bytes, and max_attached_sessions from the template executor row on auto-enrollment.';
 
 drop function pg_temp.w4c_patch(regprocedure, text[]);

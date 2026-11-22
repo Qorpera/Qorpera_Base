@@ -8,6 +8,8 @@
  * server log keeps it), where the page that started the sign-in confirms it with its own capability.
  */
 
+import { withTimeoutScope } from "../_shared/abort-timeout.ts";
+
 const STATE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[A-Za-z0-9_-]{43}$/;
 const CODE = /^[\x21-\x7e]{1,2048}$/;
 const SHORT = /^[\x21-\x7e]{1,256}$/;
@@ -108,7 +110,6 @@ export async function handleChatGptPlanCallback(request: Request, options: ChatG
 		return failed("provider_error");
 	try {
 		const timeoutMs = options.timeoutMs ?? 20_000;
-		const signal = AbortSignal.any([request.signal, AbortSignal.timeout(timeoutMs)]);
 		const target = await options.resolveTarget(state);
 		if (!target) return failed("state_unknown");
 		const url = new URL(target);
@@ -123,29 +124,35 @@ export async function handleChatGptPlanCallback(request: Request, options: ChatG
 			!url.pathname.endsWith(`/v1/model-logins/${company}/chatgpt-plan/callback`)
 		)
 			return failed("provider_error");
-		const answer = await (options.fetchImplementation ?? fetch)(url.href, {
-			method: "POST",
-			headers: { accept: "application/json", "content-type": "application/json" },
-			body: JSON.stringify({ schema: "qorpera.chatgpt-plan-callback/v1", state, code, error, clientId }),
-			redirect: "error",
-			signal,
-		});
-		if (answer.status !== 200) {
-			await answer.body?.cancel();
-			return failed("provider_error");
-		}
-		const result = (await boundedJson(answer, signal)) as Record<string, unknown> | null;
-		if (
-			result?.schema === "qorpera.chatgpt-plan-callback-result/v1" &&
-			result.status === "confirm" &&
-			typeof result.confirmation === "string" &&
-			CONFIRMATION.test(result.confirmation)
-		)
-			return back(chatGptPlanReturnLocation(options.returnUrl, { confirmation: result.confirmation }));
-		return failed(
-			result?.status === "failed" && typeof result.reason === "string" && REASONS.has(result.reason)
-				? result.reason
-				: "provider_error",
+		return await withTimeoutScope(
+			timeoutMs,
+			async (signal) => {
+				const answer = await (options.fetchImplementation ?? fetch)(url.href, {
+					method: "POST",
+					headers: { accept: "application/json", "content-type": "application/json" },
+					body: JSON.stringify({ schema: "qorpera.chatgpt-plan-callback/v1", state, code, error, clientId }),
+					redirect: "error",
+					signal,
+				});
+				if (answer.status !== 200) {
+					void answer.body?.cancel().catch(() => undefined);
+					return failed("provider_error");
+				}
+				const result = (await boundedJson(answer, signal)) as Record<string, unknown> | null;
+				if (
+					result?.schema === "qorpera.chatgpt-plan-callback-result/v1" &&
+					result.status === "confirm" &&
+					typeof result.confirmation === "string" &&
+					CONFIRMATION.test(result.confirmation)
+				)
+					return back(chatGptPlanReturnLocation(options.returnUrl, { confirmation: result.confirmation }));
+				return failed(
+					result?.status === "failed" && typeof result.reason === "string" && REASONS.has(result.reason)
+						? result.reason
+						: "provider_error",
+				);
+			},
+			request.signal,
 		);
 	} catch {
 		// The vault's detail stays private: the member sees a generic failure and starts again.

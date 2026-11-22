@@ -81,6 +81,12 @@ const workerCount =
 
 const adminToken = process.env.DATA_ADMIN_TOKEN?.trim() || null;
 
+const safeSend = (target, message) => {
+	try {
+		target?.send?.(message, () => undefined);
+	} catch {}
+};
+
 const gateway = new Gateway({
 	store: { host: setting("DATA_STORE_HOST"), port: Number(process.env.DATA_STORE_PORT ?? 5432), logins },
 	platform: new Platform({ url: setting("DATA_PLATFORM_URL"), publishableKey: setting("DATA_PLATFORM_KEY") }),
@@ -90,13 +96,13 @@ const gateway = new Gateway({
 	...(cluster.isWorker
 		? {
 				onAgentRead: ({ pid, delta }) => {
-					if (process.connected) process.send?.({ type: "agentRead", pid, delta });
+					if (process.connected) safeSend(process, { type: "agentRead", pid, delta });
 				},
 				onDrop: (event) => {
-					if (process.connected) process.send?.({ type: "drop", ...event });
+					if (process.connected) safeSend(process, { type: "drop", ...event });
 				},
 				onUnsettledTx: (database, txid) => {
-					if (process.connected) process.send?.({ type: "unsettledTx", database, txid });
+					if (process.connected) safeSend(process, { type: "unsettledTx", database, txid });
 				},
 			}
 		: {}),
@@ -107,7 +113,7 @@ if (workerCount > 1 && cluster.isPrimary) {
 	const workerReads = new Map();
 	const broadcast = (message) => {
 		for (const worker of Object.values(cluster.workers ?? {})) {
-			if (worker?.isConnected()) worker.send(message);
+			if (worker?.isConnected()) safeSend(worker, message);
 		}
 	};
 	const stopWatcher = startWatcher(gateway, {
@@ -116,6 +122,9 @@ if (workerCount > 1 && cluster.isPrimary) {
 		onLook: (looked) => {
 			lastFull = looked.full;
 			broadcast({ type: "full", databases: lastFull });
+			if (Array.isArray(looked.ended) && looked.ended.length > 0) {
+				broadcast({ type: "signalled", pids: looked.ended.map((row) => row.pid) });
+			}
 		},
 	});
 	let stopping = false;
@@ -123,9 +132,10 @@ if (workerCount > 1 && cluster.isPrimary) {
 	const restartTimers = new Set();
 	const spawnWorker = () => {
 		const worker = cluster.fork();
+		worker.on("error", () => undefined);
 		workerReads.set(worker.id, new Map());
 		worker.on("online", () => {
-			if (lastFull.length > 0 && worker.isConnected()) worker.send({ type: "full", databases: lastFull });
+			if (lastFull.length > 0 && worker.isConnected()) safeSend(worker, { type: "full", databases: lastFull });
 		});
 		worker.on("message", (message) => {
 			if (message?.type === "unsettledTx" && typeof message.database === "string" && typeof message.txid === "string") {
@@ -137,7 +147,7 @@ if (workerCount > 1 && cluster.isPrimary) {
 				else if (message.kind === "database" && typeof message.database === "string" && typeof message.schema === "string")
 					void gateway.evictDatabase(message.database, message.schema, message.n ?? null);
 				for (const peer of Object.values(cluster.workers ?? {})) {
-					if (peer && peer.id !== worker.id && peer.isConnected()) peer.send(message);
+					if (peer && peer.id !== worker.id && peer.isConnected()) safeSend(peer, message);
 				}
 				return;
 			}
@@ -208,6 +218,7 @@ if (workerCount > 1 && cluster.isPrimary) {
 	if (cluster.isWorker) {
 		process.on("message", (message) => {
 			if (message?.type === "full") gateway.setFullDatabases(message.databases);
+			else if (message?.type === "signalled" && Array.isArray(message.pids)) gateway.noteSignalled(message.pids);
 			else if (message?.type === "drop") {
 				if (message.kind === "company" && typeof message.database === "string") void gateway.evictCompany(message.database);
 				else if (message.kind === "database" && typeof message.database === "string" && typeof message.schema === "string")

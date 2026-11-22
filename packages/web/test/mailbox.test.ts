@@ -14,7 +14,7 @@ import {
 } from "../src/cloud/routines.ts";
 import type { HostedProfileRole } from "../src/cloud/types.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
-import { h } from "../src/ui/dom.ts";
+import { formatPresentationDate, h } from "../src/ui/dom.ts";
 import { setLanguagePreference, setTimeZonePreference } from "../src/ui/preferences.ts";
 import { fixture, id, profileA, scrolledTo, session, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
 import { type FolderFake, folderFake } from "./folder-fake.ts";
@@ -3154,5 +3154,155 @@ describe("Digital Post", () => {
 		tab(main, "Addresses");
 		expect(main.querySelector(".mailbox-address.is-digital-post")).not.toBeNull();
 		expect(button(main, "Choose who reads it")).toBeUndefined();
+	});
+
+	it("keeps the latest watched letter across same-tick watch switches and aborts folder reads on dispose", async () => {
+		const f = fixture();
+		const controller = new CompanyController(f.api, profileA, userA.id);
+		cleanup.push(() => controller.stop());
+		const fake = mailFake(f);
+		fake.addresses = [ADDRESS];
+		fake.digitalPost = digitalPostConnected({ letters: 2 });
+		const folder = postFolder([3, 7]);
+		const mail = new CompanyMail(
+			controller,
+			f.cloud,
+			accountsFake(),
+			(state) => controller.store.set({ mail: state }),
+			() => folder.folder,
+		);
+		cleanup.push(() => mail.dispose());
+		await mail.open();
+		await vi.waitFor(() => expect(controller.store.get().mail?.digitalPost?.letters).toHaveLength(2));
+		mail.watch([{}], [], () => true, [letterFolder(3)]);
+		mail.watch([{}], [], () => true, [letterFolder(7)]);
+		await vi.waitFor(() =>
+			expect(controller.store.get().mail?.digitalPost?.open[letterFolder(7)]?.status).toBe("ready"),
+		);
+		expect(controller.store.get().mail?.digitalPost?.open[letterFolder(3)]).toBeUndefined();
+		expect(folder.folder.read).not.toHaveBeenCalledWith(`${letterFolder(3)}/letter.md`, expect.anything());
+
+		let receivedSignal: AbortSignal | undefined;
+		folder.folder.read.mockImplementationOnce(
+			(_path: string, signal?: AbortSignal) =>
+				new Promise(() => {
+					receivedSignal = signal;
+				}),
+		);
+		mail.watch([{}], [], () => true, [letterFolder(3)]);
+		await vi.waitFor(() => expect(receivedSignal).toBeDefined());
+		expect(receivedSignal!.aborted).toBe(false);
+		mail.dispose();
+		expect(receivedSignal!.aborted).toBe(true);
+	});
+
+	it("reuses cached date formatters across many mailbox rows and redraws", async () => {
+		setTimeZonePreference("UTC");
+		try {
+			const { main } = await mailbox((fake) => {
+				fake.threads = Array.from({ length: 20 }, (_, index) =>
+					summary(index + 1, { state: "handled", lastAt: at(index + 1) }),
+				);
+			});
+			await vi.waitFor(() => expect(lines(main)).toHaveLength(20));
+			const spy = vi.spyOn(Intl, "DateTimeFormat");
+			const search = main.querySelector<HTMLInputElement>(".mailbox-search input")!;
+			type(search, "Subject");
+			expect(lines(main)).toHaveLength(20);
+			type(search, "");
+			expect(lines(main)).toHaveLength(20);
+			expect(spy).not.toHaveBeenCalled();
+		} finally {
+			setTimeZonePreference("system");
+		}
+	});
+
+	it("follows device system time zone changes in formatPresentationDate", async () => {
+		setTimeZonePreference("system");
+		const RealDateTimeFormat = Intl.DateTimeFormat;
+		let deviceZone = "America/New_York";
+		const createdZones: string[] = [];
+		const spy = vi.spyOn(Intl, "DateTimeFormat").mockImplementation(function (
+			this: unknown,
+			locale?: Intl.LocalesArgument,
+			options?: Intl.DateTimeFormatOptions,
+		) {
+			if (locale === undefined && options === undefined) {
+				return { resolvedOptions: () => ({ timeZone: deviceZone }) } as Intl.DateTimeFormat;
+			}
+			const zone = options?.timeZone ?? deviceZone;
+			createdZones.push(zone);
+			return new RealDateTimeFormat(locale, { ...options, timeZone: zone });
+		} as unknown as typeof Intl.DateTimeFormat);
+		try {
+			const sample = new Date("2026-10-06T12:00:00Z");
+			const ny = formatPresentationDate(sample, "time", "en", undefined);
+			expect(ny).toContain("08:00");
+			deviceZone = "Asia/Tokyo";
+			await Promise.resolve();
+			const tokyo = formatPresentationDate(sample, "time", "en", undefined);
+			expect(tokyo).toContain("09:00");
+			expect(createdZones).toEqual(["America/New_York", "Asia/Tokyo"]);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("restores focus to Send after reopening an evicted thread on failed send, even from a shared control, unless focus moves while loading", async () => {
+		const { main, fake, f, controller } = await mailbox((mail) => {
+			mail.threads = [summary(1)];
+		});
+		await openFirst(main);
+		button(main, "Reply")!.click();
+		type(reply(main).querySelector("textarea")!, "Retry me.");
+		let release = () => {};
+		fake.sendHold = new Promise((resolve) => {
+			release = resolve;
+		});
+		fake.sendError = { message: "The mailbox is paused; resume it to send from it", code: "0A000" };
+		reply(main).requestSubmit();
+		button(main, "Back to Inbox")!.click();
+		await vi.waitFor(() => expect(controller.store.get().mail?.threads[thread(1)]).toBeUndefined());
+		main.querySelector<HTMLInputElement>(".mailbox-search input")!.focus();
+		expect(document.activeElement).toBe(main.querySelector(".mailbox-search input"));
+		release();
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-write-error")?.textContent).toBe(
+				"The mailbox is paused; resume it to send from it",
+			),
+		);
+		expect(document.activeElement).toBe(button(reply(main), "Send"));
+
+		let releaseThread: (() => void) | undefined;
+		const rpcMock = vi.mocked(f.cloud.rpc);
+		const origRpc = rpcMock.getMockImplementation()!;
+		rpcMock.mockImplementation(async (name: string, args?: Record<string, unknown>, signal?: AbortSignal) => {
+			if (name === "qorpera_member_mail_thread") {
+				await new Promise<void>((resolve) => {
+					releaseThread = resolve;
+				});
+			}
+			return origRpc(name, args, signal);
+		});
+		let releaseSecond = () => {};
+		fake.sendHold = new Promise((resolve) => {
+			releaseSecond = resolve;
+		});
+		reply(main).requestSubmit();
+		button(main, "Back to Inbox")!.click();
+		await vi.waitFor(() => expect(controller.store.get().mail?.threads[thread(1)]).toBeUndefined());
+		(document.activeElement as HTMLElement | null)?.blur?.();
+		releaseSecond();
+		await vi.waitFor(() => expect(releaseThread).toBeDefined());
+		const searchDuringLoad = main.querySelector<HTMLInputElement>(".mailbox-search input")!;
+		searchDuringLoad.focus();
+		expect(document.activeElement).toBe(searchDuringLoad);
+		releaseThread!();
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-write-error")?.textContent).toBe(
+				"The mailbox is paused; resume it to send from it",
+			),
+		);
+		expect(document.activeElement).toBe(main.querySelector(".mailbox-search input"));
 	});
 });

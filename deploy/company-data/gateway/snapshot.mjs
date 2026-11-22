@@ -124,40 +124,62 @@ async function forEachCsvRow(filePath, onRow) {
 	};
 
 	const processText = async (text) => {
-		for (let i = 0; i < text.length; i++) {
+		const len = text.length;
+		let i = 0;
+		while (i < len) {
 			const ch = text[i];
 			if (pendingCr) {
 				pendingCr = false;
-				if (ch === "\n") continue;
+				if (ch === "\n") {
+					i++;
+					continue;
+				}
 			}
 			if (pendingQuote) {
 				pendingQuote = false;
 				if (ch === '"') {
 					field += '"';
+					i++;
 					continue;
 				}
 				inQuotes = false;
 			}
 			if (inQuotes) {
-				if (ch === '"') {
-					pendingQuote = true;
-				} else {
-					field += ch;
+				const quote = text.indexOf('"', i);
+				if (quote === -1) {
+					field += text.slice(i);
+					break;
 				}
-			} else if (ch === '"' && field.length === 0 && !fieldQuoted) {
+				if (quote > i) field += text.slice(i, quote);
+				pendingQuote = true;
+				i = quote + 1;
+				continue;
+			}
+			if (ch === '"' && field.length === 0 && !fieldQuoted) {
 				inQuotes = true;
 				fieldQuoted = true;
+				i++;
 			} else if (ch === ",") {
 				row.push(fieldQuoted ? field : field === "" ? null : field);
 				field = "";
 				fieldQuoted = false;
+				i++;
 			} else if (ch === "\r") {
 				pendingCr = true;
+				i++;
 				await emitRow();
 			} else if (ch === "\n") {
+				i++;
 				await emitRow();
 			} else {
-				field += ch;
+				const spanStart = i;
+				i++;
+				while (i < len) {
+					const next = text[i];
+					if (next === "," || next === "\r" || next === "\n") break;
+					i++;
+				}
+				field += text.slice(spanStart, i);
 			}
 		}
 	};
@@ -182,11 +204,15 @@ async function forEachCsvRow(filePath, onRow) {
 	}
 }
 
-function splitSqlStatements(sql) {
+const SQL_IDENT_CHAR = /[A-Za-z0-9_$]/;
+const SQL_DOLLAR_TAG = /\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/y;
+
+export function splitSqlStatements(sql) {
 	const statements = [];
 	let start = 0;
 	let i = 0;
 	let inSingle = false;
+	let inSingleEscape = false;
 	let inDouble = false;
 	let dollarTag = null;
 	let inLineComment = false;
@@ -228,11 +254,18 @@ function splitSqlStatements(sql) {
 			continue;
 		}
 		if (inSingle) {
+			if (inSingleEscape && ch === "\\") {
+				i += 2;
+				continue;
+			}
 			if (ch === "'" && next === "'") {
 				i += 2;
 				continue;
 			}
-			if (ch === "'") inSingle = false;
+			if (ch === "'") {
+				inSingle = false;
+				inSingleEscape = false;
+			}
 			i++;
 			continue;
 		}
@@ -266,6 +299,7 @@ function splitSqlStatements(sql) {
 		}
 		if (ch === "'") {
 			inSingle = true;
+			inSingleEscape = (sql[i - 1] === "e" || sql[i - 1] === "E") && !SQL_IDENT_CHAR.test(sql[i - 2] ?? "");
 			lineStart = false;
 			i++;
 			continue;
@@ -276,8 +310,9 @@ function splitSqlStatements(sql) {
 			i++;
 			continue;
 		}
-		if (ch === "$") {
-			const tagMatch = /^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/.exec(sql.slice(i));
+		if (ch === "$" && !SQL_IDENT_CHAR.test(sql[i - 1] ?? "")) {
+			SQL_DOLLAR_TAG.lastIndex = i;
+			const tagMatch = SQL_DOLLAR_TAG.exec(sql);
 			if (tagMatch) {
 				dollarTag = tagMatch[0];
 				lineStart = false;
@@ -374,8 +409,10 @@ function runPgDump({ host, port, user, password, database, schema, snapshotId, l
 			],
 			{ env: { ...process.env, PGPASSWORD: password } },
 		);
-		let out = "";
-		let err = "";
+		const outChunks = [];
+		const errChunks = [];
+		let errBytes = 0;
+		const MAX_ERR_BYTES = 65_536;
 		let timedOut = false;
 		const timer = setTimeout(() => {
 			timedOut = true;
@@ -383,10 +420,16 @@ function runPgDump({ host, port, user, password, database, schema, snapshotId, l
 		}, Math.max(30_000, lockWaitMs * 5));
 		timer.unref?.();
 		child.stdout.on("data", (chunk) => {
-			out += chunk;
+			outChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
 		});
 		child.stderr.on("data", (chunk) => {
-			err += chunk;
+			if (errBytes >= MAX_ERR_BYTES) return;
+			const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+			const take = Math.min(buf.length, MAX_ERR_BYTES - errBytes);
+			if (take > 0) {
+				errChunks.push(take === buf.length ? buf : buf.subarray(0, take));
+				errBytes += take;
+			}
 		});
 		child.on("error", (error) => {
 			clearTimeout(timer);
@@ -395,9 +438,10 @@ function runPgDump({ host, port, user, password, database, schema, snapshotId, l
 		});
 		child.on("close", (code) => {
 			clearTimeout(timer);
-			if (code === 0 && !timedOut) resolvePromise(out);
+			if (code === 0 && !timedOut) resolvePromise(Buffer.concat(outChunks).toString("utf8"));
 			else {
-				const message = timedOut ? "pg_dump timed out" : err.trim() || `pg_dump exited ${code}`;
+				const err = Buffer.concat(errChunks).toString("utf8").trim();
+				const message = timedOut ? "pg_dump timed out" : err || `pg_dump exited ${code}`;
 				const error = new Error(message);
 				if (!timedOut && /authentication failed|role .* does not exist|database .* does not exist/i.test(message)) {
 					error.nonRetryable = true;
@@ -527,7 +571,12 @@ async function writeQueryToCsvFile(client, sql, fullPath) {
 
 	const writeChunk = (text) => {
 		const buf = Buffer.from(text, "utf8");
-		writeSync(fd, buf, 0, buf.length);
+		let written = 0;
+		while (written < buf.length) {
+			const n = writeSync(fd, buf, written, buf.length - written);
+			if (n <= 0) throw new Error("Short write to snapshot CSV file");
+			written += n;
+		}
 		whole.update(buf);
 		totalBytes += buf.length;
 		let pos = 0;
@@ -544,21 +593,34 @@ async function writeQueryToCsvFile(client, sql, fullPath) {
 		}
 	};
 
+	const CSV_FLUSH_CHARS = 262_144;
 	try {
 		mkdirSync(dirname(fullPath), { recursive: true });
 		fd = openSync(fullPath, "w");
 		let headerWritten = false;
 		for (;;) {
 			const batch = await client.query({ text: `fetch ${CURSOR_BATCH} from ${cursorName}`, rowMode: "array", types: TEXT_TYPES });
-			const lines = [];
+			let lines = [];
+			let bufferedChars = 0;
+			const flushLines = () => {
+				if (lines.length === 0) return;
+				writeChunk(`${lines.join("\n")}\n`);
+				lines = [];
+				bufferedChars = 0;
+			};
 			if (!headerWritten) {
-				lines.push(batch.fields.map((field) => csvCell(field.name)).join(","));
+				const header = batch.fields.map((field) => csvCell(field.name)).join(",");
+				lines.push(header);
+				bufferedChars += header.length + 1;
 				headerWritten = true;
 			}
 			for (const row of batch.rows) {
-				lines.push(row.map(csvCell).join(","));
+				const line = row.map(csvCell).join(",");
+				lines.push(line);
+				bufferedChars += line.length + 1;
+				if (bufferedChars >= CSV_FLUSH_CHARS) flushLines();
 			}
-			if (lines.length > 0) writeChunk(`${lines.join("\n")}\n`);
+			flushLines();
 			if (batch.rows.length < CURSOR_BATCH) break;
 		}
 		if (pieceFill > 0) pieces.push(pieceHash.digest("hex"));

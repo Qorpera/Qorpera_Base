@@ -821,4 +821,107 @@ describe("the Mailbox's badge (§3 badge)", () => {
 		window.dispatchEvent(new Event("focus"));
 		await vi.waitFor(() => expect(interfaceBadge(controller, file!)).toBe(0));
 	});
+
+	it("stops multi-page list polling when disposed between pages", async () => {
+		const { f, controller } = company();
+		const fake = mailFake(f);
+		fake.addresses = [ADDRESS];
+		fake.threads = Array.from({ length: 80 }, (_, index) => summary(index + 1));
+		const mail = new CompanyMail(controller, f.cloud, accountsFake(), (state) =>
+			controller.store.set({ mail: state }),
+		);
+		cleanup.push(() => mail.dispose());
+		await mail.open();
+		mail.watch([{}], [], () => true);
+		await vi.waitFor(() => expect(controller.store.get().mail?.lists["[null,null,null]"]?.threads).toHaveLength(50));
+		mail.older("[null,null,null]");
+		await vi.waitFor(() => expect(controller.store.get().mail?.lists["[null,null,null]"]?.pages).toBe(2));
+
+		let listCalls = 0;
+		let releaseFirstPage: (() => void) | undefined;
+		const rpcMock = vi.mocked(f.cloud.rpc);
+		const origRpc = rpcMock.getMockImplementation()!;
+		rpcMock.mockImplementation(async (name: string, args?: Record<string, unknown>, signal?: AbortSignal) => {
+			if (name === "qorpera_member_mail_threads") {
+				listCalls += 1;
+				if (listCalls === 1) {
+					await new Promise<void>((resolve) => {
+						releaseFirstPage = resolve;
+					});
+				}
+			}
+			return origRpc(name, args, signal);
+		});
+		window.dispatchEvent(new Event("focus"));
+		await vi.waitFor(() => expect(releaseFirstPage).toBeDefined());
+		mail.dispose();
+		releaseFirstPage!();
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		expect(listCalls).toBe(1);
+	});
+
+	it("stops multi-page thread polling when unwatched between pages", async () => {
+		const { f, controller } = company();
+		const fake = mailFake(f);
+		const threadId = thread(1);
+		fake.addresses = [ADDRESS];
+		fake.threads = [summary(1, { messages: 2 })];
+		fake.reads[threadId] = {
+			thread: threadId,
+			address: ADDRESS.address,
+			messages: [received(2)],
+			more: true,
+			nextBefore: { at: at(2), kind: "received", id: id(902) },
+			waiting: [],
+		};
+		fake.reads[`${threadId} before ${id(902)}`] = {
+			thread: threadId,
+			address: ADDRESS.address,
+			messages: [received(1)],
+			more: false,
+			waiting: [],
+		};
+		const mail = new CompanyMail(controller, f.cloud, accountsFake(), (state) =>
+			controller.store.set({ mail: state }),
+		);
+		cleanup.push(() => mail.dispose());
+		await mail.open();
+		mail.watch([{}], [threadId], () => true);
+		await vi.waitFor(() => expect(controller.store.get().mail?.threads[threadId]?.status).toBe("ready"));
+		mail.olderMessages(threadId);
+		await vi.waitFor(() => {
+			const entry = controller.store.get().mail?.threads[threadId];
+			expect(entry?.status === "ready" ? entry.pages : 0).toBe(2);
+		});
+
+		fake.reads[threadId] = {
+			thread: threadId,
+			address: ADDRESS.address,
+			messages: [received(3)],
+			more: true,
+			nextBefore: { at: at(3), kind: "received", id: id(903) },
+			waiting: [],
+		};
+		let threadCalls = 0;
+		let releaseFirstPage: (() => void) | undefined;
+		const rpcMock = vi.mocked(f.cloud.rpc);
+		const origRpc = rpcMock.getMockImplementation()!;
+		rpcMock.mockImplementation(async (name: string, args?: Record<string, unknown>, signal?: AbortSignal) => {
+			if (name === "qorpera_member_mail_thread") {
+				threadCalls += 1;
+				if (threadCalls === 1) {
+					await new Promise<void>((resolve) => {
+						releaseFirstPage = resolve;
+					});
+				}
+			}
+			return origRpc(name, args, signal);
+		});
+		window.dispatchEvent(new Event("focus"));
+		await vi.waitFor(() => expect(releaseFirstPage).toBeDefined());
+		mail.watch([{}], [], () => true);
+		releaseFirstPage!();
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		expect(threadCalls).toBe(1);
+	});
 });

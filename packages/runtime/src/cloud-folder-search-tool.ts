@@ -162,7 +162,10 @@ class FolderLinkError extends Error {
 /** One connection to the node's folder service, through the slot's relay; any fault ends it. */
 class FolderLink {
 	readonly #socket: Socket;
-	#buffer: Buffer = Buffer.alloc(0);
+	readonly #chunks: Buffer[] = [];
+	#head = 0;
+	#offset = 0;
+	#bufferedBytes = 0;
 	readonly #frames: Frame[] = [];
 	#waiting: ((frame: Frame | undefined) => void) | undefined;
 	#closed = false;
@@ -172,27 +175,89 @@ class FolderLink {
 	private constructor(socket: Socket) {
 		this.#socket = socket;
 		socket.on("data", (data: Buffer) => {
-			this.#buffer = this.#buffer.byteLength === 0 ? data : Buffer.concat([this.#buffer, data]);
-			while (this.#buffer.byteLength >= 5) {
-				const length = this.#buffer.readUInt32BE(0);
+			if (this.#closed || data.byteLength === 0) return;
+			this.#chunks.push(data);
+			this.#bufferedBytes += data.byteLength;
+			while (this.#bufferedBytes >= 5) {
+				const length = this.#peekLength();
 				if (length === 0 || length - 1 > MAX_PAYLOAD) return this.close();
-				if (this.#buffer.byteLength < 4 + length) break;
-				const kind = this.#buffer[4]!;
+				if (this.#bufferedBytes < 4 + length) break;
+				const frame = this.#consumeFrame(length);
 				let body: Record<string, unknown>;
 				try {
-					const value: unknown = JSON.parse(this.#buffer.subarray(5, 4 + length).toString("utf8"));
+					const value: unknown = JSON.parse(frame.payload.toString("utf8"));
 					if (!value || typeof value !== "object" || Array.isArray(value)) return this.close();
 					body = value as Record<string, unknown>;
 				} catch {
 					return this.close();
 				}
-				this.#buffer = this.#buffer.subarray(4 + length);
-				if (this.#waiting) this.#waiting({ kind, body });
-				else this.#frames.push({ kind, body });
+				if (this.#waiting) this.#waiting({ kind: frame.kind, body });
+				else this.#frames.push({ kind: frame.kind, body });
 			}
 		});
 		socket.on("error", () => this.close());
 		socket.on("close", () => this.close());
+	}
+
+	#peekLength(): number {
+		const first = this.#chunks[this.#head]!;
+		if (first.byteLength - this.#offset >= 4) return first.readUInt32BE(this.#offset);
+		let value = 0;
+		let index = this.#head;
+		let at = this.#offset;
+		for (let i = 0; i < 4; i++) {
+			const chunk = this.#chunks[index]!;
+			value = (value * 256 + chunk[at]!) >>> 0;
+			at += 1;
+			if (at === chunk.byteLength) {
+				index += 1;
+				at = 0;
+			}
+		}
+		return value;
+	}
+
+	#consumeFrame(length: number): { kind: number; payload: Buffer } {
+		const total = 4 + length;
+		const first = this.#chunks[this.#head]!;
+		if (first.byteLength - this.#offset >= total) {
+			const kind = first[this.#offset + 4]!;
+			const payload = first.subarray(this.#offset + 5, this.#offset + total);
+			this.#offset += total;
+			this.#bufferedBytes -= total;
+			if (this.#offset === first.byteLength) {
+				this.#head += 1;
+				this.#offset = 0;
+				if (this.#head === this.#chunks.length) {
+					this.#chunks.length = 0;
+					this.#head = 0;
+				}
+			}
+			return { kind, payload };
+		}
+		const assembled = Buffer.allocUnsafe(total);
+		let written = 0;
+		while (written < total) {
+			const chunk = this.#chunks[this.#head]!;
+			const available = chunk.byteLength - this.#offset;
+			const take = Math.min(available, total - written);
+			chunk.copy(assembled, written, this.#offset, this.#offset + take);
+			written += take;
+			this.#offset += take;
+			this.#bufferedBytes -= take;
+			if (this.#offset === chunk.byteLength) {
+				this.#head += 1;
+				this.#offset = 0;
+			}
+		}
+		if (this.#head === this.#chunks.length) {
+			this.#chunks.length = 0;
+			this.#head = 0;
+		} else if (this.#head > 32) {
+			this.#chunks.splice(0, this.#head);
+			this.#head = 0;
+		}
+		return { kind: assembled[4]!, payload: assembled.subarray(5) };
 	}
 
 	/** Connects through the relay and presents the run's view. Throws the node's refusal as a FolderLinkError. */
@@ -241,11 +306,13 @@ class FolderLink {
 	}
 
 	send(kind: number, value: unknown): void {
-		const payload = Buffer.from(JSON.stringify(value));
-		const head = Buffer.allocUnsafe(5);
-		head.writeUInt32BE(payload.byteLength + 1, 0);
-		head[4] = kind;
-		this.#socket.write(Buffer.concat([head, payload]));
+		const json = JSON.stringify(value);
+		const payloadBytes = Buffer.byteLength(json);
+		const frame = Buffer.allocUnsafe(5 + payloadBytes);
+		frame.writeUInt32BE(payloadBytes + 1, 0);
+		frame[4] = kind;
+		frame.write(json, 5, payloadBytes, "utf8");
+		this.#socket.write(frame);
 	}
 
 	/** The next frame, or undefined once closed, aborted or past `ms`. */
@@ -270,6 +337,10 @@ class FolderLink {
 	close(): void {
 		if (this.#closed) return;
 		this.#closed = true;
+		this.#chunks.length = 0;
+		this.#head = 0;
+		this.#offset = 0;
+		this.#bufferedBytes = 0;
 		this.#socket.destroy();
 		this.#waiting?.(undefined);
 	}

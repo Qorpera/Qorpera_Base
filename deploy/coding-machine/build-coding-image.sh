@@ -65,6 +65,8 @@ FILES=(
 	"qorpera-docker-proxy.service /etc/systemd/user/qorpera-docker-proxy.service 0644"
 	"qorpera-docker-daemon.json /etc/docker/daemon.json 0644"
 	"qorpera-user-delegate.conf /etc/systemd/system/user@.service.d/qorpera-delegate.conf 0644"
+	"qorpera-user-slice.conf /etc/systemd/system/user-.slice.d/qorpera-limits.conf 0644"
+	"../machine/lxd-agent-memory.conf /etc/systemd/system/lxd-agent.service.d/qorpera-memory.conf 0644"
 	"qorpera-coding.sudoers /etc/sudoers.d/qorpera-coding 0440"
 	"60-qorpera-coding.conf /etc/sysctl.d/60-qorpera-coding.conf 0644"
 	"10-qorpera-coding.yaml /etc/netplan/10-qorpera-coding.yaml 0600"
@@ -171,7 +173,7 @@ lx exec "$BUILDER" -- env \
 	rm -rf /tmp/node.tar.xz /tmp/uv.tar.gz /tmp/uv-x86_64-unknown-linux-gnu /tmp/mise /tmp/git.tar.xz "/tmp/git-$GIT_VERSION" \
 		/tmp/git-build.log /tmp/chromium.zip /tmp/chromium
 	install -d -o root -g root -m 0755 /company /opt/qorpera-guest /usr/local/libexec/qorpera-coding \
-		/etc/systemd/system/user@.service.d /etc/docker
+		/etc/systemd/system/user@.service.d /etc/systemd/system/user-.slice.d /etc/systemd/system/lxd-agent.service.d /etc/docker
 	printf "%s\n" "#!/bin/sh" "[ \"\$(id -u)\" = 0 ] || exec sudo -n /opt/qorpera-folder/qorpera-folder data \"\$@\"" \
 		"exec /opt/qorpera-folder/qorpera-folder data \"\$@\"" >/usr/local/bin/data
 	chmod 0555 /usr/local/bin/data
@@ -190,10 +192,24 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" GIT_VERSION="$GIT_VERSION
 	first() { "$@" 2>&1 | sed -n 1p; }
 	systemctl daemon-reload
 	groupadd --system qorpera-coding
-	systemctl enable docker.service containerd.service qorpera-grow-root.service
+	systemctl disable docker.service containerd.service
+	systemctl enable docker.socket qorpera-grow-root.service
 	systemctl --global enable qorpera-docker.socket
 	# No self-update: the image stays what was reviewed; agents update what they need inside their own machine.
-	systemctl mask apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service
+	systemctl mask apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service systemd-networkd-wait-online.service
+	if [[ -f /etc/default/grub ]] && command -v update-grub >/dev/null; then
+		install -d -o root -g root -m 0755 /etc/default/grub.d
+		printf "%s\n" \
+			"GRUB_TIMEOUT=0" \
+			"GRUB_RECORDFAIL_TIMEOUT=0" \
+			"case \" \${GRUB_CMDLINE_LINUX_DEFAULT:-} \" in" \
+			"	*\" quiet \"*) ;;" \
+			"	*) GRUB_CMDLINE_LINUX_DEFAULT=\"\${GRUB_CMDLINE_LINUX_DEFAULT:+\$GRUB_CMDLINE_LINUX_DEFAULT }quiet\" ;;" \
+			"esac" \
+			>/etc/default/grub.d/99-qorpera-boot.cfg
+		chmod 0644 /etc/default/grub.d/99-qorpera-boot.cfg
+		update-grub
+	fi
 	# snapd refreshes itself, nothing reaches a coding machine over SSH (the executor uses LXD exec), and the cloud
 	# image'"'"'s own git would be a second one beside the pinned git. No autoremove: a metapackage that goes with them
 	# would take everything it pulled in.
@@ -245,7 +261,7 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" GIT_VERSION="$GIT_VERSION
 	# accept of each session'"'"'s own NAT (5g), since in nft a drop in any forward chain is final.
 	dockerd --validate --config-file /etc/docker/daemon.json
 	[[ $(jq -c . /etc/docker/daemon.json) == '"'"'{"ip-forward-no-drop":true}'"'"' ]] || refuse "unexpected /etc/docker/daemon.json"
-	for unit in apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service; do
+	for unit in apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service systemd-networkd-wait-online.service; do
 		[[ $(readlink "/etc/systemd/system/$unit") == /dev/null ]] || refuse "$unit is not masked"
 	done
 	visudo -cf /etc/sudoers.d/qorpera-coding
@@ -254,10 +270,15 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" GIT_VERSION="$GIT_VERSION
 	# Sessions'"'"' users are plain /etc/passwd users (5g), with sub-ids only where 5g gives them.
 	[[ ! -s /etc/subuid && ! -s /etc/subgid ]] || refuse "the image has sub-ids: $(cat /etc/subuid /etc/subgid)"
 	systemd-analyze verify /etc/systemd/system/qorpera-grow-root.service /etc/systemd/system/qorpera-coding.slice
-	for unit in docker.service containerd.service qorpera-grow-root.service; do
+	for unit in docker.socket qorpera-grow-root.service; do
 		[[ $(systemctl is-enabled "$unit") == enabled ]] || refuse "$unit is not enabled"
 	done
+	for unit in docker.service containerd.service; do
+		[[ $(systemctl is-enabled "$unit" 2>/dev/null || true) != enabled ]] || refuse "$unit is enabled at boot"
+	done
 	[[ $(systemctl --global is-enabled qorpera-docker.socket) == enabled ]] || refuse "qorpera-docker.socket is not enabled"
+	[[ $(systemctl show lxd-agent.service -p OOMScoreAdjust --value) == -900 ]] || refuse "lxd-agent.service OOMScoreAdjust is not -900"
+	[[ $(systemctl show user-.slice -p TasksMax --value) == 4096 ]] || refuse "user-.slice TasksMax is not 4096"
 	# The executor reaches the machine only through LXD exec (test/prove-coding-image.sh shows it without cloud-init).
 	echo "lxd-agent.service: $(systemctl is-enabled lxd-agent.service 2>&1 || true)"
 	if installed openssh-server || installed snapd; then refuse "openssh-server or snapd is installed"; fi

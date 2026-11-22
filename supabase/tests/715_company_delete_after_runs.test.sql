@@ -68,7 +68,9 @@ begin
 			'public.qorpera_decision_vote_hint()'::regprocedure,
 			-- A site Qorpera took down (20260930756000) keeps its row but in a purge, which a takedown keeps from
 			-- running (qorpera_finish_company_deletion waits); SQL test 1252 shows it lets a purge through.
-			'public.qorpera_site_takedown_sticks()'::regprocedure);
+			'public.qorpera_site_takedown_sticks()'::regprocedure,
+			-- WHY: statement-level pg_notify trigger for web edge route sync (20260930832000); never refuses a delete.
+			'public.qorpera_web_notify_route_change()'::regprocedure);
 	if v_unexpected is not null then
 		raise exception 'Delete triggers the company purge does not know: %', v_unexpected;
 	end if;
@@ -207,6 +209,15 @@ values (repeat('f', 64), '71500000-0000-4000-8000-000000000170', '71500000-0000-
 insert into public.qorpera_company_site_sessions(token_sha256, site_id, password_version, expires_at, scope, version_id)
 values (repeat('9', 64), '71500000-0000-4000-8000-000000000170', 1, clock_timestamp() + interval '12 hours', 'next',
 	'71500000-0000-4000-8000-000000000171');
+insert into public.qorpera_company_site_deployments(id, site_id, profile_id, version_number, kind, state, manifest_sha256,
+	file_count, total_bytes)
+values ('71500000-0000-4000-8000-000000000172', '71500000-0000-4000-8000-000000000170',
+	'92400000-0000-4000-8000-000000000010', 1, 'static', 'live', repeat('a', 64), 1, 2);
+update public.qorpera_company_sites set live_deployment_id = '71500000-0000-4000-8000-000000000172'
+where id = '71500000-0000-4000-8000-000000000170';
+insert into public.qorpera_company_site_domains(id, site_id, profile_id, hostname, is_apex, is_primary, status, verification_token)
+values ('71500000-0000-4000-8000-000000000173', '71500000-0000-4000-8000-000000000170',
+	'92400000-0000-4000-8000-000000000010', 'shop-715.example.test', false, true, 'tls_active', repeat('1', 32));
 
 -- Another folder-v2 company (made as the base makes its own), untouched by all of this: its rows are counted now and
 -- after the delete.
@@ -474,7 +485,8 @@ begin
 			'public.qorpera_code_requests'::regclass, 'public.qorpera_company_sites'::regclass,
 			'public.qorpera_company_site_versions'::regclass, 'public.qorpera_company_site_files'::regclass,
 			'public.qorpera_company_site_file_parts'::regclass, 'public.qorpera_code_releases'::regclass,
-			'public.qorpera_company_site_tickets'::regclass, 'public.qorpera_company_site_sessions'::regclass)) <> 10 then
+			'public.qorpera_company_site_tickets'::regclass, 'public.qorpera_company_site_sessions'::regclass,
+			'public.qorpera_company_site_deployments'::regclass, 'public.qorpera_company_site_domains'::regclass)) <> 12 then
 		raise exception 'The purge removed other rows than it found (removed/found): %', v_wrong;
 	end if;
 end

@@ -1034,16 +1034,27 @@ class FakeExecStream {
 	socket = "";
 	/** The fd whose upgrade it never answers, as an LXD that stalls the handshake. */
 	withhold?: string;
+	refuse?: string;
+	requireConcurrentUpgrades = false;
 	withheldSeen = false;
 	withheldClosed = false;
 	readonly #sockets = new Set<Socket>();
 	readonly #connected = new Map<string, Socket>();
+	readonly #barrier: Array<() => void> = [];
 	#ended?: number;
 	readonly #waiters: Array<(exitCode: number) => void> = [];
 	readonly #command: (stdin: Buffer, post: Record<string, unknown>) => ExecStreamCommand;
 
 	constructor(command: (stdin: Buffer, post: Record<string, unknown>) => ExecStreamCommand) {
 		this.#command = command;
+	}
+
+	openSockets(): number {
+		let count = 0;
+		for (const socket of this.#sockets) {
+			if (!socket.destroyed) count += 1;
+		}
+		return count;
 	}
 
 	async start(): Promise<string> {
@@ -1101,6 +1112,10 @@ class FakeExecStream {
 			socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
 			return;
 		}
+		if (fd === this.refuse) {
+			socket.end("HTTP/1.1 403 Forbidden\r\n\r\n", () => socket.destroy());
+			return;
+		}
 		if (fd === this.withhold) {
 			this.withheldSeen = true;
 			// Reads on, so the client's end of the connection is seen; the server keeps its sockets half open.
@@ -1114,47 +1129,58 @@ class FakeExecStream {
 			socket.resume();
 			return;
 		}
-		this.upgrades.push(fd);
-		const accept = createHash("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
-		socket.write(
-			`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
-		);
-		this.#connected.set(fd, socket);
-		let buffer = Buffer.alloc(0);
-		socket.on("data", (chunk: Buffer) => {
-			buffer = Buffer.concat([buffer, chunk]);
-			for (;;) {
-				if (buffer.byteLength < 2) return;
-				const opcode = buffer[0]! & 0x0f;
-				let length = buffer[1]! & 0x7f;
-				let offset = 2;
-				if (length === 126) {
-					length = buffer.readUInt16BE(2);
-					offset = 4;
-				} else if (length === 127) {
-					length = buffer.readUInt32BE(6);
-					offset = 10;
+		const complete = (): void => {
+			if (socket.destroyed) return;
+			this.upgrades.push(fd);
+			const accept = createHash("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+			socket.write(
+				`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
+			);
+			this.#connected.set(fd, socket);
+			let buffer = Buffer.alloc(0);
+			socket.on("data", (chunk: Buffer) => {
+				buffer = Buffer.concat([buffer, chunk]);
+				for (;;) {
+					if (buffer.byteLength < 2) return;
+					const opcode = buffer[0]! & 0x0f;
+					let length = buffer[1]! & 0x7f;
+					let offset = 2;
+					if (length === 126) {
+						length = buffer.readUInt16BE(2);
+						offset = 4;
+					} else if (length === 127) {
+						length = buffer.readUInt32BE(6);
+						offset = 10;
+					}
+					if (buffer.byteLength < offset + 4 + length) return;
+					const mask = buffer.subarray(offset, offset + 4);
+					const payload = Buffer.from(buffer.subarray(offset + 4, offset + 4 + length));
+					for (let index = 0; index < payload.byteLength; index++)
+						payload[index] = payload[index]! ^ mask[index & 3]!;
+					buffer = buffer.subarray(offset + 4 + length);
+					if (opcode === 0x8) {
+						socket.end(serverFrame(0x8, payload), () => socket.destroy());
+						this.#closedEarly(fd, socket);
+						return;
+					}
+					if (fd !== "0" || this.stdinEnded) continue;
+					if (opcode === 0x2) this.stdin = Buffer.concat([this.stdin, payload]);
+					else if (opcode === 0x1) {
+						this.stdinEnded = true;
+						this.#run();
+					}
 				}
-				if (buffer.byteLength < offset + 4 + length) return;
-				const mask = buffer.subarray(offset, offset + 4);
-				const payload = Buffer.from(buffer.subarray(offset + 4, offset + 4 + length));
-				for (let index = 0; index < payload.byteLength; index++)
-					payload[index] = payload[index]! ^ mask[index & 3]!;
-				buffer = buffer.subarray(offset + 4 + length);
-				if (opcode === 0x8) {
-					socket.end(serverFrame(0x8, payload));
-					this.#closedEarly(fd, socket);
-					return;
-				}
-				if (fd !== "0" || this.stdinEnded) continue;
-				if (opcode === 0x2) this.stdin = Buffer.concat([this.stdin, payload]);
-				else if (opcode === 0x1) {
-					this.stdinEnded = true;
-					this.#run();
-				}
+			});
+			socket.on("close", () => this.#closedEarly(fd, socket));
+		};
+		if (this.requireConcurrentUpgrades) {
+			this.#barrier.push(complete);
+			if (this.#barrier.length === 3) {
+				for (const release of this.#barrier.splice(0)) release();
 			}
-		});
-		socket.on("close", () => this.#closedEarly(fd, socket));
+			return;
+		}
+		complete();
 	}
 
 	#closedEarly(fd: string, socket: Socket): void {
@@ -1290,8 +1316,10 @@ describe("LXD exec stream", () => {
 		expect(Date.now() - started).toBeLessThan(3_000);
 		await vi.waitFor(() => expect(timed.withheldClosed).toBe(true));
 		// The stdout websocket already connected is closed too.
-		expect(timed.upgrades).toEqual(["1"]);
+		expect(timed.upgrades).toContain("1");
+		expect(timed.upgrades).not.toContain("2");
 		await vi.waitFor(() => expect(timed.killed).toBe(true));
+		await vi.waitFor(() => expect(timed.openSockets()).toBe(0));
 		const stopped = await fake(() => ({ hold: true }));
 		stopped.withhold = "1";
 		const controller = new AbortController();
@@ -1307,8 +1335,33 @@ describe("LXD exec stream", () => {
 		await expect(call).rejects.toThrow("LXD exec stream was stopped");
 		expect(Date.now() - abortedAt).toBeLessThan(1_000);
 		await vi.waitFor(() => expect(stopped.withheldClosed).toBe(true));
-		expect(stopped.upgrades).toEqual([]);
+		expect(stopped.upgrades).not.toContain("1");
 		expect(stopped.stdinEnded).toBe(false);
+		await vi.waitFor(() => expect(stopped.openSockets()).toBe(0));
+	});
+
+	it("connects all three exec stream websockets concurrently and closes every socket on partial failure", async () => {
+		const concurrent = await fake((stdin) => ({ stdout: [Buffer.from("ok:"), stdin], exitCode: 0 }));
+		concurrent.requireConcurrentUpgrades = true;
+		const result = await new LxdUnixClient(concurrent.socket, 30).execInstanceStream("coding", "coding-vm", {
+			...request,
+			timeoutMs: 2_000,
+		});
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout.toString("utf8")).toBe('ok:{"pass":"p"}');
+		expect([...concurrent.upgrades].sort()).toEqual(["0", "1", "2"]);
+
+		const partial = await fake(() => ({ hold: true }));
+		partial.refuse = "2";
+		partial.withhold = "0";
+		await expect(
+			new LxdUnixClient(partial.socket, 30).execInstanceStream("coding", "coding-vm", {
+				...request,
+				timeoutMs: 2_000,
+			}),
+		).rejects.toThrow("WebSocket handshake was refused (403)");
+		await vi.waitFor(() => expect(partial.openSockets()).toBe(0));
+		expect(partial.stdinEnded).toBe(false);
 	});
 
 	it("fails when a stream ends without its end message", async () => {

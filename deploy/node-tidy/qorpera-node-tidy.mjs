@@ -18,6 +18,9 @@ const FINGERPRINT = /\b[0-9a-f]{64}\b/g;
 const FILE_PATH = /\/(?:etc|opt|var\/lib|usr\/local)\/[A-Za-z0-9_.@/+-]+/g;
 const MAX_TRACED_FILE_BYTES = 2_000_000;
 const MAX_HOLD_FILE_BYTES = 65_536;
+const MAX_LXD_RESPONSE_BYTES = 32 * 1024 * 1024;
+const LXD_TIMEOUT_MS = 180_000;
+const SYSTEMCTL_TIMEOUT_MS = 30_000;
 const HOUR_MS = 60 * 60_000;
 
 /** Decides which LXD images stay. Pure: every input is an observation of the node.
@@ -42,10 +45,15 @@ export function planImages({ images, instances, referenced, pins, held = [], now
 	if (live) {
 		keep(live.fingerprint, "live runtime pin");
 		for (const pin of pins) if (pin.version > live.version) keep(pin.fingerprint, "staged runtime pin");
-		const previous = pins
-			.filter((pin) => pin.version < live.version && pin.fingerprint !== live.fingerprint)
-			.sort((a, b) => b.version - a.version)[0];
-		if (previous) keep(previous.fingerprint, "previous runtime pin");
+		const explicitPrevious = pins.filter((pin) => pin.previous === true);
+		if (explicitPrevious.length > 0) {
+			for (const pin of explicitPrevious) keep(pin.fingerprint, "previous runtime pin");
+		} else {
+			const previous = pins
+				.filter((pin) => pin.version < live.version && pin.fingerprint !== live.fingerprint)
+				.sort((a, b) => b.version - a.version)[0];
+			if (previous) keep(previous.fingerprint, "previous runtime pin");
+		}
 	}
 	for (const { fingerprint, reason } of held) keep(fingerprint, reason);
 	for (const image of images) {
@@ -231,13 +239,27 @@ export async function agentPins(agentRoot) {
 	});
 	const live = /^\.\.\/releases\/(0|[1-9][0-9]*)$/.exec(role)?.[1];
 	if (live === undefined) throw new Error(`the provider role link is unexpected: ${role}`);
+	const previousLink = await readlink(join(agentRoot, "previous")).catch((error) => {
+		if (error.code === "ENOENT") return null;
+		throw error;
+	});
+	let previous;
+	if (previousLink !== null) {
+		previous = /^releases\/(0|[1-9][0-9]*)$/.exec(previousLink)?.[1];
+		if (previous === undefined) throw new Error(`the previous link is unexpected: ${previousLink}`);
+	}
 	const pins = [];
 	for (const name of await readdir(join(agentRoot, "releases"))) {
 		if (!/^(0|[1-9][0-9]*)$/.test(name)) continue;
 		const release = JSON.parse(await readFile(join(agentRoot, "releases", name, "release.json"), "utf8"));
 		const fingerprint = release.roles?.provider?.env?.QORPERA_LXD_IMAGE_FINGERPRINT;
 		if (typeof fingerprint === "string" && /^[0-9a-f]{64}$/.test(fingerprint))
-			pins.push({ version: Number(name), fingerprint, live: name === live });
+			pins.push({
+				version: Number(name),
+				fingerprint,
+				live: name === live,
+				...(previous !== undefined ? { previous: name === previous } : {}),
+			});
 	}
 	return pins;
 }
@@ -284,21 +306,60 @@ async function trace(starts) {
 
 function lxdRequest(socketPath, method, path) {
 	return new Promise((resolve, reject) => {
-		const req = request({ socketPath, method, path, headers: { host: "lxd" }, timeout: 180_000 }, (response) => {
+		let settled = false;
+		const finish = (error, value) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(deadline);
+			if (error) reject(error);
+			else resolve(value);
+		};
+		const req = request({ socketPath, method, path, headers: { host: "lxd" }, timeout: LXD_TIMEOUT_MS }, (response) => {
 			const chunks = [];
-			response.on("data", (chunk) => chunks.push(chunk));
+			let totalBytes = 0;
+			response.on("data", (chunk) => {
+				if (settled) return;
+				totalBytes += chunk.length;
+				if (totalBytes > MAX_LXD_RESPONSE_BYTES) {
+					const overflow = new Error(`LXD ${method} ${path} exceeded ${MAX_LXD_RESPONSE_BYTES} bytes`);
+					req.destroy(overflow);
+					finish(overflow);
+					return;
+				}
+				chunks.push(chunk);
+			});
+			response.on("error", (error) => finish(error));
+			response.on("aborted", () => finish(new Error(`LXD ${method} ${path} aborted`)));
+			response.on("close", () => {
+				if (!response.complete) finish(new Error(`LXD ${method} ${path} closed before completing`));
+			});
 			response.on("end", () => {
+				if (!response.complete) {
+					finish(new Error(`LXD ${method} ${path} truncated`));
+					return;
+				}
 				try {
 					const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-					if (body.type === "error") reject(new Error(`LXD ${method} ${path}: ${body.error}`));
-					else resolve(body);
+					if ((response.statusCode ?? 0) >= 400 || body?.type === "error")
+						finish(new Error(`LXD ${method} ${path}: ${body?.error ?? `HTTP ${response.statusCode}`}`));
+					else finish(null, body);
 				} catch (error) {
-					reject(error);
+					finish(error);
 				}
 			});
 		});
-		req.on("timeout", () => req.destroy(new Error(`LXD ${method} ${path} timed out`)));
-		req.on("error", reject);
+		const deadline = setTimeout(() => {
+			const timeout = new Error(`LXD ${method} ${path} timed out`);
+			req.destroy(timeout);
+			finish(timeout);
+		}, LXD_TIMEOUT_MS);
+		deadline.unref?.();
+		req.on("timeout", () => {
+			const timeout = new Error(`LXD ${method} ${path} timed out`);
+			req.destroy(timeout);
+			finish(timeout);
+		});
+		req.on("error", (error) => finish(error));
 		req.end();
 	});
 }
@@ -340,7 +401,9 @@ export function nodeLxd(socketPath) {
 const run = promisify(execFile);
 export const nodeSystemd = {
 	async units(pattern) {
-		const { stdout } = await run("/usr/bin/systemctl", ["list-units", "--all", "--plain", "--no-legend", pattern]);
+		const { stdout } = await run("/usr/bin/systemctl", ["list-units", "--all", "--plain", "--no-legend", pattern], {
+			timeout: SYSTEMCTL_TIMEOUT_MS,
+		});
 		return stdout
 			.split("\n")
 			.map((line) => line.trim().split(/\s+/))
@@ -349,7 +412,9 @@ export const nodeSystemd = {
 	},
 	/** Every installed unit file matching the pattern, whatever its state (a disabled unit may not be loaded). */
 	async installedUnits(pattern) {
-		const { stdout } = await run("/usr/bin/systemctl", ["list-unit-files", "--no-legend", "--plain", pattern]);
+		const { stdout } = await run("/usr/bin/systemctl", ["list-unit-files", "--no-legend", "--plain", pattern], {
+			timeout: SYSTEMCTL_TIMEOUT_MS,
+		});
 		return stdout
 			.split("\n")
 			.map((line) => line.trim().split(/\s+/)[0])
@@ -358,18 +423,22 @@ export const nodeSystemd = {
 	/** The files a live unit really starts from: its effective start commands, environment files and the
 	 * running process's command line. Overridden drop-ins are not followed, so their old pins are not live. */
 	async startPaths(unit) {
-		const { stdout } = await run("/usr/bin/systemctl", [
-			"show",
-			unit,
-			"-p",
-			"ExecStart",
-			"-p",
-			"ExecStartPre",
-			"-p",
-			"EnvironmentFiles",
-			"-p",
-			"MainPID",
-		]);
+		const { stdout } = await run(
+			"/usr/bin/systemctl",
+			[
+				"show",
+				unit,
+				"-p",
+				"ExecStart",
+				"-p",
+				"ExecStartPre",
+				"-p",
+				"EnvironmentFiles",
+				"-p",
+				"MainPID",
+			],
+			{ timeout: SYSTEMCTL_TIMEOUT_MS },
+		);
 		const paths = stdout.match(FILE_PATH) ?? [];
 		const pid = /^MainPID=(\d+)$/m.exec(stdout)?.[1];
 		if (pid && pid !== "0") {
@@ -423,7 +492,13 @@ export async function tidy({ config, apply, lxd, systemd, now = Date.now(), remo
 	const stagingFiles = [];
 	for (const pattern of config.staging)
 		for (const path of await expand(pattern)) {
-			const info = await lstat(path);
+			let info;
+			try {
+				info = await lstat(path);
+			} catch (error) {
+				if (error.code === "ENOENT") continue;
+				throw error;
+			}
 			if (info.isFile()) stagingFiles.push({ path, size: info.size, mtimeMs: info.mtimeMs });
 		}
 	// A refusal means the node looks unlike what the rules expect: delete nothing at all.

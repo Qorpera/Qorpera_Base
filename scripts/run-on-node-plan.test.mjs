@@ -192,6 +192,16 @@ test("the folder program runs its own step (scripts/folder-program-step.mjs, tes
 	for (const file of ["scripts/folder-program-step.mjs", "scripts/folder-program-artifact.mjs"]) assert.ok(names([file]).includes("folder-program"), file);
 });
 
+test("the web hosting Rust crates run their own step without triggering folder-program", () => {
+	const plan = planChanged(["crates/qorpera-web-router/src/server.rs", "crates/qorpera-app-host/Cargo.lock"]);
+	assert.equal(plan.full, false);
+	assert.ok(plan.steps.some((step) => step.name === "web-hosting-programs"));
+	assert.ok(!plan.steps.some((step) => step.name === "folder-program"));
+	assert.deepEqual(STEPS.find((step) => step.name === "web-hosting-programs").commands, ["node scripts/web-hosting-programs-step.mjs"]);
+	for (const file of ["scripts/build-web-hosting-programs.mjs", "scripts/web-hosting-programs-step.mjs"])
+		assert.ok(names([file]).includes("web-hosting-programs"), file);
+});
+
 test("shared configuration and unknown paths run every step", () => {
 	for (const file of ["package-lock.json", "packages/runtime/package.json", "packages/contracts/src/index.ts", "tsconfig.json"]) {
 		const plan = planChanged([file]);

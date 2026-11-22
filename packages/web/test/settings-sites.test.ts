@@ -1455,7 +1455,7 @@ describe("sites client", () => {
 			"https://wristband-shop.qorpera.com.example.org/",
 			"https://wristband-shopxqorpera.com/",
 			"https://wristband-shop.qorperaxcom/",
-			"https://wristband-shop.qorpera.site/",
+			"https://wristband-shop.qorpera.org/",
 			"https://wristband-shop.example.com/",
 			"https://qorpera.com/",
 		])

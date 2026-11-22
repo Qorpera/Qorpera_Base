@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { open, readFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
+import { withTimeoutScope } from "./abort-scope.ts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 
 /** One member's Compute Identity volume, attached to the execution host at a
@@ -85,21 +86,23 @@ export function supabaseSharedExecutionIdentityAuthority(
 		throw new Error("Native identity authority requires an HTTPS origin");
 	return async (computeIdentityId, signal, runId) => {
 		const body = identityArguments(computeIdentityId, runId);
-		const response = await fetchImplementation(
-			new URL("/rest/v1/rpc/qorpera_identity_recovery_runtime_state", base),
-			{
-				method: "POST",
-				redirect: "error",
-				headers: { "content-type": "application/json" },
-				body,
-				signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
-			},
-		);
-		if (!response.ok) {
-			void response.body?.cancel().catch(() => undefined);
-			throw new Error(`Native identity authority rejected the run (${response.status})`);
-		}
-		return parseSharedExecutionIdentityState(await response.json());
+		return withTimeoutScope(signal, 10_000, async (deadline) => {
+			const response = await fetchImplementation(
+				new URL("/rest/v1/rpc/qorpera_identity_recovery_runtime_state", base),
+				{
+					method: "POST",
+					redirect: "error",
+					headers: { "content-type": "application/json" },
+					body,
+					signal: deadline,
+				},
+			);
+			if (!response.ok) {
+				void response.body?.cancel().catch(() => undefined);
+				throw new Error(`Native identity authority rejected the run (${response.status})`);
+			}
+			return parseSharedExecutionIdentityState(await response.json());
+		});
 	};
 }
 
@@ -120,23 +123,25 @@ export function supabaseSharedExecutionLoginCustody(
 		throw new Error("Native identity authority requires an HTTPS origin");
 	return async (computeIdentityId, signal, runId) => {
 		const body = identityArguments(computeIdentityId, runId);
-		const response = await fetchImplementation(
-			new URL("/rest/v1/rpc/qorpera_compute_identity_login_in_vault", base),
-			{
-				method: "POST",
-				redirect: "error",
-				headers: { "content-type": "application/json" },
-				body,
-				signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
-			},
-		);
-		if (!response.ok) {
-			void response.body?.cancel().catch(() => undefined);
-			throw new Error(`Native identity custody is unavailable (${response.status})`);
-		}
-		const answer: unknown = await response.json();
-		if (typeof answer !== "boolean") throw new Error("Native identity custody is invalid");
-		return answer;
+		return withTimeoutScope(signal, 10_000, async (deadline) => {
+			const response = await fetchImplementation(
+				new URL("/rest/v1/rpc/qorpera_compute_identity_login_in_vault", base),
+				{
+					method: "POST",
+					redirect: "error",
+					headers: { "content-type": "application/json" },
+					body,
+					signal: deadline,
+				},
+			);
+			if (!response.ok) {
+				void response.body?.cancel().catch(() => undefined);
+				throw new Error(`Native identity custody is unavailable (${response.status})`);
+			}
+			const answer: unknown = await response.json();
+			if (typeof answer !== "boolean") throw new Error("Native identity custody is invalid");
+			return answer;
+		});
 	};
 }
 

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, open, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseRecord, parseUuid, SHA256_HEX_PATTERN } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import { CLAUDE_LOGIN_FILES, CLAUDE_LOGIN_FILES_SCHEMA, claudeLoginFile } from "./cloud-model-login-sign-in.ts";
 import { CLAUDE_LOGIN_FIELD, checkClaudeLoginFiles } from "./cloud-model-login-vault-sign-in.ts";
 import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
@@ -292,11 +293,19 @@ export class CloudClaudeLoginRenewer {
 		this.#commitRetryMs = options.commitRetryMs ?? COMMIT_RETRY_MS;
 	}
 
+	#track(id: string, work: () => Promise<ClaudeRenewalResult>): Promise<ClaudeRenewalResult> {
+		const started = work().finally(() => {
+			if (this.#inFlight.get(id) === started) this.#inFlight.delete(id);
+		});
+		this.#inFlight.set(id, started);
+		return started;
+	}
+
 	check(claudeLoginId: string, purpose: ClaudeRenewalPurpose): Promise<ClaudeRenewalResult> {
 		const id = parseUuid(claudeLoginId, "Claude login");
 		const running = this.#inFlight.get(id);
 		if (running) return running;
-		const started = (async (): Promise<ClaudeRenewalResult> => {
+		return this.#track(id, async () => {
 			const pending = this.#pending.get(id);
 			if (pending) {
 				const kept = await this.#commitPending(pending);
@@ -304,16 +313,15 @@ export class CloudClaudeLoginRenewer {
 				if (kept === "kept") return "failed";
 			}
 			const taken = parseTaken(
-				await this.#authority.takeClaudeLoginRenewal(
-					{ claudeLoginId: id, purpose },
-					AbortSignal.timeout(SAVE_DEADLINE_MS),
+				await withAbortScopes(
+					[],
+					(signal) => this.#authority.takeClaudeLoginRenewal({ claudeLoginId: id, purpose }, signal),
+					SAVE_DEADLINE_MS,
 				),
 			);
 			if (taken === "busy") return "busy";
 			return taken ? this.#renew(taken) : "none";
-		})().finally(() => this.#inFlight.delete(id));
-		this.#inFlight.set(id, started);
-		return started;
+		});
 	}
 
 	async checkForRun(claudeLoginId: string, purpose: ClaudeRenewalPurpose): Promise<"reopen" | "keep" | "pending"> {
@@ -342,16 +350,24 @@ export class CloudClaudeLoginRenewer {
 	}
 
 	async idle(): Promise<number> {
-		for (const pending of [...this.#pending.values()])
-			if (!this.#inFlight.has(pending.claudeLoginId) && this.#pending.get(pending.claudeLoginId) === pending)
-				await this.#commitPending(pending);
+		for (const pending of [...this.#pending.values()]) {
+			if (this.#inFlight.has(pending.claudeLoginId) || this.#pending.get(pending.claudeLoginId) !== pending)
+				continue;
+			await this.#track(pending.claudeLoginId, async () => {
+				const kept = await this.#commitPending(pending);
+				return kept === "renewed" || kept === "dropped" ? "renewed" : "failed";
+			});
+		}
 		let checked = 0;
 		for (; checked < IDLE_PER_PASS; checked += 1) {
 			const taken = parseTaken(
-				await this.#authority.takeIdleClaudeLoginRenewal(AbortSignal.timeout(SAVE_DEADLINE_MS)),
+				await withAbortScopes([], (signal) => this.#authority.takeIdleClaudeLoginRenewal(signal), SAVE_DEADLINE_MS),
 			);
 			if (!taken || taken === "busy") break;
-			await this.#renew(taken);
+			while (this.#inFlight.has(taken.claudeLoginId)) {
+				await this.#inFlight.get(taken.claudeLoginId)!.catch(() => undefined);
+			}
+			await this.#track(taken.claudeLoginId, () => this.#renew(taken));
 		}
 		return checked;
 	}
@@ -368,7 +384,7 @@ export class CloudClaudeLoginRenewer {
 		}
 		let check: ClaudeLoginCheck;
 		try {
-			check = await this.#checker.checkClaudeLogin(files, AbortSignal.timeout(CHECK_BUDGET_MS));
+			check = await withAbortScopes([], (signal) => this.#checker.checkClaudeLogin(files, signal), CHECK_BUDGET_MS);
 		} catch {
 			check = { outcome: "failed" };
 		}
@@ -429,20 +445,26 @@ export class CloudClaudeLoginRenewer {
 	}
 
 	async #commitPending(pending: PendingCommit): Promise<"renewed" | "dropped" | "kept"> {
+		if (this.#pending.get(pending.claudeLoginId) !== pending) return "dropped";
 		let answer: Record<string, unknown>;
 		try {
 			answer = parseRecord(
-				await this.#authority.commitClaudeLoginRenewal(
-					{
-						claudeLoginId: pending.claudeLoginId,
-						token: pending.token,
-						baseVersion: pending.baseVersion,
-						baseEnvelopeSha256: pending.baseEnvelopeSha256,
-						keyId: pending.keyId,
-						encryptedEnvelope: pending.envelope,
-						envelopeSha256: pending.envelopeSha256,
-					},
-					AbortSignal.timeout(SAVE_DEADLINE_MS),
+				await withAbortScopes(
+					[],
+					(signal) =>
+						this.#authority.commitClaudeLoginRenewal(
+							{
+								claudeLoginId: pending.claudeLoginId,
+								token: pending.token,
+								baseVersion: pending.baseVersion,
+								baseEnvelopeSha256: pending.baseEnvelopeSha256,
+								keyId: pending.keyId,
+								encryptedEnvelope: pending.envelope,
+								envelopeSha256: pending.envelopeSha256,
+							},
+							signal,
+						),
+					SAVE_DEADLINE_MS,
 				),
 				"Claude login renewal commit",
 			);
@@ -484,9 +506,14 @@ export class CloudClaudeLoginRenewer {
 	): Promise<"released" | "signed_out" | "stale" | "unknown"> {
 		try {
 			const answer = parseRecord(
-				await this.#authority.releaseClaudeLoginRenewal(
-					{ claudeLoginId: taken.claudeLoginId, token: taken.token, outcome },
-					AbortSignal.timeout(SAVE_DEADLINE_MS),
+				await withAbortScopes(
+					[],
+					(signal) =>
+						this.#authority.releaseClaudeLoginRenewal(
+							{ claudeLoginId: taken.claudeLoginId, token: taken.token, outcome },
+							signal,
+						),
+					SAVE_DEADLINE_MS,
 				),
 				"Claude login renewal release",
 			);

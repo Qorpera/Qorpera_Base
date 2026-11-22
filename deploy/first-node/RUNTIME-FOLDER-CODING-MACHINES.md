@@ -700,7 +700,9 @@ The limits:
 
 Since 5j-4, the executor asks the company's secret broker for the session's environment once for each command it
 starts, and masks that command's output, `output.log` and receipts with those values and the values of every other
-session on the machine. A session's values stay in the masks until the machine's last session is released. When the
+session on the machine. A session's values stay in the masks until the machine's last session is released, or until the
+machine stops, restarts for the folder, gets a new disk, sleeps or is removed (in each case SQL has already ended every
+attachment, so this behaves like an executor restart and the next attach asks the vault again). When the
 executor does not know the values a command runs with (it restarted after the start, or the guest did not confirm that
 it took this start's environment), none of that command's output is kept: the bytes are counted lost.
 
@@ -749,8 +751,8 @@ Docker and compose on a nested VM first; Q11 asks for the fallback if the proof 
 ## More machines
 
 When a machine is full, a new session opens the member's next machine (the lowest free `number`) for the same coding
-agent, repository and setup digest (5k; migrations `20260930828000` and `20260930832000`, SQL tests `1317`, `1318`, and
-`1320`, Q9 settled):
+agent, repository and setup digest (5k; migrations `20260930828000` and `20260930837000`, SQL tests `1317`, `1318`, and
+`1323`, Q9 settled):
 
 - A machine's active sessions are the non-archived sessions currently attached to it (`attached_at is not null` and
   `attachment_until > clock_timestamp()`) or running an active leased turn (`phase in ('preparing', 'running',
@@ -843,7 +845,7 @@ Migration slots and SQL test numbers are reserved in the registry when a slice i
 | 5h | Setup file and snapshots: the three formats and their mapping, the strict schema, builder VMs, the digest with each named Dockerfile's bytes, snapshot keys and refresh, one build at a time, a failed build keeps the old snapshot, `install` at attach, image and Dockerfile setups (BuildKit, the image built again from the worktree at attach), compose devcontainers settled | Parser tests for each format and each ignored or refused key; a refresh on a setup change and on a default-branch change; a failed build keeps the old snapshot and reports its log; a second build for the same repository and member waits; a change to a named Dockerfile alone gives a new digest, so the next new session gets a new machine; a context file changed on a session's branch is in the image built at attach |
 | 5i | Previews and the browser: the preview proxy, single-use capabilities and host cookies, member-only access, host-initiated streams; the `coding_browser` tool with a boundary before each screenshot | Proxy tests: a capability works once, a cookie works only on its host, another member is refused; a screenshot waits for a boundary |
 | 5j | Secrets and the vault relay: environment secrets (member and company, with grants), host-side injection, masking in output, logs, receipts, terminals, saves and pushes, the relay for MCP sign-ins and git fetch | Masking across chunk boundaries and in base64 and URL forms; a save carrying a value refused; a push carrying a value refused; a company secret without a grant not injected; the relay forwards a sign-in only to its own origin and refuses a push; the SQL part may land before 5g |
-| 5k | A second machine: `number`, the full rule, opening the next machine (migrations `20260930828000` and `20260930832000`). Active-only session accounting, `max_attached_sessions` (default 6) and non-zero sizing floors (`1000` mCPU, `2 GiB`), cross-node overflow, detached re-homing off retiring or structurally full machines with `MACHINE_NEW_DISK` notice, update-only load record (`qorpera_record_coding_machine_load`, preserving CPU on null), and decoupled executor load reporting including FUSE and adopted user slices with 3-sample CPU hysteresis (`coding-executor-host.ts`) | Active-only capacity spreads concurrent arrivals across VMs; full/retiring remote VMs allow cross-node overflow while non-full remote VMs return `NODE_NOT_PREFERRED`; detached sessions stay on transient `full_until` hints and re-home with `MACHINE_NEW_DISK` notice off retiring or structurally full machines; attached sessions stay pinned; concurrent plans, keep attachments, and load reports serialize with zero lock-order inversions (`1317`, `1318`, `1320`, `coding-executor-host.test.ts`, `lxd-client.test.ts`) |
+| 5k | A second machine: `number`, the full rule, opening the next machine (migrations `20260930828000` and `20260930837000`). Active-only session accounting, `max_attached_sessions` (default 6) and non-zero sizing floors (`1000` mCPU, `2 GiB`), cross-node overflow, detached re-homing off retiring or structurally full machines with `MACHINE_NEW_DISK` notice, update-only load record (`qorpera_record_coding_machine_load`, preserving CPU on null), and decoupled executor load reporting including FUSE and adopted user slices with 3-sample CPU hysteresis (`coding-executor-host.ts`) | Active-only capacity spreads concurrent arrivals across VMs; full/retiring remote VMs allow cross-node overflow while non-full remote VMs return `NODE_NOT_PREFERRED`; detached sessions stay on transient `full_until` hints and re-home with `MACHINE_NEW_DISK` notice off retiring or structurally full machines; attached sessions stay pinned; concurrent plans, keep attachments, and load reports serialize with zero lock-order inversions (`1317`, `1318`, `1323`, `coding-executor-host.test.ts`, `lxd-client.test.ts`) |
 | 5l | Retirements after step 6: the private repository folder, `cloud-coding-git-guest.ts`, `coding-git-transfer.ts`, the 64 MiB cap, the storage and command helpers, the NAS data and custody plugs, COMMAND-GUEST.md | The changed tests pass with the old paths gone; `git grep` finds no caller |
 | 5m | Live proof (below) | — |
 

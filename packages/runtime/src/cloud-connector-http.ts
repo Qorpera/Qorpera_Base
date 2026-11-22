@@ -73,6 +73,28 @@ export function jsonValueBytes(value: JsonValue): number {
 	return Buffer.byteLength(JSON.stringify(value));
 }
 
+const UTF8_FATAL = new TextDecoder("utf-8", { fatal: true });
+
+export function codePointCount(value: string): number {
+	let count = 0;
+	for (let i = 0; i < value.length; ) {
+		const code = value.codePointAt(i)!;
+		i += code > 0xffff ? 2 : 1;
+		count += 1;
+	}
+	return count;
+}
+
+function jsonCodePointBytes(code: number): number {
+	if (code < 0x80) {
+		if (code === 0x22 || code === 0x5c || (code >= 0x08 && code <= 0x0d && code !== 0x0b)) return 2;
+		return code < 0x20 ? 6 : 1;
+	}
+	if (code < 0x800) return 2;
+	if (code >= 0xd800 && code <= 0xdfff) return 6;
+	return code < 0x10000 ? 3 : 4;
+}
+
 /** Clips at a code point boundary to at most `maximumCharacters` characters
  * and, when given, at most `maximumBytes` JSON bytes (escapes and multi-byte
  * characters counted), ellipsis included. */
@@ -81,22 +103,25 @@ export function clipText(
 	maximumCharacters: number,
 	maximumBytes = Number.POSITIVE_INFINITY,
 ): { text: string; truncated: boolean } {
-	const fitsCharacters = value.length <= maximumCharacters || [...value].length <= maximumCharacters;
-	if (fitsCharacters && jsonTextBytes(value) <= maximumBytes) return { text: value, truncated: false };
+	const boundedBytes = Number.isFinite(maximumBytes);
+	if (!boundedBytes && value.length <= maximumCharacters) return { text: value, truncated: false };
 	const ellipsis = "…";
-	const budget = maximumBytes - jsonTextBytes(ellipsis);
+	const budget = boundedBytes ? maximumBytes - 3 : Number.POSITIVE_INFINITY;
 	let bytes = 0;
 	let characters = 0;
-	let end = 0;
-	for (const character of value) {
-		if (characters >= maximumCharacters) break;
-		const size = jsonTextBytes(character);
-		if (bytes + size > budget) break;
-		bytes += size;
+	let clipEnd = 0;
+	for (let i = 0; i < value.length; ) {
+		const code = value.codePointAt(i)!;
+		const step = code > 0xffff ? 2 : 1;
+		const size = boundedBytes ? jsonCodePointBytes(code) : 0;
+		if (characters < maximumCharacters && bytes + size <= budget) clipEnd = i + step;
 		characters += 1;
-		end += character.length;
+		bytes += size;
+		i += step;
+		if (characters > maximumCharacters || bytes > maximumBytes)
+			return { text: `${value.slice(0, clipEnd)}${ellipsis}`, truncated: true };
 	}
-	return { text: `${value.slice(0, end)}${ellipsis}`, truncated: true };
+	return { text: value, truncated: false };
 }
 
 /** Keeps the leading items whose JSON fits in `maximumBytes`; the caller
@@ -176,7 +201,7 @@ export async function connectorRequest(input: ConnectorRequestInput): Promise<Co
 }
 
 export function decodeUtf8(bytes: Uint8Array): string {
-	return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+	return UTF8_FATAL.decode(bytes);
 }
 
 export function parseJsonResponse(response: ConnectorResponse): unknown {

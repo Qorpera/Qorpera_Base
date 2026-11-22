@@ -1,8 +1,11 @@
 import { isUuid, parseRecord, SHA256_HEX_PATTERN } from "@qorpera/contracts";
+import { withAbortScopes } from "../abort-scope.ts";
 import { ObjectDependency, ObjectDependencyError, ObjectLockConflict, ObjectStatementTimeout } from "../dependency.ts";
 import { supabaseRequestHeaders } from "../supabase-headers.ts";
 import { type BufferedResponse, nodeRequest, ResponseTooLargeError, type Transport } from "./https-request.ts";
 import { validTarget } from "./protocol.ts";
+
+const UTF8_FATAL = new TextDecoder("utf-8", { fatal: true });
 
 /** Who a mount reads as. A step 1 operator mount reads as a member or the platform; a machine view (step 2 on) as
  * the core's view actor, whose pass the folder service holds. */
@@ -1101,19 +1104,21 @@ export class SupabaseFolderCore implements FolderCore {
 		return this.#api.run(async (signal) => {
 			let response: BufferedResponse;
 			try {
-				response = await this.#transport(
-					new URL(`${this.#url}${path}`),
-					{ ...init, headers: { ...supabaseRequestHeaders(this.#key), "content-type": "application/json" } },
-					8 * 1024 * 1024,
-					caller ? AbortSignal.any([signal, caller]) : signal,
-				);
+				const fetchResponse = (scoped: AbortSignal) =>
+					this.#transport(
+						new URL(`${this.#url}${path}`),
+						{ ...init, headers: { ...supabaseRequestHeaders(this.#key), "content-type": "application/json" } },
+						8 * 1024 * 1024,
+						scoped,
+					);
+				response = caller ? await withAbortScopes([signal, caller], fetchResponse) : await fetchResponse(signal);
 			} catch (error) {
 				if (retryTooLarge && error instanceof ResponseTooLargeError) throw new CoreResponseTooLarge();
 				throw error;
 			}
 			let value: unknown;
 			try {
-				value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(response.body));
+				value = JSON.parse(UTF8_FATAL.decode(response.body));
 			} catch {
 				value = undefined;
 			}

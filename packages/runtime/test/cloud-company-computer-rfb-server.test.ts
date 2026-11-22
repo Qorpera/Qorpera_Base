@@ -263,4 +263,19 @@ describe("server RFB clipboard boundary (framing fixtures, not cloud/render acce
 			expect(() => new CompanyComputerRfbServerParser().push(invalid)).toThrow();
 		}
 	});
+
+	it("coalesces contiguous forwarded spans into a single slice while stripping interleaved clipboard messages", () => {
+		const manyRects = computerRfbUpdate(Array.from({ length: 50 }, () => computerRfbRectangle(0, 2, 2, pixels)));
+		const parser = new CompanyComputerRfbServerParser();
+		expect(Buffer.concat(parser.push(hello))).toEqual(hello);
+
+		const singleRun = parser.push(manyRects);
+		expect(singleRun).toHaveLength(1);
+		expect(singleRun[0]!.equals(manyRects)).toBe(true);
+
+		const interleaved = Buffer.concat([manyRects, clipboard, manyRects]);
+		const splitAroundClipboard = parser.push(interleaved);
+		expect(splitAroundClipboard).toHaveLength(2);
+		expect(Buffer.concat(splitAroundClipboard).equals(Buffer.concat([manyRects, manyRects]))).toBe(true);
+	});
 });

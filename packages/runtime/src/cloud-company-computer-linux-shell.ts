@@ -431,10 +431,13 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		this.#stop.signal.throwIfAborted();
 		if (this.#environment) return this.#environment;
 		const cancel = new AbortController();
+		const onStop = (): void => cancel.abort(this.#stop.signal.reason);
+		if (this.#stop.signal.aborted) onStop();
+		else this.#stop.signal.addEventListener("abort", onStop, { once: true });
 		const environment: Promise<CompanyComputerShellEnvironment> = this.#launch(
 			// A launcher may report before this call has returned; its events keep their order.
 			(event) => queueMicrotask(() => this.#event(environment, event)),
-			AbortSignal.any([this.#stop.signal, cancel.signal]),
+			cancel.signal,
 		);
 		this.#environment = environment;
 		this.#launches.set(environment, cancel);
@@ -445,11 +448,18 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 					this.#pid = opened.pid;
 				}
 				void opened.exited.then(
-					() => this.#ended(environment),
-					() => this.#ended(environment),
+					() => {
+						this.#stop.signal.removeEventListener("abort", onStop);
+						this.#ended(environment);
+					},
+					() => {
+						this.#stop.signal.removeEventListener("abort", onStop);
+						this.#ended(environment);
+					},
 				);
 			},
 			(error: unknown) => {
+				this.#stop.signal.removeEventListener("abort", onStop);
 				// A start that could not confirm its namespace gone stays an unknown
 				// outcome: closing waits for nothing more but reports it unconfirmed.
 				if (!(error instanceof CompanyComputerActionFailedError))

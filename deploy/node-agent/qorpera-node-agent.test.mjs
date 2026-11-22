@@ -822,21 +822,113 @@ test("status checks multiple roles concurrently", async () => {
 	}
 });
 
-test("nodePorts lxdGet rejects truncated Unix socket responses cleanly", async () => {
+test("nodePorts lxdGet rejects truncated Unix socket responses and HTTP error responses cleanly", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "qorpera-node-lxd-"));
 	const sock = join(dir, "lxd.sock");
+	let mode = "truncate";
 	const server = createServer((socket) => {
 		socket.once("data", () => {
-			socket.write("HTTP/1.1 200 OK\r\nContent-Length: 500\r\n\r\n{\"metadata\":");
-			socket.destroy();
+			if (mode === "truncate") {
+				socket.write('HTTP/1.1 200 OK\r\nContent-Length: 500\r\n\r\n{"metadata":');
+				socket.destroy();
+			} else {
+				const payload = JSON.stringify({ type: "error", error: "shutting down" });
+				socket.end(`HTTP/1.1 503 Service Unavailable\r\nContent-Length: ${payload.length}\r\n\r\n${payload}`);
+			}
 		});
 	});
 	await new Promise((resolve) => server.listen(sock, resolve));
 	try {
 		const ports = nodePorts(sock);
-		await assert.rejects(() => ports.instances(), /aborted|truncated|JSON/i);
+		await assert.rejects(() => ports.instances(), /aborted|truncated|closed|JSON/i);
+		mode = "error";
+		await assert.rejects(() => ports.instances(), /shutting down/);
 	} finally {
 		await new Promise((resolve) => server.close(resolve));
 		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("status and force unswitch probe health once and tolerate vanished PIDs", async () => {
+	const root = await mkdtemp(join(tmpdir(), "qorpera-node-agent-probe-"));
+	const httpServer = createServer((socket) => {
+		socket.once("data", () => {
+			socket.end("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n");
+		});
+	});
+	await new Promise((resolve) => httpServer.listen(0, "127.0.0.1", resolve));
+	const { port } = httpServer.address();
+	try {
+		const started = Date.now();
+		const healthy = await nodePorts().healthy(`http://127.0.0.1:${port}/healthz`, { attempts: 1 });
+		assert.equal(healthy, false);
+		assert.ok(Date.now() - started < 800, "single-attempt health probe must not sleep 1s after failing");
+
+		await mkdir(join(root, "etc/qorpera-node/keys"), { recursive: true });
+		await writeFile(join(root, "etc/qorpera-node/keys/release.pem"), publicPem);
+		await chmod(join(root, "etc/qorpera-node/keys"), 0o755);
+		await chmod(join(root, "etc/qorpera-node/keys/release.pem"), 0o444);
+		await writeFile(
+			join(root, "etc/qorpera-node/node.json"),
+			JSON.stringify({
+				schema: "qorpera.node/v1",
+				restartOrder: ["provider"],
+				pauseDeferredRoles: [],
+				roles: {
+					provider: { unit: UNITS.provider, exec: ["/usr/bin/node"], health: ["http://p/healthz"] },
+				},
+			}),
+		);
+		const healthCalls = [];
+		const ports = {
+			mainPid: async () => 4242,
+			cmdline: async () => {
+				const err = new Error("ENOENT");
+				err.code = "ENOENT";
+				throw err;
+			},
+			healthy: async (url, options) => {
+				healthCalls.push({ url, options });
+				return false;
+			},
+			conflicts: async () => ["qorpera-old-provider.service"],
+			isEnabled: async () => false,
+			instances: async () => [],
+		};
+		const agent = new NodeAgent({ root, ports, owner: null });
+		const status = await agent.status();
+		assert.deepEqual(status.roles.provider.command, []);
+		assert.deepEqual(status.roles.provider.healthy, [false]);
+		assert.deepEqual(healthCalls, [{ url: "http://p/healthz", options: { attempts: 1 } }]);
+
+		await mkdir(join(root, "opt/qorpera-node/roles"), { recursive: true });
+		await mkdir(join(root, "opt/qorpera-node/releases/0"), { recursive: true });
+		await symlink("../releases/0", join(root, "opt/qorpera-node/roles/provider"));
+		await assert.rejects(() => agent.switch("provider", "qorpera-old-provider.service"), /SWITCH_OLD_UNIT_NOT_RUNNING/);
+		assert.equal(await agent.roleUp({ unit: UNITS.provider, health: ["http://p/healthz"] }), false);
+		assert.deepEqual(healthCalls.at(-1), { url: "http://p/healthz", options: { attempts: 1 } });
+
+		const disabledPorts = nodePorts("/dev/null", {
+			exec: async () => {
+				const err = new Error("disabled");
+				err.code = 1;
+				err.stdout = "disabled\n";
+				throw err;
+			},
+		});
+		assert.equal(await disabledPorts.isEnabled(UNITS.provider), false);
+
+		const timedOutPorts = nodePorts("/dev/null", {
+			exec: async () => {
+				const err = new Error("timed out");
+				err.killed = true;
+				err.signal = "SIGTERM";
+				throw err;
+			},
+		});
+		await assert.rejects(() => timedOutPorts.isEnabled(UNITS.provider), /timed out/);
+	} finally {
+		await new Promise((resolve) => httpServer.close(resolve));
+		await rm(root, { recursive: true, force: true });
 	}
 });

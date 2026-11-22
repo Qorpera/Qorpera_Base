@@ -402,4 +402,11 @@ describe("CodingResultsWriter", () => {
 		expect(() => new CodingResultsWriter({ ...options, workerId, leaseSeconds: 29 })).toThrow("lease");
 		expect(() => new CodingResultsWriter({ ...options, workerId, leaseSeconds: 901 })).toThrow("lease");
 	});
+
+	it("truncates multi-byte and astral UTF-8 summaries cleanly within the summary byte bound", () => {
+		const rendered = parsed({ summary: `${"å".repeat(2000)}${"\u{1F680}".repeat(2000)}`, pullRequest: null });
+		expect(rendered.parse.summary).toBeDefined();
+		expect(bytesOf(rendered.parse.summary!)).toBeLessThanOrEqual(4000);
+		expect(rendered.parse.summary!.endsWith("…")).toBe(true);
+	});
 });

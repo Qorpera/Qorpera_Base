@@ -1,0 +1,47 @@
+{
+	default_bind {$QORPERA_EDGE_BIND:0.0.0.0}
+	email ops@qorpera.com
+	storage file_system {
+		root /var/lib/qorpera-web-certs
+	}
+	on_demand_tls {
+		ask http://127.0.0.1:8094/_internal/tls/allow
+	}
+	servers {
+		protocols h1 h2 h3
+		timeouts {
+			read_header 10s
+			idle 2m
+		}
+	}
+}
+
+http:// {
+	redir https://{host}{uri} 308
+}
+
+https:// {
+	tls {
+		on_demand
+	}
+
+	encode {
+		zstd fastest
+		gzip 4
+		minimum_length 512
+	}
+
+	reverse_proxy unix//run/qorpera-web-router/public.sock {
+		header_up X-Forwarded-Host {http.request.host}
+		header_up X-Qorpera-Client-IP {http.request.remote.host}
+		header_up -CF-Connecting-IP
+		flush_interval -1
+		transport http {
+			versions 1.1
+			dial_timeout 3s
+			response_header_timeout 35s
+			keepalive 90s
+			keepalive_idle_conns 256
+		}
+	}
+}

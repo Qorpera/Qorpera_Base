@@ -1,3 +1,4 @@
+import { withDefaultTimeout } from "./abort-scope.ts";
 import { ObjectDependencyError } from "./dependency.ts";
 import type { MemberCompanyAuthority, MemberCompanyPublisherRpc } from "./member-company-authority.ts";
 import { UUID } from "./native-objects.ts";
@@ -189,7 +190,11 @@ export class MemoryMessageEraser {
 	 * - Any other failure rests it too, and once the pass's other erases had their turn, the pass rejects with the
 	 *   first such failure's code.
 	 */
-	async eraseDue(max = 20, signal: AbortSignal = AbortSignal.timeout(30_000)): Promise<number> {
+	eraseDue(max = 20, signal?: AbortSignal): Promise<number> {
+		return withDefaultTimeout(signal, 30_000, (scoped) => this.#eraseDue(max, scoped));
+	}
+
+	async #eraseDue(max: number, signal: AbortSignal): Promise<number> {
 		if (signal.aborted || !Number.isSafeInteger(max) || max < 1) return 0;
 		const now = Date.now();
 		for (const [eraseId, until] of this.#rests) if (until <= now) this.#rests.delete(eraseId);

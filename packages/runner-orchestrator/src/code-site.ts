@@ -96,6 +96,14 @@ export type CodeSiteCollected =
 			readonly folder: string;
 			readonly name: string | null;
 			readonly title: string | null;
+			readonly kind?: "static" | "server" | "hybrid";
+			readonly dockerfile?: string | null;
+			readonly port?: number;
+			readonly healthPath?: string;
+			readonly idleTimeoutSec?: number;
+			readonly memoryMb?: number;
+			readonly vcpuLimit?: number;
+			readonly spaFallback?: string | null;
 	  }
 	| { readonly state: "missed"; readonly code: string };
 
@@ -732,6 +740,43 @@ export const CODE_SITE_COLLECT = [
 	"QORPERA_SITE",
 ].join("\n");
 
+const APP_COLLECT_PY = String.raw`import os,stat,subprocess,sys
+E=os.environb
+d=E[b"QORPERA_CHECKS_ROOT"]+b"/"+E[b"QORPERA_CHECKS_NAME"]
+top=d+b"/src"
+if not stat.S_ISDIR(os.lstat(top).st_mode):
+	sys.exit(2)
+dockerfile=E.get(b"QORPERA_SITE_DOCKERFILE",b"")
+if dockerfile:
+	parts=dockerfile.split(b"/")
+	if any(part in (b"",b".",b"..") for part in parts):
+		sys.exit(2)
+	target=top+b"/"+dockerfile
+	try:
+		mode=os.lstat(target).st_mode
+	except OSError:
+		os.write(1,b"SITE_FOLDER_MISSING\n")
+		sys.exit(3)
+	if not stat.S_ISREG(mode):
+		os.write(1,b"SITE_FOLDER_MISSING\n")
+		sys.exit(3)
+ENV={b"PATH":E.get(b"PATH",b"/usr/bin:/bin"),b"HOME":d,b"LC_ALL":b"C",b"GIT_CONFIG_NOSYSTEM":b"1",b"GIT_CONFIG_GLOBAL":b"/dev/null"}
+r=subprocess.run([b"git",b"-C",top,b"rev-parse",b"HEAD^{tree}"],stdout=subprocess.PIPE,env=ENV)
+if r.returncode:
+	sys.exit(4)
+tree=r.stdout.strip()
+if len(tree)!=40:
+	sys.exit(4)
+os.write(1,b"tree %s\nfiles 0\nbytes 0\n"%tree)`;
+
+export const CODE_SITE_APP_COLLECT = [
+	...CODE_CHECKS_NEWER_RUN,
+	'exec 2>"$QORPERA_CHECKS_ROOT/$QORPERA_CHECKS_NAME/site.err"',
+	"exec python3 -I - <<'QORPERA_SITE_APP'",
+	APP_COLLECT_PY,
+	"QORPERA_SITE_APP",
+].join("\n");
+
 /** The drop's program: each line of `$d/site.wrote` that is an object's id, its loose file in the repository's storage
  * removed; one that cannot be removed (gone already, or saved by a boundary: the company folder keeps it) is passed
  * over. Prints `dropped <n>`, the files removed. */
@@ -771,6 +816,7 @@ export const CODE_SITE_DROP = [
 // The answers ---------------------------------------------------------------------------------------------------------
 
 const MADE = /^tree ([0-9a-f]{40})\nfiles ([1-9][0-9]{0,2})\nbytes (0|[1-9][0-9]{0,7})\n$/;
+const MADE_APP = /^tree ([0-9a-f]{40})\nfiles (0|[1-9][0-9]{0,4})\nbytes (0|[1-9][0-9]{0,9})\n$/;
 const REFUSED = /^(SITE_[A-Z_]+)(?: ([^\n]+))?\n$/;
 const VARIABLE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 /** A detail exactly as the collect spells one: printable ASCII but the backslash as itself, and every other byte (a
@@ -806,8 +852,18 @@ function unescaped(detail: string): string {
 export function codeSiteCollectAnswer(
 	output: string,
 	exitCode: number | null,
+	options?: { readonly allowEmpty?: boolean },
 ): { made: { tree: string; files: number; bytes: number } } | { problem: CodeSiteProblem } | null {
 	if (exitCode === 0) {
+		if (options?.allowEmpty) {
+			const made = MADE_APP.exec(output);
+			if (!made) return null;
+			const files = Number(made[2]);
+			const total = Number(made[3]);
+			return files <= 10_000 && total <= 512 * 1024 * 1024
+				? { made: { tree: made[1] as string, files, bytes: total } }
+				: null;
+		}
 		const made = MADE.exec(output);
 		if (!made) return null;
 		const files = Number(made[2]),
@@ -870,21 +926,84 @@ export function codeSiteReported(collected: CodeSiteCollected | null): Record<st
 		if (!MISSED.test(collected.code)) throw new Error("INVALID_CODE_SITE");
 		return { state: "missed", code: collected.code };
 	}
-	const { tree, files, bytes: total, folder, name, title } = collected;
+	const {
+		tree,
+		files,
+		bytes: total,
+		folder,
+		name,
+		title,
+		kind,
+		dockerfile,
+		port,
+		healthPath,
+		idleTimeoutSec,
+		memoryMb,
+		vcpuLimit,
+		spaFallback,
+	} = collected;
+	const hasV2Fields =
+		kind !== undefined ||
+		dockerfile !== undefined ||
+		port !== undefined ||
+		healthPath !== undefined ||
+		idleTimeoutSec !== undefined ||
+		memoryMb !== undefined ||
+		vcpuLimit !== undefined ||
+		spaFallback !== undefined;
+	if (!hasV2Fields) {
+		if (
+			!TREE.test(tree) ||
+			!Number.isSafeInteger(files) ||
+			files < 1 ||
+			files > CODE_SITE_MAX_FILES ||
+			!Number.isSafeInteger(total) ||
+			total < 0 ||
+			total > CODE_SITE_MAX_BYTES ||
+			!codeSiteFolderValid(folder) ||
+			(name !== null && !codeSiteNameValid(name)) ||
+			(title !== null && !codeSiteTitleValid(title))
+		)
+			throw new Error("INVALID_CODE_SITE");
+		return {
+			state: "made",
+			site: { schema: "qorpera.code-site/v1", tree, files, bytes: total, folder, name, title },
+		};
+	}
+	const effectiveKind = kind ?? "static";
 	if (
 		!TREE.test(tree) ||
 		!Number.isSafeInteger(files) ||
-		files < 1 ||
-		files > CODE_SITE_MAX_FILES ||
+		files < (effectiveKind === "static" ? 1 : 0) ||
+		files > 10_000 ||
 		!Number.isSafeInteger(total) ||
 		total < 0 ||
-		total > CODE_SITE_MAX_BYTES ||
+		total > 512 * 1024 * 1024 ||
 		!codeSiteFolderValid(folder) ||
 		(name !== null && !codeSiteNameValid(name)) ||
 		(title !== null && !codeSiteTitleValid(title))
 	)
 		throw new Error("INVALID_CODE_SITE");
-	return { state: "made", site: { schema: "qorpera.code-site/v1", tree, files, bytes: total, folder, name, title } };
+	return {
+		state: "made",
+		site: {
+			schema: "qorpera.code-site/v2",
+			kind: effectiveKind,
+			tree,
+			files,
+			bytes: total,
+			folder,
+			name,
+			title,
+			...(port !== undefined ? { port } : {}),
+			...(healthPath !== undefined ? { healthPath } : {}),
+			...(dockerfile !== undefined ? { dockerfile } : {}),
+			...(idleTimeoutSec !== undefined ? { idleTimeoutSec } : {}),
+			...(memoryMb !== undefined ? { memoryMb } : {}),
+			...(vcpuLimit !== undefined ? { vcpuLimit } : {}),
+			...(spaFallback !== undefined ? { spaFallback } : {}),
+		},
+	};
 }
 
 /** `CODING_CHECKS_SITE_REFUSED`: every check passed, but the site the code left in `folder` cannot go, so nothing went

@@ -7,6 +7,7 @@ import {
 	osRelative,
 	parseCompanyStateFile,
 } from "@qorpera/cloud-client/company-state-files";
+import { withAbortScopes, withDefaultTimeout } from "./abort-scope.ts";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import { UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
@@ -216,12 +217,18 @@ export class CompanyFolderCreator {
 	}
 
 	/** Makes due companies until none is due or `max` were handled. Returns how many were handled. */
-	createDue(max = 5, signal: AbortSignal = AbortSignal.timeout(240_000)): Promise<number> {
-		return drainPlatformClaims(max, () => this.createOne(signal), signal);
+	createDue(max = 5, signal?: AbortSignal): Promise<number> {
+		return withDefaultTimeout(signal, 240_000, (scoped) =>
+			drainPlatformClaims(max, () => this.createOne(scoped), scoped),
+		);
 	}
 
 	/** Claims one due creation and makes the company; false when nothing is due. */
-	async createOne(signal: AbortSignal = AbortSignal.timeout(120_000)): Promise<boolean> {
+	createOne(signal?: AbortSignal): Promise<boolean> {
+		return withDefaultTimeout(signal, 120_000, (scoped) => this.#createOne(scoped));
+	}
+
+	async #createOne(signal: AbortSignal): Promise<boolean> {
 		const answer = await this.#call("qorpera_folder_company_creation_claim", {
 			p_worker: this.#options.workerId,
 			p_lease_seconds: this.#leaseSeconds,
@@ -339,6 +346,6 @@ export class CompanyFolderCreator {
 	}
 
 	#call(method: Parameters<MemberCompanyAuthority["publisher"]>[0], args: Record<string, unknown>) {
-		return this.#options.authority.publisher(method, args, AbortSignal.timeout(CALL_MS));
+		return withAbortScopes([], (callSignal) => this.#options.authority.publisher(method, args, callSignal), CALL_MS);
 	}
 }

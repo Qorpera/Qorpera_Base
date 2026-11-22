@@ -2543,7 +2543,7 @@ files. So a dispatch or a follow-up leaves its row active with no occurrence, an
   4. one block per worker: the dispatch wake of a row with none (a worker with `harness: claude-code` first takes its
      member's Claude Code lease under the id its wake gets, `qorpera_claude_worker_lease_take`, 20260930770000: up to
      `qorpera_claude_worker_run_cap(member_user_id)` Claude Code runs per member at once, across all of the member's
-     Claude logins (20260930810000 and 20260930832000: effective cap is `coalesce(qorpera_claude_member_parallel_caps.cap,
+     Claude logins (20260930810000 and 20260930837000: effective cap is `coalesce(qorpera_claude_member_parallel_caps.cap,
      qorpera_claude_parallel_runs.cap)` with range `1..64`; one slot row per live run in `qorpera_claude_worker_leases`
      slots `1..64`, taking the first free slot up to the effective cap under a per-member advisory lock; the row records
      the worker's Claude login at the take, which the run keeps to its end; operators configure global or per-member caps
