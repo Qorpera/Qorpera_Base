@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { JsonValue } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import {
 	CLOUD_ACTION_REVIEW_SPECIFICATION,
 	CLOUD_ACTION_REVIEW_TOOL,
@@ -2002,99 +2003,106 @@ class CodexBoundaryRpc {
 		if (this.#failure || this.#closed || !this.#boundary) throw new CloudPictureUnavailable();
 		if (this.#picture || this.#pictureStarting) throw new CloudPictureFailure("busy");
 		this.#pictureStarting = true;
-		// The call's own time: past it, no picture came back in time.
-		const time = new AbortController();
-		const timer = setTimeout(() => time.abort(), this.pictureMs);
-		timer.unref?.();
-		const until = AbortSignal.any([signal, time.signal]);
 		let picture: PictureThread | undefined;
 		try {
-			const started = this.#startSide("picture", until, {
-				// provider-default omits the model, as for the agent's thread: the picture's model takes images as the
-				// agent's does, which Codex's image tool asks of it.
-				...(input.model === "provider-default" ? {} : { model: input.model }),
-				cwd: input.cwd,
-				runtimeWorkspaceRoots: [],
-				environments: [],
-				ephemeral: true,
-				approvalPolicy: "never",
-				approvalsReviewer: "user",
-				sandbox: "read-only",
-				developerInstructions: CLOUD_PICTURE_MAKER_RULE,
-				dynamicTools: [],
-				config: PICTURE_THREAD_CONFIG,
-			});
-			let threadId: string;
-			try {
-				threadId = await untilAborted(started, until, "Native picture cancelled");
-			} catch (error) {
-				// A thread that starts after its caller stopped is retired at once: its messages stay on this lane.
-				void started.then(
-					(id) => this.#retirePicture(id),
-					() => undefined,
-				);
-				throw error;
-			}
-			let settle: PictureThread["settle"] = { resolve: () => undefined, reject: () => undefined };
-			const found = new Promise<PictureFound>((resolve, reject) => {
-				settle = { resolve, reject };
-			});
-			void found.catch(() => undefined);
-			const opened: PictureThread = {
-				threadId,
-				settle,
-				usageLimit: false,
-				called: false,
-				ended: false,
-				interrupted: false,
-			};
-			picture = opened;
-			this.#picture = opened;
-			const abort = (): void => this.#endPicture(opened, new Error("Native picture cancelled"));
-			until.addEventListener("abort", abort, { once: true });
-			opened.release = () => until.removeEventListener("abort", abort);
-			if (until.aborted) abort();
-			// The images request answers only once the picture exists, silent until then: the relay lets a connection wait
-			// that long while the call lasts.
-			if (!opened.ended && !this.#failure && !this.#closed) opened.egress = this.#pictureEgress?.();
-			this.#pictureHome = input.codexHome;
-			// No control deadline: Codex answers a turn's start at once, and the call's own time bounds it.
-			const starting = this.#send(
-				"turn/start",
-				{
-					threadId,
-					input: [{ type: "text", text: prompt, text_elements: [] }],
-					effort: "low",
-					environments: [],
-					runtimeWorkspaceRoots: [],
-					sandboxPolicy: { type: "readOnly", networkAccess: false },
+			return await withAbortScopes(
+				[signal],
+				async (until) => {
+					try {
+						const started = this.#startSide("picture", until, {
+							// provider-default omits the model, as for the agent's thread: the picture's model takes images as the
+							// agent's does, which Codex's image tool asks of it.
+							...(input.model === "provider-default" ? {} : { model: input.model }),
+							cwd: input.cwd,
+							runtimeWorkspaceRoots: [],
+							environments: [],
+							ephemeral: true,
+							approvalPolicy: "never",
+							approvalsReviewer: "user",
+							sandbox: "read-only",
+							developerInstructions: CLOUD_PICTURE_MAKER_RULE,
+							dynamicTools: [],
+							config: PICTURE_THREAD_CONFIG,
+						});
+						let threadId: string;
+						try {
+							threadId = await untilAborted(started, until, "Native picture cancelled");
+						} catch (error) {
+							// A thread that starts after its caller stopped is retired at once: its messages stay on this lane.
+							void started.then(
+								(id) => this.#retirePicture(id),
+								() => undefined,
+							);
+							throw error;
+						}
+						let settle: PictureThread["settle"] = { resolve: () => undefined, reject: () => undefined };
+						const found = new Promise<PictureFound>((resolve, reject) => {
+							settle = { resolve, reject };
+						});
+						void found.catch(() => undefined);
+						const opened: PictureThread = {
+							threadId,
+							settle,
+							usageLimit: false,
+							called: false,
+							ended: false,
+							interrupted: false,
+						};
+						picture = opened;
+						this.#picture = opened;
+						const abort = (): void => this.#endPicture(opened, new Error("Native picture cancelled"));
+						until.addEventListener("abort", abort, { once: true });
+						opened.release = () => until.removeEventListener("abort", abort);
+						if (until.aborted) abort();
+						// The images request answers only once the picture exists, silent until then: the relay lets a connection wait
+						// that long while the call lasts.
+						if (!opened.ended && !this.#failure && !this.#closed) opened.egress = this.#pictureEgress?.();
+						this.#pictureHome = input.codexHome;
+						// No control deadline: Codex answers a turn's start at once, and the call's own time bounds it.
+						const starting = this.#send(
+							"turn/start",
+							{
+								threadId,
+								input: [{ type: "text", text: prompt, text_elements: [] }],
+								effort: "low",
+								environments: [],
+								runtimeWorkspaceRoots: [],
+								sandboxPolicy: { type: "readOnly", networkAccess: false },
+							},
+							undefined,
+							PICTURE_REJECTED,
+						);
+						// A turn whose start is answered after the call ended is interrupted once its id is known.
+						void starting.then(
+							(value) => {
+								const id = (value as { turn?: { id?: unknown } } | null)?.turn?.id;
+								if (
+									opened.turnId === undefined &&
+									typeof id === "string" &&
+									/^[A-Za-z0-9_:.-]{1,160}$/.test(id)
+								)
+									opened.turnId = id;
+								if (opened.ended) this.#interruptPicture(opened);
+							},
+							() => undefined,
+						);
+						const turn = object(await untilAborted(starting, until, "Native picture cancelled"));
+						const turnId = identifier(object(turn.turn).id);
+						if (opened.turnId !== undefined && opened.turnId !== turnId)
+							throw new Error("Native picture binding failed");
+						opened.turnId = turnId;
+						return await this.#pictureFile(await found, threadId, input.codexHome);
+					} catch (error) {
+						if (this.#failure || this.#closed) throw new CloudPictureUnavailable();
+						if (error instanceof CloudPictureFailure || error instanceof CloudPictureUnavailable) throw error;
+						if (until.aborted && !signal.aborted) throw new CloudPictureFailure("timeout");
+						if (signal.aborted) throw new Error("Native picture cancelled");
+						throw new CloudPictureFailure("failed");
+					}
 				},
-				undefined,
-				PICTURE_REJECTED,
+				this.pictureMs,
 			);
-			// A turn whose start is answered after the call ended is interrupted once its id is known.
-			void starting.then(
-				(value) => {
-					const id = (value as { turn?: { id?: unknown } } | null)?.turn?.id;
-					if (opened.turnId === undefined && typeof id === "string" && /^[A-Za-z0-9_:.-]{1,160}$/.test(id))
-						opened.turnId = id;
-					if (opened.ended) this.#interruptPicture(opened);
-				},
-				() => undefined,
-			);
-			const turn = object(await untilAborted(starting, until, "Native picture cancelled"));
-			const turnId = identifier(object(turn.turn).id);
-			if (opened.turnId !== undefined && opened.turnId !== turnId) throw new Error("Native picture binding failed");
-			opened.turnId = turnId;
-			return await this.#pictureFile(await found, threadId, input.codexHome);
-		} catch (error) {
-			if (this.#failure || this.#closed) throw new CloudPictureUnavailable();
-			if (error instanceof CloudPictureFailure || error instanceof CloudPictureUnavailable) throw error;
-			if (time.signal.aborted && !signal.aborted) throw new CloudPictureFailure("timeout");
-			if (signal.aborted) throw new Error("Native picture cancelled");
-			throw new CloudPictureFailure("failed");
 		} finally {
-			clearTimeout(timer);
 			if (picture) this.#endPicture(picture);
 			this.#pictureStarting = false;
 		}
@@ -3568,268 +3576,273 @@ export async function runCloudCodexToolSession(options: {
 	)
 		throw new Error("Invalid native boundary input");
 	options.signal.throwIfAborted();
-	const signal =
-		timeoutMs === undefined ? options.signal : AbortSignal.any([options.signal, AbortSignal.timeout(timeoutMs)]);
-	const inputs: CloudCodexProcessInputs = {
-		command: options.command,
-		binarySha256: options.binarySha256,
-		effort,
-		serviceTier,
-		...(options.identityRoot ? { identityRoot: options.identityRoot } : {}),
-		...(options.isolation ? { isolation: options.isolation } : {}),
-		...(options.home ? { home: options.home } : {}),
-		...(options.chatGptPlanAuth ? { chatGptPlanAuth: options.chatGptPlanAuth } : {}),
-	};
-	const progress: { stage: NativeRuntimeFailureStage } = { stage: "codex-artifact" };
-	let started: CloudCodexProcess;
-	try {
-		// A home is this run's own (its socket, its environment file, its configuration), so a run with one starts its
-		// own process and never leaves it for another run.
-		const spare = inputs.home ? undefined : await takeCloudCodexSpare(cloudCodexProcessKey(inputs));
-		if (spare) started = spare;
-		else {
-			if (options.identityRoot) {
-				// No other process may share this identity home with the one that starts now.
-				const disposed = await disposeCloudCodexSpares(options.identityRoot);
-				if (disposed > 0 || options.reusedIdentityRoot) await pruneCodexHome(join(options.identityRoot, "codex"));
-			}
-			started = await startCloudCodexProcess(inputs, progress, signal);
-		}
-	} catch (error) {
-		options.boundary.close();
-		throw error;
-	}
-	const rpc = started.rpc;
-	let idleWatch: ReturnType<typeof setInterval> | undefined;
-	let stage: NativeRuntimeFailureStage = "codex-initialize";
-	const abort = (): void => {
-		rpc.fail("Native boundary execution stopped");
-	};
-	try {
-		// The run arrives: its boundary, observations and context recorder. Until
-		// now the fence refused every request and no thread could start.
-		rpc.bind(options.boundary, options.observability);
-		started.binding.boundary = options.boundary;
-		if (options.recordContextView) {
-			started.binding.recordContextView = options.recordContextView;
-			started.binding.recordChecksAuthority = options.recordChecksAuthority === true;
-		}
-		if (
-			options.boundary.captureImagesEnabled &&
-			!started.userAgent.split(" ").includes(CLOUD_NATIVE_CAPTURE_IMAGES_CAPABILITY)
-		)
-			throw new Error("Native boundary requires capture image support");
-		// The compactor's lane opens with the run: the opening settles through it, and the agent's turn and closing
-		// compact through it after.
-		const compaction = { model: COMPACT_MODEL, effort: COMPACT_EFFORT, cwd: started.workspace };
-		options.compactor?.attach((system, compactSignal) =>
-			rpc.compact({ ...compaction, instructions: system }, compactSignal),
-		);
-		if (idleTimeoutMs !== undefined) {
-			idleWatch = setInterval(
-				() => {
-					if (Date.now() - rpc.lastActivityAt > idleTimeoutMs) rpc.fail("Native boundary execution stalled");
-				},
-				Math.min(idleTimeoutMs, 15_000),
-			);
-			idleWatch.unref();
-		}
-		if (started.fenceFailed) rpc.fail("Native result boundary unavailable", "authority_unavailable");
-		signal.addEventListener("abort", abort, { once: true });
-		if (signal.aborted) abort();
-		const attachPictures = (): void => {
-			if (rpc.chatGptPlan || !options.pictures) return;
-			if (options.pictures.timeoutMs !== undefined) rpc.pictureMs = options.pictures.timeoutMs;
-			options.pictures.attach((input, pictureSignal) =>
-				rpc.picture(
-					{ ...input, cwd: started.workspace, model: options.model, codexHome: started.codexHome },
-					pictureSignal,
-				),
-			);
-		};
-		stage = "execution-admission";
-		await options.beforeModelStart?.(signal);
-		signal.throwIfAborted();
-		if (options.light) {
-			// A light ask: each question is one fresh tool-less side thread, as a compactor's line is; the agent's thread
-			// never starts. The run's provider session is the last thread it asked in.
-			stage = "codex-turn-completion";
-			attachPictures();
-			let asked: string | undefined;
-			await options.light(async (instructions, text, askSignal) => {
-				if (
-					!instructions.trim() ||
-					!text.trim() ||
-					Buffer.byteLength(instructions) > MAX_RUNTIME_INSTRUCTIONS_BYTES ||
-					Buffer.byteLength(text) > MAX_PROMPT_BYTES
-				)
-					throw new Error("Invalid native boundary input");
-				const thread = await rpc.compact({ ...compaction, instructions }, askSignal);
-				asked = thread.threadId;
-				try {
-					return (await thread.send(text, askSignal)).text;
-				} finally {
-					thread.close?.();
-				}
-			}, signal);
-			signal.throwIfAborted();
-			rpc.finishObservations(true, signal);
-			return {
-				// A light run that asked nothing (an ask past its time) has no thread: its own name, by the process.
-				providerSessionId: asked ?? `light:${randomUUID()}`,
-				toolCalls: rpc.toolCalls,
-				codexVersion: CLOUD_CODEX_BOUNDARY_VERSION,
-				fencedRequests: rpc.fencedRequests,
+	return await withAbortScopes(
+		[options.signal],
+		async (signal) => {
+			const inputs: CloudCodexProcessInputs = {
+				command: options.command,
+				binarySha256: options.binarySha256,
+				effort,
+				serviceTier,
+				...(options.identityRoot ? { identityRoot: options.identityRoot } : {}),
+				...(options.isolation ? { isolation: options.isolation } : {}),
+				...(options.home ? { home: options.home } : {}),
+				...(options.chatGptPlanAuth ? { chatGptPlanAuth: options.chatGptPlanAuth } : {}),
 			};
-		}
-		const opening: CloudCodexOpening = options.opening
-			? await options.opening(signal)
-			: {
-					prompt: options.prompt ?? "",
-					runtimeInstructions: options.runtimeInstructions,
-					composeContext: options.composeContext,
+			const progress: { stage: NativeRuntimeFailureStage } = { stage: "codex-artifact" };
+			let started: CloudCodexProcess;
+			try {
+				// A home is this run's own (its socket, its environment file, its configuration), so a run with one starts its
+				// own process and never leaves it for another run.
+				const spare = inputs.home ? undefined : await takeCloudCodexSpare(cloudCodexProcessKey(inputs));
+				if (spare) started = spare;
+				else {
+					if (options.identityRoot) {
+						// No other process may share this identity home with the one that starts now.
+						const disposed = await disposeCloudCodexSpares(options.identityRoot);
+						if (disposed > 0 || options.reusedIdentityRoot)
+							await pruneCodexHome(join(options.identityRoot, "codex"));
+					}
+					started = await startCloudCodexProcess(inputs, progress, signal);
+				}
+			} catch (error) {
+				options.boundary.close();
+				throw error;
+			}
+			const rpc = started.rpc;
+			let idleWatch: ReturnType<typeof setInterval> | undefined;
+			let stage: NativeRuntimeFailureStage = "codex-initialize";
+			const abort = (): void => {
+				rpc.fail("Native boundary execution stopped");
+			};
+			try {
+				// The run arrives: its boundary, observations and context recorder. Until
+				// now the fence refused every request and no thread could start.
+				rpc.bind(options.boundary, options.observability);
+				started.binding.boundary = options.boundary;
+				if (options.recordContextView) {
+					started.binding.recordContextView = options.recordContextView;
+					started.binding.recordChecksAuthority = options.recordChecksAuthority === true;
+				}
+				if (
+					options.boundary.captureImagesEnabled &&
+					!started.userAgent.split(" ").includes(CLOUD_NATIVE_CAPTURE_IMAGES_CAPABILITY)
+				)
+					throw new Error("Native boundary requires capture image support");
+				// The compactor's lane opens with the run: the opening settles through it, and the agent's turn and closing
+				// compact through it after.
+				const compaction = { model: COMPACT_MODEL, effort: COMPACT_EFFORT, cwd: started.workspace };
+				options.compactor?.attach((system, compactSignal) =>
+					rpc.compact({ ...compaction, instructions: system }, compactSignal),
+				);
+				if (idleTimeoutMs !== undefined) {
+					idleWatch = setInterval(
+						() => {
+							if (Date.now() - rpc.lastActivityAt > idleTimeoutMs) rpc.fail("Native boundary execution stalled");
+						},
+						Math.min(idleTimeoutMs, 15_000),
+					);
+					idleWatch.unref();
+				}
+				if (started.fenceFailed) rpc.fail("Native result boundary unavailable", "authority_unavailable");
+				signal.addEventListener("abort", abort, { once: true });
+				if (signal.aborted) abort();
+				const attachPictures = (): void => {
+					if (rpc.chatGptPlan || !options.pictures) return;
+					if (options.pictures.timeoutMs !== undefined) rpc.pictureMs = options.pictures.timeoutMs;
+					options.pictures.attach((input, pictureSignal) =>
+						rpc.picture(
+							{ ...input, cwd: started.workspace, model: options.model, codexHome: started.codexHome },
+							pictureSignal,
+						),
+					);
 				};
-		signal.throwIfAborted();
-		if (!sized(opening)) throw new Error("Invalid native boundary input");
-		if (opening.composeContext) started.binding.composeContext = opening.composeContext;
-		// This run has its home, or it has none: the thread below gets one environment or the empty list of today.
-		const home = options.home !== undefined;
-		stage = "codex-identity";
-		// Generate one host-owned bootstrap and explicitly load these exact bytes.
-		// Ambient project/home instruction discovery remains disabled: a Company
-		// File or restored auth home must never add a second platform prompt.
-		// A webhook signing secret is cut out of them, as out of everything the session writes to Codex (#write): the
-		// file and the thread's instructions are the same bytes.
-		const nativeInstructions = redactCloudWebhookSecrets(
-			[opening.resultRulesInside ? undefined : CLOUD_TOOL_RESULT_INSTRUCTIONS, opening.runtimeInstructions]
-				.filter(Boolean)
-				.join("\n"),
-		);
-		await writeFile(join(started.workspace, "AGENTS.md"), nativeInstructions, { mode: 0o400, flag: "wx" });
-		stage = "codex-thread-start";
-		await rpc.startThread();
-		const thread = object(
-			await rpc.request(
-				"thread/start",
-				{
-					// provider-default omits the model: the pinned Codex chooses its own default. An explicit
-					// name is only sent for a session override; the provider rejects names newer than the binary.
-					...(options.model === "provider-default" ? {} : { model: options.model }),
-					cwd: started.workspace,
-					runtimeWorkspaceRoots: [],
-					// The agent's home, or none at all (slice 1). A reviewer's, the compactor's and a voice call's
-					// threads never get one: they are not the agent's run.
-					environments: home ? [{ environmentId: CLOUD_HOME_ENVIRONMENT_ID, cwd: CLOUD_HOME_CWD }] : [],
-					ephemeral: true,
-					approvalPolicy: "never",
-					approvalsReviewer: "user",
-					sandbox: home ? "danger-full-access" : "read-only",
-					developerInstructions: nativeInstructions,
-					dynamicTools: [options.boundary.specification],
-					...(rpc.webSearch ? { config: CLOUD_CODEX_AGENT_THREAD_CONFIG } : {}),
-				},
-				"agent-thread",
-			),
-		);
-		const threadId = identifier(object(thread.thread).id);
-		rpc.bindThread(threadId);
-		const reviewing = rpc;
-		options.reviewer?.attach({
-			review: (input, reviewSignal) => reviewing.review({ ...input, cwd: started.workspace }, reviewSignal),
-		});
-		// Only a Codex login places voice calls: a plan run's Codex reaches OpenAI's API with the plan's token instead.
-		if (!rpc.chatGptPlan && options.voice) {
-			if (options.voice.stopMs !== undefined) rpc.voiceStopMs = options.voice.stopMs;
-			options.voice.attach(
-				(input, voiceSignal) => rpc.voice({ ...input, cwd: started.workspace }, voiceSignal),
-				(usageSignal) => rpc.voiceUsage(usageSignal),
-			);
-		}
-		// Pictures the same way: Codex's image tool reaches the Codex login's ChatGPT backend, never a plan's token.
-		attachPictures();
-		const startTurn = async (text: string): Promise<void> => {
-			const turnStarted = object(
-				await rpc.request(
-					"turn/start",
-					{
-						threadId,
-						input: [{ type: "text", text, text_elements: [] }],
-						effort,
-						environments: home ? [{ environmentId: CLOUD_HOME_ENVIRONMENT_ID, cwd: CLOUD_HOME_CWD }] : [],
-						runtimeWorkspaceRoots: [],
-						sandboxPolicy: home ? { type: "dangerFullAccess" } : { type: "readOnly", networkAccess: false },
-					},
-					"agent-turn",
-				),
-			);
-			rpc.confirmTurn(object(turnStarted.turn).id);
-		};
-		stage = "codex-turn-start";
-		rpc.startTurn();
-		rpc.observeTurnStart(Buffer.byteLength(opening.prompt));
-		await startTurn(opening.prompt);
-		stage = "codex-turn-completion";
-		await rpc.completed;
-		rpc.assertCompleted();
-		signal.throwIfAborted();
-		// The turn completed. When it left undone what the run has to end with, the model is told so in one more turn
-		// of the same thread, with everything the first one read and did still in front of it; a run gets one such
-		// turn, and what that one leaves undone the caller fails as before (10 November 2026: a turn that ended on four
-		// tokens of private text, with no final send, failed its run and left the member unanswered).
-		const correction = await options.turnCorrection?.(signal);
-		signal.throwIfAborted();
-		if (correction !== undefined) {
-			if (!correction.trim() || Buffer.byteLength(correction) > MAX_TURN_CORRECTION_BYTES)
-				throw new Error("Invalid native boundary input");
-			stage = "codex-turn-start";
-			rpc.beginNextTurn(Buffer.byteLength(correction));
-			await startTurn(correction);
-			stage = "codex-turn-completion";
-			await rpc.completed;
-			rpc.assertCompleted();
-			signal.throwIfAborted();
-		}
-		rpc.finishObservations(true, signal);
-		try {
-			await options.closing?.(signal);
-		} catch {
-			// The verified turn stands: what closing left unbuilt stays missing (§5.4).
-		}
-		const afterAnswer = rpc.afterAnswerUsageSignal;
-		return {
-			providerSessionId: threadId,
-			toolCalls: rpc.toolCalls,
-			codexVersion: CLOUD_CODEX_BOUNDARY_VERSION,
-			fencedRequests: rpc.fencedRequests,
-			...(afterAnswer ? { usageSignal: afterAnswer } : {}),
-		};
-	} catch (error) {
-		rpc.finishObservations(false, signal);
-		// A stopped run keeps only a usage limit the provider met after its answer (the 2026-11-13 amendment): that one
-		// was met before the stop.
-		if (signal.aborted)
-			throw tagNativeRuntimeFailure(
-				new Error("Native boundary execution stopped"),
-				stage,
-				cloudRuntimeErrorCategory(error, signal),
-				rpc.afterAnswerUsageSignal,
-			);
-		throw tagNativeRuntimeFailure(
-			error,
-			stage,
-			rpc.failureCategory !== "unknown" ? rpc.failureCategory : cloudRuntimeErrorCategory(error),
-			rpc.usageSignal ?? null,
-			rpc.codexError,
-		);
-	} finally {
-		options.reviewer?.attach(undefined);
-		options.compactor?.attach(undefined);
-		options.voice?.attach(undefined);
-		options.pictures?.attach(undefined);
-		if (idleWatch !== undefined) clearInterval(idleWatch);
-		signal.removeEventListener("abort", abort);
-		options.boundary.close();
-		// One run per process: the next run takes a spare or starts its own.
-		await started.close();
-	}
+				stage = "execution-admission";
+				await options.beforeModelStart?.(signal);
+				signal.throwIfAborted();
+				if (options.light) {
+					// A light ask: each question is one fresh tool-less side thread, as a compactor's line is; the agent's thread
+					// never starts. The run's provider session is the last thread it asked in.
+					stage = "codex-turn-completion";
+					attachPictures();
+					let asked: string | undefined;
+					await options.light(async (instructions, text, askSignal) => {
+						if (
+							!instructions.trim() ||
+							!text.trim() ||
+							Buffer.byteLength(instructions) > MAX_RUNTIME_INSTRUCTIONS_BYTES ||
+							Buffer.byteLength(text) > MAX_PROMPT_BYTES
+						)
+							throw new Error("Invalid native boundary input");
+						const thread = await rpc.compact({ ...compaction, instructions }, askSignal);
+						asked = thread.threadId;
+						try {
+							return (await thread.send(text, askSignal)).text;
+						} finally {
+							thread.close?.();
+						}
+					}, signal);
+					signal.throwIfAborted();
+					rpc.finishObservations(true, signal);
+					return {
+						// A light run that asked nothing (an ask past its time) has no thread: its own name, by the process.
+						providerSessionId: asked ?? `light:${randomUUID()}`,
+						toolCalls: rpc.toolCalls,
+						codexVersion: CLOUD_CODEX_BOUNDARY_VERSION,
+						fencedRequests: rpc.fencedRequests,
+					};
+				}
+				const opening: CloudCodexOpening = options.opening
+					? await options.opening(signal)
+					: {
+							prompt: options.prompt ?? "",
+							runtimeInstructions: options.runtimeInstructions,
+							composeContext: options.composeContext,
+						};
+				signal.throwIfAborted();
+				if (!sized(opening)) throw new Error("Invalid native boundary input");
+				if (opening.composeContext) started.binding.composeContext = opening.composeContext;
+				// This run has its home, or it has none: the thread below gets one environment or the empty list of today.
+				const home = options.home !== undefined;
+				stage = "codex-identity";
+				// Generate one host-owned bootstrap and explicitly load these exact bytes.
+				// Ambient project/home instruction discovery remains disabled: a Company
+				// File or restored auth home must never add a second platform prompt.
+				// A webhook signing secret is cut out of them, as out of everything the session writes to Codex (#write): the
+				// file and the thread's instructions are the same bytes.
+				const nativeInstructions = redactCloudWebhookSecrets(
+					[opening.resultRulesInside ? undefined : CLOUD_TOOL_RESULT_INSTRUCTIONS, opening.runtimeInstructions]
+						.filter(Boolean)
+						.join("\n"),
+				);
+				await writeFile(join(started.workspace, "AGENTS.md"), nativeInstructions, { mode: 0o400, flag: "wx" });
+				stage = "codex-thread-start";
+				await rpc.startThread();
+				const thread = object(
+					await rpc.request(
+						"thread/start",
+						{
+							// provider-default omits the model: the pinned Codex chooses its own default. An explicit
+							// name is only sent for a session override; the provider rejects names newer than the binary.
+							...(options.model === "provider-default" ? {} : { model: options.model }),
+							cwd: started.workspace,
+							runtimeWorkspaceRoots: [],
+							// The agent's home, or none at all (slice 1). A reviewer's, the compactor's and a voice call's
+							// threads never get one: they are not the agent's run.
+							environments: home ? [{ environmentId: CLOUD_HOME_ENVIRONMENT_ID, cwd: CLOUD_HOME_CWD }] : [],
+							ephemeral: true,
+							approvalPolicy: "never",
+							approvalsReviewer: "user",
+							sandbox: home ? "danger-full-access" : "read-only",
+							developerInstructions: nativeInstructions,
+							dynamicTools: [options.boundary.specification],
+							...(rpc.webSearch ? { config: CLOUD_CODEX_AGENT_THREAD_CONFIG } : {}),
+						},
+						"agent-thread",
+					),
+				);
+				const threadId = identifier(object(thread.thread).id);
+				rpc.bindThread(threadId);
+				const reviewing = rpc;
+				options.reviewer?.attach({
+					review: (input, reviewSignal) => reviewing.review({ ...input, cwd: started.workspace }, reviewSignal),
+				});
+				// Only a Codex login places voice calls: a plan run's Codex reaches OpenAI's API with the plan's token instead.
+				if (!rpc.chatGptPlan && options.voice) {
+					if (options.voice.stopMs !== undefined) rpc.voiceStopMs = options.voice.stopMs;
+					options.voice.attach(
+						(input, voiceSignal) => rpc.voice({ ...input, cwd: started.workspace }, voiceSignal),
+						(usageSignal) => rpc.voiceUsage(usageSignal),
+					);
+				}
+				// Pictures the same way: Codex's image tool reaches the Codex login's ChatGPT backend, never a plan's token.
+				attachPictures();
+				const startTurn = async (text: string): Promise<void> => {
+					const turnStarted = object(
+						await rpc.request(
+							"turn/start",
+							{
+								threadId,
+								input: [{ type: "text", text, text_elements: [] }],
+								effort,
+								environments: home ? [{ environmentId: CLOUD_HOME_ENVIRONMENT_ID, cwd: CLOUD_HOME_CWD }] : [],
+								runtimeWorkspaceRoots: [],
+								sandboxPolicy: home ? { type: "dangerFullAccess" } : { type: "readOnly", networkAccess: false },
+							},
+							"agent-turn",
+						),
+					);
+					rpc.confirmTurn(object(turnStarted.turn).id);
+				};
+				stage = "codex-turn-start";
+				rpc.startTurn();
+				rpc.observeTurnStart(Buffer.byteLength(opening.prompt));
+				await startTurn(opening.prompt);
+				stage = "codex-turn-completion";
+				await rpc.completed;
+				rpc.assertCompleted();
+				signal.throwIfAborted();
+				// The turn completed. When it left undone what the run has to end with, the model is told so in one more turn
+				// of the same thread, with everything the first one read and did still in front of it; a run gets one such
+				// turn, and what that one leaves undone the caller fails as before (10 November 2026: a turn that ended on four
+				// tokens of private text, with no final send, failed its run and left the member unanswered).
+				const correction = await options.turnCorrection?.(signal);
+				signal.throwIfAborted();
+				if (correction !== undefined) {
+					if (!correction.trim() || Buffer.byteLength(correction) > MAX_TURN_CORRECTION_BYTES)
+						throw new Error("Invalid native boundary input");
+					stage = "codex-turn-start";
+					rpc.beginNextTurn(Buffer.byteLength(correction));
+					await startTurn(correction);
+					stage = "codex-turn-completion";
+					await rpc.completed;
+					rpc.assertCompleted();
+					signal.throwIfAborted();
+				}
+				rpc.finishObservations(true, signal);
+				try {
+					await options.closing?.(signal);
+				} catch {
+					// The verified turn stands: what closing left unbuilt stays missing (§5.4).
+				}
+				const afterAnswer = rpc.afterAnswerUsageSignal;
+				return {
+					providerSessionId: threadId,
+					toolCalls: rpc.toolCalls,
+					codexVersion: CLOUD_CODEX_BOUNDARY_VERSION,
+					fencedRequests: rpc.fencedRequests,
+					...(afterAnswer ? { usageSignal: afterAnswer } : {}),
+				};
+			} catch (error) {
+				rpc.finishObservations(false, signal);
+				// A stopped run keeps only a usage limit the provider met after its answer (the 2026-11-13 amendment): that one
+				// was met before the stop.
+				if (signal.aborted)
+					throw tagNativeRuntimeFailure(
+						new Error("Native boundary execution stopped"),
+						stage,
+						cloudRuntimeErrorCategory(error, signal),
+						rpc.afterAnswerUsageSignal,
+					);
+				throw tagNativeRuntimeFailure(
+					error,
+					stage,
+					rpc.failureCategory !== "unknown" ? rpc.failureCategory : cloudRuntimeErrorCategory(error),
+					rpc.usageSignal ?? null,
+					rpc.codexError,
+				);
+			} finally {
+				options.reviewer?.attach(undefined);
+				options.compactor?.attach(undefined);
+				options.voice?.attach(undefined);
+				options.pictures?.attach(undefined);
+				if (idleWatch !== undefined) clearInterval(idleWatch);
+				signal.removeEventListener("abort", abort);
+				options.boundary.close();
+				// One run per process: the next run takes a spare or starts its own.
+				await started.close();
+			}
+		},
+		timeoutMs,
+	);
 }
