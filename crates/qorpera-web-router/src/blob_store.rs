@@ -1,4 +1,4 @@
-use crate::proxy::BoxBody;
+use crate::proxy::{BoxBody, BoxBodyError};
 use arc_swap::ArcSwap;
 use bytes::Bytes;
 use flate2::{write::GzEncoder, Compression};
@@ -110,6 +110,24 @@ impl AcceptedEncodings {
         }
         out
     }
+
+    pub fn ranked_sidecars(self) -> [Option<(ContentEncoding, &'static str)>; 3] {
+        let mut candidates = [
+            (ContentEncoding::Brotli, ".br", self.br_q),
+            (ContentEncoding::Zstd, ".zst", self.zstd_q),
+            (ContentEncoding::Gzip, ".gz", self.gzip_q),
+        ];
+        candidates.sort_by(|a, b| b.2.total_cmp(&a.2));
+        let mut out = [None; 3];
+        let mut idx = 0;
+        for (enc, ext, q) in candidates {
+            if q > 0.0 {
+                out[idx] = Some((enc, ext));
+                idx += 1;
+            }
+        }
+        out
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -152,6 +170,8 @@ pub enum BlobRead {
         file: tokio::fs::File,
         len: usize,
         total: usize,
+        encoding: ContentEncoding,
+        expected_sha256: Option<String>,
     },
 }
 
@@ -165,12 +185,12 @@ pub enum BlobRangeRead {
 }
 
 struct ChannelBody {
-    rx: mpsc::Receiver<Result<Frame<Bytes>, hyper::Error>>,
+    rx: mpsc::Receiver<Result<Frame<Bytes>, BoxBodyError>>,
 }
 
 impl Body for ChannelBody {
     type Data = Bytes;
-    type Error = hyper::Error;
+    type Error = BoxBodyError;
 
     fn poll_frame(
         mut self: Pin<&mut Self>,
@@ -180,22 +200,65 @@ impl Body for ChannelBody {
     }
 }
 
-pub fn stream_file_body(mut file: tokio::fs::File, mut remaining: usize) -> BoxBody {
-    let (tx, rx) = mpsc::channel::<Result<Frame<Bytes>, hyper::Error>>(4);
+pub fn stream_file_body(
+    mut file: tokio::fs::File,
+    mut remaining: usize,
+    expected_sha256: Option<String>,
+) -> BoxBody {
+    let (tx, rx) = mpsc::channel::<Result<Frame<Bytes>, BoxBodyError>>(4);
     tokio::spawn(async move {
         let mut buf = vec![0u8; STREAM_CHUNK_BYTES];
+        let mut hasher = expected_sha256.as_ref().map(|_| Sha256::new());
+        // WHY: Hold back the trailing chunk until EOF when verifying SHA-256 so a corrupt blob aborts with an error frame before Content-Length completes.
+        let mut pending: Option<Bytes> = None;
         while remaining > 0 {
             let want = remaining.min(buf.len());
             match file.read(&mut buf[..want]).await {
-                Ok(0) => break,
+                Ok(0) => {
+                    let _ = tx
+                        .send(Err(Box::new(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "blob truncated while streaming",
+                        ))))
+                        .await;
+                    return;
+                }
                 Ok(n) => {
                     remaining -= n;
+                    if let Some(ref mut h) = hasher {
+                        h.update(&buf[..n]);
+                    }
                     let chunk = Bytes::copy_from_slice(&buf[..n]);
-                    if tx.send(Ok(Frame::data(chunk))).await.is_err() {
-                        break;
+                    if expected_sha256.is_some() {
+                        if let Some(prev) = pending.replace(chunk) {
+                            if tx.send(Ok(Frame::data(prev))).await.is_err() {
+                                return;
+                            }
+                        }
+                    } else if tx.send(Ok(Frame::data(chunk))).await.is_err() {
+                        return;
                     }
                 }
-                Err(_) => break,
+                Err(err) => {
+                    let _ = tx.send(Err(Box::new(err))).await;
+                    return;
+                }
+            }
+        }
+        if let (Some(expected), Some(h)) = (expected_sha256, hasher) {
+            let mut extra = [0u8; 1];
+            let grew = matches!(file.read(&mut extra).await, Ok(n) if n > 0);
+            if grew || hex::encode(h.finalize()) != expected {
+                let _ = tx
+                    .send(Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "blob sha256 mismatch while streaming",
+                    ))))
+                    .await;
+                return;
+            }
+            if let Some(last) = pending {
+                let _ = tx.send(Ok(Frame::data(last))).await;
             }
         }
     });
@@ -570,13 +633,21 @@ struct CompressJob {
 struct CompressPool {
     tx: Mutex<Option<std_mpsc::SyncSender<CompressJob>>>,
     queue_sem: Arc<Semaphore>,
+    max_workers: usize,
+    max_queue: usize,
 }
 
 impl CompressPool {
     fn new() -> Self {
+        Self::with_limits(MAX_CONCURRENT_PRECOMPRESS, MAX_COMPRESS_QUEUE)
+    }
+
+    fn with_limits(max_workers: usize, max_queue: usize) -> Self {
         Self {
             tx: Mutex::new(None),
-            queue_sem: Arc::new(Semaphore::new(MAX_COMPRESS_QUEUE)),
+            queue_sem: Arc::new(Semaphore::new(max_queue.max(1))),
+            max_workers: max_workers.max(1),
+            max_queue: max_queue.max(1),
         }
     }
 
@@ -594,9 +665,9 @@ impl CompressPool {
             if let Some(ref tx) = *guard {
                 tx.clone()
             } else {
-                let (tx, rx) = std_mpsc::sync_channel::<CompressJob>(MAX_COMPRESS_QUEUE);
+                let (tx, rx) = std_mpsc::sync_channel::<CompressJob>(self.max_queue);
                 let shared_rx = Arc::new(Mutex::new(rx));
-                for worker_idx in 0..MAX_CONCURRENT_PRECOMPRESS {
+                for worker_idx in 0..self.max_workers {
                     let rx_ref = Arc::clone(&shared_rx);
                     let _ = std::thread::Builder::new()
                         .name(format!("qorpera-compress-{worker_idx}"))
@@ -612,8 +683,10 @@ impl CompressPool {
                                 let Ok(job) = job else {
                                     break;
                                 };
-                                let variants = precompress_all_with_ctx(&job.raw, zstd_ctx.as_mut());
-                                let _ = job.reply.send(variants);
+                                let CompressJob { raw, reply, _permit } = job;
+                                let variants = precompress_all_with_ctx(&raw, zstd_ctx.as_mut());
+                                drop(_permit);
+                                let _ = reply.send(variants);
                             }
                         });
                 }
@@ -925,11 +998,32 @@ impl BlobStore {
         let meta = tokio::fs::metadata(&path).await?;
         let total = meta.len() as usize;
         if total > self.direct_cache_limit() {
+            // WHY: Preserve precomputed sidecars for 4-8 MiB assets and verify raw stream SHA-256 on disk reads above cache limit.
+            if total <= PRECOMPRESS_MAX_BYTES {
+                for (encoding, ext) in accepted.ranked_sidecars().into_iter().flatten() {
+                    let sidecar_path = Self::sidecar_path(&path, ext);
+                    if let Ok(sidecar_file) = tokio::fs::File::open(&sidecar_path).await {
+                        if let Ok(sidecar_meta) = sidecar_file.metadata().await {
+                            if sidecar_meta.is_file() {
+                                return Ok(BlobRead::Stream {
+                                    file: sidecar_file,
+                                    len: sidecar_meta.len() as usize,
+                                    total,
+                                    encoding,
+                                    expected_sha256: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
             let file = tokio::fs::File::open(&path).await?;
             return Ok(BlobRead::Stream {
                 file,
                 len: total,
                 total,
+                encoding: ContentEncoding::Identity,
+                expected_sha256: Some(sha256.to_string()),
             });
         }
         self.get_encoded(sha256, accepted).await.map(BlobRead::Buffered)
@@ -1421,10 +1515,22 @@ mod tests {
 
         let read = store.get_or_stream(&sha, AcceptedEncodings::IDENTITY).await.unwrap();
         let streamed = match read {
-            BlobRead::Stream { file, len, total } => {
+            BlobRead::Stream {
+                file,
+                len,
+                total,
+                encoding,
+                expected_sha256,
+            } => {
                 assert_eq!(len, data.len());
                 assert_eq!(total, data.len());
-                stream_file_body(file, len).collect().await.unwrap().to_bytes()
+                assert_eq!(encoding, ContentEncoding::Identity);
+                assert_eq!(expected_sha256.as_deref(), Some(sha.as_str()));
+                stream_file_body(file, len, expected_sha256)
+                    .collect()
+                    .await
+                    .unwrap()
+                    .to_bytes()
             }
             BlobRead::Buffered(_) => panic!("expected streaming read above threshold"),
         };
@@ -1435,10 +1541,179 @@ mod tests {
             BlobRangeRead::Stream { file, len, total } => {
                 assert_eq!(len, 100);
                 assert_eq!(total, data.len());
-                stream_file_body(file, len).collect().await.unwrap().to_bytes()
+                stream_file_body(file, len, None)
+                    .collect()
+                    .await
+                    .unwrap()
+                    .to_bytes()
             }
             BlobRangeRead::Buffered(_, _) => panic!("expected streaming range above threshold"),
         };
         assert_eq!(range_bytes.len(), 100);
+    }
+
+    struct PendingBody;
+
+    impl Body for PendingBody {
+        type Data = Bytes;
+        type Error = std::convert::Infallible;
+
+        fn poll_frame(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+            Poll::Pending
+        }
+    }
+
+    struct ChunkListBody {
+        chunks: std::collections::VecDeque<Bytes>,
+    }
+
+    impl Body for ChunkListBody {
+        type Data = Bytes;
+        type Error = std::convert::Infallible;
+
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+            Poll::Ready(self.chunks.pop_front().map(|c| Ok(Frame::data(c))))
+        }
+    }
+
+    #[tokio::test]
+    async fn put_stream_enforces_frame_timeout_and_size_limit_with_temp_cleanup() {
+        let dir = tempdir().unwrap();
+        let store = BlobStore::new(dir.path().to_path_buf(), 64 * 512, 2048);
+
+        let timeout_sha = "2".repeat(64);
+        assert!(matches!(
+            store
+                .put_stream(&timeout_sha, PendingBody, false, Duration::from_millis(40))
+                .await,
+            Err(BlobError::Timeout)
+        ));
+        let bucket2 = dir.path().join("22").join("22");
+        assert!(std::fs::read_dir(&bucket2).unwrap().next().is_none());
+
+        let too_large_sha = "3".repeat(64);
+        let chunks = ChunkListBody {
+            chunks: std::collections::VecDeque::from([
+                Bytes::from(vec![b'a'; 1500]),
+                Bytes::from(vec![b'b'; 1000]),
+            ]),
+        };
+        assert!(matches!(
+            store
+                .put_stream(&too_large_sha, chunks, false, Duration::from_secs(2))
+                .await,
+            Err(BlobError::TooLarge)
+        ));
+        let bucket3 = dir.path().join("33").join("33");
+        assert!(std::fs::read_dir(&bucket3).unwrap().next().is_none());
+    }
+
+    #[tokio::test]
+    async fn get_or_stream_serves_sidecars_and_aborts_corrupt_raw_blobs_above_threshold() {
+        let dir = tempdir().unwrap();
+        let store = BlobStore::new(dir.path().to_path_buf(), 64 * 512, 256 * 1024)
+            .with_stream_threshold(1024);
+        let text = Bytes::from("console.log('qorpera web router streaming sidecar');\n".repeat(120));
+        let sha = sha256_hex(&text);
+
+        assert_eq!(
+            store
+                .put_stream(&sha, http_body_util::Full::new(text.clone()), true, Duration::from_secs(2))
+                .await
+                .unwrap(),
+            PutOutcome::Stored
+        );
+
+        let br_read = store
+            .get_or_stream(&sha, AcceptedEncodings::from_header("gzip, br, zstd"))
+            .await
+            .unwrap();
+        match br_read {
+            BlobRead::Stream {
+                file,
+                len,
+                total,
+                encoding,
+                expected_sha256,
+            } => {
+                assert_eq!(encoding, ContentEncoding::Brotli);
+                assert_eq!(total, text.len());
+                assert!(len < text.len());
+                assert!(expected_sha256.is_none());
+                let compressed = stream_file_body(file, len, expected_sha256)
+                    .collect()
+                    .await
+                    .unwrap()
+                    .to_bytes();
+                assert_eq!(compressed.len(), len);
+            }
+            BlobRead::Buffered(_) => panic!("expected streaming sidecar above threshold"),
+        }
+
+        let raw_path = dir.path().join(&sha[0..2]).join(&sha[2..4]).join(&sha);
+        let mut tampered = text.to_vec();
+        let last_idx = tampered.len() - 1;
+        tampered[last_idx] ^= 0xff;
+        tokio::fs::write(&raw_path, &tampered).await.unwrap();
+
+        let corrupt_read = store.get_or_stream(&sha, AcceptedEncodings::IDENTITY).await.unwrap();
+        match corrupt_read {
+            BlobRead::Stream {
+                file,
+                len,
+                expected_sha256,
+                ..
+            } => {
+                let err = stream_file_body(file, len, expected_sha256)
+                    .collect()
+                    .await
+                    .unwrap_err();
+                assert!(
+                    err.to_string().contains("sha256 mismatch"),
+                    "expected sha256 mismatch error, got: {err}"
+                );
+            }
+            BlobRead::Buffered(_) => panic!("expected streaming raw read above threshold"),
+        }
+    }
+
+    #[tokio::test]
+    async fn compress_pool_enforces_queue_bound_and_completes_burst() {
+        let pool = Arc::new(CompressPool::with_limits(1, 2));
+        let payload = Bytes::from("compressible-payload-".repeat(256));
+
+        let held1 = Arc::clone(&pool.queue_sem).acquire_owned().await.unwrap();
+        let held2 = Arc::clone(&pool.queue_sem).acquire_owned().await.unwrap();
+        let blocked = {
+            let p = Arc::clone(&pool);
+            let data = payload.clone();
+            tokio::spawn(async move { p.compress(data).await.unwrap() })
+        };
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!blocked.is_finished(), "compress must wait when queue bound is full");
+        drop(held1);
+        drop(held2);
+        let first = blocked.await.unwrap();
+        assert!(first.brotli.is_some());
+
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let p = Arc::clone(&pool);
+            let data = payload.clone();
+            tasks.push(tokio::spawn(async move { p.compress(data).await.unwrap() }));
+        }
+        for task in tasks {
+            let variants = task.await.unwrap();
+            assert!(variants.gzip.is_some());
+            assert!(variants.brotli.is_some());
+            assert!(variants.zstd.is_some());
+        }
+        assert_eq!(pool.queue_sem.available_permits(), 2);
     }
 }

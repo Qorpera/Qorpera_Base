@@ -454,7 +454,7 @@ pub async fn verify_domains_once(
     database_url: Option<&str>,
     query_timeout: Duration,
 ) -> Vec<DomainCheckOutcome> {
-    verify_domains_once_with_tracker(routes, dns_servers, database_url, query_timeout, None).await
+    verify_domains_once_with_tracker(routes, dns_servers, database_url, query_timeout, None, true).await
 }
 
 async fn verify_domains_once_with_tracker(
@@ -463,6 +463,7 @@ async fn verify_domains_once_with_tracker(
     database_url: Option<&str>,
     query_timeout: Duration,
     persist_tracker: Option<&Arc<DomainPersistTracker>>,
+    force_all_persist: bool,
 ) -> Vec<DomainCheckOutcome> {
     let (domains, expected_ipv4, expected_ipv6, expected_cname_target, domains_enabled) = {
         let guard = routes.load();
@@ -576,10 +577,11 @@ async fn verify_domains_once_with_tracker(
             };
             let changed_in_memory =
                 next_status != domain.status || next_misses != domain.consecutive_misses;
-
-            // WHY: Skip redundant DB writes when DNS state is unchanged inside the 10-minute heartbeat window to avoid write amplification.
+            // WHY: Always persist explicit rechecks or domains with NULL last_checked_at while throttling unchanged periodic writes.
+            let force_persist =
+                force_all_persist || changed_in_memory || domain.last_checked_at.is_none();
             let should_write_db = tracker_ref.as_ref().is_none_or(|t| {
-                t.should_persist(&domain.id, changed_in_memory, UNCHANGED_DB_HEARTBEAT)
+                t.should_persist(&domain.id, force_persist, UNCHANGED_DB_HEARTBEAT)
             });
             if should_write_db {
                 if let Some(ref client) = db_ref {
@@ -669,6 +671,7 @@ pub fn spawn_dns_verifier(
                         database_url.as_deref(),
                         Duration::from_secs(3),
                         Some(&persist_tracker),
+                        false,
                     )
                     .await;
                     last_sweep = tokio::time::Instant::now();
@@ -688,6 +691,7 @@ pub fn spawn_dns_verifier(
                         database_url.as_deref(),
                         Duration::from_secs(3),
                         Some(&persist_tracker),
+                        true,
                     )
                     .await;
                     last_sweep = tokio::time::Instant::now();

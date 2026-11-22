@@ -1534,7 +1534,7 @@ async fn websocket_concurrency_cap_activity_heartbeat_streaming_blobs_timeouts_a
 
     let mut ws1_res = open_ws().await;
     assert_eq!(ws1_res.status(), StatusCode::SWITCHING_PROTOCOLS);
-    let ws1_io = TokioIo::new(hyper::upgrade::on(&mut ws1_res).await.unwrap());
+    let mut ws1_io = TokioIo::new(hyper::upgrade::on(&mut ws1_res).await.unwrap());
 
     let mut ws2_res = open_ws().await;
     assert_eq!(ws2_res.status(), StatusCode::SWITCHING_PROTOCOLS);
@@ -1549,7 +1549,12 @@ async fn websocket_concurrency_cap_activity_heartbeat_streaming_blobs_timeouts_a
         .deployments
         .get("dep-ws-1")
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(1250)).await;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    ws1_io.write_all(b"ping").await.unwrap();
+    let mut echo = [0u8; 4];
+    ws1_io.read_exact(&mut echo).await.unwrap();
+    assert_eq!(&echo, b"ping");
+    tokio::time::sleep(Duration::from_millis(250)).await;
     let ts_after = *state
         .activity
         .snapshot()
@@ -1558,7 +1563,7 @@ async fn websocket_concurrency_cap_activity_heartbeat_streaming_blobs_timeouts_a
         .unwrap();
     assert!(
         ts_after > ts_before,
-        "live WS connection must keep advancing deployment activity ({ts_before} -> {ts_after})"
+        "active WS traffic must keep advancing deployment activity ({ts_before} -> {ts_after})"
     );
 
     drop(ws1_io);
@@ -1612,5 +1617,244 @@ async fn websocket_concurrency_cap_activity_heartbeat_streaming_blobs_timeouts_a
     })
     .await
     .expect("router listeners must exit promptly on shutdown signal");
+    backend_task.abort();
+}
+
+#[tokio::test]
+async fn websocket_per_deployment_isolation_idle_cutoff_and_streamed_sidecar_integrity() {
+    let backend_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let backend_addr = backend_listener.local_addr().unwrap();
+    let backend_task = tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = backend_listener.accept().await else {
+                break;
+            };
+            tokio::spawn(async move {
+                let io = TokioIo::new(stream);
+                let svc = service_fn(|mut req: Request<Incoming>| async move {
+                    if req.uri().path() == "/ws" {
+                        let on_upgrade = hyper::upgrade::on(&mut req);
+                        tokio::spawn(async move {
+                            if let Ok(upgraded) = on_upgrade.await {
+                                let mut ws = TokioIo::new(upgraded);
+                                let mut buf = [0u8; 64];
+                                while let Ok(n) = ws.read(&mut buf).await {
+                                    if n == 0 {
+                                        break;
+                                    }
+                                    if ws.write_all(&buf[..n]).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        });
+                        return Ok::<_, hyper::Error>(
+                            http::Response::builder()
+                                .status(StatusCode::SWITCHING_PROTOCOLS)
+                                .header("connection", "upgrade")
+                                .header("upgrade", "websocket")
+                                .body(Full::new(Bytes::new()))
+                                .unwrap(),
+                        );
+                    }
+                    Ok::<_, hyper::Error>(
+                        http::Response::builder()
+                            .status(StatusCode::OK)
+                            .body(Full::new(Bytes::from_static(b"ok")))
+                            .unwrap(),
+                    )
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, svc)
+                    .with_upgrades()
+                    .await;
+            });
+        }
+    });
+
+    let dir = tempdir().unwrap();
+    let blobs = Arc::new(
+        BlobStore::new(dir.path().to_path_buf(), 64 * 512, 1024 * 1024).with_stream_threshold(1024),
+    );
+    let large_js = Bytes::from("export const message = 'qorpera streaming asset test';\n".repeat(160));
+    let large_sha = sha256_hex(&large_js);
+
+    let mut files = HashMap::new();
+    files.insert(
+        "bundle.js".to_string(),
+        ManifestFile {
+            sha256: large_sha.clone(),
+            bytes: large_js.len(),
+            content_type: "application/javascript".to_string(),
+            immutable: true,
+        },
+    );
+
+    let make_site = |id: &str, slug: &str, dep_id: &str, site_files: HashMap<String, ManifestFile>| SiteRecord {
+        id: id.to_string(),
+        slug: slug.to_string(),
+        is_public: true,
+        taken_down: false,
+        password_sha256: None,
+        password_version: 1,
+        live_deployment: Some(DeploymentRecord {
+            id: dep_id.to_string(),
+            kind: DeploymentKind::Hybrid,
+            manifest: SiteManifest {
+                files: site_files,
+                ..Default::default()
+            },
+            upstream_addr: Some(backend_addr.to_string()),
+            oci_image_ref: None,
+            app_port: Some(3000),
+            health_path: "/".to_string(),
+            idle_timeout_sec: 900,
+            memory_mb: 512,
+            vcpu_limit: 1.0,
+            env_spec: HashMap::new(),
+        }),
+        preview_deployments: HashMap::new(),
+        primary_custom_domain: None,
+    };
+
+    let snapshot = EdgeSnapshot {
+        hosts_domain: "qorpera.site".to_string(),
+        hosts_enabled: true,
+        public_enabled: true,
+        domains_enabled: true,
+        sites: vec![
+            make_site("site-a", "tenant-a", "dep-a", files),
+            make_site("site-b", "tenant-b", "dep-b", HashMap::new()),
+        ],
+        ..Default::default()
+    };
+
+    let cfg = test_config(None);
+    let state = Arc::new(
+        RouterState::new(blobs, snapshot, &cfg)
+            .with_ws_limits(4, 1, 10)
+            .with_ws_heartbeat(Duration::from_millis(60))
+            .with_ws_idle_timeout(Duration::from_millis(180)),
+    );
+    let bound = BoundServers::bind(&cfg, Arc::clone(&state)).await.unwrap();
+    let pub_addr = bound.public_addr;
+    let int_addr = bound.internal_addr;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let (pub_h, int_h) = bound.spawn_with_shutdown(shutdown_rx);
+
+    let (st, _, _) = http_call(
+        int_addr,
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/_internal/blobs/{large_sha}"))
+            .header("authorization", "Bearer secret-control-token")
+            .body(Full::new(large_js.clone()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED);
+
+    let (st, hdrs, br_body) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("GET")
+            .uri("/bundle.js")
+            .header("host", "tenant-a.qorpera.site")
+            .header("accept-encoding", "gzip, br, zstd")
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(hdrs.get("content-encoding").unwrap(), "br");
+    assert!(br_body.len() < large_js.len());
+
+    let raw_path = dir.path().join(&large_sha[0..2]).join(&large_sha[2..4]).join(&large_sha);
+    let mut tampered = large_js.to_vec();
+    tampered[0] ^= 0x55;
+    tokio::fs::write(&raw_path, &tampered).await.unwrap();
+
+    let stream = TcpStream::connect(pub_addr).await.unwrap();
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await.unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let corrupt_res = sender
+        .send_request(
+            Request::builder()
+                .method("GET")
+                .uri("/bundle.js")
+                .header("host", "tenant-a.qorpera.site")
+                .header("accept-encoding", "identity")
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        corrupt_res.into_body().collect().await.is_err(),
+        "corrupt streamed blob above threshold must fail transfer instead of returning clean 200"
+    );
+
+    let open_ws = |host: &'static str| async move {
+        let stream = TcpStream::connect(pub_addr).await.unwrap();
+        let io = TokioIo::new(stream);
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await.unwrap();
+        tokio::spawn(async move {
+            let _ = conn.with_upgrades().await;
+        });
+        sender
+            .send_request(
+                Request::builder()
+                    .method("GET")
+                    .uri("/ws")
+                    .header("host", host)
+                    .header("connection", "Upgrade")
+                    .header("upgrade", "websocket")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    };
+
+    let mut ws_a1 = open_ws("tenant-a.qorpera.site").await;
+    assert_eq!(ws_a1.status(), StatusCode::SWITCHING_PROTOCOLS);
+    let mut ws_a1_io = TokioIo::new(hyper::upgrade::on(&mut ws_a1).await.unwrap());
+
+    let ws_a2 = open_ws("tenant-a.qorpera.site").await;
+    assert_eq!(ws_a2.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let mut ws_b1 = open_ws("tenant-b.qorpera.site").await;
+    assert_eq!(ws_b1.status(), StatusCode::SWITCHING_PROTOCOLS);
+    let _ws_b1_io = TokioIo::new(hyper::upgrade::on(&mut ws_b1).await.unwrap());
+
+    let mut buf = [0u8; 8];
+    let closed = tokio::time::timeout(Duration::from_secs(2), ws_a1_io.read(&mut buf))
+        .await
+        .expect("idle WS must be closed by idle timeout");
+    assert!(
+        matches!(closed, Ok(0) | Err(_)),
+        "expected EOF or reset after idle cutoff, got: {closed:?}"
+    );
+
+    let mut recovered = false;
+    for _ in 0..20 {
+        let res = open_ws("tenant-a.qorpera.site").await;
+        if res.status() == StatusCode::SWITCHING_PROTOCOLS {
+            recovered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(recovered, "per-deployment WS permit must be freed after idle cutoff");
+
+    let _ = shutdown_tx.send(true);
+    let _ = tokio::time::timeout(Duration::from_secs(1), async {
+        let _ = pub_h.await;
+        let _ = int_h.await;
+    })
+    .await;
     backend_task.abort();
 }

@@ -1,10 +1,10 @@
 use crate::routes::{EdgeSnapshot, SharedRoutes};
 use sha2::{Digest, Sha256};
 use std::io::BufReader;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 use tokio::sync::{mpsc, Notify};
 use tokio_postgres_rustls::MakeRustlsConnect;
 use tracing::{error, info, warn};
@@ -14,24 +14,80 @@ const DB_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DB_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 const SNAPSHOT_OFFLOAD_THRESHOLD_BYTES: usize = 64 * 1024;
 
-static DEFAULT_TLS_CONFIG: OnceLock<Result<rustls::ClientConfig, String>> = OnceLock::new();
+struct CachedTlsConfig {
+    ca_path: Option<PathBuf>,
+    ca_mtime: Option<SystemTime>,
+    config: rustls::ClientConfig,
+}
 
-fn build_tls_client_config(ca_file: Option<&Path>) -> Result<rustls::ClientConfig, String> {
+struct TlsConfigCache {
+    slot: Mutex<Option<CachedTlsConfig>>,
+}
+
+impl TlsConfigCache {
+    const fn new() -> Self {
+        Self {
+            slot: Mutex::new(None),
+        }
+    }
+
+    fn get_cached_no_ca(&self) -> Option<rustls::ClientConfig> {
+        let guard = self.slot.lock().ok()?;
+        let entry = guard.as_ref()?;
+        if entry.ca_path.is_none() {
+            Some(entry.config.clone())
+        } else {
+            None
+        }
+    }
+
+    fn get_or_build(&self, explicit_ca: Option<&Path>) -> Result<rustls::ClientConfig, String> {
+        let extra_ca = explicit_ca.map(Path::to_path_buf).or_else(env_ca_file);
+        let mtime = extra_ca
+            .as_ref()
+            .and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
+        let cacheable = extra_ca.is_none() || mtime.is_some();
+        if cacheable {
+            if let Ok(guard) = self.slot.lock() {
+                if let Some(ref entry) = *guard {
+                    if entry.ca_path == extra_ca && entry.ca_mtime == mtime {
+                        return Ok(entry.config.clone());
+                    }
+                }
+            }
+        }
+        // WHY: Cache only Ok TLS configs and re-stat CA files so transient boot errors or rotated bundles recover on reconnect.
+        let cfg = build_tls_client_config_resolved(extra_ca.as_deref())?;
+        if let Ok(mut guard) = self.slot.lock() {
+            *guard = Some(CachedTlsConfig {
+                ca_path: extra_ca,
+                ca_mtime: mtime,
+                config: cfg.clone(),
+            });
+        }
+        Ok(cfg)
+    }
+}
+
+static DEFAULT_TLS_CACHE: TlsConfigCache = TlsConfigCache::new();
+
+fn env_ca_file() -> Option<PathBuf> {
+    std::env::var("QORPERA_WEB_ROUTER_DATABASE_CA_FILE")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+}
+
+fn build_tls_client_config_resolved(extra_ca: Option<&Path>) -> Result<rustls::ClientConfig, String> {
     let mut root_store = rustls::RootCertStore::empty();
     root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let native = rustls_native_certs::load_native_certs();
     for cert in native.certs {
         let _ = root_store.add(cert);
     }
-    let env_ca = std::env::var("QORPERA_WEB_ROUTER_DATABASE_CA_FILE")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    let extra_ca = ca_file
-        .map(|p| p.to_path_buf())
-        .or_else(|| env_ca.map(std::path::PathBuf::from));
     if let Some(path) = extra_ca {
-        let file = std::fs::File::open(&path)
+        let file = std::fs::File::open(path)
             .map_err(|e| format!("failed to open database CA file {}: {e}", path.display()))?;
         let mut reader = BufReader::new(file);
         let mut added = 0usize;
@@ -57,22 +113,20 @@ fn build_tls_client_config(ca_file: Option<&Path>) -> Result<rustls::ClientConfi
 }
 
 pub fn build_postgres_tls_connector(ca_file: Option<&Path>) -> Result<MakeRustlsConnect, String> {
-    // WHY: Cache the default TLS root store so reconnects do not repeat synchronous /etc/ssl/certs reads on Tokio workers.
     if ca_file.is_none() {
-        let cfg = DEFAULT_TLS_CONFIG
-            .get_or_init(|| build_tls_client_config(None))
-            .as_ref()
-            .map_err(Clone::clone)?
-            .clone();
-        return Ok(MakeRustlsConnect::new(cfg));
+        return Ok(MakeRustlsConnect::new(DEFAULT_TLS_CACHE.get_or_build(None)?));
     }
-    Ok(MakeRustlsConnect::new(build_tls_client_config(ca_file)?))
+    let resolved = ca_file.map(Path::to_path_buf).or_else(env_ca_file);
+    Ok(MakeRustlsConnect::new(build_tls_client_config_resolved(
+        resolved.as_deref(),
+    )?))
 }
 
 async fn default_postgres_tls_connector() -> Result<MakeRustlsConnect, String> {
-    if let Some(cached) = DEFAULT_TLS_CONFIG.get() {
-        let cfg = cached.as_ref().map_err(Clone::clone)?.clone();
-        return Ok(MakeRustlsConnect::new(cfg));
+    if env_ca_file().is_none() {
+        if let Some(cfg) = DEFAULT_TLS_CACHE.get_cached_no_ca() {
+            return Ok(MakeRustlsConnect::new(cfg));
+        }
     }
     tokio::task::spawn_blocking(|| build_postgres_tls_connector(None))
         .await
@@ -319,6 +373,24 @@ mod tests {
         assert!(build_postgres_tls_connector(None).is_ok());
         let missing = Path::new("/nonexistent/qorpera-missing-ca.pem");
         assert!(build_postgres_tls_connector(Some(missing)).is_err());
+    }
+
+    #[test]
+    fn tls_config_cache_does_not_cache_errors_and_retries_after_file_appears() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca_path = dir.path().join("ca.pem");
+        let cache = TlsConfigCache::new();
+
+        let err1 = cache.get_or_build(Some(&ca_path)).unwrap_err();
+        assert!(err1.contains("failed to open"), "unexpected err: {err1}");
+        assert!(cache.get_cached_no_ca().is_none());
+
+        std::fs::write(&ca_path, b"").unwrap();
+        let err2 = cache.get_or_build(Some(&ca_path)).unwrap_err();
+        assert!(err2.contains("no CA certificates"), "unexpected err: {err2}");
+
+        assert!(cache.get_or_build(None).is_ok());
+        assert!(cache.get_cached_no_ca().is_some());
     }
 
     #[tokio::test]

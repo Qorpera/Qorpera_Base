@@ -5,8 +5,9 @@ use crate::dns_verify::{default_dns_servers, verify_domains_once};
 use crate::postgres_sync::connect_postgres_client;
 use crate::proxy::{
     full_body, is_websocket_upgrade, proxy_empty_request, proxy_http_or_ws, ActivityTracker, BoxBody,
-    PooledProxyClient, ProxyError, WakeCoordinator, WakeRequest, DEFAULT_WS_ACTIVITY_HEARTBEAT,
-    MAX_ACTIVE_WS_CONNS,
+    PooledProxyClient, ProxyError, WakeCoordinator, WakeRequest, WsLimiter,
+    DEFAULT_WS_ACTIVITY_HEARTBEAT, DEFAULT_WS_IDLE_TIMEOUT, MAX_ACTIVE_WS_CONNS,
+    MAX_ACTIVE_WS_PER_DEPLOYMENT, MAX_ACTIVE_WS_PER_IP,
 };
 use crate::ratelimit::RateLimiter;
 use crate::routes::{
@@ -34,7 +35,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::sync::{watch, Semaphore};
 
@@ -46,6 +47,7 @@ const MAX_INTERNAL_CONNS: usize = 256;
 const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
 const BODY_READ_TIMEOUT: Duration = Duration::from_secs(15);
 const AUTH_DB_TIMEOUT: Duration = Duration::from_secs(5);
+const DB_RECONNECT_BACKOFF: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub struct RedeemedTicket {
@@ -76,49 +78,118 @@ pub trait EdgeAuthBackend: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Option<RedeemedMemberPass>> + Send>>;
 }
 
+struct DbClientState<T> {
+    client: Option<Arc<T>>,
+    last_failure: Option<Instant>,
+}
+
+impl<T> Default for DbClientState<T> {
+    fn default() -> Self {
+        Self {
+            client: None,
+            last_failure: None,
+        }
+    }
+}
+
+struct DbClientSlot<T> {
+    inner: tokio::sync::Mutex<DbClientState<T>>,
+    backoff: Duration,
+}
+
+impl<T> DbClientSlot<T> {
+    fn new(backoff: Duration) -> Self {
+        Self {
+            inner: tokio::sync::Mutex::new(DbClientState::default()),
+            backoff,
+        }
+    }
+
+    async fn get_or_connect<F, Fut>(
+        &self,
+        deadline: Duration,
+        is_open: impl Fn(&T) -> bool,
+        connect: F,
+    ) -> Option<Arc<T>>
+    where
+        F: FnOnce(Duration) -> Fut,
+        Fut: Future<Output = Option<T>>,
+    {
+        let start = Instant::now();
+        // WHY: Bound mutex wait plus connect within one deadline and fail fast during backoff so PG outages never build a k*5s serial queue.
+        let mut guard = tokio::time::timeout(deadline, self.inner.lock()).await.ok()?;
+        if let Some(ref c) = guard.client {
+            if is_open(c) {
+                return Some(Arc::clone(c));
+            }
+        }
+        if guard.last_failure.is_some_and(|at| at.elapsed() < self.backoff) {
+            return None;
+        }
+        let remaining = deadline.checked_sub(start.elapsed())?;
+        if remaining.is_zero() {
+            return None;
+        }
+        match connect(remaining).await {
+            Some(client) => {
+                guard.last_failure = None;
+                let arc = Arc::new(client);
+                guard.client = Some(Arc::clone(&arc));
+                Some(arc)
+            }
+            None => {
+                guard.client = None;
+                guard.last_failure = Some(Instant::now());
+                None
+            }
+        }
+    }
+
+    async fn clear_if_same(&self, failed: &Arc<T>, timeout: Duration) {
+        let Ok(mut guard) = tokio::time::timeout(timeout, self.inner.lock()).await else {
+            return;
+        };
+        if guard.client.as_ref().is_some_and(|c| Arc::ptr_eq(c, failed)) {
+            guard.client = None;
+        }
+    }
+}
+
 pub struct PostgresAuthBackend {
     database_url: String,
-    client: Arc<tokio::sync::Mutex<Option<Arc<tokio_postgres::Client>>>>,
+    client: Arc<DbClientSlot<tokio_postgres::Client>>,
 }
 
 impl PostgresAuthBackend {
     pub fn new(database_url: String) -> Self {
         Self {
             database_url,
-            client: Arc::new(tokio::sync::Mutex::new(None)),
+            client: Arc::new(DbClientSlot::new(DB_RECONNECT_BACKOFF)),
         }
     }
 
     async fn get_client(
         db_url: &str,
-        slot: &tokio::sync::Mutex<Option<Arc<tokio_postgres::Client>>>,
+        slot: &DbClientSlot<tokio_postgres::Client>,
     ) -> Option<Arc<tokio_postgres::Client>> {
-        // WHY: Hold the slot mutex across reconnect so concurrent cache misses cannot trigger a reconnect herd.
-        let mut guard = slot.lock().await;
-        if let Some(ref c) = *guard {
-            if !c.is_closed() {
-                return Some(Arc::clone(c));
-            }
-        }
-        let client = connect_postgres_client(db_url, AUTH_DB_TIMEOUT).await.ok()?;
-        let arc = Arc::new(client);
-        *guard = Some(Arc::clone(&arc));
-        Some(arc)
+        slot.get_or_connect(
+            AUTH_DB_TIMEOUT,
+            |c| !c.is_closed(),
+            |remaining| async move { connect_postgres_client(db_url, remaining).await.ok() },
+        )
+        .await
     }
 
     async fn clear_client_if_same(
-        slot: &tokio::sync::Mutex<Option<Arc<tokio_postgres::Client>>>,
+        slot: &DbClientSlot<tokio_postgres::Client>,
         failed: &Arc<tokio_postgres::Client>,
     ) {
-        let mut guard = slot.lock().await;
-        if guard.as_ref().is_some_and(|c| Arc::ptr_eq(c, failed)) {
-            *guard = None;
-        }
+        slot.clear_if_same(failed, AUTH_DB_TIMEOUT).await;
     }
 
     async fn query_json(
         db_url: &str,
-        slot: &tokio::sync::Mutex<Option<Arc<tokio_postgres::Client>>>,
+        slot: &DbClientSlot<tokio_postgres::Client>,
         sql: &str,
         arg1: &str,
         arg2: &str,
@@ -277,10 +348,11 @@ pub struct RouterState {
     pub database_url: Option<String>,
     pub auth_backend: Option<Arc<dyn EdgeAuthBackend>>,
     pub ready: Arc<AtomicBool>,
-    pub ws_semaphore: Arc<Semaphore>,
+    pub ws_limiter: Arc<WsLimiter>,
     ws_heartbeat_interval: Duration,
+    ws_idle_timeout: Duration,
     body_read_timeout: Duration,
-    db_slot: Arc<tokio::sync::Mutex<Option<Arc<tokio_postgres::Client>>>>,
+    db_slot: Arc<DbClientSlot<tokio_postgres::Client>>,
 }
 
 impl RouterState {
@@ -321,20 +393,39 @@ impl RouterState {
             database_url: cfg.database_url.clone(),
             auth_backend,
             ready,
-            ws_semaphore: Arc::new(Semaphore::new(MAX_ACTIVE_WS_CONNS)),
+            ws_limiter: Arc::new(WsLimiter::new(
+                MAX_ACTIVE_WS_CONNS,
+                MAX_ACTIVE_WS_PER_DEPLOYMENT,
+                MAX_ACTIVE_WS_PER_IP,
+            )),
             ws_heartbeat_interval: DEFAULT_WS_ACTIVITY_HEARTBEAT,
+            ws_idle_timeout: DEFAULT_WS_IDLE_TIMEOUT,
             body_read_timeout: BODY_READ_TIMEOUT,
-            db_slot: Arc::new(tokio::sync::Mutex::new(None)),
+            db_slot: Arc::new(DbClientSlot::new(DB_RECONNECT_BACKOFF)),
         }
     }
 
     pub fn with_ws_limit(mut self, max_conns: usize) -> Self {
-        self.ws_semaphore = Arc::new(Semaphore::new(max_conns));
+        self.ws_limiter = Arc::new(WsLimiter::new(
+            max_conns,
+            MAX_ACTIVE_WS_PER_DEPLOYMENT,
+            MAX_ACTIVE_WS_PER_IP,
+        ));
+        self
+    }
+
+    pub fn with_ws_limits(mut self, global: usize, per_deployment: usize, per_ip: usize) -> Self {
+        self.ws_limiter = Arc::new(WsLimiter::new(global, per_deployment, per_ip));
         self
     }
 
     pub fn with_ws_heartbeat(mut self, interval: Duration) -> Self {
         self.ws_heartbeat_interval = interval;
+        self
+    }
+
+    pub fn with_ws_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.ws_idle_timeout = timeout;
         self
     }
 
@@ -694,7 +785,7 @@ fn check_bearer(req: &Request<Incoming>, expected_token: &str) -> bool {
 
 async fn persist_upstream_to_db(
     db_url: &str,
-    slot: &tokio::sync::Mutex<Option<Arc<tokio_postgres::Client>>>,
+    slot: &DbClientSlot<tokio_postgres::Client>,
     dep_id: &str,
     upstream_addr: &Option<String>,
 ) {
@@ -1195,10 +1286,11 @@ async fn handle_public(
         &host_s,
         &ip_s,
         !is_public,
-        &state.ws_semaphore,
+        &state.ws_limiter,
         &state.activity,
         &deployment.id,
         state.ws_heartbeat_interval,
+        state.ws_idle_timeout,
     )
     .await
     {
@@ -1519,7 +1611,7 @@ async fn serve_static_file(
                                 let body = if *req.method() == Method::HEAD {
                                     full_body(Bytes::new())
                                 } else {
-                                    stream_file_body(stream_file, len)
+                                    stream_file_body(stream_file, len, None)
                                 };
                                 (len, total, body)
                             }
@@ -1608,14 +1700,17 @@ async fn serve_static_file(
         BlobRead::Stream {
             file: stream_file,
             len,
+            encoding,
+            expected_sha256,
             ..
         } => {
+            let enc = encoding.header_value();
             let body = if *req.method() == Method::HEAD {
                 full_body(Bytes::new())
             } else {
-                stream_file_body(stream_file, len)
+                stream_file_body(stream_file, len, expected_sha256)
             };
-            (len, None, body)
+            (len, enc, body)
         }
     };
     build_static_response(
@@ -1829,4 +1924,83 @@ fn url_decode(input: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    #[tokio::test]
+    async fn db_client_slot_serializes_connects_backs_off_failures_and_clears_only_matching_arc() {
+        let slot: Arc<DbClientSlot<usize>> = Arc::new(DbClientSlot::new(Duration::from_millis(120)));
+        let connects = Arc::new(AtomicUsize::new(0));
+
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let s = Arc::clone(&slot);
+            let c = Arc::clone(&connects);
+            tasks.push(tokio::spawn(async move {
+                s.get_or_connect(
+                    Duration::from_secs(1),
+                    |_| true,
+                    |_| async move {
+                        let id = c.fetch_add(1, Ordering::SeqCst) + 1;
+                        tokio::time::sleep(Duration::from_millis(30)).await;
+                        Some(id)
+                    },
+                )
+                .await
+            }));
+        }
+        let mut results = Vec::new();
+        for t in tasks {
+            results.push(t.await.unwrap().unwrap());
+        }
+        assert_eq!(connects.load(Ordering::SeqCst), 1);
+        for arc in &results {
+            assert!(Arc::ptr_eq(&results[0], arc));
+        }
+
+        let stale = Arc::new(999usize);
+        slot.clear_if_same(&stale, Duration::from_secs(1)).await;
+        let still_same = slot
+            .get_or_connect(Duration::from_secs(1), |_| true, |_| async { Some(77) })
+            .await
+            .unwrap();
+        assert!(Arc::ptr_eq(&results[0], &still_same));
+
+        slot.clear_if_same(&still_same, Duration::from_secs(1)).await;
+        let fail_connects = Arc::new(AtomicUsize::new(0));
+        let started = Instant::now();
+        let mut failing = Vec::new();
+        for _ in 0..8 {
+            let s = Arc::clone(&slot);
+            let fc = Arc::clone(&fail_connects);
+            failing.push(tokio::spawn(async move {
+                s.get_or_connect(
+                    Duration::from_millis(200),
+                    |_| true,
+                    |_| async move {
+                        fc.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(40)).await;
+                        None
+                    },
+                )
+                .await
+            }));
+        }
+        for t in failing {
+            assert!(t.await.unwrap().is_none());
+        }
+        assert_eq!(fail_connects.load(Ordering::SeqCst), 1);
+        assert!(started.elapsed() < Duration::from_millis(200));
+
+        tokio::time::sleep(Duration::from_millis(140)).await;
+        let recovered = slot
+            .get_or_connect(Duration::from_secs(1), |_| true, |_| async { Some(42) })
+            .await
+            .unwrap();
+        assert_eq!(*recovered, 42);
+    }
 }
