@@ -42,6 +42,9 @@ test("packages an independent recovery authority and a separate restore client",
 		assert.match(service, /^ProtectSystem=strict$/m);
 		assert.match(service, /^UMask=0077$/m);
 		assert.match(service, /^NoNewPrivileges=yes$/m);
+		assert.match(service, /^LimitCORE=0$/m);
+		assert.match(service, /^MemorySwapMax=0$/m);
+		assert.match(service, /^TimeoutStopSec=35$/m);
 		assert.match(service, /^LoadCredential=qorpera-recovery-wrapping-key:/m);
 		assert.match(service, /^LoadCredential=qorpera-recovery-signing-key:/m);
 		assert.match(service, /^RequiresMountsFor=\/var\/lib\/qorpera-recovery$/m);
