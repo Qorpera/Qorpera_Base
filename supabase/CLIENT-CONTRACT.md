@@ -1833,7 +1833,9 @@ wake-path injection ship in a separate `crates/` change).
   (names, scopes, target environments, versions, grant IDs; never values). Non-members receive `[]`.
 - `qorpera_set_code_site_auto_redeploy(profile, owner, name, enabled)`: owner or admin enables or disables opt-in
   post-land server-app auto-redeploy for a repository's live server site (automatically disabled if the enabling
-  member is demoted or leaves; post-land switches append `release`/`back` rows to `qorpera_code_releases`).
+  member is demoted or leaves; post-land switches append `release`/`back` rows to `qorpera_code_releases` marked
+  `auto_redeploy = true` with `by_executor`, surfaced as `auto: true` and `byExecutor` on `live` in
+  `qorpera_list_code_releases`).
 
 ### Coding MCP sign-ins (20260928559210_coding_mcp_sign_ins)
 

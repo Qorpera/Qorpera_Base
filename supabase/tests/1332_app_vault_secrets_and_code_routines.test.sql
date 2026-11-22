@@ -436,8 +436,12 @@ begin
 		and (v_switch ->> 'releaseVersion')::integer = 2
 		and (select live_deployment_id from public.qorpera_company_sites where id = v_site) = v_dep2
 		and (select current_version_id from public.qorpera_company_sites where id = v_site) = v_ver2
-		and (select upstream_addr from public.qorpera_company_site_deployments where id = v_dep2) = '127.0.0.1:41234',
-		'auto-redeploy switch promotes new server deployment live through ledger: ' || v_switch::text
+		and (select published_by_executor from public.qorpera_company_sites where id = v_site) = 'exec-1332'
+		and (select upstream_addr from public.qorpera_company_site_deployments where id = v_dep2) = '127.0.0.1:41234'
+		and exists (select 1 from public.qorpera_code_releases
+			where environment_id = '92400000-0000-4000-8000-000000000020' and owner = 'qorpera' and name = 'qorpera_base'
+				and n = 2 and kind = 'release' and auto_redeploy and by_executor = 'exec-1332'),
+		'auto-redeploy switch promotes new server deployment live through ledger with executor attribution: ' || v_switch::text
 	);
 
 	v_res := pg_temp.t1332_as_member('92400000-0000-4000-8000-000000000001',
@@ -446,11 +450,26 @@ begin
 	v_releases := substring(v_res from 4)::jsonb;
 	perform pg_temp.base_assert(
 		(v_releases -> 'sites' -> 0 -> 'live' ->> 'version')::integer = 2
+		and (v_releases -> 'sites' -> 0 -> 'live' ->> 'auto')::boolean
+		and v_releases -> 'sites' -> 0 -> 'live' ->> 'byExecutor' = 'exec-1332'
 		and (v_releases -> 'sites' -> 0 -> 'back' ->> 'version')::integer = 1,
-		'qorpera_list_code_releases shows live=2 and back=1 after auto-redeploy: ' || v_releases::text
+		'qorpera_list_code_releases shows live=2 with auto+byExecutor and back=1 after auto-redeploy: ' || v_releases::text
 	);
 
 	perform pg_temp.base_claims('service_role');
+	v_switch := public.qorpera_code_site_auto_redeploy_switch(
+		'exec-1332', v_machine_sha, '92400000-0000-4000-8000-000000000020', v_site, v_dep, '127.0.0.1:41235', 'release');
+	perform pg_temp.base_assert(
+		v_switch ->> 'state' = 'refused' and v_switch ->> 'code' = 'RELEASE_POINT_MOVED',
+		'stale release target returns RELEASE_POINT_MOVED: ' || v_switch::text
+	);
+	v_switch := public.qorpera_code_site_auto_redeploy_switch(
+		'exec-1332', v_machine_sha, '92400000-0000-4000-8000-000000000020', v_site, v_dep2, '127.0.0.1:41235', 'back');
+	perform pg_temp.base_assert(
+		v_switch ->> 'state' = 'refused' and v_switch ->> 'code' = 'PRIOR_RELEASE_MOVED',
+		'mismatched back target returns PRIOR_RELEASE_MOVED: ' || v_switch::text
+	);
+
 	v_pruned := public.qorpera_code_site_prune(v_site);
 	perform pg_temp.base_assert(
 		exists (select 1 from public.qorpera_company_site_versions where id = v_ver1),
@@ -464,9 +483,13 @@ begin
 		and (v_switch ->> 'releaseVersion')::integer = 1
 		and (select live_deployment_id from public.qorpera_company_sites where id = v_site) = v_dep
 		and (select current_version_id from public.qorpera_company_sites where id = v_site) = v_ver1
+		and (select published_by_executor from public.qorpera_company_sites where id = v_site) = 'exec-1332'
 		and (select upstream_addr from public.qorpera_company_site_deployments where id = v_dep) = '127.0.0.1:41230'
-		and (select upstream_addr from public.qorpera_company_site_deployments where id = v_dep2) is null,
-		'auto-redeploy back switch rolls back live deployment through ledger and clears old upstream: ' || v_switch::text
+		and (select upstream_addr from public.qorpera_company_site_deployments where id = v_dep2) is null
+		and exists (select 1 from public.qorpera_code_releases
+			where environment_id = '92400000-0000-4000-8000-000000000020' and owner = 'qorpera' and name = 'qorpera_base'
+				and n = 3 and kind = 'back' and auto_redeploy and by_executor = 'exec-1332'),
+		'auto-redeploy back switch rolls back live deployment through ledger with executor attribution: ' || v_switch::text
 	);
 
 	v_res := pg_temp.t1332_as_member('92400000-0000-4000-8000-000000000001',
@@ -475,8 +498,10 @@ begin
 	perform pg_temp.base_assert(
 		(v_releases -> 'sites' -> 0 -> 'live' ->> 'version')::integer = 1
 		and v_releases -> 'sites' -> 0 -> 'live' ->> 'kind' = 'back'
+		and (v_releases -> 'sites' -> 0 -> 'live' ->> 'auto')::boolean
+		and v_releases -> 'sites' -> 0 -> 'live' ->> 'byExecutor' = 'exec-1332'
 		and (v_releases -> 'sites' -> 0 -> 'live' ->> 'from')::integer = 2,
-		'qorpera_list_code_releases shows back release to v1 from v2: ' || v_releases::text
+		'qorpera_list_code_releases shows auto back release to v1 from v2: ' || v_releases::text
 	);
 
 	perform pg_temp.base_assert(

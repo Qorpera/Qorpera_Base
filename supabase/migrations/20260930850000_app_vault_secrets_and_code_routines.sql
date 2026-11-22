@@ -689,6 +689,40 @@ alter table public.qorpera_code_repositories
 	add constraint qorpera_code_repositories_auto_redeploy_check
 		check (not auto_redeploy_enabled or (auto_redeploy_enabled_by_user_id is not null and auto_redeploy_enabled_at is not null));
 
+alter table public.qorpera_code_releases
+	add column auto_redeploy boolean not null default false,
+	add column by_executor text check (by_executor is null or by_executor ~ '^[A-Za-z0-9_.:-]{1,120}$'),
+	add constraint qorpera_code_releases_auto_redeploy_check
+		check (auto_redeploy = (by_executor is not null));
+
+alter table public.qorpera_company_sites
+	add column published_by_executor text check (published_by_executor is null or published_by_executor ~ '^[A-Za-z0-9_.:-]{1,120}$');
+
+select pg_temp.w6c_patch('public.qorpera_code_release_switch(uuid,uuid)'::regprocedure, array[
+	$old$		published_at = v_now, published_by_user_id = auth.uid(), published_by_staff_agent_id = null, updated_at = v_now$old$,
+	$new$		published_at = v_now, published_by_user_id = auth.uid(), published_by_staff_agent_id = null, published_by_executor = null, updated_at = v_now$new$
+]);
+
+select pg_temp.w6c_patch('public.qorpera_list_code_releases(uuid)'::regprocedure, array[
+	$old$				'from', case when v_live.kind = 'back' then (select replaced.version from public.qorpera_code_releases replaced
+					where replaced.environment_id = v_repository.environment_id and replaced.owner = v_repository.owner
+						and replaced.name = v_repository.name and replaced.n = v_live.replaces) end) end,$old$,
+	$new$				'from', case when v_live.kind = 'back' then (select replaced.version from public.qorpera_code_releases replaced
+					where replaced.environment_id = v_repository.environment_id and replaced.owner = v_repository.owner
+						and replaced.name = v_repository.name and replaced.n = v_live.replaces) end)
+				|| case when v_live.auto_redeploy then jsonb_build_object('auto', true, 'byExecutor', v_live.by_executor)
+					else '{}'::jsonb end end,$new$
+]);
+
+select pg_temp.w6c_patch('public.qorpera_code_release_index(public.qorpera_code_repositories)'::regprocedure, array[
+	$old$			'url', (select public.qorpera_site_url(site.slug) from public.qorpera_company_sites site
+				where site.id = p_repository.site_id)) end,$old$,
+	$new$			'url', (select public.qorpera_site_url(site.slug) from public.qorpera_company_sites site
+				where site.id = p_repository.site_id))
+			|| case when v_live.auto_redeploy then jsonb_build_object('auto', true, 'byExecutor', v_live.by_executor)
+				else '{}'::jsonb end end,$new$
+]);
+
 create function public.qorpera_set_code_site_auto_redeploy(
 	p_profile_id uuid,
 	p_owner text,
@@ -967,14 +1001,14 @@ begin
 		v_release_version := v_repo.last_version + 1;
 		insert into public.qorpera_code_releases (
 			environment_id, owner, name, n, profile_id, kind, version, change, main_sha, tree,
-			version_id, replaces, prior, changes, shown_sha256, by_user_id
+			version_id, replaces, prior, changes, shown_sha256, by_user_id, auto_redeploy, by_executor
 		) values (
 			v_repo.environment_id, v_repo.owner, v_repo.name, v_n, v_repo.profile_id, 'release',
 			v_release_version, (v_point ->> 'change')::integer, v_point ->> 'mainSha', v_point ->> 'tree',
 			v_ver.id, v_live.n, v_live.n,
 			array(select held.n::integer from jsonb_array_elements_text(v_point -> 'held') with ordinality held(n, place)
 				order by held.place),
-			v_point ->> 'token', v_repo.auto_redeploy_enabled_by_user_id
+			v_point ->> 'token', v_repo.auto_redeploy_enabled_by_user_id, true, p_owner
 		);
 		update public.qorpera_code_repositories
 		set last_release = v_n, live_release = v_n, last_version = v_release_version, index_version = index_version + 1
@@ -990,11 +1024,11 @@ begin
 		v_release_version := v_prior.version;
 		insert into public.qorpera_code_releases (
 			environment_id, owner, name, n, profile_id, kind, version, change, main_sha, tree,
-			version_id, replaces, prior, by_user_id
+			version_id, replaces, prior, by_user_id, auto_redeploy, by_executor
 		) values (
 			v_repo.environment_id, v_repo.owner, v_repo.name, v_n, v_repo.profile_id, 'back',
 			v_prior.version, v_prior.change, v_prior.main_sha, v_prior.tree,
-			v_ver.id, v_live.n, v_prior.prior, v_repo.auto_redeploy_enabled_by_user_id
+			v_ver.id, v_live.n, v_prior.prior, v_repo.auto_redeploy_enabled_by_user_id, true, p_owner
 		);
 		update public.qorpera_code_repositories
 		set last_release = v_n, live_release = v_n, index_version = index_version + 1
@@ -1012,6 +1046,7 @@ begin
 		published_at = v_now,
 		published_by_user_id = v_repo.auto_redeploy_enabled_by_user_id,
 		published_by_staff_agent_id = null,
+		published_by_executor = p_owner,
 		updated_at = v_now
 	where id = v_site.id;
 	update public.qorpera_company_site_deployments
@@ -2381,6 +2416,8 @@ grant execute on function
 
 drop function pg_temp.w6c_patch(regprocedure, text[]);
 
+comment on table public.qorpera_code_releases is
+	'20260930850000: releases of a Qorpera-hosted repository put live or rolled back either by an owner/admin (auto_redeploy = false) or by an authorized coding executor under owner/admin opt-in (auto_redeploy = true, by_executor set, by_user_id naming the enabling owner/admin).';
 comment on table public.qorpera_app_secret_grants is
 	'20260930850000: scoped company environment secret grants for hosted app sites (build/test/runtime x dev/prod).';
 comment on table public.qorpera_routine_check_states is
