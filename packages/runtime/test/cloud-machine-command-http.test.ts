@@ -4085,6 +4085,35 @@ describe("a machine's app supervision", () => {
 		});
 		expect(sqlCalls.map((c) => c.method)).toEqual(Array(5).fill("qorpera_authorize_machine_app_op"));
 
+		const escapedCmd = '"\\'.repeat(8191);
+		expect(Buffer.byteLength(escapedCmd)).toBe(16382);
+		expect(Buffer.byteLength(JSON.stringify(escapedCmd))).toBe(32766);
+		const escapedStartArgs = { action: "app_start", slug: "my-shop", command: escapedCmd, port: 3000 };
+		const escapedEnv = makeEnvelope(escapedStartArgs);
+		expect(Buffer.byteLength(escapedEnv)).toBeLessThanOrEqual(65536);
+		expect(
+			await gw.appStart?.(
+				scope,
+				{ receiptId: randomUUID(), envelope: escapedEnv, slug: "my-shop", command: escapedCmd, port: 3000 },
+				signal,
+			),
+		).toMatchObject({ schema: "qorpera.machine-app-started/v1", port: 3000 });
+
+		const tooExpanded = "\x01".repeat(6000);
+		await expect(
+			gw.appStart?.(
+				scope,
+				{
+					receiptId: randomUUID(),
+					envelope: makeEnvelope({ action: "app_start", slug: "my-shop", command: tooExpanded, port: 3000 }),
+					slug: "my-shop",
+					command: tooExpanded,
+					port: 3000,
+				},
+				signal,
+			),
+		).rejects.toThrow("Machine command gateway unavailable");
+
 		await expect(
 			gw.appStart?.(
 				scope,

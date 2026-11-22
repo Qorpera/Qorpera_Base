@@ -1231,7 +1231,9 @@ function parseSpec(v: unknown): MachineAppSpec {
 		!APP_SLUG.test(slug) ||
 		typeof command !== "string" ||
 		!command.trim() ||
-		command.length > 32768 ||
+		command.includes("\0") ||
+		Buffer.byteLength(command) > 16384 ||
+		Buffer.byteLength(JSON.stringify(command)) > 32768 ||
 		!isPort(port) ||
 		!isHp(healthPath) ||
 		(cwd != null && (typeof cwd !== "string" || cwd[0] !== "/" || cwd.length > 512 || /[\0\r\n]/.test(cwd))) ||

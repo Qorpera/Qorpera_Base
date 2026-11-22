@@ -1440,6 +1440,10 @@ describe("manage_site", () => {
 		["app_logs with bad stream", { action: "app_logs", slug: "saml-shop", stream: "stdin" }],
 		["app_logs with bad since", { action: "app_logs", slug: "saml-shop", since: "not-a-date" }],
 		["app_logs with multiline grep", { action: "app_logs", slug: "saml-shop", grep: "a\nb" }],
+		[
+			"app_start with JSON-expanded command over 32 KiB",
+			{ action: "app_start", slug: "saml-shop", command: "\x01".repeat(6000), port: 3000 },
+		],
 	])("refuses invalid manage_site arguments (%s) without calling the cloud", async (_label, args) => {
 		const f = await fixture({});
 		const result = outcome(await f.boundary.invoke("bad", "qorpera", "manage_site", args));

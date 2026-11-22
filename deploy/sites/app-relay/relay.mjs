@@ -1351,6 +1351,7 @@ class Program {
 		this.buffered = 0;
 		this.pauseCount = 0;
 		this.windowUpdates = 0;
+		this.evictions = 0;
 		this.sharedProgressChecks = 0;
 		this.uploadQueue = [];
 		this.keptAliveAt = Date.now();
@@ -1492,6 +1493,7 @@ export function createRelay({
 
 	function evictLargestBuffered(targetPrograms) {
 		let victim = null;
+		let victimProg = null;
 		let maxBytes = 0;
 		let oldestStall = Number.POSITIVE_INFINITY;
 		for (const prog of targetPrograms) {
@@ -1501,12 +1503,14 @@ export function createRelay({
 				const stalled = stream.stalledSince?.() ?? Number.POSITIVE_INFINITY;
 				if (bytes > maxBytes || (bytes === maxBytes && stalled < oldestStall)) {
 					victim = stream;
+					victimProg = prog;
 					maxBytes = bytes;
 					oldestStall = stalled;
 				}
 			}
 		}
 		if (!victim) return false;
+		victimProg.evictions++;
 		victim.evict();
 		return true;
 	}
@@ -3125,6 +3129,7 @@ export function createRelay({
 	server.dropProgram = (slug) => programs.get(slug)?.ws.terminate();
 	server.pauseCount = (slug) => programs.get(slug)?.pauseCount ?? 0;
 	server.windowUpdates = (slug) => programs.get(slug)?.windowUpdates ?? 0;
+	server.evictions = (slug) => programs.get(slug)?.evictions ?? 0;
 	server.sharedProgressChecks = (slug) => programs.get(slug)?.sharedProgressChecks ?? 0;
 	server.wsCount = (slug) => programs.get(slug)?.wsCount ?? 0;
 	server.programHealth = (slug) => {

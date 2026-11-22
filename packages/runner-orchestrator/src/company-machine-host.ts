@@ -5123,7 +5123,9 @@ export class LxdCompanyMachineHost {
 			!APP_SLUG.test(request.slug) ||
 			typeof request.command !== "string" ||
 			!request.command.trim() ||
-			request.command.length > 32768 ||
+			request.command.includes("\0") ||
+			Buffer.byteLength(request.command) > 16384 ||
+			Buffer.byteLength(JSON.stringify(request.command)) > 32768 ||
 			!Number.isInteger(request.port) ||
 			request.port < 1 ||
 			request.port > 65535

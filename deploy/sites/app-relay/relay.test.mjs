@@ -4091,6 +4091,7 @@ describe("app relay overhaul: flow control, SSE, auth modes, custom domains, hea
 		const key = `k${"e".repeat(42)}`;
 		const bigChunk = Buffer.alloc(64 * 1024, 0x62);
 
+		let abortedOnApp = 0;
 		const app = createServer((req, res) => {
 			if (req.url === "/fast") {
 				res.writeHead(200, { "content-type": "text/plain" });
@@ -4098,13 +4099,16 @@ describe("app relay overhaul: flow control, SSE, auth modes, custom domains, hea
 				return;
 			}
 			res.writeHead(200, { "content-type": "application/octet-stream" });
+			res.on("close", () => {
+				if (!res.writableEnded) abortedOnApp++;
+			});
 			let sent = 0;
 			const pump = () => {
-				while (sent < 32) {
+				while (sent < 2048 && !res.destroyed && !res.closed) {
 					sent++;
 					if (!res.write(bigChunk)) return void res.once("drain", pump);
 				}
-				res.end();
+				if (!res.destroyed && !res.closed) res.end();
 			};
 			pump();
 		});
@@ -4122,9 +4126,9 @@ describe("app relay overhaul: flow control, SSE, auth modes, custom domains, hea
 			...RELAY,
 			hostSuffix: SUFFIX,
 			fetch: fetcher,
-			streamWindowBytes: 64 * 1024,
-			windowUpdateThreshold: 32 * 1024,
-			maxProgramBufferedBytes: 128 * 1024,
+			streamWindowBytes: 256 * 1024,
+			windowUpdateThreshold: 128 * 1024,
+			maxProgramBufferedBytes: 64 * 1024,
 			recheckMs: 0,
 			log: () => {},
 		});
@@ -4145,9 +4149,14 @@ describe("app relay overhaul: flow control, SSE, auth modes, custom domains, hea
 		await until(() => relay.isConnected("shop"), "eviction client to connect", 5_000);
 
 		const stalled = [];
-		for (let i = 0; i < 4; i++) {
+		let closedStalled = 0;
+		for (let i = 0; i < 6; i++) {
 			const sock = connect(relayPort, "127.0.0.1");
 			t.after(() => sock.destroy());
+			sock.on("error", () => {});
+			sock.on("close", () => {
+				closedStalled++;
+			});
 			await new Promise((resolve) => sock.once("connect", resolve));
 			sock.pause();
 			sock.write(
@@ -4155,13 +4164,25 @@ describe("app relay overhaul: flow control, SSE, auth modes, custom domains, hea
 			);
 			stalled.push(sock);
 		}
-		await sleep(150);
+		await until(
+			() => relay.evictions("shop") > 0 && abortedOnApp >= 1,
+			"relay to evict at least one stalled stream",
+			10_000,
+		);
+		assert.ok(relay.evictions("shop") >= 1, "expected at least one stalled-stream eviction");
+		assert.ok(abortedOnApp >= 1, "expected upstream app request to abort on eviction");
 
 		for (let i = 0; i < 5; i++) {
 			const fast = await httpGet(relayPort, HOST, "/fast", { cookie: `${GATE_COOKIE}=${token}` });
 			assert.equal(fast.status, 200);
 			assert.equal(fast.text, "fast-reader-ok");
 		}
+		for (const sock of stalled) {
+			sock.on("data", () => {});
+			sock.resume();
+		}
+		await until(() => closedStalled >= 1, "evicted stalled socket to close once drained", 5_000);
+		assert.ok(closedStalled >= 1, "expected at least one evicted stalled socket to close");
 		for (const sock of stalled) sock.destroy();
 	});
 

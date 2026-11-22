@@ -1032,7 +1032,7 @@ export function cloudSiteTools(options: {
 				command: {
 					type: "string",
 					minLength: 1,
-					maxLength: 32768,
+					maxLength: 16384,
 					description: "Shell command to supervise under systemd (required when action is app_start).",
 				},
 				port: {
@@ -1104,9 +1104,12 @@ export function cloudSiteTools(options: {
 					typeof input.command !== "string" ||
 					!input.command.trim() ||
 					input.command.includes("\0") ||
-					Buffer.byteLength(input.command) > 32768
+					Buffer.byteLength(input.command) > 16384 ||
+					Buffer.byteLength(JSON.stringify(input.command)) > 32768
 				)
-					throw new CloudToolArgumentRefusal("command must be a non-empty string up to 32768 bytes");
+					throw new CloudToolArgumentRefusal(
+						"command must be a non-empty string up to 16384 bytes (32768 bytes JSON-encoded)",
+					);
 				if (!isPort(input.port))
 					throw new CloudToolArgumentRefusal(
 						"port must be the app's port on the machine, a whole number from 1 to 65535",

@@ -1045,7 +1045,8 @@ export function parseCloudMachineAppHttpRequest(value: unknown): CloudMachineApp
 			typeof raw.command !== "string" ||
 			!raw.command.trim() ||
 			raw.command.includes("\0") ||
-			Buffer.byteLength(raw.command) > 32768 ||
+			Buffer.byteLength(raw.command) > 16384 ||
+			Buffer.byteLength(JSON.stringify(raw.command)) > 32768 ||
 			!Number.isInteger(raw.port) ||
 			Number(raw.port) < 1 ||
 			Number(raw.port) > 65535 ||

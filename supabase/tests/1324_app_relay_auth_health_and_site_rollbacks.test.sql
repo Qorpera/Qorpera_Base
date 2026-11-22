@@ -661,17 +661,16 @@ begin
 		'Mutating start op authorizes with matching executing receipt: ' || v_auth::text
 	);
 	perform public.qorpera_site_take_down('live-dash', 'Abuse test');
-	perform pg_temp.base_error(
-		format('select public.qorpera_authorize_machine_app_op(%L, %L, %L, %L)', v_binding, v_scope, 'live-dash', 'logs'),
-		'42501',
-		'SITE_TAKEN_DOWN'
+	perform pg_temp.base_assert(
+		public.qorpera_authorize_machine_app_op(v_binding, v_scope, 'live-dash', 'logs') ->> 'state' = 'authorized'
+		and public.qorpera_authorize_machine_app_op(v_binding, v_scope, 'live-dash', 'health') ->> 'state' = 'authorized',
+		'Taken-down app site still allows logs and health inspection'
 	);
 	perform pg_temp.base_error(
 		format('select public.qorpera_authorize_machine_app_op(%L, %L, %L, %L, %L, %L)', v_binding, v_scope, 'live-dash', 'start', v_receipt_start, v_env_start),
 		'42501',
 		'SITE_TAKEN_DOWN'
 	);
-	perform public.qorpera_site_restore('live-dash');
 	perform public.qorpera_complete_native_tool_operation(
 		v_binding,
 		v_receipt_start,
@@ -687,9 +686,15 @@ begin
 		repeat('2', 64),
 		false
 	);
+	perform pg_temp.base_error(
+		format('select public.qorpera_authorize_machine_app_op(%L, %L, %L, %L, %L, %L)', v_binding, v_scope, 'live-dash', 'reload', v_receipt_reload, v_env_reload),
+		'42501',
+		'SITE_TAKEN_DOWN'
+	);
+	perform public.qorpera_site_restore('live-dash');
 	perform pg_temp.base_assert(
 		public.qorpera_authorize_machine_app_op(v_binding, v_scope, 'live-dash', 'reload', v_receipt_reload, v_env_reload) ->> 'state' = 'authorized',
-		'Reload op authorizes with matching executing receipt'
+		'Reload op authorizes with matching executing receipt once restored'
 	);
 	perform public.qorpera_complete_native_tool_operation(
 		v_binding,
@@ -698,6 +703,7 @@ begin
 		'{}'::jsonb
 	);
 
+	perform public.qorpera_site_take_down('live-dash', 'Abuse test');
 	perform public.qorpera_begin_native_tool_operation(
 		v_binding,
 		v_receipt_stop,
@@ -708,8 +714,9 @@ begin
 	);
 	perform pg_temp.base_assert(
 		public.qorpera_authorize_machine_app_op(v_binding, v_scope, 'live-dash', 'stop', v_receipt_stop, v_env_stop) ->> 'state' = 'authorized',
-		'Stop op authorizes with matching executing receipt'
+		'Stop op still authorizes while site is taken down'
 	);
+	perform public.qorpera_site_restore('live-dash');
 	perform public.qorpera_complete_native_tool_operation(
 		v_binding,
 		v_receipt_stop,

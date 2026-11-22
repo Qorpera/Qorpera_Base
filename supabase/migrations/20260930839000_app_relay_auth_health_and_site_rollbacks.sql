@@ -975,7 +975,7 @@ begin
 	if not found then
 		raise exception 'Machine app authority is unavailable' using errcode = '42501';
 	end if;
-	if v_site.taken_down_at is not null then
+	if v_site.taken_down_at is not null and p_op in ('start', 'reload') then
 		raise exception 'SITE_TAKEN_DOWN' using errcode = '42501';
 	end if;
 	v_placement := public.qorpera_company_machine_placement(v_machine.id);
