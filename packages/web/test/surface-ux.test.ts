@@ -1253,7 +1253,7 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		company.stop();
 	});
 
-	it("renders Live-linked via Company Files strips on Identity and Product and applies live Identity CSS vars to Product", async () => {
+	it("renders the Used by line on Identity, the Live-linked strip on Product, and applies live Identity CSS vars to Product", async () => {
 		stubFigureMotion();
 		const navigated: string[] = [];
 		const store = storeWith(undefined, {
@@ -1278,9 +1278,9 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 			'[data-identity-reach="true"][data-live-linked="true"]',
 		)!;
 		expect(identityReach).not.toBeNull();
-		expect(identityReach.textContent).toContain("Live-linked via Company Files");
-		expect(identityReach.textContent).toContain("identity/tokens.json");
-		expect(identityReach.textContent).toContain("identity/tokens.css");
+		expect(identityReach.textContent).toContain("Used by");
+		expect(identityReach.textContent).not.toContain("identity/tokens.json");
+		expect(identityReach.querySelector(".studio-live-dot")).toBeNull();
 		identityView.dispose();
 
 		const productView = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "product");
