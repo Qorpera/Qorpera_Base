@@ -1344,14 +1344,14 @@ describe("agent execution state", () => {
 		await company.start();
 		await settle();
 		expect(company.agentState(staff.id)).toBe("decision");
-		// The same answer again causes no store notification beyond the activity read's own.
+		// WHY: Unchanged activity and recovery responses emit zero store notifications.
 		let notices = 0;
 		company.store.subscribe(() => notices++);
 		vi.advanceTimersByTime(25_000);
 		await company.refreshActivity();
 		await settle();
 		expect(read).toHaveBeenCalledTimes(2);
-		expect(notices).toBe(1);
+		expect(notices).toBe(0);
 		// Accepting the proposal moves the Company File head; the run is read again right away.
 		read.mockResolvedValue(recovery());
 		hints.get("qorpera_company_files")!();
@@ -1575,5 +1575,64 @@ describe("agent execution state", () => {
 		expect(acknowledge).toHaveBeenCalledExactlyOnceWith(id(70));
 		expect(controller.agentState(staff.id)).toBe("working");
 		expect(controller.failedRunFor(staff.id)).toBeUndefined();
+	});
+
+	it("skips no-op poll store updates, backs off failing app icon reads, and bounds cached conversations", async () => {
+		const { api, controller } = company();
+		controller.store.set({ loading: false, team, sessions: [session] });
+		vi.mocked(api.readSessionEvents).mockResolvedValueOnce([event(1, "Hello")]);
+		await controller.loadConversation(session.sessionId);
+		const convStore = controller.conversation(session.sessionId, false);
+		const firstProjection = convStore.get().projection;
+		const firstEvents = convStore.get().events;
+		let convNotifies = 0;
+		const unsubConv = convStore.subscribe(() => {
+			convNotifies += 1;
+		});
+		cleanup.push(unsubConv);
+
+		vi.mocked(api.readSessionEvents).mockResolvedValueOnce([]);
+		await controller.loadConversation(session.sessionId, { eventsOnly: true });
+		vi.mocked(api.readSessionEvents).mockResolvedValueOnce([]);
+		await controller.loadConversation(session.sessionId);
+		await settle();
+		expect(convNotifies).toBe(0);
+		expect(convStore.get().projection).toBe(firstProjection);
+		expect(convStore.get().events).toBe(firstEvents);
+
+		const actRow = row("leased", "working");
+		vi.mocked(api.listStaffActivity).mockResolvedValue([actRow]);
+		await controller.refreshActivity();
+		await settle();
+		let companyNotifies = 0;
+		const unsubCompany = controller.store.subscribe(() => {
+			companyNotifies += 1;
+		});
+		cleanup.push(unsubCompany);
+		await controller.refreshActivity();
+		await settle();
+		expect(companyNotifies).toBe(0);
+
+		const iconReader = vi.fn(async () => {
+			throw new Error("icons down");
+		});
+		controller.appIconReader = iconReader;
+		await controller.loadAppIcons("trips");
+		await controller.loadAppIcons("trips");
+		expect(iconReader).toHaveBeenCalledTimes(1);
+		controller.store.set({ appIcons: { trips: [] } });
+		controller.refreshAppIcons();
+		await settle();
+		expect(iconReader).toHaveBeenCalledTimes(2);
+
+		controller.setOpenSession(session.sessionId);
+		const draftSession = id(201);
+		controller.conversation(draftSession, false).set({ draft: "keep me" });
+		for (let i = 0; i < 30; i += 1) {
+			controller.conversation(id(210 + i), false);
+		}
+		expect(controller.conversations.size).toBeLessThanOrEqual(25);
+		expect(controller.conversations.has(session.sessionId)).toBe(true);
+		expect(controller.conversations.has(draftSession)).toBe(true);
 	});
 });

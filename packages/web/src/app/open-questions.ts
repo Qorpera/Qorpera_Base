@@ -153,13 +153,16 @@ export class OpenQuestions {
 					for (const decision of decisions)
 						if (decision.kind === "draft" && !decision.othersAnswer)
 							this.#drafts.set(decision.interactionId, decision);
-					this.store.set({
-						decisions,
-						questions: decisions.filter(
-							(decision): decision is OpenCard => decision.kind === "question" && !decision.othersAnswer,
-						),
-						read: true,
-					});
+					const current = this.store.get();
+					if (!current.read || JSON.stringify(current.decisions) !== JSON.stringify(decisions)) {
+						this.store.set({
+							decisions,
+							questions: decisions.filter(
+								(decision): decision is OpenCard => decision.kind === "question" && !decision.othersAnswer,
+							),
+							read: true,
+						});
+					}
 					this.#count();
 				},
 				(error: unknown) => {
@@ -168,7 +171,7 @@ export class OpenQuestions {
 						this.#count();
 					}
 					// Otherwise what was shown stands; the next hint or the clock reads again.
-					else this.store.set({ read: true });
+					else if (!this.store.get().read) this.store.set({ read: true });
 				},
 			)
 			.finally(() => {

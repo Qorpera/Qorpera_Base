@@ -559,4 +559,16 @@ describe("kept items follow names", () => {
 		expect(thread.element(link.id)!.textContent).toContain("Renamed coworker");
 		expect(thread.element(message(1).id)!.getAttribute("aria-label")).toContain("Nova");
 	});
+
+	it("preserves DOM nodes and skips redundant skill-mention scans across status-only updates", async () => {
+		const thread = setup([message(1, { text: "Use /deploy when ready" }), message(2)]);
+		const firstEl = thread.element(message(1).id)!;
+		const change = await thread.mutations(async () => {
+			thread.company.store.set({ here: [] });
+			await settle();
+		});
+		expect(change.added).toEqual([]);
+		expect(change.removed).toEqual([]);
+		expect(thread.element(message(1).id)).toBe(firstEl);
+	});
 });

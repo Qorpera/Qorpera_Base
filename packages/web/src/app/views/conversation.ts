@@ -30,6 +30,7 @@ import {
 	type TranscriptItem,
 	type TranscriptMessage,
 	type TranscriptPeerLink,
+	type TranscriptProjection,
 	type UnaskedGroup,
 	unaskedGroups,
 } from "../../cloud/transcript.ts";
@@ -118,6 +119,17 @@ import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
 import { SharedDrafts } from "./shared-drafts.ts";
 import { type AppLook, appLook } from "./shell.ts";
+
+const transcriptItemJsonCache = new WeakMap<TranscriptItem, string>();
+function cachedTranscriptItemJson(item: TranscriptItem): string {
+	let encoded = transcriptItemJsonCache.get(item);
+	if (encoded === undefined) {
+		encoded = JSON.stringify(item);
+		transcriptItemJsonCache.set(item, encoded);
+	}
+	return encoded;
+}
+
 import { ThreadReady } from "./thread-ready.ts";
 import { ThreadSites } from "./thread-sites.ts";
 
@@ -312,6 +324,8 @@ export class ConversationView {
 	readonly #composer: HTMLTextAreaElement;
 	/** "/" in the composer: the conversation's skills, and their names in blue. */
 	readonly #skills: SkillMentions;
+	#skillsCheckedProjection: TranscriptProjection | undefined;
+	#skillsCheckedOptimistic: ConversationState["optimistic"] | undefined;
 	readonly #send: HTMLButtonElement;
 	/** Speech to text: the microphone beside the send button. */
 	readonly #dictation: Dictation;
@@ -1028,6 +1042,8 @@ export class ConversationView {
 		this.#drawn.clear();
 		this.#foldPreviews.clear();
 		this.#messagesSnap = undefined;
+		this.#skillsCheckedProjection = undefined;
+		this.#skillsCheckedOptimistic = undefined;
 		this.#closeCodingSession();
 		clearTimeout(this.#codingPoll);
 		clearTimeout(this.#firstWordsTimer);
@@ -2792,7 +2808,7 @@ export class ConversationView {
 		for (const [first, group] of folds) for (const id of group.items) foldOf.set(id, first);
 		for (const first of this.#openFolds) if (!folds.has(first)) this.#openFolds.delete(first);
 		const key = JSON.stringify([
-			items,
+			items.map(cachedTranscriptItemJson),
 			mentionTargets,
 			// Only what the line shows: the header's poll changes the rest every few seconds.
 			codingSessions.map((coding) => [coding.workerId, coding.harness, coding.title, coding.createdAt]),
@@ -2984,7 +3000,7 @@ export class ConversationView {
 			// The mention targets and skill names go in as they are, once serialized for the render.
 			// A link may lead to one of the company's sites, whose card stands under the words: the sites as read go in too.
 			const linked = this.#siteCards && item.text?.includes("https://") ? `\n${this.#siteCards.key}` : "";
-			const itemKey = `${JSON.stringify([item, author, mine, room, locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}${linked}`;
+			const itemKey = `${cachedTranscriptItemJson(item)}\n${JSON.stringify([author, mine, room, locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}${linked}`;
 			const time = `${zone} ${when(item.createdAt)}`;
 			// The input this form stands for, which the next form finds it by.
 			const input = optimisticInputs.has(item.id)
@@ -3749,7 +3765,14 @@ export class ConversationView {
 			this.#messages.tabIndex = -1;
 			this.#messages.focus({ preventScroll: true });
 		}
-		for (const item of items) if (item.kind === "member" || item.kind === "agent") this.#skills.want(item.text);
+		if (
+			this.#skillsCheckedProjection !== conversation.projection ||
+			this.#skillsCheckedOptimistic !== conversation.optimistic
+		) {
+			this.#skillsCheckedProjection = conversation.projection;
+			this.#skillsCheckedOptimistic = conversation.optimistic;
+			for (const item of items) if (item.kind === "member" || item.kind === "agent") this.#skills.want(item.text);
+		}
 		// A keyboard user reading the row keeps it through a state change or a new message.
 		if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
 		// And one on a coworker's chip keeps it as its line takes in another message.

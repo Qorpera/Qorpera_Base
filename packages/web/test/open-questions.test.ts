@@ -2425,4 +2425,18 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		expect(dock.waiting).toBe("");
 		dock.dispose();
 	});
+
+	it("skips redundant store notifications when refresh returns identical open decisions", async () => {
+		const { open } = company({ questions: [question(CARD_B, name)] });
+		await open.refresh();
+		await settle();
+		let updates = 0;
+		const unsub = open.store.subscribe(() => {
+			updates += 1;
+		});
+		await open.refresh();
+		await settle();
+		unsub();
+		expect(updates).toBe(0);
+	});
 });
