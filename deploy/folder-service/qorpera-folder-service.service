@@ -57,7 +57,10 @@ AmbientCapabilities=
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-MemoryMax=3G
+LimitNOFILE=32768
+TasksMax=1024
+MemoryHigh=4.5G
+MemoryMax=6G
 MemorySwapMax=0
 
 [Install]

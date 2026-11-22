@@ -142,6 +142,7 @@ export function lxdCodingMachinePlan(value: LxdCodingMachineBinding): {
 			config: {
 				"boot.mode": "uefi-secureboot",
 				"boot.autostart": "false",
+				"security.devlxd": "false",
 				"limits.cpu": String(binding.cpus),
 				"limits.memory": String(binding.memoryBytes),
 				"user.qorpera.schema": binding.schema,
