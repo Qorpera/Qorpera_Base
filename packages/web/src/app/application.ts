@@ -122,10 +122,20 @@ function sitesListed(list: readonly CompanySite[]): { siteCount: number; siteLis
 	return { siteCount: list.length, siteList: list };
 }
 
+const appsByNameCache = new WeakMap<readonly CompanyApp[], Map<string, CompanyApp>>();
+function appsByName(apps: readonly CompanyApp[]): Map<string, CompanyApp> {
+	let index = appsByNameCache.get(apps);
+	if (!index) {
+		index = new Map(apps.map((app) => [app.name, app]));
+		appsByNameCache.set(apps, index);
+	}
+	return index;
+}
+
 /** An app of the company a question option's preview names (`app:<name>`): its title, emblem and cover, from the
  * company's apps as last read. Undefined while they have not been read, or when no such app is there. */
 function cardAppOf(apps: readonly CompanyApp[] | undefined, name: string): InteractionCardApp | undefined {
-	const found = apps?.find((app) => app.name === name);
+	const found = apps ? appsByName(apps).get(name) : undefined;
 	const manifest = found?.manifest;
 	return manifest
 		? {
@@ -374,12 +384,23 @@ export function mountApplication(
 	// A question card's option that previews an app gets the app's cover, or its emblem and title, the same way: in a
 	// thread, in an app's page and in the Concepts viewer's dock, all on this page, and without redrawing the card, so
 	// a pick or an answer being typed stays (ui/interaction-card.ts refreshAppPreviews; review r1 of #1763, F1).
+	const APP_CARD_SELECTOR = ".app-card[data-app-name], [data-preview-app]";
+	const hasDecoratableCard = (records: readonly MutationRecord[]): boolean => {
+		for (const record of records) {
+			for (const node of record.addedNodes) {
+				if (!(node instanceof Element)) continue;
+				if (node.matches(APP_CARD_SELECTOR) || node.querySelector(APP_CARD_SELECTOR) !== null) return true;
+			}
+		}
+		return false;
+	};
 	const decorateAppCards = () => {
 		const apps = company?.store.get().apps;
 		if (!company || !apps) return;
+		const byName = appsByName(apps);
 		refreshAppPreviews(main, (name) => cardAppOf(apps, name), cardImages.get(company));
 		for (const card of main.querySelectorAll<HTMLElement>(".app-card[data-app-name]")) {
-			const app = apps.find((entry) => entry.name === card.dataset.appName);
+			const app = card.dataset.appName ? byName.get(card.dataset.appName) : undefined;
 			const look = app && appLook(company, app);
 			if (!app?.manifest || !look) continue;
 			const about = app.manifest.about ?? "";
@@ -402,8 +423,8 @@ export function mountApplication(
 		}
 	};
 	let decorating = false;
-	const appCardObserver = new MutationObserver(() => {
-		if (decorating) return;
+	const appCardObserver = new MutationObserver((records) => {
+		if (decorating || !hasDecoratableCard(records)) return;
 		decorating = true;
 		queueMicrotask(() => {
 			try {
@@ -550,7 +571,15 @@ export function mountApplication(
 	 * an answer that comes back after a newer one changes neither. `read` stands in until one did. */
 	const showReleases = (controller: CompanyController, read: CodeReleases) => {
 		const newest = companyReleases(controller).last ?? read;
-		controller.store.set({ whatsNew: whatsNewEntry(controller, newest), siteVersions: liveVersions(newest) });
+		const nextWhatsNew = whatsNewEntry(controller, newest);
+		const nextVersions = liveVersions(newest);
+		const prev = controller.store.get();
+		if (
+			JSON.stringify(prev.whatsNew) === JSON.stringify(nextWhatsNew) &&
+			JSON.stringify(prev.siteVersions) === JSON.stringify(nextVersions)
+		)
+			return;
+		controller.store.set({ whatsNew: nextWhatsNew, siteVersions: nextVersions });
 	};
 	/** Each company's open questions for its app pages and Concepts viewer, read only while one is on screen. */
 	const appQuestions = new WeakMap<CompanyController, OpenQuestions>();
@@ -710,8 +739,7 @@ export function mountApplication(
 		render();
 	}
 
-	function teardownCompany(): void {
-		settingsAfterHome = undefined;
+	function disposeCompanyViews(): void {
 		disposeInterface(main);
 		notices?.dispose();
 		notices = undefined;
@@ -729,27 +757,44 @@ export function mountApplication(
 		appPage?.dispose();
 		appPage = undefined;
 		appReturn = undefined;
+		sitesPage?.view.dispose();
+		sitesPage = undefined;
+		siteView?.view.dispose();
+		siteView = undefined;
+		whatsNewPage?.view.dispose();
+		whatsNewPage = undefined;
 		newProgramPage?.view.dispose();
 		newProgramPage = undefined;
 		conceptsView?.dispose();
 		conceptsView = undefined;
 		mail?.dispose();
 		mail = undefined;
-		executionNotices.replaceChildren();
-		unsubscribeCompany?.();
+		agentCard?.dispose();
+		agentCard = undefined;
 		conversation?.dispose();
+		conversation = undefined;
 		memberChat?.view.dispose();
 		memberChat = undefined;
 		newConversation?.dispose();
+		newConversation = undefined;
+		computerPanels?.dispose();
+		computerPanels = undefined;
+	}
+
+	function teardownCompany(): void {
+		settingsAfterHome = undefined;
+		disposeCompanyViews();
+		executionNotices.replaceChildren();
+		unsubscribeCompany?.();
+		unsubscribeCompany = undefined;
 		company?.stop();
 		pendingCompany = undefined;
 		company = undefined;
+		sitesRead = undefined;
+		releasesRead = undefined;
 		showWaitingInTitle(0);
 		agentPage = undefined;
 		computer = undefined;
-		computerPanels = undefined;
-		conversation = undefined;
-		newConversation = undefined;
 		homeReason = undefined;
 		teamFeedback = {};
 		meetState = {};
@@ -1639,31 +1684,8 @@ export function mountApplication(
 		}
 		const state = controller.store.get();
 		if (state.accessLost) {
-			notices?.dispose();
-			notices = undefined;
-			interfacePages?.dispose();
-			interfacePages = undefined;
-			companyDatabases?.dispose();
-			companyDatabases = undefined;
-			interfaceFolder?.dispose();
-			interfaceFolder = undefined;
-			companyApps?.dispose();
-			companyApps = undefined;
-			agentNotes?.dispose();
-			agentNotes = undefined;
-			mail?.dispose();
-			mail = undefined;
+			disposeCompanyViews();
 			closeSettings(false);
-			conversation?.dispose();
-			memberChat?.view.dispose();
-			memberChat = undefined;
-			newConversation?.dispose();
-			appPage?.dispose();
-			appPage = undefined;
-			conceptsView?.dispose();
-			conceptsView = undefined;
-			// Revoked access ends every retained screen connection, not only the shown one.
-			computerPanels?.dispose();
 			navigationOpen = false;
 			navigationFocus = undefined;
 			syncNavigation();
@@ -1878,28 +1900,48 @@ export function mountApplication(
 		if (sitesRead !== controller && state.team?.capabilities.read) {
 			sitesRead = controller;
 			const sites = createWebSites(cloud, controller.profile);
+			let sitesInFlight = false;
+			let sitesSeq = 0;
 			const readSites = () => {
-				void sites.list(controller.signal).then(
-					(list) => {
-						if (controller.signal.aborted) return;
-						controller.store.set(sitesListed(list));
-						// The sites Qorpera took down (step 5.1), which the list still shows live: no owed view of one. Asked
-						// only while there is a live website to leave out; a read that did not answer leaves what the last said.
-						if (list.some((site) => site.kind === "files" && site.state === "live"))
-							void sites.access(controller.signal).then(
-								(access) => {
-									if (!controller.signal.aborted)
-										controller.store.set({ sitesTakenDown: new Set(access.takenDown.keys()) });
-								},
-								() => {},
-							);
-					},
-					// Unread, the drawer has no Sites entry; a site's own page then says it can't be shown, not waits.
-					() => {
-						if (!controller.signal.aborted && controller.store.get().siteList === undefined)
-							controller.store.set({ siteList: [] });
-					},
-				);
+				if (sitesInFlight || controller.signal.aborted) return;
+				sitesInFlight = true;
+				const seq = ++sitesSeq;
+				void sites
+					.list(controller.signal)
+					.then(
+						async (list) => {
+							if (controller.signal.aborted || seq !== sitesSeq) return;
+							const prevList = controller.store.get().siteList;
+							if (prevList === undefined || JSON.stringify(prevList) !== JSON.stringify(list))
+								controller.store.set(sitesListed(list));
+							// WHY: ask for taken-down sites only while a live files site exists; keep the last set on failure.
+							if (list.some((site) => site.kind === "files" && site.state === "live")) {
+								try {
+									const access = await sites.access(controller.signal);
+									if (controller.signal.aborted || seq !== sitesSeq) return;
+									const nextTaken = new Set(access.takenDown.keys());
+									const prevTaken = controller.store.get().sitesTakenDown;
+									if (
+										!prevTaken ||
+										prevTaken.size !== nextTaken.size ||
+										[...nextTaken].some((slug) => !prevTaken.has(slug))
+									)
+										controller.store.set({ sitesTakenDown: nextTaken });
+								} catch {}
+							}
+						},
+						() => {
+							if (
+								!controller.signal.aborted &&
+								seq === sitesSeq &&
+								controller.store.get().siteList === undefined
+							)
+								controller.store.set({ siteList: [] });
+						},
+					)
+					.finally(() => {
+						sitesInFlight = false;
+					});
 			};
 			readSites();
 			window.addEventListener("focus", readSites, { signal: controller.signal });
@@ -1911,16 +1953,32 @@ export function mountApplication(
 		if (releasesRead !== controller && state.team?.capabilities.read) {
 			releasesRead = controller;
 			const releases = companyReleases(controller).shared;
-			const readReleases = () =>
-				void releases.list(controller.signal).then(
-					(read) => {
-						if (!controller.signal.aborted) showReleases(controller, read);
-					},
-					(error: unknown) => {
-						if (!controller.signal.aborted && error instanceof CloudRpcError && (error.missing || error.denied))
-							controller.store.set({ whatsNew: undefined, siteVersions: undefined });
-					},
-				);
+			let releasesInFlight = false;
+			const readReleases = () => {
+				if (releasesInFlight || controller.signal.aborted) return;
+				releasesInFlight = true;
+				void releases
+					.list(controller.signal)
+					.then(
+						(read) => {
+							if (!controller.signal.aborted) showReleases(controller, read);
+						},
+						(error: unknown) => {
+							if (
+								!controller.signal.aborted &&
+								error instanceof CloudRpcError &&
+								(error.missing || error.denied)
+							) {
+								const prev = controller.store.get();
+								if (prev.whatsNew !== undefined || prev.siteVersions !== undefined)
+									controller.store.set({ whatsNew: undefined, siteVersions: undefined });
+							}
+						},
+					)
+					.finally(() => {
+						releasesInFlight = false;
+					});
+			};
 			readReleases();
 			window.addEventListener("focus", readReleases, { signal: controller.signal });
 		}
@@ -2264,7 +2322,7 @@ export function mountApplication(
 										check,
 									).read(route.id!, messageId, ref, signal);
 									check();
-									return new Blob([Uint8Array.from(bytes)], { type: ref.mediaType });
+									return new Blob([new Uint8Array(bytes)], { type: ref.mediaType });
 								}),
 							// Routines are files (QorperaOS/agents/<handle>/routines/<key>.md): the editor and the switch
 							// write them through the member's own folder client, with the same checks as every other routine

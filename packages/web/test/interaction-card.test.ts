@@ -1118,4 +1118,68 @@ describe("the address card", () => {
 			"hello.lerhave-keramik@inbox.qorpera.com",
 		);
 	});
+
+	it("aborts mail_address handles probes and stops HandleCheck when context.signal aborts or card rerenders", async () => {
+		vi.useFakeTimers();
+		try {
+			const abort = new AbortController();
+			const observedSignals: AbortSignal[] = [];
+			let resolveHandles: ((value: { domain: string | null; handles: string[] }) => void) | undefined;
+			const status = vi.fn(async () => ({ status: "free" as const }));
+			const handles = vi.fn(
+				(signal: AbortSignal) =>
+					new Promise<{ domain: string | null; handles: string[] }>((resolve) => {
+						observedSignals.push(signal);
+						resolveHandles = resolve;
+					}),
+			);
+			const card = renderInteractionCard(
+				item(address),
+				context({ mailAddress: calls({ handles, status }), signal: abort.signal }),
+			);
+			expect(observedSignals).toHaveLength(1);
+			expect(observedSignals[0]?.aborted).toBe(false);
+			field(card).value = "fresh-handle";
+			field(card).dispatchEvent(new Event("input"));
+
+			abort.abort();
+			expect(observedSignals[0]?.aborted).toBe(true);
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(status).not.toHaveBeenCalled();
+
+			resolveHandles?.({ domain: "inbox.qorpera.com", handles: [] });
+			await Promise.resolve();
+			expect(card.querySelector(".interaction-address-domain")?.textContent).toBe("@…");
+
+			const skippedHandles = vi.fn(async () => ({ domain: "inbox.qorpera.com", handles: [] }));
+			renderInteractionCard(
+				item(address),
+				context({ mailAddress: calls({ handles: skippedHandles }), signal: abort.signal }),
+			);
+			expect(skippedHandles).not.toHaveBeenCalled();
+
+			const rerenderSignals: AbortSignal[] = [];
+			const choose = vi.fn(async () => undefined);
+			const card2 = renderInteractionCard(
+				item(address),
+				context({
+					mailAddress: calls({
+						choose,
+						handles: vi.fn((signal: AbortSignal) => {
+							rerenderSignals.push(signal);
+							return Promise.resolve({ domain: "inbox.qorpera.com", handles: [] });
+						}),
+					}),
+				}),
+			);
+			document.body.append(card2);
+			await vi.advanceTimersByTimeAsync(500);
+			use(card2)!.click();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(choose).toHaveBeenCalledTimes(1);
+			expect(rerenderSignals[0]?.aborted).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
