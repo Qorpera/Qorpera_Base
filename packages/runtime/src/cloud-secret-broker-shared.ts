@@ -213,7 +213,13 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	readonly #signingIn = new Map<string, number>();
 	#lastLookup = Number.NEGATIVE_INFINITY;
 	#lastSweep = Number.NEGATIVE_INFINITY;
-	#refreshing: Promise<void> | undefined;
+	#refreshing:
+		| {
+				promise: Promise<void>;
+				readonly controller: AbortController;
+				waiters: number;
+		  }
+		| undefined;
 	/** The last refresh's failure, until one succeeds. */
 	#refreshFailure: unknown;
 	readonly #timers = new Set<ReturnType<typeof setTimeout>>();
@@ -300,12 +306,12 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		if (known) return known.scope;
 		signal.throwIfAborted();
 		// A refresh already running (the first one after a start included) may serve it: wait for that one.
-		const running = this.#refreshing;
-		if (running) {
-			await waitForWithAbort(
-				running.catch(() => undefined),
-				signal,
-			);
+		if (this.#refreshing) {
+			try {
+				await this.refresh(signal);
+			} catch (error) {
+				if (signal.aborted) throw error;
+			}
 			return this.#unknown(id);
 		}
 		// A company created a moment ago may not be on the list yet: look again, but not on every request.
@@ -329,22 +335,56 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 
 	/** One refresh: registers the new companies, serves every registered one, drops the rest. */
 	refresh(signal: AbortSignal): Promise<void> {
-		const running = this.#refreshing;
-		if (running) return waitForWithAbort(running, signal);
-		this.#refreshing = this.#refresh(signal)
-			.then(
-				() => {
-					this.#refreshFailure = undefined;
-				},
-				(error: unknown) => {
-					this.#refreshFailure = error;
-					throw error;
-				},
-			)
-			.finally(() => {
-				this.#refreshing = undefined;
-			});
-		return this.#refreshing;
+		if (signal.aborted) return Promise.reject(signal.reason);
+		let state = this.#refreshing;
+		if (!state) {
+			// WHY: Decouple the shared refresh signal from any single caller so one client abort cannot poison or cancel piggybacking waiters.
+			const controller = new AbortController();
+			const onClose = (): void => controller.abort(this.#closing.signal.reason);
+			if (this.#closing.signal.aborted) controller.abort(this.#closing.signal.reason);
+			else this.#closing.signal.addEventListener("abort", onClose, { once: true });
+			const created: {
+				promise: Promise<void>;
+				readonly controller: AbortController;
+				waiters: number;
+			} = {
+				promise: Promise.resolve(),
+				controller,
+				waiters: 0,
+			};
+			const promise = this.#refresh(controller.signal)
+				.then(
+					() => {
+						this.#refreshFailure = undefined;
+					},
+					(error: unknown) => {
+						if (!controller.signal.aborted) this.#refreshFailure = error;
+						throw error;
+					},
+				)
+				.finally(() => {
+					this.#closing.signal.removeEventListener("abort", onClose);
+					if (this.#refreshing === created) this.#refreshing = undefined;
+				});
+			void promise.catch(() => undefined);
+			created.promise = promise;
+			this.#refreshing = created;
+			state = created;
+		}
+		state.waiters += 1;
+		let released = false;
+		const release = (aborted: boolean): void => {
+			if (released) return;
+			released = true;
+			state.waiters -= 1;
+			if (aborted && state.waiters === 0) state.controller.abort(signal.reason);
+		};
+		const onAbort = (): void => release(true);
+		signal.addEventListener("abort", onAbort, { once: true });
+		return waitForWithAbort(state.promise, signal).finally(() => {
+			signal.removeEventListener("abort", onAbort);
+			release(false);
+		});
 	}
 
 	async #refresh(signal: AbortSignal): Promise<void> {

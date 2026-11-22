@@ -52,6 +52,8 @@ test("packages the model login helper apart from the broker and every execution 
 		assert.doesNotMatch(service, /qorpera-cloud-secret-keyring|qorpera-supabase-service-key/);
 		assert.ok(!service.includes("Environment=QORPERA_"));
 		assert.match(service, /^KillMode=mixed$/m);
+		assert.match(service, /^TimeoutStopSec=85$/m);
+		assert.match(service, /^LimitCORE=0$/m);
 		const encoded = await readFile(join(destination, "manifest.json"), "utf8");
 		const repeated = spawnSync(process.execPath, ["scripts/package-model-login-helper.mjs", "--out", destination], {
 			cwd: repositoryRoot,

@@ -130,7 +130,7 @@ function principalFixture(
 		keyId: options.keyId ?? "vault-root-1",
 	};
 	const principal = {
-		companies: vi.fn(async () => ({
+		companies: vi.fn(async (_signal?: AbortSignal) => ({
 			schema: "qorpera.broker-principal-companies/v1",
 			keyId: options.principalKeyId ?? "vault-root-1",
 			registered: state.registered.map((companyId) => ({
@@ -781,5 +781,60 @@ it("aborts resolve and refresh promptly while another refresh is in flight", asy
 
 	releaseRefresh!();
 	await refresh;
+	await companies.close();
+});
+
+it("keeps a shared refresh alive when its initiator aborts while another waiter remains, and aborts once all waiters leave", async () => {
+	const one = randomUUID();
+	const { principal } = principalFixture({ registered: [one] });
+	let releaseRefresh: (() => void) | undefined;
+	let observedSignal: AbortSignal | undefined;
+	const origCompanies = principal.companies.getMockImplementation()!;
+	principal.companies.mockImplementationOnce(async (signal?: AbortSignal) => {
+		observedSignal = signal;
+		await new Promise<void>((resolve) => {
+			releaseRefresh = resolve;
+		});
+		signal?.throwIfAborted();
+		return origCompanies(signal);
+	});
+	const companies = new SharedCloudSecretBrokerCompanies({
+		principal,
+		keyring: new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) }),
+		adapters: [],
+		helper: helperFixture(),
+	});
+
+	const initiator = new AbortController();
+	const firstRefresh = companies.refresh(initiator.signal);
+	await vi.waitFor(() => expect(releaseRefresh).toBeDefined());
+	const waiterRefresh = companies.refresh(new AbortController().signal);
+	const waiterResolve = companies.resolve(one, new AbortController().signal);
+
+	const abortReason = new Error("INITIATOR_DISCONNECTED");
+	initiator.abort(abortReason);
+	await expect(firstRefresh).rejects.toBe(abortReason);
+	expect(getEventListeners(initiator.signal, "abort")).toHaveLength(0);
+	expect(observedSignal?.aborted).toBe(false);
+
+	releaseRefresh!();
+	await waiterRefresh;
+	expect(await waiterResolve).toBeDefined();
+
+	let allAbortedSignal: AbortSignal | undefined;
+	principal.companies.mockImplementationOnce(
+		async (signal?: AbortSignal) =>
+			await new Promise<Awaited<ReturnType<typeof origCompanies>>>((_resolve, reject) => {
+				allAbortedSignal = signal;
+				signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+			}),
+	);
+	const sole = new AbortController();
+	const soleRefresh = companies.refresh(sole.signal);
+	await vi.waitFor(() => expect(allAbortedSignal).toBeDefined());
+	sole.abort(new Error("SOLE_ABORTED"));
+	await expect(soleRefresh).rejects.toThrow("SOLE_ABORTED");
+	expect(allAbortedSignal?.aborted).toBe(true);
+	expect(getEventListeners(sole.signal, "abort")).toHaveLength(0);
 	await companies.close();
 });

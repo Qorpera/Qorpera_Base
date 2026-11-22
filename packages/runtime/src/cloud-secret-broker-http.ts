@@ -112,6 +112,7 @@ const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_REQUEST_BYTES = 96 * 1024;
 const MAX_RESPONSE_BYTES = 48 * 1024;
+const MAX_CONCURRENT_RELAYS = 64;
 /** A header value the coding relay reads or passes on (5j-6b): visible ASCII with inner spaces, at most 4 KiB. */
 const RELAY_HEADER_VALUE = /^[\x21-\x7e](?:[\x20-\x7e]{0,4094}[\x21-\x7e])?$/;
 /** The relay's idle timeout, on either side: an MCP server's event stream may wait minutes between events, and a
@@ -145,7 +146,12 @@ function tokenMatches(expected: string, authorization: string | undefined): bool
 	if (!authorization?.startsWith("Bearer ")) return false;
 	const left = Buffer.from(expected, "utf8");
 	const right = Buffer.from(authorization.slice("Bearer ".length), "utf8");
-	return left.byteLength === right.byteLength && timingSafeEqual(left, right);
+	try {
+		return left.byteLength === right.byteLength && timingSafeEqual(left, right);
+	} finally {
+		left.fill(0);
+		right.fill(0);
+	}
 }
 
 function parseFields(value: unknown): Record<string, string> {
@@ -582,7 +588,10 @@ async function readRequest(request: IncomingMessage): Promise<unknown> {
 		for await (const chunkValue of request) {
 			const chunk = Buffer.isBuffer(chunkValue) ? Buffer.from(chunkValue) : Buffer.from(chunkValue);
 			bytes += chunk.byteLength;
-			if (bytes > MAX_REQUEST_BYTES) throw new Error("Cloud secret broker request is too large");
+			if (bytes > MAX_REQUEST_BYTES) {
+				chunk.fill(0);
+				throw new Error("Cloud secret broker request is too large");
+			}
 			chunks.push(chunk);
 		}
 		body = Buffer.concat(chunks);
@@ -734,6 +743,15 @@ export class HttpCloudSecretBrokerService {
 	readonly #modelLoginUsage: CloudModelLoginUsage | undefined;
 	readonly #geminiKeys: CloudGeminiKeyVault | undefined;
 	#server?: Server;
+	#closingServer?: Server;
+	#closing = false;
+	#closePromise?: Promise<void>;
+	#inFlight = 0;
+	#activeRelays = 0;
+	#shutdown = new AbortController();
+	readonly #relayAborts = new Set<AbortController>();
+	readonly #drainWaiters = new Set<() => void>();
+	readonly #backgroundTasks = new Set<Promise<void>>();
 
 	constructor(
 		target: CloudSecretBroker | CloudSecretBrokerCompanies,
@@ -782,19 +800,27 @@ export class HttpCloudSecretBrokerService {
 
 	async start(): Promise<number> {
 		if (this.#server) throw new Error("Cloud secret broker service is already running");
-		this.#server = createServer((request, reply) => {
+		this.#closing = false;
+		this.#closePromise = undefined;
+		this.#shutdown = new AbortController();
+		const server = createServer((request, reply) => {
 			void this.#handle(request, reply).catch(() => reply.destroy());
 		});
 		// WHY: Disable server-wide requestTimeout so long streaming POST relays are not cut at 15 s; headersTimeout bounds headers, readRequest() bounds JSON bodies, #relay sets idleMs, and early rejections close unread bodies.
-		this.#server.requestTimeout = 0;
-		this.#server.headersTimeout = 10_000;
-		this.#server.keepAliveTimeout = 5000;
-		this.#server.maxRequestsPerSocket = 10;
+		server.requestTimeout = 0;
+		server.headersTimeout = 10_000;
+		server.keepAliveTimeout = 5000;
+		server.maxRequestsPerSocket = 10;
+		server.maxConnections = 256;
 		await new Promise<void>((resolve, reject) => {
-			this.#server?.once("error", reject);
-			this.#server?.listen(this.#port, this.#host, () => resolve());
+			server.once("error", reject);
+			server.listen(this.#port, this.#host, () => {
+				server.removeListener("error", reject);
+				resolve();
+			});
 		});
-		const address = this.#server.address();
+		this.#server = server;
+		const address = server.address();
 		if (!address || typeof address === "string") throw new Error("Cloud secret broker service address is invalid");
 		return address.port;
 	}
@@ -803,11 +829,83 @@ export class HttpCloudSecretBrokerService {
 		return this.#server?.requestTimeout;
 	}
 
-	async close(): Promise<void> {
+	#notifyDrain(): void {
+		if (this.#inFlight === 0 && this.#backgroundTasks.size === 0) {
+			for (const notify of [...this.#drainWaiters]) notify();
+		}
+	}
+
+	async close(graceMs = 35_000): Promise<void> {
+		if (this.#closePromise) return this.#closePromise;
 		const server = this.#server;
-		this.#server = undefined;
 		if (!server) return;
-		await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+		this.#closing = true;
+		this.#server = undefined;
+		this.#closingServer = server;
+		const shuttingDown = (async () => {
+			// WHY: Abort long-lived streaming relays at once and bound drain so SIGTERM finishes before TimeoutStopSec and always zeroes the keyring.
+			const shutdownError = new Error("Cloud secret broker shutting down");
+			this.#shutdown.abort(shutdownError);
+			for (const controller of this.#relayAborts) controller.abort(shutdownError);
+			const closed = new Promise<void>((resolve, reject) =>
+				server.close((error) => (error ? reject(error) : resolve())),
+			);
+			const boundedGraceMs = Number.isFinite(graceMs) ? Math.max(0, graceMs) : 35_000;
+			const deadlineAt = Date.now() + boundedGraceMs;
+			server.closeIdleConnections();
+			if ((this.#inFlight > 0 || this.#backgroundTasks.size > 0) && boundedGraceMs > 0) {
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				try {
+					await new Promise<void>((resolve) => {
+						const done = () => {
+							this.#drainWaiters.delete(done);
+							resolve();
+						};
+						this.#drainWaiters.add(done);
+						if (this.#inFlight === 0 && this.#backgroundTasks.size === 0) {
+							done();
+							return;
+						}
+						timer = setTimeout(done, boundedGraceMs);
+						timer.unref?.();
+					});
+				} finally {
+					if (timer) clearTimeout(timer);
+				}
+			}
+			if (this.#inFlight > 0 || boundedGraceMs === 0) {
+				server.closeAllConnections();
+				await closed;
+				return;
+			}
+			server.closeIdleConnections();
+			let closeTimer: ReturnType<typeof setTimeout> | undefined;
+			try {
+				await Promise.race([
+					closed,
+					new Promise<void>((resolve) => {
+						closeTimer = setTimeout(
+							() => {
+								server.closeAllConnections();
+								resolve();
+							},
+							Math.max(1, deadlineAt - Date.now()),
+						);
+						closeTimer.unref?.();
+					}),
+				]);
+			} finally {
+				if (closeTimer) clearTimeout(closeTimer);
+			}
+			await closed;
+		})();
+		this.#closePromise = shuttingDown;
+		try {
+			await shuttingDown;
+		} finally {
+			if (this.#closingServer === server) this.#closingServer = undefined;
+			if (this.#closePromise === shuttingDown) this.#closePromise = undefined;
+		}
 	}
 
 	/** The services a request's company gets: this broker's own, or its company's on the shared vault
@@ -842,99 +940,118 @@ export class HttpCloudSecretBrokerService {
 	 * needs. A redirect is refused, never followed. Every failure before the answer is the caller's opaque 403.
 	 */
 	async #relay(path: string, url: URL, request: IncomingMessage, reply: ServerResponse): Promise<void> {
+		if (this.#closing || this.#activeRelays >= MAX_CONCURRENT_RELAYS) {
+			response(reply, 503, { schema: "qorpera.cloud-secret-error/v1", error: "busy" }, { connection: "close" });
+			return;
+		}
 		// Either side's end ends the other: the reply's close, after a refusal too, ends the upstream connection.
 		const controller = new AbortController();
-		reply.once("close", () => controller.abort());
-		const mcp = path === "/v1/coding-mcp";
-		const methods = mcp ? ["GET", "POST", "DELETE"] : [path.endsWith("/refs") ? "GET" : "POST"];
-		if (!methods.includes(request.method ?? "")) {
-			response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
-			return;
-		}
-		const shape = mcp
-			? parseMcpRelayRequest(request, url)
-			: parseGitRelayRequest(request, url, path.endsWith("/refs"));
-		const scope = await this.#scope(url.searchParams.get("company")?.toLowerCase());
-		if (!scope) {
-			response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
-			return;
-		}
-		const signIn: CodingRelaySignIn = await withAbortScopes(
-			[controller.signal],
-			(signal) =>
-				shape.kind === "mcp"
-					? scope.broker.codingMcpSignIn(shape.binding, signal, scope.companyId)
-					: scope.broker.codingRepositoryFetch(shape.binding, signal, scope.companyId),
-			10_000,
-		);
-		const idleMs = shape.kind === "mcp" ? MCP_RELAY_IDLE_MS : GIT_RELAY_IDLE_MS;
-		const onRequestTimeout = () => controller.abort();
-		const onReplyTimeout = () => reply.destroy();
-		request.setTimeout(idleMs, onRequestTimeout);
+		const onReplyClose = (): void => controller.abort();
+		reply.once("close", onReplyClose);
+		this.#activeRelays += 1;
+		this.#relayAborts.add(controller);
 		try {
-			const answer = await openCloudSecretRelay(
-				this.#relayTransport,
-				{
-					origin: signIn.origin,
-					method: shape.relay.method,
-					path: `${signIn.path}${shape.relay.path}`,
-					headers: { ...shape.relay.headers, [signIn.headerName]: signIn.headerValue },
-					body: shape.relay.method === "POST" ? request : undefined,
-					idleMs,
-				},
-				controller.signal,
+			const mcp = path === "/v1/coding-mcp";
+			const methods = mcp ? ["GET", "POST", "DELETE"] : [path.endsWith("/refs") ? "GET" : "POST"];
+			if (!methods.includes(request.method ?? "")) {
+				response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
+				return;
+			}
+			const shape = mcp
+				? parseMcpRelayRequest(request, url)
+				: parseGitRelayRequest(request, url, path.endsWith("/refs"));
+			const scope = await this.#scope(url.searchParams.get("company")?.toLowerCase());
+			if (!scope) {
+				response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
+				return;
+			}
+			const signIn: CodingRelaySignIn = await withAbortScopes(
+				[controller.signal],
+				(signal) =>
+					shape.kind === "mcp"
+						? scope.broker.codingMcpSignIn(shape.binding, signal, scope.companyId)
+						: scope.broker.codingRepositoryFetch(shape.binding, signal, scope.companyId),
+				10_000,
 			);
-			const status = answer.statusCode ?? 0;
-			const type = relayAnswerHeader(answer, "content-type");
-			const session = shape.kind === "mcp" ? relayAnswerHeader(answer, "mcp-session-id") : undefined;
-			const encoding = answer.headers["content-encoding"];
-			if (
-				status < 200 ||
-				(status >= 300 && status < 400) ||
-				status > 599 ||
-				(encoding !== undefined && encoding !== "identity") ||
-				(shape.kind === "git" && status === 200 && type !== shape.answerType)
-			)
-				throw new Error("Coding relay answer is refused");
-			reply.writeHead(status, {
-				"cache-control": "no-store",
-				...(type === undefined ? {} : { "content-type": type }),
-				...(session === undefined ? {} : { "mcp-session-id": session }),
-			});
-			reply.flushHeaders();
-			reply.setTimeout(idleMs, onReplyTimeout);
-			await pipeline(answer, reply);
+			const idleMs = shape.kind === "mcp" ? MCP_RELAY_IDLE_MS : GIT_RELAY_IDLE_MS;
+			const onRequestTimeout = () => controller.abort();
+			const onReplyTimeout = () => reply.destroy();
+			request.setTimeout(idleMs, onRequestTimeout);
+			try {
+				const answer = await openCloudSecretRelay(
+					this.#relayTransport,
+					{
+						origin: signIn.origin,
+						method: shape.relay.method,
+						path: `${signIn.path}${shape.relay.path}`,
+						headers: { ...shape.relay.headers, [signIn.headerName]: signIn.headerValue },
+						body: shape.relay.method === "POST" ? request : undefined,
+						idleMs,
+					},
+					controller.signal,
+				);
+				const status = answer.statusCode ?? 0;
+				const type = relayAnswerHeader(answer, "content-type");
+				const session = shape.kind === "mcp" ? relayAnswerHeader(answer, "mcp-session-id") : undefined;
+				const encoding = answer.headers["content-encoding"];
+				if (
+					status < 200 ||
+					(status >= 300 && status < 400) ||
+					status > 599 ||
+					(encoding !== undefined && encoding !== "identity") ||
+					(shape.kind === "git" && status === 200 && type !== shape.answerType)
+				)
+					throw new Error("Coding relay answer is refused");
+				reply.writeHead(status, {
+					"cache-control": "no-store",
+					...(type === undefined ? {} : { "content-type": type }),
+					...(session === undefined ? {} : { "mcp-session-id": session }),
+				});
+				reply.flushHeaders();
+				reply.setTimeout(idleMs, onReplyTimeout);
+				await pipeline(answer, reply);
+			} finally {
+				request.off("timeout", onRequestTimeout);
+				reply.off("timeout", onReplyTimeout);
+				reply.setTimeout(0);
+			}
 		} finally {
-			request.off("timeout", onRequestTimeout);
-			reply.off("timeout", onReplyTimeout);
-			reply.setTimeout(0);
+			reply.off("close", onReplyClose);
+			this.#relayAborts.delete(controller);
+			this.#activeRelays -= 1;
 		}
 	}
 
 	async #handle(request: IncomingMessage, reply: ServerResponse): Promise<void> {
-		const url = new URL(request.url ?? "/", "http://cloud-secret-broker.invalid");
-		const path = url.pathname;
-		const capture = /^\/v1\/captures\/([0-9a-f-]{36})$/i.exec(path);
-		const geminiKeySave = /^\/v1\/gemini-keys\/([0-9a-f-]{36})$/i.exec(path);
-		const emailDraft = /^\/v1\/email-drafts\/([0-9a-f-]{36})$/i.exec(path);
-		const oauthStart = /^\/v1\/oauth\/([0-9a-f-]{36})\/start$/i.exec(path);
-		const oauthConfirm = /^\/v1\/oauth\/([0-9a-f-]{36})\/confirm$/i.exec(path);
-		const signIn = /^\/v1\/model-logins\/([0-9a-f-]{36})\/login$/i.exec(path);
-		const planCallback = /^\/v1\/model-logins\/([0-9a-f-]{36})\/chatgpt-plan\/callback$/i.exec(path);
-		const planConfirm = /^\/v1\/model-logins\/([0-9a-f-]{36})\/chatgpt-plan\/confirm$/i.exec(path);
-		const claudeCode = /^\/v1\/model-logins\/([0-9a-f-]{36})\/claude\/code$/i.exec(path);
-		const accountRefresh = /^\/v1\/model-logins\/([0-9a-f-]{36})\/account-refresh$/i.exec(path);
-		const memberRoute = Boolean(
-			(capture && UUID.test(capture[1])) ||
-				(geminiKeySave && UUID.test(geminiKeySave[1])) ||
-				(emailDraft && UUID.test(emailDraft[1])) ||
-				(oauthStart && UUID.test(oauthStart[1])) ||
-				(oauthConfirm && UUID.test(oauthConfirm[1])),
-		);
-		const origin = typeof request.headers.origin === "string" ? request.headers.origin : undefined;
-		const allowedOrigin = origin !== undefined && this.#memberOrigins.has(origin) ? origin : undefined;
-		const cors = memberRoute && allowedOrigin ? corsHeaders(allowedOrigin) : {};
+		if (this.#closing) {
+			response(reply, 503, { schema: "qorpera.cloud-secret-error/v1", error: "busy" }, { connection: "close" });
+			return;
+		}
+		this.#inFlight += 1;
+		let cors: Record<string, string> = {};
 		try {
+			const url = new URL(request.url ?? "/", "http://cloud-secret-broker.invalid");
+			const path = url.pathname;
+			const capture = /^\/v1\/captures\/([0-9a-f-]{36})$/i.exec(path);
+			const geminiKeySave = /^\/v1\/gemini-keys\/([0-9a-f-]{36})$/i.exec(path);
+			const emailDraft = /^\/v1\/email-drafts\/([0-9a-f-]{36})$/i.exec(path);
+			const oauthStart = /^\/v1\/oauth\/([0-9a-f-]{36})\/start$/i.exec(path);
+			const oauthConfirm = /^\/v1\/oauth\/([0-9a-f-]{36})\/confirm$/i.exec(path);
+			const signIn = /^\/v1\/model-logins\/([0-9a-f-]{36})\/login$/i.exec(path);
+			const planCallback = /^\/v1\/model-logins\/([0-9a-f-]{36})\/chatgpt-plan\/callback$/i.exec(path);
+			const planConfirm = /^\/v1\/model-logins\/([0-9a-f-]{36})\/chatgpt-plan\/confirm$/i.exec(path);
+			const claudeCode = /^\/v1\/model-logins\/([0-9a-f-]{36})\/claude\/code$/i.exec(path);
+			const accountRefresh = /^\/v1\/model-logins\/([0-9a-f-]{36})\/account-refresh$/i.exec(path);
+			const memberRoute = Boolean(
+				(capture && UUID.test(capture[1])) ||
+					(geminiKeySave && UUID.test(geminiKeySave[1])) ||
+					(emailDraft && UUID.test(emailDraft[1])) ||
+					(oauthStart && UUID.test(oauthStart[1])) ||
+					(oauthConfirm && UUID.test(oauthConfirm[1])),
+			);
+			const origin = typeof request.headers.origin === "string" ? request.headers.origin : undefined;
+			const allowedOrigin = origin !== undefined && this.#memberOrigins.has(origin) ? origin : undefined;
+			cors = memberRoute && allowedOrigin ? corsHeaders(allowedOrigin) : {};
 			if (request.method === "OPTIONS") {
 				// A browser preflight for a member route; every other route has no browser caller.
 				if (memberRoute && allowedOrigin) {
@@ -1124,7 +1241,17 @@ export class HttpCloudSecretBrokerService {
 				} catch {
 					// A bank session that could not be sealed is closed again rather than left open, after the answer:
 					// the member's confirm does not wait for it.
-					void withAbortScopes([], (signal) => oauth.abandon(completion, signal), 20_000).catch(() => undefined);
+					const abandonTask = withAbortScopes(
+						[this.#shutdown.signal],
+						(signal) => oauth.abandon(completion, signal),
+						20_000,
+					)
+						.catch(() => undefined)
+						.finally(() => {
+							this.#backgroundTasks.delete(abandonTask);
+							this.#notifyDrain();
+						});
+					this.#backgroundTasks.add(abandonTask);
 					response(reply, 403, { schema: "qorpera.cloud-connector-oauth-failed/v1", reason: "expired" }, cors);
 					return;
 				}
@@ -1486,6 +1613,13 @@ export class HttpCloudSecretBrokerService {
 			} else {
 				reply.destroy();
 			}
+		} finally {
+			this.#inFlight -= 1;
+			if (this.#closingServer) {
+				if (reply.writableFinished || reply.destroyed) this.#closingServer.closeIdleConnections();
+				else reply.once("finish", () => this.#closingServer?.closeIdleConnections());
+			}
+			this.#notifyDrain();
 		}
 	}
 
