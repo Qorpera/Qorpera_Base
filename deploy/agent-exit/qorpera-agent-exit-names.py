@@ -88,6 +88,13 @@ READER_FAILING = 120
 # The rules reader adds a new machine's company within a pass or two; a company it still has not listed after this long is
 # a problem (its machines have no DNS meanwhile).
 UNKNOWN_GRACE = 30
+SUBPROCESS_TIMEOUT = 15
+_TIMEOUT_EXPIRED = subprocess.TimeoutExpired
+_COMPLETED_PROCESS = subprocess.CompletedProcess
+
+
+def _monotonic():
+    return getattr(time, "monotonic", time.time)()
 
 
 def valid_name(value):
@@ -114,13 +121,16 @@ def company_rules(value):
     return value
 
 
-def read_whole(path, limit):
+def read_whole(path, limit, known_key=None):
     """A regular file's bytes, never through a link (as the plug reads its folders)."""
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
             raise ValueError("not a regular file")
+        key = (st.st_ino, st.st_mtime_ns, st.st_size)
+        if known_key is not None and key == known_key:
+            return None, key
         chunks, size = [], 0
         while chunk := os.read(fd, 1 << 20):
             chunks.append(chunk)
@@ -129,7 +139,7 @@ def read_whole(path, limit):
                 raise ValueError("too large")
     finally:
         os.close(fd)
-    return b"".join(chunks), (st.st_ino, st.st_mtime_ns, st.st_size)
+    return b"".join(chunks), key
 
 
 def parse_rules(data):
@@ -336,7 +346,7 @@ class Names:
         self.names_dir = os.path.join(args.run_dir, "names")
         self.ports_path = os.path.join(args.state_dir, "names", "ports.json")
         self.status_path = os.path.join(args.run_dir, "names.json")
-        self.started_at = time.time()
+        self.started_at = _monotonic()
         self.rules_key = None
         self.rules = None
         self.clients_cache = {}
@@ -373,20 +383,26 @@ class Names:
         # restart of this reconciler.
         self.uncut = set()
         self.problems = []
+        self._pass_table = None
 
-    def run(self, command):
-        return subprocess.run(command, capture_output=True, text=True)
+    def run(self, command, *, input=None):
+        try:
+            return subprocess.run(command, input=input, capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT)
+        except _TIMEOUT_EXPIRED:
+            return _COMPLETED_PROCESS(command, 124, "", f"timed out after {SUBPROCESS_TIMEOUT}s")
 
-    def in_exit(self, *command):
-        return self.run(["ip", "netns", "exec", self.args.netns, *command])
+    def in_exit(self, *command, input=None):
+        return self.run(["ip", "netns", "exec", self.args.netns, *command], input=input)
 
     def unit(self, port):
         return f"qorpera-agent-exit-resolver@{port}.service"
 
     # --- what is wanted ---
 
-    def check_reader(self, at):
+    def check_reader(self, at, mono=None):
         """The rules reader's status: alive, and not failing for long. The last rules stay in force meanwhile."""
+        if mono is None:
+            mono = _monotonic()
         try:
             status = json.loads(plug.read_file(self.args.rules_status))
             checked = plug.parse_iso(status["checkedAt"][:19] + "Z")
@@ -401,18 +417,19 @@ class Names:
         if status.get("ok") is True:
             self.reader_bad_since = None
             return
-        self.reader_bad_since = self.reader_bad_since or at
+        if self.reader_bad_since is None:
+            self.reader_bad_since = mono
         code = status.get("problem")
         code = code if isinstance(code, str) and re.fullmatch(r"[A-Z0-9_]{1,32}", code) else "unknown"
-        if at - self.reader_bad_since > READER_FAILING:
-            self.problems.append(f"the rules reader failing for {int(at - self.reader_bad_since)}s ({code})")
+        if mono - self.reader_bad_since > READER_FAILING:
+            self.problems.append(f"the rules reader failing for {int(mono - self.reader_bad_since)}s ({code})")
 
     def read_rules(self):
         """The companies' rules from rules.json (read again only when it changed). None when there are none yet; a file
         that cannot be used keeps the rules last read, and is a problem."""
         try:
-            data, key = read_whole(self.args.rules, MAX_RULES_BYTES)
-            if key != self.rules_key:
+            data, key = read_whole(self.args.rules, MAX_RULES_BYTES, known_key=self.rules_key)
+            if data is not None:
                 self.rules, self.rules_key = parse_rules(data), key
         except FileNotFoundError:
             self.problems.append("no rules file yet: every machine's DNS is dropped until the rules reader writes it")
@@ -626,27 +643,42 @@ class Names:
             self.reach_right, self.reach_now = True, reach
             return mapped
         family, table = plug.EXIT_TABLE
-        answers = [self.in_exit("nft", "-j", "list", "tables", family)]
-        answers += [self.in_exit("nft", "-j", "list", what, family, table, name)
-                    for what, name in (("map", "dns_port"), ("set", "dns_allowed"), ("map", "reach"))]
+        known_handle = self._pass_table
+        self._pass_table = None
+        if known_handle is None:
+            tables_answer = self.in_exit("nft", "-j", "list", "tables", family)
+            if tables_answer.returncode != 0:
+                self.problems.append(f"cannot read the exit's DNS map: {tables_answer.stderr.strip()[:200]}")
+                return {}
+            try:
+                handle = table_handle(tables_answer.stdout, table)
+            except ValueError as error:
+                self.problems.append(f"cannot parse the exit's DNS map: {error}"[:200])
+                return {}
+        else:
+            handle = known_handle[0]
+        answers = [self.in_exit("nft", "-j", "list", what, family, table, name)
+                   for what, name in (("map", "dns_port"), ("set", "dns_allowed"), ("map", "reach"))]
         failed = [a for a in answers if a.returncode != 0]
         if failed:
             self.problems.append(f"cannot read the exit's DNS map: {failed[0].stderr.strip()[:200]}")
             return {}
-        handle = table_handle(answers[0].stdout, table)
+        try:
+            loaded, allowed = loaded_map(answers[0].stdout, answers[1].stdout)
+            reached = self.reach_now = loaded_reach(answers[2].stdout)
+        except ValueError as error:
+            self.problems.append(f"cannot parse the exit's DNS map: {error}"[:200])
+            return {}
         if handle != self.table:
             # Connections made before this table may still go where an older map sent them, to the main dnsmasq
             # before a company had rules (an exit upgraded to E8b-2 included).
             self.table, self.flush_all = handle, True
-        loaded, allowed = loaded_map(answers[1].stdout, answers[2].stdout)
-        reached = self.reach_now = loaded_reach(answers[3].stdout)
         mapped = {address: loaded[address] if port in waiting else port for address, port in mapped.items()
                   if port not in waiting or loaded.get(address) in (MAIN_PORT, port)}
         if loaded != mapped or allowed != set(mapped.items()) or reached != reach:
             # The reach map in the same transaction (E8c): a machine's names and where it may go change together.
             lines = element_lines(mapped, fresh=True) + reach_lines(reach, fresh=True)
-            result = subprocess.run(["ip", "netns", "exec", self.args.netns, "nft", "-f", "-"],
-                                    input="\n".join(lines) + "\n", capture_output=True, text=True)
+            result = self.in_exit("nft", "-f", "-", input="\n".join(lines) + "\n")
             if result.returncode != 0:
                 self.problems.append(f"cannot set the exit's DNS map: {result.stderr.strip()[:200]}")
                 return loaded
@@ -695,12 +727,16 @@ class Names:
         if failed:
             self.problems.append(f"cannot read the exit's chains: {failed[0].stderr.strip()[:200]}")
             return None, set()
-        handle = table_handle(answers[0].stdout, table)
-        have = only_chains(answers[1].stdout, table)
+        try:
+            handle = table_handle(answers[0].stdout, table)
+            have = only_chains(answers[1].stdout, table)
+        except ValueError as error:
+            self.problems.append(f"cannot parse the exit's chains: {error}"[:200])
+            return None, set()
+        self._pass_table = (handle,)
         if needed - have:
             lines = [line for port in sorted(needed - have) for line in object_lines(port)]
-            result = subprocess.run(["ip", "netns", "exec", self.args.netns, "nft", "-f", "-"],
-                                    input="\n".join(lines) + "\n", capture_output=True, text=True)
+            result = self.in_exit("nft", "-f", "-", input="\n".join(lines) + "\n")
             if result.returncode != 0:
                 self.problems.append(f"cannot make the only-listed chains: {result.stderr.strip()[:200]}")
                 return have & needed, have - needed
@@ -718,8 +754,7 @@ class Names:
         lines = [line for port in sorted(extra) for line in (
             f"flush chain {family} {table} only_{port}", f"delete chain {family} {table} only_{port}",
             f"destroy set {family} {table} allow_{port}")]
-        result = subprocess.run(["ip", "netns", "exec", self.args.netns, "nft", "-f", "-"],
-                                input="\n".join(lines) + "\n", capture_output=True, text=True)
+        result = self.in_exit("nft", "-f", "-", input="\n".join(lines) + "\n")
         if result.returncode != 0:
             self.problems.append(f"cannot remove the only-listed chains: {result.stderr.strip()[:200]}")
 
@@ -727,8 +762,10 @@ class Names:
 
     def pass_once(self):
         self.problems = []
+        self._pass_table = None
         at = time.time()
-        self.check_reader(at)
+        mono = _monotonic()
+        self.check_reader(at, mono)
         rules = self.read_rules()
         clients = verified_clients(self.args.state_dir, self.clients_cache)
         self.machines = set(clients)
@@ -737,11 +774,11 @@ class Names:
         for company in sorted({c for c in clients.values() if rules.get(c) is False}):
             self.problems.append(
                 f"{company}: its rules are not as the rules reader writes them; its machines get no DNS and no way out")
-        self.unknown_since = {c: self.unknown_since.get(c, at) for c in clients.values() if c not in rules}
+        self.unknown_since = {c: self.unknown_since.get(c, mono) for c in clients.values() if c not in rules}
         for company, since in sorted(self.unknown_since.items()):
-            if at - since > UNKNOWN_GRACE:
+            if mono - since > UNKNOWN_GRACE:
                 self.problems.append(
-                    f"{company}: not in the rules file for {int(at - since)}s; its machines get no DNS and no way out")
+                    f"{company}: not in the rules file for {int(mono - since)}s; its machines get no DNS and no way out")
         wanted = {c for c in clients.values() if rules.get(c)}
         units = self.units()
         if units is None:
@@ -757,7 +794,7 @@ class Names:
         self.restart_owed(ports, units, None if present is None else present | extra)
         for port in sorted(set(ports.values())):
             if units.get(port) in (None, "inactive", "failed"):
-                self.start(port, at)
+                self.start(port, mono)
         waiting = set()
         answering = self.listening() if self.kernel and ports else set(ports.values())
         for company, port in sorted(ports.items()):
@@ -766,14 +803,14 @@ class Names:
             if port in answering:
                 self.started.pop(port, None)
                 self.restarted.pop(port, None)
-            elif at - self.started.setdefault(port, at) <= START_GRACE:
+            elif mono - self.started.setdefault(port, mono) <= START_GRACE:
                 waiting.add(port)
             else:
                 # Waited on once (start keeps the first time), not again: its machines have no DNS until it answers.
                 # One that is not running was started above.
                 self.problems.append(f"the resolver of {company} (port {port}) is not answering")
                 if units.get(port) == "active":
-                    self.start(port, at, again=True)
+                    self.start(port, mono, again=True)
         mapped = self.sync_map(wanted_map(clients, rules, ports), waiting,
                                wanted_reach(clients, rules, ports, present or set()))
         self.cut_owed(clients, ports)

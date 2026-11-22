@@ -91,6 +91,8 @@ QUARANTINE_SECONDS = 15 * 60
 PENDING_SECONDS = 60 * 60
 # Temporary files older than this in the creators' folders are left from a crash and removed.
 STALE_TMP_SECONDS = 10 * 60
+SUBPROCESS_TIMEOUT = 15
+_TIMEOUT_EXPIRED = subprocess.TimeoutExpired
 ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 LXD_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,62}$")
 PLUG_NIC = {
@@ -155,15 +157,21 @@ def read_file(path, limit=65536):
     """A regular file's text, never through a link and never blocking (the creators' folders are group-writable, so a
     link or a FIFO there must not lead the reconciler anywhere)."""
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    chunks, total = [], 0
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise ValueError("not a regular file")
-        data = os.read(fd, limit + 1)
+        while True:
+            chunk = os.read(fd, min(65536, limit + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > limit:
+                raise ValueError("too large")
     finally:
         os.close(fd)
-    if len(data) > limit:
-        raise ValueError("too large")
-    return data.decode("utf-8")
+    return b"".join(chunks).decode("utf-8")
 
 
 def _write_tmp(directory, name, text, mode):
@@ -173,10 +181,19 @@ def _write_tmp(directory, name, text, mode):
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, mode)
     try:
         os.fchmod(fd, mode)
-        os.write(fd, text.encode("utf-8"))
+        view = memoryview(text.encode("utf-8"))
+        written = 0
+        while written < len(view):
+            n = os.write(fd, view[written:])
+            if n <= 0:
+                raise OSError("short write")
+            written += n
         os.fsync(fd)
-    finally:
+    except BaseException:
         os.close(fd)
+        remove(tmp)
+        raise
+    os.close(fd)
     return tmp
 
 
@@ -187,12 +204,23 @@ def write_new(directory, name, text, mode=0o644):
     try:
         os.link(tmp, os.path.join(directory, name))
     finally:
-        os.unlink(tmp)
+        remove(tmp)
 
 
 def write_replace(path, text, mode=0o644):
     tmp = _write_tmp(os.path.dirname(path), os.path.basename(path), text, mode)
-    os.replace(tmp, path)
+    try:
+        os.replace(tmp, path)
+    except BaseException:
+        remove(tmp)
+        raise
+
+
+def _run_subprocess(command, *, input=None, timeout=SUBPROCESS_TIMEOUT):
+    try:
+        return subprocess.run(command, input=input, capture_output=True, text=True, timeout=timeout)
+    except _TIMEOUT_EXPIRED:
+        return subprocess.CompletedProcess(command, 124, "", f"timed out after {timeout}s")
 
 
 def remove(path):
@@ -393,13 +421,17 @@ def current_ports():
     """The (port, MAC) pairs the loaded bridge rules hold, or none when they are not loaded."""
     family, table = BRIDGE_TABLE
     try:
-        result = subprocess.run(["nft", "-j", "list", "set", family, table, "ports"], capture_output=True, text=True)
+        result = _run_subprocess(["nft", "-j", "list", "set", family, table, "ports"])
     except OSError:
         return set()
     if result.returncode != 0:
         return set()
+    try:
+        payload = json.loads(result.stdout)
+    except ValueError:
+        return set()
     found = set()
-    for item in json.loads(result.stdout).get("nftables", []):
+    for item in payload.get("nftables", []):
         for elem in item.get("set", {}).get("elem", []) or []:
             value = elem.get("elem", {}).get("val") if isinstance(elem, dict) and "elem" in elem else elem
             parts = value.get("concat") if isinstance(value, dict) else None
@@ -601,7 +633,11 @@ def parse_twins(text):
 def set_keys(text, address):
     """The keys of an `nft -j list set` answer that belong to this address (alone, or first in a concatenation)."""
     keys = []
-    for item in json.loads(text).get("nftables", []):
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return keys
+    for item in payload.get("nftables", []):
         for elem in item.get("set", {}).get("elem", []) or []:
             value = elem.get("elem", {}).get("val") if isinstance(elem, dict) and "elem" in elem else elem
             parts = value.get("concat") if isinstance(value, dict) else [value]
@@ -610,20 +646,47 @@ def set_keys(text, address):
     return keys
 
 
+def table_set_keys(text, address, set_names):
+    """(set_name, key) pairs from `nft -j list table` whose elements belong to this address."""
+    wanted = set(set_names)
+    found = []
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return found
+    for item in payload.get("nftables", []):
+        set_obj = item.get("set")
+        if not isinstance(set_obj, dict):
+            continue
+        name = set_obj.get("name")
+        if name not in wanted:
+            continue
+        for elem in set_obj.get("elem", []) or []:
+            value = elem.get("elem", {}).get("val") if isinstance(elem, dict) and "elem" in elem else elem
+            parts = value.get("concat") if isinstance(value, dict) else [value]
+            if parts and parts[0] == address:
+                found.append((name, " . ".join(str(p) for p in parts)))
+    return found
+
+
+_UNSET = object()
+
+
 class Reconciler:
     def __init__(self, paths, args):
         self.paths = paths
         self.args = args
         self.problems = []
         self.nft = os.environ.get("QORPERA_AGENT_PLUG_NFT", "1") != "0"
+        self._pass_bridge_state = _UNSET
         self.port_recheck_seconds = (
             args.port_recheck_seconds
             if args.port_recheck_seconds is not None
             else (0.0 if args.lxd_fixture else 0.75)
         )
 
-    def run(self, command):
-        return subprocess.run(command, capture_output=True, text=True)
+    def run(self, command, *, input=None):
+        return _run_subprocess(command, input=input)
 
     def history(self, event, entry, at=None, **extra):
         keys = ("address", "hwaddr", "kind", "company", "machine", "member", "project", "instance")
@@ -706,16 +769,15 @@ class Reconciler:
             return
         family, table = EXIT_TABLE
         statements = []
-        for name in EXIT_SETS:
-            listed = self.run(["ip", "netns", "exec", self.args.netns, "nft", "-j", "list", "set", family, table, name])
-            if listed.returncode == 0:
-                # destroy, not delete: an element that times out between the listing and this batch is no error, so
-                # it cannot keep the others in place.
-                statements += [f"destroy element {family} {table} {name} {{ {key} }}"
-                               for key in set_keys(listed.stdout, address)]
+        listed = self.run(["ip", "netns", "exec", self.args.netns, "nft", "-j", "list", "table", family, table])
+        if listed.returncode == 0:
+            # destroy, not delete: an element that times out between the listing and this batch is no error, so
+            # it cannot keep the others in place.
+            statements = [f"destroy element {family} {table} {name} {{ {key} }}"
+                          for name, key in table_set_keys(listed.stdout, address, EXIT_SETS)]
         if statements:
-            result = subprocess.run(["ip", "netns", "exec", self.args.netns, "nft", "-f", "-"],
-                                    input="\n".join(statements) + "\n", capture_output=True, text=True)
+            result = self.run(["ip", "netns", "exec", self.args.netns, "nft", "-f", "-"],
+                              input="\n".join(statements) + "\n")
             if result.returncode != 0:
                 print(f"cannot clear {address} from the exit's sets: {result.stderr.strip()[:200]}", flush=True)
         # The brake's map too, without a listing (destroying no element is no error): while the guard is down, a
@@ -758,18 +820,24 @@ class Reconciler:
                     found.add(tuple(str(p).lower() for p in parts) if parts and len(parts) == 2 else ("?",))
             return found
 
-        rules = [item["rule"] for item in json.loads(answers[2].stdout).get("nftables", []) if "rule" in item]
+        try:
+            ports = pairs(answers[0].stdout)
+            clients = pairs(answers[1].stdout)
+            rules = [item["rule"] for item in json.loads(answers[2].stdout).get("nftables", []) if "rule" in item]
+        except ValueError as error:
+            self.problems.append(f"cannot parse the bridge rules: {error}"[:200])
+            return None
         comments = sorted(r.get("comment", "") for r in rules[:-1])
         last = [next(iter(e)) for e in rules[-1].get("expr", [])] if rules else []
         bare_drop = bool(rules) and "comment" not in rules[-1] and last == ["counter", "drop"]
-        return pairs(answers[0].stdout), pairs(answers[1].stdout), comments, bare_drop
+        return ports, clients, comments, bare_drop
 
     def sync_bridge(self, entries, ports):
         """Keeps the bridge rules equal to the entries LXD backs and their ports, in one transaction. Read back every
         pass, so a restart or a crash (and the plain hand edits) are set right within a pass."""
         if not self.nft:
             return
-        state = self.bridge_state()
+        state = self.bridge_state() if self._pass_bridge_state is _UNSET else self._pass_bridge_state
         if state is None:
             return
         wanted = ({(p.lower(), m) for p, m in ports}, {(e["hwaddr"], e["address"]) for e in entries.values()},
@@ -777,7 +845,7 @@ class Reconciler:
         if state == wanted:
             return
         batch = elements(entries, ports, fresh=True)
-        result = subprocess.run(["nft", "-f", "-"], input="\n".join(batch) + "\n", capture_output=True, text=True)
+        result = self.run(["nft", "-f", "-"], input="\n".join(batch) + "\n")
         if result.returncode != 0:
             self.problems.append(f"cannot update the bridge rules: {result.stderr.strip()[:200]}")
 
@@ -901,8 +969,14 @@ class Reconciler:
             except Exception as error:  # noqa: BLE001 - a later stage, and the bridge rules, still run
                 self.problems.append(f"{type(error).__name__}: {error}"[:300])
         entries = read_entries(self.paths)[0]
-        ok, ports = backed(self.paths, entries, list(by_name.values()), current_ports() if self.nft else ())
-        self.sync_bridge(ok, ports)
+        state = self.bridge_state() if self.nft else None
+        loaded = {(p, m) for p, m in state[0] if len((p, m)) == 2 and PORT_NAME.match(p) and MAC.match(m)} if state else ()
+        ok, ports = backed(self.paths, entries, list(by_name.values()), loaded)
+        self._pass_bridge_state = state
+        try:
+            self.sync_bridge(ok, ports)
+        finally:
+            self._pass_bridge_state = _UNSET
         return self.write_status(at, entries)
 
     def reconcile_entry(self, at, address, entry, instance):
@@ -1032,7 +1106,14 @@ def main():
             os.makedirs(directory, exist_ok=True)
         reconciler = Reconciler(paths, args)
         while True:
-            reconciler.pass_once()
+            try:
+                reconciler.pass_once()
+            except Exception as error:  # noqa: BLE001 - one bad pass is reported; the next one runs
+                reconciler.problems = [f"{type(error).__name__}: {error}"[:300]]
+                try:
+                    reconciler.write_status(time.time(), {})
+                except Exception as status_error:  # noqa: BLE001
+                    print(f"cannot write plug status: {status_error}", file=sys.stderr, flush=True)
             if args.once:
                 return
             time.sleep(args.interval)

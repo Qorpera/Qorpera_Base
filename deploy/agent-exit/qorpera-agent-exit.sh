@@ -397,21 +397,21 @@ names() {
 }
 
 verify() {
-	local problems=() heartbeat age setting ns listing
+	local problems=() setting ns listing problem check_sni=0
 	has_ns || problems+=("no namespace $NS")
 	has_link "$BRIDGE" || problems+=("no bridge $BRIDGE")
 	if has_link "$BRIDGE"; then
 		for setting in forwarding=0 arp_ignore=8; do
-			[[ $(cat "/proc/sys/net/ipv4/conf/$BRIDGE/${setting%=*}") == "${setting#*=}" ]] ||
+			[[ $(cat "/proc/sys/net/ipv4/conf/$BRIDGE/${setting%=*}" 2>/dev/null || true) == "${setting#*=}" ]] ||
 				problems+=("$BRIDGE ${setting%=*} is not ${setting#*=}")
 		done
 		# Ubuntu's sysctl.d sets rp_filter=2 on every interface (and on "all", which wins); either filter is fine.
-		[[ $(cat "/proc/sys/net/ipv4/conf/$BRIDGE/rp_filter") != 0 ]] || problems+=("$BRIDGE rp_filter is off")
-		[[ $(cat "/sys/class/net/$BRIDGE/bridge/group_fwd_mask") == 0x4000 ]] ||
+		[[ $(cat "/proc/sys/net/ipv4/conf/$BRIDGE/rp_filter" 2>/dev/null || echo 0) != 0 ]] || problems+=("$BRIDGE rp_filter is off")
+		[[ $(cat "/sys/class/net/$BRIDGE/bridge/group_fwd_mask" 2>/dev/null || true) == 0x4000 ]] ||
 			problems+=("$BRIDGE does not forward LLDP frames through its rules")
-		[[ $(cat "/sys/class/net/$BRIDGE/bridge/no_linklocal_learn") == 1 ]] ||
+		[[ $(cat "/sys/class/net/$BRIDGE/bridge/no_linklocal_learn" 2>/dev/null || true) == 1 ]] ||
 			problems+=("$BRIDGE learns MACs from link-local frames")
-		[[ $(cat "/sys/class/net/$BRIDGE/bridge/stp_state") == 0 ]] || problems+=("$BRIDGE runs STP")
+		[[ $(cat "/sys/class/net/$BRIDGE/bridge/stp_state" 2>/dev/null || true) == 0 ]] || problems+=("$BRIDGE runs STP")
 	fi
 	if has_ns; then
 		# Each listing is read whole before it is searched: piped into grep -q, a command still writing after the match
@@ -425,104 +425,77 @@ verify() {
 		in_exit nft list table $EXIT_TABLE >/dev/null 2>&1 || problems+=("exit rules not loaded")
 		listing=$(in_exit ss -lnu 2>/dev/null || true)
 		[[ $listing == *"$GATEWAY:53 "* ]] || problems+=("no DNS on $GATEWAY:53")
-		ns=$(stat -L -c %i "/run/netns/$NS")
-		[[ -z $(unit_netns qorpera-agent-exit-dns.service) || $(unit_netns qorpera-agent-exit-dns.service) == "$ns" ]] ||
+		ns=$(stat -L -c %i "/run/netns/$NS" 2>/dev/null || true)
+		[[ -z $ns || -z $(unit_netns qorpera-agent-exit-dns.service) || $(unit_netns qorpera-agent-exit-dns.service) == "$ns" ]] ||
 			problems+=("the name service runs in an old namespace")
 	fi
 	nft list table $HOST_TABLE >/dev/null 2>&1 || problems+=("node rules not loaded")
 	nft list table $BRIDGE_TABLE >/dev/null 2>&1 || problems+=("bridge rules not loaded")
-	heartbeat="$run_dir/logger.heartbeat"
-	if [[ -e $heartbeat ]]; then
-		age=$(($(date +%s) - $(stat -c %Y "$heartbeat")))
-		((age < 30)) || problems+=("logger silent for ${age}s")
-	else
-		problems+=("logger not running")
-	fi
-	# The logger pauses rather than fill the node's disk; the logs' tender keeps them under their cap.
-	[[ ! -e $run_dir/logger.pause ]] || problems+=("connection log paused: $(head -c 300 "$run_dir/logger.pause")")
-	[[ ! -e $run_dir/logger.failing ]] || problems+=("$(head -c 300 "$run_dir/logger.failing")")
-	local logs_status="$run_dir/logs.json"
-	if [[ -e $logs_status ]]; then
-		age=$(($(date +%s) - $(stat -c %Y "$logs_status")))
-		((age < 900)) || problems+=("the logs' tender has not run for ${age}s")
-		while IFS= read -r problem; do
-			[[ -z $problem ]] || problems+=("the logs' tender: $problem")
-		done < <(python3 -c 'import json, sys; print("\n".join(json.load(open(sys.argv[1]))["problems"]))' \
-			"$logs_status" 2>/dev/null || echo "cannot read $logs_status")
-	else
-		problems+=("the logs' tender has not run")
-	fi
-	# The logs' shipper (E3): alive (a long pass writes its status every minute), a NAS folder set, nothing waiting
-	# more than a day.
-	local ship_status="$run_dir/ship.json"
-	if [[ -e $ship_status ]]; then
-		age=$(($(date +%s) - $(stat -c %Y "$ship_status")))
-		((age < 1800)) || problems+=("the logs' shipper has not run for ${age}s")
-		while IFS= read -r problem; do
-			[[ -z $problem ]] || problems+=("the logs' shipper: $problem")
-		done < <(python3 -c 'import json, sys; print("\n".join(json.load(open(sys.argv[1]))["problems"]))' \
-			"$ship_status" 2>/dev/null || echo "cannot read $ship_status")
-	else
-		problems+=("the logs' shipper has not run")
-	fi
-	# The brake (E7): the logger's guard alive (it writes its status every 2 seconds), its levels well formed, and the
-	# exit's brake rules readable and as it decided.
-	local brake_status="$run_dir/brake.json"
-	if [[ -e $brake_status ]]; then
-		age=$(($(date +%s) - $(stat -c %Y "$brake_status")))
-		((age < 30)) || problems+=("the brake silent for ${age}s")
-		while IFS= read -r problem; do
-			[[ -z $problem ]] || problems+=("the brake: $problem")
-		done < <(python3 -c 'import json, sys; print("\n".join(json.load(open(sys.argv[1]))["problems"]))' \
-			"$brake_status" 2>/dev/null || echo "cannot read $brake_status")
-	else
-		problems+=("the brake not running")
-	fi
-	# The agent plug's reconciler: alive, and the client map true to LXD (qorpera-agent-plug.py).
-	local plug_status="$run_dir/plug.json" problem
-	if [[ -e $plug_status ]]; then
-		age=$(($(date +%s) - $(stat -c %Y "$plug_status")))
-		((age < 30)) || problems+=("the agent plug's reconciler silent for ${age}s")
-		while IFS= read -r problem; do
-			[[ -z $problem ]] || problems+=("$problem")
-		done < <(python3 -c 'import json, sys; print("\n".join(json.load(open(sys.argv[1]))["problems"]))' \
-			"$plug_status" 2>/dev/null || echo "cannot read $plug_status")
-	else
-		problems+=("the agent plug's reconciler not running")
-	fi
-	# The names reconciler (E8b): alive, the rules reader alive and not failing long, every company's rules usable,
-	# every resolver answering and the DNS map as the client map and the rules say (qorpera-agent-exit-names.py).
-	local names_status="$run_dir/names.json"
-	if [[ -e $names_status ]]; then
-		age=$(($(date +%s) - $(stat -c %Y "$names_status")))
-		((age < 30)) || problems+=("the names reconciler silent for ${age}s")
-		while IFS= read -r problem; do
-			[[ -z $problem ]] || problems+=("names: $problem")
-		done < <(python3 -c 'import json, sys; print("\n".join(json.load(open(sys.argv[1]))["problems"]))' \
-			"$names_status" 2>/dev/null || echo "cannot read $names_status")
-	else
-		problems+=("the names reconciler not running")
-	fi
-	# The server name checker (E8c-2), while the queue modules are loaded: the sni chain in the rules, queue 0 bound in
-	# the exit (its row in nfnetlink_queue) and the checker alive. Without the modules "only listed" goes by address
-	# alone, which is no problem here.
 	if queue_loaded; then
+		check_sni=1
 		in_exit nft list chain inet qorpera_agent_exit sni >/dev/null 2>&1 ||
 			problems+=("the sni chain is not in the rules (the queue modules came after the rules: reload the exit)")
 		in_exit awk '$1 == 0 { found = 1 } END { exit !found }' /proc/net/netfilter/nfnetlink_queue 2>/dev/null ||
 			problems+=("no server name checker on queue 0: only-listed port 443 flows are refused")
-		local sni_status="$run_dir/sni.json"
-		if [[ -e $sni_status ]]; then
-			age=$(($(date +%s) - $(stat -c %Y "$sni_status")))
-			((age < 30)) || problems+=("the server name checker silent for ${age}s")
-			while IFS= read -r problem; do
-				[[ -z $problem ]] || problems+=("sni: $problem")
-			done < <(python3 -c 'import json, sys; print("\n".join(json.load(open(sys.argv[1]))["problems"]))' \
-				"$sni_status" 2>/dev/null || echo "cannot read $sni_status")
-		else
-			problems+=("the server name checker not running")
-		fi
 	fi
+	# WHY: Inspect all status/heartbeat/flag files in one python3 process to avoid TOCTOU stat/open aborts and 6+ forks per health check.
+	while IFS= read -r problem; do
+		[[ -z $problem ]] || problems+=("$problem")
+	done < <(python3 -c '
+import json, os, sys, time
+run_dir, check_sni = sys.argv[1], sys.argv[2] == "1"
+now = int(time.time())
+out = []
+try:
+    age = now - int(os.stat(os.path.join(run_dir, "logger.heartbeat")).st_mtime)
+    if age >= 30:
+        out.append(f"logger silent for {age}s")
+except FileNotFoundError:
+    out.append("logger not running")
+except OSError:
+    out.append("logger not running")
+for fname, prefix in (("logger.pause", "connection log paused: "), ("logger.failing", "")):
+    try:
+        with open(os.path.join(run_dir, fname), "rb") as f:
+            text = f.read(300).decode("utf-8", "replace").rstrip("\n").replace("\n", " ")
+        out.append(f"{prefix}{text}")
+    except FileNotFoundError:
+        pass
+    except OSError:
+        out.append(f"{prefix}unreadable")
+checks = [
+    ("logs.json", 900, "the logs'\'' tender: ", "the logs'\'' tender has not run for {age}s", "the logs'\'' tender has not run"),
+    ("ship.json", 1800, "the logs'\'' shipper: ", "the logs'\'' shipper has not run for {age}s", "the logs'\'' shipper has not run"),
+    ("brake.json", 30, "the brake: ", "the brake silent for {age}s", "the brake not running"),
+    ("plug.json", 30, "", "the agent plug'\''s reconciler silent for {age}s", "the agent plug'\''s reconciler not running"),
+    ("names.json", 30, "names: ", "the names reconciler silent for {age}s", "the names reconciler not running"),
+]
+if check_sni:
+    checks.append(("sni.json", 30, "sni: ", "the server name checker silent for {age}s", "the server name checker not running"))
+for fname, max_age, prefix, stale_msg, missing_msg in checks:
+    path = os.path.join(run_dir, fname)
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        out.append(missing_msg)
+        continue
+    except OSError:
+        out.append(f"{prefix}cannot read {path}")
+        continue
+    age = now - int(st.st_mtime)
+    if age >= max_age:
+        out.append(stale_msg.format(age=age))
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        for item in data["problems"]:
+            if item:
+                out.append(f"{prefix}{item}")
+    except (OSError, ValueError, KeyError, TypeError):
+        out.append(f"{prefix}cannot read {path}")
+if out:
+    print("\n".join(out))
+' "$run_dir" "$check_sni")
 	if ((${#problems[@]} > 0)); then
 		printf 'qorpera-agent-exit: not healthy: %s\n' "${problems[@]}" >&2
 		return 1
