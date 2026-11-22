@@ -29,49 +29,57 @@ pub async fn reap_once_with_router(
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64);
     let candidates = manager.idle_candidates(&activity, now_ms);
-    if candidates.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut cleared = Vec::new();
-    for (dep_id, started_at) in candidates {
-        if let Err(err) = set_router_upstream(router_internal_url, control_token, &dep_id, None).await {
-            warn!(deployment_id = %dep_id, error = %err, "failed clearing idle upstream before hibernate");
-        } else {
-            cleared.push((dep_id, started_at));
-        }
-    }
-    if cleared.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    tokio::time::sleep(PRE_HIBERNATE_DRAIN).await;
-
-    let latest_activity = fetch_router_activity(router_internal_url, control_token)
-        .await
-        .unwrap_or(activity);
     let mut reaped = Vec::new();
-    for (dep_id, started_at) in cleared {
-        let saw_new_traffic = latest_activity
-            .get(&dep_id)
-            .copied()
-            .map_or(false, |ts| ts >= now_ms);
-        if saw_new_traffic {
-            if let Some(st) = manager.status(&dep_id) {
-                if let Some(addr) = st.upstream_addr {
-                    let _ = set_router_upstream(
-                        router_internal_url,
-                        control_token,
-                        &dep_id,
-                        Some(&addr),
-                    )
-                    .await;
+    if !candidates.is_empty() {
+        let mut cleared = Vec::new();
+        for (dep_id, started_at) in candidates {
+            if let Err(err) =
+                set_router_upstream(router_internal_url, control_token, &dep_id, None).await
+            {
+                warn!(deployment_id = %dep_id, error = %err, "failed clearing idle upstream before freeze");
+            } else {
+                cleared.push((dep_id, started_at));
+            }
+        }
+        if !cleared.is_empty() {
+            tokio::time::sleep(PRE_HIBERNATE_DRAIN).await;
+
+            let latest_activity = fetch_router_activity(router_internal_url, control_token)
+                .await
+                .unwrap_or(activity);
+            for (dep_id, started_at) in cleared {
+                let saw_new_traffic = latest_activity
+                    .get(&dep_id)
+                    .copied()
+                    .is_some_and(|ts| ts >= now_ms);
+                if saw_new_traffic {
+                    if let Some(st) = manager.status(&dep_id) {
+                        if let Some(addr) = st.upstream_addr {
+                            let _ = set_router_upstream(
+                                router_internal_url,
+                                control_token,
+                                &dep_id,
+                                Some(&addr),
+                            )
+                            .await;
+                        }
+                    }
+                    continue;
+                }
+                if manager.freeze_if_unchanged(&dep_id, started_at, now_ms).await {
+                    info!(deployment_id = %dep_id, "froze idle deployment after clearing router upstream");
+                    reaped.push(dep_id);
                 }
             }
-            continue;
         }
-        if manager.hibernate_if_unchanged(&dep_id, started_at).await {
-            info!(deployment_id = %dep_id, "reaped idle deployment after clearing router upstream");
+    }
+
+    let now_after = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(now_ms, |d| d.as_millis() as u64);
+    for (dep_id, frozen_at) in manager.deep_hibernate_candidates(now_after) {
+        if manager.deep_hibernate_if_unchanged(&dep_id, frozen_at).await {
+            info!(deployment_id = %dep_id, "deep-hibernated frozen deployment to reclaim memory");
             reaped.push(dep_id);
         }
     }

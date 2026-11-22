@@ -177,11 +177,26 @@ async fn handle_request(
                     }
                     Err(BodyErr::Bad) => None,
                 };
-                return match manager.wake(dep_id, fallback).await {
-                    Ok(upstream_addr) => {
-                        json_res(StatusCode::OK, serde_json::json!({ "upstream_addr": upstream_addr }))
-                    }
+                return match manager.wake_detailed(dep_id, fallback).await {
+                    Ok(outcome) => json_res(
+                        StatusCode::OK,
+                        serde_json::json!({
+                            "upstream_addr": outcome.upstream_addr,
+                            "wake_mode": outcome.mode,
+                        }),
+                    ),
                     Err(err) => json_res(StatusCode::SERVICE_UNAVAILABLE, serde_json::json!({ "error": err })),
+                };
+            }
+        }
+        if let Some(dep_id) = rest.strip_suffix("/freeze") {
+            if method == Method::POST {
+                return match manager.freeze_deployment(dep_id).await {
+                    Ok(status) => json_res(StatusCode::OK, status),
+                    Err(err) if err == "deployment_not_found" => {
+                        json_res(StatusCode::NOT_FOUND, serde_json::json!({ "error": err }))
+                    }
+                    Err(err) => json_res(StatusCode::CONFLICT, serde_json::json!({ "error": err })),
                 };
             }
         }

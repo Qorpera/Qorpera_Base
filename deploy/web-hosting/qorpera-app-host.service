@@ -14,12 +14,15 @@ Environment=QORPERA_APP_HOST_ROUTER_URL=http://127.0.0.1:8094
 Environment=QORPERA_APP_HOST_DRIVER=lxd
 Environment=QORPERA_APP_HOST_LXD_PROJECT=qorpera-web-apps
 Environment=QORPERA_APP_HOST_LXD_PROFILE=qorpera-web-apps-egress
+Environment=QORPERA_APP_HOST_LXD_SOCKET=/var/snap/lxd/common/lxd/unix.socket
 Environment=QORPERA_APP_HOST_CONTAINER_BIND_IP=127.0.0.1
+Environment=QORPERA_APP_HOST_DEEP_HIBERNATE_SEC=3600
 ExecStart=/usr/local/bin/qorpera-app-host
 Restart=always
 RestartSec=2
 NoNewPrivileges=yes
 ProtectSystem=strict
+ReadWritePaths=-/var/snap/lxd/common/lxd -/var/lib/lxd
 ProtectHome=yes
 PrivateTmp=yes
 LimitNOFILE=65536

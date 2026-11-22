@@ -42,6 +42,12 @@ SYSCTL
 if command -v sysctl >/dev/null 2>&1; then
 	sysctl --system >/dev/null 2>&1 || true
 fi
+if [ -w /sys/module/zswap/parameters/enabled ]; then
+	echo 1 >/sys/module/zswap/parameters/enabled || true
+fi
+if [ -w /sys/module/zswap/parameters/compressor ]; then
+	echo lz4 >/sys/module/zswap/parameters/compressor 2>/dev/null || echo zstd >/sys/module/zswap/parameters/compressor 2>/dev/null || true
+fi
 
 if command -v lxc >/dev/null 2>&1; then
 	if ! lxc project show qorpera-web-apps >/dev/null 2>&1; then

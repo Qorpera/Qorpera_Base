@@ -1,10 +1,13 @@
-use qorpera_app_host::driver::{AppRuntimeDriver, LocalProcessDriver, LxdAppDriver};
+use qorpera_app_host::driver::{
+    AppRuntimeDriver, LocalProcessDriver, LxdAppDriver, DEFAULT_LXD_SOCKET_PATH,
+};
 use qorpera_app_host::lifecycle::AppLifecycleManager;
 use qorpera_app_host::logs::LogRingBuffer;
 use qorpera_app_host::reaper::spawn_idle_reaper;
 use qorpera_app_host::server::AppHostServer;
 use std::env;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
@@ -35,7 +38,13 @@ async fn main() {
         let profile =
             env::var("QORPERA_APP_HOST_LXD_PROFILE").unwrap_or_else(|_| "qorpera-web-apps-egress".to_string());
         let bind_ip = env::var("QORPERA_APP_HOST_CONTAINER_BIND_IP").unwrap_or_else(|_| "127.0.0.1".to_string());
-        Arc::new(LxdAppDriver::new(project, profile, bind_ip))
+        let socket_path = env::var("QORPERA_APP_HOST_LXD_SOCKET")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_LXD_SOCKET_PATH));
+        Arc::new(LxdAppDriver::with_socket_path(project, profile, bind_ip, socket_path))
     };
 
     let health_timeout_ms: u64 = env::var("QORPERA_APP_HOST_HEALTH_TIMEOUT_MS")
@@ -47,14 +56,26 @@ async fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(2_000);
+    let deep_hibernate_sec: u64 = env::var("QORPERA_APP_HOST_DEEP_HIBERNATE_SEC")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3_600);
+    let deep_hibernate_delay = if deep_hibernate_sec == 0 {
+        None
+    } else {
+        Some(Duration::from_secs(deep_hibernate_sec))
+    };
 
     let logs = Arc::new(LogRingBuffer::new(2000, 256 * 1024));
-    let manager = Arc::new(AppLifecycleManager::new(
-        driver,
-        logs,
-        Duration::from_millis(health_timeout_ms),
-        Duration::from_millis(drain_ms),
-    ));
+    let manager = Arc::new(
+        AppLifecycleManager::new(
+            driver,
+            logs,
+            Duration::from_millis(health_timeout_ms),
+            Duration::from_millis(drain_ms),
+        )
+        .with_deep_hibernate_delay(deep_hibernate_delay),
+    );
 
     let mut reaper_handle = None;
     if let Ok(router_url) = env::var("QORPERA_APP_HOST_ROUTER_URL") {

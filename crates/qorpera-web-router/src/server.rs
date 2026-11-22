@@ -287,6 +287,7 @@ impl RouterState {
                 .map(|url| Arc::new(PostgresAuthBackend::new(url)) as Arc<dyn EdgeAuthBackend>)
         });
         let ready = Arc::new(AtomicBool::new(cfg.database_url.is_none()));
+        let proxy_client = PooledProxyClient::new();
         Self {
             blobs,
             routes: Arc::new(SharedRoutes::new(RouteTable::from_snapshot(initial))),
@@ -297,12 +298,13 @@ impl RouterState {
                 32_768,
             )),
             activity: Arc::new(ActivityTracker::new()),
-            waker: Arc::new(WakeCoordinator::new(
+            waker: Arc::new(WakeCoordinator::with_client(
                 cfg.app_host_url.clone(),
                 cfg.control_token.clone(),
                 cfg.wake_timeout,
+                proxy_client.clone(),
             )),
-            proxy_client: PooledProxyClient::new(),
+            proxy_client,
             control_token: cfg.control_token.clone(),
             cookie_secret: cfg.cookie_secret.clone(),
             trusted_proxies: cfg.trusted_proxies.clone(),

@@ -1,16 +1,18 @@
 use bytes::Bytes;
-use http::{Request, StatusCode};
+use http::{Method, Request, StatusCode};
 use http_body_util::{BodyExt, Full};
 use hyper_util::rt::TokioIo;
-use qorpera_app_host::driver::LocalProcessDriver;
-use qorpera_app_host::lifecycle::{AppLifecycleManager, DeployRequest, InstanceState};
+use qorpera_app_host::driver::{AppRuntimeDriver, LocalProcessDriver, LxdAppDriver};
+use qorpera_app_host::lifecycle::{AppLifecycleManager, DeployRequest, InstanceState, WakeMode};
 use qorpera_app_host::logs::LogRingBuffer;
 use qorpera_app_host::reaper::reap_once_with_router;
 use qorpera_app_host::server::AppHostServer;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, TcpStream};
 
 async fn http_call(addr: SocketAddr, req: Request<Full<Bytes>>) -> (StatusCode, Bytes) {
@@ -28,21 +30,24 @@ async fn http_call(addr: SocketAddr, req: Request<Full<Bytes>>) -> (StatusCode, 
 
 fn node_http_script(label: &str, health_status: u16) -> Vec<String> {
     let script = format!(
-        "const http=require('http');const port=Number(process.env.PORT);console.log('boot:{label}');const s=http.createServer((req,res)=>{{if(req.url==='/health'){{res.writeHead({health_status});res.end('{label}');return;}}res.writeHead(200);res.end('{label}:'+process.env.APP_GREETING);}});s.listen(port,'127.0.0.1');"
+        "const http=require('http');const port=Number(process.env.PORT);console.log('boot:{label}');const s=http.createServer((req,res)=>{{if(req.url==='/health'){{res.writeHead({health_status});res.end('{label}');return;}}if(req.url==='/pid'){{res.writeHead(200);res.end(String(process.pid));return;}}res.writeHead(200);res.end('{label}:'+process.env.APP_GREETING);}});s.listen(port,'127.0.0.1');"
     );
     vec!["node".to_string(), "-e".to_string(), script]
 }
 
 #[tokio::test]
-async fn blue_green_deploy_rollback_on_unhealthy_hibernate_wake_and_logs() {
+async fn blue_green_deploy_rollback_on_unhealthy_two_tier_freeze_wake_and_logs() {
     let driver = Arc::new(LocalProcessDriver::new());
     let logs = Arc::new(LogRingBuffer::new(200, 64 * 1024));
-    let manager = Arc::new(AppLifecycleManager::new(
-        driver,
-        logs,
-        Duration::from_secs(4),
-        Duration::from_millis(50),
-    ));
+    let manager = Arc::new(
+        AppLifecycleManager::new(
+            driver,
+            logs,
+            Duration::from_secs(4),
+            Duration::from_millis(50),
+        )
+        .with_deep_hibernate_delay(Some(Duration::from_secs(600))),
+    );
     let bind_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
     let server = AppHostServer::bind(bind_addr, Arc::clone(&manager), "app-secret".to_string())
         .await
@@ -122,6 +127,17 @@ async fn blue_green_deploy_rollback_on_unhealthy_hibernate_wake_and_logs() {
     let v2_upstream: SocketAddr = v2_json["upstream_addr"].as_str().unwrap().parse().unwrap();
     assert_ne!(v1_upstream, v2_upstream);
     assert_eq!(manager.active_deployment_for_site("site-shop").as_deref(), Some("dep-v2"));
+    let (_, pid_before_freeze) = http_call(
+        v2_upstream,
+        Request::builder()
+            .method("GET")
+            .uri("/pid")
+            .header("host", v2_upstream.to_string())
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+
     let (v1_drain_st, _) = http_call(
         v1_upstream,
         Request::builder()
@@ -196,9 +212,10 @@ async fn blue_green_deploy_rollback_on_unhealthy_hibernate_wake_and_logs() {
     activity.insert("dep-always".to_string(), 1_000);
     let reaped = manager.reap_idle(&activity, 120_000).await;
     assert_eq!(reaped, vec!["dep-v2".to_string()]);
-    assert_eq!(manager.status("dep-v2").unwrap().state, InstanceState::Hibernated);
+    assert_eq!(manager.status("dep-v2").unwrap().state, InstanceState::Frozen);
     assert_eq!(manager.status("dep-always").unwrap().state, InstanceState::Running);
 
+    let wake_t0 = Instant::now();
     let mut wake_handles = Vec::new();
     for _ in 0..4 {
         wake_handles.push(tokio::spawn(async move {
@@ -219,9 +236,62 @@ async fn blue_green_deploy_rollback_on_unhealthy_hibernate_wake_and_logs() {
         let (st, body) = h.await.unwrap();
         assert_eq!(st, StatusCode::OK);
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["wake_mode"], "unfrozen");
         woken_addrs.push(json["upstream_addr"].as_str().unwrap().to_string());
     }
-    assert!(woken_addrs.iter().all(|a| a == &woken_addrs[0]));
+    let thaw_elapsed = wake_t0.elapsed();
+    assert!(
+        thaw_elapsed < Duration::from_millis(250),
+        "frozen wake took too long: {thaw_elapsed:?}"
+    );
+    assert!(woken_addrs.iter().all(|a| a == &v2_upstream.to_string()));
+
+    let (pid_st, pid_after_unfreeze) = http_call(
+        v2_upstream,
+        Request::builder()
+            .method("GET")
+            .uri("/pid")
+            .header("host", v2_upstream.to_string())
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(pid_st, StatusCode::OK);
+    assert_eq!(pid_after_unfreeze, pid_before_freeze);
+
+    let reaped_freeze_2 = manager.reap_idle(&activity, 200_000).await;
+    assert_eq!(reaped_freeze_2, vec!["dep-v2".to_string()]);
+    assert_eq!(manager.status("dep-v2").unwrap().state, InstanceState::Frozen);
+
+    let deep_reaped = manager.reap_idle(&activity, 900_000).await;
+    assert_eq!(deep_reaped, vec!["dep-v2".to_string()]);
+    assert_eq!(manager.status("dep-v2").unwrap().state, InstanceState::Hibernated);
+
+    let (st, cold_body) = http_call(
+        addr,
+        Request::builder()
+            .method("POST")
+            .uri("/_internal/apps/dep-v2/wake")
+            .header("authorization", "Bearer app-secret")
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let cold_json: serde_json::Value = serde_json::from_slice(&cold_body).unwrap();
+    assert_eq!(cold_json["wake_mode"], "cold_start");
+    let cold_upstream: SocketAddr = cold_json["upstream_addr"].as_str().unwrap().parse().unwrap();
+    let (_, pid_after_cold) = http_call(
+        cold_upstream,
+        Request::builder()
+            .method("GET")
+            .uri("/pid")
+            .header("host", cold_upstream.to_string())
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_ne!(pid_after_cold, pid_before_freeze);
 
     let (st, log_body) = http_call(
         addr,
@@ -251,12 +321,15 @@ async fn blue_green_deploy_rollback_on_unhealthy_hibernate_wake_and_logs() {
 async fn cold_start_wake_from_payload_and_router_idle_reaper_loop() {
     let driver = Arc::new(LocalProcessDriver::new());
     let logs = Arc::new(LogRingBuffer::new(200, 64 * 1024));
-    let manager = Arc::new(AppLifecycleManager::new(
-        driver,
-        logs,
-        Duration::from_secs(4),
-        Duration::from_millis(20),
-    ));
+    let manager = Arc::new(
+        AppLifecycleManager::new(
+            driver,
+            logs,
+            Duration::from_secs(4),
+            Duration::from_millis(20),
+        )
+        .with_deep_hibernate_delay(Some(Duration::from_millis(300))),
+    );
     let server = AppHostServer::bind(
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
         Arc::clone(&manager),
@@ -361,12 +434,19 @@ async fn cold_start_wake_from_payload_and_router_idle_reaper_loop() {
     assert_eq!(app_st, StatusCode::OK);
     assert_eq!(app_body, Bytes::from_static(b"cold:cold-ok"));
 
-    let reaped = reap_once_with_router(&manager, &format!("http://{router_addr}"), "reaper-secret")
+    let reaped_tier1 = reap_once_with_router(&manager, &format!("http://{router_addr}"), "reaper-secret")
         .await
         .unwrap();
-    assert_eq!(reaped, vec!["dep-cold".to_string()]);
-    assert_eq!(manager.status("dep-cold").unwrap().state, InstanceState::Hibernated);
+    assert_eq!(reaped_tier1, vec!["dep-cold".to_string()]);
+    assert_eq!(manager.status("dep-cold").unwrap().state, InstanceState::Frozen);
     assert_eq!(*cleared.lock().unwrap(), vec!["dep-cold".to_string()]);
+
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    let reaped_tier2 = reap_once_with_router(&manager, &format!("http://{router_addr}"), "reaper-secret")
+        .await
+        .unwrap();
+    assert_eq!(reaped_tier2, vec!["dep-cold".to_string()]);
+    assert_eq!(manager.status("dep-cold").unwrap().state, InstanceState::Hibernated);
 
     let w1 = DeployRequest {
         deployment_id: "dep-shut-1".to_string(),
@@ -390,9 +470,435 @@ async fn cold_start_wake_from_payload_and_router_idle_reaper_loop() {
     let a1: SocketAddr = s1.upstream_addr.unwrap().parse().unwrap();
     let a2: SocketAddr = s2.upstream_addr.unwrap().parse().unwrap();
 
+    let (freeze_st, _) = http_call(
+        app_host_addr,
+        Request::builder()
+            .method("POST")
+            .uri("/_internal/apps/dep-shut-2/freeze")
+            .header("authorization", "Bearer reaper-secret")
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(freeze_st, StatusCode::OK);
+    assert_eq!(manager.status("dep-shut-2").unwrap().state, InstanceState::Frozen);
+
     manager.shutdown_all().await;
     assert_eq!(manager.status("dep-shut-1").unwrap().state, InstanceState::Stopped);
     assert_eq!(manager.status("dep-shut-2").unwrap().state, InstanceState::Stopped);
     assert!(TcpStream::connect(a1).await.is_err());
     assert!(TcpStream::connect(a2).await.is_err());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn lxd_unix_socket_atomic_create_freeze_unfreeze_port_reuse_and_fallback() {
+    struct MockContainer {
+        status: String,
+        config: HashMap<String, String>,
+        devices: HashMap<String, HashMap<String, String>>,
+        server_handle: Option<tokio::task::JoinHandle<()>>,
+    }
+
+    struct MockLxdState {
+        containers: HashMap<String, MockContainer>,
+        create_calls: AtomicUsize,
+        patch_calls: AtomicUsize,
+        freeze_calls: AtomicUsize,
+        unfreeze_calls: AtomicUsize,
+        start_calls: AtomicUsize,
+        stop_calls: AtomicUsize,
+        fail_next_unfreeze: AtomicBool,
+        last_create_payload: Mutex<Option<serde_json::Value>>,
+    }
+
+    fn spawn_dummy_http(port: u16) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let Ok(listener) = TcpListener::bind(("127.0.0.1", port)).await else {
+                return;
+            };
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let io = TokioIo::new(stream);
+                    let svc = hyper::service::service_fn(|_req: Request<hyper::body::Incoming>| async {
+                        Ok::<_, hyper::Error>(
+                            http::Response::builder()
+                                .status(StatusCode::OK)
+                                .body(Full::new(Bytes::from_static(b"lxd-ok")))
+                                .unwrap(),
+                        )
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, svc)
+                        .await;
+                });
+            }
+        })
+    }
+
+    let state = Arc::new(Mutex::new(MockLxdState {
+        containers: HashMap::new(),
+        create_calls: AtomicUsize::new(0),
+        patch_calls: AtomicUsize::new(0),
+        freeze_calls: AtomicUsize::new(0),
+        unfreeze_calls: AtomicUsize::new(0),
+        start_calls: AtomicUsize::new(0),
+        stop_calls: AtomicUsize::new(0),
+        fail_next_unfreeze: AtomicBool::new(false),
+        last_create_payload: Mutex::new(None),
+    }));
+
+    let sock_path = PathBuf::from(format!("/tmp/qlxd-test-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&sock_path);
+    let unix_listener = tokio::net::UnixListener::bind(&sock_path).unwrap();
+    let state_srv = Arc::clone(&state);
+    let srv_task = tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = unix_listener.accept().await else {
+                break;
+            };
+            let st_conn = Arc::clone(&state_srv);
+            tokio::spawn(async move {
+                let io = TokioIo::new(stream);
+                let svc = hyper::service::service_fn(move |req: Request<hyper::body::Incoming>| {
+                    let st_req = Arc::clone(&st_conn);
+                    async move {
+                        let method = req.method().clone();
+                        let path = req.uri().path().to_string();
+                        let body_bytes = req
+                            .into_body()
+                            .collect()
+                            .await
+                            .map(|c| c.to_bytes())
+                            .unwrap_or_default();
+
+                        let json_reply = |code: StatusCode, val: serde_json::Value| {
+                            Ok::<_, hyper::Error>(
+                                http::Response::builder()
+                                    .status(code)
+                                    .header("content-type", "application/json")
+                                    .body(Full::new(Bytes::from(serde_json::to_vec(&val).unwrap())))
+                                    .unwrap(),
+                            )
+                        };
+
+                        if method == Method::GET && path.starts_with("/1.0/operations/") && path.ends_with("/wait") {
+                            return json_reply(
+                                StatusCode::OK,
+                                serde_json::json!({
+                                    "type": "sync",
+                                    "status": "Success",
+                                    "status_code": 200,
+                                    "metadata": { "status_code": 200, "err": "" }
+                                }),
+                            );
+                        }
+
+                        if method == Method::POST && path == "/1.0/instances" {
+                            let val: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+                            let name = val["name"].as_str().unwrap().to_string();
+                            let config: HashMap<String, String> =
+                                serde_json::from_value(val["config"].clone()).unwrap();
+                            let devices: HashMap<String, HashMap<String, String>> =
+                                serde_json::from_value(val["devices"].clone()).unwrap();
+                            let mut guard = st_req.lock().unwrap();
+                            guard.create_calls.fetch_add(1, Ordering::SeqCst);
+                            *guard.last_create_payload.lock().unwrap() = Some(val);
+                            guard.containers.insert(
+                                name,
+                                MockContainer {
+                                    status: "Stopped".to_string(),
+                                    config,
+                                    devices,
+                                    server_handle: None,
+                                },
+                            );
+                            return json_reply(
+                                StatusCode::ACCEPTED,
+                                serde_json::json!({
+                                    "type": "async",
+                                    "status": "Operation created",
+                                    "status_code": 100,
+                                    "operation": "/1.0/operations/op-create-1"
+                                }),
+                            );
+                        }
+
+                        if let Some(rest) = path.strip_prefix("/1.0/instances/") {
+                            if let Some(name) = rest.strip_suffix("/state") {
+                                if method == Method::GET {
+                                    let guard = st_req.lock().unwrap();
+                                    return match guard.containers.get(name) {
+                                        Some(c) => json_reply(
+                                            StatusCode::OK,
+                                            serde_json::json!({
+                                                "type": "sync",
+                                                "status_code": 200,
+                                                "metadata": { "status": c.status }
+                                            }),
+                                        ),
+                                        None => json_reply(
+                                            StatusCode::NOT_FOUND,
+                                            serde_json::json!({
+                                                "type": "error",
+                                                "status_code": 404,
+                                                "error": "Instance not found"
+                                            }),
+                                        ),
+                                    };
+                                }
+                                if method == Method::PUT {
+                                    let val: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+                                    let action = val["action"].as_str().unwrap();
+                                    let mut guard = st_req.lock().unwrap();
+                                    let st_ref = &mut *guard;
+                                    if action == "unfreeze" && st_ref.fail_next_unfreeze.swap(false, Ordering::SeqCst) {
+                                        return json_reply(
+                                            StatusCode::INTERNAL_SERVER_ERROR,
+                                            serde_json::json!({
+                                                "type": "error",
+                                                "status_code": 500,
+                                                "error": "injected unfreeze failure"
+                                            }),
+                                        );
+                                    }
+                                    let Some(c) = st_ref.containers.get_mut(name) else {
+                                        return json_reply(
+                                            StatusCode::NOT_FOUND,
+                                            serde_json::json!({
+                                                "type": "error",
+                                                "status_code": 404,
+                                                "error": "Instance not found"
+                                            }),
+                                        );
+                                    };
+                                    match action {
+                                        "start" => {
+                                            st_ref.start_calls.fetch_add(1, Ordering::SeqCst);
+                                            if let Some(h) = c.server_handle.take() {
+                                                h.abort();
+                                            }
+                                            let port: u16 = c.config["environment.PORT"].parse().unwrap();
+                                            c.server_handle = Some(spawn_dummy_http(port));
+                                            c.status = "Running".to_string();
+                                        }
+                                        "freeze" => {
+                                            st_ref.freeze_calls.fetch_add(1, Ordering::SeqCst);
+                                            c.status = "Frozen".to_string();
+                                        }
+                                        "unfreeze" => {
+                                            st_ref.unfreeze_calls.fetch_add(1, Ordering::SeqCst);
+                                            c.status = "Running".to_string();
+                                        }
+                                        "stop" => {
+                                            st_ref.stop_calls.fetch_add(1, Ordering::SeqCst);
+                                            if let Some(h) = c.server_handle.take() {
+                                                h.abort();
+                                            }
+                                            c.status = "Stopped".to_string();
+                                        }
+                                        _ => {}
+                                    }
+                                    return json_reply(
+                                        StatusCode::ACCEPTED,
+                                        serde_json::json!({
+                                            "type": "async",
+                                            "status_code": 100,
+                                            "operation": "/1.0/operations/op-state-1"
+                                        }),
+                                    );
+                                }
+                            } else {
+                                let name = rest;
+                                if method == Method::GET {
+                                    let guard = st_req.lock().unwrap();
+                                    return match guard.containers.get(name) {
+                                        Some(c) => json_reply(
+                                            StatusCode::OK,
+                                            serde_json::json!({
+                                                "type": "sync",
+                                                "status_code": 200,
+                                                "metadata": {
+                                                    "status": c.status,
+                                                    "config": c.config,
+                                                    "devices": c.devices,
+                                                }
+                                            }),
+                                        ),
+                                        None => json_reply(
+                                            StatusCode::NOT_FOUND,
+                                            serde_json::json!({
+                                                "type": "error",
+                                                "status_code": 404,
+                                                "error": "Instance not found"
+                                            }),
+                                        ),
+                                    };
+                                }
+                                if method == Method::PATCH {
+                                    let val: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+                                    let mut guard = st_req.lock().unwrap();
+                                    guard.patch_calls.fetch_add(1, Ordering::SeqCst);
+                                    if let Some(c) = guard.containers.get_mut(name) {
+                                        if let Some(cfg) = val["config"].as_object() {
+                                            for (k, v) in cfg {
+                                                if let Some(s) = v.as_str() {
+                                                    c.config.insert(k.clone(), s.to_string());
+                                                }
+                                            }
+                                        }
+                                        if let Some(devs) = val["devices"].as_object() {
+                                            for (k, v) in devs {
+                                                let map: HashMap<String, String> =
+                                                    serde_json::from_value(v.clone()).unwrap();
+                                                c.devices.insert(k.clone(), map);
+                                            }
+                                        }
+                                    }
+                                    return json_reply(
+                                        StatusCode::OK,
+                                        serde_json::json!({
+                                            "type": "sync",
+                                            "status_code": 200,
+                                            "metadata": {}
+                                        }),
+                                    );
+                                }
+                            }
+                        }
+
+                        json_reply(
+                            StatusCode::NOT_FOUND,
+                            serde_json::json!({ "type": "error", "status_code": 404, "error": "not found" }),
+                        )
+                    }
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, svc)
+                    .await;
+            });
+        }
+    });
+
+    let driver = Arc::new(LxdAppDriver::with_socket_path(
+        "qorpera-web-apps".to_string(),
+        "qorpera-web-apps-egress".to_string(),
+        "127.0.0.1".to_string(),
+        sock_path.clone(),
+    ));
+    let logs = Arc::new(LogRingBuffer::new(200, 64 * 1024));
+    let manager = Arc::new(
+        AppLifecycleManager::new(
+            Arc::clone(&driver) as Arc<dyn AppRuntimeDriver>,
+            logs,
+            Duration::from_secs(3),
+            Duration::from_millis(10),
+        )
+        .with_deep_hibernate_delay(Some(Duration::from_secs(600))),
+    );
+
+    let deploy = DeployRequest {
+        deployment_id: "dep-lxd-1".to_string(),
+        site_id: "site-lxd".to_string(),
+        oci_image_ref: Some(
+            "127.0.0.1:5000/qorpera-apps/demo@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .to_string(),
+        ),
+        command: None,
+        health_path: "/health".to_string(),
+        idle_timeout_sec: 60,
+        memory_mb: 512,
+        vcpu_limit: 1.5,
+        pids_limit: 256,
+        env: HashMap::from([("NODE_ENV".to_string(), "production".to_string())]),
+    };
+
+    let deployed = manager.deploy_blue_green(deploy).await.unwrap();
+    let initial_addr = deployed.upstream_addr.clone().unwrap();
+    assert_eq!(deployed.state, InstanceState::Running);
+    assert!(driver.is_running("dep-lxd-1").await);
+
+    {
+        let guard = state.lock().unwrap();
+        assert_eq!(guard.create_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(guard.start_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(guard.patch_calls.load(Ordering::SeqCst), 0);
+        let payload = guard.last_create_payload.lock().unwrap().clone().unwrap();
+        assert_eq!(payload["config"]["security.nesting"], "false");
+        assert_eq!(payload["config"]["security.privileged"], "false");
+        assert_eq!(payload["config"]["limits.cpu"], "2");
+        assert_eq!(payload["source"]["protocol"], "oci");
+        assert_eq!(payload["source"]["server"], "http://127.0.0.1:5000");
+        assert_eq!(payload["devices"]["http-ingress"]["type"], "proxy");
+    }
+
+    let mut activity = HashMap::new();
+    activity.insert("dep-lxd-1".to_string(), 1_000);
+    assert_eq!(manager.reap_idle(&activity, 120_000).await, vec!["dep-lxd-1"]);
+    assert_eq!(manager.status("dep-lxd-1").unwrap().state, InstanceState::Frozen);
+    assert!(!driver.is_running("dep-lxd-1").await);
+
+    let t0 = Instant::now();
+    let woken = manager.wake_detailed("dep-lxd-1", None).await.unwrap();
+    assert_eq!(woken.mode, WakeMode::Unfrozen);
+    assert_eq!(woken.upstream_addr, initial_addr);
+    assert!(t0.elapsed() < Duration::from_millis(100));
+    {
+        let guard = state.lock().unwrap();
+        assert_eq!(guard.freeze_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(guard.unfreeze_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(guard.create_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(guard.patch_calls.load(Ordering::SeqCst), 0);
+    }
+
+    assert_eq!(manager.reap_idle(&activity, 200_000).await, vec!["dep-lxd-1"]);
+    assert_eq!(manager.status("dep-lxd-1").unwrap().state, InstanceState::Frozen);
+    assert_eq!(manager.reap_idle(&activity, 900_000).await, vec!["dep-lxd-1"]);
+    assert_eq!(manager.status("dep-lxd-1").unwrap().state, InstanceState::Hibernated);
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let tier2_woken = manager.wake_detailed("dep-lxd-1", None).await.unwrap();
+    assert_eq!(tier2_woken.mode, WakeMode::ColdStart);
+    assert_eq!(tier2_woken.upstream_addr, initial_addr);
+    {
+        let guard = state.lock().unwrap();
+        assert_eq!(guard.create_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(guard.patch_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(guard.start_calls.load(Ordering::SeqCst), 2);
+    }
+
+    let _ = manager.freeze_deployment("dep-lxd-1").await.unwrap();
+    state
+        .lock()
+        .unwrap()
+        .fail_next_unfreeze
+        .store(true, Ordering::SeqCst);
+    let fallback_woken = manager.wake_detailed("dep-lxd-1", None).await.unwrap();
+    assert_eq!(fallback_woken.mode, WakeMode::ColdStart);
+    {
+        let guard = state.lock().unwrap();
+        assert_eq!(guard.start_calls.load(Ordering::SeqCst), 3);
+    }
+
+    assert_eq!(manager.reap_idle(&activity, 1_500_000).await, vec!["dep-lxd-1"]);
+    assert_eq!(manager.reap_idle(&activity, 2_500_000).await, vec!["dep-lxd-1"]);
+    assert_eq!(manager.status("dep-lxd-1").unwrap().state, InstanceState::Hibernated);
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let occupant = TcpListener::bind(&initial_addr).await.unwrap();
+    let collided_woken = manager.wake_detailed("dep-lxd-1", None).await.unwrap();
+    assert_eq!(collided_woken.mode, WakeMode::ColdStart);
+    assert_ne!(collided_woken.upstream_addr, initial_addr);
+    {
+        let guard = state.lock().unwrap();
+        assert_eq!(guard.patch_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(guard.start_calls.load(Ordering::SeqCst), 4);
+    }
+    drop(occupant);
+
+    let _ = manager.stop_deployment("dep-lxd-1").await;
+    srv_task.abort();
+    let _ = std::fs::remove_file(&sock_path);
 }

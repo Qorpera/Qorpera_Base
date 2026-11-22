@@ -245,15 +245,31 @@ pub struct WakeCoordinator {
     app_host_base_url: Option<String>,
     control_token: String,
     wake_timeout: Duration,
+    pool: PooledProxyClient,
     in_flight: Mutex<HashMap<String, broadcast::Sender<Result<String, String>>>>,
 }
 
 impl WakeCoordinator {
     pub fn new(app_host_base_url: Option<String>, control_token: String, wake_timeout: Duration) -> Self {
+        Self::with_client(
+            app_host_base_url,
+            control_token,
+            wake_timeout,
+            PooledProxyClient::new(),
+        )
+    }
+
+    pub fn with_client(
+        app_host_base_url: Option<String>,
+        control_token: String,
+        wake_timeout: Duration,
+        pool: PooledProxyClient,
+    ) -> Self {
         Self {
             app_host_base_url,
             control_token,
             wake_timeout,
+            pool,
             in_flight: Mutex::new(HashMap::new()),
         }
     }
@@ -289,7 +305,7 @@ impl WakeCoordinator {
         };
         let outcome = tokio::time::timeout(
             self.wake_timeout,
-            send_wake_http(&base_url, &self.control_token, &req),
+            send_wake_http(&self.pool, &base_url, &self.control_token, &req),
         )
         .await
         .unwrap_or_else(|_| Err("wake_timeout".to_string()));
@@ -297,56 +313,51 @@ impl WakeCoordinator {
     }
 }
 
-async fn send_wake_http(base_url: &str, token: &str, payload: &WakeRequest) -> Result<String, String> {
+async fn send_wake_http(
+    pool: &PooledProxyClient,
+    base_url: &str,
+    token: &str,
+    payload: &WakeRequest,
+) -> Result<String, String> {
     let trimmed = base_url.trim_end_matches('/');
     let full_url = format!("{trimmed}/_internal/apps/{}/wake", payload.deployment_id);
     let uri: Uri = full_url.parse().map_err(|_| "invalid_app_host_url".to_string())?;
-    let host = uri.host().ok_or_else(|| "missing_app_host".to_string())?;
-    let port = uri.port_u16().unwrap_or(80);
-    let stream = tokio::time::timeout(PROXY_CONNECT_TIMEOUT, TcpStream::connect((host, port)))
-        .await
-        .map_err(|_| "app_host_connect_timeout".to_string())?
-        .map_err(|e| format!("app_host_connect_failed: {e}"))?;
-    let _ = stream.set_nodelay(true);
-    let io = TokioIo::new(stream);
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .map_err(|e| format!("app_host_handshake_failed: {e}"))?;
-    tokio::spawn(async move {
-        let _ = conn.await;
-    });
+    let body_bytes = Bytes::from(serde_json::to_vec(payload).map_err(|e| e.to_string())?);
 
-    let body_bytes = serde_json::to_vec(payload).map_err(|e| e.to_string())?;
-    let path_and_query = uri
-        .path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or("/");
-    let request = Request::builder()
-        .method("POST")
-        .uri(path_and_query)
-        .header("host", format!("{host}:{port}"))
-        .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {token}"))
-        .body(Full::new(Bytes::from(body_bytes)))
-        .map_err(|e| e.to_string())?;
+    for attempt in 0..2 {
+        let request = Request::builder()
+            .method("POST")
+            .uri(uri.clone())
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(full_body(body_bytes.clone()))
+            .map_err(|e| e.to_string())?;
 
-    let response = sender
-        .send_request(request)
-        .await
-        .map_err(|e| format!("app_host_request_failed: {e}"))?;
-    let status = response.status();
-    let collected = response
-        .into_body()
-        .collect()
-        .await
-        .map_err(|e| format!("app_host_body_failed: {e}"))?
-        .to_bytes();
-    if !status.is_success() {
-        return Err(format!("app_host_status_{}", status.as_u16()));
+        match pool.client.request(request).await {
+            Ok(response) => {
+                let status = response.status();
+                let collected = response
+                    .into_body()
+                    .collect()
+                    .await
+                    .map_err(|e| format!("app_host_body_failed: {e}"))?
+                    .to_bytes();
+                if !status.is_success() {
+                    return Err(format!("app_host_status_{}", status.as_u16()));
+                }
+                let parsed: WakeResponse = serde_json::from_slice(&collected)
+                    .map_err(|e| format!("app_host_invalid_json: {e}"))?;
+                return Ok(parsed.upstream_addr);
+            }
+            Err(err) => {
+                if attempt == 0 && matches!(classify_client_error(err), ProxyError::ConnectFailed(_)) {
+                    continue;
+                }
+                return Err("app_host_request_failed".to_string());
+            }
+        }
     }
-    let parsed: WakeResponse =
-        serde_json::from_slice(&collected).map_err(|e| format!("app_host_invalid_json: {e}"))?;
-    Ok(parsed.upstream_addr)
+    Err("app_host_request_failed".to_string())
 }
 
 pub fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
