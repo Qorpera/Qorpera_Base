@@ -1,4 +1,5 @@
-import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
+import { readBoundedCloudResponse } from "@qorpera/cloud-client/cloud-request";
+import { withScopedCloudDeadline } from "./abort-scope.ts";
 import { type Cloud, CloudRpcError } from "./client.ts";
 import { boundedInteger, CloudShapeError, nonEmptyString, record, timestamp, UUID_PATTERN, uuid } from "./parse.ts";
 
@@ -190,7 +191,8 @@ export function createWebGeminiKey(
 	const normalizedProfileId = profileId.toLowerCase();
 
 	const rpc = async (method: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> => {
-		return withCloudDeadline(
+		return withScopedCloudDeadline(
+			[companySignal, signal],
 			async (deadline) => {
 				const check = () => {
 					deadline.throwIfAborted();
@@ -255,7 +257,6 @@ export function createWebGeminiKey(
 				}
 			},
 			15_000,
-			AbortSignal.any([companySignal, ...(signal ? [signal] : [])]),
 		);
 	};
 
@@ -283,7 +284,8 @@ export function createWebGeminiKey(
 				),
 				normalizedProfileId,
 			);
-			await withCloudDeadline(
+			await withScopedCloudDeadline(
+				[companySignal, signal],
 				async (deadline) => {
 					const check = () => {
 						deadline.throwIfAborted();
@@ -331,7 +333,6 @@ export function createWebGeminiKey(
 					}
 				},
 				30_000,
-				AbortSignal.any([companySignal, ...(signal ? [signal] : [])]),
 			);
 			return read(signal);
 		},
