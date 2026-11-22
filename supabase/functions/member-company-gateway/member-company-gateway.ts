@@ -335,7 +335,7 @@ async function bytes(
 
 interface UpstreamWatch {
 	readonly signal: AbortSignal;
-	wait(): void;
+	wait(countTotal?: boolean): void;
 	rest(): void;
 	dispose(): void;
 }
@@ -345,7 +345,17 @@ function watchUpstream(caller: AbortSignal, quietMs: number, maxTotalMs: number)
 	const leave = () => upstream.abort(caller.aborted ? caller.reason : new Error("Upstream request timed out"));
 	let quiet: ReturnType<typeof setTimeout> | undefined;
 	let total: ReturnType<typeof setTimeout> | undefined;
+	let remainingTotalMs = maxTotalMs;
+	let waitingSince: number | undefined;
 	let disposed = false;
+	const pauseTotal = () => {
+		clearTimeout(total);
+		total = undefined;
+		if (waitingSince !== undefined) {
+			remainingTotalMs = Math.max(0, remainingTotalMs - Math.max(0, performance.now() - waitingSince));
+			waitingSince = undefined;
+		}
+	};
 	const cleanup = () => {
 		if (disposed) return;
 		disposed = true;
@@ -353,6 +363,7 @@ function watchUpstream(caller: AbortSignal, quietMs: number, maxTotalMs: number)
 		clearTimeout(total);
 		quiet = undefined;
 		total = undefined;
+		waitingSince = undefined;
 		caller.removeEventListener("abort", leave);
 	};
 	if (caller.aborted) {
@@ -361,21 +372,33 @@ function watchUpstream(caller: AbortSignal, quietMs: number, maxTotalMs: number)
 	} else {
 		caller.addEventListener("abort", leave, { once: true });
 		upstream.signal.addEventListener("abort", cleanup, { once: true });
-		// WHY: Cap total pass-through stream lifetime so a trickling peer cannot hold an isolate open indefinitely.
-		total = setTimeout(() => upstream.abort(new Error("Upstream stream exceeded total duration")), maxTotalMs);
-		(total as unknown as { unref?: () => void }).unref?.();
 	}
 	return {
 		signal: upstream.signal,
-		wait() {
+		wait(countTotal = false) {
 			if (disposed) return;
 			clearTimeout(quiet);
 			quiet = setTimeout(leave, quietMs);
 			(quiet as unknown as { unref?: () => void }).unref?.();
+			if (countTotal) {
+				pauseTotal();
+				if (remainingTotalMs <= 0) {
+					upstream.abort(new Error("Upstream stream exceeded total duration"));
+					return;
+				}
+				waitingSince = performance.now();
+				// WHY: Cap cumulative time waiting on upstream stream chunks while pausing during downstream reader backpressure.
+				total = setTimeout(
+					() => upstream.abort(new Error("Upstream stream exceeded total duration")),
+					Math.max(1, Math.ceil(remainingTotalMs)),
+				);
+				(total as unknown as { unref?: () => void }).unref?.();
+			}
 		},
 		rest() {
 			clearTimeout(quiet);
 			quiet = undefined;
+			pauseTotal();
 		},
 		dispose: cleanup,
 	};
@@ -412,7 +435,7 @@ function passedThrough(
 		},
 		async pull(controller) {
 			if (over) return;
-			watch.wait();
+			watch.wait(true);
 			let failure: unknown;
 			try {
 				const chunk = await reader.read();

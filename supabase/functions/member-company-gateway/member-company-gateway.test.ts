@@ -547,6 +547,7 @@ describe("public member Company File gateway", () => {
 		const slow = await forward(request(), {
 			upstreamUrl,
 			timeoutMs: 10,
+			maxStreamMs: 40,
 			fetchImplementation: async () =>
 				new Response(
 					new ReadableStream<Uint8Array>({
@@ -566,6 +567,31 @@ describe("public member Company File gateway", () => {
 			read.push(...chunk.value);
 		}
 		assert.deepEqual(read, [0, 1, 2]);
+	});
+	it("cuts off a trickling pass-through stream when maxStreamMs elapses and detaches caller abort listeners", async () => {
+		let cancelled = false;
+		const req = request(object);
+		const trickling = await forward(req, {
+			upstreamUrl,
+			timeoutMs: 80,
+			maxStreamMs: 60,
+			fetchImplementation: async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						async pull(controller) {
+							await new Promise((resolve) => setTimeout(resolve, 25));
+							controller.enqueue(new Uint8Array([1]));
+						},
+						cancel() {
+							cancelled = true;
+						},
+					}),
+				),
+		});
+		assert.equal(trickling.status, 200);
+		await assert.rejects(trickling.arrayBuffer());
+		assert.equal(cancelled, true);
+		assert.equal(getEventListeners(req.signal, "abort").length, 0);
 	});
 	it("ends a folder object and its upstream when the caller leaves or the bytes pass 8 MiB", async () => {
 		const abort = new AbortController();
@@ -1707,31 +1733,5 @@ describe("the bridge's own entrypoint (index.ts)", () => {
 		});
 		assert.equal(failed.status, 503);
 		assert.equal(getEventListeners(req5.signal, "abort").length, 0);
-	});
-
-	it("cuts off a trickling pass-through stream when maxStreamMs elapses and detaches caller abort listeners", async () => {
-		let cancelled = false;
-		const req = request(object);
-		const trickling = await forward(req, {
-			upstreamUrl,
-			timeoutMs: 80,
-			maxStreamMs: 60,
-			fetchImplementation: async () =>
-				new Response(
-					new ReadableStream<Uint8Array>({
-						async pull(controller) {
-							await new Promise((resolve) => setTimeout(resolve, 25));
-							controller.enqueue(new Uint8Array([1]));
-						},
-						cancel() {
-							cancelled = true;
-						},
-					}),
-				),
-		});
-		assert.equal(trickling.status, 200);
-		await assert.rejects(trickling.arrayBuffer());
-		assert.equal(cancelled, true);
-		assert.equal(getEventListeners(req.signal, "abort").length, 0);
 	});
 });

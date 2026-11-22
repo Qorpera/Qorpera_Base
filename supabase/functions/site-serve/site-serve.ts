@@ -233,6 +233,7 @@ export interface SiteServeOptions {
 	/** Keeps work going after the answer is sent: the edge runtime's EdgeRuntime.waitUntil when not given. Without
 	 * either, a view's count is waited for at most COUNT_WAIT_MS. */
 	waitUntil?: (work: Promise<unknown>) => void;
+	bodyReadTimeoutMs?: number;
 }
 
 /** The longest an answer waits for its view's count when no waitUntil keeps the count going after it. */
@@ -1311,7 +1312,7 @@ async function hostUnlock(
 	if (sent !== null && sent !== `https://${site.host}`) return hostMessage(request, lang, 403, text.private, text.refused);
 	if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/x-www-form-urlencoded"))
 		return hostMessage(request, lang, 415, text.private, text.refused);
-	const read = await readBody(request, MAX_UNLOCK_BODY_BYTES);
+	const read = await readBody(request, MAX_UNLOCK_BODY_BYTES, options.bodyReadTimeoutMs);
 	if (!read.ok) return hostMessage(request, lang, read.status, text.private, text.refused);
 	let form: URLSearchParams;
 	try {
@@ -1387,7 +1388,7 @@ async function hostMember(
 		return hostMessage(request, lang, 403, text.private, text.fromQorpera);
 	if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/x-www-form-urlencoded"))
 		return hostMessage(request, lang, 415, text.private, text.fromQorpera);
-	const read = await readBody(request, MAX_UNLOCK_BODY_BYTES);
+	const read = await readBody(request, MAX_UNLOCK_BODY_BYTES, options.bodyReadTimeoutMs);
 	if (!read.ok) return hostMessage(request, lang, read.status, text.private, text.fromQorpera);
 	let form: URLSearchParams;
 	try {
@@ -1587,7 +1588,7 @@ async function unlock(request: Request, options: SiteServeOptions, lang: Languag
 		return htmlAnswer(request, messagePage(lang, text.private, text.refused), 403);
 	if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/x-www-form-urlencoded"))
 		return htmlAnswer(request, messagePage(lang, text.private, text.refused), 415);
-	const read = await readBody(request, MAX_UNLOCK_BODY_BYTES);
+	const read = await readBody(request, MAX_UNLOCK_BODY_BYTES, options.bodyReadTimeoutMs);
 	if (!read.ok) return htmlAnswer(request, messagePage(lang, text.private, text.refused), read.status);
 	let form: URLSearchParams;
 	try {
