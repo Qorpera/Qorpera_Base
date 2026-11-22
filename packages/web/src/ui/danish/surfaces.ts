@@ -330,7 +330,6 @@ export const SURFACES: Record<string, string> = {
 	Product: "Produkt",
 	"Starting surfaces": "Start-surfaces",
 	"Existing site or inspiration URL (optional)": "Eksisterende hjemmeside eller inspirations-URL (valgfrit)",
-	"Open in Files": "Åbn i Filer",
 	"Share live link": "Del live-link",
 	"Copy link": "Kopiér link",
 	"Copy password": "Kopiér adgangskode",
