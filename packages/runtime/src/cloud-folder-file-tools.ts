@@ -105,11 +105,10 @@ const CHANGED_WHILE_LISTED =
 	"The folder changed while it was listed, so a path may show twice here or not at all; call again the same way for a clean listing.";
 /** A glob, as company_search's (MAX_QUERY there). */
 const MAX_GLOB = 256;
-/** A read of several files at once (keyholes S3, 12 November 2026) names at most this many: what a model would read
- * one after another, in one result, while Codex sends one call a model response. */
-const MAX_PATHS = 8;
-/** What a read of several files renders at most before it is fitted: each window (one result's bound) escaped at
- * worst, six bytes a byte, with its path and fields. */
+const MAX_PATHS = 24;
+const READ_MANY_CONCURRENCY = 6;
+const LINE_RANGE_READ_BYTES = 256 * 1024;
+const MAX_LINE_NUMBER = 1_000_000;
 const MANY_JSON_BYTES = MAX_PATHS * (MAX_READ_BYTES * 6 + 32 * 1024);
 /** A listing shows a link's target up to this many bytes; company_read shows all of it. */
 const LIST_TARGET_BYTES = 512;
@@ -298,12 +297,10 @@ export async function released(
 	context: CloudToolContext,
 	answer: string,
 	reads: readonly CloudCompanyFolderRelease[],
+	tooLong = "COMPANY_FILE_ANSWER_TOO_LONG: a path in this answer is too long to show in one tool result, so nothing was read; find names with company_search (names_only)",
 ): Promise<CloudToolContent> {
 	const text = redactCloudWebhookSecrets(answer);
-	if (!fitsOneResult(text))
-		throw new CloudToolRefusal(
-			"COMPANY_FILE_ANSWER_TOO_LONG: a path in this answer is too long to show in one tool result, so nothing was read; find names with company_search (names_only)",
-		);
+	if (!fitsOneResult(text)) throw new CloudToolRefusal(tooLong);
 	context.observation?.update({ outputBytes: Buffer.byteLength(text) });
 	if (reads.length === 0) return { kind: "text", value: text };
 	const outputSha256 = createHash("sha256").update(text, "utf8").digest("hex");
@@ -314,47 +311,6 @@ export async function released(
 		unavailable(error, "shown");
 	}
 	return { kind: "text", value: text, companyReadId: id };
-}
-
-/** One release id per file of a read of several (keyholes S3): the call's output, and the file's place in it. */
-function partReleaseId(runId: string, callId: string, outputSha256: string, part: number): string {
-	const hex = createHash("sha256")
-		.update(`qorpera.company-file-release/v1:${runId}:${callId}:${outputSha256}:${part}`)
-		.digest("hex");
-	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${((Number.parseInt(hex[16] as string, 16) & 0x3) | 0x8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
-}
-
-/** `released` for an answer that shows several files: each file's read is its own release, in the answer's order,
- * all under the hash of the whole text; the answer cites the first, as company_search cites its first part (the
- * context view cites one release an output, and the run log keeps every release of the step). As in `released`, the
- * text is the answer as the model is shown it, a secret cut out (#1721): the context view cites the release under the
- * hash of that text, and SQL refuses any other (`Context read provenance differs`). */
-async function releasedEach(
-	folder: CloudCompanyFolderClient,
-	runId: string,
-	context: CloudToolContext,
-	answer: string,
-	reads: readonly CloudCompanyFolderRelease[],
-): Promise<CloudToolContent> {
-	const text = redactCloudWebhookSecrets(answer);
-	if (!fitsOneResult(text))
-		throw new CloudToolRefusal(
-			"COMPANY_FILE_ANSWER_TOO_LONG: these paths are too long to read together in one tool result, so nothing was read; read fewer at once",
-		);
-	context.observation?.update({ outputBytes: Buffer.byteLength(text) });
-	if (reads.length === 0) return { kind: "text", value: text };
-	const outputSha256 = createHash("sha256").update(text, "utf8").digest("hex");
-	let companyReadId: string | undefined;
-	for (const [part, read] of reads.entries()) {
-		const id = partReleaseId(runId, context.callId, outputSha256, part);
-		try {
-			await folder.release(id, [read], outputSha256, context.signal);
-		} catch (error) {
-			unavailable(error, "shown");
-		}
-		companyReadId ??= id;
-	}
-	return { kind: "text", value: text, ...(companyReadId ? { companyReadId } : {}) };
 }
 
 /** The longest start of a window that is whole UTF-8 text: a code point cut by the window's end is left for the next
@@ -685,31 +641,72 @@ export function cloudFolderFileTools(options: {
 		return { ...content, image: { png: view.png, sha256: view.sha256 } };
 	};
 
-	/** One path of a read of several: its answer as a read of that path alone gives it, with the text (a file's window
-	 * from its start, or a link's target) left for the fitting, and the read it releases. A path that could not be read
-	 * is said so in its own answer; a company whose work stopped, or a defect, fails the call. */
+	type PathReadTarget =
+		| string
+		| {
+				readonly path: string;
+				readonly startLine?: number;
+				readonly endLine?: number;
+		  };
+	type LineSpan = {
+		readonly startChar: number;
+		readonly endChar: number;
+		readonly startByte: number;
+		readonly endByte: number;
+	};
+	const splitLineSpans = (text: string): LineSpan[] => {
+		if (text.length === 0) return [];
+		const spans: LineSpan[] = [];
+		let startChar = 0;
+		let startByte = 0;
+		for (let index = 0; index < text.length; index++) {
+			if (text.charCodeAt(index) === 0x0a) {
+				const endChar = index + 1;
+				const endByte = startByte + Buffer.byteLength(text.slice(startChar, endChar));
+				spans.push({ startChar, endChar, startByte, endByte });
+				startChar = endChar;
+				startByte = endByte;
+			}
+		}
+		if (startChar < text.length) {
+			const endByte = startByte + Buffer.byteLength(text.slice(startChar));
+			spans.push({ startChar, endChar: text.length, startByte, endByte });
+		}
+		return spans;
+	};
+	const countNewlines = (text: string): number => {
+		let count = 0;
+		for (let index = 0; index < text.length; index++) {
+			if (text.charCodeAt(index) === 0x0a) count++;
+		}
+		return count;
+	};
 	type ManyPart = {
 		readonly answer: Record<string, JsonValue>;
-		/** The text left for the fitting: its code points, and `around`, the text and what follows it as far as read (a
-		 * window never ends inside a secret: windowEnd), with `more` when the file goes on past that. */
 		readonly text?: {
 			readonly field: "text" | "target";
 			readonly points: readonly string[];
 			readonly around: string;
 			readonly secrets: ReturnType<typeof cloudSecretSpans>;
 			readonly more: boolean;
+			readonly offset: number;
 			readonly total: number;
+			readonly lineRange?: {
+				readonly startLine: number;
+				readonly totalLines?: number;
+			};
 		};
 		readonly release?: CloudCompanyFolderRelease;
 	};
 	const readPart = async (
-		path: string,
+		target: PathReadTarget,
 		signal: AbortSignal,
-		bytesTurn: <T>(read: () => Promise<T>) => Promise<T>,
+		bytesTurn: <T>(fileSha256: string, read: () => Promise<T>) => Promise<T>,
 	): Promise<ManyPart> => {
-		// The folder's own failures other than a stop, and a read or byte range whose request timed out or lost its
-		// connection (this call not cancelled), are this path's; a stop, a cancel, an answer that fails its checks and
-		// any other defect fail the call, as for a read of one path.
+		const targetPath = typeof target === "string" ? target : target.path;
+		const reqStartLine = typeof target === "string" ? undefined : target.startLine;
+		const reqEndLine = typeof target === "string" ? undefined : target.endLine;
+		const hasLineRange = reqStartLine !== undefined || reqEndLine !== undefined;
 		const failed = (error: unknown): ManyPart => {
 			const lost =
 				error instanceof CloudCompanyFolderError
@@ -719,19 +716,31 @@ export function cloudFolderFileTools(options: {
 						(error.category === "timeout" || error.category === "transport_unavailable") &&
 						!signal.aborted;
 			if (!lost) return unavailable(error, "read");
-			return { answer: { path, refused: "COMPANY_FOLDER_UNAVAILABLE: it could not be read now; read it again" } };
+			return {
+				answer: { path: targetPath, refused: "COMPANY_FOLDER_UNAVAILABLE: it could not be read now; read it again" },
+			};
 		};
 		let entry: CloudCompanyFolderEntry | null;
 		try {
-			entry = (await folder.read(path, signal)).entry;
+			entry = (await folder.read(targetPath, signal)).entry;
 		} catch (error) {
 			return failed(error);
 		}
-		if (!entry) return { answer: { path, kind: "absent", version: null } };
+		if (!entry) return { answer: { path: targetPath, kind: "absent", version: null } };
 		const release = cloudCompanyFolderRelease(entry);
 		if (entry.kind === "folder")
 			return { answer: { path: entry.path, kind: "folder", version: entry.version }, release };
-		if (entry.kind === "symlink")
+		if (entry.kind === "symlink") {
+			if (hasLineRange)
+				return {
+					answer: {
+						path: entry.path,
+						kind: "symlink",
+						version: entry.version,
+						refused: "COMPANY_LINE_RANGE_UNSUPPORTED: startLine and endLine only apply to text files",
+					},
+					release,
+				};
 			return {
 				answer: { path: entry.path, kind: "symlink", version: entry.version, offset: 0 },
 				text: {
@@ -740,21 +749,23 @@ export function cloudFolderFileTools(options: {
 					around: entry.target,
 					secrets: cloudSecretSpans(entry.target),
 					more: false,
+					offset: 0,
 					total: Buffer.byteLength(entry.target),
 				},
 				release,
 			};
+		}
 		const total = entry.file.bytes;
+		const readBytes = hasLineRange
+			? Math.max(LINE_RANGE_READ_BYTES + SECRET_MARGIN, IMAGE_HEAD_BYTES)
+			: Math.max(MAX_READ_BYTES + SECRET_MARGIN, IMAGE_HEAD_BYTES);
 		let bytes: Uint8Array;
 		try {
-			bytes = await bytesTurn(() =>
-				folder.readRange(entry, 0, Math.max(MAX_READ_BYTES + SECRET_MARGIN, IMAGE_HEAD_BYTES), signal),
-			);
+			bytes = await bytesTurn(entry.file.fileSha256, () => folder.readRange(entry, 0, readBytes, signal));
 		} catch (error) {
 			return failed(error);
 		}
 		const named = { path: entry.path, kind: "file", version: entry.version };
-		// An image is named, never shown, among several: one result shows one picture, after the answer that names it.
 		const format = folderImageFormat(bytes);
 		if (format)
 			return {
@@ -787,9 +798,35 @@ export function cloudFolderFileTools(options: {
 				},
 				release,
 			};
-		const window = bytes.subarray(0, MAX_READ_BYTES);
-		const text = windowText(window, window.byteLength >= total);
-		if (text === null)
+		if (!hasLineRange) {
+			const window = bytes.subarray(0, MAX_READ_BYTES);
+			const text = windowText(window, window.byteLength >= total);
+			if (text === null)
+				return {
+					answer: {
+						...named,
+						refused: "COMPANY_FILE_NOT_TEXT: this file is not UTF-8 text; open such files on a machine",
+					},
+					release,
+				};
+			const around = text + AROUND.decode(bytes.subarray(Buffer.byteLength(text)));
+			return {
+				answer: { ...named, offset: 0 },
+				text: {
+					field: "text",
+					points: Array.from(text),
+					around,
+					secrets: cloudSecretSpans(around),
+					more: bytes.byteLength < total,
+					offset: 0,
+					total,
+				},
+				release,
+			};
+		}
+		const scanWindow = bytes.subarray(0, Math.min(bytes.byteLength, LINE_RANGE_READ_BYTES));
+		const scanned = windowText(scanWindow, scanWindow.byteLength >= total);
+		if (scanned === null)
 			return {
 				answer: {
 					...named,
@@ -797,39 +834,107 @@ export function cloudFolderFileTools(options: {
 				},
 				release,
 			};
-		const around = text + AROUND.decode(bytes.subarray(Buffer.byteLength(text)));
+		const fullScanned = Buffer.byteLength(scanned) >= total;
+		const spans = splitLineSpans(scanned);
+		const startLine = reqStartLine ?? 1;
+		const completeCount = fullScanned ? spans.length : Math.max(0, spans.length - (scanned.endsWith("\n") ? 0 : 1));
+		if (startLine > completeCount) {
+			if (!fullScanned)
+				return {
+					answer: {
+						...named,
+						refused:
+							"COMPANY_LINE_RANGE_BEYOND_SCAN: startLine is past the first 256 KiB of this file; read it alone with path and offset",
+					},
+					release,
+				};
+			return {
+				answer: {
+					...named,
+					offset: total,
+					startLine,
+					endLine: startLine - 1,
+					totalLines: spans.length,
+					bytesRead: 0,
+					totalBytes: total,
+					text: "",
+					nextOffset: null,
+				},
+				release,
+			};
+		}
+		const firstSpan = spans[startLine - 1]!;
+		const lastIdx = Math.min((reqEndLine ?? completeCount) - 1, completeCount - 1);
+		const lastSpan = spans[lastIdx]!;
+		const tailAround = AROUND.decode(bytes.subarray(Buffer.byteLength(scanned)));
+		const behind = scanned.slice(Math.max(0, firstSpan.startChar - SECRET_MARGIN), firstSpan.startChar);
+		const rest = scanned.slice(firstSpan.startChar) + tailAround;
+		const lead = windowLead(behind, rest);
+		const startOffset = firstSpan.startByte - Buffer.byteLength(lead);
+		const rawSlice = lead + scanned.slice(firstSpan.startChar, lastSpan.endChar);
+		const sliceText = head(rawSlice, MAX_READ_BYTES);
+		const sliceBodyLen = sliceText.length - lead.length;
+		const around = sliceText + rest.slice(sliceBodyLen, sliceBodyLen + SECRET_MARGIN);
+		const actualStartLine = Math.max(1, startLine - countNewlines(lead));
 		return {
-			answer: { ...named, offset: 0 },
+			answer: { ...named, offset: startOffset },
 			text: {
 				field: "text",
-				points: Array.from(text),
+				points: Array.from(sliceText),
 				around,
 				secrets: cloudSecretSpans(around),
-				more: bytes.byteLength < total,
+				more: startOffset + Buffer.byteLength(around) < total,
+				offset: startOffset,
 				total,
+				lineRange: {
+					startLine: actualStartLine,
+					...(fullScanned ? { totalLines: spans.length } : {}),
+				},
 			},
 			release,
 		};
 	};
 
-	/** Up to MAX_PATHS files in one result (keyholes S3): each read from its start, every text cut at the same number of
-	 * characters, the largest that fits (so small files are whole and the rest share what is left alike), each with
-	 * its own version, size shown and nextOffset. Each file shown is its own release. */
-	const readMany = async (paths: readonly string[], context: CloudToolContext): Promise<CloudToolContent> => {
-		// The entries are read side by side, and their bytes one file at a time. The object gateway serves bytes from its
-		// NAS lanes, two operations at a time and one at a time on any one object (object-store.ts), and answers 503 for
-		// an object that has no Storage copy yet (one just written) when it cannot take it now; the byte client asks
-		// twice more. Two files of the same content, or of the same first chunk, share objects, so even two of this
-		// call's byte reads at once could turn each other away: the call never contends with itself.
-		let bytesQueue: Promise<unknown> = Promise.resolve();
-		const bytesTurn = <T>(read: () => Promise<T>): Promise<T> => {
-			const turn = bytesQueue.then(read);
-			bytesQueue = turn.catch(() => undefined);
+	const readMany = async (targets: readonly PathReadTarget[], context: CloudToolContext): Promise<CloudToolContent> => {
+		// WHY: object gateway runs up to 8 NAS lanes concurrently, but rejects two simultaneous byte reads for the same fileSha256.
+		// Serializing per fileSha256 before acquiring a concurrency slot prevents same-object contention without holding slots idle.
+		const shaQueues = new Map<string, Promise<unknown>>();
+		let activeBytes = 0;
+		const byteWaiters: (() => void)[] = [];
+		const acquireByteSlot = (): Promise<void> => {
+			if (activeBytes < READ_MANY_CONCURRENCY) {
+				activeBytes++;
+				return Promise.resolve();
+			}
+			return new Promise<void>((resolve) => byteWaiters.push(resolve));
+		};
+		const releaseByteSlot = (): void => {
+			const next = byteWaiters.shift();
+			if (next) next();
+			else activeBytes--;
+		};
+		const bytesTurn = <T>(fileSha256: string, read: () => Promise<T>): Promise<T> => {
+			const prior = shaQueues.get(fileSha256) ?? Promise.resolve();
+			const run = async (): Promise<T> => {
+				await acquireByteSlot();
+				try {
+					return await read();
+				} finally {
+					releaseByteSlot();
+				}
+			};
+			const turn = prior.then(run, run);
+			const settled = turn.then(
+				() => undefined,
+				() => undefined,
+			);
+			shaQueues.set(fileSha256, settled);
+			void settled.finally(() => {
+				if (shaQueues.get(fileSha256) === settled) shaQueues.delete(fileSha256);
+			});
 			return turn;
 		};
-		const parts = await Promise.all(paths.map((path) => readPart(path, context.signal, bytesTurn)));
-		// Every text is cut at the same number of characters, and then, where that end falls inside a secret, before it
-		// (windowEnd), so each file's own nextOffset says where it goes on.
+		const parts = await Promise.all(targets.map((target) => readPart(target, context.signal, bytesTurn)));
 		const render = (cap: number): string =>
 			cloudToolJsonText(
 				{
@@ -839,19 +944,29 @@ export function cloudFolderFileTools(options: {
 						const { end, runsOn } = windowEnd(part.text.around, room, part.text.more, part.text.secrets);
 						const shown = part.text.around.slice(0, end);
 						const bytesRead = Buffer.byteLength(shown);
+						const endOffset = part.text.offset + bytesRead;
+						const lineFields: Record<string, JsonValue> = {};
+						if (part.text.lineRange) {
+							const shownLines =
+								shown.length === 0 ? 0 : countNewlines(shown) + (shown.endsWith("\n") ? 0 : 1);
+							lineFields.startLine = part.text.lineRange.startLine;
+							lineFields.endLine =
+								shownLines === 0 ? part.text.lineRange.startLine - 1 : part.text.lineRange.startLine + shownLines - 1;
+							if (part.text.lineRange.totalLines !== undefined) lineFields.totalLines = part.text.lineRange.totalLines;
+						}
 						return {
 							...part.answer,
+							...lineFields,
 							bytesRead,
 							totalBytes: part.text.total,
 							[part.text.field]: shown,
-							nextOffset: bytesRead < part.text.total ? bytesRead : null,
-							...(runsOn ? { secretRun: secretRunsOn(0) } : {}),
+							nextOffset: endOffset < part.text.total ? endOffset : null,
+							...(runsOn ? { secretRun: secretRunsOn(part.text.offset) } : {}),
 						};
 					}),
 				},
 				MANY_JSON_BYTES,
 			);
-		// The fit is of the answer as the model is shown it: the boundary cuts each secret out (releasedEach too).
 		let low = 0;
 		let high = Math.max(0, ...parts.map((part) => part.text?.points.length ?? 0));
 		while (low < high) {
@@ -859,12 +974,22 @@ export function cloudFolderFileTools(options: {
 			if (fitsOneResult(redactCloudWebhookSecrets(render(middle)))) low = middle;
 			else high = middle - 1;
 		}
-		return releasedEach(
+		const dedupedReads: CloudCompanyFolderRelease[] = [];
+		const seenReads = new Set<string>();
+		for (const part of parts) {
+			if (!part.release) continue;
+			const key = `${folderKey(part.release.path)}\0${part.release.version ?? ""}`;
+			if (seenReads.has(key)) continue;
+			seenReads.add(key);
+			dedupedReads.push(part.release);
+		}
+		return released(
 			folder,
 			identity.runId,
 			context,
 			render(low),
-			parts.flatMap((part) => (part.release ? [part.release] : [])),
+			dedupedReads,
+			"COMPANY_FILE_ANSWER_TOO_LONG: these paths are too long to read together in one tool result, so nothing was read; read fewer at once",
 		);
 	};
 
@@ -936,14 +1061,33 @@ export function cloudFolderFileTools(options: {
 			description: [
 				`Read the company folder by company paths: a file's UTF-8 text, or the target a link names (not followed), from offset (in bytes, 0 by default), up to limit bytes (at most ${MAX_READ_BYTES}, the default) a call, as much as fits one result: continue from nextOffset until it is null. A path that is a folder, or absent, says so. A file's version is what a change of it names.`,
 				`A PNG, JPEG, GIF or WebP image read from offset 0 is shown to you after the answer, at most ${SHOWN_MAX_WIDTH}×${SHOWN_MAX_HEIGHT} pixels.`,
-				`paths (up to ${MAX_PATHS}) in place of path reads several files at once, each from its start into one result: small files whole, the rest sharing the room alike, each with its own version and nextOffset (read on with path and offset); an image there is named, not shown.`,
+				`paths (up to ${MAX_PATHS}) in place of path reads several files at once into one result (plain path strings, or { path, startLine?, endLine? } objects for 1-based line ranges of text files): small files whole, the rest sharing the room alike, each with its own version and nextOffset (read on with path and offset); an image there is named, not shown.`,
 			].join("\n"),
 			inputSchema: {
 				type: "object",
 				additionalProperties: false,
 				properties: {
 					path: pathSchema,
-					paths: { type: "array", minItems: 1, maxItems: MAX_PATHS, items: pathSchema },
+					paths: {
+						type: "array",
+						minItems: 1,
+						maxItems: MAX_PATHS,
+						items: {
+							anyOf: [
+								pathSchema,
+								{
+									type: "object",
+									additionalProperties: false,
+									required: ["path"],
+									properties: {
+										path: pathSchema,
+										startLine: { type: "integer", minimum: 1, maximum: MAX_LINE_NUMBER },
+										endLine: { type: "integer", minimum: 1, maximum: MAX_LINE_NUMBER },
+									},
+								},
+							],
+						},
+					},
 					offset: { type: "integer", minimum: 0 },
 					limit: { type: "integer", minimum: 4, maximum: MAX_READ_BYTES },
 				},
@@ -959,9 +1103,40 @@ export function cloudFolderFileTools(options: {
 						);
 					if (!Array.isArray(input.paths) || input.paths.length < 1 || input.paths.length > MAX_PATHS)
 						throw new CloudToolArgumentRefusal(`paths must be a list of 1 to ${MAX_PATHS} company paths`);
-					const paths = input.paths.map((item) => path(item, false));
-					if (new Set(paths.map(folderKey)).size !== paths.length)
-						throw new CloudToolArgumentRefusal("paths must name each file once");
+					const seen = new Set<string>();
+					const paths: JsonValue[] = [];
+					for (const item of input.paths) {
+						if (typeof item === "string") {
+							const validated = path(item, false);
+							const dedupeKey = `${folderKey(validated)}\0\0`;
+							if (seen.has(dedupeKey)) throw new CloudToolArgumentRefusal("paths must name each file once");
+							seen.add(dedupeKey);
+							paths.push(validated);
+							continue;
+						}
+						if (item !== null && typeof item === "object" && !Array.isArray(item)) {
+							const entry = someArgs(item, "company_read paths entry", ["path"], ["startLine", "endLine"]);
+							const validated = path(entry.path, false);
+							const startLine =
+								entry.startLine === undefined ? undefined : integer(entry.startLine, "startLine", 1, MAX_LINE_NUMBER);
+							const endLine =
+								entry.endLine === undefined ? undefined : integer(entry.endLine, "endLine", 1, MAX_LINE_NUMBER);
+							if (startLine !== undefined && endLine !== undefined && endLine < startLine)
+								throw new CloudToolArgumentRefusal("endLine must be greater than or equal to startLine");
+							const dedupeKey = `${folderKey(validated)}\0${startLine ?? ""}\0${endLine ?? ""}`;
+							if (seen.has(dedupeKey)) throw new CloudToolArgumentRefusal("paths must name each file or range once");
+							seen.add(dedupeKey);
+							if (startLine === undefined && endLine === undefined) paths.push(validated);
+							else
+								paths.push({
+									path: validated,
+									...(startLine !== undefined ? { startLine } : {}),
+									...(endLine !== undefined ? { endLine } : {}),
+								});
+							continue;
+						}
+						throw new CloudToolArgumentRefusal("paths items must be company paths or { path, startLine?, endLine? }");
+					}
 					return { paths };
 				}
 				return {
@@ -972,7 +1147,7 @@ export function cloudFolderFileTools(options: {
 			},
 			async execute(value, context) {
 				if (Array.isArray((value as { paths?: unknown }).paths))
-					return readMany((value as { paths: string[] }).paths, context);
+					return readMany((value as { paths: PathReadTarget[] }).paths, context);
 				const input = value as { path: string; offset: number; limit: number };
 				const entry = await read(input.path, "read", context.signal);
 				if (!entry)

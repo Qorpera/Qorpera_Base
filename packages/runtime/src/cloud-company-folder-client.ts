@@ -74,17 +74,21 @@ const RUN_EFFECTS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_archive_coding_worker",
 	"qorpera_folder_note_interface_changes",
 	"qorpera_folder_request_code_undo",
+	"qorpera_folder_request_code_undo_v2",
 	"qorpera_folder_code_request",
+	"qorpera_folder_code_request_v2",
+	"qorpera_folder_code_status",
+	"qorpera_folder_code_claim_overlaps",
+	"qorpera_folder_code_history",
+	"qorpera_folder_code_query",
+	"qorpera_folder_code_lifecycle",
 	"qorpera_folder_describe_code_change",
 	"qorpera_folder_request_code_import",
 	"qorpera_folder_code_import",
 ]);
-/** What SQL raises instead of taking an undo or a description of a change (20260930720000), by SQLSTATE and SQL's
- * message: no such repository or number, a request it does not take, an operation key that names an earlier, different
- * request, a run that is not an agent's own, and the wake's refusals of work. Each is raised before the call's
- * transaction wrote anything, so that call changed nothing. */
 const CODE_REFUSALS: ReadonlyMap<string, CloudCompanyCodeRefusal> = new Map([
 	["P0002 No such change", "no_change"],
+	["P0002 No such repository", "no_repository"],
 	["22023 Code request is invalid", "invalid"],
 	["23505 logical operation key is already bound to other work", "key_reused"],
 	["42501 Code authority is unavailable", "authority"],
@@ -92,9 +96,27 @@ const CODE_REFUSALS: ReadonlyMap<string, CloudCompanyCodeRefusal> = new Map([
 	["55000 Wake public output is already final", "final"],
 	["55000 Company execution is paused", "paused"],
 ]);
-const CODE_UNDO_REASONS = ["never_landed", "lost", "restore", "wall", "too_many", "busy", "no_executor"] as const;
+const CODE_UNDO_REASONS = [
+	"never_landed",
+	"lost",
+	"restore",
+	"wall",
+	"too_many",
+	"busy",
+	"no_executor",
+	"archived",
+] as const;
+const CODE_LIFECYCLE_REASONS = [
+	"deleting",
+	"github_conflict",
+	"import_in_progress",
+	"archived",
+	"no_executor",
+	"sessions_active",
+] as const;
 const CODE_PICTURE_REASONS = ["missing", "not_a_file", "too_large", "not_a_picture", "not_shared"] as const;
 const CODE_REQUEST_KINDS = ["undo", "download", "restore"] as const;
+const CODE_REQUEST_KINDS_V2 = ["undo", "download", "restore", "query", "lifecycle"] as const;
 const CODE_REQUEST_STATES = ["queued", "running", "done", "refused", "failed"] as const;
 /** Why no import was asked for (20260930736000): a repository kept at the place, the same code kept elsewhere, an import
  * open in the company, GitHub sessions still on that code, no code service, no file at the path, a company going. */
@@ -419,6 +441,7 @@ export interface CloudCompanyFolderSignedHooks {
 /** Why SQL raised instead of taking an undo or a description of a change: that call changed nothing. */
 export type CloudCompanyCodeRefusal =
 	| "no_change"
+	| "no_repository"
 	| "invalid"
 	| "key_reused"
 	| "authority"
@@ -426,15 +449,11 @@ export type CloudCompanyCodeRefusal =
 	| "final"
 	| "paused";
 
-/** What became of an agent's ask to take a change out of a repository's main code (`qorpera_folder_request_code_undo`):
- * a request the coding executor serves, the change that already took it out, or why nothing was asked. */
 export type CloudCompanyCodeUndo =
 	| { readonly state: "queued"; readonly requestId: string }
 	| { readonly state: "already"; readonly undoneBy: number }
 	| { readonly state: "refused"; readonly reason: (typeof CODE_UNDO_REASONS)[number] | CloudCompanyCodeRefusal };
 
-/** How a request of the company's stands (`qorpera_folder_code_request`): once it ended, its result, the number of the
- * change it wrote, its code, and the files a refused undo named. */
 export interface CloudCompanyCodeRequest {
 	readonly requestId: string;
 	readonly kind: (typeof CODE_REQUEST_KINDS)[number];
@@ -444,6 +463,115 @@ export interface CloudCompanyCodeRequest {
 	readonly code: string | null;
 	readonly paths: readonly string[] | null;
 }
+
+export interface CloudCompanyCodeRequestV2 {
+	readonly requestId: string;
+	readonly kind: (typeof CODE_REQUEST_KINDS_V2)[number];
+	readonly state: (typeof CODE_REQUEST_STATES)[number];
+	readonly result: string | null;
+	readonly change: number | null;
+	readonly code: string | null;
+	readonly paths: readonly string[] | null;
+	readonly messages: readonly string[] | null;
+	readonly data: Readonly<Record<string, unknown>> | null;
+}
+
+export interface CloudCompanyCodeClaimOverlap {
+	readonly workerId: string;
+	readonly branch: string;
+	readonly phase: string;
+	readonly claimedPaths: readonly string[];
+	readonly overlappingPaths: readonly string[];
+	readonly updatedAt: string;
+}
+
+export interface CloudCompanyCodeRepositoryStatus {
+	readonly registered: boolean;
+	readonly repository: {
+		readonly owner: string;
+		readonly name: string;
+		readonly path: string;
+		readonly archived: boolean;
+		readonly archivedAt: string | null;
+		readonly checksEnabled: boolean;
+		readonly lastChange: number;
+		readonly lastMain: string | null;
+		readonly site: Readonly<Record<string, unknown>>;
+	};
+	readonly sessions: readonly {
+		readonly workerId: string;
+		readonly branch: string;
+		readonly worktree: string;
+		readonly phase: string;
+		readonly harness: string | null;
+		readonly workerState: string | null;
+		readonly title: string | null;
+		readonly folder: string | null;
+		readonly claimedPaths: readonly string[];
+		readonly archived: boolean;
+		readonly updatedAt: string;
+	}[];
+	readonly sessionsTotal: number;
+	readonly changesCount: number;
+	readonly recentChanges: readonly {
+		readonly n: number;
+		readonly kind: string;
+		readonly state: string;
+		readonly title: string | null;
+		readonly notice: string | null;
+		readonly workerId: string | null;
+		readonly filesChanged: number | null;
+		readonly checksState: string | null;
+		readonly siteState: string | null;
+		readonly mainBefore: string | null;
+		readonly mainAfter: string | null;
+		readonly createdAt: string;
+	}[];
+	readonly queue: {
+		readonly queued: number;
+		readonly preparing: number;
+		readonly running: number;
+		readonly publishing: number;
+		readonly openRequests: number;
+		readonly restoring: boolean;
+	};
+}
+
+export interface CloudCompanyCodeHistoryPage {
+	readonly owner: string;
+	readonly name: string;
+	readonly total: number;
+	readonly changes: readonly {
+		readonly n: number;
+		readonly kind: string;
+		readonly state: string;
+		readonly title: string | null;
+		readonly summary: string | null;
+		readonly notice: string | null;
+		readonly workerId: string | null;
+		readonly filesChanged: number | null;
+		readonly paths: readonly unknown[];
+		readonly pathsMore: number;
+		readonly checksState: string | null;
+		readonly siteState: string | null;
+		readonly mainBefore: string | null;
+		readonly mainAfter: string | null;
+		readonly undoes: readonly number[] | null;
+		readonly undoneBy: readonly number[] | null;
+		readonly createdAt: string;
+	}[];
+	readonly nextCursor: number | null;
+}
+
+export type CloudCompanyCodeQueryAsked =
+	| { readonly state: "queued"; readonly requestId: string }
+	| { readonly state: "refused"; readonly reason: "no_executor" | "restoring" | CloudCompanyCodeRefusal };
+
+export type CloudCompanyCodeLifecycleAnswer =
+	| { readonly state: "queued"; readonly requestId: string }
+	| { readonly state: "done"; readonly result: "archived"; readonly owner: string; readonly name: string; readonly archivedAt: string }
+	| { readonly state: "already"; readonly owner: string; readonly name: string; readonly archivedAt?: string }
+	| { readonly state: "refused"; readonly reason: (typeof CODE_LIFECYCLE_REASONS)[number] | CloudCompanyCodeRefusal };
 
 /** Where an import takes the code from: a GitHub project as `Owner/Name`, or a git bundle in the company folder
  * (code/_incoming/<folder>/<name>.bundle) with, when its main branch is not clear, the branch to take. */
@@ -680,6 +808,7 @@ export type CloudCompanyFolderWorkerRequest =
 			readonly harness?: string;
 			readonly repository?: CloudCodingRepository;
 			readonly owner?: string;
+			readonly claimedPaths?: readonly string[];
 	  }
 	/** `resultsVersion`: the results the follow-up removes, as read (null: none); other results now make it a conflict. */
 	| {
@@ -1788,6 +1917,8 @@ export class CloudCompanyFolderClient {
 	async #codeEffect<T>(
 		method:
 			| "qorpera_folder_request_code_undo"
+			| "qorpera_folder_request_code_undo_v2"
+			| "qorpera_folder_code_lifecycle"
 			| "qorpera_folder_describe_code_change"
 			| "qorpera_folder_request_code_import",
 		request: { readonly operationKey: string } & Readonly<Record<string, unknown>>,
@@ -1902,6 +2033,291 @@ export class CloudCompanyFolderClient {
 			code: input.code,
 			paths: input.paths as string[] | null,
 		};
+	}
+
+	async requestCodeUndoV2(
+		request: {
+			readonly operationKey: string;
+			readonly owner: string;
+			readonly name: string;
+			readonly change?: number;
+			readonly toChange?: number;
+			readonly changes?: readonly number[];
+			readonly andLater?: boolean;
+			readonly dryRun?: boolean;
+			readonly runChecks?: boolean;
+			readonly force?: boolean;
+			readonly reason: string;
+			readonly notice?: string;
+		},
+		signal: AbortSignal,
+	): Promise<CloudCompanyCodeUndo> {
+		return this.#codeEffect(
+			"qorpera_folder_request_code_undo_v2",
+			{
+				operationKey: request.operationKey,
+				owner: request.owner,
+				name: request.name,
+				...(request.change === undefined ? {} : { change: request.change }),
+				...(request.toChange === undefined ? {} : { toChange: request.toChange }),
+				...(request.changes === undefined ? {} : { changes: [...request.changes] }),
+				...(request.andLater === undefined ? {} : { andLater: request.andLater }),
+				...(request.dryRun === undefined ? {} : { dryRun: request.dryRun }),
+				...(request.runChecks === undefined ? {} : { runChecks: request.runChecks }),
+				...(request.force === undefined ? {} : { force: request.force }),
+				reason: request.reason,
+				...(request.notice === undefined ? {} : { notice: request.notice }),
+			},
+			signal,
+			(answer): CloudCompanyCodeUndo => {
+				const state = (answer as { state?: unknown } | null)?.state;
+				const input = record(
+					answer,
+					state === "queued"
+						? ["schema", "state", "requestId"]
+						: state === "already"
+							? ["schema", "state", "change", "undoneBy"]
+							: ["schema", "state", "reason"],
+				);
+				if (input.schema !== "qorpera.code-request/v1") invalid();
+				if (state === "queued") return { state, requestId: uuid(input.requestId) };
+				if (state === "already") {
+					if (counter(input.undoneBy) < 1) invalid();
+					return { state, undoneBy: input.undoneBy as number };
+				}
+				const reason = CODE_UNDO_REASONS.find((known) => known === input.reason);
+				if (state !== "refused" || reason === undefined) invalid();
+				return { state: "refused", reason };
+			},
+		);
+	}
+
+	async codeRequestV2(requestId: string, signal: AbortSignal): Promise<CloudCompanyCodeRequestV2> {
+		const input = record(
+			await this.#once(
+				"qorpera_folder_code_request_v2",
+				{ p_binding: this.#binding, p_request_id: uuid(requestId) },
+				signal,
+			),
+			["schema", "requestId", "kind", "state", "result", "change", "code", "paths", "messages", "data"],
+		);
+		const kind = CODE_REQUEST_KINDS_V2.find((known) => known === input.kind);
+		const state = CODE_REQUEST_STATES.find((known) => known === input.state);
+		if (
+			input.schema !== "qorpera.code-request/v2" ||
+			input.requestId !== requestId ||
+			kind === undefined ||
+			state === undefined ||
+			!nullableString(input.result) ||
+			(input.change !== null && counter(input.change) < 1) ||
+			!nullableString(input.code) ||
+			(input.paths !== null &&
+				(!Array.isArray(input.paths) ||
+					input.paths.length > 100 ||
+					input.paths.some((path) => typeof path !== "string"))) ||
+			(input.messages !== null &&
+				(!Array.isArray(input.messages) ||
+					input.messages.length > 30 ||
+					input.messages.some((msg) => typeof msg !== "string"))) ||
+			(input.data !== null && (typeof input.data !== "object" || Array.isArray(input.data)))
+		)
+			invalid();
+		return {
+			requestId,
+			kind,
+			state,
+			result: input.result,
+			change: input.change as number | null,
+			code: input.code,
+			paths: input.paths as string[] | null,
+			messages: input.messages as string[] | null,
+			data: input.data as Readonly<Record<string, unknown>> | null,
+		};
+	}
+
+	async codeRepositoryStatus(
+		owner: string,
+		name: string,
+		signal: AbortSignal,
+	): Promise<CloudCompanyCodeRepositoryStatus> {
+		const input = record(
+			await this.#once(
+				"qorpera_folder_code_status",
+				{ p_binding: this.#binding, p_owner: owner, p_name: name },
+				signal,
+			),
+			["schema", "registered", "repository", "sessions", "sessionsTotal", "changesCount", "recentChanges", "queue"],
+		);
+		if (
+			input.schema !== "qorpera.code-repository-status/v1" ||
+			typeof input.registered !== "boolean" ||
+			!Array.isArray(input.sessions) ||
+			!Array.isArray(input.recentChanges) ||
+			!input.repository ||
+			typeof input.repository !== "object" ||
+			Array.isArray(input.repository) ||
+			!input.queue ||
+			typeof input.queue !== "object" ||
+			Array.isArray(input.queue)
+		)
+			invalid();
+		return {
+			registered: input.registered,
+			repository: input.repository as CloudCompanyCodeRepositoryStatus["repository"],
+			sessions: input.sessions as CloudCompanyCodeRepositoryStatus["sessions"],
+			sessionsTotal: counter(input.sessionsTotal),
+			changesCount: counter(input.changesCount),
+			recentChanges: input.recentChanges as CloudCompanyCodeRepositoryStatus["recentChanges"],
+			queue: input.queue as CloudCompanyCodeRepositoryStatus["queue"],
+		};
+	}
+
+	async codeClaimOverlaps(
+		request: {
+			readonly repository: CloudCodingRepository;
+			readonly claimedPaths: readonly string[];
+			readonly excludeWorkerId?: string;
+		},
+		signal: AbortSignal,
+	): Promise<readonly CloudCompanyCodeClaimOverlap[]> {
+		const input = record(
+			await this.#once(
+				"qorpera_folder_code_claim_overlaps",
+				{
+					p_binding: this.#binding,
+					p_request: {
+						repository: request.repository,
+						claimedPaths: [...request.claimedPaths],
+						...(request.excludeWorkerId === undefined ? {} : { excludeWorkerId: request.excludeWorkerId }),
+					},
+				},
+				signal,
+			),
+			["schema", "overlaps"],
+		);
+		if (input.schema !== "qorpera.code-claim-overlaps/v1" || !Array.isArray(input.overlaps)) invalid();
+		return input.overlaps as CloudCompanyCodeClaimOverlap[];
+	}
+
+	async codeHistory(
+		request: {
+			readonly owner: string;
+			readonly name: string;
+			readonly state?: string;
+			readonly workerId?: string;
+			readonly path?: string;
+			readonly cursor?: number;
+			readonly limit?: number;
+		},
+		signal: AbortSignal,
+	): Promise<CloudCompanyCodeHistoryPage> {
+		const input = record(
+			await this.#once(
+				"qorpera_folder_code_history",
+				{
+					p_binding: this.#binding,
+					p_request: {
+						owner: request.owner,
+						name: request.name,
+						...(request.state === undefined ? {} : { state: request.state }),
+						...(request.workerId === undefined ? {} : { workerId: request.workerId }),
+						...(request.path === undefined ? {} : { path: request.path }),
+						...(request.cursor === undefined ? {} : { cursor: request.cursor }),
+						...(request.limit === undefined ? {} : { limit: request.limit }),
+					},
+				},
+				signal,
+			),
+			["schema", "owner", "name", "total", "changes", "nextCursor"],
+		);
+		if (
+			input.schema !== "qorpera.code-history/v1" ||
+			typeof input.owner !== "string" ||
+			typeof input.name !== "string" ||
+			!Array.isArray(input.changes) ||
+			(input.nextCursor !== null && counter(input.nextCursor) < 1)
+		)
+			invalid();
+		return {
+			owner: input.owner,
+			name: input.name,
+			total: counter(input.total),
+			changes: input.changes as CloudCompanyCodeHistoryPage["changes"],
+			nextCursor: input.nextCursor as number | null,
+		};
+	}
+
+	async codeQuery(request: Record<string, unknown>, signal: AbortSignal): Promise<CloudCompanyCodeQueryAsked> {
+		const refusal = (error: unknown): CloudCompanyCodeRefusal | undefined =>
+			error instanceof CloudCompanyFolderRpcError
+				? CODE_REFUSALS.get(`${error.code} ${error.detail}`)
+				: undefined;
+		try {
+			const raw = await this.#once(
+				"qorpera_folder_code_query",
+				{ p_binding: this.#binding, p_request: request },
+				signal,
+			);
+			const state = (raw as { state?: unknown } | null)?.state;
+			const input = record(
+				raw,
+				state === "queued" ? ["schema", "state", "requestId"] : ["schema", "state", "reason"],
+			);
+			if (input.schema !== "qorpera.code-query/v1") invalid();
+			if (state === "queued") return { state, requestId: uuid(input.requestId) };
+			if (state === "refused" && (input.reason === "no_executor" || input.reason === "restoring"))
+				return { state: "refused", reason: input.reason };
+			invalid();
+		} catch (error) {
+			const reason = refusal(error);
+			if (reason !== undefined) return { state: "refused", reason };
+			throw error;
+		}
+	}
+
+	async codeLifecycle(
+		request: Record<string, unknown> & { readonly operationKey: string },
+		signal: AbortSignal,
+	): Promise<CloudCompanyCodeLifecycleAnswer> {
+		return this.#codeEffect(
+			"qorpera_folder_code_lifecycle",
+			request,
+			signal,
+			(answer): CloudCompanyCodeLifecycleAnswer => {
+				const state = (answer as { state?: unknown } | null)?.state;
+				const input = record(
+					answer,
+					state === "queued"
+						? ["schema", "state", "requestId"]
+						: state === "done"
+							? ["schema", "state", "result", "owner", "name", "archivedAt"]
+							: state === "already"
+								? ["schema", "state", "owner", "name"]
+								: ["schema", "state", "reason"],
+					state === "already" ? ["archivedAt"] : [],
+				);
+				if (input.schema !== "qorpera.code-lifecycle/v1") invalid();
+				if (state === "queued") return { state, requestId: uuid(input.requestId) };
+				if (
+					state === "done" &&
+					input.result === "archived" &&
+					typeof input.owner === "string" &&
+					typeof input.name === "string" &&
+					typeof input.archivedAt === "string"
+				)
+					return { state, result: "archived", owner: input.owner, name: input.name, archivedAt: input.archivedAt };
+				if (state === "already" && typeof input.owner === "string" && typeof input.name === "string")
+					return {
+						state,
+						owner: input.owner,
+						name: input.name,
+						...(typeof input.archivedAt === "string" ? { archivedAt: input.archivedAt } : {}),
+					};
+				const reason = CODE_LIFECYCLE_REASONS.find((known) => known === input.reason);
+				if (state !== "refused" || reason === undefined) invalid();
+				return { state: "refused", reason };
+			},
+		);
 	}
 
 	/** Says what a customer will notice of a change, or gives a picture of it (`qorpera_folder_describe_code_change`,

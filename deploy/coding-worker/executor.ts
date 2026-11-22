@@ -13,8 +13,9 @@ import { CODE_BUNDLE_FOLDER, type CodeBundleStore, createCodeBundleStore } from 
 import { CodeChangeRecords } from "../../packages/runner-orchestrator/src/code-change-records.ts";
 import { CodeHostCare } from "../../packages/runner-orchestrator/src/code-host-care.ts";
 import {
-	archiveCodeArea, bundleCodeArea, checkCodeArea, collectCodeGarbage, fsckCodeArea, removeCodeDownloads, retireCodeWorktrees,
-	undoCodeChange, writeCodeChangeRecords,
+	archiveCodeArea, bundleCodeArea, checkCodeArea, collectCodeGarbage, diffCodeArea, fsckCodeArea, listCodeBranches,
+	logCodeArea, previewCodeMerge, pruneCodeArea, removeCodeDownloads, retireCodeWorktrees, showCodeFile, startCodeArea,
+	tagCodeArea, undoCodeChange, writeCodeChangeRecords,
 } from "../../packages/runner-orchestrator/src/code-host-jobs.ts";
 import { CodeHostRepositories } from "../../packages/runner-orchestrator/src/code-host-repositories.ts";
 import { CODE_HOST_IMPORT_JOBS } from "../../packages/runner-orchestrator/src/code-host-import.ts";
@@ -24,9 +25,10 @@ import { CodeImportStop, type CodeImportTransports } from "../../packages/runner
 import { fetchGitHubImport } from "../../packages/runner-orchestrator/src/code-import-fetch.ts";
 import { CodeImport } from "../../packages/runner-orchestrator/src/code-import-run.ts";
 import { codeHostErrorCode, codingErrorDetail } from "../../packages/runner-orchestrator/src/coding-error-detail.ts";
-import { exportCodeSiteSource, readCodeSiteTree } from "../../packages/runner-orchestrator/src/code-host-sites.ts";
+import { exportCodeSiteSource, pinCodeSiteTree, readCodeSiteTree } from "../../packages/runner-orchestrator/src/code-host-sites.ts";
 import { CodeHostJobs, type CodeHostViewEvent } from "../../packages/runner-orchestrator/src/code-host-views.ts";
 import { CodeSiteUploads } from "../../packages/runner-orchestrator/src/code-site-uploads.ts";
+import { RealtimeOrchestratorWake } from "../../packages/runner-orchestrator/src/orchestrator-wake.ts";
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
 import { CodingMachineCommandSecrets } from "../../packages/runner-orchestrator/src/coding-command-secrets.ts";
 import { codingCommandExecution } from "../../packages/runner-orchestrator/src/coding-folder-command-transport.ts";
@@ -449,12 +451,18 @@ export function codeImportTransports(broker: { origin: string; executorToken: st
  * the one bundle store; every git step runs in the company's code host). A restore and an import need the bundle store. */
 export function codeHostRequestsOf(parts: {
 	control: CodeHostRequestsOptions["control"]; hosts: Pick<CodeHostJobs, "run">; records: CodeHostRequestsOptions["records"];
+	sites?: CodeHostRequestsOptions["sites"];
 	bundles: CodeBundleStore | undefined; transports: CodeImportTransports; owner: string; machineIdSha256: string;
 }): CodeHostRequests {
-	const { control, hosts, records, bundles, transports, owner, machineIdSha256 } = parts;
+	const { control, hosts, records, sites, bundles, transports, owner, machineIdSha256 } = parts;
 	return new CodeHostRequests({
-		control, hosts, records, owner, machineIdSha256,
-		jobs: { undo: undoCodeChange, archive: archiveCodeArea, removeDownloads: removeCodeDownloads },
+		control, hosts, records, ...(sites ? { sites } : {}), owner, machineIdSha256,
+		jobs: {
+			undo: undoCodeChange, archive: archiveCodeArea, removeDownloads: removeCodeDownloads,
+			start: startCodeArea, log: logCodeArea, diff: diffCodeArea, show: showCodeFile,
+			branches: listCodeBranches, mergePreview: previewCodeMerge, tag: tagCodeArea, prune: pruneCodeArea,
+			pinSite: pinCodeSiteTree,
+		},
 		...(bundles ? { restore: new CodeRestore({
 			control, hosts, bundles, check: checkCodeArea, bundle: bundleCodeArea, owner, machineIdSha256, report: logCodeRecord,
 		}) } : {}),
@@ -535,12 +543,20 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		machineIdSha256: createHash("sha256").update(machine).digest("hex"), report: logCodeRecord,
 		...(nativeEdge ? { nativeEdge, exportSource: exportCodeSiteSource } : {}),
 	}) : undefined;
+	const machineIdSha256 = createHash("sha256").update(machine).digest("hex");
 	const codeRequests = codeHostJobs && codeRecords ? codeHostRequestsOf({
-		control, hosts: codeHostJobs, records: codeRecords, bundles: codeBundles,
+		control, hosts: codeHostJobs, records: codeRecords, ...(codeSites ? { sites: codeSites } : {}), bundles: codeBundles,
 		transports: codeImportTransports(config.broker ? { origin: config.broker.origin,
 			executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner } : null),
-		owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
+		owner: config.owner, machineIdSha256,
 	}) : undefined;
+	const requestWake = codeRequests && config.memberScreens ? new RealtimeOrchestratorWake({
+		supabaseUrl: config.supabaseUrl,
+		publishableKey: config.memberScreens.publishableKey,
+		topic: () => `qorpera-code-requests-wake-${createHash("sha256").update(`qorpera.code-requests-wake/v1:${config.owner}:${machineIdSha256}`).digest("hex")}`,
+		onState: (state, reason) => console.log(JSON.stringify({ event: "code-request-wake", state, ...(reason ? { reason } : {}) })),
+	}) : undefined;
+	requestWake?.subscribe(() => codeRequests?.wake());
 	let folder: LxdCodingExecutorHostOptions["folder"];
 	if (config.folder) {
 		const agent = await readPinned(config.folder.agent), program = await readPinned(config.folder.program);
@@ -863,14 +879,18 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		// the passes, so an undo never waits behind one, and are counted in the pass after they ended.
 		const requesting = (async () => {
 			if (!codeRequests) return;
+			requestWake?.start();
 			while (!stop.signal.aborted) {
+				let worked = false;
 				try {
 					const passed = await codeRequests.pass(stop.signal);
-					if (passed.done + passed.refused + passed.failed + passed.busy > 0) console.log(JSON.stringify({ event: "code-request", step: "pass", ...passed }));
+					const total = passed.done + passed.refused + passed.failed + passed.busy;
+					if (total > 0) console.log(JSON.stringify({ event: "code-request", step: "pass", ...passed }));
+					worked = passed.done + passed.refused + passed.failed > 0;
 				} catch (error) {
 					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "code-request-error", step: "pass", ...loggedError(error) }));
 				}
-				await setTimeout(5_000, undefined, { signal: stop.signal }).catch(() => undefined);
+				if (!worked) await codeRequests.wait(requestWake?.listening ? 5_000 : 1_000, stop.signal);
 			}
 		})();
 		// The change record's files a landing's or an undo's own job did not write (a refused landing, a described
@@ -912,6 +932,10 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			}
 		};
 		await closeStep("executor-drain", () => executor?.drain());
+		await closeStep("code-requests-wake", () => {
+			requestWake?.stop();
+			return undefined;
+		});
 		await closeStep("code-requests", () => codeRequests?.settled());
 		await closeStep("machine-host", () => machineHost?.settled());
 		await closeStep("host-settled", async () => {

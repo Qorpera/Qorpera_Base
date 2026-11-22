@@ -45,7 +45,14 @@ const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_manage_hook",
 	"qorpera_folder_note_interface_changes",
 	"qorpera_folder_request_code_undo",
+	"qorpera_folder_request_code_undo_v2",
 	"qorpera_folder_code_request",
+	"qorpera_folder_code_request_v2",
+	"qorpera_folder_code_status",
+	"qorpera_folder_code_claim_overlaps",
+	"qorpera_folder_code_history",
+	"qorpera_folder_code_query",
+	"qorpera_folder_code_lifecycle",
 	"qorpera_folder_describe_code_change",
 	"qorpera_folder_request_code_import",
 	"qorpera_folder_code_import",
@@ -127,7 +134,14 @@ const PERMITTED_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_close_proposal",
 	"qorpera_folder_archive_coding_worker",
 	"qorpera_folder_request_code_undo",
+	"qorpera_folder_request_code_undo_v2",
 	"qorpera_folder_code_request",
+	"qorpera_folder_code_request_v2",
+	"qorpera_folder_code_status",
+	"qorpera_folder_code_claim_overlaps",
+	"qorpera_folder_code_history",
+	"qorpera_folder_code_query",
+	"qorpera_folder_code_lifecycle",
 	"qorpera_folder_describe_code_change",
 	"qorpera_folder_request_code_import",
 	"qorpera_folder_code_import",
@@ -249,7 +263,11 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 								: // One routine whole (32 KiB of instructions, each character escaped at worst), or a
 									// page of 32 with theirs cut; a page of 16 workers with their outputs' paths.
 									response.ok &&
-										(method === "qorpera_folder_agent_routines" || method === "qorpera_folder_agent_workers")
+										(method === "qorpera_folder_agent_routines" ||
+											method === "qorpera_folder_agent_workers" ||
+											method === "qorpera_folder_code_request_v2" ||
+											method === "qorpera_folder_code_history" ||
+											method === "qorpera_folder_code_status")
 									? 1024 * 1024
 									: response.ok
 										? 256 * 1024

@@ -706,3 +706,53 @@ it("routes manage_worker and report_work to the folder writer, and says how work
 	// The writer's own answer: a saved report ends the worker's turn.
 	expect(answered.completesTurn).toBe(true);
 });
+
+it("forwards claimedPaths on coding dispatch and attaches claimOverlapWarning when active sessions overlap", async () => {
+	const f = await fixture({ files: { [TODO]: todoText() } });
+	const otherId = "4b0e9c1a-0000-4000-8000-000000000099";
+	const overlaps = vi.spyOn(f.folder, "codeClaimOverlaps").mockResolvedValueOnce([
+		{
+			workerId: otherId,
+			branch: `qorpera/coding/${otherId}`,
+			phase: "working",
+			claimedPaths: ["src/cart/**"],
+			overlappingPaths: ["src/cart/totals.ts"],
+			updatedAt: "2026-11-22T09:00:00Z",
+		},
+	]);
+	const result = parse(
+		await f.workers().change(
+			{
+				...DISPATCH,
+				operationKey: "dispatch-coding-claim",
+				workerKey: "cart-totals",
+				species: "coding",
+				harness: "codex",
+				repository: { host: "qorpera", owner: "acme", name: "shop", baseBranch: "main" },
+				claimedPaths: ["src/cart/totals.ts"],
+			},
+			f.context,
+		),
+	);
+	expect(result).toMatchObject({
+		schema: "qorpera.agent-worker-receipt/v1",
+		action: "dispatch",
+		outcome: "saved",
+		claimOverlapWarning: expect.stringContaining("overlap with 1 active coding session"),
+		overlappingSessions: [
+			{
+				workerId: otherId,
+				phase: "working",
+				claimedPaths: ["src/cart/**"],
+			},
+		],
+	});
+	expect(overlaps).toHaveBeenCalledWith(
+		{
+			repository: { host: "qorpera", owner: "acme", name: "shop", baseBranch: "main" },
+			claimedPaths: ["src/cart/totals.ts"],
+			excludeWorkerId: expect.any(String),
+		},
+		expect.any(AbortSignal),
+	);
+});

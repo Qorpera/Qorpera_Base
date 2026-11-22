@@ -15,9 +15,18 @@ import {
 	type CodeHostJob,
 	CodeHostJobFailure,
 	CodeHostRefusal,
+	type diffCodeArea,
+	type listCodeBranches,
+	type logCodeArea,
+	type previewCodeMerge,
+	type pruneCodeArea,
 	type removeCodeDownloads,
+	type showCodeFile,
+	type startCodeArea,
+	type tagCodeArea,
 	type undoCodeChange,
 } from "./code-host-jobs.ts";
+import type { pinCodeSiteTree } from "./code-host-sites.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
 import {
 	CODE_IMPORT_RPCS,
@@ -78,14 +87,21 @@ const KINDS = ["undo", "download", "restore"] as const;
 /** How many stranded sessions one `qorpera_code_restore_strand` names at most. */
 export const CODE_RESTORE_STRAND_IDS = 200;
 
-/** The code host jobs the requests run: `code-host-jobs.ts`'s functions, given by the caller. */
 export interface CodeRequestJobs {
 	undo: typeof undoCodeChange;
 	archive: typeof archiveCodeArea;
 	removeDownloads: typeof removeCodeDownloads;
+	start?: typeof startCodeArea;
+	log?: typeof logCodeArea;
+	diff?: typeof diffCodeArea;
+	show?: typeof showCodeFile;
+	branches?: typeof listCodeBranches;
+	mergePreview?: typeof previewCodeMerge;
+	tag?: typeof tagCodeArea;
+	prune?: typeof pruneCodeArea;
+	pinSite?: typeof pinCodeSiteTree;
 }
 
-/** What every claimed request carries: its lease, and the repository it is about. */
 interface Claimed {
 	requestId: string;
 	token: string;
@@ -96,41 +112,51 @@ interface Claimed {
 }
 export interface CodeUndoRequest extends Claimed {
 	kind: "undo";
-	/** The change to take out, by its row's two ends of main. */
 	change: { n: number; mainBefore: string; mainAfter: string };
 	andLater: boolean;
-	/** The new commit's message. */
 	message: string;
+	dryRun?: boolean;
+	runChecks?: boolean;
+	force?: boolean;
+	checksEnabled?: boolean;
+	siteConfigured?: boolean;
+	priorSite?: { change: number; tree: string } | null;
+	targets?: { n: number; mainBefore: string; mainAfter: string }[];
+}
+export interface CodeQueryRequest extends Claimed {
+	kind: "query";
+	op: "log" | "diff" | "show" | "branches" | "merge_preview";
+	query: Record<string, unknown>;
+}
+export interface CodeLifecycleRequest extends Claimed {
+	kind: "lifecycle";
+	op: "create" | "tag" | "prune";
+	lifecycle: Record<string, unknown>;
 }
 export interface CodeDownloadRequest extends Claimed {
 	kind: "download";
-	/** `remove`: the request's file is past its time. */
 	work: "make" | "remove";
 	file: "files" | "history";
 	fileName: string;
-	/** `code/<owner>/<name>/downloads/<fileName>`. */
 	path: string;
 }
-/** A restore, as the kernel hands it out: part R's `CodeRestore` takes it as it is, and asks the request's steps
- * itself, with `requestId` and `token`. */
 export interface CodeRestoreRequest extends Claimed {
 	kind: "restore";
 	mode: "verify" | "restore" | "discard";
-	/** A stored bundle's name, or `fresh`; null for a discard. */
 	bundle: string | null;
 	damaged: "keep" | "remove" | null;
-	/** What an earlier run of the request saved of how far it got. */
 	progress: Record<string, unknown> | null;
-	/** A discard's set-aside path. */
 	path: string | null;
-	/** The repository's sessions that are not archived. */
 	sessions: { workerId: string; baseSha: string }[];
 }
-/** An import is the kernel's item as part C1 reads it (`codeImportRequestOf`), whole. */
-export type CodeRequest = CodeUndoRequest | CodeDownloadRequest | CodeRestoreRequest | CodeImportRequest;
+export type CodeRequest =
+	| CodeUndoRequest
+	| CodeQueryRequest
+	| CodeLifecycleRequest
+	| CodeDownloadRequest
+	| CodeRestoreRequest
+	| CodeImportRequest;
 
-/** What `qorpera_code_request_finish` records of one request (`qorpera.code-request-outcome/v1`), by kind; an import's
- * is part C1's. */
 export type CodeRequestOutcome = CodeImportOutcome | CodeOtherOutcome;
 type CodeOtherOutcome = { schema: "qorpera.code-request-outcome/v1" } & (
 	| {
@@ -141,6 +167,24 @@ type CodeOtherOutcome = { schema: "qorpera.code-request-outcome/v1" } & (
 			filesChanged: number;
 			paths: CodeChangePath[];
 			pathsMore: number;
+			matchesBeforeTree?: boolean;
+			checksVerified?: "passed" | "inherited" | "none" | "off" | "not_run";
+			siteReused?: boolean;
+			siteNeedsRebuild?: boolean;
+	  }
+	| {
+			state: "done";
+			result: "dry_run";
+			clean: boolean;
+			mainBefore: string;
+			filesChanged: number;
+			paths: CodeChangePath[];
+			pathsMore: number;
+			wouldRevert: number[];
+			matchesBeforeTree: boolean;
+			checksFilePresent: boolean;
+			conflictedPaths: string[];
+			conflictMessages: string[];
 	  }
 	| { state: "done"; result: "nothing"; mainSha: string }
 	| { state: "done"; result: "made"; path: string; bytes: number; sha256: string; mainSha: string }
@@ -158,35 +202,40 @@ type CodeOtherOutcome = { schema: "qorpera.code-request-outcome/v1" } & (
 			movedTo: string | null;
 	  }
 	| { state: "done"; result: "discarded" }
-	| { state: "refused"; code: string; paths?: string[] }
+	| { state: "done"; result: "ok"; data: Record<string, unknown> }
+	| { state: "done"; result: "created"; mainSha: string; created: boolean }
+	| { state: "done"; result: "tagged"; tag: string; kind: "annotated" | "lightweight"; sha: string; targetSha: string }
+	| { state: "done"; result: "tags"; tags: Record<string, unknown>[] }
+	| {
+			state: "done";
+			result: "pruned";
+			retiredWorktrees: string[];
+			deletedBranches: string[];
+			skippedWorktrees: { workerId: string; reason: string }[];
+	  }
+	| { state: "refused"; code: string; paths?: string[]; messages?: string[] }
 	| { state: "busy" }
 	| { state: "failed"; code: string }
 );
 
 export interface CodeHostRequestsOptions {
 	control: { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> };
-	/** The executor's code host jobs, with the `yields` option. */
 	hosts: Pick<CodeHostJobs, "run">;
 	jobs: CodeRequestJobs;
-	/** The change record's files: an undo's are written inside its own job. */
 	records: Pick<CodeChangeRecords, "inJob">;
-	/** Part R's `CodeRestore`. Without it a restore request is finished failed (`NOT_BUILT`). */
+	sites?: { wake(): void };
+	verifyUndoChecks?: (
+		request: CodeUndoRequest,
+		candidate: { commitSha: string; mainBefore: string; matchesBeforeTree: boolean; checksFilePresent: boolean },
+		job: CodeHostJob,
+	) => Promise<"passed" | "inherited" | "none" | "off" | "not_run">;
 	restore?: { run(request: CodeRestoreRequest, signal: AbortSignal): Promise<CodeRequestOutcome> };
-	/** Part C3's `CodeImport`, which runs one import's steps and answers its outcome. Without it no claim asks for an
-	 * import. */
 	imports?: { run(request: CodeImportRequest, signal: AbortSignal): Promise<CodeImportOutcome> };
 	owner: string;
 	machineIdSha256: string;
-	/** The log lines `code-request` and `code-request-error` (whose `error` is the error itself, for the log to
-	 * redact). */
 	report?: (event: Record<string, unknown>) => void;
-	/** How many requests one pass claims, 1 to 20. Default 10. */
 	limit?: number;
-	/** How long the finish and the record's files may hold an undo's job, which holds its company's line. Default
-	 * 10 s. */
 	recordMs?: number;
-	/** How long each call that archives a restore's stranded sessions may take, before the restore's finish and after
-	 * it. Default 5 s. */
 	strandMs?: number;
 }
 
@@ -198,8 +247,12 @@ const STRAND = "qorpera.code-restore-strand/v1";
 const CALL_MS = 10_000;
 const SHA = /^[0-9a-f]{40}$/;
 const YIELDED = "CODE_HOST_JOB_YIELDED";
-/** The refusals of an undo that the kernel takes as refusals, for the agent to act on; any other is a failure. */
-const UNDO_REFUSALS = /^CODE_HOST_(?:UNDO_CONFLICT|UNDO_NOT_IN_MAIN|UNDO_UNKNOWN_COMMIT|NAMES_[A-Z0-9_]{1,60})$/;
+const UNDO_REFUSALS =
+	/^CODE_HOST_(?:UNDO_CONFLICT|UNDO_NOT_IN_MAIN|UNDO_UNKNOWN_COMMIT|UNDO_CHECKS_[A-Z0-9_]{1,40}|NAMES_[A-Z0-9_]{1,60})$/;
+const QUERY_REFUSALS =
+	/^CODE_HOST_(?:REF_NOT_FOUND|FILE_NOT_FOUND|SYMLINK_REFUSED|NOT_A_FILE|BINARY_FILE|NOT_SEEDED|AREA_FROM_GITHUB|AREA_NO_BASE|RESTORE_IN_PROGRESS)$/;
+const LIFECYCLE_REFUSALS =
+	/^CODE_HOST_(?:TAG_EXISTS|REF_NOT_FOUND|NOT_SEEDED|AREA_FROM_GITHUB|AREA_NO_BASE|RESTORE_IN_PROGRESS)$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -249,14 +302,64 @@ function requestOf(value: unknown): CodeRequest {
 			!entry.message.trim()
 		)
 			throw new Error("CODE_REQUEST_INVALID");
-		return {
+		const parsed: CodeUndoRequest = {
 			...claimed,
 			kind: "undo",
 			change: { n: change.n, mainBefore: change.mainBefore, mainAfter: change.mainAfter },
 			andLater: entry.andLater,
-			// The job takes a commit message of at most 4096 bytes.
 			message: withinBytes(entry.message, 4096),
 		};
+		if (entry.dryRun !== undefined) {
+			if (typeof entry.dryRun !== "boolean") throw new Error("CODE_REQUEST_INVALID");
+			parsed.dryRun = entry.dryRun;
+		}
+		if (entry.runChecks !== undefined) {
+			if (typeof entry.runChecks !== "boolean") throw new Error("CODE_REQUEST_INVALID");
+			parsed.runChecks = entry.runChecks;
+		}
+		if (entry.force !== undefined) {
+			if (typeof entry.force !== "boolean") throw new Error("CODE_REQUEST_INVALID");
+			parsed.force = entry.force;
+		}
+		if (entry.checksEnabled !== undefined) {
+			if (typeof entry.checksEnabled !== "boolean") throw new Error("CODE_REQUEST_INVALID");
+			parsed.checksEnabled = entry.checksEnabled;
+		}
+		if (entry.siteConfigured !== undefined) {
+			if (typeof entry.siteConfigured !== "boolean") throw new Error("CODE_REQUEST_INVALID");
+			parsed.siteConfigured = entry.siteConfigured;
+		}
+		if (entry.priorSite !== undefined) {
+			if (entry.priorSite === null) parsed.priorSite = null;
+			else if (isRecord(entry.priorSite) && whole(entry.priorSite.change, 1) && sha(entry.priorSite.tree)) {
+				parsed.priorSite = { change: entry.priorSite.change, tree: entry.priorSite.tree };
+			} else throw new Error("CODE_REQUEST_INVALID");
+		}
+		if (entry.targets !== undefined) {
+			if (!Array.isArray(entry.targets) || entry.targets.length < 1 || entry.targets.length > 100)
+				throw new Error("CODE_REQUEST_INVALID");
+			parsed.targets = entry.targets.map((item) => {
+				if (!isRecord(item) || !whole(item.n, 1) || !sha(item.mainBefore) || !sha(item.mainAfter))
+					throw new Error("CODE_REQUEST_INVALID");
+				return { n: item.n, mainBefore: item.mainBefore, mainAfter: item.mainAfter };
+			});
+		}
+		return parsed;
+	}
+	if (entry.kind === "query") {
+		const op = entry.op;
+		if (
+			(op !== "log" && op !== "diff" && op !== "show" && op !== "branches" && op !== "merge_preview") ||
+			!isRecord(entry.query)
+		)
+			throw new Error("CODE_REQUEST_INVALID");
+		return { ...claimed, kind: "query", op, query: entry.query };
+	}
+	if (entry.kind === "lifecycle") {
+		const op = entry.op;
+		if ((op !== "create" && op !== "tag" && op !== "prune") || !isRecord(entry.lifecycle))
+			throw new Error("CODE_REQUEST_INVALID");
+		return { ...claimed, kind: "lifecycle", op, lifecycle: entry.lifecycle };
 	}
 	if (entry.kind === "download") {
 		const { work, file, fileName, path } = entry;
@@ -307,6 +410,8 @@ export class CodeHostRequests {
 	readonly #hosts: Pick<CodeHostJobs, "run">;
 	readonly #jobs: CodeRequestJobs;
 	readonly #records: Pick<CodeChangeRecords, "inJob">;
+	readonly #sites: CodeHostRequestsOptions["sites"];
+	readonly #verifyUndoChecks: CodeHostRequestsOptions["verifyUndoChecks"];
 	readonly #restore: CodeHostRequestsOptions["restore"];
 	readonly #imports: CodeHostRequestsOptions["imports"];
 	readonly #owner: string;
@@ -315,12 +420,11 @@ export class CodeHostRequests {
 	readonly #limit: number;
 	readonly #recordMs: number;
 	readonly #strandMs: number;
-	/** The downloads, restores and imports that run on beside the passes. */
 	readonly #beside = new Set<Promise<void>>();
-	/** The import that runs, to its finish: while it does, no claim asks for another. */
 	#importing: Promise<void> | undefined;
-	/** What those that ended since the last pass came to. */
 	#ended: Counts = zero();
+	#woken = false;
+	readonly #waiting = new Set<() => void>();
 
 	constructor(options: CodeHostRequestsOptions) {
 		const limit = options.limit ?? 10,
@@ -341,17 +445,18 @@ export class CodeHostRequests {
 		this.#hosts = options.hosts;
 		this.#jobs = options.jobs;
 		this.#records = options.records;
+		this.#sites = options.sites;
+		this.#verifyUndoChecks = options.verifyUndoChecks;
 		this.#restore = options.restore;
 		this.#imports = options.imports;
 		this.#owner = options.owner;
 		this.#machineIdSha256 = options.machineIdSha256;
 		const report = options.report;
-		// The log must never change what happens: a reporter that throws is not heard.
 		this.#report = (event) => {
 			try {
 				report?.(event);
 			} catch {
-				/* not heard */
+				undefined;
 			}
 		};
 		this.#limit = limit;
@@ -359,16 +464,34 @@ export class CodeHostRequests {
 		this.#strandMs = strandMs;
 	}
 
-	/** One pass: the requests this executor may do now. Each undo is run to its finish before the pass ends; a download,
-	 * a restore or an import is started and runs on beside the passes, and nothing of the pass waits for it. It never
-	 * throws for one request, nor for a kernel that does not answer: those are reported (`code-request-error`). The
-	 * counts are of the requests that ended since the last pass began to count, by how they ended: this pass's undos, and
-	 * the downloads, restores and imports that finished meanwhile. A request whose finish the kernel did not take counts
-	 * as failed; its lease ends, and it is claimed again. */
+	wake(): void {
+		this.#woken = true;
+		for (const end of [...this.#waiting]) end();
+	}
+
+	wait(ms: number, signal: AbortSignal): Promise<void> {
+		return new Promise<void>((resolve) => {
+			if (this.#woken || signal.aborted) {
+				this.#woken = false;
+				resolve();
+				return;
+			}
+			const end = () => {
+				clearTimeout(timer);
+				signal.removeEventListener("abort", end);
+				this.#waiting.delete(end);
+				this.#woken = false;
+				resolve();
+			};
+			const timer = setTimeout(end, Math.max(0, ms));
+			signal.addEventListener("abort", end, { once: true });
+			this.#waiting.add(end);
+		});
+	}
+
 	async pass(signal: AbortSignal): Promise<Counts> {
 		const counts = this.#ended;
 		this.#ended = zero();
-		// The pass's signal may live as long as the process: it is handed to no `AbortSignal.any` (abort-scope.ts).
 		await withAbortScope(signal, async (scoped) => {
 			let claimed: CodeRequest[];
 			try {
@@ -377,10 +500,17 @@ export class CodeHostRequests {
 				if (!scoped.aborted) this.#report({ event: "code-request-error", step: "claim", error });
 				return;
 			}
-			// An undo is as urgent as a landing: before anything that may take long.
-			for (const request of claimed)
+			for (const request of claimed) {
 				if (request.kind === "undo") counts[await this.#guarded(request, () => this.#undo(request, scoped))] += 1;
-			for (const request of claimed) if (request.kind !== "undo") this.#start(request, signal);
+				else if (request.kind === "query")
+					counts[await this.#guarded(request, () => this.#query(request, scoped))] += 1;
+				else if (request.kind === "lifecycle")
+					counts[await this.#guarded(request, () => this.#lifecycle(request, scoped))] += 1;
+			}
+			for (const request of claimed) {
+				if (request.kind === "download" || request.kind === "restore" || request.kind === "import")
+					this.#start(request, signal);
+			}
 		});
 		return counts;
 	}
@@ -423,11 +553,21 @@ export class CodeHostRequests {
 		}
 	}
 
-	/** The claim, by its named arguments: the kinds this executor takes now, `import` among them only while it has an
-	 * import runner and none runs (the kernel hands out one import a claim at most, and nothing else of that company
-	 * while its import runs). */
+	#hasQueryJobs(): boolean {
+		return Boolean(
+			this.#jobs.log || this.#jobs.diff || this.#jobs.show || this.#jobs.branches || this.#jobs.mergePreview,
+		);
+	}
+
+	#hasLifecycleJobs(): boolean {
+		return Boolean(this.#jobs.start || this.#jobs.tag || this.#jobs.prune);
+	}
+
 	async #claim(signal: AbortSignal): Promise<CodeRequest[]> {
-		const kinds = this.#imports !== undefined && this.#importing === undefined ? [...KINDS, "import"] : [...KINDS];
+		const kinds: string[] = [...KINDS];
+		if (this.#imports !== undefined && this.#importing === undefined) kinds.push("import");
+		if (this.#hasQueryJobs()) kinds.push("query");
+		if (this.#hasLifecycleJobs()) kinds.push("lifecycle");
 		const answer = await this.#call(
 			CODE_REQUEST_RPCS[0],
 			{ p_owner: this.#owner, p_machine_id_sha256: this.#machineIdSha256, p_limit: this.#limit, p_kinds: kinds },
@@ -441,8 +581,6 @@ export class CodeHostRequests {
 				claimed.push(requestOf(entry));
 			} catch (error) {
 				this.#report({ event: "code-request-error", step: "claim", error });
-				// A request this executor cannot read is not left to be claimed again and again: it ends failed, when it
-				// names its lease.
 				const { requestId, token } = isRecord(entry) ? entry : {};
 				if (isUuid(requestId) && isUuid(token))
 					await this.#finish(
@@ -456,29 +594,125 @@ export class CodeHostRequests {
 		return claimed;
 	}
 
-	/** An undo: one new commit on main that takes the change out, in a job that does not yield. A landing that won main
-	 * meanwhile (`CODE_HOST_BASE_MOVED`) wrote nothing, and the undo is made once more from the new main. */
 	async #undo(request: CodeUndoRequest, signal: AbortSignal): Promise<Ended> {
 		const repository = repositoryOf(request);
-		// What the job left: the undo's outcome, whether the kernel took it inside the job, and the files to confirm.
+		const isV2 =
+			request.dryRun !== undefined ||
+			request.runChecks !== undefined ||
+			request.force !== undefined ||
+			request.checksEnabled !== undefined ||
+			request.siteConfigured !== undefined ||
+			request.priorSite !== undefined ||
+			request.targets !== undefined;
+		if (request.dryRun === true) {
+			let outcome: CodeRequestOutcome;
+			try {
+				const preview = await this.#hosts.run(
+					request.companyId,
+					request.environmentId,
+					signal,
+					(job) =>
+						this.#jobs.undo(job, {
+							repository,
+							requestId: request.requestId,
+							change: request.change,
+							andLater: request.andLater,
+							message: request.message,
+							dryRun: true,
+							...(request.targets ? { targets: request.targets } : {}),
+						}),
+					{ readOnly: true },
+				);
+				if (preview.state !== "dry_run") throw new Error("CODE_REQUEST_ANSWER_INVALID");
+				const wouldRevert = request.targets
+					? request.targets.map((t) => t.n).sort((a, b) => a - b)
+					: [request.change.n];
+				outcome = {
+					schema: SCHEMA,
+					state: "done",
+					result: "dry_run",
+					clean: preview.clean,
+					mainBefore: preview.mainBefore,
+					filesChanged: preview.filesChanged,
+					paths: preview.paths,
+					pathsMore: preview.pathsMore,
+					wouldRevert,
+					matchesBeforeTree: preview.matchesBeforeTree,
+					checksFilePresent: preview.checksFilePresent,
+					conflictedPaths: preview.conflictedPaths,
+					conflictMessages: preview.conflictMessages,
+				};
+			} catch (error) {
+				if (signal.aborted) outcome = { schema: SCHEMA, state: "busy" };
+				else if (error instanceof CodeHostRefusal && UNDO_REFUSALS.test(error.code))
+					outcome = {
+						schema: SCHEMA,
+						state: "refused",
+						code: error.code,
+						paths: error.code === "CODE_HOST_UNDO_UNKNOWN_COMMIT" ? [] : codeChangeRefusalPaths(error.paths),
+						...(error.messages.length ? { messages: [...error.messages] } : {}),
+					};
+				else {
+					outcome = { schema: SCHEMA, state: "failed", code: codeChangeErrorCode(error) };
+					this.#report({ event: "code-request-error", step: "job", ...named(request), error });
+				}
+			}
+			return this.#said(request, outcome, await this.#finish(request, outcome, signal, 2));
+		}
 		const left: {
 			outcome?: CodeRequestOutcome;
-			finished?: "recorded" | "lost";
+			finished?: { state: "recorded"; change: number | null } | { state: "lost" };
 			confirm?: () => Promise<void>;
+			wakeSites?: boolean;
 		} = {};
+		let checksVerified: "passed" | "inherited" | "none" | "off" | "not_run" | undefined;
 		let failure: { error: unknown } | undefined;
 		for (let again = true; ; again = false) {
 			try {
 				await this.#hosts.run(request.companyId, request.environmentId, signal, async (job) => {
+					const verifyChecks =
+						request.runChecks === true && request.force !== true
+							? async (candidate: {
+									commitSha: string;
+									mainBefore: string;
+									matchesBeforeTree: boolean;
+									checksFilePresent: boolean;
+								}): Promise<void> => {
+									if (!candidate.checksFilePresent) {
+										checksVerified = "none";
+										return;
+									}
+									if (request.checksEnabled === false) {
+										checksVerified = "off";
+										return;
+									}
+									if (candidate.matchesBeforeTree) {
+										checksVerified = "inherited";
+										return;
+									}
+									if (this.#verifyUndoChecks) {
+										checksVerified = await this.#verifyUndoChecks(request, candidate, job);
+										return;
+									}
+									throw new CodeHostRefusal(
+										"CODE_HOST_UNDO_CHECKS_REQUIRED",
+										[".qorpera/checks.json"],
+										[
+											"Repository has .qorpera/checks.json and the merged undo tree differs from prior verified commits; pass force: true for an emergency unchecked revert or use andLater: true to revert cleanly to a prior verified state.",
+										],
+									);
+								}
+							: undefined;
 					const undone = await this.#jobs.undo(job, {
 						repository,
 						requestId: request.requestId,
 						change: request.change,
 						andLater: request.andLater,
 						message: request.message,
+						...(request.targets ? { targets: request.targets } : {}),
+						...(verifyChecks ? { verifyChecks } : {}),
 					});
-					// Main has moved, and a ref is saved where git commits it: from here on nothing may fail the job.
-					await this.#undoneInJob(request, job, undone, left);
+					await this.#undoneInJob(request, job, undone, left, isV2, checksVerified);
 				});
 			} catch (error) {
 				if (
@@ -494,8 +728,6 @@ export class CodeHostRequests {
 			break;
 		}
 		if (left.outcome !== undefined) {
-			// The undo answered: main is where it says, also when the job failed afterwards (its files were not saved then,
-			// and nothing of them is confirmed).
 			if (failure)
 				this.#report({ event: "code-request-error", step: "job", ...named(request), error: failure.error });
 			const finished = left.finished ?? (await this.#finish(request, left.outcome, signal, 2));
@@ -505,6 +737,13 @@ export class CodeHostRequests {
 				} catch (error) {
 					this.#report({ event: "code-request-error", step: "files", ...named(request), error });
 				}
+			if (!failure && left.wakeSites) {
+				try {
+					this.#sites?.wake();
+				} catch (error) {
+					this.#report({ event: "code-request-error", step: "wake", ...named(request), error });
+				}
+			}
 			return this.#said(request, left.outcome, finished);
 		}
 		let outcome: CodeRequestOutcome;
@@ -515,8 +754,8 @@ export class CodeHostRequests {
 				schema: SCHEMA,
 				state: "refused",
 				code: error.code,
-				// The files the refusal named, as many as the outcome takes. A commit that is not here names no file.
 				paths: error.code === "CODE_HOST_UNDO_UNKNOWN_COMMIT" ? [] : codeChangeRefusalPaths(error.paths),
+				...(error.messages.length ? { messages: [...error.messages] } : {}),
 			};
 		else {
 			outcome = {
@@ -529,14 +768,18 @@ export class CodeHostRequests {
 		return this.#said(request, outcome, await this.#finish(request, outcome, signal, 2));
 	}
 
-	/** Inside an undo's job, once the undo answered: the finish, so the kernel writes the undo's row while the company's
-	 * line is held, and then the record's files that are due (the undo's own, its targets', the list), under one
-	 * deadline for both. It never throws. */
 	async #undoneInJob(
 		request: CodeUndoRequest,
 		job: CodeHostJob,
 		undone: Awaited<ReturnType<typeof undoCodeChange>>,
-		left: { outcome?: CodeRequestOutcome; finished?: "recorded" | "lost"; confirm?: () => Promise<void> },
+		left: {
+			outcome?: CodeRequestOutcome;
+			finished?: { state: "recorded"; change: number | null } | { state: "lost" };
+			confirm?: () => Promise<void>;
+			wakeSites?: boolean;
+		},
+		isV2: boolean,
+		checksVerified: "passed" | "inherited" | "none" | "off" | "not_run" | undefined,
 	): Promise<void> {
 		try {
 			if (undone?.state === "nothing" && sha(undone.mainSha))
@@ -544,6 +787,9 @@ export class CodeHostRequests {
 			else {
 				const diff = undone?.state === "undone" ? codeChangeDiffOf(undone.diff) : undefined;
 				if (undone?.state !== "undone" || !sha(undone.mainBefore) || !sha(undone.mainAfter) || !diff) return;
+				const matchesBeforeTree = undone.matchesBeforeTree === true;
+				const canReuseSite = Boolean(request.priorSite && matchesBeforeTree);
+				const siteNeedsRebuild = Boolean(request.siteConfigured && !canReuseSite);
 				left.outcome = {
 					schema: SCHEMA,
 					state: "done",
@@ -551,13 +797,41 @@ export class CodeHostRequests {
 					mainBefore: undone.mainBefore,
 					mainAfter: undone.mainAfter,
 					...codeChangeDiffReported(diff),
+					...(isV2
+						? {
+								matchesBeforeTree,
+								...(checksVerified !== undefined ? { checksVerified } : {}),
+								...(canReuseSite ? { siteReused: true } : {}),
+								...(siteNeedsRebuild ? { siteNeedsRebuild: true } : {}),
+							}
+						: {}),
 				};
 			}
 			const bounded = AbortSignal.any([job.signal, AbortSignal.timeout(this.#recordMs)]);
 			const outcome = left.outcome;
 			left.finished = await answeredBefore(() => this.#finish(request, outcome, bounded, 1), bounded);
-			// Only a row the kernel wrote has files.
-			if (left.finished !== "recorded" || outcome.state !== "done" || outcome.result !== "undone") return;
+			if (left.finished?.state !== "recorded" || outcome.state !== "done" || outcome.result !== "undone") return;
+			if (
+				left.finished.change !== null &&
+				request.priorSite &&
+				undone.state === "undone" &&
+				undone.matchesBeforeTree &&
+				this.#jobs.pinSite
+			) {
+				const pinSite = this.#jobs.pinSite;
+				const changeNumber = left.finished.change;
+				const priorTree = request.priorSite.tree;
+				const repository = repositoryOf(request);
+				await answeredBefore(
+					() =>
+						pinSite(
+							{ shell: job.shell, layout: job.layout, signal: bounded },
+							{ repository, change: changeNumber, tree: priorTree },
+						),
+					bounded,
+				);
+				left.wakeSites = true;
+			}
 			left.confirm = await answeredBefore(
 				() =>
 					this.#records.inJob(
@@ -570,6 +844,163 @@ export class CodeHostRequests {
 		} catch (error) {
 			this.#report({ event: "code-request-error", step: "record", ...named(request), error });
 		}
+	}
+
+	async #query(request: CodeQueryRequest, signal: AbortSignal): Promise<Ended> {
+		const repository = repositoryOf(request);
+		let outcome: CodeRequestOutcome;
+		try {
+			const data = await this.#hosts.run(
+				request.companyId,
+				request.environmentId,
+				signal,
+				async (job): Promise<Record<string, unknown>> => {
+					const q = request.query;
+					if (request.op === "log") {
+						if (!this.#jobs.log) throw new Error("NOT_BUILT");
+						return await this.#jobs.log(job, {
+							repository,
+							...(typeof q.ref === "string" ? { ref: q.ref } : {}),
+							...(typeof q.path === "string" ? { path: q.path } : {}),
+							...(typeof q.limit === "number" ? { limit: q.limit } : {}),
+							...(typeof q.since === "string" ? { since: q.since } : {}),
+						});
+					}
+					if (request.op === "diff") {
+						if (!this.#jobs.diff) throw new Error("NOT_BUILT");
+						return await this.#jobs.diff(job, {
+							repository,
+							from: String(q.from ?? ""),
+							to: String(q.to ?? ""),
+							...(typeof q.statOnly === "boolean" ? { statOnly: q.statOnly } : {}),
+							...(Array.isArray(q.paths) ? { paths: q.paths as string[] } : {}),
+							...(typeof q.maxBytes === "number" ? { maxBytes: q.maxBytes } : {}),
+						});
+					}
+					if (request.op === "show") {
+						if (!this.#jobs.show) throw new Error("NOT_BUILT");
+						return await this.#jobs.show(job, {
+							repository,
+							...(typeof q.ref === "string" ? { ref: q.ref } : {}),
+							path: String(q.path ?? ""),
+							...(typeof q.maxBytes === "number" ? { maxBytes: q.maxBytes } : {}),
+						});
+					}
+					if (request.op === "branches") {
+						if (!this.#jobs.branches) throw new Error("NOT_BUILT");
+						return await this.#jobs.branches(job, { repository });
+					}
+					if (!this.#jobs.mergePreview) throw new Error("NOT_BUILT");
+					return await this.#jobs.mergePreview(job, {
+						repository,
+						...(typeof q.base === "string" ? { base: q.base } : {}),
+						head: String(q.head ?? ""),
+					});
+				},
+				{ readOnly: true },
+			);
+			outcome = { schema: SCHEMA, state: "done", result: "ok", data };
+		} catch (error) {
+			if (signal.aborted) outcome = { schema: SCHEMA, state: "busy" };
+			else if (error instanceof CodeHostRefusal && QUERY_REFUSALS.test(error.code))
+				outcome = {
+					schema: SCHEMA,
+					state: "refused",
+					code: error.code,
+					paths: codeChangeRefusalPaths(error.paths),
+					...(error.messages.length ? { messages: [...error.messages] } : {}),
+				};
+			else {
+				outcome = { schema: SCHEMA, state: "failed", code: codeChangeErrorCode(error) };
+				this.#report({ event: "code-request-error", step: "job", ...named(request), error });
+			}
+		}
+		return this.#said(request, outcome, await this.#finish(request, outcome, signal, 2));
+	}
+
+	async #lifecycle(request: CodeLifecycleRequest, signal: AbortSignal): Promise<Ended> {
+		const repository = repositoryOf(request);
+		let outcome: CodeRequestOutcome;
+		try {
+			const life = request.lifecycle;
+			if (request.op === "create") {
+				if (!this.#jobs.start) throw new Error("NOT_BUILT");
+				const startJob = this.#jobs.start;
+				const started = await this.#hosts.run(request.companyId, request.environmentId, signal, (job) =>
+					startJob(job, { repository }),
+				);
+				outcome = {
+					schema: SCHEMA,
+					state: "done",
+					result: "created",
+					mainSha: started.baseSha,
+					created: started.state === "started",
+				};
+			} else if (request.op === "tag") {
+				if (!this.#jobs.tag) throw new Error("NOT_BUILT");
+				const tagJob = this.#jobs.tag;
+				const mode = life.mode === "list" ? "list" : "create";
+				const result = await this.#hosts.run(
+					request.companyId,
+					request.environmentId,
+					signal,
+					(job) =>
+						mode === "list"
+							? tagJob(job, { repository, mode: "list" })
+							: tagJob(job, {
+									repository,
+									mode: "create",
+									tag: String(life.tag ?? ""),
+									...(typeof life.target === "string" ? { target: life.target } : {}),
+									...(typeof life.message === "string" ? { message: life.message } : {}),
+								}),
+					{ readOnly: mode === "list" },
+				);
+				outcome =
+					result.mode === "list"
+						? { schema: SCHEMA, state: "done", result: "tags", tags: result.tags as unknown as Record<string, unknown>[] }
+						: {
+								schema: SCHEMA,
+								state: "done",
+								result: "tagged",
+								tag: result.tag,
+								kind: result.kind,
+								sha: result.sha,
+								targetSha: result.targetSha,
+							};
+			} else {
+				if (!this.#jobs.prune) throw new Error("NOT_BUILT");
+				const pruneJob = this.#jobs.prune;
+				const workerIds = Array.isArray(life.workerIds) ? (life.workerIds as string[]) : [];
+				const deleteMergedBranches = life.deleteMergedBranches === true;
+				const pruned = await this.#hosts.run(request.companyId, request.environmentId, signal, (job) =>
+					pruneJob(job, { repository, workerIds, deleteMergedBranches }),
+				);
+				outcome = {
+					schema: SCHEMA,
+					state: "done",
+					result: "pruned",
+					retiredWorktrees: pruned.retiredWorktrees,
+					deletedBranches: pruned.deletedBranches,
+					skippedWorktrees: pruned.skippedWorktrees,
+				};
+			}
+		} catch (error) {
+			if (signal.aborted) outcome = { schema: SCHEMA, state: "busy" };
+			else if (error instanceof CodeHostRefusal && LIFECYCLE_REFUSALS.test(error.code))
+				outcome = {
+					schema: SCHEMA,
+					state: "refused",
+					code: error.code,
+					paths: codeChangeRefusalPaths(error.paths),
+					...(error.messages.length ? { messages: [...error.messages] } : {}),
+				};
+			else {
+				outcome = { schema: SCHEMA, state: "failed", code: codeChangeErrorCode(error) };
+				this.#report({ event: "code-request-error", step: "job", ...named(request), error });
+			}
+		}
+		return this.#said(request, outcome, await this.#finish(request, outcome, signal, 2));
 	}
 
 	/** A download: the file made, or an expired one removed, in a job that yields to a turn's. With its place in the
@@ -780,7 +1211,7 @@ export class CodeHostRequests {
 			}
 		}
 		const finished = await this.#finish(request, outcome, signal, 2);
-		if (answered && outcome.state === "busy" && finished === "lost") {
+		if (answered && outcome.state === "busy" && finished?.state === "lost") {
 			this.#report({ event: "code-import-waiting", requestId: request.requestId });
 			return "busy";
 		}
@@ -822,15 +1253,12 @@ export class CodeHostRequests {
 		throw new Error("CODE_REQUEST_STEP_UNCONFIRMED");
 	}
 
-	/** Records a request's outcome, asked `tries` times while no answer comes; an executor that is stopping still gets a
-	 * few seconds for it. Answers what the kernel said, or undefined when it was not heard (which is reported): the
-	 * request's lease then ends, and it is claimed again. */
 	async #finish(
 		request: Pick<Claimed, "requestId" | "token">,
 		outcome: CodeRequestOutcome,
 		signal: AbortSignal,
 		tries: number,
-	): Promise<"recorded" | "lost" | undefined> {
+	): Promise<{ state: "recorded"; change: number | null } | { state: "lost" } | undefined> {
 		let failure: unknown;
 		for (let tried = 0; tried < tries; tried++) {
 			try {
@@ -846,10 +1274,9 @@ export class CodeHostRequests {
 					signal.aborted ? AbortSignal.timeout(CALL_MS / 2) : signal,
 				);
 				if (isRecord(answer) && answer.schema === "qorpera.code-request-finish/v1") {
-					if (answer.state === "recorded") return "recorded";
-					// The lease ended, or another claim has the request: nothing was recorded, and asking again would
-					// change nothing.
-					if (answer.state === "lost") return "lost";
+					if (answer.state === "recorded")
+						return { state: "recorded", change: whole(answer.change, 1) ? answer.change : null };
+					if (answer.state === "lost") return { state: "lost" };
 				}
 				failure = new Error("CODE_REQUEST_FINISH_UNCONFIRMED");
 			} catch (error) {
@@ -860,9 +1287,12 @@ export class CodeHostRequests {
 		return undefined;
 	}
 
-	/** The log line of a request that ended, and how it counts. */
-	#said(request: CodeRequest, outcome: CodeRequestOutcome, finished: "recorded" | "lost" | undefined): Ended {
-		if (finished === "lost")
+	#said(
+		request: CodeRequest,
+		outcome: CodeRequestOutcome,
+		finished: { state: "recorded"; change: number | null } | { state: "lost" } | undefined,
+	): Ended {
+		if (finished?.state === "lost")
 			this.#report({
 				event: "code-request-error",
 				step: "finish",
@@ -876,9 +1306,9 @@ export class CodeHostRequests {
 			state: outcome.state,
 			...("result" in outcome ? { result: outcome.result } : {}),
 			...("code" in outcome ? { code: outcome.code } : {}),
-			recorded: finished === "recorded",
+			recorded: finished?.state === "recorded",
 		});
-		return finished === "recorded" ? outcome.state : "failed";
+		return finished?.state === "recorded" ? outcome.state : "failed";
 	}
 
 	#call(method: (typeof CODE_REQUEST_RPCS)[number], args: Record<string, unknown>, signal: AbortSignal) {

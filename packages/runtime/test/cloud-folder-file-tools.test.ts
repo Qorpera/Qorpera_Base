@@ -309,7 +309,7 @@ it("refuses an image it does not show by name, before releasing anything", async
 
 // Keyholes S3 (12 November 2026): several files in one call, so reading five small files is one model round, not five,
 // while Codex sends one call a model response.
-it("reads several files in one call, each whole when they fit, each released on its own, the first cited", async () => {
+it("reads several files in one call, each whole when they fit, in one batched release", async () => {
 	const files: Record<string, string> = {};
 	for (const name of ["a", "b", "c", "d", "e"]) files[`docs/${name}.md`] = `${name} `.repeat(1536);
 	const f = await fixture({ files });
@@ -327,21 +327,18 @@ it("reads several files in one call, each whole when they fit, each released on 
 			nextOffset: null,
 		})),
 	);
-	// One release a file, in the answer's order, each under the hash of the whole answer; the answer cites the first.
-	expect(f.releases.map(released)).toEqual(Object.keys(files).map((path) => [path]));
-	expect(f.releases.map((release) => release.p_output_sha256)).toEqual(
-		Array.from({ length: 5 }, () => sha(String(content.value))),
-	);
-	expect(new Set(f.releases.map((release) => release.p_release_id)).size).toBe(5);
+	expect(f.releases).toHaveLength(1);
+	expect(f.releases.map(released)).toEqual([Object.keys(files)]);
+	expect(f.releases[0]?.p_output_sha256).toBe(sha(String(content.value)));
 	expect(content.companyReadId).toBe(f.releases[0]?.p_release_id);
-	expect(f.releases[0]?.p_reads).toEqual([
-		{
-			path: "docs/a.md",
-			version: f.files.get("docs/a.md")?.version,
+	expect(f.releases[0]?.p_reads).toEqual(
+		Object.keys(files).map((path) => ({
+			path,
+			version: f.files.get(path)?.version,
 			authority: expect.any(Object),
-			fileSha256: f.files.get("docs/a.md")?.file.fileSha256,
-		},
-	]);
+			fileSha256: f.files.get(path)?.file.fileSha256,
+		})),
+	);
 });
 
 it("shares one result alike among files too large to show whole, each with its own nextOffset to read on from", async () => {
@@ -382,12 +379,9 @@ it("shares one result alike among files too large to show whole, each with its o
 	expect(on.bytesRead).toBeGreaterThan(0);
 });
 
-it("reads the entries of several files side by side, and their bytes one file at a time", async () => {
-	// The object gateway serves bytes from two NAS lanes, one operation at a time on any one object, and answers 503 for
-	// an object with no Storage copy yet when it cannot take it now: a read of eight files must not turn its own byte
-	// reads away, also when two files hold the same content and so share objects (proof sweep of #1700, review r4 F1).
+it("reads entries side by side and bytes in bounded parallel up to 6 while serializing identical fileSha256", async () => {
 	const files: Record<string, string> = {};
-	for (let n = 0; n < 6; n++) files[`docs/f${n}.md`] = `file ${n} `.repeat(100);
+	for (let n = 0; n < 10; n++) files[`docs/f${n}.md`] = `file ${n} `.repeat(100);
 	files["docs/copy-1.md"] = "the same words in two files ".repeat(40);
 	files["docs/copy-2.md"] = "the same words in two files ".repeat(40);
 	let ranges = 0;
@@ -399,12 +393,11 @@ it("reads the entries of several files side by side, and their bytes one file at
 			bytes: (inner) => ({
 				...inner,
 				range: async (file: CloudCompanyFolderFile, offset: number, length: number, signal: AbortSignal) => {
-					// As the gateway: a second read of an object in flight is turned away.
 					if (reading.has(file.fileSha256)) throw new CloudRuntimeDiagnosticError("transport_unavailable");
 					reading.add(file.fileSha256);
 					mostRanges = Math.max(mostRanges, ++ranges);
 					try {
-						await new Promise((done) => setTimeout(done, 5));
+						await new Promise((done) => setTimeout(done, 12));
 						return await inner.range(file, offset, length, signal);
 					} finally {
 						ranges--;
@@ -429,9 +422,10 @@ it("reads the entries of several files side by side, and their bytes one file at
 	expect(parse(content).files.map((file: { path: string; text: string }) => [file.path, file.text])).toEqual(
 		Object.entries(files),
 	);
-	expect(mostReads).toBe(8);
-	expect(mostRanges).toBe(1);
-	// A byte read that fails is that path's answer, and the next file's bytes are still read.
+	expect(mostReads).toBe(12);
+	expect(mostRanges).toBeGreaterThan(1);
+	expect(mostRanges).toBeLessThanOrEqual(6);
+	expect(f.releases).toHaveLength(1);
 	const range = vi.spyOn(f.folder, "readRange").mockImplementation(async (entry, offset, length, signal) => {
 		if (entry.path === "docs/f0.md") throw new CloudRuntimeDiagnosticError("timeout");
 		return CloudCompanyFolderClient.prototype.readRange.call(f.folder, entry, offset, length, signal);
@@ -502,14 +496,9 @@ it("answers each path on its own, without failing the others: absent, a folder, 
 			nextOffset: null,
 		},
 	]);
-	// Everything it names is released, each on its own; nothing is for the absent path.
+	expect(f.releases).toHaveLength(1);
 	expect(f.releases.map(released)).toEqual([
-		["docs"],
-		["docs/latest"],
-		["bin/data"],
-		["photos/pair.png"],
-		["photos/scan.tiff"],
-		["docs/plan.md"],
+		["docs", "docs/latest", "bin/data", "photos/pair.png", "photos/scan.tiff", "docs/plan.md"],
 	]);
 	// Read alone from its start, the image is shown, as before.
 	const alone = await f.call("company_read", { path: "photos/pair.png" });
@@ -607,18 +596,45 @@ it("answers a file whose bytes were cut off on their way as that path's, through
 	expect(alone).toMatchObject({ category: "transport_unavailable" });
 });
 
-it("takes path or paths, offset and limit only with path, and up to 8 files, each once", async () => {
+it("takes path or paths, offset and limit only with path, up to 24 files or line ranges, each once", async () => {
 	const f = await fixture();
 	const tool = f.tool("company_read");
 	expect(tool.parseArguments({ path: "docs/a.md" })).toEqual({ path: "docs/a.md", offset: 0, limit: 32768 });
-	const eight = Array.from({ length: 8 }, (_, index) => `docs/${index}.md`);
-	expect(tool.parseArguments({ paths: eight })).toEqual({ paths: eight });
+	const twentyFour = Array.from({ length: 24 }, (_, index) => `docs/${index}.md`);
+	expect(tool.parseArguments({ paths: twentyFour })).toEqual({ paths: twentyFour });
+	expect(
+		tool.parseArguments({
+			paths: [
+				"docs/a.md",
+				{ path: "docs/b.md", startLine: 2, endLine: 5 },
+				{ path: "docs/b.md", startLine: 10 },
+				{ path: "docs/c.md" },
+			],
+		}),
+	).toEqual({
+		paths: [
+			"docs/a.md",
+			{ path: "docs/b.md", startLine: 2, endLine: 5 },
+			{ path: "docs/b.md", startLine: 10 },
+			"docs/c.md",
+		],
+	});
 	const refused: { [key: string]: JsonValue }[] = [
 		{},
 		{ path: "docs/a.md", paths: ["docs/b.md"] },
 		{ paths: [] },
-		{ paths: [...eight, "docs/8.md"] },
+		{ paths: [...twentyFour, "docs/24.md"] },
 		{ paths: ["docs/A.md", "docs/a.md"] },
+		{
+			paths: [
+				{ path: "docs/a.md", startLine: 2, endLine: 5 },
+				{ path: "docs/A.md", startLine: 2, endLine: 5 },
+			],
+		},
+		{ paths: [{ path: "docs/a.md", startLine: 10, endLine: 5 }] },
+		{ paths: [{ path: "docs/a.md", startLine: 0 }] },
+		{ paths: [{ path: "docs/a.md", endLine: 0 }] },
+		{ paths: [{ path: "docs/a.md", extra: true }] },
 		{ paths: ["docs/a.md"], offset: 0 },
 		{ paths: ["docs/a.md"], limit: 4096 },
 		{ paths: "docs/a.md" },
@@ -631,6 +647,74 @@ it("takes path or paths, offset and limit only with path, and up to 8 files, eac
 	expect(tool.inputSchema).not.toHaveProperty("required");
 });
 
+it("reads per-file line ranges mixed with plain paths, deduplicating releases and preserving secret redaction", async () => {
+	const lines = Array.from({ length: 10 }, (_, idx) => `line ${idx + 1}\n`).join("");
+	const secret = "whsec_ABCDEF1234567890ABCDEF1234567890";
+	const f = await fixture({
+		files: {
+			"src/app.ts": lines,
+			"src/readme.md": "hello world\n",
+			"src/secret.env": `line1\nTOKEN=${secret}\nline3\n`,
+			"src/large.txt": "x".repeat(300 * 1024),
+		},
+		links: { "src/link": "app.ts" },
+	});
+	const content = await f.call("company_read", {
+		paths: [
+			{ path: "src/app.ts", startLine: 2, endLine: 4 },
+			{ path: "src/app.ts", startLine: 9, endLine: 10 },
+			{ path: "src/app.ts", startLine: 50 },
+			"src/readme.md",
+			{ path: "src/secret.env", startLine: 2, endLine: 2 },
+			{ path: "src/link", startLine: 1, endLine: 1 },
+			{ path: "src/large.txt", startLine: 5 },
+		],
+	});
+	const result = parse(content).files as Record<string, unknown>[];
+	expect(result[0]).toMatchObject({
+		path: "src/app.ts",
+		kind: "file",
+		startLine: 2,
+		endLine: 4,
+		totalLines: 10,
+		offset: Buffer.byteLength("line 1\n"),
+		text: "line 2\nline 3\nline 4\n",
+		nextOffset: Buffer.byteLength("line 1\nline 2\nline 3\nline 4\n"),
+	});
+	expect(result[1]).toMatchObject({
+		path: "src/app.ts",
+		startLine: 9,
+		endLine: 10,
+		totalLines: 10,
+		text: "line 9\nline 10\n",
+		nextOffset: null,
+	});
+	expect(result[2]).toMatchObject({
+		path: "src/app.ts",
+		startLine: 50,
+		endLine: 49,
+		totalLines: 10,
+		bytesRead: 0,
+		text: "",
+		nextOffset: null,
+	});
+	expect(result[3]).toMatchObject({ path: "src/readme.md", text: "hello world\n", nextOffset: null });
+	expect(String(result[4]?.text)).not.toContain(secret);
+	expect(String(result[4]?.text)).toContain("whsec_[REDACTED]");
+	expect(result[5]).toMatchObject({
+		path: "src/link",
+		kind: "symlink",
+		refused: expect.stringContaining("COMPANY_LINE_RANGE_UNSUPPORTED"),
+	});
+	expect(result[6]).toMatchObject({
+		path: "src/large.txt",
+		kind: "file",
+		refused: expect.stringContaining("COMPANY_LINE_RANGE_BEYOND_SCAN"),
+	});
+	expect(f.releases).toHaveLength(1);
+	expect(released(f.releases[0])).toEqual(["src/app.ts", "src/readme.md", "src/secret.env", "src/link", "src/large.txt"]);
+});
+
 it("fits files whose text escapes six-fold, and refuses paths too long to name together before releasing anything", async () => {
 	const files: Record<string, string> = {};
 	for (let index = 0; index < 8; index++) files[`raw/${index}.txt`] = "\u0001".repeat(32 * 1024);
@@ -641,7 +725,8 @@ it("fits files whose text escapes six-fold, and refuses paths too long to name t
 	expect(new Set(shown.map((file) => file.bytesRead)).size).toBe(1);
 	expect(shown[0]?.bytesRead).toBeGreaterThan(0);
 	expect(shown.every((file) => file.nextOffset === file.bytesRead && file.text.length === file.bytesRead)).toBe(true);
-	expect(f.releases).toHaveLength(8);
+	expect(f.releases).toHaveLength(1);
+	expect(released(f.releases[0])).toHaveLength(8);
 	// Eight paths of 4,096 bytes, each escaped six-fold, take more than one result between them.
 	const long: Record<string, string> = {};
 	for (let index = 0; index < 8; index++) long[`${index}/${"&".repeat(4094)}`] = "x";

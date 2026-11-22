@@ -469,6 +469,13 @@ export function cloudWorkerTools(
 						},
 					},
 				},
+				claimedPaths: {
+					type: "array",
+					maxItems: 32,
+					uniqueItems: true,
+					items: { type: "string", minLength: 1, maxLength: 256 },
+					description: "With species coding: up to 32 relative file paths or globs this session owns, to warn on overlap.",
+				},
 				text: {
 					type: "string",
 					minLength: 1,
@@ -522,6 +529,7 @@ export function cloudWorkerTools(
 							"species",
 							"harness",
 							"repository",
+							"claimedPaths",
 						]
 					: action === "followup"
 						? [...base, "text"]
@@ -601,6 +609,38 @@ export function cloudWorkerTools(
 								"A repository kept in Qorpera has a lowercase owner (letters, digits, hyphens), a lowercase name (letters, digits, hyphens, dots, underscores; not ending with a dot) and baseBranch main, such as owner company and name shop",
 							);
 						}
+					let claimedPaths: string[] | undefined;
+					if (a.claimedPaths !== undefined) {
+						if (!Array.isArray(a.claimedPaths) || a.claimedPaths.length > 32)
+							throw new CloudToolArgumentRefusal(
+								"claimedPaths must be a list of up to 32 relative file paths or globs of at most 256 bytes each",
+							);
+						const normalized = a.claimedPaths.map((entry) => {
+							if (
+								typeof entry !== "string" ||
+								!entry.trim() ||
+								entry.includes("\\") ||
+								/[\u0000-\u001f\u007f]/.test(entry)
+							)
+								throw new CloudToolArgumentRefusal(
+									"claimedPaths must be a list of up to 32 relative file paths or globs of at most 256 bytes each",
+								);
+							const cleaned = entry.trim().replace(/\/+$/, "");
+							if (
+								!cleaned ||
+								Buffer.byteLength(cleaned, "utf8") > 256 ||
+								cleaned.startsWith("/") ||
+								cleaned.split("/").some((part) => !part || part === "." || part === "..")
+							)
+								throw new CloudToolArgumentRefusal(
+									"claimedPaths must be a list of up to 32 relative file paths or globs of at most 256 bytes each",
+								);
+							return cleaned;
+						});
+						if (new Set(normalized).size !== normalized.length)
+							throw new CloudToolArgumentRefusal("claimedPaths must not contain duplicate patterns");
+						claimedPaths = normalized;
+					}
 					Object.assign(request, {
 						species: "coding",
 						harness: a.harness,
@@ -610,9 +650,12 @@ export function cloudWorkerTools(
 							name: text("repository.name", repository.name, 100, true),
 							baseBranch: text("repository.baseBranch", repository.baseBranch, 200, true),
 						},
+						...(claimedPaths && claimedPaths.length > 0 ? { claimedPaths } : {}),
 					});
 				} else if (a.repository !== undefined)
 					throw new CloudToolArgumentRefusal("repository is given only with species coding");
+				else if (a.claimedPaths !== undefined)
+					throw new CloudToolArgumentRefusal("claimedPaths is given only with species coding");
 				else if (a.harness === "claude-code" || a.harness === "codex") request.harness = a.harness;
 				else if (a.harness !== undefined)
 					throw new CloudToolArgumentRefusal("harness must be codex or claude-code");

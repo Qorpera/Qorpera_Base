@@ -50,10 +50,12 @@ export class CodingMachineUnavailable extends Error {
  * merges the default branch itself (own code storage, slice 1). */
 export class CodingLandConflict extends Error {
 	readonly paths: readonly string[];
-	constructor(paths: readonly string[]) {
+	readonly messages: readonly string[];
+	constructor(paths: readonly string[], messages: readonly string[] = []) {
 		super("CODING_LAND_CONFLICT");
 		this.name = "CodingLandConflict";
 		this.paths = Object.freeze([...paths]);
+		this.messages = Object.freeze([...messages]);
 	}
 }
 /** A landing the code host refused by rule, for another reason than a conflict (file names main cannot hold, a file too
@@ -197,9 +199,14 @@ function namedPaths(paths: readonly (string | null)[]): string {
 	return `${shown.join(", ")}${more ? ` and ${more} more` : ""}`;
 }
 /** A landing that conflicts with the default branch of a repository kept in Qorpera: what to do, and where. */
-export function landConflict(baseBranch: string, paths: readonly string[]): string {
+export function landConflict(
+	baseBranch: string,
+	paths: readonly string[],
+	messages: readonly string[] = [],
+): string {
 	const named = namedPaths(paths);
-	return `The change was not landed: it conflicts with what ${baseBranch} got since this session began${named ? `, in ${named}` : ""}. Nothing changed on ${baseBranch}. Run git merge ${baseBranch} on the session's branch, resolve the conflicts, run the checks, commit and finish again.`;
+	const details = messages.length > 0 ? ` Conflict details: ${withinBytes(messages.join("; "), 1200)}.` : "";
+	return `The change was not landed: it conflicts with what ${baseBranch} got since this session began${named ? `, in ${named}` : ""}.${details} Nothing changed on ${baseBranch}. Run git merge ${baseBranch} on the session's branch, resolve the conflicts, run the checks, commit and finish again.`;
 }
 /** Whether a failure says the session's machine needs recovery before anything else runs on it, with or without a
  * detail after the code (`CODING_HOST_VM_RECOVERY_REQUIRED:LXD_REFUSED_403`). */
@@ -975,8 +982,7 @@ export class CloudCodingExecutor {
 						if (active.aborted) throw error;
 						end();
 						if (error instanceof CodingLandConflict) {
-							// Nothing landed: the session merges the default branch itself and finishes again.
-							await complete("failed", landConflict(claimed.repository.baseBranch, error.paths));
+							await complete("failed", landConflict(claimed.repository.baseBranch, error.paths, error.messages));
 							return "failed";
 						}
 						if (error instanceof CodingLandRefused) {

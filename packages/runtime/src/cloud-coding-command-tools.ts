@@ -15,6 +15,7 @@ import {
 	MAX_CODING_INSPECT_PATH_BYTES,
 	parseCodingInspectImagePath,
 } from "./cloud-coding-image-inspect.ts";
+import { runCodingPreflightLand } from "./cloud-coding-preflight-land.ts";
 import { CLOUD_COMMAND_PAGE_ASK, cloudCommandFits, fitCloudCommandPage } from "./cloud-command-page-fit.ts";
 import { type CloudNativeToolIdentity, cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import {
@@ -186,6 +187,17 @@ export function cloudCodingCommandTools(options: {
 				throw new Error("Invalid coding operation key");
 			return { operationKey: value.operationKey, inspectImage: parseCodingInspectImagePath(value.inspectImage) };
 		}
+		if (action === "start" && value.preflightLand !== undefined) {
+			if (
+				value.preflightLand !== true ||
+				!Object.hasOwn(value, "operationKey") ||
+				Object.keys(value).some((key) => key !== "operationKey" && key !== "preflightLand")
+			)
+				throw new Error("Invalid coding command");
+			if (typeof value.operationKey !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(value.operationKey))
+				throw new Error("Invalid coding operation key");
+			return { operationKey: value.operationKey, preflightLand: true };
+		}
 		const keys = Object.keys(value).sort().join();
 		if (
 			action === "start"
@@ -255,6 +267,11 @@ export function cloudCodingCommandTools(options: {
 						description:
 							"Relative workspace path to a .png, .jpg, .jpeg or .webp screenshot (without command, timeoutMs, runChecks, checkNames or failFast) to inspect visually in your context (max 8 MiB raw, sanitized to <= 1920x1200 PNG). Use a fresh operationKey for every new or updated screenshot inspection.",
 					},
+					preflightLand: {
+						type: "boolean",
+						description:
+							"Set true (with only operationKey) to dry-run git merge-tree against main plus filename and size checks before calling coding_finish.",
+					},
 				}),
 				required: ["operationKey"],
 			},
@@ -262,6 +279,19 @@ export function cloudCodingCommandTools(options: {
 			async execute(value, context) {
 				const input = parse(value, "start");
 				await check(context);
+				if (input.preflightLand === true) {
+					return runCodingPreflightLand({
+						scope,
+						identity,
+						operations: options.operations,
+						gateway: options.gateway,
+						checkAuthority: check,
+						request: { operationKey: String(input.operationKey) },
+						context,
+						pollMs: options.pollMs,
+						timeoutGraceMs: options.timeoutGraceMs,
+					});
+				}
 				if (input.runChecks === true) {
 					return runCodingPreflightChecks({
 						scope,

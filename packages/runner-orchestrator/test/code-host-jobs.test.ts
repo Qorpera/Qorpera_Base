@@ -36,20 +36,28 @@ import {
 	type CodeHostCommand,
 	type CodeHostGcBlock,
 	type CodeHostJob,
+	CodeHostRefusal,
 	CodeWorktreeNamesRefused,
 	checkCodeArea,
 	codeAreaPath,
 	codeRefsSha256,
 	collectCodeGarbage,
+	diffCodeArea,
 	exportCodeBranch,
 	fsckCodeArea,
 	inspectCodeArea,
 	landCodeBranch,
+	listCodeBranches,
 	listCodeChangeArchives,
+	logCodeArea,
+	previewCodeMerge,
+	pruneCodeArea,
 	removeCodeDownloads,
 	retireCodeWorktrees,
 	seedCodeArea,
+	showCodeFile,
 	startCodeArea,
+	tagCodeArea,
 	undoCodeChange,
 	withJob,
 	writeCodeChangeRecords,
@@ -2427,6 +2435,8 @@ describe("code host: the change record, undo and download of a repository kept i
 				pathsMore: 0,
 			},
 			replayed: false,
+			matchesBeforeTree: false,
+			checksFilePresent: false,
 		});
 		// Main and main/ moved together, to what main was without the three commits; everything since is kept.
 		expect(await state(f, c)).toMatchObject({
@@ -2446,6 +2456,8 @@ describe("code host: the change record, undo and download of a repository kept i
 			mainBefore: undone.mainAfter,
 			diff: { filesChanged: 1, paths: [{ path: "cart.js", change: "removed" }], pathsMore: 0 },
 			replayed: false,
+			matchesBeforeTree: false,
+			checksFilePresent: false,
 		});
 		expect((await state(f, c)).files).toEqual(["later.txt"]);
 
@@ -3776,5 +3788,260 @@ describe("code host exec batching", () => {
 			archives: [{ name: "0001-0500.md", text: "# Attempted Overwrite\n", immutable: true }],
 		});
 		expect(await readFile(archivePath, "utf8")).toBe(completeText);
+	});
+});
+
+describe("read-only git queries, conflict messages, v2 undo, tags, and prune", () => {
+	const kept = { host: "qorpera" as const, owner: "qorpera", name: "example", baseBranch: "main" };
+
+	async function session(
+		f: Awaited<ReturnType<typeof fixture>>,
+		c: Awaited<ReturnType<Awaited<ReturnType<typeof fixture>>["company"]>>,
+		baseSha: string,
+	) {
+		const workerId = randomUUID();
+		await addCodeWorktree(c.job, { repository: kept, workerId, baseSha });
+		const tree = join(c.code, "worktrees", workerId);
+		const commit = async (files: Record<string, string | Buffer>, message: string) => {
+			for (const [rel, content] of Object.entries(files)) {
+				await mkdir(dirname(join(tree, rel)), { recursive: true });
+				await writeFile(join(tree, rel), content);
+			}
+			await f.git(tree, "add", "--all");
+			await f.git(tree, "commit", "--quiet", "-m", message);
+			return f.git(tree, "rev-parse", "HEAD");
+		};
+		return { workerId, tree, commit, branch: `qorpera/coding/${workerId}` };
+	}
+
+	async function refsDigest(c: Awaited<ReturnType<Awaited<ReturnType<typeof fixture>>["company"]>>) {
+		const checked = await checkCodeArea(c.job, { repository: kept });
+		if (checked.state !== "present") throw new Error("expected present");
+		return checked.refsSha256;
+	}
+
+	it("runs log, diff, show, branches, and merge_preview read-only without mutating refs", async () => {
+		const f = await fixture();
+		const c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const s1 = await session(f, c, baseSha);
+		const h1 = await s1.commit(
+			{
+				"src/app.ts": "export const v = 1;\n",
+				"docs/notes.md": "hello\n",
+				"bin/raw.dat": Buffer.from([0x00, 0x01, 0xff]),
+			},
+			"Add app and docs",
+		);
+		await symlink("notes.md", join(s1.tree, "docs/link.md"));
+		await f.git(s1.tree, "add", "docs/link.md");
+		await f.git(s1.tree, "commit", "--quiet", "-m", "Add symlink");
+		const h1Link = await f.git(s1.tree, "rev-parse", "HEAD");
+		const l1 = await landCodeBranch(c.job, { repository: kept, workerId: s1.workerId, headSha: h1Link });
+
+		const s2 = await session(f, c, l1.mainSha);
+		const bigBody = Array.from({ length: 120 }, (_, i) => `export const line${i} = ${i};`).join("\n");
+		const h2 = await s2.commit({ "src/app.ts": `export const v = 2;\n${bigBody}\n` }, "Update app v2");
+		const l2 = await landCodeBranch(c.job, { repository: kept, workerId: s2.workerId, headSha: h2 });
+
+		const sActive = await session(f, c, l1.mainSha);
+		const hConflict = await sActive.commit(
+			{ "src/app.ts": "export const v = 99;\n", "src/extra.ts": "extra\n" },
+			"Conflicting edit",
+		);
+		await f.git(c.repo, "--git-dir=.", "update-ref", "refs/qorpera/imported/heads/legacy", h1);
+
+		const refsBefore = await refsDigest(c);
+
+		const logMain = await logCodeArea(c.job, { repository: kept, ref: "main", limit: 2 });
+		expect(logMain.resolvedSha).toBe(l2.mainSha);
+		expect(logMain.commits).toHaveLength(2);
+		expect(logMain.commits[0]?.subject).toBe("Update app v2");
+
+		const logPath = await logCodeArea(c.job, { repository: kept, ref: `worker:${sActive.workerId}`, path: "src/extra.ts" });
+		expect(logPath.resolvedSha).toBe(hConflict);
+		expect(logPath.commits).toHaveLength(1);
+		expect(logPath.commits[0]?.subject).toBe("Conflicting edit");
+
+		const diffFull = await diffCodeArea(c.job, { repository: kept, from: l1.mainSha, to: l2.mainSha });
+		expect(diffFull.filesChanged).toBe(1);
+		expect(diffFull.patch).toContain("-export const v = 1;");
+		expect(diffFull.patch).toContain("+export const v = 2;");
+		expect(diffFull.truncated).toBe(false);
+
+		const diffStat = await diffCodeArea(c.job, {
+			repository: kept,
+			from: baseSha,
+			to: l2.mainSha,
+			statOnly: true,
+			paths: ["src/app.ts"],
+		});
+		expect(diffStat.patch).toBeNull();
+		expect(diffStat.filesChanged).toBe(1);
+
+		const diffTrunc = await diffCodeArea(c.job, { repository: kept, from: l1.mainSha, to: l2.mainSha, maxBytes: 1024 });
+		expect(diffTrunc.truncated).toBe(true);
+		expect(Buffer.byteLength(diffTrunc.patch ?? "")).toBeLessThanOrEqual(1024);
+
+		const shown = await showCodeFile(c.job, { repository: kept, ref: l1.mainSha, path: "src/app.ts" });
+		expect(shown.content).toBe("export const v = 1;\n");
+		expect(shown.truncated).toBe(false);
+
+		await expect(showCodeFile(c.job, { repository: kept, ref: "main", path: "docs/link.md" })).rejects.toMatchObject({
+			code: "CODE_HOST_SYMLINK_REFUSED",
+		});
+		await expect(showCodeFile(c.job, { repository: kept, ref: "main", path: "bin/raw.dat" })).rejects.toMatchObject({
+			code: "CODE_HOST_BINARY_FILE",
+		});
+		await expect(showCodeFile(c.job, { repository: kept, ref: "main", path: "missing.ts" })).rejects.toMatchObject({
+			code: "CODE_HOST_FILE_NOT_FOUND",
+		});
+		await expect(showCodeFile(c.job, { repository: kept, ref: "main", path: "src" })).rejects.toMatchObject({
+			code: "CODE_HOST_NOT_A_FILE",
+		});
+
+		const branches = await listCodeBranches(c.job, { repository: kept });
+		expect(branches.main.sha).toBe(l2.mainSha);
+		const activeBranch = branches.coding.find((b) => b.workerId === sActive.workerId);
+		expect(activeBranch).toMatchObject({ sha: hConflict, ahead: 1, behind: 1 });
+		expect(branches.imported.some((b) => b.name === "legacy")).toBe(true);
+
+		const cleanPreview = await previewCodeMerge(c.job, {
+			repository: kept,
+			base: l1.mainSha,
+			head: `worker:${sActive.workerId}`,
+		});
+		expect(cleanPreview.clean).toBe(true);
+		expect(cleanPreview.conflictedPaths).toEqual([]);
+		expect(cleanPreview.conflictMessages).toEqual([]);
+
+		const conflictPreview = await previewCodeMerge(c.job, {
+			repository: kept,
+			base: "main",
+			head: `worker:${sActive.workerId}`,
+		});
+		expect(conflictPreview.clean).toBe(false);
+		expect(conflictPreview.conflictedPaths).toEqual(["src/app.ts"]);
+		expect(conflictPreview.conflictMessages.join(" ")).toContain("CONFLICT");
+
+		expect(await refsDigest(c)).toBe(refsBefore);
+	});
+
+	it("preserves conflict messages on landCodeBranch and supports dryRun, multi-target, and verifyChecks on undoCodeChange", async () => {
+		const f = await fixture();
+		const c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const s1 = await session(f, c, baseSha);
+		const h1 = await s1.commit(
+			{ "a.txt": "v1\n", [CODE_CHECKS_FILE]: JSON.stringify({ checks: [{ name: "test", run: "true" }] }) },
+			"change 1",
+		);
+		const l1 = await landCodeBranch(c.job, { repository: kept, workerId: s1.workerId, headSha: h1 });
+
+		const s2 = await session(f, c, l1.mainSha);
+		const h2 = await s2.commit({ "b.txt": "b1\n" }, "change 2");
+		const l2 = await landCodeBranch(c.job, { repository: kept, workerId: s2.workerId, headSha: h2 });
+
+		const sConflict = await session(f, c, baseSha);
+		const hConflict = await sConflict.commit({ "a.txt": "conflict\n" }, "conflicting");
+		const landErr = await landCodeBranch(c.job, {
+			repository: kept,
+			workerId: sConflict.workerId,
+			headSha: hConflict,
+		}).catch((e) => e);
+		expect(landErr).toBeInstanceOf(CodeHostRefusal);
+		expect((landErr as CodeHostRefusal).code).toBe("CODE_HOST_LAND_CONFLICT");
+		expect((landErr as CodeHostRefusal).paths).toEqual(["a.txt"]);
+		expect((landErr as CodeHostRefusal).messages.join(" ")).toContain("CONFLICT");
+
+		const refsBeforeDry = await refsDigest(c);
+		const dry = await undoCodeChange(c.job, {
+			repository: kept,
+			requestId: randomUUID(),
+			change: { n: 2, mainBefore: l2.mainBefore, mainAfter: l2.mainSha },
+			andLater: false,
+			message: "Dry run undo 2",
+			dryRun: true,
+		});
+		expect(dry).toMatchObject({
+			state: "dry_run",
+			clean: true,
+			mainBefore: l2.mainSha,
+			matchesBeforeTree: true,
+			checksFilePresent: true,
+			conflictedPaths: [],
+		});
+		expect(await refsDigest(c)).toBe(refsBeforeDry);
+
+		await expect(
+			undoCodeChange(c.job, {
+				repository: kept,
+				requestId: randomUUID(),
+				change: { n: 2, mainBefore: l2.mainBefore, mainAfter: l2.mainSha },
+				andLater: false,
+				message: "Blocked by checks",
+				verifyChecks: async () => {
+					throw new CodeHostRefusal("CODE_HOST_UNDO_CHECKS_FAILED", ["test"]);
+				},
+			}),
+		).rejects.toMatchObject({ code: "CODE_HOST_UNDO_CHECKS_FAILED" });
+		expect(await f.git(c.repo, "--git-dir=.", "rev-parse", "refs/heads/main")).toBe(l2.mainSha);
+
+		const multi = await undoCodeChange(c.job, {
+			repository: kept,
+			requestId: randomUUID(),
+			change: { n: 1, mainBefore: l1.mainBefore, mainAfter: l1.mainSha },
+			andLater: false,
+			message: "Revert 1 and 2",
+			targets: [
+				{ n: 2, mainBefore: l2.mainBefore, mainAfter: l2.mainSha },
+				{ n: 1, mainBefore: l1.mainBefore, mainAfter: l1.mainSha },
+			],
+		});
+		expect(multi).toMatchObject({ state: "undone", mainBefore: l2.mainSha, matchesBeforeTree: true });
+		if (multi.state !== "undone") throw new Error("expected undone");
+		expect(await exists(join(c.code, "main/a.txt"))).toBe(false);
+		expect(await exists(join(c.code, "main/b.txt"))).toBe(false);
+	});
+
+	it("creates and lists lightweight/annotated tags and prunes archived worktrees and merged branches safely", async () => {
+		const f = await fixture();
+		const c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const sMerged = await session(f, c, baseSha);
+		const hMerged = await sMerged.commit({ "merged.txt": "ok\n" }, "merged work");
+		const landed = await landCodeBranch(c.job, { repository: kept, workerId: sMerged.workerId, headSha: hMerged });
+
+		const sUnmerged = await session(f, c, landed.mainSha);
+		await sUnmerged.commit({ "unmerged.txt": "wip\n" }, "unmerged work");
+
+		const light = await tagCodeArea(c.job, { repository: kept, mode: "create", tag: "v1.0.0", target: "main" });
+		expect(light).toMatchObject({ mode: "create", tag: "v1.0.0", kind: "lightweight", targetSha: landed.mainSha });
+		const annotated = await tagCodeArea(c.job, {
+			repository: kept,
+			mode: "create",
+			tag: "v1.0.1",
+			target: landed.mainSha,
+			message: "Release 1.0.1",
+		});
+		expect(annotated).toMatchObject({ mode: "create", tag: "v1.0.1", kind: "annotated", targetSha: landed.mainSha });
+		await expect(
+			tagCodeArea(c.job, { repository: kept, mode: "create", tag: "v1.0.0", target: "main" }),
+		).rejects.toMatchObject({ code: "CODE_HOST_TAG_EXISTS" });
+		const listed = await tagCodeArea(c.job, { repository: kept, mode: "list" });
+		expect(listed.mode).toBe("list");
+		if (listed.mode !== "list") throw new Error("expected list");
+		expect(listed.tags.map((t) => t.tag).sort()).toEqual(["v1.0.0", "v1.0.1"]);
+
+		const pruned = await pruneCodeArea(c.job, {
+			repository: kept,
+			workerIds: [sMerged.workerId, sUnmerged.workerId],
+			deleteMergedBranches: true,
+		});
+		expect(pruned.retiredWorktrees.sort()).toEqual([sMerged.workerId, sUnmerged.workerId].sort());
+		expect(pruned.deletedBranches).toEqual([`qorpera/coding/${sMerged.workerId}`]);
+		expect(await exists(sMerged.tree)).toBe(false);
+		expect(await exists(sUnmerged.tree)).toBe(false);
+		expect(await f.git(c.repo, "--git-dir=.", "show-ref", "--verify", `refs/heads/qorpera/coding/${sUnmerged.workerId}`)).toBeTruthy();
 	});
 });
