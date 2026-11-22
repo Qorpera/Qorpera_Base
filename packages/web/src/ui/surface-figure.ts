@@ -156,7 +156,7 @@ export function surfaceFigureFromIcon(icon: string | null | undefined): SurfaceF
 	return Object.hasOwn(FIGURE_EYES, id) ? (id as SurfaceFigureId) : undefined;
 }
 
-export type SurfaceFigureState = "rest" | "working" | "attention";
+export type SurfaceFigureState = "rest" | "working";
 
 function phase(figure: string): number {
 	let hash = 0;
@@ -189,7 +189,6 @@ export function surfaceFigure(figure: SurfaceFigureId, state: SurfaceFigureState
 		"span",
 		{ class: `surface-figure is-${state}`, "data-figure": figure, "aria-hidden": "true" },
 		h("span", { class: "surface-figure-body" }, image, eyes),
-		state === "attention" ? h("span", { class: "surface-figure-ask" }, "!") : null,
 	);
 	element.style.setProperty("--figure-phase", `-${phase(figure).toFixed(2)}s`);
 	return element;
