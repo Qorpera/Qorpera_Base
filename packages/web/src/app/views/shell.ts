@@ -1818,11 +1818,13 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	];
 	const sectioned = sectionGroups.length > 0;
 	const placing = state.memberContactPlacing === true && contacts.length > 0;
+	const activeSurfaceSlug = route.name === "company" && route.section === "surface" ? route.id : undefined;
 	const rowKeyOf = (el: HTMLElement) => el.getAttribute("data-href") ?? el.dataset.page ?? "";
 	const layoutKey = JSON.stringify([
 		parts.collapsed,
 		Boolean(sidebar),
 		activeStates.filter((entry) => entry.current).map((entry) => entry.key),
+		surfaceRail && !railQuery ? (activeSurfaceSlug ?? null) : null,
 		cofounderElement ? rowKeyOf(cofounderElement) : null,
 		pinnedElements.map(rowKeyOf),
 		sectionGroups.map(({ group, name, rows: sectionRows }) => [
@@ -1933,7 +1935,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	parts.members.el.classList.toggle("is-empty", !memberRows.length);
 	reconcile(parts.members.list, hasMembersSurface ? [] : memberRows);
 	surfaceRail?.update(
-		route.name === "company" && route.section === "surface" ? route.id : undefined,
+		activeSurfaceSlug,
 		false,
 		hasMembersSurface ? { rows: memberRows, unread: memberUnread, active: Boolean(activeMemberId) } : undefined,
 	);

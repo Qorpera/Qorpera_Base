@@ -86,21 +86,21 @@
 /* ---- the rail ---- */
 
 /* Above the travelling highlight. (:where keeps any other position, the drag ghost's, in charge.) */
-:where(.rail-row, .rail-pin, .cofounder-home) { position: relative; z-index: 1; }
+:where(.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row) { position: relative; z-index: 1; }
 /* The hover tint fades in; leaving it, or losing the selection to the travelling
  * highlight, lets go at once, so two highlights never show. */
-.rail-row, .rail-pin, .cofounder-home {
+.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row {
 	transition:
 		color var(--motion-base) ease,
 		transform var(--motion-base) var(--ease-spring);
 }
-:is(.rail-row, .rail-pin, .cofounder-home):hover:not(.active) {
+:is(.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row):hover:not(.active) {
 	transition:
 		background-color var(--motion-fast) ease,
 		color var(--motion-base) ease,
 		transform var(--motion-base) var(--ease-spring);
 }
-.rail-row:active, .rail-pin:active, .cofounder-home:active { transform: scale(0.975); }
+.rail-row:active, .rail-pin:active, .cofounder-home:active, .rail-surface:active, .rail-agent-hub-row:active { transform: scale(0.975); }
 /* The drag ghost follows the pointer exactly. */
 .rail-drag-ghost, .rail-drag-ghost * { transition: none !important; animation: none !important; }
 :is(.rail-row-status, .cofounder-status) { transition: border-color var(--motion-fast) ease; }
@@ -111,9 +111,10 @@
 	position: absolute; z-index: 0; pointer-events: none;
 	background: var(--rail-selection);
 }
-:is(.rail-row, .rail-pin, .cofounder-home).active.selection-arriving,
-:is(.rail-row, .rail-pin, .cofounder-home).active.selection-arriving:hover { background: transparent; }
-:is(.rail-row, .rail-pin, .cofounder-home).selection-arriving :is(.rail-row-status, .cofounder-status) { border-color: transparent; }
+:is(.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row).active.selection-arriving,
+:is(.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row).active.selection-arriving:hover { background: transparent; }
+:is(.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row).selection-arriving :is(.rail-row-status, .cofounder-status) { border-color: transparent; }
+.rail-surface.selection-arriving .surface-crew-pip { box-shadow: none; }
 
 /* An agent's state: quiet and exact. The figure's own motion already says it is working;
  * the rail only brings in the dot and the new line. */
