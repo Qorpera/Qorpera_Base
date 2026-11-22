@@ -3079,7 +3079,9 @@ describe("multi-batch boundary commits", () => {
 		cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
 		const { port } = server.address() as AddressInfo;
 		const uploads = new GatewayUploads({ url: `http://127.0.0.1:${port}`, token });
-		cleanups.push(() => uploads.close());
+		cleanups.push(async () => {
+			uploads.close();
+		});
 		const actor = { kind: "view" as const, viewId: "9e6f7081-92a3-4b4c-8d5e-6f708192a3b4", pass: PASS };
 
 		const payload = Buffer.alloc(2 * 1024 * 1024, 7);
