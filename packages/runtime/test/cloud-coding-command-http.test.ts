@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, request as httpRequest, type Server } from "node:http";
+import type { Socket } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
 	CloudCodingCommandExecution,
@@ -550,7 +551,7 @@ describe("isolated coding command HTTP gateway", () => {
 				open: vi.fn(),
 			},
 		});
-		const upgraded = await new Promise<import("node:net").Socket>((resolve, reject) => {
+		const upgraded = await new Promise<Socket>((resolve, reject) => {
 			const req = httpRequest({
 				host: "127.0.0.1",
 				port: Number(new URL(f.url).port),

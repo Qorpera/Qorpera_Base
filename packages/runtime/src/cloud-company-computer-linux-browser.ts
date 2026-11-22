@@ -279,7 +279,10 @@ export function createCompanyComputerLinuxBrowserLaunch(options: {
 						channel?.close();
 						signal.removeEventListener("abort", onAbort);
 						await Promise.allSettled(files.map((file) => file.close()));
-						if (temporary) await rm(temporary, { recursive: true, force: true }).catch(() => undefined);
+						if (temporary) {
+							const remove = rm(temporary, { recursive: true, force: true });
+							await (drained ? remove : remove.catch(() => undefined));
+						}
 					}
 				},
 				new AbortController().signal,
