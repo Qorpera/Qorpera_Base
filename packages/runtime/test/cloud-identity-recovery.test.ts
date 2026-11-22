@@ -1,5 +1,6 @@
 import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -290,6 +291,29 @@ describe("cloud recovery coordinator", () => {
 		expect(f.plan().objectSha256).toBe(recoveryDigest(staged!));
 		expect([...f.nas.objects.values()][0]).toEqual([...f.supabase.objects.values()][0]);
 		expect(Buffer.from(staged!).includes(f.key.toString("base64url"))).toBe(false);
+	});
+
+	it("replicates backups to NAS and Supabase concurrently", async () => {
+		const f = fixture();
+		let started = 0;
+		let releaseBarrier!: () => void;
+		const barrier = new Promise<void>((resolve) => {
+			releaseBarrier = resolve;
+		});
+		const wrapPut = (store: MemoryStore) => {
+			const originalPut = store.put.bind(store);
+			vi.spyOn(store, "put").mockImplementation(async (address, bytes) => {
+				started++;
+				if (started === 2) releaseBarrier();
+				await barrier;
+				return originalPut(address, bytes);
+			});
+		};
+		wrapPut(f.nas);
+		wrapPut(f.supabase);
+		await f.backup();
+		expect(started).toBe(2);
+		expect(f.plan().status).toBe("ready");
 	});
 
 	it("does not release before approval or silently change the selected replica", async () => {
@@ -609,5 +633,114 @@ describe("recovery transport and storage", () => {
 			20,
 		);
 		await expect(stalled.get("a".repeat(64), signal)).rejects.toThrow("deadline");
+	});
+
+	it("drains active HTTP requests on graceful close and aborts wedged requests after the grace timeout", async () => {
+		const f = fixture();
+		let started!: () => void;
+		const inControl = new Promise<void>((resolve) => {
+			started = resolve;
+		});
+		let finishControl!: () => void;
+		const holdControl = new Promise<void>((resolve) => {
+			finishControl = resolve;
+		});
+		const originalCall = f.control.call.bind(f.control);
+		vi.spyOn(f.control, "call").mockImplementationOnce(async (operation, args, requestSignal) => {
+			started();
+			await holdControl;
+			return originalCall(operation, args, requestSignal);
+		});
+		const service = new HttpIdentityRecoveryService(f.authority, "o".repeat(43));
+		services.push(service);
+		const url = await service.start();
+		const inFlight = fetch(`${url}/v1/backup/prepare`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				loginId: f.loginId,
+				loginCapability: f.loginCapability,
+				keySha256: recoveryDigest(f.key),
+			}),
+		});
+		await inControl;
+		const closing = service.close(5_000);
+		finishControl();
+		const response = await inFlight;
+		expect(response.status).toBe(200);
+		expect(response.headers.get("connection")).toBe("close");
+		await closing;
+
+		let abortedOnShutdown = false;
+		let wedgedStarted!: () => void;
+		const inWedged = new Promise<void>((resolve) => {
+			wedgedStarted = resolve;
+		});
+		vi.spyOn(f.control, "call").mockImplementationOnce(async (_operation, _args, requestSignal) => {
+			wedgedStarted();
+			await new Promise<void>((resolve) => {
+				requestSignal.addEventListener(
+					"abort",
+					() => {
+						abortedOnShutdown = true;
+						resolve();
+					},
+					{ once: true },
+				);
+			});
+			requestSignal.throwIfAborted();
+			return {};
+		});
+		const wedgedUrl = await service.start();
+		const wedgedFetch = fetch(`${wedgedUrl}/v1/backup/prepare`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				loginId: f.loginId,
+				loginCapability: f.loginCapability,
+				keySha256: recoveryDigest(f.key),
+			}),
+		}).catch(() => undefined);
+		await inWedged;
+		await service.close(50);
+		await wedgedFetch;
+		expect(abortedOnShutdown).toBe(true);
+
+		const stalledUrl = new URL(await service.start());
+		const stalledPort = Number(stalledUrl.port);
+		const partialSocket = createConnection({ host: "127.0.0.1", port: stalledPort });
+		await new Promise<void>((resolve, reject) => {
+			partialSocket.once("connect", () => resolve());
+			partialSocket.once("error", reject);
+		});
+		partialSocket.write("POST /v1/backup HTTP/1.1\r\n");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		const closedPartialAt = Date.now();
+		await service.close(50);
+		expect(Date.now() - closedPartialAt).toBeLessThan(1_000);
+		partialSocket.destroy();
+
+		const closingUrl = new URL(await service.start());
+		const closingPort = Number(closingUrl.port);
+		const lateSocket = createConnection({ host: "127.0.0.1", port: closingPort });
+		await new Promise<void>((resolve, reject) => {
+			lateSocket.once("connect", () => resolve());
+			lateSocket.once("error", reject);
+		});
+		lateSocket.write("POST /v1/backup HTTP/1.1\r\n");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		const closingWhileParsing = service.close(5_000);
+		const lateResponse = new Promise<string>((resolve) => {
+			const chunks: Buffer[] = [];
+			lateSocket.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+			lateSocket.once("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+			lateSocket.once("close", () => resolve(Buffer.concat(chunks).toString("utf8")));
+		});
+		lateSocket.write("Host: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}");
+		const rawReply = await lateResponse;
+		expect(rawReply).toContain("HTTP/1.1 503");
+		expect(rawReply.toLowerCase()).toContain("connection: close");
+		await closingWhileParsing;
+		lateSocket.destroy();
 	});
 });

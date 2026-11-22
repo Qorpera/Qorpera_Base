@@ -1,7 +1,7 @@
 //! Streams on the folder link: vsock between a VM and its node, or a Unix socket (the node's bridge
 //! to its service, and local tests).
 
-use std::io::{self, Read, Write};
+use std::io::{self, IoSlice, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::time::Duration;
 
@@ -24,6 +24,12 @@ impl Write for Stream {
 		match self {
 			Stream::Vsock(s) => s.write(buf),
 			Stream::Unix(s) => s.write(buf),
+		}
+	}
+	fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+		match self {
+			Stream::Vsock(s) => s.write_vectored(bufs),
+			Stream::Unix(s) => s.write_vectored(bufs),
 		}
 	}
 	fn flush(&mut self) -> io::Result<()> {

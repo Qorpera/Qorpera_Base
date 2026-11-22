@@ -12,6 +12,7 @@ import {
 	parseCompanyComputerServiceStartCompletion,
 	parseCompanyComputerServiceStartRequest,
 } from "@qorpera/contracts";
+import { withTimeoutScope } from "./abort-scope.ts";
 import type { LxdOfficeServiceStartClient } from "./lxd-client.ts";
 import { type LxdOfficeGuestBinding, lxdOfficeGuestPlan } from "./lxd-office-guest.ts";
 import { officeCanonical } from "./lxd-office-image-provenance.ts";
@@ -82,127 +83,142 @@ export class LxdOfficeServiceInspectionControl {
 		const request = parseCompanyComputerServiceStartRequest(requestValue);
 		const completion = parseCompanyComputerServiceStartCompletion(completionValue, command, request);
 		this.#busy = true;
-		const signal = AbortSignal.any([caller, AbortSignal.timeout(WINDOW_MS)]);
-		const started = performance.now();
-		const fresh = () => {
-			signal.throwIfAborted();
-			const elapsed = performance.now() - started;
-			if (elapsed < 0 || elapsed >= WINDOW_MS) throw new Error("inspection expired");
-		};
-		let abort = () => {};
-		const stopped = new Promise<never>((_resolve, reject) => {
-			abort = () => reject(new Error("OFFICE_SERVICE_INSPECTION_UNCONFIRMED"));
-			signal.addEventListener("abort", abort, { once: true });
-		});
-		const operation = (async () => {
-			let retainedAuthority = signal;
-			const checked = async () => {
-				fresh();
-				retainedAuthority.throwIfAborted();
-				const authority = AbortSignal.any([retainedAuthority, await authorize(signal)]);
-				retainedAuthority = authority;
-				fresh();
-				authority.throwIfAborted();
-				return authority;
+		return withTimeoutScope(caller, WINDOW_MS, async (signal) => {
+			const started = performance.now();
+			const fresh = () => {
+				signal.throwIfAborted();
+				const elapsed = performance.now() - started;
+				if (elapsed < 0 || elapsed >= WINDOW_MS) throw new Error("inspection expired");
 			};
-			const inspectionId = randomUUID();
-			if (inspectionId === command.commandId) throw new Error("nonce collision");
-			const prefix = `service-inspection-${this.#binding.allocationId}-${inspectionId}`;
-			const dispatch = {
-				schema: "qorpera.lxd-office-service-inspection-dispatch/v1",
-				binding: this.#binding,
-				inspectionId,
-				command,
-				completion,
-			};
-			await checked();
-			await assertInspectionBudget(this.#root, this.#binding.allocationId, signal);
-			fresh();
-			if (!(await publish(this.#root, `${prefix}.json`, Buffer.from(officeCanonical(dispatch)))))
-				throw new Error("inspection already dispatched");
-			const verifyDispatch = async () => {
-				fresh();
-				if (!isDeepStrictEqual((await readRecord(join(this.#root, `${prefix}.json`))).value, dispatch))
-					throw new Error("dispatch changed");
-				return checked();
-			};
-			const name = lxdOfficeGuestPlan(this.#binding).request.name;
-			const reference = await this.#client.submitOfficeServiceInspection(
-				this.#binding.project,
-				name,
-				command,
-				inspectionId,
-				await verifyDispatch(),
-			);
-			if (
-				!isDeepStrictEqual(reference, {
-					project: this.#binding.project,
-					instanceName: name,
-					operationId: reference.operationId,
-				}) ||
-				typeof reference.operationId !== "string" ||
-				!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(reference.operationId)
-			)
-				throw new Error("operation differs");
-			// Retain acceptance even if cancellation arrived with the response.
-			if (
-				!(await publish(
-					this.#root,
-					`${prefix}-accepted.json`,
-					Buffer.from(
-						officeCanonical({
-							schema: "qorpera.lxd-office-service-inspection-accepted/v1",
-							inspectionId,
-							reference,
-						}),
-					),
-				))
-			)
-				throw new Error("acceptance changed");
-			for (;;) {
-				const state = await this.#client.inspectOfficeServiceStart(reference, await verifyDispatch());
-				fresh();
-				if (state === "succeeded") break;
-				if (state !== "pending") throw new Error("inspection failed");
-				await delay(50, undefined, { signal });
-			}
-			const file = await this.#client.readInstanceFile(
-				this.#binding.project,
-				name,
-				`/run/qorpera-office-preparation/service-inspection-${inspectionId}.json`,
-				16384,
-				await verifyDispatch(),
-			);
-			fresh();
-			if (file.uid !== 0 || file.gid !== 0 || file.mode !== 0o600) throw new Error("inspection custody");
-			const observation = parseCompanyComputerServiceInspection(
-				JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(file.content)),
-				inspectionId,
-				completion,
-				request,
-			);
-			const authority = await verifyDispatch();
-			fresh();
-			const assertFresh = () => {
-				fresh();
-				authority.throwIfAborted();
-			};
-			const result = await use(observation.start, authority, assertFresh, started + WINDOW_MS);
-			fresh();
-			authority.throwIfAborted();
-			return result;
-		})()
-			.catch((error) => {
-				throw new Error("OFFICE_SERVICE_INSPECTION_UNCONFIRMED", { cause: error });
-			})
-			.finally(() => {
-				this.#busy = false;
+			let abort = () => {};
+			const stopped = new Promise<never>((_resolve, reject) => {
+				abort = () => reject(new Error("OFFICE_SERVICE_INSPECTION_UNCONFIRMED"));
+				signal.addEventListener("abort", abort, { once: true });
 			});
-		try {
-			return await Promise.race([operation, stopped]);
-		} finally {
-			signal.removeEventListener("abort", abort);
-			if (settle) await operation.catch(() => {});
-		}
+			const authorityScope = new AbortController();
+			const tracked = new Map<AbortSignal, () => void>();
+			const track = (source: AbortSignal): void => {
+				if (source.aborted) {
+					authorityScope.abort(source.reason);
+					return;
+				}
+				if (tracked.has(source)) return;
+				const onAbort = () => authorityScope.abort(source.reason);
+				source.addEventListener("abort", onAbort, { once: true });
+				tracked.set(source, () => source.removeEventListener("abort", onAbort));
+			};
+			track(signal);
+			const operation = (async () => {
+				const retainedAuthority = authorityScope.signal;
+				const checked = async () => {
+					fresh();
+					retainedAuthority.throwIfAborted();
+					track(await authorize(signal));
+					fresh();
+					retainedAuthority.throwIfAborted();
+					return retainedAuthority;
+				};
+				const inspectionId = randomUUID();
+				if (inspectionId === command.commandId) throw new Error("nonce collision");
+				const prefix = `service-inspection-${this.#binding.allocationId}-${inspectionId}`;
+				const dispatch = {
+					schema: "qorpera.lxd-office-service-inspection-dispatch/v1",
+					binding: this.#binding,
+					inspectionId,
+					command,
+					completion,
+				};
+				await checked();
+				await assertInspectionBudget(this.#root, this.#binding.allocationId, signal);
+				fresh();
+				if (!(await publish(this.#root, `${prefix}.json`, Buffer.from(officeCanonical(dispatch)))))
+					throw new Error("inspection already dispatched");
+				const verifyDispatch = async () => {
+					fresh();
+					if (!isDeepStrictEqual((await readRecord(join(this.#root, `${prefix}.json`))).value, dispatch))
+						throw new Error("dispatch changed");
+					return checked();
+				};
+				const name = lxdOfficeGuestPlan(this.#binding).request.name;
+				const reference = await this.#client.submitOfficeServiceInspection(
+					this.#binding.project,
+					name,
+					command,
+					inspectionId,
+					await verifyDispatch(),
+				);
+				if (
+					!isDeepStrictEqual(reference, {
+						project: this.#binding.project,
+						instanceName: name,
+						operationId: reference.operationId,
+					}) ||
+					typeof reference.operationId !== "string" ||
+					!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(reference.operationId)
+				)
+					throw new Error("operation differs");
+				// Retain acceptance even if cancellation arrived with the response.
+				if (
+					!(await publish(
+						this.#root,
+						`${prefix}-accepted.json`,
+						Buffer.from(
+							officeCanonical({
+								schema: "qorpera.lxd-office-service-inspection-accepted/v1",
+								inspectionId,
+								reference,
+							}),
+						),
+					))
+				)
+					throw new Error("acceptance changed");
+				for (;;) {
+					const state = await this.#client.inspectOfficeServiceStart(reference, await verifyDispatch());
+					fresh();
+					if (state === "succeeded") break;
+					if (state !== "pending") throw new Error("inspection failed");
+					await delay(50, undefined, { signal });
+				}
+				const file = await this.#client.readInstanceFile(
+					this.#binding.project,
+					name,
+					`/run/qorpera-office-preparation/service-inspection-${inspectionId}.json`,
+					16384,
+					await verifyDispatch(),
+				);
+				fresh();
+				if (file.uid !== 0 || file.gid !== 0 || file.mode !== 0o600) throw new Error("inspection custody");
+				const observation = parseCompanyComputerServiceInspection(
+					JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(file.content)),
+					inspectionId,
+					completion,
+					request,
+				);
+				const authority = await verifyDispatch();
+				fresh();
+				const assertFresh = () => {
+					fresh();
+					authority.throwIfAborted();
+				};
+				const result = await use(observation.start, authority, assertFresh, started + WINDOW_MS);
+				fresh();
+				authority.throwIfAborted();
+				return result;
+			})()
+				.catch((error) => {
+					throw new Error("OFFICE_SERVICE_INSPECTION_UNCONFIRMED", { cause: error });
+				})
+				.finally(() => {
+					for (const cleanup of tracked.values()) cleanup();
+					tracked.clear();
+					this.#busy = false;
+				});
+			try {
+				return await Promise.race([operation, stopped]);
+			} finally {
+				signal.removeEventListener("abort", abort);
+				if (settle) await operation.catch(() => {});
+			}
+		});
 	}
 }

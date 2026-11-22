@@ -70,7 +70,9 @@ begin
 			-- running (qorpera_finish_company_deletion waits); SQL test 1252 shows it lets a purge through.
 			'public.qorpera_site_takedown_sticks()'::regprocedure,
 			-- WHY: statement-level pg_notify trigger for web edge route sync (20260930832000); never refuses a delete.
-			'public.qorpera_web_notify_route_change()'::regprocedure);
+			'public.qorpera_web_notify_route_change()'::regprocedure,
+			-- WHY: AFTER DELETE trigger enqueues deleted profile_id for object GC (20260930846000); never refuses a delete.
+			'public.qorpera_enqueue_deleted_profile_object_gc_on_profile_delete()'::regprocedure);
 	if v_unexpected is not null then
 		raise exception 'Delete triggers the company purge does not know: %', v_unexpected;
 	end if;
@@ -474,7 +476,8 @@ begin
 	into v_wrong
 	from purge_table_rows as counted
 	left join jsonb_each_text(v_found) as found on found.key::regclass::oid = counted.table_id
-	where counted.before_rows - counted.after_rows <> coalesce(found.value::bigint, 0);
+	where counted.table_id <> 'public.qorpera_deleted_profile_object_gc_queue'::regclass
+		and counted.before_rows - counted.after_rows <> coalesce(found.value::bigint, 0);
 	if v_wrong is not null or (select count(*) from jsonb_each_text(v_found)) < 40
 		or (select value from jsonb_each_text(v_found) where key::regclass = 'public.qorpera_profiles'::regclass) <> '1'
 		or (select value::bigint from jsonb_each_text(v_found) where key::regclass = 'public.qorpera_folder_commits'::regclass) < 1
@@ -534,8 +537,8 @@ begin
 			and not column_row.attisdropped
 		where class.relnamespace = 'public'::regnamespace and class.relkind = 'r'
 			and class.relname not in ('qorpera_runner_usage_observations', 'qorpera_runner_model_usage_observations',
-				'qorpera_profile_objects', 'qorpera_deleted_profile_object_gc_leases', 'qorpera_deleted_profile_object_gc_entries',
-				'qorpera_company_deletions')
+				'qorpera_profile_objects', 'qorpera_deleted_profile_object_gc_queue', 'qorpera_deleted_profile_object_gc_leases',
+				'qorpera_deleted_profile_object_gc_entries', 'qorpera_company_deletions')
 			and class.relname not like 'qorpera\_computer\_hour\_%'
 	loop
 		execute format('select count(*) from %s where profile_id = %L', v_table.name, '92400000-0000-4000-8000-000000000010')

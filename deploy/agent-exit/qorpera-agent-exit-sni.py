@@ -51,6 +51,7 @@ one.
 """
 
 import argparse
+import collections
 import importlib.util
 import ipaddress
 import json
@@ -269,7 +270,8 @@ class Judge:
     def __init__(self, decide, report=lambda line: print(line, file=sys.stderr, flush=True)):
         self.decide = decide        # (machine address, server name) -> None when allowed, or why not
         self.report = report
-        self.flows = {}
+        self.flows = collections.OrderedDict()
+        self.holding_flows = set()
         self.holding = {}           # machine address -> the packets its flows hold
         self.refused = 0
 
@@ -290,6 +292,7 @@ class Judge:
         if flow:
             flow.seen = at
             flow.queued += 1
+            self.flows.move_to_end(key)
         if not outbound:
             return self.inbound(key, flow, ident, ack, flags, at)
         if flags & SYN:
@@ -297,9 +300,12 @@ class Judge:
             # A flow judged (ct mark 2 or 3) or reset is queued no more, so a SYN queued for it is a new connection's.
             if flow is None or flow.state in ("done", "refused", "reset"):
                 flow = self.flows[key] = Flow(start, at)
+                self.flows.move_to_end(key)
+                self.holding_flows.discard(key)
             elif flow.state == "waiting" and not flow.held and flow.data is None:
                 # Its SYN again (or another) before any data: the flow starts there, and its packets still count.
                 flow = self.flows[key] = Flow(start, at, flow.queued)
+                self.flows.move_to_end(key)
         elif flow is None:
             flow = self.flows[key] = Flow(None, at)
             if flags & RST:
@@ -360,6 +366,7 @@ class Judge:
         while flow.filled < STREAM_MAX and flow.known[flow.filled]:
             flow.filled += 1
         flow.held.append(ident)
+        self.holding_flows.add(key)
         self.holding[machine] = self.holding.get(machine, 0) + 1
         kind, value = client_hello(bytes(flow.data[:flow.filled]))
         if kind == "more":
@@ -417,6 +424,7 @@ class Judge:
     def release(self, key, flow):
         """The packets the flow held, which it holds no more."""
         held, flow.held = flow.held, []
+        self.holding_flows.discard(key)
         machine = key[0][0]
         left = self.holding.get(machine, 0) - len(held)
         if left > 0:
@@ -429,12 +437,20 @@ class Judge:
         """Refuses the flows that held data too long and forgets the ones not seen for FLOW_IDLE seconds. (The other
         limits, overdue(), wait for a flow's next packet: a refusal needs a packet to mark the flow with.)"""
         verdicts = []
-        for key, flow in list(self.flows.items()):
-            if flow.state == "waiting" and flow.held and at - flow.since > HOLD_TIME:
+        for key in list(self.holding_flows):
+            flow = self.flows.get(key)
+            if flow is None or not flow.held:
+                self.holding_flows.discard(key)
+                continue
+            if flow.state == "waiting" and at - flow.since > HOLD_TIME:
                 first = flow.held[0]
                 verdicts += self.refuse(key, flow, first, f"no whole ClientHello within {HOLD_TIME} seconds")
-            elif at - flow.seen > FLOW_IDLE:
-                del self.flows[key]
+        while self.flows:
+            key, flow = next(iter(self.flows.items()))
+            if at - flow.seen <= FLOW_IDLE:
+                break
+            del self.flows[key]
+            self.holding_flows.discard(key)
         return verdicts
 
 
@@ -567,8 +583,8 @@ class Checker:
         """As the names reconciler reads them: no file, no rules (every flow is refused); a file that cannot be used
         keeps the rules last read."""
         try:
-            data, key = names.read_whole(self.args.rules, names.MAX_RULES_BYTES)
-            if key != self.rules_key:
+            data, key = names.read_whole(self.args.rules, names.MAX_RULES_BYTES, known_key=self.rules_key)
+            if data is not None:
                 self.rules, self.rules_key = names.parse_rules(data), key
             self.problems = []
         except FileNotFoundError:
@@ -595,7 +611,8 @@ class Checker:
                     return {"queued": int(fields[2]), "queue_dropped": int(fields[5]), "user_dropped": int(fields[6])}
         return None
 
-    def write_status(self, at):
+    def write_status(self, at, mono=None):
+        elapsed_now = at if mono is None else mono
         problems = list(self.problems)
         try:
             kernel = self.queue_counts()
@@ -614,10 +631,10 @@ class Checker:
             self.dropping = 0
         self.dropped = total
         if self.dropping >= DROPS_LASTING:
-            self.dropped_at = at
-        if self.dropped_at is not None and at - self.dropped_at < DROPS_SHOWN:
+            self.dropped_at = elapsed_now
+        if self.dropped_at is not None and elapsed_now - self.dropped_at < DROPS_SHOWN:
             problems.append(f"the kernel dropped packets of queue {self.args.queue} in {DROPS_LASTING} status writes in "
-                            f"a row, the last {int(at - self.dropped_at)}s ago, {self.dropped} since this checker "
+                            f"a row, the last {int(elapsed_now - self.dropped_at)}s ago, {self.dropped} since this checker "
                             "started: the queue stayed full, or the checker fell behind")
         status = {"schema": STATUS_SCHEMA, "at": plug.now_iso(at), "queue": self.args.queue,
                   "flows": len(self.judge.flows), "held": sum(self.judge.holding.values()), "kernel": kernel,
@@ -627,7 +644,7 @@ class Checker:
     def run(self):
         queue = Queue(self.args.queue, self.args.queue_length)
         print(f"checking queue {self.args.queue}", file=sys.stderr, flush=True)
-        last = expired = 0
+        last = expired = 0.0
         while True:
             if select.select([queue.sock], [], [], 0.5)[0]:
                 for kind, _seq, body in queue.receive():
@@ -638,20 +655,21 @@ class Checker:
                         continue
                     for verdict in self.judge.packet(ident, data, time.monotonic()):
                         queue.verdict(*verdict)
-            if time.monotonic() - expired >= 0.25:
-                expired = time.monotonic()
+            mono = time.monotonic()
+            if mono - expired >= 0.25:
+                expired = mono
                 for verdict in self.judge.expire(expired):
                     queue.verdict(*verdict)
-            if time.time() - last >= 2:
-                last = time.time()
+            if last == 0.0 or mono - last >= 2:
+                last = mono
                 if self.moved():
                     print("the exit's namespace was made again: leaving, to be started in the new one",
                           file=sys.stderr, flush=True)
                     return
                 # The status says how the rules file is now, also when no flow is being judged.
-                self.rules_at = time.monotonic()
+                self.rules_at = mono
                 self.read_rules()
-                self.write_status(last)
+                self.write_status(time.time(), mono)
 
 
 def main():

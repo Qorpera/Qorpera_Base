@@ -1,6 +1,9 @@
 import { readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { parseCompanyComputerServiceStopCompletion, parseCompanyComputerServiceStopRequest } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { LxdOfficeStopControl } from "../src/lxd-office-stop-control.ts";
+import { inspectAndAcknowledgeLxdOfficeStop } from "../src/lxd-office-stop-inspection.ts";
 import { officeStopWorkerFixture } from "./fixtures/office-stop-worker.ts";
 
 const roots: string[] = [];
@@ -210,5 +213,43 @@ describe("serialized provider stop worker", () => {
 				(name) => name.startsWith("stop-inspection-") && !name.endsWith("-accepted.json"),
 			),
 		).toHaveLength(1);
+	});
+	it("bounds stop inspection without calling AbortSignal.any or AbortSignal.timeout", async () => {
+		const f = await fixture();
+		await expect(f.worker.reconcile(f.activation.request.intentId, f.request, signal())).resolves.toMatchObject({
+			state: "stopped",
+		});
+		const incoming = [...f.guest.entries()].find(([path]) =>
+			path.startsWith("/run/qorpera-office-preparation/service-stop-incoming-"),
+		);
+		const stopRequest = parseCompanyComputerServiceStopRequest(JSON.parse(incoming![1].content.toString("utf8")));
+		const rawCompletion = JSON.parse(f.guest.get(f.completionPath)!.content.toString("utf8"));
+		const completion = parseCompanyComputerServiceStopCompletion(rawCompletion, rawCompletion.command, stopRequest);
+		const control = {
+			prepare: async () => ({ validForMs: 5000 }),
+			acknowledge: async () => f.state.receipt!,
+		} as unknown as LxdOfficeStopControl;
+		const anySpy = vi.spyOn(AbortSignal, "any");
+		const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+		try {
+			await expect(
+				inspectAndAcknowledgeLxdOfficeStop(
+					f.root,
+					f.binding,
+					rawCompletion.command,
+					stopRequest,
+					completion,
+					f.client,
+					control,
+					async () => signal(),
+					signal(),
+				),
+			).resolves.toEqual(f.state.receipt);
+			expect(anySpy).not.toHaveBeenCalled();
+			expect(timeoutSpy).not.toHaveBeenCalled();
+		} finally {
+			anySpy.mockRestore();
+			timeoutSpy.mockRestore();
+		}
 	});
 });

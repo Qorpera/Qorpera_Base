@@ -1,16 +1,5 @@
-/* Event intake (build step W1a; contract section 19, 2026-09-29 amendment "events wake agents";
- * design deploy/first-node/RUNTIME-EVENT-INTAKE.md).
- *
- * POST /event-intake/<address>: one delivery to one of a company's hooks. The function holds no
- * company secret. It reads the body up to 256 KiB, keeps an allowed list of headers and hands the
- * delivery to the database's intake door, qorpera_receive_event, which decides the outcome:
- * accepted (202), duplicate (200), unknown (404), paused or not_ready (409), too_large (413),
- * limited (429, with Retry-After) or unavailable (503, the intake is switched off). The function
- * itself answers 404 for a path that is not a hook address (decided by its shape alone, whether or
- * not the intake is switched on), 405 for a method other than POST, 413 for a body over 256 KiB,
- * 431 for kept headers over 8000 bytes, 400 for input the database calls malformed and 503 when
- * the database cannot be reached, so the sender retries. Signatures of signed hooks are checked
- * later by the company's vault, never here. */
+import { Buffer } from "node:buffer";
+import { BodyTooLargeError, DEFAULT_BODY_READ_TIMEOUT_MS, readBoundedBytes } from "../_shared/http-guards.ts";
 
 export const MAX_BODY_BYTES = 256 * 1024;
 const MAX_HEADER_VALUE = 2048;
@@ -18,6 +7,7 @@ const MAX_HEADER_VALUE = 2048;
 // colon and comma; 8000 bytes of compact JSON always fits.
 const MAX_HEADERS_JSON_BYTES = 8000;
 const ADDRESS = /\/event-intake\/([A-Za-z0-9_-]{43})\/?$/;
+const UTF8_ENCODER = new TextEncoder();
 
 /** The headers the intake keeps; the database refuses any other (qorpera_event_kept_headers). */
 export const KEPT_HEADERS: readonly string[] = [
@@ -45,7 +35,13 @@ type Json = Record<string, unknown>;
 
 /** The database's intake door: qorpera_receive_event(address, content type, headers, body). */
 export interface IntakeStore {
-	receive(address: string, contentType: string | null, headers: Record<string, string>, bodyBase64: string): Promise<Json>;
+	receive(
+		address: string,
+		contentType: string | null,
+		headers: Record<string, string>,
+		bodyBase64: string,
+		signal?: AbortSignal,
+	): Promise<Json>;
 }
 
 /** A refusal or failure from the intake door; code is the Postgres SQLSTATE when there is one. */
@@ -66,37 +62,30 @@ function json(body: Json, status: number, headers: Record<string, string> = {}):
 }
 
 export function base64(bytes: Uint8Array): string {
-	let binary = "";
-	for (let offset = 0; offset < bytes.length; offset += 0x8000)
-		binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-	return btoa(binary);
+	return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
 }
 
-/** The body, or null when it is over the limit. */
-async function readBody(request: Request, limit: number): Promise<Uint8Array | null> {
-	const declared = request.headers.get("content-length");
-	if (declared !== null && /^\d+$/.test(declared) && Number(declared) > limit) return null;
-	if (!request.body) return new Uint8Array(0);
-	const reader = request.body.getReader();
-	const chunks: Uint8Array[] = [];
-	let size = 0;
-	for (;;) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		size += value.byteLength;
-		if (size > limit) {
-			await reader.cancel().catch(() => undefined);
-			return null;
-		}
-		chunks.push(value);
+function isTimeoutOrAbortError(error: unknown): boolean {
+	if (error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError")) return true;
+	return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+}
+
+async function readBody(
+	request: Request,
+	limit: number,
+	timeoutMs = DEFAULT_BODY_READ_TIMEOUT_MS,
+): Promise<{ readonly ok: true; readonly bytes: Uint8Array } | { readonly ok: false; readonly status: 400 | 408 | 413 }> {
+	try {
+		const bytes = await readBoundedBytes(request, limit, {
+			timeoutMs,
+			signal: request.signal,
+		});
+		return { ok: true, bytes };
+	} catch (error) {
+		if (error instanceof BodyTooLargeError) return { ok: false, status: 413 };
+		if (request.signal.aborted || isTimeoutOrAbortError(error)) return { ok: false, status: 408 };
+		return { ok: false, status: 400 };
 	}
-	const body = new Uint8Array(size);
-	let offset = 0;
-	for (const chunk of chunks) {
-		body.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	return body;
 }
 
 /** The kept headers, lowercased, each at most 2048 characters (longer values are dropped). */
@@ -126,10 +115,15 @@ export async function handleEventIntake(request: Request, store: IntakeStore): P
 	if (!address) return json({ error: "This is not a hook address" }, 404);
 	if (request.method !== "POST") return json({ error: "Method not allowed" }, 405, { allow: "POST" });
 	const headers = keptHeaders(request.headers);
-	if (new TextEncoder().encode(JSON.stringify(headers)).length > MAX_HEADERS_JSON_BYTES)
+	if (UTF8_ENCODER.encode(JSON.stringify(headers)).length > MAX_HEADERS_JSON_BYTES)
 		return json({ error: "The headers are too large" }, 431);
-	const body = await readBody(request, MAX_BODY_BYTES);
-	if (!body) return json({ error: "The body is over 256 KiB" }, 413);
+	const read = await readBody(request, MAX_BODY_BYTES);
+	if (!read.ok) {
+		if (read.status === 413) return json({ error: "The body is over 256 KiB" }, 413);
+		if (read.status === 408) return json({ error: "Request body timed out" }, 408);
+		return json({ error: "The delivery could not be read" }, 400);
+	}
+	const body = read.bytes;
 	const contentType = headers["content-type"];
 	let result: Json;
 	try {
@@ -138,6 +132,7 @@ export async function handleEventIntake(request: Request, store: IntakeStore): P
 			contentType && contentType.length <= 256 ? contentType : null,
 			headers,
 			base64(body),
+			request.signal,
 		);
 	} catch (error) {
 		if (error instanceof IntakeStoreError && error.code === "22023")
@@ -145,7 +140,9 @@ export async function handleEventIntake(request: Request, store: IntakeStore): P
 		console.error(`event-intake: ${error instanceof Error ? error.message : String(error)}`);
 		return json({ error: "Events are unavailable right now" }, 503);
 	}
-	const outcome = OUTCOMES[typeof result.outcome === "string" ? result.outcome : ""];
+	const outcomeKey = typeof result.outcome === "string" ? result.outcome : "";
+	// WHY: Guard OUTCOMES with Object.hasOwn so prototype keys like "toString" never match a response mapping.
+	const outcome = Object.hasOwn(OUTCOMES, outcomeKey) ? OUTCOMES[outcomeKey] : undefined;
 	if (!outcome) {
 		console.error(`event-intake: unexpected outcome ${JSON.stringify(result.outcome)}`);
 		return json({ error: "Events are unavailable right now" }, 503);
