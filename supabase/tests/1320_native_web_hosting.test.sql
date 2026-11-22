@@ -233,4 +233,27 @@ begin
 
 	v_res := pg_temp.req_as(pg_temp.req_owner(), format('public.qorpera_remove_company_site_domain(%L)', v_dom_www));
 	perform pg_temp.base_assert((v_res ->> 'removed')::boolean, 'domain removed');
+
+	perform pg_temp.base_assert(
+		exists (
+			select 1 from pg_roles
+			where rolname = 'qorpera_web_router'
+				and not rolsuper and not rolcreatedb and not rolcreaterole
+				and not rolinherit and not rolreplication and not rolbypassrls
+		),
+		'qorpera_web_router role exists with least-privilege attributes'
+	);
+	perform pg_temp.base_assert(
+		has_function_privilege('qorpera_web_router', 'public.qorpera_web_edge_snapshot()', 'EXECUTE')
+			and has_function_privilege('qorpera_web_router', 'public.qorpera_web_edge_tls_allow(text)', 'EXECUTE')
+			and has_function_privilege('qorpera_web_router', 'public.qorpera_web_domain_mark_checked(uuid,text,text)', 'EXECUTE')
+			and has_function_privilege('qorpera_web_router', 'public.qorpera_web_deployment_set_upstream(uuid,text)', 'EXECUTE')
+			and has_function_privilege('qorpera_web_router', 'public.qorpera_web_edge_redeem_ticket(text,text)', 'EXECUTE')
+			and has_function_privilege('qorpera_web_router', 'public.qorpera_web_edge_redeem_member_pass(text,text)', 'EXECUTE')
+			and not has_function_privilege('qorpera_web_router', 'public.qorpera_web_deployment_create(uuid,text,text,jsonb,integer,bigint,text,integer,text,integer,boolean)', 'EXECUTE')
+			and not has_table_privilege('qorpera_web_router', 'public.qorpera_profiles', 'SELECT')
+			and not has_table_privilege('qorpera_web_router', 'public.qorpera_company_sites', 'SELECT')
+			and not has_table_privilege('qorpera_web_router', 'public.qorpera_company_site_domains', 'SELECT'),
+		'qorpera_web_router may only execute the six edge RPCs'
+	);
 end $$;
