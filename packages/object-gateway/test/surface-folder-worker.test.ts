@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { ObjectDependencyError } from "../src/dependency.ts";
 import type { MemberCompanyPublisherRpc } from "../src/member-company-authority.ts";
 import { SurfaceFolderWorker } from "../src/surface-folder-worker.ts";
 
@@ -669,7 +670,7 @@ describe("SurfaceFolderWorker", () => {
 
 		const undoJobId = randomUUID();
 		const currentVersion = h.entries.get("brand/voice.md")?.version ?? null;
-		h.setCompleteMergeAttemptErrors([new Error("undo attempt 1 response timed out"), notRunningError]);
+		h.setCompleteMergeAttemptErrors([new Error("undo attempt 1 response timed out"), new ObjectDependencyError(423)]);
 		h.setPendingClaim({
 			merges: [
 				{

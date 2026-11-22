@@ -7,6 +7,7 @@ import {
 	type StudioPatchOp,
 } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
+import { ObjectDependencyError } from "./dependency.ts";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import { UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
@@ -93,6 +94,8 @@ function errorTextWithCause(error: unknown): string {
 
 function isAlreadyCompletedJobError(error: unknown): boolean {
 	if (!error) return false;
+	// WHY: SupabaseMemberCompanyAuthority maps SQLSTATE 55000 from qorpera_surface_complete_merge to HTTP 423 ObjectDependencyError without the PostgREST message body.
+	if (error instanceof ObjectDependencyError && error.status === 423) return true;
 	const text = errorTextWithCause(error);
 	if (/surface job is not running/i.test(text)) return true;
 	const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;

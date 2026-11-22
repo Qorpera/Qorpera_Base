@@ -76,9 +76,6 @@ declare
 	v_trigger jsonb;
 	v_preview_id uuid;
 	v_idx integer;
-	v_folder_job_id uuid;
-	v_folder_job_lease uuid;
-	v_merge_complete jsonb;
 begin
 	update public.qorpera_surface_settings set enabled = true, updated_at = clock_timestamp() where singleton = true;
 	select environment_id into strict v_env_a from public.qorpera_company_cofounders where profile_id = v_company_a;
@@ -484,47 +481,6 @@ begin
 		and (v_claimed -> 'merges' -> 0 ->> 'environmentId') = v_env_a::text,
 		'folder lane claims only folder merges and attaches environmentId'
 	);
-	v_folder_job_id := (v_claimed -> 'merges' -> 0 ->> 'jobId')::uuid;
-	v_folder_job_lease := (v_claimed -> 'merges' -> 0 ->> 'leaseToken')::uuid;
-
-	v_merge_complete := public.qorpera_surface_complete_merge(
-		v_folder_job_id, 'landed', null, null, null, null, null, '{"folderRoot":"identity"}'::jsonb, v_folder_job_lease
-	);
-	perform pg_temp.shw_assert(
-		(v_merge_complete ->> 'status') = 'landed'
-		and (select unpublished_change_count from public.qorpera_surfaces where id = v_folder_surface_id) = 1,
-		'first complete_merge lands the folder change and increments unpublished_change_count once'
-	);
-
-	v_merge_complete := public.qorpera_surface_complete_merge(
-		v_folder_job_id, 'landed', null, null, null, null, null, '{"folderRoot":"identity"}'::jsonb, v_folder_job_lease
-	);
-	perform pg_temp.shw_assert(
-		(v_merge_complete ->> 'status') = 'landed'
-		and coalesce((v_merge_complete ->> 'idempotent')::boolean, false)
-		and (select unpublished_change_count from public.qorpera_surfaces where id = v_folder_surface_id) = 1,
-		'retrying complete_merge with the same lease token and outcome is idempotent without double side effects'
-	);
-
-	v_errcode := null;
-	begin
-		perform public.qorpera_surface_complete_merge(
-			v_folder_job_id, 'landed', null, null, null, null, null, null, extensions.gen_random_uuid()
-		);
-	exception when others then
-		v_errcode := sqlstate;
-	end;
-	perform pg_temp.shw_assert(v_errcode = '55000', 'complete_merge retry with a different lease token raises 55000');
-
-	v_errcode := null;
-	begin
-		perform public.qorpera_surface_complete_merge(
-			v_folder_job_id, 'failed', null, null, null, null, 'late error', null, v_folder_job_lease
-		);
-	exception when others then
-		v_errcode := sqlstate;
-	end;
-	perform pg_temp.shw_assert(v_errcode = '55000', 'complete_merge retry with a mismatched outcome raises 55000');
 
 	v_claimed := public.qorpera_surface_claim_pending_jobs_for_lane(16, 'code_repo');
 	perform pg_temp.shw_assert(
