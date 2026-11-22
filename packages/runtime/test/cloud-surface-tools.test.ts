@@ -97,7 +97,7 @@ describe("cloud surface runtime tools", () => {
 			expect.objectContaining({
 				slug: "headband",
 				kind: "custom",
-				accentHex: null,
+				icon: "page",
 				isGlobal: false,
 				activateImmediately: false,
 			}),
@@ -110,7 +110,7 @@ describe("cloud surface runtime tools", () => {
 		});
 	});
 
-	it("accepts kind, accentHex, isGlobal, and activateImmediately on propose_surface and rejects invalid values", async () => {
+	it("accepts kind, figure, isGlobal, and activateImmediately on propose_surface and rejects colours and unknown figures", async () => {
 		const surfaceId = randomUUID();
 		const proposeSurface = vi.fn().mockResolvedValue({ id: surfaceId, slug: "website", status: "active" as const });
 		const tool = createProposeSurfaceTool({ proposeSurface });
@@ -122,10 +122,9 @@ describe("cloud surface runtime tools", () => {
 			archetype: "live_build",
 			sourceKind: "code_repo",
 			kind: "website",
-			accentHex: "#d76f45",
+			figure: "shop",
 			isGlobal: false,
 			activateImmediately: true,
-			icon: "globe",
 			briefSummary: "Public Scandinavian editorial storefront.",
 		});
 		const result = await tool.execute(parsed, toolContext());
@@ -134,7 +133,7 @@ describe("cloud surface runtime tools", () => {
 			expect.objectContaining({
 				slug: "website",
 				kind: "website",
-				accentHex: "#d76f45",
+				icon: "figure:shop",
 				isGlobal: false,
 				activateImmediately: true,
 			}),
@@ -154,9 +153,9 @@ describe("cloud surface runtime tools", () => {
 			sourceKind: "code_repo",
 		};
 		expect(() => tool.parseArguments({ ...base, kind: "not_a_kind" })).toThrow();
-		expect(() => tool.parseArguments({ ...base, accentHex: "#fff" })).toThrow();
-		expect(() => tool.parseArguments({ ...base, accentHex: "d76f45" })).toThrow();
-		expect(() => tool.parseArguments({ ...base, accentHex: "#gggggg" })).toThrow();
+		expect(() => tool.parseArguments({ ...base, accentHex: "#d76f45" })).toThrow();
+		expect(() => tool.parseArguments({ ...base, icon: "globe" })).toThrow();
+		expect(() => tool.parseArguments({ ...base, figure: "dragon" })).toThrow();
 		expect(() => tool.parseArguments({ ...base, isGlobal: "true" })).toThrow();
 		expect(() => tool.parseArguments({ ...base, activateImmediately: 1 })).toThrow();
 	});
@@ -510,11 +509,10 @@ describe("cloud surface runtime tools", () => {
 				group: "products",
 				archetype: "live_build",
 				kind: "website",
-				accentHex: "#d76f45",
 				isGlobal: false,
 				activateImmediately: true,
 				sourceKind: "code_repo",
-				icon: "globe",
+				icon: "figure:browser",
 				repositoryKey: "thetaband/website",
 				folderRoot: null,
 				previewMode: "static_site",
@@ -529,7 +527,8 @@ describe("cloud surface runtime tools", () => {
 				p_profile_id: ctx.companyId,
 				p_slug: "website",
 				p_kind: "website",
-				p_accent_hex: "#d76f45",
+				p_icon: "figure:browser",
+				p_accent_hex: null,
 				p_is_global: false,
 				p_activate_immediately: true,
 			},

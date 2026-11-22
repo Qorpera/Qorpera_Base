@@ -47,6 +47,36 @@ export const SURFACE_KINDS = [
 ] as const;
 export type SurfaceKind = (typeof SURFACE_KINDS)[number];
 
+export const SURFACE_FIGURES = [
+	"browser",
+	"pointer",
+	"phone",
+	"monitor",
+	"can",
+	"bars",
+	"seal",
+	"palette",
+	"parcel",
+	"book",
+	"envelope",
+	"money",
+	"people",
+	"folder",
+	"gem",
+	"shop",
+	"postbox",
+	"piggy",
+	"cabinet",
+	"house",
+	"lighthouse",
+	"jar",
+	"headband",
+	"sofa",
+	"mug",
+	"lamp",
+] as const;
+export type SurfaceFigure = (typeof SURFACE_FIGURES)[number];
+
 export const SURFACE_PUBLISH_STATUSES = ["idle", "publishing", "failed"] as const;
 export type SurfacePublishStatus = (typeof SURFACE_PUBLISH_STATUSES)[number];
 

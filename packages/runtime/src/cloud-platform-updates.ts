@@ -293,6 +293,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Surfaces, live previews and shared identity",
 		text: "Your company now runs on live Surfaces instead of ad-hoc files and separate specialist hierarchies. Every product or brand area projects its real codebase or company folder directly into the founder's canvas, where parallel work sessions propose toggleable changes and side-by-side design explorations before anything merges or goes live. Shared identity styling syncs across builds automatically, and recurring work runs as focused automations instead of permanent background roles. Keep the company folder lean by editing live surface files directly rather than creating extra draft or memo documents.",
 	},
+	{
+		id: "surface-figures",
+		kind: "behaviour",
+		date: "2026-11-22",
+		title: "Surfaces are drawn as figures",
+		text: "Every surface in the sidebar is now a small figure of the thing it is (a browser for the website, notes and a gold coin for money, a folder for files), in fixed colours. propose_surface takes figure in place of icon and accentHex: leave it out and the surface gets its kind's own figure, or pick another that fits better, such as shop for a web store. Colours are never chosen. Members can change a surface's figure themselves from the sidebar.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

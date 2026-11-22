@@ -1,3 +1,4 @@
+import { SURFACE_FIGURES, type SurfaceFigure } from "@qorpera/contracts";
 import { h } from "./dom.ts";
 import { phrase, t } from "./preferences.ts";
 
@@ -30,11 +31,11 @@ const FIGURE_EYES = {
 	sofa: [[50.43, 40.68, 5.31, 13, -12], [61.57, 39.32, 5.31, 13, -12]],
 	mug: [[55.7, 52.77, 6, 14.7, -12], [68.3, 51.23, 6, 14.7, -12]],
 	lamp: [[49.7, 38.77, 6, 14.7, -12], [62.3, 37.23, 6, 14.7, -12]],
-} as const satisfies Record<string, readonly Eye[]>;
+} as const satisfies Record<SurfaceFigure, readonly Eye[]>;
 
-export type SurfaceFigureId = keyof typeof FIGURE_EYES;
+export type SurfaceFigureId = SurfaceFigure;
 
-export const SURFACE_FIGURE_IDS = Object.keys(FIGURE_EYES) as readonly SurfaceFigureId[];
+export const SURFACE_FIGURE_IDS: readonly SurfaceFigureId[] = SURFACE_FIGURES;
 
 export const SURFACE_FIGURE_NAMES: Readonly<Record<SurfaceFigureId, string>> = {
 	browser: phrase("Browser window"),
