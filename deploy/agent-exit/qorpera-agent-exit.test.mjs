@@ -3802,6 +3802,8 @@ r.run = fake_run
 t = threading.Thread(target=lambda: r.unplug(entry, "gone"))
 t.start()
 assert in_flush.wait(5), "flush started"
+forgot_before_flush = sorted(set(forget_calls))
+entry_removed_before_flush = not os.path.lexists(paths.entry(entry["address"]))
 # Concurrent plug must succeed while unplug is blocked in flush, and must not reuse the quarantined/unflushed address.
 other = plug.plug(paths, "machine", "33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444", None, "qp", "inst-b")
 concurrent_plug_ok = True
@@ -3823,6 +3825,8 @@ print(json.dumps({
     "different_address": concurrent_address != entry["address"],
     "deduped_twin_count": unplug_twin_count,
     "parallel_twins": max_active_twins >= 2,
+    "entry_removed_before_flush": entry_removed_before_flush,
+    "forgot_before_flush": forgot_before_flush,
     "unflushed_cleared": unflushed_cleared,
     "retry_cleared": retry_cleared,
     "retry_forgot": sorted(set(forget_calls)),
@@ -3837,6 +3841,8 @@ print(json.dumps({
 				different_address: true,
 				deduped_twin_count: 6,
 				parallel_twins: true,
+				entry_removed_before_flush: true,
+				forgot_before_flush: ["braked", "dns_port", "reach"],
 				unflushed_cleared: true,
 				retry_cleared: true,
 				retry_forgot: ["braked", "dns_port", "reach"],
@@ -3923,6 +3929,17 @@ finally:
     logs_mod.COUNT_HEARTBEAT_SECONDS = orig_hb
 peak_capped = tallied["companies"]["cA"]["peakFailedDestinations60s"] == 5
 
+zero_floor_dir = os.path.join(base, "zero_floor_logs")
+os.makedirs(zero_floor_dir, exist_ok=True)
+with open(os.path.join(zero_floor_dir, "dns-2026-10-10T120000Z.log.gz"), "wb") as f:
+    f.write(b"x" * 64)
+zf_deleted, _zf_removed, zf_still = logs_mod.tidy(
+    zero_floor_dir, 1791633600.0, cap=1024 * 1024, floor=0.0, free=lambda _d: 2.0
+)
+zero_floor_preserved = zf_deleted == [] and zf_still is False and os.path.exists(
+    os.path.join(zero_floor_dir, "dns-2026-10-10T120000Z.log.gz")
+)
+
 # 3. Log: Companies.refresh runs disk IO outside Guard.lock.
 l_state = os.path.join(base, "l_state")
 os.makedirs(os.path.join(l_state, "seen"), exist_ok=True)
@@ -3969,6 +3986,7 @@ print(json.dumps({
     "evicted_fell_back": evicted_fell_back,
     "unread": unread,
     "peak_capped": peak_capped,
+    "zero_floor_preserved": zero_floor_preserved,
     "hb_hits": hb_hits >= 1,
     "guard_lock_free_during_entry": guard_lock_free_during_entry,
     "status_used_snapshot": status_used_snapshot,
@@ -3987,6 +4005,7 @@ print(json.dumps({
 				evicted_fell_back: true,
 				unread: [],
 				peak_capped: true,
+				zero_floor_preserved: true,
 				hb_hits: true,
 				guard_lock_free_during_entry: true,
 				status_used_snapshot: true,

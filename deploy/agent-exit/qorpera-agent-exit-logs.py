@@ -794,7 +794,8 @@ def tidy(log_dir, now, cap, floor, free=free_percent):
         (name for name in files if may_go(name)),
         key=lambda name: (name not in shipped, name.startswith("clients-"), file_day(name), name),
     )
-    low_water = floor + LOW_WATER_MARGIN
+    # WHY: floor == 0 disables the disk-free floor so low_water must stay 0 rather than triggering deletion at 5% free.
+    low_water = floor + LOW_WATER_MARGIN if floor > 0 else 0.0
     for name in candidates:
         # The records count toward the cap too, though they never go.
         total = sum(files.values()) + record_bytes(log_dir)

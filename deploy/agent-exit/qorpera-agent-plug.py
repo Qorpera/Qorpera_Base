@@ -870,8 +870,8 @@ class Reconciler:
 
     def unplug(self, entry, reason):
         """Takes the plug lock to re-read the entry (aborting on a newer re-plug), write quarantine and unflushed
-        markers, and remove lease/entry/seen state; then releases the lock before reloading dnsmasq, flushing
-        connections, and clearing per-machine nft state (removing unflushed once flush succeeds)."""
+        markers, clear per-machine nft state, and remove lease/entry/seen state; then releases the lock before
+        reloading dnsmasq and flushing connections (removing unflushed once flush succeeds)."""
         address = entry["address"]
         fd = lock(self.paths)
         try:
@@ -894,6 +894,7 @@ class Reconciler:
             self.history("unplugged" if verified else "dropped", entry, reason=reason)
             for directory in (self.paths.verified, self.paths.noted, self.paths.stopped, self.paths.missing):
                 remove(os.path.join(directory, address))
+            self.forget(address)
             remove(self.paths.entry(address))
             # Last: while the seen marker is there, no plug takes the address.
             remove(os.path.join(self.paths.seen, address))
@@ -903,9 +904,7 @@ class Reconciler:
         if reload.returncode != 0:
             why = reload.stderr.strip()[:200]
             self.problems.append(f"cannot reload the name service after unplugging {address}: {why}")
-        flushed = self.flush(address) is not None
-        self.forget(address)
-        if flushed:
+        if self.flush(address) is not None:
             remove(os.path.join(self.paths.unflushed, address))
         print(f"unplugged {address} ({entry['project']}/{entry['instance']}): {reason}", flush=True)
         return True
