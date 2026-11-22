@@ -31,6 +31,7 @@ pub struct AppHostServer {
     listener: TcpListener,
     manager: Arc<AppLifecycleManager>,
     control_token: String,
+    body_read_timeout: Duration,
 }
 
 impl AppHostServer {
@@ -46,7 +47,13 @@ impl AppHostServer {
             listener,
             manager,
             control_token,
+            body_read_timeout: BODY_READ_TIMEOUT,
         })
+    }
+
+    pub fn with_body_read_timeout(mut self, timeout: Duration) -> Self {
+        self.body_read_timeout = timeout;
+        self
     }
 
     pub fn spawn(self) -> tokio::task::JoinHandle<()> {
@@ -99,13 +106,16 @@ impl AppHostServer {
                 let _ = stream.set_nodelay(true);
                 let mgr = Arc::clone(&self.manager);
                 let token = self.control_token.clone();
+                let body_timeout = self.body_read_timeout;
                 tokio::spawn(async move {
                     let _permit = permit;
                     let io = TokioIo::new(stream);
                     let svc = service_fn(move |req| {
                         let m = Arc::clone(&mgr);
                         let t = token.clone();
-                        async move { Ok::<_, hyper::Error>(handle_request(m, &t, req).await) }
+                        async move {
+                            Ok::<_, hyper::Error>(handle_request(m, &t, body_timeout, req).await)
+                        }
                     });
                     let _ = hyper::server::conn::http1::Builder::new()
                         .timer(TokioTimer::new())
@@ -144,9 +154,9 @@ enum BodyErr {
     Bad,
 }
 
-async fn read_body(body: Incoming) -> Result<Bytes, BodyErr> {
+async fn read_body(body: Incoming, timeout: Duration) -> Result<Bytes, BodyErr> {
     match tokio::time::timeout(
-        BODY_READ_TIMEOUT,
+        timeout,
         Limited::new(body, MAX_CONTROL_BODY_BYTES).collect(),
     )
     .await
@@ -166,6 +176,7 @@ async fn read_body(body: Incoming) -> Result<Bytes, BodyErr> {
 async fn handle_request(
     manager: Arc<AppLifecycleManager>,
     expected_token: &str,
+    body_read_timeout: Duration,
     req: Request<Incoming>,
 ) -> Response<BoxBody> {
     let method = req.method().clone();
@@ -180,7 +191,7 @@ async fn handle_request(
     }
 
     if method == Method::POST && path == "/_internal/apps/deploy" {
-        let bytes = match read_body(req.into_body()).await {
+        let bytes = match read_body(req.into_body(), body_read_timeout).await {
             Ok(b) => b,
             Err(BodyErr::TooLarge) => {
                 return json_res(
@@ -216,7 +227,7 @@ async fn handle_request(
     if let Some(rest) = path.strip_prefix("/_internal/apps/") {
         if let Some(dep_id) = rest.strip_suffix("/wake") {
             if method == Method::POST {
-                let fallback = match read_body(req.into_body()).await {
+                let fallback = match read_body(req.into_body(), body_read_timeout).await {
                     Ok(bytes) if !bytes.is_empty() => serde_json::from_slice::<DeployRequest>(&bytes).ok(),
                     Ok(_) => None,
                     Err(BodyErr::TooLarge) => {

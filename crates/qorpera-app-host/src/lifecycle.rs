@@ -204,17 +204,28 @@ impl AppLifecycleManager {
         }
     }
 
-    fn commit_bound_port(&self, reserved_port: u16, bound_port: Option<u16>) -> Option<u16> {
+    fn commit_bound_port(
+        &self,
+        reserved_port: u16,
+        bound_port: Option<u16>,
+        allowed_existing_port: Option<u16>,
+    ) -> Result<u16, String> {
         match bound_port {
             Some(actual) if actual != reserved_port => {
-                if let Ok(mut reserved) = self.reserved_ports.lock() {
+                let mut reserved = self
+                    .reserved_ports
+                    .lock()
+                    .map_err(|_| "lock_poisoned".to_string())?;
+                if Some(actual) != allowed_existing_port && reserved.contains(&actual) {
                     reserved.remove(&reserved_port);
-                    reserved.insert(actual);
+                    return Err(format!("port_reservation_conflict:{actual}"));
                 }
-                Some(actual)
+                reserved.remove(&reserved_port);
+                reserved.insert(actual);
+                Ok(actual)
             }
-            Some(actual) => Some(actual),
-            None => Some(reserved_port),
+            Some(actual) => Ok(actual),
+            None => Ok(reserved_port),
         }
     }
 
@@ -266,6 +277,12 @@ impl AppLifecycleManager {
         let (status, previous_live) = {
             let _dep_guard = dep_lock.lock().await;
 
+            let old_port = {
+                let map = self.deployments.lock().map_err(|_| "lock_poisoned".to_string())?;
+                map.get(&req.deployment_id)
+                    .and_then(|d| d.handle.as_ref().and_then(|h| parse_port(&h.upstream_addr)))
+            };
+
             let port = self.reserve_port(None)?;
             let launch = AppLaunchSpec {
                 deployment_id: req.deployment_id.clone(),
@@ -288,6 +305,18 @@ impl AppLifecycleManager {
                 }
             };
 
+            let bound_port = match self.commit_bound_port(
+                port,
+                parse_port(&handle.upstream_addr),
+                old_port,
+            ) {
+                Ok(bound) => bound,
+                Err(err) => {
+                    let _ = self.driver.delete(&req.deployment_id).await;
+                    return Err(err);
+                }
+            };
+
             if let Err(err) = wait_for_health(
                 &handle.upstream_addr,
                 &req.health_path,
@@ -297,8 +326,7 @@ impl AppLifecycleManager {
             .await
             {
                 let _ = self.driver.delete(&req.deployment_id).await;
-                self.release_port(Some(port));
-                self.release_port(parse_port(&handle.upstream_addr));
+                self.release_port(Some(bound_port));
                 self.logs.push(
                     &req.deployment_id,
                     "system",
@@ -318,7 +346,6 @@ impl AppLifecycleManager {
                 }
             };
 
-            let bound_port = self.commit_bound_port(port, parse_port(&handle.upstream_addr));
             let status = DeploymentStatus {
                 deployment_id: req.deployment_id.clone(),
                 site_id: req.site_id.clone(),
@@ -334,10 +361,7 @@ impl AppLifecycleManager {
                 let next_gen = map
                     .get(&req.deployment_id)
                     .map_or(1, |d| d.wake_generation.wrapping_add(1));
-                let old_port = map
-                    .get(&req.deployment_id)
-                    .and_then(|d| d.handle.as_ref().and_then(|h| parse_port(&h.upstream_addr)));
-                if old_port != bound_port {
+                if old_port != Some(bound_port) {
                     self.release_port(old_port);
                 }
                 map.insert(
@@ -345,7 +369,7 @@ impl AppLifecycleManager {
                     ManagedDeployment {
                         spec: req,
                         handle: Some(handle),
-                        last_port: bound_port,
+                        last_port: Some(bound_port),
                         state: InstanceState::Running,
                         started_at_ms: Some(now_ms),
                         frozen_at_ms: None,
@@ -377,8 +401,7 @@ impl AppLifecycleManager {
                             let port = entry
                                 .handle
                                 .as_ref()
-                                .and_then(|h| parse_port(&h.upstream_addr))
-                                .or(entry.last_port);
+                                .and_then(|h| parse_port(&h.upstream_addr));
                             entry.handle = None;
                             entry.frozen_at_ms = None;
                             entry.state = InstanceState::Stopped;
@@ -425,27 +448,37 @@ impl AppLifecycleManager {
         deployment_id: &str,
         fallback_spec: Option<DeployRequest>,
     ) -> Result<WakeOutcome, String> {
-        let already_running = {
+        let maybe_running = {
             let map = self.deployments.lock().map_err(|_| "lock_poisoned".to_string())?;
             map.get(deployment_id)
-                .filter(|d| d.state == InstanceState::Running)
-                .and_then(|d| d.handle.as_ref().map(|h| h.upstream_addr.clone()))
+                .is_some_and(|d| d.state == InstanceState::Running && d.handle.is_some())
         };
-        if let Some(addr) = already_running {
-            if self.driver.is_running(deployment_id).await {
-                // WHY: Bump wake_generation on AlreadyRunning wakes so an in-flight reaper drain cannot freeze a just-woken app.
-                if let Ok(mut map) = self.deployments.lock() {
-                    if let Some(entry) = map.get_mut(deployment_id) {
-                        if entry.state == InstanceState::Running {
-                            entry.wake_generation = entry.wake_generation.wrapping_add(1);
+        if maybe_running {
+            let dep_lock = self.deployment_lock(deployment_id)?;
+            // WHY: Serialize the fast path against an in-progress freeze; if dep_lock is held, fall through to perform_wake to wait and unfreeze.
+            if let Ok(_dep_guard) = dep_lock.try_lock() {
+                let already_running = {
+                    let map = self.deployments.lock().map_err(|_| "lock_poisoned".to_string())?;
+                    map.get(deployment_id)
+                        .filter(|d| d.state == InstanceState::Running)
+                        .and_then(|d| d.handle.as_ref().map(|h| h.upstream_addr.clone()))
+                };
+                if let Some(addr) = already_running {
+                    if self.driver.is_running(deployment_id).await {
+                        if let Ok(mut map) = self.deployments.lock() {
+                            if let Some(entry) = map.get_mut(deployment_id) {
+                                if entry.state == InstanceState::Running {
+                                    entry.wake_generation = entry.wake_generation.wrapping_add(1);
+                                }
+                            }
                         }
+                        return Ok(WakeOutcome {
+                            upstream_addr: addr,
+                            mode: WakeMode::AlreadyRunning,
+                        });
                     }
                 }
-                return Ok(WakeOutcome {
-                    upstream_addr: addr,
-                    mode: WakeMode::AlreadyRunning,
-                });
-            }
+            };
         }
 
         if let Some(spec) = fallback_spec {
@@ -596,6 +629,14 @@ impl AppLifecycleManager {
                 return Err(err);
             }
         };
+        let bound_port = match self.commit_bound_port(port, parse_port(&handle.upstream_addr), None)
+        {
+            Ok(bound) => bound,
+            Err(err) => {
+                let _ = self.driver.stop(deployment_id).await;
+                return Err(err);
+            }
+        };
         if let Err(err) = wait_for_health(
             &handle.upstream_addr,
             &spec.health_path,
@@ -605,18 +646,16 @@ impl AppLifecycleManager {
         .await
         {
             let _ = self.driver.stop(deployment_id).await;
-            self.release_port(Some(port));
-            self.release_port(parse_port(&handle.upstream_addr));
+            self.release_port(Some(bound_port));
             return Err(format!("wake_health_failed: {err}"));
         }
         let addr = handle.upstream_addr.clone();
-        let bound_port = self.commit_bound_port(port, parse_port(&addr));
         let now_ms = unix_ms();
         {
             let mut map = self.deployments.lock().map_err(|_| "lock_poisoned".to_string())?;
             if let Some(entry) = map.get_mut(deployment_id) {
                 entry.handle = Some(handle);
-                entry.last_port = bound_port;
+                entry.last_port = Some(bound_port);
                 entry.state = InstanceState::Running;
                 entry.started_at_ms = Some(now_ms);
                 entry.frozen_at_ms = None;
@@ -739,8 +778,7 @@ impl AppLifecycleManager {
                 let port = entry
                     .handle
                     .as_ref()
-                    .and_then(|h| parse_port(&h.upstream_addr))
-                    .or(entry.last_port);
+                    .and_then(|h| parse_port(&h.upstream_addr));
                 entry.handle = None;
                 entry.frozen_at_ms = None;
                 entry.state = next_state;
@@ -1166,4 +1204,73 @@ fn unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::driver::LocalProcessDriver;
+
+    #[test]
+    fn prune_idle_locks_retains_held_locks_past_threshold() {
+        let manager = AppLifecycleManager::new(
+            Arc::new(LocalProcessDriver::new()),
+            Arc::new(LogRingBuffer::new(16, 4096)),
+            Duration::from_secs(1),
+            Duration::ZERO,
+        );
+        let held_site = manager.site_deploy_lock("site-held").unwrap();
+        let held_dep = manager.deployment_lock("dep-held").unwrap();
+        for i in 0..(MAX_IDLE_LOCKS + 10) {
+            let _ = manager.site_deploy_lock(&format!("site-{i}")).unwrap();
+            let _ = manager.deployment_lock(&format!("dep-{i}")).unwrap();
+        }
+        assert!(manager.deploy_locks.lock().unwrap().len() > MAX_IDLE_LOCKS);
+        assert!(manager.deployment_locks.lock().unwrap().len() > MAX_IDLE_LOCKS);
+
+        manager.prune_idle_locks();
+
+        let sites = manager.deploy_locks.lock().unwrap();
+        let deps = manager.deployment_locks.lock().unwrap();
+        assert_eq!(sites.len(), 1);
+        assert_eq!(deps.len(), 1);
+        assert!(Arc::ptr_eq(sites.get("site-held").unwrap(), &held_site));
+        assert!(Arc::ptr_eq(deps.get("dep-held").unwrap(), &held_dep));
+    }
+
+    #[test]
+    fn commit_bound_port_rejects_foreign_collision_without_releasing_owner() {
+        let manager = AppLifecycleManager::new(
+            Arc::new(LocalProcessDriver::new()),
+            Arc::new(LogRingBuffer::new(16, 4096)),
+            Duration::from_secs(1),
+            Duration::ZERO,
+        );
+        {
+            let mut reserved = manager.reserved_ports.lock().unwrap();
+            reserved.insert(41_000);
+            reserved.insert(41_001);
+        }
+
+        let err = manager
+            .commit_bound_port(41_001, Some(41_000), None)
+            .expect_err("foreign reserved port must conflict");
+        assert!(err.contains("port_reservation_conflict:41000"));
+        let reserved = manager.reserved_ports.lock().unwrap();
+        assert!(reserved.contains(&41_000));
+        assert!(!reserved.contains(&41_001));
+        drop(reserved);
+
+        {
+            let mut reserved = manager.reserved_ports.lock().unwrap();
+            reserved.insert(41_002);
+        }
+        let reused = manager
+            .commit_bound_port(41_002, Some(41_000), Some(41_000))
+            .expect("own existing port may be reattached");
+        assert_eq!(reused, 41_000);
+        let reserved = manager.reserved_ports.lock().unwrap();
+        assert!(reserved.contains(&41_000));
+        assert!(!reserved.contains(&41_002));
+    }
 }

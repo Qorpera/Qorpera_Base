@@ -2,18 +2,22 @@ use bytes::Bytes;
 use http::{Method, Request, StatusCode};
 use http_body_util::{BodyExt, Full};
 use hyper_util::rt::TokioIo;
-use qorpera_app_host::driver::{AppRuntimeDriver, LocalProcessDriver, LxdAppDriver};
+use qorpera_app_host::driver::{
+    AppInstanceHandle, AppLaunchSpec, AppRuntimeDriver, BoxFuture, LocalProcessDriver, LxdAppDriver,
+};
 use qorpera_app_host::lifecycle::{AppLifecycleManager, DeployRequest, InstanceState, WakeMode};
 use qorpera_app_host::logs::LogRingBuffer;
 use qorpera_app_host::reaper::reap_once_with_router;
 use qorpera_app_host::server::AppHostServer;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{watch, Notify};
 
 async fn http_call(addr: SocketAddr, req: Request<Full<Bytes>>) -> (StatusCode, Bytes) {
     let stream = TcpStream::connect(addr).await.unwrap();
@@ -1136,4 +1140,352 @@ async fn reaper_fails_closed_on_activity_error_and_already_running_wake_blocks_s
 
     router_task.abort();
     let _ = manager.stop_deployment("dep-guard").await;
+}
+
+struct ControlledDriver {
+    running: Arc<Mutex<HashMap<String, (u16, tokio::task::JoinHandle<()>)>>>,
+    frozen: Arc<Mutex<HashSet<String>>>,
+    forced_port_by_dep: Arc<Mutex<HashMap<String, u16>>>,
+    freeze_entered: Arc<Notify>,
+    freeze_release: Arc<Notify>,
+    block_freeze: Arc<AtomicBool>,
+    stop_calls: Arc<AtomicUsize>,
+    delete_calls: Arc<AtomicUsize>,
+    deleted_ids: Arc<Mutex<Vec<String>>>,
+    unfreeze_calls: Arc<AtomicUsize>,
+}
+
+impl ControlledDriver {
+    fn new() -> Self {
+        Self {
+            running: Arc::new(Mutex::new(HashMap::new())),
+            frozen: Arc::new(Mutex::new(HashSet::new())),
+            forced_port_by_dep: Arc::new(Mutex::new(HashMap::new())),
+            freeze_entered: Arc::new(Notify::new()),
+            freeze_release: Arc::new(Notify::new()),
+            block_freeze: Arc::new(AtomicBool::new(false)),
+            stop_calls: Arc::new(AtomicUsize::new(0)),
+            delete_calls: Arc::new(AtomicUsize::new(0)),
+            deleted_ids: Arc::new(Mutex::new(Vec::new())),
+            unfreeze_calls: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    async fn spawn_health_listener(port: u16) -> Result<tokio::task::JoinHandle<()>, String> {
+        let listener = TcpListener::bind(("127.0.0.1", port))
+            .await
+            .map_err(|e| format!("bind_{port}: {e}"))?;
+        Ok(tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 512];
+                    let _ = stream.read(&mut buf).await;
+                    let _ = stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                        .await;
+                });
+            }
+        }))
+    }
+}
+
+impl AppRuntimeDriver for ControlledDriver {
+    fn allocate_port(&self) -> Result<u16, String> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+        Ok(listener.local_addr().map_err(|e| e.to_string())?.port())
+    }
+
+    fn start(
+        &self,
+        spec: AppLaunchSpec,
+        _logs: Arc<LogRingBuffer>,
+    ) -> BoxFuture<'_, Result<AppInstanceHandle, String>> {
+        let running = Arc::clone(&self.running);
+        let frozen = Arc::clone(&self.frozen);
+        let forced = Arc::clone(&self.forced_port_by_dep);
+        Box::pin(async move {
+            let forced_port = forced.lock().unwrap().remove(&spec.deployment_id);
+            let port = forced_port.unwrap_or(spec.port);
+            if forced_port.is_none() {
+                let handle = Self::spawn_health_listener(port).await?;
+                if let Some((_, old)) = running.lock().unwrap().insert(spec.deployment_id.clone(), (port, handle)) {
+                    old.abort();
+                }
+            }
+            frozen.lock().unwrap().remove(&spec.deployment_id);
+            Ok(AppInstanceHandle {
+                deployment_id: spec.deployment_id.clone(),
+                upstream_addr: format!("127.0.0.1:{port}"),
+                runtime_id: format!("ctrl-{}", spec.deployment_id),
+            })
+        })
+    }
+
+    fn stop(&self, deployment_id: &str) -> BoxFuture<'_, Result<(), String>> {
+        let running = Arc::clone(&self.running);
+        let frozen = Arc::clone(&self.frozen);
+        let stop_calls = Arc::clone(&self.stop_calls);
+        let dep_id = deployment_id.to_string();
+        Box::pin(async move {
+            stop_calls.fetch_add(1, Ordering::SeqCst);
+            frozen.lock().unwrap().remove(&dep_id);
+            if let Some((_, handle)) = running.lock().unwrap().remove(&dep_id) {
+                handle.abort();
+            }
+            Ok(())
+        })
+    }
+
+    fn delete(&self, deployment_id: &str) -> BoxFuture<'_, Result<(), String>> {
+        let running = Arc::clone(&self.running);
+        let frozen = Arc::clone(&self.frozen);
+        let delete_calls = Arc::clone(&self.delete_calls);
+        let deleted_ids = Arc::clone(&self.deleted_ids);
+        let dep_id = deployment_id.to_string();
+        Box::pin(async move {
+            delete_calls.fetch_add(1, Ordering::SeqCst);
+            deleted_ids.lock().unwrap().push(dep_id.clone());
+            frozen.lock().unwrap().remove(&dep_id);
+            if let Some((_, handle)) = running.lock().unwrap().remove(&dep_id) {
+                handle.abort();
+            }
+            Ok(())
+        })
+    }
+
+    fn is_running(&self, deployment_id: &str) -> BoxFuture<'_, bool> {
+        let running = Arc::clone(&self.running);
+        let frozen = Arc::clone(&self.frozen);
+        let dep_id = deployment_id.to_string();
+        Box::pin(async move {
+            running.lock().unwrap().contains_key(&dep_id) && !frozen.lock().unwrap().contains(&dep_id)
+        })
+    }
+
+    fn freeze(&self, deployment_id: &str) -> BoxFuture<'_, Result<(), String>> {
+        let frozen = Arc::clone(&self.frozen);
+        let entered = Arc::clone(&self.freeze_entered);
+        let release = Arc::clone(&self.freeze_release);
+        let block = Arc::clone(&self.block_freeze);
+        let dep_id = deployment_id.to_string();
+        Box::pin(async move {
+            if block.load(Ordering::SeqCst) {
+                entered.notify_waiters();
+                release.notified().await;
+            }
+            frozen.lock().unwrap().insert(dep_id);
+            Ok(())
+        })
+    }
+
+    fn unfreeze(&self, deployment_id: &str) -> BoxFuture<'_, Result<(), String>> {
+        let frozen = Arc::clone(&self.frozen);
+        let unfreeze_calls = Arc::clone(&self.unfreeze_calls);
+        let dep_id = deployment_id.to_string();
+        Box::pin(async move {
+            unfreeze_calls.fetch_add(1, Ordering::SeqCst);
+            frozen.lock().unwrap().remove(&dep_id);
+            Ok(())
+        })
+    }
+}
+
+fn mock_deploy_request(deployment_id: &str, site_id: &str) -> DeployRequest {
+    DeployRequest {
+        deployment_id: deployment_id.to_string(),
+        site_id: site_id.to_string(),
+        oci_image_ref: None,
+        command: None,
+        health_path: "/health".to_string(),
+        idle_timeout_sec: 1,
+        memory_mb: 256,
+        vcpu_limit: 1.0,
+        pids_limit: 128,
+        env: HashMap::new(),
+    }
+}
+
+#[tokio::test]
+async fn wake_during_in_progress_freeze_waits_and_unfreezes_instead_of_returning_frozen_app() {
+    let driver = Arc::new(ControlledDriver::new());
+    let logs = Arc::new(LogRingBuffer::new(64, 16 * 1024));
+    let manager = Arc::new(AppLifecycleManager::new(
+        Arc::clone(&driver) as Arc<dyn AppRuntimeDriver>,
+        logs,
+        Duration::from_secs(2),
+        Duration::from_millis(20),
+    ));
+
+    let deployed = manager
+        .deploy_blue_green(mock_deploy_request("dep-race", "site-race"))
+        .await
+        .unwrap();
+    let addr = deployed.upstream_addr.clone().unwrap();
+
+    let mut activity = HashMap::new();
+    activity.insert("dep-race".to_string(), 1_000u64);
+    let candidates = manager.idle_candidates_with_generation(&activity, 120_000);
+    assert_eq!(candidates.len(), 1);
+    let (_, started_at, wake_gen) = candidates[0];
+
+    driver.block_freeze.store(true, Ordering::SeqCst);
+    let entered = driver.freeze_entered.notified();
+    let mgr_freeze = Arc::clone(&manager);
+    let freeze_task = tokio::spawn(async move {
+        mgr_freeze
+            .freeze_if_unchanged_generation("dep-race", started_at, wake_gen, 120_000)
+            .await
+    });
+    entered.await;
+
+    let mgr_wake = Arc::clone(&manager);
+    let wake_task = tokio::spawn(async move { mgr_wake.wake_detailed("dep-race", None).await });
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert!(!wake_task.is_finished(), "wake must wait behind active freeze lock");
+
+    driver.freeze_release.notify_waiters();
+    assert!(freeze_task.await.unwrap());
+    let outcome = wake_task.await.unwrap().unwrap();
+    assert_eq!(outcome.mode, WakeMode::Unfrozen);
+    assert_eq!(outcome.upstream_addr, addr);
+    assert_eq!(
+        manager.status("dep-race").unwrap().state,
+        InstanceState::Running
+    );
+    assert!(driver.is_running("dep-race").await);
+    assert_eq!(driver.unfreeze_calls.load(Ordering::SeqCst), 1);
+
+    let _ = manager.stop_deployment("dep-race").await;
+}
+
+#[tokio::test]
+async fn blue_green_drain_deletes_superseded_concurrent_ports_stay_distinct_and_conflict_rejected() {
+    let driver = Arc::new(ControlledDriver::new());
+    let logs = Arc::new(LogRingBuffer::new(64, 16 * 1024));
+    let manager = Arc::new(AppLifecycleManager::new(
+        Arc::clone(&driver) as Arc<dyn AppRuntimeDriver>,
+        logs,
+        Duration::from_secs(2),
+        Duration::from_millis(25),
+    ));
+
+    let mut deploy_tasks = Vec::new();
+    for i in 0..8 {
+        let mgr = Arc::clone(&manager);
+        deploy_tasks.push(tokio::spawn(async move {
+            mgr.deploy_blue_green(mock_deploy_request(
+                &format!("dep-conc-{i}"),
+                &format!("site-conc-{i}"),
+            ))
+            .await
+        }));
+    }
+    let mut ports = HashSet::new();
+    for t in deploy_tasks {
+        let st = t.await.unwrap().unwrap();
+        let addr: SocketAddr = st.upstream_addr.unwrap().parse().unwrap();
+        assert!(ports.insert(addr.port()), "duplicate port assigned: {}", addr.port());
+    }
+
+    let first = manager
+        .deploy_blue_green(mock_deploy_request("dep-bg-1", "site-bg"))
+        .await
+        .unwrap();
+    let first_port: u16 = first
+        .upstream_addr
+        .unwrap()
+        .parse::<SocketAddr>()
+        .unwrap()
+        .port();
+    let second = manager
+        .deploy_blue_green(mock_deploy_request("dep-bg-2", "site-bg"))
+        .await
+        .unwrap();
+    let second_port: u16 = second
+        .upstream_addr
+        .unwrap()
+        .parse::<SocketAddr>()
+        .unwrap()
+        .port();
+    assert_ne!(first_port, second_port);
+
+    for _ in 0..40 {
+        if driver.deleted_ids.lock().unwrap().iter().any(|id| id == "dep-bg-1") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(15)).await;
+    }
+    assert_eq!(driver.delete_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(driver.stop_calls.load(Ordering::SeqCst), 0);
+
+    driver
+        .forced_port_by_dep
+        .lock()
+        .unwrap()
+        .insert("dep-collider".to_string(), second_port);
+    let conflict_err = manager
+        .deploy_blue_green(mock_deploy_request("dep-collider", "site-collider"))
+        .await
+        .expect_err("driver returning port owned by another deployment must fail");
+    assert!(
+        conflict_err.contains(&format!("port_reservation_conflict:{second_port}")),
+        "unexpected error: {conflict_err}"
+    );
+
+    let _ = manager.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn server_returns_408_on_stalled_deploy_and_wake_bodies_and_exits_on_shutdown_signal() {
+    let driver = Arc::new(LocalProcessDriver::new());
+    let logs = Arc::new(LogRingBuffer::new(32, 8 * 1024));
+    let manager = Arc::new(AppLifecycleManager::new(
+        driver,
+        logs,
+        Duration::from_secs(2),
+        Duration::ZERO,
+    ));
+    let bind_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+    let server = AppHostServer::bind(bind_addr, manager, "app-secret".to_string())
+        .await
+        .unwrap()
+        .with_body_read_timeout(Duration::from_millis(80));
+    let addr = server.addr;
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let handle = server.spawn_with_shutdown(shutdown_rx);
+
+    for path in ["/_internal/apps/deploy", "/_internal/apps/dep-stalled/wake"] {
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "POST {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer app-secret\r\nTransfer-Encoding: chunked\r\n\r\n4\r\n{{\"a\""
+        );
+        stream.write_all(req.as_bytes()).await.unwrap();
+        let mut resp = Vec::new();
+        let mut buf = [0u8; 1024];
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(250), stream.read(&mut buf)).await {
+                Ok(Ok(0)) => break,
+                Ok(Ok(n)) => {
+                    resp.extend_from_slice(&buf[..n]);
+                    if String::from_utf8_lossy(&resp).contains("body_timeout") {
+                        break;
+                    }
+                }
+                Ok(Err(_)) | Err(_) => break,
+            }
+        }
+        let text = String::from_utf8_lossy(&resp);
+        assert!(text.starts_with("HTTP/1.1 408"), "expected 408 for {path}, got: {text}");
+        assert!(text.contains("body_timeout"), "expected body_timeout for {path}, got: {text}");
+    }
+
+    let _ = shutdown_tx.send(true);
+    tokio::time::timeout(Duration::from_secs(1), handle)
+        .await
+        .expect("accept loop must exit promptly on shutdown signal")
+        .unwrap();
 }
