@@ -216,14 +216,24 @@ declare
 	v_auth jsonb;
 	v_lookup jsonb;
 	v_switch jsonb;
+	v_releases jsonb;
+	v_pruned integer;
 begin
 	update public.qorpera_coding_executors
 	set nas_machine_id_sha256 = v_machine_sha
 	where environment_id = '92400000-0000-4000-8000-000000000020' and owner = 'exec-1332';
 	perform pg_temp.t1332_secret(v_sec_build, null, 'build_cache_token', 'build_token_secret_1332');
-	insert into public.qorpera_company_sites(id, profile_id, environment_id, slug, title, source_path, created_by_staff_agent_id, deployment_kind)
-	values (v_site, '92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
-		'billing-app', 'Billing App', 'apps/billing', '92400000-0000-4000-8000-000000000030', 'server');
+	insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name)
+	values ('92400000-0000-4000-8000-000000000020', '92400000-0000-4000-8000-000000000010', 'qorpera', 'qorpera_base')
+	on conflict (environment_id, owner, name) do nothing;
+	insert into public.qorpera_company_sites(
+		id, profile_id, environment_id, slug, title, source_path, kind,
+		code_owner, code_name, deployment_kind, published_at, published_by_user_id
+	) values (
+		v_site, '92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
+		'billing-app', 'Billing App', 'code/qorpera/qorpera_base', 'files',
+		'qorpera', 'qorpera_base', 'server', clock_timestamp(), '92400000-0000-4000-8000-000000000001'
+	);
 	insert into public.qorpera_company_site_versions(
 		id, site_id, state, first_publish, title, source_path, manifest_sha256, file_count, total_bytes, tree, change, main_sha, listed, published_at
 	) values
@@ -237,23 +247,41 @@ begin
 		(v_dep2, v_site, '92400000-0000-4000-8000-000000000010', 2, v_ver2, 'server', 'ready',
 			'127.0.0.1:5000/qorpera-apps/billing-app@sha256:' || repeat('e', 64), 3000, '/health', 2, repeat('b', 40));
 	update public.qorpera_company_sites set current_version_id = v_ver1, live_deployment_id = v_dep where id = v_site;
-	insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name, site_id)
-	values ('92400000-0000-4000-8000-000000000020', '92400000-0000-4000-8000-000000000010', 'qorpera', 'qorpera_base', v_site)
-	on conflict (environment_id, owner, name) do update set site_id = excluded.site_id;
+	insert into public.qorpera_code_releases(
+		environment_id, owner, name, n, profile_id, kind, version, change, main_sha, tree,
+		version_id, replaces, prior, changes, shown_sha256, by_user_id
+	) values (
+		'92400000-0000-4000-8000-000000000020', 'qorpera', 'qorpera_base', 1, '92400000-0000-4000-8000-000000000010',
+		'release', 1, 1, repeat('a', 40), repeat('a', 40), v_ver1, null, null, array[1], repeat('9', 64),
+		'92400000-0000-4000-8000-000000000001'
+	);
+	update public.qorpera_code_repositories
+	set site_id = v_site, last_release = 1, live_release = 1, last_version = 1
+	where environment_id = '92400000-0000-4000-8000-000000000020' and owner = 'qorpera' and name = 'qorpera_base';
 	insert into public.qorpera_code_changes(
 		environment_id, owner, name, n, profile_id, kind, state, how, main_before, main_after, head_sha,
-		worker_id, sequence, title, site_state, site
+		worker_id, sequence, title, checks_state, checks, site_state, site
 	) values
+		('92400000-0000-4000-8000-000000000020', 'qorpera', 'qorpera_base', 1, '92400000-0000-4000-8000-000000000010',
+			'landing', 'landed', 'fast-forward', null, repeat('a', 40), repeat('a', 40),
+			'13320000-0000-4000-8000-0000000000b8', 1, 'Deploy server v1', 'passed', '{}'::jsonb, 'made',
+			jsonb_build_object('schema', 'qorpera.code-site/v2', 'kind', 'server', 'tree', repeat('a', 40),
+				'files', 0, 'bytes', 0, 'folder', '.', 'name', 'billing-app', 'title', 'Billing App', 'port', 3000, 'healthPath', '/health')),
 		('92400000-0000-4000-8000-000000000020', 'qorpera', 'qorpera_base', 2, '92400000-0000-4000-8000-000000000010',
 			'landing', 'landed', 'fast-forward', repeat('a', 40), repeat('b', 40), repeat('b', 40),
-			'13320000-0000-4000-8000-0000000000b9', 1, 'Deploy server v2', 'made',
+			'13320000-0000-4000-8000-0000000000b9', 1, 'Deploy server v2', 'passed', '{}'::jsonb, 'made',
 			jsonb_build_object('schema', 'qorpera.code-site/v2', 'kind', 'server', 'tree', repeat('b', 40),
 				'files', 0, 'bytes', 0, 'folder', '.', 'name', 'billing-app', 'title', 'Billing App v2', 'port', 3000, 'healthPath', '/health')),
 		('92400000-0000-4000-8000-000000000020', 'qorpera', 'qorpera_base', 3, '92400000-0000-4000-8000-000000000010',
 			'landing', 'landed', 'fast-forward', repeat('b', 40), repeat('c', 40), repeat('c', 40),
-			'13320000-0000-4000-8000-0000000000b9', 2, 'Deploy static v3', 'made',
+			'13320000-0000-4000-8000-0000000000b9', 2, 'Deploy static v3', 'passed', '{}'::jsonb, 'made',
 			jsonb_build_object('schema', 'qorpera.code-site/v1', 'tree', repeat('c', 40),
-				'files', 1, 'bytes', 10, 'folder', 'dist', 'name', 'billing-app', 'title', 'Static'));
+				'files', 1, 'bytes', 10, 'folder', 'dist', 'name', 'billing-app', 'title', 'Static')),
+		('92400000-0000-4000-8000-000000000020', 'qorpera', 'qorpera_base', 4, '92400000-0000-4000-8000-000000000010',
+			'landing', 'landed', 'fast-forward', repeat('c', 40), repeat('f', 40), repeat('f', 40),
+			'13320000-0000-4000-8000-0000000000b9', 3, 'Unchecked server v4', 'none', null, 'made',
+			jsonb_build_object('schema', 'qorpera.code-site/v2', 'kind', 'server', 'tree', repeat('f', 40),
+				'files', 0, 'bytes', 0, 'folder', '.', 'name', 'billing-app', 'title', 'Billing App v4', 'port', 3000, 'healthPath', '/health'));
 
 	v_res := pg_temp.t1332_as_member('92400000-0000-4000-8000-000000000002',
 		format('select public.qorpera_grant_app_secret(%L, %L, %L, %L, %L)',
@@ -351,6 +379,33 @@ begin
 	v_lookup := public.qorpera_code_site_for_auto_redeploy(
 		'exec-1332', v_machine_sha, '92400000-0000-4000-8000-000000000020', 'Qorpera', 'Qorpera_Base', 2);
 	perform pg_temp.base_assert(
+		not (v_lookup ->> 'found')::boolean,
+		'auto-redeploy lookup refused until owner or admin enables opt-in: ' || v_lookup::text
+	);
+	v_switch := public.qorpera_code_site_auto_redeploy_switch(
+		'exec-1332', v_machine_sha, '92400000-0000-4000-8000-000000000020', v_site, v_dep2, '127.0.0.1:41234', 'release');
+	perform pg_temp.base_assert(
+		v_switch ->> 'state' = 'refused' and v_switch ->> 'code' = 'AUTO_REDEPLOY_NOT_AUTHORIZED',
+		'auto-redeploy switch refused without owner/admin opt-in: ' || v_switch::text
+	);
+
+	v_res := pg_temp.t1332_as_member('92400000-0000-4000-8000-000000000002',
+		format('select public.qorpera_set_code_site_auto_redeploy(%L, %L, %L, true)',
+			'92400000-0000-4000-8000-000000000010', 'Qorpera', 'Qorpera_Base'));
+	perform pg_temp.base_assert(v_res like '42501:%', 'contributor cannot enable auto-redeploy: ' || v_res);
+
+	v_res := pg_temp.t1332_as_member('92400000-0000-4000-8000-000000000004',
+		format('select public.qorpera_set_code_site_auto_redeploy(%L, %L, %L, true)',
+			'92400000-0000-4000-8000-000000000010', 'Qorpera', 'Qorpera_Base'));
+	perform pg_temp.base_assert(
+		v_res like 'ok:%' and (substring(v_res from 4)::jsonb ->> 'autoRedeployEnabled')::boolean,
+		'admin enables auto-redeploy: ' || v_res
+	);
+
+	perform pg_temp.base_claims('service_role');
+	v_lookup := public.qorpera_code_site_for_auto_redeploy(
+		'exec-1332', v_machine_sha, '92400000-0000-4000-8000-000000000020', 'Qorpera', 'Qorpera_Base', 2);
+	perform pg_temp.base_assert(
 		(v_lookup ->> 'found')::boolean
 		and (v_lookup ->> 'siteId')::uuid = v_site
 		and (v_lookup ->> 'currentDeploymentId')::uuid = v_dep
@@ -363,33 +418,65 @@ begin
 		'exec-1332', v_machine_sha, '92400000-0000-4000-8000-000000000020', 'Qorpera', 'Qorpera_Base', 3);
 	perform pg_temp.base_assert(not (v_lookup ->> 'found')::boolean, 'static site change refused for auto-redeploy');
 	v_lookup := public.qorpera_code_site_for_auto_redeploy(
+		'exec-1332', v_machine_sha, '92400000-0000-4000-8000-000000000020', 'Qorpera', 'Qorpera_Base', 4);
+	perform pg_temp.base_assert(not (v_lookup ->> 'found')::boolean, 'unchecked change refused by release point');
+	v_lookup := public.qorpera_code_site_for_auto_redeploy(
 		'other-exec', v_machine_sha, '92400000-0000-4000-8000-000000000020', 'Qorpera', 'Qorpera_Base', 2);
 	perform pg_temp.base_assert(not (v_lookup ->> 'found')::boolean, 'non-holder executor gets found=false');
 
 	v_switch := public.qorpera_code_site_auto_redeploy_switch(
-		'other-exec', v_machine_sha, '92400000-0000-4000-8000-000000000020', v_site, v_dep2, '127.0.0.1:41234');
+		'other-exec', v_machine_sha, '92400000-0000-4000-8000-000000000020', v_site, v_dep2, '127.0.0.1:41234', 'release');
 	perform pg_temp.base_assert(v_switch ->> 'state' = 'lost', 'non-holder cannot switch live deployment: ' || v_switch::text);
 
 	v_switch := public.qorpera_code_site_auto_redeploy_switch(
-		'exec-1332', v_machine_sha, '92400000-0000-4000-8000-000000000020', v_site, v_dep2, '127.0.0.1:41234');
+		'exec-1332', v_machine_sha, '92400000-0000-4000-8000-000000000020', v_site, v_dep2, '127.0.0.1:41234', 'release');
 	perform pg_temp.base_assert(
 		v_switch ->> 'state' = 'live'
 		and (v_switch ->> 'deploymentId')::uuid = v_dep2
+		and (v_switch ->> 'releaseVersion')::integer = 2
 		and (select live_deployment_id from public.qorpera_company_sites where id = v_site) = v_dep2
 		and (select current_version_id from public.qorpera_company_sites where id = v_site) = v_ver2
 		and (select upstream_addr from public.qorpera_company_site_deployments where id = v_dep2) = '127.0.0.1:41234',
-		'auto-redeploy switch promotes new server deployment live: ' || v_switch::text
+		'auto-redeploy switch promotes new server deployment live through ledger: ' || v_switch::text
+	);
+
+	v_res := pg_temp.t1332_as_member('92400000-0000-4000-8000-000000000001',
+		format('select public.qorpera_list_code_releases(%L)', '92400000-0000-4000-8000-000000000010'));
+	perform pg_temp.base_assert(v_res like 'ok:%', 'list code releases after switch: ' || v_res);
+	v_releases := substring(v_res from 4)::jsonb;
+	perform pg_temp.base_assert(
+		(v_releases -> 'sites' -> 0 -> 'live' ->> 'version')::integer = 2
+		and (v_releases -> 'sites' -> 0 -> 'back' ->> 'version')::integer = 1,
+		'qorpera_list_code_releases shows live=2 and back=1 after auto-redeploy: ' || v_releases::text
+	);
+
+	perform pg_temp.base_claims('service_role');
+	v_pruned := public.qorpera_code_site_prune(v_site);
+	perform pg_temp.base_assert(
+		exists (select 1 from public.qorpera_company_site_versions where id = v_ver1),
+		'prior live version v1 survives qorpera_code_site_prune because ledger chain keeps it'
 	);
 
 	v_switch := public.qorpera_code_site_auto_redeploy_switch(
-		'exec-1332', v_machine_sha, '92400000-0000-4000-8000-000000000020', v_site, v_dep, '127.0.0.1:41230');
+		'exec-1332', v_machine_sha, '92400000-0000-4000-8000-000000000020', v_site, v_dep, '127.0.0.1:41230', 'back');
 	perform pg_temp.base_assert(
 		v_switch ->> 'state' = 'live'
+		and (v_switch ->> 'releaseVersion')::integer = 1
 		and (select live_deployment_id from public.qorpera_company_sites where id = v_site) = v_dep
 		and (select current_version_id from public.qorpera_company_sites where id = v_site) = v_ver1
 		and (select upstream_addr from public.qorpera_company_site_deployments where id = v_dep) = '127.0.0.1:41230'
 		and (select upstream_addr from public.qorpera_company_site_deployments where id = v_dep2) is null,
-		'auto-redeploy switch rolls back live deployment and clears old upstream: ' || v_switch::text
+		'auto-redeploy back switch rolls back live deployment through ledger and clears old upstream: ' || v_switch::text
+	);
+
+	v_res := pg_temp.t1332_as_member('92400000-0000-4000-8000-000000000001',
+		format('select public.qorpera_list_code_releases(%L)', '92400000-0000-4000-8000-000000000010'));
+	v_releases := substring(v_res from 4)::jsonb;
+	perform pg_temp.base_assert(
+		(v_releases -> 'sites' -> 0 -> 'live' ->> 'version')::integer = 1
+		and v_releases -> 'sites' -> 0 -> 'live' ->> 'kind' = 'back'
+		and (v_releases -> 'sites' -> 0 -> 'live' ->> 'from')::integer = 2,
+		'qorpera_list_code_releases shows back release to v1 from v2: ' || v_releases::text
 	);
 
 	perform pg_temp.base_assert(
@@ -403,6 +490,11 @@ begin
 	perform pg_temp.base_assert(
 		(select status from public.qorpera_app_secret_grants where id = v_grant_admin) = 'revoked',
 		'demoting issuer revokes app secret grant'
+	);
+	perform pg_temp.base_assert(
+		not (select auto_redeploy_enabled from public.qorpera_code_repositories
+			where environment_id = '92400000-0000-4000-8000-000000000020' and owner = 'qorpera' and name = 'qorpera_base'),
+		'demoting enabling admin automatically disables auto-redeploy'
 	);
 
 	v_res := pg_temp.t1332_as_member('92400000-0000-4000-8000-000000000001',

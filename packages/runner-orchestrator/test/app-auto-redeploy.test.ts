@@ -35,7 +35,26 @@ describe("app-auto-redeploy", () => {
 		);
 		expect(config.autoRedeploy).toBe(true);
 		expect(config.site).toBe("billing-app");
-		expect(config.injectRuntimeSecrets).toBe(true);
+		expect(config.injectRuntimeSecrets).toBe(false);
+		expect(config.injectDatabaseUrl).toBe(false);
+		expect(() =>
+			parseAppDeployConfig({
+				site: "billing-app",
+				buildCommand: "npm run build",
+				reloadCommand: "reload",
+				healthUrl: "http://127.0.0.1:3000/health",
+				injectRuntimeSecrets: true,
+			}),
+		).toThrow(/not yet supported/);
+		expect(() =>
+			parseAppDeployConfig({
+				site: "billing-app",
+				buildCommand: "npm run build",
+				reloadCommand: "reload",
+				healthUrl: "http://127.0.0.1:3000/health",
+				injectDatabaseUrl: true,
+			}),
+		).toThrow(/not yet supported/);
 		expect(() =>
 			parseAppDeployConfig({
 				site: "billing-app",
@@ -73,16 +92,40 @@ describe("app-auto-redeploy", () => {
 		const root = await mkdtemp(join(tmpdir(), "qorpera-redeploy-"));
 		const secretsManager = new CompanyMachineSecretsManager({ rootDir: root, verifyTmpfs: async () => true });
 		try {
-			const config = parseAppDeployConfig({
-				autoRedeploy: true,
-				site: "billing-app",
-				paths: ["apps/billing/**"],
-				buildCommand: "npm run build",
-				reloadCommand: "reload-app",
-				healthUrl: "http://127.0.0.1:3000/health",
-				healthAttempts: 2,
-				healthIntervalMs: 0,
-			});
+			const config = parseAppDeployConfig(
+				{
+					autoRedeploy: true,
+					site: "billing-app",
+					paths: ["apps/billing/**"],
+					buildCommand: "npm run build",
+					reloadCommand: "reload-app",
+					healthUrl: "http://127.0.0.1:3000/health",
+					healthAttempts: 2,
+					healthIntervalMs: 0,
+					injectRuntimeSecrets: true,
+				},
+				{ allowRuntimeSecretInjection: true },
+			);
+			await expect(
+				runPostLandAppAutoRedeploy({
+					config,
+					event: {
+						kind: "landed",
+						repo: "acme/web",
+						change: "chg-no-mgr",
+						mainBefore: SHA_BEFORE,
+						mainAfter: SHA_AFTER,
+						paths: ["apps/billing/server.ts"],
+					},
+					hooks: {
+						currentReleaseId: async () => "rel-1",
+						build: async () => ({ releaseId: "rel-2" }),
+						reload: async () => undefined,
+						rollback: async () => undefined,
+					},
+					signal: new AbortController().signal,
+				}),
+			).rejects.toThrow("APP_SECRETS_DELIVERY_UNAVAILABLE");
 			const skip = shouldAutoRedeployOnCodeChange(config, {
 				kind: "landed",
 				repo: "acme/web",
@@ -180,17 +223,21 @@ describe("app-auto-redeploy", () => {
 				targetEnv: "prod",
 				secrets: { OPENAI_API_KEY: prevSecret },
 			});
-			const config = parseAppDeployConfig({
-				autoRedeploy: true,
-				site: "billing-app",
-				paths: ["apps/billing/**"],
-				buildCommand: "npm run build",
-				reloadCommand: "reload-app",
-				rollbackCommand: "rollback-app",
-				healthUrl: "http://127.0.0.1:3000/health",
-				healthAttempts: 2,
-				healthIntervalMs: 0,
-			});
+			const config = parseAppDeployConfig(
+				{
+					autoRedeploy: true,
+					site: "billing-app",
+					paths: ["apps/billing/**"],
+					buildCommand: "npm run build",
+					reloadCommand: "reload-app",
+					rollbackCommand: "rollback-app",
+					healthUrl: "http://127.0.0.1:3000/health",
+					healthAttempts: 2,
+					healthIntervalMs: 0,
+					injectRuntimeSecrets: true,
+				},
+				{ allowRuntimeSecretInjection: true },
+			);
 			const rollback = vi.fn().mockResolvedValue(undefined);
 			const emitAppUnhealthy = vi.fn().mockResolvedValue(undefined);
 			const result = await runPostLandAppAutoRedeploy({
@@ -311,7 +358,7 @@ describe("app-auto-redeploy", () => {
 		} as never;
 		try {
 			const controlCalls: { method: string; args: Record<string, unknown> }[] = [];
-			const switchCalls: { deploymentId: string; upstreamAddr: string }[] = [];
+			const switchCalls: { deploymentId: string; upstreamAddr: string; mode: string }[] = [];
 			let appHostSeq = 0;
 			const control = {
 				call: vi.fn(async (method: string, args: Record<string, unknown>) => {
@@ -353,6 +400,7 @@ describe("app-auto-redeploy", () => {
 						switchCalls.push({
 							deploymentId: String(args.p_deployment_id),
 							upstreamAddr: String(args.p_upstream_addr),
+							mode: String(args.p_mode),
 						});
 						return {
 							schema: "qorpera.code-site-auto-redeploy-switch/v1",
@@ -435,8 +483,8 @@ describe("app-auto-redeploy", () => {
 				[oldDepId, oldImage],
 			]);
 			expect(switchCalls).toEqual([
-				{ deploymentId: newDepId, upstreamAddr: "127.0.0.1:44441" },
-				{ deploymentId: oldDepId, upstreamAddr: "127.0.0.1:44442" },
+				{ deploymentId: newDepId, upstreamAddr: "127.0.0.1:44441", mode: "release" },
+				{ deploymentId: oldDepId, upstreamAddr: "127.0.0.1:44442", mode: "back" },
 			]);
 			expect(controlCalls.map((c) => c.method)).toEqual([
 				"qorpera_code_site_for_auto_redeploy",

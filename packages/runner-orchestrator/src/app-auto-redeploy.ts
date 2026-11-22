@@ -160,7 +160,10 @@ function parseHealthUrl(raw: unknown): string {
 	return parsed.toString();
 }
 
-export function parseAppDeployConfig(raw: string | unknown): AppAutoRedeployConfig {
+export function parseAppDeployConfig(
+	raw: string | unknown,
+	options?: { readonly allowRuntimeSecretInjection?: boolean },
+): AppAutoRedeployConfig {
 	let decoded: unknown = raw;
 	if (typeof raw === "string") {
 		if (Buffer.byteLength(raw, "utf8") > 32 * 1024) {
@@ -240,13 +243,16 @@ export function parseAppDeployConfig(raw: string | unknown): AppAutoRedeployConf
 		input.healthIntervalMs === undefined
 			? 500
 			: parseInteger(input.healthIntervalMs, "deploy.json healthIntervalMs", 0, 10_000);
-	const injectRuntimeSecrets = input.injectRuntimeSecrets === undefined ? true : input.injectRuntimeSecrets;
+	const injectRuntimeSecrets = input.injectRuntimeSecrets === undefined ? false : input.injectRuntimeSecrets;
 	if (typeof injectRuntimeSecrets !== "boolean") {
 		throw new RangeError("deploy.json injectRuntimeSecrets must be boolean");
 	}
 	const injectDatabaseUrl = input.injectDatabaseUrl === undefined ? false : input.injectDatabaseUrl;
 	if (typeof injectDatabaseUrl !== "boolean") {
 		throw new RangeError("deploy.json injectDatabaseUrl must be boolean");
+	}
+	if ((injectRuntimeSecrets || injectDatabaseUrl) && !options?.allowRuntimeSecretInjection) {
+		throw new RangeError("deploy.json runtime secret injection is not yet supported by app-host");
 	}
 	return Object.freeze({
 		schema: APP_DEPLOY_CONFIG_SCHEMA,
@@ -437,7 +443,10 @@ export async function runPostLandAppAutoRedeploy(options: {
 	let runtimeEnvUpdated = false;
 	let previousRuntimeEnv: Buffer | null = null;
 	try {
-		if (config.injectRuntimeSecrets && hooks.loadRuntimeSecrets && secretsManager) {
+		if (config.injectRuntimeSecrets) {
+			if (!hooks.loadRuntimeSecrets || !secretsManager) {
+				throw new Error("APP_SECRETS_DELIVERY_UNAVAILABLE");
+			}
 			previousRuntimeEnv = await secretsManager.snapshot(config.site);
 			const loaded = await hooks.loadRuntimeSecrets(config.site, config.targetEnv, signal);
 			const bundle: HostedAppSecretBundle = config.injectDatabaseUrl
@@ -684,6 +693,7 @@ export function createNativeEdgeAutoRedeploy(
 		const switchLiveDeployment = async (
 			deploymentId: string,
 			upstreamAddr: string,
+			mode: "release" | "back",
 			hookSignal: AbortSignal,
 		): Promise<void> => {
 			const switched = (await options.control.call(
@@ -695,6 +705,7 @@ export function createNativeEdgeAutoRedeploy(
 					p_site_id: siteId,
 					p_deployment_id: deploymentId,
 					p_upstream_addr: upstreamAddr,
+					p_mode: mode,
 				},
 				hookSignal,
 			)) as Record<string, unknown> | null;
@@ -851,7 +862,7 @@ export function createNativeEdgeAutoRedeploy(
 						signal: hookSignal,
 					});
 					startedNewOnAppHost = true;
-					await switchLiveDeployment(input.releaseId, deployed.upstreamAddr, hookSignal);
+					await switchLiveDeployment(input.releaseId, deployed.upstreamAddr, "release", hookSignal);
 					promotedNewInDb = true;
 				},
 				rollback: async (input, hookSignal) => {
@@ -874,7 +885,7 @@ export function createNativeEdgeAutoRedeploy(
 						signal: hookSignal,
 					});
 					if (promotedNewInDb) {
-						await switchLiveDeployment(input.previousReleaseId, restored.upstreamAddr, hookSignal);
+						await switchLiveDeployment(input.previousReleaseId, restored.upstreamAddr, "back", hookSignal);
 					}
 				},
 			},

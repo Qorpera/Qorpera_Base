@@ -388,6 +388,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_set_interface_page_hidden(uuid,text,boolean)', false, true, 'member: auth.uid() + membership of a folder-v2 company; hides or shows Mailbox, Members or Bank on the caller''s own rail and changes no data (20260930697000)'),
 	('public.qorpera_set_leaderboard_hidden(boolean)', false, true, 'member: auth.uid(); sets only the caller''s own choice (20260930690000)'),
 	('public.qorpera_set_logical_computer_status(uuid,uuid,text)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
+	('public.qorpera_set_code_site_auto_redeploy(uuid,text,text,boolean)', false, true, 'member: auth.uid() + owner or admin; enables or disables opt-in post-land auto-redeploy on a company code repository (20260930850000)'),
 	('public.qorpera_set_coding_environment_grant_scope(uuid,uuid,text,text,uuid)', false, true, 'member: auth.uid() + owner or admin; updates scope, target_env, and optional site_id on an active coding environment grant (20260930850000)'),
 	('public.qorpera_set_member_picture(text)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_set_provider_connection_status(uuid,uuid,text)', false, true, 'member: auth.uid() + membership/ownership'),

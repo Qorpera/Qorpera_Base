@@ -250,6 +250,13 @@ begin
 	select revoked.profile_id, revoked.environment_id, revoked.secret_id, secret.current_version, revoked.id,
 		'app_secret_grant_revoked', auth.uid(), secret.connector_id
 	from revoked join public.qorpera_cloud_secrets as secret on secret.id = revoked.secret_id;
+	update public.qorpera_code_repositories
+	set auto_redeploy_enabled = false,
+		auto_redeploy_enabled_by_user_id = null,
+		auto_redeploy_enabled_at = null
+	where profile_id = old.profile_id
+		and auto_redeploy_enabled_by_user_id = old.user_id
+		and auto_redeploy_enabled;
 	if tg_op = 'DELETE' then return old; end if;
 	return new;
 end
@@ -675,6 +682,67 @@ select pg_temp.w6c_patch('public.qorpera_code_sites_due(text,text,integer)'::reg
 			|| case when v_repository.site_id is not null then jsonb_build_object('siteId', v_repository.site_id) else '{}'::jsonb end);$new$
 ]);
 
+alter table public.qorpera_code_repositories
+	add column auto_redeploy_enabled boolean not null default false,
+	add column auto_redeploy_enabled_by_user_id uuid,
+	add column auto_redeploy_enabled_at timestamptz,
+	add constraint qorpera_code_repositories_auto_redeploy_check
+		check (not auto_redeploy_enabled or (auto_redeploy_enabled_by_user_id is not null and auto_redeploy_enabled_at is not null));
+
+create function public.qorpera_set_code_site_auto_redeploy(
+	p_profile_id uuid,
+	p_owner text,
+	p_name text,
+	p_enabled boolean
+)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = ''
+set lock_timeout = '3s'
+as $$
+declare
+	v_role public.qorpera_profile_role := public.qorpera_member_role(p_profile_id);
+	v_repo public.qorpera_code_repositories%rowtype;
+	v_now timestamptz := clock_timestamp();
+begin
+	if auth.role() is distinct from 'authenticated' or auth.uid() is null or v_role is null
+		or v_role not in ('owner', 'admin') then
+		raise exception 'Releases unavailable' using errcode = '42501';
+	end if;
+	if p_profile_id is null or p_owner is null or p_name is null or p_enabled is null then
+		raise exception 'Auto-redeploy setting is invalid' using errcode = '22023';
+	end if;
+	perform 1 from public.qorpera_profiles profile where profile.id = p_profile_id for key share;
+	select repository.* into v_repo
+	from public.qorpera_code_repositories repository
+	join public.qorpera_company_files file on file.environment_id = repository.environment_id
+		and file.profile_id = p_profile_id and file.core = 'folder-v2'
+	where repository.profile_id = p_profile_id
+		and lower(repository.owner) = lower(p_owner)
+		and lower(repository.name) = lower(p_name)
+	for update of repository;
+	if not found then
+		raise exception 'No such repository' using errcode = 'P0002';
+	end if;
+	update public.qorpera_code_repositories
+	set auto_redeploy_enabled = p_enabled,
+		auto_redeploy_enabled_by_user_id = case when p_enabled then auth.uid() else null end,
+		auto_redeploy_enabled_at = case when p_enabled then v_now else null end
+	where environment_id = v_repo.environment_id and owner = v_repo.owner and name = v_repo.name
+	returning * into v_repo;
+	return jsonb_build_object(
+		'schema', 'qorpera.code-site-auto-redeploy-policy/v1',
+		'owner', v_repo.owner,
+		'name', v_repo.name,
+		'autoRedeployEnabled', v_repo.auto_redeploy_enabled,
+		'enabledByUserId', v_repo.auto_redeploy_enabled_by_user_id,
+		'enabledAt', v_repo.auto_redeploy_enabled_at
+	);
+end
+$$;
+
 create function public.qorpera_code_site_for_auto_redeploy(
 	p_owner text,
 	p_machine_id_sha256 text,
@@ -693,10 +761,12 @@ declare
 	v_repo public.qorpera_code_repositories%rowtype;
 	v_site public.qorpera_company_sites%rowtype;
 	v_dep public.qorpera_company_site_deployments%rowtype;
-	v_change public.qorpera_code_changes%rowtype;
+	v_live public.qorpera_code_releases%rowtype;
+	v_point jsonb;
 	v_existing_dep_id uuid;
 	v_existing_image_ref text;
 	v_tree text;
+	v_site_spec jsonb;
 begin
 	perform public.qorpera_code_executor_custody(p_owner, p_machine_id_sha256);
 	if p_environment_id is null or p_repository_owner is null or p_name is null or p_change is null or p_change < 1 then
@@ -712,6 +782,14 @@ begin
 		and lower(name) = lower(p_name)
 	limit 1;
 	if v_repo.site_id is null
+		or not v_repo.auto_redeploy_enabled
+		or v_repo.auto_redeploy_enabled_by_user_id is null
+		or not exists (
+			select 1 from public.qorpera_profile_members m
+			where m.profile_id = v_repo.profile_id
+				and m.user_id = v_repo.auto_redeploy_enabled_by_user_id
+				and m.role in ('owner', 'admin')
+		)
 		or exists (select 1 from public.qorpera_company_deletions d where d.profile_id = v_repo.profile_id) then
 		return jsonb_build_object('schema', 'qorpera.code-site-auto-redeploy/v1', 'found', false);
 	end if;
@@ -725,24 +803,22 @@ begin
 	if v_site.id is null then
 		return jsonb_build_object('schema', 'qorpera.code-site-auto-redeploy/v1', 'found', false);
 	end if;
+	v_live := public.qorpera_code_release_live(v_repo);
+	if v_live.n is null then
+		return jsonb_build_object('schema', 'qorpera.code-site-auto-redeploy/v1', 'found', false);
+	end if;
 	select * into v_dep
 	from public.qorpera_company_site_deployments
 	where id = v_site.live_deployment_id and site_id = v_site.id;
 	if not found or v_dep.kind is distinct from 'server' or v_dep.oci_image_ref is null then
 		return jsonb_build_object('schema', 'qorpera.code-site-auto-redeploy/v1', 'found', false);
 	end if;
-	select * into v_change
-	from public.qorpera_code_changes
-	where environment_id = p_environment_id
-		and owner = v_repo.owner
-		and name = v_repo.name
-		and n = p_change;
-	if not found
-		or v_change.site_state is distinct from 'made'
-		or v_change.site ->> 'kind' is distinct from 'server' then
+	v_point := public.qorpera_code_release_point(v_repo, p_change, false);
+	if v_point is null or v_point -> 'site' ->> 'kind' is distinct from 'server' then
 		return jsonb_build_object('schema', 'qorpera.code-site-auto-redeploy/v1', 'found', false);
 	end if;
-	v_tree := v_change.site ->> 'tree';
+	v_tree := v_point ->> 'tree';
+	v_site_spec := v_point -> 'site';
 	select dep.id, dep.oci_image_ref
 	into v_existing_dep_id, v_existing_image_ref
 	from public.qorpera_company_site_versions ver
@@ -761,16 +837,16 @@ begin
 		'slug', v_site.slug,
 		'kind', 'server',
 		'tree', v_tree,
-		'dockerfile', v_change.site ->> 'dockerfile',
+		'dockerfile', v_site_spec ->> 'dockerfile',
 		'currentDeploymentId', v_dep.id,
 		'currentImageRef', v_dep.oci_image_ref,
 		'existingDeploymentId', v_existing_dep_id,
 		'existingImageRef', v_existing_image_ref,
-		'appPort', coalesce((v_change.site ->> 'port')::integer, v_dep.app_port, 3000),
-		'healthPath', coalesce(v_change.site ->> 'healthPath', v_dep.health_path, '/'),
-		'idleTimeoutSec', coalesce((v_change.site ->> 'idleTimeoutSec')::integer, v_dep.idle_timeout_sec, 900),
-		'memoryMb', coalesce((v_change.site ->> 'memoryMb')::integer, v_dep.memory_mb, 512),
-		'vcpuLimit', coalesce((v_change.site ->> 'vcpuLimit')::numeric, v_dep.vcpu_limit, 1.00)
+		'appPort', coalesce((v_site_spec ->> 'port')::integer, v_dep.app_port, 3000),
+		'healthPath', coalesce(v_site_spec ->> 'healthPath', v_dep.health_path, '/'),
+		'idleTimeoutSec', coalesce((v_site_spec ->> 'idleTimeoutSec')::integer, v_dep.idle_timeout_sec, 900),
+		'memoryMb', coalesce((v_site_spec ->> 'memoryMb')::integer, v_dep.memory_mb, 512),
+		'vcpuLimit', coalesce((v_site_spec ->> 'vcpuLimit')::numeric, v_dep.vcpu_limit, 1.00)
 	);
 end
 $$;
@@ -781,7 +857,8 @@ create function public.qorpera_code_site_auto_redeploy_switch(
 	p_environment_id uuid,
 	p_site_id uuid,
 	p_deployment_id uuid,
-	p_upstream_addr text default null
+	p_upstream_addr text default null,
+	p_mode text default 'release'
 )
 returns jsonb
 language plpgsql
@@ -792,14 +869,21 @@ set lock_timeout = '3s'
 as $$
 declare
 	c_schema constant text := 'qorpera.code-site-auto-redeploy-switch/v1';
+	v_repo public.qorpera_code_repositories%rowtype;
 	v_site public.qorpera_company_sites%rowtype;
 	v_dep public.qorpera_company_site_deployments%rowtype;
 	v_ver public.qorpera_company_site_versions%rowtype;
+	v_live public.qorpera_code_releases%rowtype;
+	v_prior public.qorpera_code_releases%rowtype;
+	v_point jsonb;
+	v_n integer;
+	v_release_version integer;
 	v_port integer;
 	v_now timestamptz := clock_timestamp();
 begin
 	perform public.qorpera_code_executor_custody(p_owner, p_machine_id_sha256);
-	if p_environment_id is null or p_site_id is null or p_deployment_id is null then
+	if p_environment_id is null or p_site_id is null or p_deployment_id is null
+		or coalesce(p_mode, '') not in ('release', 'back') then
 		raise exception 'Auto-redeploy switch is invalid' using errcode = '22023';
 	end if;
 	if p_upstream_addr is not null then
@@ -814,12 +898,35 @@ begin
 	if not public.qorpera_code_care_holder(p_environment_id, p_owner, p_machine_id_sha256) then
 		return jsonb_build_object('schema', c_schema, 'state', 'lost');
 	end if;
-	select * into v_site
-	from public.qorpera_company_sites
-	where id = p_site_id and environment_id = p_environment_id
+	perform 1 from public.qorpera_profiles profile
+	where profile.id = (
+		select repo.profile_id from public.qorpera_code_repositories repo
+		where repo.environment_id = p_environment_id and repo.site_id = p_site_id
+		limit 1
+	) for key share;
+	select * into v_repo
+	from public.qorpera_code_repositories
+	where environment_id = p_environment_id and site_id = p_site_id
 	for update;
 	if not found
-		or exists (select 1 from public.qorpera_company_deletions d where d.profile_id = v_site.profile_id) then
+		or exists (select 1 from public.qorpera_company_deletions d where d.profile_id = v_repo.profile_id) then
+		return jsonb_build_object('schema', c_schema, 'state', 'lost');
+	end if;
+	if not v_repo.auto_redeploy_enabled
+		or v_repo.auto_redeploy_enabled_by_user_id is null
+		or not exists (
+			select 1 from public.qorpera_profile_members m
+			where m.profile_id = v_repo.profile_id
+				and m.user_id = v_repo.auto_redeploy_enabled_by_user_id
+				and m.role in ('owner', 'admin')
+		) then
+		return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'AUTO_REDEPLOY_NOT_AUTHORIZED');
+	end if;
+	select * into v_site
+	from public.qorpera_company_sites
+	where id = p_site_id and environment_id = p_environment_id and profile_id = v_repo.profile_id
+	for update;
+	if not found then
 		return jsonb_build_object('schema', c_schema, 'state', 'lost');
 	end if;
 	if v_site.taken_down_at is not null
@@ -845,6 +952,54 @@ begin
 	if not found then
 		return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'VERSION_UNAVAILABLE');
 	end if;
+	v_live := public.qorpera_code_release_live(v_repo);
+	if v_live.n is null then
+		return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'RELEASE_NOT_LIVE');
+	end if;
+	v_n := v_repo.last_release + 1;
+	if p_mode = 'release' then
+		v_point := public.qorpera_code_release_point(v_repo, v_ver.change, true);
+		if v_point is null
+			or (v_point ->> 'versionId')::uuid is distinct from v_ver.id
+			or v_point -> 'site' ->> 'kind' is distinct from 'server' then
+			return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'RELEASE_POINT_MOVED');
+		end if;
+		v_release_version := v_repo.last_version + 1;
+		insert into public.qorpera_code_releases (
+			environment_id, owner, name, n, profile_id, kind, version, change, main_sha, tree,
+			version_id, replaces, prior, changes, shown_sha256, by_user_id
+		) values (
+			v_repo.environment_id, v_repo.owner, v_repo.name, v_n, v_repo.profile_id, 'release',
+			v_release_version, (v_point ->> 'change')::integer, v_point ->> 'mainSha', v_point ->> 'tree',
+			v_ver.id, v_live.n, v_live.n,
+			array(select held.n::integer from jsonb_array_elements_text(v_point -> 'held') with ordinality held(n, place)
+				order by held.place),
+			v_point ->> 'token', v_repo.auto_redeploy_enabled_by_user_id
+		);
+		update public.qorpera_code_repositories
+		set last_release = v_n, live_release = v_n, last_version = v_release_version, index_version = index_version + 1
+		where environment_id = v_repo.environment_id and owner = v_repo.owner and name = v_repo.name;
+	else
+		select * into v_prior
+		from public.qorpera_code_releases release
+		where release.environment_id = v_repo.environment_id and release.owner = v_repo.owner
+			and release.name = v_repo.name and release.n = v_live.prior;
+		if v_prior.version_id is distinct from v_ver.id then
+			return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'PRIOR_RELEASE_MOVED');
+		end if;
+		v_release_version := v_prior.version;
+		insert into public.qorpera_code_releases (
+			environment_id, owner, name, n, profile_id, kind, version, change, main_sha, tree,
+			version_id, replaces, prior, by_user_id
+		) values (
+			v_repo.environment_id, v_repo.owner, v_repo.name, v_n, v_repo.profile_id, 'back',
+			v_prior.version, v_prior.change, v_prior.main_sha, v_prior.tree,
+			v_ver.id, v_live.n, v_prior.prior, v_repo.auto_redeploy_enabled_by_user_id
+		);
+		update public.qorpera_code_repositories
+		set last_release = v_n, live_release = v_n, index_version = index_version + 1
+		where environment_id = v_repo.environment_id and owner = v_repo.owner and name = v_repo.name;
+	end if;
 	update public.qorpera_company_site_versions
 	set state = 'kept'
 	where site_id = v_site.id and state = 'live' and id <> v_ver.id;
@@ -854,6 +1009,9 @@ begin
 	update public.qorpera_company_sites
 	set current_version_id = v_ver.id,
 		title = coalesce(v_ver.title, title),
+		published_at = v_now,
+		published_by_user_id = v_repo.auto_redeploy_enabled_by_user_id,
+		published_by_staff_agent_id = null,
 		updated_at = v_now
 	where id = v_site.id;
 	update public.qorpera_company_site_deployments
@@ -868,6 +1026,7 @@ begin
 		'siteId', v_site.id,
 		'deploymentId', v_dep.id,
 		'versionId', v_ver.id,
+		'releaseVersion', v_release_version,
 		'upstreamAddr', p_upstream_addr
 	);
 end
@@ -2182,8 +2341,9 @@ revoke all on function
 	public.qorpera_revoke_app_secret_grant(uuid, uuid),
 	public.qorpera_list_app_secrets(uuid, uuid),
 	public.qorpera_authorize_app_secrets(uuid, text, uuid, text, text, text, text, uuid),
+	public.qorpera_set_code_site_auto_redeploy(uuid, text, text, boolean),
 	public.qorpera_code_site_for_auto_redeploy(text, text, uuid, text, text, integer),
-	public.qorpera_code_site_auto_redeploy_switch(text, text, uuid, uuid, uuid, text),
+	public.qorpera_code_site_auto_redeploy_switch(text, text, uuid, uuid, uuid, text, text),
 	public.qorpera_glob_matches(text, text),
 	public.qorpera_routine_check_before_wake_valid(jsonb),
 	public.qorpera_record_routine_check_result(uuid, boolean, text, text),
@@ -2197,6 +2357,7 @@ revoke all on function
 
 grant execute on function
 	public.qorpera_set_coding_environment_grant_scope(uuid, uuid, text, text, uuid),
+	public.qorpera_set_code_site_auto_redeploy(uuid, text, text, boolean),
 	public.qorpera_grant_app_secret(uuid, uuid, uuid, text, text),
 	public.qorpera_revoke_app_secret_grant(uuid, uuid),
 	public.qorpera_list_app_secrets(uuid, uuid)
@@ -2208,7 +2369,7 @@ grant execute on function
 
 grant execute on function
 	public.qorpera_code_site_for_auto_redeploy(text, text, uuid, text, text, integer),
-	public.qorpera_code_site_auto_redeploy_switch(text, text, uuid, uuid, uuid, text),
+	public.qorpera_code_site_auto_redeploy_switch(text, text, uuid, uuid, uuid, text, text),
 	public.qorpera_record_routine_check_result(uuid, boolean, text, text),
 	public.qorpera_skip_checked_routine_wake(uuid, bigint, text, timestamptz, timestamptz, timestamptz, boolean, text, text),
 	public.qorpera_read_routine_code_checks(uuid, text),
