@@ -11,11 +11,13 @@ An image stays when any of these holds:
 - An instance uses it, whatever its state. That covers the exec host, the company computers (including suspended
   ones) and builders.
 - It is listed in `keepFingerprints` (the v34 base image that runtime images are built from).
-- It is the **live runtime pin**, **any newer (staged) pin**, or the **previous pin**, the newest older one with another
-  fingerprint and so the rollback. On a node that runs the node agent (`agentRoot`, `/opt/qorpera-node`), the pins
-  come from its releases: each `releases/<n>/release.json` names its image, and the live release is the one the
-  provider role's link (`roles/provider`) names. Elsewhere they come from the provider env files (`pinFiles`), and a pin
-  file is live when a file a live unit starts from names it.
+- It is the **live runtime pin**, **any newer (staged) pin**, or the **previous pin** (the rollback). On a node that runs
+  the node agent (`agentRoot`, `/opt/qorpera-node`), the pins come from its releases: each
+  `releases/<n>/release.json` names its image, the live release is the one `roles/provider` names, and the previous pin
+  is the release named by the `previous` link (falling back to the newest older pin with another fingerprint only when
+  no `previous` link names a release with a provider image). Elsewhere they come from the provider env files
+  (`pinFiles`), where the live pin is one a live unit starts from and the previous pin is the newest older one with
+  another fingerprint.
 - On a node agent node, it is named by the env file (`pinFiles`) that an installed but inactive unit still starts from:
   the old lane's disabled unit, kept for its rollback until it is archived. Other old env files hold nothing, and
   archiving the old units frees the rest.
