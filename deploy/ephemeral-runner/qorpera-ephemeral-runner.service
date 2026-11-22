@@ -3,8 +3,6 @@ Description=Qorpera ephemeral cloud runner
 Documentation=https://github.com/Qorpera/Qorpera_Base
 Wants=network-online.target
 After=network-online.target
-StartLimitIntervalSec=120s
-StartLimitBurst=5
 
 [Service]
 Type=exec

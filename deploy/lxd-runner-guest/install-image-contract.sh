@@ -319,23 +319,37 @@ if (pin.schema !== "qorpera.native-claude-artifact/v1" || !current || !minimum |
   throw new Error("Claude Code pin is invalid");
 }
 (async () => {
-  const response = await fetch(pin.source.tarball, { redirect: "error", signal: AbortSignal.timeout(120_000) });
-  if (!response.ok || !response.body) throw new Error(`Claude Code tarball fetch failed: ${response.status}`);
-  const digest = createHash("sha512");
-  let bytes = 0;
-  const count = new Transform({
-    transform(chunk, _encoding, done) {
-      bytes += chunk.length;
-      if (bytes > pin.source.tarballBytes) return done(new Error("Claude Code tarball is larger than its pin"));
-      digest.update(chunk);
-      done(null, chunk);
-    },
-  });
-  await pipeline(Readable.fromWeb(response.body), count, createWriteStream(join(process.env.FETCH_ROOT, "claude.tgz"), { flags: "wx", mode: 0o600 }));
-  if (bytes !== pin.source.tarballBytes || `sha512-${digest.digest("base64")}` !== pin.source.integrity) {
-    throw new Error("Claude Code tarball does not match its npm integrity");
+  const stallMs = 120_000;
+  const controller = new AbortController();
+  let stallTimer;
+  const resetStall = () => {
+    clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => controller.abort(new Error("Claude Code tarball fetch stalled")), stallMs);
+  };
+  resetStall();
+  try {
+    const response = await fetch(pin.source.tarball, { redirect: "error", signal: controller.signal });
+    if (!response.ok || !response.body) throw new Error(`Claude Code tarball fetch failed: ${response.status}`);
+    resetStall();
+    const digest = createHash("sha512");
+    let bytes = 0;
+    const count = new Transform({
+      transform(chunk, _encoding, done) {
+        resetStall();
+        bytes += chunk.length;
+        if (bytes > pin.source.tarballBytes) return done(new Error("Claude Code tarball is larger than its pin"));
+        digest.update(chunk);
+        done(null, chunk);
+      },
+    });
+    await pipeline(Readable.fromWeb(response.body), count, createWriteStream(join(process.env.FETCH_ROOT, "claude.tgz"), { flags: "wx", mode: 0o600 }));
+    if (bytes !== pin.source.tarballBytes || `sha512-${digest.digest("base64")}` !== pin.source.integrity) {
+      throw new Error("Claude Code tarball does not match its npm integrity");
+    }
+    process.stdout.write(pin.source.version);
+  } finally {
+    clearTimeout(stallTimer);
   }
-  process.stdout.write(pin.source.version);
 })().catch((error) => {
   console.error(error.message);
   process.exit(1);

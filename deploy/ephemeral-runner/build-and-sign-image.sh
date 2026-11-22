@@ -24,17 +24,24 @@ esac
 command -v node >/dev/null
 command -v podman >/dev/null
 command -v cosign >/dev/null
+command -v timeout >/dev/null
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(CDPATH='' cd -- "$script_directory/../.." && pwd)
 work_directory=$(mktemp -d "${TMPDIR:-/tmp}/qorpera-ephemeral-runner-build.XXXXXX")
 artifact_directory="$work_directory/artifact"
 digest_file="$work_directory/digest"
+active_pid=""
 cleanup() {
 	rm -rf -- "$work_directory"
 }
 on_signal() {
 	sig=$1
+	if [ -n "$active_pid" ]; then
+		kill -s TERM "$active_pid" 2>/dev/null || true
+		wait "$active_pid" 2>/dev/null || true
+		active_pid=""
+	fi
 	cleanup
 	trap - "$sig" EXIT
 	kill -s "$sig" "$$"
@@ -47,11 +54,12 @@ trap 'on_signal TERM' TERM
 run_bounded() {
 	seconds=$1
 	shift
-	if command -v timeout >/dev/null 2>&1; then
-		timeout --kill-after=30 "$seconds" "$@"
-	else
-		"$@"
-	fi
+	timeout --kill-after=30 "$seconds" "$@" &
+	active_pid=$!
+	rc=0
+	wait "$active_pid" || rc=$?
+	active_pid=""
+	return "$rc"
 }
 
 cd "$repository_root"
