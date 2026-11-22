@@ -80,7 +80,7 @@ describe("the surface rail", () => {
 		expect(titles).toEqual(["Building", "Running"]);
 		const active = rail.el.querySelector<HTMLAnchorElement>(".rail-surface.active");
 		expect(active ? linkHref(active) : null).toBe(`#/c/${COMPANY}/s/website`);
-		expect(active?.querySelector(".interface-emblem")).not.toBeNull();
+		expect(active?.querySelector(".surface-figure")?.getAttribute("data-figure")).toBe("browser");
 		const add = rail.el.querySelector(".rail-surface-add");
 		expect(add ? linkHref(add) : null).toBe(`#/c/${COMPANY}/new-program`);
 		expect(rail.el.querySelector(".surface-switch")).toBeNull();

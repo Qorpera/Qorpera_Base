@@ -1025,7 +1025,7 @@ export class SurfaceView {
 						h(
 							"div",
 							{ class: "surface-empty" },
-							surfaceTile(surface, look, 30, "is-hero"),
+							surfaceTile(surface, look, "is-hero"),
 							h("h2", null, surface.title),
 							h(
 								"p",
