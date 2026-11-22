@@ -871,8 +871,9 @@ export class SurfaceView {
 				),
 			);
 		}
-		if (surface.archetype !== "ops") {
-			const publishBusy = Boolean(state.busy[`publish:${surface.id}`]) || surface.publishStatus === "publishing";
+		const publishBusy = Boolean(state.busy[`publish:${surface.id}`]) || surface.publishStatus === "publishing";
+		const barHasOtherControls = Boolean(modeNav || headerCrew) || rightTools.length > 0;
+		if (surface.archetype !== "ops" && (count > 0 || publishBusy || barHasOtherControls)) {
 			rightTools.push(
 				h(
 					"div",

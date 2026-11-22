@@ -1253,6 +1253,55 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		company.stop();
 	});
 
+	it("hides the bar on a quiet studio until it has something to publish", async () => {
+		const quiet = summary({
+			id: "55555555-5555-4555-8555-555555555589",
+			slug: "identity",
+			title: "Identity",
+			archetype: "studio",
+			kind: "identity",
+			isGlobal: true,
+			repositoryKey: null,
+			folderRoot: "identity",
+			liveUrl: null,
+			siteSlug: null,
+			activeSessionCount: 0,
+			pendingChangeCount: 0,
+			unpublishedChangeCount: 0,
+		});
+		const barOf = async (surface: typeof quiet) => {
+			const store = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn().mockResolvedValue([surface]),
+					getSurfaceWorkspace: vi.fn().mockResolvedValue(workspace([], { surface })),
+				}),
+			);
+			await store.load();
+			const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "identity");
+			document.body.append(view.el);
+			await flush();
+			view.update();
+			const bar = view.el.querySelector<HTMLElement>(".surface-bar")!;
+			const shown = {
+				hidden: bar.hidden,
+				publish: bar.querySelector(".surface-publish") !== null,
+				notch: bar.querySelector(".surface-notch") !== null,
+				count: bar.querySelector(".surface-publish-main .surface-count")?.textContent ?? null,
+			};
+			view.dispose();
+			store.dispose();
+			return shown;
+		};
+
+		expect(await barOf(quiet)).toEqual({ hidden: true, publish: false, notch: false, count: null });
+		expect(await barOf({ ...quiet, unpublishedChangeCount: 2 })).toEqual({
+			hidden: false,
+			publish: true,
+			notch: false,
+			count: "2",
+		});
+	});
+
 	it("renders the Used by line on Identity, the Live-linked strip on Product, and applies live Identity CSS vars to Product", async () => {
 		stubFigureMotion();
 		const navigated: string[] = [];
