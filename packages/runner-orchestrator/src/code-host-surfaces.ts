@@ -1,6 +1,7 @@
 import { type CloudCodingRepository, isUuid } from "@qorpera/contracts";
 import { CODE_FOLDER_ANY_SESSION, codeFolderRefuses } from "./code-folder-names.ts";
 import {
+	CODE_AREA_CONFIG,
 	CODE_AREA_IN_QORPERA_REF,
 	type CodeHostJob,
 	CodeHostJobFailure,
@@ -12,6 +13,7 @@ import {
 	SHA,
 	tail,
 	withJob,
+	ZERO,
 } from "./code-host-jobs.ts";
 
 const PREVIEW_ID = /^[a-z0-9]{8}$/;
@@ -499,5 +501,185 @@ export async function inspectChangeRange(
 			diffStats: { filesChanged: paths.length, additions, deletions },
 			restored: run.restored,
 		};
+	});
+}
+
+export interface EnsureSurfaceStarterRepositoryInput {
+	readonly repository: CloudCodingRepository;
+	readonly title?: string;
+	readonly slug?: string;
+}
+
+export interface EnsureSurfaceStarterRepositoryResult {
+	readonly status: "existing" | "created";
+	readonly mainSha: string;
+	readonly restored: readonly string[];
+}
+
+const STARTER_SURFACE_CHECKS_JSON = `${JSON.stringify(
+	{
+		site: { folder: "." },
+		preview: { run: "true", folder: ".", cwd: ".", timeoutSeconds: 60 },
+		checks: [{ name: "build", run: "true" }],
+	},
+	null,
+	2,
+)}\n`;
+
+const STARTER_SURFACE_STYLES_CSS = `:root {
+	--surface-bg: #ffffff;
+	--surface-ink: #161615;
+	--surface-muted: #6b6966;
+	--surface-accent: #d76f45;
+	--surface-font-sans: system-ui, -apple-system, sans-serif;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+body {
+	margin: 0;
+	background: var(--surface-bg);
+	color: var(--surface-ink);
+	font-family: var(--surface-font-sans);
+	line-height: 1.5;
+}
+
+.surface-shell {
+	max-width: 48rem;
+	margin: 0 auto;
+	padding: 4rem 1.5rem;
+}
+
+.surface-shell p {
+	color: var(--surface-muted);
+}
+`;
+
+function escapeStarterHtml(text: string): string {
+	return text
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;")
+		.replaceAll("'", "&#39;");
+}
+
+function starterSurfaceIndexHtml(title: string): string {
+	const safeTitle = escapeStarterHtml(title);
+	return `<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>${safeTitle}</title>
+	<link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+	<main class="surface-shell">
+		<h1>${safeTitle}</h1>
+		<p>Ready for your first change.</p>
+	</main>
+</body>
+</html>
+`;
+}
+
+export async function ensureSurfaceStarterRepository(
+	job: CodeHostJob,
+	input: EnsureSurfaceStarterRepositoryInput,
+): Promise<EnsureSurfaceStarterRepositoryResult> {
+	const repository = keptRepositoryOf(input.repository);
+	const base = `refs/heads/${repository.baseBranch}`;
+	const displayTitle = input.title?.trim() || input.slug?.trim() || repository.name;
+
+	return withJob(job, repository, async (run) => {
+		const area = await run.prepare();
+		if (!area.seeded) {
+			await run.gitOk(
+				run.repo,
+				[
+					"init",
+					"--quiet",
+					"--bare",
+					"--template=",
+					"--ref-format=files",
+					`--initial-branch=${repository.baseBranch}`,
+					run.repo,
+				],
+				"CODE_HOST_START_FAILED",
+			);
+			await run.write(`${run.repo}/config`, CODE_AREA_CONFIG);
+			if (area.made) run.restored.push(run.relative(`${run.repo}/HEAD`));
+		}
+
+		let kept = await run.ref(CODE_AREA_IN_QORPERA_REF);
+		const head = await run.ref(base);
+		if (kept === null && head !== null) {
+			throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+		}
+		if (head !== null) {
+			const at =
+				area.main === "present" &&
+				(await run.read(`${run.repo}/worktrees/main/HEAD`))?.equals(Buffer.from(`${head}\n`)) === true;
+			if (!at) await moveBase(run, area.main, base, head, head);
+			return { status: "existing" as const, mainSha: head, restored: run.restored };
+		}
+
+		if (kept === null) {
+			const encoder = new TextEncoder();
+			const writeBlob = async (content: string): Promise<string> => {
+				const sha = (
+					await run.gitOk(run.repo, ["hash-object", "-w", "--stdin"], "CODE_HOST_START_FAILED", {
+						stdin: encoder.encode(content),
+					})
+				)
+					.toString("latin1")
+					.trim();
+				if (!SHA.test(sha)) throw new CodeHostJobFailure("CODE_HOST_START_FAILED", "hash-object produced no SHA");
+				return sha;
+			};
+			const writeTree = async (entries: string): Promise<string> => {
+				const sha = (
+					await run.gitOk(run.repo, ["mktree"], "CODE_HOST_START_FAILED", {
+						stdin: encoder.encode(entries),
+					})
+				)
+					.toString("latin1")
+					.trim();
+				if (!SHA.test(sha)) throw new CodeHostJobFailure("CODE_HOST_START_FAILED", "mktree produced no SHA");
+				return sha;
+			};
+
+			const checksBlob = await writeBlob(STARTER_SURFACE_CHECKS_JSON);
+			const indexBlob = await writeBlob(starterSurfaceIndexHtml(displayTitle));
+			const stylesBlob = await writeBlob(STARTER_SURFACE_STYLES_CSS);
+			const qorperaTree = await writeTree(`100644 blob ${checksBlob}\tchecks.json\n`);
+			const rootTree = await writeTree(
+				`040000 tree ${qorperaTree}\t.qorpera\n100644 blob ${indexBlob}\tindex.html\n100644 blob ${stylesBlob}\tstyles.css\n`,
+			);
+			const initialCommit = (
+				await run.gitOk(
+					run.repo,
+					[...PLATFORM_COMMITTER, "commit-tree", rootTree, "-m", `Initialize ${displayTitle} surface`],
+					"CODE_HOST_START_FAILED",
+				)
+			)
+				.toString("latin1")
+				.trim();
+			if (!SHA.test(initialCommit)) {
+				throw new CodeHostJobFailure("CODE_HOST_START_FAILED", "commit-tree produced no SHA");
+			}
+			await run.gitOk(
+				run.repo,
+				["update-ref", "--no-deref", CODE_AREA_IN_QORPERA_REF, initialCommit, ZERO],
+				"CODE_HOST_START_FAILED",
+			);
+			kept = initialCommit;
+		}
+
+		await moveBase(run, area.main, base, kept, ZERO);
+		return { status: "created" as const, mainSha: kept, restored: run.restored };
 	});
 }

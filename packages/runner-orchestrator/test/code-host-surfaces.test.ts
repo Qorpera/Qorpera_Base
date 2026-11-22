@@ -18,9 +18,11 @@ import {
 	CodeHostChangeConflict,
 	cherryPickChangeUnits,
 	composePreviewTree,
+	ensureSurfaceStarterRepository,
 	inspectChangeRange,
 	rebaseSessionChanges,
 } from "../src/code-host-surfaces.ts";
+import { parseFastPreviewRecipe } from "../src/surface-preview-runner.ts";
 import { localShell } from "./helpers/code-host-shell.ts";
 
 const exec = promisify(execFile);
@@ -298,5 +300,55 @@ describe("code-host surfaces multi-change engine", () => {
 		expect(conflicted.appliedChangeIds).toEqual([hero1Id]);
 		expect(conflicted.conflictingChangeId).toBe(hero2Id);
 		expect(conflicted.conflictPaths).toEqual(["index.html"]);
+	}, 20_000);
+
+	it("auto-scaffolds greenfield starter repositories idempotently with fast preview checks.json", async () => {
+		const root = await realpath(await mkdtemp(join(tmpdir(), "code-host-starter-")));
+		roots.push(root);
+		const companyRoot = join(root, "folder");
+		const scratchRoot = join(root, "scratch");
+		await mkdir(companyRoot, { recursive: true });
+		await mkdir(scratchRoot, { recursive: true });
+		const log: CodeHostCommand[] = [];
+		const job: CodeHostJob = {
+			shell: crossPlatformLocalShell(log),
+			layout: { companyRoot, scratchRoot, git: GIT },
+			signal: new AbortController().signal,
+		};
+		const repository = { host: "qorpera" as const, owner: "surfaces", name: "website", baseBranch: "main" };
+
+		const created = await ensureSurfaceStarterRepository(job, {
+			repository,
+			title: "Thetaband & Co",
+			slug: "website",
+		});
+		expect(created.status).toBe("created");
+		expect(created.mainSha).toMatch(/^[0-9a-f]{40}$/);
+
+		const mainDir = join(companyRoot, "code/surfaces/website/main");
+		const html = await readFile(join(mainDir, "index.html"), "utf8");
+		const css = await readFile(join(mainDir, "styles.css"), "utf8");
+		const checksText = await readFile(join(mainDir, ".qorpera/checks.json"), "utf8");
+		expect(html).toContain("Thetaband &amp; Co");
+		expect(html).toContain("./styles.css");
+		expect(css).toContain("--surface-accent");
+		expect(parseFastPreviewRecipe(checksText)).toEqual({
+			run: "true",
+			cwd: ".",
+			timeoutSeconds: 60,
+			folder: ".",
+		});
+
+		const repeated = await ensureSurfaceStarterRepository(job, { repository, title: "Ignored" });
+		expect(repeated.status).toBe("existing");
+		expect(repeated.mainSha).toBe(created.mainSha);
+
+		const preview = await composePreviewTree(job, {
+			repository,
+			baseSha: created.mainSha,
+			changes: [],
+			previewRefId: "11223344",
+		});
+		expect(preview.status).toBe("ready");
 	}, 20_000);
 });

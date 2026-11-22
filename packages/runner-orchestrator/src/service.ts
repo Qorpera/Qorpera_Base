@@ -5,6 +5,7 @@ import { nodeHttpFetch } from "./node-http-fetch.ts";
 import { CloudRunnerOrchestrator, SupabaseCloudRunnerOrchestratorControlPlane } from "./orchestrator.ts";
 import { RealtimeOrchestratorWake, type RealtimeOrchestratorWakeState } from "./orchestrator-wake.ts";
 import { HttpCloudRunnerProviderAdapter } from "./provider-http.ts";
+import { createSurfaceExecutionHandlers, type SurfaceExecutionBridgePorts } from "./surface-execution-bridge.ts";
 import { SurfaceWorkerLoop, type SurfaceWorkerLoopPorts } from "./surface-worker-loop.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -26,6 +27,7 @@ export interface CloudRunnerOrchestratorServiceConfig {
 	dispatchConcurrency: number;
 	/** Push wake-ups over Supabase Realtime (off unless configured): the slow poll that backs them up. */
 	wake?: { backstopMs: number };
+	surfaceWorkerEnabled?: boolean;
 }
 
 export interface CloudRunnerOrchestratorSurfaceWorkerOptions {
@@ -34,6 +36,7 @@ export interface CloudRunnerOrchestratorSurfaceWorkerOptions {
 	readonly runPreviewJob: SurfaceWorkerLoopPorts["runPreviewJob"];
 	readonly runMergeJob?: SurfaceWorkerLoopPorts["runMergeJob"];
 	readonly runPublishJob?: SurfaceWorkerLoopPorts["runPublishJob"];
+	readonly runAutomationJob?: SurfaceWorkerLoopPorts["runAutomationJob"];
 	readonly onEvent?: SurfaceWorkerLoopPorts["onEvent"];
 	readonly pollIntervalMs?: number;
 	readonly batchLimit?: number;
@@ -54,7 +57,88 @@ export interface CloudRunnerOrchestratorServiceOptions {
 	signal: AbortSignal;
 	fetchImplementation?: ServiceHttpFetch;
 	onError?: (error: unknown) => void;
-	surfaceWorker?: CloudRunnerOrchestratorSurfaceWorkerOption;
+	surfaceWorker?: CloudRunnerOrchestratorSurfaceWorkerOption | null;
+}
+
+export type DefaultSurfaceWorkerOverrides = Partial<Omit<SurfaceExecutionBridgePorts, "controlPlane">> & {
+	readonly spawnOverflowMachine?: SurfaceWorkerLoopPorts["spawnOverflowMachine"];
+	readonly dispatchSessionTurn?: SurfaceWorkerLoopPorts["dispatchSessionTurn"];
+	readonly runAutomationJob?: SurfaceWorkerLoopPorts["runAutomationJob"];
+	readonly onEvent?: SurfaceWorkerLoopPorts["onEvent"];
+	readonly pollIntervalMs?: number;
+	readonly batchLimit?: number;
+};
+
+export function createDefaultSurfaceWorkerConfig(
+	context: CloudRunnerOrchestratorSurfaceWorkerContext,
+	overrides: DefaultSurfaceWorkerOverrides = {},
+): CloudRunnerOrchestratorSurfaceWorkerOptions {
+	const logEvent: (event: Record<string, unknown>) => void =
+		overrides.onEvent ??
+		((event) => {
+			console.error(
+				JSON.stringify({
+					schema: "qorpera.surface-worker/v1",
+					orchestratorId: context.orchestratorId,
+					...event,
+				}),
+			);
+		});
+	const handlers = createSurfaceExecutionHandlers({
+		controlPlane: context.controlPlane,
+		...(overrides.resolveRepository ? { resolveRepository: overrides.resolveRepository } : {}),
+		...(overrides.resolveCodeHostJob ? { resolveCodeHostJob: overrides.resolveCodeHostJob } : {}),
+		...(overrides.buildAndUploadPreview ? { buildAndUploadPreview: overrides.buildAndUploadPreview } : {}),
+		...(overrides.onSessionChangesRebased ? { onSessionChangesRebased: overrides.onSessionChangesRebased } : {}),
+		...(overrides.undoCodeRepoChange ? { undoCodeRepoChange: overrides.undoCodeRepoChange } : {}),
+		...(overrides.folder ? { folder: overrides.folder } : {}),
+		...(overrides.folderSnapshots ? { folderSnapshots: overrides.folderSnapshots } : {}),
+		...(overrides.runOpsActionJob ? { runOpsActionJob: overrides.runOpsActionJob } : {}),
+		...(overrides.publishSurface ? { publishSurface: overrides.publishSurface } : {}),
+	});
+
+	return {
+		spawnOverflowMachine:
+			overrides.spawnOverflowMachine ??
+			(async (profileId) => {
+				logEvent({
+					kind: "overflow_machine_unconfigured",
+					profileId,
+					providerAdapterId: context.providerAdapter.adapterId,
+				});
+				throw new Error(
+					`Surface overflow machine provisioning is not configured for provider ${context.providerAdapter.adapterId}`,
+				);
+			}),
+		dispatchSessionTurn:
+			overrides.dispatchSessionTurn ??
+			(async (job, machineId) => {
+				logEvent({
+					kind: "session_dispatch_unconfigured",
+					sessionId: job.sessionId,
+					surfaceId: job.surfaceId,
+					machineId,
+					providerAdapterId: context.providerAdapter.adapterId,
+				});
+			}),
+		runPreviewJob: handlers.runPreviewJob,
+		runMergeJob: handlers.runMergeJob,
+		runPublishJob: handlers.runPublishJob,
+		runAutomationJob:
+			overrides.runAutomationJob ??
+			(async (job) => {
+				logEvent({
+					kind: "automation_dispatch_unconfigured",
+					automationId: job.automationId,
+					key: job.key,
+					outputMode: job.outputMode,
+					profileId: job.profileId,
+				});
+			}),
+		onEvent: logEvent,
+		...(overrides.pollIntervalMs !== undefined ? { pollIntervalMs: overrides.pollIntervalMs } : {}),
+		...(overrides.batchLimit !== undefined ? { batchLimit: overrides.batchLimit } : {}),
+	};
 }
 
 export function createSurfaceWorkerLoop(
@@ -69,6 +153,7 @@ export function createSurfaceWorkerLoop(
 			runPreviewJob: options.runPreviewJob,
 			...(options.runMergeJob ? { runMergeJob: options.runMergeJob } : {}),
 			...(options.runPublishJob ? { runPublishJob: options.runPublishJob } : {}),
+			...(options.runAutomationJob ? { runAutomationJob: options.runAutomationJob } : {}),
 			...(options.onEvent ? { onEvent: options.onEvent } : {}),
 		},
 		{
@@ -159,6 +244,7 @@ export function cloudRunnerOrchestratorServiceConfigFromEnvironment(
 		reconcileIntervalMs,
 		dispatchConcurrency,
 		...(wakeMode === "realtime" ? { wake: { backstopMs: wakeBackstopMs } } : {}),
+		surfaceWorkerEnabled: environment.QORPERA_SURFACE_WORKER?.trim() !== "0",
 	};
 }
 
@@ -211,14 +297,21 @@ export async function runCloudRunnerOrchestratorService(options: CloudRunnerOrch
 				onState: wakeStateLogger(),
 			})
 		: undefined;
+	const surfaceWorkerContext: CloudRunnerOrchestratorSurfaceWorkerContext = {
+		controlPlane,
+		providerAdapter,
+		orchestratorId: options.config.orchestratorId,
+	};
 	const surfaceWorkerConfig =
-		typeof options.surfaceWorker === "function"
-			? options.surfaceWorker({
-					controlPlane,
-					providerAdapter,
-					orchestratorId: options.config.orchestratorId,
-				})
-			: options.surfaceWorker;
+		options.surfaceWorker === null
+			? undefined
+			: typeof options.surfaceWorker === "function"
+				? options.surfaceWorker(surfaceWorkerContext)
+				: options.surfaceWorker !== undefined
+					? options.surfaceWorker
+					: options.config.surfaceWorkerEnabled === true
+						? createDefaultSurfaceWorkerConfig(surfaceWorkerContext)
+						: undefined;
 	const surfaceWorkerLoop = surfaceWorkerConfig
 		? createSurfaceWorkerLoop(controlPlane, {
 				...surfaceWorkerConfig,

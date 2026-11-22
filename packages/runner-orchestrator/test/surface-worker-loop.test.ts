@@ -80,7 +80,13 @@ describe("SurfaceWorkerLoop horizontal scaling and drain", () => {
 		});
 
 		const result = await loop.tick(new AbortController().signal);
-		expect(result).toEqual({ startedSessions: 2, startedPreviews: 1, startedMerges: 0, startedPublishes: 0 });
+		expect(result).toEqual({
+			startedSessions: 2,
+			startedPreviews: 1,
+			startedMerges: 0,
+			startedPublishes: 0,
+			startedAutomations: 0,
+		});
 		expect(spawnOverflowMachine).toHaveBeenCalledTimes(1);
 		expect(spawnOverflowMachine).toHaveBeenCalledWith(profileId, expect.any(AbortSignal));
 		expect(dispatchSessionTurn).toHaveBeenCalledWith(
@@ -147,12 +153,24 @@ describe("SurfaceWorkerLoop horizontal scaling and drain", () => {
 		expect(loop.inFlightSessionCount).toBe(1);
 
 		const secondResult = await loop.tick(ac.signal);
-		expect(secondResult).toEqual({ startedSessions: 0, startedPreviews: 0, startedMerges: 0, startedPublishes: 0 });
+		expect(secondResult).toEqual({
+			startedSessions: 0,
+			startedPreviews: 0,
+			startedMerges: 0,
+			startedPublishes: 0,
+			startedAutomations: 0,
+		});
 		expect(dispatchSessionTurn).toHaveBeenCalledTimes(1);
 
 		release();
 		const firstResult = await firstTick;
-		expect(firstResult).toEqual({ startedSessions: 1, startedPreviews: 0, startedMerges: 0, startedPublishes: 0 });
+		expect(firstResult).toEqual({
+			startedSessions: 1,
+			startedPreviews: 0,
+			startedMerges: 0,
+			startedPublishes: 0,
+			startedAutomations: 0,
+		});
 		expect(loop.inFlightSessionCount).toBe(0);
 	});
 
@@ -215,7 +233,13 @@ describe("SurfaceWorkerLoop horizontal scaling and drain", () => {
 		});
 
 		const result = await loop.tick(new AbortController().signal);
-		expect(result).toEqual({ startedSessions: 0, startedPreviews: 0, startedMerges: 2, startedPublishes: 1 });
+		expect(result).toEqual({
+			startedSessions: 0,
+			startedPreviews: 0,
+			startedMerges: 2,
+			startedPublishes: 1,
+			startedAutomations: 0,
+		});
 		expect(runMergeJob).toHaveBeenNthCalledWith(1, landJob, expect.any(AbortSignal));
 		expect(runMergeJob).toHaveBeenNthCalledWith(2, undoJob, expect.any(AbortSignal));
 		expect(runPublishJob).toHaveBeenCalledWith(publishJob, expect.any(AbortSignal));
@@ -292,16 +316,124 @@ describe("SurfaceWorkerLoop horizontal scaling and drain", () => {
 		expect(loop.inFlightPublishCount).toBe(1);
 
 		const secondResult = await loop.tick(ac.signal);
-		expect(secondResult).toEqual({ startedSessions: 0, startedPreviews: 0, startedMerges: 0, startedPublishes: 0 });
+		expect(secondResult).toEqual({
+			startedSessions: 0,
+			startedPreviews: 0,
+			startedMerges: 0,
+			startedPublishes: 0,
+			startedAutomations: 0,
+		});
 		expect(runMergeJob).toHaveBeenCalledTimes(1);
 		expect(runPublishJob).toHaveBeenCalledTimes(1);
 
 		releaseMerge();
 		releasePublish();
 		const firstResult = await firstTick;
-		expect(firstResult).toEqual({ startedSessions: 0, startedPreviews: 0, startedMerges: 1, startedPublishes: 1 });
+		expect(firstResult).toEqual({
+			startedSessions: 0,
+			startedPreviews: 0,
+			startedMerges: 1,
+			startedPublishes: 1,
+			startedAutomations: 0,
+		});
 		expect(loop.inFlightMergeCount).toBe(0);
 		expect(loop.inFlightPublishCount).toBe(0);
+	});
+
+	it("drains sessionless decision_card automations, skips session-backed surface_session automations, and deduplicates in-flight automations", async () => {
+		const profileId = randomUUID();
+		const surfaceId = randomUUID();
+		const decisionAutomationId = randomUUID();
+		const sessionAutomationId = randomUUID();
+		const spawnedSessionId = randomUUID();
+		let releaseAutomation!: () => void;
+		const blocker = new Promise<void>((resolve) => {
+			releaseAutomation = resolve;
+		});
+
+		const batch: ClaimedSurfaceJobs = {
+			sessions: [],
+			previews: [],
+			automations: [
+				{
+					automationId: decisionAutomationId,
+					profileId,
+					key: "cofounder-pulse",
+					title: "Co-Founder Pulse",
+					prompt: "Review active surfaces and raise any decisions.",
+					targetSurfaceSlug: null,
+					outputMode: "decision_card",
+					sessionId: null,
+					surfaceId: null,
+				},
+				{
+					automationId: sessionAutomationId,
+					profileId,
+					key: "weekly-website-check",
+					title: "Weekly Website Check",
+					prompt: "Audit website copy",
+					targetSurfaceSlug: "website",
+					outputMode: "surface_session",
+					sessionId: spawnedSessionId,
+					surfaceId,
+				},
+			],
+		};
+
+		const events: Record<string, unknown>[] = [];
+		const runAutomationJob = vi.fn().mockReturnValue(blocker);
+		const loop = new SurfaceWorkerLoop({
+			claimPendingJobs: vi.fn().mockResolvedValue(batch),
+			spawnOverflowMachine: vi.fn(),
+			dispatchSessionTurn: vi.fn(),
+			runPreviewJob: vi.fn(),
+			runAutomationJob,
+			onEvent: (event) => events.push(event),
+		});
+
+		const ac = new AbortController();
+		const firstTick = loop.tick(ac.signal);
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(loop.inFlightAutomationCount).toBe(1);
+
+		const secondResult = await loop.tick(ac.signal);
+		expect(secondResult).toEqual({
+			startedSessions: 0,
+			startedPreviews: 0,
+			startedMerges: 0,
+			startedPublishes: 0,
+			startedAutomations: 0,
+		});
+		expect(runAutomationJob).toHaveBeenCalledTimes(1);
+		expect(runAutomationJob).toHaveBeenCalledWith(
+			expect.objectContaining({
+				automationId: decisionAutomationId,
+				key: "cofounder-pulse",
+				outputMode: "decision_card",
+			}),
+			expect.any(AbortSignal),
+		);
+
+		releaseAutomation();
+		const firstResult = await firstTick;
+		expect(firstResult).toEqual({
+			startedSessions: 0,
+			startedPreviews: 0,
+			startedMerges: 0,
+			startedPublishes: 0,
+			startedAutomations: 1,
+		});
+		expect(loop.inFlightAutomationCount).toBe(0);
+		expect(events).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					kind: "automation_completed",
+					automationId: decisionAutomationId,
+					key: "cofounder-pulse",
+				}),
+			]),
+		);
 	});
 
 	it("wakes immediately on realtime wake signals instead of waiting for pollIntervalMs", async () => {
@@ -365,6 +497,8 @@ describe("SupabaseCloudRunnerOrchestratorControlPlane surface actions and servic
 		const mergeJobId = randomUUID();
 		const publishJobId = randomUUID();
 		const changeId = randomUUID();
+		const explorationId = randomUUID();
+		const automationId = randomUUID();
 		const sha1 = "a".repeat(40);
 		const sha2 = "b".repeat(40);
 		const bodies: Record<string, unknown>[] = [];
@@ -390,6 +524,12 @@ describe("SupabaseCloudRunnerOrchestratorControlPlane surface actions and servic
 									surfaceSlug: "website",
 									surfaceTitle: "Website",
 									surfaceArchetype: "live_build",
+									surfaceSourceKind: "code_repo",
+									surfaceKind: "website",
+									explorationId,
+									explorationVariantLabel: "Aftenlys",
+									siteSlug: "thetaband",
+									identityFolderRoot: "identity",
 									briefSummary: "Main site",
 									placement: { strategy: "reuse_machine", machineId, activeTurns: 1, targetDensity: 6 },
 								},
@@ -425,6 +565,19 @@ describe("SupabaseCloudRunnerOrchestratorControlPlane surface actions and servic
 									repositoryKey: "thetaband/website",
 									siteId,
 									payload: { liveHeadSha: sha2 },
+								},
+							],
+							automations: [
+								{
+									automationId,
+									profileId,
+									key: "cofounder-pulse",
+									title: "Co-Founder Pulse",
+									prompt: "Check company progress",
+									targetSurfaceSlug: null,
+									outputMode: "decision_card",
+									sessionId: null,
+									surfaceId: null,
 								},
 							],
 						},
@@ -463,7 +616,22 @@ describe("SupabaseCloudRunnerOrchestratorControlPlane surface actions and servic
 		expect(claimed.previews).toHaveLength(1);
 		expect(claimed.merges).toHaveLength(1);
 		expect(claimed.publishes).toHaveLength(1);
-		expect(claimed.sessions[0]?.surfaceSlug).toBe("website");
+		expect(claimed.automations).toHaveLength(1);
+		expect(claimed.sessions[0]).toMatchObject({
+			surfaceSlug: "website",
+			surfaceSourceKind: "code_repo",
+			surfaceKind: "website",
+			explorationId,
+			explorationVariantLabel: "Aftenlys",
+			siteSlug: "thetaband",
+			identityFolderRoot: "identity",
+		});
+		expect(claimed.automations?.[0]).toMatchObject({
+			automationId,
+			key: "cofounder-pulse",
+			outputMode: "decision_card",
+			sessionId: null,
+		});
 
 		const previewDone = await controlPlane.completeSurfacePreview({
 			previewId,
@@ -515,17 +683,26 @@ describe("SupabaseCloudRunnerOrchestratorControlPlane surface actions and servic
 
 		const runMergeJob = vi.fn().mockResolvedValue(undefined);
 		const runPublishJob = vi.fn().mockResolvedValue(undefined);
+		const runAutomationJob = vi.fn().mockResolvedValue(undefined);
 		const helperLoop = createSurfaceWorkerLoop(controlPlane, {
 			spawnOverflowMachine: vi.fn(),
 			dispatchSessionTurn: vi.fn().mockResolvedValue(undefined),
 			runPreviewJob: vi.fn().mockResolvedValue(undefined),
 			runMergeJob,
 			runPublishJob,
+			runAutomationJob,
 		});
 		const tickResult = await helperLoop.tick(new AbortController().signal);
-		expect(tickResult).toEqual({ startedSessions: 1, startedPreviews: 1, startedMerges: 1, startedPublishes: 1 });
+		expect(tickResult).toEqual({
+			startedSessions: 1,
+			startedPreviews: 1,
+			startedMerges: 1,
+			startedPublishes: 1,
+			startedAutomations: 1,
+		});
 		expect(runMergeJob).toHaveBeenCalledTimes(1);
 		expect(runPublishJob).toHaveBeenCalledTimes(1);
+		expect(runAutomationJob).toHaveBeenCalledTimes(1);
 	});
 
 	it("runs SurfaceWorkerLoop concurrently inside runCloudRunnerOrchestratorService when surfaceWorker is provided", async () => {

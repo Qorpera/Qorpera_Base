@@ -456,7 +456,7 @@ begin
 
 	insert into public.qorpera_surfaces(
 		profile_id, slug, title, surface_group, archetype, surface_kind, accent_hex, is_global,
-		status, icon, source_kind, folder_root, preview_mode, brief_summary, sort_order, created_by_user_id
+		status, icon, source_kind, repository_key, folder_root, preview_mode, brief_summary, sort_order, created_by_user_id
 	)
 	values (
 		p_company_id, v_slug, v_title,
@@ -465,7 +465,9 @@ begin
 		nullif(btrim(coalesce(p_accent_hex, '')), ''),
 		coalesce(p_is_global, false) or p_kind = 'identity',
 		'active', coalesce(nullif(btrim(coalesce(p_icon, '')), ''), 'globe'),
-		v_source_kind, v_folder_root, v_preview_mode,
+		v_source_kind,
+		case when p_archetype = 'live_build' then 'surfaces/' || v_slug else null end,
+		v_folder_root, v_preview_mode,
 		nullif(btrim(coalesce(p_brief_summary, '')), ''),
 		v_sort_order, v_user_id
 	)
@@ -476,15 +478,90 @@ end $$;
 revoke all on function public.qorpera_create_surface(uuid, text, text, text, text, text, text, text, text, boolean) from public, anon;
 grant execute on function public.qorpera_create_surface(uuid, text, text, text, text, text, text, text, text, boolean) to authenticated;
 
--- WHY: Idempotently seeds Identity + core Operations surfaces on Day 0 so newly founded companies enter real cloud mode immediately.
-create function public.qorpera_bootstrap_company_surfaces(p_company_id uuid)
+-- WHY: Computes the next scheduled fire timestamp from a plain human schedule summary so Scheduled Agents fire deterministically.
+create function public.qorpera_compute_next_automation_run(
+	p_schedule_summary text,
+	p_from timestamptz default clock_timestamp()
+)
+returns timestamptz
+language plpgsql immutable set search_path = '' as $$
+declare
+	v_raw text := lower(btrim(coalesce(p_schedule_summary, '')));
+	v_from timestamptz := coalesce(p_from, clock_timestamp());
+	v_hours integer;
+	v_time_match text[];
+	v_hour integer := 9;
+	v_minute integer := 0;
+	v_target_dow integer;
+	v_current_dow integer;
+	v_days_ahead integer;
+	v_candidate timestamptz;
+begin
+	if v_raw ~ 'every\s+([0-9]{1,2})\s+hours?' then
+		v_hours := greatest(1, least(168, (regexp_match(v_raw, 'every\s+([0-9]{1,2})\s+hours?'))[1]::integer));
+		return v_from + make_interval(hours => v_hours);
+	end if;
+	if v_raw ~ 'every\s+hour|hourly' then
+		return v_from + interval '1 hour';
+	end if;
+
+	v_time_match := regexp_match(v_raw, '([01]?[0-9]|2[0-3]):([0-5][0-9])');
+	if v_time_match is not null then
+		v_hour := v_time_match[1]::integer;
+		v_minute := v_time_match[2]::integer;
+	end if;
+
+	v_target_dow := case
+		when v_raw ~ '\msunday\M' then 0
+		when v_raw ~ '\mmonday\M' then 1
+		when v_raw ~ '\mtuesday\M' then 2
+		when v_raw ~ '\mwednesday\M' then 3
+		when v_raw ~ '\mthursday\M' then 4
+		when v_raw ~ '\mfriday\M' then 5
+		when v_raw ~ '\msaturday\M' then 6
+		else null
+	end;
+
+	v_candidate := date_trunc('day', v_from at time zone 'UTC') + make_interval(hours => v_hour, mins => v_minute);
+	v_candidate := v_candidate at time zone 'UTC';
+
+	if v_target_dow is not null then
+		v_current_dow := extract(dow from v_from at time zone 'UTC')::integer;
+		v_days_ahead := (v_target_dow - v_current_dow + 7) % 7;
+		v_candidate := v_candidate + make_interval(days => v_days_ahead);
+		if v_candidate <= v_from then
+			v_candidate := v_candidate + interval '7 days';
+		end if;
+		return v_candidate;
+	end if;
+
+	if v_raw ~ 'weekly' then
+		return v_from + interval '7 days';
+	end if;
+
+	if v_candidate <= v_from then
+		v_candidate := v_candidate + interval '1 day';
+	end if;
+
+	if v_raw ~ 'weekday' then
+		while extract(dow from v_candidate at time zone 'UTC')::integer in (0, 6) loop
+			v_candidate := v_candidate + interval '1 day';
+		end loop;
+	end if;
+
+	return v_candidate;
+end $$;
+revoke all on function public.qorpera_compute_next_automation_run(text, timestamptz) from public, anon, authenticated;
+grant execute on function public.qorpera_compute_next_automation_run(text, timestamptz) to service_role;
+
+-- WHY: Idempotently seeds Identity, core Ops surfaces, and the Day-1/2 Co-Founder Pulse at company creation before Turn 1 runs.
+create function public.qorpera_service_bootstrap_company_surfaces(
+	p_company_id uuid,
+	p_creator_user_id uuid default null
+)
 returns jsonb
 language plpgsql security definer set search_path = '' as $$
-declare
-	v_user_id uuid;
 begin
-	v_user_id := public.qorpera_assert_surface_member(p_company_id, true);
-
 	insert into public.qorpera_surfaces(
 		profile_id, slug, title, surface_group, archetype, surface_kind, is_global,
 		status, icon, source_kind, folder_root, preview_mode, brief_summary, sort_order, created_by_user_id
@@ -493,7 +570,7 @@ begin
 		p_company_id, 'identity', 'Identity', 'products', 'studio', 'identity', true,
 		'active', 'spark', 'folder', 'identity', 'studio_overlay',
 		'Global brand, voice, design tokens, and philosophy applied across every surface.',
-		0, v_user_id
+		0, p_creator_user_id
 	)
 	on conflict (profile_id, slug) do nothing;
 
@@ -502,13 +579,46 @@ begin
 		status, icon, source_kind, preview_mode, sort_order, created_by_user_id
 	)
 	values
-		(p_company_id, 'inbox', 'Inbox', 'operations', 'ops', 'inbox', 'active', 'mail', 'native_ops', 'none', 100, v_user_id),
-		(p_company_id, 'money', 'Money', 'operations', 'ops', 'money', 'active', 'coin', 'native_ops', 'none', 110, v_user_id),
-		(p_company_id, 'members', 'Members', 'operations', 'ops', 'members', 'active', 'members', 'native_ops', 'none', 120, v_user_id),
-		(p_company_id, 'data', 'Databases', 'operations', 'ops', 'data', 'active', 'database', 'native_ops', 'none', 130, v_user_id),
-		(p_company_id, 'files', 'Files', 'operations', 'ops', 'files', 'active', 'drawers', 'native_ops', 'none', 140, v_user_id)
+		(p_company_id, 'inbox', 'Inbox', 'operations', 'ops', 'inbox', 'active', 'mail', 'native_ops', 'none', 100, p_creator_user_id),
+		(p_company_id, 'money', 'Money', 'operations', 'ops', 'money', 'active', 'coin', 'native_ops', 'none', 110, p_creator_user_id),
+		(p_company_id, 'members', 'Members', 'operations', 'ops', 'members', 'active', 'members', 'native_ops', 'none', 120, p_creator_user_id),
+		(p_company_id, 'data', 'Databases', 'operations', 'ops', 'data', 'active', 'database', 'native_ops', 'none', 130, p_creator_user_id),
+		(p_company_id, 'files', 'Files', 'operations', 'ops', 'files', 'active', 'drawers', 'native_ops', 'none', 140, p_creator_user_id)
 	on conflict (profile_id, slug) do nothing;
 
+	insert into public.qorpera_surface_automations(
+		profile_id, key, title, prompt, schedule_summary, target_surface_slug,
+		output_mode, enabled, status, last_outcome_summary, next_run_at, created_by_user_id
+	)
+	values (
+		p_company_id,
+		'cofounder-pulse',
+		'Co-Founder Pulse',
+		'Review senses.surfaces for open changes, newly approved Identity tokens to propagate downstream, conflicted sessions, and unpublished approved work. Act on concrete next surface improvements and message founders only when previewable work or a real decision awaits.',
+		'Every morning · 09:00',
+		null,
+		'decision_card',
+		true,
+		'idle',
+		'Checks active surfaces and launches next concrete steps.',
+		clock_timestamp() + interval '4 hours',
+		p_creator_user_id
+	)
+	on conflict (profile_id, key) do nothing;
+
+	return jsonb_build_object('bootstrapped', true, 'companyId', p_company_id);
+end $$;
+revoke all on function public.qorpera_service_bootstrap_company_surfaces(uuid, uuid) from public, anon, authenticated;
+grant execute on function public.qorpera_service_bootstrap_company_surfaces(uuid, uuid) to service_role;
+
+create function public.qorpera_bootstrap_company_surfaces(p_company_id uuid)
+returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+	v_user_id uuid;
+begin
+	v_user_id := public.qorpera_assert_surface_member(p_company_id, true);
+	perform public.qorpera_service_bootstrap_company_surfaces(p_company_id, v_user_id);
 	return public.qorpera_list_surfaces(p_company_id);
 end $$;
 revoke all on function public.qorpera_bootstrap_company_surfaces(uuid) from public, anon;
@@ -536,26 +646,33 @@ returns jsonb
 language plpgsql security definer set search_path = '' as $$
 declare
 	v_surface public.qorpera_surfaces%rowtype;
+	v_slug text := lower(btrim(p_slug));
+	v_repo_key text := nullif(btrim(coalesce(p_repository_key, '')), '');
 	v_status text := case when coalesce(p_activate_immediately, false) then 'active' else 'proposed' end;
 begin
+	if p_archetype = 'live_build' and v_repo_key is null and v_slug <> '' then
+		v_repo_key := 'surfaces/' || v_slug;
+	end if;
+
 	insert into public.qorpera_surfaces(
 		profile_id, slug, title, surface_group, archetype, surface_kind, accent_hex, is_global,
 		status, icon, source_kind, repository_key, folder_root, preview_mode, brief_summary
 	)
 	values (
-		p_company_id, lower(btrim(p_slug)), btrim(p_title), p_group, p_archetype,
+		p_company_id, v_slug, btrim(p_title), p_group, p_archetype,
 		coalesce(nullif(btrim(coalesce(p_kind, '')), ''), 'custom'),
 		nullif(btrim(coalesce(p_accent_hex, '')), ''),
 		coalesce(p_is_global, false) or p_kind = 'identity',
 		v_status,
 		coalesce(nullif(btrim(coalesce(p_icon, '')), ''), 'page'),
-		p_source_kind, p_repository_key, p_folder_root, coalesce(p_preview_mode, 'none'), p_brief_summary
+		p_source_kind, v_repo_key, p_folder_root, coalesce(p_preview_mode, 'none'), p_brief_summary
 	)
 	on conflict (profile_id, slug) do update set
 		title = excluded.title,
 		surface_kind = coalesce(excluded.surface_kind, public.qorpera_surfaces.surface_kind),
 		accent_hex = coalesce(excluded.accent_hex, public.qorpera_surfaces.accent_hex),
 		is_global = public.qorpera_surfaces.is_global or excluded.is_global,
+		repository_key = coalesce(public.qorpera_surfaces.repository_key, excluded.repository_key),
 		status = case when excluded.status = 'active' then 'active' else public.qorpera_surfaces.status end,
 		brief_summary = coalesce(excluded.brief_summary, public.qorpera_surfaces.brief_summary),
 		updated_at = clock_timestamp()
@@ -1182,12 +1299,14 @@ begin
 
 	insert into public.qorpera_surface_automations(
 		profile_id, key, title, prompt, schedule_summary, target_surface_slug,
-		output_mode, enabled, status, last_outcome_summary, created_by_user_id
+		output_mode, enabled, status, last_outcome_summary, next_run_at, created_by_user_id
 	)
 	values (
 		p_company_id, v_key, v_title, v_prompt, v_schedule, v_target,
 		case when v_target is not null then 'surface_session' else 'decision_card' end,
-		true, 'idle', left(v_prompt, 120), v_user_id
+		true, 'idle', left(v_prompt, 120),
+		public.qorpera_compute_next_automation_run(v_schedule, clock_timestamp()),
+		v_user_id
 	)
 	returning * into v_row;
 
@@ -1240,6 +1359,13 @@ begin
 		schedule_summary = coalesce(nullif(btrim(coalesce(p_schedule_summary, '')), ''), schedule_summary),
 		target_surface_slug = v_target,
 		output_mode = case when v_target is not null then 'surface_session' else 'decision_card' end,
+		next_run_at = case
+			when enabled then public.qorpera_compute_next_automation_run(
+				coalesce(nullif(btrim(coalesce(p_schedule_summary, '')), ''), schedule_summary),
+				clock_timestamp()
+			)
+			else null
+		end,
 		updated_at = clock_timestamp()
 	where id = p_automation_id
 	returning * into v_row;
@@ -1294,6 +1420,10 @@ begin
 		set
 			enabled = coalesce(p_enabled, false),
 			status = case when coalesce(p_enabled, false) then 'idle' else 'paused' end,
+			next_run_at = case
+				when coalesce(p_enabled, false) then public.qorpera_compute_next_automation_run(schedule_summary, clock_timestamp())
+				else null
+			end,
 			updated_at = clock_timestamp()
 		where id = p_automation_id
 		returning * into v_auto;
@@ -1343,6 +1473,90 @@ begin
 	);
 end $$;
 
+-- WHY: Claims due Scheduled Agents, advances their next_run_at, and spawns queued surface sessions for surface-targeted automations.
+create function public.qorpera_surface_claim_due_automations(p_limit integer default 16)
+returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+	v_cap integer := greatest(1, least(coalesce(p_limit, 16), 64));
+	v_now timestamptz := clock_timestamp();
+	v_auto record;
+	v_surface public.qorpera_surfaces%rowtype;
+	v_placement jsonb;
+	v_machine_id uuid;
+	v_session_id uuid;
+	v_results jsonb := '[]'::jsonb;
+begin
+	for v_auto in
+		with picked as (
+			select a.id
+			from public.qorpera_surface_automations a
+			where a.enabled = true
+				and a.next_run_at is not null
+				and a.next_run_at <= v_now
+			order by a.next_run_at asc
+			limit v_cap
+			for update skip locked
+		)
+		update public.qorpera_surface_automations a
+		set
+			last_run_at = v_now,
+			next_run_at = public.qorpera_compute_next_automation_run(a.schedule_summary, v_now),
+			status = 'idle',
+			updated_at = v_now
+		from picked
+		where a.id = picked.id
+		returning a.*
+	loop
+		v_session_id := null;
+		v_surface := null;
+		if v_auto.target_surface_slug is not null then
+			select * into v_surface
+			from public.qorpera_surfaces s
+			where s.profile_id = v_auto.profile_id
+				and s.slug = v_auto.target_surface_slug
+				and s.status = 'active'
+			limit 1;
+
+			if v_surface.id is not null then
+				v_placement := public.qorpera_surface_machine_placement_hint(v_auto.profile_id, 6);
+				v_machine_id := case when v_placement ->> 'machineId' is not null then (v_placement ->> 'machineId')::uuid else null end;
+
+				insert into public.qorpera_surface_sessions(
+					profile_id, surface_id, machine_id, title, prompt,
+					origin_kind, origin_label, state, base_sha
+				)
+				values (
+					v_auto.profile_id, v_surface.id, v_machine_id, left(v_auto.title, 160), v_auto.prompt,
+					'automation', v_auto.title, 'queued', v_surface.live_head_sha
+				)
+				returning id into v_session_id;
+
+				insert into public.qorpera_surface_session_messages(profile_id, session_id, author_kind, body)
+				values (v_auto.profile_id, v_session_id, 'system', v_auto.prompt);
+			end if;
+		end if;
+
+		v_results := v_results || jsonb_build_array(
+			jsonb_build_object(
+				'automationId', v_auto.id,
+				'profileId', v_auto.profile_id,
+				'key', v_auto.key,
+				'title', v_auto.title,
+				'prompt', v_auto.prompt,
+				'targetSurfaceSlug', v_auto.target_surface_slug,
+				'outputMode', v_auto.output_mode,
+				'sessionId', v_session_id,
+				'surfaceId', v_surface.id
+			)
+		);
+	end loop;
+
+	return v_results;
+end $$;
+revoke all on function public.qorpera_surface_claim_due_automations(integer) from public, anon, authenticated;
+grant execute on function public.qorpera_surface_claim_due_automations(integer) to service_role;
+
 create or replace function public.qorpera_surface_claim_pending_jobs(p_limit integer default 16)
 returns jsonb
 language plpgsql security definer set search_path = '' as $$
@@ -1350,11 +1564,14 @@ declare
 	v_cap integer := greatest(1, least(coalesce(p_limit, 16), 64));
 	v_now timestamptz := clock_timestamp();
 	v_lease timestamptz := v_now + interval '5 minutes';
+	v_automations jsonb;
 	v_sessions jsonb;
 	v_previews jsonb;
 	v_merges jsonb;
 	v_publishes jsonb;
 begin
+	v_automations := public.qorpera_surface_claim_due_automations(v_cap);
+
 	with picked as (
 		select s.id
 		from public.qorpera_surface_sessions s
@@ -1384,11 +1601,17 @@ begin
 				'prompt', c.prompt,
 				'originKind', c.origin_kind,
 				'originRef', c.origin_ref,
+				'explorationId', c.exploration_id,
+				'explorationVariantLabel', c.exploration_variant_label,
 				'repositoryKey', surf.repository_key,
 				'folderRoot', surf.folder_root,
 				'surfaceSlug', surf.slug,
 				'surfaceTitle', surf.title,
 				'surfaceArchetype', surf.archetype,
+				'surfaceSourceKind', surf.source_kind,
+				'surfaceKind', surf.surface_kind,
+				'siteSlug', site.slug,
+				'identityFolderRoot', 'identity',
 				'briefSummary', surf.brief_summary,
 				'placement', public.qorpera_surface_machine_placement_hint(c.profile_id, 6)
 			)
@@ -1398,7 +1621,8 @@ begin
 	)
 	into v_sessions
 	from claimed c
-	join public.qorpera_surfaces surf on surf.id = c.surface_id;
+	join public.qorpera_surfaces surf on surf.id = c.surface_id
+	left join public.qorpera_company_sites site on site.id = surf.site_id;
 
 	with picked as (
 		select p.id
@@ -1642,7 +1866,8 @@ begin
 		'sessions', v_sessions,
 		'previews', v_previews,
 		'merges', v_merges,
-		'publishes', v_publishes
+		'publishes', v_publishes,
+		'automations', v_automations
 	);
 end $$;
 
@@ -1944,12 +2169,13 @@ begin
 		end loop;
 		insert into public.qorpera_surface_automations(
 			profile_id, key, title, prompt, schedule_summary, target_surface_slug,
-			output_mode, enabled, status, last_outcome_summary
+			output_mode, enabled, status, last_outcome_summary, next_run_at
 		)
 		values (
 			p_company_id, v_key, v_title, v_prompt, v_schedule, v_target,
 			case when v_target is not null then 'surface_session' else 'decision_card' end,
-			coalesce(p_enabled, true), case when coalesce(p_enabled, true) then 'idle' else 'paused' end, left(v_prompt, 120)
+			coalesce(p_enabled, true), case when coalesce(p_enabled, true) then 'idle' else 'paused' end, left(v_prompt, 120),
+			case when coalesce(p_enabled, true) then public.qorpera_compute_next_automation_run(v_schedule, clock_timestamp()) else null end
 		)
 		returning * into v_row;
 	elsif p_action = 'update' then
@@ -1963,6 +2189,13 @@ begin
 			target_surface_slug = coalesce(v_target, target_surface_slug),
 			enabled = coalesce(p_enabled, enabled),
 			status = case when coalesce(p_enabled, enabled) then 'idle' else 'paused' end,
+			next_run_at = case
+				when coalesce(p_enabled, enabled) then public.qorpera_compute_next_automation_run(
+					coalesce(nullif(btrim(coalesce(p_schedule_summary, '')), ''), schedule_summary),
+					clock_timestamp()
+				)
+				else null
+			end,
 			updated_at = clock_timestamp()
 		where id = p_automation_id
 		returning * into v_row;
@@ -1989,7 +2222,28 @@ revoke all on function public.qorpera_service_manage_surface_automation(uuid, te
 grant execute on function public.qorpera_service_manage_surface_automation(uuid, text, uuid, text, text, text, text, boolean)
 	to service_role;
 
+create index if not exists qorpera_surface_automations_due
+	on public.qorpera_surface_automations(next_run_at asc)
+	where enabled = true and next_run_at is not null;
+
+-- WHY: Seeds Identity, Ops surfaces, and Co-Founder Pulse atomically when a company's Co-Founder is created so Turn 1 never races the browser.
+create function public.qorpera_bootstrap_surfaces_on_cofounder_insert()
+returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+	perform public.qorpera_service_bootstrap_company_surfaces(new.profile_id, null);
+	return new;
+end $$;
+revoke all on function public.qorpera_bootstrap_surfaces_on_cofounder_insert() from public, anon, authenticated;
+
 do $$ begin
+	if to_regclass('public.qorpera_company_cofounders') is not null then
+		drop trigger if exists qorpera_company_cofounders_bootstrap_surfaces on public.qorpera_company_cofounders;
+		create trigger qorpera_company_cofounders_bootstrap_surfaces
+			after insert on public.qorpera_company_cofounders
+			for each row execute function public.qorpera_bootstrap_surfaces_on_cofounder_insert();
+	end if;
+
 	if to_regprocedure('public.qorpera_live_hint_internal()') is not null then
 		create constraint trigger qorpera_live_hint after insert or update or delete on public.qorpera_surfaces
 			deferrable initially deferred for each row execute function public.qorpera_live_hint_internal('surfaces');

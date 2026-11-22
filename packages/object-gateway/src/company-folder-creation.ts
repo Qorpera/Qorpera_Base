@@ -52,7 +52,7 @@ const FOUNDER_KEYS = ["userId", "displayName", "role"] as const;
 const ANSWERS = new Set(["completed", "failed", "retry", "stale"]);
 /** A seeded file's media type, by its extension: the state files are Markdown, interfaces and tables plain text. */
 function mediaType(path: string): string {
-	return path.endsWith(".md") ? "text/markdown" : "text/plain";
+	return path.endsWith(".md") ? "text/markdown" : path.endsWith(".json") ? "application/json" : "text/plain";
 }
 /** A claim, a release and a fail get their own short deadline, so a drain that ran out of time still closes a claim. */
 const CALL_MS = 15_000;
@@ -195,6 +195,7 @@ export interface CompanyFolderCreatorOptions {
 	readonly store: Pick<FileSystemObjectStore, "get">;
 	readonly replication: Pick<ObjectGatewayReplication, "uploadWithAuthority">;
 	readonly leaseSeconds?: number;
+	readonly surfaceFirst?: boolean;
 }
 
 export class CompanyFolderCreator {
@@ -260,6 +261,7 @@ export class CompanyFolderCreator {
 				vision: claim.vision,
 				founders: claim.founders,
 				firstTodo: { id: claim.firstTodoId, requestedBy: claim.kickoffRequestedBy },
+				...(this.#options.surfaceFirst ? { surfaceFirst: true } : {}),
 			});
 		} catch {
 			// The parser refused a seeded file, or a writer refused a value: no retry builds another tree.

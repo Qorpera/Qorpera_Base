@@ -14,10 +14,40 @@ function hostOf(url: string | null): string {
 	}
 }
 
-export function openPublishPatchnotesSheet(store: SurfacesStore, initialSurface: SurfaceSummary): SurfaceDialog {
+async function copyToClipboard(text: string): Promise<boolean> {
+	try {
+		if (navigator.clipboard?.writeText) {
+			await navigator.clipboard.writeText(text);
+			return true;
+		}
+	} catch {
+		return false;
+	}
+	return false;
+}
+
+export interface PublishPatchnotesOptions {
+	readonly loadSitePassword?: (surface: SurfaceSummary) => Promise<string | null>;
+}
+
+export function openPublishPatchnotesSheet(
+	store: SurfacesStore,
+	initialSurface: SurfaceSummary,
+	options: PublishPatchnotesOptions = {},
+): SurfaceDialog {
 	const surfaceId = initialSurface.id;
 	let unsubscribe: (() => void) | undefined;
+	let closed = false;
+	let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+	let copiedKind: "link" | "password" | undefined;
+	let sitePassword: string | null = null;
+	let passwordLoadedFor = "";
 	const dialog = new SurfaceDialog(t("Patch notes"), "surface-sheet surface-publish-sheet", () => {
+		closed = true;
+		if (copiedTimer) {
+			clearTimeout(copiedTimer);
+			copiedTimer = undefined;
+		}
 		unsubscribe?.();
 		unsubscribe = undefined;
 	});
@@ -26,14 +56,101 @@ export function openPublishPatchnotesSheet(store: SurfacesStore, initialSurface:
 	let rollingBack: string | undefined;
 	let publishing = false;
 
+	const currentSurface = (): SurfaceSummary =>
+		store.state.surfaces.find((item) => item.id === surfaceId) ?? initialSurface;
+
+	const markCopied = (kind: "link" | "password") => {
+		if (closed) return;
+		copiedKind = kind;
+		if (copiedTimer) clearTimeout(copiedTimer);
+		copiedTimer = setTimeout(() => {
+			copiedTimer = undefined;
+			copiedKind = undefined;
+			if (!closed) render();
+		}, 2_000);
+		render();
+	};
+
+	const ensurePasswordLoaded = (surface: SurfaceSummary) => {
+		const liveUrl = surface.liveUrl?.trim() || "";
+		if (!liveUrl || !options.loadSitePassword) return;
+		const key = `${surface.id}:${surface.siteSlug ?? ""}:${liveUrl}`;
+		if (key === passwordLoadedFor) return;
+		passwordLoadedFor = key;
+		void Promise.resolve(options.loadSitePassword(surface))
+			.then((password) => {
+				if (closed || key !== passwordLoadedFor) return;
+				const next = password?.trim() || null;
+				if (next !== sitePassword) {
+					sitePassword = next;
+					render();
+				}
+			})
+			.catch(() => {
+				/* WHY: Missing site password permissions gracefully omit the copy-password button. */
+			});
+	};
+
 	const render = () => {
 		const state = store.state;
-		const surface = state.surfaces.find((item) => item.id === surfaceId) ?? initialSurface;
+		const surface = currentSurface();
 		const look = store.lookOf(surface);
 		const entries = unpublishedChanges(state, surfaceId);
 		const total = Math.max(entries.length, surface.unpublishedChangeCount);
-		const host = hostOf(surface.liveUrl);
+		const liveUrl = surface.liveUrl?.trim() || "";
+		const host = hostOf(liveUrl || null);
 		const subtitle = host ? `${surface.title} · ${host}` : surface.title;
+		ensurePasswordLoaded(surface);
+
+		const shareBar = liveUrl
+			? h(
+					"div",
+					{ class: "surface-share-bar" },
+					h(
+						"div",
+						{ class: "surface-share-copy" },
+						h("span", { class: "surface-share-label" }, t("Share live link")),
+						h("span", { class: "surface-share-url", title: liveUrl }, liveUrl),
+					),
+					h(
+						"div",
+						{ class: "surface-share-actions" },
+						h(
+							"button",
+							{
+								type: "button",
+								class: `surface-share-btn${copiedKind === "link" ? " is-copied" : ""}`,
+								"data-act": "copy-link",
+							},
+							icon(copiedKind === "link" ? "check" : "copy"),
+							h("span", null, copiedKind === "link" ? t("Copied") : t("Copy link")),
+						),
+						sitePassword
+							? h(
+									"button",
+									{
+										type: "button",
+										class: `surface-share-btn${copiedKind === "password" ? " is-copied" : ""}`,
+										"data-act": "copy-password",
+									},
+									icon(copiedKind === "password" ? "check" : "key"),
+									h("span", null, copiedKind === "password" ? t("Copied") : t("Copy password")),
+								)
+							: null,
+						h(
+							"a",
+							{
+								class: "surface-share-btn is-open",
+								href: liveUrl,
+								target: "_blank",
+								rel: "noopener noreferrer",
+							},
+							h("span", null, t("Open")),
+							icon("external"),
+						),
+					),
+				)
+			: null;
 
 		const listNodes: HTMLElement[] =
 			entries.length > 0
@@ -136,6 +253,7 @@ export function openPublishPatchnotesSheet(store: SurfacesStore, initialSurface:
 						)
 					: null,
 			),
+			...(shareBar ? [shareBar] : []),
 			h(
 				"p",
 				{ class: "surface-sheet-lead" },
@@ -152,6 +270,21 @@ export function openPublishPatchnotesSheet(store: SurfacesStore, initialSurface:
 		const target = (event.target as Element).closest<HTMLElement>("[data-act]");
 		if (!target) return;
 		const { act, change } = target.dataset;
+		if (act === "copy-link") {
+			const liveUrl = currentSurface().liveUrl?.trim() || "";
+			if (!liveUrl) return;
+			void copyToClipboard(liveUrl).then((ok) => {
+				if (ok) markCopied("link");
+			});
+			return;
+		}
+		if (act === "copy-password") {
+			if (!sitePassword) return;
+			void copyToClipboard(sitePassword).then((ok) => {
+				if (ok) markCopied("password");
+			});
+			return;
+		}
 		if (act === "cancel") {
 			dialog.close();
 			return;

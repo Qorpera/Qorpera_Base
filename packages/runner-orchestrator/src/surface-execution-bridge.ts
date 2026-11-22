@@ -8,7 +8,12 @@ import {
 	type SurfaceSessionState,
 } from "@qorpera/contracts";
 import { type CodeHostJob, CodeHostRefusal, undoCodeChange } from "./code-host-jobs.ts";
-import type { CodeHostChangeRange, RebaseSessionChangesResult } from "./code-host-surfaces.ts";
+import {
+	type CodeHostChangeRange,
+	type EnsureSurfaceStarterRepositoryResult,
+	ensureSurfaceStarterRepository,
+	type RebaseSessionChangesResult,
+} from "./code-host-surfaces.ts";
 import type {
 	CompleteSurfaceMergeInput,
 	CompleteSurfacePreviewInput,
@@ -456,6 +461,18 @@ export async function undoSurfaceCodeRepoChange(
 	}
 }
 
+export async function prepareSurfaceRepository(
+	codeHostJob: CodeHostJob,
+	input: {
+		readonly repository: CloudCodingRepository;
+		readonly title?: string;
+		readonly slug?: string;
+	},
+): Promise<EnsureSurfaceStarterRepositoryResult | null> {
+	if (input.repository.host !== "qorpera") return null;
+	return await ensureSurfaceStarterRepository(codeHostJob, input);
+}
+
 function inferSourceKind(job: ClaimedSurfaceMergeJob): "code_repo" | "folder" | "native_ops" {
 	if (job.sourceKind) return job.sourceKind;
 	if (job.repositoryKey) return "code_repo";
@@ -500,6 +517,7 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 				{ profileId: job.profileId, surfaceId: job.surfaceId, repository },
 				signal,
 			);
+			await prepareSurfaceRepository(codeHostJob, { repository, slug: repository.name });
 		} catch (error) {
 			await ports.controlPlane.completeSurfacePreview(
 				{
@@ -590,6 +608,7 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			{ profileId: job.profileId, surfaceId: job.surfaceId, repository },
 			signal,
 		);
+		await prepareSurfaceRepository(codeHostJob, { repository, slug: repository.name });
 		const outcome = await approveAndSyncSurfaceChanges(codeHostJob, {
 			surfaceId: job.surfaceId,
 			sessionId: job.sessionId ?? job.jobId,

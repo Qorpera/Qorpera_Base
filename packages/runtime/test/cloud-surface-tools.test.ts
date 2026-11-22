@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { JsonValue } from "@qorpera/contracts";
 import { describe, expect, it, vi } from "vitest";
-import { cloudActionEffect } from "../src/cloud-action-review.ts";
+import { cloudActionEffect, cloudActionReviewMandate } from "../src/cloud-action-review.ts";
 import type { CloudAgentSendReceipt } from "../src/cloud-agent-mouth.ts";
 import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
 import { cloudFolderFileTools } from "../src/cloud-folder-file-tools.ts";
@@ -901,13 +901,19 @@ describe("cloud surface runtime tools", () => {
 		const combined = `${surfacePlaybook}\n${surfacePlanning}`;
 
 		expect(combined).toContain("code/<owner>/<name>");
+		expect(combined).toContain("code/surfaces/<slug>/");
 		expect(combined).toContain("identity/");
+		expect(combined).toContain("identity/brief.md");
+		expect(combined).toContain("identity/tokens.json");
 		expect(combined).toContain("<folderRoot>/");
 		expect(combined).toContain("Preview");
 		expect(combined).toContain("activateImmediately: true");
 		expect(combined).toContain("propose_surface");
 		expect(combined).toContain("start_surface_session");
 		expect(combined).toContain("manage_surface_automation");
+		expect(combined).toContain("Co-Founder Pulse");
+		expect(combined).toContain("cofounder-pulse");
+		expect(combined).toContain("stay silent");
 		expect(combined).toContain("senses.surfaces");
 		expect(combined).toContain("QorperaOS/surfaces/<slug>/notes/");
 
@@ -955,6 +961,37 @@ describe("cloud surface runtime tools", () => {
 		expect(surfaceInstructions).not.toContain("hire_team");
 		expect(surfaceInstructions).not.toContain("vision-draft.md");
 		expect(surfaceInstructions).not.toContain("company-plan.md");
+	});
+
+	it("selects Surface-First Co-Founder mandate in cloudActionReviewMandate when surfaceFirst is true and preserves legacy default", () => {
+		const f = nativeCompanyContextFixture();
+		const cofounderContext = parseCloudNativeCompanyContext({ ...f.context, agentKind: "cofounder" }, f.binding);
+		const employeeContext = parseCloudNativeCompanyContext({ ...f.context, agentKind: "employee" }, f.binding);
+		const vision = "# Thetaband\nCalm Nordic sleep headband.";
+
+		const surfaceMandate = cloudActionReviewMandate(cofounderContext, null, vision, { surfaceFirst: true });
+		expect(surfaceMandate).toContain("Surface-First mode");
+		expect(surfaceMandate).toContain("Identity (identity/)");
+		expect(surfaceMandate).toContain("propose_surface");
+		expect(surfaceMandate).toContain("start_surface_session");
+		expect(surfaceMandate).toContain("manage_surface_automation");
+		expect(surfaceMandate).toContain("vision.md and reading.md");
+		expect(surfaceMandate).toContain("without member approval is not");
+		expect(surfaceMandate).not.toContain("hires the team");
+		expect(surfaceMandate).not.toContain("weekday planning routine");
+
+		const legacyDefaultMandate = cloudActionReviewMandate(cofounderContext, null, vision);
+		const legacyExplicitFalseMandate = cloudActionReviewMandate(cofounderContext, null, vision, {
+			surfaceFirst: false,
+		});
+		expect(legacyDefaultMandate).toBe(legacyExplicitFalseMandate);
+		expect(legacyDefaultMandate).toContain("hires the team");
+		expect(legacyDefaultMandate).toContain("weekday planning routine");
+		expect(legacyDefaultMandate).not.toContain("Surface-First mode");
+
+		expect(cloudActionReviewMandate(employeeContext, null, vision, { surfaceFirst: true })).toBe(
+			cloudActionReviewMandate(employeeContext, null, vision, { surfaceFirst: false }),
+		);
 	});
 
 	it("enforces surfaceFilePolicy on cloudFolderFileTools for cofounder doc-sprawl guard and surface_worker confinement", async () => {

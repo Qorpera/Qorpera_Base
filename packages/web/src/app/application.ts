@@ -21,7 +21,7 @@ import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
 import { createWebSessionModel } from "../cloud/session-model.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
-import { type CompanySite, createWebSites } from "../cloud/sites.ts";
+import { type CompanySite, createWebSites, siteOfLink } from "../cloud/sites.ts";
 import { loadSkillSuggestions, SkillLists } from "../cloud/skills.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { agentFigure, nativeColorOf } from "../ui/avatar.ts";
@@ -67,7 +67,7 @@ import { type CompanyReleaseReads, companyReleaseReads } from "./release-reads.t
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
-import { attachSurfaces, SurfacesStore, surfacesOf } from "./surfaces-store.ts";
+import { attachSurfaces, isLocalSurfaceId, SurfacesStore, surfacesOf } from "./surfaces-store.ts";
 import { showWaitingInTitle } from "./tab-title.ts";
 import { noteReceiver, type TellAccounts, tellAgent } from "./tell-agent.ts";
 import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
@@ -878,9 +878,9 @@ export function mountApplication(
 			const loadSurfaceCloudFiles = async (
 				surface: SurfaceSummary,
 				signal: AbortSignal,
-			): Promise<Readonly<Record<string, string>>> => {
+			): Promise<Readonly<Record<string, string>> | undefined> => {
 				const team = controller.store.get().team;
-				if (!team) return {};
+				if (!team) return undefined;
 				const roots = [
 					surface.folderRoot?.replace(/^\/+|\/+$/g, ""),
 					`QorperaOS/surfaces/${surface.slug}/notes`,
@@ -984,6 +984,7 @@ export function mountApplication(
 				const team = controller.store.get().team;
 				if (!team || controller.store.get().accessLost) return;
 				syncLogo();
+				surfaces.refreshPendingCloudFiles();
 				if (!team.capabilities.write) return;
 				const current = () => {
 					if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
@@ -2522,6 +2523,7 @@ export function mountApplication(
 							folderImage: cardImage,
 							folderApp: cardApp,
 							decisions: questionsHost(),
+							surfaces: surfacesOf(controller),
 							// A change of this agent's ready to go live, as a card below the thread; a site a message links, as
 							// the Sites page's row under the words.
 							codeReleases: releaseDesk(true),
@@ -2851,12 +2853,34 @@ export function mountApplication(
 						}
 						return files;
 					};
+					const loadSitePassword = async (surface: SurfaceSummary): Promise<string | null> => {
+						if (!managesSites() || !surface.liveUrl || isLocalSurfaceId(surface.id)) return null;
+						const sites = createWebSites(cloud, controller.profile);
+						const matchSite = (list: readonly CompanySite[]): CompanySite | undefined =>
+							(surface.siteSlug ? list.find((item) => item.slug === surface.siteSlug) : undefined) ??
+							(surface.liveUrl ? siteOfLink(list, surface.liveUrl) : undefined);
+						try {
+							let site = matchSite(controller.store.get().siteList ?? []);
+							if (!site) {
+								const listed = await sites.list(controller.signal);
+								if (controller.signal.aborted) return null;
+								controller.store.set(sitesListed(listed));
+								site = matchSite(listed);
+							}
+							if (!site) return null;
+							const result = await sites.password(site.id, controller.signal);
+							return result.password || null;
+						} catch {
+							return null;
+						}
+					};
 					const view = new SurfaceView(
 						{
 							store: surfaces,
 							mount: surfaceMount,
 							openMigration: () => openMigrationSheet(surfaces),
 							loadStudioFiles,
+							loadSitePassword,
 						},
 						route.id ?? "",
 					);

@@ -9,6 +9,7 @@ import type {
 import { fmtTime, h, icon } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import { uiScale } from "../../ui/scale.ts";
+import { surfaceHash } from "../router.ts";
 import type { SurfaceLook } from "../surface-kinds.ts";
 import {
 	formatConflictPaths,
@@ -22,7 +23,7 @@ import {
 	sessionHeld,
 } from "../surfaces-store.ts";
 import { CrewFigures } from "./surface-crew.ts";
-import { openPublishPatchnotesSheet } from "./surface-publish-sheet.ts";
+import { openPublishPatchnotesSheet, type PublishPatchnotesOptions } from "./surface-publish-sheet.ts";
 import { isActionChange } from "./surface-rail.ts";
 
 const DRAWER_WIDTH_KEY = "qorpera.web.surface-drawer-width.v1";
@@ -192,6 +193,55 @@ function rankSessions(sessions: readonly SurfaceSession[]): SurfaceSession[] {
 	return [...sessions].sort((a, b) => score(a) - score(b));
 }
 
+function projectedSourcePath(surface: SurfaceSummary): string | null {
+	const repo = surface.repositoryKey?.trim().replace(/^\/+|\/+$/g, "");
+	if (repo) return repo.startsWith("code/") ? repo : `code/${repo}`;
+	const folder = surface.folderRoot?.trim().replace(/^\/+|\/+$/g, "");
+	if (folder) return `${folder}/`;
+	return null;
+}
+
+function affectedFileChips(store: SurfacesStore, paths: readonly string[]): HTMLElement | null {
+	const files = paths.map((path) => path.trim()).filter((path) => path && !path.startsWith("mailto:"));
+	if (files.length === 0) return null;
+	const href = surfaceHash(store.companyId, "files");
+	const visible = files.slice(0, 3);
+	const extra = files.length - visible.length;
+	const goFiles = (event: MouseEvent) => {
+		if (!event.metaKey && !event.ctrlKey && !event.shiftKey && event.button === 0) store.navigateSurface("files");
+	};
+	return h(
+		"div",
+		{ class: "surface-file-chips" },
+		...visible.map((path) =>
+			h(
+				"a",
+				{
+					class: "surface-file-chip",
+					href,
+					title: path,
+					"data-file-chip": path,
+					onclick: goFiles,
+				},
+				path,
+			),
+		),
+		extra > 0
+			? h(
+					"a",
+					{
+						class: "surface-file-chip is-more",
+						href,
+						title: files.slice(3).join(", "),
+						"data-file-chip-more": String(extra),
+						onclick: goFiles,
+					},
+					`+${extra}`,
+				)
+			: null,
+	);
+}
+
 function drawerCap(): number {
 	const scale = uiScale();
 	return Math.max(DRAWER_MIN, Math.min(DRAWER_MAX, Math.floor((window.innerWidth * DRAWER_MAX_SHARE) / scale)));
@@ -209,6 +259,7 @@ export class SurfaceSessionDrawer {
 	});
 	readonly #head = h("div", { class: "surface-drawer-head" });
 	readonly #body = h("div", { class: "surface-drawer-body" });
+	readonly #sourceFoot = h("div", { class: "surface-drawer-source", hidden: true });
 	readonly #replyTitle = h("span", { class: "surface-drawer-reply-title" });
 	readonly #replyStrip = h(
 		"div",
@@ -239,6 +290,7 @@ export class SurfaceSessionDrawer {
 		h("div", { class: "surface-drawer-compose" }, this.#input, this.#send),
 	);
 	readonly #store: SurfacesStore;
+	readonly #loadSitePassword: PublishPatchnotesOptions["loadSitePassword"];
 	readonly #crew = new CrewFigures();
 	#preferredWidth: number | undefined;
 	#width = DRAWER_DEFAULT;
@@ -252,15 +304,19 @@ export class SurfaceSessionDrawer {
 	#armedApprove: string | undefined;
 	#armTimer: ReturnType<typeof setTimeout> | undefined;
 
-	constructor(store: SurfacesStore, signal: AbortSignal) {
+	constructor(store: SurfacesStore, signal: AbortSignal, options: PublishPatchnotesOptions = {}) {
 		this.#store = store;
+		this.#loadSitePassword = options.loadSitePassword;
 		try {
 			const stored = Number(localStorage.getItem(DRAWER_WIDTH_KEY));
 			if (Number.isFinite(stored) && stored >= DRAWER_MIN) this.#preferredWidth = stored;
 		} catch {
 			/* WHY: Local browser storage is optional in private/sandboxed contexts. */
 		}
-		this.el.append(this.#resizer, h("div", { class: "surface-drawer-inner" }, this.#head, this.#body, this.#form));
+		this.el.append(
+			this.#resizer,
+			h("div", { class: "surface-drawer-inner" }, this.#head, this.#body, this.#sourceFoot, this.#form),
+		);
 		this.#wireResizer(signal);
 		this.#applyWidth();
 		signal.addEventListener("abort", () => this.#disarm(false), { once: true });
@@ -490,6 +546,7 @@ export class SurfaceSessionDrawer {
 			this.#shown = "";
 			this.#sessionId = "";
 			this.#messages = 0;
+			this.#sourceFoot.hidden = true;
 			this.#disarm(false);
 			this.#setQuotedChange(undefined);
 			return;
@@ -497,12 +554,14 @@ export class SurfaceSessionDrawer {
 		if (focusedExploration) {
 			if (this.#quotedChange && this.#quotedChange.sessionId !== state.drawer?.sessionId)
 				this.#setQuotedChange(undefined);
+			this.#sourceFoot.hidden = true;
 			this.#form.hidden = false;
 			this.#renderFocusedExploration(focusedExploration, targetSurface);
 			return;
 		}
 		if (focusedSession) {
 			if (this.#quotedChange && this.#quotedChange.sessionId !== focusedSession.id) this.#setQuotedChange(undefined);
+			this.#sourceFoot.hidden = true;
 			this.#form.hidden = false;
 			this.#renderFocused(focusedSession, targetSurface);
 			return;
@@ -521,10 +580,13 @@ export class SurfaceSessionDrawer {
 		const look = store.lookOf(surface);
 		const explorations = openExplorations(workspace);
 		const plainSessions = rankSessions((workspace?.activeSessions ?? []).filter((session) => !session.explorationId));
+		const sourcePath = projectedSourcePath(surface);
 		const key = JSON.stringify([
 			"overview",
 			surface.id,
 			surface.archetype,
+			surface.repositoryKey,
+			surface.folderRoot,
 			look,
 			state.mode,
 			state.activeReportSlug,
@@ -565,6 +627,30 @@ export class SurfaceSessionDrawer {
 		}
 		this.#crew.settle();
 		this.#body.replaceChildren(...parts);
+		if (sourcePath) {
+			const href = surfaceHash(store.companyId, "files");
+			this.#sourceFoot.replaceChildren(
+				h(
+					"a",
+					{
+						class: "surface-source-pill",
+						href,
+						title: t("Open in Files"),
+						onclick: (event: MouseEvent) => {
+							if (!event.metaKey && !event.ctrlKey && !event.shiftKey && event.button === 0)
+								store.navigateSurface("files");
+						},
+					},
+					icon("folder"),
+					h("code", { class: "surface-source-path" }, sourcePath),
+					h("span", { class: "surface-source-link" }, t("Files")),
+				),
+			);
+			this.#sourceFoot.hidden = false;
+		} else {
+			this.#sourceFoot.replaceChildren();
+			this.#sourceFoot.hidden = true;
+		}
 	}
 
 	#explorationCard(
@@ -729,25 +815,31 @@ export class SurfaceSessionDrawer {
 					{ class: "surface-overview-changes" },
 					...openChanges.map((change) => {
 						const armed = this.#armedApprove === `approve:${session.id}:${change.id}`;
+						const chips = affectedFileChips(store, change.affectedPaths);
 						return h(
 							"div",
 							{ class: "surface-overview-change" },
-							h("span", { class: "surface-overview-change-title" }, change.title),
-							!running
-								? h(
-										"button",
-										{
-											type: "button",
-											class: `surface-overview-act surface-approve-btn${armed ? " is-confirming" : ""}`,
-											disabled: Boolean(state.busy[`change:${change.id}`]),
-											"data-act": "approve",
-											"data-session": session.id,
-											"data-change": change.id,
-											...(armed ? { "data-armed": "true" } : {}),
-										},
-										armed ? t("Confirm") : inbox ? t("Send") : t("Approve"),
-									)
-								: null,
+							h(
+								"div",
+								{ class: "surface-overview-change-row" },
+								h("span", { class: "surface-overview-change-title" }, change.title),
+								!running
+									? h(
+											"button",
+											{
+												type: "button",
+												class: `surface-overview-act surface-approve-btn${armed ? " is-confirming" : ""}`,
+												disabled: Boolean(state.busy[`change:${change.id}`]),
+												"data-act": "approve",
+												"data-session": session.id,
+												"data-change": change.id,
+												...(armed ? { "data-armed": "true" } : {}),
+											},
+											armed ? t("Confirm") : inbox ? t("Send") : t("Approve"),
+										)
+									: null,
+							),
+							chips,
 						);
 					}),
 				),
@@ -761,46 +853,52 @@ export class SurfaceSessionDrawer {
 						const conflicted = change.status === "conflicted";
 						const shown = store.isChangeShown(change.id);
 						const armed = this.#armedApprove === `approve:${session.id}:${change.id}`;
+						const chips = affectedFileChips(store, change.affectedPaths);
 						return h(
 							"div",
 							{ class: `surface-overview-change${conflicted ? " is-conflicted" : ""}` },
-							h("button", {
-								type: "button",
-								class: "surface-switch",
-								role: "switch",
-								"aria-checked": String(shown),
-								"aria-label": t("Show {title} in the preview", { title: change.title }),
-								"data-act": "toggle",
-								"data-change": change.id,
-							}),
-							h("span", { class: "surface-overview-change-title" }, change.title),
-							conflicted && !running
-								? h(
-										"button",
-										{
-											type: "button",
-											class: "surface-overview-act is-danger",
-											disabled: busyReconcile,
-											"data-act": "reconcile",
-											"data-change": change.id,
-										},
-										t("Reconcile"),
-									)
-								: !running
+							h(
+								"div",
+								{ class: "surface-overview-change-row" },
+								h("button", {
+									type: "button",
+									class: "surface-switch",
+									role: "switch",
+									"aria-checked": String(shown),
+									"aria-label": t("Show {title} in the preview", { title: change.title }),
+									"data-act": "toggle",
+									"data-change": change.id,
+								}),
+								h("span", { class: "surface-overview-change-title" }, change.title),
+								conflicted && !running
 									? h(
 											"button",
 											{
 												type: "button",
-												class: `surface-overview-act surface-approve-btn${armed ? " is-confirming" : ""}`,
-												disabled: Boolean(state.busy[`change:${change.id}`]),
-												"data-act": "approve",
-												"data-session": session.id,
+												class: "surface-overview-act is-danger",
+												disabled: busyReconcile,
+												"data-act": "reconcile",
 												"data-change": change.id,
-												...(armed ? { "data-armed": "true" } : {}),
 											},
-											armed ? t("Confirm") : t("Approve"),
+											t("Reconcile"),
 										)
-									: null,
+									: !running
+										? h(
+												"button",
+												{
+													type: "button",
+													class: `surface-overview-act surface-approve-btn${armed ? " is-confirming" : ""}`,
+													disabled: Boolean(state.busy[`change:${change.id}`]),
+													"data-act": "approve",
+													"data-session": session.id,
+													"data-change": change.id,
+													...(armed ? { "data-armed": "true" } : {}),
+												},
+												armed ? t("Confirm") : t("Approve"),
+											)
+										: null,
+							),
+							chips ? h("div", { class: "surface-overview-change-files" }, chips) : null,
 						);
 					}),
 				),
@@ -1215,6 +1313,7 @@ export class SurfaceSessionDrawer {
 											t("Conflicts in {paths}", { paths: conflictPaths }),
 										)
 									: null,
+								open ? affectedFileChips(store, change.affectedPaths) : null,
 							),
 							!open ? changeTag(change) : null,
 						),
@@ -1377,7 +1476,8 @@ export class SurfaceSessionDrawer {
 				return;
 			case "open-publish": {
 				const targetSurface = store.state.surfaces.find((item) => item.id === surfaceId);
-				if (targetSurface) openPublishPatchnotesSheet(store, targetSurface);
+				if (targetSurface)
+					openPublishPatchnotesSheet(store, targetSurface, { loadSitePassword: this.#loadSitePassword });
 				return;
 			}
 			case "reconcile":

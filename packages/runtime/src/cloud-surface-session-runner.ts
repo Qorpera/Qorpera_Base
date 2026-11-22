@@ -1,0 +1,455 @@
+import {
+	type PointToChangeTarget,
+	parsePointToChangeTarget,
+	type SurfaceSessionQuestion,
+	type SurfaceSourceKind,
+} from "@qorpera/contracts";
+import type { CloudCompanyFolderClient } from "./cloud-company-folder-client.ts";
+import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
+import { cloudFolderFileTools } from "./cloud-folder-file-tools.ts";
+import type { CloudNativeCodingDriver, CloudNativeCodingTurnContext } from "./cloud-native-coding-runtime.ts";
+import type { NativeCompanyExecutionRequest } from "./cloud-native-provider-host.ts";
+import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
+import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
+import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
+import {
+	type CloudSurfaceToolsPort,
+	createStageSurfaceOpsActionTool,
+	createStageSurfacePatchTool,
+	type SurfaceOpsActionToolPort,
+	type SurfacePatchToolPort,
+	type SurfaceToolsRpcClient,
+} from "./cloud-surface-tools.ts";
+import {
+	buildSurfaceTurnBrief,
+	SURFACE_STAGED_CODING_INSTRUCTIONS,
+	type SurfaceCodingTurnBinding,
+	type SurfaceIdentityContext,
+} from "./cloud-surface-turn-context.ts";
+
+const MAX_IDENTITY_BRIEF_BYTES = 16_384;
+const MAX_IDENTITY_VOICE_BYTES = 8_192;
+const MAX_IDENTITY_TOKENS_BYTES = 16_384;
+const MAX_SURFACE_BRIEF_BYTES = 32_768;
+const MAX_FAILURE_REPLY_CHARS = 500;
+const READ_ONLY_FOLDER_TOOLS = new Set(["company_read", "company_list"]);
+
+export interface SurfaceFolderTextReader {
+	readText(path: string, maxBytes: number, signal: AbortSignal): Promise<{ readonly text: string } | string | null>;
+}
+
+export interface SurfaceSessionTurnInput {
+	readonly sessionId: string;
+	readonly surfaceId: string;
+	readonly companyId: string;
+	readonly surfaceSlug: string;
+	readonly surfaceTitle: string;
+	readonly sourceKind: SurfaceSourceKind;
+	readonly prompt: string;
+	readonly state?: "queued" | "reconciling";
+	readonly repositoryKey?: string | null;
+	readonly folderRoot?: string | null;
+	readonly briefSummary?: string | null;
+	readonly briefMarkdown?: string | null;
+	readonly explorationVariantLabel?: string | null;
+	readonly originKind?: string;
+	readonly originRef?: unknown;
+	readonly conflictPaths?: readonly string[] | null;
+}
+
+export interface SurfaceSessionTurnCompletion {
+	readonly sessionId: string;
+	readonly state: "ready" | "needs_input" | "failed";
+	readonly replyText: string | null;
+	readonly question: SurfaceSessionQuestion | null;
+	readonly notePaths: readonly string[] | null;
+	readonly branchHeadSha: string | null;
+}
+
+export interface SurfaceSessionCompletionPort {
+	completeSessionTurn(completion: SurfaceSessionTurnCompletion, signal: AbortSignal): Promise<void>;
+}
+
+export interface SurfaceSessionTurnExecutionOutcome {
+	readonly state?: "ready" | "needs_input" | "failed";
+	readonly replyText?: string | null;
+	readonly question?: SurfaceSessionQuestion | null;
+	readonly notePaths?: readonly string[] | null;
+	readonly branchHeadSha?: string | null;
+}
+
+export interface SurfaceFolderOrOpsTurnRequest {
+	readonly input: SurfaceSessionTurnInput;
+	readonly mode: "folder" | "native_ops";
+	readonly instructions: string;
+	readonly turnBrief: string;
+	readonly tools: readonly CloudNativeTool[];
+	readonly identityContext: SurfaceIdentityContext | null;
+	readonly allowedRoots: readonly string[];
+	readonly signal: AbortSignal;
+}
+
+export interface SurfaceCodeRepoTurnRequest {
+	readonly input: SurfaceSessionTurnInput;
+	readonly binding: SurfaceCodingTurnBinding;
+	readonly instructions: string;
+	readonly turnBrief: string;
+	readonly signal: AbortSignal;
+}
+
+export interface SurfaceSessionFolderToolsContext {
+	readonly folder: CloudCompanyFolderClient;
+	readonly operations: CloudNativeToolOperations;
+	readonly identity: CloudNativeToolIdentity;
+}
+
+export interface SurfaceCodingDriverPreparedTurn {
+	readonly request: NativeCompanyExecutionRequest;
+	readonly identityRoot: string;
+	readonly context: Omit<CloudNativeCodingTurnContext, "surfaceSession">;
+	readonly extractOutcome?: (
+		result: Awaited<ReturnType<CloudNativeCodingDriver["execute"]>>,
+	) => SurfaceSessionTurnExecutionOutcome;
+}
+
+export interface SurfaceCodingDriverBinding {
+	readonly driver: CloudNativeCodingDriver;
+	prepareRequest(request: SurfaceCodeRepoTurnRequest): Promise<SurfaceCodingDriverPreparedTurn>;
+}
+
+export interface SurfaceSessionRunnerPorts {
+	readonly folder?: SurfaceFolderTextReader;
+	readonly folderToolsContext?: SurfaceSessionFolderToolsContext;
+	readonly surfaceTools: Partial<
+		Pick<CloudSurfaceToolsPort, "recordChange"> & SurfacePatchToolPort & SurfaceOpsActionToolPort
+	>;
+	readonly extraTools?: readonly CloudNativeTool[];
+	readonly executeTurn?: (request: SurfaceFolderOrOpsTurnRequest) => Promise<SurfaceSessionTurnExecutionOutcome>;
+	readonly executeCodeRepoTurn?: (request: SurfaceCodeRepoTurnRequest) => Promise<SurfaceSessionTurnExecutionOutcome>;
+	readonly codingDriver?: SurfaceCodingDriverBinding;
+	readonly completeSessionTurn: SurfaceSessionCompletionPort["completeSessionTurn"];
+	readonly signal?: AbortSignal;
+}
+
+export interface SurfaceSessionTurnRunResult {
+	readonly sessionId: string;
+	readonly sourceKind: SurfaceSourceKind;
+	readonly state: "ready" | "needs_input" | "failed";
+	readonly identityLoaded: boolean;
+	readonly replyText: string | null;
+	readonly question: SurfaceSessionQuestion | null;
+	readonly notePaths: readonly string[] | null;
+	readonly branchHeadSha: string | null;
+	readonly error: string | null;
+}
+
+function normalizeFolderRoot(path: string): string {
+	return path.trim().replace(/^\/+|\/+$/g, "");
+}
+
+async function readOptionalFolderText(
+	folder: SurfaceFolderTextReader,
+	path: string,
+	maxBytes: number,
+	signal: AbortSignal,
+): Promise<string | null> {
+	try {
+		const result = await folder.readText(path, maxBytes, signal);
+		if (result === null || result === undefined) return null;
+		const text = typeof result === "string" ? result : result.text;
+		const trimmed = text.trim();
+		return trimmed.length > 0 ? trimmed : null;
+	} catch (error) {
+		if (signal.aborted) throw error;
+		return null;
+	}
+}
+
+export async function loadSurfaceIdentityContext(
+	folder: SurfaceFolderTextReader,
+	signal: AbortSignal,
+): Promise<SurfaceIdentityContext | null> {
+	const [briefMarkdown, voiceSummary, tokensJson] = await Promise.all([
+		readOptionalFolderText(folder, "identity/brief.md", MAX_IDENTITY_BRIEF_BYTES, signal),
+		readOptionalFolderText(folder, "identity/voice.md", MAX_IDENTITY_VOICE_BYTES, signal),
+		readOptionalFolderText(folder, "identity/tokens.json", MAX_IDENTITY_TOKENS_BYTES, signal),
+	]);
+	if (!briefMarkdown && !voiceSummary && !tokensJson) return null;
+	return { briefMarkdown, voiceSummary, tokensJson };
+}
+
+function extractPointToChangeTarget(originRef: unknown): PointToChangeTarget | null {
+	if (!originRef || typeof originRef !== "object" || Array.isArray(originRef)) return null;
+	const rec = originRef as Record<string, unknown>;
+	const candidates: unknown[] = [originRef];
+	if (rec.target !== undefined) candidates.push(rec.target);
+	if (rec.pointToChangeTarget !== undefined) candidates.push(rec.pointToChangeTarget);
+	for (const candidate of candidates) {
+		try {
+			return parsePointToChangeTarget(candidate);
+		} catch {}
+	}
+	return null;
+}
+
+function buildFolderSurfaceInstructions(input: SurfaceSessionTurnInput, folderRoot: string, notesRoot: string): string {
+	return (
+		`This session is scoped to the Studio/Identity Surface "${input.surfaceTitle}" (${input.surfaceSlug}), which projects ${folderRoot}/ directly from Company Files. ` +
+		"Founders preview multiple unmerged staged patches toggled on or off simultaneously before approving any change. " +
+		`Use stage_surface_patch to stage cohesive folder_patch operations (write_text, merge_json, delete) relative to ${folderRoot}/, keeping each change atomic and conflict-minimizing. ` +
+		`Any file writes are strictly confined to ${folderRoot}/ and ${notesRoot}/; attach concise supporting analyses as notePaths under ${notesRoot}/ rather than creating loose markdown files elsewhere.`
+	);
+}
+
+function buildOpsSurfaceInstructions(input: SurfaceSessionTurnInput): string {
+	return (
+		`This session is scoped to the operational Surface "${input.surfaceTitle}" (${input.surfaceSlug}). ` +
+		"Inspect Company Files read-only when helpful, and use stage_surface_ops_action to stage a clear, structured action (draft email, payment preparation, record update, or file organization) that founders can review and approve directly from the Action card."
+	);
+}
+
+function formatSessionFailure(error: unknown): { readonly errorMessage: string; readonly replyText: string } {
+	const raw = error instanceof Error ? error.message.trim() : String(error ?? "Unknown error").trim();
+	const errorMessage = (raw || "Surface session turn failed").replace(/\s+/g, " ").slice(0, MAX_FAILURE_REPLY_CHARS);
+	const replyText = `The surface session could not complete: ${errorMessage}`.slice(0, MAX_FAILURE_REPLY_CHARS);
+	return { errorMessage, replyText };
+}
+
+export function createControlPlaneSessionCompletionPort(control: SurfaceToolsRpcClient): SurfaceSessionCompletionPort;
+export function createControlPlaneSessionCompletionPort(control: CloudCompanyPathControl): SurfaceSessionCompletionPort;
+export function createControlPlaneSessionCompletionPort(
+	control: SurfaceToolsRpcClient | CloudCompanyPathControl,
+): SurfaceSessionCompletionPort {
+	const rpc = (method: "qorpera_surface_complete_session_turn", args: Record<string, unknown>, signal: AbortSignal) =>
+		(control as SurfaceToolsRpcClient).call(method, args, signal);
+	return {
+		async completeSessionTurn(completion, signal) {
+			await rpc(
+				"qorpera_surface_complete_session_turn",
+				{
+					p_session_id: completion.sessionId,
+					p_state: completion.state,
+					p_reply_text: completion.replyText,
+					p_question: completion.question,
+					p_note_paths: completion.notePaths ? [...completion.notePaths] : null,
+					p_branch_head_sha: completion.branchHeadSha,
+				},
+				signal,
+			);
+		},
+	};
+}
+
+export async function runSurfaceSessionTurn(
+	input: SurfaceSessionTurnInput,
+	ports: SurfaceSessionRunnerPorts,
+): Promise<SurfaceSessionTurnRunResult> {
+	const signal = ports.signal ?? new AbortController().signal;
+	const folderReader = ports.folder ?? ports.folderToolsContext?.folder;
+	let identityContext: SurfaceIdentityContext | null = null;
+
+	try {
+		if (folderReader && input.surfaceSlug !== "identity") {
+			identityContext = await loadSurfaceIdentityContext(folderReader, signal);
+		}
+		const explicitBrief = input.briefMarkdown?.trim() || null;
+		const folderBrief =
+			explicitBrief === null && folderReader
+				? await readOptionalFolderText(
+						folderReader,
+						`QorperaOS/surfaces/${input.surfaceSlug}/brief.md`,
+						MAX_SURFACE_BRIEF_BYTES,
+						signal,
+					)
+				: null;
+		const briefMarkdown = explicitBrief ?? folderBrief ?? input.briefSummary?.trim() ?? null;
+		const pointToChangeTarget = extractPointToChangeTarget(input.originRef);
+		const normalizedFolderRoot =
+			input.sourceKind === "folder"
+				? normalizeFolderRoot(
+						input.folderRoot ?? (input.surfaceSlug === "identity" ? "identity" : input.surfaceSlug),
+					)
+				: input.folderRoot
+					? normalizeFolderRoot(input.folderRoot)
+					: null;
+
+		const turnBrief = buildSurfaceTurnBrief({
+			sessionId: input.sessionId,
+			surfaceSlug: input.surfaceSlug,
+			surfaceTitle: input.surfaceTitle,
+			briefMarkdown,
+			repositoryKey: input.repositoryKey ?? null,
+			folderRoot: normalizedFolderRoot,
+			explorationVariantLabel: input.explorationVariantLabel ?? null,
+			identityContext,
+			pointToChangeTarget,
+			conflictPaths: input.conflictPaths ?? null,
+		});
+
+		let outcome: SurfaceSessionTurnExecutionOutcome;
+		if (input.sourceKind === "folder") {
+			const stageSurfacePatch = ports.surfaceTools.stageSurfacePatch;
+			if (!stageSurfacePatch) {
+				throw new Error("Surface folder session requires stageSurfacePatch tool port");
+			}
+			if (!ports.executeTurn) {
+				throw new Error("Surface folder session requires executeTurn port");
+			}
+			const folderRoot = normalizedFolderRoot || input.surfaceSlug;
+			const notesRoot = `QorperaOS/surfaces/${input.surfaceSlug}/notes`;
+			const allowedRoots = [...new Set([folderRoot, notesRoot])];
+			const folderTools = ports.folderToolsContext
+				? cloudFolderFileTools({
+						folder: ports.folderToolsContext.folder,
+						operations: ports.folderToolsContext.operations,
+						identity: ports.folderToolsContext.identity,
+						surfaceFilePolicy: { mode: "surface_worker", allowedRoots },
+					})
+				: [];
+			const tools: CloudNativeTool[] = [
+				createStageSurfacePatchTool(input.sessionId, {
+					stageSurfacePatch: stageSurfacePatch.bind(ports.surfaceTools),
+				}),
+				...folderTools,
+				...(ports.extraTools ?? []),
+			];
+			outcome = await ports.executeTurn({
+				input,
+				mode: "folder",
+				instructions: buildFolderSurfaceInstructions(input, folderRoot, notesRoot),
+				turnBrief,
+				tools,
+				identityContext,
+				allowedRoots,
+				signal,
+			});
+		} else if (input.sourceKind === "native_ops") {
+			const stageSurfaceOpsAction = ports.surfaceTools.stageSurfaceOpsAction;
+			if (!stageSurfaceOpsAction) {
+				throw new Error("Surface native_ops session requires stageSurfaceOpsAction tool port");
+			}
+			if (!ports.executeTurn) {
+				throw new Error("Surface native_ops session requires executeTurn port");
+			}
+			const readOnlyFolderTools = ports.folderToolsContext
+				? cloudFolderFileTools({
+						folder: ports.folderToolsContext.folder,
+						operations: ports.folderToolsContext.operations,
+						identity: ports.folderToolsContext.identity,
+					}).filter((tool) => READ_ONLY_FOLDER_TOOLS.has(tool.name))
+				: [];
+			const tools: CloudNativeTool[] = [
+				createStageSurfaceOpsActionTool(input.sessionId, {
+					stageSurfaceOpsAction: stageSurfaceOpsAction.bind(ports.surfaceTools),
+				}),
+				...readOnlyFolderTools,
+				...(ports.extraTools ?? []),
+			];
+			outcome = await ports.executeTurn({
+				input,
+				mode: "native_ops",
+				instructions: buildOpsSurfaceInstructions(input),
+				turnBrief,
+				tools,
+				identityContext,
+				allowedRoots: [],
+				signal,
+			});
+		} else {
+			const recordChange = ports.surfaceTools.recordChange;
+			if (!recordChange) {
+				throw new Error("Surface code_repo session requires recordChange tool port");
+			}
+			const binding: SurfaceCodingTurnBinding = {
+				sessionId: input.sessionId,
+				surfaceSlug: input.surfaceSlug,
+				surfaceTitle: input.surfaceTitle,
+				briefMarkdown,
+				repositoryKey: input.repositoryKey ?? null,
+				folderRoot: normalizedFolderRoot,
+				explorationVariantLabel: input.explorationVariantLabel ?? null,
+				identityContext,
+				pointToChangeTarget,
+				conflictPaths: input.conflictPaths ?? null,
+				recordChange: recordChange.bind(ports.surfaceTools),
+			};
+			const codeRequest: SurfaceCodeRepoTurnRequest = {
+				input,
+				binding,
+				instructions: SURFACE_STAGED_CODING_INSTRUCTIONS,
+				turnBrief,
+				signal,
+			};
+			if (ports.executeCodeRepoTurn) {
+				outcome = await ports.executeCodeRepoTurn(codeRequest);
+			} else if (ports.codingDriver) {
+				const prepared = await ports.codingDriver.prepareRequest(codeRequest);
+				const driverResult = await ports.codingDriver.driver.execute(
+					prepared.request,
+					prepared.identityRoot,
+					signal,
+					{
+						...prepared.context,
+						surfaceSession: binding,
+					},
+				);
+				outcome = prepared.extractOutcome ? prepared.extractOutcome(driverResult) : { state: "ready" };
+			} else {
+				throw new Error("Surface code_repo session requires executeCodeRepoTurn or codingDriver");
+			}
+		}
+
+		const state = outcome.state ?? (outcome.question ? "needs_input" : "ready");
+		const replyText = outcome.replyText?.trim() || null;
+		const question = outcome.question ?? null;
+		const notePaths = outcome.notePaths ? [...outcome.notePaths] : null;
+		const branchHeadSha = outcome.branchHeadSha ?? null;
+		await ports.completeSessionTurn(
+			{
+				sessionId: input.sessionId,
+				state,
+				replyText,
+				question,
+				notePaths,
+				branchHeadSha,
+			},
+			signal,
+		);
+		return {
+			sessionId: input.sessionId,
+			sourceKind: input.sourceKind,
+			state,
+			identityLoaded: identityContext !== null,
+			replyText,
+			question,
+			notePaths,
+			branchHeadSha,
+			error: null,
+		};
+	} catch (error) {
+		const { errorMessage, replyText } = formatSessionFailure(error);
+		const completionSignal = signal.aborted ? new AbortController().signal : signal;
+		await ports.completeSessionTurn(
+			{
+				sessionId: input.sessionId,
+				state: "failed",
+				replyText,
+				question: null,
+				notePaths: null,
+				branchHeadSha: null,
+			},
+			completionSignal,
+		);
+		return {
+			sessionId: input.sessionId,
+			sourceKind: input.sourceKind,
+			state: "failed",
+			identityLoaded: identityContext !== null,
+			replyText,
+			question: null,
+			notePaths: null,
+			branchHeadSha: null,
+			error: errorMessage,
+		};
+	}
+}

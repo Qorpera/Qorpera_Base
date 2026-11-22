@@ -1,9 +1,11 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
 	type JsonValue,
+	SURFACE_AUTOMATION_OUTPUT_MODES,
 	SURFACE_CHANGE_STATUSES,
 	SURFACE_SESSION_STATES,
 	SURFACE_SOURCE_KINDS,
+	type SurfaceAutomationOutputMode,
 	type SurfaceChangeStatus,
 	type SurfacePreviewConflict,
 	type SurfaceSessionQuestion,
@@ -14,6 +16,7 @@ import type { ServiceHttpFetch } from "./http-transport.ts";
 import { CloudRunnerProviderRequestError } from "./provider-http.ts";
 import type {
 	ClaimedSurfaceApprovedChange,
+	ClaimedSurfaceAutomationJob,
 	ClaimedSurfaceChangeRange,
 	ClaimedSurfaceJobs,
 	ClaimedSurfaceMergeJob,
@@ -1206,6 +1209,7 @@ function parseOrchestrationClaim(value: unknown): CloudRunnerOrchestrationClaim 
 const SURFACE_SESSION_STATE_SET: ReadonlySet<string> = new Set(SURFACE_SESSION_STATES);
 const SURFACE_CHANGE_STATUS_SET: ReadonlySet<string> = new Set(SURFACE_CHANGE_STATUSES);
 const SURFACE_SOURCE_KIND_SET: ReadonlySet<string> = new Set(SURFACE_SOURCE_KINDS);
+const SURFACE_AUTOMATION_OUTPUT_MODE_SET: ReadonlySet<string> = new Set(SURFACE_AUTOMATION_OUTPUT_MODES);
 
 function optionalResponseString(value: unknown, label: string): string | null {
 	if (value === null || value === undefined) return null;
@@ -1298,6 +1302,33 @@ function parseClaimedSurfaceSessionJob(value: unknown): ClaimedSurfaceSessionJob
 		input.surfaceArchetype === undefined || input.surfaceArchetype === null
 			? undefined
 			: responseText(input.surfaceArchetype, "surface archetype", 32);
+	let surfaceSourceKind: SurfaceSourceKind | undefined;
+	if (input.surfaceSourceKind !== undefined && input.surfaceSourceKind !== null) {
+		if (typeof input.surfaceSourceKind !== "string" || !SURFACE_SOURCE_KIND_SET.has(input.surfaceSourceKind)) {
+			throw new Error("Runner orchestrator returned invalid surface source kind");
+		}
+		surfaceSourceKind = input.surfaceSourceKind as SurfaceSourceKind;
+	}
+	const surfaceKind =
+		input.surfaceKind === undefined || input.surfaceKind === null
+			? undefined
+			: responseText(input.surfaceKind, "surface kind", 64);
+	const explorationId =
+		input.explorationId === undefined
+			? undefined
+			: input.explorationId === null
+				? null
+				: responseUuid(input.explorationId, "surface exploration id");
+	const explorationVariantLabel =
+		input.explorationVariantLabel === undefined
+			? undefined
+			: optionalResponseString(input.explorationVariantLabel, "surface exploration variant label");
+	const siteSlug =
+		input.siteSlug === undefined ? undefined : optionalResponseString(input.siteSlug, "surface site slug");
+	const identityFolderRoot =
+		input.identityFolderRoot === undefined
+			? undefined
+			: optionalResponseString(input.identityFolderRoot, "surface identity folder root");
 	const briefSummary =
 		input.briefSummary === undefined
 			? undefined
@@ -1315,6 +1346,12 @@ function parseClaimedSurfaceSessionJob(value: unknown): ClaimedSurfaceSessionJob
 		...(surfaceSlug !== undefined ? { surfaceSlug } : {}),
 		...(surfaceTitle !== undefined ? { surfaceTitle } : {}),
 		...(surfaceArchetype !== undefined ? { surfaceArchetype } : {}),
+		...(surfaceSourceKind !== undefined ? { surfaceSourceKind } : {}),
+		...(surfaceKind !== undefined ? { surfaceKind } : {}),
+		...(explorationId !== undefined ? { explorationId } : {}),
+		...(explorationVariantLabel !== undefined ? { explorationVariantLabel } : {}),
+		...(siteSlug !== undefined ? { siteSlug } : {}),
+		...(identityFolderRoot !== undefined ? { identityFolderRoot } : {}),
 		...(briefSummary !== undefined ? { briefSummary } : {}),
 		placement: parseSurfacePlacementHint(input.placement),
 	};
@@ -1539,6 +1576,35 @@ function parseClaimedSurfacePublishJob(value: unknown): ClaimedSurfacePublishJob
 	};
 }
 
+function parseClaimedSurfaceAutomationJob(value: unknown): ClaimedSurfaceAutomationJob {
+	const input = record(value, "claimed surface automation");
+	if (typeof input.title !== "string" || typeof input.prompt !== "string") {
+		throw new Error("Runner orchestrator returned invalid claimed surface automation");
+	}
+	if (typeof input.outputMode !== "string" || !SURFACE_AUTOMATION_OUTPUT_MODE_SET.has(input.outputMode)) {
+		throw new Error("Runner orchestrator returned invalid surface automation output mode");
+	}
+	const sessionId =
+		input.sessionId === null || input.sessionId === undefined
+			? null
+			: responseUuid(input.sessionId, "surface automation session id");
+	const surfaceId =
+		input.surfaceId === null || input.surfaceId === undefined
+			? null
+			: responseUuid(input.surfaceId, "surface automation surface id");
+	return {
+		automationId: responseUuid(input.automationId, "surface automation id"),
+		profileId: responseUuid(input.profileId, "surface automation profile id"),
+		key: responseText(input.key, "surface automation key", 80),
+		title: input.title,
+		prompt: input.prompt,
+		targetSurfaceSlug: optionalResponseString(input.targetSurfaceSlug, "surface automation target slug"),
+		outputMode: input.outputMode as SurfaceAutomationOutputMode,
+		sessionId,
+		surfaceId,
+	};
+}
+
 function parseClaimedSurfaceJobs(value: unknown): ClaimedSurfaceJobs {
 	const input = record(value, "claimed surface jobs");
 	if (!Array.isArray(input.sessions) || !Array.isArray(input.previews)) {
@@ -1546,7 +1612,8 @@ function parseClaimedSurfaceJobs(value: unknown): ClaimedSurfaceJobs {
 	}
 	const rawMerges = input.merges === undefined || input.merges === null ? [] : input.merges;
 	const rawPublishes = input.publishes === undefined || input.publishes === null ? [] : input.publishes;
-	if (!Array.isArray(rawMerges) || !Array.isArray(rawPublishes)) {
+	const rawAutomations = input.automations === undefined || input.automations === null ? [] : input.automations;
+	if (!Array.isArray(rawMerges) || !Array.isArray(rawPublishes) || !Array.isArray(rawAutomations)) {
 		throw new Error("Runner orchestrator returned invalid claimed surface jobs");
 	}
 	return {
@@ -1554,6 +1621,7 @@ function parseClaimedSurfaceJobs(value: unknown): ClaimedSurfaceJobs {
 		previews: input.previews.map(parseClaimedSurfacePreviewJob),
 		merges: rawMerges.map(parseClaimedSurfaceMergeJob),
 		publishes: rawPublishes.map(parseClaimedSurfacePublishJob),
+		automations: rawAutomations.map(parseClaimedSurfaceAutomationJob),
 	};
 }
 

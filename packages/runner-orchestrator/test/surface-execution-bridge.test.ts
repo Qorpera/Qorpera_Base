@@ -884,7 +884,13 @@ describe("surface execution bridge Company Folder studio patches and publishing"
 		});
 
 		const tick = await loop.tick(new AbortController().signal);
-		expect(tick).toEqual({ startedSessions: 0, startedPreviews: 0, startedMerges: 1, startedPublishes: 0 });
+		expect(tick).toEqual({
+			startedSessions: 0,
+			startedPreviews: 0,
+			startedMerges: 1,
+			startedPublishes: 0,
+			startedAutomations: 0,
+		});
 		expect(JSON.parse(mem.files.get("identity/tokens.json") ?? "{}")).toEqual({ accent: "#d76f45" });
 		expect(completeActions).toHaveLength(1);
 		expect(completeActions[0]).toMatchObject({
@@ -893,4 +899,59 @@ describe("surface execution bridge Company Folder studio patches and publishing"
 			status: "landed",
 		});
 	});
+
+	it("auto-scaffolds an unseeded greenfield surfaces/<slug> repo before building its first preview", async () => {
+		const root = await realpath(await mkdtemp(join(tmpdir(), "surface-bridge-greenfield-")));
+		roots.push(root);
+		const companyRoot = join(root, "folder");
+		const scratchRoot = join(root, "scratch");
+		await mkdir(companyRoot, { recursive: true });
+		await mkdir(scratchRoot, { recursive: true });
+		const log: CodeHostCommand[] = [];
+		const codeHostJob: CodeHostJob = {
+			shell: crossPlatformLocalShell(log),
+			layout: { companyRoot, scratchRoot, git: GIT },
+			signal: new AbortController().signal,
+		};
+
+		const previewId = randomUUID();
+		const siteVersionId = randomUUID();
+		const completeSurfacePreview = vi.fn().mockResolvedValue(undefined);
+		const buildAndUploadPreview = vi.fn().mockResolvedValue({ siteVersionId });
+		const handlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview,
+				completeSurfaceMerge: vi.fn(),
+				completeSurfacePublish: vi.fn(),
+			},
+			resolveCodeHostJob: () => codeHostJob,
+			buildAndUploadPreview,
+		});
+
+		await handlers.runPreviewJob(
+			{
+				previewId,
+				surfaceId: randomUUID(),
+				profileId: randomUUID(),
+				shortHostId: "aa11bb22",
+				baseSha: "0".repeat(40),
+				selectedChangeIds: [],
+				repositoryKey: "surfaces/website",
+				exploration: null,
+				changes: [],
+			},
+			new AbortController().signal,
+		);
+
+		expect(buildAndUploadPreview).toHaveBeenCalledTimes(1);
+		expect(completeSurfacePreview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				previewId,
+				status: "ready",
+				siteVersionId,
+			}),
+			expect.any(AbortSignal),
+		);
+		expect(existsSync(join(companyRoot, "code/surfaces/website/main/.qorpera/checks.json"))).toBe(true);
+	}, 20_000);
 });

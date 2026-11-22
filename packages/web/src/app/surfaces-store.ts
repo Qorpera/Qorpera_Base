@@ -570,7 +570,7 @@ export interface SurfacesStoreOptions {
 	readonly loadCloudFiles?: (
 		surface: SurfaceSummary,
 		signal: AbortSignal,
-	) => Promise<Readonly<Record<string, string>>>;
+	) => Promise<Readonly<Record<string, string>> | undefined>;
 }
 
 interface LocalSandboxCacheEntry {
@@ -672,6 +672,10 @@ export class SurfacesStore {
 
 	get isLocalInteractive(): boolean {
 		return this.state.source === "local" && this.#options.localInteractive === true;
+	}
+
+	get companyId(): string {
+		return this.#options.companyId;
 	}
 
 	get companyName(): string {
@@ -1272,7 +1276,7 @@ export class SurfacesStore {
 		this.#cloudFilesLoading.add(surface.id);
 		try {
 			const files = await loadFiles(surface, this.#options.signal);
-			if (this.#options.signal.aborted) return;
+			if (this.#options.signal.aborted || files === undefined) return;
 			this.store.set((state) => ({
 				cloudSurfaceFiles: { ...state.cloudSurfaceFiles, [surface.id]: files },
 			}));
@@ -1280,6 +1284,15 @@ export class SurfacesStore {
 			/* WHY: Missing notes or studio folders are non-fatal; views fall back gracefully. */
 		} finally {
 			this.#cloudFilesLoading.delete(surface.id);
+		}
+	}
+
+	refreshPendingCloudFiles(): void {
+		if (this.state.source !== "cloud" || !this.#options.loadCloudFiles) return;
+		for (const workspace of Object.values(this.state.workspaces)) {
+			if (!isLocalSurfaceId(workspace.surface.id) && !this.state.cloudSurfaceFiles[workspace.surface.id]) {
+				void this.refreshCloudFiles(workspace.surface);
+			}
 		}
 	}
 

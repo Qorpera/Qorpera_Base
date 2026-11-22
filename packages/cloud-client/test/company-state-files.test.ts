@@ -2723,4 +2723,26 @@ describe("companyStateSeedTree", () => {
 			companyStateSeedTree({ companyName: "Nordlys Studio", cofounderId: ANNA, vision: "x".repeat(70000) }),
 		).toThrow(/^The seeded QorperaOS\/vision\/vision\.md would be refused/);
 	});
+
+	it("seeds Surface-First Co-Founder instructions and starter Identity files when surfaceFirst is enabled", () => {
+		const tree = companyStateSeedTree({
+			companyName: "Thetaband",
+			cofounderId: ANNA,
+			vision: "Calm wearable EEG headband for deep rest.",
+			founders: [{ displayName: "Jonas", role: "Product" }],
+			firstTodo: { id: ID, requestedBy: JONAS },
+			surfaceFirst: true,
+		});
+		const agent = tree.find((entry) => entry.path === "QorperaOS/agents/co-founder/agent.md")?.text ?? "";
+		expect(agent).toContain("Populate Identity (identity/) first");
+		expect(agent).not.toContain("Hire owners when the work needs them");
+		expect(agent).not.toContain("sections.md");
+		const todo = tree.find((entry) => entry.path === "QorperaOS/agents/co-founder/todos/start-with-the-founders.md");
+		expect(todo?.text).toContain("Identity exploration");
+		const brief = tree.find((entry) => entry.path === "identity/brief.md")?.text ?? "";
+		expect(brief).toContain("# Thetaband — Identity");
+		expect(brief).toContain("Calm wearable EEG headband for deep rest.");
+		const tokens = tree.find((entry) => entry.path === "identity/tokens.json")?.text ?? "";
+		expect(JSON.parse(tokens)).toMatchObject({ brand: "Thetaband" });
+	});
 });

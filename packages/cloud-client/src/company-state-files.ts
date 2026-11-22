@@ -3179,6 +3179,15 @@ export const COMPANY_STATE_COFOUNDER_INSTRUCTIONS = `You are the Co-Founder. You
 - Hand bounded work to agents, group chats, and workers, and bring the founders crisp decisions, blockers, and real risks — each with the position you recommend, in plain everyday language.
 - Work by changing the company's files. Make no commitments outside the company without the member responsible.`;
 
+export const COMPANY_STATE_SURFACE_FIRST_COFOUNDER_INSTRUCTIONS = `You are the Co-Founder. You hold the company as a whole: its direction, its live Surfaces, its awareness of where things stand, and the partnership with the founders.
+
+## How you lead
+- Start moving from the first conversation: shape QorperaOS/vision/vision.md with the founders and turn that vision directly into tangible, previewable Surfaces.
+- Populate Identity (identity/) first with brand philosophy, voice, and design tokens so every downstream surface inherits a coherent foundation.
+- Activate 1 to 2 core product surfaces on Day 0 and launch focused sessions or 2-to-3-variant explorations so founders see real toggleable changes in Changes right away.
+- Every live-build surface projects its git codebase under code/<owner>/<name>, and Studio/Identity surfaces project Company Files directly. Never create persona org charts or dump loose planning/strategy markdown files.
+- Keep founders focused on signal: previewable results and the one decision that genuinely needs them. Make no commitments outside the company without the member responsible.`;
+
 export interface CompanyStateSeedEntry {
 	readonly path: string;
 	readonly kind: "folder" | "file";
@@ -3204,6 +3213,7 @@ export interface CompanyStateSeedOptions {
 	/** The ids of the library's interfaces and tables (`interfaceLibraryFiles`), random unless given. A creation commits
 	 * whole, so each attempt may draw new ones. */
 	readonly newId?: () => string;
+	readonly surfaceFirst?: boolean;
 }
 
 /** The Co-Founder's first todo when the founding table starts the company. */
@@ -3249,8 +3259,52 @@ export function companyStateSeedTree(options: CompanyStateSeedOptions): CompanyS
 	return tree;
 }
 
+function seedIdentityEntries(options: CompanyStateSeedOptions): CompanyStateSeedEntry[] {
+	const name = readable(options.companyName) || "New Company";
+	const rawVision = (options.vision ?? "").trim();
+	const summaryLine = rawVision.split(/\r?\n/, 1)[0]?.trim() || "Brand foundation shaped with the founders.";
+	const brief = [
+		`# ${name} — Identity`,
+		"",
+		"## Philosophy & Positioning",
+		summaryLine,
+		"",
+		"## Voice & Tone",
+		"- Clear, grounded, and direct.",
+		"- Specific over generic marketing copy.",
+		"",
+	].join("\n");
+	const tokens = `${JSON.stringify(
+		{
+			brand: name,
+			colors: {
+				primary: "#18181b",
+				accent: "#2563eb",
+				surface: "#ffffff",
+				muted: "#f4f4f5",
+			},
+			typography: {
+				heading: "Inter",
+				body: "Inter",
+				mono: "JetBrains Mono",
+			},
+			voice: {
+				summary: summaryLine.slice(0, 240),
+			},
+		},
+		null,
+		2,
+	)}\n`;
+	return [
+		{ path: "identity", kind: "folder" },
+		{ path: "identity/brief.md", kind: "file", text: brief },
+		{ path: "identity/tokens.json", kind: "file", text: tokens },
+	];
+}
+
 function seedEntries(options: CompanyStateSeedOptions): CompanyStateSeedEntry[] {
 	const cofounder = osPath(`agents/${COMPANY_STATE_COFOUNDER_HANDLE}`);
+	const surfaceFirst = options.surfaceFirst === true;
 	return [
 		{ path: QORPERA_OS_ROOT, kind: "folder" },
 		{ path: osPath("vision"), kind: "folder" },
@@ -3271,7 +3325,9 @@ function seedEntries(options: CompanyStateSeedOptions): CompanyStateSeedEntry[] 
 				figure: "crown",
 				model: null,
 				effort: null,
-				instructions: COMPANY_STATE_COFOUNDER_INSTRUCTIONS,
+				instructions: surfaceFirst
+					? COMPANY_STATE_SURFACE_FIRST_COFOUNDER_INSTRUCTIONS
+					: COMPANY_STATE_COFOUNDER_INSTRUCTIONS,
 			}),
 		},
 		{ path: `${cofounder}/memory`, kind: "folder" },
@@ -3288,8 +3344,9 @@ function seedEntries(options: CompanyStateSeedOptions): CompanyStateSeedEntry[] 
 							title: "Start with the founders",
 							status: "open",
 							requestedBy: options.firstTodo.requestedBy,
-							detail:
-								"Meet the founders in your thread. Shape QorperaOS/vision/vision.md with them: what the company builds, for whom, why, and how it works.\n\nDone when every founder has agreed their part of the vision.",
+							detail: surfaceFirst
+								? "Meet the founders in your thread, refine QorperaOS/vision/vision.md, launch a 2-to-3-direction Identity exploration under identity/, and activate 1 to 2 core product surfaces with concrete staged changes waiting in Changes.\n\nDone when the founders have previewable directions underway and aligned on the vision."
+								: "Meet the founders in your thread. Shape QorperaOS/vision/vision.md with them: what the company builds, for whom, why, and how it works.\n\nDone when every founder has agreed their part of the vision.",
 						}),
 					},
 				]
@@ -3303,6 +3360,7 @@ function seedEntries(options: CompanyStateSeedOptions): CompanyStateSeedEntry[] 
 		{ path: COMPANY_STATE_HUMAN_TASK_SKILL_PATH, kind: "file", text: COMPANY_STATE_HUMAN_TASK_SKILL },
 		{ path: osPath("rules"), kind: "folder" },
 		...seedLibrary(options.newId ?? (() => globalThis.crypto.randomUUID())),
+		...(surfaceFirst ? seedIdentityEntries(options) : []),
 	];
 }
 

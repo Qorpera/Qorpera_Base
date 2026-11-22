@@ -50,6 +50,7 @@ export interface SurfaceViewHost {
 		surface: SurfaceSummary,
 		signal: AbortSignal,
 	) => Promise<Readonly<Record<string, string>>>;
+	readonly loadSitePassword?: (surface: SurfaceSummary) => Promise<string | null>;
 }
 
 interface CompareColumn {
@@ -230,7 +231,9 @@ export class SurfaceView {
 			/* WHY: Local browser storage is optional in private/sandboxed contexts. */
 		}
 		const signal = this.#lifetime.signal;
-		this.#drawer = new SurfaceSessionDrawer(host.store, signal);
+		this.#drawer = new SurfaceSessionDrawer(host.store, signal, {
+			loadSitePassword: host.loadSitePassword,
+		});
 		this.#primaryDoor = new SurfaceDoorStage(signal, {
 			onPick: (target) => this.#onPick(target),
 			onShownChange: () => {
@@ -1602,7 +1605,7 @@ export class SurfaceView {
 				return;
 			case "publish":
 			case "open-publish":
-				openPublishPatchnotesSheet(store, surface);
+				openPublishPatchnotesSheet(store, surface, { loadSitePassword: this.#host.loadSitePassword });
 				return;
 			case "publish-menu": {
 				const box = target.getBoundingClientRect();
@@ -1610,7 +1613,8 @@ export class SurfaceView {
 				items.push({
 					label: t("Patch notes"),
 					icon: "file",
-					select: () => openPublishPatchnotesSheet(store, surface),
+					select: () =>
+						openPublishPatchnotesSheet(store, surface, { loadSitePassword: this.#host.loadSitePassword }),
 				});
 				if (surface.liveUrl) {
 					const url = surface.liveUrl;

@@ -7,14 +7,21 @@ export interface SurfaceIdentityContext {
 	readonly voiceSummary?: string | null;
 }
 
-export interface SurfaceCodingTurnBinding {
+export interface SurfaceTurnBriefInput {
 	readonly sessionId: string;
 	readonly surfaceSlug: string;
 	readonly surfaceTitle: string;
 	readonly briefMarkdown: string | null;
+	readonly repositoryKey?: string | null;
+	readonly folderRoot?: string | null;
+	readonly explorationVariantLabel?: string | null;
 	readonly identityContext?: SurfaceIdentityContext | null;
 	readonly pointToChangeTarget?: PointToChangeTarget | null;
 	readonly conflictPaths?: readonly string[] | null;
+	readonly recordChange?: CloudSurfaceToolsPort["recordChange"];
+}
+
+export interface SurfaceCodingTurnBinding extends SurfaceTurnBriefInput {
 	readonly recordChange: CloudSurfaceToolsPort["recordChange"];
 }
 
@@ -26,15 +33,31 @@ export const SURFACE_STAGED_CODING_INSTRUCTIONS =
 	"When all requested deliverables are committed and verified, call coding_finish to stage the session as ready for review.";
 
 // WHY: Injects global company Identity assets, Surface domain taste (brief.md), Point-to-Change DOM context, and conflict paths directly into scoped coding turns.
-export function buildSurfaceTurnBrief(binding: SurfaceCodingTurnBinding): string {
-	const sections: string[] = [
+export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
+	const headerLines = [
 		`# Surface Context: ${binding.surfaceTitle} (${binding.surfaceSlug})`,
 		`Session ID: ${binding.sessionId}`,
+	];
+	const repositoryKey = binding.repositoryKey?.trim();
+	const folderRoot = binding.folderRoot?.trim();
+	const explorationVariantLabel = binding.explorationVariantLabel?.trim();
+	if (repositoryKey) headerLines.push(`Repository: code/${repositoryKey}`);
+	if (folderRoot) headerLines.push(`Folder root: ${folderRoot}`);
+	if (explorationVariantLabel) headerLines.push(`Exploration direction: ${explorationVariantLabel}`);
+
+	const sections: string[] = [
+		headerLines.join("\n"),
 		"## Surface Projection & Parallel Preview\n" +
 			"This Surface projects its underlying codebase or Company Files folder directly into the live Preview. " +
 			"Founders can toggle multiple unmerged staged changes from concurrent sessions on and off together in Preview before approving or publishing them. " +
 			"Keep each staged change atomic, self-contained, and conflict-minimizing — touch only the files required for your deliverable and avoid unnecessary edits to unrelated shared files.",
 	];
+
+	if (explorationVariantLabel) {
+		sections.push(
+			`## Exploration Direction: ${explorationVariantLabel}\nDeliver a distinct, cohesive take matching this direction so founders can compare side-by-side variants cleanly in Preview.`,
+		);
+	}
 
 	const identity = binding.identityContext;
 	if (identity) {

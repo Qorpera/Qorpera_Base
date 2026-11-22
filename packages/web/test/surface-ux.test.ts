@@ -10,14 +10,18 @@ import {
 	clearLocalSandboxCache,
 	synthesizeSurfaces,
 } from "../src/app/surfaces-store.ts";
+import { ConversationView } from "../src/app/views/conversation.ts";
+import { HubController } from "../src/app/views/hub.ts";
+import { renderNewCompany } from "../src/app/views/new-company.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { CrewFigures, crewLook, sessionCrew } from "../src/app/views/surface-crew.ts";
 import { openCreateSurfaceSheet, openScheduleAgentSheet } from "../src/app/views/surface-migration-sheet.ts";
+import { openPublishPatchnotesSheet } from "../src/app/views/surface-publish-sheet.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { SurfaceView } from "../src/app/views/surface-view.ts";
 import { linkHref } from "../src/ui/dom.ts";
 import { RailLayout } from "../src/ui/rail-layout.ts";
-import { fixture, id, profileA, staff, stubFigureMotion, userA } from "./fixtures.ts";
+import { session as chatSession, fixture, id, profileA, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
 import {
 	CHANGES,
 	COMPANY,
@@ -919,5 +923,330 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 
 		view.dispose();
 		store.dispose();
+	});
+
+	it("renders affected file chips and projected Company Files source footer in the Changes drawer", async () => {
+		stubFigureMotion();
+		const navigated: string[] = [];
+		const site = summary({
+			id: SURFACE,
+			slug: "website",
+			title: "Website",
+			repositoryKey: "website",
+			folderRoot: null,
+			activeSessionCount: 1,
+			pendingChangeCount: 1,
+		});
+		const identitySurface = summary({
+			id: "55555555-5555-4555-8555-555555555588",
+			slug: "identity",
+			title: "Identity",
+			archetype: "studio",
+			kind: "identity",
+			isGlobal: true,
+			repositoryKey: null,
+			folderRoot: "identity",
+			liveUrl: null,
+			siteSlug: null,
+			activeSessionCount: 0,
+			pendingChangeCount: 0,
+		});
+		const multiFileChange = change(CHANGES[0], 1, "staged", {
+			title: "Refine hero & tokens",
+			affectedPaths: ["identity/tokens.json", "src/Hero.tsx", "src/Footer.tsx", "src/Nav.tsx"],
+		});
+		const activeSess = session(["staged"], {
+			id: SESSION,
+			surfaceId: site.id,
+			title: "Hero polish",
+			changes: [multiFileChange],
+		});
+		const client = fakeClient({
+			listSurfaces: vi.fn().mockResolvedValue([site, identitySurface]),
+			getSurfaceWorkspace: vi
+				.fn()
+				.mockImplementation(async (surfaceId: string) =>
+					surfaceId === site.id
+						? workspace([activeSess], { surface: site })
+						: workspace([], { surface: identitySurface }),
+				),
+		});
+		const store = storeWith(client, {
+			onNavigateSurface: (slug) => navigated.push(slug),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const chips = [...view.el.querySelectorAll<HTMLAnchorElement>(".surface-overview-change .surface-file-chip")];
+		expect(chips.map((chip) => chip.textContent)).toEqual([
+			"identity/tokens.json",
+			"src/Hero.tsx",
+			"src/Footer.tsx",
+			"+1",
+		]);
+		expect(linkHref(chips[0]!)).toBe(`#/c/${COMPANY}/s/files`);
+		chips[0]!.click();
+		expect(navigated).toEqual(["files"]);
+		expect(location.hash).toBe(`#/c/${COMPANY}/s/files`);
+
+		const sourcePill = view.el.querySelector<HTMLAnchorElement>(".surface-drawer-source .surface-source-pill");
+		expect(sourcePill).not.toBeNull();
+		expect(sourcePill?.querySelector(".surface-source-path")?.textContent).toBe("code/website");
+		expect(linkHref(sourcePill!)).toBe(`#/c/${COMPANY}/s/files`);
+
+		view.dispose();
+
+		store.openPreviewPanel();
+		const identityView = new SurfaceView(
+			{ store, mount: () => undefined, openMigration: () => undefined },
+			"identity",
+		);
+		document.body.append(identityView.el);
+		await flush();
+		identityView.update();
+		expect(identityView.el.querySelector(".surface-drawer-source .surface-source-path")?.textContent).toBe(
+			"identity/",
+		);
+		expect(linkHref(identityView.el.querySelector(".surface-drawer-source .surface-source-pill")!)).toBe(
+			`#/c/${COMPANY}/s/files`,
+		);
+
+		identityView.dispose();
+		store.dispose();
+	});
+
+	it("renders Share live link bar inside Patch notes sheet, copies link and optional password", async () => {
+		const writeText = vi.fn().mockResolvedValue(undefined);
+		Object.defineProperty(navigator, "clipboard", {
+			configurable: true,
+			value: { writeText },
+		});
+		HTMLDialogElement.prototype.showModal = function () {
+			this.open = true;
+		};
+		HTMLDialogElement.prototype.close = function () {
+			this.open = false;
+			this.dispatchEvent(new Event("close"));
+		};
+		const site = summary({
+			id: SURFACE,
+			slug: "website",
+			title: "Website",
+			liveUrl: "https://thetaband.qorpera.com",
+			unpublishedChangeCount: 1,
+			hasUnpublishedChanges: true,
+		});
+		const client = fakeClient({
+			listSurfaces: vi.fn().mockResolvedValue([site]),
+			getSurfaceWorkspace: vi.fn().mockResolvedValue(workspace([], { surface: site })),
+		});
+		const store = storeWith(client);
+		await store.load();
+
+		const loadSitePassword = vi.fn().mockResolvedValue("nordic-pass-42");
+		const dialog = openPublishPatchnotesSheet(store, site, { loadSitePassword });
+		await flush();
+
+		const shareBar = document.querySelector<HTMLElement>(".surface-share-bar")!;
+		expect(shareBar).not.toBeNull();
+		expect(shareBar.querySelector(".surface-share-url")?.textContent).toBe("https://thetaband.qorpera.com");
+		const openLink = shareBar.querySelector<HTMLAnchorElement>(".surface-share-btn.is-open")!;
+		expect(openLink.getAttribute("href")).toBe("https://thetaband.qorpera.com");
+		expect(openLink.target).toBe("_blank");
+		expect(openLink.rel).toContain("noopener");
+
+		const copyLinkBtn = shareBar.querySelector<HTMLButtonElement>('[data-act="copy-link"]')!;
+		copyLinkBtn.click();
+		await flush();
+		expect(writeText).toHaveBeenCalledWith("https://thetaband.qorpera.com");
+		expect(document.querySelector('[data-act="copy-link"]')?.textContent).toBe("Copied");
+
+		const copyPassBtn = document.querySelector<HTMLButtonElement>('[data-act="copy-password"]')!;
+		expect(copyPassBtn).not.toBeNull();
+		copyPassBtn.click();
+		await flush();
+		expect(writeText).toHaveBeenCalledWith("nordic-pass-42");
+		expect(document.querySelector('[data-act="copy-password"]')?.textContent).toBe("Copied");
+		dialog.close();
+
+		const dialogWithoutPass = openPublishPatchnotesSheet(store, site);
+		await flush();
+		expect(document.querySelector(".surface-share-bar")).not.toBeNull();
+		expect(document.querySelector('[data-act="copy-password"]')).toBeNull();
+		dialogWithoutPass.close();
+		store.dispose();
+	});
+
+	it("folds optional starting surfaces and reference URL into NewCompanyView submissions without affecting blank ones", () => {
+		const f = fixture();
+		const hub = new HubController(f.api, userA.id);
+		const start = vi.spyOn(hub, "startFromIdea").mockResolvedValue(false);
+		const host = document.createElement("div");
+		document.body.append(host);
+		renderNewCompany(hub, host, { userId: userA.id, name: "Anna" });
+
+		expect(host.querySelector("label")).toBeNull();
+		const idea = host.querySelector<HTMLTextAreaElement>(".hero-idea")!;
+		const form = host.querySelector<HTMLFormElement>(".hero-box")!;
+		const url = host.querySelector<HTMLInputElement>(".hero-starter-url")!;
+
+		idea.value = "Calm wearable for meditation";
+		idea.dispatchEvent(new Event("input"));
+		form.requestSubmit();
+		expect(start).toHaveBeenLastCalledWith("Calm wearable for meditation", "start", "", { spectators: [] });
+
+		const websitePill = host.querySelector<HTMLButtonElement>('[data-starter-surface="website"]')!;
+		const mobilePill = host.querySelector<HTMLButtonElement>('[data-starter-surface="mobile-app"]')!;
+		websitePill.click();
+		mobilePill.click();
+		expect(websitePill.getAttribute("aria-pressed")).toBe("true");
+		expect(mobilePill.getAttribute("aria-pressed")).toBe("true");
+		url.value = "https://thetaband.dk";
+		form.requestSubmit();
+		expect(start).toHaveBeenLastCalledWith(
+			"Calm wearable for meditation\n\nStarting surfaces: Website, Mobile App\nReference URL: https://thetaband.dk",
+			"start",
+			"",
+			{ spectators: [] },
+		);
+
+		start.mockClear();
+		idea.value = "";
+		form.requestSubmit();
+		expect(start).not.toHaveBeenCalled();
+
+		hub.dispose();
+	});
+
+	it("renders the Active Surfaces Jump Strip in Co-Founder's thread and opens Changes on click", async () => {
+		stubFigureMotion();
+		const f = fixture();
+		const cofounder = { ...staff, id: id(10), templateId: "co-founder", displayName: "Co-Founder" };
+		const specialist = { ...staff, id: id(11), templateId: "designer", displayName: "Maja" };
+		const cofounderSession = { ...chatSession, sessionId: id(20), staffAgentId: cofounder.id };
+		const specialistSession = { ...chatSession, sessionId: id(21), staffAgentId: specialist.id };
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({
+			team,
+			staff: [cofounder, specialist],
+			sessions: [cofounderSession, specialistSession],
+			loading: false,
+		});
+
+		const identitySurf = summary({
+			id: "55555555-5555-4555-8555-555555555571",
+			slug: "identity",
+			title: "Identity",
+			group: "products",
+			archetype: "studio",
+			kind: "identity",
+			isGlobal: true,
+			activeSessionCount: 0,
+			pendingChangeCount: 0,
+			sortOrder: 0,
+		});
+		const websiteSurf = summary({
+			id: "55555555-5555-4555-8555-555555555572",
+			slug: "website",
+			title: "Website",
+			group: "products",
+			archetype: "live_build",
+			activeSessionCount: 3,
+			pendingChangeCount: 3,
+			sortOrder: 1,
+		});
+		const appSurf = summary({
+			id: "55555555-5555-4555-8555-555555555573",
+			slug: "mobile-app",
+			title: "Meditation App",
+			group: "products",
+			archetype: "live_build",
+			kind: "mobile_app",
+			activeSessionCount: 1,
+			runningSessionCount: 1,
+			pendingChangeCount: 0,
+			sortOrder: 2,
+		});
+		const quietSurf = summary({
+			id: "55555555-5555-4555-8555-555555555574",
+			slug: "headband",
+			title: "Headband",
+			group: "products",
+			archetype: "studio",
+			activeSessionCount: 0,
+			runningSessionCount: 0,
+			pendingChangeCount: 0,
+			sortOrder: 3,
+		});
+
+		const variantIds = [
+			"44444444-4444-4444-8444-444444444401",
+			"44444444-4444-4444-8444-444444444402",
+			"44444444-4444-4444-8444-444444444403",
+		];
+		const exp = {
+			id: "88888888-8888-4888-8888-888888888801",
+			surfaceId: websiteSurf.id,
+			title: "Landing directions",
+			status: "open" as const,
+			chosenSessionId: null,
+			variantSessionIds: variantIds,
+			createdAt: "2026-11-21T10:00:00.000Z",
+			resolvedAt: null,
+		};
+		const variantSessions = variantIds.map((variantId, index) =>
+			session(["staged"], {
+				id: variantId,
+				surfaceId: websiteSurf.id,
+				explorationId: exp.id,
+				explorationVariantLabel: `Direction ${index + 1}`,
+			}),
+		);
+		const navigated: string[] = [];
+		const client = fakeClient({
+			listSurfaces: vi.fn().mockResolvedValue([identitySurf, websiteSurf, appSurf, quietSurf, inbox]),
+			getSurfaceWorkspace: vi
+				.fn()
+				.mockResolvedValue(workspace(variantSessions, { surface: websiteSurf, explorations: [exp] })),
+		});
+		const store = storeWith(client, {
+			companyId: profileA.profileId,
+			onNavigateSurface: (slug) => navigated.push(slug),
+		});
+		await store.load();
+		await store.openSurface("website");
+		attachSurfaces(company, store);
+
+		const cofounderView = new ConversationView(company, cofounderSession.sessionId, { surfaces: store });
+		document.body.append(cofounderView.el);
+		const strip = cofounderView.el.querySelector<HTMLElement>(".surface-thread-jump")!;
+		expect(strip.hidden).toBe(false);
+		const chips = [...strip.querySelectorAll<HTMLAnchorElement>(".surface-thread-jump-chip")];
+		expect(chips.map((chip) => chip.dataset.surfaceJump)).toEqual(["identity", "website", "mobile-app"]);
+		expect(chips[0]?.querySelector(".surface-thread-jump-pill")?.textContent).toBe("Ready");
+		expect(chips[1]?.querySelector(".surface-thread-jump-pill")?.textContent).toBe("3 directions ready");
+		expect(chips[2]?.querySelector(".surface-thread-jump-pill")?.textContent).toBe("Working");
+		expect(chips[2]?.querySelector(".surface-thread-jump-dot.is-running")).not.toBeNull();
+		expect(linkHref(chips[1]!)).toBe(`#/c/${profileA.profileId}/s/website`);
+
+		store.closePanel();
+		store.setMode("live");
+		chips[1]!.click();
+		expect(navigated).toEqual(["website"]);
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/s/website`);
+		expect(store.state.mode).toBe("preview");
+		expect(store.state.previewPanel).toBe("open");
+		cofounderView.dispose();
+
+		const specialistView = new ConversationView(company, specialistSession.sessionId, { surfaces: store });
+		document.body.append(specialistView.el);
+		expect(specialistView.el.querySelector(".surface-thread-jump")).toBeNull();
+		specialistView.dispose();
+
+		store.dispose();
+		company.stop();
 	});
 });

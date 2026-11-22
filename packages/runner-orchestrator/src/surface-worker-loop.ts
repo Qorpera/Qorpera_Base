@@ -1,4 +1,9 @@
-import type { SurfaceChangeStatus, SurfaceSessionState, SurfaceSourceKind } from "@qorpera/contracts";
+import type {
+	SurfaceAutomationOutputMode,
+	SurfaceChangeStatus,
+	SurfaceSessionState,
+	SurfaceSourceKind,
+} from "@qorpera/contracts";
 
 export interface SurfaceMachinePlacementHint {
 	readonly strategy: "reuse_machine" | "spawn_overflow_machine";
@@ -20,6 +25,12 @@ export interface ClaimedSurfaceSessionJob {
 	readonly surfaceSlug?: string;
 	readonly surfaceTitle?: string;
 	readonly surfaceArchetype?: string;
+	readonly surfaceSourceKind?: SurfaceSourceKind;
+	readonly surfaceKind?: string;
+	readonly explorationId?: string | null;
+	readonly explorationVariantLabel?: string | null;
+	readonly siteSlug?: string | null;
+	readonly identityFolderRoot?: string | null;
 	readonly briefSummary?: string | null;
 	readonly placement: SurfaceMachinePlacementHint;
 }
@@ -99,11 +110,24 @@ export interface ClaimedSurfacePublishJob {
 	readonly payload: Readonly<Record<string, unknown>>;
 }
 
+export interface ClaimedSurfaceAutomationJob {
+	readonly automationId: string;
+	readonly profileId: string;
+	readonly key: string;
+	readonly title: string;
+	readonly prompt: string;
+	readonly targetSurfaceSlug: string | null;
+	readonly outputMode: SurfaceAutomationOutputMode;
+	readonly sessionId: string | null;
+	readonly surfaceId: string | null;
+}
+
 export interface ClaimedSurfaceJobs {
 	readonly sessions: readonly ClaimedSurfaceSessionJob[];
 	readonly previews: readonly ClaimedSurfacePreviewJob[];
 	readonly merges?: readonly ClaimedSurfaceMergeJob[];
 	readonly publishes?: readonly ClaimedSurfacePublishJob[];
+	readonly automations?: readonly ClaimedSurfaceAutomationJob[];
 }
 
 export interface SurfaceWorkerWakeSource {
@@ -116,6 +140,7 @@ export interface SurfaceWorkerTickResult {
 	readonly startedPreviews: number;
 	readonly startedMerges: number;
 	readonly startedPublishes: number;
+	readonly startedAutomations: number;
 }
 
 export interface SurfaceWorkerLoopPorts {
@@ -125,6 +150,7 @@ export interface SurfaceWorkerLoopPorts {
 	runPreviewJob(job: ClaimedSurfacePreviewJob, signal: AbortSignal): Promise<void>;
 	runMergeJob?: (job: ClaimedSurfaceMergeJob, signal: AbortSignal) => Promise<void>;
 	runPublishJob?: (job: ClaimedSurfacePublishJob, signal: AbortSignal) => Promise<void>;
+	runAutomationJob?: (job: ClaimedSurfaceAutomationJob, signal: AbortSignal) => Promise<void>;
 	onEvent?: (event: Record<string, unknown>) => void;
 }
 
@@ -133,7 +159,7 @@ export interface SurfaceWorkerLoopOptions {
 	readonly batchLimit?: number;
 }
 
-// WHY: Drains pending Surface sessions, previews, merges, and publishes while scaling horizontally via overflow VMs when running machines hit turn density.
+// WHY: Drains pending Surface sessions, previews, merges, publishes, and due automations while scaling horizontally via overflow VMs when running machines hit turn density.
 export class SurfaceWorkerLoop {
 	readonly #ports: SurfaceWorkerLoopPorts;
 	readonly #pollIntervalMs: number;
@@ -142,6 +168,7 @@ export class SurfaceWorkerLoop {
 	readonly #inFlightPreviews = new Set<string>();
 	readonly #inFlightMerges = new Set<string>();
 	readonly #inFlightPublishes = new Set<string>();
+	readonly #inFlightAutomations = new Set<string>();
 
 	constructor(ports: SurfaceWorkerLoopPorts, options: SurfaceWorkerLoopOptions = {}) {
 		this.#ports = ports;
@@ -165,6 +192,10 @@ export class SurfaceWorkerLoop {
 		return this.#inFlightPublishes.size;
 	}
 
+	get inFlightAutomationCount(): number {
+		return this.#inFlightAutomations.size;
+	}
+
 	#emit(event: Record<string, unknown>): void {
 		try {
 			this.#ports.onEvent?.(event);
@@ -178,11 +209,13 @@ export class SurfaceWorkerLoop {
 		const claimed = await this.#ports.claimPendingJobs(this.#batchLimit, signal);
 		const merges = claimed.merges ?? [];
 		const publishes = claimed.publishes ?? [];
+		const automations = claimed.automations ?? [];
 		const tasks: Promise<void>[] = [];
 		let startedSessions = 0;
 		let startedPreviews = 0;
 		let startedMerges = 0;
 		let startedPublishes = 0;
+		let startedAutomations = 0;
 
 		for (const merge of merges) {
 			if (!this.#ports.runMergeJob || this.#inFlightMerges.has(merge.jobId)) continue;
@@ -284,8 +317,39 @@ export class SurfaceWorkerLoop {
 			);
 		}
 
+		for (const automation of automations) {
+			if (automation.sessionId !== null) continue;
+			if (!this.#ports.runAutomationJob || this.#inFlightAutomations.has(automation.automationId)) continue;
+			this.#inFlightAutomations.add(automation.automationId);
+			startedAutomations += 1;
+			tasks.push(
+				this.#ports
+					.runAutomationJob(automation, signal)
+					.then(() => {
+						this.#emit({
+							kind: "automation_completed",
+							automationId: automation.automationId,
+							key: automation.key,
+							outputMode: automation.outputMode,
+						});
+					})
+					.catch((error) => {
+						this.#emit({
+							kind: "automation_failed",
+							automationId: automation.automationId,
+							key: automation.key,
+							outputMode: automation.outputMode,
+							error: error instanceof Error ? error.message : String(error),
+						});
+					})
+					.finally(() => {
+						this.#inFlightAutomations.delete(automation.automationId);
+					}),
+			);
+		}
+
 		await Promise.all(tasks);
-		return { startedSessions, startedPreviews, startedMerges, startedPublishes };
+		return { startedSessions, startedPreviews, startedMerges, startedPublishes, startedAutomations };
 	}
 
 	async #runSession(session: ClaimedSurfaceSessionJob, signal: AbortSignal): Promise<void> {
