@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { chmod, rm } from "node:fs/promises";
 import { createServer, request as httpRequest, type IncomingMessage, type Server } from "node:http";
 import { isAbsolute, resolve } from "node:path";
+import { withAbortScopes } from "./abort-scope.ts";
 import type { ClaudeLoginRead, ClaudeLoginReads } from "./cloud-claude-login-reader.ts";
 import {
 	CLAUDE_LOGIN_CHECK_REQUEST_SCHEMA,
@@ -157,22 +158,32 @@ function tokenMatches(expected: string, authorization: string | undefined): bool
 	if (!authorization?.startsWith("Bearer ")) return false;
 	const left = Buffer.from(expected, "utf8");
 	const right = Buffer.from(authorization.slice("Bearer ".length), "utf8");
-	return left.byteLength === right.byteLength && timingSafeEqual(left, right);
+	try {
+		return left.byteLength === right.byteLength && timingSafeEqual(left, right);
+	} finally {
+		left.fill(0);
+		right.fill(0);
+	}
 }
 
 async function readBody(request: IncomingMessage): Promise<unknown> {
 	const chunks: Buffer[] = [];
+	let body: Buffer | undefined;
 	let total = 0;
-	for await (const chunk of request) {
-		total += (chunk as Buffer).byteLength;
-		if (total > MAX_REQUEST_BYTES) throw new Error("Login helper request is too large");
-		chunks.push(chunk as Buffer);
-	}
-	const body = Buffer.concat(chunks);
 	try {
+		for await (const chunk of request) {
+			const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+			total += bytes.byteLength;
+			if (total > MAX_REQUEST_BYTES) {
+				bytes.fill(0);
+				throw new Error("Login helper request is too large");
+			}
+			chunks.push(bytes);
+		}
+		body = Buffer.concat(chunks);
 		return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
 	} finally {
-		body.fill(0);
+		body?.fill(0);
 		for (const chunk of chunks) chunk.fill(0);
 	}
 }
@@ -297,7 +308,13 @@ export class ModelLoginHelperService {
 	 * is answered only to the client that began it. */
 	readonly #owners = new Map<string, { client: HelperClient; until: number }>();
 	#running = 0;
+	#inFlight = 0;
+	#closing = false;
+	#closePromise?: Promise<void>;
 	#server?: Server;
+	#closingServer?: Server;
+	readonly #activeAborts = new Set<AbortController>();
+	readonly #drainWaiters = new Set<() => void>();
 
 	constructor(options: {
 		socketPath: string;
@@ -327,25 +344,63 @@ export class ModelLoginHelperService {
 		this.#concurrency = options.concurrency ?? 4;
 	}
 
+	#notifyDrain(): void {
+		if (this.#inFlight === 0) {
+			for (const notify of [...this.#drainWaiters]) notify();
+		}
+	}
+
 	async start(): Promise<void> {
 		if (this.#server) throw new Error("Login helper is already running");
+		this.#closing = false;
+		this.#closePromise = undefined;
 		await rm(this.#socketPath, { force: true });
 		const server = createServer((request, reply) => {
-			void this.#handle(request)
+			if (this.#closing) {
+				const body = JSON.stringify({ schema: "qorpera.model-login-helper-error/v1", error: "busy" });
+				reply.writeHead(503, {
+					"content-type": "application/json",
+					"cache-control": "no-store",
+					"content-length": Buffer.byteLength(body),
+					connection: "close",
+				});
+				reply.end(body);
+				return;
+			}
+			this.#inFlight += 1;
+			const requestAbort = new AbortController();
+			this.#activeAborts.add(requestAbort);
+			const onReplyClose = (): void => {
+				if (!reply.writableEnded) requestAbort.abort(new Error("Login helper client disconnected"));
+			};
+			reply.once("close", onReplyClose);
+			void this.#handle(request, requestAbort.signal)
 				.then((result) => {
+					if (reply.destroyed || reply.writableEnded) return;
 					const body = JSON.stringify(result.body);
 					reply.writeHead(result.status, {
 						"content-type": "application/json",
 						"cache-control": "no-store",
 						"content-length": Buffer.byteLength(body),
+						...(this.#closing ? { connection: "close" } : {}),
 					});
 					reply.end(body);
 				})
-				.catch(() => reply.destroy());
+				.catch(() => reply.destroy())
+				.finally(() => {
+					reply.off("close", onReplyClose);
+					this.#activeAborts.delete(requestAbort);
+					this.#inFlight -= 1;
+					if (this.#closingServer) {
+						if (reply.writableFinished || reply.destroyed) this.#closingServer.closeIdleConnections();
+						else reply.once("finish", () => this.#closingServer?.closeIdleConnections());
+					}
+					this.#notifyDrain();
+				});
 		});
 		server.requestTimeout = 10_000;
 		server.headersTimeout = 5000;
-		this.#server = server;
+		server.maxConnections = 64;
 		await new Promise<void>((resolveListen, reject) => {
 			server.once("error", reject);
 			server.listen(this.#socketPath, () => {
@@ -353,18 +408,87 @@ export class ModelLoginHelperService {
 				resolveListen();
 			});
 		});
+		this.#server = server;
 		// A later server error must not end the process with renewals in flight.
 		server.on("error", () => undefined);
 		// The broker's account reaches the socket through the helper's group; nobody else does.
 		await chmod(this.#socketPath, 0o660);
 	}
 
-	async close(): Promise<void> {
+	async close(graceMs = 75_000): Promise<void> {
+		if (this.#closePromise) return this.#closePromise;
 		const server = this.#server;
-		this.#server = undefined;
 		if (!server) return;
-		await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
-		await rm(this.#socketPath, { force: true });
+		this.#closing = true;
+		this.#server = undefined;
+		this.#closingServer = server;
+		const shuttingDown = (async () => {
+			// WHY: Drain active renewals/resets within the unit stop budget while bounding half-open Unix sockets so SIGTERM never hangs.
+			const closed = new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+			const boundedGraceMs = Number.isFinite(graceMs) ? Math.max(0, graceMs) : 75_000;
+			const deadlineAt = Date.now() + boundedGraceMs;
+			server.closeIdleConnections();
+			if (this.#inFlight > 0 && boundedGraceMs > 0) {
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				try {
+					await new Promise<void>((resolve) => {
+						const done = () => {
+							this.#drainWaiters.delete(done);
+							resolve();
+						};
+						this.#drainWaiters.add(done);
+						if (this.#inFlight === 0) {
+							done();
+							return;
+						}
+						timer = setTimeout(done, boundedGraceMs);
+						timer.unref?.();
+					});
+				} finally {
+					if (timer) clearTimeout(timer);
+				}
+			}
+			const abortAndCloseAll = (): void => {
+				if (this.#inFlight > 0) {
+					const shutdownError = new Error("Login helper shutting down");
+					for (const controller of this.#activeAborts) controller.abort(shutdownError);
+				}
+				server.closeAllConnections();
+			};
+			if (this.#inFlight > 0 || boundedGraceMs === 0) {
+				abortAndCloseAll();
+				await closed;
+			} else {
+				server.closeIdleConnections();
+				let closeTimer: ReturnType<typeof setTimeout> | undefined;
+				try {
+					await Promise.race([
+						closed,
+						new Promise<void>((resolve) => {
+							closeTimer = setTimeout(
+								() => {
+									abortAndCloseAll();
+									resolve();
+								},
+								Math.max(1, deadlineAt - Date.now()),
+							);
+							closeTimer.unref?.();
+						}),
+					]);
+				} finally {
+					if (closeTimer) clearTimeout(closeTimer);
+				}
+				await closed;
+			}
+			await rm(this.#socketPath, { force: true });
+		})();
+		this.#closePromise = shuttingDown;
+		try {
+			await shuttingDown;
+		} finally {
+			if (this.#closingServer === server) this.#closingServer = undefined;
+			if (this.#closePromise === shuttingDown) this.#closePromise = undefined;
+		}
 	}
 
 	#client(authorization: string | undefined): HelperClient | undefined {
@@ -383,7 +507,10 @@ export class ModelLoginHelperService {
 		return owner === undefined || owner.client === client;
 	}
 
-	async #handle(request: IncomingMessage): Promise<{ status: number; body: Record<string, unknown> }> {
+	async #handle(
+		request: IncomingMessage,
+		requestSignal: AbortSignal,
+	): Promise<{ status: number; body: Record<string, unknown> }> {
 		const signIns = this.#signIns;
 		const signInRoutes = [
 			"/v1/sign-in",
@@ -400,7 +527,7 @@ export class ModelLoginHelperService {
 			client !== undefined &&
 			request.headers["content-type"] === "application/json"
 		)
-			return this.#checkClaude(request, this.#claudeChecker);
+			return this.#checkClaude(request, this.#claudeChecker, requestSignal);
 		if (
 			request.method === "POST" &&
 			(request.url === "/v1/claude/read" || request.url === "/v1/claude/reset") &&
@@ -408,7 +535,7 @@ export class ModelLoginHelperService {
 			client === "vault" &&
 			request.headers["content-type"] === "application/json"
 		)
-			return this.#claude(request, this.#claudeReads);
+			return this.#claude(request, this.#claudeReads, requestSignal);
 		if (
 			request.method !== "POST" ||
 			!(request.url === "/v1/renew" || (signIns && signInRoutes.includes(request.url ?? ""))) ||
@@ -443,72 +570,80 @@ export class ModelLoginHelperService {
 			} catch {
 				return { status: 400, body: { schema: "qorpera.model-login-helper-error/v1", error: "invalid" } };
 			}
-			const signal = AbortSignal.timeout(
-				request.url === "/v1/sign-in/code" ? SIGN_IN_CODE_ANSWER_MS : SIGN_IN_ANSWER_MS,
-			);
+			const timeoutMs = request.url === "/v1/sign-in/code" ? SIGN_IN_CODE_ANSWER_MS : SIGN_IN_ANSWER_MS;
 			try {
-				if (request.url === "/v1/sign-in") {
-					const binding: ModelLoginSignInBinding = {
-						signInId: input.signInId as string,
-						companyId: input.companyId as string,
-						computeIdentityId: input.computeIdentityId as string,
-						capabilitySha256: input.capabilitySha256 as string,
-						expiresAt: input.expiresAt as string,
-						...(input.harness === "claude-code" ? { harness: "claude-code" as const } : {}),
-					};
-					// Another client's sign-in: refused, as a binding of another company is.
-					if (!this.#owns(binding.signInId, client)) throw new Error("Sign-in belongs to another client");
-					// Claimed before the (up to 12 s) wait for Codex, so the other client cannot reach it meanwhile.
-					const claimed = !this.#owners.has(binding.signInId);
-					const claim = { client, until: Date.now() + SIGN_IN_OWNER_MS };
-					this.#owners.set(binding.signInId, claim);
-					let state: Awaited<ReturnType<ModelLoginSignInHelper["beginSignIn"]>>;
-					try {
-						state = await signIns.beginSignIn(binding, signal);
-					} catch (error) {
-						// A failed first start frees the id, unless a start of the same client renewed the claim since.
-						if (claimed && this.#owners.get(binding.signInId) === claim) this.#owners.delete(binding.signInId);
-						throw error;
-					}
-					// Renewed on success, so a failing start that overlapped this one cannot free it.
-					this.#owners.set(binding.signInId, { client, until: Date.now() + SIGN_IN_OWNER_MS });
-					return { status: 200, body: { schema: "qorpera.model-login-sign-in/v1", ...state } };
-				}
-				const target = { signInId: input.signInId as string, companyId: input.companyId as string };
-				if (request.url === "/v1/sign-in/read") {
-					// Another client's sign-in reads as one the helper does not know.
-					const state = this.#owns(target.signInId, client)
-						? await signIns.readSignIn(target, signal)
-						: { status: "unknown" as const };
-					return { status: 200, body: { schema: "qorpera.model-login-sign-in/v1", ...state } };
-				}
-				if (request.url === "/v1/sign-in/code") {
-					if (!this.#owns(target.signInId, client) || !signIns.submitCode)
-						throw new Error("Sign-in belongs to another client");
-					const state = await signIns.submitCode({ ...target, code: input.code as string }, signal);
-					return { status: 200, body: { schema: "qorpera.model-login-sign-in/v1", ...state } };
-				}
-				if (request.url === "/v1/sign-in/completed") {
-					const finished = await signIns.listCompletedSignIns({ companyId: input.companyId as string }, signal);
-					return {
-						status: 200,
-						body: {
-							schema: "qorpera.model-login-sign-in-completed/v1",
-							signIns: finished
-								.filter((entry) => this.#owns(entry.signInId, client))
-								.map((entry) => ({
-									signInId: entry.signInId,
-									capabilitySha256: entry.capabilitySha256,
-								})),
-						},
-					};
-				}
-				if (!this.#owns(target.signInId, client)) throw new Error("Sign-in belongs to another client");
-				await signIns.finishSignIn(target, signal);
-				return {
-					status: 200,
-					body: { schema: "qorpera.model-login-sign-in-finished/v1", signInId: target.signInId },
-				};
+				return await withAbortScopes(
+					[requestSignal],
+					async (signal) => {
+						if (request.url === "/v1/sign-in") {
+							const binding: ModelLoginSignInBinding = {
+								signInId: input.signInId as string,
+								companyId: input.companyId as string,
+								computeIdentityId: input.computeIdentityId as string,
+								capabilitySha256: input.capabilitySha256 as string,
+								expiresAt: input.expiresAt as string,
+								...(input.harness === "claude-code" ? { harness: "claude-code" as const } : {}),
+							};
+							// Another client's sign-in: refused, as a binding of another company is.
+							if (!this.#owns(binding.signInId, client)) throw new Error("Sign-in belongs to another client");
+							// Claimed before the (up to 12 s) wait for Codex, so the other client cannot reach it meanwhile.
+							const claimed = !this.#owners.has(binding.signInId);
+							const claim = { client, until: Date.now() + SIGN_IN_OWNER_MS };
+							this.#owners.set(binding.signInId, claim);
+							let state: Awaited<ReturnType<ModelLoginSignInHelper["beginSignIn"]>>;
+							try {
+								state = await signIns.beginSignIn(binding, signal);
+							} catch (error) {
+								// A failed first start frees the id, unless a start of the same client renewed the claim since.
+								if (claimed && this.#owners.get(binding.signInId) === claim)
+									this.#owners.delete(binding.signInId);
+								throw error;
+							}
+							// Renewed on success, so a failing start that overlapped this one cannot free it.
+							this.#owners.set(binding.signInId, { client, until: Date.now() + SIGN_IN_OWNER_MS });
+							return { status: 200, body: { schema: "qorpera.model-login-sign-in/v1", ...state } };
+						}
+						const target = { signInId: input.signInId as string, companyId: input.companyId as string };
+						if (request.url === "/v1/sign-in/read") {
+							// Another client's sign-in reads as one the helper does not know.
+							const state = this.#owns(target.signInId, client)
+								? await signIns.readSignIn(target, signal)
+								: { status: "unknown" as const };
+							return { status: 200, body: { schema: "qorpera.model-login-sign-in/v1", ...state } };
+						}
+						if (request.url === "/v1/sign-in/code") {
+							if (!this.#owns(target.signInId, client) || !signIns.submitCode)
+								throw new Error("Sign-in belongs to another client");
+							const state = await signIns.submitCode({ ...target, code: input.code as string }, signal);
+							return { status: 200, body: { schema: "qorpera.model-login-sign-in/v1", ...state } };
+						}
+						if (request.url === "/v1/sign-in/completed") {
+							const finished = await signIns.listCompletedSignIns(
+								{ companyId: input.companyId as string },
+								signal,
+							);
+							return {
+								status: 200,
+								body: {
+									schema: "qorpera.model-login-sign-in-completed/v1",
+									signIns: finished
+										.filter((entry) => this.#owns(entry.signInId, client))
+										.map((entry) => ({
+											signInId: entry.signInId,
+											capabilitySha256: entry.capabilitySha256,
+										})),
+								},
+							};
+						}
+						if (!this.#owns(target.signInId, client)) throw new Error("Sign-in belongs to another client");
+						await signIns.finishSignIn(target, signal);
+						return {
+							status: 200,
+							body: { schema: "qorpera.model-login-sign-in-finished/v1", signInId: target.signInId },
+						};
+					},
+					timeoutMs,
+				);
 			} catch {
 				return { status: 409, body: { schema: "qorpera.model-login-helper-error/v1", error: "refused" } };
 			}
@@ -526,7 +661,11 @@ export class ModelLoginHelperService {
 			};
 		this.#running += 1;
 		try {
-			const result = await this.#renewer.renew(authJson, AbortSignal.timeout(HELPER_ANSWER_MS));
+			const result = await withAbortScopes(
+				[requestSignal],
+				(signal) => this.#renewer.renew(authJson, signal),
+				HELPER_ANSWER_MS,
+			);
 			return { status: 200, body: { schema: "qorpera.model-login-renewal/v1", ...result } };
 		} catch {
 			return {
@@ -540,6 +679,7 @@ export class ModelLoginHelperService {
 	async #checkClaude(
 		request: IncomingMessage,
 		claude: ClaudeLoginChecker,
+		requestSignal: AbortSignal,
 	): Promise<{ status: number; body: Record<string, unknown> }> {
 		let files: ClaudeLoginFiles;
 		try {
@@ -559,7 +699,11 @@ export class ModelLoginHelperService {
 			return { status: 200, body: { schema: CLAUDE_LOGIN_CHECK_SCHEMA, outcome: "failed" } };
 		this.#running += 1;
 		try {
-			const check = await claude.checkClaudeLogin(files, AbortSignal.timeout(CLAUDE_CHECK_ANSWER_MS));
+			const check = await withAbortScopes(
+				[requestSignal],
+				(signal) => claude.checkClaudeLogin(files, signal),
+				CLAUDE_CHECK_ANSWER_MS,
+			);
 			return { status: 200, body: { schema: CLAUDE_LOGIN_CHECK_SCHEMA, ...check } };
 		} catch {
 			return { status: 200, body: { schema: CLAUDE_LOGIN_CHECK_SCHEMA, outcome: "failed" } };
@@ -571,6 +715,7 @@ export class ModelLoginHelperService {
 	async #claude(
 		request: IncomingMessage,
 		reads: ClaudeLoginReads,
+		requestSignal: AbortSignal,
 	): Promise<{ status: number; body: Record<string, unknown> }> {
 		const reset = request.url === "/v1/claude/reset";
 		let input: Record<string, unknown>;
@@ -587,19 +732,29 @@ export class ModelLoginHelperService {
 		this.#running += 1;
 		try {
 			if (reset) {
-				const outcome = await reads.useClaudeReset(
-					{ credentials: input.credentials as string, kind: input.kind as ClaudeResetKind },
-					AbortSignal.timeout(CLAUDE_RESET_ANSWER_MS),
+				const outcome = await withAbortScopes(
+					[requestSignal],
+					(signal) =>
+						reads.useClaudeReset(
+							{ credentials: input.credentials as string, kind: input.kind as ClaudeResetKind },
+							signal,
+						),
+					CLAUDE_RESET_ANSWER_MS,
 				);
 				return { status: 200, body: { schema: "qorpera.claude-login-reset/v1", ...outcome } };
 			}
-			const read = await reads.readClaudeLogin(
-				{
-					credentials: input.credentials as string,
-					usage: input.usage as boolean,
-					resets: input.resets as boolean,
-				},
-				AbortSignal.timeout(CLAUDE_READ_ANSWER_MS),
+			const read = await withAbortScopes(
+				[requestSignal],
+				(signal) =>
+					reads.readClaudeLogin(
+						{
+							credentials: input.credentials as string,
+							usage: input.usage as boolean,
+							resets: input.resets as boolean,
+						},
+						signal,
+					),
+				CLAUDE_READ_ANSWER_MS,
 			);
 			return {
 				status: 200,
@@ -794,9 +949,15 @@ export class ModelLoginHelperClient
 				(response) => {
 					const chunks: Buffer[] = [];
 					let total = 0;
+					const wipe = (): void => {
+						for (const chunk of chunks) chunk.fill(0);
+						chunks.length = 0;
+					};
 					response.on("data", (chunk: Buffer) => {
 						total += chunk.byteLength;
 						if (total > MAX_RESPONSE_BYTES) {
+							chunk.fill(0);
+							wipe();
 							response.destroy();
 							reject(new Error("Login helper answer is too large"));
 							return;
@@ -812,10 +973,14 @@ export class ModelLoginHelperClient
 							reject(error);
 						} finally {
 							text.fill(0);
-							for (const chunk of chunks) chunk.fill(0);
+							wipe();
 						}
 					});
-					response.on("error", reject);
+					response.on("error", (error) => {
+						wipe();
+						reject(error);
+					});
+					response.on("close", wipe);
 				},
 			);
 			outgoing.on("error", reject);

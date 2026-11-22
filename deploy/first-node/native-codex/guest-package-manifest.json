@@ -87,8 +87,8 @@
     },
     {
       "file": "qorpera-claude-box-stage.sh",
-      "bytes": 2577,
-      "sha256": "2d375bd4483f39d1b574c855574fac03db863abaafd96b2973efcc9c267517e0"
+      "bytes": 2798,
+      "sha256": "e414a21dbd9b87d5cd005fd1a18dd18a2cb3ee3911e6599b1a31fac034e9e1ca"
     },
     {
       "file": "qorpera-claude-home-shell.mjs",
@@ -102,8 +102,8 @@
     },
     {
       "file": "qorpera-ephemeral-runner.mjs",
-      "bytes": 158887,
-      "sha256": "df616dabb32fdb4936950ebd646cf18f57039fa500d8aa879d3ad063fa8d496b"
+      "bytes": 163372,
+      "sha256": "e4f0bc5f2b07c816dae2ae2643ff62ea1a8caa5f82f1b81e648f631c69a9f455"
     },
     {
       "file": "qorpera-ephemeral-runner.service",
@@ -112,13 +112,13 @@
     },
     {
       "file": "qorpera-identity-recovery-restore.mjs",
-      "bytes": 28458,
-      "sha256": "38cef71b24727e0705a851502f1afe1dfb109d8f2d0c4f463e64ece35e6b2f98"
+      "bytes": 30242,
+      "sha256": "42c982ff439e8a35786de760fdeef340c7e882795c70003b7e20192f598f2b1a"
     },
     {
       "file": "qorpera-lxd-native-login-bootstrap.mjs",
-      "bytes": 62279,
-      "sha256": "12022ce4a24c7007f32aaf9455126b5752a312f94b152bf958546b7bcc474f93"
+      "bytes": 63120,
+      "sha256": "e1d4f37328eaaec44e66a863365af54f0584c2eecdcf43039c50f36005229f96"
     },
     {
       "file": "qorpera-lxd-native-login-bootstrap.service",
@@ -127,8 +127,8 @@
     },
     {
       "file": "qorpera-lxd-runner-bootstrap.mjs",
-      "bytes": 85499,
-      "sha256": "06f479c0854dce729f1d9a876fd129cb18fd9514871e65a63f51b7c13311cad1"
+      "bytes": 86579,
+      "sha256": "cb98175d99b9690cff86aeb7f398023b55c15cadf7f58eadddc6085cb71f3bc3"
     },
     {
       "file": "qorpera-lxd-runner-bootstrap.service",
@@ -152,8 +152,8 @@
     },
     {
       "file": "qorpera-native-provider-host.mjs",
-      "bytes": 5676702,
-      "sha256": "73a89afa3a2f242c5ededaf16d1b8cf88e7e8d3424f65377a6fd1ba6a3b67da8"
+      "bytes": 5987072,
+      "sha256": "9afff07b6cfa38b227d514ee79835e4b9abe3c7cb7767661e1b625c7301a50ac"
     },
     {
       "file": "qorpera-native-provider-host.service",

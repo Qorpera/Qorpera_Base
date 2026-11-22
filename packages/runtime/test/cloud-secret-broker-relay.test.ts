@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer, request as httpRequest, type IncomingMessage, type Server, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { PassThrough } from "node:stream";
 import { gzipSync } from "node:zlib";
 import {
 	CloudSecretBroker,
@@ -10,7 +11,7 @@ import {
 	PostgresCloudSecretBrokerAuthority,
 } from "@qorpera/runtime/cloud-secret-broker";
 import { HttpCloudSecretBrokerService } from "@qorpera/runtime/cloud-secret-broker-http";
-import type { CloudSecretRelayTarget } from "@qorpera/runtime/cloud-secret-broker-relay";
+import { type CloudSecretRelayTarget, openCloudSecretRelay } from "@qorpera/runtime/cloud-secret-broker-relay";
 import { CloudSecretKeyring } from "@qorpera/runtime/cloud-secret-crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -986,5 +987,61 @@ describe("capturing an MCP sign-in", () => {
 		clientAbort.abort();
 		await expect(pending).rejects.toThrow();
 		await vi.waitFor(() => expect(lookupSignal?.aborted).toBe(true));
+	});
+
+	it("aborts open streaming relays immediately on close and tears down upstream on request body errors", async () => {
+		const f = await fixture();
+		let upstreamClosed = false;
+		let upstreamReady!: () => void;
+		const inUpstream = new Promise<void>((resolve) => {
+			upstreamReady = resolve;
+		});
+		f.answer((req, reply) => {
+			reply.writeHead(200, { "content-type": "text/event-stream" });
+			reply.write("event: ready\ndata: ok\n\n");
+			upstreamReady();
+			req.once("close", () => {
+				upstreamClosed = true;
+			});
+		});
+		const service = services.at(-1)!;
+		const streamResponse = await f.call("/v1/coding-mcp", { headers: mcpHeaders() });
+		expect(streamResponse.status).toBe(200);
+		await inUpstream;
+		const closingAt = Date.now();
+		await service.close(5_000);
+		expect(Date.now() - closingAt).toBeLessThan(1_500);
+		await vi.waitFor(() => expect(upstreamClosed).toBe(true));
+		void streamResponse.body?.cancel().catch(() => undefined);
+
+		const body = new PassThrough();
+		let destroyedUpstream = false;
+		const fakeUpstream = new PassThrough() as unknown as ReturnType<typeof httpRequest>;
+		Object.assign(fakeUpstream, {
+			setTimeout: () => fakeUpstream,
+			destroy(error?: Error) {
+				destroyedUpstream = true;
+				PassThrough.prototype.destroy.call(this, error);
+				return this;
+			},
+		});
+		const relayPromise = openCloudSecretRelay(
+			{
+				resolve: async () => [PUBLIC_ADDRESS],
+				request: () => fakeUpstream,
+			},
+			{
+				origin: "https://mcp.example.test",
+				method: "POST",
+				path: "/mcp",
+				headers: {},
+				body,
+				idleMs: 5_000,
+			},
+			signal(),
+		);
+		queueMicrotask(() => body.emit("error", new Error("client body broke")));
+		await expect(relayPromise).rejects.toThrow("Cloud secret relay ended");
+		expect(destroyedUpstream).toBe(true);
 	});
 });

@@ -193,14 +193,6 @@ function rankSessions(sessions: readonly SurfaceSession[]): SurfaceSession[] {
 	return [...sessions].sort((a, b) => score(a) - score(b));
 }
 
-function projectedSourcePath(surface: SurfaceSummary): string | null {
-	const repo = surface.repositoryKey?.trim().replace(/^\/+|\/+$/g, "");
-	if (repo) return repo.startsWith("code/") ? repo : `code/${repo}`;
-	const folder = surface.folderRoot?.trim().replace(/^\/+|\/+$/g, "");
-	if (folder) return `${folder}/`;
-	return null;
-}
-
 function affectedFileChips(store: SurfacesStore, paths: readonly string[]): HTMLElement | null {
 	const files = paths.map((path) => path.trim()).filter((path) => path && !path.startsWith("mailto:"));
 	if (files.length === 0) return null;
@@ -247,6 +239,14 @@ function drawerCap(): number {
 	return Math.max(DRAWER_MIN, Math.min(DRAWER_MAX, Math.floor((window.innerWidth * DRAWER_MAX_SHARE) / scale)));
 }
 
+function sameDeps(prev: readonly unknown[] | undefined, next: readonly unknown[]): boolean {
+	if (!prev || prev.length !== next.length) return false;
+	for (let i = 0; i < next.length; i++) {
+		if (!Object.is(prev[i], next[i])) return false;
+	}
+	return true;
+}
+
 export class SurfaceSessionDrawer {
 	readonly el = h("aside", { class: "surface-drawer", "aria-hidden": "true" });
 	readonly #resizer = h("div", {
@@ -259,7 +259,6 @@ export class SurfaceSessionDrawer {
 	});
 	readonly #head = h("div", { class: "surface-drawer-head" });
 	readonly #body = h("div", { class: "surface-drawer-body" });
-	readonly #sourceFoot = h("div", { class: "surface-drawer-source", hidden: true });
 	readonly #replyTitle = h("span", { class: "surface-drawer-reply-title" });
 	readonly #replyStrip = h(
 		"div",
@@ -297,7 +296,7 @@ export class SurfaceSessionDrawer {
 	#dragging = false;
 	#dragged = false;
 	#surfaceId = "";
-	#shown = "";
+	#shown: readonly unknown[] | undefined;
 	#sessionId = "";
 	#messages = 0;
 	#quotedChange: QuotedChangeRef | undefined;
@@ -313,10 +312,7 @@ export class SurfaceSessionDrawer {
 		} catch {
 			/* WHY: Local browser storage is optional in private/sandboxed contexts. */
 		}
-		this.el.append(
-			this.#resizer,
-			h("div", { class: "surface-drawer-inner" }, this.#head, this.#body, this.#sourceFoot, this.#form),
-		);
+		this.el.append(this.#resizer, h("div", { class: "surface-drawer-inner" }, this.#head, this.#body, this.#form));
 		this.#wireResizer(signal);
 		this.#applyWidth();
 		signal.addEventListener("abort", () => this.#disarm(false), { once: true });
@@ -459,7 +455,7 @@ export class SurfaceSessionDrawer {
 	}
 
 	#redraw(): void {
-		this.#shown = "";
+		this.#shown = undefined;
 		const current = this.#store.state.surfaces.find(
 			(item) => item.id === (this.#store.state.drawer?.surfaceId ?? this.#surfaceId),
 		);
@@ -543,10 +539,9 @@ export class SurfaceSessionDrawer {
 		this.el.setAttribute("aria-hidden", String(!open));
 		this.el.inert = !open;
 		if (!open) {
-			this.#shown = "";
+			this.#shown = undefined;
 			this.#sessionId = "";
 			this.#messages = 0;
-			this.#sourceFoot.hidden = true;
 			this.#disarm(false);
 			this.#setQuotedChange(undefined);
 			return;
@@ -554,14 +549,12 @@ export class SurfaceSessionDrawer {
 		if (focusedExploration) {
 			if (this.#quotedChange && this.#quotedChange.sessionId !== state.drawer?.sessionId)
 				this.#setQuotedChange(undefined);
-			this.#sourceFoot.hidden = true;
 			this.#form.hidden = false;
 			this.#renderFocusedExploration(focusedExploration, targetSurface);
 			return;
 		}
 		if (focusedSession) {
 			if (this.#quotedChange && this.#quotedChange.sessionId !== focusedSession.id) this.#setQuotedChange(undefined);
-			this.#sourceFoot.hidden = true;
 			this.#form.hidden = false;
 			this.#renderFocused(focusedSession, targetSurface);
 			return;
@@ -578,16 +571,11 @@ export class SurfaceSessionDrawer {
 		const state = store.state;
 		const workspace = state.workspaces[surface.id];
 		const look = store.lookOf(surface);
-		const explorations = openExplorations(workspace);
-		const plainSessions = rankSessions((workspace?.activeSessions ?? []).filter((session) => !session.explorationId));
-		const sourcePath = projectedSourcePath(surface);
-		const key = JSON.stringify([
+		const deps: readonly unknown[] = [
 			"overview",
-			surface.id,
-			surface.archetype,
-			surface.repositoryKey,
-			surface.folderRoot,
-			look,
+			surface,
+			look.kind,
+			look.accent,
 			state.mode,
 			state.activeReportSlug,
 			state.hiddenChanges,
@@ -596,11 +584,13 @@ export class SurfaceSessionDrawer {
 			this.#armedApprove,
 			state.localStudioBase[surface.id],
 			state.cloudSurfaceFiles[surface.id],
-			explorations,
-			plainSessions,
-		]);
-		if (key === this.#shown) return;
-		this.#shown = key;
+			state.studioPatches,
+			workspace,
+		];
+		if (sameDeps(this.#shown, deps)) return;
+		this.#shown = deps;
+		const explorations = openExplorations(workspace);
+		const plainSessions = rankSessions((workspace?.activeSessions ?? []).filter((session) => !session.explorationId));
 		this.#sessionId = "";
 		this.#messages = 0;
 
@@ -627,30 +617,6 @@ export class SurfaceSessionDrawer {
 		}
 		this.#crew.settle();
 		this.#body.replaceChildren(...parts);
-		if (sourcePath) {
-			const href = surfaceHash(store.companyId, "files");
-			this.#sourceFoot.replaceChildren(
-				h(
-					"a",
-					{
-						class: "surface-source-pill",
-						href,
-						title: t("Open in Files"),
-						onclick: (event: MouseEvent) => {
-							if (!event.metaKey && !event.ctrlKey && !event.shiftKey && event.button === 0)
-								store.navigateSurface("files");
-						},
-					},
-					icon("folder"),
-					h("code", { class: "surface-source-path" }, sourcePath),
-					h("span", { class: "surface-source-link" }, t("Files")),
-				),
-			);
-			this.#sourceFoot.hidden = false;
-		} else {
-			this.#sourceFoot.replaceChildren();
-			this.#sourceFoot.hidden = true;
-		}
 	}
 
 	#explorationCard(
@@ -931,20 +897,20 @@ export class SurfaceSessionDrawer {
 			? reportsOwnedBy(state, resolvedSurface.id, { kind: "exploration", id: exploration.id })
 			: [];
 		const busy = Boolean(state.busy[`exploration:${exploration.id}`]);
-		const key = JSON.stringify([
+		const deps: readonly unknown[] = [
 			"focused-exploration",
 			exploration,
-			variants,
+			workspace,
 			picked?.id,
-			notes,
+			state.notes,
 			state.mode,
 			state.activeReportSlug,
 			state.busy,
 			this.#armedApprove,
 			ownedNotes,
-		]);
-		if (key === this.#shown) return;
-		this.#shown = key;
+		];
+		if (sameDeps(this.#shown, deps)) return;
+		this.#shown = deps;
 		this.#input.placeholder = t("Steer this session…");
 		this.#input.setAttribute("aria-label", t("Steer this session…"));
 		this.#send.setAttribute("aria-label", t("Send"));
@@ -1083,20 +1049,22 @@ export class SurfaceSessionDrawer {
 		const ownedNotes = resolvedSurface
 			? reportsOwnedBy(state, resolvedSurface.id, { kind: "session", id: session.id })
 			: [];
-		const key = JSON.stringify([
+		const deps: readonly unknown[] = [
 			"focused",
 			session,
-			notes,
+			resolvedSurface,
+			state.notes,
 			state.mode,
 			state.activeReportSlug,
 			state.hiddenChanges,
 			state.busy,
-			look,
+			look?.kind,
+			look?.accent,
 			this.#armedApprove,
 			ownedNotes,
-		]);
-		if (key === this.#shown) return;
-		this.#shown = key;
+		];
+		if (sameDeps(this.#shown, deps)) return;
+		this.#shown = deps;
 		this.#input.placeholder = t("Steer this session…");
 		this.#input.setAttribute("aria-label", t("Steer this session…"));
 		this.#send.setAttribute("aria-label", t("Send"));

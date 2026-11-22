@@ -615,7 +615,13 @@ fn saved_text(root: &Path, path: &str, sha256: &str) -> Option<String> {
 	if !inside {
 		return None;
 	}
-	let file = std::fs::File::open(root.join(path)).ok()?;
+	use std::os::unix::fs::OpenOptionsExt;
+	// WHY: Reject symlinks and avoid blocking on FIFOs or special devices before metadata checks run.
+	let file = std::fs::OpenOptions::new()
+		.read(true)
+		.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+		.open(root.join(path))
+		.ok()?;
 	let meta = file.metadata().ok()?;
 	if !meta.is_file() || meta.len() > MAX_TEXT {
 		return None;
@@ -1580,5 +1586,33 @@ mod tests {
 		assert_eq!(changes["database"], json!("shop"));
 		assert_eq!(changes["changes"][0]["name"], json!("add"));
 		assert_eq!(render(&changes, Format::Ndjson), "{\"name\":\"add\",\"parameters\":[\"id\"],\"words\":\"Add order\"}\n");
+	}
+
+	#[test]
+	fn saved_text_rejects_symlinks_and_fifos_without_blocking() {
+		let dir = std::env::temp_dir().join(format!(
+			"qorpera-folder-data-fifo-{}-{}",
+			std::process::id(),
+			std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()
+		));
+		let data_dir = dir.join("data");
+		std::fs::create_dir_all(&data_dir).unwrap();
+		let real = dir.join("outside.sql");
+		std::fs::write(&real, b"select 1;").unwrap();
+		let hash: String = Sha256::digest(b"select 1;").iter().map(|b| format!("{b:02x}")).collect();
+		let link = data_dir.join("link.sql");
+		std::os::unix::fs::symlink(&real, &link).unwrap();
+		assert_eq!(saved_text(&dir, "data/link.sql", &hash), None);
+
+		let fifo = data_dir.join("pipe.sql");
+		let c_fifo = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+		// SAFETY: mkfifo with a valid null-terminated path creates a FIFO in our temp test directory.
+		assert_eq!(unsafe { libc::mkfifo(c_fifo.as_ptr(), 0o600) }, 0);
+		assert_eq!(saved_text(&dir, "data/pipe.sql", &hash), None);
+
+		let ok = data_dir.join("ok.sql");
+		std::fs::write(&ok, b"select 1;").unwrap();
+		assert_eq!(saved_text(&dir, "data/ok.sql", &hash).as_deref(), Some("select 1;"));
+		let _ = std::fs::remove_dir_all(&dir);
 	}
 }

@@ -239,8 +239,8 @@ All tables are keyed by company environment.
   re-resolves it, and a wake's read copy copies it as it is.
 - **Objects** (`qorpera_profile_objects`, shared) gain two columns:
   `unreferenced_since`, and a `deleting` mark (§8).
-- **Storage usage** (`qorpera_folder_storage_usage`) is updated outside the
-  commit transaction, and the upload quota trigger reads it for `folder-v2`.
+- **Storage usage** (`qorpera_folder_storage_usage`, sharded across 16 `(profile_id, bucket)` rows) is updated outside
+  the commit transaction, and quota/usage readers sum across buckets for `folder-v2`.
 
 ## 3. Commits
 

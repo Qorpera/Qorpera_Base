@@ -66,7 +66,8 @@ describe("thread interaction requests", () => {
 			// A coding value's name as the capture takes it.
 			{ name: "npm-token" },
 			{ name: "git_token" },
-			{ name: "openai_api_key" },
+			{ name: "codex_home" },
+			{ name: "claude_code_oauth_token" },
 			// The names a coding machine sets itself, as the kernel lists them.
 			{ name: "path" },
 			{ name: "https_proxy" },

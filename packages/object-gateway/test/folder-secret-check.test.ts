@@ -887,4 +887,51 @@ describe("the save check of git's own storage (repo.git)", () => {
 		expect(core.entries.has("docs/third.txt")).toBe(false);
 		nothingNamed();
 	});
+
+	it("invalidates pack clean-OID cache across repacks when a coding machine's secret set expands", async () => {
+		const scratch = await mkdtemp(join(tmpdir(), "qorpera-folder-repack-"));
+		cleanups.push(() => rm(scratch, { recursive: true, force: true }));
+		const gitRun = (args: string[], input?: string) => {
+			const res = spawnSync("/usr/bin/git", args, {
+				cwd: scratch,
+				input,
+				env: { PATH: "/usr/bin:/bin", HOME: scratch, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+			});
+			if (res.status !== 0) throw new Error(`git ${args[0]} failed: ${res.stderr.toString()}`);
+			return res.stdout;
+		};
+		gitRun(["init", "-q", "--bare", "."]);
+		const oidA = gitRun(["hash-object", "-w", "--stdin"], `existing payload with ${VALUE}\n`).toString().trim();
+		const oidB = gitRun(["hash-object", "-w", "--stdin"], "new clean object\n").toString().trim();
+		const oidC = gitRun(["hash-object", "-w", "--stdin"], "third clean object\n").toString().trim();
+		const pack1 = gitRun(["pack-objects", "--stdout", "-q"], `${oidA}\n`);
+		const pack2 = gitRun(["pack-objects", "--stdout", "-q"], `${oidA}\n${oidB}\n`);
+		const pack3 = gitRun(["pack-objects", "--stdout", "-q"], `${oidA}\n${oidB}\n${oidC}\n`);
+
+		const { core, service, open, nothingNamed } = await company(secretsOf("other-value-0002"));
+		const view = await open();
+		const p1 = `${MIRROR}/objects/pack/pack-${"a".repeat(40)}.pack`;
+		const p2 = `${MIRROR}/objects/pack/pack-${"b".repeat(40)}.pack`;
+		const p3 = `${MIRROR}/objects/pack/pack-${"c".repeat(40)}.pack`;
+		const p4 = `${MIRROR}/objects/pack/pack-${"d".repeat(40)}.pack`;
+
+		await put(view, p1, pack1);
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual([]);
+		expect(core.entries.get(p1)?.fileSha256).toBe(hashOf(pack1));
+
+		await put(view, p2, pack2);
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual([]);
+		expect(core.entries.get(p2)?.fileSha256).toBe(hashOf(pack2));
+
+		service.secrets(CODING_MACHINE_ID, secretsOf("other-value-0002", VALUE));
+		await put(view, p3, pack2);
+		await put(view, p4, pack3);
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual([
+			refused(p3, CARRIES),
+			refused(p4, CARRIES),
+		]);
+		expect(core.entries.has(p3)).toBe(false);
+		expect(core.entries.has(p4)).toBe(false);
+		nothingNamed();
+	});
 });

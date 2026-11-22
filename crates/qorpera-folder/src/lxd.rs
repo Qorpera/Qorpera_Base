@@ -22,6 +22,7 @@ pub const SOCKET: &str = "/var/snap/lxd/common/lxd/unix.socket";
 const MAX_ANSWER: u64 = 64 * 1024 * 1024;
 const CONFIRMED_FOR: Duration = Duration::from_secs(2);
 const LIST_AT_MOST_EVERY: Duration = Duration::from_secs(1);
+const FAILURE_COOLDOWN: Duration = Duration::from_secs(1);
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 struct Known {
@@ -35,6 +36,7 @@ struct State {
 	confirming: std::collections::HashSet<u32>,
 	listing: bool,
 	listed: Option<Instant>,
+	failed_at: Option<Instant>,
 }
 
 pub struct Machines {
@@ -63,6 +65,9 @@ impl Machines {
 				Some(k) if k.confirmed.elapsed() < CONFIRMED_FOR => return (Lookup::Found, Some(k.machine.clone())),
 				Some(_) if state.confirming.contains(&cid) => state = self.done.wait(state).unwrap(),
 				Some(k) => {
+					if state.failed_at.is_some_and(|at| at.elapsed() < FAILURE_COOLDOWN) {
+						return (Lookup::Unavailable, None);
+					}
 					let hint = (k.machine.clone(), k.confirmed);
 					state.confirming.insert(cid);
 					break Some(hint);
@@ -78,16 +83,21 @@ impl Machines {
 			self.done.notify_all();
 			match confirmed {
 				Ok(true) => {
+					state.failed_at = None;
 					state.known.insert(cid, Known { machine: machine.clone(), confirmed: Instant::now() });
 					return (Lookup::Found, Some(machine));
 				}
 				Ok(false) => {
+					state.failed_at = None;
 					// Only the entry that was checked: a listing meanwhile may have put a fresh one there.
 					if state.known.get(&cid).is_some_and(|k| k.confirmed == seen) {
 						state.known.remove(&cid);
 					}
 				}
-				Err(_) => return (Lookup::Unavailable, None),
+				Err(_) => {
+					state.failed_at = Some(Instant::now());
+					return (Lookup::Unavailable, None);
+				}
 			}
 		}
 		self.from_listing(cid)
@@ -118,10 +128,14 @@ impl Machines {
 			if state.listed.is_some_and(|at| at.elapsed() < LIST_AT_MOST_EVERY) {
 				return (Lookup::None, None);
 			}
-			if !state.listing {
-				break;
+			if state.listing {
+				state = self.done.wait(state).unwrap();
+				continue;
 			}
-			state = self.done.wait(state).unwrap();
+			if state.failed_at.is_some_and(|at| at.elapsed() < FAILURE_COOLDOWN) {
+				return (Lookup::Unavailable, None);
+			}
+			break;
 		}
 		state.listing = true;
 		drop(state);
@@ -137,6 +151,7 @@ impl Machines {
 		match listed {
 			Ok(found) => {
 				let now = Instant::now();
+				state.failed_at = None;
 				state.known = found.into_iter().map(|(c, machine)| (c, Known { machine, confirmed: now })).collect();
 				state.listed = Some(now);
 				match state.known.get(&cid) {
@@ -144,7 +159,10 @@ impl Machines {
 					None => (Lookup::None, None),
 				}
 			}
-			Err(_) => (Lookup::Unavailable, None),
+			Err(_) => {
+				state.failed_at = Some(Instant::now());
+				(Lookup::Unavailable, None)
+			}
 		}
 	}
 
@@ -391,5 +409,38 @@ mod tests {
 		std::thread::sleep(LIST_AT_MOST_EVERY + Duration::from_millis(50));
 		assert_eq!(machines.lookup(42), (Lookup::Unavailable, None));
 		assert_eq!(Machines::new("/nonexistent/lxd.sock").lookup(42), (Lookup::Unavailable, None));
+	}
+
+	#[test]
+	fn failed_lookups_share_cooldown_instead_of_cascading_serially() {
+		let (socket, seen) = fake_lxd(|_| (500, "{}".into()), Duration::from_millis(80));
+		let machines = Arc::new(Machines::new(&socket));
+		let threads: Vec<_> = (0..20)
+			.map(|_| {
+				let machines = machines.clone();
+				std::thread::spawn(move || machines.lookup(42))
+			})
+			.collect();
+		for t in threads {
+			assert_eq!(t.join().unwrap(), (Lookup::Unavailable, None));
+		}
+		assert_eq!(machines.asked(), 1, "20 concurrent failed listings should make one LXD call: {:?}", seen.lock().unwrap());
+
+		let (socket2, seen2) = fake_lxd(|_| (500, "{}".into()), Duration::from_millis(80));
+		let machines2 = Arc::new(Machines::new(&socket2));
+		machines2.state.lock().unwrap().known.insert(
+			42,
+			Known { machine: exec(), confirmed: Instant::now() - CONFIRMED_FOR - Duration::from_millis(1) },
+		);
+		let threads: Vec<_> = (0..20)
+			.map(|_| {
+				let machines2 = machines2.clone();
+				std::thread::spawn(move || machines2.lookup(42))
+			})
+			.collect();
+		for t in threads {
+			assert_eq!(t.join().unwrap(), (Lookup::Unavailable, None));
+		}
+		assert_eq!(machines2.asked(), 1, "20 concurrent failed confirms should make one LXD call: {:?}", seen2.lock().unwrap());
 	}
 }

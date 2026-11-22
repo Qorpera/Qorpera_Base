@@ -48,5 +48,11 @@ wait "$box"
 rc=$?
 umount -l "$mnt" 2>/dev/null
 kill "$fs" 2>/dev/null
+# WHY: Bound sshfs teardown wait and fall back to SIGKILL so a wedged SFTP/FUSE process cannot hang a completed run.
+for _ in $(seq 1 20); do
+	kill -0 "$fs" 2>/dev/null || break
+	sleep 0.05
+done
+kill -9 "$fs" 2>/dev/null
 wait "$fs" 2>/dev/null
 exit "$rc"

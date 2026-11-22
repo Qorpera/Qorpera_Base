@@ -22,6 +22,7 @@ import { DataChanges } from "./data-changes.ts";
 import { DataParams } from "./data-params.ts";
 
 const PAGE_ROWS = 100;
+const MAX_WATCH_REFETCH_PAGES = 10;
 const WATCH_GAP_MS = 500;
 const WATCH_RETRY_MS = [2000, 5000, 10_000] as const;
 const SAVED_MS = 1600;
@@ -540,24 +541,68 @@ class DataListView {
 		if (ok && !read.stop.signal.aborted && !this.#lifetime.signal.aborted) void this.#watch(read);
 	}
 
-	#take(read: ListRead, pages: readonly CloudMemberDataPage[]): void {
+	#take(read: ListRead, pages: readonly CloudMemberDataPage[], preserveTail = false): void {
 		const [first] = pages;
 		if (!first) return;
 		read.moreAbort?.abort();
 		read.moreAbort = undefined;
 		read.loading = false;
 		read.failed = false;
+		const previousRows = read.rows;
+		const previousNext = read.next;
+		const previousMore = read.more;
+		const previousPages = read.pages;
+		const sameSchema =
+			preserveTail &&
+			first.key.length > 0 &&
+			read.columns.length === first.columns.length &&
+			read.columns.every((column, index) => column === first.columns[index]) &&
+			read.key.length === first.key.length &&
+			read.key.every((column, index) => column === first.key[index]);
 		read.columns = first.columns;
 		read.key = first.key;
-		read.rows = pages.flatMap((page) =>
+		const freshRows = pages.flatMap((page) =>
 			page.rows.filter(hasValues).map((row) => ({ values: row.values, seen: row.seen })),
 		);
-		const last = pages.at(-1);
-		read.next = last?.next;
-		read.more = last?.more ?? false;
+		let keptTail = false;
+		if (sameSchema) {
+			const boundaryRow = freshRows.at(-1);
+			const boundaryKey = boundaryRow ? keyOf(first.columns, first.key, boundaryRow.values) : null;
+			const boundaryIndex =
+				boundaryKey === null
+					? -1
+					: previousRows.findIndex((row) => keyOf(first.columns, first.key, row.values) === boundaryKey);
+			if (
+				boundaryIndex >= 0 &&
+				boundaryRow &&
+				JSON.stringify(previousRows[boundaryIndex]!.values) === JSON.stringify(boundaryRow.values)
+			) {
+				const seenKeys = new Set(freshRows.map((row) => keyOf(first.columns, first.key, row.values)));
+				// WHY: Keep the old tail only when every prior row through the boundary is still present, so a head row edited into the tail cannot vanish behind a stale cursor.
+				const allHeadPresent = previousRows
+					.slice(0, boundaryIndex + 1)
+					.every((row) => seenKeys.has(keyOf(first.columns, first.key, row.values)));
+				if (allHeadPresent) {
+					keptTail = true;
+					const tail = previousRows
+						.slice(boundaryIndex + 1)
+						.filter((row) => !seenKeys.has(keyOf(first.columns, first.key, row.values)));
+					read.rows = [...freshRows, ...tail];
+					read.next = previousNext;
+					read.more = previousMore;
+					read.pages = previousPages;
+				}
+			}
+		}
+		if (!keptTail) {
+			read.rows = freshRows;
+			const last = pages.at(-1);
+			read.next = last?.next;
+			read.more = last?.more ?? false;
+			read.pages = pages.length;
+		}
 		read.tooLarge = pages.some((page) => page.tooLarge === true);
 		read.etag = first.etag;
-		read.pages = pages.length;
 	}
 
 	async #more(read: ListRead): Promise<void> {
@@ -615,24 +660,25 @@ class DataListView {
 				const hidden = () => document.visibilityState === "hidden" && call.abort();
 				document.addEventListener("visibilitychange", hidden);
 				try {
-					const answer = await withAbortScopes([signal, call.signal], (watchSignal) =>
-						this.#calls().watchTables([watched], watchSignal),
-					);
-					failures = 0;
-					if ("changed" in answer && !signal.aborted) {
-						const changed = answer.changed[0]?.answer;
-						if (changed && "key" in changed) await this.#again(read, changed, signal);
-						else if (changed) {
-							read.columns = changed.columns;
-							read.rows = changed.rows.map((values) => ({ values, seen: null }));
-							read.more = changed.more;
-							read.etag = changed.etag;
+					// WHY: Scope both watchTables and multi-page #again refetches to visibility so hiding the tab aborts background page fetches immediately.
+					await withAbortScopes([signal, call.signal], async (watchSignal) => {
+						const answer = await this.#calls().watchTables([watched], watchSignal);
+						failures = 0;
+						if ("changed" in answer && !watchSignal.aborted) {
+							const changed = answer.changed[0]?.answer;
+							if (changed && "key" in changed) await this.#again(read, changed, watchSignal);
+							else if (changed) {
+								read.columns = changed.columns;
+								read.rows = changed.rows.map((values) => ({ values, seen: null }));
+								read.more = changed.more;
+								read.etag = changed.etag;
+							}
+							if (!watchSignal.aborted && this.#list === read) {
+								this.#drawBody();
+								this.#follow(read);
+							}
 						}
-						if (!signal.aborted && this.#list === read) {
-							this.#drawBody();
-							this.#follow(read);
-						}
-					}
+					});
 				} catch {
 					if (signal.aborted) return;
 					if (!call.signal.aborted) {
@@ -649,8 +695,14 @@ class DataListView {
 
 	async #again(read: ListRead, first: CloudMemberDataPage, signal: AbortSignal): Promise<void> {
 		const pages = [first];
+		// WHY: Cap watch refetches and stop on repeated cursors so deep scrolls do not flood serial requests on every live update.
+		const limit = Math.min(read.pages, MAX_WATCH_REFETCH_PAGES);
 		let next = first.next;
-		while (pages.length < read.pages && next && !signal.aborted) {
+		const seenCursors = new Set<string>();
+		while (pages.length < limit && next && !signal.aborted) {
+			const cursorKey = JSON.stringify(next);
+			if (seenCursors.has(cursorKey)) break;
+			seenCursors.add(cursorKey);
 			try {
 				const page = await this.#calls().rows({ ...this.#asked(read), after: next }, signal);
 				pages.push(page);
@@ -659,7 +711,8 @@ class DataListView {
 				break;
 			}
 		}
-		if (!signal.aborted) this.#take(read, pages);
+		const capped = read.pages > limit && pages.length === limit && next !== undefined;
+		if (!signal.aborted) this.#take(read, pages, capped);
 	}
 
 	#follow(read: ListRead): void {

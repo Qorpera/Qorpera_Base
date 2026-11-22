@@ -5,6 +5,21 @@ const MAX_SESSION_COMMANDS = 1024;
 
 /** What runs: a model's command, a terminal (5g-7) or a setup step (5h). */
 export type CodingCommandKind = "command" | "terminal" | "install";
+export type CodingSecretScope = "all" | "build" | "test" | "runtime";
+export type CodingSecretTargetEnv = "all" | "dev" | "test" | "prod";
+
+export interface ScopedEnvironmentEntry {
+	readonly name: string;
+	readonly value: string;
+	readonly scope: CodingSecretScope;
+	readonly targetEnv: CodingSecretTargetEnv;
+	readonly sensitive?: boolean;
+}
+
+export interface FilteredScopedEnvironment {
+	readonly secrets: Readonly<Record<string, string>>;
+	readonly config: Readonly<Record<string, string>>;
+}
 
 /** One byte stream's masking (a `CodingSecretMaskStream`): `push` holds back the tail that could still start a
  * value (`pending` raw bytes), and `end` lets it through. A new stream takes over at that tail with `resume` and what
@@ -373,4 +388,105 @@ function checkMaskValues(candidates: Iterable<string>): void {
 			throw new RangeError(`a coding secret shorter than ${CODING_SECRET_MASK_MINIMUM_BYTES} bytes can't be masked`);
 		}
 	}
+}
+function checkConfigValues(candidates: Iterable<string>): void {
+	for (const value of candidates) {
+		if (typeof value !== "string" || value.includes("\0") || Buffer.byteLength(value, "utf8") > 32 * 1024) {
+			throw new RangeError("a coding config value is invalid");
+		}
+	}
+}
+
+const SCOPED_ENV_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
+const SCOPED_ENV_REFUSED_PREFIX = /^(LC|GIT|LD|DYLD|QORPERA|SSH|XDG|DOCKER|CLAUDE|CODEX)_/;
+const SCOPED_ENV_RESERVED = new Set([
+	"HOME",
+	"PATH",
+	"TMPDIR",
+	"TMP",
+	"TEMP",
+	"USER",
+	"LOGNAME",
+	"SHELL",
+	"PWD",
+	"OLDPWD",
+	"TERM",
+	"COLORTERM",
+	"COLUMNS",
+	"LINES",
+	"LANG",
+	"LANGUAGE",
+	"TZ",
+	"BASH_ENV",
+	"ENV",
+	"IFS",
+	"PS1",
+	"PS2",
+	"PS4",
+	"PROMPT_COMMAND",
+	"SHELLOPTS",
+	"BASHOPTS",
+	"CDPATH",
+	"GLOBIGNORE",
+	"HOSTNAME",
+	"SHLVL",
+	"MAIL",
+	"MAILPATH",
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+	"NO_PROXY",
+	"ALL_PROXY",
+	"FTP_PROXY",
+	"SSL_CERT_FILE",
+	"SSL_CERT_DIR",
+	"NODE_EXTRA_CA_CERTS",
+]);
+
+function checkEnvName(name: string): void {
+	if (
+		typeof name !== "string" ||
+		!SCOPED_ENV_NAME.test(name) ||
+		SCOPED_ENV_REFUSED_PREFIX.test(name) ||
+		SCOPED_ENV_RESERVED.has(name)
+	) {
+		throw new RangeError(`environment variable name is not allowed: ${name}`);
+	}
+}
+
+export function filterScopedSecrets(
+	entries: readonly ScopedEnvironmentEntry[],
+	scope: Exclude<CodingSecretScope, "all">,
+	targetEnv: Exclude<CodingSecretTargetEnv, "all">,
+): FilteredScopedEnvironment {
+	const secrets: Record<string, string> = {};
+	const config: Record<string, string> = {};
+	for (const entry of entries) {
+		if (entry.scope !== "all" && entry.scope !== scope) continue;
+		if (entry.targetEnv !== "all" && entry.targetEnv !== targetEnv) continue;
+		checkEnvName(entry.name);
+		if (entry.sensitive === false) {
+			checkConfigValues([entry.value]);
+			config[entry.name] = entry.value;
+		} else {
+			checkMaskValues([entry.value]);
+			secrets[entry.name] = entry.value;
+		}
+	}
+	return Object.freeze({
+		secrets: Object.freeze(secrets),
+		config: Object.freeze(config),
+	});
+}
+
+export function buildAppSecretMask(
+	secrets: Readonly<Record<string, string>>,
+	history: readonly string[] = [],
+): CodingSecretMask {
+	const secretValues = Object.values(secrets);
+	checkMaskValues(secretValues);
+	checkMaskValues(history);
+	const mask = new CodingSecretMask();
+	for (const value of secretValues) mask.add(value);
+	for (const value of history) mask.add(value);
+	return mask;
 }

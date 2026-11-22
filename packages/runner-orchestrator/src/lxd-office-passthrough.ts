@@ -1,6 +1,6 @@
 import { createConnection, createServer, isIP, type Socket } from "node:net";
 import { withTimeoutScope } from "./abort-scope.ts";
-import type { LxdHostInventoryClient, LxdInstanceStateRecord } from "./lxd-client.ts";
+import type { LxdHostInventoryClient, LxdHostInventoryInstance, LxdInstanceStateRecord } from "./lxd-client.ts";
 import { lxdGuestIpv4 } from "./lxd-guest-network.ts";
 import { officeRecord } from "./lxd-office-image-provenance.ts";
 
@@ -111,6 +111,7 @@ export interface LxdOfficePassthroughGuestIdentity {
  * into a burst of LXD inventories. */
 export function createLxdOfficeGuestResolver(
 	client: LxdHostInventoryClient & {
+		listProjectInstances?(project: string, signal: AbortSignal): Promise<LxdHostInventoryInstance[]>;
 		getInstanceState(project: string, name: string, signal?: AbortSignal): Promise<LxdInstanceStateRecord>;
 	},
 	guest: LxdOfficePassthroughGuestIdentity,
@@ -122,8 +123,11 @@ export function createLxdOfficeGuestResolver(
 		| { promise: Promise<string | undefined>; controller: AbortController; waiters: number; settled: boolean }
 		| undefined;
 	const resolve = async (signal: AbortSignal): Promise<string | undefined> => {
-		const inventory = await client.inspectHostInventory(signal);
-		const candidates = inventory.instances.filter(
+		// WHY: Prefer project-scoped instance listing over whole-host inventory when available to avoid all-projects dumps every second.
+		const instances = client.listProjectInstances
+			? await client.listProjectInstances(guest.project, signal)
+			: (await client.inspectHostInventory(signal)).instances;
+		const candidates = instances.filter(
 			(instance) =>
 				instance.project === guest.project &&
 				instance.type === "virtual-machine" &&
@@ -203,6 +207,7 @@ export class LxdOfficePassthrough {
 	readonly #resolve: LxdOfficeGuestResolver;
 	readonly #options: Required<Omit<LxdOfficePassthroughOptions, "onError">> &
 		Pick<LxdOfficePassthroughOptions, "onError">;
+	readonly #closeAbort = new AbortController();
 	#closed = false;
 
 	private constructor(
@@ -280,9 +285,14 @@ export class LxdOfficePassthrough {
 		this.#sockets.add(client);
 		let upstream: Socket | undefined;
 		let finished = false;
+		const resolveAbort = new AbortController();
+		const onPassthroughClose = () => resolveAbort.abort(new Error("OFFICE_PASSTHROUGH_CLOSED"));
+		this.#closeAbort.signal.addEventListener("abort", onPassthroughClose, { once: true });
 		const finish = () => {
 			if (finished) return;
 			finished = true;
+			this.#closeAbort.signal.removeEventListener("abort", onPassthroughClose);
+			resolveAbort.abort(new Error("OFFICE_PASSTHROUGH_CLIENT_CLOSED"));
 			this.#sockets.delete(client);
 			if (upstream) this.#sockets.delete(upstream);
 			this.#counts.set(key, Math.max(0, (this.#counts.get(key) ?? 1) - 1));
@@ -293,11 +303,14 @@ export class LxdOfficePassthrough {
 		client.on("close", () => finish());
 		let address: string | undefined;
 		try {
-			address = await withTimeoutScope(undefined, this.#options.connectTimeoutMs, (checked) =>
+			// WHY: Abort guest lookup immediately when the client disconnects or the passthrough closes instead of waiting for connectTimeoutMs.
+			address = await withTimeoutScope(resolveAbort.signal, this.#options.connectTimeoutMs, (checked) =>
 				this.#resolve(checked),
 			);
 		} catch (error) {
-			this.#report(error);
+			if (!resolveAbort.signal.aborted) this.#report(error);
+		} finally {
+			this.#closeAbort.signal.removeEventListener("abort", onPassthroughClose);
 		}
 		if (address === undefined || client.destroyed || this.#closed) {
 			finish();
@@ -330,6 +343,7 @@ export class LxdOfficePassthrough {
 
 	async close(): Promise<void> {
 		this.#closed = true;
+		this.#closeAbort.abort(new Error("OFFICE_PASSTHROUGH_CLOSED"));
 		for (const socket of this.#sockets) socket.destroy();
 		this.#sockets.clear();
 		await Promise.all(

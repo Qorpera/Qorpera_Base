@@ -186,4 +186,11 @@ describe("web account boundaries", () => {
 		await expect(account.companies()).rejects.toThrow("Sign in");
 		expect(() => account.recovery()).toThrow();
 	});
+	it("preserves previously loaded companies when a subsequent refresh fails transiently", async () => {
+		const { account, state } = fixture();
+		await account.companies();
+		state.rpc = async () => new Response(null, { status: 503 });
+		await expect(account.companies()).rejects.toThrow("Cloud access is unavailable");
+		expect(account.openCompany(id(11)).company.companyId).toBe(id(10));
+	});
 });

@@ -35,11 +35,13 @@ declare
 	v_ops_surface_id uuid;
 	v_session_member uuid;
 	v_session_cofounder uuid;
+	v_session_cofounder_folder uuid;
 	v_session_auto uuid;
 	v_session_ops uuid;
 	v_session_big_prompt uuid;
 	v_lease_member uuid;
 	v_lease_cofounder uuid;
+	v_lease_cofounder_folder uuid;
 	v_lease_auto uuid;
 	v_lease_ops uuid;
 	v_lease_big uuid;
@@ -123,9 +125,12 @@ begin
 	v_session_cofounder := (public.qorpera_native_surface_start_session(
 		v_company_a, v_code_surface_id, 'Build landing hero', 'Landing hero', 'cofounder', 'Co-Founder'
 	) ->> 'sessionId')::uuid;
+	v_session_cofounder_folder := (public.qorpera_native_surface_start_session(
+		v_company_a, v_folder_surface_id, 'Refresh palette notes', 'Palette refresh', 'cofounder', 'Co-Founder'
+	) ->> 'sessionId')::uuid;
 
 	v_auto := public.qorpera_native_surface_manage_automation(
-		v_company_a, 'create', null, 'Daily Website Check', 'Review website metrics', 'Daily at 09:00', 'website', true
+		v_company_a, 'create', null, 'Daily Identity Check', 'Review identity tokens', 'Daily at 09:00', 'identity', true
 	);
 	v_auto_id := (v_auto ->> 'id')::uuid;
 	v_trigger := public.qorpera_surface_trigger_automation(v_auto_id);
@@ -137,7 +142,7 @@ begin
 
 	v_claimed := public.qorpera_surface_claim_pending_jobs_for_lane(16, 'sessions');
 	perform pg_temp.shw_assert(
-		jsonb_array_length(v_claimed -> 'sessions') >= 4,
+		jsonb_array_length(v_claimed -> 'sessions') >= 5,
 		'sessions lane claims all queued surface sessions'
 	);
 
@@ -150,6 +155,9 @@ begin
 	select (elem ->> 'leaseToken')::uuid into strict v_lease_cofounder
 	from jsonb_array_elements(v_claimed -> 'sessions') elem
 	where (elem ->> 'sessionId')::uuid = v_session_cofounder;
+	select (elem ->> 'leaseToken')::uuid into strict v_lease_cofounder_folder
+	from jsonb_array_elements(v_claimed -> 'sessions') elem
+	where (elem ->> 'sessionId')::uuid = v_session_cofounder_folder;
 	select (elem ->> 'leaseToken')::uuid into strict v_lease_auto
 	from jsonb_array_elements(v_claimed -> 'sessions') elem
 	where (elem ->> 'sessionId')::uuid = v_session_auto;
@@ -241,11 +249,11 @@ begin
 
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	set local role service_role;
-	v_enq := public.qorpera_surface_enqueue_session_run(v_session_cofounder, v_lease_cofounder);
-	perform pg_temp.shw_assert(v_enq ->> 'status' = 'enqueued', 'cofounder session enqueues wake');
+	v_enq := public.qorpera_surface_enqueue_session_run(v_session_cofounder_folder, v_lease_cofounder_folder);
+	perform pg_temp.shw_assert(v_enq ->> 'status' = 'enqueued', 'cofounder folder session enqueues wake');
 	v_wake := (select w from public.qorpera_wake_occurrences w where w.id = (v_enq ->> 'wakeId')::uuid);
 	v_enq := public.qorpera_surface_enqueue_session_run(v_session_auto, v_lease_auto);
-	perform pg_temp.shw_assert(v_enq ->> 'status' = 'enqueued', 'automation session enqueues wake');
+	perform pg_temp.shw_assert(v_enq ->> 'status' = 'enqueued', 'automation folder session enqueues wake');
 	reset role;
 
 	v_mat := pg_temp.shw_materialize(v_company_a, 16);
@@ -253,7 +261,7 @@ begin
 		not exists (
 			select 1 from public.qorpera_wake_occurrences w
 			where w.source_kind = 'surface-session'
-				and w.source_id in (v_session_cofounder, v_session_auto)
+				and w.source_id in (v_session_cofounder_folder, v_session_auto)
 				and w.status = 'materialized'
 		),
 		'cofounder and automation surface sessions do NOT materialize when allow_autonomous = false'

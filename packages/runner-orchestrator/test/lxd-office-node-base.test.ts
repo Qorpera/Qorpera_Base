@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { LxdOfficeInfrastructure } from "../src/lxd-client.ts";
 import {
@@ -7,6 +10,7 @@ import {
 	measureLxdOfficeNodeBase,
 	officeNodeJournalMount,
 	parseLxdOfficeNodeBaseConfig,
+	readBoundedMountInfo,
 } from "../src/lxd-office-node-base.ts";
 import { parseLxdOfficePhysicalPolicy } from "../src/lxd-office-physical-policy.ts";
 import { officePhysicalFixture } from "./fixtures/office-physical-policy.ts";
@@ -293,5 +297,19 @@ describe("node base for automatic company machine setup (step 1)", () => {
 			{ ...config(), journal: { mountPoint: "/srv/qorpera-scratch/journals" } },
 		])
 			expect(() => parseLxdOfficeNodeBaseConfig(bad)).toThrow();
+	});
+
+	it("bounds mountinfo reads incrementally and rejects files over the cap", async () => {
+		const root = await mkdtemp(join(tmpdir(), "office-mountinfo-"));
+		try {
+			const okPath = join(root, "ok");
+			await writeFile(okPath, "41 22 8:17 / / rw - ext4 /dev/sdb1 rw\n");
+			expect(await readBoundedMountInfo(okPath, 1024)).toContain("/dev/sdb1");
+			const bigPath = join(root, "big");
+			await writeFile(bigPath, "x".repeat(2049));
+			await expect(readBoundedMountInfo(bigPath, 2048)).rejects.toThrow("OFFICE_NODE_BASE_MOUNT_UNCONFIRMED");
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
 	});
 });

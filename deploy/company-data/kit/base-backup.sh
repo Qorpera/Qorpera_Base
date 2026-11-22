@@ -10,10 +10,26 @@ set -euo pipefail
 KEEP=${KEEP:-7}
 CHECKPOINT=${CHECKPOINT:-spread}
 [[ $KEEP =~ ^[1-9][0-9]*$ ]] || die "KEEP is a number of backups"
+[[ $CHECKPOINT == spread || $CHECKPOINT == fast ]] || die "CHECKPOINT is spread or fast"
 running || die "data-db is not running"
 [ "$(qc 'select pg_is_in_recovery()')" = f ] || die "this store is a standby: base backups are taken on the primary"
 D=$B/base
 [[ $D == /* ]] && [ -d "$D" ] || die "no backup folder $D"
+# WHY: Hold a non-blocking lock per backup folder so overlapping timer/manual runs cannot race on retention or pg_archivecleanup.
+exec 9>"$D/.base-backup.lock"
+flock -n 9 || die "another base backup is already running"
+PARTIAL_DIR=""
+cleanup_partial() {
+	if [ -n "$PARTIAL_DIR" ]; then
+		# WHY: Terminate the in-container pg_basebackup walsender before removing the partial folder because docker exec outlives its client.
+		qc "select pg_terminate_backend(pid) from pg_stat_activity where backend_type = 'walsender' and application_name = 'qorpera-base-backup'" >/dev/null 2>&1 || true
+		rm -rf -- "$PARTIAL_DIR"
+	fi
+}
+trap cleanup_partial EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 # A backup's own name, and the only names retention removes. Nothing here passes a path through word splitting: every
 # name is read null-delimited, checked against these, and removed by its full quoted path directly inside $D.
 STAMP='^[0-9]{8}T[0-9]{6}Z$'
@@ -32,8 +48,9 @@ while [ -e "$D/$stamp" ] || [ -e "$D/$stamp.partial" ]; do
 	stamp=$(date -u +%Y%m%dT%H%M%SZ)
 done
 t0=$(date +%s)
+PARTIAL_DIR="$D/$stamp.partial"
 # Tar format, gzip, with the WAL it needs streamed beside it (pg_wal.tar.gz), so each backup restores on its own.
-dc exec -T -u postgres data-db pg_basebackup -U postgres -D "/backup/base/$stamp.partial" -Ft -z -X stream \
+dc exec -T -e PGAPPNAME=qorpera-base-backup -u postgres data-db pg_basebackup -U postgres -D "/backup/base/$stamp.partial" -Ft -z -X stream \
 	-c "$CHECKPOINT" -l "company-data $stamp" -w </dev/null
 secs=$(($(date +%s) - t0))
 # backup_label names the first WAL file this backup needs. Reading it unpacks the whole tar once, which checks it.
@@ -42,6 +59,7 @@ start=$(tar -xzOf "$D/$stamp.partial/base.tar.gz" backup_label | sed -n 's/^STAR
 gzip -t "$D/$stamp.partial/pg_wal.tar.gz"
 echo "$start" >"$D/$stamp.partial/START_WAL"
 mv "$D/$stamp.partial" "$D/$stamp"
+PARTIAL_DIR=""
 sync "$D"
 bytes=$(du -sb "$D/$stamp" | cut -f1)
 echo "$stamp ${secs}s ${bytes}B start=$start" | tee -a "$D/base-backup.log"

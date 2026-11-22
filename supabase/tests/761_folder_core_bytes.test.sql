@@ -45,7 +45,9 @@ language sql as $$
 	select public.qorpera_folder_authorize_object_download(p_env, p_actor, p_sha)
 $$;
 create function pg_temp.usage() returns public.qorpera_folder_storage_usage language sql as $$
-	select * from public.qorpera_folder_storage_usage where profile_id = '63400000-0000-4000-8000-000000000010'
+	select profile_id, sum(bytes)::bigint, sum(objects)::bigint, max(updated_at), 0::smallint
+	from public.qorpera_folder_storage_usage where profile_id = '63400000-0000-4000-8000-000000000010'
+	group by profile_id
 $$;
 
 -- 1. The version-2 manifest --------------------------------------------------------------------------------------------

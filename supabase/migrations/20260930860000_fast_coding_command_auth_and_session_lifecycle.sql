@@ -3,7 +3,10 @@ set local lock_timeout = '3s';
 alter table public.qorpera_coding_sessions
 	add column if not exists worktree_created_at timestamptz;
 
-create or replace function public.qorpera_coding_session_claim_json(p_session public.qorpera_coding_sessions, p_worker public.qorpera_runtime_workers)
+create or replace function public.qorpera_coding_session_claim_json(
+	p_session public.qorpera_coding_sessions,
+	p_worker public.qorpera_runtime_workers
+)
 returns jsonb language sql stable security definer set search_path = '' as $$
 	select jsonb_build_object('schema','qorpera.coding-session-claim/v1','workerId',p_worker.id,'sequence',p_worker.sequence,
 		'leaseToken',p_session.lease_token,'leaseUntil',p_session.lease_until,'profileId',p_worker.profile_id,'environmentId',p_worker.environment_id,
@@ -13,6 +16,17 @@ returns jsonb language sql stable security definer set search_path = '' as $$
 		'worktreeCreatedAt',p_session.worktree_created_at,
 		'harnessSessionRef',p_session.harness_session_ref,'pullRequest',p_session.pull_request,'title',p_worker.title,
 		'dispatch',p_worker.dispatch,'followUp',p_worker.dispatch ->> 'followUp','todoId',p_worker.todo_id)
+		|| case when p_session.surface_session_id is null then '{}'::jsonb else coalesce((
+			select jsonb_build_object('surfaceSession', jsonb_build_object(
+				'sessionId', ss.id,
+				'surfaceId', surf.id,
+				'slug', surf.slug,
+				'title', coalesce(nullif(btrim(public.qorpera_surface_utf8_left(surf.title, 320)), ''), surf.slug)
+			))
+			from public.qorpera_surface_sessions ss
+			join public.qorpera_surfaces surf on surf.id = ss.surface_id
+			where ss.id = p_session.surface_session_id
+		), '{}'::jsonb) end
 $$;
 
 create function public.qorpera_record_coding_worktree_created(p_worker_id uuid, p_lease_token uuid)
@@ -84,6 +98,8 @@ begin
 		and environment_grant.environment_id = p_environment_id
 		and environment_grant.repository = p_repository
 		and environment_grant.status = 'active'
+		and environment_grant.scope in ('all', 'build', 'test')
+		and environment_grant.target_env in ('all', 'dev', 'test')
 		and secret.profile_id = p_profile_id
 		and secret.environment_id = p_environment_id
 		and secret.connector_id = 'environment'

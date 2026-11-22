@@ -1733,3 +1733,65 @@ fn an_explicit_owner_still_needs_allow_other() {
 fn an_explicit_owner_does_not_make_a_read_only_view_writable() {
 	a_root_mount_for_another_account(Some((65534, 65534)), true, false);
 }
+
+#[test]
+fn a_close_refused_with_denied_during_pause_is_retried_until_it_lands() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	let (company, runner) = start(&node);
+	node.deny_closes(1);
+	let mut f = std::fs::File::create(company.join("paused.md")).unwrap();
+	f.write_all(b"written during pause").unwrap();
+	// SAFETY: closes the descriptor this test owns.
+	assert_eq!(unsafe { libc::close(f.into_raw_fd()) }, -1);
+	assert_eq!(last_errno(), Some(libc::EACCES));
+	assert!(eventually(Duration::from_secs(5), || node.open_handles() == 0), "the node's handle was left open");
+	assert_eq!(node.content("paused.md").unwrap(), b"written during pause");
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn invalidating_a_large_directory_between_readdir_batches_preserves_nonzero_inodes() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::start();
+	for i in 0..300 {
+		node.put(&format!("many/entry-{i:04}-padding-filename.txt"), "ok", false);
+	}
+	let (company, runner) = start(&node);
+	let dir_path = std::ffi::CString::new(company.join("many").to_str().unwrap()).unwrap();
+	// SAFETY: opendir/readdir/closedir operate on the valid CString path and returned DIR handle.
+	let dir = unsafe { libc::opendir(dir_path.as_ptr()) };
+	assert!(!dir.is_null(), "opendir failed: {:?}", last_errno());
+	let mut seen = std::collections::BTreeSet::new();
+	let mut zero_inos = Vec::new();
+	let mut resynced = false;
+	loop {
+		let entry = unsafe { libc::readdir(dir) };
+		if entry.is_null() {
+			break;
+		}
+		let ino = unsafe { (*entry).d_ino };
+		let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) }.to_string_lossy().into_owned();
+		if name != "." && name != ".." {
+			if ino == 0 {
+				zero_inos.push(name.clone());
+			}
+			seen.insert(name);
+			if !resynced && seen.len() == 10 {
+				resynced = true;
+				node.resync();
+				std::thread::sleep(Duration::from_millis(150));
+			}
+		}
+	}
+	unsafe { libc::closedir(dir) };
+	assert!(zero_inos.is_empty(), "readdirplus emitted d_ino == 0 entries: {zero_inos:?}");
+	assert_eq!(seen.len(), 300, "all 300 entries must be returned across resync");
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}

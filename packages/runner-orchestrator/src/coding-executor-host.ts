@@ -265,6 +265,7 @@ export interface LxdCodingExecutorHostOptions {
 	/** Or the secrets built on that source, shared with the folder control's save check (5j-5 a): their `values` for a
 	 * machine are what its views may not save. Given, it is used in place of `commandEnvironment`. */
 	commandSecrets?: CodingMachineCommandSecrets;
+	autoRedeploy?: CodingExecutorHost["autoRedeploy"];
 	fetch?: typeof fetch;
 	runGit?: CodingBrokerGitRunner;
 	/** How long a freshly started guest may take to bring up its agent and
@@ -891,6 +892,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	readonly #storage: CodingNasStorage;
 	readonly #placement: CodingMachineStorage;
 	readonly #hostLeases: CodingHostLeases;
+	readonly autoRedeploy?: CodingExecutorHost["autoRedeploy"];
 	// WHY: unresolved hard-NFS syscalls keep libuv workers after caller timeout; one chain caps stuck workers at 1.
 	#storageWork: Promise<unknown> = Promise.resolve();
 	readonly #machineWork = new Map<string, Promise<unknown>>();
@@ -967,6 +969,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		if (options.journalRoot !== this.#storage.controlPath) throw new Error("CODING_HOST_JOURNAL_NOT_ON_NAS");
 		this.#placement = Object.freeze({ policy: storagePolicy, machineIdSha256: options.machineIdSha256 });
 		this.#hostLeases = options.hostLeases ?? new CodingHostLeases();
+		if (options.autoRedeploy) this.autoRedeploy = options.autoRedeploy;
 		this.#options = {
 			...options,
 			storagePolicy,
@@ -3337,6 +3340,24 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			// saved was checked for its secret values by the folder's save check above.
 			if (claim.repository.host === "qorpera") {
 				const repositories = folder.repositories;
+				if (claim.surfaceSession) {
+					if (!repositories?.verifyStaged) throw new Error("CODING_REPOSITORY_NOT_HERE");
+					const staged = await repositories.verifyStaged(
+						this.#repositorySession(claim, ready.machine, ready.storage, ready.folder.uid, ready.baseSha, root),
+						submission.headSha,
+						signal,
+					);
+					return {
+						pullRequest: null,
+						noChange: !staged.changed,
+						staged: {
+							branch: staged.branch,
+							baseSha: staged.baseSha,
+							headSha: staged.headSha,
+							filesChanged: staged.filesChanged,
+						},
+					};
+				}
 				if (!repositories?.land) throw new Error("CODING_REPOSITORY_NOT_HERE");
 				if (submission.headSha === ready.baseSha) return { pullRequest: null, noChange: true };
 				// The picture the session named with its hand-in is checked by the landing, in the commit that lands.
