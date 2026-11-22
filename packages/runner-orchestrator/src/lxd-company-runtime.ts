@@ -31,6 +31,7 @@ export interface LxdNativeCompanyRuntimeConfig {
 	 * token it presents (the systemd credential `qorpera-company-data`) and the store's own CA, pinned by its sha256.
 	 * Absent, a host offers no data tools. */
 	companyData?: { origin: string; token: string; caCertificate: string; caSha256: string };
+	surfaceFirst?: boolean;
 }
 
 export function exactHttpsOrigin(value: string, label: string): string {
@@ -146,10 +147,12 @@ export function validateLxdNativeCompanyRuntime(config: LxdNativeCompanyRuntimeC
 		...(config.offices !== undefined ? ["offices"] : []),
 		...(config.codingCommand !== undefined ? ["codingCommand"] : []),
 		...(config.companyData !== undefined ? ["companyData"] : []),
+		...(config.surfaceFirst !== undefined ? ["surfaceFirst"] : []),
 	];
 	if (
 		Object.keys(config).length !== keys.length ||
 		Object.keys(config).some((key) => !keys.includes(key)) ||
+		(config.surfaceFirst !== undefined && typeof config.surfaceFirst !== "boolean") ||
 		typeof config.mode !== "string" ||
 		typeof config.codexPath !== "string" ||
 		typeof config.binarySha256 !== "string" ||
@@ -328,6 +331,9 @@ export function lxdNativeCompanyRuntimeFromEnvironment(
 			caCertificate: pinnedCaCertificate(caFile as string, caSha256 as string, "Company data CA"),
 			caSha256: caSha256 as string,
 		};
+	}
+	if (environment.QORPERA_SURFACE_FIRST?.trim() === "1") {
+		config.surfaceFirst = true;
 	}
 	validateLxdNativeCompanyRuntime(config);
 	return config;

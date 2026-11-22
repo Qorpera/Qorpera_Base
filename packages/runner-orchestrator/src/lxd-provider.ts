@@ -1969,6 +1969,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 						...(office ? [`QORPERA_COMPANY_COMPUTER_URL=${office.url}`] : []),
 						...(coding ? [`QORPERA_CODING_COMMAND_URL=${coding.origin}`] : []),
 						...(authority.loginCustody === "vault" ? ["QORPERA_NATIVE_LOGIN_CUSTODY=vault"] : []),
+						...(runtime.surfaceFirst ? ["QORPERA_SURFACE_FIRST=1"] : []),
 					]
 				: []),
 			"",
