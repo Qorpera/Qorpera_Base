@@ -1,13 +1,17 @@
-use crate::re::{fold_char_utf8_len, fold_text, trigrams_of_bytes, ExecScratch, PatternError, Regex, TrigramQuery};
+use crate::re::{
+	find_subslice_ascii_icase, fold_char_utf8_len, fold_text, trigrams_of_bytes, ExecScratch, PatternError, Regex,
+	TrigramQuery,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::OpenOptions;
 use std::io::{self, BufWriter, ErrorKind, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 pub const CHUNK_BYTES: usize = 4 * 1024 * 1024;
@@ -27,6 +31,11 @@ const INDEX_SHARDS: usize = 16;
 const SMALL_EXACT_TRIGRAM_LIMIT: usize = 32;
 const SMALL_FILE_COLLECT_LIMIT: u64 = 16 * 1024;
 const MEDIUM_FILE_LIMIT: u64 = 256 * 1024;
+const MAX_INVERTED_TRIGRAMS_PER_DOC: usize = 16_384;
+const PREFETCH_BATCH_SIZE: usize = 256;
+const PREFETCH_MAX_FILE_BYTES: u64 = (CHUNK_BYTES as u64) * 2;
+const PREFETCH_MAX_BATCH_BYTES: u64 = 16 * 1024 * 1024;
+const PREFETCH_THREADS: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct ObjectKey {
@@ -253,28 +262,34 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> LruShard<K, V> {
 
 struct ShardedLru<K, V> {
 	shards: Vec<Mutex<LruShard<K, V>>>,
+	mask: usize,
 }
 
 impl<K: Eq + std::hash::Hash + Clone, V: Clone> ShardedLru<K, V> {
 	fn new(total_bytes: usize) -> Self {
-		let per_shard = (total_bytes / INDEX_SHARDS).max(4096);
-		let mut shards = Vec::with_capacity(INDEX_SHARDS);
-		for _ in 0..INDEX_SHARDS {
+		Self::with_shards(total_bytes, INDEX_SHARDS)
+	}
+
+	fn with_shards(total_bytes: usize, shard_count: usize) -> Self {
+		let count = shard_count.max(1).next_power_of_two();
+		let per_shard = (total_bytes / count).max(4096);
+		let mut shards = Vec::with_capacity(count);
+		for _ in 0..count {
 			shards.push(Mutex::new(LruShard::new(per_shard)));
 		}
-		Self { shards }
+		Self { shards, mask: count - 1 }
 	}
 
 	fn get(&self, shard: usize, key: &K) -> Option<V> {
-		self.shards[shard].lock().unwrap().get(key)
+		self.shards[shard & self.mask].lock().unwrap().get(key)
 	}
 
 	fn get_with<R>(&self, shard: usize, key: &K, f: impl FnOnce(&V) -> R) -> Option<R> {
-		self.shards[shard].lock().unwrap().get_with(key, f)
+		self.shards[shard & self.mask].lock().unwrap().get_with(key, f)
 	}
 
 	fn insert(&self, shard: usize, key: K, val: V, cost: usize) {
-		self.shards[shard].lock().unwrap().insert(key, val, cost);
+		self.shards[shard & self.mask].lock().unwrap().insert(key, val, cost);
 	}
 
 	#[cfg(test)]
@@ -379,6 +394,7 @@ enum BuilderMode {
 
 struct TrigramBuilder {
 	mode: BuilderMode,
+	file_bytes: u64,
 	last2: [u8; 2],
 	have: usize,
 	utf8_tail: Vec<u8>,
@@ -389,16 +405,14 @@ struct TrigramBuilder {
 
 impl TrigramBuilder {
 	fn new(file_bytes: u64) -> Self {
-		let mode = if file_bytes <= SMALL_FILE_COLLECT_LIMIT {
+		let mode = if file_bytes <= MEDIUM_FILE_LIMIT {
 			BuilderMode::Collect(Vec::with_capacity((file_bytes as usize).min(4096)))
-		} else if file_bytes <= MEDIUM_FILE_LIMIT {
-			let bits = ((file_bytes as usize) * 4).next_power_of_two().clamp(8192, 65536);
-			BuilderMode::Bloom(vec![0u64; bits / 64])
 		} else {
 			BuilderMode::Bloom(vec![0u64; 262_144 / 64])
 		};
 		Self {
 			mode,
+			file_bytes,
 			last2: [0, 0],
 			have: 0,
 			utf8_tail: Vec::new(),
@@ -408,10 +422,44 @@ impl TrigramBuilder {
 		}
 	}
 
+	fn spill_collect_to_bloom(&mut self) {
+		if let BuilderMode::Collect(v) = &mut self.mode {
+			v.sort_unstable();
+			v.dedup();
+			if v.len() <= MAX_INVERTED_TRIGRAMS_PER_DOC {
+				return;
+			}
+			let bits = if self.file_bytes <= SMALL_FILE_COLLECT_LIMIT {
+				(v.len() * 12).next_power_of_two().clamp(512, 65536)
+			} else if self.file_bytes <= MEDIUM_FILE_LIMIT {
+				((self.file_bytes as usize) * 4).next_power_of_two().clamp(8192, 65536)
+			} else {
+				262_144
+			};
+			let mut words = vec![0u64; bits / 64];
+			let mask = (bits - 1) as u32;
+			for &tri in v.iter() {
+				let (h1, h2) = trigram_hashes(tri);
+				let b0 = h1 & mask;
+				words[(b0 >> 6) as usize] |= 1u64 << (b0 & 63);
+				let b1 = h1.wrapping_add(h2) & mask;
+				words[(b1 >> 6) as usize] |= 1u64 << (b1 & 63);
+				let b2 = h1.wrapping_add(h2.wrapping_mul(2)) & mask;
+				words[(b2 >> 6) as usize] |= 1u64 << (b2 & 63);
+			}
+			self.mode = BuilderMode::Bloom(words);
+		}
+	}
+
 	#[inline]
 	fn add_tri(&mut self, tri: u32) {
 		match &mut self.mode {
-			BuilderMode::Collect(v) => v.push(tri),
+			BuilderMode::Collect(v) => {
+				v.push(tri);
+				if v.len() >= MAX_INVERTED_TRIGRAMS_PER_DOC * 2 {
+					self.spill_collect_to_bloom();
+				}
+			}
 			BuilderMode::Bloom(words) => {
 				let mask = ((words.len() * 64) - 1) as u32;
 				let (h1, h2) = trigram_hashes(tri);
@@ -449,6 +497,31 @@ impl TrigramBuilder {
 		self.last2 = [b0, b1];
 	}
 
+	fn push_ascii_folded_bytes(&mut self, bytes: &[u8]) {
+		if bytes.is_empty() {
+			return;
+		}
+		let mut i = 0usize;
+		while self.have < 2 && i < bytes.len() {
+			self.last2[self.have] = bytes[i].to_ascii_lowercase();
+			self.have += 1;
+			i += 1;
+		}
+		if self.have < 2 || i >= bytes.len() {
+			return;
+		}
+		let mut b0 = self.last2[0];
+		let mut b1 = self.last2[1];
+		for &raw in &bytes[i..] {
+			let b2 = raw.to_ascii_lowercase();
+			let tri = ((b0 as u32) << 16) | ((b1 as u32) << 8) | (b2 as u32);
+			self.add_tri(tri);
+			b0 = b1;
+			b1 = b2;
+		}
+		self.last2 = [b0, b1];
+	}
+
 	fn push_raw_chunk(&mut self, chunk: &[u8], is_last: bool) {
 		let mut start = 0usize;
 		for (i, &b) in chunk.iter().enumerate() {
@@ -476,11 +549,7 @@ impl TrigramBuilder {
 		}
 
 		if self.utf8_tail.is_empty() && chunk.is_ascii() {
-			let mut folded = Vec::with_capacity(chunk.len());
-			for &b in chunk {
-				folded.push(b.to_ascii_lowercase());
-			}
-			self.push_folded_bytes(&folded);
+			self.push_ascii_folded_bytes(chunk);
 			return;
 		}
 		let combined: Vec<u8>;
@@ -497,11 +566,7 @@ impl TrigramBuilder {
 			self.utf8_tail.extend_from_slice(&data[cut..]);
 		}
 		if head.is_ascii() {
-			let mut folded = Vec::with_capacity(head.len());
-			for &b in head {
-				folded.push(b.to_ascii_lowercase());
-			}
-			self.push_folded_bytes(&folded);
+			self.push_ascii_folded_bytes(head);
 		} else {
 			let decoded = String::from_utf8_lossy(head);
 			let folded = fold_text(&decoded);
@@ -509,21 +574,24 @@ impl TrigramBuilder {
 		}
 	}
 
-	fn finish(self, meta: ManifestMeta) -> IndexedEntry {
+	fn finish(self, meta: ManifestMeta) -> (IndexedEntry, Option<Vec<u32>>) {
+		let mut exact_for_inverted: Option<Vec<u32>> = None;
 		let filter = match self.mode {
 			BuilderMode::Collect(mut v) => {
 				if v.is_empty() {
+					exact_for_inverted = Some(Vec::new());
 					TrigramFilter::Empty
 				} else {
 					v.sort_unstable();
 					v.dedup();
 					if v.len() <= SMALL_EXACT_TRIGRAM_LIMIT {
+						exact_for_inverted = Some(v.clone());
 						TrigramFilter::Exact(Arc::from(v))
 					} else {
 						let bits = (v.len() * 12).next_power_of_two().clamp(512, 65536);
 						let mut words = vec![0u64; bits / 64];
 						let mask = (bits - 1) as u32;
-						for tri in v {
+						for &tri in &v {
 							let (h1, h2) = trigram_hashes(tri);
 							let b0 = h1 & mask;
 							words[(b0 >> 6) as usize] |= 1u64 << (b0 & 63);
@@ -531,6 +599,9 @@ impl TrigramBuilder {
 							words[(b1 >> 6) as usize] |= 1u64 << (b1 & 63);
 							let b2 = h1.wrapping_add(h2.wrapping_mul(2)) & mask;
 							words[(b2 >> 6) as usize] |= 1u64 << (b2 & 63);
+						}
+						if v.len() <= MAX_INVERTED_TRIGRAMS_PER_DOC {
+							exact_for_inverted = Some(v);
 						}
 						TrigramFilter::Bloom(Arc::from(words))
 					}
@@ -540,6 +611,7 @@ impl TrigramBuilder {
 				let total_bits = words.len() * 64;
 				let ones: usize = words.iter().map(|w| w.count_ones() as usize).sum();
 				if ones == 0 {
+					exact_for_inverted = Some(Vec::new());
 					TrigramFilter::Empty
 				} else if ones * 10 > total_bits * 9 {
 					TrigramFilter::MatchAll
@@ -548,7 +620,10 @@ impl TrigramBuilder {
 				}
 			}
 		};
-		IndexedEntry::Text { meta, filter, max_line_bytes: self.max_line_bytes, long_lines_1m: self.long_lines_1m }
+		(
+			IndexedEntry::Text { meta, filter, max_line_bytes: self.max_line_bytes, long_lines_1m: self.long_lines_1m },
+			exact_for_inverted,
+		)
 	}
 }
 
@@ -622,6 +697,7 @@ struct CompactEntry {
 	bytes: u64,
 	extra_idx: u32,
 	inline_i: u32,
+	doc_id: u32,
 	version: [u8; 16],
 	m_sha: [u8; 32],
 	f_sha: [u8; 32],
@@ -669,6 +745,7 @@ struct CompactTree {
 	entries: Vec<CompactEntry>,
 	paths: Vec<u8>,
 	extras: Vec<ExtraMeta>,
+	next_doc_id: u32,
 }
 
 enum DeltaOp {
@@ -687,7 +764,7 @@ impl DeltaOp {
 
 impl CompactTree {
 	fn new() -> Self {
-		Self { entries: Vec::new(), paths: Vec::new(), extras: Vec::new() }
+		Self { entries: Vec::new(), paths: Vec::new(), extras: Vec::new(), next_doc_id: 0 }
 	}
 
 	fn with_capacity(entries_cap: usize, paths_cap: usize) -> Self {
@@ -695,6 +772,7 @@ impl CompactTree {
 			entries: Vec::with_capacity(entries_cap),
 			paths: Vec::with_capacity(paths_cap),
 			extras: Vec::new(),
+			next_doc_id: 0,
 		}
 	}
 
@@ -710,11 +788,13 @@ impl CompactTree {
 		self.entries.reserve(incoming.len());
 		self.paths.reserve(extra_paths);
 		for w in incoming {
-			self.push_wire_ref(w, media);
+			let doc_id = self.next_doc_id;
+			self.next_doc_id = self.next_doc_id.checked_add(1).expect("tree doc_id exceeds u32");
+			self.push_wire_ref(w, media, doc_id);
 		}
 	}
 
-	fn push_wire_ref(&mut self, w: &WorkerEntry, media: &MediaInterner) {
+	fn push_wire_ref(&mut self, w: &WorkerEntry, media: &MediaInterner, doc_id: u32) {
 		let path_off = u32::try_from(self.paths.len()).expect("tree paths exceed 4 GiB");
 		let path_len = u32::try_from(w.p.len()).expect("entry path exceeds u32");
 		self.paths.extend_from_slice(w.p.as_bytes());
@@ -778,6 +858,7 @@ impl CompactTree {
 			bytes,
 			extra_idx,
 			inline_i: w.i,
+			doc_id,
 			version,
 			m_sha,
 			f_sha,
@@ -821,7 +902,12 @@ impl CompactTree {
 		}
 	}
 
-	fn patch(base: &CompactTree, upserts: Vec<WorkerEntry>, removes: Vec<String>, media: &MediaInterner) -> Self {
+	fn patch(
+		base: &CompactTree,
+		upserts: Vec<WorkerEntry>,
+		removes: Vec<String>,
+		media: &MediaInterner,
+	) -> (Self, Vec<u32>, bool) {
 		let upserts_count = upserts.len();
 		let upsert_path_bytes: usize = upserts.iter().map(|w| w.p.len()).sum();
 		let mut ops: Vec<DeltaOp> = Vec::with_capacity(removes.len() + upserts_count);
@@ -840,7 +926,10 @@ impl CompactTree {
 				deduped.push(op);
 			}
 		}
+		let mut reset_inverted = (base.next_doc_id as u64).saturating_add(upserts_count as u64) >= u32::MAX as u64;
 		let mut out = Self::with_capacity(base.entries.len() + upserts_count, base.paths.len() + upsert_path_bytes);
+		out.next_doc_id = if reset_inverted { 0 } else { base.next_doc_id };
+		let mut removed_docs = Vec::new();
 		let mut bi = 0usize;
 		let mut oi = 0usize;
 		while bi < base.entries.len() && oi < deduped.len() {
@@ -850,15 +939,26 @@ impl CompactTree {
 					bi += 1;
 				}
 				Ordering::Equal => {
+					if !reset_inverted {
+						removed_docs.push(base.entries[bi].doc_id);
+					}
 					if let DeltaOp::Upsert(w) = &deduped[oi] {
-						out.push_wire_ref(w, media);
+						let doc_id = out.next_doc_id;
+						if !reset_inverted {
+							out.next_doc_id = out.next_doc_id.checked_add(1).expect("tree doc_id exceeds u32");
+						}
+						out.push_wire_ref(w, media, doc_id);
 					}
 					bi += 1;
 					oi += 1;
 				}
 				Ordering::Greater => {
 					if let DeltaOp::Upsert(w) = &deduped[oi] {
-						out.push_wire_ref(w, media);
+						let doc_id = out.next_doc_id;
+						if !reset_inverted {
+							out.next_doc_id = out.next_doc_id.checked_add(1).expect("tree doc_id exceeds u32");
+						}
+						out.push_wire_ref(w, media, doc_id);
 					}
 					oi += 1;
 				}
@@ -869,12 +969,27 @@ impl CompactTree {
 		}
 		while oi < deduped.len() {
 			if let DeltaOp::Upsert(w) = &deduped[oi] {
-				out.push_wire_ref(w, media);
+				let doc_id = out.next_doc_id;
+				if !reset_inverted {
+					out.next_doc_id = out.next_doc_id.checked_add(1).expect("tree doc_id exceeds u32");
+				}
+				out.push_wire_ref(w, media, doc_id);
 			}
 			oi += 1;
 		}
+		// WHY: renumber densely once churn leaves more dead doc_ids than live entries so doc_info never grows unboundedly.
+		if !reset_inverted && (out.next_doc_id as usize) > out.entries.len().saturating_mul(2).max(1024) {
+			reset_inverted = true;
+		}
+		if reset_inverted {
+			for (idx, entry) in out.entries.iter_mut().enumerate() {
+				entry.doc_id = u32::try_from(idx).expect("tree entry count exceeds u32");
+			}
+			out.next_doc_id = u32::try_from(out.entries.len()).expect("tree entry count exceeds u32");
+			removed_docs.clear();
+		}
 		out.shrink_to_fit();
-		out
+		(out, removed_docs, reset_inverted)
 	}
 
 	fn shrink_to_fit(&mut self) {
@@ -920,7 +1035,7 @@ impl CompactTree {
 	}
 
 	fn mem_bytes(&self) -> usize {
-		let entries_b = self.entries.capacity() * std::mem::size_of::<CompactEntry>();
+		let entries_b = self.entries.capacity() * (std::mem::size_of::<CompactEntry>() + std::mem::size_of::<DocInfo>());
 		let paths_b = self.paths.capacity();
 		let extras_b = self.extras.capacity() * std::mem::size_of::<ExtraMeta>()
 			+ self.extras.iter().map(ExtraMeta::heap_bytes).sum::<usize>();
@@ -964,6 +1079,11 @@ impl<'a> EntryRef<'a> {
 	#[inline]
 	fn inline_i(&self) -> u32 {
 		self.raw.inline_i
+	}
+
+	#[inline]
+	fn doc_id(&self) -> u32 {
+		self.raw.doc_id
 	}
 
 	#[inline]
@@ -1124,14 +1244,596 @@ enum CachedObject {
 	Chunk(Arc<Vec<u8>>),
 }
 
+const DOC_UNINDEXED: u8 = 0;
+const DOC_INDEXED: u8 = 1;
+const DOC_BLOOM_ONLY: u8 = 2;
+const DOC_BINARY: u8 = 3;
+
+#[derive(Clone, Copy, Default)]
+struct DocInfo {
+	kind: u8,
+	long_lines_1m: u32,
+	max_line_bytes: u64,
+}
+
+const _: () = assert!(std::mem::size_of::<CompactEntry>() == 120 && std::mem::size_of::<DocInfo>() == 16);
+
+struct InvertedBudget {
+	used: AtomicUsize,
+	limit: usize,
+}
+
+impl InvertedBudget {
+	fn new(limit: usize) -> Self {
+		Self { used: AtomicUsize::new(0), limit }
+	}
+
+	fn can_afford(&self, extra: usize) -> bool {
+		self.used.load(AtomicOrdering::Relaxed).saturating_add(extra) <= self.limit
+	}
+
+	fn charge(&self, bytes: usize) {
+		if bytes > 0 {
+			self.used.fetch_add(bytes, AtomicOrdering::Relaxed);
+		}
+	}
+
+	fn release(&self, bytes: usize) {
+		if bytes > 0 {
+			let _ = self.used.fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |cur| {
+				Some(cur.saturating_sub(bytes))
+			});
+		}
+	}
+
+	#[cfg(test)]
+	fn used(&self) -> usize {
+		self.used.load(AtomicOrdering::Relaxed)
+	}
+}
+
+#[derive(Clone, Default)]
+struct PostingList {
+	last_doc: u32,
+	count: u32,
+	bytes: Vec<u8>,
+}
+
+#[inline]
+fn encode_varint(mut v: u32, out: &mut Vec<u8>) {
+	while v >= 0x80 {
+		out.push(((v as u8) & 0x7f) | 0x80);
+		v >>= 7;
+	}
+	out.push(v as u8);
+}
+
+struct PostingIter<'a> {
+	bytes: &'a [u8],
+	pos: usize,
+	cur: u32,
+	started: bool,
+}
+
+impl<'a> Iterator for PostingIter<'a> {
+	type Item = u32;
+
+	#[inline]
+	fn next(&mut self) -> Option<u32> {
+		if self.pos >= self.bytes.len() {
+			return None;
+		}
+		let mut shift = 0u32;
+		let mut delta = 0u32;
+		while self.pos < self.bytes.len() {
+			let b = self.bytes[self.pos];
+			self.pos += 1;
+			delta |= ((b & 0x7f) as u32) << shift;
+			if (b & 0x80) == 0 {
+				break;
+			}
+			shift += 7;
+		}
+		if !self.started {
+			self.started = true;
+			self.cur = delta;
+		} else {
+			self.cur = self.cur.wrapping_add(delta);
+		}
+		Some(self.cur)
+	}
+}
+
+impl PostingList {
+	fn try_push_monotonic(&mut self, doc_id: u32) -> Option<usize> {
+		let before = self.bytes.len();
+		if self.count == 0 {
+			encode_varint(doc_id, &mut self.bytes);
+			self.last_doc = doc_id;
+			self.count = 1;
+		} else if doc_id > self.last_doc {
+			encode_varint(doc_id - self.last_doc, &mut self.bytes);
+			self.last_doc = doc_id;
+			self.count += 1;
+		} else if doc_id == self.last_doc {
+			return Some(0);
+		} else {
+			return None;
+		}
+		Some(self.bytes.len().saturating_sub(before))
+	}
+
+	fn iter(&self) -> PostingIter<'_> {
+		PostingIter { bytes: &self.bytes, pos: 0, cur: 0, started: false }
+	}
+}
+
+struct InvertedBase {
+	postings: HashMap<u32, PostingList>,
+	doc_info: Vec<DocInfo>,
+	postings_bytes: usize,
+	extra_doc_info_bytes: usize,
+	budget: Arc<InvertedBudget>,
+}
+
+impl Drop for InvertedBase {
+	fn drop(&mut self) {
+		self.budget.release(self.postings_bytes + self.extra_doc_info_bytes);
+	}
+}
+
+impl InvertedBase {
+	fn with_docs(doc_count: usize, live_docs: usize, budget: Arc<InvertedBudget>) -> Self {
+		let doc_info = vec![DocInfo::default(); doc_count];
+		// WHY: live DocInfo slots are charged in TS COMPACT_ENTRY_BYTES (136); charge any dead-slot overflow to InvertedBudget.
+		let extra_doc_info_bytes = doc_count.saturating_sub(live_docs) * std::mem::size_of::<DocInfo>();
+		budget.charge(extra_doc_info_bytes);
+		Self { postings: HashMap::new(), doc_info, postings_bytes: 0, extra_doc_info_bytes, budget }
+	}
+
+	fn try_push_posting(&mut self, tri: u32, doc_id: u32) -> bool {
+		let is_new = !self.postings.contains_key(&tri);
+		let entry = self.postings.entry(tri).or_default();
+		let Some(added) = entry.try_push_monotonic(doc_id) else {
+			return false;
+		};
+		let delta = added + if is_new { 48 } else { 0 };
+		self.postings_bytes += delta;
+		self.budget.charge(delta);
+		true
+	}
+}
+
+struct InvertedIndex {
+	profile_uuid: Option<[u8; 16]>,
+	base: Arc<InvertedBase>,
+	removed_docs: HashSet<u32>,
+	added_docs: HashMap<u32, DocInfo>,
+	added_postings: HashMap<u32, Vec<u32>>,
+	delta_bytes: usize,
+	budget: Arc<InvertedBudget>,
+	live_docs: usize,
+	indexed_docs: usize,
+	next_doc_id: u32,
+	generation: u64,
+}
+
+impl Drop for InvertedIndex {
+	fn drop(&mut self) {
+		self.budget.release(self.delta_bytes);
+	}
+}
+
+impl InvertedIndex {
+	fn new(doc_count: usize, budget: Arc<InvertedBudget>) -> Self {
+		Self {
+			profile_uuid: None,
+			base: Arc::new(InvertedBase::with_docs(doc_count, doc_count, budget.clone())),
+			removed_docs: HashSet::new(),
+			added_docs: HashMap::new(),
+			added_postings: HashMap::new(),
+			delta_bytes: 0,
+			budget,
+			live_docs: doc_count,
+			indexed_docs: 0,
+			next_doc_id: doc_count as u32,
+			generation: 0,
+		}
+	}
+
+	fn ensure_capacity(&mut self, doc_count: usize) {
+		self.live_docs = doc_count;
+		if doc_count as u32 > self.next_doc_id {
+			self.next_doc_id = doc_count as u32;
+		}
+		if doc_count > self.base.doc_info.len() && self.removed_docs.is_empty() {
+			if let Some(base) = Arc::get_mut(&mut self.base) {
+				base.doc_info.resize(doc_count, DocInfo::default());
+			}
+		}
+	}
+
+	fn charge_delta(&mut self, bytes: usize) {
+		self.delta_bytes += bytes;
+		self.budget.charge(bytes);
+	}
+
+	#[inline]
+	fn doc_info_of(&self, doc_id: u32) -> DocInfo {
+		if self.removed_docs.contains(&doc_id) {
+			return DocInfo::default();
+		}
+		if let Some(&info) = self.added_docs.get(&doc_id) {
+			return info;
+		}
+		if let Some(&info) = self.base.doc_info.get(doc_id as usize) {
+			return info;
+		}
+		DocInfo::default()
+	}
+
+	fn record_doc(&mut self, profile_uuid: [u8; 16], doc_id: u32, mut info: DocInfo, trigrams: Option<&[u32]>) {
+		if self.profile_uuid.is_none() {
+			self.profile_uuid = Some(profile_uuid);
+		}
+		if self.profile_uuid != Some(profile_uuid) {
+			return;
+		}
+		if self.doc_info_of(doc_id).kind != DOC_UNINDEXED {
+			return;
+		}
+		if info.kind == DOC_INDEXED {
+			match trigrams {
+				Some(tris) => {
+					let est = tris.len() * 2 + 64;
+					if !self.budget.can_afford(est) {
+						info.kind = DOC_BLOOM_ONLY;
+					}
+				}
+				None => {
+					info.kind = DOC_BLOOM_ONLY;
+				}
+			}
+		}
+		let mut wrote_base = false;
+		let mut overflowed = false;
+		if (doc_id as usize) < self.base.doc_info.len() && self.removed_docs.is_empty() {
+			if let Some(base) = Arc::get_mut(&mut self.base) {
+				wrote_base = true;
+				base.doc_info[doc_id as usize] = info;
+				if info.kind == DOC_INDEXED {
+					if let Some(tris) = trigrams {
+						for &tri in tris {
+							if !base.try_push_posting(tri, doc_id) {
+								let is_new = !self.added_postings.contains_key(&tri);
+								let list = self.added_postings.entry(tri).or_default();
+								list.push(doc_id);
+								let delta = 4 + if is_new { 48 } else { 0 };
+								self.delta_bytes += delta;
+								self.budget.charge(delta);
+								overflowed = true;
+							}
+						}
+					}
+				}
+			}
+		}
+		if wrote_base {
+			if overflowed {
+				self.maybe_compact();
+			}
+		} else {
+			self.removed_docs.remove(&doc_id);
+			self.added_docs.insert(doc_id, info);
+			self.charge_delta(std::mem::size_of::<DocInfo>() + 16);
+			if info.kind == DOC_INDEXED {
+				if let Some(tris) = trigrams {
+					for &tri in tris {
+						let is_new = !self.added_postings.contains_key(&tri);
+						let list = self.added_postings.entry(tri).or_default();
+						match list.last().copied() {
+							None => {
+								list.push(doc_id);
+								self.charge_delta(4 + if is_new { 48 } else { 0 });
+							}
+							Some(last) if doc_id > last => {
+								list.push(doc_id);
+								self.charge_delta(4);
+							}
+							Some(last) if doc_id == last => {}
+							_ => {
+								if let Err(pos) = list.binary_search(&doc_id) {
+									list.insert(pos, doc_id);
+									self.charge_delta(4);
+								}
+							}
+						}
+					}
+				}
+			}
+			self.maybe_compact();
+		}
+		self.indexed_docs += 1;
+		self.generation = self.generation.wrapping_add(1);
+	}
+
+	fn patch_from(&self, removed: &[u32], next_doc_id: u32, live_docs: usize) -> Self {
+		self.budget.charge(self.delta_bytes);
+		let mut out = Self {
+			profile_uuid: self.profile_uuid,
+			base: self.base.clone(),
+			removed_docs: self.removed_docs.clone(),
+			added_docs: self.added_docs.clone(),
+			added_postings: self.added_postings.clone(),
+			delta_bytes: self.delta_bytes,
+			budget: self.budget.clone(),
+			live_docs,
+			indexed_docs: self.indexed_docs,
+			next_doc_id,
+			generation: self.generation.wrapping_add(1),
+		};
+		for &doc_id in removed {
+			if let Some(prev) = out.added_docs.remove(&doc_id) {
+				if prev.kind != DOC_UNINDEXED {
+					out.indexed_docs = out.indexed_docs.saturating_sub(1);
+				}
+				out.removed_docs.insert(doc_id);
+			} else if (doc_id as usize) < out.base.doc_info.len() {
+				if out.removed_docs.insert(doc_id) && out.base.doc_info[doc_id as usize].kind != DOC_UNINDEXED {
+					out.indexed_docs = out.indexed_docs.saturating_sub(1);
+				}
+			}
+		}
+		out.maybe_compact();
+		out
+	}
+
+	fn maybe_compact(&mut self) {
+		let threshold = (self.base.doc_info.len() / 8).max(256);
+		let byte_threshold = (self.base.postings_bytes / 4).max(256 * 1024);
+		if self.removed_docs.len() + self.added_docs.len() > threshold || self.delta_bytes > byte_threshold {
+			self.compact();
+		}
+	}
+
+	fn compact(&mut self) {
+		let doc_len = (self.next_doc_id as usize).max(self.base.doc_info.len());
+		let mut new_base = InvertedBase::with_docs(doc_len, self.live_docs, self.budget.clone());
+		for (idx, &info) in self.base.doc_info.iter().enumerate() {
+			let doc_id = idx as u32;
+			if !self.removed_docs.contains(&doc_id) {
+				new_base.doc_info[idx] = info;
+			}
+		}
+		for (&doc_id, &info) in &self.added_docs {
+			if !self.removed_docs.contains(&doc_id) && (doc_id as usize) < new_base.doc_info.len() {
+				new_base.doc_info[doc_id as usize] = info;
+			}
+		}
+		let mut merged_buf: Vec<u32> = Vec::new();
+		for (&tri, plist) in &self.base.postings {
+			merged_buf.clear();
+			for d in plist.iter() {
+				if !self.removed_docs.contains(&d) {
+					merged_buf.push(d);
+				}
+			}
+			if let Some(added) = self.added_postings.get(&tri) {
+				for &d in added {
+					if !self.removed_docs.contains(&d) {
+						merged_buf.push(d);
+					}
+				}
+				merged_buf.sort_unstable();
+				merged_buf.dedup();
+			}
+			if !merged_buf.is_empty() {
+				let mut np = PostingList::default();
+				for &d in &merged_buf {
+					let _ = np.try_push_monotonic(d);
+				}
+				let cost = np.bytes.len() + 48;
+				new_base.postings_bytes += cost;
+				new_base.budget.charge(cost);
+				new_base.postings.insert(tri, np);
+			}
+		}
+		for (&tri, added) in &self.added_postings {
+			if self.base.postings.contains_key(&tri) {
+				continue;
+			}
+			merged_buf.clear();
+			for &d in added {
+				if !self.removed_docs.contains(&d) {
+					merged_buf.push(d);
+				}
+			}
+			if !merged_buf.is_empty() {
+				merged_buf.sort_unstable();
+				merged_buf.dedup();
+				let mut np = PostingList::default();
+				for &d in &merged_buf {
+					let _ = np.try_push_monotonic(d);
+				}
+				let cost = np.bytes.len() + 48;
+				new_base.postings_bytes += cost;
+				new_base.budget.charge(cost);
+				new_base.postings.insert(tri, np);
+			}
+		}
+		self.base = Arc::new(new_base);
+		self.removed_docs.clear();
+		self.added_docs.clear();
+		self.added_postings.clear();
+		self.budget.release(self.delta_bytes);
+		self.delta_bytes = 0;
+		self.generation = self.generation.wrapping_add(1);
+	}
+
+	fn estimate_cost(&self, q: &CompiledTrigramQuery) -> usize {
+		match q {
+			CompiledTrigramQuery::All => usize::MAX,
+			CompiledTrigramQuery::Exact { tri, .. } => {
+				let b = self.base.postings.get(tri).map_or(0, |p| p.count as usize);
+				let a = self.added_postings.get(tri).map_or(0, Vec::len);
+				b + a
+			}
+			CompiledTrigramQuery::And(xs) => xs.iter().map(|c| self.estimate_cost(c)).min().unwrap_or(usize::MAX),
+			CompiledTrigramQuery::Or(xs) => {
+				let mut sum = 0usize;
+				for c in xs {
+					let cost = self.estimate_cost(c);
+					if cost == usize::MAX {
+						return usize::MAX;
+					}
+					sum = sum.saturating_add(cost);
+				}
+				sum
+			}
+		}
+	}
+
+	fn postings_for(&self, tri: u32) -> Vec<u32> {
+		let b_opt = self.base.postings.get(&tri);
+		let a_opt = self.added_postings.get(&tri);
+		let cap = b_opt.map_or(0, |p| p.count as usize) + a_opt.map_or(0, Vec::len);
+		if cap == 0 {
+			return Vec::new();
+		}
+		let mut out = Vec::with_capacity(cap);
+		let has_removed = !self.removed_docs.is_empty();
+		if let Some(plist) = b_opt {
+			if has_removed {
+				for d in plist.iter() {
+					if !self.removed_docs.contains(&d) {
+						out.push(d);
+					}
+				}
+			} else {
+				out.extend(plist.iter());
+			}
+		}
+		if let Some(added) = a_opt {
+			let base_len = out.len();
+			if has_removed {
+				for &d in added {
+					if !self.removed_docs.contains(&d) {
+						out.push(d);
+					}
+				}
+			} else {
+				out.extend_from_slice(added);
+			}
+			if out.len() > base_len && out.len() > 1 {
+				out.sort_unstable();
+				out.dedup();
+			}
+		}
+		out
+	}
+
+	fn eval_query(&self, q: &CompiledTrigramQuery) -> Option<Vec<u32>> {
+		match q {
+			CompiledTrigramQuery::All => None,
+			CompiledTrigramQuery::Exact { tri, .. } => Some(self.postings_for(*tri)),
+			CompiledTrigramQuery::And(xs) => {
+				let mut order: Vec<(usize, usize)> =
+					xs.iter().enumerate().map(|(i, c)| (self.estimate_cost(c), i)).collect();
+				order.sort_unstable_by_key(|&(cost, _)| cost);
+				let mut acc: Option<Vec<u32>> = None;
+				for (_, idx) in order {
+					let Some(next) = self.eval_query(&xs[idx]) else {
+						continue;
+					};
+					if next.is_empty() {
+						return Some(Vec::new());
+					}
+					acc = Some(match acc {
+						None => next,
+						Some(prev) => intersect_sorted(&prev, &next),
+					});
+					if acc.as_ref().is_some_and(Vec::is_empty) {
+						return Some(Vec::new());
+					}
+				}
+				acc
+			}
+			CompiledTrigramQuery::Or(xs) => {
+				let mut acc: Vec<u32> = Vec::new();
+				for c in xs {
+					let part = self.eval_query(c)?;
+					if acc.is_empty() {
+						acc = part;
+					} else if !part.is_empty() {
+						acc = union_sorted(&acc, &part);
+					}
+				}
+				Some(acc)
+			}
+		}
+	}
+}
+
+fn intersect_sorted(a: &[u32], b: &[u32]) -> Vec<u32> {
+	let mut out = Vec::with_capacity(a.len().min(b.len()));
+	let (mut i, mut j) = (0usize, 0usize);
+	while i < a.len() && j < b.len() {
+		match a[i].cmp(&b[j]) {
+			Ordering::Less => i += 1,
+			Ordering::Greater => j += 1,
+			Ordering::Equal => {
+				out.push(a[i]);
+				i += 1;
+				j += 1;
+			}
+		}
+	}
+	out
+}
+
+fn union_sorted(a: &[u32], b: &[u32]) -> Vec<u32> {
+	let mut out = Vec::with_capacity(a.len() + b.len());
+	let (mut i, mut j) = (0usize, 0usize);
+	while i < a.len() && j < b.len() {
+		match a[i].cmp(&b[j]) {
+			Ordering::Less => {
+				out.push(a[i]);
+				i += 1;
+			}
+			Ordering::Greater => {
+				out.push(b[j]);
+				j += 1;
+			}
+			Ordering::Equal => {
+				out.push(a[i]);
+				i += 1;
+				j += 1;
+			}
+		}
+	}
+	out.extend_from_slice(&a[i..]);
+	out.extend_from_slice(&b[j..]);
+	out
+}
+
 struct TreeSlot {
 	tree: Arc<CompactTree>,
+	inverted: Arc<RwLock<InvertedIndex>>,
 	bytes: usize,
+	deferred_drop: bool,
+}
+
+#[derive(Clone)]
+struct ResolvedTree {
+	tree: Arc<CompactTree>,
+	inverted: Arc<RwLock<InvertedIndex>>,
 }
 
 struct TreeCacheState {
 	slots: HashMap<u64, TreeSlot>,
+	pins: HashMap<u64, usize>,
 	total_bytes: usize,
+	inverted_budget: Arc<InvertedBudget>,
 }
 
 struct TreeCache {
@@ -1139,8 +1841,47 @@ struct TreeCache {
 }
 
 impl TreeCache {
-	fn new() -> Self {
-		Self { inner: Mutex::new(TreeCacheState { slots: HashMap::new(), total_bytes: 0 }) }
+	fn new(inverted_budget: usize) -> Self {
+		Self {
+			inner: Mutex::new(TreeCacheState {
+				slots: HashMap::new(),
+				pins: HashMap::new(),
+				total_bytes: 0,
+				inverted_budget: Arc::new(InvertedBudget::new(inverted_budget)),
+			}),
+		}
+	}
+
+	#[cfg(test)]
+	fn inverted_used_bytes(&self) -> usize {
+		self.inner.lock().unwrap().inverted_budget.used()
+	}
+
+	fn pin(&self, snapshot_id: u64) {
+		let mut guard = self.inner.lock().unwrap();
+		*guard.pins.entry(snapshot_id).or_insert(0) += 1;
+	}
+
+	fn resolve_and_unpin(&self, snapshot_id: u64) -> Option<ResolvedTree> {
+		let mut guard = self.inner.lock().unwrap();
+		let resolved = guard
+			.slots
+			.get(&snapshot_id)
+			.map(|s| ResolvedTree { tree: s.tree.clone(), inverted: s.inverted.clone() });
+		let mut should_drop = false;
+		if let Some(count) = guard.pins.get_mut(&snapshot_id) {
+			*count = count.saturating_sub(1);
+			if *count == 0 {
+				guard.pins.remove(&snapshot_id);
+				should_drop = true;
+			}
+		}
+		if should_drop && guard.slots.get(&snapshot_id).is_some_and(|s| s.deferred_drop) {
+			if let Some(removed) = guard.slots.remove(&snapshot_id) {
+				guard.total_bytes = guard.total_bytes.saturating_sub(removed.bytes);
+			}
+		}
+		resolved
 	}
 
 	fn sync(
@@ -1162,6 +1903,8 @@ impl TreeCache {
 			if complete {
 				tree.shrink_to_fit();
 			}
+			let doc_count = tree.len();
+			slot.inverted.write().unwrap().ensure_capacity(doc_count);
 			let new_bytes = tree.mem_bytes();
 			slot.bytes = new_bytes;
 			guard.total_bytes = guard.total_bytes.saturating_sub(old_bytes) + new_bytes;
@@ -1171,12 +1914,22 @@ impl TreeCache {
 		if complete {
 			tree.shrink_to_fit();
 		}
+		let doc_count = tree.len();
 		let bytes = tree.mem_bytes();
 		let mut guard = self.inner.lock().unwrap();
+		let budget = guard.inverted_budget.clone();
 		if let Some(old) = guard.slots.remove(&snapshot_id) {
 			guard.total_bytes = guard.total_bytes.saturating_sub(old.bytes);
 		}
-		guard.slots.insert(snapshot_id, TreeSlot { tree: Arc::new(tree), bytes });
+		guard.slots.insert(
+			snapshot_id,
+			TreeSlot {
+				tree: Arc::new(tree),
+				inverted: Arc::new(RwLock::new(InvertedIndex::new(doc_count, budget))),
+				bytes,
+				deferred_drop: false,
+			},
+		);
 		guard.total_bytes += bytes;
 		true
 	}
@@ -1189,34 +1942,60 @@ impl TreeCache {
 		removes: Vec<String>,
 		media: &MediaInterner,
 	) -> bool {
-		let base = {
+		let (base, budget) = {
 			let guard = self.inner.lock().unwrap();
-			guard.slots.get(&base_snapshot_id).map(|s| s.tree.clone())
+			(
+				guard.slots.get(&base_snapshot_id).map(|s| (s.tree.clone(), s.inverted.clone())),
+				guard.inverted_budget.clone(),
+			)
 		};
-		let Some(base_tree) = base else {
+		let Some((base_tree, base_inv)) = base else {
 			return false;
 		};
-		let patched = CompactTree::patch(&base_tree, upserts, removes, media);
+		let (patched, removed_docs, reset_inverted) = CompactTree::patch(&base_tree, upserts, removes, media);
+		let next_doc_id = patched.next_doc_id;
+		let new_inv = if reset_inverted {
+			InvertedIndex::new(patched.len(), budget)
+		} else {
+			base_inv.read().unwrap().patch_from(&removed_docs, next_doc_id, patched.len())
+		};
 		let bytes = patched.mem_bytes();
 		let mut guard = self.inner.lock().unwrap();
 		if let Some(old) = guard.slots.remove(&snapshot_id) {
 			guard.total_bytes = guard.total_bytes.saturating_sub(old.bytes);
 		}
-		guard.slots.insert(snapshot_id, TreeSlot { tree: Arc::new(patched), bytes });
+		guard.slots.insert(
+			snapshot_id,
+			TreeSlot {
+				tree: Arc::new(patched),
+				inverted: Arc::new(RwLock::new(new_inv)),
+				bytes,
+				deferred_drop: false,
+			},
+		);
 		guard.total_bytes += bytes;
 		true
 	}
 
 	fn drop_tree(&self, snapshot_id: u64) {
 		let mut guard = self.inner.lock().unwrap();
+		if guard.pins.get(&snapshot_id).copied().unwrap_or(0) > 0 {
+			if let Some(slot) = guard.slots.get_mut(&snapshot_id) {
+				slot.deferred_drop = true;
+			}
+			return;
+		}
 		if let Some(removed) = guard.slots.remove(&snapshot_id) {
 			guard.total_bytes = guard.total_bytes.saturating_sub(removed.bytes);
 		}
 	}
 
-	fn get(&self, snapshot_id: u64) -> Option<Arc<CompactTree>> {
+	fn get(&self, snapshot_id: u64) -> Option<ResolvedTree> {
 		let guard = self.inner.lock().unwrap();
-		guard.slots.get(&snapshot_id).map(|s| s.tree.clone())
+		guard
+			.slots
+			.get(&snapshot_id)
+			.map(|s| ResolvedTree { tree: s.tree.clone(), inverted: s.inverted.clone() })
 	}
 
 	#[cfg(test)]
@@ -1234,15 +2013,81 @@ enum TrigramProbe {
 	MaybeMatch,
 }
 
+enum FlightState<T> {
+	Running,
+	Done(Result<T, ObjectError>),
+}
+
+struct SingleFlight<T> {
+	slots: Mutex<HashMap<ObjectKey, Arc<(Mutex<FlightState<T>>, Condvar)>>>,
+}
+
+struct FlightCleanup<'a, T> {
+	map: &'a Mutex<HashMap<ObjectKey, Arc<(Mutex<FlightState<T>>, Condvar)>>>,
+	key: ObjectKey,
+	slot: Arc<(Mutex<FlightState<T>>, Condvar)>,
+	finished: bool,
+}
+
+impl<T> Drop for FlightCleanup<'_, T> {
+	fn drop(&mut self) {
+		if !self.finished {
+			self.map.lock().unwrap().remove(&self.key);
+			let mut st = self.slot.0.lock().unwrap();
+			*st = FlightState::Done(Err(ObjectError::Unavailable("Object load aborted".to_string())));
+			self.slot.1.notify_all();
+		}
+	}
+}
+
+impl<T: Clone> SingleFlight<T> {
+	fn new() -> Self {
+		Self { slots: Mutex::new(HashMap::new()) }
+	}
+
+	fn run(&self, key: ObjectKey, work: impl FnOnce() -> Result<T, ObjectError>) -> Result<T, ObjectError> {
+		let existing = {
+			let mut guard = self.slots.lock().unwrap();
+			if let Some(slot) = guard.get(&key) {
+				Some(slot.clone())
+			} else {
+				let slot = Arc::new((Mutex::new(FlightState::Running), Condvar::new()));
+				guard.insert(key, slot.clone());
+				drop(guard);
+				let mut cleanup = FlightCleanup { map: &self.slots, key, slot: slot.clone(), finished: false };
+				let result = work();
+				self.slots.lock().unwrap().remove(&key);
+				{
+					let mut st = slot.0.lock().unwrap();
+					*st = FlightState::Done(result.clone());
+					slot.1.notify_all();
+				}
+				cleanup.finished = true;
+				return result;
+			}
+		};
+		let slot = existing.unwrap();
+		let mut st = slot.0.lock().unwrap();
+		loop {
+			match &*st {
+				FlightState::Running => st = slot.1.wait(st).unwrap(),
+				FlightState::Done(res) => return res.clone(),
+			}
+		}
+	}
+}
+
 pub struct SharedIndex {
 	storage_root: PathBuf,
 	trigrams: ShardedLru<ObjectKey, IndexedEntry>,
 	objects: ShardedLru<ObjectKey, CachedObject>,
+	manifest_flight: SingleFlight<Arc<ParsedManifest>>,
+	chunk_flight: SingleFlight<Arc<Vec<u8>>>,
 	trees: TreeCache,
 	media: MediaInterner,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum ObjectError {
 	Integrity(String),
 	Missing(String),
@@ -1260,13 +2105,25 @@ impl ObjectError {
 impl SharedIndex {
 	pub fn new(storage_root: PathBuf, index_mib: usize) -> Self {
 		let total = index_mib.max(1) * 1024 * 1024;
-		let trigram_bytes = (total * 25) / 100;
-		let object_bytes = (total * 10) / 100;
+		// WHY: budget sums to 100% of --index-mib: 50% trees+DocInfo (TS), 15% shared inverted, 15% trigrams, 20% objects.
+		let trigram_bytes = (total * 15) / 100;
+		let object_bytes = (total * 20) / 100;
+		let inverted_bytes = (total * 15) / 100;
+		let min_shard = CHUNK_BYTES + 4096;
+		let object_shards = if object_bytes >= min_shard * 4 {
+			4
+		} else if object_bytes >= min_shard * 2 {
+			2
+		} else {
+			1
+		};
 		Self {
 			storage_root,
 			trigrams: ShardedLru::new(trigram_bytes),
-			objects: ShardedLru::new(object_bytes),
-			trees: TreeCache::new(),
+			objects: ShardedLru::with_shards(object_bytes, object_shards),
+			manifest_flight: SingleFlight::new(),
+			chunk_flight: SingleFlight::new(),
+			trees: TreeCache::new(inverted_bytes),
 			media: MediaInterner::new(),
 		}
 	}
@@ -1289,8 +2146,16 @@ impl SharedIndex {
 		self.trees.drop_tree(snapshot_id);
 	}
 
-	fn get_tree(&self, snapshot_id: u64) -> Option<Arc<CompactTree>> {
+	fn get_tree(&self, snapshot_id: u64) -> Option<ResolvedTree> {
 		self.trees.get(snapshot_id)
+	}
+
+	fn pin_tree(&self, snapshot_id: u64) {
+		self.trees.pin(snapshot_id);
+	}
+
+	fn resolve_and_unpin_tree(&self, snapshot_id: u64) -> Option<ResolvedTree> {
+		self.trees.resolve_and_unpin(snapshot_id)
 	}
 
 	fn check_profile_dir(&self, profile_id: &str) -> Result<[u8; 16], ObjectError> {
@@ -1383,11 +2248,18 @@ impl SharedIndex {
 			verify_manifest_against_entry(&parsed, entry, &self.media)?;
 			return Ok(parsed);
 		}
-		let manifest_hex = hex_encode_32(&manifest_sha);
-		let raw = self.read_verified_file(profile_id, &manifest_hex, manifest_sha, MAX_MANIFEST_BYTES, None)?;
-		let parsed = Arc::new(parse_manifest_bytes(&raw, entry, &self.media)?);
-		let cost = 256 + parsed.chunks.len() * 128;
-		self.objects.insert(shard, key, CachedObject::Manifest(parsed.clone()), cost);
+		let parsed = self.manifest_flight.run(key, || {
+			if let Some(CachedObject::Manifest(parsed)) = self.objects.get(shard, &key) {
+				return Ok(parsed);
+			}
+			let manifest_hex = hex_encode_32(&manifest_sha);
+			let raw = self.read_verified_file(profile_id, &manifest_hex, manifest_sha, MAX_MANIFEST_BYTES, None)?;
+			let parsed = Arc::new(parse_manifest_raw(&raw)?);
+			let cost = 256 + parsed.chunks.len() * 128;
+			self.objects.insert(shard, key, CachedObject::Manifest(parsed.clone()), cost);
+			Ok(parsed)
+		})?;
+		verify_manifest_against_entry(&parsed, entry, &self.media)?;
 		Ok(parsed)
 	}
 
@@ -1405,11 +2277,21 @@ impl SharedIndex {
 			}
 			return Ok(bytes);
 		}
-		let raw = self.read_verified_file(profile_id, &chunk.sha256, chunk.sha256_bytes, chunk.bytes, Some(chunk.bytes))?;
-		let arc = Arc::new(raw);
-		let cost = 128 + arc.len();
-		self.objects.insert(shard, key, CachedObject::Chunk(arc.clone()), cost);
-		Ok(arc)
+		let bytes = self.chunk_flight.run(key, || {
+			if let Some(CachedObject::Chunk(bytes)) = self.objects.get(shard, &key) {
+				return Ok(bytes);
+			}
+			let raw =
+				self.read_verified_file(profile_id, &chunk.sha256, chunk.sha256_bytes, chunk.bytes, Some(chunk.bytes))?;
+			let arc = Arc::new(raw);
+			let cost = 128 + arc.len();
+			self.objects.insert(shard, key, CachedObject::Chunk(arc.clone()), cost);
+			Ok(arc)
+		})?;
+		if bytes.len() != chunk.bytes {
+			return Err(ObjectError::Integrity("Object has the wrong size".to_string()));
+		}
+		Ok(bytes)
 	}
 
 	fn probe_trigram(
@@ -1420,16 +2302,45 @@ impl SharedIndex {
 		trigram_query: &CompiledTrigramQuery,
 		use_regex: bool,
 		longest_line: usize,
-	) -> TrigramProbe {
+	) -> (TrigramProbe, Option<(DocInfo, Option<Arc<[u32]>>)>) {
 		let key = ObjectKey { profile_uuid, sha256: manifest_sha };
 		self.trigrams
 			.get_with(shard_of(&key), &key, |cached| {
 				if !cached.meta().matches_entry(entry) {
-					return TrigramProbe::MetadataMismatch;
+					return (TrigramProbe::MetadataMismatch, None);
 				}
 				match cached {
-					IndexedEntry::Binary { .. } => TrigramProbe::Binary,
+					IndexedEntry::Binary { .. } => (
+						TrigramProbe::Binary,
+						Some((DocInfo { kind: DOC_BINARY, long_lines_1m: 0, max_line_bytes: 0 }, None)),
+					),
 					IndexedEntry::Text { filter, max_line_bytes, long_lines_1m, .. } => {
+						let inv_meta = match filter {
+							TrigramFilter::Empty => Some((
+								DocInfo {
+									kind: DOC_INDEXED,
+									long_lines_1m: *long_lines_1m,
+									max_line_bytes: *max_line_bytes,
+								},
+								Some(Arc::from([])),
+							)),
+							TrigramFilter::Exact(tris) => Some((
+								DocInfo {
+									kind: DOC_INDEXED,
+									long_lines_1m: *long_lines_1m,
+									max_line_bytes: *max_line_bytes,
+								},
+								Some(tris.clone()),
+							)),
+							TrigramFilter::Bloom(_) | TrigramFilter::MatchAll => Some((
+								DocInfo {
+									kind: DOC_BLOOM_ONLY,
+									long_lines_1m: *long_lines_1m,
+									max_line_bytes: *max_line_bytes,
+								},
+								None,
+							)),
+						};
 						let long_lines_known = !use_regex
 							|| *max_line_bytes <= longest_line as u64
 							|| longest_line == DEFAULT_LONGEST_LINE;
@@ -1439,20 +2350,66 @@ impl SharedIndex {
 							} else {
 								0
 							};
-							TrigramProbe::Skip { extra_long_lines }
+							(TrigramProbe::Skip { extra_long_lines }, inv_meta)
 						} else {
-							TrigramProbe::MaybeMatch
+							(TrigramProbe::MaybeMatch, inv_meta)
 						}
 					}
 				}
 			})
-			.unwrap_or(TrigramProbe::Miss)
+			.unwrap_or((TrigramProbe::Miss, None))
 	}
 
 	fn put_trigram(&self, profile_uuid: [u8; 16], manifest_sha: [u8; 32], entry: IndexedEntry) {
 		let key = ObjectKey { profile_uuid, sha256: manifest_sha };
 		let cost = entry.cost();
 		self.trigrams.insert(shard_of(&key), key, entry, cost);
+	}
+
+	fn has_trigram(&self, profile_uuid: [u8; 16], manifest_sha: [u8; 32]) -> bool {
+		let key = ObjectKey { profile_uuid, sha256: manifest_sha };
+		self.trigrams.get_with(shard_of(&key), &key, |_| ()).is_some()
+	}
+
+	fn prefetch_and_index_entry(
+		&self,
+		profile_id: &str,
+		profile_uuid: [u8; 16],
+		entry: EntryRef<'_>,
+	) -> Option<(u32, DocInfo, Option<Vec<u32>>)> {
+		let manifest_sha = entry.manifest_sha()?;
+		if self.has_trigram(profile_uuid, manifest_sha) {
+			return None;
+		}
+		let manifest = self.load_manifest(profile_id, profile_uuid, entry).ok()?;
+		let mut builder = TrigramBuilder::new(entry.bytes());
+		let mut checked_binary = false;
+		for (idx, chunk) in manifest.chunks.iter().enumerate() {
+			let data = self.load_chunk(profile_id, profile_uuid, chunk).ok()?;
+			if !checked_binary {
+				checked_binary = true;
+				if data[..data.len().min(BINARY_PROBE)].contains(&0) {
+					self.put_trigram(
+						profile_uuid,
+						manifest_sha,
+						IndexedEntry::Binary { meta: ManifestMeta::from_manifest(&manifest, &self.media) },
+					);
+					return Some((
+						entry.doc_id(),
+						DocInfo { kind: DOC_BINARY, long_lines_1m: 0, max_line_bytes: 0 },
+						None,
+					));
+				}
+			}
+			let is_last = idx + 1 == manifest.chunks.len();
+			builder.push_raw_chunk(&data, is_last);
+		}
+		let max_line_bytes = builder.max_line_bytes;
+		let long_lines_1m = builder.long_lines_1m;
+		let (indexed_entry, exact_tris) = builder.finish(ManifestMeta::from_manifest(&manifest, &self.media));
+		self.put_trigram(profile_uuid, manifest_sha, indexed_entry);
+		let kind = if exact_tris.is_some() { DOC_INDEXED } else { DOC_BLOOM_ONLY };
+		Some((entry.doc_id(), DocInfo { kind, long_lines_1m, max_line_bytes }, exact_tris))
 	}
 }
 
@@ -1474,7 +2431,7 @@ fn verify_manifest_against_entry(
 	Ok(())
 }
 
-fn parse_manifest_bytes(raw: &[u8], entry: EntryRef<'_>, media: &MediaInterner) -> Result<ParsedManifest, ObjectError> {
+fn parse_manifest_raw(raw: &[u8]) -> Result<ParsedManifest, ObjectError> {
 	let text = std::str::from_utf8(raw).map_err(|_| ObjectError::Integrity("Manifest is not JSON".to_string()))?;
 	let val: serde_json::Value =
 		serde_json::from_str(text).map_err(|_| ObjectError::Integrity("Manifest is not JSON".to_string()))?;
@@ -1537,12 +2494,10 @@ fn parse_manifest_bytes(raw: &[u8], entry: EntryRef<'_>, media: &MediaInterner) 
 			.checked_add(c_bytes)
 			.ok_or_else(|| ObjectError::Integrity("Manifest chunks do not add up to the file".to_string()))?;
 	}
-	if start != entry.bytes() {
+	if start != bytes {
 		return Err(ObjectError::Integrity("Manifest chunks do not add up to the file".to_string()));
 	}
-	let parsed = ParsedManifest { v2, file_sha256, bytes, media_type, executable, chunks };
-	verify_manifest_against_entry(&parsed, entry, media)?;
-	Ok(parsed)
+	Ok(ParsedManifest { v2, file_sha256, bytes, media_type, executable, chunks })
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -1844,7 +2799,7 @@ fn slice_tree(tree: &CompactTree, path: &str, from: Option<&str>) -> std::ops::R
 
 enum GlobPart {
 	DoubleStar,
-	Pattern(Vec<char>),
+	Pattern(String),
 }
 
 enum SimpleNameGlob {
@@ -1852,13 +2807,13 @@ enum SimpleNameGlob {
 	Affix { prefix: String, suffix: String },
 }
 
-struct CompiledGlob {
+struct SingleGlob {
 	parts: Vec<GlobPart>,
 	name_only: bool,
 	simple_name: Option<SimpleNameGlob>,
 }
 
-impl CompiledGlob {
+impl SingleGlob {
 	fn parse(glob: &str) -> Self {
 		let name_only = !glob.contains('/');
 		let mut simple_name = None;
@@ -1885,7 +2840,7 @@ impl CompiledGlob {
 				if part == "**" {
 					GlobPart::DoubleStar
 				} else {
-					GlobPart::Pattern(part.chars().collect())
+					GlobPart::Pattern(part.to_string())
 				}
 			})
 			.collect();
@@ -1919,20 +2874,38 @@ impl CompiledGlob {
 					}
 				};
 			}
-			let name_chars: Vec<char> = name.chars().collect();
 			return match &self.parts[0] {
 				GlobPart::DoubleStar => true,
-				GlobPart::Pattern(pat) => glob_name_matches(pat, &name_chars),
+				GlobPart::Pattern(pat) => glob_name_matches_str(pat, name),
 			};
 		}
-		let names: Vec<Vec<char>> = rel.split('/').map(|s| s.chars().collect()).collect();
+		let mut stack_segs = [""; 32];
+		let mut count = 0usize;
+		let mut overflow: Option<Vec<&str>> = None;
+		for seg in rel.split('/') {
+			if let Some(v) = overflow.as_mut() {
+				v.push(seg);
+			} else if count < stack_segs.len() {
+				stack_segs[count] = seg;
+				count += 1;
+			} else {
+				let mut v = Vec::with_capacity(64);
+				v.extend_from_slice(&stack_segs);
+				v.push(seg);
+				overflow = Some(v);
+			}
+		}
+		let names: &[&str] = match &overflow {
+			Some(v) => v.as_slice(),
+			None => &stack_segs[..count],
+		};
 		let mut p = 0usize;
 		let mut n = 0usize;
 		let mut star: Option<usize> = None;
 		let mut mark = 0usize;
 		while n < names.len() {
 			match self.parts.get(p) {
-				Some(GlobPart::Pattern(pat)) if glob_name_matches(pat, &names[n]) => {
+				Some(GlobPart::Pattern(pat)) if glob_name_matches_str(pat, names[n]) => {
 					p += 1;
 					n += 1;
 				}
@@ -1959,16 +2932,57 @@ impl CompiledGlob {
 	}
 }
 
-fn glob_name_matches(pattern: &[char], name: &[char]) -> bool {
+struct CompiledGlob {
+	includes: Vec<SingleGlob>,
+	excludes: Vec<SingleGlob>,
+}
+
+impl CompiledGlob {
+	fn parse(glob: &str) -> Option<Self> {
+		let mut includes = Vec::new();
+		let mut excludes = Vec::new();
+		if glob.starts_with('!') || glob.contains(",!") {
+			for raw in glob.split(',') {
+				let token = raw.trim();
+				if token.is_empty() {
+					continue;
+				}
+				if let Some(neg) = token.strip_prefix('!') {
+					if !neg.is_empty() {
+						excludes.push(SingleGlob::parse(neg));
+					}
+				} else {
+					includes.push(SingleGlob::parse(token));
+				}
+			}
+		} else if !glob.is_empty() {
+			includes.push(SingleGlob::parse(glob));
+		}
+		if includes.is_empty() && excludes.is_empty() {
+			None
+		} else {
+			Some(Self { includes, excludes })
+		}
+	}
+
+	fn matches_entry(&self, entry_path: &str, request_path: &str) -> bool {
+		if !self.includes.is_empty() && !self.includes.iter().any(|g| g.matches_entry(entry_path, request_path)) {
+			return false;
+		}
+		!self.excludes.iter().any(|g| g.matches_entry(entry_path, request_path))
+	}
+}
+
+fn glob_name_matches_ascii(pattern: &[u8], name: &[u8]) -> bool {
 	let mut p = 0usize;
 	let mut n = 0usize;
 	let mut star: Option<usize> = None;
 	let mut mark = 0usize;
 	while n < name.len() {
-		if p < pattern.len() && pattern[p] != '*' && (pattern[p] == '?' || pattern[p] == name[n]) {
+		if p < pattern.len() && pattern[p] != b'*' && (pattern[p] == b'?' || pattern[p] == name[n]) {
 			p += 1;
 			n += 1;
-		} else if p < pattern.len() && pattern[p] == '*' {
+		} else if p < pattern.len() && pattern[p] == b'*' {
 			star = Some(p);
 			p += 1;
 			mark = n;
@@ -1980,7 +2994,46 @@ fn glob_name_matches(pattern: &[char], name: &[char]) -> bool {
 			return false;
 		}
 	}
-	while p < pattern.len() && pattern[p] == '*' {
+	while p < pattern.len() && pattern[p] == b'*' {
+		p += 1;
+	}
+	p == pattern.len()
+}
+
+fn glob_name_matches_str(pattern: &str, name: &str) -> bool {
+	if pattern.is_ascii() && name.is_ascii() {
+		return glob_name_matches_ascii(pattern.as_bytes(), name.as_bytes());
+	}
+	let mut p = 0usize;
+	let mut n = 0usize;
+	let mut star: Option<usize> = None;
+	let mut mark = 0usize;
+	while n < name.len() {
+		let n_ch = name[n..].chars().next().unwrap();
+		if p < pattern.len() {
+			let p_ch = pattern[p..].chars().next().unwrap();
+			if p_ch == '*' {
+				star = Some(p);
+				p += 1;
+				mark = n;
+				continue;
+			}
+			if p_ch == '?' || p_ch == n_ch {
+				p += p_ch.len_utf8();
+				n += n_ch.len_utf8();
+				continue;
+			}
+		}
+		if let Some(st) = star {
+			p = st + 1;
+			let m_ch = name[mark..].chars().next().unwrap();
+			mark += m_ch.len_utf8();
+			n = mark;
+		} else {
+			return false;
+		}
+	}
+	while p < pattern.len() && pattern.as_bytes()[p] == b'*' {
 		p += 1;
 	}
 	p == pattern.len()
@@ -2064,30 +3117,122 @@ fn context_text(bytes: &[u8]) -> String {
 	out
 }
 
-fn around(line: &str, found_folded_byte: usize, case_sensitive: bool) -> String {
-	let chars: Vec<char> = line.chars().map(sanitize_char).collect();
-	if chars.len() <= HIT_CHARS {
-		return chars.into_iter().collect();
-	}
-	let mut at = 0usize;
-	let mut folded_bytes = 0usize;
-	for ch in line.chars() {
-		if folded_bytes >= found_folded_byte {
-			break;
+fn around(line: &str, found_folded_byte: usize, raw_byte_offset: bool) -> String {
+	if line.is_ascii() {
+		let bytes = line.as_bytes();
+		if bytes.len() <= HIT_CHARS {
+			let mut out = String::with_capacity(bytes.len());
+			for &b in bytes {
+				out.push(sanitize_char(b as char));
+			}
+			return out;
 		}
-		folded_bytes += if case_sensitive { ch.len_utf8() } else { fold_char_utf8_len(ch) };
-		at += 1;
+		let at = found_folded_byte.min(bytes.len());
+		let start = at.saturating_sub(HIT_CHARS / 4).min(bytes.len() - HIT_CHARS);
+		let mut out = String::with_capacity(HIT_CHARS + 6);
+		if start > 0 {
+			out.push('…');
+		}
+		for &b in &bytes[start..start + HIT_CHARS] {
+			out.push(sanitize_char(b as char));
+		}
+		if start + HIT_CHARS < bytes.len() {
+			out.push('…');
+		}
+		return out;
 	}
-	let start = at.saturating_sub(HIT_CHARS / 4).min(chars.len() - HIT_CHARS);
+	if line.len() <= HIT_CHARS {
+		return line.chars().map(sanitize_char).collect();
+	}
+	if raw_byte_offset {
+		let mut target = found_folded_byte.min(line.len());
+		while target > 0 && !line.is_char_boundary(target) {
+			target -= 1;
+		}
+		let mut start_byte = target;
+		let mut back = 0usize;
+		for (idx, _) in line[..target].char_indices().rev() {
+			start_byte = idx;
+			back += 1;
+			if back >= HIT_CHARS / 4 {
+				break;
+			}
+		}
+		let mut taken = 0usize;
+		let mut end_byte = start_byte;
+		for (rel, ch) in line[start_byte..].char_indices() {
+			taken += 1;
+			end_byte = start_byte + rel + ch.len_utf8();
+			if taken == HIT_CHARS {
+				break;
+			}
+		}
+		if taken < HIT_CHARS && start_byte > 0 {
+			let mut need = HIT_CHARS - taken;
+			for (idx, _) in line[..start_byte].char_indices().rev() {
+				start_byte = idx;
+				need -= 1;
+				if need == 0 {
+					break;
+				}
+			}
+			end_byte = line.len();
+		}
+		if start_byte == 0 && end_byte == line.len() {
+			return line.chars().map(sanitize_char).collect();
+		}
+		let mut out = String::with_capacity(HIT_CHARS * 2 + 6);
+		if start_byte > 0 {
+			out.push('…');
+		}
+		for ch in line[start_byte..end_byte].chars() {
+			out.push(sanitize_char(ch));
+		}
+		if end_byte < line.len() {
+			out.push('…');
+		}
+		return out;
+	}
+	let mut ring: VecDeque<char> = VecDeque::with_capacity(HIT_CHARS + 1);
+	let mut folded_bytes = 0usize;
+	let mut found_at: Option<usize> = None;
+	let mut chars_seen = 0usize;
+	let mut iter = line.chars();
+	while let Some(ch) = iter.next() {
+		if found_at.is_none() && folded_bytes >= found_folded_byte {
+			found_at = Some(chars_seen);
+		}
+		folded_bytes += fold_char_utf8_len(ch);
+		if ring.len() == HIT_CHARS {
+			ring.pop_front();
+		}
+		ring.push_back(sanitize_char(ch));
+		chars_seen += 1;
+		if let Some(at) = found_at {
+			let want_start = at.saturating_sub(HIT_CHARS / 4);
+			if chars_seen >= want_start + HIT_CHARS {
+				let has_more = iter.next().is_some();
+				let mut out = String::with_capacity(HIT_CHARS * 2 + 6);
+				if want_start > 0 {
+					out.push('…');
+				}
+				for c in ring {
+					out.push(c);
+				}
+				if has_more {
+					out.push('…');
+				}
+				return out;
+			}
+		}
+	}
+	if chars_seen <= HIT_CHARS {
+		return ring.into_iter().collect();
+	}
 	let mut out = String::with_capacity(HIT_CHARS * 2 + 6);
-	if start > 0 {
-		out.push('…');
-	}
-	for &ch in &chars[start..start + HIT_CHARS] {
-		out.push(ch);
-	}
-	if start + HIT_CHARS < chars.len() {
-		out.push('…');
+	out.push('…');
+	for c in ring {
+		out.push(c);
 	}
 	out
 }
@@ -2126,7 +3271,6 @@ enum Matcher {
 	},
 	Pattern {
 		regex: Regex,
-		case_sensitive: bool,
 	},
 }
 
@@ -2138,7 +3282,7 @@ impl Matcher {
 		if regex {
 			let re = Regex::compile(q, case_sensitive)?;
 			let tq = CompiledTrigramQuery::from_query(re.trigram_query());
-			return Ok((Self::Pattern { regex: re, case_sensitive }, tq));
+			return Ok((Self::Pattern { regex: re }, tq));
 		}
 		let folded = fold_text(q);
 		let tq = CompiledTrigramQuery::from_query(&trigrams_of_bytes(folded.as_bytes()));
@@ -2151,24 +3295,34 @@ impl Matcher {
 		Ok((Self::Literal { query_folded: query_match, raw_bytes, case_sensitive }, tq))
 	}
 
+	fn uses_raw_byte_offsets(&self) -> bool {
+		match self {
+			Self::Always => true,
+			Self::Literal { case_sensitive, .. } => *case_sensitive,
+			Self::Pattern { regex } => !regex.runs_on_folded(),
+		}
+	}
+
 	fn find_str(&self, text: &str, scratch: &mut ExecScratch) -> Option<usize> {
 		match self {
 			Self::Always => Some(0),
 			Self::Literal { query_folded, case_sensitive, .. } => {
 				if *case_sensitive {
 					text.find(query_folded.as_str())
+				} else if text.is_ascii() && query_folded.is_ascii() {
+					find_subslice_ascii_icase(text.as_bytes(), query_folded.as_bytes())
 				} else {
 					fold_text(text).find(query_folded.as_str())
 				}
 			}
-			Self::Pattern { regex, .. } => regex.find_in_text(text, scratch),
+			Self::Pattern { regex } => regex.find_in_text(text, scratch),
 		}
 	}
 
 	fn chunk_has_match(&self, whole: &[u8], scratch: &mut ExecScratch) -> bool {
 		match self {
 			Self::Always => true,
-			Self::Literal { query_folded, raw_bytes, case_sensitive } => {
+			Self::Literal { query_folded, raw_bytes, case_sensitive, .. } => {
 				if let Some(raw) = raw_bytes {
 					return find_subslice(whole, raw).is_some();
 				}
@@ -2176,20 +3330,17 @@ impl Matcher {
 					return String::from_utf8_lossy(whole).contains(query_folded.as_str());
 				}
 				if whole.is_ascii() && query_folded.is_ascii() {
-					let lowered: Vec<u8> = whole.iter().map(|b| b.to_ascii_lowercase()).collect();
-					return find_subslice(&lowered, query_folded.as_bytes()).is_some();
+					return find_subslice_ascii_icase(whole, query_folded.as_bytes()).is_some();
 				}
 				fold_text(&String::from_utf8_lossy(whole)).contains(query_folded.as_str())
 			}
-			Self::Pattern { regex, case_sensitive } => {
-				if *case_sensitive {
+			Self::Pattern { regex } => {
+				if !regex.runs_on_folded() {
 					let decoded = String::from_utf8_lossy(whole);
 					return regex.find_in_text(&decoded, scratch).is_some();
 				}
 				if whole.is_ascii() {
-					let lowered_bytes: Vec<u8> = whole.iter().map(|b| b.to_ascii_lowercase()).collect();
-					let lowered = std::str::from_utf8(&lowered_bytes).unwrap();
-					return regex.find_in_folded(lowered, scratch).is_some();
+					return regex.find_in_ascii_folded(whole, scratch).is_some();
 				}
 				let folded = fold_text(&String::from_utf8_lossy(whole));
 				regex.find_in_folded(&folded, scratch).is_some()
@@ -2242,6 +3393,12 @@ fn hit_measure(shown: &SearchHit, v2: bool) -> usize {
 	}
 }
 
+struct ActiveChunk {
+	chunk_idx: usize,
+	sha256: [u8; 32],
+	data: Arc<Vec<u8>>,
+}
+
 fn read_manifest_slice(
 	index: &SharedIndex,
 	profile_id: &str,
@@ -2249,22 +3406,88 @@ fn read_manifest_slice(
 	manifest: &ParsedManifest,
 	offset: u64,
 	length: usize,
+	active: &mut Option<ActiveChunk>,
 ) -> Result<Vec<u8>, ObjectError> {
 	let end = manifest.bytes.min(offset.saturating_add(length as u64));
 	if offset >= end {
 		return Ok(Vec::new());
 	}
 	let mut out = Vec::with_capacity((end - offset) as usize);
-	for chunk in &manifest.chunks {
-		let c_end = chunk.start + chunk.bytes as u64;
-		if chunk.start < end && c_end > offset {
-			let data = index.load_chunk(profile_id, profile_uuid, chunk)?;
-			let from = offset.saturating_sub(chunk.start) as usize;
-			let to = (end - chunk.start).min(chunk.bytes as u64) as usize;
-			out.extend_from_slice(&data[from..to]);
+	let first = manifest.chunks.partition_point(|c| c.start + c.bytes as u64 <= offset);
+	for (rel, chunk) in manifest.chunks[first..].iter().enumerate() {
+		if chunk.start >= end {
+			break;
 		}
+		let chunk_idx = first + rel;
+		let data = if let Some(cached) = active.as_ref().filter(|a| a.chunk_idx == chunk_idx && a.sha256 == chunk.sha256_bytes) {
+			cached.data.clone()
+		} else {
+			let loaded = index.load_chunk(profile_id, profile_uuid, chunk)?;
+			*active = Some(ActiveChunk { chunk_idx, sha256: chunk.sha256_bytes, data: loaded.clone() });
+			loaded
+		};
+		let from = offset.saturating_sub(chunk.start) as usize;
+		let to = (end - chunk.start).min(chunk.bytes as u64) as usize;
+		out.extend_from_slice(&data[from..to]);
 	}
 	Ok(out)
+}
+
+struct InvUpdate {
+	doc_id: u32,
+	info: DocInfo,
+	trigrams: Option<Vec<u32>>,
+}
+
+struct InvFlushGuard<'a> {
+	inverted: Option<&'a RwLock<InvertedIndex>>,
+	profile_uuid: Option<[u8; 16]>,
+	updates: Vec<InvUpdate>,
+}
+
+impl<'a> InvFlushGuard<'a> {
+	fn flush(&mut self) {
+		if self.updates.is_empty() {
+			return;
+		}
+		if let (Some(inv), Some(uuid)) = (self.inverted, self.profile_uuid) {
+			// WHY: parallel prefetch workers collect updates out of doc_id order; sorting preserves O(1) monotonic varint appends.
+			self.updates.sort_unstable_by_key(|u| u.doc_id);
+			let mut guard = inv.write().unwrap();
+			for upd in self.updates.drain(..) {
+				guard.record_doc(uuid, upd.doc_id, upd.info, upd.trigrams.as_deref());
+			}
+		} else {
+			self.updates.clear();
+		}
+	}
+}
+
+impl Drop for InvFlushGuard<'_> {
+	fn drop(&mut self) {
+		self.flush();
+	}
+}
+
+fn sync_inv_candidates(
+	guard: &InvertedIndex,
+	profile_uuid: [u8; 16],
+	trigram_query: &CompiledTrigramQuery,
+	inv_candidates_gen: &mut Option<u64>,
+	inv_active: &mut bool,
+	inv_candidates: &mut Option<Vec<u32>>,
+) {
+	// WHY: concurrent searches on the same snapshot can record new docs between guard drops; re-evaluate whenever generation advances.
+	if *inv_candidates_gen != Some(guard.generation) {
+		*inv_candidates_gen = Some(guard.generation);
+		if guard.profile_uuid == Some(profile_uuid) && guard.indexed_docs > 0 {
+			*inv_active = true;
+			*inv_candidates = guard.eval_query(trigram_query);
+		} else {
+			*inv_active = false;
+			*inv_candidates = None;
+		}
+	}
 }
 
 pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<WorkerOk, WorkerError> {
@@ -2275,14 +3498,16 @@ pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<Worker
 fn execute_search_with_tree(
 	index: &SharedIndex,
 	req: &WorkerRequest,
-	resolved_tree: Option<Arc<CompactTree>>,
+	resolved_tree: Option<ResolvedTree>,
 ) -> Result<WorkerOk, WorkerError> {
 	let v2 = req.version == 2;
 	let use_regex = v2 && req.regex;
 	let files_only = v2 && req.files_only;
 	let context = if v2 { req.context.min(5) } else { 0 };
-	let (matcher, trigram_query) = Matcher::build(req.query.as_deref(), use_regex, req.case_sensitive)
-		.map_err(|e| WorkerError::simple("pattern", e.0))?;
+	let (matcher, trigram_query) =
+		Matcher::build(req.query.as_deref(), use_regex, req.case_sensitive)
+			.map_err(|e| WorkerError::simple("pattern", e.0))?;
+	let raw_offsets = matcher.uses_raw_byte_offsets();
 	let use_ranges = req.snapshot_id.is_some();
 	let synced_tree = if use_ranges {
 		Some(resolved_tree.ok_or_else(|| WorkerError::simple("missing_tree", "Synced tree snapshot not found"))?)
@@ -2290,16 +3515,18 @@ fn execute_search_with_tree(
 		None
 	};
 	let inline_tree = if use_ranges { CompactTree::new() } else { CompactTree::from_wire(&req.entries, &index.media) };
-	let glob = if use_ranges { req.glob.as_deref().map(CompiledGlob::parse) } else { None };
+	let glob = if use_ranges { req.glob.as_deref().and_then(CompiledGlob::parse) } else { None };
 	let tree_ref: &CompactTree = match &synced_tree {
-		Some(tree) => tree.as_ref(),
+		Some(resolved) => resolved.tree.as_ref(),
 		None => &inline_tree,
 	};
+	let synced_inv: Option<&RwLock<InvertedIndex>> = synced_tree.as_ref().map(|r| r.inverted.as_ref());
 	let entry_range = if use_ranges {
 		slice_tree(tree_ref, &req.path, req.after.as_ref().map(|a| a.path.as_str()))
 	} else {
 		0..tree_ref.len()
 	};
+	let range_end = entry_range.end;
 	let deadline = Instant::now() + Duration::from_millis(req.slice_ms);
 	let piece_bytes = req
 		.piece_bytes
@@ -2321,6 +3548,11 @@ fn execute_search_with_tree(
 	let mut long_lines: u64 = 0;
 	let mut scratch = ExecScratch::new();
 	let mut profile_uuid_checked: Option<[u8; 16]> = None;
+	let mut inv_candidates_gen: Option<u64> = None;
+	let mut inv_candidates: Option<Vec<u32>> = None;
+	let mut inv_active = false;
+	let mut prefetched_until: usize = 0;
+	let mut inv_flush = InvFlushGuard { inverted: synced_inv, profile_uuid: None, updates: Vec::new() };
 
 	let record_read = |entry: EntryRef<'_>,
 	                   entry_idx: u32,
@@ -2350,6 +3582,8 @@ fn execute_search_with_tree(
 		true
 	};
 
+	let mut inv_read_guard: Option<std::sync::RwLockReadGuard<'_, InvertedIndex>> = None;
+
 	for tree_idx in entry_range {
 		let entry = tree_ref.entry(tree_idx);
 		let entry_idx = if use_ranges { tree_idx as u32 } else { entry.inline_i() };
@@ -2371,6 +3605,7 @@ fn execute_search_with_tree(
 				|| Instant::now() >= deadline
 				|| (files_only && is_text && state.hit_bytes + shown_line(entry_path, 0, "") + 8 > budget))
 		{
+			drop(inv_read_guard);
 			return Ok(WorkerOk {
 				hits,
 				files,
@@ -2408,6 +3643,7 @@ fn execute_search_with_tree(
 					from: None,
 				};
 				if !push_hit(hit, &mut state, &mut hits) {
+					drop(inv_read_guard);
 					return Ok(WorkerOk {
 						hits,
 						files,
@@ -2441,6 +3677,7 @@ fn execute_search_with_tree(
 					from: None,
 				};
 				if !push_hit(hit, &mut state, &mut hits) {
+					drop(inv_read_guard);
 					return Ok(WorkerOk {
 						hits,
 						files,
@@ -2464,6 +3701,7 @@ fn execute_search_with_tree(
 			continue;
 		}
 		let Some(profile_id) = req.profile_id.as_deref() else {
+			drop(inv_read_guard);
 			if use_ranges {
 				return Err(WorkerError {
 					kind: "need_profile",
@@ -2478,25 +3716,29 @@ fn execute_search_with_tree(
 		};
 		let profile_uuid = match profile_uuid_checked {
 			Some(uuid) => uuid,
-			None => match index.check_profile_dir(profile_id) {
-				Ok(uuid) => {
-					profile_uuid_checked = Some(uuid);
-					uuid
-				}
-				Err(err) => {
-					if matches!(err, ObjectError::Unavailable(_)) {
-						return Err(WorkerError::simple("unavailable", err.message()));
+			None => {
+				drop(inv_read_guard.take());
+				match index.check_profile_dir(profile_id) {
+					Ok(uuid) => {
+						profile_uuid_checked = Some(uuid);
+						inv_flush.profile_uuid = Some(uuid);
+						uuid
 					}
-					logs.push(format!(
-						"folder-service: search passed over {} ({}): {}",
-						entry_path,
-						entry.version_string(),
-						err.message()
-					));
-					unreadable += 1;
-					continue;
+					Err(err) => {
+						if matches!(err, ObjectError::Unavailable(_)) {
+							return Err(WorkerError::simple("unavailable", err.message()));
+						}
+						logs.push(format!(
+							"folder-service: search passed over {} ({}): {}",
+							entry_path,
+							entry.version_string(),
+							err.message()
+						));
+						unreadable += 1;
+						continue;
+					}
 				}
-			},
+			}
 		};
 
 		let resume = req
@@ -2504,12 +3746,186 @@ fn execute_search_with_tree(
 			.as_ref()
 			.filter(|a| a.path.as_str() == entry_path && entry.version_eq(&a.version));
 		let manifest_sha = entry.manifest_sha();
+		let doc_id = entry.doc_id();
 		let mut already_indexed = false;
 
 		if resume.is_none() && piece_bytes >= BINARY_PROBE {
+			if let Some(inv_lock) = synced_inv {
+				if inv_read_guard.is_none() {
+					let guard = inv_lock.read().unwrap();
+					sync_inv_candidates(
+						&guard,
+						profile_uuid,
+						&trigram_query,
+						&mut inv_candidates_gen,
+						&mut inv_active,
+						&mut inv_candidates,
+					);
+					if inv_active {
+						inv_read_guard = Some(guard);
+					}
+				}
+				if let Some(guard) = inv_read_guard.as_ref() {
+					let info = guard.doc_info_of(doc_id);
+					match info.kind {
+						DOC_BINARY => {
+							record_read(entry, entry_idx, &mut state, &mut read_indices, &mut read_ranges);
+							binary += 1;
+							continue;
+						}
+						DOC_INDEXED => {
+							let long_lines_known = !use_regex
+								|| info.max_line_bytes <= longest_line as u64
+								|| longest_line == DEFAULT_LONGEST_LINE;
+							if long_lines_known
+								&& inv_candidates.as_ref().is_some_and(|cands| cands.binary_search(&doc_id).is_err())
+							{
+								record_read(entry, entry_idx, &mut state, &mut read_indices, &mut read_ranges);
+								if use_regex && info.max_line_bytes > longest_line as u64 {
+									long_lines += info.long_lines_1m as u64;
+								}
+								searched += 1;
+								continue;
+							}
+							already_indexed = true;
+						}
+						_ => {}
+					}
+				}
+			}
+		}
+
+		drop(inv_read_guard.take());
+
+		if resume.is_none() && piece_bytes >= BINARY_PROBE && !already_indexed {
 			if let Some(m_sha) = manifest_sha {
-				match index.probe_trigram(profile_uuid, m_sha, entry, &trigram_query, use_regex, longest_line) {
-					TrigramProbe::Miss => {}
+				let (probe, inv_meta) =
+					index.probe_trigram(profile_uuid, m_sha, entry, &trigram_query, use_regex, longest_line);
+				if let Some((doc_info, exact_tris)) = inv_meta {
+					if synced_inv.is_some() {
+						inv_flush.updates.push(InvUpdate {
+							doc_id,
+							info: doc_info,
+							trigrams: exact_tris.map(|t| t.to_vec()),
+						});
+						if inv_flush.updates.len() >= 64 {
+							inv_flush.flush();
+						}
+					}
+				}
+				match probe {
+					TrigramProbe::Miss => {
+						if use_ranges
+							&& tree_idx >= prefetched_until
+							&& entry_bytes <= PREFETCH_MAX_FILE_BYTES
+							&& deadline.saturating_duration_since(Instant::now()) >= Duration::from_millis(25)
+						{
+							let mut batch: Vec<usize> = Vec::with_capacity(PREFETCH_BATCH_SIZE);
+							let mut batch_bytes = 0u64;
+							let mut rem_reads = READS_PER_ANSWER.saturating_sub(state.reads_count);
+							let mut rem_read_bytes = READS_BYTES.saturating_sub(state.read_bytes);
+							let mut scan_end = tree_idx;
+							for cand_idx in tree_idx..range_end {
+								if batch.len() >= PREFETCH_BATCH_SIZE
+									|| batch_bytes >= PREFETCH_MAX_BATCH_BYTES
+									|| rem_reads == 0
+									|| rem_read_bytes == 0
+								{
+									break;
+								}
+								scan_end = cand_idx + 1;
+								let ce = tree_ref.entry(cand_idx);
+								if ce.kind_code() != 0 || ce.bytes() == 0 || ce.bytes() > PREFETCH_MAX_FILE_BYTES {
+									continue;
+								}
+								let c_glob = glob.as_ref().map_or(true, |g| g.matches_entry(ce.path(), &req.path));
+								if !c_glob {
+									continue;
+								}
+								let Some(cm_sha) = ce.manifest_sha() else {
+									continue;
+								};
+								if !index.has_trigram(profile_uuid, cm_sha) {
+									batch.push(cand_idx);
+									batch_bytes += ce.bytes();
+									rem_reads = rem_reads.saturating_sub(1);
+									rem_read_bytes = rem_read_bytes.saturating_sub(ce.rb());
+								}
+							}
+							prefetched_until = scan_end;
+							if batch.len() >= 4 {
+								let workers = PREFETCH_THREADS.min(batch.len());
+								let cursor = AtomicUsize::new(0);
+								let prefetch_deadline = deadline.checked_sub(Duration::from_millis(15)).unwrap_or(deadline);
+								let batch_ref = batch.as_slice();
+								let collected: Mutex<Vec<InvUpdate>> = Mutex::new(Vec::with_capacity(batch.len()));
+								std::thread::scope(|scope| {
+									for _ in 0..workers {
+										scope.spawn(|| {
+											let mut local = Vec::new();
+											loop {
+												if Instant::now() >= prefetch_deadline {
+													break;
+												}
+												let pos = cursor.fetch_add(1, AtomicOrdering::Relaxed);
+												if pos >= batch_ref.len() {
+													break;
+												}
+												let ce = tree_ref.entry(batch_ref[pos]);
+												if let Some((cid, cinfo, ctris)) =
+													index.prefetch_and_index_entry(profile_id, profile_uuid, ce)
+												{
+													local.push(InvUpdate { doc_id: cid, info: cinfo, trigrams: ctris });
+												}
+											}
+											if !local.is_empty() {
+												collected.lock().unwrap().extend(local);
+											}
+										});
+									}
+								});
+								let updates = collected.into_inner().unwrap();
+								if !updates.is_empty() {
+									inv_flush.updates.extend(updates);
+									inv_flush.flush();
+								}
+								let (reprobe, _) = index.probe_trigram(
+									profile_uuid,
+									m_sha,
+									entry,
+									&trigram_query,
+									use_regex,
+									longest_line,
+								);
+								match reprobe {
+									TrigramProbe::Miss => {}
+									TrigramProbe::MetadataMismatch => {
+										logs.push(format!(
+											"folder-service: search passed over {} ({}): Manifest does not match its entry",
+											entry_path,
+											entry.version_string()
+										));
+										unreadable += 1;
+										continue;
+									}
+									TrigramProbe::Binary => {
+										record_read(entry, entry_idx, &mut state, &mut read_indices, &mut read_ranges);
+										binary += 1;
+										continue;
+									}
+									TrigramProbe::Skip { extra_long_lines } => {
+										record_read(entry, entry_idx, &mut state, &mut read_indices, &mut read_ranges);
+										long_lines += extra_long_lines;
+										searched += 1;
+										continue;
+									}
+									TrigramProbe::MaybeMatch => {
+										already_indexed = true;
+									}
+								}
+							}
+						}
+					}
 					TrigramProbe::MetadataMismatch => {
 						logs.push(format!(
 							"folder-service: search passed over {} ({}): Manifest does not match its entry",
@@ -2568,6 +3984,7 @@ fn execute_search_with_tree(
 		let mut ring: VecDeque<ContextLine> = VecDeque::with_capacity(context + 1);
 		let mut open_hit_idx: Option<usize> = None;
 		let mut wanted: usize = 0;
+		let mut active_chunk: Option<ActiveChunk> = None;
 		let mut builder: Option<TrigramBuilder> =
 			if offset == 0 && piece_bytes >= BINARY_PROBE && !already_indexed && manifest_sha.is_some() {
 				Some(TrigramBuilder::new(entry_bytes))
@@ -2576,7 +3993,15 @@ fn execute_search_with_tree(
 			};
 
 		loop {
-			let piece = match read_manifest_slice(index, profile_id, profile_uuid, &manifest, offset, piece_bytes) {
+			let piece = match read_manifest_slice(
+				index,
+				profile_id,
+				profile_uuid,
+				&manifest,
+				offset,
+				piece_bytes,
+				&mut active_chunk,
+			) {
 				Ok(p) => p,
 				Err(ObjectError::Unavailable(msg)) => return Err(WorkerError::simple("unavailable", msg)),
 				Err(err) => {
@@ -2603,6 +4028,13 @@ fn execute_search_with_tree(
 								m_sha,
 								IndexedEntry::Binary { meta: ManifestMeta::from_manifest(&manifest, &index.media) },
 							);
+							if synced_inv.is_some() {
+								inv_flush.updates.push(InvUpdate {
+									doc_id,
+									info: DocInfo { kind: DOC_BINARY, long_lines_1m: 0, max_line_bytes: 0 },
+									trigrams: None,
+								});
+							}
 						}
 					}
 					binary += 1;
@@ -2684,7 +4116,7 @@ fn execute_search_with_tree(
 									path: entry_path.to_string(),
 									kind: "file".to_string(),
 									line: line + 1,
-									text: around(&text_line, found, req.case_sensitive),
+									text: around(&text_line, found, raw_offsets),
 									version: entry.version_string(),
 									offset: line_start,
 									target: None,
@@ -2776,7 +4208,7 @@ fn execute_search_with_tree(
 									path: entry_path.to_string(),
 									kind: "file".to_string(),
 									line: line + 1,
-									text: around(&text_line, found, req.case_sensitive),
+									text: around(&text_line, found, raw_offsets),
 									version: entry.version_string(),
 									offset: line_start,
 									target: None,
@@ -2858,7 +4290,7 @@ fn execute_search_with_tree(
 									path: entry_path.to_string(),
 									kind: "file".to_string(),
 									line: line + 1,
-									text: around(&text_line, found, req.case_sensitive),
+									text: around(&text_line, found, raw_offsets),
 									version: entry.version_string(),
 									offset: line_start,
 									target: None,
@@ -2953,7 +4385,21 @@ fn execute_search_with_tree(
 
 		if let (Some(m_sha), Some(b)) = (manifest_sha, builder) {
 			if !skipped {
-				index.put_trigram(profile_uuid, m_sha, b.finish(ManifestMeta::from_manifest(&manifest, &index.media)));
+				let max_line_bytes = b.max_line_bytes;
+				let long_lines_1m = b.long_lines_1m;
+				let (indexed_entry, exact_tris) = b.finish(ManifestMeta::from_manifest(&manifest, &index.media));
+				index.put_trigram(profile_uuid, m_sha, indexed_entry);
+				if synced_inv.is_some() {
+					let kind = if exact_tris.is_some() { DOC_INDEXED } else { DOC_BLOOM_ONLY };
+					inv_flush.updates.push(InvUpdate {
+						doc_id,
+						info: DocInfo { kind, long_lines_1m, max_line_bytes },
+						trigrams: exact_tris,
+					});
+					if inv_flush.updates.len() >= 64 {
+						inv_flush.flush();
+					}
+				}
 			}
 		}
 
@@ -2970,6 +4416,9 @@ fn execute_search_with_tree(
 			searched += 1;
 		}
 	}
+
+	drop(inv_read_guard);
+	inv_flush.flush();
 
 	Ok(WorkerOk {
 		hits,
@@ -3020,9 +4469,84 @@ fn write_frame<W: Write>(writer: &mut W, payload: &[u8]) -> io::Result<()> {
 	writer.flush()
 }
 
+enum TreeOp {
+	Sync(SyncTreeMessage, u64),
+	Patch(PatchTreeMessage, u64),
+	Drop(DropTreeMessage, u64),
+}
+
+struct TreeOpQueue {
+	queue: Mutex<(VecDeque<TreeOp>, bool)>,
+	ready: Condvar,
+	completed_seq: Mutex<(u64, bool)>,
+	seq_done: Condvar,
+}
+
+impl TreeOpQueue {
+	fn new() -> Self {
+		Self {
+			queue: Mutex::new((VecDeque::new(), false)),
+			ready: Condvar::new(),
+			completed_seq: Mutex::new((0, false)),
+			seq_done: Condvar::new(),
+		}
+	}
+
+	fn push(&self, op: TreeOp) {
+		let mut guard = self.queue.lock().unwrap();
+		guard.0.push_back(op);
+		self.ready.notify_one();
+	}
+
+	fn pop(&self) -> Option<TreeOp> {
+		let mut guard = self.queue.lock().unwrap();
+		loop {
+			if let Some(op) = guard.0.pop_front() {
+				return Some(op);
+			}
+			if guard.1 {
+				return None;
+			}
+			guard = self.ready.wait(guard).unwrap();
+		}
+	}
+
+	fn mark_done(&self, seq: u64) {
+		let mut guard = self.completed_seq.lock().unwrap();
+		if seq > guard.0 {
+			guard.0 = seq;
+		}
+		self.seq_done.notify_all();
+	}
+
+	fn mark_stopped(&self) {
+		let mut guard = self.completed_seq.lock().unwrap();
+		guard.1 = true;
+		self.seq_done.notify_all();
+	}
+
+	fn completed(&self) -> u64 {
+		self.completed_seq.lock().unwrap().0
+	}
+
+	fn wait_for(&self, seq: u64) {
+		let mut guard = self.completed_seq.lock().unwrap();
+		while guard.0 < seq && !guard.1 {
+			guard = self.seq_done.wait(guard).unwrap();
+		}
+	}
+
+	fn close(&self) {
+		let mut guard = self.queue.lock().unwrap();
+		guard.1 = true;
+		self.ready.notify_all();
+	}
+}
+
 struct SearchJob {
 	req: WorkerRequest,
-	synced_tree: Option<Arc<CompactTree>>,
+	synced_tree: Option<ResolvedTree>,
+	wait_tree_seq: Option<(u64, u64)>,
 }
 
 struct JobQueue {
@@ -3069,17 +4593,88 @@ pub fn run_worker_io<R: Read, W: Write + Send + 'static>(
 	writer: W,
 ) -> Result<(), String> {
 	let index = Arc::new(SharedIndex::new(storage_root, index_mib));
+	let tree_queue = Arc::new(TreeOpQueue::new());
 	let queue = Arc::new(JobQueue::new());
 	let out = Arc::new(Mutex::new(BufWriter::new(writer)));
+
+	let tree_handle = {
+		let idx = index.clone();
+		let tq = tree_queue.clone();
+		let w = out.clone();
+		std::thread::spawn(move || {
+			while let Some(op) = tq.pop() {
+				match op {
+					TreeOp::Sync(msg, seq) => {
+						let resp = if idx.sync_tree(msg.snapshot_id, msg.entries, msg.append, msg.complete) {
+							WorkerResponse { id: msg.id, synced: Some(true), ok: None, error: None }
+						} else {
+							WorkerResponse {
+								id: msg.id,
+								synced: None,
+								ok: None,
+								error: Some(WorkerError::simple("missing_tree", "Synced tree snapshot not found")),
+							}
+						};
+						tq.mark_done(seq);
+						let payload = serde_json::to_vec(&resp).expect("sync response serializes");
+						let mut guard = w.lock().unwrap();
+						if write_frame(&mut *guard, &payload).is_err() {
+							break;
+						}
+					}
+					TreeOp::Patch(msg, seq) => {
+						let resp = if idx.patch_tree(msg.base_snapshot_id, msg.snapshot_id, msg.upserts, msg.removes) {
+							WorkerResponse { id: msg.id, synced: Some(true), ok: None, error: None }
+						} else {
+							WorkerResponse {
+								id: msg.id,
+								synced: None,
+								ok: None,
+								error: Some(WorkerError::simple("missing_tree", "Base snapshot not found")),
+							}
+						};
+						tq.mark_done(seq);
+						let payload = serde_json::to_vec(&resp).expect("patch response serializes");
+						let mut guard = w.lock().unwrap();
+						if write_frame(&mut *guard, &payload).is_err() {
+							break;
+						}
+					}
+					TreeOp::Drop(msg, seq) => {
+						idx.drop_tree(msg.snapshot_id);
+						tq.mark_done(seq);
+						if msg.id != 0 {
+							let resp = WorkerResponse { id: msg.id, synced: Some(true), ok: None, error: None };
+							let payload = serde_json::to_vec(&resp).expect("drop response serializes");
+							let mut guard = w.lock().unwrap();
+							if write_frame(&mut *guard, &payload).is_err() {
+								break;
+							}
+						}
+					}
+				}
+			}
+			tq.mark_stopped();
+		})
+	};
+
 	let mut handles = Vec::with_capacity(threads);
 	for _ in 0..threads {
 		let idx = index.clone();
+		let tq = tree_queue.clone();
 		let q = queue.clone();
 		let w = out.clone();
 		handles.push(std::thread::spawn(move || {
 			while let Some(job) = q.pop() {
 				let id = job.req.id;
-				let resp = match execute_search_with_tree(&idx, &job.req, job.synced_tree) {
+				let resolved = match job.wait_tree_seq {
+					Some((sid, seq)) => {
+						tq.wait_for(seq);
+						idx.resolve_and_unpin_tree(sid)
+					}
+					None => job.synced_tree,
+				};
+				let resp = match execute_search_with_tree(&idx, &job.req, resolved) {
 					Ok(ok) => WorkerResponse { id, synced: None, ok: Some(ok), error: None },
 					Err(error) => WorkerResponse { id, synced: None, ok: None, error: Some(error) },
 				};
@@ -3091,60 +4686,51 @@ pub fn run_worker_io<R: Read, W: Write + Send + 'static>(
 			}
 		}));
 	}
+	let mut next_tree_seq = 0u64;
+	let mut snapshot_state: HashMap<u64, u64> = HashMap::new();
 	let mut read_err: Option<String> = None;
 	loop {
 		match read_frame(&mut reader) {
 			Ok(None) => break,
 			Ok(Some(bytes)) => match parse_worker_message(&bytes) {
 				Ok(WorkerMessage::SyncTree(msg)) => {
-					let resp = if index.sync_tree(msg.snapshot_id, msg.entries, msg.append, msg.complete) {
-						WorkerResponse { id: msg.id, synced: Some(true), ok: None, error: None }
-					} else {
-						WorkerResponse {
-							id: msg.id,
-							synced: None,
-							ok: None,
-							error: Some(WorkerError::simple("missing_tree", "Synced tree snapshot not found")),
-						}
-					};
-					let payload = serde_json::to_vec(&resp).expect("sync response serializes");
-					let mut guard = out.lock().unwrap();
-					if write_frame(&mut *guard, &payload).is_err() {
-						break;
-					}
+					next_tree_seq += 1;
+					snapshot_state.insert(msg.snapshot_id, next_tree_seq);
+					tree_queue.push(TreeOp::Sync(msg, next_tree_seq));
 				}
 				Ok(WorkerMessage::PatchTree(msg)) => {
-					let resp = if index.patch_tree(msg.base_snapshot_id, msg.snapshot_id, msg.upserts, msg.removes) {
-						WorkerResponse { id: msg.id, synced: Some(true), ok: None, error: None }
-					} else {
-						WorkerResponse {
-							id: msg.id,
-							synced: None,
-							ok: None,
-							error: Some(WorkerError::simple("missing_tree", "Base snapshot not found")),
-						}
-					};
-					let payload = serde_json::to_vec(&resp).expect("patch response serializes");
-					let mut guard = out.lock().unwrap();
-					if write_frame(&mut *guard, &payload).is_err() {
-						break;
-					}
+					next_tree_seq += 1;
+					snapshot_state.insert(msg.snapshot_id, next_tree_seq);
+					tree_queue.push(TreeOp::Patch(msg, next_tree_seq));
 				}
 				Ok(WorkerMessage::DropTree(msg)) => {
-					index.drop_tree(msg.snapshot_id);
-					if msg.id != 0 {
-						let resp = WorkerResponse { id: msg.id, synced: Some(true), ok: None, error: None };
-						let payload = serde_json::to_vec(&resp).expect("drop response serializes");
-						let mut guard = out.lock().unwrap();
-						if write_frame(&mut *guard, &payload).is_err() {
-							break;
-						}
-					}
+					next_tree_seq += 1;
+					snapshot_state.remove(&msg.snapshot_id);
+					tree_queue.push(TreeOp::Drop(msg, next_tree_seq));
 				}
 				Ok(WorkerMessage::Search(req)) => {
-					// WHY: resolve the snapshot Arc synchronously on the reader thread so a subsequent dropTree never races a queued search.
-					let synced_tree = req.snapshot_id.and_then(|sid| index.get_tree(sid));
-					queue.push(SearchJob { req, synced_tree });
+					if let Some(sid) = req.snapshot_id {
+						match snapshot_state.get(&sid).copied() {
+							Some(need_seq) if need_seq > tree_queue.completed() => {
+								// WHY: pin snapshot before queueing wait so a later dropTree cannot evict it before resolution.
+								index.pin_tree(sid);
+								queue.push(SearchJob {
+									req,
+									synced_tree: None,
+									wait_tree_seq: Some((sid, need_seq)),
+								});
+							}
+							Some(_) => {
+								let synced_tree = index.get_tree(sid);
+								queue.push(SearchJob { req, synced_tree, wait_tree_seq: None });
+							}
+							None => {
+								queue.push(SearchJob { req, synced_tree: None, wait_tree_seq: None });
+							}
+						}
+					} else {
+						queue.push(SearchJob { req, synced_tree: None, wait_tree_seq: None });
+					}
 				}
 				Err(e) => {
 					read_err = Some(format!("bad search request json: {e}"));
@@ -3157,6 +4743,8 @@ pub fn run_worker_io<R: Read, W: Write + Send + 'static>(
 			}
 		}
 	}
+	tree_queue.close();
+	let _ = tree_handle.join();
 	queue.close();
 	for h in handles {
 		let _ = h.join();
@@ -3339,8 +4927,8 @@ mod tests {
 		}
 		let r = execute_search(&index, &base_request(entries, Some("file_0399_content"))).unwrap();
 		assert_eq!(r.hits.len(), 1);
-		assert!(index.trigrams.total_bytes() <= (1024 * 1024 * 25) / 100 + 65536);
-		assert!(index.objects.total_bytes() <= (1024 * 1024 * 10) / 100 + 65536);
+		assert!(index.trigrams.total_bytes() <= (1024 * 1024 * 15) / 100 + 65536);
+		assert!(index.objects.total_bytes() <= (1024 * 1024 * 20) / 100 + 65536);
 		let _ = fs::remove_dir_all(&dir);
 	}
 
@@ -3503,7 +5091,7 @@ mod tests {
 		let sub_range = slice_tree(&compact, "docs", Some("docs/b.ts"));
 		assert_eq!(sub_range, 3..4);
 		assert_eq!(compact.path(sub_range.start), "docs/b.ts");
-		let g = CompiledGlob::parse("**/*.ts");
+		let g = CompiledGlob::parse("**/*.ts").unwrap();
 		assert!(!g.matches_entry("docs/a.md", ""));
 		assert!(g.matches_entry("docs/b.ts", ""));
 		assert!(g.matches_entry("docs/b.ts", "docs"));
@@ -3690,14 +5278,211 @@ mod tests {
 		}
 		assert!(index.patch_tree(1, 2, upserts, removes));
 		let patched = index.get_tree(2).unwrap();
-		assert_eq!(patched.len(), 2_000);
-		for i in 1..patched.len() {
-			assert_eq!(tree_order(patched.path(i - 1), patched.path(i)), Ordering::Less);
+		assert_eq!(patched.tree.len(), 2_000);
+		for i in 1..patched.tree.len() {
+			assert_eq!(tree_order(patched.tree.path(i - 1), patched.tree.path(i)), Ordering::Less);
 		}
 		index.drop_tree(1);
 		index.drop_tree(2);
 		assert_eq!(index.trees.total_bytes(), 0);
 
+		let _ = fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn caches_full_4mib_chunks_and_reuses_active_chunk_across_regex_pieces() {
+		let dir = temp_dir("chunk4m");
+		let mut content = vec![b'a'; CHUNK_BYTES];
+		for i in (0..CHUNK_BYTES).step_by(64) {
+			if i + 1 < CHUNK_BYTES {
+				content[i + 63.min(CHUNK_BYTES - 1 - i)] = b'\n';
+			}
+		}
+		let tail = b"needle_at_chunk_end\n";
+		let start = CHUNK_BYTES - tail.len();
+		content[start..].copy_from_slice(tail);
+		let entry = write_object_file(
+			&dir,
+			"big.txt",
+			"00000000-0000-4000-8000-000000000099",
+			&content,
+			CHUNK_BYTES,
+			0,
+		);
+		let index = SharedIndex::new(dir.clone(), 512);
+		let mut req = base_request(vec![entry.clone()], Some("needle_at_chunk_end"));
+		req.regex = true;
+		req.piece_bytes = Some(DEFAULT_REGEX_PIECE_BYTES);
+		let ok = execute_search(&index, &req).unwrap();
+		assert_eq!(ok.hits.len(), 1);
+		assert!(
+			index.objects.total_bytes() >= CHUNK_BYTES,
+			"expected 4 MiB chunk to stay cached at index_mib=512, got {} bytes",
+			index.objects.total_bytes()
+		);
+		let _ = fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn inverted_index_handles_warm_queries_incremental_patch_and_compaction() {
+		let dir = temp_dir("inverted");
+		let mut entries = Vec::new();
+		for i in 0..80u32 {
+			let body = if i == 17 {
+				"unique_alpha_marker_17\n".to_string()
+			} else if i == 53 {
+				"unique_beta_marker_53\n".to_string()
+			} else {
+				format!("common filler line number {i:03}\n")
+			};
+			entries.push(write_object_file(
+				&dir,
+				&format!("src/f{i:03}.ts"),
+				&format!("00000000-0000-4000-8000-{i:012x}"),
+				body.as_bytes(),
+				4096,
+				i,
+			));
+		}
+		let index = SharedIndex::new(dir.clone(), 32);
+		assert!(index.sync_tree(1, entries, false, true));
+
+		let mut req = base_request(Vec::new(), Some("unique_alpha_marker_17"));
+		req.snapshot_id = Some(1);
+		let r1 = execute_search(&index, &req).unwrap();
+		assert_eq!(r1.hits.len(), 1);
+		assert_eq!(r1.hits[0].path, "src/f017.ts");
+		assert_eq!(r1.searched, 80);
+
+		let mut req_warm = base_request(Vec::new(), Some("unique_beta_marker_53"));
+		req_warm.snapshot_id = Some(1);
+		let r2 = execute_search(&index, &req_warm).unwrap();
+		assert_eq!(r2.hits.len(), 1);
+		assert_eq!(r2.hits[0].path, "src/f053.ts");
+		assert_eq!(r2.searched, 80);
+
+		let replacement = write_object_file(
+			&dir,
+			"src/f017.ts",
+			"00000000-0000-4000-8000-000000009999",
+			b"replaced_gamma_token\n",
+			4096,
+			0,
+		);
+		let added = write_object_file(
+			&dir,
+			"src/f099.ts",
+			"00000000-0000-4000-8000-000000009998",
+			b"unique_alpha_marker_17\n",
+			4096,
+			0,
+		);
+		assert!(index.patch_tree(1, 2, vec![replacement, added], vec!["src/f053.ts".to_string()]));
+
+		let mut p1 = base_request(Vec::new(), Some("unique_alpha_marker_17"));
+		p1.snapshot_id = Some(2);
+		let pr1 = execute_search(&index, &p1).unwrap();
+		assert_eq!(pr1.hits.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(), vec!["src/f099.ts"]);
+
+		let mut p2 = base_request(Vec::new(), Some("unique_beta_marker_53"));
+		p2.snapshot_id = Some(2);
+		let pr2 = execute_search(&index, &p2).unwrap();
+		assert!(pr2.hits.is_empty());
+
+		let mut p3 = base_request(Vec::new(), Some("replaced_gamma_token"));
+		p3.snapshot_id = Some(2);
+		let pr3 = execute_search(&index, &p3).unwrap();
+		assert_eq!(pr3.hits.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(), vec!["src/f017.ts"]);
+
+		let _ = fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn supports_negative_globs_and_bounded_around() {
+		let dir = temp_dir("ergo");
+		let e0 = write_object_file(
+			&dir,
+			"src/app.ts",
+			"00000000-0000-4000-8000-000000000001",
+			b"plan planning PLAN\nsecond plan line\n",
+			1024,
+			0,
+		);
+		let e1 = write_object_file(
+			&dir,
+			"src/app.test.ts",
+			"00000000-0000-4000-8000-000000000002",
+			b"PLAN in test\n",
+			1024,
+			1,
+		);
+		let e2 = write_object_file(
+			&dir,
+			"src/other.ts",
+			"00000000-0000-4000-8000-000000000003",
+			b"planning only\n",
+			1024,
+			2,
+		);
+		let index = SharedIndex::new(dir.clone(), 8);
+		assert!(index.sync_tree(1, vec![e0, e1, e2], false, true));
+
+		let mut req = base_request(Vec::new(), Some("plan"));
+		req.snapshot_id = Some(1);
+		req.glob = Some("*.ts,!*.test.ts".to_string());
+		let r = execute_search(&index, &req).unwrap();
+		assert_eq!(r.hits.len(), 3);
+		assert!(r.hits.iter().all(|h| h.path != "src/app.test.ts"));
+
+		let mut excl_only = base_request(Vec::new(), Some("PLAN"));
+		excl_only.snapshot_id = Some(1);
+		excl_only.case_sensitive = true;
+		excl_only.glob = Some("!*.test.ts".to_string());
+		excl_only.files_only = true;
+		let r_upper = execute_search(&index, &excl_only).unwrap();
+		assert!(r_upper.hits.is_empty());
+		assert_eq!(r_upper.files.len(), 1);
+		assert_eq!(r_upper.files[0].path, "src/app.ts");
+		assert_eq!(r_upper.files[0].count, 1);
+
+		let naive_around = |line: &str, found_folded_byte: usize, cs: bool| -> String {
+			let chars: Vec<char> = line.chars().map(sanitize_char).collect();
+			if chars.len() <= HIT_CHARS {
+				return chars.into_iter().collect();
+			}
+			let mut at = 0usize;
+			let mut folded_bytes = 0usize;
+			for ch in line.chars() {
+				if folded_bytes >= found_folded_byte {
+					break;
+				}
+				folded_bytes += if cs { ch.len_utf8() } else { fold_char_utf8_len(ch) };
+				at += 1;
+			}
+			let start = at.saturating_sub(HIT_CHARS / 4).min(chars.len() - HIT_CHARS);
+			let mut out = String::new();
+			if start > 0 {
+				out.push('…');
+			}
+			for &ch in &chars[start..start + HIT_CHARS] {
+				out.push(ch);
+			}
+			if start + HIT_CHARS < chars.len() {
+				out.push('…');
+			}
+			out
+		};
+
+		let long_ascii = format!("{}NEEDLE{}", "x".repeat(500), "y".repeat(500));
+		for pos in [0usize, 10, 50, 500, 950, 1005] {
+			assert_eq!(around(&long_ascii, pos, true), naive_around(&long_ascii, pos, true));
+			assert_eq!(around(&long_ascii, pos, false), naive_around(&long_ascii, pos, false));
+		}
+		let long_utf8 = format!("{}ΣΤΡΑ{}", "é".repeat(300), "Ω".repeat(300));
+		for pos in [0usize, 40, 200, 600, 1150] {
+			assert_eq!(around(&long_utf8, pos, true), naive_around(&long_utf8, pos, true));
+			assert_eq!(around(&long_utf8, pos, false), naive_around(&long_utf8, pos, false));
+		}
 		let _ = fs::remove_dir_all(&dir);
 	}
 
@@ -3729,6 +5514,226 @@ mod tests {
 			self.pos += n;
 			Ok(n)
 		}
+	}
+
+	#[test]
+	fn inverted_index_handles_out_of_order_inserts_and_compaction() {
+		let profile = [7u8; 16];
+		let budget = Arc::new(InvertedBudget::new(1024 * 1024));
+		let mut inv = InvertedIndex::new(100, budget.clone());
+		let info = DocInfo { kind: DOC_INDEXED, long_lines_1m: 0, max_line_bytes: 16 };
+		let tri_a: u32 = 0x616263;
+		let tri_b: u32 = 0x78797a;
+		inv.record_doc(profile, 50, info, Some(&[tri_a, tri_b]));
+		inv.record_doc(profile, 10, info, Some(&[tri_a]));
+		inv.record_doc(profile, 30, info, Some(&[tri_a, tri_b]));
+		assert_eq!(inv.postings_for(tri_a), vec![10, 30, 50]);
+		assert_eq!(inv.postings_for(tri_b), vec![30, 50]);
+		let gen_before = inv.generation;
+		inv.compact();
+		assert_ne!(inv.generation, gen_before);
+		assert_eq!(inv.postings_for(tri_a), vec![10, 30, 50]);
+		assert_eq!(inv.postings_for(tri_b), vec![30, 50]);
+		let mut patched = inv.patch_from(&[50], 120, 100);
+		assert_eq!(patched.postings_for(tri_a), vec![10, 30]);
+		assert_eq!(patched.postings_for(tri_b), vec![30]);
+		patched.compact();
+		assert!(patched.base.extra_doc_info_bytes >= 20 * std::mem::size_of::<DocInfo>());
+		drop(patched);
+		drop(inv);
+		assert_eq!(budget.used(), 0);
+	}
+
+	#[test]
+	fn generation_bump_forces_candidate_re_evaluation_for_concurrent_readers() {
+		let profile = [9u8; 16];
+		let budget = Arc::new(InvertedBudget::new(1024 * 1024));
+		let inv = Arc::new(RwLock::new(InvertedIndex::new(16, budget.clone())));
+		let info = DocInfo { kind: DOC_INDEXED, long_lines_1m: 0, max_line_bytes: 32 };
+		let other_tri: u32 = 0x6f7468;
+		let needle_tri: u32 = 0x6e6565;
+		let (h1, h2) = trigram_hashes(needle_tri);
+		let query = CompiledTrigramQuery::Exact { tri: needle_tri, h1, h2 };
+
+		inv.write().unwrap().record_doc(profile, 1, info, Some(&[other_tri]));
+
+		let mut inv_candidates_gen: Option<u64> = None;
+		let mut inv_active = false;
+		let mut inv_candidates: Option<Vec<u32>> = None;
+		{
+			let guard = inv.read().unwrap();
+			sync_inv_candidates(
+				&guard,
+				profile,
+				&query,
+				&mut inv_candidates_gen,
+				&mut inv_active,
+				&mut inv_candidates,
+			);
+			assert!(inv_active);
+			assert_eq!(inv_candidates_gen, Some(1));
+			assert_eq!(inv_candidates.as_deref(), Some(&[][..]));
+		}
+
+		// WHY: simulate a second concurrent search flushing a matching doc while the first search dropped its read guard.
+		let second_handle = inv.clone();
+		second_handle.write().unwrap().record_doc(profile, 5, info, Some(&[needle_tri]));
+
+		{
+			let guard = inv.read().unwrap();
+			assert_eq!(guard.doc_info_of(5).kind, DOC_INDEXED);
+			assert!(inv_candidates.as_ref().unwrap().binary_search(&5).is_err());
+			sync_inv_candidates(
+				&guard,
+				profile,
+				&query,
+				&mut inv_candidates_gen,
+				&mut inv_active,
+				&mut inv_candidates,
+			);
+			assert_eq!(inv_candidates_gen, Some(2));
+			assert_eq!(inv_candidates.as_deref(), Some(&[5][..]));
+			assert!(inv_candidates.as_ref().unwrap().binary_search(&5).is_ok());
+		}
+		drop(second_handle);
+		drop(inv);
+		assert_eq!(budget.used(), 0);
+	}
+
+	fn make_folder_entry(path: &str, idx: u32) -> WorkerEntry {
+		WorkerEntry {
+			i: idx,
+			k: 1,
+			p: path.to_string(),
+			v: String::new(),
+			m: None,
+			f: None,
+			b: 0,
+			t: None,
+			x: false,
+			tg: None,
+			rb: 0,
+			gm: true,
+		}
+	}
+
+	#[test]
+	fn concurrent_interleaved_searches_do_not_miss_newly_indexed_matches() {
+		let dir = temp_dir("concurrent-inv");
+		let mut entries = vec![make_folder_entry("", 0), make_folder_entry("src", 1)];
+		for i in 0..80u32 {
+			let body = if i % 2 == 0 {
+				format!("export const alpha_{i} = 'CONCURRENT_ALPHA_HIT';\n")
+			} else {
+				format!("export const beta_{i} = 'CONCURRENT_BETA_HIT';\n")
+			};
+			entries.push(write_object_file(
+				&dir,
+				&format!("src/f{i:03}.ts"),
+				&format!("00000000-0000-4000-8000-00000000{:04x}", i + 1),
+				body.as_bytes(),
+				1024,
+				i + 2,
+			));
+		}
+		let index = Arc::new(SharedIndex::new(dir.clone(), 16));
+		assert!(index.sync_tree(1, entries, false, true));
+
+		// WHY: seed doc 2 first so concurrent searches start with indexed_docs > 0 and must observe generation bumps.
+		let mut seed = base_request(Vec::new(), Some("CONCURRENT_ALPHA_HIT"));
+		seed.snapshot_id = Some(1);
+		seed.glob = Some("f000.ts".to_string());
+		assert_eq!(execute_search(&index, &seed).unwrap().hits.len(), 1);
+
+		let barrier = Arc::new(std::sync::Barrier::new(2));
+		let idx_a = index.clone();
+		let bar_a = barrier.clone();
+		let t_a = std::thread::spawn(move || {
+			let mut req = base_request(Vec::new(), Some("CONCURRENT_ALPHA_HIT"));
+			req.snapshot_id = Some(1);
+			bar_a.wait();
+			execute_search(&idx_a, &req).unwrap()
+		});
+		let idx_b = index.clone();
+		let bar_b = barrier.clone();
+		let t_b = std::thread::spawn(move || {
+			let mut req = base_request(Vec::new(), Some("CONCURRENT_BETA_HIT"));
+			req.snapshot_id = Some(1);
+			bar_b.wait();
+			execute_search(&idx_b, &req).unwrap()
+		});
+		let res_a = t_a.join().unwrap();
+		let res_b = t_b.join().unwrap();
+		assert_eq!(res_a.hits.len(), 40);
+		assert_eq!(res_b.hits.len(), 40);
+		let _ = fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn shared_inverted_budget_caps_across_trees_and_releases_on_drop() {
+		let dir = temp_dir("shared-budget");
+		let mut entries = vec![make_folder_entry("", 0), make_folder_entry("src", 1)];
+		for i in 0..32u32 {
+			let body = format!("module_{i} unique_token_{i}_alpha_{i} beta_{i}_gamma_{i}\n");
+			entries.push(write_object_file(
+				&dir,
+				&format!("src/b{i:02}.ts"),
+				&format!("00000000-0000-4000-8000-00000001{:04x}", i + 1),
+				body.as_bytes(),
+				1024,
+				i + 2,
+			));
+		}
+		let index = SharedIndex::new(dir.clone(), 1);
+		let limit = (1024 * 1024 * 15) / 100;
+		for sid in 1..=6u64 {
+			assert!(index.sync_tree(sid, entries.clone(), false, true));
+			let mut req = base_request(Vec::new(), Some("unique_token_15_alpha_15"));
+			req.snapshot_id = Some(sid);
+			let res = execute_search(&index, &req).unwrap();
+			assert_eq!(res.hits.len(), 1);
+			assert!(
+				index.trees.inverted_used_bytes() <= limit + 65536,
+				"shared inverted bytes {} exceeded limit {}",
+				index.trees.inverted_used_bytes(),
+				limit
+			);
+		}
+		assert!(index.trees.inverted_used_bytes() > 0);
+		for sid in 1..=6u64 {
+			index.drop_tree(sid);
+		}
+		assert_eq!(index.trees.inverted_used_bytes(), 0);
+		assert_eq!(index.trees.total_bytes(), 0);
+		let _ = fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn patch_resets_doc_ids_when_next_doc_id_nears_u32_max() {
+		let dir = temp_dir("docid-reset");
+		let e0 = write_object_file(&dir, "a.ts", "00000000-0000-4000-8000-000000000001", b"alpha\n", 1024, 0);
+		let e1 = write_object_file(&dir, "b.ts", "00000000-0000-4000-8000-000000000002", b"beta\n", 1024, 1);
+		let media = MediaInterner::new();
+		let mut base = CompactTree::from_wire(&[e0], &media);
+		base.next_doc_id = u32::MAX - 1;
+		let (patched, removed, reset) = CompactTree::patch(&base, vec![e1.clone()], Vec::new(), &media);
+		assert!(reset);
+		assert!(removed.is_empty());
+		assert_eq!(patched.len(), 2);
+		assert_eq!(patched.entries[0].doc_id, 0);
+		assert_eq!(patched.entries[1].doc_id, 1);
+		assert_eq!(patched.next_doc_id, 2);
+
+		let mut churned = patched;
+		churned.next_doc_id = 1025;
+		let (dense, dense_removed, dense_reset) = CompactTree::patch(&churned, vec![e1], Vec::new(), &media);
+		assert!(dense_reset);
+		assert!(dense_removed.is_empty());
+		assert_eq!(dense.len(), 2);
+		assert_eq!(dense.entries[0].doc_id, 0);
+		assert_eq!(dense.entries[1].doc_id, 1);
+		assert_eq!(dense.next_doc_id, 2);
+		let _ = fs::remove_dir_all(&dir);
 	}
 
 	fn pipe_buffer() -> (SharedBuf, SharedReader) {

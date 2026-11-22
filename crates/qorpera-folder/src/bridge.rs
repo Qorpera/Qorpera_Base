@@ -10,9 +10,11 @@ use crate::lxd::Machines;
 use crate::proto::Bridge;
 use crate::transport::{connect, Listener, Stream};
 use std::collections::HashMap;
-use std::io;
+use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+const COPY_BUF_BYTES: usize = 128 * 1024;
 
 /// Connections one machine may hold open at once. A guard against a machine (where an agent can be root)
 /// exhausting the node's threads, not a product limit: a folder program opens one feed and at most 16
@@ -80,6 +82,21 @@ fn release(open: &Mutex<HashMap<u32, usize>>, cid: u32) {
 }
 
 /// Names the machine, then passes its connection through to the service until either side closes.
+fn copy_buffered<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> io::Result<u64> {
+	let mut buf = vec![0u8; COPY_BUF_BYTES];
+	let mut total = 0u64;
+	loop {
+		let n = match reader.read(&mut buf) {
+			Ok(0) => return Ok(total),
+			Ok(n) => n,
+			Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+			Err(e) => return Err(e),
+		};
+		writer.write_all(&buf[..n])?;
+		total += n as u64;
+	}
+}
+
 fn pass(machine: Stream, cid: u32, service: &str, machines: &Machines) -> io::Result<()> {
 	let (lookup, found) = machines.lookup(cid);
 	let mut to_service = connect(service)?;
@@ -88,13 +105,12 @@ fn pass(machine: Stream, cid: u32, service: &str, machines: &Machines) -> io::Re
 	let mut from_machine = machine.try_clone()?;
 	let mut into_service = to_service.try_clone()?;
 	let upstream = std::thread::Builder::new().name(format!("bridge-{cid}-up")).spawn(move || {
-		let _ = io::copy(&mut from_machine, &mut into_service);
-		// The machine closed (or broke): end both directions.
+		let _ = copy_buffered(&mut from_machine, &mut into_service);
 		into_service.shutdown();
 		from_machine.shutdown();
 	})?;
 	let mut into_machine = machine;
-	let _ = io::copy(&mut to_service, &mut into_machine);
+	let _ = copy_buffered(&mut to_service, &mut into_machine);
 	into_machine.shutdown();
 	to_service.shutdown();
 	let _ = upstream.join();

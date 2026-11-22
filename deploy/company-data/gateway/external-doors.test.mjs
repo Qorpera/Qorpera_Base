@@ -677,26 +677,33 @@ describe("external doors, direct logins, hooks, and live triggers against Postgr
 			assert.equal(wakesOld.length, 0);
 			assert.equal(wakesNew.length, 1);
 
-			await asSuperuser(
+			const terminated = await asSuperuser(
 				"postgres",
-				"select pg_terminate_backend(pid) from pg_stat_activity where datname = $1 and application_name = 'qorpera-data-gateway listen'",
+				"select pid, pg_terminate_backend(pid) from pg_stat_activity where datname = $1 and application_name = 'qorpera-data-gateway listen'",
 				[companyDatabase(envId)],
 			);
-			for (let i = 0; i < 40; i++) {
+			const oldPids = terminated.map((row) => row.pid);
+			assert.ok(oldPids.length >= 1, "expected an active LISTEN backend to terminate");
+			let reconnected = false;
+			for (let i = 0; i < 100; i++) {
 				const active = await asSuperuser(
 					"postgres",
-					"select count(*)::int as n from pg_stat_activity where datname = $1 and application_name = 'qorpera-data-gateway listen'",
-					[companyDatabase(envId)],
+					"select count(*)::int as n from pg_stat_activity where datname = $1 and application_name = 'qorpera-data-gateway listen' and not (pid = any($2::int[])) and state = 'idle' and query = 'listen qorpera_data'",
+					[companyDatabase(envId), oldPids],
 				);
-				if (active[0].n > 0) break;
+				if (active[0].n > 0) {
+					reconnected = true;
+					break;
+				}
 				await new Promise((r) => setTimeout(r, 50));
 			}
+			assert.equal(reconnected, true, "expected LISTEN backend to reconnect with a new pid");
 			await post(
 				`/v1/hook-data/${envId}/change`,
 				{ database: "shop", change: "ingest-stripe", hookId: "hook-reconnect-1", params: { email: "r2@example.com", source: "stripe" } },
 				{ authorization: `Bearer ${hookToken}` },
 			);
-			for (let i = 0; i < 40 && wakesNew.length < 2; i++) await new Promise((r) => setTimeout(r, 25));
+			for (let i = 0; i < 80 && wakesNew.length < 2; i++) await new Promise((r) => setTimeout(r, 25));
 			assert.ok(wakesNew.length >= 2, `expected trigger wake after LISTEN reconnect, got ${wakesNew.length}`);
 
 			const wakesBeforeEvict = wakesNew.length;
