@@ -42,8 +42,10 @@ Everything here runs only for `folder-v2` companies. No real one exists before C
 - **`qorpera_folder_file_chunks`** `(profile_id, chunk_sha256, manifest_sha256)`, primary key in that order, a foreign
   key to `qorpera_profiles` and a foreign key `(profile_id, manifest_sha256)` to `profile_objects`, both cascading:
   which version-2 manifests contain a chunk. The download check finds a chunk's manifests here in one indexed step.
-- **`qorpera_folder_storage_usage`** `(profile_id primary key, bytes, objects, updated_at)`: a `folder-v2` company's
-  stored bytes. Only the catalog trigger writes it (§5); nothing else locks it.
+- **`qorpera_folder_storage_usage`** `(profile_id, bucket smallint check (bucket between 0 and 15), bytes, objects, updated_at)`,
+  primary key `(profile_id, bucket)`: a `folder-v2` company's stored bytes sharded across 16 buckets (keyed by the low
+  nibble of the object's first SHA-256 byte, with existing/seed totals in bucket 0). Only the catalog trigger writes it
+  (§5); nothing else locks it, and readers sum across buckets for `profile_id`.
 - **Proofs.** `qorpera_verified_company_file_objects` accepts verifier version 2: any media type of core §3 and an
   `executable` bit, both taken from a version-2 manifest. Version 1 (octet-stream, no bit) stays exactly as it is. The
   new check is added `not valid`: the old checks and the new null column already hold for every row, so the migration
@@ -184,13 +186,16 @@ The catalog rows a new folder reads went from N × 20,000 to 20,000 + 2N.
 
 ## 5. Usage and the quota
 
-- **`refresh_company_storage_usage`** (on `profile_objects`): for a `folder-v2` company it adds the delta to
-  `qorpera_folder_storage_usage` (`bytes = bytes + x, objects = objects ± 1`) and leaves `company_files` alone. It
-  runs only when the catalog row changes, so an upload of a hash already stored adds nothing.
-- **The row seeds itself.** The first change after a company became `folder-v2` inserts the catalog's sum without the
-  change itself (`on conflict do nothing`), then adds the change. So a company enabled while it holds objects starts
-  right, with no seed in the migration or in `qorpera_folder_enable`. Two first changes at once seed the same base,
-  and each adds its own.
+- **`refresh_company_storage_usage`** (on `profile_objects`): for a `folder-v2` company it adds the delta to that
+  object's shard row in `qorpera_folder_storage_usage` (`(profile_id, bucket)` where `bucket` is the low nibble of the
+  first SHA-256 byte; `bytes = bytes + x, objects = objects ± 1`) and leaves `company_files` alone. It runs only when
+  the catalog row changes, so an upload of a hash already stored adds nothing, and concurrent confirms on distinct
+  buckets do not contend on a single row.
+- **Bucket 0 seeds itself.** The first change after a company became `folder-v2` (when no row exists for `profile_id`)
+  inserts the catalog's sum without the change itself into bucket `0` (`on conflict (profile_id, bucket) do nothing`),
+  then upserts the change into the object's bucket. Existing pre-sharding rows live in bucket `0`; readers
+  (`qorpera_folder_storage_quota_check`, `qorpera_company_file_json`, `qorpera_set_account_entitlement`) sum `bytes`
+  across all buckets for `profile_id`. Two first changes at once seed the same bucket-0 base, and each adds its own.
 - **`enforce_company_storage_quota`** (on `storage.objects`): for a `folder-v2` company it reads the usage and the
   limit plainly, takes neither the fence nor `company_files`, and checks only objects the catalog lacks.
 - **The quota is soft** for `folder-v2`: uploads in flight at once can pass the limit by what they carry, as F2-3's

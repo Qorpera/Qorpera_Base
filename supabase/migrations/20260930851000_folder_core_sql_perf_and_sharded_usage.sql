@@ -919,6 +919,7 @@ $new$	v_outcomes jsonb := '[]'::jsonb; v_outcome_list jsonb[] := '{}'::jsonb[]; 
 $old$	v_locks jsonb := '{}'::jsonb; v_claims text[] := '{}'; v_lock record; v_invalid boolean; v_objects text[];$old$,
 $new$	v_lock_keys text[] := '{}'; v_lock_paths text[] := '{}'; v_lock_modes text[] := '{}';
 	v_claims text[] := '{}'; v_lock record; v_sub record; v_locked_shas bytea[]; v_inserted_shas bytea[]; v_inserted_keys text[];
+	v_lock_subxids integer := 0; v_short boolean := false;
 	v_write_proofs jsonb := '{}'::jsonb; v_write_status text; v_write_allowed boolean[]; v_can_precheck_write boolean := false;
 	v_git_other_unsaved boolean := false; v_invalid boolean; v_objects text[];$new$,
 $old$	v_parked jsonb := '[]'::jsonb; v_proposal_id uuid := extensions.gen_random_uuid();$old$,
@@ -1014,60 +1015,65 @@ $new$	if cardinality(v_lock_keys) > 0 then
 			group by g.grp
 			order by g.grp
 		loop
-			if cardinality(v_sub.keys) = 1 then
-				if public.qorpera_folder_lock_path(p_environment_id, v_sub.paths[1], v_sub.mode) then
-					v_claims := array_append(v_claims, v_sub.keys[1]);
-				end if;
-			elsif v_sub.exists_now then
-				if v_sub.mode = 'update' then
-					select coalesce(array_agg(s.key_sha256), '{}') into v_locked_shas
-					from (
-						select e.key_sha256 from public.qorpera_folder_entries e
-						where e.environment_id = p_environment_id and e.key_sha256 = any (v_sub.key_shas)
-						order by e.key_text collate "C"
-						for update
-					) s;
-				else
-					select coalesce(array_agg(s.key_sha256), '{}') into v_locked_shas
-					from (
-						select e.key_sha256 from public.qorpera_folder_entries e
-						where e.environment_id = p_environment_id and e.key_sha256 = any (v_sub.key_shas)
-						order by e.key_text collate "C"
-						for key share
-					) s;
-				end if;
-				if cardinality(v_locked_shas) < cardinality(v_sub.keys) then
-					for v_lock in
-						select u.k, u.p as path
-						from unnest(v_sub.keys, v_sub.paths, v_sub.key_shas) with ordinality as u(k, p, sha, ord)
-						where not (u.sha = any (v_locked_shas))
-						order by u.ord
-					loop
-						if public.qorpera_folder_lock_path(p_environment_id, v_lock.path, v_sub.mode) then
-							v_claims := array_append(v_claims, v_lock.k);
-						end if;
-					end loop;
-				end if;
-			else
-				with inserted as (
-					insert into public.qorpera_folder_entries(environment_id, path, kind)
-					select p_environment_id, u.p, 'claim'
-					from unnest(v_sub.paths) with ordinality as u(p, ord)
+			if cardinality(v_sub.keys) = 1 or v_lock_subxids >= 32 then
+				for v_lock in
+					select u.k, u.p as path
+					from unnest(v_sub.keys, v_sub.paths) with ordinality as u(k, p, ord)
 					order by u.ord
-					on conflict (environment_id, key_sha256) do nothing
-					returning key_text, key_sha256
-				)
-				select coalesce(array_agg(key_text), '{}'), coalesce(array_agg(key_sha256), '{}')
-				into v_inserted_keys, v_inserted_shas
-				from inserted;
-				if cardinality(v_inserted_keys) > 0 then
-					v_claims := v_claims || v_inserted_keys;
-				end if;
-				if cardinality(v_inserted_shas) < cardinality(v_sub.keys) then
+				loop
+					if public.qorpera_folder_lock_path(p_environment_id, v_lock.path, v_sub.mode) then
+						v_claims := array_append(v_claims, v_lock.k);
+					end if;
+				end loop;
+			else
+				v_lock_subxids := v_lock_subxids + 1;
+				v_short := false;
+				begin
+					if v_sub.exists_now then
+						if v_sub.mode = 'update' then
+							select coalesce(array_agg(s.key_sha256), '{}') into v_locked_shas
+							from (
+								select e.key_sha256 from public.qorpera_folder_entries e
+								where e.environment_id = p_environment_id and e.key_sha256 = any (v_sub.key_shas)
+								order by e.key_text collate "C"
+								for update
+							) s;
+						else
+							select coalesce(array_agg(s.key_sha256), '{}') into v_locked_shas
+							from (
+								select e.key_sha256 from public.qorpera_folder_entries e
+								where e.environment_id = p_environment_id and e.key_sha256 = any (v_sub.key_shas)
+								order by e.key_text collate "C"
+								for key share
+							) s;
+						end if;
+						if cardinality(v_locked_shas) < cardinality(v_sub.keys) then
+							raise exception using errcode = 'Q6D01';
+						end if;
+					else
+						with inserted as (
+							insert into public.qorpera_folder_entries(environment_id, path, kind)
+							select p_environment_id, u.p, 'claim'
+							from unnest(v_sub.paths) with ordinality as u(p, ord)
+							order by u.ord
+							on conflict (environment_id, key_sha256) do nothing
+							returning key_text, key_sha256
+						)
+						select coalesce(array_agg(key_text), '{}'), coalesce(array_agg(key_sha256), '{}')
+						into v_inserted_keys, v_inserted_shas
+						from inserted;
+						if cardinality(v_inserted_shas) < cardinality(v_sub.keys) then
+							raise exception using errcode = 'Q6D01';
+						end if;
+						v_claims := v_claims || v_inserted_keys;
+					end if;
+				exception when sqlstate 'Q6D01' then
+					v_short := true;
+				end;
+				if v_short then
 					for v_lock in
 						select u.k, u.p as path
-						from unnest(v_sub.keys, v_sub.paths, v_sub.key_shas) with ordinality as u(k, p, sha, ord)
-						where not (u.sha = any (v_inserted_shas))
+						from unnest(v_sub.keys, v_sub.paths) with ordinality as u(k, p, ord)
 						order by u.ord
 					loop
 						if public.qorpera_folder_lock_path(p_environment_id, v_lock.path, v_sub.mode) then
@@ -1155,11 +1161,12 @@ $new$	with write_units as materialized (
 	)
 	select coalesce(jsonb_object_agg(wu.unit_no::text,
 		case
-			when p.manifest_sha256 is null or not coalesce(ok.objs_ok, false) then 'bytes_unverified'
-			when p.verifier_version = 2 and v_bytes_actor ->> 'kind' is distinct from 'platform'
-				and sm.manifest_sha256 is null and rm.manifest_sha256 is null then 'bytes_unverified'
+			when p.manifest_sha256 is null then 'bytes_unverified'
 			when p.verifier_version = 2 and (p.media_type is distinct from wu.media_type
 				or p.executable is distinct from wu.executable) then 'mismatch'
+			when not coalesce(ok.objs_ok, false) then 'bytes_unverified'
+			when p.verifier_version = 2 and v_bytes_actor ->> 'kind' is distinct from 'platform'
+				and sm.manifest_sha256 is null and rm.manifest_sha256 is null then 'bytes_unverified'
 			else 'ok'
 		end), '{}'::jsonb)
 	into v_write_proofs

@@ -777,6 +777,7 @@ export class FolderService {
 	readonly #staging: FolderStaging | undefined;
 	readonly #pollMs: number;
 	readonly #maxPollMs: number;
+	readonly #backoffConnected: boolean;
 	readonly #reloadMs: number;
 	readonly #idleMs: number;
 	readonly #checkWaitMs: number;
@@ -861,6 +862,7 @@ export class FolderService {
 		this.#grants = options.grants;
 		this.#staging = options.staging;
 		this.#pollMs = options.pollMs ?? 500;
+		this.#backoffConnected = options.maxPollMs !== undefined;
 		this.#maxPollMs = Math.max(
 			this.#pollMs,
 			options.maxPollMs ?? (options.pollMs === undefined ? IDLE_POLL_MAX_MS : this.#pollMs),
@@ -2013,7 +2015,8 @@ export class FolderService {
 					this.#queue(view, () => this.#catchUp(view));
 				}
 			}
-			if (active) this.#noteActivity();
+			const hasConnected = live.some((v) => v.connections > 0);
+			if (active || (hasConnected && !this.#backoffConnected)) this.#noteActivity();
 			else this.#noteQuietTick();
 		} finally {
 			this.#polling = false;

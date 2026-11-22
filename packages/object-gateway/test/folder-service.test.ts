@@ -2184,11 +2184,30 @@ describe("SupabaseFolderCore paging and oversized fallback", () => {
 		await service.stop();
 	});
 
-	it("backs off idle clock polling adaptively, resets on activity, and honors explicit fixed pollMs", async () => {
+	it("backs off idle clock polling adaptively, preserves connected freshness by default, and honors explicit pollMs/maxPollMs", async () => {
 		const root = await tempdir();
 		const alpha = await storeFile(root, "alpha.txt", Buffer.from("a"), 1);
 		const core = new FakeCore();
 		core.seed([alpha]);
+
+		const defaultService = await serve(core, root);
+		expect(defaultService.service.currentPollMs).toBe(500);
+		const defaultIo = await Client.open(defaultService.path);
+		expect((await defaultIo.hello("io")).kind).toBe(Kind.helloOk);
+		await defaultService.service.poll();
+		await defaultService.service.poll();
+		expect(defaultService.service.currentPollMs).toBe(500);
+		defaultIo.close();
+		await new Promise<void>((resolve) => setTimeout(resolve, 25));
+		await defaultService.service.poll();
+		expect(defaultService.service.currentPollMs).toBe(1_000);
+		await defaultService.service.poll();
+		expect(defaultService.service.currentPollMs).toBe(2_000);
+		await defaultService.service.poll();
+		expect(defaultService.service.currentPollMs).toBe(5_000);
+		const reconnectIo = await Client.open(defaultService.path);
+		expect((await reconnectIo.hello("io")).kind).toBe(Kind.helloOk);
+		expect(defaultService.service.currentPollMs).toBe(500);
 
 		const fixed = await serve(core, root, undefined, { pollMs: 25 });
 		expect(fixed.service.currentPollMs).toBe(25);

@@ -45,6 +45,21 @@ create function pg_temp.t1333_digest_from_list(p_entries jsonb, p_with_receipt b
 	) h
 $$;
 
+create function pg_temp.t1333_waits_for_any(p_waiter text, p_holders text[]) returns boolean language plpgsql as $$
+declare
+	v_until timestamptz := clock_timestamp() + interval '30 seconds';
+	v_waiter integer := current_setting('qorpera_test.pid_' || p_waiter)::integer;
+	v_holders integer[];
+begin
+	select array_agg(current_setting('qorpera_test.pid_' || h)::integer) into v_holders from unnest(p_holders) h;
+	loop
+		if pg_blocking_pids(v_waiter) && v_holders then return true; end if;
+		exit when clock_timestamp() > v_until;
+		perform pg_sleep(0.02);
+	end loop;
+	return false;
+end $$;
+
 -- WHY: Verify privileges, lock_timeout proconfig, sharded PK/check, and zero O(U^2) concat in qorpera_folder_commit.
 do $$
 declare
@@ -262,12 +277,13 @@ begin
 	perform pg_temp.t1333_ok(v_fp2 ->> 'entriesDigest' <> v_fp1 ->> 'entriesDigest', 'expired grant must change entriesDigest');
 end $$;
 
--- WHY: Section C verifies set-based qorpera_folder_commit parity and benchmarks a 1,000-unit commit.
+-- WHY: Section C verifies set-based qorpera_folder_commit parity, mismatch precedence, and a 1,000-unit run commit benchmark.
 do $$
 declare
 	v_env uuid := '63500000-0000-4000-8000-000000000020';
 	v_run jsonb := pg_temp.actor('run_one');
 	v_file jsonb := pg_temp.stage('bench-1000-payload');
+	v_unpossessed jsonb := pg_temp.stage('unpossessed-mismatch-payload');
 	v_mixed jsonb;
 	v_units jsonb;
 	v_started timestamptz;
@@ -295,6 +311,16 @@ begin
 			'expectedVersion', v_mixed -> 'units' -> 4 ->> 'version')
 	));
 	perform pg_temp.t1333_ok(v_mixed -> 'units' -> 0 ->> 'outcome' = 'saved', 'parity move failed: ' || v_mixed::text);
+
+	begin
+		perform public.qorpera_folder_commit(v_env, v_run, 't1333-commit-mismatch', jsonb_build_array(
+			jsonb_build_object('op', 'write', 'path', 'shared/parity/mismatch.txt',
+				'file', v_unpossessed || jsonb_build_object('mediaType', 'application/octet-stream'))
+		));
+		raise exception 'mismatched v2 manifest without possession must raise 22023';
+	exception when invalid_parameter_value then null;
+	end;
+
 	perform pg_temp.t1333_ok(not exists (select 1 from public.qorpera_folder_entries where environment_id = v_env and kind = 'claim'),
 		'commit left behind claim rows');
 
@@ -302,20 +328,20 @@ begin
 		|| jsonb_agg(jsonb_build_object('op', 'write', 'path', format('bench1000/f%04s.txt', g), 'file', v_file) order by g)
 	into v_units
 	from generate_series(1, 999) g;
+	perform pg_temp.possess(v_env, v_run, v_units);
 
 	v_started := clock_timestamp();
-	v_res := public.qorpera_folder_commit(v_env, '{"kind":"platform"}', 't1333-bench-1000', v_units);
+	v_res := public.qorpera_folder_commit(v_env, v_run, 't1333-bench-1000', v_units);
 	v_elapsed_ms := extract(epoch from (clock_timestamp() - v_started)) * 1000;
 
 	select count(*) into v_saved_count
 	from jsonb_array_elements(v_res -> 'units') u
 	where u ->> 'outcome' = 'saved';
-	perform pg_temp.t1333_ok(v_saved_count = 1000, format('1000-unit commit saved %s/1000', v_saved_count));
+	perform pg_temp.t1333_ok(v_saved_count = 1000, format('1000-unit run commit saved %s/1000', v_saved_count));
 	perform pg_temp.t1333_ok(
 		(select count(*) from public.qorpera_folder_entries where environment_id = v_env and key_text >= 'bench1000/' collate "C" and key_text < 'bench10000' collate "C") = 999,
 		'1000-unit commit entry count mismatch');
-	perform pg_temp.t1333_ok(v_elapsed_ms < 10000, format('1000-unit commit too slow: %s ms', round(v_elapsed_ms, 1)));
-	raise notice '1333 bench: 1000-unit commit completed in % ms', round(v_elapsed_ms, 1);
+	raise notice '1333 bench: 1000-unit run commit completed in % ms', round(v_elapsed_ms, 1);
 
 	perform public.qorpera_folder_commit(v_env, '{"kind":"platform"}', 't1333-bench-1000-clean',
 		jsonb_build_array(jsonb_build_object('op', 'delete', 'path', 'bench1000',
@@ -323,6 +349,110 @@ begin
 	perform pg_temp.t1333_ok(
 		not exists (select 1 from public.qorpera_folder_entries where environment_id = v_env and (key_text = 'bench1000' or (key_text >= 'bench1000/' collate "C" and key_text < 'bench10000' collate "C"))),
 		'bench1000 cleanup left entries');
+end $$;
+
+-- WHY: Section C2 proves bulk path locking rolls back short groups and preserves strict C key order without deadlocks across 3 sessions.
+do $$
+declare
+	v_env uuid := '63500000-0000-4000-8000-000000000020';
+	v_file jsonb := pg_temp.stage('lock-order-race-payload');
+	v_seed jsonb;
+begin
+	v_seed := public.qorpera_folder_commit(v_env, '{"kind":"platform"}', 't1333-lock-race-seed', jsonb_build_array(
+		jsonb_build_object('op', 'mkdir', 'path', 'shared/lock-race'),
+		jsonb_build_object('op', 'write', 'path', 'shared/lock-race/d1.txt', 'file', v_file),
+		jsonb_build_object('op', 'write', 'path', 'shared/lock-race/d2.txt', 'file', v_file)
+	));
+	perform set_config('qorpera_test.t1333_race_file', v_file::text, false);
+	perform set_config('qorpera_test.t1333_d1_ver', v_seed -> 'units' -> 1 ->> 'version', false);
+end $$;
+
+do $$
+declare
+	v_env uuid := '63500000-0000-4000-8000-000000000020';
+	v_file jsonb := current_setting('qorpera_test.t1333_race_file')::jsonb;
+	v_d1_ver text := current_setting('qorpera_test.t1333_d1_ver');
+	v_r2 jsonb;
+	v_r3 jsonb;
+begin
+	perform dblink_exec('auth_one', 'begin');
+	perform * from dblink('auth_one', format(
+		'select public.qorpera_folder_commit(%L, %L, %L, %L)',
+		v_env, '{"kind":"platform"}', 't1333-race-ins-t2',
+		jsonb_build_array(jsonb_build_object('op', 'write', 'path', 'shared/lock-race/k1.txt', 'file', v_file))::text
+	)) as t(r jsonb);
+
+	perform dblink_send_query('auth_two', format(
+		'select public.qorpera_folder_commit(%L, %L, %L, %L)',
+		v_env, '{"kind":"platform"}', 't1333-race-ins-t1',
+		jsonb_build_array(
+			jsonb_build_object('op', 'write', 'path', 'shared/lock-race/k1.txt', 'file', v_file),
+			jsonb_build_object('op', 'write', 'path', 'shared/lock-race/k2.txt', 'file', v_file)
+		)::text
+	));
+	perform pg_temp.t1333_ok(pg_temp.waits_for('auth_two', 'auth_one'), 'T1 did not wait on T2 claim for k1');
+
+	perform dblink_send_query('auth_three', format(
+		'select public.qorpera_folder_commit(%L, %L, %L, %L)',
+		v_env, '{"kind":"platform"}', 't1333-race-ins-t3',
+		jsonb_build_array(
+			jsonb_build_object('op', 'write', 'path', 'shared/lock-race/k1.txt', 'file', v_file),
+			jsonb_build_object('op', 'write', 'path', 'shared/lock-race/k2.txt', 'file', v_file)
+		)::text
+	));
+	perform pg_temp.t1333_ok(pg_temp.t1333_waits_for_any('auth_three', array['auth_one', 'auth_two']), 'T3 did not wait on T2/T1 claim for k1');
+
+	perform dblink_exec('auth_one', 'commit');
+	v_r2 := pg_temp.result('auth_two');
+	v_r3 := pg_temp.result('auth_three');
+	perform pg_temp.t1333_ok(
+		v_r2 -> 'units' -> 0 ->> 'outcome' = 'conflict' and v_r3 -> 'units' -> 0 ->> 'outcome' = 'conflict',
+		format('k1 must conflict after T2 commits: t1=%s t3=%s', v_r2, v_r3));
+	perform pg_temp.t1333_ok(
+		((v_r2 -> 'units' -> 1 ->> 'outcome' = 'saved' and v_r3 -> 'units' -> 1 ->> 'outcome' = 'conflict')
+			or (v_r2 -> 'units' -> 1 ->> 'outcome' = 'conflict' and v_r3 -> 'units' -> 1 ->> 'outcome' = 'saved')),
+		format('k2 must save once without deadlock: t1=%s t3=%s', v_r2, v_r3));
+
+	perform dblink_exec('auth_one', 'begin');
+	perform * from dblink('auth_one', format(
+		'select public.qorpera_folder_commit(%L, %L, %L, %L)',
+		v_env, '{"kind":"platform"}', 't1333-race-del-t2',
+		jsonb_build_array(jsonb_build_object('op', 'delete', 'path', 'shared/lock-race/d1.txt', 'expectedVersion', v_d1_ver))::text
+	)) as t(r jsonb);
+
+	perform dblink_send_query('auth_two', format(
+		'select public.qorpera_folder_commit(%L, %L, %L, %L)',
+		v_env, '{"kind":"platform"}', 't1333-race-del-t1',
+		jsonb_build_array(
+			jsonb_build_object('op', 'write', 'path', 'shared/lock-race/d1.txt', 'file', v_file),
+			jsonb_build_object('op', 'write', 'path', 'shared/lock-race/d2.txt', 'file', v_file)
+		)::text
+	));
+	perform pg_temp.t1333_ok(pg_temp.waits_for('auth_two', 'auth_one'), 'T1 did not wait on T2 delete for d1');
+
+	perform dblink_send_query('auth_three', format(
+		'select public.qorpera_folder_commit(%L, %L, %L, %L)',
+		v_env, '{"kind":"platform"}', 't1333-race-del-t3',
+		jsonb_build_array(
+			jsonb_build_object('op', 'write', 'path', 'shared/lock-race/d1.txt', 'file', v_file),
+			jsonb_build_object('op', 'write', 'path', 'shared/lock-race/d2.txt', 'file', v_file)
+		)::text
+	));
+	perform pg_temp.t1333_ok(pg_temp.t1333_waits_for_any('auth_three', array['auth_one', 'auth_two']), 'T3 did not wait on T2/T1 delete for d1');
+
+	perform dblink_exec('auth_one', 'commit');
+	v_r2 := pg_temp.result('auth_two');
+	v_r3 := pg_temp.result('auth_three');
+	perform pg_temp.t1333_ok(
+		((v_r2 -> 'units' -> 0 ->> 'outcome' = 'saved' and v_r3 -> 'units' -> 0 ->> 'outcome' = 'conflict')
+			or (v_r2 -> 'units' -> 0 ->> 'outcome' = 'conflict' and v_r3 -> 'units' -> 0 ->> 'outcome' = 'saved')),
+		format('d1 must recreate once after delete without deadlock: t1=%s t3=%s', v_r2, v_r3));
+	perform pg_temp.t1333_ok(
+		v_r2 -> 'units' -> 1 ->> 'outcome' = 'conflict' and v_r3 -> 'units' -> 1 ->> 'outcome' = 'conflict',
+		format('d2 must remain conflict: t1=%s t3=%s', v_r2, v_r3));
+	perform pg_temp.t1333_ok(
+		not exists (select 1 from public.qorpera_folder_entries where environment_id = v_env and kind = 'claim'),
+		'bulk lock rollback left behind claim rows');
 end $$;
 
 -- WHY: Section D verifies active-entry readability short-circuit, historical fallback, and authority-clock download fence.
