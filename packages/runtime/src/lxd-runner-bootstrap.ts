@@ -59,6 +59,7 @@ export interface LxdRunnerBootstrapConfig {
 		/** Stateless Compute step 1: the vault keeps this identity's login. The guest has no
 		 * identity volume and its native host holds no capsule key. */
 		loginCustody?: "vault";
+		surfaceFirst?: true;
 	};
 }
 
@@ -229,11 +230,14 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 				"office",
 				"coding_command",
 				"login_custody",
+				"surface_first",
 			],
 			"Governed native bootstrap",
 		);
 		if (company.login_custody !== undefined && company.login_custody !== "vault")
 			throw new Error("Governed native login custody is invalid");
+		if (company.surface_first !== undefined && company.surface_first !== true)
+			throw new Error("Governed native surface mode is invalid");
 		if (company.mode !== "company-path-v1" || company.recovery_volume_path !== PRODUCTION_PATHS.runnerHomeDirectory) {
 			throw new Error("Governed native bootstrap mode or recovery path is invalid");
 		}
@@ -288,6 +292,7 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 			...(office ? { office } : {}),
 			...(codingCommand ? { codingCommand } : {}),
 			...(company.login_custody === "vault" ? { loginCustody: "vault" as const } : {}),
+			...(company.surface_first === true ? { surfaceFirst: true as const } : {}),
 		};
 	}
 	return {
@@ -623,7 +628,7 @@ async function verifyIdentityRecovery(
 	);
 }
 
-function nativeProviderEnvironment(
+export function validateNativeProviderEnvironment(
 	encoded: string,
 	baseUrl: string,
 	nativeBridgeUrl: string,
@@ -663,6 +668,7 @@ function nativeProviderEnvironment(
 					...(companyRuntime.office ? ["QORPERA_COMPANY_COMPUTER_URL"] : []),
 					...(companyRuntime.codingCommand ? ["QORPERA_CODING_COMMAND_URL"] : []),
 					...(companyRuntime.loginCustody ? ["QORPERA_NATIVE_LOGIN_CUSTODY"] : []),
+					...(companyRuntime.surfaceFirst ? ["QORPERA_SURFACE_FIRST"] : []),
 				]
 			: []),
 	];
@@ -702,7 +708,8 @@ function nativeProviderEnvironment(
 			environment.get("QORPERA_CLOUD_SECRET_BROKER_URL") !== companyRuntime.secretBrokerUrl ||
 			environment.get("QORPERA_COMPANY_COMPUTER_URL") !== companyRuntime.office?.url ||
 			environment.get("QORPERA_CODING_COMMAND_URL") !== companyRuntime.codingCommand?.url ||
-			environment.get("QORPERA_NATIVE_LOGIN_CUSTODY") !== companyRuntime.loginCustody)
+			environment.get("QORPERA_NATIVE_LOGIN_CUSTODY") !== companyRuntime.loginCustody ||
+			environment.get("QORPERA_SURFACE_FIRST") !== (companyRuntime.surfaceFirst ? "1" : undefined))
 	) {
 		throw new Error("Governed native environment does not match immutable bootstrap authority");
 	}
@@ -1149,7 +1156,7 @@ export async function runLxdRunnerBootstrap(options: RunLxdRunnerBootstrapOption
 		expectedRootUid,
 		true,
 	);
-	nativeProviderEnvironment(
+	validateNativeProviderEnvironment(
 		nativeProviderEnvironmentEncoded,
 		runnerConfig.baseUrl,
 		runnerConfig.nativeBridgeUrl,
@@ -1261,7 +1268,7 @@ export async function runLxdNativeLoginBootstrap(options: RunLxdNativeLoginBoots
 		expectedRootUid,
 		true,
 	);
-	nativeProviderEnvironment(
+	validateNativeProviderEnvironment(
 		nativeProviderEnvironmentEncoded,
 		bootstrap.supabaseUrl,
 		bootstrap.nativeBridgeUrl,

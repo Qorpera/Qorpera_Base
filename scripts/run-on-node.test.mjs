@@ -21,6 +21,12 @@ import test from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
 	baseCopyCompare,
+	buildClearCaretakerCloseScript,
+	buildClearSleepMarkerScript,
+	buildCloseForSleepScript,
+	buildWakeQueryScript,
+	buildWakeStartScript,
+	CARETAKER_CLOSE_REASON,
 	CHANGED_CORES,
 	CLOSED,
 	CPU_SLOTS,
@@ -28,8 +34,9 @@ import {
 	copyOptions,
 	customTarget,
 	DROPPED,
-	dockerLabelScript,
 	describeProbes,
+	diskTidyLine,
+	dockerLabelScript,
 	EXTRA_MEMORY_MIB,
 	EXTRA_PAUSE_SECONDS,
 	EXTRA_PRESSURE,
@@ -45,6 +52,7 @@ import {
 	HISTORY_SCHEMA,
 	historyScript,
 	includeRules,
+	isCaretakerSleeping,
 	joinRecords,
 	KEPT_SLOTS,
 	LANE_FOLDERS,
@@ -58,6 +66,7 @@ import {
 	parseArgs,
 	parseSeed,
 	parseStatus,
+	parseWakeQueryOutput,
 	pickSlot,
 	probeAll,
 	probeScript,
@@ -76,9 +85,11 @@ import {
 	runResult,
 	runScript,
 	SET_UP,
+	shouldWakeStoppedMachines,
 	SLOT,
 	SPREAD_MS,
 	secretLooking,
+	vmNameForMachine,
 	seedScript,
 	shellQuote,
 	slotsTaken,
@@ -2322,4 +2333,72 @@ test("release-check parses --from-release and rejects invalid combinations", () 
 	assert.equal(parsed.base, "origin/master");
 	assert.throws(() => parseArgs(["--from-release", "bd48f5e9e", "changed"]), /--from-release is for release-check/);
 	assert.throws(() => parseArgs(["--quick", "release-check"]), /--quick is for one short command, not for changed/);
+});
+
+test("pruneScript reaps orphaned cdgateway/qext containers and diskTidyLine parses cleanly", () => {
+	const script = pruneScript();
+	assert.equal(spawnSync("bash", ["-n", "-c", script]).status, 0);
+	assert.match(script, /--filter name=\^cdgateway-/);
+	assert.match(script, /--filter name=\^qext-/);
+	assert.match(script, /docker volume prune -f/);
+	assert.equal(spawnSync("bash", ["-n", "-c", diskTidyLine()]).status, 0);
+});
+
+test("vmNameForMachine and shouldWakeStoppedMachines identify wakeable sleeping VMs only when needed", () => {
+	assert.equal(vmNameForMachine({ name: "node02" }), "qorpera-testvm-node02");
+	assert.equal(vmNameForMachine({ name: "bad name!" }), null);
+	const idle = (name, extra = {}) => ({
+		name,
+		busy: 0,
+		waiting: 0,
+		quickBusy: 0,
+		quickWaiting: 0,
+		arriving: 0,
+		frontWaiting: 0,
+		closed: false,
+		setUp: true,
+		cpus: 10,
+		load: 0.1,
+		...extra,
+	});
+	const down = (name) => ({ name, unreachable: "connect failed" });
+	assert.deepEqual(shouldWakeStoppedMachines([idle("node01"), down("node02")]), []);
+	assert.deepEqual(shouldWakeStoppedMachines([idle("node01", { busy: 4 }), down("node02")]), ["node02"]);
+	assert.deepEqual(shouldWakeStoppedMachines([down("node01"), down("node02")]), ["node01", "node02"]);
+	assert.deepEqual(shouldWakeStoppedMachines([down("node02")], { explicitMachine: true }), ["node02"]);
+});
+
+test("auto-wake only wakes caretaker-slept VMs with matching jump-host marker and never manually stopped VMs", () => {
+	const queryScript = buildWakeQueryScript("qorpera-testvm-node02");
+	const startScript = buildWakeStartScript("qorpera-testvm-node02");
+	const clearMarkerScript = buildClearSleepMarkerScript("qorpera-testvm-node02");
+	assert.equal(spawnSync("bash", ["-n", "-c", queryScript]).status, 0);
+	assert.equal(spawnSync("bash", ["-n", "-c", startScript]).status, 0);
+	assert.equal(spawnSync("bash", ["-n", "-c", clearMarkerScript]).status, 0);
+	assert.doesNotMatch(queryScript, /lxc config set/);
+	assert.doesNotMatch(startScript, /lxc config set/);
+	assert.doesNotMatch(startScript, /rm -f/);
+
+	const caretakerSlept = parseWakeQueryOutput(
+		"status=Stopped\nlast_used_at=2026-11-22T18:00:00Z\nsleep_marker=2026-11-22T18:00:00Z\n",
+	);
+	assert.equal(isCaretakerSleeping(caretakerSlept), true);
+
+	const manuallyStopped = parseWakeQueryOutput("status=Stopped\nlast_used_at=2026-11-22T18:00:00Z\nsleep_marker=\n");
+	assert.equal(isCaretakerSleeping(manuallyStopped), false);
+
+	const operatorRestartedThenStopped = parseWakeQueryOutput(
+		"status=Stopped\nlast_used_at=2026-11-22T19:00:00Z\nsleep_marker=2026-11-22T18:00:00Z\n",
+	);
+	assert.equal(isCaretakerSleeping(operatorRestartedThenStopped), false);
+
+	const running = parseWakeQueryOutput("status=Running\nlast_used_at=2026-11-22T18:00:00Z\nsleep_marker=2026-11-22T18:00:00Z\n");
+	assert.equal(isCaretakerSleeping(running), false);
+
+	const closeScript = buildCloseForSleepScript();
+	const clearScript = buildClearCaretakerCloseScript();
+	assert.equal(spawnSync("bash", ["-n", "-c", closeScript]).status, 0);
+	assert.equal(spawnSync("bash", ["-n", "-c", clearScript]).status, 0);
+	assert.match(closeScript, /noclobber/);
+	assert.match(clearScript, new RegExp(CARETAKER_CLOSE_REASON));
 });

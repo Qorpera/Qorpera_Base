@@ -1099,6 +1099,58 @@ describe("governed native guest for a vault login", () => {
 		expect(() => parseLxdRunnerBootstrapConfig(bootstrap)).toThrow("login custody is invalid");
 	});
 
+	it("accepts matching surface_first bootstrap authority and QORPERA_SURFACE_FIRST=1 and rejects mismatches", async () => {
+		const matching = await vaultCompanyFixture();
+		const matchingBootstrap = JSON.parse(await readFile(matching.bootstrapConfig, "utf-8")) as {
+			company_runtime: Record<string, unknown>;
+		};
+		matchingBootstrap.company_runtime.surface_first = true;
+		await writeFile(matching.bootstrapConfig, JSON.stringify(matchingBootstrap), { mode: 0o600 });
+		await writeFile(
+			matching.nativeProviderEnvironment,
+			`${await readFile(matching.nativeProviderEnvironment, "utf-8")}QORPERA_SURFACE_FIRST=1\n`,
+			{ mode: 0o600 },
+		);
+		const started: string[] = [];
+		await startCompanyFixture(matching, started);
+		expect(started).toEqual(["qorpera-native-company-host.service", "qorpera-company-runner.service"]);
+
+		const envOnly = await vaultCompanyFixture();
+		await writeFile(
+			envOnly.nativeProviderEnvironment,
+			`${await readFile(envOnly.nativeProviderEnvironment, "utf-8")}QORPERA_SURFACE_FIRST=1\n`,
+			{ mode: 0o600 },
+		);
+		await expect(startCompanyFixture(envOnly, [])).rejects.toThrow("unexpected settings");
+
+		const bootstrapOnly = await vaultCompanyFixture();
+		const bootstrapOnlyConfig = JSON.parse(await readFile(bootstrapOnly.bootstrapConfig, "utf-8")) as {
+			company_runtime: Record<string, unknown>;
+		};
+		bootstrapOnlyConfig.company_runtime.surface_first = true;
+		await writeFile(bootstrapOnly.bootstrapConfig, JSON.stringify(bootstrapOnlyConfig), { mode: 0o600 });
+		await expect(startCompanyFixture(bootstrapOnly, [])).rejects.toThrow("unexpected settings");
+
+		const wrongValue = await vaultCompanyFixture();
+		const wrongBootstrap = JSON.parse(await readFile(wrongValue.bootstrapConfig, "utf-8")) as {
+			company_runtime: Record<string, unknown>;
+		};
+		wrongBootstrap.company_runtime.surface_first = true;
+		await writeFile(wrongValue.bootstrapConfig, JSON.stringify(wrongBootstrap), { mode: 0o600 });
+		await writeFile(
+			wrongValue.nativeProviderEnvironment,
+			`${await readFile(wrongValue.nativeProviderEnvironment, "utf-8")}QORPERA_SURFACE_FIRST=0\n`,
+			{ mode: 0o600 },
+		);
+		await expect(startCompanyFixture(wrongValue, [])).rejects.toThrow("immutable bootstrap authority");
+
+		const invalidBootstrap = JSON.parse(await readFile(wrongValue.bootstrapConfig, "utf-8")) as {
+			company_runtime: Record<string, unknown>;
+		};
+		invalidBootstrap.company_runtime.surface_first = false;
+		expect(() => parseLxdRunnerBootstrapConfig(invalidBootstrap)).toThrow("surface mode is invalid");
+	});
+
 	it("stops when cloud recovery fences the identity", async () => {
 		const paths = await vaultCompanyFixture();
 		const uid = process.getuid?.() ?? 0;

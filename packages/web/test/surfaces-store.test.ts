@@ -6,7 +6,11 @@ import {
 	attachSurfaces,
 	clearLocalSandboxCache,
 	compiledCompanyIdentity,
+	effectiveStudioBaseFiles,
 	migrationPending,
+	normalizeStudioPatchOps,
+	PREVIEW_PASS_TTL_MS,
+	readSurfaceFolderFiles,
 	reportsOwnedBy,
 	runningSessionTotal,
 	SURFACE_UNDO_MS,
@@ -863,6 +867,559 @@ describe("SurfacesStore", () => {
 		await store.undo();
 		expect(undoSurfaceChange).toHaveBeenCalledTimes(1);
 		expect(undoSurfaceChange).toHaveBeenCalledWith(CHANGES[0]);
+		store.dispose();
+	});
+
+	it("compiles live company identity tokens from folder-relative staged patches on the identity surface", async () => {
+		const identity = summary({
+			id: "22222222-2222-4222-8222-222222222291",
+			slug: "identity",
+			title: "Identity",
+			archetype: "studio",
+			kind: "identity",
+			isGlobal: true,
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "identity",
+			siteSlug: null,
+			previewMode: "studio_overlay",
+			liveUrl: null,
+		});
+		const c1 = change(CHANGES[0], 1, "staged", {
+			surfaceId: identity.id,
+			kind: "folder_patch",
+			title: "Update accent",
+			affectedPaths: ["tokens.json"],
+			patchManifest: [{ op: "merge_json", path: "tokens.json", patch: { colors: { accent: "#c9643b" } } }],
+		});
+		const idSession = session(["staged"], { surfaceId: identity.id, changes: [c1] });
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [identity, summary()]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([idSession], { surface: identity })),
+			}),
+			{
+				loadCloudFiles: vi.fn(async () => ({
+					"identity/tokens.json": JSON.stringify({ colors: { primary: "#18181b", accent: "#2563eb" } }),
+				})),
+			},
+		);
+		await store.load();
+		await store.openSurface("identity");
+		await Promise.resolve();
+
+		const tokens = store.companyIdentityTokens();
+		expect(tokens?.vars["--q-color-primary"]).toBe("#18181b");
+		expect(tokens?.vars["--q-color-accent"]).toBe("#c9643b");
+		store.dispose();
+	});
+
+	it("keeps merging folder_patch active on approveAll, overlays optimistic base until post-merge cloud files settle, and refreshes immediately on publish and folder hints", async () => {
+		vi.useFakeTimers();
+		const identityId = "22222222-2222-4222-8222-222222222271";
+		const identity = summary({
+			id: identityId,
+			slug: "identity",
+			title: "Identity",
+			archetype: "studio",
+			sourceKind: "folder",
+			folderRoot: "identity",
+			kind: "identity",
+			isGlobal: true,
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const oldTokens = JSON.stringify({ colors: { accent: "#111111" } });
+		const newTokens = JSON.stringify({ colors: { accent: "#ff5500" } });
+		const patchManifest = [
+			{ op: "merge_json" as const, path: "tokens.json", patch: { colors: { accent: "#ff5500" } } },
+		];
+		const stagedChange = change(CHANGES[0], 1, "staged", {
+			surfaceId: identityId,
+			kind: "folder_patch",
+			affectedPaths: ["identity/tokens.json"],
+			patchManifest,
+		});
+		const mergingChange = change(CHANGES[0], 1, "merging", {
+			surfaceId: identityId,
+			kind: "folder_patch",
+			affectedPaths: ["identity/tokens.json"],
+			patchManifest,
+		});
+		const mergedChange = change(CHANGES[0], 1, "merged", {
+			surfaceId: identityId,
+			kind: "folder_patch",
+			affectedPaths: ["identity/tokens.json"],
+			patchManifest,
+		});
+		const stagedSession = session(["staged"], { surfaceId: identityId, changes: [stagedChange] });
+		const mergingSession = session(["merging"], { surfaceId: identityId, changes: [mergingChange] });
+		const mergedSession = session(["merged"], { surfaceId: identityId, state: "completed", changes: [mergedChange] });
+
+		const postMergeFiles = deferred<Record<string, string>>();
+		const postPublishFiles = deferred<Record<string, string>>();
+		const publishRpc = deferred<ReturnType<typeof summary>>();
+		let loadCount = 0;
+		const loadCloudFiles = vi.fn(async () => {
+			loadCount += 1;
+			if (loadCount === 1) return { "identity/tokens.json": oldTokens };
+			if (loadCount === 2) return await postMergeFiles.promise;
+			if (loadCount === 3) return await postPublishFiles.promise;
+			return { "identity/tokens.json": JSON.stringify({ colors: { accent: "#00aa66" } }) };
+		});
+
+		const getSurfaceWorkspace = vi
+			.fn()
+			.mockResolvedValueOnce(workspace([stagedSession], { surface: identity }))
+			.mockResolvedValue(
+				workspace([], {
+					surface: { ...identity, hasUnpublishedChanges: true, unpublishedChangeCount: 1 },
+					recentHistory: [mergedSession],
+				}),
+			);
+
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [identity]),
+			getSurfaceWorkspace,
+			approveSessionAll: vi.fn(async () => mergingSession),
+			publishSurface: vi.fn(() => publishRpc.promise),
+		});
+
+		const store = storeWith(client, { loadCloudFiles, realtimeLive: () => true });
+		await store.load();
+		await store.openSurface("identity");
+		await Promise.resolve();
+		expect(loadCloudFiles).toHaveBeenCalledTimes(1);
+		expect(store.surfaceUpdatePhase(identityId)).toBeNull();
+
+		await store.approveAll(SESSION);
+		expect(store.workspace(identityId)?.activeSessions).toHaveLength(1);
+		expect(store.surfaceUpdatePhase(identityId)).toBe("merging");
+
+		await store.refreshWorkspace(identityId);
+		expect(store.workspace(identityId)?.activeSessions).toHaveLength(0);
+		expect(store.surfaceUpdatePhase(identityId)).toBe("updating");
+		expect(loadCloudFiles).toHaveBeenCalledTimes(2);
+		expect(JSON.parse(effectiveStudioBaseFiles(store.state, identityId)?.["identity/tokens.json"] ?? "{}")).toEqual({
+			colors: { accent: "#ff5500" },
+		});
+		expect(compiledCompanyIdentity(store.state)?.vars["--q-color-accent"]).toBe("#ff5500");
+
+		postMergeFiles.resolve({ "identity/tokens.json": newTokens });
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(store.surfaceUpdatePhase(identityId)).toBeNull();
+		expect(store.state.pendingStudioPatches[identityId]).toBeUndefined();
+		expect(store.state.cloudSurfaceFiles[identityId]?.["identity/tokens.json"]).toBe(newTokens);
+
+		const publishPromise = store.publish(identityId);
+		expect(store.surfaceUpdatePhase(identityId)).toBe("publishing");
+		publishRpc.resolve({
+			...identity,
+			hasUnpublishedChanges: false,
+			unpublishedChangeCount: 0,
+		});
+		await publishPromise;
+		expect(loadCloudFiles).toHaveBeenCalledTimes(3);
+		expect(store.surfaceUpdatePhase(identityId)).toBe("updating");
+
+		store.onFolderHint();
+		vi.advanceTimersByTime(60);
+		postPublishFiles.resolve({ "identity/tokens.json": newTokens });
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(loadCloudFiles).toHaveBeenCalledTimes(4);
+		expect(store.surfaceUpdatePhase(identityId)).toBeNull();
+		expect(store.state.cloudSurfaceFiles[identityId]?.["identity/tokens.json"]).toContain("#00aa66");
+		store.dispose();
+	});
+
+	it("lists roots and reads studio files in parallel via readSurfaceFolderFiles", async () => {
+		let activeLists = 0;
+		let maxConcurrentLists = 0;
+		let activeReads = 0;
+		let maxConcurrentReads = 0;
+		const encoder = new TextEncoder();
+		const listGateA = deferred<void>();
+		const listGateB = deferred<void>();
+		const bothListsStarted = deferred<void>();
+		const bothReadsStarted = deferred<void>();
+		const readGates = [deferred<void>(), deferred<void>()];
+		const folder = {
+			list: vi.fn(async (parent: string | null) => {
+				activeLists += 1;
+				maxConcurrentLists = Math.max(maxConcurrentLists, activeLists);
+				if (activeLists === 2) bothListsStarted.resolve();
+				if (parent === "identity") await listGateA.promise;
+				else await listGateB.promise;
+				activeLists -= 1;
+				if (parent === "identity") {
+					return {
+						entries: [
+							{ path: "identity/tokens.json", kind: "file", file: { bytes: 16, id: 0 } },
+							{ path: "identity/voice.md", kind: "file", file: { bytes: 16, id: 1 } },
+							{ path: "identity/logo.png", kind: "file", file: { bytes: 16, id: 2 } },
+						],
+					};
+				}
+				return { entries: [] };
+			}),
+			readFile: vi.fn(async (file: { readonly bytes: number; readonly id: number }) => {
+				activeReads += 1;
+				maxConcurrentReads = Math.max(maxConcurrentReads, activeReads);
+				if (activeReads === 2) bothReadsStarted.resolve();
+				await readGates[file.id]!.promise;
+				activeReads -= 1;
+				return encoder.encode(file.id === 0 ? '{"accent":"#fff"}' : "Calm voice");
+			}),
+		};
+
+		const promise = readSurfaceFolderFiles(
+			folder,
+			["identity", "QorperaOS/surfaces/identity/notes"],
+			new AbortController().signal,
+		);
+		await bothListsStarted.promise;
+		expect(maxConcurrentLists).toBe(2);
+		listGateA.resolve();
+		listGateB.resolve();
+		await bothReadsStarted.promise;
+		expect(maxConcurrentReads).toBe(2);
+		readGates[0]!.resolve();
+		readGates[1]!.resolve();
+
+		const files = await promise;
+		expect(files).toEqual({
+			"identity/tokens.json": '{"accent":"#fff"}',
+			"identity/voice.md": "Calm voice",
+		});
+	});
+
+	it("polls composing/building previews, deduplicates in-flight polls, and pauses when the tab is hidden", async () => {
+		vi.useFakeTimers();
+		const fakeDoc = new EventTarget() as EventTarget & { visibilityState: DocumentVisibilityState };
+		fakeDoc.visibilityState = "visible";
+		const prevDocument = globalThis.document;
+		Object.defineProperty(globalThis, "document", { configurable: true, value: fakeDoc });
+		try {
+			let pendingPoll = deferred<ReturnType<typeof workspace>>();
+			let calls = 0;
+			const client = fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => {
+					calls += 1;
+					if (calls === 1) {
+						return workspace([session(["staged"])], {
+							previewState: {
+								surfaceId: SURFACE,
+								mode: "single",
+								primary: previewFrame({ status: "building", doorActionUrl: null, memberPass: null }),
+								compareFrames: [],
+							},
+						});
+					}
+					return pendingPoll.promise;
+				}),
+			});
+			const store = storeWith(client, { realtimeLive: () => false });
+			await store.load();
+			await store.openSurface("website");
+			expect(calls).toBe(1);
+
+			vi.advanceTimersByTime(4_100);
+			expect(calls).toBe(2);
+			vi.advanceTimersByTime(4_100);
+			expect(calls).toBe(2);
+
+			pendingPoll.resolve(
+				workspace([session(["staged"])], {
+					previewState: {
+						surfaceId: SURFACE,
+						mode: "single",
+						primary: previewFrame({ status: "composing", doorActionUrl: null, memberPass: null }),
+						compareFrames: [],
+					},
+				}),
+			);
+			await vi.advanceTimersByTimeAsync(0);
+
+			fakeDoc.visibilityState = "hidden";
+			fakeDoc.dispatchEvent(new Event("visibilitychange"));
+			vi.advanceTimersByTime(12_000);
+			expect(calls).toBe(2);
+
+			pendingPoll = deferred<ReturnType<typeof workspace>>();
+			fakeDoc.visibilityState = "visible";
+			fakeDoc.dispatchEvent(new Event("visibilitychange"));
+			expect(calls).toBe(3);
+
+			pendingPoll.resolve(workspace([session(["staged"])]));
+			await vi.advanceTimersByTimeAsync(0);
+			store.dispose();
+		} finally {
+			Object.defineProperty(globalThis, "document", { configurable: true, value: prevDocument });
+		}
+	});
+
+	it("coalesces rapid preview selection toggles and syncs setSessionChatOpen when switching exploration variants", async () => {
+		const firstSync = deferred<ReturnType<typeof workspace>["previewState"]>();
+		const secondSync = deferred<ReturnType<typeof workspace>["previewState"]>();
+		const selections: { toggledChangeIds: string[]; explorationSessionId: string | null }[] = [];
+		const setPreviewSelection = vi.fn(
+			async (_surfaceId: string, sel: { toggledChangeIds: string[]; explorationSessionId: string | null }) => {
+				selections.push(sel);
+				return selections.length === 1 ? firstSync.promise : secondSync.promise;
+			},
+		);
+		const setSessionChatOpen = vi.fn(async () => session(["staged"]));
+		const variantA = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333301",
+			explorationId: "66666666-6666-4666-8666-666666666601",
+			explorationVariantLabel: "Calm",
+		});
+		const variantB = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333302",
+			explorationId: "66666666-6666-4666-8666-666666666601",
+			explorationVariantLabel: "Bold",
+		});
+		const baseSession = session(["staged", "staged"]);
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace([baseSession, variantA, variantB], {
+					explorations: [
+						{
+							id: "66666666-6666-4666-8666-666666666601",
+							surfaceId: SURFACE,
+							title: "Hero explorations",
+							status: "open",
+							chosenSessionId: null,
+							variantSessionIds: [variantA.id, variantB.id],
+							createdAt: "2026-10-16T09:00:00.000Z",
+							resolvedAt: null,
+						},
+					],
+				}),
+			),
+			setPreviewSelection,
+			setSessionChatOpen,
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+
+		const p1 = store.toggleChange(SURFACE, CHANGES[0]);
+		const p2 = store.toggleChange(SURFACE, CHANGES[1]);
+		expect(selections).toHaveLength(1);
+		expect(selections[0]?.toggledChangeIds).toEqual([CHANGES[1]]);
+
+		firstSync.resolve({
+			surfaceId: SURFACE,
+			mode: "single",
+			primary: previewFrame({ previewId: PREVIEW_IDS[0], toggledChangeIds: [CHANGES[1]] }),
+			compareFrames: [],
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(selections).toHaveLength(2);
+		expect(selections[1]?.toggledChangeIds).toEqual([]);
+
+		secondSync.resolve({
+			surfaceId: SURFACE,
+			mode: "single",
+			primary: previewFrame({ previewId: PREVIEW_IDS[1], toggledChangeIds: [] }),
+			compareFrames: [],
+		});
+		await Promise.all([p1, p2]);
+		expect(store.workspace(SURFACE)?.previewState.primary.previewId).toBe(PREVIEW_IDS[1]);
+
+		store.openExplorationDrawer(SURFACE, "66666666-6666-4666-8666-666666666601");
+		setSessionChatOpen.mockClear();
+		const p3 = store.pickVariant(SURFACE, "66666666-6666-4666-8666-666666666601", variantB.id);
+		await Promise.resolve();
+		expect(setSessionChatOpen).toHaveBeenCalledWith(variantA.id, false);
+		expect(setSessionChatOpen).toHaveBeenCalledWith(variantB.id, true);
+		await p3;
+		store.dispose();
+	});
+
+	it("tracks preview pass TTL/consumption, fences stale refreshes, scopes realtime hints, and applies partial multi-step mutations", async () => {
+		vi.useFakeTimers();
+		let mintCount = 0;
+		const mintPreviewPass = vi.fn(async (previewId: string) => {
+			mintCount += 1;
+			return {
+				previewId,
+				doorActionUrl: "https://thetaband--p1.qorpera.com/__qorpera/member",
+				memberPass: `${VALID_PASS.slice(0, -1)}${mintCount}`,
+			};
+		});
+		const secondSurface = summary({
+			id: "22222222-2222-4222-8222-222222222229",
+			slug: "brand",
+			title: "Brand",
+			archetype: "studio",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const staleRefresh = deferred<ReturnType<typeof workspace>>();
+		let websiteCalls = 0;
+		const getSurfaceWorkspace = vi.fn(async (surfaceId: string) => {
+			if (surfaceId === secondSurface.id) return workspace([], { surface: secondSurface });
+			websiteCalls += 1;
+			if (websiteCalls === 2) {
+				return workspace([session(["staged", "staged"])], {
+					previewState: {
+						surfaceId: SURFACE,
+						mode: "single",
+						primary: previewFrame({ previewId: PREVIEW_IDS[0], doorActionUrl: null, memberPass: null }),
+						compareFrames: [],
+					},
+				});
+			}
+			if (websiteCalls === 3) return staleRefresh.promise;
+			if (websiteCalls === 4) {
+				return workspace([], {
+					surface: summary({ title: "Website (refreshed)" }),
+					recentHistory: [session(["merged", "merged"], { state: "completed" })],
+				});
+			}
+			return workspace([session(["staged", "staged"])], {
+				previewState: {
+					surfaceId: SURFACE,
+					mode: "single",
+					primary: previewFrame({ previewId: PREVIEW_IDS[0], doorActionUrl: null, memberPass: null }),
+					compareFrames: [],
+				},
+			});
+		});
+		const approveDeferred = deferred<ReturnType<typeof session>>();
+		let discardAttempts = 0;
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [summary(), secondSurface]),
+			getSurfaceWorkspace,
+			mintPreviewPass,
+			approveSurfaceChange: vi.fn(() => approveDeferred.promise),
+			approveSessionAll: vi.fn(async () => session(["merged", "merged"])),
+			discardSurfaceChange: vi.fn(async () => {
+				discardAttempts += 1;
+				if (discardAttempts === 1) return session(["discarded", "staged"]);
+				throw new Error("second discard failed");
+			}),
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("brand");
+		await store.openSurface("website");
+		await Promise.resolve();
+		await Promise.resolve();
+
+		const pass1 = store.workspace(SURFACE)!.previewState.primary.memberPass!;
+		expect(store.isPreviewPassUsable(PREVIEW_IDS[0], pass1)).toBe(true);
+		vi.advanceTimersByTime(PREVIEW_PASS_TTL_MS + 1_000);
+		expect(store.isPreviewPassUsable(PREVIEW_IDS[0], pass1)).toBe(false);
+
+		store.markPreviewPassConsumed(PREVIEW_IDS[0], pass1);
+		expect(await store.remintPreviewPass(SURFACE, PREVIEW_IDS[0], pass1)).toBe(true);
+		const pass2 = store.workspace(SURFACE)!.previewState.primary.memberPass!;
+		expect(pass2).not.toBe(pass1);
+		expect(store.isPreviewPassUsable(PREVIEW_IDS[0], pass2)).toBe(true);
+
+		mintPreviewPass.mockRejectedValueOnce(new Error("mint unavailable"));
+		expect(await store.remintPreviewPass(SURFACE, PREVIEW_IDS[0], pass2)).toBe(false);
+		expect(store.isPreviewPassUsable(PREVIEW_IDS[0], pass2)).toBe(false);
+
+		await store.refreshWorkspace(SURFACE);
+		await Promise.resolve();
+		await Promise.resolve();
+		const pass3 = store.workspace(SURFACE)!.previewState.primary.memberPass!;
+		expect(pass3).not.toBe(pass2);
+		expect(store.isPreviewPassUsable(PREVIEW_IDS[0], pass3)).toBe(true);
+
+		const slowPromise = store.refreshWorkspace(SURFACE);
+		store.openDrawer(SURFACE, SESSION);
+		const approvePromise = store.approveChange(SESSION, CHANGES[0]);
+		store.closeDrawer();
+		approveDeferred.resolve(session(["merged", "merged"], { state: "completed" }));
+		expect(await approvePromise).toBe("history");
+		expect(store.workspace(SURFACE)?.recentHistory.map((s) => s.id)).toEqual([SESSION]);
+
+		staleRefresh.resolve(workspace([session(["staged", "staged"])]));
+		await slowPromise;
+		expect(store.workspace(SURFACE)?.recentHistory.map((s) => s.id)).toEqual([SESSION]);
+		expect(store.workspace(SURFACE)?.surface.title).toBe("Website (refreshed)");
+
+		getSurfaceWorkspace.mockClear();
+		store.onRealtimeHint("surfaces");
+		vi.advanceTimersByTime(200);
+		expect(getSurfaceWorkspace).toHaveBeenCalledWith(SURFACE);
+		expect(getSurfaceWorkspace).not.toHaveBeenCalledWith(secondSurface.id);
+
+		vi.advanceTimersByTime(SURFACE_UNDO_MS);
+		await store.approveAll(SESSION);
+		expect(store.state.undo).toBeUndefined();
+
+		await store.refreshWorkspace(SURFACE);
+		expect(await store.discardSession(SESSION)).toBe(false);
+		expect(store.session(SESSION)?.changes[0]?.status).toBe("discarded");
+		store.dispose();
+	});
+
+	it("runs a queued dirty refresh and clears updating flags even when an earlier loadCloudFiles call resolves undefined, and matches worker path normalization", async () => {
+		const identityId = "22222222-2222-4222-8222-222222222279";
+		const identity = summary({
+			id: identityId,
+			slug: "identity",
+			title: "Identity",
+			archetype: "studio",
+			sourceKind: "folder",
+			folderRoot: "identity",
+			kind: "identity",
+			isGlobal: true,
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const firstLoad = deferred<Record<string, string> | undefined>();
+		const secondLoad = deferred<Record<string, string> | undefined>();
+		let calls = 0;
+		const loadCloudFiles = vi.fn(() => {
+			calls += 1;
+			return calls === 1 ? firstLoad.promise : secondLoad.promise;
+		});
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [identity]),
+			getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: identity })),
+		});
+		const store = storeWith(client, { loadCloudFiles });
+		await store.load();
+		await store.openSurface("identity");
+		expect(loadCloudFiles).toHaveBeenCalledTimes(1);
+		expect(store.isCloudFilesLoading(identityId)).toBe(true);
+
+		const dirtyRefresh = store.refreshCloudFiles(identity, { visible: true });
+		expect(store.surfaceUpdatePhase(identityId)).toBe("updating");
+
+		firstLoad.resolve(undefined);
+		await dirtyRefresh;
+		await Promise.resolve();
+		expect(loadCloudFiles).toHaveBeenCalledTimes(2);
+		expect(store.surfaceUpdatePhase(identityId)).toBe("updating");
+
+		secondLoad.resolve({ "identity/tokens.json": '{"colors":{"accent":"#336699"}}' });
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(store.isCloudFilesLoading(identityId)).toBe(false);
+		expect(store.surfaceUpdatePhase(identityId)).toBeNull();
+		expect(store.state.cloudSurfaceFiles[identityId]?.["identity/tokens.json"]).toContain("#336699");
+
+		expect(
+			normalizeStudioPatchOps(
+				[
+					{ op: "write_text", path: "QorperaOS/surfaces/identity/notes/a.md", content: "note" },
+					{ op: "write_text", path: "identity/tokens.json", content: "{}" },
+					{ op: "write_text", path: "voice.md", content: "hi" },
+				],
+				"identity",
+			).map((op) => op.path),
+		).toEqual(["identity/QorperaOS/surfaces/identity/notes/a.md", "identity/tokens.json", "identity/voice.md"]);
 		store.dispose();
 	});
 });

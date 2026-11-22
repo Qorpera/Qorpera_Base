@@ -72,7 +72,8 @@ describe("room messages use the public room admission contract", () => {
 		expect(JSON.parse(f.fetch.mock.calls[0]![1]!.body as string)).toEqual({ p_profile_id: profileA.profileId });
 		const [url, request] = f.fetch.mock.calls[1]!;
 		expect(url).toBe("https://fixture.invalid/rest/v1/rpc/qorpera_post_company_room_message");
-		expect(request).toMatchObject({ method: "POST", redirect: "error", cache: "no-store", credentials: "omit" });
+		expect(request).toMatchObject({ method: "POST", redirect: "error", credentials: "omit" });
+		expect(request?.cache).toBeUndefined();
 		expect(new Headers(request!.headers).get("authorization")).toBe("Bearer fixture-token");
 		expect(JSON.parse(request!.body as string)).toEqual({
 			p_room_id: id(90),
