@@ -538,3 +538,46 @@ it("cancels a hung process/start when the client disconnects and releases its co
 	expect(terminated).toHaveLength(1);
 	await shell.close();
 });
+
+it("closes silent clients when firstLine times out and terminates quiet picture probes that overflow 1 MiB", async () => {
+	const terminated: string[] = [];
+	const home = fakeHome((message, send) => {
+		if (message.method === "process/start") {
+			const { processId } = message.params as { processId: string };
+			send({ id: message.id, result: {} });
+			const chunk = Buffer.alloc(600 * 1024, 65).toString("base64");
+			send({ method: "process/output", params: { processId, stream: "stdout", chunk } });
+			send({ method: "process/output", params: { processId, stream: "stdout", chunk } });
+		} else if (message.method === "process/terminate") {
+			terminated.push((message.params as { processId: string }).processId);
+			send({ id: message.id, result: {} });
+		}
+	});
+	const { shell } = await shellWith(home.channel, { pictures: { make: async () => ({ png: PNG }) } });
+	const overflowResult = await command(shell.socketPath, {
+		cmd: asClaudeCode("picture /company/big.png red"),
+		cwd: "/company",
+		env: {},
+	});
+	expect(overflowResult.code).toBe(255);
+	expect(terminated).toHaveLength(1);
+
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	try {
+		const silent = createConnection(shell.socketPath);
+		silent.resume();
+		await new Promise<void>((resolve) => silent.once("connect", () => resolve()));
+		let closed = false;
+		silent.once("close", () => {
+			closed = true;
+		});
+		for (let step = 0; step < 10 && !closed; step += 1) {
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			await vi.advanceTimersByTimeAsync(2_000);
+		}
+		expect(closed).toBe(true);
+	} finally {
+		vi.useRealTimers();
+	}
+	await shell.close();
+});

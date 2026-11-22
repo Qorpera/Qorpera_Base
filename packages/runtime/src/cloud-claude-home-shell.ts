@@ -74,6 +74,7 @@ const FIRST_LINE_TIMEOUT_MS = 10_000;
 const PROCESS_START_TIMEOUT_MS = 30_000;
 const PROCESS_TERMINATE_TIMEOUT_MS = 5_000;
 const QUIET_MAX_OUTPUT_BYTES = 1024 * 1024;
+const MAX_SHELL_EVENT_BYTES = 16 * 1024 * 1024;
 const PICTURE_PLACE_MS = 30_000;
 const PICTURE_WRITE_MS = 120_000;
 const PICTURE_PLACE = [
@@ -518,8 +519,24 @@ export class CloudClaudeHomeShell {
 			processId = `claude-${this.counts.commands}-${randomBytes(4).toString("hex")}`;
 			let events: Record<string, unknown>[] = [];
 			let eventHead = 0;
+			let eventBytes = 0;
+			let overflowed = false;
 			let wake: (() => void) | undefined;
 			channel.processes.set(processId, (message) => {
+				if (overflowed) return;
+				if (message.method === "process/output") {
+					const chunk = (message.params as Record<string, unknown> | undefined)?.chunk;
+					const size = typeof chunk === "string" ? chunk.length : 0;
+					if (eventBytes + size > MAX_SHELL_EVENT_BYTES) {
+						overflowed = true;
+						events.length = 0;
+						eventHead = 0;
+						eventBytes = 0;
+						wake?.();
+						return;
+					}
+					eventBytes += size;
+				}
 				events.push(message);
 				wake?.();
 			});
@@ -559,6 +576,14 @@ export class CloudClaudeHomeShell {
 			asked.addEventListener("abort", onDrop, { once: true });
 			let exitCode: number | undefined;
 			for (;;) {
+				if (overflowed) {
+					if (!channel.closed) {
+						this.counts.terminated += 1;
+						await call(channel, "process/terminate", { processId }, { timeoutMs: PROCESS_TERMINATE_TIMEOUT_MS });
+					}
+					fail("HOME_OUTPUT_LIMIT: the command produced more output than the channel can buffer.", 126);
+					return;
+				}
 				const message = eventHead < events.length ? events[eventHead++] : undefined;
 				if (eventHead === events.length) {
 					events.length = 0;
@@ -588,8 +613,10 @@ export class CloudClaudeHomeShell {
 				}
 				const params = (message.params ?? {}) as Record<string, unknown>;
 				if (message.method === "process/output") {
+					const chunk = typeof params.chunk === "string" ? params.chunk : "";
+					eventBytes = Math.max(0, eventBytes - chunk.length);
 					const ok = send({
-						[params.stream === "stderr" ? "e" : "o"]: typeof params.chunk === "string" ? params.chunk : "",
+						[params.stream === "stderr" ? "e" : "o"]: chunk,
 					});
 					if (!ok && !(await waitDrain(asked))) dropped = true;
 				} else if (message.method === "process/exited") {

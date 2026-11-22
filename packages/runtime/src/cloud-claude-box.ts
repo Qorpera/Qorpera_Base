@@ -785,7 +785,46 @@ async function runClaudeReviewer(
 
 /** How long closing the box waits for the session's close in SQL (as CLOUD_HOME_CLOSE_MS). */
 const CLAUDE_BOX_CLOSE_MS = 5_000;
-const MAX_STDOUT_LINE_CHARS = 16 * 1024 * 1024;
+export const CLAUDE_BOX_MAX_STDOUT_LINE_CHARS = 16 * 1024 * 1024;
+
+export async function* claudeBoxStdoutLines(
+	stdout: AsyncIterable<string>,
+	onLine?: (line: string) => void,
+	onOverflow?: () => void,
+	maxLineChars = CLAUDE_BOX_MAX_STDOUT_LINE_CHARS,
+): AsyncGenerator<string> {
+	let rest = "";
+	for await (const chunk of stdout) {
+		const scanFrom = rest.length;
+		rest += chunk;
+		let start = 0;
+		let end = rest.indexOf("\n", scanFrom);
+		while (end >= 0) {
+			const line = rest.slice(start, end);
+			if (line.length > maxLineChars) {
+				onOverflow?.();
+				return;
+			}
+			onLine?.(line);
+			yield line;
+			start = end + 1;
+			end = rest.indexOf("\n", start);
+		}
+		if (start > 0) rest = rest.slice(start);
+		if (rest.length > maxLineChars) {
+			onOverflow?.();
+			return;
+		}
+	}
+	if (rest) {
+		if (rest.length > maxLineChars) {
+			onOverflow?.();
+			return;
+		}
+		onLine?.(rest);
+		yield rest;
+	}
+}
 
 /** One piece of the SFTP stream as a channel line (C1's contract: standard base64, at most 768 KiB a piece). */
 const SFTP_PIECE = 768 * 1024;
@@ -1213,56 +1252,13 @@ async function startBox(
 		stdin.end(options.prompt);
 		child.stdout?.setEncoding("utf8");
 		const stdout = child.stdout as Readable;
-		async function* lines(): AsyncGenerator<string> {
-			let rest = "";
-			let oversized = false;
-			for await (const chunk of stdout) {
-				const text = chunk as string;
-				if (oversized) {
-					const nl = text.indexOf("\n");
-					if (nl < 0) continue;
-					oversized = false;
-					rest = text.slice(nl + 1);
-					let start = 0;
-					let end = rest.indexOf("\n", start);
-					while (end >= 0) {
-						const line = rest.slice(start, end);
-						filesGate?.notice(line);
-						yield line;
-						start = end + 1;
-						end = rest.indexOf("\n", start);
-					}
-					if (start > 0) rest = rest.slice(start);
-					if (rest.length > MAX_STDOUT_LINE_CHARS) {
-						rest = "";
-						oversized = true;
-					}
-					continue;
-				}
-				const scanFrom = rest.length;
-				rest += text;
-				let start = 0;
-				let end = rest.indexOf("\n", scanFrom);
-				while (end >= 0) {
-					const line = rest.slice(start, end);
-					filesGate?.notice(line);
-					yield line;
-					start = end + 1;
-					end = rest.indexOf("\n", start);
-				}
-				if (start > 0) rest = rest.slice(start);
-				if (rest.length > MAX_STDOUT_LINE_CHARS) {
-					rest = "";
-					oversized = true;
-				}
-			}
-			if (rest && !oversized) {
-				filesGate?.notice(rest);
-				yield rest;
-			}
-		}
+		const lines = claudeBoxStdoutLines(
+			stdout as AsyncIterable<string>,
+			(line) => filesGate?.notice(line),
+			() => void close(),
+		);
 		return {
-			lines: lines(),
+			lines,
 			exited,
 			stderr: () => stderr,
 			shell,
