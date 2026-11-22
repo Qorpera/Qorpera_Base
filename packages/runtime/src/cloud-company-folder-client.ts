@@ -2171,7 +2171,17 @@ export class CloudCompanyFolderClient {
 				{ p_binding: this.#binding, p_owner: owner, p_name: name },
 				signal,
 			),
-			["schema", "registered", "repository", "sessions", "sessionsTotal", "changesCount", "recentChanges", "site", "queue"],
+			[
+				"schema",
+				"registered",
+				"repository",
+				"sessions",
+				"sessionsTotal",
+				"changesCount",
+				"recentChanges",
+				"site",
+				"queue",
+			],
 		);
 		if (
 			input.schema !== "qorpera.code-repository-status/v1" ||
@@ -2246,7 +2256,15 @@ export class CloudCompanyFolderClient {
 		);
 		if (input.schema !== "qorpera.code-claim-overlaps/v1" || !Array.isArray(input.overlaps)) invalid();
 		for (const item of input.overlaps) {
-			const row = record(item, ["workerId", "workerKey", "title", "phase", "branch", "claimedPaths", "matchedPaths"]);
+			const row = record(item, [
+				"workerId",
+				"workerKey",
+				"title",
+				"phase",
+				"branch",
+				"claimedPaths",
+				"matchedPaths",
+			]);
 			uuid(row.workerId);
 			if (
 				typeof row.workerKey !== "string" ||
@@ -2313,9 +2331,7 @@ export class CloudCompanyFolderClient {
 
 	async codeQuery(request: Record<string, unknown>, signal: AbortSignal): Promise<CloudCompanyCodeQueryAsked> {
 		const refusal = (error: unknown): CloudCompanyCodeRefusal | undefined =>
-			error instanceof CloudCompanyFolderRpcError
-				? CODE_REFUSALS.get(`${error.code} ${error.detail}`)
-				: undefined;
+			error instanceof CloudCompanyFolderRpcError ? CODE_REFUSALS.get(`${error.code} ${error.detail}`) : undefined;
 		try {
 			const raw = await this.#once(
 				"qorpera_folder_code_query",

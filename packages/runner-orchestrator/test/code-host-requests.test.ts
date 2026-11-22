@@ -1488,7 +1488,9 @@ describe("CodeHostRequests", () => {
 			const log = vi.fn<NonNullable<CodeRequestJobs["log"]>>(async () => ({
 				ref: "main",
 				resolvedSha: MAIN,
-				commits: [{ sha: MAIN, parents: [BEFORE], author: "Alice", authoredAt: "2026-11-22T00:00:00Z", subject: "Init" }],
+				commits: [
+					{ sha: MAIN, parents: [BEFORE], author: "Alice", authoredAt: "2026-11-22T00:00:00Z", subject: "Init" },
+				],
 			}));
 			const show = vi.fn<NonNullable<CodeRequestJobs["show"]>>(async () => {
 				throw new CodeHostRefusal("CODE_HOST_BINARY_FILE", ["assets/logo.png"]);
@@ -1602,7 +1604,12 @@ describe("CodeHostRequests", () => {
 					},
 				],
 			];
-			await expect(r.pass(new AbortController().signal)).resolves.toEqual({ done: 2, refused: 1, failed: 0, busy: 0 });
+			await expect(r.pass(new AbortController().signal)).resolves.toEqual({
+				done: 2,
+				refused: 1,
+				failed: 0,
+				busy: 0,
+			});
 			expect(t.calls[0]).toEqual({
 				method: "qorpera_code_requests_claim",
 				args: { ...WHO, p_limit: 10, p_kinds: ["undo", "download", "restore", "query", "lifecycle"] },
@@ -1619,19 +1626,35 @@ describe("CodeHostRequests", () => {
 						ref: "main",
 						resolvedSha: MAIN,
 						commits: [
-							{ sha: MAIN, parents: [BEFORE], author: "Alice", authoredAt: "2026-11-22T00:00:00Z", subject: "Init" },
+							{
+								sha: MAIN,
+								parents: [BEFORE],
+								author: "Alice",
+								authoredAt: "2026-11-22T00:00:00Z",
+								subject: "Init",
+							},
 						],
 					},
 				}),
 			);
 			expect(t.finishes()[1]).toEqual(
-				finishOf(R2, T2, { schema: SCHEMA, state: "refused", code: "CODE_HOST_BINARY_FILE", paths: ["assets/logo.png"] }),
+				finishOf(R2, T2, {
+					schema: SCHEMA,
+					state: "refused",
+					code: "CODE_HOST_BINARY_FILE",
+					paths: ["assets/logo.png"],
+				}),
 			);
 			expect(t.finishes()[2]).toEqual(
 				finishOf(R3, T3, { schema: SCHEMA, state: "done", result: "created", mainSha: MAIN, created: true }),
 			);
 
-			await expect(r.pass(new AbortController().signal)).resolves.toEqual({ done: 2, refused: 0, failed: 0, busy: 0 });
+			await expect(r.pass(new AbortController().signal)).resolves.toEqual({
+				done: 2,
+				refused: 0,
+				failed: 0,
+				busy: 0,
+			});
 			expect(t.runs[3]?.options).toEqual({ readOnly: true });
 			expect(t.runs[4]?.options).toBeUndefined();
 			expect(t.runs[5]?.options).toBeUndefined();
@@ -1699,9 +1722,11 @@ describe("CodeHostRequests", () => {
 					checksFilePresent: true,
 				})
 				.mockRejectedValueOnce(
-					new CodeHostRefusal("CODE_HOST_UNDO_CONFLICT", ["src/front.tsx"], [
-						"CONFLICT (content): Merge conflict in src/front.tsx",
-					]),
+					new CodeHostRefusal(
+						"CODE_HOST_UNDO_CONFLICT",
+						["src/front.tsx"],
+						["CONFLICT (content): Merge conflict in src/front.tsx"],
+					),
 				);
 			const r = new CodeHostRequests({
 				control: t.kernel,
@@ -1733,7 +1758,12 @@ describe("CodeHostRequests", () => {
 					{ ...UNDO, requestId: R3, token: T3 },
 				],
 			];
-			await expect(r.pass(new AbortController().signal)).resolves.toEqual({ done: 2, refused: 1, failed: 0, busy: 0 });
+			await expect(r.pass(new AbortController().signal)).resolves.toEqual({
+				done: 2,
+				refused: 1,
+				failed: 0,
+				busy: 0,
+			});
 			expect(t.runs[0]?.options).toEqual({ readOnly: true });
 			expect(t.inJob).toHaveBeenCalledTimes(1);
 			expect(pinSite).toHaveBeenCalledTimes(1);

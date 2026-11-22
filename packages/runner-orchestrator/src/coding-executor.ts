@@ -199,11 +199,7 @@ function namedPaths(paths: readonly (string | null)[]): string {
 	return `${shown.join(", ")}${more ? ` and ${more} more` : ""}`;
 }
 /** A landing that conflicts with the default branch of a repository kept in Qorpera: what to do, and where. */
-export function landConflict(
-	baseBranch: string,
-	paths: readonly string[],
-	messages: readonly string[] = [],
-): string {
+export function landConflict(baseBranch: string, paths: readonly string[], messages: readonly string[] = []): string {
 	const named = namedPaths(paths);
 	const details = messages.length > 0 ? ` Conflict details: ${withinBytes(messages.join("; "), 1200)}.` : "";
 	return `The change was not landed: it conflicts with what ${baseBranch} got since this session began${named ? `, in ${named}` : ""}.${details} Nothing changed on ${baseBranch}. Run git merge ${baseBranch} on the session's branch, resolve the conflicts, run the checks, commit and finish again.`;

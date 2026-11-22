@@ -474,7 +474,8 @@ export function cloudWorkerTools(
 					maxItems: 32,
 					uniqueItems: true,
 					items: { type: "string", minLength: 1, maxLength: 256 },
-					description: "With species coding: up to 32 relative file paths or globs this session owns, to warn on overlap.",
+					description:
+						"With species coding: up to 32 relative file paths or globs this session owns, to warn on overlap.",
 				},
 				text: {
 					type: "string",

@@ -975,7 +975,12 @@ export class CodeHostRequests {
 				);
 				outcome =
 					result.mode === "list"
-						? { schema: SCHEMA, state: "done", result: "tags", tags: result.tags as unknown as Record<string, unknown>[] }
+						? {
+								schema: SCHEMA,
+								state: "done",
+								result: "tags",
+								tags: result.tags as unknown as Record<string, unknown>[],
+							}
 						: {
 								schema: SCHEMA,
 								state: "done",

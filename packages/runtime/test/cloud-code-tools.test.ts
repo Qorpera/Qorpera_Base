@@ -224,7 +224,10 @@ describe("manage_code: the tool an agent's own run is offered", () => {
 			for (const [args, why] of [
 				[{ ...undo, action: "revert" }, "action must be one of"],
 				[{ operationKey: "k", owner: "acme", name: "shop", change: 12 }, "action must be one of"],
-				[{ action: "status", owner: "acme", name: "shop", operationKey: "k" }, "status takes only action, owner, name"],
+				[
+					{ action: "status", owner: "acme", name: "shop", operationKey: "k" },
+					"status takes only action, owner, name",
+				],
 				[{ action: "status", owner: "acme", name: "shop", change: 1 }, "status takes only action, owner, name"],
 				[{ action: "status", owner: "Acme", name: "shop" }, "owner and name are the repository's"],
 				[{ ...undo, picture: "product/a.png" }, "undo takes only action, operationKey, owner, name"],
@@ -257,13 +260,28 @@ describe("manage_code: the tool an agent's own run is offered", () => {
 				[{ ...undo, toChange: 10 }, "toChange must be at least change"],
 				[{ ...undo, toChange: 62 }, "toChange must be at least change and span at most 50 changes"],
 				[{ ...undo, toChange: 15, andLater: true }, "toChange cannot be combined with andLater"],
-				[{ action: "history", owner: "acme", name: "shop", state: "unchanged" }, "state must be one of landed, reverted, conflict, refused, lost"],
+				[
+					{ action: "history", owner: "acme", name: "shop", state: "unchanged" },
+					"state must be one of landed, reverted, conflict, refused, lost",
+				],
 				[{ action: "diff", owner: "acme", name: "shop", base: "main" }, "diff requires base and head"],
-				[{ action: "show", owner: "acme", name: "shop", path: "../escape" }, "path must be a relative repository path"],
+				[
+					{ action: "show", owner: "acme", name: "shop", path: "../escape" },
+					"path must be a relative repository path",
+				],
 				[{ action: "merge_preview", owner: "acme", name: "shop" }, "merge_preview requires head"],
-				[{ action: "tag", operationKey: "t1", owner: "acme", name: "shop", mode: "list", tag: "v1" }, "tag list does not take"],
-				[{ action: "tag", operationKey: "t2", owner: "acme", name: "shop", mode: "create", tag: "bad..tag" }, "tag must be a valid git tag name"],
-				[{ action: "tag", operationKey: "t3", owner: "acme", name: "shop", mode: "create", tag: "v1/.hidden" }, "tag must be a valid git tag name"],
+				[
+					{ action: "tag", operationKey: "t1", owner: "acme", name: "shop", mode: "list", tag: "v1" },
+					"tag list does not take",
+				],
+				[
+					{ action: "tag", operationKey: "t2", owner: "acme", name: "shop", mode: "create", tag: "bad..tag" },
+					"tag must be a valid git tag name",
+				],
+				[
+					{ action: "tag", operationKey: "t3", owner: "acme", name: "shop", mode: "create", tag: "v1/.hidden" },
+					"tag must be a valid git tag name",
+				],
 				[{ ...undo, notice: "x".repeat(201) }, "notice is one line of at most 200 characters"],
 				[{ ...undo, notice: "a\tb" }, "notice is one line of at most 200 characters"],
 				[
@@ -1980,7 +1998,15 @@ describe("manage_code status (SQL-backed)", () => {
 		const f = await statusFixture({
 			folders: ["code/acme/shop/main"],
 			sqlStatus: baseSqlStatus({
-				recentChanges: [{ n: 13, state: "landed", summary: `Verify ${secret}`, createdAt: "2026-11-21T10:00:00Z", workerId: null }],
+				recentChanges: [
+					{
+						n: 13,
+						state: "landed",
+						summary: `Verify ${secret}`,
+						createdAt: "2026-11-21T10:00:00Z",
+						workerId: null,
+					},
+				],
 				changesCount: 1,
 			}),
 		});
@@ -2031,13 +2057,18 @@ describe("manage_code read queries, history, lifecycle, and v2 undo", () => {
 					owner: "acme",
 					name: "shop",
 					total: 120,
-					changes: [{ n: 120, state: "landed", summary: "Latest", createdAt: "2026-11-22T00:00:00Z", workerId: null }],
+					changes: [
+						{ n: 120, state: "landed", summary: "Latest", createdAt: "2026-11-22T00:00:00Z", workerId: null },
+					],
 					nextCursor: 119,
 				};
 			}
 			if (method === QUERY) return { schema: "qorpera.code-query/v1", state: "queued", requestId: REQUEST };
 			if (method === STANDS) {
-				const lastQuery = f.calls.filter((c) => c.method === QUERY).at(-1)?.args.p_request as Record<string, unknown>;
+				const lastQuery = f.calls.filter((c) => c.method === QUERY).at(-1)?.args.p_request as Record<
+					string,
+					unknown
+				>;
 				if (lastQuery.op === "diff") {
 					return stands({
 						kind: "query",
@@ -2051,11 +2082,29 @@ describe("manage_code read queries, history, lifecycle, and v2 undo", () => {
 			throw new Error(`Unexpected ${method} ${JSON.stringify(args)}`);
 		});
 		try {
-			const hist = await f.invoke({ action: "history", owner: "acme", name: "shop", state: "landed", cursor: 121, limit: 10 });
+			const hist = await f.invoke({
+				action: "history",
+				owner: "acme",
+				name: "shop",
+				state: "landed",
+				cursor: 121,
+				limit: 10,
+			});
 			expect(hist.success).toBe(true);
-			expect(JSON.parse(hist.text)).toMatchObject({ schema: "qorpera.code-history/v1", total: 120, nextCursor: 119 });
+			expect(JSON.parse(hist.text)).toMatchObject({
+				schema: "qorpera.code-history/v1",
+				total: 120,
+				nextCursor: 119,
+			});
 
-			const logRes = await f.invoke({ action: "log", owner: "acme", name: "shop", ref: "main", path: "src/app.ts", limit: 5 });
+			const logRes = await f.invoke({
+				action: "log",
+				owner: "acme",
+				name: "shop",
+				ref: "main",
+				path: "src/app.ts",
+				limit: 5,
+			});
 			expect(logRes.success).toBe(true);
 			expect(f.calls.find((c) => c.method === QUERY)?.args.p_request).toEqual({
 				op: "log",
@@ -2089,7 +2138,13 @@ describe("manage_code read queries, history, lifecycle, and v2 undo", () => {
 			for (const call of [
 				{ action: "show", owner: "acme", name: "shop", ref: 12, path: "src/app.ts" },
 				{ action: "branches", owner: "acme", name: "shop" },
-				{ action: "merge_preview", owner: "acme", name: "shop", base: "main", head: "worker:10000000-0000-4000-8000-000000000001" },
+				{
+					action: "merge_preview",
+					owner: "acme",
+					name: "shop",
+					base: "main",
+					head: "worker:10000000-0000-4000-8000-000000000001",
+				},
 			]) {
 				expect((await f.invoke(call)).success).toBe(true);
 			}
@@ -2130,17 +2185,38 @@ describe("manage_code read queries, history, lifecycle, and v2 undo", () => {
 				if (last?.method === LIFECYCLE) {
 					const op = (last.args.p_request as Record<string, unknown>).op;
 					if (op === "create")
-						return stands({ kind: "lifecycle", state: "done", result: "created", data: { created: true, mainSha: "a".repeat(40) } });
+						return stands({
+							kind: "lifecycle",
+							state: "done",
+							result: "created",
+							data: { created: true, mainSha: "a".repeat(40) },
+						});
 					if (op === "tag")
-						return stands({ kind: "lifecycle", state: "done", result: "tagged", data: { tag: "v1.0.0", kind: "annotated", sha: "a".repeat(40), targetSha: "a".repeat(40) } });
-					return stands({ kind: "lifecycle", state: "done", result: "pruned", data: { retiredWorktrees: ["w1"], deletedBranches: ["qorpera/coding/w1"], skippedWorktrees: [] } });
+						return stands({
+							kind: "lifecycle",
+							state: "done",
+							result: "tagged",
+							data: { tag: "v1.0.0", kind: "annotated", sha: "a".repeat(40), targetSha: "a".repeat(40) },
+						});
+					return stands({
+						kind: "lifecycle",
+						state: "done",
+						result: "pruned",
+						data: { retiredWorktrees: ["w1"], deletedBranches: ["qorpera/coding/w1"], skippedWorktrees: [] },
+					});
 				}
 				const u = last?.args.p_request as Record<string, unknown>;
 				if (u.dryRun) {
 					return stands({
 						state: "done",
 						result: "dry_run",
-						data: { clean: true, wouldRevert: [10, 11], filesChanged: 2, matchesBeforeTree: true, checksFilePresent: true },
+						data: {
+							clean: true,
+							wouldRevert: [10, 11],
+							filesChanged: 2,
+							matchesBeforeTree: true,
+							checksFilePresent: true,
+						},
 					});
 				}
 				if (u.runChecks && !u.force) {
@@ -2172,11 +2248,22 @@ describe("manage_code read queries, history, lifecycle, and v2 undo", () => {
 				created: true,
 			});
 
-			const archived = await f.invoke({ action: "archive", operationKey: "ar-1", owner: "acme", name: "shop", reason: "Retired" });
+			const archived = await f.invoke({
+				action: "archive",
+				operationKey: "ar-1",
+				owner: "acme",
+				name: "shop",
+				reason: "Retired",
+			});
 			expect(archived.success).toBe(true);
 			expect(archived.text).toContain("archived");
 
-			const unarchived = await f.invoke({ action: "unarchive", operationKey: "unar-1", owner: "acme", name: "shop" });
+			const unarchived = await f.invoke({
+				action: "unarchive",
+				operationKey: "unar-1",
+				owner: "acme",
+				name: "shop",
+			});
 			expect(unarchived.success).toBe(true);
 			expect(JSON.parse(unarchived.text)).toMatchObject({
 				action: "unarchive",
@@ -2204,7 +2291,13 @@ describe("manage_code read queries, history, lifecycle, and v2 undo", () => {
 				message: "Release 1.0.0",
 			});
 
-			const pruned = await f.invoke({ action: "prune", operationKey: "pr-1", owner: "acme", name: "shop", deleteMergedBranches: true });
+			const pruned = await f.invoke({
+				action: "prune",
+				operationKey: "pr-1",
+				owner: "acme",
+				name: "shop",
+				deleteMergedBranches: true,
+			});
 			expect(pruned.success).toBe(true);
 
 			const dry = await f.invoke({

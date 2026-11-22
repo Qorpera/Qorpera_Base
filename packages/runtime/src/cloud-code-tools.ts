@@ -418,7 +418,10 @@ function parse(value: unknown): CodeCall {
 	if (action === "status") return { action, owner, name };
 	if (action === "branches") return { action, owner, name };
 	if (action === "log") {
-		if (a.limit !== undefined && (!Number.isSafeInteger(a.limit) || (a.limit as number) < 1 || (a.limit as number) > 100))
+		if (
+			a.limit !== undefined &&
+			(!Number.isSafeInteger(a.limit) || (a.limit as number) < 1 || (a.limit as number) > 100)
+		)
 			throw new CloudToolArgumentRefusal("limit must be a whole number from 1 to 100");
 		if (a.since !== undefined && (typeof a.since !== "string" || !SINCE_PATTERN.test(a.since)))
 			throw new CloudToolArgumentRefusal("since must be an ISO date or timestamp like 2026-11-01");
@@ -492,7 +495,10 @@ function parse(value: unknown): CodeCall {
 			throw new CloudToolArgumentRefusal("workerId must be a valid UUID");
 		if (a.cursor !== undefined && (!Number.isSafeInteger(a.cursor) || (a.cursor as number) < 1))
 			throw new CloudToolArgumentRefusal("cursor must be a whole number from 1");
-		if (a.limit !== undefined && (!Number.isSafeInteger(a.limit) || (a.limit as number) < 1 || (a.limit as number) > 100))
+		if (
+			a.limit !== undefined &&
+			(!Number.isSafeInteger(a.limit) || (a.limit as number) < 1 || (a.limit as number) > 100)
+		)
 			throw new CloudToolArgumentRefusal("limit must be a whole number from 1 to 100");
 		return {
 			action,
@@ -515,7 +521,8 @@ function parse(value: unknown): CodeCall {
 		return { action, operationKey, owner, name, ...(reason === undefined ? {} : { reason }) };
 	}
 	if (action === "tag") {
-		if (a.mode !== "create" && a.mode !== "list") throw new CloudToolArgumentRefusal("tag mode must be create or list");
+		if (a.mode !== "create" && a.mode !== "list")
+			throw new CloudToolArgumentRefusal("tag mode must be create or list");
 		if (a.mode === "list") {
 			if (a.tag !== undefined || a.ref !== undefined || a.message !== undefined)
 				throw new CloudToolArgumentRefusal("tag list does not take tag, ref or message");
@@ -1054,10 +1061,7 @@ function importOpen(request: CodeBringIn, seen: CloudCompanyCodeImport | undefin
 	return `It is being ${request.look ? "looked at" : "brought in"} (${step}${waits}). Call bring_in again with the same operationKey to see how it went.`;
 }
 
-function fitTextFieldJson(
-	payload: Record<string, JsonValue>,
-	textField?: "content" | "patch",
-): string {
+function fitTextFieldJson(payload: Record<string, JsonValue>, textField?: "content" | "patch"): string {
 	const render = (obj: Record<string, JsonValue>): string | undefined => {
 		try {
 			const candidate = redactCloudWebhookSecrets(cloudToolJsonText(obj, JSON_RENDER_BYTES));
@@ -1349,8 +1353,7 @@ export function cloudCodeTools(options: {
 		const render = (n: number): string | undefined => {
 			try {
 				const slice = page.changes.slice(0, n);
-				const nextCursor =
-					n < page.changes.length ? (slice.at(-1)?.n ?? page.nextCursor) : page.nextCursor;
+				const nextCursor = n < page.changes.length ? (slice.at(-1)?.n ?? page.nextCursor) : page.nextCursor;
 				const text = redactCloudWebhookSecrets(
 					cloudToolJsonText(
 						{

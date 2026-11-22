@@ -3858,7 +3858,11 @@ describe("read-only git queries, conflict messages, v2 undo, tags, and prune", (
 		expect(logMain.commits).toHaveLength(2);
 		expect(logMain.commits[0]?.subject).toBe("Update app v2");
 
-		const logPath = await logCodeArea(c.job, { repository: kept, ref: `worker:${sActive.workerId}`, path: "src/extra.ts" });
+		const logPath = await logCodeArea(c.job, {
+			repository: kept,
+			ref: `worker:${sActive.workerId}`,
+			path: "src/extra.ts",
+		});
 		expect(logPath.resolvedSha).toBe(hConflict);
 		expect(logPath.commits).toHaveLength(1);
 		expect(logPath.commits[0]?.subject).toBe("Conflicting edit");
@@ -3879,7 +3883,12 @@ describe("read-only git queries, conflict messages, v2 undo, tags, and prune", (
 		expect(diffStat.patch).toBeNull();
 		expect(diffStat.filesChanged).toBe(1);
 
-		const diffTrunc = await diffCodeArea(c.job, { repository: kept, from: l1.mainSha, to: l2.mainSha, maxBytes: 1024 });
+		const diffTrunc = await diffCodeArea(c.job, {
+			repository: kept,
+			from: l1.mainSha,
+			to: l2.mainSha,
+			maxBytes: 1024,
+		});
 		expect(diffTrunc.truncated).toBe(true);
 		expect(Buffer.byteLength(diffTrunc.patch ?? "")).toBeLessThanOrEqual(1024);
 

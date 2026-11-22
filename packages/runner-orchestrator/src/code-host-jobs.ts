@@ -3211,9 +3211,7 @@ export async function undoCodeChange(
 			if (held.status !== 0) throw new CodeHostJobFailure("CODE_HOST_UNDO_FAILED", tail(held.stderr));
 		}
 		const treeOf = async (gitDir: string, commit: string): Promise<string> => {
-			const tree = (
-				await run.gitOk(gitDir, ["rev-parse", "--verify", `${commit}^{tree}`], "CODE_HOST_UNDO_FAILED")
-			)
+			const tree = (await run.gitOk(gitDir, ["rev-parse", "--verify", `${commit}^{tree}`], "CODE_HOST_UNDO_FAILED"))
 				.toString("latin1")
 				.trim();
 			if (!SHA.test(tree)) throw new CodeHostJobFailure("CODE_HOST_UNDO_FAILED", "no tree");
@@ -3583,7 +3581,16 @@ function trimIncompleteUtf8Tail(buf: Buffer): Buffer {
 	let start = len - 1;
 	while (start > 0 && len - start < 4 && ((buf[start] as number) & 0xc0) === 0x80) start -= 1;
 	const lead = buf[start] as number;
-	const expected = lead < 0x80 ? 1 : lead >= 0xc2 && lead <= 0xdf ? 2 : lead >= 0xe0 && lead <= 0xef ? 3 : lead >= 0xf0 && lead <= 0xf4 ? 4 : 1;
+	const expected =
+		lead < 0x80
+			? 1
+			: lead >= 0xc2 && lead <= 0xdf
+				? 2
+				: lead >= 0xe0 && lead <= 0xef
+					? 3
+					: lead >= 0xf0 && lead <= 0xf4
+						? 4
+						: 1;
 	return len - start < expected ? buf.subarray(0, start) : buf;
 }
 
@@ -3683,12 +3690,24 @@ async function resolveKeptRef(run: Run, base: string, mainSha: string, rawRef: s
 		fullRef = rawRef;
 	} else if (rawRef.startsWith("imported:")) {
 		const name = rawRef.slice("imported:".length);
-		if (!IMPORTED_BRANCH_PATTERN.test(name) || name.includes("..") || name.includes("//") || name.startsWith("/") || name.endsWith("/"))
+		if (
+			!IMPORTED_BRANCH_PATTERN.test(name) ||
+			name.includes("..") ||
+			name.includes("//") ||
+			name.startsWith("/") ||
+			name.endsWith("/")
+		)
 			throw new Error("INVALID_CODE_HOST_JOB");
 		fullRef = `refs/qorpera/imported/heads/${name}`;
 	} else if (rawRef.startsWith("refs/qorpera/imported/heads/")) {
 		const name = rawRef.slice("refs/qorpera/imported/heads/".length);
-		if (!IMPORTED_BRANCH_PATTERN.test(name) || name.includes("..") || name.includes("//") || name.startsWith("/") || name.endsWith("/"))
+		if (
+			!IMPORTED_BRANCH_PATTERN.test(name) ||
+			name.includes("..") ||
+			name.includes("//") ||
+			name.startsWith("/") ||
+			name.endsWith("/")
+		)
 			throw new Error("INVALID_CODE_HOST_JOB");
 		fullRef = rawRef;
 	} else if (rawRef.startsWith("tag:")) {
@@ -3779,7 +3798,13 @@ export async function logCodeArea(
 				parents: parentField ? parentField.split(" ").filter((p) => SHA.test(p)) : [],
 				authoredAt,
 				author: clipUtf8String(author, 120),
-				subject: clipUtf8String(subjectParts.join("\x1f").replace(/[\r\n]+/g, " ").trim(), 300),
+				subject: clipUtf8String(
+					subjectParts
+						.join("\x1f")
+						.replace(/[\r\n]+/g, " ")
+						.trim(),
+					300,
+				),
 			});
 		}
 		return { ref: refInput ?? repository.baseBranch, resolvedSha, commits };
@@ -4041,7 +4066,13 @@ export async function listCodeBranches(
 						behind: Number(behindRaw) || 0,
 						ahead: Number(aheadRaw) || 0,
 						committedAt,
-						subject: clipUtf8String(subj.join("\x1f").replace(/[\r\n]+/g, " ").trim(), 200),
+						subject: clipUtf8String(
+							subj
+								.join("\x1f")
+								.replace(/[\r\n]+/g, " ")
+								.trim(),
+							200,
+						),
 					});
 				}
 			}
@@ -4074,7 +4105,13 @@ export async function listCodeBranches(
 				ref: base,
 				sha: mainSha,
 				committedAt: mainDate,
-				subject: clipUtf8String(mainSubj.join("\x1f").replace(/[\r\n]+/g, " ").trim(), 200),
+				subject: clipUtf8String(
+					mainSubj
+						.join("\x1f")
+						.replace(/[\r\n]+/g, " ")
+						.trim(),
+					200,
+				),
 			},
 			coding,
 			imported,
@@ -4214,9 +4251,9 @@ export async function tagCodeArea(
 		input.message === undefined || input.message === null
 			? null
 			: typeof input.message === "string" &&
-				  input.message.trim().length > 0 &&
-				  !input.message.includes("\0") &&
-				  Buffer.byteLength(input.message, "utf8") <= 1000
+					input.message.trim().length > 0 &&
+					!input.message.includes("\0") &&
+					Buffer.byteLength(input.message, "utf8") <= 1000
 				? input.message.trim()
 				: (() => {
 						throw new Error("INVALID_CODE_HOST_JOB");

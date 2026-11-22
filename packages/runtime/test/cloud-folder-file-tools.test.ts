@@ -712,7 +712,13 @@ it("reads per-file line ranges mixed with plain paths, deduplicating releases an
 		refused: expect.stringContaining("COMPANY_LINE_RANGE_BEYOND_SCAN"),
 	});
 	expect(f.releases).toHaveLength(1);
-	expect(released(f.releases[0])).toEqual(["src/app.ts", "src/readme.md", "src/secret.env", "src/link", "src/large.txt"]);
+	expect(released(f.releases[0])).toEqual([
+		"src/app.ts",
+		"src/readme.md",
+		"src/secret.env",
+		"src/link",
+		"src/large.txt",
+	]);
 });
 
 it("fits files whose text escapes six-fold, and refuses paths too long to name together before releasing anything", async () => {

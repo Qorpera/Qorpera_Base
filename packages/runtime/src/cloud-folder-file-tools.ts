@@ -717,7 +717,10 @@ export function cloudFolderFileTools(options: {
 						!signal.aborted;
 			if (!lost) return unavailable(error, "read");
 			return {
-				answer: { path: targetPath, refused: "COMPANY_FOLDER_UNAVAILABLE: it could not be read now; read it again" },
+				answer: {
+					path: targetPath,
+					refused: "COMPANY_FOLDER_UNAVAILABLE: it could not be read now; read it again",
+				},
 			};
 		};
 		let entry: CloudCompanyFolderEntry | null;
@@ -895,7 +898,10 @@ export function cloudFolderFileTools(options: {
 		};
 	};
 
-	const readMany = async (targets: readonly PathReadTarget[], context: CloudToolContext): Promise<CloudToolContent> => {
+	const readMany = async (
+		targets: readonly PathReadTarget[],
+		context: CloudToolContext,
+	): Promise<CloudToolContent> => {
 		// WHY: object gateway runs up to 8 NAS lanes concurrently, but rejects two simultaneous byte reads for the same fileSha256.
 		// Serializing per fileSha256 before acquiring a concurrency slot prevents same-object contention without holding slots idle.
 		const shaQueues = new Map<string, Promise<unknown>>();
@@ -947,12 +953,14 @@ export function cloudFolderFileTools(options: {
 						const endOffset = part.text.offset + bytesRead;
 						const lineFields: Record<string, JsonValue> = {};
 						if (part.text.lineRange) {
-							const shownLines =
-								shown.length === 0 ? 0 : countNewlines(shown) + (shown.endsWith("\n") ? 0 : 1);
+							const shownLines = shown.length === 0 ? 0 : countNewlines(shown) + (shown.endsWith("\n") ? 0 : 1);
 							lineFields.startLine = part.text.lineRange.startLine;
 							lineFields.endLine =
-								shownLines === 0 ? part.text.lineRange.startLine - 1 : part.text.lineRange.startLine + shownLines - 1;
-							if (part.text.lineRange.totalLines !== undefined) lineFields.totalLines = part.text.lineRange.totalLines;
+								shownLines === 0
+									? part.text.lineRange.startLine - 1
+									: part.text.lineRange.startLine + shownLines - 1;
+							if (part.text.lineRange.totalLines !== undefined)
+								lineFields.totalLines = part.text.lineRange.totalLines;
 						}
 						return {
 							...part.answer,
@@ -1118,13 +1126,16 @@ export function cloudFolderFileTools(options: {
 							const entry = someArgs(item, "company_read paths entry", ["path"], ["startLine", "endLine"]);
 							const validated = path(entry.path, false);
 							const startLine =
-								entry.startLine === undefined ? undefined : integer(entry.startLine, "startLine", 1, MAX_LINE_NUMBER);
+								entry.startLine === undefined
+									? undefined
+									: integer(entry.startLine, "startLine", 1, MAX_LINE_NUMBER);
 							const endLine =
 								entry.endLine === undefined ? undefined : integer(entry.endLine, "endLine", 1, MAX_LINE_NUMBER);
 							if (startLine !== undefined && endLine !== undefined && endLine < startLine)
 								throw new CloudToolArgumentRefusal("endLine must be greater than or equal to startLine");
 							const dedupeKey = `${folderKey(validated)}\0${startLine ?? ""}\0${endLine ?? ""}`;
-							if (seen.has(dedupeKey)) throw new CloudToolArgumentRefusal("paths must name each file or range once");
+							if (seen.has(dedupeKey))
+								throw new CloudToolArgumentRefusal("paths must name each file or range once");
 							seen.add(dedupeKey);
 							if (startLine === undefined && endLine === undefined) paths.push(validated);
 							else
@@ -1135,7 +1146,9 @@ export function cloudFolderFileTools(options: {
 								});
 							continue;
 						}
-						throw new CloudToolArgumentRefusal("paths items must be company paths or { path, startLine?, endLine? }");
+						throw new CloudToolArgumentRefusal(
+							"paths items must be company paths or { path, startLine?, endLine? }",
+						);
 					}
 					return { paths };
 				}
