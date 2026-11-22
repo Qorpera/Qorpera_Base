@@ -28,7 +28,7 @@ import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { isUnnamed } from "../../ui/company-name.ts";
 import { type MenuEntry, openContextMenu } from "../../ui/context-menu.ts";
-import { fmtTime, formatPresentationDate, h, icon, notice, personAvatar, spinner } from "../../ui/dom.ts";
+import { fmtTime, formatPresentationDate, h, icon, notice, personAvatar, replace, spinner } from "../../ui/dom.ts";
 import { presentationDay, presentationLocale, presentationTimeZone, t, timeZoneOption } from "../../ui/preferences.ts";
 import { uiScale } from "../../ui/scale.ts";
 import type { CompanyController } from "../company.ts";
@@ -42,7 +42,7 @@ import {
 } from "../company-mail.ts";
 import { mailList, mailRow, mailSummary } from "../interface-mail.ts";
 import type { QuotedText } from "../quotes.ts";
-import { messageText, show } from "./interface.ts";
+import { messageText, show, shownKey } from "./interface.ts";
 import { type DigitalPostClient, DigitalPostView } from "./settings-digital-post.ts";
 import { type HooksClient, HooksView } from "./settings-hooks.ts";
 
@@ -501,43 +501,72 @@ export function renderMailbox(
 	const lists = ui.tab === "addresses" ? [] : [request];
 	const threads = ui.open ? [ui.open] : [];
 	const letters = ui.letter ? [ui.letter] : [];
-	const digitalPost = mail ? digitalPostOf(mail) : null;
-	const key = JSON.stringify([
-		profileId,
-		controllerKey(company),
-		company.userId,
-		presentationLocale(),
-		presentationTimeZone(),
-		new Date().toDateString(),
+	const computeKey = () => {
+		const latestState = company.store.get();
+		const latestMail = latestState.mail;
+		const latestDigitalPost = latestMail ? digitalPostOf(latestMail) : null;
+		return JSON.stringify([
+			profileId,
+			controllerKey(company),
+			company.userId,
+			presentationLocale(),
+			presentationTimeZone(),
+			new Date().toDateString(),
+			name,
+			{ ...ui, toast: ui.toast?.id ?? null },
+			// The addresses whose lines still go by what the routines said (`answeredBy`): a new read of the addresses
+			// draws them from it, also when it reads the same as the last one.
+			[...(answeredBy.get(ui) ?? [])].map(([address, kept]) => [
+				address,
+				kept.agents,
+				kept.read === latestMail?.addresses,
+			]),
+			// How each agent answers an address, as its routine says.
+			cachedRoutinesJson(manageViews.get(ui)?.routines.list),
+			latestState.team?.capabilities.write === true,
+			latestState.team?.capabilities.authorize === true,
+			cachedTeamMembersJson(latestState.team?.members),
+			company.cofounderId() ?? null,
+			cachedStaffJson(latestState.staff),
+			latestMail && latestDigitalPost
+				? [
+						cachedJson(latestMail.addresses),
+						cachedJson(latestMail.waiting),
+						cachedJson(latestMail.answers),
+						lists.map((each) => cachedJson(latestMail.lists[mailListKey(each)] ?? null)),
+						threads.map((thread) => [
+							cachedJson(latestMail.threads[thread] ?? null),
+							cachedJson(mailSummary(company, thread) ?? null),
+						]),
+						cachedJson(latestDigitalPost.connection ?? null),
+						cachedJson(latestDigitalPost.letters),
+						letters.map((letter) => cachedJson(latestDigitalPost.open[letter] ?? null)),
+					]
+				: null,
+		]);
+	};
+	const key = computeKey();
+	const page: Page = {
+		company,
+		ui,
 		name,
-		{ ...ui, toast: ui.toast?.id ?? null },
-		// The addresses whose lines still go by what the routines said (`answeredBy`): a new read of the addresses
-		// draws them from it, also when it reads the same as the last one.
-		[...(answeredBy.get(ui) ?? [])].map(([address, kept]) => [address, kept.agents, kept.read === mail?.addresses]),
-		// How each agent answers an address, as its routine says.
-		cachedRoutinesJson(manageViews.get(ui)?.routines.list),
-		state.team?.capabilities.write === true,
-		state.team?.capabilities.authorize === true,
-		cachedTeamMembersJson(state.team?.members),
-		company.cofounderId() ?? null,
-		cachedStaffJson(state.staff),
-		mail && digitalPost
-			? [
-					cachedJson(mail.addresses),
-					cachedJson(mail.waiting),
-					cachedJson(mail.answers),
-					lists.map((each) => cachedJson(mail.lists[mailListKey(each)] ?? null)),
-					threads.map((thread) => [
-						cachedJson(mail.threads[thread] ?? null),
-						cachedJson(mailSummary(company, thread) ?? null),
-					]),
-					cachedJson(digitalPost.connection ?? null),
-					cachedJson(digitalPost.letters),
-					letters.map((letter) => cachedJson(digitalPost.open[letter] ?? null)),
-				]
-			: null,
-	]);
-	const page: Page = { company, ui, name, profileId, redraw, options };
+		profileId,
+		redraw,
+		options,
+		updateSearch: () => {
+			if (!stillShown() || ui.open !== null || ui.letter !== null || ui.tab === "addresses") return false;
+			const latestMail = company.store.get().mail;
+			if (!latestMail || !mailShown(latestMail)) return false;
+			const root = container.firstElementChild;
+			const scroll = container.querySelector<HTMLElement>(".mailbox-scroll");
+			if (!root || !scroll) return false;
+			root.classList.add("is-settled");
+			replace(scroll, listView(page));
+			scroll.scrollTop = 0;
+			shownKey(container, computeKey());
+			return true;
+		},
+	};
 	if (moveFocus === undefined && ui.pendingFocus !== null && document.activeElement !== ui.pendingFocus.carried) {
 		ui.pendingFocus = null;
 	}
@@ -576,6 +605,7 @@ interface Page {
 	readonly name: string;
 	readonly profileId: string;
 	readonly redraw: (moveFocus?: string) => void;
+	readonly updateSearch?: () => boolean;
 	readonly options: MailboxOptions;
 }
 
@@ -793,9 +823,11 @@ function bar(page: Page): HTMLElement {
 						"data-focus-key": "search",
 						oninput: (event: Event) => {
 							const field = event.target as HTMLInputElement;
+							const wasReading = ui.open !== null || ui.letter !== null;
 							ui.search = field.value;
 							ui.open = null;
 							ui.letter = null;
+							if (!wasReading && page.updateSearch?.()) return;
 							// What the new words find is read from its top, not from where the old list was left.
 							const list = field.closest(".mailbox")?.querySelector(".mailbox-scroll");
 							if (list) list.scrollTop = 0;

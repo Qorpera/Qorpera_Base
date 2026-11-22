@@ -305,7 +305,11 @@ export class CompanyMail {
 
 	#set(change: (state: MailState) => MailState): void {
 		if (this.#closed) return;
-		this.#state = change(this.#state ?? EMPTY);
+		const had = this.#state !== undefined;
+		const prev = this.#state ?? EMPTY;
+		const next = change(prev);
+		if (had && next === prev) return;
+		this.#state = next;
 		this.#publish(this.#state);
 	}
 
@@ -320,82 +324,121 @@ export class CompanyMail {
 		}
 	}
 
+	async #fetchAddresses(afterChange = false): Promise<{ read: number; addresses: MailAddress[] } | null> {
+		const read = ++this.#addressReads;
+		if (afterChange) this.#addressesSince = read;
+		try {
+			return { read, addresses: await readMailAddresses(this.#cloud, this.#environmentId) };
+		} catch (error) {
+			// A cloud without the member mail read has no mail to show; another failure keeps what was read.
+			if (!(error instanceof CloudRpcError && (error.missing || error.denied))) return null;
+			return { read, addresses: [] };
+		}
+	}
+
 	/** Reads the addresses, and says whether they were read. Reads may answer out of turn: one begun before another
 	 * whose answer is already in says nothing newer, and is let go. So is one begun before a read asked for after a
 	 * change (`afterChange`), from the moment that read begins: what it says is from before the change. */
 	async #readAddresses(afterChange = false): Promise<boolean> {
-		const read = ++this.#addressReads;
-		if (afterChange) this.#addressesSince = read;
-		const take = (addresses: MailAddress[]) => {
-			if (read < this.#addressesSince) return;
-			this.#addressesSince = read;
-			this.#set((state) => ({ ...state, addresses }));
-		};
-		try {
-			take(await readMailAddresses(this.#cloud, this.#environmentId));
-			return true;
-		} catch (error) {
-			// A cloud without the member mail read has no mail to show; another failure keeps what was read.
-			if (!(error instanceof CloudRpcError && (error.missing || error.denied))) return false;
-			take([]);
-			return true;
-		}
+		const result = await this.#fetchAddresses(afterChange);
+		if (!result) return false;
+		if (result.read < this.#addressesSince) return true;
+		this.#addressesSince = result.read;
+		this.#set((state) => ({ ...state, addresses: result.addresses }));
+		return true;
 	}
 
 	async #refreshCompany(): Promise<void> {
+		let addressesResult: { read: number; addresses: MailAddress[] } | null = null;
+		let waitingResult: MailWaitingItem[] | undefined;
+		let digitalPostResult:
+			| { connection: DigitalPostConnection; index?: { version: string | undefined; letters: DigitalPostLetter[] } }
+			| undefined;
 		await Promise.all([
 			this.#once("addresses", async () => {
-				await this.#readAddresses();
+				addressesResult = await this.#fetchAddresses();
 			}),
 			this.#once("waiting", async () => {
 				try {
-					const waiting = await readMailWaiting(this.#cloud, this.#environmentId);
-					this.#set((state) => ({ ...state, waiting }));
+					waitingResult = await readMailWaiting(this.#cloud, this.#environmentId);
 				} catch {
 					// The badge keeps its last count.
 				}
 			}),
-			this.#readDigitalPost(),
+			this.#once("digital-post", async () => {
+				let connection: DigitalPostConnection;
+				try {
+					connection = await readDigitalPost(this.#cloud, this.#environmentId);
+				} catch {
+					// A cloud without the call has no Digital Post; another failure keeps what was read.
+					return;
+				}
+				const index = connection.connected || connection.letters > 0 ? await this.#fetchIndex() : undefined;
+				digitalPostResult = { connection, ...(index !== undefined ? { index } : {}) };
+			}),
 		]);
-	}
-
-	/** The Digital Post connection, then the letters index when there may be letters. */
-	#readDigitalPost(): Promise<void> {
-		return this.#once("digital-post", async () => {
-			let connection: DigitalPostConnection;
-			try {
-				connection = await readDigitalPost(this.#cloud, this.#environmentId);
-			} catch {
-				// A cloud without the call has no Digital Post; another failure keeps what was read.
-				return;
+		if (addressesResult === null && waitingResult === undefined && digitalPostResult === undefined) return;
+		this.#set((state) => {
+			let next = state;
+			if (addressesResult !== null && addressesResult.read >= this.#addressesSince) {
+				this.#addressesSince = addressesResult.read;
+				next = { ...next, addresses: addressesResult.addresses };
 			}
-			this.#set((state) => ({ ...state, digitalPost: { ...digitalPostOf(state), connection } }));
-			if (connection.connected || connection.letters > 0) await this.#readIndex();
+			if (waitingResult !== undefined && JSON.stringify(next.waiting) !== JSON.stringify(waitingResult)) {
+				next = { ...next, waiting: waitingResult };
+			}
+			if (digitalPostResult !== undefined) {
+				const current = digitalPostOf(next);
+				const connChanged = JSON.stringify(current.connection) !== JSON.stringify(digitalPostResult.connection);
+				const index = digitalPostResult.index;
+				if (index !== undefined) this.#indexVersion = index.version;
+				const lettersChanged = index !== undefined && !(index.letters.length === 0 && current.letters.length === 0);
+				if (connChanged || lettersChanged) {
+					next = {
+						...next,
+						digitalPost: {
+							...current,
+							...(connChanged ? { connection: digitalPostResult.connection } : {}),
+							...(lettersChanged ? { letters: index.letters } : {}),
+						},
+					};
+				}
+			}
+			return next;
 		});
 	}
 
-	/** The letters the folder's index lists, read again only when its version changed. */
-	async #readIndex(): Promise<void> {
-		if (!this.#folder || this.#closed) return;
+	async #fetchIndex(): Promise<{ version: string | undefined; letters: DigitalPostLetter[] } | undefined> {
+		if (!this.#folder || this.#closed) return undefined;
 		try {
-			await this.#withFolderDeadline(async (signal) => {
+			return await this.#withFolderDeadline(async (signal) => {
 				const folder = this.#folder!(signal);
 				const read = await folder.read(DIGITAL_POST_INDEX_PATH, signal);
 				const file = read.entry?.kind === "file" ? read.entry.file : null;
 				if (!read.entry || !file || file.bytes > DIGITAL_POST_INDEX_MAX_BYTES) {
-					this.#indexVersion = undefined;
-					this.#set((state) => ({ ...state, digitalPost: { ...digitalPostOf(state), letters: [] } }));
-					return;
+					return { version: undefined, letters: [] };
 				}
-				if (read.entry.version === this.#indexVersion) return;
+				if (read.entry.version === this.#indexVersion) return undefined;
 				const bytes = await folder.readFile(file, signal, DIGITAL_POST_INDEX_MAX_BYTES);
 				const letters = parseDigitalPostLetters(new TextDecoder().decode(bytes));
-				this.#indexVersion = read.entry.version;
-				this.#set((state) => ({ ...state, digitalPost: { ...digitalPostOf(state), letters } }));
+				return { version: read.entry.version, letters };
 			});
 		} catch {
 			// The list keeps what was read before.
+			return undefined;
 		}
+	}
+
+	/** The letters the folder's index lists, read again only when its version changed. */
+	async #readIndex(): Promise<void> {
+		const index = await this.#fetchIndex();
+		if (!index) return;
+		this.#set((state) => {
+			this.#indexVersion = index.version;
+			const current = digitalPostOf(state);
+			if (index.letters.length === 0 && current.letters.length === 0) return state;
+			return { ...state, digitalPost: { ...current, letters: index.letters } };
+		});
 	}
 
 	/** An open letter's `letter.md`. */
@@ -552,13 +595,22 @@ export class CompanyMail {
 						seen.add(item.thread);
 						threads.push(opened.has(item.thread) ? { ...item, unread: false } : item);
 					}
+					const older = was?.older === "loading" ? "loading" : "idle";
+					if (
+						was?.status === "ready" &&
+						was.pages === pages &&
+						was.next === (next ?? undefined) &&
+						was.older === older &&
+						JSON.stringify(was.threads) === JSON.stringify(threads)
+					)
+						return state;
 					const list: MailList = {
 						request,
 						threads,
 						...(next ? { next } : {}),
 						pages,
 						status: "ready",
-						older: was?.older === "loading" ? "loading" : "idle",
+						older,
 					};
 					return { ...state, lists: { ...state.lists, [key]: list } };
 				});

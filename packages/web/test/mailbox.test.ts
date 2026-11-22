@@ -3305,4 +3305,53 @@ describe("Digital Post", () => {
 		);
 		expect(document.activeElement).toBe(main.querySelector(".mailbox-search input"));
 	});
+
+	it("updates only the scroll region in place on search input so the search input element keeps identity and focus", async () => {
+		const { main } = await mailbox((mail) => {
+			mail.threads = [summary(1, { subject: "Quarterly budget" }), summary(2, { subject: "Cake order" })];
+		});
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(2));
+		const section = main.querySelector<HTMLElement>("section.mailbox")!;
+		const input = main.querySelector<HTMLInputElement>(".mailbox-search input")!;
+		input.focus();
+		type(input, "cake");
+		expect(main.querySelector("section.mailbox")).toBe(section);
+		expect(main.querySelector(".mailbox-search input")).toBe(input);
+		expect(document.activeElement).toBe(input);
+		expect(lines(main)).toHaveLength(1);
+		type(input, "");
+		expect(main.querySelector(".mailbox-search input")).toBe(input);
+		expect(lines(main)).toHaveLength(2);
+	});
+
+	it("batches initial CompanyMail refresh into one publish and preserves list reference on unchanged poll", async () => {
+		vi.useFakeTimers();
+		const f = fixture();
+		const controller = new CompanyController(f.api, profileA, userA.id);
+		cleanup.push(() => controller.stop());
+		const fake = mailFake(f);
+		fake.addresses = [ADDRESS];
+		fake.threads = [summary(1)];
+		const accounts = accountsFake();
+		const publish = vi.fn((state) => controller.store.set({ mail: state }));
+		const reader = new CompanyMail(controller, f.cloud, accounts, publish);
+		cleanup.push(() => reader.dispose());
+		await reader.open();
+		expect(publish).toHaveBeenCalledTimes(1);
+
+		const inboxRequest = {};
+		reader.watch([inboxRequest], [], () => true);
+		await vi.advanceTimersByTimeAsync(1);
+		const firstLists = controller.store.get().mail!.lists;
+		const inboxKey = Object.keys(firstLists)[0]!;
+		const inboxListBefore = firstLists[inboxKey]!;
+		expect(inboxListBefore.threads).toHaveLength(1);
+		const publishesBeforePoll = publish.mock.calls.length;
+		const listCallsBefore = calls(fake, "qorpera_member_mail_threads").length;
+
+		await vi.advanceTimersByTimeAsync(20_000);
+		expect(calls(fake, "qorpera_member_mail_threads").length).toBeGreaterThan(listCallsBefore);
+		expect(controller.store.get().mail!.lists[inboxKey]).toBe(inboxListBefore);
+		expect(publish.mock.calls.length).toBe(publishesBeforePoll);
+	});
 });
