@@ -854,6 +854,35 @@ describe("LXD exec pipe", () => {
 			const single = await run(execLargeSingle, { stderrTailBytes: 8 }, parent.signal);
 			expect(single.stderrTail.toString("utf8")).toBe("TAIL1234");
 			expect(anySpy).not.toHaveBeenCalled();
+
+			const largeHead = Buffer.alloc(60 * 1024, "a".charCodeAt(0));
+			const smallTailChunks = Array.from({ length: 80 }, (_, i) =>
+				Buffer.from(`${String(i).padStart(2, "0")}-${"z".repeat(97)}`),
+			);
+			const expectedSliding = Buffer.concat([largeHead, ...smallTailChunks]);
+			const execSliding = await fake(async (io) => {
+				await io.input();
+				io.print("stderr", largeHead);
+				for (const chunk of smallTailChunks) io.print("stderr", chunk);
+				return 0;
+			});
+			let largeBufferCopies = 0;
+			const origBufferFrom = Buffer.from;
+			const fromSpy = vi.spyOn(Buffer, "from").mockImplementation(((...args: unknown[]) => {
+				const first = args[0];
+				if (first instanceof Uint8Array && first.byteLength >= 32 * 1024) largeBufferCopies += 1;
+				return Reflect.apply(origBufferFrom, Buffer, args) as Buffer;
+			}) as typeof Buffer.from);
+			try {
+				const sliding = await run(execSliding, { stderrTailBytes: 64 * 1024 }, parent.signal);
+				expect(sliding.stderrTail.equals(expectedSliding.subarray(expectedSliding.byteLength - 64 * 1024))).toBe(
+					true,
+				);
+				// WHY: Partial trimming of the 60 KiB head chunk must use zero-copy subarray views, not Buffer.from copies.
+				expect(largeBufferCopies).toBeLessThanOrEqual(2);
+			} finally {
+				fromSpy.mockRestore();
+			}
 		} finally {
 			anySpy.mockRestore();
 		}

@@ -4063,7 +4063,7 @@ export class LxdUnixClient
 												stderrHead += 1;
 												stderrBytes -= first.byteLength;
 											} else {
-												stderrChunks[stderrHead] = Buffer.from(first.subarray(overflow));
+												stderrChunks[stderrHead] = first.subarray(overflow);
 												stderrBytes -= overflow;
 											}
 										}
@@ -4223,9 +4223,8 @@ export class LxdUnixClient
 		format: "json" | "text" = "json",
 	): Promise<HttpResult> {
 		if (!signal) {
-			const defaultTimeoutMs = path.includes("/wait?timeout=")
-				? (this.#operationTimeoutSeconds + 5) * 1000
-				: this.#operationTimeoutSeconds * 1000;
+			const waitMatch = /\/wait\?(?:.*&)?timeout=(\d+)(?:&|$)/.exec(path);
+			const defaultTimeoutMs = waitMatch ? (Number(waitMatch[1]) + 5) * 1000 : this.#operationTimeoutSeconds * 1000;
 			return withTimeoutScope(undefined, defaultTimeoutMs, (checked) =>
 				this.#requestPayload(method, path, payload, headers, checked, maximumResponseBytes, format),
 			);

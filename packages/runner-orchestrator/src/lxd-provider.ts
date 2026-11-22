@@ -4,7 +4,7 @@ import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { parseCompanyComputerNativeRoute } from "@qorpera/contracts";
-import { withTimeoutScope } from "./abort-scope.ts";
+import { withAbortScopes, withTimeoutScope } from "./abort-scope.ts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import {
 	type LxdClient,
@@ -981,10 +981,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	/** Journals of finished runs stay on disk. Once one is stopped or lost, its guest gone and its capacity
 	 * settled, reconcile has nothing left to do for it: it is skipped for the rest of the process and archived
 	 * a day after its last change (23 Sep 2026: node 1 re-read 76 of them, three LXD calls each, every pass). */
-	readonly #settled = new Map<
-		string,
-		{ readonly settledAt: number; readonly runId: string; readonly attempt: number }
-	>();
+	readonly #settled = new Map<string, { readonly settledAt: number; readonly runId: string }>();
 	/** When each settled journal whose recovery volume could not be retired was last tried, and last named in the log. */
 	readonly #retirementTried = new Map<string, number>();
 	readonly #retirementReported = new Map<string, number>();
@@ -2038,22 +2035,32 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			throw new Error("LXD guest bootstrap no longer matches its durable journal");
 		}
 		await this.#waitForGuestAgent(journal, signal);
-		let next = 0;
-		const pushWorker = async (): Promise<void> => {
-			while (next < files.length) {
-				signal?.throwIfAborted();
-				const file = files[next++]!;
-				await this.#lxd.pushInstanceFile(
-					journal.lxd.project,
-					journal.instanceName,
-					file.path,
-					file.content,
-					0o600,
-					signal,
-				);
-			}
-		};
-		await Promise.all(Array.from({ length: Math.min(4, files.length) }, pushWorker));
+		const pushAbort = new AbortController();
+		await withAbortScopes([signal, pushAbort.signal], async (pushSignal) => {
+			pushSignal.throwIfAborted();
+			let next = 0;
+			const pushWorker = async (): Promise<void> => {
+				while (next < files.length) {
+					if (pushAbort.signal.aborted) return;
+					pushSignal.throwIfAborted();
+					const file = files[next++]!;
+					try {
+						await this.#lxd.pushInstanceFile(
+							journal.lxd.project,
+							journal.instanceName,
+							file.path,
+							file.content,
+							0o600,
+							pushSignal,
+						);
+					} catch (error) {
+						if (!pushAbort.signal.aborted) pushAbort.abort(error);
+						throw error;
+					}
+				}
+			};
+			await Promise.all(Array.from({ length: Math.min(4, files.length) }, pushWorker));
+		});
 	}
 
 	async #waitForGuestAgent(journal: LxdProviderJournal, signal?: AbortSignal): Promise<void> {
@@ -2527,7 +2534,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	async #settledAt(
 		acquisitionId: string,
 		signal?: AbortSignal,
-	): Promise<{ readonly settledAt: number; readonly runId: string; readonly attempt: number } | undefined> {
+	): Promise<{ readonly settledAt: number; readonly runId: string } | undefined> {
 		const journal = await this.#readJournal(acquisitionId);
 		if (!journal || (journal.physicalState !== "stopped" && journal.physicalState !== "lost")) return undefined;
 		if ((journal.capacityRegistered || journal.nodeCapacity) && !this.#capacityReleased(journal)) return undefined;
@@ -2535,7 +2542,6 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		return {
 			settledAt: Date.parse(journal.updatedAt),
 			runId: journal.runId ?? journal.acquisitionId,
-			attempt: journal.attempt ?? 1,
 		};
 	}
 
