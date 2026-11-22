@@ -38,7 +38,9 @@ const ZERO_SHA = "0".repeat(40);
 const DISALLOWED_JSON_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 export const SURFACE_PRE_MERGE_SNAPSHOT_MAX_BYTES = 96 * 1024;
 const MAX_SNAPSHOT_VERSION_CHARS = 128;
-const DEFAULT_COMPLETION_RETRY_DELAYS_MS: readonly number[] = [50, 200, 500];
+const DEFAULT_COMPLETION_RETRY_DELAYS_MS: readonly number[] = [
+	250, 1_000, 2_500, 5_000, 15_000, 30_000, 60_000, 60_000, 60_000,
+];
 
 export interface SurfaceExecutionControlPlane {
 	completeSurfacePreview(input: CompleteSurfacePreviewInput, signal?: AbortSignal): Promise<unknown>;
@@ -858,6 +860,54 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			const entry = versionedMap[path];
 			filesBefore[path] = entry && typeof entry.content === "string" ? entry.content : null;
 			versionsBefore[path] = entry && typeof entry.version === "string" ? entry.version : null;
+		}
+
+		// WHY: If a prior attempt committed files and crashed before reporting completion, reuse its pre-merge snapshot instead of overwriting filesBefore.
+		if (ports.folderSnapshots) {
+			const existingSnapshot = await ports.folderSnapshots.loadSnapshot(
+				{
+					profileId: job.profileId,
+					surfaceId: job.surfaceId,
+					changeId: parsedChanges[0]!.changeId,
+				},
+				signal,
+			);
+			if (
+				existingSnapshot?.afterContentSha256 &&
+				orderedPaths.every(
+					(path) =>
+						hashNullableText(filesBefore[path] ?? null) === (existingSnapshot.afterContentSha256![path] ?? null),
+				)
+			) {
+				const changeIds = parsedChanges.map((change) => change.changeId);
+				const versionsFitInline = Object.values(versionsBefore).every(
+					(value) => value === null || value.length <= MAX_SNAPSHOT_VERSION_CHARS,
+				);
+				const recoveredSnapshot: SurfaceFolderUndoSnapshot = {
+					...existingSnapshot,
+					versionsAfter: { ...versionsBefore },
+				};
+				await ports.folderSnapshots.saveSnapshot(recoveredSnapshot, signal);
+				markCommitted();
+				await completeCommittedMerge(
+					{
+						jobId: job.jobId,
+						status: "landed",
+						mainBefore: existingSnapshot.snapshotId,
+						mainAfter: hashFolderFiles(filesBefore),
+						preMergeSnapshot: {
+							snapshotId: existingSnapshot.snapshotId,
+							folderRoot: existingSnapshot.folderRoot,
+							changeIds,
+							externalSnapshot: true,
+							...(versionsFitInline ? { versionsAfter: { ...versionsBefore } } : {}),
+							afterContentSha256: existingSnapshot.afterContentSha256,
+						},
+					},
+					signal,
+				);
+				return;
+			}
 		}
 
 		const applied = applyStudioFolderPatches(filesBefore, parsedChanges, normalizedRoot);

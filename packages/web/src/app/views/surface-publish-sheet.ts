@@ -164,6 +164,7 @@ export function openPublishPatchnotesSheet(
 								const busy =
 									rollingBack === change.id || Boolean(state.busy[`undo:${change.id}`]) || publishing;
 								const stamp = fmtTime(change.resolvedAt ?? change.createdAt);
+								const batchSize = change.kind === "folder_patch" ? (change.undoBatchSize ?? 1) : 1;
 								return h(
 									"li",
 									{ class: "surface-patchnote-item", "data-change": change.id },
@@ -180,9 +181,20 @@ export function openPublishPatchnotesSheet(
 												disabled: busy,
 												"data-act": "rollback",
 												"data-change": change.id,
+												...(batchSize > 1
+													? {
+															title: t("Rolls back all {count} changes landed together in this batch", {
+																count: batchSize,
+															}),
+														}
+													: {}),
 											},
 											icon("reset"),
-											h("span", null, t("Rollback")),
+											h(
+												"span",
+												null,
+												batchSize > 1 ? t("Rollback batch ({count})", { count: batchSize }) : t("Rollback"),
+											),
 										),
 									),
 									change.summary ? h("p", { class: "surface-patchnote-summary" }, change.summary) : null,

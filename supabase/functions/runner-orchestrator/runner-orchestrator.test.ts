@@ -802,6 +802,23 @@ describe("the edge function's route for the one call", () => {
 		]);
 
 		calls.length = 0;
+		answer = answers(true, { data: { sessionId, released: true, state: "queued" } });
+		const releaseRes = await post({
+			action: "surface_release_session_claim",
+			orchestratorId,
+			sessionId,
+			leaseToken,
+		});
+		assert.equal(releaseRes.status, 200);
+		assert.deepEqual(calls[1], [
+			"qorpera_surface_release_session_claim",
+			{
+				p_session_id: sessionId,
+				p_lease_token: leaseToken,
+			},
+		]);
+
+		calls.length = 0;
 		answer = answers(true, { data: { previewId, status: "ready", shortHostId: "ab12cd34", compositeTreeSha: sha1 } });
 		const previewRes = await post({
 			action: "surface_complete_preview",

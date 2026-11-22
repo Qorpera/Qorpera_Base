@@ -168,10 +168,14 @@ describe("SurfacesStore", () => {
 	});
 
 	it("Approve all closes the drawer, files the session and Undo restores it", async () => {
-		const restored = session(["staged", "staged", "staged"]);
+		const statuses: ("merged" | "staged")[] = ["merged", "merged", "merged"];
 		const client = fakeClient({
 			approveSessionAll: vi.fn(async () => session(["merged", "merged", "merged"], { state: "completed" })),
-			undoSurfaceChange: vi.fn(async () => restored),
+			undoSurfaceChange: vi.fn(async (id: string) => {
+				const idx = CHANGES.indexOf(id as (typeof CHANGES)[number]);
+				if (idx >= 0) statuses[idx] = "staged";
+				return session([...statuses]);
+			}),
 		});
 		const store = storeWith(client);
 		await store.load();
@@ -818,6 +822,47 @@ describe("SurfacesStore", () => {
 		expect(ws.previewState.primary.doorActionUrl).toContain(PREVIEW_IDS[0].slice(-8));
 		expect(ws.previewState.compareFrames[0]?.frame.memberPass).toBe(VALID_PASS);
 		expect(ws.previewState.compareFrames[0]?.frame.doorActionUrl).toContain(PREVIEW_IDS[1].slice(-8));
+		store.dispose();
+	});
+
+	it("keeps loading on transient isSurfacesEnabled network errors and recovers on retry", async () => {
+		const owner = {};
+		let attempts = 0;
+		const isSurfacesEnabled = vi.fn(async () => {
+			attempts += 1;
+			if (attempts === 1) throw new Error("Failed to fetch");
+			return true;
+		});
+		const store = storeWith(fakeClient({ isSurfacesEnabled }));
+		attachSurfaces(owner, store);
+
+		await store.load();
+		expect(store.state.source).toBe("loading");
+		expect(surfacesDisabledOf(owner)).toBe(false);
+		expect(surfacesOf(owner)).toBeUndefined();
+
+		await store.load();
+		expect(store.state.source).toBe("cloud");
+		expect(surfacesDisabledOf(owner)).toBe(false);
+		expect(surfacesOf(owner)).toBe(store);
+		store.dispose();
+	});
+
+	it("skips redundant undo RPCs when a folder batch undo already restored sibling changes", async () => {
+		const undoSurfaceChange = vi.fn(async () => session(["staged", "staged"]));
+		const client = fakeClient({
+			approveSessionAll: vi.fn(async () => session(["merged", "merged"])),
+			undoSurfaceChange,
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+		await store.approveAll(SESSION);
+		expect(store.state.undo?.changeIds).toEqual([CHANGES[0], CHANGES[1]]);
+
+		await store.undo();
+		expect(undoSurfaceChange).toHaveBeenCalledTimes(1);
+		expect(undoSurfaceChange).toHaveBeenCalledWith(CHANGES[0]);
 		store.dispose();
 	});
 });

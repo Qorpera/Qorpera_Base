@@ -70,6 +70,17 @@ declare
 	v_folder_surface_id uuid;
 	v_folder_session_id uuid;
 	v_folder_change_id uuid;
+	v_batch_session_id uuid;
+	v_batch_c1 uuid;
+	v_batch_c2 uuid;
+	v_batch_job_id uuid;
+	v_batch_lease uuid;
+	v_batch_undo_job_id uuid;
+	v_batch_undo_lease uuid;
+	v_batch_unpub_before integer;
+	v_release_session_id uuid;
+	v_release_lease uuid;
+	v_released jsonb;
 	v_merge_job_id uuid;
 	v_merge_lease uuid;
 	v_undo_job jsonb;
@@ -932,6 +943,187 @@ begin
 	v_senses := public.qorpera_surface_describe_company_senses(v_profile);
 	reset role;
 	perform pg_temp.sf_assert(jsonb_array_length(v_senses -> 'surfaces') >= 7, 'describe_company_senses lists seeded and created surfaces');
+
+	select coalesce(unpublished_change_count, 0) into v_batch_unpub_before
+	from public.qorpera_surfaces where id = v_folder_surface_id;
+
+	perform pg_temp.sf_as(v_owner);
+	set local role authenticated;
+	v_session := public.qorpera_start_surface_session(v_folder_surface_id, 'Batch folder edits', 'Batch test', 'member', null, null, null, null, null);
+	reset role;
+	v_batch_session_id := (v_session ->> 'id')::uuid;
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_batch_c1 := (public.qorpera_record_surface_change(
+		v_batch_session_id, 'Batch A', 'Update tokens', 'folder_patch',
+		null, null, '{}'::uuid[], array['identity/tokens.json'], null,
+		'[{"op":"merge_json","path":"identity/tokens.json","patch":{"accent":"#445566"}}]'::jsonb,
+		false
+	) ->> 'changeId')::uuid;
+	v_batch_c2 := (public.qorpera_record_surface_change(
+		v_batch_session_id, 'Batch B', 'Update voice', 'folder_patch',
+		null, null, '{}'::uuid[], array['identity/voice.md'], null,
+		'[{"op":"write_text","path":"identity/voice.md","content":"Calm voice\n"}]'::jsonb,
+		true
+	) ->> 'changeId')::uuid;
+	reset role;
+
+	perform pg_temp.sf_as(v_owner);
+	set local role authenticated;
+	perform public.qorpera_approve_session_all(v_batch_session_id);
+	reset role;
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_claimed := public.qorpera_surface_claim_pending_jobs(32);
+	reset role;
+	select (elem ->> 'jobId')::uuid, (elem ->> 'leaseToken')::uuid into v_batch_job_id, v_batch_lease
+	from jsonb_array_elements(v_claimed -> 'merges') elem
+	where elem ->> 'kind' = 'land_change' and elem ->> 'sessionId' = v_batch_session_id::text;
+	perform pg_temp.sf_assert(v_batch_job_id is not null, 'approve_session_all queued batch land_change job');
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	perform public.qorpera_surface_complete_merge(
+		v_batch_job_id,
+		'landed',
+		repeat('a', 64),
+		repeat('b', 64),
+		null,
+		null,
+		null,
+		jsonb_build_object(
+			'snapshotId', repeat('a', 64),
+			'folderRoot', 'identity',
+			'changeIds', jsonb_build_array(v_batch_c1::text, v_batch_c2::text),
+			'filesBefore', jsonb_build_object('identity/tokens.json', '{}', 'identity/voice.md', 'Old')
+		),
+		v_batch_lease
+	);
+	reset role;
+
+	perform pg_temp.sf_assert(
+		(select unpublished_change_count from public.qorpera_surfaces where id = v_folder_surface_id) = v_batch_unpub_before + 2,
+		'batch folder landing incremented unpublished_change_count by 2'
+	);
+
+	perform pg_temp.sf_as(v_owner);
+	set local role authenticated;
+	v_workspace := public.qorpera_get_surface_workspace(v_folder_surface_id);
+	reset role;
+	perform pg_temp.sf_assert(
+		exists (
+			select 1
+			from jsonb_array_elements(v_workspace -> 'recentHistory') sess,
+				jsonb_array_elements(sess -> 'changes') ch
+			where ch ->> 'id' = v_batch_c1::text and (ch ->> 'undoBatchSize')::integer = 2
+		),
+		'merged batch folder change exposes undoBatchSize = 2'
+	);
+
+	perform pg_temp.sf_as(v_owner);
+	set local role authenticated;
+	v_undone := public.qorpera_undo_surface_change(v_batch_c1);
+	reset role;
+	perform pg_temp.sf_assert(
+		(select status from public.qorpera_surface_changes where id = v_batch_c1) = 'staged'
+		and (select status from public.qorpera_surface_changes where id = v_batch_c2) = 'staged'
+		and (select unpublished_change_count from public.qorpera_surfaces where id = v_folder_surface_id) = v_batch_unpub_before,
+		'undoing one change in a folder batch resets every change in the batch and decrements unpublished_change_count by batch size'
+	);
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_claimed := public.qorpera_surface_claim_pending_jobs(32);
+	reset role;
+	select elem, (elem ->> 'jobId')::uuid, (elem ->> 'leaseToken')::uuid
+	into v_undo_job, v_batch_undo_job_id, v_batch_undo_lease
+	from jsonb_array_elements(v_claimed -> 'merges') elem
+	where elem ->> 'kind' = 'undo_change' and elem ->> 'sessionId' = v_batch_session_id::text;
+	perform pg_temp.sf_assert(
+		jsonb_array_length(v_undo_job -> 'payload' -> 'changeIds') = 2,
+		'folder batch undo_change payload carries all batch changeIds'
+	);
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	perform public.qorpera_surface_complete_merge(
+		v_batch_undo_job_id,
+		'conflicted',
+		null,
+		null,
+		v_batch_c1,
+		array['identity/tokens.json'],
+		'Conflicted paths: identity/tokens.json',
+		null,
+		v_batch_undo_lease
+	);
+	reset role;
+	perform pg_temp.sf_assert(
+		(select status from public.qorpera_surface_changes where id = v_batch_c1) = 'merged'
+		and (select status from public.qorpera_surface_changes where id = v_batch_c2) = 'merged'
+		and (select unpublished_change_count from public.qorpera_surfaces where id = v_folder_surface_id) = v_batch_unpub_before + 2,
+		'conflicted folder undo restores batch changes to merged and restores unpublished_change_count'
+	);
+
+	perform pg_temp.sf_as(v_owner);
+	set local role authenticated;
+	v_session := public.qorpera_start_surface_session(v_folder_surface_id, 'Capacity test', 'Release claim test', 'member', null, null, null, null, null);
+	reset role;
+	v_release_session_id := (v_session ->> 'id')::uuid;
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_claimed := public.qorpera_surface_claim_pending_jobs(32);
+	reset role;
+	select (elem ->> 'leaseToken')::uuid into v_release_lease
+	from jsonb_array_elements(v_claimed -> 'sessions') elem
+	where elem ->> 'sessionId' = v_release_session_id::text;
+	perform pg_temp.sf_assert(
+		v_release_lease is not null
+		and (select state from public.qorpera_surface_sessions where id = v_release_session_id) = 'running'
+		and (select retry_count from public.qorpera_surface_sessions where id = v_release_session_id) = 0,
+		'session claimed before release test'
+	);
+
+	v_errcode := null;
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	begin
+		perform public.qorpera_surface_release_session_claim(v_release_session_id, gen_random_uuid());
+	exception when others then
+		v_errcode := sqlstate;
+	end;
+	reset role;
+	perform pg_temp.sf_assert(v_errcode = '55000', 'release_session_claim rejects mismatched lease token');
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_released := public.qorpera_surface_release_session_claim(v_release_session_id, v_release_lease);
+	reset role;
+	perform pg_temp.sf_assert(
+		(v_released ->> 'released')::boolean = true
+		and (v_released ->> 'state') = 'queued'
+		and (select state from public.qorpera_surface_sessions where id = v_release_session_id) = 'queued'
+		and (select lease_token from public.qorpera_surface_sessions where id = v_release_session_id) is null
+		and (select lease_expires_at from public.qorpera_surface_sessions where id = v_release_session_id) is null
+		and (select retry_count from public.qorpera_surface_sessions where id = v_release_session_id) = 0,
+		'release_session_claim returns running session to queued without incrementing retry_count'
+	);
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_claimed2 := public.qorpera_surface_claim_pending_jobs(32);
+	reset role;
+	perform pg_temp.sf_assert(
+		exists (
+			select 1 from jsonb_array_elements(v_claimed2 -> 'sessions') elem
+			where elem ->> 'sessionId' = v_release_session_id::text
+		)
+		and (select retry_count from public.qorpera_surface_sessions where id = v_release_session_id) = 0,
+		'released session is immediately reclaimable with retry_count still 0'
+	);
 end $$;
 
 rollback;

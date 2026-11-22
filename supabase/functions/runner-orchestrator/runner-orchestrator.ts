@@ -173,6 +173,12 @@ export type RunnerOrchestratorRequest =
 			extendSeconds: number;
 	  }
 	| {
+			action: "surface_release_session_claim";
+			orchestratorId: string;
+			sessionId: string;
+			leaseToken: string;
+	  }
+	| {
 			action: "surface_complete_preview";
 			orchestratorId: string;
 			previewId: string;
@@ -507,6 +513,13 @@ export function parseRunnerOrchestratorRequest(value: unknown): RunnerOrchestrat
 				extendSeconds: input.extendSeconds === undefined ? 300 : seconds(input.extendSeconds, "surface lease seconds"),
 			};
 		}
+		case "surface_release_session_claim":
+			return {
+				action: input.action,
+				orchestratorId,
+				sessionId: uuid(input.sessionId, "surface session id"),
+				leaseToken: uuid(input.leaseToken, "surface lease token"),
+			};
 		case "surface_complete_preview": {
 			if (typeof input.status !== "string" || !SURFACE_PREVIEW_COMPLETION_STATUSES.has(input.status)) {
 				throw new Error("Invalid surface preview status");

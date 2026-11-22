@@ -167,7 +167,12 @@ export function createDefaultSurfaceWorkerConfig(
 
 export function createSurfaceWorkerLoop(
 	controlPlane: Pick<SupabaseCloudRunnerOrchestratorControlPlane, "claimSurfaceJobs"> &
-		Partial<Pick<SupabaseCloudRunnerOrchestratorControlPlane, "completeSurfaceSessionTurn" | "renewSurfaceLease">>,
+		Partial<
+			Pick<
+				SupabaseCloudRunnerOrchestratorControlPlane,
+				"completeSurfaceSessionTurn" | "renewSurfaceLease" | "releaseSurfaceSessionClaim"
+			>
+		>,
 	options: CloudRunnerOrchestratorSurfaceWorkerOptions,
 ): SurfaceWorkerLoop {
 	const reportSessionFailure = controlPlane.completeSurfaceSessionTurn
@@ -185,6 +190,10 @@ export function createSurfaceWorkerLoop(
 					signal,
 				);
 			}
+		: undefined;
+	const releaseSessionClaim = controlPlane.releaseSurfaceSessionClaim
+		? (input: { readonly sessionId: string; readonly leaseToken: string }, signal: AbortSignal) =>
+				controlPlane.releaseSurfaceSessionClaim!(input, signal)
 		: undefined;
 	const renewLease = controlPlane.renewSurfaceLease
 		? (
@@ -207,6 +216,7 @@ export function createSurfaceWorkerLoop(
 			...(options.runPublishJob ? { runPublishJob: options.runPublishJob } : {}),
 			...(options.runAutomationJob ? { runAutomationJob: options.runAutomationJob } : {}),
 			...(reportSessionFailure ? { reportSessionFailure } : {}),
+			...(releaseSessionClaim ? { releaseSessionClaim } : {}),
 			...(renewLease ? { renewLease } : {}),
 			...(options.onEvent ? { onEvent: options.onEvent } : {}),
 		},

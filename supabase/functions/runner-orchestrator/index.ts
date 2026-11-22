@@ -250,6 +250,13 @@ Deno.serve(async (request) => {
 				p_extend_seconds: action.extendSeconds,
 			};
 			break;
+		case "surface_release_session_claim":
+			rpc = "qorpera_surface_release_session_claim";
+			args = {
+				p_session_id: action.sessionId,
+				p_lease_token: action.leaseToken,
+			};
+			break;
 		case "surface_complete_preview":
 			rpc = "qorpera_surface_complete_preview";
 			args = {

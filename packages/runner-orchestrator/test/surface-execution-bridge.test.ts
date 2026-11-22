@@ -1676,4 +1676,202 @@ describe("surface execution bridge Company Folder studio patches and publishing"
 			expect.any(AbortSignal),
 		);
 	});
+
+	it("reverts every file touched by a multi-change approve-all folder batch on undo", async () => {
+		const mem = createInMemoryCompanyFolder({
+			"identity/tokens.json": '{"accent":"#111111"}\n',
+			"identity/voice.md": "Original voice\n",
+		});
+		const completeSurfaceMerge = vi.fn().mockResolvedValue(undefined);
+		const handlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview: vi.fn(),
+				completeSurfaceMerge,
+				completeSurfacePublish: vi.fn(),
+			},
+			folder: mem.folder,
+			completionRetryDelaysMs: [1, 1],
+		});
+
+		const surfaceId = randomUUID();
+		const profileId = randomUUID();
+		const sessionId = randomUUID();
+		const changeA = randomUUID();
+		const changeB = randomUUID();
+		const landJobId = randomUUID();
+
+		await handlers.runMergeJob(
+			{
+				jobId: landJobId,
+				surfaceId,
+				profileId,
+				sessionId,
+				kind: "land_change",
+				payload: {},
+				repositoryKey: null,
+				folderRoot: "identity",
+				sourceKind: "folder",
+				approvedChanges: [
+					{
+						changeId: changeA,
+						title: "Batch A tokens",
+						summary: "",
+						kind: "folder_patch",
+						parentSha: null,
+						headSha: null,
+						affectedPaths: ["identity/tokens.json"],
+						patchManifest: [{ op: "merge_json", path: "identity/tokens.json", patch: { accent: "#334455" } }],
+					},
+					{
+						changeId: changeB,
+						title: "Batch B voice",
+						summary: "",
+						kind: "folder_patch",
+						parentSha: null,
+						headSha: null,
+						affectedPaths: ["identity/voice.md"],
+						patchManifest: [{ op: "write_text", path: "identity/voice.md", content: "Updated voice\n" }],
+					},
+				],
+			},
+			new AbortController().signal,
+		);
+
+		const landed = completeSurfaceMerge.mock.calls[0]?.[0] as {
+			status: string;
+			mainBefore: string;
+			mainAfter: string;
+			preMergeSnapshot: Record<string, unknown>;
+		};
+		expect(landed.status).toBe("landed");
+		expect(landed.preMergeSnapshot.changeIds).toEqual([changeA, changeB]);
+		expect(mem.files.get("identity/voice.md")).toBe("Updated voice\n");
+
+		const undoJobId = randomUUID();
+		await handlers.runMergeJob(
+			{
+				jobId: undoJobId,
+				surfaceId,
+				profileId,
+				sessionId,
+				kind: "undo_change",
+				payload: {
+					changeId: changeA,
+					changeIds: [changeA, changeB],
+					landedMainBefore: landed.mainBefore,
+					landedMainAfter: landed.mainAfter,
+				},
+				repositoryKey: null,
+				folderRoot: "identity",
+				sourceKind: "folder",
+				preMergeSnapshot: landed.preMergeSnapshot,
+			},
+			new AbortController().signal,
+		);
+
+		expect(mem.files.get("identity/tokens.json")).toBe('{"accent":"#111111"}\n');
+		expect(mem.files.get("identity/tokens.css")).toBeUndefined();
+		expect(mem.files.get("identity/voice.md")).toBe("Original voice\n");
+		expect(completeSurfaceMerge).toHaveBeenLastCalledWith(
+			expect.objectContaining({ jobId: undoJobId, status: "landed", mainAfter: landed.mainBefore }),
+			expect.any(AbortSignal),
+		);
+	});
+
+	it("recovers idempotently on retry when a prior attempt committed files and crashed before completion", async () => {
+		const originalText = "Original brief\n";
+		const mem = createInMemoryCompanyFolder({ "identity/brief.md": originalText });
+		const snapshotStore = new InMemorySurfaceFolderSnapshotStore();
+		const surfaceId = randomUUID();
+		const profileId = randomUUID();
+		const sessionId = randomUUID();
+		const changeId = randomUUID();
+		const jobId = randomUUID();
+
+		const failingComplete = vi.fn().mockRejectedValue(new Error("Control plane outage"));
+		const firstHandlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview: vi.fn(),
+				completeSurfaceMerge: failingComplete,
+				completeSurfacePublish: vi.fn(),
+			},
+			folder: mem.folder,
+			folderSnapshots: snapshotStore,
+			completionRetryDelaysMs: [],
+		});
+		const landJob = {
+			jobId,
+			surfaceId,
+			profileId,
+			sessionId,
+			kind: "land_change" as const,
+			payload: {},
+			repositoryKey: null,
+			folderRoot: "identity",
+			sourceKind: "folder" as const,
+			approvedChanges: [
+				{
+					changeId,
+					title: "Update brief",
+					summary: "",
+					kind: "folder_patch" as const,
+					parentSha: null,
+					headSha: null,
+					affectedPaths: ["identity/brief.md"],
+					patchManifest: [{ op: "write_text", path: "identity/brief.md", content: "Updated brief\n" }],
+				},
+			],
+		};
+
+		await expect(firstHandlers.runMergeJob(landJob, new AbortController().signal)).rejects.toThrow(
+			"Control plane outage",
+		);
+		expect(mem.commitCalls).toHaveLength(1);
+		expect(mem.files.get("identity/brief.md")).toBe("Updated brief\n");
+
+		const secondComplete = vi.fn().mockResolvedValue(undefined);
+		const retryHandlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview: vi.fn(),
+				completeSurfaceMerge: secondComplete,
+				completeSurfacePublish: vi.fn(),
+			},
+			folder: mem.folder,
+			folderSnapshots: snapshotStore,
+			completionRetryDelaysMs: [1],
+		});
+		await retryHandlers.runMergeJob(landJob, new AbortController().signal);
+
+		expect(mem.commitCalls).toHaveLength(1);
+		const landed = secondComplete.mock.calls[0]?.[0] as {
+			status: string;
+			mainBefore: string;
+			mainAfter: string;
+			preMergeSnapshot: Record<string, unknown>;
+		};
+		expect(landed.status).toBe("landed");
+		expect(landed.mainBefore).not.toBe(landed.mainAfter);
+
+		const undoJobId = randomUUID();
+		await retryHandlers.runMergeJob(
+			{
+				jobId: undoJobId,
+				surfaceId,
+				profileId,
+				sessionId,
+				kind: "undo_change",
+				payload: {
+					changeId,
+					landedMainBefore: landed.mainBefore,
+					landedMainAfter: landed.mainAfter,
+				},
+				repositoryKey: null,
+				folderRoot: "identity",
+				sourceKind: "folder",
+				preMergeSnapshot: landed.preMergeSnapshot,
+			},
+			new AbortController().signal,
+		);
+		expect(mem.files.get("identity/brief.md")).toBe(originalText);
+	});
 });

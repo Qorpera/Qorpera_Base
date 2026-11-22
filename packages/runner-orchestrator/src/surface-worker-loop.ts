@@ -167,6 +167,10 @@ export interface SurfaceWorkerLoopPorts {
 		input: { readonly sessionId: string; readonly leaseToken?: string | null; readonly errorDetail: string },
 		signal: AbortSignal,
 	) => Promise<void>;
+	releaseSessionClaim?: (
+		input: { readonly sessionId: string; readonly leaseToken: string },
+		signal: AbortSignal,
+	) => Promise<unknown>;
 	renewLease?: (
 		input: {
 			readonly kind: "session" | "preview" | "job";
@@ -476,7 +480,30 @@ export class SurfaceWorkerLoop {
 		} catch (error) {
 			const isCapacityBusy =
 				typeof error === "object" && error !== null && (error as { status?: unknown }).status === 429;
-			if (!signal.aborted && !isCapacityBusy && this.#ports.reportSessionFailure) {
+			if (!signal.aborted && isCapacityBusy) {
+				if (this.#ports.releaseSessionClaim && session.leaseToken) {
+					try {
+						await this.#ports.releaseSessionClaim(
+							{ sessionId: session.sessionId, leaseToken: session.leaseToken },
+							signal,
+						);
+						this.#emit({
+							kind: "session_deferred",
+							sessionId: session.sessionId,
+							surfaceId: session.surfaceId,
+						});
+						return;
+					} catch (releaseError) {
+						this.#emit({
+							kind: "session_release_error",
+							sessionId: session.sessionId,
+							error: releaseError instanceof Error ? releaseError.message : String(releaseError),
+						});
+					}
+				}
+				throw error;
+			}
+			if (!signal.aborted && this.#ports.reportSessionFailure) {
 				const raw = error instanceof Error ? error.message : String(error);
 				const errorDetail = raw.replace(/\0/g, "").trim().slice(0, 1000).trim() || "Session dispatch failed";
 				try {

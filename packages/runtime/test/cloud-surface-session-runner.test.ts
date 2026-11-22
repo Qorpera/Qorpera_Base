@@ -884,4 +884,74 @@ describe("cloud surface session runner", () => {
 			},
 		]);
 	});
+
+	it("aborts the turn signal and skips completion when lease renewal reports renewed: false, and requires renewSessionLease on leased provider turns", async () => {
+		const sessionId = randomUUID();
+		const surfaceId = randomUUID();
+		const companyId = randomUUID();
+		const leaseToken = randomUUID();
+		let observedAbort = false;
+		const completeSessionTurn = vi.fn().mockResolvedValue(undefined);
+		const renewSessionLease = vi.fn().mockResolvedValue({ renewed: false });
+
+		const result = await runSurfaceSessionTurn(
+			{
+				sessionId,
+				surfaceId,
+				companyId,
+				surfaceSlug: "identity",
+				surfaceTitle: "Identity",
+				sourceKind: "folder",
+				folderRoot: "identity",
+				prompt: "Edit tokens",
+				leaseToken,
+			},
+			{
+				surfaceTools: { stageSurfacePatch: vi.fn() },
+				renewSessionLease,
+				leaseRenewIntervalMs: 12,
+				executeTurn: async ({ signal }) =>
+					new Promise((_, reject) => {
+						signal.addEventListener(
+							"abort",
+							() => {
+								observedAbort = true;
+								reject(signal.reason ?? new Error("aborted"));
+							},
+							{ once: true },
+						);
+					}),
+				completeSessionTurn,
+			},
+		);
+
+		expect(observedAbort).toBe(true);
+		expect(result.state).toBe("failed");
+		expect(result.error).toContain("lease lost");
+		expect(completeSessionTurn).not.toHaveBeenCalled();
+
+		const hook = createSurfaceSessionProviderHook({
+			resolveRunnerPorts: async () => ({
+				surfaceTools: { stageSurfacePatch: vi.fn() },
+				executeTurn: vi.fn(),
+				completeSessionTurn: vi.fn(),
+			}),
+		});
+		const unconfigured = await hook.runDeliveredSession(
+			{
+				sessionId,
+				surfaceId,
+				profileId: companyId,
+				surfaceSlug: "identity",
+				surfaceTitle: "Identity",
+				surfaceSourceKind: "folder",
+				folderRoot: "identity",
+				prompt: "Edit tokens",
+				leaseToken,
+			},
+			"machine-1",
+		);
+		expect(unconfigured.state).toBe("failed");
+		expect(unconfigured.error).toContain("renewSessionLease");
+	});
 });

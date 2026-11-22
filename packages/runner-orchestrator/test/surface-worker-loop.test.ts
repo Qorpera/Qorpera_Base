@@ -968,4 +968,60 @@ describe("SupabaseCloudRunnerOrchestratorControlPlane surface actions and servic
 			makePlane({ sponsor: { sponsorBindingId: randomUUID(), sponsorVersion: 0 } }).claimSurfaceJobs(4),
 		).rejects.toThrow("sponsor version");
 	});
+
+	it("releases the session claim without failing the session when provider dispatch returns HTTP 429", async () => {
+		const sessionId = randomUUID();
+		const surfaceId = randomUUID();
+		const profileId = randomUUID();
+		const machineId = randomUUID();
+		const leaseToken = randomUUID();
+		const events: Record<string, unknown>[] = [];
+		const releaseSessionClaim = vi.fn().mockResolvedValue({ sessionId, released: true, state: "queued" });
+		const reportSessionFailure = vi.fn().mockResolvedValue(undefined);
+
+		const loop = new SurfaceWorkerLoop({
+			claimPendingJobs: vi.fn().mockResolvedValue({
+				sessions: [
+					{
+						sessionId,
+						surfaceId,
+						profileId,
+						state: "queued",
+						prompt: "Update homepage",
+						originKind: "member",
+						originRef: null,
+						repositoryKey: "surfaces/website",
+						leaseToken,
+						placement: { strategy: "reuse_machine", machineId, activeTurns: 0, targetDensity: 6 },
+					},
+				],
+				previews: [],
+				merges: [],
+				publishes: [],
+			}),
+			spawnOverflowMachine: vi.fn(),
+			dispatchSessionTurn: vi
+				.fn()
+				.mockRejectedValue(Object.assign(new Error("Provider capacity reached"), { status: 429 })),
+			runPreviewJob: vi.fn(),
+			releaseSessionClaim,
+			reportSessionFailure,
+			onEvent: (event) => events.push(event),
+		});
+
+		await loop.tick(new AbortController().signal);
+		await loop.drain();
+
+		expect(releaseSessionClaim).toHaveBeenCalledExactlyOnceWith({ sessionId, leaseToken }, expect.any(AbortSignal));
+		expect(reportSessionFailure).not.toHaveBeenCalled();
+		expect(events).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					kind: "session_deferred",
+					sessionId,
+					surfaceId,
+				}),
+			]),
+		);
+	});
 });

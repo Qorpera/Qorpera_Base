@@ -444,18 +444,24 @@ export async function runSurfaceSessionTurn(
 	input: SurfaceSessionTurnInput,
 	ports: SurfaceSessionRunnerPorts,
 ): Promise<SurfaceSessionTurnRunResult> {
-	const signal = ports.signal ?? new AbortController().signal;
+	const callerSignal = ports.signal ?? new AbortController().signal;
+	const turnAbort = new AbortController();
+	const signal = turnAbort.signal;
 	const folderReader = ports.folder ?? ports.folderToolsContext?.folder;
 	let identityContext: SurfaceIdentityContext | null = null;
 	let sharedAssets: SurfaceSharedAssetsContext | null = null;
 
 	let leaseTimer: ReturnType<typeof setInterval> | undefined;
+	let leaseLost = false;
 	const leaseAbort = new AbortController();
-	const onSignalAbort = (): void => leaseAbort.abort(signal.reason);
-	if (signal.aborted) {
-		leaseAbort.abort(signal.reason);
+	const onCallerAbort = (): void => {
+		turnAbort.abort(callerSignal.reason);
+		leaseAbort.abort(callerSignal.reason);
+	};
+	if (callerSignal.aborted) {
+		onCallerAbort();
 	} else {
-		signal.addEventListener("abort", onSignalAbort, { once: true });
+		callerSignal.addEventListener("abort", onCallerAbort, { once: true });
 	}
 	if (input.leaseToken && ports.renewSessionLease) {
 		const renewSessionLease = ports.renewSessionLease;
@@ -469,7 +475,7 @@ export async function runSurfaceSessionTurn(
 			Math.min(900, Math.floor(ports.leaseExtendSeconds ?? DEFAULT_SESSION_LEASE_EXTEND_SECONDS)),
 		);
 		let inFlight = false;
-		// WHY: Keep the session lease alive for the full duration of long turns after the provider returns 202.
+		// WHY: Keep the session lease alive for long turns and abort immediately if another worker reclaims the lease.
 		leaseTimer = setInterval(() => {
 			if (inFlight || leaseAbort.signal.aborted) return;
 			inFlight = true;
@@ -484,6 +490,13 @@ export async function runSurfaceSessionTurn(
 						leaseAbort.signal,
 					),
 				)
+				.then((result) => {
+					if (result && result.renewed === false) {
+						leaseLost = true;
+						leaseAbort.abort(new Error("Surface session lease lost during execution"));
+						turnAbort.abort(new Error("Surface session lease lost during execution"));
+					}
+				})
 				.catch(() => undefined)
 				.finally(() => {
 					inFlight = false;
@@ -674,6 +687,9 @@ export async function runSurfaceSessionTurn(
 			}
 		}
 
+		if (leaseLost) {
+			throw new Error("Surface session lease lost during execution");
+		}
 		const state = outcome.state ?? (outcome.question ? "needs_input" : "ready");
 		const replyText = outcome.replyText?.trim() || null;
 		const question = outcome.question ?? null;
@@ -705,19 +721,21 @@ export async function runSurfaceSessionTurn(
 		};
 	} catch (error) {
 		const { errorMessage, replyText } = formatSessionFailure(error);
-		const completionSignal = signal.aborted ? new AbortController().signal : signal;
-		await ports.completeSessionTurn(
-			{
-				sessionId: input.sessionId,
-				state: "failed",
-				replyText,
-				question: null,
-				notePaths: null,
-				branchHeadSha: null,
-				...(input.leaseToken !== undefined ? { leaseToken: input.leaseToken } : {}),
-			},
-			completionSignal,
-		);
+		if (!leaseLost) {
+			const completionSignal = callerSignal.aborted ? new AbortController().signal : callerSignal;
+			await ports.completeSessionTurn(
+				{
+					sessionId: input.sessionId,
+					state: "failed",
+					replyText,
+					question: null,
+					notePaths: null,
+					branchHeadSha: null,
+					...(input.leaseToken !== undefined ? { leaseToken: input.leaseToken } : {}),
+				},
+				completionSignal,
+			);
+		}
 		return {
 			sessionId: input.sessionId,
 			sourceKind: input.sourceKind,
@@ -733,7 +751,7 @@ export async function runSurfaceSessionTurn(
 	} finally {
 		if (leaseTimer !== undefined) clearInterval(leaseTimer);
 		leaseAbort.abort();
-		signal.removeEventListener("abort", onSignalAbort);
+		callerSignal.removeEventListener("abort", onCallerAbort);
 	}
 }
 
@@ -783,6 +801,9 @@ export function createSurfaceSessionProviderHook(ports: SurfaceSessionProviderHo
 		const runSignal = signal ?? new AbortController().signal;
 		try {
 			const runnerPorts = await ports.resolveRunnerPorts(job, machineId, runSignal);
+			if (job.leaseToken && !runnerPorts.renewSessionLease) {
+				throw new Error("Surface session provider must wire renewSessionLease for leased turns");
+			}
 			const result = await runSurfaceSessionTurn(turnInput, {
 				...runnerPorts,
 				signal: runnerPorts.signal ?? runSignal,

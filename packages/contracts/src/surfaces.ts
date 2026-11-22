@@ -195,6 +195,7 @@ export interface SurfaceChangeUnit {
 	readonly conflictPaths: readonly string[] | null;
 	readonly landedChangeNumber: number | null;
 	readonly canUndo: boolean;
+	readonly undoBatchSize?: number;
 	readonly publishedAt?: string | null;
 	readonly approvedByUserId?: string | null;
 	readonly createdAt: string;
@@ -547,6 +548,9 @@ export function parseSurfaceChangeUnit(value: unknown, label = "change"): Surfac
 				? null
 				: parseInteger(raw.landedChangeNumber, `${label}.landedChangeNumber`, 1, 10_000_000),
 		canUndo: raw.canUndo,
+		...(raw.undoBatchSize !== undefined && raw.undoBatchSize !== null
+			? { undoBatchSize: parseInteger(raw.undoBatchSize, `${label}.undoBatchSize`, 1, 10_000) }
+			: {}),
 		...(publishedAt !== undefined ? { publishedAt } : {}),
 		...(approvedByUserId !== undefined ? { approvedByUserId } : {}),
 		createdAt: parseTimestamp(raw.createdAt, `${label}.createdAt`).text,

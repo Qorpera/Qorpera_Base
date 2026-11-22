@@ -301,6 +301,17 @@ export interface RenewSurfaceLeaseResult {
 	readonly leaseExpiresAt: string | null;
 }
 
+export interface ReleaseSurfaceSessionClaimInput {
+	readonly sessionId: string;
+	readonly leaseToken: string;
+}
+
+export interface ReleaseSurfaceSessionClaimResult {
+	readonly sessionId: string;
+	readonly released: boolean;
+	readonly state: "queued" | "reconciling";
+}
+
 export interface CompleteSurfacePreviewInput {
 	readonly previewId: string;
 	readonly status: "ready" | "conflicted" | "failed";
@@ -664,6 +675,12 @@ type CloudRunnerOrchestratorRequest =
 			id: string;
 			leaseToken: string;
 			extendSeconds: number;
+	  }
+	| {
+			action: "surface_release_session_claim";
+			orchestratorId: string;
+			sessionId: string;
+			leaseToken: string;
 	  }
 	| {
 			action: "surface_complete_preview";
@@ -1732,6 +1749,18 @@ function parseRenewSurfaceLeaseResult(value: unknown): RenewSurfaceLeaseResult {
 			? null
 			: responseTimestamp(input.leaseExpiresAt, "surface lease expiry");
 	return { renewed: input.renewed, leaseExpiresAt };
+}
+
+function parseReleaseSurfaceSessionClaimResult(value: unknown): ReleaseSurfaceSessionClaimResult {
+	const input = record(value, "surface session claim release");
+	const sessionId = responseUuid(input.sessionId, "surface session id");
+	if (typeof input.released !== "boolean") {
+		throw new Error("Runner orchestrator returned invalid surface session release flag");
+	}
+	if (input.state !== "queued" && input.state !== "reconciling") {
+		throw new Error("Runner orchestrator returned invalid surface session release state");
+	}
+	return { sessionId, released: input.released, state: input.state };
 }
 
 function parseCompleteSurfacePreviewResult(value: unknown): CompleteSurfacePreviewResult {
@@ -4098,6 +4127,25 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 					id: input.id,
 					leaseToken: input.leaseToken,
 					extendSeconds,
+				},
+				signal,
+			),
+		);
+	}
+
+	async releaseSurfaceSessionClaim(
+		input: ReleaseSurfaceSessionClaimInput,
+		signal?: AbortSignal,
+	): Promise<ReleaseSurfaceSessionClaimResult> {
+		requiredUuid(input.sessionId, "Surface session id");
+		requiredUuid(input.leaseToken, "Surface lease token");
+		return parseReleaseSurfaceSessionClaimResult(
+			await this.#request(
+				{
+					action: "surface_release_session_claim",
+					orchestratorId: this.#orchestratorId,
+					sessionId: input.sessionId,
+					leaseToken: input.leaseToken,
 				},
 				signal,
 			),

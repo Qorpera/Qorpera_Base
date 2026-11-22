@@ -458,6 +458,13 @@ language sql stable security definer set search_path = '' as $$
 					'conflictPaths', case when ch.conflict_paths is null then null else to_jsonb(ch.conflict_paths) end,
 					'landedChangeNumber', ch.landed_change_number,
 					'canUndo', (ch.status = 'merged' and ch.published_at is null and ch.resolved_at is not null),
+					'undoBatchSize', case
+						when ch.kind = 'folder_patch'
+							and ch.status = 'merged'
+							and jsonb_typeof(ch.pre_merge_snapshot -> 'changeIds') = 'array'
+						then greatest(1, jsonb_array_length(ch.pre_merge_snapshot -> 'changeIds'))
+						else 1
+					end,
 					'publishedAt', ch.published_at,
 					'approvedByUserId', ch.approved_by_user_id,
 					'createdAt', ch.created_at,
@@ -1577,6 +1584,9 @@ declare
 	v_session public.qorpera_surface_sessions%rowtype;
 	v_user_id uuid;
 	v_chosen_has_landed boolean := false;
+	v_undo_change_ids uuid[] := array[p_change_id];
+	v_batch_ids uuid[];
+	v_batch_published boolean := false;
 begin
 	select ch.session_id, ch.surface_id, ch.profile_id, s.exploration_id into v_lookup
 	from public.qorpera_surface_changes ch
@@ -1618,9 +1628,32 @@ begin
 	end if;
 
 	if v_change.status = 'merged' then
+		-- WHY: Folder batch landings share one pre_merge_snapshot; undoing any change in the batch must reset the whole batch atomically.
+		if v_change.kind = 'folder_patch'
+			and v_change.pre_merge_snapshot is not null
+			and jsonb_typeof(v_change.pre_merge_snapshot -> 'changeIds') = 'array' then
+			select coalesce(array_agg(ch.id order by ch.seq asc), array[p_change_id]),
+				coalesce(bool_or(ch.published_at is not null), false)
+			into v_batch_ids, v_batch_published
+			from public.qorpera_surface_changes ch
+			where ch.session_id = v_session.id
+				and ch.id in (
+					select x::uuid
+					from jsonb_array_elements_text(v_change.pre_merge_snapshot -> 'changeIds') as x
+				)
+				and (ch.id = p_change_id or ch.status = 'merged');
+
+			if v_batch_published then
+				raise exception 'Published change cannot be rolled back before release; start a new change instead' using errcode = '22023';
+			end if;
+			if cardinality(v_batch_ids) > 0 then
+				v_undo_change_ids := v_batch_ids;
+			end if;
+		end if;
+
 		update public.qorpera_surfaces
 		set
-			unpublished_change_count = greatest(0, unpublished_change_count - 1),
+			unpublished_change_count = greatest(0, unpublished_change_count - cardinality(v_undo_change_ids)),
 			updated_at = clock_timestamp()
 		where id = v_change.surface_id;
 
@@ -1633,6 +1666,7 @@ begin
 				v_change.profile_id, v_change.surface_id, v_change.session_id, 'undo_change',
 				jsonb_build_object(
 					'changeId', v_change.id,
+					'changeIds', to_jsonb(v_undo_change_ids),
 					'landedMainBefore', v_change.landed_main_before,
 					'landedMainAfter', v_change.landed_main_after
 				),
@@ -1643,7 +1677,7 @@ begin
 
 	update public.qorpera_surface_changes
 	set status = 'staged', resolved_at = null, approved_by_user_id = null, discarded_by_exploration = false
-	where id = p_change_id;
+	where id = any(v_undo_change_ids);
 
 	update public.qorpera_surface_sessions
 	set state = 'ready', closed_at = null, updated_at = clock_timestamp()
@@ -2192,6 +2226,38 @@ begin
 				if v_expired_job.session_id is not null then
 					perform public.qorpera_evaluate_surface_session_lifecycle(v_expired_job.session_id);
 				end if;
+			elsif v_expired_job.kind = 'undo_change' then
+				with restored as (
+					update public.qorpera_surface_changes
+					set status = 'merged', resolved_at = coalesce(resolved_at, v_now)
+					where (
+						(
+							jsonb_typeof(v_expired_job.payload -> 'changeIds') = 'array'
+							and id in (
+								select x::uuid
+								from jsonb_array_elements_text(v_expired_job.payload -> 'changeIds') as x
+							)
+						)
+						or (
+							jsonb_typeof(v_expired_job.payload -> 'changeIds') is distinct from 'array'
+							and v_expired_job.payload ? 'changeId'
+							and id = (v_expired_job.payload ->> 'changeId')::uuid
+						)
+					)
+						and surface_id = v_expired_job.surface_id
+						and status = 'staged'
+					returning id
+				)
+				update public.qorpera_surfaces
+				set
+					unpublished_change_count = unpublished_change_count + (select count(*) from restored),
+					updated_at = v_now
+				where id = v_expired_job.surface_id
+					and exists (select 1 from restored);
+
+				if v_expired_job.session_id is not null then
+					perform public.qorpera_evaluate_surface_session_lifecycle(v_expired_job.session_id);
+				end if;
 			elsif v_expired_job.kind = 'publish_surface' then
 				update public.qorpera_surfaces
 				set
@@ -2597,6 +2663,47 @@ revoke all on function public.qorpera_surface_renew_lease(text, uuid, uuid, inte
 grant execute on function public.qorpera_surface_renew_lease(text, uuid, uuid, integer)
 	to service_role;
 
+-- WHY: Returns a claimed session to queued/reconciling without spending retry_count when a provider rejects with HTTP 429 capacity backpressure.
+create function public.qorpera_surface_release_session_claim(
+	p_session_id uuid,
+	p_lease_token uuid
+)
+returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+	v_session public.qorpera_surface_sessions%rowtype;
+	v_next_state text;
+begin
+	if p_lease_token is null then
+		raise exception 'Lease token is required' using errcode = '22023';
+	end if;
+	select * into v_session from public.qorpera_surface_sessions where id = p_session_id for update;
+	if v_session.id is null then
+		raise exception 'Surface session not found' using errcode = 'P0002';
+	end if;
+	if v_session.state not in ('running', 'reconciling_running') then
+		raise exception 'Surface session is not running' using errcode = '55000';
+	end if;
+	if v_session.lease_token is not null and p_lease_token is distinct from v_session.lease_token then
+		raise exception 'Surface session lease mismatch' using errcode = '55000';
+	end if;
+
+	v_next_state := case when v_session.state = 'reconciling_running' then 'reconciling' else 'queued' end;
+	update public.qorpera_surface_sessions
+	set
+		state = v_next_state,
+		lease_token = null,
+		lease_expires_at = null,
+		updated_at = clock_timestamp()
+	where id = p_session_id;
+
+	return jsonb_build_object('sessionId', p_session_id, 'released', true, 'state', v_next_state);
+end $$;
+revoke all on function public.qorpera_surface_release_session_claim(uuid, uuid)
+	from public, anon, authenticated;
+grant execute on function public.qorpera_surface_release_session_claim(uuid, uuid)
+	to service_role;
+
 create function public.qorpera_surface_complete_session_turn(
 	p_session_id uuid,
 	p_state text,
@@ -2756,10 +2863,42 @@ begin
 		if v_job.session_id is not null then
 			perform public.qorpera_evaluate_surface_session_lifecycle(v_job.session_id);
 		end if;
-	elsif v_job.kind = 'undo_change' and p_status = 'landed' and p_main_after is not null then
-		update public.qorpera_surfaces
-		set live_head_sha = p_main_after, updated_at = clock_timestamp()
-		where id = v_job.surface_id;
+	elsif v_job.kind = 'undo_change' then
+		if p_status = 'landed' and p_main_after is not null then
+			update public.qorpera_surfaces
+			set live_head_sha = p_main_after, updated_at = clock_timestamp()
+			where id = v_job.surface_id;
+		elsif p_status in ('conflicted', 'failed') then
+			-- WHY: When an undo is refused or fails without modifying disk, keep the database merged status aligned with disk.
+			if jsonb_typeof(v_job.payload -> 'changeIds') = 'array' then
+				select coalesce(array_agg(x::uuid), '{}'::uuid[])
+				into v_change_ids
+				from jsonb_array_elements_text(v_job.payload -> 'changeIds') as x;
+			elsif v_job.payload ? 'changeId' then
+				v_change_ids := array[(v_job.payload ->> 'changeId')::uuid];
+			else
+				v_change_ids := '{}'::uuid[];
+			end if;
+
+			update public.qorpera_surface_changes
+			set status = 'merged', resolved_at = coalesce(resolved_at, clock_timestamp())
+			where id = any(v_change_ids)
+				and surface_id = v_job.surface_id
+				and status = 'staged';
+			get diagnostics v_merged_count = row_count;
+
+			if v_merged_count > 0 then
+				update public.qorpera_surfaces
+				set
+					unpublished_change_count = unpublished_change_count + v_merged_count,
+					updated_at = clock_timestamp()
+				where id = v_job.surface_id;
+			end if;
+
+			if v_job.session_id is not null then
+				perform public.qorpera_evaluate_surface_session_lifecycle(v_job.session_id);
+			end if;
+		end if;
 	end if;
 
 	update public.qorpera_surface_jobs

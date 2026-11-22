@@ -660,6 +660,7 @@ export class SurfacesStore {
 	#undoTimer: ReturnType<typeof setTimeout> | undefined;
 	#pollTimer: ReturnType<typeof setInterval> | undefined;
 	#hintTimer: ReturnType<typeof setTimeout> | undefined;
+	#retryLoadTimer: ReturnType<typeof setTimeout> | undefined;
 	#pendingHintFiles = false;
 	#undoSeq = 0;
 	#noteSeq = 0;
@@ -757,11 +758,13 @@ export class SurfacesStore {
 		if (this.#undoTimer) clearTimeout(this.#undoTimer);
 		if (this.#pollTimer) clearInterval(this.#pollTimer);
 		if (this.#hintTimer) clearTimeout(this.#hintTimer);
+		if (this.#retryLoadTimer) clearTimeout(this.#retryLoadTimer);
 		for (const timer of this.#localTimers) clearTimeout(timer);
 		this.#localTimers.clear();
 		this.#undoTimer = undefined;
 		this.#pollTimer = undefined;
 		this.#hintTimer = undefined;
+		this.#retryLoadTimer = undefined;
 		this.store.dispose();
 	}
 
@@ -810,12 +813,21 @@ export class SurfacesStore {
 				}
 			} catch (error) {
 				if (this.#options.signal.aborted) return;
-				this.store.set({
-					source: "disabled",
-					surfaces: [],
-					automations: [],
-					error: isMissingSurfaceRpcError(error) || isSurfacesDisabledError(error) ? undefined : describe(error),
-				});
+				if (isMissingSurfaceRpcError(error) || isSurfacesDisabledError(error)) {
+					this.store.set({ source: "disabled", surfaces: [], automations: [], error: undefined });
+					return;
+				}
+				// WHY: Keep loading on transient network errors so Surfaces do not stay hidden or redirect home for the rest of the session.
+				this.#loaded = undefined;
+				this.store.set({ source: "loading", error: describe(error) });
+				if (!this.#retryLoadTimer) {
+					this.#retryLoadTimer = setTimeout(() => {
+						this.#retryLoadTimer = undefined;
+						if (!this.#options.signal.aborted && this.state.source === "loading") {
+							void this.load();
+						}
+					}, POLL_MS);
+				}
 				return;
 			}
 		}
@@ -1494,6 +1506,10 @@ export class SurfacesStore {
 			if (this.#options.signal.aborted) return;
 			const reloadFiles = this.#pendingHintFiles;
 			this.#pendingHintFiles = false;
+			if (this.state.source === "loading" && !this.#loaded) {
+				void this.load();
+				return;
+			}
 			if (this.state.source === "cloud") {
 				void this.refreshSurfaces();
 				const client = this.#options.client;
@@ -2450,6 +2466,7 @@ export class SurfacesStore {
 		}
 		let restored: SurfaceSession | undefined;
 		for (const changeId of undo.changeIds) {
+			if (restored?.changes.find((item) => item.id === changeId)?.status === "staged") continue;
 			const next = await this.#run(`undo:${changeId}`, (client) => client.undoSurfaceChange(changeId));
 			if (!next) return false;
 			restored = next;
@@ -2545,6 +2562,7 @@ export class SurfacesStore {
 		}
 		let restored: SurfaceSession | undefined;
 		for (const change of undoable) {
+			if (restored?.changes.find((item) => item.id === change.id)?.status === "staged") continue;
 			const next = await this.#run(`undo:${change.id}`, (client) => client.undoSurfaceChange(change.id));
 			if (!next) return false;
 			restored = next;
