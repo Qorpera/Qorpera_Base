@@ -609,11 +609,29 @@ export class CompanyMail {
 						seen.add(item.thread);
 						threads.push(opened.has(item.thread) ? { ...item, unread: false } : item);
 					}
+					let preserveTail = false;
+					if (target > cap && pages === cap && next !== undefined && was?.status === "ready") {
+						let lastOverlap = -1;
+						for (let index = 0; index < was.threads.length; index++) {
+							if (seen.has(was.threads[index]!.thread)) lastOverlap = index;
+						}
+						if (lastOverlap >= 0) {
+							// WHY: Preserve threads loaded past MAX_REFRESH_LIST_PAGES when the refreshed head joins cleanly without resurrecting removed head items.
+							preserveTail = true;
+							for (const item of was.threads.slice(lastOverlap + 1)) {
+								if (seen.has(item.thread)) continue;
+								seen.add(item.thread);
+								threads.push(opened.has(item.thread) ? { ...item, unread: false } : item);
+							}
+						}
+					}
+					const finalNext = preserveTail ? was!.next : next;
+					const finalPages = preserveTail ? was!.pages : pages;
 					const older = was?.older === "loading" ? "loading" : "idle";
 					if (
 						was?.status === "ready" &&
-						was.pages === pages &&
-						sameMailCursor(was.next, next) &&
+						was.pages === finalPages &&
+						sameMailCursor(was.next, finalNext) &&
 						was.older === older &&
 						JSON.stringify(was.threads) === JSON.stringify(threads)
 					)
@@ -621,8 +639,8 @@ export class CompanyMail {
 					const list: MailList = {
 						request,
 						threads,
-						...(next ? { next } : {}),
-						pages,
+						...(finalNext ? { next: finalNext } : {}),
+						pages: finalPages,
 						status: "ready",
 						older,
 					};

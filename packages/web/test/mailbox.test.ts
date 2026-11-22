@@ -3435,6 +3435,7 @@ describe("Digital Post", () => {
 		let listCallCount = 0;
 		let threadCallCount = 0;
 		let msgSeq = 600;
+		let repeatListCursorMode = false;
 		let repeatCursorMode = false;
 		const mainThread = thread(1);
 		rpcMock.mockImplementation(async (name: string, args?: Record<string, unknown>, signal?: AbortSignal) => {
@@ -3443,9 +3444,10 @@ describe("Digital Post", () => {
 				listCallCount += 1;
 				const before = (args?.p_request as { before?: { lastAt: string; thread: string } } | undefined)?.before;
 				const idx = before ? Number(before.thread.slice("thread-".length)) + 1 : 1;
+				const nextIdx = repeatListCursorMode ? 1 : idx;
 				return {
 					threads: [summary(idx)],
-					nextBefore: { lastAt: at(idx), thread: thread(idx) },
+					nextBefore: { lastAt: at(nextIdx), thread: thread(nextIdx) },
 				};
 			}
 			if (name === "qorpera_member_mail_thread") {
@@ -3491,6 +3493,17 @@ describe("Digital Post", () => {
 		await vi.advanceTimersByTimeAsync(20_000);
 		expect(listCallCount).toBe(10);
 		expect(threadCallCount).toBe(10);
+		const listAfterPoll = controller.store.get().mail!.lists[listKey]!;
+		expect(listAfterPoll.pages).toBe(13);
+		expect(listAfterPoll.threads.map((item) => item.thread)).toEqual(
+			Array.from({ length: 13 }, (_, index) => thread(index + 1)),
+		);
+
+		repeatListCursorMode = true;
+		listCallCount = 0;
+		await vi.advanceTimersByTimeAsync(20_000);
+		expect(listCallCount).toBe(2);
+		repeatListCursorMode = false;
 
 		reader.olderMessages(mainThread);
 		await vi.advanceTimersByTimeAsync(1);

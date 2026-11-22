@@ -541,24 +541,57 @@ class DataListView {
 		if (ok && !read.stop.signal.aborted && !this.#lifetime.signal.aborted) void this.#watch(read);
 	}
 
-	#take(read: ListRead, pages: readonly CloudMemberDataPage[]): void {
+	#take(read: ListRead, pages: readonly CloudMemberDataPage[], preserveTail = false): void {
 		const [first] = pages;
 		if (!first) return;
 		read.moreAbort?.abort();
 		read.moreAbort = undefined;
 		read.loading = false;
 		read.failed = false;
+		const previousRows = read.rows;
+		const previousNext = read.next;
+		const previousMore = read.more;
+		const previousPages = read.pages;
+		const sameSchema =
+			preserveTail &&
+			first.key.length > 0 &&
+			read.columns.length === first.columns.length &&
+			read.columns.every((column, index) => column === first.columns[index]) &&
+			read.key.length === first.key.length &&
+			read.key.every((column, index) => column === first.key[index]);
 		read.columns = first.columns;
 		read.key = first.key;
-		read.rows = pages.flatMap((page) =>
+		const freshRows = pages.flatMap((page) =>
 			page.rows.filter(hasValues).map((row) => ({ values: row.values, seen: row.seen })),
 		);
-		const last = pages.at(-1);
-		read.next = last?.next;
-		read.more = last?.more ?? false;
+		let keptTail = false;
+		if (sameSchema) {
+			const seenKeys = new Set(freshRows.map((row) => keyOf(first.columns, first.key, row.values)));
+			let lastOverlap = -1;
+			for (let index = 0; index < previousRows.length; index++) {
+				if (seenKeys.has(keyOf(first.columns, first.key, previousRows[index]!.values))) lastOverlap = index;
+			}
+			if (lastOverlap >= 0) {
+				// WHY: Preserve rows loaded past MAX_WATCH_REFETCH_PAGES when the refreshed head joins cleanly without resurrecting deleted head rows.
+				keptTail = true;
+				const tail = previousRows
+					.slice(lastOverlap + 1)
+					.filter((row) => !seenKeys.has(keyOf(first.columns, first.key, row.values)));
+				read.rows = [...freshRows, ...tail];
+				read.next = previousNext;
+				read.more = previousMore;
+				read.pages = previousPages;
+			}
+		}
+		if (!keptTail) {
+			read.rows = freshRows;
+			const last = pages.at(-1);
+			read.next = last?.next;
+			read.more = last?.more ?? false;
+			read.pages = pages.length;
+		}
 		read.tooLarge = pages.some((page) => page.tooLarge === true);
 		read.etag = first.etag;
-		read.pages = pages.length;
 	}
 
 	async #more(read: ListRead): Promise<void> {
@@ -667,7 +700,8 @@ class DataListView {
 				break;
 			}
 		}
-		if (!signal.aborted) this.#take(read, pages);
+		const capped = read.pages > limit && pages.length === limit && next !== undefined;
+		if (!signal.aborted) this.#take(read, pages, capped);
 	}
 
 	#follow(read: ListRead): void {

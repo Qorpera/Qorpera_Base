@@ -970,9 +970,8 @@ describe("the page's words for values and refusals", () => {
 						watchResolves.push(resolve);
 					}),
 			);
-			let rowSeq = 1;
-			calls.rows.mockImplementation(async () => {
-				const n = rowSeq++;
+			calls.rows.mockImplementation(async (asked) => {
+				const n = asked.after ? Number(asked.after[0]) + 1 : 1;
 				return {
 					...repairs([[n, `Bike ${n}`, n * 10, true]], true),
 					next: [String(n)],
@@ -1004,8 +1003,8 @@ describe("the page's words for values and refusals", () => {
 					{
 						index: 0,
 						answer: {
-							...repairs([[100, "Fresh 100", 100, true]], true),
-							next: ["100"],
+							...repairs([[1, "Bike 1 Updated", 15, true]], true),
+							next: ["1"],
 							etag: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 						},
 					},
@@ -1013,7 +1012,30 @@ describe("the page's words for values and refusals", () => {
 			});
 			await vi.advanceTimersByTimeAsync(0);
 			expect(calls.rows).toHaveBeenCalledTimes(9);
-			expect(container.querySelectorAll("button.data-row")).toHaveLength(10);
+			expect(container.querySelectorAll("button.data-row")).toHaveLength(13);
+			expect(texts(container, "button.data-row .is-lead")).toContain("Bike 1 Updated");
+			expect(texts(container, "button.data-row .is-lead")).toContain("Bike 13");
+
+			await vi.advanceTimersByTimeAsync(500);
+			calls.rows.mockClear();
+			calls.rows.mockImplementation(async () => ({
+				...repairs([[2, "Bike 2 Loop", 20, true]], true),
+				next: ["1"],
+			}));
+			watchResolves.shift()?.({
+				changed: [
+					{
+						index: 0,
+						answer: {
+							...repairs([[1, "Bike 1 Loop", 15, true]], true),
+							next: ["1"],
+							etag: "dddddddddddddddddddddddddddddddd",
+						},
+					},
+				],
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(calls.rows).toHaveBeenCalledTimes(1);
 
 			await vi.advanceTimersByTimeAsync(500);
 			let againSignal: AbortSignal | undefined;
