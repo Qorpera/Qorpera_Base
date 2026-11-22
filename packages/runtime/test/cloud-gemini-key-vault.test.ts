@@ -1,9 +1,9 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
 	CloudGeminiKeyVault,
+	checkGeminiApiKey,
 	GeminiKeyInvalidError,
 	type GeminiKeyVaultAuthority,
-	checkGeminiApiKey,
 	geminiKeyHint,
 	geminiNeonSpendMicrodollars,
 	isGeminiApiKeyFormat,
@@ -41,7 +41,18 @@ function standIn(
 		apiKey: string,
 		signal: AbortSignal,
 	) => Promise<
-		{ readonly ok: true } | { readonly ok: false; readonly errorCode: "key_rejected" | "billing_required" | "quota_exhausted" | "model_unavailable" | "invalid_request" | "provider_outage" | "transport_unavailable" }
+		| { readonly ok: true }
+		| {
+				readonly ok: false;
+				readonly errorCode:
+					| "key_rejected"
+					| "billing_required"
+					| "quota_exhausted"
+					| "model_unavailable"
+					| "invalid_request"
+					| "provider_outage"
+					| "transport_unavailable";
+		  }
 	>,
 ) {
 	const keyring = new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) });
@@ -253,7 +264,10 @@ describe("Gemini Neon pricing and key formatting", () => {
 		});
 
 		const rejectedFetch = (async () =>
-			Response.json({ error: { status: "INVALID_ARGUMENT", details: [{ reason: "API_KEY_INVALID" }] } }, { status: 400 })) as typeof fetch;
+			Response.json(
+				{ error: { status: "INVALID_ARGUMENT", details: [{ reason: "API_KEY_INVALID" }] } },
+				{ status: 400 },
+			)) as typeof fetch;
 		expect(await checkGeminiApiKey(CANARY_KEY, AbortSignal.timeout(5_000), rejectedFetch)).toEqual({
 			ok: false,
 			errorCode: "key_rejected",

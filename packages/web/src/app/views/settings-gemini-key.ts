@@ -136,7 +136,10 @@ export class GeminiKeyView {
 		this.#status = undefined;
 		this.#draw();
 		try {
-			const next = await this.#client.save({ apiKey, defaultForChats: false, monthlyCapCents }, this.#lifetime.signal);
+			const next = await this.#client.save(
+				{ apiKey, defaultForChats: false, monthlyCapCents },
+				this.#lifetime.signal,
+			);
 			if (this.#lifetime.signal.aborted) return;
 			this.#state = next;
 			this.#keyDraft = "";
@@ -207,9 +210,7 @@ export class GeminiKeyView {
 			if (this.#lifetime.signal.aborted) return;
 			this.#state = result.state;
 			if (result.ok) {
-				this.#status = t(
-					"Key verified for Gemini 4 Neon. Google checks billing and credits when a reply runs.",
-				);
+				this.#status = t("Key verified for Gemini 4 Neon. Google checks billing and credits when a reply runs.");
 			}
 		} catch {
 			if (this.#lifetime.signal.aborted) return;
@@ -444,11 +445,9 @@ export class GeminiKeyView {
 		});
 
 		const checkButton = this.#client.check
-			? button(
-					this.#working === "check" ? t("Checking…") : t("Check key"),
-					() => void this.#checkKey(),
-					{ disabled: busy },
-				)
+			? button(this.#working === "check" ? t("Checking…") : t("Check key"), () => void this.#checkKey(), {
+					disabled: busy,
+				})
 			: null;
 		const replaceButton = button(
 			t("Replace key"),
@@ -481,7 +480,10 @@ export class GeminiKeyView {
 			? notice(
 					lastErrorCode === "key_rejected" || lastErrorCode === "billing_required" ? "danger" : "warn",
 					key.lastErrorAt
-						? t("{message} ({time})", { message: geminiErrorMessage(lastErrorCode), time: fmtTime(key.lastErrorAt) })
+						? t("{message} ({time})", {
+								message: geminiErrorMessage(lastErrorCode),
+								time: fmtTime(key.lastErrorAt),
+							})
 						: geminiErrorMessage(lastErrorCode),
 				)
 			: null;

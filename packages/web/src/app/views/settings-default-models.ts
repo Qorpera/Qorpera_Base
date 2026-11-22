@@ -258,9 +258,7 @@ export class DefaultModelsView {
 				const allowed = defaultModelEfforts(state, "coding", value);
 				const clamped = clampEffort(state.codingEffort, allowed);
 				void this.#save(
-					clamped !== state.codingEffort
-						? { codingModel: value, codingEffort: clamped }
-						: { codingModel: value },
+					clamped !== state.codingEffort ? { codingModel: value, codingEffort: clamped } : { codingModel: value },
 				);
 			},
 		);

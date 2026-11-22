@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CLOUD_AGENT_NO_FINAL_SEND_CODE, CloudAgentNoFinalSend } from "../src/cloud-agent-mouth.ts";
-import {
-	GeminiCapReachedError,
-	GeminiKeyRevokedError,
-	GeminiProviderError,
-} from "../src/cloud-gemini-tool-session.ts";
+import { GeminiCapReachedError, GeminiKeyRevokedError, GeminiProviderError } from "../src/cloud-gemini-tool-session.ts";
 import { tagNativeRuntimeFailure } from "../src/cloud-native-failure.ts";
 import { nativeProviderFailureCode } from "../src/cloud-native-provider-service.ts";
 import {
@@ -117,9 +113,9 @@ describe("the fixed code a failed native execution carries back", () => {
 				new GeminiProviderError("quota_exhausted", 429, "RESOURCE_EXHAUSTED", "Quota exhausted"),
 			),
 		).toBe("GEMINI_API:QUOTA_EXHAUSTED");
-		expect(
-			nativeProviderFailureCode(new GeminiProviderError("provider_outage", 503, "UNAVAILABLE", "Outage")),
-		).toBe("GEMINI_API:PROVIDER_OUTAGE");
+		expect(nativeProviderFailureCode(new GeminiProviderError("provider_outage", 503, "UNAVAILABLE", "Outage"))).toBe(
+			"GEMINI_API:PROVIDER_OUTAGE",
+		);
 		expect(
 			nativeProviderFailureCode(new GeminiProviderError("invalid_request", 400, "INVALID_ARGUMENT", "Bad request")),
 		).toBe("GEMINI_API:REQUEST_REJECTED");

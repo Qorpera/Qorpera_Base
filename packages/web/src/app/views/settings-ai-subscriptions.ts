@@ -89,9 +89,7 @@ export class AccountSubscriptionsView {
 			}
 			if (signal.aborted) return;
 			if (!usable) continue;
-			this.#defaultModels = company.defaultModels
-				? new DefaultModelsView(company.defaultModels, signal)
-				: undefined;
+			this.#defaultModels = company.defaultModels ? new DefaultModelsView(company.defaultModels, signal) : undefined;
 			const refreshDefaults = () => void this.#defaultModels?.refresh();
 			this.#connections = new ConnectionsView(
 				company.client,

@@ -434,7 +434,13 @@ async function generateGeminiContent(options: {
 	const observation = options.observability?.start("model_request");
 	let recorded = false;
 	const failObservation = (
-		errorCategory: "authority_unavailable" | "budget_exhausted" | "provider_failed" | "transport_unavailable" | "timeout" | "cancelled",
+		errorCategory:
+			| "authority_unavailable"
+			| "budget_exhausted"
+			| "provider_failed"
+			| "transport_unavailable"
+			| "timeout"
+			| "cancelled",
 	): void => {
 		if (recorded) return;
 		recorded = true;
@@ -559,9 +565,15 @@ async function generateGeminiContent(options: {
 							} else {
 								failObservation("transport_unavailable");
 								throw tagNativeRuntimeFailure(
-									new GeminiProviderError("transport_unavailable", null, null, "Could not reach the Gemini API", {
-										cause: error,
-									}),
+									new GeminiProviderError(
+										"transport_unavailable",
+										null,
+										null,
+										"Could not reach the Gemini API",
+										{
+											cause: error,
+										},
+									),
 									"native-tools",
 									"transport_unavailable",
 								);
@@ -594,7 +606,11 @@ async function generateGeminiContent(options: {
 			}
 			if (!isPlainObject(parsed)) {
 				failObservation("provider_failed");
-				throw tagNativeRuntimeFailure(new Error("Gemini API response is invalid"), "native-tools", "provider_failed");
+				throw tagNativeRuntimeFailure(
+					new Error("Gemini API response is invalid"),
+					"native-tools",
+					"provider_failed",
+				);
 			}
 			const candidates = Array.isArray(parsed.candidates) ? parsed.candidates : [];
 			const first = isPlainObject(candidates[0]) ? candidates[0] : undefined;

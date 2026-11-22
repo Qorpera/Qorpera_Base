@@ -1329,7 +1329,10 @@ export class ConnectionsView {
 			if (credits.balance !== undefined) {
 				remainingPercent = Math.max(0, Math.min(100, Math.round((credits.balance / credits.limit) * 100)));
 			} else if (credits.used !== undefined) {
-				remainingPercent = Math.max(0, Math.min(100, Math.round(((credits.limit - credits.used) / credits.limit) * 100)));
+				remainingPercent = Math.max(
+					0,
+					Math.min(100, Math.round(((credits.limit - credits.used) / credits.limit) * 100)),
+				);
 			}
 		}
 		const fill = remainingPercent !== undefined ? h("span") : null;
