@@ -218,13 +218,11 @@ export const SURFACES: Record<string, string> = {
 	"Design System": "Designsystem",
 	Philosophy: "Filosofi",
 	"Voice & Files": "Stemme og filer",
-	"Shapes these interfaces": "Former disse flader",
+	"Used by": "Bruges af",
 	"Live-linked via Company Files": "Live-forbundet via Virksomhedsfiler",
 	Inherits: "Arver",
 	Feeds: "Føder",
 	"{count} CSS vars": "{count} CSS-variabler",
-	"Design tokens, voice rules, and philosophy live here and flow into every surface below.":
-		"Designtokens, stemmeregler og filosofi bor her og flyder ud i alle flader herunder.",
 	"Product Studio": "Produktstudie",
 	"Custom Surface": "Egen surface",
 	"Anything else: an inventory tracker, investor room, support desk…":
