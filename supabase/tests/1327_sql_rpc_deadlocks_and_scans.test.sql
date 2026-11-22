@@ -137,7 +137,7 @@ begin
 		'13270000-0000-4000-8000-000000000077', 1, 'routine', 'company-file', 'file-change',
 		'file:' || g || ':1', clock_timestamp(), clock_timestamp(),
 		case when g = 1 then '{"folded":[{"seq":1}]}'::jsonb else '{}'::jsonb end
-	from generate_series(1, 200) g;
+	from generate_series(1, 2000) g;
 	analyze public.qorpera_wake_occurrences;
 
 	set local enable_bitmapscan = on;
