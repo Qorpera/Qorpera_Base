@@ -236,6 +236,7 @@ if (process.argv[2] === "migrate") {
 			});
 	}, 15_000);
 	let stopping = false;
+	const shutdown = new AbortController();
 	// The connection-file writer's own loop: one drain at a time (its worker id holds at most one claim), at most ten
 	// files and 60 s per tick, so it never holds up the gateway's other maintenance.
 	let writing = false;
@@ -243,9 +244,9 @@ if (process.argv[2] === "migrate") {
 		if (!connectionFiles || writing || stopping) return;
 		writing = true;
 		try {
-			await withAbortScopes([], (signal) => connectionFiles.writeDue(10, signal), 60_000);
+			await withAbortScopes([shutdown.signal], (signal) => connectionFiles.writeDue(10, signal), 60_000);
 		} catch {
-			process.stderr.write("Connection file writer requires operator attention\n");
+			if (!shutdown.signal.aborted) process.stderr.write("Connection file writer requires operator attention\n");
 		} finally {
 			writing = false;
 		}
@@ -260,9 +261,9 @@ if (process.argv[2] === "migrate") {
 		if (!codingResults || writingResults || stopping) return;
 		writingResults = true;
 		try {
-			await withAbortScopes([], (signal) => codingResults.writeDue(10, signal), 30_000);
+			await withAbortScopes([shutdown.signal], (signal) => codingResults.writeDue(10, signal), 30_000);
 		} catch {
-			process.stderr.write("Coding results writer requires operator attention\n");
+			if (!shutdown.signal.aborted) process.stderr.write("Coding results writer requires operator attention\n");
 		} finally {
 			writingResults = false;
 		}
@@ -277,9 +278,9 @@ if (process.argv[2] === "migrate") {
 		if (!bankSummaries || writingSummaries || stopping) return;
 		writingSummaries = true;
 		try {
-			await withAbortScopes([], (signal) => bankSummaries.writeDue(10, signal), 60_000);
+			await withAbortScopes([shutdown.signal], (signal) => bankSummaries.writeDue(10, signal), 60_000);
 		} catch {
-			process.stderr.write("Bank summary writer requires operator attention\n");
+			if (!shutdown.signal.aborted) process.stderr.write("Bank summary writer requires operator attention\n");
 		} finally {
 			writingSummaries = false;
 		}
@@ -294,9 +295,9 @@ if (process.argv[2] === "migrate") {
 		if (!digitalPostLetters || writingLetters || stopping) return;
 		writingLetters = true;
 		try {
-			await withAbortScopes([], (signal) => digitalPostLetters.writeDue(5, signal), 120_000);
+			await withAbortScopes([shutdown.signal], (signal) => digitalPostLetters.writeDue(5, signal), 120_000);
 		} catch {
-			process.stderr.write("Digital Post letter writer requires operator attention\n");
+			if (!shutdown.signal.aborted) process.stderr.write("Digital Post letter writer requires operator attention\n");
 		} finally {
 			writingLetters = false;
 		}
@@ -311,9 +312,9 @@ if (process.argv[2] === "migrate") {
 		if (!memoryErase || erasing || stopping) return;
 		erasing = true;
 		try {
-			await withAbortScopes([], (signal) => memoryErase.eraseDue(10, signal), 30_000);
+			await withAbortScopes([shutdown.signal], (signal) => memoryErase.eraseDue(10, signal), 30_000);
 		} catch {
-			process.stderr.write("Memory message eraser requires operator attention\n");
+			if (!shutdown.signal.aborted) process.stderr.write("Memory message eraser requires operator attention\n");
 		} finally {
 			erasing = false;
 		}
@@ -327,9 +328,9 @@ if (process.argv[2] === "migrate") {
 		if (!companyCreation || creating || stopping) return;
 		creating = true;
 		try {
-			await withAbortScopes([], (signal) => companyCreation.createDue(5, signal), 120_000);
+			await withAbortScopes([shutdown.signal], (signal) => companyCreation.createDue(5, signal), 120_000);
 		} catch {
-			process.stderr.write("Company creation worker requires operator attention\n");
+			if (!shutdown.signal.aborted) process.stderr.write("Company creation worker requires operator attention\n");
 		} finally {
 			creating = false;
 		}
@@ -343,8 +344,11 @@ if (process.argv[2] === "migrate") {
 
 	for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		process.on(signal, () => {
-			triggerReconcile = undefined;
+			// WHY: Ignore duplicate shutdown signals so server.close() is invoked once and abort in-flight background writer loops immediately.
+			if (stopping) return;
 			stopping = true;
+			triggerReconcile = undefined;
+			shutdown.abort();
 			maintenance.stop();
 			clearInterval(storedLineWrites);
 			clearInterval(connectionFileWrites);

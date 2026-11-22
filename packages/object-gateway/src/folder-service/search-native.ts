@@ -10,6 +10,7 @@ import { byteOrder, type TreeDelta, type TreeEntry, type ViewTree } from "./view
 const DEFAULT_INDEX_MIB = 512;
 const DEFAULT_THREADS = 4;
 const DEFAULT_BUDGET_WAIT_MS = 20_000;
+const DEFAULT_FRAME_TIMEOUT_MS = 60_000;
 const TREE_BUDGET_RATIO = 0.65;
 const COMPACT_ENTRY_BYTES = 112;
 const ESTIMATE_ENTRY_BYTES = COMPACT_ENTRY_BYTES + 80;
@@ -124,6 +125,12 @@ class MissingTreeError extends Error {
 interface PendingCall {
 	readonly resolve: (resp: WorkerResponse) => void;
 	readonly reject: (error: Error) => void;
+	readonly timer: ReturnType<typeof setTimeout>;
+}
+
+interface InFlightSync {
+	readonly promise: Promise<SyncedTreeSnapshot>;
+	readonly isLeaderServingError: () => boolean;
 }
 
 interface BudgetWaiter {
@@ -158,6 +165,7 @@ export interface NativeSearchWorkerOptions {
 	readonly indexMiB?: number;
 	readonly threads?: number;
 	readonly budgetWaitMs?: number;
+	readonly frameTimeoutMs?: number;
 	readonly log?: (line: string) => void;
 }
 
@@ -371,6 +379,7 @@ export class NativeSearchWorker {
 	readonly #treeBudgetBytes: number;
 	readonly #threads: number;
 	readonly #budgetWaitMs: number;
+	readonly #frameTimeoutMs: number | undefined;
 	readonly #log: ((line: string) => void) | undefined;
 	#proc: ChildProcessWithoutNullStreams | undefined;
 	#generation = 0;
@@ -382,7 +391,7 @@ export class NativeSearchWorker {
 	readonly #pending = new Map<number, PendingCall>();
 	readonly #snapshots = new WeakMap<ViewTree, SyncedTreeSnapshot>();
 	readonly #liveSnapshots = new Map<number, SyncedTreeSnapshot>();
-	readonly #inFlight = new WeakMap<ViewTree, Promise<SyncedTreeSnapshot>>();
+	readonly #inFlight = new WeakMap<ViewTree, InFlightSync>();
 	readonly #budgetWaiters: BudgetWaiter[] = [];
 	readonly #finalizer: FinalizationRegistry<{ readonly generation: number; readonly snapshotId: number }>;
 	#chunks: Buffer[] = [];
@@ -398,6 +407,7 @@ export class NativeSearchWorker {
 		this.#treeBudgetBytes = Math.max(64 * 1024, Math.floor(this.#indexMiB * 1024 * 1024 * TREE_BUDGET_RATIO));
 		this.#threads = options.threads ?? DEFAULT_THREADS;
 		this.#budgetWaitMs = Math.max(1, options.budgetWaitMs ?? DEFAULT_BUDGET_WAIT_MS);
+		this.#frameTimeoutMs = options.frameTimeoutMs === undefined ? undefined : Math.max(1, options.frameTimeoutMs);
 		this.#log = options.log;
 		this.#finalizer = new FinalizationRegistry(({ generation, snapshotId }) => {
 			if (this.#closed || !this.#proc || this.#generation !== generation) return;
@@ -449,7 +459,7 @@ export class NativeSearchWorker {
 			const inflight = this.#inFlight.get(tree);
 			if (inflight) {
 				try {
-					const synced = await inflight;
+					const synced = await inflight.promise;
 					if (
 						synced.generation === this.#generation &&
 						synced.snapshotId !== missedSnapshotId &&
@@ -461,12 +471,35 @@ export class NativeSearchWorker {
 						return synced;
 					}
 				} catch (error) {
+					if (this.#inFlight.get(tree) === inflight) this.#inFlight.delete(tree);
+					if (this.#closed) throw error;
+					// WHY: Retry when a coalesced leader failed due to its own departure or earlier budget deadline while this caller is still healthy.
+					const leaderExpiredBudget =
+						error instanceof ProtocolError &&
+						error.code === ErrorCode.unavailable &&
+						performance.now() < waitDeadline;
+					if (inflight.isLeaderServingError() || leaderExpiredBudget) {
+						serving?.();
+						continue;
+					}
 					if (!(error instanceof MissingTreeError)) throw error;
 				}
 				continue;
 			}
-			const promise = this.#syncOrPatch(tree, generation, current, missedSnapshotId, serving, waitDeadline);
-			this.#inFlight.set(tree, promise);
+			let leaderServingFailed = false;
+			const guardedServing = serving
+				? () => {
+						try {
+							serving();
+						} catch (error) {
+							leaderServingFailed = true;
+							throw error;
+						}
+					}
+				: undefined;
+			const promise = this.#syncOrPatch(tree, generation, current, missedSnapshotId, guardedServing, waitDeadline);
+			const entry: InFlightSync = { promise, isLeaderServingError: () => leaderServingFailed };
+			this.#inFlight.set(tree, entry);
 			try {
 				const synced = await promise;
 				if (
@@ -482,7 +515,7 @@ export class NativeSearchWorker {
 			} catch (error) {
 				if (!(error instanceof MissingTreeError)) throw error;
 			} finally {
-				if (this.#inFlight.get(tree) === promise) this.#inFlight.delete(tree);
+				if (this.#inFlight.get(tree) === entry) this.#inFlight.delete(tree);
 			}
 		}
 		throw new ObjectUnavailableError("Search snapshot could not be synchronized");
@@ -525,7 +558,10 @@ export class NativeSearchWorker {
 		this.#liveTreeBytes = 0;
 		this.#reservedTreeBytes = 0;
 		const closedError = new ObjectUnavailableError("Search worker is closed");
-		for (const call of this.#pending.values()) call.reject(closedError);
+		for (const call of this.#pending.values()) {
+			clearTimeout(call.timer);
+			call.reject(closedError);
+		}
 		this.#pending.clear();
 		while (this.#budgetWaiters.length > 0) {
 			this.#budgetWaiters.shift()!.reject(closedError);
@@ -913,8 +949,20 @@ export class NativeSearchWorker {
 		}
 		const header = Buffer.allocUnsafe(4);
 		header.writeUInt32BE(payload.byteLength, 0);
+		const timeoutMs =
+			this.#frameTimeoutMs ??
+			Math.max(
+				DEFAULT_FRAME_TIMEOUT_MS,
+				request.op === "search" ? request.sliceMs + 15_000 : DEFAULT_FRAME_TIMEOUT_MS,
+			);
 		return new Promise<WorkerResponse>((resolve, reject) => {
-			this.#pending.set(id, { resolve, reject });
+			// WHY: Bound worker frame responses so a wedged child process cannot pin active snapshots and search slots forever.
+			const timer = setTimeout(() => {
+				if (!this.#pending.has(id)) return;
+				this.#failProc(proc, new ObjectUnavailableError("Search worker timed out waiting for response"));
+			}, timeoutMs);
+			timer.unref();
+			this.#pending.set(id, { resolve, reject, timer });
 			try {
 				proc.stdin.write(header);
 				proc.stdin.write(payload);
@@ -1012,6 +1060,7 @@ export class NativeSearchWorker {
 			const pending = this.#pending.get(parsed.id);
 			if (!pending) continue;
 			this.#pending.delete(parsed.id);
+			clearTimeout(pending.timer);
 			if (parsed.error) {
 				if (parsed.error.kind === "pattern") pending.reject(new SearchPatternError(parsed.error.message));
 				else if (parsed.error.kind === "missing_tree") pending.reject(new MissingTreeError());
@@ -1043,7 +1092,10 @@ export class NativeSearchWorker {
 			const suffix = detail.length > 0 ? ` (${detail.split("\n")[0]})` : "";
 			this.#log?.(`folder-service: ${error.message}${suffix}`);
 		}
-		for (const call of this.#pending.values()) call.reject(error);
+		for (const call of this.#pending.values()) {
+			clearTimeout(call.timer);
+			call.reject(error);
+		}
 		this.#pending.clear();
 		this.#drainBudgetWaiters();
 		this.#terminate(proc, false);
