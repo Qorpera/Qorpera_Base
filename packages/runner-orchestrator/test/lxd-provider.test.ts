@@ -2903,11 +2903,11 @@ describe("LXD cloud runner provider", () => {
 		expect(rawEnvironment).toContain("QORPERA_SURFACE_FIRST=1\n");
 		const parsedBootstrap = parseLxdRunnerBootstrapConfig(JSON.parse(rawBootstrap));
 		expect(parsedBootstrap.companyRuntime?.surfaceFirst).toBe(true);
-		const runnerConfig = JSON.parse(rawRunnerConfig) as { supabase_url: string; native_bridge_url: string };
+		const runnerConfig = JSON.parse(rawRunnerConfig) as { base_url: string; native_bridge_url: string };
 		expect(() =>
 			validateNativeProviderEnvironment(
 				rawEnvironment,
-				runnerConfig.supabase_url,
+				runnerConfig.base_url,
 				runnerConfig.native_bridge_url,
 				parsedBootstrap.computeIdentityId,
 				undefined,
