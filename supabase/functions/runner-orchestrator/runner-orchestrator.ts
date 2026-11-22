@@ -1,7 +1,16 @@
+import { DEFAULT_BODY_READ_TIMEOUT_MS, readBoundedText } from "../_shared/http-guards.ts";
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_BODY_BYTES = 128 * 1024;
+const SURFACE_PREVIEW_COMPLETION_STATUSES = new Set(["ready", "conflicted", "failed"]);
+const SURFACE_SESSION_COMPLETION_STATES = new Set(["needs_input", "ready", "completed", "failed"]);
+const SURFACE_MERGE_COMPLETION_STATUSES = new Set(["landed", "conflicted", "failed"]);
+const SURFACE_PUBLISH_COMPLETION_STATUSES = new Set(["published", "failed"]);
+const SURFACE_LEASE_KINDS = new Set(["session", "preview", "job"]);
+const SURFACE_CLAIM_LANES = new Set(["all", "sessions", "folder", "code_repo"]);
+const GIT_SHA_PATTERN = /^[0-9a-f]{40}$/;
 
 /** The per-company folder drains (folder core C4, P29: deploy/first-node/RUNTIME-COMPANY-FOLDER-LISTENER.md §9): each name
  * the orchestrator may ask for, its due list's and one company's RPC (`(p_after_environment uuid, p_limit integer)` and
@@ -153,6 +162,91 @@ export type RunnerOrchestratorRequest =
 			claimId: string;
 			clientAssignmentId: string;
 			error: string;
+	  }
+	| {
+			action: "surface_claim_jobs";
+			orchestratorId: string;
+			limit: number;
+			lane?: "all" | "sessions" | "folder" | "code_repo";
+	  }
+	| {
+			action: "surface_enqueue_session_run";
+			orchestratorId: string;
+			sessionId: string;
+			leaseToken: string;
+	  }
+	| {
+			action: "surface_trigger_automation";
+			orchestratorId: string;
+			automationId: string;
+	  }
+	| {
+			action: "surface_update_rebased_changes";
+			orchestratorId: string;
+			surfaceId: string;
+			sessionId: string;
+			branchHeadSha?: string;
+			rebasedChanges?: { changeId: string; parentSha: string; headSha: string }[];
+			conflictedChangeId?: string;
+			conflictPaths?: string[];
+	  }
+	| {
+			action: "surface_renew_lease";
+			orchestratorId: string;
+			kind: "session" | "preview" | "job";
+			id: string;
+			leaseToken: string;
+			extendSeconds: number;
+	  }
+	| {
+			action: "surface_release_session_claim";
+			orchestratorId: string;
+			sessionId: string;
+			leaseToken: string;
+	  }
+	| {
+			action: "surface_complete_preview";
+			orchestratorId: string;
+			previewId: string;
+			status: "ready" | "conflicted" | "failed";
+			compositeTreeSha?: string;
+			siteVersionId?: string;
+			conflictReport?: Record<string, unknown>;
+			errorDetail?: string;
+			leaseToken?: string;
+	  }
+	| {
+			action: "surface_complete_session_turn";
+			orchestratorId: string;
+			sessionId: string;
+			state: "needs_input" | "ready" | "completed" | "failed";
+			replyText?: string;
+			question?: Record<string, unknown>;
+			notePaths?: string[];
+			branchHeadSha?: string;
+			leaseToken?: string;
+	  }
+	| {
+			action: "surface_complete_merge";
+			orchestratorId: string;
+			jobId: string;
+			status: "landed" | "conflicted" | "failed";
+			mainBefore?: string;
+			mainAfter?: string;
+			conflictChangeId?: string;
+			conflictPaths?: string[];
+			errorDetail?: string;
+			preMergeSnapshot?: Record<string, unknown>;
+			leaseToken?: string;
+	  }
+	| {
+			action: "surface_complete_publish";
+			orchestratorId: string;
+			jobId: string;
+			status: "published" | "failed";
+			publishedHeadSha?: string;
+			errorDetail?: string;
+			leaseToken?: string;
 	  };
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -192,6 +286,39 @@ function text(value: unknown, label: string, maximumBytes: number): string {
 		new TextEncoder().encode(value).byteLength > maximumBytes ||
 		/[\0\r\n]/.test(value)
 	) {
+		throw new Error(`Invalid ${label}`);
+	}
+	return value;
+}
+
+function errorDetail(value: unknown, label: string): string {
+	if (
+		typeof value !== "string" ||
+		value !== value.trim() ||
+		value.length < 1 ||
+		value.length > 1000 ||
+		value.includes("\0")
+	) {
+		throw new Error(`Invalid ${label}`);
+	}
+	return value;
+}
+
+function boundedRecord(value: unknown, label: string, maximumBytes: number): Record<string, unknown> {
+	const parsed = record(value, label);
+	if (new TextEncoder().encode(JSON.stringify(parsed)).byteLength > maximumBytes) {
+		throw new Error(`Invalid ${label}`);
+	}
+	return parsed;
+}
+
+function textArray(value: unknown, label: string, maximumItems: number, maximumBytes: number): string[] {
+	if (!Array.isArray(value) || value.length > maximumItems) throw new Error(`Invalid ${label}`);
+	return value.map((item) => text(item, label, maximumBytes));
+}
+
+function surfaceReplyText(value: unknown, label: string): string {
+	if (typeof value !== "string" || value.length > 16_000 || value.includes("\0")) {
 		throw new Error(`Invalid ${label}`);
 	}
 	return value;
@@ -393,53 +520,214 @@ export function parseRunnerOrchestratorRequest(value: unknown): RunnerOrchestrat
 				error: input.error,
 			};
 		}
+		case "surface_claim_jobs": {
+			let lane: "all" | "sessions" | "folder" | "code_repo" | undefined;
+			if (input.lane !== undefined) {
+				if (typeof input.lane !== "string" || !SURFACE_CLAIM_LANES.has(input.lane)) {
+					throw new Error("Invalid surface claim lane");
+				}
+				lane = input.lane as "all" | "sessions" | "folder" | "code_repo";
+			}
+			return {
+				action: input.action,
+				orchestratorId,
+				limit: input.limit === undefined ? 16 : integer(input.limit, "surface job limit", 64),
+				...(lane !== undefined ? { lane } : {}),
+			};
+		}
+		case "surface_enqueue_session_run":
+			return {
+				action: input.action,
+				orchestratorId,
+				sessionId: uuid(input.sessionId, "surface session id"),
+				leaseToken: uuid(input.leaseToken, "surface lease token"),
+			};
+		case "surface_trigger_automation":
+			return {
+				action: input.action,
+				orchestratorId,
+				automationId: uuid(input.automationId, "surface automation id"),
+			};
+		case "surface_update_rebased_changes": {
+			let rebasedChanges: { changeId: string; parentSha: string; headSha: string }[] | undefined;
+			if (input.rebasedChanges !== undefined && input.rebasedChanges !== null) {
+				if (!Array.isArray(input.rebasedChanges) || input.rebasedChanges.length > 64) {
+					throw new Error("Invalid rebased surface changes");
+				}
+				rebasedChanges = input.rebasedChanges.map((item) => {
+					const entry = record(item, "rebased surface change");
+					const changeId = uuid(entry.changeId, "rebased change id");
+					if (
+						typeof entry.parentSha !== "string" ||
+						!GIT_SHA_PATTERN.test(entry.parentSha) ||
+						typeof entry.headSha !== "string" ||
+						!GIT_SHA_PATTERN.test(entry.headSha)
+					) {
+						throw new Error("Invalid rebased change sha");
+					}
+					return { changeId, parentSha: entry.parentSha, headSha: entry.headSha };
+				});
+			}
+			let branchHeadSha: string | undefined;
+			if (input.branchHeadSha !== undefined && input.branchHeadSha !== null) {
+				if (typeof input.branchHeadSha !== "string" || !GIT_SHA_PATTERN.test(input.branchHeadSha)) {
+					throw new Error("Invalid surface branch head sha");
+				}
+				branchHeadSha = input.branchHeadSha;
+			}
+			return {
+				action: input.action,
+				orchestratorId,
+				surfaceId: uuid(input.surfaceId, "surface id"),
+				sessionId: uuid(input.sessionId, "surface session id"),
+				...(branchHeadSha !== undefined ? { branchHeadSha } : {}),
+				...(rebasedChanges !== undefined ? { rebasedChanges } : {}),
+				...(input.conflictedChangeId === null || input.conflictedChangeId === undefined
+					? {}
+					: { conflictedChangeId: uuid(input.conflictedChangeId, "conflicted change id") }),
+				...(input.conflictPaths === null || input.conflictPaths === undefined
+					? {}
+					: { conflictPaths: textArray(input.conflictPaths, "rebase conflict paths", 256, 512) }),
+			};
+		}
+		case "surface_renew_lease": {
+			if (typeof input.kind !== "string" || !SURFACE_LEASE_KINDS.has(input.kind)) {
+				throw new Error("Invalid surface lease kind");
+			}
+			return {
+				action: input.action,
+				orchestratorId,
+				kind: input.kind as "session" | "preview" | "job",
+				id: uuid(input.id, "surface lease target id"),
+				leaseToken: uuid(input.leaseToken, "surface lease token"),
+				extendSeconds: input.extendSeconds === undefined ? 300 : seconds(input.extendSeconds, "surface lease seconds"),
+			};
+		}
+		case "surface_release_session_claim":
+			return {
+				action: input.action,
+				orchestratorId,
+				sessionId: uuid(input.sessionId, "surface session id"),
+				leaseToken: uuid(input.leaseToken, "surface lease token"),
+			};
+		case "surface_complete_preview": {
+			if (typeof input.status !== "string" || !SURFACE_PREVIEW_COMPLETION_STATUSES.has(input.status)) {
+				throw new Error("Invalid surface preview status");
+			}
+			return {
+				action: input.action,
+				orchestratorId,
+				previewId: uuid(input.previewId, "surface preview id"),
+				status: input.status as "ready" | "conflicted" | "failed",
+				...(input.compositeTreeSha === null || input.compositeTreeSha === undefined
+					? {}
+					: { compositeTreeSha: text(input.compositeTreeSha, "composite tree sha", 64) }),
+				...(input.siteVersionId === null || input.siteVersionId === undefined
+					? {}
+					: { siteVersionId: uuid(input.siteVersionId, "site version id") }),
+				...(input.conflictReport === null || input.conflictReport === undefined
+					? {}
+					: { conflictReport: boundedRecord(input.conflictReport, "preview conflict report", 16 * 1024) }),
+				...(input.errorDetail === null || input.errorDetail === undefined
+					? {}
+					: { errorDetail: errorDetail(input.errorDetail, "preview error detail") }),
+				...(input.leaseToken === null || input.leaseToken === undefined
+					? {}
+					: { leaseToken: uuid(input.leaseToken, "surface lease token") }),
+			};
+		}
+		case "surface_complete_session_turn": {
+			if (typeof input.state !== "string" || !SURFACE_SESSION_COMPLETION_STATES.has(input.state)) {
+				throw new Error("Invalid surface session state");
+			}
+			return {
+				action: input.action,
+				orchestratorId,
+				sessionId: uuid(input.sessionId, "surface session id"),
+				state: input.state as "needs_input" | "ready" | "completed" | "failed",
+				...(input.replyText === null || input.replyText === undefined
+					? {}
+					: { replyText: surfaceReplyText(input.replyText, "surface session reply") }),
+				...(input.question === null || input.question === undefined
+					? {}
+					: { question: boundedRecord(input.question, "surface session question", 8 * 1024) }),
+				...(input.notePaths === null || input.notePaths === undefined
+					? {}
+					: { notePaths: textArray(input.notePaths, "surface session note paths", 64, 512) }),
+				...(input.branchHeadSha === null || input.branchHeadSha === undefined
+					? {}
+					: { branchHeadSha: text(input.branchHeadSha, "surface branch head sha", 64) }),
+				...(input.leaseToken === null || input.leaseToken === undefined
+					? {}
+					: { leaseToken: uuid(input.leaseToken, "surface lease token") }),
+			};
+		}
+		case "surface_complete_merge": {
+			if (typeof input.status !== "string" || !SURFACE_MERGE_COMPLETION_STATUSES.has(input.status)) {
+				throw new Error("Invalid surface merge status");
+			}
+			return {
+				action: input.action,
+				orchestratorId,
+				jobId: uuid(input.jobId, "surface merge job id"),
+				status: input.status as "landed" | "conflicted" | "failed",
+				...(input.mainBefore === null || input.mainBefore === undefined
+					? {}
+					: { mainBefore: text(input.mainBefore, "merge main before sha", 64) }),
+				...(input.mainAfter === null || input.mainAfter === undefined
+					? {}
+					: { mainAfter: text(input.mainAfter, "merge main after sha", 64) }),
+				...(input.conflictChangeId === null || input.conflictChangeId === undefined
+					? {}
+					: { conflictChangeId: uuid(input.conflictChangeId, "merge conflict change id") }),
+				...(input.conflictPaths === null || input.conflictPaths === undefined
+					? {}
+					: { conflictPaths: textArray(input.conflictPaths, "merge conflict paths", 256, 512) }),
+				...(input.errorDetail === null || input.errorDetail === undefined
+					? {}
+					: { errorDetail: errorDetail(input.errorDetail, "merge error detail") }),
+				...(input.preMergeSnapshot === null || input.preMergeSnapshot === undefined
+					? {}
+					: { preMergeSnapshot: boundedRecord(input.preMergeSnapshot, "merge pre-merge snapshot", 96 * 1024) }),
+				...(input.leaseToken === null || input.leaseToken === undefined
+					? {}
+					: { leaseToken: uuid(input.leaseToken, "surface lease token") }),
+			};
+		}
+		case "surface_complete_publish": {
+			if (typeof input.status !== "string" || !SURFACE_PUBLISH_COMPLETION_STATUSES.has(input.status)) {
+				throw new Error("Invalid surface publish status");
+			}
+			return {
+				action: input.action,
+				orchestratorId,
+				jobId: uuid(input.jobId, "surface publish job id"),
+				status: input.status as "published" | "failed",
+				...(input.publishedHeadSha === null || input.publishedHeadSha === undefined
+					? {}
+					: { publishedHeadSha: text(input.publishedHeadSha, "published head sha", 64) }),
+				...(input.errorDetail === null || input.errorDetail === undefined
+					? {}
+					: { errorDetail: errorDetail(input.errorDetail, "publish error detail") }),
+				...(input.leaseToken === null || input.leaseToken === undefined
+					? {}
+					: { leaseToken: uuid(input.leaseToken, "surface lease token") }),
+			};
+		}
 		default:
 			throw new Error("Invalid orchestrator action");
 	}
 }
 
-const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
-
-async function readBoundedText(request: Request, maxBytes: number): Promise<string> {
-	const rawLength = request.headers.get("content-length");
-	if (rawLength !== null) {
-		const contentLength = Number(rawLength);
-		if (!Number.isFinite(contentLength) || contentLength < 0 || contentLength > maxBytes) {
-			throw new Error("Invalid orchestrator request size");
-		}
-	}
-	const reader = request.body?.getReader();
-	if (!reader) return "";
-	const chunks: Uint8Array[] = [];
-	let total = 0;
-	let overflow = false;
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			total += value.byteLength;
-			if (total > maxBytes) {
-				overflow = true;
-				throw new Error("Invalid orchestrator request size");
-			}
-			chunks.push(value);
-		}
-	} finally {
-		if (overflow) void reader.cancel().catch(() => undefined);
-	}
-	if (chunks.length === 0) return "";
-	if (chunks.length === 1) return UTF8_DECODER.decode(chunks[0]!);
-	const merged = new Uint8Array(total);
-	let offset = 0;
-	for (const chunk of chunks) {
-		merged.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	return UTF8_DECODER.decode(merged);
-}
-
-export async function readRunnerOrchestratorRequest(request: Request): Promise<RunnerOrchestratorRequest> {
-	const text = await readBoundedText(request, MAX_BODY_BYTES);
+export async function readRunnerOrchestratorRequest(
+	request: Request,
+	timeoutMs = DEFAULT_BODY_READ_TIMEOUT_MS,
+): Promise<RunnerOrchestratorRequest> {
+	const text = await readBoundedText(request, MAX_BODY_BYTES, {
+		signal: request.signal,
+		timeoutMs,
+		sizeErrorMessage: "Invalid orchestrator request size",
+	});
 	return parseRunnerOrchestratorRequest(JSON.parse(text));
 }
 

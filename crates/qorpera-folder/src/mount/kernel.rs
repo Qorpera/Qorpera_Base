@@ -236,7 +236,12 @@ impl Kernel {
 		let Some(dir) = s.local.as_ref().and_then(Local::programs) else { return Ok(()) };
 		let heard = {
 			let s = s.clone();
-			move |h| s.kernel.heard(h)
+			move |h| {
+				if let Some(local) = &s.local {
+					local.cache_gen.fetch_add(1, Ordering::Release);
+				}
+				s.kernel.heard(h);
+			}
 		};
 		let listener = peers::listen(&dir, heard)?;
 		let teller = Teller::new(&dir, listener.name())?;

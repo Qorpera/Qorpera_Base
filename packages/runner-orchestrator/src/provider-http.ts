@@ -7,6 +7,7 @@ import type {
 	CloudRunnerProviderAdapter,
 	CloudRunnerWork,
 } from "./orchestrator.ts";
+import type { ClaimedSurfaceSessionJob } from "./surface-worker-loop.ts";
 
 const PROVIDER_RESPONSE_LIMIT_BYTES = 64 * 1024;
 // A full-VM provider may legitimately spend up to five minutes booting and
@@ -39,6 +40,13 @@ type CloudRunnerProviderRequest =
 			adapter_id: string;
 			runner: CloudRunnerInstance;
 			reason: "delivery_failed" | "idle" | "revoked";
+	  }
+	| {
+			schema: "qorpera.runner-provider/v1";
+			action: "surface_session";
+			adapter_id: string;
+			machine_id: string;
+			session: ClaimedSurfaceSessionJob;
 	  };
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -312,6 +320,21 @@ export class HttpCloudRunnerProviderAdapter implements CloudRunnerProviderAdapte
 		);
 	}
 
+	async deliverSurfaceSession(job: ClaimedSurfaceSessionJob, machineId: string, signal?: AbortSignal): Promise<void> {
+		if (!UUID_PATTERN.test(machineId)) throw new Error("Runner provider machine id is invalid");
+		if (!UUID_PATTERN.test(job.sessionId)) throw new Error("Runner provider surface session id is invalid");
+		await this.#request(
+			{
+				schema: "qorpera.runner-provider/v1",
+				action: "surface_session",
+				adapter_id: this.adapterId,
+				machine_id: machineId,
+				session: structuredClone(job),
+			},
+			signal,
+		);
+	}
+
 	async #request(body: CloudRunnerProviderRequest, signal?: AbortSignal): Promise<unknown> {
 		return withTimeoutScope(signal, PROVIDER_REQUEST_TIMEOUT_MS, async (requestSignal) => {
 			const response = await this.#fetch(this.#url, {
@@ -342,6 +365,9 @@ export class HttpCloudRunnerProviderAdapter implements CloudRunnerProviderAdapte
 				throw new Error("Runner provider returned invalid JSON", { cause: error });
 			}
 			const envelope = record(value, "response envelope");
+			if (body.action === "surface_session" && envelope.ok === true && Object.keys(envelope).length === 1) {
+				return undefined;
+			}
 			exactKeys(envelope, ["value"], "response envelope");
 			return envelope.value;
 		});

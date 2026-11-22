@@ -239,8 +239,47 @@ impl Shared {
 		let (version, size, disk) = match self.child(dir, ".gitignore") {
 			Ok(child) if child.attr.kind == EntryKind::File => (child.attr.version, child.attr.size, None),
 			Err(libc::ENOENT) => {
-				let disk = local.open_in(Area::Cache, &file).ok()?;
-				let meta = disk.metadata().ok().filter(|m| m.is_file())?;
+				let cache_gen = local.cache_gen.load(Ordering::Acquire);
+				let absent_ver = if !local.shared() {
+					format!("absent:{cache_gen}")
+				} else {
+					let room = local.room(path, Area::Cache);
+					match fs::symlink_metadata(&room) {
+						Ok(m) => format!(
+							"absent-dir:{cache_gen}:{}:{}.{}:{}.{}",
+							m.ino(),
+							m.mtime(),
+							m.mtime_nsec(),
+							m.ctime(),
+							m.ctime_nsec()
+						),
+						Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+						Err(_) => String::new(),
+					}
+				};
+				if !absent_ver.is_empty() {
+					if let Some((known, patterns)) = local.ignores.lock().unwrap().get(&file) {
+						if *known == absent_ver && patterns.is_none() {
+							return None;
+						}
+					}
+				}
+				let disk = match local.open_in(Area::Cache, &file) {
+					Ok(disk) => disk,
+					Err(e) if matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR)) => {
+						if !absent_ver.is_empty() {
+							local.ignores.lock().unwrap().insert(file, (absent_ver, None));
+						}
+						return None;
+					}
+					Err(_) => return None,
+				};
+				let Some(meta) = disk.metadata().ok().filter(|m| m.is_file()) else {
+					if !absent_ver.is_empty() {
+						local.ignores.lock().unwrap().insert(file, (absent_ver, None));
+					}
+					return None;
+				};
 				let (ino, len) = (meta.ino(), meta.len());
 				let version = format!("disk:{ino}:{len}:{}.{}:{}.{}", meta.mtime(), meta.mtime_nsec(), meta.ctime(), meta.ctime_nsec());
 				(version, len, Some(disk))
@@ -249,7 +288,7 @@ impl Shared {
 		};
 		if let Some((known, patterns)) = local.ignores.lock().unwrap().get(&file) {
 			if *known == version {
-				return Some(patterns.clone());
+				return patterns.clone();
 			}
 		}
 		let patterns = if size >= ignore::MAX_FILE as u64 {
@@ -271,20 +310,35 @@ impl Shared {
 			}
 		};
 		let patterns = Arc::new(patterns);
-		local.ignores.lock().unwrap().insert(file, (version, patterns.clone()));
+		local.ignores.lock().unwrap().insert(file, (version, Some(patterns.clone())));
 		Some(patterns)
 	}
 
-	/// The repository's `info/exclude` (`area`'s): a session-local git file (`local.rs`), seeded first. A link in its
-	/// place counts as none.
 	fn exclude(&self, local: &Local, area: &str) -> Option<Arc<Patterns>> {
 		let seed = format!("{area}/repo.git");
 		self.seed(local, &seed).ok()?;
 		// WHY: load git_gen before open_in so an in-place same-length rewrite within one coarse fs timestamp tick misses cache.
 		let git_gen = local.git_gen.load(Ordering::Acquire);
+		let key = format!("\0exclude:{seed}");
+		let absent_ver = format!("absent:{git_gen}");
+		if let Some((known, patterns)) = local.ignores.lock().unwrap().get(&key) {
+			if *known == absent_ver && patterns.is_none() {
+				return None;
+			}
+		}
 		let rel = format!("{seed}/info/exclude");
-		let disk = local.open_in(Area::Git, &rel).ok()?;
-		let meta = disk.metadata().ok().filter(|m| m.is_file())?;
+		let disk = match local.open_in(Area::Git, &rel) {
+			Ok(disk) => disk,
+			Err(e) if matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR)) => {
+				local.ignores.lock().unwrap().insert(key, (absent_ver, None));
+				return None;
+			}
+			Err(_) => return None,
+		};
+		let Some(meta) = disk.metadata().ok().filter(|m| m.is_file()) else {
+			local.ignores.lock().unwrap().insert(key, (absent_ver, None));
+			return None;
+		};
 		if meta.len() >= ignore::MAX_FILE as u64 {
 			return None;
 		}
@@ -298,10 +352,9 @@ impl Shared {
 			meta.ctime(),
 			meta.ctime_nsec()
 		);
-		let key = format!("\0exclude:{seed}");
 		if let Some((known, patterns)) = local.ignores.lock().unwrap().get(&key) {
 			if *known == version {
-				return Some(patterns.clone());
+				return patterns.clone();
 			}
 		}
 		let mut text = Vec::new();
@@ -310,7 +363,7 @@ impl Shared {
 			return None;
 		}
 		let patterns = Arc::new(Patterns::parse(&text));
-		local.ignores.lock().unwrap().insert(key, (version, patterns.clone()));
+		local.ignores.lock().unwrap().insert(key, (version, Some(patterns.clone())));
 		Some(patterns)
 	}
 
@@ -340,6 +393,7 @@ impl Shared {
 		for entry in entries.iter().filter(|e| local::seeded_names(seed).contains(&e.name.as_str())) {
 			self.copy_in(local, &join(seed, &entry.name), entry)?;
 		}
+		local.git_gen.fetch_add(1, Ordering::Release);
 		local.mark_seeded(seed);
 		Ok(())
 	}
@@ -511,8 +565,7 @@ impl Shared {
 			let mut moved = false;
 			let done = self.move_in(local, &mut held, &worktree, &name, &mut moved);
 			if moved {
-				// Caches left the disk behind the kernels' backs. A name told in a node folder always raises the epoch,
-				// which drops every name a kernel holds, so the worktree's stands for all the move changed.
+				local.cache_gen.fetch_add(1, Ordering::Release);
 				let (parent, last) = split(&worktree);
 				self.kernel.moved(vec![Change::name(Parent::Dir(parent.to_string()), last)]);
 			}
@@ -898,6 +951,9 @@ impl FolderFs {
 			}
 			return Ok(());
 		}
+		if let Some(local) = &self.s.local {
+			local.cache_gen.fetch_add(1, Ordering::Release);
+		}
 		self.s.kernel.tell(&changes())
 	}
 
@@ -930,8 +986,6 @@ impl FolderFs {
 		let Some(local) = &self.s.local else { return Some(reply) };
 		let Some(dir) = self.s.cache_dir(parent) else { return Some(reply) };
 		let up = Up::Mount(dir);
-		// The node's entry wins once it has one (rule 1, `move_in`): without the kernel cache the kernel asks again each
-		// time; with it, the change that gives the node the name drops it (`may_answer_top`).
 		let ttl = self.ttl(&up, Area::Cache);
 		match local.entry(up, name, Area::Cache) {
 			Ok(attr) => self.entry(reply, &ttl, &attr),
@@ -958,7 +1012,7 @@ impl FolderFs {
 		// Its cache's top entry held from before it is read until the release (`Local::hold_dir`).
 		let listed = self.local().and_then(|l| {
 			let top = l.hold_dir(ino)?;
-			let children = l.children(ino);
+			let children = l.children_plus(ino);
 			if let (Err(_), Some(key)) = (&children, top) {
 				l.let_go_top(key);
 			}
@@ -966,31 +1020,32 @@ impl FolderFs {
 		});
 		match listed {
 			Ok((children, top)) => {
-				let mut entries = vec![
-					(ino, FileType::Directory, ".".to_string()),
-					(ino, FileType::Directory, "..".to_string()),
-				];
-				entries.extend(children);
-				reply.opened(self.s.handle(Handle::Dir(entries, top)), FopenFlags::empty());
+				let mut entries = Vec::with_capacity(children.len() + 2);
+				entries.push(DirItem { ino, kind: FileType::Directory, name: ".".to_string(), plus: DirPlus::Dot });
+				entries.push(DirItem { ino, kind: FileType::Directory, name: "..".to_string(), plus: DirPlus::Dot });
+				entries.extend(
+					children
+						.into_iter()
+						.map(|(c_ino, kind, name, attr)| DirItem { ino: c_ino, kind, name, plus: DirPlus::Local(attr) }),
+				);
+				reply.opened(self.s.handle(Handle::Dir(Arc::new(entries), top)), FopenFlags::empty());
 			}
 			Err(e) => reply.error(Errno::from_i32(e)),
 		}
 		None
 	}
 
-	/// The local entries of the node's folder `ino` (at `dir`) added to its `entries`: the session-local git files in
-	/// place of the node's, or the folder's caches where the node has nothing. A cache where the node has an entry now
-	/// goes (rule 1), as do the caches of a folder in it the node no longer has (removed or renamed by another view), but
-	/// not in a cache folder other programs share, where that folder may be another view's not published yet
-	/// (`Local::shared`); both wait while a worktree's caches move into the folder, whose moves make the node's folders
-	/// first. A rename here since the listing may have given `dir` to another folder: what goes is that of `ino`'s path
-	/// now.
-	pub(super) fn merge_local(&self, ino: u64, dir: &str, entries: &mut Vec<(u64, FileType, String)>) -> Result<(), i32> {
+	pub(super) fn merge_local(&self, ino: u64, dir: &str, entries: &mut Vec<DirItem>) -> Result<(), i32> {
 		let Some(local) = &self.s.local else { return Ok(()) };
 		if let Some(seed) = local::seed_of(dir).filter(|_| !self.s.code_host) {
 			self.s.seed(local, &seed)?;
-			entries.retain(|e| !local::git_file(&join(dir, &e.2)));
-			entries.extend(local.entries_of(dir, Area::Git));
+			entries.retain(|e| !local::git_file(&join(dir, &e.name)));
+			entries.extend(
+				local
+					.entries_of_plus(dir, Area::Git)
+					.into_iter()
+					.map(|(c_ino, kind, name, attr)| DirItem { ino: c_ino, kind, name, plus: DirPlus::Local(attr) }),
+			);
 			return Ok(());
 		}
 		if self.s.cache_dir(ino).is_none() {
@@ -1006,12 +1061,10 @@ impl FolderFs {
 			};
 			local.mirrors(dir).into_iter().filter(no_folder).collect::<Vec<_>>()
 		};
-		let listed = |dir: &str| local.entries_of(dir, Area::Cache).iter().any(|c| entries.iter().any(|e| e.2 == c.2));
+		let listed = |dir: &str| local.entries_of(dir, Area::Cache).iter().any(|c| entries.iter().any(|e| e.name == c.2));
 		if settled(local, dir) && (listed(dir) || !gone(dir).is_empty()) {
 			let mut moved = Vec::new();
 			{
-				// Asked again, for the path `ino` has now, once no rename here is between the node's and its caches'
-				// (`Local::folders`); none moves it while this holds.
 				let _held = local.folders.lock().unwrap();
 				let Ok(dir) = self.s.path_of(ino) else { return Ok(()) };
 				if settled(local, &dir) {
@@ -1028,14 +1081,14 @@ impl FolderFs {
 				}
 			}
 			if !moved.is_empty() {
+				local.cache_gen.fetch_add(1, Ordering::Release);
 				self.s.kernel.moved(moved);
 			}
 		}
-		// Those of the folder `ino` is now, whose listing this is.
 		let Ok(dir) = self.s.path_of(ino) else { return Ok(()) };
-		for cache in local.entries_of(&dir, Area::Cache) {
-			if !entries.iter().any(|e| e.2 == cache.2) {
-				entries.push(cache);
+		for (c_ino, kind, name, attr) in local.entries_of_plus(&dir, Area::Cache) {
+			if !entries.iter().any(|e| e.name == name) {
+				entries.push(DirItem { ino: c_ino, kind, name, plus: DirPlus::Local(attr) });
 			}
 		}
 		Ok(())
@@ -1151,14 +1204,22 @@ impl FolderFs {
 		}
 		let written = self.local().and_then(|l| {
 			let n = l.write(fh, offset, data)?;
-			if l.opened(fh).is_some_and(|ino| l.name(ino).is_none_or(|(_, _, area)| area == Area::Git)) {
-				l.git_gen.fetch_add(1, Ordering::Release);
-			}
-			let cache = |ino: &u64| l.name(*ino).is_some_and(|(_, _, area)| area == Area::Cache);
-			match l.opened(fh).filter(|ino| l.shared() && cache(ino)) {
-				Some(ino) if writeback => self.s.kernel.later(vec![Change::ino(ino)]),
-				Some(ino) => self.tell(Area::Cache, || vec![Change::ino(ino)])?,
-				None => {}
+			if let Some(ino) = l.opened(fh) {
+				match l.name(ino).map(|(_, _, area)| area) {
+					Some(Area::Cache) => {
+						l.cache_gen.fetch_add(1, Ordering::Release);
+						if l.shared() {
+							if writeback {
+								self.s.kernel.later(vec![Change::ino(ino)]);
+							} else {
+								self.tell(Area::Cache, || vec![Change::ino(ino)])?;
+							}
+						}
+					}
+					_ => {
+						l.git_gen.fetch_add(1, Ordering::Release);
+					}
+				}
 			}
 			Ok(n)
 		});
@@ -1706,6 +1767,7 @@ impl FolderFs {
 	pub(super) fn caches_gone(&self, path: &str) {
 		if let Some(local) = &self.s.local {
 			local.drop_mirror(path);
+			local.cache_gen.fetch_add(1, Ordering::Release);
 		}
 	}
 
@@ -1748,7 +1810,9 @@ impl FolderFs {
 		if !moved {
 			return Ok(());
 		}
-		// A name told in a node folder raises the epoch, which drops every name a kernel holds below it too.
+		if let Some(local) = &self.s.local {
+			local.cache_gen.fetch_add(1, Ordering::Release);
+		}
 		self.s.kernel.own();
 		let ((from_parent, from_last), (to_parent, to_last)) = (split(from), split(to));
 		self.tell(Area::Cache, || {

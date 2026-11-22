@@ -124,6 +124,7 @@ const TIMEOUT_MS = 25_000;
  * the gateway's commit). A retry with the same input id is safe: the begin and the commit answer the same file as
  * saved until the input is posted. */
 const UPLOAD_TIMEOUT_MS = 35_000;
+const MAX_STREAM_MS = 120_000;
 const FOLDER_UNAVAILABLE = "Company File gateway is unavailable. A submitted change may still apply.";
 const IMAGE_UNAVAILABLE = "Chat images are unavailable just now. An uploaded image may still be saved.";
 const PROGRAM_UNAVAILABLE = "Programs are unavailable just now. A finished program may still be saved.";
@@ -134,6 +135,7 @@ export interface MemberCompanyGatewayOptions {
 	allowedOrigins?: readonly string[];
 	fetchImplementation?: typeof fetch;
 	timeoutMs?: number;
+	maxStreamMs?: number;
 	/** Whether the auth service knows this `Bearer` token. A write's body is read only after it says yes, so no one
 	 * signed out can make the bridge hold a body. */
 	memberSignedIn?: (authorization: string, signal: AbortSignal) => Promise<boolean>;
@@ -333,21 +335,35 @@ async function bytes(
 
 interface UpstreamWatch {
 	readonly signal: AbortSignal;
-	wait(): void;
+	wait(countTotal?: boolean): void;
 	rest(): void;
 	dispose(): void;
 }
 
-function watchUpstream(caller: AbortSignal, quietMs: number): UpstreamWatch {
+function watchUpstream(caller: AbortSignal, quietMs: number, maxTotalMs: number): UpstreamWatch {
 	const upstream = new AbortController();
 	const leave = () => upstream.abort(caller.aborted ? caller.reason : new Error("Upstream request timed out"));
 	let quiet: ReturnType<typeof setTimeout> | undefined;
+	let total: ReturnType<typeof setTimeout> | undefined;
+	let remainingTotalMs = maxTotalMs;
+	let waitingSince: number | undefined;
 	let disposed = false;
+	const pauseTotal = () => {
+		clearTimeout(total);
+		total = undefined;
+		if (waitingSince !== undefined) {
+			remainingTotalMs = Math.max(0, remainingTotalMs - Math.max(0, performance.now() - waitingSince));
+			waitingSince = undefined;
+		}
+	};
 	const cleanup = () => {
 		if (disposed) return;
 		disposed = true;
 		clearTimeout(quiet);
+		clearTimeout(total);
 		quiet = undefined;
+		total = undefined;
+		waitingSince = undefined;
 		caller.removeEventListener("abort", leave);
 	};
 	if (caller.aborted) {
@@ -359,14 +375,30 @@ function watchUpstream(caller: AbortSignal, quietMs: number): UpstreamWatch {
 	}
 	return {
 		signal: upstream.signal,
-		wait() {
+		wait(countTotal = false) {
 			if (disposed) return;
 			clearTimeout(quiet);
 			quiet = setTimeout(leave, quietMs);
+			(quiet as unknown as { unref?: () => void }).unref?.();
+			if (countTotal) {
+				pauseTotal();
+				if (remainingTotalMs <= 0) {
+					upstream.abort(new Error("Upstream stream exceeded total duration"));
+					return;
+				}
+				waitingSince = performance.now();
+				// WHY: Cap cumulative time waiting on upstream stream chunks while pausing during downstream reader backpressure.
+				total = setTimeout(
+					() => upstream.abort(new Error("Upstream stream exceeded total duration")),
+					Math.max(1, Math.ceil(remainingTotalMs)),
+				);
+				(total as unknown as { unref?: () => void }).unref?.();
+			}
 		},
 		rest() {
 			clearTimeout(quiet);
 			quiet = undefined;
+			pauseTotal();
 		},
 		dispose: cleanup,
 	};
@@ -403,7 +435,7 @@ function passedThrough(
 		},
 		async pull(controller) {
 			if (over) return;
-			watch.wait();
+			watch.wait(true);
 			let failure: unknown;
 			try {
 				const chunk = await reader.read();
@@ -465,9 +497,10 @@ export async function forwardMemberCompanyGateway(
 		origin &&
 		!policy?.publicRoute &&
 		!allowed.some((value) => {
+			if (origin !== value) return false;
 			try {
 				const parsed = new URL(value);
-				return parsed.protocol === "https:" && parsed.origin === value && origin === value;
+				return parsed.protocol === "https:" && parsed.origin === value;
 			} catch {
 				return false;
 			}
@@ -513,6 +546,9 @@ export async function forwardMemberCompanyGateway(
 	}
 	const timeout = options.timeoutMs ?? policy.timeoutMs ?? TIMEOUT_MS;
 	if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > UPLOAD_TIMEOUT_MS)
+		return fail(503, "Member gateway is not configured");
+	const maxStreamMs = options.maxStreamMs ?? MAX_STREAM_MS;
+	if (!Number.isSafeInteger(maxStreamMs) || maxStreamMs < 1 || maxStreamMs > MAX_STREAM_MS)
 		return fail(503, "Member gateway is not configured");
 	const scoped = new AbortController();
 	const onCallerAbort = () => scoped.abort(request.signal.reason);
@@ -566,7 +602,7 @@ export async function forwardMemberCompanyGateway(
 				"Member gateway request could not be read",
 			);
 		}
-		watch = policy.passesBodyThrough ? watchUpstream(request.signal, timeout) : undefined;
+		watch = policy.passesBodyThrough ? watchUpstream(request.signal, timeout, maxStreamMs) : undefined;
 		try {
 			const forwarded = new Headers();
 			for (const name of [...policy.headers, ...(policy.proxyHeaders ?? [])]) {

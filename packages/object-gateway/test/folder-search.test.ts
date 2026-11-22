@@ -841,6 +841,12 @@ describe("folder search, version 2 (keyholes S4)", () => {
 		expect(globMatches(compileGlob("package.json"), "dir/package.json")).toBe(true);
 		expect(globMatches(compileGlob("package.json"), "dir/xpackage.json")).toBe(false);
 		expect(globMatches(compileGlob("*"), "dir/anything")).toBe(true);
+		expect(globMatches(compileGlob("*.ts,!*.test.ts"), "src/app.ts")).toBe(true);
+		expect(globMatches(compileGlob("*.ts,!*.test.ts"), "src/app.test.ts")).toBe(false);
+		expect(globMatches(compileGlob("*.ts,!*.test.ts"), "src/app.md")).toBe(false);
+		expect(globMatches(compileGlob("!dist/**,!*.test.ts"), "src/app.ts")).toBe(true);
+		expect(globMatches(compileGlob("!dist/**,!*.test.ts"), "dist/bundle.js")).toBe(false);
+		expect(globMatches(compileGlob("!dist/**,!*.test.ts"), "src/app.test.ts")).toBe(false);
 
 		const { source } = stage({
 			"ascii.txt": "alpha\nSharedExecutionProvider\nomega\n",

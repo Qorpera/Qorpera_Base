@@ -2,9 +2,10 @@ import { Agent as HttpAgent, request as httpRequest } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NODE_OBSERVATIONS_PATH, ProviderNodeObservability } from "../src/node-observability.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "../src/orchestrator.ts";
-import { HttpCloudRunnerProviderAdapter } from "../src/provider-http.ts";
+import { CloudRunnerProviderRequestError, HttpCloudRunnerProviderAdapter } from "../src/provider-http.ts";
 import { type CloudRunnerProviderServiceBackend, HttpCloudRunnerProviderService } from "../src/provider-service.ts";
 import { ProviderRpcFailed, ProviderStepFailed, providerRpcErrorCode } from "../src/provider-shared.ts";
+import type { ClaimedSurfaceSessionJob } from "../src/surface-worker-loop.ts";
 
 const token = "provider-service-token";
 const runnerId = "55555555-5555-4555-8555-555555555555";
@@ -744,6 +745,185 @@ describe("runner provider HTTP service", () => {
 		} finally {
 			log.mockRestore();
 		}
+	});
+
+	it("delivers authenticated surface_session requests with 202 when enabled and returns 501 when unconfigured", async () => {
+		const machineId = "66666666-6666-4666-8666-666666666666";
+		const session: ClaimedSurfaceSessionJob = {
+			sessionId: "11111111-1111-4111-8111-111111111111",
+			surfaceId: "22222222-2222-4222-8222-222222222222",
+			profileId: "88888888-8888-4888-8888-888888888888",
+			state: "queued",
+			prompt: "Refresh brand tokens",
+			originKind: "member",
+			originRef: { selector: "main.hero" },
+			repositoryKey: "surfaces/website",
+			folderRoot: null,
+			surfaceSlug: "website",
+			surfaceTitle: "Website",
+			surfaceArchetype: "live_build",
+			surfaceSourceKind: "code_repo",
+			surfaceKind: "website",
+			siteSlug: "thetaband",
+			identityFolderRoot: "identity",
+			briefSummary: "Public site",
+			retryCount: 1,
+			sponsor: {
+				sponsorBindingId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+				sponsorVersion: 4,
+			},
+			leaseToken: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+			placement: {
+				strategy: "reuse_machine",
+				machineId,
+				activeTurns: 0,
+				targetDensity: 6,
+			},
+		};
+
+		let releaseDelivery!: () => void;
+		const deliveryBlocker = new Promise<void>((resolve) => {
+			releaseDelivery = resolve;
+		});
+		const deliverSurfaceSession = vi.fn(async () => {
+			await deliveryBlocker;
+		});
+		const enabledProvider: CloudRunnerProviderServiceBackend = {
+			...backend(),
+			deliverSurfaceSession,
+		};
+		const enabledService = new HttpCloudRunnerProviderService(enabledProvider, token);
+		services.push(enabledService);
+		const enabledPort = await enabledService.start();
+
+		const rawOk = await fetch(`http://127.0.0.1:${enabledPort}/v1/qorpera-runner-provider`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+			body: JSON.stringify({
+				schema: "qorpera.runner-provider/v1",
+				action: "surface_session",
+				adapter_id: "managed",
+				machine_id: machineId,
+				session,
+			}),
+		});
+		expect(rawOk.status).toBe(202);
+		await expect(rawOk.json()).resolves.toEqual({ ok: true });
+
+		const enabledAdapter = new HttpCloudRunnerProviderAdapter(`http://127.0.0.1:${enabledPort}`, "managed", token);
+		await expect(
+			enabledAdapter.deliverSurfaceSession(session, machineId, new AbortController().signal),
+		).resolves.toBeUndefined();
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(deliverSurfaceSession).toHaveBeenCalledTimes(2);
+		expect(deliverSurfaceSession).toHaveBeenLastCalledWith(session, machineId, expect.any(AbortSignal));
+		releaseDelivery();
+
+		const disabledService = new HttpCloudRunnerProviderService(backend(), token);
+		services.push(disabledService);
+		const disabledPort = await disabledService.start();
+
+		const rawDisabled = await fetch(`http://127.0.0.1:${disabledPort}/v1/qorpera-runner-provider`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+			body: JSON.stringify({
+				schema: "qorpera.runner-provider/v1",
+				action: "surface_session",
+				adapter_id: "managed",
+				machine_id: machineId,
+				session,
+			}),
+		});
+		expect(rawDisabled.status).toBe(501);
+		await expect(rawDisabled.json()).resolves.toEqual({
+			error: "Surface session execution is not enabled on this provider",
+		});
+
+		const disabledAdapter = new HttpCloudRunnerProviderAdapter(`http://127.0.0.1:${disabledPort}`, "managed", token);
+		let caught: unknown;
+		try {
+			await disabledAdapter.deliverSurfaceSession(session, machineId, new AbortController().signal);
+		} catch (error) {
+			caught = error;
+		}
+		expect(caught).toBeInstanceOf(CloudRunnerProviderRequestError);
+		expect((caught as CloudRunnerProviderRequestError).status).toBe(501);
+		expect((caught as CloudRunnerProviderRequestError).message).toContain("[code=PROVIDER_SURFACE_SESSION]");
+	});
+
+	it("enforces maxConcurrentSurfaceDeliveries with HTTP 429 and recovers once a slot frees", async () => {
+		const releaseSlots: (() => void)[] = [];
+		const provider = backend();
+		provider.deliverSurfaceSession = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					releaseSlots.push(resolve);
+				}),
+		);
+		const service = new HttpCloudRunnerProviderService(provider, token, "127.0.0.1", 0, {
+			maxConcurrentSurfaceDeliveries: 2,
+		});
+		services.push(service);
+		const port = await service.start();
+		const machineId = "11111111-1111-4111-8111-111111111111";
+		const makeBody = (sessionId: string) =>
+			JSON.stringify({
+				schema: "qorpera.runner-provider/v1",
+				action: "surface_session",
+				adapter_id: "managed",
+				machine_id: machineId,
+				session: {
+					sessionId,
+					surfaceId: "33333333-3333-4333-8333-333333333333",
+					profileId: "44444444-4444-4444-8444-444444444444",
+					state: "queued",
+					prompt: "Run turn",
+					originKind: "member",
+					originRef: null,
+					repositoryKey: null,
+					folderRoot: "identity",
+					surfaceSlug: "identity",
+					surfaceTitle: "Identity",
+					surfaceArchetype: "studio",
+					surfaceSourceKind: "folder",
+					surfaceKind: "identity",
+					explorationId: null,
+					explorationVariantLabel: null,
+					siteSlug: null,
+					identityFolderRoot: "identity",
+					briefSummary: null,
+					retryCount: 0,
+					sponsor: null,
+					leaseToken: "55555555-5555-4555-8555-555555555555",
+					placement: {
+						strategy: "reuse_machine",
+						machineId,
+						activeTurns: 0,
+						targetDensity: 6,
+					},
+				},
+			});
+		const send = (sessionId: string) =>
+			fetch(`http://127.0.0.1:${port}/v1/qorpera-runner-provider`, {
+				method: "POST",
+				headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+				body: makeBody(sessionId),
+			});
+
+		const first = await send("22222222-2222-4222-8222-222222222201");
+		const second = await send("22222222-2222-4222-8222-222222222202");
+		const third = await send("22222222-2222-4222-8222-222222222203");
+		expect(first.status).toBe(202);
+		expect(second.status).toBe(202);
+		expect(third.status).toBe(429);
+		expect(third.headers.get("retry-after")).toBe("5");
+		await expect(third.json()).resolves.toEqual({ error: "Provider surface session capacity reached" });
+
+		releaseSlots[0]?.();
+		await new Promise((resolve) => setTimeout(resolve, 15));
+		const fourth = await send("22222222-2222-4222-8222-222222222204");
+		expect(fourth.status).toBe(202);
+		for (const release of releaseSlots) release();
 	});
 
 	it("decodes multi-byte UTF-8 JSON bodies split across TCP chunks without corruption", async () => {

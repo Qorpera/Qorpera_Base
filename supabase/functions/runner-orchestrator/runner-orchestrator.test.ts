@@ -385,21 +385,304 @@ describe("runner orchestrator boundary", () => {
 		assert.equal(runnerOrchestratorRpcStatus({ code: "40001" }), 409);
 		assert.equal(runnerOrchestratorRpcStatus({ code: "55000" }), 423);
 	});
+
+	it("parses and validates surface job claim and completion actions", () => {
+		const previewId = "88888888-8888-4888-8888-888888888888";
+		const siteVersionId = "99999999-9999-4999-8999-999999999999";
+		const sessionId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+		const jobId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+		const conflictChangeId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+		const sha1 = "a".repeat(40);
+		const sha2 = "b".repeat(40);
+
+		assert.deepEqual(parseRunnerOrchestratorRequest({ action: "surface_claim_jobs", orchestratorId }), {
+			action: "surface_claim_jobs",
+			orchestratorId,
+			limit: 16,
+		});
+		assert.deepEqual(parseRunnerOrchestratorRequest({ action: "surface_claim_jobs", orchestratorId, limit: 32 }), {
+			action: "surface_claim_jobs",
+			orchestratorId,
+			limit: 32,
+		});
+		for (const limit of [0, 65, 1.5, "16", null]) {
+			assert.throws(() => parseRunnerOrchestratorRequest({ action: "surface_claim_jobs", orchestratorId, limit }));
+		}
+
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_preview",
+				orchestratorId,
+				previewId,
+				status: "ready",
+				compositeTreeSha: sha1,
+				siteVersionId,
+				conflictReport: null,
+				errorDetail: null,
+			}),
+			{
+				action: "surface_complete_preview",
+				orchestratorId,
+				previewId,
+				status: "ready",
+				compositeTreeSha: sha1,
+				siteVersionId,
+			},
+		);
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_preview",
+				orchestratorId,
+				previewId,
+				status: "conflicted",
+				conflictReport: { changeIds: [conflictChangeId], paths: ["index.html"] },
+			}),
+			{
+				action: "surface_complete_preview",
+				orchestratorId,
+				previewId,
+				status: "conflicted",
+				conflictReport: { changeIds: [conflictChangeId], paths: ["index.html"] },
+			},
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_preview",
+				orchestratorId,
+				previewId,
+				status: "building",
+			}),
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_preview",
+				orchestratorId,
+				previewId: "not-a-uuid",
+				status: "failed",
+				errorDetail: "Build failed",
+			}),
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_preview",
+				orchestratorId,
+				previewId,
+				status: "failed",
+				errorDetail: "x".repeat(1001),
+			}),
+		);
+
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_session_turn",
+				orchestratorId,
+				sessionId,
+				state: "needs_input",
+				replyText: "Line 1\nLine 2",
+				question: { text: "Which palette?", options: ["Aftenlys", "Varmt studie"] },
+				notePaths: ["notes/decisions.md"],
+				branchHeadSha: sha1,
+			}),
+			{
+				action: "surface_complete_session_turn",
+				orchestratorId,
+				sessionId,
+				state: "needs_input",
+				replyText: "Line 1\nLine 2",
+				question: { text: "Which palette?", options: ["Aftenlys", "Varmt studie"] },
+				notePaths: ["notes/decisions.md"],
+				branchHeadSha: sha1,
+			},
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_session_turn",
+				orchestratorId,
+				sessionId,
+				state: "invalid_state",
+			}),
+		);
+		for (const state of ["queued", "running", "reconciling", "discarded"]) {
+			assert.throws(() =>
+				parseRunnerOrchestratorRequest({
+					action: "surface_complete_session_turn",
+					orchestratorId,
+					sessionId,
+					state,
+				}),
+			);
+		}
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "surface_renew_lease",
+				orchestratorId,
+				kind: "session",
+				id: sessionId,
+				leaseToken: jobId,
+			}),
+			{
+				action: "surface_renew_lease",
+				orchestratorId,
+				kind: "session",
+				id: sessionId,
+				leaseToken: jobId,
+				extendSeconds: 300,
+			},
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({
+				action: "surface_renew_lease",
+				orchestratorId,
+				kind: "invalid",
+				id: sessionId,
+				leaseToken: jobId,
+			}),
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_session_turn",
+				orchestratorId,
+				sessionId,
+				state: "ready",
+				notePaths: ["bad\npath"],
+			}),
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_session_turn",
+				orchestratorId,
+				sessionId,
+				state: "ready",
+				replyText: "x".repeat(16_001),
+			}),
+		);
+
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_merge",
+				orchestratorId,
+				jobId,
+				status: "landed",
+				mainBefore: sha1,
+				mainAfter: sha2,
+			}),
+			{
+				action: "surface_complete_merge",
+				orchestratorId,
+				jobId,
+				status: "landed",
+				mainBefore: sha1,
+				mainAfter: sha2,
+			},
+		);
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_merge",
+				orchestratorId,
+				jobId,
+				status: "conflicted",
+				conflictChangeId,
+				conflictPaths: ["hero.html"],
+				errorDetail: "Merge conflict on hero.html",
+			}),
+			{
+				action: "surface_complete_merge",
+				orchestratorId,
+				jobId,
+				status: "conflicted",
+				conflictChangeId,
+				conflictPaths: ["hero.html"],
+				errorDetail: "Merge conflict on hero.html",
+			},
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_merge",
+				orchestratorId,
+				jobId,
+				status: "queued",
+			}),
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_merge",
+				orchestratorId,
+				jobId,
+				status: "conflicted",
+				conflictChangeId: "not-a-uuid",
+			}),
+		);
+
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_publish",
+				orchestratorId,
+				jobId,
+				status: "published",
+				publishedHeadSha: sha2,
+			}),
+			{
+				action: "surface_complete_publish",
+				orchestratorId,
+				jobId,
+				status: "published",
+				publishedHeadSha: sha2,
+			},
+		);
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_publish",
+				orchestratorId,
+				jobId,
+				status: "failed",
+				errorDetail: "Site upload timed out",
+			}),
+			{
+				action: "surface_complete_publish",
+				orchestratorId,
+				jobId,
+				status: "failed",
+				errorDetail: "Site upload timed out",
+			},
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_publish",
+				orchestratorId,
+				jobId,
+				status: "publishing",
+			}),
+		);
+	});
 });
 
 describe("the edge function's route for the one call", () => {
 	type RpcAnswer = { data?: unknown; error?: { code: string } };
 	type Handler = (request: Request) => Promise<Response>;
 	const calls: [string, unknown][] = [];
-	let answer: (name: string) => RpcAnswer = () => ({ data: null });
+	const signals: (AbortSignal | undefined)[] = [];
+	let answer: (name: string, signal?: AbortSignal) => RpcAnswer = () => ({ data: null });
 	let handler: Handler | undefined;
 
 	// index.ts as it is, under Node: Deno and its npm specifier are stand-ins that record what it asks of PostgREST.
 	before(async () => {
 		Reflect.set(globalThis, "qorperaEdgeTestClient", () => ({
-			rpc: async (name: string, args: unknown) => {
-				calls.push([name, args]);
-				return answer(name);
+			rpc: (name: string, args: unknown) => {
+				let attached: AbortSignal | undefined;
+				const builder = {
+					abortSignal(signal: AbortSignal) {
+						attached = signal;
+						return builder;
+					},
+					then(onFulfilled?: (value: RpcAnswer) => unknown, onRejected?: (reason: unknown) => unknown) {
+						calls.push([name, args]);
+						signals.push(attached);
+						return Promise.resolve()
+							.then(() => answer(name, attached))
+							.then(onFulfilled, onRejected);
+					},
+				};
+				return builder;
 			},
 		}));
 		Reflect.set(globalThis, "Deno", {
@@ -490,6 +773,229 @@ describe("the edge function's route for the one call", () => {
 		for (const [, name, due] of answers) assert.equal(due, lists.get(name), `${name} reads ${due}`);
 	});
 
+	it("authenticates and dispatches all five surface orchestration RPCs", async () => {
+		const previewId = "88888888-8888-4888-8888-888888888888";
+		const siteVersionId = "99999999-9999-4999-8999-999999999999";
+		const sessionId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+		const jobId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+		const conflictChangeId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+		const leaseToken = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+		const sha1 = "a".repeat(40);
+		const sha2 = "b".repeat(40);
+		const tokenHash = createHash("sha256").update(token).digest("hex");
+
+		calls.length = 0;
+		answer = answers(true, { data: { sessions: [], previews: [], merges: [], publishes: [] } });
+		const claimRes = await post({ action: "surface_claim_jobs", orchestratorId, limit: 24 });
+		assert.equal(claimRes.status, 200);
+		assert.deepEqual(await claimRes.json(), { value: { sessions: [], previews: [], merges: [], publishes: [] } });
+		assert.deepEqual(calls, [
+			["qorpera_runner_orchestrator_control_valid", { p_orchestrator_id: orchestratorId, p_control_token_sha256: tokenHash }],
+			["qorpera_surface_claim_pending_jobs", { p_limit: 24 }],
+		]);
+
+		calls.length = 0;
+		answer = answers(true, { data: { renewed: true, leaseExpiresAt: "2026-11-22T03:05:00Z" } });
+		const renewRes = await post({
+			action: "surface_renew_lease",
+			orchestratorId,
+			kind: "session",
+			id: sessionId,
+			leaseToken,
+			extendSeconds: 300,
+		});
+		assert.equal(renewRes.status, 200);
+		assert.deepEqual(calls[1], [
+			"qorpera_surface_renew_lease",
+			{
+				p_kind: "session",
+				p_id: sessionId,
+				p_lease_token: leaseToken,
+				p_extend_seconds: 300,
+			},
+		]);
+
+		calls.length = 0;
+		answer = answers(true, { data: { sessionId, released: true, state: "queued" } });
+		const releaseRes = await post({
+			action: "surface_release_session_claim",
+			orchestratorId,
+			sessionId,
+			leaseToken,
+		});
+		assert.equal(releaseRes.status, 200);
+		assert.deepEqual(calls[1], [
+			"qorpera_surface_release_session_claim",
+			{
+				p_session_id: sessionId,
+				p_lease_token: leaseToken,
+			},
+		]);
+
+		calls.length = 0;
+		answer = answers(true, { data: { previewId, status: "ready", shortHostId: "ab12cd34", compositeTreeSha: sha1 } });
+		const previewRes = await post({
+			action: "surface_complete_preview",
+			orchestratorId,
+			previewId,
+			status: "ready",
+			compositeTreeSha: sha1,
+			siteVersionId,
+			leaseToken,
+		});
+		assert.equal(previewRes.status, 200);
+		assert.deepEqual(calls[1], [
+			"qorpera_surface_complete_preview",
+			{
+				p_preview_id: previewId,
+				p_status: "ready",
+				p_composite_tree_sha: sha1,
+				p_site_version_id: siteVersionId,
+				p_conflict_report: null,
+				p_error_detail: null,
+				p_lease_token: leaseToken,
+			},
+		]);
+
+		calls.length = 0;
+		answer = answers(true, { data: { id: sessionId, state: "ready" } });
+		const turnRes = await post({
+			action: "surface_complete_session_turn",
+			orchestratorId,
+			sessionId,
+			state: "ready",
+			replyText: "Prepared changes",
+			notePaths: ["notes/plan.md"],
+			branchHeadSha: sha1,
+			leaseToken,
+		});
+		assert.equal(turnRes.status, 200);
+		assert.deepEqual(calls[1], [
+			"qorpera_surface_complete_session_turn",
+			{
+				p_session_id: sessionId,
+				p_state: "ready",
+				p_reply_text: "Prepared changes",
+				p_question: null,
+				p_note_paths: ["notes/plan.md"],
+				p_branch_head_sha: sha1,
+				p_lease_token: leaseToken,
+			},
+		]);
+
+		calls.length = 0;
+		answer = answers(true, { data: { jobId, status: "conflicted" } });
+		const mergeRes = await post({
+			action: "surface_complete_merge",
+			orchestratorId,
+			jobId,
+			status: "conflicted",
+			mainBefore: sha1,
+			conflictChangeId,
+			conflictPaths: ["index.html"],
+			preMergeSnapshot: { files: { "identity/tokens.json": "{}" } },
+			leaseToken,
+		});
+		assert.equal(mergeRes.status, 200);
+		assert.deepEqual(calls[1], [
+			"qorpera_surface_complete_merge",
+			{
+				p_job_id: jobId,
+				p_status: "conflicted",
+				p_main_before: sha1,
+				p_main_after: null,
+				p_conflict_change_id: conflictChangeId,
+				p_conflict_paths: ["index.html"],
+				p_error_detail: null,
+				p_pre_merge_snapshot: { files: { "identity/tokens.json": "{}" } },
+				p_lease_token: leaseToken,
+			},
+		]);
+
+		calls.length = 0;
+		answer = answers(true, { data: { jobId, status: "published" } });
+		const publishRes = await post({
+			action: "surface_complete_publish",
+			orchestratorId,
+			jobId,
+			status: "published",
+			publishedHeadSha: sha2,
+			leaseToken,
+		});
+		assert.equal(publishRes.status, 200);
+		assert.deepEqual(calls[1], [
+			"qorpera_surface_complete_publish",
+			{
+				p_job_id: jobId,
+				p_status: "published",
+				p_published_head_sha: sha2,
+				p_error_detail: null,
+				p_lease_token: leaseToken,
+			},
+		]);
+
+		calls.length = 0;
+		answer = answers(true, { data: { sessions: [], previews: [], merges: [], publishes: [], automations: [] } });
+		const laneClaimRes = await post({
+			action: "surface_claim_jobs",
+			orchestratorId,
+			limit: 12,
+			lane: "sessions",
+		});
+		assert.equal(laneClaimRes.status, 200);
+		assert.deepEqual(calls[1], [
+			"qorpera_surface_claim_pending_jobs_for_lane",
+			{ p_limit: 12, p_lane: "sessions" },
+		]);
+
+		calls.length = 0;
+		answer = answers(true, { data: { status: "enqueued", wakeId: claimId, runId: null } });
+		const enqueueRes = await post({
+			action: "surface_enqueue_session_run",
+			orchestratorId,
+			sessionId,
+			leaseToken,
+		});
+		assert.equal(enqueueRes.status, 200);
+		assert.deepEqual(calls[1], [
+			"qorpera_surface_enqueue_session_run",
+			{ p_session_id: sessionId, p_lease_token: leaseToken },
+		]);
+
+		calls.length = 0;
+		answer = answers(true, { data: { status: "started", session: { sessionId } } });
+		const triggerRes = await post({
+			action: "surface_trigger_automation",
+			orchestratorId,
+			automationId: routineId,
+		});
+		assert.equal(triggerRes.status, 200);
+		assert.deepEqual(calls[1], ["qorpera_surface_trigger_automation", { p_automation_id: routineId }]);
+
+		calls.length = 0;
+		answer = answers(true, { data: { updated: 1, sessionId } });
+		const rebaseRes = await post({
+			action: "surface_update_rebased_changes",
+			orchestratorId,
+			surfaceId: assignmentId,
+			sessionId,
+			branchHeadSha: sha2,
+			rebasedChanges: [{ changeId: occurrenceId, parentSha: sha1, headSha: sha2 }],
+		});
+		assert.equal(rebaseRes.status, 200);
+		assert.deepEqual(calls[1], [
+			"qorpera_surface_update_rebased_changes",
+			{
+				p_surface_id: assignmentId,
+				p_session_id: sessionId,
+				p_branch_head_sha: sha2,
+				p_rebased_changes: [{ changeId: occurrenceId, parentSha: sha1, headSha: sha2 }],
+				p_conflicted_change_id: null,
+				p_conflict_paths: null,
+			},
+		]);
+	});
+
 	it("returns 503 on transient control-token validation DB errors instead of 401 and cancels oversized chunked bodies", async () => {
 		assert.equal(orchestratorAuthFailure({ code: "08006" }, null)?.status, 503);
 		assert.equal(orchestratorAuthFailure({ code: "42501" }, null)?.status, 401);
@@ -526,5 +1032,54 @@ describe("the edge function's route for the one call", () => {
 		await assert.rejects(readRunnerOrchestratorRequest(chunkedReq), /request size/);
 		assert.equal(cancelled, true);
 		assert.ok(pulled <= 10, `expected early stream cancellation, saw ${pulled} chunks`);
+
+		let stalledCancelled = false;
+		const stalled = new ReadableStream<Uint8Array>({
+			pull() {
+				return new Promise<void>(() => {});
+			},
+			cancel() {
+				stalledCancelled = true;
+			},
+		});
+		const stalledReq = new Request("https://project.invalid/functions/v1/runner-orchestrator", {
+			method: "POST",
+			headers: { authorization: `Bearer ${token}` },
+			body: stalled,
+			duplex: "half",
+		} as RequestInit);
+		await assert.rejects(readRunnerOrchestratorRequest(stalledReq, 15), (error: unknown) => {
+			assert.equal(error instanceof Error ? error.name : "", "TimeoutError");
+			return true;
+		});
+		assert.equal(stalledCancelled, true);
+
+		answer = () => {
+			throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+		};
+		const rpcThrown = await post({ action: "due_summary", orchestratorId });
+		assert.equal(rpcThrown.status, 503);
+		assert.deepEqual(await rpcThrown.json(), { error: "Runner orchestration is unavailable" });
+
+		signals.length = 0;
+		const ac = new AbortController();
+		answer = (name, signal) => {
+			if (name === "qorpera_runner_orchestrator_control_valid") return { data: true };
+			signal?.throwIfAborted();
+			return { data: {} };
+		};
+		const req = new Request("https://project.invalid/functions/v1/runner-orchestrator", {
+			method: "POST",
+			headers: { authorization: `Bearer ${token}` },
+			body: JSON.stringify({ action: "due_summary", orchestratorId }),
+			signal: ac.signal,
+		});
+		const ok = await (handler as Handler)(req);
+		assert.equal(ok.status, 200);
+		assert.equal(signals.length, 2);
+		assert.equal(signals[0], req.signal);
+		assert.equal(signals[1], req.signal);
+		ac.abort(new Error("caller gone"));
+		assert.equal(signals[1]?.aborted, true);
 	});
 });

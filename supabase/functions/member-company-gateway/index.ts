@@ -16,15 +16,23 @@ function allowedOrigins(): readonly string[] | undefined {
 	return cachedOrigins;
 }
 
+let cachedAuthBase: string | undefined;
+let cachedAuthUserUrl: URL | undefined;
+
 /** The auth service's own check of the member's token (GoTrue `/auth/v1/user`): yes, no (401/403), or a throw. */
 async function memberSignedIn(authorization: string, signal: AbortSignal): Promise<boolean> {
 	const base = Deno.env.get("SUPABASE_URL");
 	const key = Deno.env.get("SUPABASE_ANON_KEY");
 	if (!base || !key) throw new Error("Auth is not configured");
+	if (base !== cachedAuthBase || !cachedAuthUserUrl) {
+		cachedAuthUserUrl = new URL("/auth/v1/user", base);
+		cachedAuthBase = base;
+	}
+	const authUrl = cachedAuthUserUrl;
 	return withTimeoutScope(
 		5_000,
 		async (scopedSignal) => {
-			const response = await fetch(new URL("/auth/v1/user", base), {
+			const response = await fetch(authUrl, {
 				headers: { apikey: key, authorization },
 				redirect: "error",
 				signal: scopedSignal,

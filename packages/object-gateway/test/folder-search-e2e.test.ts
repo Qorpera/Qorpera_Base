@@ -1,6 +1,9 @@
+import { spawn } from "node:child_process";
+import { createHmac } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Writable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CoreEntry } from "../src/folder-service/core.ts";
 import { MountGrants } from "../src/folder-service/mounts.ts";
@@ -340,13 +343,13 @@ describe.skipIf(!program)("native Rust search-worker E2E", () => {
 		const errorCases: [string, string][] = [
 			["(a)\\1", "REGEX_BACKREFERENCE: "],
 			["(?=a)a", "REGEX_LOOKAROUND: "],
-			["(?i)a", "REGEX_FLAGS: "],
+			["(?s)a", "REGEX_FLAGS: "],
 			["\\p{L}", "REGEX_ESCAPE: "],
 			["[[:alpha:]]", "REGEX_SYNTAX: "],
 			["\\k<x>", "REGEX_BACKREFERENCE: "],
 			["\\q", "REGEX_ESCAPE: "],
 			["[unclosed", "REGEX_SYNTAX: "],
-			["a{17}", "REGEX_TOO_LARGE: "],
+			["a{65}", "REGEX_TOO_LARGE: "],
 			["(a{1,10}){1,10}", "REGEX_TOO_LARGE: "],
 		];
 		for (const [pattern, prefix] of errorCases) {
@@ -914,7 +917,7 @@ describe.skipIf(!program)("native Rust search-worker E2E", () => {
 
 		const compactBytes = (tree: ViewTree): number => {
 			let total = 64;
-			for (const entry of tree.walk("")) total += 112 + Buffer.byteLength(entry.path);
+			for (const entry of tree.walk("")) total += 136 + Buffer.byteLength(entry.path);
 			return total;
 		};
 		expect(worker.liveTreeBytes).toBe(compactBytes(treeA) + compactBytes(treeOther));
@@ -992,5 +995,108 @@ describe.skipIf(!program)("native Rust search-worker E2E", () => {
 			makeRequest({ query: "BUDGET_WAIT_B" }),
 		);
 		expect(answerB.hits.map((h) => h.path)).toEqual(["d00/sentinel_b.ts"]);
+	});
+
+	it("runs scan-stream and scan-pack --diff-idx / --exclude-idx end-to-end on the compiled binary", async () => {
+		const root = await makeTempDir();
+		const key = Buffer.alloc(32, 0x33);
+		const kw = createHmac("sha256", key).update("qorpera-secret-window/v1").digest();
+		const kv = createHmac("sha256", key).update("qorpera-secret-value/v1").digest();
+		const c0 = kw.readUInt32BE(0);
+		const c1 = (kw.readUInt32BE(4) | 1) >>> 0;
+		const c2 = kw.readUInt32BE(8);
+		const c3 = (kw.readUInt32BE(12) | 1) >>> 0;
+		const c4 = kw.readUInt32BE(16);
+		const c5 = (kw.readUInt32BE(20) | 1) >>> 0;
+		const c6 = kw.readUInt32BE(24);
+		const c7 = (kw.readUInt32BE(28) | 1) >>> 0;
+		const secret = "sk_live_e2e_secret_token_9876543210";
+		const sb = Buffer.from(secret);
+		let h = Math.imul((sb.readUInt32BE(0) ^ c0) >>> 0, c1) >>> 0;
+		h = (h ^ (h >>> 15)) >>> 0;
+		h = Math.imul((h ^ sb.readUInt32BE(4) ^ c2) >>> 0, c3) >>> 0;
+		h = (h ^ (h >>> 13)) >>> 0;
+		h = Math.imul((h ^ c4) >>> 0, c5) >>> 0;
+		h = (h ^ (h >>> 16)) >>> 0;
+		h = Math.imul((h ^ c6) >>> 0, c7) >>> 0;
+		const spec = JSON.stringify({
+			key: key.toString("base64url"),
+			values: [
+				{
+					length: sb.length,
+					start: h >>> 12,
+					whole: createHmac("sha256", kv).update(sb).digest().subarray(0, 16).toString("base64url"),
+				},
+			],
+			rebuiltMax: 16 * 1024 * 1024,
+		});
+
+		const runCli = (args: readonly string[], stdinData: Buffer, specData?: string) =>
+			new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
+				const child = spawn(program!, args, {
+					stdio: specData === undefined ? ["pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe", "pipe"],
+				});
+				let stdout = "";
+				let stderr = "";
+				child.stdout.on("data", (d: Buffer) => {
+					stdout += d.toString("utf8");
+				});
+				child.stderr.on("data", (d: Buffer) => {
+					stderr += d.toString("utf8");
+				});
+				child.stdin.on("error", () => {});
+				if (specData !== undefined) (child.stdio[3] as Writable).end(specData);
+				child.stdin.end(stdinData);
+				child.once("close", (code) => resolve({ code, stdout, stderr }));
+			});
+
+		const cleanRes = await runCli(["scan-stream", "--spec-fd", "3"], Buffer.from("clean content\n".repeat(64)), spec);
+		expect(cleanRes.code).toBe(0);
+		expect(JSON.parse(cleanRes.stdout.trim())).toEqual({ status: "clean", rebuilt: 64 * 14 });
+
+		const hitRes = await runCli(
+			["scan-stream", "--spec-fd", "3"],
+			Buffer.concat([Buffer.alloc(256 * 1024 - 10, 0x61), sb, Buffer.from("tail")]),
+			spec,
+		);
+		expect(hitRes.code).toBe(0);
+		expect(JSON.parse(hitRes.stdout.trim())).toEqual({ status: "secret" });
+
+		const makeIdxV2 = (oidsHex: readonly string[]): Buffer => {
+			const sorted = [...oidsHex].sort().map((hex) => Buffer.from(hex, "hex"));
+			const fanout = Buffer.alloc(256 * 4);
+			for (let b = 0; b < 256; b++) {
+				const count = sorted.filter((o) => o[0]! <= b).length;
+				fanout.writeUInt32BE(count, b * 4);
+			}
+			const n = sorted.length;
+			return Buffer.concat([
+				Buffer.from([0xff, 0x74, 0x4f, 0x63, 0, 0, 0, 2]),
+				fanout,
+				...sorted,
+				Buffer.alloc(n * 4),
+				Buffer.alloc(n * 4),
+				Buffer.alloc(40),
+			]);
+		};
+		const oidOld = "11".repeat(20);
+		const oidNew = "22".repeat(20);
+		const oldIdx = join(root, "old.idx");
+		const newIdx = join(root, "new.idx");
+		await writeFile(oldIdx, makeIdxV2([oidOld]));
+		await writeFile(newIdx, makeIdxV2([oidOld, oidNew]));
+
+		const diffRes = await runCli(["scan-pack", "--diff-idx", newIdx, "--exclude-idx", oldIdx], Buffer.alloc(0));
+		expect(diffRes.code).toBe(0);
+		expect(diffRes.stdout.trim()).toBe(oidNew);
+
+		const batch = Buffer.concat([
+			Buffer.from(`${oidOld} blob ${sb.length}\n`),
+			sb,
+			Buffer.from(`\n${oidNew} blob 5\nhello\n`),
+		]);
+		const exclRes = await runCli(["scan-pack", "--spec-fd", "3", "--exclude-idx", oldIdx], batch, spec);
+		expect(exclRes.code).toBe(0);
+		expect(JSON.parse(exclRes.stdout.trim())).toEqual({ status: "clean", rebuilt: 5 });
 	});
 });

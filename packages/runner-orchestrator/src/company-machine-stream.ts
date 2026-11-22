@@ -33,13 +33,27 @@ export const COMPANY_MACHINE_DESKTOP_VIEW = [
  * SetEncodings (2, 4 + 4n bytes, n at most 16) and FramebufferUpdateRequest (3, 10 bytes). A key (4), a pointer (5),
  * the clipboard (6) or anything else ends it (93) before any of it reaches the server. */
 export const COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM = [
-	"import os, socket, sys, threading, time",
+	"import os, select, socket, sys, threading, time",
 	"try:",
 	"    vnc = socket.create_connection(('127.0.0.1', 5901), timeout=5)",
 	"except OSError:",
 	"    sys.exit(95)",
 	"vnc.settimeout(None)",
 	"vnc.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)",
+	// WHY: Bound stalled VNC writes to 10 s (exiting 96) so a wedged server cannot pin the relay and keep touching last-use forever.
+	"def send_vnc(buf):",
+	"    view = memoryview(buf)",
+	"    try:",
+	"        while view:",
+	"            _, ready, _ = select.select([], [vnc], [], 10)",
+	"            if not ready:",
+	"                os._exit(96)",
+	"            sent = vnc.send(view)",
+	"            if sent <= 0:",
+	"                os._exit(96)",
+	"            view = view[sent:]",
+	"    except OSError:",
+	"        os._exit(96)",
 	// The server went away (the desktop stopped or restarted): 96, so the host hears the desktop ended (an exit 0 with
 	// the host's input still open is a failed call to LXD; the real machine's run 2 of this step).
 	"def down():",
@@ -48,8 +62,11 @@ export const COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM = [
 	"            data = vnc.recv(65536)",
 	"            if not data:",
 	"                break",
-	"            sys.stdout.buffer.write(data)",
-	"            sys.stdout.buffer.flush()",
+	"            try:",
+	"                sys.stdout.buffer.write(data)",
+	"                sys.stdout.buffer.flush()",
+	"            except BrokenPipeError:",
+	"                os._exit(0)",
 	"    except OSError:",
 	"        pass",
 	"    os._exit(96)",
@@ -100,7 +117,7 @@ export const COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM = [
 	"                os._exit(93)",
 	"        if len(held) < size:",
 	"            return",
-	"        vnc.sendall(held[:size])",
+	"        send_vnc(held[:size])",
 	"        held = held[size:]",
 	"        stage = min(stage + 1, 3)",
 	"while True:",
@@ -118,6 +135,7 @@ export const COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM = [
 /** The relay's exits besides 0 (its input ended: the host stopped watching): not allowed (93, never for what this
  * module sends), the desktop off (95), the desktop's server went away (96), another boot (97), an image without python3
  * (98). */
+// WHY: Exit 96 covers both a closed VNC server and a 10 s stalled write in send_vnc.
 export const DESKTOP_VIEW_EXITS: Readonly<
 	Record<number, "DESKTOP_NOT_RUNNING" | "DESKTOP_ENDED" | "MACHINE_BOOT_CHANGED" | "MACHINE_IMAGE_WITHOUT_SCREEN">
 > = Object.freeze({

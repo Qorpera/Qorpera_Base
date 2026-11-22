@@ -73,6 +73,12 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { withTimeoutScope } from "../_shared/abort-timeout.ts";
+import {
+	BodyTooLargeError,
+	DEFAULT_BODY_READ_TIMEOUT_MS,
+	readBoundedBytes,
+	readBoundedJson,
+} from "../_shared/http-guards.ts";
 
 export const DEFAULT_SITES_ORIGIN = "https://sites.qorpera.com";
 /** The web's origins when QORPERA_WEB_ORIGINS is not set: the production app. */
@@ -88,7 +94,15 @@ const SLUG = /^[a-z0-9](?:[a-z0-9-]{1,46}[a-z0-9])$/;
 const TOKEN = /^[A-Za-z0-9_-]{32}$/;
 const SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,199}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
-const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const BASE64_CHARS = /^[A-Za-z0-9+/]*={0,2}$/;
+const UTF8_ENCODER = new TextEncoder();
+const UTF8_FATAL_DECODER = new TextDecoder("utf-8", { fatal: true });
+const ROBOTS_TXT_BYTES = UTF8_ENCODER.encode("User-agent: *\nDisallow: /\n");
+
+function isValidBase64(value: string): boolean {
+	// WHY: Flat DFA scan + modulo-4 check avoids millions of regex group repetitions on 10 MiB base64 file payloads.
+	return value.length % 4 === 0 && BASE64_CHARS.test(value);
+}
 const CONTENT_TYPE = /^[a-z]+\/[a-z0-9.+-]+(?:; charset=utf-8)?$/;
 const MAX_SEGMENTS = 16;
 const MAX_PATH = 512;
@@ -106,7 +120,7 @@ export const PAGE_SECURITY_POLICY =
  * web share (STEP5-BUILD.md, release 5.1, item 3). The one label before qorpera.com is a name of letters and digits in
  * runs joined by single hyphens (group 1, the slug, which can never hold `--`), then `--next` on a next host (group 2).
  * The slug is also 3 to 48 long (SITE_HOST_SLUG_LENGTH); SQL checks the rest of the name rule. */
-export const SITE_HOST = /^([a-z0-9]+(?:-[a-z0-9]+)*)(--next)?\.qorpera\.com$/;
+export const SITE_HOST = /^([a-z0-9]+(?:-[a-z0-9]+)*)(--next|--p[a-z0-9]{8})?\.qorpera\.com$/;
 const SITE_HOST_SLUG_LENGTH = { min: 3, max: 48 } as const;
 /** The session cookie on a site host: host-only, so a visitor's on the own host and a member's on the next host never
  * meet, and no sibling can set or overwrite it. */
@@ -122,6 +136,7 @@ export const HOST_PAGE_SECURITY_POLICY =
 const PLATFORM_FOLDER = "__qorpera";
 /** The member's door on an own host: a one-use pass from the web, posted in a form's body. */
 export const MEMBER_PATH = `/${PLATFORM_FOLDER}/member`;
+export const INSPECTOR_PATH = `/${PLATFORM_FOLDER}/inspector.js`;
 /** A member pass: 32 random bytes, base64url without padding, as Look first's ticket. */
 const PASS = TICKET;
 
@@ -181,8 +196,9 @@ export interface SiteStore {
 		etag: string | null,
 		offset: number,
 		length: number,
+		signal?: AbortSignal,
 	): Promise<unknown>;
-	unlock(slug: string, password: string, client: string): Promise<unknown>;
+	unlock(slug: string, password: string, client: string, signal?: AbortSignal): Promise<unknown>;
 	/** What a host answers (qorpera_site_serve_host): on the old host whether the path's site moved or is gone, on a site
 	 * host one file for a session as `serve` gives it, with its status and scope. */
 	serveHost(
@@ -192,16 +208,17 @@ export interface SiteStore {
 		etag: string | null,
 		offset: number,
 		length: number,
+		signal?: AbortSignal,
 	): Promise<unknown>;
 	/** An own host's password (qorpera_site_unlock_host): `unlock`'s answers for the host's site. */
-	unlockHost(host: string, password: string, client: string): Promise<unknown>;
+	unlockHost(host: string, password: string, client: string, signal?: AbortSignal): Promise<unknown>;
 	/** A next host's ticket for a member's session (qorpera_site_enter). */
-	enter(host: string, ticket: string): Promise<unknown>;
+	enter(host: string, ticket: string, signal?: AbortSignal): Promise<unknown>;
 	/** Counts a page view of a session (qorpera_site_count_view): the host, the answered file's path in the site (on the
 	 * old host after the site's name, `<slug>/<path>`) and the session's token. Its answer is not read. */
 	countView(host: string, path: string, token: string): Promise<unknown>;
 	/** An own host's member pass for a member's session (qorpera_site_member_pass_redeem): `enter`'s answers. */
-	memberPass(host: string, pass: string): Promise<unknown>;
+	memberPass(host: string, pass: string, signal?: AbortSignal): Promise<unknown>;
 }
 
 /** The database has no such function yet (PostgREST's PGRST202): this function was installed before its migration. */
@@ -217,6 +234,7 @@ export interface SiteServeOptions {
 	/** Keeps work going after the answer is sent: the edge runtime's EdgeRuntime.waitUntil when not given. Without
 	 * either, a view's count is waited for at most COUNT_WAIT_MS. */
 	waitUntil?: (work: Promise<unknown>) => void;
+	bodyReadTimeoutMs?: number;
 }
 
 /** The longest an answer waits for its view's count when no waitUntil keeps the count going after it. */
@@ -303,7 +321,7 @@ function fileFields(
 		!Number.isSafeInteger(answer.offset) ||
 		(answer.offset as number) < 0 ||
 		(answer.offset as number) > (answer.bytes as number) ||
-		!(answer.content === null || (typeof answer.content === "string" && BASE64.test(answer.content))) ||
+		!(answer.content === null || (typeof answer.content === "string" && isValidBase64(answer.content))) ||
 		// The content is left out when the visitor holds exactly this file, when none was asked for, or when the bytes
 		// asked for start at the file's end.
 		(answer.content === null && !held && length > 0 && (answer.offset as number) < (answer.bytes as number))
@@ -388,7 +406,7 @@ type HostAnswer =
  * 404.html for a path it lacks (status 404, whole: its content is never left out for the visitor's ETag). */
 export function parseHostAnswer(
 	value: unknown,
-	scope: "site" | "next",
+	scope: "site" | "next" | "preview",
 	etag: string | null,
 	options: { length: number },
 ): HostAnswer {
@@ -399,7 +417,8 @@ export function parseHostAnswer(
 	}
 	const scoped = (keys: readonly string[]) => {
 		const answer = closed(value, [...keys, "scope", "public"]);
-		if (answer.scope !== scope || answer.public !== false) invalid();
+		const matches = scope === "preview" ? answer.scope === "preview" || answer.scope === "next" : answer.scope === scope;
+		if (!matches || answer.public !== false) invalid();
 		return answer;
 	};
 	if (state === "locked" || state === "missing") {
@@ -582,7 +601,7 @@ function htmlAnswer(
 	extra: Record<string, string> = {},
 	referrerPolicy: "no-referrer" | "same-origin" = "no-referrer",
 ): Response {
-	const bytes = new TextEncoder().encode(html);
+	const bytes = UTF8_ENCODER.encode(html);
 	return new Response(request.method === "HEAD" ? null : bytes, {
 		status,
 		headers: {
@@ -599,13 +618,12 @@ function redirect(location: string, status: 303 | 308, extra: Record<string, str
 }
 
 function robots(request: Request): Response {
-	const bytes = new TextEncoder().encode("User-agent: *\nDisallow: /\n");
-	return new Response(request.method === "HEAD" ? null : bytes, {
+	return new Response(request.method === "HEAD" ? null : ROBOTS_TXT_BYTES, {
 		status: 200,
 		headers: {
 			...pageHeaders(),
 			"content-type": "text/plain; charset=utf-8",
-			"content-length": String(bytes.byteLength),
+			"content-length": String(ROBOTS_TXT_BYTES.byteLength),
 		},
 	});
 }
@@ -693,7 +711,7 @@ async function readFile(
 	etag: string | null,
 ): Promise<{ answer: ServeAnswer; range: { start: number; end: number } | "unsatisfiable" | undefined }> {
 	const ask = async (offset: number, length: number) =>
-		parseServeAnswer(await store.serve(slug, path, token, etag, offset, length), etag, { length });
+		parseServeAnswer(await store.serve(slug, path, token, etag, offset, length, request.signal), etag, { length });
 	if (request.method === "HEAD") return { answer: await ask(0, 0), range: undefined };
 	const header = request.headers.get("range");
 	const wanted = rangeRequest(header);
@@ -815,32 +833,32 @@ export function clientAddress(header: string | null): string {
 	return [high >> 8, high & 255, low >> 8, low & 255].join(".");
 }
 
-/** Reads a body up to `limit` bytes; null when it is longer. */
-async function readBody(request: Request, limit: number): Promise<Uint8Array | null> {
+function isTimeoutOrAbortError(error: unknown): boolean {
+	if (error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError")) return true;
+	return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+}
+
+async function readBody(
+	request: Request,
+	limit: number,
+	timeoutMs = DEFAULT_BODY_READ_TIMEOUT_MS,
+): Promise<{ readonly ok: true; readonly bytes: Uint8Array } | { readonly ok: false; readonly status: 400 | 408 | 413 }> {
 	const declared = request.headers.get("content-length");
-	if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > limit)) return null;
-	if (!request.body) return new Uint8Array();
-	const reader = request.body.getReader();
-	const chunks: Uint8Array[] = [];
-	let total = 0;
+	if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > limit)) {
+		void request.body?.cancel().catch(() => undefined);
+		return { ok: false, status: 413 };
+	}
 	try {
-		for (;;) {
-			const chunk = await reader.read();
-			if (chunk.done) break;
-			total += chunk.value.byteLength;
-			if (total > limit) return null;
-			chunks.push(chunk.value);
-		}
-	} finally {
-		void reader.cancel().catch(() => undefined);
+		const bytes = await readBoundedBytes(request, limit, {
+			timeoutMs,
+			signal: request.signal,
+		});
+		return { ok: true, bytes };
+	} catch (error) {
+		if (error instanceof BodyTooLargeError) return { ok: false, status: 413 };
+		if (request.signal.aborted || isTimeoutOrAbortError(error)) return { ok: false, status: 408 };
+		return { ok: false, status: 400 };
 	}
-	const body = new Uint8Array(total);
-	let offset = 0;
-	for (const chunk of chunks) {
-		body.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	return body;
 }
 
 function unavailable(request: Request, lang: Language, error: unknown): Response {
@@ -884,7 +902,10 @@ export async function handleSiteServe(request: Request, options: SiteServeOption
 			: site
 				? await onSiteHost(request, options, lang, site, rest)
 				: undefined;
-		if (answer) return site?.scope === "site" ? framedByWeb(answer, options.webOrigins ?? DEFAULT_WEB_ORIGINS) : answer;
+		if (answer)
+			return site?.scope === "site" || site?.scope === "preview"
+				? framedByWeb(answer, options.webOrigins ?? DEFAULT_WEB_ORIGINS)
+				: answer;
 	}
 	return legacySiteServe(request, options);
 }
@@ -912,7 +933,10 @@ async function onOldHost(
 	if (!SLUG.test(slug)) return undefined;
 	let answer: OldHostAnswer;
 	try {
-		answer = parseOldHostAnswer(await options.store.serveHost(origin.host, `${slug}/`, null, null, 0, 0), slug);
+		answer = parseOldHostAnswer(
+			await options.store.serveHost(origin.host, `${slug}/`, null, null, 0, 0, request.signal),
+			slug,
+		);
 	} catch (error) {
 		if (error instanceof MissingFunction) return undefined;
 		return unavailable(request, lang, error);
@@ -937,7 +961,8 @@ export interface SiteHost {
 	host: string;
 	slug: string;
 	/** site: the own host (the live version, a visitor's session); next: the next host (a member's look first). */
-	scope: "site" | "next";
+	scope: "site" | "next" | "preview";
+	readonly previewId?: string;
 }
 
 /** The site host x-forwarded-host names by the one host rule (SITE_HOST and the slug's length), lower-cased; null for
@@ -948,7 +973,10 @@ export function siteHost(forwarded: string | null): SiteHost | null {
 	const match = SITE_HOST.exec(host);
 	const slug = match?.[1];
 	if (!match || !slug || slug.length < SITE_HOST_SLUG_LENGTH.min || slug.length > SITE_HOST_SLUG_LENGTH.max) return null;
-	return { host, slug, scope: match[2] ? "next" : "site" };
+	const suffix = match[2];
+	if (!suffix) return { host, slug, scope: "site" };
+	if (suffix === "--next") return { host, slug, scope: "next" };
+	return { host, slug, scope: "preview", previewId: suffix.slice(3) };
 }
 
 /** Fetch Metadata (D22): a site host's answers go to the site's own pages (same-origin), to what a person typed or
@@ -1022,7 +1050,7 @@ function hostHtml(
 	extra: Record<string, string> = {},
 	referrerPolicy: "no-referrer" | "same-origin" = "no-referrer",
 ): Response {
-	const bytes = new TextEncoder().encode(html);
+	const bytes = UTF8_ENCODER.encode(html);
 	return new Response(request.method === "HEAD" ? null : bytes, {
 		status,
 		headers: {
@@ -1079,7 +1107,7 @@ function hostLocked(
 	options: { error?: string; clear?: boolean; extra?: Record<string, string> } = {},
 ): Response {
 	const extra = { ...(options.clear ? { "set-cookie": hostCookie("", 0) } : {}), ...options.extra };
-	if (site.scope === "next") {
+	if (site.scope === "next" || site.scope === "preview") {
 		const text = TEXT[lang];
 		return hostHtml(request, messagePage(lang, text.notLive, text.notLiveLead), status, extra);
 	}
@@ -1090,6 +1118,120 @@ function hostLocked(
  * wherever the page ends), ASCII only, so a page's own encoding never garbles it. */
 export function nextBar(lang: Language): string {
 	return `\n<div lang="${lang}" role="status" style="all:initial;display:block;position:fixed;left:0;right:0;bottom:0;z-index:2147483647;padding:8px 12px;background:#1d1c1a;color:#fff;font:600 14px/1.4 system-ui,sans-serif;text-align:center">${TEXT[lang].bar}</div>\n`;
+}
+
+// WHY: Injected strictly on ephemeral --p<id> preview hosts so founders can point at elements without ever altering production HTML.
+export function previewInspectorTag(): string {
+	return `\n<script src="${INSPECTOR_PATH}" defer></script>\n`;
+}
+
+export function previewInspectorScript(origins: readonly string[]): string {
+	const allowed = JSON.stringify(origins);
+	return `(() => {
+	const allowed = new Set(${allowed});
+	let active = false;
+	let parentOrigin = "";
+	let box = null;
+	let badge = null;
+	const ensureUi = () => {
+		if (box) return;
+		box = document.createElement("div");
+		box.style.cssText = "position:fixed;pointer-events:none;z-index:2147483646;border:2px solid #0e84ff;background:rgba(14,132,255,0.08);border-radius:6px;display:none;transition:all 60ms ease-out;";
+		badge = document.createElement("div");
+		badge.style.cssText = "position:fixed;pointer-events:none;z-index:2147483647;background:#161615;color:#fff;font:600 11px/1.3 system-ui,sans-serif;padding:3px 7px;border-radius:6px;display:none;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.22);";
+		document.documentElement.append(box, badge);
+	};
+	const hide = () => { if (box) box.style.display = "none"; if (badge) badge.style.display = "none"; };
+	const selectorOf = (el) => {
+		if (!el || el.nodeType !== 1) return "body";
+		const parts = [];
+		let cur = el;
+		while (cur && cur.nodeType === 1 && parts.length < 5) {
+			let seg = cur.tagName.toLowerCase();
+			if (cur.id) { parts.unshift(seg + "#" + cur.id); break; }
+			const cls = typeof cur.className === "string" ? cur.className.trim().split(/\\s+/).filter(Boolean).slice(0, 2) : [];
+			if (cls.length) seg += "." + cls.join(".");
+			parts.unshift(seg);
+			cur = cur.parentElement;
+		}
+		return parts.join(" > ");
+	};
+	const onMove = (event) => {
+		if (!active) return;
+		const el = document.elementFromPoint(event.clientX, event.clientY);
+		if (!el || el === box || el === badge) { hide(); return; }
+		ensureUi();
+		const r = el.getBoundingClientRect();
+		box.style.display = "block";
+		box.style.left = r.left + "px";
+		box.style.top = r.top + "px";
+		box.style.width = r.width + "px";
+		box.style.height = r.height + "px";
+		const hint = el.getAttribute("data-qorpera-component") || el.tagName.toLowerCase();
+		badge.textContent = hint;
+		badge.style.display = "block";
+		badge.style.left = Math.max(6, Math.min(window.innerWidth - 160, r.left)) + "px";
+		badge.style.top = Math.max(6, r.top - 26) + "px";
+	};
+	const onClick = (event) => {
+		if (!active || !parentOrigin) return;
+		event.preventDefault();
+		event.stopPropagation();
+		const el = document.elementFromPoint(event.clientX, event.clientY) || event.target;
+		if (!el || el.nodeType !== 1) return;
+		const r = el.getBoundingClientRect();
+		const target = {
+			route: location.pathname || "/",
+			selector: selectorOf(el).slice(0, 512),
+			textSnippet: String(el.innerText || el.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 160),
+			tagName: String(el.tagName || "div").toLowerCase().slice(0, 40),
+			componentHint: el.getAttribute("data-qorpera-component") || el.getAttribute("aria-label") || null,
+			boundingBox: { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) },
+			viewport: { width: window.innerWidth || 1280, height: window.innerHeight || 800 },
+		};
+		active = false;
+		hide();
+		document.documentElement.style.cursor = "";
+		window.parent.postMessage({ type: "qorpera-inspector-pick", target }, parentOrigin);
+	};
+	window.addEventListener("message", (event) => {
+		if (event.source !== window.parent || !allowed.has(event.origin)) return;
+		if (!event.data || typeof event.data !== "object") return;
+		if (event.data.type === "qorpera:identity-tokens-css") {
+			const vars = event.data.vars;
+			if (!vars || typeof vars !== "object" || Array.isArray(vars)) return;
+			const root = document.documentElement;
+			for (const [k, v] of Object.entries(vars)) {
+				if (/^--[a-z][a-z0-9-]{1,60}$/.test(k) && typeof v === "string" && v.length <= 160 && !/[;{}<>\\\\]|url\\s*\\(/i.test(v)) {
+					root.style.setProperty(k, v);
+				}
+			}
+			return;
+		}
+		if (event.data.type !== "qorpera-inspector-mode") return;
+		parentOrigin = event.origin;
+		active = Boolean(event.data.active);
+		document.documentElement.style.cursor = active ? "crosshair" : "";
+		if (!active) hide();
+	});
+	window.addEventListener("mousemove", onMove, true);
+	window.addEventListener("click", onClick, true);
+})();\n`;
+}
+
+function previewInspectorResponse(request: Request, origins: readonly string[]): Response {
+	if (request.method !== "GET" && request.method !== "HEAD") return hostNotAllowed("GET, HEAD");
+	const bytes = new TextEncoder().encode(previewInspectorScript(origins));
+	return new Response(request.method === "HEAD" ? null : bytes, {
+		status: 200,
+		headers: {
+			...hostHeaders(),
+			"content-type": "text/javascript; charset=utf-8",
+			"content-security-policy": HOST_CONTENT_SECURITY_POLICY,
+			"cache-control": NO_STORE,
+			"content-length": String(bytes.byteLength),
+		},
+	});
 }
 
 function isHtml(contentType: string): boolean {
@@ -1108,17 +1250,17 @@ async function onSiteHost(
 	const text = TEXT[lang];
 	const method = request.method;
 	if (serviceWorkerScript(request.headers)) return hostNotFound(request, lang);
-	if (!fetchAllowed(request.headers, site.scope === "site"))
+	const framable = site.scope === "site" || site.scope === "preview";
+	if (!fetchAllowed(request.headers, framable))
 		return hostMessage(request, lang, 403, text.unavailable, text.ownAddress);
 	if (rest === "/robots.txt") {
 		if (method !== "GET" && method !== "HEAD") return hostNotAllowed("GET, HEAD");
-		const bytes = new TextEncoder().encode("User-agent: *\nDisallow: /\n");
-		return new Response(method === "HEAD" ? null : bytes, {
+		return new Response(method === "HEAD" ? null : ROBOTS_TXT_BYTES, {
 			status: 200,
 			headers: {
 				...hostPageHeaders(),
 				"content-type": "text/plain; charset=utf-8",
-				"content-length": String(bytes.byteLength),
+				"content-length": String(ROBOTS_TXT_BYTES.byteLength),
 			},
 		});
 	}
@@ -1133,7 +1275,10 @@ async function onSiteHost(
 	if (path === null) return hostNotFound(request, lang);
 	// The platform's folder, whatever a site holds there: the member's door on an own host, nothing else.
 	if (path === PLATFORM_FOLDER || path.startsWith(`${PLATFORM_FOLDER}/`)) {
-		if (`/${path}` === MEMBER_PATH && site.scope === "site") return hostMember(request, options, lang, site);
+		if (`/${path}` === MEMBER_PATH && framable) return hostMember(request, options, lang, site);
+		if (`/${path}` === INSPECTOR_PATH && site.scope === "preview") {
+			return previewInspectorResponse(request, options.webOrigins ?? DEFAULT_WEB_ORIGINS);
+		}
 		return hostNotFound(request, lang);
 	}
 	if (method !== "GET" && method !== "HEAD") return hostNotAllowed("GET, HEAD");
@@ -1191,14 +1336,19 @@ async function readHostFile(
 	etag: string | null,
 ): Promise<{ answer: HostAnswer; range: { start: number; end: number } | "unsatisfiable" | undefined }> {
 	const ask = async (offset: number, length: number) =>
-		parseHostAnswer(await store.serveHost(site.host, path, token, etag, offset, length), site.scope, etag, { length });
+		parseHostAnswer(
+			await store.serveHost(site.host, path, token, etag, offset, length, request.signal),
+			site.scope,
+			etag,
+			{ length },
+		);
 	if (request.method === "HEAD") return { answer: await ask(0, 0), range: undefined };
 	const header = request.headers.get("range");
 	const wanted = rangeRequest(header);
 	if (wanted === undefined) return { answer: await ask(0, MAX_FILE_BYTES), range: undefined };
 	let answer = "suffix" in wanted ? await ask(0, 0) : await ask(wanted.offset, wanted.length);
 	if (answer.state !== "file") return { answer, range: undefined };
-	if (answer.status === 404 || (site.scope === "next" && isHtml(answer.contentType)))
+	if (answer.status === 404 || ((site.scope === "next" || site.scope === "preview") && isHtml(answer.contentType)))
 		return { answer: await ask(0, MAX_FILE_BYTES), range: undefined };
 	if (answer.sha256 === etag) return { answer, range: undefined };
 	const ifRange = request.headers.get("if-range");
@@ -1215,13 +1365,18 @@ async function readHostFile(
 function hostFileAnswer(
 	request: Request,
 	file: Extract<HostAnswer, { state: "file" }>,
-	scope: "site" | "next",
+	scope: "site" | "next" | "preview",
 	etag: string | null,
 	range: { start: number; end: number } | "unsatisfiable" | undefined,
 	lang: Language,
 ): Response {
 	const fresh = scope === "site" && file.status === 200;
-	const bar = scope === "next" && isHtml(file.contentType) ? new TextEncoder().encode(nextBar(lang)) : null;
+	const suffix =
+		scope === "next" && isHtml(file.contentType)
+			? UTF8_ENCODER.encode(nextBar(lang))
+			: scope === "preview" && isHtml(file.contentType)
+				? UTF8_ENCODER.encode(previewInspectorTag())
+				: null;
 	const headers: Record<string, string> = {
 		...hostHeaders(),
 		"content-type": file.contentType,
@@ -1229,10 +1384,10 @@ function hostFileAnswer(
 		"referrer-policy": "same-origin",
 		"cache-control": fresh ? "private, no-cache, no-transform" : NO_STORE,
 		...(fresh ? { etag: `"${file.sha256}"` } : {}),
-		...(file.status === 200 && !bar ? { "accept-ranges": "bytes" } : {}),
+		...(file.status === 200 && !suffix ? { "accept-ranges": "bytes" } : {}),
 	};
 	if (fresh && etag === file.sha256) return new Response(null, { status: 304, headers });
-	const length = file.bytes + (bar?.byteLength ?? 0);
+	const length = file.bytes + (suffix?.byteLength ?? 0);
 	if (request.method === "HEAD")
 		return new Response(null, { status: file.status, headers: { ...headers, "content-length": String(length) } });
 	if (range === "unsatisfiable")
@@ -1258,8 +1413,14 @@ function hostFileAnswer(
 		createHash("sha256").update(bytes).digest("hex") !== file.sha256
 	)
 		invalid();
-	const combined = bar ? Buffer.concat([bytes, bar], bytes.byteLength + bar.byteLength) : null;
-	const body = combined ? new Uint8Array(combined.buffer, combined.byteOffset, combined.byteLength) : bytes;
+	let body: Uint8Array<ArrayBuffer>;
+	if (suffix) {
+		body = new Uint8Array(new ArrayBuffer(bytes.byteLength + suffix.byteLength));
+		body.set(bytes, 0);
+		body.set(suffix, bytes.byteLength);
+	} else {
+		body = bytes as Uint8Array<ArrayBuffer>;
+	}
 	return new Response(body, {
 		status: file.status,
 		headers: { ...headers, "content-length": String(body.byteLength) },
@@ -1278,16 +1439,16 @@ async function hostUnlock(
 	const method = request.method;
 	if (method === "GET" || method === "HEAD") return hostRedirect("/", 303);
 	if (method !== "POST") return hostNotAllowed("POST");
-	if (site.scope === "next") return hostLocked(request, lang, site, "", 401);
+	if (site.scope === "next" || site.scope === "preview") return hostLocked(request, lang, site, "", 401);
 	const sent = request.headers.get("origin");
 	if (sent !== null && sent !== `https://${site.host}`) return hostMessage(request, lang, 403, text.private, text.refused);
 	if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/x-www-form-urlencoded"))
 		return hostMessage(request, lang, 415, text.private, text.refused);
-	const body = await readBody(request, MAX_UNLOCK_BODY_BYTES);
-	if (!body) return hostMessage(request, lang, 413, text.private, text.refused);
+	const read = await readBody(request, MAX_UNLOCK_BODY_BYTES, options.bodyReadTimeoutMs);
+	if (!read.ok) return hostMessage(request, lang, read.status, text.private, text.refused);
 	let form: URLSearchParams;
 	try {
-		form = new URLSearchParams(new TextDecoder("utf-8", { fatal: true }).decode(body));
+		form = new URLSearchParams(UTF8_FATAL_DECODER.decode(read.bytes));
 	} catch {
 		return hostMessage(request, lang, 400, text.private, text.refused);
 	}
@@ -1298,7 +1459,7 @@ async function hostUnlock(
 	let answer: UnlockAnswer;
 	try {
 		answer = parseUnlockAnswer(
-			await options.store.unlockHost(site.host, password, clientAddress(request.headers.get("cf-connecting-ip"))),
+			await options.store.unlockHost(site.host, password, clientAddress(request.headers.get("cf-connecting-ip")), request.signal),
 		);
 	} catch (error) {
 		if (error instanceof MissingFunction) return undefined;
@@ -1331,7 +1492,7 @@ async function hostEnter(
 	if (!TICKET.test(ticket)) return refused();
 	let answer: ReturnType<typeof parseEnterAnswer>;
 	try {
-		answer = parseEnterAnswer(await options.store.enter(site.host, ticket));
+		answer = parseEnterAnswer(await options.store.enter(site.host, ticket, request.signal));
 	} catch (error) {
 		if (error instanceof MissingFunction) return undefined;
 		return hostUnavailable(request, lang, error);
@@ -1359,11 +1520,11 @@ async function hostMember(
 		return hostMessage(request, lang, 403, text.private, text.fromQorpera);
 	if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/x-www-form-urlencoded"))
 		return hostMessage(request, lang, 415, text.private, text.fromQorpera);
-	const body = await readBody(request, MAX_UNLOCK_BODY_BYTES);
-	if (!body) return hostMessage(request, lang, 413, text.private, text.fromQorpera);
+	const read = await readBody(request, MAX_UNLOCK_BODY_BYTES, options.bodyReadTimeoutMs);
+	if (!read.ok) return hostMessage(request, lang, read.status, text.private, text.fromQorpera);
 	let form: URLSearchParams;
 	try {
-		form = new URLSearchParams(new TextDecoder("utf-8", { fatal: true }).decode(body));
+		form = new URLSearchParams(UTF8_FATAL_DECODER.decode(read.bytes));
 	} catch {
 		return hostMessage(request, lang, 400, text.private, text.fromQorpera);
 	}
@@ -1375,7 +1536,7 @@ async function hostMember(
 	if (!PASS.test(pass)) return wrong();
 	let answer: ReturnType<typeof parseEnterAnswer>;
 	try {
-		answer = parseEnterAnswer(await options.store.memberPass(site.host, pass));
+		answer = parseEnterAnswer(await options.store.memberPass(site.host, pass, request.signal));
 	} catch (error) {
 		if (error instanceof MissingFunction) return undefined;
 		return hostUnavailable(request, lang, error);
@@ -1528,7 +1689,9 @@ async function legacySiteServe(request: Request, options: SiteServeOptions): Pro
 		try {
 			for (const token of tokens) {
 				// A check only: no bytes.
-				const answer = parseServeAnswer(await options.store.serve(slug, path, token, null, 0, 0), null, { length: 0 });
+				const answer = parseServeAnswer(await options.store.serve(slug, path, token, null, 0, 0, request.signal), null, {
+					length: 0,
+				});
 				if (answer.state !== "locked") return redirect(`/${slug}/~${token}/${path}${search}`, 303);
 			}
 		} catch (error) {
@@ -1557,11 +1720,11 @@ async function unlock(request: Request, options: SiteServeOptions, lang: Languag
 		return htmlAnswer(request, messagePage(lang, text.private, text.refused), 403);
 	if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/x-www-form-urlencoded"))
 		return htmlAnswer(request, messagePage(lang, text.private, text.refused), 415);
-	const body = await readBody(request, MAX_UNLOCK_BODY_BYTES);
-	if (!body) return htmlAnswer(request, messagePage(lang, text.private, text.refused), 413);
+	const read = await readBody(request, MAX_UNLOCK_BODY_BYTES, options.bodyReadTimeoutMs);
+	if (!read.ok) return htmlAnswer(request, messagePage(lang, text.private, text.refused), read.status);
 	let form: URLSearchParams;
 	try {
-		form = new URLSearchParams(new TextDecoder("utf-8", { fatal: true }).decode(body));
+		form = new URLSearchParams(UTF8_FATAL_DECODER.decode(read.bytes));
 	} catch {
 		return htmlAnswer(request, messagePage(lang, text.private, text.refused), 400);
 	}
@@ -1572,7 +1735,7 @@ async function unlock(request: Request, options: SiteServeOptions, lang: Languag
 	let answer: UnlockAnswer;
 	try {
 		answer = parseUnlockAnswer(
-			await options.store.unlock(slug, password, clientAddress(request.headers.get("cf-connecting-ip"))),
+			await options.store.unlock(slug, password, clientAddress(request.headers.get("cf-connecting-ip")), request.signal),
 		);
 	} catch (error) {
 		return unavailable(request, lang, error);
@@ -1599,27 +1762,16 @@ export function serviceHeaders(secretKey: string): Record<string, string> {
 /** The most bytes of a PostgREST error read for its code. */
 const MAX_ERROR_BYTES = 4096;
 
-/** The `code` of a PostgREST error body of at most 4 KiB, else null. The body is never logged. */
-async function errorCode(response: Response): Promise<string | null> {
-	const reader = response.body?.getReader();
-	if (!reader) return null;
-	const chunks: Uint8Array[] = [];
-	let total = 0;
+async function errorCode(response: Response, signal: AbortSignal): Promise<string | null> {
 	try {
-		for (;;) {
-			const chunk = await reader.read();
-			if (chunk.done) break;
-			total += chunk.value.byteLength;
-			if (total > MAX_ERROR_BYTES) return null;
-			chunks.push(chunk.value);
-		}
-		const parsed: unknown = JSON.parse(new TextDecoder().decode(Buffer.concat(chunks)));
+		const parsed = await readBoundedJson(response, MAX_ERROR_BYTES, {
+			signal,
+			ignoreContentLength: response.headers.has("content-encoding"),
+		});
 		const code = (parsed as { code?: unknown } | null)?.code;
 		return typeof code === "string" ? code : null;
 	} catch {
 		return null;
-	} finally {
-		void reader.cancel().catch(() => undefined);
 	}
 }
 
@@ -1644,19 +1796,30 @@ export class PostgrestSiteStore implements SiteStore {
 		etag: string | null,
 		offset: number,
 		length: number,
+		signal?: AbortSignal,
 	): Promise<unknown> {
-		return this.#call("qorpera_site_serve", {
-			p_slug: slug,
-			p_path: path,
-			p_token: token,
-			p_etag: etag,
-			p_offset: offset,
-			p_length: length,
-		});
+		return this.#call(
+			"qorpera_site_serve",
+			{
+				p_slug: slug,
+				p_path: path,
+				p_token: token,
+				p_etag: etag,
+				p_offset: offset,
+				p_length: length,
+			},
+			this.#timeoutMs,
+			signal,
+		);
 	}
 
-	unlock(slug: string, password: string, client: string): Promise<unknown> {
-		return this.#call("qorpera_site_unlock", { p_slug: slug, p_password: password, p_client: client });
+	unlock(slug: string, password: string, client: string, signal?: AbortSignal): Promise<unknown> {
+		return this.#call(
+			"qorpera_site_unlock",
+			{ p_slug: slug, p_password: password, p_client: client },
+			this.#timeoutMs,
+			signal,
+		);
 	}
 
 	serveHost(
@@ -1666,23 +1829,34 @@ export class PostgrestSiteStore implements SiteStore {
 		etag: string | null,
 		offset: number,
 		length: number,
+		signal?: AbortSignal,
 	): Promise<unknown> {
-		return this.#call("qorpera_site_serve_host", {
-			p_host: host,
-			p_path: path,
-			p_token: token,
-			p_etag: etag,
-			p_offset: offset,
-			p_length: length,
-		});
+		return this.#call(
+			"qorpera_site_serve_host",
+			{
+				p_host: host,
+				p_path: path,
+				p_token: token,
+				p_etag: etag,
+				p_offset: offset,
+				p_length: length,
+			},
+			this.#timeoutMs,
+			signal,
+		);
 	}
 
-	unlockHost(host: string, password: string, client: string): Promise<unknown> {
-		return this.#call("qorpera_site_unlock_host", { p_host: host, p_password: password, p_client: client });
+	unlockHost(host: string, password: string, client: string, signal?: AbortSignal): Promise<unknown> {
+		return this.#call(
+			"qorpera_site_unlock_host",
+			{ p_host: host, p_password: password, p_client: client },
+			this.#timeoutMs,
+			signal,
+		);
 	}
 
-	enter(host: string, ticket: string): Promise<unknown> {
-		return this.#call("qorpera_site_enter", { p_host: host, p_ticket: ticket });
+	enter(host: string, ticket: string, signal?: AbortSignal): Promise<unknown> {
+		return this.#call("qorpera_site_enter", { p_host: host, p_ticket: ticket }, this.#timeoutMs, signal);
 	}
 
 	countView(host: string, path: string, token: string): Promise<unknown> {
@@ -1693,48 +1867,43 @@ export class PostgrestSiteStore implements SiteStore {
 		);
 	}
 
-	memberPass(host: string, pass: string): Promise<unknown> {
-		return this.#call("qorpera_site_member_pass_redeem", { p_host: host, p_pass: pass });
+	memberPass(host: string, pass: string, signal?: AbortSignal): Promise<unknown> {
+		return this.#call("qorpera_site_member_pass_redeem", { p_host: host, p_pass: pass }, this.#timeoutMs, signal);
 	}
 
-	async #call(name: string, args: Record<string, unknown>, timeoutMs = this.#timeoutMs): Promise<unknown> {
-		return withTimeoutScope(timeoutMs, async (signal) => {
-			const response = await this.#fetch(`${this.#projectUrl}/rest/v1/rpc/${name}`, {
-				method: "POST",
-				redirect: "error",
-				headers: { ...serviceHeaders(this.#secretKey), "content-type": "application/json" },
-				body: JSON.stringify(args),
-				signal,
-			});
-			if (!response.ok) {
-				// PostgREST answers 404 with code PGRST202 for a function it does not have: one whose migration is not applied.
-				if (response.status === 404 && (await errorCode(response)) === "PGRST202") throw new MissingFunction(name);
-				void response.body?.cancel().catch(() => undefined);
-				throw new Error(`The database answered HTTP ${response.status}`);
-			}
-			const declared = response.headers.get("content-length");
-			if (declared !== null && Number(declared) > MAX_STORE_ANSWER_BYTES) {
-				void response.body?.cancel().catch(() => undefined);
-				throw new Error("The database's answer is too large");
-			}
-			const reader = response.body?.getReader();
-			if (!reader) throw new Error("The database answered without a body");
-			const chunks: Uint8Array[] = [];
-			let total = 0;
-			try {
-				for (;;) {
-					const chunk = await reader.read();
-					if (chunk.done) break;
-					total += chunk.value.byteLength;
-					if (total > MAX_STORE_ANSWER_BYTES) throw new Error("The database's answer is too large");
-					chunks.push(chunk.value);
+	async #call(
+		name: string,
+		args: Record<string, unknown>,
+		timeoutMs = this.#timeoutMs,
+		parentSignal?: AbortSignal,
+	): Promise<unknown> {
+		return withTimeoutScope(
+			timeoutMs,
+			async (signal) => {
+				const response = await this.#fetch(`${this.#projectUrl}/rest/v1/rpc/${name}`, {
+					method: "POST",
+					redirect: "error",
+					headers: { ...serviceHeaders(this.#secretKey), "content-type": "application/json" },
+					body: JSON.stringify(args),
+					signal,
+				});
+				if (!response.ok) {
+					// PostgREST answers 404 with code PGRST202 for a function it does not have: one whose migration is not applied.
+					if (response.status === 404 && (await errorCode(response, signal)) === "PGRST202") {
+						throw new MissingFunction(name);
+					}
+					void response.body?.cancel().catch(() => undefined);
+					throw new Error(`The database answered HTTP ${response.status}`);
 				}
-			} finally {
-				void reader.cancel().catch(() => undefined);
-			}
-			const merged = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, total);
-			chunks.length = 0;
-			return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(merged));
-		});
+				if (!response.body) throw new Error("The database answered without a body");
+				const merged = await readBoundedBytes(response, MAX_STORE_ANSWER_BYTES, {
+					signal,
+					ignoreContentLength: response.headers.has("content-encoding"),
+					sizeErrorMessage: "The database's answer is too large",
+				});
+				return JSON.parse(UTF8_FATAL_DECODER.decode(merged));
+			},
+			parentSignal,
+		);
 	}
 }

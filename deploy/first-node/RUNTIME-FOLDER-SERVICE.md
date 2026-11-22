@@ -415,19 +415,26 @@ service, so the execution host stays small:
     zero-credential child process (`qorpera-folder search-worker --storage-root <dir> --index-mib 512 --threads 4`)
     over 4-byte length-prefixed JSON frames on stdin/stdout and advertises `regex: true` in `hello`.
     - **Content-addressed index & linear-time regex.** All worker caches are budgeted inside `--index-mib` (default
-      `512 MiB`: `65%` / `332.8 MiB` (`349.0 MB`) arena-packed `CompactTree` synced views at `112 + path byte length`
-      bytes/entry — ~136 bytes/path at 24-byte benchmark paths, ~192 bytes/path at 80-byte company-repo paths — holding
-      all `SEARCH_PATHS = 1,500,000` paths simultaneously plus ~61 MB of transient patch-copy headroom for average paths
-      up to ~80 bytes; `25%` / `128.0 MiB` sharded LRU trigram filters; `10%` / `51.2 MiB` verified manifests/chunks),
-      keyed by `(profile_id, manifest_sha256)`. On cache miss, objects are opened under
-      `--storage-root/<profile_id>/<sha256>` with `O_NOFOLLOW` and verified against SHA-256 and manifest metadata
-      before indexing; verified immutable objects share index entries across parallel views with zero cross-tenant
-      leakage. Warm trigram skips check the company's profile directory once per search (catching an unmounted share
-      without firing per-file `lstat` RPCs on NFS, matching `NasObjects`'s in-memory `ByteCache` semantics for immutable
-      objects) and still record every skipped file in `reads` at its searched version so read-provenance accounting
-      matches a full scan identically. Patterns run on a pure-Rust Thompson NFA engine (`crates/qorpera-folder/src/re.rs`,
-      `O(m * n)` worst-case, zero backtracking) with exact `REGEX_*` refusal codes and Unicode case folding (`ς -> σ`)
-      matching `regex.ts` (count limit 16, no back-references, lookaround, inline flags, `\p` or POSIX classes).
+      `512 MiB`, summing strictly to `100%`: `50%` / `256.0 MiB` arena-packed `CompactTree` synced views + per-doc
+      metadata at `136 + path byte length` bytes/entry — `120 B` `CompactEntry` + `16 B` `DocInfo`; `15%` / `76.8 MiB`
+      global shared delta-varint inverted trigram index with O(changed) `patchTree` delta overlays, generation-checked
+      candidate evaluation across concurrent searches, and automatic byte release on drop; `15%` / `76.8 MiB` sharded
+      LRU trigram filters; `20%` / `102.4 MiB` verified manifests/chunks with dynamic 4/2/1 shard sizing guaranteeing
+      `per_shard >= 4 MiB + 4 KiB` whenever the object budget allows plus local active-chunk reuse across 256 KiB regex
+      pieces and `SingleFlight` deduplication), keyed by `(profile_id, manifest_sha256)`. Cold scans prefetch unindexed
+      files in bounded parallel batches (`4` threads, up to `256` entries / `16 MiB`, respecting per-answer read and
+      deadline limits) and offload tree `syncTree`/`patchTree`/`dropTree` work to a dedicated queue off the stdin reader
+      thread. On cache miss, objects are opened under `--storage-root/<profile_id>/<sha256>` with `O_NOFOLLOW` and
+      verified against SHA-256 and manifest metadata before indexing; verified immutable objects share index entries
+      across parallel views with zero cross-tenant leakage. Warm trigram and inverted-index skips check the company's
+      profile directory once per search (catching an unmounted share without firing per-file `lstat` RPCs on NFS,
+      matching `NasObjects`'s in-memory `ByteCache` semantics for immutable objects) and still record every skipped file
+      in `reads` at its searched version so read-provenance accounting matches a full scan identically. Patterns run on
+      a pure-Rust Thompson NFA engine (`crates/qorpera-folder/src/re.rs`, `O(m * n)` worst-case, zero backtracking) with
+      exact `REGEX_*` refusal codes, Unicode case folding (`ς -> σ`), quantifier counts up to `64` (within the bounded
+      NFA instruction cap), inline `(?i)` / `(?m)` flags, and case-sensitive literal prefiltering (the legacy JS V8
+      linear-engine fallback in `regex.ts`, used when `folderProgram` is unset, stays capped at count `16` and refuses
+      inline flags with `REGEX_TOO_LARGE` / `REGEX_FLAGS`).
     - **Incremental tree sync, budget back-pressure & event-loop budget.** Each `ViewTree` syncs to the worker once on
       first search via `2,048`-entry chunks, yielding to the Node event loop every `10 ms` (`setImmediate`) and
       checking `serving()` on each turn (measured on `node02` under `node --jitless`: 100,000 paths in `680.6 ms`,
@@ -438,7 +445,7 @@ service, so the execution host stays small:
       1-delta `115.3 ms` / `18.2 ms` lag and 512-delta `132.7 ms` / `18.9 ms` lag), falling back to a cooperative full
       sync on delta rollover, idle eviction when total tree bytes plus transient patch copies exceed the budget, or
       worker restart. Node owns snapshot lifetime, verifies worker generation across every yield and frame send so
-      restarts never leak or install stale-generation trees, and enforces the `65%` tree budget via idle-only LRU
+      restarts never leak or install stale-generation trees, and enforces the `50%` tree budget via idle-only LRU
       eviction (`inUse === 0`) plus FIFO back-pressure bounded by `SEARCH_WAIT_MS` (20 s, failing with `UNAVAILABLE` /
       `SEARCH_BUSY` on timeout and draining any smaller waiters behind a timed-out head), so neither active nor mid-sync
       snapshots are ever silently evicted; the worker's reader thread resolves each snapshot `Arc` synchronously before
@@ -447,8 +454,9 @@ service, so the execution host stays small:
       `search.ts` and `regex.ts` (`SEARCH_RUNNING = 4`, advertising `regex: true` only if node started with
       `--enable-experimental-regexp-engine`).
   - **Globs.** `glob` keeps to matching paths: `*` and `?` within a name, a whole `**` part for any number of folders
-    (a `**` inside a name is a `*`; a trailing `**` also matches the folder itself, so `docs/**` keeps `docs`); a glob
-    without '/' is matched against the name. Matching walks the name and the
+    (a `**` inside a name is a `*`; a trailing `**` also matches the folder itself, so `docs/**` keeps `docs`), and
+    optional `!pattern` / comma-separated exclusions (e.g. `*.ts,!*.test.ts`, `!dist/**`) matched identically in both
+    the Rust worker and the JS fallback; a glob without '/' is matched against the name. Matching walks the name and the
     pattern with one place to go back to: at most their lengths multiplied, never exponential, whatever the glob.
   - **One page per call.** It walks the view in the order a machine lists it, straight from the cursor (never past
     what came before it), and answers when its hits fill about 6 KiB (version 2: when what they show, each line's

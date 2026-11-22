@@ -374,5 +374,47 @@ describe("mail message", () => {
 		assert.equal(skewed.truncated, true);
 		assert.ok(Buffer.byteLength(JSON.stringify(skewed)) <= MAX_MESSAGE_BYTES);
 		assert.ok(typeof skewed.text === "string" && skewed.text.length > 100_000);
+		const hugeBoth = normalizeMessage(EMAIL_ID, {
+			...message,
+			text: "t".repeat(1_000_000),
+			html: "h".repeat(1_000_000),
+		});
+		assert.equal(hugeBoth.truncated, true);
+		assert.equal(hugeBoth.html, null);
+		assert.ok(Buffer.byteLength(JSON.stringify(hugeBoth)) <= MAX_MESSAGE_BYTES);
+		assert.ok(typeof hugeBoth.text === "string" && hugeBoth.text.length > 200_000);
+	});
+
+	it("returns 400 on an errored webhook body stream and 408 on an aborted request", async () => {
+		const noop = {
+			secret: "whsec_" + Buffer.alloc(32, 7).toString("base64"),
+			store: { receive: async () => ({ outcome: "settled", results: [] }) },
+			provider: { fetch: async () => null },
+		};
+		const errored = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.error(new Error("connection reset"));
+			},
+		});
+		const erroredRes = await handleMailIntake(
+			new Request("https://project.example.test/functions/v1/mail-intake", {
+				method: "POST",
+				body: errored,
+				duplex: "half",
+			} as RequestInit),
+			noop,
+		);
+		assert.equal(erroredRes.status, 400);
+		const controller = new AbortController();
+		controller.abort(new DOMException("aborted", "AbortError"));
+		const abortedRes = await handleMailIntake(
+			new Request("https://project.example.test/functions/v1/mail-intake", {
+				method: "POST",
+				body: "{}",
+				signal: controller.signal,
+			}),
+			noop,
+		);
+		assert.equal(abortedRes.status, 408);
 	});
 });

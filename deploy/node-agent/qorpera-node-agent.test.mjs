@@ -932,3 +932,158 @@ test("status and force unswitch probe health once and tolerate vanished PIDs", a
 		await rm(root, { recursive: true, force: true });
 	}
 });
+
+test("unswitch recovers from an interrupted switch-intent and refuses repeated unswitch after completion", async () => {
+	const node = await nodeFixture();
+	try {
+		await adopted(node, { switched: false });
+		const journalDir = join(node.root, "var/lib/qorpera-node-agent/journal");
+		await mkdir(journalDir, { recursive: true });
+		const oldCommand = ["/usr/bin/node", "--jitless", "/opt/qorpera-native25-phql-a1/provider-v82p2.mjs"];
+		await writeFile(
+			join(journalDir, `2026-01-01T00-00-00.000Z-switch-intent-rnone-${randomUUID()}.json`),
+			JSON.stringify({
+				kind: "switch-intent",
+				release: 0,
+				role: "provider",
+				from: OLD_PROVIDER,
+				to: UNITS.provider,
+				before: oldCommand,
+			}),
+		);
+		node.state.units[OLD_PROVIDER] = { enabled: false, active: false, pid: 0 };
+		node.state.units[UNITS.provider] = { enabled: true, active: true, pid: ++node.state.pid };
+
+		const recovered = await node.agent.unswitch("provider", OLD_PROVIDER);
+		assert.deepEqual(recovered.command, oldCommand);
+		assert.equal(node.state.units[OLD_PROVIDER].enabled, true);
+		assert.equal(node.state.units[UNITS.provider].enabled, false);
+
+		await assert.rejects(node.agent.unswitch("provider", OLD_PROVIDER), /UNSWITCH_NO_SWITCH_FROM/);
+	} finally {
+		await node.close();
+	}
+});
+
+test("journalSince filters with millisecond UTC --since and --grep and restartRole catches a refusal before a retry succeeds", async () => {
+	const calls = [];
+	const ports = nodePorts("/dev/null", {
+		exec: async (bin, args, opts) => {
+			calls.push({ bin, args, opts });
+			if (calls.length === 1) {
+				const err = new Error("no match");
+				err.code = 1;
+				err.stderr = "";
+				throw err;
+			}
+			return { stdout: '{"state":"QORPERA_NODE_ROLE_START_REFUSED"}\n', stderr: "" };
+		},
+	});
+	const since = new Date("2026-11-22T12:00:00.250Z");
+	assert.equal(await ports.journalSince(UNITS.provider, since, { grep: "QORPERA_NODE_ROLE_START_REFUSED" }), "");
+	assert.deepEqual(calls[0].args, [
+		"-u",
+		UNITS.provider,
+		"--since",
+		"2026-11-22 12:00:00.250 UTC",
+		"--no-pager",
+		"-o",
+		"cat",
+		"--grep",
+		"QORPERA_NODE_ROLE_START_REFUSED",
+	]);
+	assert.equal(calls[0].opts.maxBuffer, 4 * 1024 * 1024);
+
+	assert.match(
+		await ports.journalSince(UNITS.provider, since, { grep: "QORPERA_NODE_ROLE_START_REFUSED" }),
+		/QORPERA_NODE_ROLE_START_REFUSED/,
+	);
+
+	const node = await nodeFixture();
+	try {
+		await adopted(node);
+		await staged(node, 1, { provider: "p1" });
+		const seenOpts = [];
+		const baseRestart = node.agent.ports.restart;
+		const baseMainPid = node.agent.ports.mainPid;
+		let attempts = 0;
+		const refusalTimes = [];
+		node.agent.ports.restart = async (unit) => {
+			attempts = 0;
+			await baseRestart(unit);
+			if ((await node.link("roles/provider")) === "../releases/1") refusalTimes.push(Date.now());
+		};
+		node.agent.ports.mainPid = async (unit) => {
+			if (unit === UNITS.provider && (await node.link("roles/provider")) === "../releases/1" && attempts++ === 0) {
+				node.state.units[unit].pid = ++node.state.pid;
+				return 0;
+			}
+			return baseMainPid(unit);
+		};
+		node.agent.ports.journalSince = async (_unit, from, opts) => {
+			seenOpts.push(opts);
+			return refusalTimes.some((ts) => ts >= from.getTime()) ? '{"state":"QORPERA_NODE_ROLE_START_REFUSED"}\n' : "";
+		};
+		await assert.rejects(node.agent.apply(1), /APPLY_ROLLED_BACK ROLE_REFUSED provider/);
+		assert.deepEqual(seenOpts[0], { grep: "QORPERA_NODE_ROLE_START_REFUSED" });
+		assert.equal(await node.link("current"), "releases/0");
+	} finally {
+		await node.close();
+	}
+});
+
+test("stage refuses symlinked or oversized release inputs without following links", async () => {
+	const node = await nodeFixture();
+	try {
+		const symlinked = await node.release({ revision: 0, previousRevision: null });
+		const realManifest = join(node.root, "outside-manifest.json");
+		await writeFile(realManifest, await readFile(join(symlinked, "release.json")));
+		await rm(join(symlinked, "release.json"));
+		await symlink(realManifest, join(symlinked, "release.json"));
+		await assert.rejects(node.agent.stage(symlinked), (err) => err.code === "ELOOP");
+
+		const oversizedSig = await node.release({ revision: 0, previousRevision: null });
+		await writeFile(join(oversizedSig, "release.sig"), "A".repeat(8192));
+		await assert.rejects(node.agent.stage(oversizedSig), /RELEASE_SIGNATURE_UNSAFE/);
+	} finally {
+		await node.close();
+	}
+});
+
+test("quiet blocks transitional LXD states, bounds --wait sleep, rollback clears first previous, and gc prunes orphan records", async () => {
+	const node = await nodeFixture();
+	try {
+		await adopted(node);
+		await staged(node, 1, { provider: "p1" });
+
+		const slept = [];
+		let polls = 0;
+		node.agent.ports.sleep = async (ms) => {
+			slept.push(ms);
+		};
+		node.agent.ports.instances = async () => {
+			polls++;
+			if (polls === 1) return [{ name: `qorpera-${"d".repeat(32)}`, status: "Starting" }];
+			return [{ name: `qorpera-${"d".repeat(32)}`, status: "Stopped" }];
+		};
+		await node.agent.quiet(2);
+		assert.equal(slept.length, 1);
+		assert.ok(slept[0] > 0 && slept[0] <= 2_000, `expected bounded wait sleep <= 2000ms, got ${slept[0]}`);
+		await assert.rejects(node.agent.quiet(-1), /INVALID_WAIT/);
+
+		node.agent.ports.instances = async () => [];
+		node.state.unhealthyRevision = 1;
+		await assert.rejects(node.agent.apply(1), /APPLY_ROLLED_BACK ROLE_HEALTH provider/);
+		assert.equal(await node.link("current"), "releases/0");
+		await assert.rejects(node.link("previous"), { code: "ENOENT" });
+
+		const journalDir = join(node.root, "var/lib/qorpera-node-agent/journal");
+		const orphan = `2026-01-01T00-00-00.000Z-stage-r99-${randomUUID()}.json`;
+		await writeFile(join(journalDir, orphan), JSON.stringify({ kind: "stage", release: 99 }));
+		const gcResult = await node.agent.gc();
+		assert.ok(gcResult.prunedRecords >= 1);
+		assert.ok(!(await journal(node)).includes(orphan));
+	} finally {
+		await node.close();
+	}
+});
