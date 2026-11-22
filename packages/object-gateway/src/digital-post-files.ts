@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
+import { withAbortScopes, withDefaultTimeout } from "./abort-scope.ts";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import { UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
@@ -210,16 +211,27 @@ export class DigitalPostLetterWriter {
 	}
 
 	/** Writes due letters until none is due or `max` were handled. Returns how many were handled. */
-	writeDue(max = 10, signal: AbortSignal = AbortSignal.timeout(120_000)): Promise<number> {
-		return drainPlatformClaims(max, () => this.writeOne(signal), signal);
+	writeDue(max = 10, signal?: AbortSignal): Promise<number> {
+		return withDefaultTimeout(signal, 120_000, (scoped) =>
+			drainPlatformClaims(max, () => this.writeOne(scoped), scoped),
+		);
 	}
 
 	/** Claims one kept letter and writes it into the company folder; false when nothing is due. */
-	async writeOne(signal: AbortSignal = AbortSignal.timeout(120_000)): Promise<boolean> {
-		const answer = await this.#options.authority.publisher(
-			"qorpera_claim_digital_post_letter_file",
-			{ p_worker: this.#options.workerId, p_lease_seconds: this.#leaseSeconds },
-			AbortSignal.timeout(FINISH_MS),
+	writeOne(signal?: AbortSignal): Promise<boolean> {
+		return withDefaultTimeout(signal, 120_000, (scoped) => this.#writeOne(scoped));
+	}
+
+	async #writeOne(signal: AbortSignal): Promise<boolean> {
+		const answer = await withAbortScopes(
+			[],
+			(claimSignal) =>
+				this.#options.authority.publisher(
+					"qorpera_claim_digital_post_letter_file",
+					{ p_worker: this.#options.workerId, p_lease_seconds: this.#leaseSeconds },
+					claimSignal,
+				),
+			FINISH_MS,
 		);
 		let claim: DigitalPostLetterClaim | null;
 		try {
@@ -335,10 +347,15 @@ export class DigitalPostLetterWriter {
 
 	/** Closes a claim on its own short deadline. `finished: false` means another writer holds the letter now. */
 	async #finish(letterId: string, code: string | null): Promise<void> {
-		const answer = (await this.#options.authority.publisher(
-			"qorpera_finish_digital_post_letter_file",
-			{ p_worker: this.#options.workerId, p_letter_id: letterId, p_problem: code },
-			AbortSignal.timeout(FINISH_MS),
+		const answer = (await withAbortScopes(
+			[],
+			(finishSignal) =>
+				this.#options.authority.publisher(
+					"qorpera_finish_digital_post_letter_file",
+					{ p_worker: this.#options.workerId, p_letter_id: letterId, p_problem: code },
+					finishSignal,
+				),
+			FINISH_MS,
 		)) as { schema?: unknown; finished?: unknown } | null;
 		if (answer?.schema !== "qorpera.digital-post-letter-finish/v1" || typeof answer.finished !== "boolean")
 			problem("finish_invalid");

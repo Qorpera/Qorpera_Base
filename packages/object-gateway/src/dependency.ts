@@ -1,3 +1,5 @@
+import { withAbortScopes } from "./abort-scope.ts";
+
 export class ObjectDependencyError extends Error {
 	readonly status: number;
 	readonly unavailable: boolean;
@@ -74,7 +76,10 @@ export async function postgrestError(
 		const body: unknown = JSON.parse(
 			new TextDecoder().decode(
 				await boundedObjectOperation(
-					() => readBoundedObjectResponse(response, 16 * 1024, AbortSignal.any([signal, errorBody.signal])),
+					() =>
+						withAbortScopes([signal, errorBody.signal], (scoped) =>
+							readBoundedObjectResponse(response, 16 * 1024, scoped),
+						),
 					250,
 				),
 			),
