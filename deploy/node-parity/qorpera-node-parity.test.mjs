@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import { CLASS_SCHEMA, compareSetups, labelForms, neutral, normalizeSetup } from "./qorpera-node-parity.mjs";
+import { CLASS_SCHEMA, collect, compareSetups, labelForms, neutral, normalizeSetup } from "./qorpera-node-parity.mjs";
 
 function raw(label, n, change = () => {}) {
 	const observed = {
@@ -350,4 +353,52 @@ test("the command line: 0 same, 1 differ, 2 error, and an error prints no comman
 	assert.equal(bad.status, 2);
 	assert.match(bad.stderr, /INVALID_PARITY_CLASS/);
 	assert.equal(spawnSync("node", [tool, "compare", join(dir, "missing.json"), a, b]).status, 2);
+});
+
+test("collect runs queries concurrently, skips temp .link-* symlinks, and tolerates null mount options", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "parity-collect-"));
+	try {
+		const rolesDir = join(dir, "roles");
+		await mkdir(rolesDir);
+		await symlink("../releases/42", join(rolesDir, "provider"));
+		await symlink("../releases/43", join(rolesDir, ".link-12345678"));
+		const nodeJsonPath = join(dir, "node.json");
+		await writeFile(nodeJsonPath, JSON.stringify({ roles: { provider: { fixed: { A: "1" }, secretKeys: [] } } }));
+
+		let inFlight = 0;
+		let maxInFlight = 0;
+		let releaseAll;
+		const barrier = new Promise((resolve) => {
+			releaseAll = resolve;
+		});
+		const exec = async (cmd, args) => {
+			inFlight++;
+			maxInFlight = Math.max(maxInFlight, inFlight);
+			if (inFlight === 7) releaseAll();
+			await Promise.race([
+				barrier,
+				new Promise((_, reject) => setTimeout(() => reject(new Error("collect ran serially")), 1000)),
+			]);
+			inFlight--;
+			if (cmd === "systemctl" && args[0] === "list-units") {
+				return { stdout: "qorpera-node-provider.service loaded active running Provider\n" };
+			}
+			if (cmd === "systemctl") return { stdout: "qorpera-node-provider.service enabled\n" };
+			if (cmd === "findmnt") {
+				return {
+					stdout: JSON.stringify({
+						filesystems: [{ target: "/srv/qorpera/canonical", source: "nas:/x", fstype: "nfs4", options: null }],
+					}),
+				};
+			}
+			return { stdout: "[]" };
+		};
+
+		const setup = await collect("node01", { exec, rolesDir, nodeJsonPath });
+		assert.equal(maxInFlight, 7);
+		assert.deepEqual(setup.agent.roles, { provider: { release: "42" } });
+		assert.deepEqual(setup.nfs["/srv/qorpera/canonical"].options, []);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
 });

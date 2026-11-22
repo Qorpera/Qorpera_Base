@@ -7,7 +7,7 @@
 export const CODING_VALUE_REPOSITORY = /^[a-z0-9]([a-z0-9-]{0,37}[a-z0-9])?\/[a-z0-9_][a-z0-9_.-]{0,99}$/;
 /** A coding value's name: its environment variable's name in lower case (20260928549440). */
 const CODING_VALUE_NAME_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
-const CODING_VALUE_NAME_REFUSED = /^(lc|git|ld|dyld|qorpera|ssh|xdg|docker|anthropic|claude|codex|openai)_/;
+const CODING_VALUE_NAME_REFUSED = /^(lc|git|ld|dyld|qorpera|ssh|xdg|docker|claude|codex)_/;
 /** The names a coding machine sets itself, as qorpera_coding_environment_name_allowed lists them. */
 const CODING_VALUE_NAMES_RESERVED: ReadonlySet<string> = new Set([
 	"home",

@@ -5,7 +5,8 @@ import { systemdCredentialMetadataIsSafe } from "../../packages/runtime/src/syst
 
 /** Credential filenames are selected by reviewed service configuration only. */
 export async function readCodingServiceCredential(directory: string, name: string): Promise<string> {
-	if (!/^qorpera-coding-[a-z0-9-]{1,80}$/.test(name) || resolve(directory) !== directory ||
+	// WHY: Reviewed executor config includes both qorpera-coding-* and webHosting qorpera-web-* systemd credentials.
+	if (!/^qorpera-(?:coding|web)-[a-z0-9-]{1,80}$/.test(name) || resolve(directory) !== directory ||
 		await realpath(directory) !== directory) throw new Error("CODING_CREDENTIAL_PATH_INVALID");
 	const file = await open(join(directory, name), constants.O_RDONLY | constants.O_NOFOLLOW);
 	let bytes: Buffer | undefined;

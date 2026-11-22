@@ -101,6 +101,27 @@ Deno.serve(async (request) => {
 					p_next_due_at: action.nextDueAt,
 				};
 				break;
+			case "check_routine_wake":
+				rpc = "qorpera_skip_checked_routine_wake";
+				args = {
+					p_routine_id: action.routineId,
+					p_expected_version: action.expectedVersion,
+					p_trigger_id: action.triggerId,
+					p_scheduled_for: action.scheduledFor,
+					p_expected_last_scheduled_for: action.expectedLastScheduledFor ?? null,
+					p_next_due_at: action.nextDueAt,
+					p_healthy: action.healthy,
+					p_summary: action.summary,
+					p_detail: action.detail ?? null,
+				};
+				break;
+			case "read_routine_code_checks":
+				rpc = "qorpera_read_routine_code_checks";
+				args = {
+					p_routine_id: action.routineId,
+					p_repo: action.repo ?? null,
+				};
+				break;
 			case "folder_dynamic_routines":
 				rpc = "qorpera_folder_dynamic_routines_due";
 				args = {

@@ -430,19 +430,27 @@ pub struct IdxV2 {
 
 impl IdxV2 {
 	pub fn from_path(path: &Path) -> Result<Self, String> {
+		Self::from_path_limited(path, MAX_IDX_OBJECTS)
+	}
+
+	pub fn from_path_limited(path: &Path, max_objects: usize) -> Result<Self, String> {
 		let mut file = OpenOptions::new()
 			.read(true)
-			.custom_flags(libc::O_NOFOLLOW)
+			.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
 			.open(path)
 			.map_err(|e| format!("idx {} could not be opened: {e}", path.display()))?;
 		let meta = file.metadata().map_err(|e| format!("idx {} could not be stated: {e}", path.display()))?;
 		if !meta.file_type().is_file() {
 			return Err(format!("idx {} is not a regular file", path.display()));
 		}
-		Self::from_reader(&mut file, Some(meta.len()))
+		Self::from_reader_limited(&mut file, Some(meta.len()), max_objects)
 	}
 
 	pub fn from_reader<R: Read>(reader: &mut R, known_len: Option<u64>) -> Result<Self, String> {
+		Self::from_reader_limited(reader, known_len, MAX_IDX_OBJECTS)
+	}
+
+	pub fn from_reader_limited<R: Read>(reader: &mut R, known_len: Option<u64>, max_objects: usize) -> Result<Self, String> {
 		let mut header = [0u8; IDX_V2_HEADER_LEN];
 		reader.read_exact(&mut header).map_err(|_| "idx header is truncated".to_string())?;
 		if header[0..4] != IDX_V2_MAGIC {
@@ -464,7 +472,7 @@ impl IdxV2 {
 			prev = count;
 		}
 		let total = fanout[255] as usize;
-		if total > MAX_IDX_OBJECTS {
+		if total > max_objects {
 			return Err("idx object count exceeds limit".to_string());
 		}
 		let min_size = (IDX_V2_HEADER_LEN as u64)
@@ -602,9 +610,16 @@ impl OidExcludeSet {
 	}
 
 	pub fn load(idx_paths: &[PathBuf], exclude_oids_fd: Option<RawFd>) -> Result<Self, String> {
+		Self::load_with_limit(idx_paths, exclude_oids_fd, MAX_IDX_OBJECTS)
+	}
+
+	fn load_with_limit(idx_paths: &[PathBuf], exclude_oids_fd: Option<RawFd>, max_objects: usize) -> Result<Self, String> {
 		let mut set = Self::default();
+		let mut remaining = max_objects;
 		for path in idx_paths {
-			set.add_idx(IdxV2::from_path(path)?);
+			let idx = IdxV2::from_path_limited(path, remaining)?;
+			remaining -= idx.len();
+			set.add_idx(idx);
 		}
 		if let Some(fd) = exclude_oids_fd {
 			if fd < 3 {
@@ -1371,5 +1386,24 @@ mod tests {
 			scan_pack_stream_with_excludes(&mut Cursor::new(bad_framing.as_bytes()), &spec, &excludes),
 			ScanOutcome::Unchecked { reason: "framing" }
 		);
+	}
+
+	#[test]
+	fn exclude_set_load_enforces_cumulative_idx_object_cap() {
+		let dir = std::env::temp_dir().join(format!(
+			"qorpera-folder-scan-cap-{}-{}",
+			std::process::id(),
+			std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()
+		));
+		std::fs::create_dir(&dir).unwrap();
+		let p1 = dir.join("a.idx");
+		let p2 = dir.join("b.idx");
+		std::fs::write(&p1, build_synthetic_idx_v2(vec![[0x01u8; 20], [0x02u8; 20]], 0)).unwrap();
+		std::fs::write(&p2, build_synthetic_idx_v2(vec![[0x03u8; 20], [0x04u8; 20]], 0)).unwrap();
+		let ok = OidExcludeSet::load_with_limit(&[p1.clone(), p2.clone()], None, 4).unwrap();
+		assert!(ok.contains_sha1(&[0x01u8; 20]) && ok.contains_sha1(&[0x04u8; 20]));
+		let err = OidExcludeSet::load_with_limit(&[p1, p2], None, 3).err().expect("exceeds cap");
+		assert!(err.contains("limit"), "unexpected error: {err}");
+		let _ = std::fs::remove_dir_all(&dir);
 	}
 }

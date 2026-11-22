@@ -8,6 +8,7 @@ import { type CloudCodingRepository, parseCloudCodingRepository } from "../../pa
 import { cloudCodingSessionLayout } from "../../packages/contracts/src/cloud-coding-session.ts";
 import { parseCloudCodingNasPolicy } from "../../packages/contracts/src/cloud-coding-storage.ts";
 import { CloudCodingExecutor } from "../../packages/runner-orchestrator/src/coding-executor.ts";
+import { createNativeEdgeAutoRedeploy } from "../../packages/runner-orchestrator/src/app-auto-redeploy.ts";
 import { type CodeHostEvent, type CodeHostPolicy, controlCodeHostDeletions, LxdCodeHosts, parseCodeHostPolicy } from "../../packages/runner-orchestrator/src/code-host.ts";
 import { CODE_BUNDLE_FOLDER, type CodeBundleStore, createCodeBundleStore } from "../../packages/runner-orchestrator/src/code-bundle-store.ts";
 import { CodeChangeRecords } from "../../packages/runner-orchestrator/src/code-change-records.ts";
@@ -25,7 +26,7 @@ import { CodeImportStop, type CodeImportTransports } from "../../packages/runner
 import { fetchGitHubImport } from "../../packages/runner-orchestrator/src/code-import-fetch.ts";
 import { CodeImport } from "../../packages/runner-orchestrator/src/code-import-run.ts";
 import { codeHostErrorCode, codingErrorDetail } from "../../packages/runner-orchestrator/src/coding-error-detail.ts";
-import { exportCodeSiteSource, pinCodeSiteTree, readCodeSiteTree } from "../../packages/runner-orchestrator/src/code-host-sites.ts";
+import { exportCodeSiteSource, pinCodeSiteTree, readCodeSiteTree, readRepoDeployConfig } from "../../packages/runner-orchestrator/src/code-host-sites.ts";
 import { CodeHostJobs, type CodeHostViewEvent } from "../../packages/runner-orchestrator/src/code-host-views.ts";
 import { CodeSiteUploads } from "../../packages/runner-orchestrator/src/code-site-uploads.ts";
 import { RealtimeOrchestratorWake } from "../../packages/runner-orchestrator/src/orchestrator-wake.ts";
@@ -62,7 +63,7 @@ import {
 	MachineCommandRouter, machineCommandRoutes,
 } from "./machine-command-routing.ts";
 import { MemberMachineScreenControl } from "./member-control.ts";
-import { CodingCommandRouter, type CodingCommandPeer } from "./command-routing.ts";
+import { CodingCommandRouter, codingCommandRoutes, type CodingCommandPeer } from "./command-routing.ts";
 import { CodingExecutorHttpControl } from "./control.ts";
 import { readCodingServiceCredential } from "./credentials.ts";
 import { BrokerRepositoryCredentials, REPOSITORY_TOKEN } from "./repository-credentials.ts";
@@ -525,6 +526,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	}) : undefined;
 	// A repository's site (step 4): the tree its landing's checks left in the repository's storage, read in a job that
 	// yields to a turn's and uploaded as a version a member can put live from What's new.
+	const machineIdSha256 = createHash("sha256").update(machine).digest("hex");
 	const nativeEdge = config.webHosting
 		? {
 				routerInternalUrl: config.webHosting.routerInternalUrl,
@@ -539,12 +541,33 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				...(config.webHosting.objectStorageUrl ? { objectStorageUrl: config.webHosting.objectStorageUrl } : {}),
 			}
 		: undefined;
+	const repoBuildTails = new Map<string, Promise<unknown>>();
+	const serializeRepoBuild = <T>(repoKey: string, fn: () => Promise<T>): Promise<T> => {
+		const prev = repoBuildTails.get(repoKey) ?? Promise.resolve();
+		const next = prev.catch(() => undefined).then(fn);
+		const tail = next.finally(() => {
+			if (repoBuildTails.get(repoKey) === tail) repoBuildTails.delete(repoKey);
+		});
+		repoBuildTails.set(repoKey, tail);
+		return next;
+	};
+	const registeredAutoRedeploys = new Set<string>();
+	const recordAutoRedeploy = (changeKey: string) => {
+		if (registeredAutoRedeploys.size >= 200) registeredAutoRedeploys.clear();
+		registeredAutoRedeploys.add(changeKey);
+	};
 	const codeSites = codeHostJobs ? new CodeSiteUploads({
 		control, hosts: codeHostJobs, read: readCodeSiteTree, owner: config.owner,
-		machineIdSha256: createHash("sha256").update(machine).digest("hex"), report: logCodeRecord,
-		...(nativeEdge ? { nativeEdge, exportSource: exportCodeSiteSource } : {}),
+		machineIdSha256, report: logCodeRecord,
+		...(nativeEdge
+			? {
+					nativeEdge,
+					exportSource: exportCodeSiteSource,
+					serialize: serializeRepoBuild,
+					shouldSkipNative: (changeKey: string) => registeredAutoRedeploys.has(changeKey),
+				}
+			: {}),
 	}) : undefined;
-	const machineIdSha256 = createHash("sha256").update(machine).digest("hex");
 	const surfaceCodeHost = codeHostJobs && environment.QORPERA_SURFACE_CODE_HOST_WORKER?.trim() === "1"
 		? new SurfaceCodeHostWorker({
 			control,
@@ -600,9 +623,24 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			repositories: codeHostJobs ? "code-host" : "none" }));
 	}
 	const host = new LxdCodingExecutorHost({
-		control, owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
+		control, owner: config.owner, machineIdSha256,
 		vmPolicy: config.vmPolicy, storagePolicy: config.storagePolicy, client: lxd, guest: config.guest, journalRoot, ...(folder ? { folder } : {}),
 		...(commandSecrets ? { commandSecrets } : {}),
+		...(codeHostJobs && nativeEdge?.appHostInternalUrl && nativeEdge?.appHostControlToken
+			? {
+					autoRedeploy: createNativeEdgeAutoRedeploy({
+						control,
+						codeHostJobs,
+						nativeEdge,
+						owner: config.owner,
+						machineIdSha256,
+						readDeployConfig: readRepoDeployConfig,
+						exportSource: exportCodeSiteSource,
+						serialize: serializeRepoBuild,
+						onRegistered: recordAutoRedeploy,
+					}),
+				}
+			: {}),
 		repositoryCredentials: {
 			async withRepositoryToken(scope, repository, use, signal) {
 				signal.throwIfAborted();
@@ -714,12 +752,14 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				request.action === "read" ? transport.read(request.scope, request.input, signal) : transport.cancel(request.scope, request.input.commandId, signal));
 		},
 	});
+	const ingressCoding = codingCommandRoutes(router, control, false);
+	const peerCoding = codingCommandRoutes(router, control, true);
 	const commands = new HttpCloudCodingCommandService({
 		token: commandToken, port: config.commandPort,
 		// G2-6b: a guest's request proves its run's lease before anything else is asked about its binding.
 		proveBinding: (binding, holder, signal) => proveNativeBinding(control, binding, holder, signal),
-		authorize: (request, signal) => authorizeCodingCommand(control, request, signal),
-		execute: (request, signal) => router.execute(request, signal),
+		authorize: ingressCoding.authorize,
+		execute: ingressCoding.execute,
 		machines: machineCommandRoutes(machineRouter, control, false),
 		// The agent's home (slice 1): one channel per run, opened on this node's machine or forwarded to the peer that
 		// holds it, as a machine command is.
@@ -732,8 +772,8 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		token: peerToken, port: config.peerCommandPort,
 		// Only executors hold the peer token, and the forwarding one proved the guest's holder at its own ingress.
 		proveBinding: null,
-		authorize: (request, signal) => authorizeCodingCommand(control, request, signal),
-		execute: (request, signal) => router.execute(request, signal, true),
+		authorize: peerCoding.authorize,
+		execute: peerCoding.execute,
 		machines: machineCommandRoutes(machineRouter, control, true),
 		// A home channel a peer forwarded: SQL authorizes the same session again, and it opens only on this node.
 		home: {
@@ -759,11 +799,25 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		admit: (ticket, origin) => machineRouter.admitMemberStream(ticket, origin),
 	}) : undefined;
 	let executor: CloudCodingExecutor | undefined;
+	let memberStreamsClosing: Promise<void> | undefined;
+	const closeMemberStreams = (): Promise<void> | undefined => {
+		if (!memberStreams) return undefined;
+		memberStreamsClosing ??= memberStreams.close();
+		return memberStreamsClosing;
+	};
+	const onStopStreams = (): void => {
+		// WHY: Stop accepting new desktop streams and abort open relays immediately on SIGTERM instead of waiting behind the 45s+ host drain.
+		void closeMemberStreams()?.catch(() => undefined);
+	};
 	try {
 		await commands.start(stop.signal);
 		await peerCommands.start(stop.signal);
 		await memberScreens?.start(stop.signal);
 		await memberStreams?.listen();
+		if (memberStreams) {
+			if (stop.signal.aborted) onStopStreams();
+			else stop.signal.addEventListener("abort", onStopStreams, { once: true });
+		}
 		const running = new CloudCodingExecutor({
 			control,
 			host,
@@ -949,6 +1003,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		await Promise.all([claiming, keeping, housekeeping, machines, hosting, deletions, caring, requesting, recording, uploading, surfacing]);
 	} finally {
 		stop.abort();
+		stop.signal.removeEventListener("abort", onStopStreams);
 		const closeStep = async (stage: string, work: () => Promise<unknown> | undefined): Promise<void> => {
 			try {
 				await work();
@@ -956,6 +1011,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				console.error(JSON.stringify({ event: "coding-executor-shutdown-error", stage, ...loggedError(error) }));
 			}
 		};
+		await closeStep("member-streams", closeMemberStreams);
 		await closeStep("executor-drain", () => executor?.drain());
 		await closeStep("code-requests-wake", () => {
 			requestWake?.stop();
@@ -971,12 +1027,14 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		await closeStep("commands", () => commands.close());
 		await closeStep("peer-commands", () => peerCommands.close());
 		await closeStep("member-screens", () => memberScreens?.close());
-		await closeStep("member-streams", () => memberStreams?.close());
 		process.off("SIGTERM", shutdown);
 		process.off("SIGINT", shutdown);
 	}
 }
 
 if (!DESKTOP_STREAM_INSTANCE && process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-	runCodingExecutorMain().catch(() => { console.error("CODING_EXECUTOR_START_FAILED"); process.exitCode = 1; });
+	runCodingExecutorMain().catch((error) => {
+		console.error(`CODING_EXECUTOR_START_FAILED:${errorCode(error)}`);
+		process.exitCode = 1;
+	});
 }

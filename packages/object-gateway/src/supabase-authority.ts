@@ -11,7 +11,7 @@ import {
 	unavailableStateFailure,
 } from "./dependency.ts";
 import type { FolderGcAuthority } from "./folder-gc.ts";
-import type { FolderActor, FolderObjectAuthority } from "./folder-objects.ts";
+import type { FolderActor, FolderDownloadFence, FolderObjectAuthority } from "./folder-objects.ts";
 import type { MemberFolderObjectAuthority } from "./member-folder-objects.ts";
 import type { LegacyObjectMigrationItem } from "./migration.ts";
 import { supabaseRequestHeaders } from "./supabase-headers.ts";
@@ -351,10 +351,57 @@ export class SupabaseObjectAuthority
 		environmentId: string,
 		actor: FolderActor,
 		sha256: string,
-	): Promise<{ profileId: string; bytes: number }> {
+	): Promise<{ profileId: string; bytes: number; fence?: FolderDownloadFence }> {
 		const value = (await this.#rpc(
 			"qorpera_folder_authorize_object_download",
 			{ p_environment_id: environmentId, p_actor: actor, p_sha256: sha256 },
+			undefined,
+			this.#secretKey,
+			"folder",
+		)) as Record<string, unknown> | null;
+		if (
+			!value ||
+			value.schema !== "qorpera.folder-object-download/v1" ||
+			typeof value.profileId !== "string" ||
+			!UUID_PATTERN.test(value.profileId) ||
+			!Number.isSafeInteger(value.bytes) ||
+			(value.bytes as number) < 0 ||
+			(value.bytes as number) > 8 * 1024 * 1024
+		)
+			throw new ObjectDependencyError(403);
+		const fence =
+			Number.isSafeInteger(value.authoritySeq) &&
+			(value.authoritySeq as number) >= 0 &&
+			typeof value.checkedAt === "string" &&
+			value.checkedAt.length > 0 &&
+			typeof value.viaActive === "boolean"
+				? {
+						authoritySeq: value.authoritySeq as number,
+						checkedAt: value.checkedAt,
+						viaActive: value.viaActive,
+					}
+				: undefined;
+		return fence
+			? { profileId: value.profileId, bytes: value.bytes as number, fence }
+			: { profileId: value.profileId, bytes: value.bytes as number };
+	}
+
+	async recheckFolderDownloadFence(
+		environmentId: string,
+		actor: FolderActor,
+		sha256: string,
+		fence: FolderDownloadFence,
+	): Promise<{ profileId: string; bytes: number }> {
+		const value = (await this.#rpc(
+			"qorpera_folder_download_fence",
+			{
+				p_environment_id: environmentId,
+				p_actor: actor,
+				p_sha256: sha256,
+				p_authority_seq: fence.authoritySeq,
+				p_checked_at: fence.checkedAt,
+				p_via_active: fence.viaActive,
+			},
 			undefined,
 			this.#secretKey,
 			"folder",

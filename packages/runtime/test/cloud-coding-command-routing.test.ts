@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CodingCommandRouter } from "../../../deploy/coding-worker/command-routing.ts";
+import { CodingCommandRouter, codingCommandRoutes } from "../../../deploy/coding-worker/command-routing.ts";
 import {
 	type CloudCodingCommandHttpRequest,
 	type CloudCodingCommandServiceOptions,
@@ -272,5 +272,18 @@ describe("coding commands follow SQL machine placement", () => {
 		expect(body).not.toContain("secret");
 		expect(f.fetcher).toHaveBeenCalledOnce();
 		expect(authorize).toHaveBeenCalledTimes(2);
+	});
+	it("codingCommandRoutes reuses pre-authorized authority once between authorize and execute", async () => {
+		const f = fixture();
+		Object.assign(f.route, { executorOwner: "node-one", providerId: "coding-one" });
+		const routes = codingCommandRoutes(f.router, { call: f.call }, true);
+		await routes.authorize(f.request, f.signal);
+		expect((await routes.execute(f.request, f.signal)).receipt).toEqual(f.receipt);
+		const authCalls = f.call.mock.calls.filter(([method]) => method === "qorpera_authorize_coding_command");
+		expect(authCalls).toHaveLength(1);
+		// WHY: The handoff must be single-use so a second execute() on the same object still re-authorizes.
+		await routes.execute(f.request, f.signal);
+		const authCallsAfter = f.call.mock.calls.filter(([method]) => method === "qorpera_authorize_coding_command");
+		expect(authCallsAfter).toHaveLength(2);
 	});
 });

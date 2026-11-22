@@ -6,6 +6,8 @@ import {
 	parseCloudCodingRepository,
 } from "@qorpera/contracts";
 import { withAbortScope, withAbortScopes, withTimeoutScope } from "./abort-scope.ts";
+import { type AppAutoRedeployHooks, parseAppDeployConfig, runPostLandAppAutoRedeploy } from "./app-auto-redeploy.ts";
+import type { CompanyMachineSecretsManager } from "./company-machine-secrets.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA40 = /^[0-9a-f]{40}$/;
@@ -32,6 +34,8 @@ export const CODING_EXECUTOR_RPCS = [
 	"qorpera_describe_coding_turn",
 	"qorpera_complete_coding_turn",
 	"qorpera_defer_coding_session",
+	"qorpera_emit_code_change_routine_wakes",
+	"qorpera_emit_app_unhealthy_routine_wakes",
 ] as const;
 /** The turn cannot have its member's machine yet (a full node, a machine being
  * removed, the session still on another machine): it waits in the queue. */
@@ -275,6 +279,7 @@ export const PUBLICATION_UNFINISHED =
  * into the default branch (own code storage, step 3). Set before the executor knows whether the repository has checks.
  * The web shows the founder's card line for checks by these exact words. */
 const CODING_LANDING_STEP = "Checking and saving the change";
+const CODING_STAGING_STEP = "Staging changes for preview";
 /** One housekeeping step on one machine, for the executor's log. */
 export interface CodingHousekeepingOutcome {
 	/** Null for archive: the quiet sessions of this executor's environments. */
@@ -304,6 +309,13 @@ export interface CodingExecutorControl {
 	): Promise<unknown>;
 }
 
+export interface CodingSurfaceSessionClaim {
+	readonly sessionId: string;
+	readonly surfaceId: string;
+	readonly slug: string;
+	readonly title: string;
+}
+
 /** One leased turn of a coding session, as qorpera_claim_coding_session hands it out. */
 export interface CodingSessionClaim {
 	workerId: string;
@@ -326,6 +338,7 @@ export interface CodingSessionClaim {
 	definitionOfDone: string;
 	context: string;
 	followUp: string | null;
+	surfaceSession?: CodingSurfaceSessionClaim;
 }
 
 /** What the harness left behind at the end of its turn (qorpera_submit_coding_turn). `picture`: the screenshot the
@@ -370,7 +383,22 @@ export interface CodingExecutorPublication {
 		readonly mainSha: string;
 		readonly filesChanged: number;
 		readonly change: number | null;
+		readonly mainBefore?: string;
+		readonly paths?: readonly string[];
 	};
+	readonly staged?: {
+		readonly branch: string;
+		readonly baseSha: string;
+		readonly headSha: string;
+		readonly filesChanged: number;
+	};
+}
+export interface CodingAutoRedeployContext {
+	readonly rawConfig: string;
+	readonly siteId: string;
+	readonly paths?: readonly string[];
+	readonly secretsManager?: CompanyMachineSecretsManager;
+	readonly hooks: AppAutoRedeployHooks;
 }
 export interface CodingExecutorHost {
 	/** Plan and wake the member's coding machine on genuine node capacity, attach
@@ -402,6 +430,11 @@ export interface CodingExecutorHost {
 	 * kept per-session VMs and close released ones; every failure is recorded
 	 * and returned. */
 	housekeep(signal: AbortSignal): Promise<CodingHousekeepingOutcome[]>;
+	autoRedeploy?(
+		claim: CodingSessionClaim,
+		landed: NonNullable<CodingExecutorPublication["landed"]>,
+		signal: AbortSignal,
+	): Promise<CodingAutoRedeployContext | null>;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -437,6 +470,28 @@ export function parseCodingSessionClaim(value: unknown): CodingSessionClaim {
 		!dispatch.goal.trim()
 	)
 		throw new Error("Invalid coding claim");
+	let surfaceSession: CodingSurfaceSessionClaim | undefined;
+	if (item.surfaceSession !== undefined && item.surfaceSession !== null) {
+		const rawSurface = record(item.surfaceSession, "Invalid coding claim");
+		if (
+			typeof rawSurface.sessionId !== "string" ||
+			!UUID.test(rawSurface.sessionId) ||
+			typeof rawSurface.surfaceId !== "string" ||
+			!UUID.test(rawSurface.surfaceId) ||
+			typeof rawSurface.slug !== "string" ||
+			!/^[a-z0-9][a-z0-9-]{0,63}$/.test(rawSurface.slug) ||
+			typeof rawSurface.title !== "string" ||
+			!rawSurface.title.trim() ||
+			Buffer.byteLength(rawSurface.title) > 400
+		)
+			throw new Error("Invalid coding claim");
+		surfaceSession = {
+			sessionId: rawSurface.sessionId,
+			surfaceId: rawSurface.surfaceId,
+			slug: rawSurface.slug.trim(),
+			title: rawSurface.title.trim(),
+		};
+	}
 	return {
 		workerId: String(item.workerId),
 		leaseToken: String(item.leaseToken),
@@ -461,6 +516,7 @@ export function parseCodingSessionClaim(value: unknown): CodingSessionClaim {
 		definitionOfDone: text(dispatch.definitionOfDone ?? "", 4000),
 		context: text(dispatch.context ?? "", 16384),
 		followUp: optionalText(item.followUp, 8192),
+		...(surfaceSession ? { surfaceSession } : {}),
 	};
 }
 
@@ -577,7 +633,7 @@ function answerBefore<T>(call: () => Promise<T>, signal: AbortSignal): Promise<T
  * lease is another's): the kernel wrote what happened, and nothing is left for the executor to report. */
 export type CodingTurnOutcome = "completed" | "blocked" | "failed" | "deferred" | "released" | "recovery-required";
 /** Where a reported error happened. `watch`: a read of the running turn that stayed lost, which the turn outlives. */
-export type CodingReportStage = "turn" | "stop" | "defer" | "publish" | "watch";
+export type CodingReportStage = "turn" | "stop" | "defer" | "publish" | "watch" | "redeploy";
 
 /** Claims coding session turns and runs each to its end, many at once: every
  * member's sessions share that member's machine, and the node's capacity is
@@ -968,9 +1024,33 @@ export class CloudCodingExecutor {
 						p_phase: "publishing",
 						// A repository kept in Qorpera has no pull request: its work lands (own code storage), once its checks
 						// passed (step 3). The founder's card reads exactly these words (CODING_LANDING_STEP).
-						p_last_step:
-							claimed.repository.host === "qorpera" ? CODING_LANDING_STEP : "Publishing the draft pull request",
+						p_last_step: claimed.surfaceSession
+							? CODING_STAGING_STEP
+							: claimed.repository.host === "qorpera"
+								? CODING_LANDING_STEP
+								: "Publishing the draft pull request",
 					});
+					const emitCodeChange = async (
+						kind: "landed" | "checks_failed" | "conflict",
+						event: Record<string, unknown>,
+					): Promise<void> => {
+						try {
+							await call(
+								"qorpera_emit_code_change_routine_wakes",
+								{
+									p_environment_id: claimed.environmentId,
+									p_owner: claimed.repository.owner,
+									p_name: claimed.repository.name,
+									p_kind: kind,
+									p_event: event,
+								},
+								signal,
+								5000,
+							);
+						} catch {
+							// WHY: routine wake emission is best-effort and must never fail a finalized turn.
+						}
+					};
 					let publication: CodingExecutorPublication;
 					try {
 						publication = await this.#host.publish(claimed, submission, active);
@@ -979,12 +1059,24 @@ export class CloudCodingExecutor {
 						end();
 						if (error instanceof CodingLandConflict) {
 							await complete("failed", landConflict(claimed.repository.baseBranch, error.paths, error.messages));
+							await emitCodeChange("conflict", {
+								workerId: claimed.workerId,
+								...(turn.runId ? { parentRunId: turn.runId } : {}),
+								paths: error.paths,
+							});
 							return "failed";
 						}
 						if (error instanceof CodingLandRefused) {
 							// Nothing landed, and the same work would be refused again: the turn fails with what to change.
 							this.#reported("publish", error);
 							await complete("failed", error.summary);
+							if (error.message.startsWith("CODING_CHECKS_")) {
+								await emitCodeChange("checks_failed", {
+									workerId: claimed.workerId,
+									...(turn.runId ? { parentRunId: turn.runId } : {}),
+									checks: { code: error.message, summary: withinBytes(error.summary, 1000) },
+								});
+							}
 							return "failed";
 						}
 						if (error instanceof CodingPushRefused || error instanceof CodingSaveRefused) {
@@ -1008,10 +1100,11 @@ export class CloudCodingExecutor {
 						await complete("failed", PUBLICATION_UNFINISHED);
 						return "failed";
 					}
-					if (!publication.pullRequest && !publication.noChange && !publication.landed)
+					if (!publication.pullRequest && !publication.noChange && !publication.landed && !publication.staged)
 						throw new Error("Coding publication unconfirmed");
 					end();
 					const landed = publication.landed;
+					const staged = publication.staged;
 					// How many files the landing changed on the default branch, for the session's card: only for a landing that
 					// moved it, and only a count the kernel takes.
 					const filesChanged =
@@ -1021,26 +1114,96 @@ export class CloudCodingExecutor {
 						landed.filesChanged >= 0 &&
 						landed.filesChanged <= 2_147_483_647
 							? landed.filesChanged
-							: null;
+							: staged &&
+									Number.isSafeInteger(staged.filesChanged) &&
+									staged.filesChanged >= 0 &&
+									staged.filesChanged <= 2_147_483_647
+								? staged.filesChanged
+								: null;
 					await complete("succeeded", submission.summary, {
 						p_pull_request: publication.pullRequest,
 						p_harness_session_ref: claimed.harnessSessionRef,
 						// Where a repository kept in Qorpera got the commit: the session's record, and its agent's report.
-						...(landed
+						...(staged
 							? {
 									p_artifacts: [
 										{
-											kind: "landed",
-											state: landed.state,
-											branch: claimed.repository.baseBranch,
-											headSha: submission.headSha,
-											mainSha: landed.mainSha,
+											kind: "staged",
+											branch: staged.branch,
+											baseSha: staged.baseSha,
+											headSha: staged.headSha,
 										},
 									],
 									p_files_changed: filesChanged,
 								}
-							: {}),
+							: landed
+								? {
+										p_artifacts: [
+											{
+												kind: "landed",
+												state: landed.state,
+												branch: claimed.repository.baseBranch,
+												headSha: submission.headSha,
+												mainSha: landed.mainSha,
+											},
+										],
+										p_files_changed: filesChanged,
+									}
+								: {}),
 					});
+					if (landed && landed.state !== "unchanged") {
+						await emitCodeChange("landed", {
+							...(landed.change !== null ? { change: String(landed.change) } : {}),
+							...(landed.mainBefore ? { mainBefore: landed.mainBefore } : {}),
+							mainAfter: landed.mainSha,
+							workerId: claimed.workerId,
+							...(turn.runId ? { parentRunId: turn.runId } : {}),
+							...(landed.paths ? { paths: landed.paths } : {}),
+						});
+						if (this.#host.autoRedeploy) {
+							try {
+								const redeploy = await this.#host.autoRedeploy(claimed, landed, signal);
+								if (redeploy) {
+									const config = parseAppDeployConfig(JSON.parse(redeploy.rawConfig));
+									await runPostLandAppAutoRedeploy({
+										config,
+										event: {
+											kind: "landed",
+											repo: `${claimed.repository.owner}/${claimed.repository.name}`,
+											change: landed.change !== null ? String(landed.change) : landed.mainSha,
+											mainBefore: landed.mainBefore ?? null,
+											mainAfter: landed.mainSha,
+											paths: redeploy.paths ?? landed.paths ?? [],
+										},
+										...(redeploy.secretsManager ? { secretsManager: redeploy.secretsManager } : {}),
+										hooks: {
+											...redeploy.hooks,
+											emitAppUnhealthy: async (unhealthy, hookSignal) => {
+												await call(
+													"qorpera_emit_app_unhealthy_routine_wakes",
+													{
+														p_environment_id: claimed.environmentId,
+														p_site_id: redeploy.siteId,
+														p_event: {
+															status: unhealthy.status,
+															restartCount: unhealthy.restartCount,
+															error: unhealthy.error,
+														},
+													},
+													hookSignal,
+													5000,
+												).catch(() => undefined);
+												await redeploy.hooks.emitAppUnhealthy?.(unhealthy, hookSignal);
+											},
+										},
+										signal,
+									});
+								}
+							} catch (redeployError) {
+								this.#reported("redeploy", redeployError);
+							}
+						}
+					}
 					return "completed";
 				}
 				end();

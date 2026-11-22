@@ -83,6 +83,8 @@ LISTED = 0x80000001
 REFUSED = 0x80000002
 HELLO_MAX = 16 * 1024
 STREAM_MAX = HELLO_MAX + 1024
+MAX_HELLO_RECORDS = 64
+MAX_FLOWS = 65536
 HOLD_TIME = 5
 FLOW_HELD = 64              # a whole 16 KiB ClientHello is 12 full segments, or 31 of 536 bytes
 MACHINE_HELD = 512
@@ -172,18 +174,22 @@ def client_hello(data):
     """What a flow's first bytes say: ("more", None) while they may still become a ClientHello within STREAM_MAX bytes,
     ("name", (name, end)) for a whole one with one server name (end: where the record with its last byte ends; nothing
     else may be in its records), ("bad", why) otherwise."""
-    hello, at = b"", 0
+    view = memoryview(data)
+    hello, at, records = bytearray(), 0, 0
     while True:
-        if len(data) < at + 5:
+        if len(view) < at + 5:
             return ("more", None) if at + 5 <= STREAM_MAX else ("bad", "a ClientHello over 16 KiB")
-        kind, major, length = data[at], data[at + 1], int.from_bytes(data[at + 3:at + 5], "big")
+        kind, major, length = view[at], view[at + 1], int.from_bytes(view[at + 3:at + 5], "big")
         if kind != 22 or major != 3 or not 0 < length <= 16384:
             return "bad", "not TLS"
+        records += 1
+        if records > MAX_HELLO_RECORDS:
+            return "bad", "too many TLS records in a ClientHello"
         if at + 5 + length > STREAM_MAX:
             return "bad", "a ClientHello over 16 KiB"
-        if len(data) < at + 5 + length:
+        if len(view) < at + 5 + length:
             return "more", None
-        hello += data[at + 5:at + 5 + length]
+        hello.extend(view[at + 5:at + 5 + length])
         at += 5 + length
         if len(hello) >= 4:
             if hello[0] != 1:
@@ -267,13 +273,33 @@ class Judge:
     gives back (packet id, verdict, mark) for the packets it judged: ACCEPT (on as it was), REPEAT (back to the chain
     with the mark), DROP."""
 
-    def __init__(self, decide, report=lambda line: print(line, file=sys.stderr, flush=True)):
+    def __init__(self, decide, report=lambda line: print(line, file=sys.stderr, flush=True), max_flows=MAX_FLOWS):
         self.decide = decide        # (machine address, server name) -> None when allowed, or why not
         self.report = report
+        self.max_flows = max_flows
         self.flows = collections.OrderedDict()
         self.holding_flows = set()
+        self.passed_flows = set()
         self.holding = {}           # machine address -> the packets its flows hold
         self.refused = 0
+
+    def _put_flow(self, key, flow):
+        self.flows[key] = flow
+        self.flows.move_to_end(key)
+        self.passed_flows.discard(key)
+        excess = len(self.flows) - self.max_flows
+        if excess > 0:
+            evict = []
+            for old_key in self.flows:
+                if old_key == key or old_key in self.holding_flows:
+                    continue
+                evict.append(old_key)
+                if len(evict) >= excess:
+                    break
+            for old_key in evict:
+                del self.flows[old_key]
+                self.passed_flows.discard(old_key)
+        return flow
 
     def packet(self, ident, data, at):
         """One queued packet: the machine's when it comes from a machine's address, the server's when it goes to one."""
@@ -299,15 +325,13 @@ class Judge:
             start = (seq + 1) & 0xFFFFFFFF
             # A flow judged (ct mark 2 or 3) or reset is queued no more, so a SYN queued for it is a new connection's.
             if flow is None or flow.state in ("done", "refused", "reset"):
-                flow = self.flows[key] = Flow(start, at)
-                self.flows.move_to_end(key)
+                flow = self._put_flow(key, Flow(start, at))
                 self.holding_flows.discard(key)
             elif flow.state == "waiting" and not flow.held and flow.data is None:
                 # Its SYN again (or another) before any data: the flow starts there, and its packets still count.
-                flow = self.flows[key] = Flow(start, at, flow.queued)
-                self.flows.move_to_end(key)
+                flow = self._put_flow(key, Flow(start, at, flow.queued))
         elif flow is None:
-            flow = self.flows[key] = Flow(None, at)
+            flow = self._put_flow(key, Flow(None, at))
             if flags & RST:
                 flow.state = "reset"
                 return [(ident, ACCEPT, 0)]
@@ -322,7 +346,8 @@ class Judge:
             return self.refuse(key, flow, ident, "urgent data")
         if flags & RST:
             # The machine ends the flow: what it held is dropped. The flow stays, so that its later packets still count.
-            flow.state, flow.data, flow.known = "reset", None, None
+            flow.state, flow.data, flow.known, flow.hello = "reset", None, None, b""
+            self.passed_flows.discard(key)
             return [(i, DROP, 0) for i in self.release(key, flow)] + [(ident, ACCEPT, 0)]
         if flow.state == "reset":
             return [(ident, DROP, 0)]
@@ -368,7 +393,7 @@ class Judge:
         flow.held.append(ident)
         self.holding_flows.add(key)
         self.holding[machine] = self.holding.get(machine, 0) + 1
-        kind, value = client_hello(bytes(flow.data[:flow.filled]))
+        kind, value = client_hello(memoryview(flow.data)[:flow.filled])
         if kind == "more":
             return []
         if kind == "bad":
@@ -379,12 +404,13 @@ class Judge:
             return self.refuse(key, flow, ident, f"{name}: {why}")
         flow.state, flow.hello, flow.passed = "passed", bytes(flow.data[:hello_end]), at
         flow.data = flow.known = None
+        self.passed_flows.add(key)
         return [(i, ACCEPT, 0) for i in self.release(key, flow)]
 
     def inbound(self, key, flow, ident, ack, flags, at):
         """A packet from the server: the one that acknowledges a passed ClientHello unmarks the flow."""
         if flow is None:
-            flow = self.flows[key] = Flow(None, at)
+            flow = self._put_flow(key, Flow(None, at))
             return self.refuse(key, flow, ident, "a server's packet of a flow whose SYN this checker did not see")
         if flow.state == "refused":
             return [(ident, DROP, 0)]
@@ -397,6 +423,7 @@ class Judge:
             past = (ack - flow.start) & 0xFFFFFFFF
             if len(flow.hello) <= past < 1 << 31:
                 flow.state, flow.hello = "done", b""
+                self.passed_flows.discard(key)
                 return [(ident, REPEAT, LISTED)]
         return [(ident, ACCEPT, 0)]
 
@@ -419,6 +446,7 @@ class Judge:
         self.report(f"refused {machine}:{port} -> {server}:{server_port}: {why}")
         held = [i for i in self.release(key, flow) if i != ident]
         flow.state, flow.data, flow.known, flow.hello = "refused", None, None, b""
+        self.passed_flows.discard(key)
         return [(i, DROP, 0) for i in held] + [(ident, REPEAT, REFUSED)]
 
     def release(self, key, flow):
@@ -445,12 +473,22 @@ class Judge:
             if flow.state == "waiting" and at - flow.since > HOLD_TIME:
                 first = flow.held[0]
                 verdicts += self.refuse(key, flow, first, f"no whole ClientHello within {HOLD_TIME} seconds")
+        for key in list(self.passed_flows):
+            flow = self.flows.get(key)
+            if flow is None or flow.state != "passed":
+                self.passed_flows.discard(key)
+                continue
+            if at - flow.passed > HOLD_TIME:
+                # WHY: Free passed ClientHello bytes once HOLD_TIME elapses while keeping state='passed' so any late packet still triggers overdue() refusal.
+                flow.hello = b""
+                self.passed_flows.discard(key)
         while self.flows:
             key, flow = next(iter(self.flows.items()))
             if at - flow.seen <= FLOW_IDLE:
                 break
             del self.flows[key]
             self.holding_flows.discard(key)
+            self.passed_flows.discard(key)
         return verdicts
 
 
@@ -498,7 +536,7 @@ class Queue:
         self.request(attribute(CFG_QUEUE_MAXLEN, struct.pack("!I", length)))
 
     def message(self, kind, payload, flags):
-        self.seq += 1
+        self.seq = (self.seq + 1) & 0xFFFFFFFF
         body = struct.pack("!BBH", socket.AF_UNSPEC, 0, self.number) + payload
         return struct.pack("=IHHII", 16 + len(body), (NFNL_SUBSYS_QUEUE << 8) | kind, flags, self.seq, 0) + body
 

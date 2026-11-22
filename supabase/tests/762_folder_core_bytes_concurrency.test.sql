@@ -132,14 +132,14 @@ declare
 begin
 	v_one := (current_setting('qorpera_test.open_c1')::jsonb ->> 'intentId')::uuid;
 	v_two := (current_setting('qorpera_test.open_c2')::jsonb ->> 'intentId')::uuid;
-	v_objects := (select objects from public.qorpera_folder_storage_usage where profile_id = '63500000-0000-4000-8000-000000000010');
+	v_objects := (select coalesce(sum(objects), 0)::bigint from public.qorpera_folder_storage_usage where profile_id = '63500000-0000-4000-8000-000000000010');
 	perform dblink_exec('auth_one', 'begin');
 	perform * from dblink('auth_one', pg_temp.sql_confirm(pg_temp.member(1), v_one, v_twice)) as t(r jsonb);
 	perform dblink_send_query('auth_two', pg_temp.sql_confirm(pg_temp.member(2), v_two, v_twice));
 	if not pg_temp.waits_for('auth_two', 'auth_one') then raise exception 'The second upload waits for the first''s row'; end if;
 	perform dblink_exec('auth_one', 'commit');
 	r := pg_temp.result('auth_two');
-	if (r ->> 'stored')::boolean or (select objects from public.qorpera_folder_storage_usage
+	if (r ->> 'stored')::boolean or (select coalesce(sum(objects), 0)::bigint from public.qorpera_folder_storage_usage
 		where profile_id = '63500000-0000-4000-8000-000000000010') <> v_objects + 1 then
 		raise exception 'One hash, stored and counted once: %', r; end if;
 end $$;

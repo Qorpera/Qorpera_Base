@@ -293,6 +293,34 @@ describe("an app's base style", () => {
 		void app.panel.reload(true);
 		expect((await app.handed()).html).toContain("--q-accent: #1f6f5b;");
 	});
+
+	it("preserves fresh=true when a fresh reload is queued during an in-flight load", async () => {
+		const { host, fake } = company({ "QorperaOS/brand/brand.toml": 'accent = "#1f6f5b"\n' });
+		const app = await opened(host);
+		expect(app.html).toContain("--q-accent: #1f6f5b;");
+		const origRead = fake.folder.read.getMockImplementation();
+		if (!origRead) throw new Error("the folder fake reads");
+		let releaseFirst: (() => void) | undefined;
+		let blockedOnce = false;
+		fake.folder.read.mockImplementation(async (...args) => {
+			if (!blockedOnce && args[0] === "apps/sales/index.html") {
+				blockedOnce = true;
+				await new Promise<void>((resolve) => {
+					releaseFirst = resolve;
+				});
+			}
+			return origRead(...args);
+		});
+		const firstReload = app.panel.reload(false);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		fake.put("QorperaOS/brand/brand.toml", 'accent = "#b84a1c"\n');
+		const queuedFresh = app.panel.reload(true);
+		releaseFirst?.();
+		await firstReload;
+		await queuedFresh;
+		const refreshed = await app.handed();
+		expect(refreshed.html).toContain("--q-accent: #b84a1c;");
+	});
 });
 
 describe("an app's live values when its manifest changes", () => {

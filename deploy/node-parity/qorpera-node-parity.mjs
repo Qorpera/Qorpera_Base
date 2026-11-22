@@ -93,7 +93,7 @@ export function normalizeSetup({ label, units, unitFiles, mounts, projects, netw
 		mounts
 			.filter((mount) => /^nfs/.test(mount.fstype))
 			.map((mount) => {
-				const options = mount.options
+				const options = String(mount.options ?? "")
 					.split(",")
 					.filter((option) => /^(ro|rw|noexec|exec|nosuid|suid|nodev|vers=.*|hard|soft|sec=.*|proto=.*)$/.test(option))
 					.sort();
@@ -272,15 +272,6 @@ export function compareSetups(klass, a, b) {
 }
 
 const exec = promisify(execFile);
-// Every command is read-only and quick; one that hangs (a stuck NFS mount under findmnt) is stopped.
-// Its error names the command (the arguments carry no secret), never its output.
-async function run(command, args, options) {
-	try {
-		return await exec(command, args, { ...options, timeout: 60000 });
-	} catch (error) {
-		throw new Error(`${error?.killed ? "COMMAND_TIMED_OUT" : "COMMAND_FAILED"}: ${command} ${args.join(" ")}`);
-	}
-}
 // A JSON.parse error quotes part of its input, so it is replaced by a fixed message.
 function parse(text, what) {
 	try {
@@ -289,40 +280,63 @@ function parse(text, what) {
 		throw new Error(`INVALID_JSON: ${what}`);
 	}
 }
-async function json(command, args) {
-	return parse((await run(command, args, { maxBuffer: 64 * 1024 * 1024 })).stdout, `${command} ${args.join(" ")}`);
-}
-async function lines(command, args) {
-	return (await run(command, args, { maxBuffer: 16 * 1024 * 1024 })).stdout.split("\n").filter(Boolean);
-}
 
-export async function collect(label) {
-	const units = (await lines("systemctl", ["list-units", "--all", "--plain", "--no-legend", "--no-pager", "--type=service,timer,mount,socket"]))
-		.map((line) => line.trim().split(/\s+/))
-		.map(([unit, , active]) => ({ unit, active }));
-	const unitFiles = (await lines("systemctl", ["list-unit-files", "--plain", "--no-legend", "--no-pager"]))
-		.map((line) => line.trim().split(/\s+/))
-		.map(([unit, state]) => ({ unit, state }));
-	const mounts = ((await json("findmnt", ["-J", "-o", "TARGET,SOURCE,FSTYPE,OPTIONS"])).filesystems ?? []).flatMap(
-		function walk(item) {
-			return [item, ...(item.children ?? []).flatMap(walk)];
-		},
-	);
-	const projects = await json("lxc", ["query", "/1.0/projects?recursion=1"]);
-	const networks = await json("lxc", ["query", "/1.0/networks?recursion=1"]);
-	const pools = await json("lxc", ["query", "/1.0/storage-pools?recursion=1"]);
-	const instances = await json("lxc", ["query", "/1.0/instances?all-projects=true&recursion=1"]);
+export async function collect(
+	label,
+	{ exec: execFn = exec, rolesDir = "/opt/qorpera-node/roles", nodeJsonPath = "/etc/qorpera-node/node.json" } = {},
+) {
+	const runWith = async (command, args, options) => {
+		try {
+			return await execFn(command, args, { ...options, timeout: 60000 });
+		} catch (error) {
+			throw new Error(`${error?.killed ? "COMMAND_TIMED_OUT" : "COMMAND_FAILED"}: ${command} ${args.join(" ")}`);
+		}
+	};
+	const jsonWith = async (command, args) =>
+		parse((await runWith(command, args, { maxBuffer: 64 * 1024 * 1024 })).stdout, `${command} ${args.join(" ")}`);
+	const linesWith = async (command, args) =>
+		(await runWith(command, args, { maxBuffer: 16 * 1024 * 1024 })).stdout.split("\n").filter(Boolean);
+	// WHY: Run the seven read-only host queries concurrently so parity collection finishes in one round-trip window.
+	const [unitLines, unitFileLines, findmnt, projects, networks, pools, instances] = await Promise.all([
+		linesWith("systemctl", [
+			"list-units",
+			"--all",
+			"--plain",
+			"--no-legend",
+			"--no-pager",
+			"--type=service,timer,mount,socket",
+		]),
+		linesWith("systemctl", ["list-unit-files", "--plain", "--no-legend", "--no-pager"]),
+		jsonWith("findmnt", ["-J", "-o", "TARGET,SOURCE,FSTYPE,OPTIONS"]),
+		jsonWith("lxc", ["query", "/1.0/projects?recursion=1"]),
+		jsonWith("lxc", ["query", "/1.0/networks?recursion=1"]),
+		jsonWith("lxc", ["query", "/1.0/storage-pools?recursion=1"]),
+		jsonWith("lxc", ["query", "/1.0/instances?all-projects=true&recursion=1"]),
+	]);
+	const units = unitLines.map((line) => line.trim().split(/\s+/)).map(([unit, , active]) => ({ unit, active }));
+	const unitFiles = unitFileLines.map((line) => line.trim().split(/\s+/)).map(([unit, state]) => ({ unit, state }));
+	const mounts = (findmnt.filesystems ?? []).flatMap(function walk(item) {
+		return [item, ...(item.children ?? []).flatMap(walk)];
+	});
 	const roles = {};
 	let roleNames = [];
 	try {
-		roleNames = await readdir("/opt/qorpera-node/roles");
+		roleNames = await readdir(rolesDir);
 	} catch {
 		/* node without the agent */
 	}
-	for (const role of roleNames.sort()) roles[role] = (await readlink(`/opt/qorpera-node/roles/${role}`)).split("/").pop();
+	for (const role of roleNames.sort()) {
+		// WHY: Skip dot-prefixed temp symlinks (.link-<uuid>) written by qorpera-node-agent during atomic swaps and tolerate ENOENT races.
+		if (role.startsWith(".")) continue;
+		const target = await readlink(`${rolesDir}/${role}`).catch((error) => {
+			if (error.code === "ENOENT") return null;
+			throw error;
+		});
+		if (target !== null) roles[role] = target.split("/").pop();
+	}
 	let nodeJson = null;
 	try {
-		nodeJson = JSON.parse(await readFile("/etc/qorpera-node/node.json", "utf8"));
+		nodeJson = JSON.parse(await readFile(nodeJsonPath, "utf8"));
 	} catch {
 		/* node without the agent */
 	}

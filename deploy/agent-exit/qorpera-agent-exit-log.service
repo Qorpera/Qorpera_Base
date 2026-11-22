@@ -5,6 +5,7 @@ After=qorpera-agent-exit.service
 # At shutdown LXD stops the machines first, so they lose names and the log only after they are gone.
 Before=snap.lxd.daemon.service
 ConditionPathExists=/run/netns/qexit
+StartLimitIntervalSec=0
 
 [Service]
 ExecStart=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh log

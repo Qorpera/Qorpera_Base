@@ -81,6 +81,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_folder_commit", "standard"],
 	["qorpera_folder_complete_run_receipt", "standard"],
 	["qorpera_folder_describe_code_change", "standard"],
+	["qorpera_folder_emit_data_change_wakes", "standard"],
 	["qorpera_folder_list", "standard"],
 	["qorpera_folder_manage_hook", "standard"],
 	["qorpera_folder_memory_commit", "standard"],

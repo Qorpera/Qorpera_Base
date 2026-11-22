@@ -19,6 +19,19 @@ die() {
 [ "$(id -u)" = 0 ] || die "run as root"
 command -v openssl >/dev/null || die "no openssl"
 
+CLEANUP_FILES=()
+cleanup() {
+	local f
+	for f in "${CLEANUP_FILES[@]}"; do
+		[ -z "$f" ] || rm -f -- "$f"
+	done
+}
+# WHY: Always remove temp OpenSSL configs, CSRs, error logs, and staged .new keys on failure or signal.
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # An openssl config; the arguments are the server's names as DNS:x or IP:x.
 cnf() {
 	local n d=0 i=0
@@ -39,12 +52,13 @@ ossl() {
 	local step=$1 e
 	shift
 	e=$(mktemp)
+	CLEANUP_FILES+=("$e")
 	if ! openssl "$@" >/dev/null 2>"$e"; then
 		cat "$e" >&2
-		rm -f "$e"
+		rm -f -- "$e"
 		die "$step: openssl failed"
 	fi
-	rm -f "$e"
+	rm -f -- "$e"
 }
 until_date() { openssl x509 -in "$1" -noout -enddate | cut -d= -f2; }
 
@@ -53,12 +67,15 @@ make_ca() {
 	[ ! -e "$dir/ca.key" ] && [ ! -e "$dir/ca.crt" ] || die "ca: $dir holds a CA already"
 	install -d -m 0700 "$dir"
 	c=$(mktemp)
+	CLEANUP_FILES+=("$c" "$dir/ca.key.new" "$dir/ca.crt.new")
 	cnf >"$c"
 	(umask 077 && ossl ca req -x509 -new -config "$c" -extensions ca_ext -subj "/CN=company data store CA" \
-		-newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -sha256 -days 3650 -keyout "$dir/ca.key" -out "$dir/ca.crt")
-	rm -f "$c"
-	chmod 0400 "$dir/ca.key"
-	chmod 0644 "$dir/ca.crt"
+		-newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -sha256 -days 3650 -keyout "$dir/ca.key.new" -out "$dir/ca.crt.new")
+	rm -f -- "$c"
+	chmod 0400 "$dir/ca.key.new"
+	chmod 0644 "$dir/ca.crt.new"
+	mv "$dir/ca.key.new" "$dir/ca.key"
+	mv "$dir/ca.crt.new" "$dir/ca.crt"
 	echo "tls: CA made, valid until $(until_date "$dir/ca.crt")"
 }
 
@@ -84,12 +101,13 @@ make_cert() {
 		install -d -m 0500 -o "$NOBODY" -g "$NOBODY" "$out"
 	fi
 	c=$(mktemp)
+	CLEANUP_FILES+=("$c" "$base.csr" "$base.key.new" "$base.crt.new")
 	cnf "${sans[@]}" >"$c"
 	(umask 077 && ossl "$kind key" genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$base.key.new")
 	ossl "$kind request" req -new -config "$c" -key "$base.key.new" -subj "/CN=company data store" -out "$base.csr"
 	ossl "$kind cert" x509 -req -in "$base.csr" -CA "$ca/ca.crt" -CAkey "$ca/ca.key" \
 		-set_serial "0x$(openssl rand -hex 16)" -extfile "$c" -extensions server_ext -days 825 -sha256 -out "$base.crt.new"
-	rm -f "$c" "$base.csr"
+	rm -f -- "$c" "$base.csr"
 	openssl verify -CAfile "$ca/ca.crt" "$base.crt.new" >/dev/null 2>&1 || die "$kind: the new cert does not verify"
 	if [ "$kind" = server ]; then
 		chown "0:$PG_GID" "$base.key.new"

@@ -194,18 +194,14 @@ describe("operational surfaces", () => {
 		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
 		document.body.append(rail.el);
 		rail.update("inbox");
-		const row = rail.el.querySelector(".surface-session")!;
-		expect(row.classList.contains("is-action")).toBe(true);
-		expect(row.querySelector(".surface-crew .figure")).not.toBeNull();
-		expect(row.querySelector(".surface-crew")?.getAttribute("data-figure")).not.toBe("crown");
-		expect(row.querySelector(".surface-session-status")?.textContent).toBe("Draft ready");
-		expect(row.querySelector(".surface-switch")).toBeNull();
-		expect(row.querySelector('.surface-approve.is-action[aria-label^="Send"]')).not.toBeNull();
+		expect(rail.el.querySelector(".surface-tree")).toBeNull();
+		const crew = rail.el.querySelector<HTMLElement>('.rail-surface[data-surface-slug="inbox"] .rail-surface-crew')!;
+		expect(crew.getAttribute("aria-label")).toBe("1 session active");
+		expect(crew.querySelectorAll(".surface-crew.is-mini .figure")).toHaveLength(1);
+		expect(crew.querySelector(".surface-crew")?.getAttribute("data-figure")).not.toBe("crown");
 		const tile = rail.el.querySelector<HTMLElement>('.rail-surface[data-surface-slug="inbox"] .surface-tile')!;
 		expect(tile.style.getPropertyValue("--surface-tint")).toBe("#2f63d8");
-		expect(rail.el.querySelector('.rail-surface[data-surface-slug="inbox"] .rail-surface-sub')?.textContent).toBe(
-			"1 session active",
-		);
+		expect(tile.querySelector(".surface-figure")?.getAttribute("data-figure")).toBe("envelope");
 
 		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "inbox");
 		document.body.append(view.el);
@@ -259,7 +255,7 @@ describe("operational surfaces", () => {
 });
 
 describe("creating surfaces", () => {
-	it("offers nine kinds, a custom surface with colour, icon and brief, and opens a Mobile App in the phone frame", async () => {
+	it("offers nine kinds, a figure for each, a custom surface with a brief, and opens a Mobile App in the phone frame", async () => {
 		const navigated: string[] = [];
 		const store = storeWith(undefined, {
 			companyName: "Brooks",
@@ -295,10 +291,19 @@ describe("creating surfaces", () => {
 		expect(custom.hidden).toBe(true);
 		sheet.querySelector<HTMLElement>('[data-preset="custom"]')!.click();
 		expect(custom.hidden).toBe(false);
-		expect(custom.querySelectorAll(".surface-create-swatch").length).toBeGreaterThan(5);
+		expect(sheet.querySelector(".surface-create-swatch")).toBeNull();
+		const picked = () =>
+			sheet.querySelector<HTMLElement>('.surface-figure-choice[aria-checked="true"]')?.dataset.figure;
+		expect(sheet.querySelectorAll(".surface-figure-choice")).toHaveLength(26);
+		expect(picked()).toBe("gem");
 
 		sheet.querySelector<HTMLElement>('[data-preset="mobile_app"]')!.click();
 		expect(custom.hidden).toBe(true);
+		expect(picked()).toBe("phone");
+		sheet.querySelector<HTMLElement>('.surface-figure-choice[data-figure="piggy"]')!.click();
+		sheet.querySelector<HTMLElement>('[data-preset="website"]')!.click();
+		expect(picked()).toBe("piggy");
+		sheet.querySelector<HTMLElement>('[data-preset="mobile_app"]')!.click();
 		expect(sheet.querySelector<HTMLInputElement>(".surface-create-input")?.value).toBe("Mobile App");
 		sheet
 			.querySelector<HTMLFormElement>(".surface-create-form")!
@@ -306,6 +311,7 @@ describe("creating surfaces", () => {
 		await flush();
 		const mobile = store.state.surfaces.find((item) => item.slug === "mobile")!;
 		expect(store.lookOf(mobile).kind).toBe("mobile_app");
+		expect(mobile.icon).toBe("figure:piggy");
 		expect(store.state.device).toBe("mobile");
 		expect(navigated).toEqual(["mobile"]);
 
@@ -314,10 +320,9 @@ describe("creating surfaces", () => {
 			archetype: "studio",
 			icon: "book",
 			kind: "custom",
-			accent: "#e0559b",
 			description: "Data room for the seed round.",
 		});
-		expect(store.lookOf(investor!)).toEqual({ kind: "custom", accent: "#e0559b" });
+		expect(store.lookOf(investor!)).toEqual({ kind: "custom" });
 		expect(store.workspace(investor!.id)?.briefSummary).toBe("Data room for the seed round.");
 		expect(store.state.localStudioBase[investor!.id]?.["investor-room/brief.md"]).toContain(
 			"Data room for the seed round.",
@@ -373,7 +378,6 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		expect(membersRow.querySelector(".rail-surface-sub")?.textContent).toBe("1 teammate");
 		const tree = membersRow.nextElementSibling!;
 		expect(tree.querySelector('.rail-members [data-member-id="user-marie"]')).toBe(marie);
-		expect(tree.querySelector(".surface-tree-empty")).toBeNull();
 		expect(rail.el.querySelector('[aria-label="Building"]')).toBeNull();
 		store.dispose();
 	});
@@ -928,7 +932,7 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		store.dispose();
 	});
 
-	it("renders affected file chips and projected Company Files source footer in the Changes drawer", async () => {
+	it("renders affected file chips and omits the folder source footer in the Changes drawer", async () => {
 		stubFigureMotion();
 		const navigated: string[] = [];
 		const site = summary({
@@ -995,10 +999,9 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		expect(navigated).toEqual(["files"]);
 		expect(location.hash).toBe(`#/c/${COMPANY}/s/files`);
 
-		const sourcePill = view.el.querySelector<HTMLAnchorElement>(".surface-drawer-source .surface-source-pill");
-		expect(sourcePill).not.toBeNull();
-		expect(sourcePill?.querySelector(".surface-source-path")?.textContent).toBe("code/website");
-		expect(linkHref(sourcePill!)).toBe(`#/c/${COMPANY}/s/files`);
+		expect(view.el.querySelector(".surface-drawer.is-open.is-overview")).not.toBeNull();
+		expect(view.el.querySelector(".surface-drawer-source")).toBeNull();
+		expect(view.el.querySelector(".surface-source-pill")).toBeNull();
 
 		view.dispose();
 
@@ -1010,12 +1013,9 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		document.body.append(identityView.el);
 		await flush();
 		identityView.update();
-		expect(identityView.el.querySelector(".surface-drawer-source .surface-source-path")?.textContent).toBe(
-			"identity/",
-		);
-		expect(linkHref(identityView.el.querySelector(".surface-drawer-source .surface-source-pill")!)).toBe(
-			`#/c/${COMPANY}/s/files`,
-		);
+		expect(identityView.el.querySelector(".surface-drawer.is-open.is-overview")).not.toBeNull();
+		expect(identityView.el.querySelector(".surface-drawer-source")).toBeNull();
+		expect(identityView.el.querySelector(".surface-source-pill")).toBeNull();
 
 		identityView.dispose();
 		store.dispose();
@@ -1253,7 +1253,7 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		company.stop();
 	});
 
-	it("renders Live-linked via Company Files strips on Identity and Product and applies live Identity CSS vars to Product", async () => {
+	it("renders the Used by line on Identity, the Live-linked strip on Product, and applies live Identity CSS vars to Product", async () => {
 		stubFigureMotion();
 		const navigated: string[] = [];
 		const store = storeWith(undefined, {
@@ -1278,9 +1278,9 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 			'[data-identity-reach="true"][data-live-linked="true"]',
 		)!;
 		expect(identityReach).not.toBeNull();
-		expect(identityReach.textContent).toContain("Live-linked via Company Files");
-		expect(identityReach.textContent).toContain("identity/tokens.json");
-		expect(identityReach.textContent).toContain("identity/tokens.css");
+		expect(identityReach.textContent).toContain("Used by");
+		expect(identityReach.textContent).not.toContain("identity/tokens.json");
+		expect(identityReach.querySelector(".studio-live-dot")).toBeNull();
 		identityView.dispose();
 
 		const productView = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "product");

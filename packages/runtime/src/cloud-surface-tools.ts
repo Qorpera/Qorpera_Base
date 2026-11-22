@@ -12,8 +12,8 @@ import {
 	type StudioPatchOp,
 	SURFACE_ARCHETYPES,
 	SURFACE_AUTOMATION_STATUSES,
+	SURFACE_FIGURES,
 	SURFACE_GROUPS,
-	SURFACE_HEX_COLOR_PATTERN,
 	SURFACE_KINDS,
 	SURFACE_MAX_CHANGE_SUMMARY_CHARS,
 	SURFACE_MAX_CHANGE_TITLE_CHARS,
@@ -35,6 +35,7 @@ import {
 	type SurfaceSourceKind,
 	type SurfaceStatus,
 } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import {
 	type CloudNativeTool,
@@ -50,6 +51,9 @@ const MAX_SURFACE_PATH_CHARS = 512;
 const MAX_OWNER_LABEL_CHARS = 160;
 const MAX_VARIANT_LABEL_CHARS = 80;
 const MAX_OPS_ACTION_PAYLOAD_BYTES = 256 * 1024;
+const MAX_STAGE_SURFACE_PATCH_BYTES = 512 * 1024;
+const MAX_MERGE_JSON_DEPTH = 16;
+const DISALLOWED_MERGE_JSON_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const MAX_AUTOMATION_TITLE_CHARS = 120;
 const MAX_AUTOMATION_SCHEDULE_CHARS = 160;
 const MANAGE_SURFACE_AUTOMATION_ACTIONS = ["create", "update", "delete"] as const;
@@ -144,7 +148,6 @@ export interface ProposeSurfaceRequest {
 	readonly group: SurfaceGroup;
 	readonly archetype: SurfaceArchetype;
 	readonly kind?: SurfaceKind;
-	readonly accentHex?: string | null;
 	readonly isGlobal?: boolean;
 	readonly activateImmediately?: boolean;
 	readonly sourceKind: SurfaceSourceKind;
@@ -275,25 +278,39 @@ function parseBooleanArg(value: unknown, field: string, fallback: boolean): bool
 	return value;
 }
 
-function parseOptionalAccentHexArg(value: unknown, field: string): string | null {
-	if (value === undefined || value === null) return null;
-	if (typeof value !== "string" || !SURFACE_HEX_COLOR_PATTERN.test(value)) {
-		throw new CloudToolArgumentRefusal(`${field} must be a 6-digit hex color like #d76f45`);
-	}
-	return value;
-}
-
 function assertSafeRelativePath(path: string, field: string): string {
 	const trimmed = path.trim();
 	if (
 		trimmed.length === 0 ||
 		trimmed.startsWith("/") ||
+		trimmed.endsWith("/") ||
 		trimmed.includes("\\") ||
-		trimmed.split("/").some((segment) => segment === "..")
+		trimmed.includes("\0") ||
+		trimmed.includes(":") ||
+		trimmed.split("/").some((segment) => segment === "" || segment === "." || segment === "..")
 	) {
 		throw new CloudToolArgumentRefusal(`${field} must be a safe relative path`);
 	}
 	return trimmed;
+}
+
+function validateMergeJsonValue(value: unknown, field: string, depth: number): void {
+	if (depth > MAX_MERGE_JSON_DEPTH) {
+		throw new CloudToolArgumentRefusal(`${field} exceeds maximum nesting depth of ${MAX_MERGE_JSON_DEPTH}`);
+	}
+	if (value === null || typeof value !== "object") return;
+	if (Array.isArray(value)) {
+		for (let i = 0; i < value.length; i += 1) {
+			validateMergeJsonValue(value[i], `${field}[${i}]`, depth + 1);
+		}
+		return;
+	}
+	for (const key of Object.getOwnPropertyNames(value)) {
+		if (DISALLOWED_MERGE_JSON_KEYS.has(key)) {
+			throw new CloudToolArgumentRefusal(`${field} contains forbidden key "${key}"`);
+		}
+		validateMergeJsonValue((value as Record<string, unknown>)[key], `${field}.${key}`, depth + 1);
+	}
 }
 
 function parseOptionalNotePathsArg(value: unknown): string[] {
@@ -523,7 +540,7 @@ export function createControlPlaneSurfaceToolsPort(
 					p_preview_mode: request.previewMode,
 					p_brief_summary: request.briefSummary,
 					p_kind: request.kind ?? "custom",
-					p_accent_hex: request.accentHex ?? null,
+					p_accent_hex: null,
 					p_is_global: request.isGlobal ?? false,
 					p_activate_immediately: request.activateImmediately ?? false,
 				},
@@ -620,10 +637,10 @@ export function createControlPlaneSurfaceToolsPort(
 		},
 
 		async listSurfaceSenses(companyId, signal) {
-			const response = await rpc(
-				"qorpera_native_surface_describe_senses",
-				{ p_profile_id: companyId },
-				signal ?? new AbortController().signal,
+			const response = await withAbortScopes(
+				signal ? [signal] : [],
+				(rpcSignal) => rpc("qorpera_native_surface_describe_senses", { p_profile_id: companyId }, rpcSignal),
+				15_000,
 			);
 			return parseSurfaceCompanySenses(response, "listSurfaceSenses");
 		},
@@ -656,7 +673,7 @@ export function createCodingRecordChangeTool(
 		name: "coding_record_change",
 		source: "worker",
 		description:
-			"Stage one cohesive committed ChangeUnit on this Surface session branch without landing main. Members toggle and approve each recorded change individually; pass parentSha (the base commit before this change unit, e.g. git rev-parse HEAD~1) and commitSha, calling once per distinct deliverable before surface_reply.",
+			"Stage one cohesive committed ChangeUnit on this Surface session branch without landing main. Members toggle and approve each recorded change individually; pass parentSha (the base commit before this change unit, e.g. git rev-parse HEAD~1) and commitSha, calling once per distinct deliverable before coding_finish.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -757,10 +774,11 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 					enum: [...SURFACE_KINDS],
 					description: "Semantic kind of surface (identity, website, web_app, mobile_app, product, etc.).",
 				},
-				accentHex: {
+				figure: {
 					type: "string",
-					pattern: SURFACE_HEX_COLOR_PATTERN.source,
-					description: "Optional #rrggbb accent color for the surface icon and badge.",
+					enum: [...SURFACE_FIGURES],
+					description:
+						"The figure the surface is drawn as in the sidebar, the thing it is: omit for its kind's own (website = browser, money = money, files = folder). Its colours are fixed; there is no colour to choose.",
 				},
 				isGlobal: {
 					type: "boolean",
@@ -771,7 +789,6 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 					description: "Set true during Day-0 founding for 1-2 core product surfaces; omit or false to propose.",
 				},
 				sourceKind: { type: "string", enum: [...SURFACE_SOURCE_KINDS] },
-				icon: { type: "string", maxLength: 40 },
 				repositoryKey: { type: "string", maxLength: 200 },
 				folderRoot: { type: "string", maxLength: 256 },
 				previewMode: { type: "string", enum: [...SURFACE_PREVIEW_MODES] },
@@ -787,10 +804,9 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 					["slug", "title", "group", "archetype", "sourceKind"],
 					[
 						"kind",
-						"accentHex",
+						"figure",
 						"isGlobal",
 						"activateImmediately",
-						"icon",
 						"repositoryKey",
 						"folderRoot",
 						"previewMode",
@@ -814,10 +830,13 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 			const sourceKind = parseEnumArg(raw.sourceKind, SURFACE_SOURCE_KINDS, "sourceKind");
 			const kind =
 				raw.kind === undefined || raw.kind === null ? "custom" : parseEnumArg(raw.kind, SURFACE_KINDS, "kind");
-			const accentHex = parseOptionalAccentHexArg(raw.accentHex, "accentHex");
+			const figure =
+				raw.figure === undefined || raw.figure === null
+					? null
+					: parseEnumArg(raw.figure, SURFACE_FIGURES, "figure");
 			const isGlobal = parseBooleanArg(raw.isGlobal, "isGlobal", false);
 			const activateImmediately = parseBooleanArg(raw.activateImmediately, "activateImmediately", false);
-			const icon = parseOptionalBounded(raw.icon, "icon", 40) ?? "page";
+			const icon = figure ? `figure:${figure}` : "page";
 			const repositoryKey = parseOptionalBounded(raw.repositoryKey, "repositoryKey", 200);
 			const folderRoot = parseOptionalBounded(raw.folderRoot, "folderRoot", 256);
 			const previewMode =
@@ -835,7 +854,6 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 				group,
 				archetype,
 				kind,
-				accentHex,
 				isGlobal,
 				activateImmediately,
 				sourceKind,
@@ -1060,8 +1078,12 @@ export function createStageSurfacePatchTool(sessionId: string, port: SurfacePatc
 				const safePath = assertSafeRelativePath(op.path, `ops[${index}].path`);
 				if (op.op === "write_text") return { op: "write_text", path: safePath, content: op.content };
 				if (op.op === "delete") return { op: "delete", path: safePath };
+				validateMergeJsonValue(op.patch, `ops[${index}].patch`, 0);
 				return { op: "merge_json", path: safePath, patch: op.patch };
 			});
+			if (Buffer.byteLength(JSON.stringify(normalizedOps), "utf8") > MAX_STAGE_SURFACE_PATCH_BYTES) {
+				throw new CloudToolArgumentRefusal(`ops exceeds ${MAX_STAGE_SURFACE_PATCH_BYTES} bytes`);
+			}
 			const notePaths = parseOptionalNotePathsArg(raw.notePaths);
 			const finishSession = parseBooleanArg(raw.finishSession, "finishSession", false);
 			return {

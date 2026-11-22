@@ -79,6 +79,7 @@ export const CODE_REQUEST_RPCS = [
 	"qorpera_code_restore_strand",
 	// An import's own: `CodeImport` makes them (the look, and the record inside the job that opens the place).
 	...CODE_IMPORT_RPCS,
+	"qorpera_emit_code_change_routine_wakes",
 ] as const;
 
 /** The kinds a claim asks for (`p_kinds` of `qorpera_code_requests_claim`); `import` with them only while this executor
@@ -751,6 +752,28 @@ export class CodeHostRequests {
 					this.#sites?.wake();
 				} catch (error) {
 					this.#report({ event: "code-request-error", step: "wake", ...named(request), error });
+				}
+			}
+			if (finished?.state === "recorded" && left.outcome.state === "done" && left.outcome.result === "undone") {
+				try {
+					await this.#call(
+						"qorpera_emit_code_change_routine_wakes",
+						{
+							p_environment_id: request.environmentId,
+							p_owner: request.owner,
+							p_name: request.name,
+							p_kind: "undone",
+							p_event: {
+								change: String(request.change.n),
+								mainBefore: left.outcome.mainBefore,
+								mainAfter: left.outcome.mainAfter,
+								paths: left.outcome.paths.map((item) => item.path),
+							},
+						},
+						signal,
+					);
+				} catch {
+					// WHY: routine wake emission is best-effort and must never fail a recorded undo.
 				}
 			}
 			return this.#said(request, left.outcome, finished);

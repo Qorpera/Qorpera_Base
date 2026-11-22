@@ -1613,4 +1613,153 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 			[authorize, 60_000],
 		]);
 	});
+
+	it("exposes coding_record_change and staged surface instructions for a surface-backed coding turn", async () => {
+		const f = fixture();
+		f.coding.repository = { host: "qorpera", owner: "surfaces", name: "website", baseBranch: "main" };
+		const sessionId = randomUUID();
+		const recordChange = vi.fn().mockResolvedValue({ changeId: randomUUID(), seq: 1, openChangeCount: 1 });
+		const fullPrompt = `${"Build the Scandinavian storefront hero. ".repeat(60)}END_MARKER`;
+		let offeredToolNames: string[] = [];
+		let finishDescription = "";
+		let capturedInstructions = "";
+		let capturedPrompt = "";
+
+		vi.mocked(runCloudNativeRunToolSession).mockImplementationOnce(async (options) => {
+			capturedInstructions = options.runtimeInstructions ?? "";
+			capturedPrompt = options.prompt ?? "";
+			const run = await CloudNativeToolRun.open(f.binding, f.control, options.signal);
+			try {
+				const adapters = await options.tools(
+					f.authority.identity,
+					new CloudNativeToolOperations(run, f.control),
+					run,
+				);
+				offeredToolNames = adapters.tools.map((tool) => tool.name);
+				finishDescription = adapters.tools.find((tool) => tool.name === "coding_finish")?.description ?? "";
+				const recordTool = adapters.tools.find((tool) => tool.name === "coding_record_change")!;
+				await recordTool.execute(
+					recordTool.parseArguments({
+						title: "Initial hero",
+						summary: "Builds landing hero for preview.",
+						commitSha: "b".repeat(40),
+					}),
+					f.context,
+				);
+				const finishTool = adapters.tools.find((tool) => tool.name === "coding_finish")!;
+				await finishTool.execute(
+					finishTool.parseArguments({
+						operationKey: "surf-finish-1",
+						summary: "Staged the homepage for preview.",
+						headSha: "b".repeat(40),
+					}),
+					f.context,
+				);
+				return {
+					providerSessionId: "native-surface-thread",
+					toolCalls: 2,
+					codexVersion: "pinned",
+					fencedRequests: 2,
+				};
+			} finally {
+				run.close();
+			}
+		});
+
+		await f.runtime.execute(f.request, "/private", f.context.signal, {
+			...f.turn,
+			surfaceSession: {
+				sessionId,
+				surfaceSlug: "website",
+				surfaceTitle: "Hjemmeside",
+				repositoryKey: "surfaces/website",
+				folderRoot: null,
+				briefMarkdown: "Public landing page.",
+				explorationVariantLabel: null,
+				pointToChangeTarget: null,
+				conflictPaths: [],
+				fullPrompt,
+				recordChange,
+			},
+		});
+
+		expect(offeredToolNames).toEqual([
+			"coding_run_command",
+			"coding_read_command",
+			"coding_cancel_command",
+			"coding_record_change",
+			"coding_finish",
+			"coding_ask",
+		]);
+		expect(finishDescription).toContain("staged on the session branch for founder Preview and approval");
+		expect(finishDescription).not.toContain("lands into");
+		expect(capturedInstructions).toContain("Surface Staged Mode");
+		expect(capturedPrompt).toContain("END_MARKER");
+		expect(recordChange).toHaveBeenCalledTimes(1);
+	});
+
+	it("surfaces sorted secretNames in coding turn context and composed prompt without values", async () => {
+		const f = await fixture();
+		Object.assign(f.turnContext, { secretNames: ["ANTHROPIC_API_KEY", "NPM_TOKEN", "OPENAI_API_KEY"] });
+		const prompts: Record<string, unknown>[] = [];
+		vi.mocked(runCloudNativeRunToolSession).mockImplementationOnce(async (options) => {
+			const run = await CloudNativeToolRun.open(f.binding, f.control, options.signal);
+			try {
+				const adapters = await options.tools(
+					f.authority.identity,
+					new CloudNativeToolOperations(run, f.control),
+					run,
+				);
+				prompts.push(JSON.parse(options.prompt ?? "") as Record<string, unknown>);
+				expect(options.runtimeInstructions).toContain(
+					"secretNames in the context lists those exact variable names",
+				);
+				const finish = adapters.tools.find((tool) => tool.name === "coding_finish")!;
+				await finish.execute(
+					finish.parseArguments({
+						operationKey: "finish-secrets",
+						headSha: "a".repeat(40),
+						summary: "Done.",
+					}),
+					f.context,
+				);
+				return { providerSessionId: "native-thread", toolCalls: 1, codexVersion: "pinned", fencedRequests: 1 };
+			} finally {
+				run.close();
+			}
+		});
+		await f.runtime.execute(f.request, "/private", f.context.signal, f.turn);
+		expect(prompts[0]?.secretNames).toEqual(["ANTHROPIC_API_KEY", "NPM_TOKEN", "OPENAI_API_KEY"]);
+		const repository = {
+			host: "github.com" as const,
+			owner: f.coding.repository.owner,
+			name: f.coding.repository.name,
+			baseBranch: f.coding.repository.baseBranch,
+		};
+		const baseContext = {
+			schema: "qorpera.coding-turn-context/v2",
+			workerId: f.coding.workerId,
+			sequence: 1,
+			...f.turnContext,
+		};
+		expect(() =>
+			parseCloudCodingTurnContext(
+				{ ...baseContext, secretNames: ["lowercase_bad"] },
+				{ workerId: f.coding.workerId, sequence: 1 },
+				repository,
+			),
+		).toThrow("CODING_TURN_CONTEXT_INVALID");
+		expect(() =>
+			parseCloudCodingTurnContext(
+				{ ...baseContext, secretNames: ["OPENAI_API_KEY", "OPENAI_API_KEY"] },
+				{ workerId: f.coding.workerId, sequence: 1 },
+				repository,
+			),
+		).toThrow("CODING_TURN_CONTEXT_INVALID");
+		const omitted: Record<string, unknown> = { ...baseContext };
+		delete omitted.secretNames;
+		expect(
+			parseCloudCodingTurnContext(omitted, { workerId: f.coding.workerId, sequence: 1 }, repository).secretNames,
+		).toEqual([]);
+	});
 });

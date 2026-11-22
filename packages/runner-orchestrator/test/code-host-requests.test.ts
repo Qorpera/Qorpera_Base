@@ -126,7 +126,9 @@ function setup(options: Partial<CodeHostRequestsOptions> = {}) {
 			signal.throwIfAborted();
 			calls.push({ method, args: structuredClone(args) });
 			order.push(
-				method.replace("qorpera_code_request", "").replace("qorpera_code_restore_", "").replace(/^s?_/, ""),
+				method === "qorpera_emit_code_change_routine_wakes"
+					? "wake"
+					: method.replace("qorpera_code_request", "").replace("qorpera_code_restore_", "").replace(/^s?_/, ""),
 			);
 			const forced = await kernel.answer?.(method, args);
 			if (forced !== undefined) return forced;
@@ -135,6 +137,8 @@ function setup(options: Partial<CodeHostRequestsOptions> = {}) {
 			if (method === "qorpera_code_request_step")
 				return { schema: STEP, state: "go", leaseUntil: "2026-11-10T12:35:00+00:00" };
 			if (method === "qorpera_code_request_finish") return { schema: FINISH, state: "recorded", change: 15 };
+			if (method === "qorpera_emit_code_change_routine_wakes")
+				return { schema: "qorpera.code-change-wakes/v1", state: "idle", wakes: 0, skipped: 0, wakeIds: [] };
 			// Every session named was archived: none was at work.
 			if (method === "qorpera_code_restore_strand")
 				return { schema: STRAND, state: "done", archived: (args.p_stranded as unknown[]).length, active: 0 };
@@ -247,6 +251,7 @@ describe("CodeHostRequests", () => {
 			"qorpera_code_restore_strand",
 			"qorpera_code_import_looked",
 			"qorpera_code_import_record",
+			"qorpera_emit_code_change_routine_wakes",
 		]);
 	});
 
@@ -296,7 +301,22 @@ describe("CodeHostRequests", () => {
 			// In the company's line, as a landing is: never a job that gives way.
 			expect(t.runs).toEqual([{ companyId: COMPANY, environmentId: ENVIRONMENT, options: undefined }]);
 			// The finish is made while the line is held, so the kernel writes the undo's row in main's order; then the files.
-			expect(t.order).toEqual(["claim", "job", "undo", "finish", "records", "saved", "confirm"]);
+			expect(t.order).toEqual(["claim", "job", "undo", "finish", "records", "saved", "confirm", "wake"]);
+			expect(t.calls.at(-1)).toEqual({
+				method: "qorpera_emit_code_change_routine_wakes",
+				args: {
+					p_environment_id: ENVIRONMENT,
+					p_owner: "qorpera",
+					p_name: "shop",
+					p_kind: "undone",
+					p_event: {
+						change: "12",
+						mainBefore: MAIN,
+						mainAfter: UNDONE,
+						paths: DIFF.paths.map((item) => item.path),
+					},
+				},
+			});
 			expect(t.jobs.undo.mock.calls[0]?.[1]).toEqual({
 				repository: REPOSITORY,
 				requestId: R1,
@@ -442,7 +462,7 @@ describe("CodeHostRequests", () => {
 			};
 			await expect(t.pass()).resolves.toEqual({ ...NONE, done: 1 });
 			// The job saved main all the same; the second finish comes once it has.
-			expect(t.order).toEqual(["claim", "job", "undo", "finish", "saved", "finish"]);
+			expect(t.order).toEqual(["claim", "job", "undo", "finish", "saved", "finish", "wake"]);
 			expect(t.finishes()).toEqual([finishOf(R1, T1, undone), finishOf(R1, T1, undone)]);
 			expect(t.inJob).not.toHaveBeenCalled();
 			expect(t.errors()).toEqual(["finish:CODING_CONTROL_UNCONFIRMED"]);
@@ -494,7 +514,7 @@ describe("CodeHostRequests", () => {
 				return asked === 1 ? new Promise(() => undefined) : undefined;
 			};
 			await expect(slow.pass()).resolves.toEqual({ ...NONE, done: 1 });
-			expect(slow.order).toEqual(["claim", "job", "undo", "finish", "saved", "finish"]);
+			expect(slow.order).toEqual(["claim", "job", "undo", "finish", "saved", "finish", "wake"]);
 			expect(slow.inJob).not.toHaveBeenCalled();
 
 			// An answer of the job that is no undo's is not finished as one.
@@ -1366,6 +1386,7 @@ describe("CodeHostRequests", () => {
 			"records",
 			"saved",
 			"confirm",
+			"wake",
 			"job",
 			"step",
 			"archive",

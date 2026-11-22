@@ -47,6 +47,36 @@ export const SURFACE_KINDS = [
 ] as const;
 export type SurfaceKind = (typeof SURFACE_KINDS)[number];
 
+export const SURFACE_FIGURES = [
+	"browser",
+	"pointer",
+	"phone",
+	"monitor",
+	"can",
+	"bars",
+	"seal",
+	"palette",
+	"parcel",
+	"book",
+	"envelope",
+	"money",
+	"people",
+	"folder",
+	"gem",
+	"shop",
+	"postbox",
+	"piggy",
+	"cabinet",
+	"house",
+	"lighthouse",
+	"jar",
+	"headband",
+	"sofa",
+	"mug",
+	"lamp",
+] as const;
+export type SurfaceFigure = (typeof SURFACE_FIGURES)[number];
+
 export const SURFACE_PUBLISH_STATUSES = ["idle", "publishing", "failed"] as const;
 export type SurfacePublishStatus = (typeof SURFACE_PUBLISH_STATUSES)[number];
 
@@ -851,4 +881,34 @@ export function parseSurfaceMigrationChecklist(
 
 export function isValidSurfaceId(value: unknown): value is string {
 	return isUuid(value);
+}
+
+export function normalizeStudioFolderRoot(folderRoot: string | null | undefined): string {
+	const cleaned = (folderRoot ?? "").trim().replace(/^\/+|\/+$/g, "");
+	if (
+		!cleaned ||
+		cleaned.includes("\\") ||
+		cleaned.includes("\0") ||
+		cleaned.split("/").some((segment) => segment === "" || segment === "." || segment === "..")
+	) {
+		throw new Error("Surface folder root is invalid");
+	}
+	return cleaned;
+}
+
+export function resolveStudioFolderPath(folderRoot: string, rawPath: string): string {
+	const normalized = rawPath.trim().replace(/^\/+|\/+$/g, "");
+	if (!normalized || normalized.includes("\\") || normalized.includes("\0")) {
+		throw new Error(`Invalid studio patch path: ${rawPath}`);
+	}
+	const segments = normalized.split("/");
+	if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+		throw new Error(`Unsafe studio patch path: ${rawPath}`);
+	}
+	const prefixed =
+		normalized === folderRoot || normalized.startsWith(`${folderRoot}/`) ? normalized : `${folderRoot}/${normalized}`;
+	if (!prefixed.startsWith(`${folderRoot}/`)) {
+		throw new Error(`Patch path escapes surface folder root: ${rawPath}`);
+	}
+	return prefixed;
 }

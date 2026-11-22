@@ -46,6 +46,7 @@ import {
 } from "./code-host-jobs.ts";
 import { attachCodeSession, type CodeAreaBroker } from "./code-host-seed.ts";
 import { pinCodeSiteTree } from "./code-host-sites.ts";
+import { ensureSurfaceStarterRepository, verifyStagedSurfaceBranch } from "./code-host-surfaces.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
 import { codeImportShown } from "./code-import.ts";
 import {
@@ -66,6 +67,7 @@ import {
 	type CodingFolderRepositorySession,
 	type CodingFolderStart,
 	type CodingLanded,
+	type CodingStaged,
 } from "./coding-folder-repositories.ts";
 
 /** The largest bundle a session's export hands the broker's push: the NAS path's cap (coding-git-transfer.ts). */
@@ -286,10 +288,20 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 	/** A repository kept in Qorpera, made empty when it is not there yet, and its default branch's commit. A code host
 	 * refusal or failure fails the turn with its code, as a prepare's does. */
 	async start(session: CodingFolderStart, signal: AbortSignal): Promise<{ baseSha: string }> {
-		const { repository } = session.claim;
+		const { repository, surfaceSession } = session.claim;
 		if (repository.host !== "qorpera") throw new Error("CODE_HOST_REPOSITORY_NOT_HERE");
 		try {
-			const started = await this.#job(session, signal, (job) => startCodeArea(job, { repository }));
+			const started = await this.#job(session, signal, async (job) => {
+				if (surfaceSession) {
+					const surface = await ensureSurfaceStarterRepository(job, {
+						repository,
+						title: surfaceSession.title,
+						slug: surfaceSession.slug,
+					});
+					return { baseSha: surface.mainSha };
+				}
+				return await startCodeArea(job, { repository });
+			});
 			return { baseSha: started.baseSha };
 		} catch (error) {
 			if (signal.aborted || !(error instanceof CodeHostJobFailure || error instanceof CodeHostRefusal)) throw error;
@@ -302,6 +314,37 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 						: CODE_START_FAILED,
 				{ cause: error },
 			);
+		}
+	}
+
+	async verifyStaged(
+		session: CodingFolderRepositorySession,
+		headSha: string,
+		signal: AbortSignal,
+	): Promise<CodingStaged> {
+		const { repository, workerId } = session.claim;
+		if (repository.host !== "qorpera") throw new Error("CODE_HOST_REPOSITORY_NOT_HERE");
+		try {
+			const verified = await this.#job(session, signal, (job) =>
+				verifyStagedSurfaceBranch(job, {
+					repository,
+					workerId,
+					baseSha: session.baseSha,
+					headSha,
+				}),
+			);
+			return {
+				branch: verified.branch,
+				baseSha: verified.baseSha,
+				headSha: verified.headSha,
+				changed: verified.changed,
+				filesChanged: verified.filesChanged,
+			};
+		} catch (error) {
+			if (signal.aborted || !(error instanceof CodeHostRefusal)) throw error;
+			const summary = landRefusal(repository.baseBranch, error.code, error.paths);
+			if (summary) throw new CodingLandRefused(error.code, summary, { cause: error });
+			throw error;
 		}
 	}
 

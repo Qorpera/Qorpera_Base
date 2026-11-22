@@ -660,6 +660,70 @@ describe("worker dispatch and completion envelopes", () => {
 		).toThrow();
 		expect(() => parseCloudWakeEnvelope({ ...wake, payload: { ...wake.payload, coding } }, identity)).toThrow();
 	});
+	it("admits a surface-backed coding turn with parentRunId null and surfaceSession metadata, and rejects malformed variants", () => {
+		const { identity, wake } = workerWakeFixture("worker-dispatch");
+		const workerId = wake.source.id;
+		const coding = {
+			harness: "codex",
+			repository: { host: "qorpera", owner: "surfaces", name: "website", baseBranch: "main" },
+			branch: `qorpera/coding/${workerId}`,
+			baseSha: "a".repeat(40),
+			harnessSessionRef: null,
+			sequence: 1,
+			vmId: randomUUID(),
+		};
+		const surfaceSession = {
+			sessionId: randomUUID(),
+			surfaceId: randomUUID(),
+			surfaceSlug: "website",
+			leaseToken: randomUUID(),
+		};
+		const surfaceTurn: CloudWakeEnvelope = {
+			...wake,
+			parentRunId: null,
+			payload: {
+				...wake.payload,
+				parentRunId: null,
+				species: "coding",
+				todo: { todoKey: null, title: null, path: null },
+				outputFolder: null,
+				coding,
+				surfaceSession,
+			},
+		};
+		const parsed = parseCloudWakeEnvelope(surfaceTurn, identity);
+		expect(parsed.parentRunId).toBeNull();
+		expect(parsed.payload.surfaceSession).toEqual(surfaceSession);
+
+		expect(() =>
+			parseCloudWakeEnvelope(
+				{
+					...surfaceTurn,
+					payload: { ...surfaceTurn.payload, surfaceSession: undefined },
+				},
+				identity,
+			),
+		).toThrow();
+		expect(() =>
+			parseCloudWakeEnvelope(
+				{
+					...wake,
+					parentRunId: null,
+					payload: { ...wake.payload, parentRunId: null, surfaceSession },
+				},
+				identity,
+			),
+		).toThrow();
+		expect(() =>
+			parseCloudWakeEnvelope(
+				{
+					...surfaceTurn,
+					payload: { ...surfaceTurn.payload, surfaceSession: { ...surfaceSession, surfaceSlug: "BAD SLUG" } },
+				},
+				identity,
+			),
+		).toThrow();
+	});
 	it("admits a plain worker Claude Code does by its harness, claude-code alone (20260930770000)", () => {
 		const { identity, wake } = workerWakeFixture("worker-dispatch");
 		const claude = { ...wake, payload: { ...wake.payload, harness: "claude-code" } };
