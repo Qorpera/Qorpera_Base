@@ -441,7 +441,7 @@ export class SurfaceRail {
 	readonly #profileId: string;
 	readonly #onAddSurface: (() => void) | undefined;
 	readonly #crew = new CrewFigures();
-	#shown = "";
+	#shown: readonly unknown[] | undefined;
 	#active: string | undefined;
 
 	constructor(store: SurfacesStore, profileId: string, signal: AbortSignal, onAddSurface?: () => void) {
@@ -456,7 +456,10 @@ export class SurfaceRail {
 		const memberRows = members?.rows ?? [];
 		reconcileChildren(this.#membersList, memberRows);
 		const state = this.#store.state;
-		const key = JSON.stringify([
+		const activeWorkspace = activeSlug
+			? state.workspaces[state.surfaces.find((s) => s.slug === activeSlug)?.id ?? ""]
+			: undefined;
+		const deps: readonly unknown[] = [
 			activeSlug,
 			canAddProgram,
 			memberRows.length,
@@ -464,7 +467,7 @@ export class SurfaceRail {
 			members?.active ?? false,
 			state.source,
 			state.surfaces,
-			activeSlug ? state.workspaces[state.surfaces.find((s) => s.slug === activeSlug)?.id ?? ""] : null,
+			activeWorkspace,
 			state.hiddenChanges,
 			state.variantPick,
 			state.historyOpen,
@@ -473,9 +476,15 @@ export class SurfaceRail {
 			state.highlight,
 			state.busy,
 			state.surfaceLooks,
-		]);
-		if (key === this.#shown) return;
-		this.#shown = key;
+		];
+		if (
+			this.#shown &&
+			this.#shown.length === deps.length &&
+			deps.every((value, index) => Object.is(this.#shown![index], value))
+		) {
+			return;
+		}
+		this.#shown = deps;
 		const groups: HTMLElement[] = [];
 		for (const [group, label] of [
 			["products", t("Building")],

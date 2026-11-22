@@ -53,8 +53,9 @@ export function openPublishPatchnotesSheet(
 	});
 	const body = h("div", { class: "surface-patchnotes-body" });
 	const status = h("p", { class: "surface-sheet-status", role: "status" });
-	let rollingBack: string | undefined;
+	const rollingBack = new Set<string>();
 	let publishing = false;
+	let lastRenderKey: string | undefined;
 
 	const currentSurface = (): SurfaceSummary =>
 		store.state.surfaces.find((item) => item.id === surfaceId) ?? initialSurface;
@@ -92,6 +93,7 @@ export function openPublishPatchnotesSheet(
 	};
 
 	const render = () => {
+		if (closed) return;
 		const state = store.state;
 		const surface = currentSurface();
 		const look = store.lookOf(surface);
@@ -101,6 +103,31 @@ export function openPublishPatchnotesSheet(
 		const host = hostOf(liveUrl || null);
 		const subtitle = host ? `${surface.title} · ${host}` : surface.title;
 		ensurePasswordLoaded(surface);
+
+		const renderKey = JSON.stringify([
+			surface.title,
+			surface.unpublishedChangeCount,
+			surface.publishStatus ?? "",
+			liveUrl,
+			look.kind,
+			look.accent ?? "",
+			sitePassword ?? "",
+			copiedKind ?? "",
+			publishing,
+			status.textContent ?? "",
+			entries.map(({ change, session, exploration }) => [
+				change.id,
+				change.title,
+				change.summary ?? "",
+				change.resolvedAt ?? change.createdAt,
+				change.approvedByUserId ?? "",
+				change.undoBatchSize ?? 1,
+				exploration?.title ?? session.title,
+				rollingBack.has(change.id) || Boolean(state.busy[`undo:${change.id}`]),
+			]),
+		]);
+		if (renderKey === lastRenderKey) return;
+		lastRenderKey = renderKey;
 
 		const shareBar = liveUrl
 			? h(
@@ -162,7 +189,7 @@ export function openPublishPatchnotesSheet(
 								const sourceLabel = exploration ? exploration.title : session.title;
 								const approver = store.memberName(change.approvedByUserId);
 								const busy =
-									rollingBack === change.id || Boolean(state.busy[`undo:${change.id}`]) || publishing;
+									rollingBack.has(change.id) || Boolean(state.busy[`undo:${change.id}`]) || publishing;
 								const stamp = fmtTime(change.resolvedAt ?? change.createdAt);
 								const batchSize = change.kind === "folder_patch" ? (change.undoBatchSize ?? 1) : 1;
 								return h(
@@ -302,22 +329,26 @@ export function openPublishPatchnotesSheet(
 			return;
 		}
 		if (act === "rollback" && change) {
-			rollingBack = change;
+			if (rollingBack.has(change) || publishing) return;
+			rollingBack.add(change);
 			status.textContent = "";
 			render();
 			void store.rollbackChange(change).then((ok) => {
-				rollingBack = undefined;
+				rollingBack.delete(change);
+				if (closed) return;
 				if (!ok) status.textContent = store.state.error ?? t("That didn't work. Try again.");
 				render();
 			});
 			return;
 		}
 		if (act === "confirm-publish") {
+			if (publishing) return;
 			publishing = true;
 			status.textContent = t("Publishing…");
 			render();
 			void store.publish(surfaceId).then((ok) => {
 				publishing = false;
+				if (closed) return;
 				if (ok) dialog.close();
 				else {
 					status.textContent = store.state.error ?? t("That didn't work. Try again.");
