@@ -882,6 +882,33 @@ describe("native provider onboarding browser adapter", () => {
 		await expect(login.submitCode!("anthropic-code#state")).rejects.toBeInstanceOf(ClaudeCodeError);
 		expect(f.fetch.mock.calls.length).toBe(sent);
 	});
+	it("gives up on Claude submitCode after 45 seconds", async () => {
+		const f = loginSetup();
+		f.input.provider = "anthropic";
+		f.responses.authorization.provider = "anthropic";
+		f.responses.authorization.native_harness = "claude-code";
+		f.responses.prompt.interaction_url = "https://claude.com/cai/oauth/authorize?code=true&state=fixture";
+		(f.responses.prompt as Record<string, unknown>).user_code = null;
+		const login = await f.client.beginProviderLogin(f.input);
+		vi.useFakeTimers();
+		try {
+			f.fetch.mockImplementationOnce(
+				(_url, init) =>
+					new Promise<Response>((_resolve, reject) =>
+						init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true }),
+					),
+			);
+			const submitting = login.submitCode!("anthropic-code#state");
+			const caught = submitting.catch((error: unknown) => error);
+			await vi.advanceTimersByTimeAsync(44_999);
+			await vi.advanceTimersByTimeAsync(1);
+			const error = await caught;
+			expect(error).toBeInstanceOf(DOMException);
+			expect((error as DOMException).name).toBe("TimeoutError");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 	it("rechecks preparation after one second using the same admitted capability", async () => {
 		vi.useFakeTimers();
 		const f = loginSetup();

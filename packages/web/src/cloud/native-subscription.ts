@@ -827,7 +827,8 @@ export function createWebNativeSubscription(
 				checked.throwIfAborted();
 				current();
 				if (!pendingMetadataRefresh) {
-					const work = withCloudDeadline(
+					const work = withScopedCloudDeadline(
+						[companySignal],
 						async (deadline) => {
 							const accounts = known ?? (await client(deadline).listConnections(profileId));
 							const eligible = loginsAUsageRefreshReads(accounts);
@@ -988,7 +989,6 @@ export function createWebNativeSubscription(
 							}
 						},
 						120_000,
-						companySignal,
 					).catch(() => {
 						throw new Error("Account usage could not be refreshed. Try again shortly.");
 					});
