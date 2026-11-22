@@ -17,6 +17,7 @@ import {
 	parseNativeAccountRefreshResult,
 } from "@qorpera/cloud-client/native-account-refresh";
 import { HttpNativeProviderIdentityBridge } from "@qorpera/cloud-client/native-provider-login";
+import { withAbortScopes, withScopedCloudDeadline } from "./abort-scope.ts";
 import type { ChatGptPlanReturn, ChatGptPlanSignIn } from "./chatgpt-plan-sign-in.ts";
 import { type Cloud, CloudRpcError } from "./client.ts";
 import { parseCloudConfig } from "./deployment-config.ts";
@@ -467,7 +468,8 @@ export function createWebNativeSubscription(
 	const rpc = (method: string, args: Readonly<Record<string, unknown>>, signal?: AbortSignal, sessionId?: string) => {
 		// Snapshot SDK arguments before authentication can yield to another UI action.
 		const body = JSON.stringify(args);
-		return withCloudDeadline(
+		return withScopedCloudDeadline(
+			[companySignal, signal],
 			async (deadline) => {
 				const check = () => {
 					deadline.throwIfAborted();
@@ -545,7 +547,6 @@ export function createWebNativeSubscription(
 				}
 			},
 			10000,
-			AbortSignal.any([companySignal, ...(signal ? [signal] : [])]),
 		).catch((error: unknown) => {
 			if (
 				error instanceof CloudRpcError &&
@@ -612,7 +613,8 @@ export function createWebNativeSubscription(
 			// Admission creates its capability inside the SDK. Calling admission again
 			// with the same IDs would create different authority, so never retry it.
 			const request = { ...input };
-			return withCloudDeadline(
+			return withScopedCloudDeadline(
+				[companySignal, signal],
 				async (deadline) => {
 					const check = () => {
 						deadline.throwIfAborted();
@@ -743,45 +745,48 @@ export function createWebNativeSubscription(
 					const submitCode = async (code: string, codeSignal?: AbortSignal): Promise<"completed" | "saving"> => {
 						if (sent) throw new ClaudeCodeError();
 						sent = true;
-						const checked = AbortSignal.any([
-							AbortSignal.timeout(CONFIRM_DEADLINE_MS),
-							companySignal,
-							...(codeSignal ? [codeSignal] : []),
-						]);
-						current();
-						const response = await fetch(new URL("claude-code", loginBase).href, {
-							method: "POST",
-							headers: { authorization: `Bearer ${capability}`, "content-type": "application/json" },
-							body: JSON.stringify({
-								schema: "qorpera.claude-sign-in-code/v1",
-								login_id: authorization.loginId,
-								code,
-							}),
-							signal: checked,
-							credentials: "omit",
-							cache: "no-store",
-							redirect: "error",
-						});
-						let value: Record<string, unknown> = {};
-						try {
-							const read: unknown = JSON.parse(
-								new TextDecoder().decode(await readBoundedCloudResponse(response, 64 * 1024, checked)),
-							);
-							if (read && typeof read === "object") value = read as Record<string, unknown>;
-						} catch {
-							// An unreadable answer is a failed code.
-						}
-						current();
-						if (response.status === 403 && value.schema === "qorpera.claude-sign-in-code-failed/v1")
-							throw new ClaudeCodeError();
-						// `preparing`: Claude Code is still saving the login; the page sees it in the member's list.
-						if (
-							response.status !== 200 ||
-							value.login_id !== authorization.loginId ||
-							(value.status !== "completed" && value.status !== "preparing")
-						)
-							throw new Error("The Claude sign-in could not be finished.");
-						return value.status === "completed" ? "completed" : "saving";
+						return await withAbortScopes(
+							[companySignal, codeSignal],
+							async (checked) => {
+								current();
+								const response = await fetch(new URL("claude-code", loginBase).href, {
+									method: "POST",
+									headers: { authorization: `Bearer ${capability}`, "content-type": "application/json" },
+									body: JSON.stringify({
+										schema: "qorpera.claude-sign-in-code/v1",
+										login_id: authorization.loginId,
+										code,
+									}),
+									signal: checked,
+									credentials: "omit",
+									cache: "no-store",
+									redirect: "error",
+								});
+								let value: Record<string, unknown> = {};
+								try {
+									const read: unknown = JSON.parse(
+										new TextDecoder().decode(await readBoundedCloudResponse(response, 64 * 1024, checked)),
+									);
+									if (read && typeof read === "object") value = read as Record<string, unknown>;
+								} catch {
+									// An unreadable answer is a failed code.
+								} finally {
+									if (!response.body?.locked) void response.body?.cancel?.().catch(() => undefined);
+								}
+								current();
+								if (response.status === 403 && value.schema === "qorpera.claude-sign-in-code-failed/v1")
+									throw new ClaudeCodeError();
+								// `preparing`: Claude Code is still saving the login; the page sees it in the member's list.
+								if (
+									response.status !== 200 ||
+									value.login_id !== authorization.loginId ||
+									(value.status !== "completed" && value.status !== "preparing")
+								)
+									throw new Error("The Claude sign-in could not be finished.");
+								return value.status === "completed" ? "completed" : "saving";
+							},
+							CONFIRM_DEADLINE_MS,
+						);
 					};
 					return {
 						...prompt,
@@ -791,7 +796,6 @@ export function createWebNativeSubscription(
 					};
 				},
 				120000,
-				AbortSignal.any([companySignal, ...(signal ? [signal] : [])]),
 			)
 				.then((result) => {
 					companySignal.throwIfAborted();
@@ -818,183 +822,187 @@ export function createWebNativeSubscription(
 			}).listConnections(profileId);
 			return { ...listed, connections: listed.connections.map((connection) => withPlanFields(connection, answer)) };
 		},
-		refreshAccountMetadata: async (signal, force = false, known) => {
-			const checked = AbortSignal.any([companySignal, ...(signal ? [signal] : [])]);
-			checked.throwIfAborted();
-			current();
-			if (!pendingMetadataRefresh) {
-				const work = withCloudDeadline(
-					async (deadline) => {
-						const accounts = known ?? (await client(deadline).listConnections(profileId));
-						const eligible = loginsAUsageRefreshReads(accounts);
-						if (!accounts.computeIdentity || !eligible.length) return;
-						// A completed attempt keeps its authority until it expires: at most one
-						// attempt per expiry window, however often views ask, unless a reset
-						// passed in the meantime or the member asked.
-						const held = metadataAdmission?.completed === true && metadataAdmission.expiresAt > Date.now();
-						if (!force) {
-							const now = Date.now();
-							if (!eligible.some((account) => usageStale(account, now, held))) return;
-						}
-						// An attempt that did not complete keeps its authority for a retry.
-						const admission =
-							!metadataAdmission || held || metadataAdmission.expiresAt <= Date.now()
-								? admit()
-								: metadataAdmission;
-						const settle = (expiresAt: string) => {
-							admission.expiresAt = Date.parse(expiresAt);
-							admission.completed = true;
-						};
-						if (!loginBase) throw new Error("Account refresh is not configured");
-						const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(admission.capability));
-						const pause = (milliseconds: number) =>
-							new Promise<void>((resolve, reject) => {
-								deadline.throwIfAborted();
-								const stop = () => {
-									clearTimeout(timer);
-									reject(new Error("Account refresh interrupted"));
-								};
-								const timer = setTimeout(() => {
-									deadline.removeEventListener("abort", stop);
-									resolve();
-								}, milliseconds);
-								deadline.addEventListener("abort", stop, { once: true });
-							});
-						const args = {
-							p_profile_id: profileId,
-							p_client_request_id: admission.clientRequestId,
-							p_capability_sha256: Array.from(new Uint8Array(digest), (byte) =>
-								byte.toString(16).padStart(2, "0"),
-							).join(""),
-						};
-						let authority: NativeAccountRefreshDescription;
-						// Another attempt of this member may be pending (another tab, or one an earlier page left
-						// behind), and begin answers 55000 until it settles or expires: a server error in the browser's
-						// console at each company open. So the read goes first: a pending attempt is watched with the
-						// read, and begin is asked only when none is pending. If begin still answers busy (two pages
-						// asked at once), it is asked again only after a pause: a steady retry is an error storm.
-						let wait = 2000;
-						let watched = false;
-						let busy = false;
-						for (;;) {
-							const receipt = await rpc(
-								"qorpera_get_native_account_refresh",
-								{ p_profile_id: profileId },
-								deadline,
+		refreshAccountMetadata: async (signal, force = false, known) =>
+			withAbortScopes([companySignal, signal], async (checked) => {
+				checked.throwIfAborted();
+				current();
+				if (!pendingMetadataRefresh) {
+					const work = withCloudDeadline(
+						async (deadline) => {
+							const accounts = known ?? (await client(deadline).listConnections(profileId));
+							const eligible = loginsAUsageRefreshReads(accounts);
+							if (!accounts.computeIdentity || !eligible.length) return;
+							// A completed attempt keeps its authority until it expires: at most one
+							// attempt per expiry window, however often views ask, unless a reset
+							// passed in the meantime or the member asked.
+							const held = metadataAdmission?.completed === true && metadataAdmission.expiresAt > Date.now();
+							if (!force) {
+								const now = Date.now();
+								if (!eligible.some((account) => usageStale(account, now, held))) return;
+							}
+							// An attempt that did not complete keeps its authority for a retry.
+							const admission =
+								!metadataAdmission || held || metadataAdmission.expiresAt <= Date.now()
+									? admit()
+									: metadataAdmission;
+							const settle = (expiresAt: string) => {
+								admission.expiresAt = Date.parse(expiresAt);
+								admission.completed = true;
+							};
+							if (!loginBase) throw new Error("Account refresh is not configured");
+							const digest = await crypto.subtle.digest(
+								"SHA-256",
+								new TextEncoder().encode(admission.capability),
 							);
-							let pending = false;
-							if (receipt !== null) {
-								const observed = parseNativeAccountRefreshDescription(receipt);
-								if (
-									observed.profileId !== profileId ||
-									observed.requestedByUserId !== memberId ||
-									observed.computeIdentityId !== accounts.computeIdentity.computeIdentityId
-								)
-									throw new Error("Account refresh authority changed");
-								if (Date.parse(observed.expiresAt) > Date.now()) {
-									// The attempt this page waited for has completed. One that had completed before
-									// this page looked is admission's to judge: it knows whether it is still fresh.
-									if (observed.status === "completed" && watched) {
-										settle(observed.expiresAt);
-										return;
+							const pause = (milliseconds: number) =>
+								new Promise<void>((resolve, reject) => {
+									deadline.throwIfAborted();
+									const stop = () => {
+										clearTimeout(timer);
+										reject(new Error("Account refresh interrupted"));
+									};
+									const timer = setTimeout(() => {
+										deadline.removeEventListener("abort", stop);
+										resolve();
+									}, milliseconds);
+									deadline.addEventListener("abort", stop, { once: true });
+								});
+							const args = {
+								p_profile_id: profileId,
+								p_client_request_id: admission.clientRequestId,
+								p_capability_sha256: Array.from(new Uint8Array(digest), (byte) =>
+									byte.toString(16).padStart(2, "0"),
+								).join(""),
+							};
+							let authority: NativeAccountRefreshDescription;
+							// Another attempt of this member may be pending (another tab, or one an earlier page left
+							// behind), and begin answers 55000 until it settles or expires: a server error in the browser's
+							// console at each company open. So the read goes first: a pending attempt is watched with the
+							// read, and begin is asked only when none is pending. If begin still answers busy (two pages
+							// asked at once), it is asked again only after a pause: a steady retry is an error storm.
+							let wait = 2000;
+							let watched = false;
+							let busy = false;
+							for (;;) {
+								const receipt = await rpc(
+									"qorpera_get_native_account_refresh",
+									{ p_profile_id: profileId },
+									deadline,
+								);
+								let pending = false;
+								if (receipt !== null) {
+									const observed = parseNativeAccountRefreshDescription(receipt);
+									if (
+										observed.profileId !== profileId ||
+										observed.requestedByUserId !== memberId ||
+										observed.computeIdentityId !== accounts.computeIdentity.computeIdentityId
+									)
+										throw new Error("Account refresh authority changed");
+									if (Date.parse(observed.expiresAt) > Date.now()) {
+										// The attempt this page waited for has completed. One that had completed before
+										// this page looked is admission's to judge: it knows whether it is still fresh.
+										if (observed.status === "completed" && watched) {
+											settle(observed.expiresAt);
+											return;
+										}
+										// A pending attempt that is this page's own (an uncertain guest answer left it so) is
+										// admission's to answer again: it answers the same request, never busy, and the page
+										// asks the guest again. Only another's pending attempt is watched.
+										pending = observed.status !== "completed" && observed.requestId !== admission.requestId;
 									}
-									// A pending attempt that is this page's own (an uncertain guest answer left it so) is
-									// admission's to answer again: it answers the same request, never busy, and the page
-									// asks the guest again. Only another's pending attempt is watched.
-									pending = observed.status !== "completed" && observed.requestId !== admission.requestId;
+								}
+								if (pending || busy) {
+									watched = true;
+									busy = false;
+									await pause(wait);
+									wait = Math.min(Math.round(wait * 1.5), 10_000);
+									if (pending) continue;
+								}
+								try {
+									authority = parseNativeAccountRefreshDescription(
+										await rpc("qorpera_begin_native_account_refresh", args, deadline),
+									);
+									break;
+								} catch (error) {
+									if (!(error instanceof CloudRpcError) || error.code !== "55000") throw error;
+									// Busy means an attempt is pending: the next read may already show it completed.
+									watched = true;
+									busy = true;
 								}
 							}
-							if (pending || busy) {
-								watched = true;
-								busy = false;
-								await pause(wait);
-								wait = Math.min(Math.round(wait * 1.5), 10_000);
-								if (pending) continue;
+							if (
+								authority.profileId !== profileId ||
+								authority.computeIdentityId !== accounts.computeIdentity.computeIdentityId ||
+								authority.requestedByUserId !== memberId ||
+								Date.parse(authority.expiresAt) <= Date.now()
+							)
+								throw new Error("Account refresh authority changed");
+							admission.expiresAt = Date.parse(authority.expiresAt);
+							admission.requestId = authority.requestId;
+							if (authority.status === "completed") {
+								settle(authority.expiresAt);
+								return;
 							}
-							try {
-								authority = parseNativeAccountRefreshDescription(
-									await rpc("qorpera_begin_native_account_refresh", args, deadline),
-								);
-								break;
-							} catch (error) {
-								if (!(error instanceof CloudRpcError) || error.code !== "55000") throw error;
-								// Busy means an attempt is pending: the next read may already show it completed.
-								watched = true;
-								busy = true;
-							}
-						}
-						if (
-							authority.profileId !== profileId ||
-							authority.computeIdentityId !== accounts.computeIdentity.computeIdentityId ||
-							authority.requestedByUserId !== memberId ||
-							Date.parse(authority.expiresAt) <= Date.now()
-						)
-							throw new Error("Account refresh authority changed");
-						admission.expiresAt = Date.parse(authority.expiresAt);
-						admission.requestId = authority.requestId;
-						if (authority.status === "completed") {
-							settle(authority.expiresAt);
-							return;
-						}
-						const request: NativeAccountRefreshRequest = { ...authority, capability: admission.capability };
-						const body = JSON.stringify(nativeAccountRefreshBody(request));
-						// The host answers "preparing" while the refresh machine boots; ask less often as it takes longer.
-						let poll = 1000;
-						for (;;) {
-							deadline.throwIfAborted();
-							current();
-							const { data, error } = await cloud.supabase.auth.getSession();
-							deadline.throwIfAborted();
-							current();
-							if (error || data.session?.user.id !== memberId) throw new Error("Account refresh member changed");
-							const response = await fetch(new URL("account-refresh", loginBase).href, {
-								method: "POST",
-								headers: {
-									authorization: `Bearer ${admission.capability}`,
-									"content-type": "application/json",
-								},
-								body,
-								signal: deadline,
-								redirect: "error",
-								cache: "no-store",
-								credentials: "omit",
-							});
-							try {
-								if (!response.ok) throw new Error("Account refresh unavailable");
-								const value: unknown = JSON.parse(
-									new TextDecoder("utf-8", { fatal: true }).decode(
-										await readBoundedCloudResponse(response, 64 * 1024, deadline),
-									),
-								);
+							const request: NativeAccountRefreshRequest = { ...authority, capability: admission.capability };
+							const body = JSON.stringify(nativeAccountRefreshBody(request));
+							// The host answers "preparing" while the refresh machine boots; ask less often as it takes longer.
+							let poll = 1000;
+							for (;;) {
 								deadline.throwIfAborted();
 								current();
-								if (parseNativeAccountRefreshResult(value, authority.requestId) === "completed") {
-									settle(authority.expiresAt);
-									return;
+								const { data, error } = await cloud.supabase.auth.getSession();
+								deadline.throwIfAborted();
+								current();
+								if (error || data.session?.user.id !== memberId)
+									throw new Error("Account refresh member changed");
+								const response = await fetch(new URL("account-refresh", loginBase).href, {
+									method: "POST",
+									headers: {
+										authorization: `Bearer ${admission.capability}`,
+										"content-type": "application/json",
+									},
+									body,
+									signal: deadline,
+									redirect: "error",
+									cache: "no-store",
+									credentials: "omit",
+								});
+								try {
+									if (!response.ok) throw new Error("Account refresh unavailable");
+									const value: unknown = JSON.parse(
+										new TextDecoder("utf-8", { fatal: true }).decode(
+											await readBoundedCloudResponse(response, 64 * 1024, deadline),
+										),
+									);
+									deadline.throwIfAborted();
+									current();
+									if (parseNativeAccountRefreshResult(value, authority.requestId) === "completed") {
+										settle(authority.expiresAt);
+										return;
+									}
+								} finally {
+									if (!response.body?.locked) void response.body?.cancel().catch(() => undefined);
 								}
-							} finally {
-								if (!response.body?.locked) void response.body?.cancel().catch(() => undefined);
+								await pause(poll);
+								poll = Math.min(Math.round(poll * 1.5), 4000);
 							}
-							await pause(poll);
-							poll = Math.min(Math.round(poll * 1.5), 4000);
-						}
-					},
-					120_000,
-					companySignal,
-				).catch(() => {
-					throw new Error("Account usage could not be refreshed. Try again shortly.");
-				});
-				pendingMetadataRefresh = work;
-				void work
-					.finally(() => {
-						if (pendingMetadataRefresh === work) pendingMetadataRefresh = undefined;
-					})
-					.catch(() => undefined);
-			}
-			await withCloudDeadline(() => pendingMetadataRefresh!, 120_000, checked);
-			checked.throwIfAborted();
-			current();
-		},
+						},
+						120_000,
+						companySignal,
+					).catch(() => {
+						throw new Error("Account usage could not be refreshed. Try again shortly.");
+					});
+					pendingMetadataRefresh = work;
+					void work
+						.finally(() => {
+							if (pendingMetadataRefresh === work) pendingMetadataRefresh = undefined;
+						})
+						.catch(() => undefined);
+				}
+				await withCloudDeadline(() => pendingMetadataRefresh!, 120_000, checked);
+				checked.throwIfAborted();
+				current();
+			}),
 		selectSessionAccount: async (sessionId, signal) => {
 			if (!UUID_PATTERN.test(sessionId)) throw new Error("Invalid conversation account request.");
 			const value = await rpc(
@@ -1098,7 +1106,8 @@ export function createWebNativeSubscription(
 			return value.shown_at;
 		},
 		beginChatGptPlanSignIn: (displayName, signal) =>
-			withCloudDeadline(
+			withScopedCloudDeadline(
+				[companySignal, signal],
 				async (deadline) => {
 					const check = () => {
 						deadline.throwIfAborted();
@@ -1202,54 +1211,57 @@ export function createWebNativeSubscription(
 					};
 				},
 				120000,
-				AbortSignal.any([companySignal, ...(signal ? [signal] : [])]),
 			),
 		finishChatGptPlanSignIn: async (outcome, signal) => {
 			const signIn = outcome.signIn;
 			if (outcome.outcome !== "confirm") throw new ChatGptPlanSignInError(outcome.reason ?? "provider_error");
 			if (!loginBase || !outcome.confirmation || signIn.companyId !== profileId)
 				throw new Error("This sign-in cannot be finished here.");
-			const checked = AbortSignal.any([
-				AbortSignal.timeout(CONFIRM_DEADLINE_MS),
-				companySignal,
-				...(signal ? [signal] : []),
-			]);
-			// The capability is the bearer; the confirmation id works once.
-			const response = await fetch(new URL("chatgpt-plan-confirm", loginBase).href, {
-				method: "POST",
-				headers: { authorization: `Bearer ${signIn.capability}`, "content-type": "application/json" },
-				body: JSON.stringify({
-					schema: "qorpera.chatgpt-plan-confirm/v1",
-					login_id: signIn.loginId,
-					confirmation: outcome.confirmation,
-				}),
-				signal: checked,
-				credentials: "omit",
-				cache: "no-store",
-				redirect: "error",
-			});
-			let value: Record<string, unknown> = {};
-			try {
-				const read: unknown = JSON.parse(
-					new TextDecoder().decode(await readBoundedCloudResponse(response, 64 * 1024, checked)),
-				);
-				if (read && typeof read === "object") value = read as Record<string, unknown>;
-			} catch {
-				// An unreadable answer is a failed confirm.
-			}
-			current();
-			if (response.status === 200 && value.status === "completed" && value.login_id === signIn.loginId) return;
-			throw new ChatGptPlanSignInError(
-				value.schema === "qorpera.chatgpt-plan-confirm-failed/v1" && typeof value.reason === "string"
-					? value.reason
-					: "provider_error",
+			await withAbortScopes(
+				[companySignal, signal],
+				async (checked) => {
+					// The capability is the bearer; the confirmation id works once.
+					const response = await fetch(new URL("chatgpt-plan-confirm", loginBase).href, {
+						method: "POST",
+						headers: { authorization: `Bearer ${signIn.capability}`, "content-type": "application/json" },
+						body: JSON.stringify({
+							schema: "qorpera.chatgpt-plan-confirm/v1",
+							login_id: signIn.loginId,
+							confirmation: outcome.confirmation,
+						}),
+						signal: checked,
+						credentials: "omit",
+						cache: "no-store",
+						redirect: "error",
+					});
+					let value: Record<string, unknown> = {};
+					try {
+						const read: unknown = JSON.parse(
+							new TextDecoder().decode(await readBoundedCloudResponse(response, 64 * 1024, checked)),
+						);
+						if (read && typeof read === "object") value = read as Record<string, unknown>;
+					} catch {
+						// An unreadable answer is a failed confirm.
+					} finally {
+						if (!response.body?.locked) void response.body?.cancel?.().catch(() => undefined);
+					}
+					current();
+					if (response.status === 200 && value.status === "completed" && value.login_id === signIn.loginId) return;
+					throw new ChatGptPlanSignInError(
+						value.schema === "qorpera.chatgpt-plan-confirm-failed/v1" && typeof value.reason === "string"
+							? value.reason
+							: "provider_error",
+					);
+				},
+				CONFIRM_DEADLINE_MS,
 			);
 		},
 		revokeConnection: (input, signal) => client(signal).revokeConnection({ ...input, profileId }),
 		listClaudeLogins: async (signal) =>
 			parseClaudeLogins(await rpc("qorpera_list_claude_logins", { p_profile_id: profileId }, signal)),
 		readClaude: async ({ loginId, force = false, reset }, signal) =>
-			withCloudDeadline(
+			withScopedCloudDeadline(
+				[companySignal, signal],
 				async (deadline) => {
 					current();
 					if (!loginBase) throw new Error("Account refresh is not configured");
@@ -1271,6 +1283,10 @@ export function createWebNativeSubscription(
 					};
 					const pause = (milliseconds: number) =>
 						new Promise<void>((resolve, reject) => {
+							if (deadline.aborted) {
+								reject(new Error("Claude read interrupted"));
+								return;
+							}
 							const stop = () => {
 								clearTimeout(timer);
 								reject(new Error("Claude read interrupted"));
@@ -1330,7 +1346,6 @@ export function createWebNativeSubscription(
 					}
 				},
 				reset ? 120_000 : 60_000,
-				AbortSignal.any([companySignal, ...(signal ? [signal] : [])]),
 			),
 		useClaude: async (loginId, signal) => {
 			if (!UUID_PATTERN.test(loginId)) throw new Error("Invalid Claude login.");

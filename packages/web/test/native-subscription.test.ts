@@ -533,19 +533,30 @@ describe("Continue with ChatGPT (offered only while the company may use plan log
 		}
 	});
 	it("gives up on a confirm after 45 seconds", async () => {
-		const f = setup("https://fixture.invalid/functions/v1/native-provider-login/");
-		const deadline = new AbortController();
-		const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
-		f.fetch.mockImplementationOnce(
-			(_url, init) =>
-				new Promise<Response>((_resolve, reject) =>
-					init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true }),
-				),
-		);
-		const finishing = f.client.finishChatGptPlanSignIn!({ outcome: "confirm", confirmation: "d".repeat(43), signIn });
-		expect(timeout).toHaveBeenCalledExactlyOnceWith(45_000);
-		deadline.abort(new DOMException("The confirm took too long.", "TimeoutError"));
-		await expect(finishing).rejects.toThrow("took too long");
+		vi.useFakeTimers();
+		try {
+			const f = setup("https://fixture.invalid/functions/v1/native-provider-login/");
+			f.fetch.mockImplementationOnce(
+				(_url, init) =>
+					new Promise<Response>((_resolve, reject) =>
+						init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true }),
+					),
+			);
+			const finishing = f.client.finishChatGptPlanSignIn!({
+				outcome: "confirm",
+				confirmation: "d".repeat(43),
+				signIn,
+			});
+			const caught = finishing.catch((error: unknown) => error);
+			await vi.advanceTimersByTimeAsync(44_999);
+			expect(f.fetch).toHaveBeenCalledTimes(1);
+			await vi.advanceTimersByTimeAsync(1);
+			const error = await caught;
+			expect(error).toBeInstanceOf(DOMException);
+			expect((error as DOMException).name).toBe("TimeoutError");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 
