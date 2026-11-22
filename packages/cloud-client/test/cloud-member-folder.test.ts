@@ -1375,4 +1375,74 @@ describe("the folder hint", () => {
 		const slice = backing.subarray(7, 51);
 		expect(await cloudFileBytesSha256(slice)).toBe(sha(slice));
 	});
+
+	it("coalesces concurrent cache waiters after leader abort, skips 4xx retries, and cleans up dangling rejoin channels", async () => {
+		const cache = new CloudMemberFolderFileCache();
+		let loads = 0;
+		let releaseFirst: () => void = () => {};
+		const firstAbort = new AbortController();
+		const waiterSignal = new AbortController().signal;
+		const payload = new TextEncoder().encode("coalesced-payload");
+		const load = (sig: AbortSignal): Promise<Uint8Array> => {
+			loads += 1;
+			if (loads === 1) {
+				return new Promise<Uint8Array>((_resolve, reject) => {
+					releaseFirst = () => reject(sig.reason ?? new Error("leader aborted"));
+					sig.addEventListener("abort", releaseFirst, { once: true });
+				});
+			}
+			return Promise.resolve(payload);
+		};
+		const p1 = cache.read("k1", firstAbort.signal, load);
+		const p2 = cache.read("k1", waiterSignal, load);
+		const p3 = cache.read("k1", waiterSignal, load);
+		const p4 = cache.read("k1", waiterSignal, load);
+		firstAbort.abort(new Error("leader gone"));
+		await expect(p1).rejects.toThrow("leader gone");
+		const [r2, r3, r4] = await Promise.all([p2, p3, p4]);
+		expect(r2).toEqual(payload);
+		expect(r3).toEqual(payload);
+		expect(r4).toEqual(payload);
+		expect(loads).toBe(2);
+
+		let deniedLoads = 0;
+		const deniedFirst = new Promise<Uint8Array>((_resolve, reject) => {
+			queueMicrotask(() => reject(new CloudMemberFolderAccessDenied("denied")));
+		});
+		const d1 = cache.read("k2", waiterSignal, () => {
+			deniedLoads += 1;
+			return deniedFirst;
+		});
+		const d2 = cache.read("k2", waiterSignal, () => {
+			deniedLoads += 1;
+			return deniedFirst;
+		});
+		await expect(d1).rejects.toBeInstanceOf(CloudMemberFolderAccessDenied);
+		await expect(d2).rejects.toBeInstanceOf(CloudMemberFolderAccessDenied);
+		expect(deniedLoads).toBe(1);
+
+		const { store, file } = stored("missing-object");
+		const failing = client(() => new Response("not found", { status: 404 }));
+		await expect(failing.folder.readFile(file, waiterSignal)).rejects.toThrow();
+		expect(failing.calls).toHaveLength(1);
+		expect(store.size).toBeGreaterThan(0);
+
+		vi.useFakeTimers();
+		try {
+			const { client: rtClient, channels, removed } = realtime(["timed out", "ok"]);
+			const hints = new CloudMemberFolderHints({
+				environmentId: env,
+				client: rtClient,
+				signal: new AbortController().signal,
+				onHint() {},
+			});
+			channels[0]!.onStatus?.("CLOSED");
+			await vi.advanceTimersByTimeAsync(0);
+			expect(removed).toEqual([channels[0]]);
+			await hints.close();
+			expect(removed).toEqual([channels[0], channels[0]]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });

@@ -530,6 +530,7 @@ function manifestPieces(reference: CloudMemberFolderFile, bytes: Uint8Array): { 
 
 /** Waits, unless the caller stops first. */
 function pause(ms: number, signal: AbortSignal): Promise<void> {
+	if (signal.aborted) return Promise.reject(signal.reason);
 	return new Promise((resolve, reject) => {
 		const stop = () => {
 			clearTimeout(timer);
@@ -769,29 +770,36 @@ export class CloudMemberFolderFileCache {
 		signal.throwIfAborted();
 		// As this reader asked: a read it waits for or makes itself after a clear() keeps nothing.
 		const generation = this.#generation;
-		const held = this.#held.get(key);
-		if (held) {
-			// The most recently read goes last, and so leaves last.
-			this.#held.delete(key);
-			this.#held.set(key, held);
-			return held.slice();
-		}
-		const pending = this.#reading.get(key);
-		if (pending)
-			try {
-				return (await untilAborted(pending, signal)).slice();
-			} catch (error) {
-				if (signal.aborted) throw error;
-				// The first reader stopped, or its read failed: this reader reads for itself.
+		let lastPending: Promise<Uint8Array> | undefined;
+		for (;;) {
+			signal.throwIfAborted();
+			const held = this.#held.get(key);
+			if (held) {
+				// The most recently read goes last, and so leaves last.
+				this.#held.delete(key);
+				this.#held.set(key, held);
+				return held.slice();
 			}
-		const reading = load(signal);
-		this.#reading.set(key, reading);
-		try {
-			const bytes = await reading;
-			if (generation === this.#generation) this.#keep(key, bytes);
-			return bytes.slice();
-		} finally {
-			if (this.#reading.get(key) === reading) this.#reading.delete(key);
+			const pending = this.#reading.get(key);
+			if (pending && pending !== lastPending) {
+				lastPending = pending;
+				try {
+					return (await untilAborted(pending, signal)).slice();
+				} catch (error) {
+					if (signal.aborted || error instanceof CloudMemberFolderAccessDenied) throw error;
+					// WHY: Re-check #held and #reading so concurrent waiters coalesce onto one replacement load instead of stampeding.
+					continue;
+				}
+			}
+			const reading = load(signal);
+			this.#reading.set(key, reading);
+			try {
+				const bytes = await reading;
+				if (generation === this.#generation) this.#keep(key, bytes);
+				return bytes.slice();
+			} finally {
+				if (this.#reading.get(key) === reading) this.#reading.delete(key);
+			}
 		}
 	}
 
@@ -1341,6 +1349,7 @@ export class CloudMemberFolderClient {
 			try {
 				return await around(() => withCloudDeadline(send, retry.deadlineMs ?? this.#timeoutMs, signal));
 			} catch (error) {
+				if (signal.aborted) throw error;
 				const status = error instanceof CloudMemberFolderError ? error.status : null;
 				if (status === 409 && ahead++ < (retry.aheadTries ?? PIECE_TRIES)) {
 					attempt--;
@@ -1348,7 +1357,7 @@ export class CloudMemberFolderClient {
 					continue;
 				}
 				const late = error instanceof CloudRequestTimeoutError || status === 408 || status === 504;
-				if (signal.aborted || (status !== null && status < 500 && status !== 408)) throw error;
+				if (status !== null && status < 500 && status !== 408) throw error;
 				if (late && retry.slow?.()) {
 					attempt--;
 					continue;
@@ -1391,7 +1400,13 @@ export class CloudMemberFolderClient {
 			try {
 				return await withCloudDeadline(read, this.#timeoutMs, signal);
 			} catch (error) {
-				if (signal.aborted || error instanceof CloudMemberFolderAccessDenied || attempt === PIECE_TRIES)
+				const status = error instanceof CloudMemberFolderError ? error.status : null;
+				if (
+					signal.aborted ||
+					error instanceof CloudMemberFolderAccessDenied ||
+					(status !== null && status < 500 && status !== 408 && status !== 429) ||
+					attempt === PIECE_TRIES
+				)
 					throw error;
 				await pause(this.#pieceRetryMs * attempt, signal);
 			}
@@ -1512,6 +1527,7 @@ export class CloudMemberFolderHints {
 	readonly #onHint: (seq: number) => void;
 	readonly #onState?: (connected: boolean) => void;
 	#channel: RealtimeChannel | undefined;
+	readonly #removing = new Set<RealtimeChannel>();
 	#retry: ReturnType<typeof setTimeout> | undefined;
 	#closed = false;
 	readonly #onAbort = (): void => {
@@ -1561,9 +1577,13 @@ export class CloudMemberFolderHints {
 	/** Joins again once the old channel is gone: the client hands back a channel it still holds for the same topic,
 	 * and that one never subscribes again. Until it is removed, removing is tried again every 10 s. */
 	async #rejoin(old: RealtimeChannel): Promise<void> {
+		this.#removing.add(old);
 		const removed = await withCloudDeadline(() => this.#client.removeChannel(old), 2000).catch(() => "error");
+		if (removed === "ok") this.#removing.delete(old);
 		if (this.#closed) return;
-		this.#retry = setTimeout(() => (removed === "ok" ? this.#join() : void this.#rejoin(old)), 10_000);
+		// WHY: Jitter rejoin timers across [0.75x, 1.0x] to prevent synchronized reconnect storms across tabs.
+		const delay = Math.max(1, Math.round(10_000 * (0.75 + Math.random() * 0.25)));
+		this.#retry = setTimeout(() => (removed === "ok" ? this.#join() : void this.#rejoin(old)), delay);
 		if (typeof this.#retry === "object") this.#retry.unref?.();
 	}
 
@@ -1573,8 +1593,21 @@ export class CloudMemberFolderHints {
 		this.#signal.removeEventListener("abort", this.#onAbort);
 		clearTimeout(this.#retry);
 		this.#retry = undefined;
-		const channel = this.#channel;
-		this.#channel = undefined;
-		if (channel) await withCloudDeadline(() => this.#client.removeChannel(channel), 2000).catch(() => undefined);
+		const toRemove: RealtimeChannel[] = [];
+		if (this.#channel) {
+			toRemove.push(this.#channel);
+			this.#channel = undefined;
+		}
+		for (const stale of this.#removing) {
+			if (!toRemove.includes(stale)) toRemove.push(stale);
+		}
+		this.#removing.clear();
+		if (toRemove.length > 0) {
+			await Promise.all(
+				toRemove.map((channel) =>
+					withCloudDeadline(() => this.#client.removeChannel(channel), 2000).catch(() => undefined),
+				),
+			);
+		}
 	}
 }
