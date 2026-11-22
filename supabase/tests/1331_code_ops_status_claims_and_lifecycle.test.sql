@@ -484,4 +484,32 @@ begin
 		and ((select input ->> 'change' from public.qorpera_code_requests where id = v_id)::integer) = 4,
 		'range undo starting on reverted change advances lower edge to smallest landed change: ' || v_res::text
 	);
+
+	insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name)
+	values ((pg_temp.rec_shop()).environment_id, (pg_temp.rec_shop()).profile_id, 'surfaces', 'website');
+	insert into public.qorpera_surfaces(
+		profile_id, slug, title, surface_group, archetype, status, source_kind, repository_key
+	)
+	values
+		((pg_temp.rec_shop()).profile_id, 'website', 'Website', 'products', 'live_build', 'active', 'code_repo', null),
+		((pg_temp.rec_shop()).profile_id, 'storefront', 'Storefront', 'products', 'live_build', 'active', 'code_repo', 'company/shop');
+
+	v_res := public.qorpera_folder_code_lifecycle(
+		pg_temp.c3_alice(),
+		jsonb_build_object('operationKey', 'life-archive-surface-default', 'op', 'archive', 'owner', 'surfaces', 'name', 'website')
+	);
+	perform pg_temp.base_assert(
+		v_res ->> 'state' = 'refused' and v_res ->> 'reason' = 'surface_backed',
+		'archive refuses default surfaces/<slug> repository: ' || v_res::text
+	);
+
+	v_res := public.qorpera_folder_code_lifecycle(
+		pg_temp.c3_alice(),
+		jsonb_build_object('operationKey', 'life-archive-surface-custom', 'op', 'archive', 'owner', 'company', 'name', 'shop')
+	);
+	perform pg_temp.base_assert(
+		v_res ->> 'state' = 'refused' and v_res ->> 'reason' = 'surface_backed'
+		and (pg_temp.rec_shop()).archived_at is null,
+		'archive refuses custom repository_key backing a code_repo surface: ' || v_res::text
+	);
 end $$;

@@ -2158,6 +2158,13 @@ describe("manage_code read queries, history, lifecycle, and v2 undo", () => {
 			if (method === LIFECYCLE) {
 				const req = args.p_request as Record<string, unknown>;
 				if (req.op === "archive") {
+					if (req.owner === "surfaces") {
+						return {
+							schema: "qorpera.code-lifecycle/v1",
+							state: "refused",
+							reason: "surface_backed",
+						};
+					}
 					return {
 						schema: "qorpera.code-lifecycle/v1",
 						state: "done",
@@ -2257,6 +2264,15 @@ describe("manage_code read queries, history, lifecycle, and v2 undo", () => {
 			});
 			expect(archived.success).toBe(true);
 			expect(archived.text).toContain("archived");
+
+			const surfaceArchived = await f.invoke({
+				action: "archive",
+				operationKey: "ar-surface",
+				owner: "surfaces",
+				name: "website",
+			});
+			expect(surfaceArchived.success).toBe(false);
+			expect(surfaceArchived.text).toContain("backs a surface and cannot be archived");
 
 			const unarchived = await f.invoke({
 				action: "unarchive",

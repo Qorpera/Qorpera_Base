@@ -948,6 +948,20 @@ begin
 				'schema', 'qorpera.code-lifecycle/v1', 'state', 'already',
 				'owner', v_owner, 'name', v_name, 'archivedAt', v_repo.archived_at
 			);
+		elsif v_owner = 'surfaces' or exists (
+			select 1 from public.qorpera_surfaces surface
+			where surface.profile_id = v_run.profile_id
+				and surface.source_kind = 'code_repo'
+				and (
+					case
+						when surface.repository_key is not null and position('/' in surface.repository_key) > 0
+							then lower(btrim(split_part(surface.repository_key, '/', 1))) = v_owner
+								and lower(btrim(split_part(surface.repository_key, '/', 2))) = v_name
+						else v_owner = 'surfaces' and lower(surface.slug) = v_name
+					end
+				)
+		) then
+			v_result := jsonb_build_object('schema', 'qorpera.code-lifecycle/v1', 'state', 'refused', 'reason', 'surface_backed');
 		elsif exists (
 			select 1 from public.qorpera_coding_sessions session
 			join public.qorpera_runtime_workers worker on worker.id = session.worker_id

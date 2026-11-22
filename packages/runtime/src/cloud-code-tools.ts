@@ -833,6 +833,8 @@ function lifecycleRefused(
 			return `Nothing was changed: ${request.owner}/${request.name} is archived.`;
 		case "sessions_active":
 			return `Nothing was archived: ${request.owner}/${request.name} still has active coding sessions. Archive or finish them first.`;
+		case "surface_backed":
+			return `Nothing was archived: ${request.owner}/${request.name} backs a surface and cannot be archived.`;
 		case "no_executor":
 			return "Qorpera's code service is not running for this company right now. Try again in a few minutes, with a new operationKey.";
 		default:
