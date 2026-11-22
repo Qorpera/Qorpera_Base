@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	defaultLxdRequestTimeoutMs,
 	type LxdCreateInstanceRequest,
 	type LxdCreateStorageVolumeRequest,
 	LxdOperationFailed,
@@ -1523,5 +1524,71 @@ describe("LXD exec stream", () => {
 				"LXD_CODING_MEMORY_READ_FAILED",
 			);
 		}
+	});
+
+	it("bounds un-signalled LXD socket requests with operationTimeoutSeconds instead of hanging indefinitely", async () => {
+		const root = await mkdtemp(join(tmpdir(), "qorpera-lxd-stall-"));
+		roots.push(root);
+		const socket = join(root, "lxd.socket");
+		const server = createServer((_req, _res) => {});
+		servers.push(server);
+		await new Promise<void>((resolveListen, reject) => {
+			server.once("error", reject);
+			server.listen(socket, () => resolveListen());
+		});
+		const client = new LxdUnixClient(socket, 1);
+		const started = Date.now();
+		await expect(client.getInstance("qorpera-runners", "stalled")).rejects.toThrow();
+		expect(Date.now() - started).toBeLessThan(3_000);
+	});
+
+	it("honors explicit waitSeconds above operationTimeoutSeconds on un-signalled operation waits", async () => {
+		expect(defaultLxdRequestTimeoutMs("/1.0/operations/op-1/wait?timeout=600", 120)).toBe(605_000);
+		expect(defaultLxdRequestTimeoutMs("/1.0/operations/op-1/wait?timeout=5&project=qorpera-runners", 120)).toBe(
+			10_000,
+		);
+		expect(defaultLxdRequestTimeoutMs("/1.0/operations/op-1/wait?project=qorpera-runners&timeout=600", 30)).toBe(
+			605_000,
+		);
+		expect(defaultLxdRequestTimeoutMs("/1.0/instances/stalled?project=qorpera-runners", 30)).toBe(30_000);
+
+		const root = await mkdtemp(join(tmpdir(), "qorpera-lxd-wait-"));
+		roots.push(root);
+		const socket = join(root, "lxd.socket");
+		let waitedPath = "";
+		const server = createServer((req, res) => {
+			const url = req.url ?? "";
+			if (req.method === "POST" && url.includes("/exec")) {
+				req.resume();
+				res.writeHead(202, { "content-type": "application/json" });
+				res.end(JSON.stringify({ type: "async", status_code: 100, operation: "/1.0/operations/op-wait-1" }));
+				return;
+			}
+			if (req.method === "GET" && url.includes("/1.0/operations/op-wait-1/wait")) {
+				waitedPath = url;
+				setTimeout(() => {
+					res.writeHead(200, { "content-type": "application/json" });
+					res.end(
+						JSON.stringify({
+							type: "sync",
+							status_code: 200,
+							metadata: { status_code: 200, metadata: { return: 0 } },
+						}),
+					);
+				}, 1_250);
+				return;
+			}
+			res.writeHead(404).end();
+		});
+		servers.push(server);
+		await new Promise<void>((resolveListen, reject) => {
+			server.once("error", reject);
+			server.listen(socket, () => resolveListen());
+		});
+		const client = new LxdUnixClient(socket, 1);
+		await expect(
+			client.execInstance("qorpera-runners", "slow-op", ["/bin/true"], undefined, 2),
+		).resolves.toBeUndefined();
+		expect(waitedPath).toContain("/wait?timeout=2");
 	});
 });

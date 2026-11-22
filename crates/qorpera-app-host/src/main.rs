@@ -115,10 +115,12 @@ async fn async_main() {
         .await
         .expect("failed to bind qorpera-app-host");
     info!(addr = %server.addr, driver = %driver_mode, "qorpera-app-host listening");
-    let srv_handle = server.spawn();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let srv_handle = server.spawn_with_shutdown(shutdown_rx);
     shutdown_signal().await;
     info!("shutting down qorpera-app-host");
-    srv_handle.abort();
+    let _ = shutdown_tx.send(true);
+    let _ = tokio::time::timeout(Duration::from_secs(2), srv_handle).await;
     if let Some(h) = reaper_handle {
         h.abort();
     }

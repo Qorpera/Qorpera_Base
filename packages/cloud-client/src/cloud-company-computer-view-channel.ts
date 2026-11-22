@@ -95,6 +95,7 @@ export async function connectCompanyComputerViewChannel(options: {
 		let state = 0;
 		let handshake = new Uint8Array(0);
 		let queued: ArrayBuffer[] = [];
+		let queuedHead = 0;
 		let queuedBytes = 0;
 		let receiver: CompanyComputerViewChannel["onmessage"] = null;
 		let flushing = false;
@@ -106,8 +107,9 @@ export async function connectCompanyComputerViewChannel(options: {
 			ticket.fill(0);
 			handshake.fill(0);
 			handshake = new Uint8Array(0);
-			for (const bytes of queued) new Uint8Array(bytes).fill(0);
+			for (let index = queuedHead; index < queued.length; index++) new Uint8Array(queued[index]!).fill(0);
 			queued = [];
+			queuedHead = 0;
 			queuedBytes = 0;
 		};
 		const close = (failed = false): void => {
@@ -130,15 +132,19 @@ export async function connectCompanyComputerViewChannel(options: {
 			channel.onerror?.(new Event("error"));
 		};
 		const flush = (): void => {
-			if (flushing || state !== 1 || !receiver) return;
+			if (flushing || state !== 1 || !receiver || queuedHead >= queued.length) return;
 			flushing = true;
 			queueMicrotask(() => {
 				flushing = false;
 				try {
-					while (state === 1 && receiver && queued.length) {
-						const bytes = queued.shift()!;
+					while (state === 1 && receiver && queuedHead < queued.length) {
+						const bytes = queued[queuedHead++]!;
 						queuedBytes -= bytes.byteLength;
 						receiver({ data: bytes });
+					}
+					if (queuedHead >= queued.length) {
+						queued.length = 0;
+						queuedHead = 0;
 					}
 				} catch {
 					fail();
@@ -218,11 +224,16 @@ export async function connectCompanyComputerViewChannel(options: {
 				if (state === 3) return;
 				if (!sent || !(event.data instanceof ArrayBuffer) || event.data.byteLength > MAX_BUFFER)
 					throw new Error("INVALID_VIEW_FRAME");
-				const bytes = new Uint8Array(event.data);
 				if (state === 1) {
-					enqueue(bytes);
+					// WHY: Deliver live RFB frames directly without copying or microtask queuing once pre-attach backlog is drained.
+					if (receiver && !flushing && queuedHead >= queued.length) {
+						if (event.data.byteLength > 0) receiver({ data: event.data });
+						return;
+					}
+					enqueue(new Uint8Array(event.data));
 					return;
 				}
+				const bytes = new Uint8Array(event.data);
 				const combined = new Uint8Array(handshake.length + bytes.length);
 				combined.set(handshake);
 				combined.set(bytes, handshake.length);

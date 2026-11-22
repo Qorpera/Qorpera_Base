@@ -56,7 +56,6 @@ export type CodingSessionTone = "working" | "attention" | "done" | "failed" | "i
 const POLL_WORKING_MS = 2_500;
 const POLL_WAITING_MS = 6_000;
 const POLL_SETTLED_MS = 30_000;
-const POLL_HIDDEN_MS = 20_000;
 /** Steps shown in the transcript; older ones fold into one line at its top, when there are at least a few. */
 const RECENT_EVENTS = 10;
 const FOLD_AT_LEAST = 3;
@@ -393,6 +392,7 @@ export class CodingSessionElement {
 	#sizes: ResizeObserver | undefined;
 	#session: CodingSession;
 	#events: CodingSessionEvent[] = [];
+	readonly #eventIds = new Set<number>();
 	#cursor = 0;
 	#showAll = false;
 	#busy = false;
@@ -566,9 +566,19 @@ export class CodingSessionElement {
 				if (request.signal.aborted || this.disposed) return;
 				more = read.events.length >= READ_PAGE;
 				this.#caughtUp = !more;
-				const known = new Set(this.#events.map((event) => event.id));
-				for (const event of read.events) if (!known.has(event.id)) this.#events.push(event);
-				this.#events.sort((a, b) => a.id - b.id);
+				// WHY: Avoid O(N) Set rebuild and O(N log N) sort on every poll; only sort when out-of-order events arrive.
+				if (read.events.length > 0) {
+					let outOfOrder = false;
+					let lastId = this.#events[this.#events.length - 1]?.id ?? Number.NEGATIVE_INFINITY;
+					for (const event of read.events) {
+						if (this.#eventIds.has(event.id)) continue;
+						this.#eventIds.add(event.id);
+						if (event.id < lastId) outOfOrder = true;
+						else lastId = event.id;
+						this.#events.push(event);
+					}
+					if (outOfOrder) this.#events.sort((a, b) => a.id - b.id);
+				}
 				this.#cursor = this.#events[this.#events.length - 1]?.id ?? this.#cursor;
 				this.#session = { ...read.session, isOwner: read.isOwner };
 				this.#readError = undefined;
@@ -611,16 +621,14 @@ export class CodingSessionElement {
 
 	#schedule(): void {
 		clearTimeout(this.#poll);
-		if (this.disposed) return;
+		// WHY: Pause polling while the tab is hidden; #onVisibility() refreshes immediately on return.
+		if (this.disposed || (typeof document !== "undefined" && document.hidden)) return;
 		const phase = this.#session.phase;
-		const wait =
-			typeof document !== "undefined" && document.hidden
-				? POLL_HIDDEN_MS
-				: !codingSessionGoing(this.#session)
-					? POLL_SETTLED_MS
-					: phase === "awaiting_input"
-						? POLL_WAITING_MS
-						: POLL_WORKING_MS;
+		const wait = !codingSessionGoing(this.#session)
+			? POLL_SETTLED_MS
+			: phase === "awaiting_input"
+				? POLL_WAITING_MS
+				: POLL_WORKING_MS;
 		this.#poll = setTimeout(() => void this.refresh(), wait);
 	}
 

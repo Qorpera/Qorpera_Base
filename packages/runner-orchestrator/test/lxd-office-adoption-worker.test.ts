@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LxdUnixClient } from "../src/lxd-client.ts";
-import type { executeLxdOfficeAdoptionFiles } from "../src/lxd-office-adoption-files.ts";
+import { executeLxdOfficeAdoptionFiles } from "../src/lxd-office-adoption-files.ts";
 import { planLxdOfficeAdoption } from "../src/lxd-office-adoption-plan.ts";
 import { assertOfficeStorageMaintenanceHandoff, LxdOfficeAdoptionWorker } from "../src/lxd-office-adoption-worker.ts";
 import { openLxdOfficeCreationIdentity } from "../src/lxd-office-creation-journal.ts";
@@ -331,5 +331,39 @@ describe("office adoption provider composition", () => {
 		expect(() =>
 			assertOfficeStorageMaintenanceHandoff(Buffer.from(`${f.bytes}\n`), f.observation, f.plan, f.review),
 		).toThrow("OFFICE_ADOPTION_MAINTENANCE_HANDOFF_REQUIRED");
+	});
+	it("bounds adoption file copy without calling AbortSignal.any or AbortSignal.timeout", async () => {
+		const f = await fixture();
+		const { policy } = officePhysicalFixture();
+		const anySpy = vi.spyOn(AbortSignal, "any");
+		const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+		try {
+			await expect(
+				executeLxdOfficeAdoptionFiles(
+					{
+						binding: f.identity.binding,
+						observation: f.observation,
+						input: f.request.input,
+						source: { root: f.root, uid: 0, gid: 0, mount: policy.journal },
+						limits: {
+							maxEntries: 0,
+							maxDepth: 8,
+							maxFileBytes: 1024,
+							maxTotalBytes: 4096,
+							maxManifestBytes: 65536,
+						},
+						journalRoot: f.root,
+						reviewPath: f.request.reviewPath,
+					},
+					{ assertWritable: async () => {} },
+					signal(),
+				),
+			).rejects.toThrow();
+			expect(anySpy).not.toHaveBeenCalled();
+			expect(timeoutSpy).not.toHaveBeenCalled();
+		} finally {
+			anySpy.mockRestore();
+			timeoutSpy.mockRestore();
+		}
 	});
 });
