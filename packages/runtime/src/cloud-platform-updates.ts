@@ -270,7 +270,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "behaviour",
 		date: "2026-11-22",
 		title: "Higher parallel worker limits per member",
-		text: "Claude Code workers are no longer capped at four per member: operators can raise the global or per-member parallel limit up to 64, and extra workers queue cleanly instead of failing. Dispatch as many independent parallel workers or coding sessions as the task benefits from without artificially capping batches at four; coding sessions automatically spread across additional machines when one is busy.",
+		text: "Operators can now raise the global or per-member Claude Code parallel worker limit up to 64 (the default stays unchanged until raised), and extra workers wait in the queue until a slot frees. Split work into as many independent parallel workers or coding sessions as the task benefits from rather than assuming a fixed cap of four; coding sessions automatically spread across additional machines when one is busy.",
 	},
 ]);
 

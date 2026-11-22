@@ -488,12 +488,11 @@ $new$	v_new_disk := exists (select 1 from public.qorpera_coding_session_turns tu
 		join public.qorpera_coding_machine_folder_restarts rebuild on rebuild.machine_id = v_session.vm_allocation_id
 			and rebuild.state = 'replaced' and rebuild.recorded_at >= coalesce(occurrence.created_at, turn.created_at)
 		where turn.worker_id = v_worker_id and turn.sequence = v_sequence - 1)
-		or exists (select 1 from public.qorpera_coding_session_turns turn
-			left join public.qorpera_wake_occurrences occurrence on occurrence.id = turn.occurrence_id
-			join public.qorpera_coding_session_events event on event.worker_id = v_worker_id
-				and event.kind = 'step' and event.actor = 'executor' and event.body ? 'rehomedFrom'
-				and event.created_at >= coalesce(occurrence.created_at, turn.created_at)
-			where turn.worker_id = v_worker_id and turn.sequence = v_sequence - 1);$new$
+		or (v_sequence > 1 and exists (select 1 from public.qorpera_coding_session_events event
+			where event.worker_id = v_worker_id and event.kind = 'step' and event.actor = 'executor'
+				and event.body ? 'rehomedFrom' and event.sequence <= v_sequence
+				and event.sequence > coalesce((select max(prev.sequence) from public.qorpera_coding_session_turns prev
+					where prev.worker_id = v_worker_id and prev.sequence < v_sequence and prev.occurrence_id is not null), 0)));$new$
 ]);
 
 select pg_temp.w4c_patch('public.qorpera_keep_coding_attachments(uuid,text,text,text,jsonb)'::regprocedure, array[

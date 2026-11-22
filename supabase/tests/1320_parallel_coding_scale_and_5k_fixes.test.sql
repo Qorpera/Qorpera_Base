@@ -1,4 +1,4 @@
-begin;
+-- @fixture 928_folder_coding_dispatch.test.sql until "-- 1. The refusals"
 
 create function pg_temp.t1320_ok(p_ok boolean, p_message text) returns void language plpgsql as $$
 begin if p_ok is distinct from true then raise exception 'Parallel coding scale 1320: %', p_message; end if; end $$;
@@ -556,6 +556,126 @@ begin
 		position('rehomedFrom' in pg_get_functiondef('public.qorpera_read_coding_turn_context(jsonb)'::regprocedure)) > 0
 		and position('20260930515000' in pg_get_functiondef('public.qorpera_read_coding_turn_context(jsonb)'::regprocedure)) > 0,
 		'qorpera_read_coding_turn_context surfaces rehomedFrom events as machine.newDisk while preserving 20260930515000');
+end $$;
+
+do $$
+declare
+	v_alice jsonb := pg_temp.c3_alice();
+	v_env constant uuid := '92400000-0000-4000-8000-000000000020';
+	v_node_id constant uuid := '13200000-0000-4000-8000-0000000002e1';
+	v_node_sha text := encode(sha256(convert_to('node-1320-ctx', 'UTF8')), 'hex');
+	v_b1 constant uuid := '13200000-0000-4000-8000-0000000002b1';
+	v_b2 constant uuid := '13200000-0000-4000-8000-0000000002b2';
+	v_b3 constant uuid := '13200000-0000-4000-8000-0000000002b3';
+	v_digest text := repeat('7', 64);
+	v_claim jsonb; v_p1 jsonb; v_p2 jsonb; v_p3 jsonb; v_pf1 jsonb; v_pf2 jsonb;
+	v_att jsonb; v_pass jsonb; v_turn jsonb; v_ctx jsonb; v_m1 uuid; v_m2 uuid;
+	v_tok uuid;
+begin
+	perform pg_temp.base_claims('service_role');
+	set local session_replication_role = replica;
+	insert into public.qorpera_runtime_nodes(id, machine_id_sha256, label, version, cpu_millis, memory_bytes, headroom_cpu_millis,
+		headroom_memory_bytes, standard_cpu_millis, standard_memory_bytes, enabled)
+	values (v_node_id, v_node_sha, 'node-1320-ctx', 1, 16000, 68719476736, 1000, 4294967296, 4000, 8589934592, true);
+	insert into public.qorpera_runtime_node_observations(node_id, observation_id, observed_at, observation)
+	values (v_node_id, '13200000-0000-4000-8000-0000000002e2', clock_timestamp(),
+		'{"state":"ready","cpuMillis":16000,"memoryBytes":68719476736}');
+	insert into public.qorpera_runtime_node_inventory_policies(node_id, policy, policy_sha256)
+	values (v_node_id, '{}', repeat('a', 64));
+	insert into public.qorpera_runtime_node_inventory_receipts(node_id, observation_id, node_version, policy_sha256, context_sha256, inventory)
+	values (v_node_id, '13200000-0000-4000-8000-0000000002e2', 1, repeat('a', 64), repeat('b', 64), '{}');
+	insert into public.qorpera_runtime_node_providers(provider_kind, provider_id, node_id, policy_sha256, cpu_millis, memory_bytes)
+	values ('coding', 'coding-1320-ctx', v_node_id, repeat('d', 64), 2000, 4294967296);
+	insert into public.qorpera_coding_executors(environment_id, owner, enabled, harnesses, nas_machine_id_sha256, vm_policy, nas_policy)
+	values (v_env, 'exec-1320-ctx', true, array['codex'], v_node_sha,
+		jsonb_build_object('providerId', 'coding-1320-ctx', 'providerPolicySha256', repeat('d', 64), 'project', 'qorpera-coding',
+			'imageFingerprint', repeat('f', 64), 'bootstrapSha256', repeat('e', 64), 'storagePool', 'default', 'network', 'qorpera-coding',
+			'cpus', 2, 'memoryBytes', 4294967296, 'rootDiskBytes', 21474836480),
+		'{"rootPath":"/nas/coding-ctx"}');
+	set local session_replication_role = origin;
+	perform public.qorpera_set_coding_repository_grant(v_env, '92400000-0000-4000-8000-000000000030', pg_temp.c3_repo(), true);
+
+	perform pg_temp.t1320_ok(pg_temp.c3_dispatch(v_alice, 'ctx-1320-d1', 'QorperaOS/agents/alice/todos/fix-login/ctx-1',
+		pg_temp.c3_brief(v_b1)) -> 'units' -> 0 ->> 'outcome' = 'saved', 'ctx dispatch b1');
+	perform pg_temp.base_claims('service_role');
+	v_claim := public.qorpera_claim_coding_session('exec-1320-ctx', 120);
+	perform pg_temp.t1320_ok((v_claim ->> 'workerId')::uuid = v_b1, 'claim b1 turn 1');
+	v_p1 := public.qorpera_plan_coding_machine(v_b1, (pg_temp.c3_session(v_b1)).lease_token, v_node_sha, v_digest);
+	v_m1 := (v_p1 ->> 'machineId')::uuid;
+	v_att := public.qorpera_attach_coding_session(v_b1, (pg_temp.c3_session(v_b1)).lease_token, v_p1 ->> 'bindingText',
+		pg_temp.t1320_storage(v_b1, v_node_sha, '/nas/coding-ctx'), v_node_sha, null);
+	v_tok := (v_att ->> 'attachmentToken')::uuid;
+	perform public.qorpera_begin_coding_turn(v_b1, (pg_temp.c3_session(v_b1)).lease_token, '{}');
+	v_pass := pg_temp.base_materialize();
+	v_turn := pg_temp.base_start((v_pass -> 'run_ids' ->> 0)::uuid);
+	perform pg_temp.base_claims('service_role');
+	v_ctx := public.qorpera_read_coding_turn_context(v_turn);
+	perform pg_temp.t1320_ok(v_ctx ->> 'sequence' = '1' and v_ctx -> 'machine' = '{"newDisk":false}'::jsonb,
+		format('turn 1 before re-home reports newDisk=false: %s', v_ctx));
+	set local session_replication_role = replica;
+	update public.qorpera_runner_jobs set status = 'completed', result = '{}', finished_at = clock_timestamp(),
+		lease_token_sha256 = null, lease_expires_at = null where id = (v_turn ->> 'jobId')::uuid;
+	set local session_replication_role = origin;
+	perform pg_temp.base_claims('service_role');
+	perform public.qorpera_complete_coding_turn(v_b1, (pg_temp.c3_session(v_b1)).lease_token, 'succeeded', 'Turn 1 done.');
+	perform public.qorpera_record_coding_session_detached(v_m1, 'exec-1320-ctx', v_p1 ->> 'bindingText', v_node_sha, v_b1, v_tok, 'SLEEP', '[]');
+
+	perform pg_temp.t1320_ok(pg_temp.c3_dispatch(v_alice, 'ctx-1320-d2', 'QorperaOS/agents/alice/todos/fix-login/ctx-2',
+		pg_temp.c3_brief(v_b2)) -> 'units' -> 0 ->> 'outcome' = 'saved'
+		and pg_temp.c3_dispatch(v_alice, 'ctx-1320-d3', 'QorperaOS/agents/alice/todos/fix-login/ctx-3',
+		pg_temp.c3_brief(v_b3)) -> 'units' -> 0 ->> 'outcome' = 'saved', 'ctx dispatch filler sessions');
+	perform pg_temp.base_claims('service_role');
+	v_claim := public.qorpera_claim_coding_session('exec-1320-ctx', 120);
+	v_pf1 := public.qorpera_plan_coding_machine((v_claim ->> 'workerId')::uuid,
+		(pg_temp.c3_session((v_claim ->> 'workerId')::uuid)).lease_token, v_node_sha, v_digest);
+	perform public.qorpera_attach_coding_session((v_claim ->> 'workerId')::uuid,
+		(pg_temp.c3_session((v_claim ->> 'workerId')::uuid)).lease_token, v_pf1 ->> 'bindingText',
+		pg_temp.t1320_storage((v_claim ->> 'workerId')::uuid, v_node_sha, '/nas/coding-ctx'), v_node_sha, null);
+	v_claim := public.qorpera_claim_coding_session('exec-1320-ctx', 120);
+	v_pf2 := public.qorpera_plan_coding_machine((v_claim ->> 'workerId')::uuid,
+		(pg_temp.c3_session((v_claim ->> 'workerId')::uuid)).lease_token, v_node_sha, v_digest);
+	perform public.qorpera_attach_coding_session((v_claim ->> 'workerId')::uuid,
+		(pg_temp.c3_session((v_claim ->> 'workerId')::uuid)).lease_token, v_pf2 ->> 'bindingText',
+		pg_temp.t1320_storage((v_claim ->> 'workerId')::uuid, v_node_sha, '/nas/coding-ctx'), v_node_sha, null);
+	perform pg_temp.t1320_ok((v_pf1 ->> 'machineId')::uuid = v_m1 and (v_pf2 ->> 'machineId')::uuid = v_m1,
+		'filler sessions structurally fill m1 (2/2 active)');
+
+	perform pg_temp.c3_answer(v_b1, 'Continue on turn 2.');
+	perform pg_temp.base_claims('service_role');
+	v_claim := public.qorpera_claim_coding_session('exec-1320-ctx', 120);
+	perform pg_temp.t1320_ok((v_claim ->> 'workerId')::uuid = v_b1, 'claim b1 turn 2');
+	v_p2 := public.qorpera_plan_coding_machine(v_b1, (pg_temp.c3_session(v_b1)).lease_token, v_node_sha, v_digest);
+	v_m2 := (v_p2 ->> 'machineId')::uuid;
+	perform pg_temp.t1320_ok(v_p2 ->> 'state' = 'planned' and v_m2 <> v_m1, format('b1 turn 2 re-homed off full m1 onto m2: %s', v_p2));
+	perform public.qorpera_attach_coding_session(v_b1, (pg_temp.c3_session(v_b1)).lease_token, v_p2 ->> 'bindingText',
+		pg_temp.t1320_storage(v_b1, v_node_sha, '/nas/coding-ctx'), v_node_sha, null);
+	perform public.qorpera_begin_coding_turn(v_b1, (pg_temp.c3_session(v_b1)).lease_token, '{}');
+	v_pass := pg_temp.base_materialize();
+	v_turn := pg_temp.base_start((v_pass -> 'run_ids' ->> 0)::uuid);
+	perform pg_temp.base_claims('service_role');
+	v_ctx := public.qorpera_read_coding_turn_context(v_turn);
+	perform pg_temp.t1320_ok(v_ctx ->> 'sequence' = '2' and v_ctx -> 'machine' = '{"newDisk":true}'::jsonb,
+		format('turn 2 after re-home reports machine.newDisk=true: %s', v_ctx));
+	set local session_replication_role = replica;
+	update public.qorpera_runner_jobs set status = 'completed', result = '{}', finished_at = clock_timestamp(),
+		lease_token_sha256 = null, lease_expires_at = null where id = (v_turn ->> 'jobId')::uuid;
+	set local session_replication_role = origin;
+	perform pg_temp.base_claims('service_role');
+	perform public.qorpera_complete_coding_turn(v_b1, (pg_temp.c3_session(v_b1)).lease_token, 'succeeded', 'Turn 2 done.');
+
+	perform pg_temp.c3_answer(v_b1, 'Continue on turn 3.');
+	perform pg_temp.base_claims('service_role');
+	v_claim := public.qorpera_claim_coding_session('exec-1320-ctx', 120);
+	perform pg_temp.t1320_ok((v_claim ->> 'workerId')::uuid = v_b1, 'claim b1 turn 3');
+	v_p3 := public.qorpera_plan_coding_machine(v_b1, (pg_temp.c3_session(v_b1)).lease_token, v_node_sha, v_digest);
+	perform pg_temp.t1320_ok((v_p3 ->> 'machineId')::uuid = v_m2, 'b1 turn 3 stays on m2');
+	perform public.qorpera_begin_coding_turn(v_b1, (pg_temp.c3_session(v_b1)).lease_token, '{}');
+	v_pass := pg_temp.base_materialize();
+	v_turn := pg_temp.base_start((v_pass -> 'run_ids' ->> 0)::uuid);
+	perform pg_temp.base_claims('service_role');
+	v_ctx := public.qorpera_read_coding_turn_context(v_turn);
+	perform pg_temp.t1320_ok(v_ctx ->> 'sequence' = '3' and v_ctx -> 'machine' = '{"newDisk":false}'::jsonb,
+		format('turn 3 after re-home reports machine.newDisk=false: %s', v_ctx));
 end $$;
 
 rollback;
