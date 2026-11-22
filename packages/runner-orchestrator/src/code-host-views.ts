@@ -152,6 +152,7 @@ export function lxdCodeHostShell(
 					environment: command.env,
 					cwd: command.cwd,
 					...(command.stdin === undefined ? {} : { stdin: command.stdin }),
+					...(command.onStdout === undefined ? {} : { stdout: command.onStdout }),
 					maxStdoutBytes: command.maximumOutputBytes,
 					stderrTailBytes: STDERR_TAIL_BYTES,
 				},

@@ -835,6 +835,33 @@ describe("LxdCodeHosts", () => {
 		await busy;
 		await vi.waitFor(() => expect(lxd.running(company(2))).toBe(false));
 	});
+	it("skips the redundant second project check when #turn did not wait, and polls agent readiness with 100/200/500ms backoff", async () => {
+		const { lxd, codeHosts } = hosts({ running: 2, agentWaitMs: 5000 });
+		let projectGets = 0;
+		const origGetProject = lxd.getProject.bind(lxd);
+		lxd.getProject = async (name) => {
+			projectGets += 1;
+			return origGetProject(name);
+		};
+		const project = codeHostProject(company(1));
+		await lxd.createProject(project, CODE_HOST_PROJECT_CONFIG);
+		projectGets = 0;
+
+		let execAttempts = 0;
+		lxd.agentDown = 2;
+		lxd.onExec = () => {
+			execAttempts += 1;
+		};
+
+		const startedAt = Date.now();
+		await expect(codeHosts.use(company(1), signal(), async () => "ok")).resolves.toBe("ok");
+		const elapsed = Date.now() - startedAt;
+		expect(projectGets).toBe(1);
+		expect(execAttempts).toBe(3);
+		expect(elapsed).toBeLessThan(900);
+		await codeHosts.close();
+	});
+
 	it("refuses waits outside 1 ms to a day, and a bad policy", () => {
 		for (const options of [{ idleStopMs: 0 }, { agentWaitMs: 86_400_001 }, { idleStopMs: 1.5 }])
 			expect(() => new LxdCodeHosts({ client: new FakeLxd(), policy, ...options })).toThrow(

@@ -219,7 +219,7 @@ begin
 		pg_temp.chk_report('landed', h, b, a, '{"state":"none","result":null}'),
 		pg_temp.chk_report('landed', h, b, a, '{"state":"off","more":1}'),
 		pg_temp.chk_report('landed', h, b, a, '{"state":"skipped"}'), pg_temp.chk_report('landed', h, b, a, '{"state":null}'),
-		pg_temp.chk_report('landed', h, b, a, '{"state":"inherited"}'), pg_temp.chk_report('landed', h, b, a, '{"state":"not_run"}'),
+		pg_temp.chk_report('landed', h, b, a, '{"state":"inherited"}'), pg_temp.chk_report('landed', h, b, a, '{"state":"not_run","more":1}'),
 		pg_temp.chk_report('landed', h, b, a, '{"state":"passed"}'),
 		pg_temp.chk_report('landed', h, b, a, '{"state":"passed","result":null}'),
 		pg_temp.chk_report('landed', h, b, a, v_ok || '{"more":1}'),

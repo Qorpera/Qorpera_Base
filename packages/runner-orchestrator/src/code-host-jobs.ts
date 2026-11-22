@@ -17,9 +17,8 @@ export interface CodeHostCommand {
 	argv: readonly string[];
 	env: Readonly<Record<string, string>>;
 	cwd: string;
-	/** Written to the command's stdin, which is then closed. Without it stdin is empty. */
 	stdin?: Uint8Array | AsyncIterable<Uint8Array>;
-	/** More stdout than this fails the command. */
+	onStdout?: (chunk: Buffer) => void;
 	maximumOutputBytes: number;
 }
 export interface CodeHostCommandResult {
@@ -278,6 +277,7 @@ export class Run {
 		argv: readonly string[],
 		options: {
 			stdin?: CodeHostCommand["stdin"];
+			onStdout?: CodeHostCommand["onStdout"];
 			maximumOutputBytes?: number;
 			signal?: AbortSignal;
 			cwd?: string;
@@ -291,6 +291,7 @@ export class Run {
 				env: Object.freeze({ ...this.#env }),
 				cwd: options.cwd ?? this.directory,
 				...(options.stdin === undefined ? {} : { stdin: options.stdin }),
+				...(options.onStdout === undefined ? {} : { onStdout: options.onStdout }),
 				maximumOutputBytes: options.maximumOutputBytes ?? MAX_TEXT,
 			},
 			signal,
@@ -625,6 +626,244 @@ export class Run {
 		if (large.length) throw new CodeHostRefusal("CODE_HOST_FILE_TOO_LARGE", large);
 		return records;
 	}
+
+	async checkNamesIncremental(
+		gitDir: string,
+		baseCommit: string,
+		nextCommit: string,
+	): Promise<{ records: ReturnType<typeof treeRecords>; checksFileTouched: boolean }> {
+		const diff = await this.gitOk(
+			gitDir,
+			["diff-tree", "-r", "-z", "--no-renames", "--raw", baseCommit, nextCommit],
+			"CODE_HOST_TREE_UNREADABLE",
+			{ maximumOutputBytes: MAX_LISTING },
+		);
+		const decoder = new TextDecoder("utf-8", { fatal: true });
+		const checksFileBytes = Buffer.from(CODE_CHECKS_FILE, "utf8");
+		const notUtf8: string[] = [];
+		const touchedDirs = new Set<string>();
+		let addedOrChanged = 0;
+		let checksFileTouched = false;
+		for (let start = 0; start < diff.length; ) {
+			const headerEnd = diff.indexOf(0, start);
+			const pathEnd = headerEnd < 0 ? -1 : diff.indexOf(0, headerEnd + 1);
+			if (pathEnd < 0) throw new CodeHostJobFailure("CODE_HOST_TREE_UNREADABLE");
+			const header = diff.subarray(start, headerEnd).toString("latin1");
+			const raw = diff.subarray(headerEnd + 1, pathEnd);
+			start = pathEnd + 1;
+			if (!header.startsWith(":")) throw new CodeHostJobFailure("CODE_HOST_TREE_UNREADABLE");
+			if (raw.equals(checksFileBytes)) checksFileTouched = true;
+			const status = header.slice(header.lastIndexOf(" ") + 1);
+			if (status === "D") continue;
+			addedOrChanged += 1;
+			let decoded: string;
+			try {
+				decoded = decoder.decode(raw);
+			} catch {
+				notUtf8.push(raw.toString("utf8"));
+				continue;
+			}
+			touchedDirs.add("");
+			let slash = decoded.indexOf("/");
+			while (slash >= 0) {
+				touchedDirs.add(decoded.slice(0, slash));
+				slash = decoded.indexOf("/", slash + 1);
+			}
+		}
+		if (notUtf8.length) throw new CodeHostRefusal("CODE_HOST_NAMES_NOT_UTF8", notUtf8);
+		if (addedOrChanged === 0) return { records: [], checksFileTouched };
+		if (touchedDirs.size > 200) return { records: await this.checkNames(gitDir, nextCommit), checksFileTouched };
+		const byDepth = new Map<number, string[]>();
+		for (const dir of touchedDirs) {
+			const depth = dir === "" ? 0 : dir.split("/").length;
+			const bucket = byDepth.get(depth);
+			if (bucket) bucket.push(dir);
+			else byDepth.set(depth, [dir]);
+		}
+		const records: ReturnType<typeof treeRecords> = [];
+		const depths = [...byDepth.keys()].sort((a, b) => a - b);
+		for (const depth of depths) {
+			const dirs = byDepth.get(depth) as string[];
+			if (depth === 0) {
+				const listing = await this.gitOk(gitDir, ["ls-tree", "-l", "-z", nextCommit], "CODE_HOST_TREE_UNREADABLE", {
+					maximumOutputBytes: MAX_LISTING,
+				});
+				records.push(...treeRecords(listing));
+			} else {
+				for (let at = 0; at < dirs.length; at += 40) {
+					const part = dirs.slice(at, at + 40).map((dir) => `${dir}/`);
+					const listing = await this.gitOk(
+						gitDir,
+						["--literal-pathspecs", "ls-tree", "-l", "-z", nextCommit, "--", ...part],
+						"CODE_HOST_TREE_UNREADABLE",
+						{ maximumOutputBytes: MAX_LISTING },
+					);
+					records.push(...treeRecords(listing));
+				}
+			}
+		}
+		records.sort((a, b) => Buffer.compare(a.path, b.path));
+		const notNfc: string[] = [];
+		const large: string[] = [];
+		const names = new Map<string, string>();
+		const siblings = new Set<string>();
+		for (const { type, size, path: raw } of records) {
+			let path: string;
+			try {
+				path = decoder.decode(raw);
+			} catch {
+				notUtf8.push(raw.toString("utf8"));
+				continue;
+			}
+			if (path.normalize("NFC") !== path) notNfc.push(path);
+			if (type === "blob" && Number(size) > MAX_BLOB) large.push(path);
+			const slash = path.lastIndexOf("/"),
+				key = `${path.slice(0, slash + 1)}\0${folderKey(path.slice(slash + 1))}`,
+				other = names.get(key);
+			if (other === undefined) names.set(key, path);
+			else siblings.add(other).add(path);
+		}
+		if (notUtf8.length) throw new CodeHostRefusal("CODE_HOST_NAMES_NOT_UTF8", notUtf8);
+		if (notNfc.length) throw new CodeHostRefusal("CODE_HOST_NAMES_NOT_NFC", notNfc);
+		if (siblings.size) throw new CodeHostRefusal("CODE_HOST_NAMES_DIFFER_BY_CASE", [...siblings]);
+		if (large.length) throw new CodeHostRefusal("CODE_HOST_FILE_TOO_LARGE", large);
+		return { records, checksFileTouched };
+	}
+}
+
+export const STREAM_FILE_WINDOW_BYTES = 32 * 1024 * 1024;
+const STREAM_FILE_WINDOW_CHUNKS = 4;
+
+export async function streamFileOut(
+	run: Run,
+	file: string,
+	expectedBytes: number,
+	expectedSha256: string,
+	chunkBytes: number,
+	write: (piece: Buffer) => Promise<void>,
+	failureCode: string,
+	mismatchMessage: string,
+	maxWindowBytes = STREAM_FILE_WINDOW_BYTES,
+): Promise<void> {
+	if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0 || !Number.isSafeInteger(chunkBytes) || chunkBytes < 1)
+		throw new Error("INVALID_CODE_HOST_JOB");
+	const read = createHash("sha256");
+	if (expectedBytes === 0) {
+		const probe = await run.command(["/usr/bin/dd", `if=${file}`, "bs=1", "count=1", "status=none"], {
+			maximumOutputBytes: 1,
+		});
+		if (probe.status !== 0) throw new CodeHostJobFailure(failureCode, tail(probe.stderr) || "a piece was cut short");
+		if (probe.stdout.length > 0) throw new CodeHostJobFailure(failureCode, "the file grew while being read");
+		if (read.digest("hex") !== expectedSha256) throw new CodeHostJobFailure(failureCode, mismatchMessage);
+		return;
+	}
+	const chunksPerWindow = Math.max(
+		1,
+		Math.min(STREAM_FILE_WINDOW_CHUNKS, Math.floor(Math.max(chunkBytes, maxWindowBytes) / chunkBytes)),
+	);
+	const windowBytes = chunksPerWindow * chunkBytes;
+	let total = 0;
+	for (let chunkIndex = 0; chunkIndex * chunkBytes < expectedBytes; chunkIndex += chunksPerWindow) {
+		const offset = chunkIndex * chunkBytes;
+		const wantBytes = Math.min(windowBytes, expectedBytes - offset);
+		const wantChunks = Math.ceil(wantBytes / chunkBytes);
+		const isFinalWindow = offset + wantBytes === expectedBytes;
+		const streamAbort = new AbortController();
+		const onJobAbort = () => streamAbort.abort(run.job.signal.reason);
+		if (run.job.signal.aborted) streamAbort.abort(run.job.signal.reason);
+		else run.job.signal.addEventListener("abort", onJobAbort, { once: true });
+		let pending: Buffer[] = [];
+		let pendingBytes = 0;
+		let windowTotal = 0;
+		let chain: Promise<void> = Promise.resolve();
+		let hasWriteFailure = false;
+		let writeFailure: unknown;
+		let overflow = false;
+		const enqueue = (piece: Buffer) => {
+			const copy = Buffer.from(piece);
+			chain = chain
+				.then(async () => {
+					if (hasWriteFailure) return;
+					run.job.signal.throwIfAborted();
+					await write(copy);
+				})
+				.catch((error: unknown) => {
+					if (!hasWriteFailure) {
+						hasWriteFailure = true;
+						writeFailure = error;
+						streamAbort.abort(error);
+					}
+				});
+		};
+		const handleChunk = (chunk: Buffer) => {
+			if (hasWriteFailure || overflow || chunk.length === 0) return;
+			windowTotal += chunk.length;
+			if (windowTotal > wantBytes) {
+				overflow = true;
+				streamAbort.abort(new CodeHostJobFailure(failureCode, "the file grew while being read"));
+				return;
+			}
+			read.update(chunk);
+			pending.push(chunk);
+			pendingBytes += chunk.length;
+			while (pendingBytes >= chunkBytes) {
+				const combined = pending.length === 1 ? (pending[0] as Buffer) : Buffer.concat(pending, pendingBytes);
+				const piece = combined.subarray(0, chunkBytes);
+				const rest = combined.subarray(chunkBytes);
+				pending = rest.length > 0 ? [rest] : [];
+				pendingBytes = rest.length;
+				enqueue(piece);
+			}
+		};
+		let result: CodeHostCommandResult | undefined;
+		let runError: unknown;
+		try {
+			// WHY: LXD exec stdout callbacks have no pause/resume backpressure; windowing dd bounds
+			// peak buffered orchestrator memory to windowBytes even when the upload sink stalls.
+			result = await run.command(
+				[
+					"/usr/bin/dd",
+					`if=${file}`,
+					`bs=${chunkBytes}`,
+					`skip=${chunkIndex}`,
+					`count=${isFinalWindow ? wantChunks + 1 : wantChunks}`,
+					"iflag=fullblock",
+					"status=none",
+				],
+				{
+					maximumOutputBytes: wantBytes + chunkBytes,
+					signal: streamAbort.signal,
+					onStdout: handleChunk,
+				},
+			);
+		} catch (error) {
+			runError = error;
+		} finally {
+			run.job.signal.removeEventListener("abort", onJobAbort);
+		}
+		await chain;
+		if (hasWriteFailure) throw writeFailure;
+		if (overflow) throw new CodeHostJobFailure(failureCode, "the file grew while being read");
+		run.job.signal.throwIfAborted();
+		if (runError !== undefined) throw runError;
+		if (!result || result.status !== 0)
+			throw new CodeHostJobFailure(failureCode, tail(result?.stderr ?? "") || "a piece was cut short");
+		if (windowTotal === 0 && result.stdout.length > 0) {
+			handleChunk(result.stdout);
+			await chain;
+			if (hasWriteFailure) throw writeFailure;
+			if (overflow) throw new CodeHostJobFailure(failureCode, "the file grew while being read");
+		}
+		if (pendingBytes > 0) {
+			const last = pending.length === 1 ? (pending[0] as Buffer) : Buffer.concat(pending, pendingBytes);
+			await write(last);
+			run.job.signal.throwIfAborted();
+		}
+		if (windowTotal !== wantBytes) throw new CodeHostJobFailure(failureCode, "a piece was cut short");
+		total += windowTotal;
+	}
+	if (total !== expectedBytes) throw new CodeHostJobFailure(failureCode, "a piece was cut short");
+	if (read.digest("hex") !== expectedSha256) throw new CodeHostJobFailure(failureCode, mismatchMessage);
 }
 
 /** The records of `ls-tree -l -z`, `<mode> <type> <object> <size>\t<path>\0`, with the path as raw bytes. Only this
@@ -1218,21 +1457,15 @@ const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
  * path must name a regular file of the commit (`records` is its tree, as `checkNames` read it) of at most 4 MiB whose
  * first bytes are a PNG's, a JPEG's or a WebP's. The four checks are made in that order, and the first that fails is
  * the answer. A string that can be no path in a repository names nothing: it is `missing`. */
-async function checkPicture(
+async function checkPictureEntry(
 	run: Run,
-	records: ReturnType<typeof treeRecords>,
-	path: string,
+	entry: ReturnType<typeof treeRecords>[number] | undefined,
 ): Promise<CodePictureChecked> {
-	if (!path || path.length > 4096 || /[\0\n\r]/.test(path)) return { state: "missing" };
-	if (path.split("/").some((part) => !part || part === "." || part === "..")) return { state: "missing" };
-	const wanted = Buffer.from(path, "utf8"),
-		entry = records.find((record) => record.path.equals(wanted));
 	if (!entry) return { state: "missing" };
 	if (entry.type !== "blob" || (entry.mode !== "100644" && entry.mode !== "100755")) return { state: "not_a_file" };
 	const bytes = Number(entry.size);
 	if (!SHA.test(entry.name) || !Number.isSafeInteger(bytes)) throw new CodeHostJobFailure("CODE_HOST_TREE_UNREADABLE");
 	if (bytes > MAX_PICTURE) return { state: "too_large" };
-	// A WebP says what it is in its first twelve bytes, the others sooner.
 	const length = Math.min(bytes, 12);
 	const read = await run.sh(
 		'n=$1; shift; "$@" | exec /usr/bin/head -c "$n"',
@@ -1250,6 +1483,18 @@ async function checkPicture(
 				? ("webp" as const)
 				: null;
 	return type ? { state: "ok", blob: entry.name, bytes, type } : { state: "not_a_picture" };
+}
+
+async function checkPictureAtCommit(run: Run, commit: string, path: string): Promise<CodePictureChecked> {
+	if (!path || path.length > 4096 || /[\0\n\r]/.test(path)) return { state: "missing" };
+	if (path.split("/").some((part) => !part || part === "." || part === "..")) return { state: "missing" };
+	const entry = await commitTreeEntry(run, commit, path);
+	return checkPictureEntry(run, entry);
+}
+
+function checksEntryKey(entry: ReturnType<typeof treeRecords>[number] | undefined): string {
+	if (!entry) return "missing";
+	return `${entry.mode}:${entry.type}:${entry.name}`;
 }
 
 /** The commit of the default branch that first held `head`, which `main` reaches: `main` itself when it is `head`;
@@ -1484,29 +1729,39 @@ export async function landCodeBranch(
 				.trim();
 			if (!SHA.test(next)) throw new CodeHostJobFailure("CODE_HOST_LAND_FAILED", "no merge commit");
 		}
-		const records = await run.checkNames(run.repo, next);
-		// Every path where a session's worktree will hold it, by the company folder's own rule, as the import's look asks:
-		// git takes a name such as `bad.` that the folder refuses, and it would refuse main/'s whole change set at the
-		// publish, with no word to the session. A worktree is 42 bytes deeper than main/, so nothing goes into main that a
-		// session could not check out. Before the checks, so none runs on a commit that cannot land.
-		const refused = codeFolderRefuses(run.area, records, CODE_FOLDER_ANY_SESSION);
-		if (refused.length) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
+		let incrementalRecords: ReturnType<typeof treeRecords> = [];
+		let checksFileTouched = false;
+		if (!expected) {
+			const checkedNames = await run.checkNamesIncremental(run.repo, current, next);
+			incrementalRecords = checkedNames.records;
+			checksFileTouched = checkedNames.checksFileTouched;
+			const refused = codeFolderRefuses(run.area, incrementalRecords, CODE_FOLDER_ANY_SESSION);
+			if (refused.length) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
+		}
 		if (checks) {
-			const wantedPath = Buffer.from(CODE_CHECKS_FILE, "utf8");
-			const nextEntry = records.find((record) => record.path.equals(wantedPath));
-			const [found, mainEntry] = await Promise.all([
-				commitFileFromEntry(run, nextEntry, CODE_CHECKS_READ_BYTES),
-				commitTreeEntry(run, current, CODE_CHECKS_FILE),
-			]);
-			const mainFound =
-				found.entry.kind === "file" &&
-				mainEntry &&
-				mainEntry.type === "blob" &&
-				(mainEntry.mode === "100644" || mainEntry.mode === "100755") &&
-				mainEntry.name === found.blob &&
-				Number.isSafeInteger(Number(mainEntry.size))
-					? { entry: { kind: "file" as const, bytes: new Uint8Array(found.entry.bytes) }, blob: found.blob }
-					: await commitFileFromEntry(run, mainEntry, CODE_CHECKS_READ_BYTES);
+			const mainEntry = await commitTreeEntry(run, current, CODE_CHECKS_FILE);
+			let found: CodeCommitFile;
+			let mainFound: CodeCommitFile;
+			if (!checksFileTouched) {
+				found = await commitFileFromEntry(run, mainEntry, CODE_CHECKS_READ_BYTES);
+				mainFound =
+					found.entry.kind === "file"
+						? { entry: { kind: "file" as const, bytes: new Uint8Array(found.entry.bytes) }, blob: found.blob }
+						: found;
+			} else {
+				const wantedPath = Buffer.from(CODE_CHECKS_FILE, "utf8");
+				const nextEntry = incrementalRecords.find((record) => record.path.equals(wantedPath));
+				found = await commitFileFromEntry(run, nextEntry, CODE_CHECKS_READ_BYTES);
+				mainFound =
+					found.entry.kind === "file" &&
+					mainEntry &&
+					mainEntry.type === "blob" &&
+					(mainEntry.mode === "100644" || mainEntry.mode === "100755") &&
+					mainEntry.name === found.blob &&
+					Number.isSafeInteger(Number(mainEntry.size))
+						? { entry: { kind: "file" as const, bytes: new Uint8Array(found.entry.bytes) }, blob: found.blob }
+						: await commitFileFromEntry(run, mainEntry, CODE_CHECKS_READ_BYTES);
+			}
 			if (found.entry.kind !== "missing" || mainFound.entry.kind !== "missing")
 				return {
 					state: "to-check",
@@ -1520,7 +1775,7 @@ export async function landCodeBranch(
 		}
 		const [diff, checked] = await Promise.all([
 			changeDiff(run, current, next, "CODE_HOST_LAND_FAILED"),
-			picture === undefined ? Promise.resolve(null) : checkPicture(run, records, picture),
+			picture === undefined ? Promise.resolve(null) : checkPictureAtCommit(run, next, picture),
 		]);
 		await moveBase(run, area.main, base, next, current);
 		return {
@@ -1530,6 +1785,353 @@ export async function landCodeBranch(
 			containedAt: null,
 			diff,
 			picture: checked,
+			restored: run.restored,
+		};
+	});
+}
+
+export const CODE_LAND_BATCH_MAX = 8;
+
+export interface CodeBranchBatchCandidate {
+	workerId: string;
+	headSha: string;
+}
+
+export interface CodeBranchBatchPreparedStep {
+	index: number;
+	workerId: string;
+	headSha: string;
+	how: "fast-forward" | "merged";
+	mainBefore: string;
+	mainAfter: string;
+}
+
+export interface CodeBranchBatchRejected {
+	index: number;
+	workerId: string;
+	headSha: string;
+	error: CodeHostRefusal;
+}
+
+export interface CodeBranchBatchUnchanged {
+	index: number;
+	workerId: string;
+	headSha: string;
+	mainSha: string;
+	containedAt: string;
+}
+
+export interface CodeBranchBatchPrepared {
+	mainBefore: string;
+	mainChecks: CodeCommitFile;
+	tipChecks: CodeCommitFile;
+	accepted: CodeBranchBatchPreparedStep[];
+	rejected: CodeBranchBatchRejected[];
+	unchanged: CodeBranchBatchUnchanged[];
+	deferred: number[];
+	restored: string[];
+}
+
+export async function landCodeBranchBatch(
+	job: CodeHostJob,
+	value: { repository: CloudCodingRepository; candidates: readonly CodeBranchBatchCandidate[] },
+): Promise<CodeBranchBatchPrepared> {
+	const input = closed(value, ["repository", "candidates"]);
+	const repository = keptRepositoryOf(input.repository);
+	const raw = input.candidates;
+	if (!Array.isArray(raw) || raw.length < 1 || raw.length > CODE_LAND_BATCH_MAX)
+		throw new Error("INVALID_CODE_HOST_JOB");
+	const candidates = raw.map((entry: unknown) => {
+		const item = closed(entry, ["workerId", "headSha"]);
+		return { workerId: workerIdOf(item.workerId), headSha: sha(item.headSha) };
+	});
+	if (new Set(candidates.map((candidate) => candidate.workerId)).size !== candidates.length)
+		throw new Error("INVALID_CODE_HOST_JOB");
+	const base = `refs/heads/${repository.baseBranch}`;
+	return withJob(job, repository, async (run): Promise<CodeBranchBatchPrepared> => {
+		const area = await run.prepare();
+		if (!area.seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
+		const branchRefs = candidates.map((candidate) => `refs/heads/qorpera/coding/${candidate.workerId}`);
+		const named = await run.refsNamed([CODE_AREA_IN_QORPERA_REF, base, ...branchRefs]);
+		if (named(CODE_AREA_IN_QORPERA_REF) === null) throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+		const mainStart = named(base);
+		if (!mainStart) throw new CodeHostRefusal("CODE_HOST_AREA_NO_BASE", [base]);
+		const ancestor = async (older: string, newer: string): Promise<boolean> => {
+			if (older === newer) return true;
+			const result = await run.git(run.repo, ["merge-base", "--is-ancestor", older, newer]);
+			if (result.status !== 0 && result.status !== 1)
+				throw new CodeHostJobFailure("CODE_HOST_LAND_FAILED", tail(result.stderr));
+			return result.status === 0;
+		};
+		const mainChecksEntry = await commitTreeEntry(run, mainStart, CODE_CHECKS_FILE);
+		const mainChecks = await commitFileFromEntry(run, mainChecksEntry, CODE_CHECKS_READ_BYTES);
+		const mainChecksKey = checksEntryKey(mainChecksEntry);
+		let tipChecks: CodeCommitFile =
+			mainChecks.entry.kind === "file"
+				? { entry: { kind: "file", bytes: new Uint8Array(mainChecks.entry.bytes) }, blob: mainChecks.blob }
+				: mainChecks;
+		const accepted: CodeBranchBatchPreparedStep[] = [];
+		const rejected: CodeBranchBatchRejected[] = [];
+		const unchanged: CodeBranchBatchUnchanged[] = [];
+		const deferred: number[] = [];
+		let tip = mainStart;
+		for (let i = 0; i < candidates.length; i += 1) {
+			const { workerId, headSha } = candidates[i] as { workerId: string; headSha: string };
+			const ref = branchRefs[i] as string;
+			const branch = named(ref);
+			if (
+				!branch ||
+				(branch !== headSha && (!(await run.isCommit(run.repo, headSha)) || !(await ancestor(headSha, branch))))
+			) {
+				rejected.push({
+					index: i,
+					workerId,
+					headSha,
+					error: new CodeHostRefusal(branch ? "CODE_HOST_EXPORT_MOVED" : "CODE_HOST_EXPORT_NO_BRANCH", [ref]),
+				});
+				continue;
+			}
+			const [alreadyInTip, fastForward] =
+				headSha === tip ? [true, true] : await Promise.all([ancestor(headSha, tip), ancestor(tip, headSha)]);
+			if (alreadyInTip) {
+				if (tip === mainStart) {
+					const containedAt = await firstHeldAt(run, headSha, mainStart);
+					unchanged.push({ index: i, workerId, headSha, mainSha: mainStart, containedAt });
+				} else {
+					deferred.push(i);
+				}
+				continue;
+			}
+			const how = fastForward ? ("fast-forward" as const) : ("merged" as const);
+			let next = headSha;
+			if (how === "merged") {
+				const merged = await run.git(run.repo, [
+					"merge-tree",
+					"--write-tree",
+					"-z",
+					"--name-only",
+					"--no-messages",
+					tip,
+					headSha,
+				]);
+				const fields = merged.stdout.toString("utf8").split("\0");
+				if (merged.status === 1) {
+					if (tip !== mainStart) {
+						deferred.push(i);
+						continue;
+					}
+					const paths = [...new Set(fields.slice(1).filter(Boolean))];
+					rejected.push({
+						index: i,
+						workerId,
+						headSha,
+						error: new CodeHostRefusal("CODE_HOST_LAND_CONFLICT", paths),
+					});
+					continue;
+				}
+				if (merged.status !== 0 || !SHA.test(fields[0] ?? ""))
+					throw new CodeHostJobFailure("CODE_HOST_LAND_FAILED", tail(merged.stderr));
+				next = (
+					await run.gitOk(
+						run.repo,
+						[
+							...PLATFORM_COMMITTER,
+							"commit-tree",
+							fields[0] as string,
+							"-p",
+							tip,
+							"-p",
+							headSha,
+							"-m",
+							`Merge the work of coding session ${workerId}`,
+						],
+						"CODE_HOST_LAND_FAILED",
+					)
+				)
+					.toString("utf8")
+					.trim();
+				if (!SHA.test(next)) throw new CodeHostJobFailure("CODE_HOST_LAND_FAILED", "no merge commit");
+			}
+			let checkedNames: { records: ReturnType<typeof treeRecords>; checksFileTouched: boolean };
+			try {
+				checkedNames = await run.checkNamesIncremental(run.repo, tip, next);
+				const refused = codeFolderRefuses(run.area, checkedNames.records, CODE_FOLDER_ANY_SESSION);
+				if (refused.length) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
+			} catch (error) {
+				if (error instanceof CodeHostRefusal) {
+					if (tip !== mainStart) {
+						deferred.push(i);
+						continue;
+					}
+					rejected.push({ index: i, workerId, headSha, error });
+					continue;
+				}
+				throw error;
+			}
+			if (checkedNames.checksFileTouched) {
+				const wantedPath = Buffer.from(CODE_CHECKS_FILE, "utf8");
+				const nextChecksEntry = checkedNames.records.find((record) => record.path.equals(wantedPath));
+				if (checksEntryKey(nextChecksEntry) !== mainChecksKey) {
+					if (accepted.length > 0) {
+						for (let rest = i; rest < candidates.length; rest += 1) deferred.push(rest);
+						break;
+					}
+					tipChecks = await commitFileFromEntry(run, nextChecksEntry, CODE_CHECKS_READ_BYTES);
+					accepted.push({ index: i, workerId, headSha, how, mainBefore: tip, mainAfter: next });
+					tip = next;
+					for (let rest = i + 1; rest < candidates.length; rest += 1) deferred.push(rest);
+					break;
+				}
+			}
+			accepted.push({ index: i, workerId, headSha, how, mainBefore: tip, mainAfter: next });
+			tip = next;
+		}
+		if (accepted.length === 0 && unchanged.length > 0) {
+			const headBytes = area.main === "present" ? await run.read(`${run.repo}/worktrees/main/HEAD`) : null;
+			const at = area.main === "present" && headBytes?.equals(Buffer.from(`${mainStart}\n`)) === true;
+			if (!at) await moveBase(run, area.main, base, mainStart, mainStart);
+		}
+		return {
+			mainBefore: mainStart,
+			mainChecks,
+			tipChecks,
+			accepted,
+			rejected,
+			unchanged,
+			deferred,
+			restored: run.restored,
+		};
+	});
+}
+
+export interface CodeBranchBatchCommitStep {
+	workerId: string;
+	headSha: string;
+	how: "fast-forward" | "merged";
+	mainBefore: string;
+	mainAfter: string;
+	picture?: string;
+}
+
+export interface CodeBranchBatchCommittedStep {
+	workerId: string;
+	headSha: string;
+	state: "fast-forward" | "merged";
+	mainBefore: string;
+	mainSha: string;
+	diff: CodeChangeDiff;
+	picture: CodePictureChecked | null;
+}
+
+export interface CodeBranchBatchCommitted {
+	mainBefore: string;
+	mainSha: string;
+	steps: CodeBranchBatchCommittedStep[];
+	restored: string[];
+}
+
+export async function commitCodeBranchBatch(
+	job: CodeHostJob,
+	value: { repository: CloudCodingRepository; steps: readonly CodeBranchBatchCommitStep[] },
+): Promise<CodeBranchBatchCommitted> {
+	const input = closed(value, ["repository", "steps"]);
+	const repository = keptRepositoryOf(input.repository);
+	const raw = input.steps;
+	if (!Array.isArray(raw) || raw.length < 1 || raw.length > CODE_LAND_BATCH_MAX)
+		throw new Error("INVALID_CODE_HOST_JOB");
+	const steps = raw.map((entry: unknown) => {
+		const item = closedWith(entry, ["workerId", "headSha", "how", "mainBefore", "mainAfter"], ["picture"]);
+		if (item.how !== "fast-forward" && item.how !== "merged") throw new Error("INVALID_CODE_HOST_JOB");
+		if (item.picture !== undefined && typeof item.picture !== "string") throw new Error("INVALID_CODE_HOST_JOB");
+		return {
+			workerId: workerIdOf(item.workerId),
+			headSha: sha(item.headSha),
+			how: item.how as "fast-forward" | "merged",
+			mainBefore: sha(item.mainBefore),
+			mainAfter: sha(item.mainAfter),
+			picture: item.picture as string | undefined,
+		};
+	});
+	if (new Set(steps.map((step) => step.workerId)).size !== steps.length) throw new Error("INVALID_CODE_HOST_JOB");
+	for (let i = 1; i < steps.length; i += 1) {
+		if (steps[i]?.mainBefore !== steps[i - 1]?.mainAfter) throw new Error("INVALID_CODE_HOST_JOB");
+	}
+	const base = `refs/heads/${repository.baseBranch}`;
+	const stale = (detail: string) => new CodeHostJobFailure("CODE_HOST_LAND_STALE", detail);
+	return withJob(job, repository, async (run): Promise<CodeBranchBatchCommitted> => {
+		const area = await run.prepare();
+		if (!area.seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
+		const branchRefs = steps.map((step) => `refs/heads/qorpera/coding/${step.workerId}`);
+		const named = await run.refsNamed([CODE_AREA_IN_QORPERA_REF, base, ...branchRefs]);
+		if (named(CODE_AREA_IN_QORPERA_REF) === null) throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+		const current = named(base);
+		if (!current) throw new CodeHostRefusal("CODE_HOST_AREA_NO_BASE", [base]);
+		const mainBefore = (steps[0] as (typeof steps)[number]).mainBefore;
+		if (current !== mainBefore) throw stale("the default branch moved");
+		const ancestor = async (older: string, newer: string): Promise<boolean> => {
+			if (older === newer) return true;
+			const result = await run.git(run.repo, ["merge-base", "--is-ancestor", older, newer]);
+			if (result.status !== 0 && result.status !== 1)
+				throw new CodeHostJobFailure("CODE_HOST_LAND_FAILED", tail(result.stderr));
+			return result.status === 0;
+		};
+		for (let i = 0; i < steps.length; i += 1) {
+			const step = steps[i] as (typeof steps)[number];
+			const branch = named(branchRefs[i] as string);
+			if (
+				!branch ||
+				(branch !== step.headSha &&
+					(!(await run.isCommit(run.repo, step.headSha)) || !(await ancestor(step.headSha, branch))))
+			)
+				throw stale("the session's branch no longer holds the commit");
+			if (step.how === "fast-forward") {
+				if (step.mainAfter !== step.headSha || !(await ancestor(step.mainBefore, step.headSha)))
+					throw stale("not the candidate that was checked");
+			}
+		}
+		const mergedSteps = steps.filter((step) => step.how === "merged");
+		if (mergedSteps.length > 0) {
+			const mergedIds = mergedSteps.map((step) => step.mainAfter);
+			const exists = await run.areCommits(run.repo, mergedIds);
+			if (exists.some((ok) => !ok)) throw stale("not the candidate that was checked");
+			const parentsOut = (
+				await run.gitOk(run.repo, ["rev-list", "--no-walk", "--parents", ...mergedIds], "CODE_HOST_LAND_FAILED")
+			).toString("latin1");
+			const parentsByCommit = new Map<string, string>();
+			for (const line of parentsOut.split("\n")) {
+				if (!line) continue;
+				const space = line.indexOf(" ");
+				if (space > 0) parentsByCommit.set(line.slice(0, space), line);
+			}
+			for (const step of mergedSteps) {
+				if (parentsByCommit.get(step.mainAfter) !== `${step.mainAfter} ${step.mainBefore} ${step.headSha}`)
+					throw stale("not the candidate that was checked");
+			}
+		}
+		const committedSteps: CodeBranchBatchCommittedStep[] = [];
+		for (const step of steps) {
+			const [diff, checked] = await Promise.all([
+				changeDiff(run, step.mainBefore, step.mainAfter, "CODE_HOST_LAND_FAILED"),
+				step.picture === undefined
+					? Promise.resolve(null)
+					: checkPictureAtCommit(run, step.mainAfter, step.picture),
+			]);
+			committedSteps.push({
+				workerId: step.workerId,
+				headSha: step.headSha,
+				state: step.how,
+				mainBefore: step.mainBefore,
+				mainSha: step.mainAfter,
+				diff,
+				picture: checked,
+			});
+		}
+		const tipSha = (steps[steps.length - 1] as (typeof steps)[number]).mainAfter;
+		await moveBase(run, area.main, base, tipSha, mainBefore);
+		return {
+			mainBefore,
+			mainSha: tipSha,
+			steps: committedSteps,
 			restored: run.restored,
 		};
 	});
@@ -1547,12 +2149,8 @@ export interface CodeGarbageOptions {
 	maximumWaitMs?: number;
 	sleep?(ms: number, signal: AbortSignal): Promise<void>;
 	now?(): number;
-	/** Pack every ref but the sessions' branches before the gc (the default). Nightly care passes false: a session
-	 * deletes a tag or a branch of its own only while it is a loose file, since packed-refs' lock is the platform's. */
 	packRefs?: boolean;
-	/** Drop the unreachable objects git calls old (the default). Nightly care passes false (`gc --no-prune`): no object
-	 * goes, the unreachable ones are kept in a pack of their own. The folder cannot refresh an old object's time, so
-	 * its age does not say that no session is about to use it. */
+	packArchivedRefs?: boolean;
 	prune?: boolean;
 }
 export type CodeGarbageCollected =
@@ -1578,6 +2176,7 @@ export async function collectCodeGarbage(
 		sleep = options.sleep ?? ((ms: number, signal: AbortSignal) => delay(ms, undefined, { signal })),
 		now = options.now ?? Date.now,
 		packRefs = options.packRefs ?? true,
+		packArchivedRefs = options.packArchivedRefs ?? false,
 		prune = options.prune ?? true;
 	return withJob(job, repository, async (run) => {
 		if (!(await run.prepare()).seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
@@ -1593,7 +2192,6 @@ export async function collectCodeGarbage(
 				if (answer.state === "busy") throw new CodeHostJobFailure("CODE_HOST_GC_BLOCK_LOST");
 				held = answer.held;
 			}
-			// A shallow line would make prune drop the history behind it, and sessions can write repo.git/shallow.
 			if ((await run.types([`${run.repo}/shallow`]))[0] !== "none")
 				throw new CodeHostRefusal("CODE_HOST_GC_SHALLOW", [`${run.area}/repo.git/shallow`]);
 			if (packRefs)
@@ -1602,7 +2200,60 @@ export async function collectCodeGarbage(
 					["pack-refs", "--all", "--exclude", "refs/heads/qorpera/coding/*"],
 					"CODE_HOST_GC_FAILED",
 				);
-			await run.gitOk(run.repo, prune ? ["gc", "--quiet"] : ["gc", "--quiet", "--no-prune"], "CODE_HOST_GC_FAILED");
+			if (packArchivedRefs) {
+				const scan = await run.sh(
+					'if [ -d "$1" ]; then for d in "$1"/*; do [ -d "$d" ] || continue; printf "W %s\\n" "$(basename -- "$d")"; done; fi; if [ -d "$2" ]; then for f in "$2"/*; do [ -f "$f" ] || continue; printf "C %s\\n" "$(basename -- "$f")"; done; fi; if [ -d "$3" ]; then for f in "$3"/*; do [ -f "$f" ] || continue; printf "S\\n"; break; done; fi',
+					[`${run.repo}/worktrees`, `${run.repo}/refs/heads/qorpera/coding`, `${run.repo}/refs/qorpera/sites`],
+				);
+				if (scan.status !== 0) throw new CodeHostJobFailure("CODE_HOST_GC_FAILED", tail(scan.stderr));
+				const active = new Set<string>();
+				const codingLoose: string[] = [];
+				let hasSitePins = false;
+				for (const line of scan.stdout.toString("utf8").split("\n")) {
+					if (line.startsWith("W ")) active.add(line.slice(2));
+					else if (line.startsWith("C ")) codingLoose.push(line.slice(2));
+					else if (line === "S") hasSitePins = true;
+				}
+				const includes = [
+					...codingLoose.filter((id) => !active.has(id)).map((id) => `refs/heads/qorpera/coding/${id}`),
+					...(hasSitePins ? ["refs/qorpera/sites/*"] : []),
+				];
+				for (let at = 0; at < includes.length; at += 25) {
+					const part = includes.slice(at, at + 25);
+					await run.gitOk(
+						run.repo,
+						["pack-refs", ...part.flatMap((pattern) => ["--include", pattern])],
+						"CODE_HOST_GC_FAILED",
+					);
+				}
+			}
+			if (prune) {
+				await run.gitOk(
+					run.repo,
+					[
+						"repack",
+						"--cruft",
+						"--cruft-expiration=14.days.ago",
+						"-d",
+						"--write-midx",
+						"--write-bitmap-index",
+						"-q",
+					],
+					"CODE_HOST_GC_FAILED",
+				);
+				await run.gitOk(run.repo, ["prune", "--expire=14.days.ago"], "CODE_HOST_GC_FAILED");
+			} else {
+				await run.gitOk(
+					run.repo,
+					["repack", "--geometric=2", "-d", "--write-midx", "--write-bitmap-index", "-q"],
+					"CODE_HOST_GC_FAILED",
+				);
+			}
+			await run.gitOk(
+				run.repo,
+				["commit-graph", "write", "--reachable", "--changed-paths", "--split", "--expire-time=1.day.ago"],
+				"CODE_HOST_GC_FAILED",
+			);
 			return { state: "collected", restored: run.restored };
 		};
 		const end = () => withTimeoutScope(undefined, 30_000, (endSignal) => block.end(run.area, endSignal));
@@ -1944,29 +2595,16 @@ export async function bundleCodeArea(
 			.replace(/^git version /, "");
 		if (!gitVersion || gitVersion.length > 100)
 			throw new CodeHostJobFailure("CODE_HOST_BUNDLE_FAILED", "git version");
-		const read = createHash("sha256");
-		for (let index = 0; index * chunkBytes < bytes; index += 1) {
-			const length = Math.min(chunkBytes, bytes - index * chunkBytes);
-			const piece = await run.command(
-				[
-					"/usr/bin/dd",
-					`if=${file}`,
-					`bs=${chunkBytes}`,
-					`skip=${index}`,
-					"count=1",
-					"iflag=fullblock",
-					"status=none",
-				],
-				{ maximumOutputBytes: length },
-			);
-			if (piece.status !== 0 || piece.stdout.length !== length)
-				throw new CodeHostJobFailure("CODE_HOST_BUNDLE_FAILED", tail(piece.stderr) || "a piece was cut short");
-			read.update(piece.stdout);
-			await sink.write(piece.stdout);
-			job.signal.throwIfAborted();
-		}
-		if (read.digest("hex") !== sha256)
-			throw new CodeHostJobFailure("CODE_HOST_BUNDLE_FAILED", "the bundle read out is not the one made");
+		await streamFileOut(
+			run,
+			file,
+			bytes,
+			sha256,
+			chunkBytes,
+			(piece) => sink.write(piece),
+			"CODE_HOST_BUNDLE_FAILED",
+			"the bundle read out is not the one made",
+		);
 		return { sha256, bytes, gitVersion, refs, refsSha256 };
 	});
 }
@@ -2065,7 +2703,6 @@ async function retireFiles(run: Run, workerId: string): Promise<string | null> {
 		],
 	);
 	if (plain.status !== 0) return "NOT_CLEAN";
-	// Nothing changed, staged, untracked or ignored: the folder holds the head's files and no other.
 	const clean = await run.clean([
 		`--git-dir=${admin}`,
 		`--work-tree=${tree}`,
@@ -2073,7 +2710,6 @@ async function retireFiles(run: Run, workerId: string): Promise<string | null> {
 		"--porcelain",
 		"-z",
 		"--untracked-files=all",
-		"--ignored=matching",
 		"--ignore-submodules=all",
 	]);
 	if (!clean) return "NOT_CLEAN";
@@ -2200,10 +2836,39 @@ export interface CodeChangeRecordFile {
 	/** The picture's git blob and the folder path it is copied to (`code/<owner>/<name>/changes/<n>.<ext>`). */
 	picture?: { blob: string; to: string };
 }
-/** One job writes at most this many records. */
-const MAX_RECORDS = 100;
-/** A record or the list is text of at most this many bytes. */
+export interface CodeChangeArchiveFile {
+	name: string;
+	text: string;
+	immutable?: boolean;
+}
+export const CODE_CHANGE_ARCHIVE_COMPLETE_LINE = "Status: complete.";
+export const MAX_CODE_CHANGE_ARCHIVES = 50;
+const MAX_RECORDS = 200;
+const MAX_ARCHIVES = MAX_CODE_CHANGE_ARCHIVES;
+const ARCHIVE_FILE_NAME = /^(\d{4,9})-(\d{4,9})\.md$/;
 const MAX_RECORD_TEXT = 256 * 1024;
+
+export async function listCodeChangeArchives(
+	job: CodeHostJob,
+	repositoryInput: CloudCodingRepository,
+): Promise<Set<string>> {
+	const repository = keptRepositoryOf(repositoryInput);
+	return withJob(job, repository, async (run) => {
+		if (job.preparedKeptArea !== run.area) await keptArea(run);
+		const archiveFolder = `${run.code}/changes/archive`;
+		const listed = await run.sh(
+			'if [ -d "$1" ]; then for f in "$1"/*.md; do [ -f "$f" ] || continue; if head -n 4 -- "$f" | grep -Fxq -- "$2"; then basename -- "$f"; fi; done; fi',
+			[archiveFolder, CODE_CHANGE_ARCHIVE_COMPLETE_LINE],
+		);
+		if (listed.status !== 0) throw new CodeHostJobFailure("CODE_HOST_RECORD_FAILED", tail(listed.stderr));
+		const found = new Set<string>();
+		for (const line of listed.stdout.toString("utf8").split("\n")) {
+			const name = line.trim();
+			if (ARCHIVE_FILE_NAME.test(name)) found.add(name);
+		}
+		return found;
+	});
+}
 
 function recordText(value: unknown): string {
 	if (typeof value !== "string" || !value || value.includes("\0") || Buffer.byteLength(value) > MAX_RECORD_TEXT)
@@ -2237,14 +2902,41 @@ exec mv -fT -- "$to.lock" "$to"`;
  * while its record is written. The job never touches a ref, and the folder saves what it wrote when it ends. */
 export async function writeCodeChangeRecords(
 	job: CodeHostJob,
-	value: { repository: CloudCodingRepository; records: readonly CodeChangeRecordFile[]; index: string | null },
+	value: {
+		repository: CloudCodingRepository;
+		records: readonly CodeChangeRecordFile[];
+		index: string | null;
+		archives?: readonly CodeChangeArchiveFile[];
+	},
 ): Promise<{ written: number[]; diffs: ({ n: number } & CodeChangeDiff)[]; restored: string[] }> {
-	const input = closed(value, ["repository", "records", "index"]);
+	const input = closedWith(value, ["repository", "records", "index"], ["archives"]);
 	const repository = keptRepositoryOf(input.repository),
 		index = input.index === null ? null : recordText(input.index),
 		given = input.records,
+		givenArchives = input.archives ?? [],
 		changes = `${codeAreaPath(repository)}/changes`;
-	if (!Array.isArray(given) || given.length > MAX_RECORDS) throw new Error("INVALID_CODE_HOST_JOB");
+	if (
+		!Array.isArray(given) ||
+		given.length > MAX_RECORDS ||
+		!Array.isArray(givenArchives) ||
+		givenArchives.length > MAX_ARCHIVES
+	)
+		throw new Error("INVALID_CODE_HOST_JOB");
+	const archives = givenArchives.map((entry: unknown) => {
+		const archive = closedWith(entry, ["name", "text"], ["immutable"]);
+		if (typeof archive.name !== "string") throw new Error("INVALID_CODE_HOST_JOB");
+		const match = ARCHIVE_FILE_NAME.exec(archive.name);
+		if (!match) throw new Error("INVALID_CODE_HOST_JOB");
+		const start = Number(match[1]);
+		const end = Number(match[2]);
+		if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start)
+			throw new Error("INVALID_CODE_HOST_JOB");
+		if (archive.immutable !== undefined && typeof archive.immutable !== "boolean")
+			throw new Error("INVALID_CODE_HOST_JOB");
+		return { name: archive.name, text: recordText(archive.text), immutable: archive.immutable === true };
+	});
+	if (new Set(archives.map((archive) => archive.name)).size !== archives.length)
+		throw new Error("INVALID_CODE_HOST_JOB");
 	const records = given.map((entry: unknown) => {
 		const record = closedWith(entry, ["n", "text"], ["diff", "picture"]),
 			n = record.n,
@@ -2254,7 +2946,6 @@ export async function writeCodeChangeRecords(
 			diff = ends && { before: sha(ends.before), after: sha(ends.after) },
 			copy = record.picture === undefined ? undefined : closed(record.picture, ["blob", "to"]),
 			picture = copy && { blob: sha(copy.blob), to: copy.to as string };
-		// A text still to be rendered needs the two commits it is rendered from.
 		if (typeof text !== "function") recordText(text);
 		else if (!diff) throw new Error("INVALID_CODE_HOST_JOB");
 		if (picture && !["png", "jpg", "webp"].some((ext) => picture.to === `${changes}/${n}.${ext}`))
@@ -2265,8 +2956,9 @@ export async function writeCodeChangeRecords(
 	return withJob(job, repository, async (run) => {
 		if (job.preparedKeptArea !== run.area) await keptArea(run);
 		const folder = `${run.code}/changes`,
+			archiveFolder = `${folder}/archive`,
 			diffs: ({ n: number } & CodeChangeDiff)[] = [],
-			texts: { n: number | null; path: string; bytes: Buffer }[] = [],
+			texts: { n: number | null; path: string; bytes: Buffer; archive?: boolean; immutable?: boolean }[] = [],
 			pictures: { blob: string; path: string }[] = [];
 		const diffCommits = [
 			...new Set(records.flatMap((record) => (record.diff ? [record.diff.before, record.diff.after] : []))),
@@ -2285,7 +2977,15 @@ export async function writeCodeChangeRecords(
 			if (picture) pictures.push({ blob: picture.blob, path: `${run.layout.companyRoot}/${picture.to}` });
 		}
 		if (index !== null) texts.push({ n: null, path: `${folder}/index.md`, bytes: Buffer.from(index, "utf8") });
-		// Only the pictures whose file version is still in the repository, and small enough to be one.
+		for (const archive of archives) {
+			texts.push({
+				n: null,
+				path: `${archiveFolder}/${archive.name}`,
+				bytes: Buffer.from(archive.text, "utf8"),
+				archive: true,
+				immutable: archive.immutable,
+			});
+		}
 		if (pictures.length) {
 			const sized = await run.gitOk(run.repo, ["cat-file", "--batch-check"], "CODE_HOST_RECORD_FAILED", {
 				stdin: Buffer.from(pictures.map((picture) => `${picture.blob}\n`).join("")),
@@ -2301,10 +3001,9 @@ export async function writeCodeChangeRecords(
 		}
 		const type = await ownPaths(
 			run,
-			[folder],
+			archives.length ? [folder, archiveFolder] : [folder],
 			[...texts, ...pictures].map((file) => file.path),
 		);
-		// What is there already, by its hash: a text's sha256, a picture's git id.
 		const hashes = async (script: string, lead: readonly string[], paths: readonly string[], pattern: RegExp) => {
 			const found = new Map<string, string>();
 			for (let at = 0; at < paths.length; at += 50) {
@@ -2322,11 +3021,26 @@ export async function writeCodeChangeRecords(
 			return found;
 		};
 		const there = (file: { path: string }) => type.get(file.path) === "file";
+		const existingCompleteArchives = new Set<string>();
+		const immutableExisting = texts.filter((file) => file.immutable && there(file));
+		if (immutableExisting.length) {
+			const checked = await run.sh(
+				'marker=$1; shift; for p do if head -n 4 -- "$p" | grep -Fxq -- "$marker"; then printf "1\\n"; else printf "0\\n"; fi; done',
+				[CODE_CHANGE_ARCHIVE_COMPLETE_LINE, ...immutableExisting.map((file) => file.path)],
+			);
+			const flags = checked.stdout.toString("latin1").split("\n");
+			if (checked.status !== 0 || flags.pop() !== "" || flags.length !== immutableExisting.length)
+				throw new CodeHostJobFailure("CODE_HOST_RECORD_FAILED", tail(checked.stderr));
+			immutableExisting.forEach((file, idx) => {
+				if (flags[idx] === "1") existingCompleteArchives.add(file.path);
+			});
+		}
+		const hashableTexts = texts.filter((file) => there(file) && !existingCompleteArchives.has(file.path));
 		const [textHashes, pictureHashes] = await Promise.all([
 			hashes(
 				'for p do sha256sum <"$p" || exit 1; done',
 				[],
-				texts.filter(there).map((file) => file.path),
+				hashableTexts.map((file) => file.path),
 				/^([0-9a-f]{64}) [ *]-$/,
 			),
 			hashes(
@@ -2336,12 +3050,17 @@ export async function writeCodeChangeRecords(
 				/^([0-9a-f]{40})$/,
 			),
 		]);
-		const newTexts = texts.filter(
-				(file) => textHashes.get(file.path) !== createHash("sha256").update(file.bytes).digest("hex"),
-			),
+		const newTexts = texts.filter((file) => {
+				if (existingCompleteArchives.has(file.path)) return false;
+				return textHashes.get(file.path) !== createHash("sha256").update(file.bytes).digest("hex");
+			}),
 			newPictures = pictures.filter((file) => pictureHashes.get(file.path) !== file.blob);
 		if (newTexts.length + newPictures.length && type.get(folder) === "none") {
 			const made = await run.command(["/usr/bin/mkdir", "-m", "0755", "--", folder]);
+			if (made.status !== 0) throw new CodeHostJobFailure("CODE_HOST_RECORD_FAILED", tail(made.stderr));
+		}
+		if (newTexts.some((file) => file.archive) && type.get(archiveFolder) === "none") {
+			const made = await run.command(["/usr/bin/mkdir", "-m", "0755", "--", archiveFolder]);
 			if (made.status !== 0) throw new CodeHostJobFailure("CODE_HOST_RECORD_FAILED", tail(made.stderr));
 		}
 		for (let at = 0; at < newTexts.length; at += 25) {
