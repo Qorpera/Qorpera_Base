@@ -105,4 +105,60 @@ describe("viewer presentation races", () => {
 		await expect(request).rejects.toThrow("Viewer closed");
 		expect(close).toHaveBeenCalledOnce();
 	});
+
+	it("keeps the connection abort signal live until release and detaches parent listeners on close", async () => {
+		const hostAbort = new AbortController();
+		const hostAdd = vi.spyOn(hostAbort.signal, "addEventListener");
+		const hostRemove = vi.spyOn(hostAbort.signal, "removeEventListener");
+		const host = new ComputerViewHost(hostAbort.signal);
+		const baselineAdds = hostAdd.mock.calls.filter(([type]) => type === "abort").length;
+		const open = vi.spyOn(viewer, "openComputerViewer").mockReturnValue({ close: vi.fn(async () => {}) });
+		const signals: AbortSignal[] = [];
+		const makeConnection = (connectionId: string): CompanyComputerMemberView => ({
+			connectionId,
+			binding,
+			mode: "watch",
+			close: vi.fn(async () => {}),
+			channel: {
+				readyState: 1,
+				protocol: "",
+				binaryType: "arraybuffer",
+				onopen: null,
+				onclose: null,
+				onerror: null,
+				onmessage: null,
+				send() {},
+				close() {},
+			},
+		});
+		let nextId = 61;
+		await host.open({
+			binding,
+			title: "Computer",
+			canControl: false,
+			requestConnection: async ({ signal }) => {
+				signals.push(signal);
+				return makeConnection(id(nextId++));
+			},
+		});
+		const viewerOptions = open.mock.calls[0]![0];
+		const attemptA = new AbortController();
+		const connA = await viewerOptions.requestConnection({ binding, mode: "watch", signal: attemptA.signal });
+		expect(signals[0]!.aborted).toBe(false);
+		attemptA.abort(new Error("replaced"));
+		expect(signals[0]!.aborted).toBe(true);
+		await viewerOptions.releaseConnection({ connectionId: connA.connectionId });
+
+		const attemptB = new AbortController();
+		const attemptAdd = vi.spyOn(attemptB.signal, "addEventListener");
+		const attemptRemove = vi.spyOn(attemptB.signal, "removeEventListener");
+		const connB = await viewerOptions.requestConnection({ binding, mode: "watch", signal: attemptB.signal });
+		expect(attemptAdd.mock.calls.filter(([type]) => type === "abort")).toHaveLength(1);
+		await connB.close();
+		expect(attemptRemove.mock.calls.filter(([type]) => type === "abort")).toHaveLength(1);
+		const connAdds = hostAdd.mock.calls.filter(([type]) => type === "abort").length - baselineAdds;
+		const connRemoves = hostRemove.mock.calls.filter(([type]) => type === "abort").length;
+		expect(connAdds).toBe(2);
+		expect(connRemoves).toBe(2);
+	});
 });

@@ -210,4 +210,21 @@ describe("a figure being saved", () => {
 		expect(f.company.store.get().looks?.[staff.id]).toBeUndefined();
 		expect(f.drawn()).toEqual([{ figure: "crown", color: coral }]);
 	});
+
+	it("detaches abort listeners from edits.signal after repeated saves", async () => {
+		let version = staff.version;
+		const update = vi.fn<NonNullable<WorkspaceActions["updateAgent"]>>(async () => ++version);
+		const f = setup(update);
+		const addSpy = vi.spyOn(f.edits.signal, "addEventListener");
+		const removeSpy = vi.spyOn(f.edits.signal, "removeEventListener");
+		for (const displayName of ["Alpha", "Beta", "Gamma"]) {
+			f.edits.change({ displayName });
+			await settle();
+		}
+		expect(update).toHaveBeenCalledTimes(3);
+		const adds = addSpy.mock.calls.filter(([type]) => type === "abort");
+		const removes = removeSpy.mock.calls.filter(([type]) => type === "abort");
+		expect(adds).toHaveLength(3);
+		expect(removes).toHaveLength(3);
+	});
 });

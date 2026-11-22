@@ -2812,4 +2812,24 @@ describe("the chat's card when the Claude login in use is used up", () => {
 			document.body.replaceChildren();
 		}
 	});
+
+	it("keeps background Claude login check live after refresh returns and aborts it on dispose", async () => {
+		const pendingLogins = deferred<ClaudeLogin[]>();
+		const f = claudeSetup([{ ...work }, { ...home }]);
+		let observedSignal: AbortSignal | undefined;
+		f.native.listClaudeLogins.mockReset();
+		f.native.listClaudeLogins.mockImplementation((signal) => {
+			observedSignal = signal;
+			return pendingLogins.promise;
+		});
+		refresh();
+		await settle();
+		expect(observedSignal).toBeDefined();
+		expect(observedSignal?.aborted).toBe(false);
+		dispose?.();
+		dispose = undefined;
+		expect(observedSignal?.aborted).toBe(true);
+		pendingLogins.resolve([{ ...work }, { ...home }]);
+		await settle();
+	});
 });
