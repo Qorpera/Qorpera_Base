@@ -1,3 +1,4 @@
+import { withAbortScopes } from "./abort-scope.ts";
 import {
 	companyStateFailure,
 	ObjectDependency,
@@ -6,6 +7,8 @@ import {
 	readBoundedObjectResponse,
 } from "./dependency.ts";
 import { supabaseRequestHeaders } from "./supabase-headers.ts";
+
+const UTF8_FATAL = new TextDecoder("utf-8", { fatal: true });
 
 export type MemberCompanyRpc =
 	| "qorpera_company_presence_scope"
@@ -129,36 +132,42 @@ export class SupabaseMemberCompanyAuthority implements MemberCompanyAuthority {
 		signal: AbortSignal,
 	): Promise<unknown> {
 		signal.throwIfAborted();
-		return this.#dependency.run(async (deadline) => {
-			const combined = AbortSignal.any([signal, deadline]);
-			const response = await this.#fetch(`${this.#url}/rest/v1/rpc/${method}`, {
-				method: "POST",
-				redirect: "error",
-				headers: {
-					...supabaseRequestHeaders(apiKey, token),
-					"content-type": "application/json",
-				},
-				body: JSON.stringify(args),
-				signal: combined,
-			});
-			if (!response.ok) {
-				// Never inspect a denial body. A very short, bounded error-code read distinguishes one company's
-				// state or lock conflict from the database's health; a missing or unreadable body stays a
-				// dependency failure. One of the company's limits (54000: an input's images, its hooks) refuses this
-				// request only, as 413; so does a missing conversation, message or erase (P0002, which PostgREST
-				// answers as 500) of the member erase route, as 404.
-				if (response.status === 500) {
-					const code = await postgrestErrorCode(response, combined);
-					if (code === "P0002" && NOT_FOUND_RPCS.has(method)) throw new ObjectDependencyError(404);
-					throw code === "54000" ? new ObjectDependencyError(413) : companyStateFailure(code);
-				}
-				void response.body?.cancel().catch(() => undefined);
-				throw new ObjectDependencyError(response.status);
-			}
-			if (response.status === 204) return null;
-			const bytes = await readBoundedObjectResponse(response, 8 * 1024 * 1024, combined);
-			combined.throwIfAborted();
-			return bytes.length ? (JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown) : null;
-		}, signal);
+		return this.#dependency.run(
+			(deadline) =>
+				withAbortScopes([signal, deadline], async (combined) => {
+					const response = await this.#fetch(`${this.#url}/rest/v1/rpc/${method}`, {
+						method: "POST",
+						redirect: "error",
+						headers: {
+							...supabaseRequestHeaders(apiKey, token),
+							"content-type": "application/json",
+						},
+						body: JSON.stringify(args),
+						signal: combined,
+					});
+					if (!response.ok) {
+						// Never inspect a denial body. A very short, bounded error-code read distinguishes one company's
+						// state or lock conflict from the database's health; a missing or unreadable body stays a
+						// dependency failure. One of the company's limits (54000: an input's images, its hooks) refuses this
+						// request only, as 413; so does a missing conversation, message or erase (P0002, which PostgREST
+						// answers as 500) of the member erase route, as 404.
+						if (response.status === 500) {
+							const code = await postgrestErrorCode(response, combined);
+							if (code === "P0002" && NOT_FOUND_RPCS.has(method)) throw new ObjectDependencyError(404);
+							throw code === "54000" ? new ObjectDependencyError(413) : companyStateFailure(code);
+						}
+						void response.body?.cancel().catch(() => undefined);
+						throw new ObjectDependencyError(response.status);
+					}
+					if (response.status === 204) {
+						void response.body?.cancel().catch(() => undefined);
+						return null;
+					}
+					const bytes = await readBoundedObjectResponse(response, 8 * 1024 * 1024, combined);
+					combined.throwIfAborted();
+					return bytes.length ? (JSON.parse(UTF8_FATAL.decode(bytes)) as unknown) : null;
+				}),
+			signal,
+		);
 	}
 }

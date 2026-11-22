@@ -1,4 +1,5 @@
-import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
+import { readBoundedCloudResponse } from "@qorpera/cloud-client/cloud-request";
+import { withScopedCloudDeadline } from "./abort-scope.ts";
 import { type Cloud, CloudRpcError } from "./client.ts";
 import { UUID_PATTERN } from "./parse.ts";
 import { type MessageQuote, parseQuotes } from "./quotes.ts";
@@ -61,7 +62,8 @@ export function createWebRoomMessages(
 	return {
 		post: (input, signal) => {
 			const request = { ...input };
-			return withCloudDeadline(
+			return withScopedCloudDeadline(
+				[companySignal, signal],
 				async (deadline): Promise<RoomMessageReceipt> => {
 					const check = () => {
 						deadline.throwIfAborted();
@@ -228,7 +230,6 @@ export function createWebRoomMessages(
 					};
 				},
 				15000,
-				AbortSignal.any([companySignal, ...(signal ? [signal] : [])]),
 			)
 				.then((result) => {
 					companySignal.throwIfAborted();

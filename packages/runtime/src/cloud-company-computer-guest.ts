@@ -15,6 +15,7 @@ import {
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import type { JsonValue } from "@qorpera/contracts";
 import type { BrowserContext, Page } from "playwright-core";
+import { withAbortScopes } from "./abort-scope.ts";
 import { codingValuePattern, sealCodingValueCapture } from "./cloud-coding-value-capture-box.ts";
 import type { CompanyComputerFillKey } from "./cloud-company-account-fill-box.ts";
 import {
@@ -145,8 +146,8 @@ export class PersistentCompanyComputerBrowser {
 		grant: CompanyComputerBrowserGrant,
 		signal: AbortSignal,
 	): Promise<CompanyComputerBrowserSession> {
-		signal = AbortSignal.any([signal, this.#stop.signal]);
 		signal.throwIfAborted();
+		this.#stop.signal.throwIfAborted();
 		assertCompanyComputerScreenBinding(binding, binding);
 		if (
 			!COMPANY_COMPUTER_UUID.test(grant.profileId) ||
@@ -158,17 +159,19 @@ export class PersistentCompanyComputerBrowser {
 		// Both copies are host-owned and cannot be changed while authorization awaits.
 		binding = Object.freeze({ ...binding });
 		grant = Object.freeze({ ...grant });
-		await companyComputerRequest(async (requestSignal) => {
-			await this.#boundary.assertReady(binding, requestSignal);
-			await this.#access.assertGranted(grant, binding, requestSignal);
-		}, signal);
+		await withAbortScopes([signal, this.#stop.signal], (openSignal) =>
+			companyComputerRequest(async (requestSignal) => {
+				await this.#boundary.assertReady(binding, requestSignal);
+				await this.#access.assertGranted(grant, binding, requestSignal);
+			}, openSignal),
+		);
 		const previous = this.#profiles.get(grant.profileId);
 		if (previous) {
 			const session = await previous;
 			assertCompanyComputerScreenBinding(binding, session.binding);
 			if (session.grant.grantId !== grant.grantId || session.grant.version !== grant.version)
 				throw new Error("BROWSER_PROFILE_IN_USE");
-			await session.assertActive(signal);
+			await withAbortScopes([signal, this.#stop.signal], (openSignal) => session.assertActive(openSignal));
 			return session;
 		}
 		const opening = this.#open(binding, grant, signal, () => {
@@ -190,89 +193,112 @@ export class PersistentCompanyComputerBrowser {
 	async #open(
 		binding: CompanyComputerScreenBinding,
 		grant: CompanyComputerBrowserGrant,
-		signal: AbortSignal,
+		callerSignal: AbortSignal,
 		released: () => void,
 	): Promise<CompanyComputerBrowserSession> {
-		const root = this.#layout.browserProfilesRoot;
-		const rootInfo = await lstat(root);
-		if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink() || (await realpath(root)) !== root)
-			throw new Error("UNSAFE_BROWSER_PROFILE_ROOT");
-		const directory = join(root, grant.profileId);
-		await mkdir(directory, { mode: 0o700, recursive: true });
-		const info = await lstat(directory);
-		if (
-			!info.isDirectory() ||
-			info.isSymbolicLink() ||
-			relative(root, await realpath(directory)) !== grant.profileId
-		) {
-			throw new Error("UNSAFE_BROWSER_PROFILE_DIRECTORY");
-		}
-		await this.#boundary.assertReady(binding, signal);
-		await this.#access.assertGranted(grant, binding, signal);
-		signal.throwIfAborted();
-		const launched = await this.#launch(directory, {
-			binding,
-			grant,
-			display: companyComputerScreenDisplay(binding.screenOrdinal),
-			home: this.#layout.desktopHome,
-			signal,
-		});
-		const { context } = launched;
-		let closing: Promise<void> | undefined;
-		let ended = false;
-		context.on("close", () => {
-			ended = true;
-		});
-		const close = (): Promise<void> => {
-			closing ??= launched.close().then(
-				() => {
-					signal.removeEventListener("abort", onAbort);
-					released();
+		const lifetime = new AbortController();
+		const forwardCaller = (): void => lifetime.abort(callerSignal.reason);
+		const forwardStop = (): void => lifetime.abort(this.#stop.signal.reason);
+		if (callerSignal.aborted) forwardCaller();
+		else callerSignal.addEventListener("abort", forwardCaller, { once: true });
+		if (this.#stop.signal.aborted) forwardStop();
+		else this.#stop.signal.addEventListener("abort", forwardStop, { once: true });
+		const detachLifetime = (): void => {
+			callerSignal.removeEventListener("abort", forwardCaller);
+			this.#stop.signal.removeEventListener("abort", forwardStop);
+		};
+		const signal = lifetime.signal;
+		let owned = false;
+		try {
+			const root = this.#layout.browserProfilesRoot;
+			const rootInfo = await lstat(root);
+			if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink() || (await realpath(root)) !== root)
+				throw new Error("UNSAFE_BROWSER_PROFILE_ROOT");
+			const directory = join(root, grant.profileId);
+			await mkdir(directory, { mode: 0o700, recursive: true });
+			const info = await lstat(directory);
+			if (
+				!info.isDirectory() ||
+				info.isSymbolicLink() ||
+				relative(root, await realpath(directory)) !== grant.profileId
+			) {
+				throw new Error("UNSAFE_BROWSER_PROFILE_DIRECTORY");
+			}
+			await this.#boundary.assertReady(binding, signal);
+			await this.#access.assertGranted(grant, binding, signal);
+			signal.throwIfAborted();
+			const launched = await this.#launch(directory, {
+				binding,
+				grant,
+				display: companyComputerScreenDisplay(binding.screenOrdinal),
+				home: this.#layout.desktopHome,
+				signal,
+			});
+			owned = true;
+			const { context } = launched;
+			let closing: Promise<void> | undefined;
+			let ended = false;
+			context.on("close", () => {
+				ended = true;
+			});
+			const close = (): Promise<void> => {
+				closing ??= launched.close().then(
+					() => {
+						signal.removeEventListener("abort", onAbort);
+						detachLifetime();
+						released();
+					},
+					() => {
+						signal.removeEventListener("abort", onAbort);
+						detachLifetime();
+						throw new Error("BROWSER_DRAIN_FAILED");
+					},
+				);
+				return closing;
+			};
+			const onAbort = (): void => {
+				void close().catch(() => undefined);
+			};
+			signal.addEventListener("abort", onAbort, { once: true });
+			if (signal.aborted) {
+				await close();
+				throw new Error("BROWSER_ACCESS_ENDED");
+			}
+			return {
+				binding,
+				grant,
+				context,
+				close,
+				isEnded: () => ended || closing !== undefined,
+				assertActive: async (requestSignal) => {
+					if (closing || ended) {
+						void close().catch(() => undefined);
+						throw new Error("BROWSER_ACCESS_ENDED");
+					}
+					try {
+						await withAbortScopes([signal, requestSignal], (combined) =>
+							companyComputerRequest(async (checked) => {
+								await this.#boundary.assertReady(binding, checked);
+								await this.#access.assertGranted(grant, binding, checked);
+							}, combined),
+						);
+					} catch (error) {
+						// Nobody entitled present, or no answer: this use is refused, but the
+						// window stays on the desktop. Only a refusal closes it.
+						if (
+							error instanceof CompanyComputerBrowserNetworkPausedError ||
+							companyComputerAuthorityUnanswered(error)
+						)
+							throw new Error("BROWSER_ACCESS_UNCONFIRMED", { cause: error });
+						void close().catch(() => undefined);
+						throw new Error("BROWSER_ACCESS_ENDED");
+					}
 				},
-				() => {
-					throw new Error("BROWSER_DRAIN_FAILED");
-				},
-			);
-			return closing;
-		};
-		const onAbort = (): void => {
-			void close().catch(() => undefined);
-		};
-		signal.addEventListener("abort", onAbort, { once: true });
-		if (signal.aborted) {
-			await close();
-			throw new Error("BROWSER_ACCESS_ENDED");
+			};
+		} catch (error) {
+			if (!owned) detachLifetime();
+			throw error;
 		}
-		return {
-			binding,
-			grant,
-			context,
-			close,
-			isEnded: () => ended || closing !== undefined,
-			assertActive: async (requestSignal) => {
-				if (closing || ended) {
-					void close().catch(() => undefined);
-					throw new Error("BROWSER_ACCESS_ENDED");
-				}
-				const combined = AbortSignal.any([signal, requestSignal]);
-				try {
-					await companyComputerRequest(async (checked) => {
-						await this.#boundary.assertReady(binding, checked);
-						await this.#access.assertGranted(grant, binding, checked);
-					}, combined);
-				} catch (error) {
-					// Nobody entitled present, or no answer: this use is refused, but the
-					// window stays on the desktop. Only a refusal closes it.
-					if (
-						error instanceof CompanyComputerBrowserNetworkPausedError ||
-						companyComputerAuthorityUnanswered(error)
-					)
-						throw new Error("BROWSER_ACCESS_UNCONFIRMED", { cause: error });
-					void close().catch(() => undefined);
-					throw new Error("BROWSER_ACCESS_ENDED");
-				}
-			},
-		};
 	}
 
 	/** Service ownership includes pending starts and profiles whose automation

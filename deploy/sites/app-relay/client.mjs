@@ -79,10 +79,11 @@ let appAnswers = true;
 let current = null;
 
 function message(type, stream, payload = Buffer.alloc(0)) {
-	const head = Buffer.alloc(5);
-	head[0] = type;
-	head.writeUInt32BE(stream, 1);
-	return Buffer.concat([head, payload]);
+	const out = Buffer.allocUnsafe(5 + payload.byteLength);
+	out[0] = type;
+	out.writeUInt32BE(stream, 1);
+	if (payload.byteLength > 0) payload.copy(out, 5);
+	return out;
 }
 
 function isValidCloseCode(code) {
@@ -221,6 +222,7 @@ function connect() {
 	ws.binaryType = "arraybuffer";
 	current = ws;
 	const streams = new Map(); // stream id -> the request to the app
+	const uploadClosed = new WeakSet();
 	const wsStreams = new Map();
 	const send = (type, stream, payload) => {
 		if (ws.readyState === WebSocket.OPEN) ws.send(message(type, stream, payload));
@@ -277,7 +279,7 @@ function connect() {
 		else if (type === HEAD) start(id, payload);
 		else if (type === BODY) {
 			const app = streams.get(id);
-			if (!app) return;
+			if (!app || app.destroyed || app.writableEnded || uploadClosed.has(app)) return;
 			let totalBuffered = 0;
 			for (const stream of streams.values()) totalBuffered += stream.writableLength;
 			// WHY: Bound aggregate local upload buffering (64 MiB) while still allowing any single valid 10 MiB delayed-read upload.
@@ -288,8 +290,10 @@ function connect() {
 				return;
 			}
 			app.write(payload);
-		} else if (type === END) streams.get(id)?.end();
-		else if (type === RESET) {
+		} else if (type === END) {
+			const app = streams.get(id);
+			if (app && !app.destroyed && !app.writableEnded && !uploadClosed.has(app)) app.end();
+		} else if (type === RESET) {
 			const app = streams.get(id);
 			streams.delete(id);
 			app?.destroy();
@@ -349,6 +353,8 @@ function connect() {
 		};
 		app.on("response", (response) => {
 			answered = true;
+			// WHY: 413 means the app rejected the upload payload; stop writing more BODY/END frames so a closed app socket does not TCP-RST unread response bytes under backpressure.
+			if (response.statusCode === 413) uploadClosed.add(app);
 			if (!appAnswers) console.log(`The app on port ${port} answers again`);
 			appAnswers = true;
 			const headers = [];
@@ -358,10 +364,10 @@ function connect() {
 			response.on("data", (chunk) => {
 				for (let at = 0; at < chunk.length; at += CHUNK) send(BODY, id, chunk.subarray(at, at + CHUNK));
 				// The relay is slower than the app: wait until what is queued has gone out.
-				if (ws.bufferedAmount > 4 * 1024 * 1024) {
+				if (ws.bufferedAmount > 4 * 1024 * 1024 && !response.isPaused()) {
 					response.pause();
 					const check = () =>
-						ws.readyState !== WebSocket.OPEN || ws.bufferedAmount < 1024 * 1024
+						streams.get(id) !== app || ws.readyState !== WebSocket.OPEN || ws.bufferedAmount < 1024 * 1024
 							? response.resume()
 							: setTimeout(check, 20);
 					setTimeout(check, 20);
@@ -371,6 +377,7 @@ function connect() {
 				if (streams.get(id) !== app) return;
 				streams.delete(id);
 				send(END, id);
+				if (!app.writableEnded) app.destroy();
 			});
 			// The app broke off its answer.
 			response.on("error", reset);

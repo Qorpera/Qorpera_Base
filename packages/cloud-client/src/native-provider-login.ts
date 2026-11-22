@@ -76,8 +76,20 @@ export class HttpNativeProviderIdentityBridge implements NativeProviderIdentityB
 		) {
 			throw new Error("Native provider login authority is invalid");
 		}
-		const value = record(
-			await this.#request(
+		const stop = new AbortController();
+		const onAbort = (): void => stop.abort(this.#signal?.reason);
+		if (this.#signal?.aborted) onAbort();
+		else this.#signal?.addEventListener("abort", onAbort, { once: true });
+		const timer = stop.signal.aborted
+			? undefined
+			: setTimeout(
+					() => stop.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+					30_000,
+				);
+		timer?.unref?.();
+		let raw: unknown;
+		try {
+			raw = await this.#request(
 				this.#loginUrl,
 				{
 					schema: BRIDGE_LOGIN_REQUEST_SCHEMA,
@@ -92,11 +104,14 @@ export class HttpNativeProviderIdentityBridge implements NativeProviderIdentityB
 					login_capability: authorization.capability,
 					expires_at: authorization.expiresAt,
 				},
-				AbortSignal.any([AbortSignal.timeout(30_000), ...(this.#signal ? [this.#signal] : [])]),
+				stop.signal,
 				authorization.capability,
-			),
-			"Native provider login response",
-		);
+			);
+		} finally {
+			clearTimeout(timer);
+			this.#signal?.removeEventListener("abort", onAbort);
+		}
+		const value = record(raw, "Native provider login response");
 		if (
 			value.schema !== BRIDGE_LOGIN_RESPONSE_SCHEMA ||
 			value.login_id !== authorization.loginId ||

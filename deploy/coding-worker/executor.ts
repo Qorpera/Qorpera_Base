@@ -535,8 +535,18 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const memberControl = config.memberScreens
 		? new MemberMachineScreenControl({ supabaseUrl: config.supabaseUrl, publishableKey: config.memberScreens.publishableKey })
 		: undefined;
+	const commandToken = await credential("qorpera-coding-command");
+	const peerToken = await credential("qorpera-coding-peer-command");
+	if (commandToken === peerToken) throw new Error("CODING_COMMAND_CREDENTIALS_NOT_SEPARATE");
+	const peerTokens = new Map<string, string>();
+	for (const peer of config.commandPeers) {
+		const remoteToken = await credential(peer.tokenCredential);
+		if (remoteToken === commandToken || remoteToken === peerToken) throw new Error("CODING_COMMAND_CREDENTIALS_NOT_SEPARATE");
+		peerTokens.set(peer.tokenCredential, remoteToken);
+	}
+	const peerCredential = async (name: string): Promise<string> => peerTokens.get(name) ?? credential(name);
 	const machineRouter = new MachineCommandRouter({
-		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential,
+		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential: peerCredential,
 		...(memberControl ? { memberBegin: (token: string, look: { companyId: string; machineId: string; confirmed: boolean },
 			signal: AbortSignal) => memberControl.begin(token, look, signal),
 		// A member's action (20260930713000) is begun as the member too, recorded without its text.
@@ -579,7 +589,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		} : {}),
 	});
 	const router = new CodingCommandRouter({
-		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential,
+		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential: peerCredential,
 		async executeLocal(request, signal) {
 			const transport = await host.commandTransport(request.scope, async (action, scope, commandId, inputSha256, checked) => {
 				if (action !== request.action || JSON.stringify(scope) !== JSON.stringify(request.scope) || commandId !== request.input.commandId ||
@@ -592,13 +602,6 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				request.action === "read" ? transport.read(request.scope, request.input, signal) : transport.cancel(request.scope, request.input.commandId, signal));
 		},
 	});
-	const commandToken = await credential("qorpera-coding-command");
-	const peerToken = await credential("qorpera-coding-peer-command");
-	if (commandToken === peerToken) throw new Error("CODING_COMMAND_CREDENTIALS_NOT_SEPARATE");
-	for (const peer of config.commandPeers) {
-		const remoteToken = await credential(peer.tokenCredential);
-		if (remoteToken === commandToken || remoteToken === peerToken) throw new Error("CODING_COMMAND_CREDENTIALS_NOT_SEPARATE");
-	}
 	const commands = new HttpCloudCodingCommandService({
 		token: commandToken, port: config.commandPort,
 		// G2-6b: a guest's request proves its run's lease before anything else is asked about its binding.
@@ -665,7 +668,10 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 					const result = await running.claim(stop.signal);
 					claimed = result.state === "claimed";
 					if (result.state === "claimed")
-						void result.turn.then((status) => console.log(JSON.stringify({ event: "coding-turn", status })));
+						void result.turn.then(
+							(status) => console.log(JSON.stringify({ event: "coding-turn", status })),
+							(error) => console.error(JSON.stringify({ event: "coding-turn-error", stage: "turn", ...loggedError(error) })),
+						);
 				} catch {
 					if (!stop.signal.aborted) console.error("CODING_EXECUTOR_TICK_UNCONFIRMED");
 				}
@@ -811,20 +817,25 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		await Promise.all([claiming, keeping, housekeeping, machines, hosting, deletions, caring, requesting, recording, uploading]);
 	} finally {
 		stop.abort();
-		await executor?.drain();
-		// A download or a restore that ran on beside the requests' passes ends on the same abort, finished as busy.
-		await codeRequests?.settled();
-		// A machine step that outlasted its pass ends on the same abort.
-		await machineHost?.settled();
-		// A take-off the keeper started settles before the process ends.
-		for (const outcome of await host.settled())
-			console.log(JSON.stringify({ event: outcome.state === "failed" ? "coding-session-error" : "coding-session", ...outcome }));
-		// Each code host stops once its jobs end.
-		await codeHosts?.close();
-		await commands.close();
-		await peerCommands.close();
-		await memberScreens?.close();
-		await memberStreams?.close();
+		const closeStep = async (stage: string, work: () => Promise<unknown> | undefined): Promise<void> => {
+			try {
+				await work();
+			} catch (error) {
+				console.error(JSON.stringify({ event: "coding-executor-shutdown-error", stage, ...loggedError(error) }));
+			}
+		};
+		await closeStep("executor-drain", () => executor?.drain());
+		await closeStep("code-requests", () => codeRequests?.settled());
+		await closeStep("machine-host", () => machineHost?.settled());
+		await closeStep("host-settled", async () => {
+			for (const outcome of await host.settled())
+				console.log(JSON.stringify({ event: outcome.state === "failed" ? "coding-session-error" : "coding-session", ...outcome }));
+		});
+		await closeStep("code-hosts", () => codeHosts?.close());
+		await closeStep("commands", () => commands.close());
+		await closeStep("peer-commands", () => peerCommands.close());
+		await closeStep("member-screens", () => memberScreens?.close());
+		await closeStep("member-streams", () => memberStreams?.close());
 		process.off("SIGTERM", shutdown);
 		process.off("SIGINT", shutdown);
 	}
