@@ -22,9 +22,57 @@ import { DataChanges } from "./data-changes.ts";
 import { DataParams } from "./data-params.ts";
 
 const PAGE_ROWS = 100;
+const MAX_LIVE_REFETCH_PAGES = 3;
 const WATCH_GAP_MS = 500;
 const WATCH_RETRY_MS = [2000, 5000, 10_000] as const;
 const SAVED_MS = 1600;
+
+const numberFormats = new Map<string, Intl.NumberFormat>();
+const countFormats = new Map<string, Intl.NumberFormat>();
+const dateFormats = new Map<string, Intl.DateTimeFormat>();
+const dateTimeFormats = new Map<string, Intl.DateTimeFormat>();
+
+function numberFormat(locale: string): Intl.NumberFormat {
+	let fmt = numberFormats.get(locale);
+	if (!fmt) {
+		fmt = new Intl.NumberFormat(locale, { maximumFractionDigits: 6 });
+		numberFormats.set(locale, fmt);
+	}
+	return fmt;
+}
+
+function countFormat(locale: string): Intl.NumberFormat {
+	let fmt = countFormats.get(locale);
+	if (!fmt) {
+		fmt = new Intl.NumberFormat(locale);
+		countFormats.set(locale, fmt);
+	}
+	return fmt;
+}
+
+function dateFormat(locale: string): Intl.DateTimeFormat {
+	let fmt = dateFormats.get(locale);
+	if (!fmt) {
+		fmt = new Intl.DateTimeFormat(locale, { day: "numeric", month: "short", year: "numeric" });
+		dateFormats.set(locale, fmt);
+	}
+	return fmt;
+}
+
+function dateTimeFormat(locale: string): Intl.DateTimeFormat {
+	let fmt = dateTimeFormats.get(locale);
+	if (!fmt) {
+		fmt = new Intl.DateTimeFormat(locale, {
+			day: "numeric",
+			month: "short",
+			year: "numeric",
+			hour: "2-digit",
+			minute: "2-digit",
+		});
+		dateTimeFormats.set(locale, fmt);
+	}
+	return fmt;
+}
 
 type Kind = "boolean" | "number" | "date" | "time" | "json" | "text";
 
@@ -55,6 +103,7 @@ interface ListRead {
 	loading: boolean;
 	failed: boolean;
 	tooLarge: boolean;
+	moreAbort?: AbortController;
 	readonly stop: AbortController;
 }
 
@@ -96,28 +145,16 @@ export function shownValue(value: unknown, kind: Kind): string {
 	if (value === null || value === undefined) return "";
 	const locale = presentationLocale() === "da" ? "da-DK" : "en-GB";
 	if (typeof value === "boolean") return value ? t("Yes") : t("No");
-	if (typeof value === "number") return new Intl.NumberFormat(locale, { maximumFractionDigits: 6 }).format(value);
+	if (typeof value === "number") return numberFormat(locale).format(value);
 	if (typeof value !== "string") return JSON.stringify(value);
 	if (kind === "json") return JSON.stringify(value);
 	if (kind === "date") {
 		const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-		if (day)
-			return new Date(Number(day[1]), Number(day[2]) - 1, Number(day[3])).toLocaleDateString(locale, {
-				day: "numeric",
-				month: "short",
-				year: "numeric",
-			});
+		if (day) return dateFormat(locale).format(new Date(Number(day[1]), Number(day[2]) - 1, Number(day[3])));
 	}
 	if (kind === "time" && /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(value)) {
 		const at = new Date(value.replace(" ", "T").replace(/([+-]\d{2})$/, "$1:00"));
-		if (Number.isFinite(at.getTime()))
-			return at.toLocaleString(locale, {
-				day: "numeric",
-				month: "short",
-				year: "numeric",
-				hour: "2-digit",
-				minute: "2-digit",
-			});
+		if (Number.isFinite(at.getTime())) return dateTimeFormat(locale).format(at);
 	}
 	return value;
 }
@@ -507,6 +544,10 @@ class DataListView {
 	#take(read: ListRead, pages: readonly CloudMemberDataPage[]): void {
 		const [first] = pages;
 		if (!first) return;
+		read.moreAbort?.abort();
+		read.moreAbort = undefined;
+		read.loading = false;
+		read.failed = false;
 		read.columns = first.columns;
 		read.key = first.key;
 		read.rows = pages.flatMap((page) =>
@@ -523,20 +564,23 @@ class DataListView {
 	async #more(read: ListRead): Promise<void> {
 		if (read.loading || !read.next || read.tab.kind !== "table") return;
 		read.loading = true;
-		this.#drawBody();
+		read.failed = false;
+		if (!this.#syncMore(read)) this.#drawBody();
 		const from = read.etag;
-		await withAbortScopes([read.stop.signal, this.#lifetime.signal], async (signal) => {
+		const moreAbort = new AbortController();
+		read.moreAbort = moreAbort;
+		let added: Row[] | undefined;
+		await withAbortScopes([read.stop.signal, this.#lifetime.signal, moreAbort.signal], async (signal) => {
 			try {
 				const page = await this.#calls().rows({ ...this.#asked(read), after: read.next }, signal);
 				if (signal.aborted) return;
 				if (read.etag !== from) {
 					read.loading = false;
+					if (this.#list === read) this.#drawBody();
 					return;
 				}
-				read.rows = [
-					...read.rows,
-					...page.rows.filter(hasValues).map((row) => ({ values: row.values, seen: row.seen })),
-				];
+				added = page.rows.filter(hasValues).map((row) => ({ values: row.values, seen: row.seen }));
+				read.rows = [...read.rows, ...added];
 				read.next = page.next;
 				read.more = page.more;
 				read.tooLarge ||= page.tooLarge === true;
@@ -545,9 +589,16 @@ class DataListView {
 			} catch {
 				if (signal.aborted) return;
 				read.failed = true;
+			} finally {
+				if (read.moreAbort === moreAbort) read.moreAbort = undefined;
 			}
 			read.loading = false;
-			if (this.#list === read) this.#drawBody();
+			if (this.#list !== read) return;
+			if (added) {
+				if (!this.#appendRows(read, added)) this.#drawBody();
+			} else if (!this.#syncMore(read)) {
+				this.#drawBody();
+			}
 		});
 	}
 
@@ -599,8 +650,9 @@ class DataListView {
 
 	async #again(read: ListRead, first: CloudMemberDataPage, signal: AbortSignal): Promise<void> {
 		const pages = [first];
+		const targetPages = Math.min(read.pages, MAX_LIVE_REFETCH_PAGES);
 		let next = first.next;
-		while (pages.length < read.pages && next && !signal.aborted) {
+		while (pages.length < targetPages && next && !signal.aborted) {
 			try {
 				const page = await this.#calls().rows({ ...this.#asked(read), after: next }, signal);
 				pages.push(page);
@@ -814,15 +866,7 @@ class DataListView {
 		if (next && keep > 0) next.scrollTop = keep;
 		const sentinel = this.#body.querySelector<HTMLElement>(".data-more");
 		const read = this.#list;
-		if (sentinel && read && typeof IntersectionObserver === "function") {
-			this.#observer = new IntersectionObserver(
-				(entries) => {
-					if (entries.some((entry) => entry.isIntersecting)) void this.#more(read);
-				},
-				{ root: next, rootMargin: "0px 0px 400px 0px" },
-			);
-			this.#observer.observe(sentinel);
-		}
+		if (read) this.#observeMore(read, next, sentinel);
 		this.#refocus(focus);
 	}
 
@@ -880,14 +924,129 @@ class DataListView {
 		return h("div", { class: "data-empty" }, h("h1", null, title), h("p", null, words));
 	}
 
-	#listEl(read: ListRead): HTMLElement {
+	#listColumns(read: ListRead): {
+		readonly columns: readonly string[];
+		readonly indices: readonly number[];
+		readonly kinds: readonly Kind[];
+	} {
 		const columns = shownColumns(read.columns, read.key);
+		const indices = columns.map((name) => read.columns.indexOf(name));
 		const kinds = columns.map(
-			(name) =>
+			(name, index) =>
 				(read.tab.kind === "question"
-					? answerKind(read.rows.map((row) => row.values[read.columns.indexOf(name)]))
+					? answerKind(read.rows.map((row) => row.values[indices[index] ?? -1]))
 					: undefined) ?? this.#kindOf(name),
 		);
+		return { columns, indices, kinds };
+	}
+
+	#listRowEl(
+		read: ListRead,
+		row: Row,
+		indices: readonly number[],
+		kinds: readonly Kind[],
+		opens: boolean,
+	): HTMLElement {
+		const cells = indices.map((colIndex, index) => {
+			const value = colIndex >= 0 ? row.values[colIndex] : undefined;
+			const text = shownValue(value, kinds[index] ?? "text");
+			return h(
+				"span",
+				{
+					class: `data-cell${index === 0 ? " is-lead" : ""}${kinds[index] === "number" ? " is-number" : ""}`,
+				},
+				text,
+			);
+		});
+		return opens
+			? h(
+					"button",
+					{
+						type: "button",
+						class: "data-row",
+						dataset: { key: keyOf(read.columns, read.key, row.values) },
+						onclick: () => this.#openRow(read, row),
+					},
+					...cells,
+				)
+			: h("div", { class: "data-row" }, ...cells);
+	}
+
+	#moreContent(read: ListRead): HTMLElement | null {
+		if (read.loading) {
+			return h(
+				"span",
+				{ class: "skeleton-group data-more-rows", role: "status" },
+				h("span", { class: "visually-hidden" }, t("Loading the list")),
+				...Array.from({ length: 3 }, () =>
+					h(
+						"span",
+						{ class: "data-skeleton-row" },
+						h("span", { class: "skeleton skeleton-line" }),
+						h("span", { class: "skeleton skeleton-line" }),
+						h("span", { class: "skeleton skeleton-line" }),
+					),
+				),
+			);
+		}
+		if (typeof IntersectionObserver === "function" && !read.failed) return null;
+		return button(read.failed ? t("Try again") : t("Show more"), () => void this.#more(read), { small: true });
+	}
+
+	#observeMore(read: ListRead, scroller: HTMLElement | null, sentinel: HTMLElement | null): void {
+		this.#observer?.disconnect();
+		this.#observer = undefined;
+		if (sentinel && typeof IntersectionObserver === "function") {
+			this.#observer = new IntersectionObserver(
+				(entries) => {
+					if (entries.some((entry) => entry.isIntersecting)) void this.#more(read);
+				},
+				{ root: scroller, rootMargin: "0px 0px 400px 0px" },
+			);
+			this.#observer.observe(sentinel);
+		}
+	}
+
+	#syncMore(read: ListRead): boolean {
+		if (this.#open || this.#changing || this.#list !== read) return false;
+		const scroller = this.#body.querySelector<HTMLElement>(".data-scroll");
+		if (scroller?.dataset.list !== read.id) return false;
+		const sentinel = scroller.querySelector<HTMLElement>(".data-more");
+		if (!read.next || read.tab.kind !== "table") {
+			this.#observer?.disconnect();
+			this.#observer = undefined;
+			sentinel?.remove();
+			return true;
+		}
+		if (!sentinel) return false;
+		const content = this.#moreContent(read);
+		replace(sentinel, ...(content ? [content] : []));
+		this.#observeMore(read, scroller, sentinel);
+		return true;
+	}
+
+	#appendRows(read: ListRead, added: readonly Row[]): boolean {
+		if (this.#open || this.#changing || this.#list !== read) return false;
+		const scroller = this.#body.querySelector<HTMLElement>(".data-scroll");
+		if (scroller?.dataset.list !== read.id) return false;
+		const list = scroller.querySelector<HTMLElement>(".data-list");
+		const sentinel = list?.querySelector<HTMLElement>(".data-more") ?? null;
+		if (!list || !sentinel) return false;
+		if (added.length > 0) {
+			list.querySelector(".data-none")?.remove();
+			const { indices, kinds } = this.#listColumns(read);
+			const fragment = document.createDocumentFragment();
+			for (const row of added) fragment.append(this.#listRowEl(read, row, indices, kinds, true));
+			list.insertBefore(fragment, sentinel);
+		}
+		this.#syncMore(read);
+		const foot = scroller.querySelector<HTMLElement>(".data-foot");
+		if (foot) foot.replaceWith(this.#foot(read));
+		return true;
+	}
+
+	#listEl(read: ListRead): HTMLElement {
+		const { columns, indices, kinds } = this.#listColumns(read);
 		const template = columns
 			.map((_, index) =>
 				index === 0
@@ -935,31 +1094,7 @@ class DataListView {
 			}),
 		);
 		const opens = read.tab.kind === "table";
-		const rows = read.rows.map((row) => {
-			const cells = columns.map((name, index) => {
-				const value = row.values[read.columns.indexOf(name)];
-				const text = shownValue(value, kinds[index] ?? "text");
-				return h(
-					"span",
-					{
-						class: `data-cell${index === 0 ? " is-lead" : ""}${kinds[index] === "number" ? " is-number" : ""}`,
-					},
-					text,
-				);
-			});
-			return opens
-				? h(
-						"button",
-						{
-							type: "button",
-							class: "data-row",
-							dataset: { key: keyOf(read.columns, read.key, row.values) },
-							onclick: () => this.#openRow(read, row),
-						},
-						...cells,
-					)
-				: h("div", { class: "data-row" }, ...cells);
-		});
+		const rows = read.rows.map((row) => this.#listRowEl(read, row, indices, kinds, opens));
 		const none = read.rows.length === 0 && !read.loading && !read.tooLarge;
 		return h(
 			"div",
@@ -967,32 +1102,7 @@ class DataListView {
 			head,
 			...rows,
 			none ? h("p", { class: "data-none" }, t("No rows yet")) : null,
-			read.next && read.tab.kind === "table"
-				? h(
-						"div",
-						{ class: "data-more" },
-						read.loading
-							? h(
-									"span",
-									{ class: "skeleton-group data-more-rows", role: "status" },
-									h("span", { class: "visually-hidden" }, t("Loading the list")),
-									...Array.from({ length: 3 }, () =>
-										h(
-											"span",
-											{ class: "data-skeleton-row" },
-											h("span", { class: "skeleton skeleton-line" }),
-											h("span", { class: "skeleton skeleton-line" }),
-											h("span", { class: "skeleton skeleton-line" }),
-										),
-									),
-								)
-							: typeof IntersectionObserver === "function" && !read.failed
-								? null
-								: button(read.failed ? t("Try again") : t("Show more"), () => void this.#more(read), {
-										small: true,
-									}),
-					)
-				: null,
+			read.next && read.tab.kind === "table" ? h("div", { class: "data-more" }, this.#moreContent(read)) : null,
 		);
 	}
 
@@ -1005,9 +1115,9 @@ class DataListView {
 				: Math.max(0, table.rows + (this.#counted.get(`${read.database}/${read.tab.name}`) ?? 0));
 		const count =
 			counted !== undefined
-				? t("{count} rows", { count: new Intl.NumberFormat(presentationLocale()).format(counted) })
+				? t("{count} rows", { count: countFormat(presentationLocale()).format(counted) })
 				: table?.rowsAbout !== undefined
-					? t("About {count} rows", { count: new Intl.NumberFormat(presentationLocale()).format(table.rowsAbout) })
+					? t("About {count} rows", { count: countFormat(presentationLocale()).format(table.rowsAbout) })
 					: read.more
 						? t("The first {count} rows", { count: read.rows.length })
 						: t("{count} rows", { count: read.rows.length });
