@@ -2226,6 +2226,17 @@ begin
 				if v_expired_job.session_id is not null then
 					perform public.qorpera_evaluate_surface_session_lifecycle(v_expired_job.session_id);
 				end if;
+			elsif v_expired_job.kind = 'undo_change' then
+				if v_expired_job.session_id is not null then
+					insert into public.qorpera_surface_session_messages(profile_id, session_id, author_kind, body)
+					values (
+						v_expired_job.profile_id,
+						v_expired_job.session_id,
+						'system',
+						'Rollback worker lease expired after max attempts. Verify surface state or re-apply the staged change.'
+					);
+					perform public.qorpera_evaluate_surface_session_lifecycle(v_expired_job.session_id);
+				end if;
 			elsif v_expired_job.kind = 'publish_surface' then
 				update public.qorpera_surfaces
 				set

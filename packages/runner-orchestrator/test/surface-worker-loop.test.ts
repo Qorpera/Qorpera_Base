@@ -1026,92 +1026,96 @@ describe("SupabaseCloudRunnerOrchestratorControlPlane surface actions and servic
 	});
 
 	it("ignores immediate wake signals after HTTP 429 release until pollIntervalMs has elapsed", async () => {
-		const sessionId = randomUUID();
-		const surfaceId = randomUUID();
-		const profileId = randomUUID();
-		const machineId = randomUUID();
-		const leaseToken = randomUUID();
-		const listeners = new Set<() => void>();
-		const wake = {
-			listening: true,
-			subscribe(listener: () => void) {
-				listeners.add(listener);
-				return () => {
-					listeners.delete(listener);
-				};
-			},
-		};
+		vi.useFakeTimers();
+		try {
+			const sessionId = randomUUID();
+			const surfaceId = randomUUID();
+			const profileId = randomUUID();
+			const machineId = randomUUID();
+			const leaseToken = randomUUID();
+			const listeners = new Set<() => void>();
+			const wake = {
+				listening: true,
+				subscribe(listener: () => void) {
+					listeners.add(listener);
+					return () => {
+						listeners.delete(listener);
+					};
+				},
+			};
 
-		const dispatchTimes: number[] = [];
-		let releaseFirstDone!: () => void;
-		const firstReleaseDone = new Promise<void>((resolve) => {
-			releaseFirstDone = resolve;
-		});
-		let secondDispatchDone!: () => void;
-		const secondDispatched = new Promise<void>((resolve) => {
-			secondDispatchDone = resolve;
-		});
+			const dispatchTimes: number[] = [];
+			const dispatchSessionTurn = vi.fn(async () => {
+				dispatchTimes.push(Date.now());
+				if (dispatchTimes.length === 1) {
+					throw Object.assign(new Error("Provider capacity reached"), { status: 429 });
+				}
+			});
+			const releaseSessionClaim = vi.fn(async () => {
+				for (const listener of listeners) listener();
+				return { sessionId, released: true, state: "queued" };
+			});
 
-		const dispatchSessionTurn = vi.fn(async () => {
-			dispatchTimes.push(Date.now());
-			if (dispatchTimes.length === 1) {
-				throw Object.assign(new Error("Provider capacity reached"), { status: 429 });
-			}
-			secondDispatchDone();
-		});
-		const releaseSessionClaim = vi.fn(async () => {
+			const pollIntervalMs = 200;
+			const loop = new SurfaceWorkerLoop(
+				{
+					claimPendingJobs: vi.fn(
+						async (): Promise<ClaimedSurfaceJobs> => ({
+							sessions:
+								dispatchTimes.length < 2
+									? [
+											{
+												sessionId,
+												surfaceId,
+												profileId,
+												state: "queued",
+												prompt: "Update homepage",
+												originKind: "member",
+												originRef: null,
+												repositoryKey: "surfaces/website",
+												leaseToken,
+												placement: {
+													strategy: "reuse_machine",
+													machineId,
+													activeTurns: 0,
+													targetDensity: 6,
+												},
+											},
+										]
+									: [],
+							previews: [],
+							merges: [],
+							publishes: [],
+						}),
+					),
+					spawnOverflowMachine: vi.fn(),
+					dispatchSessionTurn,
+					runPreviewJob: vi.fn(),
+					releaseSessionClaim,
+				},
+				{ pollIntervalMs },
+			);
+
+			const ac = new AbortController();
+			const running = loop.run(ac.signal, wake);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(releaseSessionClaim).toHaveBeenCalledTimes(1);
+			expect(dispatchTimes).toHaveLength(1);
+
 			for (const listener of listeners) listener();
-			releaseFirstDone();
-			return { sessionId, released: true, state: "queued" };
-		});
+			await vi.advanceTimersByTimeAsync(100);
+			for (const listener of listeners) listener();
+			await vi.advanceTimersByTimeAsync(50);
+			expect(dispatchTimes).toHaveLength(1);
 
-		const pollIntervalMs = 120;
-		const loop = new SurfaceWorkerLoop(
-			{
-				claimPendingJobs: vi.fn(
-					async (): Promise<ClaimedSurfaceJobs> => ({
-						sessions:
-							dispatchTimes.length < 2
-								? [
-										{
-											sessionId,
-											surfaceId,
-											profileId,
-											state: "queued",
-											prompt: "Update homepage",
-											originKind: "member",
-											originRef: null,
-											repositoryKey: "surfaces/website",
-											leaseToken,
-											placement: { strategy: "reuse_machine", machineId, activeTurns: 0, targetDensity: 6 },
-										},
-									]
-								: [],
-						previews: [],
-						merges: [],
-						publishes: [],
-					}),
-				),
-				spawnOverflowMachine: vi.fn(),
-				dispatchSessionTurn,
-				runPreviewJob: vi.fn(),
-				releaseSessionClaim,
-			},
-			{ pollIntervalMs },
-		);
+			await vi.advanceTimersByTimeAsync(60);
+			expect(dispatchTimes).toHaveLength(2);
+			expect(dispatchTimes[1]! - dispatchTimes[0]!).toBeGreaterThanOrEqual(pollIntervalMs);
 
-		const ac = new AbortController();
-		const running = loop.run(ac.signal, wake);
-		await firstReleaseDone;
-		for (const listener of listeners) listener();
-		await new Promise((resolve) => setTimeout(resolve, 40));
-		expect(dispatchTimes).toHaveLength(1);
-
-		await secondDispatched;
-		ac.abort();
-		await running;
-
-		expect(dispatchTimes).toHaveLength(2);
-		expect(dispatchTimes[1]! - dispatchTimes[0]!).toBeGreaterThanOrEqual(pollIntervalMs - 20);
+			ac.abort();
+			await running;
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

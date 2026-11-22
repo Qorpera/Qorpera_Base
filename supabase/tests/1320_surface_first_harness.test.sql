@@ -1125,8 +1125,14 @@ begin
 	perform pg_temp.sf_assert(
 		(select status from public.qorpera_surface_jobs where id = v_batch_undo_job_id) = 'failed'
 		and (select status from public.qorpera_surface_changes where id = v_batch_c1) = 'staged'
-		and (select status from public.qorpera_surface_changes where id = v_batch_c2) = 'staged',
-		'expired undo_change at max attempts marks job failed without blindly restoring staged changes to merged'
+		and (select status from public.qorpera_surface_changes where id = v_batch_c2) = 'staged'
+		and exists (
+			select 1 from public.qorpera_surface_session_messages m
+			where m.session_id = v_batch_session_id
+				and m.author_kind = 'system'
+				and m.body like 'Rollback worker lease expired%'
+		),
+		'expired undo_change at max attempts marks job failed, records a system message, and leaves staged changes intact'
 	);
 
 	perform pg_temp.sf_as(v_owner);
