@@ -717,11 +717,13 @@ describe("the page's words for values and refusals", () => {
 		vi.useFakeTimers();
 		try {
 			const { calls } = fakeCalls(describedWith());
-			let watchResolve: ((value: { changed: Array<{ answer: CloudMemberDataPage }> }) => void) | undefined;
+			const watchResolves: Array<
+				(value: { changed: Array<{ index: number; answer: CloudMemberDataPage }> }) => void
+			> = [];
 			calls.watchTables.mockImplementation(
 				(_watches: unknown, signal: AbortSignal) =>
 					new Promise((resolve, reject) => {
-						watchResolve = resolve as typeof watchResolve;
+						watchResolves.push(resolve);
 						signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
 					}),
 			);
@@ -776,11 +778,11 @@ describe("the page's words for values and refusals", () => {
 			expect(container.querySelectorAll("button.data-row")).toHaveLength(7);
 
 			calls.rows.mockClear();
-			const firstWatch = watchResolve;
-			watchResolve = undefined;
+			const firstWatch = watchResolves.shift();
 			firstWatch?.({
 				changed: [
 					{
+						index: 0,
 						answer: {
 							...repairs(
 								[
@@ -804,7 +806,8 @@ describe("the page's words for values and refusals", () => {
 			expect(container.querySelector(".data-more-rows")).toBeNull();
 
 			await vi.advanceTimersByTimeAsync(500);
-			expect(watchResolve).toBeDefined();
+			const secondWatch = watchResolves.shift();
+			expect(secondWatch).toBeDefined();
 
 			calls.rows.mockImplementationOnce(
 				() =>
@@ -814,9 +817,10 @@ describe("the page's words for values and refusals", () => {
 			);
 			button(container, "Show more").click();
 			expect(container.querySelector(".data-more-rows")).not.toBeNull();
-			watchResolve?.({
+			secondWatch?.({
 				changed: [
 					{
+						index: 0,
 						answer: {
 							...repairs([[1, "Live Replace", 111, true]], true),
 							etag: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
