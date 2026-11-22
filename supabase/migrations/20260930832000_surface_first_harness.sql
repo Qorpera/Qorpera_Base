@@ -65,7 +65,7 @@ create table public.qorpera_surface_sessions (
 	origin_ref jsonb,
 	created_by_user_id uuid references auth.users(id) on delete set null,
 	state text not null check (state in (
-		'queued', 'running', 'needs_input', 'ready', 'reconciling', 'completed', 'discarded', 'failed'
+		'queued', 'running', 'needs_input', 'ready', 'reconciling', 'reconciling_running', 'completed', 'discarded', 'failed'
 	)) default 'queued',
 	question jsonb,
 	base_sha text check (base_sha is null or char_length(base_sha) <= 64),
@@ -77,7 +77,7 @@ create table public.qorpera_surface_sessions (
 );
 create index qorpera_surface_sessions_surface_state on public.qorpera_surface_sessions(surface_id, state, updated_at desc);
 create index qorpera_surface_sessions_machine_active on public.qorpera_surface_sessions(profile_id, machine_id)
-	where state in ('queued', 'running', 'reconciling');
+	where state in ('queued', 'running', 'reconciling', 'reconciling_running');
 alter table public.qorpera_surface_sessions enable row level security;
 revoke all on public.qorpera_surface_sessions from public, anon, authenticated, service_role, qorpera_secret_broker;
 
@@ -194,7 +194,7 @@ begin
 	from public.qorpera_company_machines machine
 	left join public.qorpera_surface_sessions session
 		on session.machine_id = machine.id
-		and session.state in ('queued', 'running', 'reconciling')
+		and session.state in ('queued', 'running', 'reconciling', 'reconciling_running')
 	where machine.profile_id = p_profile_id
 		and machine.desired_state = 'running'
 		and machine.removed_at is null
@@ -348,7 +348,7 @@ begin
 		raise exception 'Surface session not found' using errcode = 'P0002';
 	end if;
 
-	if v_session.state in ('queued', 'running', 'reconciling', 'needs_input', 'failed') then
+	if v_session.state in ('queued', 'running', 'reconciling', 'reconciling_running', 'needs_input', 'failed') then
 		return v_session;
 	end if;
 
@@ -855,6 +855,16 @@ begin
 	select * into v_exploration from public.qorpera_surface_explorations where id = p_exploration_id for update;
 	if v_exploration.id is null then raise exception 'Exploration not found' using errcode = 'P0002'; end if;
 	perform public.qorpera_assert_surface_member(v_exploration.profile_id, true);
+
+	if not exists (
+		select 1 from public.qorpera_surface_sessions s
+		where s.id = p_session_id
+			and s.exploration_id = p_exploration_id
+			and s.surface_id = v_exploration.surface_id
+			and s.profile_id = v_exploration.profile_id
+	) then
+		raise exception 'Session does not belong to exploration' using errcode = '42501';
+	end if;
 
 	v_winner := public.qorpera_approve_session_all(p_session_id);
 

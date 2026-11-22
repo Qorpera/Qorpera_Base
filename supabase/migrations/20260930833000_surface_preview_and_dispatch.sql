@@ -63,7 +63,9 @@ begin
 	select string_agg(ch.id::text || ':' || coalesce(ch.head_sha, ''), ',' order by array_position(p_selected_change_ids, ch.id))
 	into v_key_input
 	from public.qorpera_surface_changes ch
-	where ch.id = any(coalesce(p_selected_change_ids, '{}'::uuid[]));
+	where ch.id = any(coalesce(p_selected_change_ids, '{}'::uuid[]))
+		and ch.surface_id = p_surface.id
+		and ch.profile_id = p_surface.profile_id;
 
 	v_comp_key := encode(
 		extensions.digest(
@@ -304,6 +306,35 @@ begin
 		raise exception 'Compare supports at most 3 variants' using errcode = '22023';
 	end if;
 
+	if cardinality(v_toggled) > 0 and exists (
+		select 1 from unnest(v_toggled) as cid
+		where not exists (
+			select 1 from public.qorpera_surface_changes ch
+			where ch.id = cid and ch.surface_id = p_surface_id and ch.profile_id = v_surface.profile_id
+		)
+	) then
+		raise exception 'Change does not belong to surface' using errcode = '42501';
+	end if;
+
+	if p_exploration_session_id is not null and not exists (
+		select 1 from public.qorpera_surface_sessions s
+		where s.id = p_exploration_session_id
+			and s.surface_id = p_surface_id
+			and s.profile_id = v_surface.profile_id
+	) then
+		raise exception 'Exploration session does not belong to surface' using errcode = '42501';
+	end if;
+
+	if cardinality(v_compare) > 0 and exists (
+		select 1 from unnest(v_compare) as sid
+		where not exists (
+			select 1 from public.qorpera_surface_sessions s
+			where s.id = sid and s.surface_id = p_surface_id and s.profile_id = v_surface.profile_id
+		)
+	) then
+		raise exception 'Compare session does not belong to surface' using errcode = '42501';
+	end if;
+
 	insert into public.qorpera_member_surface_state(
 		user_id, surface_id, active_exploration_session_id, toggled_change_ids, compare_session_ids, active_route, updated_at
 	)
@@ -398,6 +429,16 @@ begin
 	if v_surface.id is null then raise exception 'Surface not found' using errcode = 'P0002'; end if;
 	v_user_id := public.qorpera_assert_surface_member(v_surface.profile_id, true);
 
+	if exists (
+		select 1 from unnest(p_change_ids) as cid
+		where not exists (
+			select 1 from public.qorpera_surface_changes ch
+			where ch.id = cid and ch.surface_id = p_surface_id and ch.profile_id = v_surface.profile_id
+		)
+	) then
+		raise exception 'Change does not belong to surface' using errcode = '42501';
+	end if;
+
 	select
 		string_agg(ch.title, ', ' order by ch.created_at asc),
 		array(select distinct p from unnest(array_agg(coalesce(ch.conflict_paths, ch.affected_paths))) as arr(p))
@@ -440,7 +481,26 @@ returns jsonb
 language plpgsql security definer set search_path = '' as $$
 declare
 	v_row public.qorpera_surface_previews%rowtype;
+	v_surface public.qorpera_surfaces%rowtype;
 begin
+	if p_status not in ('ready', 'conflicted', 'failed') then
+		raise exception 'Invalid preview completion status' using errcode = '22023';
+	end if;
+
+	select * into v_row from public.qorpera_surface_previews where id = p_preview_id for update;
+	if v_row.id is null then raise exception 'Preview not found' using errcode = 'P0002'; end if;
+	if v_row.status not in ('composing', 'building') then
+		raise exception 'Preview is not active for completion' using errcode = '55000';
+	end if;
+
+	select * into v_surface from public.qorpera_surfaces where id = v_row.surface_id;
+	if p_site_version_id is not null and not exists (
+		select 1 from public.qorpera_company_site_versions v
+		where v.id = p_site_version_id and v.site_id = v_surface.site_id
+	) then
+		raise exception 'Site version does not belong to surface site' using errcode = '42501';
+	end if;
+
 	update public.qorpera_surface_previews
 	set
 		status = p_status,
@@ -451,7 +511,6 @@ begin
 	where id = p_preview_id
 	returning * into v_row;
 
-	if v_row.id is null then raise exception 'Preview not found' using errcode = 'P0002'; end if;
 	return jsonb_build_object(
 		'previewId', v_row.id,
 		'status', v_row.status,

@@ -45,6 +45,7 @@ alter table public.qorpera_surface_explorations
 alter table public.qorpera_surface_sessions
 	add column note_paths text[] not null default '{}'::text[],
 	add column lease_expires_at timestamptz,
+	add column lease_token uuid,
 	add column retry_count integer not null default 0 check (retry_count >= 0);
 
 -- WHY: Wraps qorpera_company_execution_paused safely so surface claims never execute work for paused or deleting companies.
@@ -100,6 +101,7 @@ declare
 	v_base_slug text;
 	v_slug text;
 	v_suffix integer := 0;
+	v_attempt integer;
 	v_site_id uuid;
 	v_password text;
 begin
@@ -138,23 +140,36 @@ begin
 		v_base_slug := 's-' || substr(replace(p_surface_id::text, '-', ''), 1, 10);
 		v_slug := v_base_slug;
 	end if;
-	while exists (select 1 from public.qorpera_company_sites where slug = v_slug) or not public.qorpera_site_slug_valid(v_slug) loop
-		v_suffix := v_suffix + 1;
-		v_slug := left(v_base_slug, 38) || '-' || v_suffix::text;
+
+	for v_attempt in 1..16 loop
+		while exists (select 1 from public.qorpera_company_sites where slug = v_slug) or not public.qorpera_site_slug_valid(v_slug) loop
+			v_suffix := v_suffix + 1;
+			v_slug := left(v_base_slug, 38) || '-' || v_suffix::text;
+		end loop;
+
+		begin
+			insert into public.qorpera_company_sites(
+				profile_id, environment_id, slug, title, source_path, created_by_staff_agent_id
+			)
+			values (
+				v_surface.profile_id,
+				v_cofounder.environment_id,
+				v_slug,
+				left(v_surface.title, 120),
+				coalesce(v_surface.repository_key, 'surfaces/' || v_surface.slug),
+				v_cofounder.staff_agent_id
+			)
+			returning id into v_site_id;
+			exit;
+		exception when unique_violation then
+			v_suffix := v_suffix + 1;
+			v_slug := left(v_base_slug, 33) || '-' || v_suffix::text || '-' || substr(encode(extensions.gen_random_bytes(3), 'hex'), 1, 4);
+		end;
 	end loop;
 
-	insert into public.qorpera_company_sites(
-		profile_id, environment_id, slug, title, source_path, created_by_staff_agent_id
-	)
-	values (
-		v_surface.profile_id,
-		v_cofounder.environment_id,
-		v_slug,
-		left(v_surface.title, 120),
-		coalesce(v_surface.repository_key, 'surfaces/' || v_surface.slug),
-		v_cofounder.staff_agent_id
-	)
-	returning id into v_site_id;
+	if v_site_id is null then
+		raise exception 'Could not reserve unique site slug' using errcode = '23505';
+	end if;
 
 	if to_regclass('public.qorpera_company_site_secrets') is not null then
 		v_password := substr(encode(extensions.gen_random_bytes(16), 'hex'), 1, 16);
@@ -168,8 +183,6 @@ begin
 	where id = p_surface_id;
 
 	return v_site_id;
-exception when others then
-	return v_surface.site_id;
 end $$;
 revoke all on function public.qorpera_surface_ensure_site(uuid) from public, anon, authenticated;
 grant execute on function public.qorpera_surface_ensure_site(uuid) to service_role;
@@ -177,11 +190,14 @@ grant execute on function public.qorpera_surface_ensure_site(uuid) to service_ro
 alter table public.qorpera_surface_changes
 	add column published_at timestamptz,
 	add column approved_by_user_id uuid references auth.users(id) on delete set null,
-	add column published_by_user_id uuid references auth.users(id) on delete set null;
+	add column published_by_user_id uuid references auth.users(id) on delete set null,
+	add column pre_merge_snapshot jsonb,
+	add column discarded_by_exploration boolean not null default false;
 
 alter table public.qorpera_surface_previews
 	add column exploration_session_id uuid references public.qorpera_surface_sessions(id) on delete set null,
-	add column lease_expires_at timestamptz;
+	add column lease_expires_at timestamptz,
+	add column lease_token uuid;
 
 create or replace function public.qorpera_surface_upsert_preview(
 	p_surface public.qorpera_surfaces,
@@ -197,14 +213,12 @@ declare
 	v_host_id text;
 	v_row public.qorpera_surface_previews%rowtype;
 begin
-	if p_surface.archetype = 'live_build' and p_surface.site_id is null then
-		perform public.qorpera_surface_ensure_site(p_surface.id);
-	end if;
-
 	select string_agg(ch.id::text || ':' || coalesce(ch.head_sha, ''), ',' order by array_position(p_selected_change_ids, ch.id))
 	into v_key_input
 	from public.qorpera_surface_changes ch
-	where ch.id = any(coalesce(p_selected_change_ids, '{}'::uuid[]));
+	where ch.id = any(coalesce(p_selected_change_ids, '{}'::uuid[]))
+		and ch.surface_id = p_surface.id
+		and ch.profile_id = p_surface.profile_id;
 
 	v_comp_key := encode(
 		extensions.digest(
@@ -227,6 +241,14 @@ begin
 	on conflict (surface_id, composition_key) do update set
 		exploration_session_id = excluded.exploration_session_id,
 		expires_at = clock_timestamp() + interval '24 hours',
+		lease_expires_at = case
+			when public.qorpera_surface_previews.status = 'failed' then null
+			else public.qorpera_surface_previews.lease_expires_at
+		end,
+		lease_token = case
+			when public.qorpera_surface_previews.status = 'failed' then null
+			else public.qorpera_surface_previews.lease_token
+		end,
 		status = case
 			when public.qorpera_surface_previews.status = 'failed' then 'composing'
 			else public.qorpera_surface_previews.status
@@ -247,6 +269,7 @@ create table public.qorpera_surface_jobs (
 	requested_by_user_id uuid references auth.users(id) on delete set null,
 	attempts integer not null default 0 check (attempts >= 0),
 	lease_expires_at timestamptz,
+	lease_token uuid,
 	error_detail text check (error_detail is null or char_length(error_detail) <= 1000),
 	created_at timestamptz not null default clock_timestamp(),
 	updated_at timestamptz not null default clock_timestamp(),
@@ -320,7 +343,7 @@ language sql stable security definer set search_path = '' as $$
 	left join lateral (
 		select
 			count(*) filter (where session.state not in ('completed', 'discarded'))::integer as active_sessions,
-			count(*) filter (where session.state in ('queued', 'running', 'reconciling'))::integer as running_sessions,
+			count(*) filter (where session.state in ('queued', 'running', 'reconciling', 'reconciling_running'))::integer as running_sessions,
 			count(*) filter (where session.state in ('needs_input', 'failed'))::integer as attention_sessions
 		from public.qorpera_surface_sessions session
 		where session.surface_id = p_surface.id
@@ -343,7 +366,7 @@ language sql stable security definer set search_path = '' as $$
 		'workerId', p_session.worker_id,
 		'title', p_session.title,
 		'prompt', p_session.prompt,
-		'state', p_session.state,
+		'state', case when p_session.state = 'reconciling_running' then 'reconciling' else p_session.state end,
 		'originKind', p_session.origin_kind,
 		'originLabel', p_session.origin_label,
 		'createdByUserId', p_session.created_by_user_id,
@@ -412,7 +435,7 @@ $$;
 
 create or replace function public.qorpera_get_surface_workspace(p_surface_id uuid)
 returns jsonb
-language plpgsql security definer set search_path = '' as $$
+language plpgsql stable security definer set search_path = '' as $$
 declare
 	v_surface public.qorpera_surfaces%rowtype;
 	v_site public.qorpera_company_sites%rowtype;
@@ -425,7 +448,6 @@ declare
 	v_route text;
 	v_preview public.qorpera_surface_previews%rowtype;
 	v_primary_host text;
-	v_primary_pass text;
 begin
 	select * into v_surface from public.qorpera_surfaces where id = p_surface_id;
 	if v_surface.id is null then
@@ -486,15 +508,16 @@ begin
 	end if;
 
 	if cardinality(v_toggled) > 0 or v_member_state.active_exploration_session_id is not null then
-		v_preview := public.qorpera_surface_upsert_preview(
-			v_surface,
-			v_surface.live_head_sha,
-			v_toggled,
-			v_member_state.active_exploration_session_id
-		);
-		if v_site.id is not null and v_preview.status = 'ready' then
+		select p.* into v_preview
+		from public.qorpera_surface_previews p
+		where p.surface_id = p_surface_id
+			and p.selected_change_ids = v_toggled
+			and p.exploration_session_id is not distinct from v_member_state.active_exploration_session_id
+			and p.expires_at > clock_timestamp()
+		order by p.created_at desc
+		limit 1;
+		if v_site.id is not null and v_preview.id is not null and v_preview.status = 'ready' then
 			v_primary_host := v_site.slug || '--p' || v_preview.short_host_id || '.qorpera.com';
-			v_primary_pass := public.qorpera_surface_mint_preview_pass(v_site.id, v_user_id, v_primary_host);
 		end if;
 	end if;
 
@@ -511,7 +534,7 @@ begin
 				'previewId', v_preview.id,
 				'status', case when v_preview.id is not null then v_preview.status else 'live_baseline' end,
 				'doorActionUrl', case when v_primary_host is not null then 'https://' || v_primary_host || '/__qorpera/member' else null end,
-				'memberPass', v_primary_pass,
+				'memberPass', null,
 				'activeRoute', v_route,
 				'toggledChangeIds', to_jsonb(v_toggled),
 				'conflictReport', v_preview.conflict_report,
@@ -854,9 +877,13 @@ declare
 	v_count integer;
 	v_variant_label text;
 	v_owner_label text;
+	v_origin_kind text := coalesce(nullif(btrim(coalesce(p_origin_kind, '')), ''), 'member');
 begin
 	if char_length(v_prompt) < 1 or char_length(v_prompt) > 16000 then
 		raise exception 'Prompt must be 1..16000 characters' using errcode = '22023';
+	end if;
+	if v_origin_kind not in ('member', 'point_to_change', 'cross_surface') then
+		raise exception 'Invalid member session origin kind' using errcode = '22023';
 	end if;
 	select * into v_surface from public.qorpera_surfaces where id = p_surface_id;
 	if v_surface.id is null then raise exception 'Surface not found' using errcode = 'P0002'; end if;
@@ -873,8 +900,8 @@ begin
 		values (
 			v_surface.profile_id, p_surface_id,
 			coalesce(nullif(btrim(coalesce(p_exploration_title, '')), ''), v_title),
-			coalesce(v_owner_label, 'Co-Founder'),
-			case when coalesce(p_origin_kind, 'member') in ('cofounder', 'automation') then p_origin_kind else 'member' end
+			coalesce(v_owner_label, 'Member'),
+			'member'
 		)
 		returning id into v_exploration_id;
 
@@ -891,7 +918,7 @@ begin
 				v_surface.profile_id, p_surface_id, v_machine_id, v_exploration_id,
 				left(v_variant_label, 80),
 				left(v_variant_label, 160),
-				v_prompt, coalesce(p_origin_kind, 'member'), coalesce(v_owner_label, 'Co-Founder'), p_origin_ref, v_user_id, 'queued', v_surface.live_head_sha
+				v_prompt, v_origin_kind, coalesce(v_owner_label, 'Member'), p_origin_ref, v_user_id, 'queued', v_surface.live_head_sha
 			)
 			returning * into v_session;
 
@@ -905,7 +932,7 @@ begin
 		)
 		values (
 			v_surface.profile_id, p_surface_id, v_machine_id, v_title, v_prompt,
-			coalesce(p_origin_kind, 'member'), v_owner_label, p_origin_ref, v_user_id, 'queued', v_surface.live_head_sha
+			v_origin_kind, v_owner_label, p_origin_ref, v_user_id, 'queued', v_surface.live_head_sha
 		)
 		returning * into v_session;
 
@@ -917,6 +944,84 @@ begin
 end $$;
 revoke all on function public.qorpera_start_surface_session(uuid, text, text, text, text, jsonb, integer, text, text[]) from public, anon;
 grant execute on function public.qorpera_start_surface_session(uuid, text, text, text, text, jsonb, integer, text, text[]) to authenticated;
+
+create or replace function public.qorpera_reply_surface_session(p_session_id uuid, p_message text, p_keep_open boolean default true)
+returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+	v_session public.qorpera_surface_sessions%rowtype;
+	v_user_id uuid;
+	v_body text := btrim(coalesce(p_message, ''));
+begin
+	if char_length(v_body) < 1 then
+		raise exception 'Message cannot be empty' using errcode = '22023';
+	end if;
+	select * into v_session from public.qorpera_surface_sessions where id = p_session_id for update;
+	if v_session.id is null then raise exception 'Surface session not found' using errcode = 'P0002'; end if;
+	v_user_id := public.qorpera_assert_surface_member(v_session.profile_id, true);
+
+	insert into public.qorpera_surface_session_messages(profile_id, session_id, author_kind, author_user_id, body)
+	values (v_session.profile_id, p_session_id, 'member', v_user_id, v_body);
+
+	update public.qorpera_surface_sessions
+	set
+		state = 'queued',
+		question = null,
+		has_active_chat = coalesce(p_keep_open, true),
+		closed_at = null,
+		lease_expires_at = null,
+		lease_token = null,
+		retry_count = 0,
+		updated_at = clock_timestamp()
+	where id = p_session_id
+	returning * into v_session;
+
+	return public.qorpera_surface_session_json(v_session);
+end $$;
+
+create or replace function public.qorpera_choose_exploration(p_exploration_id uuid, p_session_id uuid)
+returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+	v_exploration public.qorpera_surface_explorations%rowtype;
+	v_winner jsonb;
+begin
+	select * into v_exploration from public.qorpera_surface_explorations where id = p_exploration_id for update;
+	if v_exploration.id is null then raise exception 'Exploration not found' using errcode = 'P0002'; end if;
+	perform public.qorpera_assert_surface_member(v_exploration.profile_id, true);
+
+	if not exists (
+		select 1 from public.qorpera_surface_sessions s
+		where s.id = p_session_id
+			and s.exploration_id = p_exploration_id
+			and s.surface_id = v_exploration.surface_id
+			and s.profile_id = v_exploration.profile_id
+	) then
+		raise exception 'Session does not belong to exploration' using errcode = '42501';
+	end if;
+
+	v_winner := public.qorpera_approve_session_all(p_session_id);
+
+	update public.qorpera_surface_changes
+	set status = 'discarded', discarded_by_exploration = true, resolved_at = clock_timestamp()
+	where session_id in (
+		select id from public.qorpera_surface_sessions where exploration_id = p_exploration_id and id <> p_session_id
+	) and status in ('staged', 'conflicted');
+
+	update public.qorpera_surface_sessions
+	set state = 'discarded', has_active_chat = false, closed_at = clock_timestamp(), updated_at = clock_timestamp()
+	where exploration_id = p_exploration_id and id <> p_session_id;
+
+	update public.qorpera_surface_explorations
+	set status = 'chosen', chosen_session_id = p_session_id, resolved_at = clock_timestamp()
+	where id = p_exploration_id;
+
+	update public.qorpera_member_surface_state
+	set active_exploration_session_id = null, compare_session_ids = '{}'::uuid[]
+	where surface_id = v_exploration.surface_id;
+
+	return v_winner;
+end $$;
 
 create function public.qorpera_service_start_surface_session(
 	p_company_id uuid,
@@ -1054,6 +1159,7 @@ create or replace function public.qorpera_approve_surface_change(p_change_id uui
 returns jsonb
 language plpgsql security definer set search_path = '' as $$
 declare
+	v_lookup record;
 	v_change public.qorpera_surface_changes%rowtype;
 	v_surface public.qorpera_surfaces%rowtype;
 	v_session public.qorpera_surface_sessions%rowtype;
@@ -1062,9 +1168,20 @@ declare
 	v_needs_worker boolean := false;
 	v_merged_count integer;
 begin
-	select * into v_change from public.qorpera_surface_changes where id = p_change_id for update;
+	select session_id, surface_id, profile_id into v_lookup
+	from public.qorpera_surface_changes
+	where id = p_change_id;
+	if v_lookup.session_id is null then raise exception 'Change not found' using errcode = 'P0002'; end if;
+	v_user_id := public.qorpera_assert_surface_member(v_lookup.profile_id, true);
+
+	-- WHY: Acquire session -> surface -> change locks in the same canonical order as qorpera_approve_session_all to prevent 40P01 deadlocks.
+	select * into v_session from public.qorpera_surface_sessions where id = v_lookup.session_id for update;
+	if v_session.id is null then raise exception 'Surface session not found' using errcode = 'P0002'; end if;
+	select * into v_surface from public.qorpera_surfaces where id = v_session.surface_id for update;
+	perform 1 from public.qorpera_surface_changes where session_id = v_session.id order by seq asc, id asc for update;
+
+	select * into v_change from public.qorpera_surface_changes where id = p_change_id;
 	if v_change.id is null then raise exception 'Change not found' using errcode = 'P0002'; end if;
-	v_user_id := public.qorpera_assert_surface_member(v_change.profile_id, true);
 
 	if v_change.status not in ('staged', 'conflicted') then
 		raise exception 'Change is not open for approval' using errcode = '22023';
@@ -1075,8 +1192,6 @@ begin
 	else
 		v_target_ids := array[v_change.id];
 	end if;
-
-	select * into v_surface from public.qorpera_surfaces where id = v_change.surface_id for update;
 
 	v_needs_worker := (
 		(v_change.kind = 'git_range' and v_surface.repository_key is not null and v_change.head_sha is not null)
@@ -1160,6 +1275,7 @@ begin
 	v_user_id := public.qorpera_assert_surface_member(v_session.profile_id, true);
 
 	select * into v_surface from public.qorpera_surfaces where id = v_session.surface_id for update;
+	perform 1 from public.qorpera_surface_changes where session_id = p_session_id order by seq asc, id asc for update;
 
 	select
 		coalesce(array_agg(ch.id order by ch.seq asc), '{}'::uuid[]),
@@ -1223,14 +1339,30 @@ create or replace function public.qorpera_undo_surface_change(p_change_id uuid)
 returns jsonb
 language plpgsql security definer set search_path = '' as $$
 declare
+	v_lookup record;
 	v_change public.qorpera_surface_changes%rowtype;
 	v_surface public.qorpera_surfaces%rowtype;
 	v_session public.qorpera_surface_sessions%rowtype;
 	v_user_id uuid;
+	v_has_other_landed boolean := false;
 begin
-	select * into v_change from public.qorpera_surface_changes where id = p_change_id for update;
+	select ch.session_id, ch.surface_id, ch.profile_id, s.exploration_id into v_lookup
+	from public.qorpera_surface_changes ch
+	join public.qorpera_surface_sessions s on s.id = ch.session_id
+	where ch.id = p_change_id;
+	if v_lookup.session_id is null then raise exception 'Change not found' using errcode = 'P0002'; end if;
+	v_user_id := public.qorpera_assert_surface_member(v_lookup.profile_id, true);
+
+	if v_lookup.exploration_id is not null then
+		perform 1 from public.qorpera_surface_explorations where id = v_lookup.exploration_id for update;
+	end if;
+	select * into v_session from public.qorpera_surface_sessions where id = v_lookup.session_id for update;
+	if v_session.id is null then raise exception 'Surface session not found' using errcode = 'P0002'; end if;
+	select * into v_surface from public.qorpera_surfaces where id = v_session.surface_id for update;
+	perform 1 from public.qorpera_surface_changes where session_id = v_session.id order by seq asc, id asc for update;
+
+	select * into v_change from public.qorpera_surface_changes where id = p_change_id;
 	if v_change.id is null then raise exception 'Change not found' using errcode = 'P0002'; end if;
-	v_user_id := public.qorpera_assert_surface_member(v_change.profile_id, true);
 
 	if v_change.status not in ('merged', 'discarded') then
 		raise exception 'Change cannot be undone from current status' using errcode = '22023';
@@ -1238,9 +1370,6 @@ begin
 	if v_change.published_at is not null then
 		raise exception 'Published change cannot be rolled back before release; start a new change instead' using errcode = '22023';
 	end if;
-
-	select * into v_surface from public.qorpera_surfaces where id = v_change.surface_id for update;
-	select * into v_session from public.qorpera_surface_sessions where id = v_change.session_id for update;
 
 	if v_change.status = 'merged' then
 		update public.qorpera_surfaces
@@ -1266,29 +1395,38 @@ begin
 		end if;
 	end if;
 
-	-- WHY: Rolling back a chosen exploration variant must re-open the full exploration so siblings can be reconsidered.
+	update public.qorpera_surface_changes
+	set status = 'staged', resolved_at = null, approved_by_user_id = null, discarded_by_exploration = false
+	where id = p_change_id;
+
+	update public.qorpera_surface_sessions
+	set state = 'ready', closed_at = null, updated_at = clock_timestamp()
+	where id = v_change.session_id and state in ('completed', 'discarded');
+
+	-- WHY: Reopen the exploration without touching other merged, merging, or manually discarded changes in the chosen session.
 	if v_session.exploration_id is not null then
 		update public.qorpera_surface_explorations
 		set status = 'open', chosen_session_id = null, resolved_at = null
 		where id = v_session.exploration_id and status = 'chosen';
 
-		update public.qorpera_surface_changes
-		set status = 'staged', resolved_at = null, approved_by_user_id = null
-		where session_id in (
-			select id from public.qorpera_surface_sessions where exploration_id = v_session.exploration_id
-		) and published_at is null;
+		select exists (
+			select 1 from public.qorpera_surface_changes ch
+			where ch.session_id = v_change.session_id
+				and ch.status in ('merged', 'merging')
+		) into v_has_other_landed;
 
-		update public.qorpera_surface_sessions
-		set state = 'ready', closed_at = null, updated_at = clock_timestamp()
-		where exploration_id = v_session.exploration_id and state in ('completed', 'discarded');
-	else
-		update public.qorpera_surface_changes
-		set status = 'staged', resolved_at = null, approved_by_user_id = null
-		where id = p_change_id;
+		if not v_has_other_landed then
+			update public.qorpera_surface_changes
+			set status = 'staged', resolved_at = null, approved_by_user_id = null, discarded_by_exploration = false
+			where session_id in (
+				select id from public.qorpera_surface_sessions
+				where exploration_id = v_session.exploration_id and id <> v_change.session_id
+			) and status = 'discarded' and discarded_by_exploration = true and published_at is null;
 
-		update public.qorpera_surface_sessions
-		set state = 'ready', closed_at = null, updated_at = clock_timestamp()
-		where id = v_change.session_id and state in ('completed', 'discarded');
+			update public.qorpera_surface_sessions
+			set state = 'ready', closed_at = null, updated_at = clock_timestamp()
+			where exploration_id = v_session.exploration_id and id <> v_change.session_id and state = 'discarded';
+		end if;
 	end if;
 
 	v_session := public.qorpera_evaluate_surface_session_lifecycle(v_change.session_id);
@@ -1555,9 +1693,7 @@ returns jsonb
 language plpgsql security definer set search_path = '' as $$
 declare
 	v_auto public.qorpera_surface_automations%rowtype;
-	v_routine public.qorpera_cloud_routines%rowtype;
-	v_title text;
-	v_prompt text;
+	v_routine_profile uuid;
 begin
 	select * into v_auto from public.qorpera_surface_automations where id = p_automation_id for update;
 	if v_auto.id is not null then
@@ -1590,33 +1726,14 @@ begin
 		);
 	end if;
 
-	select * into v_routine from public.qorpera_cloud_routines where id = p_automation_id for update;
-	if v_routine.id is null then raise exception 'Automation not found' using errcode = 'P0002'; end if;
-	perform public.qorpera_assert_surface_member(v_routine.profile_id, true);
+	-- WHY: Legacy cloud routines have payer and folder-v2 authority rules and must not be toggled directly here.
+	select profile_id into v_routine_profile from public.qorpera_cloud_routines where id = p_automation_id;
+	if v_routine_profile is not null then
+		perform public.qorpera_assert_surface_member(v_routine_profile, true);
+		raise exception 'Legacy routines must be managed in routine settings' using errcode = '42501';
+	end if;
 
-	update public.qorpera_cloud_routines
-	set status = case when coalesce(p_enabled, false) then 'active' else 'paused' end, updated_at = clock_timestamp()
-	where id = p_automation_id
-	returning * into v_routine;
-
-	select rv.title, rv.prompt into v_title, v_prompt
-	from public.qorpera_cloud_routine_versions rv
-	where rv.routine_id = v_routine.id and rv.version = v_routine.current_version;
-
-	return jsonb_build_object(
-		'id', v_routine.id,
-		'key', v_routine.client_routine_id::text,
-		'title', coalesce(v_title, 'Routine'),
-		'prompt', v_prompt,
-		'scheduleSummary', 'scheduled',
-		'targetSurfaceSlug', null,
-		'outputMode', 'surface_session',
-		'enabled', (v_routine.status = 'active'),
-		'status', case when v_routine.status = 'active' then 'idle' else 'paused' end,
-		'lastRunAt', v_routine.updated_at,
-		'lastOutcomeSummary', null,
-		'nextRunAt', null
-	);
+	raise exception 'Automation not found' using errcode = 'P0002';
 end $$;
 
 -- WHY: Claims due Scheduled Agents, advances their next_run_at, and spawns queued surface sessions for surface-targeted automations.
@@ -1711,12 +1828,127 @@ declare
 	v_cap integer := greatest(1, least(coalesce(p_limit, 16), 64));
 	v_now timestamptz := clock_timestamp();
 	v_lease timestamptz := v_now + interval '5 minutes';
+	v_expired_session record;
+	v_expired_job record;
 	v_automations jsonb;
 	v_sessions jsonb;
 	v_previews jsonb;
 	v_merges jsonb;
 	v_publishes jsonb;
 begin
+	for v_expired_session in
+		select s.*
+		from public.qorpera_surface_sessions s
+		where s.state in ('running', 'reconciling_running')
+			and s.lease_expires_at is not null
+			and s.lease_expires_at <= v_now
+		order by s.lease_expires_at asc
+		limit v_cap
+		for update skip locked
+	loop
+		if v_expired_session.retry_count < 1 then
+			update public.qorpera_surface_sessions
+			set
+				state = case when state = 'reconciling_running' then 'reconciling' else 'queued' end,
+				retry_count = retry_count + 1,
+				lease_expires_at = null,
+				lease_token = null,
+				updated_at = v_now
+			where id = v_expired_session.id;
+
+			insert into public.qorpera_surface_session_messages(profile_id, session_id, author_kind, body)
+			values (
+				v_expired_session.profile_id,
+				v_expired_session.id,
+				'system',
+				'Previous worker lease expired; retrying automatically.'
+			);
+		else
+			update public.qorpera_surface_sessions
+			set
+				state = 'failed',
+				lease_expires_at = null,
+				lease_token = null,
+				updated_at = v_now
+			where id = v_expired_session.id;
+
+			insert into public.qorpera_surface_session_messages(profile_id, session_id, author_kind, body)
+			values (
+				v_expired_session.profile_id,
+				v_expired_session.id,
+				'system',
+				'Session worker lease expired after retry.'
+			);
+		end if;
+	end loop;
+
+	with expired_previews as (
+		select p.id
+		from public.qorpera_surface_previews p
+		where p.status = 'building'
+			and p.lease_expires_at is not null
+			and p.lease_expires_at <= v_now
+			and p.expires_at > v_now
+		order by p.lease_expires_at asc
+		limit v_cap
+		for update skip locked
+	)
+	update public.qorpera_surface_previews p
+	set status = 'composing', lease_expires_at = null, lease_token = null
+	from expired_previews
+	where p.id = expired_previews.id;
+
+	for v_expired_job in
+		select j.*
+		from public.qorpera_surface_jobs j
+		where j.status = 'running'
+			and j.lease_expires_at is not null
+			and j.lease_expires_at <= v_now
+		order by j.lease_expires_at asc
+		limit v_cap
+		for update skip locked
+	loop
+		if v_expired_job.attempts >= 3 then
+			update public.qorpera_surface_jobs
+			set
+				status = 'failed',
+				error_detail = coalesce(error_detail, 'Worker lease expired after max attempts'),
+				lease_expires_at = null,
+				lease_token = null,
+				completed_at = v_now,
+				updated_at = v_now
+			where id = v_expired_job.id;
+
+			if v_expired_job.kind = 'land_change' then
+				update public.qorpera_surface_changes
+				set status = 'staged'
+				where id in (
+					select x::uuid
+					from jsonb_array_elements_text(coalesce(v_expired_job.payload -> 'changeIds', '[]'::jsonb)) as x
+				) and surface_id = v_expired_job.surface_id and status = 'merging';
+
+				if v_expired_job.session_id is not null then
+					perform public.qorpera_evaluate_surface_session_lifecycle(v_expired_job.session_id);
+				end if;
+			elsif v_expired_job.kind = 'publish_surface' then
+				update public.qorpera_surfaces
+				set
+					publish_status = 'failed',
+					last_publish_error = 'Publish worker lease expired',
+					updated_at = v_now
+				where id = v_expired_job.surface_id;
+			end if;
+		else
+			update public.qorpera_surface_jobs
+			set
+				status = 'queued',
+				lease_expires_at = null,
+				lease_token = null,
+				updated_at = v_now
+			where id = v_expired_job.id;
+		end if;
+	end loop;
+
 	v_automations := public.qorpera_surface_claim_due_automations(v_cap);
 
 	with picked as (
@@ -1732,8 +1964,9 @@ begin
 	claimed as (
 		update public.qorpera_surface_sessions s
 		set
-			state = case when s.state = 'queued' then 'running' else s.state end,
+			state = case when s.state = 'reconciling' then 'reconciling_running' else 'running' end,
 			lease_expires_at = v_lease,
+			lease_token = extensions.gen_random_uuid(),
 			updated_at = v_now
 		from picked
 		where s.id = picked.id
@@ -1745,7 +1978,8 @@ begin
 				'sessionId', c.id,
 				'surfaceId', c.surface_id,
 				'profileId', c.profile_id,
-				'state', case when c.state = 'reconciling' then 'reconciling' else 'queued' end,
+				'state', case when c.state = 'reconciling_running' then 'reconciling' else 'queued' end,
+				'leaseToken', c.lease_token,
 				'prompt', c.prompt,
 				'originKind', c.origin_kind,
 				'originRef', c.origin_ref,
@@ -1787,7 +2021,10 @@ begin
 	),
 	claimed as (
 		update public.qorpera_surface_previews p
-		set status = 'building', lease_expires_at = v_lease
+		set
+			status = 'building',
+			lease_expires_at = v_lease,
+			lease_token = extensions.gen_random_uuid()
 		from picked
 		where p.id = picked.id
 		returning p.*
@@ -1802,6 +2039,7 @@ begin
 				'baseSha', p.base_sha,
 				'selectedChangeIds', to_jsonb(p.selected_change_ids),
 				'repositoryKey', surf.repository_key,
+				'leaseToken', p.lease_token,
 				'exploration', case
 					when exp_sess.id is not null and exp_sess.base_sha is not null and exp_sess.branch_head_sha is not null then
 						jsonb_build_object(
@@ -1824,6 +2062,8 @@ begin
 						)
 						from public.qorpera_surface_changes ch
 						where ch.id = any(p.selected_change_ids)
+							and ch.surface_id = p.surface_id
+							and ch.profile_id = p.profile_id
 							and ch.parent_sha is not null
 							and ch.head_sha is not null
 					),
@@ -1837,16 +2077,16 @@ begin
 	into v_previews
 	from claimed p
 	join public.qorpera_surfaces surf on surf.id = p.surface_id
-	left join public.qorpera_surface_sessions exp_sess on exp_sess.id = p.exploration_session_id;
+	left join public.qorpera_surface_sessions exp_sess
+		on exp_sess.id = p.exploration_session_id
+		and exp_sess.surface_id = p.surface_id
+		and exp_sess.profile_id = p.profile_id;
 
 	with picked as (
 		select j.id
 		from public.qorpera_surface_jobs j
 		where j.kind in ('land_change', 'undo_change')
-			and (
-				j.status = 'queued'
-				or (j.status = 'running' and j.lease_expires_at is not null and j.lease_expires_at <= v_now)
-			)
+			and j.status = 'queued'
 			and not public.qorpera_surface_company_paused(j.profile_id)
 		order by j.created_at asc
 		limit v_cap
@@ -1854,7 +2094,12 @@ begin
 	),
 	claimed as (
 		update public.qorpera_surface_jobs j
-		set status = 'running', attempts = j.attempts + 1, lease_expires_at = v_lease, updated_at = v_now
+		set
+			status = 'running',
+			attempts = j.attempts + 1,
+			lease_expires_at = v_lease,
+			lease_token = extensions.gen_random_uuid(),
+			updated_at = v_now
 		from picked
 		where j.id = picked.id
 		returning j.*
@@ -1867,15 +2112,25 @@ begin
 				'surfaceId', j.surface_id,
 				'sessionId', j.session_id,
 				'profileId', j.profile_id,
+				'leaseToken', j.lease_token,
 				'sourceKind', surf.source_kind,
 				'repositoryKey', surf.repository_key,
 				'folderRoot', surf.folder_root,
 				'autoPublish', surf.auto_publish,
 				'expectMainSha', surf.live_head_sha,
 				'sessionWorkerId', sess.worker_id,
-				'sessionState', sess.state,
+				'sessionState', case when sess.state = 'reconciling_running' then 'reconciling' else sess.state end,
 				'sessionHasActiveChat', coalesce(sess.has_active_chat, false),
 				'payload', j.payload,
+				'preMergeSnapshot', (
+					select ch.pre_merge_snapshot
+					from public.qorpera_surface_changes ch
+					where j.kind = 'undo_change'
+						and j.payload ? 'changeId'
+						and ch.id = (j.payload ->> 'changeId')::uuid
+						and ch.surface_id = j.surface_id
+						and ch.profile_id = j.profile_id
+				),
 				'allSessionChangeStatuses', coalesce(
 					(
 						select jsonb_agg(
@@ -1907,6 +2162,8 @@ begin
 							select x::uuid
 							from jsonb_array_elements_text(coalesce(j.payload -> 'changeIds', '[]'::jsonb)) as x
 						)
+							and ch.surface_id = j.surface_id
+							and ch.profile_id = j.profile_id
 					),
 					'[]'::jsonb
 				),
@@ -1981,10 +2238,7 @@ begin
 		select j.id
 		from public.qorpera_surface_jobs j
 		where j.kind = 'publish_surface'
-			and (
-				j.status = 'queued'
-				or (j.status = 'running' and j.lease_expires_at is not null and j.lease_expires_at <= v_now)
-			)
+			and j.status = 'queued'
 			and not public.qorpera_surface_company_paused(j.profile_id)
 		order by j.created_at asc
 		limit v_cap
@@ -1992,7 +2246,12 @@ begin
 	),
 	claimed as (
 		update public.qorpera_surface_jobs j
-		set status = 'running', attempts = j.attempts + 1, lease_expires_at = v_lease, updated_at = v_now
+		set
+			status = 'running',
+			attempts = j.attempts + 1,
+			lease_expires_at = v_lease,
+			lease_token = extensions.gen_random_uuid(),
+			updated_at = v_now
 		from picked
 		where j.id = picked.id
 		returning j.*
@@ -2003,6 +2262,7 @@ begin
 				'jobId', j.id,
 				'surfaceId', j.surface_id,
 				'profileId', j.profile_id,
+				'leaseToken', j.lease_token,
 				'repositoryKey', surf.repository_key,
 				'siteId', surf.site_id,
 				'payload', j.payload
@@ -2024,13 +2284,65 @@ begin
 	);
 end $$;
 
+create function public.qorpera_surface_renew_lease(
+	p_kind text,
+	p_id uuid,
+	p_lease_token uuid,
+	p_extend_seconds integer default 300
+)
+returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+	v_seconds integer := greatest(30, least(coalesce(p_extend_seconds, 300), 900));
+	v_new_expiry timestamptz := clock_timestamp() + make_interval(secs => v_seconds);
+	v_updated integer := 0;
+begin
+	if p_lease_token is null then
+		raise exception 'Lease token is required' using errcode = '22023';
+	end if;
+	if p_kind = 'session' then
+		update public.qorpera_surface_sessions
+		set lease_expires_at = v_new_expiry, updated_at = clock_timestamp()
+		where id = p_id
+			and state in ('running', 'reconciling_running')
+			and lease_token = p_lease_token;
+		get diagnostics v_updated = row_count;
+	elsif p_kind = 'preview' then
+		update public.qorpera_surface_previews
+		set lease_expires_at = v_new_expiry
+		where id = p_id
+			and status = 'building'
+			and lease_token = p_lease_token;
+		get diagnostics v_updated = row_count;
+	elsif p_kind = 'job' then
+		update public.qorpera_surface_jobs
+		set lease_expires_at = v_new_expiry, updated_at = clock_timestamp()
+		where id = p_id
+			and status = 'running'
+			and lease_token = p_lease_token;
+		get diagnostics v_updated = row_count;
+	else
+		raise exception 'Invalid lease kind' using errcode = '22023';
+	end if;
+
+	return jsonb_build_object(
+		'renewed', (v_updated > 0),
+		'leaseExpiresAt', case when v_updated > 0 then v_new_expiry else null end
+	);
+end $$;
+revoke all on function public.qorpera_surface_renew_lease(text, uuid, uuid, integer)
+	from public, anon, authenticated;
+grant execute on function public.qorpera_surface_renew_lease(text, uuid, uuid, integer)
+	to service_role;
+
 create function public.qorpera_surface_complete_session_turn(
 	p_session_id uuid,
 	p_state text,
 	p_reply_text text default null,
 	p_question jsonb default null,
 	p_note_paths text[] default null,
-	p_branch_head_sha text default null
+	p_branch_head_sha text default null,
+	p_lease_token uuid default null
 )
 returns jsonb
 language plpgsql security definer set search_path = '' as $$
@@ -2039,11 +2351,21 @@ declare
 	v_next_state text := p_state;
 	v_retry_increment integer := 0;
 begin
+	if p_state not in ('ready', 'needs_input', 'failed', 'completed') then
+		raise exception 'Invalid session completion state' using errcode = '22023';
+	end if;
+
 	select * into v_session from public.qorpera_surface_sessions where id = p_session_id for update;
 	if v_session.id is null then raise exception 'Surface session not found' using errcode = 'P0002'; end if;
+	if v_session.state not in ('running', 'reconciling_running') then
+		raise exception 'Surface session is not running' using errcode = '55000';
+	end if;
+	if v_session.lease_token is not null and p_lease_token is distinct from v_session.lease_token then
+		raise exception 'Surface session lease mismatch' using errcode = '55000';
+	end if;
 
 	if p_state = 'failed' and v_session.retry_count < 1 then
-		v_next_state := 'queued';
+		v_next_state := case when v_session.state = 'reconciling_running' then 'reconciling' else 'queued' end;
 		v_retry_increment := 1;
 		insert into public.qorpera_surface_session_messages(profile_id, session_id, author_kind, body)
 		values (
@@ -2064,19 +2386,21 @@ begin
 	set
 		state = v_next_state,
 		retry_count = retry_count + v_retry_increment,
-		question = case when v_next_state = 'queued' then null else p_question end,
+		question = case when v_next_state in ('queued', 'reconciling') then null else p_question end,
 		note_paths = case when p_note_paths is not null then p_note_paths else note_paths end,
 		branch_head_sha = coalesce(p_branch_head_sha, branch_head_sha),
 		lease_expires_at = null,
+		lease_token = null,
+		closed_at = case when v_next_state = 'completed' then coalesce(closed_at, clock_timestamp()) else closed_at end,
 		updated_at = clock_timestamp()
 	where id = p_session_id
 	returning * into v_session;
 
 	return public.qorpera_surface_session_json(v_session);
 end $$;
-revoke all on function public.qorpera_surface_complete_session_turn(uuid, text, text, jsonb, text[], text)
+revoke all on function public.qorpera_surface_complete_session_turn(uuid, text, text, jsonb, text[], text, uuid)
 	from public, anon, authenticated;
-grant execute on function public.qorpera_surface_complete_session_turn(uuid, text, text, jsonb, text[], text)
+grant execute on function public.qorpera_surface_complete_session_turn(uuid, text, text, jsonb, text[], text, uuid)
 	to service_role;
 
 create function public.qorpera_surface_complete_merge(
@@ -2086,7 +2410,9 @@ create function public.qorpera_surface_complete_merge(
 	p_main_after text default null,
 	p_conflict_change_id uuid default null,
 	p_conflict_paths text[] default null,
-	p_error_detail text default null
+	p_error_detail text default null,
+	p_pre_merge_snapshot jsonb default null,
+	p_lease_token uuid default null
 )
 returns jsonb
 language plpgsql security definer set search_path = '' as $$
@@ -2096,9 +2422,25 @@ declare
 	v_change_ids uuid[];
 	v_merged_count integer := 0;
 begin
+	if p_status not in ('landed', 'conflicted', 'failed') then
+		raise exception 'Invalid merge completion status' using errcode = '22023';
+	end if;
+
 	select * into v_job from public.qorpera_surface_jobs where id = p_job_id for update;
 	if v_job.id is null then raise exception 'Surface job not found' using errcode = 'P0002'; end if;
+	if v_job.kind not in ('land_change', 'undo_change') then
+		raise exception 'Surface job is not a merge job' using errcode = '22023';
+	end if;
+	if v_job.status <> 'running' then
+		raise exception 'Surface job is not running' using errcode = '55000';
+	end if;
+	if v_job.lease_token is not null and p_lease_token is distinct from v_job.lease_token then
+		raise exception 'Surface job lease mismatch' using errcode = '55000';
+	end if;
 
+	if v_job.session_id is not null then
+		perform 1 from public.qorpera_surface_sessions where id = v_job.session_id for update;
+	end if;
 	select * into v_surface from public.qorpera_surfaces where id = v_job.surface_id for update;
 
 	if v_job.kind = 'land_change' then
@@ -2113,8 +2455,11 @@ begin
 				conflict_paths = null,
 				landed_main_before = coalesce(p_main_before, landed_main_before),
 				landed_main_after = coalesce(p_main_after, landed_main_after),
+				pre_merge_snapshot = coalesce(p_pre_merge_snapshot, pre_merge_snapshot),
 				resolved_at = clock_timestamp()
-			where id = any(v_change_ids) and status in ('merging', 'staged', 'conflicted');
+			where id = any(v_change_ids)
+				and surface_id = v_job.surface_id
+				and status in ('merging', 'staged', 'conflicted');
 			get diagnostics v_merged_count = row_count;
 
 			update public.qorpera_surfaces
@@ -2139,11 +2484,11 @@ begin
 			set
 				status = case when id = p_conflict_change_id then 'conflicted' else 'staged' end,
 				conflict_paths = case when id = p_conflict_change_id then p_conflict_paths else null end
-			where id = any(v_change_ids) and status = 'merging';
+			where id = any(v_change_ids) and surface_id = v_job.surface_id and status = 'merging';
 		else
 			update public.qorpera_surface_changes
 			set status = 'staged'
-			where id = any(v_change_ids) and status = 'merging';
+			where id = any(v_change_ids) and surface_id = v_job.surface_id and status = 'merging';
 		end if;
 
 		if v_job.session_id is not null then
@@ -2160,38 +2505,47 @@ begin
 		status = case when p_status in ('landed', 'conflicted') then 'completed' else 'failed' end,
 		error_detail = p_error_detail,
 		lease_expires_at = null,
+		lease_token = null,
 		completed_at = clock_timestamp(),
 		updated_at = clock_timestamp()
 	where id = p_job_id;
 
 	return jsonb_build_object('jobId', p_job_id, 'status', p_status);
 end $$;
-revoke all on function public.qorpera_surface_complete_merge(uuid, text, text, text, uuid, text[], text)
+revoke all on function public.qorpera_surface_complete_merge(uuid, text, text, text, uuid, text[], text, jsonb, uuid)
 	from public, anon, authenticated;
-grant execute on function public.qorpera_surface_complete_merge(uuid, text, text, text, uuid, text[], text)
+grant execute on function public.qorpera_surface_complete_merge(uuid, text, text, text, uuid, text[], text, jsonb, uuid)
 	to service_role;
 
 create function public.qorpera_surface_complete_publish(
 	p_job_id uuid,
 	p_status text,
 	p_published_head_sha text default null,
-	p_error_detail text default null
+	p_error_detail text default null,
+	p_lease_token uuid default null
 )
 returns jsonb
 language plpgsql security definer set search_path = '' as $$
 declare
 	v_job public.qorpera_surface_jobs%rowtype;
 begin
+	if p_status not in ('published', 'failed') then
+		raise exception 'Invalid publish completion status' using errcode = '22023';
+	end if;
+
 	select * into v_job from public.qorpera_surface_jobs where id = p_job_id for update;
 	if v_job.id is null then raise exception 'Surface job not found' using errcode = 'P0002'; end if;
+	if v_job.kind <> 'publish_surface' then
+		raise exception 'Surface job is not a publish job' using errcode = '22023';
+	end if;
+	if v_job.status <> 'running' then
+		raise exception 'Surface job is not running' using errcode = '55000';
+	end if;
+	if v_job.lease_token is not null and p_lease_token is distinct from v_job.lease_token then
+		raise exception 'Surface job lease mismatch' using errcode = '55000';
+	end if;
 
 	if p_status = 'published' then
-		update public.qorpera_surface_changes
-		set
-			published_at = clock_timestamp(),
-			published_by_user_id = v_job.requested_by_user_id
-		where surface_id = v_job.surface_id and status = 'merged' and published_at is null;
-
 		update public.qorpera_surfaces
 		set
 			published_head_sha = coalesce(p_published_head_sha, live_head_sha),
@@ -2200,6 +2554,12 @@ begin
 			last_publish_error = null,
 			updated_at = clock_timestamp()
 		where id = v_job.surface_id;
+
+		update public.qorpera_surface_changes
+		set
+			published_at = clock_timestamp(),
+			published_by_user_id = v_job.requested_by_user_id
+		where surface_id = v_job.surface_id and status = 'merged' and published_at is null;
 	else
 		update public.qorpera_surfaces
 		set
@@ -2214,15 +2574,76 @@ begin
 		status = case when p_status = 'published' then 'completed' else 'failed' end,
 		error_detail = p_error_detail,
 		lease_expires_at = null,
+		lease_token = null,
 		completed_at = clock_timestamp(),
 		updated_at = clock_timestamp()
 	where id = p_job_id;
 
 	return jsonb_build_object('jobId', p_job_id, 'status', p_status);
 end $$;
-revoke all on function public.qorpera_surface_complete_publish(uuid, text, text, text)
+revoke all on function public.qorpera_surface_complete_publish(uuid, text, text, text, uuid)
 	from public, anon, authenticated;
-grant execute on function public.qorpera_surface_complete_publish(uuid, text, text, text)
+grant execute on function public.qorpera_surface_complete_publish(uuid, text, text, text, uuid)
+	to service_role;
+
+drop function if exists public.qorpera_surface_complete_preview(uuid, text, text, uuid, jsonb, text);
+create function public.qorpera_surface_complete_preview(
+	p_preview_id uuid,
+	p_status text,
+	p_composite_tree_sha text default null,
+	p_site_version_id uuid default null,
+	p_conflict_report jsonb default null,
+	p_error_detail text default null,
+	p_lease_token uuid default null
+)
+returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+	v_row public.qorpera_surface_previews%rowtype;
+	v_surface public.qorpera_surfaces%rowtype;
+begin
+	if p_status not in ('ready', 'conflicted', 'failed') then
+		raise exception 'Invalid preview completion status' using errcode = '22023';
+	end if;
+
+	select * into v_row from public.qorpera_surface_previews where id = p_preview_id for update;
+	if v_row.id is null then raise exception 'Preview not found' using errcode = 'P0002'; end if;
+	if v_row.status <> 'building' then
+		raise exception 'Preview is not building' using errcode = '55000';
+	end if;
+	if v_row.lease_token is not null and p_lease_token is distinct from v_row.lease_token then
+		raise exception 'Preview lease mismatch' using errcode = '55000';
+	end if;
+
+	select * into v_surface from public.qorpera_surfaces where id = v_row.surface_id;
+	if p_site_version_id is not null and not exists (
+		select 1 from public.qorpera_company_site_versions v
+		where v.id = p_site_version_id and v.site_id = v_surface.site_id
+	) then
+		raise exception 'Site version does not belong to surface site' using errcode = '42501';
+	end if;
+
+	update public.qorpera_surface_previews
+	set
+		status = p_status,
+		composite_tree_sha = coalesce(p_composite_tree_sha, composite_tree_sha),
+		site_version_id = coalesce(p_site_version_id, site_version_id),
+		conflict_report = p_conflict_report,
+		error_detail = p_error_detail,
+		lease_expires_at = null,
+		lease_token = null
+	where id = p_preview_id
+	returning * into v_row;
+
+	return jsonb_build_object(
+		'previewId', v_row.id,
+		'status', v_row.status,
+		'shortHostId', v_row.short_host_id
+	);
+end $$;
+revoke all on function public.qorpera_surface_complete_preview(uuid, text, text, uuid, jsonb, text, uuid)
+	from public, anon, authenticated;
+grant execute on function public.qorpera_surface_complete_preview(uuid, text, text, uuid, jsonb, text, uuid)
 	to service_role;
 
 create function public.qorpera_surface_describe_company_senses(p_company_id uuid)
@@ -2255,7 +2676,7 @@ language sql stable security definer set search_path = '' as $$
 						jsonb_build_object(
 							'id', ss.id,
 							'title', ss.title,
-							'state', ss.state,
+							'state', case when ss.state = 'reconciling_running' then 'reconciling' else ss.state end,
 							'explorationId', ss.exploration_id,
 							'openChangeCount', (
 								select count(*)::integer

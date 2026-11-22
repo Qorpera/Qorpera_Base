@@ -502,6 +502,42 @@ describe("runner orchestrator boundary", () => {
 				state: "invalid_state",
 			}),
 		);
+		for (const state of ["queued", "running", "reconciling", "discarded"]) {
+			assert.throws(() =>
+				parseRunnerOrchestratorRequest({
+					action: "surface_complete_session_turn",
+					orchestratorId,
+					sessionId,
+					state,
+				}),
+			);
+		}
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "surface_renew_lease",
+				orchestratorId,
+				kind: "session",
+				id: sessionId,
+				leaseToken: jobId,
+			}),
+			{
+				action: "surface_renew_lease",
+				orchestratorId,
+				kind: "session",
+				id: sessionId,
+				leaseToken: jobId,
+				extendSeconds: 300,
+			},
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({
+				action: "surface_renew_lease",
+				orchestratorId,
+				kind: "invalid",
+				id: sessionId,
+				leaseToken: jobId,
+			}),
+		);
 		assert.throws(() =>
 			parseRunnerOrchestratorRequest({
 				action: "surface_complete_session_turn",
@@ -729,6 +765,7 @@ describe("the edge function's route for the one call", () => {
 		const sessionId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 		const jobId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 		const conflictChangeId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+		const leaseToken = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 		const sha1 = "a".repeat(40);
 		const sha2 = "b".repeat(40);
 		const tokenHash = createHash("sha256").update(token).digest("hex");
@@ -744,6 +781,27 @@ describe("the edge function's route for the one call", () => {
 		]);
 
 		calls.length = 0;
+		answer = answers(true, { data: { renewed: true, leaseExpiresAt: "2026-11-22T03:05:00Z" } });
+		const renewRes = await post({
+			action: "surface_renew_lease",
+			orchestratorId,
+			kind: "session",
+			id: sessionId,
+			leaseToken,
+			extendSeconds: 300,
+		});
+		assert.equal(renewRes.status, 200);
+		assert.deepEqual(calls[1], [
+			"qorpera_surface_renew_lease",
+			{
+				p_kind: "session",
+				p_id: sessionId,
+				p_lease_token: leaseToken,
+				p_extend_seconds: 300,
+			},
+		]);
+
+		calls.length = 0;
 		answer = answers(true, { data: { previewId, status: "ready", shortHostId: "ab12cd34", compositeTreeSha: sha1 } });
 		const previewRes = await post({
 			action: "surface_complete_preview",
@@ -752,6 +810,7 @@ describe("the edge function's route for the one call", () => {
 			status: "ready",
 			compositeTreeSha: sha1,
 			siteVersionId,
+			leaseToken,
 		});
 		assert.equal(previewRes.status, 200);
 		assert.deepEqual(calls[1], [
@@ -763,6 +822,7 @@ describe("the edge function's route for the one call", () => {
 				p_site_version_id: siteVersionId,
 				p_conflict_report: null,
 				p_error_detail: null,
+				p_lease_token: leaseToken,
 			},
 		]);
 
@@ -776,6 +836,7 @@ describe("the edge function's route for the one call", () => {
 			replyText: "Prepared changes",
 			notePaths: ["notes/plan.md"],
 			branchHeadSha: sha1,
+			leaseToken,
 		});
 		assert.equal(turnRes.status, 200);
 		assert.deepEqual(calls[1], [
@@ -787,6 +848,7 @@ describe("the edge function's route for the one call", () => {
 				p_question: null,
 				p_note_paths: ["notes/plan.md"],
 				p_branch_head_sha: sha1,
+				p_lease_token: leaseToken,
 			},
 		]);
 
@@ -800,6 +862,8 @@ describe("the edge function's route for the one call", () => {
 			mainBefore: sha1,
 			conflictChangeId,
 			conflictPaths: ["index.html"],
+			preMergeSnapshot: { files: { "identity/tokens.json": "{}" } },
+			leaseToken,
 		});
 		assert.equal(mergeRes.status, 200);
 		assert.deepEqual(calls[1], [
@@ -812,6 +876,8 @@ describe("the edge function's route for the one call", () => {
 				p_conflict_change_id: conflictChangeId,
 				p_conflict_paths: ["index.html"],
 				p_error_detail: null,
+				p_pre_merge_snapshot: { files: { "identity/tokens.json": "{}" } },
+				p_lease_token: leaseToken,
 			},
 		]);
 
@@ -823,6 +889,7 @@ describe("the edge function's route for the one call", () => {
 			jobId,
 			status: "published",
 			publishedHeadSha: sha2,
+			leaseToken,
 		});
 		assert.equal(publishRes.status, 200);
 		assert.deepEqual(calls[1], [
@@ -832,6 +899,7 @@ describe("the edge function's route for the one call", () => {
 				p_status: "published",
 				p_published_head_sha: sha2,
 				p_error_detail: null,
+				p_lease_token: leaseToken,
 			},
 		]);
 	});

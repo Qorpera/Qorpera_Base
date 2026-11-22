@@ -1301,13 +1301,33 @@ export class SurfacesStore {
 			}
 		}
 		this.store.set((state) => {
+			const prev = state.workspaces[workspace.surface.id]?.previewState.primary;
+			const nextPrimary = workspace.previewState.primary;
+			const mergedWorkspace =
+				prev?.previewId &&
+				prev.previewId === nextPrimary.previewId &&
+				nextPrimary.status === "ready" &&
+				!nextPrimary.memberPass &&
+				prev.memberPass
+					? {
+							...workspace,
+							previewState: {
+								...workspace.previewState,
+								primary: {
+									...nextPrimary,
+									doorActionUrl: nextPrimary.doorActionUrl ?? prev.doorActionUrl,
+									memberPass: prev.memberPass,
+								},
+							},
+						}
+					: workspace;
 			const notes = reconcileNotes(state.notes, sessions);
 			const nextPatches =
 				Object.keys(extractedPatches).length > 0
 					? { ...state.studioPatches, ...extractedPatches }
 					: state.studioPatches;
 			return {
-				workspaces: { ...state.workspaces, [workspace.surface.id]: workspace },
+				workspaces: { ...state.workspaces, [workspace.surface.id]: mergedWorkspace },
 				surfaces: state.surfaces.map((surface) =>
 					surface.id === workspace.surface.id ? workspace.surface : surface,
 				),

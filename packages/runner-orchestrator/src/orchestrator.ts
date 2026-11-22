@@ -289,6 +289,18 @@ export interface CloudRoutineWakeOccurrence {
 	scheduledFor: string;
 }
 
+export interface RenewSurfaceLeaseInput {
+	readonly kind: "session" | "preview" | "job";
+	readonly id: string;
+	readonly leaseToken: string;
+	readonly extendSeconds?: number;
+}
+
+export interface RenewSurfaceLeaseResult {
+	readonly renewed: boolean;
+	readonly leaseExpiresAt: string | null;
+}
+
 export interface CompleteSurfacePreviewInput {
 	readonly previewId: string;
 	readonly status: "ready" | "conflicted" | "failed";
@@ -296,6 +308,7 @@ export interface CompleteSurfacePreviewInput {
 	readonly siteVersionId?: string | null;
 	readonly conflictReport?: SurfacePreviewConflict | Readonly<Record<string, unknown>> | null;
 	readonly errorDetail?: string | null;
+	readonly leaseToken?: string | null;
 }
 
 export interface CompleteSurfacePreviewResult {
@@ -307,11 +320,12 @@ export interface CompleteSurfacePreviewResult {
 
 export interface CompleteSurfaceSessionTurnInput {
 	readonly sessionId: string;
-	readonly state: SurfaceSessionState;
+	readonly state: "ready" | "needs_input" | "failed" | "completed";
 	readonly replyText?: string | null;
 	readonly question?: SurfaceSessionQuestion | Readonly<Record<string, unknown>> | null;
 	readonly notePaths?: readonly string[] | null;
 	readonly branchHeadSha?: string | null;
+	readonly leaseToken?: string | null;
 }
 
 export interface CompleteSurfaceSessionTurnResult {
@@ -328,6 +342,8 @@ export interface CompleteSurfaceMergeInput {
 	readonly conflictChangeId?: string | null;
 	readonly conflictPaths?: readonly string[] | null;
 	readonly errorDetail?: string | null;
+	readonly preMergeSnapshot?: Readonly<Record<string, unknown>> | null;
+	readonly leaseToken?: string | null;
 }
 
 export interface CompleteSurfaceMergeResult {
@@ -340,6 +356,7 @@ export interface CompleteSurfacePublishInput {
 	readonly status: "published" | "failed";
 	readonly publishedHeadSha?: string | null;
 	readonly errorDetail?: string | null;
+	readonly leaseToken?: string | null;
 }
 
 export interface CompleteSurfacePublishResult {
@@ -421,6 +438,7 @@ export interface CloudRunnerOrchestratorControlPlane {
 		signal?: AbortSignal,
 	): Promise<{ deferred: boolean } | undefined>;
 	claimSurfaceJobs?(limit?: number, signal?: AbortSignal): Promise<ClaimedSurfaceJobs>;
+	renewSurfaceLease?(input: RenewSurfaceLeaseInput, signal?: AbortSignal): Promise<RenewSurfaceLeaseResult>;
 	completeSurfacePreview?(
 		input: CompleteSurfacePreviewInput,
 		signal?: AbortSignal,
@@ -640,6 +658,14 @@ type CloudRunnerOrchestratorRequest =
 			limit: number;
 	  }
 	| {
+			action: "surface_renew_lease";
+			orchestratorId: string;
+			kind: "session" | "preview" | "job";
+			id: string;
+			leaseToken: string;
+			extendSeconds: number;
+	  }
+	| {
 			action: "surface_complete_preview";
 			orchestratorId: string;
 			previewId: string;
@@ -648,16 +674,18 @@ type CloudRunnerOrchestratorRequest =
 			siteVersionId?: string;
 			conflictReport?: Record<string, unknown>;
 			errorDetail?: string;
+			leaseToken?: string;
 	  }
 	| {
 			action: "surface_complete_session_turn";
 			orchestratorId: string;
 			sessionId: string;
-			state: SurfaceSessionState;
+			state: "ready" | "needs_input" | "failed" | "completed";
 			replyText?: string;
 			question?: Record<string, unknown>;
 			notePaths?: readonly string[];
 			branchHeadSha?: string;
+			leaseToken?: string;
 	  }
 	| {
 			action: "surface_complete_merge";
@@ -669,6 +697,8 @@ type CloudRunnerOrchestratorRequest =
 			conflictChangeId?: string;
 			conflictPaths?: readonly string[];
 			errorDetail?: string;
+			preMergeSnapshot?: Record<string, unknown>;
+			leaseToken?: string;
 	  }
 	| {
 			action: "surface_complete_publish";
@@ -677,6 +707,7 @@ type CloudRunnerOrchestratorRequest =
 			status: "published" | "failed";
 			publishedHeadSha?: string;
 			errorDetail?: string;
+			leaseToken?: string;
 	  };
 
 function requiredUuid(value: string, label: string): void {
@@ -1211,6 +1242,12 @@ function parseOrchestrationClaim(value: unknown): CloudRunnerOrchestrationClaim 
 }
 
 const SURFACE_SESSION_STATE_SET: ReadonlySet<string> = new Set(SURFACE_SESSION_STATES);
+const SURFACE_SESSION_COMPLETION_STATE_SET: ReadonlySet<string> = new Set([
+	"ready",
+	"needs_input",
+	"failed",
+	"completed",
+]);
 const SURFACE_CHANGE_STATUS_SET: ReadonlySet<string> = new Set(SURFACE_CHANGE_STATUSES);
 const SURFACE_SOURCE_KIND_SET: ReadonlySet<string> = new Set(SURFACE_SOURCE_KINDS);
 const SURFACE_AUTOMATION_OUTPUT_MODE_SET: ReadonlySet<string> = new Set(SURFACE_AUTOMATION_OUTPUT_MODES);
@@ -1353,6 +1390,12 @@ function parseClaimedSurfaceSessionJob(value: unknown): ClaimedSurfaceSessionJob
 			};
 		}
 	}
+	const leaseToken =
+		input.leaseToken === undefined
+			? undefined
+			: input.leaseToken === null
+				? null
+				: responseUuid(input.leaseToken, "surface session lease token");
 	return {
 		sessionId: responseUuid(input.sessionId, "surface session id"),
 		surfaceId: responseUuid(input.surfaceId, "surface id"),
@@ -1375,6 +1418,7 @@ function parseClaimedSurfaceSessionJob(value: unknown): ClaimedSurfaceSessionJob
 		...(briefSummary !== undefined ? { briefSummary } : {}),
 		...(retryCount !== undefined ? { retryCount } : {}),
 		...(sponsor !== undefined ? { sponsor } : {}),
+		...(leaseToken !== undefined ? { leaseToken } : {}),
 		placement: parseSurfacePlacementHint(input.placement),
 	};
 }
@@ -1419,6 +1463,12 @@ function parseClaimedSurfacePreviewJob(value: unknown): ClaimedSurfacePreviewJob
 		}
 		changes = input.changes.map((item) => parseClaimedSurfaceChangeRange(item, "preview change"));
 	}
+	const leaseToken =
+		input.leaseToken === undefined
+			? undefined
+			: input.leaseToken === null
+				? null
+				: responseUuid(input.leaseToken, "surface preview lease token");
 	return {
 		previewId: responseUuid(input.previewId, "surface preview id"),
 		surfaceId: responseUuid(input.surfaceId, "surface id"),
@@ -1427,6 +1477,7 @@ function parseClaimedSurfacePreviewJob(value: unknown): ClaimedSurfacePreviewJob
 		baseSha: responseText(input.baseSha, "surface preview base sha", 64),
 		selectedChangeIds: input.selectedChangeIds.map((id) => responseUuid(id, "surface change id")),
 		repositoryKey: optionalResponseString(input.repositoryKey, "surface repository key"),
+		...(leaseToken !== undefined ? { leaseToken } : {}),
 		...(exploration !== undefined ? { exploration } : {}),
 		...(changes !== undefined ? { changes } : {}),
 	};
@@ -1558,12 +1609,28 @@ function parseClaimedSurfaceMergeJob(value: unknown): ClaimedSurfaceMergeJob {
 		}
 		peerSessions = input.peerSessions.map(parseClaimedSurfacePeerSession);
 	}
+	const leaseToken =
+		input.leaseToken === undefined
+			? undefined
+			: input.leaseToken === null
+				? null
+				: responseUuid(input.leaseToken, "surface merge lease token");
+	const preMergeSnapshot =
+		input.preMergeSnapshot === undefined
+			? undefined
+			: input.preMergeSnapshot === null
+				? null
+				: (structuredClone(record(input.preMergeSnapshot, "surface merge pre-merge snapshot")) as Record<
+						string,
+						unknown
+					>);
 	return {
 		jobId: responseUuid(input.jobId, "surface merge job id"),
 		kind: input.kind,
 		surfaceId: responseUuid(input.surfaceId, "surface id"),
 		sessionId,
 		profileId: responseUuid(input.profileId, "surface profile id"),
+		...(leaseToken !== undefined ? { leaseToken } : {}),
 		...(sourceKind !== undefined ? { sourceKind } : {}),
 		repositoryKey: optionalResponseString(input.repositoryKey, "surface repository key"),
 		folderRoot: optionalResponseString(input.folderRoot, "surface folder root"),
@@ -1573,6 +1640,7 @@ function parseClaimedSurfaceMergeJob(value: unknown): ClaimedSurfaceMergeJob {
 		...(sessionState !== undefined ? { sessionState } : {}),
 		...(sessionHasActiveChat !== undefined ? { sessionHasActiveChat } : {}),
 		payload,
+		...(preMergeSnapshot !== undefined ? { preMergeSnapshot } : {}),
 		...(allSessionChangeStatuses !== undefined ? { allSessionChangeStatuses } : {}),
 		...(approvedChanges !== undefined ? { approvedChanges } : {}),
 		...(siblingRemainingChanges !== undefined ? { siblingRemainingChanges } : {}),
@@ -1588,10 +1656,17 @@ function parseClaimedSurfacePublishJob(value: unknown): ClaimedSurfacePublishJob
 		input.payload === null || input.payload === undefined
 			? {}
 			: (structuredClone(record(input.payload, "surface publish payload")) as Record<string, unknown>);
+	const leaseToken =
+		input.leaseToken === undefined
+			? undefined
+			: input.leaseToken === null
+				? null
+				: responseUuid(input.leaseToken, "surface publish lease token");
 	return {
 		jobId: responseUuid(input.jobId, "surface publish job id"),
 		surfaceId: responseUuid(input.surfaceId, "surface id"),
 		profileId: responseUuid(input.profileId, "surface profile id"),
+		...(leaseToken !== undefined ? { leaseToken } : {}),
 		repositoryKey: optionalResponseString(input.repositoryKey, "surface repository key"),
 		siteId,
 		payload,
@@ -1645,6 +1720,18 @@ function parseClaimedSurfaceJobs(value: unknown): ClaimedSurfaceJobs {
 		publishes: rawPublishes.map(parseClaimedSurfacePublishJob),
 		automations: rawAutomations.map(parseClaimedSurfaceAutomationJob),
 	};
+}
+
+function parseRenewSurfaceLeaseResult(value: unknown): RenewSurfaceLeaseResult {
+	const input = record(value, "surface lease renewal");
+	if (typeof input.renewed !== "boolean") {
+		throw new Error("Runner orchestrator returned invalid surface lease renewal flag");
+	}
+	const leaseExpiresAt =
+		input.leaseExpiresAt === null || input.leaseExpiresAt === undefined
+			? null
+			: responseTimestamp(input.leaseExpiresAt, "surface lease expiry");
+	return { renewed: input.renewed, leaseExpiresAt };
 }
 
 function parseCompleteSurfacePreviewResult(value: unknown): CompleteSurfacePreviewResult {
@@ -3992,6 +4079,31 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 		);
 	}
 
+	async renewSurfaceLease(input: RenewSurfaceLeaseInput, signal?: AbortSignal): Promise<RenewSurfaceLeaseResult> {
+		if (input.kind !== "session" && input.kind !== "preview" && input.kind !== "job") {
+			throw new Error("Surface lease kind is invalid");
+		}
+		requiredUuid(input.id, "Surface lease target id");
+		requiredUuid(input.leaseToken, "Surface lease token");
+		const extendSeconds = input.extendSeconds ?? 300;
+		if (!Number.isSafeInteger(extendSeconds) || extendSeconds < 30 || extendSeconds > 900) {
+			throw new Error("Surface lease extendSeconds is outside the supported range");
+		}
+		return parseRenewSurfaceLeaseResult(
+			await this.#request(
+				{
+					action: "surface_renew_lease",
+					orchestratorId: this.#orchestratorId,
+					kind: input.kind,
+					id: input.id,
+					leaseToken: input.leaseToken,
+					extendSeconds,
+				},
+				signal,
+			),
+		);
+	}
+
 	async completeSurfacePreview(
 		input: CompleteSurfacePreviewInput,
 		signal?: AbortSignal,
@@ -4021,6 +4133,11 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 			input.errorDetail === null || input.errorDetail === undefined
 				? undefined
 				: validateSurfaceErrorDetail(input.errorDetail, "Preview error detail");
+		let leaseToken: string | undefined;
+		if (input.leaseToken !== null && input.leaseToken !== undefined) {
+			requiredUuid(input.leaseToken, "Surface lease token");
+			leaseToken = input.leaseToken;
+		}
 		return parseCompleteSurfacePreviewResult(
 			await this.#request(
 				{
@@ -4032,6 +4149,7 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 					...(siteVersionId !== undefined ? { siteVersionId } : {}),
 					...(conflictReport !== undefined ? { conflictReport } : {}),
 					...(errorDetail !== undefined ? { errorDetail } : {}),
+					...(leaseToken !== undefined ? { leaseToken } : {}),
 				},
 				signal,
 			),
@@ -4043,7 +4161,7 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 		signal?: AbortSignal,
 	): Promise<CompleteSurfaceSessionTurnResult> {
 		requiredUuid(input.sessionId, "Surface session id");
-		if (!SURFACE_SESSION_STATE_SET.has(input.state)) {
+		if (!SURFACE_SESSION_COMPLETION_STATE_SET.has(input.state)) {
 			throw new Error("Surface session state is invalid");
 		}
 		let replyText: string | undefined;
@@ -4069,6 +4187,11 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 			input.branchHeadSha === null || input.branchHeadSha === undefined
 				? undefined
 				: validateSurfaceShortText(input.branchHeadSha, "Surface branch head sha", 64);
+		let leaseToken: string | undefined;
+		if (input.leaseToken !== null && input.leaseToken !== undefined) {
+			requiredUuid(input.leaseToken, "Surface lease token");
+			leaseToken = input.leaseToken;
+		}
 		return parseCompleteSurfaceSessionTurnResult(
 			await this.#request(
 				{
@@ -4080,6 +4203,7 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 					...(question !== undefined ? { question } : {}),
 					...(notePaths !== undefined ? { notePaths } : {}),
 					...(branchHeadSha !== undefined ? { branchHeadSha } : {}),
+					...(leaseToken !== undefined ? { leaseToken } : {}),
 				},
 				signal,
 			),
@@ -4115,6 +4239,15 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 			input.errorDetail === null || input.errorDetail === undefined
 				? undefined
 				: validateSurfaceErrorDetail(input.errorDetail, "Merge error detail");
+		const preMergeSnapshot =
+			input.preMergeSnapshot === null || input.preMergeSnapshot === undefined
+				? undefined
+				: validateSurfaceRecordPayload(input.preMergeSnapshot, "Merge pre-merge snapshot", 96 * 1024);
+		let leaseToken: string | undefined;
+		if (input.leaseToken !== null && input.leaseToken !== undefined) {
+			requiredUuid(input.leaseToken, "Surface lease token");
+			leaseToken = input.leaseToken;
+		}
 		return parseCompleteSurfaceMergeResult(
 			await this.#request(
 				{
@@ -4127,6 +4260,8 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 					...(conflictChangeId !== undefined ? { conflictChangeId } : {}),
 					...(conflictPaths !== undefined ? { conflictPaths } : {}),
 					...(errorDetail !== undefined ? { errorDetail } : {}),
+					...(preMergeSnapshot !== undefined ? { preMergeSnapshot } : {}),
+					...(leaseToken !== undefined ? { leaseToken } : {}),
 				},
 				signal,
 			),
@@ -4149,6 +4284,11 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 			input.errorDetail === null || input.errorDetail === undefined
 				? undefined
 				: validateSurfaceErrorDetail(input.errorDetail, "Publish error detail");
+		let leaseToken: string | undefined;
+		if (input.leaseToken !== null && input.leaseToken !== undefined) {
+			requiredUuid(input.leaseToken, "Surface lease token");
+			leaseToken = input.leaseToken;
+		}
 		return parseCompleteSurfacePublishResult(
 			await this.#request(
 				{
@@ -4158,6 +4298,7 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 					status: input.status,
 					...(publishedHeadSha !== undefined ? { publishedHeadSha } : {}),
 					...(errorDetail !== undefined ? { errorDetail } : {}),
+					...(leaseToken !== undefined ? { leaseToken } : {}),
 				},
 				signal,
 			),

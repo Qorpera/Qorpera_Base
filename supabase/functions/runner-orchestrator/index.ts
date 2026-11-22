@@ -241,6 +241,15 @@ Deno.serve(async (request) => {
 				p_limit: action.limit,
 			};
 			break;
+		case "surface_renew_lease":
+			rpc = "qorpera_surface_renew_lease";
+			args = {
+				p_kind: action.kind,
+				p_id: action.id,
+				p_lease_token: action.leaseToken,
+				p_extend_seconds: action.extendSeconds,
+			};
+			break;
 		case "surface_complete_preview":
 			rpc = "qorpera_surface_complete_preview";
 			args = {
@@ -250,6 +259,7 @@ Deno.serve(async (request) => {
 				p_site_version_id: action.siteVersionId ?? null,
 				p_conflict_report: action.conflictReport ?? null,
 				p_error_detail: action.errorDetail ?? null,
+				p_lease_token: action.leaseToken ?? null,
 			};
 			break;
 		case "surface_complete_session_turn":
@@ -261,6 +271,7 @@ Deno.serve(async (request) => {
 				p_question: action.question ?? null,
 				p_note_paths: action.notePaths ?? null,
 				p_branch_head_sha: action.branchHeadSha ?? null,
+				p_lease_token: action.leaseToken ?? null,
 			};
 			break;
 		case "surface_complete_merge":
@@ -273,6 +284,8 @@ Deno.serve(async (request) => {
 				p_conflict_change_id: action.conflictChangeId ?? null,
 				p_conflict_paths: action.conflictPaths ?? null,
 				p_error_detail: action.errorDetail ?? null,
+				p_pre_merge_snapshot: action.preMergeSnapshot ?? null,
+				p_lease_token: action.leaseToken ?? null,
 			};
 			break;
 		case "surface_complete_publish":
@@ -282,6 +295,7 @@ Deno.serve(async (request) => {
 				p_status: action.status,
 				p_published_head_sha: action.publishedHeadSha ?? null,
 				p_error_detail: action.errorDetail ?? null,
+				p_lease_token: action.leaseToken ?? null,
 			};
 			break;
 	}

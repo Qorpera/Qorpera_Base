@@ -127,7 +127,9 @@ export function createDefaultSurfaceWorkerConfig(
 								providerAdapterId: context.providerAdapter.adapterId,
 								status: error.status,
 							});
-							return;
+							throw new Error(
+								`Surface session execution is not enabled on provider ${context.providerAdapter.adapterId}`,
+							);
 						}
 						throw error;
 					}
@@ -139,6 +141,9 @@ export function createDefaultSurfaceWorkerConfig(
 					machineId,
 					providerAdapterId: context.providerAdapter.adapterId,
 				});
+				throw new Error(
+					`Surface session dispatch is not configured for provider ${context.providerAdapter.adapterId}`,
+				);
 			}),
 		runPreviewJob: handlers.runPreviewJob,
 		runMergeJob: handlers.runMergeJob,
@@ -161,9 +166,37 @@ export function createDefaultSurfaceWorkerConfig(
 }
 
 export function createSurfaceWorkerLoop(
-	controlPlane: Pick<SupabaseCloudRunnerOrchestratorControlPlane, "claimSurfaceJobs">,
+	controlPlane: Pick<SupabaseCloudRunnerOrchestratorControlPlane, "claimSurfaceJobs"> &
+		Partial<Pick<SupabaseCloudRunnerOrchestratorControlPlane, "completeSurfaceSessionTurn" | "renewSurfaceLease">>,
 	options: CloudRunnerOrchestratorSurfaceWorkerOptions,
 ): SurfaceWorkerLoop {
+	const reportSessionFailure = controlPlane.completeSurfaceSessionTurn
+		? async (
+				input: { readonly sessionId: string; readonly leaseToken?: string | null; readonly errorDetail: string },
+				signal: AbortSignal,
+			) => {
+				await controlPlane.completeSurfaceSessionTurn!(
+					{
+						sessionId: input.sessionId,
+						state: "failed",
+						replyText: input.errorDetail,
+						...(input.leaseToken !== undefined ? { leaseToken: input.leaseToken } : {}),
+					},
+					signal,
+				);
+			}
+		: undefined;
+	const renewLease = controlPlane.renewSurfaceLease
+		? (
+				input: {
+					readonly kind: "session" | "preview" | "job";
+					readonly id: string;
+					readonly leaseToken: string;
+					readonly extendSeconds?: number;
+				},
+				signal: AbortSignal,
+			) => controlPlane.renewSurfaceLease!(input, signal)
+		: undefined;
 	return new SurfaceWorkerLoop(
 		{
 			claimPendingJobs: (limit, signal) => controlPlane.claimSurfaceJobs(limit, signal),
@@ -173,6 +206,8 @@ export function createSurfaceWorkerLoop(
 			...(options.runMergeJob ? { runMergeJob: options.runMergeJob } : {}),
 			...(options.runPublishJob ? { runPublishJob: options.runPublishJob } : {}),
 			...(options.runAutomationJob ? { runAutomationJob: options.runAutomationJob } : {}),
+			...(reportSessionFailure ? { reportSessionFailure } : {}),
+			...(renewLease ? { renewLease } : {}),
 			...(options.onEvent ? { onEvent: options.onEvent } : {}),
 		},
 		{
@@ -263,7 +298,7 @@ export function cloudRunnerOrchestratorServiceConfigFromEnvironment(
 		reconcileIntervalMs,
 		dispatchConcurrency,
 		...(wakeMode === "realtime" ? { wake: { backstopMs: wakeBackstopMs } } : {}),
-		surfaceWorkerEnabled: environment.QORPERA_SURFACE_WORKER?.trim() !== "0",
+		surfaceWorkerEnabled: environment.QORPERA_SURFACE_WORKER?.trim() === "1",
 	};
 }
 

@@ -285,7 +285,7 @@ describe("runner orchestrator service boundary", () => {
 		await expect(request).rejects.toThrow("service stopping");
 	});
 
-	it("enables surfaceWorkerEnabled by default from environment and honors QORPERA_SURFACE_WORKER=0 kill switch", () => {
+	it("defaults surfaceWorkerEnabled to off and enables it only when QORPERA_SURFACE_WORKER=1", () => {
 		const baseEnv = {
 			QORPERA_SUPABASE_URL: "https://project.supabase.co",
 			QORPERA_SUPABASE_PUBLISHABLE_KEY: "publishable-key",
@@ -296,7 +296,7 @@ describe("runner orchestrator service boundary", () => {
 			QORPERA_RUNNER_PROVIDER_ADAPTER: "managed",
 			QORPERA_RUNNER_PROVIDER_TOKEN: "provider-service-token",
 		};
-		expect(cloudRunnerOrchestratorServiceConfigFromEnvironment(baseEnv).surfaceWorkerEnabled).toBe(true);
+		expect(cloudRunnerOrchestratorServiceConfigFromEnvironment(baseEnv).surfaceWorkerEnabled).toBe(false);
 		expect(
 			cloudRunnerOrchestratorServiceConfigFromEnvironment({ ...baseEnv, QORPERA_SURFACE_WORKER: "1" })
 				.surfaceWorkerEnabled,
@@ -373,7 +373,9 @@ describe("runner orchestrator service boundary", () => {
 			});
 			expect(events).toHaveLength(0);
 
-			await defaultConfig.dispatchSessionTurn(sampleSession, runnerId, new AbortController().signal);
+			await expect(
+				defaultConfig.dispatchSessionTurn(sampleSession, runnerId, new AbortController().signal),
+			).rejects.toThrow(/not enabled/);
 			await defaultConfig.runAutomationJob?.(
 				{
 					automationId: runnerId,

@@ -95,6 +95,7 @@ function parseSurfaceSession(value: unknown): ClaimedSurfaceSessionJob {
 			"briefSummary",
 			"retryCount",
 			"sponsor",
+			"leaseToken",
 			"placement",
 		],
 		"Surface session",
@@ -206,6 +207,12 @@ function parseSurfaceSession(value: unknown): ClaimedSurfaceSessionJob {
 		input.briefSummary === undefined
 			? undefined
 			: optionalBoundedString(input.briefSummary, "Surface brief summary", 4000);
+	const leaseToken =
+		input.leaseToken === undefined
+			? undefined
+			: input.leaseToken === null
+				? null
+				: uuid(input.leaseToken, "Surface lease token");
 	return {
 		sessionId: uuid(input.sessionId, "Surface session id"),
 		surfaceId: uuid(input.surfaceId, "Surface id"),
@@ -228,6 +235,7 @@ function parseSurfaceSession(value: unknown): ClaimedSurfaceSessionJob {
 		...(briefSummary !== undefined ? { briefSummary } : {}),
 		...(retryCount !== undefined ? { retryCount } : {}),
 		...(sponsor !== undefined ? { sponsor } : {}),
+		...(leaseToken !== undefined ? { leaseToken } : {}),
 		placement: {
 			strategy: placement.strategy,
 			machineId: placementMachineId,
@@ -503,6 +511,8 @@ export class HttpCloudRunnerProviderService {
 	readonly #trustedSource?: string;
 	readonly #tls?: CloudRunnerProviderServiceTlsConfig;
 	readonly #nodeObservations?: ProviderNodeObservability;
+	readonly #surfaceDeliveries = new Set<Promise<void>>();
+	#surfaceController = new AbortController();
 	#nodeObservationsStarted = false;
 	#server?: HttpServer | HttpsServer;
 
@@ -540,6 +550,7 @@ export class HttpCloudRunnerProviderService {
 
 	async start(): Promise<number> {
 		if (this.#server) throw new Error("Runner provider service is already started");
+		this.#surfaceController = new AbortController();
 		const handle = (request: IncomingMessage, response: ServerResponse): void => {
 			void this.#handle(request, response);
 		};
@@ -570,6 +581,7 @@ export class HttpCloudRunnerProviderService {
 		const server = this.#server;
 		this.#server = undefined;
 		this.#nodeObservationsStarted = false;
+		this.#surfaceController.abort(new Error("Provider service stopping"));
 		try {
 			this.#nodeObservations?.stop();
 		} catch {
@@ -579,6 +591,7 @@ export class HttpCloudRunnerProviderService {
 		await new Promise<void>((resolve, reject) => {
 			server.close((error) => (error ? reject(error) : resolve()));
 		});
+		await Promise.allSettled([...this.#surfaceDeliveries]);
 		await this.#backend.close?.();
 	}
 
@@ -646,13 +659,32 @@ export class HttpCloudRunnerProviderService {
 			const parsed = parseRequest(JSON.parse(encoded) as unknown, this.#backend.adapterId);
 			action = parsed.action;
 			if (parsed.action === "surface_session") {
-				if (!this.#backend.deliverSurfaceSession) {
+				const deliver = this.#backend.deliverSurfaceSession;
+				if (!deliver) {
 					response
 						.writeHead(501, { "content-type": "application/json" })
 						.end(`${JSON.stringify({ error: "Surface session execution is not enabled on this provider" })}\n`);
 					return;
 				}
-				await this.#backend.deliverSurfaceSession(parsed.session, parsed.machineId, controller.signal);
+				// WHY: Acknowledge delivery immediately with 202 so a long surface turn never stalls orchestrator claim ticks.
+				const deliverySignal = this.#surfaceController.signal;
+				const delivery = Promise.resolve()
+					.then(() => deliver(parsed.session, parsed.machineId, deliverySignal))
+					.catch((error) => {
+						if (deliverySignal.aborted) return;
+						console.error(
+							JSON.stringify({
+								schema: "qorpera.provider-surface-error/v1",
+								providerAdapter: this.#backend.adapterId,
+								sessionId: parsed.session.sessionId,
+								errorCategory: error instanceof Error ? error.name : "unknown",
+							}),
+						);
+					})
+					.finally(() => {
+						this.#surfaceDeliveries.delete(delivery);
+					});
+				this.#surfaceDeliveries.add(delivery);
 				response.writeHead(202, { "content-type": "application/json" }).end('{"ok":true}\n');
 				return;
 			}

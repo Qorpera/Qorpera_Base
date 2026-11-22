@@ -91,6 +91,7 @@ export interface SurfaceSessionTurnInput {
 	readonly originKind?: string;
 	readonly originRef?: unknown;
 	readonly conflictPaths?: readonly string[] | null;
+	readonly leaseToken?: string | null;
 }
 
 export interface SurfaceSessionTurnCompletion {
@@ -100,6 +101,7 @@ export interface SurfaceSessionTurnCompletion {
 	readonly question: SurfaceSessionQuestion | null;
 	readonly notePaths: readonly string[] | null;
 	readonly branchHeadSha: string | null;
+	readonly leaseToken?: string | null;
 }
 
 export interface SurfaceSessionCompletionPort {
@@ -203,6 +205,7 @@ export interface SurfaceSessionDeliveryJob {
 	readonly identityFolderRoot?: string | null;
 	readonly retryCount?: number;
 	readonly sponsor?: { readonly sponsorBindingId: string; readonly sponsorVersion: number } | null;
+	readonly leaseToken?: string | null;
 }
 
 export interface SurfaceSessionProviderHookFailure {
@@ -589,6 +592,7 @@ export async function runSurfaceSessionTurn(
 				question,
 				notePaths,
 				branchHeadSha,
+				...(input.leaseToken !== undefined ? { leaseToken: input.leaseToken } : {}),
 			},
 			signal,
 		);
@@ -615,6 +619,7 @@ export async function runSurfaceSessionTurn(
 				question: null,
 				notePaths: null,
 				branchHeadSha: null,
+				...(input.leaseToken !== undefined ? { leaseToken: input.leaseToken } : {}),
 			},
 			completionSignal,
 		);
@@ -658,6 +663,7 @@ function deliveryJobToTurnInput(job: SurfaceSessionDeliveryJob): SurfaceSessionT
 		explorationVariantLabel: job.explorationVariantLabel ?? null,
 		originKind: job.originKind,
 		originRef: job.originRef,
+		...(job.leaseToken !== undefined ? { leaseToken: job.leaseToken } : {}),
 	};
 }
 

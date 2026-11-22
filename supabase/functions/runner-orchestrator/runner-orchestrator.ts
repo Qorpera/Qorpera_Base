@@ -3,18 +3,10 @@ const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_BODY_BYTES = 128 * 1024;
 const SURFACE_PREVIEW_COMPLETION_STATUSES = new Set(["ready", "conflicted", "failed"]);
-const SURFACE_SESSION_STATES = new Set([
-	"queued",
-	"running",
-	"needs_input",
-	"ready",
-	"reconciling",
-	"completed",
-	"discarded",
-	"failed",
-]);
+const SURFACE_SESSION_COMPLETION_STATES = new Set(["needs_input", "ready", "completed", "failed"]);
 const SURFACE_MERGE_COMPLETION_STATUSES = new Set(["landed", "conflicted", "failed"]);
 const SURFACE_PUBLISH_COMPLETION_STATUSES = new Set(["published", "failed"]);
+const SURFACE_LEASE_KINDS = new Set(["session", "preview", "job"]);
 
 /** The per-company folder drains (folder core C4, P29: deploy/first-node/RUNTIME-COMPANY-FOLDER-LISTENER.md §9): each name
  * the orchestrator may ask for, its due list's and one company's RPC (`(p_after_environment uuid, p_limit integer)` and
@@ -173,6 +165,14 @@ export type RunnerOrchestratorRequest =
 			limit: number;
 	  }
 	| {
+			action: "surface_renew_lease";
+			orchestratorId: string;
+			kind: "session" | "preview" | "job";
+			id: string;
+			leaseToken: string;
+			extendSeconds: number;
+	  }
+	| {
 			action: "surface_complete_preview";
 			orchestratorId: string;
 			previewId: string;
@@ -181,16 +181,18 @@ export type RunnerOrchestratorRequest =
 			siteVersionId?: string;
 			conflictReport?: Record<string, unknown>;
 			errorDetail?: string;
+			leaseToken?: string;
 	  }
 	| {
 			action: "surface_complete_session_turn";
 			orchestratorId: string;
 			sessionId: string;
-			state: "queued" | "running" | "needs_input" | "ready" | "reconciling" | "completed" | "discarded" | "failed";
+			state: "needs_input" | "ready" | "completed" | "failed";
 			replyText?: string;
 			question?: Record<string, unknown>;
 			notePaths?: string[];
 			branchHeadSha?: string;
+			leaseToken?: string;
 	  }
 	| {
 			action: "surface_complete_merge";
@@ -202,6 +204,8 @@ export type RunnerOrchestratorRequest =
 			conflictChangeId?: string;
 			conflictPaths?: string[];
 			errorDetail?: string;
+			preMergeSnapshot?: Record<string, unknown>;
+			leaseToken?: string;
 	  }
 	| {
 			action: "surface_complete_publish";
@@ -210,6 +214,7 @@ export type RunnerOrchestratorRequest =
 			status: "published" | "failed";
 			publishedHeadSha?: string;
 			errorDetail?: string;
+			leaseToken?: string;
 	  };
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -489,6 +494,19 @@ export function parseRunnerOrchestratorRequest(value: unknown): RunnerOrchestrat
 				orchestratorId,
 				limit: input.limit === undefined ? 16 : integer(input.limit, "surface job limit", 64),
 			};
+		case "surface_renew_lease": {
+			if (typeof input.kind !== "string" || !SURFACE_LEASE_KINDS.has(input.kind)) {
+				throw new Error("Invalid surface lease kind");
+			}
+			return {
+				action: input.action,
+				orchestratorId,
+				kind: input.kind as "session" | "preview" | "job",
+				id: uuid(input.id, "surface lease target id"),
+				leaseToken: uuid(input.leaseToken, "surface lease token"),
+				extendSeconds: input.extendSeconds === undefined ? 300 : seconds(input.extendSeconds, "surface lease seconds"),
+			};
+		}
 		case "surface_complete_preview": {
 			if (typeof input.status !== "string" || !SURFACE_PREVIEW_COMPLETION_STATUSES.has(input.status)) {
 				throw new Error("Invalid surface preview status");
@@ -510,25 +528,20 @@ export function parseRunnerOrchestratorRequest(value: unknown): RunnerOrchestrat
 				...(input.errorDetail === null || input.errorDetail === undefined
 					? {}
 					: { errorDetail: errorDetail(input.errorDetail, "preview error detail") }),
+				...(input.leaseToken === null || input.leaseToken === undefined
+					? {}
+					: { leaseToken: uuid(input.leaseToken, "surface lease token") }),
 			};
 		}
 		case "surface_complete_session_turn": {
-			if (typeof input.state !== "string" || !SURFACE_SESSION_STATES.has(input.state)) {
+			if (typeof input.state !== "string" || !SURFACE_SESSION_COMPLETION_STATES.has(input.state)) {
 				throw new Error("Invalid surface session state");
 			}
 			return {
 				action: input.action,
 				orchestratorId,
 				sessionId: uuid(input.sessionId, "surface session id"),
-				state: input.state as
-					| "queued"
-					| "running"
-					| "needs_input"
-					| "ready"
-					| "reconciling"
-					| "completed"
-					| "discarded"
-					| "failed",
+				state: input.state as "needs_input" | "ready" | "completed" | "failed",
 				...(input.replyText === null || input.replyText === undefined
 					? {}
 					: { replyText: surfaceReplyText(input.replyText, "surface session reply") }),
@@ -541,6 +554,9 @@ export function parseRunnerOrchestratorRequest(value: unknown): RunnerOrchestrat
 				...(input.branchHeadSha === null || input.branchHeadSha === undefined
 					? {}
 					: { branchHeadSha: text(input.branchHeadSha, "surface branch head sha", 64) }),
+				...(input.leaseToken === null || input.leaseToken === undefined
+					? {}
+					: { leaseToken: uuid(input.leaseToken, "surface lease token") }),
 			};
 		}
 		case "surface_complete_merge": {
@@ -567,6 +583,12 @@ export function parseRunnerOrchestratorRequest(value: unknown): RunnerOrchestrat
 				...(input.errorDetail === null || input.errorDetail === undefined
 					? {}
 					: { errorDetail: errorDetail(input.errorDetail, "merge error detail") }),
+				...(input.preMergeSnapshot === null || input.preMergeSnapshot === undefined
+					? {}
+					: { preMergeSnapshot: boundedRecord(input.preMergeSnapshot, "merge pre-merge snapshot", 96 * 1024) }),
+				...(input.leaseToken === null || input.leaseToken === undefined
+					? {}
+					: { leaseToken: uuid(input.leaseToken, "surface lease token") }),
 			};
 		}
 		case "surface_complete_publish": {
@@ -584,6 +606,9 @@ export function parseRunnerOrchestratorRequest(value: unknown): RunnerOrchestrat
 				...(input.errorDetail === null || input.errorDetail === undefined
 					? {}
 					: { errorDetail: errorDetail(input.errorDetail, "publish error detail") }),
+				...(input.leaseToken === null || input.leaseToken === undefined
+					? {}
+					: { leaseToken: uuid(input.leaseToken, "surface lease token") }),
 			};
 		}
 		default:

@@ -772,6 +772,7 @@ describe("runner provider HTTP service", () => {
 				sponsorBindingId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
 				sponsorVersion: 4,
 			},
+			leaseToken: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
 			placement: {
 				strategy: "reuse_machine",
 				machineId,
@@ -780,7 +781,13 @@ describe("runner provider HTTP service", () => {
 			},
 		};
 
-		const deliverSurfaceSession = vi.fn(async () => undefined);
+		let releaseDelivery!: () => void;
+		const deliveryBlocker = new Promise<void>((resolve) => {
+			releaseDelivery = resolve;
+		});
+		const deliverSurfaceSession = vi.fn(async () => {
+			await deliveryBlocker;
+		});
 		const enabledProvider: CloudRunnerProviderServiceBackend = {
 			...backend(),
 			deliverSurfaceSession,
@@ -807,8 +814,10 @@ describe("runner provider HTTP service", () => {
 		await expect(
 			enabledAdapter.deliverSurfaceSession(session, machineId, new AbortController().signal),
 		).resolves.toBeUndefined();
+		await new Promise((resolve) => setTimeout(resolve, 10));
 		expect(deliverSurfaceSession).toHaveBeenCalledTimes(2);
 		expect(deliverSurfaceSession).toHaveBeenLastCalledWith(session, machineId, expect.any(AbortSignal));
+		releaseDelivery();
 
 		const disabledService = new HttpCloudRunnerProviderService(backend(), token);
 		services.push(disabledService);

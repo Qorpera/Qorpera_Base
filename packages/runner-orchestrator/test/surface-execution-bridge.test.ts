@@ -110,8 +110,26 @@ async function createGitSurfaceFixture() {
 
 function createInMemoryCompanyFolder(initial: Record<string, string> = {}) {
 	const files = new Map<string, string>(Object.entries(initial));
+	const versions = new Map<string, number>();
+	for (const key of files.keys()) versions.set(key, 1);
+	let seq = 1;
 	const writeCalls: { path: string; content: string }[] = [];
 	const deleteCalls: string[] = [];
+	const commitCalls: readonly { path: string; expectedVersion: string | null; content: string | null }[][] = [];
+	const versionOf = (path: string): string | null => {
+		const ver = versions.get(path);
+		return ver === undefined ? null : `v${ver}`;
+	};
+	const mutateExternal = (path: string, content: string | null): void => {
+		seq += 1;
+		if (content === null) {
+			files.delete(path);
+			versions.delete(path);
+		} else {
+			files.set(path, content);
+			versions.set(path, seq);
+		}
+	};
 	const folder: SurfaceCompanyFolderPort = {
 		async readFiles({ paths }) {
 			const out: Record<string, string | null> = {};
@@ -120,16 +138,45 @@ function createInMemoryCompanyFolder(initial: Record<string, string> = {}) {
 			}
 			return out;
 		},
-		async writeFile({ path, content }) {
-			writeCalls.push({ path, content });
-			files.set(path, content);
+		async readFilesWithVersions({ paths }) {
+			const out: Record<string, { readonly content: string | null; readonly version: string | null }> = {};
+			for (const path of paths) {
+				out[path] = {
+					content: files.has(path) ? (files.get(path) as string) : null,
+					version: versionOf(path),
+				};
+			}
+			return out;
 		},
-		async deleteFile({ path }) {
-			deleteCalls.push(path);
-			files.delete(path);
+		async commitFiles({ operations }) {
+			const conflictPaths: string[] = [];
+			for (const op of operations) {
+				if (versionOf(op.path) !== op.expectedVersion) {
+					conflictPaths.push(op.path);
+				}
+			}
+			if (conflictPaths.length > 0) {
+				return { status: "conflict", conflictPaths };
+			}
+			(commitCalls as { path: string; expectedVersion: string | null; content: string | null }[][]).push(
+				operations.map((op) => ({ ...op })),
+			);
+			seq += 1;
+			for (const op of operations) {
+				if (op.content === null) {
+					deleteCalls.push(op.path);
+					files.delete(op.path);
+					versions.delete(op.path);
+				} else {
+					writeCalls.push({ path: op.path, content: op.content });
+					files.set(op.path, op.content);
+					versions.set(op.path, seq);
+				}
+			}
+			return { status: "saved" };
 		},
 	};
-	return { files, writeCalls, deleteCalls, folder };
+	return { files, writeCalls, deleteCalls, commitCalls, mutateExternal, folder };
 }
 
 describe("surface execution bridge helpers", () => {
@@ -829,6 +876,227 @@ describe("surface execution bridge Company Folder studio patches and publishing"
 		expect(mem.files.get("identity/tokens.css")).toBe(priorCss);
 	});
 
+	it("fails closed without atomic CAS, rejects concurrent folder edits atomically, and restores undo from durable DB snapshots after restart", async () => {
+		const profileId = randomUUID();
+		const surfaceId = randomUUID();
+		const sessionId = randomUUID();
+		const changeId = randomUUID();
+		const leaseToken = randomUUID();
+		const priorTokens = `${JSON.stringify({ colors: { accent: "#111111" } }, null, 2)}\n`;
+		const priorVoice = "Calm and crisp.\n";
+
+		const legacyWrite = vi.fn().mockResolvedValue(undefined);
+		const legacyComplete = vi.fn().mockResolvedValue(undefined);
+		const legacyHandlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview: vi.fn(),
+				completeSurfaceMerge: legacyComplete,
+				completeSurfacePublish: vi.fn(),
+			},
+			folder: {
+				readFiles: vi.fn().mockResolvedValue({ "identity/voice.md": priorVoice }),
+				writeFile: legacyWrite,
+				deleteFile: vi.fn(),
+			},
+		});
+		const legacyJobId = randomUUID();
+		await legacyHandlers.runMergeJob(
+			{
+				jobId: legacyJobId,
+				kind: "land_change",
+				surfaceId,
+				sessionId,
+				profileId,
+				leaseToken,
+				sourceKind: "folder",
+				repositoryKey: null,
+				folderRoot: "identity",
+				payload: { changeIds: [changeId] },
+				approvedChanges: [
+					{
+						changeId,
+						kind: "folder_patch",
+						parentSha: null,
+						headSha: null,
+						title: "Rewrite voice",
+						summary: "",
+						patchManifest: [{ op: "write_text", path: "identity/voice.md", content: "New voice.\n" }],
+						affectedPaths: ["identity/voice.md"],
+					},
+				],
+			},
+			new AbortController().signal,
+		);
+		expect(legacyWrite).not.toHaveBeenCalled();
+		expect(legacyComplete).toHaveBeenCalledWith(
+			expect.objectContaining({
+				jobId: legacyJobId,
+				status: "failed",
+				leaseToken,
+				errorDetail: expect.stringContaining("compare-and-swap"),
+			}),
+			expect.any(AbortSignal),
+		);
+
+		const mem = createInMemoryCompanyFolder({
+			"identity/tokens.json": priorTokens,
+			"identity/voice.md": priorVoice,
+		});
+		const racingFolder: SurfaceCompanyFolderPort = {
+			...mem.folder,
+			async readFilesWithVersions(input, signal) {
+				const snap = await mem.folder.readFilesWithVersions!(input, signal);
+				mem.mutateExternal("identity/voice.md", "Concurrent edit from another session.\n");
+				return snap;
+			},
+		};
+		const raceComplete = vi.fn().mockResolvedValue(undefined);
+		const raceHandlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview: vi.fn(),
+				completeSurfaceMerge: raceComplete,
+				completeSurfacePublish: vi.fn(),
+			},
+			folder: racingFolder,
+		});
+		const raceJobId = randomUUID();
+		await raceHandlers.runMergeJob(
+			{
+				jobId: raceJobId,
+				kind: "land_change",
+				surfaceId,
+				sessionId,
+				profileId,
+				leaseToken,
+				sourceKind: "folder",
+				repositoryKey: null,
+				folderRoot: "identity",
+				payload: { changeIds: [changeId] },
+				approvedChanges: [
+					{
+						changeId,
+						kind: "folder_patch",
+						parentSha: null,
+						headSha: null,
+						title: "Update tokens and voice",
+						summary: "",
+						patchManifest: [
+							{ op: "merge_json", path: "identity/tokens.json", patch: { colors: { accent: "#ff0000" } } },
+							{ op: "write_text", path: "identity/voice.md", content: "Stale overwrite.\n" },
+						],
+						affectedPaths: ["identity/tokens.json", "identity/voice.md"],
+					},
+				],
+			},
+			new AbortController().signal,
+		);
+		expect(raceComplete).toHaveBeenCalledWith(
+			expect.objectContaining({
+				jobId: raceJobId,
+				status: "conflicted",
+				conflictChangeId: changeId,
+				conflictPaths: ["identity/voice.md"],
+				leaseToken,
+			}),
+			expect.any(AbortSignal),
+		);
+		expect(mem.files.get("identity/tokens.json")).toBe(priorTokens);
+		expect(mem.files.get("identity/voice.md")).toBe("Concurrent edit from another session.\n");
+
+		const durableComplete = vi.fn().mockResolvedValue(undefined);
+		const writerHandlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview: vi.fn(),
+				completeSurfaceMerge: durableComplete,
+				completeSurfacePublish: vi.fn(),
+			},
+			folder: mem.folder,
+		});
+		const landJobId = randomUUID();
+		await writerHandlers.runMergeJob(
+			{
+				jobId: landJobId,
+				kind: "land_change",
+				surfaceId,
+				sessionId,
+				profileId,
+				leaseToken,
+				sourceKind: "folder",
+				repositoryKey: null,
+				folderRoot: "identity",
+				payload: { changeIds: [changeId] },
+				approvedChanges: [
+					{
+						changeId,
+						kind: "folder_patch",
+						parentSha: null,
+						headSha: null,
+						title: "Set durable accent",
+						summary: "",
+						patchManifest: [
+							{ op: "merge_json", path: "identity/tokens.json", patch: { colors: { accent: "#334455" } } },
+						],
+						affectedPaths: ["identity/tokens.json"],
+					},
+				],
+			},
+			new AbortController().signal,
+		);
+		const landCall = durableComplete.mock.calls[0]?.[0];
+		expect(landCall.status).toBe("landed");
+		expect(landCall.leaseToken).toBe(leaseToken);
+		expect(landCall.preMergeSnapshot).toMatchObject({
+			snapshotId: landCall.mainBefore,
+			folderRoot: "identity",
+			changeIds: [changeId],
+			filesBefore: { "identity/tokens.json": priorTokens, "identity/tokens.css": null },
+		});
+
+		const restartedComplete = vi.fn().mockResolvedValue(undefined);
+		const restartedHandlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview: vi.fn(),
+				completeSurfaceMerge: restartedComplete,
+				completeSurfacePublish: vi.fn(),
+			},
+			folder: mem.folder,
+		});
+		const undoJobId = randomUUID();
+		const undoLease = randomUUID();
+		await restartedHandlers.runMergeJob(
+			{
+				jobId: undoJobId,
+				kind: "undo_change",
+				surfaceId,
+				sessionId,
+				profileId,
+				leaseToken: undoLease,
+				sourceKind: "folder",
+				repositoryKey: null,
+				folderRoot: "identity",
+				payload: {
+					changeId,
+					landedMainBefore: landCall.mainBefore,
+					landedMainAfter: landCall.mainAfter,
+				},
+				preMergeSnapshot: landCall.preMergeSnapshot,
+			},
+			new AbortController().signal,
+		);
+		expect(restartedComplete).toHaveBeenCalledWith(
+			expect.objectContaining({
+				jobId: undoJobId,
+				status: "landed",
+				mainBefore: landCall.mainAfter,
+				mainAfter: landCall.mainBefore,
+				leaseToken: undoLease,
+			}),
+			expect.any(AbortSignal),
+		);
+		expect(mem.files.get("identity/tokens.json")).toBe(priorTokens);
+		expect(mem.files.has("identity/tokens.css")).toBe(false);
+	});
+
 	it("collects shared company assets with auto-compiled tokens.css and forwards sharedAssets into previews and publishes", async () => {
 		const f = await createGitSurfaceFixture();
 		const seed = await f.startSession();
@@ -1070,6 +1338,7 @@ describe("surface execution bridge Company Folder studio patches and publishing"
 		});
 
 		const tick = await loop.tick(new AbortController().signal);
+		await loop.drain();
 		expect(tick).toEqual({
 			startedSessions: 0,
 			startedPreviews: 0,

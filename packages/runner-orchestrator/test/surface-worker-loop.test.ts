@@ -87,6 +87,7 @@ describe("SurfaceWorkerLoop horizontal scaling and drain", () => {
 			startedPublishes: 0,
 			startedAutomations: 0,
 		});
+		await loop.drain();
 		expect(spawnOverflowMachine).toHaveBeenCalledTimes(1);
 		expect(spawnOverflowMachine).toHaveBeenCalledWith(profileId, expect.any(AbortSignal));
 		expect(dispatchSessionTurn).toHaveBeenCalledWith(
@@ -147,9 +148,14 @@ describe("SurfaceWorkerLoop horizontal scaling and drain", () => {
 		});
 
 		const ac = new AbortController();
-		const firstTick = loop.tick(ac.signal);
-		await Promise.resolve();
-		await Promise.resolve();
+		const firstResult = await loop.tick(ac.signal);
+		expect(firstResult).toEqual({
+			startedSessions: 1,
+			startedPreviews: 0,
+			startedMerges: 0,
+			startedPublishes: 0,
+			startedAutomations: 0,
+		});
 		expect(loop.inFlightSessionCount).toBe(1);
 
 		const secondResult = await loop.tick(ac.signal);
@@ -163,15 +169,94 @@ describe("SurfaceWorkerLoop horizontal scaling and drain", () => {
 		expect(dispatchSessionTurn).toHaveBeenCalledTimes(1);
 
 		release();
-		const firstResult = await firstTick;
-		expect(firstResult).toEqual({
-			startedSessions: 1,
-			startedPreviews: 0,
-			startedMerges: 0,
-			startedPublishes: 0,
-			startedAutomations: 0,
-		});
+		await loop.drain();
 		expect(loop.inFlightSessionCount).toBe(0);
+	});
+
+	it("reports dispatch failures to the database and periodically renews active leases without blocking ticks", async () => {
+		const sessionId = randomUUID();
+		const slowMergeId = randomUUID();
+		const surfaceId = randomUUID();
+		const profileId = randomUUID();
+		const machineId = randomUUID();
+		const sessionLease = randomUUID();
+		const mergeLease = randomUUID();
+		let releaseMerge!: () => void;
+		const mergeBlocker = new Promise<void>((resolve) => {
+			releaseMerge = resolve;
+		});
+
+		const claimPendingJobs = vi
+			.fn()
+			.mockResolvedValueOnce({
+				sessions: [
+					{
+						sessionId,
+						surfaceId,
+						profileId,
+						state: "queued" as const,
+						prompt: "Run turn",
+						originKind: "member",
+						originRef: null,
+						repositoryKey: null,
+						leaseToken: sessionLease,
+						placement: { strategy: "reuse_machine" as const, machineId, activeTurns: 0, targetDensity: 6 },
+					},
+				],
+				previews: [],
+				merges: [
+					{
+						jobId: slowMergeId,
+						kind: "land_change" as const,
+						surfaceId,
+						sessionId,
+						profileId,
+						leaseToken: mergeLease,
+						repositoryKey: "thetaband/website",
+						folderRoot: null,
+						payload: { changeIds: [randomUUID()] },
+					},
+				],
+			})
+			.mockResolvedValue({ sessions: [], previews: [], merges: [], publishes: [] });
+
+		const reportSessionFailure = vi.fn().mockResolvedValue(undefined);
+		const renewLease = vi.fn().mockResolvedValue({ renewed: true });
+		const loop = new SurfaceWorkerLoop(
+			{
+				claimPendingJobs,
+				spawnOverflowMachine: vi.fn(),
+				dispatchSessionTurn: vi.fn().mockRejectedValue(new Error("provider rejected turn")),
+				runPreviewJob: vi.fn(),
+				runMergeJob: vi.fn().mockReturnValue(mergeBlocker),
+				reportSessionFailure,
+				renewLease,
+			},
+			{ leaseRenewIntervalMs: 25, leaseExtendSeconds: 300 },
+		);
+
+		const ac = new AbortController();
+		const first = await loop.tick(ac.signal);
+		expect(first.startedSessions).toBe(1);
+		expect(first.startedMerges).toBe(1);
+
+		const second = await loop.tick(ac.signal);
+		expect(second.startedMerges).toBe(0);
+		expect(claimPendingJobs).toHaveBeenCalledTimes(2);
+
+		await new Promise((resolve) => setTimeout(resolve, 65));
+		expect(renewLease).toHaveBeenCalledWith(
+			{ kind: "job", id: slowMergeId, leaseToken: mergeLease, extendSeconds: 300 },
+			expect.any(AbortSignal),
+		);
+		expect(reportSessionFailure).toHaveBeenCalledWith(
+			{ sessionId, leaseToken: sessionLease, errorDetail: "provider rejected turn" },
+			expect.any(AbortSignal),
+		);
+
+		releaseMerge();
+		await loop.drain();
+		expect(loop.inFlightTaskCount).toBe(0);
 	});
 
 	it("drains merge landing, undo execution, and publish jobs", async () => {
@@ -240,6 +325,7 @@ describe("SurfaceWorkerLoop horizontal scaling and drain", () => {
 			startedPublishes: 1,
 			startedAutomations: 0,
 		});
+		await loop.drain();
 		expect(runMergeJob).toHaveBeenNthCalledWith(1, landJob, expect.any(AbortSignal));
 		expect(runMergeJob).toHaveBeenNthCalledWith(2, undoJob, expect.any(AbortSignal));
 		expect(runPublishJob).toHaveBeenCalledWith(publishJob, expect.any(AbortSignal));
@@ -309,9 +395,14 @@ describe("SurfaceWorkerLoop horizontal scaling and drain", () => {
 		});
 
 		const ac = new AbortController();
-		const firstTick = loop.tick(ac.signal);
-		await Promise.resolve();
-		await Promise.resolve();
+		const firstResult = await loop.tick(ac.signal);
+		expect(firstResult).toEqual({
+			startedSessions: 0,
+			startedPreviews: 0,
+			startedMerges: 1,
+			startedPublishes: 1,
+			startedAutomations: 0,
+		});
 		expect(loop.inFlightMergeCount).toBe(1);
 		expect(loop.inFlightPublishCount).toBe(1);
 
@@ -328,14 +419,7 @@ describe("SurfaceWorkerLoop horizontal scaling and drain", () => {
 
 		releaseMerge();
 		releasePublish();
-		const firstResult = await firstTick;
-		expect(firstResult).toEqual({
-			startedSessions: 0,
-			startedPreviews: 0,
-			startedMerges: 1,
-			startedPublishes: 1,
-			startedAutomations: 0,
-		});
+		await loop.drain();
 		expect(loop.inFlightMergeCount).toBe(0);
 		expect(loop.inFlightPublishCount).toBe(0);
 	});
@@ -392,9 +476,14 @@ describe("SurfaceWorkerLoop horizontal scaling and drain", () => {
 		});
 
 		const ac = new AbortController();
-		const firstTick = loop.tick(ac.signal);
-		await Promise.resolve();
-		await Promise.resolve();
+		const firstResult = await loop.tick(ac.signal);
+		expect(firstResult).toEqual({
+			startedSessions: 0,
+			startedPreviews: 0,
+			startedMerges: 0,
+			startedPublishes: 0,
+			startedAutomations: 1,
+		});
 		expect(loop.inFlightAutomationCount).toBe(1);
 
 		const secondResult = await loop.tick(ac.signal);
@@ -416,14 +505,7 @@ describe("SurfaceWorkerLoop horizontal scaling and drain", () => {
 		);
 
 		releaseAutomation();
-		const firstResult = await firstTick;
-		expect(firstResult).toEqual({
-			startedSessions: 0,
-			startedPreviews: 0,
-			startedMerges: 0,
-			startedPublishes: 0,
-			startedAutomations: 1,
-		});
+		await loop.drain();
 		expect(loop.inFlightAutomationCount).toBe(0);
 		expect(events).toEqual(
 			expect.arrayContaining([
@@ -601,6 +683,10 @@ describe("SupabaseCloudRunnerOrchestratorControlPlane surface actions and servic
 					return Response.json({
 						value: { jobId: publishJobId, status: "published" },
 					});
+				case "surface_renew_lease":
+					return Response.json({
+						value: { renewed: true, leaseExpiresAt: "2026-11-22T03:05:00Z" },
+					});
 				default:
 					return Response.json({ value: null });
 			}
@@ -671,10 +757,20 @@ describe("SupabaseCloudRunnerOrchestratorControlPlane surface actions and servic
 		});
 		expect(mergeDone).toEqual({ jobId: mergeJobId, status: "landed" });
 
+		const leaseToken = randomUUID();
+		const renewed = await controlPlane.renewSurfaceLease({
+			kind: "session",
+			id: sessionId,
+			leaseToken,
+			extendSeconds: 300,
+		});
+		expect(renewed).toEqual({ renewed: true, leaseExpiresAt: "2026-11-22T03:05:00.000Z" });
+
 		const publishDone = await controlPlane.completeSurfacePublish({
 			jobId: publishJobId,
 			status: "published",
 			publishedHeadSha: sha2,
+			leaseToken,
 		});
 		expect(publishDone).toEqual({ jobId: publishJobId, status: "published" });
 
@@ -683,6 +779,7 @@ describe("SupabaseCloudRunnerOrchestratorControlPlane surface actions and servic
 			"surface_complete_preview",
 			"surface_complete_session_turn",
 			"surface_complete_merge",
+			"surface_renew_lease",
 			"surface_complete_publish",
 		]);
 
@@ -698,6 +795,7 @@ describe("SupabaseCloudRunnerOrchestratorControlPlane surface actions and servic
 			runAutomationJob,
 		});
 		const tickResult = await helperLoop.tick(new AbortController().signal);
+		await helperLoop.drain();
 		expect(tickResult).toEqual({
 			startedSessions: 1,
 			startedPreviews: 1,
