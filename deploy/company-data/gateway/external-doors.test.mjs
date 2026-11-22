@@ -1863,7 +1863,8 @@ describe("external doors, direct logins, hooks, and live triggers against Postgr
 			assert.equal(liveWrite.status, 200, JSON.stringify(liveWrite.value));
 			for (let i = 0; i < 40 && wakes.length === 0; i++) await new Promise((r) => setTimeout(r, 50));
 			assert.equal(wakes.length, 1, "primary-owned trigger must fire HTTP wake across workers");
-			assert.equal(wakes[0].triggerId, "cluster-trig");
+			assert.equal(wakes[0].id, "cluster-trig");
+			assert.deepEqual(wakes[0].tables, ["items"]);
 			const trigDel = await sendCluster(
 				listenPort,
 				"DELETE",
@@ -1875,7 +1876,7 @@ describe("external doors, direct logins, hooks, and live triggers against Postgr
 			assert.equal(trigDel.value.unregistered, true);
 
 			const capSchemas = [];
-			for (let i = 0; i < 10; i++) {
+			for (let i = 0; i < 8; i++) {
 				const c = await sendCluster(
 					listenPort,
 					"POST",
