@@ -91,41 +91,72 @@ select pg_temp.folder_perf_patch(
 	]
 );
 
--- WHY: Batch member history path authority checks once per change set to avoid up to 10,000 per-row authority scans.
+-- WHY: Batch member history path authority checks in 64-row keyset chunks to preserve the 10,000-version work bound while avoiding per-row scans.
 select pg_temp.folder_perf_patch(
 	'public.qorpera_member_folder_history(uuid,bigint,integer)'::regprocedure,
 	array[
+		$old$	v_repo text; v_repos text[]; v_repo_path text; -- 20260930446400$old$,
+		$new$	v_repo text; v_repos text[]; v_repo_path text; -- 20260930446400
+	v_chunk_unit integer; v_chunk_version uuid; v_chunk_limit integer; v_chunk_rows integer;$new$,
+		$old$		v_seen := 0; v_found := 0; v_paths := '[]'; v_repos := '{}';$old$,
+		$new$		v_seen := 0; v_found := 0; v_paths := '[]'; v_repos := '{}';
+		v_chunk_unit := 0; v_chunk_version := '00000000-0000-0000-0000-000000000000';$new$,
 		$old$		for v_version in select version.path, version.op, version.kind, version.version
 			from public.qorpera_folder_path_versions as version
 			where version.commit_id = (v_journal.commit_row).id
 			order by version.unit_no, version.version$old$,
-		$new$		for v_version in
-			-- WHY: Resolve covering resources and read authority once per bounded change-set batch instead of per version row.
-			with rows as materialized (
-				select version.unit_no, version.path, version.op, version.kind, version.version
-				from public.qorpera_folder_path_versions as version
-				where version.commit_id = (v_journal.commit_row).id
-				order by version.unit_no, version.version$new$,
+		$new$		<<chunks>>
+		loop
+			v_chunk_limit := least(64, v_cap + 1 - v_seen);
+			exit chunks when v_chunk_limit <= 0;
+			v_chunk_rows := 0;
+			for v_version in
+				-- WHY: Resolve covering resources and read authority per 64-row keyset chunk so readable commits stop near row 21.
+				with rows as materialized (
+					select version.unit_no, version.path, version.op, version.kind, version.version
+					from public.qorpera_folder_path_versions as version
+					where version.commit_id = (v_journal.commit_row).id
+						and (version.unit_no, version.version) > (v_chunk_unit, v_chunk_version)
+					order by version.unit_no, version.version$new$,
 		$old$			limit v_cap + 1
-		loop$old$,
-		$new$				limit v_cap + 1
-			), auth as materialized (
-				select a.path, a.ok
-				from public.qorpera_folder_paths_authority(
-					p_environment_id,
-					v_profile,
-					v_actor,
-					array(select r.path from rows r)
-				) a
-			)
-			select r.path, r.op, r.kind, r.version, coalesce(a.ok, false) as allowed
-			from rows r
-			left join auth a on a.path collate "C" = r.path
-			order by r.unit_no, r.version
-		loop$new$,
+		loop
+			v_seen := v_seen + 1;
+			exit when v_seen > v_cap;$old$,
+		$new$					limit v_chunk_limit
+				), auth as materialized (
+					select a.path, a.ok
+					from public.qorpera_folder_paths_authority(
+						p_environment_id,
+						v_profile,
+						v_actor,
+						array(select r.path from rows r)
+					) a
+				)
+				select r.unit_no, r.path, r.op, r.kind, r.version, coalesce(a.ok, false) as allowed
+				from rows r
+				left join auth a on a.path collate "C" = r.path
+				order by r.unit_no, r.version
+			loop
+				v_chunk_rows := v_chunk_rows + 1;
+				v_chunk_unit := v_version.unit_no;
+				v_chunk_version := v_version.version;
+				v_seen := v_seen + 1;
+				exit chunks when v_seen > v_cap;$new$,
 		$old$			if (v_repo is null or not v_repo = any(v_repos))
-					and public.qorpera_folder_actor_allowed(p_environment_id, v_profile, v_actor, v_version.path, 'read') then$old$,
-		$new$			if (v_repo is null or not v_repo = any(v_repos)) and v_version.allowed then$new$
+					and public.qorpera_folder_actor_allowed(p_environment_id, v_profile, v_actor, v_version.path, 'read') then
+				v_found := v_found + 1;
+				exit when v_found > 20;$old$,
+		$new$			if (v_repo is null or not v_repo = any(v_repos)) and v_version.allowed then
+				v_found := v_found + 1;
+				exit chunks when v_found > 20;$new$,
+		$old$			end if;
+		end loop;
+		-- The budget ran out inside this change set: it goes whole to the next page.$old$,
+		$new$			end if;
+			end loop;
+			exit chunks when v_chunk_rows < v_chunk_limit;
+		end loop chunks;
+		-- The budget ran out inside this change set: it goes whole to the next page.$new$
 	]
 );
 

@@ -98,10 +98,12 @@ declare
 	v_ver_file uuid;
 	v_ver_copy uuid;
 	v_plan text := '';
+	v_like_plan text := '';
 	v_line text;
 	v_move_change jsonb;
 	v_item jsonb;
 	v_refusal text;
+	v_bulk_units jsonb;
 begin
 	insert into auth.users(id, email) values
 		(v_owner, 'owner-1334@example.test'),
@@ -189,6 +191,28 @@ begin
 		select count(*) from jsonb_array_elements(v_item -> 'paths') p where p ->> 'path' = 'code/acme/app/repo.git'
 	) = 1, 'member history did not collapse repo.git entries to one line');
 
+	-- WHY: Exercise multi-chunk keyset resume (> 64 versions in one commit: 70 hidden + 22 visible) and confirm 20-path cap + more=true.
+	select jsonb_agg(u) into v_bulk_units
+	from (
+		select jsonb_build_object('op', 'write', 'path', 'secret/chunk-' || lpad(g::text, 3, '0') || '.txt', 'file', v_file) as u
+		from generate_series(1, 70) g
+		union all
+		select jsonb_build_object('op', 'write', 'path', 'shared/chunk-' || lpad(g::text, 3, '0') || '.txt', 'file', v_file) as u
+		from generate_series(1, 22) g
+	) s;
+	v_res := public.qorpera_folder_commit(v_env, '{"kind":"platform"}'::jsonb, 'op-1334-chunks', v_bulk_units);
+	perform pg_temp.t1334_ok(not exists (
+		select 1 from jsonb_array_elements(v_res -> 'units') o where o ->> 'outcome' <> 'saved'
+	), 'chunk commit failed: ' || v_res::text);
+	perform set_config('request.jwt.claims', jsonb_build_object('role', 'authenticated', 'sub', v_member)::text, true);
+	v_history := public.qorpera_member_folder_history(v_env, null, 1);
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	v_item := v_history -> 'items' -> 0;
+	perform pg_temp.t1334_ok(jsonb_array_length(v_item -> 'paths') = 20, 'multi-chunk history expected 20 visible paths: ' || v_item::text);
+	perform pg_temp.t1334_ok((v_item ->> 'more')::boolean is true, 'multi-chunk history expected more=true: ' || v_item::text);
+	perform pg_temp.t1334_ok((v_item -> 'paths' -> 0 ->> 'path') = 'shared/chunk-001.txt', 'multi-chunk history wrong first path: ' || v_item::text);
+	perform pg_temp.t1334_ok((v_item -> 'paths' -> 19 ->> 'path') = 'shared/chunk-020.txt', 'multi-chunk history wrong 20th path: ' || v_item::text);
+
 	-- WHY: Verify copy, subtree authority, git unit refusal, and single-pass delete keep exact C-collated subtree bounds.
 	select version into v_ver_dir from public.qorpera_folder_entries where environment_id = v_env and key_text = 'dir_100';
 	v_res := public.qorpera_folder_commit(v_env, '{"kind":"platform"}'::jsonb, 'op-1334-copy', jsonb_build_array(
@@ -239,7 +263,7 @@ begin
 		where environment_id = v_env and op = 'delete' and path in ('dir_100', 'dir_100/child.txt', 'shared/visible.txt')
 	) = 3, 'delete did not log all 3 delete path versions');
 
-	-- WHY: Verify generic plan on parameterized C-collated range scan uses qorpera_folder_entries_key_text instead of seqscan.
+	-- WHY: Verify generic plan puts key_text range bounds into Index Cond (and control shows old LIKE only filters after scanning environment_id).
 	set local session_replication_role = replica;
 	insert into public.qorpera_folder_entries(environment_id, path, kind)
 	select v_env, 'bulk-' || g || '/item.txt', 'claim'
@@ -257,5 +281,20 @@ begin
 	deallocate t1334_subtree_plan;
 	perform pg_temp.t1334_ok(position('qorpera_folder_entries_key_text' in v_plan) > 0,
 		'generic plan did not use qorpera_folder_entries_key_text: ' || v_plan);
+	perform pg_temp.t1334_ok(v_plan ~ 'Index Cond:[^\n]*key_text >=[^\n]*key_text <',
+		'generic plan did not push key_text range bounds into Index Cond: ' || v_plan);
+
+	prepare t1334_like_control(uuid, text) as
+		select e.key_text from public.qorpera_folder_entries e
+		where e.environment_id = $1 and e.kind <> 'claim'
+			and e.key_text like public.qorpera_folder_under($2);
+	for v_line in execute 'explain (costs off) execute t1334_like_control(' || quote_literal(v_env) || ', ''shared'')' loop
+		v_like_plan := v_like_plan || v_line || E'\n';
+	end loop;
+	deallocate t1334_like_control;
+	perform pg_temp.t1334_ok(v_like_plan !~ 'Index Cond:[^\n]*key_text',
+		'control unexpectedly pushed LIKE qorpera_folder_under into Index Cond: ' || v_like_plan);
+	perform pg_temp.t1334_ok(v_like_plan ~ 'Filter:[^\n]*key_text ~~',
+		'control did not show LIKE fallback in Filter: ' || v_like_plan);
 end $$;
 rollback;
