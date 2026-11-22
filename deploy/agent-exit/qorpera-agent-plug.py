@@ -811,17 +811,21 @@ class Reconciler:
             self.problems.append(f"cannot read the bridge rules: {failed[0].stderr.strip()[:200]}")
             return None
 
-        def pairs(text):
+        def pairs(text, *, lower_first=True):
             found = set()
             for item in json.loads(text).get("nftables", []):
                 for elem in item.get("set", {}).get("elem", []) or []:
                     value = elem.get("elem", {}).get("val") if isinstance(elem, dict) and "elem" in elem else elem
                     parts = value.get("concat") if isinstance(value, dict) else None
-                    found.add(tuple(str(p).lower() for p in parts) if parts and len(parts) == 2 else ("?",))
+                    if parts and len(parts) == 2:
+                        first = str(parts[0]).lower() if lower_first else str(parts[0])
+                        found.add((first, str(parts[1]).lower()))
+                    else:
+                        found.add(("?",))
             return found
 
         try:
-            ports = pairs(answers[0].stdout)
+            ports = pairs(answers[0].stdout, lower_first=False)
             clients = pairs(answers[1].stdout)
             rules = [item["rule"] for item in json.loads(answers[2].stdout).get("nftables", []) if "rule" in item]
         except ValueError as error:
@@ -840,9 +844,10 @@ class Reconciler:
         state = self.bridge_state() if self._pass_bridge_state is _UNSET else self._pass_bridge_state
         if state is None:
             return
+        current_ports = {(t[0].lower(), t[1]) if len(t) == 2 else t for t in state[0]}
         wanted = ({(p.lower(), m) for p, m in ports}, {(e["hwaddr"], e["address"]) for e in entries.values()},
                   sorted(entries), True)
-        if state == wanted:
+        if (current_ports, state[1], state[2], state[3]) == wanted:
             return
         batch = elements(entries, ports, fresh=True)
         result = self.run(["nft", "-f", "-"], input="\n".join(batch) + "\n")
@@ -970,7 +975,10 @@ class Reconciler:
                 self.problems.append(f"{type(error).__name__}: {error}"[:300])
         entries = read_entries(self.paths)[0]
         state = self.bridge_state() if self.nft else None
-        loaded = {(p, m) for p, m in state[0] if len((p, m)) == 2 and PORT_NAME.match(p) and MAC.match(m)} if state else ()
+        loaded = (
+            {(t[0], t[1]) for t in state[0] if len(t) == 2 and PORT_NAME.match(t[0]) and MAC.match(t[1])}
+            if state else ()
+        )
         ok, ports = backed(self.paths, entries, list(by_name.values()), loaded)
         self._pass_bridge_state = state
         try:

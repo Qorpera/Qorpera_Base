@@ -3560,4 +3560,164 @@ print(json.dumps({
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+
+	test("verify() fails closed on stale, missing, unreadable/recursive, and crashing status checks", () => {
+		const dir = mkdtempSync(join(tmpdir(), "qorpera-agent-exit-verify-"));
+		const exitTool = join(here, "qorpera-agent-exit.sh");
+		try {
+			const runDir = join(dir, "run");
+			mkdirSync(runDir, { recursive: true });
+			const now = Date.now() / 1000;
+			writeFileSync(join(runDir, "logger.heartbeat"), `${Math.floor(now)}\n`);
+			writeFileSync(join(runDir, "logs.json"), JSON.stringify({ problems: [] }));
+			utimesSync(join(runDir, "logs.json"), now - 1200, now - 1200);
+			mkdirSync(join(runDir, "brake.json"));
+			writeFileSync(join(runDir, "plug.json"), "[".repeat(2000) + "]".repeat(2000));
+			writeFileSync(join(runDir, "names.json"), JSON.stringify({ problems: ["sentinel-names-problem"] }));
+
+			const harness = `
+set -euo pipefail
+source <(sed '/^case "\${1:-}" in$/,$d' "$1")
+has_ns() { return 1; }
+has_link() { return 1; }
+nft() { return 0; }
+queue_loaded() { return 1; }
+run_dir="$2"
+verify
+`;
+			const bad = spawnSync("bash", ["-c", harness, "_", exitTool, runDir], { encoding: "utf8" });
+			assert.equal(bad.status, 1);
+			assert.match(bad.stderr, /the logs' tender has not run for \d+s/);
+			assert.match(bad.stderr, /the logs' shipper has not run/);
+			assert.match(bad.stderr, /the brake: cannot read .*brake\.json/);
+			assert.match(bad.stderr, /cannot read .*plug\.json/);
+			assert.match(bad.stderr, /names: sentinel-names-problem/);
+
+			const fakeBin = join(dir, "bin");
+			mkdirSync(fakeBin, { recursive: true });
+			writeFileSync(join(fakeBin, "python3"), "#!/bin/sh\nexit 1\n");
+			chmodSync(join(fakeBin, "python3"), 0o755);
+			const crashed = spawnSync("bash", ["-c", harness, "_", exitTool, runDir], {
+				encoding: "utf8",
+				env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
+			});
+			assert.equal(crashed.status, 1);
+			assert.match(crashed.stderr, /cannot inspect the exit's status files/);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("plug.Reconciler reuses bridge_state, repairs malformed elements, keeps mixed-case ports, batches forget(), and guards main()", () => {
+		const dir = mkdtempSync(join(tmpdir(), "qorpera-agent-exit-plug-bridge-"));
+		const script = String.raw`
+import importlib.util, json, os, subprocess, sys
+spec = importlib.util.spec_from_file_location("plug", sys.argv[1])
+plug = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(plug)
+
+root = sys.argv[2]
+state_dir = os.path.join(root, "state")
+run_dir = os.path.join(root, "run")
+log_dir = os.path.join(root, "log")
+paths = plug.Paths(state_dir, run_dir, log_dir)
+for d in (*paths.root_dirs(), paths.clients, paths.dhcp, log_dir):
+    os.makedirs(d, exist_ok=True)
+
+entry = plug.plug(paths, "coding", "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222",
+                  "33333333-3333-4333-8333-333333333333", "qp", "vm-case")
+plug.write_replace(os.path.join(paths.verified, entry["address"]), plug.now_iso() + "\n")
+plug.write_replace(os.path.join(paths.seen, entry["address"]), json.dumps(entry) + "\n")
+
+fixture = os.path.join(root, "lxd.json")
+with open(fixture, "w", encoding="utf-8") as f:
+    json.dump([], f)
+
+class Args:
+    lxd_socket = "/nonexistent"
+    lxd_fixture = fixture
+    port_recheck_seconds = 0.0
+    reload_dns = "true"
+    flush_log = os.path.join(root, "flush.log")
+    netns = "qexit"
+
+r = plug.Reconciler(paths, Args())
+r.nft = True
+port_list_calls = 0
+repair_batches = []
+forget_list_calls = 0
+forget_batches = []
+
+def fake_run(cmd, *, input=None):
+    global port_list_calls, forget_list_calls
+    if cmd[:5] == ["nft", "-j", "list", "set", "bridge"] and cmd[-1] == "ports":
+        port_list_calls += 1
+        return subprocess.CompletedProcess(cmd, 0, json.dumps({"nftables": [{"set": {"elem": [
+            {"concat": ["Tap-Mix1", entry["hwaddr"]]},
+            {"concat": ["broken-only-one"]},
+        ]}}]}), "")
+    if cmd[:5] == ["nft", "-j", "list", "set", "bridge"] and cmd[-1] == "clients":
+        return subprocess.CompletedProcess(cmd, 0, json.dumps({"nftables": [{"set": {"elem": []}}]}), "")
+    if cmd[:5] == ["nft", "-j", "list", "chain", "bridge"] and cmd[-1] == "dhcp":
+        return subprocess.CompletedProcess(cmd, 0, json.dumps({"nftables": []}), "")
+    if cmd == ["nft", "-f", "-"]:
+        repair_batches.append(input or "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    if cmd[:4] == ["ip", "netns", "exec", "qexit"] and cmd[4:8] == ["nft", "-j", "list", "table"]:
+        forget_list_calls += 1
+        return subprocess.CompletedProcess(cmd, 0, json.dumps({"nftables": [
+            {"set": {"name": "new_by_client", "elem": [entry["address"]]}},
+            {"set": {"name": "refused_flows", "elem": [{"concat": [entry["address"], "1.2.3.4", 443]}]}},
+        ]}), "")
+    if cmd[:4] == ["ip", "netns", "exec", "qexit"] and cmd[4:7] == ["nft", "-f", "-"]:
+        forget_batches.append(input or "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    return subprocess.CompletedProcess(cmd, 0, "", "")
+
+r.run = fake_run
+r.pass_once()
+r.forget(entry["address"])
+
+orig_pass = plug.Reconciler.pass_once
+def boom(self):
+    raise RuntimeError("boom-pass")
+plug.Reconciler.pass_once = boom
+orig_argv = sys.argv
+sys.argv = ["plug", "reconcile", "--once", "--state-dir", state_dir, "--run-dir", run_dir, "--log-dir", log_dir,
+            "--lxd-fixture", fixture]
+try:
+    plug.main()
+finally:
+    plug.Reconciler.pass_once = orig_pass
+    sys.argv = orig_argv
+
+with open(os.path.join(run_dir, "plug.json"), encoding="utf-8") as f:
+    status = json.load(f)
+
+print(json.dumps({
+    "port_list_calls": port_list_calls,
+    "repaired": len(repair_batches) == 1,
+    "kept_mixed_case": f'"Tap-Mix1" . {entry["hwaddr"]}' in (repair_batches[0] if repair_batches else ""),
+    "forget_list_calls": forget_list_calls,
+    "forget_batch_ok": (len(forget_batches) == 1
+                        and f"destroy element inet qorpera_agent_exit new_by_client {{ {entry['address']} }}" in forget_batches[0]
+                        and f"destroy element inet qorpera_agent_exit refused_flows {{ {entry['address']} . 1.2.3.4 . 443 }}" in forget_batches[0]),
+    "main_guarded": any("RuntimeError: boom-pass" in p for p in status.get("problems", [])),
+}))
+`;
+		try {
+			const run = spawnSync("python3", ["-c", script, plugTool, dir], { encoding: "utf8" });
+			assert.equal(run.status, 0, run.stderr);
+			assert.deepEqual(JSON.parse(run.stdout), {
+				port_list_calls: 1,
+				repaired: true,
+				kept_mixed_case: true,
+				forget_list_calls: 1,
+				forget_batch_ok: true,
+				main_guarded: true,
+			});
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 });

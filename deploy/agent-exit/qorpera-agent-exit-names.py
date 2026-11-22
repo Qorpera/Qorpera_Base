@@ -383,7 +383,6 @@ class Names:
         # restart of this reconciler.
         self.uncut = set()
         self.problems = []
-        self._pass_table = None
 
     def run(self, command, *, input=None):
         try:
@@ -643,20 +642,15 @@ class Names:
             self.reach_right, self.reach_now = True, reach
             return mapped
         family, table = plug.EXIT_TABLE
-        known_handle = self._pass_table
-        self._pass_table = None
-        if known_handle is None:
-            tables_answer = self.in_exit("nft", "-j", "list", "tables", family)
-            if tables_answer.returncode != 0:
-                self.problems.append(f"cannot read the exit's DNS map: {tables_answer.stderr.strip()[:200]}")
-                return {}
-            try:
-                handle = table_handle(tables_answer.stdout, table)
-            except ValueError as error:
-                self.problems.append(f"cannot parse the exit's DNS map: {error}"[:200])
-                return {}
-        else:
-            handle = known_handle[0]
+        tables_answer = self.in_exit("nft", "-j", "list", "tables", family)
+        if tables_answer.returncode != 0:
+            self.problems.append(f"cannot read the exit's DNS map: {tables_answer.stderr.strip()[:200]}")
+            return {}
+        try:
+            handle = table_handle(tables_answer.stdout, table)
+        except ValueError as error:
+            self.problems.append(f"cannot parse the exit's DNS map: {error}"[:200])
+            return {}
         answers = [self.in_exit("nft", "-j", "list", what, family, table, name)
                    for what, name in (("map", "dns_port"), ("set", "dns_allowed"), ("map", "reach"))]
         failed = [a for a in answers if a.returncode != 0]
@@ -733,7 +727,6 @@ class Names:
         except ValueError as error:
             self.problems.append(f"cannot parse the exit's chains: {error}"[:200])
             return None, set()
-        self._pass_table = (handle,)
         if needed - have:
             lines = [line for port in sorted(needed - have) for line in object_lines(port)]
             result = self.in_exit("nft", "-f", "-", input="\n".join(lines) + "\n")
@@ -762,7 +755,6 @@ class Names:
 
     def pass_once(self):
         self.problems = []
-        self._pass_table = None
         at = time.time()
         mono = _monotonic()
         self.check_reader(at, mono)

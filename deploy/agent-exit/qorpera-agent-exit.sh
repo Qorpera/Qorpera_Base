@@ -450,9 +450,7 @@ try:
     age = now - int(os.stat(os.path.join(run_dir, "logger.heartbeat")).st_mtime)
     if age >= 30:
         out.append(f"logger silent for {age}s")
-except FileNotFoundError:
-    out.append("logger not running")
-except OSError:
+except Exception:
     out.append("logger not running")
 for fname, prefix in (("logger.pause", "connection log paused: "), ("logger.failing", "")):
     try:
@@ -461,7 +459,7 @@ for fname, prefix in (("logger.pause", "connection log paused: "), ("logger.fail
         out.append(f"{prefix}{text}")
     except FileNotFoundError:
         pass
-    except OSError:
+    except Exception:
         out.append(f"{prefix}unreadable")
 checks = [
     ("logs.json", 900, "the logs'\'' tender: ", "the logs'\'' tender has not run for {age}s", "the logs'\'' tender has not run"),
@@ -479,7 +477,7 @@ for fname, max_age, prefix, stale_msg, missing_msg in checks:
     except FileNotFoundError:
         out.append(missing_msg)
         continue
-    except OSError:
+    except Exception:
         out.append(f"{prefix}cannot read {path}")
         continue
     age = now - int(st.st_mtime)
@@ -491,11 +489,11 @@ for fname, max_age, prefix, stale_msg, missing_msg in checks:
         for item in data["problems"]:
             if item:
                 out.append(f"{prefix}{item}")
-    except (OSError, ValueError, KeyError, TypeError):
+    except Exception:
         out.append(f"{prefix}cannot read {path}")
 if out:
     print("\n".join(out))
-' "$run_dir" "$check_sni")
+' "$run_dir" "$check_sni" || echo "cannot inspect the exit's status files")
 	if ((${#problems[@]} > 0)); then
 		printf 'qorpera-agent-exit: not healthy: %s\n' "${problems[@]}" >&2
 		return 1
