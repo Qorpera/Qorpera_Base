@@ -572,8 +572,12 @@ class DataListView {
 				boundaryKey === null
 					? -1
 					: previousRows.findIndex((row) => keyOf(first.columns, first.key, row.values) === boundaryKey);
-			if (boundaryIndex >= 0) {
-				// WHY: Anchor deep-scroll tail joins on the refreshed head's final row so tail rows promoted into the head never hide intermediate rows.
+			if (
+				boundaryIndex >= 0 &&
+				boundaryRow &&
+				JSON.stringify(previousRows[boundaryIndex]!.values) === JSON.stringify(boundaryRow.values)
+			) {
+				// WHY: Anchor deep-scroll tail joins only when the head's final row is unchanged so a tail row promoted onto the boundary cannot skip rows.
 				const seenKeys = new Set(freshRows.map((row) => keyOf(first.columns, first.key, row.values)));
 				keptTail = true;
 				const tail = previousRows

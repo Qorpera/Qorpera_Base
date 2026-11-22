@@ -1049,6 +1049,57 @@ describe("the page's words for values and refusals", () => {
 
 			await vi.advanceTimersByTimeAsync(500);
 			calls.rows.mockClear();
+			calls.rows.mockImplementation(async (asked) => {
+				const after = asked.after?.[0];
+				if (after === "edge-10") {
+					return {
+						...repairs(
+							[
+								[10, "Bike 10", 100, true],
+								[11, "Bike 11", 110, true],
+								[12, "Bike 12", 120, true],
+							],
+							false,
+						),
+					};
+				}
+				const n = after ? Number(after) + 1 : 2;
+				if (n === 10) {
+					return {
+						...repairs([[13, "Bike 13 At Edge", 135, true]], true),
+						next: ["edge-10"],
+					};
+				}
+				return {
+					...repairs([[n, `Bike ${n}`, n * 10, true]], true),
+					next: [String(n)],
+				};
+			});
+			watchResolves.shift()?.({
+				changed: [
+					{
+						index: 0,
+						answer: {
+							...repairs([[1, "Bike 1", 10, true]], true),
+							next: ["1"],
+							etag: "ffffffffffffffffffffffffffffffff",
+						},
+					},
+				],
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(calls.rows).toHaveBeenCalledTimes(9);
+			expect(container.querySelectorAll("button.data-row")).toHaveLength(10);
+			button(container, "Show more").click();
+			await vi.advanceTimersByTimeAsync(0);
+			const recoveredLeads = texts(container, "button.data-row .is-lead");
+			expect(recoveredLeads).toContain("Bike 13 At Edge");
+			expect(recoveredLeads).toContain("Bike 10");
+			expect(recoveredLeads).toContain("Bike 11");
+			expect(recoveredLeads).toContain("Bike 12");
+
+			await vi.advanceTimersByTimeAsync(500);
+			calls.rows.mockClear();
 			calls.rows.mockImplementation(async () => ({
 				...repairs([[2, "Bike 2 Loop", 20, true]], true),
 				next: ["1"],
