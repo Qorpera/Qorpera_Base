@@ -80,6 +80,7 @@ export interface SurfaceSessionTurnInput {
 	readonly companyId: string;
 	readonly surfaceSlug: string;
 	readonly surfaceTitle: string;
+	readonly surfaceKind?: string;
 	readonly sourceKind: SurfaceSourceKind;
 	readonly prompt: string;
 	readonly state?: "queued" | "reconciling";
@@ -361,12 +362,39 @@ export function extractPointToChangeTarget(originRef: unknown): PointToChangeTar
 	return null;
 }
 
+const STUDIO_REPORT_SCHEMA =
+	"`<slug>.report.json` (one or more files for deep-dive vendor audits, competitor analyses, strategy essays, or product blog posts — rendered in the Analysis tab with charts, tables, and article switcher): " +
+	'JSON object `{ "category", "headline", "subtitle", "author", "date", "readingTime", "keyMetrics": [{ "label", "value", "delta" }], "sections": [{ "id", "kicker", "heading", "paragraphs": ["..."], "blocks": [...] }] }`. ' +
+	'Supported section `blocks`: `bar_chart` (`heading`, `subtitle`, `max`, `items: [{ label, value, display, note, highlight }]`), `line_chart` (`heading`, `subtitle`, `xLabels`, `series: [{ name, color, values }]`), `table` (`heading`, `caption`, `columns`, `rows`, `highlightRow`), `callout` (`tone: "thesis" | "decision" | "tradeoff"`, `heading`, `body`, `bullets`), `quote` (`text`, `attribution`), `figure` (`heading`, `caption`, `panels: [{ label, heading, body, accent }]`).';
+
+const PRODUCT_STUDIO_SCHEMA =
+	"Product Studio file layout (write files directly at the root of the surface folder, not scattered in nested markdown folders): " +
+	'(1) `specs.json` — `{ "model": { "kind": "headband" | "device", "dimensions": "...", "layers": ["..."] }, "overview": { ...key-value specs... }, "colorways": [{ "name": "...", "hex": "#rrggbb" }], "bom": [{ "part": "...", "supplier": "...", "unitCost": "..." }] }`. `model` renders the interactive 3D Studio viewer with drag-to-orbit, exploded layers, and colorway switching (use `"headband"` for wearable bands/headbands, `"device"` for other physical hardware); `overview` renders Key specs; `colorways` drives Palette swatches and 3D variants; `bom` renders the BOM table under Specs & BOM. ' +
+	'(2) `vendors.json` — `{ "production": { "targetBatch", "landedCogs", "criticalPath", "compliance" }, "vendors": [{ "vendor", "component", "region", "moq", "leadTime", "unitPrice", "status", "certifications" }] }` (renders Production & Vendors cards). ' +
+	`(3) ${STUDIO_REPORT_SCHEMA} ` +
+	"(4) `brief.md` — concise product brief (renders under Brief & Files). " +
+	"Prefer structured JSON (`specs.json`, `vendors.json`, `<slug>.report.json`) over loose markdown prose so the founder gets the 3D stage, specs/variants, vendor cards, and tabbed analysis views.";
+
 function buildFolderSurfaceInstructions(input: SurfaceSessionTurnInput, folderRoot: string, notesRoot: string): string {
+	const isIdentity = input.surfaceKind === "identity" || input.surfaceSlug === "identity" || folderRoot === "identity";
+	const isReport = !isIdentity && input.surfaceKind === "report";
+	const isDatabase = !isIdentity && input.surfaceKind === "database";
+	const isProduct = !isIdentity && input.surfaceKind === "product";
+	const schemaGuidance = isIdentity
+		? `Identity Studio file layout (directly under ${folderRoot}/): \`tokens.json\` (colors, typography, radii), \`logo.svg\` (vector brand mark), \`voice.md\` and \`brief.md\` (voice and guidelines), and optional ${STUDIO_REPORT_SCHEMA}`
+		: isReport
+			? `Report & Analysis file layout (directly under ${folderRoot}/): ${STUDIO_REPORT_SCHEMA}`
+			: isProduct
+				? PRODUCT_STUDIO_SCHEMA
+				: !isDatabase
+					? `When this surface represents a physical product, follow the ${PRODUCT_STUDIO_SCHEMA}`
+					: "";
 	return (
 		`This session is scoped to the Studio/Identity Surface "${input.surfaceTitle}" (${input.surfaceSlug}), which projects ${folderRoot}/ directly from Company Files. ` +
 		"Founders preview multiple unmerged staged patches toggled on or off simultaneously before approving any change. " +
 		`Use stage_surface_patch to stage cohesive folder_patch operations (write_text, merge_json, delete) relative to ${folderRoot}/, keeping each change atomic and conflict-minimizing. ` +
-		"Studio renders structured JSON (tokens, specs, *.report.json), Markdown prose (voice.md, brief.md), and SVG marks natively — do not create standalone HTML/CSS code pages inside Studio folders. " +
+		"Studio renders structured JSON (tokens, specs, vendors, *.report.json), Markdown prose (voice.md, brief.md), and SVG marks natively — do not create standalone HTML/CSS code pages inside Studio folders. " +
+		(schemaGuidance ? `${schemaGuidance} ` : "") +
 		`Any file writes are strictly confined to ${folderRoot}/ and ${notesRoot}/; attach concise supporting analyses as notePaths under ${notesRoot}/ rather than creating loose markdown files elsewhere.`
 	);
 }
@@ -874,6 +902,7 @@ function deliveryJobToTurnInput(job: SurfaceSessionDeliveryJob): SurfaceSessionT
 		companyId: job.profileId,
 		surfaceSlug,
 		surfaceTitle,
+		...(job.surfaceKind ? { surfaceKind: job.surfaceKind } : {}),
 		sourceKind: inferDeliverySourceKind(job),
 		prompt: job.prompt,
 		state: job.state,

@@ -108,6 +108,27 @@ describe("cloud surface runtime tools", () => {
 			slug: "headband",
 			status: "proposed",
 		});
+
+		const isolated = tool.parseArguments({
+			slug: "thetabands",
+			title: "Thetabands",
+			group: "products",
+			archetype: "studio",
+			kind: "product",
+			sourceKind: "folder",
+		}) as Record<string, unknown>;
+		expect(isolated.folderRoot).toBe("surfaces/thetabands");
+
+		const identity = tool.parseArguments({
+			slug: "identity",
+			title: "Identity",
+			group: "products",
+			archetype: "studio",
+			kind: "identity",
+			isGlobal: true,
+			sourceKind: "folder",
+		}) as Record<string, unknown>;
+		expect(identity.folderRoot).toBe("identity");
 	});
 
 	it("accepts kind, figure, isGlobal, and activateImmediately on propose_surface and rejects colours and unknown figures", async () => {

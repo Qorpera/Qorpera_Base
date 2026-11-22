@@ -307,6 +307,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Surfaces are drawn as figures",
 		text: "Every surface in the sidebar is now a small figure of the thing it is (a browser for the website, notes and a gold coin for money, a folder for files), in fixed colours. When you propose a surface you may name its figure: leave it out and the surface gets its kind's own figure, or pick another that fits better, such as shop for a web store. Colours are never chosen. Members can change a surface's figure themselves from the sidebar.",
 	},
+	{
+		id: "studio-surface-isolation-and-schemas",
+		kind: "behaviour",
+		date: "2026-11-23",
+		title: "Clean Studio folders and Product/Report Studio schemas",
+		text: "Non-Identity Studio surfaces now default to an isolated surfaces/<slug> folder instead of top-level company folders like product/ or reports/, so each new Studio surface starts blank and only holds its own work (Identity stays at identity/). Product Studio sessions now receive the structured Studio file layout directly: specs.json (3D model, key specs, colorways, BOM), vendors.json (production plan and supplier cards), <slug>.report.json (competitor, strategy, and vendor analyses with charts and tables), and brief.md. Report surfaces receive the same <slug>.report.json format.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

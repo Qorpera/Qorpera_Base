@@ -1081,30 +1081,16 @@ export class SurfaceStudioView {
 		const hasAnalysisTab = reportPaths.length > 0;
 		const hasFilesTab = docs.length > 0;
 		const hasPagesTab = htmlPages.length > 0;
-		const hasNonIdentitySharedLinks =
-			!isIdentity &&
-			(sharedAssetsConsumedBy(lookKind).some((link) =>
-				activeOtherSurfaces.some((item) => {
-					const targetKind = store.lookOf(item).kind;
-					return (
-						link.producedBy.includes(targetKind) ||
-						(link.producedBy.includes("identity") && item.isGlobal === true)
-					);
-				}),
-			) ||
-				sharedAssetsProducedBy(lookKind).some((link) =>
-					activeOtherSurfaces.some((item) => link.consumedBy.includes(store.lookOf(item).kind)),
-				));
+		const isProduct = !isIdentity && lookKind === "product";
 		const hasOverviewContent = Boolean(
 			(isIdentity && downstreamSurfaces.length > 0) ||
-				hasNonIdentitySharedLinks ||
 				modelConfig ||
 				svgs.length ||
 				colors.length ||
 				(isIdentity && typography.length) ||
 				(!isIdentity && primarySpec && primarySpec.entries.length > 0),
 		);
-		const tabbed = Boolean(modelConfig || vendors.length || reportPaths.length || isIdentity);
+		const tabbed = Boolean(modelConfig || vendors.length || reportPaths.length || isIdentity || isProduct);
 		const availableTabs: { readonly id: StudioTab; readonly label: string }[] = [];
 		if (tabbed) {
 			if (hasOverviewContent || (!hasSpecsTab && !hasVendorsTab && !hasAnalysisTab && !hasFilesTab && !hasPagesTab))
@@ -1269,12 +1255,16 @@ export class SurfaceStudioView {
 					),
 				);
 			}
+			const cleanFolderRoot = surface.folderRoot?.replace(/^\/+|\/+$/g, "") ?? "";
 			for (const link of produced) {
 				const consumers = activeOtherSurfaces
 					.filter((item) => link.consumedBy.includes(store.lookOf(item).kind))
 					.sort((a, b) => (a.group === "products" ? 0 : 1) - (b.group === "products" ? 0 : 1));
 				if (!consumers.length) continue;
-				const primaryPath = link.sourcePaths[0] ?? "";
+				const primaryPath =
+					link.id === "product-catalog" && cleanFolderRoot
+						? `${cleanFolderRoot}/specs.json`
+						: (link.sourcePaths[0] ?? "");
 				linkRows.push(
 					h(
 						"div",

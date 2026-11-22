@@ -333,7 +333,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		title: phrase("Database"),
 		description: phrase("Tables, schemas, records, and queries."),
 		archetype: "studio",
-		folderRoot: "database",
 	},
 	{
 		id: "dashboard",
@@ -350,7 +349,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		title: phrase("Product Studio"),
 		description: phrase("Product specs, colorways, BOM, and design briefs in one place."),
 		archetype: "studio",
-		folderRoot: "product",
 	},
 	{
 		id: "report",
@@ -359,7 +357,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		title: phrase("Report & Analysis"),
 		description: phrase("Long-form essays, vendor analyses, and design notes with inline charts and tables."),
 		archetype: "studio",
-		folderRoot: "reports",
 	},
 	{
 		id: "custom",
@@ -522,13 +519,15 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 		submit.disabled = true;
 		const custom = selected.kind === "custom";
 		const archetype = custom ? customArchetype : selected.archetype;
+		const matchesPresetTitle = title.toLowerCase() === t(selected.title).trim().toLowerCase();
+		const usePresetSlug = selected.kind === "identity" || (!customName && matchesPresetTitle);
 		const created = await store.createSurface({
 			title,
-			...(selected.slug ? { slug: selected.slug } : {}),
+			...(usePresetSlug && selected.slug ? { slug: selected.slug } : {}),
 			archetype,
 			icon: surfaceFigureIcon(figure),
 			kind: selected.kind,
-			folderRoot: custom && archetype === "studio" ? undefined : selected.folderRoot,
+			folderRoot: selected.kind === "identity" ? selected.folderRoot : undefined,
 			description: custom ? descriptionInput.value.trim() || undefined : undefined,
 			initialPrompt: promptInput.value.trim() || undefined,
 		});

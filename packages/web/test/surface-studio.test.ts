@@ -581,4 +581,55 @@ describe("SurfaceStudioView", () => {
 		view.dispose();
 		store.dispose();
 	});
+
+	it("keeps Product Studio tabbed on SVG and markdown drafts and shows its isolated specs path", async () => {
+		const thetabands = summary({
+			id: HEADBAND_ID,
+			slug: "thetabands",
+			title: "Thetabands",
+			archetype: "studio",
+			kind: "product",
+			icon: "figure:headband",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/thetabands",
+			siteSlug: null,
+			previewMode: "studio_overlay",
+			liveUrl: null,
+		});
+		const website = summary({
+			id: IDENTITY_ID,
+			slug: "website",
+			title: "Hjemmeside",
+			archetype: "live_build",
+			kind: "website",
+		});
+		const store = storeWith(fakeClient({ listSurfaces: vi.fn(async () => [website, thetabands]) }));
+		await store.load();
+
+		const view = new SurfaceStudioView({
+			store,
+			surface: thetabands,
+			signal: new AbortController().signal,
+			baseFiles: {
+				"surfaces/thetabands/concepts.svg":
+					'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 40"><rect width="120" height="40"/></svg>',
+				"surfaces/thetabands/brief.md": "# Thetabands\nInitial concept notes.\n",
+			},
+		});
+		document.body.append(view.el);
+
+		const tabs = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map((tab) => tab.textContent);
+		expect(tabs).toEqual(["Overview", "Brief & Files"]);
+		expect(view.el.querySelector('[data-file="surfaces/thetabands/concepts.svg"]')).not.toBeNull();
+		expect(view.el.querySelector('[data-file="surfaces/thetabands/brief.md"]')).toBeNull();
+		expect(view.el.querySelector('[data-link-dir="out"]')?.textContent).toContain("surfaces/thetabands/specs.json");
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
+		expect(view.el.querySelector('[data-file="surfaces/thetabands/brief.md"]')?.textContent).toContain(
+			"Initial concept notes.",
+		);
+		view.dispose();
+		store.dispose();
+	});
 });

@@ -2164,6 +2164,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			companyId: identity.companyId,
 			surfaceSlug,
 			surfaceTitle,
+			...(typeof sessionTurnRaw.surfaceKind === "string" ? { surfaceKind: sessionTurnRaw.surfaceKind } : {}),
 			sourceKind,
 			prompt: sessionTurnRaw.prompt,
 			state: sessionTurnRaw.state === "reconciling" ? "reconciling" : "queued",

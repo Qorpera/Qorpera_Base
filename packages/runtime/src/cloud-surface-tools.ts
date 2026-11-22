@@ -790,7 +790,12 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 				},
 				sourceKind: { type: "string", enum: [...SURFACE_SOURCE_KINDS] },
 				repositoryKey: { type: "string", maxLength: 200 },
-				folderRoot: { type: "string", maxLength: 256 },
+				folderRoot: {
+					type: "string",
+					maxLength: 256,
+					description:
+						"Studio folder root in Company Files. Omit for non-Identity Studio surfaces to default to an isolated surfaces/<slug> folder instead of colliding with top-level company folders (Identity uses identity/).",
+				},
 				previewMode: { type: "string", enum: [...SURFACE_PREVIEW_MODES] },
 				briefSummary: { type: "string", maxLength: 4000 },
 			},
@@ -838,7 +843,14 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 			const activateImmediately = parseBooleanArg(raw.activateImmediately, "activateImmediately", false);
 			const icon = figure ? `figure:${figure}` : "page";
 			const repositoryKey = parseOptionalBounded(raw.repositoryKey, "repositoryKey", 200);
-			const folderRoot = parseOptionalBounded(raw.folderRoot, "folderRoot", 256);
+			const rawFolderRoot = parseOptionalBounded(raw.folderRoot, "folderRoot", 256);
+			const folderRoot =
+				rawFolderRoot ??
+				(sourceKind === "folder" || archetype === "studio"
+					? kind === "identity" || isGlobal || raw.slug === "identity"
+						? "identity"
+						: `surfaces/${raw.slug}`
+					: null);
 			const previewMode =
 				raw.previewMode === undefined || raw.previewMode === null
 					? sourceKind === "code_repo"
