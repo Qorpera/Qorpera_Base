@@ -375,6 +375,9 @@ describe("company databases: the data gateway's run door", () => {
 		expect(
 			lxdNativeCompanyRuntimeFromEnvironment({ ...base, QORPERA_SURFACE_FIRST: "0" })?.surfaceFirst,
 		).toBeUndefined();
+		expect(
+			lxdNativeCompanyRuntimeFromEnvironment({ ...base, QORPERA_SURFACE_FIRST: " 1" })?.surfaceFirst,
+		).toBeUndefined();
 		expect(lxdNativeCompanyRuntimeFromEnvironment({ ...base, QORPERA_SURFACE_FIRST: "1" })?.surfaceFirst).toBe(true);
 	});
 });

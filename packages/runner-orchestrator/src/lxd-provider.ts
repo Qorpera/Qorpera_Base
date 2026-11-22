@@ -1933,6 +1933,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 									? { coding_command: { url: coding.origin, token_sha256: sha256(coding.token) } }
 									: {}),
 								...(authority.loginCustody === "vault" ? { login_custody: "vault" } : {}),
+								...(runtime.surfaceFirst ? { surface_first: true } : {}),
 								recovery_volume_path: "/var/lib/qorpera-runner",
 							},
 						}

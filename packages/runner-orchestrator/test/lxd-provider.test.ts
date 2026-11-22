@@ -5,6 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	parseLxdRunnerBootstrapConfig,
+	validateNativeProviderEnvironment,
+} from "../../runtime/src/lxd-runner-bootstrap.ts";
+import {
 	type LxdClient,
 	type LxdCreateInstanceRequest,
 	type LxdCreateStorageVolumeRequest,
@@ -2892,7 +2896,24 @@ describe("LXD cloud runner provider", () => {
 		);
 		await backend.acquire(runId, work(), new AbortController().signal);
 		const files = new Map(lxd.filePushes.map((file) => [file.path, file.content]));
-		expect(files.get("/var/lib/qorpera-bootstrap/native-provider.env")).toContain("QORPERA_SURFACE_FIRST=1\n");
+		const rawBootstrap = files.get("/var/lib/qorpera-bootstrap/bootstrap.json");
+		const rawRunnerConfig = files.get("/var/lib/qorpera-bootstrap/runner-config.json");
+		const rawEnvironment = files.get("/var/lib/qorpera-bootstrap/native-provider.env");
+		if (!rawBootstrap || !rawRunnerConfig || !rawEnvironment) throw new Error("Expected pushed bootstrap files");
+		expect(rawEnvironment).toContain("QORPERA_SURFACE_FIRST=1\n");
+		const parsedBootstrap = parseLxdRunnerBootstrapConfig(JSON.parse(rawBootstrap));
+		expect(parsedBootstrap.companyRuntime?.surfaceFirst).toBe(true);
+		const runnerConfig = JSON.parse(rawRunnerConfig) as { supabase_url: string; native_bridge_url: string };
+		expect(() =>
+			validateNativeProviderEnvironment(
+				rawEnvironment,
+				runnerConfig.supabase_url,
+				runnerConfig.native_bridge_url,
+				parsedBootstrap.computeIdentityId,
+				undefined,
+				parsedBootstrap.companyRuntime,
+			),
+		).not.toThrow();
 	});
 
 	it("gives a vault login guest no identity volume and tells its host to ask the vault", async () => {

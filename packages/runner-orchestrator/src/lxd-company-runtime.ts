@@ -332,7 +332,7 @@ export function lxdNativeCompanyRuntimeFromEnvironment(
 			caSha256: caSha256 as string,
 		};
 	}
-	if (environment.QORPERA_SURFACE_FIRST?.trim() === "1") {
+	if (environment.QORPERA_SURFACE_FIRST === "1") {
 		config.surfaceFirst = true;
 	}
 	validateLxdNativeCompanyRuntime(config);
