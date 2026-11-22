@@ -567,7 +567,7 @@ export async function rebaseSessionChanges(
 				return { status: "deferred" as const, ontoSha, reason: "cas_race" as const, restored: run.restored };
 			}
 			if (hasWorktree) {
-				// WHY: If reset fails (e.g. concurrent index.lock), roll back the ref via CAS so a stale index never reverts main on the next commit; only mark unsynced if rollback itself fails.
+				// WHY: On reset failure, CAS-rollback the ref and best-effort restore oldTip; if restore fails too, mark worktree_unsafe so half-checked-out files aren't mistaken for untouched.
 				const reset = await run.git(wtAdmin, [`--work-tree=${wtTree}`, "reset", "--hard", "--quiet", cursor]);
 				if (reset.status !== 0) {
 					const rollbackArgs = oldTip
@@ -575,10 +575,13 @@ export async function rebaseSessionChanges(
 						: ["update-ref", "-d", branchRef, cursor];
 					const rolledBack = await run.git(run.repo, rollbackArgs);
 					if (rolledBack.status === 0) {
+						const restoredTree = oldTip
+							? await run.git(wtAdmin, [`--work-tree=${wtTree}`, "reset", "--hard", "--quiet", oldTip])
+							: { status: 1 };
 						return {
 							status: "deferred" as const,
 							ontoSha,
-							reason: "worktree_dirty" as const,
+							reason: restoredTree.status === 0 ? ("worktree_dirty" as const) : ("worktree_unsafe" as const),
 							restored: run.restored,
 						};
 					}

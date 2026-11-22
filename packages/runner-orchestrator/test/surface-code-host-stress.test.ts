@@ -396,8 +396,10 @@ describe("surface code_repo parallel work, merge conflicts, previews, and scale 
 			remainingChanges: [{ changeId: randomUUID(), parentSha: baseSha, headSha: lockedHead, title: "Locked" }],
 			updateBranchRef: true,
 		});
-		expect(lockedRebase).toMatchObject({ status: "deferred", reason: "worktree_dirty" });
+		expect(lockedRebase).toMatchObject({ status: "deferred", reason: "worktree_unsafe" });
 		expect(await f.git(f.repo, "rev-parse", `refs/heads/qorpera/coding/${lockedPeer.workerId}`)).toBe(lockedHead);
+		expect(await readFile(join(lockedPeer.worktree, "locked.js"), "utf8")).toContain("export const l = 1;");
+		expect(existsSync(join(lockedPeer.worktree, "other.js"))).toBe(false);
 		await rm(lockPath, { force: true });
 
 		await expect(
