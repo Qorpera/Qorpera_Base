@@ -62,10 +62,14 @@ token:1)
 		exit 2
 	fi
 	install -d -o root -g root -m 0700 "${STORE}" "${SEALED_WITH%/*}"
-	rm -f -- "${SEALED}.new"
+	# WHY: Seal inside a unique temp directory so concurrent runs cannot race and systemd-creds receives a fresh output path.
+	tmp_dir=$(mktemp -d "${STORE}/.seal.XXXXXX")
+	sealed_tmp="${tmp_dir}/token"
+	with_tmp=""
+	trap 'rm -rf -- "${tmp_dir}" "${with_tmp}"' EXIT
 	# printf is bash's own: the token goes down the pipe, never into an argument or a file. What systemd-creds says (a
 	# warning that the host key is not on encrypted media, for one) is kept, and shown only if sealing fails.
-	seal() { printf %s "${token}" | systemd-creds encrypt "$@" --name=token - "${SEALED}.new" 2>&1; }
+	seal() { rm -f -- "${sealed_tmp}" && printf %s "${token}" | systemd-creds encrypt "$@" --name=token - "${sealed_tmp}" 2>&1; }
 	# The key: this host's own, and its TPM as well when it has a working one (then a copy of the disk is not enough),
 	# bound to that TPM alone (`--tpm2-pcrs=` empty), never to a measured boot state, so a firmware or Secure Boot
 	# change cannot strand the token. Should the TPM refuse, the host key alone; `status` says which.
@@ -75,14 +79,18 @@ token:1)
 		key=host
 	else
 		token=""
-		rm -f -- "${SEALED}.new"
+		rm -rf -- "${tmp_dir}"
 		echo "the token could not be sealed; nothing written (systemd-creds said: ${said})" >&2
 		exit 1
 	fi
 	token=""
-	chmod 0600 "${SEALED}.new"
-	mv -f -- "${SEALED}.new" "${SEALED}"
-	printf '%s\n' "${key}" >"${SEALED_WITH}"
+	chmod 0600 "${sealed_tmp}"
+	mv -f -- "${sealed_tmp}" "${SEALED}"
+	with_tmp=$(mktemp "${SEALED_WITH}.new.XXXXXX")
+	printf '%s\n' "${key}" >"${with_tmp}"
+	mv -f -- "${with_tmp}" "${SEALED_WITH}"
+	rm -rf -- "${tmp_dir}"
+	trap - EXIT
 	echo "written"
 	if systemctl is-active --quiet "${UNIT}"; then systemctl --quiet restart "${UNIT}"; fi
 	;;
@@ -99,12 +107,15 @@ on:1)
 	if ! systemctl is-active --quiet "${UNIT}"; then systemctl --quiet restart "${UNIT}"; fi
 	# "on" only once the connector reached Cloudflare (its own readiness), not once it was started: a connector that
 	# cannot run or connect says so, and stays enabled until `off`.
-	for _ in $(seq 1 30); do
+	# WHY: Bound readiness polling to 30 s wall-clock time instead of 30 x (2 s curl + 1 s sleep) = 90 s, and stop early if permanently failed.
+	deadline=$((SECONDS + 30))
+	while (( SECONDS < deadline )); do
 		if curl -fsS --max-time 2 -o /dev/null http://127.0.0.1:20242/ready 2>/dev/null; then
 			echo "on"
 			exit 0
 		fi
-		sleep 1
+		[[ $(systemctl show -p ActiveState --value "${UNIT}" 2>/dev/null || true) == failed ]] && break
+		(( SECONDS < deadline )) && sleep 1
 	done
 	if ! cannot_start >&2; then
 		echo "started, but not connected after 30 s: $(systemctl is-active "${UNIT}" 2>/dev/null || true); see status, or off" >&2

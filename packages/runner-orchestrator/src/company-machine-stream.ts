@@ -33,13 +33,34 @@ export const COMPANY_MACHINE_DESKTOP_VIEW = [
  * SetEncodings (2, 4 + 4n bytes, n at most 16) and FramebufferUpdateRequest (3, 10 bytes). A key (4), a pointer (5),
  * the clipboard (6) or anything else ends it (93) before any of it reaches the server. */
 export const COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM = [
-	"import os, socket, sys, threading, time",
+	"import os, select, socket, sys, threading, time",
 	"try:",
 	"    vnc = socket.create_connection(('127.0.0.1', 5901), timeout=5)",
 	"except OSError:",
 	"    sys.exit(95)",
 	"vnc.settimeout(None)",
 	"vnc.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)",
+	// WHY: Detect dead VNC sockets and bound stalled writes so a wedged server exits 96 instead of pinning the relay and touching last-use forever.
+	"vnc.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)",
+	"for opt, val in (('TCP_KEEPIDLE', 30), ('TCP_KEEPINTVL', 10), ('TCP_KEEPCNT', 3)):",
+	"    if hasattr(socket, opt):",
+	"        try:",
+	"            vnc.setsockopt(socket.IPPROTO_TCP, getattr(socket, opt), val)",
+	"        except OSError:",
+	"            pass",
+	"def send_vnc(buf):",
+	"    view = memoryview(buf)",
+	"    try:",
+	"        while view:",
+	"            _, ready, _ = select.select([], [vnc], [], 10)",
+	"            if not ready:",
+	"                os._exit(96)",
+	"            sent = vnc.send(view)",
+	"            if sent <= 0:",
+	"                os._exit(96)",
+	"            view = view[sent:]",
+	"    except OSError:",
+	"        os._exit(96)",
 	// The server went away (the desktop stopped or restarted): 96, so the host hears the desktop ended (an exit 0 with
 	// the host's input still open is a failed call to LXD; the real machine's run 2 of this step).
 	"def down():",
@@ -48,8 +69,11 @@ export const COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM = [
 	"            data = vnc.recv(65536)",
 	"            if not data:",
 	"                break",
-	"            sys.stdout.buffer.write(data)",
-	"            sys.stdout.buffer.flush()",
+	"            try:",
+	"                sys.stdout.buffer.write(data)",
+	"                sys.stdout.buffer.flush()",
+	"            except BrokenPipeError:",
+	"                os._exit(0)",
 	"    except OSError:",
 	"        pass",
 	"    os._exit(96)",
@@ -100,7 +124,7 @@ export const COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM = [
 	"                os._exit(93)",
 	"        if len(held) < size:",
 	"            return",
-	"        vnc.sendall(held[:size])",
+	"        send_vnc(held[:size])",
 	"        held = held[size:]",
 	"        stage = min(stage + 1, 3)",
 	"while True:",
@@ -1255,8 +1279,14 @@ export class DesktopStream {
 		this.#relay = this.#options
 			.run(
 				(chunk) => {
-					reader.push(chunk);
-					readSoon();
+					if (this.#ended) return;
+					// WHY: Catch push-time RFB_UPDATE_TOO_LARGE synchronously so a hostile VNC burst ends the stream instead of crashing the host callback.
+					try {
+						reader.push(chunk);
+						readSoon();
+					} catch {
+						this.#end("STREAM_UNAVAILABLE");
+					}
 				},
 				this.#outbox.messages(),
 				this.#stop.signal,
