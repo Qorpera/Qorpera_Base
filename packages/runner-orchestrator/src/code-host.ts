@@ -392,13 +392,11 @@ export class LxdCodeHosts {
 	}
 
 	async #start(host: Host, signal: AbortSignal): Promise<void> {
-		// A refused project is never touched: it is checked before anything else.
 		await this.#project(host, signal, true);
 		const fresh = !host.started;
-		await this.#turn(host, signal);
+		const waited = await this.#turn(host, signal);
 		try {
-			// The wait for a start has no bound: the project is checked again before its VM is touched.
-			await this.#project(host, signal, true);
+			if (waited) await this.#project(host, signal, true);
 			let instance = await this.#client.getInstance(host.project, CODE_HOST_INSTANCE, signal);
 			if (instance && !codeHostInstanceMatches(this.#policy, host.project, instance)) {
 				// Made under another policy (another image, other limits): its disk is scratch.
@@ -444,29 +442,30 @@ export class LxdCodeHosts {
 	}
 
 	/** Takes one of the policy's `running` starts for the host: a free one, or the least recently used idle host's. */
-	async #turn(host: Host, signal: AbortSignal): Promise<void> {
-		if (host.started) return;
+	async #turn(host: Host, signal: AbortSignal): Promise<boolean> {
+		if (host.started) return false;
 		const turn = {};
 		this.#turns.push(turn);
-		// Idle hosts this turn failed to stop (a refused project, an error of LXD's): they keep their starts, and their
-		// own idle stops try again.
 		const failed = new Set<Host>();
+		let waited = false;
 		try {
 			for (;;) {
 				if (this.#turns[0] === turn) {
 					const hosts = [...this.#hosts.values()];
 					if (hosts.filter((h) => h.started).length < this.#policy.running) {
 						host.started = true;
-						return;
+						return waited;
 					}
 					const idle = hosts
 						.filter((h) => h.started && h.jobs === 0 && !failed.has(h))
 						.sort((a, b) => a.lastUsed - b.lastUsed)[0];
 					if (idle) {
+						waited = true;
 						await this.#step(idle, () => this.#stopIdle(idle)).catch(() => failed.add(idle));
 						continue;
 					}
 				}
+				waited = true;
 				await this.#changed(signal);
 			}
 		} finally {
@@ -500,6 +499,8 @@ export class LxdCodeHosts {
 	/** Polls until the agent runs a command: LXD answers exec only once the VM's agent is up. */
 	async #agent(host: Host, signal: AbortSignal): Promise<void> {
 		const deadline = AbortSignal.any([signal, AbortSignal.timeout(this.#agentWaitMs)]);
+		const backoffMs = [100, 200, 500] as const;
+		let attempt = 0;
 		for (;;) {
 			try {
 				await this.#client.execInstance(host.project, CODE_HOST_INSTANCE, ["/bin/true"], deadline);
@@ -509,7 +510,9 @@ export class LxdCodeHosts {
 				if (deadline.aborted) throw new Error("CODE_HOST_AGENT_UNAVAILABLE");
 				if (!(error instanceof Error) || error.message !== "LXD instance agent not running") throw error;
 			}
-			await delay(1000, undefined, { signal: deadline }).catch(() => undefined);
+			const waitMs = backoffMs[Math.min(attempt, backoffMs.length - 1)] as number;
+			attempt += 1;
+			await delay(waitMs, undefined, { signal: deadline }).catch(() => undefined);
 		}
 	}
 

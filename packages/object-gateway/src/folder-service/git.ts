@@ -65,7 +65,7 @@ export function gitPublishedObject(path: string): boolean {
 	const place = gitPlace(path);
 	return (
 		place.kind === "git" &&
-		/^objects\/([0-9a-f]{2}\/[0-9a-f]{38}([0-9a-f]{24})?|pack\/pack-[0-9a-f]{40}([0-9a-f]{24})?\.(pack|idx|rev|bitmap|mtimes|promisor))$/.test(
+		/^objects\/([0-9a-f]{2}\/[0-9a-f]{38}([0-9a-f]{24})?|pack\/pack-[0-9a-f]{40}([0-9a-f]{24})?\.(pack|idx|rev|bitmap|mtimes|promisor)|info\/commit-graph|info\/commit-graphs\/(commit-graph-chain|graph-[0-9a-f]{40}([0-9a-f]{24})?\.graph)|pack\/multi-pack-index(-[0-9a-f]{40}([0-9a-f]{24})?\.bitmap)?)$/.test(
 			place.rest,
 		)
 	);
@@ -227,6 +227,6 @@ function gitObjectIndex(rest: string): boolean {
 	const parts = rest.split("/");
 	if (parts[0] !== "objects" || parts.length < 3) return false;
 	const name = parts[2];
-	if (parts[1] === "info") return name === "packs" || name.startsWith("packs_") || name.startsWith("commit-graph");
-	return parts[1] === "pack" && name.startsWith("multi-pack-index");
+	if (parts[1] === "info") return name === "packs" || name.startsWith("packs_");
+	return parts[1] === "pack" && name === "multi-pack-index.d";
 }

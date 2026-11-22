@@ -19,6 +19,13 @@ export function localShell(log: CodeHostCommand[]): CodeHostShell {
 				let size = 0,
 					stderr = "";
 				child.stdout.on("data", (chunk: Buffer) => {
+					if (command.onStdout) {
+						if (chunk.length > command.maximumOutputBytes) {
+							child.kill("SIGKILL");
+							reject(new Error("CODE_HOST_OUTPUT_TOO_LARGE"));
+						} else command.onStdout(chunk);
+						return;
+					}
 					size += chunk.length;
 					if (size > command.maximumOutputBytes) {
 						child.kill("SIGKILL");

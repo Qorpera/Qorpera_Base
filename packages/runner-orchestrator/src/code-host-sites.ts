@@ -207,3 +207,33 @@ export async function readCodeSiteTree(
 		return { files, manifestSha256: codeSiteManifest(files) };
 	});
 }
+
+export const CODE_SITE_REF_PREFIX = "refs/qorpera/sites/change-";
+
+export async function pinCodeSiteTree(
+	job: CodeHostJob,
+	value: { repository: CloudCodingRepository; change: number; tree: string },
+): Promise<{ pinned: boolean; ref: string }> {
+	const input = closed(value, ["repository", "change", "tree"]);
+	const repository = keptRepositoryOf(input.repository);
+	const change = input.change;
+	const tree = input.tree;
+	if (!Number.isSafeInteger(change) || (change as number) < 1 || typeof tree !== "string" || !SHA.test(tree))
+		throw new Error("INVALID_CODE_HOST_JOB");
+	const ref = `${CODE_SITE_REF_PREFIX}${change}`;
+	return withJob(job, repository, async (run) => {
+		if (job.preparedKeptArea !== run.area) {
+			if (!(await run.prepare()).seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
+			if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null)
+				throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+		}
+		const kind = (
+			await run.gitOk(run.repo, ["cat-file", "--batch-check"], "CODE_HOST_SITE_PIN_FAILED", {
+				stdin: Buffer.from(`${tree}\n`),
+			})
+		).toString("latin1");
+		if (!kind.startsWith(`${tree} tree `)) return { pinned: false, ref };
+		await run.gitOk(run.repo, ["update-ref", "--no-deref", ref, tree], "CODE_HOST_SITE_PIN_FAILED");
+		return { pinned: true, ref };
+	});
+}

@@ -26,7 +26,8 @@ export const GIT_OBJECT_DELETE = "git_object_delete";
 /** A published git object's path below a repo.git: a loose object (SHA-1 or SHA-256) or a pack's own file, as folder-
  * service/git.ts gitPublishedObject takes them (never a pack's .keep, which is never published), or a loose object's
  * folder. */
-const PUBLISHED_OBJECT = /^objects\/([0-9a-f]{2}(\/[0-9a-f]{38}([0-9a-f]{24})?)?|pack\/pack-[0-9a-f]{40}([0-9a-f]{24})?\.(pack|idx|rev|bitmap|mtimes|promisor))$/;
+const PUBLISHED_OBJECT =
+	/^objects\/([0-9a-f]{2}(\/[0-9a-f]{38}([0-9a-f]{24})?)?|pack\/pack-[0-9a-f]{40}([0-9a-f]{24})?\.(pack|idx|rev|bitmap|mtimes|promisor)|info\/commit-graph|info\/commit-graphs\/(commit-graph-chain|graph-[0-9a-f]{40}([0-9a-f]{24})?\.graph)|pack\/multi-pack-index(-[0-9a-f]{40}([0-9a-f]{24})?\.bitmap)?)$/;
 
 /** The folder's refusals in a turn's boundary answers, each the paths one refused (`{ path, reason }`) or null for one
  * that cannot be read: `answers` from the turn's start, of which those from `end` on came at its end (the save its end

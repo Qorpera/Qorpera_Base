@@ -1,6 +1,7 @@
 import { type CloudCodingRepository, isUuid, parseCloudCodingRepository } from "@qorpera/contracts";
 import { withAbortScope } from "./abort-scope.ts";
 import {
+	type CodeChangeArchiveFile,
 	type CodeChangeDiff,
 	type CodeChangePath,
 	type CodeChangeRecordFile,
@@ -34,6 +35,7 @@ export const CODE_CHANGE_RPCS = [
 	"qorpera_code_change_files_due",
 	"qorpera_code_change_files",
 	"qorpera_code_change_files_written",
+	"qorpera_code_change_archive",
 ] as const;
 
 /** A record file is at most this long, whatever its row holds. */
@@ -791,10 +793,55 @@ function restoreLine(lines: readonly CodeChangeLine[], now: number): string | un
 /** What the list's head says beside the changes, as the kernel sends it in the list's `index`: what of the site is live
  * and what is ready (step 4), and the repository's import while it is new (step 6, migration `20260930741000`). */
 export interface CodeChangeIndexHead extends CodeChangeReleases {
-	/** `{at, lines}`: when the repository was brought in, and the other lines of work that came with it (the
-	 * registry's `imported_from.lines`: `{count, changes, shown}`). The kernel sends it for 30 days after the import, and
-	 * only when a line came; never checked on the way in: a value the list cannot show is no line. */
 	imported?: unknown;
+	total?: number;
+}
+
+export const CODE_CHANGE_INDEX_LIMIT = 100;
+export const CODE_CHANGE_ARCHIVE_BUCKET = 500;
+const CODE_CHANGE_ARCHIVE_SLICE = 200;
+const CODE_CHANGE_MAX_BATCH = 200;
+const CODE_CHANGE_MAX_CONTINUATIONS = 100;
+const CODE_CHANGE_ARCHIVE_CACHE_MAX = 4096;
+
+export function codeChangeArchiveName(start: number, end: number): string {
+	return `${String(start).padStart(4, "0")}-${String(end).padStart(4, "0")}.md`;
+}
+
+export function codeChangeArchiveRanges(
+	total: number,
+): { start: number; end: number; name: string; immutable: boolean }[] {
+	if (!whole(total, 1) || total <= CODE_CHANGE_INDEX_LIMIT) return [];
+	const cutoff = total - CODE_CHANGE_INDEX_LIMIT;
+	const ranges: { start: number; end: number; name: string; immutable: boolean }[] = [];
+	for (let start = 1; start <= cutoff; start += CODE_CHANGE_ARCHIVE_BUCKET) {
+		const end = start + CODE_CHANGE_ARCHIVE_BUCKET - 1;
+		ranges.push({ start, end, name: codeChangeArchiveName(start, end), immutable: total >= end });
+	}
+	return ranges;
+}
+
+export function codeChangeArchiveText(
+	repository: { owner: string; name: string },
+	start: number,
+	end: number,
+	lines: readonly CodeChangeLine[],
+): string {
+	const byNumber = new Map<number, CodeChangeLine>();
+	for (const entry of lines) {
+		if (entry.n >= start && entry.n <= end) byNumber.set(entry.n, entry);
+	}
+	const ordered = [...byNumber.values()].sort((a, b) => a.n - b.n);
+	return `${[
+		`# Changes ${start} to ${end} in ${words(`${repository.owner}/${repository.name}`, 200)}`,
+		"",
+		...(ordered.length
+			? ordered.map((entry) => {
+					const said = words(entry.line, 200);
+					return `- ${entry.n} · ${day(entry.createdAt)} · ${LISTED[entry.state]}${said ? ` · ${said}` : ""}`;
+				})
+			: ["None yet."]),
+	].join("\n")}\n`;
 }
 
 /** How long after an import the list opens with the other lines of work that came with it. */
@@ -827,8 +874,12 @@ export function codeChangeIndexText(
 	head: CodeChangeIndexHead = {},
 	now: number = Date.now(),
 ): string {
-	const newest = [...lines].sort((a, b) => b.n - a.n).slice(0, 100);
-	// A site Qorpera took down: that line in place of what is live, whatever else the kernel says of it (never a link).
+	const newest = [...lines].sort((a, b) => b.n - a.n).slice(0, CODE_CHANGE_INDEX_LIMIT);
+	const total = Math.max(lines.length, whole(head.total, 0) ? head.total : 0);
+	const summary =
+		total > CODE_CHANGE_INDEX_LIMIT
+			? `Showing latest ${CODE_CHANGE_INDEX_LIMIT} of ${total} changes. Older changes are in changes/archive/.`
+			: undefined;
 	const site = [
 		takenDownLine(head.takenDown) ?? liveLine(head.live),
 		readyLine(head.ready),
@@ -840,6 +891,7 @@ export function codeChangeIndexText(
 		"",
 		...(opening.length ? [...opening, ""] : []),
 		...(site.length ? [...site, ""] : []),
+		...(summary ? [summary, ""] : []),
 		...(newest.length
 			? newest.map((entry) => {
 					const said = words(entry.line, 200);
@@ -1016,7 +1068,11 @@ function filesOf(
 	answer: unknown,
 	target: CodeChangeTarget,
 	limit: number,
-): { changes: CodeChangeFile[]; index: ({ version: number; lines: CodeChangeLine[] } & CodeChangeIndexHead) | null } {
+): {
+	changes: CodeChangeFile[];
+	index: ({ version: number; lines: CodeChangeLine[] } & CodeChangeIndexHead) | null;
+	hasMore: boolean;
+} {
 	if (!isRecord(answer) || answer.schema !== "qorpera.code-change-files/v1" || !Array.isArray(answer.changes))
 		throw new Error("CODE_CHANGE_FILES_UNCONFIRMED");
 	const named = isRecord(answer.repository) ? answer.repository : {};
@@ -1027,9 +1083,7 @@ function filesOf(
 		!(named.companyId === null || named.companyId === target.companyId)
 	)
 		throw new Error("CODE_CHANGE_FILES_UNCONFIRMED");
-	// The kernel names no company: this executor does not hold it, or nobody registered the repository. Nothing is due
-	// here.
-	if (named.companyId === null) return { changes: [], index: null };
+	if (named.companyId === null) return { changes: [], index: null, hasMore: false };
 	const index = answer.index;
 	if (index !== null && !(isRecord(index) && whole(index.version) && Array.isArray(index.lines)))
 		throw new Error("CODE_CHANGE_FILES_UNCONFIRMED");
@@ -1041,16 +1095,30 @@ function filesOf(
 				: {
 						version: index.version as number,
 						lines: (index.lines as unknown[]).map(lineOf),
-						// What is live and what is ready (step 4), the import while it is new (step 6), and what is being
-						// prepared while sites have hosts of their own (step 5), as the kernel sends them: the list reads them
-						// leniently, and a kernel from before sends none.
 						live: index.live,
 						ready: index.ready,
 						imported: index.imported,
 						preparing: index.preparing,
 						takenDown: index.takenDown,
+						...(whole(index.total, 0) ? { total: index.total } : {}),
 					},
+		hasMore: answer.hasMore === true,
 	};
+}
+
+function archiveLinesOf(answer: unknown, target: CodeChangeTarget): CodeChangeLine[] {
+	if (!isRecord(answer) || answer.schema !== "qorpera.code-change-archive/v1" || !Array.isArray(answer.lines))
+		throw new Error("CODE_CHANGE_ARCHIVE_UNCONFIRMED");
+	const named = isRecord(answer.repository) ? answer.repository : {};
+	if (
+		named.environmentId !== target.environmentId ||
+		named.owner !== target.owner ||
+		named.name !== target.name ||
+		!(named.companyId === null || named.companyId === target.companyId)
+	)
+		throw new Error("CODE_CHANGE_ARCHIVE_UNCONFIRMED");
+	if (named.companyId === null) return [];
+	return answer.lines.map(lineOf);
 }
 
 // The writer ---------------------------------------------------------------------------------------------------------
@@ -1088,6 +1156,8 @@ interface Written {
 	changes: { n: number; version: number; diff?: CodeChangeDiff }[];
 	indexVersion: number | null;
 	leftOut: number[];
+	hasMore: boolean;
+	immutableArchives: string[];
 }
 /** The problem the kernel is told for a record a job left out. */
 const LEFT_OUT = "CODE_CHANGE_RECORD_LEFT_OUT";
@@ -1105,10 +1175,11 @@ export class CodeChangeRecords {
 	readonly #limit: number;
 	readonly #changes: number;
 	readonly #now: () => number;
+	readonly #writtenArchives = new Set<string>();
 
 	constructor(options: CodeChangeRecordsOptions) {
 		const limit = options.limit ?? 20,
-			changes = options.changes ?? 20;
+			changes = options.changes ?? CODE_CHANGE_MAX_BATCH;
 		if (
 			typeof options.owner !== "string" ||
 			!options.owner ||
@@ -1118,7 +1189,7 @@ export class CodeChangeRecords {
 			!whole(limit, 1) ||
 			limit > 50 ||
 			!whole(changes, 1) ||
-			changes > 20
+			changes > CODE_CHANGE_MAX_BATCH
 		)
 			throw new Error("INVALID_CODE_CHANGE_RECORDS");
 		this.#control = options.control;
@@ -1155,6 +1226,7 @@ export class CodeChangeRecords {
 		const wrote = written;
 		if (!wrote) return async () => undefined;
 		return async () => {
+			this.#rememberArchives(wrote.immutableArchives);
 			if (
 				await this.#written(
 					target,
@@ -1168,14 +1240,8 @@ export class CodeChangeRecords {
 		};
 	}
 
-	/** One pass: every repository with a file due, each in a code host job of its own that yields to a turn's. It never
-	 * throws for one repository, nor for a kernel that does not answer: those are reported (`code-change-error`).
-	 * `written` counts the repositories whose due files were written and the kernel told, `failed` those whose job or
-	 * calls failed, or whose job left a record out; the kernel is told of a failure, and waits longer before it names
-	 * that repository again. One whose job gave way to a turn, or found nothing due any more, is in neither. */
 	async pass(signal: AbortSignal): Promise<{ written: number; failed: number }> {
 		const counts = { written: 0, failed: 0 };
-		// The pass's signal may live as long as the process: it is handed to no `AbortSignal.any` (abort-scope.ts).
 		await withAbortScope(signal, async (scoped) => {
 			let due: CodeChangeTarget[];
 			try {
@@ -1186,8 +1252,26 @@ export class CodeChangeRecords {
 			}
 			for (const target of due) {
 				if (scoped.aborted) return;
-				const ended = await this.#repository(target, scoped);
-				if (ended) counts[ended] += 1;
+				const seen = new Set<string>();
+				let status: "written" | "failed" | undefined;
+				for (let round = 0; round < CODE_CHANGE_MAX_CONTINUATIONS && !scoped.aborted; round += 1) {
+					const step = await this.#repository(target, scoped);
+					if (step.status === "failed") {
+						status = "failed";
+						break;
+					}
+					if (step.status === undefined) break;
+					status = "written";
+					let progressed = false;
+					for (const key of step.writtenKeys) {
+						if (!seen.has(key)) {
+							seen.add(key);
+							progressed = true;
+						}
+					}
+					if (!step.hasMore || !progressed) break;
+				}
+				if (status) counts[status] += 1;
 			}
 		});
 		return counts;
@@ -1218,41 +1302,49 @@ export class CodeChangeRecords {
 	}
 
 	/** One repository's due files, in a job of its own that yields. */
-	async #repository(target: CodeChangeTarget, signal: AbortSignal): Promise<"written" | "failed" | undefined> {
+	async #repository(
+		target: CodeChangeTarget,
+		signal: AbortSignal,
+	): Promise<{ status: "written" | "failed" | undefined; hasMore: boolean; writtenKeys: string[] }> {
 		let wrote: Written | undefined;
+		const limits = [...new Set([this.#changes, 50, 20, 5, 1].filter((n) => n <= this.#changes))];
 		try {
 			wrote = await this.#hosts.run(
 				target.companyId,
 				target.environmentId,
 				signal,
-				// An answer too large for the control to take (many long rows at once) is asked for again in smaller parts.
-				(job) => this.#writeDue(job, target, job.signal, [this.#changes, 5, 1]),
+				(job) => this.#writeDue(job, target, job.signal, limits),
 				{ yields: true },
 			);
 		} catch (error) {
-			// A turn's job joined the line, the kernel's rows were busy, or the pass was stopped: nothing was saved, and
-			// nothing failed. The files stay due.
 			if (
 				signal.aborted ||
 				(error instanceof CodeHostJobFailure && error.code === YIELDED) ||
 				error instanceof CodingControlBusy
 			)
-				return undefined;
+				return { status: undefined, hasMore: false, writtenKeys: [] };
 			this.#report({ event: "code-change-error", step: "files", where: "pass", ...named(target), error });
-			// The kernel counts the failure and names the repository again after a pause that doubles.
 			await this.#written(
 				target,
-				{ changes: [], indexVersion: null, leftOut: [] },
+				{ changes: [], indexVersion: null, leftOut: [], hasMore: false, immutableArchives: [] },
 				codeChangeErrorCode(error),
 				1,
 				signal,
 			);
-			return "failed";
+			return { status: "failed", hasMore: false, writtenKeys: [] };
 		}
-		if (!wrote) return undefined;
-		if (!(await this.#written(target, wrote, wrote.leftOut.length ? LEFT_OUT : null, 2, signal))) return "failed";
+		if (!wrote) return { status: undefined, hasMore: false, writtenKeys: [] };
+		this.#rememberArchives(wrote.immutableArchives);
+		if (!(await this.#written(target, wrote, wrote.leftOut.length ? LEFT_OUT : null, 2, signal)))
+			return { status: "failed", hasMore: false, writtenKeys: [] };
 		this.#report({ event: "code-change", step: "written", where: "pass", ...named(target), ...said(wrote) });
-		if (!wrote.leftOut.length) return "written";
+		if (!wrote.leftOut.length) {
+			return {
+				status: "written",
+				hasMore: wrote.hasMore,
+				writtenKeys: wrote.changes.map((change) => `${change.n}:${change.version}`),
+			};
+		}
 		this.#report({
 			event: "code-change-error",
 			step: "files",
@@ -1261,7 +1353,99 @@ export class CodeChangeRecords {
 			changes: wrote.leftOut,
 			error: new Error(LEFT_OUT),
 		});
-		return "failed";
+		return { status: "failed", hasMore: false, writtenKeys: [] };
+	}
+
+	#rememberArchives(keys: readonly string[]): void {
+		for (const key of keys) {
+			if (this.#writtenArchives.size >= CODE_CHANGE_ARCHIVE_CACHE_MAX) {
+				const oldest = this.#writtenArchives.values().next().value;
+				if (oldest !== undefined) this.#writtenArchives.delete(oldest);
+			}
+			this.#writtenArchives.add(key);
+		}
+	}
+
+	async #archivesFor(
+		target: CodeChangeTarget,
+		due: ReturnType<typeof filesOf>,
+		signal: AbortSignal,
+	): Promise<{ files: CodeChangeArchiveFile[]; immutableKeys: string[] }> {
+		if (!due.index) return { files: [], immutableKeys: [] };
+		const total = Math.max(due.index.lines.length, whole(due.index.total, 0) ? due.index.total : 0);
+		const ranges = codeChangeArchiveRanges(total);
+		if (!ranges.length) return { files: [], immutableKeys: [] };
+		const known = new Map<number, CodeChangeLine>();
+		for (const change of due.changes) {
+			known.set(change.n, {
+				n: change.n,
+				createdAt: change.createdAt,
+				state: change.state,
+				kind: change.kind,
+				line: change.notice ?? change.title,
+			});
+		}
+		for (const line of due.index.lines) known.set(line.n, line);
+		const files: CodeChangeArchiveFile[] = [];
+		const immutableKeys: string[] = [];
+		for (const range of ranges) {
+			const cacheKey = `${target.environmentId}/${target.owner}/${target.name}/${range.name}`;
+			if (range.immutable && this.#writtenArchives.has(cacheKey)) continue;
+			const targetEnd = Math.min(range.end, total);
+			let missingStart: number | null = null;
+			const missing: { from: number; to: number }[] = [];
+			for (let n = range.start; n <= targetEnd; n += 1) {
+				if (!known.has(n)) {
+					if (missingStart === null) missingStart = n;
+				} else if (missingStart !== null) {
+					missing.push({ from: missingStart, to: n - 1 });
+					missingStart = null;
+				}
+			}
+			if (missingStart !== null) missing.push({ from: missingStart, to: targetEnd });
+			let fetchedOk = true;
+			for (const span of missing) {
+				for (let from = span.from; from <= span.to; from += CODE_CHANGE_ARCHIVE_SLICE) {
+					const to = Math.min(span.to, from + CODE_CHANGE_ARCHIVE_SLICE - 1);
+					try {
+						const answer = await this.#call(
+							CODE_CHANGE_RPCS[3],
+							{
+								p_owner: this.#owner,
+								p_machine_id_sha256: this.#machineIdSha256,
+								p_environment_id: target.environmentId,
+								p_repository_owner: target.owner,
+								p_name: target.name,
+								p_from: from,
+								p_to: to,
+							},
+							signal,
+						);
+						for (const line of archiveLinesOf(answer, target)) known.set(line.n, line);
+					} catch (error) {
+						if (signal.aborted) throw error;
+						this.#report({ event: "code-change-error", step: "archive", ...named(target), error });
+						fetchedOk = false;
+						break;
+					}
+				}
+				if (!fetchedOk) break;
+			}
+			if (!fetchedOk) continue;
+			const bucketLines: CodeChangeLine[] = [];
+			for (let n = range.start; n <= targetEnd; n += 1) {
+				const found = known.get(n);
+				if (found) bucketLines.push(found);
+			}
+			if (!bucketLines.length) continue;
+			files.push({
+				name: range.name,
+				text: codeChangeArchiveText(target, range.start, range.end, bucketLines),
+				immutable: range.immutable,
+			});
+			if (range.immutable) immutableKeys.push(cacheKey);
+		}
+		return { files, immutableKeys };
 	}
 
 	/** Inside a job: asks what is due, renders it and has the code host write it. Answers what was written, or undefined
@@ -1330,20 +1514,24 @@ export class CodeChangeRecords {
 						imported: due.index.imported,
 						preparing: due.index.preparing,
 						takenDown: due.index.takenDown,
+						...(due.index.total === undefined ? {} : { total: due.index.total }),
 					},
 					this.#now(),
 				)
 			: null;
+		const { files: archives, immutableKeys: immutableArchives } = await this.#archivesFor(target, due, signal);
 		const writer: CodeHostJob = {
 			shell: job.shell,
 			layout: job.layout,
 			signal,
 			...(job.preparedKeptArea === undefined ? {} : { preparedKeptArea: job.preparedKeptArea }),
 		};
-		const wrote = await this.#write(writer, { repository, records, index });
-		// The job names the records whose file now holds its text, also one that held it already. It leaves out a record
-		// whose two ends of main the repository no longer holds (a restore went back past them): that one is written
-		// once more, without its files, or it would stay due for good.
+		const wrote = await this.#write(writer, {
+			repository,
+			records,
+			index,
+			...(archives.length ? { archives } : {}),
+		});
 		const held = new Set(Array.isArray(wrote?.written) ? wrote.written : []);
 		const without = due.changes.filter((change) => diffDue(change) && !held.has(change.n));
 		if (without.length) {
@@ -1371,12 +1559,11 @@ export class CodeChangeRecords {
 				}),
 			indexVersion: due.index?.version ?? null,
 			leftOut: due.changes.filter((change) => !held.has(change.n)).map((change) => change.n),
+			hasMore: due.hasMore,
+			immutableArchives,
 		};
 	}
 
-	/** Tells the kernel which files are written, or of a problem that left them due. Answers whether it heard; an
-	 * answer that did not come is reported, and the files stay due. Rows whose diffs together would pass what one call
-	 * carries are told in several calls, the list's version with the last. */
 	async #written(
 		target: CodeChangeTarget,
 		wrote: Written,
@@ -1389,7 +1576,8 @@ export class CodeChangeRecords {
 		for (const { n, version, diff } of wrote.changes) {
 			const entry = { n, version, ...(diff ? codeChangeDiffReported(diff) : {}) };
 			const entrySize = bytes(JSON.stringify(entry)) + 1;
-			if (size + entrySize > WRITTEN_BYTES && parts.at(-1)?.length) {
+			const current = parts.at(-1) as Record<string, unknown>[];
+			if (current.length > 0 && (size + entrySize > WRITTEN_BYTES || current.length >= CODE_CHANGE_MAX_BATCH)) {
 				parts.push([]);
 				size = 0;
 			}

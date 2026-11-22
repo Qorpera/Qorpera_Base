@@ -1508,6 +1508,7 @@ describe("code host: nightly care of a repository kept in Qorpera (own code stor
 		);
 		const before = await readdir(c.repo);
 		const pieces: Buffer[] = [];
+		const beforeBundle = c.log.length;
 		const bundled = await bundleCodeArea(
 			c.job,
 			{ repository: kept, refsSha256: checked.refsSha256 },
@@ -1529,6 +1530,9 @@ describe("code host: nightly care of a repository kept in Qorpera (own code stor
 		expect(pieces.length).toBeGreaterThan(1);
 		expect(pieces.length).toBe(Math.ceil(whole.length / 256));
 		expect(pieces.slice(0, -1).every((piece) => piece.length === 256)).toBe(true);
+		const bundleCommands = c.log.slice(beforeBundle);
+		expect(bundleCommands.some((command) => command.argv[0] === "/usr/bin/dd")).toBe(false);
+		expect(bundleCommands.filter((command) => command.argv[2] === 'exec cat -- "$1"')).toHaveLength(1);
 
 		// Anywhere with git: a mirror of the bundle is the whole repository.
 		const file = join(f.root, "all.bundle"),
@@ -1638,9 +1642,14 @@ describe("code host: nightly care of a repository kept in Qorpera (own code stor
 		expect(packed.objects.loose).toBe(0);
 		expect(packed.objects.packs).toBeGreaterThan(0);
 		expect(await fsckCodeArea(c.job, { repository: kept })).toEqual({ state: "ok", exitCode: 0, detail: "" });
-		expect(c.log.filter((command) => command.argv.includes("gc")).map((command) => command.argv.slice(3))).toEqual([
-			["gc", "--quiet", "--no-prune"],
-		]);
+		expect(
+			c.log.filter((command) => command.argv.includes("repack")).map((command) => command.argv.slice(3)),
+		).toEqual([["repack", "--geometric=2", "-d", "--write-midx", "--write-bitmap-index", "-q"]]);
+		expect(
+			c.log.filter((command) => command.argv.includes("commit-graph")).map((command) => command.argv.slice(3)),
+		).toEqual([["commit-graph", "write", "--reachable", "--changed-paths", "--split=no-merge"]]);
+		expect(await exists(join(c.repo, "objects/pack/multi-pack-index"))).toBe(true);
+		expect(await exists(join(c.repo, "objects/info/commit-graphs/commit-graph-chain"))).toBe(true);
 		expect(c.log.some((command) => command.argv.includes("pack-refs"))).toBe(false);
 
 		const more = await first.commit({ "more.txt": "more\n" }, "more");
@@ -1658,28 +1667,30 @@ describe("code host: nightly care of a repository kept in Qorpera (own code stor
 		});
 		const other = await session(f, c, more);
 		expect(await readFile(join(other.tree, "more.txt"), "utf8")).toBe("more\n");
-		// A session deletes a branch of its own afterwards: it is still a loose file.
 		await f.git(other.tree, "branch", "spare");
 		await f.git(other.tree, "branch", "-D", "spare");
 		expect(await exists(join(c.repo, "packed-refs"))).toBe(false);
 
-		// Without the two options the gc is today's: it packs the refs, the sessions' branches left out.
 		expect(await collectCodeGarbage(c.job, { repository: kept }, unblocked)).toEqual({
 			state: "collected",
 			restored: [],
 		});
 		expect(await readFile(join(c.repo, "packed-refs"), "utf8")).toContain(`${more} refs/heads/main`);
 		expect(await exists(join(c.repo, "refs/heads/main"))).toBe(false);
-		expect(c.log.filter((command) => command.argv.includes("gc")).map((command) => command.argv.slice(3))).toEqual([
-			["gc", "--quiet", "--no-prune"],
-			["gc", "--quiet"],
+		expect(
+			c.log.filter((command) => command.argv.includes("repack")).map((command) => command.argv.slice(3)),
+		).toEqual([
+			["repack", "--geometric=2", "-d", "--write-midx", "--write-bitmap-index", "-q"],
+			["repack", "--cruft", "--cruft-expiration=14.days.ago", "-d", "--write-midx", "--write-bitmap-index", "-q"],
 		]);
+		expect(c.log.filter((command) => command.argv.includes("prune")).map((command) => command.argv.slice(3))).toEqual(
+			[["prune", "--expire=14.days.ago"]],
+		);
 		expect(await readdir(c.scratchRoot)).toEqual([]);
 	});
 
-	it("gc --no-prune keeps an unreachable commit readable, however old; git's own pruning would drop it (the plan's assumption)", async () => {
+	it("geometric repack keeps unreachable objects while cruft prune drops expired orphans and keeps pinned site trees", async () => {
 		const { f, c, head } = await landed();
-		// A commit no ref reaches, with a file version of its own, both a month old: older than git's two weeks.
 		const repo = (...args: string[]) => f.git(c.repo, "--git-dir=.", ...args);
 		await writeFile(join(f.root, "orphan.txt"), "kept by no ref\n");
 		const blob = await repo("hash-object", "-w", join(f.root, "orphan.txt"));
@@ -1697,18 +1708,31 @@ describe("code host: nightly care of a repository kept in Qorpera (own code stor
 		expect(
 			await collectCodeGarbage(c.job, { repository: kept }, unblocked, { packRefs: false, prune: false }),
 		).toEqual({ state: "collected", restored: [] });
-		// Its loose files went into a pack, and it reads as before.
 		for (const object of [blob, tree, orphan])
 			expect(await exists(join(c.repo, "objects", object.slice(0, 2), object.slice(2)))).toBe(false);
 		expect(await repo("cat-file", "-t", orphan)).toBe("commit");
 		expect(await repo("show", `${orphan}:orphan.txt`)).toBe("kept by no ref");
 		expect(await repo("fsck", "--full", "--no-dangling", "--no-progress")).toBe("");
-		// Another night's pack: it stays.
 		await collectCodeGarbage(c.job, { repository: kept }, unblocked, { packRefs: false, prune: false });
 		expect(await repo("show", `${orphan}:orphan.txt`)).toBe("kept by no ref");
-		// git's own pruning (today's gc) drops it by its age.
+
+		await writeFile(join(f.root, "expired.txt"), "expired orphan\n");
+		const expiredBlob = await repo("hash-object", "-w", join(f.root, "expired.txt"));
+		await writeFile(join(f.root, "site.html"), "<h1>pinned site</h1>\n");
+		const siteBlob = await repo("hash-object", "-w", join(f.root, "site.html"));
+		await writeFile(join(f.root, "site.tree"), `100644 blob ${siteBlob}\tindex.html\n`);
+		const siteTree = (
+			await exec("/bin/sh", ["-c", `exec ${GIT} --git-dir=. mktree <"$1"`, "sh", join(f.root, "site.tree")], {
+				cwd: c.repo,
+				env: f.env,
+			})
+		).stdout.trim();
+		await repo("update-ref", "--no-deref", "refs/qorpera/sites/change-1", siteTree);
+		for (const object of [expiredBlob, siteBlob, siteTree])
+			await utimes(join(c.repo, "objects", object.slice(0, 2), object.slice(2)), old, old);
 		await collectCodeGarbage(c.job, { repository: kept }, unblocked);
-		await expect(repo("cat-file", "-e", orphan)).rejects.toThrow();
+		await expect(repo("cat-file", "-e", expiredBlob)).rejects.toThrow();
+		expect(await repo("cat-file", "-p", siteBlob)).toBe("<h1>pinned site</h1>");
 		expect(await repo("rev-parse", "refs/heads/main")).toBe(head);
 	});
 
@@ -1736,7 +1760,6 @@ describe("code host: nightly care of a repository kept in Qorpera (own code stor
 				},
 			],
 			["NOT_CLEAN", (s) => writeFile(join(s.tree, "untracked.txt"), "x\n")],
-			["NOT_CLEAN", (s) => writeFile(join(s.tree, "debug.log"), "ignored\n")],
 			["NOT_CLEAN", (s) => writeFile(join(s.tree, "index.html"), "<p>another shop</p>\n")],
 			["NOT_CLEAN", (s) => rm(join(s.tree, "index.html"))],
 			[
@@ -2371,7 +2394,7 @@ describe("code host: the change record, undo and download of a repository kept i
 			{ records: [{ n: 1, text: "x", picture: { blob: head, to: `${area}/changes/1.gif` } }], index: null },
 			{ records: [{ n: 1, text: "x", picture: { blob: "main", to: `${area}/changes/1.png` } }], index: null },
 			{ records: [{ n: 1, text: "x", state: "landed" }], index: null },
-			{ records: Array.from({ length: 101 }, (_, index) => ({ n: index + 1, text: "x" })), index: null },
+			{ records: Array.from({ length: 201 }, (_, index) => ({ n: index + 1, text: "x" })), index: null },
 			{ records: "all", index: null },
 			{ records: [], index: "" },
 			{ records: [], index: "x".repeat(256 * 1024 + 1) },
@@ -3581,5 +3604,105 @@ describe("code host exec batching", () => {
 		expect(jobACommands.filter((command) => command.argv.includes("for-each-ref"))).toHaveLength(1);
 		expect(jobACommands.filter((command) => command.argv.includes("cat-file"))).toHaveLength(1);
 		expect(jobACommands.filter((command) => command.argv.includes(CODE_CHECKS_FILE))).toHaveLength(1);
+		expect(jobACommands.some((command) => command.argv.includes("ls-tree") && command.argv.includes("-r"))).toBe(
+			false,
+		);
+
+		const beforeB = c.log.length;
+		const landedB = await landCodeBranch(c.job, {
+			repository: kept,
+			workerId: s.workerId,
+			headSha: h2,
+			expect: { how: toCheck.how, mainBefore: toCheck.mainBefore, mainAfter: toCheck.mainAfter },
+		});
+		expect(landedB.state).toBe("fast-forward");
+		const jobBCommands = c.log.slice(beforeB);
+		expect(jobBCommands.some((command) => command.argv.includes("ls-tree"))).toBe(false);
+	});
+
+	it("retires worktrees containing gitignored node_modules, dist, target, and debug.log cleanly", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const s = await session(f, c, baseSha);
+		const head = await s.commit(
+			{ ".gitignore": "node_modules/\ndist/\ntarget/\n*.log\n", "src/app.ts": "export const x = 1;\n" },
+			"add gitignore",
+		);
+		await landCodeBranch(c.job, { repository: kept, workerId: s.workerId, headSha: head });
+		await mkdir(join(s.tree, "node_modules/pkg"), { recursive: true });
+		await mkdir(join(s.tree, "dist"), { recursive: true });
+		await mkdir(join(s.tree, "target/debug"), { recursive: true });
+		await writeFile(join(s.tree, "node_modules/pkg/index.js"), "module.exports = 1;\n");
+		await writeFile(join(s.tree, "dist/bundle.js"), "console.log(1);\n");
+		await writeFile(join(s.tree, "target/debug/app"), "bin\n");
+		await writeFile(join(s.tree, "debug.log"), "trace\n");
+
+		expect(
+			await retireCodeWorktrees(c.job, { repository: kept, workerIds: [s.workerId] }, { phase: "files" }),
+		).toEqual({ retired: [s.workerId], kept: [] });
+		expect(await exists(s.tree)).toBe(false);
+		expect(
+			await retireCodeWorktrees(c.job, { repository: kept, workerIds: [s.workerId] }, { phase: "git-folder" }),
+		).toEqual({ retired: [s.workerId], kept: [] });
+		expect(await exists(s.admin)).toBe(false);
+	});
+
+	it("packs archived session refs and site pins while keeping active session branches loose", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const active = await session(f, c, baseSha);
+		const archived = await session(f, c, baseSha);
+		const hActive = await active.commit({ "active.txt": "a\n" }, "active");
+		const hArchived = await archived.commit({ "archived.txt": "b\n" }, "archived");
+		await landCodeBranch(c.job, { repository: kept, workerId: archived.workerId, headSha: hArchived });
+		await retireCodeWorktrees(c.job, { repository: kept, workerIds: [archived.workerId] }, { phase: "files" });
+		await retireCodeWorktrees(c.job, { repository: kept, workerIds: [archived.workerId] }, { phase: "git-folder" });
+		const treeSha = await f.git(c.repo, "--git-dir=.", "rev-parse", `${hArchived}^{tree}`);
+		await f.git(c.repo, "--git-dir=.", "update-ref", "--no-deref", "refs/qorpera/sites/change-1", treeSha);
+		const gcUnblocked: CodeHostGcBlock = {
+			begin: async () => ({ state: "blocking", held: 0 }),
+			end: async () => undefined,
+		};
+
+		expect(
+			await collectCodeGarbage(c.job, { repository: kept }, gcUnblocked, {
+				packRefs: false,
+				prune: false,
+				packArchivedRefs: true,
+			}),
+		).toEqual({ state: "collected", restored: [] });
+		expect(await exists(join(c.repo, "refs/heads/qorpera/coding", active.workerId))).toBe(true);
+		expect(await exists(join(c.repo, "refs/heads/qorpera/coding", archived.workerId))).toBe(false);
+		expect(await exists(join(c.repo, "refs/qorpera/sites/change-1"))).toBe(false);
+		const packed = await readFile(join(c.repo, "packed-refs"), "utf8");
+		expect(packed).toContain(`${hArchived} refs/heads/qorpera/coding/${archived.workerId}`);
+		expect(packed).toContain(`${treeSha} refs/qorpera/sites/change-1`);
+		expect(packed).not.toContain(`refs/heads/qorpera/coding/${active.workerId}`);
+		expect(await f.git(c.repo, "--git-dir=.", "rev-parse", `refs/heads/qorpera/coding/${active.workerId}`)).toBe(
+			hActive,
+		);
+	});
+
+	it("writes immutable changes/archive rollup files without overwriting existing immutable rollups", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		await startCodeArea(c.job, { repository: kept });
+		await writeCodeChangeRecords(c.job, {
+			repository: kept,
+			records: [{ n: 1, text: "# Change 1\n" }],
+			index: "# Changes in qorpera/example\n\n- 1 · 2026-11-10 · in main · Init\n",
+			archives: [{ name: "0001-0500.md", text: "# Changes 1 to 500\n\n- 1 · Init\n", immutable: true }],
+		});
+		const archivePath = join(c.code, "changes/archive/0001-0500.md");
+		expect(await readFile(archivePath, "utf8")).toBe("# Changes 1 to 500\n\n- 1 · Init\n");
+		await writeCodeChangeRecords(c.job, {
+			repository: kept,
+			records: [],
+			index: null,
+			archives: [{ name: "0001-0500.md", text: "# Attempted Overwrite\n", immutable: true }],
+		});
+		expect(await readFile(archivePath, "utf8")).toBe("# Changes 1 to 500\n\n- 1 · Init\n");
 	});
 });
