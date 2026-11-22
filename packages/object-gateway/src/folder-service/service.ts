@@ -4041,7 +4041,10 @@ export class FolderService {
 							refused: [],
 							gitHeld: plan.gitHeld,
 						};
-						const batchHeld = held(batchPlan, (idx) => ({ outcome: "refused", reason: answer.units[idx]?.reason }));
+						const batchHeld = held(batchPlan, (idx) => ({
+							outcome: "refused",
+							reason: answer.units[idx]?.reason,
+						}));
 						const laterRefused = remainingEntries(i + 1, "refused", answer.refused);
 						this.#notice(view, unasked, {
 							commitId: null,
