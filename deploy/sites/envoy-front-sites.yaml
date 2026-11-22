@@ -7,7 +7,8 @@
 #  1. A virtual host `sites`, before the api host: every path on sites.qorpera.com goes to the site-serve function
 #     (prefix_rewrite /functions/v1/site-serve/), and nothing else of the stack is reachable on that name (no /rest,
 #     /auth, /storage, /realtime or other function). It sets x-forwarded-host to the sites host, replacing a visitor's
-#     own; the function serves only when that header is exactly the sites host.
+#     own; the function serves only when that header is exactly the sites host. WebSocket upgrades are off on that route
+#     (Envoy answers an upgrade 403 itself).
 #  2. On the api host, /functions/v1/site-serve answers 404 (before the functions route), so agent-made sites are never
 #     served as api.qorpera.com's origin.
 #  3. On the api host, a visitor's x-forwarded-host is dropped and the name the request asked for (its Host) is set in
@@ -45,7 +46,7 @@
 #     --entrypoint envoy api-front --mode validate -c /etc/envoy/new.yaml
 # Envoy reads its file only when it starts: docker compose up -d --no-deps --force-recreate api-front (SITE-HOSTS.md).
                   virtual_hosts:
-                    # Company sites: the site-serve function on every path, and nothing else of the stack.
+                    # Company sites: the site-serve function on every path, no WebSocket, and nothing else of the stack.
                     - name: sites
                       domains: ["sites.qorpera.com"]
                       request_headers_to_add:
