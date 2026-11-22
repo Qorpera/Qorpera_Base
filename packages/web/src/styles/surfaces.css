@@ -1943,6 +1943,22 @@
 }
 .surface-thread-jump-dot.is-attention { background: var(--warning); }
 
+.surface-door-retry { margin-top: 4px; }
+.surface-door-retry[hidden] { display: none; }
+.surface-failed {
+	display: grid; justify-items: start; gap: 8px; margin: 6px; padding: 11px 12px;
+	border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--border)); border-radius: 14px;
+	background: color-mix(in srgb, var(--danger) 7%, var(--bg)); color: var(--text); font-size: 13px; line-height: 18px;
+}
+.surface-failed.is-compact { margin: 2px 0 0; padding: 9px 10px; border-radius: 11px; font-size: 12.5px; }
+.surface-failed p { margin: 0; color: var(--danger); }
+.surface-sheet-error {
+	margin: 2px 0; padding: 9px 12px; border: 1px solid color-mix(in srgb, var(--danger) 32%, var(--border));
+	border-radius: 11px; background: color-mix(in srgb, var(--danger) 8%, var(--bg)); color: var(--danger);
+	font-size: 12.5px; line-height: 18px;
+}
+.surface-toast.is-pending { padding-right: 14px; }
+
 @media (prefers-reduced-motion: reduce) {
 	.surface-state.is-running, .surface-ring, .surface-toast, .surface-bar-agent.is-attention, .surface-thread-jump-dot.is-running,
 	.surface-studio.is-updating .studio-head::after, .surface-report.is-updating .report-chrome::after,

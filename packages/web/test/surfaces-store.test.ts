@@ -1261,26 +1261,29 @@ describe("SurfacesStore", () => {
 
 		const p1 = store.toggleChange(SURFACE, CHANGES[0]);
 		const p2 = store.toggleChange(SURFACE, CHANGES[1]);
+		expect(selections).toHaveLength(0);
+		await new Promise((resolve) => setTimeout(resolve, 180));
 		expect(selections).toHaveLength(1);
-		expect(selections[0]?.toggledChangeIds).toEqual([CHANGES[1]]);
+		expect(selections[0]?.toggledChangeIds).toEqual([]);
 
+		const p2b = store.toggleChange(SURFACE, CHANGES[0]);
 		firstSync.resolve({
 			surfaceId: SURFACE,
 			mode: "single",
-			primary: previewFrame({ previewId: PREVIEW_IDS[0], toggledChangeIds: [CHANGES[1]] }),
+			primary: previewFrame({ previewId: PREVIEW_IDS[0], toggledChangeIds: [] }),
 			compareFrames: [],
 		});
-		await new Promise((resolve) => setTimeout(resolve, 0));
+		await new Promise((resolve) => setTimeout(resolve, 10));
 		expect(selections).toHaveLength(2);
-		expect(selections[1]?.toggledChangeIds).toEqual([]);
+		expect(selections[1]?.toggledChangeIds).toEqual([CHANGES[0]]);
 
 		secondSync.resolve({
 			surfaceId: SURFACE,
 			mode: "single",
-			primary: previewFrame({ previewId: PREVIEW_IDS[1], toggledChangeIds: [] }),
+			primary: previewFrame({ previewId: PREVIEW_IDS[1], toggledChangeIds: [CHANGES[0]] }),
 			compareFrames: [],
 		});
-		await Promise.all([p1, p2]);
+		await Promise.all([p1, p2, p2b]);
 		expect(store.workspace(SURFACE)?.previewState.primary.previewId).toBe(PREVIEW_IDS[1]);
 
 		store.openExplorationDrawer(SURFACE, "66666666-6666-4666-8666-666666666601");
@@ -1590,6 +1593,242 @@ describe("SurfacesStore", () => {
 			colors: { accent: "#ff5500" },
 		});
 		expect(store.state.pendingStudioPatches[studioId]).toBeUndefined();
+		store.dispose();
+	});
+
+	it("auto-composes when change headSha or liveHeadSha advances, avoids infinite failed-preview loops, supports retryPreview, and resets to live_baseline when last change closes", async () => {
+		let currentHeadSha = "a".repeat(40);
+		let currentLiveSha = "1".repeat(40);
+		let currentStatus: "ready" | "failed" = "ready";
+		let hasOpen = true;
+		const setPreviewSelection = vi.fn(
+			async (_surfaceId: string, sel: { toggledChangeIds: string[]; explorationSessionId: string | null }) => ({
+				surfaceId: SURFACE,
+				mode: "single" as const,
+				primary:
+					sel.toggledChangeIds.length === 0
+						? previewFrame({
+								previewId: null,
+								status: "live_baseline",
+								toggledChangeIds: [],
+								doorActionUrl: null,
+								memberPass: null,
+							})
+						: previewFrame({
+								previewId: currentStatus === "failed" ? PREVIEW_IDS[0] : PREVIEW_IDS[1],
+								status: currentStatus,
+								toggledChangeIds: sel.toggledChangeIds,
+								errorDetail: currentStatus === "failed" ? "Build error" : null,
+							}),
+				compareFrames: [],
+			}),
+		);
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace(
+					hasOpen
+						? [
+								session(["staged"], {
+									changes: [
+										change(CHANGES[0], 1, "staged", { parentSha: currentLiveSha, headSha: currentHeadSha }),
+									],
+								}),
+							]
+						: [],
+					{
+						surface: summary({ liveHeadSha: currentLiveSha }),
+						previewState: {
+							surfaceId: SURFACE,
+							mode: "single",
+							primary: previewFrame({
+								previewId: PREVIEW_IDS[0],
+								status: currentStatus,
+								toggledChangeIds: [CHANGES[0]],
+								errorDetail: currentStatus === "failed" ? "Build error" : null,
+							}),
+							compareFrames: [],
+						},
+					},
+				),
+			),
+			setPreviewSelection,
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(setPreviewSelection).toHaveBeenCalledTimes(0);
+
+		currentStatus = "failed";
+		await store.refreshWorkspace(SURFACE);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(setPreviewSelection).toHaveBeenCalledTimes(0);
+
+		await store.retryPreview(SURFACE);
+		expect(setPreviewSelection).toHaveBeenCalledTimes(1);
+
+		currentStatus = "ready";
+		currentHeadSha = "b".repeat(40);
+		await store.refreshWorkspace(SURFACE);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(setPreviewSelection).toHaveBeenCalledTimes(2);
+
+		currentLiveSha = "2".repeat(40);
+		await store.refreshWorkspace(SURFACE);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(setPreviewSelection).toHaveBeenCalledTimes(3);
+
+		hasOpen = false;
+		await store.refreshWorkspace(SURFACE);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(setPreviewSelection).toHaveBeenCalledTimes(4);
+		expect(store.workspace(SURFACE)?.previewState.primary.status).toBe("live_baseline");
+		store.dispose();
+	});
+
+	it("polls composing/building previews at fast 1s cadence and sends compareSessionIds on compareExploration", async () => {
+		vi.useFakeTimers();
+		const variantA = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333311",
+			explorationId: "66666666-6666-4666-8666-666666666611",
+			explorationVariantLabel: "Minimal",
+			branchHeadSha: "a".repeat(40),
+		});
+		const variantB = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333312",
+			explorationId: "66666666-6666-4666-8666-666666666611",
+			explorationVariantLabel: "Bold",
+			branchHeadSha: "b".repeat(40),
+		});
+		let wsCalls = 0;
+		const setPreviewSelection = vi.fn(
+			async (
+				_id: string,
+				sel: { toggledChangeIds: string[]; explorationSessionId: string | null; compareSessionIds?: string[] },
+			) => ({
+				surfaceId: SURFACE,
+				mode: (sel.compareSessionIds && sel.compareSessionIds.length >= 2 ? "compare" : "single") as
+					| "compare"
+					| "single",
+				primary: previewFrame({
+					status: "building",
+					doorActionUrl: null,
+					memberPass: null,
+					toggledChangeIds: sel.toggledChangeIds,
+				}),
+				compareFrames: (sel.compareSessionIds ?? []).map((sid) => ({
+					sessionId: sid,
+					label: sid,
+					frame: previewFrame({ status: "composing", doorActionUrl: null, memberPass: null }),
+				})),
+			}),
+		);
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () => {
+				wsCalls += 1;
+				return workspace([variantA, variantB], {
+					explorations: [
+						{
+							id: "66666666-6666-4666-8666-666666666611",
+							surfaceId: SURFACE,
+							title: "Header exploration",
+							status: "open",
+							chosenSessionId: null,
+							variantSessionIds: [variantA.id, variantB.id],
+							createdAt: "2026-10-16T09:00:00.000Z",
+							resolvedAt: null,
+						},
+					],
+					previewState: {
+						surfaceId: SURFACE,
+						mode: "single",
+						primary: previewFrame({
+							status: "building",
+							doorActionUrl: null,
+							memberPass: null,
+							toggledChangeIds: [],
+						}),
+						compareFrames: [],
+					},
+				});
+			}),
+			setPreviewSelection,
+		});
+		const store = storeWith(client, { realtimeLive: () => false });
+		await store.load();
+		await store.openSurface("website");
+		expect(wsCalls).toBe(1);
+
+		await vi.advanceTimersByTimeAsync(1_050);
+		expect(wsCalls).toBe(2);
+
+		setPreviewSelection.mockClear();
+		store.compareExploration("66666666-6666-4666-8666-666666666611");
+		await vi.advanceTimersByTimeAsync(0);
+		expect(setPreviewSelection).toHaveBeenCalledWith(SURFACE, {
+			toggledChangeIds: [],
+			explorationSessionId: variantA.id,
+			compareSessionIds: [variantA.id, variantB.id],
+		});
+		store.dispose();
+	});
+
+	it("shows pending Merging toast for async merges until merged, and defers markPublished until async publish finishes", async () => {
+		vi.useFakeTimers();
+		let wsState: "staged" | "merging" | "merged" = "staged";
+		let pubStatus: "idle" | "publishing" | "failed" = "idle";
+		const undoSurfaceChange = vi.fn(async () => session(["staged"]));
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace(wsState === "merged" ? [] : [session([wsState])], {
+					surface: summary({
+						publishStatus: pubStatus,
+						lastPublishError: pubStatus === "failed" ? "Build exited 1" : null,
+						hasUnpublishedChanges: wsState === "merged" && pubStatus !== "idle",
+						unpublishedChangeCount: wsState === "merged" && pubStatus !== "idle" ? 1 : 0,
+					}),
+					recentHistory: wsState === "merged" ? [session(["merged"], { state: "completed" })] : [],
+				}),
+			),
+			approveSurfaceChange: vi.fn(async () => {
+				wsState = "merging";
+				return session(["merging"]);
+			}),
+			undoSurfaceChange,
+			publishSurface: vi.fn(async () => {
+				pubStatus = "publishing";
+				return summary({ publishStatus: "publishing", hasUnpublishedChanges: true, unpublishedChangeCount: 1 });
+			}),
+		});
+		const store = storeWith(client, { realtimeLive: () => false });
+		await store.load();
+		await store.openSurface("website");
+
+		await store.approveChange(SESSION, CHANGES[0]);
+		expect(store.state.undo?.pending).toBe(true);
+		expect(await store.undo()).toBe(false);
+		expect(undoSurfaceChange).not.toHaveBeenCalled();
+
+		wsState = "merged";
+		pubStatus = "publishing";
+		await store.refreshWorkspace(SURFACE);
+		expect(store.state.undo?.pending).toBeUndefined();
+		expect(store.state.undo?.changeIds).toEqual([CHANGES[0]]);
+
+		await store.publish(SURFACE);
+		expect(store.state.publishedChangeIds[CHANGES[0]]).toBeUndefined();
+		expect(unpublishedChanges(store.state, SURFACE)).toHaveLength(1);
+
+		pubStatus = "failed";
+		await store.refreshWorkspace(SURFACE);
+		expect(store.state.publishedChangeIds[CHANGES[0]]).toBeUndefined();
+		expect(store.workspace(SURFACE)?.surface.lastPublishError).toBe("Build exited 1");
+
+		await store.publish(SURFACE);
+		expect(store.state.publishedChangeIds[CHANGES[0]]).toBeUndefined();
+		pubStatus = "idle";
+		await store.refreshWorkspace(SURFACE);
+		expect(store.state.publishedChangeIds[CHANGES[0]]).toBe(true);
 		store.dispose();
 	});
 });
