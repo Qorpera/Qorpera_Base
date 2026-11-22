@@ -177,6 +177,7 @@ async function fixture(
 		mountInfoPath?: string;
 		warmIdleMs?: number;
 		folderSearch?: boolean;
+		surfaceFirst?: boolean;
 		executionHostCredential?: string;
 		runnerIdFor?: (runId: string) => string;
 		onRpc?: (name: string, body: Record<string, unknown>) => Promise<void> | void;
@@ -230,6 +231,7 @@ async function fixture(
 		recoveryVolumeSize: "4GiB",
 		...(options.codingCommand ? { codingCommand: options.codingCommand } : {}),
 		...(options.companyData ? { companyData: options.companyData } : {}),
+		...(options.surfaceFirst ? { surfaceFirst: true } : {}),
 	};
 	const state: Fixture = {
 		backend: undefined as unknown as SharedExecutionProviderBackend,
@@ -538,6 +540,16 @@ describe("shared execution provider backend", () => {
 		expect(await readFile(join(off.runRoot, "slots", "0", "native-provider.env"), "utf-8")).not.toContain(
 			"QORPERA_FOLDER_SEARCH_SOCKET",
 		);
+		expect(await readFile(join(off.runRoot, "slots", "0", "native-provider.env"), "utf-8")).not.toContain(
+			"QORPERA_SURFACE_FIRST",
+		);
+	});
+
+	it("forwards QORPERA_SURFACE_FIRST=1 into slot native-provider.env when surfaceFirst is enabled", async () => {
+		const f = await fixture({ surfaceFirst: true });
+		await f.backend.acquire(runId, work(), new AbortController().signal);
+		const environment = await readFile(join(f.runRoot, "slots", "0", "native-provider.env"), "utf-8");
+		expect(environment).toContain("QORPERA_SURFACE_FIRST=1\n");
 	});
 
 	it("starts a sandbox pair on a free slot, delivers the assignment, and retires the slot when the runner exits", async () => {

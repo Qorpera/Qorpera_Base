@@ -1583,6 +1583,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				? [`QORPERA_FOLDER_SEARCH_SOCKET=${FOLDER_RELAY_DIRECTORY}/${current.slot}.sock`]
 				: []),
 			...(vaultLogin ? ["QORPERA_NATIVE_LOGIN_CUSTODY=vault"] : []),
+			...(runtime.surfaceFirst ? ["QORPERA_SURFACE_FIRST=1"] : []),
 			"",
 		].join("\n");
 		// The runner reads its configuration from a file it owns, as the one-run
