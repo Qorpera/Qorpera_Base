@@ -308,4 +308,67 @@ describe("SurfaceStudioView", () => {
 		view.dispose();
 		store.dispose();
 	});
+
+	it("passes async-loaded baseFiles to embedded report views and clamps degenerate chart bounds safely", async () => {
+		const headband = summary({
+			id: HEADBAND_ID,
+			slug: "headband",
+			title: "Headband",
+			archetype: "studio",
+			folderRoot: "hardware/headband",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const store = storeWith(fakeClient({ listSurfaces: vi.fn(async () => [headband]) }));
+		await store.load();
+
+		const reportJson = JSON.stringify({
+			slug: "vendor-deep-dive",
+			headline: "Vendor Deep Dive",
+			sections: [
+				{
+					id: "s1",
+					heading: "Metrics",
+					paragraphs: ["Overview"],
+					blocks: [
+						{
+							kind: "bar_chart",
+							heading: "Zero Max Bars",
+							max: 0,
+							items: [
+								{ label: "A", value: 10 },
+								{ label: "B", value: Number.NaN },
+							],
+						},
+						{
+							kind: "line_chart",
+							heading: "Degenerate Curve",
+							xLabels: ["Q1", "Q2", "Q3"],
+							series: [{ name: "Cost", values: [12, 18, 25] }],
+						},
+					],
+				},
+			],
+		});
+		const view = new SurfaceStudioView({
+			store,
+			surface: headband,
+			signal: new AbortController().signal,
+			loadFiles: async () => ({
+				"hardware/headband/specs.json": JSON.stringify({ weight: "42g" }),
+				"hardware/headband/vendor.report.json": reportJson,
+			}),
+		});
+		document.body.append(view.el);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="analysis"]')!.click();
+		expect(view.el.querySelector(".report-article")?.textContent).toContain("Vendor Deep Dive");
+		const fills = [...view.el.querySelectorAll<HTMLElement>(".report-bar-fill")].map((el) => el.style.width);
+		expect(fills).toEqual(["100%", "4%"]);
+		const pathD = view.el.querySelector("svg.report-line-svg path")?.getAttribute("d") ?? "";
+		expect(pathD).not.toContain("NaN");
+		view.dispose();
+		store.dispose();
+	});
 });

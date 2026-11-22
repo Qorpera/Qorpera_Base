@@ -8,6 +8,7 @@ import {
 	compiledCompanyIdentity,
 	effectiveStudioBaseFiles,
 	migrationPending,
+	PREVIEW_PASS_TTL_MS,
 	readSurfaceFolderFiles,
 	reportsOwnedBy,
 	runningSessionTotal,
@@ -1048,5 +1049,272 @@ describe("SurfacesStore", () => {
 			"identity/tokens.json": '{"accent":"#fff"}',
 			"identity/voice.md": "Calm voice",
 		});
+	});
+
+	it("polls composing/building previews, deduplicates in-flight polls, and pauses when the tab is hidden", async () => {
+		vi.useFakeTimers();
+		const fakeDoc = new EventTarget() as EventTarget & { visibilityState: DocumentVisibilityState };
+		fakeDoc.visibilityState = "visible";
+		const prevDocument = globalThis.document;
+		Object.defineProperty(globalThis, "document", { configurable: true, value: fakeDoc });
+		try {
+			let pendingPoll = deferred<ReturnType<typeof workspace>>();
+			let calls = 0;
+			const client = fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => {
+					calls += 1;
+					if (calls === 1) {
+						return workspace([session(["staged"])], {
+							previewState: {
+								surfaceId: SURFACE,
+								mode: "single",
+								primary: previewFrame({ status: "building", doorActionUrl: null, memberPass: null }),
+								compareFrames: [],
+							},
+						});
+					}
+					return pendingPoll.promise;
+				}),
+			});
+			const store = storeWith(client, { realtimeLive: () => false });
+			await store.load();
+			await store.openSurface("website");
+			expect(calls).toBe(1);
+
+			vi.advanceTimersByTime(4_100);
+			expect(calls).toBe(2);
+			vi.advanceTimersByTime(4_100);
+			expect(calls).toBe(2);
+
+			pendingPoll.resolve(
+				workspace([session(["staged"])], {
+					previewState: {
+						surfaceId: SURFACE,
+						mode: "single",
+						primary: previewFrame({ status: "composing", doorActionUrl: null, memberPass: null }),
+						compareFrames: [],
+					},
+				}),
+			);
+			await vi.advanceTimersByTimeAsync(0);
+
+			fakeDoc.visibilityState = "hidden";
+			fakeDoc.dispatchEvent(new Event("visibilitychange"));
+			vi.advanceTimersByTime(12_000);
+			expect(calls).toBe(2);
+
+			pendingPoll = deferred<ReturnType<typeof workspace>>();
+			fakeDoc.visibilityState = "visible";
+			fakeDoc.dispatchEvent(new Event("visibilitychange"));
+			expect(calls).toBe(3);
+
+			pendingPoll.resolve(workspace([session(["staged"])]));
+			await vi.advanceTimersByTimeAsync(0);
+			store.dispose();
+		} finally {
+			Object.defineProperty(globalThis, "document", { configurable: true, value: prevDocument });
+		}
+	});
+
+	it("coalesces rapid preview selection toggles and syncs setSessionChatOpen when switching exploration variants", async () => {
+		const firstSync = deferred<ReturnType<typeof workspace>["previewState"]>();
+		const secondSync = deferred<ReturnType<typeof workspace>["previewState"]>();
+		const selections: { toggledChangeIds: string[]; explorationSessionId: string | null }[] = [];
+		const setPreviewSelection = vi.fn(
+			async (_surfaceId: string, sel: { toggledChangeIds: string[]; explorationSessionId: string | null }) => {
+				selections.push(sel);
+				return selections.length === 1 ? firstSync.promise : secondSync.promise;
+			},
+		);
+		const setSessionChatOpen = vi.fn(async () => session(["staged"]));
+		const variantA = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333301",
+			explorationId: "66666666-6666-4666-8666-666666666601",
+			explorationVariantLabel: "Calm",
+		});
+		const variantB = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333302",
+			explorationId: "66666666-6666-4666-8666-666666666601",
+			explorationVariantLabel: "Bold",
+		});
+		const baseSession = session(["staged", "staged"]);
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace([baseSession, variantA, variantB], {
+					explorations: [
+						{
+							id: "66666666-6666-4666-8666-666666666601",
+							surfaceId: SURFACE,
+							title: "Hero explorations",
+							status: "open",
+							chosenSessionId: null,
+							variantSessionIds: [variantA.id, variantB.id],
+							createdAt: "2026-10-16T09:00:00.000Z",
+							resolvedAt: null,
+						},
+					],
+				}),
+			),
+			setPreviewSelection,
+			setSessionChatOpen,
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+
+		const p1 = store.toggleChange(SURFACE, CHANGES[0]);
+		const p2 = store.toggleChange(SURFACE, CHANGES[1]);
+		expect(selections).toHaveLength(1);
+		expect(selections[0]?.toggledChangeIds).toEqual([CHANGES[1]]);
+
+		firstSync.resolve({
+			surfaceId: SURFACE,
+			mode: "single",
+			primary: previewFrame({ previewId: PREVIEW_IDS[0], toggledChangeIds: [CHANGES[1]] }),
+			compareFrames: [],
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(selections).toHaveLength(2);
+		expect(selections[1]?.toggledChangeIds).toEqual([]);
+
+		secondSync.resolve({
+			surfaceId: SURFACE,
+			mode: "single",
+			primary: previewFrame({ previewId: PREVIEW_IDS[1], toggledChangeIds: [] }),
+			compareFrames: [],
+		});
+		await Promise.all([p1, p2]);
+		expect(store.workspace(SURFACE)?.previewState.primary.previewId).toBe(PREVIEW_IDS[1]);
+
+		store.openExplorationDrawer(SURFACE, "66666666-6666-4666-8666-666666666601");
+		setSessionChatOpen.mockClear();
+		const p3 = store.pickVariant(SURFACE, "66666666-6666-4666-8666-666666666601", variantB.id);
+		await Promise.resolve();
+		expect(setSessionChatOpen).toHaveBeenCalledWith(variantA.id, false);
+		expect(setSessionChatOpen).toHaveBeenCalledWith(variantB.id, true);
+		await p3;
+		store.dispose();
+	});
+
+	it("tracks preview pass TTL/consumption, fences stale refreshes, scopes realtime hints, and applies partial multi-step mutations", async () => {
+		vi.useFakeTimers();
+		let mintCount = 0;
+		const mintPreviewPass = vi.fn(async (previewId: string) => {
+			mintCount += 1;
+			return {
+				previewId,
+				doorActionUrl: "https://thetaband--p1.qorpera.com/__qorpera/member",
+				memberPass: `${VALID_PASS.slice(0, -1)}${mintCount}`,
+			};
+		});
+		const secondSurface = summary({
+			id: "22222222-2222-4222-8222-222222222229",
+			slug: "brand",
+			title: "Brand",
+			archetype: "studio",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const staleRefresh = deferred<ReturnType<typeof workspace>>();
+		let websiteCalls = 0;
+		const getSurfaceWorkspace = vi.fn(async (surfaceId: string) => {
+			if (surfaceId === secondSurface.id) return workspace([], { surface: secondSurface });
+			websiteCalls += 1;
+			if (websiteCalls === 2) {
+				return workspace([session(["staged", "staged"])], {
+					previewState: {
+						surfaceId: SURFACE,
+						mode: "single",
+						primary: previewFrame({ previewId: PREVIEW_IDS[0], doorActionUrl: null, memberPass: null }),
+						compareFrames: [],
+					},
+				});
+			}
+			if (websiteCalls === 3) return staleRefresh.promise;
+			if (websiteCalls === 4) {
+				return workspace([], {
+					surface: summary({ title: "Website (refreshed)" }),
+					recentHistory: [session(["merged", "merged"], { state: "completed" })],
+				});
+			}
+			return workspace([session(["staged", "staged"])], {
+				previewState: {
+					surfaceId: SURFACE,
+					mode: "single",
+					primary: previewFrame({ previewId: PREVIEW_IDS[0], doorActionUrl: null, memberPass: null }),
+					compareFrames: [],
+				},
+			});
+		});
+		const approveDeferred = deferred<ReturnType<typeof session>>();
+		let discardAttempts = 0;
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [summary(), secondSurface]),
+			getSurfaceWorkspace,
+			mintPreviewPass,
+			approveSurfaceChange: vi.fn(() => approveDeferred.promise),
+			approveSessionAll: vi.fn(async () => session(["merged", "merged"])),
+			discardSurfaceChange: vi.fn(async () => {
+				discardAttempts += 1;
+				if (discardAttempts === 1) return session(["discarded", "staged"]);
+				throw new Error("second discard failed");
+			}),
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("brand");
+		await store.openSurface("website");
+		await Promise.resolve();
+		await Promise.resolve();
+
+		const pass1 = store.workspace(SURFACE)!.previewState.primary.memberPass!;
+		expect(store.isPreviewPassUsable(PREVIEW_IDS[0], pass1)).toBe(true);
+		vi.advanceTimersByTime(PREVIEW_PASS_TTL_MS + 1_000);
+		expect(store.isPreviewPassUsable(PREVIEW_IDS[0], pass1)).toBe(false);
+
+		store.markPreviewPassConsumed(PREVIEW_IDS[0], pass1);
+		expect(await store.remintPreviewPass(SURFACE, PREVIEW_IDS[0], pass1)).toBe(true);
+		const pass2 = store.workspace(SURFACE)!.previewState.primary.memberPass!;
+		expect(pass2).not.toBe(pass1);
+		expect(store.isPreviewPassUsable(PREVIEW_IDS[0], pass2)).toBe(true);
+
+		mintPreviewPass.mockRejectedValueOnce(new Error("mint unavailable"));
+		expect(await store.remintPreviewPass(SURFACE, PREVIEW_IDS[0], pass2)).toBe(false);
+		expect(store.isPreviewPassUsable(PREVIEW_IDS[0], pass2)).toBe(false);
+
+		await store.refreshWorkspace(SURFACE);
+		await Promise.resolve();
+		await Promise.resolve();
+		const pass3 = store.workspace(SURFACE)!.previewState.primary.memberPass!;
+		expect(pass3).not.toBe(pass2);
+		expect(store.isPreviewPassUsable(PREVIEW_IDS[0], pass3)).toBe(true);
+
+		const slowPromise = store.refreshWorkspace(SURFACE);
+		store.openDrawer(SURFACE, SESSION);
+		const approvePromise = store.approveChange(SESSION, CHANGES[0]);
+		store.closeDrawer();
+		approveDeferred.resolve(session(["merged", "merged"], { state: "completed" }));
+		expect(await approvePromise).toBe("history");
+		expect(store.workspace(SURFACE)?.recentHistory.map((s) => s.id)).toEqual([SESSION]);
+
+		staleRefresh.resolve(workspace([session(["staged", "staged"])]));
+		await slowPromise;
+		expect(store.workspace(SURFACE)?.recentHistory.map((s) => s.id)).toEqual([SESSION]);
+		expect(store.workspace(SURFACE)?.surface.title).toBe("Website (refreshed)");
+
+		getSurfaceWorkspace.mockClear();
+		store.onRealtimeHint("surfaces");
+		vi.advanceTimersByTime(200);
+		expect(getSurfaceWorkspace).toHaveBeenCalledWith(SURFACE);
+		expect(getSurfaceWorkspace).not.toHaveBeenCalledWith(secondSurface.id);
+
+		vi.advanceTimersByTime(SURFACE_UNDO_MS);
+		await store.approveAll(SESSION);
+		expect(store.state.undo).toBeUndefined();
+
+		await store.refreshWorkspace(SURFACE);
+		expect(await store.discardSession(SESSION)).toBe(false);
+		expect(store.session(SESSION)?.changes[0]?.status).toBe("discarded");
+		store.dispose();
 	});
 });

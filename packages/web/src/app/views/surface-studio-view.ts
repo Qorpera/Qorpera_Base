@@ -316,6 +316,25 @@ function updatingLabel(phase: SurfaceUpdatePhase): string {
 	return t("Updating…");
 }
 
+function sameDeps(prev: readonly unknown[] | undefined, next: readonly unknown[]): boolean {
+	if (!prev || prev.length !== next.length) return false;
+	for (let i = 0; i < next.length; i++) {
+		if (!Object.is(prev[i], next[i])) return false;
+	}
+	return true;
+}
+
+function sameOrderedChanges(
+	prev: readonly StudioPatchChange[] | undefined,
+	next: readonly StudioPatchChange[],
+): boolean {
+	if (!prev || prev.length !== next.length) return false;
+	for (let i = 0; i < next.length; i++) {
+		if (prev[i]!.changeId !== next[i]!.changeId || prev[i]!.ops !== next[i]!.ops) return false;
+	}
+	return true;
+}
+
 export class SurfaceStudioView {
 	readonly el = h("div", { class: "surface-studio" });
 	readonly #options: SurfaceStudioOptions;
@@ -326,7 +345,8 @@ export class SurfaceStudioView {
 	#viewer3d: Studio3DViewer | undefined;
 	#reportView: SurfaceReportView | undefined;
 	#tab: StudioTab = "overview";
-	#shown = "";
+	#shownDeps: readonly unknown[] | undefined;
+	#shownOrdered: readonly StudioPatchChange[] | undefined;
 	#appliedIdentityVars: string[] = [];
 	#wasUpdating = false;
 	#settleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -456,23 +476,26 @@ export class SurfaceStudioView {
 		this.#wasUpdating = updating;
 		const activeOtherSurfaces = state.surfaces.filter((item) => item.status === "active" && item.id !== surface.id);
 		const downstreamSurfaces = activeOtherSurfaces.filter((item) => item.group === "products");
-		const key = JSON.stringify([
+		const deps: readonly unknown[] = [
 			initialLoading,
 			updatingPhase,
 			state.mode,
 			this.#tab,
-			baseFiles,
-			ordered,
-			surface.title,
-			surface.folderRoot,
+			this.#baseFiles,
+			state.cloudSurfaceFiles[surface.id],
+			state.pendingStudioPatches[surface.id],
+			state.localStudioBase[surface.id],
+			surface,
 			lookKind,
 			identityTokens?.css ?? "",
 			workspace?.briefSummary,
-			activeOtherSurfaces.map((item) => [item.id, item.slug, item.title, item.group, store.lookOf(item).kind]),
+			state.surfaces,
+			state.surfaceLooks,
 			busyReconcile,
-		]);
-		if (key === this.#shown) return;
-		this.#shown = key;
+		];
+		if (sameDeps(this.#shownDeps, deps) && sameOrderedChanges(this.#shownOrdered, ordered)) return;
+		this.#shownDeps = deps;
+		this.#shownOrdered = ordered;
 
 		const composition = composeStudioPreview(baseFiles, ordered);
 		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
@@ -1140,10 +1163,12 @@ export class SurfaceStudioView {
 					store,
 					surface,
 					signal: this.#lifetime.signal,
-					baseFiles: this.#options.baseFiles,
+					baseFiles: this.#baseFiles,
 					patches: this.#options.patches,
 					embedded: true,
 				});
+			} else {
+				this.#reportView.setBaseFiles(this.#baseFiles);
 			}
 			this.#reportView.update();
 			sections.push(this.#reportView.el);
