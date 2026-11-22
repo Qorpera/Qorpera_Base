@@ -484,6 +484,7 @@ interface HiddenParts {
 	open: boolean;
 }
 const HIDDEN_OPEN_KEY = "qorpera.web.rail-hidden-open";
+const AGENTS_OPEN_KEY = "qorpera.web.rail-agents-open";
 const APPS_OPEN_KEY = "qorpera.web.rail-apps-open";
 /** The drawer's order is kept per company on this device, as whether it is open is (Jonas, 9 Nov 2026). */
 const APPS_ORDER_KEY = "qorpera.web.rail-apps-order";
@@ -2043,6 +2044,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 interface AgentsHubParts {
 	readonly el: HTMLElement;
 	readonly title: HTMLElement;
+	readonly toggle: HTMLElement;
+	readonly count: HTMLElement;
+	readonly body: HTMLElement;
 	readonly workingWrap: HTMLElement;
 	readonly workingTitle: HTMLElement;
 	readonly workingList: HTMLElement;
@@ -2093,7 +2097,15 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 
 	let hub = agentsHubs.get(company);
 	if (!hub) {
-		const title = h("span", null, t("Agents"));
+		const title = h("span", { class: "rail-agents-label" }, t("Agents"));
+		const count = h("span", { class: "rail-agents-count" });
+		const toggle = h(
+			"button",
+			{ type: "button", class: "rail-section-title rail-agents-head", "aria-controls": "rail-agents-body" },
+			title,
+			count,
+			h("span", { class: "rail-agents-chevron", "aria-hidden": "true" }, icon("chevron-down")),
+		);
 		const workingTitle = h("div", { class: "rail-agents-subhead" }, t("Working"));
 		const workingList = h("div", { class: "rail-agents-list" });
 		const workingWrap = h("div", { class: "rail-agents-sub", hidden: true }, workingTitle, workingList);
@@ -2103,17 +2115,42 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 		const idleTitle = h("div", { class: "rail-agents-subhead" }, t("Ready"));
 		const idleList = h("div", { class: "rail-agents-list" });
 		const idleWrap = h("div", { class: "rail-agents-sub", hidden: true }, idleTitle, idleList);
-		const el = h(
+		const body = h(
 			"div",
-			{ class: "rail-agents-hub", role: "group", "aria-label": t("Agents") },
-			h("div", { class: "rail-section-title rail-agents-head" }, title),
+			{ class: "rail-agents-body", id: "rail-agents-body" },
 			workingWrap,
 			scheduledWrap,
 			idleWrap,
 		);
+		const el = h("div", { class: "rail-agents-hub", role: "group", "aria-label": t("Agents") }, toggle, body);
+		let open = false;
+		try {
+			open = localStorage.getItem(AGENTS_OPEN_KEY) === "1";
+		} catch {
+			/* Storage may be unavailable; the section starts folded. */
+		}
+		const paintOpen = () => {
+			el.classList.toggle("is-open", open);
+			toggle.setAttribute("aria-expanded", String(open));
+			body.hidden = !open;
+			count.hidden = open;
+		};
+		toggle.addEventListener("click", () => {
+			open = !open;
+			try {
+				localStorage.setItem(AGENTS_OPEN_KEY, open ? "1" : "0");
+			} catch {
+				/* The choice lasts this visit. */
+			}
+			paintOpen();
+		});
+		paintOpen();
 		hub = {
 			el,
 			title,
+			toggle,
+			count,
+			body,
 			workingWrap,
 			workingTitle,
 			workingList,
@@ -2382,6 +2419,9 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 		hub.idleList.replaceChildren(...idleRows);
 	}
 
+	hub.count.textContent = String(
+		hub.workingList.childElementCount + hub.scheduledList.childElementCount + hub.idleList.childElementCount,
+	);
 	return hub.el;
 }
 

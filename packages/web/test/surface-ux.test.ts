@@ -768,6 +768,22 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		expect(new Set(staffHrefs).size).toBe(3);
 		expect(hub?.querySelector("[data-hub-exploration]")).not.toBeNull();
 
+		const toggle = hub!.querySelector<HTMLButtonElement>("button.rail-agents-head")!;
+		const body = hub!.querySelector<HTMLElement>(".rail-agents-body")!;
+		const count = hub!.querySelector<HTMLElement>(".rail-agents-count")!;
+		expect(toggle.getAttribute("aria-expanded")).toBe("false");
+		expect(body.hidden).toBe(true);
+		expect(count.hidden).toBe(false);
+		expect(Number(count.textContent)).toBe(hub!.querySelectorAll(".rail-agent-hub-row").length);
+		toggle.click();
+		expect(toggle.getAttribute("aria-expanded")).toBe("true");
+		expect(body.hidden).toBe(false);
+		expect(count.hidden).toBe(true);
+		expect(localStorage.getItem("qorpera.web.rail-agents-open")).toBe("1");
+		toggle.click();
+		expect(body.hidden).toBe(true);
+		localStorage.removeItem("qorpera.web.rail-agents-open");
+
 		auth.dispose();
 		store.dispose();
 		company.stop();
