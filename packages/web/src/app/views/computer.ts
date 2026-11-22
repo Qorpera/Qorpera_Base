@@ -2034,18 +2034,19 @@ export class ComputerPanel {
 			await lane.moving;
 		}
 		const unsure = lane.unsure - Date.now();
-		if (unsure > 0) {
+		if (unsure > 0 && !sender.stop.signal.aborted) {
 			settled = false;
 			await new Promise<void>((resolve) => {
-				const timer = setTimeout(resolve, unsure);
-				sender.stop.signal.addEventListener(
-					"abort",
-					() => {
-						clearTimeout(timer);
-						resolve();
-					},
-					{ once: true },
-				);
+				// WHY: Remove the abort listener when the timer settles normally so repeated pointer holds do not accumulate listeners.
+				const onAbort = () => {
+					clearTimeout(timer);
+					resolve();
+				};
+				const timer = setTimeout(() => {
+					sender.stop.signal.removeEventListener("abort", onAbort);
+					resolve();
+				}, unsure);
+				sender.stop.signal.addEventListener("abort", onAbort, { once: true });
 			});
 		}
 		if (!(await this.#ledger.movesSettled(sender.machineId, sender.stop.signal))) settled = false;

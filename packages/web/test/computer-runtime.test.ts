@@ -6209,6 +6209,51 @@ describe("the member's own pointer is the desktop's (20260930744000)", () => {
 		expect(s.acts.map((act) => act.action.type)).toEqual(["click", "click"]);
 	});
 
+	it("removes the abort listener when the pointer-settled wait timer resolves normally", async () => {
+		const s = setup();
+		const { p } = await inside(s);
+		s.state.pointerRoute = "movesFail";
+		hover(p, 50, 50);
+		await advance(40);
+		await flush();
+		const added = new Set<EventListenerOrEventListenerObject>();
+		const origAdd = AbortSignal.prototype.addEventListener;
+		const origRemove = AbortSignal.prototype.removeEventListener;
+		vi.spyOn(AbortSignal.prototype, "addEventListener").mockImplementation(function (
+			this: AbortSignal,
+			type: string,
+			listener: EventListenerOrEventListenerObject,
+			options?: boolean | AddEventListenerOptions,
+		) {
+			if (type === "abort") added.add(listener);
+			return origAdd.call(this, type, listener, options);
+		});
+		vi.spyOn(AbortSignal.prototype, "removeEventListener").mockImplementation(function (
+			this: AbortSignal,
+			type: string,
+			listener: EventListenerOrEventListenerObject,
+			options?: boolean | EventListenerOptions,
+		) {
+			if (type === "abort") added.delete(listener);
+			return origRemove.call(this, type, listener, options);
+		});
+		const runCycle = async (x: number) => {
+			hover(p, x, 50);
+			await advance(40);
+			await flush();
+			press(canvas(p), 10, 10, { button: 2 });
+			await advance(12_000);
+			await flush();
+		};
+		await runCycle(50);
+		const afterFirst = added.size;
+		await runCycle(60);
+		await runCycle(70);
+		expect(s.acts.map((act) => act.action.type)).toEqual(["click", "click", "click"]);
+		// WHY: Repeated pointer-settled waits must remove their abort listeners rather than leaking one per cycle.
+		expect(added.size).toBe(afterFirst);
+	});
+
 	it("keeps that wait for a move on its way when the window is closed and the desktop opened in a new one (v242 release review r1 F1)", async () => {
 		const s = setup();
 		const ledger = new DesktopHoldLedger(s.computer, s.stop.signal);
