@@ -345,7 +345,15 @@ test("qorpera-claude-box-stage bounds sshfs teardown with SIGKILL and preserves 
 		const stagePath = join(repositoryRoot, "deploy/claude-box/qorpera-claude-box-stage.sh");
 		const run = spawnSync(
 			"/bin/bash",
-			["-c", 'exec 4</dev/null 5>/dev/null; exec /bin/bash "$1" "$2" "$3" passive -- /bin/sh -c "exit 7"', "_", stagePath, mnt, stubSshfs],
+			[
+				"-c",
+				'exec 4</dev/null 5>/dev/null; exec /bin/bash "$1" "$2" "$3" passive -- /bin/sh -c \'while [ ! -s "$1" ]; do sleep 0.01; done; exit 7\' _ "$4"',
+				"_",
+				stagePath,
+				mnt,
+				stubSshfs,
+				pidFile,
+			],
 			{
 				cwd: work,
 				encoding: "utf-8",
