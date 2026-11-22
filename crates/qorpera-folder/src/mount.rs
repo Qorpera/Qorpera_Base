@@ -799,7 +799,7 @@ impl Shared {
 fn again(f: &Fail) -> bool {
 	match f {
 		Fail::Link(_) => true,
-		Fail::Remote(e) => [code::BUSY, code::UNAVAILABLE, code::DENIED].contains(&e.code.as_str()),
+		Fail::Remote(e) => [code::BUSY, code::UNAVAILABLE].contains(&e.code.as_str()),
 	}
 }
 
@@ -1044,8 +1044,9 @@ impl Filesystem for FolderFs {
 	fn forget(&self, _req: &Request, ino: INodeNo, nlookup: u64) {
 		if local::is_local(ino.0) {
 			self.s.kernel.forget(ino.0, nlookup);
+		} else if self.s.tree.lock().unwrap().forget(ino.0, nlookup) {
+			self.s.kernel.forgotten(ino.0);
 		}
-		self.s.tree.lock().unwrap().forget(ino.0, nlookup);
 	}
 
 	fn getattr(&self, _req: &Request, ino: INodeNo, fh: Option<FileHandle>, reply: ReplyAttr) {
@@ -1136,31 +1137,50 @@ impl Filesystem for FolderFs {
 					}
 				}
 				DirPlus::Node { attr, kept } => {
-					let (use_attr, ttl) = if prime_node && *kept && !node_ttl.is_zero() {
+					let resolved = {
 						let mut tree = self.s.tree.lock().unwrap();
-						let fresh = self.s.writable && tree.path(item.ino).is_some_and(on_disk::fresh);
-						if !fresh && tree.current(item.ino) && tree.parent(item.ino) == Some(dir.0) {
-							if let Some(current_attr) = tree.attr(item.ino) {
-								tree.hold(item.ino);
-								self.s.answer(dir.0, &item.name, tree.changes());
-								(current_attr, node_ttl)
+						if prime_node && *kept && !node_ttl.is_zero() {
+							let fresh = self.s.writable && tree.path(item.ino).is_some_and(on_disk::fresh);
+							if !fresh && tree.current(item.ino) && tree.parent(item.ino) == Some(dir.0) {
+								if let Some(current_attr) = tree.attr(item.ino) {
+									if tree.hold(item.ino) {
+										self.s.answer(dir.0, &item.name, tree.changes());
+										Some((item.ino, current_attr, node_ttl))
+									} else {
+										tree.hold_child(dir.0, &item.name).map(|(ino, a)| (ino, a, Duration::ZERO))
+									}
+								} else if tree.hold(item.ino) {
+									Some((item.ino, attr.clone(), Duration::ZERO))
+								} else {
+									tree.hold_child(dir.0, &item.name).map(|(ino, a)| (ino, a, Duration::ZERO))
+								}
+							} else if tree.hold(item.ino) {
+								Some((item.ino, tree.attr(item.ino).unwrap_or_else(|| attr.clone()), Duration::ZERO))
 							} else {
-								tree.hold(item.ino);
-								(attr.clone(), Duration::ZERO)
+								tree.hold_child(dir.0, &item.name).map(|(ino, a)| (ino, a, Duration::ZERO))
 							}
+						} else if tree.hold(item.ino) {
+							Some((item.ino, tree.attr(item.ino).unwrap_or_else(|| attr.clone()), Duration::ZERO))
 						} else {
-							tree.hold(item.ino);
-							(tree.attr(item.ino).unwrap_or_else(|| attr.clone()), Duration::ZERO)
+							tree.hold_child(dir.0, &item.name).map(|(ino, a)| (ino, a, Duration::ZERO))
 						}
-					} else {
-						let mut tree = self.s.tree.lock().unwrap();
-						tree.hold(item.ino);
-						(tree.attr(item.ino).unwrap_or_else(|| attr.clone()), Duration::ZERO)
 					};
-					let shown = self.s.shown(item.ino, use_attr);
-					let file_attr = self.s.file_attr(item.ino, &shown);
-					if reply.add(INodeNo(item.ino), next_off, &item.name, &ttl, &file_attr, Generation(0)) {
-						self.s.tree.lock().unwrap().forget(item.ino, 1);
+					if let Some((live_ino, use_attr, ttl)) = resolved {
+						let shown = self.s.shown(live_ino, use_attr);
+						let file_attr = self.s.file_attr(live_ino, &shown);
+						if reply.add(INodeNo(live_ino), next_off, &item.name, &ttl, &file_attr, Generation(0)) {
+							self.s.tree.lock().unwrap().forget(live_ino, 1);
+							break;
+						}
+					} else if reply.add(
+						// WHY: fuser 0.18 sets both entry_out.nodeid and dirent.ino from attr.ino, so attr.ino=0 skips priming pruned nodes and forces LOOKUP.
+						INodeNo(0),
+						next_off,
+						&item.name,
+						&Duration::ZERO,
+						&unprimed_attr(0, item.kind),
+						Generation(0),
+					) {
 						break;
 					}
 				}
@@ -1903,13 +1923,15 @@ fn follow(
 	}
 }
 
+const MAX_CHASE_ENTRIES: usize = 8192;
+
 /// Drops raced names from the kernel again at 1, 2, 4 … ms after their change, CHASE_STEPS times: a lookup answered
 /// from before the change lands in the kernel within that, and the next drop after it removes what it made. A drop
 /// of a name the kernel no longer holds does nothing.
 fn chase(notifier: Notifier, names: mpsc::Receiver<Vec<(u64, String)>>) {
-	let mut due: Vec<(Instant, u32, u64, String)> = Vec::new();
+	let mut due: HashMap<(u64, String), (Instant, u32)> = HashMap::new();
 	loop {
-		let next = due.iter().map(|d| d.0).min();
+		let next = due.values().map(|&(at, _)| at).min();
 		let got = match next {
 			Some(at) => names.recv_timeout(at.saturating_duration_since(Instant::now())),
 			None => names.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
@@ -1917,24 +1939,32 @@ fn chase(notifier: Notifier, names: mpsc::Receiver<Vec<(u64, String)>>) {
 		match got {
 			Ok(batch) => {
 				let at = Instant::now() + Duration::from_millis(1);
-				due.extend(batch.into_iter().map(|(parent, name)| (at, 0, parent, name)));
+				for key in batch {
+					if due.contains_key(&key) || due.len() < MAX_CHASE_ENTRIES {
+						due.insert(key, (at, 0));
+					} else {
+						tell_kernel(&notifier, vec![Inval::Entry(key.0, key.1)]);
+					}
+				}
 			}
 			Err(mpsc::RecvTimeoutError::Timeout) => {}
 			Err(mpsc::RecvTimeoutError::Disconnected) => return,
 		}
 		let now = Instant::now();
-		let mut later = Vec::with_capacity(due.len());
-		for (at, step, parent, name) in due.drain(..) {
-			if at > now {
-				later.push((at, step, parent, name));
-				continue;
-			}
-			tell_kernel(&notifier, vec![Inval::Entry(parent, name.clone())]);
-			if step + 1 < CHASE_STEPS {
-				later.push((now + Duration::from_millis(1 << step), step + 1, parent, name));
+		let mut ready = Vec::new();
+		for (key, &(at, step)) in &due {
+			if at <= now {
+				ready.push((key.clone(), step));
 			}
 		}
-		due = later;
+		for (key, step) in ready {
+			tell_kernel(&notifier, vec![Inval::Entry(key.0, key.1.clone())]);
+			if step + 1 < CHASE_STEPS {
+				due.insert(key, (now + Duration::from_millis(1 << step), step + 1));
+			} else {
+				due.remove(&key);
+			}
+		}
 	}
 }
 
@@ -2315,5 +2345,15 @@ mod tests {
 		assert_eq!(cache.of(pid), pid);
 		assert_eq!(cache.of(pid), pid);
 		assert_eq!(cache.of(0), 0);
+	}
+
+	#[test]
+	fn retry_again_excludes_permanent_denied_error() {
+		let denied = Fail::Remote(crate::proto::ErrorReply { code: code::DENIED.into(), message: "denied".into() });
+		let busy = Fail::Remote(crate::proto::ErrorReply { code: code::BUSY.into(), message: "busy".into() });
+		let link_err = Fail::Link(std::io::Error::other("broken pipe"));
+		assert!(!again(&denied));
+		assert!(again(&busy));
+		assert!(again(&link_err));
 	}
 }

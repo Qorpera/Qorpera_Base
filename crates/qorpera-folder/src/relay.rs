@@ -6,14 +6,43 @@
 use crate::transport::{self, Stream};
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixListener;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 const COPY_BUF_BYTES: usize = 128 * 1024;
+const MAX_RELAY_CONNECTIONS: usize = 512;
+
+struct ActiveGuard(Arc<AtomicUsize>);
+
+impl Drop for ActiveGuard {
+	fn drop(&mut self) {
+		self.0.fetch_sub(1, Ordering::AcqRel);
+	}
+}
+
+fn try_acquire(active: &Arc<AtomicUsize>, limit: usize) -> Option<ActiveGuard> {
+	let mut cur = active.load(Ordering::Acquire);
+	loop {
+		if cur >= limit {
+			return None;
+		}
+		match active.compare_exchange_weak(cur, cur + 1, Ordering::AcqRel, Ordering::Acquire) {
+			Ok(_) => return Some(ActiveGuard(Arc::clone(active))),
+			Err(next) => cur = next,
+		}
+	}
+}
 
 /// Serves every connection to `listener`, each over its own connection to `upstream`. An accept that fails for the
 /// moment (no descriptors left, a caller gone before it was taken) is logged and the relay goes on, so the slot's other
 /// connections stay up. A listening socket that can never accept again ends the relay with the error, and systemd
 /// starts it again (`Restart=on-failure`).
 pub fn run(listener: UnixListener, upstream: &str) -> io::Result<()> {
+	run_with_limit(listener, upstream, MAX_RELAY_CONNECTIONS)
+}
+
+fn run_with_limit(listener: UnixListener, upstream: &str, max_connections: usize) -> io::Result<()> {
+	let active = Arc::new(AtomicUsize::new(0));
 	for local in listener.incoming() {
 		let local = match local {
 			Ok(s) => s,
@@ -25,11 +54,19 @@ pub fn run(listener: UnixListener, upstream: &str) -> io::Result<()> {
 				continue;
 			}
 		};
+		let Some(guard) = try_acquire(&active, max_connections) else {
+			eprintln!("qorpera-folder relay: too many open connections ({max_connections}); refusing");
+			let _ = local.shutdown(std::net::Shutdown::Both);
+			continue;
+		};
 		let upstream = upstream.to_string();
-		let spawned = std::thread::Builder::new().name("relay".into()).spawn(move || match transport::connect(&upstream) {
-			Ok(remote) => pipe(Stream::Unix(local), remote),
-			// The caller sees its connection end and asks again.
-			Err(e) => eprintln!("qorpera-folder relay: {upstream}: {e}"),
+		let spawned = std::thread::Builder::new().name("relay".into()).spawn(move || {
+			let _guard = guard;
+			match transport::connect(&upstream) {
+				Ok(remote) => pipe(Stream::Unix(local), remote),
+				// The caller sees its connection end and asks again.
+				Err(e) => eprintln!("qorpera-folder relay: {upstream}: {e}"),
+			}
 		});
 		if let Err(e) = spawned {
 			eprintln!("qorpera-folder relay: no thread for a connection: {e}");
@@ -69,14 +106,21 @@ fn pipe(local: Stream, remote: Stream) {
 		}
 	};
 	let up = std::thread::Builder::new().name("relay-up".into()).spawn(move || {
-		let _ = copy_buffered(&mut from_local, &mut into_remote);
-		from_local.shutdown();
-		into_remote.shutdown();
+		// WHY: Propagate clean EOF with SHUT_WR so half-closed requests keep receiving their in-flight response.
+		if copy_buffered(&mut from_local, &mut into_remote).is_ok() {
+			into_remote.shutdown_write();
+		} else {
+			from_local.shutdown();
+			into_remote.shutdown();
+		}
 	});
 	let (mut from_remote, mut into_local) = (remote, local);
-	let _ = copy_buffered(&mut from_remote, &mut into_local);
-	from_remote.shutdown();
-	into_local.shutdown();
+	if copy_buffered(&mut from_remote, &mut into_local).is_ok() {
+		into_local.shutdown_write();
+	} else {
+		from_remote.shutdown();
+		into_local.shutdown();
+	}
 	if let Ok(up) = up {
 		let _ = up.join();
 	}
@@ -178,6 +222,47 @@ mod tests {
 		let mut rest = Vec::new();
 		caller.read_to_end(&mut rest).unwrap();
 		assert!(rest.is_empty());
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn half_close_preserves_inflight_response_and_enforces_connection_cap() {
+		let dir = std::env::temp_dir().join(format!(
+			"qorpera-folder-relay-cap-{}-{}",
+			std::process::id(),
+			std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()
+		));
+		std::fs::create_dir(&dir).unwrap();
+		let service_sock = dir.join("service.sock");
+		let relay_sock = dir.join("relay.sock");
+		let service = UnixListener::bind(&service_sock).unwrap();
+		let relay = UnixListener::bind(&relay_sock).unwrap();
+		let upstream = format!("unix:{}", service_sock.display());
+		std::thread::spawn(move || run_with_limit(relay, &upstream, 1));
+		std::thread::spawn(move || {
+			for conn in service.incoming() {
+				let mut conn = conn.unwrap();
+				std::thread::spawn(move || {
+					let mut req = Vec::new();
+					let _ = conn.read_to_end(&mut req);
+					std::thread::sleep(std::time::Duration::from_millis(60));
+					let _ = conn.write_all(&req.to_ascii_uppercase());
+				});
+			}
+		});
+
+		let mut first = UnixStream::connect(&relay_sock).unwrap();
+		first.write_all(b"ping").unwrap();
+		first.shutdown(std::net::Shutdown::Write).unwrap();
+		let mut second = UnixStream::connect(&relay_sock).unwrap();
+		second.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+		let mut refused = Vec::new();
+		second.read_to_end(&mut refused).unwrap();
+		assert!(refused.is_empty());
+
+		let mut reply = Vec::new();
+		first.read_to_end(&mut reply).unwrap();
+		assert_eq!(reply, b"PING");
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 }

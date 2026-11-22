@@ -100,19 +100,29 @@ fn copy_buffered<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> io::Resul
 fn pass(machine: Stream, cid: u32, service: &str, machines: &Machines) -> io::Result<()> {
 	let (lookup, found) = machines.lookup(cid);
 	let mut to_service = connect(service)?;
+	let handshake = std::time::Duration::from_secs(10);
+	let _ = to_service.set_timeouts(Some(handshake), Some(handshake));
 	let bridge = Bridge { cid, lookup, machine: found };
 	write_frame(&mut to_service, kind::BRIDGE, &serde_json::to_vec(&bridge).expect("serializes"))?;
+	let _ = to_service.set_timeouts(None, None);
 	let mut from_machine = machine.try_clone()?;
 	let mut into_service = to_service.try_clone()?;
 	let upstream = std::thread::Builder::new().name(format!("bridge-{cid}-up")).spawn(move || {
-		let _ = copy_buffered(&mut from_machine, &mut into_service);
-		into_service.shutdown();
-		from_machine.shutdown();
+		// WHY: Propagate clean EOF with SHUT_WR so half-closed requests keep receiving their in-flight response.
+		if copy_buffered(&mut from_machine, &mut into_service).is_ok() {
+			into_service.shutdown_write();
+		} else {
+			into_service.shutdown();
+			from_machine.shutdown();
+		}
 	})?;
 	let mut into_machine = machine;
-	let _ = copy_buffered(&mut to_service, &mut into_machine);
-	into_machine.shutdown();
-	to_service.shutdown();
+	if copy_buffered(&mut to_service, &mut into_machine).is_ok() {
+		into_machine.shutdown_write();
+	} else {
+		into_machine.shutdown();
+		to_service.shutdown();
+	}
 	let _ = upstream.join();
 	Ok(())
 }

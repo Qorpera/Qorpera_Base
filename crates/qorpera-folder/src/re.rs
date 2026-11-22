@@ -1,10 +1,13 @@
 use std::collections::BTreeSet;
 
 const FOLD_BUDGET: usize = 4096;
+const MAX_PATTERN_BYTES: usize = 16 * 1024;
+const MAX_NESTING_DEPTH: usize = 64;
 const MAX_QUANTIFIER_COUNT: usize = 64;
 const MAX_NFA_INSTS: usize = 2048;
 const MAX_TRIGRAM_EXACT: usize = 16;
 const MAX_TRIGRAM_OR: usize = 32;
+const MAX_TRIGRAM_DEPTH: usize = 32;
 const MAX_EXACT_STR_LEN: usize = 64;
 
 const SHORTHAND_D: u8 = 1 << 0;
@@ -415,6 +418,7 @@ fn expand_unfolded_case(ch: char, out: &mut Vec<u32>) {
 struct Parser<'a> {
 	chars: &'a [char],
 	pos: usize,
+	depth: usize,
 	case_sensitive: bool,
 	multiline: bool,
 	folded_input: bool,
@@ -429,6 +433,7 @@ impl<'a> Parser<'a> {
 		let mut p = Self {
 			chars,
 			pos: 0,
+			depth: 0,
 			case_sensitive,
 			multiline: true,
 			folded_input: first_folded,
@@ -445,6 +450,7 @@ impl<'a> Parser<'a> {
 			let mut p2 = Self {
 				chars,
 				pos: 0,
+				depth: 0,
 				case_sensitive,
 				multiline: true,
 				folded_input: want_folded,
@@ -566,7 +572,13 @@ impl<'a> Parser<'a> {
 						self.multiline = ml;
 					}
 					self.pos = j + 1;
+					// WHY: Bound group nesting so deeply nested parens return PatternError instead of overflowing the 2 MiB search worker stack.
+					if self.depth >= MAX_NESTING_DEPTH {
+						return Err(too_large_err());
+					}
+					self.depth += 1;
 					let inner = self.parse_alt()?;
+					self.depth -= 1;
 					self.case_sensitive = saved_cs;
 					self.multiline = saved_ml;
 					if self.chars.get(self.pos) != Some(&')') {
@@ -633,7 +645,12 @@ impl<'a> Parser<'a> {
 				}
 				let saved_cs = self.case_sensitive;
 				let saved_ml = self.multiline;
+				if self.depth >= MAX_NESTING_DEPTH {
+					return Err(too_large_err());
+				}
+				self.depth += 1;
 				let inner = self.parse_alt()?;
+				self.depth -= 1;
 				self.case_sensitive = saved_cs;
 				self.multiline = saved_ml;
 				if self.chars.get(self.pos) != Some(&')') {
@@ -803,32 +820,42 @@ impl<'a> Parser<'a> {
 			let mut added = Vec::new();
 			let mut variants = Vec::new();
 			for &(lo, hi) in &ranges {
-				let span = (hi - lo + 1) as usize;
-				if span > self.fold_budget {
-					break;
-				}
-				self.fold_budget -= span;
-				for code in lo..=hi {
-					if let Some(ch) = char::from_u32(code) {
-						if self.folded_input {
-							let folded = fold_char(ch);
-							let mut it = folded.chars();
-							if let (Some(f), None) = (it.next(), it.next()) {
-								let f_code = f as u32;
-								if f_code != code {
-									added.push((f_code, f_code));
+				// WHY: Fold ASCII ranges unconditionally and fail closed if non-ASCII folding exceeds budget instead of silently skipping later classes.
+				let mut fold_range = |start: u32, end: u32| {
+					for code in start..=end {
+						if let Some(ch) = char::from_u32(code) {
+							if self.folded_input {
+								let folded = fold_char(ch);
+								let mut it = folded.chars();
+								if let (Some(f), None) = (it.next(), it.next()) {
+									let f_code = f as u32;
+									if f_code != code {
+										added.push((f_code, f_code));
+									}
 								}
-							}
-						} else {
-							variants.clear();
-							expand_unfolded_case(ch, &mut variants);
-							for &v in &variants {
-								if v != code {
-									added.push((v, v));
+							} else {
+								variants.clear();
+								expand_unfolded_case(ch, &mut variants);
+								for &v in &variants {
+									if v != code {
+										added.push((v, v));
+									}
 								}
 							}
 						}
 					}
+				};
+				if lo < 128 {
+					fold_range(lo, hi.min(127));
+				}
+				if hi >= 128 {
+					let non_ascii_lo = lo.max(128);
+					let span = (hi - non_ascii_lo + 1) as usize;
+					if span > self.fold_budget {
+						return Err(too_large_err());
+					}
+					self.fold_budget -= span;
+					fold_range(non_ascii_lo, hi);
 				}
 			}
 			ranges.extend(added);
@@ -979,6 +1006,20 @@ pub enum TrigramQuery {
 	Or(Vec<TrigramQuery>),
 }
 
+impl TrigramQuery {
+	fn depth(&self) -> usize {
+		match self {
+			Self::All | Self::Exact(_) => 1,
+			Self::And(xs) | Self::Or(xs) => 1 + xs.iter().map(Self::depth).max().unwrap_or(0),
+		}
+	}
+}
+
+fn bound_trigram_depth(q: TrigramQuery) -> TrigramQuery {
+	// WHY: Bound recursive TrigramQuery trees so downstream compilation and evaluation cannot overflow the search worker stack.
+	if q.depth() > MAX_TRIGRAM_DEPTH { TrigramQuery::All } else { q }
+}
+
 pub fn trigrams_of_bytes(bytes: &[u8]) -> TrigramQuery {
 	if bytes.len() < 3 {
 		return TrigramQuery::All;
@@ -995,7 +1036,7 @@ pub fn trigrams_of_bytes(bytes: &[u8]) -> TrigramQuery {
 }
 
 fn q_and(a: TrigramQuery, b: TrigramQuery) -> TrigramQuery {
-	match (a, b) {
+	let out = match (a, b) {
 		(TrigramQuery::All, x) | (x, TrigramQuery::All) => x,
 		(TrigramQuery::And(mut xs), TrigramQuery::And(ys)) => {
 			for y in ys {
@@ -1019,7 +1060,8 @@ fn q_and(a: TrigramQuery, b: TrigramQuery) -> TrigramQuery {
 		}
 		(x, y) if x == y => x,
 		(x, y) => TrigramQuery::And(vec![x, y]),
-	}
+	};
+	bound_trigram_depth(out)
 }
 
 fn simplify_and(mut xs: Vec<TrigramQuery>) -> TrigramQuery {
@@ -1032,7 +1074,7 @@ fn simplify_and(mut xs: Vec<TrigramQuery>) -> TrigramQuery {
 }
 
 fn q_or(a: TrigramQuery, b: TrigramQuery) -> TrigramQuery {
-	match (a, b) {
+	let out = match (a, b) {
 		(TrigramQuery::All, _) | (_, TrigramQuery::All) => TrigramQuery::All,
 		(TrigramQuery::Or(mut xs), TrigramQuery::Or(ys)) => {
 			for y in ys {
@@ -1056,7 +1098,8 @@ fn q_or(a: TrigramQuery, b: TrigramQuery) -> TrigramQuery {
 		}
 		(x, y) if x == y => x,
 		(x, y) => TrigramQuery::Or(vec![x, y]),
-	}
+	};
+	bound_trigram_depth(out)
 }
 
 fn trigrams_of_any(strings: &[String]) -> TrigramQuery {
@@ -1477,6 +1520,7 @@ pub struct Regex {
 	required_folded_literals: Vec<String>,
 	required_exact_literals: Vec<String>,
 	run_on_folded: bool,
+	has_text_anchor: bool,
 }
 
 pub struct ExecScratch {
@@ -1513,9 +1557,15 @@ impl Default for ExecScratch {
 
 impl Regex {
 	pub fn compile(pattern: &str, case_sensitive: bool) -> Result<Self, PatternError> {
+		if pattern.len() > MAX_PATTERN_BYTES {
+			return Err(too_large_err());
+		}
 		let chars: Vec<char> = pattern.chars().collect();
 		let (expr, run_on_folded) = Parser::parse(&chars, case_sensitive)?;
 		let (insts, classes) = Compiler::compile(&expr)?;
+		let has_text_anchor = insts
+			.iter()
+			.any(|inst| matches!(inst, Inst::Assert(AssertKind::StartText | AssertKind::EndText)));
 		let info = analyze(&expr);
 		let required_folded_literals: Vec<String> = info
 			.required
@@ -1538,11 +1588,16 @@ impl Regex {
 			required_folded_literals,
 			required_exact_literals,
 			run_on_folded,
+			has_text_anchor,
 		})
 	}
 
 	pub fn trigram_query(&self) -> &TrigramQuery {
 		&self.trigram_query
+	}
+
+	pub fn has_text_anchor(&self) -> bool {
+		self.has_text_anchor
 	}
 
 	pub fn required_folded_literals(&self) -> &[String] {
@@ -1973,5 +2028,36 @@ mod tests {
 		let started = Instant::now();
 		assert_eq!(re.find_in_text(&subject, &mut scratch), None);
 		assert!(started.elapsed().as_millis() < 200, "took {:?}", started.elapsed());
+	}
+
+	#[test]
+	fn rejects_deeply_nested_and_oversized_patterns_without_stack_overflow() {
+		let handle = std::thread::Builder::new()
+			.stack_size(2 * 1024 * 1024)
+			.spawn(|| {
+				let deep_parens = format!("{}a{}", "(".repeat(5000), ")".repeat(5000));
+				assert!(Regex::compile(&deep_parens, true).is_err());
+				let deep_flags = format!("{}a{}", "(?i:".repeat(5000), ")".repeat(5000));
+				assert!(Regex::compile(&deep_flags, true).is_err());
+				let over_limit = format!("{}a{}", "(".repeat(MAX_NESTING_DEPTH + 1), ")".repeat(MAX_NESTING_DEPTH + 1));
+				assert!(Regex::compile(&over_limit, true).is_err());
+				let at_limit = format!("{}a{}", "(".repeat(MAX_NESTING_DEPTH), ")".repeat(MAX_NESTING_DEPTH));
+				assert!(Regex::compile(&at_limit, true).is_ok());
+				let too_long = "a".repeat(MAX_PATTERN_BYTES + 1);
+				assert!(Regex::compile(&too_long, true).is_err());
+			})
+			.expect("spawn 2 MiB test thread");
+		handle.join().expect("thread must not overflow stack");
+	}
+
+	#[test]
+	fn fails_closed_when_non_ascii_class_fold_exceeds_budget_and_tracks_text_anchors() {
+		assert!(Regex::compile("[\u{1000}-\u{2001}A]", false).is_err());
+		assert!(Regex::compile("[\u{0100}-\u{0fff}][\u{0100}-\u{0fff}][A-Z]", false).is_err());
+		assert!(matches("[\u{0100}-\u{0110}A-Z]", "a", false));
+		assert!(matches("[\u{0100}-\u{0110}A-Z]", "\u{0101}", false));
+		assert!(Regex::compile("(?-m)^foo", true).unwrap().has_text_anchor());
+		assert!(Regex::compile("(?-m)foo$", true).unwrap().has_text_anchor());
+		assert!(!Regex::compile("^foo$", true).unwrap().has_text_anchor());
 	}
 }

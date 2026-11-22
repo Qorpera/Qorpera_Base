@@ -295,20 +295,39 @@ impl Tree {
 	}
 
 	/// The kernel looked a node up once more (from a cached listing).
-	pub fn hold(&mut self, ino: u64) {
+	pub fn hold(&mut self, ino: u64) -> bool {
 		if let Some(n) = self.nodes.get_mut(&ino) {
 			n.lookups += 1;
+			true
+		} else {
+			false
+		}
+	}
+
+	pub fn hold_child(&mut self, dir: u64, name: &str) -> Option<(u64, Attr)> {
+		let dir_path = self.path(dir)?;
+		let child_path = crate::proto::join(dir_path, name);
+		let &ino = self.by_path.get(&child_path)?;
+		let attr = self.attr(ino)?;
+		if self.hold(ino) {
+			Some((ino, attr))
+		} else {
+			None
 		}
 	}
 
 	/// The kernel gave back `count` lookups.
-	pub fn forget(&mut self, ino: u64, count: u64) {
+	pub fn forget(&mut self, ino: u64, count: u64) -> bool {
 		if ino == ROOT {
-			return;
+			return false;
 		}
 		if let Some(n) = self.nodes.get_mut(&ino) {
 			n.lookups = n.lookups.saturating_sub(count);
+			let dropped = n.lookups == 0;
 			self.prune(ino);
+			dropped
+		} else {
+			true
 		}
 	}
 
@@ -899,5 +918,25 @@ mod tests {
 		t.resync();
 		let (_, kept_after_resync) = t.install(alpha, vec![file("a.txt", 2, "v2")], started_resync, true, None);
 		assert!(!kept_after_resync);
+	}
+
+	#[test]
+	fn hold_returns_false_for_pruned_node_and_forget_reports_zero_lookups() {
+		let mut t = Tree::new();
+		let (kids, _) = t.install(ROOT, vec![file("a.txt", 1, "v1")], t.changes(), true, None);
+		let a = ino_of(&kids, "a.txt");
+		assert!(t.hold(a));
+		assert!(t.hold(a));
+		assert!(!t.forget(a, 1));
+		assert!(t.forget(a, 1));
+		t.drop_listings("");
+		assert!(!t.hold(a));
+		assert!(t.hold_child(ROOT, "a.txt").is_none());
+		let (kids2, _) = t.install(ROOT, vec![file("a.txt", 2, "v2")], t.changes(), true, None);
+		let a2 = ino_of(&kids2, "a.txt");
+		let (held_ino, held_attr) = t.hold_child(ROOT, "a.txt").expect("resolves live child");
+		assert_eq!((held_ino, held_attr.size), (a2, 2));
+		assert!(t.forget(held_ino, 1));
+		assert!(!t.forget(ROOT, 1));
 	}
 }

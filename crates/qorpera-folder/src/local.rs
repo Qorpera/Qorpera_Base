@@ -416,9 +416,14 @@ fn set_times(place: &File, times: (Option<std::time::SystemTime>, Option<std::ti
 }
 
 /// `ino` is known by `name` in `up`, its latest name.
-fn known(names: &mut Names, ino: u64, up: Up, name: &str, area: Area) {
+fn known(names: &mut Names, ino: u64, up: Up, name: &str, area: Area, is_dir: bool) {
 	let all = names.entry(ino).or_default();
-	all.retain(|(u, n, _)| !(*u == up && n == name));
+	if is_dir {
+		// WHY: Directories have a single parent on POSIX; retaining stale prior parents across cross-mount renames can create a cycle in chain().
+		all.clear();
+	} else {
+		all.retain(|(u, n, _)| !(*u == up && n == name));
+	}
 	all.push((up, name.to_string(), area));
 }
 
@@ -459,14 +464,20 @@ fn forget_all(names: &mut Names, gone: impl Fn(&Up, &str, Area) -> bool) {
 fn chain(names: &Names, ino: u64) -> Option<(String, Vec<String>, Area)> {
 	let (mut up, name, area) = latest(names, ino)?;
 	let mut parts = vec![name];
+	let mut seen = HashSet::new();
+	seen.insert(ino);
 	loop {
 		match up {
 			Up::Mount(path) => {
 				parts.reverse();
 				return Some((path, parts, area));
 			}
-			Up::Local(ino) => {
-				let (next, name, _) = latest(names, ino)?;
+			Up::Local(parent_ino) => {
+				// WHY: Guard against cycles or runaway parent chains while holding the shared names flock so stale cross-mount state yields ESTALE.
+				if !seen.insert(parent_ino) || parts.len() >= 256 {
+					return None;
+				}
+				let (next, name, _) = latest(names, parent_ino)?;
 				parts.push(name);
 				up = next;
 			}
@@ -1637,7 +1648,7 @@ impl Local {
 	fn known_at(&self, names: &mut Names, up: Up, name: &str, area: Area, disk: &Disk) -> Result<FileAttr, i32> {
 		let meta = fs::symlink_metadata(disk.path()).map_err(errno)?;
 		let ino = self.id(area, &meta)?;
-		known(names, ino, up, name, area);
+		known(names, ino, up, name, area, meta.is_dir());
 		Ok(self.attr(ino, &meta))
 	}
 
@@ -1700,7 +1711,7 @@ impl Local {
 				continue;
 			};
 			let Ok(ino) = self.id(area, &meta) else { continue };
-			known(&mut names, ino, Up::Mount(dir.to_string()), &name, area);
+			known(&mut names, ino, Up::Mount(dir.to_string()), &name, area, meta.is_dir());
 			out.push((ino, kind(&meta.file_type()), name, self.attr(ino, &meta)));
 		}
 		out
@@ -1724,7 +1735,7 @@ impl Local {
 				continue;
 			};
 			let Ok(child) = self.id(area, &meta) else { continue };
-			known(&mut names, child, Up::Local(ino), &name, area);
+			known(&mut names, child, Up::Local(ino), &name, area, meta.is_dir());
 			out.push((child, kind(&meta.file_type()), name, self.attr(child, &meta)));
 		}
 		Ok(out)
@@ -1775,7 +1786,7 @@ impl Local {
 					file.set_len(0).map_err(errno)?;
 				}
 				let meta = file.metadata().map_err(errno)?;
-				known(&mut names, ino, up.clone(), name, area);
+				known(&mut names, ino, up.clone(), name, area, meta.is_dir());
 				let fh = self.hold(file, ino, flags, top.keep());
 				drop(names);
 				Ok((self.attr(ino, &meta), fh))
@@ -2065,8 +2076,12 @@ impl Local {
 				} else {
 					0
 				};
-				let ino_at = |d: &Disk| fs::symlink_metadata(d.path()).ok().map(|m| self.id(area, &m)).transpose();
-				let (moved, replaced) = (ino_at(&source)?, ino_at(&target)?);
+				let ino_at = |d: &Disk| {
+					fs::symlink_metadata(d.path()).ok().map(|m| self.id(area, &m).map(|ino| (ino, m.is_dir()))).transpose()
+				};
+				let (moved_info, replaced_info) = (ino_at(&source)?, ino_at(&target)?);
+				let moved = moved_info.map(|(ino, _)| ino);
+				let replaced = replaced_info.map(|(ino, _)| ino);
 				if kind.is_none() && replaced.is_none() && !exchange && self.found_gone(to.0, to.1, area) {
 					return Err(Change::Failed(libc::ESTALE));
 				}
@@ -2081,15 +2096,15 @@ impl Local {
 					self.pause("records_renamed");
 					self.records_renamed(from, to, kind, exchange);
 				}
-				if let Some(ino) = replaced {
+				if let Some((ino, _)) = replaced_info {
 					forget(&mut names, ino, to.0, to.1);
 				}
-				if let Some(ino) = moved {
+				if let Some((ino, is_dir)) = moved_info {
 					forget(&mut names, ino, from.0, from.1);
-					known(&mut names, ino, to.0.clone(), to.1, area);
+					known(&mut names, ino, to.0.clone(), to.1, area, is_dir);
 				}
-				if let (true, Some(ino)) = (exchange, replaced) {
-					known(&mut names, ino, from.0.clone(), from.1, area);
+				if let (true, Some((ino, is_dir))) = (exchange, replaced_info) {
+					known(&mut names, ino, from.0.clone(), from.1, area, is_dir);
 				}
 				Ok((moved, replaced))
 			},
@@ -2401,7 +2416,7 @@ impl Local {
 					if let Some(old) = replaced {
 						forget(&mut names, old, up, name);
 					}
-					known(&mut names, ino, up.clone(), name, area);
+					known(&mut names, ino, up.clone(), name, area, false);
 					Ok((ino, replaced))
 				},
 			)
@@ -2506,7 +2521,7 @@ impl Placed<'_> {
 				if back.is_ok() {
 					forget(&mut names, self.ino, up, name);
 					if let Some(old) = self.replaced {
-						known(&mut names, old, up.clone(), name, area);
+						known(&mut names, old, up.clone(), name, area, false);
 					}
 				}
 				Ok(())
@@ -3987,5 +4002,19 @@ mod tests {
 		});
 		l.release(fh);
 		fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[test]
+	fn directory_reparent_clears_prior_parents_and_chain_breaks_cycles() {
+		let mut names = Names::new();
+		known(&mut names, 10, Up::Mount("a".into()), "dir", Area::Cache, true);
+		known(&mut names, 10, Up::Mount("b".into()), "dir", Area::Cache, true);
+		assert_eq!(names.get(&10).unwrap().len(), 1);
+		assert_eq!(chain(&names, 10).unwrap().0, "b");
+
+		let mut cyclic = Names::new();
+		cyclic.insert(100, vec![(Up::Local(200), "a".into(), Area::Cache)]);
+		cyclic.insert(200, vec![(Up::Local(100), "b".into(), Area::Cache)]);
+		assert_eq!(chain(&cyclic, 100), None);
 	}
 }
