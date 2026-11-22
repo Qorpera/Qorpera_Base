@@ -528,7 +528,7 @@ describe("a coding machine's values for the folder service's save check (5j-5 (a
 		expect(f.environment).toHaveBeenCalledTimes(4);
 	});
 
-	it("bounds retained per-session command entries while keeping machine mask values", async () => {
+	it("bounds retained per-session command entries via LRU and unaccepted-first eviction while keeping machine mask values", async () => {
 		const workerId = randomUUID();
 		const machineId = randomUUID();
 		const f = fixture({ [workerId]: { API_KEY } });
@@ -538,14 +538,21 @@ describe("a coding machine's values for the folder service's save check (5j-5 (a
 		const firstReq = { ...f.request(machineId, scope), vaultEnvVersion: version };
 		await session.resolve(firstReq, signal());
 		session.accepted(firstReq);
+		const longRunningReq = { ...f.request(machineId, scope), vaultEnvVersion: version };
+		await session.resolve(longRunningReq, signal());
+		session.accepted(longRunningReq);
 		let latestReq = firstReq;
 		for (let i = 0; i < 1050; i++) {
 			latestReq = { ...f.request(machineId, scope), vaultEnvVersion: version };
 			await session.resolve(latestReq, signal());
 			session.accepted(latestReq);
+			if (i % 200 === 0) {
+				expect(await session.output(longRunningReq, signal())).not.toBeNull();
+			}
 		}
 		expect(f.environment).toHaveBeenCalledTimes(1);
 		expect(await session.output(firstReq, signal())).toBeNull();
+		expect(masked(await readMask(session, longRunningReq), `long=${API_KEY}`)).toBe("long=***");
 		expect(masked(await readMask(session, latestReq), `x=${API_KEY}`)).toBe("x=***");
 		expect(f.secrets.values(machineId)).toEqual([API_KEY]);
 	});

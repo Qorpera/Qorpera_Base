@@ -20,6 +20,7 @@ import {
 } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type CodeCheck, type CodeSiteRecipe, codeChecksTail } from "../src/code-checks.ts";
+import { CODE_RESTORING } from "../src/code-host-repositories.ts";
 import {
 	CODE_CHECKS_DRILL,
 	CODE_CHECKS_NEWER_RUN,
@@ -10078,7 +10079,7 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 		expect(mocked.keptCommand).toHaveBeenCalledTimes(2);
 	});
 
-	it("overlaps VM boot with worktree prepare, skips turn 2..N prepare when .git exists, and falls back when missing", async () => {
+	it("overlaps VM boot with worktree prepare, runs prepare ahead of attach on turn 2, and refuses with CODE_RESTORING", async () => {
 		const f = await folderFixture();
 		const order: string[] = [];
 		let releaseReconcile!: () => void;
@@ -10107,15 +10108,14 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 		expect(f.calls("qorpera_record_coding_worktree_created")).toHaveLength(1);
 		expect(f.repositories.prepare).toHaveBeenCalledTimes(1);
 
-		const origExec = vi.mocked(f.client.execInstance).getMockImplementation()!;
-		const testChecks: string[][] = [];
-		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
-			if (command[0] === "/usr/bin/test") {
-				testChecks.push([...command]);
-				return;
-			}
-			return origExec(project, name, command, signal);
+		const turn2Order: string[] = [];
+		f.repositories.prepare.mockImplementationOnce(async (session, signal) => {
+			turn2Order.push("prepare");
+			return origPrepare(session, signal);
 		});
+		f.state.duringAttach = () => {
+			turn2Order.push("attach");
+		};
 		const turn2Claim = { ...f.claim, sequence: 2, worktreeCreatedAt: new Date().toISOString() };
 		f.sequences.set(f.claim.workerId, 2);
 		f.host.endTurn(f.claim);
@@ -10124,44 +10124,62 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 			{ ...f.turn(), sequence: 2, turnId: codingHostId("turn", `${f.claim.workerId}:2`), baseSha: f.baseSha },
 			f.signal,
 		);
-		expect(f.repositories.prepare).toHaveBeenCalledTimes(1);
-		expect(testChecks).toHaveLength(1);
-		expect(testChecks[0]?.[2]).toContain("/.git");
+		expect(f.repositories.prepare).toHaveBeenCalledTimes(2);
+		expect(turn2Order).toEqual(["prepare", "attach"]);
+		expect(f.calls("qorpera_record_coding_worktree_created")).toHaveLength(1);
 
-		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
-			if (command[0] === "/usr/bin/test") throw new Error("LXD instance command failed");
-			return origExec(project, name, command, signal);
-		});
 		const turn3Claim = { ...turn2Claim, sequence: 3 };
 		f.sequences.set(f.claim.workerId, 3);
 		f.host.endTurn(turn2Claim);
-		await f.host.prepareWorkspace(
-			turn3Claim,
-			{ ...f.turn(), sequence: 3, turnId: codingHostId("turn", `${f.claim.workerId}:3`), baseSha: f.baseSha },
-			f.signal,
+		const attachBeforeTurn3 = f.calls("qorpera_attach_coding_session").length;
+		f.repositories.prepare.mockRejectedValueOnce(
+			new CodingWorkspaceFailed("CODE_HOST_RESTORE_IN_PROGRESS", CODE_RESTORING),
 		);
-		expect(f.repositories.prepare).toHaveBeenCalledTimes(2);
+		await expect(
+			f.host.prepareWorkspace(
+				turn3Claim,
+				{ ...f.turn(), sequence: 3, turnId: codingHostId("turn", `${f.claim.workerId}:3`), baseSha: f.baseSha },
+				f.signal,
+			),
+		).rejects.toMatchObject({
+			message: "CODE_HOST_RESTORE_IN_PROGRESS",
+			summary: `${CODE_RESTORING} [code=CODE_HOST_RESTORE_IN_PROGRESS]`,
+		});
+		expect(f.calls("qorpera_attach_coding_session")).toHaveLength(attachBeforeTurn3);
 	});
 
-	it("shards #storageWork per workerId so a slow worker does not block another worker", async () => {
+	it("serializes hard-NFS storage calls across two workers so at most one NAS call hangs at a time", async () => {
 		const f = await folderFixture();
+		const host = new LxdCodingExecutorHost({ ...f.options, folder: f.folder, storageStepTimeoutMs: 60 });
 		const second = f.another();
-		let releaseSlow!: () => void;
-		const slowGate = new Promise<void>((resolve) => {
-			releaseSlow = resolve;
+		let active = 0;
+		let maxActive = 0;
+		let started = 0;
+		let releaseHang!: () => void;
+		const hang = new Promise<void>((resolve) => {
+			releaseHang = resolve;
 		});
-		let secondFinishedWhileFirstBlocked = false;
-		mocked.storagePrepare.mockImplementation(async (arg) => {
-			if (arg && typeof arg === "object" && "workerId" in arg && arg.workerId === f.claim.workerId) {
-				await slowGate;
+		mocked.storagePrepare.mockImplementation(async () => {
+			active++;
+			started++;
+			maxActive = Math.max(maxActive, active);
+			try {
+				await hang;
+			} finally {
+				active--;
 			}
 		});
-		const firstWork = f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
-		await f.host.prepareWorkspace(second, f.turnOf(second), f.signal);
-		secondFinishedWhileFirstBlocked = true;
-		releaseSlow();
-		await firstWork;
-		expect(secondFinishedWhileFirstBlocked).toBe(true);
+		const firstWork = host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		const secondWork = host.prepareWorkspace(second, f.turnOf(second), f.signal);
+		const results = await Promise.allSettled([firstWork, secondWork]);
+		expect(results[0]?.status).toBe("rejected");
+		expect(results[1]?.status).toBe("rejected");
+		expect((results[0] as PromiseRejectedResult).reason).toMatchObject({ message: "CODING_HOST_STORAGE_TIMEOUT" });
+		expect((results[1] as PromiseRejectedResult).reason).toMatchObject({ message: "CODING_HOST_STORAGE_TIMEOUT" });
+		expect(maxActive).toBe(1);
+		expect(started).toBe(1);
+		releaseHang();
+		await hang;
 	});
 
 	it("reuses pre-authorized CodingCommandTurnContext in commandTransport without duplicate run or list RPCs", async () => {

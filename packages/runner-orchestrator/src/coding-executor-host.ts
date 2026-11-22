@@ -891,10 +891,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	readonly #storage: CodingNasStorage;
 	readonly #placement: CodingMachineStorage;
 	readonly #hostLeases: CodingHostLeases;
-	readonly #storageWork = new Map<string, Promise<unknown>>();
+	// WHY: unresolved hard-NFS syscalls keep libuv workers after caller timeout; one chain caps stuck workers at 1.
+	#storageWork: Promise<unknown> = Promise.resolve();
 	readonly #machineWork = new Map<string, Promise<unknown>>();
 	readonly #keptCommands = new Map<string, { turn: number; command: string }>();
-	readonly #worktreeReady = new Map<string, { baseSha: string; cwd: string }>();
 	readonly #prepared = new Map<string, Prepared>();
 	readonly #attached = new Map<string, Attached>();
 	readonly #attachments = new Map<string, Attachment>();
@@ -1005,26 +1005,16 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			});
 		return abortable(work, signal);
 	}
-	async #storageTask<T>(
-		use: (signal: AbortSignal) => Promise<T>,
-		signal?: AbortSignal,
-		key = "__control__",
-	): Promise<T> {
+	async #storageTask<T>(use: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
 		const limit = AbortSignal.timeout(this.#options.storageStepTimeoutMs ?? CODING_STORAGE_STEP_MS);
 		const checked = AbortSignal.any([...(signal ? [signal] : []), limit]);
-		const previous = this.#storageWork.get(key) ?? Promise.resolve();
-		const work = previous
+		const work = this.#storageWork
 			.catch(() => undefined)
 			.then(() => {
 				checked.throwIfAborted();
 				return use(checked);
 			});
-		this.#storageWork.set(key, work);
-		void work
-			.catch(() => undefined)
-			.finally(() => {
-				if (this.#storageWork.get(key) === work) this.#storageWork.delete(key);
-			});
+		this.#storageWork = work;
 		let abort: (() => void) | undefined;
 		try {
 			return await Promise.race([
@@ -1042,25 +1032,21 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			if (abort) checked.removeEventListener("abort", abort);
 		}
 	}
-	async #directory(name: string, callerSignal?: AbortSignal, shardKey = `dir:${name}`): Promise<string> {
+	async #directory(name: string, callerSignal?: AbortSignal): Promise<string> {
 		for (let attempt = 1; ; attempt++) {
 			try {
-				return await this.#storageTask(
-					async (signal) => {
-						await this.#storage.assertControl(signal);
-						await checkDirectory(this.#options.journalRoot);
-						const path = join(this.#options.journalRoot, name);
-						signal.throwIfAborted();
-						await mkdir(path, { mode: 0o700 }).catch((error) => {
-							if (!code(error, "EEXIST")) throw error;
-						});
-						await checkDirectory(path);
-						await this.#storage.assertControl(signal);
-						return path;
-					},
-					callerSignal,
-					shardKey,
-				);
+				return await this.#storageTask(async (signal) => {
+					await this.#storage.assertControl(signal);
+					await checkDirectory(this.#options.journalRoot);
+					const path = join(this.#options.journalRoot, name);
+					signal.throwIfAborted();
+					await mkdir(path, { mode: 0o700 }).catch((error) => {
+						if (!code(error, "EEXIST")) throw error;
+					});
+					await checkDirectory(path);
+					await this.#storage.assertControl(signal);
+					return path;
+				}, callerSignal);
 			} catch (error) {
 				if (
 					!(error instanceof Error && error.message === "CODING_HOST_STORAGE_TIMEOUT") ||
@@ -1123,19 +1109,15 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const guestUid = value.guestUid as number | null;
 		if (guestUid !== null && guestUid < CODING_SESSION_UID_BASE)
 			throw new Error("CODING_MACHINE_ADMISSION_UNCONFIRMED");
-		await this.#storageTask(
-			async (checked) => {
-				if (prepareStorage) {
-					await this.#storage.prepareControl(checked);
-					await this.#storage.prepare(storage, checked);
-				} else {
-					await this.#storage.assertControl(checked);
-					await this.#storage.assert(storage, checked);
-				}
-			},
-			signal,
-			claim.workerId,
-		);
+		await this.#storageTask(async (checked) => {
+			if (prepareStorage) {
+				await this.#storage.prepareControl(checked);
+				await this.#storage.prepare(storage, checked);
+			} else {
+				await this.#storage.assertControl(checked);
+				await this.#storage.assert(storage, checked);
+			}
+		}, signal);
 		if (performance.now() >= deadline) throw new Error("CODING_MACHINE_ADMISSION_EXPIRED");
 		signal.throwIfAborted();
 		return value as unknown as CodingMachineAdmissionReceipt;
@@ -1190,7 +1172,6 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		signal: AbortSignal,
 		stoppedFromOutside?: (startOperationId: string, signal: AbortSignal) => Promise<void>,
 		starting?: CodingMachineReconcileOptions["starting"],
-		storageKey?: string,
 	): Promise<"running" | "stopped" | "absent" | "deleted"> {
 		const checked = AbortSignal.any([
 			signal,
@@ -1198,7 +1179,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		]);
 		for (let attempt = 0; ; attempt++) {
 			checked.throwIfAborted();
-			const journalRoot = await this.#directory("machines", checked, storageKey);
+			const journalRoot = await this.#directory("machines", checked);
 			const result = await reconcileCodingMachine({
 				plan: journal,
 				journalRoot,
@@ -1674,7 +1655,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		authorize: () => Promise<void>,
 		signal: AbortSignal,
 	): Promise<{ root: string; baseSha: string }> {
-		const root = await this.#directory("git", signal, claim.workerId);
+		const root = await this.#directory("git", signal);
 		const baseName = `${claim.workerId}.base.json`;
 		let baseSha: string;
 		try {
@@ -1740,22 +1721,14 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const initialUid = initialReceipt.guestUid;
 		if (initialUid === null || initialUid < CODING_GUEST.minUid || initialUid > CODING_GUEST.maxUid)
 			throw new Error("CODING_FOLDER_SESSION_UID_MISSING");
-		const expectedBase = claim.baseSha ?? turn.baseSha;
-		const remembered = this.#worktreeReady.get(claim.workerId);
-		const canSkipRepoPrepare =
-			folder.repositories !== undefined &&
-			claim.sequence > 1 &&
-			expectedBase !== null &&
-			(Boolean(claim.worktreeCreatedAt) || remembered?.baseSha === expectedBase);
 		const overlap = new AbortController();
 		const overlapSignal = AbortSignal.any([signal, overlap.signal]);
 		const authorize = async () => {
 			await this.#run(claim, machine, storage, overlapSignal);
 		};
 		const startPromise = this.#startFolder(folder, claim, machine, storage, journal, overlapSignal, undefined, true);
-		const repoPromise = (async (): Promise<{ root: string; baseSha: string; cwd?: string }> => {
+		const repoPromise = (async (): Promise<{ root: string; baseSha: string; cwd: string }> => {
 			const { root, baseSha } = await this.#base(claim, turn, authorize, overlapSignal);
-			if (canSkipRepoPrepare) return { root, baseSha };
 			const { cwd } = await (folder.repositories ?? codingFolderNoRepositories).prepare(
 				this.#repositorySession(claim, machine, storage, initialUid, baseSha, root),
 				overlapSignal,
@@ -1763,7 +1736,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			return { root, baseSha, cwd };
 		})();
 		let started: { bootId: string; uid: number; starts: number };
-		let repo: { root: string; baseSha: string; cwd?: string };
+		let repo: { root: string; baseSha: string; cwd: string };
 		try {
 			[started, repo] = await Promise.all([
 				startPromise.catch((error: unknown) => {
@@ -1779,10 +1752,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			await Promise.allSettled([startPromise, repoPromise]);
 			throw error;
 		}
-		const { root, baseSha } = repo;
-		let cwd = repo.cwd;
-		if (cwd !== undefined && folder.repositories) {
-			this.#worktreeReady.set(claim.workerId, { baseSha, cwd });
+		const { baseSha, cwd } = repo;
+		if (folder.repositories && !claim.worktreeCreatedAt) {
 			await this.#call(
 				"qorpera_record_coding_worktree_created",
 				{ p_worker_id: claim.workerId, p_lease_token: claim.leaseToken },
@@ -1813,49 +1784,6 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				newDisk: error.code === "READS_UNREADABLE",
 			});
 			guest = await attach(started);
-		}
-		if (cwd === undefined) {
-			const expectedCwd =
-				remembered?.baseSha === baseSha
-					? remembered.cwd
-					: `${CODING_FOLDER_COMPANY_ROOT}/${codeAreaPath(claim.repository)}/worktrees/${claim.workerId}`;
-			const rel = expectedCwd.startsWith(`${CODING_FOLDER_COMPANY_ROOT}/`)
-				? expectedCwd.slice(CODING_FOLDER_COMPANY_ROOT.length + 1)
-				: "";
-			const mountWorktreeGit = `${CODING_GUEST.folder}/mounts/${claim.workerId.replaceAll("-", "")}/${rel}/.git`;
-			const existsInGuest =
-				rel.length > 0 &&
-				(await this.#options.client
-					.execInstance(
-						machine.project,
-						lxdCodingMachineName(machine.machineId),
-						["/usr/bin/test", "-e", mountWorktreeGit],
-						signal,
-					)
-					.then(
-						() => true,
-						(error: unknown) => {
-							signal.throwIfAborted();
-							if (error instanceof Error && error.message === "LXD instance command failed") return false;
-							return false;
-						},
-					));
-			if (existsInGuest) {
-				cwd = expectedCwd;
-				this.#worktreeReady.set(claim.workerId, { baseSha, cwd });
-			} else {
-				const preparedRepo = await (folder.repositories ?? codingFolderNoRepositories).prepare(
-					this.#repositorySession(claim, machine, storage, started.uid, baseSha, root),
-					signal,
-				);
-				cwd = preparedRepo.cwd;
-				this.#worktreeReady.set(claim.workerId, { baseSha, cwd });
-				await this.#call(
-					"qorpera_record_coding_worktree_created",
-					{ p_worker_id: claim.workerId, p_lease_token: claim.leaseToken },
-					signal,
-				).catch(() => undefined);
-			}
 		}
 		const ready: Prepared = {
 			claim,
@@ -1938,7 +1866,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			// which clears the marks that withheld them until then.
 			async (afterOperationId, checked, after) => {
 				this.#folderStartOperations.delete(machine.machineId);
-				const journalRoot = await this.#directory("machines", checked, claim.workerId);
+				const journalRoot = await this.#directory("machines", checked);
 				const boot = await codingMachineLastStart(journalRoot, journal);
 				const marked = boot !== null && (await dropCodingMachineStart(journalRoot, journal, boot));
 				const dropped = await folder.control.restarted(machine.machineId, checked);
@@ -1949,7 +1877,6 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				} else if (await this.#recordFolderRestart(machine, afterOperationId, checked)) return "rebuild";
 				this.#folderStarts.set(machine.machineId, (this.#folderStarts.get(machine.machineId) ?? 0) + 1);
 			},
-			claim.workerId,
 		).catch(async (error: unknown) => {
 			// The machine's image is no longer on the node: it stays stopped and marked, with its own error, and each turn
 			// on it fails so until the image is back or the machine is removed.
@@ -1960,7 +1887,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		// The start this boot came from: a command's start names it, so a read after a restart knows its boot.
 		this.#folderStartOperations.set(
 			machine.machineId,
-			await codingMachineStartOperation(await this.#directory("machines", signal, claim.workerId), journal),
+			await codingMachineStartOperation(await this.#directory("machines", signal), journal),
 		);
 	}
 	/** Rule 4 (RUNTIME-FOLDER-CODING-MACHINES.md): the machine's reads can't be proven released, so it stops before any
@@ -3700,7 +3627,6 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		this.#samples.delete(workerId);
 		this.#folderUidCache.delete(workerId);
 		this.#deleteKeptCommandsForWorker(workerId);
-		this.#worktreeReady.delete(workerId);
 	}
 	/** A member's machine LXD shows stopped after its settled start (the
 	 * reconcile has just written that stop down) lost every session's boot: each
@@ -3874,7 +3800,6 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			this.#samples.delete(workerId);
 			this.#folderUidCache.delete(workerId);
 			this.#deleteKeptCommandsForWorker(workerId);
-			this.#worktreeReady.delete(workerId);
 		}
 	}
 	#deleteKeptCommandsForWorker(workerId: string): void {
@@ -3896,11 +3821,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			this.#keptCommands.set(cacheKey, cached);
 			return cached;
 		}
-		const kept = await this.#storageTask(
-			() => codingFolderKeptCommand(custody, workerId, commandId),
-			signal,
-			workerId,
-		);
+		const kept = await this.#storageTask(() => codingFolderKeptCommand(custody, workerId, commandId), signal);
 		if (!kept) return undefined;
 		const entry = { turn: kept.turn, command: clipped(kept.command, CODING_OBSERVED_COMMAND_BYTES) };
 		if (this.#keptCommands.size >= CODING_KEPT_COMMAND_CACHE_MAX) {

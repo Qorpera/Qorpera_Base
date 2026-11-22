@@ -108,11 +108,27 @@ function environmentHash(environment: Environment): string {
 	return createHash("sha256").update(JSON.stringify(entries)).digest("hex");
 }
 
+function touchSessionCommand(session: Session, commandId: string, ref: CommandRef): void {
+	session.commands.delete(commandId);
+	session.commands.set(commandId, ref);
+}
+
 function recordSessionCommand(session: Session, commandId: string, envHash: string): void {
-	if (session.commands.has(commandId)) return;
+	const existing = session.commands.get(commandId);
+	if (existing) {
+		touchSessionCommand(session, commandId, existing);
+		return;
+	}
 	if (session.commands.size >= MAX_SESSION_COMMANDS) {
-		const oldest = session.commands.keys().next().value;
-		if (oldest !== undefined) session.commands.delete(oldest);
+		let victim: string | undefined;
+		for (const [id, ref] of session.commands) {
+			if (!ref.accepted) {
+				victim = id;
+				break;
+			}
+		}
+		const target = victim ?? session.commands.keys().next().value;
+		if (target !== undefined) session.commands.delete(target);
 	}
 	session.commands.set(commandId, { envHash, accepted: false });
 }
@@ -148,7 +164,10 @@ export class CodingMachineCommandSecrets {
 			accepted: (request) => {
 				this.#check(machineId, asked, request);
 				const ref = session.commands.get(request.commandId);
-				if (ref) ref.accepted = true;
+				if (ref) {
+					ref.accepted = true;
+					touchSessionCommand(session, request.commandId, ref);
+				}
 			},
 		};
 	}
@@ -247,6 +266,7 @@ export class CodingMachineCommandSecrets {
 		if (existing) {
 			const environment = session.envByHash.get(existing.envHash);
 			if (environment) {
+				touchSessionCommand(session, request.commandId, existing);
 				const machine = this.#activeMachine(machineId, scope, session);
 				this.#answered.add(machineId);
 				const mask = machine.mask;
@@ -313,6 +333,7 @@ export class CodingMachineCommandSecrets {
 		signal.throwIfAborted();
 		const ref = session.commands.get(request.commandId);
 		if (!ref || !ref.accepted) return null;
+		touchSessionCommand(session, request.commandId, ref);
 		const machine = this.#activeMachine(machineId, scope, session);
 		const mask = machine.mask;
 		return () => mask.stream();

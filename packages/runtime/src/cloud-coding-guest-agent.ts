@@ -1414,24 +1414,16 @@ function runArgs(at: Agent, session: Places, command: CommandPlaces, request: Co
 }
 async function pruneEnded(at: Agent, session: Places): Promise<void> {
 	const now = at.nowMs();
-	const ended: { name: string; directory: string; mtimeMs: number }[] = [];
 	for (const name of (await missing(() => readdir(session.commands))) ?? []) {
 		if (!COMPACT.test(name)) continue;
 		const directory = join(session.commands, name);
 		const outcome = await missing(() => lstat(join(directory, "outcome.json")));
 		if (!outcome?.isFile()) continue;
-		ended.push({ name, directory, mtimeMs: outcome.mtimeMs });
+		await ignore(rm(join(session.activeDir, name), { force: true }));
 		if (now - outcome.mtimeMs <= OUTCOME_KEEP_MS) continue;
 		const output = join(directory, "output");
 		for (const entry of (await missing(() => readdir(output))) ?? []) await ignore(unlink(join(output, entry)));
 		await ignore(rmdir(output));
-	}
-	if (ended.length > CODING_GUEST.maxStatusCommands) {
-		ended.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-		for (const stale of ended.slice(CODING_GUEST.maxStatusCommands)) {
-			await ignore(rm(stale.directory, { recursive: true, force: true }));
-			await ignore(rm(join(session.activeDir, stale.name), { force: true }));
-		}
 	}
 	const inputs = join(at.runtimeRoot, "inputs");
 	for (const name of (await missing(() => readdir(inputs))) ?? []) {

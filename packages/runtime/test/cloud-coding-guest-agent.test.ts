@@ -2574,14 +2574,31 @@ describe("batched status-all, cgroup isolation, lock-free network reuse, and end
 		expect(m.ipBatches).toEqual([]);
 	});
 
-	it("prunes ended command directories beyond newest 256 while preserving active commands", async () => {
+	it("preserves intent and outcome tombstones past 256 ended commands while pruning expired output and active markers", async () => {
 		const m = await machine();
 		const workerId = await mounted(m);
 		const s = sessionAt(m, workerId);
-		const commandsDir = join(s.session, "commands");
-		const oldIds: string[] = [];
+		const nowSec = Math.floor(Date.now() / 1000);
+		const expired = await plant(m, workerId, { boot: randomUUID() });
+		await writeFile(join(expired.output, "00000000000000000000.log"), "old-bytes");
+		await writeFile(
+			expired.outcome,
+			JSON.stringify({
+				schema: "qorpera.coding-guest-outcome/v1",
+				commandId: expired.commandId,
+				state: "exited",
+				exit: { code: 0, signal: null },
+				end: 9,
+			}),
+		);
+		await utimes(expired.outcome, 1000, 1000);
+		await mkdir(join(m.runRoot, "active", s.w), { recursive: true });
+		await writeFile(join(m.runRoot, "active", s.w, expired.c), "");
+
+		const recent: Awaited<ReturnType<typeof plant>>[] = [];
 		for (let i = 0; i < CODING_GUEST.maxStatusCommands + 5; i++) {
 			const cmd = await plant(m, workerId, { boot: randomUUID() });
+			await writeFile(join(cmd.output, "00000000000000000000.log"), "kept");
 			await writeFile(
 				cmd.outcome,
 				JSON.stringify({
@@ -2589,17 +2606,36 @@ describe("batched status-all, cgroup isolation, lock-free network reuse, and end
 					commandId: cmd.commandId,
 					state: "exited",
 					exit: { code: 0, signal: null },
-					end: 0,
+					end: 4,
 				}),
 			);
-			await utimes(cmd.outcome, 1000 + i, 1000 + i);
-			oldIds.push(cmd.c);
+			await utimes(cmd.outcome, nowSec - i, nowSec - i);
+			recent.push(cmd);
 		}
 		const fresh = await ran(m, workerId, "printf ok");
 		expect(fresh.commandId).toBeTruthy();
-		const remaining = await readdir(commandsDir);
-		expect(remaining.length).toBeLessThanOrEqual(CODING_GUEST.maxStatusCommands + 1);
-		expect(remaining).not.toContain(oldIds[0]);
-		expect(remaining).not.toContain(oldIds[1]);
+
+		expect((await lstat(expired.intent)).isFile()).toBe(true);
+		expect((await lstat(expired.outcome)).isFile()).toBe(true);
+		await expect(lstat(expired.output)).rejects.toMatchObject({ code: "ENOENT" });
+		await expect(lstat(join(m.runRoot, "active", s.w, expired.c))).rejects.toMatchObject({ code: "ENOENT" });
+
+		const oldestRecent = recent.at(-1)!;
+		expect((await lstat(oldestRecent.intent)).isFile()).toBe(true);
+		expect((await lstat(oldestRecent.outcome)).isFile()).toBe(true);
+		expect(await readFile(join(oldestRecent.output, "00000000000000000000.log"), "utf8")).toBe("kept");
+
+		const liveId = randomUUID();
+		const startedLive = await call(m, "run", runRequest(m, workerId, liveId, "sleep 60"));
+		expect(startedLive.line).toMatchObject({ commandId: liveId, state: "running" });
+
+		const status = await call(m, "status-all", {
+			schema: "qorpera.coding-guest-status-all/v1",
+			workerIds: [workerId],
+		});
+		expect(status.code).toBe(0);
+		expect(status.line.sessions[0].commands.map((c: { commandId: string }) => c.commandId)).toEqual([liveId]);
+		await call(m, "cancel", { schema: "qorpera.coding-guest-cancel/v1", workerId, commandId: liveId });
+		await m.settle();
 	});
 });
