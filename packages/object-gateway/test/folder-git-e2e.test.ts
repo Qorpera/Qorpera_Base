@@ -1175,8 +1175,12 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 			const at = await area();
 			const host = await mountSession(at, "host");
 			const second = await mountSession(at, "second");
-			await host.git("repack", "--geometric=2", "-d", "--write-midx", "--write-bitmap-index", "-q");
-			await host.git(
+			const gitDir = join(host.company, R);
+			await git(gitDir, host.home, "repack", "--geometric=2", "-d", "--write-midx", "--write-bitmap-index", "-q");
+			await git(gitDir, host.home, "update-server-info");
+			await git(
+				gitDir,
+				host.home,
 				"commit-graph",
 				"write",
 				"--reachable",
@@ -1184,6 +1188,7 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 				"--split",
 				"--expire-time=1.day.ago",
 			);
+			await stat(join(gitDir, "objects/info/packs"));
 			expect((await host.publish()).code).toBe(0);
 			const hostEntries = [...at.core.entries.keys()];
 			expect(hostEntries).toContain(`${R}/objects/pack/multi-pack-index`);
@@ -1207,7 +1212,7 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 					}
 				}),
 			).toBe(true);
-			expect(await second.git("commit-graph", "verify")).toBe("");
+			expect(await second.git("commit-graph", "verify", "--no-progress")).toBe("");
 			expect(await second.git("fsck", "--no-progress", "--no-dangling")).toBe("");
 		},
 		TIMEOUT,
