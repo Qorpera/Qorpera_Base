@@ -89,13 +89,27 @@ export class WhatsNewView {
 		this.el.remove();
 	}
 
-	/** Who said go, by the name the team knows them by; nobody when they left. */
+	/** WHY: distinguishes member releases from automatic executor releases/rollbacks without exposing internal executor ids. */
 	#liveLine(live: CodeReleaseLive): string {
 		const version = String(live.version);
 		const time = fmtTime(live.since);
 		const name = live.by
 			? this.#company.store.get().team?.members.find((member) => member.userId === live.by)?.displayName
 			: undefined;
+		if (live.auto) {
+			if (!name) {
+				return live.kind === "back"
+					? t("Version {version} · since {time} · went back automatically", { version, time })
+					: t("Version {version} · since {time} · automatic", { version, time });
+			}
+			return live.kind === "back"
+				? t("Version {version} · since {time} · went back automatically (enabled by {name})", {
+						version,
+						time,
+						name,
+					})
+				: t("Version {version} · since {time} · automatic (enabled by {name})", { version, time, name });
+		}
 		if (!name) return t("Version {version} · since {time}", { version, time });
 		return live.kind === "back"
 			? t("Version {version} · since {time} · {name} went back", { version, time, name })

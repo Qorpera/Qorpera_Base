@@ -47,7 +47,7 @@ function shop(extra: Partial<CodeReleaseSite> = {}): CodeReleaseSite {
 		owner: "qorpera",
 		name: "wristband-shop",
 		site: { slug: "wristband-shop", url: "https://sites.qorpera.com/wristband-shop/", title: "Wristband shop" },
-		live: { version: 3, kind: "release", since: timestamp, by: userA.id },
+		live: { version: 3, kind: "release", since: timestamp, by: userA.id, auto: false, byExecutor: null },
 		back: { version: 2 },
 		ready: {
 			change: 17,
@@ -93,7 +93,17 @@ function wire(releases: CodeReleases): unknown {
 		schema: "qorpera.code-releases/v1",
 		canRelease: releases.canRelease,
 		...(releases.preview ? { preview: true } : {}),
-		sites: releases.sites.map((site) => ({ ...site, live: site.live && { ...site.live, from: null } })),
+		sites: releases.sites.map((site) => ({
+			...site,
+			live: site.live && {
+				version: site.live.version,
+				kind: site.live.kind,
+				since: site.live.since,
+				by: site.live.by,
+				...(site.live.auto ? { auto: true, byExecutor: site.live.byExecutor } : {}),
+				from: null,
+			},
+		})),
 	};
 }
 
@@ -213,6 +223,29 @@ describe("What's new: the read", () => {
 		};
 		expect(bad((site) => Object.assign(site.ready as object, { token: "short" }))).toThrow();
 		expect(bad((site) => Object.assign(site.live as object, { kind: "forward" }))).toThrow();
+		expect(bad((site) => Object.assign(site.live as object, { auto: "yes" }))).toThrow(CloudShapeError);
+		expect(bad((site) => Object.assign(site.live as object, { auto: true }))).toThrow(CloudShapeError);
+		expect(bad((site) => Object.assign(site.live as object, { auto: true, byExecutor: "bad executor!" }))).toThrow(
+			CloudShapeError,
+		);
+		expect(bad((site) => Object.assign(site.live as object, { auto: true, byExecutor: "x".repeat(121) }))).toThrow(
+			CloudShapeError,
+		);
+		expect(bad((site) => Object.assign(site.live as object, { auto: false, byExecutor: "exec-1" }))).toThrow(
+			CloudShapeError,
+		);
+		expect(bad((site) => Object.assign(site.live as object, { byExecutor: "exec-1" }))).toThrow(CloudShapeError);
+		const autoLive = shop({
+			live: {
+				version: 4,
+				kind: "release",
+				since: timestamp,
+				by: userA.id,
+				auto: true,
+				byExecutor: "executor:worker-1.prod_01",
+			},
+		});
+		expect(parseCodeReleases(wire(releasesOf([autoLive])))).toEqual(releasesOf([autoLive]));
 		expect(bad((site) => Object.assign(site.site as object, { url: "http://sites.qorpera.com/x/" }))).toThrow();
 		expect(
 			bad((site) => Object.assign((site.ready as { changes: object[] }).changes[0]!, { picture: "../secret.png" })),
@@ -425,7 +458,7 @@ describe("What's new: the page", () => {
 	it("puts it live: both buttons off while the call is out, then the new version, read again", async () => {
 		const answer = deferred<CodeReleaseAnswer>();
 		const after = shop({
-			live: { version: 4, kind: "release", since: timestamp, by: userA.id },
+			live: { version: 4, kind: "release", since: timestamp, by: userA.id, auto: false, byExecutor: null },
 			back: { version: 3 },
 			ready: null,
 		});
@@ -545,7 +578,7 @@ describe("What's new: the page", () => {
 	const fourLive = () =>
 		releasesOf([
 			shop({
-				live: { version: 4, kind: "release", since: timestamp, by: userA.id },
+				live: { version: 4, kind: "release", since: timestamp, by: userA.id, auto: false, byExecutor: null },
 				back: { version: 3 },
 				ready: null,
 			}),
@@ -646,7 +679,10 @@ describe("What's new: the page", () => {
 	});
 
 	it("says the same of a Go back that a gateway's 502 answered after it committed", async () => {
-		const gone = shop({ live: { version: 2, kind: "back", since: timestamp, by: userA.id }, back: null });
+		const gone = shop({
+			live: { version: 2, kind: "back", since: timestamp, by: userA.id, auto: false, byExecutor: null },
+			back: null,
+		});
 		const { view } = await stepped([releasesOf([shop()]), releasesOf([gone])], {
 			goBack: () => Promise.reject(ambiguous[0]![1]),
 		});
@@ -683,7 +719,10 @@ describe("What's new: the page", () => {
 	});
 
 	it("says the same of a Go back whose answer was lost, and settles it when the older version is live", async () => {
-		const gone = shop({ live: { version: 2, kind: "back", since: timestamp, by: userA.id }, back: null });
+		const gone = shop({
+			live: { version: 2, kind: "back", since: timestamp, by: userA.id, auto: false, byExecutor: null },
+			back: null,
+		});
 		const { view } = await stepped([releasesOf([shop()]), new Error("Failed to fetch"), releasesOf([gone])], {
 			goBack: lost,
 		});
@@ -719,7 +758,7 @@ describe("What's new: the page", () => {
 
 	it("draws what is live again when Go back finds the page moved", async () => {
 		const newer = shop({
-			live: { version: 4, kind: "release", since: timestamp, by: userA.id },
+			live: { version: 4, kind: "release", since: timestamp, by: userA.id, auto: false, byExecutor: null },
 			back: { version: 3 },
 		});
 		const { view } = await page([releasesOf([shop()]), releasesOf([newer])], {
@@ -772,7 +811,7 @@ describe("What's new: the page", () => {
 
 	it("asks once before going back, and goes back to the version Go back named", async () => {
 		const back = shop({
-			live: { version: 2, kind: "back", since: timestamp, by: userA.id },
+			live: { version: 2, kind: "back", since: timestamp, by: userA.id, auto: false, byExecutor: null },
 			back: null,
 			ready: {
 				...shop().ready!,
@@ -847,9 +886,127 @@ describe("What's new: the page", () => {
 
 	it("leaves the name out when the member who said go left the company", async () => {
 		const { view } = await page([
-			releasesOf([shop({ live: { version: 3, kind: "release", since: timestamp, by: id(99) } })]),
+			releasesOf([
+				shop({
+					live: { version: 3, kind: "release", since: timestamp, by: id(99), auto: false, byExecutor: null },
+				}),
+			]),
 		]);
 		expect(block(view).querySelector(".site-meta")?.textContent).toMatch(/^Version 3 · since [^·]+$/);
+	});
+
+	it("marks automatic executor releases and rollbacks without claiming the admin pressed go", async () => {
+		const { view: released } = await page([
+			releasesOf([
+				shop({
+					live: {
+						version: 4,
+						kind: "release",
+						since: timestamp,
+						by: userA.id,
+						auto: true,
+						byExecutor: "executor-1",
+					},
+				}),
+			]),
+		]);
+		const releaseSite = block(released);
+		expect(releaseSite.querySelector(".site-meta")?.textContent).toMatch(
+			/^Version 4 · since .+ · automatic \(enabled by Ann\)$/,
+		);
+		expect(text(releaseSite)).not.toContain("Ann said go");
+		expect(text(releaseSite)).not.toContain("executor-1");
+		plain(releaseSite);
+
+		const { view: rolledBack } = await page([
+			releasesOf([
+				shop({
+					live: {
+						version: 2,
+						kind: "back",
+						since: timestamp,
+						by: userA.id,
+						auto: true,
+						byExecutor: "executor-1",
+					},
+				}),
+			]),
+		]);
+		expect(block(rolledBack).querySelector(".site-meta")?.textContent).toMatch(
+			/^Version 2 · since .+ · went back automatically \(enabled by Ann\)$/,
+		);
+		plain(block(rolledBack));
+
+		const { view: anonRelease } = await page([
+			releasesOf([
+				shop({
+					live: {
+						version: 4,
+						kind: "release",
+						since: timestamp,
+						by: id(99),
+						auto: true,
+						byExecutor: "executor-1",
+					},
+				}),
+			]),
+		]);
+		expect(block(anonRelease).querySelector(".site-meta")?.textContent).toMatch(/^Version 4 · since .+ · automatic$/);
+
+		const { view: anonBack } = await page([
+			releasesOf([
+				shop({
+					live: {
+						version: 2,
+						kind: "back",
+						since: timestamp,
+						by: null,
+						auto: true,
+						byExecutor: "executor-1",
+					},
+				}),
+			]),
+		]);
+		expect(block(anonBack).querySelector(".site-meta")?.textContent).toMatch(
+			/^Version 2 · since .+ · went back automatically$/,
+		);
+
+		setLanguagePreference("da");
+		const { view: daAuto } = await page([
+			releasesOf([
+				shop({
+					live: {
+						version: 4,
+						kind: "release",
+						since: timestamp,
+						by: userA.id,
+						auto: true,
+						byExecutor: "executor-1",
+					},
+				}),
+			]),
+		]);
+		expect(block(daAuto).querySelector(".site-meta")?.textContent).toMatch(
+			/^Version 4 · siden .+ · automatisk \(slået til af Ann\)$/,
+		);
+
+		const { view: daBack } = await page([
+			releasesOf([
+				shop({
+					live: {
+						version: 2,
+						kind: "back",
+						since: timestamp,
+						by: userA.id,
+						auto: true,
+						byExecutor: "executor-1",
+					},
+				}),
+			]),
+		]);
+		expect(block(daBack).querySelector(".site-meta")?.textContent).toMatch(
+			/^Version 2 · siden .+ · sat live igen automatisk \(slået til af Ann\)$/,
+		);
 	});
 
 	it("says when the page could not be read, and reads it again on Try again", async () => {
