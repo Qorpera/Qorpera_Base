@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SURFACE_KINDS, surfaceFigureOf, surfaceKindFigure } from "../src/app/surface-kinds.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
@@ -15,7 +17,9 @@ import { COMPANY, fakeClient, storeWith, summary } from "./surface-fixtures.ts";
 
 describe("surface figures", () => {
 	it("ships one picture per figure and nothing else", () => {
-		const files = readdirSync(new URL("../public/assets/surfaces/figures-v1/", import.meta.url)).sort();
+		const files = readdirSync(
+			join(dirname(fileURLToPath(import.meta.url)), "../public/assets/surfaces/figures-v1"),
+		).sort();
 		expect(files).toEqual(SURFACE_FIGURE_IDS.map((id) => `${id}.png`).sort());
 	});
 
