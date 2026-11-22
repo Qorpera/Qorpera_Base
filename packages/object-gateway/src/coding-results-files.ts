@@ -9,6 +9,7 @@ import {
 	workerTextNormal,
 	writeWorkerResultsFile,
 } from "@qorpera/cloud-client/company-state-files";
+import { withAbortScopes, withDefaultTimeout } from "./abort-scope.ts";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import { UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
@@ -279,18 +280,29 @@ export class CodingResultsWriter {
 	}
 
 	/** Writes due results until none is due or `max` were handled. Returns how many were handled. */
-	writeDue(max = 20, signal: AbortSignal = AbortSignal.timeout(30_000)): Promise<number> {
-		return drainPlatformClaims(max, () => this.writeOne(signal), signal);
+	writeDue(max = 20, signal?: AbortSignal): Promise<number> {
+		return withDefaultTimeout(signal, 30_000, (scoped) =>
+			drainPlatformClaims(max, () => this.writeOne(scoped), scoped),
+		);
 	}
 
 	/** Claims one due coding worker and writes its results.md; false when nothing is due. */
-	async writeOne(signal: AbortSignal = AbortSignal.timeout(30_000)): Promise<boolean> {
+	writeOne(signal?: AbortSignal): Promise<boolean> {
+		return withDefaultTimeout(signal, 30_000, (scoped) => this.#writeOne(scoped));
+	}
+
+	async #writeOne(signal: AbortSignal): Promise<boolean> {
 		// The claim gets its own short deadline, as the finish does: a drain whose budget ends during the call would
 		// otherwise reject a claim the database may already have committed.
-		const answer = await this.#options.authority.publisher(
-			"qorpera_claim_coding_results_file",
-			{ p_worker: this.#options.workerId, p_lease_seconds: this.#leaseSeconds },
-			AbortSignal.timeout(FINISH_MS),
+		const answer = await withAbortScopes(
+			[],
+			(claimSignal) =>
+				this.#options.authority.publisher(
+					"qorpera_claim_coding_results_file",
+					{ p_worker: this.#options.workerId, p_lease_seconds: this.#leaseSeconds },
+					claimSignal,
+				),
+			FINISH_MS,
 		);
 		let claim: CodingResultsClaim | null;
 		try {
@@ -358,15 +370,20 @@ export class CodingResultsWriter {
 	/** Closes a claim on its own short deadline. `finished: false` is the usual answer after a save (the commit removed
 	 * the due row), or means a newer claim holds the worker: its write is the one that counts. */
 	async #finish(codingWorkerId: string, generation: number, code: string | null): Promise<void> {
-		const answer = (await this.#options.authority.publisher(
-			"qorpera_finish_coding_results_file",
-			{
-				p_worker: this.#options.workerId,
-				p_coding_worker_id: codingWorkerId,
-				p_generation: generation,
-				p_problem: code,
-			},
-			AbortSignal.timeout(FINISH_MS),
+		const answer = (await withAbortScopes(
+			[],
+			(finishSignal) =>
+				this.#options.authority.publisher(
+					"qorpera_finish_coding_results_file",
+					{
+						p_worker: this.#options.workerId,
+						p_coding_worker_id: codingWorkerId,
+						p_generation: generation,
+						p_problem: code,
+					},
+					finishSignal,
+				),
+			FINISH_MS,
 		)) as { schema?: unknown; finished?: unknown } | null;
 		if (answer?.schema !== "qorpera.coding-results-finish/v1" || typeof answer.finished !== "boolean")
 			problem("finish_invalid");
