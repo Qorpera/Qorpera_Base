@@ -59,12 +59,12 @@ export async function showRecoveryPanel(options: {
 	async function profiles(after: string | null = null) {
 		const privacy = await action<CloudCompanyComputerPrivacyStatus | null>({ method: "privacy" });
 		const { catalog: page } = await action<{ catalog: MemberBrowserProfileCatalog }>({ method: "profiles", after });
-		details.replaceChildren(
+		const nodes: HTMLElement[] = [
 			element("h2", "Your browser access"),
 			button("Refresh this computer", async () => profiles(), work),
-		);
+		];
 		if (privacy?.challenge && ["entering", "private"].includes(privacy.state))
-			details.append(
+			nodes.push(
 				button(
 					"Finish your private sign-in",
 					async () => {
@@ -77,9 +77,9 @@ export async function showRecoveryPanel(options: {
 			);
 		for (const profile of page.profiles) {
 			const row = element("div", undefined, element("h3", profile.label));
-			details.append(row);
 			if (!profile.activeStaffAgentId) {
 				row.append(element("p", "No active browser consent."));
+				nodes.push(row);
 				continue;
 			}
 			const grant = await action<MemberBrowserGrantStatus>({
@@ -121,18 +121,23 @@ export async function showRecoveryPanel(options: {
 						work,
 					),
 				);
+			nodes.push(row);
 		}
-		if (page.nextAfter) details.append(button("More profiles", async () => profiles(page.nextAfter), work));
+		if (page.nextAfter) nodes.push(button("More profiles", async () => profiles(page.nextAfter), work));
+		details.replaceChildren(...nodes);
 	}
-	root.replaceChildren(
-		element("h2", "Browser access cleanup"),
-		element("p", "Revoke your browser consent or finish your private sign-in, including in companies you have left."),
-		button("Refresh computers", async () => refresh(), work),
-		offices,
-		details,
-	);
 	try {
 		await refresh();
+		root.replaceChildren(
+			element("h2", "Browser access cleanup"),
+			element(
+				"p",
+				"Revoke your browser consent or finish your private sign-in, including in companies you have left.",
+			),
+			button("Refresh computers", async () => refresh(), work),
+			offices,
+			details,
+		);
 		return () => scope.dispose();
 	} catch (error) {
 		scope.dispose();

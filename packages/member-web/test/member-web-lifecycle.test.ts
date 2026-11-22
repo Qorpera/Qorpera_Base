@@ -7,6 +7,7 @@ import { webAuthStorage } from "../src/auth.ts";
 import type { MemberWebConfig } from "../src/config.ts";
 import { WebFileDownloads } from "../src/files.ts";
 import { showOfficePanel } from "../src/office-panel.ts";
+import { showRecoveryPanel } from "../src/recovery-panel.ts";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const scopeFixture = {
@@ -652,5 +653,241 @@ describe("member-web abort-scope, storage, downloads, and office lifecycle", () 
 		expect(signInWithOtp).not.toHaveBeenCalled();
 		mounted.close();
 		expect(reload).not.toHaveBeenCalled();
+	});
+
+	it("avoids mounting dead controls on initial office/recovery load errors, prevents partial recovery renders, and clears deferred session timers on close", async () => {
+		installFakeDom();
+		const session = { user: { id: id(1) }, access_token: "member-1" } as Session;
+		const account = new WebMemberAccount({
+			config,
+			client: {
+				auth: { getSession: vi.fn(async () => ({ data: { session }, error: null })) },
+			} as unknown as SupabaseClient,
+			fetch: vi.fn(async (input: RequestInfo | URL) => {
+				const method = String(input).split("/").at(-1)!;
+				if (method === "qorpera_list_hosted_profiles") {
+					return Response.json([
+						{
+							profile_id: id(10),
+							environment_id: id(11),
+							profile_name: "Alpha",
+							environment_name: "Main",
+							role: "owner",
+							contract_version: 1,
+							created_at: "2026-09-08T00:00:00Z",
+							bootstrap_state: "completed",
+						},
+					]);
+				}
+				if (method === "qorpera_member_office_catalog") {
+					return Response.json({
+						companyId: id(10),
+						environmentId: id(11),
+						canManage: true,
+						scope: scopeFixture,
+						staff: [{ staffAgentId: id(14), name: "Analyst" }],
+						nextAfter: null,
+					});
+				}
+				if (method === "qorpera_runtime_office_start_status") {
+					return new Response(null, { status: 503 });
+				}
+				if (method === "qorpera_runtime_office_access_status") {
+					return Response.json({
+						schema: "qorpera.office-access-status/v1",
+						scope: scopeFixture,
+						staffAgentId: id(14),
+						grant: null,
+					});
+				}
+				if (method === "qorpera_runtime_office_member_status") {
+					return Response.json({
+						scope: scopeFixture,
+						computerGeneration: 1,
+						state: "active",
+						privacyState: "shared",
+						privacyVersion: 0,
+						screens: [],
+						viewers: [],
+					});
+				}
+				if (method === "qorpera_runtime_office_privacy_status") {
+					return Response.json({
+						scope: scopeFixture,
+						computerGeneration: 1,
+						state: "shared",
+						version: 0,
+						challenge: null,
+					});
+				}
+				if (method === "qorpera_member_browser_profiles") {
+					return Response.json({
+						scope: scopeFixture,
+						memberId: id(1),
+						canUse: true,
+						profiles: [],
+						nextAfter: null,
+					});
+				}
+				throw new Error(`Unexpected RPC ${method}`);
+			}),
+		});
+		account.setSession(session);
+		await account.companies();
+		const company = account.openCompany(id(11));
+		const officeRoot = new FakeNode("div");
+		await expect(
+			showOfficePanel({
+				root: officeRoot as unknown as HTMLElement,
+				company,
+				work: (action) => action().catch(() => undefined),
+				status: () => undefined,
+				current: () => undefined,
+			}),
+		).rejects.toThrow();
+		expect(officeRoot.children).toHaveLength(0);
+
+		const failRecoveryRoot = new FakeNode("div");
+		const failingRecoveryAccount = new WebMemberAccount({
+			config,
+			client: {
+				auth: { getSession: vi.fn(async () => ({ data: { session }, error: null })) },
+			} as unknown as SupabaseClient,
+			fetch: vi.fn(async () => new Response(null, { status: 503 })),
+		});
+		failingRecoveryAccount.setSession(session);
+		await expect(
+			showRecoveryPanel({
+				root: failRecoveryRoot as unknown as HTMLElement,
+				account: failingRecoveryAccount,
+				work: (action) => action().catch(() => undefined),
+				current: () => undefined,
+				status: () => undefined,
+			}),
+		).rejects.toThrow();
+		expect(failRecoveryRoot.children).toHaveLength(0);
+
+		let grantCalls = 0;
+		const partialRecoveryAccount = new WebMemberAccount({
+			config,
+			client: {
+				auth: { getSession: vi.fn(async () => ({ data: { session }, error: null })) },
+			} as unknown as SupabaseClient,
+			fetch: vi.fn(async (input: RequestInfo | URL) => {
+				const method = String(input).split("/").at(-1)!;
+				if (method === "qorpera_member_browser_recovery") {
+					return Response.json({
+						memberId: id(1),
+						offices: [{ scope: scopeFixture, ownsPrivacy: false }],
+						nextAfter: null,
+					});
+				}
+				if (method === "qorpera_runtime_office_privacy_status") {
+					return Response.json({
+						scope: scopeFixture,
+						computerGeneration: 1,
+						state: "shared",
+						version: 0,
+						challenge: null,
+					});
+				}
+				if (method === "qorpera_member_browser_profiles") {
+					return Response.json({
+						scope: scopeFixture,
+						memberId: id(1),
+						canUse: true,
+						profiles: [
+							{
+								profileId: id(20),
+								label: "Profile A",
+								version: 1,
+								prepared: true,
+								activeStaffAgentId: id(14),
+							},
+							{
+								profileId: id(21),
+								label: "Profile B",
+								version: 1,
+								prepared: true,
+								activeStaffAgentId: id(15),
+							},
+						],
+						nextAfter: null,
+					});
+				}
+				if (method === "qorpera_member_browser_grant_status") {
+					grantCalls += 1;
+					if (grantCalls === 1) {
+						return Response.json({
+							scope: scopeFixture,
+							memberId: id(1),
+							staffAgentId: id(14),
+							profile: {
+								profileId: id(20),
+								label: "Profile A",
+								version: 1,
+								prepared: true,
+								activeStaffAgentId: id(14),
+							},
+							grant: {
+								grantId: id(30),
+								profileVersion: 1,
+								version: 1,
+								state: "active",
+								usable: true,
+							},
+						});
+					}
+					return new Response(null, { status: 503 });
+				}
+				throw new Error(`Unexpected RPC ${method}`);
+			}),
+		});
+		partialRecoveryAccount.setSession(session);
+		const partialRoot = new FakeNode("div");
+		let lastWork: Promise<void> = Promise.resolve();
+		const disposeRecovery = await showRecoveryPanel({
+			root: partialRoot as unknown as HTMLElement,
+			account: partialRecoveryAccount,
+			work: (action) => {
+				lastWork = action().catch(() => undefined);
+				return lastWork;
+			},
+			current: () => undefined,
+			status: () => undefined,
+		});
+		const computerBtn = partialRoot.findAll(
+			(node) => node.tag === "button" && node.textContent.startsWith("Computer "),
+		)[0];
+		computerBtn.click();
+		await lastWork;
+		const detailsSection = partialRoot.findAll((node) => node.tag === "section")[0];
+		expect(detailsSection.children).toHaveLength(0);
+		disposeRecovery();
+
+		const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+		let authCb: ((event: string, sess: Session | null) => void) | undefined;
+		const timerRoot = new FakeNode("div");
+		const mounted = mountMemberWeb(timerRoot as unknown as HTMLElement, {
+			config,
+			clearAuth: vi.fn(),
+			reload: vi.fn(),
+			client: {
+				auth: {
+					onAuthStateChange: (cb: (event: string, sess: Session | null) => void) => {
+						authCb = cb;
+						return { data: { subscription: { unsubscribe: vi.fn() } } };
+					},
+					getSession: vi.fn(async () => ({ data: { session: null }, error: null })),
+					signInWithOAuth: vi.fn(),
+					signInWithOtp: vi.fn(),
+					signOut: vi.fn(async () => ({ error: null })),
+				},
+			} as unknown as SupabaseClient,
+		});
+		authCb?.("SIGNED_IN", session);
+		const callsBeforeClose = clearTimeoutSpy.mock.calls.length;
+		mounted.close();
+		expect(clearTimeoutSpy.mock.calls.length).toBeGreaterThan(callsBeforeClose);
 	});
 });
