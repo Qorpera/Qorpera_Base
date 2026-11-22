@@ -1,8 +1,30 @@
 #!/bin/sh
-/usr/local/bin/node /qorpera/lib/qorpera-sandbox-probe.mjs || exit $?
+child=""
+stop_term() {
+	if [ -n "$child" ]; then
+		kill -TERM "$child" 2>/dev/null || true
+	fi
+	exit 143
+}
+stop_int() {
+	if [ -n "$child" ]; then
+		kill -INT "$child" 2>/dev/null || true
+	fi
+	exit 130
+}
+trap stop_term TERM
+trap stop_int INT
+
+/usr/local/bin/node /qorpera/lib/qorpera-sandbox-probe.mjs &
+child=$!
+wait "$child" || exit $?
+child=""
 
 # Keep tmpfs outputs mounted until the trusted host copies them and destroys
 # the container. Podman's independent --timeout remains the hard deadline.
 while :; do
-	sleep 3600
+	sleep 3600 &
+	child=$!
+	wait "$child" || true
+	child=""
 done
