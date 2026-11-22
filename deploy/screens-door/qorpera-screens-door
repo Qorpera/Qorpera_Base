@@ -62,7 +62,9 @@ token:1)
 		exit 2
 	fi
 	install -d -o root -g root -m 0700 "${STORE}" "${SEALED_WITH%/*}"
-	# WHY: Seal inside a unique temp directory so concurrent runs cannot race and systemd-creds receives a fresh output path.
+	# WHY: Serialize token sealing and both atomic renames under one lock and a unique temp directory so concurrent runs cannot race.
+	exec 9>"${SEALED_WITH%/*}/.lock"
+	flock 9
 	tmp_dir=$(mktemp -d "${STORE}/.seal.XXXXXX")
 	sealed_tmp="${tmp_dir}/token"
 	with_tmp=""

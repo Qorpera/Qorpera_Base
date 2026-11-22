@@ -99,6 +99,7 @@ test("the door: root only, four verbs, the token in one variable that only bash 
 	for (const line of naming) assert.ok(allowed.has(line), line);
 	assert.ok(naming.includes(SEAL));
 	// Sealed beside, then moved over: never half written; a failure leaves nothing.
+	assert.match(door, /exec 9>"\$\{SEALED_WITH%\/\*}\/\.lock"\n\tflock 9/);
 	assert.match(door, /tmp_dir=\$\(mktemp -d "\$\{STORE\}\/\.seal\.XXXXXX"\)/);
 	assert.match(door, /trap 'rm -rf -- "\$\{tmp_dir\}" "\$\{with_tmp\}"' EXIT/);
 	assert.match(door, /chmod 0600 "\$\{sealed_tmp\}"\n\tmv -f -- "\$\{sealed_tmp\}" "\$\{SEALED\}"/);

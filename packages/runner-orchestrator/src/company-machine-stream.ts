@@ -40,14 +40,7 @@ export const COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM = [
 	"    sys.exit(95)",
 	"vnc.settimeout(None)",
 	"vnc.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)",
-	// WHY: Detect dead VNC sockets and bound stalled writes so a wedged server exits 96 instead of pinning the relay and touching last-use forever.
-	"vnc.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)",
-	"for opt, val in (('TCP_KEEPIDLE', 30), ('TCP_KEEPINTVL', 10), ('TCP_KEEPCNT', 3)):",
-	"    if hasattr(socket, opt):",
-	"        try:",
-	"            vnc.setsockopt(socket.IPPROTO_TCP, getattr(socket, opt), val)",
-	"        except OSError:",
-	"            pass",
+	// WHY: Bound stalled VNC writes to 10 s (exiting 96) so a wedged server cannot pin the relay and keep touching last-use forever.
 	"def send_vnc(buf):",
 	"    view = memoryview(buf)",
 	"    try:",
@@ -142,6 +135,7 @@ export const COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM = [
 /** The relay's exits besides 0 (its input ended: the host stopped watching): not allowed (93, never for what this
  * module sends), the desktop off (95), the desktop's server went away (96), another boot (97), an image without python3
  * (98). */
+// WHY: Exit 96 covers both a closed VNC server and a 10 s stalled write in send_vnc.
 export const DESKTOP_VIEW_EXITS: Readonly<
 	Record<number, "DESKTOP_NOT_RUNNING" | "DESKTOP_ENDED" | "MACHINE_BOOT_CHANGED" | "MACHINE_IMAGE_WITHOUT_SCREEN">
 > = Object.freeze({
@@ -1279,14 +1273,8 @@ export class DesktopStream {
 		this.#relay = this.#options
 			.run(
 				(chunk) => {
-					if (this.#ended) return;
-					// WHY: Catch push-time RFB_UPDATE_TOO_LARGE synchronously so a hostile VNC burst ends the stream instead of crashing the host callback.
-					try {
-						reader.push(chunk);
-						readSoon();
-					} catch {
-						this.#end("STREAM_UNAVAILABLE");
-					}
+					reader.push(chunk);
+					readSoon();
 				},
 				this.#outbox.messages(),
 				this.#stop.signal,
