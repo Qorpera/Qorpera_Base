@@ -212,6 +212,28 @@ export const CONVERSATION: Record<string, string> = {
 		"Din seneste kørsel stoppede, fordi et login nåede sin forbrugsgrænse. Fortsæt venligst det arbejde.",
 	"ChatGPT refused or could not answer this run's request. Check the login that pays for it in Settings → AI subscriptions, or choose another login for this conversation.":
 		"ChatGPT afviste eller kunne ikke besvare kørslens forespørgsel. Tjek det login, der betaler for den, under Indstillinger → AI-abonnementer, eller vælg et andet login til denne samtale.",
+	"Your monthly Gemini spend cap was reached, so the work stopped. Raise the cap in Settings → AI subscriptions or switch models to continue.":
+		"Din månedlige forbrugsgrænse for Gemini blev nået, så arbejdet stoppede. Hæv grænsen under Indstillinger → AI-abonnementer, eller skift model for at fortsætte.",
+	"Google reported that billing or AI Ultra credits are not active for your Gemini API key. Check your credits in Google AI Studio or switch models.":
+		"Google meldte, at fakturering eller AI Ultra-kredit ikke er aktiv for din Gemini-API-nøgle. Tjek din kredit i Google AI Studio, eller skift model.",
+	"Google turned this Gemini request away due to a quota or rate limit. Check your credits in Google AI Studio, or wait a moment.":
+		"Google afviste denne Gemini-forespørgsel på grund af en kvote- eller hastighedsgrænse. Tjek din kredit i Google AI Studio, eller vent et øjeblik.",
+	"Google rejected your Gemini API key, so the work stopped. Replace the key in Settings → AI subscriptions.":
+		"Google afviste din Gemini-API-nøgle, så arbejdet stoppede. Udskift nøglen under Indstillinger → AI-abonnementer.",
+	"Google's Gemini service had a temporary server error while this run was working. This is usually brief.":
+		"Googles Gemini-tjeneste havde en midlertidig serverfejl, mens kørslen arbejdede. Det går som regel hurtigt over.",
+	"Google's Gemini service rejected this request. Check the key in Settings → AI subscriptions, or choose another model for this conversation.":
+		"Googles Gemini-tjeneste afviste denne forespørgsel. Tjek nøglen under Indstillinger → AI-abonnementer, eller vælg en anden model til denne samtale.",
+	"The monthly Gemini spend cap paying for this run was reached, so the work stopped. The member whose Gemini key pays for it can raise the cap in Settings → AI subscriptions.":
+		"Den månedlige forbrugsgrænse for den Gemini-nøgle, der betaler for kørslen, blev nået, så arbejdet stoppede. Det medlem, der ejer nøglen, kan hæve grænsen under Indstillinger → AI-abonnementer.",
+	"Google reported that billing or credits are not active for the Gemini API key paying for this run. The member whose key it is can check it in Settings → AI subscriptions.":
+		"Google meldte, at fakturering eller kredit ikke er aktiv for den Gemini-API-nøgle, der betaler for kørslen. Det medlem, der ejer nøglen, kan tjekke den under Indstillinger → AI-abonnementer.",
+	"Google turned this Gemini request away due to a quota or rate limit. The member whose Gemini key pays for it can check it in Settings → AI subscriptions.":
+		"Google afviste denne Gemini-forespørgsel på grund af en kvote- eller hastighedsgrænse. Det medlem, hvis Gemini-nøgle betaler for den, kan tjekke den under Indstillinger → AI-abonnementer.",
+	"Google rejected the Gemini API key paying for this run, so the work stopped. The member whose key it is can replace it in Settings → AI subscriptions.":
+		"Google afviste den Gemini-API-nøgle, der betaler for kørslen, så arbejdet stoppede. Det medlem, der ejer nøglen, kan udskifte den under Indstillinger → AI-abonnementer.",
+	"Google's Gemini service rejected this request. The member whose Gemini key pays for it can check it in Settings → AI subscriptions.":
+		"Googles Gemini-tjeneste afviste denne forespørgsel. Det medlem, hvis Gemini-nøgle betaler for den, kan tjekke den under Indstillinger → AI-abonnementer.",
 	"Your message didn't go through: ChatGPT got too many requests at once. The login is fine.":
 		"Din besked gik ikke igennem: ChatGPT fik for mange forespørgsler på én gang. Loginnet er i orden.",
 	"ChatGPT turned this run away because too many requests came at once. The login is fine.":

@@ -117,7 +117,9 @@ import {
 	GEMINI_ACTION_REVIEW_MODEL,
 	GeminiCapReachedError,
 	GeminiKeyRevokedError,
+	type GeminiProviderErrorCode,
 	type GeminiUsageReceipt,
+	geminiProviderErrorCode,
 } from "./cloud-gemini-tool-session.ts";
 import { cloudGoodWillTools } from "./cloud-good-will-tools.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
@@ -1862,7 +1864,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		} catch (error) {
 			composition.finish("failed", { errorCategory: cloudRuntimeErrorCategory(error, signal) });
 			if (isGeminiRun) {
-				if (error instanceof GeminiCapReachedError) await this.#recordGeminiCapReached(binding);
+				if (error instanceof GeminiCapReachedError) {
+					await this.#recordGeminiCapReached(binding);
+				} else {
+					const geminiError = geminiProviderErrorCode(error);
+					if (geminiError) await this.#recordGeminiKeyError(binding, geminiError);
+				}
 			} else {
 				await this.#recordUsageSignal(binding, error);
 			}
@@ -2931,6 +2938,24 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			);
 		} catch {
 			console.error("Gemini spend cap notice was not recorded");
+		}
+	}
+
+	async #recordGeminiKeyError(binding: CloudNativeToolBinding, errorCode: GeminiProviderErrorCode): Promise<void> {
+		try {
+			await withAbortScopes(
+				[],
+				(recordSignal) =>
+					this.#paths.call(
+						"qorpera_record_gemini_key_error",
+						{ p_binding: binding, p_error_code: errorCode },
+						recordSignal,
+						10_000,
+					),
+				10_000,
+			);
+		} catch {
+			console.error(`Gemini key error notice was not recorded (${errorCode})`);
 		}
 	}
 
