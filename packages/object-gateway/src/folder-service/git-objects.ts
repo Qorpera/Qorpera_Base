@@ -8,15 +8,6 @@ import { finished } from "node:stream/promises";
 import { createInflate } from "node:zlib";
 import { CARRIES, SecretRefusal, type SecretScan, type SecretSet, UNCHECKED } from "./secret-scan.ts";
 
-/**
- * The save check of what git stores (5j-5 (a); RUNTIME-FOLDER-CODING-MACHINES.md, "Masking"). Git keeps what it is
- * given compressed, as a loose object or in a pack, so a value a session commits is not in the stored bytes as they
- * are. A saved file is read by its name's shape, wherever a coding machine saves it: `objects/xx/<38 or 62 hex>` is a
- * loose object, inflated; `objects/pack/pack-<40 or 64 hex>.pack` is a pack, which git itself reads in a scratch
- * repository of its own (`index-pack`, then `cat-file --batch-all-objects --batch`). Both are scanned as stored too, as
- * every other file is. What cannot be read whole is refused as not checked; the service never drops it itself.
- */
-
 /** How a saved file's bytes are read for the check. */
 export type StoredForm = "plain" | "loose" | "pack" | "sha256-pack";
 
@@ -53,7 +44,7 @@ const LOOSE_MAX = 1024 ** 3;
 /** The longest a loose object's header ("commit 1073741824", say) can be. */
 const HEADER_MAX = 32;
 const LOOSE_HEADER = /^(?:blob|tree|commit|tag) (0|[1-9][0-9]{0,9})$/;
-const BATCH_HEADER = /^(?:[0-9a-f]{40}|[0-9a-f]{64}) (?:blob|tree|commit|tag) (0|[1-9][0-9]{0,12})$/;
+const BATCH_HEADER = /^([0-9a-f]{40}|[0-9a-f]{64}) (?:blob|tree|commit|tag) (0|[1-9][0-9]{0,12})$/;
 const BATCH_LINE_MAX = 256;
 
 /** How packs are read. The defaults are the node's, from what packs of code rebuild to and how fast the service scans
@@ -87,6 +78,7 @@ export interface PackReading {
 	readonly rebuiltMax?: number;
 	readonly cleanOidCacheMax?: number;
 	readonly nativeStreamMinBytes?: number;
+	readonly streamAtOnce?: number;
 }
 
 type ResolvedPackReading = Omit<Required<PackReading>, "folderProgram"> & {
@@ -94,9 +86,12 @@ type ResolvedPackReading = Omit<Required<PackReading>, "folderProgram"> & {
 };
 
 const NATIVE_AT_ONCE = 2;
+const NATIVE_STREAM_AT_ONCE = 16;
 const SCAN_RESULT_MAX = 4096;
 const NATIVE_STREAM_MIN_BYTES = 64 * 1024;
 const CLEAN_OID_CACHE_MAX = 250_000;
+const DELTA_BATCH_MAX = 65_536;
+const MAX_EXCLUDE_OIDS_BYTES = 64 * 1024 * 1024;
 const IDX_V2_MAGIC = 0xff744f63;
 const IDX_V2_HEADER_LEN = 8 + 256 * 4;
 const MAX_IDX_OBJECTS = 20_000_000;
@@ -120,12 +115,14 @@ const READING: ResolvedPackReading = {
 	rebuiltMax: 4 * 1024 ** 3,
 	cleanOidCacheMax: CLEAN_OID_CACHE_MAX,
 	nativeStreamMinBytes: NATIVE_STREAM_MIN_BYTES,
+	streamAtOnce: NATIVE_STREAM_AT_ONCE,
 };
 
 /** The save check for each form: one per node, so its pack checks take turns. */
 export class SaveChecks {
 	readonly #reading: ResolvedPackReading;
 	readonly #turns: Turns;
+	readonly #streamTurns: StreamTurns;
 	readonly #cleanOids: CleanOidCache;
 
 	constructor(reading: PackReading = {}) {
@@ -142,6 +139,7 @@ export class SaveChecks {
 			this.#reading.waitingMax,
 			this.#reading.waitingBytes,
 		);
+		this.#streamTurns = new StreamTurns(this.#reading.streamAtOnce);
 		this.#cleanOids = new CleanOidCache(this.#reading.cleanOidCacheMax);
 	}
 
@@ -159,11 +157,12 @@ export class SaveChecks {
 					"/",
 					this.#reading.timeoutMs,
 					false,
+					this.#streamTurns,
 				);
 			}
 			return new PlainCheck(secrets.scan(size));
 		}
-		if (form === "loose") return new LooseCheck(this.#reading, secrets, size);
+		if (form === "loose") return new LooseCheck(this.#reading, this.#streamTurns, secrets, size);
 		return new PackCheck(this.#reading, this.#turns, this.#cleanOids, secrets, size, form === "sha256-pack");
 	}
 }
@@ -176,9 +175,12 @@ class NativeStreamScan implements ContentCheck {
 	readonly #cwd: string;
 	readonly #timeoutMs: number | undefined;
 	readonly #skipAccessCheck: boolean;
+	readonly #streamTurns: StreamTurns | undefined;
 	#proc: Git | undefined;
 	#timer: NodeJS.Timeout | undefined;
 	#starting: Promise<Git | undefined> | undefined;
+	#cancelTurn: (() => void) | undefined;
+	#release: (() => void) | undefined;
 	#aborting: Promise<void> | undefined;
 	#failure: Error | undefined;
 	#stdoutChunks: Buffer[] = [];
@@ -196,6 +198,7 @@ class NativeStreamScan implements ContentCheck {
 		cwd: string,
 		timeoutMs: number | undefined,
 		skipAccessCheck: boolean,
+		streamTurns?: StreamTurns,
 	) {
 		this.#reading = reading;
 		this.#folderProgram = folderProgram;
@@ -204,6 +207,7 @@ class NativeStreamScan implements ContentCheck {
 		this.#cwd = cwd;
 		this.#timeoutMs = timeoutMs;
 		this.#skipAccessCheck = skipAccessCheck;
+		this.#streamTurns = streamTurns;
 	}
 
 	async push(chunk: Buffer): Promise<void> {
@@ -254,12 +258,15 @@ class NativeStreamScan implements ContentCheck {
 	abort(): Promise<void> {
 		this.#aborted = true;
 		this.#clearTimer();
+		this.#cancelTurn?.();
+		this.#cancelTurn = undefined;
 		this.#aborting ??= (async () => {
 			const proc = await this.#starting?.catch(() => undefined);
 			if (proc) {
 				kill(proc);
 				await proc.closed;
 			}
+			this.#releaseTurn();
 		})();
 		return this.#aborting;
 	}
@@ -270,73 +277,104 @@ class NativeStreamScan implements ContentCheck {
 	}
 
 	async #start(): Promise<Git | undefined> {
-		if (!this.#skipAccessCheck) {
-			await access(this.#reading.prlimit, constants.X_OK);
-			if (!(await stat(this.#reading.prlimit)).isFile())
-				throw new Error("prlimit could not be started for the save check");
-			await access(this.#folderProgram, constants.X_OK);
-			if (!(await stat(this.#folderProgram)).isFile())
-				throw new Error("folder program could not be started for the save check");
-		}
 		if (this.#aborted || this.#failure) return undefined;
-		const child = spawn(
-			this.#reading.prlimit,
-			[`--as=${this.#reading.memoryBytes}`, "--", this.#folderProgram, "scan-stream", "--spec-fd", "3"],
-			{
-				cwd: this.#cwd,
-				env: { PATH: "/usr/local/bin:/usr/bin:/bin", LC_ALL: "C" },
-				stdio: ["pipe", "pipe", "pipe", "pipe"],
-				detached: true,
-			},
-		);
-		child.stderr?.resume();
-		// WHY: scan-stream closes stdin immediately on secret detection; classify via exit status and stdout JSON instead of failing EPIPE as unchecked.
-		child.stdin?.on("error", () => {
-			this.#stdinFailed = true;
-		});
-		child.stdout?.on("data", (chunk: Buffer) => {
-			this.#stdoutBytes += chunk.length;
-			if (this.#stdoutBytes > SCAN_RESULT_MAX) {
-				this.#stdoutOverflow = true;
-				this.#fail(new SecretRefusal(UNCHECKED));
-				return;
+		if (this.#streamTurns) {
+			const pending = this.#streamTurns.take();
+			this.#cancelTurn = pending.cancel;
+			let release: () => void;
+			try {
+				release = await pending.promise;
+			} finally {
+				this.#cancelTurn = undefined;
 			}
-			this.#stdoutChunks.push(chunk);
-		});
-		const closed = new Promise<number | null>((resolve) => {
-			let done = false;
-			const finish = (code: number | null): void => {
-				if (done) return;
-				done = true;
-				this.#clearTimer();
-				resolve(code);
-			};
-			child.once("error", () => {
-				this.#fail(new Error("folder program could not be started for the save check"));
-				finish(null);
+			this.#release = release;
+			if (this.#aborted || this.#failure) {
+				this.#releaseTurn();
+				return undefined;
+			}
+		}
+		try {
+			if (!this.#skipAccessCheck) {
+				await access(this.#reading.prlimit, constants.X_OK);
+				if (!(await stat(this.#reading.prlimit)).isFile())
+					throw new Error("prlimit could not be started for the save check");
+				await access(this.#folderProgram, constants.X_OK);
+				if (!(await stat(this.#folderProgram)).isFile())
+					throw new Error("folder program could not be started for the save check");
+			}
+			if (this.#aborted || this.#failure) {
+				this.#releaseTurn();
+				return undefined;
+			}
+			const child = spawn(
+				this.#reading.prlimit,
+				[`--as=${this.#reading.memoryBytes}`, "--", this.#folderProgram, "scan-stream", "--spec-fd", "3"],
+				{
+					cwd: this.#cwd,
+					env: { PATH: "/usr/local/bin:/usr/bin:/bin", LC_ALL: "C" },
+					stdio: ["pipe", "pipe", "pipe", "pipe"],
+					detached: true,
+				},
+			);
+			child.stderr?.resume();
+			// WHY: scan-stream closes stdin immediately on secret detection; classify via exit status and stdout JSON instead of failing EPIPE as unchecked.
+			child.stdin?.on("error", () => {
+				this.#stdinFailed = true;
 			});
-			child.once("close", (code) => finish(code));
-		});
-		const proc: Git = { child, closed };
-		this.#proc = proc;
-		if (this.#timeoutMs !== undefined) {
-			this.#timer = setTimeout(() => {
-				this.#fail(new SecretRefusal(UNCHECKED));
-			}, this.#timeoutMs);
+			child.stdout?.on("data", (chunk: Buffer) => {
+				this.#stdoutBytes += chunk.length;
+				if (this.#stdoutBytes > SCAN_RESULT_MAX) {
+					this.#stdoutOverflow = true;
+					this.#fail(new SecretRefusal(UNCHECKED));
+					return;
+				}
+				this.#stdoutChunks.push(chunk);
+			});
+			const closed = new Promise<number | null>((resolve) => {
+				let done = false;
+				const finish = (code: number | null): void => {
+					if (done) return;
+					done = true;
+					this.#clearTimer();
+					resolve(code);
+				};
+				child.once("error", () => {
+					this.#fail(new Error("folder program could not be started for the save check"));
+					finish(null);
+				});
+				child.once("close", (code) => finish(code));
+			});
+			const proc: Git = { child, closed };
+			this.#proc = proc;
+			void closed.finally(() => this.#releaseTurn());
+			if (this.#timeoutMs !== undefined) {
+				this.#timer = setTimeout(() => {
+					this.#fail(new SecretRefusal(UNCHECKED));
+				}, this.#timeoutMs);
+			}
+			const specStream = child.stdio[3] as Writable | null;
+			if (!specStream) {
+				this.#fail(new Error("folder program spec pipe was unavailable for the save check"));
+			} else {
+				specStream.on("error", () => undefined);
+				specStream.end(JSON.stringify({ ...this.#secrets.toSpec(), rebuiltMax: this.#rebuiltMax }));
+			}
+			void closed.then((code) => {
+				if (this.#aborted || this.#ending || this.#failure) return;
+				this.#fail(this.#exitError(code, false) ?? new SecretRefusal(UNCHECKED));
+			});
+			if (this.#aborted || this.#failure) kill(proc);
+			return proc;
+		} catch (error) {
+			this.#releaseTurn();
+			throw error;
 		}
-		const specStream = child.stdio[3] as Writable | null;
-		if (!specStream) {
-			this.#fail(new Error("folder program spec pipe was unavailable for the save check"));
-		} else {
-			specStream.on("error", () => undefined);
-			specStream.end(JSON.stringify({ ...this.#secrets.toSpec(), rebuiltMax: this.#rebuiltMax }));
-		}
-		void closed.then((code) => {
-			if (this.#aborted || this.#ending || this.#failure) return;
-			this.#fail(this.#exitError(code, false) ?? new SecretRefusal(UNCHECKED));
-		});
-		if (this.#aborted || this.#failure) kill(proc);
-		return proc;
+	}
+
+	#releaseTurn(): void {
+		const release = this.#release;
+		this.#release = undefined;
+		release?.();
 	}
 
 	#exitError(code: number | null, allowClean: boolean): Error | undefined {
@@ -395,6 +433,7 @@ class PlainCheck implements ContentCheck {
  * header and exactly the content its size gives is refused as not checked. */
 class LooseCheck implements ContentCheck {
 	readonly #reading: ResolvedPackReading;
+	readonly #streamTurns: StreamTurns;
 	readonly #secrets: SecretSet;
 	readonly #storedJs: SecretScan | undefined;
 	readonly #storedNative: NativeStreamScan | undefined;
@@ -405,6 +444,10 @@ class LooseCheck implements ContentCheck {
 	#contentNative: NativeStreamScan | undefined;
 	#contentWork: Promise<void> = Promise.resolve();
 	#contentPending = 0;
+	#turnAcquire: Promise<() => void> | undefined;
+	#cancelTurn: (() => void) | undefined;
+	#releaseTurn: (() => void) | undefined;
+	#aborting: Promise<void> | undefined;
 	#header = Buffer.alloc(0);
 	/** Content bytes still due. */
 	#due = 0;
@@ -412,8 +455,9 @@ class LooseCheck implements ContentCheck {
 	#failure: Error | undefined;
 	#aborted = false;
 
-	constructor(reading: ResolvedPackReading, secrets: SecretSet, size: number) {
+	constructor(reading: ResolvedPackReading, streamTurns: StreamTurns, secrets: SecretSet, size: number) {
 		this.#reading = reading;
+		this.#streamTurns = streamTurns;
 		this.#secrets = secrets;
 		if (reading.folderProgram && Number.isSafeInteger(size) && size >= reading.nativeStreamMinBytes) {
 			this.#storedNative = new NativeStreamScan(
@@ -446,8 +490,14 @@ class LooseCheck implements ContentCheck {
 
 	async push(chunk: Buffer): Promise<void> {
 		this.#throwIfFailed();
-		if (this.#storedNative) await this.#storedNative.push(chunk);
-		else await this.#storedJs!.pushAsync(chunk);
+		if (this.#storedNative) {
+			if (chunk.length > 0) {
+				await this.#ensureStreamTurn();
+				await this.#storedNative.push(chunk);
+			}
+		} else {
+			await this.#storedJs!.pushAsync(chunk);
+		}
 		this.#throwIfFailed();
 		this.#fed += chunk.length;
 		await this.#write(chunk);
@@ -477,16 +527,43 @@ class LooseCheck implements ContentCheck {
 		}
 	}
 
-	async abort(): Promise<void> {
+	abort(): Promise<void> {
 		this.#aborted = true;
-		this.#inflate.destroy();
-		this.#storedNative?.kill();
-		this.#contentNative?.kill();
-		await this.#contentWork;
-		await Promise.all([
-			this.#storedNative?.abort() ?? Promise.resolve(),
-			this.#contentNative?.abort() ?? Promise.resolve(),
-		]);
+		this.#cancelTurn?.();
+		this.#cancelTurn = undefined;
+		this.#aborting ??= (async () => {
+			this.#inflate.destroy();
+			this.#storedNative?.kill();
+			this.#contentNative?.kill();
+			await this.#contentWork;
+			await Promise.all([
+				this.#storedNative?.abort() ?? Promise.resolve(),
+				this.#contentNative?.abort() ?? Promise.resolve(),
+			]);
+			const release = this.#releaseTurn ?? (await this.#turnAcquire?.catch(() => undefined));
+			this.#releaseTurn = undefined;
+			release?.();
+		})();
+		return this.#aborting;
+	}
+
+	async #ensureStreamTurn(): Promise<void> {
+		if (this.#releaseTurn) return;
+		if (!this.#turnAcquire) {
+			// WHY: stored and inflated scan-stream processes share one StreamTurns permit so streamAtOnce=1 cannot deadlock.
+			const pending = this.#streamTurns.take();
+			this.#cancelTurn = pending.cancel;
+			this.#turnAcquire = pending.promise.then((release) => {
+				this.#cancelTurn = undefined;
+				if (this.#aborted) {
+					release();
+					throw new SecretRefusal(UNCHECKED);
+				}
+				this.#releaseTurn = release;
+				return release;
+			});
+		}
+		await this.#turnAcquire;
 	}
 
 	/** Resolves once zlib took the chunk, or the stream ended. */
@@ -543,7 +620,10 @@ class LooseCheck implements ContentCheck {
 			this.#inflate.pause();
 			this.#contentWork = this.#contentWork.then(async () => {
 				try {
-					if (!this.#failure && !this.#aborted) await native.push(copy);
+					if (!this.#failure && !this.#aborted) {
+						await this.#ensureStreamTurn();
+						if (!this.#failure && !this.#aborted) await native.push(copy);
+					}
 				} catch (error) {
 					this.#failure ??= error instanceof Error ? error : new SecretRefusal(UNCHECKED);
 					this.#inflate.destroy();
@@ -610,6 +690,64 @@ class Turns {
 				this.#waitingFor -= next.bytes;
 				this.#running++;
 				this.#runningFor += next.bytes;
+				next.go();
+			}
+		};
+	}
+}
+
+class StreamTurns {
+	readonly #atOnce: number;
+	readonly #waiting: {
+		readonly go: () => void;
+		readonly cancel: (error: Error) => void;
+	}[] = [];
+	#running = 0;
+
+	constructor(atOnce: number) {
+		this.#atOnce = Number.isFinite(atOnce) ? Math.max(1, Math.floor(atOnce)) : NATIVE_STREAM_AT_ONCE;
+	}
+
+	take(): { readonly promise: Promise<() => void>; readonly cancel: () => void } {
+		if (this.#running < this.#atOnce && this.#waiting.length === 0) {
+			this.#running++;
+			return { promise: Promise.resolve(this.#releaser()), cancel: () => undefined };
+		}
+		let entry: { readonly go: () => void; readonly cancel: (error: Error) => void } | undefined;
+		let settled = false;
+		const promise = new Promise<() => void>((resolve, reject) => {
+			entry = {
+				go: () => {
+					settled = true;
+					resolve(this.#releaser());
+				},
+				cancel: (error: Error) => {
+					settled = true;
+					reject(error);
+				},
+			};
+			this.#waiting.push(entry);
+		});
+		return {
+			promise,
+			cancel: () => {
+				if (settled || !entry) return;
+				const index = this.#waiting.indexOf(entry);
+				if (index >= 0) this.#waiting.splice(index, 1);
+				entry.cancel(new SecretRefusal(UNCHECKED));
+			},
+		};
+	}
+
+	#releaser(): () => void {
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			this.#running--;
+			while (this.#running < this.#atOnce && this.#waiting.length > 0) {
+				const next = this.#waiting.shift() as { readonly go: () => void; readonly cancel: (error: Error) => void };
+				this.#running++;
 				next.go();
 			}
 		};
@@ -851,24 +989,31 @@ class PackRun {
 		this.#throwIfFailed();
 		const digest = this.#secrets.digest;
 		if (idx && this.#cleanOids.hasDigest(digest)) {
-			const deltaIndices = await this.#cleanOids.deltaIndices(digest, idx);
+			const { deltaIndices, cachedIndices } = await this.#cleanOids.partitionIndices(digest, idx);
 			this.#throwIfFailed();
 			if (deltaIndices.length === 0) return;
-			if (deltaIndices.length < idx.total) {
-				const deltaHex = hexOidsForIndices(idx, deltaIndices);
-				if (this.#reading.folderProgram) {
-					await this.#scanNative(this.#reading.folderProgram, deltaHex);
+			if (cachedIndices.length > 0) {
+				let mode: PackScanMode;
+				if (deltaIndices.length * 2 <= idx.total && deltaIndices.length <= DELTA_BATCH_MAX) {
+					await sortIndicesByPackOffset(idx, deltaIndices);
+					this.#throwIfFailed();
+					mode = { kind: "delta", idx, deltaIndices };
 				} else {
-					await this.#scanJs(deltaHex);
+					mode = { kind: "all", idx, excludeIndices: cachedIndices };
+				}
+				if (this.#reading.folderProgram) {
+					await this.#scanNative(this.#reading.folderProgram, mode);
+				} else {
+					await this.#scanJs(mode);
 				}
 				await this.#cleanOids.recordIndices(digest, idx, deltaIndices);
 				return;
 			}
 		}
 		if (this.#reading.folderProgram) {
-			await this.#scanNative(this.#reading.folderProgram);
+			await this.#scanNative(this.#reading.folderProgram, { kind: "all" });
 		} else {
-			await this.#scanJs();
+			await this.#scanJs({ kind: "all" });
 		}
 		if (idx) await this.#cleanOids.recordIdx(digest, idx);
 	}
@@ -882,42 +1027,68 @@ class PackRun {
 		}
 	}
 
-	async #feedDeltaOids(cat: Git, deltaHex: readonly string[]): Promise<boolean> {
-		const stdin = cat.child.stdin;
-		if (!stdin) return false;
+	async #feedIndices(
+		stream: Writable | null,
+		idx: ParsedIdx,
+		indices: readonly number[],
+		maxCount = indices.length,
+	): Promise<boolean> {
+		if (!stream) return false;
 		let writeFailed = false;
-		stdin.on("error", () => {
+		stream.on("error", () => {
 			writeFailed = true;
 		});
+		const { oidLen, oids } = idx;
+		const count = Math.min(indices.length, maxCount);
 		const lines: string[] = [];
 		let chunkBytes = 0;
-		for (const oid of deltaHex) {
-			if (this.#failure || writeFailed || stdin.destroyed) return false;
-			lines.push(`${oid}\n`);
-			chunkBytes += oid.length + 1;
+		let sinceYield = 0;
+		for (let i = 0; i < count; i++) {
+			if (this.#failure || this.#closing || writeFailed || stream.destroyed) return false;
+			const off = (indices[i] as number) * oidLen;
+			const hex = oids.toString("hex", off, off + oidLen);
+			lines.push(`${hex}\n`);
+			chunkBytes += hex.length + 1;
+			sinceYield++;
 			if (chunkBytes >= DELTA_OIDS_CHUNK_BYTES) {
-				await writeWritable(stdin, Buffer.from(lines.join(""), "ascii"));
+				await writeWritable(stream, Buffer.from(lines.join(""), "ascii"));
 				lines.length = 0;
 				chunkBytes = 0;
+				sinceYield = 0;
+			} else if (sinceYield >= IDX_YIELD_INTERVAL) {
+				sinceYield = 0;
+				await yieldLoop();
 			}
 		}
-		if (this.#failure || writeFailed || stdin.destroyed) return false;
+		if (this.#failure || this.#closing || writeFailed || stream.destroyed) return false;
 		if (lines.length > 0) {
-			await writeWritable(stdin, Buffer.from(lines.join(""), "ascii"));
+			await writeWritable(stream, Buffer.from(lines.join(""), "ascii"));
 		}
-		await endWritable(stdin);
+		await endWritable(stream);
 		return !writeFailed;
 	}
 
-	async #scanJs(deltaHex?: readonly string[]): Promise<void> {
-		const batch = new Batch(this.#secrets.scan(this.#rebuilt), this.#rebuilt);
-		const catArgs = deltaHex
+	async #scanJs(mode: PackScanMode): Promise<void> {
+		let excludedHex: Set<string> | undefined;
+		if (mode.kind === "all" && mode.idx && mode.excludeIndices && mode.excludeIndices.length > 0) {
+			excludedHex = new Set<string>();
+			const { oidLen, oids } = mode.idx;
+			for (let i = 0; i < mode.excludeIndices.length; i++) {
+				if (i > 0 && (i & (IDX_YIELD_INTERVAL - 1)) === 0) await yieldLoop();
+				const off = (mode.excludeIndices[i] as number) * oidLen;
+				excludedHex.add(oids.toString("hex", off, off + oidLen));
+			}
+			this.#throwIfFailed();
+		}
+		const isDelta = mode.kind === "delta";
+		const batch = new Batch(this.#secrets.scan(this.#rebuilt), this.#rebuilt, excludedHex);
+		const catArgs = isDelta
 			? ["cat-file", "--batch", "--buffer"]
 			: ["cat-file", "--batch-all-objects", "--batch", "--unordered"];
-		const cat = this.#spawnGit(catArgs, ["pipe", "pipe", "pipe"], true, !deltaHex);
+		const cat = this.#spawnGit(catArgs, ["pipe", "pipe", "pipe"], true, !isDelta);
 		let deltaFed: Promise<boolean>;
-		if (deltaHex) {
-			deltaFed = this.#feedDeltaOids(cat, deltaHex);
+		if (isDelta) {
+			deltaFed = this.#feedIndices(cat.child.stdin, mode.idx, mode.deltaIndices);
 		} else {
 			cat.child.stdin?.end();
 			deltaFed = Promise.resolve(true);
@@ -932,15 +1103,18 @@ class PackRun {
 		});
 		const [read, fedAll] = await Promise.all([cat.closed, deltaFed]);
 		this.#throwIfFailed();
-		if (read !== 0 || !fedAll || !batch.whole || (deltaHex && batch.count !== deltaHex.length))
+		if (read !== 0 || !fedAll || !batch.whole || (isDelta && batch.count !== mode.deltaIndices.length))
 			throw new SecretRefusal(UNCHECKED);
 	}
 
-	async #scanNative(folderProgram: string, deltaHex?: readonly string[]): Promise<void> {
-		const catArgs = deltaHex
+	async #scanNative(folderProgram: string, mode: PackScanMode): Promise<void> {
+		const isDelta = mode.kind === "delta";
+		const hasExcludes =
+			mode.kind === "all" && Boolean(mode.idx && mode.excludeIndices && mode.excludeIndices.length > 0);
+		const catArgs = isDelta
 			? ["cat-file", "--batch", "--buffer"]
 			: ["cat-file", "--batch-all-objects", "--batch", "--unordered"];
-		const cat = this.#spawnGit(catArgs, [deltaHex ? "pipe" : "ignore", "pipe", "pipe"], false, false);
+		const cat = this.#spawnGit(catArgs, [isDelta ? "pipe" : "ignore", "pipe", "pipe"], false, false);
 		const catStdout = cat.child.stdout;
 		if (!catStdout) {
 			kill(cat);
@@ -948,13 +1122,19 @@ class PackRun {
 			throw new Error("git stdout pipe was unavailable for the save check");
 		}
 		catStdout.on("error", () => undefined);
+		const scanArgs = hasExcludes
+			? ["scan-pack", "--spec-fd", "3", "--exclude-oids-fd", "4"]
+			: ["scan-pack", "--spec-fd", "3"];
+		const scanStdio: StdioOptions = hasExcludes
+			? [catStdout, "pipe", "pipe", "pipe", "pipe"]
+			: [catStdout, "pipe", "pipe", "pipe"];
 		let scanner: Git;
 		try {
 			scanner = this.#spawnProgram(
 				folderProgram,
-				["scan-pack", "--spec-fd", "3"],
+				scanArgs,
 				{ PATH: "/usr/local/bin:/usr/bin:/bin", LC_ALL: "C" },
-				[catStdout, "pipe", "pipe", "pipe"],
+				scanStdio,
 				"folder program could not be started for the save check",
 				false,
 				false,
@@ -985,37 +1165,52 @@ class PackRun {
 			specStream.on("error", () => undefined);
 			specStream.end(JSON.stringify({ ...this.#secrets.toSpec(), rebuiltMax: this.#rebuilt }));
 		}
-		const deltaFed = deltaHex ? this.#feedDeltaOids(cat, deltaHex) : Promise.resolve(true);
+		const excludeStream = hasExcludes ? (scanner.child.stdio[4] as Writable | null) : null;
+		if (hasExcludes && !excludeStream) {
+			this.#fail(new Error("folder program exclude pipe was unavailable for the save check"));
+		}
+		const deltaFed = isDelta
+			? this.#feedIndices(cat.child.stdin, mode.idx, mode.deltaIndices)
+			: Promise.resolve(true);
+		const excludeFed =
+			hasExcludes && mode.kind === "all" && mode.idx && mode.excludeIndices
+				? this.#feedIndices(
+						excludeStream,
+						mode.idx,
+						mode.excludeIndices,
+						Math.floor(MAX_EXCLUDE_OIDS_BYTES / (mode.idx.oidLen * 2 + 1)),
+					)
+				: Promise.resolve(true);
 		const scanned = await scanner.closed;
-		if (this.#failure) {
+		const cleanup = async (): Promise<void> => {
 			kill(cat);
-			await Promise.all([cat.closed, deltaFed]);
+			excludeStream?.destroy();
+			await Promise.all([cat.closed, deltaFed, excludeFed]);
+		};
+		if (this.#failure) {
+			await cleanup();
 			throw this.#failure;
 		}
 		if (scanned === 1 || scanned === 2 || scanned === 126 || scanned === 127) {
-			kill(cat);
-			await Promise.all([cat.closed, deltaFed]);
+			await cleanup();
 			throw new Error("folder program could not run scan-pack for the save check");
 		}
 		if (scanned !== 0 || overflow) {
-			kill(cat);
-			await Promise.all([cat.closed, deltaFed]);
+			await cleanup();
 			throw new SecretRefusal(UNCHECKED);
 		}
 		const result = parseScanResult(Buffer.concat(chunks).toString("utf8"));
 		if (result === "secret") {
-			kill(cat);
-			await Promise.all([cat.closed, deltaFed]);
+			await cleanup();
 			throw new SecretRefusal(CARRIES);
 		}
 		if (result !== "clean") {
-			kill(cat);
-			await Promise.all([cat.closed, deltaFed]);
+			await cleanup();
 			throw new SecretRefusal(UNCHECKED);
 		}
-		const [read, fedAll] = await Promise.all([cat.closed, deltaFed]);
+		const [read, fedDelta, fedExclude] = await Promise.all([cat.closed, deltaFed, excludeFed]);
 		this.#throwIfFailed();
-		if (read !== 0 || !fedAll) throw new SecretRefusal(UNCHECKED);
+		if (read !== 0 || !fedDelta || !fedExclude) throw new SecretRefusal(UNCHECKED);
 	}
 
 	/** Stops what still runs, removes the scratch repository and gives the turn back; once, whatever came before. */
@@ -1105,10 +1300,16 @@ class PackRun {
 	}
 }
 
+type PackScanMode =
+	| { readonly kind: "all"; readonly idx?: ParsedIdx; readonly excludeIndices?: readonly number[] }
+	| { readonly kind: "delta"; readonly idx: ParsedIdx; readonly deltaIndices: readonly number[] };
+
 interface ParsedIdx {
 	readonly total: number;
 	readonly oidLen: number;
 	readonly oids: Buffer;
+	readonly offsets32: Buffer;
+	readonly offsets64: Buffer;
 }
 
 function yieldLoop(): Promise<void> {
@@ -1129,8 +1330,14 @@ async function parseIdxV2(buf: Buffer, sha256: boolean): Promise<ParsedIdx | und
 	const total = prev;
 	if (total > MAX_IDX_OBJECTS) return undefined;
 	const minSize = IDX_V2_HEADER_LEN + total * (oidLen + 8) + trailerLen;
-	if (buf.length < minSize || (buf.length - minSize) % 8 !== 0) return undefined;
+	const largeBytes = buf.length - minSize;
+	if (largeBytes < 0 || largeBytes % 8 !== 0) return undefined;
+	const largeCount = largeBytes / 8;
 	const oids = buf.subarray(IDX_V2_HEADER_LEN, IDX_V2_HEADER_LEN + total * oidLen);
+	const offsets32Start = IDX_V2_HEADER_LEN + total * (oidLen + 4);
+	const offsets32End = offsets32Start + total * 4;
+	const offsets32 = buf.subarray(offsets32Start, offsets32End);
+	const offsets64 = buf.subarray(offsets32End, buf.length - trailerLen);
 	let lo = 0;
 	let checked = 0;
 	for (let bucket = 0; bucket < 256; bucket++) {
@@ -1150,22 +1357,84 @@ async function parseIdxV2(buf: Buffer, sha256: boolean): Promise<ParsedIdx | und
 				}
 				if (cmp >= 0) return undefined;
 			}
+			const rawOff = offsets32.readUInt32BE(idx * 4);
+			if (rawOff >= 0x80000000 && rawOff - 0x80000000 >= largeCount) return undefined;
 			checked++;
 			if ((checked & (IDX_YIELD_INTERVAL - 1)) === 0) await yieldLoop();
 		}
 		lo = hi;
 	}
-	return { total, oidLen, oids };
+	return { total, oidLen, oids, offsets32, offsets64 };
 }
 
-function hexOidsForIndices(idx: ParsedIdx, indices: readonly number[]): string[] {
-	const { oidLen, oids } = idx;
-	const out: string[] = [];
-	for (const index of indices) {
-		const off = index * oidLen;
-		out.push(oids.toString("hex", off, off + oidLen));
+function packOffsetOf(idx: ParsedIdx, index: number): number {
+	const raw = idx.offsets32.readUInt32BE(index * 4);
+	if (raw < 0x80000000) return raw;
+	return Number(idx.offsets64.readBigUInt64BE((raw - 0x80000000) * 8));
+}
+
+async function sortIndicesByPackOffset(idx: ParsedIdx, indices: number[]): Promise<void> {
+	const n = indices.length;
+	if (n <= 1) return;
+	let srcIdx = new Uint32Array(n);
+	let srcOff = new Float64Array(n);
+	let dstIdx = new Uint32Array(n);
+	let dstOff = new Float64Array(n);
+	for (let i = 0; i < n; i++) {
+		if (i > 0 && (i & (IDX_YIELD_INTERVAL - 1)) === 0) await yieldLoop();
+		const entry = indices[i] as number;
+		srcIdx[i] = entry;
+		srcOff[i] = packOffsetOf(idx, entry);
 	}
-	return out;
+	let steps = 0;
+	for (let width = 1; width < n; width *= 2) {
+		for (let left = 0; left < n; left += width * 2) {
+			const mid = Math.min(left + width, n);
+			const right = Math.min(left + width * 2, n);
+			let i = left;
+			let j = mid;
+			let k = left;
+			while (i < mid && j < right) {
+				if ((srcOff[i] as number) <= (srcOff[j] as number)) {
+					dstIdx[k] = srcIdx[i] as number;
+					dstOff[k] = srcOff[i] as number;
+					i++;
+				} else {
+					dstIdx[k] = srcIdx[j] as number;
+					dstOff[k] = srcOff[j] as number;
+					j++;
+				}
+				k++;
+			}
+			while (i < mid) {
+				dstIdx[k] = srcIdx[i] as number;
+				dstOff[k] = srcOff[i] as number;
+				i++;
+				k++;
+			}
+			while (j < right) {
+				dstIdx[k] = srcIdx[j] as number;
+				dstOff[k] = srcOff[j] as number;
+				j++;
+				k++;
+			}
+			steps += right - left;
+			if (steps >= IDX_YIELD_INTERVAL) {
+				steps = 0;
+				await yieldLoop();
+			}
+		}
+		const tmpIdx = srcIdx;
+		srcIdx = dstIdx;
+		dstIdx = tmpIdx;
+		const tmpOff = srcOff;
+		srcOff = dstOff;
+		dstOff = tmpOff;
+	}
+	for (let i = 0; i < n; i++) {
+		if (i > 0 && (i & (IDX_YIELD_INTERVAL - 1)) === 0) await yieldLoop();
+		indices[i] = srcIdx[i] as number;
+	}
 }
 
 class CleanOidCache {
@@ -1185,13 +1454,20 @@ class CleanOidCache {
 		return this.#max > 0 && (this.#byDigest.get(digest)?.size ?? 0) > 0;
 	}
 
-	async deltaIndices(digest: string, idx: ParsedIdx): Promise<number[]> {
+	async partitionIndices(
+		digest: string,
+		idx: ParsedIdx,
+	): Promise<{ readonly deltaIndices: number[]; readonly cachedIndices: number[] }> {
 		let set = this.#byDigest.get(digest);
-		const indices: number[] = [];
+		const deltaIndices: number[] = [];
+		const cachedIndices: number[] = [];
 		const { total, oidLen, oids } = idx;
 		if (!set || set.size === 0) {
-			for (let i = 0; i < total; i++) indices.push(i);
-			return indices;
+			for (let i = 0; i < total; i++) {
+				if (i > 0 && (i & (IDX_YIELD_INTERVAL - 1)) === 0) await yieldLoop();
+				deltaIndices.push(i);
+			}
+			return { deltaIndices, cachedIndices };
 		}
 		this.#byDigest.delete(digest);
 		this.#byDigest.set(digest, set);
@@ -1200,8 +1476,11 @@ class CleanOidCache {
 				await yieldLoop();
 				set = this.#byDigest.get(digest);
 				if (!set || set.size === 0) {
-					for (let j = i; j < total; j++) indices.push(j);
-					return indices;
+					for (let j = i; j < total; j++) {
+						if (j > i && ((j - i) & (IDX_YIELD_INTERVAL - 1)) === 0) await yieldLoop();
+						deltaIndices.push(j);
+					}
+					return { deltaIndices, cachedIndices };
 				}
 			}
 			const off = i * oidLen;
@@ -1209,11 +1488,12 @@ class CleanOidCache {
 			if (set.has(key)) {
 				set.delete(key);
 				set.add(key);
+				cachedIndices.push(i);
 			} else {
-				indices.push(i);
+				deltaIndices.push(i);
 			}
 		}
-		return indices;
+		return { deltaIndices, cachedIndices };
 	}
 
 	async recordIndices(digest: string, idx: ParsedIdx, indices: readonly number[]): Promise<void> {
@@ -1354,15 +1634,18 @@ function endWritable(stream: Writable | null): Promise<void> {
 class Batch {
 	readonly #scan: SecretScan;
 	readonly #rebuiltMax: number;
+	readonly #excludedHex: ReadonlySet<string> | undefined;
 	#line = Buffer.alloc(0);
 	/** The content bytes still due, then the newline after them; -1 between objects. */
 	#due = -1;
+	#skip = false;
 	#rebuilt = 0;
 	#count = 0;
 
-	constructor(scan: SecretScan, rebuiltMax: number) {
+	constructor(scan: SecretScan, rebuiltMax: number, excludedHex?: ReadonlySet<string>) {
 		this.#scan = scan;
 		this.#rebuiltMax = rebuiltMax;
+		this.#excludedHex = excludedHex;
 	}
 
 	/** Every object read to its end. */
@@ -1383,20 +1666,28 @@ class Batch {
 				if (this.#line.length + part.length > BATCH_LINE_MAX) throw new SecretRefusal(UNCHECKED);
 				this.#line = Buffer.concat([this.#line, part]);
 				if (newline < 0) return;
-				const size = Number(BATCH_HEADER.exec(this.#line.toString("latin1"))?.[1] ?? Number.NaN);
+				const match = BATCH_HEADER.exec(this.#line.toString("latin1"));
+				const oid = match?.[1];
+				const size = Number(match?.[2] ?? Number.NaN);
 				this.#line = Buffer.alloc(0);
-				this.#rebuilt += size;
-				if (!(this.#rebuilt <= this.#rebuiltMax)) throw new SecretRefusal(UNCHECKED);
+				if (!oid || !Number.isSafeInteger(size)) throw new SecretRefusal(UNCHECKED);
+				const skip = this.#excludedHex?.has(oid) ?? false;
+				if (!skip) {
+					this.#rebuilt += size;
+					if (!(this.#rebuilt <= this.#rebuiltMax)) throw new SecretRefusal(UNCHECKED);
+				}
+				this.#skip = skip;
 				this.#due = size;
 				at = newline + 1;
 			} else if (this.#due > 0) {
 				const take = Math.min(this.#due, chunk.length - at);
-				this.#scan.push(chunk.subarray(at, at + take));
+				if (!this.#skip) this.#scan.push(chunk.subarray(at, at + take));
 				this.#due -= take;
 				at += take;
 			} else {
 				if (chunk[at] !== 10) throw new SecretRefusal(UNCHECKED);
-				this.#scan.end();
+				if (!this.#skip) this.#scan.end();
+				this.#skip = false;
 				this.#due = -1;
 				this.#count++;
 				at++;

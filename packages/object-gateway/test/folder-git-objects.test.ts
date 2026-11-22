@@ -828,6 +828,278 @@ describe("a pack's check", () => {
 		expect(await outcome(sha256Checks, pack256Second, "sha256-pack", secretsExpanded)).toBe(CARRIES);
 		await scratchIsEmpty();
 	});
+
+	it("sorts small/moderate deltas by packfile offset, uses --exclude-oids-fd 4 or JS exclusion for large deltas, and handles concurrent cache access", async () => {
+		const deltaOidsFile = join(root, "delta-oids.log");
+		const catModeLog = join(root, "cat-mode.log");
+		const gitOrderWrapper = join(root, "git-order-wrapper");
+		await writeFile(
+			gitOrderWrapper,
+			[
+				"#!/bin/sh",
+				'if [ "$1" = "cat-file" ]; then',
+				'  case "$*" in',
+				"    *--batch-all-objects*)",
+				`      echo "ALL" >> ${catModeLog}`,
+				`      exec ${GIT} "$@"`,
+				"      ;;",
+				"    *)",
+				"      tmp=$(mktemp)",
+				'      cat > "$tmp"',
+				`      cp "$tmp" ${deltaOidsFile}`,
+				`      echo "DELTA" >> ${catModeLog}`,
+				`      ${GIT} "$@" < "$tmp"`,
+				"      rc=$?",
+				'      rm -f "$tmp"',
+				"      exit $rc",
+				"      ;;",
+				"  esac",
+				"fi",
+				`exec ${GIT} "$@"`,
+				"",
+			].join("\n"),
+		);
+		await chmod(gitOrderWrapper, 0o755);
+
+		const secrets = secretsOf(VALUE);
+		const orderRepo = await repository(root, "pack-order-repo", [
+			Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`base-${i}.txt`, `base content ${i}\n`])),
+		]);
+		const orderPack1 = packOf(orderRepo);
+		for (let i = 0; i < 5; i++) {
+			await writeFile(join(orderRepo, `added-${i}.txt`), `delta content ${i} ${"x".repeat((i + 1) * 64)}\n`);
+		}
+		git(orderRepo, ["add", "-A"]);
+		git(orderRepo, ["commit", "-q", "-m", "five delta blobs"]);
+		const orderPack2 = packOf(orderRepo);
+
+		const inspectDir = join(root, "inspect-pack");
+		await mkdir(inspectDir);
+		git(inspectDir, ["init", "-q", "--bare"]);
+		git(inspectDir, ["index-pack", "--stdin"], orderPack2);
+		const inspectPacks = (await readdir(join(inspectDir, "objects/pack"))).filter((n) => n.endsWith(".idx"));
+		const verifyOut = git(inspectDir, [
+			"verify-pack",
+			"-v",
+			join(inspectDir, "objects/pack", inspectPacks[0]!),
+		]).toString("utf8");
+		const offsetByOid = new Map<string, number>();
+		for (const line of verifyOut.split("\n")) {
+			const match = /^([0-9a-f]{40})\s+\S+\s+\d+\s+\d+\s+(\d+)/.exec(line);
+			if (match) offsetByOid.set(match[1]!, Number(match[2]!));
+		}
+
+		await writeFile(catModeLog, "");
+		const orderChecks = new SaveChecks({ ...reading, git: gitOrderWrapper });
+		expect(await outcome(orderChecks, orderPack1, "pack", secrets)).toBe(CHECKED);
+		expect(await outcome(orderChecks, orderPack2, "pack", secrets)).toBe(CHECKED);
+		expect((await readFile(catModeLog, "utf8")).trim().split("\n")).toEqual(["ALL", "DELTA"]);
+		const fedOids = (await readFile(deltaOidsFile, "utf8")).trim().split("\n");
+		expect(fedOids.length).toBe(7);
+		const fedOffsets = fedOids.map((oid) => offsetByOid.get(oid));
+		for (let i = 0; i < fedOffsets.length; i++) {
+			expect(fedOffsets[i]).toBeTypeOf("number");
+			if (i > 0) expect(fedOffsets[i]!).toBeGreaterThan(fedOffsets[i - 1]!);
+		}
+		expect(fedOids).not.toEqual([...fedOids].sort());
+
+		const largeDeltaRepo = await repository(root, "large-delta-repo", [
+			{ "base-big.txt": "0123456789abcdef\n".repeat(12_000) },
+		]);
+		const basePack = packOf(largeDeltaRepo);
+		for (let i = 0; i < 8; i++) {
+			await writeFile(join(largeDeltaRepo, `extra-${i}.txt`), `clean extra file ${i}\n`.repeat(1000));
+		}
+		git(largeDeltaRepo, ["add", "-A"]);
+		git(largeDeltaRepo, ["commit", "-q", "-m", "large delta fraction"]);
+		const largeDeltaPack = packOf(largeDeltaRepo);
+		const baseOids = git(largeDeltaRepo, ["rev-list", "--objects", "--no-object-names", "HEAD~1"])
+			.toString("utf8")
+			.trim()
+			.split("\n")
+			.sort();
+		expect(baseOids.length).toBe(3);
+
+		const limit = 250_000;
+		expect(
+			await outcome(
+				new SaveChecks({
+					...reading,
+					git: gitOrderWrapper,
+					rebuiltFactor: 1,
+					rebuiltFloor: limit,
+					rebuiltMax: limit,
+				}),
+				largeDeltaPack,
+				"pack",
+				secrets,
+			),
+		).toBe(UNCHECKED);
+		await writeFile(catModeLog, "");
+		const jsLargeChecks = new SaveChecks({
+			...reading,
+			git: gitOrderWrapper,
+			rebuiltFactor: 1,
+			rebuiltFloor: limit,
+			rebuiltMax: limit,
+		});
+		expect(await outcome(jsLargeChecks, basePack, "pack", secrets)).toBe(CHECKED);
+		expect(await outcome(jsLargeChecks, largeDeltaPack, "pack", secrets)).toBe(CHECKED);
+		expect(await outcome(jsLargeChecks, largeDeltaPack, "pack", secrets)).toBe(CHECKED);
+		expect((await readFile(catModeLog, "utf8")).trim().split("\n")).toEqual(["ALL", "ALL"]);
+
+		const dirtyLargeRepo = await repository(root, "dirty-large-delta-repo", [{ "base.txt": "clean base\n" }]);
+		const dirtyBasePack = packOf(dirtyLargeRepo);
+		for (let i = 0; i < 8; i++) {
+			await writeFile(
+				join(dirtyLargeRepo, `new-${i}.txt`),
+				i === 5 ? `contains ${VALUE} here\n` : `clean new file ${i}\n`,
+			);
+		}
+		git(dirtyLargeRepo, ["add", "-A"]);
+		git(dirtyLargeRepo, ["commit", "-q", "-m", "dirty large delta"]);
+		const dirtyLargePack = packOf(dirtyLargeRepo);
+		const dirtyJsChecks = new SaveChecks({ ...reading, git: gitOrderWrapper });
+		expect(await outcome(dirtyJsChecks, dirtyBasePack, "pack", secrets)).toBe(CHECKED);
+		expect(await outcome(dirtyJsChecks, dirtyLargePack, "pack", secrets)).toBe(CARRIES);
+
+		const scannerCalls = join(root, "exclude-scanner-calls.log");
+		const excludeCaptured = join(root, "exclude-oids.captured");
+		const excludeScanner = join(root, "exclude-scanner");
+		await writeFile(
+			excludeScanner,
+			[
+				"#!/bin/sh",
+				`printf '%s\\n' "$*" >> ${scannerCalls}`,
+				"cat <&3 > /dev/null",
+				'case "$*" in',
+				"  *--exclude-oids-fd\\ 4*)",
+				`    cat <&4 > ${excludeCaptured}`,
+				"    ;;",
+				"esac",
+				'bytes=$(wc -c | tr -d " ")',
+				'printf \'{"status":"clean","rebuilt":%s}\\n\' "$bytes"',
+				"exit 0",
+				"",
+			].join("\n"),
+		);
+		await chmod(excludeScanner, 0o755);
+		await writeFile(scannerCalls, "");
+		await writeFile(catModeLog, "");
+		const nativeExcludeChecks = new SaveChecks({
+			...reading,
+			git: gitOrderWrapper,
+			folderProgram: excludeScanner,
+		});
+		expect(await outcome(nativeExcludeChecks, basePack, "pack", secrets)).toBe(CHECKED);
+		expect(await outcome(nativeExcludeChecks, largeDeltaPack, "pack", secrets)).toBe(CHECKED);
+		expect(await outcome(nativeExcludeChecks, largeDeltaPack, "pack", secrets)).toBe(CHECKED);
+		expect((await readFile(catModeLog, "utf8")).trim().split("\n")).toEqual(["ALL", "ALL"]);
+		expect((await readFile(scannerCalls, "utf8")).trim().split("\n")).toEqual([
+			"scan-stream --spec-fd 3",
+			"scan-pack --spec-fd 3",
+			"scan-stream --spec-fd 3",
+			"scan-pack --spec-fd 3 --exclude-oids-fd 4",
+			"scan-stream --spec-fd 3",
+		]);
+		expect((await readFile(excludeCaptured, "utf8")).trim().split("\n").sort()).toEqual(baseOids);
+
+		await writeFile(catModeLog, "");
+		const concurrentChecks = new SaveChecks({ ...reading, git: gitOrderWrapper, atOnce: 2 });
+		const [res1, res2] = await Promise.all([
+			outcome(concurrentChecks, orderPack1, "pack", secrets),
+			outcome(concurrentChecks, basePack, "pack", secrets),
+		]);
+		expect(res1).toBe(CHECKED);
+		expect(res2).toBe(CHECKED);
+		expect(await outcome(concurrentChecks, orderPack1, "pack", secrets)).toBe(CHECKED);
+		expect(await outcome(concurrentChecks, basePack, "pack", secrets)).toBe(CHECKED);
+		expect((await readFile(catModeLog, "utf8")).trim().split("\n")).toEqual(["ALL", "ALL"]);
+		await scratchIsEmpty();
+	});
+
+	it("bounds concurrent standalone scan-stream processes with streamAtOnce without deadlocking loose checks or leaking permits on abort", async () => {
+		const activeDir = join(root, "stream-active");
+		await mkdir(activeDir);
+		const gateFile = join(root, "stream-gate");
+		const gatedScanner = join(root, "gated-stream-scanner");
+		await writeFile(
+			gatedScanner,
+			[
+				"#!/bin/sh",
+				`marker="${activeDir}/$$"`,
+				'touch "$marker"',
+				"trap 'rm -f \"$marker\"' EXIT",
+				"cat <&3 > /dev/null",
+				`while [ -f "${gateFile}" ]; do sleep 0.02; done`,
+				'bytes=$(wc -c | tr -d " ")',
+				'printf \'{"status":"clean","rebuilt":%s}\\n\' "$bytes"',
+				"exit 0",
+				"",
+			].join("\n"),
+		);
+		await chmod(gatedScanner, 0o755);
+
+		const secrets = secretsOf(VALUE);
+		const largePlain = Buffer.alloc(64 * 1024, 0x61);
+		const bounded = new SaveChecks({
+			...reading,
+			folderProgram: gatedScanner,
+			nativeStreamMinBytes: 64 * 1024,
+			streamAtOnce: 1,
+		});
+
+		await writeFile(gateFile, "hold");
+		const first = bounded.start(secrets, largePlain.length, "plain");
+		await first.push(largePlain.subarray(0, 1024));
+		for (let i = 0; i < 40 && (await readdir(activeDir)).length === 0; i++) {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+		expect(await readdir(activeDir)).toHaveLength(1);
+
+		const waitingAbort = bounded.start(secrets, largePlain.length, "plain");
+		let waitingAbortSettled = false;
+		const waitingAbortPush = waitingAbort.push(largePlain.subarray(0, 1024)).catch((error: unknown) => {
+			waitingAbortSettled = true;
+			return error;
+		});
+
+		const third = bounded.start(secrets, largePlain.length, "plain");
+		let thirdStarted = false;
+		const thirdPush = third.push(largePlain.subarray(0, 1024)).then(() => {
+			thirdStarted = true;
+		});
+
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		expect(await readdir(activeDir)).toHaveLength(1);
+		expect(waitingAbortSettled).toBe(false);
+		expect(thirdStarted).toBe(false);
+
+		await waitingAbort.abort();
+		const abortErr = await waitingAbortPush;
+		expect(abortErr).toBeInstanceOf(SecretRefusal);
+		expect((abortErr as SecretRefusal).message).toBe(UNCHECKED);
+		expect(thirdStarted).toBe(false);
+		expect(await readdir(activeDir)).toHaveLength(1);
+
+		await rm(gateFile, { force: true });
+		await first.push(largePlain.subarray(1024));
+		await first.end();
+		await thirdPush;
+		expect(thirdStarted).toBe(true);
+		await third.push(largePlain.subarray(1024));
+		await third.end();
+		expect(await readdir(activeDir)).toEqual([]);
+
+		const uncompressedLoose = deflateSync(
+			Buffer.concat([Buffer.from(`blob ${70_000}\0`), Buffer.alloc(70_000, 0x62)]),
+			{ level: 0 },
+		);
+		expect(uncompressedLoose.length).toBeGreaterThanOrEqual(64 * 1024);
+		expect(await outcome(bounded, uncompressedLoose, "loose", secrets)).toBe(CHECKED);
+		expect(await outcome(bounded, largePlain, "plain", secrets)).toBe(CHECKED);
+		expect(await readdir(activeDir)).toEqual([]);
+	});
 });
 
 const nativeProgram = process.env.QORPERA_FOLDER_MOUNT_BIN;
@@ -884,6 +1156,30 @@ describe.skipIf(!nativeProgram)("native qorpera-folder scan-stream and delta OID
 		expect(await outcome(checks, pack2, "pack", secrets)).toBe(CHECKED);
 		expect(await outcome(checks, pack2, "pack", secrets)).toBe(CHECKED);
 		expect(await outcome(checks, pack2, "pack", secretsOf(VALUE, secondSecret))).toBe(CARRIES);
+
+		const largeRepo = await repository(root, "native-large-delta", [{ "seed.txt": `seed ${secondSecret}\n` }]);
+		const seedPack = packOf(largeRepo);
+		for (let i = 0; i < 8; i++) {
+			await writeFile(join(largeRepo, `clean-${i}.txt`), `clean native large delta ${i}\n`.repeat(100));
+		}
+		git(largeRepo, ["add", "-A"]);
+		git(largeRepo, ["commit", "-q", "-m", "clean large delta"]);
+		const cleanLargeDeltaPack = packOf(largeRepo);
+		await writeFile(join(largeRepo, "leak.txt"), `leaked ${VALUE} in large delta\n`);
+		git(largeRepo, ["add", "-A"]);
+		git(largeRepo, ["commit", "-q", "-m", "dirty large delta"]);
+		const dirtyLargeDeltaPack = packOf(largeRepo);
+
+		const largeChecks = new SaveChecks({ scratch, folderProgram: nativeProgram! });
+		expect(await outcome(largeChecks, seedPack, "pack", secrets)).toBe(CHECKED);
+		expect(await outcome(largeChecks, cleanLargeDeltaPack, "pack", secrets)).toBe(CHECKED);
+		expect(await outcome(largeChecks, cleanLargeDeltaPack, "pack", secrets)).toBe(CHECKED);
+		expect(await outcome(largeChecks, dirtyLargeDeltaPack, "pack", secrets)).toBe(CARRIES);
+		expect(await outcome(largeChecks, cleanLargeDeltaPack, "pack", secretsOf(VALUE, secondSecret))).toBe(CARRIES);
+
+		const dirtyLargeNativeChecks = new SaveChecks({ scratch, folderProgram: nativeProgram! });
+		expect(await outcome(dirtyLargeNativeChecks, seedPack, "pack", secrets)).toBe(CHECKED);
+		expect(await outcome(dirtyLargeNativeChecks, dirtyLargeDeltaPack, "pack", secrets)).toBe(CARRIES);
 		expect(await readdir(scratch)).toEqual([]);
 	});
 });
