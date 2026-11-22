@@ -199,6 +199,7 @@ export interface SurfaceSessionTurnRunResult {
 	readonly notePaths: readonly string[] | null;
 	readonly branchHeadSha: string | null;
 	readonly error: string | null;
+	readonly cause?: unknown;
 }
 
 export interface SurfaceSessionDeliveryJob {
@@ -771,6 +772,7 @@ export async function runSurfaceSessionTurn(
 			notePaths: null,
 			branchHeadSha: null,
 			error: errorMessage,
+			cause: error,
 		};
 	} finally {
 		if (leaseTimer !== undefined) clearInterval(leaseTimer);

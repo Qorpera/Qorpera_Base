@@ -50,6 +50,7 @@ export interface SurfaceCodeHostWorkerOptions {
 	readonly batchLimit?: number;
 	readonly leaseRenewIntervalMs?: number;
 	readonly leaseExtendSeconds?: number;
+	readonly completionRetryDelaysMs?: readonly number[];
 	readonly report?: (event: Record<string, unknown>) => void;
 }
 
@@ -65,6 +66,30 @@ const PUT_BATCH_MAX_JSON_BYTES = 112 * 1024;
 const PUT_BATCH_MAX_PARTS = 100;
 const MAX_SHARED_ASSET_READ_BYTES = 32 * 1024;
 const GIT_SHA = /^[0-9a-f]{40}$/;
+const DEFAULT_COMPLETION_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000] as const;
+
+async function retryCommittedCompletion<T>(
+	fn: (attemptSignal: AbortSignal) => Promise<T>,
+	parentSignal: AbortSignal,
+	delaysMs: readonly number[],
+): Promise<T> {
+	let lastError: unknown;
+	for (let attempt = 0; attempt <= delaysMs.length; attempt += 1) {
+		const attemptSignal = AbortSignal.timeout(15_000);
+		try {
+			return await fn(attemptSignal);
+		} catch (error) {
+			lastError = error;
+			const delayMs = delaysMs[attempt];
+			if (delayMs === undefined || parentSignal.aborted) break;
+			await new Promise<void>((resolve) => {
+				const timer = setTimeout(resolve, delayMs);
+				timer.unref?.();
+			});
+		}
+	}
+	throw lastError;
+}
 
 function sha256Hex(bytes: Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex");
@@ -401,6 +426,7 @@ export class SurfaceCodeHostWorker {
 	readonly #batchLimit: number;
 	readonly #leaseRenewIntervalMs: number;
 	readonly #leaseExtendSeconds: number;
+	readonly #completionRetryDelaysMs: readonly number[];
 	readonly #report: ((event: Record<string, unknown>) => void) | undefined;
 
 	constructor(options: SurfaceCodeHostWorkerOptions) {
@@ -410,6 +436,7 @@ export class SurfaceCodeHostWorker {
 		this.#batchLimit = Math.min(Math.max(1, options.batchLimit ?? 8), 64);
 		this.#leaseRenewIntervalMs = Math.max(50, options.leaseRenewIntervalMs ?? 60_000);
 		this.#leaseExtendSeconds = Math.min(Math.max(30, options.leaseExtendSeconds ?? 300), 900);
+		this.#completionRetryDelaysMs = options.completionRetryDelaysMs ?? DEFAULT_COMPLETION_RETRY_DELAYS_MS;
 		this.#report = options.report;
 	}
 
@@ -738,11 +765,26 @@ export class SurfaceCodeHostWorker {
 			);
 			throw error;
 		}
-		for (const applyRebase of deferredRebases) {
-			await applyRebase();
-		}
 		if (deferredMergeCompletion) {
-			await controlPlane.completeSurfaceMerge(deferredMergeCompletion, signal);
+			const completionPayload = deferredMergeCompletion;
+			await retryCommittedCompletion(
+				(attemptSignal) => controlPlane.completeSurfaceMerge(completionPayload, attemptSignal),
+				signal,
+				this.#completionRetryDelaysMs,
+			);
+		}
+		// WHY: Persist rebased sibling/peer SHAs best-effort only after the landed merge completion is recorded so a transient rebase failure never rolls back or blocks completion.
+		for (const applyRebase of deferredRebases) {
+			try {
+				await applyRebase();
+			} catch (error) {
+				this.#report?.({
+					event: "surface-code-host-rebase-persist-failed",
+					jobId: merge.jobId,
+					surfaceId: merge.surfaceId,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
 		}
 	}
 

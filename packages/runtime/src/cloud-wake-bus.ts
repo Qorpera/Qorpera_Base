@@ -817,38 +817,25 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			"surfaceId",
 			"profileId",
 			"surfaceSlug",
-			"surfaceTitle",
 			"sourceKind",
-			"repositoryKey",
-			"folderRoot",
-			"prompt",
-			"state",
-			"leaseToken",
-			"briefSummary",
-			"explorationVariantLabel",
 			"originKind",
-			"originRef",
+			"memberInitiated",
+			"leaseToken",
 		]);
 		const surfaceSourceKind = session.sourceKind;
-		const sessionState = session.state;
 		if (
 			session.schema !== CLOUD_SURFACE_SESSION_WAKE_SCHEMA ||
 			uuidKey(session.surfaceSessionId) !== uuidKey(source.id) ||
+			uuid(session.surfaceId) === null ||
 			uuidKey(session.profileId) !== uuidKey(identity.companyId) ||
 			source.occurrenceKey.toLowerCase() !==
 				`surface-session:${uuidKey(source.id)}:${uuidKey(session.leaseToken)}` ||
 			typeof session.surfaceSlug !== "string" ||
 			!session.surfaceSlug.trim() ||
-			typeof session.surfaceTitle !== "string" ||
-			!session.surfaceTitle.trim() ||
 			(surfaceSourceKind !== "code_repo" && surfaceSourceKind !== "folder" && surfaceSourceKind !== "native_ops") ||
-			(session.repositoryKey !== null && typeof session.repositoryKey !== "string") ||
-			(session.folderRoot !== null && typeof session.folderRoot !== "string") ||
-			typeof session.prompt !== "string" ||
-			(sessionState !== "queued" && sessionState !== "reconciling") ||
-			(session.briefSummary !== null && typeof session.briefSummary !== "string") ||
-			(session.explorationVariantLabel !== null && typeof session.explorationVariantLabel !== "string") ||
 			typeof session.originKind !== "string" ||
+			!session.originKind.trim() ||
+			typeof session.memberInitiated !== "boolean" ||
 			heldMessages !== undefined ||
 			parentRunId !== null ||
 			wake.routine !== null ||

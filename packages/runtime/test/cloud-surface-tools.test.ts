@@ -1666,17 +1666,10 @@ describe("cloud surface runtime tools", () => {
 					surfaceId,
 					profileId: f.context.identity.companyId,
 					surfaceSlug: "identity",
-					surfaceTitle: "Identity",
 					sourceKind: "folder",
-					repositoryKey: null,
-					folderRoot: "identity",
-					prompt: "Try a warmer terracotta primary accent.",
-					state: "queued",
-					leaseToken,
-					briefSummary: "Global visual identity",
-					explorationVariantLabel: null,
 					originKind: "member",
-					originRef: null,
+					memberInitiated: true,
+					leaseToken,
 				},
 				parentRunId: null,
 				causal: { rootId: randomUUID(), agentIds: [f.context.identity.staffAgentId] },
@@ -1811,6 +1804,27 @@ describe("cloud surface runtime tools", () => {
 						ordinal: 1,
 					};
 				}
+				if (method === "qorpera_native_surface_read_session_turn") {
+					surfaceCalls.push({ method, args });
+					return {
+						sessionId,
+						surfaceId,
+						surfaceSlug: "identity",
+						surfaceTitle: "Identity",
+						sourceKind: "folder",
+						prompt: "Try a warmer terracotta primary accent.",
+						state: "queued",
+						repositoryKey: null,
+						folderRoot: "identity",
+						briefSummary: "Global visual identity",
+						explorationVariantLabel: null,
+						originKind: "member",
+						originRef: null,
+						baseSha: null,
+						branchHeadSha: null,
+						conflictPaths: [],
+					};
+				}
 				if (method === "qorpera_native_surface_record_change") {
 					surfaceCalls.push({ method, args });
 					return { changeId, seq: 1, session: { openChangeCount: 1 } };
@@ -1891,6 +1905,14 @@ describe("cloud surface runtime tools", () => {
 
 			expect(surfaceCalls).toEqual([
 				{
+					method: "qorpera_native_surface_read_session_turn",
+					args: {
+						p_profile_id: f.context.identity.companyId,
+						p_session_id: sessionId,
+						p_lease_token: leaseToken,
+					},
+				},
+				{
 					method: "qorpera_native_surface_record_change",
 					args: expect.objectContaining({
 						p_profile_id: f.context.identity.companyId,
@@ -1898,6 +1920,7 @@ describe("cloud surface runtime tools", () => {
 						p_kind: "folder_patch",
 						p_title: "Warm terracotta accent",
 						p_affected_paths: ["tokens.json"],
+						p_lease_token: leaseToken,
 					}),
 				},
 				{
@@ -1913,6 +1936,266 @@ describe("cloud surface runtime tools", () => {
 						p_lease_token: leaseToken,
 					},
 				},
+			]);
+		} finally {
+			bundleSpy.mockRestore();
+			await rm(tempRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("forwards parentSha and leaseToken from coding_record_change to qorpera_native_surface_record_change", async () => {
+		const rpcCalls: { method: string; args: Record<string, unknown> }[] = [];
+		const leaseToken = randomUUID();
+		const sessionId = randomUUID();
+		const companyId = randomUUID();
+		const parentSha = "1".repeat(40);
+		const commitSha = "2".repeat(40);
+		const port = createControlPlaneSurfaceToolsPort(
+			{
+				async call(method, args) {
+					rpcCalls.push({ method, args });
+					return { changeId: randomUUID(), seq: 1, session: { openChangeCount: 1 } };
+				},
+			},
+			{ leaseToken },
+		);
+		const tool = createCodingRecordChangeTool(sessionId, { recordChange: port.recordChange });
+		const parsed = tool.parseArguments({
+			title: "Add pricing section",
+			summary: "Adds transparent pricing tiers to the landing page.",
+			parentSha,
+			commitSha,
+			dependsOnChangeIds: [],
+		});
+		await tool.execute(parsed, {
+			companyId,
+			signal: new AbortController().signal,
+		} as CloudToolContext);
+		expect(rpcCalls).toEqual([
+			{
+				method: "qorpera_native_surface_record_change",
+				args: expect.objectContaining({
+					p_profile_id: companyId,
+					p_session_id: sessionId,
+					p_kind: "git_range",
+					p_parent_sha: parentSha,
+					p_head_sha: commitSha,
+					p_lease_token: leaseToken,
+				}),
+			},
+		]);
+	});
+
+	it("rethrows tagged turn errors from #surfaceSessionTurn after marking the surface session failed", async () => {
+		const tempRoot = await mkdtemp(join(tmpdir(), "qorpera-surface-session-err-test-"));
+		const binarySha256 = createHash("sha256")
+			.update(await readFile(process.execPath))
+			.digest("hex");
+		const assertBundle = runtimeBundle.assertCloudRuntimeBundle;
+		const bundleSpy = vi
+			.spyOn(runtimeBundle, "assertCloudRuntimeBundle")
+			.mockImplementation((identity) => assertBundle(identity, CLOUD_RUNTIME_NATIVE_BINARY_SHA256));
+
+		try {
+			const f = nativeCompanyContextFixture();
+			f.context = {
+				...f.context,
+				agentKind: "cofounder",
+				identity: { ...f.context.identity, sessionId: null },
+			};
+			f.authority = {
+				...f.authority,
+				identity: { ...f.authority.identity, sessionId: null },
+			};
+			const surfaceId = randomUUID();
+			const sessionId = randomUUID();
+			const leaseToken = randomUUID();
+			const wake = {
+				schema: "qorpera.wake-envelope/v1",
+				id: randomUUID(),
+				runId: f.context.identity.runId,
+				kind: "agent",
+				companyId: f.context.identity.companyId,
+				environmentId: f.context.identity.environmentId,
+				staffAgentId: f.context.identity.staffAgentId,
+				requesterUserId: f.context.identity.requesterUserId,
+				actorStaffId: null,
+				actorUserId: null,
+				audience: {
+					kind: f.context.identity.audienceKind,
+					userId: f.context.identity.audienceUserId,
+					sessionId: null,
+				},
+				source: {
+					kind: "surface-session",
+					id: sessionId,
+					occurrenceKey: `surface-session:${sessionId}:${leaseToken}`,
+				},
+				policy: {
+					schema: "qorpera.wake-policy/v1",
+					kind: "agent",
+					initial: "forbidden",
+					final: "forbidden",
+					silenceAllowed: true,
+					maxPublicSends: 0,
+				},
+				time: {
+					utc: "2026-09-02T08:00:00.000000Z",
+					local: "2026-09-02T10:00:00.000000",
+					timeZone: "Europe/Copenhagen",
+				},
+				pins: {
+					companySnapshotId: null,
+					companySeq: 1,
+					staffVersion: f.context.identity.staffVersion,
+					wakeSchema: "qorpera.wake-envelope/v1",
+					runtimeBundleVersion: null,
+				},
+				routine: null,
+				payload: {
+					schema: "qorpera.surface-session-wake/v1",
+					surfaceSessionId: sessionId,
+					surfaceId,
+					profileId: f.context.identity.companyId,
+					surfaceSlug: "identity",
+					sourceKind: "folder",
+					originKind: "member",
+					memberInitiated: true,
+					leaseToken,
+				},
+				parentRunId: null,
+				causal: { rootId: randomUUID(), agentIds: [f.context.identity.staffAgentId] },
+			};
+
+			const completed: Record<string, unknown>[] = [];
+			const taggedFailure = Object.assign(new Error("Simulated admission failure"), {
+				nativeFailureStage: "native-tools",
+				nativeFailureCategory: "authority_unavailable",
+			});
+			const pathCall: CloudCompanyPathControl["call"] = async (method, args) => {
+				if (method === "qorpera_company_machines_available") return false;
+				if (method === "qorpera_company_home_available")
+					return { schema: "qorpera.company-home/v1", available: false };
+				if (method === "qorpera_record_runtime_observation_batch") {
+					const batch = args.p_observations as { attemptId: string; phase: string }[];
+					return {
+						schema: "qorpera.runtime-observation-batch-receipt/v1",
+						runId: f.binding.runId,
+						receipts: batch.map((observation) => ({
+							schema: "qorpera.runtime-observation-receipt/v1",
+							runId: f.binding.runId,
+							attemptId: observation.attemptId,
+							phase: observation.phase,
+							ingestedAt: new Date().toISOString(),
+							replayed: false,
+						})),
+					};
+				}
+				if (method === "qorpera_folder_read") {
+					return { schema: "qorpera.folder-read/v1", asOfSeq: 1, found: false, entry: null };
+				}
+				if (method === "qorpera_describe_company_run_context") return structuredClone(f.context);
+				if (method === "qorpera_read_native_wake") return structuredClone(wake);
+				if (method === "qorpera_native_surface_read_session_turn") {
+					return {
+						sessionId,
+						surfaceId,
+						surfaceSlug: "identity",
+						surfaceTitle: "Identity",
+						sourceKind: "folder",
+						prompt: "Update palette.",
+						state: "queued",
+						repositoryKey: null,
+						folderRoot: "identity",
+						briefSummary: null,
+						explorationVariantLabel: null,
+						originKind: "member",
+						originRef: null,
+						baseSha: null,
+						branchHeadSha: null,
+						conflictPaths: [],
+					};
+				}
+				if (method === "qorpera_begin_native_company_execution_v3") {
+					throw taggedFailure;
+				}
+				if (method === "qorpera_native_surface_complete_turn") {
+					completed.push(args);
+					return { id: sessionId, state: args.p_state };
+				}
+				throw new Error(`Unexpected RPC: ${method}`);
+			};
+
+			const identityRoot = join(tempRoot, "identity");
+			await mkdir(join(identityRoot, "codex"), { recursive: true, mode: 0o700 });
+			await writeFile(join(identityRoot, "codex", "auth.json"), '{"tokens":{"access_token":"SYNTHETIC_SECRET"}}', {
+				mode: 0o600,
+			});
+
+			const runtime = new CloudNativeCompanyRuntime({
+				controlPlane: {
+					describeToolAuthority: vi.fn(async () => structuredClone(f.authority)),
+					beginToolOperation: vi.fn(async () => {
+						throw new Error("Unexpected");
+					}),
+					completeToolOperation: vi.fn(async () => {
+						throw new Error("Unexpected");
+					}),
+					completeFolderToolOperation: vi.fn(async () => {
+						throw new Error("Unexpected");
+					}),
+					sendMessage: vi.fn(async () => {
+						throw new Error("Unexpected");
+					}),
+				},
+				pathControl: { call: pathCall },
+				command: [process.execPath, "-e", "process.exit(0)"],
+				binarySha256,
+				timeoutMs: 10_000,
+				surfaceFirst: true,
+				folderBytes: () => ({
+					put: async () => {
+						throw new Error("No folder writes expected");
+					},
+					get: async () => {
+						throw new Error("No file bytes");
+					},
+					range: async () => {
+						throw new Error("No file bytes");
+					},
+				}),
+			});
+
+			await expect(
+				runtime.execute(
+					{
+						runtime: "company-path-v1",
+						authority: {
+							...f.binding,
+							encryptedCapsuleReference: `native-capsule/${f.binding.credentialCapsuleId}`,
+							attestationPolicySha256: "a".repeat(64),
+							expiresAt: "2099-08-28T12:00:00Z",
+						},
+						job: {
+							jobId: f.binding.jobId,
+							jobType: "agent_turn",
+							requiredCapability: "agent_turn",
+							attemptCount: 1,
+							payload: {},
+						},
+					},
+					identityRoot,
+					new AbortController().signal,
+				),
+			).rejects.toThrow("Cloud context authority unavailable");
+
+			expect(completed).toEqual([
+				expect.objectContaining({
+					p_profile_id: f.context.identity.companyId,
+					p_session_id: sessionId,
+					p_state: "failed",
+					p_lease_token: leaseToken,
+				}),
 			]);
 		} finally {
 			bundleSpy.mockRestore();

@@ -517,4 +517,128 @@ describe("SurfaceCodeHostWorker", () => {
 		);
 		expect(revertedHtml).toContain("Original");
 	});
+
+	it("retries completeSurfaceMerge after view publication before persisting rebases best-effort", async () => {
+		const f = await createCodeHostFixture();
+		const profileId = randomUUID();
+		const environmentId = randomUUID();
+		const surfaceId = randomUUID();
+		const sessionId = randomUUID();
+		const workerId = randomUUID();
+		const changeA = randomUUID();
+		const changeB = randomUUID();
+
+		await addCodeWorktree(f.job, { repository: f.repository, workerId, baseSha: f.baseSha });
+		const sessionWorktree = join(f.code, "worktrees", workerId);
+		await writeFile(join(sessionWorktree, "index.html"), "<!doctype html><h1>Landed V2</h1>\n");
+		await f.git(sessionWorktree, "add", "index.html");
+		await f.git(sessionWorktree, "commit", "-m", "Update hero v2");
+		const shaA = await f.git(sessionWorktree, "rev-parse", "HEAD");
+
+		await writeFile(join(sessionWorktree, "about.html"), "<!doctype html><p>About</p>\n");
+		await f.git(sessionWorktree, "add", "about.html");
+		await f.git(sessionWorktree, "commit", "-m", "Add about");
+		const shaB = await f.git(sessionWorktree, "rev-parse", "HEAD");
+
+		const callOrder: string[] = [];
+		let completeAttempts = 0;
+		const mergeJobId = randomUUID();
+		const mergeLease = randomUUID();
+		let pendingClaim: Record<string, unknown> = {
+			sessions: [],
+			previews: [],
+			merges: [
+				{
+					jobId: mergeJobId,
+					kind: "land_change",
+					surfaceId,
+					sessionId,
+					profileId,
+					environmentId,
+					leaseToken: mergeLease,
+					sourceKind: "code_repo",
+					repositoryKey: "thetaband/website",
+					folderRoot: null,
+					expectMainSha: f.baseSha,
+					sessionWorkerId: workerId,
+					sessionState: "ready",
+					sessionHasActiveChat: false,
+					payload: { changeIds: [changeA] },
+					allSessionChangeStatuses: [
+						{ changeId: changeA, status: "merging" },
+						{ changeId: changeB, status: "staged" },
+					],
+					approvedChanges: [
+						{
+							changeId: changeA,
+							kind: "git_range",
+							parentSha: f.baseSha,
+							headSha: shaA,
+							title: "Update hero v2",
+							summary: "Updates hero heading",
+							patchManifest: null,
+							affectedPaths: ["index.html"],
+						},
+					],
+					siblingRemainingChanges: [{ changeId: changeB, parentSha: shaA, headSha: shaB, title: "Add about" }],
+					peerSessions: [],
+				},
+			],
+			publishes: [],
+			automations: [],
+		};
+
+		const reported: Record<string, unknown>[] = [];
+		const control = {
+			async call(method: SurfaceCodeHostRpc, args: Record<string, unknown>): Promise<unknown> {
+				if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+					const res = pendingClaim;
+					pendingClaim = { sessions: [], previews: [], merges: [], publishes: [], automations: [] };
+					return res;
+				}
+				if (method === "qorpera_surface_complete_merge") {
+					completeAttempts += 1;
+					callOrder.push(`complete:${completeAttempts}:${String(args.p_status)}`);
+					if (completeAttempts === 1) {
+						throw new Error("transient HTTP 503");
+					}
+					return { jobId: args.p_job_id, status: args.p_status };
+				}
+				if (method === "qorpera_surface_update_rebased_changes") {
+					callOrder.push("rebase");
+					throw new Error("transient rebase RPC failure");
+				}
+				if (method === "qorpera_surface_renew_lease") {
+					return { renewed: true };
+				}
+				throw new Error(`Unexpected RPC ${method}`);
+			},
+		};
+
+		const hosts = {
+			async run<T>(
+				_companyId: string,
+				_envId: string,
+				_signal: AbortSignal,
+				fn: (job: CodeHostJob, gc: never) => Promise<T>,
+			): Promise<T> {
+				const result = await fn(f.job, undefined as never);
+				callOrder.push("published");
+				return result;
+			},
+		};
+
+		const worker = new SurfaceCodeHostWorker({
+			control,
+			hosts,
+			readTree: readCodeSiteTree,
+			completionRetryDelaysMs: [5, 5],
+			report: (ev) => reported.push(ev),
+		});
+
+		const pass = await worker.pass(new AbortController().signal);
+		expect(pass).toEqual({ previews: 0, merges: 1, publishes: 0, failed: 0 });
+		expect(callOrder).toEqual(["published", "complete:1:landed", "complete:2:landed", "rebase"]);
+		expect(reported.some((ev) => ev.event === "surface-code-host-rebase-persist-failed")).toBe(true);
+	});
 });

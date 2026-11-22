@@ -76,28 +76,34 @@ create index qorpera_surface_folder_snapshots_lookup_idx
 alter table public.qorpera_surface_folder_snapshots enable row level security;
 revoke all on table public.qorpera_surface_folder_snapshots from public, anon, authenticated;
 
--- WHY: Prevents code-site version pruning from deleting active un-expired surface preview versions.
+-- WHY: Prunes old code-site and surface-site versions while keeping live releases, unexpired surface previews, and the three newest ready versions.
 create or replace function public.qorpera_code_site_prune(p_site_id uuid)
 returns integer language plpgsql volatile set search_path = '' as $$
 declare v_site public.qorpera_company_sites%rowtype; v_repository public.qorpera_code_repositories%rowtype;
 	v_live public.qorpera_code_releases%rowtype; v_keep uuid[] := '{}'; v_count integer;
 begin
 	select * into v_site from public.qorpera_company_sites where id = p_site_id;
-	if v_site.code_owner is null then return 0; end if;
-	select * into v_repository from public.qorpera_code_repositories
-	where environment_id = v_site.environment_id and owner = v_site.code_owner and name = v_site.code_name;
-	v_live := public.qorpera_code_release_live(v_repository);
-	if v_live.n is not null then
-		with recursive chain(prior, version_id, depth) as (
-			select release.prior, release.version_id, 1 from public.qorpera_code_releases release
-			where release.environment_id = v_repository.environment_id and release.owner = v_repository.owner
-				and release.name = v_repository.name and release.n = v_live.prior
-			union all
-			select release.prior, release.version_id, chain.depth + 1 from chain
-			join public.qorpera_code_releases release on release.environment_id = v_repository.environment_id
-				and release.owner = v_repository.owner and release.name = v_repository.name and release.n = chain.prior
-			where chain.depth < 5)
-		select coalesce(array_agg(chain.version_id) filter (where chain.version_id is not null), '{}') into v_keep from chain;
+	if v_site.id is null then return 0; end if;
+	if v_site.code_owner is null then
+		if not exists (select 1 from public.qorpera_surfaces sf where sf.site_id = p_site_id) then
+			return 0;
+		end if;
+	else
+		select * into v_repository from public.qorpera_code_repositories
+		where environment_id = v_site.environment_id and owner = v_site.code_owner and name = v_site.code_name;
+		v_live := public.qorpera_code_release_live(v_repository);
+		if v_live.n is not null then
+			with recursive chain(prior, version_id, depth) as (
+				select release.prior, release.version_id, 1 from public.qorpera_code_releases release
+				where release.environment_id = v_repository.environment_id and release.owner = v_repository.owner
+					and release.name = v_repository.name and release.n = v_live.prior
+				union all
+				select release.prior, release.version_id, chain.depth + 1 from chain
+				join public.qorpera_code_releases release on release.environment_id = v_repository.environment_id
+					and release.owner = v_repository.owner and release.name = v_repository.name and release.n = chain.prior
+				where chain.depth < 5)
+			select coalesce(array_agg(chain.version_id) filter (where chain.version_id is not null), '{}') into v_keep from chain;
+		end if;
 	end if;
 	delete from public.qorpera_company_site_versions version
 	where version.site_id = p_site_id and version.state in ('ready','kept')
@@ -165,9 +171,14 @@ create function public.qorpera_native_surface_start_session(
 )
 returns jsonb
 language plpgsql security definer set search_path = '' as $$
+declare
+	v_origin_kind text := coalesce(nullif(lower(btrim(p_origin_kind)), ''), 'cofounder');
 begin
+	if v_origin_kind not in ('cofounder', 'automation') then
+		raise exception 'Native surface session start only accepts cofounder or automation origin' using errcode = '42501';
+	end if;
 	return public.qorpera_service_start_surface_session(
-		p_profile_id, p_surface_id, p_prompt, p_title, p_origin_kind, p_origin_label,
+		p_profile_id, p_surface_id, p_prompt, p_title, v_origin_kind, p_origin_label,
 		p_exploration_count, p_exploration_title, p_variant_labels
 	);
 end $$;
@@ -206,24 +217,114 @@ create function public.qorpera_native_surface_record_change(
 	p_affected_paths text[] default '{}'::text[],
 	p_diff_stats jsonb default null,
 	p_patch_manifest jsonb default null,
-	p_finish_session boolean default false
+	p_finish_session boolean default false,
+	p_lease_token uuid default null
 )
 returns jsonb
 language plpgsql security definer set search_path = '' as $$
+declare
+	v_session public.qorpera_surface_sessions%rowtype;
+	v_surface public.qorpera_surfaces%rowtype;
+	v_parent_sha text := nullif(btrim(coalesce(p_parent_sha, '')), '');
+	v_head_sha text := nullif(btrim(coalesce(p_head_sha, '')), '');
+	v_result jsonb;
 begin
-	if not exists (
-		select 1 from public.qorpera_surface_sessions s
-		where s.id = p_session_id and s.profile_id = p_profile_id
-	) then
+	if p_lease_token is null then
+		raise exception 'Surface change recording requires lease token' using errcode = '42501';
+	end if;
+	select * into v_session
+	from public.qorpera_surface_sessions s
+	where s.id = p_session_id and s.profile_id = p_profile_id
+	for update;
+	if v_session.id is null then
 		raise exception 'Surface session does not belong to profile' using errcode = '42501';
 	end if;
-	return public.qorpera_record_surface_change(
-		p_session_id, p_title, p_summary, p_kind, p_parent_sha, p_head_sha,
+	if v_session.state not in ('running', 'reconciling_running') or v_session.lease_token is distinct from p_lease_token then
+		raise exception 'Surface session lease is not active' using errcode = '42501';
+	end if;
+	if coalesce(p_kind, 'git_range') = 'git_range' then
+		if v_parent_sha is null then
+			select * into v_surface from public.qorpera_surfaces where id = v_session.surface_id;
+			v_parent_sha := coalesce(
+				(select nullif(btrim(c.head_sha), '') from public.qorpera_surface_changes c
+					where c.session_id = p_session_id and c.head_sha is not null
+					order by c.seq desc limit 1),
+				nullif(btrim(coalesce(v_session.branch_head_sha, '')), ''),
+				nullif(btrim(coalesce(v_session.base_sha, '')), ''),
+				nullif(btrim(coalesce(v_surface.live_head_sha, '')), '')
+			);
+		end if;
+		if v_parent_sha is null or v_parent_sha !~ '^[0-9a-f]{40}$'
+			or v_head_sha is null or v_head_sha !~ '^[0-9a-f]{40}$' then
+			raise exception 'Git range change requires valid 40-hex parent and head commit SHAs' using errcode = '22023';
+		end if;
+	end if;
+	v_result := public.qorpera_record_surface_change(
+		p_session_id, p_title, p_summary, p_kind, v_parent_sha, v_head_sha,
 		p_depends_on_change_ids, p_affected_paths, p_diff_stats, p_patch_manifest, p_finish_session
 	);
+	if coalesce(p_finish_session, false) then
+		update public.qorpera_surface_sessions
+		set wake_id = null
+		where id = p_session_id;
+	end if;
+	return v_result;
 end $$;
-revoke all on function public.qorpera_native_surface_record_change(uuid, uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean) from public, anon, authenticated;
-grant execute on function public.qorpera_native_surface_record_change(uuid, uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean) to service_role;
+revoke all on function public.qorpera_native_surface_record_change(uuid, uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean, uuid) from public, anon, authenticated;
+grant execute on function public.qorpera_native_surface_record_change(uuid, uuid, text, text, text, text, text, uuid[], text[], jsonb, jsonb, boolean, uuid) to service_role;
+
+create function public.qorpera_native_surface_read_session_turn(
+	p_profile_id uuid,
+	p_session_id uuid,
+	p_lease_token uuid
+)
+returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare
+	v_session public.qorpera_surface_sessions%rowtype;
+	v_surface public.qorpera_surfaces%rowtype;
+	v_conflict_paths text[];
+begin
+	if p_lease_token is null then
+		raise exception 'Surface session turn read requires lease token' using errcode = '42501';
+	end if;
+	select * into v_session
+	from public.qorpera_surface_sessions s
+	where s.id = p_session_id and s.profile_id = p_profile_id;
+	if v_session.id is null then
+		raise exception 'Surface session does not belong to profile' using errcode = '42501';
+	end if;
+	if v_session.state not in ('running', 'reconciling_running') or v_session.lease_token is distinct from p_lease_token then
+		raise exception 'Surface session lease is not active' using errcode = '42501';
+	end if;
+	select * into v_surface from public.qorpera_surfaces where id = v_session.surface_id and profile_id = p_profile_id;
+	if v_surface.id is null then
+		raise exception 'Surface not found for profile' using errcode = 'P0002';
+	end if;
+	select coalesce(array_agg(distinct p order by p), '{}'::text[]) into v_conflict_paths
+	from public.qorpera_surface_changes c, unnest(coalesce(c.conflict_paths, '{}'::text[])) as p
+	where c.session_id = v_session.id and c.status = 'conflicted';
+	return jsonb_build_object(
+		'sessionId', v_session.id,
+		'surfaceId', v_surface.id,
+		'surfaceSlug', v_surface.slug,
+		'surfaceTitle', v_surface.title,
+		'sourceKind', v_surface.source_kind,
+		'prompt', v_session.prompt,
+		'state', case when v_session.state = 'reconciling_running' then 'reconciling' else 'queued' end,
+		'repositoryKey', v_surface.repository_key,
+		'folderRoot', v_surface.folder_root,
+		'briefSummary', v_surface.brief_summary,
+		'explorationVariantLabel', v_session.exploration_variant_label,
+		'originKind', v_session.origin_kind,
+		'originRef', v_session.origin_ref,
+		'baseSha', v_session.base_sha,
+		'branchHeadSha', v_session.branch_head_sha,
+		'conflictPaths', to_jsonb(coalesce(v_conflict_paths, '{}'::text[]))
+	);
+end $$;
+revoke all on function public.qorpera_native_surface_read_session_turn(uuid, uuid, uuid) from public, anon, authenticated;
+grant execute on function public.qorpera_native_surface_read_session_turn(uuid, uuid, uuid) to service_role;
 
 create function public.qorpera_native_surface_complete_turn(
 	p_profile_id uuid,
@@ -286,6 +387,7 @@ insert into public.qorpera_native_host_calls(name, scope) values
 	('qorpera_native_surface_start_session', 'profile'),
 	('qorpera_native_surface_manage_automation', 'profile'),
 	('qorpera_native_surface_record_change', 'profile'),
+	('qorpera_native_surface_read_session_turn', 'profile'),
 	('qorpera_native_surface_complete_turn', 'profile'),
 	('qorpera_native_surface_renew_lease', 'profile')
 on conflict (name) do nothing;
@@ -395,12 +497,23 @@ begin
 	if p_surface_id is null or p_session_id is null then
 		raise exception 'Surface and session IDs are required' using errcode = '22023';
 	end if;
-	if not exists (
-		select 1 from public.qorpera_surface_sessions s
-		where s.id = p_session_id and s.surface_id = p_surface_id
-	) then
+	-- WHY: Lock session -> surface -> changes (by seq) to match qorpera_approve_surface_change and avoid 40P01 deadlocks.
+	perform 1
+	from public.qorpera_surface_sessions s
+	where s.id = p_session_id and s.surface_id = p_surface_id
+	for update;
+	if not found then
 		raise exception 'Surface session not found' using errcode = 'P0002';
 	end if;
+	perform 1
+	from public.qorpera_surfaces sf
+	where sf.id = p_surface_id
+	for update;
+	perform 1
+	from public.qorpera_surface_changes c
+	where c.surface_id = p_surface_id and c.session_id = p_session_id
+	order by c.seq asc
+	for update;
 
 	for v_item in
 		select elem from jsonb_array_elements(coalesce(p_rebased_changes, '[]'::jsonb)) elem
@@ -801,6 +914,8 @@ begin
 		where id = v_site.id;
 	end if;
 
+	perform public.qorpera_code_site_prune(v_site.id);
+
 	return jsonb_build_object(
 		'state', v_version.state,
 		'versionId', v_version.id,
@@ -819,6 +934,7 @@ create function public.qorpera_surface_enqueue_session_run(
 returns jsonb
 language plpgsql security definer set search_path = '' as $$
 declare
+	v_peek public.qorpera_surface_sessions%rowtype;
 	v_session public.qorpera_surface_sessions%rowtype;
 	v_surface public.qorpera_surfaces%rowtype;
 	v_existing_wake public.qorpera_wake_occurrences%rowtype;
@@ -826,6 +942,8 @@ declare
 	v_requester uuid;
 	v_sponsor jsonb;
 	v_wake public.qorpera_wake_occurrences%rowtype;
+	v_member_initiated boolean;
+	v_reason text;
 	v_now timestamptz := clock_timestamp();
 begin
 	if not public.qorpera_surfaces_enabled() then
@@ -834,6 +952,75 @@ begin
 	if p_session_id is null or p_lease_token is null then
 		raise exception 'Session ID and lease token are required' using errcode = '22023';
 	end if;
+
+	-- WHY: Read session metadata without locking and enter the folder fence before locking qorpera_surface_sessions to prevent deadlocks with company deletion purge.
+	select * into v_peek
+	from public.qorpera_surface_sessions
+	where id = p_session_id;
+	if v_peek.id is null or v_peek.state not in ('running', 'reconciling_running')
+		or v_peek.lease_token is distinct from p_lease_token then
+		return jsonb_build_object('status', 'unavailable', 'reason', 'lease_lost');
+	end if;
+
+	select * into v_cofounder
+	from public.qorpera_company_cofounders
+	where profile_id = v_peek.profile_id
+	limit 1;
+	if v_cofounder.profile_id is null then
+		return jsonb_build_object('status', 'unavailable', 'reason', 'no_cofounder');
+	end if;
+
+	if not public.qorpera_company_is_folder_v2(v_peek.profile_id) then
+		return jsonb_build_object('status', 'unavailable', 'reason', 'no_substrate');
+	end if;
+
+	v_member_initiated := v_peek.origin_kind in ('member', 'point_to_change', 'cross_surface')
+		and v_peek.created_by_user_id is not null;
+	if v_member_initiated then
+		select m.user_id into v_requester
+		from public.qorpera_profile_members m
+		where m.profile_id = v_peek.profile_id and m.user_id = v_peek.created_by_user_id;
+	else
+		v_requester := coalesce(
+			(select m.user_id from public.qorpera_profile_members m
+				where m.profile_id = v_peek.profile_id and m.user_id = v_peek.created_by_user_id),
+			(select m.user_id from public.qorpera_profile_members m
+				where m.profile_id = v_peek.profile_id and m.user_id = v_cofounder.created_by_user_id),
+			(select m.user_id from public.qorpera_profile_members m
+				where m.profile_id = v_peek.profile_id order by (m.role = 'owner') desc, m.joined_at asc limit 1)
+		);
+	end if;
+	if v_requester is null then
+		return jsonb_build_object('status', 'unavailable', 'reason', 'no_member');
+	end if;
+
+	begin
+		perform public.qorpera_folder_company_enter(
+			v_cofounder.environment_id,
+			v_peek.profile_id,
+			jsonb_build_array(
+				jsonb_build_object('rank', 1, 'tbl', 'qorpera_profile_members',
+					'key', v_peek.profile_id::text || ':' || v_requester::text, 'mode', 'keyshare', 'required', true),
+				jsonb_build_object('rank', 2, 'tbl', 'qorpera_profile_staff',
+					'key', v_peek.profile_id::text || ':' || v_cofounder.staff_agent_id::text, 'mode', 'keyshare', 'required', false),
+				jsonb_build_object('rank', 3, 'tbl', 'qorpera_staff_execution_authorities',
+					'key', v_peek.profile_id::text || ':' || v_cofounder.staff_agent_id::text, 'mode', 'keyshare', 'required', false)
+			),
+			true
+		);
+	exception when sqlstate '55000' then
+		update public.qorpera_surface_sessions
+		set
+			state = case when state = 'reconciling_running' then 'reconciling' else 'queued' end,
+			lease_token = null,
+			wake_id = null,
+			lease_expires_at = v_now + interval '15 seconds',
+			updated_at = v_now
+		where id = p_session_id
+			and state in ('running', 'reconciling_running')
+			and lease_token = p_lease_token;
+		return jsonb_build_object('status', 'deferred', 'reason', 'paused', 'retryAfterSeconds', 15);
+	end;
 
 	select * into v_session
 	from public.qorpera_surface_sessions
@@ -872,62 +1059,12 @@ begin
 		return jsonb_build_object('status', 'unavailable', 'reason', 'surface_missing');
 	end if;
 
-	select * into v_cofounder
-	from public.qorpera_company_cofounders
-	where profile_id = v_session.profile_id
-	limit 1;
-	if v_cofounder.profile_id is null then
-		return jsonb_build_object('status', 'unavailable', 'reason', 'no_cofounder');
-	end if;
-
-	if not public.qorpera_company_is_folder_v2(v_session.profile_id) then
-		return jsonb_build_object('status', 'unavailable', 'reason', 'no_substrate');
-	end if;
-
-	v_requester := coalesce(
-		(select m.user_id from public.qorpera_profile_members m
-			where m.profile_id = v_session.profile_id and m.user_id = v_session.created_by_user_id),
-		(select m.user_id from public.qorpera_profile_members m
-			where m.profile_id = v_session.profile_id and m.user_id = v_cofounder.created_by_user_id),
-		(select m.user_id from public.qorpera_profile_members m
-			where m.profile_id = v_session.profile_id order by (m.role = 'owner') desc, m.joined_at asc limit 1)
-	);
-	if v_requester is null then
-		return jsonb_build_object('status', 'unavailable', 'reason', 'no_member');
-	end if;
-
 	v_sponsor := public.qorpera_surface_resolve_sponsor(v_session.profile_id, v_requester);
 	if v_sponsor is null
 		or nullif(v_sponsor ->> 'sponsorBindingId', '') is null
 		or nullif(v_sponsor ->> 'sponsorVersion', '') is null then
 		return jsonb_build_object('status', 'unavailable', 'reason', 'no_sponsor');
 	end if;
-
-	begin
-		perform public.qorpera_folder_company_enter(
-			v_cofounder.environment_id,
-			v_session.profile_id,
-			jsonb_build_array(
-				jsonb_build_object('rank', 1, 'tbl', 'qorpera_profile_members',
-					'key', v_session.profile_id::text || ':' || v_requester::text, 'mode', 'keyshare', 'required', true),
-				jsonb_build_object('rank', 2, 'tbl', 'qorpera_profile_staff',
-					'key', v_session.profile_id::text || ':' || v_cofounder.staff_agent_id::text, 'mode', 'keyshare', 'required', false),
-				jsonb_build_object('rank', 3, 'tbl', 'qorpera_staff_execution_authorities',
-					'key', v_session.profile_id::text || ':' || v_cofounder.staff_agent_id::text, 'mode', 'keyshare', 'required', false)
-			),
-			true
-		);
-	exception when sqlstate '55000' then
-		update public.qorpera_surface_sessions
-		set
-			state = case when state = 'reconciling_running' then 'reconciling' else 'queued' end,
-			lease_token = null,
-			wake_id = null,
-			lease_expires_at = v_now + interval '15 seconds',
-			updated_at = v_now
-		where id = v_session.id;
-		return jsonb_build_object('status', 'deferred', 'reason', 'paused', 'retryAfterSeconds', 15);
-	end;
 
 	begin
 		perform public.qorpera_folder_admit_wakes(v_session.profile_id);
@@ -949,7 +1086,13 @@ begin
 		)
 		returning * into v_wake;
 	exception when insufficient_privilege then
-		return jsonb_build_object('status', 'unavailable', 'reason', 'no_sponsor');
+		v_reason := case
+			when sqlerrm = 'No model account can pay for this work' then 'no_sponsor'
+			when sqlerrm = 'Wake surface session requester is unavailable' then 'no_member'
+			when sqlerrm = 'Wake surface session is unavailable' then 'session_unavailable'
+			else 'unavailable'
+		end;
+		return jsonb_build_object('status', 'unavailable', 'reason', v_reason);
 	end;
 
 	if v_wake.status <> 'queued' then
@@ -984,10 +1127,11 @@ select pg_temp.shw_replace('public.qorpera_pin_wake_occurrence()'::regprocedure,
 	array[$old$	v_la_ask public.qorpera_light_asks%rowtype;$old$,
 		$new$	v_la_ask public.qorpera_light_asks%rowtype;
 	v_surf_session public.qorpera_surface_sessions%rowtype; v_surf public.qorpera_surfaces%rowtype;
-	v_surf_cofounder public.qorpera_company_cofounders%rowtype; v_surf_sponsor jsonb;$new$],
+	v_surf_cofounder public.qorpera_company_cofounders%rowtype; v_surf_sponsor jsonb;
+	v_surf_member_initiated boolean;$new$],
 	array[$old$	elsif new.wake_kind = 'agent' and new.source_kind = 'human-task' then$old$,
 		$new$	elsif new.wake_kind = 'agent' and new.source_kind = 'surface-session' then
-		-- WHY: 20260930844000 pins surface session turn wake from qorpera_surface_sessions.
+		-- WHY: 20260930844000 pins surface session turn wake with fixed-size metadata; full prompt and brief are fetched through qorpera_native_surface_read_session_turn.
 		select * into v_surf_session from public.qorpera_surface_sessions s
 		where s.id = new.source_id and s.profile_id = new.profile_id
 			and s.state in ('running', 'reconciling_running') and s.lease_token is not null;
@@ -1000,14 +1144,22 @@ select pg_temp.shw_replace('public.qorpera_pin_wake_occurrence()'::regprocedure,
 			or new.parent_run_id is not null or new.file_event_id is not null or new.run_id is not null then
 			raise exception 'Wake surface session is unavailable' using errcode = '42501'; end if;
 		new.staff_agent_id := v_surf_cofounder.staff_agent_id;
-		new.requested_by_user_id := coalesce(
-			(select m.user_id from public.qorpera_profile_members m
-				where m.profile_id = new.profile_id and m.user_id = v_surf_session.created_by_user_id),
-			(select m.user_id from public.qorpera_profile_members m
-				where m.profile_id = new.profile_id and m.user_id = v_surf_cofounder.created_by_user_id),
-			(select m.user_id from public.qorpera_profile_members m
-				where m.profile_id = new.profile_id order by (m.role = 'owner') desc, m.joined_at asc limit 1)
-		);
+		v_surf_member_initiated := v_surf_session.origin_kind in ('member', 'point_to_change', 'cross_surface')
+			and v_surf_session.created_by_user_id is not null;
+		if v_surf_member_initiated then
+			select m.user_id into new.requested_by_user_id
+			from public.qorpera_profile_members m
+			where m.profile_id = new.profile_id and m.user_id = v_surf_session.created_by_user_id;
+		else
+			new.requested_by_user_id := coalesce(
+				(select m.user_id from public.qorpera_profile_members m
+					where m.profile_id = new.profile_id and m.user_id = v_surf_session.created_by_user_id),
+				(select m.user_id from public.qorpera_profile_members m
+					where m.profile_id = new.profile_id and m.user_id = v_surf_cofounder.created_by_user_id),
+				(select m.user_id from public.qorpera_profile_members m
+					where m.profile_id = new.profile_id order by (m.role = 'owner') desc, m.joined_at asc limit 1)
+			);
+		end if;
 		if new.requested_by_user_id is null then
 			raise exception 'Wake surface session requester is unavailable' using errcode = '42501'; end if;
 		new.trigger_id := 'surface-session';
@@ -1018,17 +1170,10 @@ select pg_temp.shw_replace('public.qorpera_pin_wake_occurrence()'::regprocedure,
 			'surfaceId', v_surf.id,
 			'profileId', v_surf_session.profile_id,
 			'surfaceSlug', v_surf.slug,
-			'surfaceTitle', v_surf.title,
 			'sourceKind', v_surf.source_kind,
-			'repositoryKey', v_surf.repository_key,
-			'folderRoot', v_surf.folder_root,
-			'prompt', v_surf_session.prompt,
-			'state', case when v_surf_session.state = 'reconciling_running' then 'reconciling' else 'queued' end,
-			'leaseToken', v_surf_session.lease_token,
-			'briefSummary', v_surf.brief_summary,
-			'explorationVariantLabel', v_surf_session.exploration_variant_label,
 			'originKind', v_surf_session.origin_kind,
-			'originRef', v_surf_session.origin_ref
+			'memberInitiated', v_surf_member_initiated,
+			'leaseToken', v_surf_session.lease_token
 		);
 		v_surf_sponsor := public.qorpera_surface_resolve_sponsor(new.profile_id, new.requested_by_user_id);
 		if v_surf_sponsor is null
@@ -1082,18 +1227,32 @@ select pg_temp.shw_replace('public.qorpera_folder_materialize_company(uuid, inte
 	array[$old$					and (v_wake.wake_kind = 'room' or v_wake.source_kind = 'light-ask'
 						or (sponsor.allow_autonomous and public.qorpera_provider_autonomous_authority($old$,
 		$new$					and (v_wake.wake_kind = 'room' or v_wake.source_kind = 'light-ask'
-						or (v_wake.source_kind = 'surface-session' and coalesce(v_wake.payload ->> 'originKind', '') <> 'automation')
+						or (v_wake.source_kind = 'surface-session'
+							and coalesce(v_wake.payload ->> 'originKind', '') in ('member', 'point_to_change', 'cross_surface')
+							and coalesce((v_wake.payload ->> 'memberInitiated')::boolean, false)
+							and exists (
+								select 1 from public.qorpera_surface_sessions s
+								where s.id = v_wake.source_id and s.profile_id = v_wake.profile_id
+									and s.origin_kind in ('member', 'point_to_change', 'cross_surface')
+									and s.created_by_user_id is not null
+									and s.created_by_user_id = v_wake.requested_by_user_id
+							))
 						or (sponsor.allow_autonomous and public.qorpera_provider_autonomous_authority($new$]
 ]);
 
 select pg_temp.shw_replace('public.qorpera_run_autonomous_authority(public.qorpera_execution_runs)'::regprocedure, array[
 	array[$old$	if p_run.source_kind in ('session_turn','room_delivery') then return true; end if;$old$,
 		$new$	if p_run.source_kind in ('session_turn','room_delivery') then return true; end if;
-	-- WHY: 20260930844000 member-initiated surface sessions act on the requester's explicit prompt.
-	if p_run.source_kind = 'wake' and exists (select 1 from public.qorpera_wake_occurrences w
+	-- WHY: 20260930844000 only member-initiated surface sessions with matching requester bypass unattended autonomy requirements.
+	if p_run.source_kind = 'wake' and exists (
+		select 1 from public.qorpera_wake_occurrences w
+		join public.qorpera_surface_sessions s on s.id = w.source_id and s.profile_id = w.profile_id
 		where w.id = p_run.source_id and (w.run_id is null or w.run_id = p_run.id) and w.wake_kind = 'agent'
 			and w.source_kind = 'surface-session' and w.profile_id = p_run.profile_id
-			and coalesce(w.payload ->> 'originKind', '') <> 'automation') then return true; end if;$new$]
+			and s.origin_kind in ('member', 'point_to_change', 'cross_surface')
+			and s.created_by_user_id is not null
+			and s.created_by_user_id = p_run.requested_by_user_id
+	) then return true; end if;$new$]
 ]);
 
 create function public.qorpera_surface_trigger_automation(p_automation_id uuid)

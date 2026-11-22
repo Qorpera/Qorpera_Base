@@ -72,7 +72,35 @@ export interface SurfaceFolderWorkerOptions {
 	readonly readFallback?: (profileId: string, sha256: string) => Promise<Uint8Array>;
 	readonly leaseRenewIntervalMs?: number;
 	readonly leaseExtendSeconds?: number;
+	readonly jobTimeoutMs?: number;
+	readonly completionRetryDelaysMs?: readonly number[];
 	readonly onEvent?: (event: Record<string, unknown>) => void;
+}
+
+const DEFAULT_JOB_TIMEOUT_MS = 45_000;
+const DEFAULT_COMPLETION_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000] as const;
+
+async function retryCommittedRpc<T>(
+	fn: (attemptSignal: AbortSignal) => Promise<T>,
+	shutdownSignal: AbortSignal | undefined,
+	delaysMs: readonly number[],
+): Promise<T> {
+	let lastError: unknown;
+	for (let attempt = 0; attempt <= delaysMs.length; attempt += 1) {
+		const attemptSignal = AbortSignal.timeout(15_000);
+		try {
+			return await fn(attemptSignal);
+		} catch (error) {
+			lastError = error;
+			const delayMs = delaysMs[attempt];
+			if (delayMs === undefined || shutdownSignal?.aborted) break;
+			await new Promise<void>((resolve) => {
+				const timer = setTimeout(resolve, delayMs);
+				timer.unref?.();
+			});
+		}
+	}
+	throw lastError;
 }
 
 function sha256Hex(text: string): string {
@@ -289,6 +317,8 @@ export class SurfaceFolderWorker {
 	readonly #folder: PlatformFolderWriter;
 	readonly #leaseRenewIntervalMs: number;
 	readonly #leaseExtendSeconds: number;
+	readonly #jobTimeoutMs: number;
+	readonly #completionRetryDelaysMs: readonly number[];
 
 	constructor(options: SurfaceFolderWorkerOptions) {
 		this.#options = options;
@@ -300,6 +330,8 @@ export class SurfaceFolderWorker {
 		});
 		this.#leaseRenewIntervalMs = Math.max(50, options.leaseRenewIntervalMs ?? 60_000);
 		this.#leaseExtendSeconds = Math.min(Math.max(30, options.leaseExtendSeconds ?? 300), 900);
+		this.#jobTimeoutMs = Math.max(1_000, options.jobTimeoutMs ?? DEFAULT_JOB_TIMEOUT_MS);
+		this.#completionRetryDelaysMs = options.completionRetryDelaysMs ?? DEFAULT_COMPLETION_RETRY_DELAYS_MS;
 	}
 
 	#emit(event: Record<string, unknown>): void {
@@ -308,15 +340,14 @@ export class SurfaceFolderWorker {
 		} catch {}
 	}
 
-	processDue(limit = 8, signal?: AbortSignal): Promise<number> {
-		return withDefaultTimeout(signal, 60_000, (scoped) => this.#processDue(limit, scoped));
-	}
-
-	async #processDue(limit: number, signal: AbortSignal): Promise<number> {
-		const raw = (await this.#options.authority.publisher(
-			"qorpera_surface_claim_pending_jobs_for_lane",
-			{ p_limit: Math.min(Math.max(1, limit), 64), p_lane: "folder" },
-			signal,
+	async processDue(limit = 8, signal?: AbortSignal): Promise<number> {
+		// WHY: Give the claim and each individual job their own bounded timeout so a slow batch never aborts a job between commit and completion.
+		const raw = (await withDefaultTimeout(signal, 20_000, (claimSignal) =>
+			this.#options.authority.publisher(
+				"qorpera_surface_claim_pending_jobs_for_lane",
+				{ p_limit: Math.min(Math.max(1, limit), 64), p_lane: "folder" },
+				claimSignal,
+			),
 		)) as { merges?: unknown; publishes?: unknown } | null;
 		const merges = Array.isArray(raw?.merges)
 			? raw.merges.map(parseClaimedFolderMerge).filter((j): j is ClaimedFolderMergeJob => j !== null)
@@ -327,13 +358,19 @@ export class SurfaceFolderWorker {
 
 		let handled = 0;
 		for (const merge of merges) {
-			if (signal.aborted) break;
-			await this.#withJobLease(merge.jobId, merge.leaseToken, signal, () => this.#handleMerge(merge, signal));
+			if (signal?.aborted) break;
+			await withDefaultTimeout(signal, this.#jobTimeoutMs, (jobSignal) =>
+				this.#withJobLease(merge.jobId, merge.leaseToken, jobSignal, () =>
+					this.#handleMerge(merge, jobSignal, signal),
+				),
+			);
 			handled += 1;
 		}
 		for (const pub of publishes) {
-			if (signal.aborted) break;
-			await this.#withJobLease(pub.jobId, pub.leaseToken, signal, () => this.#handlePublish(pub, signal));
+			if (signal?.aborted) break;
+			await withDefaultTimeout(signal, this.#jobTimeoutMs, (jobSignal) =>
+				this.#withJobLease(pub.jobId, pub.leaseToken, jobSignal, () => this.#handlePublish(pub, jobSignal)),
+			);
 			handled += 1;
 		}
 		return handled;
@@ -417,24 +454,47 @@ export class SurfaceFolderWorker {
 		return { content: UTF8_DECODER.decode(bytes), version, isDirectory: false };
 	}
 
-	async #handleMerge(job: ClaimedFolderMergeJob, signal: AbortSignal): Promise<void> {
+	async #handleMerge(
+		job: ClaimedFolderMergeJob,
+		signal: AbortSignal,
+		shutdownSignal: AbortSignal | undefined,
+	): Promise<void> {
+		let committed = false;
+		const markCommitted = () => {
+			committed = true;
+		};
 		try {
 			if (!job.environmentId) {
 				throw new Error("Surface folder job is missing environmentId");
 			}
 			if (job.kind === "undo_change") {
-				await this.#handleUndo(job, job.environmentId, signal);
+				await this.#handleUndo(job, job.environmentId, signal, shutdownSignal, markCommitted);
 				return;
 			}
-			await this.#handleLand(job, job.environmentId, signal);
+			await this.#handleLand(job, job.environmentId, signal, shutdownSignal, markCommitted);
 		} catch (error) {
 			const errorDetail = formatError(error);
+			if (committed) {
+				// WHY: Never report status='failed' after PlatformFolderWriter already committed; that would re-queue and corrupt filesBefore undo snapshots.
+				this.#emit({
+					kind: "surface_folder_merge_completion_failed",
+					jobId: job.jobId,
+					error: errorDetail,
+				});
+				return;
+			}
 			this.#emit({ kind: "surface_folder_merge_failed", jobId: job.jobId, error: errorDetail });
 			await this.#completeMerge(job, { status: "failed", errorDetail }, signal);
 		}
 	}
 
-	async #handleLand(job: ClaimedFolderMergeJob, environmentId: string, signal: AbortSignal): Promise<void> {
+	async #handleLand(
+		job: ClaimedFolderMergeJob,
+		environmentId: string,
+		signal: AbortSignal,
+		shutdownSignal: AbortSignal | undefined,
+		markCommitted: () => void,
+	): Promise<void> {
 		const folderRoot = normalizeFolderRoot(job.folderRoot);
 		if (job.approvedChanges.length === 0) {
 			throw new Error("Folder merge job has no approved changes");
@@ -567,6 +627,7 @@ export class SurfaceFolderWorker {
 			await this.#completeMerge(job, { status: "failed", errorDetail: commitResult.errorDetail }, signal);
 			return;
 		}
+		markCommitted();
 
 		const versionsAfter: Record<string, string | null> = {};
 		const afterContentSha256: Record<string, string | null> = {};
@@ -586,19 +647,24 @@ export class SurfaceFolderWorker {
 		let preMergeSnapshot: Record<string, unknown> = inlineSnapshot;
 		if (Buffer.byteLength(JSON.stringify(inlineSnapshot), "utf8") > MAX_INLINE_SNAPSHOT_BYTES) {
 			const snapshotId = randomUUID();
-			await this.#options.authority.publisher(
-				"qorpera_surface_save_folder_snapshot",
-				{
-					p_profile_id: job.profileId,
-					p_surface_id: job.surfaceId,
-					p_snapshot_id: snapshotId,
-					p_folder_root: folderRoot,
-					p_change_ids: changeIds,
-					p_files_before: filesBefore,
-					p_versions_after: versionsAfter,
-					p_after_content_sha256: afterContentSha256,
-				},
-				signal,
+			await retryCommittedRpc(
+				(attemptSignal) =>
+					this.#options.authority.publisher(
+						"qorpera_surface_save_folder_snapshot",
+						{
+							p_profile_id: job.profileId,
+							p_surface_id: job.surfaceId,
+							p_snapshot_id: snapshotId,
+							p_folder_root: folderRoot,
+							p_change_ids: changeIds,
+							p_files_before: filesBefore,
+							p_versions_after: versionsAfter,
+							p_after_content_sha256: afterContentSha256,
+						},
+						attemptSignal,
+					),
+				shutdownSignal,
+				this.#completionRetryDelaysMs,
 			);
 			preMergeSnapshot = {
 				externalSnapshotId: snapshotId,
@@ -607,7 +673,11 @@ export class SurfaceFolderWorker {
 			};
 		}
 
-		await this.#completeMerge(job, { status: "landed", preMergeSnapshot }, signal);
+		await retryCommittedRpc(
+			(attemptSignal) => this.#completeMerge(job, { status: "landed", preMergeSnapshot }, attemptSignal),
+			shutdownSignal,
+			this.#completionRetryDelaysMs,
+		);
 		this.#emit({
 			kind: "surface_folder_merge_landed",
 			jobId: job.jobId,
@@ -616,7 +686,13 @@ export class SurfaceFolderWorker {
 		});
 	}
 
-	async #handleUndo(job: ClaimedFolderMergeJob, environmentId: string, signal: AbortSignal): Promise<void> {
+	async #handleUndo(
+		job: ClaimedFolderMergeJob,
+		environmentId: string,
+		signal: AbortSignal,
+		shutdownSignal: AbortSignal | undefined,
+		markCommitted: () => void,
+	): Promise<void> {
 		let snapshot: FolderUndoSnapshot | null = null;
 		const inline = job.preMergeSnapshot;
 		const externalSnapshotId =
@@ -759,8 +835,13 @@ export class SurfaceFolderWorker {
 			await this.#completeMerge(job, { status: "failed", errorDetail: commitResult.errorDetail }, signal);
 			return;
 		}
+		markCommitted();
 
-		await this.#completeMerge(job, { status: "landed" }, signal);
+		await retryCommittedRpc(
+			(attemptSignal) => this.#completeMerge(job, { status: "landed" }, attemptSignal),
+			shutdownSignal,
+			this.#completionRetryDelaysMs,
+		);
 		this.#emit({ kind: "surface_folder_undo_landed", jobId: job.jobId, surfaceId: job.surfaceId });
 	}
 

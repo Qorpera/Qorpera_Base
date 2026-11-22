@@ -344,11 +344,12 @@ if (process.argv[2] === "migrate") {
 		void createCompanies();
 	}, 15_000);
 	let writingSurfaceFolders = false;
+	const surfaceFolderStop = new AbortController();
 	const writeSurfaceFolders = async (): Promise<void> => {
 		if (!surfaceFolderWorker || writingSurfaceFolders || stopping) return;
 		writingSurfaceFolders = true;
 		try {
-			await withAbortScopes([], (signal) => surfaceFolderWorker.processDue(8, signal), 60_000);
+			await surfaceFolderWorker.processDue(8, surfaceFolderStop.signal);
 		} catch {
 			process.stderr.write("Surface folder writer requires operator attention\n");
 		} finally {
@@ -374,6 +375,7 @@ if (process.argv[2] === "migrate") {
 			clearInterval(memoryErasures);
 			clearInterval(companyCreations);
 			clearInterval(surfaceFolderWrites);
+			surfaceFolderStop.abort();
 			stopGateway({
 				close: (done) => server.close(done),
 				flush: () => replication.flushStoredLines(),

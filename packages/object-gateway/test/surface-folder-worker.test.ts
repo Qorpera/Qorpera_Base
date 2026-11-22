@@ -37,6 +37,8 @@ function createHarness(initialFiles: Record<string, string>) {
 	const completedMerges: Record<string, unknown>[] = [];
 	const completedPublishes: Record<string, unknown>[] = [];
 	let pendingClaim: { merges?: unknown[]; publishes?: unknown[] } = { merges: [], publishes: [] };
+	let commitCount = 0;
+	let failCompleteMergeAttempts = 0;
 
 	const putFile = (path: string, text: string, version = randomUUID()): string => {
 		const parts = path.split("/");
@@ -168,6 +170,7 @@ function createHarness(initialFiles: Record<string, string>) {
 					};
 				}
 				case "qorpera_folder_commit": {
+					commitCount += 1;
 					const units = args.p_units as {
 						op: string;
 						path: string;
@@ -260,6 +263,10 @@ function createHarness(initialFiles: Record<string, string>) {
 					return null;
 				}
 				case "qorpera_surface_complete_merge":
+					if (failCompleteMergeAttempts > 0) {
+						failCompleteMergeAttempts -= 1;
+						throw new Error("transient complete merge 503");
+					}
 					completedMerges.push(args);
 					return { jobId: args.p_job_id, status: args.p_status };
 				case "qorpera_surface_complete_publish":
@@ -296,7 +303,12 @@ function createHarness(initialFiles: Record<string, string>) {
 		},
 	};
 
-	const worker = new SurfaceFolderWorker({ authority, store, replication });
+	const worker = new SurfaceFolderWorker({
+		authority,
+		store,
+		replication,
+		completionRetryDelaysMs: [5, 5],
+	});
 
 	return {
 		profileId,
@@ -306,6 +318,10 @@ function createHarness(initialFiles: Record<string, string>) {
 		externalSnapshots,
 		completedMerges,
 		completedPublishes,
+		getCommitCount: () => commitCount,
+		setFailCompleteMergeAttempts(count: number) {
+			failCompleteMergeAttempts = count;
+		},
 		putFile,
 		setPendingClaim(next: { merges?: unknown[]; publishes?: unknown[] }) {
 			pendingClaim = next;
@@ -489,5 +505,52 @@ describe("SurfaceFolderWorker", () => {
 				p_lease_token: leaseToken,
 			},
 		]);
+	});
+
+	it("retries qorpera_surface_complete_merge after a committed folder write without re-committing or corrupting filesBefore", async () => {
+		const h = createHarness({
+			"brand/voice.md": "Original voice.",
+		});
+		const jobId = randomUUID();
+		const leaseToken = randomUUID();
+		const changeId = randomUUID();
+		h.setFailCompleteMergeAttempts(1);
+		h.setPendingClaim({
+			merges: [
+				{
+					jobId,
+					kind: "land_change",
+					surfaceId: h.surfaceId,
+					profileId: h.profileId,
+					environmentId: h.environmentId,
+					leaseToken,
+					folderRoot: "brand",
+					payload: { changeIds: [changeId] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId,
+							kind: "folder_patch",
+							title: "Update voice",
+							summary: "Refines brand voice",
+							affectedPaths: ["voice.md"],
+							patchManifest: [{ op: "write_text", path: "voice.md", content: "Updated voice." }],
+						},
+					],
+				},
+			],
+		});
+
+		expect(await h.worker.processDue(8)).toBe(1);
+		expect(h.getCommitCount()).toBe(1);
+		expect(h.readText("brand/voice.md")).toBe("Updated voice.");
+		expect(h.completedMerges).toHaveLength(1);
+		expect(h.completedMerges[0]).toMatchObject({
+			p_job_id: jobId,
+			p_status: "landed",
+			p_lease_token: leaseToken,
+		});
+		const snap = h.completedMerges[0]?.p_pre_merge_snapshot as { filesBefore?: Record<string, string | null> };
+		expect(snap?.filesBefore?.["brand/voice.md"]).toBe("Original voice.");
 	});
 });

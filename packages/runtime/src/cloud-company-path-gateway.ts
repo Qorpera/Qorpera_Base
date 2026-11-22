@@ -156,6 +156,7 @@ export type CloudCompanyPathRpc =
 	| "qorpera_native_surface_start_session"
 	| "qorpera_native_surface_manage_automation"
 	| "qorpera_native_surface_record_change"
+	| "qorpera_native_surface_read_session_turn"
 	| "qorpera_native_surface_complete_turn"
 	| "qorpera_native_surface_renew_lease";
 

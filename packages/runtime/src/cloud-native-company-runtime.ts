@@ -1988,10 +1988,28 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const sessionId = String(payload.surfaceSessionId);
 		const surfaceId = String(payload.surfaceId);
 		const surfaceSlug = String(payload.surfaceSlug);
-		const surfaceTitle = String(payload.surfaceTitle);
 		const sourceKind = payload.sourceKind as SurfaceSourceKind;
-		const prompt = String(payload.prompt);
 		const leaseToken = String(payload.leaseToken);
+		// WHY: Read the full prompt, briefSummary, originRef, and conflictPaths via native host call so wake payloads remain well under Postgres's 8192-byte check.
+		const sessionTurnRaw = (await this.#paths.call(
+			"qorpera_native_surface_read_session_turn",
+			{
+				p_profile_id: identity.companyId,
+				p_session_id: sessionId,
+				p_lease_token: leaseToken,
+			},
+			signal,
+		)) as Record<string, unknown> | null;
+		if (!sessionTurnRaw || typeof sessionTurnRaw !== "object" || typeof sessionTurnRaw.prompt !== "string") {
+			throw new Error("Surface session turn payload could not be loaded");
+		}
+		const surfaceTitle =
+			typeof sessionTurnRaw.surfaceTitle === "string" && sessionTurnRaw.surfaceTitle.trim()
+				? sessionTurnRaw.surfaceTitle.trim()
+				: surfaceSlug;
+		const conflictPaths = Array.isArray(sessionTurnRaw.conflictPaths)
+			? sessionTurnRaw.conflictPaths.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+			: [];
 		const turnInput: SurfaceSessionTurnInput = {
 			sessionId,
 			surfaceId,
@@ -1999,15 +2017,17 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			surfaceSlug,
 			surfaceTitle,
 			sourceKind,
-			prompt,
-			state: payload.state === "reconciling" ? "reconciling" : "queued",
-			repositoryKey: typeof payload.repositoryKey === "string" ? payload.repositoryKey : null,
-			folderRoot: typeof payload.folderRoot === "string" ? payload.folderRoot : null,
-			briefSummary: typeof payload.briefSummary === "string" ? payload.briefSummary : null,
+			prompt: sessionTurnRaw.prompt,
+			state: sessionTurnRaw.state === "reconciling" ? "reconciling" : "queued",
+			repositoryKey: typeof sessionTurnRaw.repositoryKey === "string" ? sessionTurnRaw.repositoryKey : null,
+			folderRoot: typeof sessionTurnRaw.folderRoot === "string" ? sessionTurnRaw.folderRoot : null,
+			briefSummary: typeof sessionTurnRaw.briefSummary === "string" ? sessionTurnRaw.briefSummary : null,
 			explorationVariantLabel:
-				typeof payload.explorationVariantLabel === "string" ? payload.explorationVariantLabel : null,
-			originKind: typeof payload.originKind === "string" ? payload.originKind : "member",
-			originRef: payload.originRef ?? null,
+				typeof sessionTurnRaw.explorationVariantLabel === "string" ? sessionTurnRaw.explorationVariantLabel : null,
+			originKind:
+				typeof sessionTurnRaw.originKind === "string" ? sessionTurnRaw.originKind : String(payload.originKind),
+			originRef: sessionTurnRaw.originRef ?? null,
+			...(conflictPaths.length > 0 ? { conflictPaths } : {}),
 			leaseToken,
 		};
 
@@ -2020,6 +2040,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		});
 		const stagedNotePaths = new Set<string>();
 		const surfaceTools = createControlPlaneSurfaceToolsPort(this.#paths, {
+			leaseToken,
 			deferSessionCompletion: true,
 			onNotePaths: (paths) => {
 				for (const path of paths) stagedNotePaths.add(path);
@@ -2384,7 +2405,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				? this.#machines(binding)
 				: undefined;
 
-		await runSurfaceSessionTurn(turnInput, {
+		const turnResult = await runSurfaceSessionTurn(turnInput, {
 			folder: folderClient,
 			surfaceTools,
 			executeTurn: async (turnReq) =>
@@ -2448,6 +2469,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			signal,
 		});
 
+		if (turnResult.cause !== undefined) {
+			throw turnResult.cause;
+		}
 		return { providerSessionId: lastProviderSessionId, delivery: { messageCount: 0, finalMessageId: null } };
 	}
 
