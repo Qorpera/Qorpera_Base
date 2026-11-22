@@ -1234,7 +1234,7 @@ function parseSpec(v: unknown): MachineAppSpec {
 		command.length > 32768 ||
 		!isPort(port) ||
 		!isHp(healthPath) ||
-		(cwd != null && (typeof cwd !== "string" || cwd[0] !== "/" || cwd.length > 512 || /\0/.test(cwd))) ||
+		(cwd != null && (typeof cwd !== "string" || cwd[0] !== "/" || cwd.length > 512 || /[\0\r\n]/.test(cwd))) ||
 		(env != null &&
 			(typeof env !== "object" ||
 				Array.isArray(env) ||
@@ -1264,6 +1264,7 @@ export class MachineAppRingLogger {
 		nextSeq: number;
 	};
 	readonly #e: string[] = [];
+	#eb = 0;
 	#q = Promise.resolve();
 	constructor(slug: string, ports: MachineGuestPorts = {}) {
 		this.#p = appP(ports, slug);
@@ -1290,27 +1291,38 @@ export class MachineAppRingLogger {
 	}
 	write(stream: "stdout" | "stderr", raw: string) {
 		const line = Buffer.byteLength(raw) > 8192 ? `${Buffer.from(raw).subarray(0, 8192).toString("utf8")}...` : raw;
-		if (stream === "stderr" && this.#e.push(line) > MACHINE_APP_CRASH_STDERR_LINES) this.#e.shift();
+		if (stream === "stderr") {
+			const tl =
+				Buffer.byteLength(line) > 4096 ? `${Buffer.from(line).subarray(0, 4096).toString("utf8")}...` : line;
+			this.#e.push(tl);
+			this.#eb += Buffer.byteLength(tl);
+			while (this.#e.length > MACHINE_APP_CRASH_STDERR_LINES || this.#eb > 32768) {
+				const drop = this.#e.shift();
+				if (drop !== undefined) this.#eb -= Buffer.byteLength(drop);
+			}
+		}
 		const m = this.#m;
 		const enc = `${JSON.stringify({ ts: new Date().toISOString(), seq: m.nextSeq++, stream, line })}\n`;
 		const len = Buffer.byteLength(enc);
-		this.#q = this.#q.then(async () => {
-			const rot = m.bytesInActive > 0 && m.bytesInActive + len > m.segmentBytes;
-			if (rot) Object.assign(m, { activeSegment: (m.activeSegment + 1) % m.segments, bytesInActive: 0 });
-			const c = constants;
-			const f = await open(
-				this.#p.g(m.activeSegment),
-				c.O_WRONLY | c.O_CREAT | c.O_NOFOLLOW | (rot ? c.O_TRUNC : c.O_APPEND),
-				0o600,
-			);
-			try {
-				await f.writeFile(enc, "utf8");
-			} finally {
-				await f.close();
-			}
-			m.bytesInActive += len;
-			await writeJson(this.#p.r, m, 0o600);
-		});
+		this.#q = this.#q
+			.then(async () => {
+				const rot = m.bytesInActive > 0 && m.bytesInActive + len > m.segmentBytes;
+				if (rot) Object.assign(m, { activeSegment: (m.activeSegment + 1) % m.segments, bytesInActive: 0 });
+				const c = constants;
+				const f = await open(
+					this.#p.g(m.activeSegment),
+					c.O_WRONLY | c.O_CREAT | c.O_NOFOLLOW | (rot ? c.O_TRUNC : c.O_APPEND),
+					0o600,
+				);
+				try {
+					await f.writeFile(enc, "utf8");
+				} finally {
+					await f.close();
+				}
+				m.bytesInActive += len;
+				await writeJson(this.#p.r, m, 0o600);
+			})
+			.catch(() => undefined);
 		return this.#q;
 	}
 	flush() {
@@ -1369,10 +1381,18 @@ export async function startMachineApp(specInput: unknown, ports: MachineGuestPor
 	await writeJson(p.sp, spec, 0o600);
 	for (const op of ["stop", "reset-failed"]) await ctl(ports, [op, p.u]).catch(() => undefined);
 	const { restart, restartSec, startLimitBurst, startLimitIntervalSec } = MACHINE_APP_RESTART_POLICY;
-	const props =
-		`Slice=${PATHS.slice} WorkingDirectory=${spec.cwd ?? ports.home ?? "/root"} Restart=${restart} RestartSec=${restartSec} StartLimitBurst=${startLimitBurst} StartLimitIntervalSec=${startLimitIntervalSec} KillMode=control-group TimeoutStopSec=15 StandardOutput=null StandardError=journal`.split(
-			" ",
-		);
+	const props = [
+		`Slice=${PATHS.slice}`,
+		`WorkingDirectory=${spec.cwd ?? ports.home ?? "/root"}`,
+		`Restart=${restart}`,
+		`RestartSec=${restartSec}`,
+		`StartLimitBurst=${startLimitBurst}`,
+		`StartLimitIntervalSec=${startLimitIntervalSec}`,
+		"KillMode=control-group",
+		"TimeoutStopSec=15",
+		"StandardOutput=null",
+		"StandardError=journal",
+	];
 	await (ports.system ?? system)("/usr/bin/systemd-run", [
 		"--quiet",
 		`--unit=${p.u}`,

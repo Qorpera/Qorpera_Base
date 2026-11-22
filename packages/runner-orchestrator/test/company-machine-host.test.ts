@@ -8415,6 +8415,38 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 
 		answering(
 			f,
+			"app-start",
+			JSON.stringify({
+				schema: "qorpera.machine-app-started/v1",
+				machineId: authority.machineId,
+				slug: "my-shop",
+				unit: "qorpera-machine-app-my-shop.service",
+				port: 3000,
+			}),
+		);
+		const started = await f.host.appStart(
+			authority,
+			{ slug: "my-shop", command: "node index.js", port: 3000, healthPath: "/healthz" },
+			f.signal,
+		);
+		expect(started).toMatchObject({ slug: "my-shop", port: 3000 });
+
+		answering(
+			f,
+			"app-stop",
+			JSON.stringify({
+				schema: "qorpera.machine-app-stopped/v1",
+				slug: "my-shop",
+				unit: "qorpera-machine-app-my-shop.service",
+			}),
+		);
+		expect(await f.host.appStop(authority, "my-shop", f.signal)).toMatchObject({
+			slug: "my-shop",
+			unit: "qorpera-machine-app-my-shop.service",
+		});
+
+		answering(
+			f,
 			"app-reload",
 			JSON.stringify({
 				schema: "qorpera.machine-app-reload/v1",

@@ -693,6 +693,85 @@ export function cloudMachineVaultWords(value: unknown): string | undefined {
 		: undefined;
 }
 
+export const CLOUD_MACHINE_APP_REFUSALS = [
+	"MACHINE_NOT_RUNNING",
+	"MACHINE_NEEDS_COMPANY_VIEW",
+	"COMPANY_MACHINE_FOLDER_HELD",
+	"MACHINE_APP_TARGET_UNHEALTHY",
+	"MACHINE_APP_SPEC_INVALID",
+	"MACHINE_GUEST_LEASE_UNAVAILABLE",
+] as const;
+export type CloudMachineAppRefusalCode = (typeof CLOUD_MACHINE_APP_REFUSALS)[number];
+export class CloudMachineAppRefusal extends Error {
+	readonly code: CloudMachineAppRefusalCode;
+	constructor(code: CloudMachineAppRefusalCode) {
+		super(code);
+		this.code = code;
+	}
+}
+export function isCloudMachineAppRefusal(value: unknown): value is CloudMachineAppRefusalCode {
+	return typeof value === "string" && (CLOUD_MACHINE_APP_REFUSALS as readonly string[]).includes(value);
+}
+
+export interface CloudMachineAppStartInput {
+	readonly slug: string;
+	readonly command: string;
+	readonly port: number;
+	readonly healthPath?: string;
+	readonly cwd?: string;
+}
+
+export interface CloudMachineAppStartAnswer {
+	readonly schema: "qorpera.machine-app-started/v1";
+	readonly machineId: string;
+	readonly slug: string;
+	readonly unit: string;
+	readonly port: number;
+}
+
+export interface CloudMachineAppStopInput {
+	readonly slug: string;
+}
+
+export interface CloudMachineAppStopAnswer {
+	readonly schema: "qorpera.machine-app-stopped/v1";
+	readonly slug: string;
+	readonly unit: string;
+}
+
+export interface CloudMachineAppHealthInput {
+	readonly slug: string;
+}
+
+export interface CloudMachineAppHealthAnswer {
+	readonly schema: "qorpera.machine-app-health/v1";
+	readonly slug: string;
+	readonly unit: string;
+	readonly activeState: string;
+	readonly subState: string;
+	readonly restarts: number;
+	readonly port: number | null;
+	readonly healthy: boolean;
+	readonly lastStatus: number | null;
+	readonly lastLatencyMs: number | null;
+	readonly crashSummary: Record<string, unknown> | null;
+}
+
+export interface CloudMachineAppReloadInput {
+	readonly slug: string;
+	readonly port?: number;
+	readonly healthPath?: string;
+}
+
+export interface CloudMachineAppReloadAnswer {
+	readonly schema: "qorpera.machine-app-reload/v1";
+	readonly slug: string;
+	readonly previousPort: number | null;
+	readonly activePort: number;
+	readonly healthy: boolean;
+	readonly restarted: boolean;
+}
+
 export interface CloudMachineAppLogsInput {
 	readonly slug: string;
 	readonly grep?: string;
@@ -716,6 +795,28 @@ export interface CloudMachineAppLogsAnswer {
 	readonly truncated: boolean;
 	readonly crashSummary: Record<string, unknown> | null;
 }
+
+export type CloudMachineAppOpInput =
+	| Readonly<{ op: "start" } & CloudMachineAppStartInput>
+	| Readonly<{ op: "stop" } & CloudMachineAppStopInput>
+	| Readonly<{ op: "logs" } & CloudMachineAppLogsInput>
+	| Readonly<{ op: "health" } & CloudMachineAppHealthInput>
+	| Readonly<{ op: "reload" } & CloudMachineAppReloadInput>;
+
+export type CloudMachineAppAnswer =
+	| CloudMachineAppStartAnswer
+	| CloudMachineAppStopAnswer
+	| CloudMachineAppLogsAnswer
+	| CloudMachineAppHealthAnswer
+	| CloudMachineAppReloadAnswer;
+
+export type CloudMachineAppHttpRequest = Readonly<{
+	schema: "qorpera.machine-command-http/v1";
+	binding: CloudNativeToolBinding;
+	scope: CloudMachineCommandScope;
+	action: "app";
+	input: CloudMachineAppOpInput;
+}>;
 
 export interface CloudMachineCommandGateway {
 	start(
@@ -752,11 +853,31 @@ export interface CloudMachineCommandGateway {
 		input: CloudMachineScreenInput,
 		signal: AbortSignal,
 	): Promise<CloudMachineScreenAnswer>;
+	appStart?(
+		scope: CloudMachineCommandScope,
+		input: CloudMachineAppStartInput,
+		signal: AbortSignal,
+	): Promise<CloudMachineAppStartAnswer>;
+	appStop?(
+		scope: CloudMachineCommandScope,
+		input: CloudMachineAppStopInput,
+		signal: AbortSignal,
+	): Promise<CloudMachineAppStopAnswer>;
 	appLogs?(
 		scope: CloudMachineCommandScope,
 		input: CloudMachineAppLogsInput,
 		signal: AbortSignal,
 	): Promise<CloudMachineAppLogsAnswer>;
+	appHealth?(
+		scope: CloudMachineCommandScope,
+		input: CloudMachineAppHealthInput,
+		signal: AbortSignal,
+	): Promise<CloudMachineAppHealthAnswer>;
+	appReload?(
+		scope: CloudMachineCommandScope,
+		input: CloudMachineAppReloadInput,
+		signal: AbortSignal,
+	): Promise<CloudMachineAppReloadAnswer>;
 }
 
 /** How long a wake with `wait` stays open at the executor, well inside the gateway's and the client's bounds. */
@@ -871,6 +992,222 @@ export function parseCloudMachineCodingValueHttpRequest(value: unknown): CloudMa
 		input: Object.freeze({ commandId: body.commandId, envelope: body.envelope }),
 	});
 }
+const APP_SLUG = /^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$/;
+const APP_RESPONSE_LIMIT = 131072;
+
+function validAppHealthPath(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		(value === "" || (value.startsWith("/") && value.length <= 256 && !/[\x00-\x1f\x7f\s]/.test(value)))
+	);
+}
+
+export function parseCloudMachineAppHttpRequest(value: unknown): CloudMachineAppHttpRequest {
+	const req = record(value, ["schema", "binding", "scope", "action", "input"]);
+	const scope = record(req.scope, ["machineId"]);
+	if (
+		req.schema !== "qorpera.machine-command-http/v1" ||
+		req.action !== "app" ||
+		typeof scope.machineId !== "string" ||
+		!UUID.test(scope.machineId) ||
+		!req.input ||
+		typeof req.input !== "object" ||
+		Array.isArray(req.input)
+	)
+		throw new Error(ERROR);
+	const raw = req.input as Record<string, unknown>;
+	const op = raw.op;
+	const slug = raw.slug;
+	if (typeof slug !== "string" || !APP_SLUG.test(slug)) throw new Error(ERROR);
+	let input: CloudMachineAppOpInput;
+	if (op === "start") {
+		const allowed = new Set(["op", "slug", "command", "port", "healthPath", "cwd"]);
+		if (Object.keys(raw).some((k) => !allowed.has(k))) throw new Error(ERROR);
+		if (
+			typeof raw.command !== "string" ||
+			!raw.command.trim() ||
+			raw.command.includes("\0") ||
+			Buffer.byteLength(raw.command) > 32768 ||
+			!Number.isInteger(raw.port) ||
+			Number(raw.port) < 1 ||
+			Number(raw.port) > 65535 ||
+			(raw.healthPath !== undefined && !validAppHealthPath(raw.healthPath)) ||
+			(raw.cwd !== undefined &&
+				(typeof raw.cwd !== "string" ||
+					!raw.cwd.startsWith("/") ||
+					raw.cwd.length > 512 ||
+					/[\0\r\n]/.test(raw.cwd)))
+		)
+			throw new Error(ERROR);
+		input = Object.freeze({
+			op: "start",
+			slug,
+			command: raw.command,
+			port: Number(raw.port),
+			...(raw.healthPath !== undefined ? { healthPath: raw.healthPath } : {}),
+			...(raw.cwd !== undefined ? { cwd: raw.cwd } : {}),
+		});
+	} else if (op === "stop" || op === "health") {
+		record(raw, ["op", "slug"]);
+		input = Object.freeze({ op, slug });
+	} else if (op === "reload") {
+		const allowed = new Set(["op", "slug", "port", "healthPath"]);
+		if (Object.keys(raw).some((k) => !allowed.has(k))) throw new Error(ERROR);
+		if (
+			(raw.port !== undefined &&
+				(!Number.isInteger(raw.port) || Number(raw.port) < 1 || Number(raw.port) > 65535)) ||
+			(raw.healthPath !== undefined && !validAppHealthPath(raw.healthPath))
+		)
+			throw new Error(ERROR);
+		input = Object.freeze({
+			op: "reload",
+			slug,
+			...(raw.port !== undefined ? { port: Number(raw.port) } : {}),
+			...(raw.healthPath !== undefined ? { healthPath: raw.healthPath } : {}),
+		});
+	} else if (op === "logs") {
+		const allowed = new Set(["op", "slug", "grep", "tail", "stream", "since"]);
+		if (Object.keys(raw).some((k) => !allowed.has(k))) throw new Error(ERROR);
+		if (
+			(raw.grep !== undefined && (typeof raw.grep !== "string" || raw.grep.length > 256)) ||
+			(raw.tail !== undefined && (!Number.isInteger(raw.tail) || Number(raw.tail) < 1 || Number(raw.tail) > 500)) ||
+			(raw.stream !== undefined && raw.stream !== "stdout" && raw.stream !== "stderr" && raw.stream !== "all") ||
+			(raw.since !== undefined &&
+				(typeof raw.since !== "string" || raw.since.length > 64 || Number.isNaN(Date.parse(raw.since))))
+		)
+			throw new Error(ERROR);
+		input = Object.freeze({
+			op: "logs",
+			slug,
+			...(raw.grep !== undefined ? { grep: raw.grep } : {}),
+			...(raw.tail !== undefined ? { tail: Number(raw.tail) } : {}),
+			...(raw.stream !== undefined ? { stream: raw.stream } : {}),
+			...(raw.since !== undefined ? { since: raw.since } : {}),
+		});
+	} else {
+		throw new Error(ERROR);
+	}
+	return Object.freeze({
+		schema: "qorpera.machine-command-http/v1",
+		binding: parseCloudNativeToolBinding(req.binding),
+		scope: Object.freeze({ machineId: scope.machineId }),
+		action: "app",
+		input,
+	});
+}
+
+export function parseCloudMachineAppAnswer(request: CloudMachineAppHttpRequest, value: unknown): CloudMachineAppAnswer {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(ERROR);
+	const raw = value as Record<string, unknown>;
+	if (raw.slug !== request.input.slug) throw new Error(ERROR);
+	if (request.input.op === "start") {
+		if (
+			raw.schema !== "qorpera.machine-app-started/v1" ||
+			typeof raw.machineId !== "string" ||
+			typeof raw.unit !== "string" ||
+			!Number.isInteger(raw.port)
+		)
+			throw new Error(ERROR);
+		return Object.freeze({
+			schema: "qorpera.machine-app-started/v1",
+			machineId: raw.machineId,
+			slug: request.input.slug,
+			unit: raw.unit,
+			port: Number(raw.port),
+		});
+	}
+	if (request.input.op === "stop") {
+		if (raw.schema !== "qorpera.machine-app-stopped/v1" || typeof raw.unit !== "string") throw new Error(ERROR);
+		return Object.freeze({
+			schema: "qorpera.machine-app-stopped/v1",
+			slug: request.input.slug,
+			unit: raw.unit,
+		});
+	}
+	if (request.input.op === "health") {
+		if (
+			raw.schema !== "qorpera.machine-app-health/v1" ||
+			typeof raw.unit !== "string" ||
+			typeof raw.activeState !== "string" ||
+			typeof raw.subState !== "string" ||
+			!Number.isSafeInteger(raw.restarts) ||
+			(raw.port !== null && !Number.isInteger(raw.port)) ||
+			typeof raw.healthy !== "boolean" ||
+			(raw.lastStatus !== null && !Number.isInteger(raw.lastStatus)) ||
+			(raw.lastLatencyMs !== null && typeof raw.lastLatencyMs !== "number") ||
+			(raw.crashSummary !== null && (typeof raw.crashSummary !== "object" || Array.isArray(raw.crashSummary)))
+		)
+			throw new Error(ERROR);
+		return Object.freeze({
+			schema: "qorpera.machine-app-health/v1",
+			slug: request.input.slug,
+			unit: raw.unit,
+			activeState: raw.activeState,
+			subState: raw.subState,
+			restarts: Number(raw.restarts),
+			port: raw.port === null ? null : Number(raw.port),
+			healthy: raw.healthy,
+			lastStatus: raw.lastStatus === null ? null : Number(raw.lastStatus),
+			lastLatencyMs: raw.lastLatencyMs === null ? null : Number(raw.lastLatencyMs),
+			crashSummary: (raw.crashSummary as Record<string, unknown> | null) ?? null,
+		});
+	}
+	if (request.input.op === "reload") {
+		if (
+			raw.schema !== "qorpera.machine-app-reload/v1" ||
+			(raw.previousPort !== null && !Number.isInteger(raw.previousPort)) ||
+			!Number.isInteger(raw.activePort) ||
+			typeof raw.healthy !== "boolean" ||
+			typeof raw.restarted !== "boolean"
+		)
+			throw new Error(ERROR);
+		return Object.freeze({
+			schema: "qorpera.machine-app-reload/v1",
+			slug: request.input.slug,
+			previousPort: raw.previousPort === null ? null : Number(raw.previousPort),
+			activePort: Number(raw.activePort),
+			healthy: raw.healthy,
+			restarted: raw.restarted,
+		});
+	}
+	if (
+		raw.schema !== "qorpera.machine-app-logs/v1" ||
+		!Array.isArray(raw.lines) ||
+		!Number.isSafeInteger(raw.totalMatched) ||
+		typeof raw.truncated !== "boolean" ||
+		(raw.crashSummary !== null && (typeof raw.crashSummary !== "object" || Array.isArray(raw.crashSummary)))
+	)
+		throw new Error(ERROR);
+	const lines: CloudMachineAppLogEntry[] = [];
+	for (const item of raw.lines) {
+		if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error(ERROR);
+		const entry = item as Record<string, unknown>;
+		if (
+			typeof entry.ts !== "string" ||
+			!Number.isSafeInteger(entry.seq) ||
+			(entry.stream !== "stdout" && entry.stream !== "stderr") ||
+			typeof entry.line !== "string"
+		)
+			throw new Error(ERROR);
+		lines.push(
+			Object.freeze({
+				ts: entry.ts,
+				seq: Number(entry.seq),
+				stream: entry.stream,
+				line: entry.line,
+			}),
+		);
+	}
+	return Object.freeze({
+		schema: "qorpera.machine-app-logs/v1",
+		slug: request.input.slug,
+		lines: Object.freeze(lines),
+		totalMatched: Number(raw.totalMatched),
+		truncated: raw.truncated,
+		crashSummary: (raw.crashSummary as Record<string, unknown> | null) ?? null,
+	});
+}
+
 export function parseCloudMachineAccountFillHttpRequest(value: unknown): CloudMachineAccountFillHttpRequest {
 	const input = record(value, ["schema", "binding", "scope", "action", "input"]);
 	const scope = record(input.scope, ["machineId"]);
@@ -1444,7 +1781,84 @@ export function createHttpCloudMachineCommandGateway(options: {
 				throw new Error(ERROR);
 			}
 		},
+		appStart: async (scope, input, signal) =>
+			(await postApp(scope, { op: "start", ...input }, signal)) as CloudMachineAppStartAnswer,
+		appStop: async (scope, input, signal) =>
+			(await postApp(scope, { op: "stop", ...input }, signal)) as CloudMachineAppStopAnswer,
+		appLogs: async (scope, input, signal) =>
+			(await postApp(scope, { op: "logs", ...input }, signal)) as CloudMachineAppLogsAnswer,
+		appHealth: async (scope, input, signal) =>
+			(await postApp(scope, { op: "health", ...input }, signal)) as CloudMachineAppHealthAnswer,
+		appReload: async (scope, input, signal) =>
+			(await postApp(scope, { op: "reload", ...input }, signal)) as CloudMachineAppReloadAnswer,
 	});
+
+	async function postApp(
+		scope: CloudMachineCommandScope,
+		input: CloudMachineAppOpInput,
+		signal: AbortSignal,
+	): Promise<CloudMachineAppAnswer> {
+		try {
+			const admitted = parseCloudMachineAppHttpRequest({
+				schema: "qorpera.machine-command-http/v1",
+				binding,
+				scope,
+				action: "app",
+				input,
+			});
+			const body = JSON.stringify(admitted);
+			if (Buffer.byteLength(body) > REQUEST_LIMIT) throw new Error(ERROR);
+			return await withCloudDeadline(
+				async (requestSignal) => {
+					const response = await transport(`${base}/v1/machine-commands/app`, {
+						method: "POST",
+						redirect: "error",
+						signal: requestSignal,
+						headers: {
+							authorization: `Bearer ${options.token}`,
+							"content-type": "application/json",
+							...(options.holder ? { "x-qorpera-identity": options.holder() } : {}),
+						},
+						body,
+					}).catch(() => {
+						throw new CloudMachineCommandUnanswered();
+					});
+					if (response.status >= 500) {
+						void response.body?.cancel().catch(() => undefined);
+						throw new CloudMachineCommandUnanswered();
+					}
+					if (response.status === 409) {
+						const { code } = JSON.parse(
+							new TextDecoder("utf8", { fatal: true }).decode(
+								await readBoundedCloudResponse(response, 4096, requestSignal),
+							),
+						) as { code?: unknown };
+						if (isCloudMachineAppRefusal(code)) throw new CloudMachineAppRefusal(code);
+						throw new Error(ERROR);
+					}
+					if (response.status !== 200) {
+						void response.body?.cancel().catch(() => undefined);
+						throw new Error(ERROR);
+					}
+					return parseCloudMachineAppAnswer(
+						admitted,
+						JSON.parse(
+							new TextDecoder("utf8", { fatal: true }).decode(
+								await readBoundedCloudResponse(response, APP_RESPONSE_LIMIT, requestSignal),
+							),
+						),
+					);
+				},
+				30000,
+				signal,
+			);
+		} catch (error) {
+			if (error instanceof CloudMachineCommandUnanswered || error instanceof CloudRequestTimeoutError)
+				throw new CloudMachineCommandUnanswered();
+			if (error instanceof CloudMachineAppRefusal) throw error;
+			throw new Error(ERROR);
+		}
+	}
 }
 
 /** Sends one of a desktop's messages to a member's sink and gives up the moment `signal` aborts: a browser that stops
@@ -1856,6 +2270,7 @@ export interface CloudMachineCommandServiceOptions {
 	/** machine_screen (20260930708000): authorized in SQL and run on the machine's node, or forwarded there; a refusal
 	 * is a CloudMachineScreenRefusal. */
 	screen?(request: CloudMachineScreenHttpRequest, signal: AbortSignal): Promise<CloudMachineScreenAnswer>;
+	app?(request: CloudMachineAppHttpRequest, signal: AbortSignal): Promise<CloudMachineAppAnswer>;
 	/** A member's look (20260930712000), on the peer listener only: authorized in SQL and looked at on this node; a
 	 * refusal is a CloudMemberMachineScreenRefusal. */
 	memberScreen?(request: CloudMemberMachineScreenPeerRequest, signal: AbortSignal): Promise<CloudMemberMachineScreen>;

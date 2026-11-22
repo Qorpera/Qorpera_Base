@@ -15,6 +15,7 @@ import {
 } from "../../../deploy/coding-worker/machine-command-authority.ts";
 import {
 	localMachineAccountFill,
+	localMachineApp,
 	localMachineCodingValue,
 	localMachineCodingValueClear,
 	localMachineScreen,
@@ -47,6 +48,7 @@ import {
 	CLOUD_MACHINE_TOOL_VERSION,
 	type CloudMachineAccountFillHttpRequest,
 	CloudMachineAccountFillRefusal,
+	CloudMachineAppRefusal,
 	type CloudMachineCodingValueHttpRequest,
 	CloudMachineCodingValueRefusal,
 	type CloudMachineCommandHttpRequest,
@@ -3877,5 +3879,176 @@ describe("a member's live picture of a desktop (20260930745000)", () => {
 		}).memberStream({ passId: delayed.passId, epoch: null }, delayedSink, new AbortController().signal);
 		expect(delayedReason).toBe("DESKTOP_ENDED");
 		expect(delayedSink.messages.map(String)).toEqual(["late-first-frame"]);
+	});
+});
+
+describe("a machine's app supervision", () => {
+	const cleanups: (() => Promise<void>)[] = [];
+	afterEach(async () => {
+		while (cleanups.length) await cleanups.pop()?.();
+	});
+
+	it("authorizes via qorpera_authorize_machine_app_op over HTTP, executes locally or on a peer, and propagates refusals", async () => {
+		const { binding } = nativeToolAuthorityFixture();
+		const machineId = randomUUID();
+		const placementId = randomUUID();
+		const bootId = randomUUID();
+		const runId = randomUUID();
+		const token = randomBytes(32).toString("base64url");
+		const holder = `job.${binding.jobId.toLowerCase()}.${randomBytes(32).toString("base64url")}`;
+		let executorOwner = "mx-a";
+		const sqlCalls: { method: string; args: Record<string, unknown> }[] = [];
+		const call = vi.fn(async (method: string, args: Record<string, unknown>) => {
+			if (!CODING_CONTROL_METHODS.has(method)) throw new Error(`unexpected ${method}`);
+			sqlCalls.push({ method, args });
+			if (args.p_slug === "stopped-app") {
+				return {
+					schema: "qorpera.machine-app-authority/v1",
+					state: "refused",
+					reason: "MACHINE_NOT_RUNNING",
+					machine: "shop-server",
+				};
+			}
+			return {
+				schema: "qorpera.machine-app-authority/v1",
+				state: "authorized",
+				machineId,
+				placementId,
+				bootId,
+				executorOwner,
+				providerId: "machine-node",
+				runId,
+				slug: args.p_slug,
+				appPort: 3000,
+			};
+		});
+		const host = {
+			appStart: vi.fn(async (_auth: unknown, req: { slug: string; port: number }) => ({
+				schema: "qorpera.machine-app-started/v1" as const,
+				machineId,
+				slug: req.slug,
+				unit: `qorpera-machine-app-${req.slug}.service`,
+				port: req.port,
+			})),
+			appStop: vi.fn(async (_auth: unknown, slug: string) => ({
+				schema: "qorpera.machine-app-stopped/v1" as const,
+				slug,
+				unit: `qorpera-machine-app-${slug}.service`,
+			})),
+			appHealth: vi.fn(async (_auth: unknown, slug: string) => ({
+				schema: "qorpera.machine-app-health/v1" as const,
+				slug,
+				unit: `qorpera-machine-app-${slug}.service`,
+				activeState: "active",
+				subState: "running",
+				restarts: 1,
+				port: 3000,
+				healthy: true,
+				lastStatus: 200,
+				lastLatencyMs: 3,
+				crashSummary: null,
+			})),
+			appReload: vi.fn(async (_auth: unknown, req: { slug: string; port?: number }) => {
+				if (req.port === 3999) throw new Error("MACHINE_APP_TARGET_UNHEALTHY");
+				return {
+					schema: "qorpera.machine-app-reload/v1" as const,
+					slug: req.slug,
+					previousPort: 3000,
+					activePort: req.port ?? 3000,
+					healthy: true,
+					restarted: req.port === undefined || req.port === 3000,
+				};
+			}),
+			appLogs: vi.fn(async (_auth: unknown, req: { slug: string }) => ({
+				schema: "qorpera.machine-app-logs/v1" as const,
+				slug: req.slug,
+				lines: [{ ts: "2026-11-22T06:00:00.000Z", seq: 1, stream: "stdout" as const, line: "ready" }],
+				totalMatched: 1,
+				truncated: false,
+				crashSummary: null,
+			})),
+		};
+		const peerUrls: string[] = [];
+		const router = new MachineCommandRouter({
+			owner: "mx-a",
+			providerId: "machine-node",
+			peers: [
+				{ owner: "mx-b", providerId: "machine-node", origin: "https://node-b.example", tokenCredential: "peer-b" },
+			],
+			control: { call },
+			credential: async () => randomBytes(32).toString("base64url"),
+			appLocal: localMachineApp(host),
+			fetch: (async (input: string | URL | Request) => {
+				peerUrls.push(String(input));
+				return new Response(
+					JSON.stringify({
+						schema: "qorpera.machine-app-health/v1",
+						slug: "my-shop",
+						unit: "qorpera-machine-app-my-shop.service",
+						activeState: "active",
+						subState: "running",
+						restarts: 0,
+						port: 3000,
+						healthy: true,
+						lastStatus: 200,
+						lastLatencyMs: 2,
+						crashSummary: null,
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}) as typeof fetch,
+		});
+		const service = new HttpCloudCodingCommandService({
+			token,
+			proveBinding: async () => {},
+			authorize: async () => {
+				throw new Error("not a coding command");
+			},
+			execute: async () => {
+				throw new Error("not a coding command");
+			},
+			machines: machineCommandRoutes(router, { call }, false),
+		});
+		const port = await service.start();
+		cleanups.push(() => service.close());
+		const gw = createHttpCloudMachineCommandGateway({
+			url: `http://127.0.0.1:${port}`,
+			allowLoopback: true,
+			token,
+			binding,
+			holder: () => holder,
+		});
+		const signal = new AbortController().signal;
+		const scope = { machineId };
+		expect(
+			await gw.appStart?.(scope, { slug: "my-shop", command: "node index.js", port: 3000 }, signal),
+		).toMatchObject({ schema: "qorpera.machine-app-started/v1", port: 3000 });
+		expect(await gw.appHealth?.(scope, { slug: "my-shop" }, signal)).toMatchObject({
+			schema: "qorpera.machine-app-health/v1",
+			healthy: true,
+		});
+		expect(await gw.appLogs?.(scope, { slug: "my-shop", tail: 10 }, signal)).toMatchObject({
+			schema: "qorpera.machine-app-logs/v1",
+			totalMatched: 1,
+		});
+		expect(await gw.appReload?.(scope, { slug: "my-shop", port: 3001 }, signal)).toMatchObject({
+			schema: "qorpera.machine-app-reload/v1",
+			activePort: 3001,
+		});
+		expect(await gw.appStop?.(scope, { slug: "my-shop" }, signal)).toMatchObject({
+			schema: "qorpera.machine-app-stopped/v1",
+			slug: "my-shop",
+		});
+		expect(sqlCalls.map((c) => c.method)).toEqual(Array(5).fill("qorpera_authorize_machine_app_op"));
+
+		await expect(gw.appLogs?.(scope, { slug: "stopped-app" }, signal)).rejects.toThrow(CloudMachineAppRefusal);
+		await expect(gw.appReload?.(scope, { slug: "my-shop", port: 3999 }, signal)).rejects.toMatchObject({
+			code: "MACHINE_APP_TARGET_UNHEALTHY",
+		});
+
+		executorOwner = "mx-b";
+		const peerHealth = await gw.appHealth?.(scope, { slug: "my-shop" }, signal);
+		expect(peerHealth?.healthy).toBe(true);
+		expect(peerUrls).toEqual(["https://node-b.example/v1/machine-commands/app"]);
 	});
 });

@@ -283,8 +283,8 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		id: "app-relay-streaming-and-site-rollbacks",
 		kind: "capability",
 		date: "2026-11-22",
-		title: "App link WebSockets, SSE streaming, logs and site rollbacks",
-		text: "Shared app links (share_app) now carry HTTP, long-lived SSE streaming and WebSockets cleanly with per-stream flow control, active health probing, zero-downtime swaps, and password, company-member or public auth modes. Static websites published with publish_site now keep their last ten versions and accept WebAssembly, glTF/GLB, WebVTT, Markdown, and RSS/Atom files. Use manage_site to list retained versions, roll back a static site atomically, or query structured app logs and crash summaries.",
+		title: "App WebSockets, SSE, supervision and site rollbacks",
+		text: "Shared app links (share_app) now carry HTTP, long-lived SSE streaming and WebSockets with per-stream flow control, active health probing, and zero-downtime port swaps. Static websites published with publish_site now keep up to ten versions within a per-company kept-version budget and accept WebAssembly, glTF/GLB, WebVTT, Markdown, and RSS/Atom files. Use manage_site to list versions, roll back a published static website atomically, or start, check health, reload, stop, and read structured logs and crash summaries for a hosted app.",
 	},
 ]);
 

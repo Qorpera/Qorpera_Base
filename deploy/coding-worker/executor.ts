@@ -54,9 +54,9 @@ import { authorizeCodingCommand, proveNativeBinding } from "./command-authority.
 import { authorizeHomeSession } from "./home-session-authority.ts";
 import { BrokerMachineAccountFill } from "./machine-account-fill-broker.ts";
 import {
-	localMachineAccountFill, localMachineCodingValue, localMachineCodingValueClear, localMachineScreen, localMachineWake,
-	localMemberMachineAct, localMemberMachinePointer, localMemberMachineScreen, localMemberMachineStart, localMemberMachineStream,
-	MachineCommandRouter, machineCommandRoutes,
+	localMachineAccountFill, localMachineApp, localMachineCodingValue, localMachineCodingValueClear, localMachineScreen,
+	localMachineWake, localMemberMachineAct, localMemberMachinePointer, localMemberMachineScreen, localMemberMachineStart,
+	localMemberMachineStream, MachineCommandRouter, machineCommandRoutes,
 } from "./machine-command-routing.ts";
 import { MemberMachineScreenControl } from "./member-control.ts";
 import { CodingCommandRouter, type CodingCommandPeer } from "./command-routing.ts";
@@ -668,6 +668,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			...(accountFills ? { accountFillLocal: localMachineAccountFill(machineHost, accountFills) } : {}),
 			codingValueClearLocal: localMachineCodingValueClear(machineHost),
 			screenLocal: localMachineScreen(machineHost),
+			appLocal: localMachineApp(machineHost),
 			memberScreenLocal: localMemberMachineScreen(machineHost),
 			memberActLocal: localMemberMachineAct(machineHost),
 			memberStartLocal: localMemberMachineStart(machineHost),

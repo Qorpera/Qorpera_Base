@@ -41,6 +41,25 @@ describe("site-blob-upload", () => {
 		expect(built.manifestSha256).toMatch(/^[0-9a-f]{64}$/);
 	});
 
+	it("maps expanded static web asset extensions to their MIME types", () => {
+		const built = buildCanonicalSiteManifest([
+			makeFile("engine.wasm", "\x00asm"),
+			makeFile("models/hero.glb", "glTF"),
+			makeFile("models/hero.gltf", "{}"),
+			makeFile("captions/en.vtt", "WEBVTT"),
+			makeFile("docs/guide.md", "# Guide"),
+			makeFile("feed.rss", "<rss/>"),
+			makeFile("feed.atom", "<feed/>"),
+		]);
+		expect(built.manifest.files["engine.wasm"]?.content_type).toBe("application/wasm");
+		expect(built.manifest.files["models/hero.glb"]?.content_type).toBe("model/gltf-binary");
+		expect(built.manifest.files["models/hero.gltf"]?.content_type).toBe("model/gltf+json");
+		expect(built.manifest.files["captions/en.vtt"]?.content_type).toBe("text/vtt; charset=utf-8");
+		expect(built.manifest.files["docs/guide.md"]?.content_type).toBe("text/markdown; charset=utf-8");
+		expect(built.manifest.files["feed.rss"]?.content_type).toBe("application/rss+xml; charset=utf-8");
+		expect(built.manifest.files["feed.atom"]?.content_type).toBe("application/atom+xml; charset=utf-8");
+	});
+
 	it("deduplicates identical blobs and uploads only missing ones via HEAD + PUT", async () => {
 		const existing = makeFile("a.txt", "already-on-nas");
 		const fresh1 = makeFile("index.html", "<h1>Fresh</h1>");

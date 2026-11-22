@@ -1071,6 +1071,28 @@ export interface CompanyMachineAppAuthority {
 	readonly runId?: string;
 }
 
+export interface CompanyMachineAppStartRequest {
+	readonly slug: string;
+	readonly command: string;
+	readonly port: number;
+	readonly healthPath?: string;
+	readonly cwd?: string;
+}
+
+export interface CompanyMachineAppStartResult {
+	readonly schema: "qorpera.machine-app-started/v1";
+	readonly machineId: string;
+	readonly slug: string;
+	readonly unit: string;
+	readonly port: number;
+}
+
+export interface CompanyMachineAppStopResult {
+	readonly schema: "qorpera.machine-app-stopped/v1";
+	readonly slug: string;
+	readonly unit: string;
+}
+
 export interface CompanyMachineAppHealthResult {
 	readonly schema: "qorpera.machine-app-health/v1";
 	readonly slug: string;
@@ -5075,6 +5097,89 @@ export class LxdCompanyMachineHost {
 				: HELD.untaken;
 		}
 	}
+	async #checkAppFolder(authority: CompanyMachineAppAuthority, signal: AbortSignal): Promise<void> {
+		const folder = this.#options.folder;
+		if (!folder) return;
+		const f = this.#folders.get(authority.placementId);
+		const boot = f?.bootId === authority.bootId ? f : undefined;
+		const at: FolderRelease = {
+			placementId: authority.placementId,
+			bootId: authority.bootId ?? undefined,
+			runId: authority.runId,
+		};
+		if (this.#heldAlready(at, boot) !== undefined) throw new Error("COMPANY_MACHINE_FOLDER_HELD");
+		if ((await this.#release(folder, at, boot, BOUNDARY_MS, signal)) !== undefined)
+			throw new Error("COMPANY_MACHINE_FOLDER_HELD");
+	}
+
+	async appStart(
+		authority: CompanyMachineAppAuthority,
+		request: CompanyMachineAppStartRequest,
+		signal: AbortSignal,
+	): Promise<CompanyMachineAppStartResult> {
+		if (
+			!UUID.test(authority.machineId) ||
+			!UUID.test(authority.placementId) ||
+			!APP_SLUG.test(request.slug) ||
+			typeof request.command !== "string" ||
+			!request.command.trim() ||
+			request.command.length > 32768 ||
+			!Number.isInteger(request.port) ||
+			request.port < 1 ||
+			request.port > 65535
+		)
+			throw new Error("COMPANY_MACHINE_APP_INVALID");
+		if (
+			request.healthPath !== undefined &&
+			(typeof request.healthPath !== "string" ||
+				(request.healthPath !== "" &&
+					(!request.healthPath.startsWith("/") ||
+						request.healthPath.length > 256 ||
+						/[\x00-\x1f\x7f\s]/.test(request.healthPath))))
+		)
+			throw new Error("COMPANY_MACHINE_APP_INVALID");
+		if (
+			request.cwd !== undefined &&
+			(typeof request.cwd !== "string" ||
+				!request.cwd.startsWith("/") ||
+				request.cwd.length > 512 ||
+				/[\0\r\n]/.test(request.cwd))
+		)
+			throw new Error("COMPANY_MACHINE_APP_INVALID");
+		await this.#checkAppFolder(authority, signal);
+		const payload = {
+			slug: request.slug,
+			command: request.command,
+			port: request.port,
+			...(request.healthPath !== undefined ? { healthPath: request.healthPath } : {}),
+			...(request.cwd !== undefined ? { cwd: request.cwd } : {}),
+		};
+		const value = await this.#runAppGuestCommand(authority.placementId, ["app-start"], payload, signal);
+		if (
+			value.schema !== "qorpera.machine-app-started/v1" ||
+			value.slug !== request.slug ||
+			typeof value.machineId !== "string" ||
+			typeof value.unit !== "string" ||
+			!Number.isInteger(value.port)
+		)
+			throw new Error("COMPANY_MACHINE_APP_INVALID");
+		return value as unknown as CompanyMachineAppStartResult;
+	}
+
+	async appStop(
+		authority: CompanyMachineAppAuthority,
+		slug: string,
+		signal: AbortSignal,
+	): Promise<CompanyMachineAppStopResult> {
+		if (!UUID.test(authority.machineId) || !UUID.test(authority.placementId) || !APP_SLUG.test(slug))
+			throw new Error("COMPANY_MACHINE_APP_INVALID");
+		await this.#checkAppFolder(authority, signal);
+		const value = await this.#runAppGuestCommand(authority.placementId, ["app-stop", slug], null, signal);
+		if (value.schema !== "qorpera.machine-app-stopped/v1" || value.slug !== slug || typeof value.unit !== "string")
+			throw new Error("COMPANY_MACHINE_APP_INVALID");
+		return value as unknown as CompanyMachineAppStopResult;
+	}
+
 	async appHealth(
 		authority: CompanyMachineAppAuthority,
 		slug: string,
@@ -5082,6 +5187,7 @@ export class LxdCompanyMachineHost {
 	): Promise<CompanyMachineAppHealthResult> {
 		if (!UUID.test(authority.machineId) || !UUID.test(authority.placementId) || !APP_SLUG.test(slug))
 			throw new Error("COMPANY_MACHINE_APP_INVALID");
+		await this.#checkAppFolder(authority, signal);
 		const value = await this.#runAppGuestCommand(authority.placementId, ["app-health", slug], null, signal);
 		if (
 			value.schema !== "qorpera.machine-app-health/v1" ||
@@ -5114,6 +5220,7 @@ export class LxdCompanyMachineHost {
 						/[\x00-\x1f\x7f\s]/.test(request.healthPath))))
 		)
 			throw new Error("COMPANY_MACHINE_APP_INVALID");
+		await this.#checkAppFolder(authority, signal);
 		const hasOptions = request.port !== undefined || request.healthPath !== undefined;
 		const payload = hasOptions
 			? {
@@ -5156,20 +5263,7 @@ export class LxdCompanyMachineHost {
 			(typeof request.since !== "string" || request.since.length > 64 || Number.isNaN(Date.parse(request.since)))
 		)
 			throw new Error("COMPANY_MACHINE_APP_INVALID");
-		const folder = this.#options.folder;
-		if (folder) {
-			const f = this.#folders.get(authority.placementId);
-			const boot = f?.bootId === authority.bootId ? f : undefined;
-			const at: FolderRelease = {
-				placementId: authority.placementId,
-				bootId: authority.bootId ?? undefined,
-				runId: authority.runId,
-			};
-			const already = this.#heldAlready(at, boot);
-			if (already !== undefined) throw new Error("COMPANY_MACHINE_FOLDER_HELD");
-			const heldBack = await this.#release(folder, at, boot, BOUNDARY_MS, signal);
-			if (heldBack !== undefined) throw new Error("COMPANY_MACHINE_FOLDER_HELD");
-		}
+		await this.#checkAppFolder(authority, signal);
 		const payload = {
 			...(request.grep !== undefined ? { grep: request.grep } : {}),
 			...(request.tail !== undefined ? { tail: request.tail } : {}),

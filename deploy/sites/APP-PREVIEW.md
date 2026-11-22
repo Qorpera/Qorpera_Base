@@ -132,110 +132,151 @@ relay at `/.qorpera/client.mjs` on every app host, no password).
 Relay, listening on `:8090` on the compose network; environment `QORPERA_API` (`http://api-gw:8000`),
 `QORPERA_API_KEY` (the stack's anon key, the gateway's `apikey`), `QORPERA_RELAY_JWT` (a JWT with role
 `qorpera_site_relay`, minted at rollout from the stack's JWT secret: the relay never holds the service role and refuses
-to start with any other role), `QORPERA_APP_HOST_SUFFIX` (`-preview.qorpera.com`):
+to start with any other role), `QORPERA_APP_HOST_SUFFIX` (`-preview.qorpera.com`), optional `QORPERA_WEB_ORIGINS` (JSON
+array of exact `https://` web origins permitted to post member passes; defaults to `["https://app.qorpera.com"]`),
+optional `QORPERA_APP_RELAY_MAX_BODY_BYTES` (default 10 MiB, configurable up to 100 MiB), and optional
+`QORPERA_APP_RELAY_GRACEFUL_SHUTDOWN_MS` (default 30 s):
 
 - The app host is `x-forwarded-host` as api-front sets it (the request's own name), matched against
-  `^([a-z0-9][a-z0-9-]{1,46}[a-z0-9])<suffix>$`; anything else 404.
+  `^([a-z0-9][a-z0-9-]{1,46}[a-z0-9])<suffix>$` or a verified custom domain (`dns_verified` / `tls_active`) reported for
+  a connected link program by `qorpera_site_app_connect`; anything else 404. (Note: Envoy front routing in
+  `envoy-front-sites.yaml` currently routes `*-preview.qorpera.com` to `app_relay`; custom domains reach `app-relay`
+  once routed to it by a front proxy.)
 - `/.qorpera/` is the platform's on an app host: `connect` (WebSocket upgrade; `Authorization: Bearer <secret>` and
   `x-qorpera-program: <the program's id>` → `qorpera_site_app_connect(slug, secret, id)`, asked before the handshake
   completes; a refusal still completes it and closes with 4001, the only answer a WebSocket client can read; a secret
-  or id that is not of the platform's form is refused without asking; the answer's key, the link's URL and its port go
-  to the program in the first message), `client.mjs`, `unlock` (POST form `password`, `next`), anything else 404.
+  or id that is not of the platform's form is refused without asking; the answer's key, the link's URL, its port, and
+  the per-stream initial flow-control window go to the program in the first message), `client.mjs`, `unlock` (POST form
+  `password`, `next`), `member` (`POST /.qorpera/member` and `POST /__qorpera/member`: accepts a one-use member pass
+  `pass` + optional `next`/`path` posted ONLY from an exact origin in `QORPERA_WEB_ORIGINS`, redeemed once via
+  `qorpera_site_app_unlock` into `__Host-qorpera_app`, then 303 redirect), anything else 404.
   Connects in flight are capped in all (512), with untrusted connects additionally capped per address and reserving
   capacity for trusted exit addresses so one cycling address cannot starve other links. Refused connects are counted per
   address (an IPv6 address by its /64) and link, 10 a minute (and per address across links), then 429; never for the
   agent exits' public addresses (`QORPERA_APP_RELAY_TRUSTED_ADDRESSES`, which every company's machines share).
-- The gate: cookie `__Host-qorpera_app` (HttpOnly, Secure, SameSite=Lax, Path=/, the session's max age), checked with
-  `qorpera_site_app_session` (open answers kept 30 s LRU and locked answers 5 s in a separate cache so invalid cookies
-  never evict active sessions, with concurrent cold lookups coalesced). No valid cookie: the password page
-  (401, English or Danish as site-serve's, same look); `unlock` → `qorpera_site_app_unlock(slug, password,
-  CF-Connecting-IP)` → cookie → 303 to `next` (a same-host path only). 429 when limited.
+- Auth modes (`app_auth_mode` on `qorpera_company_sites`, configured by owners/admins via
+  `qorpera_set_company_site_app_auth_mode`):
+  - `password` (default): cookie `__Host-qorpera_app` (HttpOnly, Secure, SameSite=Lax, Path=/, the session's max age),
+    checked with `qorpera_site_app_session` (open answers kept 30 s LRU and locked answers 5 s in a separate cache so
+    invalid cookies never evict active sessions, with concurrent cold lookups coalesced). No valid cookie: the password
+    page (401, English or Danish as site-serve's, same look); `unlock` → `qorpera_site_app_unlock(slug, password,
+    CF-Connecting-IP)` → cookie → 303 to `next` (a same-host path only). 429 when limited.
+  - `company_member`: only redeemed `__Host-qorpera_app` member sessions (created by posting a one-use pass from
+    `QORPERA_WEB_ORIGINS` to `POST /.qorpera/member` or `/__qorpera/member`) are accepted — never a non-`__Host-` cookie
+    or an unredeemed pass. `qorpera_site_app_session` verifies live company membership and returns `memberId`, which the
+    relay forwards as `X-Qorpera-Member-Id` after stripping all incoming `X-Qorpera-*` headers. Removing a member
+    invalidates access immediately.
+  - `public`: enabled only when `qorpera_site_settings.public_enabled` is true. Skips the cookie gate on HTTP and WS,
+    bounded by a per-(IP, slug) token bucket (300 burst, 600 req/min refill) and `PUBLIC_MAX_CONCURRENT_PER_IP = 32`.
 - A change from another site (step 5, release 5.1; SITE-HOSTS.md): before the gate, any method but GET, HEAD and
   OPTIONS whose `Sec-Fetch-Site` is `same-site` or `cross-site`, or whose `Origin` is there and is not exactly
   `https://<the app host>` (`null` passes only with `Sec-Fetch-Site: same-origin`), answers 403 (`no-store`): every
   company website is a same-site neighbour of every app link and could otherwise make a visitor's browser post into an
-  app on the Lax gate cookie. The unlock form's own POST is same-origin and passes; a request with neither header
-  passes as before.
+  app on the Lax gate cookie. The sole exception is `POST /.qorpera/member` (and `POST /__qorpera/member`), which passes
+  only when `Origin` is strictly in `QORPERA_WEB_ORIGINS` (any missing, `null`, sibling, or other origin answers 403).
+  The unlock form's own POST is same-origin and passes; a request with neither header passes as before.
 - Forwarding, through the slug's one connected program (a newer connection replaces an older one), and only when that
   program connected for the very site the session opens (`siteId`). On a mismatch the session is asked again, past the
-  kept answer: locked → the password page; the program's site after all → forwarded; another site still → the program
-  is checked with its key, dropped (4001) only when the database no longer takes it, and the visitor gets 503. The request line, headers and body as frames; the response streamed
-  back. No program: 503 "This app is not running right now". No response head in 60 s: 504; 60 s without a body chunk
-  after the head: the connection ends. Request bodies ≤ 10 MiB, queued across the link socket with per-stream
-  backpressure so concurrent upload bursts do not trip the 8 MiB send cap.
-  A visitor who stops reading while the program waits on them (after 256 KiB per stream, 2 MiB per link, or 32 MiB
-  across the relay for links above their share) is cut off after 30 s — or after 4 s without forward progress when other
-  visitors share the program — so the program serves everyone else again. Hop-by-hop headers dropped both ways. To the app: the gate cookie taken out of `Cookie`, `X-Forwarded-Proto:
-  https`, `X-Forwarded-Host`, `X-Forwarded-For` = the visitor's CF-Connecting-IP only, and `Transfer-Encoding: chunked`
-  when the visitor's body came chunked (so the app never reads a body as a request of its own). From the app: the
-  app's cache headers (`Cache-Control`, `Expires`, `CDN-Cache-Control`, `Cloudflare-CDN-Cache-Control`,
-  `Surrogate-Control`) replaced by `Cache-Control: private, no-cache` (`private, no-store` when the app said
-  `no-store`) and `CDN-Cache-Control: no-store` (Cloudflare's cache sits in front of the password); every answer held
-  to its Content-Length (more or fewer bytes end the visitor's connection, which api-front shares between app hosts),
-  and an answer that names its length twice or not in digits refused (502); `Domain=` taken out of every `Set-Cookie`
-  (host-only cookies from the app's answers; an app's script can still set cookies for qorpera.com with
-  `document.cookie`, which is why the platform uses no cookie for sign-in on qorpera.com names), any `Set-Cookie` for
-  `__Host-qorpera_app` dropped.
+  kept answer: locked → 401; the program's site after all → forwarded; another site still → the program
+  is checked with its key, dropped (4001) only when the database no longer takes it, and the visitor gets 503. The
+  request line, headers and body travel as frames; the response streams back with per-stream credit-based flow control
+  (`TYPE.window = 12`, initial window 256 KiB per stream, `WINDOW_UPDATE` sent after 64 KiB flushed or on `drain`) so
+  one slow visitor never stalls sibling streams on the same tunnel. The relay enforces the granted credit on every
+  `BODY` frame (closing a misbehaving program with 1002 if it exceeds its window) plus hard `res.writableLength` caps
+  (512 KiB per stream, 2 MiB per program, 32 MiB relay-wide) as a memory backstop; a stalled visitor is cut off after
+  30 s (or 4 s without forward progress). No program: 503 "This app is not running right now". Timeouts separate
+  first-byte (`FIRST_BYTE_TIMEOUT_MS = 60 s` before response headers → 504) from stream idle
+  (`STREAM_IDLE_TIMEOUT_MS = 300 s` after response headers). For `Content-Type: text/event-stream` responses, the relay
+  emits `Cache-Control: no-cache, no-transform`, `X-Accel-Buffering: no`, and `CDN-Cache-Control: no-store` (non-public
+  modes), and writes SSE keepalive comments (`: keepalive\n\n`) every 25 s while idle. Request bodies default to ≤ 10
+  MiB (configurable up to 100 MiB via `QORPERA_APP_RELAY_MAX_BODY_BYTES`), streamed across the link socket with
+  per-stream backpressure so concurrent upload bursts do not trip the 8 MiB send cap.
+  Hop-by-hop headers dropped both ways. To the app: gate cookies taken out of `Cookie`, all incoming `X-Qorpera-*`
+  headers stripped, `X-Forwarded-Proto: https`, `X-Forwarded-Host`, `X-Forwarded-For` = the visitor's CF-Connecting-IP
+  only, `X-Qorpera-Member-Id` when authenticated as a company member, and `Transfer-Encoding: chunked` when the
+  visitor's body came chunked (so the app never reads a body as a request of its own). From the app: safe browser
+  caching directives (`private, max-age=...`, optional `must-revalidate`, `immutable`, `stale-while-revalidate`; and
+  `public` only in `public` auth mode when requested) are preserved while keeping `CDN-Cache-Control: no-store` on all
+  non-public modes and defaulting unannotated answers to `Cache-Control: private, no-cache` (`private, no-store` when
+  the app said `no-store`); every answer held to its Content-Length (more or fewer bytes end the visitor's connection,
+  which api-front shares between app hosts), and an answer that names its length twice or not in digits refused (502);
+  `Domain=` taken out of every `Set-Cookie` (host-only cookies from the app's answers), and any `Set-Cookie` for gate
+  cookies dropped.
 - Visitor WebSockets: a visitor's `Upgrade: websocket` on any non-platform path passes the same host check, an exact
-  same-origin CSWSH check (`Origin` must be present and equal `https://<the app host>`, and `Sec-Fetch-Site` must not
-  be `same-site` or `cross-site`; rejected with 403 before the gate), the same `__Host-qorpera_app` session gate
-  (`qorpera_site_app_session`; rejected with 401 before upgrading), and the same `siteId` / live-program check (503
-  when not running). The relay waits for the link program to complete the upstream RFC 6455 handshake to
-  `127.0.0.1:<port>` before answering `101 Switching Protocols` to the visitor (non-101 upstream responses reject the
-  visitor before upgrade; handshake timeout answers 504). Forwarded upgrade headers strip `__Host-qorpera_app`,
-  `Authorization`, visitor `Host`, hop-by-hop, `X-Envoy-*`, `Content-Length`, and `Sec-WebSocket-{Key,Version,Extensions,Accept}`
-  while preserving validated `Sec-WebSocket-Protocol` negotiation; 101 response headers strip hop-by-hop and cache
-  headers and sanitize `Set-Cookie` host-only without `__Host-qorpera_app`. Resource bounds: at most 32 concurrent
-  visitor WebSockets per link (`MAX_WS_PER_SITE`, 503 when full), 1 MiB max message size (`MAX_WS_MESSAGE_BYTES`,
-  closed with 1009), 2 MiB per-visitor send queue cap (`MAX_WS_QUEUED_BYTES`, slow consumers dropped cleanly without
-  stalling other streams), and 25 s ping / 60 s idle timeout keepalive. Open visitor WebSockets re-verify their gate
-  session every `sessionCacheMs` (30 s, cached and coalesced across sockets sharing a token) and close with 1008
-  ("session ended") when the session is revoked (e.g., password change or expiry) or no longer matches the link's site.
-  Close codes are sanitized per RFC 6455 so
-  non-wire codes (such as 1005, 1006, 1015) are never sent on the wire. All open visitor WebSockets close cleanly with
-  1001 when the tunnel drops, a newer link program replaces it, the site is unpublished/retaken, or the relay stops.
+  same-origin CSWSH check (`Origin` must equal `https://<the app host>`, and `Sec-Fetch-Site` must not be `same-site` or
+  `cross-site`; rejected with 403 before the gate — absent `Origin` is permitted ONLY in `public` mode with no `Cookie`
+  header for non-browser CLI/SDK/mobile clients), the same session gate (`qorpera_site_app_session`; rejected with 401
+  before upgrading), and the same `siteId` / live-program check (503 when not running). The relay waits for the link
+  program to complete the upstream RFC 6455 handshake to `127.0.0.1:<port>` before answering `101 Switching Protocols`
+  to the visitor (non-101 upstream responses reject the visitor before upgrade; handshake timeout answers 504).
+  Forwarded upgrade headers preserve `Authorization` for app-level auth while stripping gate cookies, incoming
+  `X-Qorpera-*` headers, visitor `Host`, hop-by-hop, `X-Envoy-*`, `Content-Length`, and
+  `Sec-WebSocket-{Key,Version,Extensions,Accept}` (and injecting trusted `X-Qorpera-Member-Id` for `company_member`
+  sessions and validated `Sec-WebSocket-Protocol` negotiation); 101 response headers strip hop-by-hop and cache headers
+  and sanitize `Set-Cookie` host-only without gate cookies. Resource bounds: at most 256 concurrent visitor WebSockets
+  per link (`MAX_WS_PER_SITE`, 503 when full, counted independently of HTTP streams), 1 MiB max message size
+  (`MAX_WS_MESSAGE_BYTES`, closed with 1009), 2 MiB per-visitor send queue cap (`MAX_WS_QUEUED_BYTES`, slow consumers
+  closed cleanly with 1013 without stalling other streams), per-stream `TYPE.window` flow control, and 25 s ping / 60 s
+  idle timeout keepalive. Open visitor WebSockets re-verify their gate session every `sessionCacheMs` (30 s, cached and
+  coalesced across sockets sharing a token) and close with 1008 ("session ended") when the session is revoked or no
+  longer matches the link's site. Close codes are sanitized per RFC 6455 so non-wire codes (1005, 1006, 1015) are never
+  sent on the wire. All open visitor WebSockets close cleanly with 1001 when the tunnel drops, a newer link program
+  replaces it, the site is unpublished/retaken, or the relay finishes draining.
+- Graceful shutdown: on `SIGTERM`/`SIGINT`, `server.drain(gracefulShutdownMs)` marks `/.qorpera/health` 503 (`draining`),
+  refuses new requests, waits up to 30 s (`compose-service.yml` sets `stop_grace_period: 35s`) for in-flight HTTP and WS
+  streams to finish, then closes remaining sockets with 1001.
 - Every connected program is checked again every 5 minutes: a key that no longer holds or another site under the slug
-  ends it (4001), a changed port closes it (1012) so it connects again and learns the port. A program that lets more
-  than 8 MiB pile up unread, or pings more than 10 times a second, is cut off.
+  ends it (4001), `authMode` and verified custom domains sync live, and a changed port attempts a zero-downtime
+  `TYPE.swapTarget` swap over the existing tunnel first (falling back to 1012 close only if the swap fails or times
+  out). A program that lets more than 8 MiB pile up unread, exceeds its stream window (1002), or pings more than 10
+  times a second (1008) is cut off.
 - Never logged: a claim, key, token, password, cookie or the relay's JWT. `/.qorpera/health` (no host check) for the
   container's healthcheck.
 
 Link program (`node client.mjs <slug> <port> <claim> [host suffix]`): makes a random id when it starts (32 bytes,
 base64url, in memory only) and sends it on every connect; connects to `wss://<slug><suffix>/.qorpera/connect` with the
-claim, keeps the key it gets (in memory only), reconnects with the key after a drop (backoff 1 s → 30 s), and serves each request frame with `http.request` (a connection of its own, no
-agent) to `127.0.0.1` on the port the relay's hello names, the one the link is shared for; when its own `<port>`
-differs it says so ("This link is shared for port 3000, not 8080: serving port 3000."). Prints plain status lines
-("Connected: <url>", "Lost the connection, trying again", "The app on port 3000 is not answering"). Exits 1 with a
-plain reason when the relay refuses (claim used or expired: ask the agent to share again; or the link was turned off
-or shared again), 0 when a newer program took over.
+claim, keeps the key it gets (in memory only), reconnects with the key after a drop (backoff 1 s → 30 s), and serves
+each request frame over a shared keep-alive `http.Agent` (`keepAlive: true, maxSockets: 256, maxFreeSockets: 64`) to
+`127.0.0.1` on the port the relay's hello names (or updated via `TYPE.swapTarget`), honoring per-stream `sendCredits`,
+O(1) upload buffer tracking, and event-driven socket `drain` backpressure. Probes `127.0.0.1:<port>` (HTTP GET to
+`QORPERA_APP_HEALTH_PATH` or TCP connect every 10 s) and sends `TYPE.health` heartbeats; on `TYPE.swapTarget`, probes
+the target port, switches new streams to it while draining in-flight streams on the old port, and acknowledges. On
+`SIGTERM`/`SIGINT`, stops accepting new streams, waits up to 30 s for in-flight streams to drain, destroys the HTTP
+agent, and exits cleanly. Exits 1 with a plain reason when the relay refuses (claim used or expired: ask the agent to
+share again; or the link was turned off or shared again), 0 when a newer program took over.
 
 Frames (WebSocket, binary): one byte type + 4-byte stream id + payload. Types: `1` request head (JSON
 `{method, path, headers}`), `2` body chunk, `3` body end, `4` response head (JSON `{status, headers}`), `5` reset
-(either side), `6` hello (relay → program, JSON `{key, url, port}`), `7` keepalive (stream 0, empty: the relay sends
-one every 25 s and the program answers; either side drops a connection silent for 60 s), `8` visitor WebSocket open
-(relay → program, JSON `{path, headers}`), `9` visitor WebSocket open ok (program → relay, JSON `{protocol?, headers?}`),
-`10` visitor WebSocket data (either side, 1-byte opcode `1` text / `2` binary + message payload ≤ 1 MiB), `11` visitor
-WebSocket close (either side, 2-byte uint16BE RFC 6455 close code + UTF-8 reason, or 2-byte HTTP 4xx/5xx status when
-sent program → relay before `9` to report a non-101 upstream rejection). Headers as `[name, value]`
-pairs so repeated `Set-Cookie` survive. Close codes from the relay: 4001 refused and 4002 replaced (the program stops),
-1012 port changed, 1001 relay stopping, 1008 too many pings (it connects again).
+(either side), `6` hello (relay → program, JSON `{key, url, port, window}`), `7` keepalive (stream 0, empty: the relay
+sends one every 25 s and the program answers; either side drops a connection silent for 60 s), `8` visitor WebSocket
+open (relay → program, JSON `{path, headers}`), `9` visitor WebSocket open ok (program → relay, JSON
+`{protocol?, headers?}`), `10` visitor WebSocket data (either side, 1-byte opcode `1` text / `2` binary + message
+payload ≤ 1 MiB), `11` visitor WebSocket close (either side, 2-byte uint16BE RFC 6455 close code + UTF-8 reason, or
+2-byte HTTP 4xx/5xx status when sent program → relay before `9` to report a non-101 upstream rejection), `12` window
+update (relay → program, 4-byte uint32BE bytes consumed on stream), `13` health heartbeat (program → relay, stream 0,
+JSON `{healthy, port, lastStatus, lastLatencyMs, restartCount, checkedAt}`), `14` target port swap (stream 0; relay →
+program JSON `{port, healthPath?, timeoutMs?}`, program → relay JSON `{ok, activePort, previousPort?, error?}`).
+Headers as `[name, value]` pairs so repeated `Set-Cookie` survive. Close codes from the relay: 4001 refused and 4002
+replaced (the program stops), 1002 protocol/flow-control violation, 1012 port changed (when live swap failed), 1001
+relay stopping, 1008 too many pings (it connects again).
 
 ### 4. Routing (`deploy/sites/`)
 
 - `envoy-front-sites.yaml`: a virtual host `apps` with `domains: ["*-preview.qorpera.com"]`, every path to cluster
-  `app_relay` (`app-relay:8090`, `envoy-front-app-relay-cluster.yaml`, in the kit file's `clusters:`), WebSocket
-  upgrades on, `x-forwarded-host` = the request's own name; the api host gets `"api.qorpera.com"` first in its domains,
-  and every other name under qorpera.com goes to a virtual host of its own, so a wildcard name never reaches the API
-  (until 5.1 `others`, answering 404; since 5.1 `site-hosts`, a company site's own host, SITE-HOSTS.md). The
-  `front` listener's connection manager gets `strip_any_host_port` and `strip_trailing_host_dot`, so a name with a port
-  or a trailing dot is matched (and forwarded) by its bare name.
+  `app_relay` (`app-relay:8090`, `envoy-front-app-relay-cluster.yaml` with `idle_timeout: 360s` for long-lived SSE/LLM
+  streams, in the kit file's `clusters:`), WebSocket upgrades on, `x-forwarded-host` = the request's own name; the api
+  host gets `"api.qorpera.com"` first in its domains, and every other name under qorpera.com goes to a virtual host of
+  its own, so a wildcard name never reaches the API (until 5.1 `others`, answering 404; since 5.1 `site-hosts`, a
+  company site's own host, SITE-HOSTS.md). The `front` listener's connection manager gets `strip_any_host_port` and
+  `strip_trailing_host_dot`, so a name with a port or a trailing dot is matched (and forwarded) by its bare name.
 - `sites-route.mjs`: also the tunnel rule `*.qorpera.com → http://api-front:8080` (after the exact rules, before the
   catch-all), a Cache Rule bypassing Cloudflare's cache for `-preview.qorpera.com` hosts (made before the names exist;
   a token without Cache Rules permission is said plainly) and a proxied wildcard CNAME `*` → the tunnel, with
   `--check` checking the cache rule and probing an app host's `/.qorpera/health`.
 - The compose service `app-relay` (snippet `deploy/sites/app-relay/compose-service.yml`, for the dbhome kit's
-  `docker-compose.dbhome-front.yml`): pinned `node:24` image, read-only, `./front/app-relay:/app:ro`, `ANON_KEY` and
-  `QORPERA_RELAY_JWT` from `.env` (the snippet's header says how the JWT is minted).
+  `docker-compose.dbhome-front.yml`): pinned `node:24` image, `stop_grace_period: 35s`, read-only,
+  `./front/app-relay:/app:ro`, `ANON_KEY`, `QORPERA_RELAY_JWT`, and optional `QORPERA_WEB_ORIGINS` from `.env` (the
+  snippet's header says how the JWT is minted).
 
 ## Rollout (v195)
 

@@ -67,7 +67,8 @@ begin
 	end loop;
 	foreach v_sig in array array[
 		'public.qorpera_site_agent_list_versions(jsonb,text)',
-		'public.qorpera_site_agent_activate_version(jsonb,text,uuid)'
+		'public.qorpera_site_agent_activate_version(jsonb,text,uuid)',
+		'public.qorpera_authorize_machine_app_op(jsonb,jsonb,text,text)'
 	] loop
 		perform pg_temp.base_assert(
 			not has_function_privilege('anon', v_sig, 'execute')
@@ -223,10 +224,8 @@ begin
 	perform pg_temp.base_claims('service_role');
 	v_session := public.qorpera_site_app_session('live-dash', v_pass);
 	perform pg_temp.base_assert(
-		v_session ->> 'state' = 'open'
-		and v_session ->> 'authMode' = 'company_member'
-		and v_session ->> 'memberId' = '92400000-0000-4000-8000-000000000003',
-		'Member pass validates in qorpera_site_app_session: ' || v_session::text
+		v_session = '{"state":"locked","authMode":"company_member"}'::jsonb,
+		'Unredeemed member pass is rejected by qorpera_site_app_session: ' || v_session::text
 	);
 	v_redeem := public.qorpera_site_app_unlock('live-dash', v_pass, '192.0.2.11');
 	v_member_token := v_redeem ->> 'token';
@@ -480,31 +479,129 @@ begin
 	perform pg_temp.base_assert(
 		jsonb_array_length(v_list -> 'versions') = 3
 		and v_list #>> '{versions,0,origin}' = 'code',
-		'qorpera_site_list_versions lists code site versions'
+		'qorpera_site_list_versions lists code site versions read-only'
 	);
-	v_list := public.qorpera_site_activate_version(v_code_site, v_v_kept);
-	perform pg_temp.base_assert(
-		v_list ->> 'versionId' = v_v_kept::text
-		and (select current_version_id from public.qorpera_company_sites where id = v_code_site) = v_v_kept,
-		'Owner rolls back code site to kept version'
+	perform pg_temp.base_error(
+		format('select public.qorpera_site_activate_version(%L, %L)', v_code_site, v_v_kept),
+		'55000',
+		'SITE_FROM_CODE: this site is made from code kept in Qorpera; a member puts it live in What''s new'
+	);
+	perform pg_temp.base_error(
+		format('select public.qorpera_site_activate_version(%L, %L)', v_code_site, v_v_ready),
+		'55000',
+		'SITE_FROM_CODE: this site is made from code kept in Qorpera; a member puts it live in What''s new'
 	);
 
 	perform pg_temp.base_claims('service_role');
 	perform pg_temp.base_error(
-		format('select public.qorpera_site_agent_activate_version(%L, %L, %L)', v_binding, 'code-shop', v_v_ready),
-		'22023',
-		'SITE_VERSION_UNAVAILABLE: that version is not available for this site'
+		format('select public.qorpera_site_agent_activate_version(%L, %L, %L)', v_binding, 'code-shop', v_v_kept),
+		'55000',
+		'SITE_FROM_CODE: this site is made from code kept in Qorpera; a member puts it live in What''s new'
 	);
 	perform pg_temp.base_assert(
-		public.qorpera_site_agent_activate_version(v_binding, 'code-shop', v_v_live) ->> 'versionId' = v_v_live::text,
-		'Agent rolls back code site to previously live kept version'
+		(select current_version_id from public.qorpera_company_sites where id = v_code_site) = v_v_live,
+		'Code site current_version_id remains unchanged after refused direct activation'
+	);
+end $$;
+
+do $$
+declare
+	v_site_id uuid;
+begin
+	perform pg_temp.base_claims('service_role');
+	select id into v_site_id from public.qorpera_company_sites where slug = 'rollback-shop';
+	update public.qorpera_company_site_versions
+	set total_bytes = 26214400
+	where site_id = v_site_id and state = 'kept';
+	perform pg_temp.r839_publish('rollback-shop', 'pub-v14', '<h1>Release 14</h1>');
+	perform pg_temp.base_assert(
+		coalesce((
+			select sum(v.total_bytes)
+			from public.qorpera_company_site_versions as v
+			join public.qorpera_company_sites as s on s.id = v.site_id
+			where s.profile_id = '92400000-0000-4000-8000-000000000010' and v.tree is null and v.state = 'kept'
+		), 0) <= 131072000
+		and (select count(*) from public.qorpera_company_site_versions where site_id = v_site_id and state = 'kept') < 9,
+		'publish_site prunes kept versions to stay within the 125 MiB per-company byte budget'
+	);
+end $$;
+
+do $$
+declare
+	v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb;
+	v_machine uuid := '13240000-0000-4000-8000-0000000000a1';
+	v_scope jsonb := jsonb_build_object('machineId', '13240000-0000-4000-8000-0000000000a1');
+	v_auth jsonb;
+begin
+	perform pg_temp.base_claims('service_role');
+	v_auth := public.qorpera_authorize_machine_app_op(v_binding, v_scope, 'live-dash', 'logs');
+	perform pg_temp.base_assert(
+		v_auth ->> 'state' = 'refused' and v_auth ->> 'reason' = 'MACHINE_NOT_RUNNING',
+		'Unplaced app machine is refused with MACHINE_NOT_RUNNING: ' || v_auth::text
 	);
 
-	perform pg_temp.r839_as('92400000-0000-4000-8000-000000000004');
-	v_list := public.qorpera_site_activate_version(v_code_site, v_v_ready);
+	perform set_config('session_replication_role', 'replica', true);
+	update public.qorpera_company_machines
+	set desired_state = 'running', last_used_at = clock_timestamp() - interval '1 hour'
+	where id = v_machine;
+	insert into public.qorpera_company_machine_placements(
+		id, machine_id, profile_id, owner, machine_id_sha256, binding, instance_sha256, running_at, boot_id
+	) values (
+		'13240000-0000-4000-8000-0000000007b1',
+		v_machine,
+		'92400000-0000-4000-8000-000000000010',
+		'mx-1324',
+		repeat('8', 64),
+		'{"providerId":"machine-1324"}',
+		repeat('7', 64),
+		clock_timestamp(),
+		'13240000-0000-4000-8000-0000000007c1'
+	);
+	insert into public.qorpera_runtime_machine_allocations(
+		id, profile_id, company_machine_placement_id, provider_adapter, instance_sha256, reserved_at
+	) values (
+		'13240000-0000-4000-8000-0000000007b1',
+		'92400000-0000-4000-8000-000000000010',
+		'13240000-0000-4000-8000-0000000007b1',
+		'lxd',
+		repeat('7', 64),
+		clock_timestamp()
+	);
+	insert into public.qorpera_runtime_node_demands(
+		allocation_id, node_id, provider_kind, provider_id, policy_sha256, cpu_millis, memory_bytes, reserved_at
+	) values (
+		'13240000-0000-4000-8000-0000000007b1',
+		'13240000-0000-4000-8000-0000000007d1',
+		'machine',
+		'machine-1324',
+		repeat('4', 64),
+		2000,
+		4294967296,
+		clock_timestamp()
+	);
+	perform set_config('session_replication_role', 'origin', true);
+
+	v_auth := public.qorpera_authorize_machine_app_op(v_binding, v_scope, 'live-dash', 'logs');
 	perform pg_temp.base_assert(
-		v_list ->> 'versionId' = v_v_ready::text
-		and (select state from public.qorpera_company_site_versions where id = v_v_ready) = 'live',
-		'Admin activates ready code site version'
+		v_auth ->> 'state' = 'authorized'
+		and v_auth ->> 'executorOwner' = 'mx-1324'
+		and v_auth ->> 'slug' = 'live-dash'
+		and (v_auth ->> 'appPort')::int = 4000,
+		'Running app machine authorizes logs op: ' || v_auth::text
+	);
+	perform pg_temp.base_assert(
+		public.qorpera_authorize_machine_app_op(v_binding, v_scope, 'live-dash', 'start') ->> 'state' = 'authorized'
+		and public.qorpera_authorize_machine_app_op(v_binding, v_scope, 'live-dash', 'health') ->> 'state' = 'authorized'
+		and public.qorpera_authorize_machine_app_op(v_binding, v_scope, 'live-dash', 'reload') ->> 'state' = 'authorized'
+		and public.qorpera_authorize_machine_app_op(v_binding, v_scope, 'live-dash', 'stop') ->> 'state' = 'authorized',
+		'All five machine app operations authorize for the owning app site'
+	);
+	perform pg_temp.base_error(
+		format('select public.qorpera_authorize_machine_app_op(%L, %L, %L, %L)', v_binding, v_scope, 'rollback-shop', 'logs'),
+		'42501'
+	);
+	perform pg_temp.base_error(
+		format('select public.qorpera_authorize_machine_app_op(%L, %L, %L, %L)', v_binding, v_scope, 'live-dash', 'exec'),
+		'22023'
 	);
 end $$;

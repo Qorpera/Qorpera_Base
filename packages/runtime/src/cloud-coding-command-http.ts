@@ -33,6 +33,7 @@ import {
 	CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT,
 	CLOUD_MACHINE_WAKE_SCHEMA,
 	CloudMachineAccountFillRefusal,
+	CloudMachineAppRefusal,
 	CloudMachineCodingValueRefusal,
 	CloudMachineCommandRefusal,
 	type CloudMachineCommandServiceOptions,
@@ -49,6 +50,8 @@ import {
 	cloudMemberMachineStreamFrameHead,
 	parseCloudMachineAccountFillAnswer,
 	parseCloudMachineAccountFillHttpRequest,
+	parseCloudMachineAppAnswer,
+	parseCloudMachineAppHttpRequest,
 	parseCloudMachineCodingValueAnswer,
 	parseCloudMachineCodingValueHttpRequest,
 	parseCloudMachineScreenAnswer,
@@ -668,6 +671,7 @@ export class HttpCloudCodingCommandService {
 				this.#options.machines?.accountFill && request.url === "/v1/machine-commands/account-fill";
 			// machine_screen (20260930708000): the machine's screen helper, for a look or one executing receipt.
 			const screenRoute = this.#options.machines?.screen && request.url === "/v1/machine-commands/screen";
+			const appRoute = this.#options.machines?.app && request.url === "/v1/machine-commands/app";
 			// A member's look (20260930712000): on the peer listener only (no run's lease to prove), from another executor.
 			const memberScreenRoute =
 				this.#options.proveBinding === null &&
@@ -702,6 +706,7 @@ export class HttpCloudCodingCommandService {
 					!codingValueRoute &&
 					!accountFillRoute &&
 					!screenRoute &&
+					!appRoute &&
 					!memberScreenRoute &&
 					!memberActRoute &&
 					!memberStartRoute &&
@@ -782,6 +787,21 @@ export class HttpCloudCodingCommandService {
 				} catch (error) {
 					// Only a refusal the agent can act on is told apart, by its fixed code.
 					if (!(error instanceof CloudMachineScreenRefusal)) throw error;
+					replyJson(reply, 409, { code: error.code });
+				}
+				return;
+			}
+			if (appRoute && this.#options.machines?.app) {
+				const admitted = parseCloudMachineAppHttpRequest(body);
+				try {
+					replyJson(
+						reply,
+						200,
+						parseCloudMachineAppAnswer(admitted, await this.#options.machines.app(admitted, controller.signal)),
+						131072,
+					);
+				} catch (error) {
+					if (!(error instanceof CloudMachineAppRefusal)) throw error;
 					replyJson(reply, 409, { code: error.code });
 				}
 				return;

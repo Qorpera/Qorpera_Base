@@ -315,6 +315,39 @@ async function fixture(
 			crashSummary: configured?.crashSummary ?? null,
 		};
 	});
+	const appStart = vi.fn<NonNullable<CloudMachineCommandGateway["appStart"]>>(async (scope, input) => ({
+		schema: "qorpera.machine-app-started/v1",
+		machineId: scope.machineId,
+		slug: input.slug,
+		unit: `qorpera-machine-app-${input.slug}.service`,
+		port: input.port,
+	}));
+	const appStop = vi.fn<NonNullable<CloudMachineCommandGateway["appStop"]>>(async (_scope, input) => ({
+		schema: "qorpera.machine-app-stopped/v1",
+		slug: input.slug,
+		unit: `qorpera-machine-app-${input.slug}.service`,
+	}));
+	const appHealth = vi.fn<NonNullable<CloudMachineCommandGateway["appHealth"]>>(async (_scope, input) => ({
+		schema: "qorpera.machine-app-health/v1",
+		slug: input.slug,
+		unit: `qorpera-machine-app-${input.slug}.service`,
+		activeState: "active",
+		subState: "running",
+		restarts: 0,
+		port: 3000,
+		healthy: true,
+		lastStatus: 200,
+		lastLatencyMs: 5,
+		crashSummary: null,
+	}));
+	const appReload = vi.fn<NonNullable<CloudMachineCommandGateway["appReload"]>>(async (_scope, input) => ({
+		schema: "qorpera.machine-app-reload/v1",
+		slug: input.slug,
+		previousPort: 3000,
+		activePort: input.port ?? 3000,
+		healthy: true,
+		restarted: input.port === undefined || input.port === 3000,
+	}));
 	const tools = cloudSiteTools({
 		binding,
 		identity: run.identity,
@@ -324,7 +357,9 @@ async function fixture(
 			? {}
 			: {
 					machines: {
-						gateway: (options.appLogs === "unavailable" ? { start } : { start, appLogs }) as never,
+						gateway: (options.appLogs === "unavailable"
+							? { start }
+							: { start, appStart, appStop, appHealth, appReload, appLogs }) as never,
 						operations: { execute: operations },
 					},
 				}),
@@ -1192,7 +1227,8 @@ describe("share_app", () => {
 		expect(share.description).not.toContain("not WebSockets");
 		expect(share.description).toContain("WebSockets");
 		expect(share.description).toContain("SSE");
-		expect(share.description).toContain("company_member");
+		expect(share.description).toContain("manage_site");
+		expect(share.description).not.toContain("auth mode on the Sites page");
 		expect(Buffer.byteLength(share.description)).toBeLessThanOrEqual(4096);
 		// Sites left Settings for the apps drawer (9 November 2026); since site hosts (v247) the row under a message that
 		// links a site copies its password too (web #1848).
@@ -1410,5 +1446,69 @@ describe("manage_site", () => {
 		expect(result.status).toBe("denied");
 		expect(result.text).toMatch(/^INVALID_ARGUMENTS/);
 		expect(f.call).not.toHaveBeenCalled();
+	});
+
+	it("starts, probes health, reloads, and stops supervised apps via manage_site", async () => {
+		const f = await fixture(
+			{},
+			{
+				siteVersions: {
+					kind: "app",
+					machine: "shop-server",
+					machineId: MACHINE_IDS["shop-server"],
+					port: 3000,
+					versions: [],
+				},
+			},
+		);
+		const started = outcome(
+			await f.boundary.invoke("call_start", "qorpera", "manage_site", {
+				action: "app_start",
+				slug: "saml-shop",
+				command: "node server.js",
+				port: 3000,
+				healthPath: "/healthz",
+				cwd: "/root/app",
+			}),
+		);
+		expect(started.status, started.text).toBe("ok");
+		expect(started.answer).toMatchObject({
+			schema: "qorpera.site-app-started/v1",
+			slug: "saml-shop",
+			port: 3000,
+		});
+
+		const health = outcome(
+			await f.boundary.invoke("call_health", "qorpera", "manage_site", {
+				action: "app_health",
+				slug: "saml-shop",
+			}),
+		);
+		expect(health.status, health.text).toBe("ok");
+		expect(health.answer).toMatchObject({ schema: "qorpera.site-app-health/v1", healthy: true, port: 3000 });
+
+		const reloaded = outcome(
+			await f.boundary.invoke("call_reload", "qorpera", "manage_site", {
+				action: "app_reload",
+				slug: "saml-shop",
+				port: 3001,
+				healthPath: "/healthz",
+			}),
+		);
+		expect(reloaded.status, reloaded.text).toBe("ok");
+		expect(reloaded.answer).toMatchObject({
+			schema: "qorpera.site-app-reload/v1",
+			activePort: 3001,
+			restarted: false,
+		});
+
+		const stopped = outcome(
+			await f.boundary.invoke("call_stop", "qorpera", "manage_site", {
+				action: "app_stop",
+				slug: "saml-shop",
+			}),
+		);
+		expect(stopped.status, stopped.text).toBe("ok");
+		expect(stopped.answer).toMatchObject({ schema: "qorpera.site-app-stopped/v1", slug: "saml-shop" });
 	});
 });

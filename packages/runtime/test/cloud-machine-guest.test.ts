@@ -1405,7 +1405,6 @@ describe("managed app supervision, rolling NDJSON logs, and crash summaries", ()
 			...m.ports,
 			readMemoryEvents: async () => "low 0\nhigh 0\nmax 1\noom 2\noom_kill 3\n",
 		};
-		m.units.set("qorpera-machine-app-crash-app.service", "ControlGroup=/qorpera-machine.slice/crash-app\n");
 		await startMachineApp(
 			{
 				slug: "crash-app",
@@ -1414,6 +1413,7 @@ describe("managed app supervision, rolling NDJSON logs, and crash summaries", ()
 			},
 			ports,
 		);
+		m.units.set("qorpera-machine-app-crash-app.service", "ControlGroup=/qorpera-machine.slice/crash-app\n");
 		const code = await executeMachineApp("crash-app", ports);
 		expect(code).toBe(137);
 		expect(parseCgroupOomKills("low 0\noom_kill 7\n")).toBe(7);
@@ -1494,5 +1494,35 @@ describe("managed app supervision, rolling NDJSON logs, and crash summaries", ()
 			port: 3001,
 			healthy: true,
 		});
+	});
+
+	it("recovers from ring write failures without poisoning the queue and bounds crash.json under 64 KiB", async () => {
+		const m = await machine();
+		await prepareMachineGuest(m.machineId, 900_000, m.ports);
+		await refreshMachineLease(900_000, m.ports);
+		const ring = new MachineAppRingLogger("fail-safe", m.ports);
+		await expect(ring.write("stdout", "before-init")).resolves.toBeUndefined();
+		await ring.init();
+		await expect(ring.write("stdout", "after-init")).resolves.toBeUndefined();
+		await ring.flush();
+		const recovered = await queryMachineAppLogs("fail-safe", { tail: 10 }, m.ports);
+		expect(recovered.lines.some((entry) => entry.line === "after-init")).toBe(true);
+
+		const hugeLine = "x".repeat(8192);
+		await startMachineApp(
+			{
+				slug: "big-stderr",
+				command: `node -e 'for (let i = 0; i < 50; i++) console.error(${JSON.stringify(hugeLine)} + i); process.exit(1);'`,
+				port: 4050,
+			},
+			m.ports,
+		);
+		expect(await executeMachineApp("big-stderr", m.ports)).toBe(1);
+		const crashRaw = await readFile(join(m.root, "var", "apps", "big-stderr", "crash.json"), "utf8");
+		expect(Buffer.byteLength(crashRaw)).toBeLessThan(65536);
+		const bigLogs = await queryMachineAppLogs("big-stderr", { tail: 5 }, m.ports);
+		expect(bigLogs.crashSummary).not.toBeNull();
+		expect(bigLogs.crashSummary?.exitCode).toBe(1);
+		expect(bigLogs.crashSummary?.stderrTail.length).toBeGreaterThan(0);
 	});
 });

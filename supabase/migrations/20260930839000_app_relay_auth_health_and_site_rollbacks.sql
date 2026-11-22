@@ -384,15 +384,6 @@ begin
 				and session.site_id = v_site.id
 				and session.member_user_id is not null
 				and session.expires_at > clock_timestamp();
-		elsif p_token is not null and p_token ~ '^[A-Za-z0-9_-]{43}$' then
-			select pass.user_id into v_member_id
-			from public.qorpera_company_site_member_passes as pass
-			join public.qorpera_profile_members as member
-				on member.profile_id = v_site.profile_id and member.user_id = pass.user_id
-			where pass.pass_sha256 = public.qorpera_site_sha256(p_token)
-				and pass.site_id = v_site.id
-				and pass.host = v_resolved.expected_host
-				and pass.expires_at > clock_timestamp();
 		end if;
 		if v_member_id is null then
 			return jsonb_build_object('state', 'locked', 'authMode', 'company_member') || v_extra;
@@ -604,10 +595,18 @@ begin
 	delete from public.qorpera_company_site_versions as version
 	where version.id in (
 		select old.id
-		from public.qorpera_company_site_versions as old
-		where old.site_id = v_site.id and old.tree is null and old.state = 'kept' and old.id <> v_version.id
-		order by old.published_at desc nulls last, old.created_at desc, old.id desc
-		offset 9
+		from (
+			select v.id,
+				row_number() over (partition by v.site_id order by v.published_at desc nulls last, v.created_at desc, v.id desc) as site_rank,
+				sum(v.total_bytes) over (
+					order by v.published_at desc nulls last, v.created_at desc, v.id desc
+					rows between unbounded preceding and current row
+				) as company_kept_bytes
+			from public.qorpera_company_site_versions as v
+			join public.qorpera_company_sites as s on s.id = v.site_id
+			where s.profile_id = v_site.profile_id and v.tree is null and v.state = 'kept' and v.id <> v_version.id
+		) as old
+		where old.site_rank > 9 or old.company_kept_bytes > 131072000
 	);
 	return public.qorpera_site_publish_receipt(v_site, v_version);
 end $$;
@@ -691,12 +690,15 @@ begin
 	if v_site.kind <> 'files' then
 		raise exception 'STATIC_SITE_REQUIRED' using errcode = '22023';
 	end if;
+	if v_site.code_owner is not null then
+		raise exception 'SITE_FROM_CODE: this site is made from code kept in Qorpera; a member puts it live in What''s new' using errcode = '55000';
+	end if;
 	if v_site.taken_down_at is not null then
 		raise exception 'SITE_TAKEN_DOWN' using errcode = '42501';
 	end if;
 	select version.* into v_version
 	from public.qorpera_company_site_versions as version
-	where version.id = p_version_id and version.site_id = v_site.id and version.state in ('live', 'kept', 'ready')
+	where version.id = p_version_id and version.site_id = v_site.id and version.state in ('live', 'kept')
 	for update;
 	if not found then
 		raise exception 'SITE_VERSION_UNAVAILABLE' using errcode = '22023';
@@ -828,6 +830,9 @@ begin
 	if v_site.kind <> 'files' then
 		raise exception 'STATIC_SITE_REQUIRED: version rollback applies to static websites, not app links' using errcode = '22023';
 	end if;
+	if v_site.code_owner is not null then
+		raise exception 'SITE_FROM_CODE: this site is made from code kept in Qorpera; a member puts it live in What''s new' using errcode = '55000';
+	end if;
 	perform public.qorpera_site_assert_resume_recorded(v_run.id, p_binding);
 	select version.* into v_version
 	from public.qorpera_company_site_versions as version
@@ -875,6 +880,114 @@ revoke all on function public.qorpera_site_agent_list_versions(jsonb, text),
 	from public, anon, authenticated, service_role, qorpera_secret_broker, qorpera_site_relay;
 grant execute on function public.qorpera_site_agent_list_versions(jsonb, text),
 	public.qorpera_site_agent_activate_version(jsonb, text, uuid)
+	to service_role;
+
+create function public.qorpera_authorize_machine_app_op(
+	p_binding jsonb,
+	p_scope jsonb,
+	p_slug text,
+	p_op text
+)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+	v_identity jsonb;
+	v_run public.qorpera_execution_runs%rowtype;
+	v_site public.qorpera_company_sites%rowtype;
+	v_machine public.qorpera_company_machines%rowtype;
+	v_placement public.qorpera_company_machine_placements%rowtype;
+	v_reads_root boolean;
+	v_mutates boolean := p_op in ('start', 'stop', 'reload');
+	v_uuid constant text := '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
+begin
+	if auth.role() is distinct from 'service_role'
+		or jsonb_typeof(p_scope) is distinct from 'object'
+		or p_scope - 'machineId' <> '{}'::jsonb
+		or coalesce(p_scope ->> 'machineId' !~ v_uuid, true)
+		or not public.qorpera_site_slug_valid(p_slug)
+		or p_op not in ('start', 'stop', 'logs', 'health', 'reload') then
+		raise exception 'Machine app request is malformed' using errcode = '22023';
+	end if;
+	v_identity := public.qorpera_describe_native_tool_authority(p_binding) -> 'identity';
+	if v_identity ->> 'audienceKind' is distinct from 'company' then
+		raise exception 'Machines belong to company conversations' using errcode = '42501';
+	end if;
+	select run.* into v_run from public.qorpera_execution_runs as run where run.id = (p_binding ->> 'runId')::uuid;
+	if v_mutates then
+		perform public.qorpera_assert_wake_work_allowed(v_run.id);
+	end if;
+	select machine.* into v_machine
+	from public.qorpera_company_machines as machine
+	where machine.id = (p_scope ->> 'machineId')::uuid
+		and machine.profile_id = v_run.profile_id
+		and machine.environment_id = v_run.environment_id
+		and machine.removed_at is null
+	for update;
+	if not found then
+		raise exception 'Machine app authority is unavailable' using errcode = '42501';
+	end if;
+	select site.* into v_site
+	from public.qorpera_company_sites as site
+	where site.slug = p_slug
+		and site.profile_id = v_run.profile_id
+		and site.kind = 'app'
+		and site.machine_id = v_machine.id;
+	if not found then
+		raise exception 'Machine app authority is unavailable' using errcode = '42501';
+	end if;
+	v_placement := public.qorpera_company_machine_placement(v_machine.id);
+	if v_machine.desired_state <> 'running'
+		or v_placement.id is null
+		or v_placement.running_at is null
+		or v_placement.boot_id is null
+		or not coalesce(public.qorpera_company_machine_placement_reserved(v_placement.id), false) then
+		return jsonb_build_object(
+			'schema', 'qorpera.machine-app-authority/v1',
+			'state', 'refused',
+			'reason', 'MACHINE_NOT_RUNNING',
+			'machine', v_machine.name
+		);
+	end if;
+	v_reads_root := public.qorpera_folder_reads_root(
+		v_machine.environment_id,
+		v_machine.profile_id,
+		(v_identity ->> 'staffAgentId')::uuid,
+		(v_identity ->> 'requesterUserId')::uuid
+	);
+	if not v_reads_root and exists (select 1 from public.qorpera_folder_views as v where v.placement_id = v_placement.id) then
+		return jsonb_build_object(
+			'schema', 'qorpera.machine-app-authority/v1',
+			'state', 'refused',
+			'reason', 'MACHINE_NEEDS_COMPANY_VIEW',
+			'machine', v_machine.name
+		);
+	end if;
+	if v_mutates and not v_reads_root then
+		update public.qorpera_company_machine_placements
+		set folder_unchecked_at = clock_timestamp()
+		where id = v_placement.id
+			and folder_unchecked_at is null
+			and not exists (select 1 from public.qorpera_folder_views as v where v.placement_id = v_placement.id);
+	end if;
+	update public.qorpera_company_machines
+	set last_used_at = clock_timestamp()
+	where id = v_machine.id and last_used_at < clock_timestamp() - interval '30 seconds';
+	return jsonb_build_object(
+		'schema', 'qorpera.machine-app-authority/v1',
+		'state', 'authorized',
+		'machineId', v_machine.id,
+		'placementId', v_placement.id,
+		'bootId', v_placement.boot_id,
+		'executorOwner', v_placement.owner,
+		'providerId', v_placement.binding ->> 'providerId',
+		'runId', v_run.id,
+		'slug', v_site.slug,
+		'appPort', v_site.app_port
+	);
+end $$;
+
+revoke all on function public.qorpera_authorize_machine_app_op(jsonb, jsonb, text, text)
+	from public, anon, authenticated, service_role, qorpera_secret_broker, qorpera_site_relay;
+grant execute on function public.qorpera_authorize_machine_app_op(jsonb, jsonb, text, text)
 	to service_role;
 
 insert into public.qorpera_native_host_calls(name, scope) values

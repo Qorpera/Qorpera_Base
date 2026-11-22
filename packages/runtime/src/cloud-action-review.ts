@@ -369,7 +369,11 @@ export function cloudActionEffect(
 		case "unpublish_site":
 			return "destructive";
 		case "manage_site":
-			return args.action === "rollback" ? "external" : "read";
+			return args.action === "rollback"
+				? "external"
+				: args.action === "app_start" || args.action === "app_stop" || args.action === "app_reload"
+					? "internal"
+					: "read";
 		// A new hook or mailbox lets the outside reach the company (E3a); pausing or resuming one only changes what the
 		// company takes in. Removing one ends it for good, and a removed mailbox's address is free for any company.
 		case "manage_hook":

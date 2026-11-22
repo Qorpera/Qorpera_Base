@@ -42,13 +42,14 @@ import {
 	MAX_WS_MESSAGE_BYTES,
 	MAX_WS_PER_SITE,
 	MAX_WS_QUEUED_BYTES,
-	MEMBER_PASS_COOKIE,
 	PAGE_SECURITY_POLICY,
 	parseConnectAnswer,
 	parseSessionAnswer,
 	parseUnlockAnswer,
+	parseWebOrigins,
 	parseWsProtocols,
 	passwordPage,
+	PUBLIC_RATE_LIMIT_BURST,
 	RELAY_ROLE,
 	relayHeaders,
 	requestHeaders,
@@ -1366,9 +1367,25 @@ describe("app relay: connecting, keepalives and the recheck", () => {
 		assert.equal(close.payload.readUInt16BE(0), CLOSE.refused);
 	});
 
-	it("checks a program again: a changed port closes it with 1012, so it connects again and learns the port", async (t) => {
-		const { db, relay, frames } = await setup(t, { recheckMs: 150 });
+	it("checks a program again: a changed port tries live swap and closes with 1012 when swap fails", async (t) => {
+		const { db, relay, lab, frames } = await setup(t, { recheckMs: 150 });
 		db.sites.get("lab").port = 3001;
+		const swapReq = await frames.message(3000);
+		assert.equal(swapReq.opcode, 0x2);
+		const decoded = decodeMessage(swapReq.payload);
+		assert.equal(decoded.type, TYPE.swapTarget);
+		assert.equal(JSON.parse(decoded.payload.toString("utf8")).port, 3001);
+		lab.socket.write(
+			encodeFrame(
+				0x2,
+				encodeMessage(
+					TYPE.swapTarget,
+					0,
+					Buffer.from(JSON.stringify({ ok: false, activePort: 3000, error: "target unhealthy" })),
+				),
+				{ mask: Buffer.from([5, 6, 7, 8]) },
+			),
+		);
 		const close = await frames.message(3000);
 		assert.equal(close.opcode, 0x8);
 		assert.equal(close.payload.readUInt16BE(0), CLOSE.portChanged);
@@ -3633,6 +3650,40 @@ describe("app relay overhaul: flow control, SSE, auth modes, custom domains, hea
 		});
 	}
 
+	function httpPost(relayPort, host, path, body, headers = {}) {
+		return new Promise((resolve, reject) => {
+			const payload = Buffer.from(body, "utf8");
+			const req = request(
+				{
+					host: "127.0.0.1",
+					port: relayPort,
+					path,
+					method: "POST",
+					headers: {
+						"x-forwarded-host": host,
+						"content-type": "application/x-www-form-urlencoded",
+						"content-length": String(payload.length),
+						...headers,
+					},
+				},
+				(res) => {
+					const chunks = [];
+					res.on("data", (chunk) => chunks.push(chunk));
+					res.on("end", () =>
+						resolve({
+							status: res.statusCode,
+							headers: res.headers,
+							body: Buffer.concat(chunks),
+							text: Buffer.concat(chunks).toString("utf8"),
+						}),
+					);
+				},
+			);
+			req.on("error", reject);
+			req.end(payload);
+		});
+	}
+
 	it("eliminates HOL blocking via TYPE.window credits, streams SSE past first-byte timeout with keepalives, and reuses keep-alive sockets in client.mjs", async (t) => {
 		const siteId = randomUUID();
 		const token = "w".repeat(32);
@@ -3746,7 +3797,7 @@ describe("app relay overhaul: flow control, SSE, auth modes, custom domains, hea
 		assert.ok(sse.text.includes("data: second\n\n"));
 	});
 
-	it("enforces company_member auth mode, strips spoofed X-Qorpera-* headers, supports public mode with absent-Origin WS, and routes verified custom domains", async (t) => {
+	it("enforces company_member auth mode via POST /.qorpera/member into __Host-qorpera_app, strips spoofed X-Qorpera-* headers, supports public mode with absent-Origin WS, and routes verified custom domains", async (t) => {
 		const siteId = randomUUID();
 		const memberId = randomUUID();
 		const memberPass = "m".repeat(43);
@@ -3755,7 +3806,11 @@ describe("app relay overhaul: flow control, SSE, auth modes, custom domains, hea
 		const key = `k${"m".repeat(42)}`;
 		const customHost = "app.acme-test.example";
 		let authMode = "company_member";
+		let passRedeemed = false;
 		const wsReceivedHeaders = [];
+
+		assert.deepEqual(parseWebOrigins('["https://app.qorpera.com","http://bad.example"]'), ["https://app.qorpera.com"]);
+		assert.ok(PUBLIC_RATE_LIMIT_BURST >= 300);
 
 		const app = createServer((req, res) => {
 			res.writeHead(200, { "content-type": "application/json" });
@@ -3794,13 +3849,14 @@ describe("app relay overhaul: flow control, SSE, auth modes, custom domains, hea
 				const isCustom = body.p_slug === customHost;
 				const slugExtra = isCustom ? { slug: "shop" } : {};
 				if (authMode === "public") return Response.json({ state: "open", siteId, authMode: "public", ...slugExtra });
-				if (body.p_token === memberPass || body.p_token === memberSession) {
+				if (body.p_token === memberSession) {
 					return Response.json({ state: "open", siteId, authMode: "company_member", memberId, ...slugExtra });
 				}
 				return Response.json({ state: "locked", authMode: "company_member", ...slugExtra });
 			}
 			if (url.endsWith("/qorpera_site_app_unlock")) {
-				if (body.p_password === memberPass) {
+				if (body.p_password === memberPass && !passRedeemed) {
+					passRedeemed = true;
 					return Response.json({ state: "open", token: memberSession, maxAge: 43200, memberId });
 				}
 				return Response.json({ state: "wrong" });
@@ -3836,8 +3892,39 @@ describe("app relay overhaul: flow control, SSE, auth modes, custom domains, hea
 		assert.equal(locked.status, 401);
 		assert.match(locked.text, /Company members only/);
 
+		const nonHostCookie = await httpGet(relayPort, HOST, "/", {
+			cookie: `qorpera_site_member_pass=${memberPass}`,
+		});
+		assert.equal(nonHostCookie.status, 401);
+
+		const badOriginMemberPost = await httpPost(relayPort, HOST, "/.qorpera/member", `pass=${memberPass}`, {
+			origin: "https://sibling.qorpera.com",
+			"sec-fetch-site": "same-site",
+		});
+		assert.equal(badOriginMemberPost.status, 403);
+
+		const missingOriginMemberPost = await httpPost(relayPort, HOST, "/.qorpera/member", `pass=${memberPass}`, {
+			"sec-fetch-site": "same-site",
+		});
+		assert.equal(missingOriginMemberPost.status, 403);
+
+		const redeemed = await httpPost(relayPort, HOST, "/.qorpera/member", `pass=${memberPass}&path=dashboard`, {
+			origin: "https://app.qorpera.com",
+			"sec-fetch-site": "same-site",
+		});
+		assert.equal(redeemed.status, 303);
+		assert.equal(redeemed.headers.location, "/dashboard");
+		const setCookie = String(redeemed.headers["set-cookie"] ?? "");
+		assert.match(setCookie, new RegExp(`^${GATE_COOKIE}=${memberSession};.*HttpOnly; Secure; SameSite=Lax`));
+
+		const replay = await httpPost(relayPort, HOST, "/.qorpera/member", `pass=${memberPass}`, {
+			origin: "https://app.qorpera.com",
+			"sec-fetch-site": "same-site",
+		});
+		assert.equal(replay.status, 401);
+
 		const memberRes = await httpGet(relayPort, customHost, "/", {
-			cookie: `${MEMBER_PASS_COOKIE}=${memberPass}`,
+			cookie: `${GATE_COOKIE}=${memberSession}`,
 			"x-qorpera-member-id": "00000000-0000-0000-0000-000000000000",
 			"x-qorpera-spoof": "evil",
 		});
@@ -3851,7 +3938,7 @@ describe("app relay overhaul: flow control, SSE, auth modes, custom domains, hea
 			relayPort,
 			customHost,
 			"/ws",
-			`Origin: https://${customHost}\r\nCookie: ${MEMBER_PASS_COOKIE}=${memberPass}\r\nAuthorization: Bearer app-jwt\r\nX-Qorpera-Member-Id: forged\r\n`,
+			`Origin: https://${customHost}\r\nCookie: ${GATE_COOKIE}=${memberSession}\r\nAuthorization: Bearer app-jwt\r\nX-Qorpera-Member-Id: forged\r\n`,
 		);
 		t.after(() => wsCustom.socket.destroy());
 		assert.equal(wsCustom.status, 101);
@@ -3860,12 +3947,7 @@ describe("app relay overhaul: flow control, SSE, auth modes, custom domains, hea
 		assert.equal(wsReceivedHeaders[0].authorization, "Bearer app-jwt");
 		wsCustom.socket.destroy();
 
-		const wsMemberNoOrigin = await rawUpgrade(
-			relayPort,
-			HOST,
-			"/ws",
-			`Cookie: ${MEMBER_PASS_COOKIE}=${memberPass}\r\n`,
-		);
+		const wsMemberNoOrigin = await rawUpgrade(relayPort, HOST, "/ws", `Cookie: ${GATE_COOKIE}=${memberSession}\r\n`);
 		assert.equal(wsMemberNoOrigin.status, 403);
 		wsMemberNoOrigin.socket.destroy();
 
@@ -3909,7 +3991,155 @@ describe("app relay overhaul: flow control, SSE, auth modes, custom domains, hea
 		assert.equal(limited.status, 429);
 	});
 
-	it("reports active /healthz probes, performs zero-downtime SWAP_TARGET blue-green port swaps, and drains in-flight requests on shutdown", async (t) => {
+	it("closes a rogue link program with 1002 when it ignores per-stream TYPE.window credits while a visitor stops reading", async (t) => {
+		const siteId = randomUUID();
+		const token = "f".repeat(32);
+		const claim = `c${"f".repeat(42)}`;
+		const key = `k${"f".repeat(42)}`;
+		const programId = "r".repeat(43);
+
+		const fetcher = async (url, init) => {
+			const body = JSON.parse(init.body);
+			if (url.endsWith("/qorpera_site_app_connect")) {
+				return Response.json({ state: "ok", siteId, port: 4123, key: body.p_secret === claim ? key : null });
+			}
+			if (url.endsWith("/qorpera_site_app_session")) {
+				return Response.json(body.p_token === token ? { state: "open", siteId } : { state: "locked" });
+			}
+			return Response.json({ state: "locked" });
+		};
+		const relay = createRelay({
+			api: "http://database.invalid",
+			...RELAY,
+			hostSuffix: SUFFIX,
+			fetch: fetcher,
+			streamWindowBytes: 32 * 1024,
+			windowUpdateThreshold: 16 * 1024,
+			recheckMs: 0,
+			log: () => {},
+		});
+		const relayPort = await listen(relay);
+		t.after(async () => {
+			relay.closeAllConnections();
+			await new Promise((r) => relay.close(r));
+		});
+
+		const rogue = await rawUpgrade(
+			relayPort,
+			HOST,
+			"/.qorpera/connect",
+			`Authorization: Bearer ${claim}\r\nX-Qorpera-Program: ${programId}\r\n`,
+		);
+		t.after(() => rogue.socket.destroy());
+		assert.equal(rogue.status, 101);
+		await until(() => relay.isConnected("shop"), "rogue program connected", 2_000);
+
+		let closeCode = null;
+		let buf = Buffer.from(rogue.rest);
+		let flooded = false;
+		const mask = Buffer.from([1, 2, 3, 4]);
+		const sendClientFrame = (type, streamId, payload) => {
+			if (!rogue.socket.destroyed) rogue.socket.write(encodeFrame(0x2, encodeMessage(type, streamId, payload), { mask }));
+		};
+		rogue.socket.on("data", (chunk) => {
+			buf = Buffer.concat([buf, chunk]);
+			while (buf.length >= 2) {
+				const frame = decodeFrame(buf, { masked: false });
+				if (!frame) break;
+				buf = buf.subarray(frame.size);
+				if (frame.opcode === 0x8) {
+					closeCode = decodeWsClose(frame.payload).code;
+				} else if (frame.opcode === 0x2) {
+					const msg = decodeMessage(frame.payload);
+					if (msg.type === TYPE.head && !flooded) {
+						flooded = true;
+						sendClientFrame(
+							TYPE.response,
+							msg.stream,
+							Buffer.from(JSON.stringify({ status: 200, headers: [["content-type", "application/octet-stream"]] })),
+						);
+						const big = Buffer.alloc(16 * 1024, 0x41);
+						let sent = 0;
+						const pump = () => {
+							if (closeCode !== null || rogue.socket.destroyed || sent >= 512) return;
+							for (let i = 0; i < 8 && sent < 512; i++, sent++) sendClientFrame(TYPE.body, msg.stream, big);
+							setImmediate(pump);
+						};
+						pump();
+					}
+				}
+			}
+		});
+
+		const visitor = connect(relayPort, "127.0.0.1");
+		t.after(() => visitor.destroy());
+		await new Promise((resolve) => visitor.once("connect", resolve));
+		visitor.pause();
+		visitor.write(
+			`GET /flood HTTP/1.1\r\nHost: ${HOST}\r\nX-Forwarded-Host: ${HOST}\r\nCookie: ${GATE_COOKIE}=${token}\r\n\r\n`,
+		);
+
+		await until(() => closeCode !== null, "relay to close rogue program", 3_000);
+		assert.equal(closeCode, 1002);
+		await until(() => !relay.isConnected("shop"), "rogue program removed", 2_000);
+	});
+
+	it("allows high-burst Vite/SPA page loads in public mode via token bucket without 429", async (t) => {
+		const siteId = randomUUID();
+		const claim = `c${"p".repeat(42)}`;
+		const key = `k${"p".repeat(42)}`;
+		const app = createServer((_req, res) => {
+			res.writeHead(200, { "content-type": "application/javascript" });
+			res.end("export default 1;");
+		});
+		const appPort = await listen(app);
+		const fetcher = async (url, init) => {
+			const body = JSON.parse(init.body);
+			if (url.endsWith("/qorpera_site_app_connect")) {
+				return Response.json({
+					state: "ok",
+					siteId,
+					port: appPort,
+					key: body.p_secret === claim ? key : null,
+					authMode: "public",
+				});
+			}
+			if (url.endsWith("/qorpera_site_app_session")) {
+				return Response.json({ state: "open", siteId, authMode: "public" });
+			}
+			return Response.json({ state: "locked" });
+		};
+		const relay = createRelay({
+			api: "http://database.invalid",
+			...RELAY,
+			hostSuffix: SUFFIX,
+			fetch: fetcher,
+			recheckMs: 0,
+			log: () => {},
+		});
+		const relayPort = await listen(relay);
+		const bridge = await startBridge(relayPort, HOST);
+		const child = spawn(process.execPath, [CLIENT, "shop", String(appPort), claim, SUFFIX], {
+			env: { ...process.env, QORPERA_APP_RELAY_ORIGIN: `ws://127.0.0.1:${bridge.port}` },
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		t.after(async () => {
+			child.kill("SIGKILL");
+			await bridge.close();
+			relay.closeAllConnections();
+			await new Promise((r) => relay.close(r));
+			app.closeAllConnections();
+			await new Promise((r) => app.close(r));
+		});
+		await until(() => relay.isConnected("shop"), "public client to connect", 5_000);
+
+		for (let i = 0; i < 150; i++) {
+			const res = await httpGet(relayPort, HOST, `/mod-${i}.js`, { "cf-connecting-ip": "198.51.100.77" });
+			assert.equal(res.status, 200, `request ${i} should succeed under default public token bucket burst`);
+		}
+	});
+
+	it("reports active /healthz probes, performs zero-downtime SWAP_TARGET blue-green port swaps (including on recheck), and drains in-flight requests on shutdown", async (t) => {
 		const siteId = randomUUID();
 		const token = "z".repeat(32);
 		const claim = `c${"z".repeat(42)}`;
@@ -3942,11 +4172,12 @@ describe("app relay overhaul: flow control, SSE, auth modes, custom domains, hea
 		});
 		const portV1 = await listen(appV1);
 		const portV2 = await listen(appV2);
+		let dbPort = portV1;
 
 		const fetcher = async (url, init) => {
 			const body = JSON.parse(init.body);
 			if (url.endsWith("/qorpera_site_app_connect"))
-				return Response.json({ state: "ok", siteId, port: portV1, key: body.p_secret === claim ? key : null });
+				return Response.json({ state: "ok", siteId, port: dbPort, key: body.p_secret === claim ? key : null });
 			if (url.endsWith("/qorpera_site_app_session"))
 				return Response.json(body.p_token === token ? { state: "open", siteId } : { state: "locked" });
 			return Response.json({ state: "locked" });
@@ -3956,7 +4187,7 @@ describe("app relay overhaul: flow control, SSE, auth modes, custom domains, hea
 			...RELAY,
 			hostSuffix: SUFFIX,
 			fetch: fetcher,
-			recheckMs: 0,
+			recheckMs: 120,
 			log: () => {},
 		});
 		const relayPort = await listen(relay);
@@ -3991,10 +4222,9 @@ describe("app relay overhaul: flow control, SSE, auth modes, custom domains, hea
 		const inFlightV1 = httpGet(relayPort, HOST, "/slow-v1", { cookie: `${GATE_COOKIE}=${token}` });
 		await until(() => releaseV1 !== null, "slow v1 request to reach appV1", 3_000);
 
-		const swapAck = await relay.swapTarget("shop", portV2, { healthPath: "/healthz", timeoutMs: 3_000 });
-		assert.equal(swapAck.ok, true);
-		assert.equal(swapAck.activePort, portV2);
-		assert.equal(swapAck.previousPort, portV1);
+		dbPort = portV2;
+		await until(() => relay.programHealth("shop").port === portV2, "recheck to live-swap to portV2", 3_000);
+		assert.equal(relay.isConnected("shop"), true);
 
 		const newReq = await httpGet(relayPort, HOST, "/which", { cookie: `${GATE_COOKIE}=${token}` });
 		assert.equal(newReq.status, 200);
@@ -4021,6 +4251,7 @@ describe("app relay overhaul: flow control, SSE, auth modes, custom domains, hea
 			appV3.closeAllConnections();
 			await new Promise((r) => appV3.close(r));
 		});
+		dbPort = portV3;
 		const swapV3 = await relay.swapTarget("shop", portV3, { healthPath: "/healthz", timeoutMs: 3_000 });
 		assert.equal(swapV3.ok, true);
 
