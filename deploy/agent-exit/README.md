@@ -103,10 +103,12 @@ and its usual identity keys: `user.qorpera.company_id`, `user.qorpera.machine_id
 Everything after that is the reconciler's (`qorpera-agent-plug.service`, root), which reads LXD every 5 seconds:
 - a machine that stops (asleep) keeps its address and entry; its connections are flushed once;
 - a machine that is gone (missing from two reads of LXD in a row after it was seen, or never created within an hour
-  of its last plug) is unplugged under the plug lock: quarantined for 15 minutes first, then it loses its lease (dnsmasq
-  reloads), its connections, the exit's per-machine counts, refused flows and brake, and its entry. A failed flush is
-  tried again every pass; the address is not given out before it succeeds. An entry removed by hand is unplugged
-  the same way, from the reconciler's own copy;
+  of its last plug) is unplugged: under the plug lock its address is quarantined for 15 minutes and marked `unflushed`
+  before its lease, entry, and `seen` marker are removed; after releasing the lock dnsmasq reloads and its connections,
+  the exit's per-machine counts, refused flows, and brake are cleared, and `unflushed` is removed once the flush
+  succeeds. A failed flush (or crash before flush finishes) leaves `unflushed` in place so the address stays held and
+  is retried (with `forget`) on the next pass. An entry removed by hand is unplugged the same way, from the reconciler's
+  own copy;
 - a flush ends the address's connections in the exit's table and their masqueraded twins in the node's (TCP, UDP and
   ICMP; other protocols' twins end with their timeout);
 - every entry is checked against its machine (the card above, the identity keys), a running machine's card must be

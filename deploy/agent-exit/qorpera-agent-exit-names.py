@@ -384,8 +384,6 @@ class Names:
         # restart of this reconciler.
         self.uncut = set()
         self.problems = []
-        self._last_ports = {}
-        self._last_mapped = {}
         self._heartbeat_at = 0.0
 
     def _heartbeat(self):
@@ -393,10 +391,9 @@ class Names:
         if now_mono - self._heartbeat_at < 5.0:
             return
         self._heartbeat_at = now_mono
-        status = {"schema": STATUS_SCHEMA, "at": plug.now_iso(time.time()), "resolvers": self._last_ports,
-                  "mapped": self._last_mapped, "reach": self.reach_now, "problems": list(self.problems)}
         try:
-            plug.write_replace(self.status_path, json.dumps(status, sort_keys=True) + "\n")
+            # WHY: Touch mtime only so health freshness updates during long flushes without overwriting prior pass problems.
+            os.utime(self.status_path, None)
         except OSError:
             pass
 
@@ -411,14 +408,18 @@ class Names:
                 out.append((address, fn(address)))
                 self._heartbeat()
             return out
-        out = []
-        chunk_size = 32
+        results = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            for i in range(0, len(ordered), chunk_size):
-                chunk = ordered[i:i + chunk_size]
-                out.extend(zip(chunk, pool.map(fn, chunk)))
+            futures_to_addr = {pool.submit(fn, address): address for address in ordered}
+            pending = set(futures_to_addr)
+            while pending:
+                done, pending = concurrent.futures.wait(
+                    pending, timeout=5.0, return_when=concurrent.futures.FIRST_COMPLETED
+                )
+                for future in done:
+                    results[futures_to_addr[future]] = future.result()
                 self._heartbeat()
-        return out
+        return [(address, results[address]) for address in ordered]
 
     def run(self, command, *, input=None):
         try:
@@ -720,7 +721,6 @@ class Names:
             self.unflushed |= set(loaded) | set(mapped) | self.machines
             self.uncut |= (set(loaded) | set(reached) | self.machines) - set(reach)
             self.flush_all = False
-        self._last_mapped = mapped
         for address, ok in self._run_address_batch(
             self.uncut,
             lambda addr: self._conntrack_ok(self.in_exit("conntrack", "-D", "-s", addr)),
@@ -844,7 +844,6 @@ class Names:
                 self.problems.append(f"the resolver of {company} (port {port}) is not answering")
                 if units.get(port) == "active":
                     self.start(port, mono, again=True)
-        self._last_ports = ports
         mapped = self.sync_map(wanted_map(clients, rules, ports), waiting,
                                wanted_reach(clients, rules, ports, present or set()))
         self.cut_owed(clients, ports)
@@ -853,7 +852,7 @@ class Names:
         return self.write_status(at, ports, mapped)
 
     def write_status(self, at, ports, mapped):
-        self._last_ports, self._last_mapped, self._heartbeat_at = ports, mapped, _monotonic()
+        self._heartbeat_at = _monotonic()
         status = {"schema": STATUS_SCHEMA, "at": plug.now_iso(at), "resolvers": ports, "mapped": mapped,
                   "reach": self.reach_now, "problems": self.problems}
         plug.write_replace(self.status_path, json.dumps(status, sort_keys=True) + "\n")

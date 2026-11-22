@@ -770,7 +770,7 @@ class Guard:
                                              for address, (number, until) in sorted(wanted.items()))
                         statements.append(f"add element {family} {table} braked {{ {elements} }}")
             self.prune(now)
-            status = self.status_record(now, problems)
+            status = self.status_record(now, problems, known)
         if statements:
             try:
                 self.kernel.write(statements)
@@ -808,9 +808,10 @@ class Guard:
             for company in [c for c, steps in counts.items() if not steps or max(steps) < now // width - 1]:
                 del counts[company]
 
-    def status_record(self, now, problems):
+    def status_record(self, now, problems, known=None):
         machines = {}
-        for address, company in self.companies.known.items():
+        known_map = self.companies.snapshot() if known is None else known
+        for address, company in known_map.items():
             if company in self.braked:
                 machines[company] = machines.get(company, 0) + 1
         return {

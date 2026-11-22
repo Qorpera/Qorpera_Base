@@ -3872,6 +3872,9 @@ n_args = type("A", (), {
     "upstreams": "1.1.1.1", "netns": "qexit",
 })()
 reconciler = names_mod.Names(n_args)
+with open(reconciler.status_path, "w", encoding="utf-8") as f:
+    json.dump({"schema": names_mod.STATUS_SCHEMA, "at": "2026-01-01T00:00:00Z", "resolvers": {}, "mapped": {}, "reach": {}, "problems": ["existing-fault"]}, f)
+os.utime(reconciler.status_path, (1000, 1000))
 reconciler._heartbeat_at = -100.0
 active = 0
 max_active = 0
@@ -3886,7 +3889,9 @@ def fake_flush(addr):
         active -= 1
     return True
 res = reconciler._run_address_batch([f"10.210.1.{i}" for i in range(1, 13)], fake_flush)
-names_heartbeat_written = os.path.exists(reconciler.status_path)
+names_mtime_bumped = os.stat(reconciler.status_path).st_mtime > 1000
+with open(reconciler.status_path, encoding="utf-8") as f:
+    names_problems_preserved = json.load(f).get("problems") == ["existing-fault"]
 
 # 2. Logs: resolutions max_asked cap + tally failed_windows cap + heartbeat callback.
 dns_file = os.path.join(base, "dns.log")
@@ -3941,17 +3946,33 @@ def check_entry(addr, files_cache=None):
 companies.entry = check_entry
 companies.read_at = None
 guard.see({"event": "new", "ts": 1000.0, "src": "10.210.1.1"})
+with open(os.path.join(l_state, "seen", "10.210.1.2"), "w", encoding="utf-8") as f:
+    json.dump({"company": "cB"}, f)
+open(os.path.join(l_state, "verified", "10.210.1.2"), "w").close()
+guard.braked["cA"] = {"number": 1, "since": 1000.0, "until": 2000.0, "reason": "test", "dropped": 0, "resent": 0}
+class ExplodingDict(dict):
+    def items(self):
+        raise RuntimeError("status_record must iterate snapshot, not companies.known")
+companies.known = ExplodingDict(companies.known)
+step_status = guard.step(now=1005.0)
+status_used_snapshot = step_status["braked"][0]["machines"] == 1
+companies.known = dict(companies.known)
+companies.of("10.210.1.2")
+concurrent_insert_ok = companies.snapshot().get("10.210.1.2") == "cB"
 
 print(json.dumps({
     "names_batch_len": len(res),
     "names_parallel": max_active >= 2,
-    "names_heartbeat_written": names_heartbeat_written,
+    "names_mtime_bumped": names_mtime_bumped,
+    "names_problems_preserved": names_problems_preserved,
     "recent_kept": recent_kept,
     "evicted_fell_back": evicted_fell_back,
     "unread": unread,
     "peak_capped": peak_capped,
     "hb_hits": hb_hits >= 1,
     "guard_lock_free_during_entry": guard_lock_free_during_entry,
+    "status_used_snapshot": status_used_snapshot,
+    "concurrent_insert_ok": concurrent_insert_ok,
 }))
 `;
 		try {
@@ -3960,13 +3981,16 @@ print(json.dumps({
 			assert.deepEqual(JSON.parse(run.stdout), {
 				names_batch_len: 12,
 				names_parallel: true,
-				names_heartbeat_written: true,
+				names_mtime_bumped: true,
+				names_problems_preserved: true,
 				recent_kept: true,
 				evicted_fell_back: true,
 				unread: [],
 				peak_capped: true,
 				hb_hits: true,
 				guard_lock_free_during_entry: true,
+				status_used_snapshot: true,
+				concurrent_insert_ok: true,
 			});
 			for (const unit of [
 				"qorpera-agent-exit-dns.service",
