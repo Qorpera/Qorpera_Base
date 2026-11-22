@@ -104,10 +104,10 @@
 	display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 5px 8px;
 	border: 0; border-radius: 10px; background: none; color: var(--text); font: inherit; text-align: left;
 	text-decoration: none; cursor: pointer; -webkit-font-smoothing: auto;
-	transition: background-color var(--motion-fast) ease;
 }
 .rail-agent-hub-row:hover { background: var(--rail-hover); text-decoration: none; }
-.rail-agent-hub-row.active { background: color-mix(in srgb, var(--text) 7%, transparent); }
+.rail-agent-hub-row.active, .rail-agent-hub-row.active:hover { background: var(--rail-selection); color: var(--rail-selection-text); }
+.rail-agent-hub-row:focus-visible { outline: 2px solid var(--rail-selection-ink); outline-offset: -2px; }
 .rail-agent-hub-fig { display: grid; place-items: center; width: 32px; height: 32px; flex: none; }
 .rail-agent-hub-copy { display: grid; flex: 1; min-width: 0; gap: 1px; }
 .rail-agent-hub-copy strong {
@@ -118,10 +118,15 @@
 	overflow: hidden; color: var(--rail-small); font-size: 11.5px; font-weight: 480; line-height: 15px;
 	text-overflow: ellipsis; white-space: nowrap;
 }
+.rail-agent-hub-row.active .rail-agent-hub-copy small { color: var(--rail-selection-sub); }
 .rail-agent-surface-tag {
 	flex: none; max-width: 82px; padding: 2px 7px; overflow: hidden; border-radius: 999px;
 	background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--rail-small);
 	font-size: 10.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap;
+}
+.rail-agent-hub-row.active .rail-agent-surface-tag {
+	background: color-mix(in srgb, var(--rail-selection-text) 12%, transparent);
+	color: var(--rail-selection-sub);
 }
 .rail-agent-sched {
 	display: flex; align-items: center; gap: 4px; padding-right: 6px; border-radius: 10px;
@@ -188,10 +193,10 @@
 .rail-surface {
 	display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 7px 10px; border-radius: 13px;
 	color: var(--text); text-decoration: none; -webkit-font-smoothing: auto;
-	transition: background-color var(--motion-fast) ease;
 }
 .rail-surface:hover { background: var(--rail-hover); text-decoration: none; }
-.rail-surface.active { background: color-mix(in srgb, var(--text) 7%, transparent); }
+.rail-surface.active, .rail-surface.active:hover { background: var(--rail-selection); color: var(--rail-selection-text); }
+.rail-surface:focus-visible { outline: 2px solid var(--rail-selection-ink); outline-offset: -2px; }
 .rail-surface-text { display: grid; flex: 1; min-width: 0; gap: 2px; }
 .rail-surface-name {
 	min-width: 0; overflow: hidden; color: var(--text); font-size: 14.5px; font-weight: 660; line-height: 20px;
@@ -201,6 +206,10 @@
 	min-width: 0; overflow: hidden; color: var(--rail-small); font-size: 12.5px; font-weight: 450; line-height: 17px;
 	text-overflow: ellipsis; white-space: nowrap;
 }
+.rail-surface.active .rail-surface-name { color: var(--rail-selection-text); }
+.rail-surface.active .rail-surface-sub,
+.rail-surface.active .rail-surface-crew-more { color: var(--rail-selection-sub); }
+:root:not([data-composer-color="grey"]) .rail-surface.active .surface-figure-ask { color: var(--rail-selection-text); }
 @keyframes surface-breathe { 50% { opacity: 0.35; transform: scale(0.8); } }
 .rail-surface-proposed {
 	display: flex; align-items: center; gap: 10px; min-height: 44px; margin-top: 2px; padding: 0 6px 0 10px;
@@ -248,6 +257,7 @@
 	position: absolute; right: -3px; bottom: -2px; display: grid; place-items: center; width: 15px; height: 15px;
 	border-radius: 50%; background: var(--agent-active); color: #fff; box-shadow: 0 0 0 2px var(--rail);
 }
+.rail-surface.active .surface-crew-pip { box-shadow: 0 0 0 2px var(--rail-selection); }
 .surface-crew-pip .icon { width: 9px; height: 9px; stroke-width: 3; }
 .surface-crew.is-large .surface-crew-pip { width: 17px; height: 17px; box-shadow: 0 0 0 2px var(--bg); }
 .surface-changes { display: grid; grid-template-columns: minmax(0, 1fr); padding: 1px 0 4px; }
@@ -278,7 +288,7 @@
 	box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--text) 32%, transparent);
 	transition: box-shadow var(--motion-base) var(--ease-spring);
 }
-.surface-variant[aria-checked="true"] .surface-radio { box-shadow: inset 0 0 0 4px var(--rail-selection); }
+.surface-variant[aria-checked="true"] .surface-radio { box-shadow: inset 0 0 0 4px var(--rail-selection-ink); }
 .surface-overview-option[aria-checked="true"] .surface-radio { box-shadow: inset 0 0 0 4px var(--sidebar-selection); }
 .surface-variant-foot { display: flex; gap: 2px; padding: 2px 0 2px 40px; }
 

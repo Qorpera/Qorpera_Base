@@ -409,8 +409,8 @@ button.program-drop-area {
 	cursor: pointer;
 }
 .program-drop.is-over .program-drop-area {
-	border-color: var(--composer-accent);
-	background: color-mix(in srgb, var(--composer-accent) 7%, var(--bg));
+	border-color: var(--composer-accent-ink);
+	background: color-mix(in srgb, var(--composer-accent-ink) 7%, var(--bg));
 }
 .program-drop-line {
 	margin: 0;
@@ -434,7 +434,7 @@ button.program-drop-area {
 }
 .program-drop-choose:focus-visible,
 .program-drop-area:focus-visible {
-	outline: 2px solid var(--composer-accent);
+	outline: 2px solid var(--composer-accent-ink);
 	outline-offset: 2px;
 }
 .program-drop-problem {
@@ -462,7 +462,7 @@ button.program-drop-area {
 	aspect-ratio: 1;
 	background: linear-gradient(
 		to top,
-		color-mix(in srgb, var(--composer-accent) 13%, var(--program-glass)) var(--share),
+		color-mix(in srgb, var(--composer-accent-ink) 13%, var(--program-glass)) var(--share),
 		var(--program-glass) var(--share)
 	);
 	transition: background var(--motion-base) ease;
@@ -486,7 +486,7 @@ button.program-drop-area {
 .program-kind.is-choice:focus-visible {
 	background: var(--bg);
 	outline: none;
-	border-color: var(--composer-accent);
+	border-color: var(--composer-accent-ink);
 }
 .program-drop-status {
 	display: flex;

@@ -10,10 +10,11 @@
 .mailbox {
 	--mailbox-waiting: #b4400e;
 	--mailbox-accent: var(--composer-accent);
+	--mailbox-accent-ink: var(--composer-accent-ink);
 	--mailbox-on-accent: var(--composer-on-accent);
-	--mailbox-accent-text: color-mix(in srgb, var(--mailbox-accent) 80%, var(--text));
-	--mailbox-tint: color-mix(in srgb, var(--mailbox-accent) 12%, var(--bg));
-	--mailbox-tint-strong: color-mix(in srgb, var(--mailbox-accent) 20%, var(--bg));
+	--mailbox-accent-text: color-mix(in srgb, var(--mailbox-accent-ink) 80%, var(--text));
+	--mailbox-tint: color-mix(in srgb, var(--mailbox-accent-ink) 12%, var(--bg));
+	--mailbox-tint-strong: color-mix(in srgb, var(--mailbox-accent-ink) 20%, var(--bg));
 	--mailbox-gutter: 24px;
 	--mailbox-who: 132px;
 	container: mailbox / inline-size;
@@ -132,7 +133,7 @@ a.mailbox-open { text-decoration: none; }
 span.mailbox-open { cursor: default; }
 .mailbox-open:focus-visible { outline-offset: -2px; border-radius: 6px; }
 .mailbox-dot { justify-self: start; width: 8px; height: 8px; margin-left: 4px; border-radius: 50%; }
-.mailbox-row.is-unread .mailbox-dot { background: var(--mailbox-accent); }
+.mailbox-row.is-unread .mailbox-dot { background: var(--mailbox-accent-ink); }
 .mailbox-row.is-waiting .mailbox-dot { background: var(--mailbox-waiting); }
 .mailbox-who {
 	display: flex; align-items: center; min-width: 0; padding-right: 16px; overflow: hidden; white-space: nowrap;
@@ -421,8 +422,9 @@ span.mailbox-open { cursor: default; }
    them, and Save. It stands outside the page, so it takes the page's accent itself. */
 .mailbox-how-panel {
 	--mailbox-accent: var(--composer-accent);
+	--mailbox-accent-ink: var(--composer-accent-ink);
 	--mailbox-on-accent: var(--composer-on-accent);
-	--mailbox-tint-strong: color-mix(in srgb, var(--mailbox-accent) 20%, var(--bg));
+	--mailbox-tint-strong: color-mix(in srgb, var(--mailbox-accent-ink) 20%, var(--bg));
 }
 .context-panel:has(> .mailbox-how-panel) { width: 360px; padding: 8px; }
 .mailbox-how-panel { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 4px 4px 2px; }
@@ -435,7 +437,7 @@ span.mailbox-open { cursor: default; }
 }
 .mailbox-how-panel textarea::placeholder { color: var(--text-muted); }
 .mailbox-how-panel textarea:focus-visible {
-	outline: none; border-color: var(--mailbox-accent); box-shadow: 0 0 0 3px var(--mailbox-tint-strong);
+	outline: none; border-color: var(--mailbox-accent-ink); box-shadow: 0 0 0 3px var(--mailbox-tint-strong);
 }
 .mailbox-how-panel textarea:read-only { color: var(--text-muted); }
 :root[data-theme="dark"] .mailbox-how-panel textarea { background: color-mix(in srgb, var(--text) 5%, var(--bg)); }
@@ -532,7 +534,7 @@ span.mailbox-open { cursor: default; }
 .mailbox-manage .btn.hook-add[aria-expanded="true"], :root[data-theme="dark"] .mailbox-manage .btn.hook-add[aria-expanded="true"] {
 	background: var(--mailbox-tint-strong); box-shadow: none;
 }
-.mailbox-manage .btn-primary, :root[data-theme="dark"] .mailbox-manage .btn-primary { background: var(--mailbox-accent); }
+.mailbox-manage .btn-primary, :root[data-theme="dark"] .mailbox-manage .btn-primary { background: var(--mailbox-accent); color: var(--mailbox-on-accent); }
 .mailbox-manage .btn-primary:hover:not(:disabled), :root[data-theme="dark"] .mailbox-manage .btn-primary:hover:not(:disabled) {
 	background: var(--composer-accent-hover);
 }

@@ -116,7 +116,7 @@
 .leaderboard-rows { margin: 0; padding: 0; list-style: none; border: 1px solid #e3e3e0; border-radius: 14px; background: #fff; overflow: hidden; }
 .leaderboard-row { display: flex; align-items: center; gap: 14px; min-height: 60px; padding: 9px 18px; }
 .leaderboard-row + .leaderboard-row { border-top: 1px solid #f0f0ee; }
-.leaderboard-row.is-me { background: color-mix(in srgb, var(--composer-accent) 6%, transparent); }
+.leaderboard-row.is-me { background: color-mix(in srgb, var(--composer-accent-ink) 6%, transparent); }
 .leaderboard-place { flex: none; width: 22px; font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .leaderboard-move { flex: none; width: 40px; color: var(--text-soft); font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .leaderboard-move.is-up { color: #1f8f5f; }

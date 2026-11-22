@@ -3,6 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { renderAccount } from "../src/app/views/account.ts";
 import { renderAppearance } from "../src/app/views/appearance.ts";
+import appCss from "../src/styles/app.css?raw";
+import settingsCss from "../src/styles/settings.css?raw";
+import surfacesCss from "../src/styles/surfaces.css?raw";
+import tokensCss from "../src/styles/tokens.css?raw";
+import { h } from "../src/ui/dom.ts";
 import {
 	applyComposerColor,
 	composerColorPreference,
@@ -10,6 +15,7 @@ import {
 	setThemePreference,
 	watchTheme,
 } from "../src/ui/preferences.ts";
+import { RailSelection } from "../src/ui/rail-selection.ts";
 import { fixture, userA } from "./fixtures.ts";
 
 const storageKey = "qorpera.web.composer-color";
@@ -189,5 +195,110 @@ describe("General settings", () => {
 		]);
 		expect([...panel.querySelectorAll(".settings-preference")].map((row) => row.children.length)).toEqual([1, 1, 1]);
 		expect(panel.textContent).toBe("AppearanceSystemLightDarkBlueGreenGreySmallBig");
+	});
+});
+
+function cssRulesOf(raw: string): CSSStyleRule[] {
+	const style = h("style", null, raw.replace(/^@import .*;$/gm, ""));
+	document.head.append(style);
+	const flatten = (rules: CSSRuleList): CSSStyleRule[] =>
+		[...rules].flatMap((rule) =>
+			rule instanceof CSSStyleRule ? [rule] : "cssRules" in rule ? flatten(rule.cssRules as CSSRuleList) : [],
+		);
+	const rules = flatten(style.sheet!.cssRules);
+	style.remove();
+	return rules;
+}
+
+describe("rail selection and grey appearance styles", () => {
+	it("replaces dark grey with the soft interface grey in tokens and settings swatch", () => {
+		const tokenRules = cssRulesOf(tokensCss);
+		const greyRule = tokenRules.find((rule) => rule.selectorText === ':root[data-composer-color="grey"]');
+		expect(greyRule?.style.getPropertyValue("--composer-accent").trim()).toBe(
+			"color-mix(in srgb, var(--text) 7%, var(--bg))",
+		);
+		expect(greyRule?.style.getPropertyValue("--composer-on-accent").trim()).toBe("var(--text)");
+		expect(greyRule?.style.getPropertyValue("--composer-accent-ink").trim()).toBe("#5b5b5b");
+
+		const darkGreyRule = tokenRules.find(
+			(rule) => rule.selectorText === ':root[data-theme="dark"][data-composer-color="grey"]',
+		);
+		expect(darkGreyRule?.style.getPropertyValue("--composer-accent-ink").trim()).toBe("#989894");
+
+		const settingsRules = cssRulesOf(settingsCss);
+		const swatchRule = settingsRules.find((rule) => rule.selectorText === ".color-swatch-grey");
+		expect(swatchRule?.style.getPropertyValue("--swatch-accent").trim()).toBe(
+			"color-mix(in srgb, var(--text) 7%, transparent)",
+		);
+	});
+
+	it("styles active rail surfaces and agent rows with the settings selection tokens like the Co-Founder", () => {
+		const surfaceRules = cssRulesOf(surfacesCss);
+		const activeSurface = surfaceRules.find(
+			(rule) => rule.selectorText === ".rail-surface.active, .rail-surface.active:hover",
+		);
+		expect(activeSurface?.style.background).toBe("var(--rail-selection)");
+		expect(activeSurface?.style.color).toBe("var(--rail-selection-text)");
+
+		const activeSurfaceName = surfaceRules.find(
+			(rule) => rule.selectorText === ".rail-surface.active .rail-surface-name",
+		);
+		expect(activeSurfaceName?.style.color).toBe("var(--rail-selection-text)");
+
+		const activeSurfaceSub = surfaceRules.find(
+			(rule) =>
+				rule.selectorText ===
+				".rail-surface.active .rail-surface-sub, .rail-surface.active .rail-surface-crew-more",
+		);
+		expect(activeSurfaceSub?.style.color).toBe("var(--rail-selection-sub)");
+
+		const activeAgentHub = surfaceRules.find(
+			(rule) => rule.selectorText === ".rail-agent-hub-row.active, .rail-agent-hub-row.active:hover",
+		);
+		expect(activeAgentHub?.style.background).toBe("var(--rail-selection)");
+		expect(activeAgentHub?.style.color).toBe("var(--rail-selection-text)");
+
+		const appRules = cssRulesOf(appCss);
+		const cofounder = appRules.find(
+			(rule) => rule.selectorText === ".cofounder-home.active, .cofounder-home.active:hover",
+		);
+		expect(cofounder?.style.background).toBe("var(--rail-selection)");
+		expect(cofounder?.style.color).toBe("var(--rail-selection-text)");
+
+		const greyRail = appRules.find(
+			(rule) =>
+				rule.selectorText === ':root[data-composer-color="grey"] :is(.rail, .concepts-side, .rail-drag-ghost)',
+		);
+		expect(greyRail?.style.getPropertyValue("--rail-selection").trim()).toBe(
+			"color-mix(in srgb, var(--text) 7%, var(--rail))",
+		);
+		expect(greyRail?.style.getPropertyValue("--rail-selection-sub").trim()).toBe("var(--rail-small)");
+	});
+
+	it("slides RailSelection from Co-Founder to an active surface row", () => {
+		const list = h("div", { class: "rail-scroll" });
+		const cofounder = h("a", { class: "cofounder-home active" }, "Co-Founder");
+		const surface = h("a", { class: "rail-surface" }, "Identity");
+		list.append(cofounder, surface);
+		document.body.append(list);
+
+		Object.defineProperty(cofounder, "offsetParent", { value: list });
+		Object.defineProperty(surface, "offsetParent", { value: list });
+		list.getBoundingClientRect = () => new DOMRect(0, 0, 300, 600);
+		cofounder.getBoundingClientRect = () => new DOMRect(10, 20, 260, 72);
+		surface.getBoundingClientRect = () => new DOMRect(10, 120, 260, 64);
+
+		const selection = new RailSelection();
+		const animate = vi.fn(() => ({ finished: new Promise<void>(() => {}), cancel: vi.fn() }) as unknown as Animation);
+		selection.ghost.animate = animate;
+
+		selection.measure(list);
+		cofounder.classList.remove("active");
+		surface.classList.add("active");
+		selection.move(list);
+
+		expect(animate).toHaveBeenCalledOnce();
+		expect(surface.classList.contains("selection-arriving")).toBe(true);
+		expect(selection.moving).toBe(selection.ghost);
 	});
 });
