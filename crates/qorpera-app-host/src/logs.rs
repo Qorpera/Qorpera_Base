@@ -35,7 +35,11 @@ impl LogRingBuffer {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as u64);
         let clipped = if line.len() > 4096 {
-            line[..4096].to_string()
+            let mut end = 4096;
+            while end > 0 && !line.is_char_boundary(end) {
+                end -= 1;
+            }
+            line[..end].to_string()
         } else {
             line
         };
@@ -96,5 +100,11 @@ mod tests {
         assert_eq!(tail.len(), 3);
         assert_eq!(tail[0].line, "line-27");
         assert_eq!(tail[2].line, "line-29");
+
+        let multibyte = format!("{}øæå", "a".repeat(4095));
+        logs.push("dep-utf8", "stdout", multibyte);
+        let utf8_tail = logs.tail("dep-utf8", 1);
+        assert_eq!(utf8_tail.len(), 1);
+        assert_eq!(utf8_tail[0].line.len(), 4095);
     }
 }

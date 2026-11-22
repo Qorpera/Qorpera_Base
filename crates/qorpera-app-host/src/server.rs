@@ -1,17 +1,23 @@
 use crate::lifecycle::{AppLifecycleManager, DeployRequest};
 use bytes::Bytes;
 use http::{Method, Request, Response, StatusCode};
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use serde::Serialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 
 pub type BoxBody = http_body_util::combinators::BoxBody<Bytes, hyper::Error>;
+
+const MAX_CONTROL_BODY_BYTES: usize = 1024 * 1024;
+const MAX_CONNS: usize = 256;
+const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn full_body(bytes: impl Into<Bytes>) -> BoxBody {
     Full::new(bytes.into())
@@ -43,14 +49,21 @@ impl AppHostServer {
     }
 
     pub fn spawn(self) -> tokio::task::JoinHandle<()> {
+        let sem = Arc::new(Semaphore::new(MAX_CONNS));
         tokio::spawn(async move {
             loop {
                 let Ok((stream, _peer)) = self.listener.accept().await else {
                     continue;
                 };
+                let Ok(permit) = Arc::clone(&sem).try_acquire_owned() else {
+                    drop(stream);
+                    continue;
+                };
+                let _ = stream.set_nodelay(true);
                 let mgr = Arc::clone(&self.manager);
                 let token = self.control_token.clone();
                 tokio::spawn(async move {
+                    let _permit = permit;
                     let io = TokioIo::new(stream);
                     let svc = service_fn(move |req| {
                         let m = Arc::clone(&mgr);
@@ -58,6 +71,8 @@ impl AppHostServer {
                         async move { Ok::<_, hyper::Error>(handle_request(m, &t, req).await) }
                     });
                     let _ = hyper::server::conn::http1::Builder::new()
+                        .timer(TokioTimer::new())
+                        .header_read_timeout(HEADER_READ_TIMEOUT)
                         .serve_connection(io, svc)
                         .await;
                 });
@@ -86,6 +101,24 @@ fn check_auth(req: &Request<Incoming>, expected: &str) -> bool {
     token.len() == expected.len() && bool::from(token.as_bytes().ct_eq(expected.as_bytes()))
 }
 
+enum BodyErr {
+    TooLarge,
+    Bad,
+}
+
+async fn read_body(body: Incoming) -> Result<Bytes, BodyErr> {
+    match Limited::new(body, MAX_CONTROL_BODY_BYTES).collect().await {
+        Ok(c) => Ok(c.to_bytes()),
+        Err(err) => {
+            if err.downcast_ref::<http_body_util::LengthLimitError>().is_some() {
+                Err(BodyErr::TooLarge)
+            } else {
+                Err(BodyErr::Bad)
+            }
+        }
+    }
+}
+
 async fn handle_request(
     manager: Arc<AppLifecycleManager>,
     expected_token: &str,
@@ -103,10 +136,19 @@ async fn handle_request(
     }
 
     if method == Method::POST && path == "/_internal/apps/deploy" {
-        let Ok(collected) = req.into_body().collect().await else {
-            return json_res(StatusCode::BAD_REQUEST, serde_json::json!({ "error": "bad_body" }));
+        let bytes = match read_body(req.into_body()).await {
+            Ok(b) => b,
+            Err(BodyErr::TooLarge) => {
+                return json_res(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    serde_json::json!({ "error": "body_too_large" }),
+                );
+            }
+            Err(BodyErr::Bad) => {
+                return json_res(StatusCode::BAD_REQUEST, serde_json::json!({ "error": "bad_body" }));
+            }
         };
-        let deploy_req: DeployRequest = match serde_json::from_slice(&collected.to_bytes()) {
+        let deploy_req: DeployRequest = match serde_json::from_slice(&bytes) {
             Ok(v) => v,
             Err(e) => {
                 return json_res(
@@ -124,16 +166,16 @@ async fn handle_request(
     if let Some(rest) = path.strip_prefix("/_internal/apps/") {
         if let Some(dep_id) = rest.strip_suffix("/wake") {
             if method == Method::POST {
-                let fallback = match req.into_body().collect().await {
-                    Ok(collected) => {
-                        let bytes = collected.to_bytes();
-                        if bytes.is_empty() {
-                            None
-                        } else {
-                            serde_json::from_slice::<DeployRequest>(&bytes).ok()
-                        }
+                let fallback = match read_body(req.into_body()).await {
+                    Ok(bytes) if !bytes.is_empty() => serde_json::from_slice::<DeployRequest>(&bytes).ok(),
+                    Ok(_) => None,
+                    Err(BodyErr::TooLarge) => {
+                        return json_res(
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            serde_json::json!({ "error": "body_too_large" }),
+                        );
                     }
-                    Err(_) => None,
+                    Err(BodyErr::Bad) => None,
                 };
                 return match manager.wake(dep_id, fallback).await {
                     Ok(upstream_addr) => {

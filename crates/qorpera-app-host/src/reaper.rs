@@ -10,6 +10,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
 use tracing::{info, warn};
 
+const ROUTER_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
+const PRE_HIBERNATE_DRAIN: Duration = Duration::from_millis(250);
+
 #[derive(Deserialize)]
 struct ActivityResponse {
     #[serde(default)]
@@ -25,12 +28,51 @@ pub async fn reap_once_with_router(
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64);
-    let reaped = manager.reap_idle(&activity, now_ms).await;
-    for dep_id in &reaped {
-        if let Err(err) = clear_router_upstream(router_internal_url, control_token, dep_id).await {
-            warn!(deployment_id = %dep_id, error = %err, "failed clearing hibernated upstream in router");
+    let candidates = manager.idle_candidates(&activity, now_ms);
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut cleared = Vec::new();
+    for (dep_id, started_at) in candidates {
+        if let Err(err) = set_router_upstream(router_internal_url, control_token, &dep_id, None).await {
+            warn!(deployment_id = %dep_id, error = %err, "failed clearing idle upstream before hibernate");
         } else {
-            info!(deployment_id = %dep_id, "reaped idle deployment and cleared router upstream");
+            cleared.push((dep_id, started_at));
+        }
+    }
+    if cleared.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    tokio::time::sleep(PRE_HIBERNATE_DRAIN).await;
+
+    let latest_activity = fetch_router_activity(router_internal_url, control_token)
+        .await
+        .unwrap_or(activity);
+    let mut reaped = Vec::new();
+    for (dep_id, started_at) in cleared {
+        let saw_new_traffic = latest_activity
+            .get(&dep_id)
+            .copied()
+            .map_or(false, |ts| ts >= now_ms);
+        if saw_new_traffic {
+            if let Some(st) = manager.status(&dep_id) {
+                if let Some(addr) = st.upstream_addr {
+                    let _ = set_router_upstream(
+                        router_internal_url,
+                        control_token,
+                        &dep_id,
+                        Some(&addr),
+                    )
+                    .await;
+                }
+            }
+            continue;
+        }
+        if manager.hibernate_if_unchanged(&dep_id, started_at).await {
+            info!(deployment_id = %dep_id, "reaped idle deployment after clearing router upstream");
+            reaped.push(dep_id);
         }
     }
     Ok(reaped)
@@ -63,13 +105,19 @@ async fn fetch_router_activity(
     let uri: Uri = url.parse().map_err(|_| "invalid_router_url".to_string())?;
     let host = uri.host().ok_or_else(|| "missing_router_host".to_string())?;
     let port = uri.port_u16().unwrap_or(80);
-    let stream = TcpStream::connect((host, port))
+    let stream = tokio::time::timeout(ROUTER_HTTP_TIMEOUT, TcpStream::connect((host, port)))
         .await
+        .map_err(|_| "router_connect_timeout".to_string())?
         .map_err(|e| format!("router_connect: {e}"))?;
+    let _ = stream.set_nodelay(true);
     let io = TokioIo::new(stream);
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .map_err(|e| format!("router_handshake: {e}"))?;
+    let (mut sender, conn) = tokio::time::timeout(
+        ROUTER_HTTP_TIMEOUT,
+        hyper::client::conn::http1::handshake(io),
+    )
+    .await
+    .map_err(|_| "router_handshake_timeout".to_string())?
+    .map_err(|e| format!("router_handshake: {e}"))?;
     tokio::spawn(async move {
         let _ = conn.await;
     });
@@ -80,17 +128,16 @@ async fn fetch_router_activity(
         .header("authorization", format!("Bearer {token}"))
         .body(Full::new(Bytes::new()))
         .map_err(|e| e.to_string())?;
-    let res = sender
-        .send_request(req)
+    let res = tokio::time::timeout(ROUTER_HTTP_TIMEOUT, sender.send_request(req))
         .await
+        .map_err(|_| "router_request_timeout".to_string())?
         .map_err(|e| format!("router_request: {e}"))?;
     if !res.status().is_success() {
         return Err(format!("router_status_{}", res.status().as_u16()));
     }
-    let body = res
-        .into_body()
-        .collect()
+    let body = tokio::time::timeout(ROUTER_HTTP_TIMEOUT, res.into_body().collect())
         .await
+        .map_err(|_| "router_body_timeout".to_string())?
         .map_err(|e| format!("router_body: {e}"))?
         .to_bytes();
     let parsed: ActivityResponse =
@@ -98,37 +145,46 @@ async fn fetch_router_activity(
     Ok(parsed.deployments)
 }
 
-async fn clear_router_upstream(
+async fn set_router_upstream(
     base_url: &str,
     token: &str,
     deployment_id: &str,
+    upstream_addr: Option<&str>,
 ) -> Result<(), String> {
     let path = format!("/_internal/deployments/{deployment_id}/upstream");
     let url = format!("{}{}", base_url.trim_end_matches('/'), path);
     let uri: Uri = url.parse().map_err(|_| "invalid_router_url".to_string())?;
     let host = uri.host().ok_or_else(|| "missing_router_host".to_string())?;
     let port = uri.port_u16().unwrap_or(80);
-    let stream = TcpStream::connect((host, port))
+    let stream = tokio::time::timeout(ROUTER_HTTP_TIMEOUT, TcpStream::connect((host, port)))
         .await
+        .map_err(|_| "router_connect_timeout".to_string())?
         .map_err(|e| format!("router_connect: {e}"))?;
+    let _ = stream.set_nodelay(true);
     let io = TokioIo::new(stream);
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .map_err(|e| format!("router_handshake: {e}"))?;
+    let (mut sender, conn) = tokio::time::timeout(
+        ROUTER_HTTP_TIMEOUT,
+        hyper::client::conn::http1::handshake(io),
+    )
+    .await
+    .map_err(|_| "router_handshake_timeout".to_string())?
+    .map_err(|e| format!("router_handshake: {e}"))?;
     tokio::spawn(async move {
         let _ = conn.await;
     });
+    let payload = serde_json::to_vec(&serde_json::json!({ "upstream_addr": upstream_addr }))
+        .map_err(|e| e.to_string())?;
     let req = Request::builder()
         .method("POST")
         .uri(&path)
         .header("host", format!("{host}:{port}"))
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {token}"))
-        .body(Full::new(Bytes::from_static(b"{\"upstream_addr\":null}")))
+        .body(Full::new(Bytes::from(payload)))
         .map_err(|e| e.to_string())?;
-    let res = sender
-        .send_request(req)
+    let res = tokio::time::timeout(ROUTER_HTTP_TIMEOUT, sender.send_request(req))
         .await
+        .map_err(|_| "router_request_timeout".to_string())?
         .map_err(|e| format!("router_request: {e}"))?;
     if !res.status().is_success() {
         return Err(format!("router_status_{}", res.status().as_u16()));

@@ -121,8 +121,25 @@ async fn blue_green_deploy_rollback_on_unhealthy_hibernate_wake_and_logs() {
     let v2_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let v2_upstream: SocketAddr = v2_json["upstream_addr"].as_str().unwrap().parse().unwrap();
     assert_ne!(v1_upstream, v2_upstream);
-    assert_eq!(manager.status("dep-v1").unwrap().state, InstanceState::Stopped);
     assert_eq!(manager.active_deployment_for_site("site-shop").as_deref(), Some("dep-v2"));
+    let (v1_drain_st, _) = http_call(
+        v1_upstream,
+        Request::builder()
+            .method("GET")
+            .uri("/")
+            .header("host", v1_upstream.to_string())
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(v1_drain_st, StatusCode::OK);
+    for _ in 0..20 {
+        if manager.status("dep-v1").unwrap().state == InstanceState::Stopped {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(manager.status("dep-v1").unwrap().state, InstanceState::Stopped);
 
     let deploy_v3_broken = DeployRequest {
         deployment_id: "dep-v3".to_string(),
@@ -350,4 +367,32 @@ async fn cold_start_wake_from_payload_and_router_idle_reaper_loop() {
     assert_eq!(reaped, vec!["dep-cold".to_string()]);
     assert_eq!(manager.status("dep-cold").unwrap().state, InstanceState::Hibernated);
     assert_eq!(*cleared.lock().unwrap(), vec!["dep-cold".to_string()]);
+
+    let w1 = DeployRequest {
+        deployment_id: "dep-shut-1".to_string(),
+        site_id: "site-shut-1".to_string(),
+        oci_image_ref: None,
+        command: Some(node_http_script("s1", 200)),
+        health_path: "/health".to_string(),
+        idle_timeout_sec: 0,
+        memory_mb: 256,
+        vcpu_limit: 1.0,
+        pids_limit: 128,
+        env: HashMap::new(),
+    };
+    let w2 = DeployRequest {
+        deployment_id: "dep-shut-2".to_string(),
+        site_id: "site-shut-2".to_string(),
+        ..w1.clone()
+    };
+    let s1 = manager.deploy_blue_green(w1).await.unwrap();
+    let s2 = manager.deploy_blue_green(w2).await.unwrap();
+    let a1: SocketAddr = s1.upstream_addr.unwrap().parse().unwrap();
+    let a2: SocketAddr = s2.upstream_addr.unwrap().parse().unwrap();
+
+    manager.shutdown_all().await;
+    assert_eq!(manager.status("dep-shut-1").unwrap().state, InstanceState::Stopped);
+    assert_eq!(manager.status("dep-shut-2").unwrap().state, InstanceState::Stopped);
+    assert!(TcpStream::connect(a1).await.is_err());
+    assert!(TcpStream::connect(a2).await.is_err());
 }

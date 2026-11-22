@@ -1,15 +1,22 @@
 use bytes::Bytes;
 use flate2::{write::GzEncoder, Compression};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, VecDeque};
-use std::io::Write;
+use std::collections::HashMap;
+use std::io::{SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio::sync::broadcast;
 
 pub const DEFAULT_MAX_CACHE_BYTES: usize = 256 * 1024 * 1024;
 pub const DEFAULT_MAX_BLOB_BYTES: usize = 100 * 1024 * 1024;
 const GZIP_MIN_BYTES: usize = 256;
+const BLOCKING_OFFLOAD_THRESHOLD: usize = 32 * 1024;
+const CACHE_SHARDS: usize = 16;
+
+static TEMP_FILE_SEQ: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PutOutcome {
@@ -84,58 +91,113 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+#[derive(Clone)]
 struct CachedBlob {
     raw: Bytes,
     gzip: Option<Bytes>,
     accounted_bytes: usize,
 }
 
-struct LruState {
-    entries: HashMap<String, CachedBlob>,
-    order: VecDeque<String>,
+impl CachedBlob {
+    fn to_payload(&self, prefer_gzip: bool) -> BlobPayload {
+        let raw_len = self.raw.len();
+        if prefer_gzip {
+            if let Some(gz) = &self.gzip {
+                return BlobPayload {
+                    bytes: gz.clone(),
+                    raw_len,
+                    encoding: ContentEncoding::Gzip,
+                };
+            }
+        }
+        BlobPayload {
+            bytes: self.raw.clone(),
+            raw_len,
+            encoding: ContentEncoding::Identity,
+        }
+    }
+}
+
+struct LruNode {
+    key: String,
+    value: CachedBlob,
+    prev: Option<usize>,
+    next: Option<usize>,
+}
+
+struct LruShard {
+    index: HashMap<String, usize>,
+    nodes: Vec<Option<LruNode>>,
+    free: Vec<usize>,
+    head: Option<usize>,
+    tail: Option<usize>,
     total_bytes: usize,
     max_bytes: usize,
 }
 
-impl LruState {
+impl LruShard {
     fn new(max_bytes: usize) -> Self {
         Self {
-            entries: HashMap::new(),
-            order: VecDeque::new(),
+            index: HashMap::new(),
+            nodes: Vec::new(),
+            free: Vec::new(),
+            head: None,
+            tail: None,
             total_bytes: 0,
             max_bytes,
         }
     }
 
-    fn get(&mut self, key: &str, prefer_gzip: bool) -> Option<BlobPayload> {
-        let entry = self.entries.get(key)?;
-        let raw_len = entry.raw.len();
-        let payload = if prefer_gzip {
-            if let Some(gz) = &entry.gzip {
-                BlobPayload {
-                    bytes: gz.clone(),
-                    raw_len,
-                    encoding: ContentEncoding::Gzip,
-                }
-            } else {
-                BlobPayload {
-                    bytes: entry.raw.clone(),
-                    raw_len,
-                    encoding: ContentEncoding::Identity,
-                }
+    fn detach(&mut self, idx: usize) {
+        let (prev, next) = {
+            let Some(node) = self.nodes[idx].as_ref() else {
+                return;
+            };
+            (node.prev, node.next)
+        };
+        if let Some(p) = prev {
+            if let Some(pn) = self.nodes[p].as_mut() {
+                pn.next = next;
             }
         } else {
-            BlobPayload {
-                bytes: entry.raw.clone(),
-                raw_len,
-                encoding: ContentEncoding::Identity,
-            }
-        };
-        if let Some(pos) = self.order.iter().position(|k| k == key) {
-            self.order.remove(pos);
+            self.head = next;
         }
-        self.order.push_back(key.to_string());
-        Some(payload)
+        if let Some(n) = next {
+            if let Some(nn) = self.nodes[n].as_mut() {
+                nn.prev = prev;
+            }
+        } else {
+            self.tail = prev;
+        }
+        if let Some(node) = self.nodes[idx].as_mut() {
+            node.prev = None;
+            node.next = None;
+        }
+    }
+
+    fn push_back(&mut self, idx: usize) {
+        let old_tail = self.tail;
+        if let Some(node) = self.nodes[idx].as_mut() {
+            node.prev = old_tail;
+            node.next = None;
+        }
+        if let Some(t) = old_tail {
+            if let Some(tn) = self.nodes[t].as_mut() {
+                tn.next = Some(idx);
+            }
+        } else {
+            self.head = Some(idx);
+        }
+        self.tail = Some(idx);
+    }
+
+    fn get(&mut self, key: &str, prefer_gzip: bool) -> Option<BlobPayload> {
+        let idx = *self.index.get(key)?;
+        if self.tail != Some(idx) {
+            self.detach(idx);
+            self.push_back(idx);
+        }
+        self.nodes[idx].as_ref().map(|n| n.value.to_payload(prefer_gzip))
     }
 
     fn insert(&mut self, key: String, raw: Bytes, gzip: Option<Bytes>) {
@@ -143,45 +205,120 @@ impl LruState {
         if self.max_bytes == 0 || accounted > self.max_bytes {
             return;
         }
-        if let Some(prev) = self.entries.remove(&key) {
-            self.total_bytes = self.total_bytes.saturating_sub(prev.accounted_bytes);
-            if let Some(pos) = self.order.iter().position(|k| k == &key) {
-                self.order.remove(pos);
+        if let Some(existing_idx) = self.index.remove(&key) {
+            self.detach(existing_idx);
+            if let Some(old) = self.nodes[existing_idx].take() {
+                self.total_bytes = self.total_bytes.saturating_sub(old.value.accounted_bytes);
             }
+            self.free.push(existing_idx);
         }
         while self.total_bytes + accounted > self.max_bytes {
-            let Some(oldest) = self.order.pop_front() else {
+            let Some(oldest_idx) = self.head else {
                 break;
             };
-            if let Some(evicted) = self.entries.remove(&oldest) {
-                self.total_bytes = self.total_bytes.saturating_sub(evicted.accounted_bytes);
+            self.detach(oldest_idx);
+            if let Some(evicted) = self.nodes[oldest_idx].take() {
+                self.index.remove(&evicted.key);
+                self.total_bytes = self.total_bytes.saturating_sub(evicted.value.accounted_bytes);
             }
+            self.free.push(oldest_idx);
         }
-        self.total_bytes += accounted;
-        self.order.push_back(key.clone());
-        self.entries.insert(
-            key,
-            CachedBlob {
+        let node = LruNode {
+            key: key.clone(),
+            value: CachedBlob {
                 raw,
                 gzip,
                 accounted_bytes: accounted,
             },
-        );
+            prev: None,
+            next: None,
+        };
+        let idx = if let Some(slot) = self.free.pop() {
+            self.nodes[slot] = Some(node);
+            slot
+        } else {
+            let slot = self.nodes.len();
+            self.nodes.push(Some(node));
+            slot
+        };
+        self.total_bytes += accounted;
+        self.index.insert(key, idx);
+        self.push_back(idx);
     }
+}
+
+#[derive(Clone)]
+enum ReadResult {
+    Ok(CachedBlob),
+    NotFound,
+    Corrupt,
+    Io(String),
+}
+
+struct InFlightGuard<'a> {
+    map: &'a Mutex<HashMap<String, broadcast::Sender<ReadResult>>>,
+    key: String,
+    completed: bool,
+}
+
+impl<'a> InFlightGuard<'a> {
+    fn finish(mut self, result: ReadResult) {
+        self.completed = true;
+        if let Ok(mut guard) = self.map.lock() {
+            if let Some(tx) = guard.remove(&self.key) {
+                let _ = tx.send(result);
+            }
+        }
+    }
+}
+
+impl Drop for InFlightGuard<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            if let Ok(mut guard) = self.map.lock() {
+                if let Some(tx) = guard.remove(&self.key) {
+                    let _ = tx.send(ReadResult::Io("blob_read_cancelled".to_string()));
+                }
+            }
+        }
+    }
+}
+
+fn shard_for_sha(sha256: &str) -> usize {
+    let b = sha256.as_bytes().first().copied().unwrap_or(0);
+    let nibble = match b {
+        b'0'..=b'9' => (b - b'0') as usize,
+        b'a'..=b'f' => (b - b'a' + 10) as usize,
+        _ => 0,
+    };
+    nibble & (CACHE_SHARDS - 1)
 }
 
 pub struct BlobStore {
     root: PathBuf,
     max_blob_bytes: usize,
-    cache: Mutex<LruState>,
+    max_cache_bytes: usize,
+    shards: Vec<Mutex<LruShard>>,
+    inflight: Mutex<HashMap<String, broadcast::Sender<ReadResult>>>,
 }
 
 impl BlobStore {
     pub fn new(root: PathBuf, max_cache_bytes: usize, max_blob_bytes: usize) -> Self {
+        let per_shard = if max_cache_bytes == 0 {
+            0
+        } else {
+            (max_cache_bytes / CACHE_SHARDS).max(1)
+        };
+        let mut shards = Vec::with_capacity(CACHE_SHARDS);
+        for _ in 0..CACHE_SHARDS {
+            shards.push(Mutex::new(LruShard::new(per_shard)));
+        }
         Self {
             root,
             max_blob_bytes,
-            cache: Mutex::new(LruState::new(max_cache_bytes)),
+            max_cache_bytes,
+            shards,
+            inflight: Mutex::new(HashMap::new()),
         }
     }
 
@@ -204,6 +341,12 @@ impl BlobStore {
 
     pub async fn exists(&self, sha256: &str) -> Result<bool, BlobError> {
         let path = self.blob_path(sha256)?;
+        let shard_idx = shard_for_sha(sha256);
+        if let Ok(guard) = self.shards[shard_idx].lock() {
+            if guard.index.contains_key(sha256) {
+                return Ok(true);
+            }
+        }
         match tokio::fs::metadata(&path).await {
             Ok(meta) => Ok(meta.is_file()),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -221,27 +364,51 @@ impl BlobStore {
         if bytes.len() > self.max_blob_bytes {
             return Err(BlobError::TooLarge);
         }
-        if sha256_hex(&bytes) != sha256 {
+        let expected_sha = sha256.to_string();
+        let bytes_for_cpu = bytes.clone();
+        let (hash_ok, gzipped) = if bytes.len() >= BLOCKING_OFFLOAD_THRESHOLD {
+            tokio::task::spawn_blocking(move || {
+                if sha256_hex(&bytes_for_cpu) != expected_sha {
+                    return (false, None);
+                }
+                let gz = if precompress_gzip && bytes_for_cpu.len() >= GZIP_MIN_BYTES {
+                    compress_if_smaller(&bytes_for_cpu)
+                } else {
+                    None
+                };
+                (true, gz)
+            })
+            .await
+            .map_err(|e| BlobError::Io(std::io::Error::other(e.to_string())))?
+        } else {
+            if sha256_hex(&bytes) != sha256 {
+                return Err(BlobError::HashMismatch);
+            }
+            let gz = if precompress_gzip && bytes.len() >= GZIP_MIN_BYTES {
+                compress_if_smaller(&bytes)
+            } else {
+                None
+            };
+            (true, gz)
+        };
+        if !hash_ok {
             return Err(BlobError::HashMismatch);
         }
+
         if tokio::fs::metadata(&path).await.map_or(false, |m| m.is_file()) {
             return Ok(PutOutcome::Exists);
         }
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        write_atomic(&path, &bytes).await?;
+        write_atomic(&path, &bytes, true).await?;
 
-        let gzipped = if precompress_gzip && bytes.len() >= GZIP_MIN_BYTES {
-            compress_if_smaller(&bytes)
-        } else {
-            None
-        };
         if let Some(ref gz) = gzipped {
             let gz_path = Self::gzip_path(&path);
-            let _ = write_atomic(&gz_path, gz).await;
+            let _ = write_atomic(&gz_path, gz, false).await;
         }
-        if let Ok(mut guard) = self.cache.lock() {
+        let shard_idx = shard_for_sha(sha256);
+        if let Ok(mut guard) = self.shards[shard_idx].lock() {
             guard.insert(sha256.to_string(), bytes, gzipped);
         }
         Ok(PutOutcome::Stored)
@@ -249,46 +416,90 @@ impl BlobStore {
 
     pub async fn get(&self, sha256: &str, prefer_gzip: bool) -> Result<BlobPayload, BlobError> {
         let path = self.blob_path(sha256)?;
-        if let Ok(mut guard) = self.cache.lock() {
+        let shard_idx = shard_for_sha(sha256);
+        if let Ok(mut guard) = self.shards[shard_idx].lock() {
             if let Some(hit) = guard.get(sha256, prefer_gzip) {
                 return Ok(hit);
             }
         }
-        let raw_vec = tokio::fs::read(&path).await?;
-        if sha256_hex(&raw_vec) != sha256 {
+
+        let existing_rx = {
+            let mut map = self
+                .inflight
+                .lock()
+                .map_err(|_| BlobError::Io(std::io::Error::other("inflight lock poisoned")))?;
+            if let Some(tx) = map.get(sha256) {
+                Some(tx.subscribe())
+            } else {
+                let (tx, _) = broadcast::channel(8);
+                map.insert(sha256.to_string(), tx);
+                None
+            }
+        };
+
+        if let Some(mut rx) = existing_rx {
+            return match rx.recv().await {
+                Ok(ReadResult::Ok(blob)) => Ok(blob.to_payload(prefer_gzip)),
+                Ok(ReadResult::NotFound) => Err(BlobError::NotFound),
+                Ok(ReadResult::Corrupt) => Err(BlobError::CorruptOnDisk),
+                Ok(ReadResult::Io(msg)) => Err(BlobError::Io(std::io::Error::other(msg))),
+                Err(_) => Err(BlobError::Io(std::io::Error::other("inflight_closed"))),
+            };
+        }
+
+        let guard = InFlightGuard {
+            map: &self.inflight,
+            key: sha256.to_string(),
+            completed: false,
+        };
+
+        let raw_vec = match tokio::fs::read(&path).await {
+            Ok(v) => v,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                guard.finish(ReadResult::NotFound);
+                return Err(BlobError::NotFound);
+            }
+            Err(err) => {
+                let msg = err.to_string();
+                guard.finish(ReadResult::Io(msg));
+                return Err(BlobError::Io(err));
+            }
+        };
+
+        let expected = sha256.to_string();
+        let (valid, raw) = if raw_vec.len() >= BLOCKING_OFFLOAD_THRESHOLD {
+            tokio::task::spawn_blocking(move || {
+                let ok = sha256_hex(&raw_vec) == expected;
+                (ok, Bytes::from(raw_vec))
+            })
+            .await
+            .map_err(|e| BlobError::Io(std::io::Error::other(e.to_string())))?
+        } else {
+            let ok = sha256_hex(&raw_vec) == expected;
+            (ok, Bytes::from(raw_vec))
+        };
+
+        if !valid {
+            guard.finish(ReadResult::Corrupt);
             return Err(BlobError::CorruptOnDisk);
         }
-        let raw = Bytes::from(raw_vec);
+
         let gz_path = Self::gzip_path(&path);
         let gzip = match tokio::fs::read(&gz_path).await {
             Ok(vec) => Some(Bytes::from(vec)),
             Err(_) => None,
         };
-        let raw_len = raw.len();
-        let payload = if prefer_gzip {
-            if let Some(ref gz) = gzip {
-                BlobPayload {
-                    bytes: gz.clone(),
-                    raw_len,
-                    encoding: ContentEncoding::Gzip,
-                }
-            } else {
-                BlobPayload {
-                    bytes: raw.clone(),
-                    raw_len,
-                    encoding: ContentEncoding::Identity,
-                }
-            }
-        } else {
-            BlobPayload {
-                bytes: raw.clone(),
-                raw_len,
-                encoding: ContentEncoding::Identity,
-            }
+        let accounted = raw.len() + gzip.as_ref().map_or(0, Bytes::len);
+        let cached = CachedBlob {
+            raw: raw.clone(),
+            gzip: gzip.clone(),
+            accounted_bytes: accounted,
         };
-        if let Ok(mut guard) = self.cache.lock() {
-            guard.insert(sha256.to_string(), raw, gzip);
+        let payload = cached.to_payload(prefer_gzip);
+        if let Ok(mut shard_guard) = self.shards[shard_idx].lock() {
+            shard_guard.insert(sha256.to_string(), raw, gzip);
         }
+        guard.finish(ReadResult::Ok(cached));
         Ok(payload)
     }
 
@@ -298,18 +509,42 @@ impl BlobStore {
         start: usize,
         end_inclusive: usize,
     ) -> Result<(Bytes, usize), BlobError> {
-        let payload = self.get(sha256, false).await?;
-        let total = payload.raw_len;
+        let path = self.blob_path(sha256)?;
+        let shard_idx = shard_for_sha(sha256);
+        if let Ok(mut guard) = self.shards[shard_idx].lock() {
+            if let Some(hit) = guard.get(sha256, false) {
+                let total = hit.raw_len;
+                if total == 0 || start >= total || start > end_inclusive {
+                    return Ok((Bytes::new(), total));
+                }
+                let capped_end = end_inclusive.min(total - 1);
+                return Ok((hit.bytes.slice(start..=capped_end), total));
+            }
+        }
+
+        let meta = tokio::fs::metadata(&path).await?;
+        let total = meta.len() as usize;
         if total == 0 || start >= total || start > end_inclusive {
             return Ok((Bytes::new(), total));
         }
         let capped_end = end_inclusive.min(total - 1);
-        Ok((payload.bytes.slice(start..=capped_end), total))
+        let max_direct_cache = (self.max_cache_bytes / CACHE_SHARDS).min(4 * 1024 * 1024);
+        if total <= max_direct_cache {
+            let payload = self.get(sha256, false).await?;
+            return Ok((payload.bytes.slice(start..=capped_end), payload.raw_len));
+        }
+
+        let len = capped_end - start + 1;
+        let mut file = tokio::fs::File::open(&path).await?;
+        file.seek(SeekFrom::Start(start as u64)).await?;
+        let mut buf = Vec::with_capacity(len.min(16 * 1024 * 1024));
+        file.take(len as u64).read_to_end(&mut buf).await?;
+        Ok((Bytes::from(buf), total))
     }
 }
 
 fn compress_if_smaller(raw: &[u8]) -> Option<Bytes> {
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
     encoder.write_all(raw).ok()?;
     let compressed = encoder.finish().ok()?;
     if compressed.len() * 100 < raw.len() * 95 {
@@ -319,17 +554,20 @@ fn compress_if_smaller(raw: &[u8]) -> Option<Bytes> {
     }
 }
 
-async fn write_atomic(target: &Path, bytes: &[u8]) -> Result<(), BlobError> {
+async fn write_atomic(target: &Path, bytes: &[u8], sync_data: bool) -> Result<(), BlobError> {
+    let seq = TEMP_FILE_SEQ.fetch_add(1, Ordering::Relaxed);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
     let mut tmp = target.as_os_str().to_os_string();
-    tmp.push(format!(".{}.{}.tmp", std::process::id(), nonce));
+    tmp.push(format!(".{}.{}.{}.tmp", std::process::id(), seq, nonce));
     let tmp_path = PathBuf::from(tmp);
     let write_res = async {
         let mut file = tokio::fs::File::create(&tmp_path).await?;
         tokio::io::AsyncWriteExt::write_all(&mut file, bytes).await?;
-        file.sync_all().await?;
+        if sync_data {
+            file.sync_data().await?;
+        }
         tokio::fs::rename(&tmp_path, target).await?;
         Ok::<(), std::io::Error>(())
     }
@@ -384,5 +622,33 @@ mod tests {
         let disk_path = dir.path().join(&hash[0..2]).join(&hash[2..4]).join(&hash);
         tokio::fs::write(&disk_path, b"tampered!").await.unwrap();
         assert!(matches!(store.get(&hash, false).await, Err(BlobError::CorruptOnDisk)));
+    }
+
+    #[tokio::test]
+    async fn evicts_lru_entries_in_constant_time_and_coalesces_cold_reads() {
+        let dir = tempdir().unwrap();
+        let store = std::sync::Arc::new(BlobStore::new(dir.path().to_path_buf(), 16 * 64, 1024 * 1024));
+        let mut hashes = Vec::new();
+        for i in 0..40 {
+            let body = Bytes::from(format!("payload-{i:04}-{}", "a".repeat(20)));
+            let h = sha256_hex(&body);
+            store.put(&h, body, false).await.unwrap();
+            hashes.push(h);
+        }
+
+        let target = hashes[0].clone();
+        let mut tasks = Vec::new();
+        for _ in 0..32 {
+            let s = std::sync::Arc::clone(&store);
+            let h = target.clone();
+            tasks.push(tokio::spawn(async move { s.get(&h, false).await.unwrap().raw_len }));
+        }
+        for t in tasks {
+            assert!(t.await.unwrap() > 20);
+        }
+
+        let (slice, total) = store.get_range(&target, 0, 7).await.unwrap();
+        assert_eq!(slice.as_ref(), b"payload-");
+        assert!(total > 20);
     }
 }

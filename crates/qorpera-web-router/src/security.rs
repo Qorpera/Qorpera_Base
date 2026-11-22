@@ -85,6 +85,33 @@ pub fn parse_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     None
 }
 
+pub fn strip_platform_cookie(headers: &HeaderMap) -> Option<String> {
+    let mut kept = Vec::new();
+    for value in headers.get_all("cookie") {
+        let Ok(raw) = value.to_str() else {
+            continue;
+        };
+        for pair in raw.split(';') {
+            let trimmed = pair.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let key = trimmed
+                .split_once('=')
+                .map(|(k, _)| k.trim())
+                .unwrap_or(trimmed);
+            if key != SITE_SESSION_COOKIE {
+                kept.push(trimmed);
+            }
+        }
+    }
+    if kept.is_empty() {
+        None
+    } else {
+        Some(kept.join("; "))
+    }
+}
+
 pub fn sign_preview_cookie(
     secret: &[u8],
     site_id: &str,
@@ -104,21 +131,24 @@ pub fn verify_preview_cookie(
     password_version: i32,
     now_unix: u64,
 ) -> Option<String> {
-    let parts: Vec<&str> = cookie.split('.').collect();
-    if parts.len() != 4 || parts[0] != "v2" {
+    let mut parts = cookie.split('.');
+    let version = parts.next()?;
+    let expires_s = parts.next()?;
+    let version_id = parts.next()?;
+    let mac = parts.next()?;
+    if parts.next().is_some() || version != "v2" {
         return None;
     }
-    let expires_unix = parts[1].parse::<u64>().ok()?;
+    let expires_unix = expires_s.parse::<u64>().ok()?;
     if expires_unix <= now_unix {
         return None;
     }
-    let version_id = parts[2];
     if version_id.is_empty() || version_id.len() > 64 {
         return None;
     }
     let payload = format!("v2.{expires_unix}.{version_id}");
     let expected = compute_mac(secret, site_id, "next", password_version, &payload);
-    if constant_time_eq(parts[3].as_bytes(), expected.as_bytes()) {
+    if constant_time_eq(mac.as_bytes(), expected.as_bytes()) {
         Some(version_id.to_string())
     } else {
         None
@@ -145,11 +175,16 @@ pub fn verify_session_cookie(
     password_version: i32,
     now_unix: u64,
 ) -> bool {
-    let parts: Vec<&str> = cookie.split('.').collect();
-    if parts.len() != 3 || parts[0] != "v1" {
+    let mut parts = cookie.split('.');
+    let (Some(version), Some(expires_s), Some(mac), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    if version != "v1" {
         return false;
     }
-    let Ok(expires_unix) = parts[1].parse::<u64>() else {
+    let Ok(expires_unix) = expires_s.parse::<u64>() else {
         return false;
     };
     if expires_unix <= now_unix {
@@ -157,7 +192,7 @@ pub fn verify_session_cookie(
     }
     let payload = format!("v1.{expires_unix}");
     let expected = compute_mac(secret, site_id, scope, password_version, &payload);
-    constant_time_eq(parts[2].as_bytes(), expected.as_bytes())
+    constant_time_eq(mac.as_bytes(), expected.as_bytes())
 }
 
 fn compute_mac(secret: &[u8], site_id: &str, scope: &str, password_version: i32, payload: &str) -> String {
@@ -180,12 +215,41 @@ fn compute_mac(secret: &[u8], site_id: &str, scope: &str, password_version: i32,
     hex::encode(outer.finalize())
 }
 
+pub fn has_control_or_unsafe_header_bytes(input: &str) -> bool {
+    input.bytes().any(|b| b < 0x20 || b == 0x7f)
+}
+
 pub fn sanitize_next_path(next: &str) -> String {
-    if next.starts_with('/') && !next.starts_with("//") && !next.contains('\r') && !next.contains('\n') {
+    if next.len() <= 2048
+        && next.starts_with('/')
+        && !next.starts_with("//")
+        && !next.contains('\\')
+        && !has_control_or_unsafe_header_bytes(next)
+    {
         next.to_string()
     } else {
         "/".to_string()
     }
+}
+
+pub fn sanitize_redirect_location(location: &str) -> Option<String> {
+    if location.is_empty()
+        || location.len() > 4096
+        || has_control_or_unsafe_header_bytes(location)
+        || location.contains('\\')
+    {
+        return None;
+    }
+    if location.starts_with('/') {
+        if location.starts_with("//") {
+            return None;
+        }
+        return Some(location.to_string());
+    }
+    if location.starts_with("https://") || location.starts_with("http://") {
+        return Some(location.to_string());
+    }
+    None
 }
 
 pub fn escape_html(input: &str) -> String {
@@ -282,5 +346,33 @@ mod tests {
             extract_client_ip(&HeaderMap::new(), IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 1, 2, 3, 4, 5, 6)), &[]),
             "2001:db8:1:2::/64"
         );
+    }
+
+    #[test]
+    fn sanitizes_paths_redirects_and_strips_platform_cookie() {
+        assert_eq!(sanitize_next_path("/ok/path?x=1"), "/ok/path?x=1");
+        assert_eq!(sanitize_next_path("//evil.com"), "/");
+        assert_eq!(sanitize_next_path("/bad\x7fpath"), "/");
+        assert_eq!(sanitize_next_path("/bad\r\npath"), "/");
+        assert_eq!(sanitize_next_path("/bad\\path"), "/");
+
+        assert_eq!(sanitize_redirect_location("/new/page"), Some("/new/page".to_string()));
+        assert_eq!(sanitize_redirect_location("https://example.dk/x"), Some("https://example.dk/x".to_string()));
+        assert_eq!(sanitize_redirect_location("//evil.com/x"), None);
+        assert_eq!(sanitize_redirect_location("/bad\r\nX: 1"), None);
+        assert_eq!(sanitize_redirect_location("/bad\x7f"), None);
+
+        let mut h = HeaderMap::new();
+        h.insert(
+            "cookie",
+            format!("{SITE_SESSION_COOKIE}=v1.999.abc; app_sid=42; theme=dark")
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(strip_platform_cookie(&h).as_deref(), Some("app_sid=42; theme=dark"));
+
+        let mut only_platform = HeaderMap::new();
+        only_platform.insert("cookie", format!("{SITE_SESSION_COOKIE}=v1.999.abc").parse().unwrap());
+        assert_eq!(strip_platform_cookie(&only_platform), None);
     }
 }

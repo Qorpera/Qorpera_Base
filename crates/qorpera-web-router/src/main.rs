@@ -112,6 +112,7 @@ async fn main() {
         spawn_postgres_sync(
             db_url,
             Arc::clone(&state.routes),
+            Arc::clone(&state.ready),
             Duration::from_secs(60),
             Some(dns_tx),
         );
@@ -125,9 +126,27 @@ async fn main() {
         internal_addr = %bound.internal_addr,
         "qorpera-web-router listening"
     );
-    let (_pub_handle, _int_handle) = bound.spawn();
-    let _ = tokio::signal::ctrl_c().await;
+    let (pub_handle, int_handle) = bound.spawn();
+    shutdown_signal().await;
     info!("shutting down qorpera-web-router");
+    pub_handle.abort();
+    int_handle.abort();
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate()).expect("failed installing SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = sigterm.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 fn read_secret(env_key: &str, file_key: &str) -> Result<String, String> {

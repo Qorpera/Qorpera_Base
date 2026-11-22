@@ -38,14 +38,25 @@ async fn main() {
         Arc::new(LxdAppDriver::new(project, profile, bind_ip))
     };
 
+    let health_timeout_ms: u64 = env::var("QORPERA_APP_HOST_HEALTH_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30_000)
+        .max(250);
+    let drain_ms: u64 = env::var("QORPERA_APP_HOST_DRAIN_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2_000);
+
     let logs = Arc::new(LogRingBuffer::new(2000, 256 * 1024));
     let manager = Arc::new(AppLifecycleManager::new(
         driver,
         logs,
-        Duration::from_secs(30),
-        Duration::from_secs(2),
+        Duration::from_millis(health_timeout_ms),
+        Duration::from_millis(drain_ms),
     ));
 
+    let mut reaper_handle = None;
     if let Ok(router_url) = env::var("QORPERA_APP_HOST_ROUTER_URL") {
         let trimmed = router_url.trim().to_string();
         if !trimmed.is_empty() {
@@ -54,22 +65,43 @@ async fn main() {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(30)
                 .max(5);
-            let _reaper = spawn_idle_reaper(
+            reaper_handle = Some(spawn_idle_reaper(
                 Arc::clone(&manager),
                 trimmed,
                 control_token.clone(),
                 Duration::from_secs(reap_sec),
-            );
+            ));
         }
     }
 
-    let server = AppHostServer::bind(bind_addr, manager, control_token)
+    let server = AppHostServer::bind(bind_addr, Arc::clone(&manager), control_token)
         .await
         .expect("failed to bind qorpera-app-host");
     info!(addr = %server.addr, driver = %driver_mode, "qorpera-app-host listening");
-    let _handle = server.spawn();
-    let _ = tokio::signal::ctrl_c().await;
+    let srv_handle = server.spawn();
+    shutdown_signal().await;
     info!("shutting down qorpera-app-host");
+    srv_handle.abort();
+    if let Some(h) = reaper_handle {
+        h.abort();
+    }
+    manager.shutdown_all().await;
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate()).expect("failed installing SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = sigterm.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 fn read_secret(env_key: &str, file_key: &str) -> Result<String, String> {

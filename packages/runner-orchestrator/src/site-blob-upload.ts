@@ -226,6 +226,7 @@ const defaultFetch: BlobUploadFetch = async (url, init) => {
 		body: init.body === undefined ? undefined : Buffer.from(init.body),
 		signal: init.signal,
 	});
+	await res.body?.cancel().catch(() => undefined);
 	return { status: res.status };
 };
 
@@ -238,7 +239,7 @@ export function parseRedirectsFile(text: string): SiteRedirectEntry[] {
 		if (parts.length < 2) continue;
 		const from = parts[0] as string;
 		const to = parts[1] as string;
-		if (!from.startsWith("/") || (!to.startsWith("/") && !to.startsWith("https://"))) continue;
+		if (!from.startsWith("/") || to.startsWith("//") || (!to.startsWith("/") && !to.startsWith("https://"))) continue;
 		const parsedStatus = parts[2] ? Number.parseInt(parts[2].replace(/!$/, ""), 10) : 301;
 		const status = [200, 301, 302, 303, 307, 308].includes(parsedStatus) ? parsedStatus : 301;
 		rules.push({ from, to, status });
@@ -316,38 +317,75 @@ export async function uploadSiteBlobsToEdge(options: UploadSiteBlobsOptions): Pr
 	let cursor = 0;
 	let uploadedBlobs = 0;
 	let deduplicatedBlobs = 0;
+	let failed = false;
+
+	const fetchWithRetry = async (
+		url: string,
+		init: Parameters<BlobUploadFetch>[1],
+	): Promise<BlobUploadFetchResponse> => {
+		let lastErr: unknown;
+		for (let attempt = 0; attempt < 3; attempt += 1) {
+			options.signal?.throwIfAborted();
+			try {
+				const res = await fetchImpl(url, init);
+				if (res.status < 500 || attempt === 2) return res;
+				lastErr = new Error(`HTTP ${res.status}`);
+			} catch (err) {
+				if (options.signal?.aborted || attempt === 2) throw err;
+				lastErr = err;
+			}
+			const delayMs = 100 * 2 ** attempt;
+			await new Promise<void>((resolve, reject) => {
+				const timer = setTimeout(resolve, delayMs);
+				options.signal?.addEventListener(
+					"abort",
+					() => {
+						clearTimeout(timer);
+						reject(options.signal?.reason);
+					},
+					{ once: true },
+				);
+			});
+		}
+		throw lastErr instanceof Error ? lastErr : new Error("Blob upload failed");
+	};
 
 	const worker = async (): Promise<void> => {
-		while (cursor < queue.length) {
+		while (!failed && cursor < queue.length) {
 			options.signal?.throwIfAborted();
 			const idx = cursor++;
 			const [sha256, content] = queue[idx];
 			const url = `${base}/_internal/blobs/${sha256}`;
 			const authHeader = { authorization: `Bearer ${options.controlToken}` };
-			const headRes = await fetchImpl(url, {
-				method: "HEAD",
-				headers: authHeader,
-				signal: options.signal,
-			});
-			if (headRes.status === 200) {
-				deduplicatedBlobs++;
-				continue;
-			}
-			if (headRes.status !== 404) {
-				throw new Error(`Blob HEAD failed for ${sha256} with HTTP ${headRes.status}`);
-			}
-			const putRes = await fetchImpl(url, {
-				method: "PUT",
-				headers: { ...authHeader, "content-type": "application/octet-stream" },
-				body: content,
-				signal: options.signal,
-			});
-			if (putRes.status === 201) {
-				uploadedBlobs++;
-			} else if (putRes.status === 200) {
-				deduplicatedBlobs++;
-			} else {
-				throw new Error(`Blob PUT failed for ${sha256} with HTTP ${putRes.status}`);
+			try {
+				const headRes = await fetchWithRetry(url, {
+					method: "HEAD",
+					headers: authHeader,
+					signal: options.signal,
+				});
+				if (headRes.status === 200) {
+					deduplicatedBlobs++;
+					continue;
+				}
+				if (headRes.status !== 404) {
+					throw new Error(`Blob HEAD failed for ${sha256} with HTTP ${headRes.status}`);
+				}
+				const putRes = await fetchWithRetry(url, {
+					method: "PUT",
+					headers: { ...authHeader, "content-type": "application/octet-stream" },
+					body: content,
+					signal: options.signal,
+				});
+				if (putRes.status === 201) {
+					uploadedBlobs++;
+				} else if (putRes.status === 200) {
+					deduplicatedBlobs++;
+				} else {
+					throw new Error(`Blob PUT failed for ${sha256} with HTTP ${putRes.status}`);
+				}
+			} catch (err) {
+				failed = true;
+				throw err;
 			}
 		}
 	};

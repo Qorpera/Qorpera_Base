@@ -76,15 +76,46 @@ struct ManagedDeployment {
     started_at_ms: Option<u64>,
 }
 
+struct WakingGuard<'a> {
+    map: &'a Mutex<HashMap<String, broadcast::Sender<Result<String, String>>>>,
+    key: String,
+    completed: bool,
+}
+
+impl<'a> WakingGuard<'a> {
+    fn finish(mut self, outcome: Result<String, String>) -> Result<String, String> {
+        self.completed = true;
+        if let Ok(mut waking) = self.map.lock() {
+            if let Some(tx) = waking.remove(&self.key) {
+                let _ = tx.send(outcome.clone());
+            }
+        }
+        outcome
+    }
+}
+
+impl Drop for WakingGuard<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            if let Ok(mut waking) = self.map.lock() {
+                if let Some(tx) = waking.remove(&self.key) {
+                    let _ = tx.send(Err("wake_cancelled".to_string()));
+                }
+            }
+        }
+    }
+}
+
 pub struct AppLifecycleManager {
     driver: Arc<dyn AppRuntimeDriver>,
     logs: Arc<LogRingBuffer>,
     health_timeout: Duration,
     health_interval: Duration,
     drain_delay: Duration,
-    deployments: Mutex<HashMap<String, ManagedDeployment>>,
+    deployments: Arc<Mutex<HashMap<String, ManagedDeployment>>>,
     live_by_site: Mutex<HashMap<String, String>>,
     waking: Mutex<HashMap<String, broadcast::Sender<Result<String, String>>>>,
+    deploy_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl AppLifecycleManager {
@@ -100,9 +131,10 @@ impl AppLifecycleManager {
             health_timeout,
             health_interval: Duration::from_millis(50),
             drain_delay,
-            deployments: Mutex::new(HashMap::new()),
+            deployments: Arc::new(Mutex::new(HashMap::new())),
             live_by_site: Mutex::new(HashMap::new()),
             waking: Mutex::new(HashMap::new()),
+            deploy_locks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -110,7 +142,19 @@ impl AppLifecycleManager {
         Arc::clone(&self.logs)
     }
 
+    fn site_deploy_lock(&self, site_id: &str) -> Result<Arc<tokio::sync::Mutex<()>>, String> {
+        let mut locks = self.deploy_locks.lock().map_err(|_| "lock_poisoned".to_string())?;
+        Ok(Arc::clone(
+            locks
+                .entry(site_id.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        ))
+    }
+
     pub async fn deploy_blue_green(&self, req: DeployRequest) -> Result<DeploymentStatus, String> {
+        let site_lock = self.site_deploy_lock(&req.site_id)?;
+        let _site_guard = site_lock.lock().await;
+
         let port = self.driver.allocate_port()?;
         let launch = AppLaunchSpec {
             deployment_id: req.deployment_id.clone(),
@@ -178,10 +222,23 @@ impl AppLifecycleManager {
         }
 
         if let Some(prev_id) = previous_live {
-            if !self.drain_delay.is_zero() {
-                tokio::time::sleep(self.drain_delay).await;
+            if self.drain_delay.is_zero() {
+                let _ = self.stop_deployment_internal(&prev_id, InstanceState::Stopped).await;
+            } else {
+                let driver = Arc::clone(&self.driver);
+                let deployments = Arc::clone(&self.deployments);
+                let delay = self.drain_delay;
+                tokio::spawn(async move {
+                    tokio::time::sleep(delay).await;
+                    let _ = driver.stop(&prev_id).await;
+                    if let Ok(mut map) = deployments.lock() {
+                        if let Some(entry) = map.get_mut(&prev_id) {
+                            entry.handle = None;
+                            entry.state = InstanceState::Stopped;
+                        }
+                    }
+                });
             }
-            let _ = self.stop_deployment_internal(&prev_id, InstanceState::Stopped).await;
         }
 
         Ok(status)
@@ -215,26 +272,28 @@ impl AppLifecycleManager {
             if let Some(tx) = waking.get(deployment_id) {
                 Some(tx.subscribe())
             } else {
-                let (tx, _) = broadcast::channel(8);
+                let (tx, _) = broadcast::channel(16);
                 waking.insert(deployment_id.to_string(), tx);
                 None
             }
         };
 
         if let Some(mut rx) = existing_rx {
-            return rx
-                .recv()
-                .await
-                .map_err(|_| "wake_channel_closed".to_string())?;
+            let wait_limit = self.health_timeout + Duration::from_secs(5);
+            return match tokio::time::timeout(wait_limit, rx.recv()).await {
+                Ok(Ok(outcome)) => outcome,
+                Ok(Err(_)) => Err("wake_channel_closed".to_string()),
+                Err(_) => Err("wake_wait_timeout".to_string()),
+            };
         }
 
+        let guard = WakingGuard {
+            map: &self.waking,
+            key: deployment_id.to_string(),
+            completed: false,
+        };
         let outcome = self.perform_wake(deployment_id).await;
-        if let Ok(mut waking) = self.waking.lock() {
-            if let Some(tx) = waking.remove(deployment_id) {
-                let _ = tx.send(outcome.clone());
-            }
-        }
-        outcome
+        guard.finish(outcome)
     }
 
     async fn perform_wake(&self, deployment_id: &str) -> Result<String, String> {
@@ -287,6 +346,16 @@ impl AppLifecycleManager {
             .await
     }
 
+    pub async fn shutdown_all(&self) {
+        self.driver.stop_all().await;
+        if let Ok(mut map) = self.deployments.lock() {
+            for dep in map.values_mut() {
+                dep.handle = None;
+                dep.state = InstanceState::Stopped;
+            }
+        }
+    }
+
     async fn stop_deployment_internal(
         &self,
         deployment_id: &str,
@@ -301,44 +370,87 @@ impl AppLifecycleManager {
         Ok(())
     }
 
+    pub fn idle_candidates(
+        &self,
+        activity_ms: &HashMap<String, u64>,
+        now_ms: u64,
+    ) -> Vec<(String, Option<u64>)> {
+        let waking_keys: std::collections::HashSet<String> = self
+            .waking
+            .lock()
+            .map(|w| w.keys().cloned().collect())
+            .unwrap_or_default();
+        let Ok(map) = self.deployments.lock() else {
+            return Vec::new();
+        };
+        map.iter()
+            .filter_map(|(id, dep)| {
+                if dep.state != InstanceState::Running
+                    || dep.spec.idle_timeout_sec == 0
+                    || waking_keys.contains(id)
+                {
+                    return None;
+                }
+                let last = activity_ms
+                    .get(id)
+                    .copied()
+                    .or(dep.started_at_ms)
+                    .unwrap_or(0);
+                let timeout_ms = dep.spec.idle_timeout_sec.saturating_mul(1000);
+                if now_ms.saturating_sub(last) >= timeout_ms {
+                    Some((id.clone(), dep.started_at_ms))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub async fn hibernate_if_unchanged(
+        &self,
+        deployment_id: &str,
+        expected_started_at_ms: Option<u64>,
+    ) -> bool {
+        let still_matches = {
+            let waking_busy = self
+                .waking
+                .lock()
+                .map_or(false, |w| w.contains_key(deployment_id));
+            if waking_busy {
+                false
+            } else {
+                self.deployments.lock().map_or(false, |map| {
+                    map.get(deployment_id).map_or(false, |d| {
+                        d.state == InstanceState::Running && d.started_at_ms == expected_started_at_ms
+                    })
+                })
+            }
+        };
+        if !still_matches {
+            return false;
+        }
+        if self
+            .stop_deployment_internal(deployment_id, InstanceState::Hibernated)
+            .await
+            .is_ok()
+        {
+            self.logs
+                .push(deployment_id, "system", "hibernated idle deployment".to_string());
+            true
+        } else {
+            false
+        }
+    }
+
     pub async fn reap_idle(
         &self,
         activity_ms: &HashMap<String, u64>,
         now_ms: u64,
     ) -> Vec<String> {
-        let candidates: Vec<String> = {
-            let Ok(map) = self.deployments.lock() else {
-                return Vec::new();
-            };
-            map.iter()
-                .filter_map(|(id, dep)| {
-                    if dep.state != InstanceState::Running || dep.spec.idle_timeout_sec == 0 {
-                        return None;
-                    }
-                    let last = activity_ms
-                        .get(id)
-                        .copied()
-                        .or(dep.started_at_ms)
-                        .unwrap_or(0);
-                    let timeout_ms = dep.spec.idle_timeout_sec.saturating_mul(1000);
-                    if now_ms.saturating_sub(last) >= timeout_ms {
-                        Some(id.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        };
-
+        let candidates = self.idle_candidates(activity_ms, now_ms);
         let mut reaped = Vec::new();
-        for id in candidates {
-            if self
-                .stop_deployment_internal(&id, InstanceState::Hibernated)
-                .await
-                .is_ok()
-            {
-                self.logs
-                    .push(&id, "system", "hibernated idle deployment".to_string());
+        for (id, started_at) in candidates {
+            if self.hibernate_if_unchanged(&id, started_at).await {
                 reaped.push(id);
             }
         }
@@ -393,6 +505,7 @@ async fn probe_http(addr: &str, path: &str) -> Result<(), String> {
         .await
         .map_err(|_| "connect_timeout".to_string())?
         .map_err(|e| format!("connect: {e}"))?;
+    let _ = stream.set_nodelay(true);
     let io = TokioIo::new(stream);
     let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
         .await

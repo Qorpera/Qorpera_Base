@@ -1011,3 +1011,275 @@ async fn preview_ticket_member_pass_and_live_dns_domain_verification() {
     assert_eq!(st, StatusCode::OK);
     assert_eq!(body, live_html);
 }
+
+#[tokio::test]
+async fn hardening_security_utf8_limits_cookie_strip_stale_pool_and_readiness() {
+    let dir = tempdir().unwrap();
+    let blobs = Arc::new(BlobStore::new(dir.path().to_path_buf(), 2 * 1024 * 1024, 64 * 1024));
+    let mut cfg = test_config(None);
+    cfg.database_url = Some("postgresql://127.0.0.1:1/unused".to_string());
+    let state = Arc::new(RouterState::new(blobs, EdgeSnapshot::default(), &cfg));
+    let bound = BoundServers::bind(&cfg, Arc::clone(&state)).await.unwrap();
+    let pub_addr = bound.public_addr;
+    let int_addr = bound.internal_addr;
+    let (_pub_h, _int_h) = bound.spawn();
+
+    let (st, _, _) = http_call(
+        int_addr,
+        Request::builder()
+            .method("GET")
+            .uri("/_internal/health")
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
+
+    let html_bytes = Bytes::from("<html><body>private-hardening-test-body</body></html>".repeat(20));
+    let html_sha = sha256_hex(&html_bytes);
+    let (st, _, _) = http_call(
+        int_addr,
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/_internal/blobs/{html_sha}"))
+            .header("authorization", "Bearer secret-control-token")
+            .body(Full::new(html_bytes.clone()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED);
+
+    let oversized = Bytes::from(vec![b'x'; 80 * 1024]);
+    let (st, _, _) = http_call(
+        int_addr,
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/_internal/blobs/{}", sha256_hex(&oversized)))
+            .header("authorization", "Bearer secret-control-token")
+            .body(Full::new(oversized))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::PAYLOAD_TOO_LARGE);
+
+    let backend_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let backend_addr = backend_listener.local_addr().unwrap();
+    let saw_cookie: Arc<std::sync::Mutex<String>> = Arc::new(std::sync::Mutex::new(String::new()));
+    let saw_cookie_ref = Arc::clone(&saw_cookie);
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = backend_listener.accept().await else {
+                break;
+            };
+            let sc = Arc::clone(&saw_cookie_ref);
+            tokio::spawn(async move {
+                let io = TokioIo::new(stream);
+                let svc = service_fn(move |req: Request<Incoming>| {
+                    let sc_inner = Arc::clone(&sc);
+                    async move {
+                        let cookie_val = req
+                            .headers()
+                            .get("cookie")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("")
+                            .to_string();
+                        *sc_inner.lock().unwrap() = cookie_val;
+                        Ok::<_, hyper::Error>(
+                            http::Response::builder()
+                                .status(StatusCode::OK)
+                                .header("cache-control", "public, max-age=86400")
+                                .header("x-robots-tag", "index")
+                                .body(Full::new(Bytes::from_static(b"backend-ok")))
+                                .unwrap(),
+                        )
+                    }
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, svc)
+                    .await;
+            });
+        }
+    });
+
+    let mut files = HashMap::new();
+    files.insert(
+        "index.html".to_string(),
+        ManifestFile {
+            sha256: html_sha.clone(),
+            bytes: html_bytes.len(),
+            content_type: "text/html; charset=utf-8".to_string(),
+            immutable: false,
+        },
+    );
+    let snapshot = EdgeSnapshot {
+        hosts_domain: "qorpera.site".to_string(),
+        hosts_enabled: true,
+        public_enabled: true,
+        domains_enabled: true,
+        sites: vec![SiteRecord {
+            id: "site-priv-h".to_string(),
+            slug: "priv-hard".to_string(),
+            is_public: false,
+            taken_down: false,
+            password_sha256: Some(sha256_hex(b"secret-pw")),
+            password_version: 1,
+            live_deployment: Some(DeploymentRecord {
+                id: "dep-priv-h".to_string(),
+                kind: DeploymentKind::Hybrid,
+                manifest: SiteManifest {
+                    files,
+                    redirects: vec![
+                        RedirectRule {
+                            from: "/old/*".to_string(),
+                            to: "/new/:splat".to_string(),
+                            status: 301,
+                        },
+                        RedirectRule {
+                            from: "/open/*".to_string(),
+                            to: "/:splat".to_string(),
+                            status: 302,
+                        },
+                    ],
+                    headers: vec![HeaderRule {
+                        path_prefix: "/".to_string(),
+                        headers: HashMap::from([
+                            ("cache-control".to_string(), "public, max-age=999999".to_string()),
+                            ("x-robots-tag".to_string(), "index, follow".to_string()),
+                            ("x-allowed".to_string(), "yes".to_string()),
+                        ]),
+                    }],
+                    spa_fallback: None,
+                    not_found_page: None,
+                },
+                upstream_addr: Some(backend_addr.to_string()),
+                oci_image_ref: None,
+                app_port: None,
+                health_path: "/".to_string(),
+                idle_timeout_sec: 900,
+                memory_mb: 512,
+                vcpu_limit: 1.0,
+                env_spec: HashMap::new(),
+            }),
+            preview_deployments: HashMap::new(),
+            primary_custom_domain: None,
+        }],
+        ..Default::default()
+    };
+
+    let (st, _, _) = http_call(
+        int_addr,
+        Request::builder()
+            .method("POST")
+            .uri("/_internal/routes/snapshot")
+            .header("authorization", "Bearer secret-control-token")
+            .body(Full::new(Bytes::from(serde_json::to_vec(&snapshot).unwrap())))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+
+    let (st, _, _) = http_call(
+        int_addr,
+        Request::builder()
+            .method("GET")
+            .uri("/_internal/health")
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+
+    let (st, _, _) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("POST")
+            .uri("/.qorpera/unlock")
+            .header("host", "priv-hard.qorpera.site")
+            .body(Full::new(Bytes::from("password=%a\u{00e9}&next=%f\u{00f8}")))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+
+    let (st, _, _) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("POST")
+            .uri("/.qorpera/unlock")
+            .header("host", "priv-hard.qorpera.site")
+            .body(Full::new(Bytes::from(vec![b'a'; 32 * 1024])))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::PAYLOAD_TOO_LARGE);
+
+    let (st, hdrs, _) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("POST")
+            .uri("/.qorpera/unlock")
+            .header("host", "priv-hard.qorpera.site")
+            .body(Full::new(Bytes::from("password=secret-pw&next=/")))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::SEE_OTHER);
+    let session_cookie = hdrs
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+
+    let (st, hdrs, _) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("GET")
+            .uri("/")
+            .header("host", "priv-hard.qorpera.site")
+            .header("cookie", session_cookie.clone())
+            .header("accept-encoding", "gzip;q=0, identity")
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(hdrs.get("content-encoding").is_none());
+    assert_eq!(hdrs.get("cache-control").unwrap(), "private, no-cache, no-transform");
+    assert_eq!(hdrs.get("x-robots-tag").unwrap(), "noindex, nofollow, noarchive");
+    assert_eq!(hdrs.get("x-allowed").unwrap(), "yes");
+
+    let (st, _, _) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("GET")
+            .uri("/")
+            .header("host", "priv-hard.qorpera.site")
+            .header("cookie", session_cookie.clone())
+            .header("if-none-match", format!("\"other\", W/\"{html_sha}\""))
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_MODIFIED);
+
+    let (st, hdrs, body) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("GET")
+            .uri("/api/me")
+            .header("host", "priv-hard.qorpera.site")
+            .header("cookie", format!("{session_cookie}; app_sid=user42"))
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body, Bytes::from_static(b"backend-ok"));
+    assert_eq!(saw_cookie.lock().unwrap().as_str(), "app_sid=user42");
+    assert_eq!(hdrs.get("cache-control").unwrap(), "private, no-store, no-transform");
+    assert_eq!(hdrs.get("x-robots-tag").unwrap(), "noindex, nofollow, noarchive");
+}

@@ -141,6 +141,13 @@ begin
 	where dep.site_id = new.id and dep.version_id = new.current_version_id
 	for update;
 	if not found then
+		if old.live_deployment_id is not null then
+			update public.qorpera_company_site_deployments
+			set state = 'ready', stopped_at = v_now
+			where site_id = new.id and state = 'live';
+			new.live_deployment_id := null;
+			new.storage_mode := 'db';
+		end if;
 		return new;
 	end if;
 	if new.is_public and coalesce(v_dep.has_credential_inputs, false) then
@@ -367,7 +374,7 @@ create or replace function public.qorpera_web_edge_snapshot()
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_settings public.qorpera_site_settings%rowtype;
 begin
-	if auth.role() is distinct from 'service_role' and current_user <> 'postgres' then
+	if auth.role() is distinct from 'service_role' and session_user not in ('postgres', 'service_role') then
 		raise exception 'Edge snapshot requires service_role' using errcode = '42501';
 	end if;
 	select settings.* into v_settings from public.qorpera_site_settings as settings limit 1;
@@ -407,15 +414,15 @@ begin
 					select jsonb_build_object(
 						'id', dep.id,
 						'kind', dep.kind,
-						'manifest', dep.manifest_json,
+						'manifest', coalesce(dep.manifest_json, '{}'::jsonb),
 						'upstream_addr', dep.upstream_addr,
 						'oci_image_ref', dep.oci_image_ref,
 						'app_port', dep.app_port,
-						'health_path', dep.health_path,
-						'idle_timeout_sec', dep.idle_timeout_sec,
-						'memory_mb', dep.memory_mb,
-						'vcpu_limit', dep.vcpu_limit,
-						'env_spec', dep.env_spec
+						'health_path', coalesce(dep.health_path, '/'),
+						'idle_timeout_sec', coalesce(dep.idle_timeout_sec, 900),
+						'memory_mb', coalesce(dep.memory_mb, 512),
+						'vcpu_limit', coalesce(dep.vcpu_limit, 1.00),
+						'env_spec', coalesce(dep.env_spec, '{}'::jsonb)
 					)
 					from public.qorpera_company_site_deployments as dep
 					where dep.id = site.live_deployment_id
@@ -426,15 +433,15 @@ begin
 						jsonb_build_object(
 							'id', dep.id,
 							'kind', dep.kind,
-							'manifest', dep.manifest_json,
+							'manifest', coalesce(dep.manifest_json, '{}'::jsonb),
 							'upstream_addr', dep.upstream_addr,
 							'oci_image_ref', dep.oci_image_ref,
 							'app_port', dep.app_port,
-							'health_path', dep.health_path,
-							'idle_timeout_sec', dep.idle_timeout_sec,
-							'memory_mb', dep.memory_mb,
-							'vcpu_limit', dep.vcpu_limit,
-							'env_spec', dep.env_spec
+							'health_path', coalesce(dep.health_path, '/'),
+							'idle_timeout_sec', coalesce(dep.idle_timeout_sec, 900),
+							'memory_mb', coalesce(dep.memory_mb, 512),
+							'vcpu_limit', coalesce(dep.vcpu_limit, 1.00),
+							'env_spec', coalesce(dep.env_spec, '{}'::jsonb)
 						)
 					)
 					from public.qorpera_company_site_deployments as dep
@@ -471,7 +478,7 @@ declare v_host text := lower(btrim(coalesce(p_host, '')));
 	v_ticket public.qorpera_company_site_tickets%rowtype;
 	v_now timestamptz := clock_timestamp();
 begin
-	if auth.role() is distinct from 'service_role' and current_user <> 'postgres' then
+	if auth.role() is distinct from 'service_role' and session_user not in ('postgres', 'service_role') then
 		raise exception 'Edge ticket redeem requires service_role' using errcode = '42501';
 	end if;
 	if p_ticket is null or p_ticket !~ '^[A-Za-z0-9_-]{43}$' or not public.qorpera_site_hosts_on() then
@@ -523,7 +530,7 @@ declare v_host text := lower(btrim(coalesce(p_host, '')));
 	v_pass public.qorpera_company_site_member_passes%rowtype;
 	v_now timestamptz := clock_timestamp();
 begin
-	if auth.role() is distinct from 'service_role' and current_user <> 'postgres' then
+	if auth.role() is distinct from 'service_role' and session_user not in ('postgres', 'service_role') then
 		raise exception 'Edge member pass redeem requires service_role' using errcode = '42501';
 	end if;
 	if p_pass is null or p_pass !~ '^[A-Za-z0-9_-]{43}$' or not public.qorpera_site_hosts_on() then

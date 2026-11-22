@@ -10,6 +10,10 @@
 	}
 	servers {
 		protocols h1 h2 h3
+		timeouts {
+			read_header 10s
+			idle 2m
+		}
 	}
 }
 
@@ -27,5 +31,11 @@ https:// {
 		header_up X-Qorpera-Client-IP {http.request.remote.host}
 		header_up -CF-Connecting-IP
 		flush_interval -1
+		transport http {
+			dial_timeout 3s
+			response_header_timeout 35s
+			keepalive 90s
+			keepalive_idle_conns 256
+		}
 	}
 }

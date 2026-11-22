@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	buildCanonicalSiteManifest,
 	htmlContainsCredentialInputs,
+	parseRedirectsFile,
 	scanSiteCredentialInputs,
 	uploadSiteBlobsToEdge,
 } from "../src/site-blob-upload.ts";
@@ -68,5 +69,31 @@ describe("site-blob-upload", () => {
 		expect(result.deduplicatedBlobs).toBe(1);
 		expect(result.hasCredentialInputs).toBe(false);
 		expect(calls.filter((c) => c.startsWith("PUT:"))).toHaveLength(1);
+	});
+
+	it("retries transient 5xx blob uploads and rejects protocol-relative open redirects", async () => {
+		const rules = parseRedirectsFile(
+			"/ok /target 301\n/bad //evil.example/steal 302\n/ext https://example.dk/x 301\n",
+		);
+		expect(rules).toEqual([
+			{ from: "/ok", to: "/target", status: 301 },
+			{ from: "/ext", to: "https://example.dk/x", status: 301 },
+		]);
+
+		const file = makeFile("index.html", "<h1>Retry test</h1>");
+		let putAttempts = 0;
+		const res = await uploadSiteBlobsToEdge({
+			routerInternalUrl: "http://127.0.0.1:8094",
+			controlToken: "tok-retry",
+			files: [file],
+			fetchImpl: async (_url, init) => {
+				if (init.method === "HEAD") return { status: 404 };
+				putAttempts += 1;
+				if (putAttempts < 2) return { status: 503 };
+				return { status: 201 };
+			},
+		});
+		expect(res.uploadedBlobs).toBe(1);
+		expect(putAttempts).toBe(2);
 	});
 });

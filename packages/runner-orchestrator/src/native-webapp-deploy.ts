@@ -428,6 +428,9 @@ export async function deployCodeSiteToNativeEdge(options: {
 					input,
 					buildSignal,
 				));
+		if (!edge.buildAppImage && !options.sourceDir) {
+			throw new Error("APP_SOURCE_DIR_REQUIRED");
+		}
 		const sourceDir = options.sourceDir ?? ".";
 		const built = await builderFn(
 			{

@@ -124,7 +124,13 @@ revoke all on public.qorpera_company_site_domains
 create function public.qorpera_web_notify_route_change()
 returns trigger language plpgsql security definer set search_path = '' as $$
 begin
-	perform pg_notify('qorpera_web_route_changes', tg_table_name);
+	perform pg_notify(
+		'qorpera_web_route_changes',
+		case
+			when tg_table_name = 'qorpera_company_site_domains' and tg_op = 'INSERT' then 'domain_added'
+			else tg_table_name
+		end
+	);
 	return null;
 end $$;
 
@@ -136,8 +142,20 @@ create trigger qorpera_web_notify_sites
 	for each statement execute function public.qorpera_web_notify_route_change();
 
 create trigger qorpera_web_notify_domains
-	after insert or update or delete on public.qorpera_company_site_domains
+	after insert or delete on public.qorpera_company_site_domains
 	for each statement execute function public.qorpera_web_notify_route_change();
+
+create trigger qorpera_web_notify_domains_update
+	after update on public.qorpera_company_site_domains
+	for each row
+	when (
+		old.hostname is distinct from new.hostname
+		or old.is_apex is distinct from new.is_apex
+		or old.is_primary is distinct from new.is_primary
+		or old.status is distinct from new.status
+		or old.verification_token is distinct from new.verification_token
+	)
+	execute function public.qorpera_web_notify_route_change();
 
 create trigger qorpera_web_notify_deployments
 	after insert or update or delete on public.qorpera_company_site_deployments
@@ -376,7 +394,7 @@ create function public.qorpera_web_edge_snapshot()
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_settings public.qorpera_site_settings%rowtype;
 begin
-	if auth.role() is distinct from 'service_role' and current_user <> 'postgres' then
+	if auth.role() is distinct from 'service_role' and session_user not in ('postgres', 'service_role') then
 		raise exception 'Edge snapshot requires service_role' using errcode = '42501';
 	end if;
 	select settings.* into v_settings from public.qorpera_site_settings as settings limit 1;
@@ -451,7 +469,7 @@ declare v_host text := lower(btrim(coalesce(p_domain, '')));
 	v_parsed jsonb;
 	v_allowed boolean := false;
 begin
-	if auth.role() is distinct from 'service_role' and current_user <> 'postgres' then
+	if auth.role() is distinct from 'service_role' and session_user not in ('postgres', 'service_role') then
 		raise exception 'TLS check requires service_role' using errcode = '42501';
 	end if;
 	if right(v_host, 1) = '.' then
@@ -493,7 +511,7 @@ returns jsonb language plpgsql volatile security definer set search_path = '' se
 declare v_dom public.qorpera_company_site_domains%rowtype;
 	v_now timestamptz := clock_timestamp();
 begin
-	if auth.role() is distinct from 'service_role' and current_user <> 'postgres' then
+	if auth.role() is distinct from 'service_role' and session_user not in ('postgres', 'service_role') then
 		raise exception 'Domain update requires service_role' using errcode = '42501';
 	end if;
 	if p_status not in ('pending_dns', 'dns_verified', 'tls_active', 'moved', 'failed') then
@@ -533,7 +551,7 @@ declare v_site public.qorpera_company_sites%rowtype;
 	v_next_version integer;
 	v_dep public.qorpera_company_site_deployments%rowtype;
 begin
-	if auth.role() is distinct from 'service_role' and current_user <> 'postgres' then
+	if auth.role() is distinct from 'service_role' and session_user not in ('postgres', 'service_role') then
 		raise exception 'Deployment creation requires service_role' using errcode = '42501';
 	end if;
 	select site.* into v_site from public.qorpera_company_sites as site where site.id = p_site_id for update;
@@ -574,7 +592,7 @@ declare v_site public.qorpera_company_sites%rowtype;
 	v_dep public.qorpera_company_site_deployments%rowtype;
 	v_now timestamptz := clock_timestamp();
 begin
-	if auth.role() is distinct from 'service_role' and current_user <> 'postgres' then
+	if auth.role() is distinct from 'service_role' and session_user not in ('postgres', 'service_role') then
 		raise exception 'Deployment promotion requires service_role' using errcode = '42501';
 	end if;
 	select site.* into v_site from public.qorpera_company_sites as site where site.id = p_site_id for update;
@@ -626,7 +644,7 @@ create function public.qorpera_web_deployment_set_upstream(p_deployment_id uuid,
 returns jsonb language plpgsql volatile security definer set search_path = '' set lock_timeout = '3s' as $$
 declare v_dep public.qorpera_company_site_deployments%rowtype;
 begin
-	if auth.role() is distinct from 'service_role' and current_user <> 'postgres' then
+	if auth.role() is distinct from 'service_role' and session_user not in ('postgres', 'service_role') then
 		raise exception 'Upstream update requires service_role' using errcode = '42501';
 	end if;
 	update public.qorpera_company_site_deployments

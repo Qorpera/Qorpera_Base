@@ -1,6 +1,57 @@
-use serde::{Deserialize, Serialize};
+use crate::security::sanitize_redirect_location;
+use serde::{Deserialize, Deserializer, Serialize};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn null_as_health_path<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_else(default_health_path))
+}
+
+fn null_as_idle_timeout<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<u64>::deserialize(deserializer)?.unwrap_or_else(default_idle_timeout))
+}
+
+fn null_as_memory_mb<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<u32>::deserialize(deserializer)?.unwrap_or_else(default_memory_mb))
+}
+
+fn null_as_vcpu_limit<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<f32>::deserialize(deserializer)?.unwrap_or_else(default_vcpu_limit))
+}
+
+fn null_as_hosts_domain<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_else(default_hosts_domain))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UpstreamOverride {
+    Set(String),
+    Cleared(Option<String>),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -49,11 +100,11 @@ pub struct HeaderRule {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SiteManifest {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub files: HashMap<String, ManifestFile>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub redirects: Vec<RedirectRule>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub headers: Vec<HeaderRule>,
     #[serde(default)]
     pub spa_fallback: Option<String>,
@@ -65,7 +116,7 @@ pub struct SiteManifest {
 pub struct DeploymentRecord {
     pub id: String,
     pub kind: DeploymentKind,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub manifest: SiteManifest,
     #[serde(default)]
     pub upstream_addr: Option<String>,
@@ -73,15 +124,15 @@ pub struct DeploymentRecord {
     pub oci_image_ref: Option<String>,
     #[serde(default)]
     pub app_port: Option<u16>,
-    #[serde(default = "default_health_path")]
+    #[serde(default = "default_health_path", deserialize_with = "null_as_health_path")]
     pub health_path: String,
-    #[serde(default = "default_idle_timeout")]
+    #[serde(default = "default_idle_timeout", deserialize_with = "null_as_idle_timeout")]
     pub idle_timeout_sec: u64,
-    #[serde(default = "default_memory_mb")]
+    #[serde(default = "default_memory_mb", deserialize_with = "null_as_memory_mb")]
     pub memory_mb: u32,
-    #[serde(default = "default_vcpu_limit")]
+    #[serde(default = "default_vcpu_limit", deserialize_with = "null_as_vcpu_limit")]
     pub vcpu_limit: f32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub env_spec: HashMap<String, String>,
 }
 
@@ -112,7 +163,7 @@ pub struct CustomDomainRecord {
     pub verification_token: String,
     #[serde(default)]
     pub last_checked_at: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub consecutive_misses: i32,
 }
 
@@ -125,7 +176,7 @@ pub struct SiteRecord {
     pub password_sha256: Option<String>,
     pub password_version: i32,
     pub live_deployment: Option<DeploymentRecord>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub preview_deployments: HashMap<String, DeploymentRecord>,
     #[serde(default)]
     pub primary_custom_domain: Option<String>,
@@ -133,15 +184,15 @@ pub struct SiteRecord {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EdgeSnapshot {
-    #[serde(default = "default_hosts_domain")]
+    #[serde(default = "default_hosts_domain", deserialize_with = "null_as_hosts_domain")]
     pub hosts_domain: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub legacy_hosts_domains: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub hosts_enabled: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub public_enabled: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub domains_enabled: bool,
     #[serde(default)]
     pub edge_ipv4: Option<String>,
@@ -149,9 +200,9 @@ pub struct EdgeSnapshot {
     pub edge_ipv6: Option<String>,
     #[serde(default)]
     pub edge_cname_target: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub sites: Vec<SiteRecord>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub custom_domains: Vec<CustomDomainRecord>,
 }
 
@@ -179,15 +230,15 @@ pub enum ResolvedHost {
 }
 
 #[derive(Debug, Clone)]
-pub enum StaticResolution {
+pub enum StaticResolution<'a> {
     ReservedPlatformPath,
     Redirect {
         status: u16,
         location: String,
     },
     File {
-        path: String,
-        file: ManifestFile,
+        path: Cow<'a, str>,
+        file: &'a ManifestFile,
         status: u16,
     },
     NotFound,
@@ -205,7 +256,7 @@ pub struct RouteTable {
     sites_by_slug: HashMap<String, Arc<SiteRecord>>,
     sites_by_id: HashMap<String, Arc<SiteRecord>>,
     domains_by_host: HashMap<String, CustomDomainRecord>,
-    upstream_overrides: HashMap<String, String>,
+    upstream_overrides: HashMap<String, UpstreamOverride>,
 }
 
 impl RouteTable {
@@ -243,14 +294,87 @@ impl RouteTable {
         }
     }
 
+    pub fn apply_snapshot(&mut self, snapshot: EdgeSnapshot) {
+        let old_overrides = std::mem::take(&mut self.upstream_overrides);
+        let mut next = Self::from_snapshot(snapshot);
+        if !old_overrides.is_empty() {
+            let mut active_upstreams: HashMap<&str, Option<&str>> = HashMap::new();
+            for site in next.sites_by_id.values() {
+                if site.taken_down {
+                    continue;
+                }
+                if let Some(ref dep) = site.live_deployment {
+                    active_upstreams.insert(dep.id.as_str(), dep.upstream_addr.as_deref());
+                }
+                for dep in site.preview_deployments.values() {
+                    active_upstreams.insert(dep.id.as_str(), dep.upstream_addr.as_deref());
+                }
+            }
+            for (dep_id, ov) in old_overrides {
+                let Some(next_snap_addr) = active_upstreams.get(dep_id.as_str()).copied() else {
+                    continue;
+                };
+                match ov {
+                    UpstreamOverride::Set(addr) => {
+                        if next_snap_addr.is_none() {
+                            next.upstream_overrides.insert(dep_id, UpstreamOverride::Set(addr));
+                        }
+                    }
+                    UpstreamOverride::Cleared(cleared_addr) => {
+                        if next_snap_addr.is_some() && next_snap_addr == cleared_addr.as_deref() {
+                            next.upstream_overrides
+                                .insert(dep_id, UpstreamOverride::Cleared(cleared_addr));
+                        }
+                    }
+                }
+            }
+        }
+        *self = next;
+    }
+
+    fn snapshot_upstream_for(&self, deployment_id: &str) -> Option<String> {
+        for site in self.sites_by_id.values() {
+            if let Some(ref dep) = site.live_deployment {
+                if dep.id == deployment_id {
+                    return dep.upstream_addr.clone();
+                }
+            }
+            for dep in site.preview_deployments.values() {
+                if dep.id == deployment_id {
+                    return dep.upstream_addr.clone();
+                }
+            }
+        }
+        None
+    }
+
     pub fn set_upstream_override(&mut self, deployment_id: String, upstream_addr: Option<String>) {
         match upstream_addr {
             Some(addr) => {
-                self.upstream_overrides.insert(deployment_id, addr);
+                self.upstream_overrides
+                    .insert(deployment_id, UpstreamOverride::Set(addr));
             }
             None => {
-                self.upstream_overrides.remove(&deployment_id);
+                let snap_addr = self.snapshot_upstream_for(&deployment_id);
+                self.upstream_overrides
+                    .insert(deployment_id, UpstreamOverride::Cleared(snap_addr));
             }
+        }
+    }
+
+    pub fn clear_upstream_if_matches(&mut self, deployment_id: &str, expected_addr: &str) -> bool {
+        let snap_addr = self.snapshot_upstream_for(deployment_id);
+        let current_matches = match self.upstream_overrides.get(deployment_id) {
+            Some(UpstreamOverride::Set(addr)) => addr == expected_addr,
+            Some(UpstreamOverride::Cleared(_)) => false,
+            None => snap_addr.as_deref() == Some(expected_addr),
+        };
+        if current_matches {
+            self.upstream_overrides
+                .insert(deployment_id.to_string(), UpstreamOverride::Cleared(snap_addr));
+            true
+        } else {
+            false
         }
     }
 
@@ -268,18 +392,34 @@ impl RouteTable {
         false
     }
 
+    pub fn update_domain_check(&mut self, domain_id: &str, status: DomainStatus, verified: bool) -> bool {
+        for domain in self.domains_by_host.values_mut() {
+            if domain.id == domain_id {
+                domain.status = status;
+                domain.consecutive_misses = if verified {
+                    0
+                } else {
+                    domain.consecutive_misses.saturating_add(1)
+                };
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn upstream_for(&self, deployment: &DeploymentRecord) -> Option<String> {
-        self.upstream_overrides
-            .get(&deployment.id)
-            .cloned()
-            .or_else(|| deployment.upstream_addr.clone())
+        match self.upstream_overrides.get(&deployment.id) {
+            Some(UpstreamOverride::Set(addr)) => Some(addr.clone()),
+            Some(UpstreamOverride::Cleared(_)) => None,
+            None => deployment.upstream_addr.clone(),
+        }
     }
 
     pub fn is_tls_allowed(&self, raw_domain: &str) -> bool {
-        let Some(host) = normalize_host(raw_domain) else {
+        let Some(host) = normalize_host_cow(raw_domain) else {
             return false;
         };
-        if let Some(domain) = self.domains_by_host.get(&host) {
+        if let Some(domain) = self.domains_by_host.get(host.as_ref()) {
             if !self.domains_enabled {
                 return false;
             }
@@ -294,7 +434,7 @@ impl RouteTable {
         if !self.hosts_enabled {
             return false;
         }
-        if let Some((slug, _scope)) = self.parse_platform_site_host(&host) {
+        if let Some((slug, _scope)) = self.parse_platform_site_host(host.as_ref()) {
             return self
                 .sites_by_slug
                 .get(slug)
@@ -304,8 +444,8 @@ impl RouteTable {
     }
 
     pub fn resolve_host(&self, raw_host: &str) -> Option<ResolvedHost> {
-        let host = normalize_host(raw_host)?;
-        if let Some(domain) = self.domains_by_host.get(&host) {
+        let host = normalize_host_cow(raw_host)?;
+        if let Some(domain) = self.domains_by_host.get(host.as_ref()) {
             if !self.domains_enabled {
                 return None;
             }
@@ -314,7 +454,7 @@ impl RouteTable {
             }
             let site = self.sites_by_id.get(&domain.site_id)?.clone();
             let redirect = match &site.primary_custom_domain {
-                Some(primary) if !domain.is_primary && primary != &host && !site.taken_down => {
+                Some(primary) if !domain.is_primary && primary.as_str() != host.as_ref() && !site.taken_down => {
                     Some(primary.clone())
                 }
                 _ => None,
@@ -325,7 +465,7 @@ impl RouteTable {
                 canonical_redirect: redirect,
             });
         }
-        if let Some((slug, scope)) = self.parse_platform_site_host(&host) {
+        if let Some((slug, scope)) = self.parse_platform_site_host(host.as_ref()) {
             if !self.hosts_enabled {
                 return Some(ResolvedHost::UnknownOwnHost { scope });
             }
@@ -384,6 +524,10 @@ impl RouteTable {
 }
 
 pub fn normalize_host(raw: &str) -> Option<String> {
+    normalize_host_cow(raw).map(Cow::into_owned)
+}
+
+pub fn normalize_host_cow(raw: &str) -> Option<Cow<'_, str>> {
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed.len() > 260 {
         return None;
@@ -399,19 +543,27 @@ pub fn normalize_host(raw: &str) -> Option<String> {
     if stripped.is_empty() || stripped.len() > 253 {
         return None;
     }
-    let lower = stripped.to_ascii_lowercase();
-    if lower.starts_with('.') || lower.ends_with('.') || lower.contains("..") {
+    if stripped.starts_with('.') || stripped.ends_with('.') || stripped.contains("..") {
         return None;
     }
-    for label in lower.split('.') {
+    let mut needs_lower = false;
+    for label in stripped.split('.') {
         if label.is_empty() || label.len() > 63 || label.starts_with('-') || label.ends_with('-') {
             return None;
         }
-        if !label.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-')) {
-            return None;
+        for b in label.bytes() {
+            if matches!(b, b'A'..=b'Z') {
+                needs_lower = true;
+            } else if !matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-') {
+                return None;
+            }
         }
     }
-    Some(lower)
+    if needs_lower {
+        Some(Cow::Owned(stripped.to_ascii_lowercase()))
+    } else {
+        Some(Cow::Borrowed(stripped))
+    }
 }
 
 pub fn is_valid_slug(slug: &str) -> bool {
@@ -424,7 +576,7 @@ pub fn is_valid_slug(slug: &str) -> bool {
     slug.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'))
 }
 
-pub fn resolve_static_path(manifest: &SiteManifest, raw_path: &str) -> StaticResolution {
+pub fn resolve_static_path<'a>(manifest: &'a SiteManifest, raw_path: &'a str) -> StaticResolution<'a> {
     let decoded = percent_decode_path(raw_path);
     let normalized = decoded.trim_start_matches('/');
     if normalized.starts_with("__qorpera") && (normalized.len() == 9 || normalized.as_bytes()[9] == b'/') {
@@ -434,71 +586,82 @@ pub fn resolve_static_path(manifest: &SiteManifest, raw_path: &str) -> StaticRes
         return StaticResolution::ReservedPlatformPath;
     }
 
-    let request_path = format!("/{normalized}");
-    for rule in &manifest.redirects {
-        if let Some(target) = match_redirect(rule, &request_path) {
-            if matches!(rule.status, 301 | 302 | 303 | 307 | 308) {
-                return StaticResolution::Redirect {
-                    status: rule.status,
-                    location: target,
-                };
-            }
-            if rule.status == 200 {
-                let rewritten = target.trim_start_matches('/');
-                if let Some(file) = manifest.files.get(rewritten) {
-                    return StaticResolution::File {
-                        path: rewritten.to_string(),
-                        file: file.clone(),
-                        status: 200,
-                    };
+    if !manifest.redirects.is_empty() {
+        let request_path = format!("/{normalized}");
+        for rule in &manifest.redirects {
+            if let Some(target) = match_redirect(rule, &request_path) {
+                if matches!(rule.status, 301 | 302 | 303 | 307 | 308) {
+                    if let Some(safe_loc) = sanitize_redirect_location(&target) {
+                        return StaticResolution::Redirect {
+                            status: rule.status,
+                            location: safe_loc,
+                        };
+                    }
+                    continue;
+                }
+                if rule.status == 200 {
+                    let rewritten = target.trim_start_matches('/');
+                    if let Some((key, file)) = manifest.files.get_key_value(rewritten) {
+                        return StaticResolution::File {
+                            path: Cow::Borrowed(key.as_str()),
+                            file,
+                            status: 200,
+                        };
+                    }
                 }
             }
         }
     }
 
-    if normalized.split('/').any(|seg| seg == ".." || seg == "." || seg.starts_with('.')) {
+    if normalized
+        .split('/')
+        .any(|seg| seg == ".." || seg == "." || seg.starts_with('.'))
+    {
         return StaticResolution::NotFound;
     }
 
     if normalized.is_empty() {
-        if let Some(file) = manifest.files.get("index.html") {
+        if let Some((key, file)) = manifest.files.get_key_value("index.html") {
             return StaticResolution::File {
-                path: "index.html".to_string(),
-                file: file.clone(),
+                path: Cow::Borrowed(key.as_str()),
+                file,
                 status: 200,
             };
         }
     } else if normalized.ends_with('/') {
         let index = format!("{normalized}index.html");
-        if let Some(file) = manifest.files.get(&index) {
+        if let Some((key, file)) = manifest.files.get_key_value(&index) {
             return StaticResolution::File {
-                path: index,
-                file: file.clone(),
+                path: Cow::Borrowed(key.as_str()),
+                file,
                 status: 200,
             };
         }
     } else {
-        if let Some(file) = manifest.files.get(normalized) {
+        if let Some((key, file)) = manifest.files.get_key_value(normalized) {
             return StaticResolution::File {
-                path: normalized.to_string(),
-                file: file.clone(),
+                path: Cow::Borrowed(key.as_str()),
+                file,
                 status: 200,
             };
         }
         let html_clean = format!("{normalized}.html");
-        if let Some(file) = manifest.files.get(&html_clean) {
+        if let Some((key, file)) = manifest.files.get_key_value(&html_clean) {
             return StaticResolution::File {
-                path: html_clean,
-                file: file.clone(),
+                path: Cow::Borrowed(key.as_str()),
+                file,
                 status: 200,
             };
         }
         let dir_index = format!("{normalized}/index.html");
         if manifest.files.contains_key(&dir_index) {
-            return StaticResolution::Redirect {
-                status: 308,
-                location: format!("/{normalized}/"),
-            };
+            let loc = format!("/{normalized}/");
+            if let Some(safe_loc) = sanitize_redirect_location(&loc) {
+                return StaticResolution::Redirect {
+                    status: 308,
+                    location: safe_loc,
+                };
+            }
         }
     }
 
@@ -508,10 +671,11 @@ pub fn resolve_static_path(manifest: &SiteManifest, raw_path: &str) -> StaticRes
             .next()
             .map_or(false, |last| last.contains('.'));
         if !looks_like_asset {
-            if let Some(file) = manifest.files.get(spa.trim_start_matches('/')) {
+            let spa_key = spa.trim_start_matches('/');
+            if let Some((key, file)) = manifest.files.get_key_value(spa_key) {
                 return StaticResolution::File {
-                    path: spa.trim_start_matches('/').to_string(),
-                    file: file.clone(),
+                    path: Cow::Borrowed(key.as_str()),
+                    file,
                     status: 200,
                 };
             }
@@ -520,17 +684,17 @@ pub fn resolve_static_path(manifest: &SiteManifest, raw_path: &str) -> StaticRes
 
     if let Some(not_found) = &manifest.not_found_page {
         let key = not_found.trim_start_matches('/');
-        if let Some(file) = manifest.files.get(key) {
+        if let Some((k, file)) = manifest.files.get_key_value(key) {
             return StaticResolution::File {
-                path: key.to_string(),
-                file: file.clone(),
+                path: Cow::Borrowed(k.as_str()),
+                file,
                 status: 404,
             };
         }
-    } else if let Some(file) = manifest.files.get("404.html") {
+    } else if let Some((k, file)) = manifest.files.get_key_value("404.html") {
         return StaticResolution::File {
-            path: "404.html".to_string(),
-            file: file.clone(),
+            path: Cow::Borrowed(k.as_str()),
+            file,
             status: 404,
         };
     }
@@ -538,17 +702,24 @@ pub fn resolve_static_path(manifest: &SiteManifest, raw_path: &str) -> StaticRes
     StaticResolution::NotFound
 }
 
-pub fn matching_custom_headers(manifest: &SiteManifest, path: &str) -> Vec<(String, String)> {
+pub fn matching_custom_headers(
+    manifest: &SiteManifest,
+    path: &str,
+    is_public: bool,
+) -> Vec<(String, String)> {
+    if manifest.headers.is_empty() {
+        return Vec::new();
+    }
     let normalized = if path.starts_with('/') {
-        path.to_string()
+        std::borrow::Cow::Borrowed(path)
     } else {
-        format!("/{path}")
+        std::borrow::Cow::Owned(format!("/{path}"))
     };
     let mut out = Vec::new();
     for rule in &manifest.headers {
         if rule.path_prefix == "*" || normalized.starts_with(&rule.path_prefix) {
             for (k, v) in &rule.headers {
-                if is_safe_custom_header(k) {
+                if is_safe_custom_header(k, is_public) {
                     out.push((k.clone(), v.clone()));
                 }
             }
@@ -557,9 +728,9 @@ pub fn matching_custom_headers(manifest: &SiteManifest, path: &str) -> Vec<(Stri
     out
 }
 
-fn is_safe_custom_header(name: &str) -> bool {
+fn is_safe_custom_header(name: &str, is_public: bool) -> bool {
     let lower = name.to_ascii_lowercase();
-    !matches!(
+    if matches!(
         lower.as_str(),
         "set-cookie"
             | "strict-transport-security"
@@ -569,7 +740,30 @@ fn is_safe_custom_header(name: &str) -> bool {
             | "upgrade"
             | "host"
             | "x-qorpera-client-ip"
-    )
+            | "content-encoding"
+            | "etag"
+            | "content-range"
+            | "accept-ranges"
+            | "location"
+            | "content-type"
+            | "vary"
+    ) {
+        return false;
+    }
+    if !is_public
+        && matches!(
+            lower.as_str(),
+            "cache-control"
+                | "expires"
+                | "cdn-cache-control"
+                | "surrogate-control"
+                | "x-robots-tag"
+                | "cross-origin-resource-policy"
+        )
+    {
+        return false;
+    }
+    true
 }
 
 fn match_redirect(rule: &RedirectRule, request_path: &str) -> Option<String> {
@@ -583,7 +777,10 @@ fn match_redirect(rule: &RedirectRule, request_path: &str) -> Option<String> {
     None
 }
 
-fn percent_decode_path(raw: &str) -> String {
+fn percent_decode_path(raw: &str) -> Cow<'_, str> {
+    if !raw.contains('%') {
+        return Cow::Borrowed(raw);
+    }
     let bytes = raw.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -601,7 +798,7 @@ fn percent_decode_path(raw: &str) -> String {
         out.push(bytes[i]);
         i += 1;
     }
-    String::from_utf8_lossy(&out).into_owned()
+    Cow::Owned(String::from_utf8_lossy(&out).into_owned())
 }
 
 fn hex_val(b: u8) -> Option<u8> {
@@ -664,12 +861,26 @@ mod tests {
                     kind: DeploymentKind::Static,
                     manifest: SiteManifest {
                         files,
-                        redirects: vec![RedirectRule {
-                            from: "/old/*".to_string(),
-                            to: "/new/:splat".to_string(),
-                            status: 301,
+                        redirects: vec![
+                            RedirectRule {
+                                from: "/old/*".to_string(),
+                                to: "/new/:splat".to_string(),
+                                status: 301,
+                            },
+                            RedirectRule {
+                                from: "/open/*".to_string(),
+                                to: "/:splat".to_string(),
+                                status: 302,
+                            },
+                        ],
+                        headers: vec![HeaderRule {
+                            path_prefix: "/".to_string(),
+                            headers: HashMap::from([
+                                ("cache-control".to_string(), "public, max-age=3600".to_string()),
+                                ("x-robots-tag".to_string(), "index".to_string()),
+                                ("x-custom".to_string(), "ok".to_string()),
+                            ]),
                         }],
-                        headers: vec![],
                         spa_fallback: None,
                         not_found_page: None,
                     },
@@ -760,5 +971,91 @@ mod tests {
             resolve_static_path(manifest, "/old/bread"),
             StaticResolution::Redirect { status: 301, ref location } if location == "/new/bread"
         ));
+        assert!(matches!(
+            resolve_static_path(manifest, "/old/%0d%0aX-Evil:1"),
+            StaticResolution::NotFound
+        ));
+        assert!(matches!(
+            resolve_static_path(manifest, "/open//evil.com"),
+            StaticResolution::NotFound
+        ));
+
+        let priv_headers = matching_custom_headers(manifest, "/index.html", false);
+        assert_eq!(priv_headers, vec![("x-custom".to_string(), "ok".to_string())]);
+        let pub_headers = matching_custom_headers(manifest, "/index.html", true);
+        assert!(pub_headers.iter().any(|(k, _)| k == "cache-control"));
+    }
+
+    #[test]
+    fn apply_snapshot_preserves_live_upstream_overrides() {
+        let snap = sample_snapshot();
+        let mut table = RouteTable::from_snapshot(snap.clone());
+        table.set_upstream_override("dep-1".to_string(), Some("127.0.0.1:45555".to_string()));
+        table.set_upstream_override("removed-dep".to_string(), Some("127.0.0.1:49999".to_string()));
+        table.apply_snapshot(snap);
+
+        let dep = table.sites_by_id.get("site-1").unwrap().live_deployment.as_ref().unwrap();
+        assert_eq!(table.upstream_for(dep).as_deref(), Some("127.0.0.1:45555"));
+        assert!(!table.upstream_overrides.contains_key("removed-dep"));
+
+        let mut snap_with_addr = sample_snapshot();
+        snap_with_addr.sites[0].live_deployment.as_mut().unwrap().upstream_addr =
+            Some("127.0.0.1:41001".to_string());
+        let mut t2 = RouteTable::from_snapshot(snap_with_addr.clone());
+        t2.set_upstream_override("dep-1".to_string(), None);
+        let d2 = t2.sites_by_id.get("site-1").unwrap().live_deployment.as_ref().unwrap();
+        assert_eq!(t2.upstream_for(d2), None);
+        t2.apply_snapshot(snap_with_addr.clone());
+        let d2b = t2.sites_by_id.get("site-1").unwrap().live_deployment.as_ref().unwrap();
+        assert_eq!(t2.upstream_for(d2b), None);
+
+        let mut snap_new_addr = snap_with_addr;
+        snap_new_addr.sites[0].live_deployment.as_mut().unwrap().upstream_addr =
+            Some("127.0.0.1:41002".to_string());
+        t2.apply_snapshot(snap_new_addr);
+        let site2c = Arc::clone(t2.sites_by_id.get("site-1").unwrap());
+        let d2c = site2c.live_deployment.as_ref().unwrap();
+        assert_eq!(t2.upstream_for(d2c).as_deref(), Some("127.0.0.1:41002"));
+        assert!(!t2.clear_upstream_if_matches("dep-1", "127.0.0.1:41001"));
+        assert!(t2.clear_upstream_if_matches("dep-1", "127.0.0.1:41002"));
+        assert_eq!(t2.upstream_for(d2c), None);
+    }
+
+    #[test]
+    fn deserializes_explicit_null_snapshot_fields() {
+        let raw = r#"{
+            "hosts_domain": null,
+            "legacy_hosts_domains": null,
+            "hosts_enabled": null,
+            "public_enabled": true,
+            "domains_enabled": null,
+            "sites": [{
+                "id": "s1",
+                "slug": "null-safe",
+                "is_public": true,
+                "taken_down": false,
+                "password_sha256": null,
+                "password_version": 1,
+                "live_deployment": {
+                    "id": "d1",
+                    "kind": "server",
+                    "manifest": {"files": null, "redirects": null, "headers": null},
+                    "health_path": null,
+                    "idle_timeout_sec": null,
+                    "memory_mb": null,
+                    "vcpu_limit": null,
+                    "env_spec": null
+                },
+                "preview_deployments": null
+            }],
+            "custom_domains": null
+        }"#;
+        let parsed: EdgeSnapshot = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed.hosts_domain, "qorpera.site");
+        assert_eq!(parsed.sites.len(), 1);
+        let dep = parsed.sites[0].live_deployment.as_ref().unwrap();
+        assert_eq!(dep.health_path, "/");
+        assert_eq!(dep.idle_timeout_sec, 900);
+        assert_eq!(dep.memory_mb, 512);
     }
 }

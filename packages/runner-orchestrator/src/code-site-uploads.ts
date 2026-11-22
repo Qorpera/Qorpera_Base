@@ -105,7 +105,7 @@ export interface CodeSiteTarget {
 
 export type CodeSiteSourceExport = (
 	job: CodeHostJob,
-	value: { repository: CloudCodingRepository; tree: string },
+	value: { repository: CloudCodingRepository; tree: string; kind?: "static" | "server" | "hybrid" },
 ) => Promise<{ sourceDir: string; cleanup?: () => Promise<void> }>;
 
 export interface CodeSiteUploadsOptions {
@@ -409,20 +409,30 @@ export class CodeSiteUploads {
 			}
 		}
 		let exportedSource: { sourceDir: string; cleanup?: () => Promise<void> } | undefined;
-		if ((site.kind === "server" || site.kind === "hybrid") && this.#exportSource) {
-			const exportFn = this.#exportSource;
-			try {
-				exportedSource = await this.#hosts.run(
-					due.target.companyId,
-					due.target.environmentId,
+		if (site.kind === "server" || site.kind === "hybrid") {
+			if (this.#exportSource) {
+				const exportFn = this.#exportSource;
+				try {
+					exportedSource = await this.#hosts.run(
+						due.target.companyId,
+						due.target.environmentId,
+						signal,
+						(job) => exportFn(job, { repository, tree: site.tree, kind: site.kind }),
+						{ yields: true },
+					);
+				} catch (error) {
+					if (signal.aborted || (error instanceof CodeHostJobFailure && error.code === YIELDED)) return undefined;
+					const code = codeChangeErrorCode(error);
+					return await this.#failed(due, "export", code === "UNCLASSIFIED" ? READ_FAILED : code, error, signal);
+				}
+			} else if (!edge.buildAppImage) {
+				return await this.#failed(
+					due,
+					"export",
+					"APP_SOURCE_EXPORT_UNCONFIGURED",
+					new Error("APP_SOURCE_EXPORT_UNCONFIGURED"),
 					signal,
-					(job) => exportFn(job, { repository, tree: site.tree }),
-					{ yields: true },
 				);
-			} catch (error) {
-				if (signal.aborted || (error instanceof CodeHostJobFailure && error.code === YIELDED)) return undefined;
-				const code = codeChangeErrorCode(error);
-				return await this.#failed(due, "export", code === "UNCLASSIFIED" ? READ_FAILED : code, error, signal);
 			}
 		}
 		const key = `${due.target.environmentId}/${due.target.owner}/${due.target.name}/${due.change}`;

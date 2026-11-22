@@ -34,6 +34,15 @@ install -m 0644 "$KIT_DIR/qorpera-web-router.service" /etc/systemd/system/qorper
 install -m 0644 "$KIT_DIR/qorpera-app-host.service" /etc/systemd/system/qorpera-app-host.service
 install -m 0644 "$KIT_DIR/qorpera-web-caddy.service" /etc/systemd/system/qorpera-web-caddy.service
 
+cat <<'SYSCTL' >/etc/sysctl.d/99-qorpera-web-hosting.conf
+net.netfilter.nf_conntrack_tcp_loose = 0
+net.ipv4.tcp_syncookies = 1
+net.core.somaxconn = 4096
+SYSCTL
+if command -v sysctl >/dev/null 2>&1; then
+	sysctl --system >/dev/null 2>&1 || true
+fi
+
 if command -v lxc >/dev/null 2>&1; then
 	if ! lxc project show qorpera-web-apps >/dev/null 2>&1; then
 		lxc project create qorpera-web-apps \

@@ -42,6 +42,9 @@ pub trait AppRuntimeDriver: Send + Sync {
     ) -> BoxFuture<'_, Result<AppInstanceHandle, String>>;
     fn stop(&self, deployment_id: &str) -> BoxFuture<'_, Result<(), String>>;
     fn is_running(&self, deployment_id: &str) -> BoxFuture<'_, bool>;
+    fn stop_all(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async {})
+    }
 }
 
 pub fn allocate_ephemeral_loopback_port() -> Result<u16, String> {
@@ -83,6 +86,15 @@ impl AppRuntimeDriver for LocalProcessDriver {
     ) -> BoxFuture<'_, Result<AppInstanceHandle, String>> {
         let children = Arc::clone(&self.children);
         Box::pin(async move {
+            let old_child = {
+                let mut guard = children.lock().map_err(|_| "children lock poisoned".to_string())?;
+                guard.remove(&spec.deployment_id)
+            };
+            if let Some(mut prev) = old_child {
+                let _ = prev.kill().await;
+                let _ = prev.wait().await;
+            }
+
             let argv = spec
                 .command
                 .as_ref()
@@ -102,6 +114,7 @@ impl AppRuntimeDriver for LocalProcessDriver {
             cmd.stdin(Stdio::null());
             cmd.stdout(Stdio::piped());
             cmd.stderr(Stdio::piped());
+            cmd.kill_on_drop(true);
 
             let mut child = cmd
                 .spawn()
@@ -132,9 +145,13 @@ impl AppRuntimeDriver for LocalProcessDriver {
                 });
             }
 
-            {
+            let displaced = {
                 let mut guard = children.lock().map_err(|_| "children lock poisoned".to_string())?;
-                guard.insert(spec.deployment_id.clone(), child);
+                guard.insert(spec.deployment_id.clone(), child)
+            };
+            if let Some(mut extra) = displaced {
+                let _ = extra.kill().await;
+                let _ = extra.wait().await;
             }
 
             Ok(AppInstanceHandle {
@@ -171,6 +188,22 @@ impl AppRuntimeDriver for LocalProcessDriver {
             match guard.get_mut(&dep) {
                 Some(child) => matches!(child.try_wait(), Ok(None)),
                 None => false,
+            }
+        })
+    }
+
+    fn stop_all(&self) -> BoxFuture<'_, ()> {
+        let children = Arc::clone(&self.children);
+        Box::pin(async move {
+            let drained: Vec<Child> = {
+                let Ok(mut guard) = children.lock() else {
+                    return;
+                };
+                guard.drain().map(|(_, c)| c).collect()
+            };
+            for mut child in drained {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
             }
         })
     }
@@ -225,36 +258,6 @@ impl AppRuntimeDriver for LxdAppDriver {
             let cname = Self::container_name(&spec.deployment_id);
             let cpu_cores = spec.vcpu_limit.ceil().max(1.0) as u32;
 
-            let mut init_args = vec![
-                "--project".to_string(),
-                project.clone(),
-                "init".to_string(),
-                image,
-                cname.clone(),
-                "--profile".to_string(),
-                profile,
-                "-c".to_string(),
-                "security.nesting=false".to_string(),
-                "-c".to_string(),
-                "security.privileged=false".to_string(),
-                "-c".to_string(),
-                format!("limits.memory={}MB", spec.memory_mb),
-                "-c".to_string(),
-                format!("limits.cpu={cpu_cores}"),
-                "-c".to_string(),
-                format!("limits.processes={}", spec.pids_limit),
-                "-c".to_string(),
-                "boot.autostart=false".to_string(),
-                "-c".to_string(),
-                format!("environment.PORT={}", spec.port),
-            ];
-            for (k, v) in &spec.env {
-                if is_safe_env_key(k) {
-                    init_args.push("-c".to_string());
-                    init_args.push(format!("environment.{k}={v}"));
-                }
-            }
-
             let exists = Command::new(&lxc)
                 .args(["--project", &project, "info", &cname])
                 .stdout(Stdio::null())
@@ -264,6 +267,35 @@ impl AppRuntimeDriver for LxdAppDriver {
                 .map_or(false, |s| s.success());
 
             if !exists {
+                let mut init_args = vec![
+                    "--project".to_string(),
+                    project.clone(),
+                    "init".to_string(),
+                    image,
+                    cname.clone(),
+                    "--profile".to_string(),
+                    profile,
+                    "-c".to_string(),
+                    "security.nesting=false".to_string(),
+                    "-c".to_string(),
+                    "security.privileged=false".to_string(),
+                    "-c".to_string(),
+                    format!("limits.memory={}MB", spec.memory_mb),
+                    "-c".to_string(),
+                    format!("limits.cpu={cpu_cores}"),
+                    "-c".to_string(),
+                    format!("limits.processes={}", spec.pids_limit),
+                    "-c".to_string(),
+                    "boot.autostart=false".to_string(),
+                    "-c".to_string(),
+                    format!("environment.PORT={}", spec.port),
+                ];
+                for (k, v) in &spec.env {
+                    if is_safe_env_key(k) {
+                        init_args.push("-c".to_string());
+                        init_args.push(format!("environment.{k}={v}"));
+                    }
+                }
                 let init_out = Command::new(&lxc)
                     .args(&init_args)
                     .output()
@@ -273,27 +305,51 @@ impl AppRuntimeDriver for LxdAppDriver {
                     let err = String::from_utf8_lossy(&init_out.stderr);
                     return Err(format!("lxc init error: {err}"));
                 }
-
-                let proxy_out = Command::new(&lxc)
+            } else {
+                let _ = Command::new(&lxc)
+                    .args([
+                        "--project",
+                        &project,
+                        "config",
+                        "set",
+                        &cname,
+                        &format!("environment.PORT={}", spec.port),
+                    ])
+                    .output()
+                    .await;
+                let _ = Command::new(&lxc)
                     .args([
                         "--project",
                         &project,
                         "config",
                         "device",
-                        "add",
+                        "remove",
                         &cname,
                         "http-ingress",
-                        "proxy",
-                        &format!("listen=tcp:{bind_ip}:{}", spec.port),
-                        &format!("connect=tcp:127.0.0.1:{}", spec.port),
                     ])
                     .output()
-                    .await
-                    .map_err(|e| format!("lxc proxy add failed: {e}"))?;
-                if !proxy_out.status.success() {
-                    let err = String::from_utf8_lossy(&proxy_out.stderr);
-                    return Err(format!("lxc proxy add error: {err}"));
-                }
+                    .await;
+            }
+
+            let proxy_out = Command::new(&lxc)
+                .args([
+                    "--project",
+                    &project,
+                    "config",
+                    "device",
+                    "add",
+                    &cname,
+                    "http-ingress",
+                    "proxy",
+                    &format!("listen=tcp:{bind_ip}:{}", spec.port),
+                    &format!("connect=tcp:127.0.0.1:{}", spec.port),
+                ])
+                .output()
+                .await
+                .map_err(|e| format!("lxc proxy add failed: {e}"))?;
+            if !proxy_out.status.success() {
+                let err = String::from_utf8_lossy(&proxy_out.stderr);
+                return Err(format!("lxc proxy add error: {err}"));
             }
 
             let start_out = Command::new(&lxc)

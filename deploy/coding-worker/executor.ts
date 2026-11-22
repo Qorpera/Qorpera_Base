@@ -24,7 +24,7 @@ import { CodeImportStop, type CodeImportTransports } from "../../packages/runner
 import { fetchGitHubImport } from "../../packages/runner-orchestrator/src/code-import-fetch.ts";
 import { CodeImport } from "../../packages/runner-orchestrator/src/code-import-run.ts";
 import { codeHostErrorCode, codingErrorDetail } from "../../packages/runner-orchestrator/src/coding-error-detail.ts";
-import { readCodeSiteTree } from "../../packages/runner-orchestrator/src/code-host-sites.ts";
+import { exportCodeSiteSource, readCodeSiteTree } from "../../packages/runner-orchestrator/src/code-host-sites.ts";
 import { CodeHostJobs, type CodeHostViewEvent } from "../../packages/runner-orchestrator/src/code-host-views.ts";
 import { CodeSiteUploads } from "../../packages/runner-orchestrator/src/code-site-uploads.ts";
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
@@ -533,7 +533,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const codeSites = codeHostJobs ? new CodeSiteUploads({
 		control, hosts: codeHostJobs, read: readCodeSiteTree, owner: config.owner,
 		machineIdSha256: createHash("sha256").update(machine).digest("hex"), report: logCodeRecord,
-		...(nativeEdge ? { nativeEdge } : {}),
+		...(nativeEdge ? { nativeEdge, exportSource: exportCodeSiteSource } : {}),
 	}) : undefined;
 	const codeRequests = codeHostJobs && codeRecords ? codeHostRequestsOf({
 		control, hosts: codeHostJobs, records: codeRecords, bundles: codeBundles,

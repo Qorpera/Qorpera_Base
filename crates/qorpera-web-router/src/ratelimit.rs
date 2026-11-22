@@ -1,6 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+const SHARD_COUNT: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RateDecision {
@@ -13,51 +15,139 @@ struct Bucket {
     last_refill: Instant,
 }
 
+struct Shard {
+    buckets: HashMap<String, Bucket>,
+    fifo: VecDeque<String>,
+    last_sweep: Option<Instant>,
+}
+
+impl Shard {
+    fn new() -> Self {
+        Self {
+            buckets: HashMap::new(),
+            fifo: VecDeque::new(),
+            last_sweep: None,
+        }
+    }
+}
+
 pub struct RateLimiter {
     rate_per_sec: f64,
     burst: f64,
-    max_entries: usize,
-    buckets: Mutex<HashMap<String, Bucket>>,
+    per_shard_cap: usize,
+    stale_cutoff: Duration,
+    shards: Vec<Mutex<Shard>>,
+}
+
+fn fnv1a_pair(a: &str, b: &str) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in a.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash ^= b'|' as u64;
+    hash = hash.wrapping_mul(0x100000001b3);
+    for byte in b.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn fnv1a_str(s: &str) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in s.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 impl RateLimiter {
     pub fn new(rate_per_sec: f64, burst: f64, max_entries: usize) -> Self {
+        let rps = rate_per_sec.max(0.01);
+        let b = burst.max(1.0);
+        let total_cap = max_entries.max(SHARD_COUNT);
+        let per_shard_cap = (total_cap + SHARD_COUNT - 1) / SHARD_COUNT;
+        let stale_cutoff = Duration::from_secs(((b / rps).ceil() as u64).max(60));
+        let mut shards = Vec::with_capacity(SHARD_COUNT);
+        for _ in 0..SHARD_COUNT {
+            shards.push(Mutex::new(Shard::new()));
+        }
         Self {
-            rate_per_sec: rate_per_sec.max(0.01),
-            burst: burst.max(1.0),
-            max_entries: max_entries.max(16),
-            buckets: Mutex::new(HashMap::new()),
+            rate_per_sec: rps,
+            burst: b,
+            per_shard_cap: per_shard_cap.max(1),
+            stale_cutoff,
+            shards,
         }
     }
 
     pub fn check(&self, key: &str) -> RateDecision {
-        self.check_at(key, Instant::now())
+        let shard_idx = (fnv1a_str(key) as usize) & (SHARD_COUNT - 1);
+        self.check_in_shard(shard_idx, key, Instant::now())
+    }
+
+    pub fn check_pair(&self, host: &str, client_ip: &str) -> RateDecision {
+        let shard_idx = (fnv1a_pair(host, client_ip) as usize) & (SHARD_COUNT - 1);
+        let mut key_buf = String::with_capacity(host.len() + 1 + client_ip.len());
+        key_buf.push_str(host);
+        key_buf.push('|');
+        key_buf.push_str(client_ip);
+        self.check_in_shard(shard_idx, &key_buf, Instant::now())
     }
 
     pub fn check_at(&self, key: &str, now: Instant) -> RateDecision {
-        let Ok(mut map) = self.buckets.lock() else {
+        let shard_idx = (fnv1a_str(key) as usize) & (SHARD_COUNT - 1);
+        self.check_in_shard(shard_idx, key, now)
+    }
+
+    fn check_in_shard(&self, shard_idx: usize, key: &str, now: Instant) -> RateDecision {
+        let Ok(mut shard) = self.shards[shard_idx].lock() else {
             return RateDecision {
                 allowed: true,
                 retry_after_secs: 0,
             };
         };
-        if !map.contains_key(key) && map.len() >= self.max_entries {
-            let stale_cutoff = Duration::from_secs(((self.burst / self.rate_per_sec).ceil() as u64).max(60));
-            map.retain(|_, b| now.saturating_duration_since(b.last_refill) < stale_cutoff);
-            if map.len() >= self.max_entries {
-                if let Some(oldest_key) = map
-                    .iter()
-                    .min_by_key(|(_, b)| b.last_refill)
-                    .map(|(k, _)| k.clone())
-                {
-                    map.remove(&oldest_key);
+
+        if let Some(entry) = shard.buckets.get_mut(key) {
+            return self.consume(entry, now);
+        }
+
+        if shard.buckets.len() >= self.per_shard_cap {
+            let should_sweep = shard
+                .last_sweep
+                .map_or(true, |last| now.saturating_duration_since(last) >= Duration::from_secs(1));
+            if should_sweep {
+                let cutoff = self.stale_cutoff;
+                shard
+                    .buckets
+                    .retain(|_, b| now.saturating_duration_since(b.last_refill) < cutoff);
+                shard.last_sweep = Some(now);
+            }
+            while shard.buckets.len() >= self.per_shard_cap {
+                if let Some(candidate) = shard.fifo.pop_front() {
+                    shard.buckets.remove(&candidate);
+                } else {
+                    break;
                 }
             }
+            if shard.fifo.len() > self.per_shard_cap * 2 {
+                let Shard { buckets, fifo, .. } = &mut *shard;
+                fifo.retain(|k| buckets.contains_key(k));
+            }
         }
-        let entry = map.entry(key.to_string()).or_insert(Bucket {
+
+        let owned = key.to_string();
+        shard.fifo.push_back(owned.clone());
+        let entry = shard.buckets.entry(owned).or_insert(Bucket {
             tokens: self.burst,
             last_refill: now,
         });
+        self.consume(entry, now)
+    }
+
+    fn consume(&self, entry: &mut Bucket, now: Instant) -> RateDecision {
         let elapsed = now.saturating_duration_since(entry.last_refill).as_secs_f64();
         entry.tokens = (entry.tokens + elapsed * self.rate_per_sec).min(self.burst);
         entry.last_refill = now;
@@ -76,6 +166,14 @@ impl RateLimiter {
             }
         }
     }
+
+    #[cfg(test)]
+    fn total_entries(&self) -> usize {
+        self.shards
+            .iter()
+            .map(|s| s.lock().map_or(0, |g| g.buckets.len()))
+            .sum()
+    }
 }
 
 #[cfg(test)]
@@ -84,7 +182,7 @@ mod tests {
 
     #[test]
     fn enforces_burst_and_refills() {
-        let limiter = RateLimiter::new(2.0, 2.0, 100);
+        let limiter = RateLimiter::new(2.0, 2.0, 128);
         let t0 = Instant::now();
         assert!(limiter.check_at("1.2.3.4", t0).allowed);
         assert!(limiter.check_at("1.2.3.4", t0).allowed);
@@ -96,11 +194,11 @@ mod tests {
 
     #[test]
     fn bounds_memory_under_unique_keys() {
-        let limiter = RateLimiter::new(10.0, 10.0, 16);
+        let limiter = RateLimiter::new(10.0, 10.0, 128);
         let t0 = Instant::now();
-        for i in 0..64 {
+        for i in 0..2000 {
             limiter.check_at(&format!("198.51.100.{i}"), t0);
         }
-        assert!(limiter.buckets.lock().unwrap().len() <= 16);
+        assert!(limiter.total_entries() <= 128);
     }
 }
