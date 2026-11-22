@@ -181,7 +181,10 @@ function automationLine(automation: SurfaceAutomationSummary): string {
 export function openAutomationsSheet(store: SurfacesStore): void {
 	const list = h("ul", { class: "surface-automations" });
 	const status = h("p", { class: "surface-sheet-status", role: "status" });
+	const toggling = new Set<string>();
+	let closed = false;
 	const draw = () => {
+		if (closed) return;
 		const state = store.state;
 		const rows = state.automations.map((automation) => {
 			const toggle = h("button", {
@@ -190,10 +193,18 @@ export function openAutomationsSheet(store: SurfacesStore): void {
 				role: "switch",
 				"aria-checked": String(automation.enabled),
 				"aria-label": t("Turn {name} on or off", { name: automation.title }),
-				disabled: Boolean(state.busy[`automation:${automation.id}`]),
+				disabled: toggling.has(automation.id) || Boolean(state.busy[`automation:${automation.id}`]),
 			});
 			toggle.addEventListener("click", async () => {
-				await store.toggleAutomation(automation.id, !automation.enabled);
+				if (toggling.has(automation.id)) return;
+				toggling.add(automation.id);
+				toggle.disabled = true;
+				try {
+					await store.toggleAutomation(automation.id, !automation.enabled);
+				} finally {
+					toggling.delete(automation.id);
+				}
+				if (closed) return;
 				status.textContent = store.state.error ?? "";
 				draw();
 			});
@@ -217,7 +228,9 @@ export function openAutomationsSheet(store: SurfacesStore): void {
 					]),
 		);
 	};
-	const dialog = new SurfaceDialog(t("Automations"), "surface-sheet", () => undefined);
+	const dialog = new SurfaceDialog(t("Automations"), "surface-sheet", () => {
+		closed = true;
+	});
 	const sections: HTMLElement[] = [
 		h("h2", null, t("Automations")),
 		h(
@@ -603,18 +616,23 @@ export function openScheduleAgentSheet(store: SurfacesStore, existing?: SurfaceA
 	);
 	const remove =
 		editing && existing && store.isLocalInteractive && existing.id.startsWith("local-")
-			? h(
-					"button",
-					{
-						type: "button",
-						class: "btn",
-						onclick: async () => {
-							await store.deleteScheduledAgent(existing.id);
+			? (() => {
+					const button = h("button", { type: "button", class: "btn" }, t("Delete"));
+					button.addEventListener("click", async () => {
+						if (button.disabled) return;
+						button.disabled = true;
+						submit.disabled = true;
+						const deleted = await store.deleteScheduledAgent(existing.id);
+						if (deleted) {
 							dialog.close(false);
-						},
-					},
-					t("Delete"),
-				)
+						} else {
+							button.disabled = false;
+							submit.disabled = false;
+							status.textContent = store.state.error ?? t("That didn't work. Try again.");
+						}
+					});
+					return button;
+				})()
 			: null;
 	const form = h(
 		"form",
