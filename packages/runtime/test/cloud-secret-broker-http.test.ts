@@ -496,15 +496,20 @@ it("answers the coding environment only to the executor's token, uncached, and n
 	f.keyring.close();
 });
 
-it("serves /v1/app-secrets only to the coding executor token and decrypts scoped app secrets", async () => {
+it("serves /v1/app-secrets only to the coding executor token with custody + deployment proof and decrypts scoped app secrets", async () => {
 	const f = fixture();
 	const port = await f.service.start();
 	const siteId = randomUUID();
+	const deploymentId = randomUUID();
+	const machineIdSha256 = "e".repeat(64);
 	const body = {
 		schema: "qorpera.app-secrets-request/v1",
 		siteId,
 		scope: "runtime",
 		targetEnv: "prod",
+		executorOwner: "coding-node-02",
+		machineIdSha256,
+		deploymentId,
 	};
 	const post = (authorization: string, sent: Record<string, unknown> = body) =>
 		fetch(`http://127.0.0.1:${port}/v1/app-secrets?company=${randomUUID()}`, {
@@ -527,6 +532,28 @@ it("serves /v1/app-secrets only to the coding executor token and decrypts scoped
 		targetEnv: "prod",
 		secrets: { OPENAI_API_KEY: ENVIRONMENT_VALUE },
 	});
+	expect(f.authorizeAppSecrets).toHaveBeenCalledTimes(1);
+	expect(f.authorizeAppSecrets).toHaveBeenCalledWith(
+		{
+			siteId,
+			scope: "runtime",
+			targetEnv: "prod",
+			executorOwner: "coding-node-02",
+			machineIdSha256,
+			deploymentId,
+		},
+		expect.any(AbortSignal),
+	);
+
+	const missingDep = await post(`Bearer ${f.codingExecutorToken}`, {
+		schema: "qorpera.app-secrets-request/v1",
+		siteId,
+		scope: "runtime",
+		targetEnv: "prod",
+		executorOwner: "coding-node-02",
+		machineIdSha256,
+	});
+	expect(missingDep.status).toBe(403);
 	expect(f.authorizeAppSecrets).toHaveBeenCalledTimes(1);
 
 	const bad = await post(`Bearer ${f.codingExecutorToken}`, { ...body, scope: "all" });

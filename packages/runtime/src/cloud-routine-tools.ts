@@ -45,7 +45,7 @@ const REPO_FULL = /^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9_][A-
 const SITE_SLUG = /^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$/;
 const DATA_DB = /^[a-z][a-z0-9_-]{0,63}$/;
 const DATA_TABLE = /^[a-z][a-z0-9_]{0,63}$/;
-const CHECK_URL = /^https?:\/\/[^\s\u0000-\u001f\u007f]+$/;
+const CHECK_URL = /^https:\/\/[^/@\s\u0000-\u001f\u007f]+(?:\/[^\s\u0000-\u001f\u007f]*)?$/;
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 const DECISIONS = ["next", "conclude"] as const;
 
@@ -412,7 +412,7 @@ function compileCheckBeforeWake(value: unknown): RoutineCheckBeforeWake {
 	if (kind === "http_probe") {
 		const c = object(value, ["kind", "url", "expectStatus", "timeoutMs"], ["kind", "url"]);
 		if (typeof c.url !== "string" || c.url.length < 10 || c.url.length > 1024 || !CHECK_URL.test(c.url))
-			throw new CloudToolArgumentRefusal("checkBeforeWake.url must be an http or https URL");
+			throw new CloudToolArgumentRefusal("checkBeforeWake.url must be an https URL without embedded credentials");
 		if (
 			c.expectStatus !== undefined &&
 			(!Number.isSafeInteger(c.expectStatus) || (c.expectStatus as number) < 100 || (c.expectStatus as number) > 599)
@@ -480,7 +480,7 @@ export const CLOUD_ROUTINE_TOOL_DESCRIPTION = [
 	"- code_change: triggers on landed, undone, checks_failed, or conflict for a repo (owner, name) with optional paths globs.",
 	"- app_unhealthy: triggers when a hosted app (site slug or id) fails health checks or crash-loops.",
 	"- data_change: triggers on Company Database table changes (database, optional tables and operations).",
-	"checkBeforeWake (optional on scheduled or dynamic routines): deterministic http_probe or code_checks gate that wakes you only on failure or state change.",
+	"checkBeforeWake (optional on recurring scheduled routines — every or weekly): deterministic http_probe or code_checks gate that wakes you only on failure or state change.",
 	"file_change and event listen from their last save, which drops what was not delivered yet. timeZone is the member's IANA time zone, from the wake's time; times are ISO 8601 with an offset, and a time on the hour or half hour moves a few minutes later per agent. report: optional (speak only when useful), required (always; it needs your public thread, or the run is skipped) or silent (never).",
 	"Start dense while a responsibility is new: while you can move it without a member, the next run is minutes to a few hours away, not the next morning. Give a finite watch an expiresAt, or for every and weekly a maxOccurrences, so it ends by itself. When you pick a threshold or a cadence nobody gave you, tell the member it is your starting assumption.",
 	"The routine is the file routines/<routineKey>.md in your folder. A conflict means it changed since it was read: call again with a new operationKey.",
@@ -862,8 +862,8 @@ export function cloudRoutineTools(
 				trigger: compileTrigger(a.trigger),
 			};
 			if (a.checkBeforeWake !== undefined) {
-				if ((request.trigger as { kind: string }).kind === "listener")
-					throw new CloudToolArgumentRefusal("checkBeforeWake is only supported on scheduled or dynamic routines");
+				if ((request.trigger as { kind: string }).kind !== "schedule")
+					throw new CloudToolArgumentRefusal("checkBeforeWake is only supported on recurring scheduled routines");
 				request.checkBeforeWake = compileCheckBeforeWake(a.checkBeforeWake);
 			}
 			if (a.expiresAt !== undefined) request.expiresAt = instant(a.expiresAt, "expiresAt");

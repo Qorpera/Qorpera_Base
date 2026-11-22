@@ -266,12 +266,22 @@ function parseCodingEnvironmentHttpRequest(value: unknown): CodingEnvironmentReq
 
 function parseAppSecretsHttpRequest(value: unknown): AppSecretsRequest {
 	const input = record(value, "App secrets request");
-	exact(input, ["schema", "siteId", "scope", "targetEnv"], "App secrets request");
-	if (input.schema !== "qorpera.app-secrets-request/v1") throw new Error("App secrets request is invalid");
+	const allowed = ["schema", "siteId", "scope", "targetEnv", "executorOwner", "machineIdSha256", "deploymentId"];
+	const required = ["schema", "siteId", "scope", "targetEnv", "executorOwner", "machineIdSha256"];
+	if (
+		Object.keys(input).some((key) => !allowed.includes(key)) ||
+		required.some((key) => !Object.hasOwn(input, key)) ||
+		input.schema !== "qorpera.app-secrets-request/v1"
+	) {
+		throw new Error("App secrets request is invalid");
+	}
 	return parseAppSecretsRequest({
 		siteId: input.siteId,
 		scope: input.scope,
 		targetEnv: input.targetEnv,
+		executorOwner: input.executorOwner,
+		machineIdSha256: input.machineIdSha256,
+		...(Object.hasOwn(input, "deploymentId") ? { deploymentId: input.deploymentId } : {}),
 	});
 }
 

@@ -365,6 +365,9 @@ async function scrubFile(filePath: string): Promise<void> {
 export async function fetchHostedAppSecrets(options: {
 	readonly brokerOrigin: string;
 	readonly executorToken: string;
+	readonly executorOwner: string;
+	readonly machineIdSha256: string;
+	readonly deploymentId?: string;
 	readonly companyId?: string;
 	readonly siteId: string;
 	readonly scope: HostedAppSecretScope;
@@ -378,6 +381,17 @@ export async function fetchHostedAppSecrets(options: {
 	}
 	if (options.targetEnv !== "dev" && options.targetEnv !== "prod") {
 		throw new RangeError("Hosted app target environment is invalid");
+	}
+	if (!/^[A-Za-z0-9_.:-]{1,120}$/.test(options.executorOwner)) {
+		throw new RangeError("Hosted app executorOwner is invalid");
+	}
+	if (!/^[0-9a-f]{64}$/i.test(options.machineIdSha256)) {
+		throw new RangeError("Hosted app machineIdSha256 is invalid");
+	}
+	const deploymentId =
+		options.deploymentId === undefined ? undefined : parseUuid(options.deploymentId, "Hosted app deploymentId");
+	if (options.scope === "runtime" && deploymentId === undefined) {
+		throw new RangeError("Hosted app runtime secrets require deploymentId");
 	}
 	const url = new URL("/v1/app-secrets", options.brokerOrigin);
 	if (options.companyId !== undefined) {
@@ -396,6 +410,9 @@ export async function fetchHostedAppSecrets(options: {
 			siteId,
 			scope: options.scope,
 			targetEnv: options.targetEnv,
+			executorOwner: options.executorOwner,
+			machineIdSha256: options.machineIdSha256.toLowerCase(),
+			...(deploymentId === undefined ? {} : { deploymentId }),
 		}),
 		signal: options.signal,
 	});

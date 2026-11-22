@@ -222,6 +222,7 @@ describe("CodeSiteUploads with nativeEdge for static and full-stack webapps", ()
 	it("uploads static assets to blob store and builds server webapps into native deployments", async () => {
 		expect(NATIVE_WEB_HOSTING_RPCS).toEqual([
 			"qorpera_web_code_deployment_register",
+			"qorpera_code_site_for_auto_redeploy",
 			"qorpera_emit_app_unhealthy_routine_wakes",
 		]);
 		expect(
@@ -445,7 +446,16 @@ describe("CodeSiteUploads with nativeEdge for static and full-stack webapps", ()
 					appSecretsBroker: {
 						origin: "https://broker.qorpera.test",
 						executorToken: "exec-tok",
+						executorOwner: "node-1",
+						machineIdSha256: MACHINE_SHA,
 						fetchImpl: brokerFetch,
+					},
+					appHostInternalUrl: "http://127.0.0.1:8096",
+					appHostControlToken: "app-token",
+					appHostFetchImpl: async (_url, init) => {
+						const parsed = JSON.parse(init.body ?? "{}") as { env_path?: string };
+						expect(parsed.env_path).toBe(join(rootDir, "booking-app.env"));
+						return { status: 200, body: JSON.stringify({ upstream_addr: "127.0.0.1:41230" }) };
 					},
 					buildAppImage: async (input) => {
 						observedBuildPath = input.buildEnvPath;
@@ -458,6 +468,7 @@ describe("CodeSiteUploads with nativeEdge for static and full-stack webapps", ()
 			expect(observedBuildPath).toBeTruthy();
 			expect(observedBuildContent).toContain(buildSecret);
 			expect(existsSync(observedBuildPath!)).toBe(false);
+			expect(await readFile(join(rootDir, "booking-app.env"), "utf8")).toContain("sk-runtime-secret-value-999999");
 
 			const previousSecret = "sk-old-runtime-secret-111111";
 			const oldDelivered = await secretsManager.deliver({
@@ -487,6 +498,8 @@ describe("CodeSiteUploads with nativeEdge for static and full-stack webapps", ()
 				appSecretsBroker: {
 					origin: "https://broker.qorpera.test",
 					executorToken: "exec-tok",
+					executorOwner: "node-1",
+					machineIdSha256: MACHINE_SHA,
 					fetchImpl: brokerFetch,
 				},
 				fetchImpl: async (_url, init) => {
@@ -542,12 +555,15 @@ describe("CodeSiteUploads with nativeEdge for static and full-stack webapps", ()
 			expect(await readFile(oldDelivered.envPath, "utf8")).toContain(runtimeSecret);
 			expect(controlCalls).toContainEqual({
 				method: "qorpera_emit_app_unhealthy_routine_wakes",
-				args: expect.objectContaining({
+				args: {
 					p_environment_id: ENVIRONMENT,
 					p_site_id: SITE_ID,
-					p_slug: "booking-app",
-					p_status: "deploy_failed",
-				}),
+					p_event: {
+						status: "deploy_failed",
+						restartCount: 0,
+						error: "APP_HOST_DEPLOY_FAILED_503",
+					},
+				},
 			});
 		} finally {
 			await rm(rootDir, { recursive: true, force: true });

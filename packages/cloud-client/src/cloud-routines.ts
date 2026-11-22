@@ -18,7 +18,7 @@ const APP_SITE_SLUG = /^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$/;
 const DATA_CHANGE_DB = /^[a-z][a-z0-9_-]{0,63}$/;
 const DATA_CHANGE_TABLE = /^[a-z][a-z0-9_]{0,63}$/;
 const DATA_CHANGE_OPS = ["insert", "update", "delete"] as const;
-const CHECK_PROBE_URL = /^https?:\/\/[^\s\u0000-\u001f\u007f]+$/;
+const CHECK_PROBE_URL = /^https:\/\/[^/@\s\u0000-\u001f\u007f]+(?:\/[^\s\u0000-\u001f\u007f]*)?$/;
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 const encoder = new TextEncoder();
 
@@ -124,7 +124,6 @@ export interface CloudRoutineOnceTrigger extends TriggerBase {
 	/** A listener: the folder key of a todo or human task; the run comes as soon as nothing open is left there, and at
 	 * `at` at the latest. */
 	after?: string;
-	checkBeforeWake?: CloudRoutineCheckBeforeWake;
 }
 export type CloudRoutineTrigger =
 	| CloudRoutineOnceTrigger
@@ -457,10 +456,8 @@ export function parseCloudRoutineTrigger(value: unknown): CloudRoutineTrigger {
 			...replyPolicy,
 		};
 	}
-	const checkBeforeWake =
-		input.checkBeforeWake === undefined ? {} : { checkBeforeWake: parseCheckBeforeWake(input.checkBeforeWake) };
 	if (input.kind === "once") {
-		only(input, ["id", "kind", "at", "timeZone", "replyPolicy", "after", "checkBeforeWake"], "routine next run");
+		only(input, ["id", "kind", "at", "timeZone", "replyPolicy", "after"], "routine next run");
 		if (
 			typeof input.id !== "string" ||
 			!LISTENER_ID.test(input.id) ||
@@ -477,9 +474,10 @@ export function parseCloudRoutineTrigger(value: unknown): CloudRoutineTrigger {
 			timeZone: zone(input.timeZone),
 			...(input.after === undefined ? {} : { after: input.after as string }),
 			...replyPolicy,
-			...checkBeforeWake,
 		};
 	}
+	const checkBeforeWake =
+		input.checkBeforeWake === undefined ? {} : { checkBeforeWake: parseCheckBeforeWake(input.checkBeforeWake) };
 	if (input.kind !== "schedule") invalid("routine trigger kind");
 	const id = text(input.id, "routine trigger id", 160);
 	if (id !== id.trim() || /[\r\n]/.test(id)) invalid("routine trigger id");

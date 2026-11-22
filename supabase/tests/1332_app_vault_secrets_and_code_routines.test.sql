@@ -207,13 +207,29 @@ declare
 	v_res2 text;
 	v_grant_prod uuid;
 	v_grant_admin uuid;
+	v_dep uuid := '13320000-0000-4000-8000-000000000095';
+	v_machine_sha text := repeat('c', 64);
 	v_list jsonb;
 	v_auth jsonb;
+	v_lookup jsonb;
 begin
+	update public.qorpera_coding_executors
+	set nas_machine_id_sha256 = v_machine_sha
+	where environment_id = '92400000-0000-4000-8000-000000000020' and owner = 'exec-1332';
 	perform pg_temp.t1332_secret(v_sec_build, null, 'build_cache_token', 'build_token_secret_1332');
 	insert into public.qorpera_company_sites(id, profile_id, environment_id, slug, title, source_path, created_by_staff_agent_id)
 	values (v_site, '92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
 		'billing-app', 'Billing App', 'apps/billing', '92400000-0000-4000-8000-000000000030');
+	insert into public.qorpera_company_site_deployments(
+		id, site_id, profile_id, version_number, kind, state, oci_image_ref, app_port, health_path
+	) values (
+		v_dep, v_site, '92400000-0000-4000-8000-000000000010', 1, 'server', 'live',
+		'127.0.0.1:5000/qorpera-apps/billing-app@sha256:' || repeat('d', 64), 3000, '/health'
+	);
+	update public.qorpera_company_sites set live_deployment_id = v_dep where id = v_site;
+	insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name, site_id)
+	values ('92400000-0000-4000-8000-000000000020', '92400000-0000-4000-8000-000000000010', 'qorpera', 'qorpera_base', v_site)
+	on conflict (environment_id, owner, name) do update set site_id = excluded.site_id;
 
 	v_res := pg_temp.t1332_as_member('92400000-0000-4000-8000-000000000002',
 		format('select public.qorpera_grant_app_secret(%L, %L, %L, %L, %L)',
@@ -263,14 +279,22 @@ begin
 	perform pg_temp.base_assert(substring(v_res from 4)::jsonb = '[]'::jsonb, 'outsider sees empty list');
 
 	perform pg_temp.base_assert(
-		not has_function_privilege('authenticated', 'public.qorpera_authorize_app_secrets(uuid,text,uuid,text,text)', 'execute')
-		and not has_function_privilege('service_role', 'public.qorpera_authorize_app_secrets(uuid,text,uuid,text,text)', 'execute')
-		and has_function_privilege('qorpera_secret_broker', 'public.qorpera_authorize_app_secrets(uuid,text,uuid,text,text)', 'execute'),
+		not has_function_privilege('authenticated', 'public.qorpera_authorize_app_secrets(uuid,text,uuid,text,text,text,text,uuid)', 'execute')
+		and not has_function_privilege('service_role', 'public.qorpera_authorize_app_secrets(uuid,text,uuid,text,text,text,text,uuid)', 'execute')
+		and has_function_privilege('qorpera_secret_broker', 'public.qorpera_authorize_app_secrets(uuid,text,uuid,text,text,text,text,uuid)', 'execute'),
 		'authorize_app_secrets is broker-only'
 	);
 
-	v_res := pg_temp.t1332_as_broker(format('select public.qorpera_authorize_app_secrets(%L, %L, %L, %L, %L)',
-		'13320000-0000-4000-8000-000000000040', repeat('a', 64), v_site, 'runtime', 'prod'));
+	v_res := pg_temp.t1332_as_broker(format('select public.qorpera_authorize_app_secrets(%L, %L, %L, %L, %L, %L, %L, %L)',
+		'13320000-0000-4000-8000-000000000040', repeat('a', 64), v_site, 'runtime', 'prod', 'other-exec', v_machine_sha, v_dep));
+	perform pg_temp.base_assert(v_res like '42501:%', 'non-custody executor refused app secrets: ' || v_res);
+
+	v_res := pg_temp.t1332_as_broker(format('select public.qorpera_authorize_app_secrets(%L, %L, %L, %L, %L, %L, %L, null)',
+		'13320000-0000-4000-8000-000000000040', repeat('a', 64), v_site, 'runtime', 'prod', 'exec-1332', v_machine_sha));
+	perform pg_temp.base_assert(v_res like '42501:%', 'runtime secrets without deployment proof refused: ' || v_res);
+
+	v_res := pg_temp.t1332_as_broker(format('select public.qorpera_authorize_app_secrets(%L, %L, %L, %L, %L, %L, %L, %L)',
+		'13320000-0000-4000-8000-000000000040', repeat('a', 64), v_site, 'runtime', 'prod', 'exec-1332', v_machine_sha, v_dep));
 	perform pg_temp.base_assert(v_res like 'ok:%', 'broker runtime prod: ' || v_res);
 	v_auth := substring(v_res from 4)::jsonb;
 	perform pg_temp.base_assert(
@@ -281,8 +305,8 @@ begin
 		'runtime prod returns only OPENAI_API_KEY: ' || v_auth::text
 	);
 
-	v_res := pg_temp.t1332_as_broker(format('select public.qorpera_authorize_app_secrets(%L, %L, %L, %L, %L)',
-		'13320000-0000-4000-8000-000000000040', repeat('a', 64), v_site, 'build', 'prod'));
+	v_res := pg_temp.t1332_as_broker(format('select public.qorpera_authorize_app_secrets(%L, %L, %L, %L, %L, %L, %L, %L)',
+		'13320000-0000-4000-8000-000000000040', repeat('a', 64), v_site, 'build', 'prod', 'exec-1332', v_machine_sha, v_dep));
 	v_auth := substring(v_res from 4)::jsonb;
 	perform pg_temp.base_assert(
 		jsonb_array_length(v_auth -> 'secrets') = 1
@@ -290,14 +314,28 @@ begin
 		'build prod returns only BUILD_CACHE_TOKEN: ' || v_auth::text
 	);
 
-	v_res := pg_temp.t1332_as_broker(format('select public.qorpera_authorize_app_secrets(%L, %L, %L, %L, %L)',
-		'13320000-0000-4000-8000-000000000040', repeat('a', 64), v_site, 'runtime', 'dev'));
+	v_res := pg_temp.t1332_as_broker(format('select public.qorpera_authorize_app_secrets(%L, %L, %L, %L, %L, %L, %L, %L)',
+		'13320000-0000-4000-8000-000000000040', repeat('a', 64), v_site, 'runtime', 'dev', 'exec-1332', v_machine_sha, v_dep));
 	v_auth := substring(v_res from 4)::jsonb;
 	perform pg_temp.base_assert(
 		jsonb_array_length(v_auth -> 'secrets') = 1
 		and v_auth -> 'secrets' -> 0 ->> 'name' = 'ANTHROPIC_API_KEY',
 		'runtime dev returns only ANTHROPIC_API_KEY: ' || v_auth::text
 	);
+
+	perform pg_temp.base_claims('service_role');
+	v_lookup := public.qorpera_code_site_for_auto_redeploy(
+		'exec-1332', v_machine_sha, '92400000-0000-4000-8000-000000000020', 'Qorpera', 'Qorpera_Base');
+	perform pg_temp.base_assert(
+		(v_lookup ->> 'found')::boolean
+		and (v_lookup ->> 'siteId')::uuid = v_site
+		and (v_lookup ->> 'currentDeploymentId')::uuid = v_dep
+		and v_lookup ->> 'slug' = 'billing-app',
+		'auto-redeploy site lookup returns live site and deployment: ' || v_lookup::text
+	);
+	v_lookup := public.qorpera_code_site_for_auto_redeploy(
+		'other-exec', v_machine_sha, '92400000-0000-4000-8000-000000000020', 'Qorpera', 'Qorpera_Base');
+	perform pg_temp.base_assert(not (v_lookup ->> 'found')::boolean, 'non-holder executor gets found=false');
 
 	perform pg_temp.base_assert(
 		(select count(*) from public.qorpera_cloud_secret_audit_events
@@ -404,6 +442,20 @@ begin
 			jsonb_build_object('kind', 'http_probe', 'url', 'http://169.254.169.254/latest/meta-data')),
 		'http_probe rejects plain http URL in SQL'
 	);
+	perform pg_temp.base_assert(
+		not public.qorpera_cloud_routine_trigger_valid(jsonb_build_object(
+			'id', 'file', 'kind', 'once', 'at', '2026-12-01T10:00:00Z', 'timeZone', 'UTC',
+			'checkBeforeWake', jsonb_build_object('kind', 'http_probe', 'url', 'https://billing.example.test/health'))),
+		'once/dynamic trigger refuses checkBeforeWake in SQL'
+	);
+	perform pg_temp.base_assert(
+		(public.qorpera_company_state_routine_rules(
+			'92400000-0000-4000-8000-000000000020', '92400000-0000-4000-8000-000000000010',
+			v_owner_actor, 'qorperaos/agents/alice/routines/bad-once-check.md',
+			jsonb_set(v_parse_check, '{trigger}', jsonb_build_object('when', 'once', 'at', '2026-12-01T10:00:00Z', 'after', null)), false))
+			-> 'problems' -> 0 ->> 'message' = 'checkBeforeWake is only supported on recurring scheduled routines',
+		'routine_rules refuses checkBeforeWake on once/dynamic routine'
+	);
 
 	perform pg_temp.base_assert(
 		(public.qorpera_company_state_routine_rules(
@@ -420,7 +472,7 @@ begin
 		(public.qorpera_company_state_routine_rules(
 			'92400000-0000-4000-8000-000000000020', '92400000-0000-4000-8000-000000000010',
 			v_owner_actor, 'qorperaos/agents/alice/routines/bad.md', v_parse_bad, false)) -> 'problems' -> 0 ->> 'message'
-		= 'checkBeforeWake is only supported on scheduled or dynamic routines',
+		= 'checkBeforeWake is only supported on recurring scheduled routines',
 		'checkBeforeWake refused on listener routine'
 	);
 
@@ -458,8 +510,18 @@ begin
 
 	v_emit := public.qorpera_emit_code_change_routine_wakes(
 		'92400000-0000-4000-8000-000000000020', 'Qorpera', 'Qorpera_Base', 'landed',
-		jsonb_build_object('change', 'chg-1', 'mainBefore', repeat('1', 40), 'mainAfter', repeat('2', 40),
+		jsonb_build_object('change', 'chg-own-worker', 'mainBefore', repeat('1', 40), 'mainAfter', repeat('2', 40),
 			'workerId', '13320000-0000-4000-8000-0000000000b1',
+			'paths', jsonb_build_array('src/api/server.ts')));
+	perform pg_temp.base_assert(
+		(v_emit ->> 'wakes')::integer = 0 and (v_emit ->> 'skipped')::integer = 1,
+		'agent own coding worker landing fenced by causal ancestry: ' || v_emit::text
+	);
+
+	v_emit := public.qorpera_emit_code_change_routine_wakes(
+		'92400000-0000-4000-8000-000000000020', 'Qorpera', 'Qorpera_Base', 'landed',
+		jsonb_build_object('change', 'chg-1', 'mainBefore', repeat('1', 40), 'mainAfter', repeat('2', 40),
+			'workerId', '13320000-0000-4000-8000-0000000000b2',
 			'paths', jsonb_build_array('src/api/server.ts'), 'checks', jsonb_build_object('passed', true)));
 	perform pg_temp.base_assert((v_emit ->> 'wakes')::integer = 1, 'code-change wake emitted: ' || v_emit::text);
 	select * into strict v_wake from public.qorpera_wake_occurrences where id = (v_emit -> 'wakeIds' ->> 0)::uuid;
@@ -478,8 +540,9 @@ begin
 	perform pg_temp.base_assert((v_emit ->> 'wakes')::integer = 0, 'duplicate code-change deduped');
 
 	v_emit := public.qorpera_emit_app_unhealthy_routine_wakes(
-		'92400000-0000-4000-8000-000000000020', v_site,
-		jsonb_build_object('incidentKey', 'inc-1', 'status', 'crash_loop', 'restartCount', 5, 'error', 'ECONNREFUSED'));
+		p_environment_id => '92400000-0000-4000-8000-000000000020',
+		p_site_id => v_site,
+		p_event => jsonb_build_object('incidentKey', 'inc-1', 'status', 'crash_loop', 'restartCount', 5, 'error', 'ECONNREFUSED'));
 	perform pg_temp.base_assert((v_emit ->> 'wakes')::integer = 1, 'app-unhealthy wake emitted: ' || v_emit::text);
 	select * into strict v_wake from public.qorpera_wake_occurrences where id = (v_emit -> 'wakeIds' ->> 0)::uuid;
 	perform pg_temp.base_assert(
@@ -491,6 +554,11 @@ begin
 		and public.qorpera_folder_wake_authorized(v_wake),
 		'app-unhealthy wake authorized and carries metadata'
 	);
+	v_emit := public.qorpera_emit_app_unhealthy_routine_wakes(
+		p_environment_id => '92400000-0000-4000-8000-000000000020',
+		p_site_id => v_site,
+		p_event => jsonb_build_object('status', 'deploy_failed', 'restartCount', 0, 'error', 'APP_HOST_DEPLOY_FAILED_503'));
+	perform pg_temp.base_assert((v_emit ->> 'wakes')::integer = 1, 'executor-shape app-unhealthy payload wakes: ' || v_emit::text);
 
 	v_emit := public.qorpera_emit_data_change_routine_wakes(
 		'92400000-0000-4000-8000-000000000020', 'billing',
@@ -526,6 +594,44 @@ begin
 	perform pg_temp.base_assert((v_emit ->> 'wakes')::integer = 1, 'batched W6-B tables wakes only unfiltered routine: ' || v_emit::text);
 	select * into strict v_wake from public.qorpera_wake_occurrences where id = (v_emit -> 'wakeIds' ->> 0)::uuid;
 	perform pg_temp.base_assert(v_wake.routine_id = v_r_data_all, 'batched event without operation skips insert-only routine');
+
+	set local session_replication_role = replica;
+	insert into public.qorpera_execution_runs (
+		id, profile_id, environment_id, source_kind, source_id, job_id, substrate_version_id,
+		company_snapshot_id, company_seq, staff_agent_id, staff_version, sponsor_binding_id, sponsor_version,
+		required_capability, job_type, payload_sha256, transcript_start_sequence,
+		created_by_user_id, requested_by_user_id, model_provider, model_id, model_selection,
+		audience_kind, runtime_bundle_id, runtime_bundle_sha256, input_ids
+	)
+	select
+		'13320000-0000-4000-8000-000000000501', v_wake.profile_id, v_wake.environment_id, 'wake', v_wake.id,
+		extensions.gen_random_uuid(), r.substrate_version_id, r.company_snapshot_id, r.company_seq,
+		v_wake.staff_agent_id, v_wake.staff_version, v_wake.sponsor_binding_id, v_wake.sponsor_version,
+		r.required_capability, r.job_type, r.payload_sha256, 0,
+		v_wake.requested_by_user_id, v_wake.requested_by_user_id, r.model_provider, r.model_id, r.model_selection,
+		r.audience_kind, r.runtime_bundle_id, r.runtime_bundle_sha256, '{}'::uuid[]
+	from public.qorpera_execution_runs r
+	where r.profile_id = v_wake.profile_id
+	limit 1;
+	update public.qorpera_wake_occurrences set status = 'materialized', run_id = '13320000-0000-4000-8000-000000000501' where id = v_wake.id;
+	set local session_replication_role = origin;
+	v_emit := public.qorpera_emit_data_change_routine_wakes(
+		'92400000-0000-4000-8000-000000000020', 'billing',
+		jsonb_build_object('eventKey', 'dc-self-loop', 'table', 'invoices', 'operation', 'insert', 'rowId', 'inv-loop'),
+		'13320000-0000-4000-8000-000000000501'::uuid);
+	perform pg_temp.base_assert(
+		(v_emit ->> 'wakes')::integer = 0 and (v_emit ->> 'skipped')::integer = 2,
+		'data-change self-loop fenced by causal ancestry: ' || v_emit::text
+	);
+
+	v_emit := public.qorpera_emit_code_change_routine_wakes(
+		'92400000-0000-4000-8000-000000000020', 'Qorpera', 'Qorpera_Base', 'landed',
+		jsonb_build_object('change', 'chg-self-loop', 'paths', jsonb_build_array('src/api/server.ts'),
+			'parentRunId', '13320000-0000-4000-8000-000000000501'));
+	perform pg_temp.base_assert(
+		(v_emit ->> 'wakes')::integer = 0 and (v_emit ->> 'skipped')::integer = 1,
+		'code-change self-loop fenced by causal ancestry: ' || v_emit::text
+	);
 
 	v_chk := public.qorpera_record_routine_check_result(v_r_check, true, 'HTTP 200 OK');
 	perform pg_temp.base_assert(not (v_chk ->> 'shouldWake')::boolean and not (v_chk ->> 'stateChanged')::boolean,

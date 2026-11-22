@@ -150,7 +150,7 @@ const CODE_CHANGE_REPO = /^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0
 const APP_SITE_SLUG = /^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$/;
 const DATA_CHANGE_DB = /^[a-z][a-z0-9_-]{0,63}$/;
 const DATA_CHANGE_TABLE = /^[a-z][a-z0-9_]{0,63}$/;
-const CHECK_PROBE_URL = /^https?:\/\/[^\s\u0000-\u001f\u007f]+$/;
+const CHECK_PROBE_URL = /^https:\/\/[^/@\s\u0000-\u001f\u007f]+(?:\/[^\s\u0000-\u001f\u007f]*)?$/;
 
 /** A human task's statuses: the agent sets open, accepted, returned and cancelled; the person done
  * and declined (H2). */
@@ -1921,7 +1921,12 @@ function routine(split: Split, fields: Fields, problems: Problems): RoutineFile 
 	if (checkKind === "http_probe") {
 		const url = fields.text("check_url", true, 1024);
 		if (url !== null && (url.length < 10 || !CHECK_PROBE_URL.test(url)))
-			problems.add("value", fields.line("check_url"), "check_url", "check_url must be an http or https URL");
+			problems.add(
+				"value",
+				fields.line("check_url"),
+				"check_url",
+				"check_url must be an https URL without credentials",
+			);
 		const expectStatus = fields.whole("check_expect_status", false, 100, 599);
 		const timeoutMs = fields.whole("check_timeout_ms", false, 500, 30000);
 		if (url) {
@@ -1946,6 +1951,14 @@ function routine(split: Split, fields: Fields, problems: Problems): RoutineFile 
 		for (const extra of ["check_url", "check_expect_status", "check_timeout_ms", "check_repo"] as const) {
 			if (fields.values.has(extra)) problems.add("value", fields.line(extra), extra, `${extra} requires check_kind`);
 		}
+	}
+	if (checkBeforeWake !== undefined && when !== null && when !== "every" && when !== "weekly" && when !== "window") {
+		problems.add(
+			"value",
+			fields.line("check_kind"),
+			"check_kind",
+			"check_kind is only supported on recurring scheduled routines",
+		);
 	}
 	const timezone = fields.timeZone("timezone", when !== null && when !== "every");
 	const ends = fields.instant("ends", false);

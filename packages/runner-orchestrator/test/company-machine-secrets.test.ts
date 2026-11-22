@@ -166,10 +166,21 @@ describe("company-machine-secrets", () => {
 			await manager.restore("billing-app", snap);
 			expect(await readFile(initial.envPath, "utf8")).toContain("sk-proj-original-runtime-key");
 
+			const deploymentId = randomUUID();
+			const machineIdSha256 = "d".repeat(64);
 			const fetchImpl = vi.fn(async (input: string | URL, init?: RequestInit) => {
 				expect(String(input)).toBe(`https://broker.qorpera.test/v1/app-secrets?company=${companyId}`);
 				expect(init?.method).toBe("POST");
 				expect(init?.redirect).toBe("manual");
+				expect(JSON.parse(String(init?.body ?? "{}"))).toEqual({
+					schema: "qorpera.app-secrets-request/v1",
+					siteId,
+					scope: "runtime",
+					targetEnv: "prod",
+					executorOwner: "coding-node-01",
+					machineIdSha256,
+					deploymentId,
+				});
 				return new Response(
 					JSON.stringify({
 						schema: "qorpera.app-secrets/v1",
@@ -186,6 +197,9 @@ describe("company-machine-secrets", () => {
 			const fetched = await fetchHostedAppSecrets({
 				brokerOrigin: "https://broker.qorpera.test",
 				executorToken: "exec-token",
+				executorOwner: "coding-node-01",
+				machineIdSha256,
+				deploymentId,
 				companyId,
 				siteId,
 				scope: "runtime",
@@ -205,6 +219,23 @@ describe("company-machine-secrets", () => {
 				fetchHostedAppSecrets({
 					brokerOrigin: "https://broker.qorpera.test",
 					executorToken: "exec-token",
+					executorOwner: "coding-node-01",
+					machineIdSha256,
+					siteId,
+					scope: "runtime",
+					targetEnv: "prod",
+					fetchImpl,
+					signal: new AbortController().signal,
+				}),
+			).rejects.toThrow(/deploymentId/);
+
+			await expect(
+				fetchHostedAppSecrets({
+					brokerOrigin: "https://broker.qorpera.test",
+					executorToken: "exec-token",
+					executorOwner: "coding-node-01",
+					machineIdSha256,
+					deploymentId,
 					siteId,
 					scope: "runtime",
 					targetEnv: "prod",

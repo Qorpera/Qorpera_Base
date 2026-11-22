@@ -26,6 +26,7 @@ const execFileAsync = promisify(execFile);
 
 export const NATIVE_WEB_HOSTING_RPCS = [
 	"qorpera_web_code_deployment_register",
+	"qorpera_code_site_for_auto_redeploy",
 	"qorpera_emit_app_unhealthy_routine_wakes",
 ] as const;
 
@@ -88,6 +89,8 @@ export type AppHostFetch = (
 export interface AppSecretsBrokerConfig {
 	readonly origin: string;
 	readonly executorToken: string;
+	readonly executorOwner: string;
+	readonly machineIdSha256: string;
 	readonly fetchImpl?: typeof fetch;
 }
 
@@ -119,6 +122,7 @@ export interface NativeDeploymentRegistered {
 	readonly uploadedBlobs: number;
 	readonly deduplicatedBlobs: number;
 	readonly ociImageRef: string | null;
+	readonly upstreamAddr?: string;
 }
 
 export interface AppLogEntry {
@@ -331,10 +335,11 @@ export async function emitHostedAppUnhealthy(
 			{
 				p_environment_id: event.environmentId,
 				p_site_id: event.siteId,
-				p_slug: event.slug,
-				p_status: event.status,
-				p_restart_count: event.restartCount ?? 0,
-				p_error: event.error ?? null,
+				p_event: {
+					status: event.status,
+					restartCount: event.restartCount ?? 0,
+					...(event.error !== undefined ? { error: event.error } : {}),
+				},
 			},
 			signal,
 		);
@@ -358,6 +363,7 @@ export async function triggerBlueGreenAppDeploy(options: {
 	readonly memoryMb: number;
 	readonly vcpuLimit: number;
 	readonly env: Record<string, string>;
+	readonly envPath?: string;
 	readonly secretsManager?: CompanyMachineSecretsManager;
 	readonly appSecrets?: HostedAppSecretBundle;
 	readonly appSecretsBroker?: AppSecretsBrokerConfig;
@@ -376,6 +382,9 @@ export async function triggerBlueGreenAppDeploy(options: {
 			(await fetchHostedAppSecrets({
 				brokerOrigin: options.appSecretsBroker!.origin,
 				executorToken: options.appSecretsBroker!.executorToken,
+				executorOwner: options.appSecretsBroker!.executorOwner,
+				machineIdSha256: options.appSecretsBroker!.machineIdSha256,
+				deploymentId: options.deploymentId,
 				...(options.companyId ? { companyId: options.companyId } : {}),
 				siteId: options.siteId,
 				scope: "runtime",
@@ -403,7 +412,7 @@ export async function triggerBlueGreenAppDeploy(options: {
 				memory_mb: options.memoryMb,
 				vcpu_limit: options.vcpuLimit,
 				env: options.env,
-				...(delivered ? { env_path: delivered.envPath } : {}),
+				...(delivered ? { env_path: delivered.envPath } : options.envPath ? { env_path: options.envPath } : {}),
 			}),
 			signal: options.signal,
 		});
@@ -550,6 +559,8 @@ export async function deployCodeSiteToNativeEdge(options: {
 			const bundle = await fetchHostedAppSecrets({
 				brokerOrigin: edge.appSecretsBroker.origin,
 				executorToken: edge.appSecretsBroker.executorToken,
+				executorOwner: edge.appSecretsBroker.executorOwner,
+				machineIdSha256: edge.appSecretsBroker.machineIdSha256,
 				companyId: target.companyId,
 				siteId: options.siteId,
 				scope: "build",
@@ -640,6 +651,37 @@ export async function deployCodeSiteToNativeEdge(options: {
 		throw new Error("WEB_DEPLOYMENT_REGISTER_UNCONFIRMED");
 	}
 
+	let upstreamAddr: string | undefined;
+	if (
+		(spec.kind === "server" || spec.kind === "hybrid") &&
+		ociImageRef &&
+		edge.appHostInternalUrl &&
+		edge.appHostControlToken
+	) {
+		const deployed = await triggerBlueGreenAppDeploy({
+			appHostInternalUrl: edge.appHostInternalUrl,
+			controlToken: edge.appHostControlToken,
+			deploymentId: answer.deploymentId,
+			siteId: answer.siteId,
+			slug: answer.slug,
+			companyId: target.companyId,
+			environmentId: target.environmentId,
+			control,
+			ociImageRef,
+			healthPath: spec.healthPath,
+			idleTimeoutSec: spec.idleTimeoutSec,
+			memoryMb: spec.memoryMb,
+			vcpuLimit: spec.vcpuLimit,
+			env: envSpec,
+			...(edge.secretsManager ? { secretsManager: edge.secretsManager } : {}),
+			...(edge.appSecretsBroker ? { appSecretsBroker: edge.appSecretsBroker } : {}),
+			...(edge.appTargetEnv ? { appTargetEnv: edge.appTargetEnv } : {}),
+			...(edge.appHostFetchImpl ? { fetchImpl: edge.appHostFetchImpl } : {}),
+			signal,
+		});
+		upstreamAddr = deployed.upstreamAddr;
+	}
+
 	return {
 		state: answer.state,
 		siteId: answer.siteId,
@@ -651,5 +693,6 @@ export async function deployCodeSiteToNativeEdge(options: {
 		uploadedBlobs,
 		deduplicatedBlobs,
 		ociImageRef,
+		...(upstreamAddr !== undefined ? { upstreamAddr } : {}),
 	};
 }

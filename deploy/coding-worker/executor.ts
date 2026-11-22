@@ -8,6 +8,7 @@ import { type CloudCodingRepository, parseCloudCodingRepository } from "../../pa
 import { cloudCodingSessionLayout } from "../../packages/contracts/src/cloud-coding-session.ts";
 import { parseCloudCodingNasPolicy } from "../../packages/contracts/src/cloud-coding-storage.ts";
 import { CloudCodingExecutor } from "../../packages/runner-orchestrator/src/coding-executor.ts";
+import { createNativeEdgeAutoRedeploy } from "../../packages/runner-orchestrator/src/app-auto-redeploy.ts";
 import { type CodeHostEvent, type CodeHostPolicy, controlCodeHostDeletions, LxdCodeHosts, parseCodeHostPolicy } from "../../packages/runner-orchestrator/src/code-host.ts";
 import { CODE_BUNDLE_FOLDER, type CodeBundleStore, createCodeBundleStore } from "../../packages/runner-orchestrator/src/code-bundle-store.ts";
 import { CodeChangeRecords } from "../../packages/runner-orchestrator/src/code-change-records.ts";
@@ -24,7 +25,7 @@ import { CodeImportStop, type CodeImportTransports } from "../../packages/runner
 import { fetchGitHubImport } from "../../packages/runner-orchestrator/src/code-import-fetch.ts";
 import { CodeImport } from "../../packages/runner-orchestrator/src/code-import-run.ts";
 import { codeHostErrorCode, codingErrorDetail } from "../../packages/runner-orchestrator/src/coding-error-detail.ts";
-import { exportCodeSiteSource, readCodeSiteTree } from "../../packages/runner-orchestrator/src/code-host-sites.ts";
+import { exportCodeSiteSource, readCodeSiteTree, readRepoDeployConfig } from "../../packages/runner-orchestrator/src/code-host-sites.ts";
 import { CodeHostJobs, type CodeHostViewEvent } from "../../packages/runner-orchestrator/src/code-host-views.ts";
 import { CodeSiteUploads } from "../../packages/runner-orchestrator/src/code-site-uploads.ts";
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
@@ -517,6 +518,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	}) : undefined;
 	// A repository's site (step 4): the tree its landing's checks left in the repository's storage, read in a job that
 	// yields to a turn's and uploaded as a version a member can put live from What's new.
+	const machineIdSha256 = createHash("sha256").update(machine).digest("hex");
 	const appSecretsManager = config.webHosting ? new CompanyMachineSecretsManager() : undefined;
 	const nativeEdge = config.webHosting
 		? {
@@ -536,6 +538,8 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 							appSecretsBroker: {
 								origin: config.broker.origin,
 								executorToken: await credential(config.broker.executorTokenCredential),
+								executorOwner: config.owner,
+								machineIdSha256,
 							},
 						}
 					: {}),
@@ -586,9 +590,22 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			repositories: codeHostJobs ? "code-host" : "none" }));
 	}
 	const host = new LxdCodingExecutorHost({
-		control, owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
+		control, owner: config.owner, machineIdSha256,
 		vmPolicy: config.vmPolicy, storagePolicy: config.storagePolicy, client: lxd, guest: config.guest, journalRoot, ...(folder ? { folder } : {}),
 		...(commandSecrets ? { commandSecrets } : {}),
+		...(codeHostJobs && nativeEdge?.appHostInternalUrl && nativeEdge?.appHostControlToken
+			? {
+					autoRedeploy: createNativeEdgeAutoRedeploy({
+						control,
+						codeHostJobs,
+						nativeEdge,
+						owner: config.owner,
+						machineIdSha256,
+						readDeployConfig: readRepoDeployConfig,
+						exportSource: exportCodeSiteSource,
+					}),
+				}
+			: {}),
 		repositoryCredentials: {
 			async withRepositoryToken(scope, repository, use, signal) {
 				signal.throwIfAborted();

@@ -1106,7 +1106,35 @@ describe("a folder-v2 dynamic routine's decision", () => {
 				checkBeforeWake: { kind: "http_probe", url: "https://billing.example.com/health" },
 			});
 			expect(badProbeOnListener.success).toBe(false);
-			expect(badProbeOnListener.contentItems[0]?.text).toContain("checkBeforeWake is only supported");
+			expect(badProbeOnListener.contentItems[0]?.text).toContain(
+				"checkBeforeWake is only supported on recurring scheduled routines",
+			);
+
+			const badProbeOnDynamic = await f.boundary.invoke("r_bad_dyn", "qorpera", "manage_routine", {
+				action: "upsert",
+				operationKey: "op-bad-dyn",
+				routineKey: "bad-dyn-watchdog",
+				title: "Invalid dynamic",
+				intent: "Should be refused.",
+				trigger: { kind: "dynamic", firstRunAt: "2026-10-05T09:00:00Z", timeZone: "UTC" },
+				checkBeforeWake: { kind: "http_probe", url: "https://billing.example.com/health" },
+			});
+			expect(badProbeOnDynamic.success).toBe(false);
+			expect(badProbeOnDynamic.contentItems[0]?.text).toContain(
+				"checkBeforeWake is only supported on recurring scheduled routines",
+			);
+
+			const badProbeHttp = await f.boundary.invoke("r_bad_http", "qorpera", "manage_routine", {
+				action: "upsert",
+				operationKey: "op-bad-http",
+				routineKey: "bad-http-watchdog",
+				title: "Invalid http",
+				intent: "Should be refused.",
+				trigger: { kind: "every", minutes: 15 },
+				checkBeforeWake: { kind: "http_probe", url: "http://billing.example.com/health" },
+			});
+			expect(badProbeHttp.success).toBe(false);
+			expect(badProbeHttp.contentItems[0]?.text).toContain("https URL");
 		} finally {
 			f.run.close();
 		}

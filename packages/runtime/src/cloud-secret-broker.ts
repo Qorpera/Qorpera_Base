@@ -225,6 +225,9 @@ export interface AppSecretsRequest {
 	readonly siteId: string;
 	readonly scope: AppSecretScope;
 	readonly targetEnv: AppSecretTargetEnv;
+	readonly executorOwner: string;
+	readonly machineIdSha256: string;
+	readonly deploymentId?: string;
 }
 
 export interface AppSecrets {
@@ -686,19 +689,34 @@ export function parseAppSecretsRequest(value: {
 	readonly siteId: unknown;
 	readonly scope: unknown;
 	readonly targetEnv: unknown;
+	readonly executorOwner: unknown;
+	readonly machineIdSha256: unknown;
+	readonly deploymentId?: unknown;
 }): AppSecretsRequest {
 	const scope = value.scope;
 	const targetEnv = value.targetEnv;
 	if (
 		(scope !== "build" && scope !== "test" && scope !== "runtime") ||
-		(targetEnv !== "dev" && targetEnv !== "prod")
+		(targetEnv !== "dev" && targetEnv !== "prod") ||
+		typeof value.executorOwner !== "string" ||
+		!EXECUTOR_OWNER.test(value.executorOwner) ||
+		typeof value.machineIdSha256 !== "string" ||
+		!SHA.test(value.machineIdSha256)
 	) {
 		throw new Error("App secrets request is invalid");
 	}
+	const hasDeployment = value.deploymentId !== undefined && value.deploymentId !== null;
+	if (scope === "runtime" && !hasDeployment) {
+		throw new Error("App secrets request is invalid");
+	}
+	const deploymentId = hasDeployment ? uuid(value.deploymentId, "Hosted app deployment").toLowerCase() : undefined;
 	return {
 		siteId: uuid(value.siteId, "Hosted app site").toLowerCase(),
 		scope,
 		targetEnv,
+		executorOwner: value.executorOwner,
+		machineIdSha256: value.machineIdSha256.toLowerCase(),
+		...(deploymentId === undefined ? {} : { deploymentId }),
 	};
 }
 
@@ -2216,8 +2234,17 @@ export class PostgresCloudSecretBrokerAuthority
 
 	authorizeAppSecrets(request: AppSecretsRequest, signal: AbortSignal): Promise<unknown> {
 		return this.#rpc(
-			"select public.qorpera_authorize_app_secrets($1::uuid,$2::text,$3::uuid,$4::text,$5::text) as result",
-			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, request.siteId, request.scope, request.targetEnv],
+			"select public.qorpera_authorize_app_secrets($1::uuid,$2::text,$3::uuid,$4::text,$5::text,$6::text,$7::text,$8::uuid) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				request.siteId,
+				request.scope,
+				request.targetEnv,
+				request.executorOwner,
+				request.machineIdSha256,
+				request.deploymentId ?? null,
+			],
 			signal,
 		);
 	}

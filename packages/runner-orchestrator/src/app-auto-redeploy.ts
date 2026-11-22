@@ -1,12 +1,30 @@
-import { parseBoundedText, parseClosedRecord, parseInteger } from "@qorpera/contracts";
+import { createHash } from "node:crypto";
+import {
+	type CloudCodingRepository,
+	isUuid,
+	parseBoundedText,
+	parseClosedRecord,
+	parseInteger,
+} from "@qorpera/contracts";
+import type { CodeHostJob } from "./code-host-jobs.ts";
+import type { CodeHostJobs } from "./code-host-views.ts";
+import type { CodingAutoRedeployContext, CodingExecutorPublication, CodingSessionClaim } from "./coding-executor.ts";
 import { CodingSecretMask } from "./coding-secret-mask.ts";
 import {
 	APP_SLUG_PATTERN,
 	type CompanyMachineSecretsManager,
+	fetchHostedAppSecrets,
 	type HostedAppSecretBundle,
 	type HostedAppTargetEnv,
 	maskAppLogText,
 } from "./company-machine-secrets.ts";
+import {
+	type BuildAppImageFn,
+	buildAppImageWithScript,
+	buildNativeAppEnvSpec,
+	type NativeEdgeHostingConfig,
+	triggerBlueGreenAppDeploy,
+} from "./native-webapp-deploy.ts";
 import {
 	type RoutineProbeDnsLookup,
 	resolveAndValidateProbeAddress,
@@ -546,4 +564,276 @@ export async function runPostLandAppAutoRedeploy(options: {
 	} finally {
 		previousRuntimeEnv?.fill(0);
 	}
+}
+
+export interface NativeEdgeAutoRedeployOptions {
+	readonly control: { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> };
+	readonly codeHostJobs: Pick<CodeHostJobs, "run">;
+	readonly nativeEdge: NativeEdgeHostingConfig;
+	readonly owner: string;
+	readonly machineIdSha256: string;
+	readonly readDeployConfig: (
+		job: CodeHostJob,
+		value: { repository: CloudCodingRepository; commitSha: string },
+	) => Promise<{ rawConfig: string; paths: string[] } | null>;
+	readonly exportSource: (
+		job: CodeHostJob,
+		value: { repository: CloudCodingRepository; tree: string; kind?: "static" | "server" | "hybrid" },
+	) => Promise<{ sourceDir: string; cleanup?: () => Promise<void> }>;
+}
+
+export function createNativeEdgeAutoRedeploy(
+	options: NativeEdgeAutoRedeployOptions,
+): (
+	claim: CodingSessionClaim,
+	landed: NonNullable<CodingExecutorPublication["landed"]>,
+	signal: AbortSignal,
+) => Promise<CodingAutoRedeployContext | null> {
+	return async (claim, landed, signal) => {
+		if (claim.repository.host !== "qorpera" || landed.state === "unchanged") return null;
+		const appHostInternalUrl = options.nativeEdge.appHostInternalUrl;
+		const appHostControlToken = options.nativeEdge.appHostControlToken;
+		if (!appHostInternalUrl || !appHostControlToken) return null;
+
+		const configResult = await options.codeHostJobs.run(
+			claim.profileId,
+			claim.environmentId,
+			signal,
+			(job) => options.readDeployConfig(job, { repository: claim.repository, commitSha: landed.mainSha }),
+			{ yields: true },
+		);
+		if (!configResult) return null;
+
+		const lookup = (await options.control.call(
+			"qorpera_code_site_for_auto_redeploy",
+			{
+				p_owner: options.owner,
+				p_machine_id_sha256: options.machineIdSha256,
+				p_environment_id: claim.environmentId,
+				p_repository_owner: claim.repository.owner,
+				p_name: claim.repository.name,
+			},
+			signal,
+		)) as Record<string, unknown> | null;
+		if (
+			!lookup ||
+			lookup.schema !== "qorpera.code-site-auto-redeploy/v1" ||
+			lookup.found !== true ||
+			!isUuid(lookup.siteId) ||
+			typeof lookup.slug !== "string"
+		) {
+			return null;
+		}
+		const siteId = lookup.siteId;
+		const slug = lookup.slug;
+		const kind =
+			lookup.kind === "hybrid" || lookup.kind === "server" ? (lookup.kind as "server" | "hybrid") : "server";
+		const currentDeploymentId = isUuid(lookup.currentDeploymentId) ? lookup.currentDeploymentId : null;
+		const currentImageRef = typeof lookup.currentImageRef === "string" ? lookup.currentImageRef : null;
+		const appPort =
+			typeof lookup.appPort === "number" && Number.isSafeInteger(lookup.appPort) ? lookup.appPort : 3000;
+		const healthPath = typeof lookup.healthPath === "string" ? lookup.healthPath : "/";
+		const idleTimeoutSec =
+			typeof lookup.idleTimeoutSec === "number" && Number.isSafeInteger(lookup.idleTimeoutSec)
+				? lookup.idleTimeoutSec
+				: 900;
+		const memoryMb =
+			typeof lookup.memoryMb === "number" && Number.isSafeInteger(lookup.memoryMb) ? lookup.memoryMb : 512;
+		const vcpuLimit =
+			typeof lookup.vcpuLimit === "number" && Number.isFinite(lookup.vcpuLimit) ? lookup.vcpuLimit : 1;
+
+		const releaseImages = new Map<string, string>();
+		if (currentDeploymentId && currentImageRef) {
+			releaseImages.set(currentDeploymentId, currentImageRef);
+		}
+		let latestDeploymentId = currentDeploymentId;
+		let latestEnvPath: string | null = null;
+		const envSpec = buildNativeAppEnvSpec({
+			port: appPort,
+			repositoryOwner: claim.repository.owner,
+			repositoryName: claim.repository.name,
+			companyDataUrl: options.nativeEdge.companyDataUrl,
+			objectStorageUrl: options.nativeEdge.objectStorageUrl,
+		});
+
+		const broker = options.nativeEdge.appSecretsBroker;
+		return {
+			rawConfig: configResult.rawConfig,
+			siteId,
+			paths: configResult.paths,
+			...(options.nativeEdge.secretsManager ? { secretsManager: options.nativeEdge.secretsManager } : {}),
+			hooks: {
+				currentReleaseId: async () => currentDeploymentId,
+				...(broker
+					? {
+							loadBuildSecrets: async (_site, targetEnv, hookSignal) =>
+								await fetchHostedAppSecrets({
+									brokerOrigin: broker.origin,
+									executorToken: broker.executorToken,
+									executorOwner: broker.executorOwner,
+									machineIdSha256: broker.machineIdSha256,
+									...(currentDeploymentId ? { deploymentId: currentDeploymentId } : {}),
+									companyId: claim.profileId,
+									siteId,
+									scope: "build",
+									targetEnv,
+									fetchImpl: broker.fetchImpl,
+									signal: hookSignal,
+								}),
+							loadRuntimeSecrets: async (_site, targetEnv, hookSignal) =>
+								await fetchHostedAppSecrets({
+									brokerOrigin: broker.origin,
+									executorToken: broker.executorToken,
+									executorOwner: broker.executorOwner,
+									machineIdSha256: broker.machineIdSha256,
+									...(latestDeploymentId ? { deploymentId: latestDeploymentId } : {}),
+									companyId: claim.profileId,
+									siteId,
+									scope: "runtime",
+									targetEnv,
+									fetchImpl: broker.fetchImpl,
+									signal: hookSignal,
+								}),
+						}
+					: {}),
+				build: async (input, hookSignal) => {
+					const exported = await options.codeHostJobs.run(
+						claim.profileId,
+						claim.environmentId,
+						hookSignal,
+						(job) =>
+							options.exportSource(job, {
+								repository: claim.repository,
+								tree: input.commitSha,
+								kind,
+							}),
+						{ yields: true },
+					);
+					try {
+						const builderFn: BuildAppImageFn =
+							options.nativeEdge.buildAppImage ??
+							((buildInput, buildSignal) =>
+								buildAppImageWithScript(
+									options.nativeEdge.builderScriptPath ??
+										"/usr/local/libexec/qorpera-web-hosting/builder-railpack.sh",
+									buildInput,
+									buildSignal,
+								));
+						const built = await builderFn(
+							{
+								target: {
+									companyId: claim.profileId,
+									environmentId: claim.environmentId,
+									owner: claim.repository.owner,
+									name: claim.repository.name,
+								},
+								change: landed.change ?? 1,
+								tree: input.commitSha,
+								sourceDir: exported.sourceDir,
+								dockerfile: null,
+								port: appPort,
+								registryPrefix: options.nativeEdge.registryPrefix ?? "127.0.0.1:5000/qorpera-apps",
+								...(input.envPath ? { buildEnvPath: input.envPath } : {}),
+							},
+							hookSignal,
+						);
+						const manifestSha256 = createHash("sha256").update(`server:${input.commitSha}`, "utf8").digest("hex");
+						const registered = (await options.control.call(
+							"qorpera_web_code_deployment_register",
+							{
+								p_owner: options.owner,
+								p_machine_id_sha256: options.machineIdSha256,
+								p_environment_id: claim.environmentId,
+								p_repository_owner: claim.repository.owner,
+								p_name: claim.repository.name,
+								p_change: landed.change ?? 1,
+								p_kind: kind,
+								p_manifest_sha256: manifestSha256,
+								p_manifest_json: {
+									files: {},
+									redirects: [],
+									headers: [],
+									spa_fallback: null,
+									not_found_page: null,
+								},
+								p_file_count: 0,
+								p_total_bytes: 0,
+								p_oci_image_ref: built.ociImageRef,
+								p_app_port: appPort,
+								p_health_path: healthPath,
+								p_idle_timeout_sec: idleTimeoutSec,
+								p_memory_mb: memoryMb,
+								p_vcpu_limit: vcpuLimit,
+								p_has_credential_inputs: false,
+								p_upstream_addr: null,
+								p_env_spec: envSpec,
+							},
+							hookSignal,
+						)) as Record<string, unknown> | null;
+						const deploymentId =
+							registered && isUuid(registered.deploymentId)
+								? registered.deploymentId
+								: (currentDeploymentId ?? siteId);
+						releaseImages.set(deploymentId, built.ociImageRef);
+						latestDeploymentId = deploymentId;
+						return { releaseId: deploymentId };
+					} finally {
+						if (exported.cleanup) {
+							await exported.cleanup().catch(() => undefined);
+						}
+					}
+				},
+				reload: async (input, hookSignal) => {
+					const ociImageRef = releaseImages.get(input.releaseId);
+					if (!ociImageRef) throw new Error("AUTO_REDEPLOY_IMAGE_MISSING");
+					latestEnvPath = input.envPath;
+					await triggerBlueGreenAppDeploy({
+						appHostInternalUrl,
+						controlToken: appHostControlToken,
+						deploymentId: input.releaseId,
+						siteId,
+						slug,
+						ociImageRef,
+						healthPath,
+						idleTimeoutSec,
+						memoryMb,
+						vcpuLimit,
+						env: envSpec,
+						...(input.envPath ? { envPath: input.envPath } : {}),
+						...(options.nativeEdge.appHostFetchImpl ? { fetchImpl: options.nativeEdge.appHostFetchImpl } : {}),
+						signal: hookSignal,
+					});
+				},
+				rollback: async (input, hookSignal) => {
+					if (!input.previousReleaseId) return;
+					const previousImage = releaseImages.get(input.previousReleaseId);
+					if (!previousImage) throw new Error("AUTO_REDEPLOY_PREVIOUS_IMAGE_MISSING");
+					let restoredEnvPath: string | null = null;
+					if (latestEnvPath && options.nativeEdge.secretsManager) {
+						const snap = await options.nativeEdge.secretsManager.snapshot(slug);
+						if (snap !== null) {
+							snap.fill(0);
+							restoredEnvPath = latestEnvPath;
+						}
+					}
+					await triggerBlueGreenAppDeploy({
+						appHostInternalUrl,
+						controlToken: appHostControlToken,
+						deploymentId: input.previousReleaseId,
+						siteId,
+						slug,
+						ociImageRef: previousImage,
+						healthPath,
+						idleTimeoutSec,
+						memoryMb,
+						vcpuLimit,
+						env: envSpec,
+						...(restoredEnvPath ? { envPath: restoredEnvPath } : {}),
+						...(options.nativeEdge.appHostFetchImpl ? { fetchImpl: options.nativeEdge.appHostFetchImpl } : {}),
+						signal: hookSignal,
+					});
+				},
+			},
+		};
+	};
 }

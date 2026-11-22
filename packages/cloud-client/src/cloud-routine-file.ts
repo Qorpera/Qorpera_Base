@@ -84,7 +84,6 @@ export function cloudRoutineTriggerOfFile(file: RoutineFile): CloudRoutineTrigge
 				at: trigger.at,
 				timeZone: file.timezone,
 				...(trigger.after === undefined ? {} : { after: companyPathKey(trigger.after) }),
-				...check,
 			};
 		case "file-change":
 			return null;

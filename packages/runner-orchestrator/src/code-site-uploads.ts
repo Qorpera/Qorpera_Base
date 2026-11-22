@@ -125,6 +125,7 @@ interface Due {
 	target: CodeSiteTarget;
 	change: number;
 	site: NativeCodeSiteSpec | null;
+	siteId?: string;
 }
 
 /** What stopped a site: the step, the code the kernel is told, and what the log shows of why. */
@@ -269,7 +270,7 @@ export class CodeSiteUploads {
 			throw new Error("CODE_SITE_DUE_UNCONFIRMED");
 		const due: Due[] = [];
 		for (const entry of answer.sites.slice(0, this.#limit)) {
-			const { companyId, environmentId, owner, name, change, site } = isRecord(entry) ? entry : {};
+			const { companyId, environmentId, owner, name, change, site, siteId } = isRecord(entry) ? entry : {};
 			let target: CodeSiteTarget;
 			try {
 				if (!isUuid(companyId) || !isUuid(environmentId) || !whole(change, 1)) throw new Error("not a site");
@@ -281,7 +282,7 @@ export class CodeSiteUploads {
 				continue;
 			}
 			const read = parseNativeCodeSiteSpec(site);
-			due.push({ target, change, site: read });
+			due.push({ target, change, site: read, ...(isUuid(siteId) ? { siteId } : {}) });
 		}
 		return due;
 	}
@@ -445,6 +446,7 @@ export class CodeSiteUploads {
 				change: due.change,
 				spec: site,
 				files,
+				...(due.siteId ? { siteId: due.siteId } : {}),
 				...(exportedSource ? { sourceDir: exportedSource.sourceDir } : {}),
 				edge,
 				signal,

@@ -1986,18 +1986,22 @@ describe("CloudCodingExecutor code_change routine wakes and auto-redeploy", () =
 					mainBefore: baseSha,
 					mainAfter: headSha,
 					workerId: w.world.claim.workerId,
+					parentRunId: expect.any(String),
 					paths: ["src/server.ts"],
 				},
 			},
 		});
 		expect(w.world.calls).toContainEqual({
 			method: "qorpera_emit_app_unhealthy_routine_wakes",
-			args: expect.objectContaining({
+			args: {
 				p_environment_id: w.world.claim.environmentId,
 				p_site_id: siteId,
-				p_slug: "billing-api",
-				p_status: "rollback_triggered",
-			}),
+				p_event: {
+					status: "rollback_triggered",
+					restartCount: 1,
+					error: "HTTP 503",
+				},
+			},
 		});
 	});
 
@@ -2031,7 +2035,11 @@ describe("CloudCodingExecutor code_change routine wakes and auto-redeploy", () =
 				p_owner: conflictWorld.world.claim.repository.owner,
 				p_name: conflictWorld.world.claim.repository.name,
 				p_kind: "conflict",
-				p_event: { workerId: conflictWorld.world.claim.workerId, paths: ["src/app.ts"] },
+				p_event: {
+					workerId: conflictWorld.world.claim.workerId,
+					parentRunId: expect.any(String),
+					paths: ["src/app.ts"],
+				},
 			},
 		});
 
@@ -2058,6 +2066,7 @@ describe("CloudCodingExecutor code_change routine wakes and auto-redeploy", () =
 				p_kind: "checks_failed",
 				p_event: {
 					workerId: checksWorld.world.claim.workerId,
+					parentRunId: expect.any(String),
 					checks: { code: "CODING_CHECKS_FAILED", summary: "npm test failed" },
 				},
 			},

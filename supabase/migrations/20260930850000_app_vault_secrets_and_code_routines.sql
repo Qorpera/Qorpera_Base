@@ -487,7 +487,10 @@ create function public.qorpera_authorize_app_secrets(
 	p_broker_capability_sha256 text,
 	p_site_id uuid,
 	p_scope text default 'runtime',
-	p_target_env text default 'prod'
+	p_target_env text default 'prod',
+	p_executor_owner text default null,
+	p_machine_id_sha256 text default null,
+	p_deployment_id uuid default null
 )
 returns jsonb
 language plpgsql
@@ -508,7 +511,9 @@ begin
 		raise exception 'cloud secret broker authority is required' using errcode = '42501';
 	end if;
 	if coalesce(p_broker_capability_sha256, '') !~ '^[0-9a-f]{64}$'
-		or p_broker_authority_id is null or p_site_id is null then
+		or p_broker_authority_id is null or p_site_id is null
+		or coalesce(p_executor_owner, '') !~ '^[A-Za-z0-9_.:-]{1,120}$'
+		or coalesce(p_machine_id_sha256, '') !~ '^[0-9a-f]{64}$' then
 		raise exception 'app secret request is invalid' using errcode = '22023';
 	end if;
 	if coalesce(p_scope, '') not in ('build', 'test', 'runtime') then
@@ -533,6 +538,50 @@ begin
 	where site.id = p_site_id and site.profile_id = v_authority.profile_id for share;
 	if v_site.id is null then
 		raise exception 'hosted app site is unavailable to this broker' using errcode = '42501';
+	end if;
+	if not public.qorpera_code_care_holder(v_site.environment_id, p_executor_owner, p_machine_id_sha256) then
+		raise exception 'hosted app site is unavailable to this executor' using errcode = '42501';
+	end if;
+	if p_scope = 'runtime' then
+		if p_deployment_id is null or not exists (
+			select 1 from public.qorpera_company_site_deployments as dep
+			where dep.id = p_deployment_id
+				and dep.site_id = v_site.id
+				and dep.profile_id = v_site.profile_id
+				and dep.state in ('building', 'ready', 'live')
+		) then
+			raise exception 'hosted app deployment proof is unavailable' using errcode = '42501';
+		end if;
+	else
+		if not (
+			(p_deployment_id is not null and exists (
+				select 1 from public.qorpera_company_site_deployments as dep
+				where dep.id = p_deployment_id
+					and dep.site_id = v_site.id
+					and dep.profile_id = v_site.profile_id
+					and dep.state in ('building', 'ready', 'live')
+			))
+			or exists (
+				select 1
+				from public.qorpera_code_repositories as repo
+				join public.qorpera_code_changes as ch
+					on ch.environment_id = repo.environment_id
+					and ch.owner = repo.owner
+					and ch.name = repo.name
+				where repo.site_id = v_site.id
+					and repo.environment_id = v_site.environment_id
+					and ch.site_state = 'made'
+			)
+			or exists (
+				select 1 from public.qorpera_coding_sessions as cs
+				where cs.environment_id = v_site.environment_id
+					and cs.profile_id = v_site.profile_id
+					and cs.lease_owner = p_executor_owner
+					and cs.lease_until > clock_timestamp()
+			)
+		) then
+			raise exception 'hosted app build proof is unavailable' using errcode = '42501';
+		end if;
 	end if;
 	select coalesce(array_agg(locked.id), '{}'::uuid[]) into v_grant_ids
 	from (
@@ -612,6 +661,81 @@ begin
 		'scope', p_scope,
 		'targetEnv', p_target_env,
 		'secrets', v_secrets
+	);
+end
+$$;
+
+select pg_temp.w6c_patch('public.qorpera_code_sites_due(text,text,integer)'::regprocedure, array[
+	$old$		v_due := v_due || jsonb_build_object('companyId', v_repository.profile_id, 'environmentId', v_repository.environment_id,
+			'owner', v_repository.owner, 'name', v_repository.name, 'change', (v_point ->> 'change')::integer,
+			'site', v_point -> 'site');$old$,
+	$new$		v_due := v_due || (jsonb_build_object('companyId', v_repository.profile_id, 'environmentId', v_repository.environment_id,
+			'owner', v_repository.owner, 'name', v_repository.name, 'change', (v_point ->> 'change')::integer,
+			'site', v_point -> 'site')
+			|| case when v_repository.site_id is not null then jsonb_build_object('siteId', v_repository.site_id) else '{}'::jsonb end);$new$
+]);
+
+create function public.qorpera_code_site_for_auto_redeploy(
+	p_owner text,
+	p_machine_id_sha256 text,
+	p_environment_id uuid,
+	p_repository_owner text,
+	p_name text
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+	v_repo public.qorpera_code_repositories%rowtype;
+	v_site public.qorpera_company_sites%rowtype;
+	v_dep public.qorpera_company_site_deployments%rowtype;
+begin
+	perform public.qorpera_code_executor_custody(p_owner, p_machine_id_sha256);
+	if p_environment_id is null or p_repository_owner is null or p_name is null then
+		raise exception 'Code site lookup is invalid' using errcode = '22023';
+	end if;
+	if not public.qorpera_code_care_holder(p_environment_id, p_owner, p_machine_id_sha256) then
+		return jsonb_build_object('schema', 'qorpera.code-site-auto-redeploy/v1', 'found', false);
+	end if;
+	select * into v_repo
+	from public.qorpera_code_repositories
+	where environment_id = p_environment_id
+		and lower(owner) = lower(p_repository_owner)
+		and lower(name) = lower(p_name)
+	limit 1;
+	if v_repo.site_id is null then
+		return jsonb_build_object('schema', 'qorpera.code-site-auto-redeploy/v1', 'found', false);
+	end if;
+	select * into v_site
+	from public.qorpera_company_sites
+	where id = v_repo.site_id and profile_id = v_repo.profile_id and taken_down_at is null;
+	if v_site.id is null then
+		return jsonb_build_object('schema', 'qorpera.code-site-auto-redeploy/v1', 'found', false);
+	end if;
+	if v_site.live_deployment_id is not null then
+		select * into v_dep from public.qorpera_company_site_deployments where id = v_site.live_deployment_id;
+	else
+		select * into v_dep from public.qorpera_company_site_deployments
+		where site_id = v_site.id and state in ('live', 'ready')
+		order by version_number desc limit 1;
+	end if;
+	return jsonb_build_object(
+		'schema', 'qorpera.code-site-auto-redeploy/v1',
+		'found', true,
+		'companyId', v_site.profile_id,
+		'siteId', v_site.id,
+		'slug', v_site.slug,
+		'kind', coalesce(v_dep.kind, v_site.deployment_kind, 'server'),
+		'currentDeploymentId', v_dep.id,
+		'currentImageRef', v_dep.oci_image_ref,
+		'appPort', coalesce(v_dep.app_port, 3000),
+		'healthPath', coalesce(v_dep.health_path, '/'),
+		'idleTimeoutSec', coalesce(v_dep.idle_timeout_sec, 900),
+		'memoryMb', coalesce(v_dep.memory_mb, 512),
+		'vcpuLimit', coalesce(v_dep.vcpu_limit, 1.00)
 	);
 end
 $$;
@@ -811,14 +935,12 @@ select pg_temp.w6c_patch('public.qorpera_cloud_routine_trigger_valid(jsonb)'::re
 		return public.qorpera_cloud_routine_trigger_before_wake_bus(p_trigger - 'replyPolicy');
 	end if;$old$,
 	$new$	if p_trigger ? 'checkBeforeWake' and (
-		p_trigger ->> 'kind' not in ('schedule', 'once')
+		p_trigger ->> 'kind' <> 'schedule'
 		or not public.qorpera_routine_check_before_wake_valid(p_trigger -> 'checkBeforeWake')
 	) then return false; end if;
 	if p_trigger ->> 'kind' = 'schedule' then
 		return public.qorpera_cloud_routine_trigger_before_wake_bus(p_trigger - 'replyPolicy' - 'checkBeforeWake');
 	end if;$new$,
-	$old$			and p_trigger - array['id','kind','at','timeZone','replyPolicy','after'] = '{}'::jsonb$old$,
-	$new$			and p_trigger - array['id','kind','at','timeZone','replyPolicy','after','checkBeforeWake'] = '{}'::jsonb$new$,
 	$old$	if p_trigger ->> 'kind' = 'listener' and p_trigger ->> 'source' = 'event' then$old$,
 	$new$	if p_trigger ->> 'kind' = 'listener' and p_trigger ->> 'source' = 'code-change' then
 		return coalesce(p_trigger ?& array['id','kind','source','repo','events','timeZone']
@@ -884,8 +1006,8 @@ select pg_temp.w6c_patch('public.qorpera_cloud_routine_trigger_valid(jsonb)'::re
 select pg_temp.w6c_patch('public.qorpera_company_state_routine_rules(uuid,uuid,jsonb,text,jsonb,boolean)'::regprocedure, array[
 	$old$	elsif v_zone is not null then$old$,
 	$new$	elsif p_parse ? 'checkBeforeWake' and jsonb_typeof(p_parse -> 'checkBeforeWake') = 'object'
-		and v_when not in ('every','weekly','window','once') then
-		v_problem := 'checkBeforeWake is only supported on scheduled or dynamic routines';
+		and v_when not in ('every','weekly','window') then
+		v_problem := 'checkBeforeWake is only supported on recurring scheduled routines';
 	elsif p_parse ? 'checkBeforeWake' and jsonb_typeof(p_parse -> 'checkBeforeWake') = 'object'
 		and p_parse -> 'checkBeforeWake' ->> 'kind' = 'code_checks'
 		and p_parse -> 'checkBeforeWake' ? 'repo'
@@ -954,7 +1076,24 @@ select pg_temp.w6c_patch('public.qorpera_pin_wake_occurrence()'::regprocedure, a
 	$new$		new.source_id := case when new.source_kind = 'event' then (v_trigger ->> 'hookId')::uuid
 			when new.source_kind in ('company-file','app-unhealthy') then new.source_id
 			when new.source_kind in ('code-change','data-change') then coalesce(new.source_id, new.routine_id)
-			else coalesce(new.file_event_id,new.routine_id) end;$new$
+			else coalesce(new.file_event_id,new.routine_id) end;$new$,
+	$old$		else
+			if new.parent_run_id is not null or new.file_event_id is not null then
+				raise exception 'Scheduled wake cannot replace causal identity' using errcode = '42501'; end if;
+		end if;$old$,
+	$new$		elsif new.source_kind in ('code-change','data-change') then
+			if new.file_event_id is not null then
+				raise exception 'Scheduled wake cannot replace causal identity' using errcode = '42501'; end if;
+			if new.parent_run_id is not null then
+				select r.staff_agent_id into v_actor from public.qorpera_execution_runs r
+				where r.id = new.parent_run_id and r.profile_id = new.profile_id and r.environment_id = new.environment_id;
+				if not found then
+					raise exception 'Wake parent run is unavailable' using errcode = '42501'; end if;
+			end if;
+		else
+			if new.parent_run_id is not null or new.file_event_id is not null then
+				raise exception 'Scheduled wake cannot replace causal identity' using errcode = '42501'; end if;
+		end if;$new$
 ]);
 
 create or replace function public.qorpera_listener_source(p_source_kind text)
@@ -1124,6 +1263,8 @@ declare
 	v_main_before jsonb;
 	v_found_paths jsonb;
 	v_found_before text;
+	v_parent_run_id uuid;
+	v_parent_actor uuid;
 	v_payload jsonb;
 	v_change_key text;
 	v_message text;
@@ -1143,6 +1284,25 @@ begin
 	end if;
 	v_event_paths := case when jsonb_typeof(p_event -> 'paths') = 'array' then p_event -> 'paths' else '[]'::jsonb end;
 	v_main_before := p_event -> 'mainBefore';
+	if coalesce(p_event ->> 'parentRunId', '') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' then
+		select r.id, r.staff_agent_id into v_parent_run_id, v_parent_actor
+		from public.qorpera_execution_runs as r
+		where r.id = (p_event ->> 'parentRunId')::uuid
+			and r.profile_id = v_profile
+			and r.environment_id = p_environment_id;
+	elsif coalesce(p_event ->> 'workerId', '') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' then
+		select r.id, r.staff_agent_id into v_parent_run_id, v_parent_actor
+		from public.qorpera_coding_sessions as cs
+		join public.qorpera_coding_session_turns as t
+			on t.worker_id = cs.worker_id and t.input_run_id is not null
+		join public.qorpera_execution_runs as r
+			on r.id = t.input_run_id and r.profile_id = cs.profile_id and r.environment_id = cs.environment_id
+		where cs.worker_id = (p_event ->> 'workerId')::uuid
+			and cs.profile_id = v_profile
+			and cs.environment_id = p_environment_id
+		order by t.sequence desc
+		limit 1;
+	end if;
 	if p_kind = 'landed' and (jsonb_array_length(v_event_paths) = 0 or v_main_before is null) then
 		select
 			case
@@ -1241,7 +1401,10 @@ begin
 					where m.profile_id = v_profile and m.user_id = (v_listener.l ->> 'requester')::uuid)
 				or not exists (select 1 from public.qorpera_coding_repository_grants g
 					where g.environment_id = p_environment_id and g.staff_agent_id = (v_listener.l ->> 'staff')::uuid
-						and g.enabled and lower((g.repository ->> 'owner') || '/' || (g.repository ->> 'name')) = v_repo) then
+						and g.enabled and lower((g.repository ->> 'owner') || '/' || (g.repository ->> 'name')) = v_repo)
+				or (v_parent_run_id is not null and public.qorpera_wake_ancestry(
+					v_parent_run_id, v_parent_actor, (v_listener.l ->> 'staff')::uuid, (v_listener.l ->> 'routineId')::uuid
+				) is null) then
 				v_skipped := v_skipped + 1;
 				continue;
 			end if;
@@ -1265,11 +1428,11 @@ begin
 				v_wake := null;
 				insert into public.qorpera_wake_occurrences (
 					id, profile_id, environment_id, routine_id, routine_version, wake_kind,
-					source_kind, trigger_id, occurrence_key, scheduled_for, not_before, payload
+					source_kind, trigger_id, occurrence_key, scheduled_for, not_before, parent_run_id, payload
 				) values (
 					extensions.gen_random_uuid(), v_profile, p_environment_id, (v_item.w ->> 'routineId')::uuid,
 					(v_item.w ->> 'version')::bigint, 'routine', 'code-change', v_item.w ->> 'triggerId',
-					v_item.w ->> 'key', clock_timestamp(), clock_timestamp(), v_payload
+					v_item.w ->> 'key', clock_timestamp(), clock_timestamp(), v_parent_run_id, v_payload
 				)
 				on conflict (routine_id, occurrence_key) do nothing
 				returning * into v_wake;
@@ -1464,7 +1627,8 @@ $$;
 create function public.qorpera_emit_data_change_routine_wakes(
 	p_environment_id uuid,
 	p_database text,
-	p_event jsonb
+	p_event jsonb,
+	p_parent_run_id uuid default null
 )
 returns jsonb
 language plpgsql
@@ -1478,6 +1642,8 @@ declare
 	v_table text;
 	v_tables jsonb;
 	v_operation text;
+	v_parent_run_id uuid;
+	v_parent_actor uuid;
 	v_listeners jsonb;
 	v_targets jsonb;
 	v_kept jsonb := '[]'::jsonb;
@@ -1514,6 +1680,18 @@ begin
 	where environment_id = p_environment_id and core = 'folder-v2';
 	if v_profile is null then
 		return jsonb_build_object('schema', c_schema, 'state', 'not_folder', 'wakes', 0, 'skipped', 0, 'wakeIds', '[]'::jsonb);
+	end if;
+	v_parent_run_id := coalesce(
+		p_parent_run_id,
+		case
+			when coalesce(p_event ->> 'parentRunId', '') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+			then (p_event ->> 'parentRunId')::uuid
+		end
+	);
+	if v_parent_run_id is not null then
+		select r.id, r.staff_agent_id into v_parent_run_id, v_parent_actor
+		from public.qorpera_execution_runs as r
+		where r.id = v_parent_run_id and r.profile_id = v_profile and r.environment_id = p_environment_id;
 	end if;
 	select coalesce(jsonb_agg(l.listener order by l.routine_id), '[]'::jsonb) into v_listeners
 	from (
@@ -1587,7 +1765,10 @@ begin
 					jsonb_build_object('kind', 'staff_agent', 'staffAgentId', (v_listener.l ->> 'staff')::uuid,
 						'requesterUserId', (v_listener.l ->> 'requester')::uuid,
 						'audience', jsonb_build_object('kind', 'company'), 'sessionKind', 'in_house'),
-					'data/' || p_database, 'read') then
+					'data/' || p_database, 'read')
+				or (v_parent_run_id is not null and public.qorpera_wake_ancestry(
+					v_parent_run_id, v_parent_actor, (v_listener.l ->> 'staff')::uuid, (v_listener.l ->> 'routineId')::uuid
+				) is null) then
 				v_skipped := v_skipped + 1;
 				continue;
 			end if;
@@ -1611,11 +1792,11 @@ begin
 				v_wake := null;
 				insert into public.qorpera_wake_occurrences (
 					id, profile_id, environment_id, routine_id, routine_version, wake_kind,
-					source_kind, trigger_id, occurrence_key, scheduled_for, not_before, payload
+					source_kind, trigger_id, occurrence_key, scheduled_for, not_before, parent_run_id, payload
 				) values (
 					extensions.gen_random_uuid(), v_profile, p_environment_id, (v_item.w ->> 'routineId')::uuid,
 					(v_item.w ->> 'version')::bigint, 'routine', 'data-change', v_item.w ->> 'triggerId',
-					v_item.w ->> 'key', clock_timestamp(), clock_timestamp(), v_payload
+					v_item.w ->> 'key', clock_timestamp(), clock_timestamp(), v_parent_run_id, v_payload
 				)
 				on conflict (routine_id, occurrence_key) do nothing
 				returning * into v_wake;
@@ -1857,7 +2038,7 @@ begin
 	) then
 		raise exception 'Database is unavailable to this run' using errcode = '42501';
 	end if;
-	return public.qorpera_emit_data_change_routine_wakes(v_run.environment_id, p_database, p_event);
+	return public.qorpera_emit_data_change_routine_wakes(v_run.environment_id, p_database, p_event, v_run.id);
 end
 $$;
 
@@ -1867,7 +2048,8 @@ revoke all on function
 	public.qorpera_grant_app_secret(uuid, uuid, uuid, text, text),
 	public.qorpera_revoke_app_secret_grant(uuid, uuid),
 	public.qorpera_list_app_secrets(uuid, uuid),
-	public.qorpera_authorize_app_secrets(uuid, text, uuid, text, text),
+	public.qorpera_authorize_app_secrets(uuid, text, uuid, text, text, text, text, uuid),
+	public.qorpera_code_site_for_auto_redeploy(text, text, uuid, text, text),
 	public.qorpera_glob_matches(text, text),
 	public.qorpera_routine_check_before_wake_valid(jsonb),
 	public.qorpera_record_routine_check_result(uuid, boolean, text, text),
@@ -1875,7 +2057,7 @@ revoke all on function
 	public.qorpera_read_routine_code_checks(uuid, text),
 	public.qorpera_emit_code_change_routine_wakes(uuid, text, text, text, jsonb),
 	public.qorpera_emit_app_unhealthy_routine_wakes(uuid, uuid, jsonb),
-	public.qorpera_emit_data_change_routine_wakes(uuid, text, jsonb),
+	public.qorpera_emit_data_change_routine_wakes(uuid, text, jsonb, uuid),
 	public.qorpera_folder_emit_data_change_wakes(jsonb, text, jsonb)
 	from public, anon, authenticated, service_role, qorpera_secret_broker, qorpera_site_relay;
 
@@ -1887,16 +2069,17 @@ grant execute on function
 	to authenticated;
 
 grant execute on function
-	public.qorpera_authorize_app_secrets(uuid, text, uuid, text, text)
+	public.qorpera_authorize_app_secrets(uuid, text, uuid, text, text, text, text, uuid)
 	to qorpera_secret_broker;
 
 grant execute on function
+	public.qorpera_code_site_for_auto_redeploy(text, text, uuid, text, text),
 	public.qorpera_record_routine_check_result(uuid, boolean, text, text),
 	public.qorpera_skip_checked_routine_wake(uuid, bigint, text, timestamptz, timestamptz, timestamptz, boolean, text, text),
 	public.qorpera_read_routine_code_checks(uuid, text),
 	public.qorpera_emit_code_change_routine_wakes(uuid, text, text, text, jsonb),
 	public.qorpera_emit_app_unhealthy_routine_wakes(uuid, uuid, jsonb),
-	public.qorpera_emit_data_change_routine_wakes(uuid, text, jsonb),
+	public.qorpera_emit_data_change_routine_wakes(uuid, text, jsonb, uuid),
 	public.qorpera_folder_emit_data_change_wakes(jsonb, text, jsonb)
 	to service_role;
 
@@ -1908,7 +2091,7 @@ comment on table public.qorpera_routine_check_states is
 	'20260930850000: deterministic check-first routine state tracker used to wake LLM agents only on failure or state transition.';
 comment on function public.qorpera_coding_environment_name_allowed(text) is
 	'20260930850000: allows company-owned OPENAI_* and ANTHROPIC_* coding environment secrets while keeping host and harness internals refused.';
-comment on function public.qorpera_authorize_app_secrets(uuid, text, uuid, text, text) is
-	'20260930850000: broker-only scoped secret authorization for hosted app tmpfs injection.';
+comment on function public.qorpera_authorize_app_secrets(uuid, text, uuid, text, text, text, text, uuid) is
+	'20260930850000: broker-only scoped secret authorization for hosted app tmpfs injection bound to live executor custody and deployment or build proof.';
 comment on function public.qorpera_skip_checked_routine_wake(uuid, bigint, text, timestamptz, timestamptz, timestamptz, boolean, text, text) is
 	'20260930850000: records deterministic checkBeforeWake result and advances schedule cursor without waking the LLM when healthy and unchanged.';

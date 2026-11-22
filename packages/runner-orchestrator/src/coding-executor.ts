@@ -1016,7 +1016,11 @@ export class CloudCodingExecutor {
 						if (error instanceof CodingLandConflict) {
 							// Nothing landed: the session merges the default branch itself and finishes again.
 							await complete("failed", landConflict(claimed.repository.baseBranch, error.paths));
-							await emitCodeChange("conflict", { workerId: claimed.workerId, paths: error.paths });
+							await emitCodeChange("conflict", {
+								workerId: claimed.workerId,
+								...(turn.runId ? { parentRunId: turn.runId } : {}),
+								paths: error.paths,
+							});
 							return "failed";
 						}
 						if (error instanceof CodingLandRefused) {
@@ -1026,6 +1030,7 @@ export class CloudCodingExecutor {
 							if (error.message.startsWith("CODING_CHECKS_")) {
 								await emitCodeChange("checks_failed", {
 									workerId: claimed.workerId,
+									...(turn.runId ? { parentRunId: turn.runId } : {}),
 									checks: { code: error.message, summary: withinBytes(error.summary, 1000) },
 								});
 							}
@@ -1091,6 +1096,7 @@ export class CloudCodingExecutor {
 							...(landed.mainBefore ? { mainBefore: landed.mainBefore } : {}),
 							mainAfter: landed.mainSha,
 							workerId: claimed.workerId,
+							...(turn.runId ? { parentRunId: turn.runId } : {}),
 							...(landed.paths ? { paths: landed.paths } : {}),
 						});
 						if (this.#host.autoRedeploy) {
@@ -1117,10 +1123,11 @@ export class CloudCodingExecutor {
 													{
 														p_environment_id: claimed.environmentId,
 														p_site_id: redeploy.siteId,
-														p_slug: unhealthy.site,
-														p_status: unhealthy.status,
-														p_restart_count: unhealthy.restartCount,
-														p_error: unhealthy.error,
+														p_event: {
+															status: unhealthy.status,
+															restartCount: unhealthy.restartCount,
+															error: unhealthy.error,
+														},
 													},
 													hookSignal,
 													5000,
