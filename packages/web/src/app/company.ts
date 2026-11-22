@@ -405,8 +405,6 @@ export function draftReplaced(state: Pick<ConversationState, "draftEpoch">): Pic
 	return { draftEpoch: (state.draftEpoch ?? 0) + 1 };
 }
 
-/** Drop optimistic card answers once the projection carries them, or once their
- * input failed: that answer never reached the agent, so the card is open again. */
 function sameJson(a: unknown, b: unknown): boolean {
 	if (a === b) return true;
 	if (a === undefined || b === undefined) return false;
@@ -420,6 +418,8 @@ const newestActivityByAgent = new WeakMap<
 	Map<string, HostedStaffExecutionActivity>
 >();
 
+/** Drop optimistic card answers once the projection carries them, or once their
+ * input failed: that answer never reached the agent, so the card is open again. */
 function reconcileInteractionAnswers(
 	answers: Record<string, InteractionAnswer> | undefined,
 	projection: TranscriptProjection,
@@ -677,7 +677,7 @@ export class CompanyController {
 	#tailMissing = false;
 	/** Taken inputs a thread has read back for once: never again (a run queued for hours stays taken
 	 * without an event, and each load would read further back). */
-	readonly #readBackFor = new Set<string>();
+	readonly #readBackFor = new Map<string, Set<string>>();
 	/** Proposals this browser discarded: a listing read before the discard landed does not show them again. */
 	readonly #discardedProposals = new Set<string>();
 	/** Per failed run: when its details may be read next (performance.now()), and
@@ -1616,7 +1616,7 @@ export class CompanyController {
 				this.store.set((state) => ({
 					appIconsDrawing: stale.reduce((all, name) => withoutKey(all, name), state.appIconsDrawing),
 				}));
-			for (const name of names) if (!stale.includes(name)) void this.loadAppIcons(name);
+			for (const name of names) if (!stale.includes(name)) void this.loadAppIcons(name, { force: true });
 		}, APP_ICONS_WATCH_MS);
 	}
 
@@ -2369,7 +2369,7 @@ export class CompanyController {
 				optimistic: [],
 			});
 			this.conversations.set(sessionId, store);
-			this.#pruneConversations();
+			this.#pruneConversations(sessionId);
 			if (load) void this.loadConversation(sessionId);
 		}
 		return store;
@@ -2384,21 +2384,43 @@ export class CompanyController {
 				this.conversations.set(sessionId, existing);
 			}
 		}
-		this.#pruneConversations();
+		this.#pruneConversations(sessionId);
 		this.#trackOpen();
 		this.#seeMentions();
 	}
 
-	#pruneConversations(): void {
+	#pruneConversations(protectedId?: string): void {
 		if (this.conversations.size <= MAX_CACHED_CONVERSATIONS) return;
 		for (const [id, store] of [...this.conversations]) {
 			if (this.conversations.size <= MAX_CACHED_CONVERSATIONS) break;
-			if (id === this.#openSessionId || this.#conversationLoads.has(id) || store.listenerCount > 0) continue;
+			if (
+				id === protectedId ||
+				id === this.#openSessionId ||
+				this.#conversationLoads.has(id) ||
+				store.listenerCount > 0
+			)
+				continue;
 			const state = store.get();
-			if (state.optimistic.length > 0 || state.draft || state.sending || state.answering) continue;
+			if (
+				state.optimistic.length > 0 ||
+				Boolean(state.draft) ||
+				Boolean(state.attachments?.length) ||
+				state.sending ||
+				Boolean(state.retrySend) ||
+				state.answering !== undefined ||
+				Boolean(state.interactionAnswers && Object.keys(state.interactionAnswers).length > 0) ||
+				Boolean(state.interactionError) ||
+				Boolean(state.sendError) ||
+				Boolean(state.discardingProposals?.length) ||
+				Boolean(state.earlierLoading) ||
+				Boolean(state.earlierError) ||
+				Boolean(state.quoteRecords?.length)
+			)
+				continue;
 			store.dispose();
 			this.conversations.delete(id);
 			this.#conversationReadAt.delete(id);
+			this.#readBackFor.delete(id);
 		}
 	}
 
@@ -2634,11 +2656,12 @@ export class CompanyController {
 				let earlier = hasEarlier ?? store.get().hasEarlier ?? false;
 				// An input a run took before the oldest event read stands in the transcript before it: read
 				// back until its place is read, so it is not shown again as waiting.
-				const taken = earlier
-					? takenBefore(pending, merged).filter((input) => !this.#readBackFor.has(input.inputId))
-					: [];
+				const readBack = this.#readBackFor.get(sessionId);
+				const taken = earlier ? takenBefore(pending, merged).filter((input) => !readBack?.has(input.inputId)) : [];
 				if (taken.length) {
-					for (const input of taken) this.#readBackFor.add(input.inputId);
+					const seen = readBack ?? new Set<string>();
+					if (!readBack) this.#readBackFor.set(sessionId, seen);
+					for (const input of taken) seen.add(input.inputId);
 					const read = await this.#readTail(sessionId, merged, taken, () => !this.#stopped);
 					if (!read) return;
 					// "Show earlier" may have landed meanwhile, and reached further back.

@@ -119,6 +119,8 @@ import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
 import { SharedDrafts } from "./shared-drafts.ts";
 import { type AppLook, appLook } from "./shell.ts";
+import { ThreadReady } from "./thread-ready.ts";
+import { ThreadSites } from "./thread-sites.ts";
 
 const transcriptItemJsonCache = new WeakMap<TranscriptItem, string>();
 function cachedTranscriptItemJson(item: TranscriptItem): string {
@@ -129,9 +131,6 @@ function cachedTranscriptItemJson(item: TranscriptItem): string {
 	}
 	return encoded;
 }
-
-import { ThreadReady } from "./thread-ready.ts";
-import { ThreadSites } from "./thread-sites.ts";
 
 /* How often the thread re-reads its coding sessions while one is still going: the
  * pill's figures follow them. Nothing is read once they all settled. */

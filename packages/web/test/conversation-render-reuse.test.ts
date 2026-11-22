@@ -8,6 +8,7 @@ import type { HostedProfileMember, HostedSessionEvent } from "../src/cloud/types
 import { conversationTimestampLabel } from "../src/ui/conversation-timestamps.ts";
 import { fmtTime } from "../src/ui/dom.ts";
 import { ReceivedAttachments } from "../src/ui/received-attachments.ts";
+import { SkillMentions } from "../src/ui/skill-mentions.ts";
 import {
 	event,
 	fixture,
@@ -561,14 +562,27 @@ describe("kept items follow names", () => {
 	});
 
 	it("preserves DOM nodes and skips redundant skill-mention scans across status-only updates", async () => {
+		const wantSpy = vi.spyOn(SkillMentions.prototype, "want");
 		const thread = setup([message(1, { text: "Use /deploy when ready" }), message(2)]);
+		expect(wantSpy).toHaveBeenCalledTimes(2);
+		wantSpy.mockClear();
 		const firstEl = thread.element(message(1).id)!;
 		const change = await thread.mutations(async () => {
 			thread.company.store.set({ here: [] });
 			await settle();
 		});
+		expect(wantSpy).not.toHaveBeenCalled();
 		expect(change.added).toEqual([]);
 		expect(change.removed).toEqual([]);
 		expect(thread.element(message(1).id)).toBe(firstEl);
+		thread.store.set({
+			projection: {
+				items: [message(1, { text: "Use /deploy when ready" }), message(2), message(3)],
+				hiddenCount: 0,
+				lastSequence: 3,
+			},
+		});
+		await settle();
+		expect(wantSpy).toHaveBeenCalledTimes(3);
 	});
 });

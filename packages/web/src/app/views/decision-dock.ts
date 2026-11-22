@@ -14,6 +14,7 @@ import { agentFigure } from "../../ui/avatar.ts";
 import { h, personAvatar, replace } from "../../ui/dom.ts";
 import { renderInteractionCard } from "../../ui/interaction-card.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
+import type { ConversationState } from "../company.ts";
 import type { OpenQuestions } from "../open-questions.ts";
 import type { QuestionDockHost } from "./question-dock.ts";
 
@@ -300,11 +301,18 @@ export class DecisionDock {
 		this.el.remove();
 	}
 
+	#peek(sessionId: string): ConversationState | undefined {
+		if (typeof this.#host.questions.conversationState === "function")
+			return this.#host.questions.conversationState(sessionId);
+		return this.#host.conversation(sessionId).get();
+	}
+
 	#dropUndelivered(): boolean {
 		const kept = this.#decided.filter((entry) => {
 			if (entry.state !== "sent") return true;
 			const id = entry.decision.interactionId;
-			const thread = this.#host.conversation(entry.decision.sessionId).get();
+			const thread = this.#peek(entry.decision.sessionId);
+			if (!thread) return true;
 			if (thread.interactionAnswers?.[id]) return true;
 			return !(thread.projection?.items ?? []).some(
 				(item) =>
@@ -355,7 +363,7 @@ export class DecisionDock {
 						!(decision.kind === "draft" && decision.othersAnswer) &&
 						(expiry(decision) > now || (decision.kind === "draft" && questions.draftUnsettled(decision))) &&
 						!this.#onItsWay(decision.interactionId) &&
-						!this.#host.conversation(decision.sessionId).get().interactionAnswers?.[decision.interactionId],
+						!this.#peek(decision.sessionId)?.interactionAnswers?.[decision.interactionId],
 				),
 			...questions.unsettledDrafts(),
 		].sort(decisionOrder);
@@ -881,7 +889,7 @@ export class DecisionDock {
 				await this.#host.questions.answer(entry.decision, outcome, value);
 			}
 		} catch (error) {
-			const said = this.#host.conversation(decision.sessionId).get().interactionError;
+			const said = this.#peek(decision.sessionId)?.interactionError;
 			const pickOf = entry.decision.kind === "question" ? (entry as DecidedCard).pickOf : undefined;
 			const stale =
 				pickOf !== undefined &&

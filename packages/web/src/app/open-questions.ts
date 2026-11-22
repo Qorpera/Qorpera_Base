@@ -16,7 +16,7 @@ import type { OpenQuestion } from "../cloud/open-questions.ts";
 import type { ActionReviewAnswer } from "../cloud/review-rules.ts";
 import { selectSessionExecutionSponsor } from "../cloud/session-input.ts";
 import type { JsonValue } from "../cloud/types.ts";
-import type { CompanyController } from "./company.ts";
+import type { CompanyController, ConversationState } from "./company.ts";
 import { Store, throttle } from "./state.ts";
 
 /* An agent's open questions on the interface app they are about (Jonas, 10 November 2026: agents show their work in
@@ -404,6 +404,12 @@ export class OpenQuestions {
 			stopTeam();
 			clearInterval(clock);
 		};
+	}
+
+	/** WHY: peeks an already-cached thread without creating or loading a new store so docks do not churn LRU. */
+	conversationState(sessionId: string): ConversationState | undefined {
+		if (this.#company.conversations) return this.#company.conversations.get(sessionId)?.get();
+		return this.#company.conversation(sessionId, false).get();
 	}
 
 	/** Gives the thread the model account the cloud chooses for it now, as the thread does when it opens and as Mailbox
