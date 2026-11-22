@@ -16,7 +16,14 @@ function digestSha256(bytes: Uint8Array | string): string {
 	return createHash("sha256").update(bytes).digest("hex");
 }
 
-function createHarness(initialFiles: Record<string, string>) {
+function createHarness(
+	initialFiles: Record<string, string>,
+	options?: {
+		readonly jobTimeoutMs?: number;
+		readonly leaseRenewIntervalMs?: number;
+		readonly hangStoreGet?: boolean;
+	},
+) {
 	const profileId = randomUUID();
 	const environmentId = randomUUID();
 	const surfaceId = randomUUID();
@@ -36,9 +43,11 @@ function createHarness(initialFiles: Record<string, string>) {
 	const externalSnapshots = new Map<string, Record<string, unknown>>();
 	const completedMerges: Record<string, unknown>[] = [];
 	const completedPublishes: Record<string, unknown>[] = [];
+	const events: Record<string, unknown>[] = [];
 	let pendingClaim: { merges?: unknown[]; publishes?: unknown[] } = { merges: [], publishes: [] };
 	let commitCount = 0;
-	let failCompleteMergeAttempts = 0;
+	let leaseRenewCount = 0;
+	let completeMergeAttemptErrors: Error[] = [];
 
 	const putFile = (path: string, text: string, version = randomUUID()): string => {
 		const parts = path.split("/");
@@ -262,17 +271,19 @@ function createHarness(initialFiles: Record<string, string>) {
 					}
 					return null;
 				}
-				case "qorpera_surface_complete_merge":
-					if (failCompleteMergeAttempts > 0) {
-						failCompleteMergeAttempts -= 1;
-						throw new Error("transient complete merge 503");
+				case "qorpera_surface_complete_merge": {
+					const nextError = completeMergeAttemptErrors.shift();
+					if (nextError) {
+						throw nextError;
 					}
 					completedMerges.push(args);
 					return { jobId: args.p_job_id, status: args.p_status };
+				}
 				case "qorpera_surface_complete_publish":
 					completedPublishes.push(args);
 					return { jobId: args.p_job_id, status: args.p_status };
 				case "qorpera_surface_renew_lease":
+					leaseRenewCount += 1;
 					return { renewed: true };
 				default:
 					throw new Error(`Unexpected RPC: ${method}`);
@@ -282,6 +293,9 @@ function createHarness(initialFiles: Record<string, string>) {
 
 	const store = {
 		async get(_profileId: string, hash: string): Promise<Uint8Array> {
+			if (options?.hangStoreGet) {
+				return await new Promise<Uint8Array>(() => undefined);
+			}
 			const buf = objects.get(hash);
 			if (!buf) throw new Error("Object not found");
 			return buf;
@@ -307,7 +321,10 @@ function createHarness(initialFiles: Record<string, string>) {
 		authority,
 		store,
 		replication,
+		...(options?.jobTimeoutMs !== undefined ? { jobTimeoutMs: options.jobTimeoutMs } : {}),
+		...(options?.leaseRenewIntervalMs !== undefined ? { leaseRenewIntervalMs: options.leaseRenewIntervalMs } : {}),
 		completionRetryDelaysMs: [5, 5],
+		onEvent: (event) => events.push(event),
 	});
 
 	return {
@@ -318,9 +335,14 @@ function createHarness(initialFiles: Record<string, string>) {
 		externalSnapshots,
 		completedMerges,
 		completedPublishes,
+		events,
 		getCommitCount: () => commitCount,
+		getLeaseRenewCount: () => leaseRenewCount,
 		setFailCompleteMergeAttempts(count: number) {
-			failCompleteMergeAttempts = count;
+			completeMergeAttemptErrors = Array.from({ length: count }, () => new Error("transient complete merge 503"));
+		},
+		setCompleteMergeAttemptErrors(errors: Error[]) {
+			completeMergeAttemptErrors = [...errors];
 		},
 		putFile,
 		setPendingClaim(next: { merges?: unknown[]; publishes?: unknown[] }) {
@@ -552,5 +574,129 @@ describe("SurfaceFolderWorker", () => {
 		});
 		const snap = h.completedMerges[0]?.p_pre_merge_snapshot as { filesBefore?: Record<string, string | null> };
 		expect(snap?.filesBefore?.["brand/voice.md"]).toBe("Original voice.");
+	});
+
+	it("applies jobTimeoutMs even when caller passes a shutdown AbortSignal and aborts hung store reads cleanly", async () => {
+		const h = createHarness(
+			{ "brand/voice.md": "Original voice." },
+			{ jobTimeoutMs: 40, leaseRenewIntervalMs: 50, hangStoreGet: true },
+		);
+		const jobId = randomUUID();
+		const leaseToken = randomUUID();
+		const changeId = randomUUID();
+		const shutdown = new AbortController();
+		h.setPendingClaim({
+			merges: [
+				{
+					jobId,
+					kind: "land_change",
+					surfaceId: h.surfaceId,
+					profileId: h.profileId,
+					environmentId: h.environmentId,
+					leaseToken,
+					folderRoot: "brand",
+					payload: { changeIds: [changeId] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId,
+							kind: "folder_patch",
+							title: "Update voice",
+							summary: "Refines brand voice",
+							affectedPaths: ["voice.md"],
+							patchManifest: [{ op: "write_text", path: "voice.md", content: "Updated voice." }],
+						},
+					],
+				},
+			],
+		});
+
+		expect(await h.worker.processDue(8, shutdown.signal)).toBe(1);
+		expect(shutdown.signal.aborted).toBe(false);
+		expect(h.getCommitCount()).toBe(0);
+		expect(h.completedMerges).toHaveLength(1);
+		expect(h.completedMerges[0]).toMatchObject({
+			p_job_id: jobId,
+			p_status: "failed",
+			p_lease_token: leaseToken,
+		});
+		const renewsAfter = h.getLeaseRenewCount();
+		await new Promise((resolve) => setTimeout(resolve, 90));
+		expect(h.getLeaseRenewCount()).toBe(renewsAfter);
+	});
+
+	it("treats 55000 Surface job is not running on completion retry after a committed write as already landed for land and undo", async () => {
+		const h = createHarness({
+			"brand/voice.md": "Original voice.",
+		});
+		const jobId = randomUUID();
+		const changeId = randomUUID();
+		const notRunningError = Object.assign(new Error("Surface job is not running"), { code: "55000" });
+
+		h.setCompleteMergeAttemptErrors([new Error("attempt 1 response timed out"), notRunningError]);
+		h.setPendingClaim({
+			merges: [
+				{
+					jobId,
+					kind: "land_change",
+					surfaceId: h.surfaceId,
+					profileId: h.profileId,
+					environmentId: h.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "brand",
+					payload: { changeIds: [changeId] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId,
+							kind: "folder_patch",
+							title: "Update voice",
+							summary: "Refines brand voice",
+							affectedPaths: ["voice.md"],
+							patchManifest: [{ op: "write_text", path: "voice.md", content: "Updated voice." }],
+						},
+					],
+				},
+			],
+		});
+
+		expect(await h.worker.processDue(8)).toBe(1);
+		expect(h.getCommitCount()).toBe(1);
+		expect(h.readText("brand/voice.md")).toBe("Updated voice.");
+		expect(h.completedMerges).toHaveLength(0);
+		expect(h.events.some((ev) => ev.kind === "surface_folder_merge_landed")).toBe(true);
+		expect(h.events.some((ev) => ev.kind === "surface_folder_merge_completion_failed")).toBe(false);
+
+		const undoJobId = randomUUID();
+		const currentVersion = h.entries.get("brand/voice.md")?.version ?? null;
+		h.setCompleteMergeAttemptErrors([new Error("undo attempt 1 response timed out"), notRunningError]);
+		h.setPendingClaim({
+			merges: [
+				{
+					jobId: undoJobId,
+					kind: "undo_change",
+					surfaceId: h.surfaceId,
+					profileId: h.profileId,
+					environmentId: h.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "brand",
+					payload: { changeId },
+					preMergeSnapshot: {
+						snapshotId: "",
+						folderRoot: "brand",
+						changeIds: [changeId],
+						filesBefore: { "brand/voice.md": "Original voice." },
+						versionsAfter: { "brand/voice.md": currentVersion },
+					},
+					approvedChanges: [],
+				},
+			],
+		});
+
+		expect(await h.worker.processDue(8)).toBe(1);
+		expect(h.getCommitCount()).toBe(2);
+		expect(h.readText("brand/voice.md")).toBe("Original voice.");
+		expect(h.events.some((ev) => ev.kind === "surface_folder_undo_landed")).toBe(true);
+		expect(h.events.some((ev) => ev.kind === "surface_folder_merge_completion_failed")).toBe(false);
 	});
 });

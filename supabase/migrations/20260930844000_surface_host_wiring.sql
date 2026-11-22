@@ -1861,3 +1861,161 @@ language plpgsql security definer set search_path = '' as $$
 begin
 	return public.qorpera_surface_claim_pending_jobs_for_lane(p_limit, 'all');
 end $$;
+
+alter table public.qorpera_surface_jobs
+	add column if not exists completed_lease_token uuid,
+	add column if not exists completed_outcome text;
+
+-- WHY: Make merge completion retries idempotent for the exact completing lease token so a lost HTTP response after commit never fails retries or double-applies side effects.
+create or replace function public.qorpera_surface_complete_merge(
+	p_job_id uuid,
+	p_status text,
+	p_main_before text default null,
+	p_main_after text default null,
+	p_conflict_change_id uuid default null,
+	p_conflict_paths text[] default null,
+	p_error_detail text default null,
+	p_pre_merge_snapshot jsonb default null,
+	p_lease_token uuid default null
+)
+returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+	v_job public.qorpera_surface_jobs%rowtype;
+	v_surface public.qorpera_surfaces%rowtype;
+	v_change_ids uuid[];
+	v_merged_count integer := 0;
+begin
+	if p_status not in ('landed', 'conflicted', 'failed') then
+		raise exception 'Invalid merge completion status' using errcode = '22023';
+	end if;
+
+	select * into v_job from public.qorpera_surface_jobs where id = p_job_id for update;
+	if v_job.id is null then raise exception 'Surface job not found' using errcode = 'P0002'; end if;
+	if v_job.kind not in ('land_change', 'undo_change') then
+		raise exception 'Surface job is not a merge job' using errcode = '22023';
+	end if;
+	if v_job.status <> 'running' then
+		if p_lease_token is not null
+			and v_job.completed_lease_token = p_lease_token
+			and v_job.completed_outcome = p_status then
+			return jsonb_build_object('jobId', p_job_id, 'status', p_status, 'idempotent', true);
+		end if;
+		raise exception 'Surface job is not running' using errcode = '55000';
+	end if;
+	if v_job.lease_token is not null and p_lease_token is distinct from v_job.lease_token then
+		raise exception 'Surface job lease mismatch' using errcode = '55000';
+	end if;
+
+	if v_job.session_id is not null then
+		perform 1 from public.qorpera_surface_sessions where id = v_job.session_id for update;
+	end if;
+	select * into v_surface from public.qorpera_surfaces where id = v_job.surface_id for update;
+
+	if v_job.kind = 'land_change' then
+		select coalesce(array_agg(x::uuid), '{}'::uuid[])
+		into v_change_ids
+		from jsonb_array_elements_text(coalesce(v_job.payload -> 'changeIds', '[]'::jsonb)) as x;
+
+		if p_status = 'landed' then
+			update public.qorpera_surface_changes
+			set
+				status = 'merged',
+				conflict_paths = null,
+				landed_main_before = coalesce(p_main_before, landed_main_before),
+				landed_main_after = coalesce(p_main_after, landed_main_after),
+				pre_merge_snapshot = coalesce(p_pre_merge_snapshot, pre_merge_snapshot),
+				resolved_at = clock_timestamp()
+			where id = any(v_change_ids)
+				and surface_id = v_job.surface_id
+				and status in ('merging', 'staged', 'conflicted');
+			get diagnostics v_merged_count = row_count;
+
+			update public.qorpera_surfaces
+			set
+				live_head_sha = coalesce(p_main_after, live_head_sha),
+				unpublished_change_count = unpublished_change_count + greatest(v_merged_count, 0),
+				updated_at = clock_timestamp()
+			where id = v_job.surface_id;
+
+			if coalesce((v_job.payload ->> 'autoPublish')::boolean, false) then
+				insert into public.qorpera_surface_jobs(
+					profile_id, surface_id, kind, payload, requested_by_user_id
+				)
+				values (
+					v_job.profile_id, v_job.surface_id, 'publish_surface',
+					jsonb_build_object('liveHeadSha', coalesce(p_main_after, v_surface.live_head_sha), 'repositoryKey', v_surface.repository_key),
+					v_job.requested_by_user_id
+				);
+			end if;
+		elsif p_status = 'conflicted' then
+			update public.qorpera_surface_changes
+			set
+				status = case when id = p_conflict_change_id then 'conflicted' else 'staged' end,
+				conflict_paths = case when id = p_conflict_change_id then p_conflict_paths else null end
+			where id = any(v_change_ids) and surface_id = v_job.surface_id and status = 'merging';
+		else
+			update public.qorpera_surface_changes
+			set status = 'staged'
+			where id = any(v_change_ids) and surface_id = v_job.surface_id and status = 'merging';
+		end if;
+
+		if v_job.session_id is not null then
+			perform public.qorpera_evaluate_surface_session_lifecycle(v_job.session_id);
+		end if;
+	elsif v_job.kind = 'undo_change' then
+		if p_status = 'landed' and p_main_after is not null then
+			update public.qorpera_surfaces
+			set live_head_sha = p_main_after, updated_at = clock_timestamp()
+			where id = v_job.surface_id;
+		elsif p_status in ('conflicted', 'failed') then
+			-- WHY: When an undo is refused or fails without modifying disk, keep the database merged status aligned with disk.
+			if jsonb_typeof(v_job.payload -> 'changeIds') = 'array' then
+				select coalesce(array_agg(x::uuid), '{}'::uuid[])
+				into v_change_ids
+				from jsonb_array_elements_text(v_job.payload -> 'changeIds') as x;
+			elsif v_job.payload ? 'changeId' then
+				v_change_ids := array[(v_job.payload ->> 'changeId')::uuid];
+			else
+				v_change_ids := '{}'::uuid[];
+			end if;
+
+			update public.qorpera_surface_changes
+			set status = 'merged', resolved_at = coalesce(resolved_at, clock_timestamp())
+			where id = any(v_change_ids)
+				and surface_id = v_job.surface_id
+				and status = 'staged';
+			get diagnostics v_merged_count = row_count;
+
+			if v_merged_count > 0 then
+				update public.qorpera_surfaces
+				set
+					unpublished_change_count = unpublished_change_count + v_merged_count,
+					updated_at = clock_timestamp()
+				where id = v_job.surface_id;
+			end if;
+
+			if v_job.session_id is not null then
+				perform public.qorpera_evaluate_surface_session_lifecycle(v_job.session_id);
+			end if;
+		end if;
+	end if;
+
+	update public.qorpera_surface_jobs
+	set
+		status = case when p_status in ('landed', 'conflicted') then 'completed' else 'failed' end,
+		error_detail = p_error_detail,
+		lease_expires_at = null,
+		lease_token = null,
+		completed_lease_token = p_lease_token,
+		completed_outcome = p_status,
+		completed_at = clock_timestamp(),
+		updated_at = clock_timestamp()
+	where id = p_job_id;
+
+	return jsonb_build_object('jobId', p_job_id, 'status', p_status);
+end $$;
+revoke all on function public.qorpera_surface_complete_merge(uuid, text, text, text, uuid, text[], text, jsonb, uuid)
+	from public, anon, authenticated;
+grant execute on function public.qorpera_surface_complete_merge(uuid, text, text, text, uuid, text[], text, jsonb, uuid)
+	to service_role;

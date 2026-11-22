@@ -6,7 +6,7 @@ import {
 	parseStudioPatchOps,
 	type StudioPatchOp,
 } from "@qorpera/contracts";
-import { withDefaultTimeout } from "./abort-scope.ts";
+import { withAbortScopes } from "./abort-scope.ts";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import { UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
@@ -80,17 +80,64 @@ export interface SurfaceFolderWorkerOptions {
 const DEFAULT_JOB_TIMEOUT_MS = 45_000;
 const DEFAULT_COMPLETION_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000] as const;
 
+function errorTextWithCause(error: unknown): string {
+	if (!error) return "";
+	const parts: string[] = [];
+	let cur: unknown = error;
+	for (let depth = 0; depth < 3 && cur !== undefined && cur !== null; depth += 1) {
+		parts.push(cur instanceof Error ? cur.message : String(cur));
+		cur = cur instanceof Error ? cur.cause : undefined;
+	}
+	return parts.join(" ");
+}
+
+function isAlreadyCompletedJobError(error: unknown): boolean {
+	if (!error) return false;
+	const text = errorTextWithCause(error);
+	if (/surface job is not running/i.test(text)) return true;
+	const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
+	return code === "55000" && /not running/i.test(text);
+}
+
+// WHY: Bound object-store and replication calls that do not accept an AbortSignal so per-job timeouts always release the worker.
+function raceSignal<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) {
+		work.catch(() => undefined);
+		return Promise.reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
+	}
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = (): void => {
+			work.catch(() => undefined);
+			reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+		work.then(
+			(value) => {
+				signal.removeEventListener("abort", onAbort);
+				resolve(value);
+			},
+			(error) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
+}
+
 async function retryCommittedRpc<T>(
 	fn: (attemptSignal: AbortSignal) => Promise<T>,
 	shutdownSignal: AbortSignal | undefined,
 	delaysMs: readonly number[],
-): Promise<T> {
+	options?: { readonly treatNotRunningAsDoneOnRetry?: boolean },
+): Promise<T | undefined> {
 	let lastError: unknown;
 	for (let attempt = 0; attempt <= delaysMs.length; attempt += 1) {
-		const attemptSignal = AbortSignal.timeout(15_000);
 		try {
-			return await fn(attemptSignal);
+			return await withAbortScopes([], fn, 15_000);
 		} catch (error) {
+			if (attempt > 0 && options?.treatNotRunningAsDoneOnRetry && isAlreadyCompletedJobError(error)) {
+				return undefined;
+			}
 			lastError = error;
 			const delayMs = delaysMs[attempt];
 			if (delayMs === undefined || shutdownSignal?.aborted) break;
@@ -330,7 +377,7 @@ export class SurfaceFolderWorker {
 		});
 		this.#leaseRenewIntervalMs = Math.max(50, options.leaseRenewIntervalMs ?? 60_000);
 		this.#leaseExtendSeconds = Math.min(Math.max(30, options.leaseExtendSeconds ?? 300), 900);
-		this.#jobTimeoutMs = Math.max(1_000, options.jobTimeoutMs ?? DEFAULT_JOB_TIMEOUT_MS);
+		this.#jobTimeoutMs = Math.max(25, options.jobTimeoutMs ?? DEFAULT_JOB_TIMEOUT_MS);
 		this.#completionRetryDelaysMs = options.completionRetryDelaysMs ?? DEFAULT_COMPLETION_RETRY_DELAYS_MS;
 	}
 
@@ -341,13 +388,17 @@ export class SurfaceFolderWorker {
 	}
 
 	async processDue(limit = 8, signal?: AbortSignal): Promise<number> {
-		// WHY: Give the claim and each individual job their own bounded timeout so a slow batch never aborts a job between commit and completion.
-		const raw = (await withDefaultTimeout(signal, 20_000, (claimSignal) =>
-			this.#options.authority.publisher(
-				"qorpera_surface_claim_pending_jobs_for_lane",
-				{ p_limit: Math.min(Math.max(1, limit), 64), p_lane: "folder" },
-				claimSignal,
-			),
+		// WHY: Combine caller shutdown signal with per-claim and per-job timeouts via withAbortScopes so timeouts always apply even when CLI passes a shutdown signal.
+		const callerSignals = signal ? [signal] : [];
+		const raw = (await withAbortScopes(
+			callerSignals,
+			(claimSignal) =>
+				this.#options.authority.publisher(
+					"qorpera_surface_claim_pending_jobs_for_lane",
+					{ p_limit: Math.min(Math.max(1, limit), 64), p_lane: "folder" },
+					claimSignal,
+				),
+			20_000,
 		)) as { merges?: unknown; publishes?: unknown } | null;
 		const merges = Array.isArray(raw?.merges)
 			? raw.merges.map(parseClaimedFolderMerge).filter((j): j is ClaimedFolderMergeJob => j !== null)
@@ -359,17 +410,25 @@ export class SurfaceFolderWorker {
 		let handled = 0;
 		for (const merge of merges) {
 			if (signal?.aborted) break;
-			await withDefaultTimeout(signal, this.#jobTimeoutMs, (jobSignal) =>
-				this.#withJobLease(merge.jobId, merge.leaseToken, jobSignal, () =>
-					this.#handleMerge(merge, jobSignal, signal),
-				),
+			await withAbortScopes(
+				callerSignals,
+				(jobSignal) =>
+					this.#withJobLease(merge.jobId, merge.leaseToken, jobSignal, () =>
+						this.#handleMerge(merge, jobSignal, signal),
+					),
+				this.#jobTimeoutMs,
 			);
 			handled += 1;
 		}
 		for (const pub of publishes) {
 			if (signal?.aborted) break;
-			await withDefaultTimeout(signal, this.#jobTimeoutMs, (jobSignal) =>
-				this.#withJobLease(pub.jobId, pub.leaseToken, jobSignal, () => this.#handlePublish(pub, jobSignal)),
+			await withAbortScopes(
+				callerSignals,
+				(jobSignal) =>
+					this.#withJobLease(pub.jobId, pub.leaseToken, jobSignal, () =>
+						this.#handlePublish(pub, jobSignal, signal),
+					),
+				this.#jobTimeoutMs,
 			);
 			handled += 1;
 		}
@@ -445,10 +504,13 @@ export class SurfaceFolderWorker {
 		) {
 			throw new Error(`Invalid folder entry metadata for ${path}`);
 		}
-		const bytes = await this.#folder.read(
-			environmentId,
-			{ manifestSha256: entry.manifestSha256, fileSha256: entry.fileSha256, bytes: entry.bytes },
-			MAX_READ_BYTES,
+		const bytes = await raceSignal(
+			this.#folder.read(
+				environmentId,
+				{ manifestSha256: entry.manifestSha256, fileSha256: entry.fileSha256, bytes: entry.bytes },
+				MAX_READ_BYTES,
+				signal,
+			),
 			signal,
 		);
 		return { content: UTF8_DECODER.decode(bytes), version, isDirectory: false };
@@ -484,7 +546,13 @@ export class SurfaceFolderWorker {
 				return;
 			}
 			this.#emit({ kind: "surface_folder_merge_failed", jobId: job.jobId, error: errorDetail });
-			await this.#completeMerge(job, { status: "failed", errorDetail }, signal);
+			if (!shutdownSignal?.aborted) {
+				await withAbortScopes(
+					shutdownSignal ? [shutdownSignal] : [],
+					(failSignal) => this.#completeMerge(job, { status: "failed", errorDetail }, failSignal),
+					10_000,
+				).catch(() => undefined);
+			}
 		}
 	}
 
@@ -582,12 +650,15 @@ export class SurfaceFolderWorker {
 				unitPaths.push(path);
 			} else {
 				const bytes = UTF8_ENCODER.encode(nextContent);
-				const file = await this.#folder.stage(
-					environmentId,
-					bytes,
-					{ mediaType: mediaTypeForPath(path), executable: false },
+				const file = await raceSignal(
+					this.#folder.stage(
+						environmentId,
+						bytes,
+						{ mediaType: mediaTypeForPath(path), executable: false },
+						signal,
+						{ profileId: job.profileId },
+					),
 					signal,
-					{ profileId: job.profileId },
 				);
 				units.push({
 					op: "write",
@@ -677,6 +748,7 @@ export class SurfaceFolderWorker {
 			(attemptSignal) => this.#completeMerge(job, { status: "landed", preMergeSnapshot }, attemptSignal),
 			shutdownSignal,
 			this.#completionRetryDelaysMs,
+			{ treatNotRunningAsDoneOnRetry: true },
 		);
 		this.#emit({
 			kind: "surface_folder_merge_landed",
@@ -790,12 +862,15 @@ export class SurfaceFolderWorker {
 				unitPaths.push(path);
 			} else {
 				const bytes = UTF8_ENCODER.encode(beforeContent);
-				const file = await this.#folder.stage(
-					environmentId,
-					bytes,
-					{ mediaType: mediaTypeForPath(path), executable: false },
+				const file = await raceSignal(
+					this.#folder.stage(
+						environmentId,
+						bytes,
+						{ mediaType: mediaTypeForPath(path), executable: false },
+						signal,
+						{ profileId: job.profileId },
+					),
 					signal,
-					{ profileId: job.profileId },
 				);
 				units.push({
 					op: "write",
@@ -841,6 +916,7 @@ export class SurfaceFolderWorker {
 			(attemptSignal) => this.#completeMerge(job, { status: "landed" }, attemptSignal),
 			shutdownSignal,
 			this.#completionRetryDelaysMs,
+			{ treatNotRunningAsDoneOnRetry: true },
 		);
 		this.#emit({ kind: "surface_folder_undo_landed", jobId: job.jobId, surfaceId: job.surfaceId });
 	}
@@ -895,7 +971,11 @@ export class SurfaceFolderWorker {
 		return { status: "saved", versionsAfter };
 	}
 
-	async #handlePublish(job: ClaimedFolderPublishJob, signal: AbortSignal): Promise<void> {
+	async #handlePublish(
+		job: ClaimedFolderPublishJob,
+		signal: AbortSignal,
+		shutdownSignal: AbortSignal | undefined,
+	): Promise<void> {
 		try {
 			await this.#options.authority.publisher(
 				"qorpera_surface_complete_publish",
@@ -912,19 +992,24 @@ export class SurfaceFolderWorker {
 		} catch (error) {
 			const errorDetail = formatError(error);
 			this.#emit({ kind: "surface_folder_publish_failed", jobId: job.jobId, error: errorDetail });
-			await this.#options.authority
-				.publisher(
-					"qorpera_surface_complete_publish",
-					{
-						p_job_id: job.jobId,
-						p_status: "failed",
-						p_published_head_sha: null,
-						p_error_detail: errorDetail,
-						p_lease_token: job.leaseToken,
-					},
-					signal,
-				)
-				.catch(() => undefined);
+			if (!shutdownSignal?.aborted) {
+				await withAbortScopes(
+					shutdownSignal ? [shutdownSignal] : [],
+					(failSignal) =>
+						this.#options.authority.publisher(
+							"qorpera_surface_complete_publish",
+							{
+								p_job_id: job.jobId,
+								p_status: "failed",
+								p_published_head_sha: null,
+								p_error_detail: errorDetail,
+								p_lease_token: job.leaseToken,
+							},
+							failSignal,
+						),
+					10_000,
+				).catch(() => undefined);
+			}
 		}
 	}
 

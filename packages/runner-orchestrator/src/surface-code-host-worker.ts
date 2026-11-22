@@ -68,17 +68,40 @@ const MAX_SHARED_ASSET_READ_BYTES = 32 * 1024;
 const GIT_SHA = /^[0-9a-f]{40}$/;
 const DEFAULT_COMPLETION_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000] as const;
 
+function errorTextWithCause(error: unknown): string {
+	if (!error) return "";
+	const parts: string[] = [];
+	let cur: unknown = error;
+	for (let depth = 0; depth < 3 && cur !== undefined && cur !== null; depth += 1) {
+		parts.push(cur instanceof Error ? cur.message : String(cur));
+		cur = cur instanceof Error ? cur.cause : undefined;
+	}
+	return parts.join(" ");
+}
+
+function isAlreadyCompletedJobError(error: unknown): boolean {
+	if (!error) return false;
+	const text = errorTextWithCause(error);
+	if (/surface job is not running/i.test(text)) return true;
+	const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
+	return code === "55000" && /not running/i.test(text);
+}
+
 async function retryCommittedCompletion<T>(
 	fn: (attemptSignal: AbortSignal) => Promise<T>,
 	parentSignal: AbortSignal,
 	delaysMs: readonly number[],
-): Promise<T> {
+	options?: { readonly treatNotRunningAsDoneOnRetry?: boolean },
+): Promise<T | undefined> {
 	let lastError: unknown;
 	for (let attempt = 0; attempt <= delaysMs.length; attempt += 1) {
 		const attemptSignal = AbortSignal.timeout(15_000);
 		try {
 			return await fn(attemptSignal);
 		} catch (error) {
+			if (attempt > 0 && options?.treatNotRunningAsDoneOnRetry && isAlreadyCompletedJobError(error)) {
+				return undefined;
+			}
 			lastError = error;
 			const delayMs = delaysMs[attempt];
 			if (delayMs === undefined || parentSignal.aborted) break;
@@ -559,7 +582,7 @@ export class SurfaceCodeHostWorker {
 		codeHostJob: CodeHostJob,
 		overrides?: {
 			readonly controlPlane?: SurfaceExecutionControlPlane;
-			readonly deferRebase?: (update: () => Promise<void>) => void;
+			readonly deferRebase?: (update: (rebaseSignal: AbortSignal) => Promise<void>) => void;
 		},
 	) {
 		const controlPlane = overrides?.controlPlane ?? createControlPlaneBridge(this.#control);
@@ -587,18 +610,18 @@ export class SurfaceCodeHostWorker {
 				return { siteVersionId: uploaded.versionId };
 			},
 			onSessionChangesRebased: async (input, callSignal) => {
-				const applyRebases = async (): Promise<void> => {
+				const applyRebases = async (rebaseSignal: AbortSignal): Promise<void> => {
 					if (input.sessionId && input.siblingRebase) {
-						await this.#persistRebaseOutcome(input.surfaceId, input.sessionId, input.siblingRebase, callSignal);
+						await this.#persistRebaseOutcome(input.surfaceId, input.sessionId, input.siblingRebase, rebaseSignal);
 					}
 					for (const peer of input.peerSync) {
-						await this.#persistRebaseOutcome(input.surfaceId, peer.sessionId, peer.result, callSignal);
+						await this.#persistRebaseOutcome(input.surfaceId, peer.sessionId, peer.result, rebaseSignal);
 					}
 				};
 				if (overrides?.deferRebase) {
 					overrides.deferRebase(applyRebases);
 				} else {
-					await applyRebases();
+					await applyRebases(callSignal);
 				}
 			},
 			undoCodeRepoChange: async (input) =>
@@ -736,7 +759,7 @@ export class SurfaceCodeHostWorker {
 		}
 		// WHY: Defer rebase and merge completion RPCs until hosts.run publishes the code host view durably so Postgres never marks a merge landed before git refs persist.
 		let deferredMergeCompletion: CompleteSurfaceMergeInput | null = null;
-		const deferredRebases: (() => Promise<void>)[] = [];
+		const deferredRebases: ((rebaseSignal: AbortSignal) => Promise<void>)[] = [];
 		const bufferedControlPlane: SurfaceExecutionControlPlane = {
 			completeSurfacePreview: controlPlane.completeSurfacePreview,
 			completeSurfacePublish: controlPlane.completeSurfacePublish,
@@ -765,25 +788,33 @@ export class SurfaceCodeHostWorker {
 			);
 			throw error;
 		}
-		if (deferredMergeCompletion) {
-			const completionPayload = deferredMergeCompletion;
-			await retryCommittedCompletion(
-				(attemptSignal) => controlPlane.completeSurfaceMerge(completionPayload, attemptSignal),
-				signal,
-				this.#completionRetryDelaysMs,
-			);
-		}
-		// WHY: Persist rebased sibling/peer SHAs best-effort only after the landed merge completion is recorded so a transient rebase failure never rolls back or blocks completion.
-		for (const applyRebase of deferredRebases) {
-			try {
-				await applyRebase();
-			} catch (error) {
-				this.#report?.({
-					event: "surface-code-host-rebase-persist-failed",
-					jobId: merge.jobId,
-					surfaceId: merge.surfaceId,
-					error: error instanceof Error ? error.message : String(error),
-				});
+		try {
+			if (deferredMergeCompletion) {
+				const completionPayload = deferredMergeCompletion;
+				await retryCommittedCompletion(
+					(attemptSignal) => controlPlane.completeSurfaceMerge(completionPayload, attemptSignal),
+					signal,
+					this.#completionRetryDelaysMs,
+					{ treatNotRunningAsDoneOnRetry: true },
+				);
+			}
+		} finally {
+			// WHY: Always attempt best-effort persistence of rebased sibling/peer SHAs regardless of completion outcome so git worktrees and database SHAs stay aligned.
+			for (const applyRebase of deferredRebases) {
+				try {
+					await retryCommittedCompletion(
+						(attemptSignal) => applyRebase(attemptSignal),
+						signal,
+						this.#completionRetryDelaysMs,
+					);
+				} catch (error) {
+					this.#report?.({
+						event: "surface-code-host-rebase-persist-failed",
+						jobId: merge.jobId,
+						surfaceId: merge.surfaceId,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
 			}
 		}
 	}

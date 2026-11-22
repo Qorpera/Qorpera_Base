@@ -638,7 +638,212 @@ describe("SurfaceCodeHostWorker", () => {
 
 		const pass = await worker.pass(new AbortController().signal);
 		expect(pass).toEqual({ previews: 0, merges: 1, publishes: 0, failed: 0 });
-		expect(callOrder).toEqual(["published", "complete:1:landed", "complete:2:landed", "rebase"]);
+		expect(callOrder).toEqual(["published", "complete:1:landed", "complete:2:landed", "rebase", "rebase", "rebase"]);
 		expect(reported.some((ev) => ev.event === "surface-code-host-rebase-persist-failed")).toBe(true);
+	});
+
+	it("treats 55000 not-running on completion retry as landed and still persists rebases if completion fails", async () => {
+		const f = await createCodeHostFixture();
+		const profileId = randomUUID();
+		const environmentId = randomUUID();
+		const surfaceId = randomUUID();
+		const sessionId = randomUUID();
+		const workerId = randomUUID();
+		const changeA = randomUUID();
+		const changeB = randomUUID();
+		const changeC = randomUUID();
+
+		await addCodeWorktree(f.job, { repository: f.repository, workerId, baseSha: f.baseSha });
+		const sessionWorktree = join(f.code, "worktrees", workerId);
+		await writeFile(join(sessionWorktree, "index.html"), "<!doctype html><h1>Landed V3</h1>\n");
+		await f.git(sessionWorktree, "add", "index.html");
+		await f.git(sessionWorktree, "commit", "-m", "Update hero v3");
+		const shaA = await f.git(sessionWorktree, "rev-parse", "HEAD");
+
+		await writeFile(join(sessionWorktree, "faq.html"), "<!doctype html><p>FAQ</p>\n");
+		await f.git(sessionWorktree, "add", "faq.html");
+		await f.git(sessionWorktree, "commit", "-m", "Add faq");
+		const shaB = await f.git(sessionWorktree, "rev-parse", "HEAD");
+
+		await writeFile(join(sessionWorktree, "contact.html"), "<!doctype html><p>Contact</p>\n");
+		await f.git(sessionWorktree, "add", "contact.html");
+		await f.git(sessionWorktree, "commit", "-m", "Add contact");
+		const shaC = await f.git(sessionWorktree, "rev-parse", "HEAD");
+
+		const callOrder: string[] = [];
+		let mode: "not_running_retry" | "permanent_failure" = "not_running_retry";
+		let completeAttempts = 0;
+		let rebaseAttempts = 0;
+		let pendingClaim: Record<string, unknown> = {
+			sessions: [],
+			previews: [],
+			merges: [],
+			publishes: [],
+			automations: [],
+		};
+
+		const control = {
+			async call(method: SurfaceCodeHostRpc, args: Record<string, unknown>): Promise<unknown> {
+				if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+					const res = pendingClaim;
+					pendingClaim = { sessions: [], previews: [], merges: [], publishes: [], automations: [] };
+					return res;
+				}
+				if (method === "qorpera_surface_complete_merge") {
+					completeAttempts += 1;
+					callOrder.push(`complete:${completeAttempts}`);
+					if (mode === "not_running_retry") {
+						if (completeAttempts === 1) throw new Error("attempt 1 timed out after commit");
+						throw new Error("CODING_CONTROL_UNCONFIRMED", {
+							cause: new Error("qorpera_surface_complete_merge: HTTP 500 55000 Surface job is not running"),
+						});
+					}
+					throw new Error("persistent HTTP 503");
+				}
+				if (method === "qorpera_surface_update_rebased_changes") {
+					rebaseAttempts += 1;
+					callOrder.push(`rebase:${rebaseAttempts}`);
+					if (mode === "permanent_failure" && rebaseAttempts === 1) {
+						throw new Error("transient rebase error");
+					}
+					return { updated: 1, sessionId: args.p_session_id };
+				}
+				if (method === "qorpera_surface_renew_lease") {
+					return { renewed: true };
+				}
+				throw new Error(`Unexpected RPC ${method}`);
+			},
+		};
+
+		const hosts = {
+			async run<T>(
+				_companyId: string,
+				_envId: string,
+				_signal: AbortSignal,
+				fn: (job: CodeHostJob, gc: never) => Promise<T>,
+			): Promise<T> {
+				const result = await fn(f.job, undefined as never);
+				callOrder.push("published");
+				return result;
+			},
+		};
+
+		const worker = new SurfaceCodeHostWorker({
+			control,
+			hosts,
+			readTree: readCodeSiteTree,
+			completionRetryDelaysMs: [5, 5],
+		});
+
+		pendingClaim = {
+			sessions: [],
+			previews: [],
+			merges: [
+				{
+					jobId: randomUUID(),
+					kind: "land_change",
+					surfaceId,
+					sessionId,
+					profileId,
+					environmentId,
+					leaseToken: randomUUID(),
+					sourceKind: "code_repo",
+					repositoryKey: "thetaband/website",
+					folderRoot: null,
+					expectMainSha: f.baseSha,
+					sessionWorkerId: workerId,
+					sessionState: "ready",
+					sessionHasActiveChat: false,
+					payload: { changeIds: [changeA] },
+					allSessionChangeStatuses: [
+						{ changeId: changeA, status: "merging" },
+						{ changeId: changeB, status: "staged" },
+					],
+					approvedChanges: [
+						{
+							changeId: changeA,
+							kind: "git_range",
+							parentSha: f.baseSha,
+							headSha: shaA,
+							title: "Update hero v3",
+							summary: "Updates hero heading",
+							patchManifest: null,
+							affectedPaths: ["index.html"],
+						},
+					],
+					siblingRemainingChanges: [{ changeId: changeB, parentSha: shaA, headSha: shaB, title: "Add faq" }],
+					peerSessions: [],
+				},
+			],
+			publishes: [],
+			automations: [],
+		};
+
+		const firstPass = await worker.pass(new AbortController().signal);
+		expect(firstPass).toEqual({ previews: 0, merges: 1, publishes: 0, failed: 0 });
+		expect(callOrder).toEqual(["published", "complete:1", "complete:2", "rebase:1"]);
+
+		callOrder.length = 0;
+		completeAttempts = 0;
+		rebaseAttempts = 0;
+		mode = "permanent_failure";
+		const mainAfterFirst = await f.git(join(f.code, "repo.git"), "rev-parse", "refs/heads/main");
+		const rebasedWorktreeHead = await f.git(sessionWorktree, "rev-parse", "HEAD");
+		const rebasedParent = await f.git(sessionWorktree, "rev-parse", "HEAD~1");
+		await writeFile(join(sessionWorktree, "contact.html"), "<!doctype html><p>Contact v2</p>\n");
+		await f.git(sessionWorktree, "add", "contact.html");
+		await f.git(sessionWorktree, "commit", "-m", "Add contact v2");
+		const shaC2 = await f.git(sessionWorktree, "rev-parse", "HEAD");
+
+		pendingClaim = {
+			sessions: [],
+			previews: [],
+			merges: [
+				{
+					jobId: randomUUID(),
+					kind: "land_change",
+					surfaceId,
+					sessionId,
+					profileId,
+					environmentId,
+					leaseToken: randomUUID(),
+					sourceKind: "code_repo",
+					repositoryKey: "thetaband/website",
+					folderRoot: null,
+					expectMainSha: mainAfterFirst,
+					sessionWorkerId: workerId,
+					sessionState: "ready",
+					sessionHasActiveChat: false,
+					payload: { changeIds: [changeB] },
+					allSessionChangeStatuses: [
+						{ changeId: changeB, status: "merging" },
+						{ changeId: changeC, status: "staged" },
+					],
+					approvedChanges: [
+						{
+							changeId: changeB,
+							kind: "git_range",
+							parentSha: rebasedParent,
+							headSha: rebasedWorktreeHead,
+							title: "Add faq",
+							summary: "Adds faq page",
+							patchManifest: null,
+							affectedPaths: ["faq.html"],
+						},
+					],
+					siblingRemainingChanges: [
+						{ changeId: changeC, parentSha: rebasedWorktreeHead, headSha: shaC2, title: "Add contact" },
+					],
+					peerSessions: [],
+				},
+			],
+			publishes: [],
+			automations: [],
+		};
+		expect(shaC).toMatch(/^[0-9a-f]{40}$/);
+
+		const secondPass = await worker.pass(new AbortController().signal);
+		expect(secondPass).toEqual({ previews: 0, merges: 0, publishes: 0, failed: 1 });
+		expect(callOrder).toEqual(["published", "complete:1", "complete:2", "complete:3", "rebase:1", "rebase:2"]);
 	});
 });
