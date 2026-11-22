@@ -34,6 +34,9 @@ install -d -m 0755 /usr/local/libexec/qorpera-web-hosting
 
 install -m 0755 "$BIN_DIR/qorpera-web-router" /usr/local/bin/qorpera-web-router
 install -m 0755 "$BIN_DIR/qorpera-app-host" /usr/local/bin/qorpera-app-host
+if [ -x "$BIN_DIR/caddy" ]; then
+	install -m 0755 "$BIN_DIR/caddy" /usr/bin/caddy
+fi
 install -m 0755 "$KIT_DIR/builder-railpack.sh" /usr/local/libexec/qorpera-web-hosting/builder-railpack.sh
 install -m 0644 "$KIT_DIR/Caddyfile" /etc/qorpera-web/Caddyfile
 install -m 0644 "$KIT_DIR/nftables-edge.nft" /etc/qorpera-web/nftables-edge.nft
