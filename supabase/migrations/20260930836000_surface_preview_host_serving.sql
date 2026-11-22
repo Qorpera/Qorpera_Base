@@ -2,12 +2,13 @@ set local lock_timeout = '3s';
 
 do $$ begin
 	if to_regprocedure('public.qorpera_spawn_cross_surface_session(uuid,text,text,text,jsonb)') is not null then
-		raise exception 'Surface Preview Host Serving (20260930834000) is already applied';
+		raise exception 'Surface Preview Host Serving (20260930836000) is already applied';
 	end if;
 	if to_regclass('public.qorpera_surface_previews') is null
 		or to_regprocedure('public.qorpera_site_serve_host(text,text,text,text,integer,integer)') is null
-		or to_regprocedure('public.qorpera_site_member_pass_redeem(text,text)') is null then
-		raise exception 'Surface Preview Host Serving (20260930834000) requires 20260930756000, 20260930774000, and 20260930833000 first';
+		or to_regprocedure('public.qorpera_site_member_pass_redeem(text,text)') is null
+		or to_regprocedure('public.qorpera_web_edge_tls_allow(text)') is null then
+		raise exception 'Surface Preview Host Serving (20260930836000) requires 20260930756000, 20260930774000, 20260930832000, and 20260930835000 first';
 	end if;
 end $$;
 
@@ -21,7 +22,7 @@ alter table public.qorpera_company_site_sessions
 	add constraint qorpera_company_site_sessions_member check (member_user_id is null or scope in ('site', 'preview')),
 	add constraint qorpera_company_site_sessions_preview_host check ((scope = 'preview') = (preview_host is not null));
 
--- WHY: Matches site-serve's SITE_HOST rule so live, --next, and isolated --p<8chars> preview hosts share one host grammar.
+-- WHY: Matches site-serve's SITE_HOST rule for live, --next, and isolated --p<8chars> surface preview hosts (qorpera-web-router only routes live and --next hosts).
 create or replace function public.qorpera_site_host_pattern(p_domain text)
 returns text language sql immutable set search_path = '' as $$
 	select '^([a-z0-9]+(?:-[a-z0-9]+)*)(--next|--p[a-z0-9]{8})?\.' || replace(p_domain, '.', '\.') || '$'
@@ -54,6 +55,51 @@ begin
 		return jsonb_build_object('slug', v_label, 'scope', 'preview', 'previewId', v_preview_id);
 	end if;
 	return jsonb_build_object('slug', v_label, 'scope', case when v_next then 'next' else 'site' end);
+end $$;
+
+-- WHY: Keeps qorpera_web_edge_tls_allow aligned with qorpera-web-router's is_tls_allowed so on-demand TLS never issues certs for --p preview hosts the router does not yet route.
+create or replace function public.qorpera_web_edge_tls_allow(p_domain text)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+declare v_host text := lower(btrim(coalesce(p_domain, '')));
+	v_settings public.qorpera_site_settings%rowtype;
+	v_parsed jsonb;
+	v_allowed boolean := false;
+begin
+	if auth.role() is distinct from 'service_role' and session_user not in ('postgres', 'service_role') then
+		raise exception 'TLS check requires service_role' using errcode = '42501';
+	end if;
+	if right(v_host, 1) = '.' then
+		v_host := left(v_host, -1);
+	end if;
+	select settings.* into v_settings from public.qorpera_site_settings as settings limit 1;
+	if coalesce(v_settings.enabled and v_settings.domains_enabled, false) then
+		select exists (
+			select 1
+			from public.qorpera_company_site_domains as dom
+			join public.qorpera_company_sites as site on site.id = dom.site_id
+			where dom.hostname = v_host
+				and dom.status in ('dns_verified', 'tls_active')
+				and site.taken_down_at is null
+		) into v_allowed;
+		if v_allowed then
+			return jsonb_build_object('allowed', true, 'reason', 'custom_domain');
+		end if;
+	end if;
+	if coalesce(v_settings.enabled and v_settings.hosts_enabled, false) then
+		v_parsed := public.qorpera_site_host(v_host);
+		if v_parsed is not null and v_parsed ->> 'scope' in ('site', 'next') then
+			select exists (
+				select 1
+				from public.qorpera_company_sites as site
+				where site.slug = v_parsed ->> 'slug'
+					and site.taken_down_at is null
+			) into v_allowed;
+			if v_allowed then
+				return jsonb_build_object('allowed', true, 'reason', 'site_host');
+			end if;
+		end if;
+	end if;
+	return jsonb_build_object('allowed', false, 'reason', 'denied');
 end $$;
 
 create or replace function public.qorpera_site_member_pass_redeem(p_host text, p_pass text)

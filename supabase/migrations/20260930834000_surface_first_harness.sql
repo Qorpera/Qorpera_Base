@@ -2,7 +2,7 @@ set local lock_timeout = '3s';
 
 do $$ begin
 	if to_regclass('public.qorpera_surfaces') is not null then
-		raise exception 'Surface-First Harness (20260930832000) is already applied';
+		raise exception 'Surface-First Harness (20260930834000) is already applied';
 	end if;
 end $$;
 

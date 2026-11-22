@@ -2,13 +2,13 @@ set local lock_timeout = '3s';
 
 do $$ begin
 	if to_regclass('public.qorpera_surface_jobs') is not null then
-		raise exception 'Surface Platform Live (20260930835000) is already applied';
+		raise exception 'Surface Platform Live (20260930837000) is already applied';
 	end if;
 	if to_regclass('public.qorpera_surfaces') is null then
-		raise exception 'Surface Platform Live (20260930835000) requires 20260930832000 first';
+		raise exception 'Surface Platform Live (20260930837000) requires 20260930834000 first';
 	end if;
 	if to_regclass('public.qorpera_surface_session_messages') is null then
-		raise exception 'Surface Platform Live (20260930835000) requires 20260930833000 first';
+		raise exception 'Surface Platform Live (20260930837000) requires 20260930835000 first';
 	end if;
 end $$;
 

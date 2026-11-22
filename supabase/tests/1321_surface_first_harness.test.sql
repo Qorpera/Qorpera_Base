@@ -793,6 +793,11 @@ begin
 
 	v_served := public.qorpera_site_serve_host(v_site_slug || '--p00000000.qorpera.com', '/', v_redeemed ->> 'token', null, null, null);
 	perform pg_temp.sf_assert(v_served ->> 'state' = 'locked', 'preview session token is bound strictly to its --p host');
+	perform pg_temp.sf_assert(
+		(public.qorpera_web_edge_tls_allow(v_site_slug || '.qorpera.com') ->> 'allowed')::boolean = true
+		and (public.qorpera_web_edge_tls_allow(v_preview_host) ->> 'allowed')::boolean = false,
+		'qorpera_web_edge_tls_allow allows own host but denies --p preview host to match qorpera-web-router'
+	);
 	reset role;
 
 	perform pg_temp.sf_as(v_owner);
