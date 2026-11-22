@@ -281,7 +281,6 @@ export interface SurfacesState {
 	readonly publishedChangeIds: Readonly<Record<string, true>>;
 	readonly studioPatches: Readonly<Record<string, readonly StudioPatchOp[]>>;
 	readonly variantPick: Readonly<Record<string, string>>;
-	readonly historyOpen: boolean;
 	readonly collapsed: Readonly<Record<string, true>>;
 	readonly notes: readonly SurfaceNote[];
 	readonly undo?: SurfaceUndo;
@@ -976,7 +975,6 @@ export class SurfacesStore {
 			publishedChangeIds: {},
 			studioPatches: {},
 			variantPick: {},
-			historyOpen: false,
 			collapsed: {},
 			notes: [],
 			busy: {},
@@ -2425,10 +2423,6 @@ export class SurfacesStore {
 		this.store.set({ device });
 	}
 
-	toggleHistory(): void {
-		this.store.set((state) => ({ historyOpen: !state.historyOpen }));
-	}
-
 	toggleCollapsed(sessionId: string): void {
 		this.store.set((state) => {
 			const collapsed = { ...state.collapsed };
@@ -3262,31 +3256,6 @@ export class SurfacesStore {
 		await this.refreshWorkspace(surfaceId);
 		void this.refreshSurfaces();
 		return true;
-	}
-
-	async revertSession(sessionId: string): Promise<boolean> {
-		const session = this.session(sessionId);
-		if (!session) return false;
-		const undoable = session.changes.filter((item) => item.status === "merged" && item.canUndo);
-		if (this.isLocalInteractive && isLocalSurfaceId(session.surfaceId)) {
-			return Boolean(this.#undoLocalChangeIds(undoable.map((item) => item.id)));
-		}
-		let restored: SurfaceSession | undefined;
-		for (const change of undoable) {
-			if (restored?.changes.find((item) => item.id === change.id)?.status === "staged") continue;
-			const next = await this.#run(`undo:${change.id}`, (client) => client.undoSurfaceChange(change.id));
-			if (!next) {
-				if (restored) {
-					this.#applySession(restored, approvalOutcome(restored, this.drawerOpenOn(restored.id)));
-					void this.refreshSurfaces();
-				}
-				return false;
-			}
-			restored = next;
-		}
-		if (restored) this.#applySession(restored, approvalOutcome(restored, false));
-		void this.refreshSurfaces();
-		return Boolean(restored);
 	}
 
 	async chooseVariant(exploration: SurfaceExplorationSet, sessionId: string): Promise<boolean> {

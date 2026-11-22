@@ -174,6 +174,23 @@ describe("a surface's figure in the rail", () => {
 		store.dispose();
 	});
 
+	it("renders no history row under an open surface even when it has past sessions", async () => {
+		const past = session(["merged"], { state: "completed" });
+		const store = storeWith(
+			fakeClient({ getSurfaceWorkspace: vi.fn(async () => workspace([], { recentHistory: [past] })) }),
+		);
+		await store.load();
+		await store.openSurface("website");
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+		document.body.append(rail.el);
+		rail.update("website");
+
+		expect(rail.el.querySelector(".surface-tree")).toBeNull();
+		expect(rail.el.querySelector(".surface-history-toggle")).toBeNull();
+		expect(rail.el.textContent).not.toContain("History");
+		store.dispose();
+	});
+
 	it("shows the row only on the open surface, and a surface left behind gets its words back", async () => {
 		const surfaces = [summary({ activeSessionCount: 1 }), summary({ id: "s-mail", slug: "mail", title: "Mail" })];
 		const store = storeWith(

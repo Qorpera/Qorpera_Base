@@ -56,8 +56,6 @@
 .rail-compact .rail-surface-title,
 .rail-compact .rail-surface-text,
 .rail-compact .rail-surface-proposed,
-.rail-compact .surface-history-toggle,
-.rail-compact .surface-history-row,
 .rail-compact .surface-conflict-paths { display: none; }
 .rail-compact .rail-surface {
 	width: 56px; min-height: 56px; padding: 4px; justify-content: center; gap: 0;
@@ -253,12 +251,12 @@
 .surface-crew-pip .icon { width: 9px; height: 9px; stroke-width: 3; }
 .surface-crew.is-large .surface-crew-pip { width: 17px; height: 17px; box-shadow: 0 0 0 2px var(--bg); }
 .surface-changes { display: grid; grid-template-columns: minmax(0, 1fr); padding: 1px 0 4px; }
-.surface-change, .surface-variant, .surface-history-row {
+.surface-change, .surface-variant {
 	display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 6px 0 46px; border-radius: 8px;
 	color: var(--text); font-size: 12.5px;
 }
 .surface-change-bullet { width: 6px; height: 6px; flex: none; margin: 0 9px; border-radius: 50%; background: color-mix(in srgb, var(--text) 30%, transparent); }
-.surface-change:hover, .surface-variant:hover, .surface-history-row:hover { background: var(--rail-hover); }
+.surface-change:hover, .surface-variant:hover { background: var(--rail-hover); }
 .surface-change-copy { display: grid; flex: 1; min-width: 0; gap: 1px; padding: 3px 0; }
 .surface-change-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .surface-change-paths {
@@ -283,21 +281,6 @@
 .surface-variant[aria-checked="true"] .surface-radio { box-shadow: inset 0 0 0 4px var(--rail-selection); }
 .surface-overview-option[aria-checked="true"] .surface-radio { box-shadow: inset 0 0 0 4px var(--sidebar-selection); }
 .surface-variant-foot { display: flex; gap: 2px; padding: 2px 0 2px 40px; }
-.surface-mini {
-	display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border: 0; border-radius: 999px;
-	background: none; color: var(--rail-small); font: inherit; font-size: 11px; font-weight: 600; white-space: nowrap; cursor: pointer;
-}
-.surface-mini:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
-.surface-mini .icon { width: 12px; height: 12px; }
-.surface-history-toggle {
-	display: flex; align-items: center; gap: 7px; width: 100%; height: 32px; padding: 0 8px; border: 0; border-radius: 8px;
-	background: none; color: var(--rail-small); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
-}
-.surface-history-toggle:hover { background: var(--rail-hover); }
-.surface-history-toggle .icon { width: 13px; height: 13px; }
-.surface-history-count { margin-left: auto; font-weight: 500; }
-.surface-history-row .surface-mini { opacity: 0; }
-.surface-history-row:hover .surface-mini, .surface-history-row .surface-mini:focus-visible { opacity: 1; }
 
 .surface-chevron {
 	display: grid; place-items: center; width: 24px; height: 24px; flex: none; border: 0; border-radius: 50%;

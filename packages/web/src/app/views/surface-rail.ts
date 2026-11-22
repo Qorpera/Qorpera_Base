@@ -1,4 +1,4 @@
-import type { SurfaceChangeUnit, SurfaceSession, SurfaceSummary } from "@qorpera/contracts";
+import type { SurfaceChangeUnit, SurfaceSummary } from "@qorpera/contracts";
 import { menuPoint, openContextMenu, pressToOpenMenu } from "../../ui/context-menu.ts";
 import { h, icon } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
@@ -36,41 +36,6 @@ export function isActionChange(
 	return change.kind === "ops_action" || surface.archetype === "ops";
 }
 
-function historyRows(state: SurfacesState, sessions: readonly SurfaceSession[]): HTMLElement[] {
-	if (!sessions.length) return [];
-	const toggle = h(
-		"button",
-		{
-			type: "button",
-			class: "surface-history-toggle",
-			"aria-expanded": String(state.historyOpen),
-			"data-act": "history",
-		},
-		icon("clock"),
-		h("span", null, t("History")),
-		h("span", { class: "surface-history-count" }, String(sessions.length)),
-	);
-	if (!state.historyOpen) return [toggle];
-	return [
-		toggle,
-		...sessions.map((session) =>
-			h(
-				"div",
-				{ class: "surface-history-row" },
-				h("span", { class: "surface-change-title" }, session.title),
-				session.changes.some((change) => change.status === "merged" && change.canUndo)
-					? h(
-							"button",
-							{ type: "button", class: "surface-mini", "data-act": "revert", "data-session": session.id },
-							icon("reset"),
-							t("Revert"),
-						)
-					: null,
-			),
-		),
-	];
-}
-
 export interface SurfaceRailMembers {
 	readonly rows: readonly HTMLElement[];
 	readonly unread: number;
@@ -83,23 +48,6 @@ function reconcileChildren(parent: HTMLElement, children: readonly HTMLElement[]
 	children.forEach((child, index) => {
 		if (parent.children[index] !== child) parent.insertBefore(child, parent.children[index] ?? null);
 	});
-}
-
-function treeFor(
-	store: SurfacesStore,
-	state: SurfacesState,
-	surface: SurfaceSummary,
-	active: boolean,
-	membersList?: HTMLElement,
-): HTMLElement | null {
-	const children: HTMLElement[] = [];
-	if (membersList) children.push(membersList);
-	if (active) children.push(...historyRows(state, state.workspaces[surface.id]?.recentHistory ?? []));
-	if (!children.length) return null;
-	const look = store.lookOf(surface);
-	const tree = h("div", { class: "surface-tree" }, children);
-	tree.style.setProperty("--surface-tint", surfaceTint(look));
-	return tree;
 }
 
 function hostOf(url: string): string {
@@ -306,7 +254,6 @@ export class SurfaceRail {
 			activeWorkspace,
 			state.hiddenChanges,
 			state.variantPick,
-			state.historyOpen,
 			state.collapsed,
 			state.drawer,
 			state.highlight,
@@ -375,11 +322,10 @@ export class SurfaceRail {
 							active ? crewRow(state, surface, this.#crew) : null,
 							hasMembers ? members : undefined,
 						);
-						const tree =
-							active || hasMembers
-								? treeFor(this.#store, state, surface, active, hasMembers ? this.#membersList : undefined)
-								: null;
-						return tree ? [row, tree] : [row];
+						if (!hasMembers) return [row];
+						const tree = h("div", { class: "surface-tree" }, this.#membersList);
+						tree.style.setProperty("--surface-tint", surfaceTint(look));
+						return [row, tree];
 					}),
 					proposedSurfaces.map((surface) =>
 						proposedSurfaceRow(
@@ -400,7 +346,7 @@ export class SurfaceRail {
 		const target = (event.target as Element).closest<HTMLElement>("[data-act]");
 		if (!target || !this.el.contains(target)) return;
 		event.preventDefault();
-		const { act, surface, session } = target.dataset;
+		const { act, surface } = target.dataset;
 		const store = this.#store;
 		switch (act) {
 			case "add-surface":
@@ -411,12 +357,6 @@ export class SurfaceRail {
 				return;
 			case "dismiss-surface":
 				if (surface) void store.archiveSurface(surface);
-				return;
-			case "history":
-				store.toggleHistory();
-				return;
-			case "revert":
-				if (session) void store.revertSession(session);
 				return;
 		}
 	}
