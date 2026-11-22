@@ -74,10 +74,10 @@ declare
 	v_claim jsonb := current_setting('qorpera_test.claim')::jsonb;
 	v_owner constant uuid := '85600000-0000-4000-8000-000000000001';
 	v_member constant uuid := '85600000-0000-4000-8000-000000000002';
-	v_orch constant uuid := '13370000-0000-4000-8000-000000000092';
-	v_other_owner constant uuid := '13370000-0000-4000-8000-000000000098';
-	v_company_b constant uuid := '13370000-0000-4000-8000-000000000011';
-	v_env_b constant uuid := '13370000-0000-4000-8000-000000000021';
+	v_orch constant uuid := '13390000-0000-4000-8000-000000000092';
+	v_other_owner constant uuid := '13390000-0000-4000-8000-000000000098';
+	v_company_b constant uuid := '13390000-0000-4000-8000-000000000011';
+	v_env_b constant uuid := '13390000-0000-4000-8000-000000000021';
 	v_company_a uuid := (v_claim ->> 'profileId')::uuid;
 	v_env_a uuid;
 	v_cofounder_agent uuid;
@@ -121,7 +121,7 @@ begin
 	insert into public.qorpera_company_environments(id, profile_id, name, contract_version, created_by_user_id)
 	values (v_env_b, v_company_b, 'Executor Template Env', 1, v_other_owner);
 	perform pg_temp.as_service();
-	perform public.qorpera_configure_coding_executor(v_env_b, 'exec-1337', true, array['codex', 'claude-code']);
+	perform public.qorpera_configure_coding_executor(v_env_b, 'exec-1339', true, array['codex', 'claude-code']);
 
 	perform public.qorpera_register_runner_orchestrator(v_orch, 'Surface coding fixture', 'process', repeat('0', 64), 3600);
 
@@ -186,7 +186,7 @@ begin
 	perform pg_temp.scrcs_assert(
 		exists (
 			select 1 from public.qorpera_coding_executors e
-			where e.environment_id = v_env_a and e.owner = 'exec-1337' and e.enabled and v_coding.harness = any(e.harnesses)
+			where e.environment_id = v_env_a and e.owner = 'exec-1339' and e.enabled and v_coding.harness = any(e.harnesses)
 		) and exists (
 			select 1 from public.qorpera_coding_repository_grants g
 			where g.environment_id = v_env_a and g.staff_agent_id = v_cofounder_agent
@@ -216,7 +216,7 @@ begin
 
 	set local session_replication_role = replica;
 	insert into public.qorpera_coding_machines(id, kind, profile_id, environment_id, member_user_id, owner, machine_id_sha256, binding)
-	values ('13370000-0000-4000-8000-0000000000d1', 'member', v_company_a, v_env_a, v_owner, 'exec-1337', repeat('8', 64), '{}');
+	values ('13390000-0000-4000-8000-0000000000d1', 'member', v_company_a, v_env_a, v_owner, 'exec-1339', repeat('8', 64), '{}');
 	update public.qorpera_execution_sponsor_versions
 	set allow_autonomous = false
 	where binding_id in (select id from public.qorpera_execution_sponsor_bindings where profile_id = v_company_a);
@@ -233,7 +233,7 @@ begin
 
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	set local role service_role;
-	v_coding_claim := public.qorpera_claim_coding_session('exec-1337', 60);
+	v_coding_claim := public.qorpera_claim_coding_session('exec-1339', 60);
 	perform pg_temp.scrcs_assert(
 		v_coding_claim ->> 'workerId' = v_worker_id::text
 		and v_coding_claim #>> '{surfaceSession,sessionId}' = v_session_member::text
@@ -298,7 +298,7 @@ begin
 
 	v_binding := pg_temp.scrcs_start_run(v_orch, v_run.id);
 	update public.qorpera_coding_sessions
-	set vm_allocation_id = '13370000-0000-4000-8000-0000000000d2'
+	set vm_allocation_id = '13390000-0000-4000-8000-0000000000d2'
 	where worker_id = v_worker_id;
 
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
@@ -427,7 +427,7 @@ begin
 
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	set local role service_role;
-	v_coding_claim := public.qorpera_claim_coding_session('exec-1337', 60);
+	v_coding_claim := public.qorpera_claim_coding_session('exec-1339', 60);
 	perform pg_temp.scrcs_assert(
 		v_coding_claim ->> 'workerId' = v_worker_id::text and (v_coding_claim ->> 'sequence')::integer = 2,
 		'coding executor claims turn 2'
@@ -486,7 +486,7 @@ begin
 	);
 	v_cofounder_worker_id := (v_enq ->> 'workerId')::uuid;
 
-	v_coding_claim := public.qorpera_claim_coding_session('exec-1337', 60);
+	v_coding_claim := public.qorpera_claim_coding_session('exec-1339', 60);
 	perform pg_temp.scrcs_assert(
 		v_coding_claim ->> 'workerId' = v_cofounder_worker_id::text,
 		'coding executor claims cofounder code_repo coding session'
@@ -499,7 +499,7 @@ begin
 
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	set local role service_role;
-	perform public.qorpera_claim_coding_session('exec-1337', 60);
+	perform public.qorpera_claim_coding_session('exec-1339', 60);
 	reset role;
 
 	select * into strict v_surf_session from public.qorpera_surface_sessions where id = v_session_cofounder;

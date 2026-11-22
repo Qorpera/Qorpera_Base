@@ -14,7 +14,7 @@ declare
 	v_hits integer;
 begin
 	if coalesce(array_length(p_pairs, 1), 0) = 0 or array_length(p_pairs, 1) % 2 <> 0 then
-		raise exception '20260930855000: invalid replacement pairs for %', p_function;
+		raise exception '20260930857000: invalid replacement pairs for %', p_function;
 	end if;
 	v_i := 1;
 	while v_i <= array_length(p_pairs, 1) loop
@@ -22,7 +22,7 @@ begin
 		v_new := p_pairs[v_i + 1];
 		v_hits := case when v_old = '' then 0 else (length(v_def) - length(replace(v_def, v_old, ''))) / length(v_old) end;
 		if v_hits <> 1 then
-			raise exception '20260930855000: anchor matched % time(s) in %: %', v_hits, p_function, left(v_old, 120);
+			raise exception '20260930857000: anchor matched % time(s) in %: %', v_hits, p_function, left(v_old, 120);
 		end if;
 		v_def := replace(v_def, v_old, v_new);
 		v_i := v_i + 2;
@@ -497,7 +497,7 @@ select pg_temp.scrcs_replace('public.qorpera_worker_wake_ancestry(public.qorpera
 	$old$	select * into v_worker from public.qorpera_runtime_workers where id = p_wake.source_id;
 	select * into v_parent from public.qorpera_execution_runs where id = p_wake.parent_run_id;$old$,
 	$new$	select * into v_worker from public.qorpera_runtime_workers where id = p_wake.source_id;
-	-- 20260930855000: a surface-backed coding worker starts its own causal root with no parent run.
+	-- 20260930857000: a surface-backed coding worker starts its own causal root with no parent run.
 	if p_wake.source_kind = 'worker-dispatch' and p_wake.parent_run_id is null
 		and v_worker.id is not null and v_worker.species = 'coding' and v_worker.surface_session_id is not null then
 		if p_wake.wake_kind <> 'agent'
@@ -521,7 +521,7 @@ select pg_temp.scrcs_replace('public.qorpera_pin_wake_occurrence()'::regprocedur
 	v_surf_worker public.qorpera_runtime_workers%rowtype;$new$,
 	$old$	elsif new.wake_kind = 'agent' then$old$,
 	$new$	elsif new.wake_kind = 'agent' and new.source_kind = 'worker-dispatch' and new.parent_run_id is null then
-		-- 20260930855000: surface-backed coding worker dispatch has no parent run; pin from the coding worker and active surface session.
+		-- 20260930857000: surface-backed coding worker dispatch has no parent run; pin from the coding worker and active surface session.
 		select * into v_surf_worker from public.qorpera_runtime_workers w
 		where w.id = new.source_id and w.profile_id = new.profile_id and w.environment_id = new.environment_id
 			and w.staff_agent_id = new.staff_agent_id and w.species = 'coding' and w.surface_session_id is not null;
@@ -546,7 +546,7 @@ select pg_temp.scrcs_replace('public.qorpera_pin_wake_occurrence()'::regprocedur
 select pg_temp.scrcs_replace('public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)'::regprocedure, array[
 	$old$		if not exists (select 1 from public.qorpera_execution_runs where id = p_wake.parent_run_id and profile_id = p_wake.profile_id
 			and environment_id = p_wake.environment_id) then return false; end if;$old$,
-	$new$		-- 20260930855000: surface-backed coding worker-dispatch has no parent run; its owner sponsor was verified above.
+	$new$		-- 20260930857000: surface-backed coding worker-dispatch has no parent run; its owner sponsor was verified above.
 		if p_wake.source_kind = 'worker-dispatch' and p_wake.parent_run_id is null
 			and exists (
 				select 1 from public.qorpera_runtime_workers w
@@ -566,7 +566,7 @@ select pg_temp.scrcs_replace('public.qorpera_folder_wake_authorized(public.qorpe
 select pg_temp.scrcs_replace('public.qorpera_folder_materialize_company(uuid, integer)'::regprocedure, array[
 	$old$			elsif v_wake.source_kind in ('office-activation', 'worker-dispatch', 'worker-completion', 'machine-event', 'machine-checkin') then -- 20260930098000$old$,
 	$new$			elsif v_wake.source_kind in ('office-activation', 'worker-dispatch', 'worker-completion', 'machine-event', 'machine-checkin')
-				and v_wake.parent_run_id is not null then -- 20260930098000 / 20260930855000$new$,
+				and v_wake.parent_run_id is not null then -- 20260930098000 / 20260930857000$new$,
 	$old$						or (sponsor.allow_autonomous and public.qorpera_provider_autonomous_authority($old$,
 	$new$						or (v_wake.source_kind = 'worker-dispatch' and v_wake.parent_run_id is null
 							and exists (
@@ -582,7 +582,7 @@ select pg_temp.scrcs_replace('public.qorpera_run_autonomous_authority(public.qor
 	$old$	if p_run.source_kind = 'wake' and exists (
 		select 1 from public.qorpera_wake_occurrences w
 		join public.qorpera_surface_sessions s on s.id = w.source_id and s.profile_id = w.profile_id$old$,
-	$new$	-- 20260930855000: member-initiated surface-backed coding turns bypass unattended autonomy requirements for their requester.
+	$new$	-- 20260930857000: member-initiated surface-backed coding turns bypass unattended autonomy requirements for their requester.
 	if p_run.source_kind = 'wake' and exists (
 		select 1 from public.qorpera_wake_occurrences w
 		join public.qorpera_runtime_workers rw on rw.id = w.source_id and rw.profile_id = w.profile_id
@@ -662,7 +662,7 @@ select pg_temp.scrcs_replace('public.qorpera_heartbeat_coding_session(uuid,uuid,
 	$old$	where worker_id = v_session.worker_id returning lease_until into v_until;
 	return v_until;$old$,
 	$new$	where worker_id = v_session.worker_id returning lease_until into v_until;
-	-- 20260930855000: keep linked surface session lease alive while coding executor holds the turn.
+	-- 20260930857000: keep linked surface session lease alive while coding executor holds the turn.
 	if v_session.surface_session_id is not null then
 		update public.qorpera_surface_sessions
 		set lease_expires_at = greatest(coalesce(lease_expires_at, clock_timestamp()), v_until + interval '5 minutes'),
@@ -678,7 +678,7 @@ select pg_temp.scrcs_replace('public.qorpera_record_coding_progress(uuid,uuid,te
 	return public.qorpera_coding_session_view(v_session, v_worker);$old$,
 	$new$	if p_phase is not null then
 		perform public.qorpera_coding_event(v_worker.id, v_worker.sequence, 'phase', 'executor', jsonb_build_object('phase', p_phase)); end if;
-	-- 20260930855000: propagate initialized starter repo base_sha to the surface session and surface baseline.
+	-- 20260930857000: propagate initialized starter repo base_sha to the surface session and surface baseline.
 	if v_session.surface_session_id is not null and v_session.base_sha is not null then
 		update public.qorpera_surface_sessions
 		set base_sha = coalesce(base_sha, v_session.base_sha),
@@ -701,7 +701,7 @@ select pg_temp.scrcs_replace('public.qorpera_begin_coding_turn(uuid,uuid,jsonb)'
 	$new$	update public.qorpera_coding_session_turns set occurrence_id = v_occurrence,
 		narrow = narrow or public.qorpera_coding_view_narrow(v_worker.id)
 	where worker_id = v_worker.id and sequence = v_worker.sequence;
-	-- 20260930855000: track active coding turn wake on the linked surface session.
+	-- 20260930857000: track active coding turn wake on the linked surface session.
 	if v_session.surface_session_id is not null then
 		update public.qorpera_surface_sessions
 		set wake_id = v_occurrence,
@@ -722,7 +722,7 @@ select pg_temp.scrcs_replace('public.qorpera_claim_coding_session(text,integer)'
 	$new$				if v_worker.todo_id is not null then
 					perform public.qorpera_touch_agent_todo(v_worker.todo_id, null);
 				end if;
-				-- 20260930855000: surface-backed coding sessions sync executor lease expiry back to qorpera_surface_sessions.
+				-- 20260930857000: surface-backed coding sessions sync executor lease expiry back to qorpera_surface_sessions.
 				if v_session.surface_session_id is not null then
 					select * into v_worker from public.qorpera_runtime_workers where id = v_worker.id;
 					perform public.qorpera_surface_sync_coding_completion(
@@ -752,7 +752,7 @@ select pg_temp.scrcs_replace('public.qorpera_complete_coding_turn(uuid,uuid,text
 			or p_artifacts -> 0 ->> 'branch' is distinct from v_session.repository ->> 'baseBranch'
 			or coalesce(p_artifacts -> 0 ->> 'headSha', '') !~ '^[0-9a-f]{40}$'
 			or coalesce(p_artifacts -> 0 ->> 'mainSha', '') !~ '^[0-9a-f]{40}$'))$old$,
-	$new$		-- 20260930855000: surface-backed coding sessions report a 'staged' artifact on the session branch instead of landing main.
+	$new$		-- 20260930857000: surface-backed coding sessions report a 'staged' artifact on the session branch instead of landing main.
 		or (p_artifacts is not null and (v_session.repository ->> 'host' <> 'qorpera' or p_outcome <> 'succeeded'
 			or jsonb_array_length(p_artifacts) <> 1 or jsonb_typeof(p_artifacts -> 0) <> 'object'
 			or case when v_session.surface_session_id is not null then
@@ -772,11 +772,11 @@ select pg_temp.scrcs_replace('public.qorpera_complete_coding_turn(uuid,uuid,text
 	$old$	-- 20260930670000: the platform's own line on where the commit landed, after the session's summary (cut to fit).
 	if p_artifacts is not null then$old$,
 	$new$	-- 20260930670000: the platform's own line on where the commit landed, after the session's summary (cut to fit).
-	-- 20260930855000: surface-backed sessions stay staged on the session branch and do not append a landing line.
+	-- 20260930857000: surface-backed sessions stay staged on the session branch and do not append a landing line.
 	if p_artifacts is not null and p_artifacts -> 0 ->> 'kind' = 'landed' then$new$,
 	$old$		-- 20260930670000: where a repository kept in Qorpera got the commit.
 		|| case when p_artifacts is not null then jsonb_build_object('landed', p_artifacts -> 0) else '{}'::jsonb end$old$,
-	$new$		-- 20260930670000 / 20260930855000: where a repository kept in Qorpera landed or staged the commit.
+	$new$		-- 20260930670000 / 20260930857000: where a repository kept in Qorpera landed or staged the commit.
 		|| case
 			when p_artifacts is not null and p_artifacts -> 0 ->> 'kind' = 'staged' then jsonb_build_object('staged', p_artifacts -> 0)
 			when p_artifacts is not null then jsonb_build_object('landed', p_artifacts -> 0)
@@ -1251,7 +1251,7 @@ select pg_temp.scrcs_replace('public.qorpera_surface_claim_pending_jobs_for_lane
 
 select pg_temp.scrcs_replace('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure, array[
 	$old$/* 20260930817000 */'narrate_app',$old$,
-	$new$/* 20260930817000 */'narrate_app',/* 20260930855000 */'coding_record_change','propose_surface','start_surface_session','stage_surface_patch','stage_surface_ops_action','manage_surface_automation','surface_reply','surface_ask',$new$
+	$new$/* 20260930817000 */'narrate_app',/* 20260930857000 */'coding_record_change','propose_surface','start_surface_session','stage_surface_patch','stage_surface_ops_action','manage_surface_automation','surface_reply','surface_ask',$new$
 ]);
 
 revoke all on function
