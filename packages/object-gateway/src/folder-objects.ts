@@ -136,6 +136,7 @@ export async function putFolderObject(
 	actor: FolderActor,
 	authority: FolderObjectAuthority,
 	replication: ObjectGatewayReplication,
+	options?: { readonly singleAuthorize?: boolean },
 ): Promise<void> {
 	const intent = request.headers["x-qorpera-upload-intent"];
 	if (typeof intent !== "string" || !UUID.test(intent)) throw new ObjectDependencyError(400);
@@ -143,24 +144,34 @@ export async function putFolderObject(
 	if (!declared || !/^(0|[1-9][0-9]{0,7})$/.test(declared) || Number(declared) > MAX_BYTES)
 		throw new ObjectDependencyError(413);
 	const length = Number(declared);
-	const { profileId } = await authority.authorizeFolderUpload(environmentId, actor, intent, sha256, length);
-	const bytes = await boundedObjectOperation(async () => {
-		const chunks: Uint8Array[] = [];
-		let count = 0;
-		for await (const part of request) {
-			const chunk = typeof part === "string" ? Buffer.from(part) : Buffer.from(part);
-			count += chunk.byteLength;
-			if (count > length) throw new ObjectDependencyError(413);
-			chunks.push(chunk);
+	const readVerifiedBody = async (): Promise<{ bytes: Buffer; verified: VerifiedObjectBytes }> => {
+		const read = await boundedObjectOperation(async () => {
+			const chunks: Uint8Array[] = [];
+			let count = 0;
+			for await (const part of request) {
+				const chunk = typeof part === "string" ? Buffer.from(part) : Buffer.from(part);
+				count += chunk.byteLength;
+				if (count > length) throw new ObjectDependencyError(413);
+				chunks.push(chunk);
+			}
+			if (count !== length) throw new ObjectDependencyError(400);
+			return Buffer.concat(chunks);
+		});
+		try {
+			return { bytes: read, verified: verifyObjectBytes(sha256, read) };
+		} catch {
+			throw new ObjectDependencyError(400);
 		}
-		if (count !== length) throw new ObjectDependencyError(400);
-		return Buffer.concat(chunks);
-	});
+	};
+	let profileId: string;
+	let bytes: Buffer;
 	let verified: VerifiedObjectBytes;
-	try {
-		verified = verifyObjectBytes(sha256, bytes);
-	} catch {
-		throw new ObjectDependencyError(400);
+	if (options?.singleAuthorize) {
+		({ bytes, verified } = await readVerifiedBody());
+		({ profileId } = await authority.authorizeFolderUpload(environmentId, actor, intent, sha256, length));
+	} else {
+		({ profileId } = await authority.authorizeFolderUpload(environmentId, actor, intent, sha256, length));
+		({ bytes, verified } = await readVerifiedBody());
 	}
 	const status = await replication.uploadWithAuthority(
 		profileId,
@@ -174,6 +185,7 @@ export async function putFolderObject(
 			confirm: () => authority.confirmFolderObject(environmentId, actor, intent, sha256, length),
 		},
 		verified,
+		options?.singleAuthorize ? { preAuthorized: true } : undefined,
 	);
 	response.writeHead(status === "stored" ? 201 : 200, {
 		"cache-control": "no-store",

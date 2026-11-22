@@ -23,9 +23,9 @@ beforeEach(() => {
 });
 
 describe("bounded NAS filesystem operations", () => {
-	it("retains at most two blocked syscall slots and refuses at once while both are blocked", async () => {
+	it("retains at most the configured blocked syscall slots and refuses at once while all are blocked", async () => {
 		filesystem.stat.mockImplementation(() => new Promise(() => {}));
-		const store = new FileSystemObjectStore("/synthetic-objects", 15);
+		const store = new FileSystemObjectStore("/synthetic-objects", 15, 10_000, 2);
 		await expect(store.get(profileId, hash, bytes.length)).rejects.toMatchObject({ status: 503 });
 		await expect(store.get(profileId, "a".repeat(64), bytes.length)).rejects.toMatchObject({ status: 503 });
 		await expect(store.get(profileId, "b".repeat(64), bytes.length)).rejects.toMatchObject({ status: 503 });
@@ -35,6 +35,21 @@ describe("bounded NAS filesystem operations", () => {
 		expect(filesystem.stat).toHaveBeenCalledTimes(2);
 		expect(filesystem.open).not.toHaveBeenCalled();
 		expect(filesystem.rm).not.toHaveBeenCalled();
+	});
+
+	it("defaults to eight NAS lanes and isolates stuck-NAS outages at eight blocked syscalls", async () => {
+		filesystem.stat.mockImplementation(() => new Promise(() => {}));
+		const store = new FileSystemObjectStore("/synthetic-objects", 15);
+		const results = await Promise.all(
+			Array.from({ length: 10 }, (_, i) =>
+				store.get(profileId, `${i}`.repeat(64), bytes.length).then(
+					() => "ok",
+					(error: { status?: number }) => error.status,
+				),
+			),
+		);
+		expect(results).toEqual(Array(10).fill(503));
+		expect(filesystem.stat).toHaveBeenCalledTimes(8);
 	});
 
 	it("does not let deletion overtake an immutable write that completes after its caller timed out", async () => {
@@ -65,7 +80,7 @@ describe("bounded NAS filesystem operations", () => {
 				}),
 		);
 		filesystem.readFile.mockResolvedValue(bytes);
-		const store = new FileSystemObjectStore("/synthetic-objects", 1000);
+		const store = new FileSystemObjectStore("/synthetic-objects", 1000, 10_000, 2);
 		const readers = [1, 2, 3, 4].map(() => store.get(profileId, hash, bytes.length));
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		expect(filesystem.stat).toHaveBeenCalledOnce();
@@ -95,7 +110,7 @@ describe("bounded NAS filesystem operations", () => {
 				}),
 		);
 		filesystem.readFile.mockImplementation(async (path: string) => named(path)?.content);
-		const store = new FileSystemObjectStore("/synthetic-objects", 1000);
+		const store = new FileSystemObjectStore("/synthetic-objects", 1000, 10_000, 2);
 		const [one, two, three, four] = objects.map((object) => object.sha256) as [string, string, string, string];
 		const reads = objects.map((object) => store.get(profileId, object.sha256, object.content.length));
 		await new Promise<void>((resolve) => setImmediate(resolve));
@@ -118,7 +133,7 @@ describe("bounded NAS filesystem operations", () => {
 
 	it("refuses a waiting operation when its patience runs out, without starting it", async () => {
 		filesystem.stat.mockImplementation(() => new Promise(() => {}));
-		const store = new FileSystemObjectStore("/synthetic-objects", 1000, 15);
+		const store = new FileSystemObjectStore("/synthetic-objects", 1000, 15, 2);
 		void store.get(profileId, hash, bytes.length).catch(() => {});
 		void store.get(profileId, "a".repeat(64), bytes.length).catch(() => {});
 		await expect(store.get(profileId, "b".repeat(64), bytes.length)).rejects.toMatchObject({ status: 503 });
@@ -129,7 +144,7 @@ describe("bounded NAS filesystem operations", () => {
 
 	it("refuses every waiting operation as soon as both lanes are blocked past their deadline", async () => {
 		filesystem.stat.mockImplementation(() => new Promise(() => {}));
-		const store = new FileSystemObjectStore("/synthetic-objects", 15, 10_000);
+		const store = new FileSystemObjectStore("/synthetic-objects", 15, 10_000, 2);
 		const refusal = (read: Promise<Uint8Array>) =>
 			read.then(
 				() => "read",
@@ -157,7 +172,7 @@ describe("bounded NAS filesystem operations", () => {
 		filesystem.rm.mockImplementation(async (path: string) => {
 			if (!path.endsWith(".tmp")) order.push("rm");
 		});
-		const store = new FileSystemObjectStore("/synthetic-objects", 1000);
+		const store = new FileSystemObjectStore("/synthetic-objects", 1000, 10_000, 2);
 		const put = store.put(profileId, hash, bytes);
 		const removal = store.remove(profileId, hash);
 		await new Promise<void>((resolve) => setImmediate(resolve));
@@ -173,7 +188,7 @@ describe("bounded NAS filesystem operations", () => {
 		filesystem.stat.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
 		filesystem.mkdir.mockResolvedValue(`/synthetic-objects/${profileId}`);
 		filesystem.open.mockResolvedValue({ writeFile: async () => {}, sync, close: async () => {} });
-		const store = new FileSystemObjectStore("/synthetic-objects", 1000);
+		const store = new FileSystemObjectStore("/synthetic-objects", 1000, 10_000, 2);
 		expect(await store.put(profileId, hash, bytes)).toBe("stored");
 		expect(filesystem.open).toHaveBeenCalledWith("/synthetic-objects", "r");
 		expect(sync).toHaveBeenCalledTimes(4);
@@ -183,13 +198,16 @@ describe("bounded NAS filesystem operations", () => {
 
 	it("scales lanes when configured and still isolates a full stuck-NAS outage at the configured lane cap", async () => {
 		expect(resolveObjectStoreLanes({})).toBe(2);
+		expect(resolveObjectStoreLanes({ UV_THREADPOOL_SIZE: "6" })).toBe(4);
+		expect(resolveObjectStoreLanes({ UV_THREADPOOL_SIZE: "16" })).toBe(8);
+		expect(resolveObjectStoreLanes({ UV_THREADPOOL_SIZE: "32" })).toBe(8);
 		expect(resolveObjectStoreLanes({ UV_THREADPOOL_SIZE: "3", QORPERA_OBJECT_GATEWAY_NAS_LANES: "1" })).toBe(1);
 		expect(resolveObjectStoreLanes({ UV_THREADPOOL_SIZE: "16", QORPERA_OBJECT_GATEWAY_NAS_LANES: "8" })).toBe(8);
 		expect(() => resolveObjectStoreLanes({ QORPERA_OBJECT_GATEWAY_NAS_LANES: "4" })).toThrow("UV_THREADPOOL_SIZE>=6");
 		expect(() => resolveObjectStoreLanes({ UV_THREADPOOL_SIZE: "8", QORPERA_OBJECT_GATEWAY_NAS_LANES: "7" })).toThrow(
 			"UV_THREADPOOL_SIZE>=9",
 		);
-		expect(() => resolveObjectStoreLanes({ UV_THREADPOOL_SIZE: "2" })).toThrow("UV_THREADPOOL_SIZE>=4");
+		expect(() => resolveObjectStoreLanes({ UV_THREADPOOL_SIZE: "2" })).toThrow("UV_THREADPOOL_SIZE>=3");
 		expect(() => resolveObjectStoreLanes({ UV_THREADPOOL_SIZE: "1", QORPERA_OBJECT_GATEWAY_NAS_LANES: "2" })).toThrow(
 			"UV_THREADPOOL_SIZE>=4",
 		);
@@ -233,7 +251,7 @@ describe("bounded NAS filesystem operations", () => {
 		filesystem.stat.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
 		filesystem.mkdir.mockResolvedValue(`/synthetic-objects/${profileId}`);
 		filesystem.open.mockResolvedValue(okHandle);
-		const store = new FileSystemObjectStore("/synthetic-objects", 1000);
+		const store = new FileSystemObjectStore("/synthetic-objects", 1000, 10_000, 2);
 
 		expect(await store.put(profileId, hash, bytes)).toBe("stored");
 		expect(filesystem.mkdir).toHaveBeenCalledTimes(1);

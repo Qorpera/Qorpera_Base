@@ -93,8 +93,9 @@ export const CHECK_RUNNING = "its check for secret values has not ended yet";
 /** Why the rest of a code area's git directory waits while a file's check there has not ended: the check may yet refuse
  * the file, and then nothing else of its git change may be in the folder. */
 export const WAITS_FOR_CHECK = "it waits for a change whose check for secret values has not ended yet";
+export const STRUCTURED_TOO_LARGE = "a structured file exceeds the 1 MiB limit";
 export const MAX_COMMIT_UNITS = 1000;
-export const MAX_NEW_FOLDER_ENTRIES = 10_000;
+export const MAX_NEW_FOLDER_ENTRIES = 1_000;
 export const MAX_COMMIT_STRUCTURED_FILES = 64;
 export const MAX_COMMIT_STRUCTURED_BYTES = 1024 * 1024;
 
@@ -262,6 +263,11 @@ export function planBoundary(
 		if (!file) {
 			keep.add(path);
 			waiting.push({ path, reason: "its bytes are not saved yet" });
+			continue;
+		}
+		if (companyStatePath(path) && file.bytes > MAX_COMMIT_STRUCTURED_BYTES) {
+			keep.add(path);
+			refuse(path, STRUCTURED_TOO_LARGE);
 			continue;
 		}
 		if (origin) writes.push({ kind: "write", path, file, expected: origin.version, paths: [path] });

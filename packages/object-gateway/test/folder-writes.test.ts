@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { NasObjects } from "../src/folder-service/objects.ts";
+import { MAX_COMMIT_STRUCTURED_BYTES, STRUCTURED_TOO_LARGE } from "../src/folder-service/plan.ts";
 import {
 	type BridgeInfo,
 	encodeFrame,
@@ -22,7 +23,13 @@ import {
 } from "../src/folder-service/protocol.ts";
 import { createFolderServer } from "../src/folder-service/server.ts";
 import { FolderService, LISTING_ONLY, type ViewHandle } from "../src/folder-service/service.ts";
-import { FolderStaging, type FolderUploads, GatewayUploads, manifestText } from "../src/folder-service/staging.ts";
+import {
+	FolderStaging,
+	type FolderUploads,
+	GatewayUploads,
+	manifestText,
+	STAGE_CONCURRENCY,
+} from "../src/folder-service/staging.ts";
 import {
 	ALLOCATION,
 	BRIDGE,
@@ -1420,13 +1427,15 @@ describe("writes through the mount", () => {
 		let now = Date.now();
 		const { core, open, service } = await fixture({ now: () => now });
 		const view = await open();
-		// A swap file saved three times and never published: only its last version's bytes are held.
 		for (const text of ["one", "two", "three"]) await write(view, "draft.md~", text);
-		const opened = [...core.intents.keys()];
-		expect(opened).toHaveLength(6);
+		const swapOpened = [...core.intents.keys()];
+		expect(swapOpened).toHaveLength(3);
+		for (const text of ["alpha", "beta", "gamma"]) await write(view, "draft.md", text);
+		const allOpened = [...core.intents.keys()];
+		expect(allOpened).toHaveLength(9);
 		now += 10 * 60_000;
 		await service.renewIntents();
-		expect(core.renewals).toEqual(opened.slice(4));
+		expect(core.renewals).toEqual([swapOpened[2], ...allOpened.slice(7)]);
 	});
 
 	it("cuts a file at its close, on the grid or to nothing, with no chunk sent", async () => {
@@ -1787,6 +1796,9 @@ describe("the gateway's upload", () => {
 		const uploads = new GatewayUploads({
 			url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
 			token: "t".repeat(43),
+		});
+		cleanups.push(async () => {
+			uploads.close();
 		});
 		const actor = { kind: "member" as const, userId: MEMBER };
 		const part = Buffer.alloc(4 * 1024 * 1024);
@@ -2428,13 +2440,16 @@ describe("multi-batch boundary commits", () => {
 		expect(await view.publish()).toEqual({ commitId: null, seq: null, paths: [] });
 	});
 
-	it("keeps command finals on the single-commit path after endCommand while auto-splitting non-final publishes", async () => {
+	it("auto-splits final boundaries with final:true only on the last batch and holds cleanly after endCommand", async () => {
 		const root = await mkdtemp(join(tmpdir(), "qorpera-folder-writes-final-"));
 		const core = new FakeCore();
-		core.seed([folder("out"), folder("pre")]);
-		const viewId = "5e6f7081-92a3-4b4c-8d5e-6f708192a3b4";
-		const cmdPass = "cmdpass_0123456789-abcdefghijklmnopqrstuvwx";
-		core.openView(viewId, cmdPass, { kind: "computer_shell_command", machineId: ALLOCATION });
+		core.seed([folder("out"), folder("pre"), folder("ended")]);
+		const liveViewId = "5e6f7081-92a3-4b4c-8d5e-6f708192a3b4";
+		const livePass = "cmdpass_0123456789-abcdefghijklmnopqrstuvwx";
+		const endedViewId = "5e6f7081-92a3-4b4c-8d5e-6f708192a3b5";
+		const endedPass = "cmdpass_9123456789-abcdefghijklmnopqrstuvwx";
+		core.openView(liveViewId, livePass, { kind: "computer_shell_command", machineId: ALLOCATION });
+		core.openView(endedViewId, endedPass, { kind: "computer_shell_command", machineId: ALLOCATION });
 		const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
 		const service = new FolderService({
 			core,
@@ -2444,9 +2459,17 @@ describe("multi-batch boundary commits", () => {
 			log: () => undefined,
 		});
 		const atOffice: BridgeInfo = { cid: 90, lookup: "found", machine: OFFICE };
-		const view = await service.open({ protocol: 3, environmentId: ENV, viewId, pass: cmdPass, role: "io" }, atOffice);
+		const view = await service.open(
+			{ protocol: 3, environmentId: ENV, viewId: liveViewId, pass: livePass, role: "io" },
+			atOffice,
+		);
+		const endedView = await service.open(
+			{ protocol: 3, environmentId: ENV, viewId: endedViewId, pass: endedPass, role: "io" },
+			atOffice,
+		);
 		cleanups.push(async () => {
 			view.release();
+			endedView.release();
 			service.stop();
 			await rm(root, { recursive: true, force: true });
 		});
@@ -2462,16 +2485,31 @@ describe("multi-batch boundary commits", () => {
 		expect(runningReport.paths.every((p) => p.outcome === "saved")).toBe(true);
 
 		for (let i = 0; i < 1050; i++) await write(view, `out/f${String(i).padStart(4, "0")}.txt`, `o-${i % 8}`);
-		core.endCommand(viewId);
 		const finalReport = await view.publish(true);
 		expect(core.commits.slice(2).map((c) => ({ count: c.units.length, final: c.final }))).toEqual([
-			{ count: 1050, final: true },
+			{ count: 1000, final: false },
+			{ count: 50, final: true },
 		]);
-		expect(finalReport.refused).toBe("invalid");
-		expect(finalReport.commitId).toBeNull();
-		expect(finalReport.seq).toBeNull();
-		expect(finalReport.closed).toBeUndefined();
-		expect([...core.entries.keys()].filter((p) => p.startsWith("out/"))).toHaveLength(0);
+		expect(finalReport.refused).toBeUndefined();
+		expect(finalReport.commitId).toBeTruthy();
+		expect(finalReport.seq).toBe(core.seq);
+		expect(finalReport.closed).toBe(true);
+		expect(finalReport.paths).toHaveLength(1050);
+		expect(finalReport.paths.every((p) => p.outcome === "saved")).toBe(true);
+		expect([...core.entries.keys()].filter((p) => p.startsWith("out/"))).toHaveLength(1050);
+
+		for (let i = 0; i < 1050; i++) await write(endedView, `ended/f${String(i).padStart(4, "0")}.txt`, `e-${i % 8}`);
+		core.endCommand(endedViewId);
+		const endedReport = await endedView.publish(true);
+		expect(core.commits.slice(4).map((c) => ({ count: c.units.length, final: c.final }))).toEqual([
+			{ count: 1000, final: false },
+		]);
+		expect(endedReport.refused).toBe("denied");
+		expect(endedReport.commitId).toBeNull();
+		expect(endedReport.seq).toBeNull();
+		expect(endedReport.closed).toBeUndefined();
+		expect(endedReport.paths.filter((p) => p.outcome === "refused" && p.kept)).toHaveLength(1050);
+		expect([...core.entries.keys()].filter((p) => p.startsWith("ended/"))).toHaveLength(0);
 	});
 
 	it("stops on mid-batch refusal, clears batch 1, keeps batches 2 and 3 pending, and retries cleanly", async () => {
@@ -2565,8 +2603,8 @@ describe("multi-batch boundary commits", () => {
 			{ key: `${baseKey}:b1`, count: 1000 },
 			{ key: `${baseKey}:b1`, count: 1000 },
 		]);
-		expect(first.commitId).toBeNull();
-		expect(first.seq).toBeNull();
+		expect(first.commitId).toBeTruthy();
+		expect(first.seq).toBe(1);
 		expect(first.paths.filter((p) => p.outcome === "saved")).toHaveLength(1000);
 		expect(first.paths.filter((p) => p.outcome === "not_applied" && p.kept)).toHaveLength(1500);
 		expect([...core.entries.keys()].filter((p) => p.startsWith("bulk/"))).toHaveLength(1000);
@@ -2767,16 +2805,16 @@ describe("multi-batch boundary commits", () => {
 		core.commitHook = undefined;
 		const commitsBeforeClosed = core.commits.length;
 		for (let i = 0; i < 1200; i++) await write(viewB, `c/f${String(i).padStart(4, "0")}.txt`, `c-${i % 8}`);
-		const origFeed = core.feed.bind(core);
+		const origCommit = core.commit.bind(core);
 		let closedTriggered = false;
-		core.feed = async (...args) => {
-			const page = await origFeed(...args);
+		core.commit = async (...args) => {
+			const answer = await origCommit(...args);
 			if (!closedTriggered && core.commits.length === commitsBeforeClosed + 1) {
 				closedTriggered = true;
 				core.views.get(closedViewId)!.state = "closed";
 				await service.renewLeases();
 			}
-			return page;
+			return answer;
 		};
 		await expect(viewB.publish()).rejects.toMatchObject({ code: "VIEW_CLOSED" });
 		expect(core.commits).toHaveLength(commitsBeforeClosed + 1);
@@ -2904,5 +2942,114 @@ describe("multi-batch boundary commits", () => {
 		expect(retryReport?.paths).toHaveLength(100);
 		expect(retryReport?.paths.every((p) => p.outcome === "saved")).toBe(true);
 		expect(core.entries.has("src/del.txt")).toBe(true);
+	});
+
+	it("defers feed catch-up and FUSE change push across multi-batch commits until settlement at the end", async () => {
+		const { core, open } = await fixture();
+		core.seed([folder("bulk")]);
+		const pushes: unknown[] = [];
+		const view = await open();
+		view.subscribe({ change: (message) => pushes.push(message), closed: () => undefined });
+		for (let i = 0; i < 2500; i++) await write(view, `bulk/f${String(i).padStart(4, "0")}.txt`, `v-${i % 8}`);
+
+		let feedCalls = 0;
+		const origFeed = core.feed.bind(core);
+		core.feed = async (...args) => {
+			feedCalls++;
+			return origFeed(...args);
+		};
+		pushes.length = 0;
+
+		const report = await view.publish();
+		expect(core.commits.map((c) => c.units.length)).toEqual([1000, 1000, 500]);
+		expect(report.refused).toBeUndefined();
+		expect(report.commitId).toBeTruthy();
+		expect(report.seq).toBe(core.seq);
+		expect(report.paths).toHaveLength(2500);
+		expect(report.paths.every((p) => p.outcome === "saved")).toBe(true);
+		expect(feedCalls).toBe(1);
+		expect(pushes.length).toBeLessThanOrEqual(2);
+		expect([...core.entries.keys()].filter((p) => p.startsWith("bulk/"))).toHaveLength(2500);
+	});
+
+	it("fails fast on a single structured file over 1 MiB while publishing valid sibling files", async () => {
+		const { core, open } = await fixture();
+		core.seed([folder("QorperaOS"), folder("QorperaOS/rules")]);
+		const view = await open();
+		await write(view, "QorperaOS/rules/huge.md", "x".repeat(MAX_COMMIT_STRUCTURED_BYTES + 1));
+		await write(view, "QorperaOS/rules/ok.md", "# Valid rule\n");
+
+		const report = await view.publish();
+		expect(core.commits).toHaveLength(1);
+		expect(report.paths).toContainEqual({
+			path: "QorperaOS/rules/huge.md",
+			outcome: "refused",
+			reason: STRUCTURED_TOO_LARGE,
+			kept: true,
+		});
+		expect(report.paths).toContainEqual({ path: "QorperaOS/rules/ok.md", outcome: "saved" });
+		expect(core.entries.has("QorperaOS/rules/ok.md")).toBe(true);
+		expect(core.entries.has("QorperaOS/rules/huge.md")).toBe(false);
+	});
+
+	it("parallelizes multi-chunk puts and ordered chunk reads up to STAGE_CONCURRENCY", async () => {
+		const { root, core, objects } = await fixture();
+		const chunkBuffers = Array.from({ length: 6 }, (_, i) => Buffer.from(`chunk-${i}-${"a".repeat(128)}`));
+		const chunkRefs = chunkBuffers.map((buf) => ({ sha256: hashOf(buf), bytes: buf.byteLength }));
+		for (let i = 0; i < chunkBuffers.length; i++) {
+			await storeFile(root, `seed-${i}.bin`, chunkBuffers[i]!, i + 1, chunkBuffers[i]!.byteLength);
+		}
+		const freshObjects = new NasObjects({ root, cacheBytes: 1024 * 1024 });
+		let readInFlight = 0;
+		let readPeak = 0;
+		const origChunk = freshObjects.chunk.bind(freshObjects);
+		freshObjects.chunk = async (profileId, sha256, bytes, priority) => {
+			readInFlight++;
+			readPeak = Math.max(readPeak, readInFlight);
+			try {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+				return await origChunk(profileId, sha256, bytes, priority);
+			} finally {
+				readInFlight--;
+			}
+		};
+
+		let putInFlight = 0;
+		let putPeak = 0;
+		const baseUploads = new FakeUploads(root, core);
+		const trackedUploads: FolderUploads = {
+			start(environmentId, actor, intentId, sha256, bytes) {
+				const inner = baseUploads.start(environmentId, actor, intentId, sha256, bytes);
+				return {
+					write: (part) => inner.write(part),
+					end: async () => {
+						putInFlight++;
+						putPeak = Math.max(putPeak, putInFlight);
+						try {
+							await new Promise((resolve) => setTimeout(resolve, 15));
+							await inner.end();
+						} finally {
+							putInFlight--;
+						}
+					},
+					abort: () => inner.abort(),
+				};
+			},
+		};
+		const staging = new FolderStaging(core, trackedUploads, freshObjects);
+		const totalSize = chunkBuffers.reduce((sum, buf) => sum + buf.byteLength, 0);
+		const staged = await staging.stageFile(
+			ENV,
+			{ kind: "member", userId: MEMBER },
+			PROFILE,
+			{ chunks: chunkRefs, size: totalSize },
+			"application/octet-stream",
+			false,
+			secretsOf("absent-secret-value-0001"),
+		);
+		expect(staged.file.fileSha256).toBe(hashOf(Buffer.concat(chunkBuffers)));
+		expect(readPeak).toBe(STAGE_CONCURRENCY);
+		expect(putPeak).toBe(STAGE_CONCURRENCY);
+		expect(objects.maxCacheBytes).toBeGreaterThan(0);
 	});
 });

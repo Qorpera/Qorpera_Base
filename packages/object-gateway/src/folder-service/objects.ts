@@ -120,8 +120,12 @@ export function parseManifest(text: Uint8Array, entry: TreeEntry): Manifest {
 	return parseManifestRecord(text, entry).manifest;
 }
 
-/** Bytes kept in memory, least recently used dropped first. */
-class ByteCache {
+const SMALL_OBJECT_MAX_BYTES = 64 * 1024;
+const SMALL_POOL_MAX_BYTES = 256 * 1024 * 1024;
+
+export type ReadPriority = "interactive" | "bulk";
+
+class LruPool {
 	readonly #max: number;
 	readonly #items = new Map<string, Buffer>();
 	#bytes = 0;
@@ -168,6 +172,47 @@ class ByteCache {
 	}
 }
 
+class ByteCache {
+	readonly #max: number;
+	readonly #small: LruPool;
+	readonly #large: LruPool;
+
+	constructor(maxBytes: number) {
+		this.#max = maxBytes;
+		const smallMax =
+			maxBytes <= SMALL_OBJECT_MAX_BYTES
+				? maxBytes
+				: Math.min(SMALL_POOL_MAX_BYTES, Math.max(SMALL_OBJECT_MAX_BYTES, Math.floor(maxBytes / 4)));
+		this.#small = new LruPool(smallMax);
+		this.#large = new LruPool(maxBytes - smallMax);
+	}
+
+	get bytes(): number {
+		return this.#small.bytes + this.#large.bytes;
+	}
+
+	get max(): number {
+		return this.#max;
+	}
+
+	canFit(size: number): boolean {
+		return size <= (size <= SMALL_OBJECT_MAX_BYTES ? this.#small.max : this.#large.max);
+	}
+
+	has(key: string): boolean {
+		return this.#small.has(key) || this.#large.has(key);
+	}
+
+	get(key: string): Buffer | undefined {
+		return this.#small.get(key) ?? this.#large.get(key);
+	}
+
+	set(key: string, value: Buffer): void {
+		const pool = value.byteLength <= SMALL_OBJECT_MAX_BYTES ? this.#small : this.#large;
+		pool.set(key, value);
+	}
+}
+
 export interface NasObjectsOptions {
 	/** The object gateway's store on the storage server's share, laid out `<profileId>/<sha256>`, e.g.
 	 * `/srv/qorpera/objects` (the store bound into the service's namespace; README "Reading the objects"). */
@@ -190,7 +235,8 @@ export class NasObjects {
 	readonly #parallel: number;
 	readonly #timeoutMs: number;
 	readonly #pending = new Map<string, Promise<Buffer>>();
-	readonly #waiting: (() => void)[] = [];
+	readonly #interactiveWaiting: (() => void)[] = [];
+	readonly #bulkWaiting: (() => void)[] = [];
 	#running = 0;
 
 	constructor(options: NasObjectsOptions) {
@@ -214,6 +260,10 @@ export class NasObjects {
 		return this.#cache.max;
 	}
 
+	canCache(bytes: number): boolean {
+		return this.#cache.canFit(bytes);
+	}
+
 	has(profileId: string, sha256: string): boolean {
 		return this.#cache.has(`${profileId}/${sha256}`);
 	}
@@ -224,7 +274,7 @@ export class NasObjects {
 		if (bytes.byteLength < 1 || bytes.byteLength > CHUNK_BYTES)
 			throw new ObjectIntegrityError("Object has the wrong size");
 		if (digest(bytes) !== sha256) throw new ObjectIntegrityError("Object failed its hash check");
-		if (bytes.byteLength > this.#cache.max) return;
+		if (!this.#cache.canFit(bytes.byteLength)) return;
 		const key = `${profileId}/${sha256}`;
 		if (this.#cache.get(key)) return;
 		// WHY: unpooled Buffer avoids pinning large socket frame slabs and insulates cached bytes from caller mutation.
@@ -285,10 +335,9 @@ export class NasObjects {
 		return Buffer.concat(parts);
 	}
 
-	/** One chunk's bytes, checked against its hash and size. */
-	chunk(profileId: string, sha256: string, bytes: number): Promise<Buffer> {
+	chunk(profileId: string, sha256: string, bytes: number, priority: ReadPriority = "interactive"): Promise<Buffer> {
 		if (bytes < 1 || bytes > CHUNK_BYTES) return Promise.reject(new ObjectIntegrityError("Chunk is invalid"));
-		return this.#object(profileId, sha256, bytes, bytes);
+		return this.#object(profileId, sha256, bytes, bytes, priority);
 	}
 
 	/** The chunks of a live file's manifest, checked against its entry. */
@@ -315,8 +364,13 @@ export class NasObjects {
 		return parsed.manifest;
 	}
 
-	/** One object, from memory or the share, checked against its hash (and its size when known). */
-	#object(profileId: string, hash: string, maximum: number, exact?: number): Promise<Buffer> {
+	#object(
+		profileId: string,
+		hash: string,
+		maximum: number,
+		exact?: number,
+		priority: ReadPriority = "interactive",
+	): Promise<Buffer> {
 		const key = `${profileId}/${hash}`;
 		const cached = this.#cache.get(key);
 		if (cached) {
@@ -326,7 +380,7 @@ export class NasObjects {
 		}
 		let pending = this.#pending.get(key);
 		if (!pending) {
-			const created = this.#turn(() => this.#load(profileId, hash, maximum, exact));
+			const created = this.#turn(() => this.#load(profileId, hash, maximum, exact), priority);
 			const clear = () => {
 				if (this.#pending.get(key) === created) this.#pending.delete(key);
 			};
@@ -387,10 +441,7 @@ export class NasObjects {
 		}
 	}
 
-	/** Runs an object read when one of the parallel slots is free. The deadline counts from the request, waiting
-	 * included; a read past it keeps its slot until the share answers, so a hung share cannot pile up reads, and a
-	 * read whose caller gave up while it waited never starts. */
-	async #turn<T>(operation: () => Promise<T>): Promise<T> {
+	async #turn<T>(operation: () => Promise<T>, priority: ReadPriority): Promise<T> {
 		let expired = false;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const deadline = new Promise<never>((_, reject) => {
@@ -400,9 +451,10 @@ export class NasObjects {
 			}, this.#timeoutMs);
 		});
 		const work = (async (): Promise<T> => {
-			// A finished read hands its slot straight to the next waiting one.
-			if (this.#running >= this.#parallel) await new Promise<void>((go) => this.#waiting.push(go));
-			else this.#running++;
+			if (this.#running >= this.#parallel) {
+				const queue = priority === "interactive" ? this.#interactiveWaiting : this.#bulkWaiting;
+				await new Promise<void>((go) => queue.push(go));
+			} else this.#running++;
 			try {
 				if (expired) throw new ObjectUnavailableError("The storage server did not answer");
 				return await operation();
@@ -414,14 +466,13 @@ export class NasObjects {
 			return await Promise.race([work, deadline]);
 		} finally {
 			clearTimeout(timer);
-			// The losing side's rejection is handled here, not left unhandled.
 			void work.catch(() => undefined);
 			void deadline.catch(() => undefined);
 		}
 	}
 
 	#done(): void {
-		const next = this.#waiting.shift();
+		const next = this.#interactiveWaiting.shift() ?? this.#bulkWaiting.shift();
 		if (next) next();
 		else this.#running--;
 	}

@@ -25,6 +25,13 @@ function credential(name: string): string {
 	return readFileSync(join(directory, name), "utf8").trim();
 }
 
+function optionalCredential(name: string): string | undefined {
+	const directory = process.env.CREDENTIALS_DIRECTORY;
+	if (!directory) return undefined;
+	const file = join(directory, name);
+	return existsSync(file) ? readFileSync(file, "utf8").trim() : undefined;
+}
+
 interface Config {
 	readonly supabaseUrl: string;
 	readonly storageRoot: string;
@@ -97,9 +104,12 @@ if (!runtime || runtime.includes(":"))
 	throw new Error("RUNTIME_DIRECTORY is not one folder: run under systemd with RuntimeDirectory=");
 // Taken, and removed, before anything is served: a crash of this run leaves no note.
 const vouched = takeCleanStop(runtime, log);
+const supabaseCa = optionalCredential("qorpera-folder-supabase-ca");
+const gatewayCa = optionalCredential("qorpera-folder-gateway-ca");
 const core = new SupabaseFolderCore({
 	projectUrl: settings.supabaseUrl,
 	secretKey: credential("qorpera-supabase-service-key"),
+	...(supabaseCa !== undefined ? { ca: supabaseCa } : {}),
 });
 const FOLDER_PROGRAM = "/opt/qorpera-folder-service/qorpera-folder";
 const folderProgram = existsSync(FOLDER_PROGRAM) ? FOLDER_PROGRAM : undefined;
@@ -112,7 +122,11 @@ const service = new FolderService({
 		? {
 				staging: new FolderStaging(
 					core,
-					new GatewayUploads({ url: settings.gatewayUrl, token: credential("qorpera-folder-gateway-token") }),
+					new GatewayUploads({
+						url: settings.gatewayUrl,
+						token: credential("qorpera-folder-gateway-token"),
+						...(gatewayCa !== undefined ? { ca: gatewayCa } : {}),
+					}),
 					objects,
 					new SaveChecks(folderProgram ? { folderProgram } : {}),
 				),
@@ -186,8 +200,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const)
 				return false;
 			})
 			.then((clean) => {
-				// Its machines' views stay marked served: the next run refuses them, and their machines restart. It leaves
-				// no note either, so the next run vouches for no machine.
+				service.stop();
 				if (!clean) log("folder-service: stopped without a clean stop");
 				else
 					try {

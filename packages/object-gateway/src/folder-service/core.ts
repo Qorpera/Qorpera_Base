@@ -1,7 +1,13 @@
 import { isUuid, parseRecord, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import { ObjectDependency, ObjectDependencyError, ObjectLockConflict, ObjectStatementTimeout } from "../dependency.ts";
 import { supabaseRequestHeaders } from "../supabase-headers.ts";
-import { type BufferedResponse, nodeRequest, ResponseTooLargeError, type Transport } from "./https-request.ts";
+import {
+	type BufferedResponse,
+	createNodeTransport,
+	type ManagedTransport,
+	ResponseTooLargeError,
+	type Transport,
+} from "./https-request.ts";
 import { validTarget } from "./protocol.ts";
 
 /** Who a mount reads as. A step 1 operator mount reads as a member or the platform; a machine view (step 2 on) as
@@ -176,6 +182,7 @@ export interface FolderCore {
 		database: string | null,
 		signal?: AbortSignal,
 	): Promise<MachineDataPass>;
+	close?(): void;
 }
 
 export interface MachineDataPass {
@@ -742,21 +749,21 @@ class CoreResponseTooLarge extends ObjectDependencyError {
 	}
 }
 
-interface SupabaseFolderCoreOptions {
+export interface SupabaseFolderCoreOptions {
 	readonly projectUrl: string;
 	readonly secretKey: string;
 	readonly transport?: Transport;
+	readonly ca?: string;
 	readonly requestTimeoutMs?: number;
 }
 
 const CLOCKS_BATCH = 100;
 
-/** The folder core over PostgREST, with the service credential: list, feed, the clock, the download check for the
- * storage profile, view renewals, and (step 3) staging and the commit. */
 export class SupabaseFolderCore implements FolderCore {
 	readonly #url: string;
 	readonly #key: string;
 	readonly #transport: Transport;
+	readonly #ownedTransport: ManagedTransport | undefined;
 	readonly #api: ObjectDependency;
 
 	constructor(options: SupabaseFolderCoreOptions) {
@@ -765,10 +772,21 @@ export class SupabaseFolderCore implements FolderCore {
 			throw new Error("Folder core requires an exact HTTPS origin");
 		if (!options.secretKey || options.secretKey.length > 8192 || /[\0\r\n]/.test(options.secretKey))
 			throw new Error("Folder core credential is invalid");
+		if (options.ca !== undefined && !options.ca.includes("-----BEGIN CERTIFICATE-----"))
+			throw new Error("Folder core CA certificate is invalid");
 		this.#url = url.origin;
 		this.#key = options.secretKey;
-		this.#transport = options.transport ?? nodeRequest;
+		if (options.transport) {
+			this.#transport = options.transport;
+		} else {
+			this.#ownedTransport = createNodeTransport(options.ca !== undefined ? { ca: options.ca } : {});
+			this.#transport = this.#ownedTransport.request;
+		}
 		this.#api = new ObjectDependency(options.requestTimeoutMs ?? 15_000, 2_000);
+	}
+
+	close(): void {
+		this.#ownedTransport?.close();
 	}
 
 	async list(environmentId: string, actor: FolderActor, after: string | null, signal?: AbortSignal) {

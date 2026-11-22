@@ -1,3 +1,8 @@
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SupabaseObjectAuthority } from "../src/supabase-authority.ts";
 
@@ -135,5 +140,100 @@ describe("Supabase object authority", () => {
 		const again = await authority.readLegacyObject(profileId, sha256);
 		expect(fetchCount).toBe(2);
 		expect(Buffer.from(again)).toEqual(Buffer.from(payload));
+	});
+
+	it("connects over private LAN TLS when given a matching CA and refuses wrong or invalid CAs and redirects", async () => {
+		expect(
+			() =>
+				new SupabaseObjectAuthority({
+					projectUrl: "https://127.0.0.1:8443",
+					publishableKey: "sb_publishable_public",
+					secretKey: "sb_secret_private",
+					ca: "not-a-pem",
+				}),
+		).toThrow("CA certificate is invalid");
+
+		const directory = await mkdtemp(join(tmpdir(), "qorpera-supabase-ca-"));
+		let server: HttpsServer | undefined;
+		try {
+			const make = (name: string): void => {
+				const made = spawnSync(
+					"openssl",
+					[
+						"req",
+						"-x509",
+						"-newkey",
+						"rsa:2048",
+						"-nodes",
+						"-keyout",
+						join(directory, `${name}-key.pem`),
+						"-out",
+						join(directory, `${name}.pem`),
+						"-days",
+						"1",
+						"-subj",
+						"/CN=localhost",
+						"-addext",
+						"subjectAltName=IP:127.0.0.1",
+					],
+					{ encoding: "utf8", timeout: 15_000 },
+				);
+				if (made.status !== 0) throw new Error("Could not create test TLS certificate");
+			};
+			make("primary");
+			make("other");
+			const cert = await readFile(join(directory, "primary.pem"), "utf8");
+			const key = await readFile(join(directory, "primary-key.pem"), "utf8");
+			const otherCa = await readFile(join(directory, "other.pem"), "utf8");
+			let mode: "ok" | "redirect" = "ok";
+			server = createHttpsServer({ cert, key }, (req, res) => {
+				req.resume();
+				if (mode === "redirect") {
+					res.writeHead(302, { location: "https://127.0.0.1/elsewhere" });
+					res.end();
+					return;
+				}
+				if (req.url?.includes("/storage/v1/object/")) {
+					res.writeHead(200, { "content-type": "application/json" });
+					res.end(JSON.stringify({ Key: `${profileId}/${sha256}` }));
+					return;
+				}
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end("true");
+			});
+			await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+			const address = server.address();
+			if (!address || typeof address === "string") throw new Error("No server address");
+			const projectUrl = `https://127.0.0.1:${address.port}`;
+
+			const trusted = new SupabaseObjectAuthority({
+				projectUrl,
+				publishableKey: "sb_publishable_public",
+				secretKey: "sb_secret_private",
+				ca: cert,
+			});
+			const wrong = new SupabaseObjectAuthority({
+				projectUrl,
+				publishableKey: "sb_publishable_public",
+				secretKey: "sb_secret_private",
+				ca: otherCa,
+			});
+			try {
+				await expect(trusted.confirmUpload(profileId, sha256, 4)).resolves.toBeUndefined();
+				expect(await trusted.writeReplica(profileId, sha256, Buffer.from("data"))).toBe("created");
+				await expect(wrong.confirmUpload(profileId, sha256, 4)).rejects.toMatchObject({ status: 503 });
+				mode = "redirect";
+				await expect(trusted.confirmUpload(profileId, sha256, 4)).rejects.toMatchObject({ status: 503 });
+			} finally {
+				trusted.close();
+				wrong.close();
+			}
+		} finally {
+			if (server) {
+				server.closeAllConnections();
+				await new Promise<void>((resolve) => server!.close(() => resolve()));
+			}
+			await rm(directory, { recursive: true, force: true });
+		}
 	});
 });

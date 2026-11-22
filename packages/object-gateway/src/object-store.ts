@@ -8,9 +8,8 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const QUARANTINE = ".quarantine";
 const MAX_QUARANTINED_BYTES = 8 * 1024 * 1024;
-// WHY: a timed-out hard-NFS syscall keeps its libuv worker until the OS lets go. Two lanes leave at least two of
-// the four default workers to the journal, so more lanes require a larger UV_THREADPOOL_SIZE first.
-const DEFAULT_LANES = 2;
+// WHY: a timed-out hard-NFS syscall keeps its libuv worker until the OS lets go; reserving MIN_RESERVED_WORKERS keeps journal I/O alive.
+const DEFAULT_LANES = 8;
 const MAX_LANES = 16;
 const MIN_RESERVED_WORKERS = 2;
 const MAX_UV_THREADPOOL_SIZE = 1024;
@@ -19,9 +18,10 @@ const MAX_KNOWN_DIRS = 4_096;
 const MAX_WAITING = 512;
 
 export function resolveObjectStoreLanes(environment: NodeJS.ProcessEnv): number {
+	const explicit = environment.QORPERA_OBJECT_GATEWAY_NAS_LANES !== undefined;
 	let lanes = DEFAULT_LANES;
-	if (environment.QORPERA_OBJECT_GATEWAY_NAS_LANES !== undefined) {
-		const rawLanes = environment.QORPERA_OBJECT_GATEWAY_NAS_LANES.trim();
+	if (explicit) {
+		const rawLanes = environment.QORPERA_OBJECT_GATEWAY_NAS_LANES!.trim();
 		if (!/^[1-9][0-9]*$/.test(rawLanes)) throw new Error("QORPERA_OBJECT_GATEWAY_NAS_LANES is invalid");
 		lanes = Number(rawLanes);
 		if (!Number.isSafeInteger(lanes) || lanes < 1 || lanes > MAX_LANES)
@@ -34,6 +34,14 @@ export function resolveObjectStoreLanes(environment: NodeJS.ProcessEnv): number 
 		const parsedPool = Number(rawPool);
 		if (!Number.isSafeInteger(parsedPool) || parsedPool > MAX_INT32) throw new Error("UV_THREADPOOL_SIZE is invalid");
 		poolSize = Math.min(MAX_UV_THREADPOOL_SIZE, parsedPool);
+	}
+	if (!explicit) {
+		const available = poolSize - MIN_RESERVED_WORKERS;
+		if (available < 1)
+			throw new Error(
+				`QORPERA_OBJECT_GATEWAY_NAS_LANES=1 requires UV_THREADPOOL_SIZE>=${1 + MIN_RESERVED_WORKERS} to reserve workers for the journal`,
+			);
+		lanes = Math.min(DEFAULT_LANES, available);
 	}
 	if (poolSize - lanes < MIN_RESERVED_WORKERS)
 		throw new Error(

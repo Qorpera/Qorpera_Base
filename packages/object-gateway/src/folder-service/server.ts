@@ -7,6 +7,7 @@ import {
 	encodeJson,
 	type Frame,
 	FrameReader,
+	fitReport,
 	HELLO_MAX_PAYLOAD,
 	Kind,
 	MAX_PAYLOAD,
@@ -301,7 +302,7 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 				return;
 			}
 			case Kind.publish:
-				send(encodeJson(Kind.report, await handle.publish(parsePublish(frame.payload).final)));
+				send(encodeJson(Kind.report, fitReport(await handle.publish(parsePublish(frame.payload).final))));
 				return;
 			case Kind.reads:
 				send(encodeJson(Kind.readsOk, await handle.reads(parseReads(frame.payload))));

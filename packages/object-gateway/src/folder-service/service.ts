@@ -49,14 +49,17 @@ import {
 	type PendingFile,
 	PendingView,
 	PublishFirst,
+	unpublished,
 } from "./pending.ts";
 import {
 	type BoundaryPlan,
 	type CommitUnit,
+	MAX_COMMIT_STRUCTURED_BYTES,
 	type PlannedUnit,
 	planBoundary,
 	planCommitBatches,
 	type SecretCheck,
+	STRUCTURED_TOO_LARGE,
 	WAITS_FOR_UNCHECKED,
 } from "./plan.ts";
 import {
@@ -80,6 +83,8 @@ import {
 	type ReadsAnswer,
 	type ReadsRequest,
 	type RenameRequest,
+	type Report,
+	type ReportEntry,
 	SEARCH_VERSION,
 	type SearchRequest,
 	type SearchSupport,
@@ -221,33 +226,7 @@ export const SEARCH_PATHS = 1_500_000;
 const SEARCH_BUSY = "SEARCH_BUSY: the node's folder search is busy; try again shortly";
 const SEARCH_FULL = "SEARCH_FULL: the node's folder search holds as many folders as it may now; try again later";
 
-/** One changed path's outcome at a boundary (RUNTIME-FOLDER-WRITES.md, "Outcomes and the report"). */
-export interface ReportEntry {
-	readonly path: string;
-	readonly outcome: "saved" | "conflict" | "refused" | "denied" | "waiting_for_review" | "not_applied" | "waiting";
-	readonly reason?: string;
-	/** A conflict's receipt: the change set that keeps this view's version (P17). */
-	readonly receipt?: string;
-	/** The change is still pending in this view. */
-	readonly kept?: boolean;
-	/** A conflicting link's target, kept on the receipt (protocol 4). */
-	readonly target?: string;
-}
-
-export interface Report {
-	/** The change set's id, when one was committed. */
-	readonly commitId: string | null;
-	readonly seq: number | null;
-	readonly paths: readonly ReportEntry[];
-	/** A command's final change set closed the view (F3 4b): nothing is kept pending. */
-	readonly closed?: true;
-	/** The core refused the change set whole, or the release of the view's reads before it, and why (`denied`: 42501;
-	 * `unreadable`: 42501, a read being released is no longer readable; `run_ended`: 42501, the run the view acts for
-	 * has ended; `stopped`: the pause, 55000; `invalid`: 22023, a change set over 1000 units among others): an answer,
-	 * unlike a boundary that got none (F3 4b, 4c). `unproven`: the view's machine cannot show its read log complete, so
-	 * this and every later boundary of the view is refused (F3 4c, the log's rule 4). */
-	readonly refused?: CoreRefusal["reason"] | "unproven";
-}
+export type { Report, ReportEntry };
 
 /** A coding machine's boundary (F3 5c, the plan's "Boundaries"), as the executor asks it over the control socket. */
 export interface MachineBoundary {
@@ -334,14 +313,73 @@ function committed(answer: Answer): Pick<Report, "commitId" | "seq" | "refused">
 		: { commitId: answer.commitId, seq: answer.seq };
 }
 
-/** A boundary the core answered, while the view waits for the feed to bring its change set: until then the view keeps
- * its pending changes as they were, and nothing changes (BUSY). */
 interface Settlement {
 	readonly plan: BoundaryPlan;
 	readonly made: ReadonlyMap<string, string>;
 	readonly answer: CommitAnswer;
 	readonly keep: ReadonlySet<string>;
 	readonly saved: ReadonlySet<string>;
+	readonly written?: ReadonlyMap<string, string>;
+	readonly changeSetSeqs?: readonly number[];
+}
+
+const CLEAN_CACHE_MAX = 16_384;
+const EMPTY_FILE_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+class CleanCheckCache {
+	readonly #max: number;
+	readonly #exact = new Map<string, true>();
+	readonly #latest = new Map<string, SecretSet>();
+
+	constructor(max = CLEAN_CACHE_MAX) {
+		this.#max = max;
+	}
+
+	mark(fileSha256: string, form: StoredForm, secrets: SecretSet): void {
+		this.#put(fileSha256, form, secrets);
+		if (form !== "plain") this.#put(fileSha256, "plain", secrets);
+	}
+
+	unchecked(fileSha256: string, form: StoredForm, secrets: SecretSet): SecretSet | undefined {
+		if (secrets.size === 0) return undefined;
+		const exactKey = `${fileSha256}\0${form}\0${secrets.digest}`;
+		if (this.#exact.has(exactKey)) {
+			this.#exact.delete(exactKey);
+			this.#exact.set(exactKey, true);
+			return undefined;
+		}
+		const latestKey = `${fileSha256}\0${form}`;
+		const had = this.#latest.get(latestKey);
+		if (!had) return secrets;
+		this.#latest.delete(latestKey);
+		this.#latest.set(latestKey, had);
+		const diff = secrets.since(had);
+		return diff.size === 0 ? undefined : diff;
+	}
+
+	#put(fileSha256: string, form: StoredForm, secrets: SecretSet): void {
+		const exactKey = `${fileSha256}\0${form}\0${secrets.digest}`;
+		this.#exact.delete(exactKey);
+		this.#exact.set(exactKey, true);
+		if (this.#exact.size > this.#max) {
+			const oldest = this.#exact.keys().next().value;
+			if (oldest !== undefined) this.#exact.delete(oldest);
+		}
+		const latestKey = `${fileSha256}\0${form}`;
+		this.#latest.delete(latestKey);
+		this.#latest.set(latestKey, secrets);
+		if (this.#latest.size > this.#max) {
+			const oldest = this.#latest.keys().next().value;
+			if (oldest !== undefined) this.#latest.delete(oldest);
+		}
+	}
+}
+
+function knownFileSha256(content: Content, node: PendingFile): string | undefined {
+	if (content.size === 0 && content.chunks.length === 0) return EMPTY_FILE_SHA256;
+	if (content.chunks.length === 1 && content.chunks[0]!.bytes === content.size) return content.chunks[0]!.sha256;
+	if (node.content === undefined) return node.origin?.entry?.fileSha256 ?? node.copyOf?.fileSha256;
+	return undefined;
 }
 
 /** A git lock a view holds (git.ts, §6): the core's lease on the shared file it guards, the versions the lease found,
@@ -754,9 +792,7 @@ export class FolderService {
 	readonly #windows = new CommandWindows();
 	/** Each coding machine's secret values, as its executor last sent them (`secrets`, 5j-5), for this run only. */
 	readonly #secrets = new Map<string, SecretSet>();
-	/** The values each staged file's bytes were checked against, and as which stored form (git-objects.ts): checked
-	 * again as a form that one covers, they are checked for the other values alone. */
-	readonly #checked = new WeakMap<FileRef, { readonly secrets: SecretSet; readonly form: StoredForm }>();
+	readonly #cleanChecks = new CleanCheckCache();
 	/** Each file the check refused: at which version, under which values, and why; `again` if for the node's load, not
 	 * the file's bytes (`SecretRefusal.again`), so the next staging checks it again. */
 	readonly #refusals = new WeakMap<
@@ -835,6 +871,11 @@ export class FolderService {
 	}
 
 	stop(): void {
+		this.#stopTimers();
+		this.#closeTransports();
+	}
+
+	#stopTimers(): void {
 		if (this.#timer) clearInterval(this.#timer);
 		if (this.#heartbeat) clearInterval(this.#heartbeat);
 		if (this.#renewals) clearInterval(this.#renewals);
@@ -842,6 +883,11 @@ export class FolderService {
 		this.#heartbeat = undefined;
 		this.#renewals = undefined;
 		this.#searchWorker?.close();
+	}
+
+	#closeTransports(): void {
+		this.#core.close?.();
+		this.#staging?.close();
 	}
 
 	/** A boundary of a coding machine, which the executor asks over the control socket (F3 5c, the plan's "Boundaries"):
@@ -1022,56 +1068,56 @@ export class FolderService {
 	 * executor restarts their machines (rule 4). Other views are dropped with what they hold, as before. Whether the core
 	 * cleared it: only then may the next run start from the machines this one vouches for (`vouched`). */
 	async stopCleanly(): Promise<boolean> {
-		this.stop();
+		this.#stopTimers();
 		this.#stopping = true;
-		const views = [...this.#views.values()];
-		for (const view of views) {
-			if (view.quiet) clearTimeout(view.quiet);
-			view.quiet = undefined;
-		}
-		await Promise.allSettled(views.flatMap((view) => [...view.active]));
-		const machines = new Set<string>();
-		for (const view of views) {
-			const machine = view.access?.machine;
-			if (machine !== undefined && !view.closed) machines.add(machine);
-		}
-		for (const machine of machines) await this.#machineBoundary(machine, []);
-		// A code host's views are marked served too: they publish what they hold (their reads reach no model, 5a).
-		await Promise.allSettled(
-			views.filter((view) => codeHost(view) && !view.closed).map((view) => this.#publish(view)),
-		);
-		await Promise.allSettled(views.map((view) => view.renewing));
-		// A machine not vouched for stays out of the note, so the next run counts it lost too: its views, unproven for that
-		// alone, hold what they could never save, and hold up no clean stop for it once their reads are released.
-		const left = [...this.#views.values()].filter((view) => {
-			const unvouched = this.#unvouched(view.access?.machine);
-			return (
-				(view.access?.machine !== undefined || codeHost(view)) &&
-				!view.closed &&
-				((view.unproven && !unvouched) ||
-					view.unreleased ||
-					view.unanswered !== undefined ||
-					view.unsettled !== undefined ||
-					(view.pending?.unsaved === true && !unvouched))
-			);
-		});
-		// A machine that lost a read and has not restarted since: a view of it this run let go may still be open in the
-		// core, marked served by this run, and it stays marked, so the next run (which knows nothing of the loss) refuses
-		// it too.
-		if (left.length > 0 || this.#lostMachines.size > 0) {
-			for (const view of left)
-				this.#log(`folder-service: ${view.key}: not stopped cleanly: reads unreleased or changes unpublished`);
-			for (const machine of this.#lostMachines)
-				this.#log(`folder-service: machine ${machine}: not stopped cleanly: a read it was served went unreleased`);
-			return false;
-		}
 		try {
-			const cleared = await this.#core.serviceStopped(this.#serviceId);
-			this.#log(`folder-service: stopped cleanly; ${cleared} coding views no longer marked served`);
-			return true;
-		} catch (error) {
-			this.#log(`folder-service: the clean stop was not recorded: ${(error as Error).message}`);
-			return false;
+			const views = [...this.#views.values()];
+			for (const view of views) {
+				if (view.quiet) clearTimeout(view.quiet);
+				view.quiet = undefined;
+			}
+			await Promise.allSettled(views.flatMap((view) => [...view.active]));
+			const machines = new Set<string>();
+			for (const view of views) {
+				const machine = view.access?.machine;
+				if (machine !== undefined && !view.closed) machines.add(machine);
+			}
+			for (const machine of machines) await this.#machineBoundary(machine, []);
+			await Promise.allSettled(
+				views.filter((view) => codeHost(view) && !view.closed).map((view) => this.#publish(view)),
+			);
+			await Promise.allSettled(views.map((view) => view.renewing));
+			const left = [...this.#views.values()].filter((view) => {
+				const unvouched = this.#unvouched(view.access?.machine);
+				return (
+					(view.access?.machine !== undefined || codeHost(view)) &&
+					!view.closed &&
+					((view.unproven && !unvouched) ||
+						view.unreleased ||
+						view.unanswered !== undefined ||
+						view.unsettled !== undefined ||
+						(view.pending?.unsaved === true && !unvouched))
+				);
+			});
+			if (left.length > 0 || this.#lostMachines.size > 0) {
+				for (const view of left)
+					this.#log(`folder-service: ${view.key}: not stopped cleanly: reads unreleased or changes unpublished`);
+				for (const machine of this.#lostMachines)
+					this.#log(
+						`folder-service: machine ${machine}: not stopped cleanly: a read it was served went unreleased`,
+					);
+				return false;
+			}
+			try {
+				const cleared = await this.#core.serviceStopped(this.#serviceId);
+				this.#log(`folder-service: stopped cleanly; ${cleared} coding views no longer marked served`);
+				return true;
+			} catch (error) {
+				this.#log(`folder-service: the clean stop was not recorded: ${(error as Error).message}`);
+				return false;
+			}
+		} finally {
+			this.#closeTransports();
 		}
 	}
 
@@ -1574,10 +1620,9 @@ export class FolderService {
 						view.uploads.delete(key);
 					}
 				const path = node.open === 0 ? this.#pathOfNode(view, node) : undefined;
-				// Staged as a boundary stages it, so a boundary meanwhile joins it rather than checking the bytes again. A
-				// coding view's close waits for its check as long as a boundary does at most: a large pack's goes on.
 				const secrets = this.#secretsOf(view);
-				const file = path === undefined ? undefined : { path, node };
+				const file =
+					path === undefined || unpublished(path, view.pending?.codeHost ?? false) ? undefined : { path, node };
 				if (file && secrets !== null)
 					await this.#stageAll(view, secrets, secrets ? { file, waitMs: this.#checkWaitMs } : { file });
 				return { version: node.version };
@@ -3262,15 +3307,16 @@ export class FolderService {
 				}
 				return undefined;
 			}
-			this.#checked.set(file, { secrets: check, form });
+			this.#cleanChecks.mark(file.fileSha256, form, check);
 			this.#passed(node, version, check);
 			return file;
 		}
-		// A staging for another version or media type is never used again.
 		node.staged = undefined;
 		const mediaType = this.#mediaType(view, node, path);
 		const bytes = await this.#bytesOf(view, node);
 		if (!bytes) return undefined;
+		const knownSha = check ? knownFileSha256(bytes.content, node) : undefined;
+		const toCheck = check && knownSha !== undefined ? this.#cleanChecks.unchecked(knownSha, form, check) : check;
 		let staged: { readonly file: FileRef; readonly intentId: string };
 		try {
 			staged = await staging.stageFile(
@@ -3280,7 +3326,7 @@ export class FolderService {
 				bytes.content,
 				mediaType,
 				node.executable,
-				check,
+				toCheck,
 				form,
 			);
 		} catch (error) {
@@ -3290,7 +3336,7 @@ export class FolderService {
 			return undefined;
 		}
 		if (check) {
-			this.#checked.set(staged.file, { secrets: check, form });
+			this.#cleanChecks.mark(staged.file.fileSha256, form, check);
 			this.#passed(node, version, check);
 		}
 		if (node.version === version) {
@@ -3370,17 +3416,26 @@ export class FolderService {
 		const had = this.#movedChecks.get(node);
 		const same = had?.version === version && had.form === form;
 		if (same && had.secrets === secrets && !had.again) return;
-		// Passed under older values, they are checked for the newer alone.
-		const left = same && had.reason === undefined ? secrets.since(had.secrets) : secrets;
+		const cachedLeft =
+			source.fileSha256 !== undefined ? this.#cleanChecks.unchecked(source.fileSha256, form, secrets) : secrets;
+		const left =
+			cachedLeft === undefined
+				? undefined
+				: same && had.reason === undefined
+					? secrets.since(had.secrets)
+					: cachedLeft;
 		let refusal: SecretRefusal | undefined;
-		try {
-			const profile = await this.#profile(view, source);
-			const chunks = await this.#objects.manifestChunks(profile, source);
-			await staging.check(profile, { chunks, size: source.bytes }, left, form);
-		} catch (error) {
-			if (!(error instanceof SecretRefusal)) throw error;
-			refusal = error;
+		if (left && left.size > 0) {
+			try {
+				const profile = await this.#profile(view, source);
+				const chunks = await this.#objects.manifestChunks(profile, source);
+				await staging.check(profile, { chunks, size: source.bytes }, left, form);
+			} catch (error) {
+				if (!(error instanceof SecretRefusal)) throw error;
+				refusal = error;
+			}
 		}
+		if (!refusal && source.fileSha256 !== undefined) this.#cleanChecks.mark(source.fileSha256, form, secrets);
 		if (node.version === version)
 			this.#movedChecks.set(node, {
 				version,
@@ -3399,14 +3454,8 @@ export class FolderService {
 		return had.reason;
 	}
 
-	/** The values of `secrets` a staged file's bytes still need checking for, as `form`: none (`undefined`) if they
-	 * were checked against these values as a form that covers it; only the newer ones if against older values so;
-	 * else all. A plain check covers no git form; every form's check scans the bytes as they are too. */
 	#uncheckedOf(file: FileRef, secrets: SecretSet, form: StoredForm): SecretSet | undefined {
-		const had = this.#checked.get(file);
-		const covered = had !== undefined && (form === "plain" || had.form === form);
-		if (covered && had.secrets === secrets) return undefined;
-		return covered ? secrets.since(had.secrets) : secrets;
+		return this.#cleanChecks.unchecked(file.fileSha256, form, secrets);
 	}
 
 	/** What a boundary checks against `secrets` (plan.ts). */
@@ -3495,8 +3544,10 @@ export class FolderService {
 		const secrets = this.#secretsOf(view);
 		const place = gitPlace(target);
 		if (!secrets || place.kind !== "git") return unchecked;
+		const codeHost = view.pending?.codeHost ?? false;
 		for (const [path, node] of view.pending?.nodes() ?? []) {
 			if (node.kind !== "file" || node.open > 0 || !path.startsWith(`${place.area}/repo.git/`)) continue;
+			if (unpublished(path, codeHost)) continue;
 			if (this.#runningFor(node, path, secrets)) {
 				unchecked.set(node, undefined);
 				continue;
@@ -3770,9 +3821,20 @@ export class FolderService {
 			view.heard = "answered";
 			return { commitId: null, seq: null, paths: [...entries, ...dropped] };
 		}
-		const batches = final ? [] : planCommitBatches(plan.units);
+		const batches = planCommitBatches(plan.units);
 		if (batches.length > 1)
-			return await this.#commitBatches(view, pending, plan, batches, credited, entries, dropped, last, unasked);
+			return await this.#commitBatches(
+				view,
+				pending,
+				plan,
+				batches,
+				credited,
+				entries,
+				dropped,
+				final,
+				last,
+				unasked,
+			);
 		const structured = await this.#structured(
 			view,
 			plan.units.map((u) => u.unit),
@@ -3831,6 +3893,7 @@ export class FolderService {
 		credited: readonly (readonly string[] | undefined)[],
 		entries: ReportEntry[],
 		dropped: readonly ReportEntry[],
+		final: boolean,
 		last: boolean,
 		unasked: boolean,
 	): Promise<Report> {
@@ -3841,6 +3904,60 @@ export class FolderService {
 		let lastCommitId: string | null = null;
 		let lastSeq: number | null = null;
 		let unitOffset = 0;
+
+		const remainingKeep = new Map<string, number>();
+		const remainingRemovals = new Map<string, number>();
+		for (const batch of batches)
+			for (const planned of batch) {
+				const counts = planned.unit.op === "delete" ? remainingRemovals : remainingKeep;
+				for (const path of planned.paths) counts.set(path, (counts.get(path) ?? 0) + 1);
+			}
+		const decrementBatch = (batch: readonly PlannedUnit[]): void => {
+			for (const planned of batch) {
+				const counts = planned.unit.op === "delete" ? remainingRemovals : remainingKeep;
+				for (const path of planned.paths) {
+					const next = (counts.get(path) ?? 0) - 1;
+					if (next <= 0) counts.delete(path);
+					else counts.set(path, next);
+				}
+			}
+		};
+
+		const committedUnits: PlannedUnit[] = [];
+		const committedOutcomes: CommitOutcome[] = [];
+		const committedMade = new Map<string, string>();
+		const committedSaved = new Set<string>();
+		const committedWritten = new Map<string, string>();
+		const committedChangeSetSeqs: number[] = [];
+
+		const settleCommitted = async (): Promise<void> => {
+			if (committedUnits.length === 0) return;
+			const settleKeep = new Set<string>(keptNodes);
+			for (const path of remainingKeep.keys()) settleKeep.add(path);
+			const settleRemovals = new Set<string>(plan.removals);
+			for (const path of remainingRemovals.keys()) settleRemovals.add(path);
+			const committedPlan: BoundaryPlan = {
+				units: committedUnits,
+				waiting: [],
+				dropped: plan.dropped,
+				keep: settleKeep,
+				removals: settleRemovals,
+				refused: [],
+				gitHeld: plan.gitHeld,
+			};
+			const settlement: Settlement = {
+				plan: committedPlan,
+				made: committedMade,
+				answer: { commitId: lastCommitId ?? "", seq: lastSeq, units: committedOutcomes },
+				keep: settleKeep,
+				saved: committedSaved,
+				written: committedWritten,
+				changeSetSeqs: committedChangeSetSeqs,
+			};
+			view.unsettled = settlement;
+			for (let attempt = 0; attempt < 3 && view.unsettled === settlement && !view.closed; attempt++)
+				await this.#trySettle(view);
+		};
 
 		const remainingEntries = (fromIndex: number, outcome: ReportEntry["outcome"], reason: string): ReportEntry[] => {
 			const out: ReportEntry[] = [];
@@ -3854,6 +3971,7 @@ export class FolderService {
 			if (i > 0) {
 				if (view.closed) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
 				if (view.unproven) {
+					await settleCommitted();
 					view.heard = "refused";
 					const laterRefused = remainingEntries(i, "refused", "unproven");
 					this.#notice(view, unasked, { commitId: null, seq: null, refused: "unproven", paths: laterRefused });
@@ -3870,23 +3988,7 @@ export class FolderService {
 			const offset = unitOffset;
 			unitOffset += batch.length;
 			const batchKey = i === 0 ? baseKey : `${baseKey}:b${i}`;
-
-			const batchKeep = new Set<string>(keptNodes);
-			const batchRemovals = new Set<string>(plan.removals);
-			for (let j = i + 1; j < batches.length; j++)
-				for (const planned of batches[j]!) {
-					const target = planned.unit.op === "delete" ? batchRemovals : batchKeep;
-					for (const path of planned.paths) target.add(path);
-				}
-			const batchPlan: BoundaryPlan = {
-				units: batch,
-				waiting: [],
-				dropped: i === 0 ? plan.dropped : [],
-				keep: batchKeep,
-				removals: batchRemovals,
-				refused: [],
-				gitHeld: plan.gitHeld,
-			};
+			const isFinalBatch = final && i === batches.length - 1;
 
 			const structured = await this.#structured(
 				view,
@@ -3904,14 +4006,35 @@ export class FolderService {
 						if (node?.kind === "file" || node?.kind === "symlink") batchMade.set(path, node.version);
 					}
 
-			const answer = await this.#commit(view, actor, batchKey, units, false);
+			view.askingFinal = isFinalBatch;
+			let answer: Answer | undefined;
+			try {
+				answer = await this.#commit(view, actor, batchKey, units, isFinalBatch);
+			} finally {
+				view.askingFinal = false;
+			}
 			view.heard = heardOf(answer);
 
 			if (!answer) {
-				view.unanswered = { key: batchKey, actor, units, plan: batchPlan, made: batchMade, final: false };
+				await settleCommitted();
+				decrementBatch(batch);
+				const unansweredKeep = new Set<string>(keptNodes);
+				for (const path of remainingKeep.keys()) unansweredKeep.add(path);
+				const unansweredRemovals = new Set<string>(plan.removals);
+				for (const path of remainingRemovals.keys()) unansweredRemovals.add(path);
+				const batchPlan: BoundaryPlan = {
+					units: batch,
+					waiting: [],
+					dropped: i === 0 ? plan.dropped : [],
+					keep: unansweredKeep,
+					removals: unansweredRemovals,
+					refused: [],
+					gitHeld: plan.gitHeld,
+				};
+				view.unanswered = { key: batchKey, actor, units, plan: batchPlan, made: batchMade, final: isFinalBatch };
 				return {
-					commitId: null,
-					seq: null,
+					commitId: lastCommitId,
+					seq: lastSeq,
 					paths: [
 						...entries,
 						...(i === 0 ? dropped : []),
@@ -3921,9 +4044,37 @@ export class FolderService {
 				};
 			}
 
+			if (isFinalBatch && answer.commitId) {
+				const finalPlan: BoundaryPlan = {
+					units: batch,
+					waiting: [],
+					dropped: i === 0 ? plan.dropped : [],
+					keep: new Set(),
+					removals: new Set(),
+					refused: [],
+					gitHeld: plan.gitHeld,
+				};
+				return this.#notice(
+					view,
+					unasked,
+					await this.#closedBy(view, finalPlan, answer, [...entries, ...(i === 0 ? dropped : [])]),
+				);
+			}
+			if (isFinalBatch && view.closed) throw this.#closedOtherwise(view);
+
 			if (answer.refused) {
 				if (answer.said === VIEW_ENDED) this.#close(view, VIEW_ENDED);
 				if (holds(view, answer, last)) {
+					if (!view.closed) await settleCommitted();
+					const batchPlan: BoundaryPlan = {
+						units: batch,
+						waiting: [],
+						dropped: i === 0 ? plan.dropped : [],
+						keep: keptNodes,
+						removals: plan.removals,
+						refused: [],
+						gitHeld: plan.gitHeld,
+					};
 					const batchHeld = held(batchPlan, (idx) => ({ outcome: "refused", reason: answer.units[idx]?.reason }));
 					const laterRefused = remainingEntries(i + 1, "refused", answer.refused);
 					this.#notice(view, unasked, {
@@ -3939,6 +4090,7 @@ export class FolderService {
 						paths: [...entries, ...batchHeld, ...laterRefused],
 					};
 				}
+				if (!view.closed) await settleCommitted();
 				const remainingUnits = batches.slice(i).flat();
 				const remainingPlan: BoundaryPlan = {
 					units: remainingUnits,
@@ -3959,7 +4111,28 @@ export class FolderService {
 						version: null,
 					})),
 				};
-				const settledRefusal = await this.#settle(view, remainingPlan, new Map(), remainingAnswer);
+				let settledRefusal: ReportEntry[];
+				if (view.unsettled) {
+					const { entries: refusedEntries, keep: refusedKeep } = await this.#outcomes(
+						view,
+						remainingPlan,
+						remainingAnswer,
+					);
+					const prior = view.unsettled;
+					view.unsettled = {
+						...prior,
+						plan: {
+							...prior.plan,
+							units: [...prior.plan.units, ...remainingUnits],
+							keep: refusedKeep,
+							removals: plan.removals,
+						},
+						keep: refusedKeep,
+					};
+					settledRefusal = refusedEntries;
+				} else {
+					settledRefusal = await this.#settle(view, remainingPlan, new Map(), remainingAnswer);
+				}
 				const batchPaths = [...(i === 0 ? dropped : []), ...settledRefusal];
 				this.#notice(view, unasked, {
 					commitId: null,
@@ -3971,27 +4144,49 @@ export class FolderService {
 				return { commitId: null, seq: null, refused: answer.refused, paths: entries };
 			}
 
-			const batchSettled = await this.#settle(view, batchPlan, batchMade, answer);
-			const batchPaths = [...(i === 0 ? dropped : []), ...batchSettled];
+			decrementBatch(batch);
+			const batchPlan: BoundaryPlan = {
+				units: batch,
+				waiting: [],
+				dropped: [],
+				keep: new Set(),
+				removals: new Set(),
+				refused: [],
+				gitHeld: plan.gitHeld,
+			};
+			const {
+				entries: batchEntries,
+				keep: batchKept,
+				saved: batchSaved,
+			} = await this.#outcomes(view, batchPlan, answer);
+			const batchPaths = [...(i === 0 ? dropped : []), ...batchEntries];
 			this.#notice(view, unasked, { ...committed(answer), paths: batchPaths });
 			entries.push(...batchPaths);
+			for (const path of batchKept) keptNodes.add(path);
+			for (const path of batchSaved) committedSaved.add(path);
+			for (const [path, version] of batchMade) committedMade.set(path, version);
+			let batchNeedsChangeSet = false;
+			batch.forEach((planned, idx) => {
+				const outcome = answer.units[idx];
+				const op = planned.unit.op;
+				if ((op === "write" || op === "symlink") && outcome?.outcome === "saved" && outcome.version)
+					committedWritten.set(planned.unit.path, outcome.version);
+				if (op === "move" && outcome?.outcome === "saved") batchNeedsChangeSet = true;
+			});
+			if (!batchNeedsChangeSet && answer.seq !== null)
+				for (const path of batchMade.keys())
+					if (batchSaved.has(path) && !committedWritten.has(path)) {
+						batchNeedsChangeSet = true;
+						break;
+					}
+			if (batchNeedsChangeSet && answer.seq !== null) committedChangeSetSeqs.push(answer.seq);
+			committedUnits.push(...batch);
+			committedOutcomes.push(...answer.units);
 			lastCommitId = answer.commitId || lastCommitId;
 			if (answer.seq !== null) lastSeq = answer.seq;
-			if (view.unsettled) {
-				const moreRemain = i + 1 < batches.length;
-				if (moreRemain) view.heard = "open";
-				return {
-					commitId: moreRemain ? null : lastCommitId,
-					seq: moreRemain ? null : lastSeq,
-					paths: [
-						...entries,
-						...remainingEntries(i + 1, "not_applied", "the last save has not come back through the feed yet"),
-					],
-				};
-			}
-			for (const entry of batchSettled) if (entry.kept) keptNodes.add(entry.path);
 		}
 
+		await settleCommitted();
 		if (runCount < batches.length) {
 			view.heard = "open";
 			entries.push(
@@ -4211,9 +4406,11 @@ export class FolderService {
 		const files: ReturnType<PendingView["nodes"]> = only.file
 			? new Map([[only.file.path, only.file.node]])
 			: (view.pending?.nodes() ?? new Map());
+		const codeHost = view.pending?.codeHost ?? false;
 		for (const [path, node] of files) {
 			if (node.kind !== "file" || node.open > 0) continue;
 			if (only.under !== undefined && !path.startsWith(only.under)) continue;
+			if (unpublished(path, codeHost)) continue;
 			const running = this.#runningFor(node, path, secrets);
 			if (running) {
 				ends.push(running.done);
@@ -4278,6 +4475,8 @@ export class FolderService {
 		const parse = async (path: string, file: FileRef): Promise<Record<string, unknown> | null> => {
 			if (!companyStatePath(path)) return null;
 			if (file.bytes === 0) return memberFolderStructured(path, "");
+			if (file.bytes > MAX_COMMIT_STRUCTURED_BYTES)
+				throw new ProtocolError(ErrorCode.badRequest, STRUCTURED_TOO_LARGE);
 			const entry: TreeEntry = {
 				path,
 				kind: "file",
@@ -4465,22 +4664,27 @@ export class FolderService {
 			await view.work;
 			if (view.seq < seq) return;
 		}
-		// A write's version is in the core's answer; a new folder's files' are only in its change set, which is read
-		// when one of them was saved. So are the versions a move gave what it moved.
-		const written = new Map<string, string>();
-		settlement.plan.units.forEach((planned, i) => {
-			const outcome = settlement.answer.units[i];
-			const op = planned.unit.op;
-			if ((op === "write" || op === "symlink") && outcome?.outcome === "saved" && outcome.version)
-				written.set(planned.unit.path, outcome.version);
-		});
+		const written = new Map<string, string>(settlement.written);
+		if (!settlement.written) {
+			settlement.plan.units.forEach((planned, i) => {
+				const outcome = settlement.answer.units[i];
+				const op = planned.unit.op;
+				if ((op === "write" || op === "symlink") && outcome?.outcome === "saved" && outcome.version)
+					written.set(planned.unit.path, outcome.version);
+			});
+		}
 		let moved: ReadonlyMap<string, MovedVersion> = new Map();
-		const someMoved = settlement.plan.units.some(
-			(planned, i) => planned.unit.op === "move" && settlement.answer.units[i]?.outcome === "saved",
-		);
-		if (someMoved || [...settlement.made.keys()].some((path) => settlement.saved.has(path) && !written.has(path)))
+		const seqsToRead =
+			settlement.changeSetSeqs !== undefined
+				? settlement.changeSetSeqs
+				: settlement.plan.units.some(
+							(planned, i) => planned.unit.op === "move" && settlement.answer.units[i]?.outcome === "saved",
+						) || [...settlement.made.keys()].some((path) => settlement.saved.has(path) && !written.has(path))
+					? [seq]
+					: [];
+		if (seqsToRead.length > 0)
 			try {
-				const changeSet = await this.#changeSet(view, seq);
+				const changeSet = await this.#changeSets(view, seqsToRead);
 				for (const [path, version] of changeSet.writes) if (!written.has(path)) written.set(path, version);
 				moved = changeSet.moved;
 			} catch (error) {
@@ -4492,22 +4696,26 @@ export class FolderService {
 		if (view.unsettled === settlement) this.#finishSettle(view, settlement, written, moved);
 	}
 
-	/** The versions change set `seq` wrote, and those its moves gave (with the version each path had where it came
-	 * from), read from the feed just before it: whatever the view's own rounds did since (a full listing included), the
-	 * change set says exactly. A feed that no longer serves that position gives none. */
-	async #changeSet(
+	async #changeSets(
 		view: View,
-		seq: number,
+		seqs: readonly number[],
 	): Promise<{ writes: Map<string, string>; moved: Map<string, MovedVersion> }> {
 		const writes = new Map<string, string>();
 		const moved = new Map<string, MovedVersion>();
-		let position: { afterSeq: number; cursor: FeedCursor | null } = { afterSeq: seq - 1, cursor: null };
+		const wanted = new Set(seqs);
+		let minSeq = seqs[0]!;
+		let maxSeq = seqs[0]!;
+		for (const s of seqs) {
+			if (s < minSeq) minSeq = s;
+			if (s > maxSeq) maxSeq = s;
+		}
+		let position: { afterSeq: number; cursor: FeedCursor | null } = { afterSeq: minSeq - 1, cursor: null };
 		for (;;) {
 			const page = await this.#core.feed(view.environmentId, view.actor, position.afterSeq, position.cursor);
 			if (page.resync || !page.next) return { writes, moved };
 			for (const event of page.events) {
-				if (event.seq > seq) return { writes, moved };
-				if (event.seq === seq && event.kind === "change_set")
+				if (event.seq > maxSeq) return { writes, moved };
+				if (wanted.has(event.seq) && event.kind === "change_set")
 					for (const change of event.changes) {
 						if (change.op === "write") writes.set(change.path, change.version);
 						if (change.op === "move_in" && change.kind !== "folder" && change.priorVersion)

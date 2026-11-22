@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
-import { request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
+import { Agent as HttpAgent, request as httpRequest } from "node:http";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import type { FolderActor, FolderCore } from "./core.ts";
 import { type ContentCheck, SaveChecks, type StoredForm } from "./git-objects.ts";
 import { CHUNK_BYTES, type NasObjects } from "./objects.ts";
 import type { ChunkRef, Content, FileRef } from "./pending.ts";
 import { ErrorCode, ProtocolError } from "./protocol.ts";
 import type { SecretSet } from "./secret-scan.ts";
+
+export const STAGE_CONCURRENCY = 4;
 
 /** One object put through the object gateway's route for the folder service (F3 step 3b), streamed. */
 export interface Upload {
@@ -19,6 +21,7 @@ export interface Upload {
 
 export interface FolderUploads {
 	start(environmentId: string, actor: FolderActor, intentId: string, sha256: string, bytes: number): Upload;
+	close?(): void;
 }
 
 /** What the gateway's answer means to the machine. */
@@ -33,29 +36,59 @@ function uploadError(status: number): ProtocolError {
 export class GatewayUploads implements FolderUploads {
 	readonly #origin: URL;
 	readonly #token: string;
+	readonly #ca: string | undefined;
+	readonly #agent: HttpAgent | HttpsAgent;
 
-	constructor(options: { readonly url: string; readonly token: string }) {
+	constructor(options: { readonly url: string; readonly token: string; readonly ca?: string }) {
 		const url = new URL(options.url);
 		if ((url.protocol !== "https:" && url.protocol !== "http:") || url.pathname !== "/" || url.search || url.username)
 			throw new Error("The object gateway's address must be an exact origin");
 		if (!/^[A-Za-z0-9_-]{43}$/.test(options.token)) throw new Error("The folder service's gateway token is invalid");
+		if (options.ca !== undefined && !options.ca.includes("-----BEGIN CERTIFICATE-----"))
+			throw new Error("The object gateway's CA certificate is invalid");
 		this.#origin = url;
 		this.#token = options.token;
+		this.#ca = options.ca;
+		this.#agent =
+			url.protocol === "https:"
+				? new HttpsAgent({
+						keepAlive: true,
+						keepAliveMsecs: 30_000,
+						maxSockets: 32,
+						maxFreeSockets: 16,
+						...(options.ca ? { ca: options.ca, minVersion: "TLSv1.2" } : {}),
+					})
+				: new HttpAgent({
+						keepAlive: true,
+						keepAliveMsecs: 30_000,
+						maxSockets: 32,
+						maxFreeSockets: 16,
+					});
+	}
+
+	close(): void {
+		this.#agent.destroy();
 	}
 
 	start(environmentId: string, actor: FolderActor, intentId: string, sha256: string, bytes: number): Upload {
 		const url = new URL(`/v1/folder-service-objects/${environmentId}/${sha256}`, this.#origin);
-		const request = (url.protocol === "https:" ? httpsRequest : httpRequest)(url, {
-			method: "PUT",
-			headers: {
-				authorization: `Bearer ${this.#token}`,
-				"x-qorpera-folder-actor": Buffer.from(JSON.stringify(actor)).toString("base64url"),
-				"x-qorpera-upload-intent": intentId,
-				"content-type": "application/octet-stream",
-				"content-length": String(bytes),
-			},
-			timeout: 60_000,
-		});
+		const headers = {
+			authorization: `Bearer ${this.#token}`,
+			"x-qorpera-folder-actor": Buffer.from(JSON.stringify(actor)).toString("base64url"),
+			"x-qorpera-upload-intent": intentId,
+			"content-type": "application/octet-stream",
+			"content-length": String(bytes),
+		};
+		const request =
+			url.protocol === "https:"
+				? httpsRequest(url, {
+						method: "PUT",
+						headers,
+						timeout: 60_000,
+						agent: this.#agent,
+						...(this.#ca ? { ca: this.#ca, minVersion: "TLSv1.2" } : {}),
+					})
+				: httpRequest(url, { method: "PUT", headers, timeout: 60_000, agent: this.#agent });
 		const answer = new Promise<void>((resolve, reject) => {
 			request.once("response", (response) => {
 				response.resume();
@@ -174,6 +207,10 @@ export class FolderStaging {
 		this.#uploadBufferMax = Math.min(UPLOAD_BUFFER_CAP_BYTES, objects.maxCacheBytes);
 	}
 
+	close(): void {
+		this.#uploads.close?.();
+	}
+
 	/** Opens a chunk's own intent. `present`: the actor holds it already, and need not send it. */
 	async openChunk(
 		environmentId: string,
@@ -227,7 +264,7 @@ export class FolderStaging {
 			!profileId ||
 			bytes < 1 ||
 			bytes > CHUNK_BYTES ||
-			bytes > this.#objects.maxCacheBytes ||
+			!this.#objects.canCache(bytes) ||
 			this.#objects.has(profileId, sha256)
 		)
 			return inner;
@@ -308,12 +345,13 @@ export class FolderStaging {
 	): Promise<{ readonly file: FileRef; readonly intentId: string }> {
 		const singleChunk = content.chunks.length === 1 && content.chunks[0]!.bytes === content.size;
 		const hash = singleChunk ? undefined : createHash("sha256");
-		await this.#read(
-			profileId,
-			content,
-			secrets && this.#checks.start(secrets, content.size, form),
-			hash ? (bytes) => hash.update(bytes) : undefined,
-		);
+		if (secrets || hash)
+			await this.#read(
+				profileId,
+				content,
+				secrets && this.#checks.start(secrets, content.size, form),
+				hash ? (bytes) => hash.update(bytes) : undefined,
+			);
 		const text = manifestText({
 			fileSha256: singleChunk ? content.chunks[0]!.sha256 : hash!.digest("hex"),
 			bytes: content.size,
@@ -326,51 +364,88 @@ export class FolderStaging {
 		for (let attempt = 0; attempt < 2; attempt++) {
 			const open = await this.#core.openUpload(environmentId, actor, text);
 			const present = new Set(open.present);
-			for (const c of content.chunks)
-				if (!present.has(c.sha256)) {
-					present.add(c.sha256);
-					await this.#put(
-						environmentId,
-						actor,
-						open.intentId,
-						c.sha256,
-						await this.#objects.chunk(profileId, c.sha256, c.bytes),
-					);
-				}
+			const missing: { readonly sha256: string; readonly bytes: number; readonly data?: Buffer }[] = [];
+			for (const c of content.chunks) {
+				if (present.has(c.sha256)) continue;
+				present.add(c.sha256);
+				missing.push({ sha256: c.sha256, bytes: c.bytes });
+			}
 			if (!present.has(manifestSha256))
-				await this.#put(environmentId, actor, open.intentId, manifestSha256, manifest);
+				missing.push({ sha256: manifestSha256, bytes: manifest.byteLength, data: manifest });
+			await this.#putBounded(missing, async (item) => {
+				const data = item.data ?? (await this.#objects.chunk(profileId, item.sha256, item.bytes, "bulk"));
+				await this.#put(environmentId, actor, open.intentId, item.sha256, data);
+			});
 			const seal = await this.#core.sealUpload(environmentId, actor, open.intentId);
 			if (seal.state === "sealed") return { file: seal.file, intentId: open.intentId };
 		}
 		throw new ProtocolError(ErrorCode.unavailable, "The file's bytes could not be saved now");
 	}
 
-	/** Checks a file's bytes, from its chunks on the share, for `secrets`, as `form` stores them: throws
-	 * `SecretRefusal` if they carry one or cannot be checked. */
 	async check(profileId: string, content: Content, secrets: SecretSet, form: StoredForm = "plain"): Promise<void> {
 		if (secrets.size === 0) return;
 		await this.#read(profileId, content, this.#checks.start(secrets, content.size, form));
 	}
 
-	/** Reads a file's chunks in order, each through `check` (to its end) and then `each`. A check that fails, or is
-	 * left by a failed read, is stopped. */
 	async #read(
 		profileId: string,
 		content: Content,
 		check: ContentCheck | undefined,
 		each?: (bytes: Buffer) => void,
 	): Promise<void> {
+		const chunks = content.chunks;
+		const prefetched = new Map<number, Promise<Buffer>>();
+		const prefetch = (index: number): void => {
+			if (index >= chunks.length || prefetched.has(index)) return;
+			const c = chunks[index]!;
+			const pending = this.#objects.chunk(profileId, c.sha256, c.bytes, "bulk");
+			void pending.catch(() => undefined);
+			prefetched.set(index, pending);
+		};
 		try {
-			for (const c of content.chunks) {
-				const bytes = await this.#objects.chunk(profileId, c.sha256, c.bytes);
+			const window = Math.min(STAGE_CONCURRENCY, chunks.length);
+			for (let i = 0; i < window; i++) prefetch(i);
+			for (let i = 0; i < chunks.length; i++) {
+				const bytes = await prefetched.get(i)!;
+				prefetched.delete(i);
 				await check?.push(bytes);
 				each?.(bytes);
+				prefetch(i + window);
 			}
 			await check?.end();
 		} catch (error) {
 			await check?.abort();
 			throw error;
 		}
+	}
+
+	async #putBounded<T>(items: readonly T[], run: (item: T) => Promise<void>): Promise<void> {
+		if (items.length === 0) return;
+		if (items.length === 1) {
+			await run(items[0]!);
+			return;
+		}
+		let next = 0;
+		let failed = false;
+		let firstIndex = Number.POSITIVE_INFINITY;
+		let firstError: unknown;
+		const worker = async (): Promise<void> => {
+			while (!failed) {
+				const index = next++;
+				if (index >= items.length) return;
+				try {
+					await run(items[index]!);
+				} catch (error) {
+					failed = true;
+					if (index < firstIndex) {
+						firstIndex = index;
+						firstError = error;
+					}
+				}
+			}
+		};
+		await Promise.all(Array.from({ length: Math.min(STAGE_CONCURRENCY, items.length) }, () => worker()));
+		if (failed) throw firstError;
 	}
 
 	async #put(
