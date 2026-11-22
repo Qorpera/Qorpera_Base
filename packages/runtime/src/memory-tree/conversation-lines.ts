@@ -23,6 +23,7 @@
 //   recorder (`memoryCompactionRecorder`).
 
 import { isUuid, parseClosedRecord, parseInteger, parseSha256Hex, WireValueError } from "@qorpera/contracts";
+import { withAbortScopes } from "../abort-scope.ts";
 import type { CloudCompanyFolderClient, CloudCompanyFolderUnit } from "../cloud-company-folder-client.ts";
 import { type CloudCompanyPathControl, CloudCompanyPathNotText } from "../cloud-company-path-gateway.ts";
 import { type CloudNativeToolBinding, cloudToolRequest } from "../cloud-native-tool-authority.ts";
@@ -572,15 +573,44 @@ export class CloudConversationLines {
 		const byPath = new Map<string, MemoryTreeLine[]>();
 		for (const line of this.#unstored.values()) {
 			const path = memoryBlockPath(line.l, line.k);
-			byPath.set(path, [...(byPath.get(path) ?? []), line]);
+			let group = byPath.get(path);
+			if (!group) {
+				group = [];
+				byPath.set(path, group);
+			}
+			group.push(line);
 		}
+		const entries = [...byPath].sort(([a], [b]) => (a < b ? -1 : 1));
+		type StoredBlock = Awaited<ReturnType<CloudConversationLinesOptions["folder"]["readText"]>> | undefined;
+		const storedBlocks: StoredBlock[] = new Array(entries.length);
+		let nextRead = 0;
+		const stop = new AbortController();
+		await withAbortScopes([signal, stop.signal], (readSignal) =>
+			Promise.all(
+				Array.from({ length: Math.min(8, entries.length) }, async () => {
+					while (!readSignal.aborted && nextRead < entries.length) {
+						const index = nextRead++;
+						const path = entries[index]![0];
+						try {
+							storedBlocks[index] = await this.#folder
+								.readText(`${root}/${path}`, BLOCK_BYTES, readSignal)
+								.catch((error) => {
+									if (error instanceof CloudCompanyPathNotText) return undefined;
+									throw error;
+								});
+						} catch (error) {
+							stop.abort(error);
+							throw error;
+						}
+					}
+				}),
+			),
+		);
 		const writes: BlockWrite[] = [];
-		for (const [path, lines] of [...byPath].sort(([a], [b]) => (a < b ? -1 : 1))) {
+		for (let entryIndex = 0; entryIndex < entries.length; entryIndex += 1) {
+			const [path, lines] = entries[entryIndex]!;
 			const keys = lines.map((line) => nodeKey(line.l, line.k));
-			const stored = await this.#folder.readText(`${root}/${path}`, BLOCK_BYTES, signal).catch((error) => {
-				if (error instanceof CloudCompanyPathNotText) return undefined;
-				throw error;
-			});
+			const stored = storedBlocks[entryIndex];
 			const kept = stored === undefined ? null : stored ? memoryBlockLines(stored.text, path) : [];
 			if (kept === null) {
 				// A block this writer cannot read is left as it is.

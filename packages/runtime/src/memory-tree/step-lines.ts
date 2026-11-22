@@ -18,6 +18,7 @@
 // - A request whose fold needs lines not built yet waits up to SETTLE for them, then shows placeholders (§5.4, §5.7).
 //   At run end, `finish` builds what is left within CLOSE (§7.1).
 
+import { withAbortScopes } from "../abort-scope.ts";
 import type { CloudNativeContextComposition, CloudNativeContextRequest } from "../cloud-native-context-composition.ts";
 import { type CloudRunLog, CloudRunLogGone, type CloudRunLogStep, type CloudRunTreeBlock } from "../cloud-run-log.ts";
 import {
@@ -144,6 +145,7 @@ export class CloudRunStepLines {
 		this.#first = first;
 		this.#observe = options.observe;
 		this.#unsubscribe = this.#log.onCommitted(() => {
+			if (this.#signal.aborted && !this.#finishing) return;
 			this.#want();
 		});
 	}
@@ -273,22 +275,25 @@ export class CloudRunStepLines {
 		// Reads and commits stop with the run, or at closing with `finish`'s signal; building also at CLOSE.
 		const io = finishing ?? this.#signal;
 		if (io.aborted) return;
-		const build = finishing ? this.#close.signal : AbortSignal.any([this.#signal, this.#close.signal]);
-		try {
-			const read = await this.#read(io);
-			// Before the run's first step there is nothing to read; a log that kept moving is read by the next pass.
-			if (!read?.T) return;
-			const { generation, T, texts, narrow } = read;
-			this.#generation ??= generation;
-			// What was read at one generation is never stored at another (§4.3).
-			if (generation !== this.#generation) this.#stale = true;
-			const scope = this.#scope(T);
-			if (scope.leaves.length && !build.aborted) await this.#build(T, texts, narrow, scope, build);
-			await this.#commit(this.#generation, io);
-		} catch (error) {
-			// What was built stays, and the next pass tries again; a gone log ends the writer.
-			if (error instanceof CloudRunLogGone) this.#gone = true;
-		}
+		const runPass = async (build: AbortSignal): Promise<void> => {
+			try {
+				const read = await this.#read(io);
+				// Before the run's first step there is nothing to read; a log that kept moving is read by the next pass.
+				if (!read?.T) return;
+				const { generation, T, texts, narrow } = read;
+				this.#generation ??= generation;
+				// What was read at one generation is never stored at another (§4.3).
+				if (generation !== this.#generation) this.#stale = true;
+				const scope = this.#scope(T);
+				if (scope.leaves.length && !build.aborted) await this.#build(T, texts, narrow, scope, build);
+				await this.#commit(this.#generation, io);
+			} catch (error) {
+				// What was built stays, and the next pass tries again; a gone log ends the writer.
+				if (error instanceof CloudRunLogGone) this.#gone = true;
+			}
+		};
+		if (finishing) await runPass(this.#close.signal);
+		else await withAbortScopes([this.#signal, this.#close.signal], runPass);
 	}
 
 	/**
@@ -349,16 +354,36 @@ export class CloudRunStepLines {
 	 * as empty.
 	 */
 	async #blocks(T: number, signal: AbortSignal): Promise<Map<string, MemoryTreeLine[]>> {
-		const blocks = new Map<string, MemoryTreeLine[]>();
+		const paths: string[] = [];
 		for (let tier = 0; 2 ** (4 * tier) <= T; tier++) {
 			const span = 16 ** (tier + 1);
 			for (let block = 0; block * span + 2 ** (4 * tier) <= T; block++) {
 				const path = memoryBlockPath(4 * tier, block * 16);
-				if (this.#loaded.has(path)) continue;
-				const stored = await this.#log.treeRead(path, signal);
-				blocks.set(path, (stored && cloudRunTreeBlockLines(stored.text, path)) ?? []);
+				if (!this.#loaded.has(path)) paths.push(path);
 			}
 		}
+		const results: MemoryTreeLine[][] = new Array(paths.length);
+		let next = 0;
+		const stop = new AbortController();
+		await withAbortScopes([signal, stop.signal], (readSignal) =>
+			Promise.all(
+				Array.from({ length: Math.min(8, paths.length) }, async () => {
+					while (!readSignal.aborted && next < paths.length) {
+						const index = next++;
+						const path = paths[index]!;
+						try {
+							const stored = await this.#log.treeRead(path, readSignal);
+							results[index] = (stored && cloudRunTreeBlockLines(stored.text, path)) ?? [];
+						} catch (error) {
+							stop.abort(error);
+							throw error;
+						}
+					}
+				}),
+			),
+		);
+		const blocks = new Map<string, MemoryTreeLine[]>();
+		for (let i = 0; i < paths.length; i += 1) blocks.set(paths[i]!, results[i]!);
 		return blocks;
 	}
 
@@ -456,11 +481,37 @@ export class CloudRunStepLines {
 		const byPath = new Map<string, MemoryTreeLine[]>();
 		for (const line of this.#unstored.values()) {
 			const path = memoryBlockPath(line.l, line.k);
-			byPath.set(path, [...(byPath.get(path) ?? []), line]);
+			let group = byPath.get(path);
+			if (!group) {
+				group = [];
+				byPath.set(path, group);
+			}
+			group.push(line);
 		}
+		const entries = [...byPath].sort(([a], [b]) => (a < b ? -1 : 1));
+		type StoredTreeBlock = Awaited<ReturnType<CloudRunStepLinesLog["treeRead"]>>;
+		const storedBlocks: StoredTreeBlock[] = new Array(entries.length);
+		let nextRead = 0;
+		const stop = new AbortController();
+		await withAbortScopes([signal, stop.signal], (readSignal) =>
+			Promise.all(
+				Array.from({ length: Math.min(8, entries.length) }, async () => {
+					while (!readSignal.aborted && nextRead < entries.length) {
+						const index = nextRead++;
+						try {
+							storedBlocks[index] = await this.#log.treeRead(entries[index]![0], readSignal);
+						} catch (error) {
+							stop.abort(error);
+							throw error;
+						}
+					}
+				}),
+			),
+		);
 		const writes: { readonly block: CloudRunTreeBlock; readonly keys: readonly string[] }[] = [];
-		for (const [path, lines] of [...byPath].sort(([a], [b]) => (a < b ? -1 : 1))) {
-			const stored = await this.#log.treeRead(path, signal);
+		for (let entryIndex = 0; entryIndex < entries.length; entryIndex += 1) {
+			const [path, lines] = entries[entryIndex]!;
+			const stored = storedBlocks[entryIndex];
 			const kept = stored ? cloudRunTreeBlockLines(stored.text, path) : [];
 			const keys = lines.map((line) => nodeKey(line.l, line.k));
 			if (kept === null) {
@@ -524,8 +575,29 @@ export class CloudRunStepLines {
 
 	/** Whether a block of a refused change set is no longer at the version it was read at. */
 	async #changed(writes: readonly { readonly block: CloudRunTreeBlock }[], signal: AbortSignal): Promise<boolean> {
-		for (const { block } of writes)
-			if (((await this.#log.treeRead(block.path, signal))?.version ?? null) !== block.version) return true;
-		return false;
+		let next = 0;
+		let found = false;
+		const stop = new AbortController();
+		await withAbortScopes([signal, stop.signal], (readSignal) =>
+			Promise.all(
+				Array.from({ length: Math.min(8, writes.length) }, async () => {
+					while (!found && !readSignal.aborted && next < writes.length) {
+						const { block } = writes[next++]!;
+						try {
+							if (((await this.#log.treeRead(block.path, readSignal))?.version ?? null) !== block.version) {
+								found = true;
+								stop.abort();
+								return;
+							}
+						} catch (error) {
+							if (found && !signal.aborted) return;
+							stop.abort(error);
+							throw error;
+						}
+					}
+				}),
+			),
+		);
+		return found;
 	}
 }

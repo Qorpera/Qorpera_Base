@@ -627,3 +627,32 @@ it("keeps a fake instruction a tool result carried into the run's lines as data 
 	});
 	expect(cloudNativeContextReply(request, composed).input).toEqual(composed.input);
 });
+
+it("reads step-tree blocks in parallel with bounded concurrency without calling AbortSignal.any", async () => {
+	const anySpy = vi.spyOn(AbortSignal, "any");
+	try {
+		const log = new FakeLog();
+		let active = 0;
+		let peak = 0;
+		const origTreeRead = log.treeRead.bind(log);
+		log.treeRead = async (path: string) => {
+			active += 1;
+			peak = Math.max(peak, active);
+			await new Promise((resolve) => setTimeout(resolve, 15));
+			try {
+				return await origTreeRead(path);
+			} finally {
+				active -= 1;
+			}
+		};
+		const lines = writer(log, fake(named).call);
+		log.commit(...Array.from({ length: 64 }, (_, j) => step(j, `short ${j}`)));
+		await lines.finish(open());
+		expect(peak).toBeGreaterThanOrEqual(2);
+		expect(peak).toBeLessThanOrEqual(8);
+		expect(anySpy).not.toHaveBeenCalled();
+		expect(log.commits.length).toBeGreaterThanOrEqual(1);
+	} finally {
+		anySpy.mockRestore();
+	}
+});

@@ -1,3 +1,4 @@
+import { getEventListeners } from "node:events";
 import {
 	COMPACT,
 	COMPACT_SCALE,
@@ -596,4 +597,55 @@ it("defers window reads until slot acquisition and leaves stats.failures at 0 wh
 	expect(lines).toEqual([]);
 	expect(stats).toMatchObject({ calls: 0, free: 0, failures: 0, stopped: null });
 	expect(readIndices).toContain(0);
+});
+
+it("bounds eager event fetches on large backfills and shares one abort listener per signal on MemoryCompactLane", async () => {
+	const lane = new MemoryCompactLane(1);
+	const sharedAbort = new AbortController();
+	let releaseBlocker!: () => void;
+	let blockerEntered!: () => void;
+	const entered = new Promise<void>((resolve) => {
+		blockerEntered = resolve;
+	});
+	const blocker = lane.run([0, 0], sharedAbort.signal, async () => {
+		blockerEntered();
+		await new Promise<void>((resolve) => {
+			releaseBlocker = resolve;
+		});
+		return "done";
+	});
+	await entered;
+	const queued = Array.from({ length: 20 }, (_, i) => lane.run([i + 1, 0], sharedAbort.signal, async () => i));
+	expect(getEventListeners(sharedAbort.signal, "abort")).toHaveLength(2);
+	sharedAbort.abort();
+	expect(await Promise.all(queued)).toEqual(Array.from({ length: 20 }, () => null));
+	releaseBlocker();
+	await blocker;
+	expect(getEventListeners(sharedAbort.signal, "abort")).toHaveLength(0);
+
+	const abort = new AbortController();
+	const fetched: number[] = [];
+	const texts = Array.from({ length: 64 }, (_, i) => long(`E${i}`));
+	const largeSource: MemoryCompactSource = {
+		kind: "conversation",
+		T: texts.length,
+		built: () => undefined,
+		leaves: texts.map((_, i) => i),
+		event: async (i) => {
+			fetched.push(i);
+			return { text: texts[i]!, seq: 100 + i, hash: HASH };
+		},
+	};
+	let calls = 0;
+	const model = fake(async (message) => {
+		calls += 1;
+		if (calls === 2) {
+			abort.abort();
+			return new Promise<MemoryCompactReply>(() => {});
+		}
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		return named(message);
+	});
+	await memoryCompact(largeSource, model.call, { lane: new MemoryCompactLane(2), signal: abort.signal });
+	expect(fetched.length).toBeLessThan(16);
 });

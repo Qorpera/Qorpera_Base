@@ -799,3 +799,26 @@ it("detaches parent abort listeners after settle and close", async () => {
 	await lines.close(controller.signal);
 	expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
 });
+
+it("reads multiple dirty blocks in parallel with bounded concurrency during settle", async () => {
+	const host = thread(64, 1);
+	let active = 0;
+	let peak = 0;
+	const origRead = host.folder.readText;
+	host.folder.readText = async (path, maxBytes, signal) => {
+		active += 1;
+		peak = Math.max(peak, active);
+		await new Promise((resolve) => setTimeout(resolve, 15));
+		try {
+			return await origRead(path, maxBytes, signal);
+		} finally {
+			active -= 1;
+		}
+	};
+	const lines = writer(host, fake());
+	await expect(lines.open(open())).resolves.toBe(true);
+	await lines.settle(open());
+	expect(peak).toBeGreaterThanOrEqual(2);
+	expect(peak).toBeLessThanOrEqual(8);
+	expect(host.commits.length).toBeGreaterThanOrEqual(1);
+});
