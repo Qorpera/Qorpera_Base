@@ -2947,7 +2947,10 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 			for (let n = 16; n < 40; n++) await begin(`eyJh.eyJz.dG9rZW4t${n}`);
 			await expect(begin("eyJh.eyJz.Zm9ydHktb25l")).rejects.toThrow("MEMBER_POINTER_BUSY");
 			expect(f.memberPointerBegin).toHaveBeenCalledTimes(40);
-			vi.setSystemTime(Date.parse("2026-11-13T10:00:01.000Z"));
+			// WHY: Backward wall-clock jumps must not reset the monotonic per-second begin limit.
+			vi.setSystemTime(Date.parse("2026-11-13T09:59:00.000Z"));
+			await expect(begin("eyJh.eyJz.Zm9ydHktb25l")).rejects.toThrow("MEMBER_POINTER_BUSY");
+			vi.advanceTimersByTime(1000);
 			await expect(begin("eyJh.eyJz.Zm9ydHktb25l")).resolves.toEqual({ pass: f.passId, milliseconds: 10000 });
 			// A begin that failed gives its token's place back.
 			f.memberPointerBegin.mockImplementationOnce(async () => {
@@ -3587,6 +3590,8 @@ describe("a member's live picture of a desktop (20260930745000)", () => {
 			expect(f.router.admitMemberStream(((await f.ticket()) as { ticket: string }).ticket, f.origin)).toBeNull();
 			// An admitted ticket never run gives its place back after a moment.
 			vi.advanceTimersByTime(10_001);
+			// WHY: A late invocation of the reclaimed closure must fail closed instead of bypassing the per-member cap.
+			expect(await runs[0]!(sinkOf(), f.signal)).toBe("STREAM_UNAVAILABLE");
 			expect(f.router.admitMemberStream(((await f.ticket()) as { ticket: string }).ticket, f.origin)).not.toBeNull();
 		} finally {
 			vi.useRealTimers();

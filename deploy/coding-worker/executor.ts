@@ -59,7 +59,7 @@ import {
 	MachineCommandRouter, machineCommandRoutes,
 } from "./machine-command-routing.ts";
 import { MemberMachineScreenControl } from "./member-control.ts";
-import { CodingCommandRouter, type CodingCommandPeer } from "./command-routing.ts";
+import { CodingCommandRouter, codingCommandRoutes, type CodingCommandPeer } from "./command-routing.ts";
 import { CodingExecutorHttpControl } from "./control.ts";
 import { readCodingServiceCredential } from "./credentials.ts";
 import { BrokerRepositoryCredentials, REPOSITORY_TOKEN } from "./repository-credentials.ts";
@@ -689,12 +689,14 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				request.action === "read" ? transport.read(request.scope, request.input, signal) : transport.cancel(request.scope, request.input.commandId, signal));
 		},
 	});
+	const ingressCoding = codingCommandRoutes(router, control, false);
+	const peerCoding = codingCommandRoutes(router, control, true);
 	const commands = new HttpCloudCodingCommandService({
 		token: commandToken, port: config.commandPort,
 		// G2-6b: a guest's request proves its run's lease before anything else is asked about its binding.
 		proveBinding: (binding, holder, signal) => proveNativeBinding(control, binding, holder, signal),
-		authorize: (request, signal) => authorizeCodingCommand(control, request, signal),
-		execute: (request, signal) => router.execute(request, signal),
+		authorize: ingressCoding.authorize,
+		execute: ingressCoding.execute,
 		machines: machineCommandRoutes(machineRouter, control, false),
 		// The agent's home (slice 1): one channel per run, opened on this node's machine or forwarded to the peer that
 		// holds it, as a machine command is.
@@ -707,8 +709,8 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		token: peerToken, port: config.peerCommandPort,
 		// Only executors hold the peer token, and the forwarding one proved the guest's holder at its own ingress.
 		proveBinding: null,
-		authorize: (request, signal) => authorizeCodingCommand(control, request, signal),
-		execute: (request, signal) => router.execute(request, signal, true),
+		authorize: peerCoding.authorize,
+		execute: peerCoding.execute,
 		machines: machineCommandRoutes(machineRouter, control, true),
 		// A home channel a peer forwarded: SQL authorizes the same session again, and it opens only on this node.
 		home: {
@@ -734,11 +736,25 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		admit: (ticket, origin) => machineRouter.admitMemberStream(ticket, origin),
 	}) : undefined;
 	let executor: CloudCodingExecutor | undefined;
+	let memberStreamsClosing: Promise<void> | undefined;
+	const closeMemberStreams = (): Promise<void> | undefined => {
+		if (!memberStreams) return undefined;
+		memberStreamsClosing ??= memberStreams.close();
+		return memberStreamsClosing;
+	};
+	const onStopStreams = (): void => {
+		// WHY: Stop accepting new desktop streams and abort open relays immediately on SIGTERM instead of waiting behind the 45s+ host drain.
+		void closeMemberStreams()?.catch(() => undefined);
+	};
 	try {
 		await commands.start(stop.signal);
 		await peerCommands.start(stop.signal);
 		await memberScreens?.start(stop.signal);
 		await memberStreams?.listen();
+		if (memberStreams) {
+			if (stop.signal.aborted) onStopStreams();
+			else stop.signal.addEventListener("abort", onStopStreams, { once: true });
+		}
 		const running = new CloudCodingExecutor({
 			control,
 			host,
@@ -904,6 +920,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		await Promise.all([claiming, keeping, housekeeping, machines, hosting, deletions, caring, requesting, recording, uploading]);
 	} finally {
 		stop.abort();
+		stop.signal.removeEventListener("abort", onStopStreams);
 		const closeStep = async (stage: string, work: () => Promise<unknown> | undefined): Promise<void> => {
 			try {
 				await work();
@@ -911,6 +928,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				console.error(JSON.stringify({ event: "coding-executor-shutdown-error", stage, ...loggedError(error) }));
 			}
 		};
+		await closeStep("member-streams", closeMemberStreams);
 		await closeStep("executor-drain", () => executor?.drain());
 		await closeStep("code-requests", () => codeRequests?.settled());
 		await closeStep("machine-host", () => machineHost?.settled());
@@ -922,12 +940,14 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		await closeStep("commands", () => commands.close());
 		await closeStep("peer-commands", () => peerCommands.close());
 		await closeStep("member-screens", () => memberScreens?.close());
-		await closeStep("member-streams", () => memberStreams?.close());
 		process.off("SIGTERM", shutdown);
 		process.off("SIGINT", shutdown);
 	}
 }
 
 if (!DESKTOP_STREAM_INSTANCE && process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-	runCodingExecutorMain().catch(() => { console.error("CODING_EXECUTOR_START_FAILED"); process.exitCode = 1; });
+	runCodingExecutorMain().catch((error) => {
+		console.error(`CODING_EXECUTOR_START_FAILED:${errorCode(error)}`);
+		process.exitCode = 1;
+	});
 }
