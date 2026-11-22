@@ -892,10 +892,10 @@ class Reconciler:
             write_replace(os.path.join(self.paths.unflushed, address), now_iso() + "\n")
             remove(os.path.join(self.paths.dhcp, address))
             verified = os.path.lexists(os.path.join(self.paths.verified, address))
-            self.history("unplugged" if verified else "dropped", entry, reason=reason)
             for directory in (self.paths.verified, self.paths.noted, self.paths.stopped, self.paths.missing):
                 remove(os.path.join(directory, address))
             self.forget(address)
+            self.history("unplugged" if verified else "dropped", entry, reason=reason)
             remove(self.paths.entry(address))
             # Last: while the seen marker is there, no plug takes the address.
             remove(os.path.join(self.paths.seen, address))

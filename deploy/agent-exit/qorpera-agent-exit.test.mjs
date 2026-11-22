@@ -3769,6 +3769,13 @@ max_active_twins = 0
 twin_lock = threading.Lock()
 twin_cmds = []
 forget_calls = []
+forgot_before_history = []
+orig_history = r.history
+def wrapped_history(event, entry_arg, **kw):
+    if event == "unplugged":
+        forgot_before_history.extend(sorted(set(forget_calls)))
+    return orig_history(event, entry_arg, **kw)
+r.history = wrapped_history
 
 def fake_run(cmd, *, input=None):
     global active_twins, max_active_twins
@@ -3826,6 +3833,7 @@ print(json.dumps({
     "deduped_twin_count": unplug_twin_count,
     "parallel_twins": max_active_twins >= 2,
     "entry_removed_before_flush": entry_removed_before_flush,
+    "forgot_before_history": forgot_before_history,
     "forgot_before_flush": forgot_before_flush,
     "unflushed_cleared": unflushed_cleared,
     "retry_cleared": retry_cleared,
@@ -3842,6 +3850,7 @@ print(json.dumps({
 				deduped_twin_count: 6,
 				parallel_twins: true,
 				entry_removed_before_flush: true,
+				forgot_before_history: ["braked", "dns_port", "reach"],
 				forgot_before_flush: ["braked", "dns_port", "reach"],
 				unflushed_cleared: true,
 				retry_cleared: true,
