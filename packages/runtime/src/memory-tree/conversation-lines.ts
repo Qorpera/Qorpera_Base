@@ -585,8 +585,8 @@ export class CloudConversationLines {
 		const storedBlocks: StoredBlock[] = new Array(entries.length);
 		let nextRead = 0;
 		const stop = new AbortController();
-		await withAbortScopes([signal, stop.signal], (readSignal) =>
-			Promise.all(
+		await withAbortScopes([signal, stop.signal], async (readSignal) => {
+			await Promise.all(
 				Array.from({ length: Math.min(8, entries.length) }, async () => {
 					while (!readSignal.aborted && nextRead < entries.length) {
 						const index = nextRead++;
@@ -604,8 +604,9 @@ export class CloudConversationLines {
 						}
 					}
 				}),
-			),
-		);
+			);
+			readSignal.throwIfAborted();
+		});
 		const writes: BlockWrite[] = [];
 		for (let entryIndex = 0; entryIndex < entries.length; entryIndex += 1) {
 			const [path, lines] = entries[entryIndex]!;

@@ -822,3 +822,29 @@ it("reads multiple dirty blocks in parallel with bounded concurrency during sett
 	expect(peak).toBeLessThanOrEqual(8);
 	expect(host.commits.length).toBeGreaterThanOrEqual(1);
 });
+
+it("keeps unstored lines when settle aborts during parallel block reads even if readText ignores the signal", async () => {
+	const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	try {
+		const host = thread(160, 1);
+		const abort = new AbortController();
+		let storeReads = 0;
+		const origRead = host.folder.readText;
+		host.folder.readText = async (path, maxBytes) => {
+			storeReads += 1;
+			if (storeReads === 1) abort.abort();
+			return origRead(path, maxBytes, open());
+		};
+		const lines = writer(host, fake());
+		await lines.open(open());
+		await expect(lines.settle(abort.signal)).rejects.toThrow();
+		expect(host.commits).toEqual([]);
+		host.folder.readText = origRead;
+		await lines.close(open());
+		expect(host.commits.length).toBeGreaterThanOrEqual(1);
+		const storedKeys = new Set(host.view().tree.lines.map((line) => `${line.l}.${line.k}`));
+		for (let i = 0; i < 160; i += 1) expect(storedKeys.has(`0.${i}`)).toBe(true);
+	} finally {
+		error.mockRestore();
+	}
+});

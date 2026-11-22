@@ -649,3 +649,28 @@ it("bounds eager event fetches on large backfills and shares one abort listener 
 	await memoryCompact(largeSource, model.call, { lane: new MemoryCompactLane(2), signal: abort.signal });
 	expect(fetched.length).toBeLessThan(16);
 });
+
+it("prunes unreachable older window events past 128 leaves without re-reading any event or losing merges", async () => {
+	const count = 160;
+	const texts = Array.from({ length: count }, (_, i) => long(`E${i}`));
+	const reads = new Map<number, number>();
+	const pruneSource: MemoryCompactSource = {
+		kind: "conversation",
+		T: count,
+		built: () => undefined,
+		leaves: texts.map((_, i) => i),
+		event: async (i) => {
+			reads.set(i, (reads.get(i) ?? 0) + 1);
+			return { text: texts[i]!, seq: 100 + i, hash: HASH };
+		},
+	};
+	const model = fake(named);
+	const { lines, stats } = await memoryCompact(pruneSource, model.call, {
+		lane: new MemoryCompactLane(4),
+		signal: deadline(),
+	});
+	expect(stats.failures).toBe(0);
+	expect(reads.size).toBe(count);
+	for (const seen of reads.values()) expect(seen).toBe(1);
+	expect(lines).toHaveLength(160 + 80 + 40 + 20 + 10 + 5 + 2 + 1);
+});

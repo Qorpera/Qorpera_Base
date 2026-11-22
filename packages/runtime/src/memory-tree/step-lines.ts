@@ -362,11 +362,12 @@ export class CloudRunStepLines {
 				if (!this.#loaded.has(path)) paths.push(path);
 			}
 		}
+		if (!paths.length) return new Map();
 		const results: MemoryTreeLine[][] = new Array(paths.length);
 		let next = 0;
 		const stop = new AbortController();
-		await withAbortScopes([signal, stop.signal], (readSignal) =>
-			Promise.all(
+		await withAbortScopes([signal, stop.signal], async (readSignal) => {
+			await Promise.all(
 				Array.from({ length: Math.min(8, paths.length) }, async () => {
 					while (!readSignal.aborted && next < paths.length) {
 						const index = next++;
@@ -380,8 +381,9 @@ export class CloudRunStepLines {
 						}
 					}
 				}),
-			),
-		);
+			);
+			readSignal.throwIfAborted();
+		});
 		const blocks = new Map<string, MemoryTreeLine[]>();
 		for (let i = 0; i < paths.length; i += 1) blocks.set(paths[i]!, results[i]!);
 		return blocks;
@@ -493,8 +495,8 @@ export class CloudRunStepLines {
 		const storedBlocks: StoredTreeBlock[] = new Array(entries.length);
 		let nextRead = 0;
 		const stop = new AbortController();
-		await withAbortScopes([signal, stop.signal], (readSignal) =>
-			Promise.all(
+		await withAbortScopes([signal, stop.signal], async (readSignal) => {
+			await Promise.all(
 				Array.from({ length: Math.min(8, entries.length) }, async () => {
 					while (!readSignal.aborted && nextRead < entries.length) {
 						const index = nextRead++;
@@ -506,8 +508,9 @@ export class CloudRunStepLines {
 						}
 					}
 				}),
-			),
-		);
+			);
+			readSignal.throwIfAborted();
+		});
 		const writes: { readonly block: CloudRunTreeBlock; readonly keys: readonly string[] }[] = [];
 		for (let entryIndex = 0; entryIndex < entries.length; entryIndex += 1) {
 			const [path, lines] = entries[entryIndex]!;
@@ -578,8 +581,8 @@ export class CloudRunStepLines {
 		let next = 0;
 		let found = false;
 		const stop = new AbortController();
-		await withAbortScopes([signal, stop.signal], (readSignal) =>
-			Promise.all(
+		await withAbortScopes([signal, stop.signal], async (readSignal) => {
+			await Promise.all(
 				Array.from({ length: Math.min(8, writes.length) }, async () => {
 					while (!found && !readSignal.aborted && next < writes.length) {
 						const { block } = writes[next++]!;
@@ -596,8 +599,9 @@ export class CloudRunStepLines {
 						}
 					}
 				}),
-			),
-		);
+			);
+			signal.throwIfAborted();
+		});
 		return found;
 	}
 }
