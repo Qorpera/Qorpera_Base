@@ -75,6 +75,7 @@ services:
       DATA_PLATFORM_URL: ${DATA_PLATFORM_URL:?set DATA_PLATFORM_URL}
       DATA_PLATFORM_KEY: ${DATA_PLATFORM_KEY:?set DATA_PLATFORM_KEY}
       DATA_LISTEN: 0.0.0.0:8480
+      DATA_WORKERS: ${DATA_WORKERS:-1}
       DATA_ADMIN_TOKEN: ${DATA_ADMIN_TOKEN:-}
       DATA_ADMIN_TOKEN_FILE: ${DATA_ADMIN_TOKEN_FILE:-}
       DATA_DIRECT_LOGIN_TOKEN: ${DATA_DIRECT_LOGIN_TOKEN:-}
@@ -105,6 +106,7 @@ services:
       - ${DATA_GATEWAY_LISTEN:?set DATA_GATEWAY_LISTEN}:8480
     cpus: 1
     mem_limit: 512m
+    stop_grace_period: 20s
     logging:
       driver: json-file
       options: { max-size: 20m, max-file: "3" }

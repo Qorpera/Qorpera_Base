@@ -81,11 +81,15 @@ seed() {
 	echo "standby: base backup over TLS took $(($(date +%s) - t0))s"
 	dc up -d --no-deps data-db </dev/null
 	wait_store 120 standby || die "the standby did not come up"
+	local receiver_status="NOT streaming"
 	for _ in $(seq 1 60); do
-		[ "$(qc "select coalesce((select status from pg_stat_wal_receiver), 'none')")" = streaming ] && break
+		receiver_status=$(qc "select coalesce((select status from pg_stat_wal_receiver), 'none')")
+		[ "$receiver_status" = streaming ] && break
 		sleep 1
 	done
-	echo "standby: $(qc "select coalesce((select status from pg_stat_wal_receiver), 'NOT streaming')") $(($(date +%s) - t0))s after the start"
+	# WHY: Fail non-zero if the standby never starts streaming so provisioning callers do not treat a broken replica as healthy.
+	[ "$receiver_status" = streaming ] || die "standby did not reach streaming state (status: $receiver_status)"
+	echo "standby: $receiver_status $(($(date +%s) - t0))s after the start"
 }
 
 status() {

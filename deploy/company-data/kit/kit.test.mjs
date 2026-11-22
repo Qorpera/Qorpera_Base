@@ -317,3 +317,128 @@ test("gateway-main wires all four external doors from env and secret files witho
 		await rm(temporary, { recursive: true, force: true });
 	}
 });
+
+test("archive-wal.sh and restore-wal.sh verify copies and leave no temp remnants on errors", async () => {
+	const temporary = await mkdtemp(join(tmpdir(), "qorpera-company-data-wal-test-"));
+	try {
+		const walDir = join(temporary, "wal");
+		const srcDir = join(temporary, "src");
+		const dstDir = join(temporary, "dst");
+		mkdirSync(walDir, { recursive: true });
+		mkdirSync(srcDir, { recursive: true });
+		mkdirSync(dstDir, { recursive: true });
+		const archiveScript = join(kit, "postgres", "archive-wal.sh");
+		const restoreScript = join(kit, "postgres", "restore-wal.sh");
+		const env = { PATH: process.env.PATH, QORPERA_WAL_ARCHIVE_DIR: walDir };
+
+		const walName = "000000010000000000000001";
+		const srcFile = join(srcDir, walName);
+		const payload = "wal-segment-bytes-0001\n".repeat(128);
+		writeFileSync(srcFile, payload);
+
+		const first = spawnSync("sh", [archiveScript, srcFile, walName], { env, encoding: "utf8" });
+		assert.equal(first.status, 0, first.stderr);
+		assert.equal(existsSync(join(walDir, `${walName}.gz`)), true);
+
+		const idempotent = spawnSync("sh", [archiveScript, srcFile, walName], { env, encoding: "utf8" });
+		assert.equal(idempotent.status, 0, idempotent.stderr);
+
+		const otherSrc = join(srcDir, "other");
+		writeFileSync(otherSrc, "different-wal-content\n");
+		const conflict = spawnSync("sh", [archiveScript, otherSrc, walName], { env, encoding: "utf8" });
+		assert.notEqual(conflict.status, 0);
+		assert.match(conflict.stderr, /exists and differs/);
+
+		const missingSrc = spawnSync("sh", [archiveScript, join(srcDir, "missing"), "000000010000000000000002"], {
+			env,
+			encoding: "utf8",
+		});
+		assert.notEqual(missingSrc.status, 0);
+		const walFilesAfterFail = execFileSync("ls", ["-A", walDir], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
+		assert.deepEqual(walFilesAfterFail, [`${walName}.gz`]);
+
+		const restoredPath = join(dstDir, walName);
+		const restored = spawnSync("sh", [restoreScript, walName, restoredPath], { env, encoding: "utf8" });
+		assert.equal(restored.status, 0, restored.stderr);
+		assert.equal(readFileSync(restoredPath, "utf8"), payload);
+
+		const missingWal = spawnSync("sh", [restoreScript, "000000010000000000000099", join(dstDir, "none")], {
+			env,
+			encoding: "utf8",
+		});
+		assert.equal(missingWal.status, 1);
+
+		const corruptName = "000000010000000000000003";
+		writeFileSync(join(walDir, `${corruptName}.gz`), "not-valid-gzip");
+		const corruptRestore = spawnSync("sh", [restoreScript, corruptName, join(dstDir, corruptName)], {
+			env,
+			encoding: "utf8",
+		});
+		assert.notEqual(corruptRestore.status, 0);
+		const dstFiles = execFileSync("ls", ["-A", dstDir], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
+		assert.deepEqual(dstFiles, [walName]);
+
+		const repaired = spawnSync("sh", [archiveScript, srcFile, corruptName], { env, encoding: "utf8" });
+		assert.equal(repaired.status, 0, repaired.stderr);
+		assert.match(repaired.stderr, /is damaged; archiving it again/);
+	} finally {
+		await rm(temporary, { recursive: true, force: true });
+	}
+});
+
+test("kit operational scripts validate args, parse .env safely, guard backups with flock and traps, and configure compose grace period", async () => {
+	const temporary = await mkdtemp(join(tmpdir(), "qorpera-company-data-ops-test-"));
+	try {
+		const copyKit = join(temporary, "kit");
+		await cp(kit, copyKit, { recursive: true, filter: (source) => !source.endsWith("/.env") });
+
+		const primaryNoArgs = spawnSync("bash", [join(copyKit, "provision-data-vm.sh"), "primary"], {
+			env: { PATH: process.env.PATH },
+			encoding: "utf8",
+		});
+		assert.equal(primaryNoArgs.status, 2);
+		assert.match(primaryNoArgs.stderr, /primary <cert-name>/);
+
+		const standbyNoArgs = spawnSync("bash", [join(copyKit, "provision-data-vm.sh"), "standby"], {
+			env: { PATH: process.env.PATH },
+			encoding: "utf8",
+		});
+		assert.equal(standbyNoArgs.status, 2);
+		assert.match(standbyNoArgs.stderr, /standby <subcommand>/);
+
+		const marker = join(temporary, "pwned");
+		writeFileSync(join(copyKit, ".env"), `DATA_LOCAL="/tmp/local"\nDATA_BACKUP="$(touch ${marker})"\nOPEN="unclosed\n`);
+		const badEnv = spawnSync("bash", [join(copyKit, "provision-data-vm.sh"), "primary", "db.internal"], {
+			env: { PATH: process.env.PATH },
+			encoding: "utf8",
+		});
+		assert.equal(badEnv.status, 1);
+		assert.equal(existsSync(marker), false);
+
+		const provisionSrc = readFileSync(join(kit, "provision-data-vm.sh"), "utf8");
+		assert.match(provisionSrc, /load_env/);
+		assert.doesNotMatch(provisionSrc, /^\s*source\s+/m);
+		assert.match(provisionSrc, /install -d -m 0750 -o 0 -g "\$\{PG_UID\}" "\$\{DATA_BACKUP\}"/);
+
+		const backupSrc = readFileSync(join(kit, "base-backup.sh"), "utf8");
+		assert.match(backupSrc, /flock -n 9/);
+		assert.match(backupSrc, /trap cleanup_partial EXIT/);
+
+		const backupUnit = readFileSync(join(kit, "systemd", "qorpera-company-data-backup.service"), "utf8");
+		assert.match(backupUnit, /^TimeoutStartSec=4h$/m);
+		assert.match(backupUnit, /^UMask=0027$/m);
+
+		const standbySrc = readFileSync(join(kit, "standby.sh"), "utf8");
+		assert.match(standbySrc, /\[ "\$receiver_status" = streaming \] \|\| die /);
+
+		const tlsSrc = readFileSync(join(kit, "tls.sh"), "utf8");
+		assert.match(tlsSrc, /trap cleanup EXIT/);
+		assert.match(tlsSrc, /ca\.key\.new/);
+
+		const composeSrc = readFileSync(join(kit, "docker-compose.yml"), "utf8");
+		assert.match(composeSrc, /DATA_WORKERS: \$\{DATA_WORKERS:-1\}/);
+		assert.match(composeSrc, /stop_grace_period: 20s/);
+	} finally {
+		await rm(temporary, { recursive: true, force: true });
+	}
+});
