@@ -349,6 +349,17 @@ describe("Resend sender", () => {
 			throw new TypeError("network down");
 		}) as unknown as typeof fetch);
 		await assert.rejects(unreachable.send(email, "k1"), (error: unknown) => error instanceof MailSendError && error.retryable);
+
+		let seenRedirect: RequestRedirect | undefined;
+		const oversized = new ResendSender("k", (async (_url: string, init?: RequestInit) => {
+			seenRedirect = init?.redirect;
+			return new Response(JSON.stringify({ id: "x".repeat(80 * 1024) }), { status: 200 });
+		}) as unknown as typeof fetch);
+		await assert.rejects(
+			oversized.send(email, "k1"),
+			(error: unknown) => error instanceof MailSendError && error.retryable,
+		);
+		assert.equal(seenRedirect, "error");
 	});
 });
 
@@ -694,5 +705,82 @@ describe("mail outbox attachments", () => {
 			messageIds: 0,
 		});
 		assert.equal(sent.length, 1);
+	});
+
+	it("prefetches multi-chunk attachments within window 3, suppresses unhandled prefetch rejections, and checks budget after attachment load", async () => {
+		const multi = new Uint8Array(12 * 1024 * 1024 + 17).map((_, index) => (index * 31 + 5) & 0xff);
+		const objects = new Map<string, Uint8Array>();
+		const file = companyFile(objects, multi, "multi.bin");
+
+		let active = 0;
+		let peak = 0;
+		const slowReader: ObjectReader = {
+			async get(companyId, sha256) {
+				assert.equal(companyId, COMPANY);
+				active += 1;
+				peak = Math.max(peak, active);
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				active -= 1;
+				return objects.get(sha256) ?? null;
+			},
+		};
+		const parts = await attachmentBase64(COMPANY, file, slowReader);
+		assert.equal(peak, 3);
+		assert.equal(parts.join(""), Buffer.from(multi).toString("base64"));
+
+		const prefetchSignals: AbortSignal[] = [];
+		const failingReader: ObjectReader = {
+			async get(_companyId, sha256, signal) {
+				if (sha256 === file.manifestSha256) return objects.get(sha256) ?? null;
+				if (signal) prefetchSignals.push(signal);
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				throw new MailSendError("storage down", true);
+			},
+		};
+		await assert.rejects(
+			() => attachmentBase64(COMPANY, file, failingReader),
+			(err: unknown) => err instanceof MailSendError && err.retryable,
+		);
+		assert.ok(prefetchSignals.length >= 2, "expected concurrent prefetch signals");
+		assert.ok(prefetchSignals.every((sig) => sig.aborted), "first chunk failure must abort in-flight prefetches");
+		await new Promise((resolve) => setTimeout(resolve, 20));
+
+		let clock = 1_000;
+		const sent: string[] = [];
+		const sender: MailSender = {
+			async send(email) {
+				sent.push(email.subject);
+				return "msg-should-not-send";
+			},
+			async messageId() {
+				return null;
+			},
+		};
+		const budgetExhaustingReader: ObjectReader = {
+			async get(_companyId, sha256) {
+				clock += 30_000;
+				return objects.get(sha256) ?? null;
+			},
+		};
+		const harness = outbox([job(1, { companyId: COMPANY, attachments: [file] })], sender, budgetExhaustingReader);
+		const response = await handleMailOutbox(post(), {
+			keys: [KEY],
+			store: () => harness.store,
+			objects: () => budgetExhaustingReader,
+			sender,
+			pace: 0,
+			budgetMs: 20_000,
+			now: () => clock,
+		});
+		assert.deepEqual(await response.json(), {
+			claimed: 1,
+			sent: 0,
+			retrying: 0,
+			failed: 0,
+			rejected: 0,
+			deferred: 1,
+			messageIds: 0,
+		});
+		assert.equal(sent.length, 0);
 	});
 });

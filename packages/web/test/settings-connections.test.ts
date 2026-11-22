@@ -543,6 +543,24 @@ describe("member model account settings", () => {
 		expect(client.listConnections).toHaveBeenCalledTimes(4);
 		expect(view.el.textContent).toContain("5% left");
 		expect(view.el.textContent).not.toContain("at last check");
+
+		// WHY: Detaching a cached panel must stop fetches, and reattaching must resume 60s refreshes even across hidden tabs.
+		view.el.remove();
+		await vi.advanceTimersByTimeAsync(120_000);
+		expect(client.listConnections).toHaveBeenCalledTimes(4);
+		document.body.append(view.el);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(client.listConnections).toHaveBeenCalledTimes(5);
+		view.el.remove();
+		vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+		await vi.advanceTimersByTimeAsync(60_000);
+		vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+		document.dispatchEvent(new Event("visibilitychange"));
+		await settle();
+		expect(client.listConnections).toHaveBeenCalledTimes(5);
+		document.body.append(view.el);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(client.listConnections).toHaveBeenCalledTimes(6);
 	});
 	it("shows an active provider usage wall without treating an earlier snapshot as available quota", async () => {
 		vi.useFakeTimers();

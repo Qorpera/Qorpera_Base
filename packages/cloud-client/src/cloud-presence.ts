@@ -1,4 +1,5 @@
 import { REALTIME_SUBSCRIBE_STATES, type RealtimeChannel, type SupabaseClient } from "@supabase/supabase-js";
+import { withCloudDeadline } from "./cloud-request.ts";
 import type { HostedPresenceIdentity } from "./hosted-primary.ts";
 import { PresenceSignatures } from "./presence-signatures.ts";
 
@@ -7,12 +8,21 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
  * stops resolving within it, and routine syncs (every agent's file presence re-tracks
  * every 10 s on this topic) cost no lookup. */
 const IDENTITY_TTL_MS = 60_000;
+const NEGATIVE_IDENTITY_TTL_MS = 20_000;
+const MAX_IDENTITY_LOOKUP_BATCH = 100;
+const OUTBOUND_CALL_TIMEOUT_MS = 5_000;
+const REMOVE_CHANNEL_TIMEOUT_MS = 2_000;
+const MAX_PENDING_OUTBOUND = 64;
 /** A sync whose identity lookup failed is tried again after this long, doubling up to the cap. */
 const SYNC_RETRY_MS = 3_000;
 const SYNC_RETRY_MAX_MS = 30_000;
 const MAX_TRACKED_CLIENTS = 4_096;
 const SEQUENCE_RETENTION_MS = 6 * 60_000;
 const TEXT_ENCODER = new TextEncoder();
+
+function jitteredDelay(ceilingMs: number): number {
+	return Math.max(1, Math.round(ceilingMs * (0.75 + Math.random() * 0.25)));
+}
 
 function recordSequence(
 	map: Map<string, { sequence: number; at: number }>,
@@ -145,6 +155,7 @@ export class SupabaseCloudPresenceTransport {
 		const publicKey = signatures.publicKey();
 		let registration: Promise<HostedPresenceIdentity> | undefined;
 		let outbound = Promise.resolve();
+		let pendingOutbound = 0;
 		let broadcastSequence = 0;
 		let presenceGeneration = 0;
 		const isSequenceProtected = (id: string): boolean => {
@@ -162,8 +173,10 @@ export class SupabaseCloudPresenceTransport {
 			activity?: PresenceAgentActivityEvent["activity"],
 		): void => {
 			if (stopped || !subscribed || !channel) return;
+			if (event !== "open_thread" && pendingOutbound >= MAX_PENDING_OUTBOUND) return;
 			const target = channel;
 			const sequence = ++broadcastSequence;
+			pendingOutbound += 1;
 			outbound = outbound
 				.then(async () => {
 					if (stopped || target !== channel || !subscribed) return;
@@ -171,38 +184,57 @@ export class SupabaseCloudPresenceTransport {
 						broadcastBytes(profileId, clientId, sequence, event, staffAgentId, activity),
 					);
 					if (stopped || target !== channel || !subscribed) return;
+					// WHY: Bound track/send calls so a dying WebSocket cannot stall outbound presence indefinitely.
 					if (event === "open_thread")
-						await target.track({ staff_agent_id: staffAgentId || null, sequence, signature });
+						await withCloudDeadline(
+							() => target.track({ staff_agent_id: staffAgentId || null, sequence, signature }),
+							OUTBOUND_CALL_TIMEOUT_MS,
+						);
 					else
-						await target.send({
-							type: "broadcast",
-							event,
-							payload: {
-								client_id: clientId,
-								sequence,
-								staff_agent_id: staffAgentId,
-								signature,
-								...(activity ? { activity } : {}),
-							},
-						});
+						await withCloudDeadline(
+							() =>
+								target.send({
+									type: "broadcast",
+									event,
+									payload: {
+										client_id: clientId,
+										sequence,
+										staff_agent_id: staffAgentId,
+										signature,
+										...(activity ? { activity } : {}),
+									},
+								}),
+							OUTBOUND_CALL_TIMEOUT_MS,
+						);
 				})
-				.catch(() => undefined);
+				.catch(() => undefined)
+				.finally(() => {
+					if (target === channel && pendingOutbound > 0) pendingOutbound -= 1;
+				});
 		};
 		const track = () => {
 			publish("open_thread", openThread ?? "");
 		};
+		const unknownIdentities = new Map<string, number>();
 		const identitiesInFlight = new Map<string, Promise<HostedPresenceIdentity | undefined>>();
 		const resolveIdentities = async (clientIds: string[]): Promise<Map<string, HostedPresenceIdentity>> => {
 			const requested = [...new Set(clientIds)].filter((id) => UUID_PATTERN.test(id));
 			const resolved = new Map<string, HostedPresenceIdentity>();
 			const now = Date.now();
 			for (const [id, known] of identities) if (now - known.at >= IDENTITY_TTL_MS) identities.delete(id);
+			for (const [id, missedAt] of unknownIdentities) {
+				if (now - missedAt >= NEGATIVE_IDENTITY_TTL_MS) unknownIdentities.delete(id);
+			}
 			const waiting: Array<Promise<readonly [string, HostedPresenceIdentity | undefined]>> = [];
 			const missing: string[] = [];
 			for (const id of requested) {
 				const known = identities.get(id);
 				if (known && now - known.at < IDENTITY_TTL_MS) {
 					resolved.set(id, known.identity);
+					continue;
+				}
+				const missedAt = unknownIdentities.get(id);
+				if (missedAt !== undefined && now - missedAt < NEGATIVE_IDENTITY_TTL_MS) {
 					continue;
 				}
 				const pending = identitiesInFlight.get(id);
@@ -213,23 +245,38 @@ export class SupabaseCloudPresenceTransport {
 				missing.push(id);
 			}
 			if (missing.length > 0) {
-				const batch = this.#primary.listPresenceDevices(profileId, missing).then((list) => {
-					const byId = new Map<string, HostedPresenceIdentity>();
-					for (const identity of list) {
-						identities.set(identity.clientId, { identity, at: now });
-						byId.set(identity.clientId, identity);
+				// WHY: Chunk large device lookups and negatively cache absent IDs so unregistered clients cannot cause RPC storms.
+				for (let offset = 0; offset < missing.length; offset += MAX_IDENTITY_LOOKUP_BATCH) {
+					const chunk = missing.slice(offset, offset + MAX_IDENTITY_LOOKUP_BATCH);
+					const batch = this.#primary.listPresenceDevices(profileId, chunk).then((list) => {
+						const byId = new Map<string, HostedPresenceIdentity>();
+						const checkedAt = Date.now();
+						for (const identity of list) {
+							unknownIdentities.delete(identity.clientId);
+							identities.set(identity.clientId, { identity, at: checkedAt });
+							byId.set(identity.clientId, identity);
+						}
+						for (const id of chunk) {
+							if (!byId.has(id)) {
+								if (unknownIdentities.size >= MAX_TRACKED_CLIENTS) {
+									const oldest = unknownIdentities.keys().next().value;
+									if (oldest !== undefined) unknownIdentities.delete(oldest);
+								}
+								unknownIdentities.set(id, checkedAt);
+							}
+						}
+						return byId;
+					});
+					for (const id of chunk) {
+						const entry = batch.then((byId) => byId.get(id));
+						identitiesInFlight.set(id, entry);
+						void entry
+							.finally(() => {
+								if (identitiesInFlight.get(id) === entry) identitiesInFlight.delete(id);
+							})
+							.catch(() => undefined);
+						waiting.push(entry.then((identity) => [id, identity] as const));
 					}
-					return byId;
-				});
-				for (const id of missing) {
-					const entry = batch.then((byId) => byId.get(id));
-					identitiesInFlight.set(id, entry);
-					void entry
-						.finally(() => {
-							if (identitiesInFlight.get(id) === entry) identitiesInFlight.delete(id);
-						})
-						.catch(() => undefined);
-					waiting.push(entry.then((identity) => [id, identity] as const));
 				}
 			}
 			if (waiting.length > 0) {
@@ -307,8 +354,13 @@ export class SupabaseCloudPresenceTransport {
 			onHealth?.({ phase: "degraded", error: detail });
 			console.error(`presence channel degraded: ${detail}`);
 			channel = undefined;
-			removing = this.#client.removeChannel(failed).catch(() => undefined);
-			const delay = Math.min(30_000, 1_000 * 2 ** Math.min(reconnectAttempts, 5));
+			// WHY: Reset outbound chain and bound removeChannel so a stalled old socket cannot deadlock publishing or reconnect.
+			outbound = Promise.resolve();
+			pendingOutbound = 0;
+			removing = withCloudDeadline(() => this.#client.removeChannel(failed), REMOVE_CHANNEL_TIMEOUT_MS).catch(
+				() => undefined,
+			);
+			const delay = jitteredDelay(Math.min(30_000, 1_000 * 2 ** Math.min(reconnectAttempts, 5)));
 			reconnectAttempts++;
 			reconnectTimer = setTimeout(() => {
 				reconnectTimer = undefined;
@@ -438,7 +490,7 @@ export class SupabaseCloudPresenceTransport {
 							.catch(() => {
 								// The lookup failed: try this sync again unless a newer one came.
 								if (next !== channel || stopped || generation !== presenceGeneration) return;
-								const delay = Math.min(SYNC_RETRY_MAX_MS, SYNC_RETRY_MS * 2 ** syncFailures);
+								const delay = jitteredDelay(Math.min(SYNC_RETRY_MAX_MS, SYNC_RETRY_MS * 2 ** syncFailures));
 								syncFailures += 1;
 								syncRetryTimer = setTimeout(() => {
 									syncRetryTimer = undefined;
@@ -494,7 +546,7 @@ export class SupabaseCloudPresenceTransport {
 						phase: "degraded",
 						error: error instanceof Error ? error.message : "Presence identity registration failed",
 					});
-					const delay = Math.min(30_000, 1_000 * 2 ** Math.min(reconnectAttempts, 5));
+					const delay = jitteredDelay(Math.min(30_000, 1_000 * 2 ** Math.min(reconnectAttempts, 5)));
 					reconnectAttempts++;
 					reconnectTimer = setTimeout(() => {
 						reconnectTimer = undefined;
@@ -530,12 +582,19 @@ export class SupabaseCloudPresenceTransport {
 				heartbeatTimer = undefined;
 				const active = channel;
 				channel = undefined;
+				outbound = Promise.resolve();
+				pendingOutbound = 0;
 				identities.clear();
+				unknownIdentities.clear();
 				identitiesInFlight.clear();
 				lastBroadcastSequence.clear();
 				lastPresenceSequence.clear();
 				// Leave first: others stop seeing this tab at once, and the topic is free again.
-				if (active) await this.#client.removeChannel(active).catch(() => undefined);
+				if (active) {
+					await withCloudDeadline(() => this.#client.removeChannel(active), REMOVE_CHANNEL_TIMEOUT_MS).catch(
+						() => undefined,
+					);
+				}
 				await registration?.catch(() => undefined);
 				await this.#primary.unregisterPresenceDevice(profileId, clientId).catch(() => undefined);
 				report([]);

@@ -1,4 +1,4 @@
-import type { TranscriptMessage, TranscriptNote } from "../../cloud/transcript.ts";
+import type { TranscriptMessage, TranscriptNote, TranscriptProjection } from "../../cloud/transcript.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import {
@@ -50,6 +50,21 @@ export class PairTranscriptView {
 	#placeholder: HTMLElement | undefined;
 	#renderedKey = "";
 	#identityKey = "";
+	#snap:
+		| {
+				projection: TranscriptProjection;
+				loading: boolean;
+				error: string | undefined;
+				hasEarlier: boolean | undefined;
+				earlierLoading: boolean | undefined;
+				earlierError: string | undefined;
+				firstName: string;
+				secondName: string;
+				firstAppearance: HostedStaffAgent["appearance"] | undefined;
+				secondAppearance: HostedStaffAgent["appearance"] | undefined;
+				locale: string;
+		  }
+		| undefined;
 	readonly #rendered = new Map<string, { key: string; node: HTMLElement }>();
 	#disposed = false;
 	/** "Show earlier": older messages come in above, and the reader stays where they were. */
@@ -149,10 +164,41 @@ export class PairTranscriptView {
 		const conversation = this.#host.conversation(this.#sessionId, false).get();
 		const first = this.#agent(this.#agentIds[0]);
 		const second = this.#agent(this.#agentIds[1]);
+		const locale = presentationLocale();
+		const prevSnap = this.#snap;
+		if (
+			prevSnap !== undefined &&
+			this.#renderedKey !== "" &&
+			prevSnap.projection === conversation.projection &&
+			prevSnap.loading === conversation.loading &&
+			prevSnap.error === conversation.error &&
+			prevSnap.hasEarlier === conversation.hasEarlier &&
+			prevSnap.earlierLoading === conversation.earlierLoading &&
+			prevSnap.earlierError === conversation.earlierError &&
+			prevSnap.firstName === first.name &&
+			prevSnap.secondName === second.name &&
+			prevSnap.firstAppearance === first.agent?.appearance &&
+			prevSnap.secondAppearance === second.agent?.appearance &&
+			prevSnap.locale === locale
+		) {
+			return;
+		}
+		this.#snap = {
+			projection: conversation.projection,
+			loading: conversation.loading,
+			error: conversation.error,
+			hasEarlier: conversation.hasEarlier,
+			earlierLoading: conversation.earlierLoading,
+			earlierError: conversation.earlierError,
+			firstName: first.name,
+			secondName: second.name,
+			firstAppearance: first.agent?.appearance,
+			secondAppearance: second.agent?.appearance,
+			locale,
+		};
 		const items = conversation.projection.items.filter(
 			(item): item is TranscriptMessage | TranscriptNote => item.kind === "agent" || item.kind === "note",
 		);
-		const locale = presentationLocale();
 		const key = JSON.stringify([
 			items,
 			conversation.loading,

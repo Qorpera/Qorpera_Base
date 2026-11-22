@@ -1073,6 +1073,44 @@ describe("site-serve: helpers", () => {
 			"application/octet-stream",
 		);
 	});
+
+	it("accepts valid base64 (unpadded and padded) and rejects malformed padding or characters", () => {
+		for (const raw of ["abc", "ab", "a"]) {
+			const encoded = Buffer.from(raw).toString("base64");
+			const parsed = parseServeAnswer(
+				{
+					state: "file",
+					path: "index.html",
+					contentType: "text/html; charset=utf-8",
+					bytes: raw.length,
+					sha256: sha(raw),
+					offset: 0,
+					content: encoded,
+				},
+				null,
+				{ length: raw.length },
+			);
+			assert.equal(parsed.state, "file");
+			assert.equal(parsed.content, encoded);
+		}
+		for (const badContent of ["a=", "====", "a===", "ab=c", "ab!d"]) {
+			assert.throws(() =>
+				parseServeAnswer(
+					{
+						state: "file",
+						path: "index.html",
+						contentType: "text/html; charset=utf-8",
+						bytes: 3,
+						sha256: sha("abc"),
+						offset: 0,
+						content: badContent,
+					},
+					null,
+					{ length: 3 },
+				),
+			);
+		}
+	});
 });
 
 describe("site-serve: the database through PostgREST", () => {
@@ -1248,6 +1286,147 @@ describe("site-serve: the database through PostgREST", () => {
 			"qorpera_site_unlock_host",
 			"qorpera_site_enter",
 		]);
+	});
+
+	it("aborts stalled PostgREST RPC bodies on timeout and when a parent signal aborts", async () => {
+		let timeoutSignal: AbortSignal | undefined;
+		const stalled = new PostgrestSiteStore(
+			"https://project.example.test",
+			"sb_secret_fixture",
+			(async (_url: string | URL | Request, init?: RequestInit) => {
+				timeoutSignal = init?.signal ?? undefined;
+				return new Response(new ReadableStream({ start() {} }), { status: 200 });
+			}) as typeof fetch,
+			40,
+		);
+		await assert.rejects(() => stalled.serveHost(OWN, "", null, null, 0, 10));
+		assert.equal(timeoutSignal?.aborted, true);
+
+		let parentForwarded: AbortSignal | undefined;
+		const slowStore = new PostgrestSiteStore(
+			"https://project.example.test",
+			"sb_secret_fixture",
+			(async (_url: string | URL | Request, init?: RequestInit) => {
+				parentForwarded = init?.signal ?? undefined;
+				return new Response(new ReadableStream({ start() {} }), { status: 200 });
+			}) as typeof fetch,
+			5_000,
+		);
+		const parent = new AbortController();
+		const pending = slowStore.serveHost(OWN, "", null, null, 0, 10, parent.signal);
+		setTimeout(() => parent.abort(new DOMException("caller left", "AbortError")), 20);
+		await assert.rejects(() => pending);
+		assert.equal(parentForwarded?.aborted, true);
+	});
+
+	it("forwards request.signal to every SiteStore call site", async () => {
+		const seen: Record<string, AbortSignal | undefined> = {};
+		const record = (name: string, signal: AbortSignal | undefined) => {
+			seen[name] = signal;
+		};
+		const recordingStore = (serveHostResult: unknown): SiteStore => ({
+			serve: async (_slug, _path, _token, _etag, offset, length, signal) => {
+				record(length === 0 ? "legacyCookieCheck" : "readFile", signal);
+				return asTheDatabase(file(HTML), null, offset, length);
+			},
+			unlock: async (_slug, _password, _client, signal) => {
+				record("unlock", signal);
+				return { state: "wrong" };
+			},
+			serveHost: async (host, _path, _token, _etag, offset, length, signal) => {
+				record(host.startsWith("sites.") ? "onOldHost" : "readHostFile", signal);
+				if (typeof serveHostResult === "function")
+					return asTheDatabase((serveHostResult as (h: string) => unknown)(host), null, offset, length);
+				return asTheDatabase(serveHostResult, null, offset, length);
+			},
+			unlockHost: async (_host, _password, _client, signal) => {
+				record("hostUnlock", signal);
+				return { state: "wrong" };
+			},
+			enter: async (_host, _ticket, signal) => {
+				record("hostEnter", signal);
+				return { state: "refused" };
+			},
+			countView: async () => ({ state: "counted", visit: true }),
+			memberPass: async (_host, _pass, signal) => {
+				record("hostMember", signal);
+				return { state: "refused" };
+			},
+		});
+
+		const expectSignal = async (name: string, make: (signal: AbortSignal) => Request, siteStore: SiteStore) => {
+			const controller = new AbortController();
+			const req = make(controller.signal);
+			await serve(req, siteStore);
+			assert.equal(seen[name], req.signal, `${name} must receive request.signal`);
+			controller.abort(new DOMException("aborted", "AbortError"));
+			assert.equal(seen[name]?.aborted, true, `${name} signal must follow caller abort`);
+		};
+
+		await expectSignal(
+			"onOldHost",
+			(signal) => request("/look-shop/", { signal }),
+			recordingStore({ state: "legacy" }),
+		);
+		await expectSignal(
+			"readFile",
+			(signal) => request(`/look-shop/~${TOKEN}/index.html`, { signal }),
+			recordingStore({ state: "legacy" }),
+		);
+		await expectSignal(
+			"legacyCookieCheck",
+			(signal) => request("/look-shop/", { signal, headers: { cookie: `qorpera_site=${TOKEN}` } }),
+			recordingStore({ state: "legacy" }),
+		);
+		await expectSignal(
+			"unlock",
+			(signal) =>
+				request("/look-shop/.qorpera/unlock", {
+					method: "POST",
+					body: "password=pw",
+					signal,
+					headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN },
+				}),
+			recordingStore({ state: "legacy" }),
+		);
+		await expectSignal(
+			"readHostFile",
+			(signal) => hostRequest(OWN, "/", { signal, headers: { cookie: `${HOST_COOKIE}=${TOKEN}` } }),
+			recordingStore(hostFile(HTML)),
+		);
+		await expectSignal(
+			"hostUnlock",
+			(signal) =>
+				hostRequest(OWN, "/.qorpera/unlock", {
+					method: "POST",
+					body: "password=pw",
+					signal,
+					headers: { "content-type": "application/x-www-form-urlencoded", origin: `https://${OWN}` },
+				}),
+			recordingStore(hostFile(HTML)),
+		);
+		await expectSignal(
+			"hostEnter",
+			(signal) => hostRequest(NEXT, `/.qorpera/enter?t=${TICKET}`, { signal }),
+			recordingStore(hostFile(HTML)),
+		);
+		await expectSignal(
+			"hostMember",
+			(signal) =>
+				hostRequest(OWN, MEMBER_PATH, {
+					method: "POST",
+					body: `pass=${MEMBER_PASS}`,
+					signal,
+					headers: {
+						"content-type": "application/x-www-form-urlencoded",
+						origin: WEB,
+						"sec-fetch-site": "same-site",
+						"sec-fetch-mode": "navigate",
+						"sec-fetch-dest": "iframe",
+					},
+				}),
+			recordingStore(hostFile(HTML)),
+		);
 	});
 });
 
@@ -1763,6 +1942,57 @@ describe("site-serve: the own host's password form", () => {
 			return lines;
 		});
 		assert.ok(logged.every((line) => !line.includes("k7mq-x2pa-9fhd")));
+	});
+
+	it("returns 400 on an errored unlock stream and 408 on an aborted or timed-out unlock body", async () => {
+		const { store: siteStore } = store(undefined, undefined, { unlockHost: { state: "wrong" } });
+		const errored = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.error(new Error("reset"));
+			},
+		});
+		const erroredRes = await serve(
+			hostRequest(OWN, "/.qorpera/unlock", {
+				method: "POST",
+				body: errored,
+				duplex: "half",
+				headers: { "content-type": "application/x-www-form-urlencoded", origin: `https://${OWN}` },
+			} as RequestInit),
+			siteStore,
+		);
+		assert.equal(erroredRes.status, 400);
+
+		const aborted = new AbortController();
+		aborted.abort(new DOMException("aborted", "AbortError"));
+		const abortedRes = await serve(
+			hostRequest(OWN, "/.qorpera/unlock", {
+				method: "POST",
+				body: "password=pw",
+				signal: aborted.signal,
+				headers: { "content-type": "application/x-www-form-urlencoded", origin: `https://${OWN}` },
+			}),
+			siteStore,
+		);
+		assert.equal(abortedRes.status, 408);
+
+		let hangingCancelled = false;
+		const hanging = new ReadableStream<Uint8Array>({
+			start() {},
+			cancel() {
+				hangingCancelled = true;
+			},
+		});
+		const timedOutRes = await handleSiteServe(
+			hostRequest(OWN, "/.qorpera/unlock", {
+				method: "POST",
+				body: hanging,
+				duplex: "half",
+				headers: { "content-type": "application/x-www-form-urlencoded", origin: `https://${OWN}` },
+			} as RequestInit),
+			{ origin: ORIGIN, store: siteStore, bodyReadTimeoutMs: 40 },
+		);
+		assert.equal(timedOutRes.status, 408);
+		assert.equal(hangingCancelled, true);
 	});
 });
 

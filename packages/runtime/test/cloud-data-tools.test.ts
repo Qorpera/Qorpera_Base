@@ -748,6 +748,93 @@ describe("the company data tools", () => {
 			).success,
 		).toBe(true);
 	});
+
+	it("passes through rich DDL metadata in data_describe and trims DDL extras first when the full payload is too large", async () => {
+		const richAnswer = {
+			databases: [
+				{
+					database: "shop",
+					name: "Shop",
+					about: null,
+					steps: {
+						applied: [{ name: "001-init", at: "2026-11-22T00:00:00Z" }],
+						waiting: [],
+						changed: [],
+						missing: [],
+					},
+					tables: [
+						{
+							name: "orders",
+							kind: "table",
+							key: ["id"],
+							rows: 5,
+							columns: [
+								{ name: "id", type: "bigint", settable: false, nullable: false, default: null },
+								{ name: "total", type: "numeric(10,2)", settable: true, nullable: false, default: "0" },
+							],
+							constraints: [
+								{ name: "orders_pkey", type: "primary_key", columns: ["id"] },
+								{
+									name: "orders_total_check",
+									type: "check",
+									columns: ["total"],
+									definition: "CHECK ((total >= (0)::numeric))",
+								},
+							],
+							indexes: [{ name: "orders_pkey", columns: ["id"], unique: true, method: "btree" }],
+						},
+						{
+							name: "big_orders",
+							kind: "view",
+							key: [],
+							rows: 1,
+							columns: [{ name: "id", type: "bigint", settable: false, nullable: true, default: null }],
+							viewDefinition: "SELECT id FROM orders WHERE (total > (100)::numeric);",
+						},
+					],
+					enums: [{ name: "order_status", labels: ["draft", "paid"] }],
+					extensions: [{ name: "pgcrypto", version: "1.3" }],
+					questions: [],
+					changes: [],
+				},
+			],
+			companyBytes: 4096,
+			limitBytes: 1024 ** 3,
+		};
+		const f = await fixture(() => ok(richAnswer));
+		const shownRich = await f.invoke("data_describe", { database: "shop" });
+		expect(shownRich).toMatchObject({ success: true, status: "ok" });
+		expect(JSON.parse(shownRich.text)).toEqual(richAnswer);
+
+		const hugeView = `SELECT ${"1, ".repeat(20_000)}1;`;
+		const oversized = {
+			databases: [
+				{
+					...richAnswer.databases[0],
+					tables: [
+						richAnswer.databases[0].tables[0],
+						{ ...richAnswer.databases[0].tables[1], viewDefinition: hugeView },
+					],
+				},
+			],
+			companyBytes: 4096,
+			limitBytes: 1024 ** 3,
+		};
+		const compact = await fixture(() => ok(oversized));
+		const shownCompact = await compact.invoke("data_describe", {});
+		expect(shownCompact).toMatchObject({ success: true, status: "ok" });
+		const parsedCompact = JSON.parse(shownCompact.text);
+		expect(parsedCompact.note).toContain("constraints, indexes, view definitions, enums and extensions");
+		expect(parsedCompact.databases[0].enums).toBeUndefined();
+		expect(parsedCompact.databases[0].extensions).toBeUndefined();
+		expect(parsedCompact.databases[0].tables[0].columns[0]).toEqual({
+			name: "id",
+			type: "bigint",
+			settable: false,
+			nullable: false,
+		});
+		expect(parsedCompact.databases[0].tables[1].viewDefinition).toBeUndefined();
+	});
 });
 
 describe("the run door over HTTPS", () => {

@@ -660,15 +660,29 @@ describe("the edge function's route for the one call", () => {
 	type RpcAnswer = { data?: unknown; error?: { code: string } };
 	type Handler = (request: Request) => Promise<Response>;
 	const calls: [string, unknown][] = [];
-	let answer: (name: string) => RpcAnswer = () => ({ data: null });
+	const signals: (AbortSignal | undefined)[] = [];
+	let answer: (name: string, signal?: AbortSignal) => RpcAnswer = () => ({ data: null });
 	let handler: Handler | undefined;
 
 	// index.ts as it is, under Node: Deno and its npm specifier are stand-ins that record what it asks of PostgREST.
 	before(async () => {
 		Reflect.set(globalThis, "qorperaEdgeTestClient", () => ({
-			rpc: async (name: string, args: unknown) => {
-				calls.push([name, args]);
-				return answer(name);
+			rpc: (name: string, args: unknown) => {
+				let attached: AbortSignal | undefined;
+				const builder = {
+					abortSignal(signal: AbortSignal) {
+						attached = signal;
+						return builder;
+					},
+					then(onFulfilled?: (value: RpcAnswer) => unknown, onRejected?: (reason: unknown) => unknown) {
+						calls.push([name, args]);
+						signals.push(attached);
+						return Promise.resolve()
+							.then(() => answer(name, attached))
+							.then(onFulfilled, onRejected);
+					},
+				};
+				return builder;
 			},
 		}));
 		Reflect.set(globalThis, "Deno", {
@@ -957,5 +971,54 @@ describe("the edge function's route for the one call", () => {
 		await assert.rejects(readRunnerOrchestratorRequest(chunkedReq), /request size/);
 		assert.equal(cancelled, true);
 		assert.ok(pulled <= 10, `expected early stream cancellation, saw ${pulled} chunks`);
+
+		let stalledCancelled = false;
+		const stalled = new ReadableStream<Uint8Array>({
+			pull() {
+				return new Promise<void>(() => {});
+			},
+			cancel() {
+				stalledCancelled = true;
+			},
+		});
+		const stalledReq = new Request("https://project.invalid/functions/v1/runner-orchestrator", {
+			method: "POST",
+			headers: { authorization: `Bearer ${token}` },
+			body: stalled,
+			duplex: "half",
+		} as RequestInit);
+		await assert.rejects(readRunnerOrchestratorRequest(stalledReq, 15), (error: unknown) => {
+			assert.equal(error instanceof Error ? error.name : "", "TimeoutError");
+			return true;
+		});
+		assert.equal(stalledCancelled, true);
+
+		answer = () => {
+			throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+		};
+		const rpcThrown = await post({ action: "due_summary", orchestratorId });
+		assert.equal(rpcThrown.status, 503);
+		assert.deepEqual(await rpcThrown.json(), { error: "Runner orchestration is unavailable" });
+
+		signals.length = 0;
+		const ac = new AbortController();
+		answer = (name, signal) => {
+			if (name === "qorpera_runner_orchestrator_control_valid") return { data: true };
+			signal?.throwIfAborted();
+			return { data: {} };
+		};
+		const req = new Request("https://project.invalid/functions/v1/runner-orchestrator", {
+			method: "POST",
+			headers: { authorization: `Bearer ${token}` },
+			body: JSON.stringify({ action: "due_summary", orchestratorId }),
+			signal: ac.signal,
+		});
+		const ok = await (handler as Handler)(req);
+		assert.equal(ok.status, 200);
+		assert.equal(signals.length, 2);
+		assert.equal(signals[0], req.signal);
+		assert.equal(signals[1], req.signal);
+		ac.abort(new Error("caller gone"));
+		assert.equal(signals[1]?.aborted, true);
 	});
 });

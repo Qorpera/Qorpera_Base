@@ -1090,5 +1090,171 @@ describe("Good will", () => {
 		assert.deepEqual(noStarve, { invoiced: 1, failed: 0 });
 		assert.deepEqual(createdAfterOpen, ["in_fresh_1"]);
 		assert.equal(callOrder[0], "POST /v1/invoices");
+		assert.equal(
+			callOrder.filter((entry) => entry.startsWith("GET /v1/invoices/")).length,
+			3,
+			"open invoice status checks stay separate from maxBatch writes",
+		);
+
+		const openBeforeDraft = [
+			...[1, 2, 3].map((n) => ({
+				profileId: `30000000-0000-4000-8000-00000000003${n}`,
+				month: "2026-08",
+				dueOre: 1000,
+				customerId: `cus_open_${n}`,
+				paymentMethodId: `pm_open_${n}`,
+				invoiceId: `in_open_ahead_${n}`,
+			})),
+			{
+				profileId: "30000000-0000-4000-8000-000000000039",
+				month: "2026-09",
+				dueOre: 1500,
+				customerId: "cus_draft",
+				paymentMethodId: "pm_draft",
+				invoiceId: "in_existing_draft",
+			},
+		];
+		const finalizedDrafts: string[] = [];
+		const draftReached = await sendGoodWillInvoices({
+			livemode: false,
+			returnUrl: "https://app.qorpera.com/plan",
+			maxBatch: 2,
+			goodWill: {
+				call: async (method) => (method === "due" ? { months: openBeforeDraft } : { recorded: true }),
+			},
+			stripe: {
+				get: async (path) => {
+					const id = path.split("/").pop() ?? "";
+					return id === "in_existing_draft"
+						? { id, status: "draft", default_payment_method: "pm_draft", lines: { data: [] } }
+						: { id, status: "open", lines: { data: [] } };
+				},
+				post: async (path) => {
+					if (path.endsWith("/finalize")) finalizedDrafts.push(path);
+					return { id: "in_existing_draft", status: "open", hosted_invoice_url: "https://stripe.test/draft" };
+				},
+			},
+		});
+		assert.deepEqual(draftReached, { invoiced: 1, failed: 0 });
+		assert.deepEqual(finalizedDrafts, ["/v1/invoices/in_existing_draft/finalize"]);
+
+		let cappedGets = 0;
+		const statusCapped = await sendGoodWillInvoices({
+			livemode: false,
+			returnUrl: "https://app.qorpera.com/plan",
+			maxBatch: 2,
+			maxStatusChecks: 2,
+			goodWill: {
+				call: async (method) => (method === "due" ? { months: openBeforeDraft } : { recorded: true }),
+			},
+			stripe: {
+				get: async (path) => {
+					cappedGets += 1;
+					return { id: path.split("/").pop(), status: "open", lines: { data: [] } };
+				},
+				post: async () => ({ id: "unused", status: "open" }),
+			},
+		});
+		assert.deepEqual(statusCapped, { invoiced: 0, failed: 0 });
+		assert.equal(cappedGets, 2, "maxStatusChecks must bound read-only open-invoice GETs");
+
+		const largeOpenBacklog = [
+			...[1, 2, 3, 4, 5].map((n) => ({
+				profileId: `30000000-0000-4000-8000-00000000004${n}`,
+				month: "2026-07",
+				dueOre: 1000,
+				customerId: `cus_backlog_${n}`,
+				paymentMethodId: `pm_backlog_${n}`,
+				invoiceId: `in_backlog_open_${n}`,
+			})),
+			{
+				profileId: "30000000-0000-4000-8000-000000000049",
+				month: "2026-08",
+				dueOre: 1500,
+				customerId: "cus_late_draft",
+				paymentMethodId: "pm_late_draft",
+				invoiceId: "in_late_draft",
+			},
+		];
+		const rotatedFinalized: string[] = [];
+		const rotatedCounts: number[] = [];
+		for (const hour of [0, 1, 2]) {
+			const res = await sendGoodWillInvoices({
+				livemode: false,
+				returnUrl: "https://app.qorpera.com/plan",
+				maxBatch: 2,
+				maxStatusChecks: 2,
+				now: () => hour * 3_600_000,
+				goodWill: {
+					call: async (method) => (method === "due" ? { months: largeOpenBacklog } : { recorded: true }),
+				},
+				stripe: {
+					get: async (path) => {
+						const id = path.split("/").pop() ?? "";
+						return id === "in_late_draft"
+							? { id, status: "draft", default_payment_method: "pm_late_draft", lines: { data: [] } }
+							: { id, status: "open", lines: { data: [] } };
+					},
+					post: async (path) => {
+						if (path.endsWith("/finalize")) rotatedFinalized.push(path);
+						return { id: "in_late_draft", status: "open", hosted_invoice_url: "https://stripe.test/late" };
+					},
+				},
+			});
+			rotatedCounts.push(Number(res.invoiced));
+		}
+		assert.deepEqual(rotatedCounts, [0, 0, 1], "hourly rotation must reach a draft behind more than maxStatusChecks open invoices");
+		assert.deepEqual(rotatedFinalized, ["/v1/invoices/in_late_draft/finalize"]);
+
+		let stripeRedirect: RequestRedirect | undefined;
+		const redirectApi = createStripeApi("sk_test_x", async (_url, init) => {
+			stripeRedirect = init?.redirect;
+			return Response.json({ id: "in_ok" });
+		});
+		await redirectApi.get("/v1/invoices/in_ok");
+		assert.equal(stripeRedirect, "error");
+
+		const brokenStream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.error(new Error("reset"));
+			},
+		});
+		const erroredReq = new Request("https://project.example.test/functions/v1/computer-billing/webhook", {
+			method: "POST",
+			body: brokenStream,
+			duplex: "half",
+		} as RequestInit);
+		const erroredRes = await handleComputerBilling(erroredReq, {
+			store: { call: async () => ({}) },
+			stripe: redirectApi,
+			auth: { member: async () => null },
+			options: {
+				livemode: false,
+				webhookSecret: "whsec_test",
+				returnUrl: "https://app.qorpera.com/plan",
+				allowedOrigins: ["https://app.qorpera.com"],
+			},
+		});
+		assert.equal(erroredRes.status, 400);
+
+		const abortedController = new AbortController();
+		abortedController.abort(new DOMException("aborted", "AbortError"));
+		const abortedReq = new Request("https://project.example.test/functions/v1/computer-billing/webhook", {
+			method: "POST",
+			body: "{}",
+			signal: abortedController.signal,
+		});
+		const abortedRes = await handleComputerBilling(abortedReq, {
+			store: { call: async () => ({}) },
+			stripe: redirectApi,
+			auth: { member: async () => null },
+			options: {
+				livemode: false,
+				webhookSecret: "whsec_test",
+				returnUrl: "https://app.qorpera.com/plan",
+				allowedOrigins: ["https://app.qorpera.com"],
+			},
+		});
+		assert.equal(abortedRes.status, 408);
 	});
 });

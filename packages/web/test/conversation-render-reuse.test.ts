@@ -3,11 +3,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
-import type { TranscriptItem, TranscriptMessage } from "../src/cloud/transcript.ts";
+import type { TranscriptInteraction, TranscriptItem, TranscriptMessage } from "../src/cloud/transcript.ts";
 import type { HostedProfileMember, HostedSessionEvent } from "../src/cloud/types.ts";
 import { conversationTimestampLabel } from "../src/ui/conversation-timestamps.ts";
 import { fmtTime } from "../src/ui/dom.ts";
 import { ReceivedAttachments } from "../src/ui/received-attachments.ts";
+import { SkillMentions } from "../src/ui/skill-mentions.ts";
 import {
 	event,
 	fixture,
@@ -558,5 +559,102 @@ describe("kept items follow names", () => {
 		await settle();
 		expect(thread.element(link.id)!.textContent).toContain("Renamed coworker");
 		expect(thread.element(message(1).id)!.getAttribute("aria-label")).toContain("Nova");
+	});
+
+	it("preserves DOM nodes and skips redundant skill-mention scans across status-only updates", async () => {
+		const wantSpy = vi.spyOn(SkillMentions.prototype, "want");
+		const thread = setup([message(1, { text: "Use /deploy when ready" }), message(2)]);
+		expect(wantSpy).toHaveBeenCalledTimes(2);
+		wantSpy.mockClear();
+		const firstEl = thread.element(message(1).id)!;
+		const change = await thread.mutations(async () => {
+			thread.company.store.set({ here: [] });
+			await settle();
+		});
+		expect(wantSpy).not.toHaveBeenCalled();
+		expect(change.added).toEqual([]);
+		expect(change.removed).toEqual([]);
+		expect(thread.element(message(1).id)).toBe(firstEl);
+		thread.store.set({
+			projection: {
+				items: [message(1, { text: "Use /deploy when ready" }), message(2), message(3)],
+				hiddenCount: 0,
+				lastSequence: 3,
+			},
+		});
+		await settle();
+		expect(wantSpy).toHaveBeenCalledTimes(3);
+	});
+
+	it("aborts per-card interaction signals on scratch times-only renders, card replacement, and view disposal", async () => {
+		const signals: (AbortSignal | undefined)[] = [];
+		const statusSignals: (AbortSignal | undefined)[] = [];
+		vi.spyOn(CompanyController.prototype, "mailAddressCalls").mockImplementation(() => ({
+			canChoose: true,
+			handles: (signal?: AbortSignal) => {
+				signals.push(signal);
+				return new Promise(() => {});
+			},
+			status: (_handle: string, signal?: AbortSignal) => {
+				statusSignals.push(signal);
+				return new Promise(() => {});
+			},
+			choose: async () => {},
+		}));
+		const firstCard: TranscriptInteraction = {
+			kind: "interaction",
+			id: id(610),
+			sequence: 1,
+			actorUserId: userA.id,
+			request: {
+				surface: "question",
+				title: "Choose your company email",
+				payload: {
+					allowCustom: true,
+					input: { kind: "mail_address" },
+					options: [{ label: "acme", value: "acme" }],
+				},
+			},
+			createdAt: at(1),
+		};
+		const thread = setup([firstCard]);
+		expect(signals).toHaveLength(1);
+		const firstSignal = signals[0];
+		expect(firstSignal).toBeInstanceOf(AbortSignal);
+		expect(firstSignal?.aborted).toBe(false);
+
+		// WHY: A times-only tick reuses the existing card element, so the scratch render's signal must abort at once.
+		localStorage.setItem("qorpera.web.time-zone", "Europe/Copenhagen");
+		thread.view.update();
+		expect(signals).toHaveLength(2);
+		expect(signals[1]?.aborted).toBe(true);
+		expect(firstSignal?.aborted).toBe(false);
+		await vi.advanceTimersByTimeAsync(500);
+		expect(statusSignals).toHaveLength(1);
+		expect(statusSignals[0]?.aborted).toBe(false);
+
+		// WHY: Replacing the open card with its answered state must abort the previous card's live probe signal.
+		await thread.show([
+			{
+				...firstCard,
+				answer: {
+					outcome: "answered",
+					answer: { values: ["hello.acme@qorpera.test"] },
+					answeredBy: userA.id,
+					answeredAt: at(2),
+				},
+			},
+		]);
+		expect(firstSignal?.aborted).toBe(true);
+		expect(statusSignals[0]?.aborted).toBe(true);
+
+		// WHY: Disposing the conversation view must abort any remaining open interaction card signals.
+		const secondCard: TranscriptInteraction = { ...firstCard, id: id(611), sequence: 2 };
+		await thread.show([secondCard]);
+		const secondSignal = signals[2];
+		expect(secondSignal).toBeInstanceOf(AbortSignal);
+		expect(secondSignal?.aborted).toBe(false);
+		thread.view.dispose();
+		expect(secondSignal?.aborted).toBe(true);
 	});
 });

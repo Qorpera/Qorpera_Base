@@ -1,3 +1,5 @@
+import { DEFAULT_BODY_READ_TIMEOUT_MS, readBoundedText } from "../_shared/http-guards.ts";
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_BODY_BYTES = 512 * 1024;
@@ -121,47 +123,15 @@ export function parseRunnerBrokerRequest(value: unknown): RunnerBrokerRequest {
 	}
 }
 
-const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
-
-export async function readRunnerBrokerRequest(request: Request): Promise<RunnerBrokerRequest> {
-	const rawLength = request.headers.get("content-length");
-	if (rawLength !== null) {
-		const contentLength = Number(rawLength);
-		if (!Number.isFinite(contentLength) || contentLength < 0 || contentLength > MAX_BODY_BYTES) {
-			throw new Error("Invalid runner broker request size");
-		}
-	}
-	const reader = request.body?.getReader();
-	if (!reader) return parseRunnerBrokerRequest(JSON.parse(""));
-	const chunks: Uint8Array[] = [];
-	let total = 0;
-	let overflow = false;
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			total += value.byteLength;
-			if (total > MAX_BODY_BYTES) {
-				overflow = true;
-				throw new Error("Invalid runner broker request size");
-			}
-			chunks.push(value);
-		}
-	} finally {
-		if (overflow) void reader.cancel().catch(() => undefined);
-	}
-	let body = "";
-	if (chunks.length === 1) {
-		body = UTF8_DECODER.decode(chunks[0]!);
-	} else if (chunks.length > 1) {
-		const merged = new Uint8Array(total);
-		let offset = 0;
-		for (const chunk of chunks) {
-			merged.set(chunk, offset);
-			offset += chunk.byteLength;
-		}
-		body = UTF8_DECODER.decode(merged);
-	}
+export async function readRunnerBrokerRequest(
+	request: Request,
+	timeoutMs = DEFAULT_BODY_READ_TIMEOUT_MS,
+): Promise<RunnerBrokerRequest> {
+	const body = await readBoundedText(request, MAX_BODY_BYTES, {
+		signal: request.signal,
+		timeoutMs,
+		sizeErrorMessage: "Invalid runner broker request size",
+	});
 	return parseRunnerBrokerRequest(JSON.parse(body));
 }
 
@@ -181,35 +151,52 @@ export async function acquireNativeAuthorityWithRollback(
 	rpc: RunnerBrokerRpc,
 	action: Extract<RunnerBrokerRequest, { readonly action: "native_authority" }>,
 	hashes: { readonly sessionTokenSha256: string; readonly leaseTokenSha256: string },
+	rollbackRpc: RunnerBrokerRpc = rpc,
 ): Promise<
 	| { readonly ok: true; readonly value: Record<string, unknown> }
 	| { readonly ok: false; readonly status: number; readonly error: string }
 > {
-	const { data, error } = await rpc("qorpera_acquire_native_provider_connection_lease", {
-		p_run_id: action.runId,
-		p_runner_id: action.runnerId,
-		p_session_token_sha256: hashes.sessionTokenSha256,
-		p_assignment_id: action.assignmentId,
-		p_lease_token_sha256: hashes.leaseTokenSha256,
-		p_lease_seconds: action.leaseSeconds,
-	});
+	let acquiredResult: { readonly data: unknown; readonly error: { readonly code?: string } | null };
+	try {
+		acquiredResult = await rpc("qorpera_acquire_native_provider_connection_lease", {
+			p_run_id: action.runId,
+			p_runner_id: action.runnerId,
+			p_session_token_sha256: hashes.sessionTokenSha256,
+			p_assignment_id: action.assignmentId,
+			p_lease_token_sha256: hashes.leaseTokenSha256,
+			p_lease_seconds: action.leaseSeconds,
+		});
+	} catch {
+		return { ok: false, status: 503, error: "Native provider authority was unavailable" };
+	}
+	const { data, error } = acquiredResult;
 	if (error) return { ok: false, status: runnerBrokerRpcStatus(error), error: "Native provider authority was rejected" };
 	if (!data || typeof data !== "object" || Array.isArray(data)) {
 		return { ok: false, status: 503, error: "Native provider authority was invalid" };
 	}
 	const acquired = data as Record<string, unknown>;
 	const leaseId = typeof acquired.lease_id === "string" && UUID_PATTERN.test(acquired.lease_id) ? acquired.lease_id : null;
-	const { data: modelData, error: modelError } = await rpc("qorpera_native_run_model_authority", {
-		p_run_id: action.runId,
-		p_runner_id: action.runnerId,
-		p_session_token_sha256: hashes.sessionTokenSha256,
-		p_job_id: action.jobId,
-		p_lease_token_sha256: hashes.leaseTokenSha256,
-	});
-	if (modelError) {
+	let modelData: unknown;
+	let modelError: { readonly code?: string } | null = null;
+	let modelThrew = false;
+	try {
+		// WHY: A thrown timeout/abort during model-authority lookup must still roll back the already-acquired connection lease.
+		const modelResult = await rpc("qorpera_native_run_model_authority", {
+			p_run_id: action.runId,
+			p_runner_id: action.runnerId,
+			p_session_token_sha256: hashes.sessionTokenSha256,
+			p_job_id: action.jobId,
+			p_lease_token_sha256: hashes.leaseTokenSha256,
+		});
+		modelData = modelResult.data;
+		modelError = modelResult.error;
+	} catch {
+		modelThrew = true;
+	}
+	if (modelThrew || modelError) {
 		if (leaseId) {
 			try {
-				await rpc("qorpera_release_native_provider_connection_lease", {
+				await rollbackRpc("qorpera_release_native_provider_connection_lease", {
 					p_lease_id: leaseId,
 					p_runner_id: action.runnerId,
 					p_session_token_sha256: hashes.sessionTokenSha256,
@@ -221,7 +208,7 @@ export async function acquireNativeAuthorityWithRollback(
 		}
 		return {
 			ok: false,
-			status: runnerBrokerRpcStatus(modelError),
+			status: modelError ? runnerBrokerRpcStatus(modelError) : 503,
 			error: "Native provider model authority was rejected",
 		};
 	}

@@ -1,8 +1,10 @@
 import { withTimeoutScope } from "../_shared/abort-timeout.ts";
+import { BodyTooLargeError, readBoundedBytes } from "../_shared/http-guards.ts";
 
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
+const UTF8_ENCODER = new TextEncoder();
 /** How long a ChatGPT plan confirmation may take end to end at this hop (see forwardLogin). */
 export const CHATGPT_PLAN_CONFIRM_TIMEOUT_MS = 40_000;
 
@@ -10,7 +12,11 @@ export interface NativeProviderLoginProxyOptions {
 	upstreamUrl?: string;
 	/** Chooses the login gateway per request (least-loaded node); an undefined or invalid result falls back to upstreamUrl. */
 	/** Receives the SHA-256 of the login capability so the backend can prefer the identity's home node. */
-	upstreamResolver?: (capabilitySha256: string, purpose?: "account_refresh") => Promise<string | undefined>;
+	upstreamResolver?: (
+		capabilitySha256: string,
+		purpose?: "account_refresh",
+		signal?: AbortSignal,
+	) => Promise<string | undefined>;
 	/** Exact browser origins; native callers without Origin still require a capability. */
 	allowedOrigins?: readonly string[];
 	fetchImplementation?: typeof fetch;
@@ -44,46 +50,9 @@ function loginCapability(request: Request): string {
 	return capability;
 }
 
-class LoginBodyTooLarge extends Error {}
-
 async function sha256Hex(value: string): Promise<string> {
-	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+	const digest = await crypto.subtle.digest("SHA-256", UTF8_ENCODER.encode(value));
 	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-/** Bound retained bytes even without Content-Length; cancellation must not wait for the peer. */
-async function readLoginBody(
-	message: Request | Response,
-	limit: number,
-	signal: AbortSignal,
-): Promise<Uint8Array<ArrayBuffer>> {
-	const reader = message.body?.getReader();
-	const cancel = () => {
-		void reader?.cancel().catch(() => {});
-	};
-	signal.addEventListener("abort", cancel, { once: true });
-	try {
-		signal.throwIfAborted();
-		const declared = Number(message.headers.get("content-length") ?? "0");
-		if (Number.isFinite(declared) && declared > limit) throw new LoginBodyTooLarge();
-		const bytes = new Uint8Array(limit);
-		let length = 0;
-		while (reader) {
-			const next = await reader.read();
-			signal.throwIfAborted();
-			if (next.done) break;
-			if (next.value.byteLength > limit - length) throw new LoginBodyTooLarge();
-			bytes.set(next.value, length);
-			length += next.value.byteLength;
-		}
-		return bytes.slice(0, length);
-	} catch (error) {
-		cancel();
-		throw error;
-	} finally {
-		signal.removeEventListener("abort", cancel);
-		reader?.releaseLock();
-	}
 }
 
 /** The resolver's answer is used only when it is a valid gateway base; anything else keeps the configured upstream. */
@@ -91,10 +60,11 @@ async function resolveUpstream(
 	options: NativeProviderLoginProxyOptions,
 	signal: AbortSignal,
 	capabilitySha256: string,
+	purpose?: "account_refresh",
 ): Promise<{ url: string; source: "resolver" | "configured" | "fallback" }> {
 	if (options.upstreamResolver) {
 		try {
-			const chosen = await options.upstreamResolver(capabilitySha256);
+			const chosen = await options.upstreamResolver(capabilitySha256, purpose, signal);
 			signal.throwIfAborted();
 			if (typeof chosen === "string" && chosen) return { url: upstreamLoginUrl(chosen), source: "resolver" };
 		} catch (error) {
@@ -115,12 +85,9 @@ function gatewayHeader(target: { url: string; source: string } | undefined, outc
 async function forwardLogin(request: Request, options: NativeProviderLoginProxyOptions): Promise<Response> {
 	if (request.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
 	let capability: string;
-	let body: Uint8Array<ArrayBuffer>;
 	try {
 		capability = loginCapability(request);
-		body = await readLoginBody(request, MAX_REQUEST_BYTES, request.signal);
-	} catch (error) {
-		if (error instanceof LoginBodyTooLarge) return jsonResponse({ error: "Native login request is too large" }, 413);
+	} catch {
 		return jsonResponse({ error: "Invalid native login request" }, 400);
 	}
 	let target: { url: string; source: string } | undefined;
@@ -145,12 +112,19 @@ async function forwardLogin(request: Request, options: NativeProviderLoginProxyO
 		return await withTimeoutScope(
 			timeoutMs,
 			async (signal) => {
+				// WHY: Read the client body inside withTimeoutScope so slowloris request streams cannot pin the isolate indefinitely.
+				let body: Uint8Array<ArrayBuffer>;
+				try {
+					body = await readBoundedBytes(request, MAX_REQUEST_BYTES, { signal });
+				} catch (error) {
+					if (error instanceof BodyTooLargeError) return jsonResponse({ error: "Native login request is too large" }, 413);
+					return jsonResponse({ error: "Invalid native login request" }, 400);
+				}
 				target = await resolveUpstream(
-					refresh && options.upstreamResolver
-						? { ...options, upstreamResolver: (hash) => options.upstreamResolver!(hash, "account_refresh") }
-						: options,
+					options,
 					signal,
 					await sha256Hex(capability),
+					refresh ? "account_refresh" : undefined,
 				);
 				if (refresh) target.url = new URL("account-refresh", target.url).href;
 				if (planConfirm) target.url = new URL("chatgpt-plan/confirm", target.url).href;
@@ -166,7 +140,10 @@ async function forwardLogin(request: Request, options: NativeProviderLoginProxyO
 					redirect: "error",
 					signal,
 				});
-				const responseBody = await readLoginBody(upstream, MAX_RESPONSE_BYTES, signal);
+				const responseBody = await readBoundedBytes(upstream, MAX_RESPONSE_BYTES, {
+					signal,
+					ignoreContentLength: upstream.headers.has("content-encoding"),
+				});
 				return new Response(responseBody, {
 					status: upstream.status,
 					headers: {
@@ -181,7 +158,7 @@ async function forwardLogin(request: Request, options: NativeProviderLoginProxyO
 	} catch (error) {
 		// Upstream detail stays private: the body is generic and the header names only the error class.
 		const failure = error instanceof Error ? error.name : "Error";
-		if (error instanceof LoginBodyTooLarge) return jsonResponse({ error: "Native login response is too large" }, 502);
+		if (error instanceof BodyTooLargeError) return jsonResponse({ error: "Native login response is too large" }, 502);
 		const response = jsonResponse({ error: "Native provider login is unavailable" }, 503);
 		response.headers.set("x-qorpera-login-gateway", gatewayHeader(target, `failed:${failure}`));
 		return response;
@@ -198,9 +175,10 @@ export async function forwardNativeProviderLogin(
 	if (
 		origin &&
 		!allowed.some((value) => {
+			if (value !== origin) return false;
 			try {
 				const url = new URL(value);
-				return url.protocol === "https:" && url.origin === value && value === origin;
+				return url.protocol === "https:" && url.origin === value;
 			} catch {
 				return false;
 			}

@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2.112.3";
+import { configuredSecretKeys, createTimedFetch, preferredServiceKey } from "../_shared/http-guards.ts";
 import {
 	handleMailOutbox,
 	type MailOutboxStore,
@@ -13,22 +14,27 @@ function required(name: string): string {
 	return value;
 }
 
-/** The project's secret keys and the legacy service role key: the callers pg_cron may present. */
-function secretKeys(): string[] {
-	const keys: string[] = [];
-	try {
-		const parsed: unknown = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}");
-		if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
-			keys.push(...Object.values(parsed).filter((value): value is string => typeof value === "string" && value.length > 20));
-	} catch {
-		// Only the legacy key, then.
+const supabaseUrl = required("SUPABASE_URL");
+const RPC_FETCH = createTimedFetch({ timeoutMs: 15_000 });
+let cachedClient:
+	| { readonly key: string; readonly client: ReturnType<typeof createClient> }
+	| undefined;
+
+function serviceClient(fallbackKey: string): ReturnType<typeof createClient> {
+	// WHY: Prefer locally verified SUPABASE_SERVICE_ROLE_KEY over KMS sb_secret keys and reuse the timed client across cron calls.
+	const key = preferredServiceKey((name) => Deno.env.get(name)) ?? fallbackKey;
+	if (!cachedClient || cachedClient.key !== key) {
+		cachedClient = {
+			key,
+			client: createClient(supabaseUrl, key, {
+				auth: { persistSession: false, autoRefreshToken: false },
+				global: { fetch: RPC_FETCH },
+			}),
+		};
 	}
-	const legacy = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-	if (legacy) keys.push(legacy);
-	return [...new Set(keys)];
+	return cachedClient.client;
 }
 
-const supabaseUrl = required("SUPABASE_URL");
 const objectGatewayUrl = Deno.env.get("QORPERA_OBJECT_GATEWAY_URL")?.trim() || undefined;
 const objectGatewayInternalToken = Deno.env.get("QORPERA_OBJECT_GATEWAY_INTERNAL_TOKEN")?.trim() || undefined;
 if (Boolean(objectGatewayUrl) !== Boolean(objectGatewayInternalToken)) {
@@ -41,7 +47,7 @@ const gatewayObjects =
 const sender = new ResendSender(required("RESEND_API_KEY"));
 
 function store(secretKey: string): MailOutboxStore {
-	const client = createClient(supabaseUrl, secretKey, { auth: { persistSession: false, autoRefreshToken: false } });
+	const client = serviceClient(secretKey);
 	const fail = async (mailId: string, leaseId: string, message: string, retryable: boolean) => {
 		const { data, error } = await client.rpc("qorpera_fail_company_mail", {
 			p_mail_id: mailId,
@@ -84,9 +90,11 @@ function store(secretKey: string): MailOutboxStore {
 
 Deno.serve((request) =>
 	handleMailOutbox(request, {
-		keys: secretKeys(),
+		keys: configuredSecretKeys((name) => Deno.env.get(name)),
 		store,
-		objects: (secretKey) => gatewayObjects ?? new StorageObjectReader(supabaseUrl, secretKey),
+		objects: (secretKey) =>
+			gatewayObjects ??
+			new StorageObjectReader(supabaseUrl, preferredServiceKey((name) => Deno.env.get(name)) ?? secretKey),
 		sender,
 	}),
 );

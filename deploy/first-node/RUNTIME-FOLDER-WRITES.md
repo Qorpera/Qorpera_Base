@@ -139,8 +139,9 @@ and, while its command runs, about two seconds after its last change, as a deskt
   its own, and the replacement conflicts if the version it names is gone. Removed, or moved to another path, it lets
   the live one go: removed at that version, or shown again if another machine changed it since (renamed only in case
   to the new one's name, too: the newer version shows there);
-- a new folder with everything created inside it: one `new_folder` when its contents fit the core's limits (at most
-  10,000 entries, 64 structured files, and 1 MiB of structured text); otherwise `mkdir` followed by its child units;
+- a new folder with everything created inside it: one `new_folder` when its contents fit the boundary planner's limits
+  (at most 1,000 entries, 64 structured files, and 1 MiB of structured text); otherwise `mkdir` followed by its child
+  units;
 - a deleted folder with everything inside it: one `delete` with `asOfSeq`; a deleted file: `delete`;
 - `mkdir` of an empty folder: `mkdir`.
 
@@ -150,14 +151,20 @@ while a move gives what it moves new versions. So the view only lets pending cha
 together that way: every unit names a live path as it is, no unit needs a version another unit makes, and no unit's
 failure can lose another's work. The units are ordered so a path is freed before it is filled, a new folder is made before what goes in it, and in any
 git directory (`repo.git/` or `.git/`) new objects and their folders land before the index, logs, and refs that name
-them (with those metadata units kept in one batch when they fit, and object deletions after them). When a non-final
-boundary splits across batches, each committed batch settles immediately (clearing its saved entries while keeping
-later batches and earlier kept byte-carrying failures pending) and records its own notice if unasked. If a later batch
-is refused whole, gets no answer, waits on the feed (`unsettled`), or hits the per-boundary batch cap, the boundary
-stops at once: earlier committed batches stay committed, remaining batches stay pending (or settle together under the
-view's non-holding refusal rule), and the report returns `commitId: null` and `seq: null` (with `refused` when refused)
+them (with those metadata units kept in one batch when they fit, and object deletions after them). A single structured
+file larger than 1 MiB is refused before commit and kept pending while valid siblings proceed. When a non-final
+boundary splits across batches, committed batches defer feed catch-up and FUSE change push until all batches finish (or
+until an early stop or mid-loop error, settling committed batches in `finally` so none are lost while keeping remaining
+batches and earlier kept byte-carrying failures pending) and each committed batch records its own notice if unasked. If
+a later batch is refused whole, gets no answer, or hits the per-boundary batch cap, the boundary stops at once: earlier
+committed batches settle and stay committed, remaining batches stay pending (or settle together under the view's
+non-holding refusal rule), and the report returns `commitId: null` and `seq: null` on refusal or batch-cap truncation
+(with `refused` when refused) or the last committed batch's `commitId` and `seq` on a partial-batch unanswered commit,
 while `paths` lists both the earlier batches' outcomes and the uncommitted paths' outcomes; when every batch commits,
-`commitId` and `seq` name the last committed batch. Then:
+`commitId` and `seq` name the last committed batch. On the wire, if a report's `paths` would exceed the 2 MiB frame
+limit (`MAX_PAYLOAD`), the service compacts `paths` without changing the report's schema by keeping all non-`saved`
+entries first and trimming routine `saved` entries to fit, so large multi-batch reports never drop the connection and
+always preserve non-`saved` outcomes. Then:
 - **a conflict** keeps this view's version on the receipt (P17's conflict copies, below), and the path shows the
   live version;
 - **refused, denied, or not applied** (its folder was not made, the save did not get through) for a unit carrying new

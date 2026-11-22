@@ -108,9 +108,15 @@ function role(value: unknown): InvitationDeliveryRole {
 	return value as InvitationDeliveryRole;
 }
 
+const GRAPHEME_SEGMENTER = new Intl.Segmenter("en", { granularity: "grapheme" });
+const EXPIRY_DATE_FORMAT = new Intl.DateTimeFormat("en", {
+	dateStyle: "long",
+	timeZone: "UTC",
+});
+
 export function shownName(value: string, maximum = SHOWN_NAME_LENGTH): string {
 	const segments = Array.from(
-		new Intl.Segmenter("en", { granularity: "grapheme" }).segment(value.replace(/\s+/g, " ").trim()),
+		GRAPHEME_SEGMENTER.segment(value.replace(/\s+/g, " ").trim()),
 		(part) => part.segment,
 	);
 	if (segments.length <= maximum) return segments.join("");
@@ -202,10 +208,7 @@ export function buildProfileInvitationEmail(
 	if (invitationUrl.protocol !== "https:") throw new Error("Invitation URL must use HTTPS");
 	invitationUrl.hash = new URLSearchParams({ invitation: job.invitationId }).toString();
 	const role = roleLine(job.role);
-	const expiry = new Intl.DateTimeFormat("en", {
-		dateStyle: "long",
-		timeZone: "UTC",
-	}).format(new Date(job.expiresAt));
+	const expiry = EXPIRY_DATE_FORMAT.format(new Date(job.expiresAt));
 	const unnamed = job.profileName === "No name yet";
 	const company = unnamed ? "their new company" : job.profileName;
 	const subject = shownName(`${job.invitedByDisplayName} invited you to ${company} on Qorpera`, SUBJECT_LENGTH);

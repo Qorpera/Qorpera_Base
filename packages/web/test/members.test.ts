@@ -564,6 +564,41 @@ describe("the Members page", () => {
 		await settle();
 		expect(container.textContent).toBe("a conversation");
 	});
+
+	it("pauses background polls while hidden, refreshes on return, and drops stale out-of-order reads", async () => {
+		vi.useFakeTimers();
+		try {
+			const first = deferred<WorksFor>();
+			const second = deferred<WorksFor>();
+			let call = 0;
+			const { container, calls } = page([ann, sofie], works(), {
+				reader: () => {
+					call += 1;
+					if (call === 1) return first.promise;
+					if (call === 2) return second.promise;
+					return Promise.resolve(works({ agents: [{ agentId: id(41), userId: sofie.userId }] }));
+				},
+			});
+			const hiddenSpy = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+			await vi.advanceTimersByTimeAsync(90_000);
+			expect(calls.read).toHaveBeenCalledTimes(1);
+
+			hiddenSpy.mockReturnValue(false);
+			document.dispatchEvent(new Event("visibilitychange"));
+			expect(calls.read).toHaveBeenCalledTimes(2);
+			second.resolve(works({ agents: [{ agentId: id(41), userId: sofie.userId }] }));
+			await vi.advanceTimersByTimeAsync(0);
+			// WHY: The older first read resolving late must not overwrite the newer second read.
+			first.resolve(works({ agents: [{ agentId: id(41), userId: userA.id }] }));
+			await vi.advanceTimersByTimeAsync(0);
+			const sofieLine = lines(container).find(
+				(line) => line.querySelector(".members-who-text b")?.textContent === "Sofie Lund",
+			);
+			expect(sofieLine?.querySelector(".members-agent-name")?.textContent).toBe("Bo");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
 
 describe("the works-for read (cloud/works-for.ts)", () => {
