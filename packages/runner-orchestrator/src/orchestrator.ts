@@ -351,7 +351,12 @@ export interface EnqueueSurfaceSessionRunInput {
 }
 
 export type EnqueueSurfaceSessionRunResult =
-	| { readonly status: "enqueued"; readonly wakeId: string; readonly runId: string | null }
+	| {
+			readonly status: "enqueued";
+			readonly wakeId: string | null;
+			readonly runId: string | null;
+			readonly workerId?: string | null;
+	  }
 	| { readonly status: "deferred"; readonly reason: string; readonly retryAfterSeconds: number }
 	| { readonly status: "unavailable"; readonly reason: string };
 
@@ -4473,10 +4478,20 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 			"surface session run enqueue",
 		);
 		if (raw.status === "enqueued") {
+			const wakeId =
+				raw.wakeId === null || raw.wakeId === undefined ? null : responseUuid(raw.wakeId, "surface wake id");
+			const workerId =
+				raw.workerId === null || raw.workerId === undefined
+					? null
+					: responseUuid(raw.workerId, "surface worker id");
+			if (!wakeId && !workerId) {
+				throw new Error("Runner orchestrator returned invalid surface wake id");
+			}
 			return {
 				status: "enqueued",
-				wakeId: responseUuid(raw.wakeId, "surface wake id"),
+				wakeId,
 				runId: raw.runId === null || raw.runId === undefined ? null : responseUuid(raw.runId, "surface run id"),
+				...(workerId ? { workerId } : {}),
 			};
 		}
 		if (raw.status === "deferred") {
