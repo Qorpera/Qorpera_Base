@@ -98,6 +98,8 @@ declare
 	v_env_preseeded uuid := '13410000-0000-4000-8000-000000000021';
 	v_co_disabled uuid := '13410000-0000-4000-8000-000000000012';
 	v_env_disabled uuid := '13410000-0000-4000-8000-000000000022';
+	v_co_disabled_unboot uuid := '13410000-0000-4000-8000-00000000001b';
+	v_env_disabled_unboot uuid := '13410000-0000-4000-8000-00000000002b';
 	v_co_proposed uuid := '13410000-0000-4000-8000-000000000013';
 	v_env_proposed uuid := '13410000-0000-4000-8000-000000000023';
 	v_co_archived uuid := '13410000-0000-4000-8000-000000000014';
@@ -331,11 +333,14 @@ begin
 	set local role authenticated;
 	perform public.qorpera_bootstrap_company_surfaces(v_co_disabled);
 	reset role;
+	perform pg_temp.ssed_make_company(v_co_disabled_unboot, v_env_disabled_unboot, v_owner, 'Disabled Unbootstrapped Co');
 	update public.qorpera_surface_settings set enabled = false, updated_at = clock_timestamp() where singleton = true;
 	perform pg_temp.ssed_write_file(v_env_disabled, 'data/shop/database.toml', 'format = "qorpera.database/v1"', 'ssed-disabled-db');
+	perform pg_temp.ssed_write_file(v_env_disabled_unboot, 'data/shop/database.toml', 'format = "qorpera.database/v1"', 'ssed-disabled-unboot-db');
 	perform pg_temp.ssed_assert(
-		not exists (select 1 from public.qorpera_surfaces where profile_id = v_co_disabled and slug = 'data'),
-		'trigger skips creating Databases surface while surfaces are disabled'
+		exists (select 1 from public.qorpera_surfaces where profile_id = v_co_disabled and slug = 'data' and status = 'active')
+		and not exists (select 1 from public.qorpera_surfaces where profile_id = v_co_disabled_unboot),
+		'trigger creates Databases surface for bootstrapped companies even while surfaces are toggled off, while keeping unbootstrapped companies at zero rows'
 	);
 	update public.qorpera_surface_settings set enabled = true, updated_at = clock_timestamp() where singleton = true;
 

@@ -68,6 +68,16 @@ end $$;
 select pg_temp.ssed_patch(
 	'public.qorpera_service_bootstrap_company_surfaces(uuid,uuid)'::regprocedure,
 	array[
+$old$begin
+	insert into public.qorpera_surfaces(
+		profile_id, slug, title, surface_group, archetype, surface_kind, is_global,$old$,
+$new$begin
+	-- WHY: Serializes lazy bootstrap against concurrent database.toml commits so neither misses the Databases surface.
+	perform pg_catalog.pg_advisory_xact_lock(
+		pg_catalog.hashtextextended('qorpera.surface-bootstrap:' || p_company_id::text, 0)
+	);
+	insert into public.qorpera_surfaces(
+		profile_id, slug, title, surface_group, archetype, surface_kind, is_global,$new$,
 $old$	insert into public.qorpera_surfaces(
 		profile_id, slug, title, surface_group, archetype, surface_kind,
 		status, icon, source_kind, preview_mode, sort_order, created_by_user_id
@@ -110,9 +120,6 @@ language plpgsql security definer set search_path = '' as $$
 declare
 	v_profile_id uuid;
 begin
-	if not public.qorpera_surfaces_enabled() then
-		return new;
-	end if;
 	select f.profile_id into v_profile_id
 	from public.qorpera_company_files f
 	where f.environment_id = new.environment_id
@@ -120,6 +127,9 @@ begin
 	if v_profile_id is null then
 		return new;
 	end if;
+	perform pg_catalog.pg_advisory_xact_lock(
+		pg_catalog.hashtextextended('qorpera.surface-bootstrap:' || v_profile_id::text, 0)
+	);
 	-- WHY: Leave unbootstrapped companies at zero rows so SurfacesStore still bootstraps Identity and core ops surfaces.
 	if not exists (
 		select 1 from public.qorpera_surfaces s
@@ -149,7 +159,8 @@ begin
 		updated_at = clock_timestamp()
 	where public.qorpera_surfaces.status = 'proposed'
 		and public.qorpera_surfaces.archetype = 'ops'
-		and public.qorpera_surfaces.surface_kind = 'data';
+		and public.qorpera_surfaces.surface_kind = 'data'
+		and public.qorpera_surfaces.source_kind = 'native_ops';
 	return new;
 end $$;
 
@@ -168,35 +179,53 @@ create function public.qorpera_prune_empty_data_surfaces()
 returns integer
 language plpgsql security definer set search_path = '' as $$
 declare
+	v_row record;
+	v_step integer := 0;
 	v_deleted integer := 0;
 begin
-	delete from public.qorpera_surfaces s
-	where s.slug = 'data'
-		and s.archetype = 'ops'
-		and s.surface_kind = 'data'
-		and s.source_kind = 'native_ops'
-		and s.status = 'active'
-		and not public.qorpera_company_has_database(s.profile_id)
-		and not exists (
-			select 1 from public.qorpera_surface_sessions ss where ss.surface_id = s.id
-		)
-		and not exists (
-			select 1 from public.qorpera_surface_explorations se where se.surface_id = s.id
-		)
-		and not exists (
-			select 1 from public.qorpera_surface_changes sc where sc.surface_id = s.id
-		)
-		and not exists (
-			select 1 from public.qorpera_surface_jobs sj where sj.surface_id = s.id
-		)
-		and not exists (
-			select 1 from public.qorpera_surface_previews sp where sp.surface_id = s.id
-		)
-		and not exists (
-			select 1 from public.qorpera_surface_automations sa
-			where sa.profile_id = s.profile_id and sa.target_surface_slug = 'data'
+	for v_row in
+		select s.id, s.profile_id
+		from public.qorpera_surfaces s
+		where s.slug = 'data'
+			and s.archetype = 'ops'
+			and s.surface_kind = 'data'
+			and s.source_kind = 'native_ops'
+			and s.status = 'active'
+		order by s.profile_id, s.id
+	loop
+		perform pg_catalog.pg_advisory_xact_lock(
+			pg_catalog.hashtextextended('qorpera.surface-bootstrap:' || v_row.profile_id::text, 0)
 		);
-	get diagnostics v_deleted = row_count;
+		delete from public.qorpera_surfaces s
+		where s.id = v_row.id
+			and s.slug = 'data'
+			and s.archetype = 'ops'
+			and s.surface_kind = 'data'
+			and s.source_kind = 'native_ops'
+			and s.status = 'active'
+			and not public.qorpera_company_has_database(s.profile_id)
+			and not exists (
+				select 1 from public.qorpera_surface_sessions ss where ss.surface_id = s.id
+			)
+			and not exists (
+				select 1 from public.qorpera_surface_explorations se where se.surface_id = s.id
+			)
+			and not exists (
+				select 1 from public.qorpera_surface_changes sc where sc.surface_id = s.id
+			)
+			and not exists (
+				select 1 from public.qorpera_surface_jobs sj where sj.surface_id = s.id
+			)
+			and not exists (
+				select 1 from public.qorpera_surface_previews sp where sp.surface_id = s.id
+			)
+			and not exists (
+				select 1 from public.qorpera_surface_automations sa
+				where sa.profile_id = s.profile_id and sa.target_surface_slug = 'data'
+			);
+		get diagnostics v_step = row_count;
+		v_deleted := v_deleted + v_step;
+	end loop;
 	return v_deleted;
 end $$;
 
@@ -221,7 +250,8 @@ declare
 		'public.qorpera_prune_empty_data_surfaces()'::regprocedure
 	];
 begin
-	if strpos(v_bootstrap, 'qorpera_company_has_database(p_company_id)') = 0 then
+	if strpos(v_bootstrap, 'qorpera_company_has_database(p_company_id)') = 0
+		or strpos(v_bootstrap, 'qorpera.surface-bootstrap:') = 0 then
 		raise exception '20260930859000 guard failed for qorpera_service_bootstrap_company_surfaces';
 	end if;
 	if (select count(*) from pg_temp.ssed_before as prior join pg_proc as patched on patched.oid = prior.oid
