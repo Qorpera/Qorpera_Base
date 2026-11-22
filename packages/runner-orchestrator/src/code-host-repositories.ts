@@ -34,7 +34,11 @@ import {
 	exportCodeBranch,
 	landCodeBranch,
 	landCodeBranchBatch,
+	type Run,
 	startCodeArea,
+	tail,
+	treeRecords,
+	withJob,
 } from "./code-host-jobs.ts";
 import { attachCodeSession, type CodeAreaBroker } from "./code-host-seed.ts";
 import { pinCodeSiteTree } from "./code-host-sites.ts";
@@ -59,6 +63,13 @@ import {
 	type CodingFolderStart,
 	type CodingLanded,
 } from "./coding-folder-repositories.ts";
+import {
+	type CodingSetupSource,
+	EMPTY_CODING_SETUP,
+	EMPTY_CODING_SETUP_DIGEST,
+	type ParsedCodingSetup,
+	parseCodingSetup,
+} from "./coding-setup.ts";
 
 /** The largest bundle a session's export hands the broker's push: the NAS path's cap (coding-git-transfer.ts). */
 export const CODE_HOST_EXPORT_MAXIMUM_BYTES = 64 * 1024 ** 2;
@@ -290,6 +301,69 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 				{ cause: error },
 			);
 		}
+	}
+
+	async readSetup(session: CodingFolderStart, baseSha: string, signal: AbortSignal): Promise<ParsedCodingSetup> {
+		if (!SHA.test(baseSha)) {
+			return {
+				file: null,
+				refused: false,
+				setupDigest: EMPTY_CODING_SETUP_DIGEST,
+				setupSpec: EMPTY_CODING_SETUP,
+				dockerfiles: [],
+				problems: [],
+			};
+		}
+		const { repository } = session.claim;
+		return this.#job(session, signal, (job) =>
+			withJob(job, repository, async (run) => {
+				if ((await run.types([run.repo]))[0] !== "directory") {
+					return {
+						file: null,
+						refused: false,
+						setupDigest: EMPTY_CODING_SETUP_DIGEST,
+						setupSpec: EMPTY_CODING_SETUP,
+						dockerfiles: [],
+						problems: [],
+					};
+				}
+				const verified = await run.git(run.repo, ["rev-parse", "--verify", "--quiet", `${baseSha}^{commit}`]);
+				if (verified.status !== 0) {
+					return {
+						file: null,
+						refused: false,
+						setupDigest: EMPTY_CODING_SETUP_DIGEST,
+						setupSpec: EMPTY_CODING_SETUP,
+						dockerfiles: [],
+						problems: [],
+					};
+				}
+				const source: CodingSetupSource = {
+					read: async (path, maxBytes) => readCommitSetupFile(run, baseSha, path, maxBytes),
+				};
+				return parseCodingSetup(source);
+			}),
+		);
+	}
+
+	async archiveCommit(
+		session: CodingFolderStart,
+		commitSha: string,
+		signal: AbortSignal,
+		options?: { maximumBytes?: number },
+	): Promise<Buffer> {
+		if (!SHA.test(commitSha)) throw new CodeHostJobFailure("CODE_HOST_COMMIT_INVALID");
+		const { repository } = session.claim;
+		const maximumBytes = options?.maximumBytes ?? CODE_HOST_EXPORT_MAXIMUM_BYTES;
+		return this.#job(session, signal, (job) =>
+			withJob(job, repository, async (run) => {
+				const result = await run.git(run.repo, ["archive", "--format=tar", commitSha], {
+					maximumOutputBytes: maximumBytes,
+				});
+				if (result.status !== 0) throw new CodeHostJobFailure("CODE_HOST_ARCHIVE_FAILED", tail(result.stderr));
+				return result.stdout;
+			}),
+		);
 	}
 
 	/** The session's submitted commit landed on the default branch of its repository kept in Qorpera. A landing that
@@ -1670,4 +1744,29 @@ function codeAreaBroker(session: CodingFolderRepositorySession): CodeAreaBroker 
 		},
 		runGit: session.runGit,
 	};
+}
+
+async function readCommitSetupFile(
+	run: Run,
+	commit: string,
+	path: string,
+	maxBytes: number,
+): Promise<{ kind: "missing" } | { kind: "other" } | { kind: "file"; bytes: Uint8Array }> {
+	if (!path || path.length > 4096 || /[\0\n\r]/.test(path)) return { kind: "missing" };
+	if (path.split("/").some((part) => !part || part === "." || part === "..")) return { kind: "missing" };
+	const listing = await run.gitOk(
+		run.repo,
+		["ls-tree", "-l", "-z", "--full-tree", commit, "--", path],
+		"CODE_HOST_TREE_UNREADABLE",
+	);
+	const wantedPath = Buffer.from(path, "utf8");
+	const entry = treeRecords(listing).find((record) => record.path.equals(wantedPath));
+	if (!entry) return { kind: "missing" };
+	if (entry.type !== "blob" || (entry.mode !== "100644" && entry.mode !== "100755")) return { kind: "other" };
+	const bytes = Number(entry.size);
+	if (!SHA.test(entry.name) || !Number.isSafeInteger(bytes)) throw new CodeHostJobFailure("CODE_HOST_TREE_UNREADABLE");
+	if (bytes > maxBytes) return { kind: "file", bytes: Buffer.alloc(maxBytes + 1) };
+	const read = await run.git(run.repo, ["cat-file", "blob", entry.name], { maximumOutputBytes: maxBytes });
+	if (read.status !== 0) throw new CodeHostJobFailure("CODE_HOST_FILE_UNREADABLE", tail(read.stderr));
+	return { kind: "file", bytes: read.stdout };
 }

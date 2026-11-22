@@ -293,6 +293,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Surfaces, live previews and shared identity",
 		text: "Your company now runs on live Surfaces instead of ad-hoc files and separate specialist hierarchies. Every product or brand area projects its real codebase or company folder directly into the founder's canvas, where parallel work sessions propose toggleable changes and side-by-side design explorations before anything merges or goes live. Shared identity styling syncs across builds automatically, and recurring work runs as focused automations instead of permanent background roles. Keep the company folder lean by editing live surface files directly rather than creating extra draft or memo documents.",
 	},
+	{
+		id: "coding-prewarmed-snapshots-and-standby",
+		kind: "capability",
+		date: "2026-11-22",
+		title: "Pre-warmed coding environments and fast standby boot",
+		text: "Repositories can now declare a Qorpera, Cursor or devcontainer environment configuration with install, start, background terminal and static non-secret environment settings. Qorpera hashes the setup, builds scrubbed per-node snapshot images in the background so future coding sessions start with dependencies already installed, and runs lifecycle hooks automatically on attach and wake. Nodes can also keep a warm pool of pre-booted standby coding machines and enable stateful sleep so fresh coding sessions attach in seconds instead of waiting for a cold boot.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

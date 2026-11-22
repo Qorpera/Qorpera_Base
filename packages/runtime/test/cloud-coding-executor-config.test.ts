@@ -59,6 +59,38 @@ const broker = { origin: "https://secrets.qorpera.test", executorTokenCredential
 describe("coding executor service configuration", () => {
 	it("accepts pinned VM policy with repository-specific systemd credentials", () => {
 		const config = parseCodingExecutorConfiguration(fixture());
+		expect(parseCodingExecutorConfiguration(fixture()).repositories[0].credential).toBe(
+			"qorpera-coding-repository-test",
+		);
+		expect(parseCodingExecutorConfiguration(fixture()).snapshots).toBeNull();
+		expect(parseCodingExecutorConfiguration(fixture()).standbyPoolSize).toBe(0);
+		expect(parseCodingExecutorConfiguration(fixture()).statefulSleep).toBe(false);
+		const withStandby = parseCodingExecutorConfiguration({
+			...fixture(),
+			snapshots: { enabled: true, builderNetwork: "qsnap0", ttlSeconds: 86400, housekeepIntervalMs: 60000 },
+			standbyPoolSize: 2,
+			statefulSleep: true,
+		});
+		expect(withStandby.snapshots).toEqual({
+			enabled: true,
+			builderNetwork: "qsnap0",
+			ttlSeconds: 86400,
+			housekeepIntervalMs: 60000,
+		});
+		expect(withStandby.standbyPoolSize).toBe(2);
+		expect(withStandby.statefulSleep).toBe(true);
+		for (const bad of [
+			{ snapshots: { enabled: "yes" } },
+			{ snapshots: { enabled: true, ttlSeconds: 10 } },
+			{ snapshots: { enabled: true, extra: 1 } },
+			{ standbyPoolSize: -1 },
+			{ standbyPoolSize: 99 },
+			{ statefulSleep: "true" },
+		]) {
+			expect(() => parseCodingExecutorConfiguration({ ...fixture(), ...bad })).toThrow(
+				"CODING_EXECUTOR_CONFIG_INVALID",
+			);
+		}
 		expect(config.repositories[0].credential).toBe("qorpera-coding-repository-test");
 		expect(config.broker).toBeNull();
 	});

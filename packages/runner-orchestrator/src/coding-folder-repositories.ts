@@ -4,6 +4,7 @@ import type { CodeChangePath, CodePictureChecked } from "./code-host-jobs.ts";
 import type { CodingSessionClaim } from "./coding-executor.ts";
 import type { CodingBrokerGitRunner } from "./coding-git.ts";
 import type { LxdCodingMachineBinding } from "./coding-machine.ts";
+import type { ParsedCodingSetup } from "./coding-setup.ts";
 
 // Where a coding session's repository lives on the folder model (F3 step 5g-6a; the plan's "Repositories"). On the
 // NAS model the executor seeds a checkout into the session's own volume and exports a bundle from it; on the folder
@@ -89,6 +90,13 @@ export interface CodingFolderRepositories {
 		signal: AbortSignal,
 		options?: { picture?: string },
 	): Promise<CodingLanded>;
+	readSetup?(session: CodingFolderStart, baseSha: string, signal: AbortSignal): Promise<ParsedCodingSetup>;
+	archiveCommit?(
+		session: CodingFolderStart,
+		commitSha: string,
+		signal: AbortSignal,
+		options?: { maximumBytes?: number },
+	): Promise<Buffer>;
 }
 
 /** What a start needs: the claim, and its run authority (no base yet, no worktree, no token). */

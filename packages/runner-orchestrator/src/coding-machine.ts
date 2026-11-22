@@ -388,6 +388,10 @@ interface Event {
 type Client = Pick<LxdTrackedClient, "getInstance" | "submitInstanceOperation" | "inspectInstanceOperation"> &
 	Partial<LxdImageClient>;
 export type CodingMachineDesiredState = "running" | "stopped" | "deleted";
+export interface CodingMachineStandbyClaim {
+	readonly operationId: string;
+	readonly resume?: (signal: AbortSignal) => Promise<string | null>;
+}
 export interface CodingMachineReconcileOptions {
 	plan: CodingMachineJournalPlan;
 	/** Existing persistent service-owned physical 0700 root, outside the VM. */
@@ -399,6 +403,8 @@ export interface CodingMachineReconcileOptions {
 	signal: AbortSignal;
 	/** The node's agent plug (default: its plug tool), for a plan with an agent card. */
 	plug?: AgentPlug;
+	claimStandby?: (request: LxdCreateInstanceRequest, signal: AbortSignal) => Promise<CodingMachineStandbyClaim | null>;
+	statefulStop?: boolean;
 	/** A member's machine that LXD shows stopped after its settled start: called
 	 * once that stop is written down and before anything else is done to the
 	 * machine (a start, a delete, or waiting for an operator), each time it is
@@ -1182,20 +1188,121 @@ export async function reconcileCodingMachine(
 	let operationId: string;
 	try {
 		signal.throwIfAborted();
-		const reference = await options.client.submitInstanceOperation(
-			plan.project,
-			// The machine holds no state of its own (every session's work is on the
-			// NAS): power it off; a guest that ignores the shutdown request would
-			// otherwise keep its place on the node until an operator stepped in.
-			action === "create"
-				? { action, request: request as LxdCreateInstanceRequest }
-				: action === "stop"
-					? { action, name: plan.name, force: true }
-					: action === "rebuild"
-						? { action, name: plan.name, fingerprint: plan.request?.source.fingerprint as string }
-						: { action, name: plan.name },
-			signal,
-		);
+		if (action === "create" && options.claimStandby && request) {
+			const claimed = await options.claimStandby(request, signal);
+			if (claimed) {
+				if (!UUID.test(claimed.operationId)) throw new Error("CODING_MACHINE_OPERATION_UNBOUND");
+				current = await readEvents(root, plan.binding, plan.disposable === true, plan.selfStops === true);
+				tail = current.events.at(-1);
+				if (tail?.kind !== "dispatch" || tail.action !== "create")
+					throw new Error("CODING_MACHINE_JOURNAL_CONFLICT");
+				await append({ action: "create", kind: "accepted", operationId: claimed.operationId, state: null });
+				current = await readEvents(root, plan.binding, plan.disposable === true, plan.selfStops === true);
+				await append({
+					action: "create",
+					kind: "settled",
+					operationId: claimed.operationId,
+					state: "succeeded",
+				});
+				if (!claimed.resume) {
+					options.signal.throwIfAborted();
+					return result("pending");
+				}
+				if (options.starting) {
+					const decision = await options.starting(claimed.operationId, options.signal, "create");
+					options.signal.throwIfAborted();
+					if (decision === "rebuild") return result("pending");
+				}
+				signal = await authorize("run");
+				current = await readEvents(root, plan.binding, plan.disposable === true, plan.selfStops === true);
+				if (current.events.length > MAX_RETAINED_EVENTS - 3) return result("pending");
+				const startDispatched = { segment: current.segment, sequence: current.events.length };
+				if (!(await append({ action: "start", kind: "dispatch", operationId: null, state: null })))
+					return result("pending");
+				try {
+					const resumedId = await claimed.resume(signal);
+					if (resumedId !== null) {
+						if (!UUID.test(resumedId)) throw new Error("CODING_MACHINE_OPERATION_UNBOUND");
+						current = await readEvents(root, plan.binding, plan.disposable === true, plan.selfStops === true);
+						await append({ action: "start", kind: "accepted", operationId: resumedId, state: null });
+						current = await readEvents(root, plan.binding, plan.disposable === true, plan.selfStops === true);
+						await append({ action: "start", kind: "settled", operationId: resumedId, state: "succeeded" });
+						options.signal.throwIfAborted();
+						return result("running");
+					}
+					const fallbackRef = await options.client.submitInstanceOperation(
+						plan.project,
+						{ action: "start", name: plan.name, stateful: false },
+						signal,
+					);
+					if (
+						fallbackRef.project !== plan.project ||
+						fallbackRef.instanceName !== plan.name ||
+						!UUID.test(fallbackRef.operationId)
+					)
+						throw new Error("CODING_MACHINE_OPERATION_UNBOUND");
+					current = await readEvents(root, plan.binding, plan.disposable === true, plan.selfStops === true);
+					await append({ action: "start", kind: "accepted", operationId: fallbackRef.operationId, state: null });
+					options.signal.throwIfAborted();
+					return result("pending");
+				} catch (error) {
+					await recordDispatchError(root, startDispatched.segment, startDispatched.sequence, "start", error).catch(
+						() => undefined,
+					);
+					return error instanceof LxdSubmissionRefused
+						? { ...result("recovery-required"), lxdStatus: error.status }
+						: result("recovery-required");
+				}
+			}
+		}
+		const submit = async () => {
+			if (action === "create") {
+				return options.client.submitInstanceOperation(
+					plan.project,
+					{ action, request: request as LxdCreateInstanceRequest },
+					signal,
+				);
+			}
+			if (action === "stop") {
+				const tryStateful = options.statefulStop === true && tail?.action !== "stop";
+				if (tryStateful) {
+					try {
+						return await options.client.submitInstanceOperation(
+							plan.project,
+							{ action: "stop", name: plan.name, stateful: true },
+							signal,
+						);
+					} catch (error) {
+						if (!(error instanceof LxdSubmissionRefused)) throw error;
+					}
+				}
+				return options.client.submitInstanceOperation(
+					plan.project,
+					{ action: "stop", name: plan.name, force: true },
+					signal,
+				);
+			}
+			if (action === "rebuild") {
+				return options.client.submitInstanceOperation(
+					plan.project,
+					{ action, name: plan.name, fingerprint: plan.request?.source.fingerprint as string },
+					signal,
+				);
+			}
+			if (action === "start" && instance?.stateful === true && tail?.action !== "start") {
+				try {
+					return await options.client.submitInstanceOperation(
+						plan.project,
+						{ action: "start", name: plan.name, stateful: true },
+						signal,
+					);
+				} catch (error) {
+					if (!(error instanceof LxdSubmissionRefused)) throw error;
+				}
+			}
+			return options.client.submitInstanceOperation(plan.project, { action, name: plan.name }, signal);
+		};
+		const reference = await submit();
 		if (
 			reference.project !== plan.project ||
 			reference.instanceName !== plan.name ||
