@@ -32,6 +32,8 @@ select pg_temp.git_maint_patch('public.qorpera_folder_git_refusal(text,text,text
 		if (v_folder and v_rest !~ '^objects(/[0-9a-f]{2}|/pack)?$') or (not v_folder and not public.qorpera_folder_git_object(p_key)) then
 			return 'git_platform_only'; end if;$new$]);
 
+-- WHY: Batched landings run checks only on the tip commit, so intermediate commits record
+-- checks_state = 'not_run' and stay excluded from release readiness.
 select pg_temp.git_maint_patch('public.qorpera_code_change_checks_valid(jsonb)'::regprocedure, array[
 	$old$				when '"off"'::jsonb then p_change -> 'checks' = '{"state":"off"}'::jsonb$old$,
 	$new$				when '"off"'::jsonb then p_change -> 'checks' = '{"state":"off"}'::jsonb
@@ -112,6 +114,8 @@ grant execute on function public.qorpera_code_change_archive(text, text, uuid, t
 	to service_role;
 comment on function public.qorpera_folder_git_index(text) is
 	'Platform-only Git acceleration index allow-list under repo.git/objects (20260930833000).';
+comment on function public.qorpera_code_change_checks_valid(jsonb) is
+	'Validates v2/v3 change-report checks: null for non-landed states; none, off, passed (on mainAfter), or not_run (intermediate batch commit, not release-ready) for landings (20260930833000).';
 comment on function public.qorpera_code_change_archive(text, text, uuid, text, text, integer, integer) is
 	'Bounded slice of compact change-index lines (at most 250 rows) for writing immutable changes/archive rollups (20260930833000).';
 

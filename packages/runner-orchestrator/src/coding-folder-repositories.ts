@@ -130,10 +130,9 @@ export interface CodeChangeReportV1 {
 	/** The code host's own code and the paths it named, at most 20. */
 	refusal: { code: string; paths: string[] } | null;
 }
-/** The same report with what the repository's checks said of a landing (`qorpera.code-change-report/v2`, own code
- * storage step 3): null for every state but `landed`. `none`: the repository has no checks file; `off`: its checks are
- * switched off, or this host runs none; `passed`: every check passed on `mainAfter`, and `result` is the row's `checks`
- * (`codeChecksPassed`). */
+// WHY: v2 reports record what checks did for a landing: `none`, `off`, `passed` (every check passed
+// on `mainAfter`), or `not_run` (intermediate batch commit whose checks ran only on the batch tip,
+// so it is not release-ready). Non-landed states carry `null`.
 export interface CodeChangeReportV2 extends Omit<CodeChangeReportV1, "schema"> {
 	schema: "qorpera.code-change-report/v2";
 	checks:
