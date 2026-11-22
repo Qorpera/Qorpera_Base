@@ -30,7 +30,7 @@ function input(args: JsonValue, destinationOrigin: string, overrides: Record<str
 
 /** A fake Google: the token endpoint exchanges the refresh token, every API
  * request must carry the access token it issued. */
-function google(routes: Record<string, (url: URL, init?: RequestInit) => Response>) {
+function google(routes: Record<string, (url: URL, init?: RequestInit) => Response | Promise<Response>>) {
 	const tokenCalls: string[] = [];
 	const fetchImplementation = vi.fn<typeof fetch>(async (target, init) => {
 		const url = new URL(String(target));
@@ -569,4 +569,104 @@ it("clips by JSON bytes at a code point boundary and turns an oversized result i
 		reason: "result_too_large",
 		detail: "The result is too large to return. Ask for fewer items or a smaller part.",
 	});
+});
+
+it("clips control characters, escapes, lone surrogates, and multi-byte UTF-8 identically to the reference algorithm", () => {
+	const referenceClip = (value: string, maximumCharacters: number, maximumBytes: number) => {
+		const jsonTextBytes = (text: string) => Buffer.byteLength(JSON.stringify(text)) - 2;
+		const characters = [...value];
+		if (characters.length <= maximumCharacters && jsonTextBytes(value) <= maximumBytes) {
+			return { text: value, truncated: false };
+		}
+		const budget = maximumBytes - jsonTextBytes("…");
+		let text = "";
+		for (const character of characters.slice(0, maximumCharacters)) {
+			const next = text + character;
+			if (jsonTextBytes(next) > budget) break;
+			text = next;
+		}
+		return { text: `${text}…`, truncated: true };
+	};
+	const samples = [
+		"",
+		"plain ascii",
+		'quote"slash\\back\bform\fnew\nret\rtab\t',
+		"\x00\x01\x07\x0b\x0e\x1f",
+		"\x7f\u2028\u2029",
+		"café naïve æøå",
+		"中文日本語한국어",
+		"😀🚀🧪🎉",
+		`prefix\ud800middle\udfffend`,
+		`mix"\\\n\x00é中😀\ud83d`,
+	];
+	for (const sample of samples) {
+		for (const maxChars of [0, 1, 2, 5, 10, 50]) {
+			for (const maxBytes of [Number.POSITIVE_INFINITY, 0, 1, 2, 3, 4, 6, 8, 12, 20, 64]) {
+				expect(clipText(sample, maxChars, maxBytes)).toEqual(referenceClip(sample, maxChars, maxBytes));
+			}
+		}
+	}
+});
+
+it("fetches Gmail search_messages metadata with bounded concurrency in order, preserves earliest error by index, and aborts higher-index siblings", async () => {
+	let inFlight = 0;
+	let peak = 0;
+	const ids = Array.from({ length: 8 }, (_, index) => `m${index + 1}`);
+	const routes: Record<string, (url: URL, init?: RequestInit) => Response | Promise<Response>> = {
+		[`GET ${GMAIL}/gmail/v1/users/me/messages`]: () =>
+			Response.json({ messages: ids.map((id) => ({ id })), resultSizeEstimate: ids.length }),
+	};
+	for (const id of ids) {
+		routes[`GET ${GMAIL}/gmail/v1/users/me/messages/${id}`] = async () => {
+			inFlight += 1;
+			peak = Math.max(peak, inFlight);
+			await new Promise((resolve) => setTimeout(resolve, 15));
+			inFlight -= 1;
+			return Response.json(message(id, `Subject ${id}`, `Body ${id}`));
+		};
+	}
+	const { fetchImplementation } = google(routes);
+	const outcome = (await gmail("search_messages", fetchImplementation).execute(
+		input({ query: "test", limit: 8 }, GMAIL),
+	)) as { status: string; result: { messages: Array<{ message_id: string }> } };
+	expect(outcome.status).toBe("completed");
+	expect(outcome.result.messages.map((item) => item.message_id)).toEqual(ids);
+	expect(peak).toBeGreaterThan(1);
+	expect(peak).toBeLessThanOrEqual(5);
+
+	const siblingAborted: string[] = [];
+	const failRoutes: Record<string, (url: URL, init?: RequestInit) => Response | Promise<Response>> = {
+		[`GET ${GMAIL}/gmail/v1/users/me/messages`]: () =>
+			Response.json({
+				messages: [{ id: "m1" }, { id: "m2" }, { id: "m3" }, { id: "m4" }],
+				resultSizeEstimate: 4,
+			}),
+		[`GET ${GMAIL}/gmail/v1/users/me/messages/m1`]: async () => {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+			return Response.json({ error: { message: "unauthorized" } }, { status: 401 });
+		},
+		[`GET ${GMAIL}/gmail/v1/users/me/messages/m2`]: (_url, init) =>
+			new Promise((_resolve, reject) => {
+				init?.signal?.addEventListener("abort", () => {
+					siblingAborted.push("m2");
+					reject(init.signal?.reason ?? new Error("aborted"));
+				});
+			}),
+		[`GET ${GMAIL}/gmail/v1/users/me/messages/m3`]: () =>
+			Response.json({ error: { message: "gone" } }, { status: 404 }),
+		[`GET ${GMAIL}/gmail/v1/users/me/messages/m4`]: (_url, init) =>
+			new Promise((_resolve, reject) => {
+				init?.signal?.addEventListener("abort", () => {
+					siblingAborted.push("m4");
+					reject(init.signal?.reason ?? new Error("aborted"));
+				});
+			}),
+	};
+	const failing = google(failRoutes);
+	const failed = await gmail("search_messages", failing.fetchImplementation).execute(
+		input({ query: "test", limit: 4 }, GMAIL),
+	);
+	expect(failed).toMatchObject({ status: "failed", reason: "authorization_required" });
+	expect(siblingAborted).toContain("m4");
+	expect(siblingAborted).toContain("m2");
 });

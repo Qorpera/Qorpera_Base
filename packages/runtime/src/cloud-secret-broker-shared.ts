@@ -1,4 +1,4 @@
-import { withAbortScope } from "./abort-scope.ts";
+import { withAbortScope, withAbortScopes } from "./abort-scope.ts";
 import { CloudBankSyncs, logBankSyncPass } from "./cloud-bank-sync.ts";
 import type { ChatGptPlanOAuth } from "./cloud-chatgpt-plan.ts";
 import { ChatGptPlanSignIns } from "./cloud-chatgpt-plan-sign-in.ts";
@@ -110,6 +110,20 @@ function servedEntry(value: unknown): { companyId: string; authorityId: string; 
 	const input = record(value, "Shared vault company");
 	if (typeof input.keyId !== "string" || !KEY_ID.test(input.keyId)) throw new Error("Shared vault company is invalid");
 	return { companyId: company(input.companyId), authorityId: company(input.authorityId), keyId: input.keyId };
+}
+
+async function waitForWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+	signal.throwIfAborted();
+	let onAbort: (() => void) | undefined;
+	const aborted = new Promise<never>((_resolve, reject) => {
+		onAbort = () => reject(signal.reason);
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
+	try {
+		return await Promise.race([promise, aborted]);
+	} finally {
+		if (onAbort) signal.removeEventListener("abort", onAbort);
+	}
 }
 
 type SharedVaultPrincipal = Pick<
@@ -284,10 +298,14 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		const id = company(companyId);
 		const known = this.#served.get(id);
 		if (known) return known.scope;
+		signal.throwIfAborted();
 		// A refresh already running (the first one after a start included) may serve it: wait for that one.
 		const running = this.#refreshing;
 		if (running) {
-			await running.catch(() => undefined);
+			await waitForWithAbort(
+				running.catch(() => undefined),
+				signal,
+			);
 			return this.#unknown(id);
 		}
 		// A company created a moment ago may not be on the list yet: look again, but not on every request.
@@ -311,7 +329,9 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 
 	/** One refresh: registers the new companies, serves every registered one, drops the rest. */
 	refresh(signal: AbortSignal): Promise<void> {
-		this.#refreshing ??= this.#refresh(signal)
+		const running = this.#refreshing;
+		if (running) return waitForWithAbort(running, signal);
+		this.#refreshing = this.#refresh(signal)
 			.then(
 				() => {
 					this.#refreshFailure = undefined;
@@ -503,7 +523,11 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		return withAbortScope(this.#closing.signal, async (signal) => {
 			if (this.#closed) return;
 			const answer = record(
-				await this.#principal.eventVerificationsDue(AbortSignal.any([signal, AbortSignal.timeout(DEADLINE_MS)])),
+				await withAbortScopes(
+					[signal],
+					(dueSignal) => this.#principal.eventVerificationsDue(dueSignal),
+					DEADLINE_MS,
+				),
 				"Shared vault event verifications",
 			);
 			if (
@@ -526,7 +550,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		return withAbortScope(this.#closing.signal, async (signal) => {
 			if (this.#closed || !this.#bank) return;
 			const answer = record(
-				await this.#principal.bankSyncsDue(AbortSignal.any([signal, AbortSignal.timeout(DEADLINE_MS)])),
+				await withAbortScopes([signal], (dueSignal) => this.#principal.bankSyncsDue(dueSignal), DEADLINE_MS),
 				"Shared vault bank syncs",
 			);
 			if (
@@ -549,7 +573,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		return withAbortScope(this.#closing.signal, async (signal) => {
 			if (this.#closed || !this.#digitalPost) return;
 			const answer = record(
-				await this.#principal.digitalPostSyncsDue(AbortSignal.any([signal, AbortSignal.timeout(DEADLINE_MS)])),
+				await withAbortScopes([signal], (dueSignal) => this.#principal.digitalPostSyncsDue(dueSignal), DEADLINE_MS),
 				"Shared vault Digital Post syncs",
 			);
 			if (
@@ -569,7 +593,11 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	start(): void {
 		if (this.#started || this.#closed) return;
 		this.#started = true;
-		this.#loop(() => this.refresh(AbortSignal.timeout(DEADLINE_MS)), this.#refreshEveryMs, 0);
+		this.#loop(
+			() => withAbortScopes([this.#closing.signal], (signal) => this.refresh(signal), DEADLINE_MS),
+			this.#refreshEveryMs,
+			0,
+		);
 		this.#loop(() => this.collect(), this.#collectEveryMs, this.#collectEveryMs);
 		// A random start, so both copies of the vault and a restart spread their renewals.
 		this.#loop(() => this.upkeep(), this.#upkeepEveryMs, 30_000 + Math.floor(Math.random() * this.#upkeepEveryMs));

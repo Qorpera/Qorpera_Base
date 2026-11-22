@@ -1,3 +1,4 @@
+import { withAbortScopes } from "./abort-scope.ts";
 import type { Cloud } from "./client.ts";
 import { array, boundedInteger, CloudShapeError, oneOf, record, timestamp, uuid } from "./parse.ts";
 
@@ -183,29 +184,41 @@ export class GoodWillCardError extends Error {
 }
 
 /** Stripe's own page (checkout.stripe.com) where a founder saves the card that pays the company's good will. */
-export async function startGoodWillCard(cloud: Cloud, profileId: string): Promise<string> {
+export async function startGoodWillCard(cloud: Cloud, profileId: string, signal?: AbortSignal): Promise<string> {
 	const { data } = await cloud.supabase.auth.getSession();
 	const token = data.session?.access_token;
 	if (!token) throw new GoodWillCardError("unavailable");
 	const address = `${cloud.config.projectUrl}/functions/v1/computer-billing/good-will-card`;
-	let response: Response;
-	try {
-		response = await fetch(address, {
-			method: "POST",
-			headers: {
-				apikey: cloud.config.publishableKey,
-				authorization: `Bearer ${token}`,
-				"content-type": "application/json",
-			},
-			body: JSON.stringify({ profileId }),
-			redirect: "error",
-			credentials: "omit",
-		});
-	} catch {
-		throw new GoodWillCardError("unavailable");
-	}
-	cloud.noticeResponse?.(address, token, response);
-	const answer: unknown = await response.json().catch(() => null);
+	const { response, answer } = await withAbortScopes(
+		[signal],
+		async (scoped) => {
+			let fetched: Response;
+			try {
+				fetched = await fetch(address, {
+					method: "POST",
+					headers: {
+						apikey: cloud.config.publishableKey,
+						authorization: `Bearer ${token}`,
+						"content-type": "application/json",
+					},
+					body: JSON.stringify({ profileId }),
+					signal: scoped,
+					redirect: "error",
+					credentials: "omit",
+				});
+			} catch {
+				throw new GoodWillCardError("unavailable");
+			}
+			cloud.noticeResponse?.(address, token, fetched);
+			try {
+				const body: unknown = await fetched.json().catch(() => null);
+				return { response: fetched, answer: body };
+			} finally {
+				if (!fetched.body?.locked) void fetched.body?.cancel?.().catch(() => undefined);
+			}
+		},
+		30_000,
+	);
 	const fields =
 		answer && typeof answer === "object" && !Array.isArray(answer) ? (answer as Record<string, unknown>) : {};
 	if (response.status === 409)

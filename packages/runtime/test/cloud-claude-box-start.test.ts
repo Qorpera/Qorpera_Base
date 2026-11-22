@@ -1,8 +1,10 @@
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough, Writable } from "node:stream";
 import { CLAUDE_BOX_CONFIGURATION, claudeBoxStartStage, startClaudeCodeBox } from "@qorpera/runtime/cloud-claude-box";
 import type { CloudClaudeHomeChannel } from "@qorpera/runtime/cloud-claude-home-shell";
 import { claudeBoxFailureCode } from "@qorpera/runtime/cloud-claude-worker";
@@ -212,5 +214,105 @@ describe.skipIf(process.platform !== "linux")("the box's start", () => {
 			account.mockRestore();
 		}
 		expect(opened).toEqual([]);
+	});
+
+	it("ends the mount forwarding loop without hanging when toMount closes during backpressure (gated and ungated)", async () => {
+		const sftpVersion = Buffer.from([0, 0, 0, 5, 2, 0, 0, 0, 3]).toString("base64");
+		for (const gated of [false, true]) {
+			let wrote = false;
+			let endedMount = false;
+			let iteratorClosed = false;
+			const toMount = new Writable({
+				highWaterMark: 1,
+				write(_chunk, _encoding, _callback) {
+					wrote = true;
+				},
+			});
+			const originalEnd = toMount.end.bind(toMount);
+			toMount.end = ((...args: Parameters<typeof toMount.end>) => {
+				endedMount = true;
+				return originalEnd(...args);
+			}) as typeof toMount.end;
+
+			let fakeChild: EventEmitter | undefined;
+			const fakeSpawn: typeof spawn = (() => {
+				const child = new EventEmitter() as unknown as Record<string, unknown>;
+				fakeChild = child as unknown as EventEmitter;
+				const stdin = new PassThrough();
+				const stdout = new PassThrough();
+				const stderr = new PassThrough();
+				const tokenPipe = new PassThrough();
+				const fromMount = new PassThrough();
+				child.stdin = stdin;
+				child.stdout = stdout;
+				child.stderr = stderr;
+				child.stdio = [stdin, stdout, stderr, tokenPipe, toMount, fromMount];
+				child.pid = undefined;
+				child.exitCode = null;
+				child.signalCode = null;
+				child.kill = () => {
+					child.signalCode = "SIGKILL";
+					(child as unknown as EventEmitter).emit("close", null, "SIGKILL");
+					return true;
+				};
+				return child;
+			}) as unknown as typeof spawn;
+
+			let releaseSecondLine: (() => void) | undefined;
+			const lines = (async function* () {
+				try {
+					yield sftpVersion;
+					await new Promise<void>((resolve) => {
+						releaseSecondLine = resolve;
+					});
+					yield sftpVersion;
+				} finally {
+					iteratorClosed = true;
+				}
+			})();
+			const channel: CloudClaudeHomeChannel = {
+				open: async () => ({
+					write: () => undefined,
+					lines,
+					close: async () => {
+						releaseSecondLine?.();
+						await lines.return(undefined);
+					},
+				}),
+			};
+			const box = await startClaudeCodeBox(
+				{
+					configuration: CLAUDE_BOX_CONFIGURATION,
+					scratchRoot: await scratch(),
+					login: { token: "sk-ant-oat01-test" },
+					channel,
+					sessionId: SESSION,
+					machineId: MACHINE,
+					prompt: "hi",
+					signal: new AbortController().signal,
+					...(gated
+						? {
+								review: {
+									gate: {} as never,
+									machine: {} as never,
+									attach: () => undefined,
+								},
+							}
+						: {}),
+				},
+				fakeSpawn,
+			);
+			try {
+				await vi.waitFor(() => expect(wrote).toBe(true));
+				expect(toMount.writableNeedDrain).toBe(true);
+				toMount.destroy();
+				await vi.waitFor(() => expect(endedMount).toBe(true));
+				await vi.waitFor(() => expect(iteratorClosed).toBe(true));
+			} finally {
+				releaseSecondLine?.();
+				fakeChild?.emit("close", 0, null);
+				await box.close();
+			}
+		}
 	});
 });
