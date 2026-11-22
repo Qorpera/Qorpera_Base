@@ -29,6 +29,24 @@ const WATCH_WORKERS = 3;
 /** Connections a company's database takes, all logins together. */
 const COMPANY_CONNECTIONS = 36;
 const RAW_JSON = Symbol("rawJson");
+const APPROX_BYTES = Symbol("approxBytes");
+const WATCH_CACHE_BYTES_TOTAL = 32 * 1024 * 1024;
+const TEXT_CACHE_BYTES_TOTAL = 32 * 1024 * 1024;
+const WATCH_QUERY_TIMEOUT_MS = 20_000;
+
+async function withFetchTimeout(timeoutMs, use) {
+	const controller = new AbortController();
+	const timer = setTimeout(
+		() => controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+		timeoutMs,
+	);
+	timer.unref?.();
+	try {
+		return await use(controller.signal);
+	} finally {
+		clearTimeout(timer);
+	}
+}
 const VOLATILE_SQL =
 	/\b(?:now|clock_timestamp|statement_timestamp|transaction_timestamp|timeofday|current_timestamp|current_date|current_time|localtime|localtimestamp|random|setseed|gen_random_uuid|uuid_generate_v[14]|pg_sleep|txid_current|pg_current_xact_id|nextval|setval|currval|lastval)\b/i;
 /** What a member's yes to a held step is for (§3): the step, the hash of its text, and the hash of what it would
@@ -577,30 +595,32 @@ export class Platform {
 		this.#fetch = fetch;
 	}
 	async #rpc(token, name, args, refusedAs = undefined) {
-		let response;
-		try {
-			response = await this.#fetch(`${this.#url}/rest/v1/rpc/${name}`, {
-				method: "POST",
-				headers: { apikey: this.#key, authorization: `Bearer ${token}`, "content-type": "application/json" },
-				body: JSON.stringify(args),
-				signal: AbortSignal.timeout(8_000),
-			});
-		} catch {
-			refuse(503, "The company folder did not answer");
-		}
-		if (response.status === 401) {
-			void response.body?.cancel().catch(() => undefined);
-			refuse(401, "Sign in again");
-		}
-		if (refusedAs !== undefined && (response.status === 403 || response.status === 404)) {
-			void response.body?.cancel().catch(() => undefined);
-			return refusedAs;
-		}
-		if (!response.ok) {
-			void response.body?.cancel().catch(() => undefined);
-			refuse(response.status === 403 || response.status === 404 ? 403 : 503, "The company folder refused the read");
-		}
-		return response.json().catch(() => refuse(503, "The company folder returned an unreadable answer"));
+		return withFetchTimeout(8_000, async (signal) => {
+			let response;
+			try {
+				response = await this.#fetch(`${this.#url}/rest/v1/rpc/${name}`, {
+					method: "POST",
+					headers: { apikey: this.#key, authorization: `Bearer ${token}`, "content-type": "application/json" },
+					body: JSON.stringify(args),
+					signal,
+				});
+			} catch {
+				refuse(503, "The company folder did not answer");
+			}
+			if (response.status === 401) {
+				void response.body?.cancel().catch(() => undefined);
+				refuse(401, "Sign in again");
+			}
+			if (refusedAs !== undefined && (response.status === 403 || response.status === 404)) {
+				void response.body?.cancel().catch(() => undefined);
+				return refusedAs;
+			}
+			if (!response.ok) {
+				void response.body?.cancel().catch(() => undefined);
+				refuse(response.status === 403 || response.status === 404 ? 403 : 503, "The company folder refused the read");
+			}
+			return response.json().catch(() => refuse(503, "The company folder returned an unreadable answer"));
+		});
 	}
 	async memberFolders(token, environmentId, parent, limit) {
 		const answer = await this.#rpc(token, "qorpera_member_folder_list", {
@@ -653,22 +673,24 @@ export class Platform {
 		const headers = { apikey: this.#key, "content-type": "application/json" };
 		// A legacy anon key is a JWT and goes as the bearer too; a publishable key goes alone.
 		if (this.#key.startsWith("eyJ") && this.#key.split(".").length === 3) headers.authorization = `Bearer ${this.#key}`;
-		let response;
-		try {
-			response = await this.#fetch(`${this.#url}/rest/v1/rpc/qorpera_data_pass_redeem`, {
-				method: "POST",
-				headers,
-				body: JSON.stringify({ p_pass: pass }),
-				signal: AbortSignal.timeout(8_000),
-			});
-		} catch {
-			refuse(503, "The platform did not answer");
-		}
-		if (!response.ok) {
-			void response.body?.cancel().catch(() => undefined);
-			refuse(503, "The platform refused the pass");
-		}
-		const answer = await response.json().catch(() => refuse(503, "The platform's answer is not a pass"));
+		const answer = await withFetchTimeout(8_000, async (signal) => {
+			let response;
+			try {
+				response = await this.#fetch(`${this.#url}/rest/v1/rpc/qorpera_data_pass_redeem`, {
+					method: "POST",
+					headers,
+					body: JSON.stringify({ p_pass: pass }),
+					signal,
+				});
+			} catch {
+				refuse(503, "The platform did not answer");
+			}
+			if (!response.ok) {
+				void response.body?.cancel().catch(() => undefined);
+				refuse(503, "The platform refused the pass");
+			}
+			return response.json().catch(() => refuse(503, "The platform's answer is not a pass"));
+		});
 		if (answer === null) return null;
 		const files = Array.isArray(answer?.files) ? answer.files : null;
 		const machine = answer?.kind === "machine";
@@ -808,9 +830,12 @@ export class Gateway {
 	#pools = new Map();
 	#proofs = new Map();
 	#texts = new Map();
+	#textsBytes = 0;
 	#statements = new Map();
 	#folders = new Map();
 	#listeners = new Map();
+	#watchCacheOrder = new Map();
+	#watchCacheBytes = 0;
 	#listenEpoch = 0;
 	#watchInFlight = new Map();
 	#tagSalt = randomBytes(16);
@@ -958,6 +983,9 @@ export class Gateway {
 					database,
 					max,
 					pipeline: kind === "r" || kind === "w",
+					keepAlive: true,
+					keepAliveInitialDelayMillis: 10_000,
+					...(door === "qorpera_data_watch" || door === "qorpera_data_keeper" ? { query_timeout: WATCH_QUERY_TIMEOUT_MS } : {}),
 					idleTimeoutMillis: kind === "o" ? 1_000 : 5_000,
 					connectionTimeoutMillis: CONNECT_MS,
 					application_name: `qorpera-data-gateway ${kind ?? user.slice("qorpera_data_".length)}`,
@@ -1007,6 +1035,11 @@ export class Gateway {
 		const now = Date.now();
 		if (this.#signalled.size > 1_000) for (const [old, mark] of this.#signalled) if (now - mark.at > 600_000) this.#signalled.delete(old);
 		this.#signalled.set(pid, { at: now, sending });
+	}
+
+	noteSignalled(pids) {
+		if (!Array.isArray(pids)) return;
+		for (const pid of pids) if (Number.isInteger(pid) && pid > 0) this.#signal(pid);
 	}
 
 	/** Gives a connection back: one whose backend was sent a cancel, or that broke, is closed instead. */
@@ -1174,8 +1207,66 @@ export class Gateway {
 	}
 
 	#cacheText(hash, text) {
-		if (this.#texts.size >= 5_000) this.#texts.delete(this.#texts.keys().next().value);
+		const budget = Math.max(1024 * 1024, Math.floor(TEXT_CACHE_BYTES_TOTAL / this.#workers));
+		const bytes = Buffer.byteLength(text, "utf8");
+		if (bytes > budget) return;
+		const existing = this.#texts.get(hash);
+		if (existing !== undefined) {
+			this.#textsBytes -= Buffer.byteLength(existing, "utf8");
+			this.#texts.delete(hash);
+		}
+		while (this.#texts.size >= 5_000 || (this.#texts.size > 0 && this.#textsBytes + bytes > budget)) {
+			const oldestKey = this.#texts.keys().next().value;
+			const oldest = this.#texts.get(oldestKey);
+			this.#texts.delete(oldestKey);
+			if (oldest !== undefined) this.#textsBytes -= Buffer.byteLength(oldest, "utf8");
+		}
 		this.#texts.set(hash, text);
+		this.#textsBytes += bytes;
+	}
+
+	#deleteListenerCacheEntry(listener, baseKey) {
+		const globalKey = `${listener.epoch}\0${baseKey}`;
+		const tracked = this.#watchCacheOrder.get(globalKey);
+		if (tracked) {
+			this.#watchCacheBytes -= tracked.bytes;
+			this.#watchCacheOrder.delete(globalKey);
+		}
+		listener.cache.delete(baseKey);
+	}
+
+	#clearListenerCache(listener) {
+		for (const baseKey of listener.cache.keys()) {
+			const globalKey = `${listener.epoch}\0${baseKey}`;
+			const tracked = this.#watchCacheOrder.get(globalKey);
+			if (tracked) {
+				this.#watchCacheBytes -= tracked.bytes;
+				this.#watchCacheOrder.delete(globalKey);
+			}
+		}
+		listener.cache.clear();
+	}
+
+	#setListenerCache(listener, baseKey, entry) {
+		const budget = Math.max(1024 * 1024, Math.floor(WATCH_CACHE_BYTES_TOTAL / this.#workers));
+		const bytes = Number(entry.answer?.[APPROX_BYTES]) || 1024;
+		if (bytes > budget) return;
+		this.#deleteListenerCacheEntry(listener, baseKey);
+		while (listener.cache.size >= 512) {
+			this.#deleteListenerCacheEntry(listener, listener.cache.keys().next().value);
+		}
+		while (this.#watchCacheOrder.size > 0 && this.#watchCacheBytes + bytes > budget) {
+			const oldestKey = this.#watchCacheOrder.keys().next().value;
+			const oldest = this.#watchCacheOrder.get(oldestKey);
+			this.#watchCacheOrder.delete(oldestKey);
+			if (oldest) {
+				this.#watchCacheBytes -= oldest.bytes;
+				oldest.listener.cache.delete(oldest.baseKey);
+			}
+		}
+		listener.cache.set(baseKey, entry);
+		this.#watchCacheOrder.set(`${listener.epoch}\0${baseKey}`, { listener, baseKey, bytes });
+		this.#watchCacheBytes += bytes;
 	}
 
 	async #textsFor(database, hashes, supplied, maximum) {
@@ -1524,10 +1615,14 @@ export class Gateway {
 			const viewerSetting =
 				ready.viewer && ENVIRONMENT.test(ready.viewer) ? `; set local "qorpera.viewer" = '${ready.viewer}'` : `; set local "qorpera.viewer" = ''`;
 			const { state: prepState, needsDeallocate } = this.#preparedState(client, ready.database, ready.name);
+			if (needsDeallocate) {
+				await client.query("deallocate all");
+				prepState.pendingDeallocate = false;
+				if (gone?.aborted) refuse(499, "The caller went away");
+			}
 			const existedBefore = new Set(prepState.names);
-			const deallocatePrefix = needsDeallocate ? "deallocate all; " : "";
 			const beginSql =
-				`${deallocatePrefix}begin transaction read only; set local statement_timeout = ${limit}; set local timezone = 'UTC'; ` +
+				`begin transaction read only; set local statement_timeout = ${limit}; set local timezone = 'UTC'; ` +
 				`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}, qorpera_ext${viewerSetting}${settings}`;
 			const spec = buildQuery(client, { maxRows, maxBytes });
 			const stream = client.connection?.stream;
@@ -1553,11 +1648,9 @@ export class Gateway {
 			if (endRes.status === "rejected") lost = endRes.reason;
 			if (beginRes.status === "rejected") {
 				if (spec.name && !existedBefore.has(spec.name)) prepState.names.delete(spec.name);
-				if (!lost && !(beginRes.reason instanceof Refusal) && !(beginRes.reason?.code && !/^(57P0[123]|08...)$/.test(beginRes.reason.code)))
-					lost = beginRes.reason;
+				lost ??= beginRes.reason;
 				throw beginRes.reason;
 			}
-			if (needsDeallocate) prepState.pendingDeallocate = false;
 			if (queryRes.status === "rejected") {
 				const error = queryRes.reason;
 				if (spec.name && (!existedBefore.has(spec.name) || error?.code === "0A000" || error?.code === "42P01" || error?.code === "42703"))
@@ -1649,7 +1742,8 @@ export class Gateway {
 		const rawBase = `{"columns":${JSON.stringify(columns)},"rows":[${rowJsons.join(",")}],"more":${more}}`;
 		const etag = sha256(rawBase).slice(0, 32);
 		const answer = { columns, rows, more, etag };
-		answer[RAW_JSON] = rawBase;
+		if (options.raw !== false) answer[RAW_JSON] = rawBase;
+		answer[APPROX_BYTES] = rawBase.length * 2 + 256;
 		return answer;
 	}
 
@@ -1700,7 +1794,7 @@ export class Gateway {
 		return { columns, key, placed, text, values };
 	}
 
-	#formatPageResult(ready, built, result, maxBytes) {
+	#formatPageResult(ready, built, result, maxBytes, raw = true) {
 		const { columns, key, placed } = built;
 		const width = columns.length;
 		const fields = result.fields.slice(0, width);
@@ -1746,7 +1840,8 @@ export class Gateway {
 		const rawBase = `{"columns":${JSON.stringify(colNames)},"key":${JSON.stringify(keyNames)},"rows":[${rowJsons.join(",")}],"more":${more}${tail}}`;
 		const etag = sha256(rawBase).slice(0, 32);
 		const out = { ...answer, etag };
-		out[RAW_JSON] = rawBase;
+		if (raw) out[RAW_JSON] = rawBase;
+		out[APPROX_BYTES] = rawBase.length * 2 + 256;
 		return out;
 	}
 
@@ -1765,7 +1860,7 @@ export class Gateway {
 					};
 				});
 				options.onShape?.({ kind: cachedShape[0].kind, rls: cachedShape[0].rls === "t" });
-				return this.#formatPageResult(ready, built, ran.result, ran.maxBytes);
+				return this.#formatPageResult(ready, built, ran.result, ran.maxBytes, options.raw !== false);
 			} catch (error) {
 				if (error instanceof Refusal) throw error;
 				if (error?.code === "42P01" || error?.code === "42703" || error?.code === "0A000") {
@@ -1791,7 +1886,7 @@ export class Gateway {
 				queryMode: "extended",
 				types: TEXT_TYPES,
 			});
-			return this.#formatPageResult(ready, built, result, maxBytes);
+			return this.#formatPageResult(ready, built, result, maxBytes, options.raw !== false);
 		});
 	}
 
@@ -2167,22 +2262,17 @@ export class Gateway {
 			const checkSql =
 				`set constraints all immediate; select kind, object, rows from qorpera_data.effects(); ` +
 				`select table_name, problem from qorpera_data.unwatched('${ready.name}')${full ? `; ${WRITTEN}` : ""}`;
-			// WHY: discard all runs after every write on _wN, which deallocates prepared statements on that connection.
-			let beginP;
+			// WHY: Await beginSql before pipelining queryP so a failed/cancelled BEGIN never executes ready.sql in autocommit mode.
+			const started = await client.query(beginSql);
+			const txid = (full ? started[started.length - 2] : started[started.length - 1]).rows[0].txid;
+			const before = full ? Number(started[started.length - 1].rows[0].rows) : 0;
+			const actorP = this.#actorLine(ready.database, txid, actor, { asyncCommit: true });
+			actorP.catch(() => undefined);
 			let queryP;
 			let checkP;
-			let actorP = null;
 			stream.on("data", counting);
 			stream.cork?.();
 			try {
-				beginP = client.query(beginSql);
-				beginP
-					.then((started) => {
-						const txid = (full ? started[started.length - 2] : started[started.length - 1]).rows[0].txid;
-						actorP = this.#actorLine(ready.database, txid, actor, { asyncCommit: true });
-						actorP.catch(() => undefined);
-					})
-					.catch(() => undefined);
 				queryP = client.query({
 					text: ready.sql,
 					values: ready.values,
@@ -2194,18 +2284,14 @@ export class Gateway {
 			} finally {
 				stream.uncork?.();
 			}
-			const [beginRes, queryRes, checkRes] = await Promise.allSettled([beginP, queryP, checkP]);
+			const [queryRes, checkRes] = await Promise.allSettled([queryP, checkP]);
 			stream.off("data", counting);
 			if (held.cut) throw new Error("The change gave back too much");
-			if (beginRes.status === "rejected") throw beginRes.reason;
 			if (queryRes.status === "rejected") throw queryRes.reason;
 			const result = queryRes.value;
 			if (!CHANGE_COMMANDS.includes(result.command))
 				await undone(400, "A change is one insert, update, delete or merge, or a select that calls a function: nothing was changed");
 			if (checkRes.status === "rejected") throw checkRes.reason;
-			const started = beginRes.value;
-			const txid = (full ? started[started.length - 2] : started[started.length - 1]).rows[0].txid;
-			const before = full ? Number(started[started.length - 1].rows[0].rows) : 0;
 			const checked = checkRes.value;
 			const effects = checked[1].rows;
 			const beyond = effects.filter((effect) => effect.kind !== "deleted rows");
@@ -2456,15 +2542,19 @@ export class Gateway {
 				tableGen: new Map(),
 				cache: new Map(),
 				viewerScoped: new Map(),
+				wakeStop: null,
 			};
 			const lost = () => {
 				if (listener.dropped) return;
 				listener.dropped = true;
 				if (this.#listeners.get(database) === listener) this.#listeners.delete(database);
-				listener.cache.clear();
+				this.#clearListenerCache(listener);
 				listener.viewerScoped.clear();
 				listener.gen++;
 				listener.wildcardGen = listener.gen;
+				const clientToEnd = listener.client;
+				listener.client = null;
+				clientToEnd?.end().catch(() => undefined);
 				for (const tell of [...listener.heard]) tell(null);
 			};
 			const connectListen = async () => {
@@ -2478,6 +2568,8 @@ export class Gateway {
 						user: "qorpera_data_keeper",
 						password: this.#store.logins.keeper,
 						database,
+						keepAlive: true,
+						keepAliveInitialDelayMillis: 10_000,
 						connectionTimeoutMillis: 5_000,
 						application_name: "qorpera-data-gateway listen",
 					});
@@ -2489,7 +2581,15 @@ export class Gateway {
 						const remaining = retryUntil - Date.now();
 						if (this.#closed || listener.stopped || error?.code !== "53300" || remaining <= 0) throw error;
 						await this.#makeRoom(database, "");
-						await new Promise((resolve) => setTimeout(resolve, Math.min(remaining, Math.min(200, 50 * (attempt + 1)))));
+						await new Promise((resolve) => {
+							const done = () => {
+								clearTimeout(timer);
+								if (listener.wakeStop === done) listener.wakeStop = null;
+								resolve();
+							};
+							const timer = setTimeout(done, Math.min(remaining, Math.min(200, 50 * (attempt + 1))));
+							listener.wakeStop = done;
+						});
 						continue;
 					}
 					if (this.#closed || listener.stopped) {
@@ -2545,10 +2645,13 @@ export class Gateway {
 				listener.heard.delete(heard);
 				if (listener.heard.size === 0 && this.#listeners.get(database) === listener) {
 					listener.stopped = true;
+					listener.wakeStop?.();
 					this.#listeners.delete(database);
-					listener.cache.clear();
+					this.#clearListenerCache(listener);
 					listener.viewerScoped.clear();
-					listener.client?.end().catch(() => undefined);
+					const clientToEnd = listener.client;
+					listener.client = null;
+					clientToEnd?.end().catch(() => undefined);
 				}
 			},
 		};
@@ -2591,7 +2694,7 @@ export class Gateway {
 		if (stop.aborted) return Promise.reject(new Refusal(499, "The caller went away"));
 		if (left < this.#limits.questionMs) return run(stop);
 		let entry = this.#watchInFlight.get(key);
-		if (!entry) {
+		if (!entry || entry.controller.signal.aborted) {
 			const controller = new AbortController();
 			const waiters = new Set();
 			const promise = run(controller.signal).finally(() => {
@@ -2605,7 +2708,10 @@ export class Gateway {
 		return new Promise((resolve, reject) => {
 			const onAbort = () => {
 				entry.waiters.delete(stop);
-				if (entry.waiters.size === 0) entry.controller.abort();
+				if (entry.waiters.size === 0) {
+					if (this.#watchInFlight.get(key) === entry) this.#watchInFlight.delete(key);
+					entry.controller.abort();
+				}
 				reject(new Refusal(499, "The caller went away"));
 			};
 			if (stop.aborted) {
@@ -2772,25 +2878,24 @@ export class Gateway {
 									const page = await this.#page(item, {
 										ms: left,
 										gone,
+										raw: false,
 										onShape: (seen) => {
 											shape = seen;
 										},
 									});
 									return { answer: page, meta: shape };
 								}
-								return { answer: await this.#ask(item, { ms: left, gone }), meta: null };
+								return { answer: await this.#ask(item, { ms: left, gone, raw: false }), meta: null };
 							});
 							answer = fetched.answer;
 							meta = fetched.meta;
 							if (isTable && meta) {
 								tableMeta.set(index, meta);
 								if ((meta.kind === "r" || meta.kind === "p") && !meta.rls && cacheable) {
-									if (listener.cache.size >= 512) listener.cache.delete(listener.cache.keys().next().value);
-									listener.cache.set(baseKey, { epoch: listener.epoch, gen: beforeGen, answer, meta });
+									this.#setListenerCache(listener, baseKey, { epoch: listener.epoch, gen: beforeGen, answer, meta });
 								}
 							} else if (!isTable && cacheable) {
-								if (listener.cache.size >= 512) listener.cache.delete(listener.cache.keys().next().value);
-								listener.cache.set(baseKey, { epoch: listener.epoch, gen: beforeGen, answer, meta: null });
+								this.#setListenerCache(listener, baseKey, { epoch: listener.epoch, gen: beforeGen, answer, meta: null });
 							}
 						}
 						asked.add(index);
@@ -3025,7 +3130,13 @@ export class Gateway {
 		const n = await this.#folder(database, name);
 		const keeper = this.#pool(database, "qorpera_data_keeper");
 		const applied = new Map(
-			(await keeper.query("select name, sha256 from qorpera_data.steps where database = $1", [name])).rows.map((row) => [row.name, row.sha256]),
+			(
+				await keeper
+					.query("select name, sha256 from qorpera_data.steps where database = $1", [name])
+					.catch((error) => {
+						throw storeProblem(error);
+					})
+			).rows.map((row) => [row.name, row.sha256]),
 		);
 		const results = [];
 		const live = new Map(steps.map((step) => [step.name, step.sha256]));
@@ -3092,7 +3203,11 @@ export class Gateway {
 	 * it destroyed is exactly what `allow` says a member said yes to (the step, its text's hash, and the hash of what it
 	 * destroys). `dry`: nothing is kept; the answer says what the step would destroy, with the `allow` for it. */
 	async #step(database, name, n, step, text, { allow = null, dry = false, actor = null } = {}) {
-		const client = await this.#pool(database, `${database}_o${n}`).connect();
+		const client = await this.#pool(database, `${database}_o${n}`)
+			.connect()
+			.catch((error) => {
+				throw storeProblem(error);
+			});
 		let lost;
 		const onClientError = (error) => {
 			lost ??= error;
@@ -3182,6 +3297,10 @@ export class Gateway {
 			throw storeProblem(error);
 		} finally {
 			client.removeListener("error", onClientError);
+			if (!lost)
+				await client.query("discard all").catch((error) => {
+					lost = error;
+				});
 			this.#release(client, lost);
 		}
 	}
@@ -4019,13 +4138,17 @@ export class Gateway {
 		const listener = this.#listeners.get(database);
 		if (listener) {
 			listener.stopped = true;
+			listener.wakeStop?.();
 			this.#listeners.delete(database);
-			listener.cache.clear();
+			this.#clearListenerCache(listener);
 			listener.viewerScoped.clear();
 			const waiting = [...listener.heard];
 			listener.heard.clear();
 			for (const tell of waiting) tell(null);
-			await listener.client?.end().catch(() => undefined);
+			await listener.ready?.catch(() => undefined);
+			const clientToEnd = listener.client;
+			listener.client = null;
+			await clientToEnd?.end().catch(() => undefined);
 		}
 		for (const [key, entry] of this.#watchInFlight) {
 			if (key.includes(`|${database}|`)) {
@@ -4362,12 +4485,20 @@ export class Gateway {
 		this.#watchInFlight.clear();
 		for (const listener of this.#listeners.values()) {
 			listener.stopped = true;
-			listener.cache.clear();
+			listener.wakeStop?.();
+			this.#clearListenerCache(listener);
 			listener.viewerScoped.clear();
 			for (const tell of [...listener.heard]) tell(null);
-			await listener.client?.end().catch(() => undefined);
+			await listener.ready?.catch(() => undefined);
+			const clientToEnd = listener.client;
+			listener.client = null;
+			await clientToEnd?.end().catch(() => undefined);
 		}
 		this.#listeners.clear();
+		this.#watchCacheOrder.clear();
+		this.#watchCacheBytes = 0;
+		this.#texts.clear();
+		this.#textsBytes = 0;
 		this.#relations.clear();
 		this.#schemaEpoch.clear();
 		this.#askPlans.clear();
