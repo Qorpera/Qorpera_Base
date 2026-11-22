@@ -2450,7 +2450,7 @@ export class CloudRunnerOrchestrator {
 		signal?: AbortSignal,
 		excludedClaimIds: ReadonlySet<string> = new Set(),
 		includeRetained = true,
-	): Promise<{ claims: readonly CloudRunnerOrchestrationClaim[]; fresh: number }> {
+	): Promise<{ claims: readonly CloudRunnerOrchestrationClaim[]; fresh: number; claimError?: unknown }> {
 		const retained = !includeRetained
 			? []
 			: signal
@@ -2458,6 +2458,7 @@ export class CloudRunnerOrchestrator {
 				: await this.#controlPlane.retainedClaims(this.#orchestratorId);
 		const claims = retained.filter((claim) => !excludedClaimIds.has(claim.claimId)).slice(0, limit);
 		let fresh = 0;
+		let claimError: unknown;
 		while (claims.length < limit) {
 			const clientClaimId = this.#clientClaimId();
 			let claim: CloudRunnerOrchestrationClaim | undefined;
@@ -2471,14 +2472,17 @@ export class CloudRunnerOrchestrator {
 						)
 					: await this.#controlPlane.claimNext(this.#orchestratorId, clientClaimId, this.#claimLeaseSeconds);
 			} catch (error) {
-				if (claims.length > 0 && !signal?.aborted) break;
+				if (claims.length > 0 && !signal?.aborted) {
+					claimError = error;
+					break;
+				}
 				throw error;
 			}
 			if (!claim) break;
 			claims.push(claim);
 			fresh++;
 		}
-		return { claims, fresh };
+		return claimError === undefined ? { claims, fresh } : { claims, fresh, claimError };
 	}
 
 	async #dispatchClaim(
@@ -2839,7 +2843,12 @@ export class CloudRunnerOrchestrator {
 					const reconciled = reconcile.succeeded;
 					const includeRetained = reconciled > reconcile.retainedRead;
 					if (announced) wakes.lastWokenClaimAt = performance.now();
-					const { claims, fresh } = await this.#claimBatch(available, signal, inFlightClaimIds, includeRetained);
+					const { claims, fresh, claimError } = await this.#claimBatch(
+						available,
+						signal,
+						inFlightClaimIds,
+						includeRetained,
+					);
 					if (includeRetained) reconcile.retainedRead = Math.max(reconcile.retainedRead, reconciled);
 					if (claims.length > 0) wakes.fastUntil = Math.max(wakes.fastUntil, performance.now() + wakeActiveMs);
 					if (wake && fresh > 0 && wakes.slow && !announced && wakes.sequence === sequence)
@@ -2872,6 +2881,7 @@ export class CloudRunnerOrchestrator {
 							});
 						inFlight.add(dispatch);
 					}
+					if (claimError !== undefined) options.onError?.(claimError);
 				}
 			} catch (error) {
 				options.onError?.(error);

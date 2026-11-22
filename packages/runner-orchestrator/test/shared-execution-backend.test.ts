@@ -1884,11 +1884,9 @@ describe("warm conversations", () => {
 		await reconciling;
 	});
 
-	it("avoids stale PID temp-file collisions, awaits in-flight retirement on concurrent stop, and memoizes released archives", async () => {
+	it("avoids stale PID temp-file collisions, awaits/aborts concurrent stop without double-retrying, and memoizes released archives", async () => {
 		const f = await fixture();
 		const signal = new AbortController().signal;
-		await mkdir(join(f.stateRoot, "journals"), { recursive: true });
-		await writeFile(join(f.stateRoot, "journals", `${runId}.json.${process.pid}.tmp`), "stale", { mode: 0o600 });
 
 		const runner = await f.backend.acquire(runId, work(), signal);
 		let stopEntered!: () => void;
@@ -1912,6 +1910,11 @@ describe("warm conversations", () => {
 
 		const firstStop = f.backend.stop(runner, "revoked");
 		await entered;
+		const waiterAbort = new AbortController();
+		const abortedWaiter = f.backend.stop(runner, "revoked", waiterAbort.signal);
+		waiterAbort.abort(new Error("shutdown"));
+		await expect(abortedWaiter).rejects.toThrow("shutdown");
+
 		let secondResolved = false;
 		const secondStop = f.backend.stop(runner, "revoked").then(() => {
 			secondResolved = true;
@@ -1923,20 +1926,62 @@ describe("warm conversations", () => {
 		expect(secondResolved).toBe(true);
 		expect(await journal(f)).toMatchObject({ physicalState: "stopped", capacityReleased: true });
 
+		const failRun = "30000000-0000-4000-8000-0000000000c2";
+		const failRunner = await f.backend.acquire(failRun, work({ runId: failRun, sourceId: failRun }), signal);
+		let failEntered!: () => void;
+		let releaseFail!: () => void;
+		const failStarted = new Promise<void>((resolve) => {
+			failEntered = resolve;
+		});
+		const failGate = new Promise<void>((resolve) => {
+			releaseFail = resolve;
+		});
+		let failStopCalls = 0;
+		f.units.stop = async (unit: string) => {
+			failStopCalls += 1;
+			if (failStopCalls === 1) {
+				failEntered();
+				await failGate;
+			}
+			return origStop(unit);
+		};
+		f.release = "unconfirmed";
+		const failFirst = f.backend.stop(failRunner, "revoked").catch((error: unknown) => error);
+		await failStarted;
+		const failSecond = f.backend.stop(failRunner, "revoked").catch((error: unknown) => error);
+		releaseFail();
+		const [err1, err2] = await Promise.all([failFirst, failSecond]);
+		expect(err1).toBeInstanceOf(Error);
+		expect(err2).toBeInstanceOf(Error);
+		expect(await journal(f, failRun)).toMatchObject({ physicalState: "stopping", retireAttempts: 1 });
+		f.units.stop = origStop;
+		f.release = "released";
+		await f.backend.stop(failRunner, "revoked");
+
 		const lostRun = "30000000-0000-4000-8000-0000000000c1";
 		await f.backend.acquire(lostRun, work({ runId: lostRun, sourceId: lostRun }), signal);
-		f.units.stop = origStop;
 		f.units.activeUnits.delete("qorpera-shared-runner@0.service");
 		f.release = "unconfirmed";
 		for (let attempt = 1; attempt < 12; attempt++) {
 			await expect(f.backend.reconcile()).rejects.toThrow("release was not confirmed");
 		}
 		await f.backend.reconcile();
+		const archiveDir = join(f.stateRoot, "journals", "archive");
+		const lostName = (await readdir(archiveDir)).find(
+			(name) => name.includes(lostRun) && name.endsWith(".lost.json"),
+		);
+		expect(lostName).toBeDefined();
+		const lostPath = join(archiveDir, lostName!);
+		await writeFile(`${lostPath}.${process.pid}.tmp`, "stale", { mode: 0o600 });
 		f.release = "released";
 		const releasesBefore = f.rpc.filter((call) => call.name === "qorpera_release_runtime_machine").length;
 		await f.backend.reconcile();
+		expect(f.rpc.filter((call) => call.name === "qorpera_release_runtime_machine")).toHaveLength(releasesBefore + 1);
+		const saved = JSON.parse(await readFile(lostPath, "utf8")) as Record<string, unknown>;
+		expect(saved).toMatchObject({ physicalState: "lost", capacityReleased: true });
+
+		await writeFile(lostPath, `${JSON.stringify({ ...saved, capacityReleased: false }, null, 2)}\n`, { mode: 0o600 });
 		await f.backend.reconcile();
 		expect(f.rpc.filter((call) => call.name === "qorpera_release_runtime_machine")).toHaveLength(releasesBefore + 1);
-		expect(await journal(f, lostRun)).toMatchObject({ physicalState: "lost", capacityReleased: true });
 	});
 });

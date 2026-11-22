@@ -3570,9 +3570,15 @@ describe("cloud runner orchestrator", () => {
 			createCapability: () => capability,
 		});
 
-		await orchestrator.run(controller.signal, { pollIntervalMs: 500, reconcileIntervalMs: 10_000 });
+		const errors: unknown[] = [];
+		await orchestrator.run(controller.signal, {
+			pollIntervalMs: 500,
+			reconcileIntervalMs: 10_000,
+			onError: (error) => errors.push(error),
+		});
 		expect(local.deliver).toHaveBeenCalledOnce();
 		expect(control.claimNext).toHaveBeenCalledTimes(2);
+		expect(errors).toEqual([expect.objectContaining({ status: 503 })]);
 	});
 
 	it("runs runner stop and claim release independently when one cleanup step fails", async () => {

@@ -464,6 +464,25 @@ async function settleAll<T>(promises: readonly Promise<T>[]): Promise<T[]> {
 	return results.map((result) => (result as PromiseFulfilledResult<T>).value);
 }
 
+function awaitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+	if (!signal) return promise;
+	if (signal.aborted) return Promise.reject(signal.reason);
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = (): void => reject(signal.reason);
+		signal.addEventListener("abort", onAbort, { once: true });
+		promise.then(
+			(value) => {
+				signal.removeEventListener("abort", onAbort);
+				resolve(value);
+			},
+			(error) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
+}
+
 async function writePrivateFile(path: string, content: string, owner?: SharedExecutionAccount): Promise<void> {
 	const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
 	let renamed = false;
@@ -530,7 +549,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	readonly #identityWaits = new Map<string, number>();
 	/** Set after the first reconcile has swept untracked slots of this service process. */
 	#swept = false;
-	/** WHY: Acquisitions whose retirement is in flight; concurrent callers wait for completion and re-check the journal. */
+	/** WHY: Acquisitions whose retirement is in flight; concurrent callers wait on the promise instead of returning early or retrying in parallel. */
 	readonly #retiring = new Map<string, Promise<void>>();
 	readonly #releasedArchive = new Set<string>();
 	readonly #claimingSlots = new Set<number>();
@@ -1173,13 +1192,10 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		signal?: AbortSignal,
 		options: { park?: boolean } = {},
 	): Promise<void> {
-		for (;;) {
-			const existing = this.#retiring.get(acquisitionId);
-			if (!existing) break;
-			await existing.catch(() => undefined);
-			if (signal?.aborted) throw signal.reason;
-			const remaining = await this.#exclusive(() => this.#readJournal(acquisitionId));
-			if (!remaining || terminal(remaining.physicalState)) return;
+		const existing = this.#retiring.get(acquisitionId);
+		if (existing) {
+			await awaitWithAbort(existing, signal);
+			return;
 		}
 		const work = this.#retireOnce(acquisitionId, reason, signal, options);
 		this.#retiring.set(acquisitionId, work);
