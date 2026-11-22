@@ -73,7 +73,8 @@ select pg_temp.assert_plan_uses_index(
 
 select pg_temp.assert_plan_uses_index(
 	$$select profile_id from public.qorpera_deleted_profile_object_gc_leases
-	  where lease_expires_at <= statement_timestamp()$$,
+	  where lease_expires_at <= statement_timestamp()
+	  order by lease_expires_at limit 1$$,
 	'qorpera_deleted_profile_object_gc_leases_expires'
 );
 
@@ -102,7 +103,8 @@ select pg_temp.assert_plan_uses_index(
 select pg_temp.assert_plan_uses_index(
 	$$select 1 from public.qorpera_digital_post_letters
 	  where profile_id = '00000000-0000-4000-8000-000000000001'
-	    and status = 'kept' and write_lease_until > clock_timestamp()$$,
+	    and status = 'kept' and write_lease_until > clock_timestamp()
+	  order by write_lease_until limit 1$$,
 	'qorpera_digital_post_letters_kept_lease'
 );
 
@@ -115,19 +117,22 @@ select pg_temp.assert_plan_uses_index(
 
 select pg_temp.assert_plan_uses_index(
 	$$select id from public.qorpera_runner_assignments
-	  where status = 'offered' and expires_at <= statement_timestamp()$$,
+	  where status = 'offered' and expires_at <= statement_timestamp()
+	  order by expires_at limit 1$$,
 	'qorpera_runner_assignments_offered_expires'
 );
 
 select pg_temp.assert_plan_uses_index(
 	$$select id from public.qorpera_runner_job_claims
-	  where status in ('claimed', 'assigned') and lease_expires_at <= statement_timestamp()$$,
+	  where status in ('claimed', 'assigned') and lease_expires_at <= statement_timestamp()
+	  order by lease_expires_at limit 1$$,
 	'qorpera_runner_job_claims_active_expires'
 );
 
 select pg_temp.assert_plan_uses_index(
 	$$select id from public.qorpera_profile_invitations
-	  where expires_at <= statement_timestamp()$$,
+	  where expires_at <= statement_timestamp()
+	  order by expires_at limit 1$$,
 	'qorpera_profile_invitations_expires'
 );
 
@@ -139,7 +144,8 @@ select pg_temp.assert_plan_uses_index(
 
 select pg_temp.assert_plan_uses_index(
 	$$select environment_id from public.qorpera_coding_executors
-	  where owner = 'node01'$$,
+	  where owner = 'node01'
+	  order by environment_id limit 1$$,
 	'qorpera_coding_executors_owner_env'
 );
 
@@ -207,7 +213,8 @@ select pg_temp.assert_plan_uses_index(
 
 select pg_temp.assert_plan_uses_index(
 	$$select 1 from public.qorpera_member_notifications
-	  where kind = 'run_no_progress' and acknowledged_at is null$$,
+	  where kind = 'run_no_progress' and acknowledged_at is null
+	  order by profile_id, dedupe_key limit 1$$,
 	'qorpera_member_notifications_open_run_no_progress'
 );
 
