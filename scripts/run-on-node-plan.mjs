@@ -283,6 +283,18 @@ export const STEPS = [
 		commands: ["node scripts/folder-program-step.mjs"],
 	},
 	{
+		name: "web-hosting-programs",
+		why: "crates/qorpera-web-router and crates/qorpera-app-host: unit and integration tests in the pinned Rust image",
+		seconds: 35,
+		paths: [
+			/^crates\/qorpera-web-router\//,
+			/^crates\/qorpera-app-host\//,
+			/^scripts\/(build-web-hosting-programs|web-hosting-programs-step)\.mjs$/,
+		],
+		cores: 1,
+		commands: ["node scripts/web-hosting-programs-step.mjs"],
+	},
+	{
 		name: "functions",
 		why: "Supabase functions (web-client.yml, step2-lxd.yml)",
 		paths: [/^supabase\/functions\//],
@@ -546,7 +558,7 @@ export function splitPlan(steps, parts) {
 
 /** Top-level areas the rules cover (their files may start only the baseline, like a runtime test). */
 function knownRoot(file) {
-	return /^(packages\/(runtime|cloud-client|object-gateway|runner-orchestrator)\/|crates\/qorpera-folder\/|scripts\/|deploy\/|supabase\/)/.test(
+	return /^(packages\/(runtime|cloud-client|object-gateway|runner-orchestrator)\/|crates\/qorpera-(folder|web-router|app-host)\/|scripts\/|deploy\/|supabase\/)/.test(
 		file,
 	);
 }

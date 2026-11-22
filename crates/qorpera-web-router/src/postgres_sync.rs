@@ -1,0 +1,170 @@
+use crate::routes::{EdgeSnapshot, SharedRoutes};
+use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio_postgres::NoTls;
+use tracing::{error, info, warn};
+
+pub const ROUTE_NOTIFY_CHANNEL: &str = "qorpera_web_route_changes";
+const DB_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const DB_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+
+pub fn spawn_postgres_sync(
+    database_url: String,
+    routes: Arc<SharedRoutes>,
+    ready: Arc<AtomicBool>,
+    reconcile_interval: Duration,
+    domain_verify_tx: Option<mpsc::Sender<()>>,
+) {
+    tokio::spawn(async move {
+        let mut backoff = Duration::from_secs(1);
+        loop {
+            match run_sync_session(
+                &database_url,
+                Arc::clone(&routes),
+                Arc::clone(&ready),
+                reconcile_interval,
+                domain_verify_tx.clone(),
+            )
+            .await
+            {
+                Ok(()) => {
+                    backoff = Duration::from_secs(1);
+                }
+                Err(err) => {
+                    error!(error = %err, "postgres route sync disconnected; retrying");
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(Duration::from_secs(30));
+                }
+            }
+        }
+    });
+}
+
+async fn run_sync_session(
+    database_url: &str,
+    routes: Arc<SharedRoutes>,
+    ready: Arc<AtomicBool>,
+    reconcile_interval: Duration,
+    domain_verify_tx: Option<mpsc::Sender<()>>,
+) -> Result<(), String> {
+    let (client, mut connection) =
+        tokio::time::timeout(DB_CONNECT_TIMEOUT, tokio_postgres::connect(database_url, NoTls))
+            .await
+            .map_err(|_| "connect timed out".to_string())?
+            .map_err(|e| format!("connect failed: {e}"))?;
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(32);
+    tokio::spawn(async move {
+        let mut stream = futures_poll_notifications(&mut connection);
+        while let Some(event) = stream.next().await {
+            match event {
+                Ok(tokio_postgres::AsyncMessage::Notification(n)) => {
+                    let _ = tx.try_send(n.payload().to_string());
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    warn!(error = %err, "postgres connection error");
+                    break;
+                }
+            }
+        }
+    });
+
+    tokio::time::timeout(
+        DB_QUERY_TIMEOUT,
+        client.batch_execute(&format!("LISTEN {ROUTE_NOTIFY_CHANNEL};")),
+    )
+    .await
+    .map_err(|_| "listen timed out".to_string())?
+    .map_err(|e| format!("listen failed: {e}"))?;
+
+    let mut last_snapshot_hash: Option<[u8; 32]> = None;
+    refresh_snapshot(&client, &routes, &mut last_snapshot_hash).await?;
+    ready.store(true, Ordering::Release);
+    info!("loaded initial web routing snapshot from postgres");
+    if let Some(ref dtx) = domain_verify_tx {
+        let _ = dtx.try_send(());
+    }
+
+    let mut ticker = tokio::time::interval(reconcile_interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ticker.tick().await;
+
+    loop {
+        tokio::select! {
+            notify = rx.recv() => {
+                let Some(first_payload) = notify else {
+                    return Err("notification stream closed".to_string());
+                };
+                let mut trigger_dns = should_trigger_dns(&first_payload);
+                while let Ok(p) = rx.try_recv() {
+                    if should_trigger_dns(&p) {
+                        trigger_dns = true;
+                    }
+                }
+                refresh_snapshot(&client, &routes, &mut last_snapshot_hash).await?;
+                if trigger_dns {
+                    if let Some(ref dtx) = domain_verify_tx {
+                        let _ = dtx.try_send(());
+                    }
+                }
+            }
+            _ = ticker.tick() => {
+                refresh_snapshot(&client, &routes, &mut last_snapshot_hash).await?;
+            }
+        }
+    }
+}
+
+fn should_trigger_dns(payload: &str) -> bool {
+    payload == "domain_recheck"
+        || payload == "domain_added"
+        || payload == "qorpera_site_settings"
+}
+
+async fn refresh_snapshot(
+    client: &tokio_postgres::Client,
+    routes: &Arc<SharedRoutes>,
+    last_hash: &mut Option<[u8; 32]>,
+) -> Result<(), String> {
+    let row = tokio::time::timeout(
+        DB_QUERY_TIMEOUT,
+        client.query_one("SELECT public.qorpera_web_edge_snapshot()::text", &[]),
+    )
+    .await
+    .map_err(|_| "snapshot query timed out".to_string())?
+    .map_err(|e| format!("snapshot query failed: {e}"))?;
+    let raw_json: String = row.get(0);
+    let digest: [u8; 32] = Sha256::digest(raw_json.as_bytes()).into();
+    if last_hash.as_ref() == Some(&digest) {
+        return Ok(());
+    }
+    let snapshot: EdgeSnapshot =
+        serde_json::from_str(&raw_json).map_err(|e| format!("snapshot parse failed: {e}"))?;
+    routes.update(|table| table.apply_snapshot(snapshot));
+    *last_hash = Some(digest);
+    Ok(())
+}
+
+struct ConnectionMessages<'a, S, T> {
+    conn: &'a mut tokio_postgres::Connection<S, T>,
+}
+
+impl<'a, S, T> ConnectionMessages<'a, S, T>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    async fn next(&mut self) -> Option<Result<tokio_postgres::AsyncMessage, tokio_postgres::Error>> {
+        std::future::poll_fn(|cx| self.conn.poll_message(cx)).await
+    }
+}
+
+fn futures_poll_notifications<S, T>(
+    conn: &mut tokio_postgres::Connection<S, T>,
+) -> ConnectionMessages<'_, S, T> {
+    ConnectionMessages { conn }
+}

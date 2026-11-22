@@ -1,4 +1,13 @@
 import { CloudRpcError } from "../../cloud/client.ts";
+import {
+	type AddedSiteDomain,
+	type CompanySiteHostingState,
+	type CustomDomainStatus,
+	isApexHostname,
+	type SiteCustomDomain,
+	validateCustomDomainInput,
+	type WebSiteHosting,
+} from "../../cloud/site-hosting.ts";
 import type {
 	CompanySite,
 	CompanySiteNamed,
@@ -63,6 +72,7 @@ export interface SitesReleases {
 
 export interface SitesOptions {
 	access?: SitesAccess;
+	hosting?: WebSiteHosting;
 	/** Told the sites after each read and after one is taken offline: the apps drawer shows Sites while there are any. */
 	listed?: (sites: readonly CompanySite[]) => void;
 	releases?: SitesReleases;
@@ -223,6 +233,7 @@ export class SitesView {
 	readonly #client: SitesClient;
 	readonly #lifetime = new AbortController();
 	readonly #access: SitesAccess;
+	readonly #hosting: WebSiteHosting | undefined;
 	readonly #listed: (sites: readonly CompanySite[]) => void;
 	readonly #releases: SitesReleases | undefined;
 	readonly #mascot: (() => HTMLElement | null) | undefined;
@@ -230,6 +241,7 @@ export class SitesView {
 	/** What the last draw drew from outside the page: the member's authority and the code sites' versions. */
 	#drawn: { manage: boolean; versions: string } | undefined;
 	#sites: CompanySite[] | undefined;
+	#hostingState: CompanySiteHostingState | undefined;
 	/** The sites Qorpera took down, by id, as the last access read that answered said (none before one did). */
 	#takenDown: ReadonlyMap<string, CompanySiteTakedown> = new Map();
 	/** Their names, as that read gave them: a row for one the list leaves out. */
@@ -237,7 +249,7 @@ export class SitesView {
 	#loading = true;
 	#error: string | undefined;
 	/** The site changing, and how, while it does: the password pills and the menus are off meanwhile. */
-	#working: { site: string; action: "show" | "copy" | "set" | "unpublish" } | undefined;
+	#working: { site: string; action: "show" | "copy" | "set" | "unpublish" | "hosting" } | undefined;
 	/** Passwords shown, by site, until hidden or the member's authority goes. Only `#reveal` and `#forget` change it. */
 	readonly #passwords = new Map<string, CompanySitePassword>();
 	/** Each site's password generation: one more each time what the page knows of its password moves on (`#moment`). */
@@ -260,6 +272,7 @@ export class SitesView {
 	constructor(client: SitesClient, signal: AbortSignal, options: SitesOptions = {}) {
 		this.#client = client;
 		this.#access = options.access ?? FULL_ACCESS;
+		this.#hosting = options.hosting;
 		this.#listed = options.listed ?? (() => {});
 		this.#releases = options.releases;
 		this.#mascot = options.mascot;
@@ -367,9 +380,11 @@ export class SitesView {
 			// Which sites Qorpera took down, read beside the list and drawn with it (no row shows a dead link first). A read
 			// that fails (a kernel without it, or no answer) keeps what the last one said.
 			const access = this.#client.access?.(this.#lifetime.signal).catch(() => undefined);
+			const hosting = this.#hosting?.read(this.#lifetime.signal).catch(() => undefined);
 			const sites = await this.#client.list(this.#lifetime.signal);
-			const read = await access;
+			const [read, hostingState] = await Promise.all([access, hosting]);
 			if (this.#lifetime.signal.aborted) return;
+			if (hostingState) this.#hostingState = hostingState;
 			if (read) {
 				this.#takenDown = read.takenDown;
 				this.#named = read.named;
@@ -547,6 +562,27 @@ export class SitesView {
 			danger: true,
 			select: () => void this.#unpublish(site),
 		};
+		const hostingState = this.#hostingState;
+		const hostingEntry = hostingState?.sites.get(site.id);
+		const menuItems: MenuEntry[] = [
+			{ label: t("Change password"), icon: "key", select: () => this.#askPassword(site) },
+		];
+		if (this.#hosting && hostingState?.publicEnabled) {
+			const isPublic = hostingEntry?.isPublic === true;
+			menuItems.push({
+				label: isPublic ? t("Make private") : t("Make public"),
+				icon: "globe",
+				select: () => void this.#togglePublic(site, !isPublic),
+			});
+		}
+		if (this.#hosting && hostingState?.domainsEnabled) {
+			menuItems.push({
+				label: t("Custom domain"),
+				icon: "link",
+				select: () => this.#askDomain(site),
+			});
+		}
+		menuItems.push({ kind: "separator" }, offline);
 		const menu = openContextMenu({
 			label: nameOf(site),
 			x: box.left,
@@ -557,11 +593,7 @@ export class SitesView {
 				this.#menuShut = press ? { site: site.id, press } : undefined;
 				findOpener()?.setAttribute("aria-expanded", "false");
 			},
-			items: [
-				{ label: t("Change password"), icon: "key", select: () => this.#askPassword(site) },
-				{ kind: "separator" },
-				offline,
-			],
+			items: menuItems,
 		});
 		// The menu hangs from the button's right edge, as the button stands at the row's end.
 		const left = Math.max(8 * uiScale(), box.right - menu.el.offsetWidth);
@@ -570,6 +602,326 @@ export class SitesView {
 			menu.el.style.transformOrigin = "top right";
 		}
 		opener.setAttribute("aria-expanded", "true");
+	}
+
+	#domainStatusLabel(status: CustomDomainStatus): string {
+		if (status === "pending_dns") return t("Waiting for DNS");
+		if (status === "dns_verified") return t("DNS verified");
+		if (status === "tls_active") return t("HTTPS active");
+		if (status === "moved") return t("DNS moved");
+		return t("DNS failed");
+	}
+
+	#domainsList(site: CompanySite, domains: readonly SiteCustomDomain[], manage: boolean, busy: boolean): HTMLElement {
+		return h(
+			"div",
+			{ class: "site-domains", dataset: { siteDomains: site.id } },
+			...domains.map((dom) => {
+				const isVerified = dom.status === "dns_verified" || dom.status === "tls_active";
+				const canPromote = manage && !dom.isPrimary && isVerified;
+				const canRecheck = manage && !isVerified;
+				return h(
+					"span",
+					{ class: "site-domain-chip", dataset: { domain: dom.hostname } },
+					isVerified
+						? h(
+								"a",
+								{
+									class: "site-domain-link",
+									href: `https://${dom.hostname}/`,
+									target: "_blank",
+									rel: "noopener noreferrer",
+								},
+								dom.hostname,
+							)
+						: h("span", null, dom.hostname),
+					dom.isPrimary ? h("span", { class: "site-domain-status" }, t("Primary")) : null,
+					h("span", { class: "site-domain-status" }, this.#domainStatusLabel(dom.status)),
+					canRecheck
+						? h(
+								"button",
+								{
+									type: "button",
+									class: "site-domain-action",
+									disabled: busy,
+									onclick: () => void this.#recheckDomain(site, dom),
+								},
+								t("Check DNS"),
+							)
+						: null,
+					canPromote
+						? h(
+								"button",
+								{
+									type: "button",
+									class: "site-domain-action",
+									disabled: busy,
+									onclick: () => void this.#setPrimaryDomain(site, dom),
+								},
+								t("Set as primary"),
+							)
+						: null,
+					manage
+						? h(
+								"button",
+								{
+									type: "button",
+									class: "site-domain-action",
+									disabled: busy,
+									onclick: () => void this.#removeDomain(site, dom),
+								},
+								t("Remove domain"),
+							)
+						: null,
+				);
+			}),
+		);
+	}
+
+	async #togglePublic(site: CompanySite, nextPublic: boolean): Promise<void> {
+		if (!this.#hosting || this.#working || this.#lifetime.signal.aborted || !this.#access.canManage()) return;
+		const working = { site: site.id, action: "hosting" } as const;
+		this.#working = working;
+		this.#draw();
+		let ok = false;
+		let failure: unknown;
+		try {
+			await this.#hosting.setPublic(site.id, nextPublic, this.#lifetime.signal);
+			ok = true;
+		} catch (error) {
+			failure = error;
+		}
+		if (this.#working === working) this.#working = undefined;
+		if (this.#lifetime.signal.aborted) return;
+		this.#say(
+			ok
+				? nextPublic
+					? t("The site is now public.")
+					: t("The site is now private.")
+				: changeError(failure, phrase("Site visibility could not be changed. Try again.")),
+		);
+		await this.#refresh(`site-more:${site.id}`);
+	}
+
+	async #recheckDomain(site: CompanySite, dom: SiteCustomDomain): Promise<void> {
+		if (!this.#hosting || this.#working || this.#lifetime.signal.aborted || !this.#access.canManage()) return;
+		const working = { site: site.id, action: "hosting" } as const;
+		this.#working = working;
+		this.#draw();
+		let ok = false;
+		let failure: unknown;
+		try {
+			await this.#hosting.recheckDomain(dom.id, this.#lifetime.signal);
+			ok = true;
+		} catch (error) {
+			failure = error;
+		}
+		if (this.#working === working) this.#working = undefined;
+		if (this.#lifetime.signal.aborted) return;
+		this.#say(
+			ok ? t("DNS check queued.") : changeError(failure, phrase("DNS check could not be started. Try again.")),
+		);
+		await this.#refresh();
+	}
+
+	async #setPrimaryDomain(site: CompanySite, dom: SiteCustomDomain): Promise<void> {
+		if (!this.#hosting || this.#working || this.#lifetime.signal.aborted || !this.#access.canManage()) return;
+		const working = { site: site.id, action: "hosting" } as const;
+		this.#working = working;
+		this.#draw();
+		let ok = false;
+		let failure: unknown;
+		try {
+			await this.#hosting.setPrimaryDomain(dom.id, this.#lifetime.signal);
+			ok = true;
+		} catch (error) {
+			failure = error;
+		}
+		if (this.#working === working) this.#working = undefined;
+		if (this.#lifetime.signal.aborted) return;
+		this.#say(
+			ok
+				? t("Primary domain updated.")
+				: changeError(failure, phrase("Primary domain could not be updated. Try again.")),
+		);
+		await this.#refresh();
+	}
+
+	async #removeDomain(site: CompanySite, dom: SiteCustomDomain): Promise<void> {
+		if (!this.#hosting || this.#working || this.#lifetime.signal.aborted || !this.#access.canManage()) return;
+		const working = { site: site.id, action: "hosting" } as const;
+		this.#working = working;
+		this.#draw();
+		let ok = false;
+		let failure: unknown;
+		try {
+			await this.#hosting.removeDomain(dom.id, this.#lifetime.signal);
+			ok = true;
+		} catch (error) {
+			failure = error;
+		}
+		if (this.#working === working) this.#working = undefined;
+		if (this.#lifetime.signal.aborted) return;
+		this.#say(
+			ok
+				? t("The domain was removed.")
+				: changeError(failure, phrase("The domain could not be removed. Try again.")),
+		);
+		await this.#refresh();
+	}
+
+	#askDomain(site: CompanySite): void {
+		const hosting = this.#hosting;
+		if (!hosting || this.#working || this.#asking || this.#lifetime.signal.aborted || !this.#access.canManage())
+			return;
+		const signal = this.#lifetime.signal;
+		const name = nameOf(site);
+		const title = `site-domain-title-${site.id}`;
+		let busy = false;
+		let closed = false;
+		const input = h("input", {
+			type: "text",
+			class: "sites-question-input",
+			maxlength: "253",
+			autocomplete: "off",
+			autocapitalize: "none",
+			spellcheck: "false",
+			placeholder: t("example.dk"),
+			"aria-label": t("Add a custom domain for {name}", { name }),
+		});
+		const problem = h("p", { class: "sites-question-problem", role: "alert" });
+		const guide = h("div", { class: "site-dns-guide", hidden: true });
+		const submitBtn = button(t("Add domain"), () => {}, { primary: true });
+		submitBtn.type = "submit";
+		const cancel = button(t("Cancel"), () => close());
+		const close = () => {
+			if (closed) return;
+			closed = true;
+			if (this.#asking?.site === site.id) this.#asking = undefined;
+			leave(backdrop, "is-leaving", () => backdrop.remove());
+			window.removeEventListener("hashchange", onHash);
+			const back = this.#control(`site-more:${site.id}`);
+			if (back && !back.matches(":disabled")) back.focus();
+		};
+		const onHash = () => close();
+		const renderGuide = (added: AddedSiteDomain) => {
+			const lines: HTMLElement[] = [h("div", null, t("Domain added. Point your DNS records below:"))];
+			if (added.dns.recordType === "A" && added.dns.ipv4) {
+				lines.push(
+					h("div", null, t("Record {type} · {host} · {value}", { type: "A", host: "@", value: added.dns.ipv4 })),
+				);
+				if (added.dns.ipv6)
+					lines.push(
+						h(
+							"div",
+							null,
+							t("Record {type} · {host} · {value}", { type: "AAAA", host: "@", value: added.dns.ipv6 }),
+						),
+					);
+			} else if (added.dns.cnameTarget) {
+				lines.push(
+					h(
+						"div",
+						null,
+						t("Record {type} · {host} · {value}", {
+							type: "CNAME",
+							host: added.hostname,
+							value: added.dns.cnameTarget,
+						}),
+					),
+				);
+			}
+			lines.push(
+				h(
+					"div",
+					null,
+					t("Record {type} · {host} · {value}", {
+						type: "TXT",
+						host: added.dns.txtHost,
+						value: added.dns.txtValue,
+					}),
+				),
+			);
+			replace(guide, ...lines);
+			guide.hidden = false;
+			input.hidden = true;
+			submitBtn.hidden = true;
+			cancel.textContent = t("Done");
+			cancel.disabled = false;
+		};
+		const submit = async () => {
+			if (busy || closed) return;
+			const invalid = validateCustomDomainInput(input.value);
+			if (invalid) {
+				problem.textContent = invalid;
+				input.focus();
+				return;
+			}
+			busy = true;
+			problem.textContent = "";
+			input.disabled = true;
+			submitBtn.disabled = true;
+			cancel.disabled = true;
+			const cleaned = input.value.trim().toLowerCase().replace(/\.$/, "");
+			const working = { site: site.id, action: "hosting" } as const;
+			this.#working = working;
+			this.#draw();
+			let added: AddedSiteDomain | undefined;
+			let failure: unknown;
+			try {
+				added = await hosting.addDomain(site.id, cleaned, isApexHostname(cleaned), signal);
+			} catch (error) {
+				failure = error;
+			}
+			if (this.#working === working) this.#working = undefined;
+			if (signal.aborted) return;
+			busy = false;
+			if (added) {
+				renderGuide(added);
+				void this.#refresh();
+				return;
+			}
+			input.disabled = false;
+			submitBtn.disabled = false;
+			cancel.disabled = false;
+			problem.textContent = changeError(failure, phrase("The domain could not be added. Try again."));
+			input.focus();
+		};
+		const form = h(
+			"form",
+			{
+				class: "modal sites-question",
+				role: "dialog",
+				"aria-modal": "true",
+				"aria-labelledby": title,
+				onsubmit: (event: SubmitEvent) => {
+					event.preventDefault();
+					void submit();
+				},
+			},
+			h("h2", { id: title }, t("Add a custom domain for {name}", { name })),
+			h("p", null, t("Enter your domain (for example example.dk or www.example.dk).")),
+			input,
+			guide,
+			problem,
+			h("div", { class: "modal-actions" }, cancel, submitBtn),
+		);
+		const backdrop = h(
+			"div",
+			{ class: "modal-backdrop", onclick: (event: MouseEvent) => event.target === backdrop && !busy && close() },
+			form,
+		);
+		backdrop.addEventListener("keydown", (event) => {
+			if (event.key === "Escape" && !event.isComposing) {
+				event.preventDefault();
+				event.stopPropagation();
+				if (!busy) close();
+			}
+		});
+		window.addEventListener("hashchange", onHash);
+		this.#asking = { site: site.id, close };
+		document.body.append(backdrop);
+		input.focus();
 	}
 
 	/** Asks for a site's new password: one the member types, or a new random one. The question stays while the change
@@ -951,6 +1303,22 @@ export class SitesView {
 		// Only a row new on the page moves in, one after another.
 		const first = !this.#seen.has(site.id);
 		this.#seen.add(site.id);
+		const hostingEntry = this.#hostingState?.sites.get(site.id);
+		const publicBadge = hostingEntry?.isPublic
+			? h("span", { class: "site-public-badge", dataset: { sitePublic: site.id } }, t("Public"))
+			: null;
+		const kindBadge =
+			hostingEntry && (hostingEntry.deploymentKind === "server" || hostingEntry.deploymentKind === "hybrid")
+				? h(
+						"span",
+						{ class: "site-kind-badge", dataset: { siteKind: hostingEntry.deploymentKind } },
+						hostingEntry.deploymentKind === "server" ? t("Webapp") : t("Hybrid"),
+					)
+				: null;
+		const domainsBlock =
+			!down && hostingEntry && hostingEntry.domains.length > 0
+				? this.#domainsList(site, hostingEntry.domains, manage, busy)
+				: null;
 		const row = h(
 			"article",
 			{
@@ -971,10 +1339,13 @@ export class SitesView {
 				{ class: "site-head" },
 				h("strong", { class: "site-name" }, name),
 				stateOf(site, Boolean(down)),
+				publicBadge,
+				kindBadge,
 				from,
 			),
 			more,
 			down ? downLine(down) : this.#share(site, manage, busy),
+			domainsBlock,
 		);
 		if (first) row.style.setProperty("--i", String(index));
 		return row;

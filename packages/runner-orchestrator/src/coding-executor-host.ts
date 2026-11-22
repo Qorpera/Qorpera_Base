@@ -32,6 +32,7 @@ import {
 import { codeAreaPath } from "./code-host-jobs.ts";
 import {
 	CODE_CHECKS_NEWER_RUN,
+	CODE_SITE_APP_COLLECT,
 	CODE_SITE_COLLECT,
 	CODE_SITE_DROP,
 	type CodeSiteCollected,
@@ -2471,13 +2472,13 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	): Promise<CodeSiteCollected | { problem: CodeSiteProblem }> {
 		const { recipe, budget } = run;
 		const missed = (code: string): CodeSiteCollected => ({ state: "missed", code });
-		// Links from the root (step 5): always one of the two values, so a secret of the session's of that name never
-		// decides it (the command's own environment wins over the secrets, coding-folder-command-transport.ts).
+		const isServerOnly = recipe.kind === "server";
 		const own: Record<string, string> = {
 			...run.base,
 			QORPERA_CHECKS_REPOSITORY: run.repository,
 			QORPERA_SITE_FOLDER: recipe.folder,
 			QORPERA_SITE_ROOT_LINKS: run.rootLinks ? "allowed" : "refused",
+			...(recipe.dockerfile ? { QORPERA_SITE_DOCKERFILE: recipe.dockerfile } : {}),
 		};
 		let names: string[];
 		try {
@@ -2515,7 +2516,6 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			{ ...own, QORPERA_SITE_SECRET_NAMES: names.join(" ") },
 			signal,
 		);
-		// What the collect came to, and the boundary asked after a made one (none otherwise).
 		let site: CodeSiteCollected | { problem: CodeSiteProblem };
 		let boundary: Pick<CodingFolderControl, "boundary"> | undefined;
 		if ("code" in collected) site = missed(collected.code);
@@ -2523,7 +2523,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			site = missed(`CODE_SITE_COLLECT_${collected.receipt.state.toUpperCase()}`);
 		else {
 			const { receipt } = collected;
-			const ending = codeSiteCollectAnswer(receipt.output, receipt.exitCode);
+			const ending = codeSiteCollectAnswer(receipt.output, receipt.exitCode, { allowEmpty: isServerOnly });
 			if (ending === null)
 				site = missed(
 					receipt.exitCode === 0 || receipt.exitCode === 3
@@ -2533,6 +2533,25 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			else if ("problem" in ending)
 				site = { problem: await this.#siteProblemMasked(ready, run, ending.problem, signal) };
 			else {
+				const extra = {
+					...(recipe.kind !== undefined ? { kind: recipe.kind } : {}),
+					...(recipe.dockerfile !== undefined ? { dockerfile: recipe.dockerfile } : {}),
+					...(recipe.port !== undefined ? { port: recipe.port } : {}),
+					...(recipe.healthPath !== undefined ? { healthPath: recipe.healthPath } : {}),
+					...(recipe.idleTimeoutSec !== undefined ? { idleTimeoutSec: recipe.idleTimeoutSec } : {}),
+					...(recipe.memoryMb !== undefined ? { memoryMb: recipe.memoryMb } : {}),
+					...(recipe.vcpuLimit !== undefined ? { vcpuLimit: recipe.vcpuLimit } : {}),
+					...(recipe.spaFallback !== undefined ? { spaFallback: recipe.spaFallback } : {}),
+				};
+				if (isServerOnly)
+					return {
+						state: "made",
+						...ending.made,
+						folder: recipe.folder,
+						name: recipe.name,
+						title: recipe.title,
+						...extra,
+					};
 				boundary = this.#folderBoundary(folder, ready.machine);
 				const judged = await this.#siteBoundary(boundary, ready, folder, budget, run.step, false, signal);
 				if (judged === "saved")
@@ -2542,6 +2561,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 						folder: recipe.folder,
 						name: recipe.name,
 						title: recipe.title,
+						...extra,
 					};
 				site =
 					judged === "carries"
@@ -2647,7 +2667,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 								...(run.rootLinks ? { rootLinks: true } : {}),
 							}),
 						),
-						command: CODE_SITE_COLLECT,
+						command: run.recipe.kind === "server" ? CODE_SITE_APP_COLLECT : CODE_SITE_COLLECT,
 						timeoutMs: CODE_SITE_COLLECT_MS,
 					}
 				: {

@@ -1,6 +1,7 @@
 import { withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import type { Cloud } from "./client.ts";
 import { UUID_PATTERN } from "./parse.ts";
+import { NATIVE_SITE_HOST } from "./site-hosting.ts";
 
 /**
  * Member surface for the company's websites: the password-protected sites the company's agents publish at
@@ -108,7 +109,7 @@ export function siteOfLink(sites: readonly CompanySite[], href: string): Company
 		return undefined;
 	}
 	if (url.protocol !== "https:" || url.username || url.password || url.port) return undefined;
-	const own = SITE_HOST.exec(url.hostname);
+	const own = SITE_HOST.exec(url.hostname) ?? NATIVE_SITE_HOST.exec(url.hostname);
 	for (const site of sites) {
 		let listed: URL;
 		try {
@@ -187,7 +188,7 @@ function siteUrl(value: unknown, slug: string, kind: CompanySiteKind): string | 
  * host, with no port and not even an empty query or fragment. A name with `--` (which the kernel refuses from step 5.1)
  * never equals group 1, so it has no host here. */
 function ownHost(url: URL, value: string, slug: string): boolean {
-	const host = SITE_HOST.exec(url.hostname);
+	const host = SITE_HOST.exec(url.hostname) ?? NATIVE_SITE_HOST.exec(url.hostname);
 	return host?.[1] === slug && host[2] === undefined && value === `https://${url.hostname}/`;
 }
 
@@ -298,7 +299,10 @@ export function parseSiteMemberPass(value: unknown, slug: string): SiteMemberPas
 		if (input.state === "off" || input.state === "gone" || input.state === "none") return { state: input.state };
 		if (input.state === "limited" && count(input.retryAfter) && input.retryAfter <= 86_400)
 			return { state: "limited", retryAfter: input.retryAfter };
-		const host = input.state === "open" && typeof input.host === "string" ? SITE_HOST.exec(input.host) : null;
+		const host =
+			input.state === "open" && typeof input.host === "string"
+				? (SITE_HOST.exec(input.host) ?? NATIVE_SITE_HOST.exec(input.host))
+				: null;
 		if (
 			host &&
 			host[1] === slug &&

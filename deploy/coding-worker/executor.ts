@@ -24,7 +24,7 @@ import { CodeImportStop, type CodeImportTransports } from "../../packages/runner
 import { fetchGitHubImport } from "../../packages/runner-orchestrator/src/code-import-fetch.ts";
 import { CodeImport } from "../../packages/runner-orchestrator/src/code-import-run.ts";
 import { codeHostErrorCode, codingErrorDetail } from "../../packages/runner-orchestrator/src/coding-error-detail.ts";
-import { readCodeSiteTree } from "../../packages/runner-orchestrator/src/code-host-sites.ts";
+import { exportCodeSiteSource, readCodeSiteTree } from "../../packages/runner-orchestrator/src/code-host-sites.ts";
 import { CodeHostJobs, type CodeHostViewEvent } from "../../packages/runner-orchestrator/src/code-host-views.ts";
 import { CodeSiteUploads } from "../../packages/runner-orchestrator/src/code-site-uploads.ts";
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
@@ -138,11 +138,21 @@ interface Config {
 	 * `qorpera-desktop-stream.socket` (deploy/coding-worker/), which systemd answers with one instance of
 	 * `qorpera-desktop-stream@.service` per connection. Absent: members' live pictures of this node's desktops are refused. */
 	desktopStreams: { socket: string } | null;
+	webHosting: {
+		routerInternalUrl: string;
+		controlTokenCredential: string;
+		appHostInternalUrl?: string;
+		appHostControlTokenCredential?: string;
+		builderScriptPath?: string;
+		registryPrefix?: string;
+		companyDataUrl?: string;
+		objectStorageUrl?: string;
+	} | null;
 }
 interface PinnedFile { path: string; sha256: string }
 const RESERVED_CREDENTIALS = new Set(["qorpera-coding-executor-config", "qorpera-coding-registry", "qorpera-coding-command", "qorpera-coding-peer-command"]);
 const CONFIG_KEYS = "commandPeers,commandPort,guest,owner,peerCommandPort,repositories,schema,storagePolicy,supabaseUrl,vmPolicy";
-const OPTIONAL_CONFIG_KEYS = new Set(["broker", "codeHost", "desktopStreams", "folder", "machines", "memberScreens", "memberStreams"]);
+const OPTIONAL_CONFIG_KEYS = new Set(["broker", "codeHost", "desktopStreams", "folder", "machines", "memberScreens", "memberStreams", "webHosting"]);
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return value as Record<string, unknown>;
@@ -206,6 +216,67 @@ function desktopStreamsConfig(value: unknown): Config["desktopStreams"] {
 		!/^\/run\/[A-Za-z0-9._-]{1,64}(\/[A-Za-z0-9._-]{1,64})?\.sock$/.test(input.socket))
 		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return { socket: input.socket };
+}
+function internalHttpOrigin(value: unknown): string {
+	if (typeof value !== "string") throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	const url = new URL(value);
+	if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password || url.search || url.hash)
+		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	return url.origin;
+}
+function webHostingConfig(value: unknown): Config["webHosting"] {
+	if (value === undefined) return null;
+	const input = object(value);
+	const allowed = new Set([
+		"routerInternalUrl",
+		"controlTokenCredential",
+		"appHostInternalUrl",
+		"appHostControlTokenCredential",
+		"builderScriptPath",
+		"registryPrefix",
+		"companyDataUrl",
+		"objectStorageUrl",
+	]);
+	if (Object.keys(input).some((k) => !allowed.has(k))) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	if (
+		typeof input.controlTokenCredential !== "string" ||
+		!/^qorpera-web-[a-z0-9-]{1,64}$/.test(input.controlTokenCredential)
+	)
+		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	const routerInternalUrl = internalHttpOrigin(input.routerInternalUrl);
+	const appHostInternalUrl =
+		input.appHostInternalUrl === undefined ? undefined : internalHttpOrigin(input.appHostInternalUrl);
+	const appHostControlTokenCredential =
+		input.appHostControlTokenCredential === undefined
+			? undefined
+			: typeof input.appHostControlTokenCredential === "string" &&
+					/^qorpera-web-[a-z0-9-]{1,64}$/.test(input.appHostControlTokenCredential)
+				? input.appHostControlTokenCredential
+				: (() => {
+						throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+					})();
+	const builderScriptPath =
+		input.builderScriptPath === undefined ? undefined : absolutePath(input.builderScriptPath, 4096);
+	const registryPrefix =
+		input.registryPrefix === undefined
+			? undefined
+			: typeof input.registryPrefix === "string" && /^[a-z0-9._:/-]{3,200}$/.test(input.registryPrefix)
+				? input.registryPrefix
+				: (() => {
+						throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+					})();
+	const companyDataUrl = input.companyDataUrl === undefined ? undefined : internalHttpOrigin(input.companyDataUrl);
+	const objectStorageUrl = input.objectStorageUrl === undefined ? undefined : internalHttpOrigin(input.objectStorageUrl);
+	return {
+		routerInternalUrl,
+		controlTokenCredential: input.controlTokenCredential,
+		...(appHostInternalUrl !== undefined ? { appHostInternalUrl } : {}),
+		...(appHostControlTokenCredential !== undefined ? { appHostControlTokenCredential } : {}),
+		...(builderScriptPath !== undefined ? { builderScriptPath } : {}),
+		...(registryPrefix !== undefined ? { registryPrefix } : {}),
+		...(companyDataUrl !== undefined ? { companyDataUrl } : {}),
+		...(objectStorageUrl !== undefined ? { objectStorageUrl } : {}),
+	};
 }
 /** The file's bytes, refused unless they are the pinned ones. */
 async function readPinned(file: PinnedFile): Promise<Buffer> {
@@ -312,6 +383,7 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 			memberScreensConfig(config.memberScreens, [Number(config.commandPort), Number(config.peerCommandPort)]),
 			[Number(config.commandPort), Number(config.peerCommandPort)]),
 		desktopStreams: desktopStreamsConfig(config.desktopStreams),
+		webHosting: webHostingConfig(config.webHosting),
 	};
 }
 
@@ -444,9 +516,24 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	}) : undefined;
 	// A repository's site (step 4): the tree its landing's checks left in the repository's storage, read in a job that
 	// yields to a turn's and uploaded as a version a member can put live from What's new.
+	const nativeEdge = config.webHosting
+		? {
+				routerInternalUrl: config.webHosting.routerInternalUrl,
+				controlToken: await credential(config.webHosting.controlTokenCredential),
+				...(config.webHosting.appHostInternalUrl ? { appHostInternalUrl: config.webHosting.appHostInternalUrl } : {}),
+				...(config.webHosting.appHostControlTokenCredential
+					? { appHostControlToken: await credential(config.webHosting.appHostControlTokenCredential) }
+					: {}),
+				...(config.webHosting.builderScriptPath ? { builderScriptPath: config.webHosting.builderScriptPath } : {}),
+				...(config.webHosting.registryPrefix ? { registryPrefix: config.webHosting.registryPrefix } : {}),
+				...(config.webHosting.companyDataUrl ? { companyDataUrl: config.webHosting.companyDataUrl } : {}),
+				...(config.webHosting.objectStorageUrl ? { objectStorageUrl: config.webHosting.objectStorageUrl } : {}),
+			}
+		: undefined;
 	const codeSites = codeHostJobs ? new CodeSiteUploads({
 		control, hosts: codeHostJobs, read: readCodeSiteTree, owner: config.owner,
 		machineIdSha256: createHash("sha256").update(machine).digest("hex"), report: logCodeRecord,
+		...(nativeEdge ? { nativeEdge, exportSource: exportCodeSiteSource } : {}),
 	}) : undefined;
 	const codeRequests = codeHostJobs && codeRecords ? codeHostRequestsOf({
 		control, hosts: codeHostJobs, records: codeRecords, bundles: codeBundles,
