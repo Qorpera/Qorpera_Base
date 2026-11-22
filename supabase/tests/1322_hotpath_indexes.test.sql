@@ -72,6 +72,12 @@ select pg_temp.assert_plan_uses_index(
 );
 
 select pg_temp.assert_plan_uses_index(
+	$$select profile_id from public.qorpera_deleted_profile_object_gc_leases
+	  where lease_expires_at <= statement_timestamp()$$,
+	'qorpera_deleted_profile_object_gc_leases_expires'
+);
+
+select pg_temp.assert_plan_uses_index(
 	$$select 1 from public.qorpera_session_events
 	  where session_id = '00000000-0000-4000-8000-000000000001'
 	    and public.qorpera_memory_entry_id(body, event_id) = 'entry-1'$$,
@@ -108,10 +114,73 @@ select pg_temp.assert_plan_uses_index(
 );
 
 select pg_temp.assert_plan_uses_index(
+	$$select id from public.qorpera_runner_assignments
+	  where status = 'offered' and expires_at <= statement_timestamp()$$,
+	'qorpera_runner_assignments_offered_expires'
+);
+
+select pg_temp.assert_plan_uses_index(
+	$$select id from public.qorpera_runner_job_claims
+	  where status in ('claimed', 'assigned') and lease_expires_at <= statement_timestamp()$$,
+	'qorpera_runner_job_claims_active_expires'
+);
+
+select pg_temp.assert_plan_uses_index(
+	$$select id from public.qorpera_profile_invitations
+	  where expires_at <= statement_timestamp()$$,
+	'qorpera_profile_invitations_expires'
+);
+
+select pg_temp.assert_plan_uses_index(
+	$$select profile_id, sha256 from public.qorpera_folder_object_gc
+	  order by profile_id, sha256 collate "C" limit 20$$,
+	'qorpera_folder_object_gc_claimable'
+);
+
+select pg_temp.assert_plan_uses_index(
+	$$select environment_id from public.qorpera_coding_executors
+	  where owner = 'node01'$$,
+	'qorpera_coding_executors_owner_env'
+);
+
+select pg_temp.assert_plan_uses_index(
 	$$select id from public.qorpera_company_machines
 	  where desired_state = 'stopped' and lifetime = 'task' and removed_at is null
 	  order by updated_at, id limit 8$$,
 	'qorpera_company_machines_stopped_task'
+);
+
+select pg_temp.assert_plan_uses_index(
+	$$select secret_id from public.qorpera_folder_connection_file_work
+	  where dirty order by updated_at, secret_id limit 1$$,
+	'qorpera_folder_connection_file_work_dirty'
+);
+
+select pg_temp.assert_plan_uses_index(
+	$$select secret_id from public.qorpera_folder_connection_file_work
+	  where profile_id = '00000000-0000-4000-8000-000000000001'$$,
+	'qorpera_folder_connection_file_work_profile'
+);
+
+select pg_temp.assert_plan_uses_index(
+	$$select worker_id from public.qorpera_coding_results_files
+	  order by created_at, worker_id limit 1$$,
+	'qorpera_coding_results_files_due'
+);
+
+select pg_temp.assert_plan_uses_index(
+	$$select id from public.qorpera_execution_runs
+	  where profile_id = '00000000-0000-4000-8000-000000000001'
+	  order by created_at desc limit 5$$,
+	'qorpera_execution_runs_profile_created'
+);
+
+select pg_temp.assert_plan_uses_index(
+	$$select id from public.qorpera_execution_runs
+	  where profile_id = '00000000-0000-4000-8000-000000000001'
+	    and staff_agent_id = '00000000-0000-4000-8000-000000000002'
+	  order by created_at desc limit 5$$,
+	'qorpera_execution_runs_profile_staff_created'
 );
 
 select pg_temp.assert_plan_uses_index(
@@ -130,9 +199,24 @@ select pg_temp.assert_plan_uses_index(
 );
 
 select pg_temp.assert_plan_uses_index(
+	$$select bucket, object_path from public.qorpera_company_storage_deletions
+	  where removed_at is null
+	  order by attempts, requested_at, bucket, object_path limit 100$$,
+	'qorpera_company_storage_deletions_claim'
+);
+
+select pg_temp.assert_plan_uses_index(
 	$$select 1 from public.qorpera_member_notifications
 	  where kind = 'run_no_progress' and acknowledged_at is null$$,
 	'qorpera_member_notifications_open_run_no_progress'
+);
+
+select pg_temp.assert_plan_uses_index(
+	$$select 1 from public.qorpera_member_notifications
+	  where profile_id = '00000000-0000-4000-8000-000000000001'
+	    and user_id = '00000000-0000-4000-8000-000000000002'
+	    and kind = 'run_no_progress' and dedupe_key = 'run-1'$$,
+	'qorpera_member_notifications_dedupe_history'
 );
 
 rollback;

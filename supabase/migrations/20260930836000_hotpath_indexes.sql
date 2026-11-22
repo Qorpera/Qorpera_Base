@@ -42,7 +42,7 @@ create index if not exists qorpera_profile_invitations_expires
 	on public.qorpera_profile_invitations (expires_at);
 
 create index if not exists qorpera_folder_object_gc_claimable
-	on public.qorpera_folder_object_gc (unreferenced_since, profile_id, sha256 collate "C");
+	on public.qorpera_folder_object_gc (profile_id, sha256 collate "C");
 
 create index if not exists qorpera_coding_executors_owner_env
 	on public.qorpera_coding_executors (owner, environment_id);
