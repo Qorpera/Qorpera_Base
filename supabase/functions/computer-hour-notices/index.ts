@@ -1,6 +1,13 @@
 import { createClient } from "npm:@supabase/supabase-js@2.112.3";
 import { withTimeoutScope } from "../_shared/abort-timeout.ts";
 import {
+	configuredSecretKeys,
+	constantTimeIncludes,
+	createTimedFetch,
+	preferredServiceKey,
+	readBoundedJson,
+} from "../_shared/http-guards.ts";
+import {
 	type ComputerHourEmail,
 	type ComputerHourEmailProvider,
 	ComputerHourEmailSendError,
@@ -16,6 +23,26 @@ import {
  * fits well inside the five-minute lease. */
 const BATCH = 10;
 const SEND_TIMEOUT_MS = 10_000;
+const RESEND_RESPONSE_MAX_BYTES = 64 * 1024;
+const RPC_FETCH = createTimedFetch({ timeoutMs: 15_000 });
+
+let cachedClient:
+	| { readonly url: string; readonly key: string; readonly client: ReturnType<typeof createClient> }
+	| undefined;
+
+function serviceClient(url: string, key: string): ReturnType<typeof createClient> {
+	if (!cachedClient || cachedClient.url !== url || cachedClient.key !== key) {
+		cachedClient = {
+			url,
+			key,
+			client: createClient(url, key, {
+				auth: { autoRefreshToken: false, persistSession: false },
+				global: { fetch: RPC_FETCH },
+			}),
+		};
+	}
+	return cachedClient.client;
+}
 
 interface FunctionConfiguration {
 	supabaseUrl: string;
@@ -29,29 +56,15 @@ function jsonResponse(value: unknown, status = 200): Response {
 	return Response.json(value, { status, headers: { "cache-control": "no-store" } });
 }
 
-function configuredSecretKeys(): string[] {
-	const legacyServiceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-	try {
-		const parsed: unknown = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}");
-		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-			return legacyServiceRoleKey ? [legacyServiceRoleKey] : [];
-		}
-		const keys = Object.values(parsed).filter(
-			(value): value is string => typeof value === "string" && value.length > 20,
-		);
-		if (legacyServiceRoleKey) keys.push(legacyServiceRoleKey);
-		return [...new Set(keys)];
-	} catch {
-		return legacyServiceRoleKey ? [legacyServiceRoleKey] : [];
-	}
-}
-
 function configuration(request: Request): FunctionConfiguration | Response {
+	const readEnv = (name: string) => Deno.env.get(name);
 	const apiKey = request.headers.get("apikey")?.trim();
 	const authorization = request.headers.get("authorization")?.trim();
 	const presentedKey =
 		apiKey || (authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length).trim() : "");
-	if (!presentedKey || !configuredSecretKeys().includes(presentedKey)) return jsonResponse({ error: "Unauthorized" }, 401);
+	if (!presentedKey || !constantTimeIncludes(configuredSecretKeys(readEnv), presentedKey)) {
+		return jsonResponse({ error: "Unauthorized" }, 401);
+	}
 	const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
 	const resendApiKey = Deno.env.get("RESEND_API_KEY") ?? "";
 	const from = Deno.env.get("QORPERA_HOURS_FROM") ?? "";
@@ -64,14 +77,14 @@ function configuration(request: Request): FunctionConfiguration | Response {
 	} catch {
 		return jsonResponse({ error: "The app URL is invalid" }, 503);
 	}
-	return { supabaseUrl, secretKey: presentedKey, resendApiKey, from, appUrl };
+	return { supabaseUrl, secretKey: preferredServiceKey(readEnv) ?? presentedKey, resendApiKey, from, appUrl };
 }
 
-async function resendFailure(response: Response): Promise<ComputerHourEmailSendError> {
+async function resendFailure(response: Response, signal: AbortSignal): Promise<ComputerHourEmailSendError> {
 	let code = "";
 	let message = `Resend returned HTTP ${response.status}`;
 	try {
-		const body: unknown = await response.json();
+		const body = await readBoundedJson(response, RESEND_RESPONSE_MAX_BYTES, { signal });
 		if (body && typeof body === "object" && !Array.isArray(body)) {
 			const input = body as Record<string, unknown>;
 			if (typeof input.name === "string") code = input.name;
@@ -107,13 +120,19 @@ class ResendProvider implements ComputerHourEmailProvider {
 						"Idempotency-Key": idempotencyKey,
 					},
 					body: JSON.stringify({ from: this.from, to: [job.recipientEmail], subject: email.subject, text: email.text, html: email.html }),
+					redirect: "error",
 					signal,
 				});
 			} catch (error) {
 				throw new ComputerHourEmailSendError(error instanceof Error ? error.message : "Resend request failed", true);
 			}
-			if (!response.ok) throw await resendFailure(response);
-			const body: unknown = await response.json();
+			if (!response.ok) throw await resendFailure(response, signal);
+			let body: unknown;
+			try {
+				body = await readBoundedJson(response, RESEND_RESPONSE_MAX_BYTES, { signal });
+			} catch {
+				throw new ComputerHourEmailSendError("Resend returned an invalid response", true);
+			}
 			if (!body || typeof body !== "object" || Array.isArray(body)) {
 				throw new ComputerHourEmailSendError("Resend returned an invalid response", true);
 			}
@@ -130,9 +149,7 @@ Deno.serve(async (request) => {
 	if (request.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
 	const config = configuration(request);
 	if (config instanceof Response) return config;
-	const client = createClient(config.supabaseUrl, config.secretKey, {
-		auth: { autoRefreshToken: false, persistSession: false },
-	});
+	const client = serviceClient(config.supabaseUrl, config.secretKey);
 	const leaseId = crypto.randomUUID();
 	const { data: claimed, error: claimError } = await client.rpc("qorpera_claim_computer_hour_notices", {
 		p_limit: BATCH,
@@ -156,11 +173,14 @@ Deno.serve(async (request) => {
 	};
 	// A notice that cannot be read is failed for good, so it holds up no other.
 	let rejected = 0;
+	let rejectedFailed = 0;
 	for (const notice of claim.rejected) {
 		try {
 			await fail(notice.noticeId, notice.leaseId, notice.message, false);
 			rejected += 1;
-		} catch {}
+		} catch {
+			rejectedFailed += 1;
+		}
 	}
 	const store: ComputerHourNoticeStore = {
 		complete: async (job, providerMessageId) => {
@@ -180,5 +200,5 @@ Deno.serve(async (request) => {
 		store,
 		{ paceMs: 600, budgetMs: 45_000 },
 	);
-	return jsonResponse({ ...result, rejected });
+	return jsonResponse({ ...result, rejected, ...(rejectedFailed > 0 ? { rejectedFailed } : {}) });
 });
