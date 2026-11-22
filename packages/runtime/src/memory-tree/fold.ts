@@ -51,6 +51,7 @@ function siblings(a: MemoryTreePart, b: MemoryTreePart): boolean {
 
 interface Link {
 	part: MemoryTreePart;
+	bytes: number;
 	prev: Link | null;
 	next: Link | null;
 }
@@ -58,7 +59,8 @@ interface Link {
 /** Replaces `a` and the part after it with their parent, and returns the parent's link. */
 function merge(a: Link, built: MemoryTreeBuilt): Link {
 	const b = a.next as Link;
-	const merged: Link = { part: part(built, a.part.l + 1, a.part.k / 2), prev: a.prev, next: b.next };
+	const mergedPart = part(built, a.part.l + 1, a.part.k / 2);
+	const merged: Link = { part: mergedPart, bytes: memoryPartBytes(mergedPart), prev: a.prev, next: b.next };
 	if (merged.prev) merged.prev.next = merged;
 	if (merged.next) merged.next.prev = merged;
 	return merged;
@@ -98,11 +100,13 @@ export function fold(T: number, built: MemoryTreeBuilt, budget: number): MemoryT
 	let last: Link | null = null;
 	let size = 0;
 	for (let n = 1; n <= T; n += 1) {
-		const leaf: Link = { part: part(built, 0, n - 1), prev: last, next: null };
+		const leafPart = part(built, 0, n - 1);
+		const leafBytes = memoryPartBytes(leafPart);
+		const leaf: Link = { part: leafPart, bytes: leafBytes, prev: last, next: null };
 		if (last) last.next = leaf;
 		else first = leaf;
 		last = leaf;
-		size += memoryPartBytes(leaf.part);
+		size += leafBytes;
 		check(leaf.prev);
 		while (size > budget && ready.size > 0) {
 			// The pair furthest from the end in its own size, `n / 2^l − k`, the oldest first on a tie. Both terms are
@@ -123,7 +127,7 @@ export function fold(T: number, built: MemoryTreeBuilt, budget: number): MemoryT
 			const a = best as Link;
 			const b = a.next as Link;
 			const merged = merge(a, built);
-			size += memoryPartBytes(merged.part) - memoryPartBytes(a.part) - memoryPartBytes(b.part);
+			size += merged.bytes - a.bytes - b.bytes;
 			ready.delete(a);
 			ready.delete(b);
 			if (first === a) first = merged;
@@ -144,12 +148,13 @@ export function memoryOverflow(
 	built: MemoryTreeBuilt,
 	limit: number,
 ): MemoryTreePart[] {
-	let size = view.reduce((total, item) => total + memoryPartBytes(item), 0);
+	const itemBytes = view.map(memoryPartBytes);
+	let size = itemBytes.reduce((total, bytes) => total + bytes, 0);
 	if (size <= limit) return [...view];
 	let first: Link | null = null;
 	let last: Link | null = null;
-	for (const item of view) {
-		const link: Link = { part: item, prev: last, next: null };
+	for (let index = 0; index < view.length; index += 1) {
+		const link: Link = { part: view[index]!, bytes: itemBytes[index]!, prev: last, next: null };
 		if (last) last.next = link;
 		else first = link;
 		last = link;
@@ -164,7 +169,7 @@ export function memoryOverflow(
 			continue;
 		}
 		const merged = merge(cursor, built);
-		size += memoryPartBytes(merged.part) - memoryPartBytes(cursor.part) - memoryPartBytes(next.part);
+		size += merged.bytes - cursor.bytes - next.bytes;
 		if (first === cursor) first = merged;
 		cursor = merged.prev ?? merged;
 	}

@@ -2533,31 +2533,46 @@ describe("per-repository landing queue and inline record batching", () => {
 		return { workerId, session, tree };
 	}
 
-	it("serializes 6 concurrent landings with checks on the same repo in FIFO order with zero stale retries", async () => {
+	it("batches 8 concurrent clean landings with checks into 1 check run, 1 Job A, and 1 Job B", async () => {
 		resetMocks();
 		const f = await fixture();
 		const logged: Record<string, unknown>[] = [];
-		const repositories = new CodeHostRepositories(f.jobs, { report: (event) => logged.push(event) });
+		const inJobCalls: string[] = [];
+		const repositories = new CodeHostRepositories(f.jobs, {
+			report: (event) => logged.push(event),
+			records: {
+				inJob: async (_job, target) => {
+					inJobCalls.push(`${target.owner}/${target.name}`);
+					return async () => undefined;
+				},
+			},
+			batchCoalesceMs: 10,
+		});
 		const repo: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
 		const checksBase = await startCheckedRepo(f, repo, repositories);
 
 		let activeChecks = 0;
 		let maxConcurrentChecks = 0;
 		let totalCheckRuns = 0;
-		const checkOrder: number[] = [];
+		let nextChange = 0;
+		const reports: CodeChangeReport[] = [];
 
 		const workers = await Promise.all(
-			Array.from({ length: 6 }, async (_, index) => {
+			Array.from({ length: 8 }, async (_, index) => {
 				const worker = await makeWorkerSession(f, repo, checksBase, repositories, {
 					checksSwitch: async () => ({ checks: true, site: false }),
 					runChecks: async () => {
 						activeChecks += 1;
 						maxConcurrentChecks = Math.max(maxConcurrentChecks, activeChecks);
 						totalCheckRuns += 1;
-						checkOrder.push(index);
-						await new Promise((resolve) => setTimeout(resolve, 15));
+						await new Promise((resolve) => setTimeout(resolve, 10));
 						activeChecks -= 1;
 						return PASSED_RUN;
+					},
+					recordChange: async (report) => {
+						reports.push(report);
+						nextChange += 1;
+						return { state: "recorded", change: nextChange };
 					},
 				});
 				const head = await f.commit(worker.tree, `worker-${index}.js`);
@@ -2565,9 +2580,11 @@ describe("per-repository landing queue and inline record batching", () => {
 			}),
 		);
 
+		const runsBefore = f.runs.length;
 		const results = await Promise.all(
 			workers.map((worker) => repositories.land(worker.session, worker.head, signal())),
 		);
+		const runsUsed = f.runs.length - runsBefore;
 
 		expect(results.map((result) => result.state)).toEqual([
 			"fast-forward",
@@ -2576,13 +2593,412 @@ describe("per-repository landing queue and inline record batching", () => {
 			"merged",
 			"merged",
 			"merged",
+			"merged",
+			"merged",
 		]);
+		expect(results.map((result) => result.change)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
 		expect(maxConcurrentChecks).toBe(1);
-		expect(totalCheckRuns).toBe(6);
-		expect(checkOrder).toEqual([0, 1, 2, 3, 4, 5]);
+		expect(totalCheckRuns).toBe(1);
+		expect(runsUsed).toBe(2);
+		expect(inJobCalls).toHaveLength(1);
+		expect(reports).toHaveLength(8);
+		expect(reports[0]?.mainBefore).toBe(checksBase);
+		for (let i = 1; i < reports.length; i += 1) {
+			expect(reports[i]?.mainBefore).toBe(reports[i - 1]?.mainAfter);
+		}
+		for (let i = 0; i < reports.length - 1; i += 1) {
+			const stepReport = reports[i];
+			expect(stepReport?.schema).toBe("qorpera.code-change-report/v2");
+			if (stepReport && stepReport.schema !== "qorpera.code-change-report/v1") {
+				expect(stepReport.checks).toEqual({ state: "not_run" });
+			}
+		}
+		const tipReport = reports[reports.length - 1];
+		expect(tipReport?.schema).toBe("qorpera.code-change-report/v3");
+		if (tipReport && tipReport.schema !== "qorpera.code-change-report/v1") {
+			expect(tipReport.checks?.state).toBe("passed");
+			if (tipReport.checks?.state === "passed") {
+				expect(tipReport.checks.result.commit).toBe(results[7]?.mainSha);
+			}
+		}
 		expect(logged.filter((event) => event.event === "code-checks" && event.step === "stale")).toEqual([]);
 		const mainFiles = (await readdir(join(f.companyRoot, "code/qorpera/example/main"))).sort();
-		for (let index = 0; index < 6; index += 1) expect(mainFiles).toContain(`worker-${index}.js`);
+		for (let index = 0; index < 8; index += 1) expect(mainFiles).toContain(`worker-${index}.js`);
+	});
+
+	it("ejects a conflicting candidate in a batch without blocking clean peers", async () => {
+		resetMocks();
+		const f = await fixture();
+		const repositories = new CodeHostRepositories(f.jobs, { batchCoalesceMs: 10 });
+		const repo: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
+		const checksBase = await startCheckedRepo(f, repo, repositories);
+
+		let totalCheckRuns = 0;
+		const workers = await Promise.all(
+			Array.from({ length: 5 }, async (_, index) => {
+				const worker = await makeWorkerSession(f, repo, checksBase, repositories, {
+					checksSwitch: async () => ({ checks: true, site: false }),
+					runChecks: async () => {
+						totalCheckRuns += 1;
+						return PASSED_RUN;
+					},
+				});
+				if (index === 0 || index === 2) {
+					await writeFile(join(worker.tree, "shared.js"), `export const v = ${index};\n`);
+					await f.git(worker.tree, "add", "shared.js");
+					const head = await f
+						.git(worker.tree, "commit", "-q", "-m", `shared-${index}`)
+						.then(() => f.git(worker.tree, "rev-parse", "HEAD"));
+					return { ...worker, head };
+				}
+				const head = await f.commit(worker.tree, `clean-${index}.js`);
+				return { ...worker, head };
+			}),
+		);
+
+		const settled = await Promise.allSettled(
+			workers.map((worker) => repositories.land(worker.session, worker.head, signal())),
+		);
+		expect(settled[0]?.status).toBe("fulfilled");
+		expect(settled[1]?.status).toBe("fulfilled");
+		expect(settled[2]?.status).toBe("rejected");
+		if (settled[2]?.status === "rejected") expect(settled[2].reason).toBeInstanceOf(CodingLandConflict);
+		expect(settled[3]?.status).toBe("fulfilled");
+		expect(settled[4]?.status).toBe("fulfilled");
+		expect(totalCheckRuns).toBe(1);
+		const mainFiles = (await readdir(join(f.companyRoot, "code/qorpera/example/main"))).sort();
+		expect(mainFiles).toContain("shared.js");
+		expect(mainFiles).toContain("clean-1.js");
+		expect(mainFiles).toContain("clean-3.js");
+		expect(mainFiles).toContain("clean-4.js");
+	});
+
+	it("defers candidates conflicting or colliding with a failing earlier speculative peer so they land cleanly against real main", async () => {
+		resetMocks();
+		const f = await fixture();
+		const repositories = new CodeHostRepositories(f.jobs, { batchCoalesceMs: 10 });
+		const repo: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
+		const checksBase = await startCheckedRepo(f, repo, repositories);
+		const repoGit = join(f.companyRoot, "code/qorpera/example/repo.git");
+
+		const failedRun: CodeChecksRun = {
+			state: "failed",
+			ms: 40,
+			passed: [],
+			failed: {
+				name: "test",
+				run: "npm test",
+				ms: 40,
+				exitCode: 1,
+				atLimit: false,
+				tail: "bad peer failed",
+				log: "~/.qorpera-checks/out/1-test.log",
+			},
+			notRun: [],
+		};
+		const makeChecked = async () =>
+			makeWorkerSession(f, repo, checksBase, repositories, {
+				checksSwitch: async () => ({ checks: true, site: false }),
+				runChecks: async ({ commit }) => {
+					const files = (await f.git(repoGit, "ls-tree", "--name-only", commit)).split("\n");
+					return files.includes("bad-marker.txt") ? failedRun : PASSED_RUN;
+				},
+			});
+
+		const failingPeer = await makeChecked();
+		await writeFile(join(failingPeer.tree, "shared.js"), "export const who = 'bad';\n");
+		await writeFile(join(failingPeer.tree, "Alpha.ts"), "export const a = 1;\n");
+		await writeFile(join(failingPeer.tree, "bad-marker.txt"), "fail\n");
+		await f.git(failingPeer.tree, "add", "shared.js", "Alpha.ts", "bad-marker.txt");
+		const failingHead = await f
+			.git(failingPeer.tree, "commit", "-q", "-m", "bad peer")
+			.then(() => f.git(failingPeer.tree, "rev-parse", "HEAD"));
+
+		const conflictingGood = await makeChecked();
+		await writeFile(join(conflictingGood.tree, "shared.js"), "export const who = 'good';\n");
+		await f.git(conflictingGood.tree, "add", "shared.js");
+		const conflictingGoodHead = await f
+			.git(conflictingGood.tree, "commit", "-q", "-m", "good shared")
+			.then(() => f.git(conflictingGood.tree, "rev-parse", "HEAD"));
+
+		const caseCollidingGood = await makeChecked();
+		await writeFile(join(caseCollidingGood.tree, "alpha.ts"), "export const a = 2;\n");
+		await f.git(caseCollidingGood.tree, "add", "alpha.ts");
+		const caseCollidingHead = await f
+			.git(caseCollidingGood.tree, "commit", "-q", "-m", "good alpha")
+			.then(() => f.git(caseCollidingGood.tree, "rev-parse", "HEAD"));
+
+		const settled = await Promise.allSettled([
+			repositories.land(failingPeer.session, failingHead, signal()),
+			repositories.land(conflictingGood.session, conflictingGoodHead, signal()),
+			repositories.land(caseCollidingGood.session, caseCollidingHead, signal()),
+		]);
+
+		expect(settled[0]?.status).toBe("rejected");
+		if (settled[0]?.status === "rejected") {
+			expect(settled[0].reason).toBeInstanceOf(CodingLandRefused);
+			expect((settled[0].reason as CodingLandRefused).message).toBe("CODING_CHECKS_FAILED");
+		}
+		expect(settled[1]?.status).toBe("fulfilled");
+		expect(settled[2]?.status).toBe("fulfilled");
+		const mainDir = join(f.companyRoot, "code/qorpera/example/main");
+		expect(await readFile(join(mainDir, "shared.js"), "utf8")).toBe("export const who = 'good';\n");
+		expect(await readFile(join(mainDir, "alpha.ts"), "utf8")).toBe("export const a = 2;\n");
+		const mainFiles = (await readdir(mainDir)).sort();
+		expect(mainFiles).not.toContain("bad-marker.txt");
+		expect(mainFiles).not.toContain("Alpha.ts");
+	});
+
+	it("isolates a single check-failing candidate in a batch of 6 via binary-search bisect while landing all 5 clean peers", async () => {
+		resetMocks();
+		const f = await fixture();
+		const repositories = new CodeHostRepositories(f.jobs, { batchCoalesceMs: 10 });
+		const repo: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
+		const checksBase = await startCheckedRepo(f, repo, repositories);
+		const repoGit = join(f.companyRoot, "code/qorpera/example/repo.git");
+
+		let totalCheckRuns = 0;
+		const failedRun: CodeChecksRun = {
+			state: "failed",
+			ms: 40,
+			passed: [],
+			failed: {
+				name: "test",
+				run: "npm test",
+				ms: 40,
+				exitCode: 1,
+				atLimit: false,
+				tail: "broken-3 failed",
+				log: "~/.qorpera-checks/out/1-test.log",
+			},
+			notRun: [],
+		};
+
+		const workers = await Promise.all(
+			Array.from({ length: 6 }, async (_, index) => {
+				const worker = await makeWorkerSession(f, repo, checksBase, repositories, {
+					checksSwitch: async () => ({ checks: true, site: false }),
+					runChecks: async ({ commit }) => {
+						totalCheckRuns += 1;
+						const files = (await f.git(repoGit, "ls-tree", "--name-only", commit)).split("\n");
+						return files.includes("broken-3.js") ? failedRun : PASSED_RUN;
+					},
+				});
+				const file = index === 3 ? "broken-3.js" : `peer-${index}.js`;
+				const head = await f.commit(worker.tree, file);
+				return { ...worker, head };
+			}),
+		);
+
+		const settled = await Promise.allSettled(
+			workers.map((worker) => repositories.land(worker.session, worker.head, signal())),
+		);
+		for (const index of [0, 1, 2, 4, 5]) expect(settled[index]?.status).toBe("fulfilled");
+		expect(settled[3]?.status).toBe("rejected");
+		if (settled[3]?.status === "rejected") {
+			expect(settled[3].reason).toBeInstanceOf(CodingLandRefused);
+			expect((settled[3].reason as CodingLandRefused).message).toBe("CODING_CHECKS_FAILED");
+		}
+		expect(totalCheckRuns).toBeLessThanOrEqual(5);
+		const mainFiles = (await readdir(join(f.companyRoot, "code/qorpera/example/main"))).sort();
+		for (const index of [0, 1, 2, 4, 5]) expect(mainFiles).toContain(`peer-${index}.js`);
+		expect(mainFiles).not.toContain("broken-3.js");
+	});
+
+	it("never mixes incompatible owner users, staff agents, or coding machines in a single speculative batch", async () => {
+		resetMocks();
+		const f = await fixture();
+		const repositories = new CodeHostRepositories(f.jobs, { batchCoalesceMs: 10 });
+		const repo: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
+		const checksBase = await startCheckedRepo(f, repo, repositories);
+
+		const scopesChecked: string[] = [];
+		const makeScoped = async (name: string, ownerUserId: string, agentId: string, machineId: string) => {
+			const worker = await makeWorkerSession(f, repo, checksBase, repositories, {
+				checksSwitch: async () => ({ checks: true, site: false }),
+				runChecks: async () => {
+					scopesChecked.push(`${ownerUserId}:${agentId}:${machineId}`);
+					return PASSED_RUN;
+				},
+			});
+			const scopedSession: CodingFolderRepositorySession = {
+				...worker.session,
+				claim: { ...worker.session.claim, ownerUserId, agentId },
+				machine: { ...worker.session.machine, machineId },
+			};
+			const head = await f.commit(worker.tree, `${name}.js`);
+			return { session: scopedSession, head };
+		};
+
+		const ownerA = "11111111-1111-4111-8111-111111111111";
+		const ownerB = "22222222-2222-4222-8222-222222222222";
+		const agentA = "33333333-3333-4333-8333-333333333333";
+		const agentB = "44444444-4444-4444-8444-444444444444";
+		const machineA = "55555555-5555-4555-8555-555555555555";
+		const machineB = "66666666-6666-4666-8666-666666666666";
+
+		const a1 = await makeScoped("a1", ownerA, agentA, machineA);
+		const a2 = await makeScoped("a2", ownerA, agentA, machineA);
+		const diffOwner = await makeScoped("b1", ownerB, agentA, machineA);
+		const diffAgent = await makeScoped("a-agent", ownerA, agentB, machineA);
+		const diffMachine = await makeScoped("a-machine", ownerA, agentA, machineB);
+
+		const results = await Promise.all([
+			repositories.land(a1.session, a1.head, signal()),
+			repositories.land(diffOwner.session, diffOwner.head, signal()),
+			repositories.land(a2.session, a2.head, signal()),
+			repositories.land(diffAgent.session, diffAgent.head, signal()),
+			repositories.land(diffMachine.session, diffMachine.head, signal()),
+		]);
+		expect(results).toHaveLength(5);
+		expect(scopesChecked).toEqual([
+			`${ownerA}:${agentA}:${machineA}`,
+			`${ownerB}:${agentA}:${machineA}`,
+			`${ownerA}:${agentB}:${machineA}`,
+			`${ownerA}:${agentA}:${machineB}`,
+		]);
+	});
+
+	it("caps a batch before a candidate that modifies .qorpera/checks.json so gate.changed stays exact", async () => {
+		resetMocks();
+		const f = await fixture();
+		const repositories = new CodeHostRepositories(f.jobs, { batchCoalesceMs: 10 });
+		const repo: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
+		const checksBase = await startCheckedRepo(f, repo, repositories);
+
+		const checkRuns: { worker: number; checkNames: string[] }[] = [];
+		const reported: { worker: number; report: CodeChangeReport }[] = [];
+		let changeSeq = 0;
+
+		const make = async (index: number) => {
+			const worker = await makeWorkerSession(f, repo, checksBase, repositories, {
+				checksSwitch: async () => ({ checks: true, site: false }),
+				runChecks: async ({ checks }) => {
+					checkRuns.push({ worker: index, checkNames: checks.map((c) => c.name) });
+					return {
+						state: "passed",
+						ms: 20,
+						copyMs: 5,
+						checks: checks.map((c) => ({ name: c.name, run: c.run, ms: 10 })),
+						site: null,
+					};
+				},
+				recordChange: async (report) => {
+					reported.push({ worker: index, report });
+					changeSeq += 1;
+					return { state: "recorded", change: changeSeq };
+				},
+			});
+			return worker;
+		};
+
+		const w0 = await make(0);
+		const w1 = await make(1);
+		const w2 = await make(2);
+		const h0 = await f.commit(w0.tree, "c0.js");
+		await writeFile(
+			join(w1.tree, ".qorpera/checks.json"),
+			`${JSON.stringify({
+				checks: [
+					{ name: "test", run: "npm test" },
+					{ name: "lint", run: "npm run lint" },
+				],
+			})}\n`,
+		);
+		await f.git(w1.tree, "add", ".qorpera/checks.json");
+		const h1 = await f.commit(w1.tree, "c1.js");
+		const h2 = await f.commit(w2.tree, "c2.js");
+
+		await Promise.all([
+			repositories.land(w0.session, h0, signal()),
+			repositories.land(w1.session, h1, signal()),
+			repositories.land(w2.session, h2, signal()),
+		]);
+
+		expect(checkRuns.map((run) => run.checkNames)).toEqual([["test"], ["test", "lint"], ["test", "lint"]]);
+		const r0 = reported.find((entry) => entry.worker === 0)?.report;
+		const r1 = reported.find((entry) => entry.worker === 1)?.report;
+		const r2 = reported.find((entry) => entry.worker === 2)?.report;
+		const changedOf = (report: CodeChangeReport | undefined) =>
+			report && report.schema !== "qorpera.code-change-report/v1" && report.checks?.state === "passed"
+				? report.checks.result.changed
+				: "bad";
+		expect(changedOf(r0)).toBeNull();
+		expect(changedOf(r1)).toEqual({ added: ["lint"], removed: [], run: [] });
+		expect(changedOf(r2)).toBeNull();
+	});
+
+	it("pins collected site trees under refs/qorpera/sites/change-<n> when landing", async () => {
+		resetMocks();
+		const f = await fixture();
+		const repositories = new CodeHostRepositories(f.jobs, { batchCoalesceMs: 10 });
+		const repo: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
+		const checksBase = await startCheckedRepo(f, repo, repositories);
+		const repoGit = join(f.companyRoot, "code/qorpera/example/repo.git");
+		const realTreeSha = await f.git(repoGit, "rev-parse", `${checksBase}^{tree}`);
+
+		const worker = await makeWorkerSession(f, repo, checksBase, repositories, {
+			checksSwitch: async () => ({ checks: true, site: true }),
+			runChecks: async () => ({
+				...PASSED_RUN,
+				site: { state: "made", tree: realTreeSha, files: 1, bytes: 10, folder: "dist", name: null, title: null },
+			}),
+			recordChange: async () => ({ state: "recorded", change: 7 }),
+		});
+		const head = await f.commit(worker.tree, "site-change.js");
+		const landed = await repositories.land(worker.session, head, signal());
+		expect(landed.change).toBe(7);
+		expect(await f.git(repoGit, "rev-parse", "refs/qorpera/sites/change-7")).toBe(realTreeSha);
+	});
+
+	it("evicts a mid-batch cancelled waiter via AbortSignal without blocking clean peers", async () => {
+		resetMocks();
+		const f = await fixture();
+		const repositories = new CodeHostRepositories(f.jobs, { batchCoalesceMs: 10 });
+		const repo: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
+		const checksBase = await startCheckedRepo(f, repo, repositories);
+
+		const checkStarted = held();
+		const checkRelease = held();
+		let calls = 0;
+
+		const make = async (index: number) => {
+			const worker = await makeWorkerSession(f, repo, checksBase, repositories, {
+				checksSwitch: async () => ({ checks: true, site: false }),
+				runChecks: async () => {
+					calls += 1;
+					if (calls === 1) {
+						checkStarted.give();
+						await checkRelease.turn;
+					}
+					return PASSED_RUN;
+				},
+			});
+			const head = await f.commit(worker.tree, `mid-abort-${index}.js`);
+			return { ...worker, head };
+		};
+
+		const w0 = await make(0);
+		const w1 = await make(1);
+		const w2 = await make(2);
+		const abort1 = new AbortController();
+		const cancelReason = new Error("MID_BATCH_CANCEL");
+
+		const p0 = repositories.land(w0.session, w0.head, signal());
+		const p1 = repositories.land(w1.session, w1.head, abort1.signal);
+		const p2 = repositories.land(w2.session, w2.head, signal());
+		await checkStarted.turn;
+		abort1.abort(cancelReason);
+		checkRelease.give();
+
+		await expect(p1).rejects.toBe(cancelReason);
+		const [r0, r2] = await Promise.all([p0, p2]);
+		expect(r0.state).toBe("fast-forward");
+		expect(r2.state).toBe("merged");
+		const mainFiles = (await readdir(join(f.companyRoot, "code/qorpera/example/main"))).sort();
+		expect(mainFiles).toContain("mid-abort-0.js");
+		expect(mainFiles).toContain("mid-abort-2.js");
+		expect(mainFiles).not.toContain("mid-abort-1.js");
 	});
 
 	it("runs checks in parallel across distinct repositories of the same company", async () => {

@@ -192,7 +192,7 @@ begin
 		and (select count(*) from public.qorpera_code_repositories) = 1, 'two sessions, one repository');
 	r := pg_temp.care_shop();
 	perform pg_temp.base_assert(r.profile_id = '92400000-0000-4000-8000-000000000010' and r.care_enabled
-		and not r.gc_enabled and not r.retire_enabled and r.next_care_at <= clock_timestamp() and r.care_token is null
+		and r.gc_enabled and r.retire_enabled and r.next_care_at <= clock_timestamp() and r.care_token is null
 		and r.care_owner is null and r.care_until is null and r.care_attempts = 0 and r.last_care_at is null
 		and r.problem is null and r.retired = 0 and r.retire_cursor is null and r.outcome is null,
 		'the registered repository: ' || to_jsonb(r)::text);
@@ -357,7 +357,7 @@ begin
 	v_token := (v ->> 'token')::uuid;
 	r := pg_temp.care_shop();
 	perform pg_temp.base_assert(v - 'token' - 'leaseUntil' = jsonb_build_object('schema', 'qorpera.code-care-step/v1',
-			'state', 'go', 'flags', jsonb_build_object('gc', false, 'retire', false),
+			'state', 'go', 'flags', jsonb_build_object('gc', true, 'retire', true),
 			'last', jsonb_build_object('refsSha256', null, 'fsckState', null, 'fsckAt', null, 'bundleRefsSha256', null,
 				'bundleName', null, 'deepAt', null))
 		and v_token is not null and r.care_token = v_token and r.care_owner = 'exec-1170' and r.care_attempts = 1
@@ -445,7 +445,7 @@ do $$
 declare v jsonb; v_token uuid := current_setting('qorpera_test.care_token')::uuid; v_named uuid[];
 	v_all uuid[] := array(select pg_temp.care_copy(n) from generate_series(1, 25) n order by n);
 begin
-	-- Retiring is off: the step goes, and names nobody.
+	update public.qorpera_code_repositories set retire_enabled = false where name = 'shop';
 	v := pg_temp.care_step(v_token, 'retire');
 	perform pg_temp.base_assert(v ->> 'state' = 'go' and v -> 'retire' = '[]'::jsonb
 		and (pg_temp.care_shop()).retire_cursor is null, 'retiring is off: ' || v::text);
