@@ -561,11 +561,10 @@ export class CodingSessionElement {
 		this.#request = request;
 		this.#refreshing = (async () => {
 			let more = false;
+			const previousCursor = this.#cursor;
 			try {
 				const read = await this.#options.api.read(this.#session.workerId, this.#cursor, request.signal);
 				if (request.signal.aborted || this.disposed) return;
-				more = read.events.length >= READ_PAGE;
-				this.#caughtUp = !more;
 				// WHY: Avoid O(N) Set rebuild and O(N log N) sort on every poll; only sort when out-of-order events arrive.
 				if (read.events.length > 0) {
 					let outOfOrder = false;
@@ -580,6 +579,9 @@ export class CodingSessionElement {
 					if (outOfOrder) this.#events.sort((a, b) => a.id - b.id);
 				}
 				this.#cursor = this.#events[this.#events.length - 1]?.id ?? this.#cursor;
+				// WHY: Require cursor advancement before scheduling a 0 ms catch-up poll so duplicate full pages cannot spin infinitely.
+				more = read.events.length >= READ_PAGE && this.#cursor > previousCursor;
+				this.#caughtUp = !more;
 				this.#session = { ...read.session, isOwner: read.isOwner };
 				this.#readError = undefined;
 			} catch (error) {
@@ -592,7 +594,7 @@ export class CodingSessionElement {
 				if (!this.disposed) {
 					this.#render();
 					// A full page: the rest is read at once, so a long session does not open in its middle.
-					if (more) {
+					if (more && !(typeof document !== "undefined" && document.hidden)) {
 						clearTimeout(this.#poll);
 						this.#poll = setTimeout(() => void this.refresh(), 0);
 					} else this.#schedule();

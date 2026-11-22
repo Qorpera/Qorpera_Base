@@ -219,6 +219,24 @@ const AGENT_FILE_MAX_BYTES = 64 * 1024;
  *   for good, and is asked no more.
  * - It stops with the company (`signal`).
  */
+function raceAbort(promise: Promise<void>, signal: AbortSignal): Promise<void> {
+	if (signal.aborted) return Promise.reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+	return new Promise<void>((resolve, reject) => {
+		const onAbort = () => reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+		signal.addEventListener("abort", onAbort, { once: true });
+		promise.then(
+			() => {
+				signal.removeEventListener("abort", onAbort);
+				resolve();
+			},
+			(error) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
+}
+
 export class CompanyReading {
 	readonly #host: CompanyReadingHost;
 	readonly #signal: AbortSignal;
@@ -247,7 +265,7 @@ export class CompanyReading {
 		} catch (error) {
 			if (this.#file === undefined) throw error;
 		}
-		await standing;
+		if (standing) await raceAbort(standing, signal);
 		signal.throwIfAborted();
 		return appReading(this.#file ?? null, this.#handles, this.#host.people(), this.#standing ?? null);
 	}
@@ -321,10 +339,29 @@ export class CompanyReading {
 			handlesFor = live;
 			// A change line may name an agent whose role ended, which the state folders no longer list: its own file says
 			// which agent it was, renamed or numbered alike.
-			for (const change of file.changes) {
-				if (handles.has(change.agent) || !isCompanyStateName(change.agent)) continue;
-				const id = await this.#endedAgent(folder, change.agent, signal);
-				if (id) handles.set(change.agent, id);
+			// WHY: Deduplicate ended-agent handles and fetch their agent.md files with bounded concurrency instead of serial duplicate reads.
+			const missingHandles = [
+				...new Set(
+					file.changes
+						.map((change) => change.agent)
+						.filter((agent) => !handles.has(agent) && isCompanyStateName(agent)),
+				),
+			];
+			if (missingHandles.length > 0) {
+				const resolved = new Array<string | null>(missingHandles.length).fill(null);
+				let next = 0;
+				const workers = Array.from({ length: Math.min(6, missingHandles.length) }, async () => {
+					while (!signal.aborted) {
+						const index = next++;
+						if (index >= missingHandles.length) return;
+						resolved[index] = await this.#endedAgent(folder, missingHandles[index]!, signal);
+					}
+				});
+				await Promise.all(workers);
+				for (let index = 0; index < missingHandles.length; index++) {
+					const id = resolved[index];
+					if (id) handles.set(missingHandles[index]!, id);
+				}
 			}
 		}
 		signal.throwIfAborted();

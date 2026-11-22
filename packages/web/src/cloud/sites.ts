@@ -378,39 +378,56 @@ export function createWebSites(cloud: Cloud, company: { profileId: string }): We
 	return {
 		async list(signal) {
 			signal?.throwIfAborted();
-			const value = await cloud.rpc("qorpera_list_company_sites", { p_profile_id: company.profileId });
+			const args = { p_profile_id: company.profileId };
+			const value = await (signal
+				? cloud.rpc("qorpera_list_company_sites", args, signal)
+				: cloud.rpc("qorpera_list_company_sites", args));
 			if (!Array.isArray(value)) throw new Error("Invalid sites.");
 			return value.map(parseCompanySite);
 		},
 		async memberPass(target, signal) {
 			signal?.throwIfAborted();
 			const id = site(target.id);
-			const value = await cloud.rpc("qorpera_site_member_pass", { p_site: id });
+			const args = { p_site: id };
+			const value = await (signal
+				? cloud.rpc("qorpera_site_member_pass", args, signal)
+				: cloud.rpc("qorpera_site_member_pass", args));
 			signal?.throwIfAborted();
 			return parseSiteMemberPass(value, target.slug);
 		},
 		async password(siteId, signal) {
 			signal?.throwIfAborted();
 			const id = site(siteId);
-			return parseCompanySitePassword(await cloud.rpc("qorpera_company_site_password", { p_site_id: id }), id);
+			const args = { p_site_id: id };
+			return parseCompanySitePassword(
+				await (signal
+					? cloud.rpc("qorpera_company_site_password", args, signal)
+					: cloud.rpc("qorpera_company_site_password", args)),
+				id,
+			);
 		},
 		async setPassword(siteId, password, signal) {
 			signal?.throwIfAborted();
 			const id = site(siteId);
 			if (password !== null && typeof password !== "string") throw new Error("Invalid site password.");
+			const args = { p_site_id: id, p_password: password };
 			return parseCompanySitePassword(
-				await cloud.rpc("qorpera_set_company_site_password", { p_site_id: id, p_password: password }),
+				await (signal
+					? cloud.rpc("qorpera_set_company_site_password", args, signal)
+					: cloud.rpc("qorpera_set_company_site_password", args)),
 				id,
 			);
 		},
 		async unpublish(siteId, signal) {
 			signal?.throwIfAborted();
 			const id = site(siteId);
-			const input = closedRecord(await cloud.rpc("qorpera_unpublish_company_site", { p_site_id: id }), [
-				"schema",
-				"siteId",
-				"removed",
-			]);
+			const args = { p_site_id: id };
+			const input = closedRecord(
+				await (signal
+					? cloud.rpc("qorpera_unpublish_company_site", args, signal)
+					: cloud.rpc("qorpera_unpublish_company_site", args)),
+				["schema", "siteId", "removed"],
+			);
 			if (
 				!input ||
 				input.schema !== "qorpera.company-site-unpublish/v1" ||
@@ -424,7 +441,7 @@ export function createWebSites(cloud: Cloud, company: { profileId: string }): We
 			signal?.throwIfAborted();
 			return parseCompanySiteAccess(
 				await withCloudDeadline(
-					() => cloud.rpc("qorpera_company_site_access", { p_profile_id: company.profileId }),
+					(deadline) => cloud.rpc("qorpera_company_site_access", { p_profile_id: company.profileId }, deadline),
 					ACCESS_MS,
 					signal,
 				),
