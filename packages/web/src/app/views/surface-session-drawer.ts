@@ -247,6 +247,14 @@ function drawerCap(): number {
 	return Math.max(DRAWER_MIN, Math.min(DRAWER_MAX, Math.floor((window.innerWidth * DRAWER_MAX_SHARE) / scale)));
 }
 
+function sameDeps(prev: readonly unknown[] | undefined, next: readonly unknown[]): boolean {
+	if (!prev || prev.length !== next.length) return false;
+	for (let i = 0; i < next.length; i++) {
+		if (!Object.is(prev[i], next[i])) return false;
+	}
+	return true;
+}
+
 export class SurfaceSessionDrawer {
 	readonly el = h("aside", { class: "surface-drawer", "aria-hidden": "true" });
 	readonly #resizer = h("div", {
@@ -297,7 +305,7 @@ export class SurfaceSessionDrawer {
 	#dragging = false;
 	#dragged = false;
 	#surfaceId = "";
-	#shown = "";
+	#shown: readonly unknown[] | undefined;
 	#sessionId = "";
 	#messages = 0;
 	#quotedChange: QuotedChangeRef | undefined;
@@ -459,7 +467,7 @@ export class SurfaceSessionDrawer {
 	}
 
 	#redraw(): void {
-		this.#shown = "";
+		this.#shown = undefined;
 		const current = this.#store.state.surfaces.find(
 			(item) => item.id === (this.#store.state.drawer?.surfaceId ?? this.#surfaceId),
 		);
@@ -543,7 +551,7 @@ export class SurfaceSessionDrawer {
 		this.el.setAttribute("aria-hidden", String(!open));
 		this.el.inert = !open;
 		if (!open) {
-			this.#shown = "";
+			this.#shown = undefined;
 			this.#sessionId = "";
 			this.#messages = 0;
 			this.#sourceFoot.hidden = true;
@@ -578,16 +586,11 @@ export class SurfaceSessionDrawer {
 		const state = store.state;
 		const workspace = state.workspaces[surface.id];
 		const look = store.lookOf(surface);
-		const explorations = openExplorations(workspace);
-		const plainSessions = rankSessions((workspace?.activeSessions ?? []).filter((session) => !session.explorationId));
-		const sourcePath = projectedSourcePath(surface);
-		const key = JSON.stringify([
+		const deps: readonly unknown[] = [
 			"overview",
-			surface.id,
-			surface.archetype,
-			surface.repositoryKey,
-			surface.folderRoot,
-			look,
+			surface,
+			look.kind,
+			look.accent,
 			state.mode,
 			state.activeReportSlug,
 			state.hiddenChanges,
@@ -596,11 +599,14 @@ export class SurfaceSessionDrawer {
 			this.#armedApprove,
 			state.localStudioBase[surface.id],
 			state.cloudSurfaceFiles[surface.id],
-			explorations,
-			plainSessions,
-		]);
-		if (key === this.#shown) return;
-		this.#shown = key;
+			state.studioPatches,
+			workspace,
+		];
+		if (sameDeps(this.#shown, deps)) return;
+		this.#shown = deps;
+		const explorations = openExplorations(workspace);
+		const plainSessions = rankSessions((workspace?.activeSessions ?? []).filter((session) => !session.explorationId));
+		const sourcePath = projectedSourcePath(surface);
 		this.#sessionId = "";
 		this.#messages = 0;
 
@@ -931,20 +937,20 @@ export class SurfaceSessionDrawer {
 			? reportsOwnedBy(state, resolvedSurface.id, { kind: "exploration", id: exploration.id })
 			: [];
 		const busy = Boolean(state.busy[`exploration:${exploration.id}`]);
-		const key = JSON.stringify([
+		const deps: readonly unknown[] = [
 			"focused-exploration",
 			exploration,
-			variants,
+			workspace,
 			picked?.id,
-			notes,
+			state.notes,
 			state.mode,
 			state.activeReportSlug,
 			state.busy,
 			this.#armedApprove,
 			ownedNotes,
-		]);
-		if (key === this.#shown) return;
-		this.#shown = key;
+		];
+		if (sameDeps(this.#shown, deps)) return;
+		this.#shown = deps;
 		this.#input.placeholder = t("Steer this session…");
 		this.#input.setAttribute("aria-label", t("Steer this session…"));
 		this.#send.setAttribute("aria-label", t("Send"));
@@ -1083,20 +1089,22 @@ export class SurfaceSessionDrawer {
 		const ownedNotes = resolvedSurface
 			? reportsOwnedBy(state, resolvedSurface.id, { kind: "session", id: session.id })
 			: [];
-		const key = JSON.stringify([
+		const deps: readonly unknown[] = [
 			"focused",
 			session,
-			notes,
+			resolvedSurface,
+			state.notes,
 			state.mode,
 			state.activeReportSlug,
 			state.hiddenChanges,
 			state.busy,
-			look,
+			look?.kind,
+			look?.accent,
 			this.#armedApprove,
 			ownedNotes,
-		]);
-		if (key === this.#shown) return;
-		this.#shown = key;
+		];
+		if (sameDeps(this.#shown, deps)) return;
+		this.#shown = deps;
 		this.#input.placeholder = t("Steer this session…");
 		this.#input.setAttribute("aria-label", t("Steer this session…"));
 		this.#send.setAttribute("aria-label", t("Send"));
